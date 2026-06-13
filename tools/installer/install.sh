@@ -7,9 +7,9 @@
 # repo is public; it's fetched over HTTPS with git — no authentication needed.
 #
 # Quick start:
-#   curl -fsSL https://raw.githubusercontent.com/adrielnava/llm-systems-manager/main/install.sh | bash
+#   bash <(curl -fsSL https://raw.githubusercontent.com/adrielnava/llm-systems-manager/main/tools/installer/install.sh)
 #   # or non-interactively:
-#   curl -fsSL https://raw.githubusercontent.com/adrielnava/llm-systems-manager/main/install.sh \
+#   curl -fsSL https://raw.githubusercontent.com/adrielnava/llm-systems-manager/main/tools/installer/install.sh \
 #     | bash -s -- --mode 1
 #
 # Modes:

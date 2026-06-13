@@ -1,10 +1,10 @@
 # LLM Systems Manager
 
-A highly configurable, real-time, monitoring and obeservability, alerting, and control systems for an LLM lab
+A highly configurable, real-time monitoring, observability, alerting, and control system for an LLM lab
 
 It currently integrates [llama.cpp](https://github.com/ggerganov/llama.cpp), [LM Studio](https://lmstudio.ai/), [stable-diffusion.cpp](https://github.com/leejet/stable-diffusion.cpp), and [OpenClaw](https://github.com/openclaw/openclaw) session telemetry, but the agent reports general host metrics for any Linux or macOS machine. 
 
-New integrations with Vllm and Ollama are on the roadmap.
+New integrations with vLLM and Ollama are on the roadmap.
 
 ---
 <img width="1526" height="1050" alt="Screenshot 2026-05-30 at 1 50 30 AM" src="https://github.com/user-attachments/assets/ecb1d3ae-ce39-4622-982a-490169888e6c" />
@@ -59,7 +59,7 @@ If you find this project useful, please consider leaving a donation
 
 <!--START_SECTION:buy-me-a-coffee-->
 <a href="https://www.buymeacoffee.com/llmsystems" target="_blank"><img src="https://cdn.buymeacoffee.com/buttons/default-blue.png" alt="Buy Me A Coffee" height="41" width="174"></a>
-<!--END_SECTION:buy-me-a-coffe-->
+<!--END_SECTION:buy-me-a-coffee-->
 ---
 
 ## Quickstart — single host
@@ -298,7 +298,7 @@ If you find this project useful, please consider leaving a donation
 
 <!--START_SECTION:buy-me-a-coffee-->
 <a href="https://www.buymeacoffee.com/llmsystems" target="_blank"><img src="https://cdn.buymeacoffee.com/buttons/default-orange.png" alt="Buy Me A Coffee" height="41" width="174"></a>
-<!--END_SECTION:buy-me-a-coffe-->
+<!--END_SECTION:buy-me-a-coffee-->
 
 ---
 

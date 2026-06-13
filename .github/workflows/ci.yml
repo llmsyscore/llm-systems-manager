@@ -2,9 +2,8 @@ name: CI
 
 # Runs on every push to main and every pull request targeting main.
 # - test: pytest across the alarm-engine + manager suites. BLOCKING.
-# - lint: ruff (pyflakes ruleset). ADVISORY for now — findings reported but
-#   PR is not blocked. Once the codebase is cleaned up, flip
-#   `continue-on-error` to false to make it blocking.
+# - lint: ruff (pyflakes ruleset). BLOCKING — new findings should be fixed
+#   in the PR that introduces them rather than letting drift accumulate.
 #
 # Intentionally deferred:
 #   * mypy — most modules aren't type-annotated; running it broadly would
