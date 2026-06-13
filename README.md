@@ -64,11 +64,10 @@ If you find this project useful, please consider leaving a donation
 
 ## Quickstart — single host
 
-For a quick installation install on one host, choose the full install option:
+For a quick installation on one host, choose the full install option:
 
 ```bash
-# Install manager + alarm engine + local agent + InfluxDB on this host
-curl -fsSL https://raw.githubusercontent.com/adrielnava/llm-systems-manager/main/tools/installer/install.sh | bash
+bash <(curl -fsSL https://raw.githubusercontent.com/adrielnava/llm-systems-manager/main/tools/installer/install.sh)
 ```
 
 The installer is interactive: it prompts for SMTP credentials (if you want email alerts), the manager admin login, and confirms before installing system packages. It then enables the systemd units but **does not start anything automatically** — it prints the exact `systemctl start` commands so you stay in control of timing.
@@ -85,11 +84,10 @@ That's it for a single-host lab. Everything else below is for adding more hosts 
 
 ## Agent installation
 
-The agent is what gets a host onto the dashboard. Run the installer and use the mode 5 (agent installation) option of the installer on every machine you want to monitor (Linux or macOS):
+The agent is what pushes all data into the dashboard. Run the installer and use the mode 5 (agent installation) option on every machine you want to monitor and control (Linux or macOS):
 
 ```bash
-# On every additional host:
-curl -fsSL https://raw.githubusercontent.com/adrielnava/llm-systems-manager/main/tools/installer/install.sh | bash
+bash <(curl -fsSL https://raw.githubusercontent.com/adrielnava/llm-systems-manager/main/tools/installer/install.sh)
 ```
 
 The agent registers itself with the manager on first launch. From **Admin → Agents**, click **Approve** — the manager signs a TLS cert for that agent and starts polling it.
