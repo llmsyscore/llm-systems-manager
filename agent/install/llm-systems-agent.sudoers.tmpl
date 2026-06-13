@@ -1,0 +1,18 @@
+# Managed by llm-systems-agent installer. Do not edit by hand.
+# Drop as /etc/sudoers.d/llm-systems-agent (mode 0440).
+# Allows the agent (running as ${AGENT_USER}) to run only the systemctl
+# commands needed for llama-server lifecycle and the perf controller's
+# CPU governor / fan profile units.
+
+Cmnd_Alias LSA_LLAMA = /usr/bin/systemctl start llama_server.service, \
+                       /usr/bin/systemctl stop llama_server.service, \
+                       /usr/bin/systemctl restart llama_server.service, \
+                       /usr/bin/systemctl daemon-reload, \
+                       /usr/local/llama-server/build-llama-cpp.sh, \
+                       /usr/bin/tee /etc/systemd/system/llama_server.service
+
+Cmnd_Alias LSA_PERF  = /usr/bin/systemctl reload-or-restart powersave, \
+                       /usr/bin/systemctl reload-or-restart performance, \
+                       /usr/bin/liquidctl
+
+${AGENT_USER} ALL=(root) NOPASSWD: LSA_LLAMA, LSA_PERF

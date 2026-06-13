@@ -1,0 +1,54 @@
+# =============================================================================
+# powersave.service — LLM Systems "idle" profile
+# =============================================================================
+# Activated by the agent's perf controller when llama-server enters its
+# sleeping state:
+#     sudo systemctl reload-or-restart powersave
+#
+# This is a STARTING POINT. Tune it for your hardware:
+#   • CPU governor                  — already set below (default: powersave)
+#   • GPU power limit               — uncomment + tune for AMD/NVIDIA
+#   • Cooling                       — uncomment to spin fans down
+#
+# Two ways to extend without editing this file:
+#   1. Drop a snippet at /etc/systemd/system/powersave.service.d/override.conf
+#      with [Service] and additional ExecStart= lines.
+#   2. Edit this file in place — but the installer will refuse to clobber
+#      it on re-run (use --force-overwrite-perf-units to bypass).
+# =============================================================================
+
+[Unit]
+Description=LLM Systems powersave profile (CPU governor + accelerators)
+Documentation=https://github.com/adrielnava/llm-systems-manager
+DefaultDependencies=no
+After=multi-user.target
+ConditionPathExists=/sys/devices/system/cpu/cpu0/cpufreq/scaling_governor
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+
+# CPU governor → powersave on every core
+ExecStart=/bin/bash -c 'for g in /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor; do echo powersave > "$g" 2>/dev/null || true; done'
+
+# ── Examples to enable (uncomment + tune) ───────────────────────────────────
+# CPU energy/perf bias (Intel)
+# ExecStart=/usr/bin/x86_energy_perf_policy power
+
+# AMD GPU power profile (low)
+# ExecStart=/bin/bash -c 'for f in /sys/class/drm/card*/device/power_dpm_force_performance_level; do echo low > "$f" 2>/dev/null || true; done'
+# AMD GPU perf level (powersaving)
+# ExecStart=/bin/bash -c 'for f in /sys/class/drm/card*/device/pp_power_profile_mode; do echo 2 > "$f" 2>/dev/null || true; done'
+
+# NVIDIA GPU persistence off + lower power-limit (W)
+# ExecStart=/usr/bin/nvidia-smi -pl 200
+
+# NZXT Kraken — quieter fans / pump
+# ExecStart=/usr/bin/liquidctl --match Kraken set pump speed 20 10 29 20 39 50 41 90 43 100
+# ExecStart=/usr/bin/liquidctl --match Kraken set fan speed 20 10 29 20 39 50 41 90 43 100
+
+# Corsair PSU / case fans — quieter
+# ExecStart=/usr/bin/liquidctl --match Commander set fan speed 30
+
+[Install]
+WantedBy=multi-user.target

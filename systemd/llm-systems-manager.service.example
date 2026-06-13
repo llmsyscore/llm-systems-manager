@@ -1,0 +1,22 @@
+[Unit]
+Description=LLM Systems Manager
+After=network.target influxdb.service llm-systems-alarm-engine.service
+
+[Service]
+User=@@RUN_USER@@
+Group=@@RUN_GROUP@@
+LimitNOFILE=65536
+WorkingDirectory=@@INSTALL_DIR@@/llm-systems-manager
+# All runtime config (URLs, timeouts, proxy flags, log paths, etc.) lives in
+# the TOML file pointed to by LLM_SYSTEMS_CONFIG. PYTHONUNBUFFERED keeps log
+# lines flushed to journald in real time.
+Environment=PYTHONUNBUFFERED=1
+Environment=LLM_SYSTEMS_CONFIG=@@INSTALL_DIR@@/config/llm-systems.toml
+ExecStart=@@INSTALL_DIR@@/llm-systems-manager/venv/bin/python3 backend/llm-systems-manager.py
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

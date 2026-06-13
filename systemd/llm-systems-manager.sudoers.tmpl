@@ -1,0 +1,5 @@
+# Installed by install-manager.sh to /etc/sudoers.d/llm-systems-manager (0440).
+# Lets the manager's runtime user restart the manager and alarm-engine units
+# from the admin tab's System Health card. Scoped to exactly these two
+# --no-block restart commands; nothing else.
+@@RUN_USER@@ ALL=(root) NOPASSWD: /usr/bin/systemctl --no-block restart llm-systems-manager.service, /usr/bin/systemctl --no-block restart llm-systems-alarm-engine.service

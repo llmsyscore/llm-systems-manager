@@ -1,0 +1,66 @@
+# Python
+venv/
+__pycache__/
+*.pyc
+*.pyo
+.env
+
+# Live configs
+config/llm-systems.toml
+config/unified_config.py
+
+# Data files (runtime-generated, don't commit)
+data/
+
+# Backups
+*.bak
+*.bak.*
+*.back
+*.orig
+*_before_sql
+*.bak.[0-9]*
+backups/
+
+# Logs
+*.log
+*.log.*
+
+# OS
+.DS_Store
+Thumbs.db
+/requirements.txt
+/*/requirements.txt
+!agent/install/requirements.txt
+!llm-systems-alarm-engine/requirements.txt
+!backend/requirements.txt
+# Live systemd units (templated from systemd/*.service.example at install time)
+systemd/*.service
+llm-systems-alarm-engine/systemd/*.service
+
+# Plans
+plans/
+docs/superpowers
+
+# Test files
+*-test.py
+*-test.html
+
+# Pytest runtime cache (created when running the unit tests; tests/ themselves
+# are tracked because contributors and CI need them, but the cache is local).
+.pytest_cache/
+
+# Development
+devel/
+.claude/
+CLAUDE.md
+HANDOFF.md
+tools/*
+!tools/installer
+!tools/run_tests.sh
+
+# IDE / OS
+/.cache/
+/.direnv/
+/.envrc
+/.vs/
+/.vscode/

@@ -1,0 +1,51 @@
+  /* Local-only tweaks for the autotune wizard; broader styles inherit from .bench-* */
+  #autotuneOverlay .at-field { display:flex; flex-direction:column; gap:4px; min-width:140px; }
+  #autotuneOverlay .at-field label { font-size:0.78em; color:var(--fg-dim); }
+  #autotuneOverlay .at-field input, #autotuneOverlay .at-field select {
+    background:var(--bg-card-alt); border:1px solid var(--border-strong);
+    border-radius:4px; color:var(--fg); font-size:0.85em; padding:6px 8px;
+  }
+  #autotuneOverlay .at-opt-row { display:flex; align-items:center; gap:8px; padding:4px 0; }
+  #autotuneOverlay .at-opt-row label.at-opt-label { min-width:120px; font-size:0.85em; }
+  #autotuneOverlay .at-opt-row input[type=number], #autotuneOverlay .at-opt-row select {
+    flex:0 0 140px;
+  }
+  #autotuneOverlay #atModelPanel { max-height:280px; overflow-y:auto; font-size:15px; }
+  #autotuneOverlay #atModelPanel .bench-model-item { padding:7px 6px; gap:10px; }
+  #autotuneOverlay #atModelPanel .bench-model-item label { font-size:13px; line-height:1.3; cursor:pointer; }
+  #autotuneOverlay #atModelPanel .bench-model-item input[type=checkbox] { width:12px; height:12px; }
+  #autotuneOverlay .at-result-card {
+    background:var(--bg-card-alt); border:1px solid var(--border-strong);
+    border-radius:6px; padding:10px 12px; margin:8px 0;
+  }
+  #autotuneOverlay .at-result-card.pending { opacity:0.7; }
+  #autotuneOverlay .at-result-grid {
+    display:grid; grid-template-columns:repeat(auto-fit,minmax(140px,1fr));
+    gap:8px 16px; margin:6px 0;
+  }
+  #autotuneOverlay .at-result-grid div { font-size:0.85em; }
+  #autotuneOverlay .at-result-grid b { color:var(--fg); }
+  #autotuneOverlay .at-result-actions { display:flex; gap:8px; margin-top:8px; }
+  #autotuneOverlay #atLog {
+    max-height:320px; overflow-y:auto;
+    background:var(--bg-card-alt); border:1px solid var(--border-strong);
+    border-radius:4px; padding:8px 10px; font-family:ui-monospace, "SF Mono", Menlo, monospace;
+    font-size:11px; line-height:1.5;
+    white-space:pre-wrap; word-break:break-all; margin-top:6px;
+  }
+  #autotuneOverlay .at-log-cmd { color:var(--accent); }
+  #autotuneOverlay .at-log-sep { color:var(--accent); margin-top:6px; }
+  #autotuneOverlay .at-log-ok   { color:var(--ok); }
+  #autotuneOverlay .at-log-warn { color:var(--warn); }
+  #autotuneOverlay .at-log-crit { color:var(--crit); }
+  #autotuneOverlay .at-log-dim  { color:var(--fg-dim); }
+  #autotuneOverlay #atRawLog {
+    max-height:340px; overflow-y:auto;
+    background:var(--bg-card-alt); border:1px solid var(--border-strong);
+    border-radius:4px; padding:6px 8px; margin-top:6px;
+    font-family:ui-monospace, "SF Mono", Menlo, monospace;
+    font-size:12px; line-height:1.45;
+    white-space:pre-wrap; word-break:break-all;
+    color:var(--fg-dim);
+  }
+  #autotuneOverlay #atRawDetails[open] > summary { color:var(--fg); }

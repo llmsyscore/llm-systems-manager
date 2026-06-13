@@ -1,0 +1,1739 @@
+<!DOCTYPE html>
+<!--
+================================================================================
+index.html  —  LLM System Manager Frontend  —  Version v2026.06.05-9
+================================================================================
+Single-page frontend for the LLM System Administration Dashboard.
+Served by the Flask backend (llm-systems-manager.py). Displays
+real-time metrics for the local Linux host (llama.cpp, GPU, CPU, RAM, disk,
+network, UPS) and the remote LM Studio host. Uses Chart.js for time-
+series graphs and SortableJS for drag-and-drop card reordering.
+
+Dependencies (loaded from CDN):
+    Chart.js          https://cdn.jsdelivr.net/npm/chart.js
+    chartjs-adapter-date-fns
+    SortableJS        https://cdn.jsdelivr.net/npm/sortablejs@1.15.2
+
+Backend API endpoints consumed:
+    GET  /api/metrics                   — full system snapshot (polled)
+    GET  /api/history                   — scalar time-series backfill
+    GET  /api/config                    — dynamic poll interval
+    GET  /api/llama-state               — llama state + model + port (2s poll)
+    GET  /api/lmstudio/metrics          — LM Studio agent payload (6s poll)
+    POST /api/llm/server/{start,stop,restart}
+    GET  /api/llm/server/log/stream     — SSE log stream
+    GET  /api/llm/server/log/tail       — last 50 log lines
+    GET  /api/llm/models                — llama model list
+    POST /api/llm/load|unload           — load/unload llama model
+    GET  /api/llm/config                — config.ini read
+    POST /api/llm/config                — config.ini write
+    POST /api/lmstudio/server/{start,stop,restart}
+    GET  /api/lmstudio/server/log       — LMS server log (SSH)
+    POST /api/lmstudio/load|unload      — LMS model load/unload
+    GET  /api/layout                    — card layout
+    POST /api/layout                    — save card layout
+================================================================================
+-->
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>LLM Systems Manager</title>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js/dist/chart.umd.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns/dist/chartjs-adapter-date-fns.bundle.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/sortablejs@1.15.2/Sortable.min.js"></script>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/xterm@5.3.0/css/xterm.min.css"/>
+  <script src="https://cdn.jsdelivr.net/npm/xterm@5.3.0/lib/xterm.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/xterm-addon-fit@0.8.0/lib/xterm-addon-fit.min.js"></script>
+  <link rel="stylesheet" href="/static/css/base.css?v=2026.06.10-6">
+</head>
+<body>
+
+<h1>
+  <a href="/" class="site-logo-link" title="Home">
+    <!-- Colors come from --brand-* :root vars injected by the manager's `/`
+         route per [manager.branding].palette (fallbacks = indigo default). -->
+    <svg width="32" height="32" viewBox="0 0 32 32" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+      <!-- Chip body -->
+      <rect x="7" y="7" width="18" height="18" rx="3" fill="var(--brand-chip1,#0a0e1f)" stroke="var(--brand-stroke,#2f3d80)" stroke-width="1.4"/>
+      <!-- Inner core area -->
+      <rect x="10.5" y="10.5" width="11" height="11" rx="1.5" fill="var(--brand-chip2,#0e1430)" stroke="var(--brand-mid,#4257b0)" stroke-width="0.9"/>
+      <!-- Central neural node -->
+      <circle cx="16" cy="16" r="2.2" fill="var(--brand-core,#5b7cfa)"/>
+      <!-- Inner circuit traces from core outward -->
+      <line x1="13.8" y1="16" x2="12.5" y2="16"   stroke="var(--brand-mid,#4257b0)" stroke-width="0.7" stroke-linecap="round"/>
+      <line x1="18.2" y1="16" x2="19.5" y2="16"   stroke="var(--brand-mid,#4257b0)" stroke-width="0.7" stroke-linecap="round"/>
+      <line x1="16"   y1="13.8" x2="16" y2="12.5" stroke="var(--brand-mid,#4257b0)" stroke-width="0.7" stroke-linecap="round"/>
+      <line x1="16"   y1="18.2" x2="16" y2="19.5" stroke="var(--brand-mid,#4257b0)" stroke-width="0.7" stroke-linecap="round"/>
+      <!-- Corner nodes on inner rect -->
+      <circle cx="12.5" cy="12.5" r="0.9" fill="var(--brand-stroke,#2f3d80)"/>
+      <circle cx="19.5" cy="12.5" r="0.9" fill="var(--brand-stroke,#2f3d80)"/>
+      <circle cx="12.5" cy="19.5" r="0.9" fill="var(--brand-stroke,#2f3d80)"/>
+      <circle cx="19.5" cy="19.5" r="0.9" fill="var(--brand-stroke,#2f3d80)"/>
+      <!-- Pins — left -->
+      <rect x="3.5" y="11.5" width="3" height="1.4" rx="0.5" fill="var(--brand-stroke,#2f3d80)"/>
+      <rect x="3.5" y="15.3" width="3" height="1.4" rx="0.5" fill="var(--brand-stroke,#2f3d80)"/>
+      <rect x="3.5" y="19.1" width="3" height="1.4" rx="0.5" fill="var(--brand-stroke,#2f3d80)"/>
+      <!-- Pins — right -->
+      <rect x="25.5" y="11.5" width="3" height="1.4" rx="0.5" fill="var(--brand-stroke,#2f3d80)"/>
+      <rect x="25.5" y="15.3" width="3" height="1.4" rx="0.5" fill="var(--brand-stroke,#2f3d80)"/>
+      <rect x="25.5" y="19.1" width="3" height="1.4" rx="0.5" fill="var(--brand-stroke,#2f3d80)"/>
+      <!-- Pins — top -->
+      <rect x="11.5" y="3.5" width="1.4" height="3" rx="0.5" fill="var(--brand-stroke,#2f3d80)"/>
+      <rect x="15.3" y="3.5" width="1.4" height="3" rx="0.5" fill="var(--brand-stroke,#2f3d80)"/>
+      <rect x="19.1" y="3.5" width="1.4" height="3" rx="0.5" fill="var(--brand-stroke,#2f3d80)"/>
+      <!-- Pins — bottom -->
+      <rect x="11.5" y="25.5" width="1.4" height="3" rx="0.5" fill="var(--brand-stroke,#2f3d80)"/>
+      <rect x="15.3" y="25.5" width="1.4" height="3" rx="0.5" fill="var(--brand-stroke,#2f3d80)"/>
+      <rect x="19.1" y="25.5" width="1.4" height="3" rx="0.5" fill="var(--brand-stroke,#2f3d80)"/>
+    </svg>
+    <span class="site-title">LLM Systems Manager</span>
+  </a>
+  <div id="serverStateBanner" class="state-banner state-unknown" style="margin-left:16px;padding:2px;border-bottom:none;">
+    <div class="state-pill"><span id="serverStateIcon">●</span> <span id="serverStateText">LLCPP · checking...</span></div>
+  </div>
+  <div id="lmsStateBanner" class="state-banner state-unknown" style="margin-left:8px;padding:2px;border-bottom:none;">
+    <div class="state-pill"><span id="lmsStateIcon">●</span> <span id="lmsStateText">LMS · —</span></div>
+  </div>
+  <div class="header-right">
+    <span class="interval-badge" id="intervalBadge">—s interval</span>
+    <button class="gear-btn" onclick="openSettings()" title="Settings">⚙</button>
+  </div>
+</h1>
+<hr class="header-divider">
+<div class="tab-nav">
+  <button class="tab-btn active" id="tabBtnOverall" onclick="switchTab('overall')">LLM Overall</button>
+  <button class="tab-btn" onclick="switchTab('dashboard')">Dashboard</button>
+  <button class="tab-btn" id="tabBtnLlmControl" onclick="switchTab('llm')">LLM Control</button>
+  <button class="tab-btn" id="tabBtnOpenclaw" style="display:none;" onclick="switchTab('openclaw')">OpenClaw</button>
+  <button class="tab-btn" id="tabBtnLlmchat"  style="display:none;" onclick="switchTab('llmchat')">LLM Chat</button>
+  <button class="tab-btn" id="tabBtnImggen"   style="display:none;" onclick="switchTab('imggen')">Image Generation</button>
+  <span style="flex:1;"></span>
+  <button class="tab-btn" id="tabBtnEvents" onclick="switchTab('events')"><span class="tab-dot" id="tabDotEvents"></span>Events</button>
+  <button class="tab-btn" id="tabBtnAdmin" onclick="switchTab('admin')"><span class="tab-dot" id="tabDotAdmin"></span>Admin</button>
+  <button class="tab-btn" id="tabBtnAccount" style="display:none;" onclick="accountMenu()">Account</button>
+</div>
+
+
+<!-- Dashboard Tab — with sub-tabs -->
+<div id="dashboardTab" style="display:none;">
+  <div style="padding:12px 20px 0;">
+    <div class="sub-tab-nav">
+      <button class="sub-tab-btn active" id="subTabBtnDashLlamacpp" onclick="switchSubTab('dashboard','llamacpp')">llama.cpp</button>
+      <button class="sub-tab-btn" id="subTabBtnDashLmstudio" onclick="switchSubTab('dashboard','lmstudio')">LM Studio</button>
+      <button class="sub-tab-btn" id="subTabBtnOpenclaw" style="display:none;" onclick="switchSubTab('dashboard','openclaw')">OpenClaw</button>
+      <button class="sub-tab-btn" onclick="switchSubTab('dashboard','manager')">Manager</button>
+    </div>
+  </div>
+  <!-- llama.cpp dashboard = existing cardGrid -->
+  <div id="dash-llamacpp" class="sub-tab-panel active">
+    <div class="agent-picker" id="agentPickerDashLlama" style="display:none"></div>
+    <div id="llm-ctrl-wrap">
+
+  <!-- Server Control -->
+  <div class="llm-section" id="secLlamaCtrl">
+    <div class="llm-section-title" onclick="toggleSection('secLlamaCtrl')">Llama Server Control<span class="llm-collapse-icon">▾</span></div>
+    <div class="llm-section-body">
+    <div class="llm-toolbar">
+      <button class="btn btn-stone-muted-gradient" id="llamaBtnStart"   onclick="serverAction('start')">▶ Start</button>
+      <button class="btn btn-slate-muted-gradient" id="llamaBtnStop"    onclick="serverAction('stop')">⏹ Stop</button>
+      <button class="btn btn-amber-muted-gradient" id="llamaBtnRestart" onclick="serverAction('restart')">↺ Restart</button>
+      <button class="btn btn-zinc-muted-gradient"  id="llamaBtnStatus"  onclick="serverStatus()">ℹ Status</button>
+      <button class="btn btn-amber-muted-gradient" id="llamaBtnWake"    onclick="serverWake()" title="POST a tiny chat-completions request to the llama-server to bring it out of idle-sleep">☀ Wakeup</button>
+      <span id="llamaServerStatus" style="font-size:0.82em;color:var(--fg-dim);margin-left:2px;">—</span>
+      <span id="serverCtrlStatus"  style="font-size:0.82em;color:var(--fg-dim);margin-left:4px;"></span>
+      <span class="status status--crit" id="llamaCtrlBadge" style="margin-left:4px;"><span class="status__dot"></span>Agent offline</span>
+      <button class="btn btn-stone-muted-gradient ml-auto" id="llamaBtnPerfPerformance" onclick="serverPerfMode('performance')" title="Force the llama agent host's CPU governor / fan profile to PERFORMANCE (sudo systemctl restart performance)">⚡ Performance</button>
+      <button class="btn btn-slate-muted-gradient" id="llamaBtnPerfPowersave"   onclick="serverPerfMode('powersave')"   title="Force the llama agent host's CPU governor / fan profile to POWERSAVE (sudo systemctl restart powersave)">🌙 Powersave</button>
+      <button class="btn btn-slate-muted-gradient" onclick="openServerConfig()">⚙ Server Config</button>
+      <button class="btn btn-slate-muted-gradient" id="llamaBtnBuild" onclick="startLlamaBuild()" title="Rebuild llama.cpp from source">⬆ Update llama.cpp</button>
+      <button class="btn btn-slate-muted-gradient" onclick="toggleTerminal()">⬛ Terminal</button>
+      <button class="btn btn-slate-muted-gradient" onclick="toggleServerLog()">☰ Server Log</button>
+    </div>
+    <div id="llamaBuildPanel" style="display:none;margin-bottom:10px;">
+      <div class="llm-toolbar" style="justify-content:space-between;margin-bottom:4px;">
+        <span style="font-size:0.82em;color:var(--fg-dim);">⬆ Update llama.cpp output <span id="llamaBuildStatus" style="margin-left:6px;"></span></span>
+        <button class="btn btn-gray-muted-gradient btn-sm" onclick="closeLlamaBuildPanel()">✕ Close</button>
+      </div>
+      <pre id="llamaBuildLog" class="log-box" style="height:360px;"></pre>
+    </div>
+    <!-- Terminal panel — sits above the server log so the layout is
+         buttons → terminal → log when both are open. -->
+    <div id="terminalPanel" style="display:none;margin-bottom:10px;">
+      <div class="llm-toolbar" style="justify-content:flex-end;margin-bottom:4px;">
+        <span style="font-size:0.75em;color:var(--fg-dim);margin-right:auto;">Terminal</span>
+        <button class="btn btn-gray-muted-gradient btn-sm" onclick="popOutTerminal()" title="Open in new window">⧉ Pop out</button>
+        <button class="btn btn-gray-muted-gradient btn-sm" onclick="reconnectTerminal()" title="Reconnect">↺ Reconnect</button>
+      </div>
+      <div class="log-wrap">
+        <div id="terminalMount" class="log-box log-box--attached log-box--flush" style="height:560px;overflow:hidden;"></div>
+        <div class="dl-log-resize" data-resize-target="terminalMount" data-fit-xterm="llama"></div>
+      </div>
+    </div>
+    <div id="serverLogPanel" style="display:none;">
+      <div class="llm-toolbar" style="justify-content:flex-end;margin-bottom:4px;">
+        <button class="btn btn-zinc-muted-gradient btn-sm" onclick="popOutLog()" title="Open in new window">⧉ Pop out</button>
+        <button class="btn btn-zinc-muted-gradient btn-sm" onclick="fullscreenLog()" title="Fullscreen">⛶ Fullscreen</button>
+        <button class="btn btn-zinc-muted-gradient btn-sm" onclick="restartLogStream()" title="Reconnect stream">↺ Refresh</button>
+      </div>
+      <div class="log-wrap">
+        <div id="serverLogBox" class="log-box log-box--attached" style="height:560px;"></div>
+        <div id="logResizeHandle" class="dl-log-resize"></div>
+      </div>
+    </div>
+    </div>
+  </div>
+
+
+  <!-- Model Roster -->
+  <div class="llm-section" id="secModels">
+    <div class="llm-section-title" onclick="toggleSection('secModels')">Models <span style="color:var(--fg-faint);font-weight:normal;margin-left:8px;text-transform:none;letter-spacing:0;">— one model may be loaded at a time</span><span class="llm-collapse-icon">▾</span></div>
+    <div class="llm-section-body">
+    <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px;font-size:0.82em;color:var(--fg-muted);">
+      <label for="modelSortSel">Sort:</label>
+      <select id="modelSortSel" class="select" onchange="onModelSortChange(this.value)" onclick="event.stopPropagation();">
+        <option value="group_by_author">By author</option>
+        <option value="alphabetical">Alphabetical</option>
+        <option value="loaded_first">Loaded first</option>
+      </select>
+    </div>
+    <div class="model-cards" id="llmModelCards">
+      <div style="color:var(--fg-dim);font-size:0.85em;">Loading...</div>
+    </div>
+    <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:14px;">
+      <button class="btn btn-gray-muted-gradient" onclick="openAddModel()">+ Add New Model</button>
+      <button class="btn btn-gray-muted-gradient" onclick="openBench(null)" title="Run a llama-bench performance benchmark on a configured model">⏱ Benchmark</button>
+      <button class="btn btn-gray-muted-gradient" onclick="openAutotune()" title="Iteratively converge ctx-size on a target free-VRAM headroom for one or more models">🎯 Auto Tune</button>
+    </div>
+    </div>
+  </div>
+
+  <!-- Model Editor (hidden until edit/add clicked) -->
+  <div class="llm-editor" id="llmEditor" style="display:none;">
+    <div class="llm-editor-header">
+      <h3 id="llmEditorTitle">Edit Model</h3>
+      <button class="btn btn-gray-muted-gradient" onclick="closeEditor()">✕ Close</button>
+    </div>
+    <div class="llm-editor-body">
+      <div class="form-section">
+        <div class="form-section-title">Model ID</div>
+        <div style="display:flex;flex-wrap:wrap;gap:16px;">
+          <div class="form-field" style="margin:0;flex:0 0 auto;">
+            <label>Model ID / HF Repo (used as section name in config)</label>
+            <input id="ef-id" type="text" placeholder="username/repo-name:QUANT" style="width:auto;min-width:340px;max-width:100%;" />
+          </div>
+          <div class="form-field" style="margin:0;flex:0 0 auto;">
+            <label>Alias <span style="color:var(--fg-muted);font-weight:normal;font-size:0.82em;">(optional — shown on the model card)</span></label>
+            <input id="ef-alias" type="text" placeholder="e.g. Qwen 32B (fast)" style="width:auto;min-width:260px;max-width:100%;" />
+          </div>
+        </div>
+      </div>
+
+      <div class="form-section" id="copyFromProfileRow" style="display:none;">
+        <div class="form-section-title">Copy Settings From</div>
+        <div style="display:inline-flex;align-items:flex-end;gap:8px;flex-wrap:wrap;">
+          <div class="form-field" style="margin:0;">
+            <label>Existing profile (Model ID is preserved)</label>
+            <select id="ef-copy-source" style="width:auto;min-width:240px;max-width:100%;">
+              <option value="">— select a profile —</option>
+            </select>
+          </div>
+          <button class="btn btn-gray-muted-gradient" onclick="copyFromProfile();return false;">Apply</button>
+        </div>
+      </div>
+
+      <div class="form-section">
+        <div class="form-section-title">Sampling</div>
+        <div class="form-grid">
+          <div class="form-field"><label>Temperature</label><input id="ef-temperature" type="number" step="0.05" min="0" max="2" /></div>
+          <div class="form-field"><label>Dynatemp Range (0.0 = disabled)</label><input id="ef-dynatemp-range" type="number" step="0.1" min="0" max="2" /></div>
+          <div class="form-field"><label>Dynatemp Exp</label><input id="ef-dynatemp-exp" type="number" step="0.1" min="0" max="2" /></div>
+          <div class="form-field"><label>Top-P (1.0 = disabled)</label><input id="ef-top-p" type="number" step="0.05" min="0" max="1" /></div>
+          <div class="form-field"><label>Top-K (0 = disabled)</label><input id="ef-top-k" type="number" min="0" max="500" /></div>
+          <div class="form-field"><label>Min-P (0.0 = disabled)</label><input id="ef-min-p" type="number" step="0.01" min="0" max="1" /></div>
+          <div class="form-field"><label>Presence Penalty (0.0 = disabled)</label><input id="ef-presence-penalty" type="number" step="0.1" min="0" max="2" /></div>
+          <div class="form-field"><label>Repeat Penalty (1.0 = disabled)</label><input id="ef-repeat-penalty" type="number" step="0.05" min="0.5" max="2" /></div>
+        </div>
+      </div>
+
+      <div class="form-section">
+        <div class="form-section-title">Context & Performance</div>
+        <div class="form-grid">
+          <div class="form-field"><label>Context Size</label><input id="ef-ctx-size" type="number" min="512" /></div>
+          <div class="form-field"><label>Batch Size</label><input id="ef-batch-size" type="number" min="1" /></div>
+          <div class="form-field"><label>Ubatch Size</label><input id="ef-ubatch-size" type="number" min="1" /></div>
+          <div class="form-field"><label>GPU Layers (99=all)</label><input id="ef-n-gpu-layers" type="number" min="0" max="999" /></div>
+          <div class="form-field"><label>Max Predict (-1=∞)</label><input id="ef-predict" type="number" min="-1" /></div>
+          <div class="form-field"><label>Memory Map</label>
+            <select id="ef-mmap"><option value="on">on</option><option value="off">off</option></select>
+          </div>
+          <div class="form-field"><label>Direct IO</label>
+            <select id="ef-direct-io"><option value="off">off</option><option value="on">on</option></select>
+          </div>
+          <div class="form-field"><label>Fit</label>
+            <select id="ef-fit"><option value="on">on</option><option value="off">off</option></select>
+          </div>
+          <div class="form-field"><label>Fit Min CTX Size</label><input id="ef-fit-ctx" type="number" min="0" placeholder="16384" /></div>
+        </div>
+      </div>
+
+      <div class="form-section">
+        <div class="form-section-title">KV Cache</div>
+        <div class="form-grid">
+          <div class="form-field"><label>Cache Type K</label>
+            <select id="ef-cache-type-k">
+              <option>f16</option><option>q8_0</option><option>q5_1</option>
+              <option>q4_1</option><option>q4_0</option><option>q5_0</option><option>iq4_nl</option>
+            </select>
+          </div>
+          <div class="form-field"><label>Cache Type V</label>
+            <select id="ef-cache-type-v">
+              <option>f16</option><option>q8_0</option><option>q5_1</option>
+              <option>q4_1</option><option>q4_0</option><option>q5_0</option><option>iq4_nl</option>
+            </select>
+          </div>
+          <div class="form-field"><label>Cache RAM (MB, 0=VRAM only)</label><input id="ef-cache-ram" type="number" min="0" /></div>
+        </div>
+      </div>
+
+      <div class="form-section">
+        <div class="form-section-title">Model Settings</div>
+        <div class="form-grid">
+          <div class="form-field"><label>Flash Attention</label>
+            <select id="ef-flash-attn"><option>on</option><option>off</option><option>auto</option></select>
+          </div>
+          <div class="form-field"><label>Reasoning</label>
+            <select id="ef-reasoning"><option>on</option><option>off</option><option>auto</option></select>
+          </div>
+          <div class="form-field"><label>Reasoning Budget (-1=∞)</label><input id="ef-reasoning-budget" type="number" min="-1" /></div>
+          <div class="form-field"><label>SWA Full</label>
+            <select id="ef-swa-full"><option value="">off</option><option value="true">on</option></select>
+          </div>
+          <div class="form-field"><label>SWA Checkpoints</label><input id="ef-swa-checkpoints" type="number" min="0" placeholder="(leave empty)" /></div>
+          <div class="form-field"><label>Check Tensors</label>
+            <select id="ef-check-tensors"><option value="off">off</option><option value="on">on</option></select>
+          </div>
+        </div>
+      </div>
+
+      <div class="form-section">
+        <div class="form-section-title">Custom Parameters</div>
+        <div id="ef-custom-params"></div>
+        <button class="btn btn-gray-muted-gradient" style="margin-top:8px;font-size:0.8em;" onclick="addCustomParam();return false;">+ Add Parameter</button>
+      </div>
+
+      <div class="editor-actions">
+        <button class="btn btn-zinc-muted-gradient" onclick="closeEditor()">Cancel</button>
+        <button class="btn btn-slate-muted-gradient" onclick="saveModel()">Save</button>
+        <button class="btn btn-stone-muted-gradient" id="saveAndLoadBtn" onclick="saveAndLoad()">Save &amp; Load Model</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- HF Downloader -->
+  <div class="llm-section" id="secDownload">
+    <div class="llm-section-title" onclick="toggleSection('secDownload')">Download from HuggingFace<span class="llm-collapse-icon">▾</span></div>
+    <div class="llm-section-body">
+    <div class="dl-row">
+      <div class="form-field" style="flex:0 0 auto;width:360px;min-width:0;">
+        <label>HF Repo ID</label>
+        <input id="dlRepo" type="text" placeholder="username/repo-name" />
+      </div>
+      <div class="form-field" style="flex:0 0 auto;width:220px;min-width:0;">
+        <label>Quant filter <span style="color:var(--fg-muted);font-weight:normal;font-size:0.82em;">(comma-separated, e.g. Q4,Q5)</span></label>
+        <input id="dlInclude" type="text" placeholder="Q4,Q5" />
+      </div>
+      <button class="btn btn-stone-muted-gradient" id="dlBtn" onclick="startDownload()">Download</button>
+      <button class="btn btn-red-muted-gradient" id="dlCancelBtn" onclick="cancelDownload()" style="display:none;">✕ Cancel</button>
+    </div>
+    <div style="display:flex;gap:16px;margin-bottom:10px;font-size:0.82em;color:var(--fg-muted);flex-wrap:wrap;">
+      <label style="display:flex;align-items:center;gap:6px;cursor:pointer;">
+        <input type="checkbox" id="dlChkConfig" checked> Download config.json
+      </label>
+      <label style="display:flex;align-items:center;gap:6px;cursor:pointer;">
+        <input type="checkbox" id="dlChkTemplate" checked> Download chat template
+      </label>
+      <label style="display:flex;align-items:center;gap:6px;cursor:pointer;">
+        <input type="checkbox" id="dlChkMmproj" checked> Download mmproj files
+      </label>
+      <label style="display:flex;align-items:center;gap:6px;cursor:pointer;">
+        <input type="checkbox" id="dlChkDryRun" checked> Dry run (preview only)
+      </label>
+    </div>
+    <div class="log-toolbar"><button class="btn-log" onclick="popoutLog('dlLog','Download output')">⛶ Pop out</button></div>
+    <div class="log-wrap">
+      <div class="dl-log" id="dlLog" style="height:424px;">Download output will appear here...</div>
+      <div class="dl-log-resize" data-resize-target="dlLog"></div>
+    </div>
+    <div id="dlAddBtn" style="display:none;margin-top:10px;flex-wrap:wrap;gap:8px;"></div>
+    </div>
+  </div>
+
+  <!-- Cache Management -->
+  <div class="llm-section" id="secCache">
+    <div class="llm-section-title" onclick="toggleSection('secCache')">Cache Management<span class="llm-collapse-icon">▾</span></div>
+    <div class="llm-section-body">
+    <div class="llm-toolbar" style="align-items:flex-end;margin-bottom:12px;">
+      <button class="btn btn-stone-muted-gradient" onclick="loadCacheList()">↺ List Cache</button>
+      <button class="btn btn-slate-muted-gradient" onclick="confirmPrune()">✂ Prune Detached Revisions</button>
+      <div class="form-field" style="min-width:260px;">
+        <label>Remove cached repo</label>
+        <input id="cacheRmRepo" type="text" placeholder="username/repo-name" />
+      </div>
+      <button class="btn btn-red-muted-gradient" onclick="confirmCacheRm()">✕ Remove</button>
+    </div>
+    <div class="log-toolbar"><button class="btn-log" onclick="popoutLog('cacheLog','Cache output')">⛶ Pop out</button></div>
+    <div class="log-wrap">
+      <div class="dl-log" id="cacheLog" style="height:424px;">Cache info will appear here...</div>
+      <div class="dl-log-resize" data-resize-target="cacheLog"></div>
+    </div>
+    </div>
+  </div>
+
+  <!-- HF Trending Models -->
+  <div class="llm-section" id="secTrending">
+    <div class="llm-section-title" onclick="toggleSection('secTrending')">Top Trending HF Models — 27B to 35B Parameters <span style="color:var(--fg-faint);font-weight:normal;margin-left:8px;text-transform:none;letter-spacing:0;">sorted by trending score</span>
+      <button class="btn btn-stone-muted-gradient" onclick="event.stopPropagation();loadHFTrending()" style="margin-left:12px;font-size:0.75em;padding:3px 10px;">↺ Refresh</button>
+      <span class="llm-collapse-icon">▾</span>
+    </div>
+    <div class="llm-section-body">
+    <div id="hfTrendingTable" style="overflow-x:auto;">
+      <div style="color:var(--fg-dim);font-size:0.85em;padding:8px;">Loading...</div>
+    </div>
+    </div>
+  </div>
+
+</div>
+
+<!-- OpenClaw tab -->
+<div id="openclawTab" style="display:none;position:fixed;top:88px;left:0;right:0;bottom:0;z-index:10;">
+  <iframe src="/proxy/openclaw/" style="width:100%;height:100%;border:none;" allowfullscreen></iframe>
+</div>
+
+<!-- LLM Chat tab -->
+<div id="llmchatTab" style="display:none;position:fixed;top:88px;left:0;right:0;bottom:0;z-index:10;">
+  <iframe src="/proxy/llmchat/" style="width:100%;height:100%;border:none;" allowfullscreen></iframe>
+</div>
+
+<!-- Events tab (Alarm Engine). Iframe is **lazy-loaded** — src is left
+     blank until the user first opens this tab. Otherwise the AE dashboard
+     boots on every page load (firing /api/alarm/alerts, /api/alarm/alerts/,
+     opening a WebSocket, and so on) even if the user never visits Events.
+     _ensureAlarmIframeLoaded() (defined near switchTab) sets the src on
+     first visit; theme propagation defers to postMessage until then. -->
+<div id="eventsTab" style="display:none;position:fixed;top:88px;left:0;right:0;bottom:0;z-index:10;">
+  <iframe id="alarmEngineIframe" data-src="/alarm/" style="width:100%;height:100%;border:none;" allowfullscreen></iframe>
+</div>
+
+<!-- Image Generation tab -->
+<div id="imggenTab" style="display:none;position:fixed;top:88px;left:0;right:0;bottom:0;z-index:10;">
+  <iframe src="/proxy/imggen/" style="width:100%;height:100%;border:none;" allowfullscreen></iframe>
+</div>
+
+<!-- Admin tab -->
+<link rel="stylesheet" href="/static/css/admin.css?v=2026.06.10-6">
+<div id="adminTab" style="display:none;position:fixed;top:88px;left:0;right:0;bottom:0;z-index:10;overflow:auto;background:var(--bg);color:var(--fg);padding:28px 24px;">
+  <div class="adm-wrap">
+
+    <!-- ── System Health (Phase 2.5) ─────────────────────────────────── -->
+    <div class="adm-card" id="adminHealthCard">
+      <div class="adm-card-hdr">
+        <div class="adm-title">System Health</div>
+        <span id="adminHealthOverall" class="status status--muted status--square">—</span>
+        <div class="adm-spacer"></div>
+        <span class="adm-muted" id="adminHealthRefresh">—</span>
+      </div>
+      <div class="adm-health-body">
+        <div class="adm-health-col">
+          <div class="adm-health-section">Services</div>
+          <div id="adminHealthServices" class="adm-health-list">
+            <div class="adm-muted" style="padding:8px 0;">Loading…</div>
+          </div>
+        </div>
+        <div class="adm-health-col">
+          <div class="adm-health-section">Data Flow</div>
+          <div id="adminHealthDataFlow" class="adm-health-list">
+            <div class="adm-muted" style="padding:8px 0;">Loading…</div>
+          </div>
+        </div>
+        <div class="adm-health-col">
+          <div class="adm-health-section">Warnings</div>
+          <div id="adminHealthWarnings" class="adm-health-warnings">
+            <div class="adm-muted" style="padding:8px 0;">—</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Sub-tabs underneath System Health -->
+    <div class="adm-subtabs">
+      <div class="sub-tab-nav adm-sub-tab-nav">
+        <button class="sub-tab-btn active" id="subTabBtnAdminAgents"  onclick="switchSubTab('admin','agents')">Agents</button>
+        <button class="sub-tab-btn"        id="subTabBtnAdminPool"    onclick="switchSubTab('admin','pool')">Llama Pool</button>
+        <button class="sub-tab-btn"        id="subTabBtnAdminBackup"  onclick="switchSubTab('admin','backup')">Backup &amp; Restore</button>
+        <button class="sub-tab-btn"        id="subTabBtnAdminAuth"    onclick="switchSubTab('admin','auth')">Authentication</button>
+        <button class="sub-tab-btn"        id="subTabBtnAdminUsers"   onclick="switchSubTab('admin','users')">Users</button>
+      </div>
+
+      <!-- Agents sub-tab (landing) -->
+      <div id="admin-agents" class="sub-tab-panel active">
+        <div class="adm-card">
+          <div class="adm-card-hdr">
+            <div class="adm-title">Agents</div>
+            <div class="adm-count" id="adminAgentsCount">—</div>
+            <span id="adminLatestVersion" title="Latest agent version available on the manager"></span>
+            <div class="adm-spacer"></div>
+            <label class="adm-toggle" title="When enabled, agents stop verifying tokens on inbound requests. For trusted-LAN dev environments only.">
+              <input type="checkbox" id="adminAuthDisabled" onchange="adminToggleAuth(this.checked)">
+              <span>Disable agent auth</span>
+            </label>
+            <button class="adm-refresh" onclick="adminPushCaToAgents()"
+              title="Force every approved agent to fetch the current cert+key+CA bundle on its next heartbeat (≤60s). Use this after rotating the manager's internal CA so agents update their stored tls-ca.pem without revoke+re-approve.">
+              ⤴ Push CA to agents
+            </button>
+            <button class="adm-refresh" onclick="adminLoadAgents()" title="Auto-refreshes every 10s">↻ Refresh</button>
+            <span class="adm-muted" id="adminLastRefresh">—</span>
+          </div>
+          <div style="overflow-x:auto;">
+            <table id="adminAgentsTable" class="adm-table">
+              <thead>
+                <tr>
+                  <th style="width:32%;">Agent</th>
+                  <th style="width:18%;">State</th>
+                  <th style="width:30%;">Capabilities</th>
+                  <th style="width:8%;">Last seen</th>
+                  <th style="width:12%; text-align:right;">Actions</th>
+                </tr>
+              </thead>
+              <tbody id="adminAgentsTbody">
+                <tr><td colspan="5" style="padding:18px;color:#7e8a9c;text-align:center;">Loading…</td></tr>
+              </tbody>
+            </table>
+          </div>
+          <div id="adminAgentsResult"></div>
+        </div>
+      </div>
+
+      <!-- Llama Pool sub-tab (pool order + pins) -->
+      <div id="admin-pool" class="sub-tab-panel">
+        <div class="adm-card" id="adminPoolCard">
+          <div class="adm-card-hdr">
+            <div class="adm-title">Llama pool order</div>
+            <span class="adm-muted" title="Drag rows to reorder. First entry = primary; round-robin walks the list in order. Add/remove via the 'in llama pool' toggles in the Agents tab.">drag to reorder</span>
+            <div class="adm-spacer"></div>
+            <button class="adm-refresh" onclick="adminLoadAgents()" title="Reload from server">↻</button>
+          </div>
+          <ul id="adminPoolOrderList" class="adm-pool-list">
+            <li class="adm-muted" style="padding:10px;">(pool is empty — toggle "in llama pool" on one or more agents in the Agents tab)</li>
+          </ul>
+          <div id="adminPoolResult" class="adm-muted" style="margin-top:6px;font-size:12px;"></div>
+        </div>
+
+        <div class="adm-card" id="adminPinsCard">
+          <div class="adm-card-hdr">
+            <div class="adm-title">Llama model pins</div>
+            <span class="adm-muted" title="Pin a specific model to a specific llama agent. Unpinned models load-balance round-robin across the pool above.">routes /api/llm/load by model</span>
+            <div class="adm-spacer"></div>
+            <button class="adm-refresh" onclick="adminLoadPins()" title="Reload from server">↻</button>
+          </div>
+          <div style="overflow-x:auto;">
+            <table id="adminPinsTable" class="adm-table">
+              <thead>
+                <tr>
+                  <th style="width:50%;">Model ID</th>
+                  <th style="width:38%;">Pinned to agent</th>
+                  <th style="width:12%; text-align:right;">Action</th>
+                </tr>
+              </thead>
+              <tbody id="adminPinsTbody">
+                <tr><td colspan="3" style="padding:14px;color:#7e8a9c;text-align:center;">Loading…</td></tr>
+              </tbody>
+            </table>
+          </div>
+          <div class="adm-pin-add-row">
+            <input type="text" id="adminPinModelInput" list="adminLlamaModels"
+                   placeholder="model id (auto-discovered from pool, or type custom)"
+                   class="adm-pin-input">
+            <datalist id="adminLlamaModels"></datalist>
+            <select id="adminPinAgentSelect" class="adm-pin-select">
+              <option value="">(choose agent)</option>
+            </select>
+            <button class="adm-btn primary" onclick="adminAddPin()">Add pin</button>
+          </div>
+          <div id="adminPinsResult" class="adm-muted" style="margin-top:6px;font-size:12px;"></div>
+        </div>
+      </div>
+
+      <!-- Backup & Restore sub-tab -->
+      <div id="admin-backup" class="sub-tab-panel">
+        <div class="adm-card" id="adminBackupCard">
+          <div class="adm-card-hdr">
+            <div class="adm-title">Backup &amp; Restore</div>
+            <span class="adm-muted" title="One encrypted archive per component. Manager archive bundles two layers: Config (TOML, layout, model aliases, benchmarks DB — always safe to import) and Identity (internal CA, manager HMAC, agent registry — REPLACES this host's identity, opt-in at import time). Alarm engine archive contains rules + channels + alert history. InfluxDB time-series are not included — start a fresh DB on the target and paste new tokens into the imported manager config.">encrypted .lsmenc archive</span>
+          </div>
+          <div class="adm-backup-grid">
+            <div class="adm-backup-cell">
+              <div class="adm-backup-label">Manager</div>
+              <div class="adm-backup-meta">config + agents + CA + layout + benchmarks</div>
+              <div class="adm-backup-actions">
+                <button class="adm-btn primary" onclick="adminExportArchive('manager')">Export…</button>
+                <button class="adm-btn" onclick="adminImportArchive('manager')">Import…</button>
+              </div>
+            </div>
+            <div class="adm-backup-cell">
+              <div class="adm-backup-label">Alarm Engine</div>
+              <div class="adm-backup-meta">rules + channels + alert history</div>
+              <div class="adm-backup-actions">
+                <button class="adm-btn primary" onclick="adminExportArchive('alarm_engine')">Export…</button>
+                <button class="adm-btn" onclick="adminImportArchive('alarm_engine')">Import…</button>
+              </div>
+            </div>
+          </div>
+          <div id="adminBackupResult" class="adm-muted" style="margin-top:10px;font-size:12px;"></div>
+        </div>
+      </div>
+
+      <!-- Authentication sub-tab -->
+      <div id="admin-auth" class="sub-tab-panel">
+        <div class="adm-card" id="adminAuthCard">
+          <div class="adm-card-hdr">
+            <div class="adm-title">Authentication</div>
+            <span class="adm-muted" id="adminAuthStatus">…</span>
+          </div>
+          <div class="adm-auth-body">
+            <label class="adm-muted adm-auth-label">Login mode
+              <select id="adminAuthMode" class="adm-auth-input">
+                <option value="required">Required — every browser must log in</option>
+                <option value="trusted_cidr">Trusted network — skip login from admin CIDRs</option>
+                <option value="disabled">Disabled — no login (trusted LAN only)</option>
+              </select>
+            </label>
+            <div class="adm-muted" id="adminAuthModeHint" style="font-size:11px;"></div>
+            <div class="adm-auth-divider"></div>
+            <div class="adm-muted" style="font-size:12px;">Manage user accounts and passwords in the <b>Users</b> tab; change your own password from the <b>Account</b> menu (top-right).</div>
+            <div style="display:flex;gap:8px;align-items:center;">
+              <button class="adm-btn primary" onclick="adminAuthSave()">Save</button>
+              <a class="adm-btn" href="/logout" style="text-decoration:none;">Log out</a>
+            </div>
+          </div>
+          <div id="adminAuthResult" class="adm-muted" style="margin-top:10px;font-size:12px;"></div>
+        </div>
+      </div>
+
+      <!-- Users sub-tab (multi-user management, #125) -->
+      <div id="admin-users" class="sub-tab-panel">
+        <div class="adm-card" id="adminUsersCard">
+          <div class="adm-card-hdr">
+            <div class="adm-title">Users</div>
+            <span class="adm-muted" id="adminUsersStatus">…</span>
+            <div class="adm-spacer"></div>
+            <button class="adm-refresh" onclick="adminUsersLoad()" title="Reload">↻ Refresh</button>
+          </div>
+          <div style="overflow-x:auto;">
+            <table id="adminUsersTable" class="adm-table">
+              <thead><tr>
+                <th style="width:30%;">Username</th><th style="width:16%;">Role</th>
+                <th style="width:18%;">Status</th><th style="width:18%;">Last login</th>
+                <th style="width:18%;text-align:right;">Actions</th>
+              </tr></thead>
+              <tbody id="adminUsersTbody">
+                <tr><td colspan="5" style="padding:14px;color:#7e8a9c;text-align:center;">Loading…</td></tr>
+              </tbody>
+            </table>
+          </div>
+          <div class="adm-pin-add-row" style="margin-top:10px;">
+            <input type="text" id="adminUserNew" placeholder="new username" class="adm-pin-input" maxlength="32">
+            <input type="password" id="adminUserNewPw" placeholder="password (min 8)" class="adm-pin-input" autocomplete="new-password">
+            <select id="adminUserNewRole" class="adm-pin-select">
+              <option value="operator">Operator</option>
+              <option value="admin">Admin</option>
+            </select>
+            <button class="adm-btn primary" onclick="adminUserCreate()">Add user</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="grid" id="cardGrid">
+
+  <div class="card" data-card="llama-server">
+    <span class="card-handle" title="Drag to reorder">⠿</span>
+    <h3>Llama server</h3>
+    <div class="sub" id="llamaModel" style="margin-bottom:10px;color:var(--fg);word-break:break-all;">—</div>
+    <div class="llama-grid">
+      <div class="llama-item"><div class="val" id="llamaPps">—</div><div class="lbl">Prompt tokens/s</div></div>
+      <div class="llama-item"><div class="val" id="llamaTps">—</div><div class="lbl">Gen tokens/s</div></div>
+      <div class="llama-item"><div class="val" id="llamaPromptTokens">—</div><div class="lbl">Tokens prompted</div></div>
+      <div class="llama-item"><div class="val" id="llamaGenTokens">—</div><div class="lbl">Tokens generated</div></div>
+      <div class="llama-item"><div class="val" id="llamaDecodes">—</div><div class="lbl">Decode calls</div></div>
+      <div class="llama-item"><div class="val" id="llamaCtxHigh">—</div><div class="lbl">Peak ctx tokens</div></div>
+      <div class="llama-item"><div class="val" id="llamaProcessing">—</div><div class="lbl">Requests processing</div></div>
+      <div class="llama-item"><div class="val" id="llamaDeferred">—</div><div class="lbl">Requests deferred</div></div>
+      <div class="llama-item"><div class="val" id="llamaSlots">—</div><div class="lbl">Active slots</div></div>
+      <div class="llama-item"><div class="val" id="llamaBusySlots">—</div><div class="lbl">Avg busy slots/decode</div></div>
+      <div class="llama-item"><div class="val" id="llamaKvRatio">—</div><div class="lbl">KV cache usage %</div></div>
+      <div class="llama-item"><div class="val" id="llamaKvTokens">—</div><div class="lbl">KV cache tokens</div></div>
+      <div class="llama-item"><div class="val" id="llamaNRemain">—</div><div class="lbl">Tokens remaining</div></div>
+    </div>
+    <div class="chart-wrap" style="height:80px;margin-top:10px;"><canvas id="ctxChart" role="img" aria-label="Peak context tokens over time"></canvas></div>
+  </div>
+
+  <div class="card" data-card="llama-throughput">
+    <span class="card-handle">⠿</span>
+    <h3>Llama throughput</h3>
+    <div class="legend-row">
+      <span><span class="legend-dot" style="background:var(--accent)"></span>Gen t/s</span>
+      <span><span class="legend-dot" style="background:var(--warn)"></span>Prompt t/s</span>
+    </div>
+    <div class="chart-wrap" style="height:140px;"><canvas id="llamaChart" role="img" aria-label="Llama token throughput over time"></canvas></div>
+    <div class="sub" style="margin-top:52px;margin-bottom:26px;">Tokens generated</div>
+    <div class="chart-wrap" style="height:140px;"><canvas id="genTokensChart" role="img" aria-label="Total tokens generated over time"></canvas></div>
+  </div>
+
+  <div class="card" data-card="gpu">
+    <span class="card-handle">⠿</span>
+    <h3 id="gpuCardTitle">GPU</h3>
+    <div class="stat-row cols3">
+      <div><div class="stat" id="gpuTemp">—</div><div class="sub">°C edge</div></div>
+      <div><div class="stat" id="gpuVram">—</div><div class="sub">VRAM %</div><div class="sub" id="gpuVramMb" style="font-size:0.75em;color:var(--fg-dim);margin-top:2px;"></div></div>
+      <div><div class="stat" id="gpuUtil">—</div><div class="sub">GPU %</div></div>
+    </div>
+    <div class="stat-row cols3">
+      <div><div class="stat" style="font-size:1.1em" id="gpuTempJunction">—</div><div class="sub">°C junction</div></div>
+      <div><div class="stat" style="font-size:1.1em" id="gpuTempMemory">—</div><div class="sub">°C memory</div></div>
+      <div><div class="stat" style="font-size:1.1em" id="gpuVddgfx">—</div><div class="sub">mV core</div></div>
+    </div>
+    <div class="stat-row cols3">
+      <div><div class="stat" style="font-size:1.1em" id="gpuPower">—</div><div class="sub">W draw</div></div>
+      <div><div class="stat" style="font-size:1.1em" id="gpuPowerCap">—</div><div class="sub">W cap</div></div>
+      <div><div class="stat" style="font-size:1.1em" id="gpuVoltage">—</div><div class="sub">mV offset</div></div>
+    </div>
+    <div class="stat-row cols3">
+      <div><div class="stat" style="font-size:1.1em" id="gpuSclk">—</div><div class="sub">SCLK MHz</div></div>
+      <div><div class="stat" style="font-size:1.1em" id="gpuMclk">—</div><div class="sub">MCLK MHz</div></div>
+      <div><div class="stat" style="font-size:1.1em" id="gpuFan1">—</div><div class="sub">fan RPM</div></div>
+    </div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:12px;">
+      <div><div class="sub" style="margin-bottom:2px;">Perf level</div><div class="badge" id="gpuPerfLevel">—</div></div>
+      <div><div class="sub" style="margin-bottom:2px;">Power profile</div><div class="badge" id="gpuPowerProfile">—</div></div>
+    </div>
+    <div class="chart-wrap"><canvas id="gpuChart" role="img" aria-label="GPU utilization over time"></canvas></div>
+  </div>
+
+  <div class="card" data-card="cpu-overall">
+    <span class="card-handle">⠿</span>
+    <h3 id="cpuCardTitle">CPU</h3>
+    <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:4px;">
+      <div class="stat" id="cpuStat">—</div>
+      <div style="text-align:right;">
+        <div class="sub" id="cpuTemp" style="font-size:0.85em;color:var(--fg-muted);"></div>
+        <div class="sub" id="cpuGovernor" style="font-size:0.75em;color:var(--fg-dim);margin-top:2px;"></div>
+      </div>
+    </div>
+    <div class="sub">% utilization</div>
+    <div class="chart-wrap"><canvas id="cpuChart" role="img" aria-label="CPU usage over time"></canvas></div>
+    <div class="core-grid" id="coreGrid" style="margin-top:10px;"></div>
+  </div>
+
+  <div class="card" data-card="ram">
+    <span class="card-handle">⠿</span>
+    <h3>RAM</h3>
+    <div class="stat" id="ramStat">—</div>
+    <div class="sub" id="ramSub"></div>
+    <div style="margin-top:12px;font-size:0.8em;color:var(--fg-dim);display:grid;grid-template-columns:1fr 1fr;gap:5px;">
+      <div>Cached: <span id="ramCached" style="color:var(--fg-muted)">—</span></div>
+      <div>Buffers: <span id="ramBuffers" style="color:var(--fg-muted)">—</span></div>
+      <div>Swap used: <span id="swapUsed" style="color:var(--fg-muted)">—</span></div>
+      <div>Swap free: <span id="swapFree" style="color:var(--fg-muted)">—</span></div>
+    </div>
+    <div class="chart-wrap" style="margin-top:28px;"><canvas id="ramChart" role="img" aria-label="RAM usage over time"></canvas></div>
+  </div>
+
+  <div class="card" data-card="network">
+    <span class="card-handle">⠿</span>
+    <h3>Network</h3>
+    <div class="stat-row cols2">
+      <div><div class="stat" id="netSent">—</div><div class="sub">MiB/s out</div></div>
+      <div><div class="stat" id="netRecv">—</div><div class="sub">MiB/s in</div></div>
+    </div>
+    <div class="chart-wrap"><canvas id="netChart" role="img" aria-label="Network throughput over time"></canvas></div>
+  </div>
+
+  <div class="card" data-card="disk-usage">
+    <span class="card-handle">⠿</span>
+    <h3>Disk usage</h3>
+    <div class="disk-list" id="diskList"></div>
+    <div style="margin-bottom:5px;margin-top:60px;font-size:0.8em;color:var(--fg-dim);">
+      <span>iSCSI: </span>
+      <span id="iscsiState" style="color:var(--fg-muted)">—</span>
+      <span style="margin-left:8px;font-size:0.85em;" id="iscsiTarget"></span>
+    </div>
+    <div class="legend-row" style="margin-top:15px;">
+      <span><span class="legend-dot" style="background:#4a9"></span>/</span>
+      <span><span class="legend-dot" style="background:var(--accent)"></span>/mnt/iscsi</span>
+    </div>
+    <div class="chart-wrap" style="margin-top:6px;"><canvas id="diskUsageChart" role="img" aria-label="Disk usage over time"></canvas></div>
+  </div>
+
+  <div class="card" data-card="disk-io">
+    <span class="card-handle">⠿</span>
+    <h3>Disk IO</h3>
+    <div class="stat-row cols2">
+      <div><div class="stat" id="ioRead">—</div><div class="sub">MiB/s read</div></div>
+      <div><div class="stat" id="ioWrite">—</div><div class="sub">MiB/s write</div></div>
+    </div>
+    <div class="legend-row">
+      <span><span class="legend-dot" style="background:#a7f"></span>Read</span>
+      <span><span class="legend-dot" style="background:#f7a"></span>Write</span>
+    </div>
+    <div class="chart-wrap"><canvas id="ioChart" role="img" aria-label="Disk IO throughput over time"></canvas></div>
+  </div>
+
+  <div class="card" data-card="ups">
+    <span class="card-handle">⠿</span>
+    <h3>UPS</h3>
+    <div class="ups-grid">
+      <div class="ups-item"><div class="val" id="upsPercent">—</div><div class="lbl">Battery %</div></div>
+      <div class="ups-item"><div class="val" id="upsState">—</div><div class="lbl">State</div></div>
+      <div class="ups-item"><div class="val" id="upsWarning">—</div><div class="lbl">Warning level</div></div>
+      <div class="ups-item"><div class="val" id="upsOnBattery">—</div><div class="lbl">On battery</div></div>
+      <div class="ups-item"><div class="val" id="upsTimeEmpty">—</div><div class="lbl">Time to empty</div></div>
+      <div class="ups-item" id="upsTimeFullItem"><div class="val" id="upsTimeFull">—</div><div class="lbl" id="upsTimeFullLbl">Time to full</div></div>
+    </div>
+  </div>
+
+  <div class="card" data-card="aio">
+    <span class="card-handle">⠿</span>
+    <h3 id="aioCardTitle">AIO</h3>
+    <div class="lq-grid">
+      <div class="lq-item"><div class="val" id="aioTemp">—</div><div class="lbl">Liquid °C</div></div>
+      <div class="lq-item"><div class="val" id="aioPumpSpeed">—</div><div class="lbl">Pump RPM</div></div>
+      <div class="lq-item"><div class="val" id="aioPumpDuty">—</div><div class="lbl">Pump duty %</div></div>
+      <div class="lq-item"><div class="val" id="aioFanSpeed">—</div><div class="lbl">Fan RPM</div></div>
+      <div class="lq-item"><div class="val" id="aioFanDuty">—</div><div class="lbl">Fan duty %</div></div>
+    </div>
+    <div class="chart-wrap" style="height:160px;margin-top:10px;"><canvas id="aioTempChart" role="img" aria-label="AIO liquid temperature over time"></canvas></div>
+  </div>
+
+  <div class="card" data-card="psu">
+    <span class="card-handle">⠿</span>
+    <h3 id="psuCardTitle">PSU</h3>
+    <div class="lq-grid">
+      <div class="lq-item"><div class="val" id="psuVrmTemp">—</div><div class="lbl">VRM °C</div></div>
+      <div class="lq-item"><div class="val" id="psuCaseTemp">—</div><div class="lbl">Case °C</div></div>
+      <div class="lq-item"><div class="val" id="psuFanSpeed">—</div><div class="lbl">Fan RPM</div></div>
+      <div class="lq-item"><div class="val" id="psuInputV">—</div><div class="lbl">Input V</div></div>
+      <div class="lq-item"><div class="val" id="psuTotalOut">—</div><div class="lbl">Total output W</div></div>
+      <div class="lq-item"><div class="val" id="psuInputPower">—</div><div class="lbl">Input power W</div></div>
+      <div class="lq-item"><div class="val" id="psuEfficiency">—</div><div class="lbl">Efficiency %</div></div>
+    </div>
+    <div class="legend-row" style="margin-top:10px;">
+      <span><span class="legend-dot" style="background:#0e9"></span>Output W</span>
+      <span><span class="legend-dot" style="background:var(--warn)"></span>Input W</span>
+    </div>
+    <div class="chart-wrap" style="height:80px;"><canvas id="psuPowerChart" role="img" aria-label="PSU input and output power over time"></canvas></div>
+  </div>
+
+  <div class="card" data-card="smart-device">
+    <span class="card-handle">⠿</span>
+    <h3 id="smartDeviceCardTitle">Fan controller</h3>
+    <table class="fan-table">
+      <thead><tr><th>Fan</th><th>Mode</th><th>Duty %</th><th>RPM</th><th>Voltage</th><th>Current</th></tr></thead>
+      <tbody id="smartFanTable"></tbody>
+    </table>
+  </div>
+
+
+</div><!-- end llm-ctrl-wrap -->
+  </div><!-- end dash-llamacpp sub-panel -->
+
+  <!-- LM Studio dashboard sub-tab -->
+  <div id="dash-lmstudio" class="sub-tab-panel">
+    <div class="agent-picker" id="agentPickerDashLms" style="display:none"></div>
+    <div class="grid" id="lmsCardGrid">
+
+      <!-- LMS Models -->
+      <div class="card" data-card="lms-models">
+        <span class="card-handle" title="Drag to reorder">⠿</span>
+        <h3>LM Studio Models <span class="status status--crit" id="lms-dash-badge" style="margin-left:8px;"><span class="status__dot"></span>offline</span></h3>
+        <div id="lmsDashModelList" style="margin-top:28px;">
+          <div style="color:var(--fg-dim);font-size:0.85em;">Waiting for agent...</div>
+        </div>
+      </div>
+
+      <!-- LMS Active Model -->
+      <div class="card" data-card="lms-active">
+        <span class="card-handle" title="Drag to reorder">⠿</span>
+        <h3>Active Model</h3>
+        <div class="sub" id="lms-active-model" style="color:var(--fg);word-break:break-all;margin-bottom:8px;">—</div>
+        <div class="stat-row cols2">
+          <div><div class="stat" id="lms-active-status" style="font-size:1.1em;">—</div><div class="sub">status</div></div>
+          <div><div class="stat" id="lms-active-size" style="font-size:1.1em;">—</div><div class="sub">size</div></div>
+        </div>
+        <div class="stat-row cols3" style="margin-top:8px;">
+          <div><div class="sub">Context</div><div id="lms-active-ctx" style="color:var(--fg-muted);font-size:0.9em;">—</div></div>
+          <div><div class="sub">Parallel</div><div id="lms-active-parallel" style="color:var(--fg-muted);font-size:0.9em;">—</div></div>
+          <div><div class="sub">Device</div><div id="lms-active-device" style="color:var(--fg-muted);font-size:0.9em;">—</div></div>
+        </div>
+      </div>
+
+      <!-- LMS CPU -->
+      <div class="card" data-card="lms-cpu">
+        <span class="card-handle" title="Drag to reorder">⠿</span>
+        <h3>CPU</h3>
+        <div class="stat" id="lms-cpu-total">—</div>
+        <div class="sub">% utilization</div>
+        <div class="core-grid" id="lmsCoreGrid" style="margin-top:10px;"></div>
+        <div class="chart-wrap" style="margin-top:10px;height:80px;"><canvas id="lmsCpuChart"></canvas></div>
+      </div>
+
+      <!-- LMS RAM -->
+      <div class="card" data-card="lms-ram">
+        <span class="card-handle" title="Drag to reorder">⠿</span>
+        <h3>RAM</h3>
+        <div class="stat" id="lms-ram-pct">—</div>
+        <div class="sub" id="lms-ram-sub">—</div>
+        <div class="stat-row cols2" style="margin-top:8px;">
+          <div><div class="sub">Swap used</div><div id="lms-swap-used" style="color:var(--fg-muted);font-size:0.9em;">—</div></div>
+          <div><div class="sub">Available</div><div id="lms-ram-avail" style="color:var(--fg-muted);font-size:0.9em;">—</div></div>
+        </div>
+        <div class="chart-wrap" style="margin-top:10px;height:120px;"><canvas id="lmsRamChart"></canvas></div>
+      </div>
+
+      <!-- LMS Network -->
+      <div class="card" data-card="lms-network">
+        <span class="card-handle" title="Drag to reorder">⠿</span>
+        <h3>Network</h3>
+        <div class="stat-row cols2">
+          <div><div class="stat" id="lms-net-sent">—</div><div class="sub">MiB/s out</div></div>
+          <div><div class="stat" id="lms-net-recv">—</div><div class="sub">MiB/s in</div></div>
+        </div>
+        <div class="chart-wrap" style="margin-top:10px;height:120px;"><canvas id="lmsNetChart"></canvas></div>
+      </div>
+
+      <!-- LMS Disk -->
+      <div class="card" data-card="lms-disk">
+        <span class="card-handle" title="Drag to reorder">⠿</span>
+        <h3>Disk Usage</h3>
+        <div class="disk-list" id="lmsDiskList"></div>
+      </div>
+
+      <!-- powermetrics — Apple Silicon thermal/power/GPU residency.
+           Populated from alarm-engine source=mac_power (requires
+           passwordless sudoers entry for /usr/bin/powermetrics on Mac).
+           Note: macOS 26+ no longer exposes die temps to powermetrics, so
+           those tiles are omitted. -->
+      <div class="card" data-card="lms-power">
+        <span class="card-handle" title="Drag to reorder">⠿</span>
+        <h3>powermetrics <span class="status status--muted" id="lms-power-badge" style="font-size:0.7em;font-weight:normal;margin-left:8px;">—</span></h3>
+        <div class="lq-grid">
+          <div class="lq-item"><div class="val" id="mpSocW">—</div><div class="lbl">SoC total W</div></div>
+          <div class="lq-item"><div class="val" id="mpCpuPkg">—</div><div class="lbl">CPU W</div></div>
+          <div class="lq-item"><div class="val" id="mpGpuW">—</div><div class="lbl">GPU W</div></div>
+          <div class="lq-item"><div class="val" id="mpAneW">—</div><div class="lbl">ANE W</div></div>
+          <div class="lq-item"><div class="val" id="mpThermal">—</div><div class="lbl">Thermal</div></div>
+          <div class="lq-item"><div class="val" id="mpGpuBusyVal">—</div><div class="lbl">GPU busy %</div></div>
+        </div>
+        <div class="stat-row cols2" style="margin-top:10px;">
+          <div><div class="sub">P-core</div><div id="mpPcore" style="color:var(--fg-muted);font-size:0.9em;">—</div></div>
+          <div><div class="sub">E-core</div><div id="mpEcore" style="color:var(--fg-muted);font-size:0.9em;">—</div></div>
+        </div>
+        <div class="stat-row cols2" style="margin-top:6px;">
+          <div><div class="sub">GPU clock</div><div id="mpGpuClock" style="color:var(--fg-muted);font-size:0.9em;">—</div></div>
+          <div><div class="sub">Network pkts/s</div><div id="mpNet" style="color:var(--fg-muted);font-size:0.9em;">—</div></div>
+        </div>
+      </div>
+
+    </div>
+  </div><!-- end dash-lmstudio sub-panel -->
+
+  <!-- Manager dashboard sub-tab — host-side service + InfluxDB health -->
+  <div id="dash-manager" class="sub-tab-panel">
+    <div class="grid" id="managerCardGrid">
+
+      <div class="card" data-card="services">
+        <span class="card-handle" title="Drag to reorder">⠿</span>
+        <h3>Services <span class="status status--muted" id="services-badge" style="font-size:0.7em;font-weight:normal;margin-left:8px;">—</span></h3>
+        <table class="fan-table" style="width:100%;">
+          <thead><tr><th>Service</th><th>Status</th><th>PID</th><th>RSS</th><th>Uptime</th></tr></thead>
+          <tbody id="servicesTable"><tr><td colspan="5" style="color:var(--fg-dim);font-size:0.85em;">Waiting for agent…</td></tr></tbody>
+        </table>
+      </div>
+
+      <div class="card" data-card="influxdb">
+        <span class="card-handle" title="Drag to reorder">⠿</span>
+        <h3>Database Performance <span class="status status--muted" id="influxdb-badge" style="font-size:0.7em;font-weight:normal;margin-left:8px;">—</span></h3>
+        <div class="sub" style="font-size:0.78em;color:var(--fg-muted);margin:6px 0 4px;">InfluxDB</div>
+        <div class="lq-grid">
+          <div class="lq-item"><div class="val" id="influxPing">—</div><div class="lbl">Ping ms</div></div>
+          <div class="lq-item"><div class="val" id="influxQuery">—</div><div class="lbl">Query ms</div></div>
+          <div class="lq-item"><div class="val" id="influxWrite">—</div><div class="lbl">Write ms</div></div>
+          <div class="lq-item"><div class="val" id="influxWriteOk">—</div><div class="lbl">Write OK %</div></div>
+          <div class="lq-item"><div class="val" id="influxDisk">—</div><div class="lbl">On disk</div></div>
+          <div class="lq-item"><div class="val" id="influxCardMetrics">—</div><div class="lbl">Metrics series</div></div>
+        </div>
+        <div class="sub" style="font-size:0.78em;color:var(--fg-muted);margin:10px 0 4px;">SQLite</div>
+        <div class="lq-grid">
+          <div class="lq-item"><div class="val" id="sqliteAlertsRows">—</div><div class="lbl">Alerts rows</div></div>
+          <div class="lq-item"><div class="val" id="sqliteSettingsRows">—</div><div class="lbl">Settings rows</div></div>
+          <div class="lq-item"><div class="val" id="sqliteAlarmsSize">—</div><div class="lbl">Alarms DB</div></div>
+          <div class="lq-item"><div class="val" id="sqliteSettingsSize">—</div><div class="lbl">Settings DB</div></div>
+          <div class="lq-item"><div class="val" id="sqliteWalSize">—</div><div class="lbl">WAL total</div></div>
+          <div class="lq-item"><div class="val" id="sqlitePages">—</div><div class="lbl">Pages (a+s)</div></div>
+          <div class="lq-item"><div class="val" id="sqliteQueryMs">—</div><div class="lbl">SELECT 1 ms</div></div>
+          <div class="lq-item"><div class="val" id="sqliteDeliveries">—</div><div class="lbl">Deliveries</div></div>
+        </div>
+      </div>
+
+      <!-- Performance cards for the llm-systems-manager host agent. Fed from
+           the alarm-engine catalog (/api/alarm/metrics) filtered to
+           hostname=llm-systems-manager. -->
+      <div class="card" data-card="mgr-agents">
+        <span class="card-handle" title="Drag to reorder">⠿</span>
+        <h3>Agents</h3>
+        <table class="fan-table" style="width:100%;">
+          <thead><tr><th>Agent</th><th>Status</th><th>Last sample</th></tr></thead>
+          <tbody id="mgrAgentsTable"><tr><td colspan="3" style="color:var(--fg-dim);font-size:0.85em;">Loading…</td></tr></tbody>
+        </table>
+      </div>
+
+      <div class="card" data-card="mgr-streams">
+        <span class="card-handle" title="Drag to reorder">⠿</span>
+        <h3>Stream &amp; Connection Health
+          <span id="mgrStreamsBadge" class="status status--ok"><span class="status__dot"></span>ok</span></h3>
+        <div id="mgrStreamsSummary" style="display:grid;grid-template-columns:repeat(2,1fr);gap:3px 16px;font-size:0.85em;margin-bottom:8px;">
+          <div style="color:var(--fg-dim);">Loading…</div>
+        </div>
+        <table class="fan-table" style="width:100%;">
+          <thead><tr><th>Agent</th><th>Active</th><th>Peak</th><th>Refusals</th><th>Terminals</th></tr></thead>
+          <tbody id="mgrStreamsTable"><tr><td colspan="5" style="color:var(--fg-dim);font-size:0.85em;">Loading…</td></tr></tbody>
+        </table>
+        <div style="font-size:0.75em;color:var(--fg-dim);margin-top:6px;">
+          Pushed to the alarm engine as <code>manager_streams</code> / <code>agent_streams</code> — add rules in the Events tab to alert on these.</div>
+      </div>
+
+      <div class="card" data-card="mgr-ram">
+        <span class="card-handle" title="Drag to reorder">⠿</span>
+        <h3>CPU, RAM &amp; Swap</h3>
+        <div class="lq-grid">
+          <div class="lq-item"><div class="val" id="mgrCpuTotal">—</div><div class="lbl">CPU %</div></div>
+          <div class="lq-item"><div class="val" id="mgrRamPct">—</div><div class="lbl">RAM %</div></div>
+          <div class="lq-item"><div class="val" id="mgrRamUsed">—</div><div class="lbl">RAM used / total</div></div>
+          <div class="lq-item"><div class="val" id="mgrRamCached">—</div><div class="lbl">Cached</div></div>
+          <div class="lq-item"><div class="val" id="mgrRamBuffers">—</div><div class="lbl">Buffers</div></div>
+          <div class="lq-item"><div class="val" id="mgrSwapPct">—</div><div class="lbl">Swap %</div></div>
+          <div class="lq-item"><div class="val" id="mgrSwapUsed">—</div><div class="lbl">Swap used / total</div></div>
+        </div>
+      </div>
+
+      <div class="card" data-card="mgr-disk">
+        <span class="card-handle" title="Drag to reorder">⠿</span>
+        <h3>Disk Usage &amp; IO</h3>
+        <div class="lq-grid">
+          <div class="lq-item"><div class="val" id="mgrDiskRootPct">—</div><div class="lbl">/ %</div></div>
+          <div class="lq-item"><div class="val" id="mgrDiskRootUsed">—</div><div class="lbl">/ used / total</div></div>
+          <div class="lq-item"><div class="val" id="mgrDiskBootPct">—</div><div class="lbl">/boot %</div></div>
+          <div class="lq-item"><div class="val" id="mgrDiskBootUsed">—</div><div class="lbl">/boot used / total</div></div>
+          <div class="lq-item"><div class="val" id="mgrIoRead">—</div><div class="lbl">MiB/s read</div></div>
+          <div class="lq-item"><div class="val" id="mgrIoWrite">—</div><div class="lbl">MiB/s write</div></div>
+        </div>
+      </div>
+
+      <div class="card" data-card="mgr-network">
+        <span class="card-handle" title="Drag to reorder">⠿</span>
+        <h3>Network</h3>
+        <div class="lq-grid">
+          <div class="lq-item"><div class="val" id="mgrNetRecv">—</div><div class="lbl">MiB/s in</div></div>
+          <div class="lq-item"><div class="val" id="mgrNetSent">—</div><div class="lbl">MiB/s out</div></div>
+        </div>
+      </div>
+
+      <div class="card" data-card="mgr-processes">
+        <span class="card-handle" title="Drag to reorder">⠿</span>
+        <h3>Processes</h3>
+        <table class="fan-table" style="width:100%;">
+          <thead><tr><th>Process</th><th>PID</th><th>RSS</th><th>Uptime</th></tr></thead>
+          <tbody id="mgrProcTable"><tr><td colspan="4" style="color:var(--fg-dim);font-size:0.85em;">Waiting for agent…</td></tr></tbody>
+        </table>
+      </div>
+
+      <!-- Agent-driven self-monitor cards (manager / alarm engine / Influx).
+           Fed by /api/alarm/metrics rows where source='manager_self_monitor'.
+           Probes run on agent hosts that have MONITOR_*_ENABLED set. -->
+      <div class="card" data-card="mgr-perf-summary">
+        <span class="card-handle" title="Drag to reorder">⠿</span>
+        <h3>Self-Monitor Summary</h3>
+        <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:4px;">
+          <div class="stat" id="selfMonWorst">—</div>
+          <div class="sub" id="selfMonWorstLabel" style="font-size:0.78em;color:var(--fg-muted);">—</div>
+        </div>
+        <div class="sub">worst current probe latency</div>
+        <div style="margin-top:10px;font-size:0.78em;color:var(--fg-muted);" id="selfMonAgeNote">—</div>
+      </div>
+
+      <div class="card" data-card="mgr-perf">
+        <span class="card-handle" title="Drag to reorder">⠿</span>
+        <h3>Manager Perf</h3>
+        <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:4px;">
+          <div class="stat" id="mgrPerfApi">—</div>
+          <div class="sub" style="text-align:right;font-size:0.78em;color:var(--fg-muted);">
+            /api/metrics latency<br>
+            <span id="mgrPerfHistory" style="color:var(--fg-dim);">history: —</span>
+          </div>
+        </div>
+        <div class="sub">ms — <span style="color:#8af;">api</span> / <span style="color:#fa8;">history</span></div>
+        <div class="chart-wrap"><canvas id="mgrPerfChart" role="img" aria-label="Manager API latency over time"></canvas></div>
+      </div>
+
+      <div class="card" data-card="ae-perf">
+        <span class="card-handle" title="Drag to reorder">⠿</span>
+        <h3>Alarm Engine + Influx Perf</h3>
+        <div class="stat" id="aePerfWorst">—</div>
+        <div class="sub">ms — worst of seven AE/Influx probes</div>
+        <div class="chart-wrap"><canvas id="aePerfChart" role="img" aria-label="Alarm engine and InfluxDB latency over time"></canvas></div>
+        <div style="margin-top:6px;font-size:0.82em;color:var(--fg-muted);display:grid;grid-template-columns:1fr 1fr;gap:3px 10px;">
+          <div><span style="color:#4ea1ff;">●</span> ae_health</div>
+          <div><span style="color:#ff8a3d;">●</span> ae_ingest</div>
+          <div><span style="color:#3ad17f;">●</span> ae_query_24h</div>
+          <div><span style="color:#ff5775;">●</span> rule_eval_cycle</div>
+          <div><span style="color:#36d7e6;">●</span> influx_write</div>
+          <div><span style="color:#ffd042;">●</span> influx_q_5m</div>
+          <div><span style="color:#b88aff;">●</span> influx_q_24h</div>
+        </div>
+      </div>
+
+    </div>
+  </div><!-- end dash-manager sub-panel -->
+
+  <!-- OpenClaw analytics sub-tab -->
+  <div id="dash-openclaw" class="sub-tab-panel">
+    <div style="padding:12px 20px 20px;">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
+        <div style="font-size:1.05em;font-weight:600;color:var(--fg);">OpenClaw Agents — Performance &amp; Analytics</div>
+        <div style="font-size:0.8em;color:var(--fg-muted);" id="opcaLastUpdate">—</div>
+      </div>
+
+      <!-- Totals summary -->
+      <div class="grid" style="grid-template-columns:repeat(auto-fit, minmax(180px, 1fr));gap:10px;margin-bottom:14px;">
+        <div class="card" style="padding:12px;">
+          <div style="font-size:0.75em;color:var(--fg-muted);text-transform:uppercase;letter-spacing:0.05em;">Sessions</div>
+          <div style="font-size:1.6em;font-weight:600;color:#8cf;" id="opcaTotSessions">—</div>
+        </div>
+        <div class="card" style="padding:12px;">
+          <div style="font-size:0.75em;color:var(--fg-muted);text-transform:uppercase;letter-spacing:0.05em;">Messages</div>
+          <div style="font-size:1.6em;font-weight:600;color:#8cf;" id="opcaTotMessages">—</div>
+        </div>
+        <div class="card" style="padding:12px;">
+          <div style="font-size:0.75em;color:var(--fg-muted);text-transform:uppercase;letter-spacing:0.05em;">Tokens (in / out)</div>
+          <div style="font-size:1.15em;font-weight:600;color:#8cf;" id="opcaTotTokens">—</div>
+          <div style="font-size:0.75em;margin-top:2px;" id="opcaTrend">—</div>
+        </div>
+        <div class="card" style="padding:12px;">
+          <div style="font-size:0.75em;color:var(--fg-muted);text-transform:uppercase;letter-spacing:0.05em;">Cache (R / W)</div>
+          <div style="font-size:1.15em;font-weight:600;color:#8cf;" id="opcaTotCache">—</div>
+        </div>
+        <div class="card" style="padding:12px;">
+          <div style="font-size:0.75em;color:var(--fg-muted);text-transform:uppercase;letter-spacing:0.05em;">Tool Uses</div>
+          <div style="font-size:1.6em;font-weight:600;color:#8cf;" id="opcaTotTools">—</div>
+        </div>
+        <div class="card" style="padding:12px;">
+          <div style="font-size:0.75em;color:var(--fg-muted);text-transform:uppercase;letter-spacing:0.05em;">Est. Cost</div>
+          <div style="font-size:1.6em;font-weight:600;color:#7d7;" id="opcaTotCost">—</div>
+        </div>
+      </div>
+
+      <!-- Tasks + Flows row -->
+      <div class="grid" style="grid-template-columns:repeat(auto-fit, minmax(380px, 1fr));gap:10px;margin-bottom:14px;">
+        <div class="card" style="padding:12px;">
+          <h3 style="margin-top:0;">Task Runs <span style="color:var(--fg-muted);font-size:0.75em;font-weight:400;" id="opcaTaskAvg"></span></h3>
+          <div id="opcaTaskStatusPills" style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:8px;"></div>
+          <div id="opcaTaskRuntimes" style="color:var(--fg-muted);font-size:0.78em;margin-bottom:8px;"></div>
+          <details style="margin-top:4px;">
+            <summary style="color:var(--fg);cursor:pointer;font-size:0.82em;">Recent failures</summary>
+            <div id="opcaTaskFailsWrap" style="margin-top:6px;"></div>
+          </details>
+        </div>
+        <div class="card" style="padding:12px;">
+          <h3 style="margin-top:0;">Flows</h3>
+          <div id="opcaFlowStatusPills" style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:8px;"></div>
+          <div id="opcaFlowRecentWrap" style="font-size:0.82em;"></div>
+        </div>
+      </div>
+
+      <!-- Delivery queue -->
+      <div class="card" style="padding:12px;margin-bottom:14px;">
+        <h3 style="margin-top:0;">Delivery Queue <span id="opcaDeliveryBadge" style="margin-left:6px;font-size:0.75em;font-weight:400;"></span></h3>
+        <div id="opcaDeliveryBody" style="color:var(--fg);font-size:0.85em;">—</div>
+      </div>
+
+      <!-- Daily cost sparkline -->
+      <div class="card" style="padding:12px;margin-bottom:14px;">
+        <h3 style="margin-top:0;">Daily Cost <span style="color:var(--fg-muted);font-size:0.75em;font-weight:400;">(last 14 days)</span></h3>
+        <div id="opcaDailyCostSpark" style="width:100%;"></div>
+      </div>
+
+      <!-- Token Distribution panel — populated by renderOpcaTokenDist() -->
+      <div class="card" style="padding:12px;margin-bottom:14px;" id="opcaTokenDistCard">
+        <div style="color:var(--fg-dim);">Loading token distribution…</div>
+      </div>
+
+      <!-- Thinking Flows panel — populated by renderOpcaThinkingFlows() -->
+      <div class="card" style="padding:12px;margin-bottom:14px;" id="opcaThinkingCard">
+        <div style="color:var(--fg-dim);">Loading thinking flow data…</div>
+      </div>
+
+      <!-- Predictive Analysis panel — populated by renderOpcaPredictive() -->
+      <div class="card" style="padding:12px;margin-bottom:14px;" id="opcaPredictiveCard">
+        <div style="color:var(--fg-dim);">Loading predictive analysis…</div>
+      </div>
+
+      <!-- Combined: Cost Anomalies (left) + Tool Attribution with 7d trend (right) -->
+      <div class="card" style="padding:12px;margin-bottom:14px;">
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:20px;">
+          <!-- Left: cost anomalies — hidden when empty -->
+          <div id="opcaAnomalyWrap"></div>
+          <!-- Right: tool attribution table now includes Trend column -->
+          <div>
+            <h3 style="margin-top:0;">Top Tools <span style="color:var(--fg-muted);font-size:0.75em;font-weight:400;">(7d trend)</span></h3>
+            <div style="overflow-x:auto;">
+              <table style="width:100%;border-collapse:collapse;font-size:0.86em;">
+                <thead>
+                  <tr style="color:var(--fg-muted);text-align:left;border-bottom:1px solid var(--border-strong);">
+                    <th style="padding:6px 8px;">Tool</th>
+                    <th style="padding:6px 8px;text-align:right;">Calls</th>
+                    <th style="padding:6px 8px;text-align:right;">%</th>
+                    <th style="padding:6px 8px;">Share</th>
+                    <th style="padding:6px 8px;text-align:center;">7d</th>
+                  </tr>
+                </thead>
+                <tbody id="opcaToolTbody">
+                  <tr><td colspan="5" style="color:var(--fg-dim);padding:10px;">—</td></tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Per-agent table -->
+      <div class="card" style="padding:12px;margin-bottom:14px;">
+        <h3 style="margin-top:0;">Per-Agent Breakdown</h3>
+        <div style="overflow-x:auto;">
+          <table style="width:100%;border-collapse:collapse;font-size:0.86em;">
+            <thead>
+              <tr style="color:var(--fg-muted);text-align:left;border-bottom:1px solid var(--border-strong);">
+                <th style="padding:6px 8px;">Agent</th>
+                <th style="padding:6px 8px;text-align:right;">Sessions</th>
+                <th style="padding:6px 8px;text-align:right;">Messages</th>
+                <th style="padding:6px 8px;text-align:right;">Input</th>
+                <th style="padding:6px 8px;text-align:right;">Output</th>
+                <th style="padding:6px 8px;text-align:right;">Cache R</th>
+                <th style="padding:6px 8px;text-align:right;">Cache W</th>
+                <th style="padding:6px 8px;text-align:right;">Tools</th>
+                <th style="padding:6px 8px;text-align:right;">Cost</th>
+                <th style="padding:6px 8px;">Last Activity</th>
+              </tr>
+            </thead>
+            <tbody id="opcaAgentTbody">
+              <tr><td colspan="10" style="color:var(--fg-dim);padding:10px;">Loading...</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- Recent sessions -->
+      <div class="card" style="padding:12px;">
+        <h3 style="margin-top:0;">Recent Sessions <span style="color:var(--fg-muted);font-size:0.75em;font-weight:400;">(top 10 per agent by last activity)</span></h3>
+        <div id="opcaRecentWrap" style="font-size:0.82em;"></div>
+      </div>
+    </div>
+  </div><!-- end dash-openclaw sub-panel -->
+
+</div><!-- end dashboardTab -->
+
+<!-- LLM Overall Tab -->
+<div id="overallTab" style="display:none;">
+  <div style="display:flex;justify-content:flex-end;padding:8px 20px 0;">
+    <div style="font-size:0.8em;color:var(--fg-muted);" id="overallLastUpdate">—</div>
+  </div>
+  <div class="grid" id="overallGrid">
+
+    <!-- llama.cpp fleet -->
+    <div class="card" data-card="ov-llama-fleet">
+      <span class="card-handle" title="Drag to reorder">⠿</span>
+      <h3>llama.cpp Fleet <span class="sub" id="ov-llama-agents" style="font-weight:normal;">—</span></h3>
+      <div class="stat-row cols2">
+        <div><div class="stat" id="ov-llama-tps" style="color:var(--accent-2);">—</div><div class="sub">total gen t/s</div></div>
+        <div><div class="stat" id="ov-llama-pps" style="color:var(--accent);">—</div><div class="sub">total prompt t/s</div></div>
+      </div>
+      <div class="stat-row cols2" style="margin-top:8px;">
+        <div><div class="sub" id="ov-llama-awake">awake —</div></div>
+        <div><div class="sub" id="ov-llama-models-n">models —</div></div>
+      </div>
+    </div>
+
+    <!-- LM Studio fleet -->
+    <div class="card" data-card="ov-lms-fleet">
+      <span class="card-handle" title="Drag to reorder">⠿</span>
+      <h3>LM Studio Fleet <span class="sub" id="ov-lms-agents" style="font-weight:normal;">—</span></h3>
+      <div class="stat-row cols2">
+        <div><div class="stat" id="ov-lms-servers">—</div><div class="sub">servers on</div></div>
+        <div><div class="stat" id="ov-lms-loaded">—</div><div class="sub">models loaded</div></div>
+      </div>
+      <div class="stat-row cols2" style="margin-top:8px;">
+        <div><div class="sub" id="ov-lms-busy">busy —</div></div>
+        <div><div class="sub" id="ov-lms-procs">processes —</div></div>
+      </div>
+    </div>
+
+    <!-- llama.cpp fleet GPU -->
+    <div class="card" data-card="ov-llama-gpu">
+      <span class="card-handle" title="Drag to reorder">⠿</span>
+      <h3>llama.cpp Fleet — GPU</h3>
+      <div class="stat-row cols3">
+        <div><div class="stat" id="ov-gpu-temp">—</div><div class="sub">max °C</div></div>
+        <div><div class="stat" id="ov-gpu-vram">—</div><div class="sub">max VRAM %</div></div>
+        <div><div class="stat" id="ov-gpu-power">—</div><div class="sub">total W</div></div>
+      </div>
+    </div>
+
+    <!-- llama throughput chart (fleet totals) -->
+    <div class="card" data-card="ov-llama-chart">
+      <span class="card-handle" title="Drag to reorder">⠿</span>
+      <h3>llama.cpp Fleet — Throughput</h3>
+      <div class="legend-row">
+        <span><span class="legend-dot" style="background:var(--accent)"></span>Gen t/s</span>
+        <span><span class="legend-dot" style="background:var(--warn)"></span>Prompt t/s</span>
+      </div>
+      <div class="chart-wrap"><canvas id="ovLlamaChart"></canvas></div>
+    </div>
+
+    <!-- llama.cpp fleet active models -->
+    <div class="card" data-card="ov-llama-active">
+      <span class="card-handle" title="Drag to reorder">⠿</span>
+      <h3>llama.cpp Fleet — Active Models</h3>
+      <div><div class="stat" id="ov-llama-active-n">—</div><div class="sub">models in flight</div></div>
+      <div class="sub" id="ov-llama-active-list" style="color:var(--fg);word-break:break-word;margin-top:8px;">—</div>
+    </div>
+
+    <!-- fleet overview -->
+    <div class="card" data-card="ov-fleet">
+      <span class="card-handle" title="Drag to reorder">⠿</span>
+      <h3>Fleet Overview</h3>
+      <div class="stat-row cols3">
+        <div><div class="stat" id="ov-fleet-agents">—</div><div class="sub">agents online</div></div>
+        <div><div class="stat" id="ov-fleet-models">—</div><div class="sub">active models</div></div>
+        <div><div class="stat" id="ov-fleet-power">—</div><div class="sub">total W</div></div>
+      </div>
+    </div>
+
+  </div>
+</div>
+
+<!-- LLM Control Tab — with sub-tabs -->
+<div id="llmTab" style="display:none;">
+  <div style="padding:12px 20px 0;">
+    <div class="sub-tab-nav">
+      <button class="sub-tab-btn active" id="subTabBtnLlmLlamacpp" onclick="switchSubTab('llm','llamacpp')">llama.cpp</button>
+      <button class="sub-tab-btn" id="subTabBtnLlmLmstudio" onclick="switchSubTab('llm','lmstudio')">LM Studio</button>
+    </div>
+  </div>
+
+  <!-- llama.cpp control = existing content, moved here by JS on load -->
+  <div id="llm-llamacpp" class="sub-tab-panel active" style="padding:8px 20px 20px;">
+    <div class="agent-picker" id="agentPickerCtrlLlama" style="display:none"></div>
+    <!-- content populated by JS from llm-ctrl-wrap -->
+  </div>
+
+  <!-- LM Studio LLM Control -->
+  <div id="llm-lmstudio" class="sub-tab-panel" style="padding:8px 20px 20px;">
+    <div class="agent-picker" id="agentPickerCtrlLms" style="display:none"></div>
+
+    <!-- LMS Server Control -->
+    <div class="llm-section" id="lmsSecCtrl">
+      <div class="llm-section-title" onclick="toggleSection('lmsSecCtrl')">LM Studio Server Control<span class="llm-collapse-icon">▾</span></div>
+      <div class="llm-section-body">
+      <div class="llm-toolbar">
+        <button class="btn btn-stone-muted-gradient" id="lmsBtnStart"   onclick="lmsServerAction('start')">▶ Start</button>
+        <button class="btn btn-slate-muted-gradient"   id="lmsBtnStop"    onclick="lmsServerAction('stop')">⏹ Stop</button>
+        <button class="btn btn-zinc-muted-gradient" id="lmsBtnRestart" onclick="lmsServerAction('restart')">↺ Restart</button>
+        <button class="btn btn-gray-muted-gradient"  id="lmsBtnStatus"  onclick="lmsServerAction('status')">ℹ Status</button>
+        <span id="lmsCtrlStatus" style="font-size:0.82em;color:var(--fg-dim);margin-left:4px;"></span>
+        <span class="status status--crit" id="lmsCtrlBadge"><span class="status__dot"></span>Agent offline</span>
+        <button class="btn btn-gray-muted-gradient ml-auto" onclick="toggleLmsLog()">☰ Server Log</button>
+        <button class="btn btn-gray-muted-gradient" onclick="toggleLmsTerminal()">⬛ Terminal</button>
+      </div>
+      <!-- LMS Terminal panel — PTY hosted on the primary LMS agent, proxied via SSE -->
+      <div id="lmsTerminalPanel" style="display:none;margin-bottom:8px;">
+        <div class="llm-toolbar" style="justify-content:flex-end;margin-bottom:4px;">
+          <span style="font-size:0.78em;color:var(--fg-dim);margin-right:auto;">LM Studio host shell</span>
+          <button class="btn btn-gray-muted-gradient btn-sm" onclick="popOutLmsTerminal()" title="Open in new window">⧉ Pop out</button>
+          <button class="btn btn-gray-muted-gradient btn-sm" onclick="reconnectLmsTerminal()" title="Reconnect">↺ Reconnect</button>
+        </div>
+        <div class="log-wrap">
+          <div id="lmsTerminalMount" class="log-box log-box--attached log-box--flush" style="height:560px;overflow:hidden;"></div>
+          <div class="dl-log-resize" data-resize-target="lmsTerminalMount" data-fit-xterm="lms"></div>
+        </div>
+      </div>
+      <div id="lmsLogPanel" style="display:none;">
+        <div class="llm-toolbar" style="justify-content:flex-end;margin-bottom:4px;">
+          <button class="btn btn-gray-muted-gradient btn-sm" onclick="popOutLmsLog()" title="Open in new window">⧉ Pop out</button>
+          <button class="btn btn-gray-muted-gradient btn-sm" onclick="fullscreenLmsLog()" title="Fullscreen">⛶ Fullscreen</button>
+          <button class="btn btn-gray-muted-gradient btn-sm" onclick="fetchLmsLog()">↺ Refresh</button>
+        </div>
+        <div id="lmsLogBox" class="log-box log-box--attached" style="height:240px;"></div>
+        <div id="lmsLogResizeHandle" class="dl-log-resize"></div>
+      </div>
+      </div>
+    </div>
+
+    <!-- LMS Model Roster -->
+    <div class="llm-section" id="lmsSecModels">
+      <div class="llm-section-title" onclick="toggleSection('lmsSecModels')">Models <span style="color:var(--fg-faint);font-weight:normal;margin-left:8px;text-transform:none;letter-spacing:0;">— LM Studio</span><span class="llm-collapse-icon">▾</span></div>
+      <div class="llm-section-body">
+        <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px;font-size:0.82em;color:var(--fg-muted);">
+          <label for="lmsModelSortSel">Sort:</label>
+          <select id="lmsModelSortSel" class="select" onchange="onLmsModelSortChange(this.value)" onclick="event.stopPropagation();">
+            <option value="group_by_author">By author</option>
+            <option value="alphabetical">Alphabetical</option>
+            <option value="loaded_first">Loaded first</option>
+          </select>
+        </div>
+        <div class="model-cards" id="lmsModelCards">
+          <div style="color:var(--fg-dim);font-size:0.85em;">Waiting for agent...</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- LMS Download -->
+    <div class="llm-section" id="lmsSecDownload">
+      <div class="llm-section-title" onclick="toggleSection('lmsSecDownload')">Download Model<span class="llm-collapse-icon">▾</span></div>
+      <div class="llm-section-body">
+        <div class="dl-row">
+          <div class="form-field" style="flex:0 0 auto;width:360px;min-width:0;">
+            <label>Model ID <span style="color:var(--fg-muted);font-weight:normal;font-size:0.82em;">(HuggingFace or LM Studio format)</span></label>
+            <input id="lmsDlModel" type="text" placeholder="qwen/qwen3.5-9b" />
+          </div>
+          <button class="btn btn-stone-muted-gradient" id="lmsDlBtn" onclick="lmsDownloadModel()">Download</button>
+        </div>
+        <div class="log-toolbar"><button class="btn-log" onclick="popoutLog('lmsDlLog','LMS download output')">⛶ Pop out</button></div>
+        <div class="log-wrap">
+          <div class="dl-log" id="lmsDlLog" style="height:424px;">Download status will appear here...</div>
+          <div class="dl-log-resize" data-resize-target="lmsDlLog"></div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+
+</div><!-- end llmTab -->
+
+<script src="/static/js/foundation.js?v=2026.06.12-5"></script>
+<script src="/static/js/charts.js?v=2026.06.12-3"></script>
+<script src="/static/js/terminal.js?v=2026.06.11-4"></script>
+<script src="/static/js/llmcontrol.js?v=2026.06.10-6"></script>
+<script src="/static/js/openclaw.js?v=2026.06.10-7"></script>
+<script src="/static/js/admin.js?v=2026.06.10-6"></script>
+<script src="/static/js/llmcontrol-models.js?v=2026.06.10-6"></script>
+<script src="/static/js/bench-autotune.js?v=2026.06.10-7"></script>
+<script src="/static/js/lmstudio.js?v=2026.06.12-7"></script>
+<script src="/static/js/overall.js?v=2026.06.09-2"></script>
+<script src="/static/js/dashboard-manager.js?v=2026.06.12-5"></script>
+
+<!-- Settings panel — kept at body root so it's never inside a hidden tab container -->
+<div class="settings-overlay" id="settingsOverlay" onclick="if(event.target===this)closeSettings()">
+  <div class="settings-panel">
+    <button class="close-btn" onclick="closeSettings()">✕</button>
+    <h2 id="settingsTitle">Dashboard settings</h2>
+    <div id="settingsList"></div>
+    <div class="settings-section-title">Theme</div>
+    <div class="interval-row">
+      <select id="themeSelect" class="interval-input" style="width:auto;text-align:left;padding:4px 10px;"
+              onchange="applyTheme(this.value, true)">
+        <option value="dark">Dark (default)</option>
+        <option value="medium">Medium</option>
+        <option value="light">Light</option>
+        <option value="modern">Modern</option>
+        <option value="classic">Classic</option>
+        <option value="slate">Slate</option>
+        <option value="enterprise">Enterprise</option>
+      </select>
+    </div>
+    <div class="settings-section-title">Polling interval</div>
+    <div class="interval-row">
+      <label class="interval-radio">
+        <input type="radio" name="intervalMode" value="auto" onchange="applyIntervalMode()" checked> Auto
+      </label>
+      <label class="interval-radio">
+        <input type="radio" name="intervalMode" value="manual" onchange="applyIntervalMode()"> Manual
+      </label>
+      <div class="interval-manual-wrap">
+        <input type="number" class="interval-input" id="intervalManualVal" value="5" min="1" max="300"
+               oninput="applyIntervalMode()" style="display:none;">
+        <span class="interval-unit" id="intervalManualUnit" style="display:none;">seconds</span>
+      </div>
+    </div>
+    <p class="settings-note">Cards can also be dragged to reorder. Settings are saved automatically.</p>
+  </div>
+</div>
+
+<!-- Server Config overlay — kept at body root -->
+<div class="svcconfig-overlay" id="svcConfigOverlay" onclick="if(event.target===this)closeSvcConfig()">
+  <div class="svcconfig-panel">
+    <button class="close-btn" onclick="closeSvcConfig()" style="float:right;background:none;border:none;color:var(--fg-dim);cursor:pointer;font-size:1.2em;">✕</button>
+    <h2>⚙ llama-server Startup Config</h2>
+    <div class="svcconfig-subtitle" id="svcConfigBinary">Loading…</div>
+    <div id="svcArgList"></div>
+    <div class="svcarg-section-title">Add argument</div>
+    <div class="svcarg-add-row">
+      <input type="text" class="svcarg-add-flag" id="svcAddFlag" placeholder="--flag" />
+      <input type="text" class="svcarg-add-val"  id="svcAddVal"  placeholder="value (blank = flag only)" />
+      <label class="svcarg-add-bool"><input type="checkbox" id="svcAddBool"> flag only (no value)</label>
+      <button type="button" class="btn btn-gray-muted-gradient" onclick="svcAddArg()" style="white-space:nowrap;">+ Add</button>
+    </div>
+    <div class="svcconfig-actions">
+      <button type="button" class="btn btn-zinc-muted-gradient"  onclick="saveSvcConfig(false)">💾 Save</button>
+      <button type="button" class="btn btn-stone-muted-gradient" onclick="saveSvcConfig(true)">↺ Save &amp; Restart</button>
+      <button type="button" class="btn btn-red-muted-gradient"   onclick="closeSvcConfig()" style="margin-left:auto;">✕ Cancel</button>
+    </div>
+    <div class="svcconfig-status" id="svcConfigStatus"></div>
+  </div>
+</div>
+
+<!-- Benchmark overlay — kept at body root -->
+<div class="bench-overlay" id="benchOverlay">
+  <div class="bench-panel">
+    <!-- Header -->
+    <div class="bench-row" style="justify-content:space-between;margin-bottom:2px;">
+      <h2 id="benchTitle">⏱ Benchmark</h2>
+      <button class="close-btn" onclick="closeBench()" style="background:none;border:none;color:var(--fg-dim);cursor:pointer;font-size:1.2em;">✕</button>
+    </div>
+    <!-- Controls row: Models dropdown + Switches dropdown -->
+    <div class="bench-controls-row">
+      <div class="bench-dropdown" id="benchModelDrop">
+        <button class="bench-drop-btn" id="benchModelDropBtn" onclick="toggleBenchDrop('benchModelDrop')">
+          <span id="benchModelLabel">Select models…</span>
+          <span class="bench-drop-caret">▾</span>
+        </button>
+        <div class="bench-drop-panel" id="benchModelPanel"></div>
+      </div>
+      <div class="bench-dropdown" id="benchSwitchDrop">
+        <button class="bench-drop-btn" id="benchSwitchDropBtn" onclick="toggleBenchDrop('benchSwitchDrop')">
+          <span id="benchSwitchLabel">Switches</span>
+          <span class="bench-drop-caret">▾</span>
+        </button>
+        <div class="bench-drop-panel" id="benchSwitchPanel">
+          <div id="benchSwitchList"></div>
+          <button class="bench-add-btn" onclick="addBenchSwitch()">+ Add switch</button>
+        </div>
+      </div>
+      <!-- Tool tabs flush right -->
+      <div class="bench-tabs" style="margin-left:auto;">
+        <button class="bench-tab active" data-tab="llama-bench"         onclick="switchBenchTab('llama-bench')">llama-bench</button>
+        <button class="bench-tab"        data-tab="llama-batched-bench" onclick="switchBenchTab('llama-batched-bench')">llama-batched-bench</button>
+      </div>
+    </div>
+    <!-- Action row: status pill + cancel + run — never compresses tabs above -->
+    <div class="bench-action-row">
+      <span id="benchStatus" class="bench-status-pill">idle</span>
+      <button id="benchCancelBtn" class="btn btn-red-muted-gradient" onclick="cancelBenchmark()" style="display:none;">✕ Cancel</button>
+      <button id="benchRunBtn" class="btn btn-stone-muted-gradient" onclick="runBenchmark()">▶ Run Benchmark</button>
+    </div>
+    <!-- Axis + chart type selectors -->
+    <div class="bench-axis-row">
+      <label>Chart:</label>
+      <select id="benchChartType" class="bench-axis-sel" onchange="_rechartBench()">
+        <option value="line">Line</option>
+        <option value="scatter">Scatter</option>
+        <option value="bar">Bar</option>
+      </select>
+      <label style="margin-left:8px;">X:</label>
+      <select id="benchXAxis" class="bench-axis-sel" onchange="_rechartBench()">
+        <option value="time">time</option>
+        <option value="seq">sequence</option>
+      </select>
+      <label style="margin-left:8px;">Y:</label>
+      <select id="benchYAxis" class="bench-axis-sel" onchange="_rechartBench()">
+        <option value="avg_ts">t/s</option>
+        <option value="ms_tok">ms/tok</option>
+      </select>
+    </div>
+    <!-- Chart — main focus -->
+    <div class="bench-chart-wrap">
+      <canvas id="benchChart"></canvas>
+    </div>
+    <!-- Log — main focus -->
+    <div id="benchLog"></div>
+    <!-- Results (shown after run completes) -->
+    <div id="benchResults">
+      <div id="benchResultRows"></div>
+    </div>
+  </div>
+</div>
+
+<!-- Auto-Tune CTX overlay — reuses bench-overlay/panel CSS for consistency -->
+<link rel="stylesheet" href="/static/css/autotune.css?v=2026.06.10-6">
+<div class="bench-overlay" id="autotuneOverlay">
+  <div class="bench-panel">
+    <div class="bench-row" style="justify-content:space-between;margin-bottom:6px;">
+      <h2>🎯 Auto Tune CTX</h2>
+      <button class="close-btn" onclick="closeAutotune()" style="background:none;border:none;color:var(--fg-dim);cursor:pointer;font-size:1.2em;">✕</button>
+    </div>
+
+    <!-- Pre-flight: llama-server must be stopped -->
+    <div id="atPreflight" class="bench-row" style="background:var(--bg-card-alt);border:1px solid var(--border-strong);border-radius:6px;padding:8px 12px;margin-bottom:6px;display:none;">
+      <span id="atPreflightMsg" style="flex:1;font-size:0.85em;">Checking llama-server state…</span>
+      <button id="atStopBtn" class="btn btn-red-muted-gradient" onclick="atStopServer()" style="display:none;">⏹ Stop llama-server</button>
+    </div>
+
+    <!-- Step 1: Models — collapsible, auto-closes on Run -->
+    <details id="atModelsDetails" class="bench-row" style="align-items:flex-start;display:block;" open>
+      <summary style="cursor:pointer;font-size:0.9em;font-weight:500;padding:4px 0;">Models to tune (select one or more)</summary>
+      <div id="atModelPanel" style="background:var(--bg-card-alt);border:1px solid var(--border-strong);border-radius:4px;padding:6px 8px;margin-top:6px;"></div>
+    </details>
+
+    <!-- Step 2: Target free VRAM + tolerance -->
+    <div class="bench-row">
+      <div class="at-field">
+        <label>Target free VRAM (MB)</label>
+        <input id="atTargetMb" type="number" min="0" step="64" value="1024" />
+      </div>
+      <div class="at-field">
+        <label>Tolerance ± (MB)</label>
+        <input id="atToleranceMb" type="number" min="1" step="1" value="50" />
+      </div>
+      <div class="at-field" style="max-width:340px;flex:1;">
+        <label style="color:var(--fg-dim)">Tuner converges within ± Tolerance of target, max 10 iterations per model.</label>
+      </div>
+      <label style="margin-left:auto;font-size:0.85em;display:flex;align-items:center;gap:6px;">
+        <input id="atRestartAfter" type="checkbox" />
+        Restart llama-server after tune
+      </label>
+    </div>
+
+    <!-- Step 3: Optional runtime parameters (collapsed by default; also
+         auto-collapses when Run Auto Tune is pressed). -->
+    <details id="atOptionalParamsDetails" style="margin:6px 0;">
+      <summary style="cursor:pointer;font-size:0.9em;color:var(--fg-dim);">Optional runtime parameters (omitted flags use llama-server defaults)</summary>
+      <div style="padding:8px 4px;display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:4px 16px;">
+        <div class="at-opt-row">
+          <input type="checkbox" id="atEn_mlock">
+          <label class="at-opt-label" for="atEn_mlock">--mlock</label>
+        </div>
+        <div class="at-opt-row">
+          <input type="checkbox" id="atEn_no_mmap">
+          <label class="at-opt-label" for="atEn_no_mmap">--no-mmap</label>
+        </div>
+        <div class="at-opt-row">
+          <input type="checkbox" id="atEn_kv_unified">
+          <label class="at-opt-label" for="atEn_kv_unified">--kv-unified</label>
+        </div>
+        <div class="at-opt-row">
+          <input type="checkbox" id="atEn_parallel">
+          <label class="at-opt-label" for="atEn_parallel">--parallel</label>
+          <input type="number" id="atV_parallel" min="1" step="1" placeholder="4">
+        </div>
+        <div class="at-opt-row">
+          <input type="checkbox" id="atEn_cache_ram">
+          <label class="at-opt-label" for="atEn_cache_ram">--cache-ram (MB)</label>
+          <input type="number" id="atV_cache_ram" min="0" step="128" placeholder="4096">
+        </div>
+        <div class="at-opt-row">
+          <input type="checkbox" id="atEn_b">
+          <label class="at-opt-label" for="atEn_b">-b (batch)</label>
+          <input type="number" id="atV_b" min="1" step="1" placeholder="2048">
+        </div>
+        <div class="at-opt-row">
+          <input type="checkbox" id="atEn_ub">
+          <label class="at-opt-label" for="atEn_ub">-ub (ubatch)</label>
+          <input type="number" id="atV_ub" min="1" step="1" placeholder="2048">
+        </div>
+        <div class="at-opt-row">
+          <input type="checkbox" id="atEn_ngl">
+          <label class="at-opt-label" for="atEn_ngl">-ngl (gpu layers)</label>
+          <input type="number" id="atV_ngl" min="0" step="1" placeholder="99">
+        </div>
+        <div class="at-opt-row">
+          <input type="checkbox" id="atEn_ctk">
+          <label class="at-opt-label" for="atEn_ctk">-ctk (K quant)</label>
+          <select id="atV_ctk">
+            <option value="">—</option>
+            <option value="f16">f16</option>
+            <option value="bf16">bf16</option>
+            <option value="q8_0">q8_0</option>
+            <option value="q5_1">q5_1</option>
+            <option value="q5_0">q5_0</option>
+            <option value="q4_1">q4_1</option>
+            <option value="q4_0">q4_0</option>
+          </select>
+        </div>
+        <div class="at-opt-row">
+          <input type="checkbox" id="atEn_ctv">
+          <label class="at-opt-label" for="atEn_ctv">-ctv (V quant)</label>
+          <select id="atV_ctv">
+            <option value="">—</option>
+            <option value="f16">f16</option>
+            <option value="bf16">bf16</option>
+            <option value="q8_0">q8_0</option>
+            <option value="q5_1">q5_1</option>
+            <option value="q5_0">q5_0</option>
+            <option value="q4_1">q4_1</option>
+            <option value="q4_0">q4_0</option>
+          </select>
+        </div>
+      </div>
+
+      <!-- Custom args: arbitrary llama-server flags passed through.
+           One flag/value pair per line, plain shell-style:
+             --flash-attn
+             --threads 16
+             --rope-freq-base 10000000
+           Lines that don't start with '-' are skipped. Quoting is
+           NOT shell-parsed; spaces split the flag from its value. -->
+      <div style="margin-top:14px;border-top:1px solid var(--border);padding-top:10px;">
+        <div style="font-size:0.85em;font-weight:500;margin-bottom:4px;">Custom args</div>
+        <div style="font-size:0.75em;color:var(--fg-dim);margin-bottom:6px;">
+          Free-form llama-server flags appended after the params above. One per line.
+          Examples: <code>--flash-attn</code>, <code>--threads 16</code>, <code>--rope-freq-base 10000000</code>.
+          Lines not starting with <code>-</code> are ignored.
+        </div>
+        <textarea id="atCustomArgs" rows="3"
+                  style="width:100%;font-family:monospace;font-size:0.85em;background:var(--bg-elev);color:var(--fg);border:1px solid var(--border);border-radius:4px;padding:6px;"
+                  placeholder="--flag value&#10;--bool-only-flag&#10;--another value"></textarea>
+      </div>
+    </details>
+
+    <!-- Action row -->
+    <div class="bench-action-row">
+      <span id="atStatus" class="bench-status-pill">idle</span>
+      <button id="atCancelBtn" class="btn btn-red-muted-gradient" onclick="cancelAutotune()" style="display:none;">✕ Cancel</button>
+      <button id="atRunBtn" class="btn btn-stone-muted-gradient" onclick="runAutotune()">▶ Run Auto Tune</button>
+    </div>
+
+    <!-- Live results (one card per model as it completes) -->
+    <div id="atResults"></div>
+
+    <!-- Live log: condensed, one line per event -->
+    <div id="atLog"></div>
+
+    <!-- Raw llama-server output — collapsed by default. Captures every
+         `line` event from the agent stream verbatim. Useful for diagnosing
+         unparseable output or tracking exactly what each iteration did. -->
+    <details id="atRawDetails" style="margin-top:8px;">
+      <summary style="cursor:pointer;font-size:0.9em;color:var(--fg-dim);user-select:none;">
+        Raw llama-server output (<span id="atRawCount">0</span> lines)
+      </summary>
+      <div id="atRawLog"></div>
+    </details>
+  </div>
+</div>
+<!-- ── Alarm Engine Toast Container (top-right, matches Events tab style) ── -->
+<link rel="stylesheet" href="/static/css/toasts.css?v=2026.06.10-6">
+<div id="alarmToastContainer"></div>
+
+<script src="/static/js/events-toasts.js?v=2026.06.10-6"></script>
+<script src="/static/js/boot.js?v=2026.06.11-5"></script>
+</body>
+</html>

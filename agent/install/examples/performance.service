@@ -1,0 +1,57 @@
+# =============================================================================
+# performance.service — LLM Systems "high-load" profile
+# =============================================================================
+# Activated by the agent's perf controller when llama-server wakes up:
+#     sudo systemctl reload-or-restart performance
+#
+# This is a STARTING POINT. Tune it for your hardware:
+#   • CPU governor                  — already set below (default: performance)
+#   • GPU power limit               — uncomment + tune for AMD/NVIDIA
+#   • Cooling (fans / pump)         — uncomment + tune for your AIO/case
+#   • PCIe / interrupt affinity     — host-specific
+#
+# Two ways to extend without editing this file:
+#   1. Drop a snippet at /etc/systemd/system/performance.service.d/override.conf
+#      with [Service] and additional ExecStart= lines.
+#   2. Edit this file in place — but understand re-running the installer
+#      will refuse to clobber it (use --force-overwrite-perf-units to bypass).
+# =============================================================================
+
+[Unit]
+Description=LLM Systems performance profile (CPU governor + accelerators)
+Documentation=https://github.com/adrielnava/llm-systems-manager
+DefaultDependencies=no
+After=multi-user.target
+ConditionPathExists=/sys/devices/system/cpu/cpu0/cpufreq/scaling_governor
+
+[Service]
+# Type=oneshot + RemainAfterExit=yes is the canonical pattern for
+# "set hardware state once and stay considered active."
+Type=oneshot
+RemainAfterExit=yes
+
+# CPU governor → performance on every core
+ExecStart=/bin/bash -c 'for g in /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor; do echo performance > "$g" 2>/dev/null || true; done'
+
+# ── Examples to enable (uncomment + tune) ───────────────────────────────────
+# CPU energy/perf bias (Intel)
+# ExecStart=/usr/bin/x86_energy_perf_policy performance
+
+# AMD GPU power profile (auto) (auto provides better performance than the other options)
+# ExecStart=/bin/bash -c 'for f in /sys/class/drm/card*/device/power_dpm_force_performance_level; do echo auto > "$f" 2>/dev/null || true; done'
+# AMD GPU perf level (compute)
+# ExecStart=/bin/bash -c 'for f in /sys/class/drm/card*/device/pp_power_profile_mode; do echo 5 > "$f" 2>/dev/null || true; done'
+
+# NVIDIA GPU persistence + power-limit (W)
+# ExecStart=/usr/bin/nvidia-smi -pm 1
+# ExecStart=/usr/bin/nvidia-smi -pl 350
+
+# NZXT Kraken pump + fans (liquidctl) — adjust --match for your device
+# ExecStart=/usr/bin/liquidctl --match Kraken set pump speed 20 30 25 40 32 85 35 95 38 100
+# ExecStart=/usr/bin/liquidctl --match Kraken set fan speed 20 30 25 40 32 85 35 95 38 100
+
+# Corsair PSU — Commander Pro / iCUE H-series fan curves
+# ExecStart=/usr/bin/liquidctl --match Commander set fan speed 75
+
+[Install]
+WantedBy=multi-user.target

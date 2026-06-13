@@ -1,0 +1,34 @@
+[Unit]
+Description=LLM Systems Alarm Engine - Thresholding, anomaly detection & alert management
+After=network.target influxdb.service
+Wants=network.target
+
+[Service]
+Type=simple
+User=@@RUN_USER@@
+Group=@@RUN_GROUP@@
+WorkingDirectory=@@INSTALL_DIR@@/llm-systems-alarm-engine
+# All runtime config (host/port, timeouts, intervals, SMTP creds, Influx
+# tokens, etc.) lives in the TOML file pointed to by LLM_SYSTEMS_CONFIG.
+Environment=PYTHONUNBUFFERED=1
+Environment=LLM_SYSTEMS_CONFIG=@@INSTALL_DIR@@/config/llm-systems.toml
+# Programmatic launcher (backend/alarm_engine.py main()) so it can serve HTTPS
+# when [alarm_engine].tls_enabled + the cert is present. host/port/log_level all
+# come from the TOML; uvloop+httptools+no-access-log preserved in main().
+ExecStart=@@INSTALL_DIR@@/llm-systems-alarm-engine/venv/bin/python3 -m backend.alarm_engine
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=llm-systems-alarm-engine
+
+# Security hardening — enable once the alarm engine is allowed to write
+# /var/log/llm-systems-manager and any other paths it touches.
+#NoNewPrivileges=true
+#ProtectSystem=strict
+#ProtectHome=true
+#ReadWritePaths=@@INSTALL_DIR@@/llm-systems-alarm-engine /var/log/llm-systems-manager
+#PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

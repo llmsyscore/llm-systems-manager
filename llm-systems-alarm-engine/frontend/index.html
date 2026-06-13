@@ -1,0 +1,625 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>LLM Systems — Alarm Engine</title>
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🔔</text></svg>">
+    <link rel="stylesheet" href="css/main.css?v=20260523a">
+    <link rel="stylesheet" href="css/dashboard.css?v=20260523a">
+    <link rel="stylesheet" href="css/alerts.css?v=20260609a">
+    <link rel="stylesheet" href="css/rules.css?v=20260523a">
+    <link rel="stylesheet" href="css/notifications.css?v=20260523a">
+    <link rel="stylesheet" href="css/history.css?v=20260523a">
+    <link rel="stylesheet" href="css/modal.css?v=20260523a">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns@3.0.0/dist/chartjs-adapter-date-fns.bundle.min.js"></script>
+</head>
+<body>
+    <!-- Top Navigation Bar -->
+    <header class="top-bar">
+        <div class="top-bar-left">
+            <h1 class="app-title">
+                <span class="title-icon">🔔</span>
+                <span class="title-text">LLM Systems Alarm Engine</span>
+            </h1>
+        </div>
+        <div class="top-bar-right">
+            <div class="header-actions">
+                <button class="btn-icon" id="refreshBtn" title="Refresh Data">
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 2v6h-6"/><path d="M3 12a9 9 0 0 1 15-6.7L21 8"/><path d="M3 22v-6h6"/><path d="M21 12a9 9 0 0 1-15 6.7L3 16"/></svg>
+                </button>
+            </div>
+            <div class="connection-status" id="connectionStatus">
+                <span class="status-dot disconnected"></span>
+                <span class="status-text">Disconnected</span>
+            </div>
+            <div class="last-refreshed" id="lastRefreshed" title="Last time alerts were refreshed">
+                <span class="last-refreshed-label">Refreshed:</span>
+                <span class="last-refreshed-time" id="lastRefreshedTime">—</span>
+            </div>
+        </div>
+    </header>
+
+    <!-- Summary Cards Row -->
+    <section class="summary-cards">
+        <div class="card card-metrics">
+            <div class="card-header">
+                <span class="card-icon">📊</span>
+                <span class="card-title">Metrics</span>
+            </div>
+            <div class="card-body">
+                <span class="card-value" id="metricsCount">0</span>
+                <span class="card-label">Tracked</span>
+            </div>
+        </div>
+        <div class="card card-active-alerts">
+            <div class="card-header">
+                <span class="card-icon">🚨</span>
+                <span class="card-title">Active Alerts</span>
+            </div>
+            <div class="card-body">
+                <span class="card-value critical" id="activeAlertsCount">0</span>
+                <span class="card-label">Alerts</span>
+            </div>
+        </div>
+        <div class="card card-critical-alerts">
+            <div class="card-header">
+                <span class="card-icon">⛔</span>
+                <span class="card-title">Critical</span>
+            </div>
+            <div class="card-body">
+                <span class="card-value critical" id="criticalAlertsCount">0</span>
+                <span class="card-label">Critical</span>
+            </div>
+        </div>
+        <div class="card card-rules">
+            <div class="card-header">
+                <span class="card-icon">⚙️</span>
+                <span class="card-title">Rules</span>
+            </div>
+            <div class="card-body">
+                <span class="card-value" id="rulesCount">0</span>
+                <span class="card-label">Active</span>
+            </div>
+        </div>
+        <div class="card card-anomalies">
+            <div class="card-header">
+                <span class="card-icon">🔍</span>
+                <span class="card-title">Anomalies</span>
+            </div>
+            <div class="card-body">
+                <span class="card-value warning" id="anomaliesCount">0</span>
+                <span class="card-label">Detected</span>
+            </div>
+        </div>
+    </section>
+
+    <!-- Tab Navigation -->
+    <nav class="tab-nav">
+        <button class="tab active" data-tab="dashboard">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg>
+            Events
+        </button>
+        <button class="tab" data-tab="alerts">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg>
+            All Alerts
+            <span class="tab-badge" id="alertsBadge">0</span>
+        </button>
+        <button class="tab" data-tab="rules">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="4" y1="21" x2="4" y2="14"/><line x1="4" y1="10" x2="4" y2="3"/><line x1="12" y1="21" x2="12" y2="12"/><line x1="12" y1="8" x2="12" y2="3"/><line x1="20" y1="21" x2="20" y2="16"/><line x1="20" y1="12" x2="20" y2="3"/></svg>
+            Rules
+        </button>
+        <button class="tab" data-tab="notifications">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72c.127.96.361 1.903.7 2.81a2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45c.907.339 1.85.573 2.81.7A2 2 0 0 1 22 16.92z"/></svg>
+            Notifications
+        </button>
+    </nav>
+
+    <!-- Main Content Area -->
+    <main class="tab-content">
+        <!-- Events Tab (formerly Dashboard) -->
+        <section class="tab-panel active" id="dashboard-panel">
+
+            <!-- Sub-tab navigation within Events -->
+            <nav class="subtab-nav">
+                <button class="subtab active" data-subtab="overview">Overview</button>
+                <button class="subtab" data-subtab="metrics">Metrics</button>
+            </nav>
+
+            <!-- Sub-panel: Overview (alerts, anomalies, recent) -->
+            <div class="subtab-panel active" id="dashboard-sub-overview">
+                <div class="dashboard-grid">
+                    <!-- Active Alerts Panel -->
+                    <div class="alerts-panel full-width">
+                        <div class="card-header">
+                            <span>Active Alerts</span>
+                            <button class="btn-sm" id="clearAllAlertsBtn">Clear All</button>
+                        </div>
+                        <div class="alerts-list" id="alertsList">
+                            <div class="empty-state">
+                                <p>No active alerts</p>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Anomaly Feed -->
+                    <div class="anomaly-feed">
+                        <div class="card-header">
+                            <span>Recent Anomalies</span>
+                        </div>
+                        <div class="anomaly-list" id="anomalyList">
+                            <div class="empty-state">
+                                <p>No anomalies detected</p>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Recent Alerts (history of the last 25 alerts of any status) -->
+                    <div class="recent-alerts-panel full-width">
+                        <div class="card-header">
+                            <span>Recent Alerts (last 25)</span>
+                        </div>
+                        <div class="recent-alerts-body" id="recentAlertsList">
+                            <div class="empty-state">
+                                <p>Loading alerts…</p>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Sub-panel: Metrics (real-time chart + historical) -->
+            <div class="subtab-panel" id="dashboard-sub-metrics">
+
+                <!-- Manual refresh — sits above the time picker, outside the chart card -->
+                <div class="metrics-refresh-bar">
+                    <button class="btn-secondary" id="metricsRefreshBtn" title="Reload real-time and historical metrics">
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M21 2v6h-6"/><path d="M3 12a9 9 0 0 1 15-6.7L21 8"/><path d="M3 22v-6h6"/><path d="M21 12a9 9 0 0 1-15 6.7L3 16"/></svg>
+                        <span>Refresh</span>
+                    </button>
+                </div>
+
+                <!-- Real-Time Metrics Chart (60-min window) -->
+                <div class="chart-card full-width">
+                    <div class="card-header">
+                        <span>Real-Time Metrics (Up to 1 hour)</span>
+                    </div>
+                    <div class="chart-pickers">
+                        <select id="deviceSelect" class="select-input">
+                            <option value="">All devices</option>
+                        </select>
+                        <select id="metricSelect" class="select-input">
+                            <option value="">Select metric...</option>
+                        </select>
+                        <select id="chartRangeSelect" class="select-input">
+                            <option value="5">Last 5 min</option>
+                            <option value="15" selected>Last 15 min</option>
+                            <option value="60">Last 1 hour</option>
+                        </select>
+                    </div>
+                    <div class="chart-body">
+                        <canvas id="mainChart"></canvas>
+                    </div>
+                </div>
+
+                <!-- Historical Range (1h → 30d, downsampled per the alarm engine tiers) -->
+                <div class="history-page">
+                    <div class="chart-card full-width">
+                        <div class="card-header">
+                            <span>Historical Metrics (Up to 30 days)</span>
+                            <div class="chart-controls">
+                                <button class="btn-secondary" id="exportHistoryBtn">Export CSV</button>
+                            </div>
+                        </div>
+                        <div class="chart-pickers">
+                            <select id="historyDeviceSelect" class="select-input">
+                                <option value="">All devices</option>
+                            </select>
+                            <select id="historyMetricSelect" class="select-input">
+                                <option value="">Select metric...</option>
+                            </select>
+                            <select id="historyRangeSelect" class="select-input">
+                                <option value="60" selected>Last hour</option>
+                                <option value="360">Last 6 hours</option>
+                                <option value="720">Last 12 hours</option>
+                                <option value="1440">Last 24 hours</option>
+                                <option value="10080">Last 7 days</option>
+                                <option value="43200">Last 30 days</option>
+                            </select>
+                        </div>
+                        <div class="chart-legend" id="chartLegend"></div>
+                        <div class="chart-body">
+                            <canvas id="historyChart"></canvas>
+                        </div>
+                    </div>
+
+                    <div class="stats-card">
+                        <div class="card-header">
+                            <span>Statistics</span>
+                        </div>
+                        <div class="stats-grid" id="statsGrid">
+                            <div class="stat-item">
+                                <span class="stat-label">Min</span>
+                                <span class="stat-value" id="statMin">—</span>
+                            </div>
+                            <div class="stat-item">
+                                <span class="stat-label">Max</span>
+                                <span class="stat-value" id="statMax">—</span>
+                            </div>
+                            <div class="stat-item">
+                                <span class="stat-label">Mean</span>
+                                <span class="stat-value" id="statMean">—</span>
+                            </div>
+                            <div class="stat-item">
+                                <span class="stat-label">Std Dev</span>
+                                <span class="stat-value" id="statStd">—</span>
+                            </div>
+                            <div class="stat-item">
+                                <span class="stat-label">P50</span>
+                                <span class="stat-value" id="statP50">—</span>
+                            </div>
+                            <div class="stat-item">
+                                <span class="stat-label">P95</span>
+                                <span class="stat-value" id="statP95">—</span>
+                            </div>
+                            <div class="stat-item">
+                                <span class="stat-label">P99</span>
+                                <span class="stat-value" id="statP99">—</span>
+                            </div>
+                            <div class="stat-item">
+                                <span class="stat-label">Count</span>
+                                <span class="stat-value" id="statCount">—</span>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="chart-card full-width">
+                        <div class="card-header">
+                            <span>Trend Analysis</span>
+                        </div>
+                        <div class="chart-body">
+                            <canvas id="trendChart"></canvas>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+        </section>
+
+        <!-- Alerts Tab -->
+        <section class="tab-panel" id="alerts-panel">
+            <div class="alerts-page">
+                <!-- Filters -->
+                <div class="filters-bar">
+                    <select id="alertSeverityFilter" class="select-input">
+                        <option value="">All Severities</option>
+                        <option value="info">Info</option>
+                        <option value="warning">Warning</option>
+                        <option value="critical">Critical</option>
+                    </select>
+                    <select id="alertStatusFilter" class="select-input">
+                        <option value="">All Statuses</option>
+                        <option value="active">Active</option>
+                        <option value="acknowledged">Acknowledged</option>
+                        <option value="closed">Closed</option>
+                        <option value="ignored">Ignored</option>
+                        <option value="exception">Exception</option>
+                    </select>
+                    <input type="text" id="alertSearchInput" class="search-input" placeholder="Search alerts...">
+                    <select id="bulkActionSelect" class="select-input" disabled>
+                        <option value="">— Bulk Action —</option>
+                        <option value="acknowledge">Acknowledge</option>
+                        <option value="close">Close</option>
+                        <option value="ignore">Ignore</option>
+                    </select>
+                    <button class="btn-primary" id="bulkActionsBtn" disabled>Apply</button>
+                    <button class="btn-secondary" id="exportAlertsBtn">Export CSV</button>
+                    <button class="btn-secondary" id="refreshAlertsBtn" title="Refresh active alerts, counts, and timestamps">
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="vertical-align:middle;margin-right:4px;"><path d="M21 2v6h-6"/><path d="M3 12a9 9 0 0 1 15-6.7L21 8"/><path d="M3 22v-6h6"/><path d="M21 12a9 9 0 0 1-15 6.7L3 16"/></svg>Refresh
+                    </button>
+                </div>
+
+                <!-- Alert Table -->
+                <div class="table-container">
+                    <table class="data-table" id="alertsTable">
+                        <thead>
+                            <tr>
+                                <th><input type="checkbox" id="selectAllAlerts"></th>
+                                <th>Severity</th>
+                                <th>Rule</th>
+                                <th>Source</th>
+                                <th>Message</th>
+                                <th>Status</th>
+                                <th>Created</th>
+                                <th>Last seen</th>
+                                <th title="Number of times this rule has re-fired while the alert is still active">Count</th>
+                                <th>Actions</th>
+                            </tr>
+                        </thead>
+                        <tbody id="alertsTableBody">
+                            <tr><td colspan="10" class="empty-row">Loading alerts...</td></tr>
+                        </tbody>
+                    </table>
+                </div>
+
+                <!-- Pagination -->
+                <div class="pagination" id="alertsPagination">
+                    <button class="btn-sm" id="prevPageBtn" disabled>← Prev</button>
+                    <span class="page-info" id="pageInfo">Page 1</span>
+                    <button class="btn-sm" id="nextPageBtn" disabled>Next →</button>
+                </div>
+            </div>
+        </section>
+
+        <!-- Rules Tab -->
+        <section class="tab-panel" id="rules-panel">
+            <div class="rules-page">
+                <div class="rules-header">
+                    <h2>Alarm Rules</h2>
+                    <button class="btn-primary" id="createRuleBtn">+ Create Rule</button>
+                </div>
+
+                <div class="rules-filters">
+                    <input type="search" id="rulesSearchInput" class="select-input"
+                           placeholder="Search rules by name, metric, description…"
+                           autocomplete="off">
+                    <select id="rulesTypeFilter" class="select-input">
+                        <option value="all">All types</option>
+                        <option value="threshold_above">Threshold above</option>
+                        <option value="threshold_below">Threshold below</option>
+                        <option value="threshold_range">Threshold range</option>
+                        <option value="z_score">Z-score (anomaly)</option>
+                        <option value="moving_average">Moving average (anomaly)</option>
+                        <option value="percentile">Percentile (anomaly)</option>
+                        <option value="rate_of_change">Rate of change (anomaly)</option>
+                    </select>
+                    <select id="rulesStatusFilter" class="select-input">
+                        <option value="all">Any status</option>
+                        <option value="enabled">Enabled only</option>
+                        <option value="disabled">Disabled only</option>
+                    </select>
+                    <span class="rules-filters-count" id="rulesFilterCount"></span>
+                </div>
+
+                <!-- Rule Templates -->
+                <div class="templates-section" id="ruleTemplates">
+                    <div class="templates-header">
+                        <h3>Quick Create</h3>
+                        <span class="templates-subtitle">Start from a common rule pattern</span>
+                    </div>
+                    <div class="template-grid">
+                        <button type="button" class="template-card" data-template="threshold_above">
+                            <span class="template-icon" aria-hidden="true">↑</span>
+                            <span class="template-body">
+                                <span class="template-title">Threshold Above</span>
+                                <span class="template-desc">Fire when value exceeds an upper limit</span>
+                            </span>
+                        </button>
+                        <button type="button" class="template-card" data-template="threshold_below">
+                            <span class="template-icon" aria-hidden="true">↓</span>
+                            <span class="template-body">
+                                <span class="template-title">Threshold Below</span>
+                                <span class="template-desc">Fire when value drops below a floor</span>
+                            </span>
+                        </button>
+                        <button type="button" class="template-card" data-template="z_score">
+                            <span class="template-icon" aria-hidden="true">σ</span>
+                            <span class="template-body">
+                                <span class="template-title">Z-Score Anomaly</span>
+                                <span class="template-desc">Detect statistical outliers</span>
+                            </span>
+                        </button>
+                        <button type="button" class="template-card" data-template="percentile">
+                            <span class="template-icon" aria-hidden="true">P95</span>
+                            <span class="template-body">
+                                <span class="template-title">Percentile</span>
+                                <span class="template-desc">Alert above a rolling Pn baseline</span>
+                            </span>
+                        </button>
+                        <button type="button" class="template-card" data-template="moving_average">
+                            <span class="template-icon" aria-hidden="true">~</span>
+                            <span class="template-body">
+                                <span class="template-title">Moving Average</span>
+                                <span class="template-desc">Deviation from rolling mean</span>
+                            </span>
+                        </button>
+                        <button type="button" class="template-card" data-template="rate_of_change">
+                            <span class="template-icon" aria-hidden="true">Δ</span>
+                            <span class="template-body">
+                                <span class="template-title">Rate of Change</span>
+                                <span class="template-desc">Alert on rapid value changes</span>
+                            </span>
+                        </button>
+                    </div>
+                </div>
+
+                <!-- Rules List -->
+                <div class="rules-table-section">
+                    <table class="data-table" id="rulesTable">
+                        <thead>
+                            <tr>
+                                <th class="sortable" data-sort-key="name">Name</th>
+                                <th class="sortable" data-sort-key="rule_type">Type</th>
+                                <th class="sortable" data-sort-key="source">Source</th>
+                                <th class="sortable" data-sort-key="metric_name">Metric</th>
+                                <th class="sortable" data-sort-key="threshold">Threshold</th>
+                                <th class="sortable" data-sort-key="severity">Severity</th>
+                                <th class="sortable" data-sort-key="enabled">Status</th>
+                                <th class="sortable" data-sort-key="created_at">Created</th>
+                                <th>Actions</th>
+                            </tr>
+                        </thead>
+                        <tbody id="rulesTableBody">
+                            <tr><td colspan="9" class="empty-row">Loading rules...</td></tr>
+                        </tbody>
+                    </table>
+                    <div class="rules-pagination" id="rulesPagination">
+                        <div class="rules-pagination-info">
+                            <label for="rulesPageSize">Rows per page:</label>
+                            <select id="rulesPageSize">
+                                <option value="10" selected>10</option>
+                                <option value="25">25</option>
+                                <option value="50">50</option>
+                                <option value="100">100</option>
+                                <option value="0">All</option>
+                            </select>
+                            <span class="rules-pagination-range" id="rulesPaginationRange">—</span>
+                        </div>
+                        <div class="rules-pagination-controls">
+                            <button class="btn btn-sm btn-secondary" id="rulesPagePrev" disabled>‹ Prev</button>
+                            <span class="rules-pagination-pages" id="rulesPagePages">Page 1 / 1</span>
+                            <button class="btn btn-sm btn-secondary" id="rulesPageNext" disabled>Next ›</button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- Notifications Tab -->
+        <section class="tab-panel" id="notifications-panel">
+            <div class="notifications-page">
+                <div class="notifications-header">
+                    <h2>Notification Channels</h2>
+                </div>
+
+                <div class="templates-section">
+                    <div class="templates-header">
+                        <h3>Quick Create</h3>
+                        <span class="templates-subtitle">Start by picking a channel type</span>
+                    </div>
+                    <div class="template-grid">
+                        <button type="button" class="template-card channel-type-card" data-type="toast">
+                            <span class="template-icon" aria-hidden="true">🔔</span>
+                            <span class="template-body">
+                                <span class="template-title">Toast</span>
+                                <span class="template-desc">Browser popup notifications</span>
+                            </span>
+                        </button>
+                        <button type="button" class="template-card channel-type-card" data-type="email">
+                            <span class="template-icon" aria-hidden="true">📧</span>
+                            <span class="template-body">
+                                <span class="template-title">Email</span>
+                                <span class="template-desc">Send email notifications</span>
+                            </span>
+                        </button>
+                        <button type="button" class="template-card channel-type-card" data-type="sms">
+                            <span class="template-icon" aria-hidden="true">📱</span>
+                            <span class="template-body">
+                                <span class="template-title">SMS</span>
+                                <span class="template-desc">Text message alerts</span>
+                            </span>
+                        </button>
+                        <button type="button" class="template-card channel-type-card" data-type="webhook">
+                            <span class="template-icon" aria-hidden="true">🔗</span>
+                            <span class="template-body">
+                                <span class="template-title">Webhook</span>
+                                <span class="template-desc">HTTP POST to custom URL</span>
+                            </span>
+                        </button>
+                        <button type="button" class="template-card channel-type-card" data-type="discord">
+                            <span class="template-icon" aria-hidden="true">💬</span>
+                            <span class="template-body">
+                                <span class="template-title">Discord</span>
+                                <span class="template-desc">Send to Discord channel</span>
+                            </span>
+                        </button>
+                    </div>
+                </div>
+
+                <div class="notifications-grid">
+                  <div class="notifications-col-left">
+                    <div class="channels-list-section">
+                        <div class="configs-header">
+                            <h3>Configured Channels</h3>
+                            <button class="btn-secondary" id="addChannelBtn">+ Add Channel</button>
+                        </div>
+                        <div class="channels-list" id="channelsList">
+                            <div class="empty-state">
+                                <p>No notification channels configured</p>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="configs-list-section">
+                        <div class="configs-header">
+                            <h3>Notification Policies</h3>
+                            <button class="btn-secondary" id="addConfigBtn">+ Add Config</button>
+                        </div>
+                        <div class="configs-list" id="configsList">
+                            <div class="empty-state">
+                                <p>No notification policies configured</p>
+                            </div>
+                        </div>
+                    </div>
+                  </div>
+
+                  <div class="notifications-col-right">
+                    <div class="delivery-history-section">
+                        <h3>Notification History</h3>
+                    <table class="data-table" id="deliveryTable">
+                        <thead>
+                            <tr>
+                                <th>Time</th>
+                                <th>Channel</th>
+                                <th>Recipient</th>
+                                <th>Status</th>
+                                <th>Details</th>
+                            </tr>
+                        </thead>
+                        <tbody id="deliveryTableBody">
+                            <tr><td colspan="5" class="empty-row">Loading delivery history...</td></tr>
+                        </tbody>
+                    </table>
+                    <div class="rules-pagination" id="deliveriesPagination">
+                        <div class="rules-pagination-info">
+                            <label for="deliveriesPageSize">Rows per page:</label>
+                            <select id="deliveriesPageSize">
+                                <option value="10">10</option>
+                                <option value="20" selected>20</option>
+                                <option value="50">50</option>
+                                <option value="100">100</option>
+                                <option value="0">All</option>
+                            </select>
+                            <span class="rules-pagination-range" id="deliveriesPaginationRange">—</span>
+                        </div>
+                        <div class="rules-pagination-controls">
+                            <button class="btn btn-sm btn-secondary" id="deliveriesPagePrev" disabled>‹ Prev</button>
+                            <span class="rules-pagination-pages" id="deliveriesPagePages">Page 1 / 1</span>
+                            <button class="btn btn-sm btn-secondary" id="deliveriesPageNext" disabled>Next ›</button>
+                        </div>
+                    </div>
+                    </div>
+                  </div>
+                </div>
+            </div>
+        </section>
+
+    </main>
+
+    <!-- Modal Overlay -->
+    <div class="modal-overlay" id="modalOverlay">
+        <div class="modal-container wide" id="mainModal">
+            <div class="modal-header">
+                <h3 class="modal-title" id="modalTitle">Modal</h3>
+                <button class="modal-close-btn" id="modalCloseBtn">&times;</button>
+            </div>
+            <div class="modal-body" id="modalBody">
+                <!-- Dynamic content -->
+            </div>
+            <div class="modal-footer" id="modalFooter">
+                <button class="btn-secondary" id="modalCancelBtn">Cancel</button>
+                <button class="btn-primary" id="modalConfirmBtn">Confirm</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Toast Container -->
+    <div class="toast-container" id="toastContainer"></div>
+
+    <!-- Application Scripts -->
+    <script src="js/api.js?v=20260523a"></script>
+    <script src="js/websocket.js?v=20260523a"></script>
+    <script src="js/main.js?v=20260609b"></script>
+</body>
+</html>

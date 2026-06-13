@@ -1,0 +1,123 @@
+name: CI
+
+# Runs on every push to main and every pull request targeting main.
+# - test: pytest across the alarm-engine + manager suites. BLOCKING.
+# - lint: ruff (pyflakes ruleset). ADVISORY for now — findings reported but
+#   PR is not blocked. Once the codebase is cleaned up, flip
+#   `continue-on-error` to false to make it blocking.
+#
+# Intentionally deferred:
+#   * mypy — most modules aren't type-annotated; running it broadly would
+#     drown signal in noise. Worth wiring once the codebase grows type
+#     hints in a few seed modules (storage/, models/, _time.py).
+#   * smoke tests (tools/llm-systems-*_smoke_test.sh) — they need a full
+#     integration environment: docker-compose InfluxDB + AE + manager +
+#     config TOML + admin password + AE TLS cert chain. Self-contained
+#     enough to warrant its own follow-up PR.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# Cancel in-progress runs when a PR gets a new push, so we don't spend
+# CPU on superseded commits.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: pytest
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          # CLAUDE.md operating rule #1 isn't tied to a Python minor; the
+          # installer requires >= 3.10. Use 3.12 here — it's the modern
+          # baseline ubuntu-latest ships with and matches the prod venvs.
+          python-version: "3.12"
+          cache: pip
+
+      # config/unified_config.py and config/llm-systems.toml are gitignored
+      # because the live install holds secrets and is provisioned by
+      # install-config-bootstrap.sh. CI doesn't go through the installer,
+      # so we materialise the loader from its tracked .example. The loader
+      # itself supports a missing TOML (falls back to schema defaults — see
+      # CLAUDE.md "Missing file → all defaults"), so a real TOML isn't
+      # needed for tests to import settings.
+      - name: Materialise config loader
+        run: cp config/unified_config.py.example config/unified_config.py
+
+      - name: Install alarm engine dependencies
+        working-directory: llm-systems-alarm-engine
+        run: |
+          python -m venv venv
+          venv/bin/python -m pip install --upgrade pip
+          venv/bin/python -m pip install -r requirements.txt -r requirements-dev.txt
+
+      - name: Install manager dependencies
+        working-directory: llm-systems-manager
+        run: |
+          python -m venv venv
+          venv/bin/python -m pip install --upgrade pip
+          venv/bin/python -m pip install -r backend/requirements.txt -r requirements-dev.txt
+
+      - name: Run alarm engine tests
+        working-directory: llm-systems-alarm-engine
+        run: venv/bin/python -m pytest -v
+
+      # The manager module configures file logging at import time pointed at
+      # /var/log/llm-systems-manager (per the production install layout). CI
+      # runs as a non-root user that can't create that dir on its own, so
+      # provision it up front. This also matches what install-manager.sh
+      # does on a real host.
+      - name: Provision manager log dir
+        run: |
+          sudo mkdir -p /var/log/llm-systems-manager
+          sudo chown "$USER" /var/log/llm-systems-manager
+
+      - name: Run manager tests
+        working-directory: llm-systems-manager
+        run: venv/bin/python -m pytest -v
+
+  lint:
+    name: ruff
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    # Blocking. The codebase was cleaned in chore/ruff-cleanup; new
+    # findings should be addressed in the PR that introduces them rather
+    # than letting drift accumulate.
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install ruff
+        run: pip install ruff
+
+      # Scope: just the three service codebases. Exclude vendored dirs,
+      # the frontend HTML, and anything in tools/ that's shell-only.
+      - name: Run ruff
+        run: |
+          ruff check \
+            --select=F \
+            --exclude=venv \
+            --exclude=__pycache__ \
+            --exclude=node_modules \
+            --output-format=github \
+            llm-systems-alarm-engine/backend \
+            llm-systems-manager/backend \
+            agent

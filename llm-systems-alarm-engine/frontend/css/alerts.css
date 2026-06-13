@@ -1,0 +1,254 @@
+/* ── Alerts Page Styles ── */
+
+/* ── Alerts Page Layout ── */
+.alerts-page {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-md);
+}
+
+/* ── Bulk Actions Bar ── */
+.bulk-actions-bar {
+    display: flex;
+    align-items: center;
+    gap: var(--space-sm);
+    padding: var(--space-sm) var(--space-md);
+    background-color: var(--bg-tertiary);
+    border-radius: var(--radius-md);
+    border: 1px solid var(--border-color);
+}
+
+.bulk-actions-bar .selected-count {
+    font-size: 0.85rem;
+    color: var(--text-secondary);
+    margin-right: auto;
+}
+
+/* ── Alert Row Actions ── */
+.alert-actions {
+    display: flex;
+    gap: var(--space-xs);
+}
+
+.alert-action-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 28px;
+    height: 28px;
+    padding: 0;
+    background: transparent;
+    border: 1px solid transparent;
+    border-radius: var(--radius-sm);
+    color: var(--text-muted);
+    cursor: pointer;
+    transition: all var(--transition-fast);
+    font-size: 0.85rem;
+}
+
+.alert-action-btn:hover {
+    background-color: var(--bg-hover);
+    color: var(--text-primary);
+    border-color: var(--border-color);
+}
+
+.alert-action-btn.acknowledge:hover { color: var(--color-warning); }
+.alert-action-btn.close:hover { color: var(--color-success); }
+.alert-action-btn.ignore:hover { color: var(--text-muted); }
+
+/* Rule column link in the alerts table → opens the rule editor (#141). */
+.alert-rule-link { color: var(--color-info); text-decoration: none; cursor: pointer; }
+.alert-rule-link:hover { text-decoration: underline; }
+.alert-action-btn.exception:hover { color: var(--color-info); }
+
+/* ── Alert Detail Panel ── */
+.alert-detail-panel {
+    background-color: var(--bg-card);
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-lg);
+    padding: var(--space-lg);
+    margin-top: var(--space-md);
+    display: none;
+}
+
+.alert-detail-panel.visible {
+    display: block;
+    animation: slideDown var(--transition-slow);
+}
+
+@keyframes slideDown {
+    from { opacity: 0; transform: translateY(-10px); }
+    to { opacity: 1; transform: translateY(0); }
+}
+
+.alert-detail-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+    gap: var(--space-md);
+}
+
+.alert-detail-item {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-xs);
+}
+
+.alert-detail-label {
+    font-size: 0.75rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--text-muted);
+}
+
+.alert-detail-value {
+    font-size: 0.9rem;
+    color: var(--text-primary);
+}
+
+.alert-detail-message {
+    grid-column: 1 / -1;
+    padding: var(--space-md);
+    background-color: var(--bg-primary);
+    border-radius: var(--radius-md);
+    font-size: 0.9rem;
+    line-height: 1.6;
+    color: var(--text-secondary);
+}
+
+/* ── Alert Value Highlight ── */
+.alert-value {
+    font-family: var(--font-mono);
+    font-weight: 600;
+    color: var(--text-primary);
+}
+
+.alert-threshold {
+    font-family: var(--font-mono);
+    color: var(--text-muted);
+    font-size: 0.8rem;
+}
+
+/* ── Alert Time Display ── */
+.alert-time {
+    font-family: var(--font-mono);
+    font-size: 0.78rem;
+    color: var(--text-muted);
+    white-space: nowrap;
+}
+
+/* ── Alert Source Display ── */
+.alert-source {
+    font-family: var(--font-mono);
+    font-size: 0.78rem;
+    color: var(--text-secondary);
+    background-color: var(--bg-tertiary);
+    padding: 2px 6px;
+    border-radius: var(--radius-sm);
+}
+
+/* ── Alert Message Truncation ── */
+.alert-message-cell {
+    max-width: 300px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+/* ── Bulk Status Update Toast ── */
+.bulk-toast {
+    position: fixed;
+    bottom: var(--space-lg);
+    right: var(--space-lg);
+    background-color: var(--bg-card);
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-lg);
+    padding: var(--space-md) var(--space-lg);
+    box-shadow: var(--shadow-xl);
+    z-index: var(--z-tooltip);
+    display: flex;
+    align-items: center;
+    gap: var(--space-md);
+    animation: slideUp var(--transition-slow);
+}
+
+@keyframes slideUp {
+    from { opacity: 0; transform: translateY(20px); }
+    to { opacity: 1; transform: translateY(0); }
+}
+
+.bulk-toast.success {
+    border-left: 4px solid var(--color-success);
+}
+
+.bulk-toast.error {
+    border-left: 4px solid var(--color-danger);
+}
+
+/* ── Export Dropdown ── */
+.export-dropdown {
+    position: relative;
+    display: inline-block;
+}
+
+.export-menu {
+    position: absolute;
+    top: 100%;
+    right: 0;
+    margin-top: var(--space-xs);
+    background-color: var(--bg-card);
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-md);
+    box-shadow: var(--shadow-lg);
+    min-width: 160px;
+    z-index: var(--z-dropdown);
+    display: none;
+}
+
+.export-menu.visible {
+    display: block;
+    animation: fadeIn var(--transition-fast);
+}
+
+.export-menu-item {
+    display: flex;
+    align-items: center;
+    gap: var(--space-sm);
+    padding: var(--space-sm) var(--space-md);
+    background: transparent;
+    border: none;
+    width: 100%;
+    text-align: left;
+    font-size: 0.85rem;
+    color: var(--text-secondary);
+    cursor: pointer;
+    transition: background-color var(--transition-fast);
+}
+
+.export-menu-item:hover {
+    background-color: var(--bg-hover);
+    color: var(--text-primary);
+}
+
+.export-menu-item:first-child {
+    border-radius: var(--radius-md) var(--radius-md) 0 0;
+}
+
+.export-menu-item:last-child {
+    border-radius: 0 0 var(--radius-md) var(--radius-md);
+}
+/* ── Alert table severity-colored cells ── */
+/* The severity and status columns are colored text instead of badges/icons so
+   the user can scan the table by severity at a glance. The status cell shares
+   the severity color (since status only really matters when the alert is
+   active — closed alerts in the export still show the original severity tone). */
+.alert-sev-cell, .alert-status-cell {
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+    font-size: 0.78rem;
+    white-space: nowrap;
+}
+.alert-sev-cell.sev-critical, .alert-status-cell.sev-critical { color: var(--color-danger); }
+.alert-sev-cell.sev-warning,  .alert-status-cell.sev-warning  { color: var(--color-warning); }
+.alert-sev-cell.sev-info,     .alert-status-cell.sev-info     { color: var(--color-info); }

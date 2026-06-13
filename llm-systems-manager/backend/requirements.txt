@@ -1,0 +1,24 @@
+# llm-systems-manager backend dependencies.
+# Audited 2026-05-15. Flask + requests bumped to clear Dependabot
+# GHSA-9wx4-h78v-vm56 / GHSA-9hjg-9r4m-mvj7 / GHSA-gc5v-m9x4-r6x2 / GHSA-68rp-wp8r-4726.
+Flask==3.1.3
+psutil==5.9.8
+requests==2.33.0
+# Phase 4 #3 — internal CA + per-agent cert signing for mutual TLS.
+cryptography>=42.0.0
+# Production WSGI server (threaded, native TLS — serves both port 5000
+# HTTP and the optional MANAGER_TLS_PORT HTTPS listener).
+cheroot>=10.0.0
+# Typed config loader (config/unified_config.py) — reads llm-systems.toml.
+pydantic>=2.10.0
+pydantic-settings>=2.6.0
+# Standalone WS proxy bridging browser /ws/alarm → alarm engine /ws
+# (_maybe_start_alarm_ws_proxy). Cheroot WSGI can't speak WebSocket, so
+# the proxy runs in its own thread on [manager].ws_proxy_port. Without
+# this the proxy thread crashes on import and the Events tab shows
+# "WebSocket connection failed" in the browser.
+websockets>=13.0
+# Standalone aiohttp SSE daemon serving /api/llama-state/stream off the fixed
+# Cheroot pool (#110, sse_daemon.py). Imported lazily inside start()/_build_app
+# so a not-yet-installed dep degrades to the Cheroot path instead of crashing.
+aiohttp>=3.9.0

@@ -1,0 +1,8 @@
+# Additional packages used only by the test suite (tests/).
+# Install with: venv/bin/python -m pip install -r requirements-dev.txt
+# Run tests   : venv/bin/python -m pytest
+
+pytest>=8.0
+# Async tests (sse_daemon + provider_state async subscription, #110) run under
+# asyncio_mode=auto in pytest.ini; without this plugin they error in CI.
+pytest-asyncio>=0.23

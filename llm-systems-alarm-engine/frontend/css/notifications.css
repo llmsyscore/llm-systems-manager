@@ -1,0 +1,574 @@
+/* ── Notifications Page Styles ── */
+
+/* ── Page Layout ── */
+.notifications-page {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-xl);
+}
+
+/* ── Page Header ── */
+.notifications-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--space-md);
+}
+
+.notifications-header h2 {
+    font-size: 1.5rem;
+    font-weight: 700;
+    color: var(--text-primary);
+    letter-spacing: -0.01em;
+}
+
+/* ── Channel Type Quick-Create (inherits .template-card layout from rules.css) ── */
+/* Per-type accent colors — applied on hover via the template-card's
+   --color-primary border, but overridden here so each channel type keeps
+   a unique highlight. */
+.channel-type-card[data-type="toast"]   { --ch-color: #7af;    --ch-color-bg: rgba(119,170,255,0.14); }
+.channel-type-card[data-type="email"]   { --ch-color: #60a5fa; --ch-color-bg: rgba(96,165,250,0.14); }
+.channel-type-card[data-type="sms"]     { --ch-color: #4ade80; --ch-color-bg: rgba(74,222,128,0.14); }
+.channel-type-card[data-type="webhook"] { --ch-color: #fb923c; --ch-color-bg: rgba(251,146,60,0.14); }
+.channel-type-card[data-type="discord"] { --ch-color: #a78bfa; --ch-color-bg: rgba(167,139,250,0.14); }
+
+.channel-type-card:hover {
+    border-color: var(--ch-color, var(--color-primary)) !important;
+    box-shadow: 0 4px 14px rgba(0,0,0,0.22), 0 0 0 1px var(--ch-color, var(--color-primary));
+}
+
+.channel-type-card .template-icon {
+    background: var(--ch-color-bg, rgba(122,170,255,0.12));
+    color: var(--ch-color, var(--color-primary));
+}
+
+#addChannelBtn {
+    padding: 4px 10px;
+    font-size: 0.8rem;
+    font-weight: 600;
+}
+
+/* ── Two-column layout: channels + policies on the left, history on the right ── */
+.notifications-grid {
+    display: grid;
+    grid-template-columns: minmax(320px, 460px) 1fr;
+    gap: var(--space-xl);
+    align-items: start;
+}
+
+.notifications-col-left {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-xl);
+    border-right: 1px solid var(--border-color);
+    padding-right: var(--space-xl);
+}
+
+.notifications-col-right {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-md);
+    min-width: 0;
+}
+
+@media (max-width: 900px) {
+    .notifications-grid { grid-template-columns: 1fr; }
+    .notifications-col-left { border-right: none; padding-right: 0; border-bottom: 1px solid var(--border-color); padding-bottom: var(--space-xl); }
+}
+
+/* ── Section Wrapper ── */
+.channels-list-section,
+.configs-list-section,
+.delivery-history-section {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-md);
+}
+
+.section-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--space-md);
+}
+
+.section-header h3,
+.channels-list-section h3,
+.configs-list-section h3,
+.delivery-history-section h3 {
+    font-size: 0.78rem;
+    font-weight: 600;
+    color: var(--text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+}
+
+.configs-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--space-md);
+}
+
+.configs-header h3 {
+    font-size: 0.78rem;
+    font-weight: 600;
+    color: var(--text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+}
+
+/* ── Empty State ── */
+.empty-state {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    padding: var(--space-2xl) var(--space-xl);
+    border: 1px dashed var(--border-color);
+    border-radius: var(--radius-lg);
+    color: var(--text-muted);
+    font-size: 0.85rem;
+    gap: var(--space-sm);
+    background: var(--bg-card);
+}
+
+.empty-state-icon {
+    font-size: 2rem;
+    opacity: 0.4;
+}
+
+/* ── Channel Cards (configured) ── */
+.channels-list {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-sm);
+}
+
+.ch-card {
+    display: flex;
+    align-items: stretch;
+    background: var(--bg-card);
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-lg);
+    overflow: hidden;
+    transition: border-color var(--transition-fast), box-shadow var(--transition-fast);
+}
+
+.ch-card:hover {
+    border-color: var(--ch-stripe-color, var(--border-color));
+    box-shadow: 0 2px 12px rgba(0, 0, 0, 0.2);
+}
+
+.ch-card-stripe {
+    width: 4px;
+    flex-shrink: 0;
+    background: var(--ch-stripe-color, var(--border-color));
+}
+
+.ch-card-body {
+    flex: 1;
+    display: flex;
+    align-items: center;
+    gap: var(--space-sm);
+    padding: 6px 10px;
+    min-width: 0;
+}
+
+.ch-type-icon {
+    font-size: 0.90rem;
+    flex-shrink: 0;
+    width: 30px;
+    height: 30px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: var(--radius-md);
+    background: var(--ch-icon-bg, rgba(119,170,255,0.08));
+    filter: drop-shadow(0 0 4px var(--ch-stripe-color, #7af));
+}
+
+.ch-info {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}
+
+.ch-name {
+    font-size: 0.85rem;
+    font-weight: 600;
+    color: var(--text-primary);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.ch-meta {
+    display: flex;
+    align-items: center;
+    gap: var(--space-sm);
+    flex-wrap: wrap;
+}
+
+.ch-type-label {
+    font-size: 0.45rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--ch-stripe-color, var(--color-primary));
+    background: var(--ch-icon-bg, rgba(119,170,255,0.08));
+    padding: 2px 8px;
+    border-radius: 20px;
+    border: 1px solid var(--ch-stripe-color, var(--color-primary));
+}
+
+.ch-target {
+    font-size: 0.55rem;
+    color: var(--text-secondary);
+    font-family: var(--font-mono);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    max-width: 320px;
+}
+
+.ch-status {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    font-size: 0.60rem;
+    font-weight: 500;
+}
+
+.ch-status::before {
+    content: '';
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    flex-shrink: 0;
+}
+
+.ch-status.enabled { color: var(--color-success); }
+.ch-status.enabled::before { background: var(--color-success); box-shadow: 0 0 5px var(--color-success); }
+.ch-status.disabled { color: var(--text-muted); }
+.ch-status.disabled::before { background: var(--text-muted); }
+
+.ch-actions {
+    display: flex;
+    align-items: center;
+    gap: var(--space-sm);
+    flex-shrink: 0;
+}
+
+/* Per channel type stripe + icon colors */
+.ch-toast   { --ch-stripe-color: #7af;    --ch-icon-bg: rgba(119,170,255,0.08); }
+.ch-email   { --ch-stripe-color: #60a5fa; --ch-icon-bg: rgba(96,165,250,0.08); }
+.ch-sms     { --ch-stripe-color: #4ade80; --ch-icon-bg: rgba(74,222,128,0.08); }
+.ch-webhook { --ch-stripe-color: #fb923c; --ch-icon-bg: rgba(251,146,60,0.08); }
+.ch-discord { --ch-stripe-color: #a78bfa; --ch-icon-bg: rgba(167,139,250,0.08); }
+
+/* ── Notification Policy Cards ── */
+.configs-list {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-sm);
+}
+
+.cfg-card {
+    display: flex;
+    background: var(--bg-card);
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-lg);
+    overflow: hidden;
+    transition: border-color var(--transition-fast), box-shadow var(--transition-fast);
+}
+
+.cfg-card:hover {
+    border-color: var(--ch-stripe-color, var(--border-color));
+    box-shadow: 0 2px 12px rgba(0, 0, 0, 0.2);
+}
+
+.cfg-card-body {
+    flex: 1;
+    display: flex;
+    align-items: center;
+    gap: var(--space-sm);
+    padding: 6px 10px;
+    min-width: 0;
+}
+
+.cfg-icon {
+    font-size: 0.90rem;
+    width: 28px;
+    height: 28px;
+    flex-shrink: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: rgba(119,170,255,0.06);
+    border-radius: var(--radius-md);
+    border: 1px solid rgba(119,170,255,0.12);
+    color: var(--color-primary);
+}
+
+.cfg-info {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+.cfg-name {
+    font-size: 0.85rem;
+    font-weight: 600;
+    color: var(--text-primary);
+}
+
+.cfg-description {
+    font-size: 0.59rem;
+    color: var(--text-muted);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.cfg-badges {
+    display: flex;
+    align-items: center;
+    gap: var(--space-sm);
+    flex-wrap: wrap;
+    margin-top: 2px;
+}
+
+.cfg-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 2px 8px;
+    border-radius: 20px;
+    font-size: 0.55rem;
+    font-weight: 600;
+    letter-spacing: 0.03em;
+}
+
+.cfg-badge.channels {
+    background: rgba(119,170,255,0.08);
+    color: var(--color-primary);
+    border: 1px solid rgba(119,170,255,0.15);
+}
+
+.cfg-badge.enabled {
+    background: rgba(68,238,153,0.08);
+    color: var(--color-success);
+    border: 1px solid rgba(68,238,153,0.15);
+    font-size: 0.55rem;
+}
+
+.cfg-badge.disabled {
+    background: rgba(100,100,100,0.08);
+    color: var(--text-muted);
+    border: 1px solid rgba(100,100,100,0.15);
+    font-size: 0.55rem;
+}
+
+.cfg-badge.auto-dismiss {
+    background: rgba(251,146,60,0.08);
+    color: #fb923c;
+    border: 1px solid rgba(251,146,60,0.15);
+    font-size: 0.55rem;
+}
+
+.cfg-badge.sticky {
+    background: rgba(167,139,250,0.08);
+    color: #a78bfa;
+    border: 1px solid rgba(167,139,250,0.15);
+    font-size: 0.55rem;
+}
+
+.cfg-actions {
+    display: flex;
+    align-items: center;
+    gap: var(--space-sm);
+    flex-shrink: 0;
+}
+
+/* ── Delivery History ── */
+.delivery-history-section h3 {
+    font-size: 0.78rem;
+    font-weight: 600;
+    color: var(--text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+}
+
+/* ── Delivery Status Badge ── */
+.delivery-status {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 2px 10px;
+    border-radius: 20px;
+    font-size: 0.53rem;
+    font-weight: 600;
+    letter-spacing: 0.03em;
+    text-transform: uppercase;
+}
+
+.delivery-status.sent {
+    background: rgba(68,238,153,0.08);
+    color: var(--color-success);
+    border: 1px solid rgba(68,238,153,0.15);
+}
+
+.delivery-status.failed {
+    background: var(--color-danger-bg);
+    color: var(--color-danger);
+    border: 1px solid rgba(255,85,85,0.15);
+}
+
+.delivery-status.pending {
+    background: rgba(250,170,119,0.08);
+    color: var(--color-warning);
+    border: 1px solid rgba(250,170,119,0.15);
+}
+
+.delivery-status.retry {
+    background: rgba(96,165,250,0.08);
+    color: #60a5fa;
+    border: 1px solid rgba(96,165,250,0.15);
+}
+
+/* ── Test Button ── */
+.btn-test {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-xs);
+    padding: 5px 12px;
+    background: rgba(119,170,255,0.06);
+    border: 1px solid rgba(119,170,255,0.2);
+    border-radius: var(--radius-md);
+    color: var(--color-primary);
+    font-size: 0.70rem;
+    font-weight: 500;
+    cursor: pointer;
+    transition: all var(--transition-fast);
+    white-space: nowrap;
+}
+
+.btn-test:hover {
+    background: rgba(119,170,255,0.12);
+    border-color: var(--color-primary);
+    box-shadow: 0 0 8px rgba(119,170,255,0.15);
+}
+
+/* ── Existing method/priority/preview styles (kept) ── */
+.method-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+    gap: var(--space-md);
+}
+
+.method-card {
+    background-color: var(--bg-card);
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-lg);
+    padding: var(--space-lg);
+    transition: all var(--transition-base);
+}
+
+.method-card:hover {
+    border-color: var(--border-color);
+    box-shadow: var(--shadow-md);
+}
+
+.method-card-header {
+    display: flex;
+    align-items: center;
+    gap: var(--space-sm);
+    margin-bottom: var(--space-md);
+}
+
+.method-icon { font-size: 1.5rem; }
+.method-name { font-size: 1rem; font-weight: 600; color: var(--text-primary); flex: 1; }
+
+.method-card-body { display: flex; flex-direction: column; gap: var(--space-sm); }
+
+.config-field { display: flex; flex-direction: column; gap: var(--space-xs); }
+.config-field label { font-size: 0.8rem; font-weight: 500; color: var(--text-secondary); }
+
+.config-field input,
+.config-field select,
+.config-field textarea {
+    padding: var(--space-sm) var(--space-md);
+    background-color: var(--bg-primary);
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-md);
+    color: var(--text-primary);
+    font-size: 0.85rem;
+    font-family: var(--font-mono);
+    transition: border-color var(--transition-fast);
+}
+
+.config-field input:focus,
+.config-field select:focus,
+.config-field textarea:focus {
+    outline: none;
+    border-color: var(--color-primary);
+    box-shadow: 0 0 0 2px var(--color-primary-bg);
+}
+
+.config-field textarea { resize: vertical; min-height: 60px; }
+
+.priority-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 2px 8px;
+    border-radius: 12px;
+    font-size: 0.72rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+}
+
+.priority-badge.critical { background-color: var(--color-danger-bg); color: var(--color-danger); }
+.priority-badge.warning  { background-color: var(--color-warning-bg); color: var(--color-warning); }
+.priority-badge.info     { background-color: var(--color-info-bg); color: var(--color-info); }
+
+.notification-history,
+.notification-rules {
+    background-color: var(--bg-card);
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-lg);
+    overflow: hidden;
+}
+
+.preview-panel {
+    background-color: var(--bg-primary);
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-lg);
+    padding: var(--space-lg);
+}
+
+.preview-panel h4 {
+    font-size: 0.85rem;
+    font-weight: 600;
+    color: var(--text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    margin-bottom: var(--space-md);
+}
+
+.preview-content {
+    padding: var(--space-md);
+    background-color: var(--bg-secondary);
+    border-radius: var(--radius-md);
+    font-family: var(--font-mono);
+    font-size: 0.82rem;
+    color: var(--text-secondary);
+    line-height: 1.6;
+    white-space: pre-wrap;
+}

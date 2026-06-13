@@ -1,0 +1,6 @@
+# Additional packages used only by the test suite (tests/).
+# Install with: venv/bin/pip install -r requirements-dev.txt
+# Run tests   : venv/bin/pytest
+
+pytest>=8.0
+pytest-asyncio>=0.23

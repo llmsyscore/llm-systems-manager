@@ -1,0 +1,509 @@
+"""
+Unified configuration for llm-systems-manager + llm-systems-alarm-engine.
+
+Single source of truth: /opt/llm-systems-manager/config/llm-systems.toml
+(override with the LLM_SYSTEMS_CONFIG environment variable).
+
+This module defines the typed schema; the TOML file holds the values.
+
+  TOML (data)  →  unified_config.py (schema/loader)  →  services
+
+Consumers do `from config.unified_config import settings` and then read
+typed nested fields:
+
+    settings.manager.port                       # int
+    settings.alarm_engine.timeouts.manager_proxy  # float
+    settings.influxdb.tokens.metrics            # str (secret)
+    settings.alarm_engine.history.downsampling.tiers  # list of Tier objects
+
+Missing keys fall back to the model defaults so a fresh checkout boots
+without any TOML file. The example template at
+config/llm-systems.toml.example documents every key.
+
+Sections:
+    [manager]            — Flask backend bind, polling, endpoints, proxies, security, agents
+    [alarm_engine]       — FastAPI alarm engine bind, timeouts, intervals, caches, api limits
+    [influxdb]           — InfluxDB connection + per-bucket tokens (★ secret)
+    [notifications]      — SMTP (★ secret) + Twilio + Discord + per-channel timeouts
+    [paths]              — log dir + rotation
+    [logging]            — single level/format/datefmt knob for both services
+    [agent]              — schema-only documentation; agents read agent_config.yaml directly
+"""
+
+from __future__ import annotations
+
+import os
+import tomllib
+from pathlib import Path
+from typing import Optional
+
+from pydantic import BaseModel, ConfigDict, Field
+from pydantic_settings import (
+    BaseSettings,
+    PydanticBaseSettingsSource,
+    SettingsConfigDict,
+    TomlConfigSettingsSource,
+)
+
+
+# ---------------------------------------------------------------------------
+# Config path discovery
+# ---------------------------------------------------------------------------
+_DEFAULT_CONFIG_PATH = Path("/opt/llm-systems-manager/config/llm-systems.toml")
+_REPO_FALLBACK_CONFIG_PATH = Path(__file__).parent / "llm-systems.toml"
+
+
+def _resolve_config_path() -> Optional[Path]:
+    """Locate the TOML config file. Order: env var → /opt → repo-local.
+    Returns None when no file exists; pydantic will fall back to model defaults."""
+    env = os.environ.get("LLM_SYSTEMS_CONFIG")
+    if env:
+        p = Path(env).expanduser()
+        return p if p.exists() else None
+    for p in (_DEFAULT_CONFIG_PATH, _REPO_FALLBACK_CONFIG_PATH):
+        if p.exists():
+            return p
+    return None
+
+
+CONFIG_PATH: Optional[Path] = _resolve_config_path()
+"""The resolved TOML config file path, or None if no file was found."""
+
+
+# Shared model config for every nested schema model. extra="ignore" lets
+# operators add their own keys to the TOML without crashing the loader,
+# which is friendlier for in-place experimentation.
+_MODEL_CFG = ConfigDict(extra="ignore")
+
+
+# ---------------------------------------------------------------------------
+# [manager]
+# ---------------------------------------------------------------------------
+class ManagerProxies(BaseModel):
+    """Per-tab reverse-proxy targets. Each value is `False | "auto" | "<url>"`.
+    See [manager.proxies] in llm-systems.toml.example for the full spec."""
+    model_config = _MODEL_CFG
+    llm_chat:  bool | str = False
+    openclaw:  bool | str = False
+    image_gen: bool | str = False
+
+
+class ManagerHistory(BaseModel):
+    model_config = _MODEL_CFG
+    window_minutes: int = 60
+    # 15s is well below the smallest downsampling-tier bucket (1m), so the
+    # in-memory ring stays fresh without firing 12 parallel Flux queries
+    # against InfluxDB every 5s (was the dominant source of CPU spikes).
+    refresh_interval_s: float = 15.0
+    fetch_limit: int = 1800
+
+
+class ManagerUploads(BaseModel):
+    model_config = _MODEL_CFG
+    max_content_length: int = 100 * 1024 * 1024  # 100 MiB
+
+
+class ManagerBenchmark(BaseModel):
+    model_config = _MODEL_CFG
+    stream_queue_size: int = 5000
+
+
+class ManagerTimeouts(BaseModel):
+    model_config = _MODEL_CFG
+    generic_http: float = 30.0
+
+
+class ManagerAgents(BaseModel):
+    model_config = _MODEL_CFG
+    stale_after_s: int = 150
+    down_after_s: int = 600
+    liveness_watch_interval_s: int = 60
+
+
+class ManagerSecurity(BaseModel):
+    model_config = _MODEL_CFG
+    admin_cidrs: list[str] = Field(
+        default_factory=lambda: ["127.0.0.1", "::1"]
+    )
+    tls_rotation_warn_days: int = 30
+    stream_token_ttl_s: int = 300
+
+
+class ManagerAuth(BaseModel):
+    """Dashboard login (single shared admin). Browser sessions are gated;
+    agent (bearer-token) calls are not. ★ password_hash is a secret."""
+    model_config = _MODEL_CFG
+    # "required"     — every browser session must log in (default).
+    # "disabled"     — no login (legacy trusted-LAN behaviour).
+    # "trusted_cidr" — login required EXCEPT for requests whose source IP is in
+    #                  [manager.security].admin_cidrs.
+    # "auto"         — hand live control to the UI: data/manager_auth.json holds
+    #                  the active mode and the Admin tab changes it instantly.
+    # When this is anything but "auto", the TOML value is authoritative (a manual
+    # edit wins on restart) and the Admin tab writes mode changes back here.
+    mode: str = "auto"
+    username: str = "admin"
+    # scrypt hash "scrypt$<salt_b64>$<dk_b64>". Empty → the built-in
+    # llmadmin/llmadmin default applies (so a fresh "required" deploy can't lock
+    # the operator out). Optional here for installer provisioning; the UI
+    # change-password flow writes data/manager_auth.json, which takes
+    # precedence over this value.
+    password_hash: str = ""
+    session_lifetime_days: int = 1
+    # Role assigned to bypassed sessions (trusted_cidr or disabled mode).
+    bypass_role: str = "admin"
+    # Lock a username OR source IP after N failures within window_s, for duration_s.
+    lockout_threshold: int = 5
+    lockout_window_s: int = 900
+    lockout_duration_s: int = 900
+
+
+class ManagerBranding(BaseModel):
+    """Brand accent palette for the login page + the dashboard logo. One of
+    the named palettes defined in the manager (teal | indigo | forest | steel);
+    unknown values fall back to indigo."""
+    model_config = _MODEL_CFG
+    palette: str = "indigo"
+
+
+class ManagerConfig(BaseModel):
+    model_config = _MODEL_CFG
+    host: str = "0.0.0.0"
+    port: int = 5000
+    # Fixed Cheroot worker-thread pool shared by BOTH the HTTP and TLS servers
+    # (cheroot can't grow it at runtime); each held SSE stream pins one thread.
+    http_threads: int = 64
+    # Workers reserved for non-stream (control/health/heartbeat) requests.
+    # Concurrent SSE streams are capped at http_threads - stream_reserve_threads
+    # so healthy long-lived streams can never exhaust the pool and hang control.
+    stream_reserve_threads: int = 24
+    # Proxied SSE relay reaping: manager-emitted keepalive cadence + hard
+    # lifetime cap so a departed browser's slot is always released.
+    stream_keepalive_s: float = 8.0
+    stream_max_lifetime_s: float = 120.0
+    tls_port: int = 5443  # 0 disables HTTPS
+    # Standalone websockets server (separate daemon thread, NOT Cheroot/WSGI)
+    # that proxies the alarm-engine WebSocket. Browsers connect here at
+    # /ws/alarm and the manager bridges to the AE's /ws (verifying the AE's
+    # internal-CA cert upstream). On by default (5444) because AE TLS is also
+    # on by default — without this, browsers loading the dashboard over plain
+    # HTTP can't reach the wss AE without trusting the internal CA. Always
+    # serves plain ws (the proxy's job is internal-CA termination upstream,
+    # not browser-side TLS — front with nginx/Caddy + a real cert for that).
+    # 0 disables.
+    ws_proxy_port: int = 5444
+    # aiohttp SSE daemon serving /api/llama-state/stream off the Cheroot pool
+    # (#110); plain HTTP via /api/llama-state/stream-info handoff. 0 disables.
+    stream_proxy_port: int = 5445
+    # Hard lifetime cap for a daemon SSE stream; backstop against half-open
+    # browsers. The frontend re-mints a token and reconnects on the cap.
+    stream_proxy_lifetime_s: float = 600.0
+    # Slow (idle) and fast (busy) dashboard polling cadences in seconds.
+    # `set_interval()` in llm-systems-manager.py reads these — fast applies
+    # when llama-server is awake OR LM Studio is loaded; slow otherwise.
+    poll_interval: int = 60
+    fast_poll_interval: int = 15
+    wait_timeout: int = 60
+    alarm_engine_url: str = "http://localhost:8081"
+    cors_origins: str = (
+        "http://localhost:5000,http://localhost:8081"
+    )
+    log_level: str = "INFO"
+    proxies: ManagerProxies = Field(default_factory=ManagerProxies)
+    history: ManagerHistory = Field(default_factory=ManagerHistory)
+    uploads: ManagerUploads = Field(default_factory=ManagerUploads)
+    benchmark: ManagerBenchmark = Field(default_factory=ManagerBenchmark)
+    timeouts: ManagerTimeouts = Field(default_factory=ManagerTimeouts)
+    agents: ManagerAgents = Field(default_factory=ManagerAgents)
+    security: ManagerSecurity = Field(default_factory=ManagerSecurity)
+    auth: ManagerAuth = Field(default_factory=ManagerAuth)
+    branding: ManagerBranding = Field(default_factory=ManagerBranding)
+
+
+# ---------------------------------------------------------------------------
+# [alarm_engine]
+# ---------------------------------------------------------------------------
+class AlarmEngineTimeouts(BaseModel):
+    model_config = _MODEL_CFG
+    manager_health: float = 1.5
+    manager_proxy: float = 10.0
+    manager_keepalive: float = 5.0
+    manager_status: float = 5.0
+    manager_metric_fetch: float = 3.0
+    influxdb_ping: float = 2.0
+
+
+class AlarmEngineIntervals(BaseModel):
+    model_config = _MODEL_CFG
+    influxdb_monitor_s: int = 30
+    websocket_heartbeat_log_s: int = 60
+    otlp_heartbeat_s: int = 60
+
+
+class AlarmEngineCaches(BaseModel):
+    model_config = _MODEL_CFG
+    size: int = 100_000
+    ttl_s: int = 900
+    rule_repo_ttl_s: int = 300
+    metric_catalog_warmup_days: int = 7
+    websocket_queue_size: int = 500
+
+
+class AlarmEngineApiLimits(BaseModel):
+    model_config = _MODEL_CFG
+    recent_alerts_limit_max: int = 5000
+    history_since_minutes_max: int = 43200    # 30 days
+    history_limit_max: int = 100000
+    summary_window_minutes_max: int = 10080   # 7 days
+    export_since_minutes_max: int = 43200     # 30 days
+
+
+class DownsamplingTier(BaseModel):
+    model_config = _MODEL_CFG
+    max_window_s: int
+    every: str
+
+
+class AlarmEngineHistoryDownsampling(BaseModel):
+    model_config = _MODEL_CFG
+    # When rollup_enabled is True, query_metrics() routes reads with
+    # every >= 1m to the pre-computed rollup_measurement instead of the raw
+    # "metrics" measurement. Tier 0 default is 1m so the manager's 60-min
+    # history refresher (the hot path) hits the rollup.
+    rollup_enabled: bool = True
+    rollup_measurement: str = "metrics_1m"
+    rollup_every: str = "1m"
+    tiers: list[DownsamplingTier] = Field(
+        default_factory=lambda: [
+            DownsamplingTier(max_window_s=21600, every="1m"),      # ≤6 h
+            DownsamplingTier(max_window_s=86400, every="1m"),      # ≤24 h
+            DownsamplingTier(max_window_s=604800, every="5m"),     # ≤7 d
+            DownsamplingTier(max_window_s=2592000, every="30m"),   # ≤30 d
+        ]
+    )
+
+
+class AlarmEngineHistory(BaseModel):
+    model_config = _MODEL_CFG
+    downsampling: AlarmEngineHistoryDownsampling = Field(
+        default_factory=AlarmEngineHistoryDownsampling
+    )
+
+
+class AlarmEngineDefaultRules(BaseModel):
+    """Seed thresholds for the default alarm rules. Applied only at first
+    boot when no rules exist; edit later via the UI."""
+    model_config = _MODEL_CFG
+    cpu_usage_critical: float = 95.0
+    cpu_temp_critical: float = 80.0
+    gpu_temp_critical: float = 85.0
+    gpu_vram_critical: float = 95.0
+    ram_usage_critical: float = 90.0
+
+
+class AlarmEngineConfig(BaseModel):
+    model_config = _MODEL_CFG
+    host: str = "0.0.0.0"
+    port: int = 8081
+    evaluation_interval: int = 15
+    keepalive_interval: int = 30
+    manager_url: str = "http://localhost:5000"
+    cors_origins: str = (
+        "http://localhost:5000,http://localhost:8081"
+    )
+    log_level: str = "INFO"
+    # ★ Secret. Bearer token required on the ingest surface (POST
+    # /api/alarm/metrics{,/batch,/ingest}, /api/alarm/ingest, and OTLP
+    # /v1/{metrics,traces,logs}). Blank (or the literal "REPLACE_ME") = ingest
+    # is OPEN (back-compat for pre-existing fleets); set it to require
+    # `Authorization: Bearer <token>`. The installer generates one at install
+    # time so co-located installs ship locked-down. The manager hands the
+    # value to agents on the heartbeat ack; the manager reads it from this
+    # same config. Rotation propagates within ≤60 s, no restart.
+    ingest_token: str = ""
+    # When true the alarm engine serves HTTPS on `port` with a cert signed by
+    # the manager's internal CA. ON by default — the installer pre-issues
+    # data/ae-tls.{crt,key} on co-located installs so no admin step is needed.
+    # On a split install copy those two files into the AE host's data/ dir
+    # after running the manager installer. Enabled-but-cert-missing → AE logs
+    # an error, reports via /health components.tls, and falls back to plain
+    # HTTP (fail-open). Set False explicitly to keep the AE on plain HTTP.
+    tls_enabled: bool = True
+    tls_cert_file: str = "data/ae-tls.crt"
+    tls_key_file: str = "data/ae-tls.key"
+    timeouts: AlarmEngineTimeouts = Field(default_factory=AlarmEngineTimeouts)
+    intervals: AlarmEngineIntervals = Field(default_factory=AlarmEngineIntervals)
+    caches: AlarmEngineCaches = Field(default_factory=AlarmEngineCaches)
+    api_limits: AlarmEngineApiLimits = Field(default_factory=AlarmEngineApiLimits)
+    history: AlarmEngineHistory = Field(default_factory=AlarmEngineHistory)
+    default_rules: AlarmEngineDefaultRules = Field(default_factory=AlarmEngineDefaultRules)
+
+
+# ---------------------------------------------------------------------------
+# [influxdb]
+# ---------------------------------------------------------------------------
+class InfluxDBTokens(BaseModel):
+    """★ Secret values. Live in /opt/llm-systems-manager/config/llm-systems.toml (mode 0600)."""
+    model_config = _MODEL_CFG
+    metrics: str = ""
+    # Token scoped to the rollup bucket (read + write). The 1-min rollup task
+    # writes through this; query_metrics() reads through it when serving
+    # downsampled grains. Leave blank to disable the rollup-bucket split —
+    # the read path then falls back to raw scans in `metrics_bucket`.
+    metrics_rollup: str = ""
+    # Optional operator/admin token used ONLY to create the rollup Flux task
+    # at startup (bucket-scoped tokens can't create tasks). Not used on the
+    # hot path. Leave blank to skip rollup task creation — the read path
+    # auto-falls-back to raw scans when the rollup measurement is missing.
+    admin: str = ""
+
+
+class InfluxDBConfig(BaseModel):
+    model_config = _MODEL_CFG
+    host: str = "localhost"
+    port: int = 8086
+    org: str = "llm-systems-manager"
+    metrics_bucket: str = "alarm_engine_metrics"
+    # Pre-aggregated 1-min rollup lives in its own bucket so the raw bucket
+    # can have a short retention (e.g. 7d) while the rollup keeps long-term
+    # history (e.g. 90d). The rollup Flux task writes here; query_metrics()
+    # reads here for grains >= rollup_every.
+    metrics_rollup_bucket: str = "alarm_engine_metrics_rollup"
+    tokens: InfluxDBTokens = Field(default_factory=InfluxDBTokens)
+
+
+# ---------------------------------------------------------------------------
+# [notifications]
+# ---------------------------------------------------------------------------
+class NotificationsSMTP(BaseModel):
+    """★ Secret. iCloud, Gmail, etc. typically require an app-specific password."""
+    model_config = _MODEL_CFG
+    server: Optional[str] = None
+    port: int = 587
+    user: Optional[str] = None
+    password: Optional[str] = None
+
+
+class NotificationsTwilio(BaseModel):
+    """★ Secret (when configured)."""
+    model_config = _MODEL_CFG
+    account_sid: Optional[str] = None
+    auth_token: Optional[str] = None
+    from_number: Optional[str] = None
+
+
+class NotificationsDiscord(BaseModel):
+    """★ Secret (when configured)."""
+    model_config = _MODEL_CFG
+    webhook_url: Optional[str] = None
+
+
+class NotificationsTimeouts(BaseModel):
+    model_config = _MODEL_CFG
+    http: float = 10.0  # webhook + Discord
+    smtp: float = 15.0  # email
+
+
+class NotificationsConfig(BaseModel):
+    model_config = _MODEL_CFG
+    smtp: NotificationsSMTP = Field(default_factory=NotificationsSMTP)
+    twilio: NotificationsTwilio = Field(default_factory=NotificationsTwilio)
+    discord: NotificationsDiscord = Field(default_factory=NotificationsDiscord)
+    timeouts: NotificationsTimeouts = Field(default_factory=NotificationsTimeouts)
+
+
+# ---------------------------------------------------------------------------
+# [paths] + [logging]
+# ---------------------------------------------------------------------------
+class PathsConfig(BaseModel):
+    model_config = _MODEL_CFG
+    log_dir: str = "/var/log/llm-systems-manager"
+    log_max_bytes: int = 50 * 1024 * 1024  # 50 MiB
+    log_backup_count: int = 5
+
+
+class LoggingConfig(BaseModel):
+    """Single knob for both manager + alarm engine. Per-service overrides
+    live in [manager].log_level / [alarm_engine].log_level."""
+    model_config = _MODEL_CFG
+    level: str = "INFO"
+    format: str = "%(asctime)s [%(levelname)s] %(name)s:%(funcName)s() - %(message)s"
+    datefmt: str = "%Y-%m-%d %H:%M:%S"
+
+
+# ---------------------------------------------------------------------------
+# [agent] — schema-only. Agents read agent_config.yaml directly; this
+# section exists so the central TOML can describe agents declaratively
+# (and so adding agent-related metadata later doesn't require a new file).
+# ---------------------------------------------------------------------------
+class AgentConfig(BaseModel):
+    model_config = _MODEL_CFG
+    dashboard_url: str = "http://localhost:5000/api/remote/lmstudio"
+    lmstudio_api_url: str = "http://localhost:1235"
+    lmstudio_cli_path: str = "/Users/llmsys/.lmstudio/bin/lms"
+    post_interval: int = 15
+    heartbeat_interval: int = 300
+    log_dir: str = "/Users/llmsys/Library/Logs/llm-systems-agent/"
+    log_file: str = "/Users/llmsys/Library/Logs/llm-systems-agent/agent.log"
+    log_max_bytes: int = 5 * 1024 * 1024
+    log_backup_count: int = 3
+
+
+# ---------------------------------------------------------------------------
+# Top-level — loads the TOML
+# ---------------------------------------------------------------------------
+class Settings(BaseSettings):
+    """Top-level settings composing every per-service config group.
+
+    Reads from the TOML file resolved by `CONFIG_PATH` at module-load time.
+    Missing keys → model defaults. Missing file → all defaults.
+    """
+    model_config = SettingsConfigDict(
+        toml_file=str(CONFIG_PATH) if CONFIG_PATH else None,
+        extra="ignore",
+    )
+
+    manager: ManagerConfig = Field(default_factory=ManagerConfig)
+    alarm_engine: AlarmEngineConfig = Field(default_factory=AlarmEngineConfig)
+    influxdb: InfluxDBConfig = Field(default_factory=InfluxDBConfig)
+    notifications: NotificationsConfig = Field(default_factory=NotificationsConfig)
+    paths: PathsConfig = Field(default_factory=PathsConfig)
+    logging: LoggingConfig = Field(default_factory=LoggingConfig)
+    agent: AgentConfig = Field(default_factory=AgentConfig)
+
+    @classmethod
+    def settings_customise_sources(
+        cls,
+        settings_cls,
+        init_settings: PydanticBaseSettingsSource,
+        env_settings: PydanticBaseSettingsSource,
+        dotenv_settings: PydanticBaseSettingsSource,
+        file_secret_settings: PydanticBaseSettingsSource,
+    ) -> tuple[PydanticBaseSettingsSource, ...]:
+        # Priority order: init kwargs → TOML file → model defaults.
+        # Env vars and .env are intentionally NOT sources — the TOML is
+        # the single source of truth. (LLM_SYSTEMS_CONFIG points to the
+        # file; it doesn't carry config values itself.)
+        if CONFIG_PATH is None:
+            return (init_settings,)
+        return (init_settings, TomlConfigSettingsSource(settings_cls))
+
+
+# Global singleton — import this.
+settings: Settings = Settings()
+
+
+def get_settings() -> Settings:
+    """Return the global settings singleton."""
+    return settings
+
+
+__all__ = [
+    "settings",
+    "get_settings",
+    "CONFIG_PATH",
+    "Settings",
+    # Sub-models (consumers rarely need these directly):
+    "ManagerConfig", "AlarmEngineConfig", "InfluxDBConfig",
+    "NotificationsConfig", "PathsConfig", "LoggingConfig", "AgentConfig",
+]

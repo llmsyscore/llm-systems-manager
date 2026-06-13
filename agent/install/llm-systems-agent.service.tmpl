@@ -1,0 +1,21 @@
+[Unit]
+Description=LLM Systems Agent (universal)
+After=network.target
+
+[Service]
+User=${AGENT_USER}
+Group=${AGENT_GROUP}
+WorkingDirectory=${AGENT_INSTALL_DIR}
+ExecStart=${AGENT_INSTALL_DIR}/venv/bin/python3 ${AGENT_INSTALL_DIR}/llm-systems-agent.py
+Restart=always
+RestartSec=3
+# Exit code 2 = malformed agent_config.yaml. Don't restart — a hard
+# loop against the same broken file blows past StartLimitBurst and
+# masks the real problem. Operator must fix the YAML and re-start.
+RestartPreventExitStatus=2
+Environment=PYTHONUNBUFFERED=1
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
