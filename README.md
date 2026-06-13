@@ -67,7 +67,7 @@ If you find this project useful, please consider leaving a donation
 For a quick installation on one host, choose the full install option:
 
 ```bash
-bash <(curl -fsSL https://raw.githubusercontent.com/adrielnava/llm-systems-manager/main/tools/installer/install.sh)
+bash <(curl -fsSL https://raw.githubusercontent.com/llmsyscore/llm-systems-manager/main/tools/installer/install.sh)
 ```
 
 The installer is interactive: it prompts for SMTP credentials (if you want email alerts), the manager admin login, and confirms before installing system packages. It then enables the systemd units but **does not start anything automatically** — it prints the exact `systemctl start` commands so you stay in control of timing.
@@ -87,7 +87,7 @@ That's it for a single-host lab. Everything else below is for adding more hosts 
 The agent is what pushes all data into the dashboard. Run the installer and use the mode 5 (agent installation) option on every machine you want to monitor and control (Linux or macOS):
 
 ```bash
-bash <(curl -fsSL https://raw.githubusercontent.com/adrielnava/llm-systems-manager/main/tools/installer/install.sh)
+bash <(curl -fsSL https://raw.githubusercontent.com/llmsyscore/llm-systems-manager/main/tools/installer/install.sh)
 ```
 
 The agent registers itself with the manager on first launch. From **Admin → Agents**, click **Approve** — the manager signs a TLS cert for that agent and starts polling it.

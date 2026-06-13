@@ -44,7 +44,7 @@ For a quick installation install on one host, choose the full install option:
 ### Step 1:
 
 ```bash
-bash <(curl -fsSL https://raw.githubusercontent.com/adrielnava/llm-systems-manager/main/tools/installer/install.sh)
+bash <(curl -fsSL https://raw.githubusercontent.com/llmsyscore/llm-systems-manager/main/tools/installer/install.sh)
 ```
 
 ### Step 2: Choose an Installation Mode
@@ -130,7 +130,7 @@ The agent installer works on both Linux and macOS. It will ask for the manager s
 Or you can optionally download and run the installer from github
 
 ```bash
-bash <(curl -fsSL https://raw.githubusercontent.com/adrielnava/llm-systems-manager/main/tools/installer/install.sh)
+bash <(curl -fsSL https://raw.githubusercontent.com/llmsyscore/llm-systems-manager/main/tools/installer/install.sh)
 ```
 
 ### Step 2: Start the Agent (if not started during the installation)

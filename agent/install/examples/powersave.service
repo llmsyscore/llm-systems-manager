@@ -19,7 +19,7 @@
 
 [Unit]
 Description=LLM Systems powersave profile (CPU governor + accelerators)
-Documentation=https://github.com/adrielnava/llm-systems-manager
+Documentation=https://github.com/llmsyscore/llm-systems-manager
 DefaultDependencies=no
 After=multi-user.target
 ConditionPathExists=/sys/devices/system/cpu/cpu0/cpufreq/scaling_governor

@@ -7,9 +7,9 @@
 # repo is public; it's fetched over HTTPS with git — no authentication needed.
 #
 # Quick start:
-#   bash <(curl -fsSL https://raw.githubusercontent.com/adrielnava/llm-systems-manager/main/tools/installer/install.sh)
+#   bash <(curl -fsSL https://raw.githubusercontent.com/llmsyscore/llm-systems-manager/main/tools/installer/install.sh)
 #   # or non-interactively:
-#   curl -fsSL https://raw.githubusercontent.com/adrielnava/llm-systems-manager/main/tools/installer/install.sh \
+#   curl -fsSL https://raw.githubusercontent.com/llmsyscore/llm-systems-manager/main/tools/installer/install.sh \
 #     | bash -s -- --mode 1
 #
 # Modes:
@@ -41,7 +41,7 @@ _ORIG_ARGV=("$@")
 # substantive change to this file. The self-update trampoline only re-execs
 # when the upstream copy carries a STRICTLY GREATER number, so locally-
 # modified scripts (or unpushed commits) are never silently downgraded.
-_INSTALL_SH_REVISION=20260610003
+_INSTALL_SH_REVISION=20260613001
 
 # Fallback bootstrap helpers — used until we source lib-common.sh.
 # TTY-aware colors so OK/WARN/ERR markers stand out in interactive runs and
@@ -63,7 +63,7 @@ _b_die()  { _b_err "$*"; exit 1; }
 # resulting file is non-empty.
 _b_fetch_from_github() {
   local repo_path="$1" dest="$2"
-  local slug="${LLMSYS_REPO_SLUG:-adrielnava/llm-systems-manager}"
+  local slug="${LLMSYS_REPO_SLUG:-llmsyscore/llm-systems-manager}"
   if command -v curl >/dev/null 2>&1; then
     if curl -fsSL "https://raw.githubusercontent.com/$slug/main/$repo_path" \
          -o "$dest" 2>/dev/null \
@@ -193,7 +193,7 @@ cat <<'BANNER'
   │                                                                   │
   ╰───────────────────────────────────────────────────────────────────╯
 
-         Repo  ·  github.com/adrielnava/llm-systems-manager
+         Repo  ·  github.com/llmsyscore/llm-systems-manager
 
 
 BANNER
@@ -417,7 +417,7 @@ if [[ "$UPDATE" == "1" ]]; then
   elif [[ -e "$LLMSYS_CLONE_TMP" ]]; then
     _b_die "$LLMSYS_CLONE_TMP exists and isn't a git repo — remove it first"
   else
-    git clone "https://github.com/${LLMSYS_REPO_SLUG:-adrielnava/llm-systems-manager}.git" "$LLMSYS_CLONE_TMP"
+    git clone "https://github.com/${LLMSYS_REPO_SLUG:-llmsyscore/llm-systems-manager}.git" "$LLMSYS_CLONE_TMP"
   fi
   UPDATE_HELPER="$LLMSYS_CLONE_TMP/tools/installer/update.sh"
   [[ -f "$UPDATE_HELPER" ]] \
@@ -497,7 +497,7 @@ printf '\n%s── Source ──────────────────
 
 # ── Clone repo (or use the local checkout if available) ─────────────────────
 LLMSYS_CLONE_TMP="${LLMSYS_CLONE_TMP:-/tmp/llm-systems-manager-install}"
-REPO_SLUG="adrielnava/llm-systems-manager"
+REPO_SLUG="llmsyscore/llm-systems-manager"
 
 # Only treat $THIS_DIR as a valid checkout if it's a real git working tree.
 # Running install.sh from the deployed snapshot (/opt/llm-systems-manager,
@@ -1166,7 +1166,7 @@ echo "    Uninstall:  sudo bash ${LLMSYS_INSTALL_DIR}/tools/installer/install.sh
 echo
 echo "  Documentation"
 echo "  ─────────────────────────────────────────────────────────────────"
-echo "    Repository:       github.com/adrielnava/llm-systems-manager"
+echo "    Repository:       github.com/llmsyscore/llm-systems-manager"
 echo
 
 if (( FAIL == 0 )); then

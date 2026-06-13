@@ -13,7 +13,7 @@ set -euo pipefail
 
 # ── Paths ───────────────────────────────────────────────────────────────────
 LLMSYS_INSTALL_DIR="${LLMSYS_INSTALL_DIR:-/opt/llm-systems-manager}"
-LLMSYS_REPO_SLUG="${LLMSYS_REPO_SLUG:-adrielnava/llm-systems-manager}"
+LLMSYS_REPO_SLUG="${LLMSYS_REPO_SLUG:-llmsyscore/llm-systems-manager}"
 LLMSYS_REPO_URL="${LLMSYS_REPO_URL:-https://github.com/${LLMSYS_REPO_SLUG}}"
 LLMSYS_CLONE_TMP="${LLMSYS_CLONE_TMP:-/tmp/llm-systems-manager-install}"
 LLMSYS_RUN_USER="${LLMSYS_RUN_USER:-llmsys}"
@@ -381,7 +381,7 @@ clone_repo() {
       die "$dest exists and isn't a git repo (non-interactive — aborting)"
     fi
   fi
-  local slug="${LLMSYS_REPO_SLUG:-adrielnava/llm-systems-manager}"
+  local slug="${LLMSYS_REPO_SLUG:-llmsyscore/llm-systems-manager}"
   have git || die "git is required to clone $slug. Install git and re-run."
   log "cloning $slug via public HTTPS → $dest"
   git clone -q "https://github.com/$slug.git" "$dest" >/dev/null 2>&1 \
