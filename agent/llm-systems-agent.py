@@ -39,6 +39,7 @@ import uvicorn
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import buffered_metric_client as bmc  # type: ignore
 import stream_pool  # type: ignore
+from _best_effort import best_effort  # type: ignore
 # collectors.configure_all(CONFIG) + providers.configure_all(ctx) called from main().
 import collectors  # type: ignore
 import providers  # type: ignore
@@ -58,7 +59,7 @@ except ImportError:
             os.chmod(tmp, mode)
         tmp.replace(p)
 
-VERSION = "v2026.06.11-3"
+VERSION = "v2026.06.14-1"
 
 
 def _detect_install_dir() -> str:
@@ -503,14 +504,12 @@ class AgentConfig:
             if v and not (v.startswith("http://") or v.startswith("https://")):
                 setattr(cfg, _attr, "http://" + v)
         if not cfg.ALARM_ENGINE_URL and cfg.MANAGER_URL:
-            try:
+            with best_effort("config: derive alarm-engine url from manager url"):
                 from urllib.parse import urlparse, urlunparse
                 p = urlparse(cfg.MANAGER_URL)
                 if p.hostname:
                     netloc = f"{p.hostname}:8081"
                     cfg.ALARM_ENGINE_URL = urlunparse((p.scheme or "http", netloc, "", "", "", ""))
-            except Exception:
-                pass
 
         cfg._loaded_from = loaded_from
         return cfg
@@ -952,10 +951,8 @@ def _pm_reader_loop() -> None:
     finally:
         # Disable after any exit to avoid respawn loops when powermetrics is broken.
         if _pm_proc is not None:
-            try:
+            with best_effort("powermetrics: reap reader process"):
                 _pm_proc.wait(timeout=1)
-            except Exception:
-                pass
         rc = _pm_proc.returncode if _pm_proc is not None else None
         _pm_disabled = True
         _pm_last_error = f"powermetrics exited rc={rc}"
@@ -1338,10 +1335,8 @@ def _probe_influxdb() -> dict[str, Optional[float]]:
         except Exception as e:
             logger.debug("influx 24h query probe failed: %s", e)
     finally:
-        try:
+        with best_effort("influx probe: close client"):
             client.close()
-        except Exception:
-            pass
 
     return out
 
@@ -2297,12 +2292,10 @@ def collector_loop() -> None:
                 if CONFIG.OPENCLAW_ENABLED:
                     tail.append("openclaw=on")
                 if _metric_client is not None:
-                    try:
+                    with best_effort("heartbeat: append buffer breakdown"):
                         mem, disk = _metric_client.buffer_breakdown()
                         if mem or disk:
                             tail.append(f"buffer=mem:{mem}/disk:{disk}")
-                    except Exception:
-                        pass
                 last_err = _state.get("last_manager_error")
                 if last_err:
                     tail.append(f"manager_err={last_err}")
@@ -2627,10 +2620,8 @@ async def agent_config_file_put(
             pass
         os.replace(tmp_path, path)
     except Exception as e:
-        try:
+        with best_effort("config write: unlink temp file"):
             os.unlink(tmp_path)
-        except Exception:
-            pass
         raise HTTPException(status_code=500, detail=f"write failed: {e}")
 
     new_st = os.stat(path)
@@ -2812,7 +2803,7 @@ def agent_self_update(authorization: Optional[str] = Header(default=None)) -> St
             return
 
         version_to = "unknown"
-        try:
+        with best_effort("self-update: read staged agent VERSION"):
             staged_agent_py = os.path.join(repo_dir, "agent", "llm-systems-agent.py")
             with open(staged_agent_py, "r") as f:
                 for raw in f:
@@ -2820,8 +2811,6 @@ def agent_self_update(authorization: Optional[str] = Header(default=None)) -> St
                     if m:
                         version_to = m.group(1)
                         break
-        except Exception:
-            pass
 
         yield _sse_event({"stage": "deploy",
                           "msg": "running install.sh --update --from-self-update --no-pull"})

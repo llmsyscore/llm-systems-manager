@@ -13,6 +13,8 @@ import logging
 import threading
 import time
 
+from _best_effort import best_effort  # type: ignore[import-not-found]  # sibling
+
 log = logging.getLogger("llm-systems-agent.stream_pool")
 
 _worker_threads = 64
@@ -97,7 +99,5 @@ async def guarded_async(sync_gen):
             yield chunk
     finally:
         POOL.release()
-        try:
+        with best_effort("stream pool: close sync generator", log=log):
             sync_gen.close()
-        except Exception:
-            pass

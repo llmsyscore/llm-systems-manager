@@ -20,6 +20,8 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
+from _best_effort import best_effort  # type: ignore[import-not-found]  # sibling
+
 log = logging.getLogger("llm-systems-agent.collectors.gpu")
 
 __all__ = ["set_deps", "collect_gpu"]
@@ -42,11 +44,9 @@ def _find_amd_gpu_path():
         for card in sorted(Path("/sys/class/drm").glob("card[0-9]*")):
             if "-" in card.name:
                 continue
-            try:
+            with best_effort("gpu: read AMD card vendor id", log=log):
                 if (card / "device" / "vendor").read_text().strip() == "0x1002":
                     return card / "device"
-            except Exception:
-                pass
     except Exception as e:
         log.debug("AMD GPU sysfs scan failed: %s", e)
     return None
@@ -110,7 +110,7 @@ def _gpu_clocks():
                             val = int(part.lower().replace("mhz", ""))
                             if target == "sclk": sclk = val
                             else: mclk = val
-                        except Exception:
+                        except ValueError:
                             pass
                 break
     return sclk, mclk
@@ -153,11 +153,9 @@ def _find_nvidia_gpu() -> bool:
         for card in Path("/sys/class/drm").glob("card[0-9]*"):
             if "-" in card.name:
                 continue
-            try:
+            with best_effort("gpu: read NVIDIA card vendor id", log=log):
                 if (card / "device" / "vendor").read_text().strip() == "0x10de":
                     return shutil.which("nvidia-smi") is not None
-            except Exception:
-                pass
     except Exception as e:
         log.debug("Nvidia GPU sysfs scan failed: %s", e)
     return False

@@ -462,6 +462,7 @@ _compute_required_install_files() {
     "$SRC_DIR/llm-systems-agent.py"
     "$SRC_DIR/buffered_metric_client.py"
     "$SRC_DIR/_utils.py"
+    "$SRC_DIR/_best_effort.py"
     "$SRC_DIR/agent_context.py"
     "$SRC_DIR/stream_pool.py"
     "$SRC_DIR/agent_config.yaml.example"
@@ -911,12 +912,14 @@ if $DO_UPDATE; then
   $SUDO cp "$SRC_DIR/llm-systems-agent.py"        "$INSTALL_DIR/llm-systems-agent.py"
   $SUDO cp "$SRC_DIR/buffered_metric_client.py"   "$INSTALL_DIR/buffered_metric_client.py"
   $SUDO cp "$SRC_DIR/_utils.py"                   "$INSTALL_DIR/_utils.py"
+  $SUDO cp "$SRC_DIR/_best_effort.py"             "$INSTALL_DIR/_best_effort.py"
   $SUDO cp "$SRC_DIR/agent_context.py"            "$INSTALL_DIR/agent_context.py"
   $SUDO cp "$SRC_DIR/stream_pool.py"              "$INSTALL_DIR/stream_pool.py"
   $SUDO chown "$USER_ARG:$USER_GROUP" \
     "$INSTALL_DIR/llm-systems-agent.py" \
     "$INSTALL_DIR/buffered_metric_client.py" \
     "$INSTALL_DIR/_utils.py" \
+    "$INSTALL_DIR/_best_effort.py" \
     "$INSTALL_DIR/agent_context.py" \
     "$INSTALL_DIR/stream_pool.py"
   _ok "agent code refreshed"
@@ -2962,12 +2965,14 @@ done
 $SUDO cp "$SRC_DIR/llm-systems-agent.py"      "$INSTALL_DIR/"
 $SUDO cp "$SRC_DIR/buffered_metric_client.py" "$INSTALL_DIR/"
 $SUDO cp "$SRC_DIR/_utils.py"                 "$INSTALL_DIR/"
+$SUDO cp "$SRC_DIR/_best_effort.py"           "$INSTALL_DIR/"
 $SUDO cp "$SRC_DIR/agent_context.py"          "$INSTALL_DIR/"
 $SUDO cp "$SRC_DIR/stream_pool.py"            "$INSTALL_DIR/"
 $SUDO chown "$USER_ARG:$USER_GROUP" \
   "$INSTALL_DIR/llm-systems-agent.py" \
   "$INSTALL_DIR/buffered_metric_client.py" \
   "$INSTALL_DIR/_utils.py" \
+  "$INSTALL_DIR/_best_effort.py" \
   "$INSTALL_DIR/stream_pool.py" \
   "$INSTALL_DIR/agent_context.py"
 _ok "agent code installed to $INSTALL_DIR"

@@ -25,6 +25,7 @@ from fastapi import Header, HTTPException, Query
 from fastapi.responses import StreamingResponse
 
 import stream_pool  # type: ignore[import-not-found]  # sibling at agent root
+from _best_effort import best_effort  # type: ignore[import-not-found]  # sibling at agent root
 
 from collectors.gpu import collect_gpu  # type: ignore
 
@@ -440,10 +441,8 @@ def llama_write_state_file(state: str) -> None:
             e, target, owner or "<unknown>",
             _require_ctx().config.AGENT_USER or "<agent_user>", target,
         )
-        try:
+        with best_effort("state file: unlink temp", log=log):
             os.unlink(tmp)
-        except Exception:
-            pass
     except Exception as e:
         log.warning("write llama state file failed: %s", e, exc_info=True)
 
@@ -518,10 +517,8 @@ async def perf_controller_loop() -> None:
                 proc.terminate()
                 await asyncio.wait_for(proc.wait(), timeout=3)
             except Exception:
-                try:
+                with best_effort("perf: kill controller proc", log=log):
                     proc.kill()
-                except Exception:
-                    pass
 
 
 async def _perf_process_line(line: str) -> None:
@@ -704,11 +701,9 @@ def _delete_quant_from_hf_cache(model_id: str) -> "tuple[list[str], Optional[str
                 symlink.unlink()
                 deleted.append(str(symlink))
                 if target and target.exists() and target.is_file():
-                    try:
+                    with best_effort("hf cache: unlink quant target", log=log):
                         target.unlink()
                         deleted.append(str(target))
-                    except Exception:
-                        pass
             except Exception as e:
                 return deleted, f"Failed to unlink {symlink}: {e}"
 
@@ -723,9 +718,9 @@ def _dl_put(msg: dict[str, Any]) -> None:
         _dl_queue.put_nowait(msg)
     except _queue_lib.Full:
         try: _dl_queue.get_nowait()
-        except Exception: pass
+        except _queue_lib.Empty: pass
         try: _dl_queue.put_nowait(msg)
-        except Exception: pass
+        except _queue_lib.Full: pass
 
 
 def _llama_run_command(cmd: list, stdin_input: "Optional[bytes]" = None,
@@ -814,12 +809,12 @@ def _llama_run_command(cmd: list, stdin_input: "Optional[bytes]" = None,
                 if proc is not None:
                     try: proc.wait(timeout=5)
                     except Exception:
-                        try: proc.terminate()
-                        except Exception: pass
+                        with best_effort("download: terminate proc", log=log):
+                            proc.terminate()
                         try: proc.wait(timeout=3)
                         except Exception:
-                            try: proc.kill()
-                            except Exception: pass
+                            with best_effort("download: kill proc", log=log):
+                                proc.kill()
                 if slave_fd != -1:
                     try: os.close(slave_fd)
                     except OSError: pass
@@ -877,20 +872,20 @@ def _llama_log_streamer() -> None:
                     _log_queue.put(line, timeout=1)
                 except _queue_lib.Full:
                     try: _log_queue.get_nowait()
-                    except Exception: pass
+                    except _queue_lib.Empty: pass
                     try: _log_queue.put_nowait(line)
-                    except Exception: pass
+                    except _queue_lib.Full: pass
     except Exception as e:
         try: _log_queue.put_nowait(f"[log stream error: {e}]")
         except _queue_lib.Full: pass
     finally:
         if proc is not None:
-            try: proc.terminate()
-            except Exception: pass
+            with best_effort("log streamer: terminate proc", log=log):
+                proc.terminate()
             try: proc.wait(timeout=3)
             except Exception:
-                try: proc.kill()
-                except Exception: pass
+                with best_effort("log streamer: kill proc", log=log):
+                    proc.kill()
         with _log_lock:
             _log_streaming = False
 
@@ -1272,10 +1267,10 @@ def llama_download_cancel(authorization: Optional[str] = Header(default=None)) -
     try:
         proc.wait(timeout=3)
     except subprocess.TimeoutExpired:
-        try: proc.kill()
-        except Exception: pass
-        try: proc.wait(timeout=2)
-        except Exception: pass
+        with best_effort("download cancel: kill proc", log=log):
+            proc.kill()
+        with best_effort("download cancel: reap proc", log=log):
+            proc.wait(timeout=2)
     return {"ok": True, "pid": proc.pid, "rc": proc.returncode}
 
 
@@ -1468,9 +1463,9 @@ def _bench_put(msg: dict) -> None:
         _bench_queue.put_nowait(msg)
     except _queue_lib.Full:
         try: _bench_queue.get_nowait()
-        except Exception: pass
+        except _queue_lib.Empty: pass
         try: _bench_queue.put_nowait(msg)
-        except Exception: pass
+        except _queue_lib.Full: pass
 
 
 def _bench_get_hf_arg(model_id: str) -> "Optional[str]":
@@ -1558,14 +1553,12 @@ def _bench_run_one(model_id: str, tool: str, switches: list, env: dict) -> None:
     result_rows: list = []
 
     def _drain_stderr():
-        try:
+        with best_effort("bench: drain subprocess stderr", log=log):
             for line in iter(proc.stderr.readline, ""):
                 if not line: break
                 txt = _BENCH_ANSI_RE.sub("", line.rstrip("\n"))
                 if txt:
                     _bench_put({"type": "line", "model_id": model_id, "text": txt})
-        except Exception:
-            pass
     threading.Thread(target=_drain_stderr, daemon=True).start()
 
     for raw in iter(proc.stdout.readline, ""):
@@ -1688,10 +1681,9 @@ def llama_bench_cancel(authorization: Optional[str] = Header(default=None)) -> d
     _bench_cancel_event.set()
     proc, pgid = _bench_proc, _bench_pgid
     if proc is None:
-        try:
+        with best_effort("bench cancel: pkill stray bench procs", log=log):
             subprocess.run(['pkill', '-9', '-f', 'llama-bench'], capture_output=True, timeout=3)
             subprocess.run(['pkill', '-9', '-f', 'llama-batched-bench'], capture_output=True, timeout=3)
-        except Exception: pass
         return {"ok": True, "msg": "no tracked benchmark process"}
     try:
         if pgid is not None:
@@ -1700,12 +1692,11 @@ def llama_bench_cancel(authorization: Optional[str] = Header(default=None)) -> d
         try: proc.wait(timeout=3)
         except subprocess.TimeoutExpired:
             if pgid is not None:
-                try: os.killpg(pgid, signal.SIGKILL)
-                except Exception: pass
-        try:
+                with best_effort("bench cancel: killpg SIGKILL", log=log):
+                    os.killpg(pgid, signal.SIGKILL)
+        with best_effort("bench cancel: pkill HIP/ROCm child procs", log=log):
             subprocess.run(['pkill', '-9', '-f', 'llama-bench'], capture_output=True, timeout=3)
             subprocess.run(['pkill', '-9', '-f', 'llama-batched-bench'], capture_output=True, timeout=3)
-        except Exception: pass
     except Exception as e:
         return {"ok": False, "error": str(e)}
     return {"ok": True}
@@ -1735,9 +1726,9 @@ def _autotune_put(msg: dict) -> None:
         _autotune_queue.put_nowait(msg)
     except _queue_lib.Full:
         try: _autotune_queue.get_nowait()
-        except Exception: pass
+        except _queue_lib.Empty: pass
         try: _autotune_queue.put_nowait(msg)
-        except Exception: pass
+        except _queue_lib.Full: pass
 
 
 def _autotune_build_optional_args(params: dict) -> list:
@@ -1875,12 +1866,12 @@ def _autotune_run_iter(model_id: str, fitt_mb: int, optional_params: dict,
                 mm = _AT_NCTX_RE.search(line)
                 if mm:
                     try: ctx_seq = int(mm.group(1))
-                    except Exception: pass
+                    except ValueError: pass
                 else:
                     mm2 = _AT_NCTX_FALLBACK_RE.search(line)
                     if mm2:
                         try: ctx_fallback = int(mm2.group(1))
-                        except Exception: pass
+                        except ValueError: pass
                 # Detect whether llama-server's auto-fit actually trimmed
                 # the ctx. Later occurrences overwrite earlier ones — the
                 # final fit decision is what we want.
@@ -1912,7 +1903,7 @@ def _autotune_run_iter(model_id: str, fitt_mb: int, optional_params: dict,
                            "text": f"[autotune] SIGTERM error: {e}"})
 
     # Last GPU breakdown row found during shutdown is authoritative for free/total.
-    try:
+    with best_effort("autotune: drain shutdown stdout", log=log):
         for raw in iter(proc.stdout.readline, ""):
             if not raw:
                 break
@@ -1923,23 +1914,21 @@ def _autotune_run_iter(model_id: str, fitt_mb: int, optional_params: dict,
                 mm = _AT_NCTX_RE.search(line)
                 if mm:
                     try: ctx_seq = int(mm.group(1))
-                    except Exception: pass
+                    except ValueError: pass
                 else:
                     mm2 = _AT_NCTX_FALLBACK_RE.search(line)
                     if mm2:
                         try: ctx_fallback = int(mm2.group(1))
-                        except Exception: pass
-    except Exception:
-        pass
+                        except ValueError: pass
 
     try:
         proc.wait(timeout=10)
     except subprocess.TimeoutExpired:
         if pgid is not None:
-            try: os.killpg(pgid, signal.SIGKILL)
-            except Exception: pass
-        try: proc.wait(timeout=5)
-        except Exception: pass
+            with best_effort("autotune iter: killpg SIGKILL", log=log):
+                os.killpg(pgid, signal.SIGKILL)
+        with best_effort("autotune iter: reap proc", log=log):
+            proc.wait(timeout=5)
 
     _autotune_proc = None
     _autotune_pgid = None
@@ -2306,8 +2295,8 @@ def _autotune_run_all(model_ids: list, target_mb: int, optional_params: dict,
         log.error("autotune run error: %s", e, exc_info=True)
         _autotune_put({"type": "done", "ok": False, "error": str(e)})
     finally:
-        try: _autotune_set_perf_mode("powersave")
-        except Exception: pass
+        with best_effort("autotune: restore powersave perf mode", log=log):
+            _autotune_set_perf_mode("powersave")
         _autotune_proc = None
         with _autotune_lock:
             _autotune_active = False
@@ -2339,15 +2328,13 @@ def llama_autotune_run(body: dict, authorization: Optional[str] = Header(default
         tolerance_mb = 1
 
     # Refuse to start if llama-server is running — port/VRAM would collide.
-    try:
+    with best_effort("autotune: probe llama unit is-active", log=log):
         st = subprocess.run(
             ["systemctl", "is-active", _require_ctx().config.LLAMA_SYSTEMD_UNIT],
             capture_output=True, text=True, timeout=5,
         )
         if (st.stdout or "").strip() == "active":
             return {"ok": False, "error": f"{_require_ctx().config.LLAMA_SYSTEMD_UNIT} is running — stop it before auto-tune"}
-    except Exception:
-        pass
 
     with _autotune_lock:
         if _autotune_active:
@@ -2390,9 +2377,8 @@ def llama_autotune_cancel(authorization: Optional[str] = Header(default=None)) -
     _autotune_cancel_event.set()
     proc, pgid = _autotune_proc, _autotune_pgid
     if proc is None:
-        try:
+        with best_effort("autotune cancel: pkill stray llama-server", log=log):
             subprocess.run(['pkill', '-9', '-f', 'llama-server'], capture_output=True, timeout=3)
-        except Exception: pass
         return {"ok": True, "msg": "no tracked autotune process"}
     try:
         if pgid is not None:
@@ -2401,8 +2387,8 @@ def llama_autotune_cancel(authorization: Optional[str] = Header(default=None)) -
         try: proc.wait(timeout=3)
         except subprocess.TimeoutExpired:
             if pgid is not None:
-                try: os.killpg(pgid, signal.SIGKILL)
-                except Exception: pass
+                with best_effort("autotune cancel: killpg SIGKILL", log=log):
+                    os.killpg(pgid, signal.SIGKILL)
     except Exception as e:
         return {"ok": False, "error": str(e)}
     return {"ok": True}
