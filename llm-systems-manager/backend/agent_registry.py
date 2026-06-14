@@ -46,6 +46,7 @@ import requests
 from flask import Response, jsonify, request as flask_request
 
 import provider_state  # type: ignore[import-not-found]  # sibling — leaf module, no cycle
+from _best_effort import best_effort  # type: ignore[import-not-found]  # sibling
 
 log = logging.getLogger("llm-systems-manager.agent_registry")
 
@@ -372,7 +373,7 @@ def agent_callback_urls(agent: dict) -> list:
         out.append(bind)
 
     if src and parsed is not None:
-        try:
+        with best_effort("agent callback: build src fallback url", log=log):
             from urllib.parse import urlunparse
             if bind_host_lower != src.lower():
                 netloc = f"{src}:{parsed.port}" if parsed.port else src
@@ -380,8 +381,6 @@ def agent_callback_urls(agent: dict) -> list:
                 fallback = fallback.rstrip("/")
                 if fallback not in out:
                     out.append(fallback)
-        except Exception:
-            pass
     return out
 
 
@@ -459,13 +458,11 @@ def agent_host_keys(agent: dict) -> "set[str]":
             keys.add(h)
             if "." in h and not h.replace(".", "").isdigit():
                 keys.add(h.split(".", 1)[0])
-    try:
+    with best_effort("agent host keys: parse bind_url host", log=log):
         from urllib.parse import urlparse
         bh = (urlparse(agent.get("bind_url") or "").hostname or "").lower()
         if bh:
             keys.add(bh)
-    except Exception:
-        pass
     return {k for k in keys if k}
 
 
@@ -815,7 +812,7 @@ def _maybe_issue_tls_bundle(agent: dict, body: dict) -> "dict | None":
         if not needs_new:
             last_issued = agent.get("last_cert_issued_at")
             if last_issued:
-                try:
+                with best_effort("tls bundle: check cert issue age", log=log):
                     li = datetime.fromisoformat(last_issued.replace("Z", "+00:00"))
                     # Read the constant from the loaded _pki module — it lives
                     # there because three different cert issuers consult it.
@@ -823,8 +820,6 @@ def _maybe_issue_tls_bundle(agent: dict, body: dict) -> "dict | None":
                     if _pki_for_aki is not None and li < _pki_for_aki.AKI_FIX_TS:
                         needs_new = True
                         reason_hint = "format-upgrade"
-                except Exception:
-                    pass
         # Explicit admin-requested rotation. The /api/admin/push-ca-to-agents
         # endpoint sets this flag on every approved agent at once — useful
         # after a manager CA rotation, since the agent's stored ca_pem is
@@ -1133,8 +1128,8 @@ def _agent_tarball():
                     break
                 yield chunk
         finally:
-            try: proc.stdout.close()
-            except Exception: pass
+            with best_effort("agent tar: close proc stdout", log=log):
+                proc.stdout.close()
             proc.wait()
 
     return Response(gen(), mimetype="application/gzip", headers={
@@ -1527,12 +1522,10 @@ def _admin_push_ca_to_agents():
     # CA fingerprint for the operator to verify against agent-side
     # tls-ca.pem after the heartbeat round-trip lands.
     ca_fp = ""
-    try:
+    with best_effort("push-ca: compute CA fingerprint", log=log):
         ca_path = (_deps.data_dir or Path(".")) / "internal-ca.crt"
         if ca_path.is_file():
             ca_fp = hashlib.sha256(ca_path.read_bytes()).hexdigest()
-    except Exception:
-        pass
     log.warning("admin push-ca-to-agents by %s: marked %d approved agent(s) "
                 "for cert-reissue on next heartbeat (CA fp=%s)",
                 flask_request.remote_addr, len(marked), ca_fp[:16] or "?")

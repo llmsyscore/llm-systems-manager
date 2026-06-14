@@ -27,11 +27,11 @@ def _async_put(q: "asyncio.Queue", item) -> None:
     except asyncio.QueueFull:
         try:
             q.get_nowait()
-        except Exception:
+        except asyncio.QueueEmpty:
             pass
         try:
             q.put_nowait(item)
-        except Exception:
+        except asyncio.QueueFull:
             pass
 
 
@@ -94,7 +94,7 @@ class _ProviderSampleStore:
         for q in waking:
             try:
                 q.put_nowait(None)
-            except Exception:
+            except asyncio.QueueFull:
                 pass
         for loop, q in awaking:
             try:
@@ -168,7 +168,7 @@ class _ProviderSampleStore:
         for q in queues:
             try:
                 q.put_nowait(sentinel)
-            except Exception:
+            except asyncio.QueueFull:
                 pass
         with self._lock:
             asubs = [(lp, q) for prov in self._async_subscribers.values()

@@ -49,6 +49,7 @@ from flask import (Response, current_app, jsonify, request as flask_request,
 
 import agent_registry  # type: ignore[import-not-found]  # sibling
 import stream_pool  # type: ignore[import-not-found]  # sibling
+from _best_effort import best_effort  # type: ignore[import-not-found]  # sibling
 
 # Shared with main; proxies.py and main both reach the same Settings singleton.
 from config.unified_config import settings  # type: ignore[import-not-found]
@@ -134,10 +135,8 @@ def thread_pumped(upstream, path, *, keepalive_s: float = _STREAM_KEEPALIVE_S,
             else:
                 log.info("proxy SSE %s drain error: %s", path, type(e).__name__)
         finally:
-            try:
+            with best_effort("proxy drain: enqueue sentinel", log=log):
                 outq.put_nowait(sentinel)
-            except Exception:
-                pass
 
     _threading.Thread(target=_drain, name="sse-drain", daemon=True).start()
     deadline = _time.monotonic() + max_lifetime_s
@@ -153,10 +152,8 @@ def thread_pumped(upstream, path, *, keepalive_s: float = _STREAM_KEEPALIVE_S,
             yield item
     finally:
         stop.set()
-        try:
+        with best_effort("proxy: close upstream", log=log):
             upstream.close()
-        except Exception:
-            pass
 
 
 # ── Dep namespace ────────────────────────────────────────────────────

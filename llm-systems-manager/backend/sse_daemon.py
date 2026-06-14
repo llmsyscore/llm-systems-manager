@@ -20,6 +20,7 @@ import threading
 import time
 
 import provider_state  # type: ignore[import-not-found]  # leaf, no cycle
+from _best_effort import best_effort  # type: ignore[import-not-found]  # sibling
 
 log = logging.getLogger("llm-systems-manager.sse_daemon")
 
@@ -178,7 +179,5 @@ def stop() -> None:
     loop = _loop
     if loop is None:
         return
-    try:
+    with best_effort("sse_daemon: stop event loop", log=log):
         loop.call_soon_threadsafe(loop.stop)
-    except Exception:
-        pass

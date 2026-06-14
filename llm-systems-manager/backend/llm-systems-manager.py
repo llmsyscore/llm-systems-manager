@@ -153,7 +153,7 @@ def _local_hostname() -> str:
 # banner reads it. Bump suffix (-1, -2, …) for same-day iterations; roll
 # the date for a new day's first change.
 # ---------------------------------------------------------------------------
-__version__ = "v2026.06.12-7"
+__version__ = "v2026.06.14-1"
 
 # Wall-clock at first import (Cheroot main process); the shutdown banner
 # reads it for the uptime line.
@@ -163,6 +163,7 @@ _startup_ts: float = time.time()
 # telemetry; providers registers ProviderSpecs at import time.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import provider_state  # type: ignore[import-not-found]  # noqa: E402  # leaf, no cycle
+from _best_effort import best_effort  # type: ignore[import-not-found]  # noqa: E402  # leaf, no cycle
 import providers       # type: ignore[import-not-found]  # noqa: E402,F401  # side-effect: registers specs
 import stream_pool     # type: ignore[import-not-found]  # noqa: E402  # leaf, no cycle
 import stream_health   # type: ignore[import-not-found]  # noqa: E402  # leaf, no cycle
@@ -532,21 +533,17 @@ def install_topology() -> dict:
     """
     from urllib.parse import urlsplit
     ae_local_disk = False
-    try:
+    with best_effort("install topology: probe AE frontend dir"):
         ae_local_disk = (_REPO_ROOT_PATH / "llm-systems-alarm-engine"
                                          / "frontend").is_dir()
-    except Exception:
-        pass
     ae_local_unit = os.path.isfile(
         "/etc/systemd/system/llm-systems-alarm-engine.service"
     )
     ae_local_url = False
     if _alarm_engine_url:
-        try:
+        with best_effort("install topology: classify AE url host"):
             host = (urlsplit(_alarm_engine_url).hostname or "").lower()
             ae_local_url = host in _LOOPBACK_HOSTS
-        except Exception:
-            pass
     split = not (ae_local_disk and ae_local_unit and ae_local_url)
     return {
         "ae_local_disk": ae_local_disk,
@@ -626,10 +623,8 @@ def _close_db(exc):
     thread's connection (and its 3 WAL FDs) would leak until GC runs."""
     conn = getattr(_db_tls, "conn", None)
     if conn is not None:
-        try:
+        with best_effort("teardown: close per-thread sqlite conn", log=log):
             conn.close()
-        except Exception as _e:
-            log.warning("swallowed at line 1513: %s", _e, exc_info=True)
         _db_tls.conn = None
 
 _INITIAL_HIDE_IDS = (
@@ -1226,7 +1221,7 @@ def get_alert():
     # CPU sustained > 95% — check last 30 seconds via alarm engine (InfluxDB-backed)
     cpu_sustained = False
     if _alarm_engine_url:
-        try:
+        with best_effort("interval: probe sustained CPU from AE", log=log):
             r = _ae_session.get(
                 f"{_alarm_engine_url.rstrip('/')}/api/alarm/metrics/cpu/usage_percent",
                 params={"since_minutes": 1, "limit": 100},
@@ -1246,8 +1241,6 @@ def get_alert():
                         recent.append(p)
                 if recent and all((p.get("value") or 0) > 95.0 for p in recent):
                     cpu_sustained = True
-        except Exception as _e:
-            log.warning("swallowed at line 1766: %s", _e, exc_info=True)
 
     cpu_cores = latest.get("cpu_per_core", [])
     cores_at_max = sum(1 for c in cpu_cores if c >= 99.0)
@@ -1501,7 +1494,7 @@ LLAMA_BATCHED_BENCH_BIN = f"{LLAMA_CPP_DIR}/llama-batched-bench"
 
 def _get_model_hf_arg(model_id: str):
     """Return the string to pass to '-hf' (e.g. 'author/repo:QUANT'), or None."""
-    try:
+    with best_effort("read -hf arg from config.ini", log=log):
         cp = _read_ini()
         section = cp[model_id] if model_id in cp.sections() else None
         if section:
@@ -1509,8 +1502,6 @@ def _get_model_hf_arg(model_id: str):
             hf_file = section.get('hf-file') or section.get('--hf-file')
             if hf_repo:
                 return f"{hf_repo}:{hf_file}" if hf_file else hf_repo
-    except Exception as _e:
-        log.warning("swallowed at line 2437: %s", _e, exc_info=True)
     # Fallback: model_id itself is already in repo:quant format
     if '/' in model_id:
         return model_id
@@ -1600,15 +1591,13 @@ def _run_one_model(model_id: str, tool: str, tool_path: str, jsonl_flags: list,
     latest_ppt  = None
 
     def _drain_stderr():
-        try:
+        with best_effort("bench: drain subprocess stderr", log=log):
             for line in iter(proc.stderr.readline, ''):
                 if not line:
                     break
                 txt = ansi_re.sub('', line.rstrip('\n'))
                 if txt:
                     _bench_put({"type": "line", "model_id": model_id, "text": txt})
-        except Exception as _e:
-            log.warning("swallowed at line 2535: %s", _e, exc_info=True)
     threading.Thread(target=_drain_stderr, daemon=True).start()
 
     for raw in iter(proc.stdout.readline, ''):
@@ -1977,11 +1966,9 @@ def benchmark_cancel():
     pgid = _bench_pgid
     if proc is None:
         # No tracked subprocess, but still run pkill in case stragglers exist
-        try:
+        with best_effort("bench cancel: pkill stray bench procs", log=log):
             subprocess.run(['pkill', '-9', '-f', 'llama-bench'], capture_output=True, timeout=3)
             subprocess.run(['pkill', '-9', '-f', 'llama-batched-bench'], capture_output=True, timeout=3)
-        except Exception as _e:
-            log.warning("swallowed at line 2862: %s", _e, exc_info=True)
         return jsonify({"ok": True, "msg": "no tracked benchmark process"})
     try:
         # SIGTERM to whole process group first
@@ -2009,11 +1996,9 @@ def benchmark_cancel():
             except Exception as _e: log.warning("proc.kill failed: %s", _e)
         # pkill fallback for any HIP/ROCm child processes that escaped the
         # process group (some GPU runtimes fork into their own session).
-        try:
+        with best_effort("bench cancel: pkill HIP/ROCm child procs", log=log):
             subprocess.run(['pkill', '-9', '-f', 'llama-bench'], capture_output=True, timeout=3)
             subprocess.run(['pkill', '-9', '-f', 'llama-batched-bench'], capture_output=True, timeout=3)
-        except Exception as _e:
-            log.warning("swallowed at line 2894: %s", _e, exc_info=True)
         # Background thread (_run_one_model) will see EOF on stdout, call
         # proc.wait(), and emit model_done + done naturally — no duplicate event.
     except Exception as e:
@@ -3093,7 +3078,7 @@ def admin_system_health():
         exp_iso = hb_data.get("tls_expires_at")
         if not exp_iso:
             continue
-        try:
+        with best_effort("system health: agent TLS cert expiry check"):
             exp = datetime.fromisoformat(str(exp_iso).replace("Z", "+00:00"))
             remaining_days = (exp - _now).total_seconds() / 86400.0
             host = reg.get("hostname") or aid[:8]
@@ -3105,13 +3090,11 @@ def admin_system_health():
                 health["warnings"].append(
                     f"agent {host} TLS cert expires in {remaining_days:.0f}d (auto-rotation may be stuck)"
                 )
-        except Exception:
-            pass
 
     # Also surveil the manager's own TLS server cert when MANAGER_TLS_PORT is on.
     mgr_crt = DATA_DIR / "manager-tls.crt"
     if mgr_crt.is_file():
-        try:
+        with best_effort("system health: manager TLS cert expiry check"):
             from cryptography import x509 as _x509_warn
             cur = _x509_warn.load_pem_x509_certificate(mgr_crt.read_bytes())
             remaining_days = (cur.not_valid_after_utc - _now).total_seconds() / 86400.0
@@ -3123,8 +3106,6 @@ def admin_system_health():
                 health["warnings"].append(
                     f"manager TLS cert expires in {remaining_days:.0f}d — will auto-reissue on next restart"
                 )
-        except Exception:
-            pass
 
     _sp = stream_pool.POOL.stats()
     if _sp["refusals"] > 0 or _sp["active"] >= _sp["limit"]:
@@ -3167,7 +3148,7 @@ def _refresh_infra_versions() -> None:
     # InfluxDB directly (firewall: only the AE host is allowed), so a
     # direct /ping from here would fail even though Influx is healthy.
     if _alarm_engine_url:
-        try:
+        with best_effort("infra versions: probe AE health"):
             r = _ae_session.get(f"{_alarm_engine_url.rstrip('/')}/health", timeout=2)
             if r.ok:
                 body = r.json() or {}
@@ -3175,21 +3156,17 @@ def _refresh_infra_versions() -> None:
                 ix_v = (body.get("components") or {}).get("influxdb_version")
                 if ix_v:
                     _infra_version_cache["influxdb"] = ix_v
-        except Exception:
-            pass
     # Fallback: only try the direct /ping when AE didn't tell us
     # (older AE without influxdb_version, or AE itself is down).
     if not _infra_version_cache.get("influxdb"):
         ix_host = settings.influxdb.host
         ix_port = settings.influxdb.port
         if ix_host:
-            try:
+            with best_effort("infra versions: probe InfluxDB ping"):
                 r = requests.get(f"http://{ix_host}:{ix_port}/ping", timeout=2)
                 v = r.headers.get("X-Influxdb-Version")
                 if v:
                     _infra_version_cache["influxdb"] = v
-            except Exception:
-                pass
 
 
 
@@ -4050,7 +4027,7 @@ def _maybe_rewrite_sse_frame(frame: bytes, latest_v: "str | None") -> bytes:
                 if isinstance(d, dict) and d.get("stage") == "done" and not d.get("version_to"):
                     d["version_to"] = latest_v
                     line = b"data: " + json.dumps(d).encode()
-            except Exception:
+            except (json.JSONDecodeError, UnicodeDecodeError):
                 pass
         out_lines.append(line)
     return b"\n".join(out_lines)
@@ -4231,13 +4208,11 @@ def _ensure_manager_server_cert() -> None:
             # bump (e.g., earlier today's cert may have a stale SAN IP
             # from gethostbyname(hostname) → 127.0.1.1). Cheaper than
             # decoding the full SAN.
-            try:
+            with best_effort("manager cert: check PKI-fix reissue"):
                 _, _, _pki_for_aki = _pki_ensure_ca()
                 if cur.not_valid_before_utc < _pki_for_aki.AKI_FIX_TS:
                     log.info("  Manager TLS cert: issued before PKI fix ts — reissuing")
                     need_new = True
-            except Exception:
-                pass
             if not need_new:
                 log.info("  Manager TLS cert: valid for %d more days", remaining)
         except Exception as e:
@@ -4577,11 +4552,9 @@ def _maybe_start_alarm_ws_proxy() -> None:
         log.info("  WS proxy:    serving ws://0.0.0.0:%d → %s", ws_port, ae_ws_url)
 
         async def _pipe(src, dst) -> None:
-            try:
+            with best_effort("ws proxy: pipe frames", log=log):
                 async for msg in src:
                     await dst.send(msg)
-            except Exception:
-                pass
 
         async def _handler(client_ws) -> None:
             # websockets v13+ passes the path on client_ws.request.path
@@ -4598,10 +4571,8 @@ def _maybe_start_alarm_ws_proxy() -> None:
                     )
             except Exception as e:
                 log.warning("WS proxy: upstream connect failed: %s", e)
-                try:
+                with best_effort("ws proxy: close client after upstream fail", log=log):
                     await client_ws.close(code=1011, reason="upstream unavailable")
-                except Exception:
-                    pass
 
         async def _serve() -> None:
             async with websockets.serve(_handler, "0.0.0.0", ws_port, ssl=serve_ssl):
@@ -4641,15 +4612,14 @@ def _log_shutdown_banner() -> None:
     approved_n = 0
     primary_llama_id = ""
     primary_lms_id = ""
-    try:
+    agents: list = []
+    with best_effort("shutdown banner: agent registry stats"):
         agents = list(((agent_registry.load_agents().get("agents") or {})).values())
         approved_n = sum(1 for a in agents if a.get("status") == "approved")
         pl = agent_registry.primary_agent("llama")
         pm = agent_registry.primary_agent("lms")
         primary_llama_id = (pl or {}).get("agent_id", "")[:8]
         primary_lms_id   = (pm or {}).get("agent_id", "")[:8]
-    except Exception:
-        pass
 
     try:
         sse_n = provider_state.STORE.total_subscriber_count()
@@ -4664,7 +4634,7 @@ def _log_shutdown_banner() -> None:
     alert_counts: dict = {}
     ae_reachable = False
     if _alarm_engine_url:
-        try:
+        with best_effort("shutdown banner: probe active alerts"):
             base = _alarm_engine_url.rstrip("/")
             r1 = _ae_session.get(
                 f"{base}/api/alarm/alerts/?include_closed=false&limit=20",
@@ -4676,8 +4646,6 @@ def _log_shutdown_banner() -> None:
                 payload = r1.json()
                 active_alerts = payload if isinstance(payload, list) else (payload.get("alerts") or [])
                 alert_counts = r2.json() or {}
-        except Exception:
-            pass
 
     log.info("=" * 60)
     log.info(f"LLM Systems Manager {__version__} shutting down")
@@ -4774,7 +4742,7 @@ if __name__ == "__main__":
         attempt = 0
         while time.perf_counter() < deadline:
             attempt += 1
-            try:
+            with best_effort("wait-for-AE: health probe", log=log):
                 r = _ae_session.get(f"{base}/health", timeout=3)
                 if r.status_code == 200:
                     d = r.json()
@@ -4783,8 +4751,6 @@ if __name__ == "__main__":
                             and comps.get("cache") == "active"
                             and "connected" in str(comps.get("influxdb", ""))):
                         return True, attempt, time.perf_counter() - t_start
-            except Exception:
-                pass
             time.sleep(2.0)
         return False, attempt, time.perf_counter() - t_start
 
@@ -4848,15 +4814,13 @@ if __name__ == "__main__":
                 # "AE has data but our query keys don't match" (a real
                 # config drift). One probe of the cache decides.
                 ae_has_any_data = False
-                try:
+                with best_effort("history warmup: probe AE metrics", log=log):
                     _probe = _ae_session.get(
                         f"{_base}/api/alarm/metrics", timeout=5,
                     )
                     if _probe.ok:
                         _j = _probe.json() or {}
                         ae_has_any_data = bool(_j.get("metrics") or _j)
-                except Exception:
-                    pass
                 if not ae_has_any_data:
                     log.warning(
                         "History ring empty: alarm engine has no metrics yet "
@@ -4946,7 +4910,7 @@ if __name__ == "__main__":
 
     # Warn when alarm_engine_url is a non-self hostname (split install): agents
     # must resolve it — the co-located rewrite only helps when the AE is here.
-    try:
+    with best_effort("startup: split-install hostname warning", log=log):
         from urllib.parse import urlparse as _urlparse
         import ipaddress as _ipaddr
         _ae_h = (_urlparse(_alarm_engine_url or "").hostname or "").lower()
@@ -4959,8 +4923,6 @@ if __name__ == "__main__":
                     "agent must resolve it (DNS or /etc/hosts). Prefer an IP in "
                     "[alarm_engine].alarm_engine_url so agents need no resolution "
                     "(the AE TLS cert SAN auto-covers the IP).", _ae_h)
-    except Exception:
-        pass
 
     from cheroot.wsgi import Server as _CherootServer
     _http_srv = _CherootServer(
@@ -4999,15 +4961,11 @@ if __name__ == "__main__":
             log.warning("registry flush on shutdown failed: %s", e)
         # Wake every SSE generator so its queue.get() returns and the
         # `while not _shutting_down` guard exits the loop.
-        try:
+        with best_effort("graceful stop: wake SSE subscribers", log=log):
             provider_state.STORE.wake_all(None)
-        except Exception:
-            pass
         # Stop the SSE daemon (its subscribers were already woken by wake_all).
-        try:
+        with best_effort("graceful stop: stop sse daemon", log=log):
             sse_daemon.stop()
-        except Exception:
-            pass
         # Hard backstop: if cheroot.stop() can't drain within 3 s
         # (typically because of long-lived SSE / log-tail streams that
         # don't honor _shutting_down), exit the process so systemd

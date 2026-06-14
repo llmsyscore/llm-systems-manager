@@ -14,6 +14,7 @@ import time
 import stream_pool  # type: ignore[import-not-found]  # sibling
 import agent_registry  # type: ignore[import-not-found]  # sibling
 import sse_daemon  # type: ignore[import-not-found]  # sibling; lazy-aiohttp, safe to import
+from _best_effort import best_effort  # type: ignore[import-not-found]  # sibling
 from config.unified_config import settings  # type: ignore[import-not-found]
 
 log = logging.getLogger("llm-systems-manager.stream_health")
@@ -38,14 +39,12 @@ def _manager_local() -> dict:
     sp = stream_pool.POOL.stats()
     total = idle = backlog = 0
     for srv in list(_servers):
-        try:
+        with best_effort("stream_health: read cheroot server stats", log=log):
             total += int(getattr(srv, "numthreads", 0) or 0)
             tp = getattr(srv, "requests", None)
             if tp is not None:
                 idle += int(getattr(tp, "idle", 0) or 0)
                 backlog += int(tp.qsize())
-        except Exception:
-            pass
     browser = agent_conn = 0
     try:
         import psutil
