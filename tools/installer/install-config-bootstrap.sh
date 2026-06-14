@@ -366,7 +366,7 @@ fi
 unset ADMIN_PW
 
 # ── Apply edits via python (TOML-aware string substitution) ─────────────────
-$SUDO -u "$USER_ARG" python3 - "$REAL" <<PYEOF
+as_run_user python3 - "$REAL" <<PYEOF
 import re, sys, pathlib
 
 path = pathlib.Path(sys.argv[1])
@@ -596,7 +596,7 @@ if (( HAS_MGR && HAS_AE )); then
     # Inline python — imports manager's _pki module via PYTHONPATH so we
     # don't duplicate sign_agent_cert here. Writes data/internal-ca.{crt,key}
     # (created on first call) and llm-systems-alarm-engine/data/ae-tls.{crt,key}.
-    AE_CERT_OUT="$($SUDO -u "$USER_ARG" \
+    AE_CERT_OUT="$(as_run_user \
       env PYTHONPATH="$INSTALL_DIR/llm-systems-manager/backend" \
           INSTALL_DIR="$INSTALL_DIR" \
           DETECTED_IP="$DETECTED_IP" \

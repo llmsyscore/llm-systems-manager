@@ -50,6 +50,17 @@ pip_filter() {
   "$@" 2> >(grep -viE 'cache entry deserialization failed' >&2)
 }
 
+# confirm <prompt> [default] — interactive yes/no; default "y" (empty=yes) or
+# "n" (empty=no). Returns 0 for yes, 1 for no. Caller owns non-TTY handling.
+confirm() {
+  local prompt="$1" default="${2:-n}" ans hint='[y/N]'
+  [[ "$default" == "y" ]] && hint='[Y/n]'
+  read -rp "$prompt $hint " ans
+  ans="${ans,,}"
+  [[ -z "$ans" ]] && ans="$default"
+  [[ "$ans" == "y" || "$ans" == "yes" ]]
+}
+
 # ── Privilege wrapper ───────────────────────────────────────────────────────
 # Set SUDO="" when running as root, "sudo" otherwise. Caller can override.
 detect_sudo() {
@@ -213,11 +224,9 @@ offer_apt_install() {
     err "  sudo apt-get install -y ${pkgs[*]}"
     return 1
   fi
-  read -rp "  Install with apt-get now? [Y/n] " ans
-  case "$(printf '%s' "$ans" | tr '[:upper:]' '[:lower:]')" in
-    ""|y|yes) ;;
-    *) err "Refused — install manually and re-run."; return 1 ;;
-  esac
+  if ! confirm "  Install with apt-get now?" y; then
+    err "Refused — install manually and re-run."; return 1
+  fi
   detect_sudo
   apt_update_once
   $SUDO apt-get install -y --no-install-recommends "${pkgs[@]}"
@@ -296,11 +305,8 @@ apt_update_with_clock_recovery() {
     warn "advances the clock for THIS install run. It does NOT enable NTP and"
     warn "does NOT persist."
     if [[ -t 0 ]]; then
-      read -rp "  Apply one-time clock fix and retry apt? [Y/n] " ans
-      case "$(printf '%s' "$ans" | tr '[:upper:]' '[:lower:]')" in
-        n|no) die "clock skew unresolved — fix the clock and re-run" ;;
-        *) ;;
-      esac
+      confirm "  Apply one-time clock fix and retry apt?" y \
+        || die "clock skew unresolved — fix the clock and re-run"
     else
       die "clock skew detected and stdin is not a TTY — fix and re-run"
     fi
@@ -321,15 +327,20 @@ apt_update_with_clock_recovery() {
   return $rc
 }
 
-# Run `apt-get update` at most once per installer process. Subsequent calls
-# are no-ops so Mode 1 doesn't refresh the package index 4× in a row.
+# Run `apt-get update` once per install run via the LLMSYS_APT_STAMP file
+# (spans sub-installer processes), or once per process when that's unset.
+: "${LLMSYS_APT_STAMP:=}"
 _APT_UPDATED=0
 apt_update_once() {
-  if [[ "$_APT_UPDATED" == "1" ]]; then return 0; fi
+  if [[ -n "$LLMSYS_APT_STAMP" && -e "$LLMSYS_APT_STAMP" ]] \
+     || [[ "$_APT_UPDATED" == "1" ]]; then
+    return 0
+  fi
   apt_update_with_clock_recovery || return $?
   _APT_UPDATED=1
+  [[ -n "$LLMSYS_APT_STAMP" ]] && : > "$LLMSYS_APT_STAMP" 2>/dev/null || true
 }
-export _APT_UPDATED
+export _APT_UPDATED LLMSYS_APT_STAMP
 
 # ── GitHub fetch prerequisite ───────────────────────────────────────────────
 require_git() {
@@ -372,11 +383,11 @@ clone_repo() {
   fi
   if [[ -e "$dest" ]]; then
     if [[ -t 0 ]]; then
-      read -rp "  $dest exists but isn't a git repo. Remove and re-clone? [y/N] " ans
-      case "$(printf '%s' "$ans" | tr '[:upper:]' '[:lower:]')" in
-        y|yes) rm -rf "$dest" ;;
-        *) die "Refusing to clone over $dest" ;;
-      esac
+      if confirm "  $dest exists but isn't a git repo. Remove and re-clone?" n; then
+        rm -rf "$dest"
+      else
+        die "Refusing to clone over $dest"
+      fi
     else
       die "$dest exists and isn't a git repo (non-interactive — aborting)"
     fi
@@ -399,11 +410,8 @@ deploy_into_install_dir() {
   if [[ -d "$dest" ]]; then
     if [[ -t 0 ]]; then
       warn "$dest already exists."
-      read -rp "  Overwrite (rsync new files in; existing config backed up)? [y/N] " ans
-      case "$(printf '%s' "$ans" | tr '[:upper:]' '[:lower:]')" in
-        y|yes) ;;
-        *) die "Aborted by user." ;;
-      esac
+      confirm "  Overwrite (rsync new files in; existing config backed up)?" n \
+        || die "Aborted by user."
     else
       warn "$dest exists; non-interactive — proceeding with rsync (config backed up)"
     fi
@@ -561,11 +569,7 @@ check_resolves() {
   if [[ ! -t 0 ]]; then
     return 1
   fi
-  read -rp "  Add an /etc/hosts entry for '$host' now? [y/N] " ans
-  case "$(printf '%s' "$ans" | tr '[:upper:]' '[:lower:]')" in
-    y|yes) ;;
-    *) return 1 ;;
-  esac
+  confirm "  Add an /etc/hosts entry for '$host' now?" n || return 1
   read -rp "  IP address for $host: " ip
   ip="${ip## }"; ip="${ip%% }"
   if [[ ! "$ip" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
@@ -624,8 +628,8 @@ report_service_health() {
   local label="$1" url="$2" _expect="${3:-200}" unit="${4:-}"
   local host port active=true bound=false attempts=5 i
   # Extract host:port from http://host:port[/path]. Defaults: 80 / 443.
-  host="$(printf '%s' "$url" | sed -nE 's|^https?://([^/:]+).*|\1|p')"
-  port="$(printf '%s' "$url" | sed -nE 's|^https?://[^/:]+:([0-9]+).*|\1|p')"
+  host="$(url_host "$url")"
+  port="$(url_port "$url")"
   case "$url" in
     https://*) port="${port:-443}" ;;
     *)         port="${port:-80}"  ;;

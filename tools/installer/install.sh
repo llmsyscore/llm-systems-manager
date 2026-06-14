@@ -639,7 +639,10 @@ export LLMSYS_INSTALL_MODE="$MODE"
 # unlinks it on exit so secrets never persist outside the live TOML.
 export LLMSYS_INFLUXDB_TOKEN_FILE="$(mktemp -t llmsys-influxdb-tokens.XXXXXX.env)"
 chmod 0600 "$LLMSYS_INFLUXDB_TOKEN_FILE"
-trap 'rm -f "$LLMSYS_INFLUXDB_TOKEN_FILE"' EXIT
+# Per-run apt-update sentinel; shared across the sub-installer processes so
+# the package index refreshes once per run, not once per sub-script.
+export LLMSYS_APT_STAMP="$(mktemp -u -t llmsys-apt-updated.XXXXXX)"
+trap 'rm -f "$LLMSYS_INFLUXDB_TOKEN_FILE" "$LLMSYS_APT_STAMP"' EXIT
 
 case "$MODE" in
   1)

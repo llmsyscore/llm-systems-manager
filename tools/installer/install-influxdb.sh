@@ -34,7 +34,6 @@ exec > >(tee -a "$INFLUX_LOG") 2> >(tee -a "$INFLUX_LOG" >&2)
 trap 'rc=$?; echo "[ERR ]  install-influxdb.sh aborted at line $LINENO (exit $rc) — full log: $INFLUX_LOG" >&2' ERR
 
 INSTALL_DIR="${LLMSYS_INSTALL_DIR}"
-USER_ARG="${LLMSYS_RUN_USER}"
 INFLUX_ORG_DEFAULT="llm-systems-manager"
 INFLUX_URL="http://localhost:8086"
 ENV_FILE="$LLMSYS_INFLUXDB_TOKEN_FILE"
@@ -211,7 +210,7 @@ if [[ "${LLMSYS_INSTALL_MODE:-}" == "6" ]]; then
   echo
 else
   if [[ -d "$INSTALL_DIR/llm-systems-alarm-engine" ]]; then
-    $SUDO -u "$USER_ARG" mkdir -p "$INSTALL_DIR/llm-systems-alarm-engine/data"
+    as_run_user mkdir -p "$INSTALL_DIR/llm-systems-alarm-engine/data"
   fi
   write_influx_token_file "$ENV_FILE" \
     "$INFLUX_URL" "$INFLUX_ORG" "$INFLUX_OPERATOR_TOKEN" \
