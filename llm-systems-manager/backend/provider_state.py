@@ -18,6 +18,8 @@ import queue
 import threading
 import time
 
+from _best_effort import best_effort  # type: ignore[import-not-found]  # sibling
+
 
 def _async_put(q: "asyncio.Queue", item) -> None:
     """Put on an asyncio.Queue from its own loop thread; drop-oldest on full so
@@ -92,10 +94,8 @@ class _ProviderSampleStore:
                 if pairs:
                     awaking.extend(pairs)
         for q in waking:
-            try:
+            with best_effort("evict: wake sync SSE subscriber"):
                 q.put_nowait(None)
-            except asyncio.QueueFull:
-                pass
         for loop, q in awaking:
             try:
                 loop.call_soon_threadsafe(_async_put, q, None)
@@ -166,10 +166,8 @@ class _ProviderSampleStore:
                         for qs in prov.values()
                         for q in qs]
         for q in queues:
-            try:
+            with best_effort("wake_all: wake sync SSE subscriber"):
                 q.put_nowait(sentinel)
-            except asyncio.QueueFull:
-                pass
         with self._lock:
             asubs = [(lp, q) for prov in self._async_subscribers.values()
                      for qs in prov.values() for (lp, q) in qs]

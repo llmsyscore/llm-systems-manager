@@ -4612,7 +4612,6 @@ def _log_shutdown_banner() -> None:
     approved_n = 0
     primary_llama_id = ""
     primary_lms_id = ""
-    agents: list = []
     with best_effort("shutdown banner: agent registry stats"):
         agents = list(((agent_registry.load_agents().get("agents") or {})).values())
         approved_n = sum(1 for a in agents if a.get("status") == "approved")
