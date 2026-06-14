@@ -44,7 +44,7 @@ def _manager_local() -> dict:
             tp = getattr(srv, "requests", None)
             if tp is not None:
                 idle += int(getattr(tp, "idle", 0) or 0)
-                backlog += int(tp.qsize())
+                backlog += int(tp.qsize)
     browser = agent_conn = 0
     try:
         import psutil
