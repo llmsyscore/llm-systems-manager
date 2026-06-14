@@ -1692,11 +1692,20 @@ def llama_bench_cancel(authorization: Optional[str] = Header(default=None)) -> d
         try: proc.wait(timeout=3)
         except subprocess.TimeoutExpired:
             if pgid is not None:
-                with best_effort("bench cancel: killpg SIGKILL", log=log):
+                try:
                     os.killpg(pgid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+                except Exception as e:
+                    log.warning("bench cancel: killpg SIGKILL failed: %s", e)
         with best_effort("bench cancel: pkill HIP/ROCm child procs", log=log):
             subprocess.run(['pkill', '-9', '-f', 'llama-bench'], capture_output=True, timeout=3)
             subprocess.run(['pkill', '-9', '-f', 'llama-batched-bench'], capture_output=True, timeout=3)
+        try:
+            proc.wait(timeout=2)
+        except subprocess.TimeoutExpired:
+            log.warning("bench cancel: process %s survived SIGKILL", proc.pid)
+            return {"ok": False, "error": "benchmark process did not terminate"}
     except Exception as e:
         return {"ok": False, "error": str(e)}
     return {"ok": True}
@@ -1925,8 +1934,12 @@ def _autotune_run_iter(model_id: str, fitt_mb: int, optional_params: dict,
         proc.wait(timeout=10)
     except subprocess.TimeoutExpired:
         if pgid is not None:
-            with best_effort("autotune iter: killpg SIGKILL", log=log):
+            try:
                 os.killpg(pgid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            except Exception as e:
+                log.warning("autotune iter: killpg SIGKILL failed: %s", e)
         with best_effort("autotune iter: reap proc", log=log):
             proc.wait(timeout=5)
 
@@ -2387,8 +2400,17 @@ def llama_autotune_cancel(authorization: Optional[str] = Header(default=None)) -
         try: proc.wait(timeout=3)
         except subprocess.TimeoutExpired:
             if pgid is not None:
-                with best_effort("autotune cancel: killpg SIGKILL", log=log):
+                try:
                     os.killpg(pgid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+                except Exception as e:
+                    log.warning("autotune cancel: killpg SIGKILL failed: %s", e)
+        try:
+            proc.wait(timeout=2)
+        except subprocess.TimeoutExpired:
+            log.warning("autotune cancel: process %s survived SIGKILL", proc.pid)
+            return {"ok": False, "error": "autotune process did not terminate"}
     except Exception as e:
         return {"ok": False, "error": str(e)}
     return {"ok": True}
