@@ -68,7 +68,7 @@ def collect_ups() -> dict:
             line = line.strip()
             if line.startswith("percentage:"):
                 try: result["percent"] = float(line.split(":")[1].strip().replace("%", ""))
-                except Exception: pass
+                except (ValueError, IndexError): pass
             elif line.startswith("state:"):
                 result["state"] = line.split(":")[1].strip()
                 result["on_battery"] = "discharging" in result["state"].lower()
