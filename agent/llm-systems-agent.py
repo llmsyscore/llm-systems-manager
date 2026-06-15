@@ -59,7 +59,7 @@ except ImportError:
             os.chmod(tmp, mode)
         tmp.replace(p)
 
-VERSION = "v2026.06.15-3"
+VERSION = "v2026.06.15-4"
 
 
 def _detect_install_dir() -> str:
@@ -822,7 +822,6 @@ _pm_lock = threading.Lock()
 _pm_latest: dict[str, Any] = {}
 _pm_proc: Optional[subprocess.Popen] = None
 _pm_thread: Optional[threading.Thread] = None
-_pm_last_error: Optional[str] = None
 _pm_disabled: bool = False
 
 
@@ -839,9 +838,7 @@ def _pm_parse_sample(raw: bytes) -> Optional[dict[str, Any]]:
     try:
         import plistlib
         doc = plistlib.loads(raw)
-    except Exception as e:
-        global _pm_last_error
-        _pm_last_error = f"plist parse: {e}"
+    except Exception:
         return None
 
     out: dict[str, Any] = {}
@@ -926,7 +923,7 @@ def _pm_parse_sample(raw: bytes) -> Optional[dict[str, Any]]:
 
 def _pm_reader_loop() -> None:
     """Read NUL-delimited plist samples and refresh the latest snapshot."""
-    global _pm_proc, _pm_last_error, _pm_disabled
+    global _pm_proc, _pm_disabled
     assert _pm_proc is not None and _pm_proc.stdout is not None
     buf = bytearray()
     try:
@@ -947,7 +944,7 @@ def _pm_reader_loop() -> None:
                             _pm_latest.clear()
                             _pm_latest.update(parsed)
     except Exception as e:
-        _pm_last_error = f"reader: {e}"
+        logger.debug("powermetrics reader error: %s", e)
     finally:
         # Disable after any exit to avoid respawn loops when powermetrics is broken.
         if _pm_proc is not None:
@@ -955,12 +952,11 @@ def _pm_reader_loop() -> None:
                 _pm_proc.wait(timeout=1)
         rc = _pm_proc.returncode if _pm_proc is not None else None
         _pm_disabled = True
-        _pm_last_error = f"powermetrics exited rc={rc}"
         logger.warning("powermetrics terminated (rc=%s) — disabling further restarts", rc)
 
 
 def _pm_ensure_running() -> None:
-    global _pm_proc, _pm_thread, _pm_last_error, _pm_disabled
+    global _pm_proc, _pm_thread, _pm_disabled
     if not _pm_should_run():
         return
     if _pm_proc is not None and _pm_proc.poll() is None:
@@ -978,7 +974,6 @@ def _pm_ensure_running() -> None:
             bufsize=0,
         )
     except FileNotFoundError as e:
-        _pm_last_error = f"spawn: {e}"
         _pm_disabled = True
         logger.warning("powermetrics not available: %s", e)
         return
@@ -996,9 +991,6 @@ def collect_powermetrics() -> dict[str, Any]:
         if not _pm_latest:
             return {}
         return dict(_pm_latest)
-
-
-_proc_cpu_cache: dict[int, float] = {}
 
 
 def _match_processes(pattern: str) -> list[psutil.Process]:

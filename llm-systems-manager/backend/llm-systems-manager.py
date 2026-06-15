@@ -153,7 +153,7 @@ def _local_hostname() -> str:
 # banner reads it. Bump suffix (-1, -2, …) for same-day iterations; roll
 # the date for a new day's first change.
 # ---------------------------------------------------------------------------
-__version__ = "v2026.06.15-8"
+__version__ = "v2026.06.15-9"
 
 # Wall-clock at first import (Cheroot main process); the shutdown banner
 # reads it for the uptime line.
@@ -217,7 +217,6 @@ _patch_cheroot_flush_noise()
 #   _PKG_DIR         → /opt/llm-systems-manager/llm-systems-manager  (this package's backend/ + frontend/)
 # ---------------------------------------------------------------------------
 _PKG_DIR   = Path(__file__).resolve().parent.parent
-BASE_DIR   = _REPO_ROOT_PATH
 STATIC_DIR = _PKG_DIR / "frontend"
 DATA_DIR   = _REPO_ROOT_PATH / "data"
 DB_PATH    = DATA_DIR / "metrics.db"
@@ -329,8 +328,6 @@ sys.unraisablehook = _filter_socket_cleanup_noise
 
 # Anti-flap state for /api/admin/system-health's alarm-engine probe.
 _ae_health_state: dict[str, int] = {"consecutive_failures": 0}
-_fwd_last_status    = None
-_fwd_last_latency_ms = None
 
 # Dynamic interval state — driven by primary-llama-agent's reported
 # llama_state (awake/sleeping) AND LMS activity. Values come from the
@@ -411,23 +408,6 @@ def set_llama_awake(awake: bool):
 # ---------------------------------------------------------------------------
 # Main metric collection
 # ---------------------------------------------------------------------------
-_LLAMA_GRAPHABLE_KEYS: tuple[str, ...] = (
-    "tokens_per_second",
-    "prompt_tokens_per_second",
-    "total_tokens_generated",
-    "total_tokens_prompted",
-    "requests_processing",
-    "requests_deferred",
-    "n_decode_total",
-    "n_busy_slots_per_decode",
-    "n_tokens_max",
-    "kv_cache_usage_ratio",
-    "kv_cache_tokens",
-    "n_remain",
-    "active_slots",
-)
-
-
 # Hostnames that are only meaningful on the local machine. Used wherever
 # a URL has to be rewritten for a remote consumer (browser, agent) —
 # sending a loopback host to a remote client would resolve to the
@@ -762,7 +742,6 @@ HISTORY_REFRESH_INTERVAL_S = settings.manager.history.refresh_interval_s
 HISTORY_FETCH_LIMIT = settings.manager.history.fetch_limit
 
 _history_rows: list[dict] = []
-_history_last_refresh: float = 0.0
 _history_lock = _threading.Lock()
 _history_pool = _HistoryExecutor(max_workers=min(12, len(_HISTORY_LEGACY_FIELD_MAP)))
 
@@ -984,7 +963,7 @@ def _history_refresher_loop():
     refresh cycle. We now keep the prior ring on empty fetches so a
     transient failure can't blank good data.
     """
-    global _history_rows, _history_last_refresh
+    global _history_rows
     consecutive_empties = 0
     while True:
         try:
@@ -992,14 +971,12 @@ def _history_refresher_loop():
             with _history_lock:
                 if rows:
                     _history_rows = rows
-                    _history_last_refresh = time.time()
                     consecutive_empties = 0
                 elif not _history_rows:
                     # Existing ring is also empty (cold start); accept
                     # the empty so the next-tick race-fix below can flip
                     # back to populated when the AE recovers.
                     _history_rows = rows
-                    _history_last_refresh = time.time()
             if not rows:
                 consecutive_empties += 1
                 if consecutive_empties == 1:
@@ -1034,7 +1011,7 @@ def get_history():
     # The cold-start fallback below assigns to these module-level names,
     # which would otherwise make Python treat them as locals for the whole
     # function and raise UnboundLocalError on the read at line ~782.
-    global _history_rows, _history_last_refresh
+    global _history_rows
 
     # Parse query params first — they determine which path we take.
     try:
@@ -1130,8 +1107,6 @@ def get_history():
             with _history_lock:
                 if not _history_rows:
                     _history_rows = rows
-                    _history_last_refresh = time.time()
-
     # Filter to the requested sub-window if the caller asked for less than 60m.
     if since_minutes < HISTORY_WINDOW_MINUTES:
         cutoff = time.time() - (since_minutes * 60)
@@ -4773,7 +4748,7 @@ if __name__ == "__main__":
     def _history_ring_warmup() -> None:
         """Background warm-up of the history ring. Runs off the main
         thread so Flask binds to its port without waiting for this."""
-        global _history_rows, _history_last_refresh
+        global _history_rows
         if not _alarm_engine_url:
             log.warning("No alarm-engine URL configured; history ring will not pre-fill")
             return
@@ -4817,7 +4792,6 @@ if __name__ == "__main__":
             if warm_rows:
                 with _history_lock:
                     _history_rows = warm_rows
-                    _history_last_refresh = time.time()
                 log.info(
                     "History ring filled: %d rows in %.1fs "
                     "(%d attempt(s); target window=%d min)",

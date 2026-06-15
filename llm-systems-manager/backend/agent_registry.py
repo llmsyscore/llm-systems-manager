@@ -897,11 +897,6 @@ def _maybe_issue_tls_bundle(agent: dict, body: dict) -> "dict | None":
         return None
 
 
-# Backwards-compatible alias for other modules that may reference the
-# legacy underscore-prefixed name.
-maybe_issue_tls_bundle = _maybe_issue_tls_bundle
-
-
 # ── Private: liveness watcher thread ─────────────────────────────────
 def _agent_liveness_watcher() -> None:
     """Background thread: log transitions to/from down/stale, every 60s.
