@@ -59,7 +59,7 @@ except ImportError:
             os.chmod(tmp, mode)
         tmp.replace(p)
 
-VERSION = "v2026.06.15-2"
+VERSION = "v2026.06.15-3"
 
 
 def _detect_install_dir() -> str:
@@ -2336,8 +2336,8 @@ async def _lifespan(_app: "FastAPI") -> AsyncIterator[None]:
             perf_task.cancel()
             try:
                 await perf_task
-            except (asyncio.CancelledError, Exception):
-                pass
+            except (asyncio.CancelledError, Exception) as e:
+                logger.debug("perf_task shutdown cleanup raised: %r", e)
 
 
 app = FastAPI(title="LLM Systems Agent", version=VERSION, lifespan=_lifespan)

@@ -153,7 +153,7 @@ def _local_hostname() -> str:
 # banner reads it. Bump suffix (-1, -2, …) for same-day iterations; roll
 # the date for a new day's first change.
 # ---------------------------------------------------------------------------
-__version__ = "v2026.06.15-7"
+__version__ = "v2026.06.15-8"
 
 # Wall-clock at first import (Cheroot main process); the shutdown banner
 # reads it for the uptime line.
@@ -597,7 +597,7 @@ def _log_request_end(resp):
             log.info("%s %s -> %s (%.0fms)", method, path, status, dur_ms)
     except Exception:
         # Never let logging break a response
-        pass
+        log.debug("request-log hook failed", exc_info=True)
     return resp
 
 @app.errorhandler(Exception)
