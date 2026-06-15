@@ -859,14 +859,17 @@ def register_routes(app, ctx, *,
         # the local tree may be missing entirely so we proxy instead.
         if not topo["split"] and os.path.isfile(filepath):
             if is_index:
-                return Response(_inject_alarm_ws_url(open(filepath, "rb").read()),
-                                mimetype="text/html",
+                idx = os.path.join(root, "index.html")
+                with open(idx, "rb") as f:
+                    body = _inject_alarm_ws_url(f.read())
+                return Response(body, mimetype="text/html",
                                 headers=_csp_header_pairs("text/html"))
             return send_from_directory(_ALARM_FRONTEND_DIR, filename)
         if not topo["split"] and os.path.isdir(_ALARM_FRONTEND_DIR):
             idx = os.path.join(_ALARM_FRONTEND_DIR, "index.html")
-            return Response(_inject_alarm_ws_url(open(idx, "rb").read()),
-                            mimetype="text/html",
+            with open(idx, "rb") as f:
+                body = _inject_alarm_ws_url(f.read())
+            return Response(body, mimetype="text/html",
                             headers=_csp_header_pairs("text/html"))
         ae_url = _deps.ctx.alarm_engine_url()
         if not ae_url:
