@@ -345,7 +345,7 @@ function _benchFormatLine(text) {
       baseFields.push([label, val]);
     });
     const fields = baseFields.map(([k, v]) =>
-      `<span class="bench-log-field"><span>${k}:</span><b>${v}</b></span>`
+      `<span class="bench-log-field"><span>${_hEsc(String(k))}:</span><b>${_hEsc(String(v))}</b></span>`
     ).join('');
     const yType = document.getElementById('benchYAxis')?.value;
     const dispVal = yType === 'ms_tok' ? (ts > 0 ? (1000/ts).toFixed(2) + ' ms/tok' : '—')
@@ -1090,7 +1090,7 @@ async function runAutotune() {
     if (msg.type === 'keepalive') return;
 
     if (msg.type === 'model_start') {
-      _atLogAppend(`<div class="at-log-sep">── ${_hEsc(msg.model_id)} · target ${msg.target_mb} MB ──</div>`);
+      _atLogAppend(`<div class="at-log-sep">── ${_hEsc(msg.model_id)} · target ${Number(msg.target_mb)||0} MB ──</div>`);
       _atSetCardStatus(msg.model_id, `tuning (target ${msg.target_mb} MB)`);
       _atSetStatus(`tuning ${_atShort(msg.model_id)}`, true);
     } else if (msg.type === 'iter_start') {
@@ -1105,8 +1105,7 @@ async function runAutotune() {
         row.style.color = '';
         row.setAttribute('data-fitt', msg.fitt);
       } else {
-        const safeModel = (msg.model_id || '').replace(/"/g, '&quot;');
-        _atLogAppend(`<div class="at-iter-line" data-iter="${msg.iter}" data-model="${safeModel}" data-fitt="${msg.fitt}">${_hEsc(text)}</div>`);
+        _atLogAppend(`<div class="at-iter-line" data-iter="${_hEsc(String(msg.iter))}" data-model="${_hEsc(String(msg.model_id))}" data-fitt="${_hEsc(String(msg.fitt))}">${_hEsc(text)}</div>`);
       }
       _atSetCardStatus(msg.model_id, `iter ${msg.iter} — fitt=${msg.fitt} MB · loading…`);
     } else if (msg.type === 'loading_progress') {
@@ -1159,7 +1158,7 @@ async function runAutotune() {
       if (msg.ok) {
         _atLogAppend(`<div class="at-log-ok">perf mode → <b>${_hEsc(msg.mode)}</b></div>`);
       } else {
-        const detail = msg.error ? ` (${_hEsc(msg.error)})` : (msg.rc != null ? ` (rc=${msg.rc})` : '');
+        const detail = msg.error ? ` (${_hEsc(msg.error)})` : (msg.rc != null ? ` (rc=${Number(msg.rc)})` : '');
         _atLogAppend(`<div class="at-log-warn">perf mode <b>${_hEsc(msg.mode)}</b> not applied${detail}</div>`);
       }
     } else if (msg.type === 'line') {
@@ -1190,7 +1189,7 @@ async function runAutotune() {
         } else {
           tag = '⚠ stopped early'; cls = 'at-log-warn';
         }
-        _atLogAppend(`<div class="${cls}" style="font-weight:500;">${tag} · final -fitt=${msg.final_fitt} MB · ctx-size=${(msg.ctx_size ?? 0).toLocaleString()} · free=${msg.free_mb} MB (${msg.iters} iters)</div>`);
+        _atLogAppend(`<div class="${cls}" style="font-weight:500;">${tag} · final -fitt=${Number(msg.final_fitt)||0} MB · ctx-size=${Number(msg.ctx_size ?? 0).toLocaleString()} · free=${Number(msg.free_mb)||0} MB (${Number(msg.iters)||0} iters)</div>`);
         if (!msg.converged && reason) {
           _atLogAppend(`<div class="at-log-dim" style="font-size:0.85em;margin-left:18px;">${_hEsc(reason)}</div>`);
         }
@@ -1309,7 +1308,7 @@ function _atRenderResultCard(payload) {
   const iters = payload.iters     ?? '—';
   const params = payload.applied_params || {};
   const paramSummary = Object.keys(params).length
-    ? Object.entries(params).map(([k,v]) => `${k}=${v}`).join(', ')
+    ? Object.entries(params).map(([k,v]) => `${_hEsc(String(k))}=${_hEsc(String(v))}`).join(', ')
     : '<i style="color:var(--fg-dim)">defaults</i>';
   card.innerHTML = `
     <div><b>${_hEsc(modelId)}</b> — ${tag}</div>

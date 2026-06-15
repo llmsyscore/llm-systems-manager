@@ -152,7 +152,7 @@ async function fetchServicesAndInflux() {
           const upHere = group.filter(s => s.running === 1 && (s.age == null || s.age <= STALE_S)).length;
           rows += `<tr class="svc-group-hdr">
             <td colspan="5" style="background:var(--bg-elev);color:var(--fg-muted);font-size:0.72em;font-weight:600;letter-spacing:0.08em;text-transform:uppercase;padding:6px 8px;border-top:1px solid var(--border);">
-              ${h}
+              ${_esc(h)}
               <span style="float:right;color:var(--fg-dim);font-weight:normal;letter-spacing:0.04em;">${upHere}/${group.length} up</span>
             </td>
           </tr>`;
@@ -162,7 +162,7 @@ async function fetchServicesAndInflux() {
             const dot = `<span class="dot dot--${running ? 'ok' : stale ? 'muted' : 'crit'}"></span>`;
             const label = stale ? 'stale' : (running ? 'running' : 'stopped');
             return `<tr>
-              <td style="padding-left:18px;">${s.svc}</td>
+              <td style="padding-left:18px;">${_esc(s.svc)}</td>
               <td>${dot} ${label}</td>
               <td>${s.pid != null ? Math.round(s.pid) : '—'}</td>
               <td>${s.rss_mb != null ? s.rss_mb.toFixed(0) + ' MB' : '—'}</td>
@@ -427,7 +427,7 @@ async function fetchServicesAndInflux() {
             const running = s.running === 1 && !stale;
             const dot = `<span class="dot dot--${running ? 'ok' : stale ? 'muted' : 'crit'}"></span>`;
             return `<tr>
-              <td>${dot} ${s.svc}</td>
+              <td>${dot} ${_esc(s.svc)}</td>
               <td>${s.pid != null ? Math.round(s.pid) : '—'}</td>
               <td>${s.rss_mb != null ? s.rss_mb.toFixed(0) + ' MB' : '—'}</td>
               <td>${_fmtUptime(s.uptime_s)}</td>

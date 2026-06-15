@@ -74,7 +74,7 @@ function renderOpenclawAnalytics(data) {
   } else {
     tbody.innerHTML = agents.map(a => `
       <tr style="border-bottom:1px solid var(--bg-card-alt);">
-        <td style="padding:6px 8px;color:var(--fg);font-weight:600;">${a.name}</td>
+        <td style="padding:6px 8px;color:var(--fg);font-weight:600;">${_esc(a.name)}</td>
         <td style="padding:6px 8px;text-align:right;">${_opcaFmtN(a.sessions)}</td>
         <td style="padding:6px 8px;text-align:right;">${_opcaFmtN(a.messages)}</td>
         <td style="padding:6px 8px;text-align:right;">${_opcaFmtN(a.input)}</td>
@@ -93,7 +93,7 @@ function renderOpenclawAnalytics(data) {
   if (!agents.length) { wrap.innerHTML = '<div style="color:var(--fg-dim);">—</div>'; return; }
   wrap.innerHTML = agents.filter(a => a.recent && a.recent.length).map(a => `
     <div style="margin-bottom:14px;">
-      <div style="color:var(--fg);font-weight:600;margin-bottom:4px;">${a.name}</div>
+      <div style="color:var(--fg);font-weight:600;margin-bottom:4px;">${_esc(a.name)}</div>
       <div style="overflow-x:auto;">
         <table style="width:100%;border-collapse:collapse;">
           <thead>
@@ -111,7 +111,7 @@ function renderOpenclawAnalytics(data) {
           <tbody>
             ${a.recent.map(s => `
               <tr style="border-bottom:1px solid var(--bg-card);">
-                <td style="padding:4px 6px;color:var(--accent);font-family:monospace;font-size:0.85em;" title="${s.id}">${s.id.slice(0,8)}…</td>
+                <td style="padding:4px 6px;color:var(--accent);font-family:monospace;font-size:0.85em;" title="${_esc(s.id)}">${_esc(s.id.slice(0,8))}…</td>
                 <td style="padding:4px 6px;text-align:right;">${_opcaFmtN(s.messages)}</td>
                 <td style="padding:4px 6px;text-align:right;">${_opcaFmtN(s.input)}</td>
                 <td style="padding:4px 6px;text-align:right;">${_opcaFmtN(s.output)}</td>
@@ -162,7 +162,7 @@ function _opcaPillsFromStatus(byStatus) {
   if (!entries.length) return '<span style="color:var(--fg-dim);font-size:0.82em;">no data</span>';
   return entries.map(([s, c]) => `
     <span class="status status--${_opcaStatusMod(s)}">
-      ${_opcaStatusIcon(s)} ${s}
+      ${_opcaStatusIcon(s)} ${_esc(s)}
       <span style="color:var(--fg);">${_opcaFmtN(c)}</span>
     </span>`).join('');
 }
@@ -252,7 +252,7 @@ function renderOpcaFlows(flows) {
           <tr style="border-bottom:1px solid var(--bg-card);">
             <td style="padding:4px 6px;color:var(--fg);" title="${_esc(f.goal)}">${_esc((f.goal || '—').slice(0,60))}</td>
             <td style="padding:4px 6px;color:${_opcaStatusColor(f.status)};">${_opcaStatusIcon(f.status)} ${_esc(f.status)}</td>
-            <td style="padding:4px 6px;text-align:right;color:var(--fg);">${f.duration_s != null ? f.duration_s + 's' : '—'}</td>
+            <td style="padding:4px 6px;text-align:right;color:var(--fg);">${f.duration_s != null ? Number(f.duration_s) + 's' : '—'}</td>
             <td style="padding:4px 6px;color:var(--fg-muted);">${_opcaAgeFromIso(f.created_iso)}</td>
           </tr>
         `).join('')}
@@ -274,7 +274,7 @@ function renderOpcaDelivery(dq) {
     return;
   }
   const channels = Object.entries(dq.by_channel || {})
-    .map(([k, v]) => `<span style="display:inline-block;margin-right:8px;"><span style="color:var(--accent);">${_esc(k)}</span>: ${v}</span>`)
+    .map(([k, v]) => `<span style="display:inline-block;margin-right:8px;"><span style="color:var(--accent);">${_esc(k)}</span>: ${_opcaFmtN(v)}</span>`)
     .join('');
   const errors = (dq.common_errors || [])
     .map(e => `<div style="color:var(--crit);font-size:0.82em;margin-top:2px;">• <span style="color:var(--fg);">${_opcaFmtN(e.count)}×</span> ${_esc(e.error)}</div>`)
@@ -311,8 +311,8 @@ function renderOpcaDailyCost(daily) {
     const label = d.slice(5); // MM-DD
     return `
       <div style="display:flex;flex-direction:column;align-items:center;flex:1;min-width:0;">
-        <div title="${d}: $${v.toFixed(4)}" style="width:80%;height:${h}px;background:${barColor(v)};border-radius:2px 2px 0 0;"></div>
-        <div style="font-size:0.65em;color:var(--fg-dim);margin-top:4px;white-space:nowrap;">${label}</div>
+        <div title="${_esc(d)}: $${v.toFixed(4)}" style="width:80%;height:${h}px;background:${barColor(v)};border-radius:2px 2px 0 0;"></div>
+        <div style="font-size:0.65em;color:var(--fg-dim);margin-top:4px;white-space:nowrap;">${_esc(label)}</div>
       </div>`;
   }).join('');
   wrap.innerHTML = `
@@ -358,10 +358,10 @@ function renderOpcaTokenDist(td, totals) {
   // Each segment is a flex child whose width equals its percentage of total tokens.
   // Colors: input=blue, output=green, cache_read=amber, cache_write=purple.
   const segments = [
-    { label: 'Input',       pct: td.input_pct   || 0, color: '#4a90d9' },
-    { label: 'Output',      pct: td.output_pct  || 0, color: '#7ec8a0' },
-    { label: 'Cache Read',  pct: td.cache_r_pct || 0, color: '#c8a07e' },
-    { label: 'Cache Write', pct: td.cache_w_pct || 0, color: '#9a7ec8' },
+    { label: 'Input',       pct: Number(td.input_pct)   || 0, color: '#4a90d9' },
+    { label: 'Output',      pct: Number(td.output_pct)  || 0, color: '#7ec8a0' },
+    { label: 'Cache Read',  pct: Number(td.cache_r_pct) || 0, color: '#c8a07e' },
+    { label: 'Cache Write', pct: Number(td.cache_w_pct) || 0, color: '#9a7ec8' },
   ];
   const bar = segments.map(s =>
     `<div title="${s.label}: ${s.pct}%" style="flex:${s.pct};background:${s.color};height:18px;min-width:${s.pct > 0 ? 2 : 0}px;"></div>`
@@ -431,7 +431,7 @@ function renderOpcaThinkingFlows(thinking) {
         ${sessions.map(s => `
           <tr style="border-bottom:1px solid var(--bg-card);">
             <td style="padding:4px 6px;color:var(--accent);font-family:monospace;font-size:0.9em;"
-                title="${_esc(s.id)}">${s.id.slice(0,8)}…</td>
+                title="${_esc(s.id)}">${_esc(s.id.slice(0,8))}…</td>
             <td style="padding:4px 6px;color:var(--fg);">${_esc(s.agent || '')}</td>
             <td style="padding:4px 6px;text-align:right;">${_opcaFmtN(s.thinking_events)}</td>
             <td style="padding:4px 6px;text-align:right;color:var(--fg-muted);">${_opcaFmtN(s.thinking_chars)}</td>
@@ -579,9 +579,9 @@ function renderOpcaAnomaliesAndTools(anomalies, tools, trends) {
             ${anomalies.map(a => `
               <tr style="border-bottom:1px solid var(--bg-card);">
                 <td style="padding:5px 6px;color:var(--crit);font-family:monospace;font-size:0.88em;"
-                    title="${_esc(a.session_id)}">${(a.session_id || '').slice(0,8)}…</td>
+                    title="${_esc(a.session_id)}">${_esc((a.session_id || '').slice(0,8))}…</td>
                 <td style="padding:5px 6px;color:var(--fg);">${_esc(a.agent)}</td>
-                <td style="padding:5px 6px;text-align:right;color:var(--note);">${a.ratio}×</td>
+                <td style="padding:5px 6px;text-align:right;color:var(--note);">${Number(a.ratio)}×</td>
                 <td style="padding:5px 6px;text-align:right;color:var(--crit);">${_opcaFmtCost(a.cost)}</td>
               </tr>`).join('')}
           </tbody>

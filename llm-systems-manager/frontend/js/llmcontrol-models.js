@@ -1372,10 +1372,16 @@ function _renderAddDownloadedButtons() {
   if (!box || !_dlLastRepo) return;
   const quants = _quantsFromFilter(_dlLastQuant);
   box.innerHTML = quants.map(q => {
-    const safeQ = q.replace(/"/g, '&quot;');
     const label = q ? `+ Add ${q} to config` : '+ Add downloaded model to config';
-    return `<button class="btn btn-slate-muted-gradient" onclick="addDownloadedModel('${safeQ}')">${label}</button>`;
+    return `<button class="btn btn-slate-muted-gradient" data-act="add-downloaded" data-quant="${_esc(q)}">${_esc(label)}</button>`;
   }).join('');
+  if (!box._addWired) {
+    box.addEventListener('click', ev => {
+      const b = ev.target.closest('button[data-act="add-downloaded"]');
+      if (b) addDownloadedModel(b.dataset.quant);
+    });
+    box._addWired = true;
+  }
   box.style.display = 'flex';
 }
 

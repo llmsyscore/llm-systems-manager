@@ -156,8 +156,8 @@ async function fetchLMStudioMetrics() {
         .map(d => {
           const fillColor = d.percent > 90 ? 'var(--crit)' : d.percent > 75 ? 'var(--warn)' : 'var(--accent-2)';
           return `<div class="disk-row">
-            <span style="min-width:100px;color:var(--fg-muted);font-size:0.8em">${d.mountpoint}</span>
-            <div class="disk-bar"><div class="disk-fill" style="width:${d.percent}%;background:${fillColor};"></div></div>
+            <span style="min-width:100px;color:var(--fg-muted);font-size:0.8em">${_esc(d.mountpoint)}</span>
+            <div class="disk-bar"><div class="disk-fill" style="width:${Number(d.percent)}%;background:${fillColor};"></div></div>
             <span>${d.percent.toFixed(1)}%</span>
           </div>`;
         }).join('');

@@ -1085,8 +1085,8 @@ async function fetchMetrics() {
     if (m.disk && m.disk.length) {
       document.getElementById('diskList').innerHTML = m.disk.map(d =>
         `<div class="disk-row">
-          <span style="min-width:100px;color:var(--fg-muted);font-size:0.8em">${d.mountpoint}</span>
-          <div class="disk-bar"><div class="disk-fill" style="width:${d.percent}%"></div></div>
+          <span style="min-width:100px;color:var(--fg-muted);font-size:0.8em">${_esc(d.mountpoint)}</span>
+          <div class="disk-bar"><div class="disk-fill" style="width:${Number(d.percent)}%"></div></div>
           <span>${d.percent.toFixed(1)}%</span>
         </div>`
       ).join('');
@@ -1206,9 +1206,9 @@ async function fetchMetrics() {
     document.getElementById('smartFanTable').innerHTML = fans.map(f =>
       `<tr>
         <td>Fan ${f.id}</td>
-        <td>${f.control_mode || '—'}</td>
-        <td>${f.duty != null ? f.duty : '—'}</td>
-        <td>${f.speed ? f.speed.value + ' ' + f.speed.unit : '—'}</td>
+        <td>${_esc(f.control_mode || '—')}</td>
+        <td>${f.duty != null ? _esc(f.duty) : '—'}</td>
+        <td>${f.speed ? _esc(f.speed.value) + ' ' + _esc(f.speed.unit) : '—'}</td>
         <td>${f.voltage_v != null ? f.voltage_v.toFixed(2) + ' V' : '—'}</td>
         <td>${f.current_ma != null ? f.current_ma + ' mA' : '—'}</td>
       </tr>`
