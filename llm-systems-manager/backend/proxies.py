@@ -859,7 +859,8 @@ def register_routes(app, ctx, *,
         # the local tree may be missing entirely so we proxy instead.
         if not topo["split"] and os.path.isfile(filepath):
             if is_index:
-                return Response(_inject_alarm_ws_url(open(filepath, "rb").read()),
+                idx = os.path.join(root, "index.html")
+                return Response(_inject_alarm_ws_url(open(idx, "rb").read()),
                                 mimetype="text/html",
                                 headers=_csp_header_pairs("text/html"))
             return send_from_directory(_ALARM_FRONTEND_DIR, filename)
