@@ -1,5 +1,5 @@
 from __future__ import annotations
-import json, os
+import os
 import pytest
 import model_profiles
 

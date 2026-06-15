@@ -7,7 +7,7 @@ on the returned AlertCreate (or None).
 """
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+from datetime import datetime
 from backend._time import now_utc
 from uuid import uuid4
 

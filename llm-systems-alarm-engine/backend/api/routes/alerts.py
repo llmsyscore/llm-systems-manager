@@ -46,8 +46,7 @@ def _try_notify(method_name: str, alert) -> None:
         try:
             fn(alert)
         except Exception:
-            import logging
-            logging.getLogger(__name__).exception(
+            logger.exception(
                 "dispatcher.%s failed for alert %s", method_name, getattr(alert, "alert_id", "?")
             )
 

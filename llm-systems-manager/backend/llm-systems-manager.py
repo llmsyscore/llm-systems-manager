@@ -153,7 +153,7 @@ def _local_hostname() -> str:
 # banner reads it. Bump suffix (-1, -2, …) for same-day iterations; roll
 # the date for a new day's first change.
 # ---------------------------------------------------------------------------
-__version__ = "v2026.06.15-10"
+__version__ = "v2026.06.15-11"
 
 # Wall-clock at first import (Cheroot main process); the shutdown banner
 # reads it for the uptime line.
@@ -1628,7 +1628,6 @@ def _run_benchmark(model_ids: list, tool: str, switches: list):
     _bench_cancel_event.clear()
     try:
         import os as _os
-        import re as _re
 
         if tool == 'llama-bench':
             tool_path = LLAMA_BENCH_BIN
@@ -1646,7 +1645,7 @@ def _run_benchmark(model_ids: list, tool: str, switches: list):
         env["FORCE_COLOR"] = "0"
         env["PYTHONUNBUFFERED"] = "1"
 
-        ansi_re = _re.compile(r'\x1b\[[0-9;]*[mGKHF]')
+        ansi_re = re.compile(r'\x1b\[[0-9;]*[mGKHF]')
 
         all_results = []
         for model_id in model_ids:
@@ -2754,7 +2753,7 @@ def _latest_agent_version() -> "str | None":
     """Parse VERSION = "..." out of the manager's local copy of
     agent/llm-systems-agent.py. Cached by mtime so we re-read only
     when the source actually changes (e.g. after `git pull`)."""
-    import pathlib, re as _re
+    import pathlib
     p = pathlib.Path(__file__).resolve().parents[2] / "agent" / "llm-systems-agent.py"
     try:
         mt = p.stat().st_mtime
@@ -2765,7 +2764,7 @@ def _latest_agent_version() -> "str | None":
     try:
         with open(p, "r") as f:
             for raw in f:
-                m = _re.match(r'^VERSION\s*=\s*["\'](.+?)["\']', raw)
+                m = re.match(r'^VERSION\s*=\s*["\'](.+?)["\']', raw)
                 if m:
                     _LATEST_AGENT_VERSION_CACHE["v"] = m.group(1)
                     _LATEST_AGENT_VERSION_CACHE["mtime"] = mt
@@ -3553,7 +3552,6 @@ def _patch_toml_lines(toml_text: str,
             targets[(section, key)] = value
     if not targets:
         return toml_text, []
-    import re
     line_re = re.compile(
         r'^(?P<indent>\s*)(?P<key>[A-Za-z_][A-Za-z0-9_-]*)(?P<sp>\s*=\s*)'
         r'(?P<val>"(?:[^"\\]|\\.)*"|\'(?:[^\'\\]|\\.)*\'|[^\s#]+)'

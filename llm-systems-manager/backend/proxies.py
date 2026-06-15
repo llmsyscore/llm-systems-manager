@@ -223,7 +223,6 @@ def resolve_proxy_target(name: str) -> "str | None":
     if sl in ("", "false"):
         return None
     if sl in ("auto", "true"):
-        sl = "auto"
         if name == "llm_chat":
             host = _host_from_agent(agent_registry.primary_agent("llama"))
             return f"http://{host}:8080" if host else None

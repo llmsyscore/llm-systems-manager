@@ -4,10 +4,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import hmac
-import json
 import time
-
-import pytest
 
 import provider_state
 import sse_daemon

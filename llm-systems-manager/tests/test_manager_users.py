@@ -390,7 +390,7 @@ class TestSessionRevocation:
 
 
 def manager_users_init_for_test(tmp_path):
-    import manager_users, auth
+    import auth
     manager_users.init(tmp_path / "mu.json", threshold=5, window_s=900, duration_s=900)
     manager_users.STORE.seed_admin("llmadmin", auth.scrypt_hash("llmadmin"))
 
