@@ -30,6 +30,10 @@ from config.unified_config import settings
 logger = logging.getLogger(__name__)
 
 
+class ConfigDeserializationError(Exception):
+    """A stored notification config row was found but could not be parsed into a model."""
+
+
 class RuleRepository:
     """Repository for alarm rules."""
 
@@ -717,8 +721,9 @@ class NotificationRepository:
                     result = self._dict_to_config(item)
                     self.cache.set(f"config:{config_id}", result.to_dict())
                     return result
-                except Exception:
-                    return None
+                except Exception as e:
+                    logger.warning("get_config: config %s found but failed to deserialize: %s", config_id, e)
+                    raise ConfigDeserializationError(str(e)) from e
         return None
 
     def update_config(self, config_id: uuid.UUID, update: NotificationConfigUpdate) -> Optional[NotificationConfig]:
@@ -736,8 +741,9 @@ class NotificationRepository:
             data[key] = value
         try:
             config = self._dict_to_config(data)
-        except Exception:
-            return None
+        except Exception as e:
+            logger.warning("update_config: config %s found but produced an invalid model: %s", config_id, e)
+            raise ConfigDeserializationError(str(e)) from e
         if self.settings_db:
             self.settings_db.write_config(config.to_dict())
         self.cache.set(f"config:{config_id}", config.to_dict())
