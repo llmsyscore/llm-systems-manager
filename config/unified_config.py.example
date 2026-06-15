@@ -127,6 +127,22 @@ class ManagerSecurity(BaseModel):
     )
     tls_rotation_warn_days: int = 30
     stream_token_ttl_s: int = 300
+    # Manager-origin CSP set on proxied HTML responses (llama Chat UI, AE SPA,
+    # OpenClaw, image-gen). Defense-in-depth behind upstream XSS. 'unsafe-inline'
+    # is required so the manager's own injected shims (ALARM_WS_URL, openclaw WS
+    # patch) run. Empty string disables it (revert to stripping CSP entirely).
+    proxy_html_csp: str = (
+        "default-src 'self'; "
+        "script-src 'self' 'unsafe-inline' 'unsafe-eval'; "
+        "style-src 'self' 'unsafe-inline'; "
+        "img-src 'self' data: blob:; "
+        "font-src 'self' data:; "
+        "connect-src 'self' ws: wss:; "
+        "frame-ancestors 'self'; "
+        "base-uri 'self'; "
+        "form-action 'self'; "
+        "object-src 'none'"
+    )
 
 
 class ManagerAuth(BaseModel):

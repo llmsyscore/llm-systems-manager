@@ -19,7 +19,7 @@ from ...models.notification import (
     NotificationConfigUpdate,
     NotificationDelivery,
 )
-from ...storage.repositories import NotificationRepository
+from ...storage.repositories import ConfigDeserializationError, NotificationRepository
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/alarm/notifications", tags=["Notifications"])
@@ -147,7 +147,10 @@ async def get_config(config_id: str) -> NotificationConfig:
         cfg_uuid = _uuid.UUID(config_id)
     except ValueError:
         raise HTTPException(status_code=400, detail=f"Invalid config_id: {config_id}")
-    config = repo.get_config(cfg_uuid)
+    try:
+        config = repo.get_config(cfg_uuid)
+    except ConfigDeserializationError as e:
+        raise HTTPException(status_code=422, detail=f"Config {config_id} is stored but could not be parsed: {e}")
     if not config:
         raise HTTPException(status_code=404, detail=f"Config {config_id} not found")
     return config
@@ -162,7 +165,10 @@ async def update_config(config_id: str, payload: NotificationConfigUpdate) -> No
         cfg_uuid = _uuid.UUID(config_id)
     except ValueError:
         raise HTTPException(status_code=400, detail=f"Invalid config_id: {config_id}")
-    updated = repo.update_config(cfg_uuid, payload)
+    try:
+        updated = repo.update_config(cfg_uuid, payload)
+    except ConfigDeserializationError as e:
+        raise HTTPException(status_code=422, detail=f"Config {config_id} update produced an invalid model: {e}")
     if not updated:
         raise HTTPException(status_code=404, detail=f"Config {config_id} not found")
     return updated

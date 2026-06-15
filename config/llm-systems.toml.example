@@ -140,6 +140,12 @@ liveness_watch_interval_s = 65                           # how often the watcher
 admin_cidrs = ["127.0.0.1", "::1", "192.168.1.0/24", "192.168.2.0/24"]
 tls_rotation_warn_days = 30                              # warn when certs expire within N days
 stream_token_ttl_s = 300                                 # short-lived SSE/EventSource HMAC tokens
+# Manager-origin CSP applied to proxied HTML (llama Chat UI, AE SPA, OpenClaw,
+# image-gen) instead of stripping CSP to nothing — defense-in-depth behind any
+# upstream-side XSS. 'unsafe-inline' is required (the manager injects inline
+# shims into the AE SPA and OpenClaw UI). Set to "" to disable and revert to
+# stripping CSP entirely if a proxied UI breaks.
+proxy_html_csp = "default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; connect-src 'self' ws: wss:; frame-ancestors 'self'; base-uri 'self'; form-action 'self'; object-src 'none'"
 
 [manager.auth]
 # Dashboard login (single shared admin). Browser sessions are gated; agent

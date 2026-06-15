@@ -79,6 +79,15 @@ _PROXY_HOP_BY_HOP = {
     "content-security-policy", "x-frame-options",
 }
 
+
+def _csp_header_pairs(content_type: str) -> list:
+    """Manager-origin CSP header for an HTML response, else []. Replaces the
+    stripped upstream CSP with [manager.security].proxy_html_csp (empty = off)."""
+    csp = (getattr(settings.manager.security, "proxy_html_csp", "") or "").strip()
+    if csp and "text/html" in (content_type or "").lower():
+        return [("Content-Security-Policy", csp)]
+    return []
+
 # Full HTTP verb list applied to every catch-all proxy decorator so proxied
 # apps see GET/POST/PUT/DELETE/PATCH/HEAD/OPTIONS.
 _PROXY_METHODS = ["GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS"]
@@ -458,6 +467,7 @@ def _proxy_llmchat(path: str, base: str):
             if kl == "location" and v.startswith(base):
                 v = v.replace(base, "/proxy/llmchat")
             headers.append((k, v))
+        headers += _csp_header_pairs(upstream.headers.get("content-type", ""))
         return Response(upstream.iter_content(chunk_size=8192),
                         status=upstream.status_code,
                         headers=headers)
@@ -523,6 +533,7 @@ def _proxy_openclaw(path: str, base: str):
                 body = body.replace("</head>", ws_patch + "</head>", 1)
             else:
                 body = ws_patch + body
+            headers += _csp_header_pairs(ct)
             return Response(body, status=upstream.status_code, headers=headers,
                             content_type=ct)
 
@@ -562,6 +573,7 @@ def _proxy_imggen(path: str, base: str):
             if kl == "location" and v.startswith(base):
                 v = v.replace(base, "/proxy/imggen")
             headers.append((k, v))
+        headers += _csp_header_pairs(upstream.headers.get("content-type", ""))
         return Response(upstream.iter_content(chunk_size=8192),
                         status=upstream.status_code, headers=headers)
     except Exception as e:
@@ -603,6 +615,8 @@ def _proxy_sdcpp(path: str, base: str):
     for k, v in upstream.headers.items():
         if k.lower() not in _PROXY_HOP_BY_HOP:
             resp_headers[k] = v
+    for name, val in _csp_header_pairs(upstream.headers.get("content-type", "")):
+        resp_headers[name] = val
 
     return Response(upstream.iter_content(chunk_size=8192),
                     status=upstream.status_code, headers=resp_headers)
@@ -658,6 +672,7 @@ def _proxy_alarm_engine(path: str):
             if kl in excluded:
                 continue
             headers.append((k, v))
+        headers += _csp_header_pairs(upstream.headers.get("content-type", ""))
         if (flask_request.method == "GET" and
                 "text/event-stream" in upstream.headers.get("content-type", "")):
             return Response(upstream.content, status=upstream.status_code, headers=headers,
@@ -844,12 +859,14 @@ def register_routes(app, ctx, *,
         if not topo["split"] and os.path.isfile(filepath):
             if is_index:
                 return Response(_inject_alarm_ws_url(open(filepath, "rb").read()),
-                                mimetype="text/html")
+                                mimetype="text/html",
+                                headers=_csp_header_pairs("text/html"))
             return send_from_directory(_ALARM_FRONTEND_DIR, filename)
         if not topo["split"] and os.path.isdir(_ALARM_FRONTEND_DIR):
             idx = os.path.join(_ALARM_FRONTEND_DIR, "index.html")
             return Response(_inject_alarm_ws_url(open(idx, "rb").read()),
-                            mimetype="text/html")
+                            mimetype="text/html",
+                            headers=_csp_header_pairs("text/html"))
         ae_url = _deps.ctx.alarm_engine_url()
         if not ae_url:
             return Response("alarm engine frontend not deployed locally and "
@@ -870,6 +887,7 @@ def register_routes(app, ctx, *,
                    if k.lower() not in excluded]
         if is_index:
             body = _inject_alarm_ws_url(upstream.content)
+            headers += _csp_header_pairs("text/html")
             return Response(body, status=upstream.status_code, headers=headers,
                             mimetype="text/html")
         return Response(upstream.iter_content(chunk_size=8192),
