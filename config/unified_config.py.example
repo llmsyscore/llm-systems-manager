@@ -130,13 +130,14 @@ class ManagerSecurity(BaseModel):
     # Manager-origin CSP set on proxied HTML responses (llama Chat UI, AE SPA,
     # OpenClaw, image-gen). Defense-in-depth behind upstream XSS. 'unsafe-inline'
     # is required so the manager's own injected shims (ALARM_WS_URL, openclaw WS
-    # patch) run. Empty string disables it (revert to stripping CSP entirely).
+    # patch) run; cdn.jsdelivr.net is allowed for the SPAs' Chart.js/date-fns.
+    # Empty string disables it (revert to stripping CSP entirely).
     proxy_html_csp: str = (
         "default-src 'self'; "
-        "script-src 'self' 'unsafe-inline' 'unsafe-eval'; "
-        "style-src 'self' 'unsafe-inline'; "
+        "script-src 'self' 'unsafe-inline' 'unsafe-eval' https://cdn.jsdelivr.net; "
+        "style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; "
         "img-src 'self' data: blob:; "
-        "font-src 'self' data:; "
+        "font-src 'self' data: https://cdn.jsdelivr.net; "
         "connect-src 'self' ws: wss:; "
         "frame-ancestors 'self'; "
         "base-uri 'self'; "

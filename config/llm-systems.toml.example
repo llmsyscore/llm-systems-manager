@@ -143,9 +143,10 @@ stream_token_ttl_s = 300                                 # short-lived SSE/Event
 # Manager-origin CSP applied to proxied HTML (llama Chat UI, AE SPA, OpenClaw,
 # image-gen) instead of stripping CSP to nothing — defense-in-depth behind any
 # upstream-side XSS. 'unsafe-inline' is required (the manager injects inline
-# shims into the AE SPA and OpenClaw UI). Set to "" to disable and revert to
-# stripping CSP entirely if a proxied UI breaks.
-proxy_html_csp = "default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; connect-src 'self' ws: wss:; frame-ancestors 'self'; base-uri 'self'; form-action 'self'; object-src 'none'"
+# shims into the AE SPA and OpenClaw UI); cdn.jsdelivr.net is allowed for the
+# SPAs' Chart.js/date-fns. Set to "" to disable and revert to stripping CSP
+# entirely if a proxied UI breaks.
+proxy_html_csp = "default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval' https://cdn.jsdelivr.net; style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; img-src 'self' data: blob:; font-src 'self' data: https://cdn.jsdelivr.net; connect-src 'self' ws: wss:; frame-ancestors 'self'; base-uri 'self'; form-action 'self'; object-src 'none'"
 
 [manager.auth]
 # Dashboard login (single shared admin). Browser sessions are gated; agent
