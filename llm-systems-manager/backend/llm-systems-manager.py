@@ -153,7 +153,7 @@ def _local_hostname() -> str:
 # banner reads it. Bump suffix (-1, -2, …) for same-day iterations; roll
 # the date for a new day's first change.
 # ---------------------------------------------------------------------------
-__version__ = "v2026.06.15-6"
+__version__ = "v2026.06.15-7"
 
 # Wall-clock at first import (Cheroot main process); the shutdown banner
 # reads it for the uptime line.
@@ -916,21 +916,18 @@ def _build_fleet_history_rows(provider: str, since_minutes: int,
         for host in hosts
         for src, name, field in _HISTORY_LEGACY_FIELD_MAP
     ]
-    # futures are ordered host-major (outer loop host, inner loop field) so we
-    # walk them in the same order to attribute each result to its host+bucket.
-    idx = 0
-    for host in hosts:
-        for src, name, field in _HISTORY_LEGACY_FIELD_MAP:
-            f, points = futures[idx].result()
-            idx += 1
-            hb: dict[str, object] = {}
-            for p in points:
-                ts = p.get("timestamp")
-                if not ts:
-                    continue
-                hb[_bucket_iso(ts, _FLEET_BUCKET_S)] = p.get("value")
-            for bts, val in hb.items():
-                accum.setdefault(f, {}).setdefault(bts, []).append(val)
+    # Each future returns its own field, so one value per host lands in
+    # accum[field][bucket] regardless of iteration order.
+    for fut in futures:
+        f, points = fut.result()
+        hb: dict[str, object] = {}
+        for p in points:
+            ts = p.get("timestamp")
+            if not ts:
+                continue
+            hb[_bucket_iso(ts, _FLEET_BUCKET_S)] = p.get("value")
+        for bts, val in hb.items():
+            accum.setdefault(f, {}).setdefault(bts, []).append(val)
     rows_by_ts: dict[str, dict] = {}
     for field, buckets in accum.items():
         agg = _FLEET_FIELD_AGG.get(field, "mean")

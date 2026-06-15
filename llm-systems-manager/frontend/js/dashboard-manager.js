@@ -477,7 +477,7 @@ async function fetchManagerAgentsCard() {
       const live = a.liveness || 'unknown';
       // Decide dot + label. For approved agents we use liveness; for
       // pending/disabled we surface the registration status instead.
-      let dotMod = 'muted', label = live;
+      let label = live, dotMod;
       if (status !== 'approved') {
         label = status;
         dotMod = status === 'pending' ? 'warn' : 'muted';

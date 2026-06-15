@@ -16,7 +16,6 @@ const ApiClient = {
     async _request(endpoint, options = {}) {
         const url = `${API_BASE}${endpoint}`;
         const config = {
-            headers: { 'Content-Type': 'application/json' },
             ...options,
             headers: { ...options.headers, 'Content-Type': 'application/json' },
         };

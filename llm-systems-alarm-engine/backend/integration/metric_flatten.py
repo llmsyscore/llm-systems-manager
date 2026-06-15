@@ -12,6 +12,7 @@ flatten happens once on the alarm-engine side.
 
 from __future__ import annotations
 
+import math
 from typing import Any, Callable, Iterable, Optional
 
 
@@ -124,7 +125,7 @@ def flatten(
             continue
         if isinstance(val, (int, float)):
             f = float(val)
-            if f != f or f in (float("inf"), float("-inf")):
+            if not math.isfinite(f):
                 continue
             yield cur, f
         elif isinstance(val, dict):
