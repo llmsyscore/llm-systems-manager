@@ -1461,7 +1461,7 @@ def _agents_issue_cert(agent_id: str):
 
     try:
         bundle = _build_and_sign_agent_cert(agent)
-    except Exception as e:
+    except Exception:
         log.exception("cert issuance failed for agent %s", agent_id)
         return jsonify({"ok": False, "error": "certificate signing failed"}), 500
     if bundle is None:
