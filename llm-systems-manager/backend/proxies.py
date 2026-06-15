@@ -848,8 +848,9 @@ def register_routes(app, ctx, *,
         For index.html we also inject a <script>window.ALARM_WS_URL=...
         </script> so the live pill's WebSocket connects directly to the AE
         (manager can't proxy WS)."""
-        filepath = os.path.realpath(os.path.join(_ALARM_FRONTEND_DIR, filename))
-        if not filepath.startswith(os.path.realpath(_ALARM_FRONTEND_DIR)):
+        root = os.path.realpath(_ALARM_FRONTEND_DIR)
+        filepath = os.path.realpath(os.path.join(root, filename))
+        if filepath != root and not filepath.startswith(root + os.sep):
             from flask import abort
             abort(404)
         is_index = filename in ("", "index.html")
