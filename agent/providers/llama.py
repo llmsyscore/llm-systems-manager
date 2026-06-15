@@ -1676,15 +1676,33 @@ def llama_bench_stream(
     )
 
 
+def _pkill_strays(patterns: list[str], what: str) -> dict[str, Any]:
+    """pkill -9 each pattern, reporting honestly: rc 0/1 ok, rc >=2 or exception is a failure."""
+    failures: list[str] = []
+    for pat in patterns:
+        try:
+            rc = subprocess.run(['pkill', '-9', '-f', pat], capture_output=True, timeout=3).returncode
+        except Exception as e:
+            log.warning("%s: pkill -f %s failed to run: %s", what, pat, e)
+            failures.append(f"{pat}: {e}")
+            continue
+        if rc >= 2:
+            log.warning("%s: pkill -f %s exited %d", what, pat, rc)
+            failures.append(f"{pat}: rc={rc}")
+    if failures:
+        return {"ok": False, "error": "pkill failed: " + "; ".join(failures)}
+    return {"ok": True}
+
+
 def llama_bench_cancel(authorization: Optional[str] = Header(default=None)) -> dict[str, Any]:
     _require_ctx().check_bearer(authorization); _llama_check_enabled()
     _bench_cancel_event.set()
     proc, pgid = _bench_proc, _bench_pgid
     if proc is None:
-        with best_effort("bench cancel: pkill stray bench procs", log=log):
-            subprocess.run(['pkill', '-9', '-f', 'llama-bench'], capture_output=True, timeout=3)
-            subprocess.run(['pkill', '-9', '-f', 'llama-batched-bench'], capture_output=True, timeout=3)
-        return {"ok": True, "msg": "no tracked benchmark process"}
+        res = _pkill_strays(['llama-bench', 'llama-batched-bench'], "bench cancel")
+        if res["ok"]:
+            res["msg"] = "no tracked benchmark process"
+        return res
     try:
         if pgid is not None:
             try: os.killpg(pgid, signal.SIGTERM)
@@ -2390,9 +2408,10 @@ def llama_autotune_cancel(authorization: Optional[str] = Header(default=None)) -
     _autotune_cancel_event.set()
     proc, pgid = _autotune_proc, _autotune_pgid
     if proc is None:
-        with best_effort("autotune cancel: pkill stray llama-server", log=log):
-            subprocess.run(['pkill', '-9', '-f', 'llama-server'], capture_output=True, timeout=3)
-        return {"ok": True, "msg": "no tracked autotune process"}
+        res = _pkill_strays(['llama-server'], "autotune cancel")
+        if res["ok"]:
+            res["msg"] = "no tracked autotune process"
+        return res
     try:
         if pgid is not None:
             try: os.killpg(pgid, signal.SIGTERM)
