@@ -108,6 +108,9 @@ _STREAM_READ_TIMEOUT_S = 120.0
 # configurable via [manager].
 _STREAM_KEEPALIVE_S = float(getattr(settings.manager, "stream_keepalive_s", 8.0) or 8.0)
 _STREAM_MAX_LIFETIME_S = float(getattr(settings.manager, "stream_max_lifetime_s", 120.0) or 120.0)
+# Lifetime cap for proxied long-running operation streams (build/download/
+# bench/autotune), which legitimately outlast the default cap.
+_STREAM_OP_MAX_LIFETIME_S = float(getattr(settings.manager, "stream_op_max_lifetime_s", 3600.0) or 3600.0)
 
 
 def _proxy_error(message: str, status: int, detail: object = None) -> Response:
@@ -357,12 +360,16 @@ def proxy_to_primary(kind: str, method: str, path: str,
 
 def proxy_stream_to_primary(kind: str, path: str, *, primary_kind: "str | None" = None,
                             agent_id: "str | None" = None,
-                            read_timeout: float = _STREAM_READ_TIMEOUT_S):
+                            read_timeout: float = _STREAM_READ_TIMEOUT_S,
+                            long_running: bool = False):
     """SSE/streaming variant of proxy_to_primary — opens a long-lived GET
     to the target agent's callback URL and pipes chunks back as a Flask
     Response. agent_id defaults to the ?agent= picker selection (no model
     pin on streams, so picker > default). read_timeout caps how long a
-    silent upstream may pin the worker thread before the stream is reaped."""
+    silent upstream may pin the worker thread before the stream is reaped.
+    long_running uses the longer op-stream lifetime cap for builds/downloads
+    that legitimately outlast the default cap."""
+    max_lifetime = _STREAM_OP_MAX_LIFETIME_S if long_running else _STREAM_MAX_LIFETIME_S
     pk = primary_kind or kind
     if agent_id is None:
         agent_id = _picker_agent_id()
@@ -403,7 +410,7 @@ def proxy_stream_to_primary(kind: str, path: str, *, primary_kind: "str | None" 
                          path, agent["agent_id"][:8], agent.get("hostname"),
                          upstream.status_code)
                 response = current_app.response_class(
-                    thread_pumped(upstream, path),
+                    thread_pumped(upstream, path, max_lifetime_s=max_lifetime),
                     mimetype=upstream.headers.get("Content-Type", "text/event-stream"),
                     headers={
                         "Cache-Control": "no-cache",

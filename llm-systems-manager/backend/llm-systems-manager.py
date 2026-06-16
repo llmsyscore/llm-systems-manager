@@ -153,7 +153,7 @@ def _local_hostname() -> str:
 # banner reads it. Bump suffix (-1, -2, …) for same-day iterations; roll
 # the date for a new day's first change.
 # ---------------------------------------------------------------------------
-__version__ = "v2026.06.16-1"
+__version__ = "v2026.06.16-2"
 
 # Wall-clock at first import (Cheroot main process); the shutdown banner
 # reads it for the uptime line.
@@ -1711,7 +1711,7 @@ def llm_download_stream_info():
 
 @app.route("/api/llm/download/stream")
 def llm_download_stream():
-    return proxies.proxy_stream_to_primary("llama", "/llama/download/stream")
+    return proxies.proxy_stream_to_primary("llama", "/llama/download/stream", long_running=True)
 
 
 @app.route("/api/llm/build/stream-info")
@@ -1736,7 +1736,7 @@ def llm_build():
 
 @app.route("/api/llm/build/stream")
 def llm_build_stream():
-    return proxies.proxy_stream_to_primary("llama", "/llama/build/stream")
+    return proxies.proxy_stream_to_primary("llama", "/llama/build/stream", long_running=True)
 
 
 @app.route("/api/benchmark/run", methods=["POST"])
@@ -1774,7 +1774,7 @@ def benchmark_run():
 
 @app.route("/api/benchmark/stream")
 def benchmark_stream():
-    proxied = proxies.proxy_stream_to_primary("llama", "/llama/bench/stream")
+    proxied = proxies.proxy_stream_to_primary("llama", "/llama/bench/stream", long_running=True)
     if proxied is not None:
         return proxied
     from flask import stream_with_context
@@ -1992,7 +1992,7 @@ def llm_autotune_run():
 
 @app.route("/api/llm/autotune/stream")
 def llm_autotune_stream():
-    proxied = proxies.proxy_stream_to_primary("llama", "/llama/autotune/stream")
+    proxied = proxies.proxy_stream_to_primary("llama", "/llama/autotune/stream", long_running=True)
     if proxied is not None:
         return proxied
     return jsonify({"ok": False, "error": "no primary llama agent set"}), 503

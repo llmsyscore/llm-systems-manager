@@ -48,6 +48,9 @@ stream_reserve_threads = 24
 # use a longer internal cap since they write every ~0.4s.
 stream_keepalive_s = 8
 stream_max_lifetime_s = 120
+# Lifetime cap for proxied long-running op streams (build/download/bench/
+# autotune); raise on slow hosts or large downloads.
+stream_op_max_lifetime_s = 3600
 # Standalone WebSocket proxy port — separate threaded `websockets` server, not
 # the Cheroot WSGI app. Browsers connect to it at /ws/alarm and the manager
 # bridges to the alarm-engine /ws (verifying the AE's internal-CA cert upstream).

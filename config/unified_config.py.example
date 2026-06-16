@@ -198,6 +198,9 @@ class ManagerConfig(BaseModel):
     # lifetime cap so a departed browser's slot is always released.
     stream_keepalive_s: float = 8.0
     stream_max_lifetime_s: float = 120.0
+    # Lifetime cap for proxied long-running operation streams (build, model
+    # download, bench, autotune); raise on slow hosts/large downloads.
+    stream_op_max_lifetime_s: float = 3600.0
     tls_port: int = 5443  # 0 disables HTTPS
     # Standalone websockets server (separate daemon thread, NOT Cheroot/WSGI)
     # that proxies the alarm-engine WebSocket. Browsers connect here at
