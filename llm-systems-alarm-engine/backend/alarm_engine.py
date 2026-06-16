@@ -65,7 +65,7 @@ from .storage.influxdb_client import InfluxDBClient
 # (-1, -2, …) for same-day iterations; roll the date for a new day's first
 # change.
 # ---------------------------------------------------------------------------
-__version__ = "v2026.06.15-9"
+__version__ = "v2026.06.15-10"
 from .storage import influx_monitor as _influx_monitor
 from .models.alarm_rule import (
     AlarmRuleCreate,
@@ -218,11 +218,10 @@ _DEFAULT_RULES: list[dict] = [
 def _seed_default_rules(repo: RuleRepository) -> None:
     """Idempotently seed a baseline set of threshold rules if none exist.
 
-    raise_on_error=True is critical: without it, an InfluxDB outage that
-    causes query_rules() to silently return [] would make us re-seed the 5
-    defaults and overshadow any custom rules already in the bucket
-    (Phase-3 migration loss mode). With it, an InfluxDB failure aborts
-    the seed entirely — the loop will re-evaluate on the next startup.
+    Rules live in SQLite, which raises on read failure rather than
+    returning []; raise_on_error is now a no-op kept for call-site
+    stability. A read error here aborts the seed so an empty result can't
+    overshadow existing custom rules.
     """
     try:
         existing = repo.get_all(raise_on_error=True)
@@ -732,7 +731,7 @@ async def health_check() -> dict:
     process up but InfluxDB unreachable" via the JSON body rather than
     HTTP code.
     """
-    import requests as _r
+    import requests
     influx_status = "not configured"
     influx_latency_ms: float | None = None
     influx_version: str | None = None
@@ -740,7 +739,7 @@ async def health_check() -> dict:
         url = f"http://{settings.influxdb.host}:{settings.influxdb.port}/ping"
         try:
             t0 = time.perf_counter()
-            resp = _r.get(url, timeout=settings.alarm_engine.timeouts.influxdb_ping)
+            resp = requests.get(url, timeout=settings.alarm_engine.timeouts.influxdb_ping)
             influx_latency_ms = round((time.perf_counter() - t0) * 1000, 1)
             influx_status = "connected" if resp.status_code in (200, 204) else f"http_{resp.status_code}"
             influx_version = resp.headers.get("X-Influxdb-Version") or None
@@ -1408,10 +1407,10 @@ def _resolve_ae_path(p: str) -> Path:
     """Resolve a configured cert path; relative paths are anchored at the
     alarm-engine package root (…/llm-systems-alarm-engine), where its data/
     dir lives — the same place the manager writes / the admin copies ae-tls.*."""
-    pp = Path(p).expanduser()
-    if not pp.is_absolute():
-        pp = Path(__file__).resolve().parent.parent / pp
-    return pp
+    resolved = Path(p).expanduser()
+    if not resolved.is_absolute():
+        resolved = Path(__file__).resolve().parent.parent / resolved
+    return resolved
 
 
 def main() -> None:

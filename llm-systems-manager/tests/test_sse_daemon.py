@@ -13,8 +13,8 @@ SECRET = b"x" * 32
 PATH = "/sse/llama-state"
 
 # Disconnect-cleanup poll: 50 × 0.02 s = up to 1 s for the handler to release.
-CLEANUP_POLL_ATTEMPTS = 50
-CLEANUP_POLL_INTERVAL_S = 0.02
+HANDLER_CLEANUP_POLL_ATTEMPTS = 50
+HANDLER_CLEANUP_POLL_INTERVAL_S = 0.02
 
 
 def _mint(agent_id, path=PATH, ttl=300, secret=SECRET):
@@ -60,12 +60,12 @@ async def _read_frame(resp):
 async def test_stream_initial_broadcast_and_disconnect_cleanup():
     from aiohttp.test_utils import TestClient, TestServer
 
-    st = provider_state._ProviderSampleStore()
+    store = provider_state._ProviderSampleStore()
     snap = {"state": "sleeping", "model": None}
     app = sse_daemon._build_app(
         secret=SECRET, snapshot_fn=lambda aid: snap,
         lifetime_s=5.0, keepalive_s=0.2,
-        is_shutting_down=lambda: False, store=st,
+        is_shutting_down=lambda: False, store=store,
     )
     async with TestClient(TestServer(app)) as client:
         token = _mint("ag1")
@@ -75,26 +75,26 @@ async def test_stream_initial_broadcast_and_disconnect_cleanup():
         assert '"state": "sleeping"' in first
         assert sse_daemon.active_count() == 1
         # a broadcast reaches the open stream
-        st.broadcast_if_changed("llama", "ag1", {"state": "awake"}, ("state",))
+        store.broadcast_if_changed("llama", "ag1", {"state": "awake"}, ("state",))
         nxt = await _read_frame(resp)
         assert '"state": "awake"' in nxt
         resp.close()  # client disconnect
     # after disconnect the handler's finally must release the subscription
-    for _ in range(CLEANUP_POLL_ATTEMPTS):
+    for _ in range(HANDLER_CLEANUP_POLL_ATTEMPTS):
         if sse_daemon.active_count() == 0:
             break
-        await asyncio.sleep(CLEANUP_POLL_INTERVAL_S)
+        await asyncio.sleep(HANDLER_CLEANUP_POLL_INTERVAL_S)
     assert sse_daemon.active_count() == 0
 
 
 async def test_stream_rejects_bad_token():
     from aiohttp.test_utils import TestClient, TestServer
 
-    st = provider_state._ProviderSampleStore()
+    store = provider_state._ProviderSampleStore()
     app = sse_daemon._build_app(
         secret=SECRET, snapshot_fn=lambda aid: {"state": "x"},
         lifetime_s=5.0, keepalive_s=0.2,
-        is_shutting_down=lambda: False, store=st,
+        is_shutting_down=lambda: False, store=store,
     )
     async with TestClient(TestServer(app)) as client:
         resp = await client.get(f"{PATH}?agent=ag1&token=bogus.sig")
