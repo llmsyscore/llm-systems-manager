@@ -3,6 +3,10 @@
 // ---------------------------------------------------------------------------
 let _lmsMetrics = {};
 
+// Normalize for matching: replace slashes + hyphens with underscores, lowercase.
+// Keep the @quant suffix so q4_k_m != iq4_xs.
+function normId(id) { return (id || '').replace(/[\/\-]/g, '_').toLowerCase(); }
+
 const lmsRamChartCtx = document.getElementById('lmsRamChart')?.getContext('2d');
 const lmsRamChart = lmsRamChartCtx ? new Chart(lmsRamChartCtx, {
   type: 'line',
@@ -163,16 +167,15 @@ async function fetchLMStudioMetrics() {
     // Model list — use ps for status, models for IDs
     const modelListEl = document.getElementById('lmsDashModelList');
     if (modelListEl) {
-      function normId2(id) { return (id||'').replace(/[\/\-]/g,'_').toLowerCase(); }
       const displayModels = models.filter(m => !m.id.toLowerCase().includes('embed'));
       const psOnly2 = ps.filter(p => {
-        const pn = normId2(p.identifier || p.model);
-        return !displayModels.some(m => normId2(m.id) === pn) &&
+        const pn = normId(p.identifier || p.model);
+        return !displayModels.some(m => normId(m.id) === pn) &&
                !(p.identifier || p.model || '').toLowerCase().includes('embed');
       });
       const listRows = [
         ...displayModels.map(m => {
-          const pr = ps.find(p => normId2(p.identifier || p.model) === normId2(m.id));
+          const pr = ps.find(p => normId(p.identifier || p.model) === normId(m.id));
           return { name: m.id, status: pr?.status || 'IDLE', size: pr?.size || '' };
         }),
         ...psOnly2.map(p => ({ name: p.model || p.identifier, status: p.status || 'IDLE', size: p.size || '' })),
@@ -304,10 +307,6 @@ function renderLMSModelCards(ps, models) {
   _lmsLastModels = models;
   const sortSel = document.getElementById('lmsModelSortSel');
   if (sortSel && sortSel.value !== _currentLmsModelSort()) sortSel.value = _currentLmsModelSort();
-
-  // Normalize for matching: replace slashes + hyphens with underscores, lowercase.
-  // Keep the @quant suffix so q4_k_m != iq4_xs.
-  function normId(id) { return (id || '').replace(/[\/\-]/g, '_').toLowerCase(); }
 
   // Filter out embedding models
   const displayModels = (models || []).filter(m => !m.id.toLowerCase().includes('embed'));

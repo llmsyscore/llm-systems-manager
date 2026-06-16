@@ -2,6 +2,7 @@
 
 import json
 import logging
+import time
 import uuid
 from datetime import datetime, timezone
 from .._best_effort import best_effort
@@ -87,7 +88,7 @@ class RuleRepository:
         return None
 
     def _iter_cached_rules(self) -> list[AlarmRule]:
-        """Yield all AlarmRule objects currently in the cache."""
+        """Return all AlarmRule objects currently in the cache."""
         rules: list[AlarmRule] = []
         for key in list(self.cache._cache.keys()):
             if not key.startswith("rule:"):
@@ -120,9 +121,8 @@ class RuleRepository:
             return rules
         # The rule-eval cycle re-asks every 15s; even sub-ms SQLite reads
         # add up across the repeated AlarmRule rebuilds.
-        import time as _t
         ts = self._all_cache_ts.get(enabled_only, 0.0)
-        if enabled_only in self._all_cache and (_t.time() - ts) < self._all_cache_ttl:
+        if enabled_only in self._all_cache and (time.time() - ts) < self._all_cache_ttl:
             return list(self._all_cache[enabled_only])
         rules_data = self.settings_db.query_rules(enabled_only=enabled_only)
         result: list[AlarmRule] = []
@@ -132,7 +132,7 @@ class RuleRepository:
             except Exception:
                 continue
         self._all_cache[enabled_only] = list(result)
-        self._all_cache_ts[enabled_only] = _t.time()
+        self._all_cache_ts[enabled_only] = time.time()
         return result
 
     def get_by_metric(self, source: str, metric_name: str, enabled_only: bool = True) -> list[AlarmRule]:
@@ -285,7 +285,7 @@ class RuleRepository:
             notification_channel_ids=[uuid.UUID(i) if isinstance(i, str) else i for i in ncids_raw],
             quiet_hours_start=data.get("quiet_hours_start"),
             quiet_hours_end=data.get("quiet_hours_end"),
-            auto_resolve_cycles=int(data.get("auto_resolve_cycles", 2) or 0),
+            auto_resolve_cycles=(int(data["auto_resolve_cycles"]) if data.get("auto_resolve_cycles") is not None else 2),
             created_at=_parse_dt(data.get("created_at")) or now_utc(),
             updated_at=_parse_dt(data.get("updated_at")) or now_utc(),
             last_evaluated_at=_parse_dt(data.get("last_evaluated_at")),
@@ -336,12 +336,11 @@ class AlertRepository:
 
     def get_active(self) -> list[Alert]:
         """Active + acknowledged alerts. Cached for the rule-eval hot path."""
-        import time as _t
-        if self._active_cache is not None and (_t.time() - self._active_cache_ts) < self._active_cache_ttl:
+        if self._active_cache is not None and (time.time() - self._active_cache_ts) < self._active_cache_ttl:
             return self._active_cache
         if self.alarms_db is None:
             self._active_cache = []
-            self._active_cache_ts = _t.time()
+            self._active_cache_ts = time.time()
             return []
         out: list[Alert] = []
         for row in self.alarms_db.query_active():
@@ -350,7 +349,7 @@ class AlertRepository:
             except Exception:
                 continue
         self._active_cache = out
-        self._active_cache_ts = _t.time()
+        self._active_cache_ts = time.time()
         return out
 
     async def list_alerts(
