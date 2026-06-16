@@ -38,6 +38,12 @@ class ConfigDeserializationError(Exception):
 class RuleRepository:
     """Repository for alarm rules."""
 
+    # Optional fields that accept None on update so users can clear them.
+    _NULLABLE_UPDATE_FIELDS = frozenset({
+        "source_host", "description",
+        "quiet_hours_start", "quiet_hours_end",
+    })
+
     def __init__(self, cache: MetricCache, settings_db: Optional[AeSettingsDB] = None):
         self.cache = cache
         self.settings_db = settings_db
@@ -162,17 +168,9 @@ class RuleRepository:
 
         # Iterate model fields directly so typed values (RuleSpecificConfig,
         # enums, UUIDs) are preserved instead of being flattened to plain dicts.
-        # Optional fields (source_host, description, quiet_hours_*) must accept
-        # None so users can clear them — e.g. switch a rule from a specific
-        # device back to "any device". Required fields skip None to avoid
-        # corrupting the rule on a partial-update payload.
-        NULLABLE_FIELDS = {
-            "source_host", "description",
-            "quiet_hours_start", "quiet_hours_end",
-        }
         for key in update.model_fields_set:
             value = getattr(update, key)
-            if value is None and key not in NULLABLE_FIELDS:
+            if value is None and key not in self._NULLABLE_UPDATE_FIELDS:
                 continue
             setattr(rule, key, value)
         rule.updated_at = now_utc()
