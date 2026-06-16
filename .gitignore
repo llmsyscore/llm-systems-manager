@@ -64,3 +64,6 @@ tools/*
 /.envrc
 /.vs/
 /.vscode/
+
+# Design assets
+design/
