@@ -153,7 +153,7 @@ def _local_hostname() -> str:
 # banner reads it. Bump suffix (-1, -2, …) for same-day iterations; roll
 # the date for a new day's first change.
 # ---------------------------------------------------------------------------
-__version__ = "v2026.06.15-14"
+__version__ = "v2026.06.16-1"
 
 # Wall-clock at first import (Cheroot main process); the shutdown banner
 # reads it for the uptime line.
@@ -2705,24 +2705,16 @@ def _brand_palette() -> dict:
 
 
 def _brand_logo_svg(p: dict, size: int = 66) -> str:
-    """The circuit-chip logo recolored to palette `p`. Mirrors the dashboard
-    header logo so the two stay visually identical."""
+    """The concentric-ring "Context" logo recolored to palette `p`. Mirrors
+    the dashboard header logo so the two stay visually identical."""
     return f"""<svg width="{size}" height="{size}" viewBox="0 0 32 32" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
-  <rect x="7" y="7" width="18" height="18" rx="3" fill="{p['chip1']}" stroke="{p['stroke']}" stroke-width="1.4"/>
-  <rect x="10.5" y="10.5" width="11" height="11" rx="1.5" fill="{p['chip2']}" stroke="{p['mid']}" stroke-width="0.9"/>
-  <circle cx="16" cy="16" r="2.2" fill="{p['core']}"/>
-  <line x1="13.8" y1="16" x2="12.5" y2="16" stroke="{p['mid']}" stroke-width="0.7" stroke-linecap="round"/>
-  <line x1="18.2" y1="16" x2="19.5" y2="16" stroke="{p['mid']}" stroke-width="0.7" stroke-linecap="round"/>
-  <line x1="16" y1="13.8" x2="16" y2="12.5" stroke="{p['mid']}" stroke-width="0.7" stroke-linecap="round"/>
-  <line x1="16" y1="18.2" x2="16" y2="19.5" stroke="{p['mid']}" stroke-width="0.7" stroke-linecap="round"/>
-  <circle cx="12.5" cy="12.5" r="0.9" fill="{p['stroke']}"/><circle cx="19.5" cy="12.5" r="0.9" fill="{p['stroke']}"/>
-  <circle cx="12.5" cy="19.5" r="0.9" fill="{p['stroke']}"/><circle cx="19.5" cy="19.5" r="0.9" fill="{p['stroke']}"/>
-  <rect x="3.5" y="11.5" width="3" height="1.4" rx="0.5" fill="{p['stroke']}"/><rect x="3.5" y="15.3" width="3" height="1.4" rx="0.5" fill="{p['stroke']}"/>
-  <rect x="3.5" y="19.1" width="3" height="1.4" rx="0.5" fill="{p['stroke']}"/><rect x="25.5" y="11.5" width="3" height="1.4" rx="0.5" fill="{p['stroke']}"/>
-  <rect x="25.5" y="15.3" width="3" height="1.4" rx="0.5" fill="{p['stroke']}"/><rect x="25.5" y="19.1" width="3" height="1.4" rx="0.5" fill="{p['stroke']}"/>
-  <rect x="11.5" y="3.5" width="1.4" height="3" rx="0.5" fill="{p['stroke']}"/><rect x="15.3" y="3.5" width="1.4" height="3" rx="0.5" fill="{p['stroke']}"/>
-  <rect x="19.1" y="3.5" width="1.4" height="3" rx="0.5" fill="{p['stroke']}"/><rect x="11.5" y="25.5" width="1.4" height="3" rx="0.5" fill="{p['stroke']}"/>
-  <rect x="15.3" y="25.5" width="1.4" height="3" rx="0.5" fill="{p['stroke']}"/><rect x="19.1" y="25.5" width="1.4" height="3" rx="0.5" fill="{p['stroke']}"/>
+  <g fill="none" stroke-linecap="round">
+    <circle cx="16" cy="16" r="11.5" stroke="{p['stroke']}" stroke-width="1.4" opacity="0.55" stroke-dasharray="42 30" transform="rotate(20 16 16)"/>
+    <circle cx="16" cy="16" r="8.5" stroke="{p['mid']}" stroke-width="1.5" opacity="0.8" stroke-dasharray="34 19" transform="rotate(-60 16 16)"/>
+    <circle cx="16" cy="16" r="5.5" stroke="{p['core']}" stroke-width="1.6" stroke-dasharray="24 11" transform="rotate(140 16 16)"/>
+  </g>
+  <circle cx="27.5" cy="16" r="1.4" fill="{p['core']}"/>
+  <circle cx="16" cy="16" r="2.4" fill="{p['core']}"/>
 </svg>"""
 
 
