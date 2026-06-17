@@ -1113,6 +1113,7 @@ def _agent_tarball():
         proc = subprocess.Popen(
             ["tar", "-czf", "-",
              "--exclude=__pycache__", "--exclude=*.pyc",
+             "--exclude=venv", "--exclude=.pytest_cache",
              "agent"],
             cwd=str(agent_dir.parent),
             stdout=subprocess.PIPE,
