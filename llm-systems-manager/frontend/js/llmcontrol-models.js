@@ -1266,10 +1266,12 @@ function closeLlamaBuildPanel() {
 
 async function startLlamaBuild() {
   {
+    const _method = (typeof _llamaBuildMethod !== 'undefined' && _llamaBuildMethod) ? _llamaBuildMethod : '';
+    const _label = _method ? ` via ${_method}` : '';
     const ok = await _themedConfirm({
-      title:        'Rebuild llama.cpp from source?',
-      bodyHtml:     'This rebuilds llama.cpp from source on the llama agent host. It can take several minutes.',
-      confirmLabel: 'Build',
+      title:        `Update llama.cpp${_label}?`,
+      bodyHtml:     `This installs/upgrades llama.cpp${_label} on the llama agent host. It can take several minutes.`,
+      confirmLabel: 'Update',
       cancelLabel:  'Cancel',
     });
     if (!ok) return;
@@ -1312,7 +1314,8 @@ async function startLlamaBuild() {
     try { msg = JSON.parse(e.data); } catch (_) { return; }
     if (msg.type === 'keepalive') return;
     if (msg.type === 'start') {
-      if (log) log.textContent = '$ ' + (msg.cmd || 'build') + '\n\n';
+      const _m = msg.method ? `[method: ${msg.method}]\n` : '';
+      if (log) log.textContent = _m + '$ ' + (msg.cmd || 'build') + '\n\n';
     } else if (msg.type === 'line') {
       if (log) {
         log.textContent += (msg.data || msg.text || '') + '\n';

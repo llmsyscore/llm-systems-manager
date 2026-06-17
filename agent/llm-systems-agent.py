@@ -59,7 +59,7 @@ except ImportError:
             os.chmod(tmp, mode)
         tmp.replace(p)
 
-VERSION = "v2026.06.15-4"
+VERSION = "v2026.06.17-2"
 
 
 def _detect_install_dir() -> str:
@@ -301,6 +301,9 @@ class AgentConfig:
     LLAMA_STATE_FILE: str = "/tmp/llama-server-last-state"
     LLAMA_SYSTEMD_UNIT: str = "llama_server.service"
     LLAMA_API_URL: str = "http://localhost:8080"
+    LLAMA_BUILD_METHOD: str = ""          # custom_script|source|release_binary|conda|homebrew
+    LLAMA_BUILD_DIR: str = ""             # managed install root; blank => ~/.local/share/llama.cpp
+    LLAMA_BUILD_OPTS: dict = {}           # YAML-only; per-method knobs
 
     PERF_CONTROLLER_ENABLED: bool = False
     PERF_TARGET_AWAKE: str = "performance"

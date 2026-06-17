@@ -637,6 +637,14 @@ function _applyLlamaStatePayload(data) {
       checkConfig();
     }
     _lastKnownState = state;
+
+    _llamaBuildMethod = (data && data.build_method) || '';
+    const _bbtn = document.getElementById('llamaBtnBuild');
+    if (_bbtn) {
+      _bbtn.textContent = _llamaBuildMethod
+        ? `⬆ Update llama.cpp (${_llamaBuildMethod})`
+        : '⬆ Update llama.cpp';
+    }
 }
 
 async function pollServerState() {
@@ -654,6 +662,9 @@ async function pollServerState() {
     _release(_pk);
   }
 }
+
+// Cached build method from the last /api/llama-state payload — read cross-file.
+var _llamaBuildMethod = '';
 
 // SSE-driven llama-state updates. Replaces the previous 2s polling loop —
 // the manager broadcasts a payload whenever (state | model | agent_online)

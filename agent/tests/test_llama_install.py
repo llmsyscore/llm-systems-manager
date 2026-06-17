@@ -1,0 +1,191 @@
+# agent/tests/test_llama_install.py
+from __future__ import annotations
+
+import types
+import pytest
+from conftest import llama_install as li
+
+
+def _cfg(**kw):
+    base = dict(LLAMA_BIN="/usr/local/llama-server/llama-server",
+                LLAMA_BUILD_DIR="", LLAMA_BUILD_OPTS={},
+                LLAMA_SYSTEMD_UNIT="llama_server.service")
+    base.update(kw)
+    return types.SimpleNamespace(**base)
+
+
+def test_custom_script_default_uses_legacy_path():
+    plan = li.plan("custom_script", {}, _cfg())
+    assert plan.method == "custom_script"
+    assert plan.steps == [["sudo", "-n", li.LEGACY_SCRIPT]]
+    assert plan.resolve_binary() == "/usr/local/llama-server/llama-server"
+
+
+def test_custom_script_honors_script_path_opt():
+    plan = li.plan("custom_script", {"script_path": "/opt/x/build.sh"}, _cfg())
+    assert plan.steps == [["sudo", "-n", "/opt/x/build.sh"]]
+
+
+def test_empty_method_falls_back_to_custom_script():
+    plan = li.plan("", {}, _cfg())
+    assert plan.method == "custom_script"
+
+
+def test_unknown_method_raises_install_error():
+    with pytest.raises(li.InstallError):
+        li.plan("nixpkgs", {}, _cfg())
+
+
+def test_source_clone_when_absent(tmp_path):
+    cfg = _cfg(LLAMA_BUILD_DIR=str(tmp_path))
+    plan = li.plan("source", {"git_ref": "b1234", "backend": "vulkan"}, cfg)
+    src = str(tmp_path / "src")
+    build = str(tmp_path / "src" / "build")
+    assert plan.method == "source"
+    assert plan.steps[0] == ["git", "clone", "--depth", "1", "--branch", "b1234", "--", li.REPO_URL, src]
+    assert ["cmake", "-S", src, "-B", build, "-DGGML_VULKAN=ON"] in plan.steps
+    assert ["cmake", "--build", build, "--target", "llama-server", "-j"] in plan.steps
+    assert plan.resolve_binary() == str(tmp_path / "src" / "build" / "bin" / "llama-server")
+    assert all(s[0] != "sudo" for s in plan.steps)
+
+
+def test_source_fetch_when_present(tmp_path):
+    (tmp_path / "src").mkdir()
+    cfg = _cfg(LLAMA_BUILD_DIR=str(tmp_path))
+    plan = li.plan("source", {}, cfg)
+    src = str(tmp_path / "src")
+    assert plan.steps[0] == ["git", "-C", src, "fetch", "--depth", "1", "origin", "--", "master"]
+    assert plan.steps[1] == ["git", "-C", src, "checkout", "-f", "FETCH_HEAD"]
+
+
+def test_source_rejects_flaglike_ref(tmp_path):
+    cfg = _cfg(LLAMA_BUILD_DIR=str(tmp_path))
+    for bad in ("--upload-pack=evil", "-x", "a b", "foo;bar", "../etc", "a..b", "/abs", "trail/"):
+        with pytest.raises(li.InstallError):
+            li.plan("source", {"git_ref": bad}, cfg)
+
+
+def test_source_rejects_unknown_backend(tmp_path):
+    cfg = _cfg(LLAMA_BUILD_DIR=str(tmp_path))
+    with pytest.raises(li.InstallError):
+        li.plan("source", {"backend": "cude"}, cfg)
+
+
+def test_source_jobs_caps_parallelism(tmp_path):
+    cfg = _cfg(LLAMA_BUILD_DIR=str(tmp_path))
+    plan = li.plan("source", {"jobs": 4}, cfg)
+    build = str(tmp_path / "src" / "build")
+    assert ["cmake", "--build", build, "--target", "llama-server", "-j", "4"] in plan.steps
+
+
+# Task 4: release_binary handler
+
+def test_release_binary_builds_download_steps(tmp_path, monkeypatch):
+    monkeypatch.setattr(li, "_resolve_release_asset",
+                        lambda version: "https://example.com/llama-bin-ubuntu-x64.zip")
+    cfg = _cfg(LLAMA_BUILD_DIR=str(tmp_path))
+    plan = li.plan("release_binary", {"version": "latest"}, cfg)
+    dest = str(tmp_path / "release")
+    assert plan.method == "release_binary"
+    assert plan.steps[0] == ["mkdir", "-p", dest]
+    # curl downloads the resolved asset URL
+    assert any(s[0] == "curl" and "https://example.com/llama-bin-ubuntu-x64.zip" in s for s in plan.steps)
+    assert all(s[0] != "sudo" for s in plan.steps)
+
+
+def test_release_binary_resolve_finds_binary(tmp_path, monkeypatch):
+    monkeypatch.setattr(li, "_resolve_release_asset", lambda version: "https://x/y.zip")
+    dest = tmp_path / "release" / "build" / "bin"
+    dest.mkdir(parents=True)
+    (dest / "llama-server").touch()
+    cfg = _cfg(LLAMA_BUILD_DIR=str(tmp_path))
+    plan = li.plan("release_binary", {}, cfg)
+    assert plan.resolve_binary() == str(dest / "llama-server")
+
+
+# Task 5: conda handler
+
+def test_conda_uses_conda_when_present(monkeypatch):
+    monkeypatch.setattr(li.shutil, "which",
+                        lambda n: "/opt/conda/bin/conda" if n == "conda"
+                        else ("/opt/conda/bin/llama-server" if n == "llama-server" else None))
+    plan = li.plan("conda", {}, _cfg())
+    assert plan.method == "conda"
+    assert plan.steps == [["conda", "install", "-y", "-c", "conda-forge", "llama-cpp"]]
+    assert plan.resolve_binary() == "/opt/conda/bin/llama-server"
+    assert all(s[0] != "sudo" for s in plan.steps)
+
+
+def test_conda_falls_back_to_mamba(monkeypatch):
+    monkeypatch.setattr(li.shutil, "which",
+                        lambda n: "/opt/conda/bin/mamba" if n == "mamba" else None)
+    plan = li.plan("conda", {}, _cfg())
+    assert plan.steps[0][0] == "mamba"
+
+
+def test_conda_missing_raises(monkeypatch):
+    monkeypatch.setattr(li.shutil, "which", lambda n: None)
+    with pytest.raises(li.InstallError):
+        li.plan("conda", {}, _cfg())
+
+
+# Task 6: homebrew handler
+
+def test_homebrew_install_when_absent(monkeypatch):
+    monkeypatch.setattr(li.shutil, "which", lambda n: "/opt/homebrew/bin/brew" if n == "brew" else None)
+    # brew list --formula llama.cpp -> not installed (rc=1)
+    monkeypatch.setattr(li.subprocess, "run",
+                        lambda *a, **k: types.SimpleNamespace(returncode=1, stdout="", stderr=""))
+    plan = li.plan("homebrew", {}, _cfg())
+    assert plan.method == "homebrew"
+    assert plan.steps == [["/opt/homebrew/bin/brew", "install", "llama.cpp"]]
+    assert all(s[0] != "sudo" for s in plan.steps)
+
+
+def test_homebrew_upgrade_when_present(monkeypatch):
+    monkeypatch.setattr(li.shutil, "which", lambda n: "/opt/homebrew/bin/brew" if n == "brew" else None)
+    monkeypatch.setattr(li.subprocess, "run",
+                        lambda *a, **k: types.SimpleNamespace(returncode=0, stdout="/opt/homebrew\n", stderr=""))
+    plan = li.plan("homebrew", {}, _cfg())
+    assert plan.steps == [["/opt/homebrew/bin/brew", "upgrade", "llama.cpp"]]
+    assert plan.resolve_binary() == "/opt/homebrew/bin/llama-server"
+
+
+def test_homebrew_missing_raises(monkeypatch):
+    monkeypatch.setattr(li.shutil, "which", lambda n: None)
+    with pytest.raises(li.InstallError):
+        li.plan("homebrew", {}, _cfg())
+
+
+# Task 7: detect_method
+
+def test_detect_homebrew_path():
+    assert li.detect_method(_cfg(LLAMA_BIN="/opt/homebrew/bin/llama-server")) == "homebrew"
+
+
+def test_detect_conda_path():
+    assert li.detect_method(_cfg(LLAMA_BIN="/home/u/miniconda3/envs/llm/bin/llama-server")) == "conda"
+
+
+def test_detect_release_binary(tmp_path):
+    binp = str(tmp_path / "release" / "build" / "bin" / "llama-server")
+    assert li.detect_method(_cfg(LLAMA_BIN=binp, LLAMA_BUILD_DIR=str(tmp_path))) == "release_binary"
+
+
+def test_detect_custom_script_when_legacy_present(monkeypatch, tmp_path):
+    monkeypatch.setattr(li.os.path, "exists", lambda p: p == li.LEGACY_SCRIPT)
+    assert li.detect_method(_cfg(LLAMA_BIN="/usr/local/llama-server/llama-server",
+                                 LLAMA_BUILD_DIR=str(tmp_path))) == "custom_script"
+
+
+def test_detect_returns_none_when_unknown(monkeypatch, tmp_path):
+    monkeypatch.setattr(li.os.path, "exists", lambda p: False)
+    assert li.detect_method(_cfg(LLAMA_BIN="/random/bin/llama-server",
+                                 LLAMA_BUILD_DIR=str(tmp_path))) is None
+
+
+def test_detect_source_when_checkout_present(tmp_path):
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "CMakeLists.txt").touch()
+    assert li.detect_method(_cfg(LLAMA_BIN="/random/bin/llama-server",
+                                 LLAMA_BUILD_DIR=str(tmp_path))) == "source"

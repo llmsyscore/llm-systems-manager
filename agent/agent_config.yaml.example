@@ -71,6 +71,13 @@ LLAMA_ENABLED: false
 # LLAMA_STATE_FILE:    "/tmp/llama-server-last-state"
 # LLAMA_SYSTEMD_UNIT:  "llama_server.service"
 # LLAMA_API_URL:       "http://localhost:8080"
+# LLAMA_BUILD_METHOD:  ""    # custom_script|source|release_binary|conda|homebrew (blank => custom_script)
+# LLAMA_BUILD_DIR:     ""    # managed install root for source/release_binary; blank => ~/.local/share/llama.cpp
+# LLAMA_BUILD_OPTS:          # per-method knobs (YAML only — not settable via LSA_* env)
+#   git_ref: master          #   source: branch/tag/commit
+#   backend: cpu             #   source: cpu|cuda|vulkan|metal|rocm
+#   version: latest          #   release_binary: 'latest' or a release tag
+#   script_path: /usr/local/llama-server/build-llama-cpp.sh   # custom_script
 
 # -- Performance controller (replaces the bash daemon) ---------------------
 # Requires LLAMA_ENABLED=true and a Linux host. The agent tails

@@ -153,7 +153,7 @@ def _local_hostname() -> str:
 # banner reads it. Bump suffix (-1, -2, …) for same-day iterations; roll
 # the date for a new day's first change.
 # ---------------------------------------------------------------------------
-__version__ = "v2026.06.16-2"
+__version__ = "v2026.06.17-1"
 
 # Wall-clock at first import (Cheroot main process); the shutdown banner
 # reads it for the uptime line.
@@ -2131,6 +2131,7 @@ def _build_llama_state_payload(agent_id: "str | None" = None) -> dict:
         "port":  8080,
         "agent_online": agent_online,
         "agent_age_s": round(agent_age, 1) if agent_age is not None else None,
+        "build_method": llama.get("build_method"),
     }
 
 

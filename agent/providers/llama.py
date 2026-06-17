@@ -28,6 +28,7 @@ import stream_pool  # type: ignore[import-not-found]  # sibling at agent root
 from _best_effort import best_effort  # type: ignore[import-not-found]  # sibling at agent root
 
 from collectors.gpu import collect_gpu  # type: ignore
+from . import llama_install
 
 # PR2: minimal spec the agent's heartbeat body emits so the manager can
 # discover what this agent serves. Manager-side providers/llama.py owns the
@@ -99,7 +100,6 @@ _LLAMA_VALUE_FLAGS = {
 _build_queue: "_queue_lib.Queue[dict[str, Any]]" = _queue_lib.Queue(maxsize=4000)
 _build_lock = threading.Lock()
 _build_running = False
-_LLAMA_BUILD_SCRIPT = "/usr/local/llama-server/build-llama-cpp.sh"
 
 _bench_queue: "_queue_lib.Queue[dict]" = _queue_lib.Queue(maxsize=5000)
 _bench_lock = threading.Lock()
@@ -410,6 +410,7 @@ def collect_llama_for_metrics() -> dict[str, Any]:
         except Exception as e:
             log.debug("llama /slots: %s", e)
 
+    llama["build_method"] = getattr(_require_ctx().config, "LLAMA_BUILD_METHOD", "") or "custom_script"
     _llama_info_cache = llama
     return llama
 
@@ -1313,38 +1314,60 @@ def _build_put(msg: dict[str, Any]) -> None:
 
 def _llama_build_worker() -> None:
     global _build_running
-    cmd = ["sudo", "-n", _LLAMA_BUILD_SCRIPT]
     rc = 1
+    resolved = None
+    cfg = _require_ctx().config
+    method = (getattr(cfg, "LLAMA_BUILD_METHOD", "") or "custom_script")
+    opts = getattr(cfg, "LLAMA_BUILD_OPTS", None) or {}
+    ansi_re = re.compile(r'\x1b\[[0-9;]*[mGKHF]')
     try:
+        try:
+            iplan = llama_install.plan(method, opts, cfg)
+        except llama_install.InstallError as e:
+            _build_put({"type": "line", "data": f"[error] {e}", "text": f"[error] {e}"})
+            rc = 2
+            return
         env = dict(os.environ)
+        env.update(iplan.env or {})
         env["PYTHONUNBUFFERED"] = "1"
         env["FORCE_COLOR"] = "0"
-        ansi_re = re.compile(r'\x1b\[[0-9;]*[mGKHF]')
-        _build_put({"type": "start", "cmd": " ".join(cmd)})
-        proc = subprocess.Popen(
-            cmd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            stdin=subprocess.DEVNULL,
-            text=True,
-            bufsize=1,
-            close_fds=True,
-            env=env,
-        )
-        assert proc.stdout is not None
-        for raw in iter(proc.stdout.readline, ""):
-            line = ansi_re.sub("", raw).rstrip()
-            if line:
-                _build_put({"type": "line", "data": line, "text": line})
-        proc.wait()
-        rc = proc.returncode if proc.returncode is not None else 1
+        joined = " && ".join(" ".join(s) for s in iplan.steps)
+        _build_put({"type": "start", "cmd": joined, "method": iplan.label})
+        rc = 0
+        for step in iplan.steps:
+            proc = subprocess.Popen(
+                step, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                stdin=subprocess.DEVNULL, text=True, bufsize=1, close_fds=True,
+                cwd=iplan.cwd, env=env,
+            )
+            assert proc.stdout is not None
+            for raw in iter(proc.stdout.readline, ""):
+                line = ansi_re.sub("", raw).rstrip()
+                if line:
+                    _build_put({"type": "line", "data": line, "text": line})
+            proc.wait()
+            rc = proc.returncode if proc.returncode is not None else 1
+            if rc != 0:
+                break
+        if rc == 0:
+            try:
+                resolved = iplan.resolve_binary()
+            except Exception as e:
+                log.debug("resolve_binary failed: %s", e)
+                resolved = None
+            bin_cfg = getattr(cfg, "LLAMA_BIN", "") or ""
+            if resolved and bin_cfg and resolved != bin_cfg:
+                warn = (f"[warn] llama-server installed at {resolved}; configured "
+                        f"LLAMA_BIN={bin_cfg} — update LLAMA_BIN and restart "
+                        f"{getattr(cfg, 'LLAMA_SYSTEMD_UNIT', 'the llama unit')} to run it")
+                _build_put({"type": "line", "data": warn, "text": warn})
     except FileNotFoundError as e:
         _build_put({"type": "line", "data": f"[error] {e}", "text": f"[error] {e}"})
     except Exception as e:
         log.error("_llama_build_worker error: %s", e, exc_info=True)
         _build_put({"type": "line", "data": f"[error] {e}", "text": f"[error] {e}"})
     finally:
-        _build_put({"type": "done", "ok": rc == 0, "rc": rc})
+        _build_put({"type": "done", "ok": rc == 0, "rc": rc, "method": method, "path": resolved})
         with _build_lock:
             _build_running = False
 
