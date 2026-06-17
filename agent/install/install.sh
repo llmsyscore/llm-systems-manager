@@ -88,6 +88,7 @@ LLAMA_LOG_FILE_OVERRIDE=""
 LLAMA_SYSTEMD_UNIT_OVERRIDE=""
 LLAMA_BIN_OVERRIDE=""
 LLAMA_CONFIG_INI_OVERRIDE=""
+LLAMA_BUILD_METHOD_OVERRIDE=""
 LMS_API_URL_OVERRIDE=""
 LMS_CMD_OVERRIDE=""
 OPENCLAW_AGENTS_DIR_OVERRIDE=""
@@ -1973,6 +1974,18 @@ _detect_llama() {
   fi
 
   # When found OR the user opted into manual configuration, gather paths.
+  # Detect existing install method from the binary path.
+  detected_build_method="custom_script"
+  case "$detected_bin" in
+    */homebrew/*|/opt/homebrew/*)            detected_build_method="homebrew" ;;
+    */envs/*|*/miniconda*/*|*/anaconda*/*)   detected_build_method="conda" ;;
+  esac
+  if [[ "$detected_build_method" == "custom_script" \
+        && ! -f /usr/local/llama-server/build-llama-cpp.sh ]] \
+     && command -v brew >/dev/null 2>&1 && [[ -x /opt/homebrew/bin/llama-server ]]; then
+    detected_build_method="homebrew"
+  fi
+
   # Skip prompts only if there's no TTY (auto-detect with no terminal).
   ENABLE_LLAMA=true
 
@@ -1984,6 +1997,7 @@ _detect_llama() {
     LLAMA_BIN_OVERRIDE="${detected_bin}"
     LLAMA_LOG_FILE_OVERRIDE="${detected_log:-${detected_dir:+$detected_dir/llama-server.log}}"
     LLAMA_CONFIG_INI_OVERRIDE="${detected_config}"
+    LLAMA_BUILD_METHOD_OVERRIDE="${detected_build_method:-custom_script}"
     return
   fi
 
@@ -2068,6 +2082,9 @@ _detect_llama() {
 
   read -rp "      systemd unit [llama_server.service]: " _v
   LLAMA_SYSTEMD_UNIT_OVERRIDE="${_v:-llama_server.service}"
+
+  read -rp "      Build method [$detected_build_method]: " _v
+  LLAMA_BUILD_METHOD_OVERRIDE="${_v:-$detected_build_method}"
 
   echo "      → llama.cpp configured"
 
@@ -2998,7 +3015,7 @@ if [[ ! -f "$INSTALL_DIR/agent_config.yaml" ]]; then
     "$USER_ARG" "$INSTALL_DIR" "$HOSTNAME_OVERRIDE" "$DESCRIPTION_OVERRIDE" \
     "$ENABLE_PERF" "$ENABLE_LLAMA" "$ENABLE_LMS" "$ENABLE_OPENCLAW" "$ENABLE_IMGGEN" \
     "$LLAMA_API_URL_OVERRIDE" "$LLAMA_LOG_FILE_OVERRIDE" "$LLAMA_SYSTEMD_UNIT_OVERRIDE" \
-    "$LLAMA_BIN_OVERRIDE" "$LLAMA_CONFIG_INI_OVERRIDE" \
+    "$LLAMA_BIN_OVERRIDE" "$LLAMA_CONFIG_INI_OVERRIDE" "$LLAMA_BUILD_METHOD_OVERRIDE" \
     "$LMS_API_URL_OVERRIDE" "$LMS_CMD_OVERRIDE" \
     "$OPENCLAW_AGENTS_DIR_OVERRIDE" \
     "$ENABLE_MONITOR_MANAGER" "$ENABLE_MONITOR_ALARM" \
@@ -3009,7 +3026,7 @@ import sys, re
  agent_user, install_dir, hostname, description,
  perf, llama, lms, openclaw, imggen,
  llama_api, llama_log, llama_unit,
- llama_bin, llama_ini,
+ llama_bin, llama_ini, llama_build_method,
  lms_api, lms_cmd,
  oc_dir,
  monitor_manager, monitor_alarm,
@@ -3203,7 +3220,8 @@ if rules_for_host:
 
 # Per-provider overrides (only if non-empty)
 if llama_bin:   _set_quoted('LLAMA_BIN',          llama_bin)
-if llama_ini:   _set_quoted('LLAMA_CONFIG_INI',   llama_ini)
+if llama_ini:           _set_quoted('LLAMA_CONFIG_INI',   llama_ini)
+if llama_build_method:  _set_quoted('LLAMA_BUILD_METHOD', llama_build_method)
 if llama_log:   _set_quoted('LLAMA_LOG_FILE',     llama_log)
 if llama_api:   _set_quoted('LLAMA_API_URL',      llama_api)
 if llama_unit:  _set_quoted('LLAMA_SYSTEMD_UNIT', llama_unit)
