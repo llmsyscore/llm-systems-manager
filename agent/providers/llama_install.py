@@ -7,6 +7,7 @@ standalone in tests via importlib without triggering providers/__init__.py.
 from __future__ import annotations
 
 import os
+import pwd
 import re
 import shutil
 import subprocess
@@ -40,11 +41,23 @@ class InstallPlan:
     resolve_binary: "Callable[[], str | None]"
 
 
+def _agent_home(cfg) -> Path:
+    """AGENT_USER's home (not euid's), mirroring _hf_cache_root in llama.py;
+    falls back to the current home when AGENT_USER is unset/unknown."""
+    user = (getattr(cfg, "AGENT_USER", "") or "").strip()
+    if user:
+        try:
+            return Path(pwd.getpwnam(user).pw_dir)
+        except KeyError:
+            pass
+    return Path(os.path.expanduser("~"))
+
+
 def _build_root(cfg) -> Path:
     d = (getattr(cfg, "LLAMA_BUILD_DIR", "") or "").strip()
     if d:
         return Path(d).expanduser()
-    return Path(os.path.expanduser("~")) / ".local" / "share" / "llama.cpp"
+    return _agent_home(cfg) / ".local" / "share" / "llama.cpp"
 
 
 def _h_custom_script(opts: dict, cfg) -> InstallPlan:
@@ -60,15 +73,22 @@ def _h_custom_script(opts: dict, cfg) -> InstallPlan:
 _GIT_REF_RE = re.compile(r"[A-Za-z0-9._/][A-Za-z0-9._/-]*\Z")
 
 
+def _valid_git_ref(ref: str) -> bool:
+    return bool(_GIT_REF_RE.match(ref)) and ".." not in ref \
+        and not ref.startswith("/") and not ref.endswith("/")
+
+
 def _h_source(opts: dict, cfg) -> InstallPlan:
     root = _build_root(cfg)
     src = root / "src"
     build = src / "build"
     ref = (opts.get("git_ref") or "master").strip()
-    if not _GIT_REF_RE.match(ref):
-        raise InstallError(f"invalid git_ref {ref!r} (must match {_GIT_REF_RE.pattern})")
+    if not _valid_git_ref(ref):
+        raise InstallError(f"invalid git_ref {ref!r}")
     backend = (opts.get("backend") or "cpu").strip().lower()
-    flags = _BACKEND_CMAKE.get(backend, [])
+    if backend not in _BACKEND_CMAKE:
+        raise InstallError(f"unknown backend {backend!r}; valid: {', '.join(sorted(_BACKEND_CMAKE))}")
+    flags = _BACKEND_CMAKE[backend]
     if src.exists():
         fetch = [
             ["git", "-C", str(src), "fetch", "--depth", "1", "origin", "--", ref],
@@ -76,10 +96,14 @@ def _h_source(opts: dict, cfg) -> InstallPlan:
         ]
     else:
         fetch = [["git", "clone", "--depth", "1", "--branch", ref, "--", REPO_URL, str(src)]]
+    build_step = ["cmake", "--build", str(build), "--target", "llama-server", "-j"]
+    jobs = opts.get("jobs")
+    if jobs:
+        build_step.append(str(int(jobs)))
     steps = [
         *fetch,
         ["cmake", "-S", str(src), "-B", str(build), *flags],
-        ["cmake", "--build", str(build), "--target", "llama-server", "-j"],
+        build_step,
     ]
     return InstallPlan(
         method="source", label="source", steps=steps, cwd=None, env={},

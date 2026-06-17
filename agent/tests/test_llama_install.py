@@ -42,13 +42,10 @@ def test_source_clone_when_absent(tmp_path):
     src = str(tmp_path / "src")
     build = str(tmp_path / "src" / "build")
     assert plan.method == "source"
-    # first step clones (src dir absent), then two cmake steps
-    # ref is validated and a `--` terminator separates options from positionals
     assert plan.steps[0] == ["git", "clone", "--depth", "1", "--branch", "b1234", "--", li.REPO_URL, src]
     assert ["cmake", "-S", src, "-B", build, "-DGGML_VULKAN=ON"] in plan.steps
     assert ["cmake", "--build", build, "--target", "llama-server", "-j"] in plan.steps
     assert plan.resolve_binary() == str(tmp_path / "src" / "build" / "bin" / "llama-server")
-    # no sudo anywhere
     assert all(s[0] != "sudo" for s in plan.steps)
 
 
@@ -63,6 +60,19 @@ def test_source_fetch_when_present(tmp_path):
 
 def test_source_rejects_flaglike_ref(tmp_path):
     cfg = _cfg(LLAMA_BUILD_DIR=str(tmp_path))
-    for bad in ("--upload-pack=evil", "-x", "a b", "foo;bar"):
+    for bad in ("--upload-pack=evil", "-x", "a b", "foo;bar", "../etc", "a..b", "/abs", "trail/"):
         with pytest.raises(li.InstallError):
             li.plan("source", {"git_ref": bad}, cfg)
+
+
+def test_source_rejects_unknown_backend(tmp_path):
+    cfg = _cfg(LLAMA_BUILD_DIR=str(tmp_path))
+    with pytest.raises(li.InstallError):
+        li.plan("source", {"backend": "cude"}, cfg)
+
+
+def test_source_jobs_caps_parallelism(tmp_path):
+    cfg = _cfg(LLAMA_BUILD_DIR=str(tmp_path))
+    plan = li.plan("source", {"jobs": 4}, cfg)
+    build = str(tmp_path / "src" / "build")
+    assert ["cmake", "--build", build, "--target", "llama-server", "-j", "4"] in plan.steps
