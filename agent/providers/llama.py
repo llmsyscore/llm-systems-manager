@@ -1312,23 +1312,21 @@ def _build_put(msg: dict[str, Any]) -> None:
         except _queue_lib.Full: pass
 
 
-def _missing_build_tools(steps: list, env: dict) -> list[str]:
-    seen: set[str] = set()
-    missing: list[str] = []
+def _missing_build_tools(tools, env: dict) -> list[str]:
     path = env.get("PATH")
-    for step in steps:
-        if not step:
-            continue
-        exe = step[0]
-        if exe in seen:
-            continue
-        seen.add(exe)
+
+    def have(exe: str) -> bool:
         if os.path.isabs(exe):
-            ok = os.path.exists(exe) and os.access(exe, os.X_OK)
-        else:
-            ok = shutil.which(exe, path=path) is not None
-        if not ok:
-            missing.append(exe)
+            return os.path.exists(exe) and os.access(exe, os.X_OK)
+        return shutil.which(exe, path=path) is not None
+
+    missing: list[str] = []
+    for entry in tools or ():
+        if isinstance(entry, (tuple, list)):
+            if not any(have(e) for e in entry):
+                missing.append(" or ".join(entry))
+        elif not have(entry):
+            missing.append(entry)
     return missing
 
 
@@ -1354,7 +1352,7 @@ def _llama_build_worker() -> None:
         joined = " && ".join(" ".join(s) for s in iplan.steps)
         _build_put({"type": "start", "cmd": joined, "method": iplan.label})
         rc = 0
-        missing = _missing_build_tools(iplan.steps, env)
+        missing = _missing_build_tools(iplan.tools, env)
         if missing:
             msg = (f"[error] required command(s) not found: {', '.join(missing)} — "
                    f"install them or choose a build method that doesn't need them, then retry")

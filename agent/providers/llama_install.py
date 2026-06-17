@@ -11,7 +11,6 @@ import os
 import platform
 import pwd
 import re
-import shlex
 import shutil
 import subprocess
 import urllib.request
@@ -43,6 +42,7 @@ class InstallPlan:
     cwd: "str | None"
     env: dict[str, str]
     resolve_binary: "Callable[[], str | None]"
+    tools: tuple = ()
 
 
 def _agent_home(cfg) -> Path:
@@ -70,6 +70,7 @@ def _h_custom_script(opts: dict, cfg) -> InstallPlan:
     return InstallPlan(
         method="custom_script", label="custom script",
         steps=[["sudo", "-n", script]], cwd=None, env={},
+        tools=("sudo",),
         resolve_binary=lambda: (bin_path or None),
     )
 
@@ -111,6 +112,7 @@ def _h_source(opts: dict, cfg) -> InstallPlan:
     ]
     return InstallPlan(
         method="source", label="source", steps=steps, cwd=None, env={},
+        tools=("git", "cmake"),
         resolve_binary=lambda: str(build / "bin" / "llama-server"),
     )
 
@@ -166,15 +168,18 @@ def _h_release_binary(opts: dict, cfg) -> InstallPlan:
     tmp = root / "release.download"
     version = (opts.get("version") or "latest").strip()
     url = _resolve_release_asset(version)
-    unpack = (f"unzip -o {shlex.quote(str(tmp))} -d {shlex.quote(str(dest))} || "
-              f"tar -xf {shlex.quote(str(tmp))} -C {shlex.quote(str(dest))}")
+    if url.lower().endswith(".zip"):
+        unpack, unpack_tool = ["unzip", "-o", str(tmp), "-d", str(dest)], "unzip"
+    else:
+        unpack, unpack_tool = ["tar", "-xf", str(tmp), "-C", str(dest)], "tar"
     steps = [
         ["mkdir", "-p", str(dest)],
         ["curl", "-fsSL", "-o", str(tmp), url],
-        ["sh", "-c", unpack],
+        unpack,
     ]
     return InstallPlan(
         method="release_binary", label="release binary", steps=steps, cwd=None, env={},
+        tools=("curl", unpack_tool),
         resolve_binary=lambda: _find_under(dest, "llama-server"),
     )
 
@@ -186,7 +191,7 @@ def _h_conda(opts: dict, cfg) -> InstallPlan:
     return InstallPlan(
         method="conda", label="conda-forge",
         steps=[[mgr, "install", "-y", "-c", "conda-forge", "llama-cpp"]],
-        cwd=None, env={},
+        cwd=None, env={}, tools=(mgr,),
         resolve_binary=lambda: shutil.which("llama-server"),
     )
 
@@ -212,7 +217,7 @@ def _h_homebrew(opts: dict, cfg) -> InstallPlan:
 
     return InstallPlan(
         method="homebrew", label="Homebrew", steps=[[brew, sub, "llama.cpp"]],
-        cwd=None, env={}, resolve_binary=_resolve,
+        cwd=None, env={}, tools=(brew,), resolve_binary=_resolve,
     )
 
 

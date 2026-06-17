@@ -24,6 +24,7 @@ def test_custom_script_default_uses_legacy_path():
 def test_custom_script_honors_script_path_opt():
     plan = li.plan("custom_script", {"script_path": "/opt/x/build.sh"}, _cfg())
     assert plan.steps == [["sudo", "-n", "/opt/x/build.sh"]]
+    assert plan.tools == ("sudo",)
 
 
 def test_empty_method_falls_back_to_custom_script():
@@ -47,6 +48,7 @@ def test_source_clone_when_absent(tmp_path):
     assert ["cmake", "--build", build, "--target", "llama-server", "-j"] in plan.steps
     assert plan.resolve_binary() == str(tmp_path / "src" / "build" / "bin" / "llama-server")
     assert all(s[0] != "sudo" for s in plan.steps)
+    assert plan.tools == ("git", "cmake")
 
 
 def test_source_fetch_when_present(tmp_path):
@@ -91,6 +93,19 @@ def test_release_binary_builds_download_steps(tmp_path, monkeypatch):
     # curl downloads the resolved asset URL
     assert any(s[0] == "curl" and "https://example.com/llama-bin-ubuntu-x64.zip" in s for s in plan.steps)
     assert all(s[0] != "sudo" for s in plan.steps)
+    # .zip asset unpacks with unzip and declares it as a required tool
+    assert plan.steps[-1][0] == "unzip"
+    assert plan.tools == ("curl", "unzip")
+
+
+def test_release_binary_targz_uses_tar(tmp_path, monkeypatch):
+    monkeypatch.setattr(li, "_resolve_release_asset",
+                        lambda version: "https://example.com/llama-bin-ubuntu-x64.tar.gz")
+    cfg = _cfg(LLAMA_BUILD_DIR=str(tmp_path))
+    plan = li.plan("release_binary", {}, cfg)
+    assert plan.steps[-1][0] == "tar"
+    assert plan.tools == ("curl", "tar")
+    assert all(s[0] != "sh" for s in plan.steps)
 
 
 def test_release_binary_resolve_finds_binary(tmp_path, monkeypatch):
@@ -112,6 +127,7 @@ def test_conda_uses_conda_when_present(monkeypatch):
     plan = li.plan("conda", {}, _cfg())
     assert plan.method == "conda"
     assert plan.steps == [["conda", "install", "-y", "-c", "conda-forge", "llama-cpp"]]
+    assert plan.tools == ("conda",)
     assert plan.resolve_binary() == "/opt/conda/bin/llama-server"
     assert all(s[0] != "sudo" for s in plan.steps)
 
@@ -139,6 +155,7 @@ def test_homebrew_install_when_absent(monkeypatch):
     plan = li.plan("homebrew", {}, _cfg())
     assert plan.method == "homebrew"
     assert plan.steps == [["/opt/homebrew/bin/brew", "install", "llama.cpp"]]
+    assert plan.tools == ("/opt/homebrew/bin/brew",)
     assert all(s[0] != "sudo" for s in plan.steps)
 
 
