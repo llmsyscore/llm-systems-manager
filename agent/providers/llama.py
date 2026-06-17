@@ -1312,6 +1312,26 @@ def _build_put(msg: dict[str, Any]) -> None:
         except _queue_lib.Full: pass
 
 
+def _missing_build_tools(steps: list, env: dict) -> list[str]:
+    seen: set[str] = set()
+    missing: list[str] = []
+    path = env.get("PATH")
+    for step in steps:
+        if not step:
+            continue
+        exe = step[0]
+        if exe in seen:
+            continue
+        seen.add(exe)
+        if os.path.isabs(exe):
+            ok = os.path.exists(exe) and os.access(exe, os.X_OK)
+        else:
+            ok = shutil.which(exe, path=path) is not None
+        if not ok:
+            missing.append(exe)
+    return missing
+
+
 def _llama_build_worker() -> None:
     global _build_running
     rc = 1
@@ -1334,6 +1354,13 @@ def _llama_build_worker() -> None:
         joined = " && ".join(" ".join(s) for s in iplan.steps)
         _build_put({"type": "start", "cmd": joined, "method": iplan.label})
         rc = 0
+        missing = _missing_build_tools(iplan.steps, env)
+        if missing:
+            msg = (f"[error] required command(s) not found: {', '.join(missing)} — "
+                   f"install them or choose a build method that doesn't need them, then retry")
+            _build_put({"type": "line", "data": msg, "text": msg})
+            rc = 127
+            return
         for step in iplan.steps:
             proc = subprocess.Popen(
                 step, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
@@ -1362,8 +1389,10 @@ def _llama_build_worker() -> None:
                         f"{getattr(cfg, 'LLAMA_SYSTEMD_UNIT', 'the llama unit')} to run it")
                 _build_put({"type": "line", "data": warn, "text": warn})
     except FileNotFoundError as e:
+        rc = 127
         _build_put({"type": "line", "data": f"[error] {e}", "text": f"[error] {e}"})
     except Exception as e:
+        rc = rc or 1
         log.error("_llama_build_worker error: %s", e, exc_info=True)
         _build_put({"type": "line", "data": f"[error] {e}", "text": f"[error] {e}"})
     finally:
