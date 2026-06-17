@@ -39,7 +39,7 @@ New integrations with vLLM and Ollama are on the roadmap.
 ## Highlights
 
 - **LLM model management.** A built-in Hugging Face interface manages your model library and allows the user to download and prune individual models and files. Each model can keep multiple named **config profiles** (e.g. chat / code / general) and swap between them from the model card, activating one applies its settings and reloads the model if it's running.
-- **Remote control without SSH.** The LLM control module allows the user to Restart the inference server daemons, update the llama.cpp installation, swap running models, edit and save per-model configs and profiles, run benchmarks against all of your models, autotune ctx slot counts to find the best context settings, tail logs, or open an in-browser PTY terminal to the inference server, all without leaving the page.
+- **Remote control without SSH.** The LLM control module allows the user to Restart the inference server daemons, update the llama.cpp installation (via a configurable per-host method — build from source, conda, Homebrew, prebuilt release binaries, or a custom script), swap running models, edit and save per-model configs and profiles, run benchmarks against all of your models, autotune ctx slot counts to find the best context settings, tail logs, or open an in-browser PTY terminal to the inference server, all without leaving the page.
 - **LLM runtime visibility.** Live state from `llama.cpp` (slots, tokens/sec, prompt-processing rate, KV cache, context, idle/awake) and from LM Studio (loaded models, active sessions).
 - **Direct LLM chat.** Chat with the model through the embedded llama.cpp web interface.
 - **OpenClaw analytics.** The manager parses session logs into token-usage, cost, and tool-attribution dashboards.
@@ -142,6 +142,7 @@ Common keys:
 | `LLAMA_BIN` | Path to the `llama-server` binary (only needed for the agent's auto-restart / config-edit flows) | auto-detected |
 | `LLAMA_CONFIG_INI` | Path to `config.ini` driving `llama-server` | auto-detected |
 | `LLAMA_LOG_FILE` | Path to `llama-server.log` (for log-tail + state detection) | auto-detected |
+| `LLAMA_BUILD_METHOD` | How the "Update llama.cpp" button installs/upgrades: `custom_script` / `source` / `release_binary` / `conda` / `homebrew` | auto-detected at install |
 | `LMS_CMD` | Path to the `lms` CLI | auto-detected (`which lms`) |
 | `PROCESS_WATCHLIST` | Process names the agent should report on (psutil-style) | sensible defaults — see the example |
 
