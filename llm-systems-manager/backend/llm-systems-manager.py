@@ -2131,6 +2131,7 @@ def _build_llama_state_payload(agent_id: "str | None" = None) -> dict:
         "port":  8080,
         "agent_online": agent_online,
         "agent_age_s": round(agent_age, 1) if agent_age is not None else None,
+        "build_method": llama.get("build_method"),
     }
 
 
