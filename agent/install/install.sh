@@ -1081,8 +1081,13 @@ while i < n:
                     pad = pad_match.group(1) if pad_match else ' '
                     output.append(f"{lead}{pad}{live_val}{inline}")
             else:
-                # At least one side is multi-line — emit live's block verbatim.
-                output.extend(live_lines[ls:le])
+                live_blk = live_lines[ls:le]
+                live_untouched = all(
+                    (not ln.strip()) or ln.lstrip().startswith('#') for ln in live_blk
+                )
+                # Untouched (all-commented) block tracks the example so new
+                # sub-keys propagate; an activated block is preserved verbatim.
+                output.extend(example_lines[i:ex_end] if live_untouched else live_blk)
         else:
             output.extend(example_lines[i:ex_end])
             added_keys.append(key)
