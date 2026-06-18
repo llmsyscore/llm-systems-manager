@@ -1531,22 +1531,30 @@ def _bench_parse_row(row: dict, tool: str):
             float(pp) if pp is not None else None)
 
 
-def _bench_tool_path(tool: str) -> str:
+def _bench_tool_path(tool: str) -> "tuple[str, bool]":
+    """Resolve a benchmark tool: prefer the copy beside LLAMA_BIN, else fall back
+    to PATH. Returns (path, found); path is the sibling location when not found."""
     if not _require_ctx().config.LLAMA_BIN:
         raise RuntimeError("LLAMA_BIN not configured")
-    return str(Path(_require_ctx().config.LLAMA_BIN).parent / tool)
+    sibling = Path(_require_ctx().config.LLAMA_BIN).parent / tool
+    if sibling.exists():
+        return str(sibling), True
+    found = shutil.which(tool)
+    if found:
+        return found, True
+    return str(sibling), False
 
 
 def _bench_run_one(model_id: str, tool: str, switches: list, env: dict) -> None:
     global _bench_proc, _bench_pgid
     try:
-        tool_path = _bench_tool_path(tool)
+        tool_path, found = _bench_tool_path(tool)
     except Exception as e:
         _bench_put({"type": "model_done", "model_id": model_id, "ok": False, "error": str(e)})
         return
-    if not Path(tool_path).exists():
+    if not found:
         _bench_put({"type": "model_done", "model_id": model_id, "ok": False,
-                    "error": f"binary not found on agent: {tool_path}"})
+                    "error": f"{tool} not found beside LLAMA_BIN ({tool_path}) or on PATH"})
         return
     hf_arg = _bench_get_hf_arg(model_id)
     if not hf_arg:
