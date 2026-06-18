@@ -29,6 +29,7 @@ from _best_effort import best_effort  # type: ignore[import-not-found]  # siblin
 
 from collectors.gpu import collect_gpu  # type: ignore
 from . import llama_install
+from . import llama_upgrade
 
 # PR2: minimal spec the agent's heartbeat body emits so the manager can
 # discover what this agent serves. Manager-side providers/llama.py owns the
@@ -1312,24 +1313,6 @@ def _build_put(msg: dict[str, Any]) -> None:
         except _queue_lib.Full: pass
 
 
-def _missing_build_tools(tools, env: dict) -> list[str]:
-    path = env.get("PATH")
-
-    def have(exe: str) -> bool:
-        if os.path.isabs(exe):
-            return os.path.exists(exe) and os.access(exe, os.X_OK)
-        return shutil.which(exe, path=path) is not None
-
-    missing: list[str] = []
-    for entry in tools or ():
-        if isinstance(entry, (tuple, list)):
-            if not any(have(e) for e in entry):
-                missing.append(" or ".join(entry))
-        elif not have(entry):
-            missing.append(entry)
-    return missing
-
-
 def _llama_build_worker() -> None:
     global _build_running
     rc = 1
@@ -1337,7 +1320,6 @@ def _llama_build_worker() -> None:
     cfg = _require_ctx().config
     method = (getattr(cfg, "LLAMA_BUILD_METHOD", "") or "custom_script")
     opts = getattr(cfg, "LLAMA_BUILD_OPTS", None) or {}
-    ansi_re = re.compile(r'\x1b\[[0-9;]*[mGKHF]')
     try:
         try:
             iplan = llama_install.plan(method, opts, cfg)
@@ -1345,43 +1327,34 @@ def _llama_build_worker() -> None:
             _build_put({"type": "line", "data": f"[error] {e}", "text": f"[error] {e}"})
             rc = 2
             return
-        env = dict(os.environ)
-        env.update(iplan.env or {})
-        env["PYTHONUNBUFFERED"] = "1"
-        env["FORCE_COLOR"] = "0"
         joined = " && ".join(" ".join(s) for s in iplan.steps)
         _build_put({"type": "start", "cmd": joined, "method": iplan.label})
-        rc = 0
-        missing = _missing_build_tools(iplan.tools, env)
-        if missing:
-            msg = (f"[error] required command(s) not found: {', '.join(missing)} — "
-                   f"install them or choose a build method that doesn't need them, then retry")
-            _build_put({"type": "line", "data": msg, "text": msg})
-            rc = 127
-            return
-        for step in iplan.steps:
-            proc = subprocess.Popen(
-                step, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                stdin=subprocess.DEVNULL, text=True, bufsize=1, close_fds=True,
-                cwd=iplan.cwd, env=env,
-            )
-            assert proc.stdout is not None
-            for raw in iter(proc.stdout.readline, ""):
-                line = ansi_re.sub("", raw).rstrip()
-                if line:
-                    _build_put({"type": "line", "data": line, "text": line})
-            proc.wait()
-            rc = proc.returncode if proc.returncode is not None else 1
-            if rc != 0:
-                break
+        emit = lambda line: _build_put({"type": "line", "data": line, "text": line})
+        rc, resolved = llama_install.run_install(iplan, emit=emit)
         if rc == 0:
-            try:
-                resolved = iplan.resolve_binary()
-            except Exception as e:
-                log.debug("resolve_binary failed: %s", e)
-                resolved = None
             bin_cfg = getattr(cfg, "LLAMA_BIN", "") or ""
-            if resolved and bin_cfg and resolved != bin_cfg:
+            if llama_upgrade.should_upgrade_in_place(method, opts) and bin_cfg and resolved:
+                try:
+                    br = str(llama_install._build_root(cfg))
+                except Exception as e:
+                    emit(f"[warn] could not resolve build root: {e}; tarball cleanup skipped")
+                    br = None
+                try:
+                    retain = int(opts.get("backup_retain", 2))
+                except (TypeError, ValueError):
+                    emit(f"[warn] backup_retain {opts.get('backup_retain')!r} is not an integer; using 2")
+                    retain = 2
+                res = llama_upgrade.upgrade_in_place(
+                    resolved, bin_cfg, build_root=br,
+                    unit=getattr(cfg, "LLAMA_SYSTEMD_UNIT", "") or "llama_server.service",
+                    agent_user=getattr(cfg, "AGENT_USER", "") or "",
+                    retain=retain, emit=emit,
+                )
+                if res.ok:
+                    resolved = res.target or bin_cfg
+                else:
+                    rc = 3
+            elif resolved and bin_cfg and resolved != bin_cfg:
                 warn = (f"[warn] llama-server installed at {resolved}; configured "
                         f"LLAMA_BIN={bin_cfg} — update LLAMA_BIN and restart "
                         f"{getattr(cfg, 'LLAMA_SYSTEMD_UNIT', 'the llama unit')} to run it")

@@ -21,6 +21,8 @@ from typing import Any, Callable
 LEGACY_SCRIPT = "/usr/local/llama-server/build-llama-cpp.sh"
 REPO_URL = "https://github.com/ggml-org/llama.cpp.git"
 
+_ANSI_RE = re.compile(r"\x1b\[[0-9;]*[mGKHF]")
+
 _BACKEND_CMAKE = {
     "cpu": [],
     "cuda": ["-DGGML_CUDA=ON"],
@@ -269,6 +271,65 @@ def plan(method: str, opts: dict, cfg) -> InstallPlan:
             f"unknown LLAMA_BUILD_METHOD {name!r}; valid: {', '.join(sorted(METHODS))}"
         )
     return handler(opts or {}, cfg)
+
+
+def missing_build_tools(tools, env: dict) -> list:
+    """Required `tools` not found on env['PATH']. Tuple/list entries are
+    any-of (satisfied if any candidate resolves)."""
+    path = env.get("PATH")
+
+    def have(exe: str) -> bool:
+        if os.path.isabs(exe):
+            return os.path.exists(exe) and os.access(exe, os.X_OK)
+        return shutil.which(exe, path=path) is not None
+
+    missing: list = []
+    for entry in tools or ():
+        if isinstance(entry, (tuple, list)):
+            if not any(have(e) for e in entry):
+                missing.append(" or ".join(entry))
+        elif not have(entry):
+            missing.append(entry)
+    return missing
+
+
+def run_install(iplan: InstallPlan, *, env: "dict | None" = None,
+                emit: Callable[[str], None] = lambda _s: None,
+                popen: Callable = subprocess.Popen) -> "tuple[int, str | None]":
+    """Preflight the plan's tools, run its steps streaming each output line via
+    emit(line), then resolve the installed binary. Returns (rc, resolved|None).
+    Shared by the agent build worker and the setup-time installer."""
+    run_env = dict(os.environ if env is None else env)
+    run_env.update(iplan.env or {})
+    run_env["PYTHONUNBUFFERED"] = "1"
+    run_env["FORCE_COLOR"] = "0"
+    missing = missing_build_tools(iplan.tools, run_env)
+    if missing:
+        emit(f"[error] required command(s) not found: {', '.join(missing)} — "
+             f"install them or choose a build method that doesn't need them, then retry")
+        return 127, None
+    rc = 0
+    for step in iplan.steps:
+        proc = popen(step, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                     stdin=subprocess.DEVNULL, text=True, bufsize=1, close_fds=True,
+                     cwd=iplan.cwd, env=run_env)
+        if proc.stdout is not None:
+            for raw in iter(proc.stdout.readline, ""):
+                line = _ANSI_RE.sub("", raw).rstrip()
+                if line:
+                    emit(line)
+        proc.wait()
+        rc = proc.returncode if proc.returncode is not None else 1
+        if rc != 0:
+            break
+    resolved = None
+    if rc == 0:
+        try:
+            resolved = iplan.resolve_binary()
+        except Exception as e:
+            emit(f"[warn] build succeeded but binary location could not be resolved: {e}")
+            resolved = None
+    return rc, resolved
 
 
 def detect_method(cfg) -> "str | None":

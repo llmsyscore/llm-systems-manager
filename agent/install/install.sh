@@ -89,6 +89,11 @@ LLAMA_SYSTEMD_UNIT_OVERRIDE=""
 LLAMA_BIN_OVERRIDE=""
 LLAMA_CONFIG_INI_OVERRIDE=""
 LLAMA_BUILD_METHOD_OVERRIDE=""
+# Setup-time llama.cpp install via install/install_llama.py (run as the agent
+# user); wires LLAMA_BIN and the build method to the result.
+INSTALL_LLAMA=false
+INSTALL_LLAMA_METHOD="release_binary"
+INSTALL_LLAMA_BACKEND="cpu"
 LMS_API_URL_OVERRIDE=""
 LMS_CMD_OVERRIDE=""
 OPENCLAW_AGENTS_DIR_OVERRIDE=""
@@ -191,6 +196,15 @@ INSTALL — provider toggles (default OFF for all)
   --enable-llama /  --no-llama
       Set LLAMA_ENABLED. The agent reads /tmp/llama-server-last-state and
       (Phase 2) will proxy llama.cpp lifecycle endpoints.
+
+  --install-llama[=METHOD]   (--llama-backend BACKEND)
+      With --role auto (the default), install llama.cpp during setup when none
+      is detected, reusing the agent's install machinery (install_llama.py).
+      METHOD is source|release_binary|conda|homebrew (default release_binary);
+      --llama-backend selects cpu|cuda|vulkan|rocm|metal (default cpu). The
+      install runs as the agent user; LLAMA_BIN and the build method are wired
+      to the result. With a TTY and no flag, the installer prompts to install
+      when no running llama-server is found.
 
   --enable-lms   /  --no-lms
       Set (LM Studio) LMS_ENABLED. The agent collects 'lms ps' / 'lms server status'
@@ -372,6 +386,9 @@ while [[ $# -gt 0 ]]; do
     --no-perf)      ENABLE_PERF=false; PERF_FLAG_EXPLICIT=true; shift ;;
     --enable-llama) ENABLE_LLAMA=true;     LLAMA_FLAG_EXPLICIT=true;    shift ;;
     --no-llama)     ENABLE_LLAMA=false;    LLAMA_FLAG_EXPLICIT=true;    shift ;;
+    --install-llama)     INSTALL_LLAMA=true; shift ;;
+    --install-llama=*)   INSTALL_LLAMA=true; INSTALL_LLAMA_METHOD="${1#*=}"; shift ;;
+    --llama-backend)     _need_arg "$1" "${2:-}"; INSTALL_LLAMA_BACKEND="$2"; shift 2 ;;
     --enable-lms)   ENABLE_LMS=true;       LMS_FLAG_EXPLICIT=true;      shift ;;
     --no-lms)       ENABLE_LMS=false;      LMS_FLAG_EXPLICIT=true;      shift ;;
     --enable-openclaw) ENABLE_OPENCLAW=true; OPENCLAW_FLAG_EXPLICIT=true; shift ;;
@@ -1832,6 +1849,60 @@ _binary_from_pid() {
   return 1
 }
 
+# _install_llama_now METHOD BACKEND — fresh-install llama.cpp as the agent
+# user via install/install_llama.py; prints the resolved binary path on success.
+_install_llama_now() {
+  local method="$1" backend="$2"
+  local helper="$SRC_DIR/install/install_llama.py"
+  if [[ ! -f "$helper" ]]; then
+    _err "install helper not found: $helper"; return 1
+  fi
+  echo "      → installing llama.cpp (method=$method, backend=$backend) as $USER_ARG …"
+  local out
+  if ! out="$(_run_as "$USER_ARG" python3 "$helper" \
+                --method "$method" --backend "$backend" --agent-user "$USER_ARG")"; then
+    _err "llama.cpp install failed"; return 1
+  fi
+  local bin="${out##*RESOLVED_BIN=}"
+  if [[ "$out" != *RESOLVED_BIN=* || -z "$bin" ]]; then
+    _err "installer did not report a binary path"; return 1
+  fi
+  printf '%s\n' "$bin"
+}
+
+# _offer_llama_unit UNIT BIN — offer a starter systemd unit pointing at BIN.
+# Never overwrites an existing unit; never enables/starts.
+_offer_llama_unit() {
+  local unit="$1" bin="$2"
+  [[ -n "$unit" && -n "$bin" ]] || return 0
+  command -v systemctl >/dev/null 2>&1 || return 0
+  local target="/etc/systemd/system/$unit"
+  if [[ -e "$target" ]]; then
+    echo "      ⓘ $unit already exists — leaving it; ensure ExecStart runs '$bin --metrics'"
+    return 0
+  fi
+  local tmpl="$SRC_DIR/install/llama_server.service.tmpl"
+  if [[ ! -f "$tmpl" ]]; then
+    echo "      ⓘ no unit template; create $unit manually with ExecStart='$bin --metrics …'"
+    return 0
+  fi
+  if [[ ! -t 0 ]]; then
+    echo "      ⓘ no TTY — not fabricating $unit; create it with ExecStart='$bin --metrics …'"
+    return 0
+  fi
+  local REPLY
+  read -rp "      Create a starter $unit pointing at the new binary? (you must add model flags before enabling) [y/N] " REPLY
+  case "$(printf '%s' "$REPLY" | tr '[:upper:]' '[:lower:]')" in
+    y|yes) ;;
+    *) echo "      → skipped; create $unit manually with ExecStart='$bin --metrics …'"; return 0 ;;
+  esac
+  sed -e "s|__LLAMA_BIN__|$bin|g" -e "s|__USER__|$USER_ARG|g" "$tmpl" \
+    | $SUDO tee "$target" >/dev/null
+  $SUDO chmod 644 "$target"
+  $SUDO systemctl daemon-reload || true
+  _ok "wrote $target (disabled). Add model flags, then: sudo systemctl enable --now $unit"
+}
+
 _detect_llama() {
   echo
   echo "  • llama.cpp"
@@ -1962,15 +2033,46 @@ _detect_llama() {
 
   if ! $found; then
     echo "      ✗ no llama-server process; HTTP probe on :8080 failed"
-    if [[ ! -t 0 ]]; then
-      echo "      → skipped (stdin is not a TTY for prompting)"
-      return
+    local _llama_just_installed=false _llama_installed_method=""
+    local _want_install=false
+    if $INSTALL_LLAMA; then
+      _want_install=true
+    elif [[ -t 0 ]]; then
+      read -rp "      Install llama.cpp now with the agent's installer? [y/N] " REPLY
+      case "$(printf '%s' "$REPLY" | tr '[:upper:]' '[:lower:]')" in
+        y|yes) _want_install=true ;;
+      esac
     fi
-    read -rp "      Manually configure llama.cpp now? [y/N] " REPLY
-    case "$(printf '%s' "$REPLY" | tr '[:upper:]' '[:lower:]')" in
-      y|yes) ;;
-      *) echo "      → skipped"; return ;;
-    esac
+    if $_want_install; then
+      local _m="$INSTALL_LLAMA_METHOD" _b="$INSTALL_LLAMA_BACKEND" _newbin="" _v
+      if [[ -t 0 ]] && ! $INSTALL_LLAMA; then
+        read -rp "      Install method (source/release_binary/conda/homebrew) [$_m]: " _v
+        _m="${_v:-$_m}"
+        read -rp "      Backend (cpu/cuda/vulkan/rocm/metal) [$_b]: " _v
+        _b="${_v:-$_b}"
+      fi
+      if _newbin="$(_install_llama_now "$_m" "$_b")"; then
+        detected_bin="$_newbin"
+        detected_dir="$(dirname "$_newbin")"
+        _llama_just_installed=true
+        _llama_installed_method="$_m"
+        found=true
+        _ok "llama.cpp installed → $_newbin"
+      else
+        _err "llama.cpp install failed — continuing; configure or retry manually"
+      fi
+    fi
+    if ! $found; then
+      if [[ ! -t 0 ]]; then
+        echo "      → skipped (stdin is not a TTY for prompting)"
+        return
+      fi
+      read -rp "      Manually configure llama.cpp now? [y/N] " REPLY
+      case "$(printf '%s' "$REPLY" | tr '[:upper:]' '[:lower:]')" in
+        y|yes) ;;
+        *) echo "      → skipped"; return ;;
+      esac
+    fi
   fi
 
   # When found OR the user opted into manual configuration, gather paths.
@@ -1984,6 +2086,10 @@ _detect_llama() {
         && ! -f /usr/local/llama-server/build-llama-cpp.sh ]] \
      && command -v brew >/dev/null 2>&1 && [[ -x /opt/homebrew/bin/llama-server ]]; then
     detected_build_method="homebrew"
+  fi
+  # Prefer the method we installed with over path-based detection.
+  if [[ "${_llama_just_installed:-false}" == true && -n "${_llama_installed_method:-}" ]]; then
+    detected_build_method="$_llama_installed_method"
   fi
 
   # Skip prompts only if there's no TTY (auto-detect with no terminal).
@@ -2085,6 +2191,10 @@ _detect_llama() {
 
   read -rp "      Build method [$detected_build_method]: " _v
   LLAMA_BUILD_METHOD_OVERRIDE="${_v:-$detected_build_method}"
+
+  if [[ "${_llama_just_installed:-false}" == true ]]; then
+    _offer_llama_unit "$LLAMA_SYSTEMD_UNIT_OVERRIDE" "$LLAMA_BIN_OVERRIDE"
+  fi
 
   echo "      → llama.cpp configured"
 
@@ -2438,10 +2548,14 @@ _configure_openclaw_otel() {
   fi
 }
 
+if $INSTALL_LLAMA && [[ "$ROLE" != "auto" ]]; then
+  _warn "--install-llama only applies with --role auto; ignoring for role=$ROLE"
+fi
+
 if [[ "$ROLE" == "auto" ]]; then
   echo
   echo "── Auto-detecting providers (role=auto) ────────────────────────────────"
-  if $LLAMA_FLAG_EXPLICIT; then
+  if $LLAMA_FLAG_EXPLICIT && ! $INSTALL_LLAMA; then
     echo
     echo "  • llama.cpp — skipping probe (--$([ "$ENABLE_LLAMA" = "true" ] && echo "enable" || echo "no")-llama set on CLI)"
   else

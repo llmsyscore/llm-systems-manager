@@ -1,6 +1,8 @@
 # agent/tests/test_llama_install.py
 from __future__ import annotations
 
+import io
+import os
 import types
 import pytest
 from conftest import llama_install as li
@@ -250,3 +252,96 @@ def test_detect_source_when_checkout_present(tmp_path):
     (tmp_path / "src" / "CMakeLists.txt").touch()
     assert li.detect_method(_cfg(LLAMA_BIN="/random/bin/llama-server",
                                  LLAMA_BUILD_DIR=str(tmp_path))) == "source"
+
+
+# Task 8 (#88): missing_build_tools + run_install (shared install executor)
+
+def test_missing_build_tools_present_and_absent():
+    env = {"PATH": os.environ.get("PATH", "")}
+    assert li.missing_build_tools(["sh"], env) == []
+    assert li.missing_build_tools(["definitely-not-a-real-binary-xyz"], env) == \
+        ["definitely-not-a-real-binary-xyz"]
+
+
+def test_missing_build_tools_any_of_tuple():
+    env = {"PATH": os.environ.get("PATH", "")}
+    assert li.missing_build_tools([("definitely-not-a-real-binary-xyz", "sh")], env) == []
+    assert li.missing_build_tools([("no-a-xyz", "no-b-xyz")], env) == ["no-a-xyz or no-b-xyz"]
+
+
+def test_missing_build_tools_absolute_path(tmp_path):
+    real = tmp_path / "real-tool"; real.touch(); real.chmod(0o755)
+    ghost = tmp_path / "ghost-tool"
+    env = {"PATH": ""}                                    # absolute paths ignore PATH
+    assert li.missing_build_tools([str(real)], env) == []
+    assert li.missing_build_tools([str(ghost)], env) == [str(ghost)]
+
+
+class _FakeProc:
+    def __init__(self, lines, rc):
+        self.stdout = io.StringIO("".join(lines))
+        self._rc = rc
+        self.returncode = None
+
+    def wait(self):
+        self.returncode = self._rc
+
+
+def _scripted_popen(scripted):
+    state = {"i": 0, "steps": []}
+
+    def popen(step, **kw):
+        i = state["i"]; state["i"] += 1
+        state["steps"].append(step)
+        lines, rc = scripted[i] if i < len(scripted) else ([], 0)
+        return _FakeProc(lines, rc)
+
+    return popen, state
+
+
+def _plan(steps, *, tools=(), resolve="/x/llama-server"):
+    return li.InstallPlan(method="source", label="source", steps=steps,
+                          cwd=None, env={}, tools=tools,
+                          resolve_binary=lambda: resolve)
+
+
+def test_run_install_streams_lines_and_resolves():
+    popen, state = _scripted_popen([(["building...\n", "\x1b[32mdone\x1b[0m\n"], 0)])
+    seen = []
+    rc, resolved = li.run_install(_plan([["cmake"]]), emit=seen.append, popen=popen)
+    assert rc == 0
+    assert resolved == "/x/llama-server"
+    assert seen == ["building...", "done"]          # ANSI stripped, blanks dropped
+    assert state["steps"] == [["cmake"]]
+
+
+def test_run_install_preflight_missing_tool_skips_steps():
+    popen, state = _scripted_popen([([], 0)])
+    seen = []
+    rc, resolved = li.run_install(_plan([["nope"]], tools=("definitely-not-a-real-binary-xyz",)),
+                                  emit=seen.append, popen=popen)
+    assert rc == 127
+    assert resolved is None
+    assert state["i"] == 0                            # popen never called
+    assert any("required command(s) not found" in s for s in seen)
+
+
+def test_run_install_step_failure_breaks_and_skips_resolve():
+    popen, state = _scripted_popen([(["boom\n"], 1), (["unreached\n"], 0)])
+    seen = []
+    rc, resolved = li.run_install(_plan([["a"], ["b"]]), emit=seen.append, popen=popen)
+    assert rc == 1
+    assert resolved is None                           # resolve skipped on failure
+    assert state["i"] == 1                            # second step never ran
+
+
+def test_run_install_resolve_exception_is_swallowed():
+    popen, _ = _scripted_popen([([], 0)])
+
+    def boom():
+        raise RuntimeError("nope")
+
+    plan = li.InstallPlan(method="source", label="source", steps=[["a"]],
+                          cwd=None, env={}, tools=(), resolve_binary=boom)
+    rc, resolved = li.run_install(plan, emit=lambda _s: None, popen=popen)
+    assert rc == 0 and resolved is None
