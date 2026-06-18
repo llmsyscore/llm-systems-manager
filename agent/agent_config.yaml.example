@@ -78,6 +78,10 @@ LLAMA_ENABLED: false
 #   backend: cpu             #   source: cpu|cuda|vulkan|metal|rocm
 #   version: latest          #   release_binary: 'latest' or a release tag
 #   script_path: /usr/local/llama-server/build-llama-cpp.sh   # custom_script
+#   install_in_place: false  #   source/release_binary: after building, swap the
+#                            #   binaries+libs onto dirname(LLAMA_BIN) in place
+#                            #   (agent-writable target only; preserves config.ini).
+#   backup_retain: 2         #   in-place upgrade: how many .upgrade.bak.* to keep
 
 # -- Performance controller (replaces the bash daemon) ---------------------
 # Requires LLAMA_ENABLED=true and a Linux host. The agent tails

@@ -29,6 +29,7 @@ from _best_effort import best_effort  # type: ignore[import-not-found]  # siblin
 
 from collectors.gpu import collect_gpu  # type: ignore
 from . import llama_install
+from . import llama_upgrade
 
 # PR2: minimal spec the agent's heartbeat body emits so the manager can
 # discover what this agent serves. Manager-side providers/llama.py owns the
@@ -1332,7 +1333,26 @@ def _llama_build_worker() -> None:
         rc, resolved = llama_install.run_install(iplan, emit=emit)
         if rc == 0:
             bin_cfg = getattr(cfg, "LLAMA_BIN", "") or ""
-            if resolved and bin_cfg and resolved != bin_cfg:
+            if llama_upgrade.should_upgrade_in_place(method, opts) and bin_cfg and resolved:
+                try:
+                    br = str(llama_install._build_root(cfg))
+                except Exception:
+                    br = None
+                try:
+                    retain = int(opts.get("backup_retain", 2))
+                except (TypeError, ValueError):
+                    retain = 2
+                res = llama_upgrade.upgrade_in_place(
+                    resolved, bin_cfg, build_root=br,
+                    unit=getattr(cfg, "LLAMA_SYSTEMD_UNIT", "") or "llama_server.service",
+                    agent_user=getattr(cfg, "AGENT_USER", "") or "",
+                    retain=retain, emit=emit,
+                )
+                if res.ok:
+                    resolved = res.target or bin_cfg
+                else:
+                    rc = 3
+            elif resolved and bin_cfg and resolved != bin_cfg:
                 warn = (f"[warn] llama-server installed at {resolved}; configured "
                         f"LLAMA_BIN={bin_cfg} — update LLAMA_BIN and restart "
                         f"{getattr(cfg, 'LLAMA_SYSTEMD_UNIT', 'the llama unit')} to run it")
