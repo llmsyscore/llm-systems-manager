@@ -5,7 +5,6 @@ import os
 import stat
 from pathlib import Path
 
-import pytest
 from conftest import llama_upgrade as lu
 
 

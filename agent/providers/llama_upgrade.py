@@ -90,8 +90,10 @@ def _probe_writable(d: Path) -> bool:
         return True
     except OSError:
         for p in (tmp, tmp + ".mv"):
-            try: os.remove(p)
-            except OSError: pass
+            try:
+                os.remove(p)
+            except OSError:
+                pass  # best-effort: probe temp file may already be gone
         return False
 
 
@@ -107,7 +109,7 @@ def _copy_one(src: Path, dst: Path) -> None:
         try: os.fsync(fd)
         finally: os.close(fd)
     except OSError:
-        pass
+        pass  # fsync is best-effort; a flush failure doesn't void the copy
 
 
 def _fsync_dir(d: Path) -> None:
@@ -116,7 +118,7 @@ def _fsync_dir(d: Path) -> None:
         try: os.fsync(fd)
         finally: os.close(fd)
     except OSError:
-        pass
+        pass  # directory fsync is best-effort / not portable across filesystems
 
 
 def _smoke(binp: Path, libdir: Path, timeout: int = 30) -> "tuple[bool, str]":
@@ -249,12 +251,14 @@ def upgrade_in_place(resolved_bin: str, dest_bin: str, *, build_root=None,
     if build_root:
         tarball = Path(build_root) / "release.download"
         if tarball.exists():
-            try: tarball.unlink()
-            except OSError: pass
+            try:
+                tarball.unlink()
+            except OSError:
+                pass  # download cleanup is optional; never fail a done swap
     try:
         _prune_backups(dest_real, retain, emit)
     except Exception:
-        pass
+        pass  # pruning is best-effort; a completed swap must not fail here
 
     emit(f"[ok] upgraded {len(names)} file(s) at {dest_real}: {', '.join(names)}")
     emit(f"[ok] previous binaries backed up to {backup}")
