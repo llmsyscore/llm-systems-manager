@@ -1050,8 +1050,17 @@ def _value_only(line):
         return None, ''
     return m.group('val').strip(), m.group('inline') or ''
 
+SUBKEY_RE = re.compile(r'^#?\s+([a-z][a-z0-9_]*)\s*:')
+
+def _subkeys(block_lines):
+    """Lowercase sub-key names in a block, skipping the KEY: header line."""
+    return [m.group(1) for ln in block_lines[1:]
+            for m in [SUBKEY_RE.match(ln)] if m]
+
 output = []
 added_keys = []
+refreshed_subkeys = []
+preserved_new_subkeys = []
 i, n = 0, len(example_lines)
 while i < n:
     if i in example_key_at:
@@ -1081,8 +1090,22 @@ while i < n:
                     pad = pad_match.group(1) if pad_match else ' '
                     output.append(f"{lead}{pad}{live_val}{inline}")
             else:
-                # At least one side is multi-line — emit live's block verbatim.
-                output.extend(live_lines[ls:le])
+                live_blk = live_lines[ls:le]
+                ex_blk = example_lines[i:ex_end]
+                live_untouched = all(
+                    (not ln.strip()) or ln.lstrip().startswith('#') for ln in live_blk
+                )
+                new_subs = [s for s in _subkeys(ex_blk) if s not in _subkeys(live_blk)]
+                # Untouched (all-commented) block tracks the example so new
+                # sub-keys propagate; an activated block is preserved verbatim.
+                if live_untouched:
+                    output.extend(ex_blk)
+                    if new_subs:
+                        refreshed_subkeys.append((key, new_subs))
+                else:
+                    output.extend(live_blk)
+                    if new_subs:
+                        preserved_new_subkeys.append((key, new_subs))
         else:
             output.extend(example_lines[i:ex_end])
             added_keys.append(key)
@@ -1230,6 +1253,25 @@ if added_keys:
     print( "  ║ you opt in. Edit the file and restart the agent to enable.")
     print( "  ╚═══════════════════════════════════════════════════════════════════╝")
     print("")
+if refreshed_subkeys:
+    print("")
+    print("  ╔═══ NEW CONFIG OPTIONS ════════════════════════════════════════════╗")
+    print("  ║ +++ surfaced new option(s) inside untouched commented block(s):")
+    for key, subs in refreshed_subkeys:
+        for s in subs:
+            print(f"  ║       + {key}.{s}")
+    print( "  ║ Review them in agent_config.yaml — defaults are off / inert until")
+    print( "  ║ you opt in. Edit the file and restart the agent to enable.")
+    print( "  ╚═══════════════════════════════════════════════════════════════════╝")
+    print("")
+if preserved_new_subkeys:
+    print("")
+    print("  ⚠ new option(s) exist in the example for block(s) you've customized —")
+    print("    your values were kept; add these manually if you want them:")
+    for key, subs in preserved_new_subkeys:
+        for s in subs:
+            print(f"      + {key}.{s}")
+    print("")
 if removed_keys:
     print("")
     print(f"  ⚠ commented out {len(removed_keys)} key(s) no longer in the example:")
@@ -1294,8 +1336,8 @@ PYEOF
 
   echo
   echo "── Update complete ─────────────────────────────────────────────────────"
-  echo "  agent_config.yaml preserved verbatim. Any newly-introduced keys were"
-  echo "  appended (commented) at the bottom — review and uncomment to enable."
+  echo "  agent_config.yaml reconciled against the example — your values were kept"
+  echo "  and new keys merged in place. See the notes above; changes apply on restart."
   if [[ "$AGENT_OS" == "linux" ]]; then
     echo "  Tail logs:  journalctl -u llm-systems-agent -f"
   else
