@@ -27,7 +27,8 @@ def _extract_reconcile() -> str:
     raise AssertionError("reconcile PYEOF block not found in install.sh")
 
 
-def _run(tmp_path: Path, live: str, example: str) -> str:
+def _run(tmp_path: Path, live: str, example: str):
+    """Returns (reconciled config text, reconcile stdout)."""
     script = tmp_path / "reconcile.py"
     script.write_text(_extract_reconcile())
     live_f = tmp_path / "agent_config.yaml"
@@ -39,7 +40,7 @@ def _run(tmp_path: Path, live: str, example: str) -> str:
     r = subprocess.run([sys.executable, str(script), str(live_f), str(ex_f), user, user],
                        capture_output=True, text=True)
     assert r.returncode == 0, r.stderr
-    return live_f.read_text()
+    return live_f.read_text(), r.stdout
 
 
 _OLD = """\
@@ -62,14 +63,19 @@ AGENT_OS: linux
 
 
 def test_reconcile_propagates_new_subkeys_into_untouched_block(tmp_path):
-    out = _run(tmp_path, _OLD, _NEW)
-    assert "install_in_place" in out
-    assert "backup_retain" in out
+    cfg, stdout = _run(tmp_path, _OLD, _NEW)
+    assert "install_in_place" in cfg
+    assert "backup_retain" in cfg
+    # and the run reports what it surfaced (was previously silent)
+    assert "NEW CONFIG OPTIONS" in stdout
+    assert "LLAMA_BUILD_OPTS.install_in_place" in stdout
+    assert "LLAMA_BUILD_OPTS.backup_retain" in stdout
 
 
 def test_reconcile_preserves_operator_activated_block(tmp_path):
-    live = "AGENT_OS: linux\nLLAMA_BUILD_OPTS:\n  backend: cuda\n  install_in_place: true\n"
-    out = _run(tmp_path, live, _NEW)
+    live = "AGENT_OS: linux\nLLAMA_BUILD_OPTS:\n  backend: cuda\n"
+    cfg, stdout = _run(tmp_path, live, _NEW)
     # operator's activated values are never clobbered
-    assert "backend: cuda" in out
-    assert "install_in_place: true" in out
+    assert "backend: cuda" in cfg
+    # the new options are NOT injected into a customized block, but are flagged
+    assert "LLAMA_BUILD_OPTS.install_in_place" in stdout
