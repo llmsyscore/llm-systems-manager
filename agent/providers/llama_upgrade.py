@@ -49,8 +49,11 @@ class UpgradeResult:
 
 
 def should_upgrade_in_place(method: str, opts: "dict | None") -> bool:
-    """True only for source/release_binary with opts['install_in_place'] set."""
-    return bool((opts or {}).get("install_in_place")) and method in ("source", "release_binary")
+    """In-place swap for source/release_binary; defaults on, opt out with
+    install_in_place: false."""
+    if method not in ("source", "release_binary"):
+        return False
+    return bool((opts or {}).get("install_in_place", True))
 
 
 def is_artifact(name: str, bin_name: str) -> bool:

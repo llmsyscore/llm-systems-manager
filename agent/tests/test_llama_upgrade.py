@@ -32,10 +32,12 @@ def _dest(tmp_path: Path) -> Path:
 
 # ---- should_upgrade_in_place / allowlist ----
 
-def test_should_upgrade_only_for_optin_build_methods():
+def test_should_upgrade_defaults_on_for_build_methods():
     assert lu.should_upgrade_in_place("source", {"install_in_place": True})
     assert lu.should_upgrade_in_place("release_binary", {"install_in_place": True})
-    assert not lu.should_upgrade_in_place("source", {})
+    assert lu.should_upgrade_in_place("source", {})                              # default on
+    assert lu.should_upgrade_in_place("release_binary", None)                    # default on
+    assert not lu.should_upgrade_in_place("source", {"install_in_place": False})  # explicit opt-out
     assert not lu.should_upgrade_in_place("custom_script", {"install_in_place": True})
     assert not lu.should_upgrade_in_place("conda", {"install_in_place": True})
 

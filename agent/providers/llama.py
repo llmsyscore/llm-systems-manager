@@ -1352,6 +1352,11 @@ def _llama_build_worker() -> None:
                 )
                 if res.ok:
                     resolved = res.target or bin_cfg
+                    if not res.skipped:
+                        try:
+                            llama_install.cleanup_after_inplace(cfg, method, emit=emit)
+                        except Exception as e:
+                            emit(f"[warn] post-upgrade cleanup failed: {e}")
                 else:
                     rc = 3
             elif resolved and bin_cfg and resolved != bin_cfg:

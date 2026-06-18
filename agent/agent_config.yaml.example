@@ -79,8 +79,8 @@ LLAMA_ENABLED: false
 #   jobs: 8                  #   source: build parallelism (-j N); blank => nproc
 #   version: latest          #   release_binary: 'latest' or a release tag
 #   script_path: /usr/local/llama-server/build-llama-cpp.sh   # custom_script
-#   install_in_place: false  #   source/release_binary: swap new binaries+libs
-#                            #   onto dirname(LLAMA_BIN) (agent-writable only)
+#   install_in_place: true   #   source/release_binary: swap new binaries+libs onto
+#                            #   dirname(LLAMA_BIN); default on, set false to opt out
 #   backup_retain: 2         #   in-place upgrade: how many .upgrade.bak.* to keep
 
 # -- Performance controller (replaces the bash daemon) ---------------------

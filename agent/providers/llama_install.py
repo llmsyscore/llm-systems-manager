@@ -11,6 +11,7 @@ import os
 import platform
 import pwd
 import re
+import shlex
 import shutil
 import subprocess
 import urllib.request
@@ -88,6 +89,63 @@ def _h_custom_script(opts: dict, cfg) -> InstallPlan:
 
 
 _GIT_REF_RE = re.compile(r"[A-Za-z0-9._/][A-Za-z0-9._/-]*\Z")
+_TOOL_RE = re.compile(r"^llama-[a-z0-9]+(?:-[a-z0-9]+)*$")
+
+
+def _existing_tool_targets(cfg) -> "list[str]":
+    """llama-* tool binaries installed beside LLAMA_BIN, excluding llama-server.
+    Used as extra cmake targets so a source upgrade rebuilds every tool the host
+    already has instead of only the server."""
+    bin_path = (getattr(cfg, "LLAMA_BIN", "") or "").strip()
+    if not bin_path:
+        return []
+    d = Path(bin_path).parent
+    try:
+        entries = os.listdir(d)
+    except OSError:
+        return []
+    out = []
+    for name in sorted(entries):
+        if name == "llama-server" or not _TOOL_RE.match(name):
+            continue
+        p = d / name
+        if (p.is_file() or p.is_symlink()) and os.access(p, os.X_OK):
+            out.append(name)
+    return out
+
+
+def cleanup_after_inplace(cfg, method: str, emit: "Callable[[str], None]" = lambda _s: None) -> None:
+    """Remove disposable build artifacts after a successful in-place swap. Source:
+    drop the build output, keep the git checkout for a fast next fetch+build.
+    Release: drop the extracted dir and the downloaded archive. Never touches a
+    directory that contains LLAMA_BIN."""
+    try:
+        root = _build_root(cfg)
+    except Exception as e:
+        emit(f"[warn] cleanup skipped: could not resolve build root: {e}")
+        return
+    bin_path = (getattr(cfg, "LLAMA_BIN", "") or "").strip()
+    live = Path(os.path.realpath(bin_path)).parent if bin_path else None
+    if method == "source":
+        targets = [root / "src" / "build"]
+    elif method == "release_binary":
+        targets = [root / "release", root / "release.download"]
+    else:
+        return
+    for t in targets:
+        rt = Path(os.path.realpath(t))
+        if live and (live == rt or rt in live.parents):
+            emit(f"[warn] cleanup skipped for {t}: it contains LLAMA_BIN")
+            continue
+        try:
+            if t.is_dir():
+                shutil.rmtree(t, ignore_errors=True)
+                emit(f"[info] cleaned up {t}")
+            elif t.exists():
+                t.unlink()
+                emit(f"[info] cleaned up {t}")
+        except OSError as e:
+            emit(f"[warn] could not clean up {t}: {e}")
 
 
 def _valid_git_ref(ref: str) -> bool:
@@ -123,11 +181,18 @@ def _h_source(opts: dict, cfg) -> InstallPlan:
             raise InstallError(f"invalid jobs {jobs!r}; must be a positive integer")
         if njobs < 1:
             raise InstallError(f"invalid jobs {jobs!r}; must be a positive integer")
-    build_step = ["cmake", "--build", str(build), "--target", "llama-server", "-j", str(njobs)]
+    nj = str(njobs)
+    build_steps = [["cmake", "--build", str(build), "--target", "llama-server", "-j", nj]]
+    extras = _existing_tool_targets(cfg)
+    if extras:
+        core = ["cmake", "--build", str(build), "--target", *extras, "-j", nj]
+        warn = "[warn] some existing llama-* tools failed to rebuild; prior copies left in place"
+        joined = " ".join(shlex.quote(a) for a in core)
+        build_steps.append(["sh", "-c", f"{joined} || echo {shlex.quote(warn)}"])
     steps = [
         *fetch,
         ["cmake", "-S", str(src), "-B", str(build), *flags],
-        build_step,
+        *build_steps,
     ]
     return InstallPlan(
         method="source", label="source", steps=steps, cwd=None, env={},

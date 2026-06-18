@@ -99,6 +99,74 @@ def test_source_rejects_invalid_jobs(tmp_path):
             li.plan("source", {"jobs": bad}, cfg)
 
 
+def test_source_builds_existing_tool_targets(tmp_path, monkeypatch):
+    monkeypatch.setattr(li.os, "cpu_count", lambda: 4)
+    install = tmp_path / "install"
+    install.mkdir()
+    for name in ("llama-server", "llama-bench", "llama-cli"):
+        f = install / name
+        f.write_text("#!/bin/sh\n")
+        f.chmod(0o755)
+    (install / "llama-server.log").write_text("log")   # dot => not a target
+    (install / "libllama.so").write_text("lib")        # not a llama-* tool
+    cfg = _cfg(LLAMA_BUILD_DIR=str(tmp_path / "bld"), LLAMA_BIN=str(install / "llama-server"))
+    plan = li.plan("source", {}, cfg)
+    build = str(tmp_path / "bld" / "src" / "build")
+    assert ["cmake", "--build", build, "--target", "llama-server", "-j", "4"] in plan.steps
+    sh_steps = [s for s in plan.steps if s[0] == "sh"]
+    assert len(sh_steps) == 1
+    cmd = sh_steps[0][2]
+    assert "llama-bench" in cmd and "llama-cli" in cmd
+    assert "llama-server.log" not in cmd and "libllama.so" not in cmd
+    assert "|| echo" in cmd
+
+
+def test_source_no_extra_step_when_only_server(tmp_path):
+    install = tmp_path / "install"
+    install.mkdir()
+    (install / "llama-server").write_text("x")
+    cfg = _cfg(LLAMA_BUILD_DIR=str(tmp_path / "bld"), LLAMA_BIN=str(install / "llama-server"))
+    plan = li.plan("source", {}, cfg)
+    assert all(s[0] != "sh" for s in plan.steps)
+
+
+def test_cleanup_source_removes_build_keeps_src(tmp_path):
+    root = tmp_path / "bld"
+    (root / "src" / "build" / "bin").mkdir(parents=True)
+    (root / "src" / "CMakeLists.txt").write_text("x")
+    live = tmp_path / "live"
+    live.mkdir()
+    (live / "llama-server").write_text("x")
+    cfg = _cfg(LLAMA_BUILD_DIR=str(root), LLAMA_BIN=str(live / "llama-server"))
+    li.cleanup_after_inplace(cfg, "source")
+    assert not (root / "src" / "build").exists()
+    assert (root / "src" / "CMakeLists.txt").exists()
+
+
+def test_cleanup_release_removes_release_and_tarball(tmp_path):
+    root = tmp_path / "bld"
+    (root / "release" / "bin").mkdir(parents=True)
+    (root / "release.download").write_text("tar")
+    live = tmp_path / "live"
+    live.mkdir()
+    (live / "llama-server").write_text("x")
+    cfg = _cfg(LLAMA_BUILD_DIR=str(root), LLAMA_BIN=str(live / "llama-server"))
+    li.cleanup_after_inplace(cfg, "release_binary")
+    assert not (root / "release").exists()
+    assert not (root / "release.download").exists()
+
+
+def test_cleanup_skips_dir_containing_llama_bin(tmp_path):
+    root = tmp_path / "bld"
+    server = root / "release" / "bin" / "llama-server"
+    server.parent.mkdir(parents=True)
+    server.write_text("x")
+    cfg = _cfg(LLAMA_BUILD_DIR=str(root), LLAMA_BIN=str(server))
+    li.cleanup_after_inplace(cfg, "release_binary")
+    assert (root / "release").exists()
+    assert server.exists()
+
+
 # Task 4: release_binary handler
 
 def test_release_binary_builds_download_steps(tmp_path, monkeypatch):
