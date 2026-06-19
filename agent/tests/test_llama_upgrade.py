@@ -205,3 +205,99 @@ def test_upgrade_copies_symlink_artifacts_as_symlinks(tmp_path):
     assert (dest / "libllama.so").is_symlink()
     assert os.readlink(dest / "libllama.so") == "libllama.so.1"
     assert (dest / "libllama.so.1").read_text() == "real"
+
+
+# ---- idempotency (#107) ----
+
+def test_upgrade_idempotent_when_already_up_to_date(tmp_path):
+    # src and live carry identical artifact content — nothing should be swapped
+    src = _src(tmp_path, marker="same")
+    dest = tmp_path / "dest"; dest.mkdir()
+    _exe(dest / "llama-server", marker="same")
+    _exe(dest / "llama-bench", marker="same")
+    (dest / "libggml-base.so").write_text("GGML-same")
+    (dest / "config.ini").write_text("[*]\nkeep = yes\n")
+    broot = tmp_path / "broot"; broot.mkdir()
+    (broot / "release.download").write_text("tarball")
+    seen = []
+    res = lu.upgrade_in_place(str(src / "llama-server"), str(dest / "llama-server"),
+                              build_root=str(broot), emit=seen.append)
+    assert res.ok and res.skipped
+    assert res.swapped == []
+    assert not any(p.name.startswith(".upgrade.bak.") for p in dest.iterdir())
+    assert not any(p.name.startswith(".upgrade.stage.") for p in dest.iterdir())
+    assert not (broot / "release.download").exists()        # download still cleaned up
+    assert any("up to date" in s for s in seen)
+
+
+def test_upgrade_swaps_only_changed_artifacts(tmp_path):
+    src = _src(tmp_path, marker="new")
+    (src / "libggml-base.so").write_text("GGML-shared")
+    dest = _dest(tmp_path)                                   # llama-server marker="old"
+    _exe(dest / "llama-bench", marker="new")                 # identical to src
+    (dest / "libggml-base.so").write_text("GGML-shared")     # identical to src
+    seen = []
+    res = lu.upgrade_in_place(str(src / "llama-server"), str(dest / "llama-server"),
+                              emit=seen.append)
+    assert res.ok and not res.skipped
+    assert set(res.swapped) == {"llama-server"}              # only the differing artifact
+    backups = [p for p in dest.iterdir() if p.name.startswith(".upgrade.bak.")]
+    assert len(backups) == 1
+    assert (backups[0] / "llama-server").exists()
+    assert not (backups[0] / "libggml-base.so").exists()     # identical lib not backed up
+    assert (dest / "libggml-base.so").read_text() == "GGML-shared"   # untouched
+
+
+def test_upgrade_idempotent_for_symlink_artifacts(tmp_path):
+    src = _src(tmp_path, marker="same")
+    (src / "libllama.so.1").write_text("real")
+    os.symlink("libllama.so.1", src / "libllama.so")
+    dest = tmp_path / "dest"; dest.mkdir()
+    _exe(dest / "llama-server", marker="same")
+    _exe(dest / "llama-bench", marker="same")
+    (dest / "libggml-base.so").write_text("GGML-same")
+    (dest / "libllama.so.1").write_text("real")
+    os.symlink("libllama.so.1", dest / "libllama.so")
+    (dest / "config.ini").write_text("[*]\nkeep = yes\n")
+    seen = []
+    res = lu.upgrade_in_place(str(src / "llama-server"), str(dest / "llama-server"),
+                              emit=seen.append)
+    assert res.ok and res.skipped
+    assert res.swapped == []
+    assert not any(p.name.startswith(".upgrade.bak.") for p in dest.iterdir())
+
+
+def test_upgrade_swaps_changed_symlink_target(tmp_path):
+    # live symlink points to .so.1, new release retargets it to .so.2
+    src = _src(tmp_path, marker="same")
+    (src / "libllama.so.2").write_text("real2")
+    os.symlink("libllama.so.2", src / "libllama.so")
+    dest = tmp_path / "dest"; dest.mkdir()
+    _exe(dest / "llama-server", marker="same")
+    _exe(dest / "llama-bench", marker="same")
+    (dest / "libggml-base.so").write_text("GGML-same")
+    (dest / "libllama.so.1").write_text("real1")
+    os.symlink("libllama.so.1", dest / "libllama.so")
+    (dest / "config.ini").write_text("[*]\nkeep = yes\n")
+    res = lu.upgrade_in_place(str(src / "llama-server"), str(dest / "llama-server"),
+                              emit=lambda _s: None)
+    assert res.ok and not res.skipped
+    assert "libllama.so" in res.swapped                      # retargeted symlink swapped
+    assert "llama-server" not in res.swapped                 # identical binary not swapped
+    assert os.readlink(dest / "libllama.so") == "libllama.so.2"
+
+
+def test_upgrade_reswaps_on_mode_change_same_content(tmp_path):
+    # live binary has identical content but lost its executable bit
+    src = _src(tmp_path, marker="same")
+    dest = tmp_path / "dest"; dest.mkdir()
+    _exe(dest / "llama-server", marker="same")
+    _exe(dest / "llama-bench", marker="same")
+    (dest / "libggml-base.so").write_text("GGML-same")
+    (dest / "config.ini").write_text("[*]\nkeep = yes\n")
+    os.chmod(dest / "llama-server", 0o644)
+    res = lu.upgrade_in_place(str(src / "llama-server"), str(dest / "llama-server"),
+                              emit=lambda _s: None)
+    assert res.ok and not res.skipped
+    assert set(res.swapped) == {"llama-server"}              # only the mode-drifted file
+    assert os.access(dest / "llama-server", os.X_OK)         # exec bit restored
