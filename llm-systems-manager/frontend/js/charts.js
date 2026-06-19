@@ -1153,6 +1153,9 @@ async function fetchMetrics() {
     const _prevLlamaActive = _llamaActiveSlots > 0;
     _llamaActiveSlots = ll.active_slots || 0;
     if ((_llamaActiveSlots > 0) !== _prevLlamaActive) renderModelCards();
+    // Repopulate per-card avg gen/prompt t/s each frame so a slot-flip
+    // re-render never leaves them blank and they track the live metric.
+    if (typeof _updateModelPerf === 'function') _updateModelPerf();
     updateNonZero('active_slots',        ll.active_slots);
     updateNonZero('requests_processing', ll.requests_processing);
     updateNonZero('requests_deferred',   ll.requests_deferred);
