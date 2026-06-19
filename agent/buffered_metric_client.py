@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import os
 import threading
 import time
@@ -85,6 +86,17 @@ class _Claim:
     disk_lines: int
     new_offset: int
     mem: int
+
+
+def _sanitize_non_finite(obj: Any) -> Any:
+    # Replace non-finite floats (inf/-inf/nan) with None throughout the sample.
+    if isinstance(obj, float):
+        return obj if math.isfinite(obj) else None
+    if isinstance(obj, dict):
+        return {k: _sanitize_non_finite(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_sanitize_non_finite(v) for v in obj]
+    return obj
 
 
 def _write_jsonl(f, samples: list[dict[str, Any]]) -> None:
@@ -365,6 +377,7 @@ class BufferedMetricClient:
     def enqueue(self, sample: dict[str, Any]) -> None:
         if not isinstance(sample, dict):
             raise TypeError("sample must be a dict")
+        sample = _sanitize_non_finite(sample)
         with self._lock:
             self.stats.enqueued += 1
             spilled, first_spill, evicted = self._store.enqueue(sample)

@@ -2792,8 +2792,14 @@ if [[ "$AGENT_OS" == "linux" ]] && [[ "$ROLE" != "system_only" ]]; then
 
   if _offer_apt_install "liquidctl" "liquidctl" "liquidctl" \
        "controls NZXT Kraken AIOs, Corsair PSUs, NZXT Smart Device V2, etc."; then
-    COLLECT_LIQUIDCTL=true
-    echo "    liquidctl:   on PATH → COLLECT_LIQUIDCTL_ENABLED=true"
+    # Binary present — only enable if a supported device is actually wired up.
+    # The collector reads Kraken / HX1000i / Smart Device, so gate on those.
+    if $SUDO liquidctl list 2>/dev/null | grep -qiE 'kraken|hx1000i|smart device'; then
+      COLLECT_LIQUIDCTL=true
+      echo "    liquidctl:   supported device found → COLLECT_LIQUIDCTL_ENABLED=true"
+    else
+      echo "    liquidctl:   installed, no Kraken/HX1000i/Smart Device → COLLECT_LIQUIDCTL_ENABLED=false"
+    fi
   fi
 
   if command -v upower >/dev/null 2>&1 && upower -e 2>/dev/null | grep -qi ups; then

@@ -201,12 +201,13 @@ PROCESS_WATCH_ENABLED: true
 #     pattern: "LM Studio"
 
 # -- Host hardware collection toggles ---------------------------------------
-# All default true; each helper degrades cleanly if its source isn't
-# present (AMD GPU on a Mac, lm-sensors not installed, no NUT-attached UPS,
-# etc.). Set any to false to skip the subprocess/sysfs work entirely.
+# Most default true and degrade cleanly if the source is absent (AMD GPU on a
+# Mac, lm-sensors missing, no UPS). liquidctl defaults false — it shells out to
+# `sudo liquidctl status`, so the installer enables it only when a supported
+# device (Kraken / HX1000i / Smart Device) is detected. Set any false to skip.
 COLLECT_GPU_ENABLED:       true
 COLLECT_SENSORS_ENABLED:   true
-COLLECT_LIQUIDCTL_ENABLED: true
+COLLECT_LIQUIDCTL_ENABLED: false
 COLLECT_UPS_ENABLED:       true
 COLLECT_ISCSI_ENABLED:     true
 # LIQUIDCTL_BIN: ""   # optional override; default = `liquidctl` on PATH

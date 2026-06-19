@@ -30,6 +30,10 @@ __all__ = ["set_deps", "collect_smart_device_sensors", "collect_liquidctl",
 _deps = SimpleNamespace()
 _liquidctl_cache: dict = {}
 _liquidctl_last_poll: float = 0.0
+# Probe-once absence memory (reset on process restart): skip devices/binary
+# found missing so we don't re-spawn `sudo liquidctl status` every tick.
+_binary_missing: bool = False
+_absent_matches: set = set()
 
 
 def set_deps(*, config) -> None:
@@ -59,7 +63,10 @@ def _liquidctl_bin():
     return getattr(_deps.config, "LIQUIDCTL_BIN", "") or "liquidctl"
 
 
-def _run_liquidctl_status(match: str) -> tuple[list[dict], "str | None"]:
+def _run_liquidctl_status(match: str) -> tuple[list[dict], "str | None", bool]:
+    # 3rd element is `definitive`: False on transient errors (timeout/unknown)
+    # so a flaky read isn't mistaken for absent hardware.
+    global _binary_missing
     results: list[dict] = []
     device_name: "str | None" = None
     try:
@@ -68,12 +75,13 @@ def _run_liquidctl_status(match: str) -> tuple[list[dict], "str | None"]:
             text=True, timeout=5, stderr=subprocess.DEVNULL, close_fds=True
         )
     except FileNotFoundError:
-        return results, device_name
+        _binary_missing = True
+        return results, device_name, True
     except subprocess.CalledProcessError:
-        return results, device_name
+        return results, device_name, True
     except Exception as e:
         log.debug("liquidctl %s: %s", match, e)
-        return results, device_name
+        return results, device_name, False
     for line in out.splitlines():
         line = _TREE_PREFIX_RE.sub("", line.strip()).strip()
         # Skip blank lines, device-header lines (NZXT/Corsair/etc.), and any
@@ -91,7 +99,7 @@ def _run_liquidctl_status(match: str) -> tuple[list[dict], "str | None"]:
         try: value = float(value_str)
         except ValueError: value = value_str.strip()
         results.append({"key": key, "value": value, "unit": unit.strip()})
-    return results, device_name
+    return results, device_name, True
 
 
 def _parse_liquidctl_rows(rows: list[dict], keys: list[str]) -> dict:
@@ -106,20 +114,36 @@ def _parse_liquidctl_rows(rows: list[dict], keys: list[str]) -> dict:
     return result
 
 
+def _status_or_absent(match: str) -> tuple[list[dict], "str | None"]:
+    # Skip a probe we've already found absent; remember new absences.
+    if _binary_missing or match in _absent_matches:
+        return [], None
+    rows, name, definitive = _run_liquidctl_status(match)
+    if definitive and not _binary_missing and not rows and name is None:
+        _absent_matches.add(match)
+    return rows, name
+
+
 def collect_liquidctl() -> dict:
     if not getattr(_deps.config, "COLLECT_LIQUIDCTL_ENABLED", True):
         return {}
-    kr_rows, kr_name = _run_liquidctl_status("Kraken")
+    if _binary_missing:
+        return {}
+    kr_rows, kr_name = _status_or_absent("Kraken")
+    psu_rows, psu_name = _status_or_absent("HX1000i")
+    smart_rows, smart_name = _status_or_absent("Smart Device")
+    if _binary_missing:
+        return {}
+    if not (kr_rows or kr_name or psu_rows or psu_name or smart_rows or smart_name):
+        return {}
     aio = _parse_liquidctl_rows(kr_rows,
         ["Liquid temperature", "Pump speed", "Pump duty", "Fan speed", "Fan duty"])
     if kr_name: aio["_name"] = kr_name
-    psu_rows, psu_name = _run_liquidctl_status("HX1000i")
     psu = _parse_liquidctl_rows(psu_rows,
         ["VRM temperature", "Case temperature", "Fan speed",
          "Input voltage", "Total power output",
          "Estimated input power", "Estimated efficiency"])
     if psu_name: psu["_name"] = psu_name
-    smart_rows, smart_name = _run_liquidctl_status("Smart Device")
     smart = {"fans": []}
     if smart_name: smart["_name"] = smart_name
     for i in range(1, 4):
