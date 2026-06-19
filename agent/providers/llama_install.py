@@ -22,7 +22,12 @@ from typing import Any, Callable
 LEGACY_SCRIPT = "/usr/local/llama-server/build-llama-cpp.sh"
 REPO_URL = "https://github.com/ggml-org/llama.cpp.git"
 
-_ANSI_RE = re.compile(r"\x1b\[[0-9;]*[mGKHF]")
+_ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]")
+
+
+def strip_ansi(text: str) -> str:
+    """Remove CSI escape sequences (color, clear, cursor-visibility) from text."""
+    return _ANSI_RE.sub("", text)
 
 _BACKEND_CMAKE = {
     "cpu": [],

@@ -733,10 +733,10 @@ def _llama_run_command(cmd: list, stdin_input: "Optional[bytes]" = None,
     try:
         env = dict(os.environ)
         env["PYTHONUNBUFFERED"] = "1"
+        if dry_run:
+            env["HF_HUB_DISABLE_PROGRESS_BARS"] = "1"
 
         _dl_put({"type": "start", "cmd": " ".join(str(c) for c in cmd)})
-
-        ansi_re = re.compile(r'\x1b\[[0-9;]*[mGKHF]')
 
         if stdin_input:
             env["FORCE_COLOR"] = "0"
@@ -753,7 +753,7 @@ def _llama_run_command(cmd: list, stdin_input: "Optional[bytes]" = None,
             proc.stdin.write(stdin_input)
             proc.stdin.close()
             for raw in iter(proc.stdout.readline, b""):
-                line = ansi_re.sub("", raw.decode("utf-8", errors="replace")).strip()
+                line = llama_install.strip_ansi(raw.decode("utf-8", errors="replace")).strip()
                 if line:
                     _dl_put({"type": "line", "text": line})
             proc.wait()
@@ -793,7 +793,7 @@ def _llama_run_command(cmd: list, stdin_input: "Optional[bytes]" = None,
                         if not data:
                             break
                         text = data.decode("utf-8", errors="replace")
-                        text = ansi_re.sub("", text)
+                        text = llama_install.strip_ansi(text)
                         buf += text
                         parts = buf.replace("\r\n", "\n").replace("\r", "\n").split("\n")
                         buf = parts[-1]

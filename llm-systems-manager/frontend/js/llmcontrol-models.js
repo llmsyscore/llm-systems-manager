@@ -1189,10 +1189,14 @@ async function startDownload() {
       log.scrollTop = log.scrollHeight;
     } else if (msg.type === 'done') {
       if (_isDryRun) {
-        // Dry run uses --format json — parse and format the buffered output
+        // Dry run uses --format json — extract the JSON payload and format it
         let formatted = _dlBuffer;
         try {
-          const parsed = JSON.parse(_dlBuffer.trim());
+          let txt = _dlBuffer.trim();
+          const s = txt.search(/[\[{]/);
+          const e = Math.max(txt.lastIndexOf(']'), txt.lastIndexOf('}'));
+          if (s !== -1 && e > s) txt = txt.slice(s, e + 1);
+          const parsed = JSON.parse(txt);
           const files = Array.isArray(parsed) ? parsed : [parsed];
           if (files.length) {
             formatted = 'Files that would be downloaded:\n\n' +

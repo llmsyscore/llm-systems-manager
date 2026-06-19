@@ -493,3 +493,14 @@ def test_run_install_resolve_exception_is_swallowed():
                           cwd=None, env={}, tools=(), resolve_binary=boom)
     rc, resolved = li.run_install(plan, emit=lambda _s: None, popen=popen)
     assert rc == 0 and resolved is None
+
+
+def test_strip_ansi_removes_color_and_clear_codes():
+    assert li.strip_ansi("\x1b[32mdone\x1b[0m") == "done"
+    assert li.strip_ansi("\x1b[2K\x1b[1Gprogress") == "progress"
+
+
+def test_strip_ansi_removes_cursor_visibility_codes():
+    # tqdm wraps progress in cursor hide/show escapes; must strip so JSON parses (#102)
+    raw = '\x1b[?25l[{"file": "a.gguf", "size": "-"}]\x1b[?25h'
+    assert li.strip_ansi(raw) == '[{"file": "a.gguf", "size": "-"}]'
