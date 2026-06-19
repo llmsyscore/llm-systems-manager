@@ -1352,7 +1352,9 @@ def _llama_build_worker() -> None:
                 )
                 if res.ok:
                     resolved = res.target or bin_cfg
-                    if not res.skipped:
+                    # Clean build artifacts after a real swap, or after a
+                    # release_binary no-op (its re-extracted dir is disposable).
+                    if not res.skipped or method == "release_binary":
                         try:
                             llama_install.cleanup_after_inplace(cfg, method, emit=emit)
                         except Exception as e:

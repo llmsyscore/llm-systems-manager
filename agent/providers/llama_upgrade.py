@@ -10,6 +10,7 @@ with atomic os.replace, which is safe on a running ELF.
 from __future__ import annotations
 
 import datetime
+import filecmp
 import os
 import re
 import shutil
@@ -97,6 +98,27 @@ def _probe_writable(d: Path) -> bool:
                 os.remove(p)
             except OSError:
                 pass  # best-effort: probe temp file may already be gone
+        return False
+
+
+def _same_artifact(staged: Path, live: Path) -> bool:
+    """True if the staged artifact already matches the live one — symlinks by
+    target name, regular files by mode + content — so the swap can skip it."""
+    s_link, l_link = staged.is_symlink(), live.is_symlink()
+    if s_link or l_link:
+        if s_link != l_link:
+            return False
+        try:
+            return os.path.basename(os.readlink(staged)) == os.path.basename(os.readlink(live))
+        except OSError:
+            return False
+    if not live.exists():
+        return False
+    try:
+        if (os.stat(staged).st_mode & 0o777) != (os.stat(live).st_mode & 0o777):
+            return False
+        return filecmp.cmp(str(staged), str(live), shallow=False)
+    except OSError:
         return False
 
 
@@ -194,6 +216,7 @@ def upgrade_in_place(resolved_bin: str, dest_bin: str, *, build_root=None,
 
     staging = Path(tempfile.mkdtemp(prefix=_STAGE_PREFIX, dir=str(dest_real)))
     backup = None
+    changed = []
     try:
         try:
             for name in names:
@@ -211,43 +234,45 @@ def upgrade_in_place(resolved_bin: str, dest_bin: str, *, build_root=None,
                 emit(msg)
                 return UpgradeResult(False, msg)
 
-        ts = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-        backup = dest_real / f"{_BACKUP_PREFIX}{ts}"
-        try:
-            backup.mkdir()
-            for name in names:
-                live = dest_real / name
-                if live.exists() or live.is_symlink():
-                    _copy_one(live, backup / name)
-            _fsync_dir(backup)
-        except OSError as e:
-            msg = f"[error] failed to back up current install: {e}; aborting swap (no changes)"
-            emit(msg)
-            return UpgradeResult(False, msg)
+        changed = [n for n in names if not _same_artifact(staging / n, dest_real / n)]
+        if changed:
+            ts = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+            backup = dest_real / f"{_BACKUP_PREFIX}{ts}"
+            try:
+                backup.mkdir()
+                for name in changed:
+                    live = dest_real / name
+                    if live.exists() or live.is_symlink():
+                        _copy_one(live, backup / name)
+                _fsync_dir(backup)
+            except OSError as e:
+                msg = f"[error] failed to back up current install: {e}; aborting swap (no changes)"
+                emit(msg)
+                return UpgradeResult(False, msg)
 
-        committed = []
-        try:
-            for name in names:
-                os.replace(str(staging / name), str(dest_real / name))
-                committed.append(name)
-        except OSError as e:
-            rolled, failed = [], []
-            for name in committed:
-                try:
-                    os.replace(str(backup / name), str(dest_real / name))
-                    rolled.append(name)
-                except OSError as re_err:
-                    failed.append(f"{name}: {re_err}")
-            if failed:
-                msg = (f"[error] swap failed AND rollback incomplete — live install may be "
-                       f"inconsistent; restore manually from {backup}. not restored: "
-                       f"{'; '.join(failed)}. cause: {e}")
-            else:
-                msg = (f"[error] swap failed; rolled back {len(rolled)} file(s) from {backup}. "
-                       f"cause: {e}")
-            emit(msg)
-            return UpgradeResult(False, msg, backup_dir=str(backup))
-        _fsync_dir(dest_real)
+            committed = []
+            try:
+                for name in changed:
+                    os.replace(str(staging / name), str(dest_real / name))
+                    committed.append(name)
+            except OSError as e:
+                rolled, failed = [], []
+                for name in committed:
+                    try:
+                        os.replace(str(backup / name), str(dest_real / name))
+                        rolled.append(name)
+                    except OSError as re_err:
+                        failed.append(f"{name}: {re_err}")
+                if failed:
+                    msg = (f"[error] swap failed AND rollback incomplete — live install may be "
+                           f"inconsistent; restore manually from {backup}. not restored: "
+                           f"{'; '.join(failed)}. cause: {e}")
+                else:
+                    msg = (f"[error] swap failed; rolled back {len(rolled)} file(s) from {backup}. "
+                           f"cause: {e}")
+                emit(msg)
+                return UpgradeResult(False, msg, backup_dir=str(backup))
+            _fsync_dir(dest_real)
     finally:
         shutil.rmtree(staging, ignore_errors=True)
 
@@ -258,12 +283,17 @@ def upgrade_in_place(resolved_bin: str, dest_bin: str, *, build_root=None,
                 tarball.unlink()
             except OSError:
                 pass  # download cleanup is optional; never fail a done swap
+
+    if not changed:
+        emit(f"[ok] already up to date — 0 file(s) changed at {dest_real}")
+        return UpgradeResult(True, "up to date", target=dest_bin, swapped=[], skipped=True)
+
     try:
         _prune_backups(dest_real, retain, emit)
     except Exception:
         pass  # pruning is best-effort; a completed swap must not fail here
 
-    emit(f"[ok] upgraded {len(names)} file(s) at {dest_real}: {', '.join(names)}")
+    emit(f"[ok] upgraded {len(changed)} file(s) at {dest_real}: {', '.join(changed)}")
     emit(f"[ok] previous binaries backed up to {backup}")
     emit(f"restart to run the new build: sudo -n /usr/bin/systemctl restart {unit}")
-    return UpgradeResult(True, "upgraded", target=dest_bin, swapped=names, backup_dir=str(backup))
+    return UpgradeResult(True, "upgraded", target=dest_bin, swapped=changed, backup_dir=str(backup))
