@@ -243,6 +243,9 @@ function renderModelCards() {
     const isLoading  = status === 'loading';
     const isSleeping = status === 'sleeping';
     const safeModelId = modelId.replace(/[^a-z0-9]/gi, '_');
+    // Seed perf cells from the last-known metric so a re-render doesn't blank them.
+    const perfSeed = (isLoaded && typeof _llamaPerfSeed === 'function')
+      ? _llamaPerfSeed(safeModelId) : { gen: '—', ppt: '—', ts: '' };
 
     let cardClass = '';
     if      (isLoaded && _llamaActiveSlots > 0) cardClass = 'loaded';      // green  — actively inferring
@@ -298,15 +301,15 @@ function renderModelCards() {
       ${isLoaded ? `<div class="model-card-perf" id="perf-${safeModelId}">
         <div style="display:flex;flex-direction:column;gap:4px;padding:1px 1px;flex:1;">
           <div style="display:flex;align-items:center;gap:4px;">
-            <span class="perf-val" id="perf-gen-${safeModelId}">—</span>
+            <span class="perf-val" id="perf-gen-${safeModelId}">${perfSeed.gen}</span>
             <span class="perf-lbl">avg gen t/s</span>
           </div>
           <div style="display:flex;align-items:center;gap:4px;">
-            <span class="perf-val" id="perf-ppt-${safeModelId}" style="color:var(--accent);">—</span>
+            <span class="perf-val" id="perf-ppt-${safeModelId}" style="color:var(--accent);">${perfSeed.ppt}</span>
             <span class="perf-lbl">avg prompt t/s</span>
           </div>
         </div>
-        <span style="color:var(--fg-faint);font-size:0.82em;align-self:flex-end;" id="perf-ts-${safeModelId}"></span>
+        <span style="color:var(--fg-faint);font-size:0.82em;align-self:flex-end;" id="perf-ts-${safeModelId}">${perfSeed.ts}</span>
       </div>` : ''}
     </div>`;
   };

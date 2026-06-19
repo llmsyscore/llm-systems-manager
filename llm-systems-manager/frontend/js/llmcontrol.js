@@ -353,22 +353,33 @@ function _pollModelCards() {
   }).catch(() => {});
 }
 
+// Last-known perf values (gen/ppt/ts) for the card with this safeModelId,
+// or dashes when the active llama model doesn't match (suffix like "(sleeping)" stripped).
+function _llamaPerfSeed(safeModelId) {
+  const ll = window._latestMetric && window._latestMetric.llama;
+  if (!ll || !ll.model || ll.sleeping) return { gen: '—', ppt: '—', ts: '' };
+  const safeId = ll.model.replace(/\s*\([^)]+\)$/, '').trim().replace(/[^a-z0-9]/gi, '_');
+  if (safeId !== safeModelId) return { gen: '—', ppt: '—', ts: '' };
+  return {
+    gen: ll.tokens_per_second        != null ? ll.tokens_per_second.toFixed(1)        : '—',
+    ppt: ll.prompt_tokens_per_second != null ? ll.prompt_tokens_per_second.toFixed(1) : '—',
+    ts:  new Date().toLocaleTimeString(),
+  };
+}
+
 function _updateModelPerf() {
   if (document.getElementById('llmTab').style.display === 'none') return;
-  const m = window._latestMetric;
-  if (!m || !m.llama) return;
-  const ll = m.llama;
-  if (!ll.model || ll.sleeping) return;
-  // Strip any suffix like "(sleeping)" to get the clean model ID
-  const cleanModel = ll.model.replace(/\s*\([^)]+\)$/, '').trim();
-  const safeId = cleanModel.replace(/[^a-z0-9]/gi, '_');
+  const ll = window._latestMetric && window._latestMetric.llama;
+  if (!ll || !ll.model || ll.sleeping) return;
+  const safeId = ll.model.replace(/\s*\([^)]+\)$/, '').trim().replace(/[^a-z0-9]/gi, '_');
   const genEl = document.getElementById(`perf-gen-${safeId}`);
+  if (!genEl) return; // card not rendered yet (still loading)
+  const seed = _llamaPerfSeed(safeId);
   const pptEl = document.getElementById(`perf-ppt-${safeId}`);
   const tsEl  = document.getElementById(`perf-ts-${safeId}`);
-  if (!genEl) return; // card not rendered yet (still loading)
-  genEl.textContent = ll.tokens_per_second        != null ? ll.tokens_per_second.toFixed(1)        : '—';
-  pptEl && (pptEl.textContent = ll.prompt_tokens_per_second != null ? ll.prompt_tokens_per_second.toFixed(1) : '—');
-  tsEl  && (tsEl.textContent  = new Date().toLocaleTimeString());
+  genEl.textContent = seed.gen;
+  pptEl && (pptEl.textContent = seed.ppt);
+  tsEl  && (tsEl.textContent  = seed.ts);
 }
 
 function startPerfRefresh() {
