@@ -1163,7 +1163,7 @@ function applyAllGridCols() {
 
 // switchTab — tab dispatcher (moved here so tab batches can rely on it)
 function switchTab(tab) {
-  if (tab === 'admin' && window._me && window._me.is_admin === false) { tab = 'overall'; }
+  if (tab === 'admin' && window._me && window._me.admin_access === false) { tab = 'overall'; }
   _activeTab = tab;
   document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
   document.querySelector(`.tab-btn[onclick="switchTab('${tab}')"]`).classList.add('active');
@@ -1207,7 +1207,7 @@ function switchTab(tab) {
 }
 
 // ── Role-aware UI (multi-user, #125) ────────────────────────────────────────
-window._me = window._me || { role: 'admin', is_admin: true, username: null, authenticated: false };
+window._me = window._me || { role: 'admin', is_admin: true, admin_access: true, username: null, authenticated: false };
 
 async function loadMe() {
   try {
@@ -1219,7 +1219,7 @@ async function loadMe() {
 }
 
 function applyRoleGating() {
-  const isAdmin = !!(window._me && window._me.is_admin);
+  const isAdmin = !!(window._me && window._me.admin_access);
   const adminBtn = document.getElementById('tabBtnAdmin');
   if (adminBtn) adminBtn.style.display = isAdmin ? '' : 'none';
   // Account (change-my-password) shows only for a real logged-in (non-bypass) session.

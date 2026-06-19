@@ -169,7 +169,7 @@ async function refreshTabIndicators() {
   })();
   // Admin — system-health roll-up ("ok" | "warn" | "down").
   (async () => {
-    if (window._me && window._me.is_admin === false) { _setTabDot('tabDotAdmin', 'ok'); return; }
+    if (window._me && window._me.admin_access === false) { _setTabDot('tabDotAdmin', 'ok'); return; }
     try {
       const r = await fetch('/api/admin/system-health');
       if (!r.ok) return;

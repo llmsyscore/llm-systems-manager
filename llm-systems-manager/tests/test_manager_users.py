@@ -468,6 +468,41 @@ class TestUserRoutes:
         d = r.get_json()
         assert d["role"] == "admin" and d["is_admin"] is True and d["username"] == "llmadmin"
 
+    def test_me_admin_access_true_when_role_admin_and_ip_allowed(self, admin_client, monkeypatch):
+        import auth
+        monkeypatch.setattr(auth, "_admin_ip_allowed", lambda _ip: True, raising=False)
+        d = admin_client.get("/api/me").get_json()
+        assert d["is_admin"] is True
+        assert d.get("admin_ip") is True
+        assert d.get("admin_access") is True
+
+    def test_me_admin_access_false_when_role_admin_but_ip_denied(self, admin_client, monkeypatch):
+        # The #117 bug: admin role from outside the admin CIDR must NOT get the
+        # admin tab — admin_access tracks the role AND IP gate, is_admin stays role.
+        import auth
+        monkeypatch.setattr(auth, "_admin_ip_allowed", lambda _ip: False, raising=False)
+        d = admin_client.get("/api/me").get_json()
+        assert d["is_admin"] is True
+        assert d.get("admin_ip") is False
+        assert d.get("admin_access") is False
+
+    def test_me_operator_has_no_admin_access(self, tmp_path, monkeypatch):
+        # Operator role never gets admin_access even from an allowed admin IP.
+        import manager_mod as M
+        import auth
+        monkeypatch.setattr(auth, "_admin_ip_allowed", lambda _ip: True, raising=False)
+        manager_users_init_for_test(tmp_path)
+        manager_users.STORE.create("op1", auth.scrypt_hash("op1pass1"), "operator")
+        M.app.config.update(TESTING=True)
+        c = M.app.test_client()
+        with c.session_transaction() as sess:
+            sess["auth_ok"] = True
+            sess["role"] = "operator"
+            sess["user"] = "op1"
+        d = c.get("/api/me").get_json()
+        assert d["is_admin"] is False
+        assert d.get("admin_access") is False
+
     def test_account_password_requires_current(self, admin_client):
         r = admin_client.post("/api/account/password",
                               json={"current_password": "wrong", "new_password": "anotherlongpw"})
@@ -482,3 +517,20 @@ class TestUserRoutes:
                               json={"current_password": "llmadmin", "new_password": "a-real-password"})
         assert r.status_code == 200
         assert admin_client.get("/api/admin/auth").get_json()["is_default"] is False
+
+
+class TestAdminIpOk:
+    # auth.admin_ip_ok() is the IP half of the admin gate, consumed by /api/me.
+    def test_true_when_remote_in_admin_cidr(self, monkeypatch):
+        import manager_mod as M
+        import auth
+        monkeypatch.setattr(auth, "_admin_ip_allowed", lambda _ip: True, raising=False)
+        with M.app.test_request_context("/api/me", environ_base={"REMOTE_ADDR": "10.0.0.5"}):
+            assert auth.admin_ip_ok() is True
+
+    def test_false_when_remote_outside_admin_cidr(self, monkeypatch):
+        import manager_mod as M
+        import auth
+        monkeypatch.setattr(auth, "_admin_ip_allowed", lambda _ip: False, raising=False)
+        with M.app.test_request_context("/api/me", environ_base={"REMOTE_ADDR": "1.2.3.4"}):
+            assert auth.admin_ip_ok() is False

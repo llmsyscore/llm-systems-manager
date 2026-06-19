@@ -47,6 +47,7 @@ __all__ = [
     "auth_policy",
     "auth_mode",
     "effective_role",
+    "admin_ip_ok",
     "write_toml_auth_mode",
     "MIN_ADMIN_PASSWORD",
     "DEFAULT_AUTH_USER",
@@ -248,6 +249,11 @@ def effective_role() -> Optional[str]:
         role, valid = _live_role_for_session()
         return role if valid else None
     return None
+
+
+def admin_ip_ok() -> bool:
+    """True when the request's remote_addr is within the admin CIDR allowlist."""
+    return bool(_admin_ip_allowed(flask_request.remote_addr or ""))
 
 
 def write_toml_auth_mode(mode: str) -> None:

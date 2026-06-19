@@ -368,8 +368,13 @@ def register_routes(app, ctx) -> None:
         # unresolved role; effective_role returns None only for anon contexts.
         role = auth.effective_role() or "operator"
         user = getattr(g, "auth_user", None) or session.get("user")
+        is_admin = role == "admin"
+        # admin_access is the effective admin gate: role admin AND request IP in admin CIDR.
+        admin_ip = auth.admin_ip_ok()
         return jsonify({"ok": True, "username": user, "role": role,
-                        "is_admin": role == "admin", "authenticated": bool(session.get("auth_ok")),
+                        "is_admin": is_admin, "admin_ip": admin_ip,
+                        "admin_access": is_admin and admin_ip,
+                        "authenticated": bool(session.get("auth_ok")),
                         "bypass": not bool(session.get("auth_ok"))})
 
     @app.route("/api/account/password", methods=["POST"])
