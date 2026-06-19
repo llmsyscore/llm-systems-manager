@@ -1289,6 +1289,9 @@ function resetLLMControlPanels() {
   if (typeof _setDlRunning === 'function') _setDlRunning(false);
   _set('cacheRmRepo', 'value', '');
   _set('cacheLog', 'textContent', 'Cache info will appear here...');
+  // LM Studio download panel.
+  _set('lmsDlModel', 'value', '');
+  _set('lmsDlLog', 'textContent', 'Download status will appear here...');
 }
 
 async function startLlamaBuild() {
