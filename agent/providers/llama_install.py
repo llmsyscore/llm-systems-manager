@@ -319,6 +319,34 @@ def _h_release_binary(opts: dict, cfg) -> InstallPlan:
     )
 
 
+def flatten_release(resolved: str, cfg, emit: "Callable[[str], None]" = lambda _s: None) -> str:
+    """Move the extracted release artifacts up to the build root so LLAMA_BIN is a
+    stable, build-number-free path. Returns the flat llama-server path. Setup-time
+    only — the in-place upgrade path swaps from the nested dir and must not flatten."""
+    root = _build_root(cfg)
+    src_dir = Path(resolved).parent
+    root.mkdir(parents=True, exist_ok=True)
+    if Path(os.path.realpath(src_dir)) == Path(os.path.realpath(root)):
+        return resolved
+    moved = 0
+    for entry in sorted(os.listdir(src_dir)):
+        s = src_dir / entry
+        if not (s.is_file() or s.is_symlink()):
+            continue
+        d = root / entry
+        if d.exists() or d.is_symlink():
+            try:
+                d.unlink()
+            except OSError:
+                pass
+        shutil.move(str(s), str(d))
+        moved += 1
+    if moved:
+        emit(f"[info] flattened {moved} release file(s) to {root}")
+    flat = root / Path(resolved).name
+    return str(flat)
+
+
 def _h_conda(opts: dict, cfg) -> InstallPlan:
     mgr = "conda" if shutil.which("conda") else ("mamba" if shutil.which("mamba") else None)
     if not mgr:
@@ -445,6 +473,8 @@ def detect_method(cfg) -> "str | None":
         return "conda"
     root = _build_root(cfg)
     if bin_path and str(root / "release").lower() in p:
+        return "release_binary"
+    if bin_path and os.path.normpath(os.path.dirname(p)) == os.path.normpath(str(root).lower()):
         return "release_binary"
     if (root / "src" / "CMakeLists.txt").exists():
         return "source"

@@ -16,7 +16,7 @@ def _load_install_llama():
     return mod
 
 
-def _fake_leaf(*, plan_result="PLAN", run_result, raise_plan=False):
+def _fake_leaf(*, plan_result="PLAN", run_result, raise_plan=False, flatten=None):
     class _Err(Exception):
         pass
 
@@ -29,7 +29,18 @@ def _fake_leaf(*, plan_result="PLAN", run_result, raise_plan=False):
     def run_install(iplan, emit=lambda _s: None, **_kw):
         return run_result
 
-    return types.SimpleNamespace(InstallError=_Err, plan=plan, run_install=run_install)
+    def flatten_release(resolved, cfg, emit=lambda _s: None):
+        flatten_release.called = resolved
+        return flatten(resolved) if flatten else resolved
+
+    def cleanup_after_inplace(cfg, method, emit=lambda _s: None):
+        cleanup_after_inplace.called = method
+
+    flatten_release.called = None
+    cleanup_after_inplace.called = None
+    return types.SimpleNamespace(InstallError=_Err, plan=plan, run_install=run_install,
+                                 flatten_release=flatten_release,
+                                 cleanup_after_inplace=cleanup_after_inplace)
 
 
 def test_install_llama_prints_resolved_on_success(monkeypatch, capsys, tmp_path):
@@ -44,6 +55,39 @@ def test_install_llama_prints_resolved_on_success(monkeypatch, capsys, tmp_path)
     assert f"RESOLVED_BIN={binp}" in out
     assert leaf.plan.seen["method"] == "release_binary"
     assert leaf.plan.seen["opts"]["backend"] == "cpu"
+
+
+def test_install_llama_flattens_release_binary(monkeypatch, capsys, tmp_path):
+    # #118: release_binary setup flattens the nested extract to a stable path
+    # and cleans up the extract temp; RESOLVED_BIN is the flat path.
+    il = _load_install_llama()
+    nested = tmp_path / "release" / "build" / "bin" / "llama-server"
+    nested.parent.mkdir(parents=True)
+    nested.touch()
+    flat = tmp_path / "llama-server"
+    flat.touch()
+    leaf = _fake_leaf(run_result=(0, str(nested)), flatten=lambda _r: str(flat))
+    monkeypatch.setattr(il, "_load_leaf", lambda: leaf)
+    rc = il.main(["--method", "release_binary", "--agent-user", "svc"])
+    assert rc == 0
+    assert f"RESOLVED_BIN={flat}" in capsys.readouterr().out
+    assert leaf.flatten_release.called == str(nested)
+    assert leaf.cleanup_after_inplace.called == "release_binary"
+
+
+def test_install_llama_does_not_flatten_source(monkeypatch, capsys, tmp_path):
+    # Source builds resolve to a stable src/build path — never flattened.
+    il = _load_install_llama()
+    binp = tmp_path / "src" / "build" / "bin" / "llama-server"
+    binp.parent.mkdir(parents=True)
+    binp.touch()
+    leaf = _fake_leaf(run_result=(0, str(binp)))
+    monkeypatch.setattr(il, "_load_leaf", lambda: leaf)
+    rc = il.main(["--method", "source"])
+    assert rc == 0
+    assert f"RESOLVED_BIN={binp}" in capsys.readouterr().out
+    assert leaf.flatten_release.called is None
+    assert leaf.cleanup_after_inplace.called is None
 
 
 def test_install_llama_returns_rc_on_failed_build(monkeypatch, capsys, tmp_path):

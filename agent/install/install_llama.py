@@ -79,6 +79,16 @@ def main(argv=None) -> int:
         emit("[error] install completed but llama-server binary not found"
              f"{(' at ' + resolved) if resolved else ''}")
         return 4
+    if args.method == "release_binary":
+        try:
+            resolved = li.flatten_release(resolved, cfg, emit=emit)
+        except OSError as e:
+            emit(f"[error] could not flatten release install: {e}")
+            return 5
+        if not resolved or not os.path.exists(resolved):
+            emit(f"[error] flattened install missing binary at {resolved!r}")
+            return 5
+        li.cleanup_after_inplace(cfg, "release_binary", emit=emit)
     print(f"RESOLVED_BIN={resolved}")
     return 0
 

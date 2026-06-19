@@ -268,6 +268,57 @@ def test_release_binary_resolve_finds_binary(tmp_path, monkeypatch):
     assert plan.resolve_binary() == str(dest / "llama-server")
 
 
+# flatten_release — collapse the build-numbered extract dir to a stable flat path (#118)
+def test_flatten_release_moves_artifacts_to_root(tmp_path):
+    nested = tmp_path / "release" / "build" / "bin"
+    nested.mkdir(parents=True)
+    (nested / "llama-server").write_text("bin")
+    (nested / "llama-cli").write_text("cli")
+    (nested / "libllama.so").write_text("lib")
+    cfg = _cfg(LLAMA_BUILD_DIR=str(tmp_path))
+    flat = li.flatten_release(str(nested / "llama-server"), cfg)
+    assert flat == str(tmp_path / "llama-server")
+    assert (tmp_path / "llama-server").read_text() == "bin"
+    assert (tmp_path / "llama-cli").read_text() == "cli"
+    assert (tmp_path / "libllama.so").read_text() == "lib"
+
+
+def test_flatten_release_preserves_executable_bit(tmp_path):
+    nested = tmp_path / "release" / "llama-bXXXX"
+    nested.mkdir(parents=True)
+    binp = nested / "llama-server"
+    binp.write_text("bin")
+    os.chmod(binp, 0o755)
+    cfg = _cfg(LLAMA_BUILD_DIR=str(tmp_path))
+    flat = li.flatten_release(str(binp), cfg)
+    assert os.access(flat, os.X_OK)
+
+
+def test_flatten_release_idempotent_when_already_flat(tmp_path):
+    (tmp_path / "llama-server").write_text("bin")
+    cfg = _cfg(LLAMA_BUILD_DIR=str(tmp_path))
+    resolved = str(tmp_path / "llama-server")
+    assert li.flatten_release(resolved, cfg) == resolved
+    assert (tmp_path / "llama-server").read_text() == "bin"
+
+
+def test_flatten_then_cleanup_leaves_flat_binaries_and_removes_extract(tmp_path):
+    # End-to-end setup sequence: flatten the extract, then cleanup the temps.
+    nested = tmp_path / "release" / "build" / "bin"
+    nested.mkdir(parents=True)
+    (nested / "llama-server").write_text("bin")
+    (nested / "libllama.so").write_text("lib")
+    (tmp_path / "release.download").write_text("tarball")
+    cfg = _cfg(LLAMA_BIN="", LLAMA_BUILD_DIR=str(tmp_path))
+    flat = li.flatten_release(str(nested / "llama-server"), cfg)
+    li.cleanup_after_inplace(cfg, "release_binary")
+    assert flat == str(tmp_path / "llama-server")
+    assert (tmp_path / "llama-server").read_text() == "bin"
+    assert (tmp_path / "libllama.so").read_text() == "lib"
+    assert not (tmp_path / "release").exists()
+    assert not (tmp_path / "release.download").exists()
+
+
 def _assets(*names):
     return [{"name": n, "browser_download_url": f"https://example.com/{n}"} for n in names]
 
@@ -380,6 +431,12 @@ def test_detect_conda_path():
 
 def test_detect_release_binary(tmp_path):
     binp = str(tmp_path / "release" / "build" / "bin" / "llama-server")
+    assert li.detect_method(_cfg(LLAMA_BIN=binp, LLAMA_BUILD_DIR=str(tmp_path))) == "release_binary"
+
+
+def test_detect_release_binary_flat_layout(tmp_path):
+    # #118: flat install lives directly in the build root (no build-number dir).
+    binp = str(tmp_path / "llama-server")
     assert li.detect_method(_cfg(LLAMA_BIN=binp, LLAMA_BUILD_DIR=str(tmp_path))) == "release_binary"
 
 
