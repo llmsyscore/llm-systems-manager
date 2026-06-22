@@ -120,7 +120,7 @@ def requests_sse_lines(
     session: Any = None,
     headers: Optional[dict[str, str]] = None,
     connect_timeout: float = 5.0,
-    read_timeout: float = 65.0,
+    read_timeout: float = 300.0,
 ) -> Iterator[str]:
     """Open a streaming GET eagerly; return an iterator of decoded SSE lines."""
     if session is None:
@@ -182,7 +182,6 @@ class LlamaSseListener:
         fail_streak = 0
         healthy = False
         while not self._should_stop():
-            got_event = False
             opened = False
             try:
                 lines = self._connect()
@@ -195,17 +194,20 @@ class LlamaSseListener:
                     obj = self._parse_data(frame.data)
                     if obj is None:
                         continue
-                    got_event = True
                     self._on_event(frame.event, obj)
             except Exception as e:
-                fail_streak += 1
-                if fail_streak == self._fail_warn_threshold:
-                    healthy = False
-                    self._log.warning(
-                        "llama /models/sse down for %d consecutive attempts: %s",
-                        fail_streak, e)
+                if opened:
+                    # Established stream ended (idle read-timeout / drop) — expected.
+                    self._log.debug("llama /models/sse stream ended: %s", type(e).__name__)
                 else:
-                    self._log.debug("llama /models/sse connection error: %s", e)
+                    fail_streak += 1
+                    if fail_streak == self._fail_warn_threshold:
+                        healthy = False
+                        self._log.warning(
+                            "llama /models/sse down for %d consecutive attempts: %s",
+                            fail_streak, e)
+                    else:
+                        self._log.debug("llama /models/sse connect error: %s", e)
             finally:
                 self.connected = False
                 if opened and self._on_disconnect is not None:
@@ -215,9 +217,11 @@ class LlamaSseListener:
                         self._log.debug("llama /models/sse on_disconnect error: %s", e)
             if self._should_stop():
                 break
-            if got_event:
+            if opened:
+                # Healthy connection ended; reconnect promptly without escalation.
                 fail_streak = 0
                 backoff = self._initial_backoff
+                self._sleep(self._initial_backoff)
             else:
                 self._sleep(backoff)
                 backoff = min(self._max_backoff, backoff * 2)

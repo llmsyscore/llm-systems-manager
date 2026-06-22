@@ -290,12 +290,14 @@ def test_listener_connected_flag_false_after_run():
     assert lis.connected is False
 
 
-def test_listener_backoff_resets_after_successful_event():
+def test_listener_backoff_resets_after_established_connection():
+    # Connect failures escalate (1,2,4); an established connection resets backoff
+    # and reconnects after a brief fixed delay, so the next failure restarts at 1.
     err = RuntimeError("x")
     good = _connection(("model_status", '{"status": "loaded"}'))
     drv = _Driver([err, err, err, good, err], max_connects=6)
     _listener(drv, max_backoff=30.0).run()
-    assert drv.sleeps == [1.0, 2.0, 4.0, 1.0]
+    assert drv.sleeps == [1.0, 2.0, 4.0, 1.0, 1.0]
 
 
 def test_listener_keepalive_only_stream_backs_off():
@@ -361,6 +363,37 @@ def test_listener_calls_on_disconnect_after_connection():
     drv = _Driver([conn], max_connects=1)
     _listener(drv, on_disconnect=lambda: calls.append(1)).run()
     assert calls == [1]
+
+
+def test_listener_idle_read_timeout_does_not_escalate():
+    # An established stream that errors mid-iteration (idle read-timeout) must
+    # reconnect promptly without fail-streak escalation or a 'down' WARNING.
+    log = _RecordingLogger()
+    calls = {"n": 0}
+    sleeps = []
+
+    def connect():
+        calls["n"] += 1
+        if calls["n"] <= 3:
+            def gen():
+                raise RuntimeError("Read timed out")
+                yield  # unreachable; makes this a generator (opens, then raises)
+            return gen()
+        return iter([])
+
+    lis = llama_sse.LlamaSseListener(
+        connect=connect,
+        on_event=lambda k, d: None,
+        should_stop=lambda: calls["n"] >= 4,
+        sleep=lambda s: sleeps.append(s),
+        logger=log,
+        fail_warn_threshold=2,
+        initial_backoff=1.0,
+        max_backoff=30.0,
+    )
+    lis.run()
+    assert log.warnings == []
+    assert sleeps == [1.0, 1.0, 1.0]
 
 
 # ── status_value / progress_value ──────────────────────────────────────
@@ -481,4 +514,4 @@ def test_requests_sse_lines_passes_stream_and_timeout():
     sess = _FakeSession(resp)
     list(llama_sse.requests_sse_lines("http://x/models/sse", session=sess))
     assert sess.get_kwargs["stream"] is True
-    assert sess.get_kwargs["timeout"] == (5.0, 65.0)
+    assert sess.get_kwargs["timeout"] == (5.0, 300.0)
