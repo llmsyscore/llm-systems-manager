@@ -82,6 +82,7 @@ LLAMA_ENABLED: false
 #   install_in_place: true   #   source/release_binary: swap new binaries+libs onto
 #                            #   dirname(LLAMA_BIN); default on, set false to opt out
 #   backup_retain: 2         #   in-place upgrade: how many .upgrade.bak.* to keep
+# LLAMA_SSE_ENABLED:   auto  # auto (router mode only) | on | off — subscribe to llama.cpp /models/sse for push-based model state
 
 # -- Performance controller (replaces the bash daemon) ---------------------
 # Requires LLAMA_ENABLED=true and a Linux host. The agent tails
@@ -276,4 +277,5 @@ LOG_WATCH_MAX_BYTES_PER_TICK: 1048576
 # -- Logging / token storage ------------------------------------------------
 # LOG_FILE:    ""        # blank => /var/log/llm-systems-manager/llm-systems-agent.log on Linux,
 #                        #          ~/Library/Logs/llm-systems-agent.log on macOS
+# LOG_LEVEL:   INFO      # DEBUG | INFO | WARNING | ERROR (applies on restart)
 # TOKEN_FILE:  ""        # blank => {AGENT_INSTALL_DIR}/data/token (mode 0600)

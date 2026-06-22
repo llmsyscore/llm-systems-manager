@@ -29,6 +29,7 @@ from _best_effort import best_effort  # type: ignore[import-not-found]  # siblin
 
 from collectors.gpu import collect_gpu  # type: ignore
 from . import llama_install
+from . import llama_sse
 from . import llama_upgrade
 
 # PR2: minimal spec the agent's heartbeat body emits so the manager can
@@ -69,6 +70,11 @@ _llama_info_last_tokens_total: "int | None" = None
 _llama_info_last_loaded_model: "str | None" = None
 _llama_info_conn_fail_count: int = 0
 _llama_info_idle_logged: bool = False
+
+# /models/sse listener (router mode); authoritative for llama_state when connected.
+_llama_sse_listener: "Optional[llama_sse.LlamaSseListener]" = None
+_llama_sse_thread: "Optional[threading.Thread]" = None
+_llama_sse_session: "Optional[requests.Session]" = None
 
 _HF_REPO_RE = re.compile(r'^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$')
 _LLAMA_LOG_IGNORE = (
@@ -156,11 +162,15 @@ def _llama_port_open() -> bool:
 
 
 def llama_get_state() -> str:
-    """Best-effort state: state-file+TCP-probe, then /v1/models, else unknown.
+    """Best-effort state: SSE (when authoritative), state-file+TCP-probe, then /v1/models, else unknown.
 
     State file alone lies after `systemctl stop` (perf controller doesn't
     clear it), so verify with a non-disturbing TCP connect.
     """
+    if _llama_sse_authoritative():
+        sse_state = _require_ctx().state.get("llama_state")
+        if sse_state in ("awake", "sleeping"):
+            return sse_state
     file_state = llama_read_state_file()
     if file_state in ("awake", "sleeping"):
         if _llama_port_open():
@@ -222,7 +232,16 @@ def collect_llama_for_metrics() -> dict[str, Any]:
         "kv_cache_usage_ratio": None,
         "kv_cache_tokens": None,
         "n_remain": None,
+        "sse_status": None,
+        "sse_connected": False,
+        "download_progress": None,
     }
+
+    sse_snap = dict(_require_ctx().state.get("llama_sse") or {})
+    if sse_snap:
+        llama["sse_status"] = sse_snap.get("status")
+        llama["download_progress"] = sse_snap.get("download_progress")
+    llama["sse_connected"] = _llama_sse_authoritative()
 
     loaded_id: "str | None" = None
     model_api_sleeping = False
@@ -528,16 +547,21 @@ async def _perf_process_line(line: str) -> None:
     matched_sleep = next((m for m in _require_ctx().config.PERF_SLEEP_MARKERS if m in line), None)
     matched_wake = next((m for m in _require_ctx().config.PERF_WAKE_MARKERS if m in line), None)
 
+    # When True, SSE owns llama_state; skip the state set + manager push below.
+    sse_auth = _llama_sse_authoritative()
+
     if matched_sleep and cur != "sleeping":
         log.info("perf transition wake->sleep (matched %r); switching to %s",
                     matched_sleep, _require_ctx().config.PERF_TARGET_SLEEP)
         await _perf_switch(_require_ctx().config.PERF_TARGET_SLEEP)
         llama_write_state_file("sleeping")
         with _require_ctx().runtime_lock:
-            _require_ctx().state["llama_state"] = "sleeping"
+            if not sse_auth:
+                _require_ctx().state["llama_state"] = "sleeping"
             _require_ctx().state["perf_sleep_count"] += 1
             _require_ctx().state["perf_last_transition"] = {"to": "sleeping", "ts": _require_ctx().now_iso(), "marker": matched_sleep}
-        _push_llama_state_to_manager("sleeping")
+        if not sse_auth:
+            _push_llama_state_to_manager("sleeping")
         return
 
     if matched_wake and cur != "awake":
@@ -546,10 +570,12 @@ async def _perf_process_line(line: str) -> None:
         await _perf_switch(_require_ctx().config.PERF_TARGET_AWAKE)
         llama_write_state_file("awake")
         with _require_ctx().runtime_lock:
-            _require_ctx().state["llama_state"] = "awake"
+            if not sse_auth:
+                _require_ctx().state["llama_state"] = "awake"
             _require_ctx().state["perf_wake_count"] += 1
             _require_ctx().state["perf_last_transition"] = {"to": "awake", "ts": _require_ctx().now_iso(), "marker": matched_wake}
-        _push_llama_state_to_manager("awake")
+        if not sse_auth:
+            _push_llama_state_to_manager("awake")
 
 
 def _push_llama_state_to_manager(state: str) -> None:
@@ -594,6 +620,116 @@ async def _perf_switch(target_unit: str) -> None:
         log.warning("perf switch %s exception: %s", target_unit, e, exc_info=True)
 
 
+# ---------------------------------------------------------------------------
+# /models/sse push-state consumer (router mode).
+# ---------------------------------------------------------------------------
+
+def _llama_router_mode() -> bool:
+    """True when the llama systemd unit launches in multi-model router mode."""
+    try:
+        content = Path(_llama_svc_file_path()).read_text()
+    except FileNotFoundError:
+        log.debug("router-mode detect: service file absent; SSE off")
+        return False
+    except OSError as e:
+        log.warning("router-mode detect: cannot read service file (%s); SSE off", e)
+        return False
+    for line in content.splitlines():
+        s = line.strip()
+        if s.startswith("ExecStart="):
+            flags = llama_sse.parse_exec_flags(s[len("ExecStart="):].strip())
+            return llama_sse.router_mode_from_flags(flags)
+    return False
+
+
+def _llama_sse_authoritative() -> bool:
+    """True when the SSE listener is connected and owns llama_state reporting."""
+    lis = _llama_sse_listener
+    return lis is not None and lis.connected
+
+
+def _llama_sse_update_snapshot(**fields: Any) -> None:
+    ctx = _require_ctx()
+    with ctx.runtime_lock:
+        snap = dict(ctx.state.get("llama_sse") or {})
+        snap.update(fields)
+        snap["connected"] = True
+        snap["ts"] = ctx.now_iso()
+        ctx.state["llama_sse"] = snap
+
+
+def _llama_sse_apply_status(data: dict[str, Any]) -> None:
+    status = llama_sse.status_value(data)
+    model_id = data.get("model") or data.get("id") or data.get("name")
+    new_state = llama_sse.sse_status_to_state(status)
+    ctx = _require_ctx()
+    changed = False
+    with ctx.runtime_lock:
+        snap = dict(ctx.state.get("llama_sse") or {})
+        snap.update({
+            "status": (status or "").lower() or None,
+            "model": model_id, "connected": True, "ts": ctx.now_iso(),
+        })
+        ctx.state["llama_sse"] = snap
+        if new_state in ("awake", "sleeping") and ctx.state.get("llama_state") != new_state:
+            ctx.state["llama_state"] = new_state
+            changed = True
+    if changed:
+        log.info("llama /models/sse: status=%s -> llama_state=%s (model=%s)",
+                    status, new_state, model_id)
+        _push_llama_state_to_manager(new_state)
+
+
+def _llama_sse_on_event(sse_event: str, data: dict[str, Any]) -> None:
+    kind = llama_sse.event_kind(sse_event, data)
+    if kind in ("status_change", "model_status"):
+        _llama_sse_apply_status(data)
+    elif kind == "download_progress":
+        _llama_sse_update_snapshot(download_progress=llama_sse.progress_value(data))
+    elif kind in ("download_finished", "download_failed"):
+        _llama_sse_update_snapshot(download_progress=None)
+
+
+def _llama_sse_on_disconnect() -> None:
+    """Drop SSE-owned llama_state so the heartbeat re-derives via fallback."""
+    ctx = _require_ctx()
+    with ctx.runtime_lock:
+        ctx.state["llama_state"] = "unknown"
+        snap = dict(ctx.state.get("llama_sse") or {})
+        if snap:
+            snap["connected"] = False
+            ctx.state["llama_sse"] = snap
+
+
+def _maybe_start_sse_listener() -> None:
+    """Start the router-mode /models/sse listener thread when enabled."""
+    global _llama_sse_listener, _llama_sse_thread, _llama_sse_session
+    ctx = _require_ctx()
+    if not ctx.config.LLAMA_ENABLED:
+        return
+    mode = (getattr(ctx.config, "LLAMA_SSE_ENABLED", "auto") or "auto").lower()
+    if mode == "off":
+        log.info("llama /models/sse listener disabled by config")
+        return
+    if mode != "on" and not _llama_router_mode():
+        log.info("llama /models/sse: single-model mode; SSE listener not started")
+        return
+    url = f"{ctx.config.LLAMA_API_URL.rstrip('/')}/models/sse"
+    _llama_sse_session = requests.Session()
+    sess = _llama_sse_session
+    _llama_sse_listener = llama_sse.LlamaSseListener(
+        connect=lambda: llama_sse.requests_sse_lines(url, session=sess),
+        on_event=_llama_sse_on_event,
+        should_stop=lambda: bool(ctx.state.get("restart_pending")),
+        on_disconnect=_llama_sse_on_disconnect,
+        logger=log,
+    )
+    _llama_sse_thread = threading.Thread(
+        target=_llama_sse_listener.run, name="llama-models-sse", daemon=True)
+    _llama_sse_thread.start()
+    log.info("llama /models/sse listener started (router mode): %s", url)
+
+
 def llama_state_endpoint(authorization: Optional[str] = Header(default=None)) -> dict[str, Any]:
     _require_ctx().check_bearer(authorization)
     if not _require_ctx().config.LLAMA_ENABLED:
@@ -603,6 +739,8 @@ def llama_state_endpoint(authorization: Optional[str] = Header(default=None)) ->
         "port": int(_require_ctx().config.LLAMA_API_URL.rsplit(":", 1)[-1]) if ":" in _require_ctx().config.LLAMA_API_URL else None,
         "perf_controller_enabled": _require_ctx().config.PERF_CONTROLLER_ENABLED,
         "last_transition": _require_ctx().state.get("perf_last_transition"),
+        "sse_connected": _llama_sse_authoritative(),
+        "sse": _require_ctx().state.get("llama_sse"),
     }
 
 
@@ -2532,8 +2670,9 @@ def register_routes(app) -> None:
 
 
 def start_background() -> "Optional[asyncio.Task]":
-    """Spawn the perf-controller log-tail task when enabled. Call from FastAPI lifespan."""
+    """Spawn the /models/sse listener + perf-controller task. Call from FastAPI lifespan."""
     ctx = _require_ctx()
+    _maybe_start_sse_listener()
     if not ctx.config.PERF_CONTROLLER_ENABLED:
         return None
     return asyncio.create_task(perf_controller_loop())
