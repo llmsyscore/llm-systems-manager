@@ -34,29 +34,28 @@ def test_event_stream_upstream_uses_thread_pumped(monkeypatch):
     monkeypatch.setattr(proxies.stream_pool.POOL, "release", lambda: None)
     up = _FakeUpstream("text/event-stream")
     with app.app_context():
-        resp = proxies._proxied_stream_response(up, "/models/sse", [], 200)
+        resp = proxies._maybe_event_stream_response(up, "/models/sse", [], 200)
         body = b"".join(resp.response)
     assert seen.get("path") == "/models/sse"
     assert b": ka\n\n" in body
 
 
-def test_non_stream_upstream_proxied_raw(monkeypatch):
+def test_non_stream_returns_none(monkeypatch):
     used_tp = {"v": False}
     monkeypatch.setattr(proxies, "thread_pumped",
                         lambda *a, **k: used_tp.__setitem__("v", True) or iter([]))
     up = _FakeUpstream("text/html")
     with app.app_context():
-        resp = proxies._proxied_stream_response(up, "/", [], 200)
-        body = b"".join(resp.response)
+        result = proxies._maybe_event_stream_response(up, "/", [], 200)
+    assert result is None
     assert used_tp["v"] is False
-    assert body == b"raw-body"
 
 
 def test_event_stream_at_capacity_returns_503_and_closes(monkeypatch):
     monkeypatch.setattr(proxies.stream_pool.POOL, "try_acquire", lambda: False)
     up = _FakeUpstream("text/event-stream")
     with app.app_context():
-        resp = proxies._proxied_stream_response(up, "/models/sse", [], 200)
+        resp = proxies._maybe_event_stream_response(up, "/models/sse", [], 200)
     assert resp.status_code == 503
     assert up.closed is True
 
@@ -69,7 +68,7 @@ def test_event_stream_releases_slot_on_close(monkeypatch):
                         lambda: released.__setitem__("n", released["n"] + 1))
     up = _FakeUpstream("text/event-stream")
     with app.app_context():
-        resp = proxies._proxied_stream_response(up, "/m", [], 200)
+        resp = proxies._maybe_event_stream_response(up, "/m", [], 200)
     resp.close()
     assert released["n"] == 1
 
@@ -89,7 +88,7 @@ def test_event_stream_releases_slot_if_body_construction_raises(monkeypatch):
     up = _FakeUpstream("text/event-stream")
     with app.app_context():
         try:
-            proxies._proxied_stream_response(up, "/m", [], 200)
+            proxies._maybe_event_stream_response(up, "/m", [], 200)
         except ValueError:
             pass
     assert released["n"] == 1
