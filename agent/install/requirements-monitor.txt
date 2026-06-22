@@ -1,0 +1,2 @@
+# Installed into the agent venv only when alarm-engine monitoring is enabled.
+influxdb-client>=1.50.0

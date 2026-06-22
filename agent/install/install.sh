@@ -483,8 +483,10 @@ _compute_required_install_files() {
     "$SRC_DIR/_best_effort.py"
     "$SRC_DIR/agent_context.py"
     "$SRC_DIR/stream_pool.py"
+    "$SRC_DIR/unified_config_reader.py"
     "$SRC_DIR/agent_config.yaml.example"
     "$TMPL_DIR/requirements.txt"
+    "$TMPL_DIR/requirements-monitor.txt"
     "$SRC_DIR/collectors/__init__.py"
     "$SRC_DIR/collectors/_shared.py"
     "$SRC_DIR/collectors/gpu.py"
@@ -934,13 +936,15 @@ if $DO_UPDATE; then
   $SUDO cp "$SRC_DIR/_best_effort.py"             "$INSTALL_DIR/_best_effort.py"
   $SUDO cp "$SRC_DIR/agent_context.py"            "$INSTALL_DIR/agent_context.py"
   $SUDO cp "$SRC_DIR/stream_pool.py"              "$INSTALL_DIR/stream_pool.py"
+  $SUDO cp "$SRC_DIR/unified_config_reader.py"    "$INSTALL_DIR/unified_config_reader.py"
   $SUDO chown "$USER_ARG:$USER_GROUP" \
     "$INSTALL_DIR/llm-systems-agent.py" \
     "$INSTALL_DIR/buffered_metric_client.py" \
     "$INSTALL_DIR/_utils.py" \
     "$INSTALL_DIR/_best_effort.py" \
     "$INSTALL_DIR/agent_context.py" \
-    "$INSTALL_DIR/stream_pool.py"
+    "$INSTALL_DIR/stream_pool.py" \
+    "$INSTALL_DIR/unified_config_reader.py"
   _ok "agent code refreshed"
 
   # 2. Refresh venv against current requirements (no-op if already satisfied)
@@ -964,6 +968,12 @@ if $DO_UPDATE; then
   _pip_filter _run_as "$USER_ARG" "$INSTALL_DIR/venv/bin/pip" install --quiet --no-cache-dir --upgrade pip
   _pip_filter _run_as "$USER_ARG" "$INSTALL_DIR/venv/bin/pip" install --quiet --no-cache-dir -r "$TMPL_DIR/requirements.txt"
   echo "  ✓ requirements installed"
+
+  _monitor_alarm_on="$(_yaml_scalar "$INSTALL_DIR/agent_config.yaml" MONITOR_ALARM_ENGINE_ENABLED)"
+  if [[ "$(printf '%s' "$_monitor_alarm_on" | tr '[:upper:]' '[:lower:]')" == "true" ]]; then
+    _pip_filter _run_as "$USER_ARG" "$INSTALL_DIR/venv/bin/pip" install --quiet --no-cache-dir -r "$TMPL_DIR/requirements-monitor.txt"
+    echo "  ✓ monitor extras (influxdb-client) installed"
+  fi
 
   _hf_llama_on="$(_yaml_scalar "$INSTALL_DIR/agent_config.yaml" LLAMA_ENABLED)"
   # tr, not ${,,} — macOS bash 3.2 lacks case-modification expansion.
@@ -3174,13 +3184,15 @@ $SUDO cp "$SRC_DIR/_utils.py"                 "$INSTALL_DIR/"
 $SUDO cp "$SRC_DIR/_best_effort.py"           "$INSTALL_DIR/"
 $SUDO cp "$SRC_DIR/agent_context.py"          "$INSTALL_DIR/"
 $SUDO cp "$SRC_DIR/stream_pool.py"            "$INSTALL_DIR/"
+$SUDO cp "$SRC_DIR/unified_config_reader.py"  "$INSTALL_DIR/"
 $SUDO chown "$USER_ARG:$USER_GROUP" \
   "$INSTALL_DIR/llm-systems-agent.py" \
   "$INSTALL_DIR/buffered_metric_client.py" \
   "$INSTALL_DIR/_utils.py" \
   "$INSTALL_DIR/_best_effort.py" \
   "$INSTALL_DIR/stream_pool.py" \
-  "$INSTALL_DIR/agent_context.py"
+  "$INSTALL_DIR/agent_context.py" \
+  "$INSTALL_DIR/unified_config_reader.py"
 _ok "agent code installed to $INSTALL_DIR"
 
 # 3. Drop config from example if missing
@@ -3433,6 +3445,10 @@ $SUDO chown "$USER_ARG:$USER_GROUP" "$INSTALL_DIR/src"
 _run_as "$USER_ARG" "$PYTHON3" -m venv "$INSTALL_DIR/venv"
 _pip_filter _run_as "$USER_ARG" "$INSTALL_DIR/venv/bin/pip" install --quiet --no-cache-dir --upgrade pip
 _pip_filter _run_as "$USER_ARG" "$INSTALL_DIR/venv/bin/pip" install --quiet --no-cache-dir -r "$TMPL_DIR/requirements.txt"
+
+if $ENABLE_MONITOR_ALARM; then
+  _pip_filter _run_as "$USER_ARG" "$INSTALL_DIR/venv/bin/pip" install --quiet --no-cache-dir -r "$TMPL_DIR/requirements-monitor.txt"
+fi
 
 if $ENABLE_LLAMA; then
   _ensure_hf_cli "$USER_ARG" "$USER_HOME"
