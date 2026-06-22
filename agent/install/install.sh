@@ -485,6 +485,7 @@ _compute_required_install_files() {
     "$SRC_DIR/stream_pool.py"
     "$SRC_DIR/agent_config.yaml.example"
     "$TMPL_DIR/requirements.txt"
+    "$TMPL_DIR/requirements-monitor.txt"
     "$SRC_DIR/collectors/__init__.py"
     "$SRC_DIR/collectors/_shared.py"
     "$SRC_DIR/collectors/gpu.py"
@@ -964,6 +965,12 @@ if $DO_UPDATE; then
   _pip_filter _run_as "$USER_ARG" "$INSTALL_DIR/venv/bin/pip" install --quiet --no-cache-dir --upgrade pip
   _pip_filter _run_as "$USER_ARG" "$INSTALL_DIR/venv/bin/pip" install --quiet --no-cache-dir -r "$TMPL_DIR/requirements.txt"
   echo "  ✓ requirements installed"
+
+  _monitor_alarm_on="$(_yaml_scalar "$INSTALL_DIR/agent_config.yaml" MONITOR_ALARM_ENGINE_ENABLED)"
+  if [[ "$(printf '%s' "$_monitor_alarm_on" | tr '[:upper:]' '[:lower:]')" == "true" ]]; then
+    _pip_filter _run_as "$USER_ARG" "$INSTALL_DIR/venv/bin/pip" install --quiet --no-cache-dir -r "$TMPL_DIR/requirements-monitor.txt"
+    echo "  ✓ monitor extras (influxdb-client) installed"
+  fi
 
   _hf_llama_on="$(_yaml_scalar "$INSTALL_DIR/agent_config.yaml" LLAMA_ENABLED)"
   # tr, not ${,,} — macOS bash 3.2 lacks case-modification expansion.
@@ -3433,6 +3440,10 @@ $SUDO chown "$USER_ARG:$USER_GROUP" "$INSTALL_DIR/src"
 _run_as "$USER_ARG" "$PYTHON3" -m venv "$INSTALL_DIR/venv"
 _pip_filter _run_as "$USER_ARG" "$INSTALL_DIR/venv/bin/pip" install --quiet --no-cache-dir --upgrade pip
 _pip_filter _run_as "$USER_ARG" "$INSTALL_DIR/venv/bin/pip" install --quiet --no-cache-dir -r "$TMPL_DIR/requirements.txt"
+
+if $ENABLE_MONITOR_ALARM; then
+  _pip_filter _run_as "$USER_ARG" "$INSTALL_DIR/venv/bin/pip" install --quiet --no-cache-dir -r "$TMPL_DIR/requirements-monitor.txt"
+fi
 
 if $ENABLE_LLAMA; then
   _ensure_hf_cli "$USER_ARG" "$USER_HOME"
