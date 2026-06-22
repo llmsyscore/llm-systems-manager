@@ -120,3 +120,26 @@ jobs:
             llm-systems-alarm-engine/backend \
             llm-systems-manager/backend \
             agent
+
+  js-test:
+    name: vitest
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    # Frontend unit tests (vitest). Buildless, dev-only deps. BLOCKING.
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: llm-systems-manager/frontend/package-lock.json
+
+      - name: Install frontend dev dependencies
+        working-directory: llm-systems-manager/frontend
+        run: npm ci
+
+      - name: Run frontend unit tests
+        working-directory: llm-systems-manager/frontend
+        run: npm test

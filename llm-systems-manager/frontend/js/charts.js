@@ -311,9 +311,8 @@ function mkMultiChart(id, lines) {
 // history backfill share one resolution (= the settings cadence). Same-grid
 // appends collapse onto the prior point instead of densifying one side (#129).
 function _bucketDate(ts) {
-  const ms = new Date(ts).getTime();
   const w = (typeof fetchInterval === 'number' && fetchInterval > 0) ? fetchInterval : 0;
-  return w ? new Date(Math.floor(ms / w) * w) : new Date(ms);
+  return LMSeries.bucketDate(ts, w);
 }
 
 // Push the same timestamp to all datasets in a multi-line chart; missing
@@ -912,23 +911,8 @@ async function loadManagerPerfHistory() {
     } catch { return []; }
   };
 
-  // Align timestamps across series by zipping into a {ts → values} map.
-  // Different probe metrics fire on different cadences (META_PERF_INTERVAL_S=60s);
-  // we don't try to interpolate — each x position has only the values
-  // that actually arrived at that timestamp, the tooltip already handles
-  // nulls gracefully (see _sparkTooltip).
-  const zipByTs = (seriesPoints) => {
-    const map = new Map();
-    seriesPoints.forEach((pts, idx) => {
-      for (const p of pts) {
-        const ts = p.timestamp || p.ts;
-        if (!ts) continue;
-        if (!map.has(ts)) map.set(ts, new Array(seriesPoints.length).fill(null));
-        map.get(ts)[idx] = p.value;
-      }
-    });
-    return [...map.entries()].sort(([a], [b]) => new Date(a) - new Date(b));
-  };
+  // Timestamp alignment lives in lib/series.js (shared with the unit tests).
+  const zipByTs = LMSeries.zipByTs;
 
   // Returns true once either chart is backfilled, so the caller can retry on a
   // transient empty response instead of latching a failed one-shot (#131).
@@ -940,10 +924,10 @@ async function loadManagerPerfHistory() {
       fetchPoints('manager_history_latency_ms'),
     ]);
     const rows = zipByTs([api, hist]);
+    filled = LMSeries.latchFilled(filled, rows);
     if (rows.length) {
       _clearChart(mgrPerfChart);  // discard any racing live point (#137)
       for (const [ts, vals] of rows) pushMulti(mgrPerfChart, ts, vals);
-      filled = true;
     }
   }
 
@@ -957,10 +941,10 @@ async function loadManagerPerfHistory() {
     ];
     const series = await Promise.all(names.map(fetchPoints));
     const rows = zipByTs(series);
+    filled = LMSeries.latchFilled(filled, rows);
     if (rows.length) {
       _clearChart(aePerfChart);  // discard any racing live point (#137)
       for (const [ts, vals] of rows) pushMulti(aePerfChart, ts, vals);
-      filled = true;
     }
   }
   return filled;
