@@ -177,6 +177,30 @@ def thread_pumped(upstream, path, *, keepalive_s: float = _STREAM_KEEPALIVE_S,
             upstream.close()
 
 
+def _proxied_stream_response(upstream, path, headers, status):
+    """Response for a proxied upstream. An event-stream goes through
+    thread_pumped (manager keepalive + lifetime cap + stream slot) so an
+    idle/closed upstream ends cleanly; other content is proxied raw."""
+    ctype = (upstream.headers.get("content-type") or "").lower()
+    if "text/event-stream" not in ctype:
+        return Response(upstream.iter_content(chunk_size=8192),
+                        status=status, headers=headers)
+    if not stream_pool.POOL.try_acquire():
+        upstream.close()
+        return _proxy_error("manager at stream capacity; retry shortly", 503)
+    handed_off = False
+    try:
+        resp = Response(thread_pumped(upstream, path), status=status, headers=headers)
+        resp.call_on_close(stream_pool.POOL.release)
+        handed_off = True
+        return resp
+    finally:
+        # Construction can raise after the slot is taken; release + close here.
+        if not handed_off:
+            upstream.close()
+            stream_pool.POOL.release()
+
+
 # ── Dep namespace ────────────────────────────────────────────────────
 
 # Populated by register_routes(). Holds the Context plus the few module-
@@ -474,9 +498,7 @@ def _proxy_llmchat(path: str, base: str):
                 v = v.replace(base, "/proxy/llmchat")
             headers.append((k, v))
         headers += _csp_header_pairs(upstream.headers.get("content-type", ""))
-        return Response(upstream.iter_content(chunk_size=8192),
-                        status=upstream.status_code,
-                        headers=headers)
+        return _proxied_stream_response(upstream, path, headers, upstream.status_code)
     except Exception as e:
         return _proxy_error("Proxy error", 502, e)
 
@@ -543,9 +565,7 @@ def _proxy_openclaw(path: str, base: str):
             return Response(body, status=upstream.status_code, headers=headers,
                             content_type=ct)
 
-        return Response(upstream.iter_content(chunk_size=8192),
-                        status=upstream.status_code,
-                        headers=headers)
+        return _proxied_stream_response(upstream, path, headers, upstream.status_code)
     except Exception as e:
         return _proxy_error("Proxy error", 502, e)
 
@@ -580,8 +600,7 @@ def _proxy_imggen(path: str, base: str):
                 v = v.replace(base, "/proxy/imggen")
             headers.append((k, v))
         headers += _csp_header_pairs(upstream.headers.get("content-type", ""))
-        return Response(upstream.iter_content(chunk_size=8192),
-                        status=upstream.status_code, headers=headers)
+        return _proxied_stream_response(upstream, path, headers, upstream.status_code)
     except Exception as e:
         return _proxy_error("Image Generation proxy error", 502, e)
 
@@ -624,8 +643,7 @@ def _proxy_sdcpp(path: str, base: str):
     for name, val in _csp_header_pairs(upstream.headers.get("content-type", "")):
         resp_headers[name] = val
 
-    return Response(upstream.iter_content(chunk_size=8192),
-                    status=upstream.status_code, headers=resp_headers)
+    return _proxied_stream_response(upstream, path, resp_headers, upstream.status_code)
 
 
 def _resolve_alarm_agent_param(path: str, args) -> list:
