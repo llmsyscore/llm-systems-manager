@@ -177,6 +177,28 @@ def thread_pumped(upstream, path, *, keepalive_s: float = _STREAM_KEEPALIVE_S,
             upstream.close()
 
 
+def _maybe_event_stream_response(upstream, path, headers, status):
+    """Wrap an event-stream upstream in thread_pumped (keepalive + lifetime cap
+    + stream slot) and return the Response; return None for non-stream content."""
+    ctype = (upstream.headers.get("content-type") or "").lower()
+    if "text/event-stream" not in ctype:
+        return None
+    if not stream_pool.POOL.try_acquire():
+        upstream.close()
+        return _proxy_error("manager at stream capacity; retry shortly", 503)
+    handed_off = False
+    try:
+        resp = Response(thread_pumped(upstream, path), status=status, headers=headers)
+        resp.call_on_close(stream_pool.POOL.release)
+        handed_off = True
+        return resp
+    finally:
+        # Construction can raise after the slot is taken; release + close here.
+        if not handed_off:
+            upstream.close()
+            stream_pool.POOL.release()
+
+
 # ── Dep namespace ────────────────────────────────────────────────────
 
 # Populated by register_routes(). Holds the Context plus the few module-
@@ -474,6 +496,9 @@ def _proxy_llmchat(path: str, base: str):
                 v = v.replace(base, "/proxy/llmchat")
             headers.append((k, v))
         headers += _csp_header_pairs(upstream.headers.get("content-type", ""))
+        sse = _maybe_event_stream_response(upstream, path, headers, upstream.status_code)
+        if sse is not None:
+            return sse
         return Response(upstream.iter_content(chunk_size=8192),
                         status=upstream.status_code,
                         headers=headers)
@@ -543,6 +568,9 @@ def _proxy_openclaw(path: str, base: str):
             return Response(body, status=upstream.status_code, headers=headers,
                             content_type=ct)
 
+        sse = _maybe_event_stream_response(upstream, path, headers, upstream.status_code)
+        if sse is not None:
+            return sse
         return Response(upstream.iter_content(chunk_size=8192),
                         status=upstream.status_code,
                         headers=headers)
@@ -580,6 +608,9 @@ def _proxy_imggen(path: str, base: str):
                 v = v.replace(base, "/proxy/imggen")
             headers.append((k, v))
         headers += _csp_header_pairs(upstream.headers.get("content-type", ""))
+        sse = _maybe_event_stream_response(upstream, path, headers, upstream.status_code)
+        if sse is not None:
+            return sse
         return Response(upstream.iter_content(chunk_size=8192),
                         status=upstream.status_code, headers=headers)
     except Exception as e:
@@ -624,6 +655,9 @@ def _proxy_sdcpp(path: str, base: str):
     for name, val in _csp_header_pairs(upstream.headers.get("content-type", "")):
         resp_headers[name] = val
 
+    sse = _maybe_event_stream_response(upstream, path, resp_headers, upstream.status_code)
+    if sse is not None:
+        return sse
     return Response(upstream.iter_content(chunk_size=8192),
                     status=upstream.status_code, headers=resp_headers)
 
