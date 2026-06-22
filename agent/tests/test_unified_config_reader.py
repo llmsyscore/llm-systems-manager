@@ -61,6 +61,13 @@ def test_missing_file_returns_none(tmp_path):
     assert ucr.read_influx_settings(str(tmp_path / "nope.toml")) is None
 
 
+def test_no_toml_parser_returns_none(tmp_path, monkeypatch):
+    p = tmp_path / "llm-systems.toml"
+    p.write_text(_FULL_TOML)
+    monkeypatch.setattr(ucr, "tomllib", None)
+    assert ucr.read_influx_settings(str(p)) is None
+
+
 def test_no_influx_table_returns_none(tmp_path):
     p = tmp_path / "llm-systems.toml"
     p.write_text("[manager]\nport = 5000\n")

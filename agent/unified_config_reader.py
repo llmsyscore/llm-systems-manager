@@ -1,19 +1,26 @@
 # agent/unified_config_reader.py
-"""Stdlib-only reader for the unified-config TOML's [influxdb] section.
-Used by the agent's InfluxDB self-monitor probe; importable without requests."""
+"""Read the unified-config TOML's [influxdb] section, returning InfluxDB
+connection settings for the agent's self-monitor probe."""
 from __future__ import annotations
 
 import os
-import tomllib
 from pathlib import Path
 from typing import Optional
+
+try:
+    import tomllib
+except ModuleNotFoundError:  # Python < 3.11
+    try:
+        import tomli as tomllib  # type: ignore
+    except ModuleNotFoundError:
+        tomllib = None  # type: ignore
 
 DEFAULT_TOML_PATH = "/opt/llm-systems-manager/config/llm-systems.toml"
 
 
 def resolve_unified_config_path(path_override: str = "") -> Optional[Path]:
     """Resolve the TOML path: $LLM_SYSTEMS_CONFIG → path_override → default.
-    A set env var is honored absolutely (file-or-None), mirroring unified_config."""
+    A set env var is honored absolutely, returning the file or None."""
     env = os.environ.get("LLM_SYSTEMS_CONFIG")
     if env:
         p = Path(env).expanduser()
@@ -27,6 +34,8 @@ def resolve_unified_config_path(path_override: str = "") -> Optional[Path]:
 
 def read_influx_settings(path_override: str = "") -> Optional[dict]:
     """Parse [influxdb] from the unified-config TOML; None if unavailable."""
+    if tomllib is None:
+        return None
     p = resolve_unified_config_path(path_override)
     if p is None:
         return None

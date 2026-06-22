@@ -60,7 +60,7 @@ except ImportError:
             os.chmod(tmp, mode)
         tmp.replace(p)
 
-VERSION = "v2026.06.22-6"
+VERSION = "v2026.06.22-7"
 
 
 def _detect_install_dir() -> str:
@@ -1186,7 +1186,6 @@ def _provider_specs() -> "list[dict]":
 
 _meta_perf_state: dict[str, Optional[float]] = {}
 _meta_perf_lock = threading.Lock()
-_influx_cfg_logged = False
 
 
 def _probe_http_latency(
@@ -1266,13 +1265,16 @@ def _probe_influxdb() -> dict[str, Optional[float]]:
         "influx_query_5m_latency_ms":  None,
         "influx_query_24h_latency_ms": None,
     }
-    global _influx_cfg_logged
     cfg = unified_config_reader.read_influx_settings(CONFIG.UNIFIED_CONFIG_TOML_PATH)
     if cfg is None:
-        if not _influx_cfg_logged:
-            logger.debug("influx probe: unified-config TOML unavailable; influx self-monitor disabled")
-            _influx_cfg_logged = True
+        _diag_throttle(
+            "influx_cfg_unavailable",
+            "influx probe: unified-config TOML unavailable; influx self-monitor disabled",
+            level=logging.DEBUG,
+        )
         return out
+    with _runtime_lock:
+        _state.get("_diag_throttle", {}).pop("influx_cfg_unavailable", None)
 
     host = cfg["host"]
     port = cfg["port"]
@@ -1328,8 +1330,8 @@ def _probe_influxdb() -> dict[str, Optional[float]]:
         except Exception as e:
             logger.debug("influx 5m query probe failed: %s", e)
 
-        # 24h reads the rollup bucket via its own scoped token; with no rollup
-        # token, fall back to the raw bucket (matches the alarm engine).
+        # 24h reads the rollup bucket via its scoped token; falls back to the
+        # raw bucket when no rollup token is set.
         use_rollup = bool(rollup_token) and bool(rollup_bucket) and rollup_bucket != bucket
         q24_bucket = rollup_bucket if use_rollup else bucket
         flux_24h = (
