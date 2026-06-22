@@ -494,6 +494,7 @@ _compute_required_install_files() {
     "$SRC_DIR/providers/__init__.py"
     "$SRC_DIR/providers/lms.py"
     "$SRC_DIR/providers/llama.py"
+    "$SRC_DIR/providers/llama_sse.py"
     "$SRC_DIR/providers/terminal.py"
   )
   case "$(uname -s)" in

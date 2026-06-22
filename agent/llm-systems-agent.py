@@ -59,7 +59,7 @@ except ImportError:
             os.chmod(tmp, mode)
         tmp.replace(p)
 
-VERSION = "v2026.06.20-2"
+VERSION = "v2026.06.22-3"
 
 
 def _detect_install_dir() -> str:
@@ -304,6 +304,8 @@ class AgentConfig:
     LLAMA_BUILD_METHOD: str = ""          # custom_script|source|release_binary|conda|homebrew
     LLAMA_BUILD_DIR: str = ""             # managed install root; blank => ~/.local/share/llama.cpp
     LLAMA_BUILD_OPTS: dict = {}           # YAML-only; per-method knobs
+    # /models/sse push-state consumer: auto (router mode only) | on | off.
+    LLAMA_SSE_ENABLED: str = "auto"
 
     PERF_CONTROLLER_ENABLED: bool = False
     PERF_TARGET_AWAKE: str = "performance"
@@ -409,6 +411,7 @@ class AgentConfig:
     POWERMETRICS_INTERVAL_MS: int = 5000
 
     LOG_FILE: str = ""
+    LOG_LEVEL: str = "INFO"          # DEBUG | INFO | WARNING | ERROR
     TOKEN_FILE: str = ""
 
     @classmethod
@@ -531,7 +534,7 @@ class AgentConfig:
 logger = logging.getLogger("llm-systems-agent")
 
 
-def setup_logging(log_file: str) -> None:
+def setup_logging(log_file: str, level: str = "INFO") -> None:
     log_dir = os.path.dirname(log_file)
     if log_dir:
         try:
@@ -543,7 +546,7 @@ def setup_logging(log_file: str) -> None:
         "%(asctime)s [%(levelname)s] %(name)s:%(funcName)s() - %(message)s",
         datefmt="%Y-%m-%d %H:%M:%S",
     )
-    logger.setLevel(logging.INFO)
+    logger.setLevel(getattr(logging, str(level).upper(), logging.INFO))
     for h in list(logger.handlers):
         logger.removeHandler(h)
 
@@ -3295,7 +3298,7 @@ def main() -> None:
         probe_http=_probe_http,
     ))
     providers.register_all_routes(app)
-    setup_logging(CONFIG.LOG_FILE)
+    setup_logging(CONFIG.LOG_FILE, CONFIG.LOG_LEVEL)
     logger.info("=" * 60)
     logger.info("LLM Systems Agent %s starting", VERSION)
     logger.info("=" * 60)
