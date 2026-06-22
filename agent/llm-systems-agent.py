@@ -37,6 +37,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 import uvicorn
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+import unified_config_reader  # type: ignore
 import buffered_metric_client as bmc  # type: ignore
 import stream_pool  # type: ignore
 from _best_effort import best_effort  # type: ignore
@@ -59,7 +60,7 @@ except ImportError:
             os.chmod(tmp, mode)
         tmp.replace(p)
 
-VERSION = "v2026.06.22-4"
+VERSION = "v2026.06.22-5"
 
 
 def _detect_install_dir() -> str:
@@ -386,6 +387,9 @@ class AgentConfig:
     MONITOR_INFLUXDB_DISK_ENABLED: bool = False
     INFLUXDB_DATA_PATH: str = ""
     INFLUXDB_DISK_PROBE_INTERVAL_S: int = 300
+    # Path to the unified-config TOML the influx self-monitor probe reads
+    # connection details from. Blank => $LLM_SYSTEMS_CONFIG or the /opt default.
+    UNIFIED_CONFIG_TOML_PATH: str = ""
 
     COLLECT_GPU_ENABLED: bool = True
     COLLECT_SENSORS_ENABLED: bool = True
@@ -1182,6 +1186,7 @@ def _provider_specs() -> "list[dict]":
 
 _meta_perf_state: dict[str, Optional[float]] = {}
 _meta_perf_lock = threading.Lock()
+_influx_cfg_logged = False
 
 
 def _probe_http_latency(
@@ -1261,18 +1266,20 @@ def _probe_influxdb() -> dict[str, Optional[float]]:
         "influx_query_5m_latency_ms":  None,
         "influx_query_24h_latency_ms": None,
     }
-    try:
-        from config.unified_config import settings as _ucfg  # type: ignore
-    except Exception as e:
-        logger.debug("influx probe: unified_config import failed: %s", e)
+    global _influx_cfg_logged
+    cfg = unified_config_reader.read_influx_settings(CONFIG.UNIFIED_CONFIG_TOML_PATH)
+    if cfg is None:
+        if not _influx_cfg_logged:
+            logger.debug("influx probe: unified-config TOML unavailable; influx self-monitor disabled")
+            _influx_cfg_logged = True
         return out
 
-    host = _ucfg.influxdb.host
-    port = _ucfg.influxdb.port
-    org = _ucfg.influxdb.org
-    bucket = _ucfg.influxdb.metrics_bucket
-    rollup_bucket = getattr(_ucfg.influxdb, "metrics_rollup_bucket", bucket)
-    token = _ucfg.influxdb.tokens.metrics
+    host = cfg["host"]
+    port = cfg["port"]
+    org = cfg["org"]
+    bucket = cfg["metrics_bucket"]
+    rollup_bucket = cfg["metrics_rollup_bucket"]
+    token = cfg["token"]
 
     if not (host and token):
         return out

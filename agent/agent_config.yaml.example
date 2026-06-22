@@ -182,6 +182,9 @@ MONITOR_INFLUXDB_DISK_ENABLED:    false
 # explicitly only when InfluxDB's data is on a non-standard path.
 INFLUXDB_DATA_PATH:               ""
 INFLUXDB_DISK_PROBE_INTERVAL_S:   300
+# Path to the unified-config TOML the influx self-monitor probe reads InfluxDB
+# connection details from. Blank => $LLM_SYSTEMS_CONFIG or /opt default.
+UNIFIED_CONFIG_TOML_PATH:         ""
 
 # -- Process / service watchlist --------------------------------------------
 # Each tick the agent reports {running: 0|1, pid, rss_mb, uptime_s} for
