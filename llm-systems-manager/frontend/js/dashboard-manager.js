@@ -35,8 +35,7 @@ async function fetchServicesAndInflux() {
   // Overall tab and the Dashboard → Manager sub-tab ONLY, not the per-agent
   // llama/lms dashboards. Skip elsewhere so dbstats + the cross-host source
   // metrics don't fire from a per-agent dashboard (#123, #127).
-  const _onMgrSub = _activeTab === 'dashboard'
-    && _subTabState && _subTabState['dashboard'] === 'manager';
+  const _onMgrSub = LMSeries.isManagerSubActive(_activeTab, _subTabState);
   if (_activeTab !== 'overall' && !_onMgrSub) return;
   try {
     // Fan out to four narrow source-filtered fetches instead of one
@@ -450,9 +449,7 @@ async function fetchManagerAgentsCard() {
   // mgrAgentsTable lives only on Dashboard → Manager sub-tab. Skip the
   // poll on every other tab/sub-tab so the 10s tick doesn't slam the
   // backend while the user is somewhere else.
-  if (_activeTab !== 'dashboard' || (_subTabState && _subTabState['dashboard']) !== 'manager') {
-    return;
-  }
+  if (!LMSeries.isManagerSubActive(_activeTab, _subTabState)) return;
   const tbody = document.getElementById('mgrAgentsTable');
   if (!tbody) return;
   try {
@@ -505,9 +502,7 @@ async function fetchManagerStreamsCard() {
   // mgrStreamsTable lives only on Dashboard → Manager sub-tab. Skip the poll
   // on every other tab/sub-tab so the 10s tick doesn't fan out to every agent
   // while the card isn't visible (and 403 for operator sessions).
-  if (_activeTab !== 'dashboard' || (_subTabState && _subTabState['dashboard']) !== 'manager') {
-    return;
-  }
+  if (!LMSeries.isManagerSubActive(_activeTab, _subTabState)) return;
   const summary = document.getElementById('mgrStreamsSummary');
   const tbody = document.getElementById('mgrStreamsTable');
   const badge = document.getElementById('mgrStreamsBadge');

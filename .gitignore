@@ -49,6 +49,11 @@ docs/superpowers
 # are tracked because contributors and CI need them, but the cache is local).
 .pytest_cache/
 
+# Node test harness (installed deps; the lockfile stays tracked)
+node_modules/
+.vitest/
+npm-debug.log*
+
 # Development
 devel/
 .claude/

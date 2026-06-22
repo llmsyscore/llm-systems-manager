@@ -1,22 +1,24 @@
 #!/usr/bin/env bash
-# Run the project's unit test suites — alarm engine + manager — back to back.
-# Each suite uses its own venv (Python deps differ). Exits non-zero on the
-# first failure so CI can short-circuit cleanly.
+# Run the project's unit test suites — alarm engine, manager, agent, and the
+# frontend JS — back to back. Exits non-zero on the first failure so CI can
+# short-circuit cleanly.
 #
 # Usage:
-#   tools/run_tests.sh                # both suites
+#   tools/run_tests.sh                # all suites (py + frontend js)
 #   tools/run_tests.sh ae             # alarm engine only
 #   tools/run_tests.sh manager        # manager only
+#   tools/run_tests.sh js             # frontend js (vitest) only
 #   tools/run_tests.sh -- -k auth     # pass-through to pytest (after --)
 #
-# The wrapper installs `pytest` into each venv on first run if it's missing
-# (the venvs are dev-side here — operator deploys don't ship pytest).
+# First run installs `pytest` into each venv and npm devDependencies for the
+# js suite if missing — dev-side only, not shipped to operator deploys.
 set -euo pipefail
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 AE_DIR="$REPO/llm-systems-alarm-engine"
 MGR_DIR="$REPO/llm-systems-manager"
 AGENT_DIR="$REPO/agent"
+FE_DIR="$REPO/llm-systems-manager/frontend"
 
 WHICH="both"
 FORWARD=()
@@ -25,12 +27,13 @@ while (( $# )); do
     ae|alarm-engine|alarm) WHICH="ae"; shift ;;
     manager|mgr)           WHICH="manager"; shift ;;
     agent)                 WHICH="agent"; shift ;;
+    js|frontend|fe)        WHICH="js"; shift ;;
     both|all)              WHICH="both"; shift ;;
     --) shift; FORWARD=("$@"); break ;;
     -h|--help)
-      sed -n '2,15p' "${BASH_SOURCE[0]}" | sed 's/^# *//'
+      sed -n '2,17p' "${BASH_SOURCE[0]}" | sed 's/^# *//'
       exit 0 ;;
-    *) echo "unknown arg: $1 (use 'ae', 'manager', 'both', or '-- <pytest args>')" >&2; exit 2 ;;
+    *) echo "unknown arg: $1 (use 'ae', 'manager', 'agent', 'js', 'both', or '-- <pytest args>')" >&2; exit 2 ;;
   esac
 done
 
@@ -54,11 +57,25 @@ run_suite() {
   ( cd "$dir" && "$dir/venv/bin/python" -m pytest "${FORWARD[@]+${FORWARD[@]}}" )
 }
 
+run_js() {
+  local dir="$1"
+  echo
+  echo "── Frontend (JS) ──────────────────────────────────────────"
+  if ! command -v npm >/dev/null 2>&1; then
+    echo "[WARN] npm not found — skipping frontend JS suite" >&2
+    return 0
+  fi
+  [[ -d "$dir/node_modules" ]] || ( cd "$dir" && echo "[INFO] npm ci (frontend devDependencies)" && npm ci )
+  ( cd "$dir" && npm test )
+}
+
 case "$WHICH" in
   ae)      run_suite "Alarm engine" "$AE_DIR" ;;
   manager) run_suite "Manager"      "$MGR_DIR" ;;
   agent)   run_suite "Agent"        "$AGENT_DIR" ;;
+  js)      run_js "$FE_DIR" ;;
   both)    run_suite "Alarm engine" "$AE_DIR"
            run_suite "Manager"      "$MGR_DIR"
-           run_suite "Agent"        "$AGENT_DIR" ;;
+           run_suite "Agent"        "$AGENT_DIR"
+           run_js "$FE_DIR" ;;
 esac

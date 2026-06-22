@@ -1,0 +1,13 @@
+{
+  "name": "llm-systems-manager-frontend",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Buildless frontend unit tests for the LLM Systems Manager dashboard (dev-only; ships no bundler).",
+  "scripts": {
+    "test": "vitest run"
+  },
+  "devDependencies": {
+    "jsdom": "^29.1.1",
+    "vitest": "^4.1.9"
+  }
+}
