@@ -253,6 +253,63 @@ def test_listener_reconnects_after_clean_stream_end():
     assert [e[1]["status"] for e in drv.events] == ["loaded", "sleeping"]
 
 
+# ── select_wake_target (issue #140) ────────────────────────────────────
+
+def test_wake_target_prefers_sleeping_over_first_listed():
+    # Sleeping model wins over the first-listed entry.
+    models = [
+        {"id": "alpha", "status": {"value": "unloaded"}},
+        {"id": "beta", "status": {"value": "sleeping"}},
+    ]
+    assert llama_sse.select_wake_target(models) == "beta"
+
+
+def test_wake_target_prefers_sleeping_over_loaded():
+    models = [
+        {"id": "loaded-one", "status": {"value": "loaded"}},
+        {"id": "sleeping-one", "status": {"value": "sleeping"}},
+    ]
+    assert llama_sse.select_wake_target(models) == "sleeping-one"
+
+
+def test_wake_target_falls_back_to_loaded_when_none_sleeping():
+    models = [
+        {"id": "x", "status": {"value": "unloaded"}},
+        {"id": "y", "status": {"value": "loaded"}},
+    ]
+    assert llama_sse.select_wake_target(models) == "y"
+
+
+def test_wake_target_falls_back_to_first_when_no_status():
+    # Older llama.cpp / single-model: no per-model status → first listed.
+    assert llama_sse.select_wake_target([{"id": "one"}, {"id": "two"}]) == "one"
+
+
+def test_wake_target_honors_explicit_request():
+    models = [
+        {"id": "alpha", "status": {"value": "sleeping"}},
+        {"id": "beta", "status": {"value": "unloaded"}},
+    ]
+    assert llama_sse.select_wake_target(models, requested="beta") == "beta"
+
+
+def test_wake_target_falls_back_when_requested_not_listed():
+    # Stale/unknown id → fall back to the sleeping model, don't warm a ghost.
+    models = [{"id": "alpha", "status": {"value": "sleeping"}}]
+    assert llama_sse.select_wake_target(models, requested="ghost") == "alpha"
+    assert llama_sse.select_wake_target(models, requested="  ") == "alpha"
+
+
+def test_wake_target_empty_list_returns_none():
+    assert llama_sse.select_wake_target([]) is None
+    assert llama_sse.select_wake_target([{"status": {"value": "sleeping"}}]) is None
+
+
+def test_wake_target_ignores_malformed_entries():
+    models = ["bad", {"id": "good", "status": {"value": "sleeping"}}, None]
+    assert llama_sse.select_wake_target(models) == "good"
+
+
 def test_listener_stops_immediately_without_connecting():
     drv = _Driver([], max_connects=0)
     _listener(drv).run()

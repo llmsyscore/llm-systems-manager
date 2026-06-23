@@ -284,6 +284,7 @@ function renderModelCards() {
       </div>
       <div class="model-card-params">${chips}</div>
       <div class="model-card-actions">
+        ${isSleeping                             ? `<button class="btn btn-green-muted-gradient" data-act="wake"   data-id="${mid}">☀ Wake</button>` : ''}
         ${!isLoaded && !isLoading && !isSleeping ? `<button class="btn btn-stone-muted-gradient" data-act="load"   data-id="${mid}">▶ Load</button>` : ''}
         ${isLoaded || isLoading || isSleeping    ? `<button class="btn btn-amber-muted-gradient" data-act="unload" data-id="${mid}">⏹ Unload</button>` : ''}
         ${isLoaded || isSleeping                 ? `<button class="btn btn-stone-muted-gradient"  data-act="reload" data-id="${mid}">↺ Reload</button>` : ''}
@@ -335,6 +336,7 @@ function renderModelCards() {
       const id  = el.dataset.id;
       const act = el.dataset.act;
       if (act === 'load')   confirmLoad(id);
+      else if (act === 'wake')   wakeModel(id);
       else if (act === 'unload') confirmUnload(id);
       else if (act === 'reload') confirmReload(id);
       else if (act === 'edit')   openEditModel(id);
@@ -384,6 +386,27 @@ async function loadModel(modelId) {
     alert('Load error: ' + e);
   } finally {
     _actionRelease('load:' + modelId);
+  }
+  await refreshLLMTab();
+}
+
+// Wake a sleeping model in place; sends the clicked model id to the agent.
+async function wakeModel(modelId) {
+  if (!_actionClaim('wake:' + modelId)) return;
+  const card = document.querySelector(`[data-id="${CSS.escape(modelId)}"]`);
+  if (card) card.style.opacity = '0.5';
+  try {
+    const resp = await _fetchT('/api/llm/server/wake', {
+      method: 'POST', headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({model: modelId})
+    }, 80000);
+    if (typeof _notePinOverride === 'function') _notePinOverride(resp, modelId);
+    const r = await resp.json();
+    if (!r.ok) alert('Wake failed: ' + (r.error || JSON.stringify(r)));
+  } catch(e) {
+    alert('Wake error: ' + e);
+  } finally {
+    _actionRelease('wake:' + modelId);
   }
   await refreshLLMTab();
 }

@@ -153,7 +153,7 @@ def _local_hostname() -> str:
 # banner reads it. Bump suffix (-1, -2, …) for same-day iterations; roll
 # the date for a new day's first change.
 # ---------------------------------------------------------------------------
-__version__ = "v2026.06.23-1"
+__version__ = "v2026.06.23-2"
 
 # Wall-clock at first import (Cheroot main process); the shutdown banner
 # reads it for the uptime line.
@@ -1393,7 +1393,10 @@ def llama_server_restart():
 def llama_server_wake():
     # Generous timeout — when --sleep-idle-seconds has unloaded the model,
     # the wake forces a reload from disk that can take many seconds.
-    proxied = proxies.proxy_to_primary("llama", "POST", "/llama/server/wake", timeout=75)
+    data     = flask_request.get_json(silent=True) or {}
+    model_id = data.get("model_id") or data.get("model")
+    proxied = proxies.proxy_to_primary("llama", "POST", "/llama/server/wake",
+                                       json=(data or None), timeout=75, model_id=model_id)
     if proxied is not None:
         return proxied
     return jsonify({"ok": False, "error": "no approved primary llama agent"}), 503

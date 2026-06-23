@@ -56,6 +56,21 @@ def sse_status_to_state(status: Optional[str]) -> Optional[str]:
     return _SSE_STATUS_TO_STATE.get((status or "").lower())
 
 
+def select_wake_target(models: Iterable[Any],
+                       requested: Optional[str] = None) -> Optional[str]:
+    """Pick the /v1/models id to warm: requested (when listed), else the
+    sleeping model, else the loaded one, else the first listed."""
+    entries = [m for m in models if isinstance(m, dict) and m.get("id")]
+    if requested and any(m["id"] == requested for m in entries):
+        return requested
+    for want in ("sleeping", "loaded"):
+        for m in entries:
+            st = m.get("status")
+            if (st.get("value") if isinstance(st, dict) else None) == want:
+                return m["id"]
+    return entries[0]["id"] if entries else None
+
+
 def _inner(data: dict[str, Any]) -> dict[str, Any]:
     """The real envelope nests fields under data['data']; fall back to top level."""
     nested = data.get("data")

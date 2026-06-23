@@ -1075,10 +1075,12 @@ def llama_server_restart_endpoint(authorization: Optional[str] = Header(default=
     return _llama_systemctl("restart", timeout=60)
 
 
-def llama_server_wake_endpoint(authorization: Optional[str] = Header(default=None)) -> dict[str, Any]:
-    # GET /v1/models for loaded id, then POST chat/completions to wake (timeout generous for reload).
+def llama_server_wake_endpoint(body: Optional[dict] = None,
+                               authorization: Optional[str] = Header(default=None)) -> dict[str, Any]:
+    # GET /v1/models, target the requested model else the sleeping/loaded one, then warm it.
     _require_ctx().check_bearer(authorization); _llama_check_enabled()
     base = _require_ctx().config.LLAMA_API_URL.rstrip("/")
+    requested = (body or {}).get("model") or (body or {}).get("model_id")
     model_id = None
     try:
         mr = _require_ctx().post_session.get(f"{base}/v1/models", timeout=5)
@@ -1086,9 +1088,7 @@ def llama_server_wake_endpoint(authorization: Optional[str] = Header(default=Non
             return {"ok": False, "status": mr.status_code,
                     "error": f"GET /v1/models returned HTTP {mr.status_code}: {mr.text[:200]}"}
         data = mr.json() or {}
-        for entry in (data.get("data") or []):
-            if entry.get("id"):
-                model_id = entry["id"]; break
+        model_id = llama_sse.select_wake_target(data.get("data") or [], requested)
     except Exception as e:
         return {"ok": False, "error": f"GET /v1/models failed: {e}"}
     if not model_id:
