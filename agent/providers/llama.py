@@ -1393,6 +1393,9 @@ def llama_download_endpoint(body: dict, authorization: Optional[str] = Header(de
     if dry_run:
         cmd.append("--dry-run")
         cmd += ["--format", "json"]
+    else:
+        # Pin 'human' so hf keeps progress bars on (default 'auto' disables them here).
+        cmd += ["--format", "human"]
     if not _llama_queue_command(cmd, dry_run=dry_run):
         raise HTTPException(status_code=409, detail="Another operation is in progress")
     return {"ok": True}
