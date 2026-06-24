@@ -48,6 +48,23 @@ def test_read_full(tmp_path):
     }
 
 
+def test_partial_config_mirrors_unified_defaults(tmp_path):
+    p = tmp_path / "llm-systems.toml"
+    p.write_text('[influxdb]\nmetrics_bucket="b"\n[influxdb.tokens]\nmetrics="t"\n')
+    cfg = ucr.read_influx_settings(str(p))
+    assert cfg["host"] == "localhost"
+    assert cfg["org"] == "llm-systems-manager"
+    assert cfg["port"] == 8086
+
+
+def test_explicit_empty_host_org_preserved(tmp_path):
+    p = tmp_path / "llm-systems.toml"
+    p.write_text('[influxdb]\nhost=""\norg=""\nmetrics_bucket="b"\n')
+    cfg = ucr.read_influx_settings(str(p))
+    assert cfg["host"] == ""
+    assert cfg["org"] == ""
+
+
 def test_rollup_token_absent_is_empty(tmp_path):
     p = tmp_path / "llm-systems.toml"
     p.write_text(
