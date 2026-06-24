@@ -50,9 +50,9 @@ def read_influx_settings(path_override: str = "") -> Optional[dict]:
     tokens = influx.get("tokens") if isinstance(influx.get("tokens"), dict) else {}
     metrics_bucket = influx.get("metrics_bucket", "")
     return {
-        "host": influx.get("host", ""),
+        "host": influx.get("host", "localhost"),
         "port": int(influx.get("port", 8086) or 8086),
-        "org": influx.get("org", ""),
+        "org": influx.get("org", "llm-systems-manager"),
         "metrics_bucket": metrics_bucket,
         "metrics_rollup_bucket": influx.get("metrics_rollup_bucket") or metrics_bucket,
         "token": tokens.get("metrics", "") or "",
