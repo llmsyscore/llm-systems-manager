@@ -100,6 +100,33 @@ def test_rollup_falls_back_to_metrics_bucket(tmp_path):
     assert cfg["metrics_rollup_bucket"] == "b"
 
 
+def test_cached_returns_same_object_until_mtime_changes(tmp_path):
+    p = tmp_path / "llm-systems.toml"
+    p.write_text(_FULL_TOML)
+    import os
+    os.utime(p, (1_000_000, 1_000_000))
+    c1 = ucr.read_influx_settings_cached(str(p))
+    c2 = ucr.read_influx_settings_cached(str(p))
+    assert c1 is c2  # cache hit: no re-parse, same object
+    assert c1["host"] == "10.0.0.5"
+    # Rewrite with new content + newer mtime -> cache invalidates, re-reads.
+    p.write_text(_FULL_TOML.replace("10.0.0.5", "10.0.0.9"))
+    os.utime(p, (2_000_000, 2_000_000))
+    c3 = ucr.read_influx_settings_cached(str(p))
+    assert c3 is not c1
+    assert c3["host"] == "10.0.0.9"
+
+
+def test_cached_missing_file_returns_none(tmp_path):
+    assert ucr.read_influx_settings_cached(str(tmp_path / "nope.toml")) is None
+
+
+def test_cached_matches_uncached(tmp_path):
+    p = tmp_path / "llm-systems.toml"
+    p.write_text(_FULL_TOML)
+    assert ucr.read_influx_settings_cached(str(p)) == ucr.read_influx_settings(str(p))
+
+
 def test_env_path_wins(tmp_path, monkeypatch):
     envp = tmp_path / "env.toml"
     envp.write_text(_FULL_TOML)

@@ -58,3 +58,27 @@ def read_influx_settings(path_override: str = "") -> Optional[dict]:
         "token": tokens.get("metrics", "") or "",
         "rollup_token": tokens.get("metrics_rollup", "") or "",
     }
+
+
+# Caches the parsed settings keyed by resolved path; single-threaded use.
+_settings_cache: dict = {}
+
+
+def read_influx_settings_cached(path_override: str = "") -> Optional[dict]:
+    """mtime-gated read_influx_settings: re-parses only when the resolved TOML
+    changes (still picks up token rotation). Treat the result as read-only."""
+    p = resolve_unified_config_path(path_override)
+    if p is None:
+        return None
+    try:
+        mtime = p.stat().st_mtime_ns
+    except OSError:
+        return None
+    key = str(p)
+    cached = _settings_cache.get(key)
+    if cached is not None and cached[0] == mtime:
+        return cached[1]
+    settings = read_influx_settings(path_override)
+    if settings is not None:
+        _settings_cache[key] = (mtime, settings)
+    return settings

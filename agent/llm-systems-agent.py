@@ -60,7 +60,7 @@ except ImportError:
             os.chmod(tmp, mode)
         tmp.replace(p)
 
-VERSION = "v2026.06.24-2"
+VERSION = "v2026.06.24-3"
 
 
 def _detect_install_dir() -> str:
@@ -1187,6 +1187,27 @@ def _provider_specs() -> "list[dict]":
 _meta_perf_state: dict[str, Optional[float]] = {}
 _meta_perf_lock = threading.Lock()
 
+# Reused InfluxDB clients for the probe; rebuilt only when conn details change.
+# Accessed only by the single meta-perf thread.
+_influx_client_cache: dict = {"main": None, "main_key": None,
+                              "rollup": None, "rollup_key": None}
+
+
+def _influx_drop_client(slot: str) -> None:
+    """Close and forget the cached probe client in `slot`."""
+    client = _influx_client_cache.get(slot)
+    if client is not None:
+        with best_effort(f"influx probe: close {slot} client"):
+            client.close()
+    _influx_client_cache[slot] = None
+    _influx_client_cache[slot + "_key"] = None
+
+
+def _influx_reset_clients() -> None:
+    """Drop both cached probe clients (config gone/disabled)."""
+    _influx_drop_client("main")
+    _influx_drop_client("rollup")
+
 
 def _probe_http_latency(
     method: str, url: str, timeout: float, body: Any = None,
@@ -1265,8 +1286,9 @@ def _probe_influxdb() -> dict[str, Optional[float]]:
         "influx_query_5m_latency_ms":  None,
         "influx_query_24h_latency_ms": None,
     }
-    cfg = unified_config_reader.read_influx_settings(CONFIG.UNIFIED_CONFIG_TOML_PATH)
+    cfg = unified_config_reader.read_influx_settings_cached(CONFIG.UNIFIED_CONFIG_TOML_PATH)
     if cfg is None:
+        _influx_reset_clients()
         _diag_throttle(
             "influx_cfg_unavailable",
             "influx probe: unified-config TOML unavailable; influx self-monitor disabled",
@@ -1285,6 +1307,7 @@ def _probe_influxdb() -> dict[str, Optional[float]]:
     rollup_token = cfg["rollup_token"]
 
     if not (host and token):
+        _influx_reset_clients()
         return out
 
     url = f"http://{host}:{port}"
@@ -1295,71 +1318,87 @@ def _probe_influxdb() -> dict[str, Optional[float]]:
         logger.debug("influx probe: influxdb_client unavailable: %s", e)
         return out
 
-    try:
-        client = InfluxDBClient(url=url, token=token, org=org,
+    def _get_client(slot: str, tok: str):
+        key = (url, tok, org)
+        c = _influx_client_cache
+        if c[slot] is not None and c[slot + "_key"] == key:
+            return c[slot]
+        if c[slot] is not None:
+            with best_effort(f"influx probe: close stale {slot} client"):
+                c[slot].close()
+            c[slot] = None
+            c[slot + "_key"] = None
+        client = InfluxDBClient(url=url, token=tok, org=org,
                                 timeout=int(CONFIG.META_PERF_TIMEOUT_S * 1000))
+        c[slot] = client
+        c[slot + "_key"] = key
+        return client
+
+    try:
+        client = _get_client("main", token)
     except Exception as e:
         logger.debug("influx probe: client init failed: %s", e)
+        _influx_drop_client("main")
         return out
 
+    main_ok = True
     try:
-        try:
-            wapi = client.write_api(write_options=SYNCHRONOUS)
-            p = (
-                Point("__probe__")
-                .tag("source", "manager_self_monitor")
-                .field("latency_synthetic", 1.0)
-            )
-            t0 = time.perf_counter()
-            wapi.write(bucket=bucket, record=p)
-            out["influx_write_latency_ms"] = (time.perf_counter() - t0) * 1000.0
-        except Exception as e:
-            logger.debug("influx write probe failed: %s", e)
-
-        qapi = client.query_api()
-        flux_5m = (
-            f'from(bucket: "{bucket}") '
-            f'|> range(start: -5m) '
-            f'|> filter(fn: (r) => r._measurement == "metrics") '
-            f'|> limit(n: 10)'
+        wapi = client.write_api(write_options=SYNCHRONOUS)
+        p = (
+            Point("__probe__")
+            .tag("source", "manager_self_monitor")
+            .field("latency_synthetic", 1.0)
         )
-        try:
-            t0 = time.perf_counter()
-            _ = qapi.query(flux_5m)
-            out["influx_query_5m_latency_ms"] = (time.perf_counter() - t0) * 1000.0
-        except Exception as e:
-            logger.debug("influx 5m query probe failed: %s", e)
+        t0 = time.perf_counter()
+        wapi.write(bucket=bucket, record=p)
+        out["influx_write_latency_ms"] = (time.perf_counter() - t0) * 1000.0
+    except Exception as e:
+        logger.debug("influx write probe failed: %s", e)
 
-        # 24h reads the rollup bucket via its scoped token; falls back to the
-        # raw bucket when no rollup token is set.
-        use_rollup = bool(rollup_token) and bool(rollup_bucket) and rollup_bucket != bucket
-        q24_bucket = rollup_bucket if use_rollup else bucket
-        flux_24h = (
-            f'from(bucket: "{q24_bucket}") '
-            f'|> range(start: -24h) '
-            f'|> filter(fn: (r) => r._measurement == "metrics") '
-            f'|> limit(n: 10)'
-        )
-        rollup_client = None
-        try:
-            if use_rollup:
-                rollup_client = InfluxDBClient(url=url, token=rollup_token, org=org,
-                                               timeout=int(CONFIG.META_PERF_TIMEOUT_S * 1000))
-                q24_api = rollup_client.query_api()
-            else:
-                q24_api = qapi
-            t0 = time.perf_counter()
-            _ = q24_api.query(flux_24h)
-            out["influx_query_24h_latency_ms"] = (time.perf_counter() - t0) * 1000.0
-        except Exception as e:
-            logger.debug("influx 24h query probe failed: %s", e)
-        finally:
-            if rollup_client is not None:
-                with best_effort("influx probe: close rollup client"):
-                    rollup_client.close()
-    finally:
-        with best_effort("influx probe: close client"):
-            client.close()
+    qapi = client.query_api()
+    flux_5m = (
+        f'from(bucket: "{bucket}") '
+        f'|> range(start: -5m) '
+        f'|> filter(fn: (r) => r._measurement == "metrics") '
+        f'|> limit(n: 10)'
+    )
+    try:
+        t0 = time.perf_counter()
+        _ = qapi.query(flux_5m)
+        out["influx_query_5m_latency_ms"] = (time.perf_counter() - t0) * 1000.0
+    except Exception as e:
+        logger.debug("influx 5m query probe failed: %s", e)
+        main_ok = False
+
+    # 24h reads the rollup bucket via its scoped token; falls back to the
+    # raw bucket when no rollup token is set.
+    use_rollup = bool(rollup_token) and bool(rollup_bucket) and rollup_bucket != bucket
+    if not use_rollup:
+        _influx_drop_client("rollup")
+    q24_bucket = rollup_bucket if use_rollup else bucket
+    flux_24h = (
+        f'from(bucket: "{q24_bucket}") '
+        f'|> range(start: -24h) '
+        f'|> filter(fn: (r) => r._measurement == "metrics") '
+        f'|> limit(n: 10)'
+    )
+    rollup_ok = True
+    try:
+        q24_api = _get_client("rollup", rollup_token).query_api() if use_rollup else qapi
+        t0 = time.perf_counter()
+        _ = q24_api.query(flux_24h)
+        out["influx_query_24h_latency_ms"] = (time.perf_counter() - t0) * 1000.0
+    except Exception as e:
+        logger.debug("influx 24h query probe failed: %s", e)
+        if use_rollup:
+            rollup_ok = False
+
+    # Self-heal: drop a client whose canonical query failed so the next tick
+    # rebuilds, preserving the recovery the per-tick rebuild used to give.
+    if not main_ok:
+        _influx_drop_client("main")
+    if use_rollup and not rollup_ok:
+        _influx_drop_client("rollup")
 
     return out
 
