@@ -45,7 +45,7 @@ Backend API endpoints consumed:
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/xterm@5.3.0/css/xterm.min.css"/>
   <script src="https://cdn.jsdelivr.net/npm/xterm@5.3.0/lib/xterm.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/xterm-addon-fit@0.8.0/lib/xterm-addon-fit.min.js"></script>
-  <link rel="stylesheet" href="/static/css/base.css?v=2026.06.25-3">
+  <link rel="stylesheet" href="/static/css/base.css?v=2026.06.25-4">
 </head>
 <body>
 
@@ -1415,7 +1415,7 @@ Backend API endpoints consumed:
 <script src="/static/js/openclaw.js?v=2026.06.10-7"></script>
 <script src="/static/js/admin.js?v=2026.06.10-6"></script>
 <script src="/static/js/llmcontrol-models.js?v=2026.06.10-6"></script>
-<script src="/static/js/bench-autotune.js?v=2026.06.25-1"></script>
+<script src="/static/js/bench-autotune.js?v=2026.06.25-2"></script>
 <script src="/static/js/lmstudio.js?v=2026.06.15-14"></script>
 <script src="/static/js/overall.js?v=2026.06.09-2"></script>
 <script src="/static/js/dashboard-manager.js?v=2026.06.21-1"></script>
@@ -1491,52 +1491,57 @@ Backend API endpoints consumed:
     <!-- Two-pane body: config rail (left) + results (right) -->
     <div class="bench-body">
       <div class="bench-rail">
-        <div class="bench-tabs">
-          <button class="bench-tab active" data-tab="llama-bench"         onclick="switchBenchTab('llama-bench')">llama-bench</button>
-          <button class="bench-tab"        data-tab="llama-batched-bench" onclick="switchBenchTab('llama-batched-bench')">batched</button>
-        </div>
-        <div class="bench-dropdown" id="benchModelDrop">
-          <button class="bench-drop-btn" id="benchModelDropBtn" onclick="toggleBenchDrop('benchModelDrop')">
-            <span id="benchModelLabel">Select models…</span>
-            <span class="bench-drop-caret">▾</span>
-          </button>
-          <div class="bench-drop-panel" id="benchModelPanel"></div>
-        </div>
-        <div class="bench-dropdown" id="benchSwitchDrop">
-          <button class="bench-drop-btn" id="benchSwitchDropBtn" onclick="toggleBenchDrop('benchSwitchDrop')">
-            <span id="benchSwitchLabel">Switches</span>
-            <span class="bench-drop-caret">▾</span>
-          </button>
-          <div class="bench-drop-panel" id="benchSwitchPanel">
-            <div id="benchSwitchList"></div>
-            <button class="bench-add-btn" onclick="addBenchSwitch()">+ Add switch</button>
+        <div class="modal-group">
+          <div class="modal-group-h">Config</div>
+          <div class="bench-tabs">
+            <button class="bench-tab active" data-tab="llama-bench"         onclick="switchBenchTab('llama-bench')">llama-bench</button>
+            <button class="bench-tab"        data-tab="llama-batched-bench" onclick="switchBenchTab('llama-batched-bench')">batched</button>
+          </div>
+          <div class="bench-dropdown" id="benchModelDrop">
+            <button class="bench-drop-btn" id="benchModelDropBtn" onclick="toggleBenchDrop('benchModelDrop')">
+              <span id="benchModelLabel">Select models…</span>
+              <span class="bench-drop-caret">▾</span>
+            </button>
+            <div class="bench-drop-panel" id="benchModelPanel"></div>
+          </div>
+          <div class="bench-dropdown" id="benchSwitchDrop">
+            <button class="bench-drop-btn" id="benchSwitchDropBtn" onclick="toggleBenchDrop('benchSwitchDrop')">
+              <span id="benchSwitchLabel">Switches</span>
+              <span class="bench-drop-caret">▾</span>
+            </button>
+            <div class="bench-drop-panel" id="benchSwitchPanel">
+              <div id="benchSwitchList"></div>
+              <button class="bench-add-btn" onclick="addBenchSwitch()">+ Add switch</button>
+            </div>
           </div>
         </div>
         <div class="bench-rail-actions">
-          <span id="benchStatus" class="bench-status-pill">idle</span>
           <button id="benchCancelBtn" class="btn btn-red-muted-gradient" onclick="cancelBenchmark()" style="display:none;">✕ Cancel</button>
           <button id="benchRunBtn" class="btn btn-stone-muted-gradient" onclick="runBenchmark()">▶ Run Benchmark</button>
         </div>
       </div>
       <div class="bench-results-pane">
-        <div class="bench-axis-row">
-          <label>X:</label>
-          <select id="benchXAxis" class="bench-axis-sel" onchange="_rechartBench()">
-            <option value="seq">sequence</option>
-          </select>
-          <label style="margin-left:8px;">Y:</label>
-          <select id="benchYAxis" class="bench-axis-sel" onchange="_rechartBench()">
-            <option value="avg_ts">t/s</option>
-            <option value="ms_tok">ms/tok</option>
-          </select>
+        <div class="bench-pane-head">
+          <div class="bench-axis-row">
+            <label>X:</label>
+            <select id="benchXAxis" class="bench-axis-sel" onchange="_rechartBench()">
+              <option value="seq">sequence</option>
+            </select>
+            <label style="margin-left:8px;">Y:</label>
+            <select id="benchYAxis" class="bench-axis-sel" onchange="_rechartBench()">
+              <option value="avg_ts">t/s</option>
+              <option value="ms_tok">ms/tok</option>
+            </select>
+          </div>
+          <span id="benchStatus" class="bench-status-pill">idle</span>
+        </div>
+        <div id="benchResults">
+          <div id="benchResultRows"></div>
         </div>
         <div class="bench-chart-wrap">
           <canvas id="benchChart"></canvas>
         </div>
         <div id="benchLog"></div>
-        <div id="benchResults">
-          <div id="benchResultRows"></div>
-        </div>
       </div>
     </div>
   </div>
@@ -1681,12 +1686,14 @@ Backend API endpoints consumed:
 
     <!-- Action row (rail bottom) -->
     <div class="bench-rail-actions">
-      <span id="atStatus" class="bench-status-pill">idle</span>
       <button id="atCancelBtn" class="btn btn-red-muted-gradient" onclick="cancelAutotune()" style="display:none;">✕ Cancel</button>
       <button id="atRunBtn" class="btn btn-stone-muted-gradient" onclick="runAutotune()">▶ Run Auto Tune</button>
     </div>
       </div>
       <div class="bench-results-pane">
+    <div class="bench-pane-head">
+      <span id="atStatus" class="bench-status-pill" style="margin-left:auto;">idle</span>
+    </div>
 
     <!-- Live results (one card per model as it completes) -->
     <div id="atResults"></div>

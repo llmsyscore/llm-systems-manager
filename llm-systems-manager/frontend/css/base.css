@@ -602,7 +602,6 @@
     .bench-rail .bench-tabs { margin-left:0; width:100%; }
     .bench-rail .bench-tab { flex:1; text-align:center; }
     .bench-rail-actions { display:flex; align-items:center; gap:8px; flex-wrap:wrap; margin-top:4px; }
-    .bench-rail-actions .bench-status-pill { width:100%; }
     .bench-rail-actions .btn { flex:1; }
     /* Prominent green primary Run button (its own full-width line). */
     .bench-rail-actions #benchRunBtn, .bench-rail-actions #atRunBtn {
@@ -679,6 +678,7 @@
     /* Chart and log — main focus */
     .bench-chart-wrap { background:var(--bg); border:1px solid var(--border-soft); border-radius:6px; padding:10px; height:460px; }
     #benchLog { background:var(--bg); border:1px solid var(--border-soft); border-radius:6px; padding:8px; font-size:12px; line-height:1.55; font-family:monospace; overflow-y:auto; height:260px; color:var(--fg); margin:0; }
+    #benchLog:empty { display:none; }
     .bench-log-cmd  { color:var(--ok); white-space:pre-wrap; word-break:break-all; }
     .bench-log-sep  { color:var(--fg-faint); border-top:1px solid var(--border-soft); margin:4px 0 2px; padding-top:3px; }
     .bench-log-text { color:var(--fg-muted); white-space:pre-wrap; display:block; }
@@ -697,17 +697,21 @@
     .bench-log-tps  { font-size:12px; font-weight:700; color:var(--accent); margin-left:auto; white-space:nowrap; }
     .bench-status-pill { font-size:0.75em; color:var(--fg-dim); font-family:monospace; }
     .bench-status-pill.running { color:var(--warn); }
-    #benchResults { display:none; gap:0; flex-direction:column; padding:8px 10px; background:color-mix(in srgb, var(--ok) 8%, var(--bg-card-alt)); border:1px solid color-mix(in srgb, var(--ok) 30%, var(--border)); border-radius:6px; flex:1; }
+    /* Results-pane header: controls on the left, run-status pill on the right. */
+    .bench-pane-head { display:flex; align-items:center; justify-content:space-between; gap:8px; min-height:24px; }
+    /* Stat-card report block sits at the top of the results pane (above chart). */
+    #benchResults { display:none; flex-direction:column; gap:10px; }
     #benchResults.shown { display:flex; }
-    .bench-result-row { display:flex; align-items:center; gap:12px; flex-wrap:wrap; padding:9px 0; border-bottom:1px solid var(--border-soft); }
-    .bench-result-row:last-child { border-bottom:none; }
-    .bench-result-model { font-size:0.85em; font-family:monospace; color:var(--fg); min-width:120px; flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-    .bench-result-vals { display:flex; gap:8px; align-items:stretch; }
-    /* Stat-cards: PPT/GEN/PG as bordered cards (label + big number). */
-    .bench-stat-card { border:1px solid var(--border); background:var(--bg); border-radius:8px; padding:5px 12px; min-width:76px; text-align:center; }
-    .bench-stat-k { font-size:0.6em; text-transform:uppercase; letter-spacing:0.05em; color:var(--fg-muted); }
-    .bench-stat-v { font-size:1.05em; font-weight:700; font-family:monospace; color:var(--fg); line-height:1.3; }
-    #benchResultRows { display:flex; flex-direction:column; width:100%; }
+    #benchResultRows { display:flex; flex-direction:column; gap:10px; width:100%; }
+    .bench-result-row { display:flex; flex-direction:column; gap:9px; border:1px solid var(--border); background:var(--bg-card-alt); border-radius:8px; padding:11px 13px; }
+    .bench-result-head { display:flex; align-items:center; justify-content:space-between; gap:10px; }
+    .bench-result-model { font-size:0.9em; font-family:monospace; color:var(--fg); flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+    .bench-result-grid { display:grid; grid-template-columns:repeat(3,1fr); gap:10px; }
+    .bench-result-actions { display:flex; gap:8px; justify-content:flex-end; }
+    /* Stat-cards: PPT/GEN/PG as bordered cards (small label + big number). */
+    .bench-stat-card { border:1px solid var(--border); background:var(--bg); border-radius:8px; padding:9px 12px; text-align:center; }
+    .bench-stat-k { font-size:0.62em; text-transform:uppercase; letter-spacing:0.06em; color:var(--fg-muted); }
+    .bench-stat-v { font-size:1.7em; font-weight:700; font-family:monospace; color:var(--fg); line-height:1.15; }
     .bench-badge { display:flex; gap:6px; margin-top:4px; flex-wrap:wrap; }
     .bench-badge-chip { font-size:11px; background:color-mix(in srgb, var(--accent) 12%, transparent); color:var(--accent); border:1px solid color-mix(in srgb, var(--accent) 30%, var(--border)); border-radius:4px; padding:2px 7px; font-family:monospace; }
 
