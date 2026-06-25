@@ -105,20 +105,23 @@ function _benchSetState(state) {
 
 function _rechartBench() {
   _benchAxisTouched = true;   // user picked an axis — stop overriding with the default
-  const xAxis = document.getElementById('benchXAxis')?.value || 'seq';
-  // Preserve dataset configs (labels + colors) but clear data
-  const dsConfigs = (_benchChart?.data.datasets || []).map(d => ({...d, data: []}));
-  if (_benchChart) { try { _benchChart.destroy(); } catch(_) {} _benchChart = null; }
-  _benchChart = _mkBenchChart('benchChart', xAxis);
   if (!_benchChart) return;
-  dsConfigs.forEach(d => _benchChart.data.datasets.push(d));
-  // Re-plot all stored rows
+  const xAxis = document.getElementById('benchXAxis')?.value || 'seq';
+  // The bar chart's x scale is always a category — changing axes only re-plots
+  // the data and relabels the axes. Rebuilding the chart here left it blank
+  // (the recreated instance inherited the old datasets' stale internal state).
+  const xs = _benchChart.options?.scales?.x;
+  if (xs && xs.title) { xs.title.display = !!xAxis && xAxis !== 'seq'; xs.title.text = xAxis || 'sequence'; }
+  const yAxis = document.getElementById('benchYAxis')?.value || 'avg_ts';
+  const ys = _benchChart.options?.scales?.y;
+  if (ys && ys.title) { ys.title.text = yAxis === 'ms_tok' ? 'ms/tok' : yAxis === 'avg_ts' ? 't/s' : yAxis; }
+  // Clear and re-plot every stored row against the newly-selected axes.
+  _benchChart.data.datasets.forEach(d => { d.data = []; });
   _benchRawRows.forEach(r => {
     const dsIdx = _benchModelDatasets[r.model_id];
     if (dsIdx === undefined) return;
-    let x = _benchGetX(r);
+    const x = String(_benchGetX(r));   // bar chart needs category (string) x values
     const y = _benchGetY(r);
-    x = String(x);   // bar chart needs category (string) x values
     if (r.n_gen > 0) {
       _benchChart.data.datasets[dsIdx].data.push({x, y});
     } else if (r.n_prompt > 0) {
