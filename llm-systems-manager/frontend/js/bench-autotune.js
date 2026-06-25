@@ -1389,6 +1389,9 @@ function _benchAddModelResultRow(modelId, _unused1, _unused2, tool) {
   const row = document.createElement('div');
   row.className = 'bench-result-row';
 
+  const head = document.createElement('div');
+  head.className = 'bench-result-head';
+
   const nameEl = document.createElement('span');
   nameEl.className = 'bench-result-model';
   // Strip embedded parameter strings llama-bench likes to inject into the
@@ -1399,26 +1402,6 @@ function _benchAddModelResultRow(modelId, _unused1, _unused2, tool) {
     .trim();
   nameEl.textContent = cleanModelId || modelId;
   nameEl.title = modelId;     // keep the full string discoverable on hover
-
-  const valsEl = document.createElement('span');
-  valsEl.className = 'bench-result-vals';
-  const mkStat = (label, val, color, digits) => {
-    const card = document.createElement('div');
-    card.className = 'bench-stat-card';
-    const k = document.createElement('div');
-    k.className = 'bench-stat-k';
-    if (color) k.style.color = color;
-    k.textContent = label;
-    const v = document.createElement('div');
-    v.className = 'bench-stat-v';
-    v.textContent = val != null ? val.toFixed(digits) : '—';
-    card.appendChild(k);
-    card.appendChild(v);
-    return card;
-  };
-  valsEl.appendChild(mkStat('PPT t/s', maxPpt, 'var(--warn)', 0));
-  valsEl.appendChild(mkStat('GEN t/s', maxGen, null, 1));
-  valsEl.appendChild(mkStat('PG t/s', maxPg, 'var(--accent-2)', 0));
 
   const saveBtn = document.createElement('button');
   saveBtn.className = 'btn btn-zinc-muted-gradient';
@@ -1445,10 +1428,36 @@ function _benchAddModelResultRow(modelId, _unused1, _unused2, tool) {
     clearStoredBenchmark(modelId, clearBtn.closest('.bench-result-row'));
   });
 
-  row.appendChild(nameEl);
-  row.appendChild(valsEl);
-  row.appendChild(saveBtn);
-  row.appendChild(clearBtn);
+  const actions = document.createElement('div');
+  actions.className = 'bench-result-actions';
+  actions.appendChild(saveBtn);
+  actions.appendChild(clearBtn);
+
+  head.appendChild(nameEl);
+  head.appendChild(actions);
+
+  const grid = document.createElement('div');
+  grid.className = 'bench-result-grid';
+  const mkStat = (label, val, color, digits) => {
+    const card = document.createElement('div');
+    card.className = 'bench-stat-card';
+    const k = document.createElement('div');
+    k.className = 'bench-stat-k';
+    if (color) k.style.color = color;
+    k.textContent = label;
+    const v = document.createElement('div');
+    v.className = 'bench-stat-v';
+    v.textContent = val != null ? val.toFixed(digits) : '—';
+    card.appendChild(k);
+    card.appendChild(v);
+    return card;
+  };
+  grid.appendChild(mkStat('PPT t/s', maxPpt, 'var(--warn)', 0));
+  grid.appendChild(mkStat('GEN t/s', maxGen, null, 1));
+  grid.appendChild(mkStat('PG t/s', maxPg, 'var(--accent-2)', 0));
+
+  row.appendChild(head);
+  row.appendChild(grid);
   rows.appendChild(row);
 }
 
@@ -1474,9 +1483,7 @@ function clearStoredBenchmark(model_id, rowEl) {
       delete _benchData[model_id];
       if (rowEl) rowEl.remove();
       const rowsEl = document.getElementById('benchResultRows');
-      // The header is a sibling of the data rows; only the .bench-result-row
-      // children count toward "are there any results". Drop the lone header
-      // when no data rows are left so the panel can hide cleanly.
+      // Hide the results panel once the last model card is removed.
       if (rowsEl && rowsEl.querySelectorAll('.bench-result-row').length === 0) {
         rowsEl.innerHTML = '';
         document.getElementById('benchResults').classList.remove('shown');
