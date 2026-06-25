@@ -1521,17 +1521,17 @@ async function adminEditConfig(aid) {
     + 'backdrop-filter:blur(4px);';
   const box = document.createElement('div');
   box.style.cssText = 'background:var(--bg-card);border:1px solid var(--border);border-radius:8px;'
-    + 'padding:18px 20px;width:min(900px,92vw);height:min(80vh,720px);display:flex;flex-direction:column;'
+    + 'padding:18px 20px;width:min(1200px,95vw);height:min(80vh,720px);display:flex;flex-direction:column;'
     + 'color:var(--fg);font-family:system-ui,-apple-system,sans-serif;box-shadow:0 8px 32px rgba(0,0,0,0.5);';
   box.innerHTML = `
     <div style="font-size:1.05em;font-weight:600;margin-bottom:6px;">Edit ${adminEsc(name)} agent_config.yaml</div>
     <div style="font-size:0.80em;color:var(--fg-muted);margin-bottom:10px;font-family:monospace;">
       ${adminEsc(initial.path)} · ${initial.size} bytes
     </div>
-    <textarea id="aecText" spellcheck="false" style="flex:1;width:100%;resize:none;
+    <textarea id="aecText" spellcheck="false" wrap="off" style="flex:1;width:100%;resize:none;
       font-family:'SFMono-Regular',ui-monospace,monospace;font-size:12.5px;line-height:1.45;
       background:var(--bg);color:var(--fg);border:1px solid var(--border);border-radius:6px;
-      padding:10px;tab-size:2;"></textarea>
+      padding:10px;tab-size:2;overflow:auto;white-space:pre;"></textarea>
     <div id="aecStatus" style="font-size:0.80em;color:var(--fg-muted);margin-top:8px;min-height:1.2em;"></div>
     <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:10px;">
       <button id="aecCancel" style="background:var(--bg-card-alt);color:var(--fg);border:1px solid var(--border);
