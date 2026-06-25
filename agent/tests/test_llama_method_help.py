@@ -35,3 +35,21 @@ def test_install_subset_excludes_custom_script():
     assert "custom_script" not in out
     assert "release_binary" in out
     assert out.count("\n") == 4  # one line per requested method
+
+
+def _run_backend_help() -> str:
+    text = INSTALL_SH.read_text()
+    m = re.search(r"^_print_llama_backend_help\(\) \{.*?^\}", text, re.M | re.S)
+    assert m, "could not extract _print_llama_backend_help from install.sh"
+    out = subprocess.run(["bash", "-c", f'{m.group(0)}\n_print_llama_backend_help\n'],
+                         capture_output=True, text=True, check=True)
+    return out.stdout
+
+
+def test_backend_help_describes_every_backend():
+    out = _run_backend_help()
+    lines = [l for l in out.splitlines() if l.strip()]
+    assert len(lines) == 5
+    for backend in ("cpu", "cuda", "vulkan", "rocm", "metal"):
+        line = next(l for l in lines if l.split()[0] == backend)
+        assert len(line.split(maxsplit=1)[1].strip()) > 5

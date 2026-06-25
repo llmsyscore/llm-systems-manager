@@ -1955,6 +1955,15 @@ _print_llama_method_help() {
   done
 }
 
+# _print_llama_backend_help — one-line description per source/release_binary backend.
+_print_llama_backend_help() {
+  echo "        cpu      CPU only — works anywhere, no GPU acceleration"
+  echo "        cuda     NVIDIA GPU (CUDA)"
+  echo "        vulkan   cross-vendor GPU (AMD/Intel/NVIDIA via Vulkan)"
+  echo "        rocm     AMD GPU (ROCm/HIP)"
+  echo "        metal    Apple GPU (macOS Metal)"
+}
+
 # _install_llama_now METHOD BACKEND — fresh-install llama.cpp as the agent user
 # via install/install_llama.py; prints the binary then the build dir, one per line.
 _install_llama_now() {
@@ -2183,6 +2192,8 @@ _detect_llama() {
           _print_llama_method_help source release_binary conda homebrew
           read -rp "      Install method [$_m]: " _v
           _m="${_v:-$_m}"
+          echo "      Backends:"
+          _print_llama_backend_help
           read -rp "      Backend (cpu/cuda/vulkan/rocm/metal) [$_b]: " _v
           _b="${_v:-$_b}"
         fi
@@ -2365,6 +2376,12 @@ _detect_llama() {
       if [[ "${_llama_just_installed:-false}" == true ]]; then
         LLAMA_BUILD_DIR_OVERRIDE="${_llama_installed_build_dir:-}"
         LLAMA_BUILD_BACKEND_OVERRIDE="${_llama_installed_backend:-}"
+      else
+        # Not a fresh install — the backend drives how a later upgrade rebuilds, so ask.
+        echo "      Backend — the GPU/CPU variant a $LLAMA_BUILD_METHOD_OVERRIDE upgrade builds:"
+        _print_llama_backend_help
+        read -rp "      Backend (cpu/cuda/vulkan/rocm/metal) [cpu]: " _v
+        LLAMA_BUILD_BACKEND_OVERRIDE="${_v:-cpu}"
       fi
       ;;
     *) LLAMA_BUILD_DIR_OVERRIDE="$_bin_dir" ;;
