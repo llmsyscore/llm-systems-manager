@@ -88,3 +88,23 @@ def test_buffer_retained_after_done_until_next_run():
     # a client reconnecting right at the end still replays the done event
     assert _ids(b.replay_after("run1:1")) == ["run1:2"]
     assert b.replay_after(None)[-1]["event"]["type"] == "done"
+
+
+def test_seq_for_resolves_resume_point():
+    b = BenchReplayBuffer()
+    b.start_run("run1")
+    assert b.seq_for(None) == 0
+    assert b.seq_for("run1:3") == 3
+    assert b.seq_for("other:3") == 0      # run mismatch -> from start
+    assert b.seq_for("garbage") == 0       # no separator -> from start
+    assert b.seq_for("run1:x") == 0        # malformed seq -> from start
+
+
+def test_records_after_seq_is_the_live_primitive():
+    b = BenchReplayBuffer()
+    b.start_run("run1")
+    for n in range(1, 4):
+        b.append({"n": n})
+    assert _ids(b.records_after_seq(0)) == ["run1:1", "run1:2", "run1:3"]
+    assert _ids(b.records_after_seq(2)) == ["run1:3"]
+    assert b.records_after_seq(3) == []

@@ -56,3 +56,14 @@ def test_buffer_retained_after_done():
     b.append({"type": "line"})
     b.append({"type": "done"})
     assert _ids(b.replay_after("run1:1")) == ["run1:2"]
+
+
+def test_seq_for_and_records_after_seq():
+    b = BenchReplayBuffer()
+    b.start_run("run1")
+    for n in range(1, 4):
+        b.append({"n": n})
+    assert b.seq_for(None) == 0
+    assert b.seq_for("run1:2") == 2
+    assert b.seq_for("other:2") == 0
+    assert _ids(b.records_after_seq(2)) == ["run1:3"]

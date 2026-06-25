@@ -30,17 +30,25 @@ class BenchReplayBuffer:
         self._buf.append(rec)
         return rec
 
-    def replay_after(self, last_event_id):
-        """Records to (re)send to a connecting client. Empty/missing id, a run
-        mismatch, or a malformed id all replay the whole current buffer; a
-        matching run replays only records with seq greater than last_event_id's."""
+    def seq_for(self, last_event_id):
+        """The seq a stream should resume after. A matching run returns that
+        run's seq; empty/missing, run mismatch, or malformed all return 0
+        (replay the whole current buffer)."""
         if not last_event_id:
-            return list(self._buf)
+            return 0
         run, sep, seq = str(last_event_id).partition(":")
         if not sep or run != self._run_id:
-            return list(self._buf)
+            return 0
         try:
-            last_seq = int(seq)
+            return int(seq)
         except ValueError:
-            return list(self._buf)
-        return [r for r in self._buf if r["seq"] > last_seq]
+            return 0
+
+    def records_after_seq(self, seq):
+        """Records in the current buffer with seq greater than the given seq."""
+        return [r for r in self._buf if r["seq"] > seq]
+
+    def replay_after(self, last_event_id):
+        """Records to (re)send to a connecting client, resolved from its
+        Last-Event-ID via seq_for + records_after_seq."""
+        return self.records_after_seq(self.seq_for(last_event_id))

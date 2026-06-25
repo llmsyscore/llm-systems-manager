@@ -17,6 +17,7 @@ import signal
 import subprocess
 import threading
 import time
+import uuid
 from collections import deque
 from pathlib import Path
 from typing import Any, Iterator, Optional
@@ -27,6 +28,7 @@ from fastapi.responses import StreamingResponse
 
 import stream_pool  # type: ignore[import-not-found]  # sibling at agent root
 from _best_effort import best_effort  # type: ignore[import-not-found]  # sibling at agent root
+from _bench_replay import BenchReplayBuffer  # type: ignore[import-not-found]  # sibling at agent root
 
 from collectors.gpu import collect_gpu  # type: ignore
 from . import llama_install
@@ -109,7 +111,8 @@ _build_queue: "_queue_lib.Queue[dict[str, Any]]" = _queue_lib.Queue(maxsize=4000
 _build_lock = threading.Lock()
 _build_running = False
 
-_bench_queue: "_queue_lib.Queue[dict]" = _queue_lib.Queue(maxsize=5000)
+_bench_replay = BenchReplayBuffer(maxlen=5000)
+_bench_cond = threading.Condition()
 _bench_lock = threading.Lock()
 _bench_active = False
 _bench_proc: "Optional[subprocess.Popen]" = None
@@ -1636,14 +1639,10 @@ def llama_hf_trending(authorization: Optional[str] = Header(default=None)) -> di
 
 
 def _bench_put(msg: dict) -> None:
-    """Bounded enqueue; drops oldest on overflow."""
-    try:
-        _bench_queue.put_nowait(msg)
-    except _queue_lib.Full:
-        try: _bench_queue.get_nowait()
-        except _queue_lib.Empty: pass
-        try: _bench_queue.put_nowait(msg)
-        except _queue_lib.Full: pass
+    """Append to the per-run replay buffer and wake any waiting streams."""
+    with _bench_cond:
+        _bench_replay.append(msg)
+        _bench_cond.notify_all()
 
 
 def _bench_get_hf_arg(model_id: str) -> "Optional[str]":
@@ -1833,9 +1832,8 @@ def llama_bench_run(body: dict, authorization: Optional[str] = Header(default=No
         if _bench_active:
             return {"ok": False, "error": "Another benchmark is in progress"}
         _bench_active = True
-        while not _bench_queue.empty():
-            try: _bench_queue.get_nowait()
-            except Exception: break
+    with _bench_cond:
+        _bench_replay.start_run(uuid.uuid4().hex[:12])
     threading.Thread(target=_bench_run_all,
                      args=(model_ids, tool, switches), daemon=True).start()
     return {"ok": True}
@@ -1844,18 +1842,27 @@ def llama_bench_run(body: dict, authorization: Optional[str] = Header(default=No
 def llama_bench_stream(
     authorization: Optional[str] = Header(default=None),
     token: Optional[str] = Query(default=None),
+    last_event_id: Optional[str] = Header(default=None, alias="Last-Event-ID"),
 ) -> StreamingResponse:
     _require_ctx().check_stream_auth(authorization, token, "/llama/bench/stream")
     _llama_check_enabled()
     def generate() -> Iterator[bytes]:
+        with _bench_cond:
+            last_seq = _bench_replay.seq_for(last_event_id)
         while True:
-            try:
-                msg = _bench_queue.get(timeout=30)
-                yield f"data: {json.dumps(msg)}\n\n".encode()
-                if msg.get("type") == "done":
-                    break
-            except _queue_lib.Empty:
+            with _bench_cond:
+                new = _bench_replay.records_after_seq(last_seq)
+                if not new:
+                    _bench_cond.wait(timeout=30)
+                    new = _bench_replay.records_after_seq(last_seq)
+            if not new:
                 yield b'data: {"type":"keepalive"}\n\n'
+                continue
+            for rec in new:
+                yield f"id: {rec['id']}\ndata: {json.dumps(rec['event'])}\n\n".encode()
+                last_seq = rec["seq"]
+                if rec["event"].get("type") == "done":
+                    return
     if not stream_pool.POOL.try_acquire():
         raise HTTPException(status_code=503, detail="agent at stream capacity; retry shortly")
     return StreamingResponse(
