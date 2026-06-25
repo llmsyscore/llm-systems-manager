@@ -98,6 +98,7 @@ function _scheduleCardSizesSave() {
     try {
       const current = await fetch('/api/layout').then(r => r.json()).catch(() => ({}));
       current.cardSizes = layout.cardSizes;
+      current.sizesByAgent = layout.sizesByAgent;
       await fetch('/api/layout', {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
@@ -120,9 +121,9 @@ function _cycleCardSize(card) {
   const idx = allowed.indexOf(cur);
   const next = allowed[(idx + 1) % allowed.length];
   _applyCardSize(card, next);
-  layout.cardSizes = layout.cardSizes || {};
-  if (next === '1x1') delete layout.cardSizes[id];
-  else layout.cardSizes[id] = next;
+  const sizes = _sizeMapFor(id);
+  if (next === '1x1') delete sizes[id];
+  else sizes[id] = next;
   _scheduleCardSizesSave();
 }
 function _resizeChartsIn(root) {
@@ -156,7 +157,7 @@ function initCardResize() {
   document.querySelectorAll('[data-card]').forEach(card => {
     const id = card.dataset.card; if (!id) return;
     _ensureSizeBtn(card);
-    const saved = (layout.cardSizes || {})[id];
+    const saved = _sizeMapFor(id)[id];
     if (saved) _applyCardSize(card, saved);
     else _applyCardSize(card, '1x1');
   });
@@ -212,15 +213,14 @@ function applyLayoutPreset(presetId) {
   const preset = LAYOUT_PRESETS[presetId]; if (!preset) return;
   // Column count for this tab's grid.
   layout[ks.cols] = preset.cols;
-  // Clear sizes for every card in this tab's label map, then apply the
-  // preset's index-keyed sizes against the current visible order.
-  layout.cardSizes = layout.cardSizes || {};
-  for (const id of Object.keys(ks.map)) delete layout.cardSizes[id];
+  // Clear this tab's card sizes (per-agent map for llama.cpp/LMS), then apply
+  // the preset's index-keyed sizes against the current visible order.
+  for (const id of Object.keys(ks.map)) delete _sizeMapFor(id)[id];
   const visible = [...ks.grid.querySelectorAll('[data-card]')]
     .filter(c => c.style.display !== 'none' && !c.dataset.card.startsWith('ov-borrow-'));
   Object.entries(preset.sizes).forEach(([idx, size]) => {
     const card = visible[Number(idx)];
-    if (card) layout.cardSizes[card.dataset.card] = size;
+    if (card) _sizeMapFor(card.dataset.card)[card.dataset.card] = size;
   });
   // Persist + reapply in place.
   fetch('/api/layout', {
