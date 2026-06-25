@@ -707,8 +707,11 @@
     .bench-log-info { display:flex; flex-wrap:wrap; gap:10px; padding:3px 0; border-bottom:1px solid var(--border-soft); }
     .bench-log-info-kv { font-size:11px; color:var(--fg-muted); }
     .bench-log-info-kv b { color:var(--fg); font-weight:600; }
-    .bench-log-result { display:flex; align-items:center; gap:10px; padding:3px 0; border-bottom:1px solid var(--border-soft); flex-wrap:wrap; }
+    /* Row stays one line: type + a wrapping fields column + a pinned t/s, so the
+       throughput never gets pushed to its own line in the narrow results pane. */
+    .bench-log-result { display:flex; align-items:flex-start; gap:10px; padding:3px 0; border-bottom:1px solid var(--border-soft); flex-wrap:nowrap; }
     .bench-log-result:last-child { border-bottom:none; }
+    .bench-log-fields { flex:1 1 auto; min-width:0; display:flex; flex-wrap:wrap; gap:3px 10px; }
     .bench-log-type { font-size:11px; padding:2px 7px; border-radius:3px; font-weight:700; letter-spacing:0.03em; flex-shrink:0; min-width:30px; text-align:center; }
     .bench-log-type.gen  { color:var(--accent); background:color-mix(in srgb, var(--accent) 15%, transparent); border:1px solid color-mix(in srgb, var(--accent) 35%, transparent); }
     .bench-log-type.ppt  { color:var(--warn);   background:color-mix(in srgb, var(--warn)   15%, transparent); border:1px solid color-mix(in srgb, var(--warn)   35%, transparent); }
@@ -716,9 +719,17 @@
     .bench-log-field { font-size:11px; min-width:48px; display:inline-block; }
     .bench-log-field span { color:var(--accent); font-weight:600; }
     .bench-log-field b { color:var(--fg); font-weight:600; }
-    .bench-log-tps  { font-size:12px; font-weight:700; color:var(--accent); margin-left:auto; white-space:nowrap; }
-    .bench-status-pill { font-size:0.75em; color:var(--fg-dim); font-family:monospace; }
-    .bench-status-pill.running { color:var(--warn); }
+    .bench-log-tps  { font-size:12px; font-weight:700; color:var(--accent); margin-left:auto; white-space:nowrap; flex-shrink:0; }
+    /* Run-status indicator as a site status chip (shared by bench + autotune #atStatus). */
+    .bench-status-pill {
+      display:inline-flex; align-items:center; gap:5px; padding:2px 9px; border-radius:11px;
+      font-size:0.72em; font-weight:600; letter-spacing:0.02em; border:1px solid transparent;
+      white-space:nowrap; vertical-align:middle;
+      color:var(--fg-dim); background:color-mix(in srgb, var(--fg-dim) 12%, transparent); border-color:color-mix(in srgb, var(--fg-dim) 26%, transparent);
+    }
+    .bench-status-pill.running { color:var(--warn); background:color-mix(in srgb, var(--warn) 14%, transparent); border-color:color-mix(in srgb, var(--warn) 30%, transparent); }
+    .bench-status-pill.ok      { color:var(--ok);   background:color-mix(in srgb, var(--ok)   14%, transparent); border-color:color-mix(in srgb, var(--ok)   30%, transparent); }
+    .bench-status-pill.err     { color:var(--crit); background:color-mix(in srgb, var(--crit) 14%, transparent); border-color:color-mix(in srgb, var(--crit) 30%, transparent); }
     /* Results-pane header: section eyebrow on the left, run-status pill on the right. */
     .bench-pane-head { display:flex; align-items:center; justify-content:space-between; gap:8px; min-height:24px; padding-bottom:7px; border-bottom:1px solid var(--border-soft); }
     .bench-pane-title { font-size:0.6em; text-transform:uppercase; letter-spacing:0.12em; color:var(--fg-dim); }

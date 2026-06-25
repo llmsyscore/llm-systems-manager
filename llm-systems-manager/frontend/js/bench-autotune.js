@@ -93,6 +93,15 @@ function _benchGetY(row) {
   return row[axis] ?? 0;
 }
 
+// Drive the benchmark status pill's chip color (idle=muted, running=warn,
+// ok=green, err=red). Mutually exclusive — clears the others.
+function _benchSetState(state) {
+  const el = document.getElementById('benchStatus');
+  if (!el) return;
+  el.classList.remove('running', 'ok', 'err');
+  if (state === 'running' || state === 'ok' || state === 'err') el.classList.add(state);
+}
+
 function _rechartBench() {
   const xAxis = document.getElementById('benchXAxis')?.value || 'seq';
   // Preserve dataset configs (labels + colors) but clear data
@@ -180,6 +189,7 @@ function _updateBenchAxisOpts() {
   const xSel = document.getElementById('benchXAxis');
   const ySel = document.getElementById('benchYAxis');
   if (!xSel || !ySel) return;
+  if (typeof computeBenchAxisOptions !== 'function') return;  // benchaxis.js absent — keep static opts, never throw
   const curX = xSel.value;
   const curY = ySel.value;
 
@@ -286,7 +296,8 @@ function _benchFormatLine(text) {
     const dispVal = yType === 'ms_tok' ? (ts > 0 ? (1000/ts).toFixed(2) + ' ms/tok' : '—')
                                        : ts.toFixed(2) + ' t/s';
     return `<div class="bench-log-result">
-      <span class="bench-log-type ${typeCls}">${typeLabel}</span>${fields}
+      <span class="bench-log-type ${typeCls}">${typeLabel}</span>
+      <span class="bench-log-fields">${fields}</span>
       <span class="bench-log-tps">${dispVal}${sd}</span>
     </div>`;
   }
@@ -317,7 +328,8 @@ function _benchPushPoint(msg) {
     if (typeof v === 'number' && k !== 'gen_tps' && k !== 'ppt_tps') raw[k] = v;
   });
   _benchRawRows.push(raw);
-  _updateBenchAxisOpts();
+  // Axis-option update is a side-effect — never let it abort chart plotting below.
+  try { _updateBenchAxisOpts(); } catch (e) { console.warn('bench axis-opts update failed', e); }
 
   if (!_benchChart) return;
   const dsIdx = _benchModelDatasets[msg.model_id];
@@ -416,7 +428,7 @@ async function openBench(modelId) {
   _benchLogClear();
   _benchRenderPlaceholder();
   document.getElementById('benchStatus').textContent = 'idle';
-  document.getElementById('benchStatus').classList.remove('running');
+  _benchSetState('idle');
   document.getElementById('benchRunBtn').disabled = false;
   if (_benchChart) {
     _benchChart.data.datasets = [];
@@ -581,7 +593,7 @@ async function runBenchmark() {
       if (!ok) return;
       if (loadedModel) {
         document.getElementById('benchStatus').textContent = 'unloading model…';
-        document.getElementById('benchStatus').classList.add('running');
+        _benchSetState('running');
         try {
           await fetch('/api/llm/unload', {
             method: 'POST', headers: {'Content-Type':'application/json'},
@@ -591,7 +603,7 @@ async function runBenchmark() {
       }
       if (serverUp) {
         document.getElementById('benchStatus').textContent = 'stopping server…';
-        document.getElementById('benchStatus').classList.add('running');
+        _benchSetState('running');
         try { await fetch('/api/llm/server/stop', {method: 'POST'}); } catch(_) {}
         // Poll up to 15s for server to actually be down before launching bench
         for (let i = 0; i < 15; i++) {
@@ -607,10 +619,10 @@ async function runBenchmark() {
 
   document.getElementById('benchRunBtn').disabled = true;
   document.getElementById('benchStatus').textContent = 'perf mode…';
-  document.getElementById('benchStatus').classList.add('running');
+  _benchSetState('running');
   await _benchSetPerfMode('performance');
   document.getElementById('benchStatus').textContent = 'starting…';
-  document.getElementById('benchStatus').classList.add('running');
+  _benchSetState('running');
   document.getElementById('benchResults').classList.remove('shown');
   document.getElementById('benchResultRows').innerHTML = '';
   document.getElementById('benchCancelBtn').style.display = '';
@@ -634,7 +646,7 @@ async function runBenchmark() {
       document.getElementById('benchRunBtn').disabled = false;
       document.getElementById('benchCancelBtn').style.display = 'none';
       document.getElementById('benchStatus').textContent = 'idle';
-      document.getElementById('benchStatus').classList.remove('running');
+      _benchSetState('idle');
       return;
     }
     if (_benchEventSrc) { try { _benchEventSrc.close(); } catch(_){} }
@@ -666,7 +678,7 @@ async function runBenchmark() {
         document.getElementById('benchRunBtn').disabled = false;
         document.getElementById('benchCancelBtn').style.display = 'none';
         document.getElementById('benchStatus').textContent = msg.ok ? 'done' : (msg.error ? 'error' : 'done');
-        document.getElementById('benchStatus').classList.remove('running');
+        _benchSetState(msg.ok ? 'ok' : 'err');
         if (msg.error) _benchLogAppend(`<span class="bench-log-text" style="color:var(--crit)">✗ Error: ${_hEsc(String(msg.error))}</span>`);
       }
     };
@@ -681,14 +693,14 @@ async function runBenchmark() {
       document.getElementById('benchRunBtn').disabled = false;
       document.getElementById('benchCancelBtn').style.display = 'none';
       document.getElementById('benchStatus').textContent = 'disconnected';
-      document.getElementById('benchStatus').classList.remove('running');
+      _benchSetState('err');
     };
   }).catch(e => {
     alert('Benchmark request failed: ' + e);
     document.getElementById('benchRunBtn').disabled = false;
     document.getElementById('benchCancelBtn').style.display = 'none';
     document.getElementById('benchStatus').textContent = 'idle';
-    document.getElementById('benchStatus').classList.remove('running');
+    _benchSetState('idle');
   });
 }
 
@@ -699,7 +711,7 @@ function cancelBenchmark() {
   document.getElementById('benchRunBtn').disabled = false;
   document.getElementById('benchCancelBtn').style.display = 'none';
   document.getElementById('benchStatus').textContent = 'cancelled';
-  document.getElementById('benchStatus').classList.remove('running');
+  _benchSetState('idle');
 }
 
 // ===========================================================================
