@@ -1408,13 +1408,14 @@ Backend API endpoints consumed:
 <script src="/static/js/lib/layout.js?v=2026.06.24-2"></script>
 <script src="/static/js/foundation.js?v=2026.06.24-2"></script>
 <script src="/static/js/lib/series.js?v=2026.06.21-1"></script>
+<script src="/static/js/lib/benchaxis.js?v=2026.06.24-5"></script>
 <script src="/static/js/charts.js?v=2026.06.24-1"></script>
 <script src="/static/js/terminal.js?v=2026.06.11-4"></script>
 <script src="/static/js/llmcontrol.js?v=2026.06.15-10"></script>
 <script src="/static/js/openclaw.js?v=2026.06.10-7"></script>
 <script src="/static/js/admin.js?v=2026.06.10-6"></script>
 <script src="/static/js/llmcontrol-models.js?v=2026.06.10-6"></script>
-<script src="/static/js/bench-autotune.js?v=2026.06.10-7"></script>
+<script src="/static/js/bench-autotune.js?v=2026.06.24-5"></script>
 <script src="/static/js/lmstudio.js?v=2026.06.15-14"></script>
 <script src="/static/js/overall.js?v=2026.06.09-2"></script>
 <script src="/static/js/dashboard-manager.js?v=2026.06.21-1"></script>
@@ -1518,17 +1519,10 @@ Backend API endpoints consumed:
       <button id="benchCancelBtn" class="btn btn-red-muted-gradient" onclick="cancelBenchmark()" style="display:none;">✕ Cancel</button>
       <button id="benchRunBtn" class="btn btn-stone-muted-gradient" onclick="runBenchmark()">▶ Run Benchmark</button>
     </div>
-    <!-- Axis + chart type selectors -->
+    <!-- Axis selectors -->
     <div class="bench-axis-row">
-      <label>Chart:</label>
-      <select id="benchChartType" class="bench-axis-sel" onchange="_rechartBench()">
-        <option value="line">Line</option>
-        <option value="scatter">Scatter</option>
-        <option value="bar">Bar</option>
-      </select>
-      <label style="margin-left:8px;">X:</label>
+      <label>X:</label>
       <select id="benchXAxis" class="bench-axis-sel" onchange="_rechartBench()">
-        <option value="time">time</option>
         <option value="seq">sequence</option>
       </select>
       <label style="margin-left:8px;">Y:</label>

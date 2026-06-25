@@ -19,9 +19,6 @@ const BENCH_COLOR_PAIRS = [
 function _mkBenchChart(id, xAxisType) {
   const ctx = document.getElementById(id)?.getContext('2d');
   if (!ctx) return null;
-  const chartType = document.getElementById('benchChartType')?.value || 'line';
-  const isTime = !xAxisType || xAxisType === 'time';
-  const isBar = chartType === 'bar';
 
   const TICK_COLOR  = cssVar('--fg-muted');
   const LABEL_COLOR = 'var(--fg)';
@@ -29,31 +26,18 @@ function _mkBenchChart(id, xAxisType) {
   const TICK_SZ     = 12;
   const TITLE_SZ    = 12;
 
-  // Bar charts need category x-axis; time axis incompatible with bar
-  let xScale;
-  if (isBar) {
-    xScale = { type: 'category',
-      ticks: { color: TICK_COLOR, font: { size: TICK_SZ }, maxRotation: 35 },
-      grid: { color: GRID_COLOR },
-      title: { display: !!xAxisType && xAxisType !== 'time' && xAxisType !== 'seq',
-               text: (xAxisType || 'sequence'), color: LABEL_COLOR, font: { size: TITLE_SZ } } };
-  } else if (isTime) {
-    xScale = { type: 'time',
-      time: { tooltipFormat: 'h:mm:ss a', displayFormats: { second: 'h:mm:ss a', minute: 'h:mm a', hour: 'h:mm a' } },
-      ticks: { color: TICK_COLOR, font: { size: TICK_SZ }, maxTicksLimit: 6, maxRotation: 0 },
-      grid: { color: GRID_COLOR } };
-  } else {
-    xScale = { type: 'linear',
-      ticks: { color: TICK_COLOR, font: { size: TICK_SZ } },
-      grid: { color: GRID_COLOR },
-      title: { display: true, text: xAxisType, color: LABEL_COLOR, font: { size: TITLE_SZ } } };
-  }
+  // Bar chart uses a category x-axis.
+  const xScale = { type: 'category',
+    ticks: { color: TICK_COLOR, font: { size: TICK_SZ }, maxRotation: 35 },
+    grid: { color: GRID_COLOR },
+    title: { display: !!xAxisType && xAxisType !== 'seq',
+             text: (xAxisType || 'sequence'), color: LABEL_COLOR, font: { size: TITLE_SZ } } };
 
   const yAxisSel = document.getElementById('benchYAxis')?.value || 'avg_ts';
   const yLabel = yAxisSel === 'ms_tok' ? 'ms/tok' : yAxisSel === 'avg_ts' ? 't/s' : yAxisSel;
 
   return new Chart(ctx, {
-    type: isBar ? 'bar' : 'line',
+    type: 'bar',
     data: { datasets: [] },
     options: {
       animation: false, responsive: true, maintainAspectRatio: false,
@@ -69,12 +53,10 @@ function _mkBenchChart(id, xAxisType) {
           callbacks: {
             title: function(items) {
               if (!items.length) return '';
-              const xSel = document.getElementById('benchXAxis')?.value || 'time';
-              // raw.x preserves the original value we pushed (number for linear,
-              // numeric string for bar/category). parsed.x is the category INDEX
-              // on bar charts — useless for axes like n_gen=512,1024.
+              const xSel = document.getElementById('benchXAxis')?.value || 'seq';
+              // raw.x is the value we pushed (numeric string for the category
+              // axis); parsed.x is the category index, useless for real values.
               const xVal = items[0].raw?.x ?? items[0].parsed.x;
-              if (xSel === 'time') return new Date(xVal).toLocaleTimeString();
               if (xSel === 'seq')  return 'Test #' + xVal;
               const short = _BENCH_AXIS_SHORT[xSel] || xSel;
               return short + ': ' + xVal;
@@ -100,8 +82,7 @@ function _mkBenchChart(id, xAxisType) {
 }
 
 function _benchGetX(row) {
-  const axis = document.getElementById('benchXAxis')?.value || 'time';
-  if (axis === 'time') return new Date(row.ts);
+  const axis = document.getElementById('benchXAxis')?.value || 'seq';
   if (axis === 'seq')  return row.seq;
   return row[axis] ?? 0;
 }
@@ -113,13 +94,11 @@ function _benchGetY(row) {
 }
 
 function _rechartBench() {
-  const xAxis = document.getElementById('benchXAxis')?.value || 'time';
-  const chartType = document.getElementById('benchChartType')?.value || 'line';
-  const isBar = chartType === 'bar';
+  const xAxis = document.getElementById('benchXAxis')?.value || 'seq';
   // Preserve dataset configs (labels + colors) but clear data
   const dsConfigs = (_benchChart?.data.datasets || []).map(d => ({...d, data: []}));
   if (_benchChart) { try { _benchChart.destroy(); } catch(_) {} _benchChart = null; }
-  _benchChart = _mkBenchChart('benchChart', xAxis === 'time' ? null : xAxis);
+  _benchChart = _mkBenchChart('benchChart', xAxis);
   if (!_benchChart) return;
   dsConfigs.forEach(d => _benchChart.data.datasets.push(d));
   // Re-plot all stored rows
@@ -128,7 +107,7 @@ function _rechartBench() {
     if (dsIdx === undefined) return;
     let x = _benchGetX(r);
     const y = _benchGetY(r);
-    if (isBar) x = String(x);   // bar chart needs category (string) x values
+    x = String(x);   // bar chart needs category (string) x values
     if (r.n_gen > 0) {
       _benchChart.data.datasets[dsIdx].data.push({x, y});
     } else if (r.n_prompt > 0) {
@@ -198,65 +177,27 @@ const _BENCH_AXIS_SHORT = {
 // AND from the user's custom switch flags so a sweep over e.g. --threads
 // can be plotted even before any results have arrived for the current run.
 function _updateBenchAxisOpts() {
-  const skip = new Set(['ts', 'seq', 'gen_tps', 'ppt_tps', 'model_id']);
-  const numericKeys = new Set();
-  _benchRawRows.forEach(r => {
-    Object.entries(r).forEach(([k, v]) => {
-      if (!skip.has(k) && typeof v === 'number') numericKeys.add(k);
-    });
-  });
-
-  // Add custom switch flags (e.g. "--threads" → "threads") as candidate
-  // X axes. Flags are valid axes only when the user is varying them across
-  // runs, but listing them makes the cross-run sweep workflow possible at all.
-  const switchKeys = new Set();
-  (_benchSwitches || []).forEach(sw => {
-    if (!sw || !sw.flag) return;
-    const name = String(sw.flag).replace(/^--?/, '').trim();
-    if (name) switchKeys.add(name);
-  });
-
   const xSel = document.getElementById('benchXAxis');
   const ySel = document.getElementById('benchYAxis');
   if (!xSel || !ySel) return;
   const curX = xSel.value;
   const curY = ySel.value;
 
-  // All numeric JSONL fields + switch names, sorted, deduped
-  const fieldKeys = [...new Set([...numericKeys, ...switchKeys])].sort();
+  const { xOptions, yOptions, defaultX, defaultY } =
+    computeBenchAxisOptions(_benchRawRows, _benchSwitches, _benchAxisLabel);
 
-  // X: time + seq first, then all axis-eligible fields
-  const allX = ['time', 'seq', ...fieldKeys];
-  xSel.innerHTML = '';
-  allX.forEach(k => {
-    const opt = document.createElement('option');
-    opt.value = k;
-    opt.textContent = _benchAxisLabel(k);
-    if (k === curX) opt.selected = true;
-    xSel.appendChild(opt);
-  });
-  if (!allX.includes(curX)) xSel.value = 'time';
-
-  // Y: avg_ts (t/s) + ms_tok first (most useful), then all JSONL fields
-  const baseY = [
-    {v: 'avg_ts', t: 'Avg tokens/sec'},
-    {v: 'ms_tok', t: 'Milliseconds per token'},
-  ];
-  ySel.innerHTML = '';
-  baseY.forEach(({v, t}) => {
-    const opt = document.createElement('option');
-    opt.value = v; opt.textContent = t;
-    if (v === curY) opt.selected = true;
-    ySel.appendChild(opt);
-  });
-  fieldKeys.filter(k => k !== 'avg_ts').forEach(k => {
-    const opt = document.createElement('option');
-    opt.value = k;
-    opt.textContent = _benchAxisLabel(k);
-    if (k === curY) opt.selected = true;
-    ySel.appendChild(opt);
-  });
-  if (![...ySel.options].find(o => o.value === curY)) ySel.value = 'avg_ts';
+  const fill = (sel, opts, cur, dflt) => {
+    sel.innerHTML = '';
+    opts.forEach(({ v, t }) => {
+      const opt = document.createElement('option');
+      opt.value = v;
+      opt.textContent = t;
+      sel.appendChild(opt);
+    });
+    sel.value = opts.some(o => o.v === cur) ? cur : dflt;
+  };
+  fill(xSel, xOptions, curX, defaultX);
+  fill(ySel, yOptions, curY, defaultY);
 }
 
 function _benchAddModelDatasets(modelId) {
@@ -266,17 +207,11 @@ function _benchAddModelDatasets(modelId) {
   const colors = BENCH_COLOR_PAIRS[colorIdx];
   const shortName = modelId.split('/').pop() || modelId;
   _benchModelDatasets[modelId] = _benchChart.data.datasets.length;
-  const chartType = document.getElementById('benchChartType')?.value || 'line';
-  const ptR   = chartType === 'scatter' ? 4 : 3;
-  const ptHov = ptR + 4;
-  const bw    = chartType === 'bar' ? 1 : 2;
   _benchChart.data.datasets.push(
     { label: shortName + ' ppt', data: [], borderColor: colors.ppt, backgroundColor: colors.ppt + '40',
-      borderWidth: bw, pointRadius: ptR, pointHoverRadius: ptHov, fill: false, tension: 0.25,
-      borderDash: chartType === 'bar' ? undefined : [5, 3], showLine: chartType !== 'scatter' },
+      borderWidth: 1, pointRadius: 3, pointHoverRadius: 7, fill: false },
     { label: shortName + ' gen', data: [], borderColor: colors.gen, backgroundColor: colors.gen + '40',
-      borderWidth: bw, pointRadius: ptR, pointHoverRadius: ptHov, fill: false, tension: 0.25,
-      showLine: chartType !== 'scatter' },
+      borderWidth: 1, pointRadius: 3, pointHoverRadius: 7, fill: false },
   );
   _benchChart.update('none');
 }
@@ -387,10 +322,9 @@ function _benchPushPoint(msg) {
   if (!_benchChart) return;
   const dsIdx = _benchModelDatasets[msg.model_id];
   if (dsIdx === undefined) return;
-  const isBar = (document.getElementById('benchChartType')?.value || 'line') === 'bar';
   let x = _benchGetX(raw);
   const y = _benchGetY(raw);
-  if (isBar) x = String(x);
+  x = String(x);
   if ((msg.n_gen ?? 0) > 0) {
     _benchChart.data.datasets[dsIdx].data.push({x, y});
   } else if ((msg.n_prompt ?? 0) > 0) {
