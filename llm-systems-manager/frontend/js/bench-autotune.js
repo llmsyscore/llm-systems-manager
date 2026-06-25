@@ -904,7 +904,7 @@ async function openAutotune() {
   document.getElementById('autotuneOverlay').classList.add('open');
   _atWireOptionalAutoCheck();
   _atLogClear();
-  document.getElementById('atResults').innerHTML = '';
+  _atRenderPlaceholder();
   _atPending = {};
   _atSetStatus('idle', false);
   document.getElementById('atRunBtn').disabled = false;
@@ -1221,6 +1221,38 @@ function _atSetCardStatus(modelId, text) {
   if (!card) return;
   const sp = card.querySelector('.at-card-status');
   if (sp) sp.textContent = text;
+}
+
+// Show a dashed placeholder result card before any run so the report layout
+// is visible on an empty modal. Cleared when a run starts (renders pending cards).
+function _atRenderPlaceholder() {
+  const results = document.getElementById('atResults');
+  if (!results) return;
+  const card = document.createElement('div');
+  card.className = 'at-result-card at-result-placeholder';
+  const head = document.createElement('div');
+  head.style.color = 'var(--fg-dim)';
+  head.textContent = 'Run auto tune to populate results';
+  const grid = document.createElement('div');
+  grid.className = 'at-result-grid';
+  ['ctx-size', 'free VRAM', 'final -fitt', 'iterations'].forEach(label => {
+    const stat = document.createElement('div');
+    stat.className = 'at-stat';
+    const k = document.createElement('div');
+    k.className = 'at-stat-k';
+    k.textContent = label;
+    const v = document.createElement('div');
+    v.className = 'at-stat-v';
+    v.style.color = 'var(--fg-faint)';
+    v.textContent = '—';
+    stat.appendChild(k);
+    stat.appendChild(v);
+    grid.appendChild(stat);
+  });
+  card.appendChild(head);
+  card.appendChild(grid);
+  results.innerHTML = '';
+  results.appendChild(card);
 }
 
 function _atRenderResultCard(payload) {
