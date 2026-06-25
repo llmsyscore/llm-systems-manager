@@ -424,6 +424,7 @@ async function openBench(modelId) {
   }
   _benchModelDatasets = {};
   _benchRawRows = [];
+  _benchSetChartIdle(true);
 }
 
 // Toggle dropdown panels in benchmark overlay (model select, switch edit, etc.)
@@ -620,6 +621,7 @@ async function runBenchmark() {
   }
   _benchModelDatasets = {};
   _benchRawRows = [];
+  _benchSetChartIdle(false);
 
   // Start benchmark on backend, which will respond with a stream of events for logs and results
   fetch('/api/benchmark/run', {
@@ -710,6 +712,7 @@ function cancelBenchmark() {
 // ===========================================================================
 let _atEventSrc = null;
 let _atPending = {};   // model_id -> {converged, final_fitt, ctx_size, free_mb, total_vram_mb, iters, applied_params}
+let _atLastTarget = null, _atLastTol = null;   // captured at run start for the tolerance gauge
 
 function _atSetStatus(text, running) {
   const el = document.getElementById('atStatus');
@@ -968,6 +971,7 @@ async function runAutotune() {
     return;
   }
   const optional_params = _atCollectOptionalParams();
+  _atLastTarget = targetMb; _atLastTol = toleranceMb;
 
   // Collapse the setup sections now that the run is starting — they
   // take a lot of vertical space and the operator wants to see iter
@@ -1255,6 +1259,27 @@ function _atRenderPlaceholder() {
   results.appendChild(card);
 }
 
+// Tolerance-band gauge HTML: where free VRAM landed vs target ± tolerance.
+// Window is target ± 3·tol; marker is green inside the band, amber outside.
+function _atGaugeHtml(free, target, tol) {
+  if (![free, target, tol].every(Number.isFinite) || tol <= 0) return '';
+  const lo = target - 3 * tol, hi = target + 3 * tol, span = hi - lo;
+  if (span <= 0) return '';
+  const clamp = p => Math.max(0, Math.min(100, p));
+  const bandL = clamp((target - tol - lo) / span * 100);
+  const bandW = clamp((2 * tol) / span * 100);
+  const mark  = clamp((free - lo) / span * 100);
+  const hit = Math.abs(free - target) <= tol;
+  return `
+    <div class="at-gauge">
+      <div class="at-gauge-lbls"><span>${lo} MB</span><span>target ${target} ±${tol}</span><span>${hi} MB</span></div>
+      <div class="at-gauge-track">
+        <div class="at-gauge-band" style="left:${bandL}%;width:${bandW}%;"></div>
+        <div class="at-gauge-mark${hit ? '' : ' miss'}" style="left:calc(${mark}% - 1px);"></div>
+      </div>
+    </div>`;
+}
+
 function _atRenderResultCard(payload) {
   const modelId = payload.model_id;
   const card = document.getElementById('atcard_' + modelId.replace(/[^a-zA-Z0-9]/g, '_'));
@@ -1293,14 +1318,16 @@ function _atRenderResultCard(payload) {
   const paramSummary = Object.keys(params).length
     ? Object.entries(params).map(([k,v]) => `${_hEsc(String(k))}=${_hEsc(String(v))}`).join(', ')
     : '<i style="color:var(--fg-dim)">defaults</i>';
+  const gaugeHtml = payload.ok ? _atGaugeHtml(Number(payload.free_mb), _atLastTarget, _atLastTol) : '';
   card.innerHTML = `
-    <div><b>${_hEsc(modelId)}</b> — ${tag}</div>
+    <div class="at-result-head"><span class="at-result-model">${_hEsc(modelId)}</span> ${tag}</div>
     <div class="at-result-grid">
       <div class="at-stat"><div class="at-stat-k">ctx-size</div><div class="at-stat-v">${_hEsc(String(ctx))}</div></div>
       <div class="at-stat"><div class="at-stat-k">free VRAM</div><div class="at-stat-v">${_hEsc(String(free))}<span class="at-stat-u"> / ${_hEsc(String(tot))} MB</span></div></div>
       <div class="at-stat"><div class="at-stat-k">final -fitt</div><div class="at-stat-v">${_hEsc(String(fitt))}</div></div>
       <div class="at-stat"><div class="at-stat-k">iterations</div><div class="at-stat-v">${_hEsc(String(iters))}</div></div>
     </div>
+    ${gaugeHtml}
     <div style="font-size:0.82em;color:var(--fg-dim);">applied params: ${paramSummary}</div>
     <div class="at-result-actions">
       <button class="btn btn-stone-muted-gradient" data-at-save="ctx"        data-at-model="${_hEsc(modelId)}" ${payload.ok ? '' : 'disabled'}
@@ -1420,12 +1447,11 @@ function _benchRenderPlaceholder() {
   head.appendChild(name);
   const grid = document.createElement('div');
   grid.className = 'bench-result-grid';
-  [['PPT t/s', 'var(--warn)'], ['GEN t/s', null], ['PG t/s', 'var(--accent-2)']].forEach(([label, color]) => {
+  ['Prompt', 'Generation', 'Combined'].forEach(label => {
     const card = document.createElement('div');
     card.className = 'bench-stat-card';
     const k = document.createElement('div');
     k.className = 'bench-stat-k';
-    if (color) k.style.color = color;
     k.textContent = label;
     const v = document.createElement('div');
     v.className = 'bench-stat-v';
@@ -1507,27 +1533,73 @@ function _benchAddModelResultRow(modelId, _unused1, _unused2, tool) {
 
   const grid = document.createElement('div');
   grid.className = 'bench-result-grid';
-  const mkStat = (label, val, color, digits) => {
+  const mkStat = (label, val, unit, digits) => {
     const card = document.createElement('div');
     card.className = 'bench-stat-card';
     const k = document.createElement('div');
     k.className = 'bench-stat-k';
-    if (color) k.style.color = color;
     k.textContent = label;
     const v = document.createElement('div');
     v.className = 'bench-stat-v';
-    v.textContent = val != null ? val.toFixed(digits) : '—';
+    if (val != null) {
+      v.textContent = val.toFixed(digits);
+      if (unit) { const u = document.createElement('span'); u.className = 'bench-stat-u'; u.textContent = unit; v.appendChild(u); }
+    } else {
+      v.textContent = '—';
+    }
     card.appendChild(k);
     card.appendChild(v);
     return card;
   };
-  grid.appendChild(mkStat('PPT t/s', maxPpt, 'var(--warn)', 0));
-  grid.appendChild(mkStat('GEN t/s', maxGen, null, 1));
-  grid.appendChild(mkStat('PG t/s', maxPg, 'var(--accent-2)', 0));
+  grid.appendChild(mkStat('Prompt', maxPpt, 't/s', 0));
+  grid.appendChild(mkStat('Generation', maxGen, 't/s', 1));
+  grid.appendChild(mkStat('Combined', maxPg, 't/s', 0));
 
   row.appendChild(head);
   row.appendChild(grid);
+
+  // Comparison bar: generation t/s relative to the fastest model in this run.
+  if (maxGen != null) {
+    row.dataset.gen = String(maxGen);
+    const rank = document.createElement('div');
+    rank.className = 'bench-rank';
+    rank.innerHTML = '<span class="bench-rank-lbl">gen vs fastest</span>'
+      + '<div class="bench-rank-track"><div class="bench-rank-fill"></div></div>'
+      + '<span class="bench-rank-pct"></span>';
+    row.appendChild(rank);
+  }
   rows.appendChild(row);
+  _benchUpdateRankBars();
+}
+
+// Recompute the gen-vs-fastest comparison bars across all rendered result rows.
+function _benchUpdateRankBars() {
+  const rows = [...document.querySelectorAll('#benchResultRows .bench-result-row')]
+    .filter(r => r.dataset.gen != null && r.dataset.gen !== '');
+  const vals = rows.map(r => parseFloat(r.dataset.gen)).filter(v => Number.isFinite(v) && v > 0);
+  const max = vals.length ? Math.max(...vals) : 0;
+  rows.forEach(r => {
+    const gen = parseFloat(r.dataset.gen);
+    const fill = r.querySelector('.bench-rank-fill');
+    const pct = r.querySelector('.bench-rank-pct');
+    if (!fill || !max || !Number.isFinite(gen)) return;
+    const ratio = Math.max(0, Math.min(100, Math.round((gen / max) * 100)));
+    fill.style.width = ratio + '%';
+    fill.classList.toggle('lead', gen >= max);
+    if (pct) pct.textContent = ratio + '%';
+  });
+}
+
+// Toggle the benchmark chart between idle (slim dashed placeholder) and active.
+function _benchSetChartIdle(idle) {
+  const wrap = document.getElementById('benchChartWrap');
+  const empty = document.getElementById('benchChartEmpty');
+  const canvas = document.getElementById('benchChart');
+  if (!wrap) return;
+  wrap.classList.toggle('idle', !!idle);
+  if (empty) empty.style.display = idle ? '' : 'none';
+  if (canvas) canvas.style.display = idle ? 'none' : '';
+  if (!idle && _benchChart) { try { _benchChart.resize(); } catch(_) {} }
 }
 
 // Save benchmark results for a model to the backend, then update local state and UI. Called when user clicks "Save" on a model's benchmark result row.

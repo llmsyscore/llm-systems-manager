@@ -592,33 +592,46 @@
       margin-bottom: 40px;
       display: flex; flex-direction: column; gap: 12px;
     }
-    .bench-panel h2 { font-size: 0.95em; font-weight: 500; color: var(--fg); margin: 0; }
-    /* Direction-B two-pane report layout: header spans the top, a config rail
-       sits left of the results/chart pane. */
-    .bench-header { display:flex; align-items:center; justify-content:space-between; }
-    .bench-body { display:grid; grid-template-columns:minmax(240px,32%) 1fr; gap:18px; align-items:start; }
-    .bench-rail { display:flex; flex-direction:column; gap:10px; min-width:0; }
+    .bench-panel h2 { font-size: 0.95em; font-weight: 500; color: var(--fg); margin: 0; display:flex; align-items:center; gap:8px; }
+    /* Two-pane report layout: header spans the top, a config sidebar sits left
+       of the results/chart pane. Header carries a one-line subtitle. */
+    .bench-header { display:flex; align-items:flex-start; justify-content:space-between; }
+    .bench-head-l { display:flex; flex-direction:column; gap:3px; }
+    .bench-sub { font-size:0.72em; color:var(--fg-faint); letter-spacing:0.01em; }
+    .bench-body { display:grid; grid-template-columns:minmax(240px,32%) 1fr; gap:18px; align-items:stretch; }
+    /* Config rail is a recessed full-height sidebar so leftover space reads as a
+       panel, not a ragged void; the primary action stays near the config. */
+    .bench-rail {
+      display:flex; flex-direction:column; gap:4px; min-width:0; align-self:stretch;
+      background: color-mix(in srgb, var(--bg) 55%, var(--bg-card));
+      border:1px solid var(--border); border-radius:10px; padding:14px;
+    }
     .bench-rail .bench-dropdown, .bench-rail .bench-drop-btn { width:100%; min-width:0; }
     .bench-rail .bench-tabs { margin-left:0; width:100%; }
     .bench-rail .bench-tab { flex:1; text-align:center; }
-    .bench-rail-actions { display:flex; align-items:center; gap:8px; flex-wrap:wrap; margin-top:4px; }
+    .bench-rail-actions { display:flex; align-items:center; gap:8px; flex-wrap:wrap; margin-top:8px; }
     .bench-rail-actions .btn { flex:1; }
-    /* Prominent green primary Run button (its own full-width line). */
+    /* Primary Run: neutral resting, accent on hover (matches the model-card load
+       button). Full-width line; emphasis via size + hover, not a neon fill. */
     .bench-rail-actions #benchRunBtn, .bench-rail-actions #atRunBtn {
-      flex:1 1 100%; padding:9px 14px; font-weight:600; color:#fff;
-      background:linear-gradient(color-mix(in srgb, var(--ok) 90%, transparent), color-mix(in srgb, var(--ok) 72%, black));
-      border:1px solid color-mix(in srgb, var(--ok) 55%, var(--border));
+      flex:1 1 100%; padding:10px 14px; font-weight:600; border-radius:7px; letter-spacing:0.02em;
+      background:var(--bg-card-alt); color:var(--fg); border:1px solid var(--border-strong);
+      background-image:none; transition:color .15s, border-color .15s, background .15s;
     }
-    .bench-rail-actions #benchRunBtn:hover, .bench-rail-actions #atRunBtn:hover { filter:brightness(1.08); }
+    .bench-rail-actions #benchRunBtn:hover, .bench-rail-actions #atRunBtn:hover {
+      border-color:var(--accent); color:var(--accent); background:var(--bg-card-alt); opacity:1;
+    }
     .bench-results-pane { display:flex; flex-direction:column; gap:10px; min-width:0; }
-    /* Config-rail group boxes (autotune details + targets). */
+    /* Config groups flatten into hairline-divided sections of the sidebar. */
     .bench-rail > details, .bench-rail > .modal-group {
-      border:1px solid var(--border); border-radius:8px; background:var(--bg-card-alt); padding:0; overflow:hidden;
+      border:none; background:transparent; border-radius:0; overflow:visible;
+      padding:10px 0; border-top:1px solid var(--border-soft);
     }
-    /* Config group holds popout dropdowns; let them escape the rounded box. */
+    .bench-rail > details:first-child, .bench-rail > .modal-group:first-child { border-top:none; padding-top:2px; }
+    /* Config group holds popout dropdowns; let them escape. */
     .bench-rail > #benchConfigGroup { overflow:visible; }
     .bench-rail > details > summary, .bench-rail > .modal-group > .modal-group-h {
-      list-style:none; cursor:pointer; padding:7px 10px;
+      list-style:none; cursor:pointer; padding:0 0 8px;
       font-size:0.62em; text-transform:uppercase; letter-spacing:0.05em; color:var(--fg-muted); font-weight:700;
       display:flex; align-items:center; justify-content:space-between;
     }
@@ -626,16 +639,20 @@
     .bench-rail > details > summary::after { content:'▾'; color:var(--fg-dim); }
     .bench-rail > details:not([open]) > summary::after { content:'▸'; }
     .bench-rail > details > *:not(summary),
-    .bench-rail > .modal-group > *:not(.modal-group-h) { padding:0 10px 9px; }
+    .bench-rail > .modal-group > *:not(.modal-group-h) { padding:0; }
+    /* Chart-axis controls live in the rail as a compact two-field group. */
+    .rail-axes { display:grid; grid-template-columns:1fr 1fr; gap:8px; }
+    .rail-axes label { font-size:0.7em; color:var(--fg-dim); margin-bottom:3px; display:block; }
+    .rail-axes select.bench-axis-sel { width:100%; height:30px; }
     #atOptCount { text-transform:none; letter-spacing:0; color:var(--fg-dim); font-weight:400; }
     .bench-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
     /* Dropdown component */
     .bench-dropdown { position: relative; flex-shrink: 0; }
     .bench-drop-btn {
-      background: var(--bg); border: 1px solid var(--border); border-radius: 5px;
-      color: var(--fg); font-size: 0.82em; padding: 5px 10px;
+      background: var(--bg-card-alt); border: 1px solid var(--border-strong); border-radius: 6px;
+      color: var(--fg); font-size: 0.82em; padding: 0 10px; height: 32px;
       cursor: pointer; display: flex; align-items: center; gap: 8px;
-      font-family: monospace; white-space: nowrap; min-width: 160px;
+      font-family: inherit; white-space: nowrap; min-width: 160px;
       justify-content: space-between;
     }
     .bench-drop-btn:hover { border-color: var(--accent); }
@@ -675,10 +692,13 @@
     /* Axis selector row */
     .bench-axis-row { display:flex; align-items:center; gap:8px; }
     .bench-axis-row label { font-size:0.72em; color:var(--fg-dim); }
-    .bench-axis-sel { background:var(--bg); border:1px solid var(--border); border-radius:4px; color:var(--fg); font-size:0.78em; padding:3px 6px; font-family:monospace; cursor:pointer; }
+    .bench-axis-sel { background:var(--bg-card-alt); border:1px solid var(--border-strong); border-radius:6px; color:var(--fg); font-size:0.78em; padding:0 8px; height:30px; font-family:inherit; cursor:pointer; }
     .bench-axis-sel:focus { outline:none; border-color:var(--accent); }
     /* Chart and log — main focus */
     .bench-chart-wrap { background:var(--bg); border:1px solid var(--border-soft); border-radius:6px; padding:10px; height:460px; }
+    /* Idle: collapse the 460px void into a slim dashed placeholder. */
+    .bench-chart-wrap.idle { height:120px; border-style:dashed; display:flex; align-items:center; justify-content:center; }
+    .bench-chart-empty { font-size:0.78em; color:var(--fg-faint); text-align:center; max-width:280px; line-height:1.5; }
     #benchLog { background:var(--bg); border:1px solid var(--border-soft); border-radius:6px; padding:8px; font-size:12px; line-height:1.55; font-family:monospace; overflow-y:auto; height:260px; color:var(--fg); margin:0; }
     #benchLog:empty { display:none; }
     .bench-log-cmd  { color:var(--ok); white-space:pre-wrap; word-break:break-all; }
@@ -699,22 +719,40 @@
     .bench-log-tps  { font-size:12px; font-weight:700; color:var(--accent); margin-left:auto; white-space:nowrap; }
     .bench-status-pill { font-size:0.75em; color:var(--fg-dim); font-family:monospace; }
     .bench-status-pill.running { color:var(--warn); }
-    /* Results-pane header: controls on the left, run-status pill on the right. */
-    .bench-pane-head { display:flex; align-items:center; justify-content:space-between; gap:8px; min-height:24px; }
+    /* Results-pane header: section eyebrow on the left, run-status pill on the right. */
+    .bench-pane-head { display:flex; align-items:center; justify-content:space-between; gap:8px; min-height:24px; padding-bottom:7px; border-bottom:1px solid var(--border-soft); }
+    .bench-pane-title { font-size:0.6em; text-transform:uppercase; letter-spacing:0.12em; color:var(--fg-dim); }
     /* Stat-card report block sits at the top of the results pane (above chart). */
     #benchResults { display:none; flex-direction:column; gap:10px; }
     #benchResults.shown { display:flex; }
     #benchResultRows { display:flex; flex-direction:column; gap:10px; width:100%; }
-    .bench-result-row { display:flex; flex-direction:column; gap:9px; border:1px solid var(--border); background:var(--bg-card-alt); border-radius:8px; padding:11px 13px; }
-    .bench-result-placeholder { border-style:dashed; background:transparent; }
-    .bench-result-head { display:flex; align-items:center; justify-content:space-between; gap:10px; }
-    .bench-result-model { font-size:0.9em; font-family:monospace; color:var(--fg); flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-    .bench-result-grid { display:grid; grid-template-columns:repeat(3,1fr); gap:10px; }
+    /* Result row = instrument card echoing the dashboard enterprise card. */
+    .bench-result-row {
+      display:flex; flex-direction:column; gap:9px;
+      border:1px solid var(--border); border-left:3px solid color-mix(in srgb, var(--ok) 55%, var(--border));
+      background: linear-gradient(160deg, var(--bg-card) 0%, color-mix(in srgb, var(--bg) 55%, var(--bg-card)) 100%);
+      border-radius:10px; padding:15px 18px;
+    }
+    .bench-result-placeholder { border-left-color:var(--border); border-style:dashed; background:transparent; }
+    .bench-result-head { display:flex; align-items:center; justify-content:space-between; gap:10px; margin-bottom:4px; }
+    .bench-result-model { font-size:0.82em; font-family:ui-monospace, Menlo, Consolas, monospace; color:var(--fg); flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+    .bench-result-grid { display:grid; grid-template-columns:repeat(3,1fr); gap:0; }
     .bench-result-actions { display:flex; gap:8px; justify-content:flex-end; }
-    /* Stat-cards: PPT/GEN/PG as bordered cards (small label + big number). */
-    .bench-stat-card { border:1px solid var(--border); background:var(--bg); border-radius:8px; padding:9px 12px; text-align:center; }
-    .bench-stat-k { font-size:0.62em; text-transform:uppercase; letter-spacing:0.06em; color:var(--fg-muted); }
-    .bench-stat-v { font-size:1.7em; font-weight:700; font-family:monospace; color:var(--fg); line-height:1.15; }
+    .bench-result-actions .btn { background:var(--bg-card-alt); color:var(--fg-muted); border:1px solid var(--border); border-radius:6px; font-size:0.78em; padding:6px 13px; background-image:none; }
+    .bench-result-actions .btn:hover { background:var(--border); color:var(--fg); opacity:1; }
+    /* Stat readouts: borderless columns separated by a hairline (thin numerals). */
+    .bench-stat-card { border:none; border-left:1px solid var(--border-soft); background:transparent; border-radius:0; padding:2px 0 2px 16px; text-align:left; }
+    .bench-result-grid .bench-stat-card:first-child { border-left:none; padding-left:0; }
+    .bench-stat-k { font-size:0.58em; text-transform:uppercase; letter-spacing:0.12em; color:var(--fg-dim); margin-bottom:5px; }
+    .bench-stat-v { font-size:clamp(1.5rem,2.1vw,2.05rem); font-weight:300; letter-spacing:-0.02em; font-variant-numeric:tabular-nums; color:var(--fg); line-height:1.0; }
+    .bench-stat-u { font-size:0.42em; font-weight:400; color:var(--fg-faint); margin-left:3px; letter-spacing:0; }
+    /* Signature: comparative generation-throughput bar vs. fastest in the run. */
+    .bench-rank { display:flex; align-items:center; gap:11px; margin-top:5px; }
+    .bench-rank-lbl { font-size:0.56em; text-transform:uppercase; letter-spacing:0.12em; color:var(--fg-faint); white-space:nowrap; }
+    .bench-rank-track { flex:1; height:5px; border-radius:3px; background:var(--bg); border:1px solid var(--border-soft); overflow:hidden; }
+    .bench-rank-fill { height:100%; border-radius:3px 0 0 3px; background:var(--accent-2); transition:width .25s; }
+    .bench-rank-fill.lead { background:var(--ok); }
+    .bench-rank-pct { font-size:0.62em; color:var(--fg-muted); font-variant-numeric:tabular-nums; white-space:nowrap; min-width:34px; text-align:right; }
     .bench-badge { display:flex; gap:6px; margin-top:4px; flex-wrap:wrap; }
     .bench-badge-chip { font-size:11px; background:color-mix(in srgb, var(--accent) 12%, transparent); color:var(--accent); border:1px solid color-mix(in srgb, var(--accent) 30%, var(--border)); border-radius:4px; padding:2px 7px; font-family:monospace; }
 

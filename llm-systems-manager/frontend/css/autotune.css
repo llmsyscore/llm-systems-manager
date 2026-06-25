@@ -3,7 +3,7 @@
   #autotuneOverlay .at-field label { font-size:0.78em; color:var(--fg-dim); }
   #autotuneOverlay .at-field input, #autotuneOverlay .at-field select {
     background:var(--bg-card-alt); border:1px solid var(--border-strong);
-    border-radius:4px; color:var(--fg); font-size:0.85em; padding:6px 8px;
+    border-radius:6px; color:var(--fg); font-size:0.85em; padding:0 9px; height:32px;
   }
   #autotuneOverlay .at-opt-row { display:flex; align-items:center; gap:8px; padding:4px 0; }
   #autotuneOverlay .at-opt-row label.at-opt-label { min-width:120px; font-size:0.85em; }
@@ -15,20 +15,33 @@
   #autotuneOverlay #atModelPanel .bench-model-item label { font-size:13px; line-height:1.3; cursor:pointer; }
   #autotuneOverlay #atModelPanel .bench-model-item input[type=checkbox] { width:12px; height:12px; }
   #autotuneOverlay .at-result-card {
-    background:var(--bg-card-alt); border:1px solid var(--border-strong);
-    border-radius:6px; padding:10px 12px; margin:8px 0;
+    background: linear-gradient(160deg, var(--bg-card) 0%, color-mix(in srgb, var(--bg) 55%, var(--bg-card)) 100%);
+    border:1px solid var(--border); border-left:3px solid color-mix(in srgb, var(--ok) 55%, var(--border));
+    border-radius:10px; padding:15px 18px; margin:0 0 12px;
   }
-  #autotuneOverlay .at-result-card.pending { opacity:0.7; }
-  #autotuneOverlay .at-result-card.at-result-placeholder { border-style:dashed; background:transparent; }
+  #autotuneOverlay .at-result-card.pending { opacity:0.7; border-left-color:var(--border); }
+  #autotuneOverlay .at-result-card.at-result-placeholder { border-left-color:var(--border); border-style:dashed; background:transparent; }
+  #autotuneOverlay .at-result-head { display:flex; align-items:center; gap:10px; margin-bottom:11px; }
+  #autotuneOverlay .at-result-model { font-family:ui-monospace, Menlo, Consolas, monospace; font-size:0.82em; color:var(--fg); }
   #autotuneOverlay .at-result-grid {
-    display:grid; grid-template-columns:repeat(auto-fit,minmax(110px,1fr));
-    gap:8px; margin:8px 0;
+    display:grid; grid-template-columns:repeat(auto-fit,minmax(96px,1fr));
+    gap:0; margin:0;
   }
-  #autotuneOverlay .at-stat { border:1px solid var(--border); background:var(--bg); border-radius:8px; padding:6px 10px; text-align:center; }
-  #autotuneOverlay .at-stat-k { font-size:0.6em; text-transform:uppercase; letter-spacing:0.05em; color:var(--fg-muted); }
-  #autotuneOverlay .at-stat-v { font-size:1.05em; font-weight:700; font-family:monospace; color:var(--fg); line-height:1.3; }
-  #autotuneOverlay .at-stat-u { font-size:0.6em; font-weight:400; color:var(--fg-dim); }
-  #autotuneOverlay .at-result-actions { display:flex; gap:8px; margin-top:8px; }
+  #autotuneOverlay .at-stat { border:none; border-left:1px solid var(--border-soft); background:transparent; border-radius:0; padding:2px 0 2px 16px; text-align:left; }
+  #autotuneOverlay .at-result-grid .at-stat:first-child { border-left:none; padding-left:0; }
+  #autotuneOverlay .at-stat-k { font-size:0.58em; text-transform:uppercase; letter-spacing:0.12em; color:var(--fg-dim); margin-bottom:5px; }
+  #autotuneOverlay .at-stat-v { font-size:clamp(1.4rem,1.9vw,1.9rem); font-weight:300; letter-spacing:-0.02em; font-variant-numeric:tabular-nums; font-family:inherit; color:var(--fg); line-height:1.0; }
+  #autotuneOverlay .at-stat-u { font-size:0.42em; font-weight:400; color:var(--fg-faint); margin-left:3px; letter-spacing:0; }
+  #autotuneOverlay .at-result-actions { display:flex; gap:8px; margin-top:13px; flex-wrap:wrap; }
+  #autotuneOverlay .at-result-actions .btn { background:var(--bg-card-alt); color:var(--fg-muted); border:1px solid var(--border); border-radius:6px; font-size:0.78em; padding:6px 13px; background-image:none; }
+  #autotuneOverlay .at-result-actions .btn:hover { background:var(--border); color:var(--fg); opacity:1; }
+  /* Signature: tolerance-band gauge — where free VRAM landed vs target ± tol. */
+  #autotuneOverlay .at-gauge { margin-top:14px; }
+  #autotuneOverlay .at-gauge-lbls { display:flex; justify-content:space-between; font-size:0.56em; text-transform:uppercase; letter-spacing:0.1em; color:var(--fg-faint); margin-bottom:5px; }
+  #autotuneOverlay .at-gauge-track { position:relative; height:7px; border-radius:4px; background:var(--bg); border:1px solid var(--border-soft); }
+  #autotuneOverlay .at-gauge-band { position:absolute; top:0; bottom:0; background:color-mix(in srgb, var(--ok) 22%, transparent); border-left:1px solid color-mix(in srgb,var(--ok) 45%,transparent); border-right:1px solid color-mix(in srgb,var(--ok) 45%,transparent); }
+  #autotuneOverlay .at-gauge-mark { position:absolute; top:-3px; width:3px; height:13px; border-radius:2px; background:var(--ok); box-shadow:0 0 6px color-mix(in srgb,var(--ok) 55%,transparent); }
+  #autotuneOverlay .at-gauge-mark.miss { background:var(--warn); box-shadow:0 0 6px color-mix(in srgb,var(--warn) 55%,transparent); }
   #autotuneOverlay #atLog {
     max-height:320px; overflow-y:auto;
     background:var(--bg-card-alt); border:1px solid var(--border-strong);

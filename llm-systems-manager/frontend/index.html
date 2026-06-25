@@ -45,7 +45,7 @@ Backend API endpoints consumed:
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/xterm@5.3.0/css/xterm.min.css"/>
   <script src="https://cdn.jsdelivr.net/npm/xterm@5.3.0/lib/xterm.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/xterm-addon-fit@0.8.0/lib/xterm-addon-fit.min.js"></script>
-  <link rel="stylesheet" href="/static/css/base.css?v=2026.06.25-5">
+  <link rel="stylesheet" href="/static/css/base.css?v=2026.06.25-6">
 </head>
 <body>
 
@@ -1415,7 +1415,7 @@ Backend API endpoints consumed:
 <script src="/static/js/openclaw.js?v=2026.06.10-7"></script>
 <script src="/static/js/admin.js?v=2026.06.10-6"></script>
 <script src="/static/js/llmcontrol-models.js?v=2026.06.10-6"></script>
-<script src="/static/js/bench-autotune.js?v=2026.06.25-4"></script>
+<script src="/static/js/bench-autotune.js?v=2026.06.25-5"></script>
 <script src="/static/js/lmstudio.js?v=2026.06.15-14"></script>
 <script src="/static/js/overall.js?v=2026.06.09-2"></script>
 <script src="/static/js/dashboard-manager.js?v=2026.06.21-1"></script>
@@ -1485,7 +1485,10 @@ Backend API endpoints consumed:
   <div class="bench-panel">
     <!-- Header spans both panes -->
     <div class="bench-header">
-      <h2 id="benchTitle">⏱ Benchmark</h2>
+      <div class="bench-head-l">
+        <h2 id="benchTitle">⏱ Benchmark</h2>
+        <span class="bench-sub">Measure prompt and generation throughput for one or more models.</span>
+      </div>
       <button class="close-btn" onclick="closeBench()" style="background:none;border:none;color:var(--fg-dim);cursor:pointer;font-size:1.2em;">✕</button>
     </div>
     <!-- Two-pane body: config rail (left) + results (right) -->
@@ -1515,6 +1518,22 @@ Backend API endpoints consumed:
             </div>
           </div>
         </div>
+        <div class="modal-group" id="benchChartGroup">
+          <div class="modal-group-h">Chart</div>
+          <div class="rail-axes">
+            <div><label for="benchXAxis">X axis</label>
+              <select id="benchXAxis" class="bench-axis-sel" onchange="_rechartBench()">
+                <option value="seq">sequence</option>
+              </select>
+            </div>
+            <div><label for="benchYAxis">Y axis</label>
+              <select id="benchYAxis" class="bench-axis-sel" onchange="_rechartBench()">
+                <option value="avg_ts">t/s</option>
+                <option value="ms_tok">ms/tok</option>
+              </select>
+            </div>
+          </div>
+        </div>
         <div class="bench-rail-actions">
           <button id="benchCancelBtn" class="btn btn-red-muted-gradient" onclick="cancelBenchmark()" style="display:none;">✕ Cancel</button>
           <button id="benchRunBtn" class="btn btn-stone-muted-gradient" onclick="runBenchmark()">▶ Run Benchmark</button>
@@ -1522,24 +1541,15 @@ Backend API endpoints consumed:
       </div>
       <div class="bench-results-pane">
         <div class="bench-pane-head">
-          <div class="bench-axis-row">
-            <label>X:</label>
-            <select id="benchXAxis" class="bench-axis-sel" onchange="_rechartBench()">
-              <option value="seq">sequence</option>
-            </select>
-            <label style="margin-left:8px;">Y:</label>
-            <select id="benchYAxis" class="bench-axis-sel" onchange="_rechartBench()">
-              <option value="avg_ts">t/s</option>
-              <option value="ms_tok">ms/tok</option>
-            </select>
-          </div>
+          <span class="bench-pane-title">Results</span>
           <span id="benchStatus" class="bench-status-pill">idle</span>
         </div>
         <div id="benchResults">
           <div id="benchResultRows"></div>
         </div>
-        <div class="bench-chart-wrap">
-          <canvas id="benchChart"></canvas>
+        <div class="bench-chart-wrap idle" id="benchChartWrap">
+          <div class="bench-chart-empty" id="benchChartEmpty">Run a benchmark to plot throughput across sequence lengths.</div>
+          <canvas id="benchChart" style="display:none;"></canvas>
         </div>
         <div id="benchLog"></div>
       </div>
@@ -1548,11 +1558,14 @@ Backend API endpoints consumed:
 </div>
 
 <!-- Auto-Tune CTX overlay — reuses bench-overlay/panel CSS for consistency -->
-<link rel="stylesheet" href="/static/css/autotune.css?v=2026.06.25-2">
+<link rel="stylesheet" href="/static/css/autotune.css?v=2026.06.25-3">
 <div class="bench-overlay" id="autotuneOverlay">
   <div class="bench-panel">
     <div class="bench-header">
-      <h2>🎯 Auto Tune CTX</h2>
+      <div class="bench-head-l">
+        <h2>🎯 Auto-Tune CTX</h2>
+        <span class="bench-sub">Converge context size on a target free-VRAM headroom for each model.</span>
+      </div>
       <button class="close-btn" onclick="closeAutotune()" style="background:none;border:none;color:var(--fg-dim);cursor:pointer;font-size:1.2em;">✕</button>
     </div>
     <div class="bench-body">
