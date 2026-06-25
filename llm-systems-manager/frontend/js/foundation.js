@@ -5,6 +5,9 @@
 // selection exists (single-agent installs) → byte-identical behavior.
 window._agentsByProvider = window._agentsByProvider || { llama: [], lms: [] };
 window._selectedAgents   = window._selectedAgents   || { llama: null, lms: null };
+// Last selection each provider's grid was rendered for, so the 30s picker poll
+// only re-applies per-agent layout when the selection actually changed.
+let _appliedAgentSel = { llama: undefined, lms: undefined };
 
 function _selectedAgent(provider) {
   return (window._selectedAgents && window._selectedAgents[provider]) || null;
@@ -178,12 +181,14 @@ async function loadLayout() {
     if (!layout.lmsHidden)       layout.lmsHidden       = [];
     if (!layout.managerHidden)   layout.managerHidden   = [];
     if (!layout.hiddenByAgent || typeof layout.hiddenByAgent !== 'object') layout.hiddenByAgent = {};
+    if (!layout.orderByAgent || typeof layout.orderByAgent !== 'object') layout.orderByAgent = {};
+    if (!layout.sizesByAgent || typeof layout.sizesByAgent !== 'object') layout.sizesByAgent = {};
     if (!layout.managerOrder)    layout.managerOrder    = [];
     if (!layout.overallBorrowed) layout.overallBorrowed = [];
     if (!layout.overallOrder)    layout.overallOrder    = [];
     if (!layout.cardSizes || typeof layout.cardSizes !== 'object') layout.cardSizes = {};
     _migrateLegacyCardIds(layout);
-    if (layout.lmsOrder)     applyLmsLayout(layout.lmsOrder);
+    _applyOrderForGrid('lmsCardGrid', 'lmsOrder');
     if (layout.managerOrder) applyManagerLayout(layout.managerOrder);
   } catch(e) {}
   applyTheme(layout && layout.theme, false);
@@ -209,26 +214,32 @@ function _migrateLegacyCardIds(lay) {
   const swap = arr => Array.isArray(arr) && arr.forEach((id, i) => {
     if (_LEGACY_CARD_RENAMES[id]) arr[i] = _LEGACY_CARD_RENAMES[id];
   });
+  const swapKeys = obj => {
+    if (!obj || typeof obj !== 'object') return;
+    for (const oldId in _LEGACY_CARD_RENAMES) {
+      if (oldId in obj) {
+        const newId = _LEGACY_CARD_RENAMES[oldId];
+        if (!(newId in obj)) obj[newId] = obj[oldId];
+        delete obj[oldId];
+      }
+    }
+  };
+  // Per-agent buckets: byAgent[provider][agentId] = [cardId...] or {cardId:size}.
+  const eachAgent = (bucket, fn) => {
+    if (!bucket || typeof bucket !== 'object') return;
+    for (const prov in bucket) {
+      const byAgent = bucket[prov];
+      if (byAgent && typeof byAgent === 'object') for (const aid in byAgent) fn(byAgent[aid]);
+    }
+  };
   swap(lay.order); swap(lay.hidden);
   swap(lay.lmsOrder); swap(lay.lmsHidden);
   swap(lay.managerOrder); swap(lay.managerHidden);
   swap(lay.overallOrder); swap(lay.overallBorrowed); swap(lay.hiddenOverall);
-  // Per-agent hidden buckets: hiddenByAgent[provider][agentId] = [cardId...].
-  if (lay.hiddenByAgent && typeof lay.hiddenByAgent === 'object') {
-    for (const prov in lay.hiddenByAgent) {
-      const byAgent = lay.hiddenByAgent[prov];
-      if (byAgent && typeof byAgent === 'object') for (const aid in byAgent) swap(byAgent[aid]);
-    }
-  }
-  if (lay.cardSizes && typeof lay.cardSizes === 'object') {
-    for (const oldId in _LEGACY_CARD_RENAMES) {
-      if (oldId in lay.cardSizes) {
-        const newId = _LEGACY_CARD_RENAMES[oldId];
-        if (!(newId in lay.cardSizes)) lay.cardSizes[newId] = lay.cardSizes[oldId];
-        delete lay.cardSizes[oldId];
-      }
-    }
-  }
+  eachAgent(lay.hiddenByAgent, swap);
+  eachAgent(lay.orderByAgent, swap);
+  eachAgent(lay.sizesByAgent, swapKeys);
+  swapKeys(lay.cardSizes);
 }
 
 // Live hardware-name registry. _setCardTitle() in charts.js updates this on
@@ -276,10 +287,13 @@ async function _loadAgentsByProvider() {
       }
     });
     _renderAgentPickers();
-    // Selection resolved — apply each provider's per-agent card visibility.
-    if (typeof _applyHiddenForGrid === 'function') {
-      _applyHiddenForGrid('cardGrid', 'hidden');
-      _applyHiddenForGrid('lmsCardGrid', 'lmsHidden');
+    // Re-apply a provider's per-agent order/visibility/sizes only when its
+    // selection changed (first resolve or a deleted-agent fallback).
+    if (typeof _applyAgentGrid === 'function') {
+      ['llama', 'lms'].forEach(prov => {
+        const sel = _selectedAgent(prov);
+        if (sel !== _appliedAgentSel[prov]) { _appliedAgentSel[prov] = sel; _applyAgentGrid(prov); }
+      });
     }
   } catch (_) {}
 }
@@ -312,6 +326,10 @@ function _selectAgent(provider, agentId) {
   if (!provider) return;
   if (_selectedAgent(provider) === agentId) return;
   window._selectedAgents[provider] = agentId;
+  // Apply the new selection's per-agent order/visibility/sizes BEFORE saving, so
+  // saveLayout() captures the new agent's card order, not the old grid's.
+  _applyAgentGrid(provider);
+  _appliedAgentSel[provider] = agentId;
   // Persist into layout — saveLayout() self-coalesces concurrent calls, so a
   // rapid chip-switch makes one POST, not one per click.
   if (typeof layout === 'object' && layout) {
@@ -319,10 +337,6 @@ function _selectAgent(provider, agentId) {
     try { saveLayout(); } catch (_) {}
   }
   _renderAgentPickers();
-  // Re-apply this provider's per-agent card visibility for the new selection,
-  // and refresh the settings chips if the panel is open.
-  if (provider === 'llama')     _applyHiddenForGrid('cardGrid', 'hidden');
-  else if (provider === 'lms')  _applyHiddenForGrid('lmsCardGrid', 'lmsHidden');
   if (typeof renderSettingsPanel === 'function'
       && document.getElementById('settingsOverlay')?.classList.contains('open')) renderSettingsPanel();
   // Reset the editor/download/cache/build panels before loading the new agent.
@@ -558,20 +572,68 @@ function _applyHiddenForGrid(gridId, hiddenKey) {
   });
 }
 
-function applyLayout() {
-  const grid = document.getElementById('cardGrid');
-  const cards = [...grid.querySelectorAll('.card')];
-
-  // Apply order
-  if (layout.order && layout.order.length) {
-    const ordered = [];
-    layout.order.forEach(id => {
-      const c = cards.find(c => c.dataset.card === id);
-      if (c) ordered.push(c);
-    });
-    cards.forEach(c => { if (!ordered.includes(c)) ordered.push(c); });
-    ordered.forEach(c => grid.appendChild(c));
+// Effective card-order list for a surface — per-agent for llama.cpp/LMS, global
+// elsewhere. Falls back to the global list if the lib is absent.
+function _orderList(orderKey) {
+  const lib = window.LMLayout;
+  if (!lib) {
+    if (!Array.isArray(layout[orderKey])) layout[orderKey] = [];
+    return layout[orderKey];
   }
+  const prov = lib.PER_AGENT_ORDER[orderKey] || null;
+  const agentId = prov ? _selectedAgent(prov) : null;
+  return lib.resolveOrderList(layout, orderKey, agentId);
+}
+
+// Reorder a grid's cards by its (possibly per-agent) order list.
+function _applyOrderForGrid(gridId, orderKey) {
+  const grid = document.getElementById(gridId);
+  if (!grid) return;
+  const order = _orderList(orderKey);
+  if (!order || !order.length) return;
+  const cards = [...grid.querySelectorAll('.card')];
+  const ordered = [];
+  order.forEach(id => { const c = cards.find(c => c.dataset.card === id); if (c) ordered.push(c); });
+  cards.forEach(c => { if (!ordered.includes(c)) ordered.push(c); });
+  ordered.forEach(c => grid.appendChild(c));
+}
+
+// Provider owning a per-agent surface card id, else null (global surfaces).
+function _perAgentProviderForCard(cardId) {
+  if (CARD_LABELS[cardId]) return 'llama';
+  if (CARD_LABELS_LMS[cardId]) return 'lms';
+  return null;
+}
+
+// cardId->size map holding this card's size — per-agent for llama.cpp/LMS cards,
+// global cardSizes otherwise (or when the lib/agent is absent).
+function _sizeMapFor(cardId) {
+  const lib = window.LMLayout;
+  const prov = _perAgentProviderForCard(cardId);
+  const agentId = prov ? _selectedAgent(prov) : null;
+  if (lib && prov && agentId) {
+    const seedIds = prov === 'llama' ? Object.keys(CARD_LABELS) : Object.keys(CARD_LABELS_LMS);
+    return lib.resolveSizeMap(layout, prov, agentId, seedIds);
+  }
+  if (!layout.cardSizes || typeof layout.cardSizes !== 'object') layout.cardSizes = {};
+  return layout.cardSizes;
+}
+
+// Re-apply order, visibility, and sizes for a provider's per-agent grid.
+function _applyAgentGrid(provider) {
+  if (provider === 'llama') {
+    _applyOrderForGrid('cardGrid', 'order');
+    _applyHiddenForGrid('cardGrid', 'hidden');
+  } else if (provider === 'lms') {
+    _applyOrderForGrid('lmsCardGrid', 'lmsOrder');
+    _applyHiddenForGrid('lmsCardGrid', 'lmsHidden');
+  }
+  if (typeof initCardResize === 'function') initCardResize();
+}
+
+function applyLayout() {
+  // Apply order — Dashboard/llama.cpp cards (per selected agent)
+  _applyOrderForGrid('cardGrid', 'order');
 
   // Apply visibility — Dashboard/llama.cpp cards (per selected agent)
   _applyHiddenForGrid('cardGrid', 'hidden');
@@ -630,7 +692,9 @@ async function saveLayout() {
       do {
         _layoutPending = false;
         const grid = document.getElementById('cardGrid');
-        layout.order = [...grid.querySelectorAll('.card')].map(c => c.dataset.card);
+        const ids = [...grid.querySelectorAll('.card')].map(c => c.dataset.card);
+        const ol = _orderList('order');
+        ol.splice(0, ol.length, ...ids);
         try {
           await fetch('/api/layout', {
             method: 'POST',
@@ -810,10 +874,13 @@ async function saveLmsLayout() {
         _lmsLayoutPending = false;
         const grid = document.getElementById('lmsCardGrid');
         if (!grid) return;
-        const lmsOrder = [...grid.querySelectorAll('.card')].map(c => c.dataset.card);
+        const ids = [...grid.querySelectorAll('.card')].map(c => c.dataset.card);
+        const ol = _orderList('lmsOrder');
+        ol.splice(0, ol.length, ...ids);
         try {
           const current = await fetch('/api/layout').then(r => r.json());
-          current.lmsOrder = lmsOrder;
+          current.lmsOrder = layout.lmsOrder;
+          current.orderByAgent = layout.orderByAgent;
           await fetch('/api/layout', {
             method: 'POST', headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(current),
@@ -825,16 +892,6 @@ async function saveLmsLayout() {
     }
   })();
   return _lmsLayoutInFlight;
-}
-
-function applyLmsLayout(savedOrder) {
-  const grid = document.getElementById('lmsCardGrid');
-  if (!grid || !savedOrder || !savedOrder.length) return;
-  const cards = [...grid.querySelectorAll('.card')];
-  const ordered = [];
-  savedOrder.forEach(id => { const c = cards.find(c => c.dataset.card === id); if (c) ordered.push(c); });
-  cards.forEach(c => { if (!ordered.includes(c)) ordered.push(c); });
-  ordered.forEach(c => grid.appendChild(c));
 }
 
 // Manager dashboard card order persistence — same shape as LMS, separate
@@ -1114,18 +1171,20 @@ async function resetCurrentTabLayout() {
   if (!ok) return;
   // Mutate the in-memory layout, then POST the whole thing back.
   layout[scope.hidden] = [];
-  // Per-agent surfaces: also clear the selected agent's own hidden set.
-  const _resetProv = (window.LMLayout && LMLayout.PER_AGENT_HIDDEN[scope.hidden]) || null;
-  if (_resetProv && layout.hiddenByAgent && layout.hiddenByAgent[_resetProv]) {
-    const _aid = _selectedAgent(_resetProv);
-    if (_aid) delete layout.hiddenByAgent[_resetProv][_aid];
-  }
   layout[scope.order]  = [];
   delete layout[scope.cols];
   if (scope.borrowed) layout[scope.borrowed] = [];
   // Drop cardSizes entries for ids in this tab's label map.
   if (layout.cardSizes) {
     for (const id of Object.keys(map)) delete layout.cardSizes[id];
+  }
+  // Per-agent surfaces: also clear the selected agent's own hidden/order/size sets.
+  const _resetProv = (window.LMLayout && LMLayout.PER_AGENT_HIDDEN[scope.hidden]) || null;
+  const _aid = _resetProv ? _selectedAgent(_resetProv) : null;
+  if (_aid) {
+    if (layout.hiddenByAgent && layout.hiddenByAgent[_resetProv]) delete layout.hiddenByAgent[_resetProv][_aid];
+    if (layout.orderByAgent && layout.orderByAgent[_resetProv]) delete layout.orderByAgent[_resetProv][_aid];
+    if (layout.sizesByAgent && layout.sizesByAgent[_resetProv]) delete layout.sizesByAgent[_resetProv][_aid];
   }
   try {
     await fetch('/api/layout', {
