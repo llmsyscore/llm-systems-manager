@@ -588,11 +588,22 @@
     #autotuneOverlay .bench-panel { margin-bottom: 0; }
     .bench-panel {
       background: var(--bg-card); border: 1px solid var(--border); border-radius: 12px;
-      padding: 20px 28px; width: 1060px; max-width: 98vw;
+      padding: 20px 28px; width: 1180px; max-width: 96vw;
       margin-bottom: 40px;
-      display: flex; flex-direction: column; gap: 10px;
+      display: flex; flex-direction: column; gap: 12px;
     }
     .bench-panel h2 { font-size: 0.95em; font-weight: 500; color: var(--fg); margin: 0; }
+    /* Direction-B two-pane report layout: header spans the top, a config rail
+       sits left of the results/chart pane. */
+    .bench-header { display:flex; align-items:center; justify-content:space-between; }
+    .bench-body { display:grid; grid-template-columns:minmax(240px,32%) 1fr; gap:18px; align-items:start; }
+    .bench-rail { display:flex; flex-direction:column; gap:10px; min-width:0; }
+    .bench-rail .bench-dropdown, .bench-rail .bench-drop-btn { width:100%; min-width:0; }
+    .bench-rail .bench-tabs { margin-left:0; width:100%; }
+    .bench-rail .bench-tab { flex:1; text-align:center; }
+    .bench-rail-actions { display:flex; align-items:center; gap:8px; flex-wrap:wrap; margin-top:4px; }
+    .bench-rail-actions .btn { flex:1; }
+    .bench-results-pane { display:flex; flex-direction:column; gap:10px; min-width:0; }
     .bench-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
     /* Controls row: dropdowns + tabs all in one line */
     .bench-controls-row { display: flex; align-items: center; gap: 8px; }
@@ -675,7 +686,7 @@
     .bench-result-label { font-size:0.78em; color:var(--fg-muted); white-space:nowrap; flex-shrink:0; }
     .bench-result-vals { display:flex; gap:10px; align-items:center; }
     #benchResultRows { display:flex; flex-direction:column; width:100%; }
-    .bench-avg-val { font-size:1em; color:var(--accent); font-family:monospace; font-weight:600; }
+    .bench-avg-val { font-size:0.9em; color:var(--fg); font-family:monospace; font-weight:600; padding:3px 9px; border-radius:6px; border:1px solid var(--border); background:var(--bg); }
     .bench-result-header { display:flex; align-items:center; gap:10px; padding:4px 0 6px; border-bottom:1px solid color-mix(in srgb, var(--ok) 30%, var(--border)); font-size:0.7em; color:var(--fg-muted); text-transform:uppercase; letter-spacing:0.06em; font-weight:700; }
     .bench-result-header > .h-model { flex:1; min-width:0; }
     .bench-result-header > .h-spacer { flex-shrink:0; }
