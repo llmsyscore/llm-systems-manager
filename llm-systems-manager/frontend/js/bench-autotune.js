@@ -414,8 +414,7 @@ async function openBench(modelId) {
   // Reset UI state
   switchBenchTab('llama-bench');
   _benchLogClear();
-  document.getElementById('benchResults').classList.remove('shown');
-  document.getElementById('benchResultRows').innerHTML = '';
+  _benchRenderPlaceholder();
   document.getElementById('benchStatus').textContent = 'idle';
   document.getElementById('benchStatus').classList.remove('running');
   document.getElementById('benchRunBtn').disabled = false;
@@ -1370,6 +1369,44 @@ if (!window.__atDelegatedBound) {
     }
   });
   window.__atDelegatedBound = true;
+}
+
+// Show a dashed placeholder stat-card row before any run so the report layout
+// is visible on an empty modal. Cleared when a run starts (runBenchmark).
+function _benchRenderPlaceholder() {
+  const rows = document.getElementById('benchResultRows');
+  if (!rows) return;
+  rows.innerHTML = '';
+  const row = document.createElement('div');
+  row.className = 'bench-result-row bench-result-placeholder';
+  const head = document.createElement('div');
+  head.className = 'bench-result-head';
+  const name = document.createElement('span');
+  name.className = 'bench-result-model';
+  name.style.color = 'var(--fg-dim)';
+  name.textContent = 'Run a benchmark to populate results';
+  head.appendChild(name);
+  const grid = document.createElement('div');
+  grid.className = 'bench-result-grid';
+  [['PPT t/s', 'var(--warn)'], ['GEN t/s', null], ['PG t/s', 'var(--accent-2)']].forEach(([label, color]) => {
+    const card = document.createElement('div');
+    card.className = 'bench-stat-card';
+    const k = document.createElement('div');
+    k.className = 'bench-stat-k';
+    if (color) k.style.color = color;
+    k.textContent = label;
+    const v = document.createElement('div');
+    v.className = 'bench-stat-v';
+    v.style.color = 'var(--fg-faint)';
+    v.textContent = '—';
+    card.appendChild(k);
+    card.appendChild(v);
+    grid.appendChild(card);
+  });
+  row.appendChild(head);
+  row.appendChild(grid);
+  rows.appendChild(row);
+  document.getElementById('benchResults').classList.add('shown');
 }
 
 // After a model finishes benchmarking, add a result row to the UI showing the best t/s for prompt, gen, and combined tests, and buttons to save or clear the benchmark data

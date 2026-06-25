@@ -615,6 +615,8 @@
     .bench-rail > details, .bench-rail > .modal-group {
       border:1px solid var(--border); border-radius:8px; background:var(--bg-card-alt); padding:0; overflow:hidden;
     }
+    /* Config group holds popout dropdowns; let them escape the rounded box. */
+    .bench-rail > #benchConfigGroup { overflow:visible; }
     .bench-rail > details > summary, .bench-rail > .modal-group > .modal-group-h {
       list-style:none; cursor:pointer; padding:7px 10px;
       font-size:0.62em; text-transform:uppercase; letter-spacing:0.05em; color:var(--fg-muted); font-weight:700;
@@ -704,6 +706,7 @@
     #benchResults.shown { display:flex; }
     #benchResultRows { display:flex; flex-direction:column; gap:10px; width:100%; }
     .bench-result-row { display:flex; flex-direction:column; gap:9px; border:1px solid var(--border); background:var(--bg-card-alt); border-radius:8px; padding:11px 13px; }
+    .bench-result-placeholder { border-style:dashed; background:transparent; }
     .bench-result-head { display:flex; align-items:center; justify-content:space-between; gap:10px; }
     .bench-result-model { font-size:0.9em; font-family:monospace; color:var(--fg); flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
     .bench-result-grid { display:grid; grid-template-columns:repeat(3,1fr); gap:10px; }
