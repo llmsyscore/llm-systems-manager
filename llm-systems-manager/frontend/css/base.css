@@ -615,6 +615,8 @@
     .bench-rail > details, .bench-rail > .modal-group {
       border:1px solid var(--border); border-radius:8px; background:var(--bg-card-alt); padding:0; overflow:hidden;
     }
+    /* Config group holds popout dropdowns; let them escape the rounded box. */
+    .bench-rail > #benchConfigGroup { overflow:visible; }
     .bench-rail > details > summary, .bench-rail > .modal-group > .modal-group-h {
       list-style:none; cursor:pointer; padding:7px 10px;
       font-size:0.62em; text-transform:uppercase; letter-spacing:0.05em; color:var(--fg-muted); font-weight:700;

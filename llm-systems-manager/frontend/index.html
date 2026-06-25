@@ -45,7 +45,7 @@ Backend API endpoints consumed:
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/xterm@5.3.0/css/xterm.min.css"/>
   <script src="https://cdn.jsdelivr.net/npm/xterm@5.3.0/lib/xterm.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/xterm-addon-fit@0.8.0/lib/xterm-addon-fit.min.js"></script>
-  <link rel="stylesheet" href="/static/css/base.css?v=2026.06.25-4">
+  <link rel="stylesheet" href="/static/css/base.css?v=2026.06.25-5">
 </head>
 <body>
 
@@ -1491,7 +1491,7 @@ Backend API endpoints consumed:
     <!-- Two-pane body: config rail (left) + results (right) -->
     <div class="bench-body">
       <div class="bench-rail">
-        <div class="modal-group">
+        <div class="modal-group" id="benchConfigGroup">
           <div class="modal-group-h">Config</div>
           <div class="bench-tabs">
             <button class="bench-tab active" data-tab="llama-bench"         onclick="switchBenchTab('llama-bench')">llama-bench</button>
