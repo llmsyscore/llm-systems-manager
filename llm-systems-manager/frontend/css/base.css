@@ -624,7 +624,8 @@
     .bench-rail > details > summary::-webkit-details-marker { display:none; }
     .bench-rail > details > summary::after { content:'▾'; color:var(--fg-dim); }
     .bench-rail > details:not([open]) > summary::after { content:'▸'; }
-    .bench-rail > details > *:not(summary) { padding:0 10px 9px; }
+    .bench-rail > details > *:not(summary),
+    .bench-rail > .modal-group > *:not(.modal-group-h) { padding:0 10px 9px; }
     #atOptCount { text-transform:none; letter-spacing:0; color:var(--fg-dim); font-weight:400; }
     .bench-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
     /* Dropdown component */
