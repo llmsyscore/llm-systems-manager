@@ -1941,6 +1941,20 @@ _binary_from_pid() {
   return 1
 }
 
+# _print_llama_method_help METHODS... — one-line description per build/install method.
+_print_llama_method_help() {
+  local m
+  for m in "$@"; do
+    case "$m" in
+      custom_script)  echo "        custom_script   run a local build script (default /usr/local/llama-server/build-llama-cpp.sh)" ;;
+      source)         echo "        source          git clone + cmake build from source (needs git, cmake, a compiler)" ;;
+      release_binary) echo "        release_binary  download a prebuilt llama.cpp release (no compiler/build tools needed)" ;;
+      conda)          echo "        conda           install the prebuilt package via conda/mamba (needs conda)" ;;
+      homebrew)       echo "        homebrew        install via Homebrew (macOS; needs brew)" ;;
+    esac
+  done
+}
+
 # _install_llama_now METHOD BACKEND — fresh-install llama.cpp as the agent user
 # via install/install_llama.py; prints the binary then the build dir, one per line.
 _install_llama_now() {
@@ -2165,7 +2179,9 @@ _detect_llama() {
       # Retry loop: on failure, offer another method / quit / skip to manual.
       while true; do
         if [[ -t 0 ]] && ! $INSTALL_LLAMA; then
-          read -rp "      Install method (source/release_binary/conda/homebrew) [$_m]: " _v
+          echo "      Install methods:"
+          _print_llama_method_help source release_binary conda homebrew
+          read -rp "      Install method [$_m]: " _v
           _m="${_v:-$_m}"
           read -rp "      Backend (cpu/cuda/vulkan/rocm/metal) [$_b]: " _v
           _b="${_v:-$_b}"
@@ -2336,6 +2352,8 @@ _detect_llama() {
   read -rp "      systemd unit [llama_server.service]: " _v
   LLAMA_SYSTEMD_UNIT_OVERRIDE="${_v:-llama_server.service}"
 
+  echo "      Build method — how a llama upgrade from the control page will rebuild:"
+  _print_llama_method_help custom_script source release_binary conda homebrew
   read -rp "      Build method [$detected_build_method]: " _v
   LLAMA_BUILD_METHOD_OVERRIDE="${_v:-$detected_build_method}"
 
