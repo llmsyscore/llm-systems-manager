@@ -1959,6 +1959,23 @@ _install_llama_now() {
   printf '%s\n' "$bin"
 }
 
+# _render_llama_unit BIN USER CFG LOG — emit the starter unit text to stdout,
+# injecting --metrics, install-chosen --models-preset/--log-file, and --perf.
+_render_llama_unit() {
+  local bin="$1" user="$2" cfg="$3" log="$4"
+  local extra=""
+  [[ -n "$cfg" ]] && extra="$extra --models-preset \"$cfg\""
+  [[ -n "$log" ]] && extra="$extra --log-file \"$log\""
+  extra="$extra --perf"
+  extra="${extra# }"
+  # Literal split-and-join (not sed/`//`) so &, \, | in paths can't break the unit.
+  local out; out="$(cat "$SRC_DIR/install/llama_server.service.tmpl")"
+  out="${out%%__LLAMA_BIN__*}$bin${out#*__LLAMA_BIN__}"
+  out="${out%%__USER__*}$user${out#*__USER__}"
+  out="${out%%__EXTRA_ARGS__*}$extra${out#*__EXTRA_ARGS__}"
+  printf '%s\n' "$out"
+}
+
 # _offer_llama_unit UNIT BIN — offer a starter systemd unit pointing at BIN.
 # Never overwrites an existing unit; never enables/starts.
 _offer_llama_unit() {
@@ -1980,16 +1997,21 @@ _offer_llama_unit() {
     return 0
   fi
   local REPLY
-  read -rp "      Create a starter $unit pointing at the new binary? (you must add model flags before enabling) [y/N] " REPLY
+  read -rp "      Create a starter $unit pointing at the new binary? [y/N] " REPLY
   case "$(printf '%s' "$REPLY" | tr '[:upper:]' '[:lower:]')" in
     y|yes) ;;
     *) echo "      → skipped; create $unit manually with ExecStart='$bin --metrics …'"; return 0 ;;
   esac
-  sed -e "s|__LLAMA_BIN__|$bin|g" -e "s|__USER__|$USER_ARG|g" "$tmpl" \
+  _render_llama_unit "$bin" "$USER_ARG" \
+    "${LLAMA_CONFIG_INI_OVERRIDE:-}" "${LLAMA_LOG_FILE_OVERRIDE:-}" \
     | $SUDO tee "$target" >/dev/null
   $SUDO chmod 644 "$target"
   $SUDO systemctl daemon-reload || true
-  _ok "wrote $target (disabled). Add model flags, then: sudo systemctl enable --now $unit"
+  if [[ -n "${LLAMA_CONFIG_INI_OVERRIDE:-}" ]]; then
+    _ok "wrote $target (disabled). Review it, then: sudo systemctl enable --now $unit"
+  else
+    _ok "wrote $target (disabled). Set a model preset/flag, then: sudo systemctl enable --now $unit"
+  fi
 }
 
 _detect_llama() {

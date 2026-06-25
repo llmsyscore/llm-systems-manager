@@ -6,9 +6,8 @@ Wants=network-online.target
 [Service]
 Type=simple
 User=__USER__
-# Add model flags before enabling, e.g.:  -hf <repo>:<quant>   or   -m /path/model.gguf
 # --metrics is required for the agent to scrape llama-server telemetry.
-ExecStart=__LLAMA_BIN__ --metrics --host 127.0.0.1 --port 8080
+ExecStart=__LLAMA_BIN__ --metrics --host 127.0.0.1 --port 8080 __EXTRA_ARGS__
 Restart=on-failure
 RestartSec=3
 
