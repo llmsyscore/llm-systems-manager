@@ -605,8 +605,6 @@
     .bench-rail-actions .btn { flex:1; }
     .bench-results-pane { display:flex; flex-direction:column; gap:10px; min-width:0; }
     .bench-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
-    /* Controls row: dropdowns + tabs all in one line */
-    .bench-controls-row { display: flex; align-items: center; gap: 8px; }
     /* Dropdown component */
     .bench-dropdown { position: relative; flex-shrink: 0; }
     .bench-drop-btn {
@@ -674,8 +672,6 @@
     .bench-log-field span { color:var(--accent); font-weight:600; }
     .bench-log-field b { color:var(--fg); font-weight:600; }
     .bench-log-tps  { font-size:12px; font-weight:700; color:var(--accent); margin-left:auto; white-space:nowrap; }
-    /* Action row: status + run/cancel on its own line below controls */
-    .bench-action-row { display:flex; align-items:center; gap:8px; justify-content:flex-end; }
     .bench-status-pill { font-size:0.75em; color:var(--fg-dim); font-family:monospace; }
     .bench-status-pill.running { color:var(--warn); }
     #benchResults { display:none; gap:0; flex-direction:column; padding:8px 10px; background:color-mix(in srgb, var(--ok) 8%, var(--bg-card-alt)); border:1px solid color-mix(in srgb, var(--ok) 30%, var(--border)); border-radius:6px; flex:1; }
