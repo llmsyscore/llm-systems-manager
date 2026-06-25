@@ -12,8 +12,10 @@ def _ids(records):
 def test_append_assigns_monotonic_ids_scoped_to_run():
     b = BenchReplayBuffer()
     b.start_run("run1")
-    assert b.append({"type": "line"})["id"] == "run1:1"
-    assert b.append({"type": "line"})["id"] == "run1:2"
+    r1 = b.append({"type": "line"})
+    r2 = b.append({"type": "line"})
+    assert r1["id"] == "run1:1"
+    assert r2["id"] == "run1:2"
 
 
 def test_start_run_resets_and_clears():
@@ -22,7 +24,8 @@ def test_start_run_resets_and_clears():
     b.append({"n": 1})
     b.start_run("run2")
     assert b.run_id == "run2"
-    assert b.append({"n": 1})["id"] == "run2:1"
+    rec = b.append({"n": 1})
+    assert rec["id"] == "run2:1"
     assert len(b.replay_after(None)) == 1
 
 
