@@ -1,6 +1,6 @@
 // Pure axis-option logic for the benchmark chart. Drops constant dimensions,
 // keeps seq as the ordinal fallback, and picks sane defaults (n_depth x avg_ts).
-export function computeBenchAxisOptions(rows, switches, labelFn) {
+function computeBenchAxisOptions(rows, switches, labelFn) {
   // avg_ts/ms_tok are throughput metrics (Y only), never sweep dimensions.
   const SKIP = new Set(['ts', 'seq', 'gen_tps', 'ppt_tps', 'model_id', 'avg_ts', 'ms_tok']);
   const label = typeof labelFn === 'function' ? labelFn : (k) => k;
@@ -33,4 +33,6 @@ export function computeBenchAxisOptions(rows, switches, labelFn) {
   return { xOptions, yOptions, defaultX, defaultY: 'avg_ts' };
 }
 
+const _API = { computeBenchAxisOptions };
 if (typeof window !== 'undefined') window.computeBenchAxisOptions = computeBenchAxisOptions;
+if (typeof module !== 'undefined' && module.exports) module.exports = _API;

@@ -1,5 +1,7 @@
 import { describe, it, expect } from 'vitest';
-import { computeBenchAxisOptions } from '../js/lib/benchaxis.js';
+import benchaxis from '../js/lib/benchaxis.js';
+
+const { computeBenchAxisOptions } = benchaxis;
 
 const xv = r => r.xOptions.map(o => o.v);
 const yv = r => r.yOptions.map(o => o.v);

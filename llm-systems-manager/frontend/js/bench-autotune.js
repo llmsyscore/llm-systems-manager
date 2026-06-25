@@ -198,65 +198,27 @@ const _BENCH_AXIS_SHORT = {
 // AND from the user's custom switch flags so a sweep over e.g. --threads
 // can be plotted even before any results have arrived for the current run.
 function _updateBenchAxisOpts() {
-  const skip = new Set(['ts', 'seq', 'gen_tps', 'ppt_tps', 'model_id']);
-  const numericKeys = new Set();
-  _benchRawRows.forEach(r => {
-    Object.entries(r).forEach(([k, v]) => {
-      if (!skip.has(k) && typeof v === 'number') numericKeys.add(k);
-    });
-  });
-
-  // Add custom switch flags (e.g. "--threads" → "threads") as candidate
-  // X axes. Flags are valid axes only when the user is varying them across
-  // runs, but listing them makes the cross-run sweep workflow possible at all.
-  const switchKeys = new Set();
-  (_benchSwitches || []).forEach(sw => {
-    if (!sw || !sw.flag) return;
-    const name = String(sw.flag).replace(/^--?/, '').trim();
-    if (name) switchKeys.add(name);
-  });
-
   const xSel = document.getElementById('benchXAxis');
   const ySel = document.getElementById('benchYAxis');
   if (!xSel || !ySel) return;
   const curX = xSel.value;
   const curY = ySel.value;
 
-  // All numeric JSONL fields + switch names, sorted, deduped
-  const fieldKeys = [...new Set([...numericKeys, ...switchKeys])].sort();
+  const { xOptions, yOptions, defaultX, defaultY } =
+    computeBenchAxisOptions(_benchRawRows, _benchSwitches, _benchAxisLabel);
 
-  // X: time + seq first, then all axis-eligible fields
-  const allX = ['time', 'seq', ...fieldKeys];
-  xSel.innerHTML = '';
-  allX.forEach(k => {
-    const opt = document.createElement('option');
-    opt.value = k;
-    opt.textContent = _benchAxisLabel(k);
-    if (k === curX) opt.selected = true;
-    xSel.appendChild(opt);
-  });
-  if (!allX.includes(curX)) xSel.value = 'time';
-
-  // Y: avg_ts (t/s) + ms_tok first (most useful), then all JSONL fields
-  const baseY = [
-    {v: 'avg_ts', t: 'Avg tokens/sec'},
-    {v: 'ms_tok', t: 'Milliseconds per token'},
-  ];
-  ySel.innerHTML = '';
-  baseY.forEach(({v, t}) => {
-    const opt = document.createElement('option');
-    opt.value = v; opt.textContent = t;
-    if (v === curY) opt.selected = true;
-    ySel.appendChild(opt);
-  });
-  fieldKeys.filter(k => k !== 'avg_ts').forEach(k => {
-    const opt = document.createElement('option');
-    opt.value = k;
-    opt.textContent = _benchAxisLabel(k);
-    if (k === curY) opt.selected = true;
-    ySel.appendChild(opt);
-  });
-  if (![...ySel.options].find(o => o.value === curY)) ySel.value = 'avg_ts';
+  const fill = (sel, opts, cur, dflt) => {
+    sel.innerHTML = '';
+    opts.forEach(({ v, t }) => {
+      const opt = document.createElement('option');
+      opt.value = v;
+      opt.textContent = t;
+      sel.appendChild(opt);
+    });
+    sel.value = opts.some(o => o.v === cur) ? cur : dflt;
+  };
+  fill(xSel, xOptions, curX, defaultX);
+  fill(ySel, yOptions, curY, defaultY);
 }
 
 function _benchAddModelDatasets(modelId) {
