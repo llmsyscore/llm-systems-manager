@@ -19,6 +19,7 @@
     border-radius:6px; padding:10px 12px; margin:8px 0;
   }
   #autotuneOverlay .at-result-card.pending { opacity:0.7; }
+  #autotuneOverlay .at-result-card.at-result-placeholder { border-style:dashed; background:transparent; }
   #autotuneOverlay .at-result-grid {
     display:grid; grid-template-columns:repeat(auto-fit,minmax(110px,1fr));
     gap:8px; margin:8px 0;
