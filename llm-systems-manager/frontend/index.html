@@ -45,7 +45,7 @@ Backend API endpoints consumed:
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/xterm@5.3.0/css/xterm.min.css"/>
   <script src="https://cdn.jsdelivr.net/npm/xterm@5.3.0/lib/xterm.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/xterm-addon-fit@0.8.0/lib/xterm-addon-fit.min.js"></script>
-  <link rel="stylesheet" href="/static/css/base.css?v=2026.06.10-6">
+  <link rel="stylesheet" href="/static/css/base.css?v=2026.06.25-1">
 </head>
 <body>
 
@@ -1546,10 +1546,12 @@ Backend API endpoints consumed:
 <link rel="stylesheet" href="/static/css/autotune.css?v=2026.06.10-6">
 <div class="bench-overlay" id="autotuneOverlay">
   <div class="bench-panel">
-    <div class="bench-row" style="justify-content:space-between;margin-bottom:6px;">
+    <div class="bench-header">
       <h2>🎯 Auto Tune CTX</h2>
       <button class="close-btn" onclick="closeAutotune()" style="background:none;border:none;color:var(--fg-dim);cursor:pointer;font-size:1.2em;">✕</button>
     </div>
+    <div class="bench-body">
+      <div class="bench-rail">
 
     <!-- Pre-flight: llama-server must be stopped -->
     <div id="atPreflight" class="bench-row" style="background:var(--bg-card-alt);border:1px solid var(--border-strong);border-radius:6px;padding:8px 12px;margin-bottom:6px;display:none;">
@@ -1674,12 +1676,14 @@ Backend API endpoints consumed:
       </div>
     </details>
 
-    <!-- Action row -->
-    <div class="bench-action-row">
+    <!-- Action row (rail bottom) -->
+    <div class="bench-rail-actions">
       <span id="atStatus" class="bench-status-pill">idle</span>
       <button id="atCancelBtn" class="btn btn-red-muted-gradient" onclick="cancelAutotune()" style="display:none;">✕ Cancel</button>
       <button id="atRunBtn" class="btn btn-stone-muted-gradient" onclick="runAutotune()">▶ Run Auto Tune</button>
     </div>
+      </div>
+      <div class="bench-results-pane">
 
     <!-- Live results (one card per model as it completes) -->
     <div id="atResults"></div>
@@ -1696,6 +1700,8 @@ Backend API endpoints consumed:
       </summary>
       <div id="atRawLog"></div>
     </details>
+      </div>
+    </div>
   </div>
 </div>
 <!-- ── Alarm Engine Toast Container (top-right, matches Events tab style) ── -->
