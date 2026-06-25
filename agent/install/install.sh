@@ -2262,7 +2262,7 @@ _detect_llama() {
   _bin_dir="$(dirname "$LLAMA_BIN_OVERRIDE")"
 
   # Config file: argv-parsed wins, then next-to-binary, then known locations;
-  # empty default when nothing exists so the user knows to fill it in.
+  # falls back to a <binary-dir>/config.ini suggestion when nothing exists.
   if [[ -n "$detected_config" && -f "$detected_config" ]]; then
     _default_ini="$detected_config"
     echo "      ✓ config file discovered from running argv: $_default_ini"
@@ -2276,11 +2276,11 @@ _detect_llama() {
                         "$HOME/.llama-server/config.ini")"; then
     echo "      ✓ config file found at: $_default_ini"
   else
-    _default_ini=""
-    echo "      ⓘ config file not auto-detected — set the path at the prompt below"
+    _default_ini="$_bin_dir/config.ini"
+    echo "      ⓘ no existing config file — suggesting $_default_ini (edit at the prompt)"
   fi
 
-  # Log file: same approach — argv > next-to-binary > known locations > empty.
+  # Log file: same approach — argv > next-to-binary > known locations > binary dir.
   if [[ -n "$detected_log" && -f "$detected_log" ]]; then
     _default_log="$detected_log"
     echo "      ✓ log file discovered from running argv: $_default_log"
@@ -2291,8 +2291,8 @@ _detect_llama() {
                         "/var/log/llama-server.log")"; then
     echo "      ✓ log file found at: $_default_log"
   else
-    _default_log=""
-    echo "      ⓘ log file not auto-detected — set the path at the prompt below"
+    _default_log="$_bin_dir/llama-server.log"
+    echo "      ⓘ no existing log file — suggesting $_default_log (edit at the prompt)"
   fi
 
   # Config-file prompt allows blank when nothing was found; emit a
