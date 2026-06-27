@@ -94,7 +94,6 @@ function closeTerminal() {
 }
 
 function popOutTerminal() {
-  const host = location.host;
   // Pop-out builds absolute URLs the fetch wrapper skips, so inject the picker
   // selection into create directly (sid-routed IO follows the owning agent).
   const agentParam = (typeof _selectedAgent === 'function' && _selectedAgent('llama'))
@@ -108,7 +107,7 @@ function popOutTerminal() {
     <style>html,body{margin:0;background:var(--bg-tabnav);height:100%;} #t{height:100%;}</style>
   </head><body><div id="t"></div><script>
   (async function(){
-    const base = 'http://${host}';
+    const base = '${location.origin}';
     const term = new Terminal({theme:{background:'#0d0d0d',foreground:'#ccc',cursor:'#7af'},fontFamily:'"Cascadia Code","Fira Code",monospace',fontSize:13,cursorBlink:true,scrollback:5000});
     const fit  = new FitAddon.FitAddon();
     term.loadAddon(fit);
@@ -208,7 +207,6 @@ function closeLmsTerminal() {
 }
 
 function popOutLmsTerminal() {
-  const host = location.host;
   const agentParam = (typeof _selectedAgent === 'function' && _selectedAgent('lms'))
     ? ('?agent=' + encodeURIComponent(_selectedAgent('lms'))) : '';
   const w = window.open('', 'lmsterm', 'width=900,height=540,resizable=yes,scrollbars=no,toolbar=no,menubar=no');
@@ -220,7 +218,7 @@ function popOutLmsTerminal() {
     <style>html,body{margin:0;background:var(--bg-tabnav);height:100%;} #t{height:100%;}</style>
   </head><body><div id="t"></div><script>
   (async function(){
-    const base = 'http://${host}';
+    const base = '${location.origin}';
     const term = new Terminal({theme:{background:'#0d0d0d',foreground:'#ccc',cursor:'#7af'},fontFamily:'"Cascadia Code","Fira Code",monospace',fontSize:13,cursorBlink:true,scrollback:5000});
     const fit  = new FitAddon.FitAddon();
     term.loadAddon(fit);
