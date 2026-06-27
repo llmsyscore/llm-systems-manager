@@ -9,10 +9,10 @@ real-time metrics for the local Linux host (llama.cpp, GPU, CPU, RAM, disk,
 network, UPS) and the remote LM Studio host. Uses Chart.js for time-
 series graphs and SortableJS for drag-and-drop card reordering.
 
-Dependencies (loaded from CDN):
-    Chart.js          https://cdn.jsdelivr.net/npm/chart.js
-    chartjs-adapter-date-fns
-    SortableJS        https://cdn.jsdelivr.net/npm/sortablejs@1.15.2
+Dependencies (vendored locally under /static/vendor/, pinned):
+    Chart.js 4.4.7 + chartjs-adapter-date-fns 3.0.0   — time-series graphs
+    SortableJS 1.15.2                                 — drag-and-drop reorder
+    xterm 5.3.0 + xterm-addon-fit 0.8.0               — terminals
 
 Backend API endpoints consumed:
     GET  /api/metrics                   — full system snapshot (polled)
@@ -39,12 +39,12 @@ Backend API endpoints consumed:
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>LLM Systems Manager</title>
-  <script src="https://cdn.jsdelivr.net/npm/chart.js/dist/chart.umd.min.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns/dist/chartjs-adapter-date-fns.bundle.min.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/sortablejs@1.15.2/Sortable.min.js"></script>
-  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/xterm@5.3.0/css/xterm.min.css"/>
-  <script src="https://cdn.jsdelivr.net/npm/xterm@5.3.0/lib/xterm.min.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/xterm-addon-fit@0.8.0/lib/xterm-addon-fit.min.js"></script>
+  <script src="/static/vendor/chart.umd.min.js?v=4.4.7"></script>
+  <script src="/static/vendor/chartjs-adapter-date-fns.bundle.min.js?v=3.0.0"></script>
+  <script src="/static/vendor/Sortable.min.js?v=1.15.2"></script>
+  <link rel="stylesheet" href="/static/vendor/xterm.min.css?v=5.3.0"/>
+  <script src="/static/vendor/xterm.min.js?v=5.3.0"></script>
+  <script src="/static/vendor/xterm-addon-fit.min.js?v=0.8.0"></script>
   <link rel="stylesheet" href="/static/css/base.css?v=2026.06.25-7">
 </head>
 <body>
@@ -1410,7 +1410,7 @@ Backend API endpoints consumed:
 <script src="/static/js/lib/series.js?v=2026.06.21-1"></script>
 <script src="/static/js/lib/benchaxis.js?v=2026.06.25-2"></script>
 <script src="/static/js/charts.js?v=2026.06.24-1"></script>
-<script src="/static/js/terminal.js?v=2026.06.11-4"></script>
+<script src="/static/js/terminal.js?v=2026.06.26-1"></script>
 <script src="/static/js/llmcontrol.js?v=2026.06.15-10"></script>
 <script src="/static/js/openclaw.js?v=2026.06.10-7"></script>
 <script src="/static/js/admin.js?v=2026.06.10-6"></script>
