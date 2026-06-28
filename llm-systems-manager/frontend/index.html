@@ -11,6 +11,8 @@ series graphs and SortableJS for drag-and-drop card reordering.
 
 Dependencies (vendored locally under /static/vendor/, pinned):
     Chart.js 4.4.7 + chartjs-adapter-date-fns 3.0.0   — time-series graphs
+    chartjs-plugin-zoom 2.2.0                          — x-axis wheel-zoom / drag-pan
+    chartjs-plugin-annotation 3.1.0                    — alarm-rule threshold lines
     SortableJS 1.15.2                                 — drag-and-drop reorder
     xterm 5.3.0 + xterm-addon-fit 0.8.0               — terminals
 
@@ -41,6 +43,8 @@ Backend API endpoints consumed:
   <title>LLM Systems Manager</title>
   <script src="/static/vendor/chart.umd.min.js?v=4.4.7"></script>
   <script src="/static/vendor/chartjs-adapter-date-fns.bundle.min.js?v=3.0.0"></script>
+  <script src="/static/vendor/chartjs-plugin-zoom.min.js?v=2.2.0"></script>
+  <script src="/static/vendor/chartjs-plugin-annotation.min.js?v=3.1.0"></script>
   <script src="/static/vendor/Sortable.min.js?v=1.15.2"></script>
   <link rel="stylesheet" href="/static/vendor/xterm.min.css?v=5.3.0"/>
   <script src="/static/vendor/xterm.min.js?v=5.3.0"></script>
@@ -1406,17 +1410,18 @@ Backend API endpoints consumed:
 </div><!-- end llmTab -->
 
 <script src="/static/js/lib/layout.js?v=2026.06.24-2"></script>
-<script src="/static/js/foundation.js?v=2026.06.24-2"></script>
+<script src="/static/js/foundation.js?v=2026.06.26-3"></script>
 <script src="/static/js/lib/series.js?v=2026.06.21-1"></script>
 <script src="/static/js/lib/benchaxis.js?v=2026.06.25-2"></script>
-<script src="/static/js/charts.js?v=2026.06.24-1"></script>
+<script src="/static/js/lib/thresholds.js?v=2026.06.26-3"></script>
+<script src="/static/js/charts.js?v=2026.06.26-3"></script>
 <script src="/static/js/terminal.js?v=2026.06.26-2"></script>
 <script src="/static/js/llmcontrol.js?v=2026.06.15-10"></script>
 <script src="/static/js/openclaw.js?v=2026.06.10-7"></script>
 <script src="/static/js/admin.js?v=2026.06.10-6"></script>
 <script src="/static/js/llmcontrol-models.js?v=2026.06.10-6"></script>
 <script src="/static/js/bench-autotune.js?v=2026.06.25-9"></script>
-<script src="/static/js/lmstudio.js?v=2026.06.15-14"></script>
+<script src="/static/js/lmstudio.js?v=2026.06.26-3"></script>
 <script src="/static/js/overall.js?v=2026.06.09-2"></script>
 <script src="/static/js/dashboard-manager.js?v=2026.06.21-1"></script>
 
@@ -1732,6 +1737,6 @@ Backend API endpoints consumed:
 <div id="alarmToastContainer"></div>
 
 <script src="/static/js/events-toasts.js?v=2026.06.10-6"></script>
-<script src="/static/js/boot.js?v=2026.06.20-1"></script>
+<script src="/static/js/boot.js?v=2026.06.26-3"></script>
 </body>
 </html>

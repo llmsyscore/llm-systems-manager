@@ -750,6 +750,7 @@ const RuleManager = {
             const rules = await ApiClient.rules.list();
             AppState.rules = rules || [];
             this.render();
+            if (typeof ChartManager !== 'undefined') ChartManager.refreshAnnotations();
         } catch (error) {
             console.error('Failed to load rules:', error);
             ToastManager.show('Failed to load rules', 'error');
@@ -2562,6 +2563,14 @@ const TabManager = {
 
 // ── Chart Manager ──
 
+// x-axis wheel-zoom + drag-pan bounded to data range; double-click resets
+// (wired at end of file). Touch/pinch needs Hammer.js (not vendored).
+const _zoomOpts = {
+    zoom: { wheel: { enabled: true }, drag: { enabled: false }, mode: 'x' },
+    pan: { enabled: true, mode: 'x' },
+    limits: { x: { min: 'original', max: 'original' } },
+};
+
 const ChartManager = {
     _mainChart: null,
     _historyChart: null,
@@ -2625,7 +2634,27 @@ const ChartManager = {
         };
     },
 
-    _chartConfig(label, unit, points) {
+    // Annotation lines for a metric chart, via the shared thresholds module.
+    // hostWildcard: a null host (console "any host") matches any source_host.
+    _thresholdAnnotations(host, source, metricName) {
+        if (!window.Thresholds) return {};
+        return Thresholds.thresholdAnnotations(AppState.rules, { source, metricName, host, hostWildcard: true });
+    },
+
+    // Re-apply threshold lines to live main/history charts (e.g. after rules
+    // load post-render). Reads each chart's stored metric identity.
+    refreshAnnotations() {
+        [this._mainChart, this._historyChart].forEach(c => {
+            if (!c || !c.$ident) return;
+            try {
+                c.options.plugins = c.options.plugins || {};
+                c.options.plugins.annotation = { annotations: this._thresholdAnnotations(c.$ident.host, c.$ident.source, c.$ident.metricName) };
+                c.update('none');
+            } catch (_) {}
+        });
+    },
+
+    _chartConfig(label, unit, points, ident) {
         const data = points.map(p => ({ x: new Date(p.timestamp), y: p.value }));
         return {
             type: 'line',
@@ -2655,6 +2684,8 @@ const ChartManager = {
                 plugins: {
                     legend: { labels: { color: '#f1f5f9' } },
                     tooltip: { mode: 'index', intersect: false },
+                    zoom: _zoomOpts,
+                    annotation: { annotations: ident ? this._thresholdAnnotations(ident.host, ident.source, ident.metricName) : {} },
                 },
             },
         };
@@ -2801,6 +2832,7 @@ const ChartManager = {
                 },
                 plugins: {
                     legend: { labels: { color: '#f1f5f9' } },
+                    zoom: _zoomOpts,
                     title: {
                         display: true,
                         text: direction,
@@ -2871,7 +2903,8 @@ const ChartManager = {
         }
 
         if (this._mainChart) { this._mainChart.destroy(); this._mainChart = null; }
-        this._mainChart = new Chart(canvas, this._chartConfig(label, unit, points));
+        this._mainChart = new Chart(canvas, this._chartConfig(label, unit, points, { host, source, metricName }));
+        this._mainChart.$ident = { host, source, metricName };
     },
 
     async loadHistory(metricKey, rangeMinutes) {
@@ -2900,7 +2933,8 @@ const ChartManager = {
         if (!canvas || typeof Chart === 'undefined') return;
         if (this._historyChart) { this._historyChart.destroy(); this._historyChart = null; }
         const label = this._chartLabel(host, source, metricName);
-        this._historyChart = new Chart(canvas, this._chartConfig(label, unit, points));
+        this._historyChart = new Chart(canvas, this._chartConfig(label, unit, points, { host, source, metricName }));
+        this._historyChart.$ident = { host, source, metricName };
 
         // Populate stats
         if (points.length > 0) {
@@ -2923,6 +2957,15 @@ const ChartManager = {
         this.loadTrend(points, `${source}/${metricName}`, unit);
     },
 };
+
+// Double-click a metric chart to reset its zoom/pan back to the full range.
+document.addEventListener('dblclick', (e) => {
+    [ChartManager._mainChart, ChartManager._historyChart, ChartManager._trendChart].forEach(c => {
+        if (c && c.canvas === e.target && typeof c.resetZoom === 'function') {
+            try { c.resetZoom(); } catch (_) {}
+        }
+    });
+});
 
 // ── Filter Handlers ──
 

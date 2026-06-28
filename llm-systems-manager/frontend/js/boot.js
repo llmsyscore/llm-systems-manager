@@ -166,6 +166,11 @@ function switchSubTab(parent, sub) {
   // Tab status dots (Events / Admin) update regardless of the active tab.
   refreshTabIndicators();
   setInterval(refreshTabIndicators, 30000);
+  // Fetch alarm-rule threshold lines now, then every 30s.
+  if (typeof refreshAlarmRules === 'function') {
+    refreshAlarmRules();
+    setInterval(refreshAlarmRules, 30000);
+  }
   // Refresh the agent picker list (online state + newly-approved agents).
   if (typeof _loadAgentsByProvider === 'function') {
     setInterval(_loadAgentsByProvider, 30000);

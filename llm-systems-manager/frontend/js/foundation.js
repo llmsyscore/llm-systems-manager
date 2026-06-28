@@ -359,6 +359,8 @@ function _selectAgent(provider, agentId) {
     if (typeof pollServerState === 'function')       pollServerState();
     if (typeof _startLlamaStateStream === 'function') _startLlamaStateStream();
     if (typeof refreshLLMTab === 'function')         refreshLLMTab();
+    // Re-resolve host-scoped alarm-rule threshold lines for the new agent.
+    if (typeof _applyThresholds === 'function')      _applyThresholds();
     // Re-query HF trending against the newly-selected agent (runs the hf CLI
     // on that agent's host) only on the LLM Control tab — otherwise an
     // agent-switch on the llama dashboard runs the remote CLI needlessly.

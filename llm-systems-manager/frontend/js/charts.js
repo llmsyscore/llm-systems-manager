@@ -273,13 +273,21 @@ const _sparkTooltip = {
   },
 };
 
+// x-axis wheel-zoom + drag-pan bounded to data range; double-click resets
+// (wired globally at end of file). Touch/pinch needs Hammer.js (not vendored).
+const _zoomOpts = {
+  zoom: { wheel: { enabled: true }, drag: { enabled: false }, mode: 'x' },
+  pan: { enabled: true, mode: 'x' },
+  limits: { x: { min: 'original', max: 'original' } },
+};
+
 function mkChart(id, label, color) {
   return new Chart(document.getElementById(id).getContext('2d'), {
     type: 'line',
     data: { labels: [], datasets: [{ label, data: [], borderColor: color, borderWidth: 1.5, pointRadius: 0, pointHoverRadius: 4, fill: false, tension: 0.2 }] },
     options: { animation: false, responsive: true, maintainAspectRatio: false,
       interaction: _sparkInteraction,
-      plugins: { legend: { display: false }, tooltip: _sparkTooltip },
+      plugins: { legend: { display: false }, tooltip: _sparkTooltip, zoom: _zoomOpts },
       scales: { x: xAxis, y: { beginAtZero: true, ticks: { color: cssVar('--fg-muted'), font: { size: 10 } }, grid: { color: cssVar('--border-soft') } } }
     }
   });
@@ -301,7 +309,7 @@ function mkMultiChart(id, lines) {
     },
     options: { animation: false, responsive: true, maintainAspectRatio: false,
       interaction: _sparkInteraction,
-      plugins: { legend: { display: false }, tooltip: _sparkTooltip },
+      plugins: { legend: { display: false }, tooltip: _sparkTooltip, zoom: _zoomOpts },
       scales: { x: xAxis, y: { beginAtZero: true, ticks: { color: cssVar('--fg-muted'), font: { size: 10 } }, grid: { color: cssVar('--border-soft') } } }
     }
   });
@@ -346,7 +354,7 @@ function mkDualChart(id, l1, c1, l2, c2) {
     ]},
     options: { animation: false, responsive: true, maintainAspectRatio: false,
       interaction: _sparkInteraction,
-      plugins: { legend: { display: false }, tooltip: _sparkTooltip },
+      plugins: { legend: { display: false }, tooltip: _sparkTooltip, zoom: _zoomOpts },
       scales: { x: xAxis, y: { beginAtZero: true, ticks: { color: cssVar('--fg-muted'), font: { size: 10 } }, grid: { color: cssVar('--border-soft') } } }
     }
   });
@@ -392,7 +400,7 @@ const diskUsageChart = new Chart(diskUsageCtx, {
   ]},
   options: { animation: false, responsive: true, maintainAspectRatio: false,
     interaction: _sparkInteraction,
-    plugins: { legend: { display: false }, tooltip: _sparkTooltip },
+    plugins: { legend: { display: false }, tooltip: _sparkTooltip, zoom: _zoomOpts },
     scales: { x: xAxis, y: { min: 0, max: 100, ticks: { color: cssVar('--fg-muted'), font: { size: 10 }, callback: v => v + '%' }, grid: { color: cssVar('--border-soft') } } }
   }
 });
@@ -1276,4 +1284,61 @@ async function fetchMetrics() {
     syncBorrowedCards();
   }
 }
+
+// ---------------------------------------------------------------------------
+// Alarm-rule threshold lines (chartjs-plugin-annotation)
+// ---------------------------------------------------------------------------
+// Maps each dashboard chart id to its alarm metric (source + metric_name).
+// Threshold lines come from enabled rules matching the selected host.
+const CHART_METRIC = {
+  cpuChart:       { source: 'cpu',  metric_name: 'usage_percent' },
+  ramChart:       { source: 'ram',  metric_name: 'usage_percent' },
+  gpuChart:       { source: 'gpu',  metric_name: 'utilization_percent' },
+  diskUsageChart: { source: 'disk', metric_name: 'root_percent' },
+};
+let _alarmRules = [];
+
+// Fetch the alarm engine's rules through the manager proxy, then redraw lines.
+async function refreshAlarmRules() {
+  try {
+    const r = await _fetchT('/api/alarm/rules?limit=1000', {}, 8000);
+    if (!r.ok) { console.warn('alarm rules fetch returned', r.status); return; }
+    const data = await r.json();
+    _alarmRules = Array.isArray(data) ? data : [];
+    _applyThresholds();
+  } catch (_) {}
+}
+
+// Hostname of the selected llama agent — dashboard system metrics follow it.
+function _thresholdHost() {
+  try {
+    const id = (typeof _selectedAgent === 'function') ? _selectedAgent('llama') : null;
+    const a = ((window._agentsByProvider || {}).llama || []).find(x => x.agent_id === id);
+    return a ? (a.hostname || null) : null;
+  } catch (_) { return null; }
+}
+
+// Redraw threshold lines on every mapped chart for the selected host.
+function _applyThresholds() {
+  if (!(window.Chart && Chart.instances && window.Thresholds)) return;
+  const host = _thresholdHost();
+  Object.values(Chart.instances).forEach(c => {
+    const meta = c && c.canvas && CHART_METRIC[c.canvas.id];
+    if (!meta) return;
+    try {
+      c.options.plugins = c.options.plugins || {};
+      c.options.plugins.annotation = { annotations: Thresholds.thresholdAnnotations(_alarmRules, { source: meta.source, metricName: meta.metric_name, host, hostWildcard: false }) };
+      c.update('none');
+    } catch (_) {}
+  });
+}
+window._applyThresholds = _applyThresholds;
+window.refreshAlarmRules = refreshAlarmRules;
+
+// Double-click any chart canvas to reset its zoom/pan to the full range.
+document.addEventListener('dblclick', (e) => {
+  if (!(window.Chart && Chart.instances)) return;
+  const inst = Object.values(Chart.instances).find(c => c.canvas === e.target);
+  if (inst && typeof inst.resetZoom === 'function') { try { inst.resetZoom(); } catch (_) {} }
+});
 
