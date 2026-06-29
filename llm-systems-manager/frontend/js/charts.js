@@ -848,6 +848,10 @@ function _resetLmsCharts() {
     .forEach(_clearChart);
 }
 
+// Carry-forward state for the sparse llama charts (ctx peak, gen total),
+// shared by backfill and live push.
+let _ctxCarry = 0, _genTokensCarry = 0;
+
 async function loadHistory() {
   try {
     // Replace, don't append — charts are per-agent, so clear before backfill.
@@ -866,6 +870,7 @@ async function loadHistory() {
     // Convert bytes-per-second → MiB-per-second so backfill points match the
     // live-fetch unit (see net/io conversion in fetchMetrics around line 3550).
     const B_PER_MIB = 1048576;
+    _ctxCarry = 0; _genTokensCarry = 0;
     for (const r of rows.slice(-MAX_POINTS)) {
       pushPoint(cpuChart,  r.ts, r.cpu_total   || 0);
       pushPoint(ramChart,  r.ts, r.ram_percent || 0);
@@ -881,12 +886,12 @@ async function loadHistory() {
         pushPoint(aioTempChart, r.ts, r.aio_temp);
       if (typeof psuPowerChart !== 'undefined' && (r.psu_out != null || r.psu_in != null))
         pushDual(psuPowerChart, r.ts, r.psu_out || 0, r.psu_in || 0);
-      // Detailed llama charts — only present when llama was active during
-      // the backfill window. Empty otherwise.
-      if (typeof ctxChart !== 'undefined' && r.llama_ctx != null)
-        pushPoint(ctxChart, r.ts, r.llama_ctx);
-      if (typeof genTokensChart !== 'undefined' && r.llama_gen_tokens != null)
-        pushPoint(genTokensChart, r.ts, r.llama_gen_tokens);
+      // Detailed llama charts — carry the last value (default 0) across idle
+      // rows so the line is continuous, not a single active-only point.
+      if (r.llama_ctx != null) _ctxCarry = r.llama_ctx;
+      if (r.llama_gen_tokens != null) _genTokensCarry = r.llama_gen_tokens;
+      if (typeof ctxChart !== 'undefined') pushPoint(ctxChart, r.ts, _ctxCarry);
+      if (typeof genTokensChart !== 'undefined') pushPoint(genTokensChart, r.ts, _genTokensCarry);
       // Disk usage — / and /mnt/iscsi percent over time.
       if (typeof diskUsageChart !== 'undefined'
           && (r.disk_root_pct != null || r.disk_iscsi_pct != null)) {
@@ -1166,8 +1171,10 @@ async function fetchMetrics() {
     document.getElementById('llamaProcessing').innerHTML = fmtWithPeak(ll.requests_processing, 'requests_processing');
     document.getElementById('llamaDeferred').innerHTML   = fmtWithPeak(ll.requests_deferred,   'requests_deferred');
     pushDual(llamaChart, ts, ll.tokens_per_second, ll.prompt_tokens_per_second);
-    pushPoint(ctxChart, ts, ll.n_tokens_max || 0);
-    pushPoint(genTokensChart, ts, ll.total_tokens_generated || 0);
+    if (ll.n_tokens_max != null) _ctxCarry = ll.n_tokens_max;
+    if (ll.total_tokens_generated != null) _genTokensCarry = ll.total_tokens_generated;
+    pushPoint(ctxChart, ts, _ctxCarry);
+    pushPoint(genTokensChart, ts, _genTokensCarry);
 
     // UPS
     const ups = m.ups || {};
