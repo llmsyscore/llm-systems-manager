@@ -50,6 +50,12 @@
         if (typeof _activeTab !== 'undefined' && _activeTab === 'events') return;
         if (alertId && dismissedAlertIds.has(alertId)) return;
 
+        const cat = category || 'alert';
+        const sev = (severity || 'info').toLowerCase();
+        const sevClass = cat === 'ack'   ? 'ae-toast-ack'
+                       : cat === 'clear' ? 'ae-toast-clear'
+                       : `ae-toast-${sev}`;
+
         // Same-incident toast already on screen — update it in place instead of stacking.
         if (incidentId) {
             const existing = container.querySelector(
@@ -63,20 +69,23 @@
                         ? `${safeTitle}<br><small>${safeBody}</small>`
                         : safeTitle;
                 }
+                // Swap severity/category class only; keep show/hide/clickable state classes.
+                Array.from(existing.classList).forEach(c => {
+                    if (c.indexOf('ae-toast-') === 0 && c !== 'ae-toast-clickable') {
+                        existing.classList.remove(c);
+                    }
+                });
+                existing.classList.add(sevClass);
                 return;
             }
         }
 
-        const cat = category || 'alert';
-        const sev = (severity || 'info').toLowerCase();
         const el = document.createElement('div');
-        el.className = cat === 'ack'   ? 'ae-toast ae-toast-ack'
-                     : cat === 'clear' ? 'ae-toast ae-toast-clear'
-                     : `ae-toast ae-toast-${sev}`;
+        el.className = `ae-toast ${sevClass}`;
         if (alertId) el.dataset.alertId = alertId;
         if (incidentId) el.dataset.incidentId = incidentId;
 
-        const safeTitle = escapeHtml(title);
+        const safeTitle = escapeHtml(title) + (incidentSize > 1 ? ` (×${incidentSize})` : '');
         const safeBody  = escapeHtml(body);
         const msgEl = document.createElement('span');
         msgEl.className = 'ae-toast-message';
@@ -138,6 +147,8 @@
         function dismiss(broadcast = true) {
             if (dismissed) return;
             dismissed = true;
+            // Free the incident slot so a later same-incident toast creates fresh.
+            delete el.dataset.incidentId;
             el.classList.remove('show');
             el.classList.add('hide');
             setTimeout(() => el.remove(), 350);
