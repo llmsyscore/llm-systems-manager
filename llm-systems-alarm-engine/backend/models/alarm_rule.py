@@ -103,6 +103,7 @@ class AlarmRuleCreate(BaseModel):
         description="Close active alerts once metric stays below threshold for this many "
                     "consecutive eval cycles (0 = never auto-resolve, manual close only)",
     )
+    correlation_group: Optional[str] = Field(default=None, description="Group key for correlating alerts across rules")
 
     def to_alarm_rule(self, rule_id: Optional[UUID] = None) -> "AlarmRule":
         """Create an AlarmRule from the create schema."""
@@ -121,6 +122,7 @@ class AlarmRuleCreate(BaseModel):
             quiet_hours_start=self.quiet_hours_start,
             quiet_hours_end=self.quiet_hours_end,
             auto_resolve_cycles=self.auto_resolve_cycles,
+            correlation_group=self.correlation_group,
             created_at=now_utc(),
             updated_at=now_utc(),
             last_evaluated_at=None,
@@ -143,6 +145,7 @@ class AlarmRuleUpdate(BaseModel):
     quiet_hours_start: Optional[str] = None
     quiet_hours_end: Optional[str] = None
     auto_resolve_cycles: Optional[int] = Field(default=None, ge=0)
+    correlation_group: Optional[str] = None
 
 
 class AlarmRule(BaseModel):
@@ -161,6 +164,7 @@ class AlarmRule(BaseModel):
     quiet_hours_start: Optional[str]
     quiet_hours_end: Optional[str]
     auto_resolve_cycles: int = DEFAULT_AUTO_RESOLVE_CYCLES
+    correlation_group: Optional[str] = None
     created_at: datetime
     updated_at: datetime
     last_evaluated_at: Optional[datetime]
@@ -183,6 +187,7 @@ class AlarmRule(BaseModel):
             "quiet_hours_start": self.quiet_hours_start,
             "quiet_hours_end": self.quiet_hours_end,
             "auto_resolve_cycles": self.auto_resolve_cycles,
+            "correlation_group": self.correlation_group,
             "created_at": self.created_at.isoformat(),
             "updated_at": self.updated_at.isoformat(),
             "last_evaluated_at": self.last_evaluated_at.isoformat() if self.last_evaluated_at else None,

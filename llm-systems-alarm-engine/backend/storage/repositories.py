@@ -46,7 +46,7 @@ class RuleRepository:
     # Optional fields that accept None on update so users can clear them.
     _NULLABLE_UPDATE_FIELDS = frozenset({
         "source_host", "description",
-        "quiet_hours_start", "quiet_hours_end",
+        "quiet_hours_start", "quiet_hours_end", "correlation_group",
     })
 
     def __init__(self, cache: MetricCache, settings_db: Optional[AeSettingsDB] = None):
@@ -289,6 +289,7 @@ class RuleRepository:
             quiet_hours_start=data.get("quiet_hours_start"),
             quiet_hours_end=data.get("quiet_hours_end"),
             auto_resolve_cycles=auto_resolve_cycles,
+            correlation_group=data.get("correlation_group"),
             created_at=_parse_dt(data.get("created_at")) or now_utc(),
             updated_at=_parse_dt(data.get("updated_at")) or now_utc(),
             last_evaluated_at=_parse_dt(data.get("last_evaluated_at")),
@@ -560,6 +561,7 @@ class AlertRepository:
             acknowledged_by=data.get("acknowledged_by"),
             exception_details=data.get("exception_details"),
             source_host=data.get("source_host"),
+            incident_id=data.get("incident_id"),
             resolution_reason=data.get("resolution_reason") or None,
             resolved_value=(
                 float(data["resolved_value"])
