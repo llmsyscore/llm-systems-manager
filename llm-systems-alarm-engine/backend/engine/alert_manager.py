@@ -7,6 +7,7 @@ Responsibilities:
 - Deduplicate alerts for the same rule
 """
 
+import asyncio
 import logging
 from typing import Optional
 import uuid
@@ -34,6 +35,31 @@ class AlertManager:
     ):
         self.alert_repository = alert_repository
         self.rule_repository = rule_repository
+        self.ws_broadcast = None
+
+    def _incident_size(self, alert) -> int:
+        """Count of ongoing alerts sharing alert's incident_id, min 1."""
+        iid = getattr(alert, "incident_id", None)
+        if not iid:
+            return 1
+        try:
+            return max(1, sum(1 for a in self.alert_repository.get_active()
+                              if getattr(a, "incident_id", None) == iid))
+        except Exception:
+            return 1
+
+    def _emit_ws_event(self, event: str, alert) -> None:
+        """Fire-and-forget alert_* broadcast; no-op without a loop/callback."""
+        if self.ws_broadcast is None:
+            return
+        try:
+            payload = alert.to_dict()
+            payload["incident_size"] = self._incident_size(alert)
+            asyncio.get_running_loop().create_task(self.ws_broadcast(event, payload))
+        except RuntimeError:
+            logger.debug("ws event %s skipped: no running event loop", event)
+        except Exception as e:
+            logger.warning("ws event %s emit failed: %s", event, e)
 
     def _rule_correlation_group(self, rule_id) -> Optional[str]:
         """Look up a rule's correlation_group by id, tolerating fake/legacy repos."""
@@ -126,6 +152,7 @@ class AlertManager:
             alert.current_value, alert.threshold_value, alert.severity,
             alert.incident_id,
         )
+        self._emit_ws_event("alert_created", alert)
         return alert
 
     def acknowledge_alert(self, alert_id: str) -> Optional[Alert]:
@@ -143,6 +170,8 @@ class AlertManager:
 
         update = AlertUpdate(status=AlertStatus.ACKNOWLEDGED)
         result = self.alert_repository.update(uid, update)
+        if result:
+            self._emit_ws_event("alert_acknowledged", result)
         logger.info(
             "ALERT ACKNOWLEDGED: id=%s rule=%s host=%s",
             alert_id, alert.rule_name or "—", alert.source_host or "—",
@@ -176,6 +205,8 @@ class AlertManager:
             resolved_value=resolved_value,
         )
         result = self.alert_repository.update(uid, update)
+        if result:
+            self._emit_ws_event("alert_closed", result)
         logger.info(
             "ALERT CLOSED: id=%s rule=%s host=%s reason=%s value=%s",
             alert_id, alert.rule_name or "—", alert.source_host or "—",
@@ -211,6 +242,8 @@ class AlertManager:
 
         update = AlertUpdate(status=AlertStatus.IGNORED)
         result = self.alert_repository.update(uid, update)
+        if result:
+            self._emit_ws_event("alert_ignored", result)
         logger.info(f"Alert ignored: {alert_id}")
         return result
 
