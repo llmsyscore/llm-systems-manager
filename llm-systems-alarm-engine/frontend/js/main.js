@@ -660,7 +660,10 @@ const AlertManager = {
     },
 
     handleNewAlert(payload) {
-        AppState.alerts.unshift(payload);
+        const exists = AppState.alerts.some(a => String(a.alert_id) === String(payload.alert_id));
+        if (!exists) {
+            AppState.alerts.unshift(payload);
+        }
         this.render();
         DashboardManager.renderStats();
         // While on the alerts tab, ensure the table reflects server truth
