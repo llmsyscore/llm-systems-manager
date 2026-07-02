@@ -210,35 +210,10 @@
                 }
                 if (type === 'alert_created' && payload) {
                     const sev = payload.severity || 'warning';
-                    showToast(
-                        payload.rule_name || 'New Alert',
-                        payload.message || '',
-                        sev, false,
-                        payload.alert_id,
-                        'alert',
-                    );
                     if (sev === 'critical') {
                         try { _setTabDot('tabDotEvents', 'alert'); } catch (_) {}
                     }
                     try { refreshTabIndicators(); } catch (_) {}
-                }
-                if (type === 'alert_acknowledged' && payload) {
-                    showToast(
-                        (payload.rule_name || 'Alert') + ' acknowledged',
-                        payload.message || '',
-                        'info', false,
-                        payload.alert_id,
-                        'ack',
-                    );
-                }
-                if ((type === 'alert_resolved' || type === 'alert_closed' || type === 'alert_cleared') && payload) {
-                    showToast(
-                        (payload.rule_name || 'Alert') + ' cleared',
-                        payload.message || '',
-                        'success', false,
-                        payload.alert_id,
-                        'clear',
-                    );
                 }
                 if (typeof type === 'string' && type.indexOf('alert_') === 0 && type !== 'alert_created') {
                     try { refreshTabIndicators(); } catch (_) {}
