@@ -36,9 +36,11 @@ class NotificationDispatcher:
         self,
         websocket_send: Optional[Callable] = None,
         notification_repository=None,
+        alert_repository=None,
     ):
         self.websocket_send = websocket_send
         self.notification_repository = notification_repository
+        self.alert_repository = alert_repository
 
         # Notification channels (channel_id -> NotificationChannel)
         self._channels: dict[str, NotificationChannel] = {}
@@ -48,6 +50,8 @@ class NotificationDispatcher:
         # service should re-evaluate suppression windows).
         # consecutive eval-cycles a given alert has been firing:
         self._breach_count: dict[str, int] = {}
+        # incident_id -> first-dispatch monotonic ts, for #215 suppression:
+        self._incident_dispatched: dict[str, float] = {}
         # last dispatch ts keyed by (config_id_str, alert_id_str):
         self._last_dispatch_ts: dict[tuple[str, str], float] = {}
         # remembers whether a given policy has ever dispatched for an
@@ -263,6 +267,35 @@ class NotificationDispatcher:
         )
         return matched
 
+    def _is_incident_joiner(self, alert) -> bool:
+        iid = getattr(alert, "incident_id", None)
+        return bool(iid) and iid != str(alert.alert_id)
+
+    def _incident_channel_suppressed(self, alert, event: str) -> bool:
+        """Suppress channel (non-toast) dispatch for firing joiner alerts
+        once the incident has already notified."""
+        cfg = getattr(settings.alarm_engine, "correlation", None)
+        if event != "firing" or not bool(getattr(cfg, "notify_per_incident", True)):
+            return False
+        iid = getattr(alert, "incident_id", None)
+        return bool(iid and self._is_incident_joiner(alert)
+                    and iid in self._incident_dispatched)
+
+    def _record_incident_dispatch(self, alert) -> None:
+        iid = getattr(alert, "incident_id", None)
+        if iid:
+            self._incident_dispatched.setdefault(iid, time.monotonic())
+
+    def _incident_size(self, alert) -> int:
+        iid = getattr(alert, "incident_id", None)
+        if not iid or self.alert_repository is None:
+            return 1
+        try:
+            return max(1, sum(1 for a in self.alert_repository.get_active()
+                              if getattr(a, "incident_id", None) == iid))
+        except Exception:
+            return 1
+
     async def _send_notifications_async(self, alert: Alert, event: str = "firing") -> None:
         """Async implementation: loads channels + policies and dispatches.
 
@@ -298,14 +331,9 @@ class NotificationDispatcher:
         matched_channel_ids = self._policies_that_should_dispatch(alert, event, policies)
         is_first_breach = (event == "firing" and breaches_before == 0)
 
-        def _passes_policy(ch) -> bool:
-            return str(ch.channel_id) in matched_channel_ids
-
         tasks = []
-        # Toast policy: always emit on resolve or acknowledge (the user
-        # needs to see those state transitions); for firing events, only
-        # emit on the FIRST breach or on an actual policy dispatch.
-        # Continuing breaches with no policy dispatch are silent.
+        # Toast fires on resolve/ack, first breach, or any policy match.
+        # Uses the pre-suppression matched set — toasts are never suppressed.
         emit_toast = (
             self.websocket_send is not None
             and (event in ("resolved", "acknowledged")
@@ -314,6 +342,14 @@ class NotificationDispatcher:
         )
         if emit_toast:
             tasks.append(self._send_toast(alert, sticky=sticky, event=event))
+
+        # #215: clear non-toast channels once the incident already dispatched.
+        incident_suppressed = self._incident_channel_suppressed(alert, event)
+        if incident_suppressed:
+            matched_channel_ids = set()
+
+        def _passes_policy(ch) -> bool:
+            return str(ch.channel_id) in matched_channel_ids
 
         email_channels   = [c for c in channels if c.channel_type == ChannelType.EMAIL   and c.enabled and _passes_policy(c)]
         sms_channels     = [c for c in channels if c.channel_type == ChannelType.SMS     and c.enabled and _passes_policy(c)]
@@ -331,6 +367,12 @@ class NotificationDispatcher:
                 "(matched=%s, loaded_channels=%s)",
                 str(getattr(alert, "alert_id", "?"))[:8],
                 len(matched_channel_ids), sorted(matched_channel_ids), loaded_ids,
+            )
+        elif incident_suppressed:
+            logger.info(
+                "alert %s: incident %s already dispatched — non-toast channels silent",
+                str(getattr(alert, "alert_id", "?"))[:8],
+                getattr(alert, "incident_id", "?"),
             )
         elif not matched_channel_ids and event == "firing":
             logger.info(
@@ -412,6 +454,8 @@ class NotificationDispatcher:
                 "source_host": host or "",
                 "metric_source": alert.metric_source or "",
                 "metric_name": alert.metric_name or "",
+                "incident_id": str(getattr(alert, "incident_id", "") or ""),
+                "incident_size": self._incident_size(alert),
             },
         }
 
@@ -476,6 +520,8 @@ Time: {alert.created_at}
         """Persist a delivery row so the Notifications History panel reflects
         non-toast sends too. Best-effort: failure to record never blocks the
         actual notification path."""
+        if success:
+            self._record_incident_dispatch(alert)
         if self.notification_repository is None:
             return
         try:
