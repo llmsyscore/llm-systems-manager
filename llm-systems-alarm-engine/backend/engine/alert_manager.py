@@ -49,7 +49,7 @@ class AlertManager:
 
     def _assign_incident(self, alert_create: AlertCreate, active: list) -> Optional[str]:
         """Incident to join, or None to self-root: same-host explicit
-        correlation_group first, else newest ongoing alert inside the window."""
+        correlation_group first, else most-recently-active ongoing alert in window."""
         cfg = getattr(settings.alarm_engine, "correlation", None)
         if not bool(getattr(cfg, "enabled", True)):
             return None
@@ -66,7 +66,8 @@ class AlertManager:
                     return a.incident_id
         window = float(getattr(cfg, "window_seconds", 60.0) or 60.0)
         now = now_utc()
-        for a in sorted(ongoing, key=lambda x: x.created_at, reverse=True):
+        for a in sorted(ongoing, key=lambda x: x.last_evaluated_at or x.created_at,
+                        reverse=True):
             anchor = a.last_evaluated_at or a.created_at
             if ((now - anchor).total_seconds() <= window
                     and getattr(a, "incident_id", None)):

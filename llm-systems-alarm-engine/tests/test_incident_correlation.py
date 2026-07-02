@@ -34,12 +34,16 @@ class FakeRuleRepo:
                 for rid, g in self._groups.items()]
 
 
-def _ongoing(host="hostA", incident="inc-1", age_s=10, rule_id=None):
-    ts = now_utc() - timedelta(seconds=age_s)
+def _ongoing(host="hostA", incident="inc-1", age_s=10, rule_id=None,
+             last_eval_age_s=None):
+    now = now_utc()
+    ts = now - timedelta(seconds=age_s)
+    eval_ts = (now - timedelta(seconds=last_eval_age_s)
+               if last_eval_age_s is not None else ts)
     return SimpleNamespace(
         rule_id=rule_id or uuid4(), source_host=host, incident_id=incident,
         status=AlertStatus.ACTIVE, is_ongoing=True,
-        created_at=ts, last_evaluated_at=ts)
+        created_at=ts, last_evaluated_at=eval_ts)
 
 
 def _ac(host="hostA", rule_id=None):
@@ -76,6 +80,15 @@ def test_correlation_group_joins_outside_window():
              groups={r_old: "thermal", r_new: "thermal"})
     alert = m.process_alert(_ac(rule_id=r_new))
     assert alert.incident_id == "inc-1"
+
+
+def test_window_join_prefers_most_recently_active():
+    # A: created long ago, refreshed just now; B: created recently, staler.
+    a = _ongoing(incident="inc-A", age_s=3000, last_eval_age_s=2)
+    b = _ongoing(incident="inc-B", age_s=20, last_eval_age_s=20)
+    m = _mgr([a, b])
+    alert = m.process_alert(_ac())
+    assert alert.incident_id == "inc-A"
 
 
 def test_disabled_self_roots(monkeypatch):
