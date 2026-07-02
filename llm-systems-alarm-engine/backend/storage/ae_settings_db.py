@@ -29,6 +29,7 @@ logger = logging.getLogger(__name__)
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS schema_version (version INTEGER PRIMARY KEY);
 INSERT OR IGNORE INTO schema_version VALUES (1);
+INSERT OR IGNORE INTO schema_version VALUES (2);
 
 CREATE TABLE IF NOT EXISTS rules (
   rule_id TEXT PRIMARY KEY,
@@ -48,7 +49,8 @@ CREATE TABLE IF NOT EXISTS rules (
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL,
   last_evaluated_at TEXT,
-  last_alert_at TEXT
+  last_alert_at TEXT,
+  correlation_group TEXT
 );
 CREATE INDEX IF NOT EXISTS rules_enabled_idx ON rules(enabled);
 
@@ -104,6 +106,16 @@ CREATE INDEX IF NOT EXISTS deliveries_config_id_idx ON deliveries(config_id);
 """
 
 
+def _migrate(conn: sqlite3.Connection) -> None:
+    """Additive column migration for pre-#215 files (first live migration)."""
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(rules)")}
+    if "correlation_group" not in cols:
+        conn.execute("ALTER TABLE rules ADD COLUMN correlation_group TEXT")
+        logger.info("ae_settings.db migrated: rules.correlation_group added")
+    conn.execute("INSERT OR IGNORE INTO schema_version VALUES (2)")
+    conn.commit()
+
+
 class AeSettingsDB:
     """Thread-safe SQLite wrapper for rules/channels/configs."""
 
@@ -115,6 +127,7 @@ class AeSettingsDB:
     @classmethod
     def open(cls, path: Path) -> "AeSettingsDB":
         conn = open_sqlite(Path(path), _SCHEMA)
+        _migrate(conn)
         logger.info("AeSettingsDB opened at %s", path)
         return cls(conn, Path(path))
 
@@ -145,6 +158,7 @@ class AeSettingsDB:
             _to_iso(rule.get("updated_at")) or now_utc().isoformat(),
             _to_iso(rule.get("last_evaluated_at")),
             _to_iso(rule.get("last_alert_at")),
+            rule.get("correlation_group") or None,
         )
         with self._lock:
             self._conn.execute(
@@ -154,8 +168,9 @@ class AeSettingsDB:
                   metric_source, metric_name, rule_type, config_json,
                   severity, enabled, notification_channel_ids_json,
                   quiet_hours_start, quiet_hours_end, auto_resolve_cycles,
-                  created_at, updated_at, last_evaluated_at, last_alert_at
-                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                  created_at, updated_at, last_evaluated_at, last_alert_at,
+                  correlation_group
+                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                 ON CONFLICT(rule_id) DO UPDATE SET
                   name=excluded.name,
                   description=excluded.description,
@@ -172,7 +187,8 @@ class AeSettingsDB:
                   auto_resolve_cycles=excluded.auto_resolve_cycles,
                   updated_at=excluded.updated_at,
                   last_evaluated_at=excluded.last_evaluated_at,
-                  last_alert_at=excluded.last_alert_at
+                  last_alert_at=excluded.last_alert_at,
+                  correlation_group=excluded.correlation_group
                 """,
                 cols,
             )
@@ -218,6 +234,7 @@ class AeSettingsDB:
             "updated_at": r["updated_at"],
             "last_evaluated_at": r["last_evaluated_at"],
             "last_alert_at": r["last_alert_at"],
+            "correlation_group": r["correlation_group"],
         }
 
     # ── Channels ─────────────────────────────────────────────────────────

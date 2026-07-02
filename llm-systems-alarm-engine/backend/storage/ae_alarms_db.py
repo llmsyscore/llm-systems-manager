@@ -35,6 +35,7 @@ _LIVE_STATUS_SQL_LIST = "({})".format(
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS schema_version (version INTEGER PRIMARY KEY);
 INSERT OR IGNORE INTO schema_version VALUES (1);
+INSERT OR IGNORE INTO schema_version VALUES (2);
 
 CREATE TABLE IF NOT EXISTS alerts (
   alert_id TEXT PRIMARY KEY,
@@ -43,6 +44,7 @@ CREATE TABLE IF NOT EXISTS alerts (
   metric_source TEXT NOT NULL,
   metric_name TEXT NOT NULL,
   source_host TEXT,
+  incident_id TEXT,
   current_value REAL NOT NULL,
   threshold_value REAL NOT NULL,
   severity TEXT NOT NULL,
@@ -70,6 +72,17 @@ CREATE INDEX IF NOT EXISTS alerts_created_at_idx ON alerts(created_at DESC);
 """
 
 
+def _migrate(conn: sqlite3.Connection) -> None:
+    """Additive column migration for pre-#215 files (first live migration)."""
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(alerts)")}
+    if "incident_id" not in cols:
+        conn.execute("ALTER TABLE alerts ADD COLUMN incident_id TEXT")
+        logger.info("ae_alarms.db migrated: alerts.incident_id added")
+    conn.execute("CREATE INDEX IF NOT EXISTS alerts_incident_idx ON alerts(incident_id)")
+    conn.execute("INSERT OR IGNORE INTO schema_version VALUES (2)")
+    conn.commit()
+
+
 class AeAlarmsDB:
     """Thread-safe SQLite wrapper for alerts."""
 
@@ -81,6 +94,7 @@ class AeAlarmsDB:
     @classmethod
     def open(cls, path: Path) -> "AeAlarmsDB":
         conn = open_sqlite(Path(path), _SCHEMA)
+        _migrate(conn)
         logger.info("AeAlarmsDB opened at %s", path)
         return cls(conn, Path(path))
 
@@ -102,6 +116,7 @@ class AeAlarmsDB:
             a.get("metric_source") or "",
             a.get("metric_name") or "",
             a.get("source_host") or None,
+            a.get("incident_id") or None,
             float(a.get("current_value") or 0.0),
             float(a.get("threshold_value") or 0.0),
             a.get("severity") or "info",
@@ -125,16 +140,17 @@ class AeAlarmsDB:
                 """
                 INSERT INTO alerts (
                   alert_id, rule_id, rule_name, metric_source, metric_name,
-                  source_host, current_value, threshold_value, severity,
+                  source_host, incident_id, current_value, threshold_value, severity,
                   status, message, trigger_count, acknowledged_by,
                   exception_details, resolution_reason, resolved_value,
                   notification_channel_ids_json, created_at,
                   last_evaluated_at, acknowledged_at, closed_at,
                   chart_window_start, chart_window_end
-                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                 ON CONFLICT(alert_id) DO UPDATE SET
                   rule_name=excluded.rule_name,
                   source_host=excluded.source_host,
+                  incident_id=excluded.incident_id,
                   current_value=excluded.current_value,
                   threshold_value=excluded.threshold_value,
                   severity=excluded.severity,
@@ -300,6 +316,7 @@ class AeAlarmsDB:
             "metric_source": r["metric_source"],
             "metric_name": r["metric_name"],
             "source_host": r["source_host"],
+            "incident_id": r["incident_id"],
             "current_value": r["current_value"],
             "threshold_value": r["threshold_value"],
             "severity": r["severity"],
