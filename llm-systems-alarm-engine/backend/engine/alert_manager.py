@@ -11,6 +11,7 @@ import logging
 from typing import Optional
 import uuid
 
+from .._time import now_utc
 from ..models.alert import (
     Alert,
     AlertCreate,
@@ -18,6 +19,7 @@ from ..models.alert import (
     AlertUpdate,
 )
 from ..storage.repositories import RuleRepository, AlertRepository
+from config.unified_config import settings
 
 logger = logging.getLogger(__name__)
 
@@ -32,6 +34,44 @@ class AlertManager:
     ):
         self.alert_repository = alert_repository
         self.rule_repository = rule_repository
+
+    def _rule_correlation_group(self, rule_id) -> Optional[str]:
+        """Look up a rule's correlation_group by id, tolerating fake/legacy repos."""
+        if not rule_id:
+            return None
+        try:
+            for r in self.rule_repository.get_all(enabled_only=False):
+                if str(r.rule_id) == str(rule_id):
+                    return getattr(r, "correlation_group", None) or None
+        except Exception as e:
+            logger.debug("correlation: rule lookup failed: %s", e)
+        return None
+
+    def _assign_incident(self, alert_create: AlertCreate, active: list) -> Optional[str]:
+        """Incident to join, or None to self-root: same-host explicit
+        correlation_group first, else newest ongoing alert inside the window."""
+        cfg = getattr(settings.alarm_engine, "correlation", None)
+        if not bool(getattr(cfg, "enabled", True)):
+            return None
+        host = alert_create.source_host or None
+        ongoing = [a for a in active
+                   if a.is_ongoing and (a.source_host or None) == host]
+        if not ongoing:
+            return None
+        my_group = self._rule_correlation_group(alert_create.rule_id)
+        if my_group:
+            for a in ongoing:
+                if (self._rule_correlation_group(a.rule_id) == my_group
+                        and getattr(a, "incident_id", None)):
+                    return a.incident_id
+        window = float(getattr(cfg, "window_seconds", 60.0) or 60.0)
+        now = now_utc()
+        for a in sorted(ongoing, key=lambda x: x.created_at, reverse=True):
+            anchor = a.last_evaluated_at or a.created_at
+            if ((now - anchor).total_seconds() <= window
+                    and getattr(a, "incident_id", None)):
+                return a.incident_id
+        return None
 
     def process_alert(self, alert_create: AlertCreate) -> Optional[Alert]:
         """Process a new alert - create or deduplicate.
@@ -64,18 +104,26 @@ class AlertManager:
             logger.debug(
                 "Deduplicated alert for rule %s: refreshed existing alert %s "
                 "(trigger_count=%d)",
-                alert_create.rule_id, existing_alert.alert_id, existing_alert.trigger_count,
+                alert_create.rule_id,
+                getattr(existing_alert, "alert_id", "?"),
+                getattr(existing_alert, "trigger_count", 0),
             )
             return None
+
+        # Join an ongoing same-host incident before creating; else self-root.
+        incident = self._assign_incident(alert_create, existing)
+        if incident:
+            alert_create.incident_id = incident
 
         # Create new alert (repository handles AlertCreate -> Alert conversion)
         alert = self.alert_repository.create(alert_create)
         logger.info(
-            "ALERT CREATED: id=%s rule=%s host=%s metric=%s/%s value=%s threshold=%s severity=%s",
+            "ALERT CREATED: id=%s rule=%s host=%s metric=%s/%s value=%s threshold=%s severity=%s incident=%s",
             alert.alert_id, alert.rule_name or "—",
             alert.source_host or "—",
             alert.metric_source, alert.metric_name,
             alert.current_value, alert.threshold_value, alert.severity,
+            alert.incident_id,
         )
         return alert
 
