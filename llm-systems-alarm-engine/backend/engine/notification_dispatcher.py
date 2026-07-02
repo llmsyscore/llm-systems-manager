@@ -52,6 +52,8 @@ class NotificationDispatcher:
         self._breach_count: dict[str, int] = {}
         # incident_id -> first-dispatch monotonic ts, for #215 suppression:
         self._incident_dispatched: dict[str, float] = {}
+        # alert_ids with at least one successful non-toast send this cycle:
+        self._nontoast_send_ok: set[str] = set()
         # last dispatch ts keyed by (config_id_str, alert_id_str):
         self._last_dispatch_ts: dict[tuple[str, str], float] = {}
         # remembers whether a given policy has ever dispatched for an
@@ -286,6 +288,19 @@ class NotificationDispatcher:
         if iid:
             self._incident_dispatched.setdefault(iid, time.monotonic())
 
+    def _sweep_incident_dispatched(self) -> None:
+        """Drop dispatch claims for incidents with no ongoing member."""
+        if self.alert_repository is None or not self._incident_dispatched:
+            return
+        try:
+            live = {getattr(a, "incident_id", None)
+                    for a in self.alert_repository.get_active()}
+            for iid in list(self._incident_dispatched):
+                if iid not in live:
+                    self._incident_dispatched.pop(iid, None)
+        except Exception:
+            pass
+
     def _incident_size(self, alert) -> int:
         iid = getattr(alert, "incident_id", None)
         if not iid or self.alert_repository is None:
@@ -343,10 +358,23 @@ class NotificationDispatcher:
         if emit_toast:
             tasks.append(self._send_toast(alert, sticky=sticky, event=event))
 
-        # #215: clear non-toast channels once the incident already dispatched.
+        # #215: sweep stale claims, then clear non-toast channels once the
+        # incident already dispatched.
+        self._sweep_incident_dispatched()
         incident_suppressed = self._incident_channel_suppressed(alert, event)
         if incident_suppressed:
             matched_channel_ids = set()
+
+        # #215: claim the incident before any send so same-cycle joiners
+        # already see it as dispatched (this prefix never yields).
+        claimed_iid = None
+        if event == "firing" and matched_channel_ids and not incident_suppressed:
+            cfg = getattr(settings.alarm_engine, "correlation", None)
+            iid = getattr(alert, "incident_id", None)
+            if iid and bool(getattr(cfg, "notify_per_incident", True)):
+                if iid not in self._incident_dispatched:
+                    claimed_iid = iid
+                self._incident_dispatched.setdefault(iid, time.monotonic())
 
         def _passes_policy(ch) -> bool:
             return str(ch.channel_id) in matched_channel_ids
@@ -396,6 +424,14 @@ class NotificationDispatcher:
 
         if tasks:
             await self._run_all(tasks)
+
+        # #215: release the claim when no non-toast send for this alert
+        # succeeded, so joiners aren't silenced by a failed root dispatch.
+        alert_key = str(getattr(alert, "alert_id", ""))
+        sent_ok = alert_key in self._nontoast_send_ok
+        self._nontoast_send_ok.discard(alert_key)
+        if claimed_iid and not sent_ok:
+            self._incident_dispatched.pop(claimed_iid, None)
 
     async def _run_all(self, tasks: list[asyncio.Task]) -> None:
         """Run tasks and log any failures."""
@@ -521,6 +557,7 @@ Time: {alert.created_at}
         non-toast sends too. Best-effort: failure to record never blocks the
         actual notification path."""
         if success:
+            self._nontoast_send_ok.add(str(getattr(alert, "alert_id", "")))
             self._record_incident_dispatch(alert)
         if self.notification_repository is None:
             return
