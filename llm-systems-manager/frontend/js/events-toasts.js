@@ -31,6 +31,10 @@
         };
     } catch (_) { /* older browser — just won't sync */ }
 
+    function escapeHtml(s) {
+        return String(s || '').replace(/[<>&]/g, c => ({'<':'&lt;','>':'&gt;','&':'&amp;'}[c]));
+    }
+
     function inferCategory(title, body, severity) {
         // 'ack' (blue, no buttons) or 'clear' (green, no buttons) for already-
         // resolved/acknowledged alerts; otherwise 'alert' (severity colors +
@@ -41,10 +45,27 @@
         return 'alert';
     }
 
-    function showToast(title, body, severity, sticky, alertId, category) {
+    function showToast(title, body, severity, sticky, alertId, category, incidentId, incidentSize) {
         if (!container) return;
         if (typeof _activeTab !== 'undefined' && _activeTab === 'events') return;
         if (alertId && dismissedAlertIds.has(alertId)) return;
+
+        // Same-incident toast already on screen — update it in place instead of stacking.
+        if (incidentId) {
+            const existing = container.querySelector(
+                `.ae-toast[data-incident-id="${CSS.escape(incidentId)}"]`);
+            if (existing) {
+                const msgEl = existing.querySelector('.ae-toast-message');
+                if (msgEl) {
+                    const safeTitle = escapeHtml(title) + (incidentSize > 1 ? ` (×${incidentSize})` : '');
+                    const safeBody = escapeHtml(body);
+                    msgEl.innerHTML = safeBody
+                        ? `${safeTitle}<br><small>${safeBody}</small>`
+                        : safeTitle;
+                }
+                return;
+            }
+        }
 
         const cat = category || 'alert';
         const sev = (severity || 'info').toLowerCase();
@@ -53,9 +74,10 @@
                      : cat === 'clear' ? 'ae-toast ae-toast-clear'
                      : `ae-toast ae-toast-${sev}`;
         if (alertId) el.dataset.alertId = alertId;
+        if (incidentId) el.dataset.incidentId = incidentId;
 
-        const safeTitle = String(title || '').replace(/[<>&]/g, c => ({'<':'&lt;','>':'&gt;','&':'&amp;'}[c]));
-        const safeBody  = String(body  || '').replace(/[<>&]/g, c => ({'<':'&lt;','>':'&gt;','&':'&amp;'}[c]));
+        const safeTitle = escapeHtml(title);
+        const safeBody  = escapeHtml(body);
         const msgEl = document.createElement('span');
         msgEl.className = 'ae-toast-message';
         msgEl.innerHTML = safeBody
@@ -171,6 +193,8 @@
                         payload.sticky === true,
                         payload.alert_id,
                         cat,
+                        payload.incident_id || '',
+                        payload.incident_size,
                     );
                 }
                 if (type === 'alert_created' && payload) {
