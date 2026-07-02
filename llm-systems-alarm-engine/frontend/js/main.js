@@ -462,15 +462,41 @@ const AlertManager = {
             }
         }
 
-        // Alerts tab: table rows
+        // Alerts tab: table rows, grouped by incident (correlated alerts
+        // collapse under their newest member with a "+N related" toggle).
         const tbody = document.getElementById('alertsTableBody');
         if (tbody) {
             if (filtered.length === 0) {
                 tbody.innerHTML = '<tr><td colspan="10" class="empty-row">No alerts to display</td></tr>';
             } else {
-                tbody.innerHTML = filtered.map(a => this.renderAlertRow(a)).join('');
+                const groups = this.groupByIncident(filtered);
+                const rows = [];
+                for (const [key, members] of groups) {
+                    if (members.length > 1) {
+                        const safeKey = escapeHtml(String(key));
+                        const badge = `<button type="button" class="incident-toggle" data-incident="${safeKey}">+${members.length - 1} related</button>`;
+                        rows.push(this.renderAlertRow(members[0], { badgeHtml: badge }));
+                        for (let i = 1; i < members.length; i++) {
+                            rows.push(this.renderAlertRow(members[i], { rowClass: `incident-child incident-${safeKey} hidden` }));
+                        }
+                    } else {
+                        rows.push(this.renderAlertRow(members[0]));
+                    }
+                }
+                tbody.innerHTML = rows.join('');
             }
         }
+    },
+
+    groupByIncident(alerts) {
+        // incident_id ?? alert_id -> members, newest first (legacy rows singleton)
+        const groups = new Map();
+        for (const a of alerts) {
+            const key = a.incident_id || a.alert_id;
+            if (!groups.has(key)) groups.set(key, []);
+            groups.get(key).push(a);
+        }
+        return groups;
     },
 
     // Drop a legacy "[rule_name] " prefix from the message so old alerts that
@@ -484,7 +510,8 @@ const AlertManager = {
             : message;
     },
 
-    renderAlertRow(alert) {
+    renderAlertRow(alert, opts = {}) {
+        const { badgeHtml = '', rowClass = '' } = opts;
         const sev = alert.severity || 'info';
         const time = alert.created_at ? (parseTs(alert.created_at)?.toLocaleString() ?? '—') : '—';
         const lastEval = alert.last_evaluated_at
@@ -508,12 +535,12 @@ const AlertManager = {
             ? `<a href="#" class="alert-rule-link" title="Open this rule for editing" data-rule-id="${escapeHtml(String(alert.rule_id))}">${ruleName}</a>`
             : ruleName;
         return `
-            <tr data-alert-id="${aid}">
+            <tr data-alert-id="${aid}"${rowClass ? ` class="${rowClass}"` : ''}>
                 <td><input type="checkbox" class="alert-checkbox" data-alert-id="${aid}"></td>
                 <td class="alert-sev-cell sev-${safeSev}">${escapeHtml(sev.toUpperCase())}</td>
                 <td>${ruleCell}</td>
                 <td>${escapeHtml(sourceCol)}</td>
-                <td>${escapeHtml(this._stripRulePrefix(alert.message, alert.rule_name) || '—')}</td>
+                <td>${badgeHtml}${escapeHtml(this._stripRulePrefix(alert.message, alert.rule_name) || '—')}</td>
                 <td class="alert-status-cell sev-${safeSev}">${escapeHtml(alert.status || '—')}</td>
                 <td>${escapeHtml(time)}</td>
                 <td>${escapeHtml(lastEval)}</td>
@@ -1629,6 +1656,11 @@ const ModalManager = {
                 <input id="form-auto_resolve_cycles" type="number" min="0" step="1" value="2"
                        title="Close active alerts once the metric stays below threshold for this many consecutive eval cycles. 0 = never auto-resolve (manual close only).">
             </div>
+            <div class="form-group">
+                <label>Correlation group</label>
+                <input id="form-correlation_group" type="text" placeholder="Optional group key"
+                       title="Alerts from rules sharing this key are correlated into one incident.">
+            </div>
         </div>
 
         <div class="checkbox-item">
@@ -1720,6 +1752,7 @@ const ModalManager = {
         set('form-rule_type', rule.rule_type);
         set('form-severity', rule.severity);
         set('form-auto_resolve_cycles', rule.auto_resolve_cycles ?? 2);
+        set('form-correlation_group', rule.correlation_group);
         const enabled = document.getElementById('form-enabled');
         if (enabled) enabled.checked = rule.enabled !== false;
         const cfg = rule.config || {};
@@ -1818,10 +1851,12 @@ const ModalManager = {
 
         const arcRaw = this._num('form-auto_resolve_cycles');
         const auto_resolve_cycles = arcRaw != null && arcRaw >= 0 ? Math.floor(arcRaw) : 2;
+        const correlation_group = this._str('form-correlation_group');
 
         return {
             name, description, source_host, metric_source, metric_name,
             rule_type, severity, enabled, config, auto_resolve_cycles,
+            correlation_group,
         };
     },
 
@@ -3375,9 +3410,17 @@ document.addEventListener('DOMContentLoaded', () => {
     if (alertsTbody) {
         alertsTbody.addEventListener('click', (e) => {
             const link = e.target.closest('.alert-rule-link');
-            if (!link) return;
-            e.preventDefault();
-            if (link.dataset.ruleId) RuleManager.edit(link.dataset.ruleId);
+            if (link) {
+                e.preventDefault();
+                if (link.dataset.ruleId) RuleManager.edit(link.dataset.ruleId);
+                return;
+            }
+            // Incident toggle: reveal/hide the correlated rows for this group.
+            const toggle = e.target.closest('.incident-toggle');
+            if (toggle && toggle.dataset.incident) {
+                const rows = alertsTbody.querySelectorAll(`tr.incident-${CSS.escape(toggle.dataset.incident)}`);
+                rows.forEach(r => r.classList.toggle('hidden'));
+            }
         });
     }
 

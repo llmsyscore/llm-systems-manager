@@ -252,3 +252,24 @@
 .alert-sev-cell.sev-critical, .alert-status-cell.sev-critical { color: var(--color-danger); }
 .alert-sev-cell.sev-warning,  .alert-status-cell.sev-warning  { color: var(--color-warning); }
 .alert-sev-cell.sev-info,     .alert-status-cell.sev-info     { color: var(--color-info); }
+
+/* ── Incident correlation: collapsed group toggle + child rows ── */
+.incident-toggle {
+    display: inline-block;
+    margin-right: var(--space-xs);
+    padding: 1px 8px;
+    background-color: var(--bg-tertiary);
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-sm);
+    color: var(--text-muted);
+    font-size: 0.72rem;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all var(--transition-fast);
+}
+.incident-toggle:hover {
+    background-color: var(--bg-hover);
+    color: var(--text-primary);
+}
+.incident-child td:first-child { padding-left: 24px; }
+.incident-child.hidden { display: none; }
