@@ -270,6 +270,15 @@ class AlarmEngineCaches(BaseModel):
     websocket_queue_size: int = 500
 
 
+class AlarmEngineCorrelation(BaseModel):
+    # Incident grouping (#215): join same-host alerts by correlation_group
+    # or time window; one channel notification per incident by default.
+    model_config = _MODEL_CFG
+    enabled: bool = True
+    window_seconds: float = 60.0
+    notify_per_incident: bool = True
+
+
 class AlarmEngineApiLimits(BaseModel):
     model_config = _MODEL_CFG
     recent_alerts_limit_max: int = 5000
@@ -355,6 +364,7 @@ class AlarmEngineConfig(BaseModel):
     timeouts: AlarmEngineTimeouts = Field(default_factory=AlarmEngineTimeouts)
     intervals: AlarmEngineIntervals = Field(default_factory=AlarmEngineIntervals)
     caches: AlarmEngineCaches = Field(default_factory=AlarmEngineCaches)
+    correlation: AlarmEngineCorrelation = Field(default_factory=AlarmEngineCorrelation)
     api_limits: AlarmEngineApiLimits = Field(default_factory=AlarmEngineApiLimits)
     history: AlarmEngineHistory = Field(default_factory=AlarmEngineHistory)
     default_rules: AlarmEngineDefaultRules = Field(default_factory=AlarmEngineDefaultRules)

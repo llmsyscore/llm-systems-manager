@@ -243,6 +243,12 @@ alert_repo_ttl_s              = 300                      # active-alert list mem
 metric_catalog_warmup_days    = 7                        # how far back to scan at boot for the metric dropdown
 websocket_queue_size          = 500                      # WS out-queue depth
 
+# ── Alert correlation / incident grouping (#215) ─────────────────────
+[alarm_engine.correlation]
+enabled = true             # false -> every alert self-roots (pre-#215 behavior)
+window_seconds = 60.0      # same-host time-window join
+notify_per_incident = true # suppress channel dispatch for joiner alerts (toasts unaffected)
+
 [alarm_engine.api_limits]
 # Hard caps for FastAPI query parameters. Raising these lets longer/larger
 # requests succeed; lowering protects against accidental DOS via deep history.
