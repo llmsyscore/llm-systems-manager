@@ -145,6 +145,7 @@ const ToastManager = {
                     }
                 });
                 existing.classList.add(`toast-${type}`);
+                if (alertId) existing.dataset.alertId = alertId;
                 if (existing._dismissTimer) clearTimeout(existing._dismissTimer);
                 if (!sticky && existing._dismiss) {
                     existing._dismissTimer = setTimeout(() => existing._dismiss(true), duration);
@@ -176,16 +177,17 @@ const ToastManager = {
         const dismiss = (broadcast = true) => {
             if (toast._dismissed) return;
             toast._dismissed = true;
+            const currentId = toast.dataset.alertId || alertId;
             // Frees the incident slot.
             delete toast.dataset.incidentId;
             if (toast._dismissTimer) clearTimeout(toast._dismissTimer);
             toast.classList.remove('show');
             toast.classList.add('hide');
             setTimeout(() => toast.remove(), 350);
-            if (broadcast && alertId) {
-                _dismissedAlertIds.add(alertId);
+            if (broadcast && currentId) {
+                _dismissedAlertIds.add(currentId);
                 if (_toastBus) {
-                    try { _toastBus.postMessage({ type: 'dismiss', alertId }); } catch (_) {}
+                    try { _toastBus.postMessage({ type: 'dismiss', alertId: currentId }); } catch (_) {}
                 }
             }
         };
@@ -207,8 +209,9 @@ const ToastManager = {
             const resBtn = toast.querySelector('.toast-resolve');
             if (ackBtn) ackBtn.addEventListener('click', async (e) => {
                 e.stopPropagation();
+                const targetId = toast.dataset.alertId || alertId;
                 try {
-                    await ApiClient.alerts.acknowledge(alertId);
+                    await ApiClient.alerts.acknowledge(targetId);
                     ToastManager.show('Alert acknowledged', 'success');
                 } catch {
                     ToastManager.show('Failed to acknowledge alert', 'error');
@@ -217,8 +220,9 @@ const ToastManager = {
             });
             if (resBtn) resBtn.addEventListener('click', async (e) => {
                 e.stopPropagation();
+                const targetId = toast.dataset.alertId || alertId;
                 try {
-                    await ApiClient.alerts.close(alertId);
+                    await ApiClient.alerts.close(targetId);
                     ToastManager.show('Alert closed', 'success');
                 } catch {
                     ToastManager.show('Failed to close alert', 'error');
