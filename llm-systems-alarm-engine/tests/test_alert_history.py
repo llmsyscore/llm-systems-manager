@@ -2,7 +2,9 @@
 import asyncio
 import sqlite3
 import uuid
+from datetime import timedelta
 
+from backend._time import now_utc
 from backend.models.alert import AlertStatus, AlertUpdate
 from backend.storage.ae_alarms_db import AeAlarmsDB
 from backend.storage.repositories import AlertRepository
@@ -389,5 +391,26 @@ def test_purge_history_older_than_empty_table_returns_zero(tmp_path):
     db = AeAlarmsDB.open(tmp_path / "fresh.db")
     try:
         assert db.purge_history_older_than("2026-01-01T00:00:00") == 0
+    finally:
+        db.close()
+
+
+def test_ignoring_old_alert_stamps_acknowledged_at_so_purge_skips_it(tmp_path):
+    """Single-alert ignore must stamp a timestamp, or purge treats it as
+    ancient (falls back to its 100-day-old created_at) and deletes it."""
+    db = AeAlarmsDB.open(tmp_path / "fresh.db")
+    try:
+        alert_id = uuid.uuid4()
+        old_created_at = (now_utc() - timedelta(days=100)).isoformat()
+        _write(db, str(alert_id), status="active", created_at=old_created_at)
+        repo = AlertRepository(alarms_db=db)
+        updated = repo.update(alert_id, AlertUpdate(status=AlertStatus.IGNORED))
+        assert updated is not None
+        hist = _history_alert(db, str(alert_id))
+        assert hist is not None
+        assert hist["acknowledged_at"] is not None
+        cutoff = (now_utc() - timedelta(days=90)).isoformat()
+        assert db.purge_history_older_than(cutoff) == 0
+        assert _history_alert(db, str(alert_id)) is not None
     finally:
         db.close()

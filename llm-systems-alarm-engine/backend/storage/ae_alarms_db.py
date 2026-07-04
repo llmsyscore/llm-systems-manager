@@ -32,11 +32,10 @@ _LIVE_STATUS_SQL_LIST = "({})".format(
 )
 
 # Non-live statuses (#220) — rows in these statuses are archived out of the
-# hot `alerts` table into `alert_history`.
-_NON_LIVE_STATUSES = (
-    AlertStatus.CLOSED.value,
-    AlertStatus.IGNORED.value,
-    AlertStatus.EXCEPTION.value,
+# hot `alerts` table into `alert_history`. Derived as the complement of
+# _LIVE_STATUSES so new AlertStatus values default to archiving.
+_NON_LIVE_STATUSES = tuple(
+    s.value for s in AlertStatus if s.value not in _LIVE_STATUSES
 )
 _NON_LIVE_STATUS_SQL_LIST = "({})".format(
     ", ".join(f"'{s}'" for s in _NON_LIVE_STATUSES)
@@ -133,8 +132,8 @@ def _migrate(conn: sqlite3.Connection) -> None:
     conn.execute("CREATE INDEX IF NOT EXISTS alerts_incident_idx ON alerts(incident_id)")
     conn.execute("INSERT OR IGNORE INTO schema_version VALUES (2)")
 
-    # #220: alert_history table + one-time backfill of non-live rows.
-    conn.executescript(_ALERT_HISTORY_DDL)
+    # #220: one-time backfill of non-live rows into alert_history (table
+    # itself already exists via _SCHEMA, run by open_sqlite before _migrate).
     conn.execute("BEGIN IMMEDIATE")
     try:
         conn.execute(
@@ -171,9 +170,8 @@ class AeAlarmsDB:
                 self._conn.close()
 
     def _archive_non_live(self, alert_id: Optional[str] = None) -> None:
-        """Move non-live alerts rows into alert_history, one alert or all,
-        in a single explicit transaction (#220). REPLACE so a re-archive of
-        an already-archived alert_id overwrites the history row."""
+        """Move non-live alert rows into alert_history, one alert or all
+        (#220). REPLACE so re-archiving an alert_id overwrites its row."""
         where = f"status IN {_NON_LIVE_STATUS_SQL_LIST}"
         args: list[Any] = []
         if alert_id is not None:
@@ -392,9 +390,8 @@ class AeAlarmsDB:
         return [self._row_to_alert(r) for r in rows]
 
     def count_by_status_and_severity(self) -> dict[str, dict[str, int]]:
-        """One indexed GROUP BY in place of materialize-then-count-in-Python
-        for AlertManager.get_alert_stats / AlertRepository.get_alert_counters.
-        Aggregates across `alerts` + `alert_history` (#220)."""
+        """One indexed GROUP BY for AlertManager.get_alert_stats /
+        AlertRepository.get_alert_counters, across `alerts` + `alert_history` (#220)."""
         with self._lock:
             rows = self._conn.execute(
                 "SELECT status, severity, COUNT(*) AS n FROM ("

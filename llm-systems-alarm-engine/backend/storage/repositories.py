@@ -367,11 +367,8 @@ class AlertRepository:
         only_active: bool = False,
         include_closed: bool = False,
     ) -> list[Alert]:
-        """List alerts with optional filtering. Filtering, sorting, and
-        pagination all push down to SQLite. `include_closed` selects the
-        full table; otherwise live alerts only. A `status` filter naming a
-        non-live status forces `live_only=False` regardless of
-        `only_active`/`include_closed` (#220 — the closed/ignored dropdown)."""
+        """List alerts with optional filtering, sorting, and pagination
+        (pushed down to SQLite). A non-live `status` forces `live_only=False` (#220)."""
         if self.alarms_db is None:
             return []
         status_str: Optional[str] = None
@@ -405,9 +402,8 @@ class AlertRepository:
         return self.get_by_id(uid)
 
     def query(self, filters: AlertFilter, include_closed: bool = False) -> list:
-        """Query alerts with filters. Returns dicts (the CSV exporter and
-        dashboard list consume the dict shape directly). A `status` filter
-        naming a non-live status forces `live_only=False` (#220)."""
+        """Query alerts with filters, returning dicts (CSV exporter/dashboard
+        list shape). A non-live `status` forces `live_only=False` (#220)."""
         if self.alarms_db is None:
             return []
         live_only = not include_closed
@@ -444,6 +440,8 @@ class AlertRepository:
             alert_data["acknowledged_at"] = now_utc().isoformat()
         elif update.status == AlertStatus.CLOSED and alert_data.get("closed_at") is None:
             alert_data["closed_at"] = now_utc().isoformat()
+        elif update.status == AlertStatus.IGNORED and alert_data.get("acknowledged_at") is None:
+            alert_data["acknowledged_at"] = now_utc().isoformat()
 
         alert = self._dict_to_alert(alert_data)
         self._save_alert(alert)

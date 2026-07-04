@@ -1,7 +1,7 @@
 """#215: additive column migrations on pre-existing v1 databases."""
 import sqlite3
 
-from backend.storage.ae_alarms_db import AeAlarmsDB
+from backend.storage.ae_alarms_db import _ALERT_COLUMNS, AeAlarmsDB
 from backend.storage.ae_settings_db import AeSettingsDB
 
 # Byte-faithful v1 alerts schema (pre-#215) to migrate from.
@@ -78,12 +78,7 @@ def test_v1_alerts_db_gains_incident_id(tmp_path):
     try:
         cols = {r[1] for r in db._conn.execute("PRAGMA table_info(alerts)")}
         assert "incident_id" in cols
-        # old-1 is status=closed, so #220 archives it into alert_history on
-        # open; get_alert() stays live-table-only until Task 3's dual read.
-        row = db._conn.execute(
-            "SELECT * FROM alert_history WHERE alert_id=?", ("old-1",)
-        ).fetchone()
-        old = db._row_to_alert(row) if row else None
+        old = db.get_alert("old-1")
         assert old is not None and old["incident_id"] is None
     finally:
         db.close()
@@ -133,5 +128,33 @@ def test_fresh_settings_db_has_correlation_group(tmp_path):
     try:
         cols = {r[1] for r in db._conn.execute("PRAGMA table_info(rules)")}
         assert "correlation_group" in cols
+    finally:
+        db.close()
+
+
+def _colnames(db, table):
+    return {r[1] for r in db._conn.execute(f"PRAGMA table_info({table})")}
+
+
+def test_alerts_and_alert_history_columns_match_on_fresh_db(tmp_path):
+    """Pins the hand-copied alert_history DDL against drift from _ALERT_COLUMNS."""
+    db = AeAlarmsDB.open(tmp_path / "fresh.db")
+    try:
+        expected = {c.strip() for c in _ALERT_COLUMNS.split(",")}
+        assert _colnames(db, "alerts") == expected
+        assert _colnames(db, "alert_history") == expected
+    finally:
+        db.close()
+
+
+def test_alerts_and_alert_history_columns_match_on_migrated_v1_db(tmp_path):
+    """Same guard on a migrated v1 fixture, where physical column order differs."""
+    p = tmp_path / "ae_alarms.db"
+    _make_v1(p)
+    db = AeAlarmsDB.open(p)
+    try:
+        expected = {c.strip() for c in _ALERT_COLUMNS.split(",")}
+        assert _colnames(db, "alerts") == expected
+        assert _colnames(db, "alert_history") == expected
     finally:
         db.close()

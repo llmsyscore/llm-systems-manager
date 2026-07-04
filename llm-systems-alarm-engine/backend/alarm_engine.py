@@ -26,7 +26,7 @@ import sys
 import time
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 # ---------------------------------------------------------------------------
 # Bootstrap — make the shared config schema/loader importable.
@@ -66,7 +66,7 @@ from .storage.influxdb_client import InfluxDBClient
 # (-1, -2, …) for same-day iterations; roll the date for a new day's first
 # change.
 # ---------------------------------------------------------------------------
-__version__ = "v2026.07.04-6"
+__version__ = "v2026.07.04-7"
 from .storage import influx_monitor as _influx_monitor
 from .models.alarm_rule import (
     AlarmRuleCreate,
@@ -256,6 +256,11 @@ def _seed_default_rules(repo: RuleRepository) -> None:
         except Exception as e:
             logger.warning(f"Failed to seed rule {spec['name']}: {e}")
     logger.info(f"Seeded {len(to_seed)} default alarm rules")
+
+
+def _periodic_refresh_count(result: Any) -> int:
+    """Row count for _periodic_refresh's log line; int results (e.g. purge) count directly."""
+    return result if isinstance(result, int) else (len(result) if hasattr(result, "__len__") else 0)
 
 
 async def _on_startup() -> None:
@@ -505,7 +510,7 @@ async def _on_startup() -> None:
             try:
                 t = time.perf_counter()
                 result = await loop.run_in_executor(None, fn, *args)
-                count = len(result) if hasattr(result, "__len__") else 0
+                count = _periodic_refresh_count(result)
                 logger.info(
                     "%s warm-up: %d record(s) in %.2fs",
                     label, count, time.perf_counter() - t,
@@ -538,8 +543,7 @@ async def _on_startup() -> None:
         ))
 
     # 6c. Alert-history retention purge (#220): delete alert_history rows
-    # older than alert_history_days. Disabled when alert_history_days <= 0
-    # (keep forever). Cutoff is computed fresh each run, not at boot.
+    # older than alert_history_days. Disabled when alert_history_days <= 0.
     _retention_cfg = getattr(settings.alarm_engine, "retention", None)
     _alert_history_days = int(getattr(_retention_cfg, "alert_history_days", 90) or 0)
     if ae_alarms_db is not None and _alert_history_days > 0:
