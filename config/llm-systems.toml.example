@@ -249,6 +249,10 @@ enabled = true             # false -> every alert self-roots (pre-#215 behavior)
 window_seconds = 60.0      # same-host time-window join
 notify_per_incident = true # suppress channel dispatch for joiner alerts (toasts unaffected)
 
+[alarm_engine.retention]
+alert_history_days = 90    # purge alert_history rows older than this; 0 = keep forever
+purge_interval_s = 3600.0  # how often the purge task runs
+
 [alarm_engine.api_limits]
 # Hard caps for FastAPI query parameters. Raising these lets longer/larger
 # requests succeed; lowering protects against accidental DOS via deep history.
