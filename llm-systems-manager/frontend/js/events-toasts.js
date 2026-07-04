@@ -76,6 +76,11 @@
                     }
                 });
                 existing.classList.add(sevClass);
+                if (alertId) existing.dataset.alertId = alertId;
+                if (existing._dismissTimer) clearTimeout(existing._dismissTimer);
+                if (!sticky && existing._dismiss) {
+                    existing._dismissTimer = setTimeout(() => existing._dismiss(true), 10000);
+                }
                 return;
             }
         }
@@ -113,16 +118,18 @@
 
             ackBtn.addEventListener('click', async (e) => {
                 e.stopPropagation();
+                const targetId = el.dataset.alertId || alertId;
                 try {
-                    await fetch(`/api/alarm/alerts/${encodeURIComponent(alertId)}/acknowledge`,
+                    await fetch(`/api/alarm/alerts/${encodeURIComponent(targetId)}/acknowledge`,
                         { method: 'POST', credentials: 'same-origin' });
                 } catch (_) {}
                 dismiss(true);
             });
             resBtn.addEventListener('click', async (e) => {
                 e.stopPropagation();
+                const targetId = el.dataset.alertId || alertId;
                 try {
-                    await fetch(`/api/alarm/alerts/${encodeURIComponent(alertId)}/close`,
+                    await fetch(`/api/alarm/alerts/${encodeURIComponent(targetId)}/close`,
                         { method: 'POST', credentials: 'same-origin' });
                 } catch (_) {}
                 dismiss(true);
@@ -147,15 +154,17 @@
         function dismiss(broadcast = true) {
             if (dismissed) return;
             dismissed = true;
-            // Free the incident slot so a later same-incident toast creates fresh.
+            const currentId = el.dataset.alertId || alertId;
+            // Frees the incident slot.
             delete el.dataset.incidentId;
+            if (el._dismissTimer) clearTimeout(el._dismissTimer);
             el.classList.remove('show');
             el.classList.add('hide');
             setTimeout(() => el.remove(), 350);
-            if (broadcast && alertId) {
-                dismissedAlertIds.add(alertId);
+            if (broadcast && currentId) {
+                dismissedAlertIds.add(currentId);
                 if (bus) {
-                    try { bus.postMessage({ type: 'dismiss', alertId }); } catch (_) {}
+                    try { bus.postMessage({ type: 'dismiss', alertId: currentId }); } catch (_) {}
                 }
             }
         }
@@ -174,7 +183,7 @@
         container.appendChild(el);
         requestAnimationFrame(() => requestAnimationFrame(() => el.classList.add('show')));
 
-        if (!sticky) setTimeout(() => dismiss(true), 10000);
+        if (!sticky) el._dismissTimer = setTimeout(() => dismiss(true), 10000);
 
         // Cap at 5 simultaneous toasts (drop oldest non-sticky first)
         while (container.children.length > 5) {
@@ -183,6 +192,16 @@
             ) || container.firstChild;
             victim.remove();
         }
+    }
+
+    // Coalesces bursts of alert_* WS events into a single indicator refresh.
+    let refreshIndicatorsTimer = null;
+    function debouncedRefreshTabIndicators() {
+        if (refreshIndicatorsTimer) clearTimeout(refreshIndicatorsTimer);
+        refreshIndicatorsTimer = setTimeout(() => {
+            refreshIndicatorsTimer = null;
+            try { refreshTabIndicators(); } catch (_) {}
+        }, 1000);
     }
 
     function connect() {
@@ -213,10 +232,10 @@
                     if (sev === 'critical') {
                         try { _setTabDot('tabDotEvents', 'alert'); } catch (_) {}
                     }
-                    try { refreshTabIndicators(); } catch (_) {}
+                    debouncedRefreshTabIndicators();
                 }
                 if (typeof type === 'string' && type.indexOf('alert_') === 0 && type !== 'alert_created') {
-                    try { refreshTabIndicators(); } catch (_) {}
+                    debouncedRefreshTabIndicators();
                 }
             } catch(_) {}
         };

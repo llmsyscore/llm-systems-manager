@@ -111,6 +111,8 @@ const ToastManager = {
         const duration = options.duration != null ? options.duration : 10000;
         const alertId = options.alertId || null;
         const subtitle = options.subtitle || '';
+        const incidentId = options.incidentId || null;
+        const incidentSize = options.incidentSize || 0;
 
         // If a sibling view already dismissed this alert, suppress the toast
         // entirely rather than briefly flashing it.
@@ -124,6 +126,33 @@ const ToastManager = {
             document.body.appendChild(container);
         }
 
+        const subtitleHtml = subtitle
+            ? `<br><small style="opacity:0.8">${escapeHtml(subtitle)}</small>`
+            : '';
+        const safeTitle = escapeHtml(message) + (incidentSize > 1 ? ` (×${incidentSize})` : '');
+
+        // Same-incident toast already on screen — update it in place instead of stacking.
+        if (incidentId) {
+            const existing = container.querySelector(
+                `.toast[data-incident-id="${CSS.escape(incidentId)}"]`);
+            if (existing) {
+                const msgEl = existing.querySelector('.toast-message');
+                if (msgEl) msgEl.innerHTML = `${safeTitle}${subtitleHtml}`;
+                // Swap severity class only; keep show/hide/clickable state classes.
+                Array.from(existing.classList).forEach(c => {
+                    if (c.indexOf('toast-') === 0 && c !== 'toast-clickable') {
+                        existing.classList.remove(c);
+                    }
+                });
+                existing.classList.add(`toast-${type}`);
+                if (existing._dismissTimer) clearTimeout(existing._dismissTimer);
+                if (!sticky && existing._dismiss) {
+                    existing._dismissTimer = setTimeout(() => existing._dismiss(true), duration);
+                }
+                return;
+            }
+        }
+
         // Message and subtitle are treated as plain text. Callers that need a
         // two-line layout should pass `subtitle` separately instead of
         // injecting raw HTML — the inputs come from WebSocket/agent payloads
@@ -131,16 +160,14 @@ const ToastManager = {
         const toast = document.createElement('div');
         toast.className = `toast toast-${type}`;
         if (alertId) toast.dataset.alertId = alertId;
+        if (incidentId) toast.dataset.incidentId = incidentId;
         const stickyBadge = sticky ? '<span class="toast-sticky-indicator">Sticky</span>' : '';
-        const subtitleHtml = subtitle
-            ? `<br><small style="opacity:0.8">${escapeHtml(subtitle)}</small>`
-            : '';
         const actionButtons = alertId ? `
             <button class="toast-action toast-ack" type="button" title="Acknowledge alert">Ack</button>
             <button class="toast-action toast-resolve" type="button" title="Close alert">Close</button>
         ` : '';
         toast.innerHTML = `
-            <span class="toast-message">${escapeHtml(message)}${subtitleHtml}</span>
+            <span class="toast-message">${safeTitle}${subtitleHtml}</span>
             ${actionButtons}
             <button class="toast-close" type="button" aria-label="Dismiss">×</button>
             ${stickyBadge}
@@ -149,6 +176,9 @@ const ToastManager = {
         const dismiss = (broadcast = true) => {
             if (toast._dismissed) return;
             toast._dismissed = true;
+            // Frees the incident slot.
+            delete toast.dataset.incidentId;
+            if (toast._dismissTimer) clearTimeout(toast._dismissTimer);
             toast.classList.remove('show');
             toast.classList.add('hide');
             setTimeout(() => toast.remove(), 350);
@@ -202,7 +232,7 @@ const ToastManager = {
         requestAnimationFrame(() => requestAnimationFrame(() => toast.classList.add('show')));
 
         if (!sticky) {
-            setTimeout(() => dismiss(true), duration);
+            toast._dismissTimer = setTimeout(() => dismiss(true), duration);
         }
 
         // Cap simultaneous toasts (drop the oldest non-sticky first).

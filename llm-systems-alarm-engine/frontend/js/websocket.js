@@ -201,6 +201,8 @@ const WebSocketEvents = {
                     sticky: payload.sticky === true,
                     alertId: payload.alert_id,
                     subtitle: body,
+                    incidentId: payload.incident_id,
+                    incidentSize: payload.incident_size,
                 });
             }
         });
