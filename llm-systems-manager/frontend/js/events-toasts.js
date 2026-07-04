@@ -31,8 +31,18 @@
         };
     } catch (_) { /* older browser — just won't sync */ }
 
-    function escapeHtml(s) {
-        return String(s || '').replace(/[<>&]/g, c => ({'<':'&lt;','>':'&gt;','&':'&amp;'}[c]));
+    // Renders title + optional <small> body into a toast message element as
+    // plain text nodes (no innerHTML).
+    function setToastMessage(msgEl, title, body, incidentSize) {
+        msgEl.textContent = '';
+        const t = String(title || '') + (incidentSize > 1 ? ` (×${incidentSize})` : '');
+        msgEl.appendChild(document.createTextNode(t));
+        if (body) {
+            msgEl.appendChild(document.createElement('br'));
+            const small = document.createElement('small');
+            small.textContent = String(body);
+            msgEl.appendChild(small);
+        }
     }
 
     function inferCategory(title, body, severity) {
@@ -62,13 +72,7 @@
                 `.ae-toast[data-incident-id="${CSS.escape(incidentId)}"]`);
             if (existing) {
                 const msgEl = existing.querySelector('.ae-toast-message');
-                if (msgEl) {
-                    const safeTitle = escapeHtml(title) + (incidentSize > 1 ? ` (×${incidentSize})` : '');
-                    const safeBody = escapeHtml(body);
-                    msgEl.innerHTML = safeBody
-                        ? `${safeTitle}<br><small>${safeBody}</small>`
-                        : safeTitle;
-                }
+                if (msgEl) setToastMessage(msgEl, title, body, incidentSize);
                 // Swap severity/category class only; keep show/hide/clickable state classes.
                 Array.from(existing.classList).forEach(c => {
                     if (c.indexOf('ae-toast-') === 0 && c !== 'ae-toast-clickable') {
@@ -90,13 +94,9 @@
         if (alertId) el.dataset.alertId = alertId;
         if (incidentId) el.dataset.incidentId = incidentId;
 
-        const safeTitle = escapeHtml(title) + (incidentSize > 1 ? ` (×${incidentSize})` : '');
-        const safeBody  = escapeHtml(body);
         const msgEl = document.createElement('span');
         msgEl.className = 'ae-toast-message';
-        msgEl.innerHTML = safeBody
-            ? `${safeTitle}<br><small>${safeBody}</small>`
-            : safeTitle;
+        setToastMessage(msgEl, title, body, incidentSize);
         el.appendChild(msgEl);
 
         if (alertId && cat === 'alert') {
