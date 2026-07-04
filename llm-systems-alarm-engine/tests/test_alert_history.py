@@ -3,7 +3,7 @@ import asyncio
 import sqlite3
 import uuid
 
-from backend.models.alert import AlertStatus
+from backend.models.alert import AlertStatus, AlertUpdate
 from backend.storage.ae_alarms_db import AeAlarmsDB
 from backend.storage.repositories import AlertRepository
 
@@ -280,5 +280,46 @@ def test_list_alerts_include_closed_true_spans_both_tables(tmp_path):
         repo = AlertRepository(alarms_db=db)
         alerts = asyncio.run(repo.list_alerts(include_closed=True, limit=100))
         assert len(alerts) == 2
+    finally:
+        db.close()
+
+
+# ── Archived-alert re-transitions ───────────────────────────────────────
+
+
+def test_resurrecting_archived_alert_removes_history_row(tmp_path):
+    db = AeAlarmsDB.open(tmp_path / "fresh.db")
+    try:
+        alert_id = uuid.uuid4()
+        _write(db, str(alert_id), status="closed")
+        repo = AlertRepository(alarms_db=db)
+        updated = repo.update(alert_id, AlertUpdate(status=AlertStatus.ACKNOWLEDGED))
+        assert updated is not None
+        live_ids = {r["alert_id"] for r in db._conn.execute("SELECT alert_id FROM alerts")}
+        assert live_ids == {str(alert_id)}
+        assert db.get_alert(str(alert_id))["status"] == "acknowledged"
+        assert _history_alert(db, str(alert_id)) is None
+        assert db.count_by_status_and_severity()["total"] == 1
+    finally:
+        db.close()
+
+
+def test_rearchiving_alert_overwrites_history_row(tmp_path):
+    db = AeAlarmsDB.open(tmp_path / "fresh.db")
+    try:
+        alert_id = uuid.uuid4()
+        _write(db, str(alert_id), status="closed")
+        repo = AlertRepository(alarms_db=db)
+        updated = repo.update(
+            alert_id,
+            AlertUpdate(status=AlertStatus.CLOSED, resolution_reason="manual"),
+        )
+        assert updated is not None
+        hist = _history_alert(db, str(alert_id))
+        assert hist is not None
+        assert hist["resolution_reason"] == "manual"
+        live_ids = {r["alert_id"] for r in db._conn.execute("SELECT alert_id FROM alerts")}
+        assert live_ids == set()
+        assert db.count_by_status_and_severity()["total"] == 1
     finally:
         db.close()

@@ -172,7 +172,8 @@ class AeAlarmsDB:
 
     def _archive_non_live(self, alert_id: Optional[str] = None) -> None:
         """Move non-live alerts rows into alert_history, one alert or all,
-        in a single explicit transaction (#220)."""
+        in a single explicit transaction (#220). REPLACE so a re-archive of
+        an already-archived alert_id overwrites the history row."""
         where = f"status IN {_NON_LIVE_STATUS_SQL_LIST}"
         args: list[Any] = []
         if alert_id is not None:
@@ -182,7 +183,7 @@ class AeAlarmsDB:
             self._conn.execute("BEGIN IMMEDIATE")
             try:
                 self._conn.execute(
-                    f"INSERT OR IGNORE INTO alert_history ({_ALERT_COLUMNS}) "
+                    f"INSERT OR REPLACE INTO alert_history ({_ALERT_COLUMNS}) "
                     f"SELECT {_ALERT_COLUMNS} FROM alerts WHERE {where}",
                     args,
                 )
@@ -259,9 +260,14 @@ class AeAlarmsDB:
                 """,
                 cols,
             )
-            # #220: sync-archive the row if the written status is non-live.
+            # #220: non-live write archives the row; live write clears any
+            # stale history row so the alert_id lives in exactly one table.
             if cols[10] in _NON_LIVE_STATUSES:
                 self._archive_non_live(alert_id=cols[0])
+            else:
+                self._conn.execute(
+                    "DELETE FROM alert_history WHERE alert_id=?", (cols[0],)
+                )
 
     def bump_refresh(self, alert_id: str, current_value: float, when: Optional[str] = None) -> None:
         """Hot-path UPDATE for refresh() — called once per rule-eval cycle
