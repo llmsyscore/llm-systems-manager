@@ -61,21 +61,19 @@ class AlertManager:
         except Exception as e:
             logger.warning("ws event %s emit failed: %s", event, e)
 
-    def _rule_correlation_group(self, rule_id) -> Optional[str]:
-        """Look up a rule's correlation_group by id, tolerating fake/legacy repos."""
-        if not rule_id:
-            return None
+    def _rule_correlation_groups(self) -> dict:
+        """Map every rule_id (str) to its correlation_group in one repo scan."""
         try:
-            for r in self.rule_repository.get_all(enabled_only=False):
-                if str(r.rule_id) == str(rule_id):
-                    return getattr(r, "correlation_group", None) or None
+            return {str(r.rule_id): (getattr(r, "correlation_group", None) or None)
+                    for r in self.rule_repository.get_all(enabled_only=False)}
         except Exception as e:
             logger.debug("correlation: rule lookup failed: %s", e)
-        return None
+            return {}
 
     def _assign_incident(self, alert_create: AlertCreate, active: list) -> Optional[str]:
         """Incident to join, or None to self-root: same-host explicit
-        correlation_group first, else most-recently-active ongoing alert in window."""
+        correlation_group first, else most-recently-active ongoing alert in
+        window (host-less alerts only ever join via correlation_group)."""
         cfg = getattr(settings.alarm_engine, "correlation", None)
         if not bool(getattr(cfg, "enabled", True)):
             return None
@@ -84,13 +82,17 @@ class AlertManager:
                    if a.is_ongoing and (a.source_host or None) == host]
         if not ongoing:
             return None
-        my_group = self._rule_correlation_group(alert_create.rule_id)
+        groups = self._rule_correlation_groups()
+        my_group = groups.get(str(alert_create.rule_id))
         if my_group:
             for a in ongoing:
-                if (self._rule_correlation_group(a.rule_id) == my_group
+                if (groups.get(str(a.rule_id)) == my_group
                         and getattr(a, "incident_id", None)):
                     return a.incident_id
-        window = float(getattr(cfg, "window_seconds", 60.0) or 60.0)
+        if not host:
+            return None
+        ws = getattr(cfg, "window_seconds", None)
+        window = 60.0 if ws is None else float(ws)
         now = now_utc()
         for a in sorted(ongoing, key=lambda x: x.last_evaluated_at or x.created_at,
                         reverse=True):

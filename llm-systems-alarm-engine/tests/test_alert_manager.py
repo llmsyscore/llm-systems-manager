@@ -84,8 +84,10 @@ class FakeAlertRepository:
 
 
 class FakeRuleRepository:
-    """RuleRepository isn't actually used by AlertManager today, but it's a
-    constructor arg — keep the slot honest for forward compatibility."""
+    """AlertManager scans this for correlation_group lookups (#215)."""
+
+    def get_all(self, enabled_only: bool = True) -> list:
+        return []
 
 
 @pytest.fixture

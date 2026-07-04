@@ -107,3 +107,41 @@ def test_same_rule_still_refreshes_not_creates():
     existing = _ongoing(rule_id=rid)
     m = _mgr([existing])
     assert m.process_alert(_ac(rule_id=rid)) is None  # dedup path unchanged
+
+
+def test_window_seconds_zero_self_roots(monkeypatch):
+    import backend.engine.alert_manager as am
+    monkeypatch.setattr(
+        am, "settings",
+        SimpleNamespace(alarm_engine=SimpleNamespace(
+            correlation=SimpleNamespace(enabled=True, window_seconds=0))))
+    m = _mgr([_ongoing(age_s=5, last_eval_age_s=5)])
+    alert = m.process_alert(_ac())
+    assert alert.incident_id == str(alert.alert_id)
+
+
+def test_window_seconds_zero_group_join_still_works(monkeypatch):
+    import backend.engine.alert_manager as am
+    monkeypatch.setattr(
+        am, "settings",
+        SimpleNamespace(alarm_engine=SimpleNamespace(
+            correlation=SimpleNamespace(enabled=True, window_seconds=0))))
+    r_old, r_new = uuid4(), uuid4()
+    m = _mgr([_ongoing(age_s=5, rule_id=r_old)],
+             groups={r_old: "thermal", r_new: "thermal"})
+    alert = m.process_alert(_ac(rule_id=r_new))
+    assert alert.incident_id == "inc-1"
+
+
+def test_hostless_alerts_do_not_window_join():
+    m = _mgr([_ongoing(host=None, age_s=5)])
+    alert = m.process_alert(_ac(host=None))
+    assert alert.incident_id == str(alert.alert_id)
+
+
+def test_hostless_alerts_group_join_still_works():
+    r_old, r_new = uuid4(), uuid4()
+    m = _mgr([_ongoing(host=None, age_s=5, rule_id=r_old)],
+             groups={r_old: "thermal", r_new: "thermal"})
+    alert = m.process_alert(_ac(host=None, rule_id=r_new))
+    assert alert.incident_id == "inc-1"
