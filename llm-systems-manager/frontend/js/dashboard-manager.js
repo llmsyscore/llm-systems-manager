@@ -210,7 +210,7 @@ async function fetchServicesAndInflux() {
     const pagesTotal = sumIfAny(a.page_count, s.page_count);
     const slowestQuery = sumIfAny(Math.max(a.query_ms ?? -Infinity, s.query_ms ?? -Infinity));
     const fmtCount = v => v != null ? v.toLocaleString() : '—';
-    setText('sqliteAlertsRows',   fmtCount(a.alerts));
+    setText('sqliteAlertsRows',   fmtCount(sumIfAny(a.alerts, a.alert_history)));
     setText('sqliteSettingsRows', fmtCount(settingsRows));
     setText('sqliteAlarmsSize',   a.size_bytes != null ? _fmtBytesShort(a.size_bytes) : '—');
     setText('sqliteSettingsSize', s.size_bytes != null ? _fmtBytesShort(s.size_bytes) : '—');
