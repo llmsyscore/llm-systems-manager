@@ -138,6 +138,7 @@ def test_acknowledge_emits_ws_event():
         return result
 
     result = asyncio.run(body())
+    assert result is not None
     assert len(bc.calls) == 1
     event, payload = bc.calls[0]
     assert event == "alert_acknowledged"
@@ -158,6 +159,7 @@ def test_close_emits_ws_event():
         return result
 
     result = asyncio.run(body())
+    assert result is not None
     assert len(bc.calls) == 1
     event, payload = bc.calls[0]
     assert event == "alert_closed"
@@ -177,6 +179,7 @@ def test_ignore_emits_ws_event():
         return result
 
     result = asyncio.run(body())
+    assert result is not None
     assert len(bc.calls) == 1
     event, payload = bc.calls[0]
     assert event == "alert_ignored"

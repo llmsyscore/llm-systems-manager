@@ -310,8 +310,8 @@ class NotificationDispatcher:
             for iid in list(self._incident_dispatched):
                 if iid not in live_incidents or iid not in live_alert_ids:
                     self._incident_dispatched.pop(iid, None)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("incident-dispatch sweep skipped: %s", e)
 
     def _incident_size(self, alert) -> int:
         iid = getattr(alert, "incident_id", None)
