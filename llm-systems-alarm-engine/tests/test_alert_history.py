@@ -1,7 +1,11 @@
 """#220: alert_history table, v3 migration + synchronous archive."""
+import asyncio
 import sqlite3
+import uuid
 
+from backend.models.alert import AlertStatus
 from backend.storage.ae_alarms_db import AeAlarmsDB
+from backend.storage.repositories import AlertRepository
 
 # Byte-faithful v2 alerts schema (pre-#220, post-#215) to migrate from.
 _V2_ALERTS = """
@@ -60,7 +64,7 @@ def _make_v2(path):
 
 
 def _history_alert(db, alert_id):
-    """Fetch a row from alert_history directly (get_alert is live-table-only until Task 3)."""
+    """Fetch a row from alert_history directly, bypassing get_alert's fallback."""
     with db._lock:
         row = db._conn.execute(
             "SELECT * FROM alert_history WHERE alert_id=?", (alert_id,)
@@ -126,7 +130,9 @@ def test_write_alert_with_closed_status_archives_immediately(tmp_path):
             "current_value": 90, "threshold_value": 85, "severity": "warning",
             "status": "closed", "created_at": "2026-01-01T00:00:00",
         })
-        assert db.get_alert("a1") is None
+        alert_ids = {r["alert_id"] for r in db._conn.execute("SELECT alert_id FROM alerts")}
+        assert "a1" not in alert_ids
+        assert db.get_alert("a1") is not None  # Task 3: get_alert falls back to alert_history.
         assert _history_alert(db, "a1") is not None
     finally:
         db.close()
@@ -156,7 +162,9 @@ def test_bulk_update_status_to_closed_archives_rows(tmp_path):
         })
         n = db.bulk_update_status(from_statuses=("active", "acknowledged"), to_status="closed")
         assert n == 1
-        assert db.get_alert("a1") is None
+        alert_ids = {r["alert_id"] for r in db._conn.execute("SELECT alert_id FROM alerts")}
+        assert "a1" not in alert_ids
+        assert db.get_alert("a1") is not None  # Task 3: get_alert falls back to alert_history.
         assert _history_alert(db, "a1") is not None
     finally:
         db.close()
@@ -182,5 +190,95 @@ def test_delete_alert_returns_false_when_missing(tmp_path):
     db = AeAlarmsDB.open(tmp_path / "fresh.db")
     try:
         assert db.delete_alert("nope") is False
+    finally:
+        db.close()
+
+
+def _write(db, alert_id, status, created_at="2026-01-01T00:00:00", severity="warning"):
+    db.write_alert({
+        "alert_id": alert_id, "metric_source": "gpu", "metric_name": "temp",
+        "current_value": 90, "threshold_value": 85, "severity": severity,
+        "status": status, "created_at": created_at, "message": "test",
+    })
+
+
+# ── Task 3: dual-table reads ────────────────────────────────────────────
+
+
+def test_get_alert_falls_back_to_history(tmp_path):
+    db = AeAlarmsDB.open(tmp_path / "fresh.db")
+    try:
+        _write(db, "c1", status="closed")
+        row = db.get_alert("c1")
+        assert row is not None
+        assert row["alert_id"] == "c1"
+        assert row["status"] == "closed"
+    finally:
+        db.close()
+
+
+def test_query_filtered_live_only_false_spans_both_tables_ordered_and_limited(tmp_path):
+    db = AeAlarmsDB.open(tmp_path / "fresh.db")
+    try:
+        _write(db, "h-old", status="closed", created_at="2026-01-01T00:00:00")
+        _write(db, "a-mid", status="active", created_at="2026-01-02T00:00:00")
+        _write(db, "h-new", status="closed", created_at="2026-01-03T00:00:00")
+        rows = db.query_filtered(live_only=False, limit=2)
+        assert [r["alert_id"] for r in rows] == ["h-new", "a-mid"]
+    finally:
+        db.close()
+
+
+def test_query_filtered_live_only_false_status_closed_returns_only_archived_rows(tmp_path):
+    db = AeAlarmsDB.open(tmp_path / "fresh.db")
+    try:
+        _write(db, "a1", status="active")
+        _write(db, "c1", status="closed")
+        _write(db, "i1", status="ignored")
+        rows = db.query_filtered(live_only=False, status="closed")
+        assert {r["alert_id"] for r in rows} == {"c1"}
+    finally:
+        db.close()
+
+
+def test_count_by_status_and_severity_aggregates_both_tables(tmp_path):
+    db = AeAlarmsDB.open(tmp_path / "fresh.db")
+    try:
+        _write(db, "a1", status="active", severity="critical")
+        _write(db, "a2", status="acknowledged", severity="warning")
+        _write(db, "c1", status="closed", severity="critical")
+        _write(db, "i1", status="ignored", severity="warning")
+        counters = db.count_by_status_and_severity()
+        assert counters["by_status"] == {"active": 1, "acknowledged": 1, "closed": 1, "ignored": 1}
+        assert counters["by_severity"] == {"critical": 2, "warning": 2}
+        assert counters["total"] == 4
+    finally:
+        db.close()
+
+
+def test_list_alerts_status_closed_without_include_closed_returns_archived_rows(tmp_path):
+    """The Alerts-tab Closed/Ignored dropdown fix (#220)."""
+    db = AeAlarmsDB.open(tmp_path / "fresh.db")
+    try:
+        alert_id = str(uuid.uuid4())
+        _write(db, alert_id, status="closed")
+        repo = AlertRepository(alarms_db=db)
+        alerts = asyncio.run(
+            repo.list_alerts(status=AlertStatus.CLOSED, include_closed=False)
+        )
+        assert [str(a.alert_id) for a in alerts] == [alert_id]
+        assert alerts[0].status == AlertStatus.CLOSED
+    finally:
+        db.close()
+
+
+def test_list_alerts_include_closed_true_spans_both_tables(tmp_path):
+    db = AeAlarmsDB.open(tmp_path / "fresh.db")
+    try:
+        _write(db, str(uuid.uuid4()), status="active")
+        _write(db, str(uuid.uuid4()), status="closed")
+        repo = AlertRepository(alarms_db=db)
+        alerts = asyncio.run(repo.list_alerts(include_closed=True, limit=100))
+        assert len(alerts) == 2
     finally:
         db.close()

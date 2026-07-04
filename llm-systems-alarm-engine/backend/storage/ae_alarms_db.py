@@ -290,10 +290,15 @@ class AeAlarmsDB:
     # ── Reads ────────────────────────────────────────────────────────────
 
     def get_alert(self, alert_id: str) -> Optional[dict[str, Any]]:
+        """Try the hot `alerts` table, fall back to `alert_history` (#220)."""
         with self._lock:
             row = self._conn.execute(
                 "SELECT * FROM alerts WHERE alert_id=?", (str(alert_id),)
             ).fetchone()
+            if row is None:
+                row = self._conn.execute(
+                    "SELECT * FROM alert_history WHERE alert_id=?", (str(alert_id),)
+                ).fetchone()
         return self._row_to_alert(row) if row else None
 
     def query_active(self, limit: int = 1000) -> list[dict[str, Any]]:
@@ -329,11 +334,10 @@ class AeAlarmsDB:
     ) -> list[dict[str, Any]]:
         """Filter + sort + paginate at the SQL layer instead of pulling
         every row and filtering in Python. Whitelisted sort columns;
-        anything else falls back to `created_at`."""
+        anything else falls back to `created_at`. `live_only=False` spans
+        `alerts` + `alert_history` via UNION ALL (#220)."""
         where: list[str] = []
         args: list[Any] = []
-        if live_only:
-            where.append(f"status IN {_LIVE_STATUS_SQL_LIST}")
         if status:
             where.append("status = ?")
             args.append(_enum_value(status))
@@ -351,22 +355,36 @@ class AeAlarmsDB:
             args.append(str(metric_name))
         sort_col = sort_by if sort_by in ("created_at", "severity") else "created_at"
         order = "DESC" if sort_desc else "ASC"
-        sql = "SELECT * FROM alerts"
-        if where:
-            sql += " WHERE " + " AND ".join(where)
-        sql += f" ORDER BY {sort_col} {order} LIMIT ? OFFSET ?"
-        args.extend([int(limit), int(offset)])
+        if live_only:
+            live_where = [f"status IN {_LIVE_STATUS_SQL_LIST}"] + where
+            sql = "SELECT * FROM alerts WHERE " + " AND ".join(live_where)
+            sql += f" ORDER BY {sort_col} {order} LIMIT ? OFFSET ?"
+            full_args = args + [int(limit), int(offset)]
+        else:
+            where_sql = (" WHERE " + " AND ".join(where)) if where else ""
+            sql = (
+                "SELECT * FROM ("
+                f"SELECT {_ALERT_COLUMNS} FROM alerts{where_sql} "
+                "UNION ALL "
+                f"SELECT {_ALERT_COLUMNS} FROM alert_history{where_sql}"
+                f") ORDER BY {sort_col} {order} LIMIT ? OFFSET ?"
+            )
+            full_args = args + args + [int(limit), int(offset)]
         with self._lock:
-            rows = self._conn.execute(sql, args).fetchall()
+            rows = self._conn.execute(sql, full_args).fetchall()
         return [self._row_to_alert(r) for r in rows]
 
     def count_by_status_and_severity(self) -> dict[str, dict[str, int]]:
         """One indexed GROUP BY in place of materialize-then-count-in-Python
-        for AlertManager.get_alert_stats / AlertRepository.get_alert_counters."""
+        for AlertManager.get_alert_stats / AlertRepository.get_alert_counters.
+        Aggregates across `alerts` + `alert_history` (#220)."""
         with self._lock:
             rows = self._conn.execute(
-                "SELECT status, severity, COUNT(*) AS n FROM alerts "
-                "GROUP BY status, severity"
+                "SELECT status, severity, COUNT(*) AS n FROM ("
+                "SELECT status, severity FROM alerts "
+                "UNION ALL "
+                "SELECT status, severity FROM alert_history"
+                ") GROUP BY status, severity"
             ).fetchall()
         by_status: dict[str, int] = {}
         by_severity: dict[str, int] = {}
