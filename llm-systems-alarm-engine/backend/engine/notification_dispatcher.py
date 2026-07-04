@@ -32,13 +32,18 @@ logger = logging.getLogger(__name__)
 class NotificationDispatcher:
     """Dispatches notifications through configured channels."""
 
+    # Minimum seconds between _sweep_incident_dispatched full scans.
+    _SWEEP_MIN_INTERVAL_S = 5.0
+
     def __init__(
         self,
         websocket_send: Optional[Callable] = None,
         notification_repository=None,
+        alert_repository=None,
     ):
         self.websocket_send = websocket_send
         self.notification_repository = notification_repository
+        self.alert_repository = alert_repository
 
         # Notification channels (channel_id -> NotificationChannel)
         self._channels: dict[str, NotificationChannel] = {}
@@ -48,12 +53,18 @@ class NotificationDispatcher:
         # service should re-evaluate suppression windows).
         # consecutive eval-cycles a given alert has been firing:
         self._breach_count: dict[str, int] = {}
+        # incident_id -> first-dispatch monotonic ts, for #215 suppression:
+        self._incident_dispatched: dict[str, float] = {}
+        # alert_ids with at least one successful non-toast send this cycle:
+        self._nontoast_send_ok: set[str] = set()
         # last dispatch ts keyed by (config_id_str, alert_id_str):
         self._last_dispatch_ts: dict[tuple[str, str], float] = {}
         # remembers whether a given policy has ever dispatched for an
         # alert — needed so notify_on_clear only fires when the alert
         # actually reached this policy in the first place:
         self._dispatched_first: set[tuple[str, str]] = set()
+        # monotonic ts of the last full _sweep_incident_dispatched scan:
+        self._last_sweep_ts: float = float("-inf")
 
         # Channel enable flags (derived from channel configs)
         self._channels_enabled: dict[str, bool] = {
@@ -263,6 +274,55 @@ class NotificationDispatcher:
         )
         return matched
 
+    def _is_incident_joiner(self, alert) -> bool:
+        iid = getattr(alert, "incident_id", None)
+        return bool(iid) and iid != str(alert.alert_id)
+
+    def _incident_channel_suppressed(self, alert, event: str) -> bool:
+        """Suppress channel (non-toast) dispatch for firing joiner alerts
+        once the incident has already notified."""
+        cfg = getattr(settings.alarm_engine, "correlation", None)
+        if event != "firing" or not bool(getattr(cfg, "notify_per_incident", True)):
+            return False
+        iid = getattr(alert, "incident_id", None)
+        return bool(iid and self._is_incident_joiner(alert)
+                    and iid in self._incident_dispatched)
+
+    def _record_incident_dispatch(self, alert) -> None:
+        iid = getattr(alert, "incident_id", None)
+        if iid:
+            self._incident_dispatched.setdefault(iid, time.monotonic())
+
+    def _sweep_incident_dispatched(self) -> None:
+        """Drop claims for incidents with no ongoing member, or whose root
+        alert (the ongoing alert whose alert_id equals the incident_id) has
+        closed. Runs at most once per _SWEEP_MIN_INTERVAL_S."""
+        if self.alert_repository is None or not self._incident_dispatched:
+            return
+        now = time.monotonic()
+        if now - self._last_sweep_ts < self._SWEEP_MIN_INTERVAL_S:
+            return
+        self._last_sweep_ts = now
+        try:
+            active = self.alert_repository.get_active()
+            live_incidents = {getattr(a, "incident_id", None) for a in active}
+            live_alert_ids = {str(getattr(a, "alert_id", "")) for a in active}
+            for iid in list(self._incident_dispatched):
+                if iid not in live_incidents or iid not in live_alert_ids:
+                    self._incident_dispatched.pop(iid, None)
+        except Exception as e:
+            logger.debug("incident-dispatch sweep skipped: %s", e)
+
+    def _incident_size(self, alert) -> int:
+        iid = getattr(alert, "incident_id", None)
+        if not iid or self.alert_repository is None:
+            return 1
+        try:
+            return max(1, sum(1 for a in self.alert_repository.get_active()
+                              if getattr(a, "incident_id", None) == iid))
+        except Exception:
+            return 1
+
     async def _send_notifications_async(self, alert: Alert, event: str = "firing") -> None:
         """Async implementation: loads channels + policies and dispatches.
 
@@ -298,14 +358,9 @@ class NotificationDispatcher:
         matched_channel_ids = self._policies_that_should_dispatch(alert, event, policies)
         is_first_breach = (event == "firing" and breaches_before == 0)
 
-        def _passes_policy(ch) -> bool:
-            return str(ch.channel_id) in matched_channel_ids
-
         tasks = []
-        # Toast policy: always emit on resolve or acknowledge (the user
-        # needs to see those state transitions); for firing events, only
-        # emit on the FIRST breach or on an actual policy dispatch.
-        # Continuing breaches with no policy dispatch are silent.
+        # Toast fires on resolve/ack, first breach, or any policy match.
+        # Uses the pre-suppression matched set — toasts are never suppressed.
         emit_toast = (
             self.websocket_send is not None
             and (event in ("resolved", "acknowledged")
@@ -314,6 +369,27 @@ class NotificationDispatcher:
         )
         if emit_toast:
             tasks.append(self._send_toast(alert, sticky=sticky, event=event))
+
+        # #215: sweep stale claims, then clear non-toast channels once the
+        # incident already dispatched.
+        self._sweep_incident_dispatched()
+        incident_suppressed = self._incident_channel_suppressed(alert, event)
+        if incident_suppressed:
+            matched_channel_ids = set()
+
+        # #215: claims the incident for this alert; no await occurs above
+        # this point in the function.
+        claimed_iid = None
+        if event == "firing" and matched_channel_ids and not incident_suppressed:
+            cfg = getattr(settings.alarm_engine, "correlation", None)
+            iid = getattr(alert, "incident_id", None)
+            if iid and bool(getattr(cfg, "notify_per_incident", True)):
+                if iid not in self._incident_dispatched:
+                    claimed_iid = iid
+                self._incident_dispatched.setdefault(iid, time.monotonic())
+
+        def _passes_policy(ch) -> bool:
+            return str(ch.channel_id) in matched_channel_ids
 
         email_channels   = [c for c in channels if c.channel_type == ChannelType.EMAIL   and c.enabled and _passes_policy(c)]
         sms_channels     = [c for c in channels if c.channel_type == ChannelType.SMS     and c.enabled and _passes_policy(c)]
@@ -332,6 +408,12 @@ class NotificationDispatcher:
                 str(getattr(alert, "alert_id", "?"))[:8],
                 len(matched_channel_ids), sorted(matched_channel_ids), loaded_ids,
             )
+        elif incident_suppressed:
+            logger.info(
+                "alert %s: incident %s already dispatched — non-toast channels silent",
+                str(getattr(alert, "alert_id", "?"))[:8],
+                getattr(alert, "incident_id", "?"),
+            )
         elif not matched_channel_ids and event == "firing":
             logger.info(
                 "alert %s: no policy matched on firing — non-toast channels silent "
@@ -344,16 +426,23 @@ class NotificationDispatcher:
             )
 
         if email_channels:
-            tasks.append(self._send_email_channels(alert, email_channels))
+            tasks.append(self._send_email_channels(alert, email_channels, event=event))
         if sms_channels:
-            tasks.append(self._send_sms_channels(alert, sms_channels))
+            tasks.append(self._send_sms_channels(alert, sms_channels, event=event))
         if webhook_channels:
-            tasks.append(self._send_webhook_channels(alert, webhook_channels))
+            tasks.append(self._send_webhook_channels(alert, webhook_channels, event=event))
         if discord_channels:
-            tasks.append(self._send_discord_channels(alert, discord_channels))
+            tasks.append(self._send_discord_channels(alert, discord_channels, event=event))
 
         if tasks:
             await self._run_all(tasks)
+
+        # #215: releases the claim when no non-toast send for this alert succeeded.
+        alert_key = str(getattr(alert, "alert_id", ""))
+        sent_ok = alert_key in self._nontoast_send_ok
+        self._nontoast_send_ok.discard(alert_key)
+        if claimed_iid and not sent_ok:
+            self._incident_dispatched.pop(claimed_iid, None)
 
     async def _run_all(self, tasks: list[asyncio.Task]) -> None:
         """Run tasks and log any failures."""
@@ -412,6 +501,8 @@ class NotificationDispatcher:
                 "source_host": host or "",
                 "metric_source": alert.metric_source or "",
                 "metric_name": alert.metric_name or "",
+                "incident_id": str(getattr(alert, "incident_id", "") or ""),
+                "incident_size": self._incident_size(alert),
             },
         }
 
@@ -436,7 +527,8 @@ class NotificationDispatcher:
         except Exception as e:
             logger.error(f"Failed to send toast: {e}")
 
-    async def _send_email_channels(self, alert: Alert, channels: list[NotificationChannel]) -> None:
+    async def _send_email_channels(self, alert: Alert, channels: list[NotificationChannel],
+                                   event: str = "firing") -> None:
         """Send email notifications via the given channel list."""
         for channel in channels:
             config = channel.config
@@ -467,15 +559,21 @@ Time: {alert.created_at}
                 err = str(e)
                 logger.error(f"Failed to send email: {e}")
             self._record_delivery(alert, channel, "email", recipients_str,
-                                  subject, body, success=err is None, error_message=err)
+                                  subject, body, success=err is None, error_message=err,
+                                  event=event)
 
     def _record_delivery(self, alert: Alert, channel: "NotificationChannel",
                          channel_type: str, recipient: str,
                          title: str, body: str,
-                         success: bool, error_message: Optional[str] = None) -> None:
+                         success: bool, error_message: Optional[str] = None,
+                         event: str = "firing") -> None:
         """Persist a delivery row so the Notifications History panel reflects
         non-toast sends too. Best-effort: failure to record never blocks the
         actual notification path."""
+        if success:
+            self._nontoast_send_ok.add(str(getattr(alert, "alert_id", "")))
+            if event == "firing":
+                self._record_incident_dispatch(alert)
         if self.notification_repository is None:
             return
         try:
@@ -492,7 +590,8 @@ Time: {alert.created_at}
         except Exception as e:
             logger.warning("record_delivery(%s) failed: %s", channel_type, e)
 
-    async def _send_sms_channels(self, alert: Alert, channels: list[NotificationChannel]) -> None:
+    async def _send_sms_channels(self, alert: Alert, channels: list[NotificationChannel],
+                                 event: str = "firing") -> None:
         """Send SMS notifications via the given channel list."""
         for channel in channels:
             config = channel.config
@@ -501,9 +600,11 @@ Time: {alert.created_at}
             message = f"[{alert.severity.upper()}] {(alert.rule_name or 'Alert')}: {alert.message}"
             logger.info(f"SMS would be sent to {config.sms.to_number}: {message}")
             self._record_delivery(alert, channel, "sms", config.sms.to_number,
-                                  (alert.rule_name or "Alert"), message, success=True)
+                                  (alert.rule_name or "Alert"), message, success=True,
+                                  event=event)
 
-    async def _send_webhook_channels(self, alert: Alert, channels: list[NotificationChannel]) -> None:
+    async def _send_webhook_channels(self, alert: Alert, channels: list[NotificationChannel],
+                                     event: str = "firing") -> None:
         """Send webhook notifications via the given channel list."""
         for channel in channels:
             config = channel.config
@@ -535,9 +636,11 @@ Time: {alert.created_at}
                 logger.error(f"Failed to send webhook: {e}")
             self._record_delivery(alert, channel, "webhook", config.webhook.url,
                                   (alert.rule_name or "Alert"),
-                                  alert.message or "", success=err is None, error_message=err)
+                                  alert.message or "", success=err is None, error_message=err,
+                                  event=event)
 
-    async def _send_discord_channels(self, alert: Alert, channels: list[NotificationChannel]) -> None:
+    async def _send_discord_channels(self, alert: Alert, channels: list[NotificationChannel],
+                                     event: str = "firing") -> None:
         """Send Discord notifications via the given channel list."""
         for channel in channels:
             config = channel.config
@@ -571,7 +674,8 @@ Time: {alert.created_at}
                 logger.error(f"Failed to send Discord notification: {e}")
             self._record_delivery(alert, channel, "discord", config.discord.webhook_url,
                                   embed["title"], alert.message or "",
-                                  success=err is None, error_message=err)
+                                  success=err is None, error_message=err,
+                                  event=event)
 
     def _send_sync_email(self, msg: MIMEText, config) -> None:
         """Synchronous email send (run in thread). Reads SMTP host/port/

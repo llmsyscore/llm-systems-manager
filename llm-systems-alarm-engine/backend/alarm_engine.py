@@ -65,7 +65,7 @@ from .storage.influxdb_client import InfluxDBClient
 # (-1, -2, …) for same-day iterations; roll the date for a new day's first
 # change.
 # ---------------------------------------------------------------------------
-__version__ = "v2026.06.28-1"
+__version__ = "v2026.07.04-2"
 from .storage import influx_monitor as _influx_monitor
 from .models.alarm_rule import (
     AlarmRuleCreate,
@@ -438,7 +438,8 @@ async def _on_startup() -> None:
             logger.warning(f"Metric catalog warm-reload failed: {e}")
 
     # 3. Initialize engine components (order matters: deps first)
-    notification_dispatcher = NotificationDispatcher(notification_repository=notification_repo)
+    notification_dispatcher = NotificationDispatcher(
+        notification_repository=notification_repo, alert_repository=alert_repo)
     alert_manager = AlertManager(
         alert_repository=alert_repo,
         rule_repository=rule_repo,
@@ -469,6 +470,10 @@ async def _on_startup() -> None:
         except Exception:
             logger.warning("ws notification dispatch failed", exc_info=True)
     notification_dispatcher.websocket_send = _dispatch_ws_notification
+
+    # 4c. Wire ws_manager into alert_manager for alert_created/acknowledged/
+    #     closed/ignored state-sync broadcasts (#221).
+    alert_manager.ws_broadcast = ws_manager.broadcast
 
     # 5. Wire API routes to shared instances
     alerts.set_repositories(

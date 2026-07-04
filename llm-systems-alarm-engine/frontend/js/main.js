@@ -111,6 +111,8 @@ const ToastManager = {
         const duration = options.duration != null ? options.duration : 10000;
         const alertId = options.alertId || null;
         const subtitle = options.subtitle || '';
+        const incidentId = options.incidentId || null;
+        const incidentSize = options.incidentSize || 0;
 
         // If a sibling view already dismissed this alert, suppress the toast
         // entirely rather than briefly flashing it.
@@ -124,6 +126,34 @@ const ToastManager = {
             document.body.appendChild(container);
         }
 
+        const subtitleHtml = subtitle
+            ? `<br><small style="opacity:0.8">${escapeHtml(subtitle)}</small>`
+            : '';
+        const safeTitle = escapeHtml(message) + (incidentSize > 1 ? ` (×${incidentSize})` : '');
+
+        // Same-incident toast already on screen — update it in place instead of stacking.
+        if (incidentId) {
+            const existing = container.querySelector(
+                `.toast[data-incident-id="${CSS.escape(incidentId)}"]`);
+            if (existing) {
+                const msgEl = existing.querySelector('.toast-message');
+                if (msgEl) msgEl.innerHTML = `${safeTitle}${subtitleHtml}`;
+                // Swap severity class only; keep show/hide/clickable state classes.
+                Array.from(existing.classList).forEach(c => {
+                    if (c.indexOf('toast-') === 0 && c !== 'toast-clickable') {
+                        existing.classList.remove(c);
+                    }
+                });
+                existing.classList.add(`toast-${type}`);
+                if (alertId) existing.dataset.alertId = alertId;
+                if (existing._dismissTimer) clearTimeout(existing._dismissTimer);
+                if (!sticky && existing._dismiss) {
+                    existing._dismissTimer = setTimeout(() => existing._dismiss(true), duration);
+                }
+                return;
+            }
+        }
+
         // Message and subtitle are treated as plain text. Callers that need a
         // two-line layout should pass `subtitle` separately instead of
         // injecting raw HTML — the inputs come from WebSocket/agent payloads
@@ -131,16 +161,14 @@ const ToastManager = {
         const toast = document.createElement('div');
         toast.className = `toast toast-${type}`;
         if (alertId) toast.dataset.alertId = alertId;
+        if (incidentId) toast.dataset.incidentId = incidentId;
         const stickyBadge = sticky ? '<span class="toast-sticky-indicator">Sticky</span>' : '';
-        const subtitleHtml = subtitle
-            ? `<br><small style="opacity:0.8">${escapeHtml(subtitle)}</small>`
-            : '';
         const actionButtons = alertId ? `
             <button class="toast-action toast-ack" type="button" title="Acknowledge alert">Ack</button>
             <button class="toast-action toast-resolve" type="button" title="Close alert">Close</button>
         ` : '';
         toast.innerHTML = `
-            <span class="toast-message">${escapeHtml(message)}${subtitleHtml}</span>
+            <span class="toast-message">${safeTitle}${subtitleHtml}</span>
             ${actionButtons}
             <button class="toast-close" type="button" aria-label="Dismiss">×</button>
             ${stickyBadge}
@@ -149,13 +177,17 @@ const ToastManager = {
         const dismiss = (broadcast = true) => {
             if (toast._dismissed) return;
             toast._dismissed = true;
+            const currentId = toast.dataset.alertId || alertId;
+            // Frees the incident slot.
+            delete toast.dataset.incidentId;
+            if (toast._dismissTimer) clearTimeout(toast._dismissTimer);
             toast.classList.remove('show');
             toast.classList.add('hide');
             setTimeout(() => toast.remove(), 350);
-            if (broadcast && alertId) {
-                _dismissedAlertIds.add(alertId);
+            if (broadcast && currentId) {
+                _dismissedAlertIds.add(currentId);
                 if (_toastBus) {
-                    try { _toastBus.postMessage({ type: 'dismiss', alertId }); } catch (_) {}
+                    try { _toastBus.postMessage({ type: 'dismiss', alertId: currentId }); } catch (_) {}
                 }
             }
         };
@@ -177,8 +209,9 @@ const ToastManager = {
             const resBtn = toast.querySelector('.toast-resolve');
             if (ackBtn) ackBtn.addEventListener('click', async (e) => {
                 e.stopPropagation();
+                const targetId = toast.dataset.alertId || alertId;
                 try {
-                    await ApiClient.alerts.acknowledge(alertId);
+                    await ApiClient.alerts.acknowledge(targetId);
                     ToastManager.show('Alert acknowledged', 'success');
                 } catch {
                     ToastManager.show('Failed to acknowledge alert', 'error');
@@ -187,8 +220,9 @@ const ToastManager = {
             });
             if (resBtn) resBtn.addEventListener('click', async (e) => {
                 e.stopPropagation();
+                const targetId = toast.dataset.alertId || alertId;
                 try {
-                    await ApiClient.alerts.close(alertId);
+                    await ApiClient.alerts.close(targetId);
                     ToastManager.show('Alert closed', 'success');
                 } catch {
                     ToastManager.show('Failed to close alert', 'error');
@@ -202,7 +236,7 @@ const ToastManager = {
         requestAnimationFrame(() => requestAnimationFrame(() => toast.classList.add('show')));
 
         if (!sticky) {
-            setTimeout(() => dismiss(true), duration);
+            toast._dismissTimer = setTimeout(() => dismiss(true), duration);
         }
 
         // Cap simultaneous toasts (drop the oldest non-sticky first).
@@ -462,15 +496,41 @@ const AlertManager = {
             }
         }
 
-        // Alerts tab: table rows
+        // Alerts tab: table rows, grouped by incident (correlated alerts
+        // collapse under their newest member with a "+N related" toggle).
         const tbody = document.getElementById('alertsTableBody');
         if (tbody) {
             if (filtered.length === 0) {
                 tbody.innerHTML = '<tr><td colspan="10" class="empty-row">No alerts to display</td></tr>';
             } else {
-                tbody.innerHTML = filtered.map(a => this.renderAlertRow(a)).join('');
+                const groups = this.groupByIncident(filtered);
+                const rows = [];
+                for (const [key, members] of groups) {
+                    if (members.length > 1) {
+                        const safeKey = escapeHtml(String(key));
+                        const badge = `<button type="button" class="incident-toggle" data-incident="${safeKey}">+${members.length - 1} related</button>`;
+                        rows.push(this.renderAlertRow(members[0], { badgeHtml: badge }));
+                        for (let i = 1; i < members.length; i++) {
+                            rows.push(this.renderAlertRow(members[i], { rowClass: `incident-child incident-${safeKey} hidden` }));
+                        }
+                    } else {
+                        rows.push(this.renderAlertRow(members[0]));
+                    }
+                }
+                tbody.innerHTML = rows.join('');
             }
         }
+    },
+
+    groupByIncident(alerts) {
+        // incident_id ?? alert_id -> members, newest first (legacy rows singleton)
+        const groups = new Map();
+        for (const a of alerts) {
+            const key = a.incident_id || a.alert_id;
+            if (!groups.has(key)) groups.set(key, []);
+            groups.get(key).push(a);
+        }
+        return groups;
     },
 
     // Drop a legacy "[rule_name] " prefix from the message so old alerts that
@@ -484,7 +544,8 @@ const AlertManager = {
             : message;
     },
 
-    renderAlertRow(alert) {
+    renderAlertRow(alert, opts = {}) {
+        const { badgeHtml = '', rowClass = '' } = opts;
         const sev = alert.severity || 'info';
         const time = alert.created_at ? (parseTs(alert.created_at)?.toLocaleString() ?? '—') : '—';
         const lastEval = alert.last_evaluated_at
@@ -508,12 +569,12 @@ const AlertManager = {
             ? `<a href="#" class="alert-rule-link" title="Open this rule for editing" data-rule-id="${escapeHtml(String(alert.rule_id))}">${ruleName}</a>`
             : ruleName;
         return `
-            <tr data-alert-id="${aid}">
+            <tr data-alert-id="${aid}"${rowClass ? ` class="${rowClass}"` : ''}>
                 <td><input type="checkbox" class="alert-checkbox" data-alert-id="${aid}"></td>
                 <td class="alert-sev-cell sev-${safeSev}">${escapeHtml(sev.toUpperCase())}</td>
                 <td>${ruleCell}</td>
                 <td>${escapeHtml(sourceCol)}</td>
-                <td>${escapeHtml(this._stripRulePrefix(alert.message, alert.rule_name) || '—')}</td>
+                <td>${badgeHtml}${escapeHtml(this._stripRulePrefix(alert.message, alert.rule_name) || '—')}</td>
                 <td class="alert-status-cell sev-${safeSev}">${escapeHtml(alert.status || '—')}</td>
                 <td>${escapeHtml(time)}</td>
                 <td>${escapeHtml(lastEval)}</td>
@@ -633,7 +694,10 @@ const AlertManager = {
     },
 
     handleNewAlert(payload) {
-        AppState.alerts.unshift(payload);
+        const exists = AppState.alerts.some(a => String(a.alert_id) === String(payload.alert_id));
+        if (!exists) {
+            AppState.alerts.unshift(payload);
+        }
         this.render();
         DashboardManager.renderStats();
         // While on the alerts tab, ensure the table reflects server truth
@@ -1629,6 +1693,11 @@ const ModalManager = {
                 <input id="form-auto_resolve_cycles" type="number" min="0" step="1" value="2"
                        title="Close active alerts once the metric stays below threshold for this many consecutive eval cycles. 0 = never auto-resolve (manual close only).">
             </div>
+            <div class="form-group">
+                <label>Correlation group</label>
+                <input id="form-correlation_group" type="text" placeholder="Optional group key"
+                       title="Alerts from rules sharing this key are correlated into one incident.">
+            </div>
         </div>
 
         <div class="checkbox-item">
@@ -1720,6 +1789,7 @@ const ModalManager = {
         set('form-rule_type', rule.rule_type);
         set('form-severity', rule.severity);
         set('form-auto_resolve_cycles', rule.auto_resolve_cycles ?? 2);
+        set('form-correlation_group', rule.correlation_group);
         const enabled = document.getElementById('form-enabled');
         if (enabled) enabled.checked = rule.enabled !== false;
         const cfg = rule.config || {};
@@ -1818,10 +1888,12 @@ const ModalManager = {
 
         const arcRaw = this._num('form-auto_resolve_cycles');
         const auto_resolve_cycles = arcRaw != null && arcRaw >= 0 ? Math.floor(arcRaw) : 2;
+        const correlation_group = this._str('form-correlation_group');
 
         return {
             name, description, source_host, metric_source, metric_name,
             rule_type, severity, enabled, config, auto_resolve_cycles,
+            correlation_group,
         };
     },
 
@@ -3375,9 +3447,17 @@ document.addEventListener('DOMContentLoaded', () => {
     if (alertsTbody) {
         alertsTbody.addEventListener('click', (e) => {
             const link = e.target.closest('.alert-rule-link');
-            if (!link) return;
-            e.preventDefault();
-            if (link.dataset.ruleId) RuleManager.edit(link.dataset.ruleId);
+            if (link) {
+                e.preventDefault();
+                if (link.dataset.ruleId) RuleManager.edit(link.dataset.ruleId);
+                return;
+            }
+            // Incident toggle: reveal/hide the correlated rows for this group.
+            const toggle = e.target.closest('.incident-toggle');
+            if (toggle && toggle.dataset.incident) {
+                const rows = alertsTbody.querySelectorAll(`tr.incident-${CSS.escape(toggle.dataset.incident)}`);
+                rows.forEach(r => r.classList.toggle('hidden'));
+            }
         });
     }
 

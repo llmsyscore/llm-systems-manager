@@ -31,6 +31,20 @@
         };
     } catch (_) { /* older browser — just won't sync */ }
 
+    // Renders title + optional <small> body into a toast message element as
+    // plain text nodes (no innerHTML).
+    function setToastMessage(msgEl, title, body, incidentSize) {
+        msgEl.textContent = '';
+        const t = String(title || '') + (incidentSize > 1 ? ` (×${incidentSize})` : '');
+        msgEl.appendChild(document.createTextNode(t));
+        if (body) {
+            msgEl.appendChild(document.createElement('br'));
+            const small = document.createElement('small');
+            small.textContent = String(body);
+            msgEl.appendChild(small);
+        }
+    }
+
     function inferCategory(title, body, severity) {
         // 'ack' (blue, no buttons) or 'clear' (green, no buttons) for already-
         // resolved/acknowledged alerts; otherwise 'alert' (severity colors +
@@ -41,26 +55,48 @@
         return 'alert';
     }
 
-    function showToast(title, body, severity, sticky, alertId, category) {
+    function showToast(title, body, severity, sticky, alertId, category, incidentId, incidentSize) {
         if (!container) return;
         if (typeof _activeTab !== 'undefined' && _activeTab === 'events') return;
         if (alertId && dismissedAlertIds.has(alertId)) return;
 
         const cat = category || 'alert';
         const sev = (severity || 'info').toLowerCase();
-        const el = document.createElement('div');
-        el.className = cat === 'ack'   ? 'ae-toast ae-toast-ack'
-                     : cat === 'clear' ? 'ae-toast ae-toast-clear'
-                     : `ae-toast ae-toast-${sev}`;
-        if (alertId) el.dataset.alertId = alertId;
+        const sevClass = cat === 'ack'   ? 'ae-toast-ack'
+                       : cat === 'clear' ? 'ae-toast-clear'
+                       : `ae-toast-${sev}`;
 
-        const safeTitle = String(title || '').replace(/[<>&]/g, c => ({'<':'&lt;','>':'&gt;','&':'&amp;'}[c]));
-        const safeBody  = String(body  || '').replace(/[<>&]/g, c => ({'<':'&lt;','>':'&gt;','&':'&amp;'}[c]));
+        // Same-incident toast already on screen — update it in place instead of stacking.
+        if (incidentId) {
+            const existing = container.querySelector(
+                `.ae-toast[data-incident-id="${CSS.escape(incidentId)}"]`);
+            if (existing) {
+                const msgEl = existing.querySelector('.ae-toast-message');
+                if (msgEl) setToastMessage(msgEl, title, body, incidentSize);
+                // Swap severity/category class only; keep show/hide/clickable state classes.
+                Array.from(existing.classList).forEach(c => {
+                    if (c.indexOf('ae-toast-') === 0 && c !== 'ae-toast-clickable') {
+                        existing.classList.remove(c);
+                    }
+                });
+                existing.classList.add(sevClass);
+                if (alertId) existing.dataset.alertId = alertId;
+                if (existing._dismissTimer) clearTimeout(existing._dismissTimer);
+                if (!sticky && existing._dismiss) {
+                    existing._dismissTimer = setTimeout(() => existing._dismiss(true), 10000);
+                }
+                return;
+            }
+        }
+
+        const el = document.createElement('div');
+        el.className = `ae-toast ${sevClass}`;
+        if (alertId) el.dataset.alertId = alertId;
+        if (incidentId) el.dataset.incidentId = incidentId;
+
         const msgEl = document.createElement('span');
         msgEl.className = 'ae-toast-message';
-        msgEl.innerHTML = safeBody
-            ? `${safeTitle}<br><small>${safeBody}</small>`
-            : safeTitle;
+        setToastMessage(msgEl, title, body, incidentSize);
         el.appendChild(msgEl);
 
         if (alertId && cat === 'alert') {
@@ -82,16 +118,18 @@
 
             ackBtn.addEventListener('click', async (e) => {
                 e.stopPropagation();
+                const targetId = el.dataset.alertId || alertId;
                 try {
-                    await fetch(`/api/alarm/alerts/${encodeURIComponent(alertId)}/acknowledge`,
+                    await fetch(`/api/alarm/alerts/${encodeURIComponent(targetId)}/acknowledge`,
                         { method: 'POST', credentials: 'same-origin' });
                 } catch (_) {}
                 dismiss(true);
             });
             resBtn.addEventListener('click', async (e) => {
                 e.stopPropagation();
+                const targetId = el.dataset.alertId || alertId;
                 try {
-                    await fetch(`/api/alarm/alerts/${encodeURIComponent(alertId)}/close`,
+                    await fetch(`/api/alarm/alerts/${encodeURIComponent(targetId)}/close`,
                         { method: 'POST', credentials: 'same-origin' });
                 } catch (_) {}
                 dismiss(true);
@@ -116,13 +154,17 @@
         function dismiss(broadcast = true) {
             if (dismissed) return;
             dismissed = true;
+            const currentId = el.dataset.alertId || alertId;
+            // Frees the incident slot.
+            delete el.dataset.incidentId;
+            if (el._dismissTimer) clearTimeout(el._dismissTimer);
             el.classList.remove('show');
             el.classList.add('hide');
             setTimeout(() => el.remove(), 350);
-            if (broadcast && alertId) {
-                dismissedAlertIds.add(alertId);
+            if (broadcast && currentId) {
+                dismissedAlertIds.add(currentId);
                 if (bus) {
-                    try { bus.postMessage({ type: 'dismiss', alertId }); } catch (_) {}
+                    try { bus.postMessage({ type: 'dismiss', alertId: currentId }); } catch (_) {}
                 }
             }
         }
@@ -141,7 +183,7 @@
         container.appendChild(el);
         requestAnimationFrame(() => requestAnimationFrame(() => el.classList.add('show')));
 
-        if (!sticky) setTimeout(() => dismiss(true), 10000);
+        if (!sticky) el._dismissTimer = setTimeout(() => dismiss(true), 10000);
 
         // Cap at 5 simultaneous toasts (drop oldest non-sticky first)
         while (container.children.length > 5) {
@@ -150,6 +192,16 @@
             ) || container.firstChild;
             victim.remove();
         }
+    }
+
+    // Coalesces bursts of alert_* WS events into a single indicator refresh.
+    let refreshIndicatorsTimer = null;
+    function debouncedRefreshTabIndicators() {
+        if (refreshIndicatorsTimer) clearTimeout(refreshIndicatorsTimer);
+        refreshIndicatorsTimer = setTimeout(() => {
+            refreshIndicatorsTimer = null;
+            try { refreshTabIndicators(); } catch (_) {}
+        }, 1000);
     }
 
     function connect() {
@@ -171,42 +223,19 @@
                         payload.sticky === true,
                         payload.alert_id,
                         cat,
+                        payload.incident_id || '',
+                        payload.incident_size,
                     );
                 }
                 if (type === 'alert_created' && payload) {
                     const sev = payload.severity || 'warning';
-                    showToast(
-                        payload.rule_name || 'New Alert',
-                        payload.message || '',
-                        sev, false,
-                        payload.alert_id,
-                        'alert',
-                    );
                     if (sev === 'critical') {
                         try { _setTabDot('tabDotEvents', 'alert'); } catch (_) {}
                     }
-                    try { refreshTabIndicators(); } catch (_) {}
-                }
-                if (type === 'alert_acknowledged' && payload) {
-                    showToast(
-                        (payload.rule_name || 'Alert') + ' acknowledged',
-                        payload.message || '',
-                        'info', false,
-                        payload.alert_id,
-                        'ack',
-                    );
-                }
-                if ((type === 'alert_resolved' || type === 'alert_closed' || type === 'alert_cleared') && payload) {
-                    showToast(
-                        (payload.rule_name || 'Alert') + ' cleared',
-                        payload.message || '',
-                        'success', false,
-                        payload.alert_id,
-                        'clear',
-                    );
+                    debouncedRefreshTabIndicators();
                 }
                 if (typeof type === 'string' && type.indexOf('alert_') === 0 && type !== 'alert_created') {
-                    try { refreshTabIndicators(); } catch (_) {}
+                    debouncedRefreshTabIndicators();
                 }
             } catch(_) {}
         };

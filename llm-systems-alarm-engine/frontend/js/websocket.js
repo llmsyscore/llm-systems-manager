@@ -158,14 +158,6 @@ const WebSocketEvents = {
         // Alert events
         ws.on('alert_created', (payload) => {
             AlertManager.handleNewAlert(payload);
-            const src = [payload.metric_source, payload.metric_name].filter(Boolean).join('/');
-            const host = payload.source_host || '';
-            const subtitle = [host, src].filter(Boolean).join(' · ');
-            const title = payload.rule_name || 'New Alert';
-            ToastManager.show(title, payload.severity || 'warning', {
-                alertId: payload.alert_id,
-                subtitle,
-            });
         });
 
         ws.on('alert_acknowledged', (payload) => {
@@ -174,25 +166,9 @@ const WebSocketEvents = {
 
         ws.on('alert_closed', (payload) => {
             AlertManager.handleAlertUpdate(payload);
-            const src = [payload.metric_source, payload.metric_name].filter(Boolean).join('/');
-            const host = payload.source_host || '';
-            const subtitle = [host, src].filter(Boolean).join(' · ');
-            const title = subtitle
-                ? (payload.rule_name || 'Alert resolved')
-                : `Alert resolved: ${payload.rule_name || ''}`;
-            ToastManager.show(title, 'success', { subtitle });
         });
 
         ws.on('alert_ignored', (payload) => {
-            AlertManager.handleAlertUpdate(payload);
-        });
-
-        ws.on('alert_exception', (payload) => {
-            AlertManager.handleAlertUpdate(payload);
-            ToastManager.show(`⚠️ Exception created for: ${payload.rule_name || ''}`, 'info');
-        });
-
-        ws.on('alert_threshold_changed', (payload) => {
             AlertManager.handleAlertUpdate(payload);
         });
 
@@ -225,6 +201,8 @@ const WebSocketEvents = {
                     sticky: payload.sticky === true,
                     alertId: payload.alert_id,
                     subtitle: body,
+                    incidentId: payload.incident_id,
+                    incidentSize: payload.incident_size,
                 });
             }
         });

@@ -30,12 +30,14 @@ class AlertCreate(BaseModel):
     message: str = Field(description="Alert message")
     notification_channel_ids: list[UUID] = Field(default_factory=list, description="Channels to notify")
     source_host: Optional[str] = Field(default=None, description="Server/device hostname that produced the metric")
+    incident_id: Optional[str] = Field(default=None, description="Incident this alert joins; None -> self-root")
 
     def to_alert(self, alert_id: Optional[UUID] = None) -> "Alert":
         """Create an Alert from the create schema."""
         now = now_utc()
+        aid = alert_id or uuid4()
         return Alert(
-            alert_id=alert_id or uuid4(),
+            alert_id=aid,
             rule_id=self.rule_id,
             rule_name=self.rule_name,
             metric_source=self.metric_source,
@@ -54,6 +56,7 @@ class AlertCreate(BaseModel):
             acknowledged_by=None,
             exception_details=None,
             source_host=self.source_host,
+            incident_id=self.incident_id or str(aid),
         )
 
 
@@ -101,6 +104,7 @@ class Alert(BaseModel):
     acknowledged_by: Optional[str] = None
     exception_details: Optional[str] = None
     source_host: Optional[str] = None
+    incident_id: Optional[str] = None
 
     # Resolution metadata (set when the alert transitions to CLOSED).
     # resolution_reason: "auto" (hysteresis threshold cleared), "manual"
@@ -133,6 +137,7 @@ class Alert(BaseModel):
             "acknowledged_by": self.acknowledged_by,
             "exception_details": self.exception_details,
             "source_host": self.source_host,
+            "incident_id": self.incident_id,
             "resolution_reason": self.resolution_reason,
             "resolved_value": self.resolved_value,
         }
