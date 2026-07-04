@@ -45,6 +45,7 @@ from fastapi.staticfiles import StaticFiles  # noqa: E402
 
 from config.unified_config import settings, CONFIG_PATH  # noqa: E402
 from ._best_effort import best_effort
+from ._time import now_utc
 from .api.websocket import WebSocketConnectionManager, init_manager
 from .api.routes import alerts, ingest, metrics, notifications, rules
 from .receivers import otlp_receiver
@@ -65,7 +66,7 @@ from .storage.influxdb_client import InfluxDBClient
 # (-1, -2, …) for same-day iterations; roll the date for a new day's first
 # change.
 # ---------------------------------------------------------------------------
-__version__ = "v2026.07.04-5"
+__version__ = "v2026.07.04-6"
 from .storage import influx_monitor as _influx_monitor
 from .models.alarm_rule import (
     AlarmRuleCreate,
@@ -536,6 +537,23 @@ async def _on_startup() -> None:
             initial_delay_s=30.0,
         ))
 
+    # 6c. Alert-history retention purge (#220): delete alert_history rows
+    # older than alert_history_days. Disabled when alert_history_days <= 0
+    # (keep forever). Cutoff is computed fresh each run, not at boot.
+    _retention_cfg = getattr(settings.alarm_engine, "retention", None)
+    _alert_history_days = int(getattr(_retention_cfg, "alert_history_days", 90) or 0)
+    if ae_alarms_db is not None and _alert_history_days > 0:
+        _purge_interval_s = float(getattr(_retention_cfg, "purge_interval_s", 3600.0) or 3600.0)
+        _alarms_db = ae_alarms_db
+
+        def _purge_alert_history() -> int:
+            cutoff = (now_utc() - timedelta(days=_alert_history_days)).isoformat()
+            return _alarms_db.purge_history_older_than(cutoff)
+
+        asyncio.create_task(_periodic_refresh(
+            "Alert-history purge", _purge_alert_history, _purge_interval_s,
+        ))
+
 
 def _fmt_uptime(seconds: float) -> str:
     s = int(max(0, seconds))
@@ -816,6 +834,7 @@ def _collect_sqlite_stats() -> dict:
         with ae_alarms_db._lock:
             stats = _sqlite_common_stats(str(ae_alarms_db.path), ae_alarms_db._conn)
             stats["alerts"] = _scalar(ae_alarms_db._conn, "SELECT COUNT(*) FROM alerts")
+            stats["alert_history"] = _scalar(ae_alarms_db._conn, "SELECT COUNT(*) FROM alert_history")
         payload["alarms_db"] = stats
     if ae_settings_db is not None:
         with ae_settings_db._lock:
@@ -841,7 +860,7 @@ def _collect_sqlite_stats() -> dict:
 # and ae_alarms.db (alerts + history) as an LSMENC archive.
 
 from . import _archive as _ae_archive
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from fastapi import UploadFile, File, Form, Body, HTTPException
 
 _AE_EXPORT_DBS = ["data/ae_notif_rules.db", "data/ae_alarms.db"]

@@ -281,6 +281,17 @@ class AeAlarmsDB:
                 (float(current_value), ts, str(alert_id)),
             )
 
+    def purge_history_older_than(self, cutoff_iso: str) -> int:
+        """Delete alert_history rows whose effective end time is before
+        cutoff_iso (#220 retention). Returns the number of rows deleted."""
+        with self._lock:
+            cur = self._conn.execute(
+                "DELETE FROM alert_history "
+                "WHERE COALESCE(closed_at, acknowledged_at, created_at) < ?",
+                (cutoff_iso,),
+            )
+            return cur.rowcount or 0
+
     def delete_alert(self, alert_id: str) -> bool:
         """Delete from both alerts and alert_history (#220) — a row lives
         in exactly one, but callers don't need to know which."""

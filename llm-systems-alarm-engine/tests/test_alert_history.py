@@ -323,3 +323,71 @@ def test_rearchiving_alert_overwrites_history_row(tmp_path):
         assert db.count_by_status_and_severity()["total"] == 1
     finally:
         db.close()
+
+
+# ── Task 4: retention purge ─────────────────────────────────────────────
+
+
+def _write_history_row(db, alert_id, *, created_at, closed_at=None, acknowledged_at=None):
+    """Insert directly into alert_history with explicit timestamps, bypassing
+    write_alert's archive path (which stamps created_at from now_utc())."""
+    with db._lock:
+        db._conn.execute(
+            "INSERT INTO alert_history (alert_id, metric_source, metric_name,"
+            " current_value, threshold_value, severity, status, created_at,"
+            " acknowledged_at, closed_at)"
+            " VALUES (?, 'gpu', 'temp', 90, 85, 'warning', 'closed', ?, ?, ?)",
+            (alert_id, created_at, acknowledged_at, closed_at),
+        )
+
+
+def test_purge_history_older_than_deletes_only_old_rows(tmp_path):
+    db = AeAlarmsDB.open(tmp_path / "fresh.db")
+    try:
+        _write_history_row(
+            db, "old-1",
+            created_at="2020-01-01T00:00:00", closed_at="2020-01-02T00:00:00",
+        )
+        _write_history_row(
+            db, "recent-1",
+            created_at="2026-06-01T00:00:00", closed_at="2026-06-02T00:00:00",
+        )
+        deleted = db.purge_history_older_than("2025-01-01T00:00:00")
+        assert deleted == 1
+        remaining = {r["alert_id"] for r in db._conn.execute("SELECT alert_id FROM alert_history")}
+        assert remaining == {"recent-1"}
+    finally:
+        db.close()
+
+
+def test_purge_history_older_than_falls_back_to_created_at_when_closed_at_null(tmp_path):
+    db = AeAlarmsDB.open(tmp_path / "fresh.db")
+    try:
+        _write_history_row(db, "old-null-closed", created_at="2020-01-01T00:00:00")
+        deleted = db.purge_history_older_than("2025-01-01T00:00:00")
+        assert deleted == 1
+        assert _history_alert(db, "old-null-closed") is None
+    finally:
+        db.close()
+
+
+def test_purge_history_older_than_no_match_returns_zero(tmp_path):
+    db = AeAlarmsDB.open(tmp_path / "fresh.db")
+    try:
+        _write_history_row(
+            db, "recent-1",
+            created_at="2026-06-01T00:00:00", closed_at="2026-06-02T00:00:00",
+        )
+        deleted = db.purge_history_older_than("2020-01-01T00:00:00")
+        assert deleted == 0
+        assert _history_alert(db, "recent-1") is not None
+    finally:
+        db.close()
+
+
+def test_purge_history_older_than_empty_table_returns_zero(tmp_path):
+    db = AeAlarmsDB.open(tmp_path / "fresh.db")
+    try:
+        assert db.purge_history_older_than("2026-01-01T00:00:00") == 0
+    finally:
+        db.close()
