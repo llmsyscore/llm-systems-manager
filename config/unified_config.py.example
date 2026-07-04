@@ -279,6 +279,13 @@ class AlarmEngineCorrelation(BaseModel):
     notify_per_incident: bool = True
 
 
+class AlarmEngineRetention(BaseModel):
+    # Alert history table retention (#220): purge old alert_history rows.
+    model_config = _MODEL_CFG
+    alert_history_days: int = 90
+    purge_interval_s: float = 3600.0
+
+
 class AlarmEngineApiLimits(BaseModel):
     model_config = _MODEL_CFG
     recent_alerts_limit_max: int = 5000
@@ -365,6 +372,7 @@ class AlarmEngineConfig(BaseModel):
     intervals: AlarmEngineIntervals = Field(default_factory=AlarmEngineIntervals)
     caches: AlarmEngineCaches = Field(default_factory=AlarmEngineCaches)
     correlation: AlarmEngineCorrelation = Field(default_factory=AlarmEngineCorrelation)
+    retention: AlarmEngineRetention = Field(default_factory=AlarmEngineRetention)
     api_limits: AlarmEngineApiLimits = Field(default_factory=AlarmEngineApiLimits)
     history: AlarmEngineHistory = Field(default_factory=AlarmEngineHistory)
     default_rules: AlarmEngineDefaultRules = Field(default_factory=AlarmEngineDefaultRules)

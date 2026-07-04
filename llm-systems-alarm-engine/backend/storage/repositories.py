@@ -22,7 +22,7 @@ from ..models.notification import (
     NotificationDelivery,
     NotificationMethod,
 )
-from .ae_alarms_db import AeAlarmsDB
+from .ae_alarms_db import AeAlarmsDB, _NON_LIVE_STATUSES
 from .ae_settings_db import AeSettingsDB
 from .cache import MetricCache
 from .influxdb_client import InfluxDBClient
@@ -367,16 +367,18 @@ class AlertRepository:
         only_active: bool = False,
         include_closed: bool = False,
     ) -> list[Alert]:
-        """List alerts with optional filtering. Filtering, sorting, and
-        pagination all push down to SQLite. `include_closed` selects the
-        full table; otherwise live alerts only."""
+        """List alerts with optional filtering, sorting, and pagination
+        (pushed down to SQLite). A non-live `status` forces `live_only=False` (#220)."""
         if self.alarms_db is None:
             return []
         status_str: Optional[str] = None
         if status is not None:
             status_str = status.value if isinstance(status, AlertStatus) else str(status)
+        live_only = only_active or not include_closed
+        if status_str in _NON_LIVE_STATUSES:
+            live_only = False
         rows = self.alarms_db.query_filtered(
-            live_only=(only_active or not include_closed),
+            live_only=live_only,
             status=status_str,
             severity=severity,
             rule_id=rule_id,
@@ -400,12 +402,15 @@ class AlertRepository:
         return self.get_by_id(uid)
 
     def query(self, filters: AlertFilter, include_closed: bool = False) -> list:
-        """Query alerts with filters. Returns dicts (the CSV exporter and
-        dashboard list consume the dict shape directly)."""
+        """Query alerts with filters, returning dicts (CSV exporter/dashboard
+        list shape). A non-live `status` forces `live_only=False` (#220)."""
         if self.alarms_db is None:
             return []
+        live_only = not include_closed
+        if filters.status in _NON_LIVE_STATUSES:
+            live_only = False
         return self.alarms_db.query_filtered(
-            live_only=not include_closed,
+            live_only=live_only,
             status=filters.status,
             severity=filters.severity,
             rule_id=str(filters.rule_id) if filters.rule_id else None,
@@ -435,6 +440,8 @@ class AlertRepository:
             alert_data["acknowledged_at"] = now_utc().isoformat()
         elif update.status == AlertStatus.CLOSED and alert_data.get("closed_at") is None:
             alert_data["closed_at"] = now_utc().isoformat()
+        elif update.status == AlertStatus.IGNORED and alert_data.get("acknowledged_at") is None:
+            alert_data["acknowledged_at"] = now_utc().isoformat()
 
         alert = self._dict_to_alert(alert_data)
         self._save_alert(alert)
