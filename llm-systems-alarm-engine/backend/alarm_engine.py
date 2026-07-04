@@ -66,7 +66,7 @@ from .storage.influxdb_client import InfluxDBClient
 # (-1, -2, …) for same-day iterations; roll the date for a new day's first
 # change.
 # ---------------------------------------------------------------------------
-__version__ = "v2026.07.04-7"
+__version__ = "v2026.07.04-8"
 from .storage import influx_monitor as _influx_monitor
 from .models.alarm_rule import (
     AlarmRuleCreate,
@@ -86,7 +86,10 @@ from .engine.notification_dispatcher import NotificationDispatcher
 LOG_DIR   = settings.paths.log_dir
 LOG_FILE  = os.path.join(LOG_DIR, "llm-systems-alarm-engine.log")
 
-os.makedirs(LOG_DIR, exist_ok=True)
+try:
+    os.makedirs(LOG_DIR, exist_ok=True)
+except OSError:
+    pass  # unwritable log dir: console-only logging below
 
 _log_formatter = logging.Formatter(
     settings.logging.format,
@@ -101,14 +104,6 @@ logger.setLevel(_log_level)
 _console_handler = logging.StreamHandler()
 _console_handler.setFormatter(_log_formatter)
 
-_file_handler = logging.handlers.RotatingFileHandler(
-    LOG_FILE,
-    maxBytes=settings.paths.log_max_bytes,
-    backupCount=settings.paths.log_backup_count,
-    encoding="utf-8",
-)
-_file_handler.setFormatter(_log_formatter)
-
 # Attach handlers to BOTH the named logger (for `logger.info` calls inside this
 # module) AND the root logger so every submodule's `logging.getLogger(__name__)`
 # propagates into the same file.
@@ -120,9 +115,16 @@ if not any(isinstance(h, logging.StreamHandler) and getattr(h, "_lsm_marker", Fa
     _root.addHandler(_console_handler)
 try:
     if not any(isinstance(h, logging.handlers.RotatingFileHandler) and getattr(h, "_lsm_marker", False) for h in _root.handlers):
+        _file_handler = logging.handlers.RotatingFileHandler(
+            LOG_FILE,
+            maxBytes=settings.paths.log_max_bytes,
+            backupCount=settings.paths.log_backup_count,
+            encoding="utf-8",
+        )
+        _file_handler.setFormatter(_log_formatter)
         _file_handler._lsm_marker = True
         _root.addHandler(_file_handler)
-except PermissionError:
+except OSError:
     # If we can't write to /var/log, log silently — don't crash the app
     pass
 
