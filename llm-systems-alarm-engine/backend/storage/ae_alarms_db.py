@@ -31,6 +31,58 @@ _LIVE_STATUS_SQL_LIST = "({})".format(
     ", ".join(f"'{s}'" for s in _LIVE_STATUSES)
 )
 
+# Non-live statuses (#220) — rows in these statuses are archived out of the
+# hot `alerts` table into `alert_history`.
+_NON_LIVE_STATUSES = (
+    AlertStatus.CLOSED.value,
+    AlertStatus.IGNORED.value,
+    AlertStatus.EXCEPTION.value,
+)
+_NON_LIVE_STATUS_SQL_LIST = "({})".format(
+    ", ".join(f"'{s}'" for s in _NON_LIVE_STATUSES)
+)
+
+# Shared column list for alerts <-> alert_history moves (#220).
+_ALERT_COLUMNS = (
+    "alert_id, rule_id, rule_name, metric_source, metric_name, source_host, "
+    "incident_id, current_value, threshold_value, severity, status, message, "
+    "trigger_count, acknowledged_by, exception_details, resolution_reason, "
+    "resolved_value, notification_channel_ids_json, created_at, "
+    "last_evaluated_at, acknowledged_at, closed_at, chart_window_start, chart_window_end"
+)
+
+# alert_history: identical column set to alerts, PK alert_id (#220).
+_ALERT_HISTORY_DDL = """
+CREATE TABLE IF NOT EXISTS alert_history (
+  alert_id TEXT PRIMARY KEY,
+  rule_id TEXT,
+  rule_name TEXT,
+  metric_source TEXT NOT NULL,
+  metric_name TEXT NOT NULL,
+  source_host TEXT,
+  incident_id TEXT,
+  current_value REAL NOT NULL,
+  threshold_value REAL NOT NULL,
+  severity TEXT NOT NULL,
+  status TEXT NOT NULL,
+  message TEXT,
+  trigger_count INTEGER NOT NULL DEFAULT 1,
+  acknowledged_by TEXT,
+  exception_details TEXT,
+  resolution_reason TEXT,
+  resolved_value REAL,
+  notification_channel_ids_json TEXT NOT NULL DEFAULT '[]',
+  created_at TEXT NOT NULL,
+  last_evaluated_at TEXT,
+  acknowledged_at TEXT,
+  closed_at TEXT,
+  chart_window_start TEXT,
+  chart_window_end TEXT
+);
+CREATE INDEX IF NOT EXISTS alert_history_created_idx ON alert_history(created_at DESC);
+CREATE INDEX IF NOT EXISTS alert_history_status_idx ON alert_history(status);
+"""
+
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS schema_version (version INTEGER PRIMARY KEY);
@@ -69,7 +121,7 @@ CREATE TABLE IF NOT EXISTS alerts (
 CREATE INDEX IF NOT EXISTS alerts_status_idx ON alerts(status);
 CREATE INDEX IF NOT EXISTS alerts_rule_id_idx ON alerts(rule_id);
 CREATE INDEX IF NOT EXISTS alerts_created_at_idx ON alerts(created_at DESC);
-"""
+""" + _ALERT_HISTORY_DDL
 
 
 def _migrate(conn: sqlite3.Connection) -> None:
@@ -80,6 +132,21 @@ def _migrate(conn: sqlite3.Connection) -> None:
         logger.info("ae_alarms.db migrated: alerts.incident_id added")
     conn.execute("CREATE INDEX IF NOT EXISTS alerts_incident_idx ON alerts(incident_id)")
     conn.execute("INSERT OR IGNORE INTO schema_version VALUES (2)")
+
+    # #220: alert_history table + one-time backfill of non-live rows.
+    conn.executescript(_ALERT_HISTORY_DDL)
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        conn.execute(
+            f"INSERT OR IGNORE INTO alert_history ({_ALERT_COLUMNS}) "
+            f"SELECT {_ALERT_COLUMNS} FROM alerts WHERE status IN {_NON_LIVE_STATUS_SQL_LIST}"
+        )
+        conn.execute(f"DELETE FROM alerts WHERE status IN {_NON_LIVE_STATUS_SQL_LIST}")
+        conn.execute("INSERT OR IGNORE INTO schema_version VALUES (3)")
+        conn.execute("COMMIT")
+    except Exception:
+        conn.execute("ROLLBACK")
+        raise
     conn.commit()
 
 
@@ -102,6 +169,28 @@ class AeAlarmsDB:
         with self._lock:
             with best_effort("close ae_alarms_db connection", log=logger):
                 self._conn.close()
+
+    def _archive_non_live(self, alert_id: Optional[str] = None) -> None:
+        """Move non-live alerts rows into alert_history, one alert or all,
+        in a single explicit transaction (#220)."""
+        where = f"status IN {_NON_LIVE_STATUS_SQL_LIST}"
+        args: list[Any] = []
+        if alert_id is not None:
+            where += " AND alert_id = ?"
+            args.append(str(alert_id))
+        with self._lock:
+            self._conn.execute("BEGIN IMMEDIATE")
+            try:
+                self._conn.execute(
+                    f"INSERT OR IGNORE INTO alert_history ({_ALERT_COLUMNS}) "
+                    f"SELECT {_ALERT_COLUMNS} FROM alerts WHERE {where}",
+                    args,
+                )
+                self._conn.execute(f"DELETE FROM alerts WHERE {where}", args)
+                self._conn.execute("COMMIT")
+            except Exception:
+                self._conn.execute("ROLLBACK")
+                raise
 
     # ── Writes ───────────────────────────────────────────────────────────
 
@@ -170,6 +259,9 @@ class AeAlarmsDB:
                 """,
                 cols,
             )
+            # #220: sync-archive the row if the written status is non-live.
+            if cols[10] in _NON_LIVE_STATUSES:
+                self._archive_non_live(alert_id=cols[0])
 
     def bump_refresh(self, alert_id: str, current_value: float, when: Optional[str] = None) -> None:
         """Hot-path UPDATE for refresh() — called once per rule-eval cycle
@@ -184,11 +276,16 @@ class AeAlarmsDB:
             )
 
     def delete_alert(self, alert_id: str) -> bool:
+        """Delete from both alerts and alert_history (#220) — a row lives
+        in exactly one, but callers don't need to know which."""
         with self._lock:
-            cur = self._conn.execute(
+            cur1 = self._conn.execute(
                 "DELETE FROM alerts WHERE alert_id=?", (str(alert_id),)
             )
-            return cur.rowcount > 0
+            cur2 = self._conn.execute(
+                "DELETE FROM alert_history WHERE alert_id=?", (str(alert_id),)
+            )
+            return cur1.rowcount > 0 or cur2.rowcount > 0
 
     # ── Reads ────────────────────────────────────────────────────────────
 
@@ -292,8 +389,9 @@ class AeAlarmsDB:
         acknowledged_at: Optional[str] = None,
     ) -> int:
         """One UPDATE for close-all / ignore-all instead of N round-trips."""
+        to_status_value = _enum_value(to_status)
         sets = ["status = ?"]
-        args: list[Any] = [_enum_value(to_status)]
+        args: list[Any] = [to_status_value]
         if closed_at is not None:
             sets.append("closed_at = ?")
             args.append(closed_at)
@@ -305,7 +403,11 @@ class AeAlarmsDB:
         args.extend(_enum_value(s) for s in from_statuses)
         with self._lock:
             cur = self._conn.execute(sql, args)
-            return cur.rowcount or 0
+            n = cur.rowcount or 0
+            # #220: sync-archive rows the bulk update just moved non-live.
+            if to_status_value in _NON_LIVE_STATUSES:
+                self._archive_non_live()
+            return n
 
     @staticmethod
     def _row_to_alert(r: sqlite3.Row) -> dict[str, Any]:

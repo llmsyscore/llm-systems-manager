@@ -78,7 +78,12 @@ def test_v1_alerts_db_gains_incident_id(tmp_path):
     try:
         cols = {r[1] for r in db._conn.execute("PRAGMA table_info(alerts)")}
         assert "incident_id" in cols
-        old = db.get_alert("old-1")
+        # old-1 is status=closed, so #220 archives it into alert_history on
+        # open; get_alert() stays live-table-only until Task 3's dual read.
+        row = db._conn.execute(
+            "SELECT * FROM alert_history WHERE alert_id=?", ("old-1",)
+        ).fetchone()
+        old = db._row_to_alert(row) if row else None
         assert old is not None and old["incident_id"] is None
     finally:
         db.close()
