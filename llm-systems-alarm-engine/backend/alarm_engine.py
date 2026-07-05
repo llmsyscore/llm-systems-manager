@@ -66,7 +66,7 @@ from .storage.influxdb_client import InfluxDBClient
 # (-1, -2, …) for same-day iterations; roll the date for a new day's first
 # change.
 # ---------------------------------------------------------------------------
-__version__ = "v2026.07.04-8"
+__version__ = "v2026.07.05-1"
 from .storage import influx_monitor as _influx_monitor
 from .models.alarm_rule import (
     AlarmRuleCreate,
@@ -751,6 +751,20 @@ async def serve_index() -> FileResponse:
 
 # ── Health endpoint ─────────────────────────────────────────────
 
+def _ping_influxdb() -> tuple[str, "float | None", "str | None"]:
+    """Blocking InfluxDB /ping probe. Returns (status, latency_ms, version)."""
+    import requests
+    url = f"http://{settings.influxdb.host}:{settings.influxdb.port}/ping"
+    try:
+        t0 = time.perf_counter()
+        resp = requests.get(url, timeout=settings.alarm_engine.timeouts.influxdb_ping)
+        latency_ms = round((time.perf_counter() - t0) * 1000, 1)
+        status = "connected" if resp.status_code in (200, 204) else f"http_{resp.status_code}"
+        return status, latency_ms, resp.headers.get("X-Influxdb-Version") or None
+    except Exception as e:
+        return f"unreachable: {type(e).__name__}", None, None
+
+
 @app.get("/health")
 async def health_check() -> dict:
     """Health check endpoint.
@@ -759,22 +773,14 @@ async def health_check() -> dict:
     checking that a host was configured. Returns 200 in all branches so
     that load balancers / uptime checkers can distinguish "alarm engine
     process up but InfluxDB unreachable" via the JSON body rather than
-    HTTP code.
+    HTTP code. The ping runs in a worker thread so a slow/unreachable
+    InfluxDB can't stall the event loop for the whole timeout.
     """
-    import requests
     influx_status = "not configured"
     influx_latency_ms: float | None = None
     influx_version: str | None = None
     if settings.influxdb.host:
-        url = f"http://{settings.influxdb.host}:{settings.influxdb.port}/ping"
-        try:
-            t0 = time.perf_counter()
-            resp = requests.get(url, timeout=settings.alarm_engine.timeouts.influxdb_ping)
-            influx_latency_ms = round((time.perf_counter() - t0) * 1000, 1)
-            influx_status = "connected" if resp.status_code in (200, 204) else f"http_{resp.status_code}"
-            influx_version = resp.headers.get("X-Influxdb-Version") or None
-        except Exception as e:
-            influx_status = f"unreachable: {type(e).__name__}"
+        influx_status, influx_latency_ms, influx_version = await asyncio.to_thread(_ping_influxdb)
     return {
         "status": "ok",
         "version": __version__,
