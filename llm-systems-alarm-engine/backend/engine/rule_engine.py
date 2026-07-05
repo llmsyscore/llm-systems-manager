@@ -73,19 +73,6 @@ class RuleEngine:
         # a value of 0 disables auto-resolve for that rule.
         self._ok_streak: dict[str, int] = {}
 
-        # Active-alerts snapshot cache. `alert_repository.get_active()` is a
-        # synchronous InfluxDB query (~1.3 s under load) — running it every
-        # evaluation cycle (default 15 s) is the single biggest source of
-        # CPU spikes on the engine. Alert state transitions invalidate
-        # the cache (fire / auto-resolve hooks set _cache_at = 0), so a
-        # 5-minute TTL doesn't hide real state changes from the engine —
-        # it only avoids the cosmetic re-fetch when nothing has fired or
-        # resolved. Cuts the periodic 1.2 s spike from once-per-minute
-        # to once-per-five-minutes.
-        self._active_alerts_cache: Optional[list] = None
-        self._active_alerts_cache_at: float = 0.0
-        self._active_alerts_cache_ttl_s: float = 300.0
-
     async def start(self) -> None:
         """Start the rule engine evaluation loop."""
         if self._running:
@@ -129,33 +116,19 @@ class RuleEngine:
         violations = 0
         per_rule_ms: list[float] = []
 
-        # Snapshot active alerts. `alert_repository.get_active()` is a
-        # synchronous InfluxDB query (~1.3 s under load). Cached across
-        # cycles (TTL = self._active_alerts_cache_ttl_s) — the alert state
-        # changes are driven by these same eval cycles, so a snapshot
-        # slightly behind real-time is harmless and saves ~1 core-second
-        # per refresh window.
-        now_mono = time.monotonic()
-        cache_age = now_mono - self._active_alerts_cache_at
-        if (self._active_alerts_cache is not None
-                and cache_age < self._active_alerts_cache_ttl_s):
-            active_alerts_snapshot = self._active_alerts_cache
-        else:
-            # InfluxDB query — ~1.3 s under load. Offload to a worker
-            # thread so the event loop stays responsive; otherwise every
-            # async handler (ingest, history, metrics-list, ...) queues
-            # up behind this call once per TTL window and reports a 1-3 s
-            # tail-latency spike.
-            try:
-                loop = asyncio.get_running_loop()
-                active_alerts_snapshot = await loop.run_in_executor(
-                    None, self.alert_repository.get_active,
-                )
-                self._active_alerts_cache = active_alerts_snapshot
-                self._active_alerts_cache_at = now_mono
-            except Exception:
-                logger.exception("Failed to fetch active alerts snapshot")
-                active_alerts_snapshot = self._active_alerts_cache or []
+        # Snapshot active alerts once per cycle. AlertRepository keeps its
+        # own TTL cache, invalidated on every state change (fire, auto-resolve,
+        # manual ack/close/ignore/delete, bulk ops), so this read is sub-ms on
+        # a cache hit and always reflects manual actions. Offloaded to a worker
+        # thread to keep the event loop responsive on a cache miss.
+        try:
+            loop = asyncio.get_running_loop()
+            active_alerts_snapshot = await loop.run_in_executor(
+                None, self.alert_repository.get_active,
+            )
+        except Exception:
+            logger.exception("Failed to fetch active alerts snapshot")
+            active_alerts_snapshot = []
 
         for rule in rules:
             r_start = time.perf_counter()
@@ -291,9 +264,6 @@ class RuleEngine:
                         str(a.alert_id), reason="auto", resolved_value=current_value,
                     )
                     if closed is not None:
-                        # Alert resolved → snapshot is stale; force re-read
-                        # next cycle so the resolved alert drops out.
-                        self._active_alerts_cache_at = 0.0
                         logger.info(
                             "ALERT AUTO-RESOLVED: rule=%s metric=%s/%s value=%.2f "
                             "(below threshold for %d cycles) alert_id=%s",
@@ -324,10 +294,6 @@ class RuleEngine:
             if not existing:
                 t0 = time.perf_counter()
                 created_alert = self.alert_manager.process_alert(alert_create)
-                # New alert minted → invalidate the snapshot so the next
-                # cycle re-reads from the repository instead of working
-                # off a stale "no-active-alert" view.
-                self._active_alerts_cache_at = 0.0
                 proc_ms = (time.perf_counter() - t0) * 1000.0
                 logger.info(
                     "ALERT FIRED: rule=%s host=%s metric=%s/%s value=%.2f threshold=%.2f severity=%s alert_id=%s (process %.1f ms)",
