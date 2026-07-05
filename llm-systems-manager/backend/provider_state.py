@@ -13,6 +13,7 @@ default for a provider. Policy lookups (default agent picking) live in
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import queue
 import threading
@@ -43,16 +44,12 @@ def _sync_put(q: "queue.Queue", item) -> None:
     try:
         q.put_nowait(item)
     except queue.Full:
-        try:
+        # Drop-oldest then retry; a consumer may have drained it or a concurrent
+        # refill may re-fill it, and dropping this one update is fine (newer follows).
+        with contextlib.suppress(queue.Empty):
             q.get_nowait()
-        except queue.Empty:
-            # a consumer drained it first; the retry below still applies
-            pass
-        try:
+        with contextlib.suppress(queue.Full):
             q.put_nowait(item)
-        except queue.Full:
-            # a concurrent refill won it; drop this update, newer state follows
-            pass
 
 
 class _ProviderSampleStore:
