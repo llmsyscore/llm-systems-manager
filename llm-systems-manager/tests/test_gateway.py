@@ -98,3 +98,51 @@ def test_models_merge_dedupe(monkeypatch):
     r = _client().get("/api/gateway/v1/models")
     ids = [m["id"] for m in r.get_json()["data"]]
     assert ids == ["m1", "m2", "m3"]
+
+
+class FakeUpstream:
+    def __init__(self, chunks, status=200, ctype="text/event-stream"):
+        self.status_code = status
+        self.headers = {"content-type": ctype}
+        self._chunks = list(chunks)
+        self.closed = False
+
+    def iter_content(self, chunk_size=None):
+        yield from self._chunks
+
+    def close(self):
+        self.closed = True
+
+
+def test_stream_pipes_chunks(monkeypatch):
+    agent = {"agent_id": "a" * 32, "hostname": "h1", "token": "t"}
+    monkeypatch.setattr(gateway, "_candidates", lambda m, a: [agent])
+    up = FakeUpstream([b'data: {"c":1}\n\n', b"data: [DONE]\n\n"])
+    monkeypatch.setattr(gateway, "_dial_stream", lambda a, p, b: up)
+    r = _client().post("/api/gateway/v1/chat/completions", json={"stream": True})
+    assert r.status_code == 200
+    assert r.content_type.startswith("text/event-stream")
+    body = r.get_data()
+    assert b'data: {"c":1}' in body and b"[DONE]" in body
+
+
+def test_stream_503_upstream_fails_over(monkeypatch):
+    a1 = {"agent_id": "a" * 32, "hostname": "h1", "token": "t"}
+    a2 = {"agent_id": "b" * 32, "hostname": "h2", "token": "t"}
+    monkeypatch.setattr(gateway, "_candidates", lambda m, a: [a1, a2])
+    bad = FakeUpstream([], status=503, ctype="application/json")
+    good = FakeUpstream([b"data: [DONE]\n\n"])
+    monkeypatch.setattr(gateway, "_dial_stream",
+                        lambda a, p, b: bad if a is a1 else good)
+    r = _client().post("/api/gateway/v1/chat/completions", json={"stream": True})
+    assert r.status_code == 200 and bad.closed
+
+
+def test_stream_non_sse_error_relayed(monkeypatch):
+    agent = {"agent_id": "a" * 32, "hostname": "h1", "token": "t"}
+    monkeypatch.setattr(gateway, "_candidates", lambda m, a: [agent])
+    up = FakeUpstream([], status=400, ctype="application/json")
+    up.content = b'{"error":{"message":"bad request"}}'
+    monkeypatch.setattr(gateway, "_dial_stream", lambda a, p, b: up)
+    r = _client().post("/api/gateway/v1/chat/completions", json={"stream": True})
+    assert r.status_code == 400

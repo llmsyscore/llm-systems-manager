@@ -134,7 +134,32 @@ def _handle_completion(sub: str) -> Response:
 
 def _stream_from(agent: dict, path: str, body: dict, errors: list):
     """One streaming attempt; None means try the next candidate."""
-    return None  # implemented in Task 4
+    upstream = _dial_stream(agent, path, body)
+    if upstream is None:
+        errors.append(f"{_label(agent)}: unreachable")
+        return None
+    if upstream.status_code in (502, 503):
+        upstream.close()
+        errors.append(f"{_label(agent)}: {upstream.status_code}")
+        return None
+    ctype = (upstream.headers.get("content-type") or "").lower()
+    if "text/event-stream" not in ctype:
+        # Upstream answered non-stream (e.g. 400 validation error): relay as-is.
+        content, status = upstream.content, upstream.status_code
+        upstream.close()
+        return Response(content, status=status,
+                        mimetype=ctype or "application/json")
+    if not stream_pool.POOL.try_acquire():
+        upstream.close()
+        return _oai_error("manager at stream capacity; retry shortly", 503)
+    resp = Response(
+        proxies.thread_pumped(upstream, path,
+                              max_lifetime_s=proxies._STREAM_OP_MAX_LIFETIME_S),
+        status=upstream.status_code, mimetype="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no",
+                 "X-Proxied-To": _label(agent)})
+    resp.call_on_close(stream_pool.POOL.release)
+    return resp
 
 
 def _gateway_models() -> Response:
