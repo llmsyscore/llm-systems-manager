@@ -297,6 +297,7 @@ class AlarmEngineApiLimits(BaseModel):
     history_limit_max: int = 100000
     summary_window_minutes_max: int = 10080   # 7 days
     export_since_minutes_max: int = 43200     # 30 days
+    max_request_body_bytes: int = 104857600   # 100 MiB; 0 = uncapped
 
 
 class DownsamplingTier(BaseModel):
