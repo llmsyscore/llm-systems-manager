@@ -154,7 +154,7 @@ def _local_hostname() -> str:
 # banner reads it. Bump suffix (-1, -2, …) for same-day iterations; roll
 # the date for a new day's first change.
 # ---------------------------------------------------------------------------
-__version__ = "v2026.07.04-3"
+__version__ = "v2026.07.04-4"
 
 # Wall-clock at first import (Cheroot main process); the shutdown banner
 # reads it for the uptime line.
@@ -3312,6 +3312,8 @@ proxies.register_routes(
 import openclaw  # type: ignore[import-not-found]  # sibling; PR M5
 openclaw.register_routes(app, ctx)
 model_profiles.register_routes(app, ctx, profiles_path=DATA_DIR / "model_profiles.json")
+import gateway  # type: ignore[import-not-found]  # sibling; #214
+gateway.register_routes(app, ctx)
 import manager_users  # type: ignore[import-not-found]  # sibling
 manager_users.init(
     DATA_DIR / "manager_users.json",
