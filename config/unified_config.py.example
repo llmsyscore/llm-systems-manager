@@ -112,11 +112,6 @@ class ManagerUploads(BaseModel):
     max_content_length: int = 100 * 1024 * 1024  # 100 MiB
 
 
-class ManagerBenchmark(BaseModel):
-    model_config = _MODEL_CFG
-    stream_queue_size: int = 5000
-
-
 class ManagerTimeouts(BaseModel):
     model_config = _MODEL_CFG
     generic_http: float = 30.0
@@ -242,7 +237,6 @@ class ManagerConfig(BaseModel):
     gateway: ManagerGateway = Field(default_factory=ManagerGateway)
     history: ManagerHistory = Field(default_factory=ManagerHistory)
     uploads: ManagerUploads = Field(default_factory=ManagerUploads)
-    benchmark: ManagerBenchmark = Field(default_factory=ManagerBenchmark)
     timeouts: ManagerTimeouts = Field(default_factory=ManagerTimeouts)
     agents: ManagerAgents = Field(default_factory=ManagerAgents)
     security: ManagerSecurity = Field(default_factory=ManagerSecurity)

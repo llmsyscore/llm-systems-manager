@@ -1298,10 +1298,10 @@ async function fetchMetrics() {
 // Maps each dashboard chart id to its alarm metric (source + metric_name).
 // Threshold lines come from enabled rules matching the selected host.
 const CHART_METRIC = {
-  cpuChart:       { source: 'cpu',  metric_name: 'usage_percent' },
-  ramChart:       { source: 'ram',  metric_name: 'usage_percent' },
-  gpuChart:       { source: 'gpu',  metric_name: 'utilization_percent' },
-  diskUsageChart: { source: 'disk', metric_name: 'root_percent' },
+  cpuChart:       { source: 'system', metric_name: 'cpu_total' },
+  ramChart:       { source: 'system', metric_name: 'ram_percent' },
+  gpuChart:       { source: 'system', metric_name: 'gpu_gpu_util_percent' },
+  diskUsageChart: { source: 'system', metric_name: 'disk_root_percent' },
 };
 let _alarmRules = [];
 
