@@ -696,11 +696,13 @@ def _proxy_alarm_engine(path: str):
     url = f"{ae_url.rstrip('/')}/api/alarm/" + path.lstrip("/")
     params = _resolve_alarm_agent_param(path, flask_request.args)
     try:
+        # authorization is excluded from the forwarded headers; the
+        # ae_session's session-level AE bearer applies instead.
         upstream = _deps.ctx.ae_session.request(
             method=flask_request.method,
             url=url,
             headers={k: v for k, v in flask_request.headers if k.lower() not in
-                     ("host", "content-length", "transfer-encoding")},
+                     ("host", "content-length", "transfer-encoding", "authorization")},
             data=flask_request.get_data(),
             params=params,
             allow_redirects=True,

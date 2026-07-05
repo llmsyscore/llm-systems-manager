@@ -22,9 +22,23 @@ from config.unified_config import settings
 _UNSET = {"", "REPLACE_ME"}
 
 
-def _configured_token() -> str:
-    tok = (settings.alarm_engine.ingest_token or "").strip()
+def _normalize_token(raw: Optional[str]) -> str:
+    tok = (raw or "").strip()
     return "" if tok in _UNSET else tok
+
+
+def _configured_token() -> str:
+    return _normalize_token(settings.alarm_engine.ingest_token)
+
+
+def _configured_management_token() -> str:
+    return _normalize_token(getattr(settings.alarm_engine, "management_token", ""))
+
+
+def _provided_bearer(authorization: Optional[str]) -> str:
+    if authorization and authorization.startswith("Bearer "):
+        return authorization[len("Bearer "):].strip()
+    return ""
 
 
 def ingest_auth_active() -> bool:
@@ -40,8 +54,17 @@ def require_ingest_token(authorization: Optional[str] = Header(default=None)) ->
     expected = _configured_token()
     if not expected:
         return
-    provided = ""
-    if authorization and authorization.startswith("Bearer "):
-        provided = authorization[len("Bearer "):].strip()
+    provided = _provided_bearer(authorization)
     if not provided or not hmac.compare_digest(provided, expected):
         raise HTTPException(status_code=401, detail="ingest authentication required")
+
+
+def require_management_token(authorization: Optional[str] = Header(default=None)) -> None:
+    """FastAPI dependency for the management routes (rules/alerts/notifications):
+    enforces `management_token`, else `ingest_token`; no-op when neither is set."""
+    expected = _configured_management_token() or _configured_token()
+    if not expected:
+        return
+    provided = _provided_bearer(authorization)
+    if not provided or not hmac.compare_digest(provided, expected):
+        raise HTTPException(status_code=401, detail="management authentication required")

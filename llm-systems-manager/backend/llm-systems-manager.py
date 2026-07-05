@@ -153,7 +153,7 @@ def _local_hostname() -> str:
 # banner reads it. Bump suffix (-1, -2, …) for same-day iterations; roll
 # the date for a new day's first change.
 # ---------------------------------------------------------------------------
-__version__ = "v2026.07.05-5"
+__version__ = "v2026.07.05-6"
 
 # Wall-clock at first import (Cheroot main process); the shutdown banner
 # reads it for the uptime line.
@@ -496,6 +496,13 @@ if (bool(settings.alarm_engine.tls_enabled)
 _ae_session = requests.Session()
 if bool(settings.alarm_engine.tls_enabled):
     _ae_session.verify = _AE_CA_PATH
+# Session-level bearer for the AE's token-gated routes: management_token,
+# else ingest_token ("" / "REPLACE_ME" count as unset).
+_AE_BEARER = (getattr(settings.alarm_engine, "management_token", "") or "").strip()
+if _AE_BEARER in ("", "REPLACE_ME"):
+    _AE_BEARER = (settings.alarm_engine.ingest_token or "").strip()
+if _AE_BEARER and _AE_BEARER != "REPLACE_ME":
+    _ae_session.headers["Authorization"] = f"Bearer {_AE_BEARER}"
 
 
 def install_topology() -> dict:
