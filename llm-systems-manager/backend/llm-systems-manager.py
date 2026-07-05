@@ -153,7 +153,7 @@ def _local_hostname() -> str:
 # banner reads it. Bump suffix (-1, -2, …) for same-day iterations; roll
 # the date for a new day's first change.
 # ---------------------------------------------------------------------------
-__version__ = "v2026.07.05-2"
+__version__ = "v2026.07.05-3"
 
 # Wall-clock at first import (Cheroot main process); the shutdown banner
 # reads it for the uptime line.
@@ -725,6 +725,11 @@ _HISTORY_LEGACY_FIELD_MAP = [
     ("llama",   "total_tokens_generated",                     "llama_gen_tokens"),
 ]
 
+# /api/alert's sustained-CPU probe reads the same series the history ring
+# maps to the legacy "cpu_total" field.
+_CPU_ALERT_SOURCE, _CPU_ALERT_METRIC = next(
+    (s, n) for s, n, f in _HISTORY_LEGACY_FIELD_MAP if f == "cpu_total")
+
 
 # ---------------------------------------------------------------------------
 # /api/history — 60-minute in-memory ring buffer.
@@ -1198,7 +1203,7 @@ def get_alert():
     if _alarm_engine_url:
         with best_effort("interval: probe sustained CPU from AE", log=log):
             r = _ae_session.get(
-                f"{_alarm_engine_url.rstrip('/')}/api/alarm/metrics/system/cpu_total",
+                f"{_alarm_engine_url.rstrip('/')}/api/alarm/metrics/{_CPU_ALERT_SOURCE}/{_CPU_ALERT_METRIC}",
                 params={"since_minutes": 1, "limit": 100},
                 timeout=2,
             )
@@ -1795,17 +1800,23 @@ def _broadcast_llama_state_if_changed(agent_id: "str | None" = None) -> None:
     )
 
 
+def _request_json_object() -> "dict | None":
+    """Parsed request JSON body when it is a JSON object, else None."""
+    try:
+        data = flask_request.get_json(force=True)
+    except Exception:
+        return None
+    return data if isinstance(data, dict) else None
+
+
 @app.route("/api/remote/host-metrics", methods=["POST"])
 def receive_remote_host_metrics():
     tok = agent_registry.bearer_from_request()
     agent = agent_registry.agent_by_token(tok or "")
     if not agent:
         return jsonify({"ok": False, "error": "invalid token or not approved"}), 401
-    try:
-        data = flask_request.get_json(force=True) or {}
-    except Exception:
-        return jsonify({"ok": False, "error": "bad JSON"}), 400
-    if not isinstance(data, dict):
+    data = _request_json_object()
+    if data is None:
         return jsonify({"ok": False, "error": "payload must be a JSON object"}), 400
     # PR2: every approved llama-capable agent pushes; STORE partitions them.
     aid = agent["agent_id"]
@@ -1828,14 +1839,13 @@ def receive_provider_state():
     agent = agent_registry.agent_by_token(tok or "")
     if not agent:
         return jsonify({"ok": False, "error": "invalid token or not approved"}), 401
-    try:
-        body = flask_request.get_json(force=True) or {}
-    except Exception:
-        return jsonify({"ok": False, "error": "bad JSON"}), 400
-    if not isinstance(body, dict):
+    body = _request_json_object()
+    if body is None:
         return jsonify({"ok": False, "error": "payload must be a JSON object"}), 400
     provider = (body.get("provider") or "").strip()
     sample = body.get("sample") or {}
+    if not isinstance(sample, dict):
+        return jsonify({"ok": False, "error": "sample must be a JSON object"}), 400
     if provider not in providers.names():
         return jsonify({"ok": False, "error": f"unknown provider: {provider}"}), 404
     aid = agent["agent_id"]
@@ -2065,10 +2075,10 @@ def receive_lmstudio_metrics():
     agent = agent_registry.agent_by_token(tok or "")
     if not agent:
         return jsonify({"ok": False, "error": "invalid token or not approved"}), 401
+    data = _request_json_object()
+    if data is None:
+        return jsonify({"ok": False, "error": "payload must be a JSON object"}), 400
     try:
-        data = flask_request.get_json(force=True)
-        if not isinstance(data, dict):
-            return jsonify({"ok": False, "error": "payload must be a JSON object"}), 400
         aid = agent["agent_id"]
         provider_state.STORE.put("lms", aid, data)
         # Per-agent online latch — log only on the False→True edge.

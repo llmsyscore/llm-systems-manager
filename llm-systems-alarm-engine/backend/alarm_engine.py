@@ -66,7 +66,7 @@ from .storage.influxdb_client import InfluxDBClient
 # (-1, -2, …) for same-day iterations; roll the date for a new day's first
 # change.
 # ---------------------------------------------------------------------------
-__version__ = "v2026.07.05-2"
+__version__ = "v2026.07.05-3"
 from .storage import influx_monitor as _influx_monitor
 from .models.alarm_rule import (
     AlarmRuleCreate,
@@ -265,8 +265,7 @@ def _periodic_refresh_count(result: Any) -> int:
     return result if isinstance(result, int) else (len(result) if hasattr(result, "__len__") else 0)
 
 
-# Strong refs to background tasks — the loop only holds weak refs, so an
-# unreferenced task can be garbage-collected mid-flight.
+# Strong references to background tasks; released when each task finishes.
 _background_tasks: set = set()
 
 
@@ -785,8 +784,7 @@ async def health_check() -> dict:
     checking that a host was configured. Returns 200 in all branches so
     that load balancers / uptime checkers can distinguish "alarm engine
     process up but InfluxDB unreachable" via the JSON body rather than
-    HTTP code. The ping runs in a worker thread so a slow/unreachable
-    InfluxDB can't stall the event loop for the whole timeout.
+    HTTP code. The InfluxDB ping runs in a worker thread.
     """
     influx_status = "not configured"
     influx_latency_ms: float | None = None
