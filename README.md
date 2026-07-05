@@ -6,6 +6,8 @@ It currently integrates [llama.cpp](https://github.com/ggerganov/llama.cpp), [LM
 
 New integrations with vLLM and Ollama are on the roadmap.
 
+It also exposes an **OpenAI-compatible inference gateway** — a single endpoint that routes chat/completion requests across your `llama.cpp` fleet, so every backend looks like one server to your apps. See [Inference gateway](#inference-gateway) below.
+
 ---
 <img width="1526" height="1050" alt="Login screen" src="docs/screenshots/login.png" />
 
@@ -51,6 +53,7 @@ New integrations with vLLM and Ollama are on the roadmap.
 - **Incident correlation, not alert spam.** When one event trips several rules on the same host at once (say GPU temp, VRAM, and fan-speed), the engine groups them into a single **incident** — one notification per incident instead of one per rule — and the Events table and toasts collapse the members behind a "+N related" count. Rules can opt into an explicit `correlation_group` to always group together; a time window handles the rest. Resolved alerts roll off into a separate history table with configurable retention so the active view stays fast.
 - **At-a-glance system status.** A dot beside the **Events** tab turns red while any *active* critical alert is unresolved; a dot beside **Admin** turns red when system health degrades (stale/down agents, disconnected services, cert warnings). Both update on every tab.
 - **Multi-agent.** Run the same provider (llama.cpp, LM Studio, …) on more than one host and a picker appears in the dashboard to switch the view and controls between agents — every approved agent is independently viewable and controllable, with one designated as the default. The **LLM Overall** tab rolls the whole fleet into one view (combined throughput, hottest GPU, total power, active models). A single-host lab sees no change; the picker only shows up once a second agent of a type is approved. Adding a brand-new provider is a one-file-per-side drop-in.
+- **OpenAI-compatible inference gateway.** Point any OpenAI SDK or tool at one manager endpoint (`/api/gateway/v1`) and it routes each chat/completion request to a healthy `llama.cpp` backend — honoring per-model **pins**, the **agent picker**, and **pool round-robin**, and **failing over** to the next live host before the first byte if one is down. Streaming and non-streaming both work; the whole fleet looks like a single server. Reachable from a dashboard session by default; add API keys to let external clients in. See [Inference gateway](#inference-gateway).
 - **Multi-user access control.** Multiple named accounts with **Admin** / **Operator** roles — operators can drive the LLMs and watch dashboards but are kept out of the Admin tab, agent management, secrets, and shells. Admins create / disable / delete users and reset passwords from **Admin → Users**; every user gets self-service password change and logout from the **Account** menu, with username + source-IP lockout after repeated failed logins.
 
 
@@ -155,6 +158,54 @@ A host with neither `llama-server` nor LM Studio just reports generic system met
 
 ---
 
+## Inference gateway
+
+One OpenAI-compatible endpoint on the manager fronts every approved `llama.cpp` agent in the fleet — so instead of targeting one `llama-server` by host:port, your apps call the manager and it picks a healthy backend for each request:
+
+- `POST /api/gateway/v1/chat/completions`
+- `POST /api/gateway/v1/completions`
+- `GET  /api/gateway/v1/models`
+
+Routing follows the same precedence as the dashboard: a per-model **pin** first, then an explicit `?agent=` pick, then **pool round-robin**, then the fleet **default**. If the chosen backend can't be reached — or answers `502`/`503` — before the first response byte, the gateway **fails over** to the next live agent. Both streaming (`"stream": true`) and non-streaming requests work, and each response carries an `X-Proxied-To` header naming the agent that served it.
+
+**Access.** By default the gateway is reachable from a logged-in dashboard session only. To let external OpenAI-SDK clients in, add one or more keys to `[manager.gateway].api_keys` in `config/llm-systems.toml` and restart the manager — each key is a bearer accepted only on `/api/gateway/*`:
+
+```toml
+[manager.gateway]
+enabled = true
+api_keys = ["sk-your-secret-key"]   # empty = dashboard-session access only
+read_timeout_s = 600.0              # generation can take minutes on big models
+```
+
+**Call it like any OpenAI endpoint:**
+
+```python
+from openai import OpenAI
+
+client = OpenAI(
+    base_url="http://<manager-host>:5000/api/gateway/v1",
+    api_key="sk-your-secret-key",       # any configured key
+)
+resp = client.chat.completions.create(
+    model="<model-id>",                 # from GET /v1/models; drives pin routing
+    messages=[{"role": "user", "content": "Hello!"}],
+)
+print(resp.choices[0].message.content)
+```
+
+or with curl:
+
+```bash
+curl http://<manager-host>:5000/api/gateway/v1/chat/completions \
+  -H "Authorization: Bearer sk-your-secret-key" \
+  -H "Content-Type: application/json" \
+  -d '{"model":"<model-id>","messages":[{"role":"user","content":"Hello!"}]}'
+```
+
+The gateway forwards over the existing bearer + TLS agent channel — **no new trust surface**, and `llama-server`'s admin/control endpoints are never exposed (the agent passthrough is a two-path allowlist). It requires agents running the current version; upgrade agents fleet-wide (**Admin → Agents → Update**) before relying on it. Fronting LM Studio through the same gateway is on the roadmap.
+
+---
+
 ## Architecture
 
 ```
@@ -218,6 +269,7 @@ InfluxDB v2 is the database for the **time-series metrics** — raw samples plus
 - **Manager TLS.** A second HTTPS server runs on the `[manager].tls_port` (default `5443`) using an auto-rotated cert from the internal CA. Approved agents auto-upgrade their control channel from `http://manager:5000` to `https://manager:5443` once they hold the CA.
 - **Alarm-engine ingest token.** Agents push metrics directly to the alarm engine (port 8081), so its ingest endpoints are gated by a shared bearer token (`[alarm_engine].ingest_token`). The installer generates one when manager + alarm engine are co-located; agents receive it from the manager on their heartbeat. Left blank, ingest stays open for backward compatibility. `[alarm_engine].tls_enabled` (default `true`) additionally serves the alarm engine over HTTPS using a cert the manager signs from its internal CA.
 - **WebSocket proxy.** `[manager].ws_proxy_port` (default `5444`, set `0` to disable) runs a standalone thread that terminates the alarm engine's internal-CA `wss` upstream on the browser's behalf, so the dashboard's Events tab works without you installing the internal CA in your browser. Front it with a real-CA reverse proxy (nginx/Caddy/etc.) for end-to-end `wss`.
+- **Inference-gateway keys.** The OpenAI-compatible gateway (`/api/gateway/*`) is reachable from a dashboard session only until you add bearer keys to `[manager.gateway].api_keys`; each key is compared in constant time and accepted only on gateway paths. It reuses the existing agent bearer + TLS channel to reach backends, so it adds no new trust surface.
 - **Secrets** (InfluxDB tokens, SMTP password) live in a single config file with restrictive permissions. A documented example template ships in the repo.
 
 ### Frontend
