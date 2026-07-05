@@ -247,21 +247,25 @@ def authenticate(username: str, password: str, remote_ip: str) -> dict:
     failure for BOTH the username and the source IP; uniform generic failures
     so the caller never reveals which key/account state tripped."""
     name = UserStore.normalize(username)
-    ukey, ipkey = f"user:{name}", f"ip:{remote_ip or ''}"
-    if LOCKOUT and (LOCKOUT.is_locked(ukey) or LOCKOUT.is_locked(ipkey)):
+    ukey = f"user:{name}"
+    # Key on the source IP only when present; a blank IP would collapse every
+    # client onto one shared "ip:" bucket.
+    ipkey = f"ip:{remote_ip}" if remote_ip else None
+    keys = [ukey] + ([ipkey] if ipkey else [])
+    if LOCKOUT and any(LOCKOUT.is_locked(k) for k in keys):
         return {"ok": False, "locked": True,
-                "retry_after": max(LOCKOUT.retry_after(ukey), LOCKOUT.retry_after(ipkey))}
+                "retry_after": max(LOCKOUT.retry_after(k) for k in keys)}
     u = STORE.get(name) if STORE else None
     # Always run one scrypt_verify (decoy when no user) so timing can't enumerate users.
     pw_ok = auth.scrypt_verify(password, u.get("password_hash", "") if u else _DECOY_HASH)
     if not u or u.get("disabled") or not pw_ok:
         if LOCKOUT:
-            LOCKOUT.record_failure(ukey)
-            LOCKOUT.record_failure(ipkey)
+            for k in keys:
+                LOCKOUT.record_failure(k)
         return {"ok": False}
     if LOCKOUT:
-        LOCKOUT.clear(ukey)
-        LOCKOUT.clear(ipkey)
+        for k in keys:
+            LOCKOUT.clear(k)
     STORE.stamp_login(name)
     return {"ok": True, "role": u.get("role", "operator"), "username": name}
 

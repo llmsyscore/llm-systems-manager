@@ -13,6 +13,7 @@ default for a provider. Policy lookups (default agent picking) live in
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import queue
 import threading
@@ -35,6 +36,20 @@ def _async_put(q: "asyncio.Queue", item) -> None:
             q.put_nowait(item)
         except asyncio.QueueFull:
             pass
+
+
+def _sync_put(q: "queue.Queue", item) -> None:
+    """Put on a bounded sync Queue; drop-oldest on full so the latest idempotent
+    state wins instead of dropping the subscriber on transient backpressure."""
+    try:
+        q.put_nowait(item)
+    except queue.Full:
+        # Drop-oldest then retry; a consumer may have drained it or a concurrent
+        # refill may re-fill it, and dropping this one update is fine (newer follows).
+        with contextlib.suppress(queue.Empty):
+            q.get_nowait()
+        with contextlib.suppress(queue.Full):
+            q.put_nowait(item)
 
 
 class _ProviderSampleStore:
@@ -95,7 +110,7 @@ class _ProviderSampleStore:
                     awaking.extend(pairs)
         for q in waking:
             with best_effort("evict: wake sync SSE subscriber"):
-                q.put_nowait(None)
+                _sync_put(q, None)
         for loop, q in awaking:
             try:
                 loop.call_soon_threadsafe(_async_put, q, None)
@@ -167,7 +182,7 @@ class _ProviderSampleStore:
                         for q in qs]
         for q in queues:
             with best_effort("wake_all: wake sync SSE subscriber"):
-                q.put_nowait(sentinel)
+                _sync_put(q, sentinel)
         with self._lock:
             asubs = [(lp, q) for prov in self._async_subscribers.values()
                      for qs in prov.values() for (lp, q) in qs]
@@ -191,20 +206,8 @@ class _ProviderSampleStore:
             self._last_published[provider][agent_id] = dict(payload)
             qs = list(self._subscribers.get(provider, {}).get(agent_id, []))
         msg = f"data: {json.dumps(payload)}\n\n"
-        dead = []
         for q in qs:
-            try:
-                q.put_nowait(msg)
-            except Exception:
-                dead.append(q)
-        if dead:
-            with self._lock:
-                live = self._subscribers.get(provider, {}).get(agent_id, [])
-                for q in dead:
-                    try:
-                        live.remove(q)
-                    except ValueError:
-                        pass
+            _sync_put(q, msg)
         with self._lock:
             asubs = list(self._async_subscribers.get(provider, {}).get(agent_id, []))
         for loop, q in asubs:

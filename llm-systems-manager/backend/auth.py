@@ -321,6 +321,15 @@ def _operator_denied(path: str) -> bool:
     return False
 
 
+def _agent_bearer_allowed(path: str) -> bool:
+    """The complete set of endpoints an approved agent's machine token may reach,
+    beyond /api/remote/*, /status, and /cert-bundle already allowed in the gate."""
+    if path in ("/api/agents/heartbeat", "/api/agents/whoami",
+                "/api/agent-tarball", "/api/metrics", "/api/history"):
+        return True
+    return path.startswith("/api/agents/") and path.endswith("/llama-state")
+
+
 # ── before_request gate ──────────────────────────────────────────────
 def _auth_gate():
     mode = auth_mode()
@@ -328,14 +337,19 @@ def _auth_gate():
     # Always-open infra paths — never gated, never role-checked.
     if path in AUTH_OPEN_PATHS or path.startswith("/api/remote/"):
         return None
-    if _agent_by_token(_bearer_from_request() or ""):
-        return None
     if path.startswith("/api/gateway/") and _gateway_key_ok():
         return None
     if path.endswith("/cert-bundle"):
         return None
     if path.startswith("/api/agents/") and path.endswith("/status"):
         return None
+    if _agent_by_token(_bearer_from_request() or ""):
+        # Machine token: allow only its known infra + read endpoints; deny the
+        # rest (operator/admin control — terminal, svcconfig, downloads, admin).
+        if _agent_bearer_allowed(path):
+            return None
+        return jsonify({"ok": False, "error": "forbidden for agent token",
+                        "role_denied": True}), 403
     # Resolve admission + effective role for browser / bypass requests.
     role = None
     if mode == "disabled":

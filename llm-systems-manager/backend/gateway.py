@@ -75,9 +75,13 @@ def _candidates(model_id, agent_id) -> list:
         ids.append(did)
     for aid in ids:
         agent = agent_registry.resolve_agent_by_id(aid, capability="llama")
-        if agent and agent_registry.agent_liveness(agent) == "live":
-            _add(agent)
-    return ordered
+        _add(agent)
+    # Order live backends first, non-live after as failover — so a stale/down
+    # agent (incl. an explicit ?agent= pick) never jumps ahead but stays reachable.
+    live, rest = [], []
+    for a in ordered:
+        (live if agent_registry.agent_liveness(a) == "live" else rest).append(a)
+    return live + rest
 
 
 def _forward_json(agent: dict, path: str, body: dict):
