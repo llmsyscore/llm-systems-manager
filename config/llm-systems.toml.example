@@ -138,8 +138,6 @@ fetch_limit = 1800                                       # alarm-engine fetch ca
 [manager.uploads]
 max_content_length = 104857600                           # bytes; default 100 MiB
 
-[manager.benchmark]
-stream_queue_size = 5000                                 # bench SSE backlog (entries)
 
 [manager.timeouts]
 generic_http = 30.0                                      # outbound HTTP default (s)
