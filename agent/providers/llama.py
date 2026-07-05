@@ -23,8 +23,9 @@ from pathlib import Path
 from typing import Any, Iterator, Optional
 
 import requests
-from fastapi import Header, HTTPException, Query
-from fastapi.responses import StreamingResponse
+from fastapi import Header, HTTPException, Query, Request
+from fastapi.responses import Response, StreamingResponse
+from starlette.concurrency import run_in_threadpool
 
 import stream_pool  # type: ignore[import-not-found]  # sibling at agent root
 from _best_effort import best_effort  # type: ignore[import-not-found]  # sibling at agent root
@@ -1276,6 +1277,77 @@ def llama_models_endpoint(authorization: Optional[str] = Header(default=None)) -
         return resp.json()
     except Exception as e:
         raise HTTPException(status_code=503, detail=str(e))
+
+
+_OPENAI_READ_TIMEOUT_S = 600.0
+
+
+def _openai_wants_stream(body: bytes) -> bool:
+    """True when the JSON body carries "stream": true."""
+    try:
+        return bool((json.loads(body or b"{}") or {}).get("stream"))
+    except Exception:
+        return False
+
+
+async def _llama_openai_forward(sub: str, request: Request,
+                                authorization: "Optional[str]"):
+    """Narrow OpenAI passthrough to llama-server /v1/<sub> (#214)."""
+    _require_ctx().check_bearer(authorization)
+    _llama_check_enabled()
+    body = await request.body()
+    url = f"{_require_ctx().config.LLAMA_API_URL.rstrip('/')}/v1/{sub}"
+    headers = {"Content-Type": "application/json"}
+    # Blocking requests.post runs off-loop: this handler is async (for
+    # request.body()), so a direct call would stall the whole event loop.
+    if _openai_wants_stream(body):
+        try:
+            upstream = await run_in_threadpool(
+                lambda: requests.post(url, data=body, headers=headers,
+                                      stream=True,
+                                      timeout=(5, _OPENAI_READ_TIMEOUT_S)))
+        except requests.exceptions.RequestException as e:
+            raise HTTPException(status_code=502, detail=str(e))
+        ctype = upstream.headers.get("content-type") or "text/event-stream"
+        if "text/event-stream" not in ctype.lower():
+            content, status = upstream.content, upstream.status_code
+            upstream.close()
+            return Response(content=content, status_code=status, media_type=ctype)
+        if not stream_pool.POOL.try_acquire():
+            upstream.close()
+            raise HTTPException(status_code=503,
+                                detail="agent at stream capacity; retry shortly")
+
+        def generate() -> "Iterator[bytes]":
+            try:
+                for chunk in upstream.iter_content(chunk_size=None):
+                    if chunk:
+                        yield chunk
+            finally:
+                upstream.close()
+
+        return StreamingResponse(stream_pool.guarded_async(generate()),
+                                 media_type="text/event-stream",
+                                 headers={"Cache-Control": "no-cache",
+                                          "X-Accel-Buffering": "no"})
+    try:
+        r = await run_in_threadpool(
+            lambda: requests.post(url, data=body, headers=headers,
+                                  timeout=(5, _OPENAI_READ_TIMEOUT_S)))
+    except requests.exceptions.RequestException as e:
+        raise HTTPException(status_code=502, detail=str(e))
+    return Response(content=r.content, status_code=r.status_code,
+                    media_type=r.headers.get("content-type") or "application/json")
+
+
+async def llama_openai_chat(request: Request,
+                            authorization: Optional[str] = Header(default=None)):
+    return await _llama_openai_forward("chat/completions", request, authorization)
+
+
+async def llama_openai_completions(request: Request,
+                                   authorization: Optional[str] = Header(default=None)):
+    return await _llama_openai_forward("completions", request, authorization)
 
 
 def llama_load_endpoint(body: dict, authorization: Optional[str] = Header(default=None)) -> dict[str, Any]:
@@ -2661,6 +2733,8 @@ _ROUTES: tuple = (
     ("GET",    "/llama/log/tail",                 llama_log_tail),
     ("GET",    "/llama/log/stream",               llama_log_stream),
     ("GET",    "/llama/models",                   llama_models_endpoint),
+    ("POST",   "/llama/openai/chat/completions",  llama_openai_chat),
+    ("POST",   "/llama/openai/completions",       llama_openai_completions),
     ("POST",   "/llama/load",                     llama_load_endpoint),
     ("POST",   "/llama/unload",                   llama_unload_endpoint),
     ("GET",    "/llama/config",                   llama_config_get),

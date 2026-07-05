@@ -88,6 +88,15 @@ class ManagerProxies(BaseModel):
     image_gen: bool | str = False
 
 
+class ManagerGateway(BaseModel):
+    """OpenAI-compatible inference gateway (#214). api_keys empty = session-only
+    access; each key is a bearer accepted ONLY on /api/gateway/* paths."""
+    model_config = _MODEL_CFG
+    enabled: bool = True
+    api_keys: list[str] = Field(default_factory=list)
+    read_timeout_s: float = 600.0
+
+
 class ManagerHistory(BaseModel):
     model_config = _MODEL_CFG
     window_minutes: int = 60
@@ -230,6 +239,7 @@ class ManagerConfig(BaseModel):
     )
     log_level: str = "INFO"
     proxies: ManagerProxies = Field(default_factory=ManagerProxies)
+    gateway: ManagerGateway = Field(default_factory=ManagerGateway)
     history: ManagerHistory = Field(default_factory=ManagerHistory)
     uploads: ManagerUploads = Field(default_factory=ManagerUploads)
     benchmark: ManagerBenchmark = Field(default_factory=ManagerBenchmark)

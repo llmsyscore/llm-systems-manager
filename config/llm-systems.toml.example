@@ -115,6 +115,17 @@ llm_chat  = "auto"
 openclaw  = "auto"
 image_gen = "auto"
 
+# ── Inference gateway (#214) ─────────────────────────────────────────
+# OpenAI-compatible endpoint: POST /api/gateway/v1/chat/completions.
+# Routes to a healthy llama agent (pin > ?agent= > pool > default).
+[manager.gateway]
+enabled = true
+# Bearer keys for external OpenAI-SDK clients (accepted only on
+# /api/gateway/*). Empty = dashboard-session access only.
+api_keys = []
+# Upstream read timeout per completion request (generation can take minutes).
+read_timeout_s = 600.0
+
 [manager.history]
 # In-memory history ring buffer that backs the /api/history hot path.
 # Controls how far back the landing-page charts pre-populate when the
