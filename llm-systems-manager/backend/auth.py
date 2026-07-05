@@ -321,10 +321,13 @@ def _operator_denied(path: str) -> bool:
     return False
 
 
-def _agent_infra_path(path: str) -> bool:
-    """Agent-token infra endpoints that _operator_denied would otherwise block.
-    Reads (/api/metrics, /api/history) and /api/remote/* aren't in the deny set."""
-    return path in ("/api/agents/heartbeat", "/api/agents/whoami")
+def _agent_bearer_allowed(path: str) -> bool:
+    """The complete set of endpoints an approved agent's machine token may reach,
+    beyond /api/remote/*, /status, and /cert-bundle already allowed in the gate."""
+    if path in ("/api/agents/heartbeat", "/api/agents/whoami",
+                "/api/agent-tarball", "/api/metrics", "/api/history"):
+        return True
+    return path.startswith("/api/agents/") and path.endswith("/llama-state")
 
 
 # ── before_request gate ──────────────────────────────────────────────
@@ -341,12 +344,12 @@ def _auth_gate():
     if path.startswith("/api/agents/") and path.endswith("/status"):
         return None
     if _agent_by_token(_bearer_from_request() or ""):
-        # Agent tokens are machine credentials, not admin — allow infra + read
-        # endpoints but deny the admin-only surface (terminal, admin, agent mgmt).
-        if _operator_denied(path) and not _agent_infra_path(path):
-            return jsonify({"ok": False, "error": "forbidden for agent token",
-                            "role_denied": True}), 403
-        return None
+        # Machine token: allow only its known infra + read endpoints; deny the
+        # rest (operator/admin control — terminal, svcconfig, downloads, admin).
+        if _agent_bearer_allowed(path):
+            return None
+        return jsonify({"ok": False, "error": "forbidden for agent token",
+                        "role_denied": True}), 403
     # Resolve admission + effective role for browser / bypass requests.
     role = None
     if mode == "disabled":

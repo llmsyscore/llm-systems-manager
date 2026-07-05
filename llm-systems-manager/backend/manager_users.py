@@ -248,9 +248,8 @@ def authenticate(username: str, password: str, remote_ip: str) -> dict:
     so the caller never reveals which key/account state tripped."""
     name = UserStore.normalize(username)
     ukey = f"user:{name}"
-    # Only key on the source IP when we actually have one — a blank remote_addr
-    # would otherwise collapse every client onto a single shared "ip:" bucket
-    # and let anyone lock out the whole login endpoint.
+    # Key on the source IP only when present; a blank IP would collapse every
+    # client onto one shared "ip:" bucket.
     ipkey = f"ip:{remote_ip}" if remote_ip else None
     keys = [ukey] + ([ipkey] if ipkey else [])
     if LOCKOUT and any(LOCKOUT.is_locked(k) for k in keys):

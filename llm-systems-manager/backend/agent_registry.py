@@ -315,9 +315,24 @@ def browser_reachable_bind_url(agent: dict) -> str:
         return bind_url
 
 
-def _remote_is_loopback(remote_addr: str) -> bool:
-    """True when the request source IP is loopback — the precondition for
-    auto-approving a co-located agent. IPv4-mapped IPv6 is normalized first."""
+def _manager_host_ips() -> "set[str]":
+    """This manager host's own IPs: loopback plus the routable + hostname-resolved
+    addresses. A request whose TCP source IP is in this set originated here."""
+    import socket as _s
+    ips = {"127.0.0.1", "::1"}
+    with best_effort("manager host ips: routable probe", log=log):
+        with _s.socket(_s.AF_INET, _s.SOCK_DGRAM) as sk:
+            sk.settimeout(1)
+            sk.connect(("1.1.1.1", 80))
+            ips.add(sk.getsockname()[0])
+    with best_effort("manager host ips: resolve hostname", log=log):
+        ips.update(_s.gethostbyname_ex(_s.gethostname())[2])
+    return ips
+
+
+def _request_is_from_manager_host(remote_addr: str) -> bool:
+    """True when the request source IP is loopback or one of this manager host's
+    own IPs — it physically originated here. IPv4-mapped IPv6 is normalized."""
     import ipaddress
     try:
         ip = ipaddress.ip_address((remote_addr or "").strip())
@@ -325,7 +340,7 @@ def _remote_is_loopback(remote_addr: str) -> bool:
         return False
     if getattr(ip, "ipv4_mapped", None) is not None:
         ip = ip.ipv4_mapped
-    return ip.is_loopback
+    return ip.is_loopback or str(ip) in _manager_host_ips()
 
 
 def is_local_bind_url(bind_url: str) -> bool:
@@ -1039,11 +1054,9 @@ def _agents_register():
 
         agent_id = str(_uuid.uuid4())
         now = datetime.now(timezone.utc).isoformat()
-        # Auto-approve only a genuinely co-located agent: the request must
-        # arrive from loopback AND advertise a local bind_url. A remote caller
-        # cannot self-approve by claiming a loopback bind_url.
-        auto_approve = (_remote_is_loopback(flask_request.remote_addr or "")
-                        and is_local_bind_url(bind_url))
+        # Auto-approve only registrations that originate on the manager host;
+        # a remote caller lands in "pending" for manual admin approval.
+        auto_approve = _request_is_from_manager_host(flask_request.remote_addr or "")
         token = _secrets.token_hex(32) if auto_approve else None
         agent = {
             "agent_id": agent_id,
