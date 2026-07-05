@@ -315,6 +315,19 @@ def browser_reachable_bind_url(agent: dict) -> str:
         return bind_url
 
 
+def _remote_is_loopback(remote_addr: str) -> bool:
+    """True when the request source IP is loopback — the precondition for
+    auto-approving a co-located agent. IPv4-mapped IPv6 is normalized first."""
+    import ipaddress
+    try:
+        ip = ipaddress.ip_address((remote_addr or "").strip())
+    except ValueError:
+        return False
+    if getattr(ip, "ipv4_mapped", None) is not None:
+        ip = ip.ipv4_mapped
+    return ip.is_loopback
+
+
 def is_local_bind_url(bind_url: str) -> bool:
     """True when the agent advertises a loopback or this-host URL — eligible for auto-approval.
 
@@ -1026,7 +1039,11 @@ def _agents_register():
 
         agent_id = str(_uuid.uuid4())
         now = datetime.now(timezone.utc).isoformat()
-        auto_approve = is_local_bind_url(bind_url)
+        # Auto-approve only a genuinely co-located agent: the request must
+        # arrive from loopback AND advertise a local bind_url. A remote caller
+        # cannot self-approve by claiming a loopback bind_url.
+        auto_approve = (_remote_is_loopback(flask_request.remote_addr or "")
+                        and is_local_bind_url(bind_url))
         token = _secrets.token_hex(32) if auto_approve else None
         agent = {
             "agent_id": agent_id,

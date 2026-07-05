@@ -321,6 +321,12 @@ def _operator_denied(path: str) -> bool:
     return False
 
 
+def _agent_infra_path(path: str) -> bool:
+    """Agent-token infra endpoints that _operator_denied would otherwise block.
+    Reads (/api/metrics, /api/history) and /api/remote/* aren't in the deny set."""
+    return path in ("/api/agents/heartbeat", "/api/agents/whoami")
+
+
 # ── before_request gate ──────────────────────────────────────────────
 def _auth_gate():
     mode = auth_mode()
@@ -328,13 +334,18 @@ def _auth_gate():
     # Always-open infra paths — never gated, never role-checked.
     if path in AUTH_OPEN_PATHS or path.startswith("/api/remote/"):
         return None
-    if _agent_by_token(_bearer_from_request() or ""):
-        return None
     if path.startswith("/api/gateway/") and _gateway_key_ok():
         return None
     if path.endswith("/cert-bundle"):
         return None
     if path.startswith("/api/agents/") and path.endswith("/status"):
+        return None
+    if _agent_by_token(_bearer_from_request() or ""):
+        # Agent tokens are machine credentials, not admin — allow infra + read
+        # endpoints but deny the admin-only surface (terminal, admin, agent mgmt).
+        if _operator_denied(path) and not _agent_infra_path(path):
+            return jsonify({"ok": False, "error": "forbidden for agent token",
+                            "role_denied": True}), 403
         return None
     # Resolve admission + effective role for browser / bypass requests.
     role = None
