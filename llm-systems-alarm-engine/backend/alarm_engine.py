@@ -46,6 +46,7 @@ from fastapi.staticfiles import StaticFiles  # noqa: E402
 from config.unified_config import settings, CONFIG_PATH  # noqa: E402
 from ._best_effort import best_effort
 from ._time import now_utc
+from .api.body_limit import BodySizeLimitMiddleware
 from .api.websocket import WebSocketConnectionManager, init_manager
 from .api.routes import alerts, ingest, metrics, notifications, rules
 from .receivers import otlp_receiver
@@ -66,7 +67,7 @@ from .storage.influxdb_client import InfluxDBClient
 # (-1, -2, …) for same-day iterations; roll the date for a new day's first
 # change.
 # ---------------------------------------------------------------------------
-__version__ = "v2026.07.05-5"
+__version__ = "v2026.07.05-6"
 from .storage import influx_monitor as _influx_monitor
 from .models.alarm_rule import (
     AlarmRuleCreate,
@@ -730,6 +731,12 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+# Body cap sits inside CORS (added first = inner); 0 disables it.
+app.add_middleware(
+    BodySizeLimitMiddleware,
+    max_bytes=int(getattr(settings.alarm_engine.api_limits,
+                          "max_request_body_bytes", 100 * 1024 * 1024)),
+)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[o.strip() for o in settings.alarm_engine.cors_origins.split(",") if o.strip()],
