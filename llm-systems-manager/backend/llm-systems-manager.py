@@ -75,7 +75,6 @@ import time
 import sqlite3
 import subprocess
 import threading
-import uuid
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Any  # Required pre-Python 3.14; 3.14+ defers annotation eval (PEP 649).
@@ -154,7 +153,7 @@ def _local_hostname() -> str:
 # banner reads it. Bump suffix (-1, -2, …) for same-day iterations; roll
 # the date for a new day's first change.
 # ---------------------------------------------------------------------------
-__version__ = "v2026.07.04-4"
+__version__ = "v2026.07.05-3"
 
 # Wall-clock at first import (Cheroot main process); the shutdown banner
 # reads it for the uptime line.
@@ -165,7 +164,6 @@ _startup_ts: float = time.time()
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import provider_state  # type: ignore[import-not-found]  # noqa: E402  # leaf, no cycle
 from _best_effort import best_effort  # type: ignore[import-not-found]  # noqa: E402  # leaf, no cycle
-from _bench_replay import BenchReplayBuffer  # type: ignore[import-not-found]  # noqa: E402  # leaf, no cycle
 import providers       # type: ignore[import-not-found]  # noqa: E402,F401  # side-effect: registers specs
 import stream_pool     # type: ignore[import-not-found]  # noqa: E402  # leaf, no cycle
 import stream_health   # type: ignore[import-not-found]  # noqa: E402  # leaf, no cycle
@@ -727,6 +725,11 @@ _HISTORY_LEGACY_FIELD_MAP = [
     ("llama",   "total_tokens_generated",                     "llama_gen_tokens"),
 ]
 
+# /api/alert's sustained-CPU probe reads the same series the history ring
+# maps to the legacy "cpu_total" field.
+_CPU_ALERT_SOURCE, _CPU_ALERT_METRIC = next(
+    (s, n) for s, n, f in _HISTORY_LEGACY_FIELD_MAP if f == "cpu_total")
+
 
 # ---------------------------------------------------------------------------
 # /api/history — 60-minute in-memory ring buffer.
@@ -1200,7 +1203,7 @@ def get_alert():
     if _alarm_engine_url:
         with best_effort("interval: probe sustained CPU from AE", log=log):
             r = _ae_session.get(
-                f"{_alarm_engine_url.rstrip('/')}/api/alarm/metrics/cpu/usage_percent",
+                f"{_alarm_engine_url.rstrip('/')}/api/alarm/metrics/{_CPU_ALERT_SOURCE}/{_CPU_ALERT_METRIC}",
                 params={"since_minutes": 1, "limit": 100},
                 timeout=2,
             )
@@ -1261,22 +1264,6 @@ import configparser
 import queue as _queue
 
 CONFIG_INI   = Path("/usr/local/llama-server/config.ini")
-
-
-# Per-run replay buffer for benchmark streaming (llama-bench / llama-batched-bench)
-_bench_replay = BenchReplayBuffer(maxlen=settings.manager.benchmark.stream_queue_size)
-_bench_cond   = threading.Condition()
-_bench_active = False
-_bench_lock   = threading.Lock()
-
-def _bench_put(msg: dict):
-    """Append to the per-run replay buffer and wake any waiting streams."""
-    with _bench_cond:
-        _bench_replay.append(msg)
-        _bench_cond.notify_all()
-
-# Separate queue for llama server log streaming
-
 
 
 @app.route("/api/llm/server/log/tail")
@@ -1397,11 +1384,8 @@ def llama_server_wake():
     # the wake forces a reload from disk that can take many seconds.
     data     = flask_request.get_json(silent=True) or {}
     model_id = data.get("model_id") or data.get("model")
-    proxied = proxies.proxy_to_primary("llama", "POST", "/llama/server/wake",
-                                       json=(data or None), timeout=75, model_id=model_id)
-    if proxied is not None:
-        return proxied
-    return jsonify({"ok": False, "error": "no approved primary llama agent"}), 503
+    return proxies.proxy_to_primary("llama", "POST", "/llama/server/wake",
+                                    json=(data or None), timeout=75, model_id=model_id)
 def _read_ini():
     cp = configparser.ConfigParser(default_section="__DEFAULTS__", interpolation=None)
     cp.optionxform = str
@@ -1462,226 +1446,9 @@ def llm_delete_config(model_id):
     )
 
 # ---------------------------------------------------------------------------
-# Benchmark (llama-bench / llama-batched-bench) — see plan
+# Benchmark (llama-bench / llama-batched-bench) — proxied to the primary
+# llama agent; the bench binaries live on the inference host.
 # ---------------------------------------------------------------------------
-LLAMA_CPP_DIR        = "/usr/local/llama.cpp"
-LLAMA_BENCH_BIN      = f"{LLAMA_CPP_DIR}/llama-bench"
-LLAMA_BATCHED_BENCH_BIN = f"{LLAMA_CPP_DIR}/llama-batched-bench"
-
-
-def _get_model_hf_arg(model_id: str):
-    """Return the string to pass to '-hf' (e.g. 'author/repo:QUANT'), or None."""
-    with best_effort("read -hf arg from config.ini", log=log):
-        cp = _read_ini()
-        section = cp[model_id] if model_id in cp.sections() else None
-        if section:
-            hf_repo = section.get('hf-repo') or section.get('--hf-repo')
-            hf_file = section.get('hf-file') or section.get('--hf-file')
-            if hf_repo:
-                return f"{hf_repo}:{hf_file}" if hf_file else hf_repo
-    # Fallback: model_id itself is already in repo:quant format
-    if '/' in model_id:
-        return model_id
-    return None
-
-
-def _parse_bench_row(row: dict, tool: str):
-    """Extract (gen_tps, ppt_tps) from a single jsonl row. Returns (None, None)
-    for non-result rows (build info, etc.).
-
-    llama-bench JSONL has no 'test' field — test type is inferred from
-    n_prompt / n_gen counts, with avg_ts being tokens/sec for that test."""
-    if not isinstance(row, dict):
-        return (None, None)
-    if tool == 'llama-bench':
-        ts_val = row.get('avg_ts')
-        if ts_val is None:
-            ts_val = row.get('t_s')  # legacy field
-        if ts_val is None:
-            return (None, None)
-        n_prompt = int(row.get('n_prompt', 0) or 0)
-        n_gen    = int(row.get('n_gen', 0) or 0)
-        if n_prompt > 0 and n_gen == 0:
-            return (None, float(ts_val))                  # pp test → ppt_tps
-        if n_gen > 0 and n_prompt == 0:
-            return (float(ts_val), None)                  # tg test → gen_tps
-        if n_prompt > 0 and n_gen > 0:
-            return (float(ts_val), None)                  # pg test → count as gen
-        return (None, None)
-    else:
-        # llama-batched-bench JSONL: each row exposes pp/tg throughput.
-        pp = row.get('pp_tps') or row.get('avg_pp_tps') or row.get('t_pp')
-        tg = row.get('tg_tps') or row.get('avg_tg_tps') or row.get('t_tg')
-        gen_tps = float(tg) if tg is not None else None
-        ppt_tps = float(pp) if pp is not None else None
-        return (gen_tps, ppt_tps)
-
-
-_bench_proc = None   # current running subprocess, set for cancel support
-_bench_pgid = None   # process group id of current subprocess (for killpg)
-_bench_cancel_event = threading.Event()  # signals reader loop to exit early on cancel
-
-def _run_one_model(model_id: str, tool: str, tool_path: str, jsonl_flags: list,
-                   switches: list, env: dict, ansi_re) -> dict:
-    """Run bench for a single model. avg_ts in each JSONL row is already
-    the per-run average over repetitions, so we emit raw values only."""
-
-    hf_arg = _get_model_hf_arg(model_id)
-    if not hf_arg:
-        _bench_put({"type": "model_done", "model_id": model_id, "ok": False,
-                    "error": f"no HF reference found for {model_id}"})
-        return {"model_id": model_id, "ok": False, "last_gen_tps": None, "last_ppt_tps": None}
-
-    cmd = [tool_path]
-    for sw in (switches or []):
-        flag = (sw.get('flag') or '').strip()
-        if not flag:
-            continue
-        cmd.append(flag)
-        val = sw.get('value')
-        if val is not None and str(val).strip() != '':
-            cmd.append(str(val))
-    cmd += ['-hf', hf_arg]
-    cmd += jsonl_flags
-
-    _bench_put({"type": "model_start", "model_id": model_id,
-                "cmd": " ".join(str(c) for c in cmd)})
-
-    global _bench_proc, _bench_pgid
-    proc = subprocess.Popen(
-        cmd,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        stdin=subprocess.DEVNULL,
-        text=True, bufsize=1,
-        close_fds=True, env=env,
-        start_new_session=True,  # own process group → killpg kills HIP/ROCm children too
-    )
-    _bench_proc = proc
-    try:
-        _bench_pgid = os.getpgid(proc.pid)
-    except Exception:
-        _bench_pgid = None
-
-    result_rows = []
-    latest_gen  = None
-    latest_ppt  = None
-
-    def _drain_stderr():
-        with best_effort("bench: drain subprocess stderr", log=log):
-            for line in iter(proc.stderr.readline, ''):
-                if not line:
-                    break
-                txt = ansi_re.sub('', line.rstrip('\n'))
-                if txt:
-                    _bench_put({"type": "line", "model_id": model_id, "text": txt})
-    threading.Thread(target=_drain_stderr, daemon=True).start()
-
-    for raw in iter(proc.stdout.readline, ''):
-        if _bench_cancel_event.is_set():
-            break
-        if not raw:
-            break
-        line = ansi_re.sub('', raw.rstrip('\n'))
-        if not line:
-            continue
-        _bench_put({"type": "line", "model_id": model_id, "text": line})
-        try:
-            row = json.loads(line)
-        except Exception:
-            continue
-        gen_tps, ppt_tps = _parse_bench_row(row, tool)
-        if gen_tps is None and ppt_tps is None:
-            continue
-        if gen_tps is not None:
-            latest_gen = gen_tps
-        if ppt_tps is not None:
-            latest_ppt = ppt_tps
-        # Emit full JSONL fields so frontend can use any field for axes
-        result_row = {
-            "n_prompt": int(row.get('n_prompt', 0) or 0),
-            "n_gen":    int(row.get('n_gen',    0) or 0),
-            "n_depth":  int(row.get('n_depth',  0) or 0),
-            "n_batch":  int(row.get('n_batch',  0) or 0),
-            "n_ubatch": int(row.get('n_ubatch', 0) or 0),
-            "avg_ts":   float(row.get('avg_ts', 0) or 0),
-        }
-        result_rows.append(result_row)
-        _bench_put({"type": "result", "model_id": model_id,
-                    "gen_tps": gen_tps, "ppt_tps": ppt_tps,
-                    **result_row})
-
-    proc.wait()
-    _bench_proc = None
-
-    cancelled = _bench_cancel_event.is_set()
-    # Send raw last-seen values — no further averaging (avg_ts is already per-run average)
-    _bench_put({"type": "model_done", "model_id": model_id,
-                "ok": (not cancelled) and proc.returncode == 0,
-                "rc": proc.returncode, "cancelled": cancelled,
-                "last_gen_tps": latest_gen, "last_ppt_tps": latest_ppt,
-                "results": result_rows})
-    return {"model_id": model_id, "ok": (not cancelled) and proc.returncode == 0,
-            "cancelled": cancelled,
-            "last_gen_tps": latest_gen, "last_ppt_tps": latest_ppt}
-
-
-def _run_benchmark(model_ids: list, tool: str, switches: list):
-    """Run llama-bench sequentially for each model in model_ids, emitting
-    per-model events and a final 'done' with all results."""
-    global _bench_active, _bench_proc
-    _bench_cancel_event.clear()
-    try:
-        import os as _os
-
-        if tool == 'llama-bench':
-            tool_path = LLAMA_BENCH_BIN
-            jsonl_flags = ['-o', 'jsonl']
-        elif tool == 'llama-batched-bench':
-            tool_path = LLAMA_BATCHED_BENCH_BIN
-            jsonl_flags = ['--output-format', 'jsonl']
-        else:
-            _bench_put({"type": "done", "ok": False, "error": f"unknown tool: {tool}"})
-            return
-
-        env = dict(_os.environ)
-        existing = env.get("LD_LIBRARY_PATH", "")
-        env["LD_LIBRARY_PATH"] = f"{LLAMA_CPP_DIR}:{existing}" if existing else LLAMA_CPP_DIR
-        env["FORCE_COLOR"] = "0"
-        env["PYTHONUNBUFFERED"] = "1"
-
-        ansi_re = re.compile(r'\x1b\[[0-9;]*[mGKHF]')
-
-        all_results = []
-        for model_id in model_ids:
-            if _bench_cancel_event.is_set():
-                break
-            result = _run_one_model(model_id, tool, tool_path, jsonl_flags, switches, env, ansi_re)
-            all_results.append(result)
-
-        cancelled = _bench_cancel_event.is_set()
-        _bench_put({"type": "done", "ok": not cancelled, "cancelled": cancelled,
-                    "results": all_results})
-    except Exception as e:
-        log.error(f"_run_benchmark error: {e}", exc_info=True)
-        _bench_put({"type": "done", "ok": False, "error": "benchmark failed"})
-    finally:
-        _bench_proc = None
-        with _bench_lock:
-            _bench_active = False
-
-
-def _queue_benchmark(model_ids: list, tool: str, switches: list) -> bool:
-    """Acquire lock, clear queue, start _run_benchmark in a thread."""
-    global _bench_active
-    with _bench_lock:
-        if _bench_active:
-            return False
-        _bench_active = True
-    with _bench_cond:
-        _bench_replay.start_run(uuid.uuid4().hex[:12])
-    threading.Thread(target=_run_benchmark, args=(model_ids, tool, switches), daemon=True).start()
-    return True
 
 
 @app.route("/api/llm/download", methods=["POST"])
@@ -1694,10 +1461,7 @@ def llm_download():
 def llm_download_cancel():
     """Kill the running hf download / cache-prune subprocess on the primary
     llama agent. No body required."""
-    proxied = proxies.proxy_to_primary("llama", "POST", "/llama/download/cancel")
-    if proxied is not None:
-        return proxied
-    return jsonify({"ok": False, "error": "no primary llama agent"}), 503
+    return proxies.proxy_to_primary("llama", "POST", "/llama/download/cancel")
 @app.route("/api/llm/download/stream-info")
 def llm_download_stream_info():
     """Direct-agent SSE URL for HF download progress."""
@@ -1748,69 +1512,12 @@ def benchmark_run():
     # Proxy to the primary llama agent — llama-bench lives next to llama-server
     # on the inference host, never on the manager host.
     body = flask_request.get_json(force=True) or {}
-    proxied = proxies.proxy_to_primary("llama", "POST", "/llama/bench/run", json=body, timeout=15)
-    if proxied is not None:
-        return proxied
-    try:
-        data = body
-        # Accept model_ids (list) or legacy model_id (single string)
-        model_ids = data.get("model_ids")
-        if not model_ids:
-            single = (data.get("model_id") or "").strip()
-            model_ids = [single] if single else []
-        if not isinstance(model_ids, list):
-            model_ids = [str(model_ids)]
-        model_ids = [m.strip() for m in model_ids if str(m).strip()]
-        tool     = (data.get("tool") or "").strip()
-        switches = data.get("switches") or []
-        if not model_ids:
-            return jsonify({"ok": False, "error": "at least one model_id required"}), 400
-        if tool not in ("llama-bench", "llama-batched-bench"):
-            return jsonify({"ok": False, "error": "invalid tool"}), 400
-        if not isinstance(switches, list):
-            return jsonify({"ok": False, "error": "switches must be a list"}), 400
-        if not _queue_benchmark(model_ids, tool, switches):
-            return jsonify({"ok": False, "error": "Another benchmark is in progress"}), 409
-        return jsonify({"ok": True})
-    except Exception as e:
-        return _err_json("internal error", 500, exc=e)
+    return proxies.proxy_to_primary("llama", "POST", "/llama/bench/run", json=body, timeout=15)
 
 
 @app.route("/api/benchmark/stream")
 def benchmark_stream():
-    proxied = proxies.proxy_stream_to_primary("llama", "/llama/bench/stream", long_running=True)
-    if proxied is not None:
-        return proxied
-    from flask import stream_with_context
-    last_event_id = flask_request.headers.get("Last-Event-ID")
-    def generate():
-        with _bench_cond:
-            cur_run = _bench_replay.run_id
-            last_seq = _bench_replay.seq_for(last_event_id)
-        while True:
-            with _bench_cond:
-                if cur_run and _bench_replay.run_id != cur_run:
-                    return   # superseded by a newer run; client opens a fresh stream
-                cur_run = _bench_replay.run_id
-                new = _bench_replay.records_after_seq(last_seq)
-                if not new:
-                    _bench_cond.wait(timeout=10)
-                    if cur_run and _bench_replay.run_id != cur_run:
-                        return
-                    new = _bench_replay.records_after_seq(last_seq)
-            if not new:
-                yield 'data: {"type":"keepalive"}\n\n'
-                continue
-            for rec in new:
-                yield f"id: {rec['id']}\ndata: {json.dumps(rec['event'])}\n\n"
-                last_seq = rec["seq"]
-                if rec["event"].get("type") == "done":
-                    return
-    return app.response_class(
-        stream_with_context(generate()),
-        mimetype="text/event-stream",
-        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
-    )
+    return proxies.proxy_stream_to_primary("llama", "/llama/bench/stream", long_running=True)
 
 
 @app.route("/api/benchmark/results", methods=["GET"])
@@ -1921,82 +1628,13 @@ def benchmark_perf_mode():
     Calls 'sudo systemctl restart {service}' on the primary llama agent;
     those systemd targets live with the perf controller, not on the manager."""
     body = flask_request.get_json(force=True) or {}
-    proxied = proxies.proxy_to_primary("llama", "POST", "/llama/bench/perf-mode", json=body, timeout=35)
-    if proxied is not None:
-        return proxied
-    try:
-        data = body
-        mode = (data.get("mode") or "").strip()
-        if mode not in ("performance", "powersave"):
-            return jsonify({"ok": False, "error": "mode must be 'performance' or 'powersave'"}), 400
-        proc = subprocess.run(
-            ["sudo", "-n", "systemctl", "restart", mode],
-            capture_output=True, text=True, timeout=30,
-        )
-        if proc.returncode != 0:
-            return jsonify({
-                "ok": False,
-                "error": (proc.stderr or proc.stdout or "").strip()[:300] or f"rc={proc.returncode}",
-            }), 500
-        return jsonify({"ok": True, "mode": mode})
-    except Exception as e:
-        return _err_json("internal error", 500, exc=e)
+    return proxies.proxy_to_primary("llama", "POST", "/llama/bench/perf-mode", json=body, timeout=35)
 
 
 @app.route("/api/benchmark/cancel", methods=["POST"])
 def benchmark_cancel():
-    """Terminate the currently running benchmark subprocess and its process
-    group (covers HIP/ROCm child processes spawned by llama-bench).
-    Also signals the reader loop to exit early and runs a pkill fallback
-    to catch any GPU compute children that escaped the process group."""
-    proxied = proxies.proxy_to_primary("llama", "POST", "/llama/bench/cancel", timeout=10)
-    if proxied is not None:
-        return proxied
-    global _bench_proc, _bench_pgid
-    # Signal the reader loop to exit early regardless of process state
-    _bench_cancel_event.set()
-    proc = _bench_proc
-    pgid = _bench_pgid
-    if proc is None:
-        # No tracked subprocess, but still run pkill in case stragglers exist
-        with best_effort("bench cancel: pkill stray bench procs", log=log):
-            subprocess.run(['pkill', '-9', '-f', 'llama-bench'], capture_output=True, timeout=3)
-            subprocess.run(['pkill', '-9', '-f', 'llama-batched-bench'], capture_output=True, timeout=3)
-        return jsonify({"ok": True, "msg": "no tracked benchmark process"})
-    try:
-        # SIGTERM to whole process group first
-        if pgid is not None:
-            try:
-                os.killpg(pgid, signal.SIGTERM)
-            except ProcessLookupError:
-                pass
-            except Exception as _e:
-                log.warning("killpg SIGTERM failed: %s", _e)
-                try: proc.terminate()
-                except Exception as _e2: log.warning("proc.terminate fallback failed: %s", _e2)
-        else:
-            try: proc.terminate()
-            except Exception as _e: log.warning("proc.terminate failed: %s", _e)
-        # Wait briefly, then SIGKILL if still alive
-        try:
-            proc.wait(timeout=4)
-        except subprocess.TimeoutExpired:
-            log.warning("proc did not exit within 4s; escalating to SIGKILL")
-            if pgid is not None:
-                try: os.killpg(pgid, signal.SIGKILL)
-                except Exception as _e: log.warning("killpg SIGKILL failed: %s", _e)
-            try: proc.kill()
-            except Exception as _e: log.warning("proc.kill failed: %s", _e)
-        # pkill fallback for any HIP/ROCm child processes that escaped the
-        # process group (some GPU runtimes fork into their own session).
-        with best_effort("bench cancel: pkill HIP/ROCm child procs", log=log):
-            subprocess.run(['pkill', '-9', '-f', 'llama-bench'], capture_output=True, timeout=3)
-            subprocess.run(['pkill', '-9', '-f', 'llama-batched-bench'], capture_output=True, timeout=3)
-        # Background thread (_run_one_model) will see EOF on stdout, call
-        # proc.wait(), and emit model_done + done naturally — no duplicate event.
-    except Exception as e:
-        return _err_json("internal error", 500, exc=e)
-    return jsonify({"ok": True})
+    """Terminate the running benchmark subprocess on the primary llama agent."""
+    return proxies.proxy_to_primary("llama", "POST", "/llama/bench/cancel", timeout=10)
 
 
 # --- Auto-tune CTX (iterative -fitt convergence) ---
@@ -2006,18 +1644,12 @@ def benchmark_cancel():
 @app.route("/api/llm/autotune/run", methods=["POST"])
 def llm_autotune_run():
     body = flask_request.get_json(force=True) or {}
-    proxied = proxies.proxy_to_primary("llama", "POST", "/llama/autotune/run", json=body, timeout=15)
-    if proxied is not None:
-        return proxied
-    return jsonify({"ok": False, "error": "no primary llama agent set"}), 503
+    return proxies.proxy_to_primary("llama", "POST", "/llama/autotune/run", json=body, timeout=15)
 
 
 @app.route("/api/llm/autotune/stream")
 def llm_autotune_stream():
-    proxied = proxies.proxy_stream_to_primary("llama", "/llama/autotune/stream", long_running=True)
-    if proxied is not None:
-        return proxied
-    return jsonify({"ok": False, "error": "no primary llama agent set"}), 503
+    return proxies.proxy_stream_to_primary("llama", "/llama/autotune/stream", long_running=True)
 
 
 @app.route("/api/llm/autotune/stream-info")
@@ -2037,10 +1669,7 @@ def llm_autotune_stream_info():
 
 @app.route("/api/llm/autotune/cancel", methods=["POST"])
 def llm_autotune_cancel():
-    proxied = proxies.proxy_to_primary("llama", "POST", "/llama/autotune/cancel", timeout=10)
-    if proxied is not None:
-        return proxied
-    return jsonify({"ok": False, "error": "no primary llama agent set"}), 503
+    return proxies.proxy_to_primary("llama", "POST", "/llama/autotune/cancel", timeout=10)
 
 
 @app.route("/api/llm/cache")
@@ -2120,8 +1749,8 @@ def _any_lms_busy() -> bool:
         if (now - (wrapper.get("last_seen") or 0)) > 15:
             continue
         ps = (wrapper.get("sample") or {}).get("ps") or []
-        if any(p.get("status", "").upper() not in ("IDLE", "STOPPED", "")
-               for p in (ps or [])):
+        if any(str(p.get("status") or "").upper() not in ("IDLE", "STOPPED", "")
+               for p in ps if isinstance(p, dict)):
             return True
     return False
 
@@ -2171,16 +1800,24 @@ def _broadcast_llama_state_if_changed(agent_id: "str | None" = None) -> None:
     )
 
 
+def _request_json_object() -> "dict | None":
+    """Parsed request JSON body when it is a JSON object, else None."""
+    try:
+        data = flask_request.get_json(force=True)
+    except Exception:
+        return None
+    return data if isinstance(data, dict) else None
+
+
 @app.route("/api/remote/host-metrics", methods=["POST"])
 def receive_remote_host_metrics():
     tok = agent_registry.bearer_from_request()
     agent = agent_registry.agent_by_token(tok or "")
     if not agent:
         return jsonify({"ok": False, "error": "invalid token or not approved"}), 401
-    try:
-        data = flask_request.get_json(force=True) or {}
-    except Exception:
-        return jsonify({"ok": False, "error": "bad JSON"}), 400
+    data = _request_json_object()
+    if data is None:
+        return jsonify({"ok": False, "error": "payload must be a JSON object"}), 400
     # PR2: every approved llama-capable agent pushes; STORE partitions them.
     aid = agent["agent_id"]
     provider_state.STORE.put("llama", aid, data)
@@ -2202,12 +1839,13 @@ def receive_provider_state():
     agent = agent_registry.agent_by_token(tok or "")
     if not agent:
         return jsonify({"ok": False, "error": "invalid token or not approved"}), 401
-    try:
-        body = flask_request.get_json(force=True) or {}
-    except Exception:
-        return jsonify({"ok": False, "error": "bad JSON"}), 400
+    body = _request_json_object()
+    if body is None:
+        return jsonify({"ok": False, "error": "payload must be a JSON object"}), 400
     provider = (body.get("provider") or "").strip()
     sample = body.get("sample") or {}
+    if not isinstance(sample, dict):
+        return jsonify({"ok": False, "error": "sample must be a JSON object"}), 400
     if provider not in providers.names():
         return jsonify({"ok": False, "error": f"unknown provider: {provider}"}), 404
     aid = agent["agent_id"]
@@ -2437,8 +2075,10 @@ def receive_lmstudio_metrics():
     agent = agent_registry.agent_by_token(tok or "")
     if not agent:
         return jsonify({"ok": False, "error": "invalid token or not approved"}), 401
+    data = _request_json_object()
+    if data is None:
+        return jsonify({"ok": False, "error": "payload must be a JSON object"}), 400
     try:
-        data = flask_request.get_json(force=True)
         aid = agent["agent_id"]
         provider_state.STORE.put("lms", aid, data)
         # Per-agent online latch — log only on the False→True edge.

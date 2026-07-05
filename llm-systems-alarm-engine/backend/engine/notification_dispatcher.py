@@ -28,6 +28,16 @@ from config.unified_config import settings  # noqa: E402
 
 logger = logging.getLogger(__name__)
 
+# Strong references to in-flight dispatch tasks; released when each finishes.
+_dispatch_tasks: set = set()
+
+
+def _spawn_dispatch(coro) -> None:
+    """create_task + keep a strong reference until the task finishes."""
+    task = asyncio.create_task(coro)
+    _dispatch_tasks.add(task)
+    task.add_done_callback(_dispatch_tasks.discard)
+
 
 class NotificationDispatcher:
     """Dispatches notifications through configured channels."""
@@ -136,7 +146,7 @@ class NotificationDispatcher:
         """Public: alert just *fired or is still firing* — apply policy
         filters and dispatch to matching channels (rate-limited per policy)."""
         logger.info(f"Dispatching notification for alert {alert.alert_id}")
-        asyncio.create_task(self._send_notifications_async(alert, event="firing"))
+        _spawn_dispatch(self._send_notifications_async(alert, event="firing"))
 
     def notify_alert_resolved(self, alert: Alert) -> None:
         """Public: alert just *resolved*. Always emits a toast informing
@@ -146,7 +156,7 @@ class NotificationDispatcher:
         their channels here, and only for alerts they actually dispatched
         on in the first place."""
         logger.info(f"Dispatching CLEAR notification for alert {alert.alert_id}")
-        asyncio.create_task(self._send_notifications_async(alert, event="resolved"))
+        _spawn_dispatch(self._send_notifications_async(alert, event="resolved"))
 
     def notify_alert_acknowledged(self, alert: Alert) -> None:
         """Public: alert was acknowledged via the UI or API. Emits a single
@@ -155,7 +165,7 @@ class NotificationDispatcher:
         Subsequent continuing-breach cycles for this alert won't fire any
         non-toast notification either (see _policies_that_should_dispatch)."""
         logger.info(f"Dispatching ACK notification for alert {alert.alert_id}")
-        asyncio.create_task(self._send_notifications_async(alert, event="acknowledged"))
+        _spawn_dispatch(self._send_notifications_async(alert, event="acknowledged"))
 
     def _enabled_policies(self) -> list:
         if self.notification_repository is None:

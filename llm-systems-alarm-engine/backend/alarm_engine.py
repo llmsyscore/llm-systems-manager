@@ -66,7 +66,7 @@ from .storage.influxdb_client import InfluxDBClient
 # (-1, -2, …) for same-day iterations; roll the date for a new day's first
 # change.
 # ---------------------------------------------------------------------------
-__version__ = "v2026.07.04-8"
+__version__ = "v2026.07.05-3"
 from .storage import influx_monitor as _influx_monitor
 from .models.alarm_rule import (
     AlarmRuleCreate,
@@ -263,6 +263,17 @@ def _seed_default_rules(repo: RuleRepository) -> None:
 def _periodic_refresh_count(result: Any) -> int:
     """Row count for _periodic_refresh's log line; int results (e.g. purge) count directly."""
     return result if isinstance(result, int) else (len(result) if hasattr(result, "__len__") else 0)
+
+
+# Strong references to background tasks; released when each task finishes.
+_background_tasks: set = set()
+
+
+def _spawn_background(coro) -> None:
+    """create_task + keep a strong reference until the task finishes."""
+    task = asyncio.create_task(coro)
+    _background_tasks.add(task)
+    task.add_done_callback(_background_tasks.discard)
 
 
 async def _on_startup() -> None:
@@ -500,7 +511,7 @@ async def _on_startup() -> None:
     # be hundreds of ms). It naturally awaits asyncio.sleep before the
     # first cycle (eval_interval = 15 s default), so we don't need to
     # delay it further.
-    asyncio.create_task(_rule_evaluation_loop())
+    _spawn_background(_rule_evaluation_loop())
 
     # 6a. Keep the metric-list cascade cache continuously warm. Walking
     # the MetricCache to build (host × source × metric_name) rows takes
@@ -524,7 +535,7 @@ async def _on_startup() -> None:
     # /api/alarm/metrics: 30 s TTL → refresh every 20 s.
     if metric_repo is not None:
         from .api.routes.metrics import compute_metric_list
-        asyncio.create_task(_periodic_refresh(
+        _spawn_background(_periodic_refresh(
             "Metric-list", compute_metric_list, 20.0, metric_repo, None, 1000,
         ))
 
@@ -538,7 +549,7 @@ async def _on_startup() -> None:
     # startup to keep the event loop free for the manager's warm-up
     # fan-out (which only has ~45 s of retry runway).
     if db_client is not None and metric_repo is not None:
-        asyncio.create_task(_influx_monitor.run(
+        _spawn_background(_influx_monitor.run(
             db_client, metric_repo,
             interval_s=settings.alarm_engine.intervals.influxdb_monitor_s,
             initial_delay_s=30.0,
@@ -556,7 +567,7 @@ async def _on_startup() -> None:
             cutoff = (now_utc() - timedelta(days=_alert_history_days)).isoformat()
             return _alarms_db.purge_history_older_than(cutoff)
 
-        asyncio.create_task(_periodic_refresh(
+        _spawn_background(_periodic_refresh(
             "Alert-history purge", _purge_alert_history, _purge_interval_s,
         ))
 
@@ -721,7 +732,7 @@ app = FastAPI(
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=settings.alarm_engine.cors_origins.split(","),
+    allow_origins=[o.strip() for o in settings.alarm_engine.cors_origins.split(",") if o.strip()],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -751,6 +762,20 @@ async def serve_index() -> FileResponse:
 
 # ── Health endpoint ─────────────────────────────────────────────
 
+def _ping_influxdb() -> tuple[str, "float | None", "str | None"]:
+    """Blocking InfluxDB /ping probe. Returns (status, latency_ms, version)."""
+    import requests
+    url = f"http://{settings.influxdb.host}:{settings.influxdb.port}/ping"
+    try:
+        t0 = time.perf_counter()
+        resp = requests.get(url, timeout=settings.alarm_engine.timeouts.influxdb_ping)
+        latency_ms = round((time.perf_counter() - t0) * 1000, 1)
+        status = "connected" if resp.status_code in (200, 204) else f"http_{resp.status_code}"
+        return status, latency_ms, resp.headers.get("X-Influxdb-Version") or None
+    except Exception as e:
+        return f"unreachable: {type(e).__name__}", None, None
+
+
 @app.get("/health")
 async def health_check() -> dict:
     """Health check endpoint.
@@ -759,22 +784,13 @@ async def health_check() -> dict:
     checking that a host was configured. Returns 200 in all branches so
     that load balancers / uptime checkers can distinguish "alarm engine
     process up but InfluxDB unreachable" via the JSON body rather than
-    HTTP code.
+    HTTP code. The InfluxDB ping runs in a worker thread.
     """
-    import requests
     influx_status = "not configured"
     influx_latency_ms: float | None = None
     influx_version: str | None = None
     if settings.influxdb.host:
-        url = f"http://{settings.influxdb.host}:{settings.influxdb.port}/ping"
-        try:
-            t0 = time.perf_counter()
-            resp = requests.get(url, timeout=settings.alarm_engine.timeouts.influxdb_ping)
-            influx_latency_ms = round((time.perf_counter() - t0) * 1000, 1)
-            influx_status = "connected" if resp.status_code in (200, 204) else f"http_{resp.status_code}"
-            influx_version = resp.headers.get("X-Influxdb-Version") or None
-        except Exception as e:
-            influx_status = f"unreachable: {type(e).__name__}"
+        influx_status, influx_latency_ms, influx_version = await asyncio.to_thread(_ping_influxdb)
     return {
         "status": "ok",
         "version": __version__,
