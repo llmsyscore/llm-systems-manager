@@ -1,7 +1,5 @@
 """Per-run SSE replay buffer. Events get a monotonic seq within a run; the SSE
 `id: <run_id>:<seq>` lets a reconnecting EventSource resume via Last-Event-ID.
-
-Mirrored verbatim between agent/ and llm-systems-manager/backend/ — keep in sync.
 """
 from collections import deque
 
