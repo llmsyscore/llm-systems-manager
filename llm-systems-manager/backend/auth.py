@@ -206,6 +206,24 @@ def auth_mode() -> str:
     return policy
 
 
+def _gateway_api_keys() -> list:
+    gw = getattr(_settings.manager, "gateway", None)
+    return [str(k) for k in (getattr(gw, "api_keys", None) or []) if k]
+
+
+def _gateway_key_ok() -> bool:
+    """Constant-time bearer check against [manager.gateway].api_keys."""
+    keys = _gateway_api_keys()
+    tok = _bearer_from_request() or ""
+    if not keys or not tok:
+        return False
+    ok = False
+    for k in keys:
+        if _hmac.compare_digest(k, tok):
+            ok = True
+    return ok
+
+
 def _bypass_role() -> str:
     """Role assigned to login-bypassed sessions (trusted_cidr/disabled)."""
     r = (getattr(_settings.manager.auth, "bypass_role", "admin") or "admin").strip().lower()
@@ -311,6 +329,8 @@ def _auth_gate():
     if path in AUTH_OPEN_PATHS or path.startswith("/api/remote/"):
         return None
     if _agent_by_token(_bearer_from_request() or ""):
+        return None
+    if path.startswith("/api/gateway/") and _gateway_key_ok():
         return None
     if path.endswith("/cert-bundle"):
         return None
