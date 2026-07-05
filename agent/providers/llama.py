@@ -25,6 +25,7 @@ from typing import Any, Iterator, Optional
 import requests
 from fastapi import Header, HTTPException, Query, Request
 from fastapi.responses import Response, StreamingResponse
+from starlette.concurrency import run_in_threadpool
 
 import stream_pool  # type: ignore[import-not-found]  # sibling at agent root
 from _best_effort import best_effort  # type: ignore[import-not-found]  # sibling at agent root
@@ -1297,10 +1298,14 @@ async def _llama_openai_forward(sub: str, request: Request,
     body = await request.body()
     url = f"{_require_ctx().config.LLAMA_API_URL.rstrip('/')}/v1/{sub}"
     headers = {"Content-Type": "application/json"}
+    # Blocking requests.post runs off-loop: this handler is async (for
+    # request.body()), so a direct call would stall the whole event loop.
     if _openai_wants_stream(body):
         try:
-            upstream = requests.post(url, data=body, headers=headers,
-                                     stream=True, timeout=(5, _OPENAI_READ_TIMEOUT_S))
+            upstream = await run_in_threadpool(
+                lambda: requests.post(url, data=body, headers=headers,
+                                      stream=True,
+                                      timeout=(5, _OPENAI_READ_TIMEOUT_S)))
         except requests.exceptions.RequestException as e:
             raise HTTPException(status_code=502, detail=str(e))
         ctype = upstream.headers.get("content-type") or "text/event-stream"
@@ -1326,8 +1331,9 @@ async def _llama_openai_forward(sub: str, request: Request,
                                  headers={"Cache-Control": "no-cache",
                                           "X-Accel-Buffering": "no"})
     try:
-        r = requests.post(url, data=body, headers=headers,
-                          timeout=(5, _OPENAI_READ_TIMEOUT_S))
+        r = await run_in_threadpool(
+            lambda: requests.post(url, data=body, headers=headers,
+                                  timeout=(5, _OPENAI_READ_TIMEOUT_S)))
     except requests.exceptions.RequestException as e:
         raise HTTPException(status_code=502, detail=str(e))
     return Response(content=r.content, status_code=r.status_code,

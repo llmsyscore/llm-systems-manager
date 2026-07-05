@@ -55,8 +55,11 @@ def _candidates(model_id, agent_id) -> list:
             ordered.append(agent)
 
     try:
-        primary, _ = proxies._resolve_target("llama", model_id, agent_id,
-                                             allow_pool=True)
+        primary, override = proxies._resolve_target("llama", model_id, agent_id,
+                                                    allow_pool=True)
+        if override == "pin":
+            log.info("gateway: model pin overrode ?agent=%s for model %s",
+                     (agent_id or "")[:8], model_id)
     except Exception as e:
         log.warning("gateway: resolve failed: %s", e)
         primary = None
@@ -152,14 +155,22 @@ def _stream_from(agent: dict, path: str, body: dict, errors: list):
     if not stream_pool.POOL.try_acquire():
         upstream.close()
         return _oai_error("manager at stream capacity; retry shortly", 503)
-    resp = Response(
-        proxies.thread_pumped(upstream, path,
-                              max_lifetime_s=proxies._STREAM_OP_MAX_LIFETIME_S),
-        status=upstream.status_code, mimetype="text/event-stream",
-        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no",
-                 "X-Proxied-To": _label(agent)})
-    resp.call_on_close(stream_pool.POOL.release)
-    return resp
+    handed_off = False
+    try:
+        resp = Response(
+            proxies.thread_pumped(upstream, path,
+                                  max_lifetime_s=proxies._STREAM_OP_MAX_LIFETIME_S),
+            status=upstream.status_code, mimetype="text/event-stream",
+            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no",
+                     "X-Proxied-To": _label(agent)})
+        resp.call_on_close(stream_pool.POOL.release)
+        handed_off = True
+        return resp
+    finally:
+        # Construction can raise after the slot is taken; release + close here.
+        if not handed_off:
+            upstream.close()
+            stream_pool.POOL.release()
 
 
 def _gateway_models() -> Response:
