@@ -6,13 +6,15 @@ import logging
 from fastapi import APIRouter, Depends, HTTPException, Query
 from typing import Any, List, Optional
 
+from ..auth import require_management_token
 from ...models.alert import Alert, AlertStatus
 from ...storage.repositories import AlertRepository
 from ...engine.alert_manager import AlertManager
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/api/alarm/alerts", tags=["alerts"])
+router = APIRouter(prefix="/api/alarm/alerts", tags=["alerts"],
+                   dependencies=[Depends(require_management_token)])
 
 # ── Dependency injection wiring ─────────────────────────────────
 _alert_repo: Optional[AlertRepository] = None

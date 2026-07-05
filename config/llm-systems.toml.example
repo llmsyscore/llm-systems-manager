@@ -215,6 +215,9 @@ log_level = "INFO"                                       # per-service override
 # agents on the heartbeat ack — rotation propagates within ≤60 s, no restart.
 # Mode 0600 (the whole TOML).
 ingest_token = "REPLACE_ME"
+# ★ Secret. Bearer token for the management routes (rules/alerts/notifications).
+# Blank or "REPLACE_ME" = they accept ingest_token; open when both are unset.
+management_token = ""
 # Serve the alarm engine over HTTPS (encrypts the agent metric-push path,
 # which carries ingest_token). Enabled by default — the installer pre-issues
 # data/ae-tls.{crt,key} from the manager's internal CA on co-located installs,

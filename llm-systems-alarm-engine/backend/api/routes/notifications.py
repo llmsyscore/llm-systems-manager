@@ -6,9 +6,10 @@ Provides CRUD for notification channels and test/send capabilities.
 import logging
 from typing import List, Optional
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 
+from ..auth import require_management_token
 from ...models.notification import (
     NotificationChannel,
     NotificationChannelCreate,
@@ -22,7 +23,8 @@ from ...models.notification import (
 from ...storage.repositories import ConfigDeserializationError, NotificationRepository
 
 logger = logging.getLogger(__name__)
-router = APIRouter(prefix="/api/alarm/notifications", tags=["Notifications"])
+router = APIRouter(prefix="/api/alarm/notifications", tags=["Notifications"],
+                   dependencies=[Depends(require_management_token)])
 
 
 # ── Request bodies ──────────────────────────────────────────────

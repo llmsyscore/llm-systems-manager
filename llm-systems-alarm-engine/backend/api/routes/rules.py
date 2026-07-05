@@ -13,8 +13,9 @@ import logging
 import uuid
 from typing import Optional
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 
+from ..auth import require_management_token
 from ...models.alarm_rule import (
     AlarmRuleCreate,
     AlarmRuleUpdate,
@@ -23,7 +24,8 @@ from ...models.alarm_rule import (
 from ...storage.repositories import RuleRepository
 
 logger = logging.getLogger(__name__)
-router = APIRouter(prefix="/api/alarm/rules", tags=["Rules"])
+router = APIRouter(prefix="/api/alarm/rules", tags=["Rules"],
+                   dependencies=[Depends(require_management_token)])
 
 # Global dependency map — populated in alarm_engine.py on app startup
 _dependency_map: dict = {}

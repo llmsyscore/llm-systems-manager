@@ -362,6 +362,9 @@ class AlarmEngineConfig(BaseModel):
     # value to agents on the heartbeat ack; the manager reads it from this
     # same config. Rotation propagates within ≤60 s, no restart.
     ingest_token: str = ""
+    # ★ Secret. Bearer token for the management surface (rules/alerts/
+    # notifications). Blank = those routes accept ingest_token instead.
+    management_token: str = ""
     # When true the alarm engine serves HTTPS on `port` with a cert signed by
     # the manager's internal CA. ON by default — the installer pre-issues
     # data/ae-tls.{crt,key} on co-located installs so no admin step is needed.
