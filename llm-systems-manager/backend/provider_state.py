@@ -46,11 +46,11 @@ def _sync_put(q: "queue.Queue", item) -> None:
         try:
             q.get_nowait()
         except queue.Empty:
-            pass
+            pass  # a consumer drained it first; the retry below still applies
         try:
             q.put_nowait(item)
         except queue.Full:
-            pass
+            pass  # a concurrent refill won it; drop this update, newer state follows
 
 
 class _ProviderSampleStore:
