@@ -17,6 +17,13 @@ logger = logging.getLogger(__name__)
 _DEFAULT_ROLLUP_GRAINS = frozenset({"1m", "5m", "10m", "30m", "1h"})
 
 
+def _flux_str(value: str) -> str:
+    """Escape a value for interpolation inside a double-quoted Flux string;
+    covers backslash, quote, newlines, and the ${} interpolation trigger."""
+    return (str(value).replace("\\", "\\\\").replace('"', '\\"')
+            .replace("\n", "\\n").replace("\r", "\\r").replace("${", "\\${"))
+
+
 class InfluxDBClient:
     """InfluxDB v2 client wrapper for alarm engine metric data.
 
@@ -171,8 +178,8 @@ class InfluxDBClient:
             from(bucket: "{bucket}")
               |> range(start: {start_ts}, stop: {end_ts})
               |> filter(fn: (r) => r._measurement == "{measurement}")
-              |> filter(fn: (r) => r.source == "{source}")
-              |> filter(fn: (r) => r.metric_name == "{metric_name}")
+              |> filter(fn: (r) => r.source == "{_flux_str(source)}")
+              |> filter(fn: (r) => r.metric_name == "{_flux_str(metric_name)}")
               |> filter(fn: (r) => r._field == "value")
               {aggregate_clause}
               |> sort(columns: ["_time"], desc: false)
@@ -323,8 +330,8 @@ class InfluxDBClient:
             from(bucket: "{self.metrics_bucket}")
               |> range(start: -1h)
               |> filter(fn: (r) => r._measurement == "metrics")
-              |> filter(fn: (r) => r.source == "{source}")
-              |> filter(fn: (r) => r.metric_name == "{metric_name}")
+              |> filter(fn: (r) => r.source == "{_flux_str(source)}")
+              |> filter(fn: (r) => r.metric_name == "{_flux_str(metric_name)}")
               |> filter(fn: (r) => r._field == "value")
               |> last()
               |> keep(columns: ["_time", "_value", "unit"])
@@ -355,8 +362,8 @@ class InfluxDBClient:
             from(bucket: "{self.metrics_bucket}")
               |> range(start: -{window_minutes}m)
               |> filter(fn: (r) => r._measurement == "metrics")
-              |> filter(fn: (r) => r.source == "{source}")
-              |> filter(fn: (r) => r.metric_name == "{metric_name}")
+              |> filter(fn: (r) => r.source == "{_flux_str(source)}")
+              |> filter(fn: (r) => r.metric_name == "{_flux_str(metric_name)}")
               |> filter(fn: (r) => r._field == "value")
               |> stats()
               |> keep(columns: ["min", "max", "mean", "stddev"])

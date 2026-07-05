@@ -11,7 +11,6 @@ Endpoints:
 
 import asyncio
 import logging
-import re
 import threading
 import time
 from datetime import datetime, timedelta, timezone
@@ -20,6 +19,7 @@ from typing import Any, Optional
 from fastapi import APIRouter, Body, Depends, HTTPException, Query
 
 from ...integration.metric_flatten import metric_to_points
+from ...models.alarm_rule import TAG_VALUE_RE
 from ...models.metrics import MetricBatchCreate, MetricPoint
 from ...storage.repositories import MetricRepository
 from ..auth import require_ingest_token
@@ -39,19 +39,8 @@ _HIST_SINCE_MAX   = _API.history_since_minutes_max
 _HIST_LIMIT_MAX   = _API.history_limit_max
 _SUMMARY_WIN_MAX  = _API.summary_window_minutes_max
 
-# Tag identifiers flow as f-string interpolation into Flux queries in
-# storage/influxdb_client.py (query_metrics, query_latest_metric,
-# query_metric_statistics). Restrict to a conservative character class so a
-# stray `"` or `\` cannot break out of the Flux string literal and rewrite
-# predicates. Space is allowed because some agent-emitted names contain
-# spaces (e.g. liquidctl_aio_Liquid temperature_value) — Flux handles
-# spaces inside double-quoted strings cleanly, so this doesn't widen the
-# injection surface.
-_TAG_RE = re.compile(r"^[A-Za-z0-9_.:\- ]{1,128}$")
-
-
 def _validate_tag(value: str, field: str) -> str:
-    if not _TAG_RE.match(value):
+    if not TAG_VALUE_RE.match(value):
         raise HTTPException(status_code=400, detail=f"Invalid {field}")
     return value
 

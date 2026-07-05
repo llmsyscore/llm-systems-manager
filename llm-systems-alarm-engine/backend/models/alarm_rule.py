@@ -1,15 +1,26 @@
 """Alarm rule data models."""
 
+import re
 from datetime import datetime
 from .._time import now_utc
 from enum import Enum
 from typing import Any, Optional
 from uuid import UUID, uuid4
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 # Consecutive sub-threshold eval cycles before an alert auto-resolves.
 DEFAULT_AUTO_RESOLVE_CYCLES = 2
+
+# Allowed charset for metric_source / metric_name — the same alphabet the
+# metrics read API enforces on its source/metric_name params.
+TAG_VALUE_RE = re.compile(r"^[A-Za-z0-9_.:\- ]{1,128}\Z")
+
+
+def _validate_metric_tag(value: str) -> str:
+    if not TAG_VALUE_RE.match(value):
+        raise ValueError("must be 1-128 chars of [A-Za-z0-9_.:- ] and space")
+    return value
 
 
 class RuleType(str, Enum):
@@ -105,6 +116,11 @@ class AlarmRuleCreate(BaseModel):
     )
     correlation_group: Optional[str] = Field(default=None, description="Group key for correlating alerts across rules")
 
+    @field_validator("metric_source", "metric_name")
+    @classmethod
+    def _check_metric_tags(cls, v: str) -> str:
+        return _validate_metric_tag(v)
+
     def to_alarm_rule(self, rule_id: Optional[UUID] = None) -> "AlarmRule":
         """Create an AlarmRule from the create schema."""
         return AlarmRule(
@@ -146,6 +162,11 @@ class AlarmRuleUpdate(BaseModel):
     quiet_hours_end: Optional[str] = None
     auto_resolve_cycles: Optional[int] = Field(default=None, ge=0)
     correlation_group: Optional[str] = None
+
+    @field_validator("metric_source", "metric_name")
+    @classmethod
+    def _check_metric_tags(cls, v: Optional[str]) -> Optional[str]:
+        return v if v is None else _validate_metric_tag(v)
 
 
 class AlarmRule(BaseModel):
