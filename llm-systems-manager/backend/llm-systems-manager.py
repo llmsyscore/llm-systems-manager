@@ -153,7 +153,7 @@ def _local_hostname() -> str:
 # banner reads it. Bump suffix (-1, -2, …) for same-day iterations; roll
 # the date for a new day's first change.
 # ---------------------------------------------------------------------------
-__version__ = "v2026.07.05-1"
+__version__ = "v2026.07.05-2"
 
 # Wall-clock at first import (Cheroot main process); the shutdown banner
 # reads it for the uptime line.
@@ -1744,8 +1744,8 @@ def _any_lms_busy() -> bool:
         if (now - (wrapper.get("last_seen") or 0)) > 15:
             continue
         ps = (wrapper.get("sample") or {}).get("ps") or []
-        if any(p.get("status", "").upper() not in ("IDLE", "STOPPED", "")
-               for p in (ps or [])):
+        if any(str(p.get("status") or "").upper() not in ("IDLE", "STOPPED", "")
+               for p in ps if isinstance(p, dict)):
             return True
     return False
 
@@ -1805,6 +1805,8 @@ def receive_remote_host_metrics():
         data = flask_request.get_json(force=True) or {}
     except Exception:
         return jsonify({"ok": False, "error": "bad JSON"}), 400
+    if not isinstance(data, dict):
+        return jsonify({"ok": False, "error": "payload must be a JSON object"}), 400
     # PR2: every approved llama-capable agent pushes; STORE partitions them.
     aid = agent["agent_id"]
     provider_state.STORE.put("llama", aid, data)
@@ -1830,6 +1832,8 @@ def receive_provider_state():
         body = flask_request.get_json(force=True) or {}
     except Exception:
         return jsonify({"ok": False, "error": "bad JSON"}), 400
+    if not isinstance(body, dict):
+        return jsonify({"ok": False, "error": "payload must be a JSON object"}), 400
     provider = (body.get("provider") or "").strip()
     sample = body.get("sample") or {}
     if provider not in providers.names():
@@ -2063,6 +2067,8 @@ def receive_lmstudio_metrics():
         return jsonify({"ok": False, "error": "invalid token or not approved"}), 401
     try:
         data = flask_request.get_json(force=True)
+        if not isinstance(data, dict):
+            return jsonify({"ok": False, "error": "payload must be a JSON object"}), 400
         aid = agent["agent_id"]
         provider_state.STORE.put("lms", aid, data)
         # Per-agent online latch — log only on the False→True edge.

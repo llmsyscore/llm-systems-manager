@@ -66,7 +66,7 @@ from .storage.influxdb_client import InfluxDBClient
 # (-1, -2, …) for same-day iterations; roll the date for a new day's first
 # change.
 # ---------------------------------------------------------------------------
-__version__ = "v2026.07.05-1"
+__version__ = "v2026.07.05-2"
 from .storage import influx_monitor as _influx_monitor
 from .models.alarm_rule import (
     AlarmRuleCreate,
@@ -263,6 +263,18 @@ def _seed_default_rules(repo: RuleRepository) -> None:
 def _periodic_refresh_count(result: Any) -> int:
     """Row count for _periodic_refresh's log line; int results (e.g. purge) count directly."""
     return result if isinstance(result, int) else (len(result) if hasattr(result, "__len__") else 0)
+
+
+# Strong refs to background tasks — the loop only holds weak refs, so an
+# unreferenced task can be garbage-collected mid-flight.
+_background_tasks: set = set()
+
+
+def _spawn_background(coro) -> None:
+    """create_task + keep a strong reference until the task finishes."""
+    task = asyncio.create_task(coro)
+    _background_tasks.add(task)
+    task.add_done_callback(_background_tasks.discard)
 
 
 async def _on_startup() -> None:
@@ -500,7 +512,7 @@ async def _on_startup() -> None:
     # be hundreds of ms). It naturally awaits asyncio.sleep before the
     # first cycle (eval_interval = 15 s default), so we don't need to
     # delay it further.
-    asyncio.create_task(_rule_evaluation_loop())
+    _spawn_background(_rule_evaluation_loop())
 
     # 6a. Keep the metric-list cascade cache continuously warm. Walking
     # the MetricCache to build (host × source × metric_name) rows takes
@@ -524,7 +536,7 @@ async def _on_startup() -> None:
     # /api/alarm/metrics: 30 s TTL → refresh every 20 s.
     if metric_repo is not None:
         from .api.routes.metrics import compute_metric_list
-        asyncio.create_task(_periodic_refresh(
+        _spawn_background(_periodic_refresh(
             "Metric-list", compute_metric_list, 20.0, metric_repo, None, 1000,
         ))
 
@@ -538,7 +550,7 @@ async def _on_startup() -> None:
     # startup to keep the event loop free for the manager's warm-up
     # fan-out (which only has ~45 s of retry runway).
     if db_client is not None and metric_repo is not None:
-        asyncio.create_task(_influx_monitor.run(
+        _spawn_background(_influx_monitor.run(
             db_client, metric_repo,
             interval_s=settings.alarm_engine.intervals.influxdb_monitor_s,
             initial_delay_s=30.0,
@@ -556,7 +568,7 @@ async def _on_startup() -> None:
             cutoff = (now_utc() - timedelta(days=_alert_history_days)).isoformat()
             return _alarms_db.purge_history_older_than(cutoff)
 
-        asyncio.create_task(_periodic_refresh(
+        _spawn_background(_periodic_refresh(
             "Alert-history purge", _purge_alert_history, _purge_interval_s,
         ))
 
@@ -721,7 +733,7 @@ app = FastAPI(
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=settings.alarm_engine.cors_origins.split(","),
+    allow_origins=[o.strip() for o in settings.alarm_engine.cors_origins.split(",") if o.strip()],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
