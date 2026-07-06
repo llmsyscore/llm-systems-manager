@@ -511,6 +511,7 @@ _compute_required_install_files() {
     Linux)
       _required_install_files+=("$TMPL_DIR/llm-systems-agent.service.tmpl")
       _required_install_files+=("$TMPL_DIR/llm-systems-agent.sudoers.tmpl")
+      _required_install_files+=("$TMPL_DIR/llm-svcconfig-apply.sh.tmpl")
       ;;
     Darwin)
       _required_install_files+=("$TMPL_DIR/com.llm-systems-agent.plist.tmpl")
@@ -699,11 +700,35 @@ _fetch_agent_into() {
     return 1
   fi
 
+  # The update payload runs as root; refuse a plaintext-HTTP (MITM-able)
+  # manager URL unless the operator explicitly opts in for a trusted LAN.
+  if [[ "$mgr_url" != https://* ]]; then
+    if [[ "${LLMSYS_ALLOW_INSECURE_UPDATE:-}" == "1" ]]; then
+      echo "  ⚠ fetching the agent update over plaintext HTTP (LLMSYS_ALLOW_INSECURE_UPDATE=1)." >&2
+    else
+      echo "  ⚠ refusing to fetch the agent update over a non-HTTPS URL: $mgr_url" >&2
+      echo "    Use an https:// MANAGER_URL, or set LLMSYS_ALLOW_INSECURE_UPDATE=1 on a trusted LAN." >&2
+      return 1
+    fi
+  fi
+
   local tmpdir; tmpdir="$(mktemp -d)"
   echo "  Downloading agent/ from $mgr_url/api/agent-tarball"
   if ! curl -fsSL -H "Authorization: Bearer $tok" \
             "$mgr_url/api/agent-tarball" -o "$tmpdir/agent.tar.gz"; then
     echo "  ⚠ download failed from $mgr_url/api/agent-tarball" >&2
+    rm -rf "$tmpdir"
+    return 1
+  fi
+
+  # tar-slip guard: reject absolute paths, parent refs, and anything outside
+  # agent/ before extracting as root — a member like ../ would escape tmpdir.
+  local _bad_member
+  _bad_member="$(tar -tzf "$tmpdir/agent.tar.gz" 2>/dev/null | awk '
+    /^\// || /(^|\/)\.\.(\/|$)/ { print; exit }
+    $0 !~ /^agent(\/|$)/        { print; exit }')"
+  if [[ -n "$_bad_member" ]]; then
+    echo "  ⚠ refusing tarball: unsafe member path: $_bad_member" >&2
     rm -rf "$tmpdir"
     return 1
   fi
@@ -3746,6 +3771,10 @@ if [[ "$AGENT_OS" == "linux" && "$SKIP_SUDOERS" == "false" ]]; then
       echo "      rm -f \"\$TMP\""
       echo "      sudo systemctl restart llm-systems-agent"
     fi
+    if [[ ! -x /usr/local/sbin/llm-svcconfig-apply ]]; then
+      echo "  ⚠ /usr/local/sbin/llm-svcconfig-apply missing — self-update can't write it."
+      echo "    Re-run install.sh with sudo to install the svcconfig helper."
+    fi
     rm -f "$TMP_SUDOERS"
   else
     TMP_SUDOERS="$(mktemp)"
@@ -3759,6 +3788,14 @@ if [[ "$AGENT_OS" == "linux" && "$SKIP_SUDOERS" == "false" ]]; then
       exit 1
     fi
     rm -f "$TMP_SUDOERS"
+    # Root-owned svcconfig helper: rewrites only the llama unit's ExecStart so
+    # the agent no longer needs a grant to write arbitrary unit content.
+    TMP_WRAP="$(mktemp)"
+    sed "s|__UNIT_PATH__|/etc/systemd/system/llama_server.service|g" \
+        "$TMPL_DIR/llm-svcconfig-apply.sh.tmpl" > "$TMP_WRAP"
+    $SUDO install -m 0755 -o root -g root "$TMP_WRAP" /usr/local/sbin/llm-svcconfig-apply
+    _ok "svcconfig helper installed: /usr/local/sbin/llm-svcconfig-apply"
+    rm -f "$TMP_WRAP"
   fi
 fi
 
@@ -3770,13 +3807,15 @@ fi
 # fixup: chown to the agent user so the agent can write atomically.
 if [[ "$AGENT_OS" == "linux" && "$ENABLE_PERF" == "true" ]]; then
   STATE_FILE="/tmp/llama-server-last-state"
-  if [[ -e "$STATE_FILE" ]]; then
+  # Only a real regular file (never a symlink) in world-writable /tmp — a
+  # planted symlink would otherwise redirect the chown to an arbitrary target.
+  if [[ -f "$STATE_FILE" && ! -L "$STATE_FILE" ]]; then
     CURRENT_OWNER="$(stat -c %U "$STATE_FILE" 2>/dev/null || echo unknown)"
     if [[ "$CURRENT_OWNER" != "$USER_ARG" ]]; then
       echo
       echo "── Migrating $STATE_FILE ownership ────────────────────────────────────"
       echo "  current owner: $CURRENT_OWNER → target: $USER_ARG"
-      $SUDO chown "$USER_ARG:$USER_GROUP" "$STATE_FILE"
+      $SUDO chown -h "$USER_ARG:$USER_GROUP" "$STATE_FILE"
       echo "  ✓ chowned to $USER_ARG:$USER_GROUP"
       echo "  (legacy artifact from the bash perf-controller daemon — agent"
       echo "   needs to own it to do atomic rename writes under /tmp)"

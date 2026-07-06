@@ -81,6 +81,7 @@ _llama_sse_thread: "Optional[threading.Thread]" = None
 _llama_sse_session: "Optional[requests.Session]" = None
 
 _HF_REPO_RE = re.compile(r'^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$')
+_SVCCONFIG_WRAPPER = "/usr/local/sbin/llm-svcconfig-apply"
 _LLAMA_LOG_IGNORE = (
     "GET /v1/models",
     "GET /metrics",
@@ -820,10 +821,14 @@ def _delete_quant_from_hf_cache(model_id: str) -> "tuple[list[str], Optional[str
     elif not repo:
         return [], f"Could not derive repo from model_id={model_id!r}"
 
-    if not repo or "/" not in repo:
+    if not repo or not _hf_repo_valid(repo):
         return [], f"Repo missing or malformed: {repo!r}"
     if not quant:
         return [], "Quant identifier missing — refusing to wildcard-delete the whole repo"
+    # quant becomes a glob pattern under a snapshot dir; a single path component
+    # only. Reject separators/parent refs so the pattern can't escape the cache.
+    if "/" in quant or "\\" in quant or ".." in quant or "\x00" in quant:
+        return [], f"Quant identifier rejected (path traversal): {quant!r}"
 
     cache_root = _hf_cache_root()
     repo_dir = cache_root / f"models--{repo.replace('/', '--')}"
@@ -1157,43 +1162,30 @@ def llama_svcconfig_post(body: dict, authorization: Optional[str] = Header(defau
     args_list = body.get("args", [])
     binary = body.get("binary", "")
     do_restart = bool(body.get("restart", False))
-    svc_path = _llama_svc_file_path()
 
-    try:
-        content = Path(svc_path).read_text()
-    except Exception as e:
-        return {"ok": False, "error": f"Cannot read service file: {e}"}
-
-    cmd_parts = [binary]
+    # stdin tokens: line 1 = binary, then one ExecStart token per line. The
+    # root-owned wrapper rewrites only the unit's ExecStart line, so the agent
+    # never writes arbitrary unit content (see llm-svcconfig-apply).
+    tokens = [binary]
     for a in args_list:
-        cmd_parts.append(a["flag"])
+        tokens.append(a["flag"])
         if not a.get("bool") and a.get("value") not in (None, ""):
-            cmd_parts.append(str(a["value"]))
-    exec_line = "ExecStart=" + " ".join(cmd_parts)
-    new_lines = []
-    for line in content.splitlines():
-        if line.strip().startswith("ExecStart="):
-            new_lines.append(exec_line)
-        else:
-            new_lines.append(line)
-    new_content = "\n".join(new_lines) + "\n"
+            tokens.append(str(a["value"]))
+    for t in tokens:
+        if not isinstance(t, str) or "\n" in t or "\r" in t:
+            return {"ok": False, "error": "invalid ExecStart token (newline or non-string)"}
+    payload = ("\n".join(tokens) + "\n").encode()
 
     try:
         r = subprocess.run(
-            ["sudo", "-n", "tee", svc_path],
-            input=new_content.encode(), capture_output=True, timeout=10,
+            ["sudo", "-n", _SVCCONFIG_WRAPPER],
+            input=payload, capture_output=True, timeout=15,
         )
         if r.returncode != 0:
             return {"ok": False,
-                    "error": r.stderr.decode().strip() or "sudo tee failed — check sudoers NOPASSWD for tee"}
+                    "error": r.stderr.decode().strip() or "svcconfig apply failed — check sudoers for llm-svcconfig-apply"}
     except Exception as e:
         return {"ok": False, "error": f"Write failed: {e}"}
-
-    try:
-        subprocess.run(["sudo", "-n", "/usr/bin/systemctl", "daemon-reload"],
-                       timeout=10, check=True, capture_output=True)
-    except Exception as e:
-        return {"ok": False, "error": f"daemon-reload failed: {e}"}
 
     if do_restart:
         try:
