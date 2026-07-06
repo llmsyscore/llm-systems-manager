@@ -1,0 +1,61 @@
+#!/usr/bin/env bash
+# Managed by llm-systems-agent installer. Installed root-owned to
+# /usr/local/sbin/llm-svcconfig-apply (mode 0755). Do not edit by hand.
+# Rewrites only the ExecStart= line of the trusted, root-owned llama unit so
+# the agent can change server flags without a grant to write arbitrary content.
+set -euo pipefail
+
+UNIT_PATH='__UNIT_PATH__'
+
+_die() { echo "llm-svcconfig-apply: $*" >&2; exit 1; }
+
+[[ -f "$UNIT_PATH" && ! -L "$UNIT_PATH" ]] || _die "unit not found or not a regular file: $UNIT_PATH"
+
+# stdin: line 1 = binary, remaining lines = ExecStart arg tokens (one per line).
+mapfile -t _lines || _die "failed to read stdin"
+[[ ${#_lines[@]} -ge 1 ]] || _die "empty input"
+
+BINARY="${_lines[0]}"
+ARGS=("${_lines[@]:1}")
+
+# Binary: absolute path, existing regular file, no whitespace/control/quote chars.
+[[ "$BINARY" == /* ]]                  || _die "binary must be an absolute path"
+[[ "$BINARY" != *[[:space:]\"\\]* ]]   || _die "binary path contains disallowed characters"
+[[ -f "$BINARY" ]]                     || _die "binary is not a regular file: $BINARY"
+
+_render_arg() {
+  # Reject control chars; systemd-quote tokens containing whitespace or quotes.
+  local a="$1"
+  [[ "$a" != *[[:cntrl:]]* ]] || _die "argument contains a control character"
+  if [[ "$a" == *[[:space:]\"]* ]]; then
+    a="${a//\\/\\\\}"; a="${a//\"/\\\"}"
+    printf '"%s"' "$a"
+  else
+    printf '%s' "$a"
+  fi
+}
+
+EXEC="ExecStart=$BINARY"
+for a in ${ARGS[@]+"${ARGS[@]}"}; do
+  EXEC+=" $(_render_arg "$a")"
+done
+
+# Preserve the trusted unit verbatim; replace only the first ExecStart= line.
+# Everything else (User=, Environment=, limits, ExecStartPre) is left as the
+# operator/installer wrote it — the request can only influence server flags.
+_replaced=0
+TMP="$(mktemp)"
+trap 'rm -f "$TMP"' EXIT
+while IFS= read -r line || [[ -n "$line" ]]; do
+  if [[ "$_replaced" -eq 0 && "${line#"${line%%[![:space:]]*}"}" == ExecStart=* ]]; then
+    printf '%s\n' "$EXEC" >> "$TMP"
+    _replaced=1
+  else
+    printf '%s\n' "$line" >> "$TMP"
+  fi
+done < "$UNIT_PATH"
+[[ "$_replaced" -eq 1 ]] || _die "no ExecStart= line found in $UNIT_PATH"
+
+install -m 0644 -o root -g root "$TMP" "$UNIT_PATH"
+/usr/bin/systemctl daemon-reload
+echo "ok"

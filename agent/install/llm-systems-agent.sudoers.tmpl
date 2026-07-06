@@ -8,11 +8,13 @@ Cmnd_Alias LSA_LLAMA = /usr/bin/systemctl start llama_server.service, \
                        /usr/bin/systemctl stop llama_server.service, \
                        /usr/bin/systemctl restart llama_server.service, \
                        /usr/bin/systemctl daemon-reload, \
-                       /usr/local/llama-server/build-llama-cpp.sh, \
-                       /usr/bin/tee /etc/systemd/system/llama_server.service
+                       /usr/local/llama-server/build-llama-cpp.sh "", \
+                       /usr/local/sbin/llm-svcconfig-apply ""
 
 Cmnd_Alias LSA_PERF  = /usr/bin/systemctl reload-or-restart powersave, \
                        /usr/bin/systemctl reload-or-restart performance, \
-                       /usr/bin/liquidctl
+                       /usr/bin/liquidctl status --match Kraken, \
+                       /usr/bin/liquidctl status --match HX1000i, \
+                       /usr/bin/liquidctl status --match "Smart Device"
 
 ${AGENT_USER} ALL=(root) NOPASSWD: LSA_LLAMA, LSA_PERF
