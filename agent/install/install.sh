@@ -606,6 +606,21 @@ _yaml_scalar() {
     | sed -E "s/^${key}:[[:space:]]*//; s/^['\"]//; s/['\"]$//; s/[[:space:]]*\$//"
 }
 
+# _resolved_llama_unit
+#   The configured llama systemd unit name — the interactive override, else the
+#   existing agent_config.yaml, else the default. Threaded into the sudoers
+#   grants, the svcconfig wrapper's unit path, and the self-update guard so a
+#   non-default unit name doesn't silently break svcconfig. Sanitised to a
+#   systemd unit charset so it's safe to substitute into sudoers.
+_resolved_llama_unit() {
+  local u="${LLAMA_SYSTEMD_UNIT_OVERRIDE:-}"
+  if [[ -z "$u" && -f "$INSTALL_DIR/agent_config.yaml" ]]; then
+    u="$(_yaml_scalar "$INSTALL_DIR/agent_config.yaml" LLAMA_SYSTEMD_UNIT)"
+  fi
+  [[ -n "$u" && "$u" =~ ^[A-Za-z0-9_.@-]+\.service$ ]] || u="llama_server.service"
+  printf '%s' "$u"
+}
+
 # _ensure_hf_cli USER HOME
 #   Install the HuggingFace 'hf' CLI into the agent venv and symlink it to
 #   ~/.local/bin/hf — the path the agent resolves for llama model downloads.
@@ -978,8 +993,9 @@ if $DO_UPDATE; then
   # helper or rewrite sudoers. On a llama host missing the helper, refuse to
   # deploy new code (which would break the ExecStart editor) and leave the
   # current agent running until a one-time root install migrates the host.
+  _lu_guard="$(_resolved_llama_unit)"
   if $FROM_SELF_UPDATE && [[ "$AGENT_OS" == "linux" \
-        && -f /etc/systemd/system/llama_server.service \
+        && -f "/etc/systemd/system/$_lu_guard" \
         && ! -x /usr/local/sbin/llm-svcconfig-apply ]]; then
     echo "ERROR: this update needs a one-time root migration on THIS host." >&2
     echo "  It moves llama unit edits behind a root-owned helper" >&2
@@ -3765,6 +3781,7 @@ EOF
 fi
 
 if [[ "$AGENT_OS" == "linux" && "$SKIP_SUDOERS" == "false" ]]; then
+  LLAMA_UNIT_RESOLVED="$(_resolved_llama_unit)"
   if $FROM_SELF_UPDATE; then
     # Self-update runs as the agent user (no root, no sudo). Skip the
     # rewrite — the existing sudoers stays. If sudoers content has
@@ -3772,7 +3789,7 @@ if [[ "$AGENT_OS" == "linux" && "$SKIP_SUDOERS" == "false" ]]; then
     # operator needs to re-run install.sh manually with sudo to pick
     # up the new template. Diff against template:
     TMP_SUDOERS="$(mktemp)"
-    sed "s|\${AGENT_USER}|$USER_ARG|g" "$TMPL_DIR/llm-systems-agent.sudoers.tmpl" > "$TMP_SUDOERS"
+    sed "s|\${AGENT_USER}|$USER_ARG|g; s|\${LLAMA_UNIT}|$LLAMA_UNIT_RESOLVED|g" "$TMPL_DIR/llm-systems-agent.sudoers.tmpl" > "$TMP_SUDOERS"
     if [[ -r /etc/sudoers.d/llm-systems-agent ]] \
        && cmp -s "$TMP_SUDOERS" /etc/sudoers.d/llm-systems-agent; then
       _ok "sudoers up-to-date (skipped — self-update can't rewrite)"
@@ -3781,7 +3798,7 @@ if [[ "$AGENT_OS" == "linux" && "$SKIP_SUDOERS" == "false" ]]; then
       echo "    Self-update can't rewrite /etc/sudoers.d/ — run manually."
       echo "    Note: single-quote the sed pattern so bash doesn't expand \${AGENT_USER}."
       echo "      TMP=\$(mktemp)"
-      echo "      sed 's|\${AGENT_USER}|$USER_ARG|g' \\"
+      echo "      sed 's|\${AGENT_USER}|$USER_ARG|g; s|\${LLAMA_UNIT}|$LLAMA_UNIT_RESOLVED|g' \\"
       echo "        $TMPL_DIR/llm-systems-agent.sudoers.tmpl > \"\$TMP\""
       echo "      sudo visudo -c -f \"\$TMP\" && \\"
       echo "        sudo install -m 0440 -o root -g root \"\$TMP\" /etc/sudoers.d/llm-systems-agent"
@@ -3791,7 +3808,7 @@ if [[ "$AGENT_OS" == "linux" && "$SKIP_SUDOERS" == "false" ]]; then
     rm -f "$TMP_SUDOERS"
   else
     TMP_SUDOERS="$(mktemp)"
-    sed "s|\${AGENT_USER}|$USER_ARG|g" "$TMPL_DIR/llm-systems-agent.sudoers.tmpl" > "$TMP_SUDOERS"
+    sed "s|\${AGENT_USER}|$USER_ARG|g; s|\${LLAMA_UNIT}|$LLAMA_UNIT_RESOLVED|g" "$TMPL_DIR/llm-systems-agent.sudoers.tmpl" > "$TMP_SUDOERS"
     if $SUDO visudo -c -f "$TMP_SUDOERS" >/dev/null 2>&1; then
       $SUDO install -m 0440 -o root -g root "$TMP_SUDOERS" /etc/sudoers.d/llm-systems-agent
       _ok "sudoers rules installed: /etc/sudoers.d/llm-systems-agent"
@@ -3804,7 +3821,7 @@ if [[ "$AGENT_OS" == "linux" && "$SKIP_SUDOERS" == "false" ]]; then
     # Root-owned svcconfig helper: rewrites only the llama unit's ExecStart so
     # the agent no longer needs a grant to write arbitrary unit content.
     TMP_WRAP="$(mktemp)"
-    sed "s|__UNIT_PATH__|/etc/systemd/system/llama_server.service|g" \
+    sed "s|__UNIT_PATH__|/etc/systemd/system/$LLAMA_UNIT_RESOLVED|g" \
         "$TMPL_DIR/llm-svcconfig-apply.sh.tmpl" > "$TMP_WRAP"
     $SUDO install -d -m 0755 /usr/local/sbin
     $SUDO install -m 0755 -o root -g root "$TMP_WRAP" /usr/local/sbin/llm-svcconfig-apply

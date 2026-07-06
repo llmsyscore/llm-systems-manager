@@ -4,9 +4,9 @@
 # commands needed for llama-server lifecycle and the perf controller's
 # CPU governor / fan profile units.
 
-Cmnd_Alias LSA_LLAMA = /usr/bin/systemctl start llama_server.service, \
-                       /usr/bin/systemctl stop llama_server.service, \
-                       /usr/bin/systemctl restart llama_server.service, \
+Cmnd_Alias LSA_LLAMA = /usr/bin/systemctl start ${LLAMA_UNIT}, \
+                       /usr/bin/systemctl stop ${LLAMA_UNIT}, \
+                       /usr/bin/systemctl restart ${LLAMA_UNIT}, \
                        /usr/bin/systemctl daemon-reload, \
                        /usr/local/llama-server/build-llama-cpp.sh "", \
                        /usr/local/sbin/llm-svcconfig-apply ""

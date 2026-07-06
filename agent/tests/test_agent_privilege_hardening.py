@@ -37,12 +37,46 @@ def test_sudoers_pins_liquidctl_to_status():
     assert not re.search(r"/usr/bin/liquidctl\s*$", text, re.MULTILINE)
 
 
+def _render_sudoers(unit: str) -> str:
+    return SUDOERS.read_text().replace("${AGENT_USER}", "llmagent").replace("${LLAMA_UNIT}", unit)
+
+
 @pytest.mark.skipif(not shutil.which("visudo"), reason="visudo not available")
-def test_rendered_sudoers_passes_visudo(tmp_path):
-    rendered = SUDOERS.read_text().replace("${AGENT_USER}", "llmagent")
-    f = tmp_path / "sudoers"; f.write_text(rendered)
+@pytest.mark.parametrize("unit", ["llama_server.service", "my-llama.service", "llama@gpu0.service"])
+def test_rendered_sudoers_passes_visudo_for_any_unit(unit, tmp_path):
+    f = tmp_path / "sudoers"; f.write_text(_render_sudoers(unit))
     r = subprocess.run(["visudo", "-c", "-f", str(f)], capture_output=True, text=True)
     assert r.returncode == 0, r.stdout + r.stderr
+
+
+def test_sudoers_grants_track_configured_unit_name():
+    rendered = _render_sudoers("my-llama.service")
+    assert "systemctl start my-llama.service" in rendered
+    assert "systemctl restart my-llama.service" in rendered
+    assert "llama_server.service" not in rendered  # placeholder fully substituted
+
+
+def _resolve_unit(override: str) -> str:
+    lines = INSTALL_SH.read_text().splitlines()
+    s = next(i for i, l in enumerate(lines) if l.startswith("_resolved_llama_unit()"))
+    e = next(i for i in range(s + 1, len(lines)) if lines[i] == "}")
+    block = "\n".join(lines[s:e + 1])
+    script = f'INSTALL_DIR=/nonexistent\nLLAMA_SYSTEMD_UNIT_OVERRIDE="{override}"\n{block}\n_resolved_llama_unit'
+    return subprocess.run(["bash", "-c", script], capture_output=True, text=True).stdout
+
+
+@pytest.mark.parametrize("bad", [
+    "x.service, ALL=(root) NOPASSWD: ALL #.service",  # sudoers injection attempt
+    "evil",           # not a .service
+    "../../etc.service",
+    "",
+])
+def test_resolver_rejects_unsafe_unit_names(bad):
+    assert _resolve_unit(bad) == "llama_server.service"
+
+
+def test_resolver_accepts_valid_unit_name():
+    assert _resolve_unit("my-llama.service") == "my-llama.service"
 
 
 # ── #289 /tmp state-file chown ────────────────────────────────────────────
