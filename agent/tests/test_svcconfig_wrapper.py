@@ -4,11 +4,8 @@ validated stdin tokens, so the agent needs no grant to write unit content."""
 from __future__ import annotations
 
 import os
-import stat
 import subprocess
 from pathlib import Path
-
-import pytest
 
 AGENT_DIR = Path(__file__).resolve().parents[1]
 TMPL = AGENT_DIR / "install" / "llm-svcconfig-apply.sh.tmpl"
