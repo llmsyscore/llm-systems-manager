@@ -7,7 +7,7 @@ class WebSocketHandler {
     constructor(options = {}) {
         this.ws = null;
         this.reconnectInterval = options.reconnectInterval || 3000;
-        this.maxReconnectAttempts = options.maxReconnectAttempts || 10;
+        this.maxReconnectDelay = options.maxReconnectDelay || 30000;
         this.reconnectAttempts = 0;
         this.messageHandlers = {};
         this.onConnect = options.onConnect || null;
@@ -79,16 +79,14 @@ class WebSocketHandler {
     }
 
     /**
-     * Attempt to reconnect with exponential backoff
+     * Attempt to reconnect with exponential backoff, retrying
+     * indefinitely with the per-attempt delay capped.
      */
     _attemptReconnect() {
-        if (this.reconnectAttempts >= this.maxReconnectAttempts) {
-            console.error('Max reconnection attempts reached');
-            return;
-        }
-
         this.reconnectAttempts++;
-        const delay = this.reconnectInterval * Math.pow(1.5, this.reconnectAttempts - 1);
+        const delay = Math.min(
+            this.reconnectInterval * Math.pow(1.5, this.reconnectAttempts - 1),
+            this.maxReconnectDelay);
         console.log(`Reconnecting in ${delay}ms (attempt ${this.reconnectAttempts})`);
 
         setTimeout(() => this.connect(), delay);
