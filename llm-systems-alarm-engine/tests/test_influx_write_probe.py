@@ -6,8 +6,6 @@ prove the probe observes failure and that write_ok_rate reflects it.
 """
 import asyncio
 
-import pytest
-
 from backend.models.metrics import MetricPoint
 from backend.storage import influx_monitor as im
 
@@ -98,6 +96,7 @@ def _run_n_cycles(monkeypatch, db, n, ping=(True, 1.0)):
     try:
         asyncio.run(im.run(db, repo, interval_s=1, initial_delay_s=0))
     except _StopLoop:
+        # expected: fake_sleep raises this to end the loop after n cycles
         pass
     return repo
 
