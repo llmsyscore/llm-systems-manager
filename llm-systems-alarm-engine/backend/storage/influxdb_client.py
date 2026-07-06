@@ -7,7 +7,7 @@ from .._time import now_utc
 from typing import Any, Optional
 
 from influxdb_client import InfluxDBClient as _InfluxDBClient
-from influxdb_client.client.write_api import WriteOptions
+from influxdb_client.client.write_api import SYNCHRONOUS, WriteOptions
 
 logger = logging.getLogger(__name__)
 
@@ -76,6 +76,9 @@ class InfluxDBClient:
             )
         )
 
+        # Synchronous single-point writer for the self-monitor write probe.
+        self._metrics_write_sync = self._metrics_client.write_api(write_options=SYNCHRONOUS)
+
         self._metrics_query = self._metrics_client.query_api()
 
         # Rollup config — surfaced by AlarmEngineHistoryDownsampling. Read
@@ -106,6 +109,10 @@ class InfluxDBClient:
     def write_metric(self, point: dict[str, Any]) -> None:
         """Write a single metric data point."""
         self._metrics_write.write(bucket=self.metrics_bucket, record=point)
+
+    def write_metric_sync(self, point: dict[str, Any]) -> None:
+        """Synchronous single-point write; raises on write failure."""
+        self._metrics_write_sync.write(bucket=self.metrics_bucket, record=point)
 
     def write_metrics_batch(self, points: list[dict[str, Any]]) -> None:
         """Write multiple metric data points in a batch."""
@@ -491,7 +498,7 @@ class InfluxDBClient:
 
     def close(self) -> None:
         """Close all per-bucket InfluxDB clients."""
-        for api in (self._metrics_write,):
+        for api in (self._metrics_write, self._metrics_write_sync):
             with best_effort("close influx write api", log=logger):
                 api.close()
         clients = [self._metrics_client]

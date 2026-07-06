@@ -1104,10 +1104,11 @@ class MetricRepository:
         self.cache = cache
         self.db = db
 
-    def create(self, point: MetricPoint) -> MetricPoint:
-        """Store a single metric point."""
+    def create(self, point: MetricPoint, sync: bool = False) -> MetricPoint:
+        """Store a single metric point. sync=True routes the DB write through
+        the synchronous path, which raises on failure (self-monitor probe)."""
         self.cache.add_metric_point(point)
-        self._write_to_db(point)
+        self._write_to_db(point, sync=sync)
         return point
 
     def create_batch(self, points: list[MetricPoint]) -> int:
@@ -1291,8 +1292,9 @@ class MetricRepository:
             )
         return None
 
-    def _write_to_db(self, point: MetricPoint) -> None:
-        """Write a single metric point to InfluxDB."""
+    def _write_to_db(self, point: MetricPoint, sync: bool = False) -> None:
+        """Write a single metric point to InfluxDB. sync=True uses the
+        synchronous write API (raises on failure) instead of the batched one."""
         if self.db is None:
             return
         tags = {
@@ -1310,7 +1312,10 @@ class MetricRepository:
             },
             "time": int(point.timestamp.timestamp() * 1e9),
         }
-        self.db.write_metric(record)
+        if sync:
+            self.db.write_metric_sync(record)
+        else:
+            self.db.write_metric(record)
 
     def _write_batch_to_db(self, points: list[MetricPoint]) -> None:
         """Write multiple metric points to InfluxDB."""
