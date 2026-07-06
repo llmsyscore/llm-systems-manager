@@ -81,8 +81,6 @@ def test_z_score_normal_value_does_not_fire():
 
 def test_z_score_contaminated_baseline_would_suppress():
     """Prove the contamination: including the spike drags z below threshold."""
-    det = AnomalyDetector()
-    cfg = ZScoreConfig(threshold=3.0, window_minutes=60, min_data_points=9)
     # If the OLD behavior (baseline incl. current) were in effect, a 6σ spike
     # would compute to z≈2.6 and NOT fire. With the fix it fires — asserted
     # above. Here we confirm the spike really is a genuine >3σ event vs the
