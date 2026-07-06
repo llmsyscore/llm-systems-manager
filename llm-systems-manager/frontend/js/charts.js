@@ -852,7 +852,10 @@ function _resetLmsCharts() {
 // shared by backfill and live push.
 let _ctxCarry = 0, _genTokensCarry = 0;
 
+let _histGen = 0;
 async function loadHistory() {
+  // Generation counter: only the newest in-flight backfill may paint (#267).
+  const gen = ++_histGen;
   try {
     // Replace, don't append — charts are per-agent, so clear before backfill.
     _resetMetricCharts();
@@ -862,6 +865,7 @@ async function loadHistory() {
     const sel = (typeof _selectedAgent === 'function') ? _selectedAgent('llama') : null;
     const url = sel ? `/api/history?agent=${encodeURIComponent(sel)}` : '/api/history';
     const rows = await fetch(url).then(r => r.json());
+    if (gen !== _histGen) return;
     if (!rows || !rows.length) return;
     // Clear again after the await: a live fetchMetrics tick can append a
     // current-time point during the fetch, which the bucketed backfill would
@@ -969,7 +973,10 @@ async function loadManagerPerfHistory() {
 // host server-side via /api/history?agent=), never by a browser-held hostname
 // (#140). Makes no llama calls — the Overall llama chart backfills separately
 // from the Overall tab (loadOverallHistory), not the LMS dashboard (#142).
+let _lmsHistGen = 0;
 async function loadLmsHistory() {
+  // Generation counter: only the newest in-flight backfill may paint (#267).
+  const gen = ++_lmsHistGen;
   // Replace, don't append — clear before backfill so an agent switch shows
   // only the selected agent's history (#121).
   _resetLmsCharts();
@@ -983,6 +990,7 @@ async function loadLmsHistory() {
     try {
       const rows = await fetch(`/api/history?agent=${encodeURIComponent(lmsAgent)}`)
         .then(r => r.json());
+      if (gen !== _lmsHistGen) return;
       if (rows && rows.length) {
         // Clear again after the await: a racing live poll can append a
         // current-time point that the #129 bucketing would otherwise collapse

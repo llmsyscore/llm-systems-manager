@@ -475,16 +475,9 @@ function startLmsLogRefresh() {
 }
 
 function stopLmsLogRefresh() {
-  if (_lmsLogTimer) { 
-    clearInterval(_lmsLogTimer); 
-    _lmsLogTimer = null; 
-  }
-  // Clean up any existing EventSource connection
-  if (_dlEventSrc) { 
-    try { 
-      _dlEventSrc.close(); 
-    } catch(_) {}
-    _dlEventSrc = null; 
+  if (_lmsLogTimer) {
+    clearInterval(_lmsLogTimer);
+    _lmsLogTimer = null;
   }
 }
 
