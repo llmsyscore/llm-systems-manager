@@ -273,12 +273,16 @@ function parseTs(ts) {
 // ── Notifications Tester (test/delete buttons for channels) ──
 
 window.NotificationsTester = {
+    _inflight: new Set(),
+
     _findChannel(channelId) {
         const list = AppState.notifications?.methods || [];
         return list.find(c => (c.channel_id || c.id) === channelId);
     },
 
     async test(channelId) {
+        // Block re-entry per channel while a test send is in flight.
+        if (this._inflight.has(channelId)) return;
         const ch = this._findChannel(channelId);
         if (!ch) {
             ToastManager.show('Channel not found in local state', 'error');
@@ -287,6 +291,7 @@ window.NotificationsTester = {
         const type = (ch.channel_type || ch.type || '').toLowerCase();
         const name = ch.name || 'channel';
 
+        this._inflight.add(channelId);
         try {
             const result = await ApiClient.notifications.testChannel({
                 channel_id: channelId,
@@ -310,6 +315,8 @@ window.NotificationsTester = {
             }
         } catch (e) {
             ToastManager.show(`Test failed: ${e.message || 'request error'}`, 'error');
+        } finally {
+            this._inflight.delete(channelId);
         }
     },
 
@@ -1400,6 +1407,8 @@ const MetricsManager = {
 const ModalManager = {
     currentCallback: null,
     currentModalId: null,
+    _submitting: false,
+    _submitSeq: 0,
     _wired: false,
 
     _wireOnce() {
@@ -1471,6 +1480,11 @@ const ModalManager = {
         UIStates.setModalOpen(false);
         this.currentCallback = null;
         this.currentModalId = null;
+        // Clear in-flight submit state and invalidate any pending finally.
+        this._submitSeq++;
+        this._submitting = false;
+        const confirmBtn = document.getElementById('modalConfirmBtn');
+        if (confirmBtn) confirmBtn.disabled = false;
     },
 
     confirm({ title = 'Confirm', message = 'Are you sure?', confirmLabel = 'Confirm', danger = false } = {}) {
@@ -1507,6 +1521,7 @@ const ModalManager = {
     },
 
     _submit() {
+        if (this._submitting) return;
         if (!this.currentCallback) {
             this.close();
             return;
@@ -1536,7 +1551,21 @@ const ModalManager = {
         } else {
             payload = this._collectGenericForm();
         }
-        this.currentCallback(payload);
+        // One in-flight submit at a time; confirm button disabled meanwhile.
+        // The seq token keeps a stale finally from clearing a newer submit.
+        this._submitting = true;
+        const seq = ++this._submitSeq;
+        const confirmBtn = document.getElementById('modalConfirmBtn');
+        if (confirmBtn) confirmBtn.disabled = true;
+        const cb = this.currentCallback;
+        Promise.resolve()
+            .then(() => cb(payload))
+            .catch(e => console.error('Modal submit failed:', e))
+            .finally(() => {
+                if (seq !== this._submitSeq) return;
+                this._submitting = false;
+                if (confirmBtn) confirmBtn.disabled = false;
+            });
     },
 
     _renderRuleForm() {
@@ -1730,6 +1759,19 @@ const ModalManager = {
         const filterByHost = (m, host) => !host || (m.hostname || '') === host;
         const allMetrics = () => (AppState.metrics || []).filter(m => !MetricsManager.isProbeMetric(m));
 
+        // Apply a pre-selection; when no matching option exists, inject a
+        // synthetic "(not currently reporting)" one and select it.
+        const forceSelect = (sel, val) => {
+            if (!sel || !val) return;
+            sel.value = val;
+            if (sel.value === val) return;
+            const opt = document.createElement('option');
+            opt.value = val;
+            opt.textContent = `${val} (not currently reporting)`;
+            sel.appendChild(opt);
+            sel.value = val;
+        };
+
         const populateSources = (host, preselect) => {
             const matches = allMetrics().filter(m => filterByHost(m, host));
             const uniqueSources = [...new Set(matches.map(m => m.source))].sort();
@@ -1737,7 +1779,7 @@ const ModalManager = {
             const list = uniqueSources.length > 0 ? uniqueSources : fallback;
             srcSel.innerHTML = '<option value="">Select source…</option>' +
                 list.map(s => `<option value="${escapeHtml(s)}">${escapeHtml(s)}</option>`).join('');
-            if (preselect) srcSel.value = preselect;
+            forceSelect(srcSel, preselect);
         };
 
         const populateMetrics = (host, source, preselect) => {
@@ -1759,7 +1801,7 @@ const ModalManager = {
             } else {
                 metSel.innerHTML = '<option value="">No metrics for this source</option>';
             }
-            if (preselect) metSel.value = preselect;
+            forceSelect(metSel, preselect);
         };
 
         // Re-populate the source list whenever device changes; clear metric.
@@ -1773,7 +1815,7 @@ const ModalManager = {
             populateMetrics(hostSel ? hostSel.value : '', srcSel.value));
 
         // Initial population — honour pre-selection from edit form
-        if (hostSel && selectedHost) hostSel.value = selectedHost;
+        forceSelect(hostSel, selectedHost);
         const initialHost = hostSel ? hostSel.value : '';
         populateSources(initialHost, selectedSource);
         if (selectedSource) populateMetrics(initialHost, selectedSource, selectedMetric);
