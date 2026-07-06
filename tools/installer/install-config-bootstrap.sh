@@ -95,6 +95,7 @@ ALARM_ENGINE_URL=""
 MANAGER_URL=""
 SMTP_SERVER=""; SMTP_USER=""; SMTP_PASS=""
 MGR_INGEST_TOKEN_PASTE=""
+MGR_MGMT_TOKEN_PASTE=""
 
 if $PROMPT; then
   banner "Interactive config edits (mode $MODE)"
@@ -177,6 +178,14 @@ if $PROMPT; then
       log "  → ingest_token will be written to [alarm_engine].ingest_token"
     else
       log "  → no ingest_token entered; warning will be emitted below"
+    fi
+    # Same for the management_token — gates the rules/alerts/notifications
+    # routes; the manager injects it on its AE calls. Enter to skip and add
+    # it later via [alarm_engine].management_token.
+    read -rp "  AE management_token (or Enter to skip): " MGR_MGMT_TOKEN_PASTE
+    MGR_MGMT_TOKEN_PASTE="$(printf '%s' "$MGR_MGMT_TOKEN_PASTE" | tr -d '[:space:]')"
+    if [[ -n "$MGR_MGMT_TOKEN_PASTE" ]]; then
+      log "  → management_token will be written to [alarm_engine].management_token"
     fi
     # InfluxDB host. The manager doesn't query InfluxDB for data (the AE does),
     # but it uses [influxdb].host for the admin tab's InfluxDB status/co-location
@@ -282,49 +291,66 @@ fi
 # config and restart, which the warning below points out.
 INGEST_TOKEN=""
 INGEST_COMMENTED=0
+# management_token gates the AE's rules/alerts/notifications routes. A distinct
+# value keeps agent hosts (which hold only ingest_token) from managing rules or
+# reading channel secrets. Same distribution shape as ingest_token: live when
+# co-located, commented-out on split-AE, pasteable on manager-only.
+MGMT_TOKEN=""
+MGMT_COMMENTED=0
 if (( HAS_AE && HAS_MGR )); then
   INGEST_TOKEN="$(openssl rand -hex 32)"
-  ok "generated alarm-engine ingest token (manager + engine co-located)"
+  MGMT_TOKEN="$(openssl rand -hex 32)"
+  ok "generated alarm-engine ingest + management tokens (manager + engine co-located)"
 elif (( HAS_AE )); then
-  # Split AE-only install: generate a token but write it commented out. Setting
-  # it live without the matching value on the manager host would 401 every
-  # agent push, so we surface the value to the operator and leave activation
-  # as a deliberate one-time step once the manager side is configured.
+  # Split AE-only install: generate both tokens but write them commented out.
+  # Setting them live without the matching values on the manager host would 401
+  # every agent push / management call, so we surface the values to the operator
+  # and leave activation as a deliberate one-time step once the manager side is
+  # configured.
   INGEST_TOKEN="$(openssl rand -hex 32)"
+  MGMT_TOKEN="$(openssl rand -hex 32)"
   INGEST_COMMENTED=1
-  banner "Save this ingest token — you'll need it on the manager host"
+  MGMT_COMMENTED=1
+  banner "Save these tokens — you'll need them on the manager host"
   cat <<EOF
 
-  A security token was generated to protect the metrics channel between
-  agents and this alarm engine. The manager host needs the SAME value.
+  Two security tokens were generated for this alarm engine. The manager
+  host needs the SAME values.
 
   ──────────────────────────────────────────────────────────────────────
-    Ingest token (copy this somewhere safe NOW):
+    ingest_token     (agent metric push) — copy somewhere safe NOW:
 
         ${INGEST_TOKEN}
+
+    management_token (rules/alerts/notifications) — copy it too:
+
+        ${MGMT_TOKEN}
 
   ──────────────────────────────────────────────────────────────────────
 
   What to do next:
 
-    1. Save the token above to your password manager / notes.
+    1. Save both tokens above to your password manager / notes.
 
-    2. When you install the manager on the other host, paste it at the
-       prompt that reads:
+    2. When you install the manager on the other host, paste them at the
+       prompts that read:
            AE ingest_token (or Enter to skip):
+           AE management_token (or Enter to skip):
 
     3. After the manager install finishes, come back to THIS host and
-       activate the token here:
+       activate the tokens here:
 
          a. Open the config file:
                 sudo nano ${REAL}
 
-         b. Find the line that starts with:
+         b. Find the lines that start with:
                 # ingest_token =
+                # management_token =
 
-         c. Remove the '#' and the space at the start of that line, so
-            it reads:
-                ingest_token = "...the token value..."
+         c. Remove the '#' and the space at the start of each line, so
+            they read:
+                ingest_token     = "...the ingest value..."
+                management_token = "...the management value..."
 
          d. Save and exit nano (Ctrl-O, Enter, Ctrl-X).
 
@@ -342,6 +368,12 @@ elif (( HAS_MGR )); then
     warn "manager installed without a co-located alarm engine — if the remote engine"
     warn "  enforces an ingest_token, paste it into [alarm_engine].ingest_token in"
     warn "  $REAL and restart llm-systems-manager"
+  fi
+  if [[ -n "$MGR_MGMT_TOKEN_PASTE" ]]; then
+    ok "manager will authenticate AE management calls with the management_token you provided"
+  else
+    warn "  if the remote engine enforces a management_token, paste it into"
+    warn "  [alarm_engine].management_token in $REAL and restart llm-systems-manager"
   fi
 fi
 
@@ -416,6 +448,9 @@ tok_admin          = """${INFLUX_OPERATOR_TOKEN}"""
 ingest_token_val      = """${INGEST_TOKEN}"""
 ingest_commented_flag = ${INGEST_COMMENTED}
 mgr_ingest_paste      = """${MGR_INGEST_TOKEN_PASTE}"""
+mgmt_token_val        = """${MGMT_TOKEN}"""
+mgmt_commented_flag   = ${MGMT_COMMENTED}
+mgr_mgmt_paste        = """${MGR_MGMT_TOKEN_PASTE}"""
 influx_host        = """${INFLUX_HOSTNAME}"""
 influx_port        = """${INFLUX_PORT}"""
 
@@ -429,6 +464,8 @@ if has_mgr:
     # the AE itself lives on another box.
     if mgr_ingest_paste and not has_ae:
         text = sub_in_section(text, "alarm_engine", "ingest_token", mgr_ingest_paste)
+    if mgr_mgmt_paste and not has_ae:
+        text = sub_in_section(text, "alarm_engine", "management_token", mgr_mgmt_paste)
     # admin_cidrs: keep loopback, swap the placeholder /24 with the detected one.
     if admin_cidr:
         text = re.sub(
@@ -468,6 +505,16 @@ if has_ae:
             )
         else:
             text = sub_in_section(text, "alarm_engine", "ingest_token", ingest_token_val)
+    # management_token, same live/commented handling as ingest_token above.
+    if mgmt_token_val:
+        if mgmt_commented_flag:
+            text = re.sub(
+                r'^(\s*)(management_token\s*=\s*)("[^"]*"|[^\n#]+)',
+                lambda m: f'{m.group(1)}# {m.group(2)}"{mgmt_token_val}"',
+                text, count=1, flags=re.MULTILINE,
+            )
+        else:
+            text = sub_in_section(text, "alarm_engine", "management_token", mgmt_token_val)
 
 # CORS allow-lists and the agent dashboard push URL all need the manager's
 # browser-facing IP — whether that's local (Modes 1/2) or remote (Mode 4).
@@ -687,6 +734,7 @@ Config bootstrap complete.
     [manager].stream_proxy_port = 5445 # off-pool llama-state SSE daemon
     [alarm_engine].tls_enabled = true  # AE HTTPS (cert pre-issued above)
     [alarm_engine].ingest_token = <set by installer>  # agent push auth
+    [alarm_engine].management_token = <set by installer>  # rules/alerts auth
 EOF
 
 # Split install (manager here, AE on another host) needs the AE TLS cert

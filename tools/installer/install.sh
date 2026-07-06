@@ -41,7 +41,7 @@ _ORIG_ARGV=("$@")
 # substantive change to this file. The self-update trampoline only re-execs
 # when the upstream copy carries a STRICTLY GREATER number, so locally-
 # modified scripts (or unpushed commits) are never silently downgraded.
-_INSTALL_SH_REVISION=20260613001
+_INSTALL_SH_REVISION=20260705001
 
 # Fallback bootstrap helpers — used until we source lib-common.sh.
 # TTY-aware colors so OK/WARN/ERR markers stand out in interactive runs and
@@ -1133,9 +1133,9 @@ case "$MODE" in
     _MGR_HOST_FOR_HINT="${_MGR_HOST_FOR_HINT:-<manager-host>}"
     echo "    1. Review configuration:     ${LLMSYS_INSTALL_DIR}/config/llm-systems.toml"
     echo "       (SMTP creds, InfluxDB host + tokens; file is mode 0600)"
-    echo "    2. Uncomment [alarm_engine].ingest_token in this file, then copy"
-    echo "       the SAME value into [alarm_engine].ingest_token on the manager"
-    echo "       host. Restart BOTH services afterwards:"
+    echo "    2. Uncomment [alarm_engine].ingest_token AND .management_token in"
+    echo "       this file, then copy the SAME values into the matching keys on"
+    echo "       the manager host. Restart BOTH services afterwards:"
     echo "         here:        sudo systemctl restart llm-systems-alarm-engine"
     echo "         on manager:  sudo systemctl restart llm-systems-manager"
     echo "    3. Copy the AE TLS cert + key FROM THE MANAGER HOST to this host."
