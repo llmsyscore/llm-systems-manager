@@ -78,6 +78,28 @@ def test_quotes_value_with_space(tmp_path):
     assert '--chat-template "a b c"' in _exec_line(unit)
 
 
+def test_trailing_backslash_arg_does_not_continue_line(tmp_path):
+    # A raw trailing backslash would be a systemd line-continuation that swallows
+    # the next directive (User=). It must be quoted+doubled, not emitted raw.
+    b = _fake_bin(tmp_path)
+    p, unit = _run(tmp_path, ["--host", "0.0.0.0\\"], b)
+    assert p.returncode == 0, p.stderr
+    line = _exec_line(unit)
+    assert not line.rstrip("\n").endswith("\\") or line.rstrip("\n").endswith('\\"')
+    assert '"0.0.0.0\\\\"' in line          # rendered as "0.0.0.0\\"
+    # every other directive is preserved (nothing merged into ExecStart)
+    text = unit.read_text()
+    assert "User=llmagent" in text
+    assert "Restart=on-failure" in text
+
+
+def test_backslash_in_middle_arg_is_escaped(tmp_path):
+    b = _fake_bin(tmp_path)
+    p, unit = _run(tmp_path, ["--chat-template", "a\\b"], b)
+    assert p.returncode == 0, p.stderr
+    assert '"a\\\\b"' in _exec_line(unit)     # single backslash doubled inside quotes
+
+
 def test_rejects_relative_binary(tmp_path):
     p, unit = _run(tmp_path, ["--metrics"], "relative/bin")
     assert p.returncode != 0

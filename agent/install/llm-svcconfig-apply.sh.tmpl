@@ -24,10 +24,12 @@ ARGS=("${_lines[@]:1}")
 [[ -f "$BINARY" ]]                     || _die "binary is not a regular file: $BINARY"
 
 _render_arg() {
-  # Reject control chars; systemd-quote tokens containing whitespace or quotes.
+  # Reject control chars; systemd-quote tokens with whitespace, quotes, or a
+  # backslash — a raw trailing backslash is a systemd line-continuation that
+  # would swallow the next unit directive (e.g. User=).
   local a="$1"
   [[ "$a" != *[[:cntrl:]]* ]] || _die "argument contains a control character"
-  if [[ "$a" == *[[:space:]\"]* ]]; then
+  if [[ "$a" == *[[:space:]\"\\]* ]]; then
     a="${a//\\/\\\\}"; a="${a//\"/\\\"}"
     printf '"%s"' "$a"
   else
