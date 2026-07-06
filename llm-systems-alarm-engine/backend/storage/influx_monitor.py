@@ -20,6 +20,7 @@ import os
 import socket
 import subprocess
 import time
+from collections import deque
 from datetime import datetime, timezone
 from typing import Optional
 
@@ -52,6 +53,23 @@ def _write_metric(repo: MetricRepository, name: str, value: float,
         ))
     except Exception as e:
         logger.debug("self-monitor write %s failed: %s", name, e)
+
+
+def _write_probe(repo: MetricRepository, host: Optional[str] = None) -> bool:
+    """Synchronous write probe. Returns True on success, False if it raised."""
+    try:
+        repo.create(MetricPoint(
+            source="influxdb",
+            metric_name="selfwrite_probe",
+            value=1.0,
+            unit=None,
+            timestamp=datetime.now(timezone.utc),
+            hostname=host or _hostname(),
+        ), sync=True)
+        return True
+    except Exception as e:
+        logger.warning("InfluxDB self-monitor write probe failed: %s", e)
+        return False
 
 
 def _ping(url: str) -> tuple[bool, float]:
@@ -221,8 +239,20 @@ async def run(
     """
     url = db.url
     host = _hostname()
-    consecutive_writes = 0
+    loop = asyncio.get_running_loop()
+    # Sliding window of recent probe outcomes.
+    probe_window: deque[bool] = deque(maxlen=20)
     consecutive_write_errors = 0
+
+    def _record_write(ok: bool) -> None:
+        nonlocal consecutive_write_errors
+        probe_window.append(ok)
+        consecutive_write_errors = 0 if ok else consecutive_write_errors + 1
+        if probe_window:
+            _write_metric(repo, "write_ok_rate",
+                          sum(probe_window) / len(probe_window), "ratio", host)
+        _write_metric(repo, "write_errors_consecutive",
+                      float(consecutive_write_errors), None, host)
 
     logger.info("InfluxDB self-monitor started (interval=%ss, first probe in %ss)",
                 interval_s, initial_delay_s)
@@ -235,31 +265,23 @@ async def run(
             _write_metric(repo, "ping_ms", ping_ms if ok else -1.0, "ms", host)
             _write_metric(repo, "up", 1.0 if ok else 0.0, None, host)
             if not ok:
-                # When unreachable, skip the rest of the probes — they'd
-                # only generate noise / timeouts. Up/ping_ms are enough
-                # for the alarm rule to fire.
+                # Unreachable: writes are failing too — record it so the
+                # write-health series don't freeze at a stale value.
+                _record_write(False)
                 await asyncio.sleep(interval_s)
                 continue
 
             q_ms = _query_latency_ms(db)
             _write_metric(repo, "query_ms", q_ms, "ms", host)
 
-            # Treat the write probe as a self-test: try writing a point
-            # and observe whether the write_api raises.
+            # Probe write runs in a thread so a slow/hanging write can't
+            # block the event loop; sync path raises so outages are seen.
             t0 = time.perf_counter()
-            try:
-                _write_metric(repo, "selfwrite_probe", 1.0, None, host)
-                consecutive_writes += 1
+            write_ok = await loop.run_in_executor(None, _write_probe, repo, host)
+            _record_write(write_ok)
+            if write_ok:
                 w_ms = (time.perf_counter() - t0) * 1000
                 _write_metric(repo, "write_ms", w_ms, "ms", host)
-            except Exception:
-                consecutive_write_errors += 1
-            denom = consecutive_writes + consecutive_write_errors
-            if denom > 0:
-                _write_metric(
-                    repo, "write_ok_rate",
-                    consecutive_writes / denom, "ratio", host,
-                )
 
             n = _cardinality(db, db.metrics_bucket, db._metrics_query)
             if n is not None:
