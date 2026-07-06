@@ -621,6 +621,32 @@ _resolved_llama_unit() {
   printf '%s' "$u"
 }
 
+# _apply_sudoers_and_wrapper
+#   Render + visudo-validate + install the sudoers file and the root-owned
+#   svcconfig helper (Linux, privileged). Called from both fresh install and
+#   root --update. Returns non-zero on a visudo failure without installing.
+_apply_sudoers_and_wrapper() {
+  local unit tmp_sudoers tmp_wrap
+  unit="$(_resolved_llama_unit)"
+  tmp_sudoers="$(mktemp)"
+  sed "s|\${AGENT_USER}|$USER_ARG|g; s|\${LLAMA_UNIT}|$unit|g" \
+      "$TMPL_DIR/llm-systems-agent.sudoers.tmpl" > "$tmp_sudoers"
+  if ! $SUDO visudo -c -f "$tmp_sudoers" >/dev/null 2>&1; then
+    echo "ERROR: visudo validation failed for $tmp_sudoers — NOT installing sudoers." >&2
+    rm -f "$tmp_sudoers"; return 1
+  fi
+  $SUDO install -m 0440 -o root -g root "$tmp_sudoers" /etc/sudoers.d/llm-systems-agent
+  _ok "sudoers rules installed: /etc/sudoers.d/llm-systems-agent"
+  rm -f "$tmp_sudoers"
+  tmp_wrap="$(mktemp)"
+  sed "s|__UNIT_PATH__|/etc/systemd/system/$unit|g" \
+      "$TMPL_DIR/llm-svcconfig-apply.sh.tmpl" > "$tmp_wrap"
+  $SUDO install -d -m 0755 /usr/local/sbin
+  $SUDO install -m 0755 -o root -g root "$tmp_wrap" /usr/local/sbin/llm-svcconfig-apply
+  _ok "svcconfig helper installed: /usr/local/sbin/llm-svcconfig-apply"
+  rm -f "$tmp_wrap"
+}
+
 # _ensure_hf_cli USER HOME
 #   Install the HuggingFace 'hf' CLI into the agent venv and symlink it to
 #   ~/.local/bin/hf — the path the agent resolves for llama model downloads.
@@ -1422,6 +1448,19 @@ PYEOF
       echo "  ✓ plist refreshed: $PLIST_DEST"
     fi
   fi
+
+  # Root --update must (re)install the sudoers file + root-owned svcconfig
+  # helper: the update path exits before the fresh-install sudoers step, so
+  # without this a root --update would deploy agent code that needs the wrapper
+  # without ever installing it. Only touch hosts already using the managed
+  # sudoers; self-update (unprivileged) is handled by the earlier migration guard.
+  if [[ "$AGENT_OS" == "linux" ]] && ! $FROM_SELF_UPDATE \
+       && [[ -f /etc/sudoers.d/llm-systems-agent ]]; then
+    echo
+    echo "── Refreshing sudoers + svcconfig helper ───────────────────────────────"
+    _apply_sudoers_and_wrapper || exit 1
+  fi
+
   if $SKIP_SERVICE_RESTART; then
     echo
     echo "── Skipping service restart (--skip-service-restart) ───────────────────"
@@ -3781,53 +3820,7 @@ EOF
 fi
 
 if [[ "$AGENT_OS" == "linux" && "$SKIP_SUDOERS" == "false" ]]; then
-  LLAMA_UNIT_RESOLVED="$(_resolved_llama_unit)"
-  if $FROM_SELF_UPDATE; then
-    # Self-update runs as the agent user (no root, no sudo). Skip the
-    # rewrite — the existing sudoers stays. If sudoers content has
-    # changed (e.g. a new perf command was added in this version) the
-    # operator needs to re-run install.sh manually with sudo to pick
-    # up the new template. Diff against template:
-    TMP_SUDOERS="$(mktemp)"
-    sed "s|\${AGENT_USER}|$USER_ARG|g; s|\${LLAMA_UNIT}|$LLAMA_UNIT_RESOLVED|g" "$TMPL_DIR/llm-systems-agent.sudoers.tmpl" > "$TMP_SUDOERS"
-    if [[ -r /etc/sudoers.d/llm-systems-agent ]] \
-       && cmp -s "$TMP_SUDOERS" /etc/sudoers.d/llm-systems-agent; then
-      _ok "sudoers up-to-date (skipped — self-update can't rewrite)"
-    else
-      echo "  ⚠ sudoers template differs from installed file (or unreadable as agent user)."
-      echo "    Self-update can't rewrite /etc/sudoers.d/ — run manually."
-      echo "    Note: single-quote the sed pattern so bash doesn't expand \${AGENT_USER}."
-      echo "      TMP=\$(mktemp)"
-      echo "      sed 's|\${AGENT_USER}|$USER_ARG|g; s|\${LLAMA_UNIT}|$LLAMA_UNIT_RESOLVED|g' \\"
-      echo "        $TMPL_DIR/llm-systems-agent.sudoers.tmpl > \"\$TMP\""
-      echo "      sudo visudo -c -f \"\$TMP\" && \\"
-      echo "        sudo install -m 0440 -o root -g root \"\$TMP\" /etc/sudoers.d/llm-systems-agent"
-      echo "      rm -f \"\$TMP\""
-      echo "      sudo systemctl restart llm-systems-agent"
-    fi
-    rm -f "$TMP_SUDOERS"
-  else
-    TMP_SUDOERS="$(mktemp)"
-    sed "s|\${AGENT_USER}|$USER_ARG|g; s|\${LLAMA_UNIT}|$LLAMA_UNIT_RESOLVED|g" "$TMPL_DIR/llm-systems-agent.sudoers.tmpl" > "$TMP_SUDOERS"
-    if $SUDO visudo -c -f "$TMP_SUDOERS" >/dev/null 2>&1; then
-      $SUDO install -m 0440 -o root -g root "$TMP_SUDOERS" /etc/sudoers.d/llm-systems-agent
-      _ok "sudoers rules installed: /etc/sudoers.d/llm-systems-agent"
-    else
-      echo "ERROR: visudo validation failed for $TMP_SUDOERS — NOT installing sudoers." >&2
-      rm -f "$TMP_SUDOERS"
-      exit 1
-    fi
-    rm -f "$TMP_SUDOERS"
-    # Root-owned svcconfig helper: rewrites only the llama unit's ExecStart so
-    # the agent no longer needs a grant to write arbitrary unit content.
-    TMP_WRAP="$(mktemp)"
-    sed "s|__UNIT_PATH__|/etc/systemd/system/$LLAMA_UNIT_RESOLVED|g" \
-        "$TMPL_DIR/llm-svcconfig-apply.sh.tmpl" > "$TMP_WRAP"
-    $SUDO install -d -m 0755 /usr/local/sbin
-    $SUDO install -m 0755 -o root -g root "$TMP_WRAP" /usr/local/sbin/llm-svcconfig-apply
-    _ok "svcconfig helper installed: /usr/local/sbin/llm-svcconfig-apply"
-    rm -f "$TMP_WRAP"
-  fi
+  _apply_sudoers_and_wrapper || exit 1
 fi
 
 # 6b. Migrate /tmp/llama-server-last-state ownership.
