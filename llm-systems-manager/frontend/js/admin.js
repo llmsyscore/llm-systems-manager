@@ -992,7 +992,7 @@ function _adminBackupLog(msg, cls) {
   if (!el) return;
   const ts = new Date().toTimeString().slice(0, 8);
   const color = cls === 'err' ? 'var(--crit)' : (cls === 'ok' ? 'var(--ok)' : 'var(--fg-muted)');
-  el.innerHTML = `<span style="color:${color};">[${ts}] ${msg}</span>`;
+  el.innerHTML = `<span style="color:${color};">[${ts}] ${adminEsc(msg)}</span>`;
 }
 
 async function adminExportArchive(component) {
