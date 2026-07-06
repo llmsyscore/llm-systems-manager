@@ -419,10 +419,11 @@ class AnomalyDetector:
     ) -> Optional[AlertCreate]:
         if not metric_points:
             return None
-        recent = _filter_by_window(metric_points, config.window_minutes)
-        if len(recent) < config.min_data_points:
+        # Baseline excludes metric_points[-1], the value under test.
+        baseline = _filter_by_window(metric_points[:-1], config.window_minutes)
+        if len(baseline) < config.min_data_points:
             return None
-        values = [p.value for p in recent]
+        values = [p.value for p in baseline]
         n = len(values)
         mean = sum(values) / n
         variance = sum((v - mean) ** 2 for v in values) / n if n > 1 else 0
@@ -461,10 +462,11 @@ class AnomalyDetector:
     ) -> Optional[AlertCreate]:
         if not metric_points:
             return None
-        recent = _filter_by_window(metric_points, config.window_minutes)
-        if len(recent) < config.min_data_points:
+        # Baseline excludes metric_points[-1], the value under test.
+        baseline = _filter_by_window(metric_points[:-1], config.window_minutes)
+        if len(baseline) < config.min_data_points:
             return None
-        values = [p.value for p in recent]
+        values = [p.value for p in baseline]
         n = len(values)
         mean = sum(values) / n
         variance = sum((v - mean) ** 2 for v in values) / n if n > 1 else 0
@@ -503,10 +505,11 @@ class AnomalyDetector:
     ) -> Optional[AlertCreate]:
         if not metric_points:
             return None
-        recent = _filter_by_window(metric_points, config.window_minutes)
-        if len(recent) < config.min_data_points:
+        # Baseline excludes metric_points[-1], the value under test.
+        baseline = _filter_by_window(metric_points[:-1], config.window_minutes)
+        if len(baseline) < config.min_data_points:
             return None
-        values = sorted(p.value for p in recent)
+        values = sorted(p.value for p in baseline)
         n = len(values)
         idx = int(config.percentile / 100 * (n - 1))
         percentile_value = values[min(idx, n - 1)]
