@@ -974,6 +974,23 @@ if $DO_UPDATE; then
   SRC_DIR="$REPO_DIR_FOR_UPDATE/agent"
   TMPL_DIR="$SRC_DIR/install"
 
+  # Self-update runs unprivileged and cannot install the root-owned svcconfig
+  # helper or rewrite sudoers. On a llama host missing the helper, refuse to
+  # deploy new code (which would break the ExecStart editor) and leave the
+  # current agent running until a one-time root install migrates the host.
+  if $FROM_SELF_UPDATE && [[ "$AGENT_OS" == "linux" \
+        && -f /etc/systemd/system/llama_server.service \
+        && ! -x /usr/local/sbin/llm-svcconfig-apply ]]; then
+    echo "ERROR: this update needs a one-time root migration on THIS host." >&2
+    echo "  It moves llama unit edits behind a root-owned helper" >&2
+    echo "  (/usr/local/sbin/llm-svcconfig-apply) that self-update can't install" >&2
+    echo "  without root. Refusing to deploy new code that would break the llama" >&2
+    echo "  ExecStart editor. The agent was NOT changed and keeps running." >&2
+    echo "  Complete the migration as root, then self-update will work again:" >&2
+    echo "      sudo bash \"$SRC_DIR/install/install.sh\" --update --no-pull" >&2
+    exit 1
+  fi
+
   # 1. Refresh agent code. Packages copied BEFORE top-level .py files so
   # a partial-cp failure leaves the OLD working agent.py in place.
   _section "Updating agent code"
@@ -3771,10 +3788,6 @@ if [[ "$AGENT_OS" == "linux" && "$SKIP_SUDOERS" == "false" ]]; then
       echo "      rm -f \"\$TMP\""
       echo "      sudo systemctl restart llm-systems-agent"
     fi
-    if [[ ! -x /usr/local/sbin/llm-svcconfig-apply ]]; then
-      echo "  ⚠ /usr/local/sbin/llm-svcconfig-apply missing — self-update can't write it."
-      echo "    Re-run install.sh with sudo to install the svcconfig helper."
-    fi
     rm -f "$TMP_SUDOERS"
   else
     TMP_SUDOERS="$(mktemp)"
@@ -3793,6 +3806,7 @@ if [[ "$AGENT_OS" == "linux" && "$SKIP_SUDOERS" == "false" ]]; then
     TMP_WRAP="$(mktemp)"
     sed "s|__UNIT_PATH__|/etc/systemd/system/llama_server.service|g" \
         "$TMPL_DIR/llm-svcconfig-apply.sh.tmpl" > "$TMP_WRAP"
+    $SUDO install -d -m 0755 /usr/local/sbin
     $SUDO install -m 0755 -o root -g root "$TMP_WRAP" /usr/local/sbin/llm-svcconfig-apply
     _ok "svcconfig helper installed: /usr/local/sbin/llm-svcconfig-apply"
     rm -f "$TMP_WRAP"
