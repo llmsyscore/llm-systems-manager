@@ -32,7 +32,7 @@ INFLUX_LOG="$(mktemp /tmp/llm-systems-influxdb-install.XXXXXX.log)"
 exec > >(tee -a "$INFLUX_LOG") 2> >(tee -a "$INFLUX_LOG" >&2)
 trap 'rc=$?; echo "[ERR ]  install-influxdb.sh aborted at line $LINENO (exit $rc) — full log: $INFLUX_LOG" >&2' ERR
 # Single EXIT handler for the whole script: temp files always, log on success.
-trap 'rc=$?; rm -f "${TMP_BASE:-}" "${TMP_OUT:-}"; (( rc == 0 )) && rm -f "$INFLUX_LOG"' EXIT
+trap 'rc=$?; rm -f "${TMP_BASE:-}" "${TMP_OUT:-}" "${INFLUX_TOKEN_TMP:-}" "${_setup_json:-}"; (( rc == 0 )) && rm -f "$INFLUX_LOG"' EXIT
 
 INSTALL_DIR="${LLMSYS_INSTALL_DIR}"
 INFLUX_ORG_DEFAULT="llm-systems-manager"
@@ -108,32 +108,50 @@ else
   FRESH_SETUP=1
   INFLUX_OPERATOR_TOKEN=$(openssl rand -hex 32)
   ADMIN_PASS=$(openssl rand -hex 24)
-  $SUDO influx setup \
-      --username admin \
-      --password "$ADMIN_PASS" \
-      --org "$INFLUX_ORG" \
-      --bucket alarm_engine_metrics \
-      --retention 720h \
-      --token "$INFLUX_OPERATOR_TOKEN" \
-      --force
+  # Onboards via POST /api/v2/setup with a --data @file body; secrets reach jq via env.
+  _setup_json="$(mktemp)"
+  ADMIN_PASS="$ADMIN_PASS" INFLUX_OPERATOR_TOKEN="$INFLUX_OPERATOR_TOKEN" \
+    jq -n --arg org "$INFLUX_ORG" \
+      '{username: "admin", password: env.ADMIN_PASS,
+        token: env.INFLUX_OPERATOR_TOKEN, org: $org,
+        bucket: "alarm_engine_metrics", retentionPeriodSeconds: 2592000}' \
+      > "$_setup_json"
+  curl -fsS -X POST "$INFLUX_URL/api/v2/setup" \
+      -H "Content-Type: application/json" --data @"$_setup_json" >/dev/null \
+    || die "InfluxDB setup via /api/v2/setup failed"
+  rm -f "$_setup_json"
   ok "InfluxDB initialized (org=$INFLUX_ORG)"
   # Mode 6 is a DB-only host — the operator records the values out-of-band
   # at the end of this run, so don't litter /root with stash files. Other
   # modes keep the stashes so install-influxdb.sh can be re-run
   # idempotently (token reuse loop at the top of this block reads them).
   if [[ "${LLMSYS_INSTALL_MODE:-}" != "6" ]]; then
-    $SUDO bash -c "umask 077; printf '%s\n' '$INFLUX_OPERATOR_TOKEN' > /root/.influxdb-operator-token"
-    $SUDO bash -c "umask 077; printf 'admin\n%s\n' '$ADMIN_PASS' > /root/.influxdb-admin-pass"
+    # Stash files receive the secrets via stdin pipes, mode 0600.
+    printf '%s\n' "$INFLUX_OPERATOR_TOKEN" \
+      | $SUDO bash -c 'umask 077; cat > /root/.influxdb-operator-token'
+    printf 'admin\n%s\n' "$ADMIN_PASS" \
+      | $SUDO bash -c 'umask 077; cat > /root/.influxdb-admin-pass'
   fi
-  $SUDO influx config create \
-      --config-name default \
-      --host-url "$INFLUX_URL" \
-      --org "$INFLUX_ORG" \
-      --token "$INFLUX_OPERATOR_TOKEN" \
-      --active 2>/dev/null || true
+  # Writes the CLI config file directly via stdin; never clobbers an existing one.
+  if ! $SUDO test -e /root/.influxdbv2/configs; then
+    $SUDO bash -c 'umask 077; mkdir -p /root/.influxdbv2; cat > /root/.influxdbv2/configs' <<CFGEOF || true
+[default]
+  url = "$INFLUX_URL"
+  token = "$INFLUX_OPERATOR_TOKEN"
+  org = "$INFLUX_ORG"
+  active = true
+CFGEOF
+  fi
 fi
 
-_influx() { $SUDO influx "$@" --host "$INFLUX_URL" --token "$INFLUX_OPERATOR_TOKEN"; }
+# 0600 scratch copy of the operator token; _influx reads it into INFLUX_TOKEN env.
+INFLUX_TOKEN_TMP="$(mktemp)"
+printf '%s\n' "$INFLUX_OPERATOR_TOKEN" > "$INFLUX_TOKEN_TMP"
+
+_influx() {
+  $SUDO bash -c 'INFLUX_TOKEN="$(cat "$1")" exec influx "${@:2}"' _ \
+      "$INFLUX_TOKEN_TMP" "$@" --host "$INFLUX_URL"
+}
 
 banner "InfluxDB — buckets"
 for name in alarm_engine_metrics alarm_engine_metrics_rollup; do
