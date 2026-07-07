@@ -586,6 +586,7 @@ body {
    font-size that squashed the SVG and made the button appear empty. */
 .btn-primary,
 .btn-secondary,
+.btn-danger,
 .btn-sm {
     display: inline-flex;
     align-items: center;
@@ -627,6 +628,21 @@ body {
 .btn-secondary:hover {
     background-color: var(--bg-hover);
     border-color: var(--bg-tertiary);
+}
+
+.btn-danger {
+    background-color: var(--color-danger);
+    color: white;
+    border-color: var(--color-danger);
+}
+
+.btn-danger:hover {
+    filter: brightness(1.08);
+}
+
+.btn-danger:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
 }
 
 /* Manual refresh bar above the real-time metrics card. */

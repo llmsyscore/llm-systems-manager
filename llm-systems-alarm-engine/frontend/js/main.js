@@ -321,7 +321,12 @@ window.NotificationsTester = {
     },
 
     async delete(channelId) {
-        if (!confirm('Delete this notification channel?')) return;
+        const ok = await ModalManager.confirm({
+            title: 'Delete channel',
+            message: 'Delete this notification channel?',
+            confirmLabel: 'Delete', danger: true,
+        });
+        if (!ok) return;
         try {
             await ApiClient.notifications.deleteChannel(channelId);
             ToastManager.show('Channel deleted', 'success');
@@ -352,7 +357,12 @@ window.NotificationsTester = {
     },
 
     async deleteConfig(configId) {
-        if (!confirm('Delete this notification config?')) return;
+        const ok = await ModalManager.confirm({
+            title: 'Delete config',
+            message: 'Delete this notification config?',
+            confirmLabel: 'Delete', danger: true,
+        });
+        if (!ok) return;
         try {
             await ApiClient.notifications.deleteConfig(configId);
             ToastManager.show('Config deleted', 'success');
@@ -588,6 +598,7 @@ const AlertManager = {
                 <td>${escapeHtml(count)}</td>
                 <td>
                     ${alert.status === 'active' ? `<button class="btn btn-sm btn-accent" onclick="AlertManager.acknowledge('${aid}')">Ack</button>` : ''}
+                    ${alert.status === 'active' ? `<button class="btn btn-sm btn-secondary" onclick="AlertManager.ignore('${aid}')">Ignore</button>` : ''}
                     ${alert.status !== 'closed' ? `<button class="btn btn-sm btn-success" onclick="AlertManager.close('${aid}')">Close</button>` : ''}
                 </td>
             </tr>`;
@@ -618,6 +629,7 @@ const AlertManager = {
                 </div>
                 <div class="alert-row-acts">
                     ${alert.status === 'active' ? `<button class="btn-xs btn-ack" onclick="AlertManager.acknowledge('${aid}')">Ack</button>` : ''}
+                    ${alert.status === 'active' ? `<button class="btn-xs btn-ignore" onclick="AlertManager.ignore('${aid}')">Ignore</button>` : ''}
                     ${alert.status !== 'closed' ? `<button class="btn-xs btn-close-alert" onclick="AlertManager.close('${aid}')">Close</button>` : ''}
                 </div>
             </div>`;
@@ -657,9 +669,11 @@ const AlertManager = {
     },
 
     async ignore(alertId) {
+        const hours = await ModalManager.chooseDuration({ title: 'Ignore alert', confirmLabel: 'Ignore' });
+        if (hours == null) return;
         try {
-            await ApiClient.alerts.ignore(alertId);
-            ToastManager.show('Alert ignored', 'info');
+            await ApiClient.alerts.ignore(alertId, hours);
+            ToastManager.show(`Alert ignored for ${hours}h`, 'info');
             this.load();
         } catch (error) {
             ToastManager.show('Failed to ignore alert', 'error');
@@ -1487,19 +1501,25 @@ const ModalManager = {
         if (confirmBtn) confirmBtn.disabled = false;
     },
 
-    confirm({ title = 'Confirm', message = 'Are you sure?', confirmLabel = 'Confirm', danger = false } = {}) {
+    // Open a transient confirm/cancel modal. onConfirm() supplies the resolved
+    // value; cancel/close resolves cancelValue; fallback() is used when the
+    // modal DOM is absent.
+    _transientChoice({ title, bodyHtml, confirmLabel = 'Confirm', danger = false,
+                       onConfirm, cancelValue = null, fallback } = {}) {
         return new Promise(resolve => {
             this._wireOnce();
             const overlay = document.getElementById('modalOverlay');
             const body = document.getElementById('modalBody');
             const titleEl = document.getElementById('modalTitle');
             const confirmBtn = document.getElementById('modalConfirmBtn');
-            if (!overlay || !body || !confirmBtn) { resolve(window.confirm(message)); return; }
-
+            if (!overlay || !body || !confirmBtn) {
+                resolve(fallback ? fallback() : cancelValue);
+                return;
+            }
             const prevLabel = confirmBtn.textContent;
             const prevClass = confirmBtn.className;
             if (titleEl) titleEl.textContent = title;
-            body.innerHTML = `<p style="margin:0;line-height:1.5;">${escapeHtml(message)}</p>`;
+            body.innerHTML = bodyHtml;
             confirmBtn.textContent = confirmLabel;
             if (danger) confirmBtn.className = 'btn-danger';
 
@@ -1513,10 +1533,42 @@ const ModalManager = {
                 this.close = realClose;
                 resolve(result);
             };
-            this.currentModalId = 'confirm-dialog';
-            this.currentCallback = () => { finish(true); realClose(); };
-            this.close = () => { finish(false); realClose(); };
+            this.currentModalId = 'transient-dialog';
+            this.currentCallback = () => { finish(onConfirm ? onConfirm() : true); realClose(); };
+            this.close = () => { finish(cancelValue); realClose(); };
             UIStates.setModalOpen(true);
+        });
+    },
+
+    confirm({ title = 'Confirm', message = 'Are you sure?', confirmLabel = 'Confirm', danger = false } = {}) {
+        return this._transientChoice({
+            title,
+            bodyHtml: `<p style="margin:0;line-height:1.5;">${escapeHtml(message)}</p>`,
+            confirmLabel, danger,
+            onConfirm: () => true, cancelValue: false,
+            fallback: () => window.confirm(message),
+        });
+    },
+
+    // Themed preset picker for "ignore for N hours". Resolves to the chosen
+    // hours, or null if the operator cancels or the dialog can't be shown.
+    chooseDuration({ title = 'Ignore alert', confirmLabel = 'Ignore', label = 'Suppress this rule for:' } = {}) {
+        const presets = [[1, '1 hour'], [6, '6 hours'], [12, '12 hours'],
+            [24, '24 hours'], [72, '3 days'], [168, '7 days'], [720, '30 days']];
+        const options = presets.map(([h, lbl]) =>
+            `<option value="${h}"${h === 24 ? ' selected' : ''}>${lbl}</option>`).join('');
+        return this._transientChoice({
+            title, confirmLabel,
+            bodyHtml: `<div class="form-group">`
+                + `<label for="ignoreDurationSelect">${escapeHtml(label)}</label>`
+                + `<select id="ignoreDurationSelect" class="select-input">${options}</select>`
+                + `</div>`,
+            onConfirm: () => {
+                const sel = document.getElementById('ignoreDurationSelect');
+                const hours = sel ? parseInt(sel.value, 10) : 24;
+                return Number.isFinite(hours) ? hours : 24;
+            },
+            cancelValue: null,
         });
     },
 
@@ -3290,9 +3342,24 @@ const FilterHandlers = {
                     ToastManager.show('Pick a bulk action first', 'info');
                     return;
                 }
-                if (!confirm(`${action} ${ids.length} alert(s)?`)) return;
+                let data = {};
+                if (action === 'ignore') {
+                    const hours = await ModalManager.chooseDuration({
+                        title: `Ignore ${ids.length} alert(s)`, confirmLabel: 'Ignore',
+                    });
+                    if (hours == null) return;
+                    data = { duration_hours: hours };
+                } else {
+                    const ok = await ModalManager.confirm({
+                        title: action === 'close' ? 'Close alerts' : 'Acknowledge alerts',
+                        message: `${action.charAt(0).toUpperCase() + action.slice(1)} ${ids.length} alert(s)?`,
+                        confirmLabel: action === 'close' ? 'Close' : 'Acknowledge',
+                        danger: action === 'close',
+                    });
+                    if (!ok) return;
+                }
                 try {
-                    const r = await ApiClient.alerts.bulkUpdate(ids, action);
+                    const r = await ApiClient.alerts.bulkUpdate(ids, action, data);
                     ToastManager.show(`${r.updated || 0} alert(s) ${action}d`, 'success');
                     if (typeof AlertManager !== 'undefined' && AlertManager.load) AlertManager.load();
                     if (selectAll) selectAll.checked = false;

@@ -420,6 +420,7 @@
 .btn-xs:hover { background: var(--bg-hover); color: var(--text-primary); }
 .btn-xs.btn-ack  { border-color: rgba(255,170,119,0.3); color: #fa7; }
 .btn-xs.btn-close-alert { border-color: rgba(255,85,85,0.3); color: #f55; }
+.btn-xs.btn-ignore { border-color: var(--border-color); color: var(--text-secondary); }
 
 /* ── Compact Dashboard Rule Rows ── */
 .rule-row {

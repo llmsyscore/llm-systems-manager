@@ -16,6 +16,15 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/alarm/alerts", tags=["alerts"],
                    dependencies=[Depends(require_management_token)])
 
+# Parse the bulk-route ignore duration: missing/unparseable -> 24, else
+# clamped to 1-720 hours.
+def _coerce_duration_hours(value: Any) -> int:
+    try:
+        hours = int(value)
+    except (TypeError, ValueError):
+        return 24
+    return max(1, min(720, hours))
+
 # ── Dependency injection wiring ─────────────────────────────────
 _alert_repo: Optional[AlertRepository] = None
 _alert_mgr: Optional[AlertManager] = None
@@ -268,7 +277,8 @@ async def bulk_update_alerts(
     alert_mgr: AlertManager = Depends(get_alert_mgr),
 ) -> dict:
     """Apply an action to a list of alerts.
-    payload: { "alert_ids": [...], "action": "acknowledge|close|ignore" }
+    payload: { "alert_ids": [...], "action": "acknowledge|close|ignore",
+               "duration_hours": <int, ignore only> }
     """
     alert_ids = payload.get("alert_ids") or []
     action = (payload.get("action") or "").lower()
@@ -280,7 +290,8 @@ async def bulk_update_alerts(
     elif action == "close":
         fn = alert_mgr.close_alert
     else:
-        fn = alert_mgr.ignore_alert
+        hours = _coerce_duration_hours(payload.get("duration_hours"))
+        fn = lambda aid: alert_mgr.ignore_alert(aid, hours)
 
     updated = 0
     failed = []
