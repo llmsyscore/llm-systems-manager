@@ -44,7 +44,12 @@ async function _termStart(mountEl) {
   // SSE output stream
   _termEvt = new EventSource(`/api/terminal/output/${_termSid}`);
   _termEvt.onmessage = e => { if (_term) _term.write(JSON.parse(e.data)); };
-  _termEvt.onerror   = () => { if (_term) _term.write('\r\n\x1b[31m● Stream error\x1b[0m\r\n'); };
+  _termEvt.onerror   = () => {
+    if (!_term) return;
+    _term.write(_termEvt && _termEvt.readyState === EventSource.CLOSED
+      ? '\r\n\x1b[31m● Stream closed — session expired; click Reconnect\x1b[0m\r\n'
+      : '\r\n\x1b[33m● Stream interrupted — reconnecting…\x1b[0m\r\n');
+  };
   // Keyboard → POST input
   _term.onData(data => {
     if (!_termSid) return;
@@ -120,7 +125,7 @@ function popOutTerminal() {
       const sid = r.sid;
       const evt = new EventSource(base+'/api/terminal/output/'+sid);
       evt.onmessage = e => term.write(JSON.parse(e.data));
-      evt.onerror   = () => term.write('\\r\\n\\x1b[31m● Stream error\\x1b[0m\\r\\n');
+      evt.onerror   = () => term.write(evt.readyState === EventSource.CLOSED ? '\\r\\n\\x1b[31m● Stream closed — session expired; reopen the terminal\\x1b[0m\\r\\n' : '\\r\\n\\x1b[33m● Stream interrupted — reconnecting\\u2026\\x1b[0m\\r\\n');
       term.onData(d => fetch(base+'/api/terminal/input/'+sid,{method:'POST',body:d,headers:{'Content-Type':'application/octet-stream'}}).catch(()=>{}));
       term.onResize(({rows,cols})=>fetch(base+'/api/terminal/resize/'+sid,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({rows,cols})}).catch(()=>{}));
       term.write('\\x1b[32m● Connected\\x1b[0m\\r\\n');
@@ -165,7 +170,12 @@ async function _lmsTermStart(mountEl) {
     _lmsTermSid = r.sid;
     _lmsTermEvt = new EventSource(`/api/terminal/output/${_lmsTermSid}`);
     _lmsTermEvt.onmessage = e => { if (_lmsTerm) _lmsTerm.write(JSON.parse(e.data)); };
-    _lmsTermEvt.onerror   = () => { if (_lmsTerm) _lmsTerm.write('\r\n\x1b[31m● Stream error\x1b[0m\r\n'); };
+    _lmsTermEvt.onerror   = () => {
+      if (!_lmsTerm) return;
+      _lmsTerm.write(_lmsTermEvt && _lmsTermEvt.readyState === EventSource.CLOSED
+        ? '\r\n\x1b[31m● Stream closed — session expired; click Reconnect\x1b[0m\r\n'
+        : '\r\n\x1b[33m● Stream interrupted — reconnecting…\x1b[0m\r\n');
+    };
     _lmsTerm.onData(data => {
       fetch(`/api/terminal/input/${_lmsTermSid}`, {
         method:'POST', body:data, headers:{'Content-Type':'application/octet-stream'},
@@ -231,7 +241,7 @@ function popOutLmsTerminal() {
       const sid = r.sid;
       const evt = new EventSource(base+'/api/terminal/output/'+sid);
       evt.onmessage = e => term.write(JSON.parse(e.data));
-      evt.onerror   = () => term.write('\\r\\n\\x1b[31m● Stream error\\x1b[0m\\r\\n');
+      evt.onerror   = () => term.write(evt.readyState === EventSource.CLOSED ? '\\r\\n\\x1b[31m● Stream closed — session expired; reopen the terminal\\x1b[0m\\r\\n' : '\\r\\n\\x1b[33m● Stream interrupted — reconnecting\\u2026\\x1b[0m\\r\\n');
       term.onData(d => fetch(base+'/api/terminal/input/'+sid,{method:'POST',body:d,headers:{'Content-Type':'application/octet-stream'}}).catch(()=>{}));
       term.onResize(({rows,cols})=>fetch(base+'/api/terminal/resize/'+sid,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({rows,cols})}).catch(()=>{}));
       window.addEventListener('resize',()=>fit.fit());

@@ -14,6 +14,7 @@ import struct as _struct_mod
 import subprocess
 import termios as _termios_mod
 import threading
+import time
 import uuid
 from typing import Any, Iterator, Optional
 
@@ -43,17 +44,25 @@ def _require_ctx():
 _term_sessions: dict[str, dict[str, Any]] = {}
 _term_sessions_lock = threading.Lock()
 _TERM_SESSION_LIMIT = 16
+_DETACH_GRACE_S = 600.0
+_DETACH_MAX_QUEUE = 2000
 
 
 # ── Helpers ────────────────────────────────────────────────────────────
 
-def _reap_session(sid: str) -> bool:
+def _reap_session(sid: str, only_if_detached: bool = False) -> bool:
     """Pop from `_term_sessions`, terminate proc, close fd. Idempotent — safe
     to call multiple times. Returns True if a session was actually reaped."""
     with _term_sessions_lock:
-        sess = _term_sessions.pop(sid, None)
-    if sess is None:
-        return False
+        sess = _term_sessions.get(sid)
+        if sess is None:
+            return False
+        if only_if_detached and (sess.get("consumers", 0) > 0
+                                 or sess.get("detached_at") is None):
+            return False
+        _term_sessions.pop(sid, None)
+        # Attached generators watch this flag; flipping it ends their loop.
+        sess["alive"] = False
     try: sess["proc"].terminate()
     except Exception as e: log.warning("reap %s: terminate failed: %s", sid, e)
     try: os.close(sess["master_fd"])
@@ -62,9 +71,36 @@ def _reap_session(sid: str) -> bool:
     return True
 
 
+def _release_consumer(sid: str) -> None:
+    """Detach one SSE consumer; reap only when the PTY is already dead."""
+    with _term_sessions_lock:
+        sess = _term_sessions.get(sid)
+        if sess is None:
+            return
+        sess["consumers"] = max(0, sess.get("consumers", 0) - 1)
+        if sess["consumers"] == 0:
+            sess["detached_at"] = time.monotonic()
+        reap = not sess.get("alive", True) and sess["consumers"] == 0
+    if reap:
+        _reap_session(sid)
+    else:
+        log.info("terminal consumer detached: %s (PTY kept alive for reattach)", sid)
+
+
 def _term_reader(sid: str, master_fd: int, q: "_queue_lib.Queue", proc: subprocess.Popen) -> None:
-    """Drain PTY master fd into the per-session queue."""
+    """Drain PTY master fd into the per-session queue; reap the session when
+    it has had no SSE consumer for longer than _DETACH_GRACE_S."""
     while proc.poll() is None:
+        with _term_sessions_lock:
+            sess = _term_sessions.get(sid)
+            detached_at = None if sess is None else sess.get("detached_at")
+            no_consumer = sess is None or sess.get("consumers", 0) <= 0
+        if (no_consumer and detached_at is not None
+                and time.monotonic() - detached_at > _DETACH_GRACE_S):
+            # only_if_detached: a consumer re-attaching in this gap wins.
+            if _reap_session(sid, only_if_detached=True):
+                log.info("terminal %s had no consumer for %.0fs — reaped", sid, _DETACH_GRACE_S)
+                return
         try:
             r, _, _ = _select_mod.select([master_fd], [], [], 0.5)
             if r:
@@ -77,6 +113,11 @@ def _term_reader(sid: str, master_fd: int, q: "_queue_lib.Queue", proc: subproce
                         except _queue_lib.Empty: pass
                         try: q.put_nowait(data.decode("utf-8", errors="replace"))
                         except _queue_lib.Full: pass
+                    # Detached sessions keep a bounded scrollback only.
+                    if no_consumer:
+                        while q.qsize() > _DETACH_MAX_QUEUE:
+                            try: q.get_nowait()
+                            except _queue_lib.Empty: break
         except OSError:
             break
     # PTY exited. If no SSE consumer has attached, no _gen.finally will fire
@@ -87,7 +128,7 @@ def _term_reader(sid: str, master_fd: int, q: "_queue_lib.Queue", proc: subproce
         if sess is None:
             return
         sess["alive"] = False
-        no_consumer = not sess.get("consumer_attached", False)
+        no_consumer = sess.get("consumers", 0) <= 0
     if no_consumer:
         _reap_session(sid)
 
@@ -99,6 +140,17 @@ def terminal_create_endpoint(
 ) -> dict[str, Any]:
     ctx = _require_ctx()
     ctx.check_bearer(authorization)
+    with _term_sessions_lock:
+        at_limit = len(_term_sessions) >= _TERM_SESSION_LIMIT
+        victim = None
+        if at_limit:
+            detached = [(k, s) for k, s in _term_sessions.items()
+                        if s.get("consumers", 0) <= 0 and s.get("detached_at") is not None]
+            if detached:
+                victim = min(detached, key=lambda kv: kv[1]["detached_at"])[0]
+    # At the cap, evict the longest-detached session to free a slot.
+    if victim is not None:
+        _reap_session(victim, only_if_detached=True)
     with _term_sessions_lock:
         if len(_term_sessions) >= _TERM_SESSION_LIMIT:
             raise HTTPException(
@@ -140,8 +192,8 @@ def terminal_create_endpoint(
 
     sid = uuid.uuid4().hex[:12]
     q: "_queue_lib.Queue[str]" = _queue_lib.Queue(maxsize=50000)
-    sess = {"proc": proc, "master_fd": master_fd, "queue": q,
-            "alive": True, "consumer_attached": False}
+    sess = {"proc": proc, "master_fd": master_fd, "queue": q, "alive": True,
+            "consumers": 0, "detached_at": time.monotonic(), "gen": 0}
     with _term_sessions_lock:
         _term_sessions[sid] = sess
     threading.Thread(target=_term_reader,
@@ -165,13 +217,24 @@ def terminal_output_endpoint(
     if not stream_pool.POOL.try_acquire():
         raise HTTPException(status_code=503, detail="agent at stream capacity; retry shortly")
     with _term_sessions_lock:
-        sess["consumer_attached"] = True
+        # Re-fetch under the lock — the session may have been reaped since.
+        sess = _term_sessions.get(sid)
+        if sess is None:
+            stream_pool.POOL.release()
+            raise HTTPException(status_code=404, detail="session not found")
+        sess["consumers"] = sess.get("consumers", 0) + 1
+        sess["detached_at"] = None
+        sess["gen"] = sess.get("gen", 0) + 1
+        my_gen = sess["gen"]
     q = sess["queue"]
 
     def _gen() -> Iterator[bytes]:
         try:
             while True:
                 alive = sess.get("alive", True)
+                # A newer consumer supersedes this stream within one tick.
+                if sess.get("gen", my_gen) != my_gen:
+                    break
                 try:
                     chunk = q.get(timeout=0.4)
                     yield f"data: {json.dumps(chunk)}\n\n".encode()
@@ -182,7 +245,7 @@ def terminal_output_endpoint(
         except GeneratorExit:
             pass
         finally:
-            _reap_session(sid)
+            _release_consumer(sid)
 
     return StreamingResponse(
         stream_pool.guarded_async(_gen()),

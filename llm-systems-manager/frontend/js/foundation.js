@@ -1293,7 +1293,13 @@ function switchTab(tab) {
   if (tab === 'llmchat')    { document.getElementById('llmchatTab').style.display    = ''; }
   if (tab === 'imggen')     { document.getElementById('imggenTab').style.display     = ''; }
   if (tab === 'admin')      { document.getElementById('adminTab').style.display      = ''; adminLoadAgents(); adminLoadHealth(); adminAuthLoad(); adminStartAutoRefresh(); }
-  else                       { adminStopAutoRefresh(); }
+  else {
+    adminStopAutoRefresh();
+    // Close the body-level admin overlays: the log panel (with its
+    // EventSource) and the self-update panel.
+    if (typeof _adminLogsClose === 'function') _adminLogsClose();
+    if (typeof _adminUpdateClose === 'function') _adminUpdateClose();
+  }
   if (tab !== 'llm')        { stopLogStream(); stopPerfRefresh(); stopLmsLogRefresh(); }
 }
 
