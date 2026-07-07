@@ -127,14 +127,30 @@ read_toml_key() {
 }
 
 # ── Systemd unit + sudoers templating ───────────────────────────────────────
+# subst_all TEXT TOKEN VALUE [TOKEN VALUE]... — replace every TOKEN, echoing
+# the result. Literal split-and-join, immune to & | \ in values (unlike sed).
+subst_all() {
+  local text="$1" token val out; shift
+  while (( $# >= 2 )); do
+    token="$1"; val="$2"; shift 2
+    out=""
+    while [[ "$text" == *"$token"* ]]; do
+      out+="${text%%"$token"*}$val"
+      text="${text#*"$token"}"
+    done
+    text="$out$text"
+  done
+  printf '%s' "$text"
+}
+
 # render_unit_template <src> <out> — substitute the @@INSTALL_DIR@@/@@RUN_USER@@/
 # @@RUN_GROUP@@ tokens a *.service.example uses, writing the result to <out>.
 render_unit_template() {
   local src="$1" out="$2"
-  sed -e "s|@@INSTALL_DIR@@|$LLMSYS_INSTALL_DIR|g" \
-      -e "s|@@RUN_USER@@|$LLMSYS_RUN_USER|g" \
-      -e "s|@@RUN_GROUP@@|$LLMSYS_RUN_GROUP|g" \
-      "$src" > "$out"
+  { subst_all "$(<"$src")" \
+      '@@INSTALL_DIR@@' "$LLMSYS_INSTALL_DIR" \
+      '@@RUN_USER@@' "$LLMSYS_RUN_USER" \
+      '@@RUN_GROUP@@' "$LLMSYS_RUN_GROUP"; printf '\n'; } > "$out"
 }
 
 # install_unit_template <src_tpl> <unit_dst> — render to a temp and install 0644.
@@ -158,7 +174,7 @@ install_sudoers_fragment() {
     return 1
   fi
   rendered="$(mktemp)"
-  sed -e "s|@@RUN_USER@@|$LLMSYS_RUN_USER|g" "$tpl" > "$rendered"
+  { subst_all "$(<"$tpl")" '@@RUN_USER@@' "$LLMSYS_RUN_USER"; printf '\n'; } > "$rendered"
   if $SUDO visudo -cf "$rendered" >/dev/null 2>&1; then
     if $SUDO install -m 0440 -o root -g root "$rendered" "$dst"; then
       ok "sudoers fragment installed ($dst)"

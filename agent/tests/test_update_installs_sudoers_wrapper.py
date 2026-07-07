@@ -31,6 +31,7 @@ def test_apply_installs_both_files_with_resolved_unit(tmp_path):
     fn = _extract_func("_apply_sudoers_and_wrapper")
     rl = _extract_func("_resolved_llama_unit")
     ys = _extract_func("_yaml_scalar")
+    st = _extract_func("_subst_tokens")
 
     binroot = tmp_path / "bin"; binroot.mkdir()
     log = tmp_path / "install.log"
@@ -59,7 +60,7 @@ def test_apply_installs_both_files_with_resolved_unit(tmp_path):
         f'TMPL_DIR="{tmpl}"\n'
         'INSTALL_DIR="/nonexistent"\n'
         'LLAMA_SYSTEMD_UNIT_OVERRIDE="my-llama.service"\n'
-        f"{ys}\n{rl}\n{fn}\n_apply_sudoers_and_wrapper\n"
+        f"{st}\n{ys}\n{rl}\n{fn}\n_apply_sudoers_and_wrapper\n"
     )
     env = dict(os.environ, PATH=f"{binroot}:{os.environ['PATH']}")
     r = subprocess.run(["bash", "-c", script], capture_output=True, text=True, env=env)
