@@ -41,7 +41,7 @@ _ORIG_ARGV=("$@")
 # substantive change to this file. The self-update trampoline only re-execs
 # when the upstream copy carries a STRICTLY GREATER number, so locally-
 # modified scripts (or unpushed commits) are never silently downgraded.
-_INSTALL_SH_REVISION=20260705001
+_INSTALL_SH_REVISION=20260707001
 
 # Fallback bootstrap helpers — used until we source lib-common.sh.
 # TTY-aware colors so OK/WARN/ERR markers stand out in interactive runs and
@@ -320,7 +320,7 @@ if [[ "${LLMSYS_SELF_UPDATE_DONE:-0}" != "1" \
     _self="$(cd "$(dirname "$_self")" 2>/dev/null && pwd || echo "")/$(basename "$_self")"
   fi
   if [[ -f "$_self" ]]; then
-    _upstream_tmp="/tmp/llm-systems-install.upstream.$$.sh"
+    _upstream_tmp="$(mktemp /tmp/llm-systems-install.upstream.XXXXXX)"
     if _b_fetch_from_github "tools/installer/install.sh" "$_upstream_tmp"; then
       # Missing revision marker parses as 0 — old copies still get updated.
       # `|| true` so a missing marker doesn't fail the pipeline (pipefail +
@@ -334,7 +334,7 @@ if [[ "${LLMSYS_SELF_UPDATE_DONE:-0}" != "1" \
         chmod +x "$_upstream_tmp"
         export LLMSYS_SELF_UPDATE_DONE=1
         export LLMSYS_ORIGINAL_SELF="$_self"
-        # The re-exec'd child becomes /tmp/.../upstream.$$.sh and would
+        # The re-exec'd child becomes the mktemp upstream copy and would
         # otherwise leak (success path never deletes it). Have the child
         # self-delete on EXIT by leaving a marker; the trampoline in the
         # new copy honors LLMSYS_SELF_UPDATE_DONE=1 and reads $_self at
@@ -450,7 +450,7 @@ if [[ "$UNINSTALL" == "1" ]]; then
   UNINSTALL_HELPER="$(_b_find_helper uninstall.sh || true)"
   if [[ -z "$UNINSTALL_HELPER" ]]; then
     _b_log "no local uninstall.sh — fetching from GitHub"
-    UNINSTALL_HELPER="/tmp/llm-systems-uninstall.$$.sh"
+    UNINSTALL_HELPER="$(mktemp /tmp/llm-systems-uninstall.XXXXXX)"
     if ! _b_fetch_from_github "tools/installer/uninstall.sh" "$UNINSTALL_HELPER"; then
       _b_die "failed to fetch uninstall.sh from GitHub — check network/curl, or drop uninstall.sh next to install.sh"
     fi

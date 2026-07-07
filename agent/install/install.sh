@@ -786,8 +786,10 @@ _fetch_agent_into() {
   fi
 
   local tmpdir; tmpdir="$(mktemp -d)"
+  # The bearer header travels in a curl -K config file, not argv.
+  printf 'header = "Authorization: Bearer %s"\n' "$tok" > "$tmpdir/curl-auth.cfg"
   echo "  Downloading agent/ from $mgr_url/api/agent-tarball"
-  if ! curl -fsSL -H "Authorization: Bearer $tok" \
+  if ! curl -fsSL -K "$tmpdir/curl-auth.cfg" \
             "$mgr_url/api/agent-tarball" -o "$tmpdir/agent.tar.gz"; then
     echo "  ⚠ download failed from $mgr_url/api/agent-tarball" >&2
     rm -rf "$tmpdir"

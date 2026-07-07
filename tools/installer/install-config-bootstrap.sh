@@ -175,6 +175,8 @@ if $PROMPT; then
     read -rp "  AE ingest_token (or Enter to skip): " MGR_INGEST_TOKEN_PASTE
     MGR_INGEST_TOKEN_PASTE="$(printf '%s' "$MGR_INGEST_TOKEN_PASTE" | tr -d '[:space:]')"
     if [[ -n "$MGR_INGEST_TOKEN_PASTE" ]]; then
+      validate_influx_token "AE ingest_token paste" "$MGR_INGEST_TOKEN_PASTE" 0 \
+        || die "pasted ingest_token failed sanity check"
       log "  → ingest_token will be written to [alarm_engine].ingest_token"
     else
       log "  → no ingest_token entered; warning will be emitted below"
@@ -185,6 +187,8 @@ if $PROMPT; then
     read -rp "  AE management_token (or Enter to skip): " MGR_MGMT_TOKEN_PASTE
     MGR_MGMT_TOKEN_PASTE="$(printf '%s' "$MGR_MGMT_TOKEN_PASTE" | tr -d '[:space:]')"
     if [[ -n "$MGR_MGMT_TOKEN_PASTE" ]]; then
+      validate_influx_token "AE management_token paste" "$MGR_MGMT_TOKEN_PASTE" 0 \
+        || die "pasted management_token failed sanity check"
       log "  → management_token will be written to [alarm_engine].management_token"
     fi
     # InfluxDB host. The manager doesn't query InfluxDB for data (the AE does),
@@ -398,11 +402,48 @@ fi
 unset ADMIN_PW
 
 # ── Apply edits via python (TOML-aware string substitution) ─────────────────
-as_run_user python3 - "$REAL" <<PYEOF
+# Values reach python through a 0600 key=value file written by shell builtins.
+_CB_VALS="$(mktemp)"
+trap '$SUDO rm -f "${_CB_VALS:-}"' EXIT
+{
+  printf 'HAS_MGR=%s\n'                     "$HAS_MGR"
+  printf 'HAS_AE=%s\n'                      "$HAS_AE"
+  printf 'MGR_HOST=%s\n'                    "$MGR_HOST"
+  printf 'MGR_PORT=%s\n'                    "$MGR_PORT"
+  printf 'MGR_IP=%s\n'                      "$MGR_IP"
+  printf 'ADMIN_CIDR=%s\n'                  "$ADMIN_CIDR"
+  printf 'ADMIN_USER=%s\n'                  "$ADMIN_USER"
+  printf 'ADMIN_PW_HASH=%s\n'               "$ADMIN_PW_HASH"
+  printf 'AE_HOST=%s\n'                     "$AE_HOST"
+  printf 'AE_PORT=%s\n'                     "$AE_PORT"
+  printf 'ALARM_ENGINE_URL=%s\n'            "$ALARM_ENGINE_URL"
+  printf 'MANAGER_URL=%s\n'                 "$MANAGER_URL"
+  printf 'SMTP_SERVER=%s\n'                 "$SMTP_SERVER"
+  printf 'SMTP_USER=%s\n'                   "$SMTP_USER"
+  printf 'SMTP_PASS=%s\n'                   "$SMTP_PASS"
+  printf 'INFLUX_METRICS_TOKEN=%s\n'        "$INFLUX_METRICS_TOKEN"
+  printf 'INFLUX_METRICS_ROLLUP_TOKEN=%s\n' "$INFLUX_METRICS_ROLLUP_TOKEN"
+  printf 'INFLUX_OPERATOR_TOKEN=%s\n'       "$INFLUX_OPERATOR_TOKEN"
+  printf 'INGEST_TOKEN=%s\n'                "$INGEST_TOKEN"
+  printf 'INGEST_COMMENTED=%s\n'            "$INGEST_COMMENTED"
+  printf 'MGR_INGEST_TOKEN_PASTE=%s\n'      "$MGR_INGEST_TOKEN_PASTE"
+  printf 'MGMT_TOKEN=%s\n'                  "$MGMT_TOKEN"
+  printf 'MGMT_COMMENTED=%s\n'              "$MGMT_COMMENTED"
+  printf 'MGR_MGMT_TOKEN_PASTE=%s\n'        "$MGR_MGMT_TOKEN_PASTE"
+  printf 'INFLUX_HOSTNAME=%s\n'             "$INFLUX_HOSTNAME"
+  printf 'INFLUX_PORT=%s\n'                 "$INFLUX_PORT"
+} > "$_CB_VALS"
+$SUDO chown "$LLMSYS_RUN_USER" "$_CB_VALS"
+as_run_user python3 - "$REAL" "$_CB_VALS" <<'PYEOF'
 import re, sys, pathlib
 
 path = pathlib.Path(sys.argv[1])
 text = path.read_text()
+
+vals = {}
+for _line in pathlib.Path(sys.argv[2]).read_text().splitlines():
+    _k, _, _v = _line.partition("=")
+    vals[_k] = _v
 
 def sub_in_section(text, section, key, new_value):
     """Replace the first 'key = "..."' line inside [section] (header line
@@ -426,33 +467,33 @@ def sub_numeric_in_section(text, section, key, new_value):
         text, count=1, flags=re.MULTILINE | re.DOTALL,
     )
 
-has_mgr     = ${HAS_MGR}
-has_ae      = ${HAS_AE}
-mgr_host    = """${MGR_HOST}"""
-mgr_port    = """${MGR_PORT}"""
-mgr_ip      = """${MGR_IP}"""
-admin_cidr  = """${ADMIN_CIDR}"""
-admin_user  = """${ADMIN_USER}"""
-admin_hash  = """${ADMIN_PW_HASH}"""
-ae_host     = """${AE_HOST}"""
-ae_port     = """${AE_PORT}"""
-ae_url      = """${ALARM_ENGINE_URL}"""
-mgr_url     = """${MANAGER_URL}"""
-smtp_srv    = """${SMTP_SERVER}"""
-smtp_user   = """${SMTP_USER}"""
-smtp_pass   = """${SMTP_PASS}"""
+has_mgr     = vals.get("HAS_MGR") == "1"
+has_ae      = vals.get("HAS_AE") == "1"
+mgr_host    = vals.get("MGR_HOST", "")
+mgr_port    = vals.get("MGR_PORT", "")
+mgr_ip      = vals.get("MGR_IP", "")
+admin_cidr  = vals.get("ADMIN_CIDR", "")
+admin_user  = vals.get("ADMIN_USER", "")
+admin_hash  = vals.get("ADMIN_PW_HASH", "")
+ae_host     = vals.get("AE_HOST", "")
+ae_port     = vals.get("AE_PORT", "")
+ae_url      = vals.get("ALARM_ENGINE_URL", "")
+mgr_url     = vals.get("MANAGER_URL", "")
+smtp_srv    = vals.get("SMTP_SERVER", "")
+smtp_user   = vals.get("SMTP_USER", "")
+smtp_pass   = vals.get("SMTP_PASS", "")
 
-tok_metrics        = """${INFLUX_METRICS_TOKEN}"""
-tok_metrics_rollup = """${INFLUX_METRICS_ROLLUP_TOKEN}"""
-tok_admin          = """${INFLUX_OPERATOR_TOKEN}"""
-ingest_token_val      = """${INGEST_TOKEN}"""
-ingest_commented_flag = ${INGEST_COMMENTED}
-mgr_ingest_paste      = """${MGR_INGEST_TOKEN_PASTE}"""
-mgmt_token_val        = """${MGMT_TOKEN}"""
-mgmt_commented_flag   = ${MGMT_COMMENTED}
-mgr_mgmt_paste        = """${MGR_MGMT_TOKEN_PASTE}"""
-influx_host        = """${INFLUX_HOSTNAME}"""
-influx_port        = """${INFLUX_PORT}"""
+tok_metrics        = vals.get("INFLUX_METRICS_TOKEN", "")
+tok_metrics_rollup = vals.get("INFLUX_METRICS_ROLLUP_TOKEN", "")
+tok_admin          = vals.get("INFLUX_OPERATOR_TOKEN", "")
+ingest_token_val      = vals.get("INGEST_TOKEN", "")
+ingest_commented_flag = vals.get("INGEST_COMMENTED") == "1"
+mgr_ingest_paste      = vals.get("MGR_INGEST_TOKEN_PASTE", "")
+mgmt_token_val        = vals.get("MGMT_TOKEN", "")
+mgmt_commented_flag   = vals.get("MGMT_COMMENTED") == "1"
+mgr_mgmt_paste        = vals.get("MGR_MGMT_TOKEN_PASTE", "")
+influx_host        = vals.get("INFLUX_HOSTNAME", "")
+influx_port        = vals.get("INFLUX_PORT", "")
 
 # ── Manager-side keys ──
 if has_mgr:
@@ -548,6 +589,7 @@ if influx_port:
 path.write_text(text)
 print(f"  rewrote {path}")
 PYEOF
+$SUDO rm -f "$_CB_VALS"    # EXIT trap covers failure paths
 
 $SUDO chmod 0600 "$REAL"
 ok "$REAL ready (mode 0600)"
