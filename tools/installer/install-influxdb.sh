@@ -26,12 +26,13 @@ detect_os
 require_linux
 detect_sudo
 
-# Mirror everything we say + everything we run into a debug log. Operators
-# can read /tmp/llm-systems-influxdb-install.log after any failure.
-INFLUX_LOG=/tmp/llm-systems-influxdb-install.log
-: >"$INFLUX_LOG"
+# Mirror everything we say + everything we run into a 0600 mktemp debug log
+# (it captures tokens); kept on failure (path in the ERR line), removed on success.
+INFLUX_LOG="$(mktemp /tmp/llm-systems-influxdb-install.XXXXXX.log)"
 exec > >(tee -a "$INFLUX_LOG") 2> >(tee -a "$INFLUX_LOG" >&2)
 trap 'rc=$?; echo "[ERR ]  install-influxdb.sh aborted at line $LINENO (exit $rc) — full log: $INFLUX_LOG" >&2' ERR
+# Single EXIT handler for the whole script: temp files always, log on success.
+trap 'rc=$?; rm -f "${TMP_BASE:-}" "${TMP_OUT:-}"; (( rc == 0 )) && rm -f "$INFLUX_LOG"' EXIT
 
 INSTALL_DIR="${LLMSYS_INSTALL_DIR}"
 INFLUX_ORG_DEFAULT="llm-systems-manager"
@@ -183,9 +184,10 @@ if [[ "${LLMSYS_INSTALL_MODE:-}" == "6" ]]; then
   echo
   echo "  ╔═══════════════════════════════════════════════════════════════════╗"
   echo "  ║                                                                   ║"
-  echo "  ║   These values are NOT saved anywhere on this host. Copy them     ║"
-  echo "  ║   into the alarm-engine host's config now — there is no second    ║"
-  echo "  ║   chance to look them up later without rotating tokens.           ║"
+  echo "  ║   These values are not persisted once this run succeeds (the      ║"
+  echo "  ║   0600 debug log is removed on success). Copy them into the       ║"
+  echo "  ║   alarm-engine host's config now — there is no second chance      ║"
+  echo "  ║   to look them up later without rotating tokens.                  ║"
   echo "  ║                                                                   ║"
   echo "  ╚═══════════════════════════════════════════════════════════════════╝"
   echo
@@ -236,7 +238,6 @@ fi
 
 TMP_BASE="$(mktemp)"
 TMP_OUT="$(mktemp)"
-trap 'rm -f "$TMP_BASE" "$TMP_OUT"' EXIT
 $SUDO cat "$CONF" > "$TMP_BASE"
 # Strip any prior managed block before re-appending.
 awk -v b="$BEGIN_MARKER" -v e="$END_MARKER" '
@@ -271,7 +272,7 @@ BLOCK
   printf '%s\n' "$END_MARKER"
 } > "$TMP_BASE"
 $SUDO install -o root -g root -m 0644 "$TMP_BASE" "$CONF"
-rm -f "$TMP_BASE" "$TMP_OUT"; trap - EXIT
+rm -f "$TMP_BASE" "$TMP_OUT"
 ok "tuned config block written to $CONF"
 
 # Sudoers drop-in: lets the alarm-engine (running as llmsys) read

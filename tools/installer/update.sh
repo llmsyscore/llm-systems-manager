@@ -556,8 +556,18 @@ ok "source tree at $REPO_SRC"
 # ── Per-component plan ─────────────────────────────────────────────────────
 RESTART_UNITS=()
 UPDATED_COMPONENTS=()
+FAILED_UNITS=()
 VERIFY_FAILURES=0
 NEED_DAEMON_RELOAD=0
+
+# True when $1's component update failed (unit must not be [re]started).
+_unit_failed() {
+  local u
+  for u in ${FAILED_UNITS[@]+"${FAILED_UNITS[@]}"}; do
+    [[ "$u" == "$1" ]] && return 0
+  done
+  return 1
+}
 
 banner "Version comparison"
 MGR_V_OLD=""; MGR_V_NEW=""
@@ -613,6 +623,10 @@ _on_exit() {
   warn "update aborted (exit $rc) after services were stopped — restarting them:"
   local u
   for u in "${STOPPED_UNITS[@]}"; do
+    if _unit_failed "$u"; then
+      warn "  NOT starting $u — its component update failed (broken venv/code); fix it, then: sudo systemctl start $u"
+      continue
+    fi
     warn "  systemctl start $u"
     $SUDO systemctl start "$u" || warn "    $u failed to start — check: journalctl -u $u -n 50"
   done
@@ -711,18 +725,30 @@ update_component() {
 }
 
 # Map: label / repo-subdir / install-subdir / unit / --only-key
-$HAVE_MANAGER && update_component "Manager" \
-  "llm-systems-manager" "llm-systems-manager" "llm-systems-manager.service" "manager" \
-  "backend/requirements.txt"
-$HAVE_AE      && update_component "Alarm engine" \
-  "llm-systems-alarm-engine" "llm-systems-alarm-engine" "llm-systems-alarm-engine.service" "alarm-engine"
+# A component failure lands in FAILED_UNITS and the run continues;
+# the if-form keeps a non-zero return from tripping set -e.
+if $HAVE_MANAGER; then
+  update_component "Manager" \
+    "llm-systems-manager" "llm-systems-manager" "llm-systems-manager.service" "manager" \
+    "backend/requirements.txt" \
+    || { FAILED_UNITS+=("llm-systems-manager.service")
+         err "Manager update failed — continuing with remaining components; llm-systems-manager.service will NOT be auto-restarted"; }
+fi
+if $HAVE_AE; then
+  update_component "Alarm engine" \
+    "llm-systems-alarm-engine" "llm-systems-alarm-engine" "llm-systems-alarm-engine.service" "alarm-engine" \
+    || { FAILED_UNITS+=("llm-systems-alarm-engine.service")
+         err "Alarm engine update failed — continuing with remaining components; llm-systems-alarm-engine.service will NOT be auto-restarted"; }
+fi
 
 # Manager-host-only: keep the repo's agent/ dir in sync so the manager's
 # /api/agent-tarball endpoint (which remote agents pull from during
 # self-update) serves the same version this manager was just upgraded
 # to. Without this, deploy-source drifts behind the running agent.
-$HAVE_MANAGER && update_component "Agent deploy source" \
-  "agent" "agent" "" "agent" ""
+if $HAVE_MANAGER; then
+  update_component "Agent deploy source" "agent" "agent" "" "agent" "" \
+    || err "Agent deploy source sync failed — /api/agent-tarball may serve stale code"
+fi
 
 # Keep the installer entry points in sync so a future --update,
 # --uninstall, or self-run of any installer sub-script doesn't execute
@@ -1244,9 +1270,15 @@ if (( ${#RESTART_UNITS[@]} > 0 )); then
   declare -A _seen=(); _uniq=()
   for u in "${RESTART_UNITS[@]}"; do
     [[ -n "${_seen[$u]:-}" ]] && continue
-    _seen[$u]=1; _uniq+=("$u")
+    _seen[$u]=1
+    # Units whose component update failed are excluded from restart.
+    if _unit_failed "$u"; then
+      warn "skipping restart of $u — its component update failed; fix it, then: sudo systemctl restart $u"
+      continue
+    fi
+    _uniq+=("$u")
   done
-  RESTART_UNITS=("${_uniq[@]}")
+  RESTART_UNITS=(${_uniq[@]+"${_uniq[@]}"})
 fi
 if (( ${#RESTART_UNITS[@]} == 0 )); then
   log "nothing to restart"
@@ -1436,7 +1468,10 @@ log "health: $PASS pass / $FAIL fail"
 if (( VERIFY_FAILURES > 0 )); then
   err "$VERIFY_FAILURES md5 verification failure(s) above — investigate"
 fi
-if (( FAIL > 0 )); then
+if (( ${#FAILED_UNITS[@]} > 0 )); then
+  err "component update failure(s) — these services were NOT restarted: ${FAILED_UNITS[*]}"
+fi
+if (( FAIL > 0 || ${#FAILED_UNITS[@]} > 0 )); then
   err "Update finished with failures."
   err "Staging clone preserved at $REPO_SRC for inspection."
   exit 1

@@ -126,6 +126,7 @@ case "$DECISION" in
       echo "    influx auth create --org <org> --read-bucket <id> --write-bucket <id>"
       echo
       read -rp "  Org [llm-systems-manager]: " ORG;        ORG="${ORG:-llm-systems-manager}"
+      validate_influx_org "$ORG" || die "org failed sanity check"
       read -rp "  Operator (admin) token: "      OP_TOKEN
       read -rp "  Metrics bucket scoped token: " METRICS_TOKEN
       read -rp "  Metrics-rollup bucket token: " ROLLUP_TOKEN
@@ -144,10 +145,13 @@ case "$DECISION" in
     echo "  Remote InfluxDB details:"
     read -rp "  Host or IP (no scheme): " HOSTNAME_IN
     [[ -n "$HOSTNAME_IN" ]] || die "host is required"
+    validate_influx_host "$HOSTNAME_IN" || die "host failed sanity check"
     check_resolves "$HOSTNAME_IN" "InfluxDB host" \
       || warn "  Continuing anyway; the probe below may fail."
     read -rp "  Port [8086]: " PORT_IN; PORT_IN="${PORT_IN:-8086}"
+    validate_influx_port "$PORT_IN" || die "port failed sanity check"
     read -rp "  Org [llm-systems-manager]: " ORG; ORG="${ORG:-llm-systems-manager}"
+    validate_influx_org "$ORG" || die "org failed sanity check"
     URL="http://${HOSTNAME_IN}:${PORT_IN}"
     log "probing $URL/health…"
     if [[ "$(probe_url "$URL/health")" == "200" ]]; then
