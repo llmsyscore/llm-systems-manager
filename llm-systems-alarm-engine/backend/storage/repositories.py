@@ -919,11 +919,21 @@ class NotificationRepository:
         return result
 
     def get_delivery_by_id(self, delivery_id: uuid.UUID) -> Optional[NotificationDelivery]:
-        """Get a delivery record by ID."""
+        """Get a delivery record by ID, falling back to SQLite on cache miss."""
         cached = self.cache.get(f"delivery:{delivery_id}")
         if cached:
             return NotificationDelivery(**cached)
-        return None
+        if self.settings_db is None:
+            return None
+        item = self.settings_db.get_delivery(str(delivery_id))
+        if not item:
+            return None
+        try:
+            delivery = NotificationDelivery(**item)
+            self.cache.set(f"delivery:{delivery_id}", item)
+            return delivery
+        except Exception:
+            return None
 
     # --- Channel methods (continued) ---
 
@@ -942,23 +952,22 @@ class NotificationRepository:
         return result
 
     async def get_channel(self, channel_id: str) -> Optional[NotificationChannel]:
-        """Get a channel by string ID."""
+        """Get a channel by string ID, falling back to SQLite on cache miss."""
         try:
             uid = uuid.UUID(channel_id)
         except ValueError:
             return None
-        cached = self.cache.get(f"channel:{uid}")
-        if cached:
-            return self._dict_to_channel(cached)
-        return None
+        return self.get_by_id(uid)
 
     async def update_channel(self, channel_id: str, update: NotificationChannelUpdate) -> Optional[NotificationChannel]:
-        """Update a channel by string ID."""
+        """Update a channel by string ID, falling back to SQLite on cache miss."""
         try:
             uid = uuid.UUID(channel_id)
         except ValueError:
             return None
         channel_data = self.cache.get(f"channel:{uid}")
+        if not channel_data and self.settings_db is not None:
+            channel_data = self.settings_db.get_channel(str(uid))
         if not channel_data:
             return None
         update_data = update.model_dump(exclude_none=True)

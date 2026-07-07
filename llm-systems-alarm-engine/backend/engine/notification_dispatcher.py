@@ -639,8 +639,12 @@ Time: {alert.created_at}
             err = None
             try:
                 async with httpx.AsyncClient(timeout=settings.notifications.timeouts.http) as client:
-                    await client.post(config.webhook.url, json=payload, headers=headers)
-                logger.info(f"Webhook sent for alert {alert.alert_id}")
+                    resp = await client.post(config.webhook.url, json=payload, headers=headers)
+                if 200 <= resp.status_code < 300:
+                    logger.info(f"Webhook sent for alert {alert.alert_id}")
+                else:
+                    err = f"HTTP {resp.status_code}"
+                    logger.error(f"Webhook for alert {alert.alert_id} returned {resp.status_code}")
             except Exception as e:
                 err = str(e)
                 logger.error(f"Failed to send webhook: {e}")
@@ -677,8 +681,12 @@ Time: {alert.created_at}
             err = None
             try:
                 async with httpx.AsyncClient(timeout=settings.notifications.timeouts.http) as client:
-                    await client.post(config.discord.webhook_url, json=payload)
-                logger.info(f"Discord notification sent for alert {alert.alert_id}")
+                    resp = await client.post(config.discord.webhook_url, json=payload)
+                if 200 <= resp.status_code < 300:
+                    logger.info(f"Discord notification sent for alert {alert.alert_id}")
+                else:
+                    err = f"HTTP {resp.status_code}"
+                    logger.error(f"Discord webhook for alert {alert.alert_id} returned {resp.status_code}")
             except Exception as e:
                 err = str(e)
                 logger.error(f"Failed to send Discord notification: {e}")

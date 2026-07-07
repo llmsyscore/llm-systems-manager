@@ -32,6 +32,9 @@ class WebSocketConnectionManager:
         self._message_queue: asyncio.Queue = asyncio.Queue(
             maxsize=settings.alarm_engine.caches.websocket_queue_size,
         )
+        # Per-client send timeout; defaults when the config has no ws_send key.
+        self._send_timeout = float(getattr(
+            settings.alarm_engine.timeouts, "ws_send", 5.0))
         self._broadcast_task: Optional[asyncio.Task] = None
         self._heartbeat_task: Optional[asyncio.Task] = None
         self._started = False
@@ -101,14 +104,21 @@ class WebSocketConnectionManager:
         return cid
 
     async def disconnect(self, client_id: str) -> None:
-        """Remove a WebSocket connection."""
+        """Remove a WebSocket connection and close its socket."""
         self._active_clients.discard(client_id)
         # Unsubscribe from all event types
         for event_type in list(self._subscribers.keys()):
             self._subscribers[event_type].discard(client_id)
             if not self._subscribers[event_type]:
                 del self._subscribers[event_type]
-        self._connections.pop(client_id, None)
+        ws = self._connections.pop(client_id, None)
+        if ws is not None:
+            # Close frame tells the client to run its reconnect logic;
+            # already-closed sockets raise here and are ignored.
+            try:
+                await asyncio.wait_for(ws.close(), self._send_timeout)
+            except Exception:
+                pass
         logger.info(f"WebSocket disconnected: {client_id}")
 
     def subscribe(self, client_id: str, event_type: str) -> None:
@@ -172,15 +182,7 @@ class WebSocketConnectionManager:
 
             if target:
                 # Send to specific client
-                ws = self._connections.get(target)
-                if ws:
-                    try:
-                        await ws.send_text(serialized)
-                        self._sends_total += 1
-                    except Exception as e:
-                        self._send_failures += 1
-                        logger.warning("ws targeted send failed for %s: %s", target, e)
-                        await self.disconnect(target)
+                await self._send_or_disconnect(target, serialized)
             else:
                 # Broadcast to subscribers
                 subscribers = self._subscribers.get(event_type, set())
@@ -189,17 +191,22 @@ class WebSocketConnectionManager:
                     subscribers = set(self._connections.keys())
 
                 for cid in list(subscribers):
-                    ws = self._connections.get(cid)
-                    if ws:
-                        try:
-                            await ws.send_text(serialized)
-                            self._sends_total += 1
-                        except Exception as e:
-                            self._send_failures += 1
-                            logger.warning("ws broadcast send failed for %s: %s", cid, e)
-                            await self.disconnect(cid)
+                    await self._send_or_disconnect(cid, serialized)
 
             self._message_queue.task_done()
+
+    async def _send_or_disconnect(self, client_id: str, text: str) -> None:
+        """Send with a bounded timeout; force-disconnect the client on failure."""
+        ws = self._connections.get(client_id)
+        if not ws:
+            return
+        try:
+            await asyncio.wait_for(ws.send_text(text), self._send_timeout)
+            self._sends_total += 1
+        except Exception as e:
+            self._send_failures += 1
+            logger.warning("ws send failed for %s: %s", client_id, e)
+            await self.disconnect(client_id)
 
 
 # ── WebSocket endpoint ──────────────────────────────────────────
@@ -230,11 +237,11 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
             try:
                 msg = json.loads(data)
             except json.JSONDecodeError:
-                await websocket.send_text(json.dumps({
+                await asyncio.wait_for(websocket.send_text(json.dumps({
                     "event": "error",
                     "data": {"message": "Invalid JSON"},
                     "ts": datetime.now(timezone.utc).isoformat(),
-                }))
+                })), _manager._send_timeout)
                 continue
 
             action = msg.get("action", "")
@@ -251,17 +258,17 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                 else:
                     _manager.unsubscribe_all(client_id)
             elif action == "ping":
-                await websocket.send_text(json.dumps({
+                await asyncio.wait_for(websocket.send_text(json.dumps({
                     "event": "pong",
                     "data": {"ts": datetime.now(timezone.utc).isoformat()},
                     "ts": datetime.now(timezone.utc).isoformat(),
-                }))
+                })), _manager._send_timeout)
             else:
-                await websocket.send_text(json.dumps({
+                await asyncio.wait_for(websocket.send_text(json.dumps({
                     "event": "error",
                     "data": {"message": f"Unknown action: {action}"},
                     "ts": datetime.now(timezone.utc).isoformat(),
-                }))
+                })), _manager._send_timeout)
 
     except WebSocketDisconnect:
         logger.info(f"WebSocket client disconnected: {client_id}")
