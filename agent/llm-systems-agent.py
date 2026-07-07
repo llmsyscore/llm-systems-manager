@@ -60,7 +60,7 @@ except ImportError:
             os.chmod(tmp, mode)
         tmp.replace(p)
 
-VERSION = "v2026.07.07-1"
+VERSION = "v2026.07.07-2"
 
 
 def _detect_install_dir() -> str:
@@ -2401,6 +2401,16 @@ async def _lifespan(_app: "FastAPI") -> AsyncIterator[None]:
                 await perf_task
             except (asyncio.CancelledError, Exception) as e:
                 logger.debug("perf_task shutdown cleanup raised: %r", e)
+        # Kill tracked bench/autotune children before draining metrics.
+        try:
+            await asyncio.to_thread(providers.llama.shutdown_children)
+        except (asyncio.CancelledError, Exception) as e:
+            logger.warning("bench/autotune shutdown cleanup failed: %r", e)
+        if _metric_client is not None:
+            try:
+                await asyncio.to_thread(_metric_client.stop, True)
+            except (asyncio.CancelledError, Exception) as e:
+                logger.warning("metric-client drain on shutdown failed: %r", e)
 
 
 app = FastAPI(title="LLM Systems Agent", version=VERSION, lifespan=_lifespan)

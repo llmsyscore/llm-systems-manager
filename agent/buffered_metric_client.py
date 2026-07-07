@@ -472,13 +472,20 @@ class BufferedMetricClient:
         )
 
     def stop(self, drain: bool = True) -> None:
-        """Stop the flush thread. If `drain`, attempt a final flush."""
+        """Stop the flush thread. If `drain`, flush batches until the buffer
+        is empty or a flush stops making progress."""
         self._stop_event.set()
         if self._thread:
             self._thread.join(timeout=self.flush_interval + self.http_timeout + 1)
             self._thread = None
         if drain:
-            self._flush_once()
+            prev = -1
+            while True:
+                remaining = self.buffered_count()
+                if remaining == 0 or remaining == prev:
+                    break
+                prev = remaining
+                self._flush_once()
         logger.info("BufferedMetricClient stopped — stats=%s", asdict(self.stats))
 
     def buffered_count(self) -> int:

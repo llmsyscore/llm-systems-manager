@@ -129,6 +129,43 @@ _autotune_proc: "Optional[subprocess.Popen]" = None
 _autotune_pgid: "Optional[int]" = None
 _autotune_cancel_event = threading.Event()
 
+def shutdown_children() -> None:
+    """SIGTERM (then SIGKILL) any tracked bench/autotune process group so an
+    agent restart doesn't orphan children holding VRAM or the server port."""
+    _bench_cancel_event.set()
+    _autotune_cancel_event.set()
+    for what, proc, pgid in (("bench", _bench_proc, _bench_pgid),
+                             ("autotune", _autotune_proc, _autotune_pgid)):
+        if proc is None or proc.poll() is not None:
+            continue
+        try:
+            if pgid is not None:
+                try:
+                    os.killpg(pgid, signal.SIGTERM)
+                except ProcessLookupError:
+                    continue
+            else:
+                proc.terminate()
+            try:
+                proc.wait(timeout=3)
+            except subprocess.TimeoutExpired:
+                if pgid is not None:
+                    try:
+                        os.killpg(pgid, signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass
+                else:
+                    proc.kill()
+                try:
+                    proc.wait(timeout=2)
+                except subprocess.TimeoutExpired:
+                    log.warning("shutdown: %s process %s survived SIGKILL", what, proc.pid)
+                    continue
+            log.info("shutdown: terminated %s process group (pid %s)", what, proc.pid)
+        except Exception as e:
+            log.warning("shutdown: %s terminate failed: %s", what, e)
+
+
 _AT_NCTX_RE = re.compile(r"n_ctx_seq\s*\(\s*(\d+)\s*\)")
 _AT_NCTX_FALLBACK_RE = re.compile(r"\bn_ctx\b\s*=\s*(\d+)")
 _AT_MEM_RE = re.compile(
@@ -2091,6 +2128,8 @@ def _autotune_run_iter(model_id: str, fitt_mb: int, optional_params: dict,
                        env: dict, iter_idx: int) -> dict:
     """Run llama-server once with -fitt, wait for model-loaded, SIGTERM, parse output."""
     global _autotune_proc, _autotune_pgid
+    if _autotune_cancel_event.is_set():
+        return {"ok": False, "error": "cancelled"}
     if not _require_ctx().config.LLAMA_BIN:
         return {"ok": False, "error": "LLAMA_BIN not configured"}
     bin_path = _require_ctx().config.LLAMA_BIN
@@ -2451,6 +2490,10 @@ def _autotune_run_one_model(model_id: str, target_mb: int, optional_params: dict
         while True:
             res = _autotune_run_iter(model_id, fitt, optional_params, env, i)
             if res.get("ok") or not res.get("sentinel"):
+                break
+            # A cancelled run yields a bogus breakdown; never respawn for it.
+            if _autotune_cancel_event.is_set():
+                res = {"ok": False}
                 break
             raw_free = res.get("raw_free_mb")
             raw_total = res.get("raw_total_mb")
