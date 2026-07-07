@@ -25,7 +25,8 @@ SKIP_TOP_LEVEL: frozenset[str] = frozenset({"ts", "platform", "interval"})
 # Path tuple → (source, metric_name, unit, transform_fn). Used so renames
 # done over time stay backwards-compatible with rules that target the old
 # names (e.g. `ram/usage_percent` instead of `ram/percent`).
-_BYTES_TO_MBPS: Callable[[float], float] = lambda v: v / 1_048_576
+# bytes/s → Mbps (megabits/s): 125_000 B/s == 1 Mbps.
+_BYTES_TO_MBPS: Callable[[float], float] = lambda v: v * 8 / 1_000_000
 
 ALIAS_TABLE: dict[
     tuple[str, ...],
