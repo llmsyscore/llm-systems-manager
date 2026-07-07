@@ -262,6 +262,36 @@ validate_influx_token() {
   return 0
 }
 
+# validate_influx_host <value> — hostname / IPv4 / IPv6 charset only.
+validate_influx_host() {
+  local host="$1"
+  if [[ -z "$host" || ${#host} -gt 253 || ! "$host" =~ ^[A-Za-z0-9._:-]+$ ]]; then
+    err "InfluxDB host '$host' contains disallowed characters (hostname/IP only)"
+    return 1
+  fi
+  return 0
+}
+
+# validate_influx_port <value> — numeric 1..65535.
+validate_influx_port() {
+  local port="$1"
+  if [[ ! "$port" =~ ^[0-9]{1,5}$ ]] || (( 10#$port < 1 || 10#$port > 65535 )); then
+    err "InfluxDB port '$port' is not a valid TCP port"
+    return 1
+  fi
+  return 0
+}
+
+# validate_influx_org <value> — alnum, space, dot, underscore, dash.
+validate_influx_org() {
+  local org="$1"
+  if [[ -z "$org" || ${#org} -gt 64 || ! "$org" =~ ^[A-Za-z0-9\ ._-]+$ ]]; then
+    err "InfluxDB org '$org' contains disallowed characters"
+    return 1
+  fi
+  return 0
+}
+
 # Run apt-get update with one specific recovery path: if it fails with the
 # 'Release file ... is not valid yet (invalid for another Xh Ymin Zs)' error
 # (system clock is behind real time — common after a VM snapshot rollback),
@@ -374,11 +404,23 @@ ensure_runas_user() {
 }
 
 # ── Repo clone (public, via git over HTTPS) ─────────────────────────────────
+# assert_staging_dir_owner <dir> — dies unless <dir> is a real directory
+# (not a symlink) owned by the current uid. Guards world-writable /tmp.
+assert_staging_dir_owner() {
+  local dir="$1" owner
+  [[ -L "$dir" ]] && die "$dir is a symlink — refusing to use it as a staging dir; remove it and re-run"
+  owner="$(stat -c %u "$dir" 2>/dev/null || stat -f %u "$dir" 2>/dev/null || echo '?')"
+  [[ "$owner" == "$(id -u)" ]] \
+    || die "$dir is owned by uid $owner, not uid $(id -u) — someone else created it; remove it and re-run"
+}
+
 clone_repo() {
   local dest="${1:-$LLMSYS_CLONE_TMP}"
   if [[ -d "$dest/.git" ]]; then
+    assert_staging_dir_owner "$dest"
     log "repo already cloned at $dest — pulling latest"
-    git -C "$dest" pull --ff-only -q >/dev/null 2>&1 || warn "git pull failed; using existing checkout"
+    git -C "$dest" pull --ff-only -q >/dev/null 2>&1 \
+      || die "git pull in $dest failed — remove the directory and re-run to get a fresh clone"
     return 0
   fi
   if [[ -e "$dest" ]]; then
@@ -397,6 +439,7 @@ clone_repo() {
   log "cloning $slug via public HTTPS → $dest"
   git clone -q "https://github.com/$slug.git" "$dest" >/dev/null 2>&1 \
     || die "git clone https://github.com/$slug.git → $dest failed"
+  assert_staging_dir_owner "$dest"
   ok "cloned to $dest"
 }
 
@@ -530,15 +573,16 @@ url_port() {
 write_influx_token_file() {
   local path="$1" url="$2" org="$3" op="$4" metrics="$5" rollup="$6"
   install -m 0600 /dev/null "$path"
-  cat > "$path" <<EOF
-# Transient — consumed by install-config-bootstrap.sh, unlinked by
-# install.sh on exit. Do not edit by hand.
-INFLUX_HOST=$url
-INFLUX_ORG=$org
-INFLUX_OPERATOR_TOKEN=$op
-INFLUX_METRICS_TOKEN=$metrics
-INFLUX_METRICS_ROLLUP_TOKEN=$rollup
-EOF
+  # Values are %q-quoted for the bash `source` in install-config-bootstrap.sh.
+  {
+    printf '# Transient — consumed by install-config-bootstrap.sh, unlinked by\n'
+    printf '# install.sh on exit. Do not edit by hand.\n'
+    printf 'INFLUX_HOST=%q\n' "$url"
+    printf 'INFLUX_ORG=%q\n' "$org"
+    printf 'INFLUX_OPERATOR_TOKEN=%q\n' "$op"
+    printf 'INFLUX_METRICS_TOKEN=%q\n' "$metrics"
+    printf 'INFLUX_METRICS_ROLLUP_TOKEN=%q\n' "$rollup"
+  } > "$path"
 }
 
 

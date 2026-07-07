@@ -75,6 +75,16 @@ _b_fetch_from_github() {
   return 1
 }
 
+# Dies unless $1 is a real directory (not a symlink) owned by the current
+# uid — refuses staging dirs someone else pre-created in world-writable /tmp.
+_b_assert_clone_owner() {
+  local dir="$1" owner
+  [[ -L "$dir" ]] && _b_die "$dir is a symlink — refusing to use it as a staging dir; remove it and re-run"
+  owner="$(stat -c %u "$dir" 2>/dev/null || stat -f %u "$dir" 2>/dev/null || echo '?')"
+  [[ "$owner" == "$(id -u)" ]] \
+    || _b_die "$dir is owned by uid $owner, not uid $(id -u) — someone else created it; remove it and re-run"
+}
+
 # Locate one of the tools/installer/*.sh helpers — looks in the running
 # checkout first, then the deployed tree. Echoes the path on stdout; non-zero
 # return when neither exists.
@@ -412,12 +422,15 @@ if [[ "$UPDATE" == "1" ]]; then
   command -v git >/dev/null 2>&1 \
     || { _b_err "git is required to fetch the repo. Install git and re-run."; exit 1; }
   if [[ -d "$LLMSYS_CLONE_TMP/.git" ]]; then
+    _b_assert_clone_owner "$LLMSYS_CLONE_TMP"
     git -C "$LLMSYS_CLONE_TMP" pull --ff-only \
-      || _b_log "git pull failed; using existing checkout"
+      || _b_die "git pull in $LLMSYS_CLONE_TMP failed — remove the directory and re-run to get a fresh clone"
   elif [[ -e "$LLMSYS_CLONE_TMP" ]]; then
     _b_die "$LLMSYS_CLONE_TMP exists and isn't a git repo — remove it first"
   else
-    git clone "https://github.com/${LLMSYS_REPO_SLUG:-llmsyscore/llm-systems-manager}.git" "$LLMSYS_CLONE_TMP"
+    git clone "https://github.com/${LLMSYS_REPO_SLUG:-llmsyscore/llm-systems-manager}.git" "$LLMSYS_CLONE_TMP" \
+      || _b_die "git clone failed"
+    _b_assert_clone_owner "$LLMSYS_CLONE_TMP"
   fi
   UPDATE_HELPER="$LLMSYS_CLONE_TMP/tools/installer/update.sh"
   [[ -f "$UPDATE_HELPER" ]] \
@@ -521,13 +534,16 @@ if [[ -n "$_REPO_ROOT_FROM_THIS" \
   _b_ok "using local checkout: $REPO_SRC"
 else
   if [[ -d "$LLMSYS_CLONE_TMP/.git" ]]; then
-    git -C "$LLMSYS_CLONE_TMP" pull --ff-only >/dev/null 2>&1 || true
+    _b_assert_clone_owner "$LLMSYS_CLONE_TMP"
+    git -C "$LLMSYS_CLONE_TMP" pull --ff-only >/dev/null 2>&1 \
+      || _b_die "git pull in $LLMSYS_CLONE_TMP failed — remove the directory and re-run to get a fresh clone"
     _b_ok "refreshed cached clone at $LLMSYS_CLONE_TMP"
   elif [[ -e "$LLMSYS_CLONE_TMP" ]]; then
     _b_die "$LLMSYS_CLONE_TMP exists and isn't a git repo — remove or rename it first"
   else
     git clone -q "https://github.com/$REPO_SLUG.git" "$LLMSYS_CLONE_TMP" >/dev/null 2>&1 \
       || _b_die "git clone https://github.com/$REPO_SLUG.git failed"
+    _b_assert_clone_owner "$LLMSYS_CLONE_TMP"
     _b_ok "cloned $REPO_SLUG → $LLMSYS_CLONE_TMP"
   fi
   REPO_SRC="$LLMSYS_CLONE_TMP"
