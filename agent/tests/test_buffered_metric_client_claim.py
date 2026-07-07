@@ -83,7 +83,7 @@ def test_abort_preserves_everything_and_order(tmp_path):
     store = _store(tmp_path, max_mem=10)
     for i in range(10):
         store.enqueue(_sample(i))
-    batch, claim = store.snapshot(5)
+    store.snapshot(5)
     for i in range(10, 20):
         store.enqueue(_sample(i))
     store.abort()
