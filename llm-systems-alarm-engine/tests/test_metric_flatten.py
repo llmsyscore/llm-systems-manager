@@ -139,12 +139,26 @@ class TestResolve:
         assert (src, name, val, unit) == ("cpu", "usage_percent", 42.5, "%")
 
     def test_aliased_path_applies_transform(self):
-        # net/bytes_sent_per_sec → Mbps (divide by 1MiB)
-        src, name, val, unit = resolve(("net", "bytes_sent_per_sec"), 1_048_576.0)
+        # net/bytes_sent_per_sec → Mbps: 125_000 B/s == 1 Mbps (bytes*8/1e6).
+        src, name, val, unit = resolve(("net", "bytes_sent_per_sec"), 125_000.0)
         assert src == "net"
         assert name == "sent_mbps"
         assert unit == "Mbps"
         assert val == 1.0
+
+    def test_throughput_metrics_convert_bytes_to_megabits(self):
+        # All four net/disk throughput aliases share the bytes/s → Mbps math.
+        for path in (
+            ("net", "bytes_sent_per_sec"),
+            ("net", "bytes_recv_per_sec"),
+            ("disk_io", "read_bytes_per_sec"),
+            ("disk_io", "write_bytes_per_sec"),
+        ):
+            _, name, val, unit = resolve(path, 1_000_000.0)
+            assert unit == "Mbps", path
+            assert name.endswith("_mbps"), path
+            # 1_000_000 B/s * 8 / 1e6 == 8 Mbps.
+            assert val == 8.0, path
 
     def test_unaliased_two_part_path(self):
         # Falls back to path[0] as source, "_".join(path[1:]) as name
