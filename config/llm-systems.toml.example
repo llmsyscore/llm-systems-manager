@@ -241,6 +241,7 @@ manager_keepalive     = 5.0
 manager_status        = 5.0
 manager_metric_fetch  = 3.0
 influxdb_ping         = 2.0                              # InfluxDB self-monitor probe
+ws_send               = 5.0                              # per-client websocket send (s)
 
 [alarm_engine.intervals]
 influxdb_monitor_s         = 30                          # how often the influx self-monitor runs
