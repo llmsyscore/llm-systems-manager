@@ -696,8 +696,11 @@ update_component() {
       sync_dir "$src" "$dest"
       if (( PARANOID_VERIFY )); then
         # shellcheck disable=SC2086
-        verify_md5_pairs "$src" "$dest" $changed \
-          || VERIFY_FAILURES=$((VERIFY_FAILURES+1))
+        if ! verify_md5_pairs "$src" "$dest" $changed; then
+          VERIFY_FAILURES=$((VERIFY_FAILURES+1))
+          err "$label: md5 verification failed — aborting this component's update"
+          return 1
+        fi
       fi
       UPDATED_COMPONENTS+=("$label")
       [[ -n "$unit" ]] && RESTART_UNITS+=("$unit")
@@ -1471,7 +1474,7 @@ fi
 if (( ${#FAILED_UNITS[@]} > 0 )); then
   err "component update failure(s) — these services were NOT restarted: ${FAILED_UNITS[*]}"
 fi
-if (( FAIL > 0 || ${#FAILED_UNITS[@]} > 0 )); then
+if (( FAIL > 0 || ${#FAILED_UNITS[@]} > 0 || VERIFY_FAILURES > 0 )); then
   err "Update finished with failures."
   err "Staging clone preserved at $REPO_SRC for inspection."
   exit 1
