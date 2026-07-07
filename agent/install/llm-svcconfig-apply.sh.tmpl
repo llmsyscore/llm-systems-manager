@@ -3,6 +3,10 @@
 # /usr/local/sbin/llm-svcconfig-apply (mode 0755). Do not edit by hand.
 # Rewrites only the ExecStart= line of the trusted, root-owned llama unit so
 # the agent can change server flags without a grant to write arbitrary content.
+# SVCCONFIG_WRAPPER_VERSION=1
+# Bump the version above on ANY change to this file OR the sudoers template —
+# self-update aborts (asking for a root install.sh --update) when the installed
+# version is older, since unprivileged self-update can't rewrite these.
 set -euo pipefail
 
 UNIT_PATH='__UNIT_PATH__'

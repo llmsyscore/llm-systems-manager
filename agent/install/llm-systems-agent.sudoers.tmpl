@@ -1,5 +1,7 @@
 # Managed by llm-systems-agent installer. Do not edit by hand.
 # Drop as /etc/sudoers.d/llm-systems-agent (mode 0440).
+# On ANY change here, bump SVCCONFIG_WRAPPER_VERSION in llm-svcconfig-apply.sh.tmpl
+# so already-migrated agents are prompted to re-run a root install.sh --update.
 # Allows the agent (running as ${AGENT_USER}) to run only the systemctl
 # commands needed for llama-server lifecycle and the perf controller's
 # CPU governor / fan profile units.
