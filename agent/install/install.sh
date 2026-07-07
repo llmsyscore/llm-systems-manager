@@ -621,6 +621,15 @@ _resolved_llama_unit() {
   printf '%s' "$u"
 }
 
+# _svcconfig_wrapper_version FILE
+#   Echo the SVCCONFIG_WRAPPER_VERSION marker from FILE (installed helper or
+#   staged template), or 0 if the file is unreadable / has no marker.
+_svcconfig_wrapper_version() {
+  local f="$1" v=""
+  [[ -r "$f" ]] && v="$(sed -n 's/^# *SVCCONFIG_WRAPPER_VERSION=\([0-9][0-9]*\).*/\1/p' "$f" | head -1)"
+  printf '%s' "${v:-0}"
+}
+
 # _apply_sudoers_and_wrapper
 #   Render + visudo-validate + install the sudoers file and the root-owned
 #   svcconfig helper (Linux, privileged). Called from both fresh install and
@@ -1015,23 +1024,29 @@ if $DO_UPDATE; then
   SRC_DIR="$REPO_DIR_FOR_UPDATE/agent"
   TMPL_DIR="$SRC_DIR/install"
 
-  # Self-update runs unprivileged and cannot install the root-owned svcconfig
-  # helper or rewrite sudoers. On a llama host missing the helper, refuse to
-  # deploy new code (which would break the ExecStart editor) and leave the
-  # current agent running until a one-time root install migrates the host.
+  # Self-update runs unprivileged and cannot install/refresh the root-owned
+  # svcconfig helper or rewrite sudoers. On a llama host whose helper is missing
+  # OR older than the staged template, refuse to deploy new code and leave the
+  # current agent running until a one-time root install/update migrates the host.
+  # (Aborting here is BEFORE the src/ wipe below, so the staged source stays put
+  # for the operator to run the command we print.)
   _lu_guard="$(_resolved_llama_unit)"
   # Skip the guard only when llama is positively disabled — a leftover unit file
   # on a non-llama host must not block self-update. Fire on true/unknown.
   _llama_on="$(_yaml_scalar "$INSTALL_DIR/agent_config.yaml" LLAMA_ENABLED | tr '[:upper:]' '[:lower:]')"
-  if $FROM_SELF_UPDATE && [[ "$AGENT_OS" == "linux" && "$_llama_on" != "false" \
-        && -f "/etc/systemd/system/$_lu_guard" \
-        && ! -x /usr/local/sbin/llm-svcconfig-apply ]]; then
-    echo "ERROR: this update needs a one-time root migration on THIS host." >&2
-    echo "  It moves llama unit edits behind a root-owned helper" >&2
-    echo "  (/usr/local/sbin/llm-svcconfig-apply) that self-update can't install" >&2
-    echo "  without root. Refusing to deploy new code that would break the llama" >&2
-    echo "  ExecStart editor. The agent was NOT changed and keeps running." >&2
-    echo "  Complete the migration as root, then self-update will work again:" >&2
+  _wrap_bin=/usr/local/sbin/llm-svcconfig-apply
+  _want_wrap_ver="$(_svcconfig_wrapper_version "$TMPL_DIR/llm-svcconfig-apply.sh.tmpl")"
+  _have_wrap_ver="$(_svcconfig_wrapper_version "$_wrap_bin")"
+  _wrap_stale=false
+  { [[ ! -x "$_wrap_bin" ]] || (( _have_wrap_ver < _want_wrap_ver )); } && _wrap_stale=true
+  if $FROM_SELF_UPDATE && $_wrap_stale && [[ "$AGENT_OS" == "linux" \
+        && "$_llama_on" != "false" && -f "/etc/systemd/system/$_lu_guard" ]]; then
+    echo "ERROR: this update needs a one-time root install/update on THIS host." >&2
+    echo "  llama unit edits go through a root-owned helper" >&2
+    echo "  (/usr/local/sbin/llm-svcconfig-apply) that self-update can't install or" >&2
+    echo "  refresh without root (installed v$_have_wrap_ver, need v$_want_wrap_ver)." >&2
+    echo "  Refusing to deploy new code that would run against a stale/absent helper." >&2
+    echo "  The agent was NOT changed and keeps running. Run as root to migrate:" >&2
     echo "      sudo bash \"$SRC_DIR/install/install.sh\" --update --no-pull" >&2
     exit 1
   fi
