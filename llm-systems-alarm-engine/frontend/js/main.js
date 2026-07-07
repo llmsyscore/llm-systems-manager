@@ -210,22 +210,30 @@ const ToastManager = {
             if (ackBtn) ackBtn.addEventListener('click', async (e) => {
                 e.stopPropagation();
                 const targetId = toast.dataset.alertId || alertId;
+                if (AlertManager._inflight.has(targetId)) return;
+                AlertManager._inflight.add(targetId);
                 try {
                     await ApiClient.alerts.acknowledge(targetId);
                     ToastManager.show('Alert acknowledged', 'success');
                 } catch {
                     ToastManager.show('Failed to acknowledge alert', 'error');
+                } finally {
+                    AlertManager._inflight.delete(targetId);
                 }
                 dismiss(true);
             });
             if (resBtn) resBtn.addEventListener('click', async (e) => {
                 e.stopPropagation();
                 const targetId = toast.dataset.alertId || alertId;
+                if (AlertManager._inflight.has(targetId)) return;
+                AlertManager._inflight.add(targetId);
                 try {
                     await ApiClient.alerts.close(targetId);
                     ToastManager.show('Alert closed', 'success');
                 } catch {
                     ToastManager.show('Failed to close alert', 'error');
+                } finally {
+                    AlertManager._inflight.delete(targetId);
                 }
                 dismiss(true);
             });
@@ -448,6 +456,9 @@ const DashboardManager = {
 // ── Alert Manager ──
 
 const AlertManager = {
+    // Per-alert in-flight guard shared by row and toast Ack/Close actions.
+    _inflight: new Set(),
+
     async load() {
         UIStates.setLoading('alerts', true);
         try {
@@ -649,22 +660,30 @@ const AlertManager = {
     },
 
     async acknowledge(alertId) {
+        if (this._inflight.has(alertId)) return;
+        this._inflight.add(alertId);
         try {
             await ApiClient.alerts.acknowledge(alertId);
             ToastManager.show('Alert acknowledged', 'success');
             this.load();
         } catch (error) {
             ToastManager.show('Failed to acknowledge alert', 'error');
+        } finally {
+            this._inflight.delete(alertId);
         }
     },
 
     async close(alertId) {
+        if (this._inflight.has(alertId)) return;
+        this._inflight.add(alertId);
         try {
             await ApiClient.alerts.close(alertId);
             ToastManager.show('Alert closed', 'success');
             this.load();
         } catch (error) {
             ToastManager.show('Failed to close alert', 'error');
+        } finally {
+            this._inflight.delete(alertId);
         }
     },
 

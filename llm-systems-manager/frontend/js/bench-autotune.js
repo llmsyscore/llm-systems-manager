@@ -614,6 +614,11 @@ async function runBenchmark() {
   const switches = _benchSwitches.filter(s => (s.flag || '').trim());
   if (!modelIds.length) { alert('Select at least one model.'); return; }
 
+  // Guard re-entry and disable the run button.
+  const runBtn = document.getElementById('benchRunBtn');
+  if (runBtn.disabled) return;
+  runBtn.disabled = true;
+
   // llama-bench spawns its own llama.cpp instance and will fail if the
   // configured port is already bound. If a model is loaded or the server
   // is running, offer to unload/stop first using the same endpoints as the
@@ -642,7 +647,7 @@ async function runBenchmark() {
         confirmLabel: 'Continue',
         cancelLabel:  'Cancel',
       });
-      if (!ok) return;
+      if (!ok) { runBtn.disabled = false; return; }
       if (loadedModel) {
         document.getElementById('benchStatus').textContent = 'unloading model…';
         _benchSetState('running');
@@ -669,7 +674,6 @@ async function runBenchmark() {
     }
   } catch(_) {}
 
-  document.getElementById('benchRunBtn').disabled = true;
   document.getElementById('benchStatus').textContent = 'perf mode…';
   _benchSetState('running');
   await _benchSetPerfMode('performance');
