@@ -84,6 +84,21 @@ def test_v1_alerts_db_gains_incident_id(tmp_path):
         db.close()
 
 
+def test_v1_alerts_db_gains_ignored_until(tmp_path):
+    p = tmp_path / "ae_alarms.db"
+    _make_v1(p)
+    db = AeAlarmsDB.open(p)
+    try:
+        cols = {r[1] for r in db._conn.execute("PRAGMA table_info(alerts)")}
+        assert "ignored_until" in cols
+        hist = {r[1] for r in db._conn.execute("PRAGMA table_info(alert_history)")}
+        assert "ignored_until" in hist
+        old = db.get_alert("old-1")
+        assert old is not None and old["ignored_until"] is None
+    finally:
+        db.close()
+
+
 def test_migration_is_idempotent(tmp_path):
     p = tmp_path / "ae_alarms.db"
     _make_v1(p)

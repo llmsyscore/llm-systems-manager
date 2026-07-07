@@ -47,6 +47,15 @@ class FakeAlertRepository:
         return [a for a in self._alerts.values()
                 if a.status in (AlertStatus.ACTIVE, AlertStatus.ACKNOWLEDGED)]
 
+    def is_rule_ignored(self, rule_id) -> bool:
+        return False
+
+    def set_rule_ignored(self, rule_id, until) -> None:
+        pass
+
+    def clear_rule_ignored(self, rule_id) -> None:
+        pass
+
     def get_by_id(self, alert_id: UUID) -> Optional[Alert]:
         return self._alerts.get(alert_id)
 

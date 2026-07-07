@@ -68,6 +68,7 @@ class AlertUpdate(BaseModel):
     new_threshold: Optional[float] = None
     resolution_reason: Optional[str] = None
     resolved_value: Optional[float] = None
+    ignored_until: Optional[datetime] = None
 
 
 class AlertFilter(BaseModel):
@@ -114,6 +115,9 @@ class Alert(BaseModel):
     # resolved_value: the metric value observed at the moment of resolution
     # so the UI can show "cleared at 72.3%".
     resolved_value: Optional[float] = None
+    # ignored_until: while set to a future time the rule is suppressed —
+    # no new alert is created or dispatched until the window expires (#247).
+    ignored_until: Optional[datetime] = None
 
     def to_dict(self) -> dict:
         """Convert to plain dictionary for InfluxDB storage."""
@@ -140,6 +144,7 @@ class Alert(BaseModel):
             "incident_id": self.incident_id,
             "resolution_reason": self.resolution_reason,
             "resolved_value": self.resolved_value,
+            "ignored_until": self.ignored_until.isoformat() if self.ignored_until else None,
         }
 
     @property

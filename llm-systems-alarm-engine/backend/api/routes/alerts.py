@@ -231,13 +231,13 @@ async def ignore_alert(
     alert_mgr: AlertManager = Depends(get_alert_mgr),
 ) -> dict:
     """Temporarily ignore an alert for a specified duration."""
-    result = alert_mgr.ignore_alert(alert_id)
+    result = alert_mgr.ignore_alert(alert_id, duration_hours)
     if not result:
         raise HTTPException(status_code=404, detail=f"Alert {alert_id} not found")
     return {
         "status": "ok",
         "message": f"Alert {alert_id} ignored for {duration_hours} hours",
-        "ignored_until": None,
+        "ignored_until": result.ignored_until.isoformat() if result.ignored_until else None,
     }
 
 

@@ -4,7 +4,7 @@ import json
 import logging
 import time
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from .._best_effort import best_effort
 from .._time import now_utc
 from typing import Any, Optional
@@ -315,10 +315,57 @@ class AlertRepository:
         self._active_cache: Optional[list[Alert]] = None
         self._active_cache_ts: float = 0.0
         self._active_cache_ttl: float = float(settings.alarm_engine.caches.alert_repo_ttl_s)
+        # rule_id (str) -> ignore-window expiry, hydrated from the persisted
+        # ignored_until column (#247).
+        self._ignored_until: dict[str, datetime] = self._load_ignores()
 
     def _invalidate_active_cache(self) -> None:
         self._active_cache = None
         self._active_cache_ts = 0.0
+
+    def _load_ignores(self) -> dict[str, datetime]:
+        m: dict[str, datetime] = {}
+        if self.alarms_db is not None:
+            try:
+                for rid, iu in self.alarms_db.get_active_ignores(now_utc().isoformat()):
+                    try:
+                        dt = datetime.fromisoformat(iu) if iu else None
+                    except (ValueError, TypeError):
+                        dt = None
+                    if rid and dt is not None:
+                        m[str(rid)] = dt
+            except Exception as e:
+                logger.warning("failed to hydrate ignore windows: %s", e)
+        return m
+
+    def set_rule_ignored(self, rule_id: Optional[str], until: datetime) -> None:
+        """Record an ignore window for a rule (no-op for rule-less alerts)."""
+        if rule_id:
+            self._ignored_until[str(rule_id)] = until
+
+    def clear_rule_ignored(self, rule_id: Optional[str]) -> None:
+        """Lift a rule's ignore window, in memory and on disk (#247)."""
+        if not rule_id:
+            return
+        self._ignored_until.pop(str(rule_id), None)
+        if self.alarms_db is not None:
+            try:
+                self.alarms_db.clear_ignored_until(str(rule_id))
+            except Exception as e:
+                logger.warning("failed to clear ignore window for %s: %s", rule_id, e)
+
+    def is_rule_ignored(self, rule_id: Optional[str]) -> bool:
+        """True while the rule's ignore window is still open; expired windows
+        are dropped on read."""
+        if not rule_id:
+            return False
+        until = self._ignored_until.get(str(rule_id))
+        if until is None:
+            return False
+        if until <= now_utc():
+            self._ignored_until.pop(str(rule_id), None)
+            return False
+        return True
 
     def create(self, alert_create: AlertCreate) -> Alert:
         alert = alert_create.to_alert()
@@ -511,11 +558,18 @@ class AlertRepository:
     async def ignore_all_alerts(self, duration_hours: int) -> int:
         if self.alarms_db is None:
             return 0
+        now = now_utc()
+        until = now + timedelta(hours=duration_hours)
+        # Capture the rules being ignored before the bulk update archives them.
+        affected = {str(a.rule_id) for a in self.get_active() if a.rule_id}
         n = self.alarms_db.bulk_update_status(
             from_statuses=(AlertStatus.ACTIVE.value, AlertStatus.ACKNOWLEDGED.value),
             to_status=AlertStatus.IGNORED.value,
-            acknowledged_at=now_utc().isoformat(),
+            acknowledged_at=now.isoformat(),
+            ignored_until=until.isoformat(),
         )
+        for rid in affected:
+            self.set_rule_ignored(rid, until)
         self._invalidate_active_cache()
         return n
 
@@ -575,6 +629,7 @@ class AlertRepository:
                 if data.get("resolved_value") not in (None, "")
                 else None
             ),
+            ignored_until=_parse_dt(data.get("ignored_until")),
         )
 
 
