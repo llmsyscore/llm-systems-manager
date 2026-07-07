@@ -9,6 +9,7 @@ Responsibilities:
 
 import asyncio
 import logging
+from datetime import timedelta
 from typing import Optional
 import uuid
 
@@ -107,6 +108,13 @@ class AlertManager:
 
         Returns the created Alert, or None if deduplicated.
         """
+        # Suppress while the rule sits in an operator ignore window (#247).
+        if alert_create.rule_id and self.alert_repository.is_rule_ignored(
+            str(alert_create.rule_id)
+        ):
+            logger.debug("Suppressed alert for ignored rule %s", alert_create.rule_id)
+            return None
+
         # Check for existing active alert on the same rule
         existing = self.alert_repository.get_active()
         matching = [
@@ -173,6 +181,10 @@ class AlertManager:
         update = AlertUpdate(status=AlertStatus.ACKNOWLEDGED)
         result = self.alert_repository.update(uid, update)
         if result:
+            # Handling the alert directly lifts any ignore window on its rule.
+            self.alert_repository.clear_rule_ignored(
+                str(alert.rule_id) if alert.rule_id else None
+            )
             self._emit_ws_event("alert_acknowledged", result)
         logger.info(
             "ALERT ACKNOWLEDGED: id=%s rule=%s host=%s",
@@ -208,6 +220,9 @@ class AlertManager:
         )
         result = self.alert_repository.update(uid, update)
         if result:
+            self.alert_repository.clear_rule_ignored(
+                str(alert.rule_id) if alert.rule_id else None
+            )
             self._emit_ws_event("alert_closed", result)
         logger.info(
             "ALERT CLOSED: id=%s rule=%s host=%s reason=%s value=%s",
@@ -225,12 +240,16 @@ class AlertManager:
             logger.warning(f"Invalid alert ID: {alert_id}")
             return False
 
+        existing = self.alert_repository.get_by_id(uid)
         result = self.alert_repository.delete(uid)
+        if result and existing is not None and existing.rule_id:
+            self.alert_repository.clear_rule_ignored(str(existing.rule_id))
         logger.info(f"Alert deleted: {alert_id}")
         return result
 
-    def ignore_alert(self, alert_id: str) -> Optional[Alert]:
-        """Ignore an alert (mark as ignored)."""
+    def ignore_alert(self, alert_id: str, duration_hours: int = 24) -> Optional[Alert]:
+        """Ignore an alert for duration_hours, suppressing its rule until the
+        window expires (#247)."""
         try:
             uid = uuid.UUID(alert_id)
         except ValueError:
@@ -242,11 +261,15 @@ class AlertManager:
             logger.warning(f"Alert not found: {alert_id}")
             return None
 
-        update = AlertUpdate(status=AlertStatus.IGNORED)
+        until = now_utc() + timedelta(hours=duration_hours)
+        update = AlertUpdate(status=AlertStatus.IGNORED, ignored_until=until)
         result = self.alert_repository.update(uid, update)
         if result:
+            self.alert_repository.set_rule_ignored(
+                str(alert.rule_id) if alert.rule_id else None, until
+            )
             self._emit_ws_event("alert_ignored", result)
-        logger.info(f"Alert ignored: {alert_id}")
+        logger.info("Alert ignored: %s until %s", alert_id, until.isoformat())
         return result
 
     def mark_as_read(self, alert_id: str) -> Optional[Alert]:

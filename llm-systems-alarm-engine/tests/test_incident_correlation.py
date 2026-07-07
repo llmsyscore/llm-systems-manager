@@ -16,6 +16,15 @@ class FakeAlertRepo:
     def get_active(self):
         return list(self._active)
 
+    def is_rule_ignored(self, rule_id) -> bool:
+        return False
+
+    def set_rule_ignored(self, rule_id, until) -> None:
+        pass
+
+    def clear_rule_ignored(self, rule_id) -> None:
+        pass
+
     def create(self, ac):
         alert = ac.to_alert()
         self.created.append(alert)

@@ -47,7 +47,8 @@ _ALERT_COLUMNS = (
     "incident_id, current_value, threshold_value, severity, status, message, "
     "trigger_count, acknowledged_by, exception_details, resolution_reason, "
     "resolved_value, notification_channel_ids_json, created_at, "
-    "last_evaluated_at, acknowledged_at, closed_at, chart_window_start, chart_window_end"
+    "last_evaluated_at, acknowledged_at, closed_at, chart_window_start, "
+    "chart_window_end, ignored_until"
 )
 
 # alert_history: identical column set to alerts, PK alert_id (#220).
@@ -76,7 +77,8 @@ CREATE TABLE IF NOT EXISTS alert_history (
   acknowledged_at TEXT,
   closed_at TEXT,
   chart_window_start TEXT,
-  chart_window_end TEXT
+  chart_window_end TEXT,
+  ignored_until TEXT
 );
 CREATE INDEX IF NOT EXISTS alert_history_created_idx ON alert_history(created_at DESC);
 CREATE INDEX IF NOT EXISTS alert_history_status_idx ON alert_history(status);
@@ -115,7 +117,8 @@ CREATE TABLE IF NOT EXISTS alerts (
   -- feature. NULL → callers compute defaults from created_at / closed_at
   -- with a sensible buffer.
   chart_window_start TEXT,
-  chart_window_end TEXT
+  chart_window_end TEXT,
+  ignored_until TEXT
 );
 CREATE INDEX IF NOT EXISTS alerts_status_idx ON alerts(status);
 CREATE INDEX IF NOT EXISTS alerts_rule_id_idx ON alerts(rule_id);
@@ -129,6 +132,13 @@ def _migrate(conn: sqlite3.Connection) -> None:
     if "incident_id" not in cols:
         conn.execute("ALTER TABLE alerts ADD COLUMN incident_id TEXT")
         logger.info("ae_alarms.db migrated: alerts.incident_id added")
+    # #247: ignore-window timestamp on both alerts and alert_history.
+    if "ignored_until" not in cols:
+        conn.execute("ALTER TABLE alerts ADD COLUMN ignored_until TEXT")
+        logger.info("ae_alarms.db migrated: alerts.ignored_until added")
+    hist_cols = {r[1] for r in conn.execute("PRAGMA table_info(alert_history)")}
+    if "ignored_until" not in hist_cols:
+        conn.execute("ALTER TABLE alert_history ADD COLUMN ignored_until TEXT")
     conn.execute("CREATE INDEX IF NOT EXISTS alerts_incident_idx ON alerts(incident_id)")
     conn.execute("INSERT OR IGNORE INTO schema_version VALUES (2)")
 
@@ -142,6 +152,7 @@ def _migrate(conn: sqlite3.Connection) -> None:
         )
         conn.execute(f"DELETE FROM alerts WHERE status IN {_NON_LIVE_STATUS_SQL_LIST}")
         conn.execute("INSERT OR IGNORE INTO schema_version VALUES (3)")
+        conn.execute("INSERT OR IGNORE INTO schema_version VALUES (4)")
         conn.execute("COMMIT")
     except Exception:
         conn.execute("ROLLBACK")
@@ -222,6 +233,7 @@ class AeAlarmsDB:
             _to_iso(a.get("closed_at")),
             _to_iso(a.get("chart_window_start")),
             _to_iso(a.get("chart_window_end")),
+            _to_iso(a.get("ignored_until")),
         )
         with self._lock:
             self._conn.execute(
@@ -233,8 +245,8 @@ class AeAlarmsDB:
                   exception_details, resolution_reason, resolved_value,
                   notification_channel_ids_json, created_at,
                   last_evaluated_at, acknowledged_at, closed_at,
-                  chart_window_start, chart_window_end
-                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                  chart_window_start, chart_window_end, ignored_until
+                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                 ON CONFLICT(alert_id) DO UPDATE SET
                   rule_name=excluded.rule_name,
                   source_host=excluded.source_host,
@@ -254,7 +266,8 @@ class AeAlarmsDB:
                   acknowledged_at=excluded.acknowledged_at,
                   closed_at=excluded.closed_at,
                   chart_window_start=excluded.chart_window_start,
-                  chart_window_end=excluded.chart_window_end
+                  chart_window_end=excluded.chart_window_end,
+                  ignored_until=excluded.ignored_until
                 """,
                 cols,
             )
@@ -280,15 +293,28 @@ class AeAlarmsDB:
             )
 
     def purge_history_older_than(self, cutoff_iso: str) -> int:
-        """Delete alert_history rows whose effective end time is before
-        cutoff_iso (#220 retention). Returns the number of rows deleted."""
+        """Delete alert_history rows older than cutoff_iso, keeping any row
+        whose ignore window is still open (#220 retention, #247)."""
         with self._lock:
             cur = self._conn.execute(
                 "DELETE FROM alert_history "
-                "WHERE COALESCE(closed_at, acknowledged_at, created_at) < ?",
-                (cutoff_iso,),
+                "WHERE COALESCE(closed_at, acknowledged_at, created_at) < ? "
+                "AND (ignored_until IS NULL OR ignored_until <= ?)",
+                (cutoff_iso, now_utc().isoformat()),
             )
             return cur.rowcount or 0
+
+    def clear_ignored_until(self, rule_id: str) -> None:
+        """NULL ignored_until for a rule across alerts + alert_history (#247)."""
+        with self._lock:
+            self._conn.execute(
+                "UPDATE alerts SET ignored_until = NULL WHERE rule_id = ?",
+                (str(rule_id),),
+            )
+            self._conn.execute(
+                "UPDATE alert_history SET ignored_until = NULL WHERE rule_id = ?",
+                (str(rule_id),),
+            )
 
     def delete_alert(self, alert_id: str) -> bool:
         """Delete from both alerts and alert_history (#220) — a row lives
@@ -419,6 +445,7 @@ class AeAlarmsDB:
         to_status: str,
         closed_at: Optional[str] = None,
         acknowledged_at: Optional[str] = None,
+        ignored_until: Optional[str] = None,
     ) -> int:
         """One UPDATE for close-all / ignore-all instead of N round-trips."""
         to_status_value = _enum_value(to_status)
@@ -430,6 +457,9 @@ class AeAlarmsDB:
         if acknowledged_at is not None:
             sets.append("acknowledged_at = ?")
             args.append(acknowledged_at)
+        if ignored_until is not None:
+            sets.append("ignored_until = ?")
+            args.append(ignored_until)
         in_list = "({})".format(", ".join("?" * len(from_statuses)))
         sql = f"UPDATE alerts SET {', '.join(sets)} WHERE status IN {in_list}"
         args.extend(_enum_value(s) for s in from_statuses)
@@ -440,6 +470,22 @@ class AeAlarmsDB:
             if to_status_value in _NON_LIVE_STATUSES:
                 self._archive_non_live()
             return n
+
+    def get_active_ignores(self, now_iso: str) -> list[tuple[str, str]]:
+        """(rule_id, latest ignored_until) for rules whose window is still open,
+        across alerts + alert_history (#247)."""
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT rule_id, MAX(ignored_until) AS iu FROM ("
+                "SELECT rule_id, ignored_until FROM alerts "
+                "WHERE rule_id IS NOT NULL AND ignored_until IS NOT NULL "
+                "UNION ALL "
+                "SELECT rule_id, ignored_until FROM alert_history "
+                "WHERE rule_id IS NOT NULL AND ignored_until IS NOT NULL"
+                ") WHERE ignored_until > ? GROUP BY rule_id",
+                (now_iso,),
+            ).fetchall()
+        return [(r["rule_id"], r["iu"]) for r in rows]
 
     @staticmethod
     def _row_to_alert(r: sqlite3.Row) -> dict[str, Any]:
@@ -468,4 +514,5 @@ class AeAlarmsDB:
             "closed_at": r["closed_at"],
             "chart_window_start": r["chart_window_start"],
             "chart_window_end": r["chart_window_end"],
+            "ignored_until": r["ignored_until"],
         }
