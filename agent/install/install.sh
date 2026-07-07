@@ -1099,27 +1099,21 @@ if $DO_UPDATE; then
   done
   for _pkg in collectors providers; do
     [[ -d "$SRC_DIR/$_pkg" ]] || { echo "ERROR: $SRC_DIR/$_pkg missing — refusing to wipe $INSTALL_DIR/$_pkg" >&2; exit 1; }
+    # Stage into .new, then rename-swap over the live dir.
+    $SUDO rm -rf "$INSTALL_DIR/$_pkg.new"
+    $SUDO cp -r "$SRC_DIR/$_pkg" "$INSTALL_DIR/$_pkg.new"
+    $SUDO chown -R "$USER_ARG:$USER_GROUP" "$INSTALL_DIR/$_pkg.new"
     $SUDO rm -rf "$INSTALL_DIR/$_pkg"
-    $SUDO cp -r "$SRC_DIR/$_pkg" "$INSTALL_DIR/$_pkg"
-    $SUDO chown -R "$USER_ARG:$USER_GROUP" "$INSTALL_DIR/$_pkg"
+    $SUDO mv "$INSTALL_DIR/$_pkg.new" "$INSTALL_DIR/$_pkg"
   done
-  $SUDO cp "$SRC_DIR/llm-systems-agent.py"        "$INSTALL_DIR/llm-systems-agent.py"
-  $SUDO cp "$SRC_DIR/buffered_metric_client.py"   "$INSTALL_DIR/buffered_metric_client.py"
-  $SUDO cp "$SRC_DIR/_utils.py"                   "$INSTALL_DIR/_utils.py"
-  $SUDO cp "$SRC_DIR/_best_effort.py"             "$INSTALL_DIR/_best_effort.py"
-  $SUDO cp "$SRC_DIR/_bench_replay.py"            "$INSTALL_DIR/_bench_replay.py"
-  $SUDO cp "$SRC_DIR/agent_context.py"            "$INSTALL_DIR/agent_context.py"
-  $SUDO cp "$SRC_DIR/stream_pool.py"              "$INSTALL_DIR/stream_pool.py"
-  $SUDO cp "$SRC_DIR/unified_config_reader.py"    "$INSTALL_DIR/unified_config_reader.py"
-  $SUDO chown "$USER_ARG:$USER_GROUP" \
-    "$INSTALL_DIR/llm-systems-agent.py" \
-    "$INSTALL_DIR/buffered_metric_client.py" \
-    "$INSTALL_DIR/_utils.py" \
-    "$INSTALL_DIR/_best_effort.py" \
-    "$INSTALL_DIR/_bench_replay.py" \
-    "$INSTALL_DIR/agent_context.py" \
-    "$INSTALL_DIR/stream_pool.py" \
-    "$INSTALL_DIR/unified_config_reader.py"
+  # Same stage-then-rename swap for the top-level .py files.
+  for _f in llm-systems-agent.py buffered_metric_client.py _utils.py \
+            _best_effort.py _bench_replay.py agent_context.py \
+            stream_pool.py unified_config_reader.py; do
+    $SUDO cp "$SRC_DIR/$_f" "$INSTALL_DIR/$_f.new"
+    $SUDO chown "$USER_ARG:$USER_GROUP" "$INSTALL_DIR/$_f.new"
+    $SUDO mv "$INSTALL_DIR/$_f.new" "$INSTALL_DIR/$_f"
+  done
   _ok "agent code refreshed"
 
   # 2. Refresh venv against current requirements (no-op if already satisfied)

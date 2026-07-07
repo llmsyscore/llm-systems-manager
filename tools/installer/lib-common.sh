@@ -564,11 +564,9 @@ sanitize_url() {
   printf '%s://%s:%s%s' "$scheme" "$host" "$default_port" "$path"
 }
 
-# Transient token-handoff between install-influxdb.sh / resolve-influxdb.sh
-# and install-config-bootstrap.sh. install.sh sets this to a mktemp path
-# with a trap that unlinks on exit; ad-hoc re-runs of the sub-scripts fall
-# back to a stable /tmp name so they still produce something consumable.
-: "${LLMSYS_INFLUXDB_TOKEN_FILE:=/tmp/llmsys-influxdb-tokens.env}"
+# Token-handoff file consumed by install-config-bootstrap.sh. install.sh
+# sets a trap-unlinked mktemp path; ad-hoc sub-script runs use this default.
+: "${LLMSYS_INFLUXDB_TOKEN_FILE:=${LLMSYS_INSTALL_DIR}/data/influxdb.env}"
 export LLMSYS_INFLUXDB_TOKEN_FILE
 
 
@@ -588,17 +586,52 @@ url_port() {
 # one place. Arguments: PATH URL ORG OP_TOKEN METRICS_TOKEN ROLLUP_TOKEN.
 write_influx_token_file() {
   local path="$1" url="$2" org="$3" op="$4" metrics="$5" rollup="$6"
-  install -m 0600 /dev/null "$path"
-  # Values are %q-quoted for the bash `source` in install-config-bootstrap.sh.
-  {
-    printf '# Transient — consumed by install-config-bootstrap.sh, unlinked by\n'
-    printf '# install.sh on exit. Do not edit by hand.\n'
-    printf 'INFLUX_HOST=%q\n' "$url"
-    printf 'INFLUX_ORG=%q\n' "$org"
-    printf 'INFLUX_OPERATOR_TOKEN=%q\n' "$op"
-    printf 'INFLUX_METRICS_TOKEN=%q\n' "$metrics"
-    printf 'INFLUX_METRICS_ROLLUP_TOKEN=%q\n' "$rollup"
-  } > "$path"
+  local v dir
+  for v in "$url" "$org" "$op" "$metrics" "$rollup"; do
+    case "$v" in *$'\n'*) die "refusing to write $path: value contains a newline" ;; esac
+  done
+  dir="$(dirname "$path")"
+  # Literal KEY=value lines, consumed by read_influx_token_file.
+  local body
+  body="$(
+    printf '# InfluxDB token handoff — parsed by read_influx_token_file (strict\n'
+    printf '# KEY=value, never executed). Do not edit by hand.\n'
+    printf 'INFLUX_HOST=%s\n' "$url"
+    printf 'INFLUX_ORG=%s\n' "$org"
+    printf 'INFLUX_OPERATOR_TOKEN=%s\n' "$op"
+    printf 'INFLUX_METRICS_TOKEN=%s\n' "$metrics"
+    printf 'INFLUX_METRICS_ROLLUP_TOKEN=%s\n' "$rollup"
+  )"
+  if [[ -w "$dir" && ( ! -e "$path" || -w "$path" ) ]]; then
+    install -m 0600 /dev/null "$path"
+    printf '%s\n' "$body" > "$path"
+  else
+    if [[ ! -d "$dir" ]]; then
+      $SUDO install -d -m 0755 "$dir"
+      # data/ is also the manager's runtime dir; own it as the run user.
+      id "$LLMSYS_RUN_USER" >/dev/null 2>&1 \
+        && $SUDO chown "$LLMSYS_RUN_USER:$LLMSYS_RUN_GROUP" "$dir"
+    fi
+    $SUDO install -m 0600 /dev/null "$path"
+    printf '%s\n' "$body" | $SUDO tee "$path" >/dev/null
+  fi
+}
+
+# Strict parser for the handoff file: assigns only the five INFLUX_* keys,
+# taking values as literal text — file contents are never executed.
+read_influx_token_file() {
+  local path="$1" line key
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    line="${line%$'\r'}"
+    case "$line" in ''|'#'*) continue ;; esac
+    key="${line%%=*}"
+    case "$key" in
+      INFLUX_HOST|INFLUX_ORG|INFLUX_OPERATOR_TOKEN|INFLUX_METRICS_TOKEN|INFLUX_METRICS_ROLLUP_TOKEN)
+        printf -v "$key" '%s' "${line#*=}" ;;
+      *)
+        warn "ignoring unexpected line in $path" ;;
+    esac
+  done < <($SUDO cat "$path")
 }
 
 
