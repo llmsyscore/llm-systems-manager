@@ -3,6 +3,7 @@
 import logging
 import threading
 import time
+from bisect import bisect_left
 from collections import OrderedDict
 from datetime import datetime, timezone
 from typing import Any, Optional
@@ -63,9 +64,10 @@ class MetricCache:
             threading.Lock() for _ in range(self._N_SHARDS)
         ]
 
-        # Index structure for metric points: key -> list of MetricPoint
-        self._metric_points: dict[str, list[MetricPoint]] = {}
-        self._point_timestamps: dict[str, list[float]] = {}
+        # Metric points: series key -> hostname ("" for None) -> per-host
+        # point/timestamp lists, each independently TTL'd and capped.
+        self._metric_points: dict[str, dict[str, list[MetricPoint]]] = {}
+        self._point_timestamps: dict[str, dict[str, list[float]]] = {}
         logger.info(
             "MetricCache initialized: metric_ttl=%ss alert_ttl=%ss "
             "max_entries=%d shards=%d",
@@ -104,9 +106,13 @@ class MetricCache:
             self._cache[key] = CacheEntry(value, ttl)
             self._cache.move_to_end(key)
 
-    # Per-series hard cap. Cache TTL is 1h; at 2s cadence that's ~1800 pts/series,
-    # so 2500 leaves headroom without growing into the prior 10k worst case.
+    # Hard cap per (series, host) sub-buffer. TTL is 1h; at 2s cadence that's
+    # ~1800 pts/host, so 2500 leaves headroom for each host independently.
     _MAX_POINTS_PER_SERIES = 2500
+
+    # Hard cap on distinct host sub-buffers per series; the stalest host is
+    # evicted when a new one would exceed it. Bounds hostname cardinality.
+    _MAX_HOSTS_PER_SERIES = 32
 
     def add_metric_point(self, point: MetricPoint) -> None:
         """Add a single metric point — convenience wrapper around the bulk
@@ -118,8 +124,8 @@ class MetricCache:
     def add_metric_points(self, batch: list[MetricPoint]) -> None:
         """Add a batch of metric points to the cache.
 
-        Groups by (source, metric_name) outside any lock, then takes the
-        per-shard lock only for the series owned by that shard. With 16
+        Groups by (source, metric_name) and hostname outside any lock, then
+        takes the per-shard lock only for the series owned by that shard. With 16
         shards, ingest batches that touch one subset of series no longer
         block reads of disjoint series — the cache lock used to serialize
         every reader and writer onto a single mutex.
@@ -127,18 +133,20 @@ class MetricCache:
         if not batch:
             return
 
-        # Group by key in one pass. The lock-held section becomes pure
-        # list manipulation per series.
-        grouped: dict[str, tuple[list[MetricPoint], list[float]]] = {}
+        # Group by (series key, host) in one pass. The lock-held section
+        # becomes pure list manipulation per sub-buffer.
+        grouped: dict[str, dict[str, tuple[list[MetricPoint], list[float]]]] = {}
         for p in batch:
             key = f"{p.source}:{p.metric_name}"
+            host = p.hostname or ""
             ts = p.timestamp
             if ts.tzinfo is None:
                 ts = ts.replace(tzinfo=timezone.utc)
             ts_float = ts.timestamp()
-            slot = grouped.get(key)
+            hosts = grouped.setdefault(key, {})
+            slot = hosts.get(host)
             if slot is None:
-                grouped[key] = ([p], [ts_float])
+                hosts[host] = ([p], [ts_float])
             else:
                 slot[0].append(p)
                 slot[1].append(ts_float)
@@ -156,42 +164,53 @@ class MetricCache:
             lock = self._metric_locks[shard_idx]
             with lock:
                 for key in keys:
-                    new_pts, new_ts = grouped[key]
-                    if key not in self._metric_points:
-                        self._metric_points[key] = []
-                        self._point_timestamps[key] = []
-                    points = self._metric_points[key]
-                    timestamps = self._point_timestamps[key]
+                    series = self._metric_points.setdefault(key, {})
+                    series_ts = self._point_timestamps.setdefault(key, {})
+                    for host, (new_pts, new_ts) in grouped[key].items():
+                        if (host not in series
+                                and len(series) >= self._MAX_HOSTS_PER_SERIES):
+                            stalest = min(
+                                series_ts,
+                                key=lambda h: series_ts[h][-1] if series_ts[h] else 0.0,
+                            )
+                            series.pop(stalest, None)
+                            series_ts.pop(stalest, None)
+                            logger.warning(
+                                "metric-cache: series %s exceeded %d hosts — "
+                                "evicted stalest host %r",
+                                key, self._MAX_HOSTS_PER_SERIES, stalest,
+                            )
+                        points = series.setdefault(host, [])
+                        timestamps = series_ts.setdefault(host, [])
 
-                    # TTL eviction (timestamps assumed monotonic per series).
-                    if timestamps and timestamps[0] < cutoff:
-                        drop = 0
-                        for t in timestamps:
-                            if t >= cutoff:
-                                break
-                            drop += 1
-                        if drop:
-                            del points[:drop]
-                            del timestamps[:drop]
-
-                    # Hard cap. Drop oldest existing points first; if a
-                    # single fat batch is still over the cap, trim from
-                    # the front of the incoming batch too.
-                    projected = len(points) + len(new_pts)
-                    if projected > self._MAX_POINTS_PER_SERIES:
-                        excess = projected - self._MAX_POINTS_PER_SERIES
-                        if points:
-                            drop = min(excess, len(points))
+                        # TTL eviction (timestamps assumed monotonic per host).
+                        if timestamps and timestamps[0] < cutoff:
+                            drop = 0
+                            for t in timestamps:
+                                if t >= cutoff:
+                                    break
+                                drop += 1
                             if drop:
                                 del points[:drop]
                                 del timestamps[:drop]
-                                excess -= drop
-                        if excess > 0:
-                            new_pts = new_pts[excess:]
-                            new_ts = new_ts[excess:]
 
-                    points.extend(new_pts)
-                    timestamps.extend(new_ts)
+                        # Hard cap per host sub-buffer. Drop oldest existing
+                        # points first, then trim the incoming batch front.
+                        projected = len(points) + len(new_pts)
+                        if projected > self._MAX_POINTS_PER_SERIES:
+                            excess = projected - self._MAX_POINTS_PER_SERIES
+                            if points:
+                                drop = min(excess, len(points))
+                                if drop:
+                                    del points[:drop]
+                                    del timestamps[:drop]
+                                    excess -= drop
+                            if excess > 0:
+                                new_pts = new_pts[excess:]
+                                new_ts = new_ts[excess:]
+
+                        points.extend(new_pts)
+                        timestamps.extend(new_ts)
 
     def get_metric_points(
         self,
@@ -209,29 +228,47 @@ class MetricCache:
         configured `source_host`.
         """
         key = f"{source}:{metric_name}"
-        # Per-shard lock — readers of disjoint series no longer contend.
-        with self._metric_locks[hash(key) % self._N_SHARDS]:
-            points = self._metric_points.get(key, [])
-            timestamps = self._point_timestamps.get(key, [])
-            # Copy the slice references out so the filtering below runs
-            # without holding the shard lock open across a list comp.
-            points = list(points)
-            timestamps = list(timestamps)
-
+        # If caller passed a naive datetime, treat it as UTC.
+        # `.timestamp()` on a naive value uses LOCAL time, which
+        # silently shifts the cutoff by the local UTC offset and
+        # filters out points that are actually within the window.
+        since_ts: Optional[float] = None
         if since:
-            # If caller passed a naive datetime, treat it as UTC.
-            # `.timestamp()` on a naive value uses LOCAL time, which
-            # silently shifts the cutoff by the local UTC offset and
-            # filters out points that are actually within the window.
             if since.tzinfo is None:
                 since = since.replace(tzinfo=timezone.utc)
             since_ts = since.timestamp()
-            points = [p for p, ts in zip(points, timestamps) if ts >= since_ts]
 
-        if hostname:
-            points = [p for p in points if p.hostname == hostname]
+        # Per-shard lock — copy the requested window out, trimmed per host
+        # via bisect (per-host lists are time-ordered), then merge outside.
+        with self._metric_locks[hash(key) % self._N_SHARDS]:
+            by_host = self._metric_points.get(key) or {}
+            ts_by_host = self._point_timestamps.get(key) or {}
+            hosts = [hostname] if hostname else list(by_host)
 
-        return points[-limit:]
+            # Newest-point fast path (get_latest): tails are per-host newest.
+            if limit == 1 and since_ts is None and len(hosts) > 1:
+                best: Optional[MetricPoint] = None
+                best_ts = float("-inf")
+                for h in hosts:
+                    ts_list = ts_by_host.get(h)
+                    if ts_list and ts_list[-1] > best_ts:
+                        best_ts = ts_list[-1]
+                        best = by_host[h][-1]
+                return [best] if best is not None else []
+
+            pairs: list[tuple[float, MetricPoint]] = []
+            for h in hosts:
+                plist = by_host.get(h) or []
+                ts_list = ts_by_host.get(h) or []
+                if since_ts is not None:
+                    i = bisect_left(ts_list, since_ts)
+                    plist = plist[i:]
+                    ts_list = ts_list[i:]
+                pairs.extend(zip(ts_list, plist))
+
+        if len(hosts) > 1:
+            pairs.sort(key=lambda x: x[0])
+        return [p for _, p in pairs[-limit:]]
 
     def get_metric_summary(
         self,
@@ -242,44 +279,52 @@ class MetricCache:
         """Compute summary statistics from cached metric points."""
         key = f"{source}:{metric_name}"
         cutoff_ts = time.time() - window_minutes * 60
-        # Per-shard lock — same justification as get_metric_points.
+        # Per-shard lock — copy the in-window slice of every host out
+        # (bisect on the time-ordered per-host lists), merge outside.
         with self._metric_locks[hash(key) % self._N_SHARDS]:
-            points = self._metric_points.get(key, [])
-            if not points:
+            by_host = self._metric_points.get(key) or {}
+            if not by_host:
                 return None
-            timestamps = self._point_timestamps.get(key, [])
-            recent = [p for p, ts in zip(points, timestamps) if ts >= cutoff_ts]
+            ts_by_host = self._point_timestamps.get(key) or {}
+            pairs: list[tuple[float, MetricPoint]] = []
+            for host, plist in by_host.items():
+                ts_list = ts_by_host.get(host) or []
+                i = bisect_left(ts_list, cutoff_ts)
+                if i < len(ts_list):
+                    pairs.extend(zip(ts_list[i:], plist[i:]))
 
-            if not recent:
-                return None
+        if not pairs:
+            return None
+        pairs.sort(key=lambda x: x[0])
+        recent = [p for _, p in pairs]
 
-            values = [p.value for p in recent]
-            values_sorted = sorted(values)
-            n = len(values_sorted)
+        values = [p.value for p in recent]
+        values_sorted = sorted(values)
+        n = len(values_sorted)
 
-            avg = sum(values) / n
-            variance = sum((v - avg) ** 2 for v in values) / n if n > 1 else 0
-            std_dev = variance ** 0.5
+        avg = sum(values) / n
+        variance = sum((v - avg) ** 2 for v in values) / n if n > 1 else 0
+        std_dev = variance ** 0.5
 
-            def percentile(pct: float) -> float:
-                idx = int(pct / 100 * (n - 1))
-                return values_sorted[min(idx, n - 1)]
+        def percentile(pct: float) -> float:
+            idx = int(pct / 100 * (n - 1))
+            return values_sorted[min(idx, n - 1)]
 
-            return MetricSummary(
-                source=source,
-                metric_name=metric_name,
-                unit=recent[-1].unit if recent else None,
-                current_value=recent[-1].value,
-                min_value=min(values),
-                max_value=max(values),
-                avg_value=round(avg, 4),
-                std_dev=round(std_dev, 4),
-                p90=round(percentile(90), 4),
-                p95=round(percentile(95), 4),
-                p99=round(percentile(99), 4),
-                data_points=n,
-                last_updated=recent[-1].timestamp,
-            )
+        return MetricSummary(
+            source=source,
+            metric_name=metric_name,
+            unit=recent[-1].unit,
+            current_value=recent[-1].value,
+            min_value=min(values),
+            max_value=max(values),
+            avg_value=round(avg, 4),
+            std_dev=round(std_dev, 4),
+            p90=round(percentile(90), 4),
+            p95=round(percentile(95), 4),
+            p99=round(percentile(99), 4),
+            data_points=n,
+            last_updated=recent[-1].timestamp,
+        )
 
     def delete(self, key: str) -> bool:
         """Remove a cached entry."""
@@ -333,8 +378,16 @@ class MetricCache:
                 for key in list(self._metric_points.keys()):
                     if hash(key) % self._N_SHARDS != shard_idx:
                         continue
-                    ts_list = self._point_timestamps.get(key) or []
-                    if not ts_list or ts_list[-1] < cutoff:
+                    by_host = self._metric_points.get(key) or {}
+                    ts_by_host = self._point_timestamps.get(key) or {}
+                    dead = [
+                        host for host, ts_list in ts_by_host.items()
+                        if not ts_list or ts_list[-1] < cutoff
+                    ]
+                    for host in dead:
+                        by_host.pop(host, None)
+                        ts_by_host.pop(host, None)
+                    if not by_host:
                         self._metric_points.pop(key, None)
                         self._point_timestamps.pop(key, None)
                         removed += 1

@@ -129,23 +129,50 @@ class BufferStore:
         except OSError:
             self._disk_bytes = 0
         self._evicted_total = 0
+        # True while a snapshot() claim is outstanding; spills are deferred
+        # until commit()/abort(). _claimed_mem = deque-front items claimed.
+        self._claim_open = False
+        self._claimed_mem = 0
+
+    @property
+    def claim_open(self) -> bool:
+        return self._claim_open
 
     def enqueue(self, sample: dict[str, Any]) -> tuple[int, bool, int]:
         """Append a sample. Returns (spilled_count, was_first_spill_event, evicted_count)."""
         self._memory.append(sample)
+        if self._claim_open:
+            # Emergency valve at 2x the bound; normal spills wait for the
+            # claim to close. The claimed deque front stays protected.
+            if len(self._memory) <= self.max_memory_samples * 2:
+                return (0, False, 0)
+            return self._spill_overflow(protect=self._claimed_mem)
+        return self._spill_overflow()
+
+    def _spill_overflow(self, protect: int = 0) -> tuple[int, bool, int]:
+        """Spill the oldest unprotected memory samples to disk when over the bound."""
         if len(self._memory) <= self.max_memory_samples:
             return (0, False, 0)
-        was_first = self._disk_count == 0 and self._offset == 0
         spill_count = len(self._memory) - (self.max_memory_samples // 2)
+        spill_count = min(spill_count, len(self._memory) - protect)
+        if spill_count <= 0:
+            return (0, False, 0)
+        was_first = self._disk_count == 0 and self._offset == 0
+        head = [self._memory.popleft() for _ in range(protect)]
         spilled = [self._memory.popleft() for _ in range(spill_count)]
+        self._memory.extendleft(reversed(head))
         evicted_before = self._evicted_total
         self._append_disk(spilled)
         evicted = self._evicted_total - evicted_before
         return (len(spilled), was_first, evicted)
 
     def snapshot(self, limit: int) -> tuple[list[dict[str, Any]], _Claim]:
-        """Read up to `limit` oldest samples (disk first, then memory) without mutating state."""
-        if limit <= 0:
+        """Read up to `limit` oldest samples (disk first, then memory) without mutating state.
+
+        Opens a claim: until commit()/abort(), spills are deferred so the
+        claimed deque front and the disk byte range cannot shift.
+        """
+        if limit <= 0 or self._claim_open:
             return [], _Claim(0, self._offset, 0)
         out: list[dict[str, Any]] = []
         disk_lines = 0
@@ -177,10 +204,16 @@ class BufferStore:
             mem_consumed = min(need, len(self._memory))
             for i in range(mem_consumed):
                 out.append(self._memory[i])
+        if out:
+            self._claim_open = True
+            self._claimed_mem = mem_consumed
         return out, _Claim(disk_lines, new_offset, mem_consumed)
 
-    def commit(self, claim: _Claim) -> None:
-        """Advance state after a successful POST."""
+    def commit(self, claim: _Claim) -> tuple[int, bool, int]:
+        """Advance state after a successful POST; runs the deferred spill.
+
+        Returns the deferred spill's (spilled, was_first, evicted) tuple.
+        """
         if claim.disk_lines:
             self._offset = claim.new_offset
             self._disk_count = max(0, self._disk_count - claim.disk_lines)
@@ -188,10 +221,28 @@ class BufferStore:
             for _ in range(claim.mem):
                 if self._memory:
                     self._memory.popleft()
+        self._claim_open = False
+        self._claimed_mem = 0
         if self._disk_count == 0:
             self._unlink_cache()
         elif self._offset >= _COMPACT_THRESHOLD_BYTES:
             self._compact()
+        result = self._spill_overflow()
+        if self._disk_bytes > self.max_disk_bytes:
+            self._enforce_budget()
+        return result
+
+    def abort(self) -> tuple[int, bool, int]:
+        """Close a claim after a failed POST without consuming anything.
+
+        Returns the deferred spill's (spilled, was_first, evicted) tuple.
+        """
+        self._claim_open = False
+        self._claimed_mem = 0
+        result = self._spill_overflow()
+        if self._disk_bytes > self.max_disk_bytes:
+            self._enforce_budget()
+        return result
 
     def memory_count(self) -> int:
         return len(self._memory)
@@ -226,6 +277,10 @@ class BufferStore:
 
     def _enforce_budget(self) -> int:
         """Drop oldest lines to fit max_disk_bytes. Returns evicted count."""
+        # Deferred while a claim is open: rewriting the file would shift the
+        # claimed byte range. commit()/abort() re-run this once closed.
+        if self._claim_open:
+            return 0
         self._compact()
         try:
             size = self.cache_file.stat().st_size
@@ -441,10 +496,28 @@ class BufferedMetricClient:
             except Exception:
                 logger.exception("flush loop error")
 
+    def _note_deferred_spill(self, spilled: int, evicted: int) -> None:
+        """Record and log a spill that ran when a claim closed."""
+        if not spilled:
+            return
+        self.stats.spilled_to_disk += spilled
+        self.stats.evicted_for_budget += evicted
+        mem, disk = self._store.breakdown()
+        logger.info(
+            "deferred spill on claim close — %d samples to disk "
+            "(memory=%d disk=%d evicted=%d)",
+            spilled, mem, disk, evicted,
+        )
+
     def _flush_once(self) -> None:
         with self._lock:
             batch, claim = self._store.snapshot(self.batch_limit)
             if not batch:
+                if self._store.claim_open:
+                    logger.warning(
+                        "flush skipped — a prior claim is still open "
+                        "(in-flight POST not yet resolved)"
+                    )
                 return
             mem_now, disk_now = self._store.breakdown()
 
@@ -461,50 +534,61 @@ class BufferedMetricClient:
                 headers["Authorization"] = f"Bearer {tok}"
 
         t0 = time.perf_counter()
+        claim_closed = False
         try:
-            resp = self._session.post(
-                self.endpoint_url,
-                json=payload,
-                timeout=self.http_timeout,
-                headers=headers,
-            )
-            resp.raise_for_status()
-        except Exception as exc:
-            self.stats.flush_failures += 1
-            self._consecutive_failures += 1
-            if self._consecutive_failures == 1:
-                logger.warning(
-                    "POST failed — endpoint=%s err=%s (buffered memory=%d disk=%d)",
-                    self.endpoint_url, exc, mem_now, disk_now,
+            try:
+                resp = self._session.post(
+                    self.endpoint_url,
+                    json=payload,
+                    timeout=self.http_timeout,
+                    headers=headers,
                 )
-            elif self._consecutive_failures % 10 == 0:
-                logger.warning(
-                    "POST still failing after %d attempts — endpoint=%s err=%s "
-                    "(buffered memory=%d disk=%d)",
-                    self._consecutive_failures, self.endpoint_url, exc,
-                    mem_now, disk_now,
-                )
-            else:
-                logger.debug(
-                    "POST failed (attempt %d) — %s", self._consecutive_failures, exc,
-                )
-            if self._on_flush_failure:
-                try:
-                    self._on_flush_failure(exc)
-                except Exception:
-                    logger.exception("on_flush_failure callback raised")
-            return
+                resp.raise_for_status()
+            except Exception as exc:
+                self.stats.flush_failures += 1
+                self._consecutive_failures += 1
+                if self._consecutive_failures == 1:
+                    logger.warning(
+                        "POST failed — endpoint=%s err=%s (buffered memory=%d disk=%d)",
+                        self.endpoint_url, exc, mem_now, disk_now,
+                    )
+                elif self._consecutive_failures % 10 == 0:
+                    logger.warning(
+                        "POST still failing after %d attempts — endpoint=%s err=%s "
+                        "(buffered memory=%d disk=%d)",
+                        self._consecutive_failures, self.endpoint_url, exc,
+                        mem_now, disk_now,
+                    )
+                else:
+                    logger.debug(
+                        "POST failed (attempt %d) — %s", self._consecutive_failures, exc,
+                    )
+                if self._on_flush_failure:
+                    try:
+                        self._on_flush_failure(exc)
+                    except Exception:
+                        logger.exception("on_flush_failure callback raised")
+                return
 
-        elapsed_ms = (time.perf_counter() - t0) * 1000.0
-        sent = len(batch)
-        self.stats.flush_successes += 1
-        self.stats.samples_posted += sent
-        prev_failures = self._consecutive_failures
-        self._consecutive_failures = 0
+            elapsed_ms = (time.perf_counter() - t0) * 1000.0
+            sent = len(batch)
+            self.stats.flush_successes += 1
+            self.stats.samples_posted += sent
+            prev_failures = self._consecutive_failures
+            self._consecutive_failures = 0
 
-        with self._lock:
-            self._store.commit(claim)
-            remaining = self._store.total()
+            with self._lock:
+                spilled, _, evicted = self._store.commit(claim)
+                claim_closed = True
+                self._note_deferred_spill(spilled, evicted)
+                remaining = self._store.total()
+        finally:
+            # Any path that didn't commit must close the claim, or spills
+            # stay deferred and future snapshots return empty forever.
+            if not claim_closed:
+                with self._lock:
+                    spilled, _, evicted = self._store.abort()
+                    self._note_deferred_spill(spilled, evicted)
 
         if prev_failures > 0:
             logger.info(
