@@ -18,7 +18,7 @@ def _extract_func(name: str) -> str:
 
 
 def _render(bin_: str, user: str, cfg: str, log: str) -> str:
-    func = _extract_func("_render_llama_unit")
+    func = _extract_func("_subst_tokens") + "\n" + _extract_func("_render_llama_unit")
     script = f'set -euo pipefail\nSRC_DIR={AGENT_DIR}\n{func}\n_render_llama_unit "$1" "$2" "$3" "$4"\n'
     out = subprocess.run(
         ["bash", "-c", script, "bash", bin_, user, cfg, log],

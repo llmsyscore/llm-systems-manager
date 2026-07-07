@@ -630,6 +630,29 @@ _svcconfig_wrapper_version() {
   printf '%s' "${v:-0}"
 }
 
+# _subst_tokens TEMPLATE_FILE TOKEN VALUE [TOKEN VALUE]... — render to stdout.
+# Literal split-and-join (not sed) so & | \ in values can't corrupt output.
+_subst_tokens() {
+  local text token val out
+  text="$(<"$1")"; shift
+  while (( $# >= 2 )); do
+    token="$1"; val="$2"; shift 2
+    out=""
+    while [[ "$text" == *"$token"* ]]; do
+      out+="${text%%"$token"*}$val"
+      text="${text#*"$token"}"
+    done
+    text="$out$text"
+  done
+  printf '%s\n' "$text"
+}
+
+# _install_dir_chars_ok DIR — 0 iff DIR is absolute and free of characters
+# that break the rendered unit/plist/sudoers/YAML (whitespace, quotes, \, &, <, >).
+_install_dir_chars_ok() {
+  [[ "$1" == /* && "$1" != *[[:space:]\"\'\\\&\<\>]* ]]
+}
+
 # _apply_sudoers_and_wrapper
 #   Render + visudo-validate + install the sudoers file and the root-owned
 #   svcconfig helper (Linux, privileged). Called from both fresh install and
@@ -638,8 +661,8 @@ _apply_sudoers_and_wrapper() {
   local unit tmp_sudoers tmp_wrap
   unit="$(_resolved_llama_unit)"
   tmp_sudoers="$(mktemp)"
-  sed "s|\${AGENT_USER}|$USER_ARG|g; s|\${LLAMA_UNIT}|$unit|g" \
-      "$TMPL_DIR/llm-systems-agent.sudoers.tmpl" > "$tmp_sudoers"
+  _subst_tokens "$TMPL_DIR/llm-systems-agent.sudoers.tmpl" \
+      '${AGENT_USER}' "$USER_ARG" '${LLAMA_UNIT}' "$unit" > "$tmp_sudoers"
   if ! $SUDO visudo -c -f "$tmp_sudoers" >/dev/null 2>&1; then
     echo "ERROR: visudo validation failed for $tmp_sudoers — NOT installing sudoers." >&2
     rm -f "$tmp_sudoers"; return 1
@@ -648,8 +671,8 @@ _apply_sudoers_and_wrapper() {
   _ok "sudoers rules installed: /etc/sudoers.d/llm-systems-agent"
   rm -f "$tmp_sudoers"
   tmp_wrap="$(mktemp)"
-  sed "s|__UNIT_PATH__|/etc/systemd/system/$unit|g" \
-      "$TMPL_DIR/llm-svcconfig-apply.sh.tmpl" > "$tmp_wrap"
+  _subst_tokens "$TMPL_DIR/llm-svcconfig-apply.sh.tmpl" \
+      '__UNIT_PATH__' "/etc/systemd/system/$unit" > "$tmp_wrap"
   $SUDO install -d -m 0755 /usr/local/sbin
   $SUDO install -m 0755 -o root -g root "$tmp_wrap" /usr/local/sbin/llm-svcconfig-apply
   _ok "svcconfig helper installed: /usr/local/sbin/llm-svcconfig-apply"
@@ -1460,20 +1483,20 @@ PYEOF
     echo "── Refreshing service definition ───────────────────────────────────────"
     if [[ "$AGENT_OS" == "linux" ]]; then
       UNIT_DEST="/etc/systemd/system/llm-systems-agent.service"
-      sed -e "s|\${AGENT_USER}|$USER_ARG|g" \
-          -e "s|\${AGENT_GROUP}|$USER_GROUP|g" \
-          -e "s|\${AGENT_INSTALL_DIR}|$INSTALL_DIR|g" \
-          "$TMPL_DIR/llm-systems-agent.service.tmpl" | $SUDO tee "$UNIT_DEST" >/dev/null
+      _subst_tokens "$TMPL_DIR/llm-systems-agent.service.tmpl" \
+          '${AGENT_USER}' "$USER_ARG" \
+          '${AGENT_GROUP}' "$USER_GROUP" \
+          '${AGENT_INSTALL_DIR}' "$INSTALL_DIR" | $SUDO tee "$UNIT_DEST" >/dev/null
       $SUDO systemctl daemon-reload
       echo "  ✓ unit refreshed: $UNIT_DEST"
     else
       PLIST_DEST="$HOME/Library/LaunchAgents/com.llm-systems-agent.plist"
       sudo -u "$USER_ARG" mkdir -p "$USER_HOME/Library/Logs/llm-systems-agent" 2>/dev/null || \
         mkdir -p "$USER_HOME/Library/Logs/llm-systems-agent"
-      sed -e "s|\${AGENT_USER}|$USER_ARG|g" \
-          -e "s|\${AGENT_USER_HOME}|$USER_HOME|g" \
-          -e "s|\${AGENT_INSTALL_DIR}|$INSTALL_DIR|g" \
-          "$TMPL_DIR/com.llm-systems-agent.plist.tmpl" > "$PLIST_DEST"
+      _subst_tokens "$TMPL_DIR/com.llm-systems-agent.plist.tmpl" \
+          '${AGENT_USER}' "$USER_ARG" \
+          '${AGENT_USER_HOME}' "$USER_HOME" \
+          '${AGENT_INSTALL_DIR}' "$INSTALL_DIR" > "$PLIST_DEST"
       echo "  ✓ plist refreshed: $PLIST_DEST"
     fi
   fi
@@ -1959,7 +1982,9 @@ echo "  ✓ user '$USER_ARG' exists (uid=$(id -u "$USER_ARG"))"
 while true; do
   INSTALL_DIR="${INSTALL_DIR%/}"
   PARENT_DIR="$(dirname "$INSTALL_DIR")"
-  if [[ -z "$PARENT_DIR" || "$PARENT_DIR" == "$INSTALL_DIR" ]]; then
+  if ! _install_dir_chars_ok "$INSTALL_DIR"; then
+    echo "  ✗ install-dir must be absolute with no whitespace, quotes, or & < > \\ (got: '$INSTALL_DIR')"
+  elif [[ -z "$PARENT_DIR" || "$PARENT_DIR" == "$INSTALL_DIR" ]]; then
     echo "  ✗ install-dir '$INSTALL_DIR' has no usable parent"
   elif [[ ! -d "$PARENT_DIR" ]]; then
     echo "  ✗ parent of install-dir does not exist: $PARENT_DIR"
@@ -2110,16 +2135,16 @@ _install_llama_now() {
 _render_llama_unit() {
   local bin="$1" user="$2" cfg="$3" log="$4"
   local extra=""
+  # Escape \ and " so the values survive systemd's double-quote parsing.
+  bin="${bin//\\/\\\\}"; bin="${bin//\"/\\\"}"
+  cfg="${cfg//\\/\\\\}"; cfg="${cfg//\"/\\\"}"
+  log="${log//\\/\\\\}"; log="${log//\"/\\\"}"
   [[ -n "$cfg" ]] && extra="$extra --models-preset \"$cfg\""
   [[ -n "$log" ]] && extra="$extra --log-file \"$log\""
   extra="$extra --perf"
   extra="${extra# }"
-  # Literal split-and-join (not sed/`//`) so &, \, | in paths can't break the unit.
-  local out; out="$(cat "$SRC_DIR/install/llama_server.service.tmpl")"
-  out="${out%%__LLAMA_BIN__*}$bin${out#*__LLAMA_BIN__}"
-  out="${out%%__USER__*}$user${out#*__USER__}"
-  out="${out%%__EXTRA_ARGS__*}$extra${out#*__EXTRA_ARGS__}"
-  printf '%s\n' "$out"
+  _subst_tokens "$SRC_DIR/install/llama_server.service.tmpl" \
+      '__LLAMA_BIN__' "$bin" '__USER__' "$user" '__EXTRA_ARGS__' "$extra"
 }
 
 # _offer_llama_unit UNIT BIN — offer a starter systemd unit pointing at BIN.
@@ -3491,14 +3516,17 @@ def _set(key, value):
     pattern = rf'^[#\s]*{re.escape(key)}:[^\n]*'
     new_line = f'{key}: {value}'
     if re.search(pattern, text, flags=re.M):
-        text = re.sub(pattern, new_line, text, count=1, flags=re.M)
+        # Lambda repl: literal insertion, no \-escape processing of the value.
+        text = re.sub(pattern, lambda _m: new_line, text, count=1, flags=re.M)
     else:
         # Key not in file at all — append.
         text = text.rstrip() + f"\n{new_line}\n"
 
 def _set_quoted(key, value):
-    """Quoted variant — same semantics as _set but wraps value in double quotes."""
-    _set(key, f'"{value}"')
+    """Quoted variant — escapes \\ \" and control chars so the YAML scalar stays valid."""
+    s = (str(value).replace('\\', '\\\\').replace('"', '\\"')
+         .replace('\n', '\\n').replace('\r', '\\r').replace('\t', '\\t'))
+    _set(key, f'"{s}"')
 
 def _set_build_opt(key, value):
     """Uncomment LLAMA_BUILD_OPTS and set its `key` child, preserving the other
@@ -3728,10 +3756,10 @@ if ! $SKIP_SERVICE; then
   if [[ "$AGENT_OS" == "linux" ]]; then
     _section "Installing systemd service"
     UNIT_DEST="/etc/systemd/system/llm-systems-agent.service"
-    sed -e "s|\${AGENT_USER}|$USER_ARG|g" \
-        -e "s|\${AGENT_GROUP}|$USER_GROUP|g" \
-        -e "s|\${AGENT_INSTALL_DIR}|$INSTALL_DIR|g" \
-        "$TMPL_DIR/llm-systems-agent.service.tmpl" | $SUDO tee "$UNIT_DEST" >/dev/null
+    _subst_tokens "$TMPL_DIR/llm-systems-agent.service.tmpl" \
+        '${AGENT_USER}' "$USER_ARG" \
+        '${AGENT_GROUP}' "$USER_GROUP" \
+        '${AGENT_INSTALL_DIR}' "$INSTALL_DIR" | $SUDO tee "$UNIT_DEST" >/dev/null
     $SUDO systemctl daemon-reload
     if $SKIP_START; then
       $SUDO systemctl enable llm-systems-agent.service >/dev/null 2>&1
@@ -3749,10 +3777,10 @@ if ! $SKIP_SERVICE; then
     # exists for the current user, but explicitly mkdir is cheap.
     sudo -u "$USER_ARG" mkdir -p "$USER_HOME/Library/Logs/llm-systems-agent" 2>/dev/null || \
       mkdir -p "$USER_HOME/Library/Logs/llm-systems-agent"
-    sed -e "s|\${AGENT_USER}|$USER_ARG|g" \
-        -e "s|\${AGENT_USER_HOME}|$USER_HOME|g" \
-        -e "s|\${AGENT_INSTALL_DIR}|$INSTALL_DIR|g" \
-        "$TMPL_DIR/com.llm-systems-agent.plist.tmpl" > "$PLIST_DEST"
+    _subst_tokens "$TMPL_DIR/com.llm-systems-agent.plist.tmpl" \
+        '${AGENT_USER}' "$USER_ARG" \
+        '${AGENT_USER_HOME}' "$USER_HOME" \
+        '${AGENT_INSTALL_DIR}' "$INSTALL_DIR" > "$PLIST_DEST"
     cat <<EOF
 
    ── macOS Local Network permission ─────────────────────────────────
