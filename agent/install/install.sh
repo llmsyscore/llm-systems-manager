@@ -1020,7 +1020,10 @@ if $DO_UPDATE; then
   # deploy new code (which would break the ExecStart editor) and leave the
   # current agent running until a one-time root install migrates the host.
   _lu_guard="$(_resolved_llama_unit)"
-  if $FROM_SELF_UPDATE && [[ "$AGENT_OS" == "linux" \
+  # Skip the guard only when llama is positively disabled — a leftover unit file
+  # on a non-llama host must not block self-update. Fire on true/unknown.
+  _llama_on="$(_yaml_scalar "$INSTALL_DIR/agent_config.yaml" LLAMA_ENABLED | tr '[:upper:]' '[:lower:]')"
+  if $FROM_SELF_UPDATE && [[ "$AGENT_OS" == "linux" && "$_llama_on" != "false" \
         && -f "/etc/systemd/system/$_lu_guard" \
         && ! -x /usr/local/sbin/llm-svcconfig-apply ]]; then
     echo "ERROR: this update needs a one-time root migration on THIS host." >&2
@@ -1031,6 +1034,17 @@ if $DO_UPDATE; then
     echo "  Complete the migration as root, then self-update will work again:" >&2
     echo "      sudo bash \"$SRC_DIR/install/install.sh\" --update --no-pull" >&2
     exit 1
+  fi
+
+  # Root --update: install the sudoers file + root-owned svcconfig helper BEFORE
+  # deploying new agent code, so if this privileged step fails the update aborts
+  # without ever leaving wrapper-dependent code on disk. Only touch hosts already
+  # using the managed sudoers; self-update is handled by the guard above.
+  if [[ "$AGENT_OS" == "linux" ]] && ! $FROM_SELF_UPDATE \
+       && [[ -f /etc/sudoers.d/llm-systems-agent ]]; then
+    echo
+    echo "── Refreshing sudoers + svcconfig helper ───────────────────────────────"
+    _apply_sudoers_and_wrapper || exit 1
   fi
 
   # 1. Refresh agent code. Packages copied BEFORE top-level .py files so
@@ -1447,18 +1461,6 @@ PYEOF
           "$TMPL_DIR/com.llm-systems-agent.plist.tmpl" > "$PLIST_DEST"
       echo "  ✓ plist refreshed: $PLIST_DEST"
     fi
-  fi
-
-  # Root --update must (re)install the sudoers file + root-owned svcconfig
-  # helper: the update path exits before the fresh-install sudoers step, so
-  # without this a root --update would deploy agent code that needs the wrapper
-  # without ever installing it. Only touch hosts already using the managed
-  # sudoers; self-update (unprivileged) is handled by the earlier migration guard.
-  if [[ "$AGENT_OS" == "linux" ]] && ! $FROM_SELF_UPDATE \
-       && [[ -f /etc/sudoers.d/llm-systems-agent ]]; then
-    echo
-    echo "── Refreshing sudoers + svcconfig helper ───────────────────────────────"
-    _apply_sudoers_and_wrapper || exit 1
   fi
 
   if $SKIP_SERVICE_RESTART; then
