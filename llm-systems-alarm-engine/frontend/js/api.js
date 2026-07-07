@@ -91,8 +91,10 @@ const ApiClient = {
                 method: 'POST',
             });
         },
-        async ignore(alertId) {
-            return ApiClient._request(`/alerts/${alertId}/ignore`, {
+        async ignore(alertId, durationHours) {
+            const q = durationHours != null
+                ? `?duration_hours=${encodeURIComponent(durationHours)}` : '';
+            return ApiClient._request(`/alerts/${alertId}/ignore${q}`, {
                 method: 'POST',
             });
         },
