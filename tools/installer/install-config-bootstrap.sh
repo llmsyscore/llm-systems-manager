@@ -261,10 +261,8 @@ INFLUX_OPERATOR_TOKEN=""
 : "${INFLUX_PORT:=}"
 if (( HAS_AE )); then
   if $SUDO test -f "$ENV_FILE"; then
-    set +u
-    # shellcheck disable=SC1090
-    source <($SUDO cat "$ENV_FILE")
-    set -u
+    # Strict KEY=value parse of the handoff file.
+    read_influx_token_file "$ENV_FILE"
     ok "loaded InfluxDB tokens from in-process handoff"
     [[ -n "$INFLUX_METRICS_TOKEN" ]] \
       || die "$ENV_FILE present but INFLUX_METRICS_TOKEN is empty — re-run resolve-influxdb.sh or install-influxdb.sh"
@@ -614,7 +612,7 @@ fi
 # REPLACE_ME, the alarm engine will 401 every read/write — fail now so the
 # operator sees the problem before services start. Skipped in Mode 3 where
 # the alarm engine isn't on this host.
-if (( HAS_AE )) && [[ -r "$ENV_FILE" ]]; then
+if (( HAS_AE )) && $SUDO test -r "$ENV_FILE"; then
   STALE=$($SUDO awk '
     /^\[influxdb\.tokens\]/ { in_tokens=1; next }
     /^\[/                   { in_tokens=0 }

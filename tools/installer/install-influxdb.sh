@@ -7,11 +7,11 @@
 # creates the three buckets the alarm engine uses and a read+write scoped
 # token for each.
 #
-# Output is a key=value file written to:
-#     $LLMSYS_INSTALL_DIR/data/influxdb.env
-# containing INFLUX_ORG, INFLUX_HOST, INFLUX_OPERATOR_TOKEN, and per-bucket
-# tokens. install-config-bootstrap.sh consumes this to write tokens into
-# the real config TOML.
+# Output is a key=value file written to $LLMSYS_INFLUXDB_TOKEN_FILE (a
+# transient mktemp path under install.sh; $LLMSYS_INSTALL_DIR/data/influxdb.env
+# on ad-hoc runs) containing INFLUX_ORG, INFLUX_HOST, INFLUX_OPERATOR_TOKEN,
+# and per-bucket tokens. install-config-bootstrap.sh consumes it to write
+# tokens into the real config TOML.
 #
 # Idempotent: re-runs reuse the operator token stashed at
 # /root/.influxdb-operator-token and skip already-configured steps.

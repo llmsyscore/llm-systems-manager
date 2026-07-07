@@ -45,6 +45,44 @@ confirm() {
   esac
 }
 
+# True only for system-range UIDs (never 0): Linux uses UID_MIN from
+# /etc/login.defs (default 1000); macOS human accounts start at 501.
+_service_account_uid_ok() {
+  local user="$1" uid uid_min
+  uid="$(id -u "$user" 2>/dev/null)" || return 1
+  [[ "$uid" =~ ^[0-9]+$ ]] || return 1
+  if [[ "$OS" == "linux" ]]; then
+    uid_min="$(awk '$1=="UID_MIN"{print $2; exit}' /etc/login.defs 2>/dev/null)"
+    [[ "$uid_min" =~ ^[0-9]+$ ]] || uid_min=1000
+  else
+    uid_min=501
+  fi
+  (( uid > 0 && uid < uid_min ))
+}
+
+# Single guarded path for deleting the runtime account — refuses anything
+# that isn't a system-range UID, and names the account in the prompt.
+_offer_delete_run_user() {
+  local user="$1" uid
+  uid="$(id -u "$user" 2>/dev/null || echo '?')"
+  banner "Runtime user $user"
+  if ! _service_account_uid_ok "$user"; then
+    warn "detected runtime user '$user' (uid $uid) is NOT in the system-account UID range."
+    warn "It may be a real login account (detection follows the unit file's User= and"
+    warn "install-dir ownership). Refusing to delete it — remove it manually if intended."
+    return 0
+  fi
+  warn "If '$user' owns files outside the install dirs, userdel will fail or leave orphans."
+  if confirm "Delete user '$user' (uid $uid) and its home directory?"; then
+    if [[ "$OS" == "linux" ]]; then
+      $SUDO userdel -r "$user" 2>/dev/null || warn "userdel failed (user may own files elsewhere)"
+    else
+      $SUDO dscl . -delete "/Users/$user" 2>/dev/null || warn "dscl delete failed"
+    fi
+    ok "user '$user' removed"
+  fi
+}
+
 # ── OS + privilege detection ───────────────────────────────────────────────
 case "$(uname -s)" in
   Linux)  OS=linux ;;
@@ -152,15 +190,7 @@ _total=$(( ${#FOUND_UNITS[@]} + ${#FOUND_LAUNCHD[@]} \
 if (( _total == 0 )) && ! $INFLUX_INSTALLED; then
   if id "$RUN_USER" >/dev/null 2>&1; then
     log "no installer artifacts found, but user '$RUN_USER' still exists"
-    banner "Runtime user $RUN_USER"
-    if confirm "Delete the '$RUN_USER' user and its home directory?"; then
-      if [[ "$OS" == "linux" ]]; then
-        $SUDO userdel -r "$RUN_USER" 2>/dev/null || warn "userdel failed (user may own files elsewhere)"
-      else
-        $SUDO dscl . -delete "/Users/$RUN_USER" 2>/dev/null || warn "dscl delete failed"
-      fi
-      ok "user '$RUN_USER' removed"
-    fi
+    _offer_delete_run_user "$RUN_USER"
   else
     ok "nothing to uninstall — host is clean"
   fi
@@ -248,16 +278,7 @@ done
 
 # ── Runtime user (auto-detected) ───────────────────────────────────────────
 if id "$RUN_USER" >/dev/null 2>&1; then
-  banner "Runtime user $RUN_USER"
-  warn "If '$RUN_USER' owns files outside the install dirs, userdel will fail or leave orphans."
-  if confirm "Delete the '$RUN_USER' user and its home directory?"; then
-    if [[ "$OS" == "linux" ]]; then
-      $SUDO userdel -r "$RUN_USER" 2>/dev/null || warn "userdel failed (user may own files elsewhere)"
-    else
-      $SUDO dscl . -delete "/Users/$RUN_USER" 2>/dev/null || warn "dscl delete failed"
-    fi
-    ok "user '$RUN_USER' removed"
-  fi
+  _offer_delete_run_user "$RUN_USER"
 fi
 
 # ── InfluxDB (Linux only — manager host) ───────────────────────────────────

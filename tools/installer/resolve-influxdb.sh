@@ -10,7 +10,7 @@
 #                                                          install locally /
 #                                                          skip
 #
-# Writes/refreshes $LLMSYS_INFLUXDB_TOKEN_FILE (transient /tmp file) so the downstream
+# Writes/refreshes $LLMSYS_INFLUXDB_TOKEN_FILE so the downstream
 # install-config-bootstrap.sh can read INFLUX_HOST + tokens and substitute
 # them into [influxdb] + [influxdb.tokens] in llm-systems.toml.
 #
