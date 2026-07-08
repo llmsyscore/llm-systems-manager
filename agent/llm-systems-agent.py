@@ -10,6 +10,8 @@ controller. Config via agent_config.yaml or env vars.
 from __future__ import annotations
 
 import asyncio
+import base64
+import binascii
 import json
 import logging
 import logging.handlers
@@ -60,7 +62,7 @@ except ImportError:
             os.chmod(tmp, mode)
         tmp.replace(p)
 
-VERSION = "v2026.07.08-2"
+VERSION = "v2026.07.08-3"
 
 
 def _detect_install_dir() -> str:
@@ -2795,6 +2797,50 @@ def agent_log_stream(authorization: Optional[str] = Header(default=None)) -> Str
     )
 
 
+def _verify_tarball_signature(tarball_path: str, sig_b64: Optional[str],
+                               ca_path: Path, tmpdir: str) -> tuple[bool, str]:
+    """Verify the tarball's X-Agent-Tarball-Sig against ca_path via openssl.
+    Mirrors install.sh's _verify_tarball_sig matrix; returns (ok, reason)."""
+    allow_insecure = os.environ.get("LLMSYS_ALLOW_INSECURE_UPDATE") == "1"
+    if not ca_path.is_file():
+        if allow_insecure:
+            return True, (f"no pinned CA ({ca_path}) + LLMSYS_ALLOW_INSECURE_UPDATE=1 "
+                          "— skipping tarball signature check")
+        return False, (f"cannot verify update signature: pinned CA {ca_path} missing "
+                       "— start the agent service so a heartbeat delivers the CA, then retry")
+    if not sig_b64:
+        return False, "manager did not sign the tarball (no X-Agent-Tarball-Sig header) — refusing update"
+    try:
+        sig_bytes = base64.b64decode(sig_b64, validate=True)
+    except (binascii.Error, ValueError):
+        return False, "malformed X-Agent-Tarball-Sig header — refusing update"
+    if not sig_bytes:
+        return False, "malformed X-Agent-Tarball-Sig header — refusing update"
+    sig_path = os.path.join(tmpdir, "tarball.sig")
+    pub_path = os.path.join(tmpdir, "ca-pub.pem")
+    with open(sig_path, "wb") as f:
+        f.write(sig_bytes)
+    try:
+        r = subprocess.run(["openssl", "x509", "-in", str(ca_path), "-pubkey", "-noout"],
+                           capture_output=True)
+    except FileNotFoundError:
+        return False, "openssl not available to verify the update signature — refusing update"
+    if r.returncode != 0:
+        return False, f"could not extract public key from {ca_path} — refusing update"
+    with open(pub_path, "wb") as f:
+        f.write(r.stdout)
+    try:
+        r2 = subprocess.run(
+            ["openssl", "dgst", "-sha256", "-verify", pub_path, "-signature", sig_path, tarball_path],
+            capture_output=True)
+    except FileNotFoundError:
+        return False, "openssl not available to verify the update signature — refusing update"
+    if r2.returncode != 0:
+        return False, ("tarball signature verification FAILED — refusing update "
+                       "(tampering, or the manager CA changed: run push-ca-to-agents and retry)")
+    return True, "tarball signature verified against pinned CA"
+
+
 @app.post("/agent/self-update")
 def agent_self_update(authorization: Optional[str] = Header(default=None)) -> StreamingResponse:
     """Fetch agent tarball, run install.sh --update, stream SSE, SIGTERM for restart.
@@ -2862,6 +2908,22 @@ def agent_self_update(authorization: Optional[str] = Header(default=None)) -> St
             yield _sse_event({"stage": "done", "ok": False,
                               "msg": "tarball download failed"})
             return
+
+        import tempfile
+        verify_dir = tempfile.mkdtemp(prefix=".agent-update-verify-", dir=repo_dir)
+        try:
+            ok, reason = _verify_tarball_signature(
+                tarball_path, r.headers.get("X-Agent-Tarball-Sig"),
+                _ca_bundle_path(), verify_dir)
+        finally:
+            shutil.rmtree(verify_dir, ignore_errors=True)
+        if not ok:
+            logger.warning("self-update: tarball signature check failed: %s", reason)
+            yield _sse_event({"stage": "done", "ok": False,
+                              "msg": f"tarball signature check failed: {reason}"})
+            return
+        if reason.startswith("no pinned CA"):
+            yield _sse_event({"line": f"WARNING: {reason}"})
 
         try:
             with tarfile.open(tarball_path, "r:gz") as tf:

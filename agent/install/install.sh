@@ -737,20 +737,19 @@ _pip_install_if_enabled() {
   return 0
 }
 
-# _verify_tarball_sig TARBALL HEADERS_FILE CA_FILE ALLOW_INSECURE
-#   Verify the manager's CA signature over the downloaded tarball before extract.
-#   Mandatory unless ALLOW_INSECURE=1 and no pinned CA. rc 0 = accept, 1 = reject.
+# _verify_tarball_sig TARBALL HEADERS_FILE CA_FILE ALLOW_INSECURE — verify CA signature
+#   before extract; mandatory unless ALLOW_INSECURE=1 and no pinned CA. rc 0 ok, 1 reject.
 _verify_tarball_sig() {
   local tarball="$1" headers="$2" ca="$3" allow_insecure="$4"
   local d; d="$(dirname "$tarball")"
   local sig_b64
-  sig_b64="$(awk -F': ' 'tolower($1)=="x-agent-tarball-sig"{gsub(/\r/,"",$2);print $2}' "$headers" 2>/dev/null | tail -n1)"
+  sig_b64="$(awk -F': ' 'tolower($1)=="x-agent-tarball-sig"{gsub(/\r/,"",$2); v=$2} END{print v}' "$headers" 2>/dev/null)"
   if [[ ! -f "$ca" ]]; then
     if [[ "$allow_insecure" == "1" ]]; then
       echo "  ⚠ no pinned CA ($ca) + LLMSYS_ALLOW_INSECURE_UPDATE=1 — skipping tarball signature check" >&2
       return 0
     fi
-    echo "  ⚠ cannot verify update signature: pinned CA $ca missing (re-enroll TLS or run a fresh install)" >&2
+    echo "  ⚠ cannot verify update signature: pinned CA $ca missing — start the agent service so a heartbeat delivers the CA, then retry" >&2
     return 1
   fi
   if [[ -z "$sig_b64" ]]; then
@@ -761,7 +760,8 @@ _verify_tarball_sig() {
     echo "  ⚠ openssl not available to verify the update signature — refusing update" >&2
     return 1
   fi
-  if ! printf '%s' "$sig_b64" | base64 -d > "$d/tarball.sig" 2>/dev/null; then
+  if ! printf '%s' "$sig_b64" | openssl base64 -d -A -out "$d/tarball.sig" 2>/dev/null || \
+     [[ ! -s "$d/tarball.sig" ]]; then
     echo "  ⚠ malformed X-Agent-Tarball-Sig header — refusing update" >&2
     return 1
   fi
@@ -770,7 +770,7 @@ _verify_tarball_sig() {
     return 1
   fi
   if ! openssl dgst -sha256 -verify "$d/ca-pub.pem" -signature "$d/tarball.sig" "$tarball" >/dev/null 2>&1; then
-    echo "  ⚠ tarball signature verification FAILED — refusing update (possible tampering)" >&2
+    echo "  ⚠ tarball signature verification FAILED — refusing update (tampering, or the manager CA changed: run push-ca-to-agents and retry)" >&2
     return 1
   fi
   echo "  ✓ tarball signature verified against pinned CA"

@@ -28,6 +28,7 @@ the same pattern auth.py uses.
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import hmac as _hmac
 import json
@@ -1110,8 +1111,7 @@ def _agents_whoami():
 
 def _build_agent_tarball_bytes() -> bytes:
     """Build a tar.gz of <repo>/agent/ into memory (buffered so it can be signed)."""
-    import pathlib
-    agent_dir = pathlib.Path(__file__).resolve().parents[2] / "agent"
+    agent_dir = Path(__file__).resolve().parents[2] / "agent"
     if not agent_dir.is_dir():
         raise FileNotFoundError(f"agent/ not found at {agent_dir}")
     proc = subprocess.run(
@@ -1129,7 +1129,6 @@ def _build_agent_tarball_bytes() -> bytes:
 
 def _sign_tarball(tgz: bytes, ca_key) -> str:
     """RSA-PKCS1v15/SHA-256 sign the tarball bytes with the CA key; base64 result."""
-    import base64
     from cryptography.hazmat.primitives import hashes
     from cryptography.hazmat.primitives.asymmetric import padding
     sig = ca_key.sign(tgz, padding.PKCS1v15(), hashes.SHA256())
@@ -1137,7 +1136,7 @@ def _sign_tarball(tgz: bytes, ca_key) -> str:
 
 
 def _agent_tarball():
-    """Stream a freshly-built tarball of <repo>/agent/ to an approved agent.
+    """Serve a freshly-built, CA-signed tarball of <repo>/agent/ to an approved agent.
     Agent bearer auth; the agent's install.sh hits this on --update so the
     manager (not GitHub) is the source of truth. Private repo stays private,
     no GitHub credentials needed on agent hosts."""
