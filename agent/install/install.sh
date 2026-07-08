@@ -3747,6 +3747,11 @@ if $ENABLE_LLAMA; then
   _ensure_hf_cli "$USER_ARG" "$USER_HOME"
 fi
 
+# Install sudoers + svcconfig wrapper before enabling the agent.
+if [[ "$AGENT_OS" == "linux" && "$SKIP_SUDOERS" == "false" ]]; then
+  _apply_sudoers_and_wrapper || exit 1
+fi
+
 # 5. systemd unit (Linux) / launchd plist (macOS)
 if ! $SKIP_SERVICE; then
   if [[ "$AGENT_OS" == "linux" ]]; then
@@ -3858,10 +3863,6 @@ EOF
     fi
     fi   # end: ! $SKIP_START
   fi
-fi
-
-if [[ "$AGENT_OS" == "linux" && "$SKIP_SUDOERS" == "false" ]]; then
-  _apply_sudoers_and_wrapper || exit 1
 fi
 
 # 6b. Migrate /tmp/llama-server-last-state ownership.
