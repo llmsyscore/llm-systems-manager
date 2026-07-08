@@ -82,6 +82,9 @@ def _fake_get_factory(props_payload):
         if url.endswith("/v1/models"):
             return _Resp({"data": [{"id": "test-model", "status": {"value": "loaded"}}]})
         if url.endswith("/props"):
+            # Router mode: per-model props only when ?model= is supplied.
+            if (kwargs.get("params") or {}).get("model") != "test-model":
+                return _Resp({"role": "router", "build_info": "b1-test"})
             return _Resp(props_payload)
         raise ConnectionError(f"unexpected fetch: {url}")
     return _fake_get
@@ -159,6 +162,21 @@ def test_props_is_sleeping_sets_canonical_sleeping_flag(ctx, monkeypatch):
     out = llama.collect_llama_for_metrics()
     assert out["is_sleeping"] is True
     assert out["sleeping"] is True
+
+
+def test_props_skipped_when_no_model_loaded(ctx, monkeypatch):
+    calls = []
+
+    def _get(url, **kwargs):
+        calls.append(url)
+        if url.endswith("/v1/models"):
+            return _Resp({"data": []})
+        raise ConnectionError(f"should not fetch {url}")
+
+    monkeypatch.setattr(llama, "requests", SimpleNamespace(get=_get))
+    out = llama.collect_llama_for_metrics()
+    assert not any(u.endswith("/props") for u in calls)
+    assert out["total_slots"] is None
 
 
 def test_props_ignores_malformed_values(ctx, monkeypatch):
