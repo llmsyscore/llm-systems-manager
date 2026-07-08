@@ -478,8 +478,28 @@ function renderOpcaPredictive(data) {
   const vpm = vel.tokens_per_min || 0;
   const velColor = vpm >= 2000 ? 'var(--crit)' : vpm >= 500 ? 'var(--warn)' : 'var(--ok)';
 
+  // Budget tile (#216) — only when [openclaw].monthly_budget_usd is set.
+  const bud = data.budget || {};
+  const hasBudget = bud.monthly_budget_usd != null;
+  const usedPct = bud.used_pct;
+  const budColor = usedPct == null ? 'var(--fg-dim)'
+    : usedPct >= 100 ? 'var(--crit)'
+    : usedPct >= (bud.warning_pct || 80) ? 'var(--warn)' : 'var(--ok)';
+  const budgetTile = hasBudget ? `
+      <div style="background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:12px;">
+        <div style="color:var(--fg-muted);font-size:0.75em;text-transform:uppercase;letter-spacing:0.05em;">Monthly Budget</div>
+        <div style="font-size:1.5em;font-weight:600;color:${budColor};margin:4px 0;">
+          ${usedPct != null ? usedPct.toFixed(0) + '%' : '—'}
+        </div>
+        <div style="font-size:0.8em;color:var(--fg-dim);">
+          ${bud.projected_monthly_usd != null
+            ? '$' + bud.projected_monthly_usd.toFixed(2) + ' of $' + bud.monthly_budget_usd.toFixed(2) + ' projected'
+            : 'no projection yet — $' + bud.monthly_budget_usd.toFixed(2) + ' ceiling'}
+        </div>
+      </div>` : '';
+
   const statCards = `
-    <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-bottom:16px;">
+    <div style="display:grid;grid-template-columns:repeat(${hasBudget ? 4 : 3},1fr);gap:12px;margin-bottom:16px;">
       <div style="background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:12px;">
         <div style="color:var(--fg-muted);font-size:0.75em;text-transform:uppercase;letter-spacing:0.05em;">Monthly Projection</div>
         <div style="font-size:1.5em;font-weight:600;color:var(--ok);margin:4px 0;">
@@ -505,6 +525,7 @@ function renderOpcaPredictive(data) {
         </div>
         <div style="font-size:0.8em;color:var(--fg-dim);">files active in last hour</div>
       </div>
+      ${budgetTile}
     </div>`;
 
   // Per-agent projection table — only agents with enough data to project

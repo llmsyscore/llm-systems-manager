@@ -22,6 +22,7 @@ route just `jsonify`s a dict.
 from __future__ import annotations
 
 import logging
+import threading
 import time
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
@@ -29,10 +30,11 @@ from types import SimpleNamespace
 from flask import jsonify
 
 import agent_registry  # type: ignore[import-not-found]  # sibling
+from config.unified_config import settings  # type: ignore[import-not-found]
 
 log = logging.getLogger("llm-systems-manager.openclaw")
 
-__all__ = ["register_routes"]
+__all__ = ["register_routes", "start_budget_monitor"]
 
 
 # ── In-process cache (TTL-invalidated on every read) ────────────────
@@ -43,6 +45,16 @@ _openclaw_agg_cache: dict  = {"ts": 0, "payload": None}
 # ── Dep namespace ───────────────────────────────────────────────────
 
 _deps = SimpleNamespace()
+
+
+def _budget_cfg() -> tuple[float, float, bool, float]:
+    """Returns (monthly_budget_usd, warning_pct, notify_anomalies, push_interval_s)."""
+    oc = getattr(settings, "openclaw", None)
+    budget = float(getattr(oc, "monthly_budget_usd", 0.0) or 0.0)
+    warn_pct = float(getattr(oc, "budget_warning_pct", 80.0) or 80.0)
+    notify_anoms = bool(getattr(oc, "notify_cost_anomalies", False))
+    interval = max(30.0, float(getattr(oc, "metrics_push_interval_s", 300.0) or 300.0))
+    return budget, warn_pct, notify_anoms, interval
 
 
 def _analyze_usage_trends(daily_tokens):
@@ -502,6 +514,17 @@ def _collect_openclaw_analytics() -> dict:
     anomalies   = _detect_cost_anomalies(agents_out)
     tool_trends = _compute_tool_trends(agents_out)
 
+    # ---- budget (#216): fleet-wide projection vs configured ceiling --------
+    budget_usd, warn_pct, _, _ = _budget_cfg()
+    fleet_projection = _project_monthly_cost(daily_cost)
+    budget_block = {
+        "monthly_budget_usd":    budget_usd if budget_usd > 0 else None,
+        "warning_pct":           warn_pct,
+        "projected_monthly_usd": fleet_projection,
+        "used_pct": (round(fleet_projection / budget_usd * 100.0, 1)
+                     if budget_usd > 0 and fleet_projection is not None else None),
+    }
+
     flows_out    = merged_flows
     tasks_out    = merged_tasks
     delivery_out = merged_delivery
@@ -522,9 +545,57 @@ def _collect_openclaw_analytics() -> dict:
         "velocity":         velocity,
         "anomalies":        anomalies,
         "tool_trends":      tool_trends,
+        "budget":           budget_block,
     }
     _openclaw_agg_cache.update({"ts": now, "payload": payload})
     return payload
+
+
+# ── Budget monitor (#216) ────────────────────────────────────────────
+
+def _budget_metric_points(payload: dict, hostname: str) -> list[dict]:
+    """MetricPoint dicts for the AE batch ingest from an analytics payload."""
+    points: list[dict] = []
+    b = payload.get("budget") or {}
+    proj = b.get("projected_monthly_usd")
+    if proj is not None:
+        points.append({"source": "openclaw", "metric_name": "projected_monthly_cost_usd",
+                       "value": float(proj), "unit": "usd", "hostname": hostname})
+    used = b.get("used_pct")
+    if used is not None:
+        points.append({"source": "openclaw", "metric_name": "budget_used_pct",
+                       "value": float(used), "unit": "%", "hostname": hostname})
+    points.append({"source": "openclaw", "metric_name": "cost_anomaly_count",
+                   "value": float(len(payload.get("anomalies") or [])),
+                   "unit": "sessions", "hostname": hostname})
+    return points
+
+
+def start_budget_monitor(push_metrics, hostname: str,
+                         is_shutting_down=lambda: False) -> None:
+    """Daemon thread pushing budget/anomaly metrics to the AE ingest so the
+    seeded 'OpenClaw budget' rules can alert. No-op unless configured."""
+    budget_usd, _, notify_anoms, interval = _budget_cfg()
+    if budget_usd <= 0 and not notify_anoms:
+        log.info("openclaw budget monitor disabled "
+                 "(set [openclaw].monthly_budget_usd or notify_cost_anomalies)")
+        return
+
+    def _loop():
+        while not is_shutting_down():
+            try:
+                payload = _collect_openclaw_analytics()
+                push_metrics(_budget_metric_points(payload, hostname))
+            except Exception as e:
+                log.debug("openclaw budget monitor: %s", e)
+            slept = 0.0
+            while slept < interval and not is_shutting_down():
+                time.sleep(0.5)
+                slept += 0.5
+
+    threading.Thread(target=_loop, name="openclaw-budget", daemon=True).start()
+    log.info("openclaw budget monitor started (budget=$%.2f/mo, anomaly notify=%s, every %.0fs)",
+             budget_usd, notify_anoms, interval)
 
 
 # ── Route registration ───────────────────────────────────────────────

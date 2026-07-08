@@ -50,7 +50,7 @@ let _mgrPerfBackfilled = false;
 const _SUB_TAB_MAP = {
   dashboard: { tabId: 'dashboardTab', prefix: 'dash',  subs: ['llamacpp','lmstudio','openclaw','manager'] },
   llm:       { tabId: 'llmTab',       prefix: 'llm',   subs: ['llamacpp','lmstudio'] },
-  admin:     { tabId: 'adminTab',     prefix: 'admin', subs: ['agents','pool','backup','auth','users'] },
+  admin:     { tabId: 'adminTab',     prefix: 'admin', subs: ['agents','pool','backup','auth','users','audit'] },
 };
 
 function switchSubTab(parent, sub) {
@@ -112,6 +112,12 @@ function switchSubTab(parent, sub) {
   }
   if (parent === 'admin' && sub === 'users') {
     if (typeof adminUsersLoad === 'function') adminUsersLoad();
+  }
+  if (parent === 'admin' && sub === 'audit') {
+    if (typeof adminAuditLoad === 'function') adminAuditLoad(0);
+  }
+  if (parent === 'admin' && sub === 'backup') {
+    if (typeof adminLoadBackupStatus === 'function') adminLoadBackupStatus();
   }
 }
 

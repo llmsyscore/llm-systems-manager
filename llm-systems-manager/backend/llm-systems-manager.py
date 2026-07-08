@@ -153,7 +153,7 @@ def _local_hostname() -> str:
 # banner reads it. Bump suffix (-1, -2, …) for same-day iterations; roll
 # the date for a new day's first change.
 # ---------------------------------------------------------------------------
-__version__ = "v2026.07.07-3"
+__version__ = "v2026.07.07-4"
 
 # Wall-clock at first import (Cheroot main process); the shutdown banner
 # reads it for the uptime line.
@@ -292,6 +292,22 @@ def init_db():
             )
         """)
     conn.execute("CREATE INDEX IF NOT EXISTS idx_bench_model ON model_benchmarks(model_id, agent_id)")
+    # Append-only admin action audit log (#217); bounded by _AUDIT_MAX_ROWS.
+    conn.execute("""
+            CREATE TABLE IF NOT EXISTS audit_log (
+                id      INTEGER PRIMARY KEY,
+                ts      TEXT NOT NULL,
+                actor   TEXT,
+                role    TEXT,
+                ip      TEXT,
+                method  TEXT,
+                path    TEXT,
+                action  TEXT,
+                target  TEXT,
+                status  INTEGER,
+                outcome TEXT
+            )
+        """)
     conn.commit()
 
 init_db()
@@ -2339,6 +2355,119 @@ import agent_registry  # type: ignore[import-not-found]  # sibling module; scrip
 
 
 # ---------------------------------------------------------------------------
+# Admin action audit log (#217): an after_request hook records mutating
+# requests to the routes below into the bounded audit_log table.
+# ---------------------------------------------------------------------------
+
+_AUDIT_MAX_ROWS = 10000
+_AUDIT_PRUNE_EVERY = 200
+
+# (method-or-None, path regex, action label). Named group "t" is the target.
+_AUDIT_ROUTES: list[tuple[str | None, "re.Pattern[str]", str]] = [
+    ("POST",   re.compile(r"^/api/agents/(?P<t>[^/]+)/approve$"),      "agent.approve"),
+    ("POST",   re.compile(r"^/api/agents/(?P<t>[^/]+)/disable$"),      "agent.disable"),
+    ("DELETE", re.compile(r"^/api/agents/(?P<t>[^/]+)$"),              "agent.delete"),
+    ("POST",   re.compile(r"^/api/agents/(?P<t>[^/]+)/role-primary$"), "agent.role-primary"),
+    ("POST",   re.compile(r"^/api/agents/(?P<t>[^/]+)/llama-pool$"),   "agent.llama-pool"),
+    ("POST",   re.compile(r"^/api/agents/global$"),                    "agent.global-config"),
+    ("POST",   re.compile(r"^/api/agents/(?P<t>[^/]+)/restart$"),      "agent.restart"),
+    ("POST",   re.compile(r"^/api/agents/(?P<t>[^/]+)/self-update$"),  "agent.self-update"),
+    ("PUT",    re.compile(r"^/api/agents/(?P<t>[^/]+)/config-file$"),  "agent.config-file"),
+    ("POST",   re.compile(r"^/api/admin/push-ca-to-agents$"),          "agent.push-ca"),
+    ("POST",   re.compile(r"^/api/admin/service/(?P<t>[^/]+)/restart$"), "service.restart"),
+    ("POST",   re.compile(r"^/api/admin/auth$"),                       "auth.mode-change"),
+    ("POST",   re.compile(r"^/api/admin/users$"),                      "user.create"),
+    ("PATCH",  re.compile(r"^/api/admin/users/(?P<t>[^/]+)$"),         "user.modify"),
+    ("DELETE", re.compile(r"^/api/admin/users/(?P<t>[^/]+)$"),         "user.delete"),
+    ("POST",   re.compile(r"^/api/admin/users/(?P<t>[^/]+)/unlock$"),  "user.unlock"),
+    ("POST",   re.compile(r"^/api/admin/export/manager$"),             "backup.export"),
+    ("POST",   re.compile(r"^/api/admin/import/manager/apply$"),       "backup.import-apply"),
+    ("POST",   re.compile(r"^/api/admin/llama-pins$"),                 "config.llama-pins"),
+    ("POST",   re.compile(r"^/api/llm/server/svcconfig$"),             "config.svcconfig"),
+    ("POST",   re.compile(r"^/api/config/interval$"),                  "config.interval"),
+]
+
+
+_AUDIT_PATH_PREFIXES = ("/api/admin/", "/api/agents/", "/api/llm/server/", "/api/config/")
+
+
+def _audit_match(method: str, path: str) -> tuple[str, str | None] | None:
+    """Return (action, target) when the request is auditable, else None."""
+    # Fast-path exit so high-frequency telemetry POSTs skip the regex table.
+    if not path.startswith(_AUDIT_PATH_PREFIXES):
+        return None
+    for m, rx, action in _AUDIT_ROUTES:
+        if m is not None and m != method:
+            continue
+        match = rx.match(path)
+        if match:
+            return action, (match.groupdict().get("t") or None)
+    # Generic fallback: any other mutating /api/admin/* call.
+    if path.startswith("/api/admin/"):
+        parts = path.split("/")
+        return "admin." + (parts[3] if len(parts) > 3 else "?"), None
+    return None
+
+
+def _audit_record(entry: tuple) -> None:
+    conn = get_db()
+    cur = conn.execute(
+        "INSERT INTO audit_log (ts, actor, role, ip, method, path, action, target, status, outcome)"
+        " VALUES (?,?,?,?,?,?,?,?,?,?)", entry)
+    if cur.lastrowid and cur.lastrowid % _AUDIT_PRUNE_EVERY == 0:
+        conn.execute(
+            "DELETE FROM audit_log WHERE id <= (SELECT MAX(id) FROM audit_log) - ?",
+            (_AUDIT_MAX_ROWS,))
+    conn.commit()
+
+
+@app.after_request
+def _audit_after_request(resp):
+    try:
+        method = flask_request.method
+        if method not in ("POST", "PUT", "PATCH", "DELETE"):
+            return resp
+        matched = _audit_match(method, flask_request.path or "")
+        if matched is None:
+            return resp
+        action, target = matched
+        status = resp.status_code
+        outcome = "ok" if status < 400 else ("denied" if status in (401, 403) else "error")
+        _audit_record((
+            datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            getattr(_flask_g, "auth_user", None) or "",
+            getattr(_flask_g, "auth_role", None) or "",
+            flask_request.remote_addr or "",
+            method, flask_request.path, action, target, status, outcome,
+        ))
+    except Exception:
+        # Never let auditing break a response.
+        log.debug("audit hook failed", exc_info=True)
+    return resp
+
+
+@app.route("/api/admin/audit-log")
+def admin_audit_log():
+    deny = _require_admin()
+    if deny is not None:
+        return deny
+    try:
+        limit = min(500, max(1, int(flask_request.args.get("limit", 100))))
+    except ValueError:
+        limit = 100
+    try:
+        offset = max(0, int(flask_request.args.get("offset", 0)))
+    except ValueError:
+        offset = 0
+    conn = get_db()
+    total = conn.execute("SELECT COUNT(*) FROM audit_log").fetchone()[0]
+    rows = conn.execute(
+        "SELECT ts, actor, role, ip, method, path, action, target, status, outcome"
+        " FROM audit_log ORDER BY id DESC LIMIT ? OFFSET ?", (limit, offset)).fetchall()
+    return jsonify({"ok": True, "total": total, "entries": [dict(r) for r in rows]})
+
+
+# ---------------------------------------------------------------------------
 # Dashboard authentication lives in the dedicated `auth` module. It exports
 # scrypt_hash / scrypt_verify and the auth_* / write_toml_auth_mode helpers,
 # and is wired into `app` via `auth.register_auth(app, ctx, ...)` further
@@ -3091,8 +3220,11 @@ _MANAGER_EXPORT_FILES = [
     "data/internal-ca.crt",
     "data/internal-ca.key",
     "data/layout.json",
+    "data/manager_auth.json",
     "data/manager_secret",
+    "data/manager_users.json",
     "data/model_aliases.json",
+    "data/model_profiles.json",
 ]
 _MANAGER_EXPORT_SQLITE = ["data/metrics.db"]
 
@@ -3119,6 +3251,7 @@ _MANAGER_EXPORT_CATEGORIES = {
         "config/llm-systems.toml",
         "data/layout.json",
         "data/model_aliases.json",
+        "data/model_profiles.json",
         "data/metrics.db",
     }),
     "identity": frozenset({
@@ -3126,6 +3259,8 @@ _MANAGER_EXPORT_CATEGORIES = {
         "data/internal-ca.key",
         "data/manager_secret",
         "data/agents.json",
+        "data/manager_auth.json",
+        "data/manager_users.json",
     }),
 }
 _DEFAULT_IMPORT_CATEGORIES = ["config"]
@@ -3309,6 +3444,15 @@ def _archive_manifest(component: str, files: dict[str, bytes],
     return json.dumps(manifest, indent=2, sort_keys=True).encode("utf-8")
 
 
+def _build_manager_export_blob(password: "str | None") -> tuple[bytes, int]:
+    """Pack + (optionally) encrypt the manager export archive. Shared by the
+    manual export route and the backup scheduler. Returns (blob, file_count)."""
+    files = _build_manager_archive()
+    files["manifest.json"] = _archive_manifest("manager", files)
+    tgz = _archive.pack_tar(files)
+    return _archive.encrypt(tgz, password if password else None), len(files)
+
+
 @app.route("/api/admin/export/manager", methods=["POST"])
 def admin_export_manager():
     """Build and return the manager backup archive. POST body
@@ -3319,16 +3463,13 @@ def admin_export_manager():
         return deny
     body = flask_request.get_json(force=True, silent=True) or {}
     password = body.get("password") or ""
-    files = _build_manager_archive()
-    files["manifest.json"] = _archive_manifest("manager", files)
     try:
-        tgz = _archive.pack_tar(files)
-        blob = _archive.encrypt(tgz, password if password else None)
+        blob, n_files = _build_manager_export_blob(password)
     except ValueError as e:
         return _err_json("invalid request", 400, exc=e)
     fname = f"lsm-manager-{socket.gethostname()}-{datetime.now().strftime('%Y%m%d-%H%M%S')}.lsmenc"
     log.warning("manager export by %s (%d files, %d bytes, encrypted=%s)",
-                flask_request.remote_addr, len(files), len(blob), bool(password))
+                flask_request.remote_addr, n_files, len(blob), bool(password))
     return app.response_class(
         blob, mimetype="application/octet-stream",
         headers={
@@ -3336,6 +3477,194 @@ def admin_export_manager():
             "X-Lsmenc-Encrypted": "1" if password else "0",
         },
     )
+
+
+# ---------------------------------------------------------------------------
+# Scheduled automatic backups (#218): a daemon thread writes export archives
+# to data/backups/ on an interval, prunes past keep_last, records status.
+# ---------------------------------------------------------------------------
+
+_BACKUP_DIR = DATA_DIR / "backups"
+_BACKUP_PREFIX = "lsm-auto-manager-"
+_BACKUP_STATUS_FILE = _BACKUP_DIR / "last_backup.json"
+_backup_status_lock = _threading.Lock()
+_backup_status: dict = {}
+
+
+def _backup_cfg() -> tuple[bool, float, int, str, str]:
+    b = getattr(settings.manager, "backup", None)
+    enabled = bool(getattr(b, "enabled", True))
+    interval_h = float(getattr(b, "interval_hours", 24.0) or 0.0)
+    keep_last = max(1, int(getattr(b, "keep_last", 7) or 7))
+    passphrase = str(getattr(b, "passphrase", "") or "")
+    mirror_dir = str(getattr(b, "mirror_dir", "") or "")
+    return enabled, interval_h, keep_last, passphrase, mirror_dir
+
+
+def _list_auto_backups() -> "list[Path]":
+    try:
+        return sorted(_BACKUP_DIR.glob(_BACKUP_PREFIX + "*.lsmenc"))
+    except OSError:
+        return []
+
+
+def _set_backup_status(st: dict) -> None:
+    with _backup_status_lock:
+        _backup_status.clear()
+        _backup_status.update(st)
+    try:
+        tmp = f"{_BACKUP_STATUS_FILE}.{os.getpid()}.tmp"
+        with open(tmp, "w") as f:
+            json.dump(st, f)
+        os.chmod(tmp, 0o600)
+        os.replace(tmp, str(_BACKUP_STATUS_FILE))
+    except OSError as e:
+        log.warning("backup status write failed: %s", e)
+
+
+def _get_backup_status() -> dict:
+    with _backup_status_lock:
+        if _backup_status:
+            return dict(_backup_status)
+    try:
+        with open(_BACKUP_STATUS_FILE) as f:
+            return json.load(f) or {}
+    except Exception:
+        return {}
+
+
+def _prune_auto_backups(keep_last: int) -> int:
+    """Delete scheduler-named archives beyond the newest keep_last."""
+    removed = 0
+    for p in _list_auto_backups()[:-keep_last] if keep_last > 0 else []:
+        try:
+            p.unlink()
+            removed += 1
+        except OSError as e:
+            log.warning("backup prune failed for %s: %s", p.name, e)
+    return removed
+
+
+def _run_scheduled_backup(passphrase: str, keep_last: int, mirror_dir: str) -> dict:
+    t0 = time.time()
+    ts_label = datetime.now().strftime("%Y%m%d-%H%M%S")
+    st: dict = {"ts": time.time(), "ok": False, "file": None, "bytes": 0,
+                "error": None, "encrypted": bool(passphrase)}
+    try:
+        _BACKUP_DIR.mkdir(parents=True, exist_ok=True)
+        os.chmod(_BACKUP_DIR, 0o700)
+        blob, n_files = _build_manager_export_blob(passphrase or None)
+        dest = _BACKUP_DIR / f"{_BACKUP_PREFIX}{socket.gethostname()}-{ts_label}.lsmenc"
+        tmp = f"{dest}.{os.getpid()}.tmp"
+        with open(tmp, "wb") as f:
+            f.write(blob)
+        os.chmod(tmp, 0o600)
+        os.replace(tmp, str(dest))
+        st.update({"ok": True, "file": dest.name, "bytes": len(blob),
+                   "files": n_files})
+        if mirror_dir:
+            try:
+                mdir = Path(mirror_dir)
+                mdir.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(dest, mdir / dest.name)
+                os.chmod(mdir / dest.name, 0o600)
+                st["mirrored"] = True
+            except OSError as e:
+                st["mirrored"] = False
+                st["mirror_error"] = str(e)
+                log.warning("backup mirror to %s failed: %s", mirror_dir, e)
+        pruned = _prune_auto_backups(keep_last)
+        st["duration_s"] = round(time.time() - t0, 2)
+        log.info("scheduled backup ok: %s (%d bytes, %d files, %d pruned, encrypted=%s)",
+                 dest.name, len(blob), n_files, pruned, bool(passphrase))
+    except Exception as e:
+        st["error"] = f"{type(e).__name__}: {e}"
+        st["duration_s"] = round(time.time() - t0, 2)
+        log.error("scheduled backup FAILED: %s", st["error"])
+    _set_backup_status(st)
+    return st
+
+
+def _last_auto_backup_ts() -> float:
+    files = _list_auto_backups()
+    if not files:
+        return 0.0
+    try:
+        return files[-1].stat().st_mtime
+    except OSError:
+        return 0.0
+
+
+# Scheduler liveness, surfaced via /api/admin/backup-status.
+_backup_sched_state: dict = {"running": False, "reason": "not started", "next_attempt": None}
+
+
+def _backup_scheduler_loop(interval_s: float, passphrase: str,
+                           keep_last: int, mirror_dir: str) -> None:
+    # First run soon after start when no archive exists yet; failed runs
+    # retry after 1h (capped at the interval) instead of spinning.
+    last = _last_auto_backup_ts()
+    next_attempt = (last + interval_s) if last else (time.time() + 120.0)
+    _backup_sched_state["next_attempt"] = next_attempt
+    while not _shutting_down:
+        if time.time() >= next_attempt:
+            st = _run_scheduled_backup(passphrase, keep_last, mirror_dir)
+            delay = interval_s if st.get("ok") else min(interval_s, 3600.0)
+            next_attempt = time.time() + delay
+            _backup_sched_state["next_attempt"] = next_attempt
+        time.sleep(0.5)
+
+
+def _maybe_start_backup_scheduler() -> None:
+    enabled, interval_h, keep_last, passphrase, mirror_dir = _backup_cfg()
+    if not enabled or interval_h <= 0:
+        _backup_sched_state.update({"running": False, "reason": "disabled ([manager.backup])"})
+        log.info("  Scheduled backups: disabled ([manager.backup])")
+        return
+    if passphrase and len(passphrase) < _archive.MIN_PASSWORD_LEN:
+        _backup_sched_state.update({
+            "running": False,
+            "reason": f"passphrase shorter than {_archive.MIN_PASSWORD_LEN} chars",
+        })
+        log.error("Scheduled backups DISABLED: [manager.backup].passphrase is "
+                  "shorter than %d chars", _archive.MIN_PASSWORD_LEN)
+        return
+    _backup_sched_state.update({"running": True, "reason": ""})
+    _threading.Thread(
+        target=_backup_scheduler_loop,
+        args=(interval_h * 3600.0, passphrase, keep_last, mirror_dir),
+        name="backup-scheduler", daemon=True,
+    ).start()
+    log.info("  Scheduled backups: every %.1fh → %s (keep %d, encrypted=%s)",
+             interval_h, _BACKUP_DIR, keep_last, bool(passphrase))
+
+
+@app.route("/api/admin/backup-status")
+def admin_backup_status():
+    deny = _require_admin()
+    if deny is not None:
+        return deny
+    enabled, interval_h, keep_last, passphrase, mirror_dir = _backup_cfg()
+    backups = []
+    for p in reversed(_list_auto_backups()):
+        try:
+            stat = p.stat()
+            backups.append({"file": p.name, "bytes": stat.st_size, "mtime": stat.st_mtime})
+        except OSError:
+            continue
+    return jsonify({
+        "ok": True,
+        "enabled": enabled and interval_h > 0,
+        "scheduler_running": bool(_backup_sched_state.get("running")),
+        "disabled_reason": _backup_sched_state.get("reason") or None,
+        "interval_hours": interval_h,
+        "keep_last": keep_last,
+        "encrypted": bool(passphrase),
+        "mirror_dir": mirror_dir,
+        "last": _get_backup_status(),
+        "next_due_ts": _backup_sched_state.get("next_attempt"),
+        "backups": backups,
+    })
 
 
 def _read_import_blob() -> tuple[bytes | None, str, str | None]:
@@ -3398,16 +3727,17 @@ def admin_import_manager_preview():
         "available": sorted(cats_present),
         "default_apply": [c for c in _DEFAULT_IMPORT_CATEGORIES if c in cats_present],
         "labels": {
-            "config":   "Config (TOML, layout, model aliases, benchmarks DB)",
-            "identity": "Identity (internal CA, manager HMAC, agent registry)",
+            "config":   "Config (TOML, layout, model aliases/profiles, benchmarks DB)",
+            "identity": "Identity (internal CA, manager HMAC, agent registry, users + auth mode)",
         },
         "descriptions": {
             "config":   "Safe to import into any manager. Keeps the target's "
                         "own cryptographic identity intact.",
-            "identity": "REPLACES this host's CA, HMAC secret, and agent "
-                        "registry with the archive's. Only opt in when "
-                        "migrating a manager to a new host and the existing "
-                        "fleet should keep working without re-approval.",
+            "identity": "REPLACES this host's CA, HMAC secret, agent "
+                        "registry, dashboard users (password hashes), and "
+                        "auth-mode setting with the archive's. Only opt in "
+                        "when migrating a manager to a new host and the "
+                        "existing fleet + logins should carry over.",
         },
     }
     topology: dict[str, Any] = {}
@@ -4531,6 +4861,20 @@ if __name__ == "__main__":
     _threading.Thread(
         target=stream_health.loop, name="stream-health", daemon=True,
     ).start()
+
+    # OpenClaw budget metrics → AE ingest (#216); no-op unless [openclaw]
+    # sets monthly_budget_usd or notify_cost_anomalies.
+    try:
+        openclaw.start_budget_monitor(_push_stream_metrics, _HOSTNAME,
+                                      lambda: _shutting_down)
+    except Exception as _e:
+        log.warning("openclaw budget monitor startup failed: %s", _e)
+
+    # Scheduled automatic backups (#218); no-op when [manager.backup] disables it.
+    try:
+        _maybe_start_backup_scheduler()
+    except Exception as _e:
+        log.warning("backup scheduler startup failed: %s", _e)
 
     # optionally serve HTTPS on a second port using the
     # manager's own server cert (signed by the internal CA). Defaults

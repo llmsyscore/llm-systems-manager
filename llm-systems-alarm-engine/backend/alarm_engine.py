@@ -67,7 +67,7 @@ from .storage.influxdb_client import InfluxDBClient
 # (-1, -2, …) for same-day iterations; roll the date for a new day's first
 # change.
 # ---------------------------------------------------------------------------
-__version__ = "v2026.07.07-5"
+__version__ = "v2026.07.07-6"
 from .storage import influx_monitor as _influx_monitor
 from .models.alarm_rule import (
     AlarmRuleCreate,
@@ -217,6 +217,46 @@ _DEFAULT_RULES: list[dict] = [
         "unit": "%",
     },
 ]
+
+# OpenClaw budget rules (#216): seeded only when [openclaw] configures a
+# budget/anomaly notify. The manager pushes the matching metrics (source
+# "openclaw": budget_used_pct, projected_monthly_cost_usd, cost_anomaly_count).
+_oc = getattr(settings, "openclaw", None)
+_oc_budget = float(getattr(_oc, "monthly_budget_usd", 0.0) or 0.0)
+if _oc_budget > 0:
+    _oc_warn = float(getattr(_oc, "budget_warning_pct", 80.0) or 80.0)
+    _DEFAULT_RULES += [
+        {
+            "name": "OpenClaw budget warning",
+            "description": (f"Projected monthly OpenClaw spend above {_oc_warn:.0f}% "
+                            f"of the ${_oc_budget:.2f} budget"),
+            "metric_source": "openclaw",
+            "metric_name": "budget_used_pct",
+            "severity": Severity.WARNING,
+            "threshold": _oc_warn,
+            "unit": "%",
+        },
+        {
+            "name": "OpenClaw budget exceeded",
+            "description": (f"Projected monthly OpenClaw spend exceeds "
+                            f"the ${_oc_budget:.2f} budget"),
+            "metric_source": "openclaw",
+            "metric_name": "budget_used_pct",
+            "severity": Severity.CRITICAL,
+            "threshold": 100.0,
+            "unit": "%",
+        },
+    ]
+if bool(getattr(_oc, "notify_cost_anomalies", False)):
+    _DEFAULT_RULES.append({
+        "name": "OpenClaw cost anomaly",
+        "description": "One or more OpenClaw sessions cost >2x the rolling session average",
+        "metric_source": "openclaw",
+        "metric_name": "cost_anomaly_count",
+        "severity": Severity.WARNING,
+        "threshold": 0.5,
+        "unit": "sessions",
+    })
 
 
 def _seed_default_rules(repo: RuleRepository) -> None:

@@ -452,6 +452,7 @@ Backend API endpoints consumed:
         <button class="sub-tab-btn"        id="subTabBtnAdminBackup"  onclick="switchSubTab('admin','backup')">Backup &amp; Restore</button>
         <button class="sub-tab-btn"        id="subTabBtnAdminAuth"    onclick="switchSubTab('admin','auth')">Authentication</button>
         <button class="sub-tab-btn"        id="subTabBtnAdminUsers"   onclick="switchSubTab('admin','users')">Users</button>
+        <button class="sub-tab-btn"        id="subTabBtnAdminAudit"   onclick="switchSubTab('admin','audit')">Audit Log</button>
       </div>
 
       <!-- Agents sub-tab (landing) -->
@@ -548,12 +549,12 @@ Backend API endpoints consumed:
         <div class="adm-card" id="adminBackupCard">
           <div class="adm-card-hdr">
             <div class="adm-title">Backup &amp; Restore</div>
-            <span class="adm-muted" title="One encrypted archive per component. Manager archive bundles two layers: Config (TOML, layout, model aliases, benchmarks DB — always safe to import) and Identity (internal CA, manager HMAC, agent registry — REPLACES this host's identity, opt-in at import time). Alarm engine archive contains rules + channels + alert history. InfluxDB time-series are not included — start a fresh DB on the target and paste new tokens into the imported manager config.">encrypted .lsmenc archive</span>
+            <span class="adm-muted" title="One encrypted archive per component. Manager archive bundles two layers: Config (TOML, layout, model aliases/profiles, benchmarks DB — always safe to import) and Identity (internal CA, manager HMAC, agent registry, dashboard users + auth mode — REPLACES this host's identity and logins, opt-in at import time). Alarm engine archive contains rules + channels + alert history. InfluxDB time-series are not included — start a fresh DB on the target and paste new tokens into the imported manager config.">encrypted .lsmenc archive</span>
           </div>
           <div class="adm-backup-grid">
             <div class="adm-backup-cell">
               <div class="adm-backup-label">Manager</div>
-              <div class="adm-backup-meta">config + agents + CA + layout + benchmarks</div>
+              <div class="adm-backup-meta">config + agents + CA + layout + users + profiles + benchmarks</div>
               <div class="adm-backup-actions">
                 <button class="adm-btn primary" onclick="adminExportArchive('manager')">Export…</button>
                 <button class="adm-btn" onclick="adminImportArchive('manager')">Import…</button>
@@ -569,6 +570,17 @@ Backend API endpoints consumed:
             </div>
           </div>
           <div id="adminBackupResult" class="adm-muted" style="margin-top:10px;font-size:12px;"></div>
+        </div>
+
+        <div class="adm-card" id="adminSchedBackupCard">
+          <div class="adm-card-hdr">
+            <div class="adm-title">Scheduled backups</div>
+            <span id="adminSchedBackupPill" class="status status--muted status--square">—</span>
+            <div class="adm-spacer"></div>
+            <button class="adm-refresh" onclick="adminLoadBackupStatus()" title="Reload status">↻</button>
+            <span class="adm-muted" id="adminSchedBackupRefresh">—</span>
+          </div>
+          <div id="adminSchedBackupBody" class="adm-muted" style="font-size:12px;">Loading…</div>
         </div>
       </div>
 
@@ -631,6 +643,35 @@ Backend API endpoints consumed:
           </div>
         </div>
       </div>
+
+      <!-- Audit Log sub-tab -->
+      <div id="admin-audit" class="sub-tab-panel">
+        <div class="adm-card" id="adminAuditCard">
+          <div class="adm-card-hdr">
+            <div class="adm-title">Admin action audit log</div>
+            <span class="adm-muted" id="adminAuditStatus">…</span>
+            <div class="adm-spacer"></div>
+            <button class="adm-refresh" onclick="adminAuditLoad(0)" title="Reload">↻ Refresh</button>
+          </div>
+          <div style="overflow-x:auto;">
+            <table id="adminAuditTable" class="adm-table">
+              <thead><tr>
+                <th style="width:17%;">Time</th><th style="width:13%;">User</th>
+                <th style="width:18%;">Action</th><th style="width:26%;">Target</th>
+                <th style="width:14%;">IP</th><th style="width:12%;text-align:right;">Outcome</th>
+              </tr></thead>
+              <tbody id="adminAuditTbody">
+                <tr><td colspan="6" style="padding:14px;color:#7e8a9c;text-align:center;">Loading…</td></tr>
+              </tbody>
+            </table>
+          </div>
+          <div class="adm-backup-actions" style="margin-top:8px;">
+            <button class="adm-btn" id="adminAuditNewer" onclick="adminAuditPage(-1)">‹ Newer</button>
+            <button class="adm-btn" id="adminAuditOlder" onclick="adminAuditPage(1)">Older ›</button>
+            <span class="adm-muted" id="adminAuditPageInfo"></span>
+          </div>
+        </div>
+      </div>
     </div>
   </div>
 </div>
@@ -655,6 +696,9 @@ Backend API endpoints consumed:
       <div class="llama-item"><div class="val" id="llamaKvRatio">—</div><div class="lbl">KV cache usage %</div></div>
       <div class="llama-item"><div class="val" id="llamaKvTokens">—</div><div class="lbl">KV cache tokens</div></div>
       <div class="llama-item"><div class="val" id="llamaNRemain">—</div><div class="lbl">Tokens remaining</div></div>
+      <div class="llama-item"><div class="val" id="llamaTotalSlots">—</div><div class="lbl">Total slots</div></div>
+      <div class="llama-item"><div class="val" id="llamaModalities">—</div><div class="lbl">Modalities</div></div>
+      <div class="llama-item"><div class="val" id="llamaChatTemplate">—</div><div class="lbl">Chat template</div></div>
     </div>
     <div class="chart-wrap" style="height:80px;margin-top:10px;"><canvas id="ctxChart" role="img" aria-label="Peak context tokens over time"></canvas></div>
   </div>

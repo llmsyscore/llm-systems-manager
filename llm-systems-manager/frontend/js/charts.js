@@ -1166,6 +1166,22 @@ async function fetchMetrics() {
     document.getElementById('llamaKvRatio').textContent      = ll.kv_cache_usage_ratio     != null ? (ll.kv_cache_usage_ratio * 100).toFixed(1) + '%' : '—';
     document.getElementById('llamaKvTokens').textContent     = ll.kv_cache_tokens          != null ? ll.kv_cache_tokens.toLocaleString() : '—';
     document.getElementById('llamaNRemain').textContent      = ll.n_remain                 != null ? ll.n_remain.toLocaleString() : '—';
+    document.getElementById('llamaTotalSlots').textContent   = ll.total_slots              != null ? ll.total_slots.toLocaleString() : '—';
+    const modsEl = document.getElementById('llamaModalities');
+    if (ll.modalities && typeof ll.modalities === 'object') {
+      const on = Object.keys(ll.modalities).filter(k => ll.modalities[k]);
+      modsEl.textContent = on.length ? on.join(', ') : 'text';
+    } else {
+      modsEl.textContent = '—';
+    }
+    const tmplEl = document.getElementById('llamaChatTemplate');
+    if (ll.chat_template_len != null) {
+      tmplEl.textContent = (ll.chat_template_len / 1024).toFixed(1) + ' KB';
+      tmplEl.title = (ll.chat_template || '').slice(0, 600);
+    } else {
+      tmplEl.textContent = '—';
+      tmplEl.title = '';
+    }
     const _prevLlamaActive = _llamaActiveSlots > 0;
     _llamaActiveSlots = ll.active_slots || 0;
     if ((_llamaActiveSlots > 0) !== _prevLlamaActive) renderModelCards();
