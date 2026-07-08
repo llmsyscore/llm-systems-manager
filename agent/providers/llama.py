@@ -343,32 +343,35 @@ def collect_llama_for_metrics() -> dict[str, Any]:
         _llama_info_cache = llama
         return llama
 
-    # /props is idle-timer-exempt like /v1/models; safe to poll while sleeping.
-    try:
-        presp = requests.get(
-            f"{api_base}/props",
-            timeout=2,
-            headers={"Authorization": "Bearer no-key"},
-        )
-        if presp.ok:
-            props = presp.json() or {}
-            tmpl = props.get("chat_template")
-            if isinstance(tmpl, str) and tmpl:
-                llama["chat_template"] = tmpl[:_LLAMA_CHAT_TEMPLATE_MAX_CHARS]
-                llama["chat_template_len"] = len(tmpl)
-            mods = props.get("modalities")
-            if isinstance(mods, dict):
-                llama["modalities"] = {k: bool(v) for k, v in mods.items()}
-            n_slots = props.get("total_slots")
-            if isinstance(n_slots, int):
-                llama["total_slots"] = n_slots
-            if isinstance(props.get("is_sleeping"), bool):
-                llama["is_sleeping"] = props["is_sleeping"]
-                # Direct API sleep signal corroborates the state-file value.
-                if props["is_sleeping"]:
-                    llama["sleeping"] = True
-    except Exception as e:
-        log.debug("llama /props: %s", e)
+    # /props is idle-timer-exempt; router mode returns the per-model fields
+    # only with ?model=, so it's skipped entirely when nothing is loaded.
+    if loaded_id:
+        try:
+            presp = requests.get(
+                f"{api_base}/props",
+                timeout=2,
+                headers={"Authorization": "Bearer no-key"},
+                params={"model": loaded_id},
+            )
+            if presp.ok:
+                props = presp.json() or {}
+                tmpl = props.get("chat_template")
+                if isinstance(tmpl, str) and tmpl:
+                    llama["chat_template"] = tmpl[:_LLAMA_CHAT_TEMPLATE_MAX_CHARS]
+                    llama["chat_template_len"] = len(tmpl)
+                mods = props.get("modalities")
+                if isinstance(mods, dict):
+                    llama["modalities"] = {k: bool(v) for k, v in mods.items()}
+                n_slots = props.get("total_slots")
+                if isinstance(n_slots, int):
+                    llama["total_slots"] = n_slots
+                if isinstance(props.get("is_sleeping"), bool):
+                    llama["is_sleeping"] = props["is_sleeping"]
+                    # Direct API sleep signal corroborates the state-file value.
+                    if props["is_sleeping"]:
+                        llama["sleeping"] = True
+        except Exception as e:
+            log.debug("llama /props: %s", e)
 
     # /metrics + /slots reset llama-server's sleep timer; skip while sleeping.
     if state == "sleeping":
