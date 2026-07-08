@@ -28,6 +28,7 @@ the same pattern auth.py uses.
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import hmac as _hmac
 import json
@@ -1108,8 +1109,34 @@ def _agents_whoami():
     })
 
 
+def _build_agent_tarball_bytes() -> bytes:
+    """Build a tar.gz of <repo>/agent/ into memory (buffered so it can be signed)."""
+    agent_dir = Path(__file__).resolve().parents[2] / "agent"
+    if not agent_dir.is_dir():
+        raise FileNotFoundError(f"agent/ not found at {agent_dir}")
+    proc = subprocess.run(
+        ["tar", "-czf", "-",
+         "--exclude=__pycache__", "--exclude=*.pyc",
+         "--exclude=venv", "--exclude=.pytest_cache",
+         "agent"],
+        cwd=str(agent_dir.parent),
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+    )
+    if proc.returncode != 0:
+        raise RuntimeError(f"tar failed: {proc.stderr.decode('utf-8', 'replace')[:200]}")
+    return proc.stdout
+
+
+def _sign_tarball(tgz: bytes, ca_key) -> str:
+    """RSA-PKCS1v15/SHA-256 sign the tarball bytes with the CA key; base64 result."""
+    from cryptography.hazmat.primitives import hashes
+    from cryptography.hazmat.primitives.asymmetric import padding
+    sig = ca_key.sign(tgz, padding.PKCS1v15(), hashes.SHA256())
+    return base64.b64encode(sig).decode("ascii")
+
+
 def _agent_tarball():
-    """Stream a freshly-built tarball of <repo>/agent/ to an approved agent.
+    """Serve a freshly-built, CA-signed tarball of <repo>/agent/ to an approved agent.
     Agent bearer auth; the agent's install.sh hits this on --update so the
     manager (not GitHub) is the source of truth. Private repo stays private,
     no GitHub credentials needed on agent hosts."""
@@ -1118,35 +1145,27 @@ def _agent_tarball():
     if not agent:
         return jsonify({"ok": False, "error": "invalid token or not approved"}), 401
 
-    import pathlib
-    agent_dir = pathlib.Path(__file__).resolve().parents[2] / "agent"
-    if not agent_dir.is_dir():
-        return jsonify({"ok": False, "error": f"agent/ not found at {agent_dir}"}), 500
+    try:
+        tgz = _build_agent_tarball_bytes()
+    except FileNotFoundError as e:
+        log.error("agent tarball build failed: %s", e)
+        return jsonify({"ok": False, "error": "agent/ source directory missing"}), 500
+    except Exception as e:
+        log.error("agent tarball build failed: %s", e)
+        return jsonify({"ok": False, "error": "tarball build failed"}), 500
 
-    def gen():
-        # Run from the parent so paths inside the tarball start with "agent/".
-        proc = subprocess.Popen(
-            ["tar", "-czf", "-",
-             "--exclude=__pycache__", "--exclude=*.pyc",
-             "--exclude=venv", "--exclude=.pytest_cache",
-             "agent"],
-            cwd=str(agent_dir.parent),
-            stdout=subprocess.PIPE,
-        )
-        try:
-            while True:
-                chunk = proc.stdout.read(65536)
-                if not chunk:
-                    break
-                yield chunk
-        finally:
-            with best_effort("agent tar: close proc stdout", log=log):
-                proc.stdout.close()
-            proc.wait()
+    try:
+        _ca_cert, ca_key, _pki = _deps.pki_ensure_ca()
+        sig_b64 = _sign_tarball(tgz, ca_key)
+    except Exception as e:
+        log.error("agent tarball signing failed: %s", e)
+        return jsonify({"ok": False, "error": "tarball signing unavailable"}), 500
 
-    return Response(gen(), mimetype="application/gzip", headers={
+    return Response(tgz, mimetype="application/gzip", headers={
         "Content-Disposition": "attachment; filename=agent.tar.gz",
         "Cache-Control": "no-store",
+        "X-Agent-Tarball-Sig": sig_b64,
+        "X-Agent-Tarball-Sig-Alg": "rsa-pkcs1-sha256",
     })
 
 
@@ -1502,6 +1521,28 @@ def _agents_issue_cert(agent_id: str):
     })
 
 
+def mark_agents_for_cert_reissue() -> "list[dict]":
+    """Set force_cert_reissue on every approved agent and persist it.
+
+    Non-HTTP helper shared by the push-ca-to-agents admin view and the
+    manager-import identity-restore flow. Returns the list of agents marked.
+    """
+    with _agents_lock:
+        data = load_agents()
+        agents = (data.get("agents") or {})
+        marked: "list[dict]" = []
+        for aid, a in agents.items():
+            if a.get("status") != "approved":
+                continue
+            a["force_cert_reissue"] = True
+            marked.append({"agent_id": aid,
+                           "hostname": a.get("hostname") or "",
+                           "bind_url": a.get("bind_url") or ""})
+        if marked:
+            save_agents(data)
+    return marked
+
+
 def _admin_push_ca_to_agents():
     """Force every approved agent to pull a fresh cert+key+CA bundle on its
     next heartbeat ack. Use after rotating the manager's internal CA — the
@@ -1518,19 +1559,7 @@ def _admin_push_ca_to_agents():
     deny = _deps.require_admin()
     if deny is not None:
         return deny
-    with _agents_lock:
-        data = load_agents()
-        agents = (data.get("agents") or {})
-        marked: "list[dict]" = []
-        for aid, a in agents.items():
-            if a.get("status") != "approved":
-                continue
-            a["force_cert_reissue"] = True
-            marked.append({"agent_id": aid,
-                           "hostname": a.get("hostname") or "",
-                           "bind_url": a.get("bind_url") or ""})
-        if marked:
-            save_agents(data)
+    marked = mark_agents_for_cert_reissue()
     # CA fingerprint for the operator to verify against agent-side
     # tls-ca.pem after the heartbeat round-trip lands.
     ca_fp = ""

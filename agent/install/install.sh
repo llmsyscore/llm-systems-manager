@@ -737,6 +737,46 @@ _pip_install_if_enabled() {
   return 0
 }
 
+# _verify_tarball_sig TARBALL HEADERS_FILE CA_FILE ALLOW_INSECURE — verify CA signature
+#   before extract; mandatory unless ALLOW_INSECURE=1 and no pinned CA. rc 0 ok, 1 reject.
+_verify_tarball_sig() {
+  local tarball="$1" headers="$2" ca="$3" allow_insecure="$4"
+  local d; d="$(dirname "$tarball")"
+  local sig_b64
+  sig_b64="$(awk -F': ' 'tolower($1)=="x-agent-tarball-sig"{gsub(/\r/,"",$2); v=$2} END{print v}' "$headers" 2>/dev/null)"
+  if [[ ! -f "$ca" ]]; then
+    if [[ "$allow_insecure" == "1" ]]; then
+      echo "  ⚠ no pinned CA ($ca) + LLMSYS_ALLOW_INSECURE_UPDATE=1 — skipping tarball signature check" >&2
+      return 0
+    fi
+    echo "  ⚠ cannot verify update signature: pinned CA $ca missing — start the agent service so a heartbeat delivers the CA, then retry" >&2
+    return 1
+  fi
+  if [[ -z "$sig_b64" ]]; then
+    echo "  ⚠ manager did not sign the tarball (no X-Agent-Tarball-Sig header) — refusing update" >&2
+    return 1
+  fi
+  if ! command -v openssl >/dev/null 2>&1; then
+    echo "  ⚠ openssl not available to verify the update signature — refusing update" >&2
+    return 1
+  fi
+  if ! printf '%s' "$sig_b64" | openssl base64 -d -A -out "$d/tarball.sig" 2>/dev/null || \
+     [[ ! -s "$d/tarball.sig" ]]; then
+    echo "  ⚠ malformed X-Agent-Tarball-Sig header — refusing update" >&2
+    return 1
+  fi
+  if ! openssl x509 -in "$ca" -pubkey -noout > "$d/ca-pub.pem" 2>/dev/null; then
+    echo "  ⚠ could not extract public key from $ca — refusing update" >&2
+    return 1
+  fi
+  if ! openssl dgst -sha256 -verify "$d/ca-pub.pem" -signature "$d/tarball.sig" "$tarball" >/dev/null 2>&1; then
+    echo "  ⚠ tarball signature verification FAILED — refusing update (tampering, or the manager CA changed: run push-ca-to-agents and retry)" >&2
+    return 1
+  fi
+  echo "  ✓ tarball signature verified against pinned CA"
+  return 0
+}
+
 # _fetch_agent_into DEST USER
 #   Download agent/ as a tarball from the manager (GET /api/agent-tarball,
 #   bearer-auth with the agent's registry token), extract only the agent/
@@ -789,9 +829,19 @@ _fetch_agent_into() {
   # The bearer header travels in a curl -K config file, not argv.
   printf 'header = "Authorization: Bearer %s"\n' "$tok" > "$tmpdir/curl-auth.cfg"
   echo "  Downloading agent/ from $mgr_url/api/agent-tarball"
-  if ! curl -fsSL -K "$tmpdir/curl-auth.cfg" \
+  if ! curl -fsSL -K "$tmpdir/curl-auth.cfg" -D "$tmpdir/resp-headers" \
             "$mgr_url/api/agent-tarball" -o "$tmpdir/agent.tar.gz"; then
     echo "  ⚠ download failed from $mgr_url/api/agent-tarball" >&2
+    rm -rf "$tmpdir"
+    return 1
+  fi
+
+  # Verify the manager's CA signature over the tarball before touching it.
+  local _ca_file; _ca_file="$(_yaml_scalar "$cfg" TLS_CA_FILE)"
+  [[ -z "$_ca_file" ]] && _ca_file="data/tls-ca.pem"
+  [[ "$_ca_file" != /* ]] && _ca_file="$INSTALL_DIR/$_ca_file"
+  if ! _verify_tarball_sig "$tmpdir/agent.tar.gz" "$tmpdir/resp-headers" \
+                           "$_ca_file" "${LLMSYS_ALLOW_INSECURE_UPDATE:-0}"; then
     rm -rf "$tmpdir"
     return 1
   fi

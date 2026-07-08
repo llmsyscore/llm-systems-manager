@@ -153,7 +153,7 @@ def _local_hostname() -> str:
 # banner reads it. Bump suffix (-1, -2, …) for same-day iterations; roll
 # the date for a new day's first change.
 # ---------------------------------------------------------------------------
-__version__ = "v2026.07.07-4"
+__version__ = "v2026.07.08-3"
 
 # Wall-clock at first import (Cheroot main process); the shutdown banner
 # reads it for the uptime line.
@@ -3834,19 +3834,32 @@ def admin_import_manager_apply():
             files["config/llm-systems.toml"] = new_text.encode("utf-8")
         except Exception as e:
             return _err_json("TOML patch failed", 400, exc=e)
+    ca_restored = "data/internal-ca.crt" in files
     try:
         result = _import_apply_manager(files)
     except Exception as e:
         log.exception("manager import failed")
         return _err_json("internal error", 500, exc=e)
+    ca_repush_marked = 0
+    if ca_restored:
+        # Mark every approved agent for cert-reissue, same as push-ca-to-agents.
+        # Restore must still succeed even if this fails; log loudly if it does.
+        try:
+            ca_repush_marked = len(agent_registry.mark_agents_for_cert_reissue())
+        except Exception:
+            log.warning("import: failed to mark agents for CA re-push after "
+                        "identity restore", exc_info=True)
+            ca_repush_marked = 0
     log.warning("manager import applied by %s: categories=%s, %d files written, "
-                "%d skipped (filtered out), backups=%s, patched=%s",
+                "%d skipped (filtered out), backups=%s, patched=%s, ca_repush_marked=%s",
                 flask_request.remote_addr, ",".join(categories),
                 len(result["written"]), len(skipped), result["ts"],
-                ",".join(patched_keys) or "none")
+                ",".join(patched_keys) or "none",
+                ca_repush_marked if ca_restored else "n/a")
     return jsonify({"ok": True, **result, "patched_toml_keys": patched_keys,
                     "categories_applied": categories,
                     "skipped_by_category": skipped,
+                    "ca_repush_marked": ca_repush_marked if ca_restored else None,
                     "note": "Restart the manager service for the imported "
                             "config + agent registry to take effect."})
 
