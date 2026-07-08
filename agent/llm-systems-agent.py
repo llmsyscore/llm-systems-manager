@@ -60,7 +60,7 @@ except ImportError:
             os.chmod(tmp, mode)
         tmp.replace(p)
 
-VERSION = "v2026.07.07-5"
+VERSION = "v2026.07.07-6"
 
 
 def _detect_install_dir() -> str:
@@ -237,15 +237,16 @@ def _probe_and_autoconfigure(cfg: "AgentConfig") -> None:
         )
     except Exception:
         sd_proc_ok = False
-    sd_http_ok, sd_http_msg = _probe_http("http://127.0.0.1:1234/")
+    sd_url = f"http://127.0.0.1:{cfg.IMGGEN_PORT}/"
+    sd_http_ok, sd_http_msg = _probe_http(sd_url)
     if sd_proc_ok or sd_http_ok:
         cfg.IMGGEN_ENABLED = True
         print("  ✓ image generation (sd.cpp) detected")
         print(f"      proc  sd-server                        {'running' if sd_proc_ok else 'not found'}")
-        print(f"      http  http://127.0.0.1:1234/           {('reachable — ' + sd_http_msg) if sd_http_ok else 'unreachable'}")
+        print(f"      http  {sd_url:<33}{('reachable — ' + sd_http_msg) if sd_http_ok else 'unreachable'}")
     else:
         print("  ✗ image generation (sd.cpp) not detected")
-        print("      tried proc=sd-server, http=127.0.0.1:1234")
+        print(f"      tried proc=sd-server, http={sd_url}")
 
     if found["llama"] and cfg.AGENT_OS == "linux":
         perf_ok, perf_state = _probe_systemd_unit(cfg.PERF_TARGET_AWAKE)
