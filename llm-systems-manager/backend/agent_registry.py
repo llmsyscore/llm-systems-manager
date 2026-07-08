@@ -1520,6 +1520,28 @@ def _agents_issue_cert(agent_id: str):
     })
 
 
+def mark_agents_for_cert_reissue() -> "list[dict]":
+    """Set force_cert_reissue on every approved agent and persist it.
+
+    Non-HTTP helper shared by the push-ca-to-agents admin view and the
+    manager-import identity-restore flow. Returns the list of agents marked.
+    """
+    with _agents_lock:
+        data = load_agents()
+        agents = (data.get("agents") or {})
+        marked: "list[dict]" = []
+        for aid, a in agents.items():
+            if a.get("status") != "approved":
+                continue
+            a["force_cert_reissue"] = True
+            marked.append({"agent_id": aid,
+                           "hostname": a.get("hostname") or "",
+                           "bind_url": a.get("bind_url") or ""})
+        if marked:
+            save_agents(data)
+    return marked
+
+
 def _admin_push_ca_to_agents():
     """Force every approved agent to pull a fresh cert+key+CA bundle on its
     next heartbeat ack. Use after rotating the manager's internal CA — the
@@ -1536,19 +1558,7 @@ def _admin_push_ca_to_agents():
     deny = _deps.require_admin()
     if deny is not None:
         return deny
-    with _agents_lock:
-        data = load_agents()
-        agents = (data.get("agents") or {})
-        marked: "list[dict]" = []
-        for aid, a in agents.items():
-            if a.get("status") != "approved":
-                continue
-            a["force_cert_reissue"] = True
-            marked.append({"agent_id": aid,
-                           "hostname": a.get("hostname") or "",
-                           "bind_url": a.get("bind_url") or ""})
-        if marked:
-            save_agents(data)
+    marked = mark_agents_for_cert_reissue()
     # CA fingerprint for the operator to verify against agent-side
     # tls-ca.pem after the heartbeat round-trip lands.
     ca_fp = ""

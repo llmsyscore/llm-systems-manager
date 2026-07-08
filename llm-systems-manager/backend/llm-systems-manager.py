@@ -3843,9 +3843,13 @@ def admin_import_manager_apply():
     ca_repush_marked = 0
     if ca_restored:
         # Mark every approved agent for cert-reissue, same as push-ca-to-agents.
-        with best_effort("import: mark agents for CA re-push after identity restore", log=log):
-            resp = agent_registry._admin_push_ca_to_agents()
-            ca_repush_marked = (resp.get_json() or {}).get("marked_count", 0)
+        # Restore must still succeed even if this fails; log loudly if it does.
+        try:
+            ca_repush_marked = len(agent_registry.mark_agents_for_cert_reissue())
+        except Exception:
+            log.warning("import: failed to mark agents for CA re-push after "
+                        "identity restore", exc_info=True)
+            ca_repush_marked = 0
     log.warning("manager import applied by %s: categories=%s, %d files written, "
                 "%d skipped (filtered out), backups=%s, patched=%s, ca_repush_marked=%s",
                 flask_request.remote_addr, ",".join(categories),
