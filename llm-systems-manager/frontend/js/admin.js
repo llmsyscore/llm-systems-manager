@@ -2167,3 +2167,117 @@ async function adminUserDelete(name) {
   if (!ok) return;
   _adminUsersApi('/api/admin/users/' + encodeURIComponent(name), { method: 'DELETE' }, name + ' deleted');
 }
+
+// ─────────────────────────────────────────────────────────────────────────
+// Admin action audit log (#217)
+// ─────────────────────────────────────────────────────────────────────────
+const _ADMIN_AUDIT_PAGE = 100;
+let _adminAuditOffset = 0;
+let _adminAuditTotal = 0;
+
+function _adminAuditRow(e) {
+  const when = e.ts ? new Date(e.ts).toLocaleString() : '—';
+  const outcomeCls = e.outcome === 'ok' ? 'status--ok'
+    : e.outcome === 'denied' ? 'status--crit' : 'status--warn';
+  return `<tr>
+    <td style="white-space:nowrap;">${adminEsc(when)}</td>
+    <td>${adminEsc(e.actor || '—')}${e.role && e.role !== 'admin' ? ' <span class="adm-muted">(' + adminEsc(e.role) + ')</span>' : ''}</td>
+    <td title="${adminEsc((e.method || '') + ' ' + (e.path || ''))}">${adminEsc(e.action || '—')}</td>
+    <td style="word-break:break-all;">${adminEsc(e.target || '—')}</td>
+    <td>${adminEsc(e.ip || '—')}</td>
+    <td style="text-align:right;"><span class="status ${outcomeCls} status--square">${adminEsc(e.outcome || '?')} ${e.status || ''}</span></td>
+  </tr>`;
+}
+
+async function adminAuditLoad(offset) {
+  if (offset != null) _adminAuditOffset = Math.max(0, offset);
+  const tbody = document.getElementById('adminAuditTbody');
+  const status = document.getElementById('adminAuditStatus');
+  try {
+    const r = await fetch(`/api/admin/audit-log?limit=${_ADMIN_AUDIT_PAGE}&offset=${_adminAuditOffset}`);
+    const d = await r.json();
+    if (!r.ok || !d.ok) throw new Error(d.error || ('HTTP ' + r.status));
+    _adminAuditTotal = d.total || 0;
+    const entries = d.entries || [];
+    tbody.innerHTML = entries.length
+      ? entries.map(_adminAuditRow).join('')
+      : '<tr><td colspan="6" style="padding:14px;color:#7e8a9c;text-align:center;">No audit entries yet.</td></tr>';
+    if (status) status.textContent = _adminAuditTotal + ' entries · updated ' + new Date().toLocaleTimeString();
+    const info = document.getElementById('adminAuditPageInfo');
+    if (info) info.textContent = _adminAuditTotal
+      ? `${_adminAuditOffset + 1}–${Math.min(_adminAuditOffset + entries.length, _adminAuditTotal)} of ${_adminAuditTotal}`
+      : '';
+    const newer = document.getElementById('adminAuditNewer');
+    const older = document.getElementById('adminAuditOlder');
+    if (newer) newer.disabled = _adminAuditOffset <= 0;
+    if (older) older.disabled = _adminAuditOffset + _ADMIN_AUDIT_PAGE >= _adminAuditTotal;
+  } catch (e) {
+    if (status) status.textContent = 'load failed: ' + e.message;
+    if (tbody) tbody.innerHTML = '<tr><td colspan="6" style="padding:14px;color:#7e8a9c;text-align:center;">Failed to load audit log.</td></tr>';
+  }
+}
+
+function adminAuditPage(dir) {
+  const next = _adminAuditOffset + dir * _ADMIN_AUDIT_PAGE;
+  if (next < 0 || next >= Math.max(_adminAuditTotal, 1)) return;
+  adminAuditLoad(next);
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// Scheduled backups status (#218)
+// ─────────────────────────────────────────────────────────────────────────
+async function adminLoadBackupStatus() {
+  const pill = document.getElementById('adminSchedBackupPill');
+  const body = document.getElementById('adminSchedBackupBody');
+  const stamp = document.getElementById('adminSchedBackupRefresh');
+  if (!pill || !body) return;
+  try {
+    const r = await fetch('/api/admin/backup-status');
+    const d = await r.json();
+    if (!r.ok || !d.ok) throw new Error(d.error || ('HTTP ' + r.status));
+    const last = d.last || {};
+    let cls = 'status--muted', label = 'disabled';
+    if (d.enabled && !d.scheduler_running) { cls = 'status--crit'; label = 'not running'; }
+    else if (d.enabled) {
+      if (last.ok === true) { cls = 'status--ok'; label = 'ok'; }
+      else if (last.error) { cls = 'status--crit'; label = 'failed'; }
+      else { cls = 'status--warn'; label = 'pending'; }
+    }
+    pill.className = 'status ' + cls + ' status--square';
+    pill.textContent = label;
+    const lines = [];
+    if (!d.enabled) {
+      lines.push('Scheduler disabled — enable via [manager.backup] in llm-systems.toml.');
+    } else if (!d.scheduler_running) {
+      lines.push('Scheduler is NOT running: ' + adminEsc(d.disabled_reason || 'unknown reason') +
+                 ' — fix [manager.backup] and restart the manager.');
+    } else {
+      lines.push(`Every ${d.interval_hours}h · keep last ${d.keep_last} · ` +
+                 (d.encrypted ? 'encrypted' : '<b>unencrypted</b> (set [manager.backup].passphrase to encrypt)'));
+      if (last.ts) {
+        lines.push(`Last backup: ${new Date(last.ts * 1000).toLocaleString()} — ` +
+                   (last.ok ? `${adminEsc(last.file || '')} (${_fmtBytesShort(last.bytes)}, ${last.files || '?'} files)`
+                            : `FAILED: ${adminEsc(last.error || 'unknown error')}`));
+      } else {
+        lines.push('No backup recorded yet (first run happens shortly after start).');
+      }
+      if (d.next_due_ts) lines.push('Next due: ' + new Date(d.next_due_ts * 1000).toLocaleString());
+      if (d.mirror_dir) {
+        lines.push('Mirror: ' + adminEsc(d.mirror_dir) +
+                   (last.mirrored === false ? ` — copy FAILED: ${adminEsc(last.mirror_error || '')}` : ''));
+      }
+      const files = d.backups || [];
+      if (files.length) {
+        lines.push(files.slice(0, 5).map(b =>
+          `${adminEsc(b.file)} <span class="adm-muted">(${_fmtBytesShort(b.bytes)})</span>`).join('<br>'));
+        if (files.length > 5) lines.push(`… and ${files.length - 5} more`);
+      }
+    }
+    body.innerHTML = lines.map(l => `<div style="margin-top:4px;">${l}</div>`).join('');
+    if (stamp) stamp.textContent = 'updated ' + new Date().toLocaleTimeString();
+  } catch (e) {
+    pill.className = 'status status--muted status--square';
+    pill.textContent = '—';
+    body.textContent = 'Status unavailable: ' + e.message;
+  }
+}

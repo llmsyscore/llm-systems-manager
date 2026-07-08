@@ -66,6 +66,8 @@ def _require_ctx():
 _llama_api_probe_cache: dict[str, Any] = {"ts": 0.0, "result": "unknown"}
 _LLAMA_METRICS_IDLE_THRESHOLD_S = 60
 _LLAMA_FAIL_THRESHOLD = 10
+# Cap on the /props chat_template text carried in each heartbeat sample.
+_LLAMA_CHAT_TEMPLATE_MAX_CHARS = 2000
 
 _llama_info_cache: dict[str, Any] = {}
 _llama_info_last_poll: float = 0.0
@@ -280,6 +282,11 @@ def collect_llama_for_metrics() -> dict[str, Any]:
         "sse_status": None,
         "sse_connected": False,
         "download_progress": None,
+        "chat_template": None,
+        "chat_template_len": None,
+        "modalities": None,
+        "total_slots": None,
+        "is_sleeping": None,
     }
 
     sse_snap = dict(_require_ctx().state.get("llama_sse") or {})
@@ -335,6 +342,33 @@ def collect_llama_for_metrics() -> dict[str, Any]:
             llama["state"] = "unknown"
         _llama_info_cache = llama
         return llama
+
+    # /props is idle-timer-exempt like /v1/models; safe to poll while sleeping.
+    try:
+        presp = requests.get(
+            f"{api_base}/props",
+            timeout=2,
+            headers={"Authorization": "Bearer no-key"},
+        )
+        if presp.ok:
+            props = presp.json() or {}
+            tmpl = props.get("chat_template")
+            if isinstance(tmpl, str) and tmpl:
+                llama["chat_template"] = tmpl[:_LLAMA_CHAT_TEMPLATE_MAX_CHARS]
+                llama["chat_template_len"] = len(tmpl)
+            mods = props.get("modalities")
+            if isinstance(mods, dict):
+                llama["modalities"] = {k: bool(v) for k, v in mods.items()}
+            n_slots = props.get("total_slots")
+            if isinstance(n_slots, int):
+                llama["total_slots"] = n_slots
+            if isinstance(props.get("is_sleeping"), bool):
+                llama["is_sleeping"] = props["is_sleeping"]
+                # Direct API sleep signal corroborates the state-file value.
+                if props["is_sleeping"]:
+                    llama["sleeping"] = True
+    except Exception as e:
+        log.debug("llama /props: %s", e)
 
     # /metrics + /slots reset llama-server's sleep timer; skip while sleeping.
     if state == "sleeping":

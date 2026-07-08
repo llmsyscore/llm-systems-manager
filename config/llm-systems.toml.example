@@ -195,6 +195,37 @@ lockout_duration_s = 900
 # One of: "teal" | "indigo" | "forest" | "steel" (unknown → indigo).
 palette = "indigo"
 
+[manager.backup]
+# Scheduled automatic backups: the manager writes its export archive (same
+# format as Admin → Backup & Restore → Export) to data/backups/ on an
+# interval, pruning old archives past keep_last. Archives are UNENCRYPTED
+# unless passphrase is set (12+ chars) — set one if backups leave this host.
+enabled = true
+interval_hours = 24.0                                    # 0 disables the scheduler
+keep_last = 7                                            # archives retained after pruning
+# ★ Secret (when set). Optional AES-256-GCM passphrase for scheduled archives;
+# also required to import them. Blank = plaintext archives.
+passphrase = ""
+# Optional second directory (e.g. a mounted NAS path) each archive is copied to.
+mirror_dir = ""
+
+
+# ────────────────────────────── OPENCLAW ──────────────────────────────────
+# Cost analytics for OpenClaw agents (Dashboard → OpenClaw sub-tab).
+[openclaw]
+# Monthly budget ceiling in USD for the whole fleet's projected spend.
+# > 0 enables: the manager pushes budget metrics (source "openclaw") to the
+# alarm engine and seeds "OpenClaw budget" rules at the AE's next start, so
+# crossing the warning/exceeded thresholds notifies via the configured
+# channels (email/webhook/Discord). 0 disables. Rules seed ONCE — changing
+# these values later means editing/deleting the seeded rules in the alarms UI.
+monthly_budget_usd = 0.0
+budget_warning_pct = 80.0                                # warn at this % of budget
+# Also alert when a session's cost is anomalous (>2x rolling average):
+# seeds an "OpenClaw cost anomaly" rule on the anomaly-count metric.
+notify_cost_anomalies = false
+metrics_push_interval_s = 300.0                          # budget metric push cadence
+
 
 # ───────────────────────────── ALARM ENGINE ───────────────────────────────
 # FastAPI service on port 8081. Owns alert rule evaluation, notification

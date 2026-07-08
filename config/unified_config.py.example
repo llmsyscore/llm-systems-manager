@@ -187,6 +187,19 @@ class ManagerBranding(BaseModel):
     palette: str = "indigo"
 
 
+class ManagerBackup(BaseModel):
+    """Scheduled automatic backups (#218): periodic manager export archives
+    written under data/backups/ with retention pruning."""
+    model_config = _MODEL_CFG
+    enabled: bool = True
+    interval_hours: float = 24.0
+    keep_last: int = 7
+    # Optional passphrase; blank = unencrypted archives (local-disk backups).
+    passphrase: str = ""
+    # Optional second directory each finished archive is copied to.
+    mirror_dir: str = ""
+
+
 class ManagerConfig(BaseModel):
     model_config = _MODEL_CFG
     host: str = "0.0.0.0"
@@ -242,6 +255,7 @@ class ManagerConfig(BaseModel):
     security: ManagerSecurity = Field(default_factory=ManagerSecurity)
     auth: ManagerAuth = Field(default_factory=ManagerAuth)
     branding: ManagerBranding = Field(default_factory=ManagerBranding)
+    backup: ManagerBackup = Field(default_factory=ManagerBackup)
 
 
 # ---------------------------------------------------------------------------
@@ -388,6 +402,19 @@ class AlarmEngineConfig(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# [openclaw]
+# ---------------------------------------------------------------------------
+class OpenClawConfig(BaseModel):
+    """OpenClaw cost-budget alerting (#216). monthly_budget_usd <= 0 disables
+    budget metrics + seeded alarm rules."""
+    model_config = _MODEL_CFG
+    monthly_budget_usd: float = 0.0
+    budget_warning_pct: float = 80.0
+    notify_cost_anomalies: bool = False
+    metrics_push_interval_s: float = 300.0
+
+
+# ---------------------------------------------------------------------------
 # [influxdb]
 # ---------------------------------------------------------------------------
 class InfluxDBTokens(BaseModel):
@@ -513,6 +540,7 @@ class Settings(BaseSettings):
 
     manager: ManagerConfig = Field(default_factory=ManagerConfig)
     alarm_engine: AlarmEngineConfig = Field(default_factory=AlarmEngineConfig)
+    openclaw: OpenClawConfig = Field(default_factory=OpenClawConfig)
     influxdb: InfluxDBConfig = Field(default_factory=InfluxDBConfig)
     notifications: NotificationsConfig = Field(default_factory=NotificationsConfig)
     paths: PathsConfig = Field(default_factory=PathsConfig)
@@ -552,6 +580,6 @@ __all__ = [
     "CONFIG_PATH",
     "Settings",
     # Sub-models (consumers rarely need these directly):
-    "ManagerConfig", "AlarmEngineConfig", "InfluxDBConfig",
+    "ManagerConfig", "AlarmEngineConfig", "OpenClawConfig", "InfluxDBConfig",
     "NotificationsConfig", "PathsConfig", "LoggingConfig", "AgentConfig",
 ]
