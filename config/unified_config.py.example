@@ -12,7 +12,7 @@ Consumers do `from config.unified_config import settings` and then read
 typed nested fields:
 
     settings.manager.port                       # int
-    settings.alarm_engine.timeouts.manager_proxy  # float
+    settings.alarm_engine.timeouts.influxdb_ping  # float
     settings.influxdb.tokens.metrics            # str (secret)
     settings.alarm_engine.history.downsampling.tiers  # list of Tier objects
 
@@ -263,11 +263,6 @@ class ManagerConfig(BaseModel):
 # ---------------------------------------------------------------------------
 class AlarmEngineTimeouts(BaseModel):
     model_config = _MODEL_CFG
-    manager_health: float = 1.5
-    manager_proxy: float = 10.0
-    manager_keepalive: float = 5.0
-    manager_status: float = 5.0
-    manager_metric_fetch: float = 3.0
     influxdb_ping: float = 2.0
     ws_send: float = 5.0
 
