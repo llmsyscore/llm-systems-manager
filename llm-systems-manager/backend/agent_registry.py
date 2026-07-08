@@ -1148,7 +1148,8 @@ def _agent_tarball():
     try:
         tgz = _build_agent_tarball_bytes()
     except FileNotFoundError as e:
-        return jsonify({"ok": False, "error": str(e)}), 500
+        log.error("agent tarball build failed: %s", e)
+        return jsonify({"ok": False, "error": "agent/ source directory missing"}), 500
     except Exception as e:
         log.error("agent tarball build failed: %s", e)
         return jsonify({"ok": False, "error": "tarball build failed"}), 500
