@@ -1108,6 +1108,34 @@ def _agents_whoami():
     })
 
 
+def _build_agent_tarball_bytes() -> bytes:
+    """Build a tar.gz of <repo>/agent/ into memory (buffered so it can be signed)."""
+    import pathlib
+    agent_dir = pathlib.Path(__file__).resolve().parents[2] / "agent"
+    if not agent_dir.is_dir():
+        raise FileNotFoundError(f"agent/ not found at {agent_dir}")
+    proc = subprocess.run(
+        ["tar", "-czf", "-",
+         "--exclude=__pycache__", "--exclude=*.pyc",
+         "--exclude=venv", "--exclude=.pytest_cache",
+         "agent"],
+        cwd=str(agent_dir.parent),
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+    )
+    if proc.returncode != 0:
+        raise RuntimeError(f"tar failed: {proc.stderr.decode('utf-8', 'replace')[:200]}")
+    return proc.stdout
+
+
+def _sign_tarball(tgz: bytes, ca_key) -> str:
+    """RSA-PKCS1v15/SHA-256 sign the tarball bytes with the CA key; base64 result."""
+    import base64
+    from cryptography.hazmat.primitives import hashes
+    from cryptography.hazmat.primitives.asymmetric import padding
+    sig = ca_key.sign(tgz, padding.PKCS1v15(), hashes.SHA256())
+    return base64.b64encode(sig).decode("ascii")
+
+
 def _agent_tarball():
     """Stream a freshly-built tarball of <repo>/agent/ to an approved agent.
     Agent bearer auth; the agent's install.sh hits this on --update so the
@@ -1118,35 +1146,26 @@ def _agent_tarball():
     if not agent:
         return jsonify({"ok": False, "error": "invalid token or not approved"}), 401
 
-    import pathlib
-    agent_dir = pathlib.Path(__file__).resolve().parents[2] / "agent"
-    if not agent_dir.is_dir():
-        return jsonify({"ok": False, "error": f"agent/ not found at {agent_dir}"}), 500
+    try:
+        tgz = _build_agent_tarball_bytes()
+    except FileNotFoundError as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
+    except Exception as e:
+        log.error("agent tarball build failed: %s", e)
+        return jsonify({"ok": False, "error": "tarball build failed"}), 500
 
-    def gen():
-        # Run from the parent so paths inside the tarball start with "agent/".
-        proc = subprocess.Popen(
-            ["tar", "-czf", "-",
-             "--exclude=__pycache__", "--exclude=*.pyc",
-             "--exclude=venv", "--exclude=.pytest_cache",
-             "agent"],
-            cwd=str(agent_dir.parent),
-            stdout=subprocess.PIPE,
-        )
-        try:
-            while True:
-                chunk = proc.stdout.read(65536)
-                if not chunk:
-                    break
-                yield chunk
-        finally:
-            with best_effort("agent tar: close proc stdout", log=log):
-                proc.stdout.close()
-            proc.wait()
+    try:
+        _ca_cert, ca_key, _pki = _deps.pki_ensure_ca()
+        sig_b64 = _sign_tarball(tgz, ca_key)
+    except Exception as e:
+        log.error("agent tarball signing failed: %s", e)
+        return jsonify({"ok": False, "error": "tarball signing unavailable"}), 500
 
-    return Response(gen(), mimetype="application/gzip", headers={
+    return Response(tgz, mimetype="application/gzip", headers={
         "Content-Disposition": "attachment; filename=agent.tar.gz",
         "Cache-Control": "no-store",
+        "X-Agent-Tarball-Sig": sig_b64,
+        "X-Agent-Tarball-Sig-Alg": "rsa-pkcs1-sha256",
     })
 
 
