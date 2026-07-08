@@ -23,11 +23,20 @@ def _stub_module(name: str, **attrs):
     return sys.modules[name]
 
 
+def _module_available(name: str) -> bool:
+    if name in sys.modules:
+        return sys.modules[name] is not None
+    try:
+        return importlib.util.find_spec(name) is not None
+    except (ImportError, ValueError):
+        return False
+
+
 # The agent test venv has no requests/fastapi (see conftest.py) — stub the
 # third-party imports so the full llama provider module can load.
-if importlib.util.find_spec("requests") is None:
+if not _module_available("requests"):
     _stub_module("requests", get=None, Session=object)
-if importlib.util.find_spec("fastapi") is None:
+if not _module_available("fastapi"):
     class _HTTPException(Exception):
         def __init__(self, status_code=500, detail=""):
             super().__init__(detail)
@@ -41,7 +50,7 @@ if importlib.util.find_spec("fastapi") is None:
     _stub_module("starlette")
     _stub_module("starlette.concurrency", run_in_threadpool=lambda f, *a, **k: f(*a, **k))
 
-if importlib.util.find_spec("psutil") is None:
+if not _module_available("psutil"):
     # collectors/__init__ pulls system.py (psutil); stub the whole package.
     _collectors = _stub_module("collectors")
     _collectors.__path__ = []
