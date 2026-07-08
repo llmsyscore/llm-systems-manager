@@ -762,7 +762,7 @@ if (( ${#SERVICES_TO_START[@]} > 0 )); then
   if [[ -t 0 ]]; then
     read -rp "  Start them now? [Y/n] " START_NOW
   else
-    log "non-interactive — skipping start prompt; run systemctl manually."
+    log "non-interactive — starting services by default (no prompt)."
   fi
   case "$(printf '%s' "${START_NOW:-y}" | tr '[:upper:]' '[:lower:]')" in
     n|no)

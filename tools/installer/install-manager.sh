@@ -36,6 +36,10 @@ while [[ $# -gt 0 ]]; do
     *) die "install-manager.sh: unexpected argument '$1' (only --user USER is accepted)" ;;
   esac
 done
+# Reject non-POSIX usernames.
+if [[ ! "$LLMSYS_RUN_USER" =~ ^[a-z_][a-z0-9_-]{0,31}$ ]]; then
+  die "--user '$LLMSYS_RUN_USER' is not a valid POSIX username"
+fi
 export LLMSYS_RUN_USER LLMSYS_RUN_GROUP
 
 detect_os
