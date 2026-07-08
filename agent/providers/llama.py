@@ -705,7 +705,7 @@ def _llama_sse_update_snapshot(**fields: Any) -> None:
 
 def _llama_sse_apply_status(data: dict[str, Any]) -> None:
     status = llama_sse.status_value(data)
-    model_id = data.get("model") or data.get("id") or data.get("name")
+    model_id = llama_sse.model_id(data)
     new_state = llama_sse.sse_status_to_state(status)
     ctx = _require_ctx()
     changed = False
@@ -2240,6 +2240,19 @@ def _autotune_run_iter(model_id: str, fitt_mb: int, optional_params: dict,
                            "text": f"[autotune] SIGTERM error: {e}"})
 
     # Last GPU breakdown row found during shutdown is authoritative for free/total.
+    # Force-kill the group after a 30s deadline.
+    _drain_watchdog = None
+    if pgid is not None:
+        def _drain_kill(_pgid: int = pgid) -> None:
+            try:
+                os.killpg(_pgid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass  # group already exited
+            except Exception as e:
+                log.warning("autotune drain watchdog: killpg failed: %s", e)
+        _drain_watchdog = threading.Timer(30.0, _drain_kill)
+        _drain_watchdog.daemon = True
+        _drain_watchdog.start()
     with best_effort("autotune: drain shutdown stdout", log=log):
         for raw in iter(proc.stdout.readline, ""):
             if not raw:
@@ -2259,6 +2272,8 @@ def _autotune_run_iter(model_id: str, fitt_mb: int, optional_params: dict,
                         # ignore an unparseable counter; keep the prior value
                         try: ctx_fallback = int(mm2.group(1))
                         except ValueError: pass
+    if _drain_watchdog is not None:
+        _drain_watchdog.cancel()
 
     try:
         proc.wait(timeout=10)

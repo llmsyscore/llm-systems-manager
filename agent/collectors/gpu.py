@@ -172,7 +172,7 @@ def _lspci_amd_name() -> "str | None":
     if shutil.which("lspci") is None:
         return None
     try:
-        slot = _GPU_PATH.parent.name
+        slot = _GPU_PATH.resolve().name
         out = subprocess.check_output(
             ["lspci", "-s", slot, "-mm", "-nn"],
             text=True, timeout=3, stderr=subprocess.DEVNULL, close_fds=True,

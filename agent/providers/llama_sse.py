@@ -95,6 +95,12 @@ def progress_value(data: dict[str, Any]) -> Any:
     return None
 
 
+def model_id(data: dict[str, Any]) -> Optional[str]:
+    """First present model identifier: model, id, or name (inner envelope)."""
+    inner = _inner(data)
+    return inner.get("model") or inner.get("id") or inner.get("name")
+
+
 def event_kind(sse_event: str, data: dict[str, Any]) -> str:
     """Best-effort event name: SSE event field, else a type/event key in data."""
     if sse_event and sse_event != "message":
