@@ -1,0 +1,125 @@
+name: Install tests
+
+# Installer integration tests (#25): exercise tools/installer/install.sh
+# end-to-end on a systemd-capable VM runner.
+# - fresh-install: mode 1 (manager + alarm engine + InfluxDB + local agent)
+#   from the PR tree, then the ci-smoke oracle.
+# - upgrade: install the PR's base commit, then update.sh to the PR head;
+#   update.sh itself asserts each service self-reports the new version,
+#   and ci-smoke re-verifies. This is the only job that catches the
+#   "new agent/*.py missing from an install file-list → crash-loop only
+#   after upgrade" class of bug (gotcha #24).
+#
+# Heavy (~15 min/job), so gated by paths: to installer/agent/requirements
+# changes; use workflow_dispatch for a manual run on anything else. A
+# nightly schedule catches drift against upstream package repos.
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - "tools/installer/**"
+      - "agent/**"
+      - "**/requirements*.txt"
+      - ".github/workflows/install-test.yml"
+  schedule:
+    - cron: "17 6 * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: install-test-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  fresh-install:
+    name: fresh install (mode 1)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      # Non-TTY runs refuse to auto-apt missing prerequisites; provide them
+      # up front (the rest of the runner image already has git/curl/python3).
+      - name: Install prerequisites
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            jq rsync python3-venv wget gnupg ca-certificates openssl
+
+      # Non-interactive: prompts take detected defaults, services start by
+      # default, and the local agent installs after the manager is up.
+      # --no-self-update pins the run to the PR's installer, not upstream's.
+      - name: Run installer (mode 1)
+        run: sudo bash tools/installer/install.sh --mode 1 --no-self-update < /dev/null
+
+      - name: Smoke test
+        run: sudo bash tools/installer/ci-smoke.sh
+
+      - name: Collect service logs on failure
+        if: failure()
+        run: |
+          for u in influxdb llm-systems-alarm-engine llm-systems-manager llm-systems-agent; do
+            echo "════ journalctl -u $u ════"
+            sudo journalctl -u "$u" -n 200 --no-pager || true
+          done
+
+  upgrade:
+    name: upgrade (base → head)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      # On pull_request, base.sha is the upgrade-from baseline; scheduled and
+      # manual runs fall back to main → main (a no-op-update drift check).
+      - name: Checkout base (upgrade-from)
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.base.sha || 'main' }}
+          path: base
+
+      - name: Checkout head (upgrade-to)
+        uses: actions/checkout@v4
+        with:
+          path: head
+
+      - name: Install prerequisites
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            jq rsync python3-venv wget gnupg ca-certificates openssl
+
+      - name: Install baseline (mode 1)
+        working-directory: base
+        run: sudo bash tools/installer/install.sh --mode 1 --no-self-update < /dev/null
+
+      - name: Record pre-upgrade manager version
+        run: |
+          curl -fsS -m 10 http://127.0.0.1:5000/health | jq -r .version | tee /tmp/version-before
+
+      # REPO_SRC points update.sh at the PR-head checkout so it deploys the
+      # code under test instead of cloning upstream main. --yes auto-confirms
+      # the per-component sync/restart prompts; update.sh then verifies each
+      # restarted service self-reports the freshly deployed version and
+      # exits non-zero on mismatch or failed units.
+      - name: Upgrade to head
+        run: sudo REPO_SRC="$GITHUB_WORKSPACE/head" bash head/tools/installer/update.sh --yes
+
+      - name: Smoke test (post-upgrade)
+        run: sudo bash head/tools/installer/ci-smoke.sh
+
+      - name: Assert manager runs the head version
+        run: |
+          want="$(grep -E '^__version__' head/llm-systems-manager/backend/llm-systems-manager.py | sed -E 's/.*"([^"]+)".*/\1/')"
+          got="$(curl -fsS -m 10 http://127.0.0.1:5000/health | jq -r .version)"
+          echo "before=$(cat /tmp/version-before) after=$got head-source=$want"
+          test "$got" = "$want"
+
+      - name: Collect service logs on failure
+        if: failure()
+        run: |
+          for u in influxdb llm-systems-alarm-engine llm-systems-manager llm-systems-agent; do
+            echo "════ journalctl -u $u ════"
+            sudo journalctl -u "$u" -n 200 --no-pager || true
+          done
