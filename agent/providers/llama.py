@@ -2244,8 +2244,12 @@ def _autotune_run_iter(model_id: str, fitt_mb: int, optional_params: dict,
     _drain_watchdog = None
     if pgid is not None:
         def _drain_kill(_pgid: int = pgid) -> None:
-            try: os.killpg(_pgid, signal.SIGKILL)
-            except Exception: pass
+            try:
+                os.killpg(_pgid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass  # group already exited
+            except Exception as e:
+                log.warning("autotune drain watchdog: killpg failed: %s", e)
         _drain_watchdog = threading.Timer(30.0, _drain_kill)
         _drain_watchdog.daemon = True
         _drain_watchdog.start()
