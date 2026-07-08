@@ -249,7 +249,10 @@ INSTALL — system integration
   --no-sudoers
       Skip dropping /etc/sudoers.d/llm-systems-agent. Set this if the agent
       will not run perf controller or llama.cpp systemctl actions. Linux
-      only.
+      only. With llama enabled this also leaves the svcconfig helper
+      (llama ExecStart editor) uninstalled — /llama/server/svcconfig
+      reports unavailable, and root --update won't install the helper
+      while the sudoers opt-out is in place.
 
   --no-service
       Skip enabling the systemd unit (Linux) / launchd plist (macOS).
@@ -628,6 +631,14 @@ _svcconfig_wrapper_version() {
   local f="$1" v=""
   [[ -r "$f" ]] && v="$(sed -n 's/^# *SVCCONFIG_WRAPPER_VERSION=\([0-9][0-9]*\).*/\1/p' "$f" | head -1)"
   printf '%s' "${v:-0}"
+}
+
+# _svcconfig_wrapper_unit_path FILE
+#   Echo the UNIT_PATH baked into an installed wrapper, or empty.
+_svcconfig_wrapper_unit_path() {
+  local f="$1"
+  [[ -r "$f" ]] || return 0
+  sed -n "s/^UNIT_PATH='\(.*\)'\$/\1/p" "$f" | head -1
 }
 
 # _subst_tokens TEMPLATE_FILE TOKEN VALUE [TOKEN VALUE]... — render to stdout.
@@ -1115,30 +1126,54 @@ if $DO_UPDATE; then
   TMPL_DIR="$SRC_DIR/install"
 
   # Self-update runs unprivileged and cannot install/refresh the root-owned
-  # svcconfig helper or rewrite sudoers. On a llama host whose helper is missing
-  # OR older than the staged template, refuse to deploy new code and leave the
-  # current agent running until a one-time root install/update migrates the host.
+  # svcconfig helper or rewrite sudoers. On a llama host whose helper is missing,
+  # older than the staged template, or baked for a different unit, refuse to
+  # deploy new code until a one-time root install/update migrates the host.
   # (Aborting here is BEFORE the src/ wipe below, so the staged source stays put
   # for the operator to run the command we print.)
   _lu_guard="$(_resolved_llama_unit)"
   # Skip the guard only when llama is positively disabled — a leftover unit file
   # on a non-llama host must not block self-update. Fire on true/unknown.
   _llama_on="$(_yaml_scalar "$INSTALL_DIR/agent_config.yaml" LLAMA_ENABLED | tr '[:upper:]' '[:lower:]')"
+  _lu_unit_file="/etc/systemd/system/$_lu_guard"
   _wrap_bin=/usr/local/sbin/llm-svcconfig-apply
   _want_wrap_ver="$(_svcconfig_wrapper_version "$TMPL_DIR/llm-svcconfig-apply.sh.tmpl")"
   _have_wrap_ver="$(_svcconfig_wrapper_version "$_wrap_bin")"
   _wrap_stale=false
   { [[ ! -x "$_wrap_bin" ]] || (( _have_wrap_ver < _want_wrap_ver )); } && _wrap_stale=true
-  if $FROM_SELF_UPDATE && $_wrap_stale && [[ "$AGENT_OS" == "linux" \
-        && "$_llama_on" != "false" && -f "/etc/systemd/system/$_lu_guard" ]]; then
-    echo "ERROR: this update needs a one-time root install/update on THIS host." >&2
-    echo "  llama unit edits go through a root-owned helper" >&2
-    echo "  (/usr/local/sbin/llm-svcconfig-apply) that self-update can't install or" >&2
-    echo "  refresh without root (installed v$_have_wrap_ver, need v$_want_wrap_ver)." >&2
-    echo "  Refusing to deploy new code that would run against a stale/absent helper." >&2
-    echo "  The agent was NOT changed and keeps running. Run as root to migrate:" >&2
-    echo "      sudo bash \"$SRC_DIR/install/install.sh\" --update --no-pull" >&2
-    exit 1
+  # Also fires when the wrapper's baked unit path differs from the configured
+  # unit (renamed unit).
+  _have_unit_path="$(_svcconfig_wrapper_unit_path "$_wrap_bin")"
+  _wrap_mismatch=false
+  [[ -x "$_wrap_bin" && -n "$_have_unit_path" \
+        && "$_have_unit_path" != "$_lu_unit_file" ]] && _wrap_mismatch=true
+  if $FROM_SELF_UPDATE && { $_wrap_stale || $_wrap_mismatch; } && [[ "$AGENT_OS" == "linux" \
+        && "$_llama_on" != "false" && -f "$_lu_unit_file" ]]; then
+    if [[ ! -f /etc/sudoers.d/llm-systems-agent ]]; then
+      # No managed sudoers grants: the agent can't sudo the wrapper and a root
+      # --update won't install it, so warn and proceed instead of aborting.
+      echo "⚠ llama is enabled but /etc/sudoers.d/llm-systems-agent is absent, so"
+      echo "  llama unit edits (svcconfig) and restarts are unavailable. This is"
+      echo "  expected on a --no-sudoers install; if the file was removed by accident,"
+      echo "  or to enable svcconfig, re-run the root agent installer without"
+      echo "  --no-sudoers. Self-update proceeds."
+    else
+      echo "ERROR: this update needs a one-time root install/update on THIS host." >&2
+      if $_wrap_mismatch; then
+        echo "  The installed svcconfig helper is baked for:  $_have_unit_path" >&2
+        echo "  but the configured llama unit is:             $_lu_unit_file" >&2
+        echo "  Renaming LLAMA_SYSTEMD_UNIT requires a root update to re-bake the" >&2
+        echo "  helper and the sudoers grants." >&2
+      else
+        echo "  llama unit edits go through a root-owned helper" >&2
+        echo "  (/usr/local/sbin/llm-svcconfig-apply) that self-update can't install or" >&2
+        echo "  refresh without root (installed v$_have_wrap_ver, need v$_want_wrap_ver)." >&2
+      fi
+      echo "  Refusing to deploy new code that would run against a stale/absent helper." >&2
+      echo "  The agent was NOT changed and keeps running. Run as root to migrate:" >&2
+      echo "      sudo bash \"$SRC_DIR/install/install.sh\" --update --no-pull" >&2
+      exit 1
+    fi
   fi
 
   # Root --update: install the sudoers file + root-owned svcconfig helper BEFORE
@@ -3307,6 +3342,11 @@ if [[ "$AGENT_OS" == "linux" && "$SKIP_SUDOERS" == "false" \
       && "$ENABLE_LLAMA" != "true" && "$ENABLE_PERF" != "true" ]]; then
   echo "  ⓘ skipping sudoers (no llama, no perf controller — nothing for the agent to sudo)"
   SKIP_SUDOERS=true
+elif [[ "$AGENT_OS" == "linux" && "$SKIP_SUDOERS" == "true" \
+      && ( "$ENABLE_LLAMA" == "true" || "$ENABLE_PERF" == "true" ) ]]; then
+  _warn "--no-sudoers with llama/perf enabled: the agent's sudo-backed actions"
+  echo "    (managed unit restarts; for llama, ExecStart edits via svcconfig) will"
+  echo "    fail safe as unavailable. Re-run without --no-sudoers to enable them."
 fi
 
 # Linux-specific: visudo (for sudoers validation), systemctl

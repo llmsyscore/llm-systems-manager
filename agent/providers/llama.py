@@ -1201,6 +1201,17 @@ def _llama_svc_file_path() -> str:
     return f"/etc/systemd/system/{_require_ctx().config.LLAMA_SYSTEMD_UNIT}"
 
 
+def _svcconfig_wrapper_baked_unit_path() -> str:
+    """UNIT_PATH baked into the installed wrapper, or "" if unreadable."""
+    try:
+        for line in Path(_SVCCONFIG_WRAPPER).read_text().splitlines():
+            if line.startswith("UNIT_PATH='") and line.rstrip().endswith("'"):
+                return line.rstrip()[len("UNIT_PATH='"):-1]
+    except OSError:
+        pass
+    return ""
+
+
 def llama_svcconfig_get(authorization: Optional[str] = Header(default=None)) -> dict[str, Any]:
     _require_ctx().check_bearer(authorization); _llama_check_enabled()
     try:
@@ -1249,6 +1260,16 @@ def llama_svcconfig_post(body: dict, authorization: Optional[str] = Header(defau
         if not isinstance(t, str) or "\n" in t or "\r" in t:
             return {"ok": False, "error": "invalid ExecStart token (newline or non-string)"}
     payload = ("\n".join(tokens) + "\n").encode()
+
+    # Refuse when the wrapper targets a different unit file than the one
+    # configured — it would edit the wrong unit.
+    baked = _svcconfig_wrapper_baked_unit_path()
+    expected = _llama_svc_file_path()
+    if baked and baked != expected:
+        return {"ok": False,
+                "error": f"svcconfig helper is baked for {baked} but the configured "
+                         f"unit is {expected} — run a root agent install.sh --update "
+                         f"to re-bake the helper and sudoers for the renamed unit"}
 
     try:
         r = subprocess.run(

@@ -70,6 +70,8 @@ LLAMA_ENABLED: false
 # LLAMA_LOG_FILE:      ""    # llama-server log file, e.g. /usr/local/llama-server/llama-server.log
 # LLAMA_STATE_FILE:    "/tmp/llama-server-last-state"
 # LLAMA_SYSTEMD_UNIT:  "llama_server.service"
+#   Renaming this needs a root `install.sh --update` afterwards to re-bake
+#   the sudoers grants + svcconfig helper for the new unit name.
 # LLAMA_API_URL:       "http://localhost:8080"
 # LLAMA_BUILD_METHOD:  ""    # custom_script|source|release_binary|conda|homebrew (blank => custom_script)
 # LLAMA_BUILD_DIR:     ""    # managed install root for source/release_binary; blank => ~/.local/share/llama.cpp
