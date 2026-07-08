@@ -554,6 +554,12 @@ fi
 # shellcheck source=tools/installer/lib-common.sh
 . "$REPO_SRC/tools/installer/lib-common.sh"
 
+# Reject an install dir (env-overridable) whose chars would word-split or
+# corrupt the rendered systemd unit ExecStart / EnvironmentFile lines.
+if ! validate_install_dir "$LLMSYS_INSTALL_DIR"; then
+  die "LLMSYS_INSTALL_DIR must be absolute with no whitespace, quotes, or & < > \\ (got: '$LLMSYS_INSTALL_DIR')"
+fi
+
 # Apply --user override now that LLMSYS_RUN_USER has its lib-common default.
 # Export so every sub-installer (install-manager.sh, install-alarm-engine.sh,
 # install-config-bootstrap.sh) and ensure_runas_user pick it up.
@@ -655,9 +661,9 @@ export LLMSYS_INSTALL_MODE="$MODE"
 # unlinks it on exit so secrets never persist outside the live TOML.
 export LLMSYS_INFLUXDB_TOKEN_FILE="$(mktemp -t llmsys-influxdb-tokens.XXXXXX.env)"
 chmod 0600 "$LLMSYS_INFLUXDB_TOKEN_FILE"
-# Per-run apt-update sentinel; shared across the sub-installer processes so
-# the package index refreshes once per run, not once per sub-script.
-export LLMSYS_APT_STAMP="$(mktemp -u -t llmsys-apt-updated.XXXXXX)"
+# Per-run apt-update sentinel shared across sub-installers; created empty and
+# marked non-empty by apt_update_once so the index refreshes once per run.
+export LLMSYS_APT_STAMP="$(mktemp -t llmsys-apt-updated.XXXXXX)"
 trap 'rm -f "$LLMSYS_INFLUXDB_TOKEN_FILE" "$LLMSYS_APT_STAMP"' EXIT
 
 case "$MODE" in

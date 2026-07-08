@@ -19,6 +19,12 @@ LLMSYS_CLONE_TMP="${LLMSYS_CLONE_TMP:-/tmp/llm-systems-manager-install}"
 LLMSYS_RUN_USER="${LLMSYS_RUN_USER:-llmsys}"
 LLMSYS_RUN_GROUP="${LLMSYS_RUN_GROUP:-llmsys}"
 
+# validate_install_dir DIR — 0 iff DIR is absolute and free of whitespace,
+# quotes, and & < > \ that would corrupt a rendered unit ExecStart line.
+validate_install_dir() {
+  [[ "$1" == /* && "$1" != *[[:space:]\"\'\\\&\<\>]* ]]
+}
+
 # ── Logging ─────────────────────────────────────────────────────────────────
 if [[ -t 1 ]]; then
   LLMSYS_C_RED=$'\033[31m'
@@ -378,13 +384,13 @@ apt_update_with_clock_recovery() {
 : "${LLMSYS_APT_STAMP:=}"
 _APT_UPDATED=0
 apt_update_once() {
-  if [[ -n "$LLMSYS_APT_STAMP" && -e "$LLMSYS_APT_STAMP" ]] \
+  if [[ -n "$LLMSYS_APT_STAMP" && -s "$LLMSYS_APT_STAMP" ]] \
      || [[ "$_APT_UPDATED" == "1" ]]; then
     return 0
   fi
   apt_update_with_clock_recovery || return $?
   _APT_UPDATED=1
-  [[ -n "$LLMSYS_APT_STAMP" ]] && : > "$LLMSYS_APT_STAMP" 2>/dev/null || true
+  [[ -n "$LLMSYS_APT_STAMP" ]] && printf 'updated\n' > "$LLMSYS_APT_STAMP" 2>/dev/null || true
 }
 export _APT_UPDATED LLMSYS_APT_STAMP
 

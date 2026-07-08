@@ -653,6 +653,21 @@ _install_dir_chars_ok() {
   [[ "$1" == /* && "$1" != *[[:space:]\"\'\\\&\<\>]* ]]
 }
 
+# _xml_escape VALUE — emit VALUE with &, <, > escaped for a plist <string>.
+_xml_escape() {
+  local s="$1" out="" c i
+  for (( i=0; i<${#s}; i++ )); do
+    c="${s:i:1}"
+    case "$c" in
+      '&') out+="&amp;" ;;
+      '<') out+="&lt;" ;;
+      '>') out+="&gt;" ;;
+      *)   out+="$c" ;;
+    esac
+  done
+  printf '%s' "$out"
+}
+
 # _apply_sudoers_and_wrapper
 #   Render + visudo-validate + install the sudoers file and the root-owned
 #   svcconfig helper (Linux, privileged). Called from both fresh install and
@@ -1540,9 +1555,12 @@ PYEOF
       sudo -u "$USER_ARG" mkdir -p "$USER_HOME/Library/Logs/llm-systems-agent" 2>/dev/null || \
         mkdir -p "$USER_HOME/Library/Logs/llm-systems-agent"
       _subst_tokens "$TMPL_DIR/com.llm-systems-agent.plist.tmpl" \
-          '${AGENT_USER}' "$USER_ARG" \
-          '${AGENT_USER_HOME}' "$USER_HOME" \
-          '${AGENT_INSTALL_DIR}' "$INSTALL_DIR" > "$PLIST_DEST"
+          '${AGENT_USER}' "$(_xml_escape "$USER_ARG")" \
+          '${AGENT_USER_HOME}' "$(_xml_escape "$USER_HOME")" \
+          '${AGENT_INSTALL_DIR}' "$(_xml_escape "$INSTALL_DIR")" > "$PLIST_DEST"
+      if command -v plutil >/dev/null 2>&1 && ! plutil -lint "$PLIST_DEST" >/dev/null 2>&1; then
+        echo "  ⚠ plist failed plutil -lint: $PLIST_DEST" >&2
+      fi
       echo "  ✓ plist refreshed: $PLIST_DEST"
     fi
   fi
@@ -2883,8 +2901,10 @@ _detect_imggen() {
   # a) running sd-server process
   if _proc_running 'sd-server'; then
     detected="sd-server process running"
-  # b) HTTP probe on the well-known sd.cpp port
-  elif [[ "$(_probe_http_code http://127.0.0.1:1234/)" =~ ^(200|404)$ ]]; then
+  # b) HTTP probe on the well-known sd.cpp port, but only when LM Studio
+  #    (which also owns :1234 on lms_host/mixed roles) isn't enabled.
+  elif [[ "$ENABLE_LMS" != "true" ]] \
+       && [[ "$(_probe_http_code http://127.0.0.1:1234/)" =~ ^(200|404)$ ]]; then
     detected="HTTP responder on 127.0.0.1:1234"
   fi
 
@@ -2892,7 +2912,11 @@ _detect_imggen() {
     echo "      ✓ $detected"
     ENABLE_IMGGEN=true
   else
-    echo "      ✗ no sd-server process, nothing on :1234"
+    if [[ "$ENABLE_LMS" == "true" ]]; then
+      echo "      ✗ no sd-server process (skipped :1234 probe — LM Studio owns that port)"
+    else
+      echo "      ✗ no sd-server process, nothing on :1234"
+    fi
     if [[ -t 0 ]]; then
       read -rp "      Enable image generation capability anyway? [y/N] " REPLY
       case "$(printf '%s' "$REPLY" | tr '[:upper:]' '[:lower:]')" in
@@ -3829,9 +3853,12 @@ if ! $SKIP_SERVICE; then
     sudo -u "$USER_ARG" mkdir -p "$USER_HOME/Library/Logs/llm-systems-agent" 2>/dev/null || \
       mkdir -p "$USER_HOME/Library/Logs/llm-systems-agent"
     _subst_tokens "$TMPL_DIR/com.llm-systems-agent.plist.tmpl" \
-        '${AGENT_USER}' "$USER_ARG" \
-        '${AGENT_USER_HOME}' "$USER_HOME" \
-        '${AGENT_INSTALL_DIR}' "$INSTALL_DIR" > "$PLIST_DEST"
+        '${AGENT_USER}' "$(_xml_escape "$USER_ARG")" \
+        '${AGENT_USER_HOME}' "$(_xml_escape "$USER_HOME")" \
+        '${AGENT_INSTALL_DIR}' "$(_xml_escape "$INSTALL_DIR")" > "$PLIST_DEST"
+    if command -v plutil >/dev/null 2>&1 && ! plutil -lint "$PLIST_DEST" >/dev/null 2>&1; then
+      echo "  ⚠ plist failed plutil -lint: $PLIST_DEST" >&2
+    fi
     cat <<EOF
 
    ── macOS Local Network permission ─────────────────────────────────
@@ -4018,7 +4045,7 @@ if { $ENABLE_PERF || $INSTALL_PERF_UNITS; } && [[ "$AGENT_OS" == "linux" ]]; the
     echo
     echo "  If you say yes, the installer will:"
     echo "    1. pipx install liquidctl    (latest stable release from PyPI)"
-    echo "    2. Drop /etc/udev/rules.d/71-liquidctl.rules from the upstream repo"
+    echo "    2. Install /etc/udev/rules.d/71-liquidctl.rules (vendored in-repo)"
     echo "       (lets liquidctl access HID devices without root in the future)"
     echo "    3. udevadm control --reload-rules && udevadm trigger"
     echo
@@ -4062,30 +4089,20 @@ if { $ENABLE_PERF || $INSTALL_PERF_UNITS; } && [[ "$AGENT_OS" == "linux" ]]; the
                 echo "    You may need to log out + log back in, or run 'pipx ensurepath'."
               fi
 
-              # Drop udev rules from upstream main branch so non-root users
-              # (and the perf systemd units running as root, but better safe)
-              # can address USB HID devices without errors.
-              UDEV_URL="https://raw.githubusercontent.com/liquidctl/liquidctl/main/extra/linux/71-liquidctl.rules"
+              # Install the in-repo vendored udev rules so non-root users can
+              # address USB HID devices without a network fetch of upstream HEAD.
+              UDEV_SRC="$TMPL_DIR/71-liquidctl.rules"
               UDEV_DEST="/etc/udev/rules.d/71-liquidctl.rules"
-              echo "  Fetching udev rules from $UDEV_URL …"
-              TMP_UDEV="$(mktemp)"
-              if command -v curl >/dev/null 2>&1; then
-                curl -fsSL -m 10 -o "$TMP_UDEV" "$UDEV_URL" || true
-              elif command -v wget >/dev/null 2>&1; then
-                wget -q -T 10 -O "$TMP_UDEV" "$UDEV_URL" || true
-              fi
-              if [[ -s "$TMP_UDEV" ]]; then
-                $SUDO install -m 0644 -o root -g root "$TMP_UDEV" "$UDEV_DEST"
-                rm -f "$TMP_UDEV"
-                echo "  ✓ installed $UDEV_DEST"
+              if [[ -s "$UDEV_SRC" ]]; then
+                $SUDO install -m 0644 -o root -g root "$UDEV_SRC" "$UDEV_DEST"
+                echo "  ✓ installed $UDEV_DEST (vendored)"
                 $SUDO udevadm control --reload-rules || true
                 $SUDO udevadm trigger || true
                 echo "  ✓ udev rules reloaded — unplug/replug USB coolers if they're connected"
               else
-                echo "  ⚠ failed to fetch udev rules; install them manually:"
-                echo "      sudo curl -fsSL -o $UDEV_DEST $UDEV_URL"
+                echo "  ⚠ vendored udev rules missing ($UDEV_SRC); install them manually:"
+                echo "      sudo install -m 0644 $UDEV_SRC $UDEV_DEST"
                 echo "      sudo udevadm control --reload-rules && sudo udevadm trigger"
-                rm -f "$TMP_UDEV"
               fi
             else
               echo "  ✗ pipx install liquidctl failed — see the error above."
