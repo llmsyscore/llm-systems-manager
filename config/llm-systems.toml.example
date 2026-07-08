@@ -267,7 +267,6 @@ tls_key_file  = "data/ae-tls.key"
 
 [alarm_engine.timeouts]
 manager_health        = 1.5                              # alarm engine → manager health ping
-manager_proxy         = 10.0                             # alarm engine → manager proxy
 manager_keepalive     = 5.0
 manager_status        = 5.0
 manager_metric_fetch  = 3.0
