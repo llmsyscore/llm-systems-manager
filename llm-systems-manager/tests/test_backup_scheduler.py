@@ -76,7 +76,8 @@ def test_prune_auto_backups_keeps_newest(backup_dir):
 
 
 def test_backup_cfg_defaults():
-    enabled, interval_h, keep_last, passphrase, mirror = manager_mod._backup_cfg()
+    enabled, interval_h, keep_last, mirror = manager_mod._backup_cfg()
     assert isinstance(enabled, bool)
     assert interval_h >= 0
     assert keep_last >= 1
+    assert isinstance(manager_mod._backup_passphrase(), str)

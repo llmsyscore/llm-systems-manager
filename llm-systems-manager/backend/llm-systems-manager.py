@@ -3491,14 +3491,19 @@ _backup_status_lock = _threading.Lock()
 _backup_status: dict = {}
 
 
-def _backup_cfg() -> tuple[bool, float, int, str, str]:
+def _backup_cfg() -> tuple[bool, float, int, str]:
+    """Non-secret [manager.backup] values; the passphrase is fetched separately
+    so log-safe fields never share a data path with it."""
     b = getattr(settings.manager, "backup", None)
     enabled = bool(getattr(b, "enabled", True))
     interval_h = float(getattr(b, "interval_hours", 24.0) or 0.0)
     keep_last = max(1, int(getattr(b, "keep_last", 7) or 7))
-    passphrase = str(getattr(b, "passphrase", "") or "")
     mirror_dir = str(getattr(b, "mirror_dir", "") or "")
-    return enabled, interval_h, keep_last, passphrase, mirror_dir
+    return enabled, interval_h, keep_last, mirror_dir
+
+
+def _backup_passphrase() -> str:
+    return str(getattr(getattr(settings.manager, "backup", None), "passphrase", "") or "")
 
 
 def _list_auto_backups() -> "list[Path]":
@@ -3575,8 +3580,9 @@ def _run_scheduled_backup(passphrase: str, keep_last: int, mirror_dir: str) -> d
                 log.warning("backup mirror to %s failed: %s", mirror_dir, e)
         pruned = _prune_auto_backups(keep_last)
         st["duration_s"] = round(time.time() - t0, 2)
-        log.info("scheduled backup ok: %s (%d bytes, %d files, %d pruned, encrypted=%s)",
-                 dest.name, len(blob), n_files, pruned, bool(passphrase))
+        log.info("scheduled backup ok: %s (%d bytes, %d files, %d pruned, %s)",
+                 dest.name, len(blob), n_files, pruned,
+                 "encrypted" if passphrase else "plaintext")
     except Exception as e:
         st["error"] = f"{type(e).__name__}: {e}"
         st["duration_s"] = round(time.time() - t0, 2)
@@ -3616,7 +3622,8 @@ def _backup_scheduler_loop(interval_s: float, passphrase: str,
 
 
 def _maybe_start_backup_scheduler() -> None:
-    enabled, interval_h, keep_last, passphrase, mirror_dir = _backup_cfg()
+    enabled, interval_h, keep_last, mirror_dir = _backup_cfg()
+    passphrase = _backup_passphrase()
     if not enabled or interval_h <= 0:
         _backup_sched_state.update({"running": False, "reason": "disabled ([manager.backup])"})
         log.info("  Scheduled backups: disabled ([manager.backup])")
@@ -3624,10 +3631,10 @@ def _maybe_start_backup_scheduler() -> None:
     if passphrase and len(passphrase) < _archive.MIN_PASSWORD_LEN:
         _backup_sched_state.update({
             "running": False,
-            "reason": f"passphrase shorter than {_archive.MIN_PASSWORD_LEN} chars",
+            "reason": "passphrase shorter than the 12-char encryption minimum",
         })
         log.error("Scheduled backups DISABLED: [manager.backup].passphrase is "
-                  "shorter than %d chars", _archive.MIN_PASSWORD_LEN)
+                  "shorter than the 12-char encryption minimum")
         return
     _backup_sched_state.update({"running": True, "reason": ""})
     _threading.Thread(
@@ -3635,8 +3642,9 @@ def _maybe_start_backup_scheduler() -> None:
         args=(interval_h * 3600.0, passphrase, keep_last, mirror_dir),
         name="backup-scheduler", daemon=True,
     ).start()
-    log.info("  Scheduled backups: every %.1fh → %s (keep %d, encrypted=%s)",
-             interval_h, _BACKUP_DIR, keep_last, bool(passphrase))
+    log.info("  Scheduled backups: every %.1fh → %s (keep %d, %s)",
+             interval_h, _BACKUP_DIR, keep_last,
+             "encrypted" if passphrase else "plaintext")
 
 
 @app.route("/api/admin/backup-status")
@@ -3644,7 +3652,7 @@ def admin_backup_status():
     deny = _require_admin()
     if deny is not None:
         return deny
-    enabled, interval_h, keep_last, passphrase, mirror_dir = _backup_cfg()
+    enabled, interval_h, keep_last, mirror_dir = _backup_cfg()
     backups = []
     for p in reversed(_list_auto_backups()):
         try:
@@ -3659,7 +3667,7 @@ def admin_backup_status():
         "disabled_reason": _backup_sched_state.get("reason") or None,
         "interval_hours": interval_h,
         "keep_last": keep_last,
-        "encrypted": bool(passphrase),
+        "encrypted": bool(_backup_passphrase()),
         "mirror_dir": mirror_dir,
         "last": _get_backup_status(),
         "next_due_ts": _backup_sched_state.get("next_attempt"),
