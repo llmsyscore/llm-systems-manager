@@ -1236,8 +1236,13 @@ if $DO_UPDATE; then
       esac
       _rm_target="$INSTALL_DIR/$_rm_rel"
       if [[ -f "$_rm_target" ]]; then
+        # Timestamped .bak first; a failed backup leaves the file in place.
+        if ! $SUDO cp -a "$_rm_target" "$_rm_target.bak.$(date +%Y%m%d-%H%M%S)"; then
+          _warn "backup of $_rm_rel failed — leaving it in place"
+          continue
+        fi
         $SUDO rm -f "$_rm_target"
-        _ok "pruned upstream-removed file: $_rm_rel"
+        _ok "pruned upstream-removed file: $_rm_rel (backup kept as .bak)"
         _rm_pruned=$((_rm_pruned+1))
       fi
       # Also drop the module's stale __pycache__ bytecode.

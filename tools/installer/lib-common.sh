@@ -528,9 +528,8 @@ deploy_into_install_dir() {
 }
 
 # ── Upstream-removed path pruning (removed-paths.manifest) ──────────────────
-# Shared by update.sh (upgrades) and install.sh (reinstalls over an existing
-# tree). Callers that define component_wanted()/backup_path() or set DRY_RUN
-# get that behavior; otherwise every present path is pruned unconditionally.
+# Shared by update.sh and install.sh; component_wanted()/backup_path()/DRY_RUN
+# are honored when the caller defines them, else a sibling .bak is kept.
 
 # Parses <manifest> into the REMOVED_FILES / REMOVED_TOML_KEYS globals.
 load_removed_paths_manifest() {
@@ -583,6 +582,8 @@ prune_removed_files() {
       else
         if declare -F backup_path >/dev/null; then
           backup_path "$_target" >/dev/null
+        elif ! $SUDO cp -a "$_target" "$_target.bak.$(date +%Y%m%d-%H%M%S)"; then
+          warn "backup of $_target failed — leaving it in place"; continue
         fi
         $SUDO rm -f "$_target"
         ok "removed $_target"
@@ -632,8 +633,14 @@ prune_removed_toml_keys() {
     else
       if declare -F backup_path >/dev/null; then
         _bak="$(backup_path "$live_toml")"
-        [[ -n "$_bak" ]] && ok "  backed up live TOML → $_bak"
+      else
+        _bak="$live_toml.bak.$(date +%Y%m%d-%H%M%S)"
+        if ! $SUDO cp -a "$live_toml" "$_bak"; then
+          warn "backup of $live_toml failed — key prune skipped"
+          rm -f "$_tmp"; return 0
+        fi
       fi
+      [[ -n "$_bak" ]] && ok "  backed up live TOML → $_bak"
       printf '%s\n' "$_pruned_toml" | $SUDO tee "$live_toml" >/dev/null
       $SUDO chmod 0600 "$live_toml"
       $SUDO chown "$LLMSYS_RUN_USER:$LLMSYS_RUN_GROUP" "$live_toml"

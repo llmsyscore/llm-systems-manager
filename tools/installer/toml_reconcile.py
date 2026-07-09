@@ -1,13 +1,9 @@
 #!/usr/bin/env python3
-# Shared TOML span-walk for update.sh's config reconcile: `merge` appends
+# Shared TOML span-walk for the installer config reconcile: `merge` appends
 # example keys missing from live; `prune` removes upstream-deleted keys.
-#
-# Protocol (consumed by update.sh + lib-common.sh):
-#   stdout — the resulting TOML text (input echoed back on a no-op)
-#   stderr — ADDED=N / PRUNED=N plus one "  + key" / "  - key" line each,
-#            PARSE_FAILED / VALIDATE_FAILED / NOTFOUND diagnostics
-#   exit   — 0 ok, 2 input parse failure, 3 output validation failure,
-#            64 usage error
+
+# Protocol: stdout = resulting TOML; stderr = ADDED=N / PRUNED=N + diagnostic
+# tags (PARSE_FAILED / VALIDATE_FAILED / NOTFOUND); exit 0 / 2 / 3 / 64.
 import re
 import sys
 import tomllib

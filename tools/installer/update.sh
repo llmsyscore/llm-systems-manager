@@ -968,11 +968,8 @@ if $HAVE_MANAGER || $HAVE_AE; then
     if (( DRY_RUN )); then
       log "[dry-run] would back up live TOML and append any missing keys"
     else
-      # Backup is deferred until the merge is known to produce changes, so a
-      # no-op run doesn't litter the backups dir. Output goes back through
-      # $SUDO tee so a non-root caller can write the 0600 live file.
-      # The stderr redirect MUST live inside the $() — placed after the
-      # closing quote it binds to the assignment, not the python run.
+      # Backup is deferred until the merge is known to produce changes. The
+      # stderr redirect MUST stay inside the $() or it binds to the assignment.
       _TOML_MERGE_TMP="$(mktemp)"
       _merged="$($SUDO python3 "$REPO_SRC/tools/installer/toml_reconcile.py" merge \
                    "$_live_toml" "$_example_toml" 2>"$_TOML_MERGE_TMP")" || {
