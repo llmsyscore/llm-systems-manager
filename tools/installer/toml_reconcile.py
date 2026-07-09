@@ -71,7 +71,8 @@ def keys_with_spans(body):
 
 def load_or_die(path, label):
     """Read + parse a TOML file; exits 2 with PARSE_FAILED on error."""
-    text = open(path).read()
+    with open(path) as f:
+        text = f.read()
     try:
         return text, tomllib.loads(text)
     except Exception as e:
