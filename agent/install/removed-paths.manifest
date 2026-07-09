@@ -1,0 +1,6 @@
+# Upstream-deleted agent files; install.sh --update prunes them from the
+# agent install dir. Paths are relative to the agent INSTALL_DIR (i.e. to
+# agent/ in the repo). When an agent runtime file is deleted upstream, add it
+# here AND (with the agent/ prefix) to tools/installer/removed-paths.manifest,
+# which cleans the manager-host deploy mirror that feeds the agent tarball.
+# Format: file|<PR>|<install-relative path>
