@@ -809,78 +809,12 @@ elif component_wanted "installer"; then
 fi
 
 # ── Prune upstream-removed files ────────────────────────────────────────────
-# Deletes install-dir files listed in removed-paths.manifest; its toml-key
-# entries are consumed by the Config reconcile step below.
-_MANIFEST="$REPO_SRC/tools/installer/removed-paths.manifest"
-REMOVED_FILES=()
-REMOVED_TOML_KEYS=()
-if [[ -f "$_MANIFEST" ]]; then
-  while IFS='|' read -r _mf_directive _mf_pr _mf_value; do
-    [[ -z "$_mf_directive" || "$_mf_directive" == \#* ]] && continue
-    case "$_mf_directive" in
-      file)     REMOVED_FILES+=("$_mf_value") ;;
-      toml-key) REMOVED_TOML_KEYS+=("$_mf_value") ;;
-      *)        warn "removed-paths.manifest: unknown directive '$_mf_directive' — skipped" ;;
-    esac
-  done < "$_MANIFEST"
-fi
-
-# _prune_component_key <path> — maps a manifest path to its --only key.
-_prune_component_key() {
-  case "$1" in
-    llm-systems-manager/*)      echo "manager" ;;
-    llm-systems-alarm-engine/*) echo "alarm-engine" ;;
-    agent/*)                    echo "agent" ;;
-    *)                          echo "installer" ;;
-  esac
-}
-
+# Loads removed-paths.manifest and deletes stale install-dir files; the
+# toml-key entries are consumed by the Config reconcile step below.
+load_removed_paths_manifest "$REPO_SRC/tools/installer/removed-paths.manifest"
 if (( ${#REMOVED_FILES[@]} > 0 )); then
   banner "Prune upstream-removed files"
-  _pruned=0
-  for _rel in "${REMOVED_FILES[@]}"; do
-    # Reject absolute paths, "..", and protected trees.
-    if [[ "$_rel" = /* || "/$_rel/" == *"/../"* ]]; then
-      warn "manifest path rejected (absolute or ..): $_rel"; continue
-    fi
-    case "/$_rel/" in
-      */data/*|*/config/*|*/backups/*|*/venv/*)
-        warn "manifest path rejected (protected tree): $_rel"; continue ;;
-    esac
-    component_wanted "$(_prune_component_key "$_rel")" || continue
-    _target="$LLMSYS_INSTALL_DIR/$_rel"
-    if $SUDO test -f "$_target"; then
-      if (( DRY_RUN )); then
-        log "[dry-run] would remove $_target"
-      else
-        backup_path "$_target" >/dev/null
-        $SUDO rm -f "$_target"
-        ok "removed $_target"
-      fi
-      _pruned=$((_pruned+1))
-    fi
-    # Removes the module's stale __pycache__ bytecode, even when the .py is
-    # itself already gone.
-    if [[ "$_rel" == *.py ]]; then
-      _stem="$(basename "$_rel" .py)"
-      _pycache="$(dirname "$_target")/__pycache__"
-      if $SUDO test -d "$_pycache"; then
-        if (( DRY_RUN )); then
-          _stale_pyc="$($SUDO find "$_pycache" -maxdepth 1 -name "${_stem}.cpython-*.pyc" 2>/dev/null | head -1)"
-          [[ -n "$_stale_pyc" ]] && { log "[dry-run] would remove stale bytecode ${_stem}.cpython-*.pyc"; _pruned=$((_pruned+1)); }
-        else
-          _pyc_gone="$($SUDO find "$_pycache" -maxdepth 1 -name "${_stem}.cpython-*.pyc" -print -delete 2>/dev/null || true)"
-          if [[ -n "$_pyc_gone" ]]; then
-            ok "removed stale bytecode: $(printf '%s' "$_pyc_gone" | tr '\n' ' ')"
-            _pruned=$((_pruned+1))
-          fi
-        fi
-      fi
-    fi
-  done
-  if (( _pruned == 0 )); then
-    ok "no stale upstream-removed files present"
-  fi
+  prune_removed_files "$LLMSYS_INSTALL_DIR"
 fi
 
 # ── Systemd unit refresh ───────────────────────────────────────────────────
@@ -1078,32 +1012,7 @@ if $HAVE_MANAGER || $HAVE_AE; then
   fi
 
   # Prune upstream-removed keys (manifest toml-key entries) from the live TOML.
-  if [[ -f "$_live_toml" ]] && (( ${#REMOVED_TOML_KEYS[@]} > 0 )); then
-    log "pruning upstream-removed keys from $(basename "$_live_toml")"
-    if (( DRY_RUN )); then
-      log "[dry-run] would prune any of ${#REMOVED_TOML_KEYS[@]} manifest key(s) present in live TOML"
-    else
-      _TOML_PRUNE_TMP="$(mktemp)"
-      if _pruned_toml="$($SUDO python3 "$REPO_SRC/tools/installer/toml_reconcile.py" prune \
-                           "$_live_toml" "${REMOVED_TOML_KEYS[@]}" 2>"$_TOML_PRUNE_TMP")"; then
-        _prune_count="$(awk -F= '/^PRUNED=/{print $2}' "$_TOML_PRUNE_TMP")"
-        if [[ "${_prune_count:-0}" == "0" ]]; then
-          ok "no upstream-removed keys present in live TOML"
-        else
-          _bak="$(backup_path "$_live_toml")"
-          [[ -n "$_bak" ]] && ok "  backed up live TOML → $_bak"
-          printf '%s\n' "$_pruned_toml" | $SUDO tee "$_live_toml" >/dev/null
-          $SUDO chmod 0600 "$_live_toml"
-          $SUDO chown "$LLMSYS_RUN_USER:$LLMSYS_RUN_GROUP" "$_live_toml"
-          ok "pruned $_prune_count upstream-removed key(s) from $_live_toml:"
-          grep -E '^  - ' "$_TOML_PRUNE_TMP" | sed 's/^/    /'
-        fi
-        rm -f "$_TOML_PRUNE_TMP"
-      else
-        warn "TOML key prune failed — live config untouched (see $_TOML_PRUNE_TMP)"
-      fi
-    fi
-  fi
+  prune_removed_toml_keys "$_live_toml" "$REPO_SRC/tools/installer/toml_reconcile.py"
 else
   log "skipping config reconcile — no manager or AE on this host"
 fi

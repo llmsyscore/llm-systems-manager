@@ -527,6 +527,125 @@ deploy_into_install_dir() {
   ok "deployed $src → $dest (owner $LLMSYS_RUN_USER:$LLMSYS_RUN_GROUP)"
 }
 
+# ── Upstream-removed path pruning (removed-paths.manifest) ──────────────────
+# Shared by update.sh (upgrades) and install.sh (reinstalls over an existing
+# tree). Callers that define component_wanted()/backup_path() or set DRY_RUN
+# get that behavior; otherwise every present path is pruned unconditionally.
+
+# Parses <manifest> into the REMOVED_FILES / REMOVED_TOML_KEYS globals.
+load_removed_paths_manifest() {
+  local manifest="$1" _d _pr _v
+  REMOVED_FILES=()
+  REMOVED_TOML_KEYS=()
+  [[ -f "$manifest" ]] || return 0
+  while IFS='|' read -r _d _pr _v; do
+    [[ -z "$_d" || "$_d" == \#* ]] && continue
+    case "$_d" in
+      file)     REMOVED_FILES+=("$_v") ;;
+      toml-key) REMOVED_TOML_KEYS+=("$_v") ;;
+      *)        warn "removed-paths.manifest: unknown directive '$_d' — skipped" ;;
+    esac
+  done < "$manifest"
+}
+
+# _prune_component_key <path> — maps a manifest path to its component key.
+_prune_component_key() {
+  case "$1" in
+    llm-systems-manager/*)      echo "manager" ;;
+    llm-systems-alarm-engine/*) echo "alarm-engine" ;;
+    agent/*)                    echo "agent" ;;
+    *)                          echo "installer" ;;
+  esac
+}
+
+# Deletes REMOVED_FILES entries (plus their stale __pycache__ bytecode)
+# under <install_dir>.
+prune_removed_files() {
+  local install_dir="$1" _rel _target _stem _pycache _stale_pyc _pyc_gone
+  local _pruned=0
+  (( ${#REMOVED_FILES[@]} > 0 )) || return 0
+  for _rel in "${REMOVED_FILES[@]}"; do
+    # Reject absolute paths, "..", and protected trees.
+    if [[ "$_rel" = /* || "/$_rel/" == *"/../"* ]]; then
+      warn "manifest path rejected (absolute or ..): $_rel"; continue
+    fi
+    case "/$_rel/" in
+      */data/*|*/config/*|*/backups/*|*/venv/*)
+        warn "manifest path rejected (protected tree): $_rel"; continue ;;
+    esac
+    if declare -F component_wanted >/dev/null; then
+      component_wanted "$(_prune_component_key "$_rel")" || continue
+    fi
+    _target="$install_dir/$_rel"
+    if $SUDO test -f "$_target"; then
+      if (( ${DRY_RUN:-0} )); then
+        log "[dry-run] would remove $_target"
+      else
+        if declare -F backup_path >/dev/null; then
+          backup_path "$_target" >/dev/null
+        fi
+        $SUDO rm -f "$_target"
+        ok "removed $_target"
+      fi
+      _pruned=$((_pruned+1))
+    fi
+    # Removes the module's stale __pycache__ bytecode, even when the .py is
+    # itself already gone.
+    if [[ "$_rel" == *.py ]]; then
+      _stem="$(basename "$_rel" .py)"
+      _pycache="$(dirname "$_target")/__pycache__"
+      if $SUDO test -d "$_pycache"; then
+        if (( ${DRY_RUN:-0} )); then
+          _stale_pyc="$($SUDO find "$_pycache" -maxdepth 1 -name "${_stem}.cpython-*.pyc" 2>/dev/null | head -1)"
+          [[ -n "$_stale_pyc" ]] && { log "[dry-run] would remove stale bytecode ${_stem}.cpython-*.pyc"; _pruned=$((_pruned+1)); }
+        else
+          _pyc_gone="$($SUDO find "$_pycache" -maxdepth 1 -name "${_stem}.cpython-*.pyc" -print -delete 2>/dev/null || true)"
+          if [[ -n "$_pyc_gone" ]]; then
+            ok "removed stale bytecode: $(printf '%s' "$_pyc_gone" | tr '\n' ' ')"
+            _pruned=$((_pruned+1))
+          fi
+        fi
+      fi
+    fi
+  done
+  if (( _pruned == 0 )); then
+    ok "no stale upstream-removed files present"
+  fi
+}
+
+# Prunes REMOVED_TOML_KEYS from <live_toml> via toml_reconcile.py at <script>.
+prune_removed_toml_keys() {
+  local live_toml="$1" script="$2" _tmp _pruned_toml _count _bak
+  (( ${#REMOVED_TOML_KEYS[@]} > 0 )) || return 0
+  [[ -f "$live_toml" ]] || return 0
+  log "pruning upstream-removed keys from $(basename "$live_toml")"
+  if (( ${DRY_RUN:-0} )); then
+    log "[dry-run] would prune any of ${#REMOVED_TOML_KEYS[@]} manifest key(s) present in live TOML"
+    return 0
+  fi
+  _tmp="$(mktemp)"
+  if _pruned_toml="$($SUDO python3 "$script" prune \
+                       "$live_toml" "${REMOVED_TOML_KEYS[@]}" 2>"$_tmp")"; then
+    _count="$(awk -F= '/^PRUNED=/{print $2}' "$_tmp")"
+    if [[ "${_count:-0}" == "0" ]]; then
+      ok "no upstream-removed keys present in live TOML"
+    else
+      if declare -F backup_path >/dev/null; then
+        _bak="$(backup_path "$live_toml")"
+        [[ -n "$_bak" ]] && ok "  backed up live TOML → $_bak"
+      fi
+      printf '%s\n' "$_pruned_toml" | $SUDO tee "$live_toml" >/dev/null
+      $SUDO chmod 0600 "$live_toml"
+      $SUDO chown "$LLMSYS_RUN_USER:$LLMSYS_RUN_GROUP" "$live_toml"
+      ok "pruned $_count upstream-removed key(s) from $live_toml:"
+      grep -E '^  - ' "$_tmp" | sed 's/^/    /'
+    fi
+    rm -f "$_tmp"
+  else
+    warn "TOML key prune failed — live config untouched (see $_tmp)"
+  fi
+}
+
 # ── URL sanitization ────────────────────────────────────────────────────────
 # Normalize operator input into a fully-qualified URL. Accepts:
 #   1.1.1.1                    → http://1.1.1.1:<default_port>
