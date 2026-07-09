@@ -7,6 +7,7 @@
 #   tools/run_tests.sh                # all suites (py + frontend js)
 #   tools/run_tests.sh ae             # alarm engine only
 #   tools/run_tests.sh manager        # manager only
+#   tools/run_tests.sh installer      # installer helpers (toml_reconcile) only
 #   tools/run_tests.sh js             # frontend js (vitest) only
 #   tools/run_tests.sh -- -k auth     # pass-through to pytest (after --)
 #
@@ -18,6 +19,7 @@ REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 AE_DIR="$REPO/llm-systems-alarm-engine"
 MGR_DIR="$REPO/llm-systems-manager"
 AGENT_DIR="$REPO/agent"
+INSTALLER_DIR="$REPO/tools/installer"
 FE_DIR="$REPO/llm-systems-manager/frontend"
 
 WHICH="both"
@@ -27,13 +29,14 @@ while (( $# )); do
     ae|alarm-engine|alarm) WHICH="ae"; shift ;;
     manager|mgr)           WHICH="manager"; shift ;;
     agent)                 WHICH="agent"; shift ;;
+    installer)             WHICH="installer"; shift ;;
     js|frontend|fe)        WHICH="js"; shift ;;
     both|all)              WHICH="both"; shift ;;
     --) shift; FORWARD=("$@"); break ;;
     -h|--help)
       sed -n '2,17p' "${BASH_SOURCE[0]}" | sed 's/^# *//'
       exit 0 ;;
-    *) echo "unknown arg: $1 (use 'ae', 'manager', 'agent', 'js', 'both', or '-- <pytest args>')" >&2; exit 2 ;;
+    *) echo "unknown arg: $1 (use 'ae', 'manager', 'agent', 'installer', 'js', 'both', or '-- <pytest args>')" >&2; exit 2 ;;
   esac
 done
 
@@ -73,9 +76,11 @@ case "$WHICH" in
   ae)      run_suite "Alarm engine" "$AE_DIR" ;;
   manager) run_suite "Manager"      "$MGR_DIR" ;;
   agent)   run_suite "Agent"        "$AGENT_DIR" ;;
+  installer) run_suite "Installer"  "$INSTALLER_DIR" ;;
   js)      run_js "$FE_DIR" ;;
   both)    run_suite "Alarm engine" "$AE_DIR"
            run_suite "Manager"      "$MGR_DIR"
            run_suite "Agent"        "$AGENT_DIR"
+           run_suite "Installer"    "$INSTALLER_DIR"
            run_js "$FE_DIR" ;;
 esac
