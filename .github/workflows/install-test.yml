@@ -59,6 +59,46 @@ jobs:
       - name: Smoke test
         run: sudo bash tools/installer/ci-smoke.sh
 
+      # Reinstall coverage (#352): plant every manifest entry as stale state,
+      # re-run install.sh over the live tree, and assert the deploy pruned it.
+      - name: Plant stale upstream-removed artifacts (reinstall fixture)
+        run: |
+          set -eu
+          MANIFEST="$GITHUB_WORKSPACE/tools/installer/removed-paths.manifest"
+          [ -f "$MANIFEST" ] || { echo "no manifest — skipping fixture"; exit 0; }
+          planted=0
+          for rel in $(awk -F'|' '$1=="file"{print $3}' "$MANIFEST"); do
+            dir="/opt/llm-systems-manager/$(dirname "$rel")"
+            sudo mkdir -p "$dir"
+            echo "# stale fixture" | sudo tee "/opt/llm-systems-manager/$rel" >/dev/null
+            case "$rel" in *.py)
+              sudo mkdir -p "$dir/__pycache__"
+              sudo touch "$dir/__pycache__/$(basename "$rel" .py).cpython-312.pyc" ;;
+            esac
+            echo "planted stale file: $rel"
+            planted=$((planted+1))
+          done
+          TOML=/opt/llm-systems-manager/config/llm-systems.toml
+          if grep -q '^toml-key|.*|manager\.benchmark\.stream_queue_size$' "$MANIFEST"; then
+            printf '\n[manager.benchmark]\nstream_queue_size = 5000\n' | sudo tee -a "$TOML" >/dev/null
+            echo "planted stale TOML key: manager.benchmark.stream_queue_size"
+            planted=$((planted+1))
+          fi
+          if grep -q '^toml-key|.*|alarm_engine\.timeouts\.manager_health$' "$MANIFEST"; then
+            sudo sed -i '/^\[alarm_engine\.timeouts\]/a manager_health = 1.5' "$TOML"
+            sudo grep -q '^manager_health' "$TOML" || { echo "fixture failed to plant manager_health"; exit 1; }
+            echo "planted stale TOML key: alarm_engine.timeouts.manager_health"
+            planted=$((planted+1))
+          fi
+          [ "$planted" -gt 0 ] || { echo "fixture planted nothing — manifest/fixture drift"; exit 1; }
+          echo "planted $planted stale artifact(s)"
+
+      - name: Reinstall over existing tree (mode 1)
+        run: sudo bash tools/installer/install.sh --mode 1 --no-self-update < /dev/null
+
+      - name: Smoke test (post-reinstall)
+        run: sudo bash tools/installer/ci-smoke.sh
+
       - name: Collect service logs on failure
         if: failure()
         run: |
