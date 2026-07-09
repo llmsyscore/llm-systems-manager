@@ -1,0 +1,13 @@
+# Upstream-deleted files/config keys; update.sh prunes them during upgrades.
+# Format: file|<PR>|<install-relative path>  OR  toml-key|<PR>|<dotted.key>
+
+file|#237|llm-systems-manager/backend/_bench_replay.py
+file|#348|llm-systems-alarm-engine/backend/integration/manager_proxy.py
+file|#348|llm-systems-alarm-engine/backend/integration/llm_systems_manager_adapter.py
+
+toml-key|#237|manager.benchmark.stream_queue_size
+toml-key|#348|alarm_engine.timeouts.manager_health
+toml-key|#348|alarm_engine.timeouts.manager_proxy
+toml-key|#348|alarm_engine.timeouts.manager_keepalive
+toml-key|#348|alarm_engine.timeouts.manager_status
+toml-key|#348|alarm_engine.timeouts.manager_metric_fetch

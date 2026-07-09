@@ -808,6 +808,81 @@ elif component_wanted "installer"; then
   done
 fi
 
+# ── Prune upstream-removed files ────────────────────────────────────────────
+# Deletes install-dir files listed in removed-paths.manifest; its toml-key
+# entries are consumed by the Config reconcile step below.
+_MANIFEST="$REPO_SRC/tools/installer/removed-paths.manifest"
+REMOVED_FILES=()
+REMOVED_TOML_KEYS=()
+if [[ -f "$_MANIFEST" ]]; then
+  while IFS='|' read -r _mf_directive _mf_pr _mf_value; do
+    [[ -z "$_mf_directive" || "$_mf_directive" == \#* ]] && continue
+    case "$_mf_directive" in
+      file)     REMOVED_FILES+=("$_mf_value") ;;
+      toml-key) REMOVED_TOML_KEYS+=("$_mf_value") ;;
+      *)        warn "removed-paths.manifest: unknown directive '$_mf_directive' — skipped" ;;
+    esac
+  done < "$_MANIFEST"
+fi
+
+# _prune_component_key <path> — maps a manifest path to its --only key.
+_prune_component_key() {
+  case "$1" in
+    llm-systems-manager/*)      echo "manager" ;;
+    llm-systems-alarm-engine/*) echo "alarm-engine" ;;
+    agent/*)                    echo "agent" ;;
+    *)                          echo "installer" ;;
+  esac
+}
+
+if (( ${#REMOVED_FILES[@]} > 0 )); then
+  banner "Prune upstream-removed files"
+  _pruned=0
+  for _rel in "${REMOVED_FILES[@]}"; do
+    # Reject absolute paths, "..", and protected trees.
+    if [[ "$_rel" = /* || "/$_rel/" == *"/../"* ]]; then
+      warn "manifest path rejected (absolute or ..): $_rel"; continue
+    fi
+    case "/$_rel/" in
+      */data/*|*/config/*|*/backups/*|*/venv/*)
+        warn "manifest path rejected (protected tree): $_rel"; continue ;;
+    esac
+    component_wanted "$(_prune_component_key "$_rel")" || continue
+    _target="$LLMSYS_INSTALL_DIR/$_rel"
+    if $SUDO test -f "$_target"; then
+      if (( DRY_RUN )); then
+        log "[dry-run] would remove $_target"
+      else
+        backup_path "$_target" >/dev/null
+        $SUDO rm -f "$_target"
+        ok "removed $_target"
+      fi
+      _pruned=$((_pruned+1))
+    fi
+    # Removes the module's stale __pycache__ bytecode, even when the .py is
+    # itself already gone.
+    if [[ "$_rel" == *.py ]]; then
+      _stem="$(basename "$_rel" .py)"
+      _pycache="$(dirname "$_target")/__pycache__"
+      if $SUDO test -d "$_pycache"; then
+        if (( DRY_RUN )); then
+          _stale_pyc="$($SUDO find "$_pycache" -maxdepth 1 -name "${_stem}.cpython-*.pyc" 2>/dev/null | head -1)"
+          [[ -n "$_stale_pyc" ]] && { log "[dry-run] would remove stale bytecode ${_stem}.cpython-*.pyc"; _pruned=$((_pruned+1)); }
+        else
+          _pyc_gone="$($SUDO find "$_pycache" -maxdepth 1 -name "${_stem}.cpython-*.pyc" -print -delete 2>/dev/null || true)"
+          if [[ -n "$_pyc_gone" ]]; then
+            ok "removed stale bytecode: $(printf '%s' "$_pyc_gone" | tr '\n' ' ')"
+            _pruned=$((_pruned+1))
+          fi
+        fi
+      fi
+    fi
+  done
+  if (( _pruned == 0 )); then
+    ok "no stale upstream-removed files present"
+  fi
+fi
+
 # ── Systemd unit refresh ───────────────────────────────────────────────────
 banner "Systemd unit files"
 if $HAVE_MANAGER && component_wanted "manager"; then
@@ -1254,6 +1329,157 @@ PYEOF
     fi
   else
     log "no live config/llm-systems.toml found — nothing to merge"
+  fi
+
+  # Prune upstream-removed keys (manifest toml-key entries) from the live TOML.
+  if [[ -f "$_live_toml" ]] && (( ${#REMOVED_TOML_KEYS[@]} > 0 )); then
+    log "pruning upstream-removed keys from $(basename "$_live_toml")"
+    if (( DRY_RUN )); then
+      log "[dry-run] would prune any of ${#REMOVED_TOML_KEYS[@]} manifest key(s) present in live TOML"
+    else
+      _TOML_PRUNE_TMP="$(mktemp)"
+      if _pruned_toml="$($SUDO python3 - "$_live_toml" "${REMOVED_TOML_KEYS[@]}" 2>"$_TOML_PRUNE_TMP" <<'PYEOF'
+import re, sys, tomllib
+
+live_path = sys.argv[1]
+prune_keys = sys.argv[2:]
+text = open(live_path).read()
+try:
+    live_dict = tomllib.loads(text)
+except Exception as e:
+    sys.stderr.write(f"PARSE_FAILED: live TOML at {live_path} doesn't parse: {e}\n")
+    sys.exit(2)
+
+def flatten(d, prefix=""):
+    for k, v in d.items():
+        path = f"{prefix}.{k}" if prefix else k
+        if isinstance(v, dict):
+            yield from flatten(v, path)
+        else:
+            yield path
+
+live_paths = set(flatten(live_dict))
+targets = [k for k in prune_keys if k in live_paths]
+if not targets:
+    sys.stderr.write("PRUNED=0\n")
+    sys.stdout.write(text)
+    sys.exit(0)
+
+SECTION_RE = re.compile(r'^\s*\[([^\]]+?)\]\s*(?:#.*)?$')
+ARRAY_SECTION_RE = re.compile(r'^\s*\[\[([^\]]+?)\]\]\s*(?:#.*)?$')
+KEY_RE = re.compile(r'^\s*([A-Za-z_][A-Za-z0-9_.-]*)\s*=')
+
+def split_sections(text):
+    # [[array-of-tables]] blocks get a '[[' -prefixed name no manifest key
+    # can address, so their contents are never pruned.
+    out = []
+    cur = ['', None, []]
+    for ln in text.splitlines():
+        am = ARRAY_SECTION_RE.match(ln)
+        m = SECTION_RE.match(ln) if am is None else None
+        if am or m:
+            out.append(tuple(cur))
+            name = '[[' + am.group(1).strip() if am else m.group(1).strip()
+            cur = [name, ln, []]
+        else:
+            cur[2].append(ln)
+    out.append(tuple(cur))
+    return out
+
+def keys_with_spans(body):
+    # Same span walk as the merger: multi-line values via bracket balance,
+    # contiguous comment block directly above included in the span.
+    i = 0
+    while i < len(body):
+        m = KEY_RE.match(body[i])
+        if not m:
+            i += 1
+            continue
+        key = m.group(1)
+        start = i
+        val = body[i].split('=', 1)[1] if '=' in body[i] else ''
+        depth_sq = val.count('[') - val.count(']')
+        depth_br = val.count('{') - val.count('}')
+        i += 1
+        while i < len(body) and (depth_sq > 0 or depth_br > 0):
+            depth_sq += body[i].count('[') - body[i].count(']')
+            depth_br += body[i].count('{') - body[i].count('}')
+            i += 1
+        cb = start - 1
+        while cb >= 0 and body[cb].lstrip().startswith('#'):
+            cb -= 1
+        yield (key, start, i, cb + 1)
+
+# Every surface form a dotted target can take: key 'c' in [a.b],
+# 'b.c' in [a], or 'a.b.c' at top level.
+want = {}
+for t in targets:
+    parts = t.split('.')
+    for i in range(len(parts)):
+        want[('.'.join(parts[:i]), '.'.join(parts[i:]))] = t
+
+removed = set()
+pruned_secs = []
+for name, header, body in split_sections(text):
+    dropidx = set()
+    for key, s, e, cb in keys_with_spans(body):
+        t = want.get((name, key))
+        if t:
+            dropidx.update(range(cb, e))
+            removed.add(t)
+    new_body = [ln for j, ln in enumerate(body) if j not in dropidx]
+    pruned_secs.append((name, header, new_body, bool(dropidx)))
+
+# Drop a section header its prune emptied (no keys left — only
+# blanks/comments). Subsections elsewhere re-create the parent implicitly.
+out = []
+for name, header, body, touched in pruned_secs:
+    if touched and header is not None and not any(True for _ in keys_with_spans(body)):
+        continue
+    if header is not None:
+        out.append(header)
+    out.extend(body)
+result = '\n'.join(out)
+if not result.endswith('\n'):
+    result += '\n'
+
+# Refuse to emit anything that doesn't parse or that lost a key we
+# weren't asked to remove.
+try:
+    post_dict = tomllib.loads(result)
+except Exception as e:
+    sys.stderr.write(f"VALIDATE_FAILED: pruned TOML doesn't parse: {e}\n")
+    sys.exit(3)
+if set(flatten(post_dict)) != live_paths - removed:
+    sys.stderr.write("VALIDATE_FAILED: pruned TOML key set doesn't match expected\n")
+    sys.exit(3)
+
+missed = [t for t in targets if t not in removed]
+for t in missed:
+    sys.stderr.write(f"NOTFOUND: {t} (present semantically but no textual match)\n")
+sys.stderr.write(f"PRUNED={len(removed)}\n")
+for t in sorted(removed):
+    sys.stderr.write(f"  - {t}\n")
+sys.stdout.write(result)
+PYEOF
+)"; then
+        _prune_count="$(awk -F= '/^PRUNED=/{print $2}' "$_TOML_PRUNE_TMP")"
+        if [[ "${_prune_count:-0}" == "0" ]]; then
+          ok "no upstream-removed keys present in live TOML"
+        else
+          _bak="$(backup_path "$_live_toml")"
+          [[ -n "$_bak" ]] && ok "  backed up live TOML → $_bak"
+          printf '%s\n' "$_pruned_toml" | $SUDO tee "$_live_toml" >/dev/null
+          $SUDO chmod 0600 "$_live_toml"
+          $SUDO chown "$LLMSYS_RUN_USER:$LLMSYS_RUN_GROUP" "$_live_toml"
+          ok "pruned $_prune_count upstream-removed key(s) from $_live_toml:"
+          grep -E '^  - ' "$_TOML_PRUNE_TMP" | sed 's/^/    /'
+        fi
+        rm -f "$_TOML_PRUNE_TMP"
+      else
+        warn "TOML key prune failed — live config untouched (see $_TOML_PRUNE_TMP)"
+      fi
+    fi
   fi
 else
   log "skipping config reconcile — no manager or AE on this host"

@@ -89,6 +89,59 @@ else
   _fail "Alarm engine /health unreachable or not ok: ${_AE_HEALTH:-<empty>}"
 fi
 
+# _toml_key_present <toml> <dotted.key> — exit 0 present, 1 absent, 2 parse error
+_toml_key_present() {
+  python3 - "$1" "$2" <<'PY'
+import sys, tomllib
+try:
+    cur = tomllib.loads(open(sys.argv[1]).read())
+except Exception:
+    sys.exit(2)
+parts = sys.argv[2].split('.')
+for p in parts[:-1]:
+    if not isinstance(cur, dict) or p not in cur:
+        sys.exit(1)
+    cur = cur[p]
+sys.exit(0 if isinstance(cur, dict) and parts[-1] in cur else 1)
+PY
+}
+
+echo "── upstream-removed paths pruned ──────────────────────────────"
+_MANIFEST="$INSTALL_DIR/tools/installer/removed-paths.manifest"
+_LIVE_TOML="$INSTALL_DIR/config/llm-systems.toml"
+if [[ -f "$_MANIFEST" ]]; then
+  while IFS='|' read -r _d _pr _v; do
+    [[ -z "$_d" || "$_d" == \#* ]] && continue
+    case "$_d" in
+      file)
+        if [[ -e "$INSTALL_DIR/$_v" ]]; then
+          _fail "stale upstream-removed file present: $_v"
+        else
+          _stale_pyc="$(find "$(dirname "$INSTALL_DIR/$_v")/__pycache__" -maxdepth 1 \
+            -name "$(basename "$_v" .py).cpython-*.pyc" 2>/dev/null | head -1)"
+          if [[ "$_v" == *.py && -n "$_stale_pyc" ]]; then
+            _fail "stale bytecode of removed module present: $_stale_pyc"
+          else
+            _pass "pruned: $_v absent"
+          fi
+        fi ;;
+      toml-key)
+        if [[ ! -f "$_LIVE_TOML" ]]; then
+          _pass "pruned: TOML key $_v absent (no live TOML)"
+        else
+          _toml_key_present "$_LIVE_TOML" "$_v"
+          case $? in
+            0) _fail "stale upstream-removed key present in live TOML: $_v" ;;
+            1) _pass "pruned: TOML key $_v absent" ;;
+            *) _fail "live TOML unparseable while checking $_v" ;;
+          esac
+        fi ;;
+    esac
+  done < "$_MANIFEST"
+else
+  _pass "no removed-paths.manifest deployed — nothing to verify"
+fi
+
 echo "── deployed versions ──────────────────────────────────────────"
 _version_match "Manager" "$(curl -sS -m 10 http://127.0.0.1:5000/health 2>/dev/null)" \
   "$INSTALL_DIR/llm-systems-manager/backend/llm-systems-manager.py"
