@@ -1230,7 +1230,7 @@ if $DO_UPDATE; then
         continue
       fi
       case "/$_rm_rel/" in
-        */venv/*|*/src/*|*/agent_config.yaml*|*.bak*)
+        */venv/*|*/src/*|*/data/*|*/agent_config.yaml*|*.bak*)
           _warn "removed-paths.manifest: protected path skipped: $_rm_rel"
           continue ;;
       esac
