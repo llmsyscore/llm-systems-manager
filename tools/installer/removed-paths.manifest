@@ -1,4 +1,9 @@
-# Upstream-deleted files/config keys; update.sh prunes them during upgrades.
+# Upstream-deleted files/config keys; update.sh (upgrades) and install.sh
+# (reinstalls) prune them from the manager-host install dir.
+
+# agent/ file entries clean only this host's deploy mirror — agent-host
+# deletions ALSO need an entry in agent/install/removed-paths.manifest.
+
 # Format: file|<PR>|<install-relative path>  OR  toml-key|<PR>|<dotted.key>
 
 file|#237|llm-systems-manager/backend/_bench_replay.py

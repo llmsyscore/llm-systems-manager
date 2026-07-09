@@ -639,6 +639,12 @@ case "$MODE" in
       4) DEPLOY_EXCLUDES=("llm-systems-manager/") ;;
     esac
     deploy_into_install_dir "$REPO_SRC" "$LLMSYS_INSTALL_DIR" "${DEPLOY_EXCLUDES[@]+"${DEPLOY_EXCLUDES[@]}"}"
+    # Reinstalls over an existing tree keep upstream-deleted files and live
+    # TOML keys around (rsync never deletes) — prune them from the manifest.
+    load_removed_paths_manifest "$REPO_SRC/tools/installer/removed-paths.manifest"
+    prune_removed_files "$LLMSYS_INSTALL_DIR"
+    prune_removed_toml_keys "$LLMSYS_INSTALL_DIR/config/llm-systems.toml" \
+      "$REPO_SRC/tools/installer/toml_reconcile.py"
     ;;
 esac
 

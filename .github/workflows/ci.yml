@@ -111,6 +111,27 @@ jobs:
         working-directory: agent
         run: python -m pytest -v
 
+  installer-test:
+    name: pytest (installer)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    # toml_reconcile.py is stdlib-only (tomllib), so pytest is the only dep.
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install pytest
+        run: pip install pytest
+
+      - name: Run installer helper tests
+        working-directory: tools/installer
+        run: python -m pytest -v
+
   lint:
     name: ruff
     runs-on: ubuntu-latest

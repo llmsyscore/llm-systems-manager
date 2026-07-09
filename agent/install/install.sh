@@ -1216,6 +1216,47 @@ if $DO_UPDATE; then
   done
   _ok "agent code refreshed"
 
+  # Prune install-dir files listed in install/removed-paths.manifest
+  # (upstream-deleted); a missing manifest (older tarball) is a no-op.
+  _rm_manifest="$TMPL_DIR/removed-paths.manifest"
+  if [[ -f "$_rm_manifest" ]]; then
+    _rm_pruned=0
+    while IFS='|' read -r _rm_d _rm_pr _rm_rel; do
+      [[ -z "$_rm_d" || "$_rm_d" == \#* ]] && continue
+      [[ "$_rm_d" == "file" ]] || continue
+      # Reject absolute paths, "..", and protected trees/files.
+      if [[ "$_rm_rel" = /* || "/$_rm_rel/" == *"/../"* ]]; then
+        _warn "removed-paths.manifest: rejected path (absolute or ..): $_rm_rel"
+        continue
+      fi
+      case "/$_rm_rel/" in
+        */venv/*|*/src/*|*/data/*|*/agent_config.yaml*|*.bak*)
+          _warn "removed-paths.manifest: protected path skipped: $_rm_rel"
+          continue ;;
+      esac
+      _rm_target="$INSTALL_DIR/$_rm_rel"
+      if [[ -f "$_rm_target" ]]; then
+        # Timestamped .bak first; a failed backup leaves the file in place.
+        if ! $SUDO cp -a "$_rm_target" "$_rm_target.bak.$(date +%Y%m%d-%H%M%S)"; then
+          _warn "backup of $_rm_rel failed — leaving it in place"
+          continue
+        fi
+        $SUDO rm -f "$_rm_target"
+        _ok "pruned upstream-removed file: $_rm_rel (backup kept as .bak)"
+        _rm_pruned=$((_rm_pruned+1))
+      fi
+      # Also drop the module's stale __pycache__ bytecode.
+      if [[ "$_rm_rel" == *.py ]]; then
+        _rm_pycache="$(dirname "$_rm_target")/__pycache__"
+        if [[ -d "$_rm_pycache" ]]; then
+          $SUDO find "$_rm_pycache" -maxdepth 1 \
+            -name "$(basename "$_rm_rel" .py).cpython-*.pyc" -delete 2>/dev/null || true
+        fi
+      fi
+    done < "$_rm_manifest"
+    [[ "$_rm_pruned" -gt 0 ]] || _ok "no upstream-removed files to prune"
+  fi
+
   # 2. Refresh venv against current requirements (no-op if already satisfied)
   echo
   echo "── Refreshing venv ──────────────────────────────────────────────────────"

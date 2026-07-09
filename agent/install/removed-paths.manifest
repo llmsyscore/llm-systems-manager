@@ -1,0 +1,7 @@
+# Upstream-deleted agent files; install.sh --update prunes them from the
+# agent install dir (paths relative to INSTALL_DIR, i.e. to agent/ in-repo).
+
+# Entries must ALSO exist (with the agent/ prefix) in
+# tools/installer/removed-paths.manifest, which cleans the manager-host mirror.
+
+# Format: file|<PR>|<install-relative path>
