@@ -100,6 +100,7 @@ Backend API endpoints consumed:
     <div class="sub-tab-nav">
       <button class="sub-tab-btn active" id="subTabBtnDashLlamacpp" onclick="switchSubTab('dashboard','llamacpp')">llama.cpp</button>
       <button class="sub-tab-btn" id="subTabBtnDashLmstudio" onclick="switchSubTab('dashboard','lmstudio')">LM Studio</button>
+      <button class="sub-tab-btn" id="subTabBtnDashVllm" style="display:none;" onclick="switchSubTab('dashboard','vllm')">vLLM</button>
       <button class="sub-tab-btn" id="subTabBtnOpenclaw" style="display:none;" onclick="switchSubTab('dashboard','openclaw')">OpenClaw</button>
       <button class="sub-tab-btn" onclick="switchSubTab('dashboard','manager')">Manager</button>
     </div>
@@ -972,6 +973,53 @@ Backend API endpoints consumed:
     </div>
   </div><!-- end dash-lmstudio sub-panel -->
 
+  <!-- vLLM dashboard sub-tab -->
+  <div id="dash-vllm" class="sub-tab-panel">
+    <div class="agent-picker" id="agentPickerDashVllm" style="display:none"></div>
+    <div class="grid" id="vllmCardGrid">
+
+      <div class="card" data-card="vllm-server">
+        <span class="card-handle" title="Drag to reorder">⠿</span>
+        <h3>vLLM Server <span class="sub" id="vllm-dash-badge" style="font-weight:normal;">—</span></h3>
+        <div class="stat-row cols1">
+          <div><div class="stat" id="vllm-active-model" style="font-size:1.05em;word-break:break-all;">—</div><div class="sub">model</div></div>
+        </div>
+        <div class="stat-row cols1" style="margin-top:8px;">
+          <div><div class="sub" id="vllm-active-state">state —</div></div>
+        </div>
+      </div>
+
+      <div class="card" data-card="vllm-requests">
+        <span class="card-handle" title="Drag to reorder">⠿</span>
+        <h3>Requests</h3>
+        <div class="stat-row cols2">
+          <div><div class="stat" id="vllm-req-running">—</div><div class="sub">running</div></div>
+          <div><div class="stat" id="vllm-req-waiting">—</div><div class="sub">waiting</div></div>
+        </div>
+      </div>
+
+      <div class="card" data-card="vllm-kv">
+        <span class="card-handle" title="Drag to reorder">⠿</span>
+        <h3>KV Cache</h3>
+        <div class="stat-row cols1">
+          <div><div class="stat" id="vllm-kv-pct">—</div><div class="sub">GPU KV cache used</div></div>
+        </div>
+        <canvas id="vllmKvChart" height="60"></canvas>
+      </div>
+
+      <div class="card" data-card="vllm-throughput">
+        <span class="card-handle" title="Drag to reorder">⠿</span>
+        <h3>Throughput</h3>
+        <div class="stat-row cols2">
+          <div><div class="stat" id="vllm-tps">—</div><div class="sub">gen tok/s</div></div>
+          <div><div class="stat" id="vllm-pps">—</div><div class="sub">prompt tok/s</div></div>
+        </div>
+        <canvas id="vllmTpsChart" height="60"></canvas>
+      </div>
+
+    </div>
+  </div><!-- end dash-vllm sub-panel -->
+
   <!-- Manager dashboard sub-tab — host-side service + InfluxDB health -->
   <div id="dash-manager" class="sub-tab-panel">
     <div class="grid" id="managerCardGrid">
@@ -1297,6 +1345,20 @@ Backend API endpoints consumed:
       </div>
     </div>
 
+    <!-- vLLM fleet -->
+    <div class="card" data-card="ov-vllm-fleet">
+      <span class="card-handle" title="Drag to reorder">⠿</span>
+      <h3>vLLM Fleet <span class="sub" id="ov-vllm-agents" style="font-weight:normal;">—</span></h3>
+      <div class="stat-row cols2">
+        <div><div class="stat" id="ov-vllm-servers">—</div><div class="sub">servers on</div></div>
+        <div><div class="stat" id="ov-vllm-running">—</div><div class="sub">requests running</div></div>
+      </div>
+      <div class="stat-row cols2" style="margin-top:8px;">
+        <div><div class="sub" id="ov-vllm-kv">kv cache —</div></div>
+        <div><div class="sub" id="ov-vllm-tps">tps —</div></div>
+      </div>
+    </div>
+
     <!-- LM Studio fleet -->
     <div class="card" data-card="ov-lms-fleet">
       <span class="card-handle" title="Drag to reorder">⠿</span>
@@ -1361,6 +1423,7 @@ Backend API endpoints consumed:
     <div class="sub-tab-nav">
       <button class="sub-tab-btn active" id="subTabBtnLlmLlamacpp" onclick="switchSubTab('llm','llamacpp')">llama.cpp</button>
       <button class="sub-tab-btn" id="subTabBtnLlmLmstudio" onclick="switchSubTab('llm','lmstudio')">LM Studio</button>
+      <button class="sub-tab-btn" id="subTabBtnLlmVllm" style="display:none;" onclick="switchSubTab('llm','vllm')">vLLM</button>
     </div>
   </div>
 
@@ -1451,22 +1514,80 @@ Backend API endpoints consumed:
 
   </div>
 
+  <!-- vLLM control sub-panel -->
+  <div id="llm-vllm" class="sub-tab-panel" style="padding:8px 20px 20px;">
+    <div class="agent-picker" id="agentPickerCtrlVllm" style="display:none"></div>
+
+    <div class="llm-section" id="vllmSecCtrl">
+      <div class="llm-section-title" onclick="toggleSection('vllmSecCtrl')">
+        <span class="llm-section-arrow">▾</span> Server Control
+      </div>
+      <div class="llm-section-body">
+        <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
+          <button class="btn btn-green-muted-gradient" id="vllmBtnStart"   onclick="vllmServerAction('start')">▶ Start</button>
+          <button class="btn btn-red-muted-gradient"   id="vllmBtnStop"    onclick="vllmServerAction('stop')">■ Stop</button>
+          <button class="btn btn-amber-muted-gradient" id="vllmBtnRestart" onclick="vllmServerAction('restart')">⟳ Restart</button>
+          <button class="btn btn-gray-muted-gradient"  id="vllmBtnStatus"  onclick="vllmServerAction('status')">ℹ Status</button>
+          <span id="vllmCtrlBadge" class="sub" style="margin-left:6px;">—</span>
+          <span id="vllmCtrlStatus" class="sub" style="flex:1;"></span>
+          <button class="btn btn-gray-muted-gradient" onclick="toggleVllmLog()">📜 Log</button>
+          <button class="btn btn-gray-muted-gradient" onclick="openServerConfig('vllm')">⚙ Server Config</button>
+        </div>
+        <div class="sub" style="margin-top:6px;color:var(--fg-dim);">
+          vLLM serves one base model per process — change the model via Server Config (ExecStart) and Restart.
+        </div>
+        <div id="vllmLogPanel" style="display:none;margin-top:10px;">
+          <div class="log-wrap">
+            <div class="dl-log" id="vllmLogBox" style="height:300px;">Log will appear here…</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="llm-section" id="vllmSecModels">
+      <div class="llm-section-title" onclick="toggleSection('vllmSecModels')">
+        <span class="llm-section-arrow">▾</span> Served Models
+      </div>
+      <div class="llm-section-body">
+        <div id="vllmModelCards" class="model-cards"><div class="sub">No vLLM data yet.</div></div>
+      </div>
+    </div>
+
+    <div class="llm-section" id="vllmSecLora">
+      <div class="llm-section-title" onclick="toggleSection('vllmSecLora')">
+        <span class="llm-section-arrow">▾</span> LoRA Adapters
+      </div>
+      <div class="llm-section-body">
+        <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
+          <input type="text" id="vllmLoraName" placeholder="adapter name" style="padding:6px 8px;background:var(--bg-elev);color:var(--fg);border:1px solid var(--border);border-radius:4px;">
+          <input type="text" id="vllmLoraPath" placeholder="adapter path on agent host" style="flex:1;min-width:220px;padding:6px 8px;background:var(--bg-elev);color:var(--fg);border:1px solid var(--border);border-radius:4px;">
+          <button class="btn btn-green-muted-gradient" onclick="vllmLoraLoad()">Load</button>
+          <button class="btn btn-red-muted-gradient"   onclick="vllmLoraUnload()">Unload</button>
+        </div>
+        <div class="sub" style="margin-top:6px;color:var(--fg-dim);">
+          Requires <code>VLLM_LORA_ENABLED: true</code> in the agent config and <code>--enable-lora</code> on the server (trusted environments only).
+        </div>
+      </div>
+    </div>
+  </div>
+
 </div><!-- end llmTab -->
 
-<script src="/static/js/lib/layout.js?v=2026.06.28-1"></script>
-<script src="/static/js/foundation.js?v=2026.06.26-3"></script>
+<script src="/static/js/lib/layout.js?v=2026.07.10-1"></script>
+<script src="/static/js/foundation.js?v=2026.07.10-1"></script>
 <script src="/static/js/lib/series.js?v=2026.06.21-1"></script>
 <script src="/static/js/lib/benchaxis.js?v=2026.06.28-1"></script>
 <script src="/static/js/lib/thresholds.js?v=2026.06.26-3"></script>
-<script src="/static/js/charts.js?v=2026.07.05-1"></script>
+<script src="/static/js/charts.js?v=2026.07.10-1"></script>
 <script src="/static/js/terminal.js?v=2026.06.26-2"></script>
-<script src="/static/js/llmcontrol.js?v=2026.06.15-10"></script>
+<script src="/static/js/llmcontrol.js?v=2026.07.10-1"></script>
 <script src="/static/js/openclaw.js?v=2026.06.10-7"></script>
-<script src="/static/js/admin.js?v=2026.06.10-6"></script>
+<script src="/static/js/admin.js?v=2026.07.10-1"></script>
 <script src="/static/js/llmcontrol-models.js?v=2026.06.10-6"></script>
 <script src="/static/js/bench-autotune.js?v=2026.06.25-9"></script>
 <script src="/static/js/lmstudio.js?v=2026.06.26-3"></script>
-<script src="/static/js/overall.js?v=2026.06.09-2"></script>
+<script src="/static/js/vllm.js?v=2026.07.10-1"></script>
+<script src="/static/js/overall.js?v=2026.07.10-1"></script>
 <script src="/static/js/dashboard-manager.js?v=2026.07.04-1"></script>
 
 <!-- Settings panel — kept at body root so it's never inside a hidden tab container -->
@@ -1781,6 +1902,6 @@ Backend API endpoints consumed:
 <div id="alarmToastContainer"></div>
 
 <script src="/static/js/events-toasts.js?v=2026.07.04-2"></script>
-<script src="/static/js/boot.js?v=2026.06.26-3"></script>
+<script src="/static/js/boot.js?v=2026.07.10-1"></script>
 </body>
 </html>

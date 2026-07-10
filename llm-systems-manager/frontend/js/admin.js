@@ -50,8 +50,14 @@ function adminPrimaryCell(a) {
   const approved = a.status === 'approved';
   const isLlamaPrimary = approved && _adminGlobal.primary_llama_id === a.agent_id;
   const isLmsPrimary   = approved && _adminGlobal.primary_lms_id   === a.agent_id;
+  const isVllmPrimary  = approved && _adminGlobal.primary_vllm_id  === a.agent_id;
   const llamaDisabled  = !approved || !caps.llama;
   const lmsDisabled    = !approved || !caps.lms;
+  const vllmDisabled   = !approved || !caps.vllm;
+  const vllmTitle = !approved ? 'agent must be approved'
+                    : !caps.vllm ? 'agent does not advertise vllm capability'
+                    : isVllmPrimary ? 'currently the primary vllm host — uncheck to clear'
+                    : 'mark as the primary vllm host';
   const llamaTitle = !approved ? 'agent must be approved'
                     : !caps.llama ? 'agent does not advertise llama capability'
                     : isLlamaPrimary ? 'currently the primary llama host — uncheck to clear'
@@ -68,6 +74,10 @@ function adminPrimaryCell(a) {
     <label style="display:block;margin-top:3px;${lmsDisabled?'opacity:0.4;':''}cursor:${lmsDisabled?'not-allowed':'pointer'};" title="${lmsTitle}">
       <input type="checkbox" ${isLmsPrimary?'checked':''} ${lmsDisabled?'disabled':''}
              onchange="adminTogglePrimary('${aid}','lms',this.checked)"> lms
+    </label>
+    <label style="display:block;margin-top:3px;${vllmDisabled?'opacity:0.4;':''}cursor:${vllmDisabled?'not-allowed':'pointer'};" title="${vllmTitle}">
+      <input type="checkbox" ${isVllmPrimary?'checked':''} ${vllmDisabled?'disabled':''}
+             onchange="adminTogglePrimary('${aid}','vllm',this.checked)"> vllm
     </label>`;
 }
 async function adminTogglePrimary(aid, kind, set) {
@@ -678,15 +688,17 @@ function _adminInfraChips(a) {
 // separate "Capabilities" and "Primary" columns.
 function _adminCapsAndPrimary(a) {
   const caps = a.capabilities || {};
-  const order = ['llama', 'lms', 'openclaw', 'image_gen', 'perf_controller', 'sysperf'];
+  const order = ['llama', 'lms', 'vllm', 'openclaw', 'image_gen', 'perf_controller', 'sysperf'];
   const enabled = order.filter(k => caps[k]);
   const isPrimaryLlama = _adminGlobal.primary_llama_id === a.agent_id;
   const isPrimaryLms   = _adminGlobal.primary_lms_id   === a.agent_id;
+  const isPrimaryVllm  = _adminGlobal.primary_vllm_id  === a.agent_id;
   // Phase 4 #4 — pool membership chip.
   const pool = _adminGlobal.llama_pool || [];
   const poolIdx = pool.indexOf(a.agent_id);
   const chipHtml = enabled.map(k => {
-    const isP = (k === 'llama' && isPrimaryLlama) || (k === 'lms' && isPrimaryLms);
+    const isP = (k === 'llama' && isPrimaryLlama) || (k === 'lms' && isPrimaryLms)
+             || (k === 'vllm' && isPrimaryVllm);
     return `<span class="adm-chip ${isP ? 'primary' : ''}" title="${isP ? 'primary ' + k + ' host' : k + ' capability'}">${adminEsc(k)}${isP ? ' ★' : ''}</span>`;
   }).join('');
 
@@ -694,6 +706,7 @@ function _adminCapsAndPrimary(a) {
   const aid = adminEsc(a.agent_id);
   const llamaDisabled = !approved || !caps.llama;
   const lmsDisabled   = !approved || !caps.lms;
+  const vllmDisabled  = !approved || !caps.vllm;
   const poolBadge = (poolIdx >= 0)
     ? `<span class="adm-chip primary" title="position ${poolIdx + 1} in llama pool (round-robin order)">pool #${poolIdx + 1}</span>`
     : '';
@@ -719,6 +732,10 @@ function _adminCapsAndPrimary(a) {
         <input type="checkbox" ${isPrimaryLms ? 'checked' : ''} ${lmsDisabled ? 'disabled' : ''}
                onchange="adminTogglePrimary('${aid}','lms',this.checked)"> primary lms
       </label>
+      <label class="${vllmDisabled ? 'disabled' : ''}" title="${vllmDisabled ? (caps.vllm ? 'agent must be approved' : 'agent has no vllm capability') : (isPrimaryVllm ? 'currently primary vllm host — uncheck to clear' : 'mark as primary vllm host')}">
+        <input type="checkbox" ${isPrimaryVllm ? 'checked' : ''} ${vllmDisabled ? 'disabled' : ''}
+               onchange="adminTogglePrimary('${aid}','vllm',this.checked)"> primary vllm
+      </label>
       <label class="${llamaDisabled ? 'disabled' : ''}" title="${llamaDisabled ? 'agent must be approved + advertise llama' : (poolIdx >= 0 ? 'remove from llama pool' : 'add to llama pool (round-robin)')}">
         <input type="checkbox" ${poolIdx >= 0 ? 'checked' : ''} ${llamaDisabled ? 'disabled' : ''}
                onchange="adminToggleLlamaPool('${aid}',this.checked)"> in llama pool
@@ -728,7 +745,7 @@ function _adminCapsAndPrimary(a) {
   // "View dashboard" — jump to the dashboard with this agent selected, one
   // button per provider capability the (approved) agent holds.
   const viewBtns = approved
-    ? ['llama', 'lms'].filter(k => caps[k]).map(k =>
+    ? ['llama', 'lms', 'vllm'].filter(k => caps[k]).map(k =>
         `<button class="adm-chip" style="cursor:pointer;border:none;" title="View this agent on the ${k} dashboard" onclick="_jumpToDashboard('${aid}','${k}')">⧉ view ${adminEsc(k)}</button>`
       ).join(' ')
     : '';
@@ -744,7 +761,7 @@ function _jumpToDashboard(agentId, provider) {
   if (list.length > 1 && typeof _selectAgent === 'function') {
     _selectAgent(provider, agentId);
   }
-  const sub = provider === 'lms' ? 'lmstudio' : 'llamacpp';
+  const sub = provider === 'lms' ? 'lmstudio' : provider === 'vllm' ? 'vllm' : 'llamacpp';
   if (typeof switchTab === 'function') switchTab('dashboard');
   if (typeof switchSubTab === 'function') switchSubTab('dashboard', sub);
 }

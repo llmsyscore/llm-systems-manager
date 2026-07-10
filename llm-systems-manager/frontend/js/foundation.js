@@ -3,11 +3,11 @@
 // or null. _withAgentParam() appends ?agent=<id> to same-origin provider API
 // URLs so the manager dispatcher routes to the picked host. No-op when no
 // selection exists (single-agent installs) → byte-identical behavior.
-window._agentsByProvider = window._agentsByProvider || { llama: [], lms: [] };
-window._selectedAgents   = window._selectedAgents   || { llama: null, lms: null };
+window._agentsByProvider = window._agentsByProvider || { llama: [], lms: [], vllm: [] };
+window._selectedAgents   = window._selectedAgents   || { llama: null, lms: null, vllm: null };
 // Last selection each provider's grid was rendered for, so the 30s picker poll
 // only re-applies per-agent layout when the selection actually changed.
-let _appliedAgentSel = { llama: undefined, lms: undefined };
+let _appliedAgentSel = { llama: undefined, lms: undefined, vllm: undefined };
 
 function _selectedAgent(provider) {
   return (window._selectedAgents && window._selectedAgents[provider]) || null;
@@ -21,6 +21,7 @@ function _agentClaimKey(base, provider) {
 }
 
 const _AGENT_PATH_PROVIDER = [
+  [/^\/api\/vllm\//,     'vllm'],
   [/^\/api\/lmstudio\//, 'lms'],
   [/^\/api\/lms\//,      'lms'],     // incl. /api/lms/terminal/create — must precede /api/terminal/
   [/^\/api\/llm\//,      'llama'],
@@ -140,6 +141,12 @@ const CARD_LABELS_LMS = {
   'lms-disk':    'LM Studio Disk',
   'lms-power':   'LM Studio powermetrics',
 };
+const CARD_LABELS_VLLM = {
+  'vllm-server':     'vLLM Server',
+  'vllm-requests':   'vLLM Requests',
+  'vllm-kv':         'vLLM KV Cache',
+  'vllm-throughput': 'vLLM Throughput',
+};
 const CARD_LABELS_MANAGER = {
   'services':         'Services',
   'influxdb':         'InfluxDB',
@@ -179,6 +186,8 @@ async function loadLayout() {
     if (!layout.hidden)          layout.hidden          = [];
     if (!layout.hiddenOverall)   layout.hiddenOverall   = [];
     if (!layout.lmsHidden)       layout.lmsHidden       = [];
+    if (!layout.vllmHidden)      layout.vllmHidden      = [];
+    if (!layout.vllmOrder)       layout.vllmOrder       = [];
     if (!layout.managerHidden)   layout.managerHidden   = [];
     if (!layout.hiddenByAgent || typeof layout.hiddenByAgent !== 'object') layout.hiddenByAgent = {};
     if (!layout.orderByAgent || typeof layout.orderByAgent !== 'object') layout.orderByAgent = {};
@@ -189,6 +198,7 @@ async function loadLayout() {
     if (!layout.cardSizes || typeof layout.cardSizes !== 'object') layout.cardSizes = {};
     _migrateLegacyCardIds(layout);
     _applyOrderForGrid('lmsCardGrid', 'lmsOrder');
+    _applyOrderForGrid('vllmCardGrid', 'vllmOrder');
     if (layout.managerOrder) applyManagerLayout(layout.managerOrder);
   } catch(e) {}
   applyTheme(layout && layout.theme, false);
@@ -258,14 +268,15 @@ function _cardLabel(id, map) {
 const _AGENT_PICKER_CONTAINERS = {
   llama: ['agentPickerDashLlama', 'agentPickerCtrlLlama'],
   lms:   ['agentPickerDashLms', 'agentPickerCtrlLms'],
+  vllm:  ['agentPickerDashVllm', 'agentPickerCtrlVllm'],
 };
 
 async function _loadAgentsByProvider() {
   try {
     const data = await fetch('/api/agents/list-by-provider').then(r => r.json());
-    window._agentsByProvider = { llama: data.llama || [], lms: data.lms || [] };
+    window._agentsByProvider = { llama: data.llama || [], lms: data.lms || [], vllm: data.vllm || [] };
     // Restore persisted selection; else fall back to the provider default.
-    ['llama', 'lms'].forEach(prov => {
+    ['llama', 'lms', 'vllm'].forEach(prov => {
       const list = window._agentsByProvider[prov] || [];
       const saved = (layout && layout._selectedAgents && layout._selectedAgents[prov]) || null;
       const savedValid = saved && list.some(a => a.agent_id === saved);
@@ -290,7 +301,7 @@ async function _loadAgentsByProvider() {
     // Re-apply a provider's per-agent order/visibility/sizes only when its
     // selection changed (first resolve or a deleted-agent fallback).
     if (typeof _applyAgentGrid === 'function') {
-      ['llama', 'lms'].forEach(prov => {
+      ['llama', 'lms', 'vllm'].forEach(prov => {
         const sel = _selectedAgent(prov);
         if (sel !== _appliedAgentSel[prov]) { _appliedAgentSel[prov] = sel; _applyAgentGrid(prov); }
       });
@@ -299,7 +310,7 @@ async function _loadAgentsByProvider() {
 }
 
 function _renderAgentPickers() {
-  ['llama', 'lms'].forEach(prov => {
+  ['llama', 'lms', 'vllm'].forEach(prov => {
     const list = window._agentsByProvider[prov] || [];
     const sel = _selectedAgent(prov);
     (_AGENT_PICKER_CONTAINERS[prov] || []).forEach(cid => {
@@ -398,6 +409,11 @@ function _selectAgent(provider, agentId) {
       if ((typeof _lmsTermSid !== 'undefined' && _lmsTermSid)
           || (_lp && _lp.style.display !== 'none')) closeLmsTerminal();
     }
+  } else if (provider === 'vllm') {
+    // No history backfill for vLLM (deferred) — just re-poll the new agent.
+    if (typeof fetchVllmMetrics === 'function') fetchVllmMetrics();
+    if (typeof _vllmLogOpen !== 'undefined' && _vllmLogOpen
+        && typeof startVllmLogRefresh === 'function') startVllmLogRefresh();
   }
 }
 
@@ -604,6 +620,7 @@ function _applyOrderForGrid(gridId, orderKey) {
 function _perAgentProviderForCard(cardId) {
   if (CARD_LABELS[cardId]) return 'llama';
   if (CARD_LABELS_LMS[cardId]) return 'lms';
+  if (CARD_LABELS_VLLM[cardId]) return 'vllm';
   return null;
 }
 
@@ -614,7 +631,9 @@ function _sizeMapFor(cardId) {
   const prov = _perAgentProviderForCard(cardId);
   const agentId = prov ? _selectedAgent(prov) : null;
   if (lib && prov && agentId) {
-    const seedIds = prov === 'llama' ? Object.keys(CARD_LABELS) : Object.keys(CARD_LABELS_LMS);
+    const seedIds = prov === 'llama' ? Object.keys(CARD_LABELS)
+                  : prov === 'vllm' ? Object.keys(CARD_LABELS_VLLM)
+                  : Object.keys(CARD_LABELS_LMS);
     return lib.resolveSizeMap(layout, prov, agentId, seedIds);
   }
   if (!layout.cardSizes || typeof layout.cardSizes !== 'object') layout.cardSizes = {};
@@ -629,6 +648,9 @@ function _applyAgentGrid(provider) {
   } else if (provider === 'lms') {
     _applyOrderForGrid('lmsCardGrid', 'lmsOrder');
     _applyHiddenForGrid('lmsCardGrid', 'lmsHidden');
+  } else if (provider === 'vllm') {
+    _applyOrderForGrid('vllmCardGrid', 'vllmOrder');
+    _applyHiddenForGrid('vllmCardGrid', 'vllmHidden');
   }
   if (typeof initCardResize === 'function') initCardResize();
 }
@@ -648,6 +670,9 @@ function applyLayout() {
 
   // Apply visibility — LMS dashboard cards (per selected agent)
   _applyHiddenForGrid('lmsCardGrid', 'lmsHidden');
+
+  // Apply visibility — vLLM dashboard cards (per selected agent)
+  _applyHiddenForGrid('vllmCardGrid', 'vllmHidden');
 
   // Apply visibility — Manager dashboard cards
   const hiddenMgr = layout.managerHidden || [];
@@ -896,6 +921,37 @@ async function saveLmsLayout() {
   return _lmsLayoutInFlight;
 }
 
+// vLLM dashboard card order persistence — same coalescing shape as LMS.
+let _vllmLayoutInFlight = null;
+let _vllmLayoutPending  = false;
+async function saveVllmLayout() {
+  if (_vllmLayoutInFlight) { _vllmLayoutPending = true; return _vllmLayoutInFlight; }
+  _vllmLayoutInFlight = (async () => {
+    try {
+      do {
+        _vllmLayoutPending = false;
+        const grid = document.getElementById('vllmCardGrid');
+        if (!grid) return;
+        const ids = [...grid.querySelectorAll('.card')].map(c => c.dataset.card);
+        const ol = _orderList('vllmOrder');
+        ol.splice(0, ol.length, ...ids);
+        try {
+          const current = await fetch('/api/layout').then(r => r.json());
+          current.vllmOrder = layout.vllmOrder;
+          current.orderByAgent = layout.orderByAgent;
+          await fetch('/api/layout', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(current),
+          });
+        } catch(_) {}
+      } while (_vllmLayoutPending);
+    } finally {
+      _vllmLayoutInFlight = null;
+    }
+  })();
+  return _vllmLayoutInFlight;
+}
+
 // Manager dashboard card order persistence — same shape as LMS, separate
 // layout key so reordering one grid never clobbers the other.
 let _managerLayoutInFlight = null;
@@ -943,6 +999,7 @@ function toggleCard(cardId, visible) {
   let hiddenKey = 'hidden';
   if (CARD_LABELS_OVERALL[cardId]) hiddenKey = 'hiddenOverall';
   else if (CARD_LABELS_LMS[cardId]) hiddenKey = 'lmsHidden';
+  else if (CARD_LABELS_VLLM[cardId]) hiddenKey = 'vllmHidden';
   else if (CARD_LABELS_MANAGER[cardId]) hiddenKey = 'managerHidden';
   const list = _hiddenList(hiddenKey);
   const idx = list.indexOf(cardId);
@@ -966,9 +1023,10 @@ function _gridIcon(n) {
 }
 
 function _getDashSubTab() {
-  // Returns 'lmstudio' | 'manager' | 'llamacpp'. Defaults to llamacpp so the
-  // settings panel falls back to llama.cpp when nothing else is active.
+  // Returns 'lmstudio' | 'vllm' | 'manager' | 'llamacpp'. Defaults to llamacpp
+  // so the settings panel falls back to llama.cpp when nothing else is active.
   if (document.getElementById('dash-lmstudio')?.classList.contains('active')) return 'lmstudio';
+  if (document.getElementById('dash-vllm')?.classList.contains('active'))     return 'vllm';
   if (document.getElementById('dash-manager')?.classList.contains('active'))  return 'manager';
   return 'llamacpp';
 }
@@ -978,6 +1036,7 @@ function _getGridColsKey() {
   if (_activeTab === 'dashboard') {
     const sub = _getDashSubTab();
     if (sub === 'lmstudio') return 'lmsCols';
+    if (sub === 'vllm')     return 'vllmCols';
     if (sub === 'manager')  return 'managerCols';
     return 'cols';
   }
@@ -989,6 +1048,7 @@ function _getGridEl() {
   if (_activeTab === 'dashboard') {
     const sub = _getDashSubTab();
     if (sub === 'lmstudio') return document.getElementById('lmsCardGrid');
+    if (sub === 'vllm')     return document.getElementById('vllmCardGrid');
     if (sub === 'manager')  return document.getElementById('managerCardGrid');
     return document.getElementById('cardGrid');
   }
@@ -1035,6 +1095,9 @@ function renderSettingsPanel() {
     if (sub === 'lmstudio') {
       label = 'Dashboard · LM Studio'; map = CARD_LABELS_LMS;
       hiddenKey = 'lmsHidden'; colsKey = 'lmsCols';
+    } else if (sub === 'vllm') {
+      label = 'Dashboard · vLLM'; map = CARD_LABELS_VLLM;
+      hiddenKey = 'vllmHidden'; colsKey = 'vllmCols';
     } else if (sub === 'manager') {
       label = 'Dashboard · Manager'; map = CARD_LABELS_MANAGER;
       hiddenKey = 'managerHidden'; colsKey = 'managerCols';
@@ -1068,6 +1131,7 @@ function renderSettingsPanel() {
     const groups = [
       { label: 'llama.cpp cards', map: CARD_LABELS },
       { label: 'LM Studio cards', map: CARD_LABELS_LMS },
+      { label: 'vLLM cards',      map: CARD_LABELS_VLLM },
       { label: 'Manager cards',   map: CARD_LABELS_MANAGER },
     ];
     let inner = '';
@@ -1154,6 +1218,9 @@ async function resetCurrentTabLayout() {
     if (sub === 'lmstudio') {
       scope = { hidden: 'lmsHidden', order: 'lmsOrder', cols: 'lmsCols' };
       map = CARD_LABELS_LMS;
+    } else if (sub === 'vllm') {
+      scope = { hidden: 'vllmHidden', order: 'vllmOrder', cols: 'vllmCols' };
+      map = CARD_LABELS_VLLM;
     } else if (sub === 'manager') {
       scope = { hidden: 'managerHidden', order: 'managerOrder', cols: 'managerCols' };
       map = CARD_LABELS_MANAGER;
@@ -1244,6 +1311,7 @@ function applyAllGridCols() {
     [document.getElementById('overallGrid'),  layout.overallCols],
     [document.getElementById('cardGrid'),     layout.cols],
     [document.getElementById('lmsCardGrid'),  layout.lmsCols],
+    [document.getElementById('vllmCardGrid'), layout.vllmCols],
     [document.getElementById('managerCardGrid'), layout.managerCols],
   ];
   pairs.forEach(([el, n]) => {
@@ -1300,7 +1368,10 @@ function switchTab(tab) {
     if (typeof _adminLogsClose === 'function') _adminLogsClose();
     if (typeof _adminUpdateClose === 'function') _adminUpdateClose();
   }
-  if (tab !== 'llm')        { stopLogStream(); stopPerfRefresh(); stopLmsLogRefresh(); }
+  if (tab !== 'llm')        {
+    stopLogStream(); stopPerfRefresh(); stopLmsLogRefresh();
+    if (typeof stopVllmLogRefresh === 'function') stopVllmLogRefresh();
+  }
 }
 
 // ── Role-aware UI (multi-user, #125) ────────────────────────────────────────

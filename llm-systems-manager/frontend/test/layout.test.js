@@ -4,8 +4,8 @@ import layoutLib from '../js/lib/layout.js';
 const { PER_AGENT_HIDDEN, PER_AGENT_ORDER, resolveHiddenList, resolveOrderList, resolveSizeMap } = layoutLib;
 
 describe('PER_AGENT_HIDDEN', () => {
-  test('only the llama.cpp and LMS dashboard surfaces are per-agent', () => {
-    expect(PER_AGENT_HIDDEN).toEqual({ hidden: 'llama', lmsHidden: 'lms' });
+  test('the llama.cpp, LMS and vLLM dashboard surfaces are per-agent', () => {
+    expect(PER_AGENT_HIDDEN).toEqual({ hidden: 'llama', lmsHidden: 'lms', vllmHidden: 'vllm' });
   });
 });
 
@@ -74,8 +74,8 @@ describe('resolveHiddenList — per-agent surfaces', () => {
 });
 
 describe('PER_AGENT_ORDER', () => {
-  test('maps the two per-agent order keys to their providers', () => {
-    expect(PER_AGENT_ORDER).toEqual({ order: 'llama', lmsOrder: 'lms' });
+  test('maps the per-agent order keys to their providers', () => {
+    expect(PER_AGENT_ORDER).toEqual({ order: 'llama', lmsOrder: 'lms', vllmOrder: 'vllm' });
   });
 });
 

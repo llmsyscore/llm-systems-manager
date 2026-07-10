@@ -48,8 +48,8 @@ const _subTabState = { dashboard: 'llamacpp', llm: 'llamacpp', admin: 'agents' }
 let _mgrPerfBackfilled = false;
 
 const _SUB_TAB_MAP = {
-  dashboard: { tabId: 'dashboardTab', prefix: 'dash',  subs: ['llamacpp','lmstudio','openclaw','manager'] },
-  llm:       { tabId: 'llmTab',       prefix: 'llm',   subs: ['llamacpp','lmstudio'] },
+  dashboard: { tabId: 'dashboardTab', prefix: 'dash',  subs: ['llamacpp','lmstudio','vllm','openclaw','manager'] },
+  llm:       { tabId: 'llmTab',       prefix: 'llm',   subs: ['llamacpp','lmstudio','vllm'] },
   admin:     { tabId: 'adminTab',     prefix: 'admin', subs: ['agents','pool','backup','auth','users','audit'] },
 };
 
@@ -94,6 +94,14 @@ function switchSubTab(parent, sub) {
     _initLMSSections();
     // Always restart log polling on every visit (timer is stopped on tab leave)
     if (_lmsLogOpen) startLmsLogRefresh();
+  }
+  // Same stop/kick pattern for the vLLM sub-tab.
+  if (sub !== 'vllm' && typeof stopVllmLogRefresh === 'function') {
+    stopVllmLogRefresh();
+  }
+  if (sub === 'vllm') {
+    fetchVllmMetrics();
+    if (typeof _vllmLogOpen !== 'undefined' && _vllmLogOpen) startVllmLogRefresh();
   }
   if (parent === 'dashboard' && sub === 'openclaw') {
     fetchOpenclawAnalytics();
@@ -162,6 +170,9 @@ function switchSubTab(parent, sub) {
   // Poll LM Studio metrics every 6 seconds
   fetchLMStudioMetrics();
   setInterval(fetchLMStudioMetrics, 6000);
+  // Poll vLLM metrics every 6 seconds
+  fetchVllmMetrics();
+  setInterval(fetchVllmMetrics, 6000);
   // Services + InfluxDB cards poll the alarm engine catalog every 10s.
   fetchServicesAndInflux();
   setInterval(fetchServicesAndInflux, 10000);
@@ -191,6 +202,7 @@ function switchSubTab(parent, sub) {
     }
     pollServerState();
     fetchLMStudioMetrics();
+    fetchVllmMetrics();
     fetchServicesAndInflux();
     fetchManagerAgentsCard();
     refreshTabIndicators();

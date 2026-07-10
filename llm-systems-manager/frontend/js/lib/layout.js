@@ -1,10 +1,10 @@
 // Pure layout helpers shared by the dashboard script and frontend unit tests.
 // Classic <script> in the browser (window.LMLayout), CommonJS under Vitest.
 
-// Hidden-list / order-list key -> provider for the two dashboard surfaces whose
-// single grid is re-pointed per picker-selected agent (llama.cpp, LM Studio).
-const PER_AGENT_HIDDEN = { hidden: 'llama', lmsHidden: 'lms' };
-const PER_AGENT_ORDER = { order: 'llama', lmsOrder: 'lms' };
+// Hidden-list / order-list key -> provider for the dashboard surfaces whose
+// single grid is re-pointed per picker-selected agent (llama.cpp, LM Studio, vLLM).
+const PER_AGENT_HIDDEN = { hidden: 'llama', lmsHidden: 'lms', vllmHidden: 'vllm' };
+const PER_AGENT_ORDER = { order: 'llama', lmsOrder: 'lms', vllmOrder: 'vllm' };
 
 // Per-agent array bucket for a surface, seeded from the global list.
 // Returns the global list when no agent is selected.

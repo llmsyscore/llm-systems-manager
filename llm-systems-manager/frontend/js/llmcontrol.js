@@ -109,13 +109,20 @@ async function _jsonOrThrow(resp) {
   catch(e) { throw new Error(`Invalid JSON: ${text.slice(0, 200)}`); }
 }
 
-async function openServerConfig() {
+// Which provider the svcconfig modal is editing ('llama' | 'vllm').
+let _svcProvider = 'llama';
+function _svcConfigRoute() {
+  return _svcProvider === 'vllm' ? '/api/vllm/server/svcconfig' : '/api/llm/server/svcconfig';
+}
+
+async function openServerConfig(provider) {
+  _svcProvider = provider === 'vllm' ? 'vllm' : 'llama';
   document.getElementById('svcConfigStatus').textContent = 'Loading…';
   document.getElementById('svcArgList').innerHTML = '';
   document.getElementById('svcConfigBinary').textContent = '…';
   document.getElementById('svcConfigOverlay').classList.add('open');
   try {
-    const d = await _jsonOrThrow(await fetch('/api/llm/server/svcconfig'));
+    const d = await _jsonOrThrow(await fetch(_svcConfigRoute()));
     if (!d.ok) throw new Error(d.error);
     _svcBinary = d.binary;
     _svcArgs   = (d.args || []).map(a => ({...a})); // shallow copy
@@ -137,7 +144,7 @@ async function saveSvcConfig(doRestart) {
   statusEl.style.color = 'var(--warn)';
   statusEl.textContent = doRestart ? 'Saving and restarting…' : 'Saving…';
   try {
-    const r = await _jsonOrThrow(await fetch('/api/llm/server/svcconfig', {
+    const r = await _jsonOrThrow(await fetch(_svcConfigRoute(), {
       method:  'POST',
       headers: {'Content-Type': 'application/json'},
       body:    JSON.stringify({ binary: _svcBinary, args: _svcArgs, restart: doRestart }),
@@ -145,7 +152,10 @@ async function saveSvcConfig(doRestart) {
     if (!r.ok) throw new Error(r.error);
     statusEl.style.color = 'var(--ok)';
     statusEl.textContent = doRestart ? '✓ Saved and restarted.' : '✓ Saved. daemon-reload complete.';
-    if (doRestart) setTimeout(() => { pollServerState(); fetchMetrics(); }, 4000);
+    if (doRestart) setTimeout(() => {
+      if (_svcProvider === 'vllm') { if (typeof fetchVllmMetrics === 'function') fetchVllmMetrics(); }
+      else { pollServerState(); fetchMetrics(); }
+    }, 4000);
   } catch(e) {
     console.error('saveSvcConfig failed:', e);
     statusEl.style.color = 'var(--crit)';

@@ -42,6 +42,13 @@ function initSortable() {
       onEnd: saveLmsLayout,
     });
   }
+  const vllmGrid = document.getElementById('vllmCardGrid');
+  if (vllmGrid) {
+    Sortable.create(vllmGrid, {
+      handle: '.card-handle', animation: 150,
+      onEnd: saveVllmLayout,
+    });
+  }
   const mgrGrid = document.getElementById('managerCardGrid');
   if (mgrGrid) {
     Sortable.create(mgrGrid, {
@@ -791,13 +798,16 @@ async function checkConfig() {
     const ag = (cfg && cfg.agents) || {};
     const llamaOn = ag.llama_present !== false;
     const lmsOn   = ag.lms_present   !== false;
-    const llmOn   = llamaOn || lmsOn;
+    const vllmOn  = ag.vllm_present  === true;   // new key: absent => hidden
+    const llmOn   = llamaOn || lmsOn || vllmOn;
     toggle('tabBtnOverall',          llmOn);
     toggle('tabBtnLlmControl',       llmOn);
     toggle('subTabBtnDashLlamacpp',  llamaOn);
     toggle('subTabBtnDashLmstudio',  lmsOn);
+    toggle('subTabBtnDashVllm',      vllmOn);
     toggle('subTabBtnLlmLlamacpp',   llamaOn);
     toggle('subTabBtnLlmLmstudio',   lmsOn);
+    toggle('subTabBtnLlmVllm',       vllmOn);
     toggle('serverStateBanner',      llamaOn);
     toggle('lmsStateBanner',         lmsOn);
 
@@ -810,8 +820,10 @@ async function checkConfig() {
     // back to a visible sibling (openclaw or manager always stay visible).
     if (_subTabState.dashboard === 'llamacpp' && !llamaOn) switchSubTab('dashboard','manager');
     if (_subTabState.dashboard === 'lmstudio' && !lmsOn)   switchSubTab('dashboard','manager');
-    if (_subTabState.llm === 'llamacpp' && !llamaOn && lmsOn) switchSubTab('llm','lmstudio');
-    if (_subTabState.llm === 'lmstudio' && !lmsOn && llamaOn) switchSubTab('llm','llamacpp');
+    if (_subTabState.dashboard === 'vllm' && !vllmOn)      switchSubTab('dashboard','manager');
+    if (_subTabState.llm === 'llamacpp' && !llamaOn) switchSubTab('llm', lmsOn ? 'lmstudio' : 'vllm');
+    if (_subTabState.llm === 'lmstudio' && !lmsOn)   switchSubTab('llm', llamaOn ? 'llamacpp' : 'vllm');
+    if (_subTabState.llm === 'vllm' && !vllmOn)      switchSubTab('llm', llamaOn ? 'llamacpp' : 'lmstudio');
   } catch(e) {
   } finally {
     _release('checkConfig');
