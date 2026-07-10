@@ -6,14 +6,17 @@ from __future__ import annotations
 import json
 import logging
 import queue as _queue_lib
+import shlex
 import subprocess
 import threading
 import time
+from pathlib import Path
 from typing import Any, Iterator, Optional
 
 import requests
-from fastapi import Header, HTTPException, Query
-from fastapi.responses import StreamingResponse
+from fastapi import Header, HTTPException, Query, Request
+from fastapi.responses import Response, StreamingResponse
+from starlette.concurrency import run_in_threadpool
 
 import stream_pool
 
@@ -323,6 +326,224 @@ def vllm_models_endpoint(authorization: Optional[str] = Header(default=None)) ->
         return {"data": [], "error": str(e)}
 
 
+# ── svcconfig (ExecStart editing via the root-owned baked wrapper) ─────
+
+_VLLM_SVCCONFIG_WRAPPER = "/usr/local/sbin/llm-vllm-svcconfig-apply"
+
+
+def _vllm_svc_file_path() -> str:
+    return f"/etc/systemd/system/{_require_ctx().config.VLLM_SYSTEMD_UNIT}"
+
+
+def _wrapper_baked_unit_path(wrapper: str) -> str:
+    """UNIT_PATH baked into the installed wrapper, or "" if unreadable."""
+    try:
+        for line in Path(wrapper).read_text().splitlines():
+            if line.startswith("UNIT_PATH='") and line.rstrip().endswith("'"):
+                return line.rstrip()[len("UNIT_PATH='"):-1]
+    except OSError:
+        pass
+    return ""
+
+
+def _parse_vllm_execstart(content: str) -> "tuple[Optional[str], list[dict]]":
+    """ExecStart → (command head incl. positionals, flag list).
+    A flag followed by a non-flag token is a value flag; else boolean."""
+    for line in content.splitlines():
+        stripped = line.strip()
+        if not stripped.startswith("ExecStart="):
+            continue
+        parts = shlex.split(stripped[len("ExecStart="):].strip())
+        head: list[str] = []
+        i = 0
+        while i < len(parts) and not parts[i].startswith("-"):
+            head.append(parts[i])
+            i += 1
+        args: list[dict] = []
+        while i < len(parts):
+            p = parts[i]
+            if p.startswith("-"):
+                if i + 1 < len(parts) and not parts[i + 1].startswith("-"):
+                    args.append({"flag": p, "value": parts[i + 1], "bool": False})
+                    i += 2
+                else:
+                    args.append({"flag": p, "value": None, "bool": True})
+                    i += 1
+            else:
+                i += 1
+        return " ".join(head), args
+    return None, []
+
+
+def _svcconfig_tokens(head: str, args_list: list) -> "Optional[list[str]]":
+    tokens = shlex.split(head or "")
+    for a in args_list:
+        tokens.append(a["flag"])
+        if not a.get("bool") and a.get("value") not in (None, ""):
+            tokens.append(str(a["value"]))
+    for t in tokens:
+        if not isinstance(t, str) or "\n" in t or "\r" in t:
+            return None
+    return tokens
+
+
+def vllm_svcconfig_get(authorization: Optional[str] = Header(default=None)) -> dict[str, Any]:
+    _require_ctx().check_bearer(authorization); _vllm_check_enabled()
+    try:
+        content = Path(_vllm_svc_file_path()).read_text()
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+    head, args = _parse_vllm_execstart(content)
+    if head is None:
+        return {"ok": False, "error": "ExecStart line not found in service file"}
+    return {"ok": True, "binary": head, "args": args}
+
+
+def vllm_svcconfig_post(body: dict, authorization: Optional[str] = Header(default=None)) -> dict[str, Any]:
+    _require_ctx().check_bearer(authorization); _vllm_check_enabled()
+    tokens = _svcconfig_tokens(body.get("binary", ""), body.get("args", []))
+    if not tokens:
+        return {"ok": False, "error": "invalid ExecStart token (newline or non-string)"}
+    payload = ("\n".join(tokens) + "\n").encode()
+
+    baked = _wrapper_baked_unit_path(_VLLM_SVCCONFIG_WRAPPER)
+    expected = _vllm_svc_file_path()
+    if baked and baked != expected:
+        return {"ok": False,
+                "error": f"svcconfig helper is baked for {baked} but the configured "
+                         f"unit is {expected} — run a root agent install.sh --update "
+                         f"to re-bake the helper and sudoers for the renamed unit"}
+
+    try:
+        r = subprocess.run(
+            ["sudo", "-n", _VLLM_SVCCONFIG_WRAPPER],
+            input=payload, capture_output=True, timeout=15,
+        )
+        if r.returncode != 0:
+            return {"ok": False,
+                    "error": r.stderr.decode().strip()
+                             or "svcconfig apply failed — check sudoers for llm-vllm-svcconfig-apply"}
+    except Exception as e:
+        return {"ok": False, "error": f"Write failed: {e}"}
+
+    if body.get("restart"):
+        try:
+            subprocess.run(["sudo", "-n", "/usr/bin/systemctl", "restart",
+                            _require_ctx().config.VLLM_SYSTEMD_UNIT],
+                           timeout=60, check=True, capture_output=True)
+        except Exception as e:
+            return {"ok": False, "error": f"restart failed: {e}"}
+    return {"ok": True}
+
+
+# ── OpenAI passthrough (mirrors providers/llama.py #214) ───────────────
+
+_OPENAI_READ_TIMEOUT_S = 600.0
+
+
+def _openai_wants_stream(body: bytes) -> bool:
+    try:
+        return bool((json.loads(body or b"{}") or {}).get("stream"))
+    except Exception:
+        return False
+
+
+async def _vllm_openai_forward(sub: str, request: Request,
+                               authorization: "Optional[str]"):
+    """Narrow OpenAI passthrough to vLLM /v1/<sub>."""
+    _require_ctx().check_bearer(authorization)
+    _vllm_check_enabled()
+    body = await request.body()
+    url = f"{_require_ctx().config.VLLM_API_URL.rstrip('/')}/v1/{sub}"
+    headers = {"Content-Type": "application/json"}
+    # Blocking requests.post runs off-loop: this handler is async (for
+    # request.body()), so a direct call would stall the whole event loop.
+    if _openai_wants_stream(body):
+        try:
+            upstream = await run_in_threadpool(
+                lambda: requests.post(url, data=body, headers=headers,
+                                      stream=True,
+                                      timeout=(5, _OPENAI_READ_TIMEOUT_S)))
+        except requests.exceptions.RequestException as e:
+            raise HTTPException(status_code=502, detail=str(e))
+        ctype = upstream.headers.get("content-type") or "text/event-stream"
+        if "text/event-stream" not in ctype.lower():
+            content, status = upstream.content, upstream.status_code
+            upstream.close()
+            return Response(content=content, status_code=status, media_type=ctype)
+        if not stream_pool.POOL.try_acquire():
+            upstream.close()
+            raise HTTPException(status_code=503,
+                                detail="agent at stream capacity; retry shortly")
+
+        def generate() -> "Iterator[bytes]":
+            try:
+                for chunk in upstream.iter_content(chunk_size=None):
+                    if chunk:
+                        yield chunk
+            finally:
+                upstream.close()
+
+        return StreamingResponse(stream_pool.guarded_async(generate()),
+                                 media_type="text/event-stream",
+                                 headers={"Cache-Control": "no-cache",
+                                          "X-Accel-Buffering": "no"})
+    try:
+        r = await run_in_threadpool(
+            lambda: requests.post(url, data=body, headers=headers,
+                                  timeout=(5, _OPENAI_READ_TIMEOUT_S)))
+    except requests.exceptions.RequestException as e:
+        raise HTTPException(status_code=502, detail=str(e))
+    return Response(content=r.content, status_code=r.status_code,
+                    media_type=r.headers.get("content-type") or "application/json")
+
+
+async def vllm_openai_chat(request: Request,
+                           authorization: Optional[str] = Header(default=None)):
+    return await _vllm_openai_forward("chat/completions", request, authorization)
+
+
+async def vllm_openai_completions(request: Request,
+                                  authorization: Optional[str] = Header(default=None)):
+    return await _vllm_openai_forward("completions", request, authorization)
+
+
+# ── LoRA adapters (opt-in; vLLM exposes these in trusted envs only) ────
+
+def _vllm_lora_guard() -> None:
+    if not getattr(_require_ctx().config, "VLLM_LORA_ENABLED", False):
+        raise HTTPException(status_code=503,
+                            detail="vllm LoRA endpoints not enabled (VLLM_LORA_ENABLED)")
+
+
+def vllm_lora_load(body: dict, authorization: Optional[str] = Header(default=None)) -> dict[str, Any]:
+    ctx = _require_ctx()
+    ctx.check_bearer(authorization); _vllm_check_enabled(); _vllm_lora_guard()
+    name, path = body.get("lora_name"), body.get("lora_path")
+    if not (name and path):
+        raise HTTPException(status_code=400, detail="lora_name and lora_path required")
+    try:
+        r = _get_session().post(f"{ctx.config.VLLM_API_URL.rstrip('/')}/v1/load_lora_adapter",
+                                json={"lora_name": name, "lora_path": path}, timeout=60)
+        return {"ok": r.ok, "status": r.status_code, "output": r.text[:500]}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+
+def vllm_lora_unload(body: dict, authorization: Optional[str] = Header(default=None)) -> dict[str, Any]:
+    ctx = _require_ctx()
+    ctx.check_bearer(authorization); _vllm_check_enabled(); _vllm_lora_guard()
+    name = body.get("lora_name")
+    if not name:
+        raise HTTPException(status_code=400, detail="lora_name required")
+    try:
+        r = _get_session().post(f"{ctx.config.VLLM_API_URL.rstrip('/')}/v1/unload_lora_adapter",
+                                json={"lora_name": name}, timeout=60)
+        return {"ok": r.ok, "status": r.status_code, "output": r.text[:500]}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+
 # ── Route registration ─────────────────────────────────────────────────
 
 _ROUTES: tuple = (
@@ -331,9 +552,15 @@ _ROUTES: tuple = (
     ("POST", "/vllm/server/start",   vllm_server_start_endpoint),
     ("POST", "/vllm/server/stop",    vllm_server_stop_endpoint),
     ("POST", "/vllm/server/restart", vllm_server_restart_endpoint),
+    ("GET",  "/vllm/server/svcconfig", vllm_svcconfig_get),
+    ("POST", "/vllm/server/svcconfig", vllm_svcconfig_post),
     ("GET",  "/vllm/log/tail",       vllm_log_tail),
     ("GET",  "/vllm/log/stream",     vllm_log_stream),
     ("GET",  "/vllm/models",         vllm_models_endpoint),
+    ("POST", "/vllm/openai/chat/completions", vllm_openai_chat),
+    ("POST", "/vllm/openai/completions",      vllm_openai_completions),
+    ("POST", "/vllm/lora/load",      vllm_lora_load),
+    ("POST", "/vllm/lora/unload",    vllm_lora_unload),
 )
 
 
