@@ -1191,6 +1191,7 @@ def get_config():
         "agents": {
             "llama_present": caps["llama"],
             "lms_present":   caps["lms"],
+            "vllm_present":  caps.get("vllm", False),
         },
     })
 
