@@ -14,7 +14,7 @@ EXAMPLE = AGENT_DIR / "agent_config.yaml.example"
 
 def _extract_writer() -> str:
     blocks = re.findall(r"<<'PYEOF'\n(.*?)\nPYEOF", INSTALL_SH.read_text(), re.S)
-    writer = [b for b in blocks if "monitor_influxdb_disk) = sys.argv" in b]
+    writer = [b for b in blocks if "vllm_unit) = sys.argv" in b]
     assert len(writer) == 1, f"expected 1 config writer, found {len(writer)}"
     return writer[0]
 
@@ -31,6 +31,7 @@ def _run_writer(cfg_path: Path, **over) -> str:
         over.get("llama_build_dir", ""), over.get("llama_backend", ""), over.get("llama_script", ""),
         "", "", "",
         "false", "false", "false",
+        "false", "",
     ]
     subprocess.run([sys.executable, "-c", _extract_writer(), *argv],
                    check=True, capture_output=True, text=True)

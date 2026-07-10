@@ -61,6 +61,7 @@ ENABLE_PERF=false
 PERF_FLAG_EXPLICIT=false   # set true if --enable-perf/--no-perf given on CLI
 ENABLE_LLAMA=false
 ENABLE_LMS=false
+ENABLE_VLLM=false
 ENABLE_OPENCLAW=false
 ENABLE_IMGGEN=false
 # Self-monitor probes — additive to whatever provider role is chosen.
@@ -76,6 +77,7 @@ ENABLE_MONITOR_INFLUXDB_DISK=false
 # happens to be running on the host.
 LLAMA_FLAG_EXPLICIT=false
 LMS_FLAG_EXPLICIT=false
+VLLM_FLAG_EXPLICIT=false
 OPENCLAW_FLAG_EXPLICIT=false
 MONITOR_MANAGER_FLAG_EXPLICIT=false
 MONITOR_ALARM_FLAG_EXPLICIT=false
@@ -86,6 +88,7 @@ MONITOR_INFLUXDB_DISK_FLAG_EXPLICIT=false
 LLAMA_API_URL_OVERRIDE=""
 LLAMA_LOG_FILE_OVERRIDE=""
 LLAMA_SYSTEMD_UNIT_OVERRIDE=""
+VLLM_SYSTEMD_UNIT_OVERRIDE=""
 LLAMA_BIN_OVERRIDE=""
 LLAMA_CONFIG_INI_OVERRIDE=""
 LLAMA_BUILD_METHOD_OVERRIDE=""
@@ -401,6 +404,9 @@ while [[ $# -gt 0 ]]; do
     --llama-backend)     _need_arg "$1" "${2:-}"; INSTALL_LLAMA_BACKEND="$2"; shift 2 ;;
     --enable-lms)   ENABLE_LMS=true;       LMS_FLAG_EXPLICIT=true;      shift ;;
     --no-lms)       ENABLE_LMS=false;      LMS_FLAG_EXPLICIT=true;      shift ;;
+    --enable-vllm)  ENABLE_VLLM=true;      VLLM_FLAG_EXPLICIT=true;     shift ;;
+    --no-vllm)      ENABLE_VLLM=false;     VLLM_FLAG_EXPLICIT=true;     shift ;;
+    --vllm-unit)    _need_arg "$1" "${2:-}"; VLLM_SYSTEMD_UNIT_OVERRIDE="$2"; shift 2 ;;
     --enable-openclaw) ENABLE_OPENCLAW=true; OPENCLAW_FLAG_EXPLICIT=true; shift ;;
     --no-openclaw)  ENABLE_OPENCLAW=false; OPENCLAW_FLAG_EXPLICIT=true; shift ;;
     --enable-imggen)   ENABLE_IMGGEN=true;   IMGGEN_FLAG_EXPLICIT=true;   shift ;;
@@ -509,12 +515,14 @@ _compute_required_install_files() {
     "$SRC_DIR/providers/llama.py"
     "$SRC_DIR/providers/llama_sse.py"
     "$SRC_DIR/providers/terminal.py"
+    "$SRC_DIR/providers/vllm.py"
   )
   case "$(uname -s)" in
     Linux)
       _required_install_files+=("$TMPL_DIR/llm-systems-agent.service.tmpl")
       _required_install_files+=("$TMPL_DIR/llm-systems-agent.sudoers.tmpl")
       _required_install_files+=("$TMPL_DIR/llm-svcconfig-apply.sh.tmpl")
+      _required_install_files+=("$TMPL_DIR/vllm.service.tmpl")
       ;;
     Darwin)
       _required_install_files+=("$TMPL_DIR/com.llm-systems-agent.plist.tmpl")
@@ -624,6 +632,16 @@ _resolved_llama_unit() {
   printf '%s' "$u"
 }
 
+# _resolved_vllm_unit — same resolution chain for the vLLM unit name.
+_resolved_vllm_unit() {
+  local u="${VLLM_SYSTEMD_UNIT_OVERRIDE:-}"
+  if [[ -z "$u" && -f "$INSTALL_DIR/agent_config.yaml" ]]; then
+    u="$(_yaml_scalar "$INSTALL_DIR/agent_config.yaml" VLLM_SYSTEMD_UNIT)"
+  fi
+  [[ -n "$u" && "$u" =~ ^[A-Za-z0-9_.@-]+\.service$ ]] || u="vllm.service"
+  printf '%s' "$u"
+}
+
 # _svcconfig_wrapper_version FILE
 #   Echo the SVCCONFIG_WRAPPER_VERSION marker from FILE (installed helper or
 #   staged template), or 0 if the file is unreadable / has no marker.
@@ -684,11 +702,13 @@ _xml_escape() {
 #   svcconfig helper (Linux, privileged). Called from both fresh install and
 #   root --update. Returns non-zero on a visudo failure without installing.
 _apply_sudoers_and_wrapper() {
-  local unit tmp_sudoers tmp_wrap
+  local unit vunit tmp_sudoers tmp_wrap tmp_vwrap
   unit="$(_resolved_llama_unit)"
+  vunit="$(_resolved_vllm_unit)"
   tmp_sudoers="$(mktemp)"
   _subst_tokens "$TMPL_DIR/llm-systems-agent.sudoers.tmpl" \
-      '${AGENT_USER}' "$USER_ARG" '${LLAMA_UNIT}' "$unit" > "$tmp_sudoers"
+      '${AGENT_USER}' "$USER_ARG" '${LLAMA_UNIT}' "$unit" \
+      '${VLLM_UNIT}' "$vunit" > "$tmp_sudoers"
   if ! $SUDO visudo -c -f "$tmp_sudoers" >/dev/null 2>&1; then
     echo "ERROR: visudo validation failed for $tmp_sudoers — NOT installing sudoers." >&2
     rm -f "$tmp_sudoers"; return 1
@@ -703,6 +723,13 @@ _apply_sudoers_and_wrapper() {
   $SUDO install -m 0755 -o root -g root "$tmp_wrap" /usr/local/sbin/llm-svcconfig-apply
   _ok "svcconfig helper installed: /usr/local/sbin/llm-svcconfig-apply"
   rm -f "$tmp_wrap"
+  # Second wrapper baked for the vLLM unit — same template, different UNIT_PATH.
+  tmp_vwrap="$(mktemp)"
+  _subst_tokens "$TMPL_DIR/llm-svcconfig-apply.sh.tmpl" \
+      '__UNIT_PATH__' "/etc/systemd/system/$vunit" > "$tmp_vwrap"
+  $SUDO install -m 0755 -o root -g root "$tmp_vwrap" /usr/local/sbin/llm-vllm-svcconfig-apply
+  _ok "vllm svcconfig helper installed: /usr/local/sbin/llm-vllm-svcconfig-apply"
+  rm -f "$tmp_vwrap"
 }
 
 # _ensure_hf_cli USER HOME
@@ -3380,13 +3407,13 @@ else
 fi
 
 if [[ "$AGENT_OS" == "linux" && "$SKIP_SUDOERS" == "false" \
-      && "$ENABLE_LLAMA" != "true" && "$ENABLE_PERF" != "true" ]]; then
-  echo "  ⓘ skipping sudoers (no llama, no perf controller — nothing for the agent to sudo)"
+      && "$ENABLE_LLAMA" != "true" && "$ENABLE_PERF" != "true" && "$ENABLE_VLLM" != "true" ]]; then
+  echo "  ⓘ skipping sudoers (no llama, no vllm, no perf controller — nothing for the agent to sudo)"
   SKIP_SUDOERS=true
 elif [[ "$AGENT_OS" == "linux" && "$SKIP_SUDOERS" == "true" \
-      && ( "$ENABLE_LLAMA" == "true" || "$ENABLE_PERF" == "true" ) ]]; then
-  _warn "--no-sudoers with llama/perf enabled: the agent's sudo-backed actions"
-  echo "    (managed unit restarts; for llama, ExecStart edits via svcconfig) will"
+      && ( "$ENABLE_LLAMA" == "true" || "$ENABLE_PERF" == "true" || "$ENABLE_VLLM" == "true" ) ]]; then
+  _warn "--no-sudoers with llama/vllm/perf enabled: the agent's sudo-backed actions"
+  echo "    (managed unit restarts; ExecStart edits via svcconfig) will"
   echo "    fail safe as unavailable. Re-run without --no-sudoers to enable them."
 fi
 
@@ -3639,7 +3666,8 @@ if [[ ! -f "$INSTALL_DIR/agent_config.yaml" ]]; then
     "$LMS_API_URL_OVERRIDE" "$LMS_CMD_OVERRIDE" \
     "$OPENCLAW_AGENTS_DIR_OVERRIDE" \
     "$ENABLE_MONITOR_MANAGER" "$ENABLE_MONITOR_ALARM" \
-    "${ENABLE_MONITOR_INFLUXDB_DISK:-false}" <<'PYEOF'
+    "${ENABLE_MONITOR_INFLUXDB_DISK:-false}" \
+    "$ENABLE_VLLM" "$VLLM_SYSTEMD_UNIT_OVERRIDE" <<'PYEOF'
 import sys, re
 
 (path, agent_os, role, mgr_url, alarm_url,
@@ -3651,7 +3679,8 @@ import sys, re
  lms_api, lms_cmd,
  oc_dir,
  monitor_manager, monitor_alarm,
- monitor_influxdb_disk) = sys.argv[1:]
+ monitor_influxdb_disk,
+ vllm, vllm_unit) = sys.argv[1:]
 
 text = open(path).read()
 
@@ -3719,6 +3748,7 @@ _set_quoted('ALARM_ENGINE_URL', alarm_url)
 _set('PERF_CONTROLLER_ENABLED', perf.lower())
 _set('LLAMA_ENABLED',           llama.lower())
 _set('LMS_ENABLED',             lms.lower())
+_set('VLLM_ENABLED',            vllm.lower())
 _set('OPENCLAW_ENABLED',        openclaw.lower())
 _set('IMGGEN_ENABLED',          imggen.lower())
 
@@ -3876,6 +3906,7 @@ if llama_script:        _set_build_opt('script_path', f'"{llama_script}"')
 if llama_log:   _set_quoted('LLAMA_LOG_FILE',     llama_log)
 if llama_api:   _set_quoted('LLAMA_API_URL',      llama_api)
 if llama_unit:  _set_quoted('LLAMA_SYSTEMD_UNIT', llama_unit)
+if vllm_unit:   _set_quoted('VLLM_SYSTEMD_UNIT',  vllm_unit)
 if lms_api:     _set_quoted('LMS_API_URL', lms_api)
 if lms_cmd:     _set_quoted('LMS_CMD',     lms_cmd)
 if oc_dir:      _set_quoted('OPENCLAW_AGENTS_DIR', oc_dir)
@@ -3905,6 +3936,16 @@ fi
 # Install sudoers + svcconfig wrapper before enabling the agent.
 if [[ "$AGENT_OS" == "linux" && "$SKIP_SUDOERS" == "false" ]]; then
   _apply_sudoers_and_wrapper || exit 1
+fi
+
+# vLLM logs to journald only — the agent needs journal read access for
+# the log tail/stream endpoints (group applies on the agent's next start).
+if [[ "$AGENT_OS" == "linux" && "$ENABLE_VLLM" == "true" ]]; then
+  if $SUDO usermod -aG systemd-journal "$USER_ARG" 2>/dev/null; then
+    _ok "$USER_ARG added to systemd-journal (vllm journal log access)"
+  else
+    _warn "could not add $USER_ARG to systemd-journal — vllm log tail will fail"
+  fi
 fi
 
 # 5. systemd unit (Linux) / launchd plist (macOS)
