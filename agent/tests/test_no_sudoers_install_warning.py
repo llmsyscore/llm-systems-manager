@@ -30,6 +30,7 @@ def _run(os_="linux", skip="true", llama="true", perf="false", vllm="false"):
         '_warn(){ echo "  ⚠ $*"; }\n'
         f'AGENT_OS="{os_}"\nSKIP_SUDOERS="{skip}"\n'
         f'ENABLE_LLAMA="{llama}"\nENABLE_PERF="{perf}"\nENABLE_VLLM="{vllm}"\n'
+        'INSTALL_VLLM="false"\n'
         f"{BLOCK}\n"
         'echo "SKIP=$SKIP_SUDOERS"\n'
     )

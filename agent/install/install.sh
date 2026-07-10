@@ -62,6 +62,8 @@ PERF_FLAG_EXPLICIT=false   # set true if --enable-perf/--no-perf given on CLI
 ENABLE_LLAMA=false
 ENABLE_LMS=false
 ENABLE_VLLM=false
+INSTALL_VLLM=false
+VLLM_VENV_DIR="/opt/vllm"
 ENABLE_OPENCLAW=false
 ENABLE_IMGGEN=false
 # Self-monitor probes — additive to whatever provider role is chosen.
@@ -407,6 +409,8 @@ while [[ $# -gt 0 ]]; do
     --enable-vllm)  ENABLE_VLLM=true;      VLLM_FLAG_EXPLICIT=true;     shift ;;
     --no-vllm)      ENABLE_VLLM=false;     VLLM_FLAG_EXPLICIT=true;     shift ;;
     --vllm-unit)    _need_arg "$1" "${2:-}"; VLLM_SYSTEMD_UNIT_OVERRIDE="$2"; shift 2 ;;
+    --install-vllm)   INSTALL_VLLM=true; shift ;;
+    --install-vllm=*) INSTALL_VLLM=true; VLLM_VENV_DIR="${1#*=}"; shift ;;
     --enable-openclaw) ENABLE_OPENCLAW=true; OPENCLAW_FLAG_EXPLICIT=true; shift ;;
     --no-openclaw)  ENABLE_OPENCLAW=false; OPENCLAW_FLAG_EXPLICIT=true; shift ;;
     --enable-imggen)   ENABLE_IMGGEN=true;   IMGGEN_FLAG_EXPLICIT=true;   shift ;;
@@ -2352,6 +2356,68 @@ _offer_llama_unit() {
   fi
 }
 
+# _offer_vllm_unit UNIT BIN — starter vllm unit; never overwrites/enables.
+_offer_vllm_unit() {
+  local unit="$1" bin="$2"
+  [[ -n "$unit" && -n "$bin" ]] || return 0
+  command -v systemctl >/dev/null 2>&1 || return 0
+  local target="/etc/systemd/system/$unit"
+  if [[ -e "$target" ]]; then
+    echo "      ⓘ $unit already exists — leaving it"
+    return 0
+  fi
+  local tmpl="$SRC_DIR/install/vllm.service.tmpl"
+  if [[ ! -f "$tmpl" ]]; then
+    echo "      ⓘ no vllm unit template; create $unit manually (ExecStart='$bin serve <model> …')"
+    return 0
+  fi
+  _subst_tokens "$tmpl" '__VLLM_BIN__' "$bin" '__USER__' "$USER_ARG" \
+      '__MODEL__' "CHANGE-ME-MODEL-ID" '__EXTRA_ARGS__' "" \
+    | $SUDO tee "$target" >/dev/null
+  $SUDO chmod 644 "$target"
+  $SUDO systemctl daemon-reload || true
+  _ok "wrote $target (disabled). Edit the model in ExecStart, then: sudo systemctl enable --now $unit"
+}
+
+# _offer_vllm_install — CUDA-gated pip install of vLLM into a dedicated venv.
+# Pre-built vLLM wheels need CUDA >= 12.8 and an NVIDIA GPU.
+_offer_vllm_install() {
+  local venv="${VLLM_VENV_DIR:-/opt/vllm}"
+  if ! command -v nvidia-smi >/dev/null 2>&1; then
+    _warn "--install-vllm: no NVIDIA GPU detected (nvidia-smi missing) — skipping (vLLM pip wheels are CUDA-only)"
+    return 1
+  fi
+  local cuda major minor
+  cuda="$(nvidia-smi 2>/dev/null | grep -o 'CUDA Version: [0-9.]*' | head -1 | awk '{print $3}')"
+  if [[ -n "$cuda" ]]; then
+    major="${cuda%%.*}"; minor="${cuda#*.}"; minor="${minor%%.*}"
+    if (( major < 12 || (major == 12 && minor < 8) )); then
+      _warn "--install-vllm: driver CUDA $cuda < 12.8 — pre-built vLLM wheels need >= 12.8"
+      if [[ ! -t 0 ]]; then
+        echo "      → aborting vLLM install (non-interactive). Upgrade the driver or build from source."
+        return 1
+      fi
+      local REPLY
+      read -rp "      Continue anyway (pip install may fail)? [y/N] " REPLY
+      case "$(printf '%s' "$REPLY" | tr '[:upper:]' '[:lower:]')" in y|yes) ;; *) return 1 ;; esac
+    fi
+  else
+    _warn "--install-vllm: could not read the driver CUDA version from nvidia-smi — proceeding"
+  fi
+  _section "Installing vLLM (pip) into $venv"
+  $SUDO install -d -m 0755 "$venv"
+  $SUDO chown "$USER_ARG:$USER_GROUP" "$venv"
+  _run_as "$USER_ARG" python3 -m venv "$venv" || { _warn "vllm venv creation failed"; return 1; }
+  _run_as "$USER_ARG" "$venv/bin/pip" install --upgrade pip >/dev/null 2>&1 || true
+  if ! _run_as "$USER_ARG" "$venv/bin/pip" install vllm; then
+    _warn "pip install vllm failed — see output above"
+    return 1
+  fi
+  _ok "vLLM installed: $venv/bin/vllm"
+  ENABLE_VLLM=true
+  _offer_vllm_unit "$(_resolved_vllm_unit)" "$venv/bin/vllm"
+}
+
 _detect_llama() {
   echo
   echo "  • llama.cpp"
@@ -3407,7 +3473,8 @@ else
 fi
 
 if [[ "$AGENT_OS" == "linux" && "$SKIP_SUDOERS" == "false" \
-      && "$ENABLE_LLAMA" != "true" && "$ENABLE_PERF" != "true" && "$ENABLE_VLLM" != "true" ]]; then
+      && "$ENABLE_LLAMA" != "true" && "$ENABLE_PERF" != "true" \
+      && "$ENABLE_VLLM" != "true" && "$INSTALL_VLLM" != "true" ]]; then
   echo "  ⓘ skipping sudoers (no llama, no vllm, no perf controller — nothing for the agent to sudo)"
   SKIP_SUDOERS=true
 elif [[ "$AGENT_OS" == "linux" && "$SKIP_SUDOERS" == "true" \
@@ -3931,6 +3998,12 @@ _pip_install_if_enabled "$ENABLE_MONITOR_ALARM" "$TMPL_DIR/requirements-monitor.
 
 if $ENABLE_LLAMA; then
   _ensure_hf_cli "$USER_ARG" "$USER_HOME"
+fi
+
+# Optional CUDA-gated vLLM install (flips ENABLE_VLLM on success — must run
+# before the sudoers/journal steps and the config writer read it).
+if $INSTALL_VLLM && [[ "$AGENT_OS" == "linux" ]]; then
+  _offer_vllm_install || _warn "vLLM install skipped — continuing agent install"
 fi
 
 # Install sudoers + svcconfig wrapper before enabling the agent.

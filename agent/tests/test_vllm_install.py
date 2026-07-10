@@ -52,3 +52,13 @@ def test_required_files_include_vllm():
     src = INSTALL.read_text()
     assert "providers/vllm.py" in src
     assert "vllm.service.tmpl" in src
+
+
+def test_install_vllm_flag_and_cuda_gate():
+    src = INSTALL.read_text()
+    assert "--install-vllm" in src
+    assert "_offer_vllm_install" in src
+    fn = src.split("_offer_vllm_install() {", 1)[1].split("\n}", 1)[0]
+    assert "CUDA" in fn or "cuda" in fn
+    assert "pip install" in fn and "vllm" in fn
+    assert "nvidia-smi" in fn
