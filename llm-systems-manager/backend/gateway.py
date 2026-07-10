@@ -1,5 +1,6 @@
-"""OpenAI-compatible inference gateway (#214). Routes chat/completion
-requests to a healthy llama agent: pin > ?agent= picker > pool RR > default."""
+"""OpenAI-compatible inference gateway (#214, vllm #125). Routes
+chat/completion requests to a healthy provider agent — llama:
+pin > ?agent= picker > pool RR > default; vllm: picker > default."""
 from __future__ import annotations
 
 import json
@@ -15,11 +16,19 @@ from config.unified_config import settings
 
 log = logging.getLogger("llm-systems-manager.gateway")
 
-# Gateway sub-path -> agent passthrough route (allowlist, nothing else proxied).
+# Per-provider gateway sub-path -> agent passthrough route (allowlist).
 _AGENT_PATHS = {
-    "chat/completions": "/llama/openai/chat/completions",
-    "completions": "/llama/openai/completions",
+    "llama": {
+        "chat/completions": "/llama/openai/chat/completions",
+        "completions": "/llama/openai/completions",
+    },
+    "vllm": {
+        "chat/completions": "/vllm/openai/chat/completions",
+        "completions": "/vllm/openai/completions",
+    },
 }
+
+_MODELS_PATHS = {"llama": "/llama/models", "vllm": "/vllm/models"}
 
 
 def _gw_cfg():
@@ -43,9 +52,9 @@ def _label(agent: dict) -> str:
     return f"{(agent.get('agent_id') or '')[:8]}@{agent.get('hostname') or '?'}"
 
 
-def _candidates(model_id, agent_id) -> list:
+def _candidates(model_id, agent_id, provider="llama") -> list:
     """Ordered failover list: resolved primary first, then remaining live
-    llama-pool members + default, deduped by agent_id."""
+    pool members (llama only) + default, deduped by agent_id."""
     ordered, seen = [], set()
 
     def _add(agent):
@@ -55,7 +64,7 @@ def _candidates(model_id, agent_id) -> list:
             ordered.append(agent)
 
     try:
-        primary, override = proxies._resolve_target("llama", model_id, agent_id,
+        primary, override = proxies._resolve_target(provider, model_id, agent_id,
                                                     allow_pool=True)
         if override == "pin":
             log.info("gateway: model pin overrode ?agent=%s for model %s",
@@ -65,16 +74,17 @@ def _candidates(model_id, agent_id) -> list:
         primary = None
     _add(primary)
     ids: list = []
-    try:
-        data = agent_registry.load_agents()
-        ids = list((data.get("global") or {}).get("llama_pool") or [])
-    except Exception:
-        ids = []
-    did = agent_registry.default_agent_id_for("llama")
+    if provider == "llama":
+        try:
+            data = agent_registry.load_agents()
+            ids = list((data.get("global") or {}).get("llama_pool") or [])
+        except Exception:
+            ids = []
+    did = agent_registry.default_agent_id_for(provider)
     if did:
         ids.append(did)
     for aid in ids:
-        agent = agent_registry.resolve_agent_by_id(aid, capability="llama")
+        agent = agent_registry.resolve_agent_by_id(aid, capability=provider)
         _add(agent)
     # Order live backends first, non-live after as failover — so a stale/down
     # agent (incl. an explicit ?agent= pick) never jumps ahead but stays reachable.
@@ -107,7 +117,7 @@ def _dial_stream(agent: dict, path: str, body: dict):
     return None
 
 
-def _handle_completion(sub: str) -> Response:
+def _handle_completion(sub: str, provider: str = "llama") -> Response:
     if not _gw_enabled():
         return _oai_error("gateway disabled", 503, "disabled")
     body = flask_request.get_json(silent=True)
@@ -116,9 +126,9 @@ def _handle_completion(sub: str) -> Response:
     model_id = body.get("model") or None
     agent_id = flask_request.args.get("agent") or None
     wants_stream = bool(body.get("stream"))
-    path = _AGENT_PATHS[sub]
+    path = _AGENT_PATHS[provider][sub]
     errors = []
-    for agent in _candidates(model_id, agent_id):
+    for agent in _candidates(model_id, agent_id, provider):
         if wants_stream:
             resp = _stream_from(agent, path, body, errors)
             if resp is not None:
@@ -134,9 +144,9 @@ def _handle_completion(sub: str) -> Response:
         return Response(r.content, status=r.status_code,
                         mimetype=r.headers.get("content-type") or "application/json",
                         headers={"X-Proxied-To": _label(agent)})
-    log.warning("gateway %s: no usable llama agent (%s)",
-                sub, "; ".join(errors) or "no candidates")
-    return _oai_error("no llama backend available", 503)
+    log.warning("gateway %s: no usable %s agent (%s)",
+                sub, provider, "; ".join(errors) or "no candidates")
+    return _oai_error(f"no {provider} backend available", 503)
 
 
 def _stream_from(agent: dict, path: str, body: dict, errors: list):
@@ -177,13 +187,13 @@ def _stream_from(agent: dict, path: str, body: dict, errors: list):
             stream_pool.POOL.release()
 
 
-def _gateway_models() -> Response:
+def _gateway_models(provider: str = "llama") -> Response:
     if not _gw_enabled():
         return _oai_error("gateway disabled", 503, "disabled")
     merged, seen = [], set()
-    for agent in _candidates(None, None):
+    for agent in _candidates(None, None, provider):
         r, _tried, _err = agent_registry.agent_request(
-            "GET", agent, "/llama/models",
+            "GET", agent, _MODELS_PATHS[provider],
             headers={"Authorization": f"Bearer {agent.get('token') or ''}"},
             timeout=(4, 15))
         if r is None or r.status_code != 200:
@@ -214,3 +224,15 @@ def register_routes(app, ctx) -> None:
     @app.route("/api/gateway/v1/models", methods=["GET"])
     def gateway_models():
         return _gateway_models()
+
+    @app.route("/api/gateway/vllm/v1/chat/completions", methods=["POST"])
+    def gateway_vllm_chat_completions():
+        return _handle_completion("chat/completions", provider="vllm")
+
+    @app.route("/api/gateway/vllm/v1/completions", methods=["POST"])
+    def gateway_vllm_completions():
+        return _handle_completion("completions", provider="vllm")
+
+    @app.route("/api/gateway/vllm/v1/models", methods=["GET"])
+    def gateway_vllm_models():
+        return _gateway_models(provider="vllm")

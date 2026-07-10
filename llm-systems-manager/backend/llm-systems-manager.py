@@ -1735,6 +1735,10 @@ def _primary_lms_agent_id() -> "str | None":
     return agent_registry.default_agent_id_for("lms")
 
 
+def _primary_vllm_agent_id() -> "str | None":
+    return agent_registry.default_agent_id_for("vllm")
+
+
 def _llama_sample_for_request() -> dict:
     """The llama host sample for the ?agent= selection, else the default
     agent. Drives /api/metrics + /api/alert so the Dashboard llama.cpp cards
@@ -2186,6 +2190,62 @@ def lmstudio_download():
     Body: {"model": "<repo/name>"}. The agent forwards to its local LMS API."""
     data    = flask_request.get_json(force=True) or {}
     return proxies.proxy_to_primary("lms", "POST", "/lms/download", json=data, timeout=60)
+
+
+@app.route("/api/vllm/metrics")
+def get_vllm_metrics():
+    """Return the latest vLLM sample for the default (or ?agent=) vLLM agent."""
+    aid = flask_request.args.get("agent") or _primary_vllm_agent_id()
+    wrap = provider_state.STORE.get("vllm", aid) if aid else None
+    data = dict((wrap or {}).get("sample") or {})
+    last_seen = float((wrap or {}).get("last_seen") or 0.0)
+    age = time.time() - last_seen if last_seen else float("inf")
+    online = age < 15
+    # Per-agent offline latch — log only on the True→False edge.
+    if aid and not online and provider_state.STORE.mark_offline("vllm", aid):
+        log.warning(f"vLLM agent offline — last seen {age:.0f}s ago "
+                    f"[agent {aid[:8]}]")
+    data["agent_online"] = online
+    data["agent_age_s"]  = round(age, 1) if last_seen else None
+    return jsonify(data)
+
+
+@app.route("/api/vllm/models")
+def vllm_models():
+    return proxies.proxy_to_primary("vllm", "GET", "/vllm/models")
+@app.route("/api/vllm/server/status")
+def vllm_server_status():
+    return proxies.proxy_to_primary("vllm", "GET", "/vllm/server/status")
+@app.route("/api/vllm/server/start", methods=["POST"])
+def vllm_server_start():
+    return proxies.proxy_to_primary("vllm", "POST", "/vllm/server/start")
+@app.route("/api/vllm/server/stop", methods=["POST"])
+def vllm_server_stop():
+    return proxies.proxy_to_primary("vllm", "POST", "/vllm/server/stop")
+@app.route("/api/vllm/server/restart", methods=["POST"])
+def vllm_server_restart():
+    return proxies.proxy_to_primary("vllm", "POST", "/vllm/server/restart", timeout=60)
+@app.route("/api/vllm/server/log")
+def vllm_server_log():
+    """Recent vLLM journal lines from the target vLLM agent."""
+    return proxies.proxy_to_primary("vllm", "GET", "/vllm/log/tail")
+@app.route("/api/vllm/log/stream")
+def vllm_log_stream():
+    return proxies.proxy_stream_to_primary("vllm", "/vllm/log/stream", read_timeout=30)
+@app.route("/api/vllm/server/svcconfig", methods=["GET", "POST"])
+def vllm_svcconfig():
+    if flask_request.method == "POST":
+        return proxies.proxy_to_primary("vllm", "POST", "/vllm/server/svcconfig",
+                                        json=flask_request.get_json(force=True), timeout=30)
+    return proxies.proxy_to_primary("vllm", "GET", "/vllm/server/svcconfig")
+@app.route("/api/vllm/lora/load", methods=["POST"])
+def vllm_lora_load():
+    return proxies.proxy_to_primary("vllm", "POST", "/vllm/lora/load",
+                                    json=flask_request.get_json(force=True), timeout=90)
+@app.route("/api/vllm/lora/unload", methods=["POST"])
+def vllm_lora_unload():
+    return proxies.proxy_to_primary("vllm", "POST", "/vllm/lora/unload",
+                                    json=flask_request.get_json(force=True), timeout=90)
 
 
 LAYOUT_FILE = DATA_DIR / "layout.json"
