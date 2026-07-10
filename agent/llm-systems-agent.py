@@ -172,7 +172,7 @@ def _probe_and_autoconfigure(cfg: "AgentConfig") -> None:
     """
     print("── Auto-detect (role=auto) ─────────────────────────────────────────────")
 
-    found = {"llama": False, "lms": False, "openclaw": False}
+    found = {"llama": False, "lms": False, "vllm": False, "openclaw": False}
 
     llama_http_ok, llama_http_msg = _probe_http(f"{cfg.LLAMA_API_URL}/v1/models")
     llama_log_exists = os.path.isfile(cfg.LLAMA_LOG_FILE)
@@ -200,6 +200,19 @@ def _probe_and_autoconfigure(cfg: "AgentConfig") -> None:
     else:
         print("  ✗ LM Studio not detected")
         print(f"      tried API={cfg.LMS_API_URL} cli={cfg.LMS_CMD or '<none>'}")
+
+    # ── vLLM (systemd unit is the authoritative signal; port 8000 alone is ambiguous) ────
+    vllm_unit_ok, vllm_unit_state = _probe_systemd_unit(cfg.VLLM_SYSTEMD_UNIT)
+    if vllm_unit_ok:
+        found["vllm"] = True
+        cfg.VLLM_ENABLED = True
+        vllm_http_ok, vllm_http_msg = _probe_http(f"{cfg.VLLM_API_URL}/v1/models")
+        print("  ✓ vLLM detected")
+        print(f"      unit  {cfg.VLLM_SYSTEMD_UNIT:<32} present — {vllm_unit_state}")
+        print(f"      API   {cfg.VLLM_API_URL:<32} {('reachable — ' + vllm_http_msg) if vllm_http_ok else 'unreachable'}")
+    else:
+        print("  ✗ vLLM not detected")
+        print(f"      tried unit={cfg.VLLM_SYSTEMD_UNIT}")
 
     # Resolve the run-as user's home via getpwnam — /home vs /Users vs LDAP.
     user_home = ""
@@ -310,6 +323,11 @@ class AgentConfig:
     LLAMA_BUILD_OPTS: dict = {}           # YAML-only; per-method knobs
     # /models/sse push-state consumer: auto (router mode only) | on | off.
     LLAMA_SSE_ENABLED: str = "auto"
+
+    VLLM_ENABLED: bool = False
+    VLLM_API_URL: str = "http://localhost:8000"
+    VLLM_SYSTEMD_UNIT: str = "vllm.service"
+    VLLM_LORA_ENABLED: bool = False
 
     PERF_CONTROLLER_ENABLED: bool = False
     PERF_TARGET_AWAKE: str = "performance"
@@ -1150,6 +1168,7 @@ def _capabilities() -> dict[str, bool]:
         "sysperf": True,
         "lms": CONFIG.LMS_ENABLED,
         "llama": CONFIG.LLAMA_ENABLED,
+        "vllm": CONFIG.VLLM_ENABLED,
         "openclaw": CONFIG.OPENCLAW_ENABLED,
         "image_gen": CONFIG.IMGGEN_ENABLED,
         "perf_controller": CONFIG.PERF_CONTROLLER_ENABLED,

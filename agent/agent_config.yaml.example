@@ -86,6 +86,14 @@ LLAMA_ENABLED: false
 #   backup_retain: 2         #   in-place upgrade: how many .upgrade.bak.* to keep
 # LLAMA_SSE_ENABLED:   auto  # auto (router mode only) | on | off — subscribe to llama.cpp /models/sse for push-based model state
 
+# -- vLLM (set VLLM_ENABLED: true on hosts running `vllm serve`) ------------
+VLLM_ENABLED: false
+# VLLM_API_URL:      "http://localhost:8000"
+# VLLM_SYSTEMD_UNIT: "vllm.service"
+#   Renaming this needs a root `install.sh --update` afterwards to re-bake
+#   the sudoers grants + svcconfig helper for the new unit name.
+# VLLM_LORA_ENABLED: false   # expose /vllm/lora/{load,unload} (trusted env only)
+
 # -- Performance controller (replaces the bash daemon) ---------------------
 # Requires LLAMA_ENABLED=true and a Linux host. The agent tails
 # LLAMA_LOG_FILE, writes LLAMA_STATE_FILE, and runs:
