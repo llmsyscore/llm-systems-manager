@@ -53,6 +53,105 @@ def _vllm_check_enabled() -> None:
         raise HTTPException(status_code=503, detail="vllm not enabled on this agent")
 
 
+# ── Metrics collector (called from _build_metric_sample in main) ───────
+
+_vllm_prev_counters: Optional[dict] = None
+_vllm_info_cache: dict[str, Any] = {}
+_vllm_info_ts: float = 0.0
+
+
+def _parse_prom_families(text: str) -> "dict[str, list[float]]":
+    """Prometheus text → {family_name: [sample values]}; drops comments + non-finite."""
+    out: dict[str, list[float]] = {}
+    for line in text.splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        name_part, _, val_part = line.rpartition(" ")
+        name = name_part.split("{", 1)[0].strip()
+        if not name:
+            continue
+        try:
+            v = float(val_part)
+        except ValueError:
+            continue
+        if v != v or v in (float("inf"), float("-inf")):
+            continue
+        out.setdefault(name, []).append(v)
+    return out
+
+
+def _fam_sum(fams: dict, name: str) -> Optional[float]:
+    vals = fams.get(name)
+    return sum(vals) if vals else None
+
+
+def _derive_vllm_fields(fams: dict, prev: Optional[dict], now_mono: float) -> dict:
+    gen = _fam_sum(fams, "vllm:generation_tokens_total")
+    prompt = _fam_sum(fams, "vllm:prompt_tokens_total")
+    # Family name varies by vLLM version: gpu_cache_usage_perc vs kv_cache_usage_perc.
+    kv_vals = fams.get("vllm:gpu_cache_usage_perc") or fams.get("vllm:kv_cache_usage_perc")
+    tps = pps = None
+    if prev and gen is not None and prev.get("gen") is not None:
+        dt = now_mono - prev["mono"]
+        if dt > 0 and gen >= prev["gen"]:
+            tps = round((gen - prev["gen"]) / dt, 2)
+        if dt > 0 and prompt is not None and prev.get("prompt") is not None and prompt >= prev["prompt"]:
+            pps = round((prompt - prev["prompt"]) / dt, 2)
+    run = _fam_sum(fams, "vllm:num_requests_running")
+    wait = _fam_sum(fams, "vllm:num_requests_waiting")
+    return {
+        "requests_running": int(run) if run is not None else None,
+        "requests_waiting": int(wait) if wait is not None else None,
+        "kv_cache_usage_pct": round(max(kv_vals) * 100.0, 1) if kv_vals else None,
+        "tokens_per_second": tps,
+        "prompt_tokens_per_second": pps,
+        "total_tokens_generated": int(gen) if gen is not None else None,
+        "total_tokens_prompted": int(prompt) if prompt is not None else None,
+    }
+
+
+def collect_vllm_for_metrics() -> dict[str, Any]:
+    """Per-poll snapshot for the metric sample + provider-state push. {} when disabled."""
+    global _vllm_prev_counters, _vllm_info_cache, _vllm_info_ts
+    ctx = _require_ctx()
+    if not ctx.config.VLLM_ENABLED:
+        return {}
+    now = time.monotonic()
+    poll_s = float(getattr(ctx.config, "POLL_INTERVAL_S", 5) or 5)
+    if _vllm_info_cache and (now - _vllm_info_ts) < poll_s:
+        return dict(_vllm_info_cache)
+    out: dict[str, Any] = {"state": "down", "model": None, "models": []}
+    base = ctx.config.VLLM_API_URL.rstrip("/")
+    try:
+        r = _get_session().get(f"{base}/v1/models", timeout=3)
+        if r.ok:
+            ids = [m.get("id") for m in (r.json().get("data") or []) if m.get("id")]
+            out["state"] = "running"
+            out["models"] = ids
+            out["model"] = ids[0] if ids else None
+    except Exception as e:
+        log.debug("vllm /v1/models unreachable: %s", e)
+    if out["state"] == "running":
+        try:
+            m = _get_session().get(f"{base}/metrics", timeout=3)
+            if m.ok:
+                fams = _parse_prom_families(m.text)
+                out.update(_derive_vllm_fields(fams, _vllm_prev_counters, now))
+                _vllm_prev_counters = {
+                    "mono": now,
+                    "gen": _fam_sum(fams, "vllm:generation_tokens_total"),
+                    "prompt": _fam_sum(fams, "vllm:prompt_tokens_total"),
+                }
+        except Exception as e:
+            log.debug("vllm /metrics scrape failed: %s", e)
+    else:
+        _vllm_prev_counters = None
+    _vllm_info_cache = out
+    _vllm_info_ts = now
+    return dict(out)
+
+
 # ── systemd lifecycle ──────────────────────────────────────────────────
 
 def _vllm_systemctl(action: str, timeout: int = 30) -> dict[str, Any]:

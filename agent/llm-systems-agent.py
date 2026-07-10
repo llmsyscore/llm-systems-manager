@@ -49,6 +49,7 @@ import providers  # type: ignore
 from collectors.system import collect_system_metrics  # type: ignore
 from providers.lms import lms_get_models, lms_get_ps, lms_get_status  # type: ignore
 from providers.llama import collect_llama_for_metrics, llama_get_state  # type: ignore
+from providers.vllm import collect_vllm_for_metrics  # type: ignore
 from agent_context import AgentContext  # type: ignore
 try:
     from _utils import atomic_write_text  # type: ignore
@@ -2031,6 +2032,10 @@ def _build_metric_sample() -> dict[str, Any]:
         if not rich:
             rich = {"state": llama_get_state()}
         sample["llama"] = rich
+    if CONFIG.VLLM_ENABLED:
+        v = collect_vllm_for_metrics()
+        if v:
+            sample["vllm"] = v
     if CONFIG.MONITOR_MANAGER_ENABLED or CONFIG.MONITOR_ALARM_ENGINE_ENABLED:
         mp = _build_meta_perf_block()
         if mp:
@@ -2142,6 +2147,30 @@ def _push_host_payload(sample: dict[str, Any]) -> None:
             logger.debug("host-metrics push HTTP %s", r.status_code)
     except Exception as e:
         logger.debug("host-metrics push failed: %s", e)
+
+
+def _push_vllm_payload(sample: dict[str, Any]) -> None:
+    """POST the vllm provider sample (system + vllm blocks) to the manager STORE."""
+    if not CONFIG.VLLM_ENABLED:
+        return
+    body = {
+        "ts": sample.get("ts"),
+        "host": sample.get("host"),
+        "system": sample.get("system") or {},
+        "gpu": (sample.get("system") or {}).get("gpu") or {},
+        "vllm": sample.get("vllm") or {},
+    }
+    try:
+        tok = _token_provider()
+        headers = {"Authorization": f"Bearer {tok}"} if tok else {}
+        r = _post_session.post(
+            f"{CONFIG.MANAGER_URL.rstrip('/')}/api/remote/provider-state",
+            json={"provider": "vllm", "sample": body}, headers=headers, timeout=3,
+        )
+        if not r.ok:
+            logger.debug("vllm provider-state push HTTP %s", r.status_code)
+    except Exception as e:
+        logger.debug("vllm provider-state push failed: %s", e)
 
 
 _log_watch_state: dict[str, dict[str, Any]] = {}
@@ -2358,6 +2387,7 @@ def collector_loop() -> None:
                     logger.exception("enqueue to alarm engine failed")
             _push_dashboard_payload(sample)
             _push_host_payload(sample)
+            _push_vllm_payload(sample)
 
             global _log_hb_last
             now = time.time()
