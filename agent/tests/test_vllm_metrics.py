@@ -52,9 +52,10 @@ def test_derive_fields_and_counter_rates():
 
 def test_derive_fields_first_sample_has_no_rates():
     fams = vllm._parse_prom_families(SAMPLE)
-    out = vllm._derive_vllm_fields(fams, None, now_mono=10.0)
-    assert out["tokens_per_second"] is None
-    assert out["prompt_tokens_per_second"] is None
+    for prev in (None, {}):  # empty rate-state dict == no previous sample
+        out = vllm._derive_vllm_fields(fams, prev, now_mono=10.0)
+        assert out["tokens_per_second"] is None
+        assert out["prompt_tokens_per_second"] is None
 
 
 def test_counter_reset_yields_none_rates():

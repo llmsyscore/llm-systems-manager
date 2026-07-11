@@ -64,7 +64,8 @@ def _vllm_check_enabled() -> None:
 
 # ── Metrics collector (called from _build_metric_sample in main) ───────
 
-_vllm_prev_counters: Optional[dict] = None
+# Last scrape's token counters ({mono, gen, prompt}); empty = no previous sample.
+_vllm_rate_state: dict[str, Any] = {}
 
 
 def _parse_prom_families(text: str) -> "dict[str, list[float]]":
@@ -127,7 +128,6 @@ def _derive_vllm_fields(fams: dict, prev: Optional[dict], now_mono: float) -> di
 
 def collect_vllm_for_metrics() -> dict[str, Any]:
     """Per-poll snapshot for the metric sample + provider-state push. {} when disabled."""
-    global _vllm_prev_counters
     ctx = _require_ctx()
     if not ctx.config.VLLM_ENABLED:
         return {}
@@ -148,16 +148,16 @@ def collect_vllm_for_metrics() -> dict[str, Any]:
             m = _get_session().get(f"{base}/metrics", timeout=3)
             if m.ok:
                 fams = _parse_prom_families(m.text)
-                out.update(_derive_vllm_fields(fams, _vllm_prev_counters, now))
-                _vllm_prev_counters = {
-                    "mono": now,
-                    "gen": _fam_sum(fams, "vllm:generation_tokens_total"),
-                    "prompt": _fam_sum(fams, "vllm:prompt_tokens_total"),
-                }
+                out.update(_derive_vllm_fields(fams, _vllm_rate_state, now))
+                _vllm_rate_state.update(
+                    mono=now,
+                    gen=_fam_sum(fams, "vllm:generation_tokens_total"),
+                    prompt=_fam_sum(fams, "vllm:prompt_tokens_total"),
+                )
         except Exception as e:
             log.debug("vllm /metrics scrape failed: %s", e)
     else:
-        _vllm_prev_counters = None
+        _vllm_rate_state.clear()
     return out
 
 
