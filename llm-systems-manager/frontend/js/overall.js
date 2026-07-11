@@ -15,14 +15,16 @@ async function fetchOverallMetrics() {
       _ovHistoryBackfilled = true;
       await loadOverallHistory();
     }
-    let llama = null, lms = null;
-    [llama, lms] = await Promise.all([
+    let llama = null, lms = null, vllm = null;
+    [llama, lms, vllm] = await Promise.all([
       fetch('/api/fleet/llama/aggregate').then(r => r.ok ? r.json() : null).catch(() => null),
       fetch('/api/fleet/lms/aggregate').then(r => r.ok ? r.json() : null).catch(() => null),
+      fetch('/api/fleet/vllm/aggregate').then(r => r.ok ? r.json() : null).catch(() => null),
     ]);
     updateOverallLlamaFleet(llama);
     updateOverallLmsFleet(lms);
-    updateOverallFleet(llama, lms);
+    updateOverallVllmFleet(vllm);
+    updateOverallFleet(llama, lms, vllm);
     const el = document.getElementById('overallLastUpdate');
     if (el) el.textContent = 'Updated ' + new Date().toLocaleTimeString();
   } catch (_) {}
@@ -62,7 +64,7 @@ function _ovSetStatus(cardId, cls) {
 // Applies severity accent border to Dashboard (cardGrid + lmsCardGrid) cards.
 // cls: 'dash-ok' | 'dash-warn' | 'dash-crit' | 'dash-off'
 function _dashSetStatus(cardId, cls) {
-  const el = document.querySelector(`#cardGrid [data-card="${cardId}"], #lmsCardGrid [data-card="${cardId}"], #managerCardGrid [data-card="${cardId}"]`);
+  const el = document.querySelector(`#cardGrid [data-card="${cardId}"], #lmsCardGrid [data-card="${cardId}"], #vllmCardGrid [data-card="${cardId}"], #managerCardGrid [data-card="${cardId}"]`);
   if (!el) return;
   el.classList.remove('dash-ok','dash-warn','dash-crit','dash-off');
   if (cls) el.classList.add(cls);
@@ -131,14 +133,37 @@ function updateOverallLmsFleet(agg) {
   _ovSetStatus('ov-lms-fleet', online > 0 ? ((agg.busy_process_count_total || 0) > 0 ? 'ov-ok' : 'ov-warn') : 'ov-off');
 }
 
-// Combined whole-fleet overview card (llama + lms).
-function updateOverallFleet(llama, lms) {
+function updateOverallVllmFleet(agg) {
+  if (!agg) {
+    ['ov-vllm-servers','ov-vllm-running'].forEach(id => _setEl(id, '—'));
+    _setEl('ov-vllm-agents', '—');
+    _setEl('ov-vllm-kv', 'kv cache —');
+    _setEl('ov-vllm-tps', 'tps —');
+    _ovSetStatus('ov-vllm-fleet', 'ov-off');
+    return;
+  }
+  const online = agg.agent_count_online || 0;
+  const total  = agg.agent_count_total  || 0;
+  const tps = (agg.throughput || {}).total_tps || 0;
+  _setEl('ov-vllm-agents', `${online}/${total} online`);
+  _setEl('ov-vllm-servers', String(agg.server_on_count || 0));
+  _setEl('ov-vllm-running', String(agg.requests_running_total || 0));
+  _setEl('ov-vllm-kv', `kv cache ${(agg.max_kv_cache_pct || 0).toFixed(0)}%`);
+  _setEl('ov-vllm-tps', `tps ${tps.toFixed(1)}`);
+  _ovSetStatus('ov-vllm-fleet', online > 0 ? ((agg.requests_running_total || 0) > 0 ? 'ov-ok' : 'ov-warn') : 'ov-off');
+}
+
+// Combined whole-fleet overview card (llama + lms + vllm).
+function updateOverallFleet(llama, lms, vllm) {
   const lOn   = (llama && llama.agent_count_online) || 0;
   const mOn   = (lms   && lms.agent_count_online)   || 0;
-  const models = (llama && llama.active_model_count) || 0;
-  const power  = (llama && llama.gpu && llama.gpu.total_power_watts) || 0;
-  _setEl('ov-fleet-agents', String(lOn + mOn));
+  const vOn   = (vllm  && vllm.agent_count_online)  || 0;
+  const models = ((llama && llama.active_model_count) || 0)
+               + ((vllm && vllm.active_model_count) || 0);
+  const power  = ((llama && llama.gpu && llama.gpu.total_power_watts) || 0)
+               + ((vllm && vllm.total_gpu_power_watts) || 0);
+  _setEl('ov-fleet-agents', String(lOn + mOn + vOn));
   _setEl('ov-fleet-models', String(models));
   _setEl('ov-fleet-power',  power > 0 ? power.toFixed(0) + ' W' : '—');
-  _ovSetStatus('ov-fleet', (lOn + mOn) > 0 ? 'ov-ok' : 'ov-off');
+  _ovSetStatus('ov-fleet', (lOn + mOn + vOn) > 0 ? 'ov-ok' : 'ov-off');
 }

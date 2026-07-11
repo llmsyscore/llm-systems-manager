@@ -25,7 +25,7 @@ def _client():
 
 
 def test_no_candidates_returns_openai_shaped_503(monkeypatch):
-    monkeypatch.setattr(gateway, "_candidates", lambda m, a: [])
+    monkeypatch.setattr(gateway, "_candidates", lambda m, a, p="llama": [])
     r = _client().post("/api/gateway/v1/chat/completions", json={"model": "x"})
     assert r.status_code == 503
     err = r.get_json()["error"]
@@ -47,7 +47,7 @@ def test_disabled_503(monkeypatch):
 def test_failover_to_second_agent(monkeypatch):
     a1 = {"agent_id": "a" * 32, "hostname": "h1", "token": "t"}
     a2 = {"agent_id": "b" * 32, "hostname": "h2", "token": "t"}
-    monkeypatch.setattr(gateway, "_candidates", lambda m, a: [a1, a2])
+    monkeypatch.setattr(gateway, "_candidates", lambda m, a, p="llama": [a1, a2])
     calls = []
 
     def fake_forward(agent, path, body):
@@ -63,7 +63,7 @@ def test_failover_to_second_agent(monkeypatch):
 def test_502_from_agent_fails_over(monkeypatch):
     a1 = {"agent_id": "a" * 32, "hostname": "h1", "token": "t"}
     a2 = {"agent_id": "b" * 32, "hostname": "h2", "token": "t"}
-    monkeypatch.setattr(gateway, "_candidates", lambda m, a: [a1, a2])
+    monkeypatch.setattr(gateway, "_candidates", lambda m, a, p="llama": [a1, a2])
     monkeypatch.setattr(gateway, "_forward_json", lambda agent, p, b:
                         (FakeResp(502), None) if agent is a1 else (FakeResp(200, {"ok": 1}), None))
     r = _client().post("/api/gateway/v1/completions", json={})
@@ -87,7 +87,7 @@ def test_candidates_order_and_dedupe(monkeypatch):
 def test_models_merge_dedupe(monkeypatch):
     a1 = {"agent_id": "a" * 32, "hostname": "h1", "token": "t"}
     a2 = {"agent_id": "b" * 32, "hostname": "h2", "token": "t"}
-    monkeypatch.setattr(gateway, "_candidates", lambda m, a: [a1, a2])
+    monkeypatch.setattr(gateway, "_candidates", lambda m, a, p="llama": [a1, a2])
     payloads = {"h1": {"data": [{"id": "m1"}, {"id": "m2"}]},
                 "h2": {"data": [{"id": "m2"}, {"id": "m3"}]}}
 
@@ -116,7 +116,7 @@ class FakeUpstream:
 
 def test_stream_pipes_chunks(monkeypatch):
     agent = {"agent_id": "a" * 32, "hostname": "h1", "token": "t"}
-    monkeypatch.setattr(gateway, "_candidates", lambda m, a: [agent])
+    monkeypatch.setattr(gateway, "_candidates", lambda m, a, p="llama": [agent])
     up = FakeUpstream([b'data: {"c":1}\n\n', b"data: [DONE]\n\n"])
     monkeypatch.setattr(gateway, "_dial_stream", lambda a, p, b: up)
     r = _client().post("/api/gateway/v1/chat/completions", json={"stream": True})
@@ -129,7 +129,7 @@ def test_stream_pipes_chunks(monkeypatch):
 def test_stream_503_upstream_fails_over(monkeypatch):
     a1 = {"agent_id": "a" * 32, "hostname": "h1", "token": "t"}
     a2 = {"agent_id": "b" * 32, "hostname": "h2", "token": "t"}
-    monkeypatch.setattr(gateway, "_candidates", lambda m, a: [a1, a2])
+    monkeypatch.setattr(gateway, "_candidates", lambda m, a, p="llama": [a1, a2])
     bad = FakeUpstream([], status=503, ctype="application/json")
     good = FakeUpstream([b"data: [DONE]\n\n"])
     monkeypatch.setattr(gateway, "_dial_stream",
@@ -140,7 +140,7 @@ def test_stream_503_upstream_fails_over(monkeypatch):
 
 def test_stream_non_sse_error_relayed(monkeypatch):
     agent = {"agent_id": "a" * 32, "hostname": "h1", "token": "t"}
-    monkeypatch.setattr(gateway, "_candidates", lambda m, a: [agent])
+    monkeypatch.setattr(gateway, "_candidates", lambda m, a, p="llama": [agent])
     up = FakeUpstream([], status=400, ctype="application/json")
     up.content = b'{"error":{"message":"bad request"}}'
     monkeypatch.setattr(gateway, "_dial_stream", lambda a, p, b: up)

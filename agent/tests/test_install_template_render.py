@@ -195,7 +195,7 @@ def test_install_sh_plist_renders_xml_escape_all_values():
 
 def _extract_writer() -> str:
     blocks = re.findall(r"<<'PYEOF'\n(.*?)\nPYEOF", INSTALL_SH.read_text(), re.S)
-    writer = [b for b in blocks if "monitor_influxdb_disk) = sys.argv" in b]
+    writer = [b for b in blocks if "vllm_unit) = sys.argv" in b]
     assert len(writer) == 1
     return writer[0]
 
@@ -209,6 +209,7 @@ def _run_writer(cfg_path: Path, hostname: str, description: str) -> str:
         "", "", "", "", "", "", "", "", "",
         "", "", "",
         "false", "false", "false",
+        "false", "",
     ]
     subprocess.run([sys.executable, "-c", _extract_writer(), *argv],
                    check=True, capture_output=True, text=True)

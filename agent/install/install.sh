@@ -61,6 +61,9 @@ ENABLE_PERF=false
 PERF_FLAG_EXPLICIT=false   # set true if --enable-perf/--no-perf given on CLI
 ENABLE_LLAMA=false
 ENABLE_LMS=false
+ENABLE_VLLM=false
+INSTALL_VLLM=false
+VLLM_VENV_DIR="/opt/vllm"
 ENABLE_OPENCLAW=false
 ENABLE_IMGGEN=false
 # Self-monitor probes — additive to whatever provider role is chosen.
@@ -76,6 +79,7 @@ ENABLE_MONITOR_INFLUXDB_DISK=false
 # happens to be running on the host.
 LLAMA_FLAG_EXPLICIT=false
 LMS_FLAG_EXPLICIT=false
+VLLM_FLAG_EXPLICIT=false
 OPENCLAW_FLAG_EXPLICIT=false
 MONITOR_MANAGER_FLAG_EXPLICIT=false
 MONITOR_ALARM_FLAG_EXPLICIT=false
@@ -86,6 +90,7 @@ MONITOR_INFLUXDB_DISK_FLAG_EXPLICIT=false
 LLAMA_API_URL_OVERRIDE=""
 LLAMA_LOG_FILE_OVERRIDE=""
 LLAMA_SYSTEMD_UNIT_OVERRIDE=""
+VLLM_SYSTEMD_UNIT_OVERRIDE=""
 LLAMA_BIN_OVERRIDE=""
 LLAMA_CONFIG_INI_OVERRIDE=""
 LLAMA_BUILD_METHOD_OVERRIDE=""
@@ -401,6 +406,11 @@ while [[ $# -gt 0 ]]; do
     --llama-backend)     _need_arg "$1" "${2:-}"; INSTALL_LLAMA_BACKEND="$2"; shift 2 ;;
     --enable-lms)   ENABLE_LMS=true;       LMS_FLAG_EXPLICIT=true;      shift ;;
     --no-lms)       ENABLE_LMS=false;      LMS_FLAG_EXPLICIT=true;      shift ;;
+    --enable-vllm)  ENABLE_VLLM=true;      VLLM_FLAG_EXPLICIT=true;     shift ;;
+    --no-vllm)      ENABLE_VLLM=false;     VLLM_FLAG_EXPLICIT=true;     shift ;;
+    --vllm-unit)    _need_arg "$1" "${2:-}"; VLLM_SYSTEMD_UNIT_OVERRIDE="$2"; shift 2 ;;
+    --install-vllm)   INSTALL_VLLM=true; shift ;;
+    --install-vllm=*) INSTALL_VLLM=true; VLLM_VENV_DIR="${1#*=}"; shift ;;
     --enable-openclaw) ENABLE_OPENCLAW=true; OPENCLAW_FLAG_EXPLICIT=true; shift ;;
     --no-openclaw)  ENABLE_OPENCLAW=false; OPENCLAW_FLAG_EXPLICIT=true; shift ;;
     --enable-imggen)   ENABLE_IMGGEN=true;   IMGGEN_FLAG_EXPLICIT=true;   shift ;;
@@ -509,12 +519,14 @@ _compute_required_install_files() {
     "$SRC_DIR/providers/llama.py"
     "$SRC_DIR/providers/llama_sse.py"
     "$SRC_DIR/providers/terminal.py"
+    "$SRC_DIR/providers/vllm.py"
   )
   case "$(uname -s)" in
     Linux)
       _required_install_files+=("$TMPL_DIR/llm-systems-agent.service.tmpl")
       _required_install_files+=("$TMPL_DIR/llm-systems-agent.sudoers.tmpl")
       _required_install_files+=("$TMPL_DIR/llm-svcconfig-apply.sh.tmpl")
+      _required_install_files+=("$TMPL_DIR/vllm.service.tmpl")
       ;;
     Darwin)
       _required_install_files+=("$TMPL_DIR/com.llm-systems-agent.plist.tmpl")
@@ -624,6 +636,28 @@ _resolved_llama_unit() {
   printf '%s' "$u"
 }
 
+# _resolved_vllm_unit — same resolution chain for the vLLM unit name.
+_resolved_vllm_unit() {
+  local u="${VLLM_SYSTEMD_UNIT_OVERRIDE:-}"
+  if [[ -z "$u" && -f "$INSTALL_DIR/agent_config.yaml" ]]; then
+    u="$(_yaml_scalar "$INSTALL_DIR/agent_config.yaml" VLLM_SYSTEMD_UNIT)"
+  fi
+  [[ -n "$u" && "$u" =~ ^[A-Za-z0-9_.@-]+\.service$ ]] || u="vllm.service"
+  printf '%s' "$u"
+}
+
+# _vllm_grant_wanted — 0 iff this host manages vLLM (CLI flags now, or the
+# live agent_config.yaml already has VLLM_ENABLED: true, e.g. on --update).
+_vllm_grant_wanted() {
+  [[ "$ENABLE_VLLM" == "true" || "$INSTALL_VLLM" == "true" ]] && return 0
+  if [[ -f "$INSTALL_DIR/agent_config.yaml" ]]; then
+    local v
+    v="$(_yaml_scalar "$INSTALL_DIR/agent_config.yaml" VLLM_ENABLED | tr '[:upper:]' '[:lower:]')"
+    [[ "$v" == "true" ]] && return 0
+  fi
+  return 1
+}
+
 # _svcconfig_wrapper_version FILE
 #   Echo the SVCCONFIG_WRAPPER_VERSION marker from FILE (installed helper or
 #   staged template), or 0 if the file is unreadable / has no marker.
@@ -684,11 +718,18 @@ _xml_escape() {
 #   svcconfig helper (Linux, privileged). Called from both fresh install and
 #   root --update. Returns non-zero on a visudo failure without installing.
 _apply_sudoers_and_wrapper() {
-  local unit tmp_sudoers tmp_wrap
+  local unit vunit tmp_sudoers tmp_wrap tmp_vwrap
   unit="$(_resolved_llama_unit)"
+  vunit="$(_resolved_vllm_unit)"
   tmp_sudoers="$(mktemp)"
   _subst_tokens "$TMPL_DIR/llm-systems-agent.sudoers.tmpl" \
-      '${AGENT_USER}' "$USER_ARG" '${LLAMA_UNIT}' "$unit" > "$tmp_sudoers"
+      '${AGENT_USER}' "$USER_ARG" '${LLAMA_UNIT}' "$unit" \
+      '${VLLM_UNIT}' "$vunit" > "$tmp_sudoers"
+  # Hosts that don't manage vLLM get no vLLM root grants at all.
+  if ! _vllm_grant_wanted; then
+    sed -i -e '/^Cmnd_Alias LSA_VLLM/,/llm-vllm-svcconfig-apply ""$/d' \
+           -e 's/, LSA_VLLM$//' "$tmp_sudoers"
+  fi
   if ! $SUDO visudo -c -f "$tmp_sudoers" >/dev/null 2>&1; then
     echo "ERROR: visudo validation failed for $tmp_sudoers — NOT installing sudoers." >&2
     rm -f "$tmp_sudoers"; return 1
@@ -703,6 +744,15 @@ _apply_sudoers_and_wrapper() {
   $SUDO install -m 0755 -o root -g root "$tmp_wrap" /usr/local/sbin/llm-svcconfig-apply
   _ok "svcconfig helper installed: /usr/local/sbin/llm-svcconfig-apply"
   rm -f "$tmp_wrap"
+  # Second wrapper baked for the vLLM unit — only on hosts that manage vLLM.
+  if _vllm_grant_wanted; then
+    tmp_vwrap="$(mktemp)"
+    _subst_tokens "$TMPL_DIR/llm-svcconfig-apply.sh.tmpl" \
+        '__UNIT_PATH__' "/etc/systemd/system/$vunit" > "$tmp_vwrap"
+    $SUDO install -m 0755 -o root -g root "$tmp_vwrap" /usr/local/sbin/llm-vllm-svcconfig-apply
+    _ok "vllm svcconfig helper installed: /usr/local/sbin/llm-vllm-svcconfig-apply"
+    rm -f "$tmp_vwrap"
+  fi
 }
 
 # _ensure_hf_cli USER HOME
@@ -2325,6 +2375,83 @@ _offer_llama_unit() {
   fi
 }
 
+# _offer_vllm_unit UNIT BIN — starter vllm unit; never overwrites/enables.
+_offer_vllm_unit() {
+  local unit="$1" bin="$2"
+  [[ -n "$unit" && -n "$bin" ]] || return 0
+  command -v systemctl >/dev/null 2>&1 || return 0
+  local target="/etc/systemd/system/$unit"
+  if [[ -e "$target" ]]; then
+    echo "      ⓘ $unit already exists — leaving it"
+    return 0
+  fi
+  local tmpl="$SRC_DIR/install/vllm.service.tmpl"
+  if [[ ! -f "$tmpl" ]]; then
+    echo "      ⓘ no vllm unit template; create $unit manually (ExecStart='$bin serve <model> …')"
+    return 0
+  fi
+  _subst_tokens "$tmpl" '__VLLM_BIN__' "$bin" '__USER__' "$USER_ARG" \
+      '__MODEL__' "CHANGE-ME-MODEL-ID" '__EXTRA_ARGS__' "" \
+    | $SUDO tee "$target" >/dev/null
+  $SUDO chmod 644 "$target"
+  $SUDO systemctl daemon-reload || true
+  _ok "wrote $target (disabled). Edit the model in ExecStart, then: sudo systemctl enable --now $unit"
+}
+
+# _detect_vllm — enable vLLM when its systemd unit exists on this host.
+_detect_vllm() {
+  echo
+  echo "  • vLLM"
+  local unit
+  unit="$(_resolved_vllm_unit)"
+  if command -v systemctl >/dev/null 2>&1 \
+     && { [[ -f "/etc/systemd/system/$unit" ]] || systemctl cat "$unit" >/dev/null 2>&1; }; then
+    ENABLE_VLLM=true
+    echo "  ✓ vLLM detected (unit $unit present)"
+  else
+    echo "  ✗ vLLM not detected (no $unit unit)"
+  fi
+}
+
+# _offer_vllm_install — CUDA-gated pip install of vLLM into a dedicated venv.
+# Pre-built vLLM wheels need CUDA >= 12.8 and an NVIDIA GPU.
+_offer_vllm_install() {
+  local venv="${VLLM_VENV_DIR:-/opt/vllm}"
+  if ! command -v nvidia-smi >/dev/null 2>&1; then
+    _warn "--install-vllm: no NVIDIA GPU detected (nvidia-smi missing) — skipping (vLLM pip wheels are CUDA-only)"
+    return 1
+  fi
+  local cuda major minor
+  cuda="$(nvidia-smi 2>/dev/null | grep -o 'CUDA Version: [0-9.]*' | head -1 | awk '{print $3}')"
+  if [[ -n "$cuda" ]]; then
+    major="${cuda%%.*}"; minor="${cuda#*.}"; minor="${minor%%.*}"
+    if (( major < 12 || (major == 12 && minor < 8) )); then
+      _warn "--install-vllm: driver CUDA $cuda < 12.8 — pre-built vLLM wheels need >= 12.8"
+      if [[ ! -t 0 ]]; then
+        echo "      → aborting vLLM install (non-interactive). Upgrade the driver or build from source."
+        return 1
+      fi
+      local REPLY
+      read -rp "      Continue anyway (pip install may fail)? [y/N] " REPLY
+      case "$(printf '%s' "$REPLY" | tr '[:upper:]' '[:lower:]')" in y|yes) ;; *) return 1 ;; esac
+    fi
+  else
+    _warn "--install-vllm: could not read the driver CUDA version from nvidia-smi — proceeding"
+  fi
+  _section "Installing vLLM (pip) into $venv"
+  $SUDO install -d -m 0755 "$venv"
+  $SUDO chown "$USER_ARG:$USER_GROUP" "$venv"
+  _run_as "$USER_ARG" python3 -m venv "$venv" || { _warn "vllm venv creation failed"; return 1; }
+  _run_as "$USER_ARG" "$venv/bin/pip" install --upgrade pip >/dev/null 2>&1 || true
+  if ! _run_as "$USER_ARG" "$venv/bin/pip" install vllm; then
+    _warn "pip install vllm failed — see output above"
+    return 1
+  fi
+  _ok "vLLM installed: $venv/bin/vllm"
+  ENABLE_VLLM=true
+  _offer_vllm_unit "$(_resolved_vllm_unit)" "$venv/bin/vllm"
+}
+
 _detect_llama() {
   echo
   echo "  • llama.cpp"
@@ -3057,6 +3184,12 @@ if [[ "$ROLE" == "auto" ]]; then
   else
     _detect_lms
   fi
+  if $VLLM_FLAG_EXPLICIT || $INSTALL_VLLM; then
+    echo
+    echo "  • vLLM — skipping probe (vllm flag set on CLI)"
+  else
+    _detect_vllm
+  fi
   if $OPENCLAW_FLAG_EXPLICIT; then
     echo
     echo "  • OpenClaw — skipping probe (--$([ "$ENABLE_OPENCLAW" = "true" ] && echo "enable" || echo "no")-openclaw set on CLI)"
@@ -3380,13 +3513,15 @@ else
 fi
 
 if [[ "$AGENT_OS" == "linux" && "$SKIP_SUDOERS" == "false" \
-      && "$ENABLE_LLAMA" != "true" && "$ENABLE_PERF" != "true" ]]; then
-  echo "  ⓘ skipping sudoers (no llama, no perf controller — nothing for the agent to sudo)"
+      && "$ENABLE_LLAMA" != "true" && "$ENABLE_PERF" != "true" \
+      && "$ENABLE_VLLM" != "true" && "$INSTALL_VLLM" != "true" ]]; then
+  echo "  ⓘ skipping sudoers (no llama, no vllm, no perf controller — nothing for the agent to sudo)"
   SKIP_SUDOERS=true
 elif [[ "$AGENT_OS" == "linux" && "$SKIP_SUDOERS" == "true" \
-      && ( "$ENABLE_LLAMA" == "true" || "$ENABLE_PERF" == "true" ) ]]; then
-  _warn "--no-sudoers with llama/perf enabled: the agent's sudo-backed actions"
-  echo "    (managed unit restarts; for llama, ExecStart edits via svcconfig) will"
+      && ( "$ENABLE_LLAMA" == "true" || "$ENABLE_PERF" == "true" \
+           || "$ENABLE_VLLM" == "true" || "$INSTALL_VLLM" == "true" ) ]]; then
+  _warn "--no-sudoers with llama/vllm/perf enabled: the agent's sudo-backed actions"
+  echo "    (managed unit restarts; ExecStart edits via svcconfig) will"
   echo "    fail safe as unavailable. Re-run without --no-sudoers to enable them."
 fi
 
@@ -3613,6 +3748,12 @@ $SUDO chown "$USER_ARG:$USER_GROUP" \
   "$INSTALL_DIR/unified_config_reader.py"
 _ok "agent code installed to $INSTALL_DIR"
 
+# Optional CUDA-gated vLLM install — flips ENABLE_VLLM on success, so it must
+# run before the config writer and the sudoers/journal steps read the flag.
+if $INSTALL_VLLM && [[ "$AGENT_OS" == "linux" ]]; then
+  _offer_vllm_install || _warn "vLLM install skipped — continuing agent install"
+fi
+
 # 3. Drop config from example if missing
 if [[ ! -f "$INSTALL_DIR/agent_config.yaml" ]]; then
   $SUDO cp "$SRC_DIR/agent_config.yaml.example" "$INSTALL_DIR/agent_config.yaml"
@@ -3639,7 +3780,8 @@ if [[ ! -f "$INSTALL_DIR/agent_config.yaml" ]]; then
     "$LMS_API_URL_OVERRIDE" "$LMS_CMD_OVERRIDE" \
     "$OPENCLAW_AGENTS_DIR_OVERRIDE" \
     "$ENABLE_MONITOR_MANAGER" "$ENABLE_MONITOR_ALARM" \
-    "${ENABLE_MONITOR_INFLUXDB_DISK:-false}" <<'PYEOF'
+    "${ENABLE_MONITOR_INFLUXDB_DISK:-false}" \
+    "$ENABLE_VLLM" "$VLLM_SYSTEMD_UNIT_OVERRIDE" <<'PYEOF'
 import sys, re
 
 (path, agent_os, role, mgr_url, alarm_url,
@@ -3651,7 +3793,8 @@ import sys, re
  lms_api, lms_cmd,
  oc_dir,
  monitor_manager, monitor_alarm,
- monitor_influxdb_disk) = sys.argv[1:]
+ monitor_influxdb_disk,
+ vllm, vllm_unit) = sys.argv[1:]
 
 text = open(path).read()
 
@@ -3719,6 +3862,7 @@ _set_quoted('ALARM_ENGINE_URL', alarm_url)
 _set('PERF_CONTROLLER_ENABLED', perf.lower())
 _set('LLAMA_ENABLED',           llama.lower())
 _set('LMS_ENABLED',             lms.lower())
+_set('VLLM_ENABLED',            vllm.lower())
 _set('OPENCLAW_ENABLED',        openclaw.lower())
 _set('IMGGEN_ENABLED',          imggen.lower())
 
@@ -3876,6 +4020,7 @@ if llama_script:        _set_build_opt('script_path', f'"{llama_script}"')
 if llama_log:   _set_quoted('LLAMA_LOG_FILE',     llama_log)
 if llama_api:   _set_quoted('LLAMA_API_URL',      llama_api)
 if llama_unit:  _set_quoted('LLAMA_SYSTEMD_UNIT', llama_unit)
+if vllm_unit:   _set_quoted('VLLM_SYSTEMD_UNIT',  vllm_unit)
 if lms_api:     _set_quoted('LMS_API_URL', lms_api)
 if lms_cmd:     _set_quoted('LMS_CMD',     lms_cmd)
 if oc_dir:      _set_quoted('OPENCLAW_AGENTS_DIR', oc_dir)
@@ -3905,6 +4050,16 @@ fi
 # Install sudoers + svcconfig wrapper before enabling the agent.
 if [[ "$AGENT_OS" == "linux" && "$SKIP_SUDOERS" == "false" ]]; then
   _apply_sudoers_and_wrapper || exit 1
+fi
+
+# vLLM logs to journald only — the agent needs journal read access for
+# the log tail/stream endpoints (group applies on the agent's next start).
+if [[ "$AGENT_OS" == "linux" && "$ENABLE_VLLM" == "true" ]]; then
+  if $SUDO usermod -aG systemd-journal "$USER_ARG" 2>/dev/null; then
+    _ok "$USER_ARG added to systemd-journal (vllm journal log access)"
+  else
+    _warn "could not add $USER_ARG to systemd-journal — vllm log tail will fail"
+  fi
 fi
 
 # 5. systemd unit (Linux) / launchd plist (macOS)

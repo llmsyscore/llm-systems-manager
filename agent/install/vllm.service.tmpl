@@ -1,0 +1,14 @@
+[Unit]
+Description=vLLM OpenAI-compatible server (vllm serve)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=__USER__
+ExecStart="__VLLM_BIN__" serve __MODEL__ --host 127.0.0.1 --port 8000 __EXTRA_ARGS__
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

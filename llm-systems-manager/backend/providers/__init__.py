@@ -46,3 +46,4 @@ def names() -> list[str]:
 # Import provider modules so they register at package import time.
 from . import llama  # noqa: E402, F401
 from . import lms    # noqa: E402, F401
+from . import vllm   # noqa: E402, F401

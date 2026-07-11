@@ -155,7 +155,7 @@ def _migrate_agents_schema(data: dict) -> bool:
         data["schema_version"] = 2
         changed = True
     g = data.setdefault("global", {})
-    for name in ("llama", "lms"):
+    for name in ("llama", "lms", "vllm"):
         prim_key = f"primary_{name}_id"
         def_key = f"default_{name}_id"
         if g.get(prim_key) and not g.get(def_key):
@@ -543,6 +543,7 @@ def approved_agent_caps() -> dict:
     ]
     llama = any((a.get("capabilities") or {}).get("llama") for a in approved)
     lms   = any((a.get("capabilities") or {}).get("lms")   for a in approved)
+    vllm  = any((a.get("capabilities") or {}).get("vllm")  for a in approved)
     llama_host = next(
         (a.get("hostname") for a in approved if (a.get("capabilities") or {}).get("llama")),
         None,
@@ -551,8 +552,13 @@ def approved_agent_caps() -> dict:
         (a.get("hostname") for a in approved if (a.get("capabilities") or {}).get("lms")),
         None,
     )
-    return {"llama": llama, "lms": lms, "either": llama or lms,
-            "llama_host": llama_host, "lms_host": lms_host}
+    vllm_host = next(
+        (a.get("hostname") for a in approved if (a.get("capabilities") or {}).get("vllm")),
+        None,
+    )
+    return {"llama": llama, "lms": lms, "vllm": vllm,
+            "either": llama or lms or vllm,
+            "llama_host": llama_host, "lms_host": lms_host, "vllm_host": vllm_host}
 
 
 def self_agent_id() -> "str | None":
@@ -632,7 +638,7 @@ def _default_for_agent(data: dict, agent_id: str,
     Reads global.default_<p>_id first, falls back to global.primary_<p>_id
     so a manual TOML/JSON edit to either key keeps working."""
     g = data.get("global") or {}
-    names = provider_names if provider_names is not None else ["llama", "lms"]
+    names = provider_names if provider_names is not None else ["llama", "lms", "vllm"]
     out: "list[str]" = []
     for name in names:
         sel = g.get(f"default_{name}_id") or g.get(f"primary_{name}_id")
@@ -1341,6 +1347,10 @@ def _agents_approve(agent_id: str):
                 and not glob.get("primary_lms_id"):
             _set_provider_default(glob, "lms", agent_id)
             auto_promoted.append("lms")
+        if caps.get("vllm") and not glob.get("default_vllm_id") \
+                and not glob.get("primary_vllm_id"):
+            _set_provider_default(glob, "vllm", agent_id)
+            auto_promoted.append("vllm")
         save_agents(data)
     log.info("agent approved by %s: id=%s hostname=%s%s",
              flask_request.remote_addr, agent_id, agent.get("hostname"),
@@ -1388,8 +1398,8 @@ def _agents_set_primary(agent_id: str):
         return deny
     body = flask_request.get_json(force=True) or {}
     kind = body.get("kind")
-    if kind not in ("llama", "lms"):
-        return jsonify({"ok": False, "error": "kind must be 'llama' or 'lms'"}), 400
+    if kind not in ("llama", "lms", "vllm"):
+        return jsonify({"ok": False, "error": "kind must be 'llama', 'lms' or 'vllm'"}), 400
     set_flag = bool(body.get("set", True))
     with _agents_lock:
         data = load_agents()

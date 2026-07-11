@@ -24,12 +24,13 @@ def _extract_block() -> str:
 BLOCK = _extract_block()
 
 
-def _run(os_="linux", skip="true", llama="true", perf="false"):
+def _run(os_="linux", skip="true", llama="true", perf="false", vllm="false"):
     script = (
         "set -u\n"
         '_warn(){ echo "  ⚠ $*"; }\n'
         f'AGENT_OS="{os_}"\nSKIP_SUDOERS="{skip}"\n'
-        f'ENABLE_LLAMA="{llama}"\nENABLE_PERF="{perf}"\n'
+        f'ENABLE_LLAMA="{llama}"\nENABLE_PERF="{perf}"\nENABLE_VLLM="{vllm}"\n'
+        'INSTALL_VLLM="false"\n'
         f"{BLOCK}\n"
         'echo "SKIP=$SKIP_SUDOERS"\n'
     )
@@ -41,6 +42,17 @@ def test_warns_on_explicit_no_sudoers_with_llama_or_perf(llama, perf):
     r = _run(skip="true", llama=llama, perf=perf)
     assert r.returncode == 0
     assert "--no-sudoers" in r.stdout and "svcconfig" in r.stdout
+
+
+def test_warns_on_explicit_no_sudoers_with_vllm():
+    r = _run(skip="true", llama="false", perf="false", vllm="true")
+    assert r.returncode == 0
+    assert "--no-sudoers" in r.stdout and "svcconfig" in r.stdout
+
+
+def test_vllm_alone_prevents_auto_skip():
+    r = _run(skip="false", llama="false", perf="false", vllm="true")
+    assert "skipping sudoers" not in r.stdout and "SKIP=false" in r.stdout
 
 
 def test_no_warning_when_no_sudoers_and_nothing_to_sudo():
