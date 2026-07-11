@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import queue as _queue_lib
 import shlex
 import subprocess
@@ -88,7 +89,7 @@ def _parse_prom_families(text: str) -> "dict[str, list[float]]":
             v = float(fields[0])
         except ValueError:
             continue
-        if v != v or v in (float("inf"), float("-inf")):
+        if math.isnan(v) or math.isinf(v):
             continue
         out.setdefault(name, []).append(v)
     return out
@@ -252,16 +253,16 @@ def _vllm_log_streamer() -> None:
                 try:
                     _log_queue.get_nowait()
                 except _queue_lib.Empty:
-                    pass
+                    pass  # another consumer drained it first
                 try:
                     _log_queue.put_nowait(line)
                 except _queue_lib.Full:
-                    pass
+                    pass  # still full — drop the line (best-effort)
     except Exception as e:
         try:
             _log_queue.put_nowait(f"[log stream error: {e}]")
         except _queue_lib.Full:
-            pass
+            pass  # queue full — drop the error line (best-effort)
     finally:
         if proc is not None:
             try:
@@ -271,7 +272,7 @@ def _vllm_log_streamer() -> None:
                 try:
                     proc.kill()
                 except Exception:
-                    pass
+                    pass  # already exited (best-effort cleanup)
         with _log_lock:
             _log_streaming = False
 
@@ -342,7 +343,7 @@ def _wrapper_baked_unit_path(wrapper: str) -> str:
             if line.startswith("UNIT_PATH='") and line.rstrip().endswith("'"):
                 return line.rstrip()[len("UNIT_PATH='"):-1]
     except OSError:
-        pass
+        pass  # unreadable/missing wrapper reads as "" (caller skips the check)
     return ""
 
 
