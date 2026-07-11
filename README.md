@@ -2,9 +2,9 @@
 
 A highly configurable, real-time monitoring, observability, alerting, and control system for an LLM lab
 
-It currently integrates [llama.cpp](https://github.com/ggerganov/llama.cpp), [LM Studio](https://lmstudio.ai/), [stable-diffusion.cpp](https://github.com/leejet/stable-diffusion.cpp), and [OpenClaw](https://github.com/openclaw/openclaw) session telemetry, but the agent reports general host metrics for any Linux or macOS machine. 
+It currently integrates [llama.cpp](https://github.com/ggerganov/llama.cpp), [vLLM](https://github.com/vllm-project/vllm), [LM Studio](https://lmstudio.ai/), [stable-diffusion.cpp](https://github.com/leejet/stable-diffusion.cpp), and [OpenClaw](https://github.com/openclaw/openclaw) session telemetry, but the agent reports general host metrics for any Linux or macOS machine.
 
-New integrations with vLLM and Ollama are on the roadmap.
+New integrations with Ollama are on the roadmap.
 
 It also exposes an **OpenAI-compatible inference gateway** — a single endpoint that routes chat/completion requests across your `llama.cpp` fleet, so every backend looks like one server to your apps. See [Inference gateway](#inference-gateway) below.
 
