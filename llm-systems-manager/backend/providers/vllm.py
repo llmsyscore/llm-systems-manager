@@ -16,6 +16,7 @@ def _fleet_aggregate(samples: dict[str, dict]) -> dict:
     total_tps = 0.0
     total_pps = 0.0
     max_kv = 0.0
+    total_power = 0.0
     models: set[str] = set()
     agent_rows: list[dict] = []
     for aid, wrap in samples.items():
@@ -23,6 +24,7 @@ def _fleet_aggregate(samples: dict[str, dict]) -> dict:
         last_seen = float(wrap.get("last_seen") or 0)
         is_online = (now - last_seen) < SPEC.online_threshold_s if last_seen else False
         v = s.get("vllm") or {}
+        gpu = s.get("gpu") or {}
         running = v.get("state") == "running"
         m = v.get("model")
         tps = v.get("tokens_per_second") if is_online else None
@@ -46,8 +48,10 @@ def _fleet_aggregate(samples: dict[str, dict]) -> dict:
                 total_pps += float(pps)
             if isinstance(kv, (int, float)) and kv > max_kv:
                 max_kv = float(kv)
-        # Offline agents report zeroed/None per-row values so a consumer
-        # rendering the row without re-checking online never shows stale data.
+            p = gpu.get("power_watts")
+            if isinstance(p, (int, float)):
+                total_power += float(p)
+        # Offline agents report zeroed/None per-row values.
         agent_rows.append({
             "agent_id": aid,
             "online": is_online,
@@ -66,6 +70,7 @@ def _fleet_aggregate(samples: dict[str, dict]) -> dict:
         "requests_waiting_total": req_waiting,
         "throughput": {"total_tps": total_tps, "total_pps": total_pps},
         "max_kv_cache_pct": max_kv,
+        "total_gpu_power_watts": total_power,
         "active_models": sorted(models),
         "active_model_count": len(models),
         "agents": agent_rows,

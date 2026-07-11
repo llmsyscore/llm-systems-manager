@@ -821,9 +821,13 @@ async function checkConfig() {
     if (_subTabState.dashboard === 'llamacpp' && !llamaOn) switchSubTab('dashboard','manager');
     if (_subTabState.dashboard === 'lmstudio' && !lmsOn)   switchSubTab('dashboard','manager');
     if (_subTabState.dashboard === 'vllm' && !vllmOn)      switchSubTab('dashboard','manager');
-    if (_subTabState.llm === 'llamacpp' && !llamaOn) switchSubTab('llm', lmsOn ? 'lmstudio' : 'vllm');
-    if (_subTabState.llm === 'lmstudio' && !lmsOn)   switchSubTab('llm', llamaOn ? 'llamacpp' : 'vllm');
-    if (_subTabState.llm === 'vllm' && !vllmOn)      switchSubTab('llm', llamaOn ? 'llamacpp' : 'lmstudio');
+    // Only fall back to a sub-tab whose provider is actually present.
+    if (_subTabState.llm === 'llamacpp' && !llamaOn && (lmsOn || vllmOn))
+      switchSubTab('llm', lmsOn ? 'lmstudio' : 'vllm');
+    if (_subTabState.llm === 'lmstudio' && !lmsOn && (llamaOn || vllmOn))
+      switchSubTab('llm', llamaOn ? 'llamacpp' : 'vllm');
+    if (_subTabState.llm === 'vllm' && !vllmOn && (llamaOn || lmsOn))
+      switchSubTab('llm', llamaOn ? 'llamacpp' : 'lmstudio');
   } catch(e) {
   } finally {
     _release('checkConfig');

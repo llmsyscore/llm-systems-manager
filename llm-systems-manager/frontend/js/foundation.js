@@ -130,6 +130,7 @@ const CARD_LABELS_OVERALL = {
   'ov-llama-active': 'llama.cpp Fleet — Active Models',
   'ov-llama-chart':  'llama.cpp Fleet — Throughput',
   'ov-lms-fleet':    'LM Studio Fleet',
+  'ov-vllm-fleet':   'vLLM Fleet',
   'ov-fleet':        'Fleet Overview',
 };
 const CARD_LABELS_LMS = {
@@ -410,7 +411,8 @@ function _selectAgent(provider, agentId) {
           || (_lp && _lp.style.display !== 'none')) closeLmsTerminal();
     }
   } else if (provider === 'vllm') {
-    // No history backfill for vLLM (deferred) — just re-poll the new agent.
+    // No history backfill for vLLM (deferred) — reset charts, re-poll the new agent.
+    if (typeof _resetVllmCharts === 'function') _resetVllmCharts();
     if (typeof fetchVllmMetrics === 'function') fetchVllmMetrics();
     if (typeof _vllmLogOpen !== 'undefined' && _vllmLogOpen
         && typeof startVllmLogRefresh === 'function') startVllmLogRefresh();
@@ -1023,8 +1025,7 @@ function _gridIcon(n) {
 }
 
 function _getDashSubTab() {
-  // Returns 'lmstudio' | 'vllm' | 'manager' | 'llamacpp'. Defaults to llamacpp
-  // so the settings panel falls back to llama.cpp when nothing else is active.
+  // Returns 'lmstudio' | 'vllm' | 'manager' | 'llamacpp'. Defaults to llamacpp.
   if (document.getElementById('dash-lmstudio')?.classList.contains('active')) return 'lmstudio';
   if (document.getElementById('dash-vllm')?.classList.contains('active'))     return 'vllm';
   if (document.getElementById('dash-manager')?.classList.contains('active'))  return 'manager';

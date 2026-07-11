@@ -160,7 +160,8 @@ function updateOverallFleet(llama, lms, vllm) {
   const vOn   = (vllm  && vllm.agent_count_online)  || 0;
   const models = ((llama && llama.active_model_count) || 0)
                + ((vllm && vllm.active_model_count) || 0);
-  const power  = (llama && llama.gpu && llama.gpu.total_power_watts) || 0;
+  const power  = ((llama && llama.gpu && llama.gpu.total_power_watts) || 0)
+               + ((vllm && vllm.total_gpu_power_watts) || 0);
   _setEl('ov-fleet-agents', String(lOn + mOn + vOn));
   _setEl('ov-fleet-models', String(models));
   _setEl('ov-fleet-power',  power > 0 ? power.toFixed(0) + ' W' : '—');

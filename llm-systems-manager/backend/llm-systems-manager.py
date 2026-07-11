@@ -153,7 +153,7 @@ def _local_hostname() -> str:
 # banner reads it. Bump suffix (-1, -2, …) for same-day iterations; roll
 # the date for a new day's first change.
 # ---------------------------------------------------------------------------
-__version__ = "v2026.07.10-1"
+__version__ = "v2026.07.11-1"
 
 # Wall-clock at first import (Cheroot main process); the shutdown banner
 # reads it for the uptime line.
@@ -4765,7 +4765,7 @@ if __name__ == "__main__":
             _glob = _data.setdefault("global", {})
             _agents_map = _data.get("agents") or {}
             _dirty = False
-            for kind in ("llama", "lms"):
+            for kind in ("llama", "lms", "vllm"):
                 if _glob.get(f"default_{kind}_id") or _glob.get(f"primary_{kind}_id"):
                     continue
                 if kind == "llama" and _glob.get("llama_pool"):
@@ -4788,7 +4788,7 @@ if __name__ == "__main__":
     except Exception as _e:
         log.warning("primary backfill failed: %s", _e)
 
-    for kind in ("llama", "lms"):
+    for kind in ("llama", "lms", "vllm"):
         try:
             agent = agent_registry.primary_agent(kind)
         except Exception:

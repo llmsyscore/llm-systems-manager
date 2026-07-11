@@ -63,7 +63,7 @@ except ImportError:
             os.chmod(tmp, mode)
         tmp.replace(p)
 
-VERSION = "v2026.07.10-1"
+VERSION = "v2026.07.11-1"
 
 
 def _detect_install_dir() -> str:
@@ -2150,13 +2150,12 @@ def _push_host_payload(sample: dict[str, Any]) -> None:
 
 
 def _push_vllm_payload(sample: dict[str, Any]) -> None:
-    """POST the vllm provider sample (system + vllm blocks) to the manager STORE."""
+    """POST the vllm provider sample (gpu + vllm blocks) to the manager STORE."""
     if not CONFIG.VLLM_ENABLED:
         return
     body = {
         "ts": sample.get("ts"),
         "host": sample.get("host"),
-        "system": sample.get("system") or {},
         "gpu": (sample.get("system") or {}).get("gpu") or {},
         "vllm": sample.get("vllm") or {},
     }

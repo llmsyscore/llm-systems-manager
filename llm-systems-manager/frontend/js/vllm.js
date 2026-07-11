@@ -20,6 +20,15 @@ const vllmTpsChart = vllmTpsChartCtx ? new Chart(vllmTpsChartCtx, {
   options: { animation: false, responsive: true, maintainAspectRatio: false, interaction: _sparkInteraction, scales: { x: { type: 'time', display: false }, y: { min: 0, display: true, ticks: { color: cssVar('--fg-muted'), font: { size: 10 } } } }, plugins: { legend: { display: false }, tooltip: _sparkTooltip, zoom: _zoomOpts } }
 }) : null;
 
+// Clear both vLLM chart series (called on agent-picker switch).
+function _resetVllmCharts() {
+  [vllmKvChart, vllmTpsChart].forEach(ch => {
+    if (!ch) return;
+    ch.data.datasets.forEach(ds => { ds.data = []; });
+    ch.update('none');
+  });
+}
+
 // True when a vLLM SUB-tab is the active view (cards + log live there only).
 function _vllmLogViewActive() {
   const t = _activeTab;

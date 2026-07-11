@@ -23,6 +23,14 @@ def test_parse_prom_families_sums_and_skips_comments():
     assert not any(k.startswith("#") for k in fams)
 
 
+def test_parse_prom_families_ignores_trailing_timestamp():
+    fams = vllm._parse_prom_families(
+        'vllm:num_requests_running{m="x"} 2.0 1712345678901\n'
+        "vllm:bare_metric 3.0 1712345678901\n")
+    assert fams["vllm:num_requests_running"] == [2.0]
+    assert fams["vllm:bare_metric"] == [3.0]
+
+
 def test_parse_prom_families_drops_non_finite():
     fams = vllm._parse_prom_families("vllm:x 1.0\nvllm:y +Inf\nvllm:z NaN\n")
     assert fams["vllm:x"] == [1.0]

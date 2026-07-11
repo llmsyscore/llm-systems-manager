@@ -54,6 +54,24 @@ def test_required_files_include_vllm():
     assert "vllm.service.tmpl" in src
 
 
+def test_install_vllm_runs_before_config_writer():
+    src = INSTALL.read_text()
+    assert src.index("_offer_vllm_install || _warn") \
+        < src.index("# 3. Drop config from example")
+
+
+def test_vllm_sudoers_grant_is_conditional():
+    src = INSTALL.read_text()
+    assert "_vllm_grant_wanted" in src
+    assert "/^Cmnd_Alias LSA_VLLM/" in src
+
+
+def test_detect_vllm_probe_exists():
+    src = INSTALL.read_text()
+    assert "_detect_vllm() {" in src
+    assert "_detect_vllm\n" in src
+
+
 def test_install_vllm_flag_and_cuda_gate():
     src = INSTALL.read_text()
     assert "--install-vllm" in src

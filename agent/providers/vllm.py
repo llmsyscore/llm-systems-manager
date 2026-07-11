@@ -47,7 +47,7 @@ def _require_ctx():
 
 
 def _get_session() -> requests.Session:
-    # Double-checked init so non-vLLM hosts don't carry a Session.
+    # Double-checked lazy init of the shared Session.
     global _vllm_session
     if _vllm_session is None:
         with _vllm_session_lock:
@@ -64,23 +64,28 @@ def _vllm_check_enabled() -> None:
 # ── Metrics collector (called from _build_metric_sample in main) ───────
 
 _vllm_prev_counters: Optional[dict] = None
-_vllm_info_cache: dict[str, Any] = {}
-_vllm_info_ts: float = 0.0
 
 
 def _parse_prom_families(text: str) -> "dict[str, list[float]]":
-    """Prometheus text → {family_name: [sample values]}; drops comments + non-finite."""
+    """Prometheus text → {family_name: [sample values]}; drops comments,
+    non-finite values, and optional trailing timestamps."""
     out: dict[str, list[float]] = {}
     for line in text.splitlines():
         line = line.strip()
         if not line or line.startswith("#"):
             continue
-        name_part, _, val_part = line.rpartition(" ")
-        name = name_part.split("{", 1)[0].strip()
-        if not name:
+        if "}" in line:
+            head, _, rest = line.partition("}")
+            name = head.split("{", 1)[0].strip()
+            fields = rest.split()
+        else:
+            fields = line.split()
+            name = fields[0] if fields else ""
+            fields = fields[1:]
+        if not name or not fields:
             continue
         try:
-            v = float(val_part)
+            v = float(fields[0])
         except ValueError:
             continue
         if v != v or v in (float("inf"), float("-inf")):
@@ -121,14 +126,11 @@ def _derive_vllm_fields(fams: dict, prev: Optional[dict], now_mono: float) -> di
 
 def collect_vllm_for_metrics() -> dict[str, Any]:
     """Per-poll snapshot for the metric sample + provider-state push. {} when disabled."""
-    global _vllm_prev_counters, _vllm_info_cache, _vllm_info_ts
+    global _vllm_prev_counters
     ctx = _require_ctx()
     if not ctx.config.VLLM_ENABLED:
         return {}
     now = time.monotonic()
-    poll_s = float(getattr(ctx.config, "POLL_INTERVAL_S", 5) or 5)
-    if _vllm_info_cache and (now - _vllm_info_ts) < poll_s:
-        return dict(_vllm_info_cache)
     out: dict[str, Any] = {"state": "down", "model": None, "models": []}
     base = ctx.config.VLLM_API_URL.rstrip("/")
     try:
@@ -155,9 +157,7 @@ def collect_vllm_for_metrics() -> dict[str, Any]:
             log.debug("vllm /metrics scrape failed: %s", e)
     else:
         _vllm_prev_counters = None
-    _vllm_info_cache = out
-    _vllm_info_ts = now
-    return dict(out)
+    return out
 
 
 # ── systemd lifecycle ──────────────────────────────────────────────────
@@ -456,8 +456,7 @@ async def _vllm_openai_forward(sub: str, request: Request,
     body = await request.body()
     url = f"{_require_ctx().config.VLLM_API_URL.rstrip('/')}/v1/{sub}"
     headers = {"Content-Type": "application/json"}
-    # Blocking requests.post runs off-loop: this handler is async (for
-    # request.body()), so a direct call would stall the whole event loop.
+    # Async handler: blocking requests.post calls run off-loop via run_in_threadpool.
     if _openai_wants_stream(body):
         try:
             upstream = await run_in_threadpool(

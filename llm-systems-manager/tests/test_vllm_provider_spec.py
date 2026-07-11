@@ -25,7 +25,8 @@ def _wrap(sample, age=1.0):
 def test_aggregator_rollup():
     spec = providers.get("vllm")
     samples = {
-        "a1": _wrap({"vllm": {"state": "running", "model": "m1",
+        "a1": _wrap({"gpu": {"power_watts": 250.0},
+                     "vllm": {"state": "running", "model": "m1",
                               "requests_running": 2, "requests_waiting": 1,
                               "kv_cache_usage_pct": 40.0, "tokens_per_second": 10.0,
                               "prompt_tokens_per_second": 5.0}}),
@@ -43,6 +44,7 @@ def test_aggregator_rollup():
     assert agg["throughput"]["total_tps"] == 10.0
     assert agg["throughput"]["total_pps"] == 5.0
     assert agg["max_kv_cache_pct"] == 40.0
+    assert agg["total_gpu_power_watts"] == 250.0
     assert agg["active_models"] == ["m1"]
     assert agg["active_model_count"] == 1
     offline_row = next(r for r in agg["agents"] if r["agent_id"] == "a3")
