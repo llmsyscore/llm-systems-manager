@@ -519,6 +519,186 @@ def _at_wait_ready(timeout_s: float = 60.0) -> Optional[int]:
     return None
 
 
+def _at_apply(head_tokens: list, args: list) -> dict:
+    """svcconfig write (daemon-reload inside the wrapper), no restart."""
+    tokens = _shared.build_svcconfig_tokens(head_tokens, args)
+    if not tokens:
+        return {"ok": False, "error": "invalid ExecStart token (newline or non-string)"}
+    return _shared.svcconfig_apply(
+        _VLLM_SVCCONFIG_WRAPPER, _vllm_svc_file_path(), tokens,
+        sudoers_hint="llm-vllm-svcconfig-apply", restart_unit=None)
+
+
+def _at_restart_and_watch(unit: str, timeout_s: float, step: str) -> dict:
+    """Start the journal watcher in a thread, then restart the unit."""
+    holder: dict[str, Any] = {}
+    t = threading.Thread(
+        target=lambda: holder.update(_at_watch_journal(unit, timeout_s, step)),
+        daemon=True)
+    t.start()
+    time.sleep(0.5)
+    r = _vllm_systemctl("restart", timeout=60)
+    if not r["ok"]:
+        _at_job.cancel_event.set()
+        _at_job.kill_tracked()
+        t.join(timeout=10)
+        _at_job.cancel_event.clear()
+        return {"outcome": "fatal", "max_conc": None,
+                "fatal_line": f"systemctl restart failed: {r.get('error')}"}
+    t.join(timeout=timeout_s + 15)
+    return holder or {"outcome": "timeout", "max_conc": None}
+
+
+def _at_run(params: dict) -> None:
+    """Job thread: probe → compute → apply+verify (or report-only) → rollback."""
+    ctx = _require_ctx()
+    unit = ctx.config.VLLM_SYSTEMD_UNIT
+    ok = False
+    mutated = False
+    head_tokens: list = []
+    orig_args: list = []
+    orig_max: Optional[int] = None
+    try:
+        content = Path(_vllm_svc_file_path()).read_text()
+        head, orig_args = _parse_vllm_execstart(content)
+        if head is None:
+            _at_job.put({"type": "model_done", "ok": False, "applied": False,
+                         "error": "ExecStart line not found in service file"})
+            return
+        head_tokens = shlex.split(head)
+        orig_max = _at_get_max_len(orig_args)
+        model = head_tokens[2] if len(head_tokens) > 2 else None
+        _at_job.put({"type": "model_start", "unit": unit, "model": model,
+                     "original_max_len": orig_max})
+
+        _at_job.put({"type": "step_start", "step": "probe",
+                     "max_model_len": params["probe_len"]})
+        r = _at_apply(head_tokens, _at_args_with_max_len(orig_args, params["probe_len"]))
+        if not r["ok"]:
+            _at_job.put({"type": "model_done", "ok": False, "applied": False,
+                         "error": r.get("error")})
+            return
+        mutated = True
+        watch = _at_restart_and_watch(unit, params["load_timeout_s"], "probe")
+        if watch["outcome"] == "cancelled":
+            return
+        if watch["outcome"] == "kv":
+            kv_tokens = watch["kv_tokens"]
+        elif watch["outcome"] == "est_max":
+            kv_tokens = watch["est_max_len"]
+        else:
+            _at_job.put({"type": "model_done", "ok": False, "applied": False,
+                         "error": watch.get("fatal_line")
+                         or f"probe {watch['outcome']} — no KV-capacity answer in journal"})
+            return
+        _at_job.put({"type": "kv_capacity", "tokens": kv_tokens})
+
+        rec = compute_recommended_max_len(kv_tokens, params["concurrency"],
+                                          params["kv_fraction"])
+        _at_job.put({"type": "recommendation", "max_model_len": rec,
+                     "kv_tokens": kv_tokens, "concurrency": params["concurrency"],
+                     "kv_fraction": params["kv_fraction"]})
+
+        if params["report_only"]:
+            _at_job.put({"type": "model_done", "ok": True, "applied": False,
+                         "report_only": True, "max_model_len": rec,
+                         "kv_tokens": kv_tokens, "max_concurrency_x": watch["max_conc"],
+                         "original_max_len": orig_max})
+            ok = True
+            return
+
+        _at_job.put({"type": "step_start", "step": "apply", "max_model_len": rec})
+        r = _at_apply(head_tokens, _at_args_with_max_len(orig_args, rec))
+        if not r["ok"]:
+            _at_job.put({"type": "model_done", "ok": False, "applied": False,
+                         "error": r.get("error")})
+            return
+        watch = _at_restart_and_watch(unit, params["load_timeout_s"], "verify")
+        if watch["outcome"] == "cancelled":
+            return
+        if watch["outcome"] != "kv":
+            _at_job.put({"type": "model_done", "ok": False, "applied": False,
+                         "error": watch.get("fatal_line")
+                         or f"verify {watch['outcome']} at max-model-len={rec}"})
+            return
+        reported = _at_wait_ready(60)
+        if reported is not None and reported != rec:
+            _at_job.put({"type": "line",
+                         "text": f"note: server reports max_model_len={reported}"})
+        mutated = False
+        ok = True
+        _at_job.put({"type": "model_done", "ok": True, "applied": True,
+                     "report_only": False, "max_model_len": rec,
+                     "kv_tokens": watch.get("kv_tokens", kv_tokens),
+                     "max_concurrency_x": watch["max_conc"],
+                     "original_max_len": orig_max})
+    except Exception as e:
+        _at_job.put({"type": "model_done", "ok": False, "applied": False,
+                     "error": str(e)})
+    finally:
+        cancelled = _at_job.cancel_event.is_set()
+        if mutated and head_tokens:
+            _at_job.put({"type": "step_start", "step": "rollback",
+                         "max_model_len": orig_max})
+            rr = _at_apply(head_tokens, orig_args)
+            rs = _vllm_systemctl("restart", timeout=60) if rr["ok"] else rr
+            if not rs["ok"]:
+                _at_job.put({"type": "rollback_failed",
+                             "error": rs.get("error") or "rollback restart failed"})
+        _at_job.put({"type": "done", "ok": ok and not cancelled,
+                     "cancelled": cancelled})
+
+
+def vllm_autotune_run(body: dict,
+                      authorization: Optional[str] = Header(default=None)) -> dict[str, Any]:
+    _require_ctx().check_bearer(authorization)
+    _vllm_check_enabled()
+    try:
+        params = {
+            "probe_len": int(body.get("probe_len") or 4096),
+            "concurrency": float(body.get("concurrency") or 1.0),
+            "kv_fraction": float(body.get("kv_fraction") or 1.0),
+            "load_timeout_s": int(body.get("load_timeout_s") or 600),
+            "report_only": bool(body.get("report_only")),
+        }
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="invalid autotune parameters")
+    if not 256 <= params["probe_len"] <= 262144:
+        raise HTTPException(status_code=400, detail="probe_len out of range (256–262144)")
+    if not 1.0 <= params["concurrency"] <= 64.0:
+        raise HTTPException(status_code=400, detail="concurrency out of range (1–64)")
+    if not 0.1 <= params["kv_fraction"] <= 1.0:
+        raise HTTPException(status_code=400, detail="kv_fraction out of range (0.1–1.0)")
+    if not 60 <= params["load_timeout_s"] <= 3600:
+        raise HTTPException(status_code=400, detail="load_timeout_s out of range (60–3600)")
+    if not _at_job.try_start(lambda: _at_run(params)):
+        return {"ok": False, "error": "Another auto-tune is in progress"}
+    return {"ok": True}
+
+
+def vllm_autotune_stream(
+    authorization: Optional[str] = Header(default=None),
+    token: Optional[str] = Query(default=None),
+) -> StreamingResponse:
+    _require_ctx().check_stream_auth(authorization, token, "/vllm/autotune/stream")
+    _vllm_check_enabled()
+    return _at_job.sse_response()
+
+
+def vllm_autotune_cancel(authorization: Optional[str] = Header(default=None)) -> dict[str, Any]:
+    _require_ctx().check_bearer(authorization)
+    _vllm_check_enabled()
+    return {"ok": _at_job.cancel(), "active": _at_job.active}
+
+
+def shutdown_children() -> None:
+    """Kill tracked autotune children at agent shutdown."""
+    try:
+        _at_job.cancel()
+    except Exception:
+        log.debug("vllm shutdown_children failed", exc_info=True)
+
+
 # ── Route registration ─────────────────────────────────────────────────
 
 _ROUTES: tuple = (
@@ -536,6 +716,9 @@ _ROUTES: tuple = (
     ("POST", "/vllm/openai/completions",      vllm_openai_completions),
     ("POST", "/vllm/lora/load",      vllm_lora_load),
     ("POST", "/vllm/lora/unload",    vllm_lora_unload),
+    ("POST", "/vllm/autotune/run",    vllm_autotune_run),
+    ("GET",  "/vllm/autotune/stream", vllm_autotune_stream),
+    ("POST", "/vllm/autotune/cancel", vllm_autotune_cancel),
 )
 
 

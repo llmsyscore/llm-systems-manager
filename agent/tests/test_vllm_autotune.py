@@ -165,3 +165,106 @@ def test_watch_cancel(ctx, monkeypatch):
     finally:
         vllm._at_job.cancel_event.clear()
     assert r["outcome"] == "cancelled"
+
+
+# ── run endpoint validation + busy guard ───────────────────────────────
+
+from fastapi import HTTPException
+
+
+def test_run_rejects_bad_params(ctx):
+    for body in ({"probe_len": 100}, {"concurrency": 0.5},
+                 {"kv_fraction": 0.01}, {"load_timeout_s": 5},
+                 {"probe_len": "nope"}):
+        with pytest.raises(HTTPException) as ei:
+            vllm.vllm_autotune_run(body)
+        assert ei.value.status_code == 400
+
+
+def test_run_busy_guard(ctx, monkeypatch):
+    import threading
+    release = threading.Event()
+    monkeypatch.setattr(vllm, "_at_run", lambda params: release.wait())
+    try:
+        assert vllm.vllm_autotune_run({}) == {"ok": True}
+        r = vllm.vllm_autotune_run({})
+        assert r["ok"] is False and "in progress" in r["error"]
+    finally:
+        release.set()
+        for _ in range(100):
+            if not vllm._at_job.active:
+                break
+            import time as _t
+            _t.sleep(0.01)
+
+
+# ── orchestration: rollback + report-only (all side effects faked) ─────
+
+def _drain(job):
+    out = []
+    while not job.queue.empty():
+        out.append(job.queue.get_nowait())
+    return out
+
+
+UNIT_TEXT = """[Service]
+ExecStart=/opt/vllm/bin/vllm serve org/model-8b --host 0.0.0.0 --max-model-len 8192
+"""
+
+
+def _wire_orchestration(monkeypatch, watch_results, applied):
+    """Fake svc file read, svcconfig writes (recorded), restarts, watcher."""
+    monkeypatch.setattr(vllm.Path, "read_text", lambda self: UNIT_TEXT)
+    monkeypatch.setattr(vllm, "_at_apply",
+                        lambda head, args: (applied.append(args), {"ok": True})[1])
+    monkeypatch.setattr(vllm, "_vllm_systemctl", lambda *a, **k: {"ok": True})
+    seq = iter(watch_results)
+    monkeypatch.setattr(vllm, "_at_restart_and_watch",
+                        lambda unit, timeout_s, step: next(seq))
+    monkeypatch.setattr(vllm, "_at_wait_ready", lambda timeout_s=60.0: None)
+
+
+def test_probe_failure_rolls_back_to_original(ctx, monkeypatch):
+    applied = []
+    _wire_orchestration(monkeypatch, [
+        {"outcome": "fatal", "fatal_line": "EngineCore failed", "max_conc": None},
+    ], applied)
+    vllm._at_run({"probe_len": 4096, "concurrency": 1.0, "kv_fraction": 1.0,
+                  "report_only": False, "load_timeout_s": 600})
+    msgs = _drain(vllm._at_job)
+    md = [m for m in msgs if m["type"] == "model_done"][0]
+    assert md["ok"] is False and "EngineCore" in md["error"]
+    # last svcconfig write restores the original 8192
+    assert vllm._at_get_max_len(applied[-1]) == 8192
+    assert msgs[-1]["type"] == "done" and msgs[-1]["ok"] is False
+
+
+def test_success_applies_recommended_and_keeps_it(ctx, monkeypatch):
+    applied = []
+    _wire_orchestration(monkeypatch, [
+        {"outcome": "kv", "kv_tokens": 230528, "max_conc": None},
+        {"outcome": "kv", "kv_tokens": 230528, "max_conc": 1.0},
+    ], applied)
+    vllm._at_run({"probe_len": 4096, "concurrency": 1.0, "kv_fraction": 1.0,
+                  "report_only": False, "load_timeout_s": 600})
+    msgs = _drain(vllm._at_job)
+    md = [m for m in msgs if m["type"] == "model_done"][0]
+    assert md["ok"] and md["applied"] and md["max_model_len"] == 230400
+    assert md["original_max_len"] == 8192
+    # writes: probe 4096, then recommended 230400 — and NO rollback after
+    assert [vllm._at_get_max_len(a) for a in applied] == [4096, 230400]
+    assert msgs[-1] == {"type": "done", "ok": True, "cancelled": False}
+
+
+def test_report_only_restores_original(ctx, monkeypatch):
+    applied = []
+    _wire_orchestration(monkeypatch, [
+        {"outcome": "kv", "kv_tokens": 230528, "max_conc": None},
+    ], applied)
+    vllm._at_run({"probe_len": 4096, "concurrency": 1.0, "kv_fraction": 1.0,
+                  "report_only": True, "load_timeout_s": 600})
+    msgs = _drain(vllm._at_job)
+    md = [m for m in msgs if m["type"] == "model_done"][0]
+    assert md["ok"] and md["applied"] is False and md["max_model_len"] == 230400
+    assert [vllm._at_get_max_len(a) for a in applied] == [4096, 8192]
+    assert msgs[-1]["ok"] is True
