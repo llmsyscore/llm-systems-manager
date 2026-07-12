@@ -49,7 +49,7 @@ Backend API endpoints consumed:
   <link rel="stylesheet" href="/static/vendor/xterm.min.css?v=5.3.0"/>
   <script src="/static/vendor/xterm.min.js?v=5.3.0"></script>
   <script src="/static/vendor/xterm-addon-fit.min.js?v=0.8.0"></script>
-  <link rel="stylesheet" href="/static/css/base.css?v=2026.07.11-8">
+  <link rel="stylesheet" href="/static/css/base.css?v=2026.07.12-1">
 </head>
 <body>
 
@@ -1536,6 +1536,7 @@ Backend API endpoints consumed:
           <button class="btn btn-gray-muted-gradient ml-auto" onclick="toggleVllmLog()">☰ Server Log</button>
           <button class="btn btn-gray-muted-gradient" onclick="toggleVllmTerminal()">⬛ Terminal</button>
           <button class="btn btn-gray-muted-gradient" onclick="openServerConfig('vllm')">⚙ Server Config</button>
+          <button class="btn btn-gray-muted-gradient" onclick="openVllmAutotune()">🎯 Auto Tune</button>
         </div>
         <div class="sub" style="margin-top:6px;color:var(--fg-dim);">
           vLLM serves one base model per process — change the model via Server Config (ExecStart) and Restart.
@@ -1604,6 +1605,7 @@ Backend API endpoints consumed:
 <script src="/static/js/bench-autotune.js?v=2026.06.25-9"></script>
 <script src="/static/js/lmstudio.js?v=2026.06.26-3"></script>
 <script src="/static/js/vllm.js?v=2026.07.12-1"></script>
+<script src="/static/js/vllm-bench-autotune.js?v=2026.07.12-1"></script>
 <script src="/static/js/overall.js?v=2026.07.11-1"></script>
 <script src="/static/js/dashboard-manager.js?v=2026.07.04-1"></script>
 
@@ -1745,7 +1747,7 @@ Backend API endpoints consumed:
 </div>
 
 <!-- Auto-Tune CTX overlay — reuses bench-overlay/panel CSS for consistency -->
-<link rel="stylesheet" href="/static/css/autotune.css?v=2026.06.25-3">
+<link rel="stylesheet" href="/static/css/autotune.css?v=2026.07.12-1">
 <div class="bench-overlay" id="autotuneOverlay">
   <div class="bench-panel">
     <div class="bench-header">
@@ -1910,6 +1912,74 @@ Backend API endpoints consumed:
       </summary>
       <div id="atRawLog"></div>
     </details>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- vLLM Auto-Tune overlay (#356) -->
+<div class="bench-overlay" id="vllmAtOverlay">
+  <div class="bench-panel">
+    <div class="bench-header">
+      <div class="bench-head-l">
+        <h2>🎯 vLLM Auto-Tune max-model-len</h2>
+        <span class="bench-sub">Probe KV-cache capacity, compute the largest safe --max-model-len, apply via Server Config.</span>
+      </div>
+      <button class="close-btn" onclick="closeVllmAutotune()" style="background:none;border:none;color:var(--fg-dim);cursor:pointer;font-size:1.2em;">✕</button>
+    </div>
+    <div class="bench-body">
+      <div class="bench-rail">
+        <div class="bench-row" style="background:var(--bg-card-alt);border:1px solid var(--border-strong);border-radius:6px;padding:8px 12px;margin-bottom:6px;">
+          <span id="vllmAtCurrent" style="flex:1;font-size:0.85em;">Reading server config…</span>
+        </div>
+        <div class="modal-group">
+          <div class="modal-group-h">Targets</div>
+          <div class="bench-row">
+            <div class="at-field">
+              <label>Target concurrency (×)</label>
+              <input id="vllmAtConc" type="number" min="1" max="64" step="0.5" value="1" />
+            </div>
+            <div class="at-field">
+              <label>KV budget (%)</label>
+              <input id="vllmAtFrac" type="number" min="10" max="100" step="5" value="100" />
+            </div>
+            <label style="margin-left:auto;font-size:0.85em;display:flex;align-items:center;gap:6px;">
+              <input id="vllmAtReportOnly" type="checkbox" />
+              Report only (restore original config, apply manually)
+            </label>
+          </div>
+        </div>
+        <details id="vllmAtAdvanced">
+          <summary>Advanced</summary>
+          <div class="bench-row" style="margin-top:6px;">
+            <div class="at-field">
+              <label>Probe --max-model-len</label>
+              <input id="vllmAtProbeLen" type="number" min="256" max="262144" step="256" value="4096" />
+            </div>
+            <div class="at-field">
+              <label>Load timeout (s)</label>
+              <input id="vllmAtTimeout" type="number" min="60" max="3600" step="30" value="600" />
+            </div>
+          </div>
+        </details>
+        <div class="sub" style="margin-top:8px;color:var(--warn,#e0a020);">
+          ⚠ This wizard restarts the vLLM server 2–3 times. In-flight requests will drop.
+        </div>
+        <div class="bench-rail-actions">
+          <button id="vllmAtCancelBtn" class="btn btn-red-muted-gradient" onclick="cancelVllmAutotune()" style="display:none;">✕ Cancel</button>
+          <button id="vllmAtRunBtn" class="btn btn-stone-muted-gradient" onclick="runVllmAutotune()">▶ Run Auto Tune</button>
+        </div>
+      </div>
+      <div class="bench-results-pane">
+        <div id="vllmAtStatus" class="sub"></div>
+        <div id="vllmAtProgress"></div>
+        <details id="vllmAtRawDetails" style="margin-top:8px;">
+          <summary style="cursor:pointer;font-size:0.9em;color:var(--fg-dim);user-select:none;">
+            Raw journal output (<span id="vllmAtRawCount">0</span> lines)
+          </summary>
+          <div class="dl-log" id="vllmAtRawLog" style="height:220px;"></div>
+        </details>
+        <div id="vllmAtResults"></div>
       </div>
     </div>
   </div>
