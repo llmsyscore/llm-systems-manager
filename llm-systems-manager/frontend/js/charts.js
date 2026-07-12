@@ -815,6 +815,7 @@ async function checkConfig() {
     toggle('subTabBtnLlmVllm',       vllmOn);
     toggle('serverStateBanner',      llamaOn);
     toggle('lmsStateBanner',         lmsOn);
+    toggle('vllmStateBanner',        vllmOn);
 
     // If the currently active tab just got hidden, fall back to Dashboard
     // — otherwise the operator stares at an empty panel with no nav.
