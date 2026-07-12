@@ -130,3 +130,46 @@ def test_resolve_target_lms_picker_then_default(monkeypatch):
     agent, override = proxies._resolve_target("lms", "some-model", None)
     assert agent["agent_id"] == lms_agent["agent_id"]
     assert override is None
+
+
+# --- provider pool routes (registered into the manager app) ---
+import manager_mod
+
+
+def _admin_client():
+    c = manager_mod.app.test_client()
+    with c.session_transaction() as s:
+        s["auth_ok"] = True
+        s["role"] = "admin"
+    return c
+
+
+def test_pool_routes_registered_per_pool_provider():
+    rules = {str(r) for r in manager_mod.app.url_map.iter_rules()}
+    assert "/api/agents/<agent_id>/llama-pool" in rules
+    assert "/api/agents/<agent_id>/vllm-pool" in rules
+    assert "/api/agents/<agent_id>/lms-pool" not in rules
+
+
+def test_vllm_pool_route_checks_vllm_capability(monkeypatch):
+    _patch(monkeypatch, {})
+    saved = []
+    monkeypatch.setattr(agent_registry, "save_agents",
+                        lambda data: saved.append(data))
+    r = _admin_client().post(f"/api/agents/{A1['agent_id']}/vllm-pool",
+                             json={"in_pool": True})
+    assert r.status_code == 400
+    assert "vllm" in r.get_json()["error"]
+    assert not saved
+
+
+def test_vllm_pool_route_adds_and_removes(monkeypatch):
+    _patch(monkeypatch, {})
+    saved = []
+    monkeypatch.setattr(agent_registry, "save_agents",
+                        lambda data: saved.append(data))
+    c = _admin_client()
+    r = c.post(f"/api/agents/{V1['agent_id']}/vllm-pool", json={"in_pool": True})
+    assert r.status_code == 200
+    assert r.get_json()["vllm_pool"] == [V1["agent_id"]]
+    assert saved[-1]["global"]["vllm_pool"] == [V1["agent_id"]]

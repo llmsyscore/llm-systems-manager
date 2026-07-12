@@ -29,6 +29,7 @@ the same pattern auth.py uses.
 from __future__ import annotations
 
 import base64
+import functools
 import hashlib
 import hmac as _hmac
 import json
@@ -1443,13 +1444,16 @@ def _agents_push_llama_state(agent_id: str):
     return jsonify({"ok": True, "applied": True, "state": state, "interval": _deps.get_interval()})
 
 
-def _agents_set_llama_pool(agent_id: str):
+def _agents_set_pool(agent_id: str, provider: str):
     deny = _deps.require_admin()
     if deny is not None:
         return deny
     body = flask_request.get_json(force=True) or {}
     in_pool = bool(body.get("in_pool", True))
     position = body.get("position")
+    spec = providers.get(provider)
+    cap = spec.capability_key if spec else provider
+    pool_key = f"{provider}_pool"
 
     with _agents_lock:
         data = load_agents()
@@ -1458,14 +1462,14 @@ def _agents_set_llama_pool(agent_id: str):
             return jsonify({"ok": False, "error": "unknown agent"}), 404
         if in_pool:
             caps = agent.get("capabilities", {}) or {}
-            if not caps.get("llama"):
+            if not caps.get(cap):
                 return jsonify({"ok": False,
-                                "error": "agent does not advertise llama capability"}), 400
+                                "error": f"agent does not advertise {cap} capability"}), 400
             if agent.get("status") != "approved":
                 return jsonify({"ok": False, "error": "agent not approved"}), 400
 
         glob = data.setdefault("global", {})
-        pool = list(glob.get("llama_pool") or [])
+        pool = list(glob.get(pool_key) or [])
         # Remove if present, then re-add at target index — handles both
         # add (was absent) and re-order (was present) in one path.
         if agent_id in pool:
@@ -1475,13 +1479,13 @@ def _agents_set_llama_pool(agent_id: str):
                 pool.insert(position, agent_id)
             else:
                 pool.append(agent_id)
-        glob["llama_pool"] = pool
+        glob[pool_key] = pool
         save_agents(data)
 
-    log.info("llama_pool %s by %s: agent=%s host=%s; pool=%s",
-             "add/move" if in_pool else "remove",
+    log.info("%s %s by %s: agent=%s host=%s; pool=%s",
+             pool_key, "add/move" if in_pool else "remove",
              flask_request.remote_addr, agent_id, agent.get("hostname"), pool)
-    return jsonify({"ok": True, "llama_pool": pool})
+    return jsonify({"ok": True, pool_key: pool})
 
 
 def _agents_issue_cert(agent_id: str):
@@ -1758,8 +1762,16 @@ def register_routes(app) -> None:
                      view_func=_agents_set_primary, methods=["POST"])
     app.add_url_rule("/api/agents/<agent_id>/llama-state", endpoint="agents_push_llama_state",
                      view_func=_agents_push_llama_state, methods=["POST"])
-    app.add_url_rule("/api/agents/<agent_id>/llama-pool", endpoint="agents_set_llama_pool",
-                     view_func=_agents_set_llama_pool, methods=["POST"])
+    # One pool route per pool-picker provider. functools.partial, not a
+    # lambda — a closure over the loop var would late-bind every URL.
+    for _pname in providers.names():
+        _pspec = providers.get(_pname)
+        if not _pspec or _pspec.default_picker != "pool":
+            continue
+        app.add_url_rule(f"/api/agents/<agent_id>/{_pname}-pool",
+                         endpoint=f"agents_set_{_pname}_pool",
+                         view_func=functools.partial(_agents_set_pool, provider=_pname),
+                         methods=["POST"])
     app.add_url_rule("/api/agents/<agent_id>/cert-bundle", endpoint="agents_issue_cert",
                      view_func=_agents_issue_cert, methods=["POST"])
     app.add_url_rule("/api/admin/push-ca-to-agents", endpoint="admin_push_ca_to_agents",
