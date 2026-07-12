@@ -56,8 +56,23 @@ def test_required_files_include_vllm():
 
 def test_install_vllm_runs_before_config_writer():
     src = INSTALL.read_text()
-    assert src.index("_offer_vllm_install || _warn") \
+    assert src.index("if ! _offer_vllm_install; then") \
         < src.index("# 3. Drop config from example")
+
+
+def test_install_vllm_failure_resets_flag():
+    src = INSTALL.read_text()
+    block = src[src.index("if ! _offer_vllm_install; then"):]
+    assert "INSTALL_VLLM=false" in block.split("fi", 1)[0]
+
+
+def test_detect_vllm_offers_interactive_install():
+    src = INSTALL.read_text()
+    fn = src[src.index("_detect_vllm() {"):]
+    fn = fn[:fn.index("\n}")]
+    assert "Install vLLM now with pip" in fn
+    assert '[[ "$AGENT_OS" == "linux" && -t 0 ]]' in fn
+    assert "INSTALL_VLLM=true" in fn
 
 
 def test_vllm_sudoers_grant_is_conditional():

@@ -218,6 +218,16 @@ INSTALL — provider toggles (default OFF for all)
       to the result. With a TTY and no flag, the installer prompts to install
       when no running llama-server is found.
 
+  --enable-vllm  /  --no-vllm    (--vllm-unit UNIT)
+      Set VLLM_ENABLED. The agent probes the vLLM OpenAI server and proxies
+      its lifecycle via the systemd unit (default vllm.service).
+
+  --install-vllm[=VENV_DIR]
+      pip-install vLLM into a dedicated venv (default /opt/vllm) as the agent
+      user and offer a starter systemd unit. Linux + NVIDIA only (pre-built
+      wheels need driver CUDA >= 12.8). With --role auto, a TTY, and no vllm
+      flag, the installer prompts to install when no vLLM unit is found.
+
   --enable-lms   /  --no-lms
       Set (LM Studio) LMS_ENABLED. The agent collects 'lms ps' / 'lms server status'
       and posts the LM Studio dashboard payload to the manager.
@@ -2399,6 +2409,7 @@ _offer_vllm_unit() {
 }
 
 # _detect_vllm — enable vLLM when its systemd unit exists on this host.
+# When absent on a Linux TTY, offers a pip install (runs later in the script).
 _detect_vllm() {
   echo
   echo "  • vLLM"
@@ -2410,6 +2421,24 @@ _detect_vllm() {
     echo "  ✓ vLLM detected (unit $unit present)"
   else
     echo "  ✗ vLLM not detected (no $unit unit)"
+    if [[ "$AGENT_OS" == "linux" && -t 0 ]]; then
+      local REPLY _v
+      read -rp "      Install vLLM now with pip into a dedicated venv? [y/N] " REPLY
+      case "$(printf '%s' "$REPLY" | tr '[:upper:]' '[:lower:]')" in
+        y|yes)
+          read -rp "      venv directory [$VLLM_VENV_DIR]: " _v
+          if [[ -n "$_v" && "$_v" != /* ]]; then
+            echo "      ⚠ not an absolute path — keeping $VLLM_VENV_DIR"
+            _v=""
+          fi
+          VLLM_VENV_DIR="${_v:-$VLLM_VENV_DIR}"
+          INSTALL_VLLM=true
+          echo "      → vLLM will be pip-installed into $VLLM_VENV_DIR later in this run"
+          echo "        (needs an NVIDIA GPU with driver CUDA >= 12.8 — checked at install time)"
+          ;;
+        *) echo "      → skipped (re-run with --install-vllm to install later)" ;;
+      esac
+    fi
   fi
 }
 
@@ -2418,7 +2447,7 @@ _detect_vllm() {
 _offer_vllm_install() {
   local venv="${VLLM_VENV_DIR:-/opt/vllm}"
   if ! command -v nvidia-smi >/dev/null 2>&1; then
-    _warn "--install-vllm: no NVIDIA GPU detected (nvidia-smi missing) — skipping (vLLM pip wheels are CUDA-only)"
+    _warn "vLLM install: no NVIDIA GPU detected (nvidia-smi missing) — skipping (vLLM pip wheels are CUDA-only)"
     return 1
   fi
   local cuda major minor
@@ -2426,7 +2455,7 @@ _offer_vllm_install() {
   if [[ -n "$cuda" ]]; then
     major="${cuda%%.*}"; minor="${cuda#*.}"; minor="${minor%%.*}"
     if (( major < 12 || (major == 12 && minor < 8) )); then
-      _warn "--install-vllm: driver CUDA $cuda < 12.8 — pre-built vLLM wheels need >= 12.8"
+      _warn "vLLM install: driver CUDA $cuda < 12.8 — pre-built vLLM wheels need >= 12.8"
       if [[ ! -t 0 ]]; then
         echo "      → aborting vLLM install (non-interactive). Upgrade the driver or build from source."
         return 1
@@ -2436,7 +2465,7 @@ _offer_vllm_install() {
       case "$(printf '%s' "$REPLY" | tr '[:upper:]' '[:lower:]')" in y|yes) ;; *) return 1 ;; esac
     fi
   else
-    _warn "--install-vllm: could not read the driver CUDA version from nvidia-smi — proceeding"
+    _warn "vLLM install: could not read the driver CUDA version from nvidia-smi — proceeding"
   fi
   _section "Installing vLLM (pip) into $venv"
   $SUDO install -d -m 0755 "$venv"
@@ -3751,7 +3780,10 @@ _ok "agent code installed to $INSTALL_DIR"
 # Optional CUDA-gated vLLM install — flips ENABLE_VLLM on success, so it must
 # run before the config writer and the sudoers/journal steps read the flag.
 if $INSTALL_VLLM && [[ "$AGENT_OS" == "linux" ]]; then
-  _offer_vllm_install || _warn "vLLM install skipped — continuing agent install"
+  if ! _offer_vllm_install; then
+    INSTALL_VLLM=false
+    _warn "vLLM install skipped — continuing agent install"
+  fi
 fi
 
 # 3. Drop config from example if missing
