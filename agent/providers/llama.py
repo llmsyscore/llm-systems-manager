@@ -24,7 +24,7 @@ from typing import Any, Iterator, Optional
 
 import requests
 from fastapi import Header, HTTPException, Query, Request
-from fastapi.responses import Response, StreamingResponse
+from fastapi.responses import StreamingResponse
 import stream_pool  # type: ignore[import-not-found]  # sibling at agent root
 from _best_effort import best_effort  # type: ignore[import-not-found]  # sibling at agent root
 from _bench_replay import BenchReplayBuffer  # type: ignore[import-not-found]  # sibling at agent root
