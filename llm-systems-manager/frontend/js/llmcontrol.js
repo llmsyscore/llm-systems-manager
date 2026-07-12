@@ -311,6 +311,7 @@ async function serverPerfMode(mode) {
     try {
       if (key === 'llama' && typeof _termFit !== 'undefined' && _termFit) _termFit.fit();
       else if (key === 'lms' && typeof _lmsTermFit !== 'undefined' && _lmsTermFit) _lmsTermFit.fit();
+      else if (key === 'vllm' && typeof _vllmTermFit !== 'undefined' && _vllmTermFit) _vllmTermFit.fit();
     } catch (_) {}
   }
   document.addEventListener('DOMContentLoaded', () => {

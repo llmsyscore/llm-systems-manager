@@ -79,7 +79,12 @@ async function fetchVllmMetrics() {
     renderVllmModelCards(up ? (v.models || []) : [], v.model);
     _setVllmBtns(up);
     const ctrlBadge = document.getElementById('vllmCtrlBadge');
-    if (ctrlBadge) ctrlBadge.textContent = up ? `running — ${v.model || '?'}` : (online ? 'server down' : 'agent offline');
+    if (ctrlBadge) {
+      const mod = up ? 'ok' : (online ? 'warn' : 'crit');
+      const txt = up ? `running — ${v.model || '?'}` : (online ? 'server down' : 'agent offline');
+      ctrlBadge.className = `status status--${mod}`;
+      ctrlBadge.innerHTML = '<span class="status__dot"></span>' + _esc(txt);
+    }
 
     const sev = !online ? 'dash-off' : (up ? 'dash-ok' : 'dash-warn');
     ['vllm-server', 'vllm-requests', 'vllm-kv', 'vllm-throughput'].forEach(c => _dashSetStatus(c, sev));
@@ -189,6 +194,29 @@ async function fetchVllmLog() {
   } catch (e) {
     box.textContent = 'Error: ' + e;
   }
+}
+
+// Open the current vLLM log in a standalone window (mirror popOutLmsLog).
+function popOutVllmLog() {
+  const box = document.getElementById('vllmLogBox');
+  const content = box ? box.textContent : '';
+  const win = window.open('', 'vllmlog', 'width=900,height=600,resizable=yes,scrollbars=yes,toolbar=no,menubar=no');
+  if (!win) { alert('Pop-out blocked — allow pop-ups for this page.'); return; }
+  win.document.write(`<!DOCTYPE html><html><head><title>vLLM Server Log</title>
+  <style>*{box-sizing:border-box;margin:0;padding:0;}body{background:#0a0a0a;color:#8a8;font-family:monospace;font-size:0.88em;display:flex;flex-direction:column;height:100vh;}
+  #toolbar{background:var(--bg);border-bottom:1px solid var(--bg-card-alt);display:flex;align-items:center;gap:10px;padding:8px 12px;flex-shrink:0;}
+  #toolbar span{color:var(--fg-dim);font-size:0.85em;}#log{flex:1;overflow-y:auto;padding:12px;white-space:pre-wrap;word-break:break-all;}</style>
+  </head><body><div id="toolbar"><span>vLLM Server Log</span></div>
+  <div id="log">${content.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')}</div>
+  <script>document.getElementById('log').scrollTop=document.getElementById('log').scrollHeight;<\/script>
+  </body></html>`);
+}
+
+function fullscreenVllmLog() {
+  const box = document.getElementById('vllmLogBox');
+  if (!box) return;
+  if (box.requestFullscreen) box.requestFullscreen();
+  else if (box.webkitRequestFullscreen) box.webkitRequestFullscreen();
 }
 
 // ---------------------------------------------------------------------------

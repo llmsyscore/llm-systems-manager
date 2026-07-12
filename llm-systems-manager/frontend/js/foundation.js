@@ -416,6 +416,11 @@ function _selectAgent(provider, agentId) {
     if (typeof fetchVllmMetrics === 'function') fetchVllmMetrics();
     if (typeof _vllmLogOpen !== 'undefined' && _vllmLogOpen
         && typeof startVllmLogRefresh === 'function') startVllmLogRefresh();
+    if (typeof closeVllmTerminal === 'function') {
+      const _vp = document.getElementById('vllmTerminalPanel');
+      if ((typeof _vllmTermSid !== 'undefined' && _vllmTermSid)
+          || (_vp && _vp.style.display !== 'none')) closeVllmTerminal();
+    }
   }
 }
 

@@ -103,5 +103,48 @@ describe('index.html', () => {
       expect(panel).toContain('llm-collapse-icon');
       expect(panel).not.toContain('llm-section-arrow');
     });
+    // #368: full parity with the llama/LMS Server Control.
+    test('has Terminal, Server Log, and Server Config buttons', () => {
+      expect(panel).toContain('onclick="toggleVllmTerminal()"');
+      expect(panel).toContain('>☰ Server Log</button>');
+      expect(panel).toContain("openServerConfig('vllm')");
+    });
+    test('terminal panel + mount with the vllm fit key', () => {
+      expect(panel).toContain('id="vllmTerminalPanel"');
+      expect(panel).toContain('id="vllmTerminalMount"');
+      expect(panel).toContain('data-fit-xterm="vllm"');
+      expect(panel).toContain('onclick="reconnectVllmTerminal()"');
+    });
+    test('log panel has pop-out / fullscreen / refresh toolbar', () => {
+      expect(panel).toContain('onclick="popOutVllmLog()"');
+      expect(panel).toContain('onclick="fullscreenVllmLog()"');
+      expect(panel).toContain('onclick="fetchVllmLog()"');
+    });
+    test('control badge is seeded as a status pill', () => {
+      expect(panel).toMatch(/<span class="status status--crit" id="vllmCtrlBadge"[^>]*>/);
+      expect(panel).toContain('<span class="status__dot"></span>');
+    });
+  });
+});
+
+describe('#368 vllm control parity wiring', () => {
+  test('base.css button override includes #llm-vllm', () => {
+    const css = src('css/base.css');
+    expect(css).toContain('#llm-vllm .btn:not([data-act]):not([data-lmsact]):not(.btn-log)');
+    expect(css).toContain('#llm-vllm .btn:not([data-act]):not([data-lmsact]):not(.btn-log):hover');
+  });
+  test('terminal.js wires the vllm terminal to /api/vllm/terminal/create', () => {
+    const term = src('js/terminal.js');
+    expect(term).toContain('function toggleVllmTerminal()');
+    expect(term).toContain("fetch('/api/vllm/terminal/create'");
+    expect(term).toContain('function popOutVllmTerminal()');
+  });
+  test('llmcontrol.js _fitXterm handles the vllm key', () => {
+    expect(src('js/llmcontrol.js')).toContain("key === 'vllm'");
+  });
+  test('backend registers POST /api/vllm/terminal/create', () => {
+    const bt = readFileSync(join(here, '..', '..', 'backend', 'terminal.py'), 'utf8');
+    expect(bt).toContain('/api/vllm/terminal/create');
+    expect(bt).toContain('_proxy_create("vllm"');
   });
 });

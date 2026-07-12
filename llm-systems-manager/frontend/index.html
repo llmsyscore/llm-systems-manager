@@ -49,7 +49,7 @@ Backend API endpoints consumed:
   <link rel="stylesheet" href="/static/vendor/xterm.min.css?v=5.3.0"/>
   <script src="/static/vendor/xterm.min.js?v=5.3.0"></script>
   <script src="/static/vendor/xterm-addon-fit.min.js?v=0.8.0"></script>
-  <link rel="stylesheet" href="/static/css/base.css?v=2026.06.25-7">
+  <link rel="stylesheet" href="/static/css/base.css?v=2026.07.11-8">
 </head>
 <body>
 
@@ -1526,17 +1526,35 @@ Backend API endpoints consumed:
           <button class="btn btn-slate-muted-gradient" id="vllmBtnStop"    onclick="vllmServerAction('stop')">⏹ Stop</button>
           <button class="btn btn-zinc-muted-gradient"  id="vllmBtnRestart" onclick="vllmServerAction('restart')">↺ Restart</button>
           <button class="btn btn-gray-muted-gradient"  id="vllmBtnStatus"  onclick="vllmServerAction('status')">ℹ Status</button>
-          <span id="vllmCtrlBadge" class="sub" style="margin-left:6px;">—</span>
-          <span id="vllmCtrlStatus" class="sub"></span>
-          <button class="btn btn-gray-muted-gradient ml-auto" onclick="toggleVllmLog()">☰ Log</button>
+          <span id="vllmCtrlStatus" class="sub" style="margin-left:2px;"></span>
+          <span class="status status--crit" id="vllmCtrlBadge" style="margin-left:4px;"><span class="status__dot"></span>Agent offline</span>
+          <button class="btn btn-gray-muted-gradient ml-auto" onclick="toggleVllmLog()">☰ Server Log</button>
+          <button class="btn btn-gray-muted-gradient" onclick="toggleVllmTerminal()">⬛ Terminal</button>
           <button class="btn btn-gray-muted-gradient" onclick="openServerConfig('vllm')">⚙ Server Config</button>
         </div>
         <div class="sub" style="margin-top:6px;color:var(--fg-dim);">
           vLLM serves one base model per process — change the model via Server Config (ExecStart) and Restart.
         </div>
+        <div id="vllmTerminalPanel" style="display:none;margin-top:10px;margin-bottom:8px;">
+          <div class="llm-toolbar" style="justify-content:flex-end;margin-bottom:4px;">
+            <span style="font-size:0.78em;color:var(--fg-dim);margin-right:auto;">vLLM host shell</span>
+            <button class="btn btn-gray-muted-gradient btn-sm" onclick="popOutVllmTerminal()" title="Open in new window">⧉ Pop out</button>
+            <button class="btn btn-gray-muted-gradient btn-sm" onclick="reconnectVllmTerminal()" title="Reconnect">↺ Reconnect</button>
+          </div>
+          <div class="log-wrap">
+            <div id="vllmTerminalMount" class="log-box log-box--attached log-box--flush" style="height:560px;overflow:hidden;"></div>
+            <div class="dl-log-resize" data-resize-target="vllmTerminalMount" data-fit-xterm="vllm"></div>
+          </div>
+        </div>
         <div id="vllmLogPanel" style="display:none;margin-top:10px;">
+          <div class="llm-toolbar" style="justify-content:flex-end;margin-bottom:4px;">
+            <button class="btn btn-gray-muted-gradient btn-sm" onclick="popOutVllmLog()" title="Open in new window">⧉ Pop out</button>
+            <button class="btn btn-gray-muted-gradient btn-sm" onclick="fullscreenVllmLog()" title="Fullscreen">⛶ Fullscreen</button>
+            <button class="btn btn-gray-muted-gradient btn-sm" onclick="fetchVllmLog()">↺ Refresh</button>
+          </div>
           <div class="log-wrap">
             <div class="dl-log" id="vllmLogBox" style="height:300px;">Log will appear here…</div>
+            <div class="dl-log-resize" data-resize-target="vllmLogBox"></div>
           </div>
         </div>
       </div>
@@ -1568,19 +1586,19 @@ Backend API endpoints consumed:
 </div><!-- end llmTab -->
 
 <script src="/static/js/lib/layout.js?v=2026.07.10-1"></script>
-<script src="/static/js/foundation.js?v=2026.07.11-1"></script>
+<script src="/static/js/foundation.js?v=2026.07.11-2"></script>
 <script src="/static/js/lib/series.js?v=2026.06.21-1"></script>
 <script src="/static/js/lib/benchaxis.js?v=2026.06.28-1"></script>
 <script src="/static/js/lib/thresholds.js?v=2026.06.26-3"></script>
 <script src="/static/js/charts.js?v=2026.07.11-1"></script>
-<script src="/static/js/terminal.js?v=2026.06.26-2"></script>
-<script src="/static/js/llmcontrol.js?v=2026.07.10-1"></script>
+<script src="/static/js/terminal.js?v=2026.07.11-1"></script>
+<script src="/static/js/llmcontrol.js?v=2026.07.11-1"></script>
 <script src="/static/js/openclaw.js?v=2026.06.10-7"></script>
 <script src="/static/js/admin.js?v=2026.07.10-1"></script>
 <script src="/static/js/llmcontrol-models.js?v=2026.06.10-6"></script>
 <script src="/static/js/bench-autotune.js?v=2026.06.25-9"></script>
 <script src="/static/js/lmstudio.js?v=2026.06.26-3"></script>
-<script src="/static/js/vllm.js?v=2026.07.11-1"></script>
+<script src="/static/js/vllm.js?v=2026.07.11-2"></script>
 <script src="/static/js/overall.js?v=2026.07.11-1"></script>
 <script src="/static/js/dashboard-manager.js?v=2026.07.04-1"></script>
 

@@ -274,6 +274,7 @@
        the global .btn-*-gradient classes without editing them. */
     #llm-llamacpp .btn:not([data-act]):not([data-lmsact]):not(.btn-log),
     #llm-lmstudio .btn:not([data-act]):not([data-lmsact]):not(.btn-log),
+    #llm-vllm .btn:not([data-act]):not([data-lmsact]):not(.btn-log),
     .svcconfig-panel .btn {
       background: var(--bg-card-alt); color: var(--fg-muted);
       border: 1px solid var(--border); border-radius: 6px;
@@ -282,14 +283,17 @@
     }
     #llm-llamacpp .btn:not([data-act]):not([data-lmsact]):not(.btn-log):hover,
     #llm-lmstudio .btn:not([data-act]):not([data-lmsact]):not(.btn-log):hover,
+    #llm-vllm .btn:not([data-act]):not([data-lmsact]):not(.btn-log):hover,
     .svcconfig-panel .btn:hover { background: var(--border); color: var(--fg); opacity: 1; }
     /* Retain a semantic hover for destructive/caution actions via their
        existing color class (Stop/Delete carry btn-red*, Restart/Wake btn-amber*). */
     #llm-llamacpp .btn[class*="btn-red"]:not([data-act]):not([data-lmsact]):hover,
     #llm-lmstudio .btn[class*="btn-red"]:not([data-act]):not([data-lmsact]):hover,
+    #llm-vllm .btn[class*="btn-red"]:not([data-act]):not([data-lmsact]):hover,
     .svcconfig-panel .btn[class*="btn-red"]:hover { border-color: var(--crit); color: var(--crit); background: var(--bg-card-alt); }
     #llm-llamacpp .btn[class*="btn-amber"]:not([data-act]):not([data-lmsact]):hover,
-    #llm-lmstudio .btn[class*="btn-amber"]:not([data-act]):not([data-lmsact]):hover { border-color: var(--warn); color: var(--warn); background: var(--bg-card-alt); }
+    #llm-lmstudio .btn[class*="btn-amber"]:not([data-act]):not([data-lmsact]):hover,
+    #llm-vllm .btn[class*="btn-amber"]:not([data-act]):not([data-lmsact]):hover { border-color: var(--warn); color: var(--warn); background: var(--bg-card-alt); }
     .btn { border: none; border-radius: 5px; cursor: pointer; font-size: 0.8em; padding: 6px 14px; transition: opacity 0.2s; }
     .btn:hover { opacity: 0.8; }
     .btn:disabled { cursor: not-allowed; opacity: 0.3; }
