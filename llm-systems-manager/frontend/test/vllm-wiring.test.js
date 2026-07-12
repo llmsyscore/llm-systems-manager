@@ -72,4 +72,11 @@ describe('index.html', () => {
     expect(vllmIdx).toBeGreaterThan(-1);
     expect(vllmIdx).toBeLessThan(bootIdx);
   });
+  // #364: bare canvases inside a flex .card with maintainAspectRatio:false
+  // grow unbounded. Each vllm chart canvas must sit in a height-constrained
+  // .chart-wrap like every other dashboard chart.
+  test.each(['vllmKvChart', 'vllmTpsChart'])('%s canvas is wrapped in .chart-wrap', (id) => {
+    const m = html.match(new RegExp(`<div class="chart-wrap"[^>]*>\\s*<canvas id="${id}"`));
+    expect(m).not.toBeNull();
+  });
 });
