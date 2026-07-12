@@ -96,6 +96,10 @@
   /* Badge layout — status chips themselves live in base.css (.status) */
   #adminTab .adm-badge-row { display:flex; flex-direction:column; gap:5px; align-items:flex-start; }
 
+  /* #359 — provider chip selector row on the pool/pins cards */
+  #adminTab .adm-chip-row { display:flex; gap:6px; flex-wrap:wrap; }
+  #adminTab .adm-chip-row .adm-chip { cursor:pointer; border:1px solid transparent; }
+
   /* Capability chips */
   #adminTab .adm-chip {
     display:inline-block; padding:1px 7px; margin:0 4px 4px 0;

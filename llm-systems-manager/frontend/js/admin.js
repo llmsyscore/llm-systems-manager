@@ -370,15 +370,33 @@ async function _restartService(svc) {
 // Phase 4 #4 polish — render the pool order list as a Sortable drag
 // surface. Called from adminLoadAgents on every refresh.
 let _adminPoolSortable = null;
+
+// Render the provider chip row for a card. which: 'pool' | 'pins'.
+function adminRenderProviderChips(which) {
+  const el = document.getElementById(which === 'pool' ? 'adminPoolProviderChips' : 'adminPinsProviderChips');
+  if (!el) return;
+  const sel = which === 'pool' ? _adminPoolSel : _adminPinsSel;
+  el.innerHTML = _adminPoolProviders.map(p =>
+    `<button class="adm-chip ${p.name === sel ? 'primary' : ''}" style="cursor:pointer;"
+             onclick="adminSelectProvider('${which}','${adminEsc(p.name)}')">${adminEsc(p.label || p.name)}</button>`
+  ).join(' ');
+}
+
+function adminSelectProvider(which, name) {
+  if (which === 'pool') { _adminPoolSel = name; adminRenderPoolOrder(); }
+  else { _adminPinsSel = name; adminRenderPins(); adminLoadProviderModels(); }
+}
+
 function adminRenderPoolOrder() {
+  adminRenderProviderChips('pool');
   const ul = document.getElementById('adminPoolOrderList');
   if (!ul) return;
-  const pool = ((_adminGlobal && _adminGlobal.llama_pool) || []).slice();
+  const pool = ((_adminGlobal && _adminGlobal[_adminPoolSel + '_pool']) || []).slice();
   const idToAgent = {};
   for (const a of (_adminAgentsCache || [])) idToAgent[a.agent_id] = a;
 
   if (pool.length === 0) {
-    ul.innerHTML = '<li class="adm-muted" style="padding:10px;">(pool is empty — toggle "in llama pool" on one or more agents above)</li>';
+    ul.innerHTML = `<li class="adm-muted" style="padding:10px;">(pool is empty — toggle "in ${adminEsc(_adminPoolSel)} pool" on one or more agents above)</li>`;
     if (_adminPoolSortable) { try { _adminPoolSortable.destroy(); } catch(e){} _adminPoolSortable = null; }
     return;
   }
@@ -411,24 +429,24 @@ function adminRenderPoolOrder() {
 }
 
 // Called by Sortable when a drag completes. Read the new order out of
-// the DOM, POST each moved agent to /api/agents/<id>/llama-pool with
+// the DOM, POST each moved agent to /api/agents/<id>/<provider>-pool with
 // its new position. Reload on completion so backend truth wins.
 async function adminPoolReorderCommit() {
   const ul = document.getElementById('adminPoolOrderList');
   const resultEl = document.getElementById('adminPoolResult');
   const newOrder = Array.from(ul.querySelectorAll('li[data-agent-id]')).map(li => li.dataset.agentId);
-  const oldOrder = (_adminGlobal && _adminGlobal.llama_pool) || [];
+  const oldOrder = (_adminGlobal && _adminGlobal[_adminPoolSel + '_pool']) || [];
   if (JSON.stringify(newOrder) === JSON.stringify(oldOrder)) return;
 
   resultEl.textContent = 'saving new order…';
   // We only need to move agents whose position changed. Walk newOrder
-  // and POST each at its target index. The backend's llama-pool
+  // and POST each at its target index. The backend's <provider>-pool
   // endpoint already handles "remove if present, then insert at
   // position" semantics — so one POST per agent is enough.
   for (let i = 0; i < newOrder.length; i++) {
     if (newOrder[i] === oldOrder[i]) continue;   // unchanged
     try {
-      await fetch(`/api/agents/${encodeURIComponent(newOrder[i])}/llama-pool`, {
+      await fetch(`/api/agents/${encodeURIComponent(newOrder[i])}/${_adminPoolSel}-pool`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ in_pool: true, position: i }),
@@ -443,14 +461,14 @@ async function adminPoolReorderCommit() {
   adminLoadAgents();
 }
 
-// Phase 4 #4 polish — fetch the union of model IDs across the pool
-// agents and populate the <datalist> the pin-editor's input is wired
-// to. Quiet on failure: operator can still type a custom model id.
-async function adminLoadLlamaModels() {
-  const dl = document.getElementById('adminLlamaModels');
+// Phase 4 #4 polish — fetch the union of model IDs across the selected
+// provider's pool agents and populate the <datalist> the pin-editor's
+// input is wired to. Quiet on failure: custom ids still typeable.
+async function adminLoadProviderModels() {
+  const dl = document.getElementById('adminProviderModels');
   if (!dl) return;
   try {
-    const r = await fetch('/api/admin/llama-models');
+    const r = await fetch(`/api/admin/${_adminPinsSel}-models`);
     if (!r.ok) return;
     const d = await r.json();
     const models = (d.models || []);
@@ -466,11 +484,13 @@ async function adminLoadLlamaModels() {
 // adminLoadAgents so every agent-list refresh keeps the pin table in
 // sync (and repopulates the agent <select> in case the pool changed).
 function adminRenderPins() {
+  adminRenderProviderChips('pins');
   const tbody = document.getElementById('adminPinsTbody');
   const select = document.getElementById('adminPinAgentSelect');
   if (!tbody || !select) return;
-  const pins = (_adminGlobal && _adminGlobal.llama_model_pins) || {};
-  const pool = (_adminGlobal && _adminGlobal.llama_pool) || [];
+  const prov = _adminPoolProviders.find(p => p.name === _adminPinsSel) || _adminPoolProviders[0];
+  const pins = (_adminGlobal && prov.pin_key && _adminGlobal[prov.pin_key]) || {};
+  const pool = (_adminGlobal && _adminGlobal[prov.name + '_pool']) || [];
   // Build agent_id → hostname lookup from the agents cache.
   const idToHost = {};
   for (const a of (_adminAgentsCache || [])) idToHost[a.agent_id] = a.hostname;
@@ -493,11 +513,11 @@ function adminRenderPins() {
   }
 
   // Refresh the agent <select>. Only show agents that are (a) in the
-  // pool, or (b) approved + llama-capable — those are the only ones
+  // pool, or (b) approved + provider-capable — those are the only ones
   // worth pinning a model to.
   const eligible = (_adminAgentsCache || []).filter(a =>
     a.status === 'approved' &&
-    ((a.capabilities || {}).llama) &&
+    ((a.capabilities || {})[prov.name]) &&
     (pool.includes(a.agent_id) || pool.length === 0)
   );
   const current = select.value;
@@ -521,7 +541,7 @@ async function adminAddPin() {
   if (!model) { resultEl.textContent = 'Enter a model id'; return; }
   if (!aid)   { resultEl.textContent = 'Pick an agent'; return; }
   try {
-    const r = await fetch('/api/admin/llama-pins', {
+    const r = await fetch(`/api/admin/${_adminPinsSel}-pins`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ model_id: model, agent_id: aid }),
@@ -542,7 +562,7 @@ async function adminAddPin() {
 async function adminClearPin(model) {
   const resultEl = document.getElementById('adminPinsResult');
   try {
-    const r = await fetch('/api/admin/llama-pins', {
+    const r = await fetch(`/api/admin/${_adminPinsSel}-pins`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ model_id: model, agent_id: '' }),
@@ -569,6 +589,11 @@ async function adminLoadAgents() {
     const d = await r.json();
     document.getElementById('adminAuthDisabled').checked = !!(d.global && d.global.auth_disabled);
     _adminGlobal = d.global || {};
+    if (Array.isArray(d.pool_providers) && d.pool_providers.length) {
+      _adminPoolProviders = d.pool_providers;
+      if (!_adminPoolProviders.some(p => p.name === _adminPoolSel)) _adminPoolSel = _adminPoolProviders[0].name;
+      if (!_adminPoolProviders.some(p => p.name === _adminPinsSel)) _adminPinsSel = _adminPoolProviders[0].name;
+    }
     _latestAgentVersion = d.latest_agent_version || null;
     const lavEl = document.getElementById('adminLatestVersion');
     if (lavEl) lavEl.textContent = _latestAgentVersion ? `manager: ${_latestAgentVersion}` : '';
@@ -596,7 +621,7 @@ async function adminLoadAgents() {
     // _adminAgentsCache are now populated.
     adminRenderPins();
     adminRenderPoolOrder();
-    adminLoadLlamaModels();   // fire-and-forget; populates datalist
+    adminLoadProviderModels();   // fire-and-forget; populates datalist
   } catch(e) {
     _adminLog('error: ' + e.message);
   }
@@ -705,9 +730,6 @@ function _adminCapsAndPrimary(a) {
   const isPrimaryLlama = _adminGlobal.primary_llama_id === a.agent_id;
   const isPrimaryLms   = _adminGlobal.primary_lms_id   === a.agent_id;
   const isPrimaryVllm  = _adminGlobal.primary_vllm_id  === a.agent_id;
-  // Phase 4 #4 — pool membership chip.
-  const pool = _adminGlobal.llama_pool || [];
-  const poolIdx = pool.indexOf(a.agent_id);
   const chipHtml = enabled.map(k => {
     const isP = (k === 'llama' && isPrimaryLlama) || (k === 'lms' && isPrimaryLms)
              || (k === 'vllm' && isPrimaryVllm);
@@ -719,9 +741,13 @@ function _adminCapsAndPrimary(a) {
   const llamaDisabled = !approved || !caps.llama;
   const lmsDisabled   = !approved || !caps.lms;
   const vllmDisabled  = !approved || !caps.vllm;
-  const poolBadge = (poolIdx >= 0)
-    ? `<span class="adm-chip primary" title="position ${poolIdx + 1} in llama pool (round-robin order)">pool #${poolIdx + 1}</span>`
-    : '';
+  // Phase 4 #4 / #359 — one pool membership chip per pool-picker provider.
+  const poolBadge = _adminPoolProviders.map(p => {
+    const idx = ((_adminGlobal[p.name + '_pool']) || []).indexOf(a.agent_id);
+    return idx >= 0
+      ? `<span class="adm-chip primary" title="position ${idx + 1} in ${adminEsc(p.name)} pool (round-robin order)">${adminEsc(p.name)} pool #${idx + 1}</span>`
+      : '';
+  }).join(' ');
   // Phase 4 #3 — TLS state derived from bind_url + last_cert_issued_at.
   const bind = a.bind_url || '';
   const certIssued = a.last_cert_issued_at;
@@ -748,10 +774,16 @@ function _adminCapsAndPrimary(a) {
         <input type="checkbox" ${isPrimaryVllm ? 'checked' : ''} ${vllmDisabled ? 'disabled' : ''}
                onchange="adminTogglePrimary('${aid}','vllm',this.checked)"> primary vllm
       </label>
-      <label class="${llamaDisabled ? 'disabled' : ''}" title="${llamaDisabled ? 'agent must be approved + advertise llama' : (poolIdx >= 0 ? 'remove from llama pool' : 'add to llama pool (round-robin)')}">
-        <input type="checkbox" ${poolIdx >= 0 ? 'checked' : ''} ${llamaDisabled ? 'disabled' : ''}
-               onchange="adminToggleLlamaPool('${aid}',this.checked)"> in llama pool
-      </label>
+      ${_adminPoolProviders.map(p => {
+        const has = !!caps[p.name];
+        const dis = !approved || !has;
+        const idx = ((_adminGlobal[p.name + '_pool']) || []).indexOf(a.agent_id);
+        const pn = adminEsc(p.name);
+        return `<label class="${dis ? 'disabled' : ''}" title="${dis ? 'agent must be approved + advertise ' + pn : (idx >= 0 ? 'remove from ' + pn + ' pool' : 'add to ' + pn + ' pool (round-robin)')}">
+        <input type="checkbox" ${idx >= 0 ? 'checked' : ''} ${dis ? 'disabled' : ''}
+               onchange="adminTogglePool('${pn}','${aid}',this.checked)"> in ${pn} pool
+      </label>`;
+      }).join('')}
     </div>
   `;
   // "View dashboard" — jump to the dashboard with this agent selected, one
@@ -778,20 +810,20 @@ function _jumpToDashboard(agentId, provider) {
   if (typeof switchSubTab === 'function') switchSubTab('dashboard', sub);
 }
 
-// Phase 4 #4 — POST /api/agents/<id>/llama-pool to add/remove.
-async function adminToggleLlamaPool(aid, inPool) {
+// Phase 4 #4 / #359 — POST /api/agents/<id>/<provider>-pool to add/remove.
+async function adminTogglePool(provider, aid, inPool) {
   try {
-    const r = await fetch(`/api/agents/${encodeURIComponent(aid)}/llama-pool`, {
+    const r = await fetch(`/api/agents/${encodeURIComponent(aid)}/${provider}-pool`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ in_pool: inPool }),
     });
     if (!r.ok) {
       const d = await r.json().catch(() => ({}));
-      _adminLog('llama-pool ' + (inPool ? 'add' : 'remove') + ' failed: ' + (d.error || r.status));
+      _adminLog(provider + '-pool ' + (inPool ? 'add' : 'remove') + ' failed: ' + (d.error || r.status));
     }
   } catch (e) {
-    _adminLog('llama-pool request failed: ' + e.message);
+    _adminLog(provider + '-pool request failed: ' + e.message);
   }
   adminLoadAgents();
 }
@@ -910,6 +942,10 @@ async function adminDelete(aid) {
 let _adminAgentsCache = [];
 let _adminGlobal = {};
 let _latestAgentVersion = null;
+// Pool-picker providers from /api/agents, plus per-card chip selections.
+let _adminPoolProviders = [{ name: 'llama', label: 'llama.cpp', pin_key: 'llama_model_pins' }];
+let _adminPoolSel = 'llama';
+let _adminPinsSel = 'llama';
 function _adminAgentName(aid) {
   const a = _adminAgentsCache.find(x => x.agent_id === aid);
   return a ? (a.hostname || aid.slice(0, 8)) : aid.slice(0, 8);

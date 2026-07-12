@@ -411,7 +411,7 @@ Backend API endpoints consumed:
 </div>
 
 <!-- Admin tab -->
-<link rel="stylesheet" href="/static/css/admin.css?v=2026.06.10-6">
+<link rel="stylesheet" href="/static/css/admin.css?v=2026.07.12-1">
 <div id="adminTab" style="display:none;position:fixed;top:88px;left:0;right:0;bottom:0;z-index:10;overflow:auto;background:var(--bg);color:var(--fg);padding:28px 24px;">
   <div class="adm-wrap">
 
@@ -449,7 +449,7 @@ Backend API endpoints consumed:
     <div class="adm-subtabs">
       <div class="sub-tab-nav adm-sub-tab-nav">
         <button class="sub-tab-btn active" id="subTabBtnAdminAgents"  onclick="switchSubTab('admin','agents')">Agents</button>
-        <button class="sub-tab-btn"        id="subTabBtnAdminPool"    onclick="switchSubTab('admin','pool')">Llama Pool</button>
+        <button class="sub-tab-btn"        id="subTabBtnAdminPool"    onclick="switchSubTab('admin','pool')">Pools &amp; Pins</button>
         <button class="sub-tab-btn"        id="subTabBtnAdminBackup"  onclick="switchSubTab('admin','backup')">Backup &amp; Restore</button>
         <button class="sub-tab-btn"        id="subTabBtnAdminAuth"    onclick="switchSubTab('admin','auth')">Authentication</button>
         <button class="sub-tab-btn"        id="subTabBtnAdminUsers"   onclick="switchSubTab('admin','users')">Users</button>
@@ -495,28 +495,30 @@ Backend API endpoints consumed:
         </div>
       </div>
 
-      <!-- Llama Pool sub-tab (pool order + pins) -->
+      <!-- Pools & Pins sub-tab (per-provider pool order + pins) -->
       <div id="admin-pool" class="sub-tab-panel">
         <div class="adm-card" id="adminPoolCard">
           <div class="adm-card-hdr">
-            <div class="adm-title">Llama pool order</div>
-            <span class="adm-muted" title="Drag rows to reorder. First entry = primary; round-robin walks the list in order. Add/remove via the 'in llama pool' toggles in the Agents tab.">drag to reorder</span>
+            <div class="adm-title">Provider pool order</div>
+            <span class="adm-muted" title="Drag rows to reorder. First entry = primary; round-robin walks the list in order. Add/remove via the 'in pool' toggles in the Agents tab.">drag to reorder</span>
             <div class="adm-spacer"></div>
             <button class="adm-refresh" onclick="adminLoadAgents()" title="Reload from server">↻</button>
           </div>
+          <div id="adminPoolProviderChips" class="adm-chip-row" style="margin:4px 0 8px;"></div>
           <ul id="adminPoolOrderList" class="adm-pool-list">
-            <li class="adm-muted" style="padding:10px;">(pool is empty — toggle "in llama pool" on one or more agents in the Agents tab)</li>
+            <li class="adm-muted" style="padding:10px;">(pool is empty — toggle "in pool" on one or more agents in the Agents tab)</li>
           </ul>
           <div id="adminPoolResult" class="adm-muted" style="margin-top:6px;font-size:12px;"></div>
         </div>
 
         <div class="adm-card" id="adminPinsCard">
           <div class="adm-card-hdr">
-            <div class="adm-title">Llama model pins</div>
-            <span class="adm-muted" title="Pin a specific model to a specific llama agent. Unpinned models load-balance round-robin across the pool above.">routes /api/llm/load by model</span>
+            <div class="adm-title">Model pins</div>
+            <span class="adm-muted" title="Pin a specific model to a specific agent. Unpinned models load-balance round-robin across the pool above.">routes by model</span>
             <div class="adm-spacer"></div>
             <button class="adm-refresh" onclick="adminLoadPins()" title="Reload from server">↻</button>
           </div>
+          <div id="adminPinsProviderChips" class="adm-chip-row" style="margin:4px 0 8px;"></div>
           <div style="overflow-x:auto;">
             <table id="adminPinsTable" class="adm-table">
               <thead>
@@ -532,10 +534,10 @@ Backend API endpoints consumed:
             </table>
           </div>
           <div class="adm-pin-add-row">
-            <input type="text" id="adminPinModelInput" list="adminLlamaModels"
+            <input type="text" id="adminPinModelInput" list="adminProviderModels"
                    placeholder="model id (auto-discovered from pool, or type custom)"
                    class="adm-pin-input">
-            <datalist id="adminLlamaModels"></datalist>
+            <datalist id="adminProviderModels"></datalist>
             <select id="adminPinAgentSelect" class="adm-pin-select">
               <option value="">(choose agent)</option>
             </select>
@@ -1594,7 +1596,7 @@ Backend API endpoints consumed:
 <script src="/static/js/terminal.js?v=2026.07.11-1"></script>
 <script src="/static/js/llmcontrol.js?v=2026.07.11-1"></script>
 <script src="/static/js/openclaw.js?v=2026.06.10-7"></script>
-<script src="/static/js/admin.js?v=2026.07.11-1"></script>
+<script src="/static/js/admin.js?v=2026.07.12-1"></script>
 <script src="/static/js/llmcontrol-models.js?v=2026.06.10-6"></script>
 <script src="/static/js/bench-autotune.js?v=2026.06.25-9"></script>
 <script src="/static/js/lmstudio.js?v=2026.06.26-3"></script>
