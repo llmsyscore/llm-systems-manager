@@ -535,3 +535,29 @@ class TestAdminIpOk:
         monkeypatch.setattr(auth, "_admin_ip_allowed", lambda _ip: False, raising=False)
         with M.app.test_request_context("/api/me", environ_base={"REMOTE_ADDR": "1.2.3.4"}):
             assert auth.admin_ip_ok() is False
+
+
+class TestDataFlowVllm:
+    # #370: the health data_flow must expose a vLLM push row alongside
+    # llama/lms so the Admin panel can render it.
+    @pytest.fixture
+    def admin_client(self, tmp_path, monkeypatch):
+        import manager_mod as M
+        import auth
+        monkeypatch.setattr(M, "_admin_ip_allowed", lambda _ip: True, raising=False)
+        manager_users_init_for_test(tmp_path)
+        M.app.config.update(TESTING=True)
+        c = M.app.test_client()
+        with c.session_transaction() as sess:
+            sess["auth_ok"] = True
+            sess["role"] = "admin"
+            sess["user"] = "llmadmin"
+        return c
+
+    def test_data_flow_includes_primary_vllm_push(self, admin_client):
+        r = admin_client.get("/api/admin/system-health")
+        assert r.status_code == 200
+        df = r.get_json()["data_flow"]
+        assert "primary_llama_push" in df and "primary_lms_push" in df
+        assert "primary_vllm_push" in df
+        assert "has_agent" in df["primary_vllm_push"]

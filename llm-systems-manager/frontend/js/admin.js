@@ -255,6 +255,7 @@ function _renderSystemHealth(d) {
   if (dfEl) {
     const plp   = (d.data_flow || {}).primary_llama_push || {};
     const pmp   = (d.data_flow || {}).primary_lms_push || {};
+    const pvp   = (d.data_flow || {}).primary_vllm_push || {};
     const mfwd  = (d.data_flow || {}).manager_to_alarm_forwarding || {};
     const rows = [];
 
@@ -279,6 +280,17 @@ function _renderSystemHealth(d) {
         lbl: 'Primary LMS push',
         val: pmp.age_s != null ? (pmp.age_s + 's ago') : '—',
         ok: pmp.ok,
+      });
+    }
+
+    // vLLM push freshness — same gate as above.
+    if (!pvp.has_agent) {
+      rows.push({ lbl: 'Primary vLLM push', val: 'no vLLM agent registered', ok: null });
+    } else {
+      rows.push({
+        lbl: 'Primary vLLM push',
+        val: pvp.age_s != null ? (pvp.age_s + 's ago') : '—',
+        ok: pvp.ok,
       });
     }
 
