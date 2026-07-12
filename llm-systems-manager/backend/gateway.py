@@ -10,25 +10,22 @@ import requests
 from flask import Response, jsonify, request as flask_request
 
 import agent_registry
+import providers
 import proxies
 import stream_pool
 from config.unified_config import settings
 
 log = logging.getLogger("llm-systems-manager.gateway")
 
-# Per-provider gateway sub-path -> agent passthrough route (allowlist).
-_AGENT_PATHS = {
-    "llama": {
-        "chat/completions": "/llama/openai/chat/completions",
-        "completions": "/llama/openai/completions",
-    },
-    "vllm": {
-        "chat/completions": "/vllm/openai/chat/completions",
-        "completions": "/vllm/openai/completions",
-    },
-}
-
-_MODELS_PATHS = {"llama": "/llama/models", "vllm": "/vllm/models"}
+# Per-provider gateway sub-path -> agent passthrough route (allowlist), for
+# every gateway_enabled spec. The Flask routes stay per-provider (bottom).
+_GATEWAY_SUBS = ("chat/completions", "completions")
+_GATEWAY_PROVIDERS = tuple(
+    p for p in providers.names()
+    if getattr(providers.get(p), "gateway_enabled", False))
+_AGENT_PATHS = {p: {s: f"/{p}/openai/{s}" for s in _GATEWAY_SUBS}
+                for p in _GATEWAY_PROVIDERS}
+_MODELS_PATHS = {p: f"/{p}/models" for p in _GATEWAY_PROVIDERS}
 
 
 def _gw_cfg():
@@ -74,10 +71,11 @@ def _candidates(model_id, agent_id, provider="llama") -> list:
         primary = None
     _add(primary)
     ids: list = []
-    if provider == "llama":
+    spec = providers.get(provider)
+    if spec and spec.default_picker == "pool":
         try:
             data = agent_registry.load_agents()
-            ids = list((data.get("global") or {}).get("llama_pool") or [])
+            ids = list((data.get("global") or {}).get(f"{provider}_pool") or [])
         except Exception:
             ids = []
     did = agent_registry.default_agent_id_for(provider)

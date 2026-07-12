@@ -63,7 +63,7 @@ except ImportError:
             os.chmod(tmp, mode)
         tmp.replace(p)
 
-VERSION = "v2026.07.11-4"
+VERSION = "v2026.07.11-5"
 
 
 def _detect_install_dir() -> str:

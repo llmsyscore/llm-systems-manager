@@ -988,49 +988,56 @@ async function loadManagerPerfHistory() {
   return filled;
 }
 
-// Backfill LM Studio host charts (CPU/RAM/Net) from the selected LMS agent's
-// history at startup so the cards land already populated with the last 60 min
-// instead of waiting for the next 6s poll. Scoped by agent id (resolved to a
-// host server-side via /api/history?agent=), never by a browser-held hostname
-// (#140). Makes no llama calls — the Overall llama chart backfills separately
-// from the Overall tab (loadOverallHistory), not the LMS dashboard (#142).
-let _lmsHistGen = 0;
-async function loadLmsHistory() {
-  // Generation counter: only the newest in-flight backfill may paint (#267).
-  const gen = ++_lmsHistGen;
-  // Replace, don't append — clear before backfill so an agent switch shows
-  // only the selected agent's history (#121).
-  _resetLmsCharts();
-  const B_PER_MIB = 1048576;
-
-  // LMS host series: picker selection, else the server-injected default LMS
-  // agent id. No id (no approved LMS agent) → skip the host-card backfill.
-  const sel = (typeof _selectedAgent === 'function') ? _selectedAgent('lms') : null;
-  const lmsAgent = sel || window.__LMS_AGENT;
-  if (lmsAgent) {
+// Per-provider /api/history?agent= chart backfill factory: generation guard
+// so only the newest in-flight call paints, reset before the fetch and again
+// after the await, then repaint the last MAX_POINTS rows.
+function _makeHistoryBackfill(provider, defaultAgentKey, resetCharts, paintRow) {
+  let gen = 0;
+  return async function () {
+    const g = ++gen;
+    resetCharts();
+    const sel = (typeof _selectedAgent === 'function') ? _selectedAgent(provider) : null;
+    const agent = sel || window[defaultAgentKey];
+    if (!agent) return;
     try {
-      const rows = await fetch(`/api/history?agent=${encodeURIComponent(lmsAgent)}`)
+      const rows = await fetch(`/api/history?agent=${encodeURIComponent(agent)}`)
         .then(r => r.json());
-      if (gen !== _lmsHistGen) return;
+      if (g !== gen) return;
       if (rows && rows.length) {
-        // Clear again after the await: a racing live poll can append a
-        // current-time point that the #129 bucketing would otherwise collapse
-        // the whole backfill onto (#137).
-        _resetLmsCharts();
-        for (const r of rows.slice(-MAX_POINTS)) {
-          if (typeof lmsCpuChart !== 'undefined' && lmsCpuChart && r.cpu_total != null)
-            pushPoint(lmsCpuChart, r.ts, r.cpu_total);
-          if (typeof lmsRamChart !== 'undefined' && lmsRamChart && r.ram_percent != null)
-            pushPoint(lmsRamChart, r.ts, r.ram_percent);
-          if (typeof lmsNetChart !== 'undefined' && lmsNetChart)
-            pushDual(lmsNetChart, r.ts,
-              r.net_sent != null ? r.net_sent / B_PER_MIB : null,
-              r.net_recv != null ? r.net_recv / B_PER_MIB : null);
-        }
+        resetCharts();
+        for (const r of rows.slice(-MAX_POINTS)) paintRow(r);
       }
-    } catch (e) { console.error('LMS history error:', e); }
-  }
+    } catch (e) { console.error(provider + ' history error:', e); }
+  };
 }
+
+// Backfill the LM Studio host charts (CPU/RAM/Net) from the selected LMS
+// agent's history. Makes no llama calls — Overall backfills separately.
+const loadLmsHistory = _makeHistoryBackfill('lms', '__LMS_AGENT',
+  () => _resetLmsCharts(),
+  (r) => {
+    const B_PER_MIB = 1048576;
+    if (typeof lmsCpuChart !== 'undefined' && lmsCpuChart && r.cpu_total != null)
+      pushPoint(lmsCpuChart, r.ts, r.cpu_total);
+    if (typeof lmsRamChart !== 'undefined' && lmsRamChart && r.ram_percent != null)
+      pushPoint(lmsRamChart, r.ts, r.ram_percent);
+    if (typeof lmsNetChart !== 'undefined' && lmsNetChart)
+      pushDual(lmsNetChart, r.ts,
+        r.net_sent != null ? r.net_sent / B_PER_MIB : null,
+        r.net_recv != null ? r.net_recv / B_PER_MIB : null);
+  });
+
+// Backfill the vLLM KV-cache + throughput charts from the selected vLLM
+// agent's history (#358).
+const loadVllmHistory = _makeHistoryBackfill('vllm', '__VLLM_AGENT',
+  () => { if (typeof _resetVllmCharts === 'function') _resetVllmCharts(); },
+  (r) => {
+    if (typeof vllmKvChart !== 'undefined' && vllmKvChart && r.vllm_kv != null)
+      pushPoint(vllmKvChart, r.ts, r.vllm_kv);
+    if (typeof vllmTpsChart !== 'undefined' && vllmTpsChart
+        && (r.vllm_tps != null || r.vllm_pps != null))
+      pushDual(vllmTpsChart, r.ts, r.vllm_tps || 0, r.vllm_pps || 0);
+  });
 
 // Backfill the Overall-tab llama TPS chart (Gen / Prompt) from the fleet
 // rollup so it matches the live fleet totals painted by fetchOverallMetrics.

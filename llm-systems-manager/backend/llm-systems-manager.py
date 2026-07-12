@@ -153,7 +153,7 @@ def _local_hostname() -> str:
 # banner reads it. Bump suffix (-1, -2, …) for same-day iterations; roll
 # the date for a new day's first change.
 # ---------------------------------------------------------------------------
-__version__ = "v2026.07.11-5"
+__version__ = "v2026.07.11-6"
 
 # Wall-clock at first import (Cheroot main process); the shutdown banner
 # reads it for the uptime line.
@@ -666,6 +666,7 @@ def index():
     globals_js = (
         f"window.__MGR_AGENT={_safe_js(agent_registry.self_agent_id())};"
         f"window.__LMS_AGENT={_safe_js(agent_registry.default_agent_id_for('lms'))};"
+        f"window.__VLLM_AGENT={_safe_js(agent_registry.default_agent_id_for('vllm'))};"
         f"window.__AE_WS_URL__={_safe_js(proxies.ae_ws_url_for_browser())};"
     )
     html = html.replace("</head>", f"<script>{globals_js}</script>\n</head>", 1)
@@ -746,6 +747,12 @@ _HISTORY_LEGACY_FIELD_MAP = [
     ("llama",   "prompt_tokens_per_second",                   "llama_pps"),
     ("llama",   "n_tokens_max",                               "llama_ctx"),
     ("llama",   "total_tokens_generated",                     "llama_gen_tokens"),
+    # vLLM stats (#358) — flattened by the AE ingest under source="vllm".
+    ("vllm",    "kv_cache_usage_pct",                         "vllm_kv"),
+    ("vllm",    "tokens_per_second",                          "vllm_tps"),
+    ("vllm",    "prompt_tokens_per_second",                   "vllm_pps"),
+    ("vllm",    "requests_running",                           "vllm_req_running"),
+    ("vllm",    "requests_waiting",                           "vllm_req_waiting"),
 ]
 
 # /api/alert's sustained-CPU probe reads the same series the history ring
@@ -845,11 +852,19 @@ def _build_history_rows(since_minutes: int, limit: int,
     if not _alarm_engine_url:
         return []
     base = _alarm_engine_url.rstrip("/")
+    # Skip provider-sourced series with no approved capable agent — they
+    # can only come back empty.
+    try:
+        caps = agent_registry.approved_agent_caps()
+        fields = [(s, n, f) for s, n, f in _HISTORY_LEGACY_FIELD_MAP
+                  if s not in providers.PROVIDERS or caps.get(s)]
+    except Exception:
+        fields = _HISTORY_LEGACY_FIELD_MAP
     rows_by_ts: dict[str, dict] = {}
     futures = [
         _history_pool.submit(_fetch_history_series, base, src, name, field,
                              since_minutes, limit, hostname)
-        for src, name, field in _HISTORY_LEGACY_FIELD_MAP
+        for src, name, field in fields
     ]
     for fut in futures:
         field, points = fut.result()
@@ -872,6 +887,8 @@ _FLEET_FIELD_AGG: dict[str, str] = {
     "net_sent": "sum", "net_recv": "sum", "io_read": "sum", "io_write": "sum",
     "llama_tps": "sum", "llama_pps": "sum", "llama_ctx": "sum",
     "llama_gen_tokens": "sum",
+    "vllm_tps": "sum", "vllm_pps": "sum", "vllm_kv": "max",
+    "vllm_req_running": "sum", "vllm_req_waiting": "sum",
 }
 _FLEET_BUCKET_S = 5.0
 
@@ -2130,23 +2147,32 @@ def receive_lmstudio_metrics():
         return _err_json("invalid request", 400, exc=e)
 
 
+def _provider_metrics_payload(provider: str) -> dict:
+    """Latest sample for the default (or ?agent=) agent of a provider,
+    with agent_online/agent_age_s derived from the spec threshold."""
+    aid = (flask_request.args.get("agent")
+           or agent_registry.default_agent_id_for(provider))
+    wrap = provider_state.STORE.get(provider, aid) if aid else None
+    data = dict((wrap or {}).get("sample") or {})
+    last_seen = float((wrap or {}).get("last_seen") or 0.0)
+    age = time.time() - last_seen if last_seen else float("inf")
+    spec = providers.get(provider)
+    online = age < (spec.online_threshold_s if spec else 15.0)
+    # Per-agent offline latch — log only on the True→False edge.
+    if aid and not online and provider_state.STORE.mark_offline(provider, aid):
+        label = spec.label if spec else provider
+        log.warning(f"{label} agent offline — last seen {age:.0f}s ago "
+                    f"[agent {aid[:8]}]")
+    data["agent_online"] = online
+    data["agent_age_s"]  = round(age, 1) if last_seen else None
+    return data
+
+
 @app.route("/api/lmstudio/metrics")
 def get_lmstudio_metrics():
     """Return latest LM Studio metrics for the primary LMS agent.
     Optional ?agent= targets a specific LMS agent."""
-    aid = flask_request.args.get("agent") or _primary_lms_agent_id()
-    wrap = provider_state.STORE.get("lms", aid) if aid else None
-    data = dict((wrap or {}).get("sample") or {})
-    last_seen = float((wrap or {}).get("last_seen") or 0.0)
-    age = time.time() - last_seen if last_seen else float("inf")
-    online = age < 15
-    # Per-agent offline latch — log only on the True→False edge.
-    if aid and not online and provider_state.STORE.mark_offline("lms", aid):
-        log.warning(f"LMS agent offline — last seen {age:.0f}s ago "
-                    f"[agent {aid[:8]}]")
-    data["agent_online"] = online
-    data["agent_age_s"]  = round(age, 1) if last_seen else None
-    return jsonify(data)
+    return jsonify(_provider_metrics_payload("lms"))
 
 
 @app.route("/api/lmstudio/models")
@@ -2203,19 +2229,7 @@ def lmstudio_download():
 @app.route("/api/vllm/metrics")
 def get_vllm_metrics():
     """Return the latest vLLM sample for the default (or ?agent=) vLLM agent."""
-    aid = flask_request.args.get("agent") or _primary_vllm_agent_id()
-    wrap = provider_state.STORE.get("vllm", aid) if aid else None
-    data = dict((wrap or {}).get("sample") or {})
-    last_seen = float((wrap or {}).get("last_seen") or 0.0)
-    age = time.time() - last_seen if last_seen else float("inf")
-    online = age < 15
-    # Per-agent offline latch — log only on the True→False edge.
-    if aid and not online and provider_state.STORE.mark_offline("vllm", aid):
-        log.warning(f"vLLM agent offline — last seen {age:.0f}s ago "
-                    f"[agent {aid[:8]}]")
-    data["agent_online"] = online
-    data["agent_age_s"]  = round(age, 1) if last_seen else None
-    return jsonify(data)
+    return jsonify(_provider_metrics_payload("vllm"))
 
 
 @app.route("/api/vllm/models")
@@ -4785,14 +4799,16 @@ if __name__ == "__main__":
             _glob = _data.setdefault("global", {})
             _agents_map = _data.get("agents") or {}
             _dirty = False
-            for kind in ("llama", "lms", "vllm"):
+            for kind in providers.names():
                 if _glob.get(f"default_{kind}_id") or _glob.get(f"primary_{kind}_id"):
                     continue
-                if kind == "llama" and _glob.get("llama_pool"):
+                _spec = providers.get(kind)
+                if _spec and _spec.default_picker == "pool" and _glob.get(f"{kind}_pool"):
                     continue
+                _cap = _spec.capability_key if _spec else kind
                 _candidates = [a for a in _agents_map.values()
                                if a.get("status") == "approved"
-                               and (a.get("capabilities") or {}).get(kind)]
+                               and (a.get("capabilities") or {}).get(_cap)]
                 if len(_candidates) == 1:
                     # Lockstep default_+primary_ — same as agent_registry's
                     # approve auto-promote, so default_agent_id_for never lags.
@@ -4808,7 +4824,7 @@ if __name__ == "__main__":
     except Exception as _e:
         log.warning("primary backfill failed: %s", _e)
 
-    for kind in ("llama", "lms", "vllm"):
+    for kind in providers.names():
         try:
             agent = agent_registry.primary_agent(kind)
         except Exception:

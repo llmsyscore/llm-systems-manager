@@ -411,9 +411,14 @@ function _selectAgent(provider, agentId) {
           || (_lp && _lp.style.display !== 'none')) closeLmsTerminal();
     }
   } else if (provider === 'vllm') {
-    // No history backfill for vLLM (deferred) — reset charts, re-poll the new agent.
-    if (typeof _resetVllmCharts === 'function') _resetVllmCharts();
-    if (typeof fetchVllmMetrics === 'function') fetchVllmMetrics();
+    // Backfill the new agent's history, then resume the live poll (#358) —
+    // same shape as the LMS branch above.
+    if (typeof loadVllmHistory === 'function') {
+      loadVllmHistory().finally(() => { if (typeof fetchVllmMetrics === 'function') fetchVllmMetrics(); });
+    } else {
+      if (typeof _resetVllmCharts === 'function') _resetVllmCharts();
+      if (typeof fetchVllmMetrics === 'function') fetchVllmMetrics();
+    }
     if (typeof _vllmLogOpen !== 'undefined' && _vllmLogOpen
         && typeof startVllmLogRefresh === 'function') startVllmLogRefresh();
     if (typeof closeVllmTerminal === 'function') {
@@ -897,96 +902,49 @@ function removeBorrowedCard(cardId) {
   saveLayout();
 }
 
-// LMS dashboard card order persistence (stored alongside main layout)
-let _lmsLayoutInFlight = null;
-let _lmsLayoutPending  = false;
-async function saveLmsLayout() {
-  if (_lmsLayoutInFlight) { _lmsLayoutPending = true; return _lmsLayoutInFlight; }
-  _lmsLayoutInFlight = (async () => {
-    try {
-      do {
-        _lmsLayoutPending = false;
-        const grid = document.getElementById('lmsCardGrid');
-        if (!grid) return;
-        const ids = [...grid.querySelectorAll('.card')].map(c => c.dataset.card);
-        const ol = _orderList('lmsOrder');
-        ol.splice(0, ol.length, ...ids);
-        try {
-          const current = await fetch('/api/layout').then(r => r.json());
-          current.lmsOrder = layout.lmsOrder;
-          current.orderByAgent = layout.orderByAgent;
-          await fetch('/api/layout', {
-            method: 'POST', headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(current),
-          });
-        } catch(_) {}
-      } while (_lmsLayoutPending);
-    } finally {
-      _lmsLayoutInFlight = null;
-    }
-  })();
-  return _lmsLayoutInFlight;
+// Coalescing per-grid card-order saver factory: one POST in flight, a
+// trailing re-run when calls land mid-flight.
+function _makeLayoutSaver(gridId, orderKey) {
+  let inFlight = null;
+  let pending  = false;
+  return async function () {
+    if (inFlight) { pending = true; return inFlight; }
+    inFlight = (async () => {
+      try {
+        do {
+          pending = false;
+          const grid = document.getElementById(gridId);
+          if (!grid) return;
+          const ids = [...grid.querySelectorAll('.card')].map(c => c.dataset.card);
+          // Per-agent keys (LMLayout.PER_AGENT_ORDER) write through
+          // _orderList() and persist layout.orderByAgent too.
+          const perAgent = !!(window.LMLayout && window.LMLayout.PER_AGENT_ORDER[orderKey]);
+          if (perAgent) {
+            const ol = _orderList(orderKey);
+            ol.splice(0, ol.length, ...ids);
+          }
+          try {
+            const current = await fetch('/api/layout').then(r => r.json());
+            current[orderKey] = perAgent ? layout[orderKey] : ids;
+            if (perAgent) current.orderByAgent = layout.orderByAgent;
+            await fetch('/api/layout', {
+              method: 'POST', headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify(current),
+            });
+          } catch(_) {}
+        } while (pending);
+      } finally {
+        inFlight = null;
+      }
+    })();
+    return inFlight;
+  };
 }
 
-// vLLM dashboard card order persistence — same coalescing shape as LMS.
-let _vllmLayoutInFlight = null;
-let _vllmLayoutPending  = false;
-async function saveVllmLayout() {
-  if (_vllmLayoutInFlight) { _vllmLayoutPending = true; return _vllmLayoutInFlight; }
-  _vllmLayoutInFlight = (async () => {
-    try {
-      do {
-        _vllmLayoutPending = false;
-        const grid = document.getElementById('vllmCardGrid');
-        if (!grid) return;
-        const ids = [...grid.querySelectorAll('.card')].map(c => c.dataset.card);
-        const ol = _orderList('vllmOrder');
-        ol.splice(0, ol.length, ...ids);
-        try {
-          const current = await fetch('/api/layout').then(r => r.json());
-          current.vllmOrder = layout.vllmOrder;
-          current.orderByAgent = layout.orderByAgent;
-          await fetch('/api/layout', {
-            method: 'POST', headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(current),
-          });
-        } catch(_) {}
-      } while (_vllmLayoutPending);
-    } finally {
-      _vllmLayoutInFlight = null;
-    }
-  })();
-  return _vllmLayoutInFlight;
-}
-
-// Manager dashboard card order persistence — same shape as LMS, separate
-// layout key so reordering one grid never clobbers the other.
-let _managerLayoutInFlight = null;
-let _managerLayoutPending  = false;
-async function saveManagerLayout() {
-  if (_managerLayoutInFlight) { _managerLayoutPending = true; return _managerLayoutInFlight; }
-  _managerLayoutInFlight = (async () => {
-    try {
-      do {
-        _managerLayoutPending = false;
-        const grid = document.getElementById('managerCardGrid');
-        if (!grid) return;
-        const order = [...grid.querySelectorAll('.card')].map(c => c.dataset.card);
-        try {
-          const current = await fetch('/api/layout').then(r => r.json());
-          current.managerOrder = order;
-          await fetch('/api/layout', {
-            method: 'POST', headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(current),
-          });
-        } catch(_) {}
-      } while (_managerLayoutPending);
-    } finally {
-      _managerLayoutInFlight = null;
-    }
-  })();
-  return _managerLayoutInFlight;
-}
+// LMS / vLLM / Manager dashboard card-order persistence.
+const saveLmsLayout     = _makeLayoutSaver('lmsCardGrid', 'lmsOrder');
+const saveVllmLayout    = _makeLayoutSaver('vllmCardGrid', 'vllmOrder');
+const saveManagerLayout = _makeLayoutSaver('managerCardGrid', 'managerOrder');
 
 function applyManagerLayout(savedOrder) {
   const grid = document.getElementById('managerCardGrid');

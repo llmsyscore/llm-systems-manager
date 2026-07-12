@@ -65,10 +65,38 @@ def test_registry_helpers_accept_vllm():
 
 
 def test_migration_and_default_lists_include_vllm():
-    from pathlib import Path
-    src = (Path(__file__).resolve().parent.parent / "backend" / "agent_registry.py").read_text()
-    assert '("llama", "lms", "vllm")' in src            # migration tuple + set-primary allowlist
-    assert '["llama", "lms", "vllm"]' in src            # _default_for_agent default list
+    import agent_registry
+    data = {"global": {"primary_vllm_id": "abc123"}}
+    assert agent_registry._migrate_agents_schema(data) is True
+    assert data["global"]["default_vllm_id"] == "abc123"
+    defaults = agent_registry._default_for_agent(
+        {"global": {"default_vllm_id": "abc123"}}, "abc123")
+    assert defaults == ["vllm"]
+
+
+def test_registry_driven_loops_cover_all_providers():
+    import agent_registry
+    caps = agent_registry.approved_agent_caps()
+    for name in providers.names():
+        assert name in caps and f"{name}_host" in caps
+    data = {"global": {f"primary_{n}_id": f"id-{n}" for n in providers.names()}}
+    agent_registry._migrate_agents_schema(data)
+    for name in providers.names():
+        assert data["global"][f"default_{name}_id"] == f"id-{name}"
+
+
+def test_gateway_paths_generated_from_registry():
+    import gateway
+    assert gateway._AGENT_PATHS["llama"] == {
+        "chat/completions": "/llama/openai/chat/completions",
+        "completions": "/llama/openai/completions",
+    }
+    assert gateway._AGENT_PATHS["vllm"] == {
+        "chat/completions": "/vllm/openai/chat/completions",
+        "completions": "/vllm/openai/completions",
+    }
+    assert gateway._MODELS_PATHS == {"llama": "/llama/models", "vllm": "/vllm/models"}
+    assert "lms" not in gateway._AGENT_PATHS  # lms has no gateway
 
 
 def test_api_config_emits_vllm_present():

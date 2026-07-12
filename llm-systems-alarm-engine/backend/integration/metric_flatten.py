@@ -59,6 +59,14 @@ ALIAS_TABLE: dict[
     ("llama", "kv_cache_usage_ratio"):        ("llama", "kv_cache_usage_ratio",     "ratio",  None),
     ("llama", "kv_cache_tokens"):             ("llama", "kv_cache_tokens",          "tokens", None),
     ("llama", "n_remain"):                    ("llama", "n_remain",                 "tokens", None),
+    # vLLM metrics (#358) — same names, with units for the AE catalog.
+    ("vllm", "tokens_per_second"):            ("vllm", "tokens_per_second",         "tps",    None),
+    ("vllm", "prompt_tokens_per_second"):     ("vllm", "prompt_tokens_per_second",  "tps",    None),
+    ("vllm", "kv_cache_usage_pct"):           ("vllm", "kv_cache_usage_pct",        "%",      None),
+    ("vllm", "requests_running"):             ("vllm", "requests_running",          None,     None),
+    ("vllm", "requests_waiting"):             ("vllm", "requests_waiting",          None,     None),
+    ("vllm", "total_tokens_generated"):       ("vllm", "total_tokens_generated",    "tokens", None),
+    ("vllm", "total_tokens_prompted"):        ("vllm", "total_tokens_prompted",     "tokens", None),
     ("ups", "percent"):                       ("psu",   "load_percent",             "%",      None),
     # Agent-side InfluxDB disk usage probe (`du -sb /var/lib/influxdb`).
     # Source matches the AE's own influx_monitor loop so the same

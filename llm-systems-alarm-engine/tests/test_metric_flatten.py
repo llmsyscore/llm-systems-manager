@@ -174,6 +174,15 @@ class TestResolve:
         src, name, val, unit = resolve(("orphan",), 1.0)
         assert (src, name, val, unit) == ("orphan", "value", 1.0, None)
 
+    def test_vllm_fields_alias_with_units(self):
+        # #358: vllm chart fields keep their names and gain catalog units.
+        src, name, val, unit = resolve(("vllm", "kv_cache_usage_pct"), 42.0)
+        assert (src, name, val, unit) == ("vllm", "kv_cache_usage_pct", 42.0, "%")
+        src, name, val, unit = resolve(("vllm", "tokens_per_second"), 10.5)
+        assert (src, name, val, unit) == ("vllm", "tokens_per_second", 10.5, "tps")
+        src, name, val, unit = resolve(("vllm", "requests_running"), 3)
+        assert (src, name) == ("vllm", "requests_running")
+
     def test_all_alias_entries_have_consistent_shape(self):
         # Self-consistency: every alias is (str, str, str|None, callable|None)
         for path, alias in ALIAS_TABLE.items():
@@ -261,6 +270,19 @@ class TestMetricToPoints:
         assert ("cpu", "temp_c") not in names  # NaN dropped
         assert ("gpu", "missing") not in names  # inf dropped
         assert not any("label" in p["metric_name"] for p in points)
+
+    def test_vllm_nested_sample(self):
+        # #358: sample["vllm"] numeric leaves land as source="vllm" points;
+        # the state/model strings are skipped.
+        m = {"vllm": {"state": "running", "model": "m1",
+                      "kv_cache_usage_pct": 40.0, "tokens_per_second": 5.0,
+                      "requests_waiting": 2}}
+        by = _by_metric(metric_to_points(m))
+        assert by[("vllm", "kv_cache_usage_pct")]["value"] == 40.0
+        assert by[("vllm", "tokens_per_second")]["value"] == 5.0
+        assert by[("vllm", "requests_waiting")]["value"] == 2
+        assert not any("state" in n or "model" in n
+                       for _, n in by.keys())
 
     def test_empty_input(self):
         assert metric_to_points({}) == []

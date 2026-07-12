@@ -47,6 +47,7 @@ import requests
 from flask import Response, jsonify, request as flask_request
 
 import provider_state  # type: ignore[import-not-found]  # sibling — leaf module, no cycle
+import providers  # type: ignore[import-not-found]  # sibling — leaf package, no cycle
 from _best_effort import best_effort  # type: ignore[import-not-found]  # sibling
 
 log = logging.getLogger("llm-systems-manager.agent_registry")
@@ -155,7 +156,7 @@ def _migrate_agents_schema(data: dict) -> bool:
         data["schema_version"] = 2
         changed = True
     g = data.setdefault("global", {})
-    for name in ("llama", "lms", "vllm"):
+    for name in providers.names():
         prim_key = f"primary_{name}_id"
         def_key = f"default_{name}_id"
         if g.get(prim_key) and not g.get(def_key):
@@ -531,34 +532,26 @@ def colocated_infra(agent: dict) -> "list[dict]":
 
 
 def approved_agent_caps() -> dict:
-    """Capability + hostname rollup. {llama, lms, either} are booleans
-    used by `/` (inline-hide injection) + `/api/config` (polled
-    refresh). llama_host / lms_host carry the first approved agent's
-    hostname for each capability so the frontend can backfill that
-    agent's charts from the alarm engine catalog without hitting the
-    admin-gated /api/agents endpoint."""
+    """Capability + hostname rollup per registered provider:
+    {<name>: bool, <name>_host: first approved hostname|None, "either": bool}."""
     approved = [
         a for a in ((load_agents().get("agents") or {}).values())
         if a.get("status") == "approved"
     ]
-    llama = any((a.get("capabilities") or {}).get("llama") for a in approved)
-    lms   = any((a.get("capabilities") or {}).get("lms")   for a in approved)
-    vllm  = any((a.get("capabilities") or {}).get("vllm")  for a in approved)
-    llama_host = next(
-        (a.get("hostname") for a in approved if (a.get("capabilities") or {}).get("llama")),
-        None,
-    )
-    lms_host = next(
-        (a.get("hostname") for a in approved if (a.get("capabilities") or {}).get("lms")),
-        None,
-    )
-    vllm_host = next(
-        (a.get("hostname") for a in approved if (a.get("capabilities") or {}).get("vllm")),
-        None,
-    )
-    return {"llama": llama, "lms": lms, "vllm": vllm,
-            "either": llama or lms or vllm,
-            "llama_host": llama_host, "lms_host": lms_host, "vllm_host": vllm_host}
+    out: dict = {}
+    either = False
+    for name in providers.names():
+        spec = providers.get(name)
+        cap = spec.capability_key if spec else name
+        out[name] = any((a.get("capabilities") or {}).get(cap) for a in approved)
+        out[f"{name}_host"] = next(
+            (a.get("hostname") for a in approved
+             if (a.get("capabilities") or {}).get(cap)),
+            None,
+        )
+        either = either or out[name]
+    out["either"] = either
+    return out
 
 
 def self_agent_id() -> "str | None":
@@ -638,7 +631,7 @@ def _default_for_agent(data: dict, agent_id: str,
     Reads global.default_<p>_id first, falls back to global.primary_<p>_id
     so a manual TOML/JSON edit to either key keeps working."""
     g = data.get("global") or {}
-    names = provider_names if provider_names is not None else ["llama", "lms", "vllm"]
+    names = provider_names if provider_names is not None else providers.names()
     out: "list[str]" = []
     for name in names:
         sel = g.get(f"default_{name}_id") or g.get(f"primary_{name}_id")
@@ -1339,18 +1332,18 @@ def _agents_approve(agent_id: str):
         glob = data.setdefault("global", {})
         caps = agent.get("capabilities") or {}
         auto_promoted = []
-        if caps.get("llama") and not glob.get("default_llama_id") \
-                and not glob.get("primary_llama_id") and not glob.get("llama_pool"):
-            _set_provider_default(glob, "llama", agent_id)
-            auto_promoted.append("llama")
-        if caps.get("lms") and not glob.get("default_lms_id") \
-                and not glob.get("primary_lms_id"):
-            _set_provider_default(glob, "lms", agent_id)
-            auto_promoted.append("lms")
-        if caps.get("vllm") and not glob.get("default_vllm_id") \
-                and not glob.get("primary_vllm_id"):
-            _set_provider_default(glob, "vllm", agent_id)
-            auto_promoted.append("vllm")
+        for name in providers.names():
+            spec = providers.get(name)
+            cap = spec.capability_key if spec else name
+            if not caps.get(cap):
+                continue
+            if glob.get(f"default_{name}_id") or glob.get(f"primary_{name}_id"):
+                continue
+            # Pool-picker providers: an existing pool also counts as "set".
+            if spec and spec.default_picker == "pool" and glob.get(f"{name}_pool"):
+                continue
+            _set_provider_default(glob, name, agent_id)
+            auto_promoted.append(name)
         save_agents(data)
     log.info("agent approved by %s: id=%s hostname=%s%s",
              flask_request.remote_addr, agent_id, agent.get("hostname"),
@@ -1391,15 +1384,16 @@ def _agents_delete(agent_id: str):
 
 
 def _agents_set_primary(agent_id: str):
-    """Mark an approved agent as primary for `llama` or `lms`.
-    Body: {"kind": "llama"|"lms", "set": true|false}"""
+    """Mark an approved agent as primary for a registered provider.
+    Body: {"kind": <provider name>, "set": true|false}"""
     deny = _deps.require_admin()
     if deny is not None:
         return deny
     body = flask_request.get_json(force=True) or {}
     kind = body.get("kind")
-    if kind not in ("llama", "lms", "vllm"):
-        return jsonify({"ok": False, "error": "kind must be 'llama', 'lms' or 'vllm'"}), 400
+    if kind not in providers.names():
+        allowed = ", ".join(f"'{n}'" for n in providers.names())
+        return jsonify({"ok": False, "error": f"kind must be one of {allowed}"}), 400
     set_flag = bool(body.get("set", True))
     with _agents_lock:
         data = load_agents()

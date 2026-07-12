@@ -153,3 +153,39 @@ describe('#368 vllm control parity wiring', () => {
     expect(bt).toContain('_proxy_create("vllm"');
   });
 });
+
+// #358: vLLM dashboard history backfill wiring.
+describe('vllm history backfill (#358)', () => {
+  test('charts.js builds loadVllmHistory from the shared backfill factory', () => {
+    const charts = src('js/charts.js');
+    const factory = charts.slice(charts.indexOf('function _makeHistoryBackfill'));
+    const fbody = factory.slice(0, factory.indexOf('\n}'));
+    expect(fbody).toContain('++gen');
+    expect(fbody).toContain('resetCharts()');
+    expect(fbody).toContain('/api/history?agent=');
+    const decl = charts.slice(charts.indexOf('const loadVllmHistory'));
+    const body = decl.slice(0, decl.indexOf('\n  });') + 6);
+    expect(body).toContain("_makeHistoryBackfill('vllm', '__VLLM_AGENT'");
+    expect(body).toContain('_resetVllmCharts');
+    expect(body).toContain('r.vllm_kv');
+    expect(body).toContain('r.vllm_tps');
+    expect(body).toContain('r.vllm_pps');
+  });
+  test('boot.js backfills vllm history at startup', () => {
+    expect(src('js/boot.js')).toContain('loadVllmHistory().catch');
+  });
+  test('foundation.js agent-switch backfills then resumes the live poll', () => {
+    const foundation = src('js/foundation.js');
+    const branch = foundation.slice(foundation.indexOf("provider === 'vllm'"));
+    expect(branch.slice(0, 600)).toContain('loadVllmHistory().finally');
+  });
+  test('backend maps the vllm history fields and injects __VLLM_AGENT', () => {
+    const be = readFileSync(
+      join(here, '..', '..', 'backend', 'llm-systems-manager.py'), 'utf8');
+    for (const f of ['vllm_kv', 'vllm_tps', 'vllm_pps',
+                     'vllm_req_running', 'vllm_req_waiting']) {
+      expect(be).toContain(`"${f}"`);
+    }
+    expect(be).toContain('window.__VLLM_AGENT');
+  });
+});

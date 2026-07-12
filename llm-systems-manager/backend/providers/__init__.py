@@ -23,6 +23,7 @@ class ProviderSpec:
     push_endpoint_legacy: str = ""
     default_picker: str = "first_approved"
     pin_dict_key: Optional[str] = None
+    gateway_enabled: bool = False
     sub_tab_keys: tuple = ()
     aggregator: Optional[Callable[[dict[str, dict]], dict]] = None
     card_labels: dict = field(default_factory=dict)

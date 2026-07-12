@@ -66,8 +66,8 @@ def test_streamer_uses_follow_argv(monkeypatch):
             raise RuntimeError("stop here")
 
     monkeypatch.setattr(vllm, "_ctx", _mk_ctx())
-    monkeypatch.setattr(vllm.subprocess, "Popen", _FakeProc)
+    monkeypatch.setattr(vllm._shared.subprocess, "Popen", _FakeProc)
     vllm._vllm_log_streamer()  # swallows the error via its except path
     assert seen["argv"] == ["journalctl", "-u", "vllm.service", "-n", "100",
                             "-f", "-o", "cat"]
-    assert vllm._log_streaming is False
+    assert vllm._log_state.streaming is False
