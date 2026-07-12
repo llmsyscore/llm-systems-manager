@@ -173,3 +173,39 @@ def test_vllm_pool_route_adds_and_removes(monkeypatch):
     assert r.status_code == 200
     assert r.get_json()["vllm_pool"] == [V1["agent_id"]]
     assert saved[-1]["global"]["vllm_pool"] == [V1["agent_id"]]
+
+
+# --- manager admin routes + audit table ---
+def test_admin_provider_routes_registered():
+    rules = {str(r) for r in manager_mod.app.url_map.iter_rules()}
+    assert "/api/admin/llama-models" in rules
+    assert "/api/admin/llama-pins" in rules
+    assert "/api/admin/vllm-models" in rules
+    assert "/api/admin/vllm-pins" in rules
+    assert "/api/admin/lms-pins" not in rules
+
+
+def test_audit_matches_provider_pool_and_pins():
+    m = manager_mod._audit_match
+    assert m("POST", "/api/agents/abc123/llama-pool") == ("agent.llama-pool", "abc123")
+    assert m("POST", "/api/agents/abc123/vllm-pool") == ("agent.vllm-pool", "abc123")
+    assert m("POST", "/api/admin/llama-pins") == ("config.llama-pins", None)
+    assert m("POST", "/api/admin/vllm-pins") == ("config.vllm-pins", None)
+
+
+def test_vllm_pins_roundtrip(monkeypatch):
+    _patch(monkeypatch, {})
+    saved = []
+    monkeypatch.setattr(agent_registry, "save_agents",
+                        lambda data: saved.append(data))
+    c = _admin_client()
+    r = c.post("/api/admin/vllm-pins",
+               json={"model_id": "m1", "agent_id": V1["agent_id"]})
+    assert r.status_code == 200
+    assert r.get_json()["vllm_model_pins"] == {"m1": V1["agent_id"]}
+    assert saved[-1]["global"]["vllm_model_pins"] == {"m1": V1["agent_id"]}
+    # llama-only agent -> capability 400
+    r = c.post("/api/admin/vllm-pins",
+               json={"model_id": "m1", "agent_id": A1["agent_id"]})
+    assert r.status_code == 400
+    assert "vllm" in r.get_json()["error"]
