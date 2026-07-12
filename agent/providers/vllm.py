@@ -425,6 +425,100 @@ def _at_args_with_max_len(args: list, value: int) -> list:
     return out
 
 
+_at_job = _shared.JobRunner("vllm-autotune")
+
+
+def _at_watch_journal(unit: str, timeout_s: float, step: str) -> dict:
+    """Follow the unit journal until a KV-capacity answer, engine failure,
+    cancel, or timeout; emits line + loading_progress events while waiting."""
+    res: dict[str, Any] = {"outcome": "timeout", "max_conc": None}
+    proc = subprocess.Popen(
+        ["journalctl", "-u", unit, "-n", "0", "-f", "-o", "cat"],
+        stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+        text=True, start_new_session=True)
+    _at_job.track(proc)
+    deadline = time.monotonic() + timeout_s
+    grace: Optional[float] = None
+    killer = threading.Timer(timeout_s, _at_job.kill_tracked)
+    killer.daemon = True
+    killer.start()
+    hb_stop = threading.Event()
+
+    def _hb():
+        start = time.monotonic()
+        while not hb_stop.wait(2.0):
+            _at_job.put({"type": "loading_progress", "step": step,
+                         "elapsed_s": round(time.monotonic() - start, 1),
+                         "timeout_s": timeout_s})
+            if time.monotonic() - start > 15:
+                try:
+                    r = subprocess.run(["systemctl", "is-active", unit],
+                                       capture_output=True, text=True, timeout=5)
+                    state = (r.stdout or "").strip()
+                    if state in ("failed", "inactive"):
+                        res["unit_state"] = state
+                        _at_job.kill_tracked()
+                        return
+                except Exception:
+                    log.debug("is-active poll failed", exc_info=True)
+
+    threading.Thread(target=_hb, daemon=True).start()
+    try:
+        assert proc.stdout is not None
+        for raw in iter(proc.stdout.readline, ""):
+            if _at_job.cancel_event.is_set():
+                res["outcome"] = "cancelled"
+                break
+            line = _AT_ANSI_RE.sub("", raw).rstrip()
+            if not line:
+                continue
+            _at_job.put({"type": "line", "text": line})
+            m = _AT_MAX_CONC_RE.search(line)
+            if m:
+                res["max_conc"] = float(m.group(2))
+            m = _AT_KV_SIZE_RE.search(line)
+            if m:
+                res.update(outcome="kv", kv_tokens=_at_num(m.group(1)))
+                grace = min(deadline, time.monotonic() + 8)
+            m = _AT_EST_MAX_RE.search(line) or _AT_KV_CAP_OLD_RE.search(line)
+            if m and res["outcome"] != "kv":
+                res.update(outcome="est_max", est_max_len=_at_num(m.group(1)))
+                break
+            if res["outcome"] != "kv" and _AT_FATAL_RE.search(line):
+                res.update(outcome="fatal", fatal_line=line[:300])
+                break
+            if res["outcome"] == "kv" and (res["max_conc"] is not None
+                                           or (grace and time.monotonic() > grace)):
+                break
+        if _at_job.cancel_event.is_set():
+            res["outcome"] = "cancelled"
+        elif res["outcome"] == "timeout" and res.get("unit_state"):
+            res.update(outcome="fatal",
+                       fatal_line=f"unit {unit} is {res['unit_state']} after restart")
+    finally:
+        hb_stop.set()
+        killer.cancel()
+        _at_job.kill_tracked()
+        _at_job.untrack()
+    return res
+
+
+def _at_wait_ready(timeout_s: float = 60.0) -> Optional[int]:
+    """Poll /v1/models until it answers; returns the reported max_model_len."""
+    base = _require_ctx().config.VLLM_API_URL.rstrip("/")
+    deadline = time.monotonic() + timeout_s
+    while time.monotonic() < deadline and not _at_job.cancel_event.is_set():
+        try:
+            r = _get_session().get(f"{base}/v1/models", timeout=3)
+            if r.ok:
+                data = r.json().get("data") or []
+                return data[0].get("max_model_len") if data else None
+        except Exception:
+            pass
+        time.sleep(2)
+    return None
+
+
 # ── Route registration ─────────────────────────────────────────────────
 
 _ROUTES: tuple = (

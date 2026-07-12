@@ -88,3 +88,80 @@ def test_args_with_max_len_replaces_without_mutating_input():
 def test_args_with_max_len_appends_when_absent():
     out = vllm._at_args_with_max_len([ARGS[0]], 4096)
     assert out[-1] == {"flag": "--max-model-len", "value": "4096", "bool": False}
+
+
+# ── journal watcher (fake journalctl via a print-then-idle python child) ─
+
+import subprocess
+import sys
+
+
+@pytest.fixture
+def ctx():
+    cfg = SimpleNamespace(
+        VLLM_ENABLED=True, VLLM_LORA_ENABLED=False,
+        VLLM_SYSTEMD_UNIT="vllm.service",
+        VLLM_API_URL="http://localhost:8000",
+    )
+    context = SimpleNamespace(config=cfg, check_bearer=lambda *_: None,
+                              check_stream_auth=lambda *a, **k: None)
+    vllm.set_context(context)
+    return context
+
+
+def _fake_journal(monkeypatch, lines, hold_open=True):
+    """Replace journalctl Popen with a child that prints lines then idles."""
+    script = "import sys,time\n"
+    for l in lines:
+        script += f"print({l!r}, flush=True)\n"
+    if hold_open:
+        script += "time.sleep(60)\n"
+    real_popen = subprocess.Popen
+
+    def popen(argv, **kw):
+        assert argv[0] == "journalctl"
+        return real_popen([sys.executable, "-c", script],
+                          stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                          text=True, start_new_session=True)
+    monkeypatch.setattr(vllm.subprocess, "Popen", popen)
+
+
+def test_watch_returns_kv_and_concurrency(ctx, monkeypatch):
+    _fake_journal(monkeypatch, [
+        "INFO loading model...",
+        "GPU KV cache size: 230,528 tokens",
+        "Maximum concurrency for 8,192 tokens per request: 28.14x",
+    ])
+    r = vllm._at_watch_journal("vllm.service", timeout_s=15, step="probe")
+    assert r["outcome"] == "kv" and r["kv_tokens"] == 230528
+    assert r["max_conc"] == 28.14
+
+
+def test_watch_estimated_max_beats_fatal_on_same_line(ctx, monkeypatch):
+    _fake_journal(monkeypatch, [
+        "ValueError: ... the estimated maximum model length is 56736.",
+    ])
+    r = vllm._at_watch_journal("vllm.service", timeout_s=15, step="probe")
+    assert r["outcome"] == "est_max" and r["est_max_len"] == 56736
+
+
+def test_watch_fatal_line(ctx, monkeypatch):
+    _fake_journal(monkeypatch, ["EngineCore failed to start."])
+    r = vllm._at_watch_journal("vllm.service", timeout_s=15, step="probe")
+    assert r["outcome"] == "fatal" and "EngineCore" in r["fatal_line"]
+
+
+def test_watch_timeout(ctx, monkeypatch):
+    _fake_journal(monkeypatch, ["INFO still loading..."])
+    r = vllm._at_watch_journal("vllm.service", timeout_s=2, step="probe")
+    assert r["outcome"] == "timeout"
+
+
+def test_watch_cancel(ctx, monkeypatch):
+    _fake_journal(monkeypatch, ["INFO still loading..."])
+    vllm._at_job.cancel_event.set()
+    try:
+        r = vllm._at_watch_journal("vllm.service", timeout_s=10, step="probe")
+    finally:
+        vllm._at_job.cancel_event.clear()
+    assert r["outcome"] == "cancelled"
