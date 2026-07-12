@@ -76,3 +76,27 @@ def test_gateway_vllm_candidates_use_vllm_capability(monkeypatch):
     assert gateway._candidates(None, None, "vllm") == []
     assert seen["pk"] == "vllm"
     assert seen["default_for"] == "vllm"
+
+
+def test_vllm_autotune_routes_registered():
+    rules = {str(r) for r in manager_mod.app.url_map.iter_rules()}
+    for path in ["/api/vllm/autotune/run", "/api/vllm/autotune/stream",
+                 "/api/vllm/autotune/cancel"]:
+        assert path in rules, f"missing route {path}"
+
+
+def test_vllm_autotune_run_proxies_to_vllm(monkeypatch):
+    calls = {}
+
+    def fake_proxy(kind, method, path, **kw):
+        calls.update(kind=kind, method=method, path=path)
+        return {"ok": True}
+
+    monkeypatch.setattr(manager_mod.proxies, "proxy_to_primary", fake_proxy)
+    c = manager_mod.app.test_client()
+    with c.session_transaction() as s:
+        s["auth_ok"] = True
+        s["role"] = "admin"
+    r = c.post("/api/vllm/autotune/run", json={"probe_len": 4096})
+    assert r.status_code == 200
+    assert calls == {"kind": "vllm", "method": "POST", "path": "/vllm/autotune/run"}
