@@ -44,6 +44,11 @@ def names() -> list[str]:
     return list(PROVIDERS.keys())
 
 
+def pool_provider_names() -> list[str]:
+    """Names of providers whose spec uses the pool default-picker."""
+    return [n for n, s in PROVIDERS.items() if s.default_picker == "pool"]
+
+
 # Import provider modules so they register at package import time.
 from . import llama  # noqa: E402, F401
 from . import lms    # noqa: E402, F401

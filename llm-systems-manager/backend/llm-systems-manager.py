@@ -2473,8 +2473,7 @@ _AUDIT_ROUTES: list[tuple[str | None, "re.Pattern[str]", str]] = [
 _AUDIT_ROUTES += [
     ("POST", re.compile(rf"^/api/agents/(?P<t>[^/]+)/{re.escape(_p)}-pool$"),
      f"agent.{_p}-pool")
-    for _p in providers.names()
-    if getattr(providers.get(_p), "default_picker", "") == "pool"
+    for _p in providers.pool_provider_names()
 ]
 _AUDIT_ROUTES += [
     ("POST", re.compile(rf"^/api/admin/{re.escape(_p)}-pins$"), f"config.{_p}-pins")
@@ -3309,15 +3308,14 @@ def _admin_provider_pins(provider: str):
     return jsonify({"ok": True, pin_key: pins})
 
 
-# Per-provider admin routes for every pool-picker spec (llama URLs unchanged).
-for _pname in providers.names():
-    _pspec = providers.get(_pname)
-    if not _pspec or _pspec.default_picker != "pool":
-        continue
+# Per-provider admin routes: -models for pool-picker specs, -pins for any
+# spec with a pin dict (llama URLs unchanged).
+for _pname in providers.pool_provider_names():
     app.add_url_rule(f"/api/admin/{_pname}-models", endpoint=f"admin_{_pname}_models",
                      view_func=functools.partial(_admin_provider_models, provider=_pname),
                      methods=["GET"])
-    if _pspec.pin_dict_key:
+for _pname in providers.names():
+    if getattr(providers.get(_pname), "pin_dict_key", None):
         app.add_url_rule(f"/api/admin/{_pname}-pins", endpoint=f"admin_{_pname}_pins",
                          view_func=functools.partial(_admin_provider_pins, provider=_pname),
                          methods=["POST"])

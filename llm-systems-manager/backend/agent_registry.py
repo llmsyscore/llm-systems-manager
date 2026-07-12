@@ -586,7 +586,7 @@ def primary_agent(kind: str) -> "dict | None":
                 if a and a.get("status") == "approved":
                     return a
             # Fall through if pool exists but none is approved — let the
-            # legacy primary_llama_id lookup below take over.
+            # legacy primary_<kind>_id lookup below take over.
 
     aid = glob.get(f"primary_{kind}_id")
     if not aid:
@@ -1311,10 +1311,9 @@ def _agents_list():
         "latest_agent_version": latest,
         # Pool-picker providers, for the admin pool/pins provider chips.
         "pool_providers": [
-            {"name": n, "label": providers.get(n).label,
-             "pin_key": providers.get(n).pin_dict_key}
-            for n in providers.names()
-            if providers.get(n).default_picker == "pool"
+            {"name": n, "label": spec.label, "pin_key": spec.pin_dict_key}
+            for n in providers.pool_provider_names()
+            if (spec := providers.get(n))
         ],
     })
 
@@ -1769,12 +1768,8 @@ def register_routes(app) -> None:
                      view_func=_agents_set_primary, methods=["POST"])
     app.add_url_rule("/api/agents/<agent_id>/llama-state", endpoint="agents_push_llama_state",
                      view_func=_agents_push_llama_state, methods=["POST"])
-    # One pool route per pool-picker provider. functools.partial, not a
-    # lambda — a closure over the loop var would late-bind every URL.
-    for _pname in providers.names():
-        _pspec = providers.get(_pname)
-        if not _pspec or _pspec.default_picker != "pool":
-            continue
+    # One pool route per pool-picker provider, bound via functools.partial.
+    for _pname in providers.pool_provider_names():
         app.add_url_rule(f"/api/agents/<agent_id>/{_pname}-pool",
                          endpoint=f"agents_set_{_pname}_pool",
                          view_func=functools.partial(_agents_set_pool, provider=_pname),

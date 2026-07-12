@@ -377,14 +377,19 @@ function adminRenderProviderChips(which) {
   if (!el) return;
   const sel = which === 'pool' ? _adminPoolSel : _adminPinsSel;
   el.innerHTML = _adminPoolProviders.map(p =>
-    `<button class="adm-chip ${p.name === sel ? 'primary' : ''}" style="cursor:pointer;"
+    `<button class="adm-chip ${p.name === sel ? 'primary' : ''}"
              onclick="adminSelectProvider('${which}','${adminEsc(p.name)}')">${adminEsc(p.label || p.name)}</button>`
   ).join(' ');
 }
 
 function adminSelectProvider(which, name) {
-  if (which === 'pool') { _adminPoolSel = name; adminRenderPoolOrder(); }
-  else { _adminPinsSel = name; adminRenderPins(); adminLoadProviderModels(); }
+  if (which === 'pool') {
+    if (name === _adminPoolSel) return;
+    _adminPoolSel = name; adminRenderPoolOrder();
+  } else {
+    if (name === _adminPinsSel) return;
+    _adminPinsSel = name; adminRenderPins(); adminLoadProviderModels();
+  }
 }
 
 function adminRenderPoolOrder() {
@@ -467,9 +472,11 @@ async function adminPoolReorderCommit() {
 async function adminLoadProviderModels() {
   const dl = document.getElementById('adminProviderModels');
   if (!dl) return;
+  const provider = _adminPinsSel;
   try {
-    const r = await fetch(`/api/admin/${_adminPinsSel}-models`);
-    if (!r.ok) return;
+    const r = await fetch(`/api/admin/${provider}-models`);
+    // A slow fan-out can resolve after the user switched chips — drop it.
+    if (!r.ok || provider !== _adminPinsSel) return;
     const d = await r.json();
     const models = (d.models || []);
     dl.innerHTML = models.map(m =>
@@ -591,8 +598,9 @@ async function adminLoadAgents() {
     _adminGlobal = d.global || {};
     if (Array.isArray(d.pool_providers) && d.pool_providers.length) {
       _adminPoolProviders = d.pool_providers;
-      if (!_adminPoolProviders.some(p => p.name === _adminPoolSel)) _adminPoolSel = _adminPoolProviders[0].name;
-      if (!_adminPoolProviders.some(p => p.name === _adminPinsSel)) _adminPinsSel = _adminPoolProviders[0].name;
+      const validSel = s => _adminPoolProviders.some(p => p.name === s) ? s : _adminPoolProviders[0].name;
+      _adminPoolSel = validSel(_adminPoolSel);
+      _adminPinsSel = validSel(_adminPinsSel);
     }
     _latestAgentVersion = d.latest_agent_version || null;
     const lavEl = document.getElementById('adminLatestVersion');
@@ -742,8 +750,12 @@ function _adminCapsAndPrimary(a) {
   const lmsDisabled   = !approved || !caps.lms;
   const vllmDisabled  = !approved || !caps.vllm;
   // Phase 4 #4 / #359 — one pool membership chip per pool-picker provider.
+  const poolIdxByProv = {};
+  for (const p of _adminPoolProviders) {
+    poolIdxByProv[p.name] = ((_adminGlobal[p.name + '_pool']) || []).indexOf(a.agent_id);
+  }
   const poolBadge = _adminPoolProviders.map(p => {
-    const idx = ((_adminGlobal[p.name + '_pool']) || []).indexOf(a.agent_id);
+    const idx = poolIdxByProv[p.name];
     return idx >= 0
       ? `<span class="adm-chip primary" title="position ${idx + 1} in ${adminEsc(p.name)} pool (round-robin order)">${adminEsc(p.name)} pool #${idx + 1}</span>`
       : '';
@@ -777,7 +789,7 @@ function _adminCapsAndPrimary(a) {
       ${_adminPoolProviders.map(p => {
         const has = !!caps[p.name];
         const dis = !approved || !has;
-        const idx = ((_adminGlobal[p.name + '_pool']) || []).indexOf(a.agent_id);
+        const idx = poolIdxByProv[p.name];
         const pn = adminEsc(p.name);
         return `<label class="${dis ? 'disabled' : ''}" title="${dis ? 'agent must be approved + advertise ' + pn : (idx >= 0 ? 'remove from ' + pn + ' pool' : 'add to ' + pn + ' pool (round-robin)')}">
         <input type="checkbox" ${idx >= 0 ? 'checked' : ''} ${dis ? 'disabled' : ''}
