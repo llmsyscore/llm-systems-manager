@@ -329,6 +329,7 @@ class AgentConfig:
     VLLM_API_URL: str = "http://localhost:8000"
     VLLM_SYSTEMD_UNIT: str = "vllm.service"
     VLLM_LORA_ENABLED: bool = False
+    VLLM_BENCH_BIN: str = ""              # optional override for vllm bench serve
 
     PERF_CONTROLLER_ENABLED: bool = False
     PERF_TARGET_AWAKE: str = "performance"

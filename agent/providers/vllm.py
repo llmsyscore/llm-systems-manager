@@ -7,9 +7,12 @@ import logging
 import math
 import re
 import shlex
+import shutil
 import subprocess
+import tempfile
 import threading
 import time
+import uuid
 from pathlib import Path
 from typing import Any, Optional
 
@@ -730,6 +733,69 @@ def shutdown_children() -> None:
         _at_job.join(timeout=45)
     except Exception:
         log.debug("vllm shutdown_children failed", exc_info=True)
+
+
+# ── Benchmark (vllm bench serve) (#357) ────────────────────────────────
+
+_BENCH_METRIC_KEYS = (
+    "request_throughput", "output_throughput", "total_token_throughput",
+    "mean_ttft_ms", "median_ttft_ms", "p99_ttft_ms",
+    "mean_tpot_ms", "median_tpot_ms", "p99_tpot_ms",
+    "mean_itl_ms", "median_itl_ms", "p99_itl_ms",
+    "completed", "duration", "total_input_tokens", "total_output_tokens",
+)
+
+
+def _bench_resolve_bin() -> "tuple[Optional[str], Optional[str]]":
+    """(vllm binary path, None) or (None, error). Order: VLLM_BENCH_BIN
+    override → svcconfig ExecStart head binary → PATH lookup."""
+    cfg = _require_ctx().config
+    override = (getattr(cfg, "VLLM_BENCH_BIN", "") or "").strip()
+    if override:
+        if Path(override).exists() or shutil.which(override):
+            return override, None
+        return None, f"VLLM_BENCH_BIN not found: {override}"
+    try:
+        head, _ = _parse_vllm_execstart(Path(_vllm_svc_file_path()).read_text())
+        if head:
+            cand = shlex.split(head)[0]
+            if Path(cand).exists():
+                return cand, None
+    except Exception:
+        log.debug("bench bin: svcconfig head unavailable", exc_info=True)
+    w = shutil.which("vllm")
+    if w:
+        return w, None
+    return None, ("vllm binary not found — set VLLM_BENCH_BIN in the agent "
+                  "config or pip install vllm[bench] on this host")
+
+
+def _bench_build_cmd(binpath: str, api_url: str, model: str,
+                     switches: list, result_dir: str) -> list:
+    cmd = [binpath, "bench", "serve",
+           "--base-url", api_url, "--model", model,
+           "--save-result", "--result-dir", result_dir,
+           "--result-filename", "result.json"]
+    for s in switches:
+        flag = str(s.get("flag") or "").strip()
+        if not flag:
+            continue
+        cmd.append(flag)
+        value = s.get("value")
+        if value not in (None, ""):
+            cmd.append(str(value))
+    return cmd
+
+
+def _bench_extract_metrics(data: dict) -> dict:
+    return {k: data[k] for k in _BENCH_METRIC_KEYS
+            if isinstance(data.get(k), (int, float))
+            and not isinstance(data.get(k), bool)}
+
+
+def _bench_extract_extra(data: dict) -> dict:
+    return {k: v for k, v in data.items()
+            if isinstance(v, (int, float, str, bool))}
 
 
 # ── Route registration ─────────────────────────────────────────────────
