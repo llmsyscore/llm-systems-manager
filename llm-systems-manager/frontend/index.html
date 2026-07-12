@@ -49,7 +49,7 @@ Backend API endpoints consumed:
   <link rel="stylesheet" href="/static/vendor/xterm.min.css?v=5.3.0"/>
   <script src="/static/vendor/xterm.min.js?v=5.3.0"></script>
   <script src="/static/vendor/xterm-addon-fit.min.js?v=0.8.0"></script>
-  <link rel="stylesheet" href="/static/css/base.css?v=2026.07.12-1">
+  <link rel="stylesheet" href="/static/css/base.css?v=2026.07.12-2">
 </head>
 <body>
 
@@ -1536,6 +1536,7 @@ Backend API endpoints consumed:
           <button class="btn btn-gray-muted-gradient ml-auto" onclick="toggleVllmLog()">☰ Server Log</button>
           <button class="btn btn-gray-muted-gradient" onclick="toggleVllmTerminal()">⬛ Terminal</button>
           <button class="btn btn-gray-muted-gradient" onclick="openServerConfig('vllm')">⚙ Server Config</button>
+          <button class="btn btn-gray-muted-gradient" onclick="openVllmBench()">⏱ Benchmark</button>
           <button class="btn btn-gray-muted-gradient" onclick="openVllmAutotune()">🎯 Auto Tune</button>
         </div>
         <div class="sub" style="margin-top:6px;color:var(--fg-dim);">
@@ -1604,8 +1605,8 @@ Backend API endpoints consumed:
 <script src="/static/js/llmcontrol-models.js?v=2026.06.10-6"></script>
 <script src="/static/js/bench-autotune.js?v=2026.06.25-9"></script>
 <script src="/static/js/lmstudio.js?v=2026.06.26-3"></script>
-<script src="/static/js/vllm.js?v=2026.07.12-1"></script>
-<script src="/static/js/vllm-bench-autotune.js?v=2026.07.12-1"></script>
+<script src="/static/js/vllm.js?v=2026.07.12-2"></script>
+<script src="/static/js/vllm-bench-autotune.js?v=2026.07.12-2"></script>
 <script src="/static/js/overall.js?v=2026.07.11-1"></script>
 <script src="/static/js/dashboard-manager.js?v=2026.07.04-1"></script>
 
@@ -1725,7 +1726,7 @@ Backend API endpoints consumed:
         </div>
         <div class="bench-rail-actions">
           <button id="benchCancelBtn" class="btn btn-red-muted-gradient" onclick="cancelBenchmark()" style="display:none;">✕ Cancel</button>
-          <button id="benchRunBtn" class="btn btn-stone-muted-gradient" onclick="runBenchmark()">▶ Run Benchmark</button>
+          <button id="benchRunBtn" class="btn btn-stone-muted-gradient bench-run-primary" onclick="runBenchmark()">▶ Run Benchmark</button>
         </div>
       </div>
       <div class="bench-results-pane">
@@ -1747,8 +1748,8 @@ Backend API endpoints consumed:
 </div>
 
 <!-- Auto-Tune CTX overlay — reuses bench-overlay/panel CSS for consistency -->
-<link rel="stylesheet" href="/static/css/autotune.css?v=2026.07.12-1">
-<div class="bench-overlay" id="autotuneOverlay">
+<link rel="stylesheet" href="/static/css/autotune.css?v=2026.07.12-2">
+<div class="bench-overlay at-wizard" id="autotuneOverlay">
   <div class="bench-panel">
     <div class="bench-header">
       <div class="bench-head-l">
@@ -1889,7 +1890,7 @@ Backend API endpoints consumed:
     <!-- Action row (rail bottom) -->
     <div class="bench-rail-actions">
       <button id="atCancelBtn" class="btn btn-red-muted-gradient" onclick="cancelAutotune()" style="display:none;">✕ Cancel</button>
-      <button id="atRunBtn" class="btn btn-stone-muted-gradient" onclick="runAutotune()">▶ Run Auto Tune</button>
+      <button id="atRunBtn" class="btn btn-stone-muted-gradient bench-run-primary" onclick="runAutotune()">▶ Run Auto Tune</button>
     </div>
       </div>
       <div class="bench-results-pane">
@@ -1918,7 +1919,7 @@ Backend API endpoints consumed:
 </div>
 
 <!-- vLLM Auto-Tune overlay (#356) -->
-<div class="bench-overlay" id="vllmAtOverlay">
+<div class="bench-overlay at-wizard" id="vllmAtOverlay">
   <div class="bench-panel">
     <div class="bench-header">
       <div class="bench-head-l">
@@ -1967,7 +1968,7 @@ Backend API endpoints consumed:
         </div>
         <div class="bench-rail-actions">
           <button id="vllmAtCancelBtn" class="btn btn-red-muted-gradient" onclick="cancelVllmAutotune()" style="display:none;">✕ Cancel</button>
-          <button id="vllmAtRunBtn" class="btn btn-stone-muted-gradient" onclick="runVllmAutotune()">▶ Run Auto Tune</button>
+          <button id="vllmAtRunBtn" class="btn btn-stone-muted-gradient bench-run-primary" onclick="runVllmAutotune()">▶ Run Auto Tune</button>
         </div>
       </div>
       <div class="bench-results-pane">
@@ -1980,6 +1981,53 @@ Backend API endpoints consumed:
           <div class="dl-log" id="vllmAtRawLog" style="height:220px;"></div>
         </details>
         <div id="vllmAtResults"></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- vLLM Benchmark overlay (#357) -->
+<div class="bench-overlay at-wizard" id="vllmBenchOverlay">
+  <div class="bench-panel">
+    <div class="bench-header">
+      <div class="bench-head-l">
+        <h2>⏱ vLLM Benchmark</h2>
+        <span class="bench-sub">Run vllm bench serve against the live server and save throughput + latency results.</span>
+      </div>
+      <button class="close-btn" onclick="closeVllmBench()" style="background:none;border:none;color:var(--fg-dim);cursor:pointer;font-size:1.2em;">✕</button>
+    </div>
+    <div class="bench-body">
+      <div class="bench-rail">
+        <div class="bench-row" id="vllmBenchPreflight" style="background:var(--bg-card-alt);border:1px solid var(--border-strong);border-radius:6px;padding:8px 12px;margin-bottom:6px;">
+          <span id="vllmBenchPreflightMsg" style="flex:1;font-size:0.85em;">Checking vLLM server…</span>
+          <button id="vllmBenchStartBtn" class="btn btn-stone-muted-gradient" onclick="vllmBenchStartServer()" style="display:none;">▶ Start vLLM</button>
+        </div>
+        <div class="modal-group">
+          <div class="modal-group-h">Switches</div>
+          <div id="vllmBenchSwitchList" style="display:flex;flex-direction:column;gap:4px;"></div>
+          <div class="bench-row" style="margin-top:6px;">
+            <input type="text" id="vllmBenchAddFlag" placeholder="--flag" style="width:170px;padding:5px 8px;background:var(--bg-elev);color:var(--fg);border:1px solid var(--border);border-radius:4px;font-family:monospace;font-size:0.85em;">
+            <input type="text" id="vllmBenchAddVal" placeholder="value (blank = boolean)" style="flex:1;min-width:120px;padding:5px 8px;background:var(--bg-elev);color:var(--fg);border:1px solid var(--border);border-radius:4px;font-family:monospace;font-size:0.85em;">
+            <button class="btn btn-gray-muted-gradient btn-sm" onclick="vllmBenchAddSwitch()">+ Add</button>
+          </div>
+        </div>
+        <div class="sub" style="margin-top:8px;color:var(--fg-dim);">
+          Runs against the live server — active requests will contend with the benchmark load.
+        </div>
+        <div class="bench-rail-actions">
+          <button id="vllmBenchCancelBtn" class="btn btn-red-muted-gradient" onclick="cancelVllmBench()" style="display:none;">✕ Cancel</button>
+          <button id="vllmBenchRunBtn" class="btn btn-stone-muted-gradient bench-run-primary" onclick="runVllmBench()">▶ Run Benchmark</button>
+        </div>
+      </div>
+      <div class="bench-results-pane">
+        <div id="vllmBenchStatus" class="sub"></div>
+        <details id="vllmBenchRawDetails" style="margin-top:8px;" open>
+          <summary style="cursor:pointer;font-size:0.9em;color:var(--fg-dim);user-select:none;">
+            Benchmark output (<span id="vllmBenchRawCount">0</span> lines)
+          </summary>
+          <div class="dl-log" id="vllmBenchRawLog" style="height:260px;"></div>
+        </details>
+        <div id="vllmBenchResults"></div>
       </div>
     </div>
   </div>

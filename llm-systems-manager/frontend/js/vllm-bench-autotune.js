@@ -1,5 +1,5 @@
-// vLLM Auto-Tune max-model-len wizard — overlay + EventSource client
-// for the /api/vllm/autotune/* routes; mirrors bench-autotune.js.
+// vLLM wizards: Auto-Tune max-model-len + Benchmark (vllm bench serve) —
+// overlay + EventSource clients for /api/vllm/{autotune,bench}/*.
 
 let _vatEventSrc = null;
 let _vatOrig = null;        // {binary, args} from svcconfig GET
@@ -252,3 +252,299 @@ function _vatFinish() {
   _vatEl('vllmAtRunBtn').style.display = '';
   _vatEl('vllmAtCancelBtn').style.display = 'none';
 }
+
+// ── Benchmark wizard (vllm bench serve) ─────────────────────────────────
+
+const VBENCH_DEFAULTS = [
+  { flag: '--dataset-name', value: 'random' },
+  { flag: '--random-input-len', value: '1024' },
+  { flag: '--random-output-len', value: '128' },
+  { flag: '--num-prompts', value: '200' },
+];
+
+let _vbenchEventSrc = null;
+let _vbenchSwitches = [];
+let _vbenchRawCount = 0;
+let _vbenchResult = null;
+let _vbenchModel = null;
+window._vbenchData = window._vbenchData || {};
+
+function _vbenchUrl(path) {
+  // Explicit agent pin so the global fetch wrapper's llama mapping for
+  // /api/benchmark/* never injects the wrong picker selection.
+  const aid = typeof _selectedAgent === 'function' ? (_selectedAgent('vllm') || '') : '';
+  const sep = path.includes('?') ? '&' : '?';
+  return `${path}${sep}provider=vllm&agent=${encodeURIComponent(aid)}`;
+}
+
+async function loadVllmBenchData() {
+  try {
+    const r = await fetch(_vbenchUrl('/api/benchmark/results')).then(_jsonOrThrow);
+    const map = {};
+    for (const row of (r.results || [])) map[row.model_id] = row;
+    window._vbenchData = map;
+    if (typeof fetchVllmMetrics === 'function') fetchVllmMetrics();
+  } catch (e) { /* offline manager: badges simply stay hidden */ }
+}
+
+function _vbenchSetStatus(txt, cls) {
+  const el = _vatEl('vllmBenchStatus');
+  if (el) { el.textContent = txt; el.className = 'sub ' + (cls || ''); }
+}
+
+function _vbenchRawAppend(text) {
+  const box = _vatEl('vllmBenchRawLog');
+  if (!box) return;
+  _vbenchRawCount++;
+  const cnt = _vatEl('vllmBenchRawCount');
+  if (cnt) cnt.textContent = String(_vbenchRawCount);
+  const nearBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 40;
+  const div = document.createElement('div');
+  div.textContent = text;
+  box.appendChild(div);
+  while (box.childNodes.length > 2000) box.removeChild(box.firstChild);
+  if (nearBottom) box.scrollTop = box.scrollHeight;
+}
+
+function _vbenchRenderSwitches() {
+  const host = _vatEl('vllmBenchSwitchList');
+  if (!host) return;
+  host.innerHTML = '';
+  _vbenchSwitches.forEach((s, i) => {
+    const row = document.createElement('div');
+    row.style.cssText = 'display:flex;gap:4px;align-items:center;flex-wrap:nowrap;';
+    const flag = document.createElement('input');
+    flag.type = 'text'; flag.value = s.flag;
+    flag.style.cssText = 'width:150px;flex:0 0 auto;padding:5px 8px;background:var(--bg-elev);color:var(--fg);border:1px solid var(--border);border-radius:4px;font-family:monospace;font-size:0.85em;';
+    flag.oninput = () => { _vbenchSwitches[i].flag = flag.value; };
+    const val = document.createElement('input');
+    val.type = 'text'; val.value = s.value;
+    val.style.cssText = 'flex:1;min-width:0;padding:5px 8px;background:var(--bg-elev);color:var(--fg);border:1px solid var(--border);border-radius:4px;font-family:monospace;font-size:0.85em;';
+    val.oninput = () => { _vbenchSwitches[i].value = val.value; };
+    const rm = document.createElement('button');
+    rm.className = 'btn btn-gray-muted-gradient btn-sm';
+    rm.style.flex = '0 0 auto';
+    rm.textContent = '✕';
+    rm.onclick = () => { _vbenchSwitches.splice(i, 1); _vbenchRenderSwitches(); };
+    row.append(flag, val, rm);
+    host.appendChild(row);
+  });
+}
+
+function vllmBenchAddSwitch() {
+  const flag = (_vatEl('vllmBenchAddFlag').value || '').trim();
+  if (!flag) return;
+  _vbenchSwitches.push({ flag, value: (_vatEl('vllmBenchAddVal').value || '').trim() });
+  _vatEl('vllmBenchAddFlag').value = '';
+  _vatEl('vllmBenchAddVal').value = '';
+  _vbenchRenderSwitches();
+}
+
+async function _vbenchPreflight() {
+  const msg = _vatEl('vllmBenchPreflightMsg');
+  const startBtn = _vatEl('vllmBenchStartBtn');
+  const runBtn = _vatEl('vllmBenchRunBtn');
+  msg.textContent = 'Checking vLLM server…';
+  startBtn.style.display = 'none';
+  try {
+    const d = await fetch('/api/vllm/metrics').then(_jsonOrThrow);
+    const v = d.vllm || {};
+    if (d.agent_online && v.state === 'running') {
+      _vbenchModel = v.model || null;
+      msg.textContent = `Server running — model: ${_vbenchModel || '(unknown)'}`;
+      runBtn.disabled = false;
+      return;
+    }
+    msg.textContent = d.agent_online
+      ? '⚠ vLLM server is not running — the benchmark needs a live server.'
+      : '⚠ vLLM agent offline.';
+    startBtn.style.display = d.agent_online ? '' : 'none';
+    runBtn.disabled = true;
+  } catch (e) {
+    msg.textContent = `⚠ ${e.message || e}`;
+    runBtn.disabled = true;
+  }
+}
+
+async function vllmBenchStartServer() {
+  const btn = _vatEl('vllmBenchStartBtn');
+  btn.disabled = true; btn.textContent = '…';
+  try { await fetch('/api/vllm/server/start', { method: 'POST' }); } catch (e) { /* poll below reports it */ }
+  const until = Date.now() + 90000;
+  while (Date.now() < until) {
+    await new Promise(r => setTimeout(r, 3000));
+    try {
+      const d = await fetch('/api/vllm/metrics').then(_jsonOrThrow);
+      if ((d.vllm || {}).state === 'running') break;
+    } catch (e) { /* keep polling until deadline */ }
+  }
+  btn.disabled = false; btn.textContent = '▶ Start vLLM';
+  _vbenchPreflight();
+}
+
+function openVllmBench() {
+  _vatEl('vllmBenchOverlay').classList.add('open');
+  _vatEl('vllmBenchResults').innerHTML = '';
+  _vatEl('vllmBenchRawLog').innerHTML = '';
+  _vbenchRawCount = 0;
+  _vbenchResult = null;
+  _vbenchSetStatus('');
+  _vatEl('vllmBenchRunBtn').style.display = '';
+  _vatEl('vllmBenchCancelBtn').style.display = 'none';
+  if (!_vbenchSwitches.length) _vbenchSwitches = VBENCH_DEFAULTS.map(s => ({ ...s }));
+  _vbenchRenderSwitches();
+  _vbenchPreflight();
+  loadVllmBenchData();
+}
+
+function closeVllmBench() {
+  _vatEl('vllmBenchOverlay').classList.remove('open');
+  if (_vbenchEventSrc) cancelVllmBench();
+  _vbenchFinish();
+}
+
+async function runVllmBench() {
+  const switches = _vbenchSwitches
+    .map(s => ({ flag: String(s.flag || '').trim(), value: String(s.value || '').trim() }))
+    .filter(s => s.flag);
+  _vatEl('vllmBenchResults').innerHTML = '';
+  _vatEl('vllmBenchRunBtn').style.display = 'none';
+  _vatEl('vllmBenchCancelBtn').style.display = '';
+  _vbenchSetStatus('Starting…');
+  let r;
+  try {
+    r = await fetch('/api/vllm/bench/run', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model: _vbenchModel, switches }),
+    }).then(_jsonOrThrow);
+  } catch (e) { r = { ok: false, error: e.message || String(e) }; }
+  if (!r.ok) {
+    _vbenchSetStatus(`⚠ ${r.error || 'run failed'}`, 'err');
+    _vbenchFinish();
+    return;
+  }
+  _vbenchEventSrc = new EventSource(window._withAgentParam('/api/vllm/bench/stream'));
+  _vbenchEventSrc.onmessage = (ev) => {
+    let msg;
+    try { msg = JSON.parse(ev.data); } catch { return; }
+    _vbenchHandleEvent(msg);
+  };
+  _vbenchEventSrc.onerror = () => {
+    if (_vbenchEventSrc && _vbenchEventSrc.readyState === EventSource.CLOSED) {
+      _vbenchSetStatus('⚠ progress stream closed', 'err');
+      _vbenchFinish();
+    }
+  };
+}
+
+function _vbenchHandleEvent(msg) {
+  switch (msg.type) {
+    case 'keepalive': return;
+    case 'model_start':
+      _vbenchSetStatus(`Benchmarking ${msg.model}…`);
+      _vbenchRawAppend(`$ ${msg.cmd}`);
+      return;
+    case 'line':
+      _vbenchRawAppend(msg.text);
+      return;
+    case 'result':
+      _vbenchResult = msg;
+      _vbenchRenderResult(msg);
+      return;
+    case 'model_done':
+      if (!msg.ok && !msg.cancelled) {
+        _vatEl('vllmBenchResults').innerHTML =
+          `<div class="at-result-card" style="border-left-color:var(--crit);"><span style="color:var(--crit);">✕ ${_esc(msg.error || 'benchmark failed')}</span></div>`;
+      }
+      return;
+    case 'done':
+      _vbenchSetStatus(msg.cancelled ? 'Cancelled.' : (msg.ok ? 'Done.' : 'Failed.'),
+                       msg.ok ? '' : 'err');
+      _vbenchFinish();
+      return;
+  }
+}
+
+function _vbenchStat(k, v, u) {
+  return `<div class="at-stat"><div class="at-stat-k">${k}</div>
+      <div class="at-stat-v">${v}<span class="at-stat-u">${u || ''}</span></div></div>`;
+}
+
+function _vbenchFmt(x, digits = 1) {
+  return (typeof x === 'number' && isFinite(x)) ? x.toFixed(digits) : '—';
+}
+
+function _vbenchRenderResult(msg) {
+  const m = msg.metrics || {};
+  const saved = window._vbenchData[msg.model_id];
+  _vatEl('vllmBenchResults').innerHTML = `
+    <div class="at-result-card">
+      <div class="at-result-head"><span class="at-result-model">${_esc(msg.model_id)}</span></div>
+      <div class="at-result-grid">
+        ${_vbenchStat('Requests', _vbenchFmt(m.request_throughput, 2), 'req/s')}
+        ${_vbenchStat('Output', _vbenchFmt(m.output_throughput), 'tok/s')}
+        ${_vbenchStat('Total', _vbenchFmt(m.total_token_throughput), 'tok/s')}
+        ${_vbenchStat('TTFT p50/p99', `${_vbenchFmt(m.median_ttft_ms, 0)}/${_vbenchFmt(m.p99_ttft_ms, 0)}`, 'ms')}
+        ${_vbenchStat('TPOT p50/p99', `${_vbenchFmt(m.median_tpot_ms, 1)}/${_vbenchFmt(m.p99_tpot_ms, 1)}`, 'ms')}
+        ${_vbenchStat('ITL p50/p99', `${_vbenchFmt(m.median_itl_ms, 1)}/${_vbenchFmt(m.p99_itl_ms, 1)}`, 'ms')}
+      </div>
+      <div class="at-result-actions">
+        <button class="btn" onclick="saveVllmBench(this)">💾 Save</button>
+        ${saved ? `<button class="btn" onclick="clearVllmBench(this)">✕ Clear saved</button>` : ''}
+      </div>
+    </div>`;
+}
+
+async function saveVllmBench(btn) {
+  if (!_vbenchResult) return;
+  const m = _vbenchResult.metrics || {};
+  btn.disabled = true; btn.textContent = '…';
+  let r;
+  try {
+    r = await fetch(_vbenchUrl('/api/benchmark/store'), {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model_id: _vbenchResult.model_id,
+        provider: 'vllm',
+        avg_gen_tps: m.output_throughput ?? null,
+        avg_pg_tps: m.total_token_throughput ?? null,
+        avg_ppt_tps: null,
+        bench_tool: 'vllm-bench-serve',
+        switches: _vbenchResult.switches || [],
+        extra_json: _vbenchResult.extra || {},
+      }),
+    }).then(_jsonOrThrow);
+  } catch (e) { r = { ok: false, error: e.message || String(e) }; }
+  btn.disabled = false;
+  btn.textContent = r.ok ? '✓ Saved' : `⚠ ${r.error || 'failed'}`;
+  if (r.ok) loadVllmBenchData();
+}
+
+async function clearVllmBench(btn) {
+  if (!_vbenchResult) return;
+  btn.disabled = true;
+  try {
+    await fetch(_vbenchUrl('/api/benchmark/results/' + encodeURIComponent(_vbenchResult.model_id)),
+                { method: 'DELETE' }).then(_jsonOrThrow);
+  } catch (e) { /* results reload below reflects the outcome */ }
+  btn.disabled = false;
+  btn.textContent = '✓ Cleared';
+  loadVllmBenchData();
+}
+
+async function cancelVllmBench() {
+  _vbenchSetStatus('Cancelling…');
+  try {
+    await fetch(window._withAgentParam('/api/vllm/bench/cancel'), { method: 'POST' });
+  } catch (e) {
+    _vbenchSetStatus(`⚠ cancel failed: ${e.message || e}`, 'err');
+  }
+}
+
+function _vbenchFinish() {
+  if (_vbenchEventSrc) { _vbenchEventSrc.close(); _vbenchEventSrc = null; }
+  _vatEl('vllmBenchRunBtn').style.display = '';
+  _vatEl('vllmBenchCancelBtn').style.display = 'none';
+}
+
+loadVllmBenchData();
