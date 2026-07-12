@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import logging
 import math
+import re
 import shlex
 import subprocess
 import threading
@@ -378,6 +379,50 @@ def vllm_lora_unload(body: dict, authorization: Optional[str] = Header(default=N
         return {"ok": r.ok, "status": r.status_code, "output": r.text[:500]}
     except Exception as e:
         return {"ok": False, "error": str(e)}
+
+
+# ── Autotune: --max-model-len tuner (#356) ─────────────────────────────
+
+_AT_ANSI_RE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
+_AT_KV_SIZE_RE = re.compile(r"GPU KV cache size:\s*([\d,]+)\s*tokens")
+_AT_MAX_CONC_RE = re.compile(
+    r"Maximum concurrency for\s*([\d,]+)\s*tokens per request:\s*([\d.]+)x")
+_AT_EST_MAX_RE = re.compile(r"estimated maximum model length is\s*([\d,]+)")
+_AT_KV_CAP_OLD_RE = re.compile(
+    r"maximum number of tokens that can be stored in KV cache \(([\d,]+)\)")
+_AT_FATAL_RE = re.compile(
+    r"EngineCore failed|Engine core initialization failed|ValueError|"
+    r"RuntimeError|OutOfMemoryError|CUDA out of memory")
+
+
+def _at_num(s: str) -> int:
+    return int(s.replace(",", ""))
+
+
+def compute_recommended_max_len(kv_tokens: int, concurrency: float = 1.0,
+                                kv_fraction: float = 1.0) -> int:
+    """Largest --max-model-len fitting kv_tokens at the target concurrency,
+    scaled by kv_fraction, floored to a multiple of 256 (min 256)."""
+    conc = max(1.0, float(concurrency))
+    frac = min(1.0, max(0.1, float(kv_fraction)))
+    raw = int(int(kv_tokens) * frac / conc)
+    return max(256, (raw // 256) * 256)
+
+
+def _at_get_max_len(args: list) -> Optional[int]:
+    for a in args:
+        if a.get("flag") == "--max-model-len" and a.get("value"):
+            try:
+                return _at_num(str(a["value"]))
+            except ValueError:
+                return None
+    return None
+
+
+def _at_args_with_max_len(args: list, value: int) -> list:
+    out = [dict(a) for a in args if a.get("flag") != "--max-model-len"]
+    out.append({"flag": "--max-model-len", "value": str(value), "bool": False})
+    return out
 
 
 # ── Route registration ─────────────────────────────────────────────────
