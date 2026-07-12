@@ -209,3 +209,13 @@ def test_vllm_pins_roundtrip(monkeypatch):
                json={"model_id": "m1", "agent_id": A1["agent_id"]})
     assert r.status_code == 400
     assert "vllm" in r.get_json()["error"]
+
+
+def test_agents_list_includes_pool_providers(monkeypatch):
+    _patch(monkeypatch, {})
+    body = _admin_client().get("/api/agents").get_json()
+    got = {p["name"]: p for p in body["pool_providers"]}
+    assert set(got) == {"llama", "vllm"}
+    assert got["vllm"]["label"] == "vLLM"
+    assert got["vllm"]["pin_key"] == "vllm_model_pins"
+    assert got["llama"]["pin_key"] == "llama_model_pins"

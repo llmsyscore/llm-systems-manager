@@ -1309,6 +1309,13 @@ def _agents_list():
         "agents": safe,
         "global": data.get("global", {"auth_disabled": False}),
         "latest_agent_version": latest,
+        # Pool-picker providers, for the admin pool/pins provider chips.
+        "pool_providers": [
+            {"name": n, "label": providers.get(n).label,
+             "pin_key": providers.get(n).pin_dict_key}
+            for n in providers.names()
+            if providers.get(n).default_picker == "pool"
+        ],
     })
 
 
