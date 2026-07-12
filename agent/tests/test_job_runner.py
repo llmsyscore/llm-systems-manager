@@ -73,5 +73,23 @@ def test_sse_generator_frames_and_stops_on_done():
 
 def test_sse_generator_keepalive_on_idle():
     job = _shared.JobRunner("t")
+    job.active = True
     gen = job._sse_iter(idle_timeout=0.05)
     assert next(gen) == b'data: {"type":"keepalive"}\n\n'
+
+
+def test_sse_generator_ends_when_no_job_active():
+    job = _shared.JobRunner("t")
+    frames = list(job._sse_iter(idle_timeout=0.05))
+    assert len(frames) == 1
+    msg = json.loads(frames[0].decode().removeprefix("data: ").strip())
+    assert msg["type"] == "done" and msg["ok"] is False
+
+
+def test_cancel_before_start_does_not_leak_into_next_run():
+    job = _shared.JobRunner("t")
+    job.cancel()
+    seen = {}
+    assert job.try_start(lambda: seen.update(c=job.cancel_event.is_set())) is True
+    job.join(timeout=5)
+    assert seen == {"c": False}

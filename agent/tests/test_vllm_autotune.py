@@ -90,6 +90,18 @@ def test_args_with_max_len_appends_when_absent():
     assert out[-1] == {"flag": "--max-model-len", "value": "4096", "bool": False}
 
 
+EQ_ARGS = [{"flag": "--max-model-len=8192", "value": None, "bool": True}]
+
+
+def test_get_max_len_reads_equals_form():
+    assert vllm._at_get_max_len(EQ_ARGS) == 8192
+
+
+def test_args_with_max_len_strips_equals_form():
+    out = vllm._at_args_with_max_len(EQ_ARGS, 4096)
+    assert out == [{"flag": "--max-model-len", "value": "4096", "bool": False}]
+
+
 # ── journal watcher (fake journalctl via a print-then-idle python child) ─
 
 import subprocess
@@ -157,6 +169,16 @@ def test_watch_timeout(ctx, monkeypatch):
     assert r["outcome"] == "timeout"
 
 
+def test_watch_kv_returns_quickly_on_quiet_journal(ctx, monkeypatch):
+    import time as _time
+    _fake_journal(monkeypatch, ["GPU KV cache size: 230,528 tokens"])
+    monkeypatch.setattr(vllm, "_AT_CONC_GRACE_S", 0.5)
+    t0 = _time.monotonic()
+    r = vllm._at_watch_journal("vllm.service", timeout_s=30, step="probe")
+    assert r["outcome"] == "kv" and r["kv_tokens"] == 230528
+    assert _time.monotonic() - t0 < 10
+
+
 def test_watch_cancel(ctx, monkeypatch):
     _fake_journal(monkeypatch, ["INFO still loading..."])
     vllm._at_job.cancel_event.set()
@@ -175,7 +197,8 @@ from fastapi import HTTPException
 def test_run_rejects_bad_params(ctx):
     for body in ({"probe_len": 100}, {"concurrency": 0.5},
                  {"kv_fraction": 0.01}, {"load_timeout_s": 5},
-                 {"probe_len": "nope"}):
+                 {"probe_len": "nope"}, {"probe_len": 0},
+                 {"kv_fraction": 0}, {"concurrency": 0}):
         with pytest.raises(HTTPException) as ei:
             vllm.vllm_autotune_run(body)
         assert ei.value.status_code == 400

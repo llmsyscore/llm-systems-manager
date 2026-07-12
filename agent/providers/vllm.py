@@ -312,16 +312,22 @@ def vllm_svcconfig_get(authorization: Optional[str] = Header(default=None)) -> d
     return {"ok": True, "binary": head, "args": args}
 
 
-def vllm_svcconfig_post(body: dict, authorization: Optional[str] = Header(default=None)) -> dict[str, Any]:
-    _require_ctx().check_bearer(authorization); _vllm_check_enabled()
-    tokens = _svcconfig_tokens(body.get("binary", ""), body.get("args", []))
+def _svcconfig_write(head_tokens: list, args: list, restart: bool = False) -> dict[str, Any]:
+    """Token build + wrapper apply, optionally restarting the unit."""
+    tokens = _shared.build_svcconfig_tokens(head_tokens, args)
     if not tokens:
         return {"ok": False, "error": "invalid ExecStart token (newline or non-string)"}
     return _shared.svcconfig_apply(
         _VLLM_SVCCONFIG_WRAPPER, _vllm_svc_file_path(), tokens,
         sudoers_hint="llm-vllm-svcconfig-apply",
-        restart_unit=_require_ctx().config.VLLM_SYSTEMD_UNIT if body.get("restart") else None,
+        restart_unit=_require_ctx().config.VLLM_SYSTEMD_UNIT if restart else None,
         restart_timeout=60)
+
+
+def vllm_svcconfig_post(body: dict, authorization: Optional[str] = Header(default=None)) -> dict[str, Any]:
+    _require_ctx().check_bearer(authorization); _vllm_check_enabled()
+    return _svcconfig_write(shlex.split(body.get("binary", "") or ""),
+                            body.get("args", []), restart=bool(body.get("restart")))
 
 
 # ── OpenAI passthrough (shared with providers/llama.py #214) ───────────
@@ -383,7 +389,6 @@ def vllm_lora_unload(body: dict, authorization: Optional[str] = Header(default=N
 
 # ── Autotune: --max-model-len tuner (#356) ─────────────────────────────
 
-_AT_ANSI_RE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
 _AT_KV_SIZE_RE = re.compile(r"GPU KV cache size:\s*([\d,]+)\s*tokens")
 _AT_MAX_CONC_RE = re.compile(
     r"Maximum concurrency for\s*([\d,]+)\s*tokens per request:\s*([\d.]+)x")
@@ -393,6 +398,9 @@ _AT_KV_CAP_OLD_RE = re.compile(
 _AT_FATAL_RE = re.compile(
     r"EngineCore failed|Engine core initialization failed|ValueError|"
     r"RuntimeError|OutOfMemoryError|CUDA out of memory")
+
+# Grace wait for the max-concurrency line after the KV-size line arrives.
+_AT_CONC_GRACE_S = 8.0
 
 
 def _at_num(s: str) -> int:
@@ -410,17 +418,27 @@ def compute_recommended_max_len(kv_tokens: int, concurrency: float = 1.0,
 
 
 def _at_get_max_len(args: list) -> Optional[int]:
+    """Current --max-model-len value; handles both '--flag v' and '--flag=v'."""
     for a in args:
-        if a.get("flag") == "--max-model-len" and a.get("value"):
+        flag = str(a.get("flag") or "")
+        raw = None
+        if flag == "--max-model-len" and a.get("value"):
+            raw = str(a["value"])
+        elif flag.startswith("--max-model-len="):
+            raw = flag.split("=", 1)[1]
+        if raw is not None:
             try:
-                return _at_num(str(a["value"]))
+                return _at_num(raw)
             except ValueError:
                 return None
     return None
 
 
 def _at_args_with_max_len(args: list, value: int) -> list:
-    out = [dict(a) for a in args if a.get("flag") != "--max-model-len"]
+    """Args with --max-model-len (either form) replaced by the given value."""
+    out = [dict(a) for a in args
+           if a.get("flag") != "--max-model-len"
+           and not str(a.get("flag") or "").startswith("--max-model-len=")]
     out.append({"flag": "--max-model-len", "value": str(value), "bool": False})
     return out
 
@@ -428,48 +446,58 @@ def _at_args_with_max_len(args: list, value: int) -> list:
 _at_job = _shared.JobRunner("vllm-autotune")
 
 
-def _at_watch_journal(unit: str, timeout_s: float, step: str) -> dict:
+def _at_watch_journal(unit: str, timeout_s: float, step: str,
+                      started: Optional[threading.Event] = None) -> dict:
     """Follow the unit journal until a KV-capacity answer, engine failure,
     cancel, or timeout; emits line + loading_progress events while waiting."""
-    res: dict[str, Any] = {"outcome": "timeout", "max_conc": None}
+    res: dict[str, Any] = {"outcome": "timeout"}
     proc = subprocess.Popen(
         ["journalctl", "-u", unit, "-n", "0", "-f", "-o", "cat"],
         stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
         text=True, start_new_session=True)
     _at_job.track(proc)
-    deadline = time.monotonic() + timeout_s
-    grace: Optional[float] = None
-    killer = threading.Timer(timeout_s, _at_job.kill_tracked)
+    if started is not None:
+        started.set()
+
+    def _kill_local():
+        try:
+            proc.kill()
+        except Exception:
+            log.debug("journal watcher kill failed", exc_info=True)
+
+    killer = threading.Timer(timeout_s, _kill_local)
     killer.daemon = True
     killer.start()
     hb_stop = threading.Event()
 
     def _hb():
         start = time.monotonic()
+        ticks = 0
         while not hb_stop.wait(2.0):
+            ticks += 1
             _at_job.put({"type": "loading_progress", "step": step,
                          "elapsed_s": round(time.monotonic() - start, 1),
                          "timeout_s": timeout_s})
-            if time.monotonic() - start > 15:
+            if time.monotonic() - start > 15 and ticks % 5 == 0:
                 try:
                     r = subprocess.run(["systemctl", "is-active", unit],
                                        capture_output=True, text=True, timeout=5)
-                    state = (r.stdout or "").strip()
-                    if state in ("failed", "inactive"):
-                        res["unit_state"] = state
-                        _at_job.kill_tracked()
+                    if (r.stdout or "").strip() == "failed":
+                        res["unit_state"] = "failed"
+                        _kill_local()
                         return
                 except Exception:
                     log.debug("is-active poll failed", exc_info=True)
 
-    threading.Thread(target=_hb, daemon=True).start()
+    hb_thread = threading.Thread(target=_hb, daemon=True)
+    hb_thread.start()
     try:
         assert proc.stdout is not None
         for raw in iter(proc.stdout.readline, ""):
             if _at_job.cancel_event.is_set():
                 res["outcome"] = "cancelled"
                 break
-            line = _AT_ANSI_RE.sub("", raw).rstrip()
+            line = _shared.ANSI_RE.sub("", raw).rstrip()
             if not line:
                 continue
             _at_job.put({"type": "line", "text": line})
@@ -477,9 +505,13 @@ def _at_watch_journal(unit: str, timeout_s: float, step: str) -> dict:
             if m:
                 res["max_conc"] = float(m.group(2))
             m = _AT_KV_SIZE_RE.search(line)
-            if m:
+            if m and res["outcome"] != "kv":
                 res.update(outcome="kv", kv_tokens=_at_num(m.group(1)))
-                grace = min(deadline, time.monotonic() + 8)
+                # Quiet journals block readline; a short timer forces EOF.
+                killer.cancel()
+                killer = threading.Timer(_AT_CONC_GRACE_S, _kill_local)
+                killer.daemon = True
+                killer.start()
             m = _AT_EST_MAX_RE.search(line) or _AT_KV_CAP_OLD_RE.search(line)
             if m and res["outcome"] != "kv":
                 res.update(outcome="est_max", est_max_len=_at_num(m.group(1)))
@@ -487,8 +519,7 @@ def _at_watch_journal(unit: str, timeout_s: float, step: str) -> dict:
             if res["outcome"] != "kv" and _AT_FATAL_RE.search(line):
                 res.update(outcome="fatal", fatal_line=line[:300])
                 break
-            if res["outcome"] == "kv" and (res["max_conc"] is not None
-                                           or (grace and time.monotonic() > grace)):
+            if res["outcome"] == "kv" and res.get("max_conc") is not None:
                 break
         if _at_job.cancel_event.is_set():
             res["outcome"] = "cancelled"
@@ -498,7 +529,8 @@ def _at_watch_journal(unit: str, timeout_s: float, step: str) -> dict:
     finally:
         hb_stop.set()
         killer.cancel()
-        _at_job.kill_tracked()
+        _kill_local()
+        hb_thread.join(timeout=6)
         _at_job.untrack()
     return res
 
@@ -521,32 +553,27 @@ def _at_wait_ready(timeout_s: float = 60.0) -> Optional[int]:
 
 def _at_apply(head_tokens: list, args: list) -> dict:
     """svcconfig write (daemon-reload inside the wrapper), no restart."""
-    tokens = _shared.build_svcconfig_tokens(head_tokens, args)
-    if not tokens:
-        return {"ok": False, "error": "invalid ExecStart token (newline or non-string)"}
-    return _shared.svcconfig_apply(
-        _VLLM_SVCCONFIG_WRAPPER, _vllm_svc_file_path(), tokens,
-        sudoers_hint="llm-vllm-svcconfig-apply", restart_unit=None)
+    return _svcconfig_write(head_tokens, args)
 
 
 def _at_restart_and_watch(unit: str, timeout_s: float, step: str) -> dict:
     """Start the journal watcher in a thread, then restart the unit."""
     holder: dict[str, Any] = {}
+    started = threading.Event()
     t = threading.Thread(
-        target=lambda: holder.update(_at_watch_journal(unit, timeout_s, step)),
+        target=lambda: holder.update(_at_watch_journal(unit, timeout_s, step,
+                                                       started=started)),
         daemon=True)
     t.start()
-    time.sleep(0.5)
+    started.wait(timeout=5)
     r = _vllm_systemctl("restart", timeout=60)
     if not r["ok"]:
-        _at_job.cancel_event.set()
         _at_job.kill_tracked()
         t.join(timeout=10)
-        _at_job.cancel_event.clear()
-        return {"outcome": "fatal", "max_conc": None,
+        return {"outcome": "fatal",
                 "fatal_line": f"systemctl restart failed: {r.get('error')}"}
     t.join(timeout=timeout_s + 15)
-    return holder or {"outcome": "timeout", "max_conc": None}
+    return holder or {"outcome": "timeout"}
 
 
 def _at_run(params: dict) -> None:
@@ -558,12 +585,16 @@ def _at_run(params: dict) -> None:
     head_tokens: list = []
     orig_args: list = []
     orig_max: Optional[int] = None
+
+    def _fail(error: Optional[str]) -> None:
+        _at_job.put({"type": "model_done", "ok": False, "applied": False,
+                     "error": error})
+
     try:
         content = Path(_vllm_svc_file_path()).read_text()
         head, orig_args = _parse_vllm_execstart(content)
         if head is None:
-            _at_job.put({"type": "model_done", "ok": False, "applied": False,
-                         "error": "ExecStart line not found in service file"})
+            _fail("ExecStart line not found in service file")
             return
         head_tokens = shlex.split(head)
         orig_max = _at_get_max_len(orig_args)
@@ -575,8 +606,7 @@ def _at_run(params: dict) -> None:
                      "max_model_len": params["probe_len"]})
         r = _at_apply(head_tokens, _at_args_with_max_len(orig_args, params["probe_len"]))
         if not r["ok"]:
-            _at_job.put({"type": "model_done", "ok": False, "applied": False,
-                         "error": r.get("error")})
+            _fail(r.get("error"))
             return
         mutated = True
         watch = _at_restart_and_watch(unit, params["load_timeout_s"], "probe")
@@ -587,9 +617,8 @@ def _at_run(params: dict) -> None:
         elif watch["outcome"] == "est_max":
             kv_tokens = watch["est_max_len"]
         else:
-            _at_job.put({"type": "model_done", "ok": False, "applied": False,
-                         "error": watch.get("fatal_line")
-                         or f"probe {watch['outcome']} — no KV-capacity answer in journal"})
+            _fail(watch.get("fatal_line")
+                  or f"probe {watch['outcome']} — no KV-capacity answer in journal")
             return
         _at_job.put({"type": "kv_capacity", "tokens": kv_tokens})
 
@@ -602,7 +631,8 @@ def _at_run(params: dict) -> None:
         if params["report_only"]:
             _at_job.put({"type": "model_done", "ok": True, "applied": False,
                          "report_only": True, "max_model_len": rec,
-                         "kv_tokens": kv_tokens, "max_concurrency_x": watch["max_conc"],
+                         "kv_tokens": kv_tokens,
+                         "max_concurrency_x": watch.get("max_conc"),
                          "original_max_len": orig_max})
             ok = True
             return
@@ -610,16 +640,14 @@ def _at_run(params: dict) -> None:
         _at_job.put({"type": "step_start", "step": "apply", "max_model_len": rec})
         r = _at_apply(head_tokens, _at_args_with_max_len(orig_args, rec))
         if not r["ok"]:
-            _at_job.put({"type": "model_done", "ok": False, "applied": False,
-                         "error": r.get("error")})
+            _fail(r.get("error"))
             return
         watch = _at_restart_and_watch(unit, params["load_timeout_s"], "verify")
         if watch["outcome"] == "cancelled":
             return
         if watch["outcome"] != "kv":
-            _at_job.put({"type": "model_done", "ok": False, "applied": False,
-                         "error": watch.get("fatal_line")
-                         or f"verify {watch['outcome']} at max-model-len={rec}"})
+            _fail(watch.get("fatal_line")
+                  or f"verify {watch['outcome']} at max-model-len={rec}")
             return
         reported = _at_wait_ready(60)
         if reported is not None and reported != rec:
@@ -630,11 +658,10 @@ def _at_run(params: dict) -> None:
         _at_job.put({"type": "model_done", "ok": True, "applied": True,
                      "report_only": False, "max_model_len": rec,
                      "kv_tokens": watch.get("kv_tokens", kv_tokens),
-                     "max_concurrency_x": watch["max_conc"],
+                     "max_concurrency_x": watch.get("max_conc"),
                      "original_max_len": orig_max})
     except Exception as e:
-        _at_job.put({"type": "model_done", "ok": False, "applied": False,
-                     "error": str(e)})
+        _fail(str(e))
     finally:
         cancelled = _at_job.cancel_event.is_set()
         if mutated and head_tokens:
@@ -653,12 +680,16 @@ def vllm_autotune_run(body: dict,
                       authorization: Optional[str] = Header(default=None)) -> dict[str, Any]:
     _require_ctx().check_bearer(authorization)
     _vllm_check_enabled()
+    def _num(key: str, default, cast):
+        v = body.get(key)
+        return cast(default if v is None else v)
+
     try:
         params = {
-            "probe_len": int(body.get("probe_len") or 4096),
-            "concurrency": float(body.get("concurrency") or 1.0),
-            "kv_fraction": float(body.get("kv_fraction") or 1.0),
-            "load_timeout_s": int(body.get("load_timeout_s") or 600),
+            "probe_len": _num("probe_len", 4096, int),
+            "concurrency": _num("concurrency", 1.0, float),
+            "kv_fraction": _num("kv_fraction", 1.0, float),
+            "load_timeout_s": _num("load_timeout_s", 600, int),
             "report_only": bool(body.get("report_only")),
         }
     except (TypeError, ValueError):
@@ -688,13 +719,15 @@ def vllm_autotune_stream(
 def vllm_autotune_cancel(authorization: Optional[str] = Header(default=None)) -> dict[str, Any]:
     _require_ctx().check_bearer(authorization)
     _vllm_check_enabled()
-    return {"ok": _at_job.cancel(), "active": _at_job.active}
+    _at_job.cancel()
+    return {"ok": True, "active": _at_job.active}
 
 
 def shutdown_children() -> None:
-    """Kill tracked autotune children at agent shutdown."""
+    """Cancel a running autotune and wait for its ExecStart rollback."""
     try:
         _at_job.cancel()
+        _at_job.join(timeout=45)
     except Exception:
         log.debug("vllm shutdown_children failed", exc_info=True)
 

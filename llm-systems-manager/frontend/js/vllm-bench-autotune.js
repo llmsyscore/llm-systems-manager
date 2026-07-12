@@ -1,5 +1,5 @@
-// vLLM wizards: Auto-Tune max-model-len (#356). Bench wizard lands in #357.
-// Mirrors bench-autotune.js: overlay + EventSource over the manager proxy.
+// vLLM Auto-Tune max-model-len wizard — overlay + EventSource client
+// for the /api/vllm/autotune/* routes; mirrors bench-autotune.js.
 
 let _vatEventSrc = null;
 let _vatOrig = null;        // {binary, args} from svcconfig GET
@@ -19,11 +19,12 @@ function _vatRawAppend(text) {
   _vatRawCount++;
   const cnt = _vatEl('vllmAtRawCount');
   if (cnt) cnt.textContent = String(_vatRawCount);
+  const nearBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 40;
   const div = document.createElement('div');
   div.textContent = text;
   box.appendChild(div);
   while (box.childNodes.length > 2000) box.removeChild(box.firstChild);
-  box.scrollTop = box.scrollHeight;
+  if (nearBottom) box.scrollTop = box.scrollHeight;
 }
 
 function _vatProgress(html) {
@@ -31,9 +32,13 @@ function _vatProgress(html) {
   if (el) el.insertAdjacentHTML('beforeend', html);
 }
 
+function _vatStripMaxLen(args) {
+  return (args || []).filter(a => a.flag !== '--max-model-len'
+                                  && !String(a.flag || '').startsWith('--max-model-len='));
+}
+
 function _vatArgsWithMaxLen(args, value) {
-  const out = (args || []).filter(a => a.flag !== '--max-model-len')
-                          .map(a => Object.assign({}, a));
+  const out = _vatStripMaxLen(args);
   out.push({ flag: '--max-model-len', value: String(value), bool: false });
   return out;
 }
@@ -47,17 +52,17 @@ async function openVllmAutotune() {
   _vatSetStatus('');
   _vatOrig = null;
   _vatResult = null;
+  _vatEl('vllmAtRunBtn').style.display = '';
+  _vatEl('vllmAtCancelBtn').style.display = 'none';
   const cur = _vatEl('vllmAtCurrent');
   cur.textContent = 'Reading server config…';
   try {
-    const r = await fetch(window._withAgentParam('/api/vllm/server/svcconfig'))
-      .then(x => x.json());
-    if (!r.ok) throw new Error(r.error || 'svcconfig read failed');
+    const r = await _vatFetchSvcconfig();
     _vatOrig = { binary: r.binary, args: r.args || [] };
-    const ml = (r.args || []).find(a => a.flag === '--max-model-len');
+    const ml = _vatGetMaxLen(r.args || []);
     const parts = (r.binary || '').split(/\s+/);
     const model = parts.length > 2 ? parts[2] : '(unknown)';
-    cur.textContent = `Model: ${model} — current --max-model-len: ${ml && ml.value ? ml.value : '(model default)'}`;
+    cur.textContent = `Model: ${model} — current --max-model-len: ${ml != null ? ml : '(model default)'}`;
     _vatEl('vllmAtRunBtn').disabled = false;
   } catch (e) {
     cur.textContent = `⚠ ${e.message || e} — is the vLLM agent online?`;
@@ -65,18 +70,40 @@ async function openVllmAutotune() {
   }
 }
 
+async function _vatFetchSvcconfig() {
+  const r = await fetch(window._withAgentParam('/api/vllm/server/svcconfig'))
+    .then(_jsonOrThrow);
+  if (!r.ok) throw new Error(r.error || 'svcconfig read failed');
+  return r;
+}
+
+function _vatGetMaxLen(args) {
+  for (const a of args) {
+    const flag = String(a.flag || '');
+    if (flag === '--max-model-len' && a.value) return a.value;
+    if (flag.startsWith('--max-model-len=')) return flag.split('=', 2)[1];
+  }
+  return null;
+}
+
 function closeVllmAutotune() {
   _vatEl('vllmAtOverlay').classList.remove('open');
-  if (_vatEventSrc) { _vatEventSrc.close(); _vatEventSrc = null; }
+  if (_vatEventSrc) cancelVllmAutotune();
+  _vatFinish();
+}
+
+function _vatNum(id, def) {
+  const v = parseFloat(_vatEl(id).value);
+  return Number.isFinite(v) ? v : def;
 }
 
 async function runVllmAutotune() {
   if (!_vatOrig) return;
   const body = {
-    probe_len: parseInt(_vatEl('vllmAtProbeLen').value, 10) || 4096,
-    concurrency: parseFloat(_vatEl('vllmAtConc').value) || 1.0,
-    kv_fraction: (parseFloat(_vatEl('vllmAtFrac').value) || 100) / 100,
-    load_timeout_s: parseInt(_vatEl('vllmAtTimeout').value, 10) || 600,
+    probe_len: Math.round(_vatNum('vllmAtProbeLen', 4096)),
+    concurrency: _vatNum('vllmAtConc', 1.0),
+    kv_fraction: _vatNum('vllmAtFrac', 100) / 100,
+    load_timeout_s: Math.round(_vatNum('vllmAtTimeout', 600)),
     report_only: _vatEl('vllmAtReportOnly').checked,
   };
   const okGo = await _themedConfirm({
@@ -97,14 +124,14 @@ async function runVllmAutotune() {
     r = await fetch(window._withAgentParam('/api/vllm/autotune/run'), {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
-    }).then(x => x.json());
-  } catch (e) { r = { ok: false, error: String(e) }; }
+    }).then(_jsonOrThrow);
+  } catch (e) { r = { ok: false, error: e.message || String(e) }; }
   if (!r.ok) {
     _vatSetStatus(`⚠ ${r.error || 'run failed'}`, 'err');
     _vatFinish();
     return;
   }
-  _vatEventSrc = new EventSource('/api/vllm/autotune/stream');
+  _vatEventSrc = new EventSource(window._withAgentParam('/api/vllm/autotune/stream'));
   _vatEventSrc.onmessage = (ev) => {
     let msg;
     try { msg = JSON.parse(ev.data); } catch { return; }
@@ -181,15 +208,19 @@ function _vatRenderResult(msg) {
     </div>`;
 }
 
-async function _vatPostSvcconfig(args, btn, okLabel) {
+async function _vatPostSvcconfig(maxLen, btn, okLabel) {
   if (btn) { btn.disabled = true; btn.textContent = '…'; }
   let r;
   try {
+    // Fresh read so a concurrent Server Config edit isn't clobbered.
+    const cur = await _vatFetchSvcconfig();
+    const args = maxLen != null ? _vatArgsWithMaxLen(cur.args, maxLen)
+                                : _vatStripMaxLen(cur.args);
     r = await fetch(window._withAgentParam('/api/vllm/server/svcconfig'), {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ binary: _vatOrig.binary, args, restart: true }),
-    }).then(x => x.json());
-  } catch (e) { r = { ok: false, error: String(e) }; }
+      body: JSON.stringify({ binary: cur.binary, args, restart: true }),
+    }).then(_jsonOrThrow);
+  } catch (e) { r = { ok: false, error: e.message || String(e) }; }
   if (btn) {
     btn.disabled = false;
     btn.textContent = r.ok ? okLabel : `⚠ ${r.error || 'failed'}`;
@@ -198,21 +229,22 @@ async function _vatPostSvcconfig(args, btn, okLabel) {
 }
 
 function vllmAtApply(btn) {
-  if (!_vatOrig || !_vatResult) return;
-  _vatPostSvcconfig(_vatArgsWithMaxLen(_vatOrig.args, _vatResult.max_model_len),
-                    btn, '✓ Applied');
+  if (!_vatResult) return;
+  _vatPostSvcconfig(_vatResult.max_model_len, btn, '✓ Applied');
 }
 
 function vllmAtRevert(btn) {
-  if (!_vatOrig) return;
-  _vatPostSvcconfig(_vatOrig.args.map(a => Object.assign({}, a)), btn, '✓ Reverted');
+  if (!_vatResult) return;
+  _vatPostSvcconfig(_vatResult.original_max_len ?? null, btn, '✓ Reverted');
 }
 
 async function cancelVllmAutotune() {
+  _vatSetStatus('Cancelling…');
   try {
     await fetch(window._withAgentParam('/api/vllm/autotune/cancel'), { method: 'POST' });
-  } catch (e) { /* stream close surfaces the outcome */ }
-  _vatSetStatus('Cancelling…');
+  } catch (e) {
+    _vatSetStatus(`⚠ cancel failed: ${e.message || e}`, 'err');
+  }
 }
 
 function _vatFinish() {

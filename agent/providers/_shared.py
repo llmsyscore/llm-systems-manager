@@ -7,6 +7,7 @@ import json
 import logging
 import os
 import queue as _queue_lib
+import re
 import signal
 import subprocess
 import threading
@@ -23,6 +24,20 @@ import stream_pool  # type: ignore[import-not-found]  # sibling at agent root
 log = logging.getLogger("llm-systems-agent.providers._shared")
 
 OPENAI_READ_TIMEOUT_S = 600.0
+
+ANSI_RE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
+
+
+def pool_guarded_sse(gen) -> StreamingResponse:
+    """Stream-pool-guarded SSE response around a byte generator."""
+    if not stream_pool.POOL.try_acquire():
+        raise HTTPException(status_code=503,
+                            detail="agent at stream capacity; retry shortly")
+    return StreamingResponse(
+        stream_pool.guarded_async(gen),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
 
 
 def openai_wants_stream(body: bytes) -> bool:
@@ -219,14 +234,7 @@ class LogStream:
                 except _queue_lib.Empty:
                     yield b'data: {"keepalive": true}\n\n'
 
-        if not stream_pool.POOL.try_acquire():
-            raise HTTPException(status_code=503,
-                                detail="agent at stream capacity; retry shortly")
-        return StreamingResponse(
-            stream_pool.guarded_async(generate()),
-            media_type="text/event-stream",
-            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
-        )
+        return pool_guarded_sse(generate())
 
 
 class JobRunner:
@@ -241,14 +249,15 @@ class JobRunner:
         self.cancel_event = threading.Event()
         self.proc: "Optional[subprocess.Popen]" = None
         self.pgid: "Optional[int]" = None
+        self.thread: "Optional[threading.Thread]" = None
 
     def try_start(self, target) -> bool:
         """Run target on a daemon thread; False when a job is already active."""
         with self.lock:
             if self.active:
                 return False
+            self.cancel_event.clear()
             self.active = True
-        self.cancel_event.clear()
         while not self.queue.empty():
             try:
                 self.queue.get_nowait()
@@ -264,8 +273,15 @@ class JobRunner:
                 with self.lock:
                     self.active = False
 
-        threading.Thread(target=_wrap, daemon=True).start()
+        self.thread = threading.Thread(target=_wrap, daemon=True)
+        self.thread.start()
         return True
+
+    def join(self, timeout: float) -> None:
+        """Wait for the job thread to finish (used at agent shutdown)."""
+        t = self.thread
+        if t is not None and t.is_alive():
+            t.join(timeout)
 
     def put(self, msg: dict) -> None:
         try:
@@ -326,6 +342,10 @@ class JobRunner:
             try:
                 msg = self.queue.get(timeout=idle_timeout)
             except _queue_lib.Empty:
+                if not self.active:
+                    yield (b'data: {"type":"done","ok":false,'
+                           b'"error":"no active job"}\n\n')
+                    return
                 yield b'data: {"type":"keepalive"}\n\n'
                 continue
             yield f"data: {json.dumps(msg)}\n\n".encode()
@@ -334,11 +354,4 @@ class JobRunner:
 
     def sse_response(self, idle_timeout: float = 30.0) -> StreamingResponse:
         """Stream-pool-guarded SSE response; ends after the done event."""
-        if not stream_pool.POOL.try_acquire():
-            raise HTTPException(status_code=503,
-                                detail="agent at stream capacity; retry shortly")
-        return StreamingResponse(
-            stream_pool.guarded_async(self._sse_iter(idle_timeout)),
-            media_type="text/event-stream",
-            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
-        )
+        return pool_guarded_sse(self._sse_iter(idle_timeout))
