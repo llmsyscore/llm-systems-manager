@@ -25,13 +25,12 @@ from typing import Any, Iterator, Optional
 import requests
 from fastapi import Header, HTTPException, Query, Request
 from fastapi.responses import Response, StreamingResponse
-from starlette.concurrency import run_in_threadpool
-
 import stream_pool  # type: ignore[import-not-found]  # sibling at agent root
 from _best_effort import best_effort  # type: ignore[import-not-found]  # sibling at agent root
 from _bench_replay import BenchReplayBuffer  # type: ignore[import-not-found]  # sibling at agent root
 
 from collectors.gpu import collect_gpu  # type: ignore
+from . import _shared
 from . import llama_install
 from . import llama_sse
 from . import llama_upgrade
@@ -96,9 +95,7 @@ _dl_active = False
 _dl_proc: "Optional[subprocess.Popen]" = None
 _dl_cancelled = False
 
-_log_queue: "_queue_lib.Queue[str]" = _queue_lib.Queue(maxsize=4096)
-_log_lock = threading.Lock()
-_log_streaming = False
+_log_state = _shared.LogStream()
 
 _LLAMA_VALUE_FLAGS = {
     "--threads", "--timeout", "--log-file", "--sleep-idle-seconds",
@@ -1081,42 +1078,11 @@ def _llama_queue_command(cmd: list, stdin_input: "Optional[bytes]" = None,
 
 
 def _llama_log_streamer() -> None:
-    """tail -F llama-server.log → _log_queue, dropping idle/noisy lines."""
-    global _log_streaming
-    proc = None
-    try:
-        proc = subprocess.Popen(
-            ["tail", "-n", "100", "-F", _require_ctx().config.LLAMA_LOG_FILE],
-            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, close_fds=True,
-        )
-        assert proc.stdout is not None
-        for raw in iter(proc.stdout.readline, b""):
-            if not _log_streaming:
-                break
-            line = raw.decode("utf-8", errors="replace").rstrip()
-            if line and _llama_log_should_keep(line):
-                try:
-                    _log_queue.put(line, timeout=1)
-                except _queue_lib.Full:
-                    # queue full: evict oldest, then re-enqueue newest
-                    try: _log_queue.get_nowait()
-                    except _queue_lib.Empty: pass
-                    try: _log_queue.put_nowait(line)
-                    except _queue_lib.Full: pass
-    except Exception as e:
-        # best-effort: surface the error line if there is room
-        try: _log_queue.put_nowait(f"[log stream error: {e}]")
-        except _queue_lib.Full: pass
-    finally:
-        if proc is not None:
-            with best_effort("log streamer: terminate proc", log=log):
-                proc.terminate()
-            try: proc.wait(timeout=3)
-            except Exception:
-                with best_effort("log streamer: kill proc", log=log):
-                    proc.kill()
-        with _log_lock:
-            _log_streaming = False
+    """tail -F llama-server.log → _log_state.queue, dropping idle/noisy lines."""
+    _log_state.pump(
+        ["tail", "-n", "100", "-F", _require_ctx().config.LLAMA_LOG_FILE],
+        should_keep=_llama_log_should_keep,
+    )
 
 
 def llama_server_status_endpoint(
@@ -1203,13 +1169,7 @@ def _llama_svc_file_path() -> str:
 
 def _svcconfig_wrapper_baked_unit_path() -> str:
     """UNIT_PATH baked into the installed wrapper, or "" if unreadable."""
-    try:
-        for line in Path(_SVCCONFIG_WRAPPER).read_text().splitlines():
-            if line.startswith("UNIT_PATH='") and line.rstrip().endswith("'"):
-                return line.rstrip()[len("UNIT_PATH='"):-1]
-    except OSError:
-        pass
-    return ""
+    return _shared.wrapper_baked_unit_path(_SVCCONFIG_WRAPPER)
 
 
 def llama_svcconfig_get(authorization: Optional[str] = Header(default=None)) -> dict[str, Any]:
@@ -1244,51 +1204,18 @@ def llama_svcconfig_get(authorization: Optional[str] = Header(default=None)) -> 
 
 def llama_svcconfig_post(body: dict, authorization: Optional[str] = Header(default=None)) -> dict[str, Any]:
     _require_ctx().check_bearer(authorization); _llama_check_enabled()
-    args_list = body.get("args", [])
-    binary = body.get("binary", "")
     do_restart = bool(body.get("restart", False))
-
     # stdin tokens: line 1 = binary, then one ExecStart token per line. The
-    # root-owned wrapper rewrites only the unit's ExecStart line, so the agent
-    # never writes arbitrary unit content (see llm-svcconfig-apply).
-    tokens = [binary]
-    for a in args_list:
-        tokens.append(a["flag"])
-        if not a.get("bool") and a.get("value") not in (None, ""):
-            tokens.append(str(a["value"]))
-    for t in tokens:
-        if not isinstance(t, str) or "\n" in t or "\r" in t:
-            return {"ok": False, "error": "invalid ExecStart token (newline or non-string)"}
-    payload = ("\n".join(tokens) + "\n").encode()
-
-    # Refuse when the wrapper targets a different unit file than the one
-    # configured — it would edit the wrong unit.
-    baked = _svcconfig_wrapper_baked_unit_path()
-    expected = _llama_svc_file_path()
-    if baked and baked != expected:
-        return {"ok": False,
-                "error": f"svcconfig helper is baked for {baked} but the configured "
-                         f"unit is {expected} — run a root agent install.sh --update "
-                         f"to re-bake the helper and sudoers for the renamed unit"}
-
-    try:
-        r = subprocess.run(
-            ["sudo", "-n", _SVCCONFIG_WRAPPER],
-            input=payload, capture_output=True, timeout=15,
-        )
-        if r.returncode != 0:
-            return {"ok": False,
-                    "error": r.stderr.decode().strip() or "svcconfig apply failed — check sudoers for llm-svcconfig-apply"}
-    except Exception as e:
-        return {"ok": False, "error": f"Write failed: {e}"}
-
-    if do_restart:
-        try:
-            subprocess.run(["sudo", "-n", "/usr/bin/systemctl", "restart", _require_ctx().config.LLAMA_SYSTEMD_UNIT],
-                           timeout=30, check=True, capture_output=True)
-        except Exception as e:
-            return {"ok": False, "error": f"restart failed: {e}"}
-    return {"ok": True}
+    # root-owned wrapper rewrites only the unit's ExecStart line.
+    tokens = _shared.build_svcconfig_tokens([body.get("binary", "")],
+                                            body.get("args", []))
+    if tokens is None:
+        return {"ok": False, "error": "invalid ExecStart token (newline or non-string)"}
+    return _shared.svcconfig_apply(
+        _SVCCONFIG_WRAPPER, _llama_svc_file_path(), tokens,
+        sudoers_hint="llm-svcconfig-apply",
+        restart_unit=_require_ctx().config.LLAMA_SYSTEMD_UNIT if do_restart else None,
+        restart_timeout=30)
 
 
 def llama_log_tail(authorization: Optional[str] = Header(default=None)) -> dict[str, Any]:
@@ -1330,31 +1257,8 @@ def llama_log_stream(
     """
     _require_ctx().check_stream_auth(authorization, token, "/llama/log/stream")
     _llama_check_enabled()
-
-    global _log_streaming
-    with _log_lock:
-        if not _log_streaming:
-            _log_streaming = True
-            while not _log_queue.empty():
-                try: _log_queue.get_nowait()
-                except Exception: break
-            threading.Thread(target=_llama_log_streamer, daemon=True).start()
-
-    def generate() -> Iterator[bytes]:
-        while True:
-            try:
-                line = _log_queue.get(timeout=15)
-                yield f"data: {json.dumps({'line': line})}\n\n".encode()
-            except _queue_lib.Empty:
-                yield b'data: {"keepalive": true}\n\n'
-
-    if not stream_pool.POOL.try_acquire():
-        raise HTTPException(status_code=503, detail="agent at stream capacity; retry shortly")
-    return StreamingResponse(
-        stream_pool.guarded_async(generate()),
-        media_type="text/event-stream",
-        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
-    )
+    _log_state.ensure_started(_llama_log_streamer)
+    return _log_state.sse_response()
 
 
 def llama_models_endpoint(authorization: Optional[str] = Header(default=None)) -> dict[str, Any]:
@@ -1366,65 +1270,13 @@ def llama_models_endpoint(authorization: Optional[str] = Header(default=None)) -
         raise HTTPException(status_code=503, detail=str(e))
 
 
-_OPENAI_READ_TIMEOUT_S = 600.0
-
-
-def _openai_wants_stream(body: bytes) -> bool:
-    """True when the JSON body carries "stream": true."""
-    try:
-        return bool((json.loads(body or b"{}") or {}).get("stream"))
-    except Exception:
-        return False
-
-
 async def _llama_openai_forward(sub: str, request: Request,
                                 authorization: "Optional[str]"):
     """Narrow OpenAI passthrough to llama-server /v1/<sub> (#214)."""
-    _require_ctx().check_bearer(authorization)
+    ctx = _require_ctx()
+    ctx.check_bearer(authorization)
     _llama_check_enabled()
-    body = await request.body()
-    url = f"{_require_ctx().config.LLAMA_API_URL.rstrip('/')}/v1/{sub}"
-    headers = {"Content-Type": "application/json"}
-    # Blocking requests.post runs off-loop: this handler is async (for
-    # request.body()), so a direct call would stall the whole event loop.
-    if _openai_wants_stream(body):
-        try:
-            upstream = await run_in_threadpool(
-                lambda: requests.post(url, data=body, headers=headers,
-                                      stream=True,
-                                      timeout=(5, _OPENAI_READ_TIMEOUT_S)))
-        except requests.exceptions.RequestException as e:
-            raise HTTPException(status_code=502, detail=str(e))
-        ctype = upstream.headers.get("content-type") or "text/event-stream"
-        if "text/event-stream" not in ctype.lower():
-            content, status = upstream.content, upstream.status_code
-            upstream.close()
-            return Response(content=content, status_code=status, media_type=ctype)
-        if not stream_pool.POOL.try_acquire():
-            upstream.close()
-            raise HTTPException(status_code=503,
-                                detail="agent at stream capacity; retry shortly")
-
-        def generate() -> "Iterator[bytes]":
-            try:
-                for chunk in upstream.iter_content(chunk_size=None):
-                    if chunk:
-                        yield chunk
-            finally:
-                upstream.close()
-
-        return StreamingResponse(stream_pool.guarded_async(generate()),
-                                 media_type="text/event-stream",
-                                 headers={"Cache-Control": "no-cache",
-                                          "X-Accel-Buffering": "no"})
-    try:
-        r = await run_in_threadpool(
-            lambda: requests.post(url, data=body, headers=headers,
-                                  timeout=(5, _OPENAI_READ_TIMEOUT_S)))
-    except requests.exceptions.RequestException as e:
-        raise HTTPException(status_code=502, detail=str(e))
-    return Response(content=r.content, status_code=r.status_code,
-                    media_type=r.headers.get("content-type") or "application/json")
+    return await _shared.openai_forward(sub, request, ctx.config.LLAMA_API_URL)
 
 
 async def llama_openai_chat(request: Request,

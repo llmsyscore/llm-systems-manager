@@ -525,6 +525,7 @@ _compute_required_install_files() {
     "$SRC_DIR/collectors/liquidctl.py"
     "$SRC_DIR/collectors/system.py"
     "$SRC_DIR/providers/__init__.py"
+    "$SRC_DIR/providers/_shared.py"
     "$SRC_DIR/providers/lms.py"
     "$SRC_DIR/providers/llama.py"
     "$SRC_DIR/providers/llama_sse.py"

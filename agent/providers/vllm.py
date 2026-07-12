@@ -3,23 +3,20 @@ svcconfig, OpenAI passthrough, opt-in LoRA."""
 
 from __future__ import annotations
 
-import json
 import logging
 import math
-import queue as _queue_lib
 import shlex
 import subprocess
 import threading
 import time
 from pathlib import Path
-from typing import Any, Iterator, Optional
+from typing import Any, Optional
 
 import requests
 from fastapi import Header, HTTPException, Query, Request
-from fastapi.responses import Response, StreamingResponse
-from starlette.concurrency import run_in_threadpool
+from fastapi.responses import StreamingResponse
 
-import stream_pool
+from . import _shared
 
 # Minimal spec the agent's heartbeat body emits — see providers/llama.py.
 PROVIDER_SPEC = {
@@ -207,9 +204,7 @@ def vllm_server_restart_endpoint(authorization: Optional[str] = Header(default=N
 
 # ── Journal log tail + SSE stream ──────────────────────────────────────
 
-_log_queue: "_queue_lib.Queue[str]" = _queue_lib.Queue(maxsize=4096)
-_log_lock = threading.Lock()
-_log_streaming = False
+_log_state = _shared.LogStream()
 
 
 def vllm_log_tail(authorization: Optional[str] = Header(default=None)) -> dict[str, Any]:
@@ -231,50 +226,10 @@ def vllm_log_tail(authorization: Optional[str] = Header(default=None)) -> dict[s
 
 
 def _vllm_log_streamer() -> None:
-    """journalctl -f → _log_queue; evicts oldest when the queue is full."""
-    global _log_streaming
-    proc = None
-    try:
-        proc = subprocess.Popen(
-            ["journalctl", "-u", _require_ctx().config.VLLM_SYSTEMD_UNIT,
-             "-n", "100", "-f", "-o", "cat"],
-            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, close_fds=True,
-        )
-        assert proc.stdout is not None
-        for raw in iter(proc.stdout.readline, b""):
-            if not _log_streaming:
-                break
-            line = raw.decode("utf-8", errors="replace").rstrip()
-            if not line:
-                continue
-            try:
-                _log_queue.put(line, timeout=1)
-            except _queue_lib.Full:
-                try:
-                    _log_queue.get_nowait()
-                except _queue_lib.Empty:
-                    pass  # another consumer drained it first
-                try:
-                    _log_queue.put_nowait(line)
-                except _queue_lib.Full:
-                    pass  # still full — drop the line (best-effort)
-    except Exception as e:
-        try:
-            _log_queue.put_nowait(f"[log stream error: {e}]")
-        except _queue_lib.Full:
-            pass  # queue full — drop the error line (best-effort)
-    finally:
-        if proc is not None:
-            try:
-                proc.terminate()
-                proc.wait(timeout=3)
-            except Exception:
-                try:
-                    proc.kill()
-                except Exception:
-                    pass  # already exited (best-effort cleanup)
-        with _log_lock:
-            _log_streaming = False
+    """journalctl -f → _log_state.queue; evicts oldest when the queue is full."""
+    _log_state.pump(
+        ["journalctl", "-u", _require_ctx().config.VLLM_SYSTEMD_UNIT,
+         "-n", "100", "-f", "-o", "cat"])
 
 
 def vllm_log_stream(
@@ -284,33 +239,8 @@ def vllm_log_stream(
     """SSE stream of vLLM journal lines (bearer header OR ?token= stream auth)."""
     _require_ctx().check_stream_auth(authorization, token, "/vllm/log/stream")
     _vllm_check_enabled()
-
-    global _log_streaming
-    with _log_lock:
-        if not _log_streaming:
-            _log_streaming = True
-            while not _log_queue.empty():
-                try:
-                    _log_queue.get_nowait()
-                except Exception:
-                    break
-            threading.Thread(target=_vllm_log_streamer, daemon=True).start()
-
-    def generate() -> Iterator[bytes]:
-        while True:
-            try:
-                line = _log_queue.get(timeout=15)
-                yield f"data: {json.dumps({'line': line})}\n\n".encode()
-            except _queue_lib.Empty:
-                yield b'data: {"keepalive": true}\n\n'
-
-    if not stream_pool.POOL.try_acquire():
-        raise HTTPException(status_code=503, detail="agent at stream capacity; retry shortly")
-    return StreamingResponse(
-        stream_pool.guarded_async(generate()),
-        media_type="text/event-stream",
-        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
-    )
+    _log_state.ensure_started(_vllm_log_streamer)
+    return _log_state.sse_response()
 
 
 # ── Models ─────────────────────────────────────────────────────────────
@@ -334,17 +264,6 @@ _VLLM_SVCCONFIG_WRAPPER = "/usr/local/sbin/llm-vllm-svcconfig-apply"
 
 def _vllm_svc_file_path() -> str:
     return f"/etc/systemd/system/{_require_ctx().config.VLLM_SYSTEMD_UNIT}"
-
-
-def _wrapper_baked_unit_path(wrapper: str) -> str:
-    """UNIT_PATH baked into the installed wrapper, or "" if unreadable."""
-    try:
-        for line in Path(wrapper).read_text().splitlines():
-            if line.startswith("UNIT_PATH='") and line.rstrip().endswith("'"):
-                return line.rstrip()[len("UNIT_PATH='"):-1]
-    except OSError:
-        pass  # unreadable/missing wrapper reads as "" (caller skips the check)
-    return ""
 
 
 def _parse_vllm_execstart(content: str) -> "tuple[Optional[str], list[dict]]":
@@ -377,15 +296,7 @@ def _parse_vllm_execstart(content: str) -> "tuple[Optional[str], list[dict]]":
 
 
 def _svcconfig_tokens(head: str, args_list: list) -> "Optional[list[str]]":
-    tokens = shlex.split(head or "")
-    for a in args_list:
-        tokens.append(a["flag"])
-        if not a.get("bool") and a.get("value") not in (None, ""):
-            tokens.append(str(a["value"]))
-    for t in tokens:
-        if not isinstance(t, str) or "\n" in t or "\r" in t:
-            return None
-    return tokens
+    return _shared.build_svcconfig_tokens(shlex.split(head or ""), args_list)
 
 
 def vllm_svcconfig_get(authorization: Optional[str] = Header(default=None)) -> dict[str, Any]:
@@ -405,97 +316,22 @@ def vllm_svcconfig_post(body: dict, authorization: Optional[str] = Header(defaul
     tokens = _svcconfig_tokens(body.get("binary", ""), body.get("args", []))
     if not tokens:
         return {"ok": False, "error": "invalid ExecStart token (newline or non-string)"}
-    payload = ("\n".join(tokens) + "\n").encode()
-
-    baked = _wrapper_baked_unit_path(_VLLM_SVCCONFIG_WRAPPER)
-    expected = _vllm_svc_file_path()
-    if baked and baked != expected:
-        return {"ok": False,
-                "error": f"svcconfig helper is baked for {baked} but the configured "
-                         f"unit is {expected} — run a root agent install.sh --update "
-                         f"to re-bake the helper and sudoers for the renamed unit"}
-
-    try:
-        r = subprocess.run(
-            ["sudo", "-n", _VLLM_SVCCONFIG_WRAPPER],
-            input=payload, capture_output=True, timeout=15,
-        )
-        if r.returncode != 0:
-            return {"ok": False,
-                    "error": r.stderr.decode().strip()
-                             or "svcconfig apply failed — check sudoers for llm-vllm-svcconfig-apply"}
-    except Exception as e:
-        return {"ok": False, "error": f"Write failed: {e}"}
-
-    if body.get("restart"):
-        try:
-            subprocess.run(["sudo", "-n", "/usr/bin/systemctl", "restart",
-                            _require_ctx().config.VLLM_SYSTEMD_UNIT],
-                           timeout=60, check=True, capture_output=True)
-        except Exception as e:
-            return {"ok": False, "error": f"restart failed: {e}"}
-    return {"ok": True}
+    return _shared.svcconfig_apply(
+        _VLLM_SVCCONFIG_WRAPPER, _vllm_svc_file_path(), tokens,
+        sudoers_hint="llm-vllm-svcconfig-apply",
+        restart_unit=_require_ctx().config.VLLM_SYSTEMD_UNIT if body.get("restart") else None,
+        restart_timeout=60)
 
 
-# ── OpenAI passthrough (mirrors providers/llama.py #214) ───────────────
-
-_OPENAI_READ_TIMEOUT_S = 600.0
-
-
-def _openai_wants_stream(body: bytes) -> bool:
-    try:
-        return bool((json.loads(body or b"{}") or {}).get("stream"))
-    except Exception:
-        return False
-
+# ── OpenAI passthrough (shared with providers/llama.py #214) ───────────
 
 async def _vllm_openai_forward(sub: str, request: Request,
                                authorization: "Optional[str]"):
     """Narrow OpenAI passthrough to vLLM /v1/<sub>."""
-    _require_ctx().check_bearer(authorization)
+    ctx = _require_ctx()
+    ctx.check_bearer(authorization)
     _vllm_check_enabled()
-    body = await request.body()
-    url = f"{_require_ctx().config.VLLM_API_URL.rstrip('/')}/v1/{sub}"
-    headers = {"Content-Type": "application/json"}
-    # Async handler: blocking requests.post calls run off-loop via run_in_threadpool.
-    if _openai_wants_stream(body):
-        try:
-            upstream = await run_in_threadpool(
-                lambda: requests.post(url, data=body, headers=headers,
-                                      stream=True,
-                                      timeout=(5, _OPENAI_READ_TIMEOUT_S)))
-        except requests.exceptions.RequestException as e:
-            raise HTTPException(status_code=502, detail=str(e))
-        ctype = upstream.headers.get("content-type") or "text/event-stream"
-        if "text/event-stream" not in ctype.lower():
-            content, status = upstream.content, upstream.status_code
-            upstream.close()
-            return Response(content=content, status_code=status, media_type=ctype)
-        if not stream_pool.POOL.try_acquire():
-            upstream.close()
-            raise HTTPException(status_code=503,
-                                detail="agent at stream capacity; retry shortly")
-
-        def generate() -> "Iterator[bytes]":
-            try:
-                for chunk in upstream.iter_content(chunk_size=None):
-                    if chunk:
-                        yield chunk
-            finally:
-                upstream.close()
-
-        return StreamingResponse(stream_pool.guarded_async(generate()),
-                                 media_type="text/event-stream",
-                                 headers={"Cache-Control": "no-cache",
-                                          "X-Accel-Buffering": "no"})
-    try:
-        r = await run_in_threadpool(
-            lambda: requests.post(url, data=body, headers=headers,
-                                  timeout=(5, _OPENAI_READ_TIMEOUT_S)))
-    except requests.exceptions.RequestException as e:
-        raise HTTPException(status_code=502, detail=str(e))
-    return Response(content=r.content, status_code=r.status_code,
-                    media_type=r.headers.get("content-type") or "application/json")
+    return await _shared.openai_forward(sub, request, ctx.config.VLLM_API_URL)
 
 
 async def vllm_openai_chat(request: Request,

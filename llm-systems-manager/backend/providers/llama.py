@@ -85,6 +85,7 @@ SPEC = ProviderSpec(
     push_endpoint_legacy="/api/remote/host-metrics",
     default_picker="pool",
     pin_dict_key="llama_model_pins",
+    gateway_enabled=True,
     sub_tab_keys=("llamacpp",),
     aggregator=_fleet_aggregate,
 )

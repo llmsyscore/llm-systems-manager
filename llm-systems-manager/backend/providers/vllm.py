@@ -84,6 +84,7 @@ SPEC = ProviderSpec(
     online_threshold_s=15.0,
     push_endpoint_legacy="",
     default_picker="first_approved",
+    gateway_enabled=True,
     sub_tab_keys=("vllm",),
     aggregator=_fleet_aggregate,
 )

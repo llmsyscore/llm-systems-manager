@@ -148,6 +148,7 @@ function switchSubTab(parent, sub) {
   // serialize startup. Each fails silently if its host isn't injected yet; the
   // manager perf shot latches _mgrPerfBackfilled so a miss retries on entry (#131).
   loadLmsHistory().catch(() => {});
+  loadVllmHistory().catch(() => {});
   loadManagerPerfHistory().then(ok => { if (ok) _mgrPerfBackfilled = true; }).catch(() => {});
   await checkConfig();
   pollServerState();
