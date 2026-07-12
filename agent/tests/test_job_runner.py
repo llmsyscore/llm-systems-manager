@@ -8,8 +8,11 @@ import sys
 import threading
 import time
 
-from tests import _vllm_load  # noqa: F401  # installs requests/fastapi stubs
-from providers import _shared
+from tests._vllm_load import load_vllm
+
+load_vllm()  # stubs requests/fastapi before the providers import below
+
+from providers import _shared  # noqa: E402
 
 
 def test_try_start_rejects_second_job():

@@ -546,7 +546,7 @@ def _at_wait_ready(timeout_s: float = 60.0) -> Optional[int]:
                 data = r.json().get("data") or []
                 return data[0].get("max_model_len") if data else None
         except Exception:
-            pass
+            log.debug("vllm readiness poll failed", exc_info=True)
         time.sleep(2)
     return None
 

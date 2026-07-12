@@ -290,11 +290,11 @@ class JobRunner:
             try:
                 self.queue.get_nowait()
             except _queue_lib.Empty:
-                pass
+                pass  # queue drained concurrently; nothing to evict
             try:
                 self.queue.put_nowait(msg)
             except _queue_lib.Full:
-                pass
+                pass  # still full after evicting one; drop the message
 
     def track(self, proc: "subprocess.Popen") -> None:
         self.proc = proc
