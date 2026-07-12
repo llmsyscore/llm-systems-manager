@@ -250,6 +250,7 @@ class TestOperatorDenyMatcher:
         "/api/admin/users", "/api/admin/system-health", "/api/admin/export/manager",
         "/api/agents", "/api/agents/abc/approve", "/api/agents/metrics",
         "/api/terminal/create", "/api/lms/terminal/create",
+        "/api/vllm/terminal/create",
         "/api/admin/push-ca-to-agents",
     ])
     def test_denied_paths(self, path):

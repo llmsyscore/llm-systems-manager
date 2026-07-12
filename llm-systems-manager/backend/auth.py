@@ -313,7 +313,8 @@ def _operator_denied(path: str) -> bool:
         return False
     if path.startswith("/api/admin/"):
         return True
-    if path.startswith("/api/terminal/") or path.startswith("/api/lms/terminal/"):
+    if path.startswith("/api/terminal/") or path.startswith("/api/lms/terminal/") \
+            or path.startswith("/api/vllm/terminal/"):
         return True
     # Exact-or-slash so a future /api/agent-<x> route can't slip the deny set.
     if path == "/api/agents" or path.startswith("/api/agents/"):

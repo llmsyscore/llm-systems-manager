@@ -252,6 +252,120 @@ function popOutLmsTerminal() {
   w.document.close();
 }
 
+// ---- vLLM host terminal — mirrors the LMS block above, retargeted to the
+// vllm agent + /api/vllm/terminal/create (output/input/resize/close are shared).
+let _vllmTerm = null, _vllmTermSid = null, _vllmTermEvt = null, _vllmTermFit = null;
+
+function _vllmTermInit(mountEl) {
+  if (_vllmTerm) { _vllmTerm.dispose(); _vllmTerm = null; }
+  _vllmTerm = new Terminal({
+    theme: {background:'#0d0d0d', foreground:'#ccc', cursor:'#7af'},
+    fontFamily: '"Cascadia Code","Fira Code",monospace',
+    fontSize: 13, cursorBlink: true, scrollback: 5000,
+  });
+  _vllmTermFit = new FitAddon.FitAddon();
+  _vllmTerm.loadAddon(_vllmTermFit);
+  _vllmTerm.open(mountEl);
+  _vllmTermFit.fit();
+}
+
+function _vllmTermCloseSession() {
+  if (_vllmTermEvt) { _vllmTermEvt.close(); _vllmTermEvt = null; }
+  if (_vllmTermSid) {
+    fetch(`/api/terminal/close/${_vllmTermSid}`, {method:'POST'}).catch(()=>{});
+    _vllmTermSid = null;
+  }
+}
+
+async function _vllmTermStart(mountEl) {
+  _vllmTermCloseSession();
+  _vllmTermInit(mountEl);
+  _vllmTerm.write('\r\n\x1b[90mConnecting to the vLLM host…\x1b[0m\r\n');
+  try {
+    const r = await _jsonOrThrow(await fetch('/api/vllm/terminal/create', {method:'POST'}));
+    _vllmTermSid = r.sid;
+    _vllmTermEvt = new EventSource(`/api/terminal/output/${_vllmTermSid}`);
+    _vllmTermEvt.onmessage = e => { if (_vllmTerm) _vllmTerm.write(JSON.parse(e.data)); };
+    _vllmTermEvt.onerror   = () => {
+      if (!_vllmTerm) return;
+      _vllmTerm.write(_vllmTermEvt && _vllmTermEvt.readyState === EventSource.CLOSED
+        ? '\r\n\x1b[31m● Stream closed — session expired; click Reconnect\x1b[0m\r\n'
+        : '\r\n\x1b[33m● Stream interrupted — reconnecting…\x1b[0m\r\n');
+    };
+    _vllmTerm.onData(data => {
+      fetch(`/api/terminal/input/${_vllmTermSid}`, {
+        method:'POST', body:data, headers:{'Content-Type':'application/octet-stream'},
+      }).catch(()=>{});
+    });
+    _vllmTerm.onResize(({rows, cols}) => {
+      fetch(`/api/terminal/resize/${_vllmTermSid}`, {
+        method:'POST', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({rows, cols}),
+      }).catch(()=>{});
+    });
+  } catch(e) {
+    if (_vllmTerm) _vllmTerm.write(`\r\n\x1b[31mFailed: ${e.message}\x1b[0m\r\n`);
+  }
+}
+
+function toggleVllmTerminal() {
+  const panel = document.getElementById('vllmTerminalPanel');
+  const open  = panel.style.display === 'none';
+  panel.style.display = open ? '' : 'none';
+  if (open) {
+    const mount = document.getElementById('vllmTerminalMount');
+    if (!_vllmTerm) _vllmTermStart(mount);
+    else { requestAnimationFrame(() => { if (_vllmTermFit) _vllmTermFit.fit(); }); }
+  }
+}
+
+function reconnectVllmTerminal() {
+  _vllmTermStart(document.getElementById('vllmTerminalMount'));
+}
+
+function closeVllmTerminal() {
+  _vllmTermCloseSession();
+  if (_vllmTerm) { try { _vllmTerm.dispose(); } catch(_) {} _vllmTerm = null; }
+  const panel = document.getElementById('vllmTerminalPanel');
+  if (panel) panel.style.display = 'none';
+}
+
+function popOutVllmTerminal() {
+  const agentParam = (typeof _selectedAgent === 'function' && _selectedAgent('vllm'))
+    ? ('?agent=' + encodeURIComponent(_selectedAgent('vllm'))) : '';
+  const w = window.open('', 'vllmterm', 'width=900,height=540,resizable=yes,scrollbars=no,toolbar=no,menubar=no');
+  w.document.write(`<!DOCTYPE html><html><head>
+    <title>Terminal — Agent</title>
+    <link rel="stylesheet" href="${location.origin}/static/vendor/xterm.min.css?v=5.3.0"/>
+    <script src="${location.origin}/static/vendor/xterm.min.js?v=5.3.0"><\/script>
+    <script src="${location.origin}/static/vendor/xterm-addon-fit.min.js?v=0.8.0"><\/script>
+    <style>html,body{margin:0;background:var(--bg-tabnav);height:100%;} #t{height:100%;}</style>
+  </head><body><div id="t"></div><script>
+  (async function(){
+    const base = '${location.origin}';
+    const term = new Terminal({theme:{background:'#0d0d0d',foreground:'#ccc',cursor:'#7af'},fontFamily:'"Cascadia Code","Fira Code",monospace',fontSize:13,cursorBlink:true,scrollback:5000});
+    const fit  = new FitAddon.FitAddon();
+    term.loadAddon(fit);
+    term.open(document.getElementById('t'));
+    fit.fit();
+    term.write('\\r\\n\\x1b[90mConnecting to Agent\\u2026\\x1b[0m\\r\\n');
+    try {
+      const r = await fetch(base+'/api/vllm/terminal/create${agentParam}',{method:'POST'}).then(r=>r.json());
+      if(!r.ok) throw new Error(r.error||'create failed');
+      const sid = r.sid;
+      const evt = new EventSource(base+'/api/terminal/output/'+sid);
+      evt.onmessage = e => term.write(JSON.parse(e.data));
+      evt.onerror   = () => term.write(evt.readyState === EventSource.CLOSED ? '\\r\\n\\x1b[31m● Stream closed — session expired; reopen the terminal\\x1b[0m\\r\\n' : '\\r\\n\\x1b[33m● Stream interrupted — reconnecting\\u2026\\x1b[0m\\r\\n');
+      term.onData(d => fetch(base+'/api/terminal/input/'+sid,{method:'POST',body:d,headers:{'Content-Type':'application/octet-stream'}}).catch(()=>{}));
+      term.onResize(({rows,cols})=>fetch(base+'/api/terminal/resize/'+sid,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({rows,cols})}).catch(()=>{}));
+      window.addEventListener('resize',()=>fit.fit());
+      window.addEventListener('beforeunload',()=>fetch(base+'/api/terminal/close/'+sid,{method:'POST'}).catch(()=>{}));
+    } catch(e) { term.write('\\r\\n\\x1b[31m● '+e.message+'\\x1b[0m\\r\\n'); }
+  })();
+  <\/script></body></html>`);
+  w.document.close();
+}
+
 function toggleServerLog() {
   const panel = document.getElementById('serverLogPanel');
   _logPanelOpen = !_logPanelOpen;

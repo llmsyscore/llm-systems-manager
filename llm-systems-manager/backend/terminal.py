@@ -10,6 +10,7 @@ same agent that minted the sid. Every routed response carries an
 Routes registered (all under app, see register_routes):
   POST /api/terminal/create           — primary llama-agent PTY
   POST /api/lms/terminal/create       — primary lms-agent PTY (SSH on macOS)
+  POST /api/vllm/terminal/create      — primary vllm-agent PTY
   GET  /api/terminal/output/<sid>     — SSE stream of PTY bytes
   POST /api/terminal/input/<sid>      — raw bytes into the PTY
   POST /api/terminal/resize/<sid>     — winsize JSON
@@ -237,6 +238,11 @@ def register_routes(app, ctx) -> None:
     def lms_terminal_create():
         """Open a PTY on the primary lms agent (SSH to llm-systems-lmstudio)."""
         return _proxy_create("lms", "/terminal/create")
+
+    @app.route("/api/vllm/terminal/create", methods=["POST"])
+    def vllm_terminal_create():
+        """Open a PTY on the primary vllm agent host."""
+        return _proxy_create("vllm", "/terminal/create")
 
     @app.route("/api/terminal/output/<sid>")
     def terminal_output_sse(sid):
