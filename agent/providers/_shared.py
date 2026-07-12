@@ -5,7 +5,10 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import queue as _queue_lib
+import re
+import signal
 import subprocess
 import threading
 from pathlib import Path
@@ -21,6 +24,20 @@ import stream_pool  # type: ignore[import-not-found]  # sibling at agent root
 log = logging.getLogger("llm-systems-agent.providers._shared")
 
 OPENAI_READ_TIMEOUT_S = 600.0
+
+ANSI_RE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
+
+
+def pool_guarded_sse(gen) -> StreamingResponse:
+    """Stream-pool-guarded SSE response around a byte generator."""
+    if not stream_pool.POOL.try_acquire():
+        raise HTTPException(status_code=503,
+                            detail="agent at stream capacity; retry shortly")
+    return StreamingResponse(
+        stream_pool.guarded_async(gen),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
 
 
 def openai_wants_stream(body: bytes) -> bool:
@@ -217,11 +234,124 @@ class LogStream:
                 except _queue_lib.Empty:
                     yield b'data: {"keepalive": true}\n\n'
 
-        if not stream_pool.POOL.try_acquire():
-            raise HTTPException(status_code=503,
-                                detail="agent at stream capacity; retry shortly")
-        return StreamingResponse(
-            stream_pool.guarded_async(generate()),
-            media_type="text/event-stream",
-            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
-        )
+        return pool_guarded_sse(generate())
+
+
+class JobRunner:
+    """Single-subprocess job scaffolding shared by vLLM wizards: busy lock,
+    bounded SSE event queue with oldest-drop, cancel event + pgid kill."""
+
+    def __init__(self, name: str, maxsize: int = 5000):
+        self.name = name
+        self.lock = threading.Lock()
+        self.active = False
+        self.queue: "_queue_lib.Queue[dict]" = _queue_lib.Queue(maxsize=maxsize)
+        self.cancel_event = threading.Event()
+        self.proc: "Optional[subprocess.Popen]" = None
+        self.pgid: "Optional[int]" = None
+        self.thread: "Optional[threading.Thread]" = None
+
+    def try_start(self, target) -> bool:
+        """Run target on a daemon thread; False when a job is already active."""
+        with self.lock:
+            if self.active:
+                return False
+            self.cancel_event.clear()
+            self.active = True
+        while not self.queue.empty():
+            try:
+                self.queue.get_nowait()
+            except Exception:
+                break
+
+        def _wrap():
+            try:
+                target()
+            except Exception as e:
+                self.put({"type": "done", "ok": False, "error": str(e)})
+            finally:
+                with self.lock:
+                    self.active = False
+
+        self.thread = threading.Thread(target=_wrap, daemon=True)
+        self.thread.start()
+        return True
+
+    def join(self, timeout: float) -> None:
+        """Wait for the job thread to finish (used at agent shutdown)."""
+        t = self.thread
+        if t is not None and t.is_alive():
+            t.join(timeout)
+
+    def put(self, msg: dict) -> None:
+        try:
+            self.queue.put_nowait(msg)
+        except _queue_lib.Full:
+            try:
+                self.queue.get_nowait()
+            except _queue_lib.Empty:
+                pass  # queue drained concurrently; nothing to evict
+            try:
+                self.queue.put_nowait(msg)
+            except _queue_lib.Full:
+                pass  # still full after evicting one; drop the message
+
+    def track(self, proc: "subprocess.Popen") -> None:
+        self.proc = proc
+        try:
+            self.pgid = os.getpgid(proc.pid)
+        except Exception:
+            self.pgid = None
+
+    def untrack(self) -> None:
+        self.proc = None
+        self.pgid = None
+
+    def kill_tracked(self) -> bool:
+        """SIGTERM the tracked process group, escalate to SIGKILL after 5s."""
+        proc, pgid = self.proc, self.pgid
+        if proc is None:
+            return False
+        try:
+            if pgid:
+                os.killpg(pgid, signal.SIGTERM)
+            else:
+                proc.terminate()
+            try:
+                proc.wait(timeout=5)
+                return True
+            except Exception:
+                pass
+            if pgid:
+                os.killpg(pgid, signal.SIGKILL)
+            else:
+                proc.kill()
+            return True
+        except ProcessLookupError:
+            return True
+        except Exception:
+            return False
+
+    def cancel(self) -> bool:
+        self.cancel_event.set()
+        self.kill_tracked()
+        return True
+
+    def _sse_iter(self, idle_timeout: float = 30.0) -> "Iterator[bytes]":
+        while True:
+            try:
+                msg = self.queue.get(timeout=idle_timeout)
+            except _queue_lib.Empty:
+                if not self.active:
+                    yield (b'data: {"type":"done","ok":false,'
+                           b'"error":"no active job"}\n\n')
+                    return
+                yield b'data: {"type":"keepalive"}\n\n'
+                continue
+            yield f"data: {json.dumps(msg)}\n\n".encode()
+            if msg.get("type") == "done":
+                return
+
+    def sse_response(self, idle_timeout: float = 30.0) -> StreamingResponse:
+        """Stream-pool-guarded SSE response; ends after the done event."""
+        return pool_guarded_sse(self._sse_iter(idle_timeout))

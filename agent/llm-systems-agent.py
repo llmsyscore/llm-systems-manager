@@ -63,7 +63,7 @@ except ImportError:
             os.chmod(tmp, mode)
         tmp.replace(p)
 
-VERSION = "v2026.07.11-5"
+VERSION = "v2026.07.12-1"
 
 
 def _detect_install_dir() -> str:
@@ -2457,6 +2457,10 @@ async def _lifespan(_app: "FastAPI") -> AsyncIterator[None]:
             await asyncio.to_thread(providers.llama.shutdown_children)
         except (asyncio.CancelledError, Exception) as e:
             logger.warning("bench/autotune shutdown cleanup failed: %r", e)
+        try:
+            await asyncio.to_thread(providers.vllm.shutdown_children)
+        except (asyncio.CancelledError, Exception) as e:
+            logger.warning("vllm autotune shutdown cleanup failed: %r", e)
         if _metric_client is not None:
             try:
                 await asyncio.to_thread(_metric_client.stop, True)

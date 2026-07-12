@@ -154,7 +154,7 @@ def _local_hostname() -> str:
 # banner reads it. Bump suffix (-1, -2, …) for same-day iterations; roll
 # the date for a new day's first change.
 # ---------------------------------------------------------------------------
-__version__ = "v2026.07.12-2"
+__version__ = "v2026.07.12-3"
 
 # Wall-clock at first import (Cheroot main process); the shutdown banner
 # reads it for the uptime line.
@@ -2269,6 +2269,24 @@ def vllm_lora_load():
 def vllm_lora_unload():
     return proxies.proxy_to_primary("vllm", "POST", "/vllm/lora/unload",
                                     json=flask_request.get_json(force=True), timeout=90)
+
+
+# --- vLLM autotune (--max-model-len tuner) — pure proxy, loop runs on the agent ---
+
+@app.route("/api/vllm/autotune/run", methods=["POST"])
+def vllm_autotune_run():
+    body = flask_request.get_json(force=True) or {}
+    return proxies.proxy_to_primary("vllm", "POST", "/vllm/autotune/run", json=body, timeout=15)
+
+
+@app.route("/api/vllm/autotune/stream")
+def vllm_autotune_stream():
+    return proxies.proxy_stream_to_primary("vllm", "/vllm/autotune/stream", long_running=True)
+
+
+@app.route("/api/vllm/autotune/cancel", methods=["POST"])
+def vllm_autotune_cancel():
+    return proxies.proxy_to_primary("vllm", "POST", "/vllm/autotune/cancel", timeout=10)
 
 
 LAYOUT_FILE = DATA_DIR / "layout.json"
