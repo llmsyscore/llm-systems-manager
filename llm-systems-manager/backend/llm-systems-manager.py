@@ -153,7 +153,7 @@ def _local_hostname() -> str:
 # banner reads it. Bump suffix (-1, -2, …) for same-day iterations; roll
 # the date for a new day's first change.
 # ---------------------------------------------------------------------------
-__version__ = "v2026.07.11-4"
+__version__ = "v2026.07.11-5"
 
 # Wall-clock at first import (Cheroot main process); the shutdown banner
 # reads it for the uptime line.
@@ -1768,6 +1768,14 @@ def _primary_lms_last_seen() -> float:
     return float((w or {}).get("last_seen") or 0.0)
 
 
+def _primary_vllm_last_seen() -> float:
+    aid = _primary_vllm_agent_id()
+    if not aid:
+        return 0.0
+    w = provider_state.STORE.get("vllm", aid)
+    return float((w or {}).get("last_seen") or 0.0)
+
+
 def _any_lms_busy() -> bool:
     """True iff at least one LMS agent has a fresh sample (<15s) AND any
     ps entry is non-IDLE. Replaces the old singleton staleness check at
@@ -2816,6 +2824,7 @@ def admin_system_health():
     ]
     has_llama_agent = any(c.get("llama") for c in _approved_caps)
     has_lms_agent   = any(c.get("lms")   for c in _approved_caps)
+    has_vllm_agent  = any(c.get("vllm")  for c in _approved_caps)
     for aid, agent in data.get("agents", {}).items():
         liveness = agent_registry.agent_liveness(agent)
         last_hb = agent.get("last_heartbeat")
@@ -2873,8 +2882,12 @@ def admin_system_health():
     lms_last_seen = _primary_lms_last_seen()
     lms_age = round(now - lms_last_seen, 1) if lms_last_seen else None
 
+    vllm_last_seen = _primary_vllm_last_seen()
+    vllm_age = round(now - vllm_last_seen, 1) if vllm_last_seen else None
+
     primary_llama_push_ok = bool(host_age is not None and host_age < 60)
     primary_lms_push_ok = bool(lms_age is not None and lms_age < 30)
+    primary_vllm_push_ok = bool(vllm_age is not None and vllm_age < 30)
 
     health["data_flow"] = {
         "primary_llama_push": {
@@ -2887,6 +2900,11 @@ def admin_system_health():
             "ok": primary_lms_push_ok,
             "age_s": lms_age,
             "has_agent": has_lms_agent,
+        },
+        "primary_vllm_push": {
+            "ok": primary_vllm_push_ok,
+            "age_s": vllm_age,
+            "has_agent": has_vllm_agent,
         },
         "manager_to_alarm_forwarding": {
             "active": False,
@@ -2903,6 +2921,8 @@ def admin_system_health():
         health["warnings"].append(f"primary llama host-metrics push is stale ({host_age:.0f}s old)")
     if has_lms_agent and lms_age is not None and lms_age > 30:
         health["warnings"].append(f"LMS push is stale ({lms_age:.0f}s old)")
+    if has_vllm_agent and vllm_age is not None and vllm_age > 30:
+        health["warnings"].append(f"vLLM push is stale ({vllm_age:.0f}s old)")
     down_agents = [a for a in health["agents"] if a["status"] == "approved" and a["liveness"] == "down"]
     if down_agents:
         health["warnings"].append(f"{len(down_agents)} approved agent(s) down: " + ", ".join(a["hostname"] or a["id"] for a in down_agents))

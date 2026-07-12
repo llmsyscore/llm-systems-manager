@@ -64,6 +64,11 @@ describe('admin.js', () => {
   test('capability chip order includes vllm', () => {
     expect(admin).toMatch(/'llama',\s*'lms',\s*'vllm'/);
   });
+  // #370: the Data Flow panel must render a vLLM push row like llama/LMS.
+  test('Data Flow renders a primary vLLM push row', () => {
+    expect(admin).toContain('primary_vllm_push');
+    expect(admin).toContain('Primary vLLM push');
+  });
 });
 
 describe('index.html', () => {
