@@ -12,7 +12,7 @@ Admin-managed self-registration + bearer-token approval. Owns:
   uses the manager's internal CA via the _pki module to sign per-agent leaf certs.
 - Agent dialing helpers consumed by terminal / proxies / openclaw in PRs M3-M5:
   agent_callback_urls, agent_tls_kwargs, agent_request (multi-fallback dialer),
-  primary_agent, pick_llama_agent (round-robin), browser_reachable_bind_url,
+  primary_agent, pick_agent (round-robin), browser_reachable_bind_url,
   is_local_bind_url, agent_liveness, approved_agent_caps.
 
 Wired into the Flask app by main via register_routes(app); deps populated
@@ -66,8 +66,8 @@ __all__ = [
     "agent_tls_kwargs",
     "agent_request",
     "primary_agent",
-    "pick_llama_agent",
-    "pinned_llama_agent",
+    "pick_agent",
+    "pinned_agent",
     "resolve_agent_by_id",
     "default_agent_id_for",
     "agent_liveness",
@@ -97,8 +97,9 @@ _agents_cache: "dict[str, Any]" = {"mtime": 0.0, "data": None, "by_token": {}}
 # underscore-prefixed module privates.
 agents_lock = _agents_lock
 
-_llama_rr_lock = threading.Lock()
-_llama_rr_index = 0
+# Per-provider round-robin cursors for pool pickers, one shared lock.
+_pool_rr_lock = threading.Lock()
+_pool_rr_index: "dict[str, int]" = {}
 
 # Bound the manager->agent dial so an unreachable/slow callback URL fails fast
 # instead of pinning a Cheroot worker thread for the full read timeout (xN
@@ -574,8 +575,9 @@ def primary_agent(kind: str) -> "dict | None":
     data = load_agents()
     glob = data.get("global") or {}
 
-    if kind == "llama":
-        pool = glob.get("llama_pool") or []
+    spec = providers.get(kind)
+    if spec and spec.default_picker == "pool":
+        pool = glob.get(f"{kind}_pool") or []
         if pool:
             agents_map = data.get("agents") or {}
             for aid in pool:
@@ -657,37 +659,38 @@ def resolve_agent_by_id(agent_id: str,
     return a
 
 
-def pinned_llama_agent(model_id: "str | None") -> "dict | None":
-    """Pin-only lookup: the agent a model is pinned to if it's approved+live,
-    else None. No pool/legacy fallback — the caller decides what to do when a
-    pin is absent or unavailable. pick_llama_agent uses this for step 1."""
-    if not model_id:
+def pinned_agent(provider: str, model_id: "str | None") -> "dict | None":
+    """Pin-only lookup via the provider spec's pin_dict_key: the agent a model
+    is pinned to if approved+live, else None. No pool/legacy fallback."""
+    spec = providers.get(provider)
+    pin_key = spec.pin_dict_key if spec else None
+    if not pin_key or not model_id:
         return None
     data = load_agents()
     glob = data.get("global") or {}
     agents_map = data.get("agents") or {}
-    pinned_id = (glob.get("llama_model_pins") or {}).get(model_id)
+    pinned_id = (glob.get(pin_key) or {}).get(model_id)
     if not pinned_id:
         return None
     a = agents_map.get(pinned_id)
     if a and a.get("status") == "approved" and agent_liveness(a) == "live":
         return a
-    log.warning("model %s pinned to agent %s but it's not approved+live "
+    log.warning("%s model %s pinned to agent %s but it's not approved+live "
                 "(status=%s liveness=%s); falling back",
-                model_id, pinned_id,
+                provider, model_id, pinned_id,
                 (a or {}).get("status"),
                 agent_liveness(a) if a else "?")
     return None
 
 
-def pick_llama_agent(model_id: "str | None" = None) -> "dict | None":
+def pick_agent(provider: str, model_id: "str | None" = None) -> "dict | None":
     data = load_agents()
     glob = data.get("global") or {}
     agents_map = data.get("agents") or {}
 
     # 1. Per-model pinning takes precedence.
     if model_id:
-        pinned = pinned_llama_agent(model_id)
+        pinned = pinned_agent(provider, model_id)
         if pinned:
             return pinned
 
@@ -695,20 +698,19 @@ def pick_llama_agent(model_id: "str | None" = None) -> "dict | None":
     #    member is stale (e.g. brief manager-restart window where no
     #    heartbeats have landed yet), accept approved-but-not-live so
     #    we don't bounce everything to the legacy fallback.
-    pool = glob.get("llama_pool") or []
+    pool = glob.get(f"{provider}_pool") or []
     approved      = [agents_map[a] for a in pool
                      if a in agents_map and agents_map[a].get("status") == "approved"]
     approved_live = [a for a in approved if agent_liveness(a) == "live"]
     candidates = approved_live or approved
     if candidates:
-        global _llama_rr_index
-        with _llama_rr_lock:
-            idx = _llama_rr_index % len(candidates)
-            _llama_rr_index = (idx + 1) % len(candidates)
+        with _pool_rr_lock:
+            idx = _pool_rr_index.get(provider, 0) % len(candidates)
+            _pool_rr_index[provider] = (idx + 1) % len(candidates)
         return candidates[idx]
 
     # 3. Legacy single-primary fallback.
-    return primary_agent("llama")
+    return primary_agent(provider)
 
 
 # ── Public API: ingest token + stream token ──────────────────────────
