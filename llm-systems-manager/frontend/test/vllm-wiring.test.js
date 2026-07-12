@@ -189,3 +189,23 @@ describe('vllm history backfill (#358)', () => {
     expect(be).toContain('window.__VLLM_AGENT');
   });
 });
+
+// #373 follow-up: vLLM header state pill (parity with LLCPP/LMS pills).
+describe('vllm header state pill', () => {
+  const index = src('index.html');
+  const vllm = src('js/vllm.js');
+  const charts = src('js/charts.js');
+  test('index.html has the vllm state banner pill', () => {
+    expect(index).toContain('vllmStateBanner');
+    expect(index).toContain('vllmStateText');
+    expect(index).toContain('vllmStateIcon');
+  });
+  test('vllm.js updates the pill from the metrics poll', () => {
+    expect(vllm).toContain("getElementById('vllmStateBanner')");
+    expect(vllm).toContain("getElementById('vllmStateText')");
+    expect(vllm).toMatch(/VLLM · /);
+  });
+  test('charts.js toggles pill visibility with vllm presence', () => {
+    expect(charts).toMatch(/toggle\('vllmStateBanner',\s*vllmOn\)/);
+  });
+});

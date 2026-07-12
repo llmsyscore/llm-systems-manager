@@ -86,6 +86,23 @@ async function fetchVllmMetrics() {
       ctrlBadge.innerHTML = '<span class="status__dot"></span>' + _esc(txt);
     }
 
+    // Update the header vLLM state pill (same lifecycle as the LMS pill).
+    const vBanner = document.getElementById('vllmStateBanner');
+    const vText   = document.getElementById('vllmStateText');
+    if (vBanner && vText) {
+      if (!online) {
+        vBanner.className = 'state-banner state-unknown';
+        vText.textContent = 'VLLM · offline';
+      } else if (up) {
+        const modelShort = (v.model || '').split('/').pop() || 'model';
+        vBanner.className = 'state-banner state-awake';
+        vText.textContent = `VLLM · Active · ${modelShort}`;
+      } else {
+        vBanner.className = 'state-banner state-sleeping';
+        vText.textContent = `VLLM · ${v.state || 'server down'}`;
+      }
+    }
+
     const sev = !online ? 'dash-off' : (up ? 'dash-ok' : 'dash-warn');
     ['vllm-server', 'vllm-requests', 'vllm-kv', 'vllm-throughput'].forEach(c => _dashSetStatus(c, sev));
   } catch (_) {

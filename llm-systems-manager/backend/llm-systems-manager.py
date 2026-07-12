@@ -67,6 +67,7 @@ Local endpoints served:
 # box (3.13) bit us once already.
 from __future__ import annotations
 
+import functools
 import json
 import os
 import shutil
@@ -153,7 +154,7 @@ def _local_hostname() -> str:
 # banner reads it. Bump suffix (-1, -2, …) for same-day iterations; roll
 # the date for a new day's first change.
 # ---------------------------------------------------------------------------
-__version__ = "v2026.07.11-6"
+__version__ = "v2026.07.12-2"
 
 # Wall-clock at first import (Cheroot main process); the shutdown banner
 # reads it for the uptime line.
@@ -2451,7 +2452,6 @@ _AUDIT_ROUTES: list[tuple[str | None, "re.Pattern[str]", str]] = [
     ("POST",   re.compile(r"^/api/agents/(?P<t>[^/]+)/disable$"),      "agent.disable"),
     ("DELETE", re.compile(r"^/api/agents/(?P<t>[^/]+)$"),              "agent.delete"),
     ("POST",   re.compile(r"^/api/agents/(?P<t>[^/]+)/role-primary$"), "agent.role-primary"),
-    ("POST",   re.compile(r"^/api/agents/(?P<t>[^/]+)/llama-pool$"),   "agent.llama-pool"),
     ("POST",   re.compile(r"^/api/agents/global$"),                    "agent.global-config"),
     ("POST",   re.compile(r"^/api/agents/(?P<t>[^/]+)/restart$"),      "agent.restart"),
     ("POST",   re.compile(r"^/api/agents/(?P<t>[^/]+)/self-update$"),  "agent.self-update"),
@@ -2465,9 +2465,20 @@ _AUDIT_ROUTES: list[tuple[str | None, "re.Pattern[str]", str]] = [
     ("POST",   re.compile(r"^/api/admin/users/(?P<t>[^/]+)/unlock$"),  "user.unlock"),
     ("POST",   re.compile(r"^/api/admin/export/manager$"),             "backup.export"),
     ("POST",   re.compile(r"^/api/admin/import/manager/apply$"),       "backup.import-apply"),
-    ("POST",   re.compile(r"^/api/admin/llama-pins$"),                 "config.llama-pins"),
     ("POST",   re.compile(r"^/api/llm/server/svcconfig$"),             "config.svcconfig"),
     ("POST",   re.compile(r"^/api/config/interval$"),                  "config.interval"),
+]
+
+# Per-provider pool/pins audit entries (llama labels unchanged).
+_AUDIT_ROUTES += [
+    ("POST", re.compile(rf"^/api/agents/(?P<t>[^/]+)/{re.escape(_p)}-pool$"),
+     f"agent.{_p}-pool")
+    for _p in providers.pool_provider_names()
+]
+_AUDIT_ROUTES += [
+    ("POST", re.compile(rf"^/api/admin/{re.escape(_p)}-pins$"), f"config.{_p}-pins")
+    for _p in providers.names()
+    if getattr(providers.get(_p), "pin_dict_key", None)
 ]
 
 
@@ -3204,19 +3215,19 @@ manager_users.register_routes(app, ctx)
 # Call sites use proxies.proxy_to_primary(...) / proxies.proxy_stream_to_primary(...).
 
 
-@app.route("/api/admin/llama-models", methods=["GET"])
-def admin_llama_models():
+def _admin_provider_models(provider: str):
     deny = _require_admin()
     if deny is not None:
         return deny
 
     data = agent_registry.load_agents()
     glob = data.get("global") or {}
-    pool = glob.get("llama_pool") or []
+    pool = glob.get(f"{provider}_pool") or []
     agents_map = data.get("agents") or {}
+    cap = providers.get(provider).capability_key
 
     # Walk the pool; if pool is empty, fall back to every approved
-    # agent with llama capability so the editor still works pre-pool.
+    # agent with the provider capability so the editor works pre-pool.
     candidates = []
     if pool:
         for aid in pool:
@@ -3225,14 +3236,14 @@ def admin_llama_models():
                 candidates.append(a)
     else:
         for a in agents_map.values():
-            if a.get("status") == "approved" and (a.get("capabilities") or {}).get("llama"):
+            if a.get("status") == "approved" and (a.get("capabilities") or {}).get(cap):
                 candidates.append(a)
 
     seen: dict[str, list[str]] = {}
     errors: list[dict] = []
     for agent in candidates:
         resp, _tried, err = agent_registry.agent_request(
-            "GET", agent, "/llama/models",
+            "GET", agent, f"/{provider}/models",
             headers={"Authorization": f"Bearer {agent['token']}"},
             timeout=5,
         )
@@ -3250,8 +3261,8 @@ def admin_llama_models():
         except Exception:
             errors.append({"agent": agent.get("hostname"), "error": "non-JSON response"})
             continue
-        # /llama/models mirrors llama-server's /v1/models which returns
-        # {"object":"list","data":[{"id":"...","object":"model",...}]}
+        # /{provider}/models mirrors the server's OpenAI /v1/models which
+        # returns {"object":"list","data":[{"id":"...","object":"model",...}]}
         for entry in (body.get("data") or body.get("models") or []):
             mid = (entry or {}).get("id") if isinstance(entry, dict) else entry
             if not mid:
@@ -3262,8 +3273,7 @@ def admin_llama_models():
     return jsonify({"ok": True, "models": out, "errors": errors})
 
 
-@app.route("/api/admin/llama-pins", methods=["POST"])
-def admin_llama_pins():
+def _admin_provider_pins(provider: str):
     deny = _require_admin()
     if deny is not None:
         return deny
@@ -3272,27 +3282,43 @@ def admin_llama_pins():
     agent_id = (body.get("agent_id") or "").strip()
     if not model_id:
         return jsonify({"ok": False, "error": "model_id required"}), 400
+    spec = providers.get(provider)
+    pin_key = spec.pin_dict_key
+    cap = spec.capability_key
 
     with agent_registry.agents_lock:
         data = agent_registry.load_agents()
         glob = data.setdefault("global", {})
-        pins = dict(glob.get("llama_model_pins") or {})
+        pins = dict(glob.get(pin_key) or {})
         if agent_id:
             agent = data["agents"].get(agent_id)
             if not agent:
                 return jsonify({"ok": False, "error": "unknown agent"}), 404
             caps = agent.get("capabilities", {}) or {}
-            if not caps.get("llama"):
+            if not caps.get(cap):
                 return jsonify({"ok": False,
-                                "error": "agent does not advertise llama capability"}), 400
+                                "error": f"agent does not advertise {cap} capability"}), 400
             pins[model_id] = agent_id
         else:
             pins.pop(model_id, None)
-        glob["llama_model_pins"] = pins
+        glob[pin_key] = pins
         agent_registry.save_agents(data)
-    log.info("llama_model_pins update by %s: model=%s -> agent=%s",
-             flask_request.remote_addr, model_id, agent_id or "(cleared)")
-    return jsonify({"ok": True, "llama_model_pins": pins})
+    log.info("%s update by %s: model=%s -> agent=%s",
+             pin_key, flask_request.remote_addr, model_id, agent_id or "(cleared)")
+    return jsonify({"ok": True, pin_key: pins})
+
+
+# Per-provider admin routes: -models for pool-picker specs, -pins for any
+# spec with a pin dict (llama URLs unchanged).
+for _pname in providers.pool_provider_names():
+    app.add_url_rule(f"/api/admin/{_pname}-models", endpoint=f"admin_{_pname}_models",
+                     view_func=functools.partial(_admin_provider_models, provider=_pname),
+                     methods=["GET"])
+for _pname in providers.names():
+    if getattr(providers.get(_pname), "pin_dict_key", None):
+        app.add_url_rule(f"/api/admin/{_pname}-pins", endpoint=f"admin_{_pname}_pins",
+                         view_func=functools.partial(_admin_provider_pins, provider=_pname),
+                         methods=["POST"])
 
 
 # ---------------------------------------------------------------------------

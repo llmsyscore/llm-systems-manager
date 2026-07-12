@@ -1,6 +1,7 @@
 """OpenAI-compatible inference gateway (#214, vllm #125). Routes
-chat/completion requests to a healthy provider agent — llama:
-pin > ?agent= picker > pool RR > default; vllm: picker > default."""
+chat/completion requests to a healthy provider agent — pool-picker providers
+(llama, vllm): pin > ?agent= picker > pool RR > default; others: picker >
+default."""
 from __future__ import annotations
 
 import json

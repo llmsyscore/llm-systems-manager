@@ -48,6 +48,7 @@ from flask import (Response, current_app, has_request_context, jsonify,
                    request as flask_request, send_from_directory)
 
 import agent_registry  # type: ignore[import-not-found]  # sibling
+import providers  # type: ignore[import-not-found]  # sibling
 import stream_pool  # type: ignore[import-not-found]  # sibling
 from _best_effort import best_effort  # type: ignore[import-not-found]  # sibling
 
@@ -289,34 +290,28 @@ def _resolve_target(pk: str, model_id: "str | None",
                     agent_id: "str | None",
                     allow_pool: bool = True) -> "tuple[dict | None, str | None]":
     """Resolve the target agent for a proxied call. Returns (agent, override).
-    Precedence for llama: pin(model_id) > agent_id picker > pool RR > default.
-    For everything else: agent_id picker > default. override == 'pin' when a
-    model pin overrode an explicit picker selection (surfaced to the operator
-    via log + X-Routing-Override header).
+    Spec-driven precedence: pin (specs with pin_dict_key) > agent_id picker >
+    pool RR (specs with default_picker 'pool') > default. override == 'pin'
+    when a model pin overrode an explicit picker selection (surfaced to the
+    operator via log + X-Routing-Override header).
 
     allow_pool=False (streams) skips pool round-robin — a stream must follow
     a specific known host (picker, else default), never a rotating pick."""
-    if pk == "llama":
-        if model_id:
-            pinned = agent_registry.pinned_llama_agent(model_id)
-            if pinned:
-                override = ("pin" if (agent_id and agent_id != pinned.get("agent_id"))
-                           else None)
-                return pinned, override
-        if agent_id:
-            a = agent_registry.resolve_agent_by_id(agent_id, capability="llama")
-            if a:
-                return a, None
-        # Pin already resolved/excluded above — pass model_id=None so
-        # pick_llama_agent doesn't re-run the pin lookup (which would log the
-        # 'pinned but unavailable' warning a second time).
-        if allow_pool:
-            a = agent_registry.pick_llama_agent(None)
-            if a:
-                return a, None
-        return _default_agent(pk), None
+    spec = providers.get(pk)
+    if spec and spec.pin_dict_key and model_id:
+        pinned = agent_registry.pinned_agent(pk, model_id)
+        if pinned:
+            override = ("pin" if (agent_id and agent_id != pinned.get("agent_id"))
+                       else None)
+            return pinned, override
     if agent_id:
         a = agent_registry.resolve_agent_by_id(agent_id, capability=pk)
+        if a:
+            return a, None
+    # Pin already resolved/excluded above — pass model_id=None so pick_agent
+    # doesn't re-run the pin lookup (would log the pin warning twice).
+    if allow_pool and spec and spec.default_picker == "pool":
+        a = agent_registry.pick_agent(pk, None)
         if a:
             return a, None
     return _default_agent(pk), None

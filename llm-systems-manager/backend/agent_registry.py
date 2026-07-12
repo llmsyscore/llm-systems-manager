@@ -12,7 +12,7 @@ Admin-managed self-registration + bearer-token approval. Owns:
   uses the manager's internal CA via the _pki module to sign per-agent leaf certs.
 - Agent dialing helpers consumed by terminal / proxies / openclaw in PRs M3-M5:
   agent_callback_urls, agent_tls_kwargs, agent_request (multi-fallback dialer),
-  primary_agent, pick_llama_agent (round-robin), browser_reachable_bind_url,
+  primary_agent, pick_agent (round-robin), browser_reachable_bind_url,
   is_local_bind_url, agent_liveness, approved_agent_caps.
 
 Wired into the Flask app by main via register_routes(app); deps populated
@@ -29,6 +29,7 @@ the same pattern auth.py uses.
 from __future__ import annotations
 
 import base64
+import functools
 import hashlib
 import hmac as _hmac
 import json
@@ -66,8 +67,8 @@ __all__ = [
     "agent_tls_kwargs",
     "agent_request",
     "primary_agent",
-    "pick_llama_agent",
-    "pinned_llama_agent",
+    "pick_agent",
+    "pinned_agent",
     "resolve_agent_by_id",
     "default_agent_id_for",
     "agent_liveness",
@@ -97,8 +98,9 @@ _agents_cache: "dict[str, Any]" = {"mtime": 0.0, "data": None, "by_token": {}}
 # underscore-prefixed module privates.
 agents_lock = _agents_lock
 
-_llama_rr_lock = threading.Lock()
-_llama_rr_index = 0
+# Per-provider round-robin cursors for pool pickers, one shared lock.
+_pool_rr_lock = threading.Lock()
+_pool_rr_index: "dict[str, int]" = {}
 
 # Bound the manager->agent dial so an unreachable/slow callback URL fails fast
 # instead of pinning a Cheroot worker thread for the full read timeout (xN
@@ -574,8 +576,9 @@ def primary_agent(kind: str) -> "dict | None":
     data = load_agents()
     glob = data.get("global") or {}
 
-    if kind == "llama":
-        pool = glob.get("llama_pool") or []
+    spec = providers.get(kind)
+    if spec and spec.default_picker == "pool":
+        pool = glob.get(f"{kind}_pool") or []
         if pool:
             agents_map = data.get("agents") or {}
             for aid in pool:
@@ -583,7 +586,7 @@ def primary_agent(kind: str) -> "dict | None":
                 if a and a.get("status") == "approved":
                     return a
             # Fall through if pool exists but none is approved — let the
-            # legacy primary_llama_id lookup below take over.
+            # legacy primary_<kind>_id lookup below take over.
 
     aid = glob.get(f"primary_{kind}_id")
     if not aid:
@@ -657,37 +660,38 @@ def resolve_agent_by_id(agent_id: str,
     return a
 
 
-def pinned_llama_agent(model_id: "str | None") -> "dict | None":
-    """Pin-only lookup: the agent a model is pinned to if it's approved+live,
-    else None. No pool/legacy fallback — the caller decides what to do when a
-    pin is absent or unavailable. pick_llama_agent uses this for step 1."""
-    if not model_id:
+def pinned_agent(provider: str, model_id: "str | None") -> "dict | None":
+    """Pin-only lookup via the provider spec's pin_dict_key: the agent a model
+    is pinned to if approved+live, else None. No pool/legacy fallback."""
+    spec = providers.get(provider)
+    pin_key = spec.pin_dict_key if spec else None
+    if not pin_key or not model_id:
         return None
     data = load_agents()
     glob = data.get("global") or {}
     agents_map = data.get("agents") or {}
-    pinned_id = (glob.get("llama_model_pins") or {}).get(model_id)
+    pinned_id = (glob.get(pin_key) or {}).get(model_id)
     if not pinned_id:
         return None
     a = agents_map.get(pinned_id)
     if a and a.get("status") == "approved" and agent_liveness(a) == "live":
         return a
-    log.warning("model %s pinned to agent %s but it's not approved+live "
+    log.warning("%s model %s pinned to agent %s but it's not approved+live "
                 "(status=%s liveness=%s); falling back",
-                model_id, pinned_id,
+                provider, model_id, pinned_id,
                 (a or {}).get("status"),
                 agent_liveness(a) if a else "?")
     return None
 
 
-def pick_llama_agent(model_id: "str | None" = None) -> "dict | None":
+def pick_agent(provider: str, model_id: "str | None" = None) -> "dict | None":
     data = load_agents()
     glob = data.get("global") or {}
     agents_map = data.get("agents") or {}
 
     # 1. Per-model pinning takes precedence.
     if model_id:
-        pinned = pinned_llama_agent(model_id)
+        pinned = pinned_agent(provider, model_id)
         if pinned:
             return pinned
 
@@ -695,20 +699,19 @@ def pick_llama_agent(model_id: "str | None" = None) -> "dict | None":
     #    member is stale (e.g. brief manager-restart window where no
     #    heartbeats have landed yet), accept approved-but-not-live so
     #    we don't bounce everything to the legacy fallback.
-    pool = glob.get("llama_pool") or []
+    pool = glob.get(f"{provider}_pool") or []
     approved      = [agents_map[a] for a in pool
                      if a in agents_map and agents_map[a].get("status") == "approved"]
     approved_live = [a for a in approved if agent_liveness(a) == "live"]
     candidates = approved_live or approved
     if candidates:
-        global _llama_rr_index
-        with _llama_rr_lock:
-            idx = _llama_rr_index % len(candidates)
-            _llama_rr_index = (idx + 1) % len(candidates)
+        with _pool_rr_lock:
+            idx = _pool_rr_index.get(provider, 0) % len(candidates)
+            _pool_rr_index[provider] = (idx + 1) % len(candidates)
         return candidates[idx]
 
     # 3. Legacy single-primary fallback.
-    return primary_agent("llama")
+    return primary_agent(provider)
 
 
 # ── Public API: ingest token + stream token ──────────────────────────
@@ -1306,6 +1309,12 @@ def _agents_list():
         "agents": safe,
         "global": data.get("global", {"auth_disabled": False}),
         "latest_agent_version": latest,
+        # Pool-picker providers, for the admin pool/pins provider chips.
+        "pool_providers": [
+            {"name": n, "label": spec.label, "pin_key": spec.pin_dict_key}
+            for n in providers.pool_provider_names()
+            if (spec := providers.get(n))
+        ],
     })
 
 
@@ -1441,13 +1450,16 @@ def _agents_push_llama_state(agent_id: str):
     return jsonify({"ok": True, "applied": True, "state": state, "interval": _deps.get_interval()})
 
 
-def _agents_set_llama_pool(agent_id: str):
+def _agents_set_pool(agent_id: str, provider: str):
     deny = _deps.require_admin()
     if deny is not None:
         return deny
     body = flask_request.get_json(force=True) or {}
     in_pool = bool(body.get("in_pool", True))
     position = body.get("position")
+    spec = providers.get(provider)
+    cap = spec.capability_key if spec else provider
+    pool_key = f"{provider}_pool"
 
     with _agents_lock:
         data = load_agents()
@@ -1456,14 +1468,14 @@ def _agents_set_llama_pool(agent_id: str):
             return jsonify({"ok": False, "error": "unknown agent"}), 404
         if in_pool:
             caps = agent.get("capabilities", {}) or {}
-            if not caps.get("llama"):
+            if not caps.get(cap):
                 return jsonify({"ok": False,
-                                "error": "agent does not advertise llama capability"}), 400
+                                "error": f"agent does not advertise {cap} capability"}), 400
             if agent.get("status") != "approved":
                 return jsonify({"ok": False, "error": "agent not approved"}), 400
 
         glob = data.setdefault("global", {})
-        pool = list(glob.get("llama_pool") or [])
+        pool = list(glob.get(pool_key) or [])
         # Remove if present, then re-add at target index — handles both
         # add (was absent) and re-order (was present) in one path.
         if agent_id in pool:
@@ -1473,13 +1485,13 @@ def _agents_set_llama_pool(agent_id: str):
                 pool.insert(position, agent_id)
             else:
                 pool.append(agent_id)
-        glob["llama_pool"] = pool
+        glob[pool_key] = pool
         save_agents(data)
 
-    log.info("llama_pool %s by %s: agent=%s host=%s; pool=%s",
-             "add/move" if in_pool else "remove",
+    log.info("%s %s by %s: agent=%s host=%s; pool=%s",
+             pool_key, "add/move" if in_pool else "remove",
              flask_request.remote_addr, agent_id, agent.get("hostname"), pool)
-    return jsonify({"ok": True, "llama_pool": pool})
+    return jsonify({"ok": True, pool_key: pool})
 
 
 def _agents_issue_cert(agent_id: str):
@@ -1756,8 +1768,12 @@ def register_routes(app) -> None:
                      view_func=_agents_set_primary, methods=["POST"])
     app.add_url_rule("/api/agents/<agent_id>/llama-state", endpoint="agents_push_llama_state",
                      view_func=_agents_push_llama_state, methods=["POST"])
-    app.add_url_rule("/api/agents/<agent_id>/llama-pool", endpoint="agents_set_llama_pool",
-                     view_func=_agents_set_llama_pool, methods=["POST"])
+    # One pool route per pool-picker provider, bound via functools.partial.
+    for _pname in providers.pool_provider_names():
+        app.add_url_rule(f"/api/agents/<agent_id>/{_pname}-pool",
+                         endpoint=f"agents_set_{_pname}_pool",
+                         view_func=functools.partial(_agents_set_pool, provider=_pname),
+                         methods=["POST"])
     app.add_url_rule("/api/agents/<agent_id>/cert-bundle", endpoint="agents_issue_cert",
                      view_func=_agents_issue_cert, methods=["POST"])
     app.add_url_rule("/api/admin/push-ca-to-agents", endpoint="admin_push_ca_to_agents",
