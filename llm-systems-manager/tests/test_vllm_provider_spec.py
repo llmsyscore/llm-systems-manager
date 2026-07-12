@@ -14,7 +14,8 @@ def test_spec_registered():
     assert spec.label == "vLLM"
     assert spec.capability_key == "vllm"
     assert spec.sub_tab_keys == ("vllm",)
-    assert spec.default_picker == "first_approved"
+    assert spec.default_picker == "pool"
+    assert spec.pin_dict_key == "vllm_model_pins"
     assert spec.aggregator is not None
 
 
