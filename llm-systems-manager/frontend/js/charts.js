@@ -186,6 +186,11 @@ function _activeTabLayoutKeys() {
       hidden: 'lmsHidden', order: 'lmsOrder', cols: 'lmsCols',
       grid: document.getElementById('lmsCardGrid'),
     };
+    if (sub === 'vllm') return {
+      label: 'Dashboard · vLLM', map: CARD_LABELS_VLLM,
+      hidden: 'vllmHidden', order: 'vllmOrder', cols: 'vllmCols',
+      grid: document.getElementById('vllmCardGrid'),
+    };
     if (sub === 'manager') return {
       label: 'Dashboard · Manager', map: CARD_LABELS_MANAGER,
       hidden: 'managerHidden', order: 'managerOrder', cols: 'managerCols',

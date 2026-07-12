@@ -49,6 +49,14 @@ describe('charts.js', () => {
     expect(charts).toContain('subTabBtnDashVllm');
     expect(charts).toContain('subTabBtnLlmVllm');
   });
+  // #366: _activeTabLayoutKeys must resolve the vllm sub-tab to the vllm grid.
+  test('_activeTabLayoutKeys handles the vllm sub-tab', () => {
+    const fn = charts.slice(charts.indexOf('function _activeTabLayoutKeys'));
+    const body = fn.slice(0, fn.indexOf('\n}'));
+    expect(body).toContain("sub === 'vllm'");
+    expect(body).toContain('vllmCardGrid');
+    expect(body).toContain('vllmCols');
+  });
 });
 
 describe('admin.js', () => {
@@ -78,5 +86,22 @@ describe('index.html', () => {
   test.each(['vllmKvChart', 'vllmTpsChart'])('%s canvas is wrapped in .chart-wrap', (id) => {
     const m = html.match(new RegExp(`<div class="chart-wrap"[^>]*>\\s*<canvas id="${id}"`));
     expect(m).not.toBeNull();
+  });
+
+  // #366: the vllm control panel must match the llama/LMS toolbar pattern.
+  describe('vllm control panel matches llama/LMS UX', () => {
+    const panel = html.slice(html.indexOf('id="llm-vllm"'), html.indexOf('end llmTab'));
+    test('server-control buttons sit in a .llm-toolbar', () => {
+      expect(panel).toMatch(/<div class="llm-toolbar"[^>]*>\s*<button[^>]*vllmBtnStart/);
+    });
+    test('uses the muted button palette, not bright green/red/amber', () => {
+      expect(panel).not.toContain('btn-green-muted-gradient');
+      expect(panel).not.toContain('btn-red-muted-gradient');
+      expect(panel).not.toContain('btn-amber-muted-gradient');
+    });
+    test('section titles use the canonical llm-collapse-icon', () => {
+      expect(panel).toContain('llm-collapse-icon');
+      expect(panel).not.toContain('llm-section-arrow');
+    });
   });
 });

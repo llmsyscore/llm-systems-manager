@@ -1519,18 +1519,16 @@ Backend API endpoints consumed:
     <div class="agent-picker" id="agentPickerCtrlVllm" style="display:none"></div>
 
     <div class="llm-section" id="vllmSecCtrl">
-      <div class="llm-section-title" onclick="toggleSection('vllmSecCtrl')">
-        <span class="llm-section-arrow">▾</span> Server Control
-      </div>
+      <div class="llm-section-title" onclick="toggleSection('vllmSecCtrl')">Server Control<span class="llm-collapse-icon">▾</span></div>
       <div class="llm-section-body">
-        <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
-          <button class="btn btn-green-muted-gradient" id="vllmBtnStart"   onclick="vllmServerAction('start')">▶ Start</button>
-          <button class="btn btn-red-muted-gradient"   id="vllmBtnStop"    onclick="vllmServerAction('stop')">■ Stop</button>
-          <button class="btn btn-amber-muted-gradient" id="vllmBtnRestart" onclick="vllmServerAction('restart')">⟳ Restart</button>
+        <div class="llm-toolbar">
+          <button class="btn btn-stone-muted-gradient" id="vllmBtnStart"   onclick="vllmServerAction('start')">▶ Start</button>
+          <button class="btn btn-slate-muted-gradient" id="vllmBtnStop"    onclick="vllmServerAction('stop')">⏹ Stop</button>
+          <button class="btn btn-zinc-muted-gradient"  id="vllmBtnRestart" onclick="vllmServerAction('restart')">↺ Restart</button>
           <button class="btn btn-gray-muted-gradient"  id="vllmBtnStatus"  onclick="vllmServerAction('status')">ℹ Status</button>
           <span id="vllmCtrlBadge" class="sub" style="margin-left:6px;">—</span>
-          <span id="vllmCtrlStatus" class="sub" style="flex:1;"></span>
-          <button class="btn btn-gray-muted-gradient" onclick="toggleVllmLog()">📜 Log</button>
+          <span id="vllmCtrlStatus" class="sub"></span>
+          <button class="btn btn-gray-muted-gradient ml-auto" onclick="toggleVllmLog()">☰ Log</button>
           <button class="btn btn-gray-muted-gradient" onclick="openServerConfig('vllm')">⚙ Server Config</button>
         </div>
         <div class="sub" style="margin-top:6px;color:var(--fg-dim);">
@@ -1545,24 +1543,20 @@ Backend API endpoints consumed:
     </div>
 
     <div class="llm-section" id="vllmSecModels">
-      <div class="llm-section-title" onclick="toggleSection('vllmSecModels')">
-        <span class="llm-section-arrow">▾</span> Served Models
-      </div>
+      <div class="llm-section-title" onclick="toggleSection('vllmSecModels')">Served Models<span class="llm-collapse-icon">▾</span></div>
       <div class="llm-section-body">
         <div id="vllmModelCards" class="model-cards"><div class="sub">No vLLM data yet.</div></div>
       </div>
     </div>
 
     <div class="llm-section" id="vllmSecLora">
-      <div class="llm-section-title" onclick="toggleSection('vllmSecLora')">
-        <span class="llm-section-arrow">▾</span> LoRA Adapters
-      </div>
+      <div class="llm-section-title" onclick="toggleSection('vllmSecLora')">LoRA Adapters<span class="llm-collapse-icon">▾</span></div>
       <div class="llm-section-body">
-        <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
+        <div class="llm-toolbar">
           <input type="text" id="vllmLoraName" placeholder="adapter name" style="padding:6px 8px;background:var(--bg-elev);color:var(--fg);border:1px solid var(--border);border-radius:4px;">
           <input type="text" id="vllmLoraPath" placeholder="adapter path on agent host" style="flex:1;min-width:220px;padding:6px 8px;background:var(--bg-elev);color:var(--fg);border:1px solid var(--border);border-radius:4px;">
-          <button class="btn btn-green-muted-gradient" onclick="vllmLoraLoad()">Load</button>
-          <button class="btn btn-red-muted-gradient"   onclick="vllmLoraUnload()">Unload</button>
+          <button class="btn btn-stone-muted-gradient" onclick="vllmLoraLoad()">Load</button>
+          <button class="btn btn-slate-muted-gradient" onclick="vllmLoraUnload()">Unload</button>
         </div>
         <div class="sub" style="margin-top:6px;color:var(--fg-dim);">
           Requires <code>VLLM_LORA_ENABLED: true</code> in the agent config and <code>--enable-lora</code> on the server (trusted environments only).
