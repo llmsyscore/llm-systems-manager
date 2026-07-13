@@ -1857,35 +1857,8 @@ def llama_bench_stream(
 ) -> StreamingResponse:
     _require_ctx().check_stream_auth(authorization, token, "/llama/bench/stream")
     _llama_check_enabled()
-    def generate() -> Iterator[bytes]:
-        with _bench_cond:
-            cur_run = _bench_replay.run_id
-            last_seq = _bench_replay.seq_for(last_event_id)
-        while True:
-            with _bench_cond:
-                if cur_run and _bench_replay.run_id != cur_run:
-                    return   # superseded by a newer run; client opens a fresh stream
-                cur_run = _bench_replay.run_id
-                new = _bench_replay.records_after_seq(last_seq)
-                if not new:
-                    _bench_cond.wait(timeout=10)
-                    if cur_run and _bench_replay.run_id != cur_run:
-                        return
-                    new = _bench_replay.records_after_seq(last_seq)
-            if not new:
-                yield b'data: {"type":"keepalive"}\n\n'
-                continue
-            for rec in new:
-                yield f"id: {rec['id']}\ndata: {json.dumps(rec['event'])}\n\n".encode()
-                last_seq = rec["seq"]
-                if rec["event"].get("type") == "done":
-                    return
-    if not stream_pool.POOL.try_acquire():
-        raise HTTPException(status_code=503, detail="agent at stream capacity; retry shortly")
-    return StreamingResponse(
-        stream_pool.guarded_async(generate()), media_type="text/event-stream",
-        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
-    )
+    return _shared.bench_replay_sse(
+        _bench_replay, _bench_cond, lambda: _bench_active, last_event_id)
 
 
 def _pkill_strays(patterns: list[str], what: str) -> dict[str, Any]:

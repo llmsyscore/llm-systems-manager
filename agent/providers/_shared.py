@@ -40,6 +40,43 @@ def pool_guarded_sse(gen) -> StreamingResponse:
     )
 
 
+def bench_replay_iter(replay, cond, is_active, last_event_id,
+                      *, wait_timeout=10.0) -> Iterator[bytes]:
+    """Replay-buffer SSE generator: resume from Last-Event-ID, wait on cond for
+    records, keepalive while active, end idle streams with a synthetic done."""
+    with cond:
+        cur_run = replay.run_id
+        last_seq = replay.seq_for(last_event_id)
+    while True:
+        with cond:
+            if cur_run and replay.run_id != cur_run:
+                return
+            cur_run = replay.run_id
+            new = replay.records_after_seq(last_seq)
+            if not new:
+                cond.wait(timeout=wait_timeout)
+                if cur_run and replay.run_id != cur_run:
+                    return
+                new = replay.records_after_seq(last_seq)
+        if not new:
+            if not is_active():
+                yield (b'data: {"type":"done","ok":false,'
+                       b'"error":"no active job"}\n\n')
+                return
+            yield b'data: {"type":"keepalive"}\n\n'
+            continue
+        for rec in new:
+            yield f"id: {rec['id']}\ndata: {json.dumps(rec['event'])}\n\n".encode()
+            last_seq = rec["seq"]
+            if rec["event"].get("type") == "done":
+                return
+
+
+def bench_replay_sse(replay, cond, is_active, last_event_id) -> StreamingResponse:
+    """Stream-pool-guarded SSE response around the bench replay generator."""
+    return pool_guarded_sse(bench_replay_iter(replay, cond, is_active, last_event_id))
+
+
 def openai_wants_stream(body: bytes) -> bool:
     """True when the JSON body carries "stream": true."""
     try:
