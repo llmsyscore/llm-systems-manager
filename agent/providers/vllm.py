@@ -902,35 +902,8 @@ def vllm_bench_stream(
     _require_ctx().check_stream_auth(authorization, token, "/vllm/bench/stream")
     _vllm_check_enabled()
 
-    def generate():
-        with _bench_cond:
-            cur_run = _bench_replay.run_id
-            last_seq = _bench_replay.seq_for(last_event_id)
-        while True:
-            with _bench_cond:
-                if cur_run and _bench_replay.run_id != cur_run:
-                    return
-                cur_run = _bench_replay.run_id
-                new = _bench_replay.records_after_seq(last_seq)
-                if not new:
-                    _bench_cond.wait(timeout=10)
-                    if cur_run and _bench_replay.run_id != cur_run:
-                        return
-                    new = _bench_replay.records_after_seq(last_seq)
-            if not new:
-                if not _bench_job.active:
-                    yield (b'data: {"type":"done","ok":false,'
-                           b'"error":"no active job"}\n\n')
-                    return
-                yield b'data: {"type":"keepalive"}\n\n'
-                continue
-            for rec in new:
-                yield f"id: {rec['id']}\ndata: {json.dumps(rec['event'])}\n\n".encode()
-                last_seq = rec["seq"]
-                if rec["event"].get("type") == "done":
-                    return
-
-    return _shared.pool_guarded_sse(generate())
+    return _shared.bench_replay_sse(
+        _bench_replay, _bench_cond, lambda: _bench_job.active, last_event_id)
 
 
 def vllm_bench_cancel(authorization: Optional[str] = Header(default=None)) -> dict[str, Any]:
