@@ -1315,6 +1315,15 @@ def _agents_list():
             for n in providers.pool_provider_names()
             if (spec := providers.get(n))
         ],
+        # All registered providers, for the admin primary checkboxes,
+        # view-dashboard buttons, and provider→sub-tab jump routing.
+        "providers": [
+            {"name": spec.name, "label": spec.label,
+             "capability_key": spec.capability_key,
+             "sub_tab": (spec.sub_tab_keys[0] if spec.sub_tab_keys else spec.name)}
+            for n in providers.names()
+            if (spec := providers.get(n))
+        ],
     })
 
 
