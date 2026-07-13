@@ -1593,7 +1593,7 @@ Backend API endpoints consumed:
 </div><!-- end llmTab -->
 
 <script src="/static/js/lib/layout.js?v=2026.07.10-1"></script>
-<script src="/static/js/foundation.js?v=2026.07.11-6"></script>
+<script src="/static/js/foundation.js?v=2026.07.13-1"></script>
 <script src="/static/js/lib/series.js?v=2026.06.21-1"></script>
 <script src="/static/js/lib/benchaxis.js?v=2026.06.28-1"></script>
 <script src="/static/js/lib/thresholds.js?v=2026.06.26-3"></script>
@@ -2006,8 +2006,8 @@ Backend API endpoints consumed:
           <div class="modal-group-h">Switches</div>
           <div id="vllmBenchSwitchList" style="display:flex;flex-direction:column;gap:4px;"></div>
           <div class="bench-row" style="margin-top:6px;">
-            <input type="text" id="vllmBenchAddFlag" placeholder="--flag" style="width:170px;padding:5px 8px;background:var(--bg-elev);color:var(--fg);border:1px solid var(--border);border-radius:4px;font-family:monospace;font-size:0.85em;">
-            <input type="text" id="vllmBenchAddVal" placeholder="value (blank = boolean)" style="flex:1;min-width:120px;padding:5px 8px;background:var(--bg-elev);color:var(--fg);border:1px solid var(--border);border-radius:4px;font-family:monospace;font-size:0.85em;">
+            <input type="text" id="vllmBenchAddFlag" class="vbench-input" placeholder="--flag" style="width:150px;">
+            <input type="text" id="vllmBenchAddVal" class="vbench-input" placeholder="value (blank = boolean)" style="flex:1;min-width:120px;">
             <button class="btn btn-gray-muted-gradient btn-sm" onclick="vllmBenchAddSwitch()">+ Add</button>
           </div>
         </div>

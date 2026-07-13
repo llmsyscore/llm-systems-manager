@@ -65,6 +65,11 @@
     color:var(--fg-dim);
   }
   #autotuneOverlay #atRawDetails[open] > summary { color:var(--fg); }
-  /* Bench result card: six stats incl. paired percentiles need a smaller scale. */
+  /* Bench overlay: tighter stat grid + smaller stat values. */
   #vllmBenchOverlay .at-result-grid { grid-template-columns:repeat(auto-fit,minmax(118px,1fr)); row-gap:12px; }
   #vllmBenchOverlay .at-stat-v { font-size:clamp(1.0rem,1.4vw,1.35rem); }
+  .at-wizard .vbench-input {
+    padding:5px 8px; background:var(--bg-elev); color:var(--fg);
+    border:1px solid var(--border); border-radius:4px;
+    font-family:monospace; font-size:0.85em;
+  }

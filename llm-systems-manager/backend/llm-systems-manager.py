@@ -280,11 +280,41 @@ def init_db():
             conn.execute("ALTER TABLE model_benchmarks ADD COLUMN avg_pg_tps REAL")
         if "extra_json" not in cols:
             conn.execute("ALTER TABLE model_benchmarks ADD COLUMN extra_json TEXT")
+        # Per-provider keyspace (#357): UNIQUE gains provider so llama and vllm
+        # results for one (model_id, agent_id) coexist; old rows become llama.
+        cols2 = [r[1] for r in conn.execute("PRAGMA table_info(model_benchmarks)").fetchall()]
+        if "provider" not in cols2:
+            conn.executescript("""
+                ALTER TABLE model_benchmarks RENAME TO _model_benchmarks_old2;
+                CREATE TABLE model_benchmarks (
+                    id          INTEGER PRIMARY KEY,
+                    model_id    TEXT NOT NULL,
+                    agent_id    TEXT NOT NULL DEFAULT '',
+                    provider    TEXT NOT NULL DEFAULT 'llama',
+                    avg_gen_tps REAL,
+                    avg_ppt_tps REAL,
+                    avg_pg_tps  REAL,
+                    bench_tool  TEXT,
+                    switches    TEXT,
+                    ts          TEXT,
+                    extra_json  TEXT,
+                    UNIQUE(model_id, agent_id, provider)
+                );
+                INSERT INTO model_benchmarks
+                    (model_id, agent_id, provider, avg_gen_tps, avg_ppt_tps, avg_pg_tps,
+                     bench_tool, switches, ts, extra_json)
+                    SELECT model_id, agent_id, 'llama', avg_gen_tps, avg_ppt_tps, avg_pg_tps,
+                           bench_tool, switches, ts, extra_json
+                    FROM _model_benchmarks_old2;
+                DROP TABLE _model_benchmarks_old2;
+            """)
+            log.info("model_benchmarks migrated to per-provider schema (model_id, agent_id, provider)")
     conn.execute("""
             CREATE TABLE IF NOT EXISTS model_benchmarks (
                 id          INTEGER PRIMARY KEY,
                 model_id    TEXT NOT NULL,
                 agent_id    TEXT NOT NULL DEFAULT '',
+                provider    TEXT NOT NULL DEFAULT 'llama',
                 avg_gen_tps REAL,
                 avg_ppt_tps REAL,
                 avg_pg_tps  REAL,
@@ -292,7 +322,7 @@ def init_db():
                 switches    TEXT,
                 ts          TEXT,
                 extra_json  TEXT,
-                UNIQUE(model_id, agent_id)
+                UNIQUE(model_id, agent_id, provider)
             )
         """)
     conn.execute("CREATE INDEX IF NOT EXISTS idx_bench_model ON model_benchmarks(model_id, agent_id)")
@@ -1586,9 +1616,9 @@ def benchmark_results():
         # per model (ORDER puts agent rows first, the dedup below keeps them).
         rows = conn.execute(
             "SELECT model_id, avg_gen_tps, avg_ppt_tps, bench_tool, switches, ts, agent_id, avg_pg_tps, extra_json "
-            "FROM model_benchmarks WHERE agent_id = ? OR agent_id = '' "
+            "FROM model_benchmarks WHERE provider = ? AND (agent_id = ? OR agent_id = '') "
             "ORDER BY (agent_id = '') ASC",
-            (agent_id,),
+            (provider, agent_id),
         ).fetchall()
         seen = set()
         out = []
@@ -1639,9 +1669,9 @@ def benchmark_store():
         conn = get_db()
         conn.execute(
             "INSERT INTO model_benchmarks "
-            "(model_id, agent_id, avg_gen_tps, avg_ppt_tps, avg_pg_tps, bench_tool, switches, ts, extra_json) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) "
-            "ON CONFLICT(model_id, agent_id) DO UPDATE SET "
+            "(model_id, agent_id, provider, avg_gen_tps, avg_ppt_tps, avg_pg_tps, bench_tool, switches, ts, extra_json) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
+            "ON CONFLICT(model_id, agent_id, provider) DO UPDATE SET "
             "  avg_gen_tps=excluded.avg_gen_tps,"
             "  avg_ppt_tps=excluded.avg_ppt_tps,"
             "  avg_pg_tps=excluded.avg_pg_tps,"
@@ -1649,7 +1679,7 @@ def benchmark_store():
             "  switches=excluded.switches,"
             "  ts=excluded.ts,"
             "  extra_json=excluded.extra_json",
-            (model_id, agent_id, avg_gen_tps, avg_ppt_tps, avg_pg_tps, bench_tool,
+            (model_id, agent_id, provider, avg_gen_tps, avg_ppt_tps, avg_pg_tps, bench_tool,
              json.dumps(switches), ts,
              json.dumps(extra) if isinstance(extra, dict) else None)
         )
@@ -1670,8 +1700,8 @@ def benchmark_delete(model_id):
         conn = get_db()
         # Remove what this agent's view shows: its own row + any legacy ('') row.
         conn.execute(
-            "DELETE FROM model_benchmarks WHERE model_id=? AND (agent_id=? OR agent_id='')",
-            (model_id, agent_id),
+            "DELETE FROM model_benchmarks WHERE model_id=? AND provider=? AND (agent_id=? OR agent_id='')",
+            (model_id, provider, agent_id),
         )
         conn.commit()
         return jsonify({"ok": True})

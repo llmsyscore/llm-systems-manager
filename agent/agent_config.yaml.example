@@ -93,6 +93,8 @@ VLLM_ENABLED: false
 #   Renaming this needs a root `install.sh --update` afterwards to re-bake
 #   the sudoers grants + svcconfig helper for the new unit name.
 # VLLM_LORA_ENABLED: false   # expose /vllm/lora/{load,unload} (trusted env only)
+# VLLM_BENCH_BIN: ""          # vllm CLI for `vllm bench serve`; blank = auto
+#   (unit ExecStart binary if named vllm, else PATH lookup)
 
 # -- Performance controller (replaces the bash daemon) ---------------------
 # Requires LLAMA_ENABLED=true and a Linux host. The agent tails

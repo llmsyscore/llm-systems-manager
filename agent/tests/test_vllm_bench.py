@@ -43,12 +43,19 @@ def test_resolve_bin_override_missing_is_error(ctx, tmp_path):
 
 
 def test_resolve_bin_execstart_head_fallback(ctx, tmp_path, monkeypatch):
-    binf = tmp_path / "venv-vllm"
+    binf = tmp_path / "vllm"
     binf.write_text("#!/bin/sh\n")
     unit = f"[Service]\nExecStart={binf} serve org/m --host 0.0.0.0\n"
     monkeypatch.setattr(vllm.Path, "read_text", lambda self: unit)
     path, err = vllm._bench_resolve_bin()
     assert path == str(binf) and err is None
+
+
+def test_resolve_bin_skips_interpreter_head(ctx, monkeypatch):
+    unit = "[Service]\nExecStart=/usr/bin/python3 -m vllm.entrypoints.openai.api_server\n"
+    monkeypatch.setattr(vllm.Path, "read_text", lambda self: unit)
+    monkeypatch.setattr(vllm.shutil, "which", lambda _: "/usr/local/bin/vllm")
+    assert vllm._bench_resolve_bin() == ("/usr/local/bin/vllm", None)
 
 
 def test_resolve_bin_which_then_error(ctx, monkeypatch):
@@ -67,14 +74,15 @@ def test_build_cmd_switches_and_save_result():
     cmd = vllm._bench_build_cmd(
         "/opt/v/bin/vllm", "http://localhost:8000", "org/m",
         [{"flag": "--num-prompts", "value": "200"},
-         {"flag": "--disable-tqdm", "value": ""}],
+         {"flag": "--ignore-eos", "value": ""}],
         "/tmp/x")
     assert cmd[:3] == ["/opt/v/bin/vllm", "bench", "serve"]
     assert ["--base-url", "http://localhost:8000"] == cmd[3:5]
     assert ["--model", "org/m"] == cmd[5:7]
+    assert "--disable-tqdm" in cmd
     assert "--save-result" in cmd and "/tmp/x" in cmd
     assert ["--num-prompts", "200"] == cmd[-3:-1]
-    assert cmd[-1] == "--disable-tqdm"
+    assert cmd[-1] == "--ignore-eos"
 
 
 # ── result parse ───────────────────────────────────────────────────────
@@ -91,17 +99,10 @@ SAMPLE = {
 }
 
 
-def test_extract_metrics_known_numeric_keys_only():
-    m = vllm._bench_extract_metrics(SAMPLE)
-    assert m["output_throughput"] == 1063.9
-    assert m["p99_itl_ms"] == 30.3
-    assert m["completed"] == 200
-    assert "input_lens" not in m and "backend" not in m
-
-
 def test_extract_extra_scalars_only():
     e = vllm._bench_extract_extra(SAMPLE)
     assert e["backend"] == "vllm" and e["num_prompts"] == 200
+    assert e["output_throughput"] == 1063.9 and e["p99_itl_ms"] == 30.3
     assert "input_lens" not in e and "itls" not in e
 
 
@@ -187,8 +188,6 @@ def test_bench_run_one_end_to_end(ctx, monkeypatch, tmp_path):
         return real_popen([_sys.executable, "-c", script] + argv[3:], **kw)
 
     monkeypatch.setattr(vllm.subprocess, "Popen", popen)
-    with vllm._bench_cond:
-        vllm._bench_replay.start_run("testrun")
     vllm._bench_run_one("/opt/v/bin/vllm", "org/m",
                         [{"flag": "--num-prompts", "value": "5"}])
     events = _drain_replay()
@@ -196,7 +195,7 @@ def test_bench_run_one_end_to_end(ctx, monkeypatch, tmp_path):
     assert types[0] == "model_start" and "cmd" in events[0]
     assert "line" in types
     res = [e for e in events if e["type"] == "result"][0]
-    assert res["metrics"]["output_throughput"] == 1063.9
+    assert res["extra"]["output_throughput"] == 1063.9
     assert res["extra"]["backend"] == "vllm"
     md = [e for e in events if e["type"] == "model_done"][0]
     assert md["ok"] is True and md["rc"] == 0

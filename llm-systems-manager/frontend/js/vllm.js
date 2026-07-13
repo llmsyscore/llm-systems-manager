@@ -131,9 +131,9 @@ function renderVllmModelCards(models, activeId) {
   }
   const benchChips = (id) => {
     const b = (window._vbenchData || {})[id];
-    if (!b) return '';
+    if (!b || (b.avg_gen_tps == null && b.avg_pg_tps == null)) return '';
     return `<div style="display:flex;gap:4px;flex-wrap:wrap;margin-top:4px;">
-      <span class="bench-badge-chip">gen ${Number(b.avg_gen_tps ?? 0).toFixed(1)} t/s</span>
+      ${b.avg_gen_tps != null ? `<span class="bench-badge-chip">gen ${Number(b.avg_gen_tps).toFixed(1)} t/s</span>` : ''}
       ${b.avg_pg_tps != null ? `<span class="bench-badge-chip">total ${Number(b.avg_pg_tps).toFixed(0)} t/s</span>` : ''}
     </div>`;
   };

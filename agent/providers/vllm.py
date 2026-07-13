@@ -733,6 +733,7 @@ def shutdown_children() -> None:
     """Cancel running bench/autotune jobs; wait for autotune's ExecStart rollback."""
     try:
         _bench_job.cancel()
+        _bench_job.join(timeout=10)
     except Exception:
         log.debug("vllm bench shutdown cancel failed", exc_info=True)
     try:
@@ -743,15 +744,6 @@ def shutdown_children() -> None:
 
 
 # ── Benchmark (vllm bench serve) (#357) ────────────────────────────────
-
-_BENCH_METRIC_KEYS = (
-    "request_throughput", "output_throughput", "total_token_throughput",
-    "mean_ttft_ms", "median_ttft_ms", "p99_ttft_ms",
-    "mean_tpot_ms", "median_tpot_ms", "p99_tpot_ms",
-    "mean_itl_ms", "median_itl_ms", "p99_itl_ms",
-    "completed", "duration", "total_input_tokens", "total_output_tokens",
-)
-
 
 def _bench_resolve_bin() -> "tuple[Optional[str], Optional[str]]":
     """(vllm binary path, None) or (None, error). Order: VLLM_BENCH_BIN
@@ -766,7 +758,8 @@ def _bench_resolve_bin() -> "tuple[Optional[str], Optional[str]]":
         head, _ = _parse_vllm_execstart(Path(_vllm_svc_file_path()).read_text())
         if head:
             cand = shlex.split(head)[0]
-            if Path(cand).exists():
+            # Interpreter heads (python -m vllm ...) can't run "bench serve".
+            if Path(cand).name == "vllm" and Path(cand).exists():
                 return cand, None
     except Exception:
         log.debug("bench bin: svcconfig head unavailable", exc_info=True)
@@ -781,6 +774,7 @@ def _bench_build_cmd(binpath: str, api_url: str, model: str,
                      switches: list, result_dir: str) -> list:
     cmd = [binpath, "bench", "serve",
            "--base-url", api_url, "--model", model,
+           "--disable-tqdm",
            "--save-result", "--result-dir", result_dir,
            "--result-filename", "result.json"]
     for s in switches:
@@ -794,13 +788,8 @@ def _bench_build_cmd(binpath: str, api_url: str, model: str,
     return cmd
 
 
-def _bench_extract_metrics(data: dict) -> dict:
-    return {k: data[k] for k in _BENCH_METRIC_KEYS
-            if isinstance(data.get(k), (int, float))
-            and not isinstance(data.get(k), bool)}
-
-
 def _bench_extract_extra(data: dict) -> dict:
+    """Scalar fields only — drops per-request arrays from the result JSON."""
     return {k: v for k, v in data.items()
             if isinstance(v, (int, float, str, bool))}
 
@@ -823,6 +812,8 @@ def _bench_run_one(binpath: str, model: str, switches: list) -> None:
     error: Optional[str] = None
     tmpdir = tempfile.mkdtemp(prefix="vllm-bench-")
     try:
+        with _bench_cond:
+            _bench_replay.start_run(uuid.uuid4().hex[:12])
         cmd = _bench_build_cmd(binpath, _require_ctx().config.VLLM_API_URL.rstrip("/"),
                                model, switches, tmpdir)
         _bench_put({"type": "model_start", "model": model,
@@ -831,6 +822,8 @@ def _bench_run_one(binpath: str, model: str, switches: list) -> None:
                                 stderr=subprocess.STDOUT, text=True,
                                 start_new_session=True)
         _bench_job.track(proc)
+        if _bench_job.cancel_event.is_set():
+            _bench_job.kill_tracked()
         assert proc.stdout is not None
         for raw in iter(proc.stdout.readline, ""):
             if _bench_job.cancel_event.is_set():
@@ -838,19 +831,27 @@ def _bench_run_one(binpath: str, model: str, switches: list) -> None:
             line = _shared.ANSI_RE.sub("", raw).rstrip()
             if line:
                 _bench_put({"type": "line", "text": line})
-        rc = proc.wait(timeout=30)
+        if _bench_job.cancel_event.is_set():
+            _bench_job.kill_tracked()
+        try:
+            rc = proc.wait(timeout=30)
+        except subprocess.TimeoutExpired:
+            _bench_job.kill_tracked()
+            try:
+                rc = proc.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                error = "benchmark process did not exit after kill"
         cancelled = _bench_job.cancel_event.is_set()
-        if rc == 0 and not cancelled:
+        if rc == 0 and not cancelled and error is None:
             try:
                 data = json.loads(Path(tmpdir, "result.json").read_text())
                 _bench_put({"type": "result", "model_id": model,
-                            "metrics": _bench_extract_metrics(data),
                             "extra": _bench_extract_extra(data),
                             "switches": switches})
                 ok = True
             except Exception as e:
                 error = f"benchmark finished but result.json unreadable: {e}"
-        elif not cancelled:
+        elif not cancelled and error is None:
             error = f"vllm bench serve exited rc={rc}"
         _bench_put({"type": "model_done", "ok": ok, "rc": rc,
                     "cancelled": cancelled, "error": error})
@@ -888,10 +889,6 @@ def vllm_bench_run(body: dict,
     binpath, err = _bench_resolve_bin()
     if not binpath:
         return {"ok": False, "error": err}
-    if _bench_job.active:
-        return {"ok": False, "error": "Another benchmark is in progress"}
-    with _bench_cond:
-        _bench_replay.start_run(uuid.uuid4().hex[:12])
     if not _bench_job.try_start(lambda: _bench_run_one(binpath, model, switches)):
         return {"ok": False, "error": "Another benchmark is in progress"}
     return {"ok": True}

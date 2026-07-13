@@ -4,27 +4,37 @@
 let _vatEventSrc = null;
 let _vatOrig = null;        // {binary, args} from svcconfig GET
 let _vatResult = null;      // last model_done payload
-let _vatRawCount = 0;
 
 function _vatEl(id) { return document.getElementById(id); }
 
-function _vatSetStatus(txt, cls) {
-  const el = _vatEl('vllmAtStatus');
+function _wizStatus(id, txt, cls) {
+  const el = _vatEl(id);
   if (el) { el.textContent = txt; el.className = 'sub ' + (cls || ''); }
 }
 
-function _vatRawAppend(text) {
-  const box = _vatEl('vllmAtRawLog');
+function _wizRawAppend(boxId, cntId, text) {
+  const box = _vatEl(boxId);
   if (!box) return;
-  _vatRawCount++;
-  const cnt = _vatEl('vllmAtRawCount');
-  if (cnt) cnt.textContent = String(_vatRawCount);
+  const cnt = _vatEl(cntId);
+  if (cnt) cnt.textContent = String((+cnt.textContent || 0) + 1);
   const nearBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 40;
   const div = document.createElement('div');
   div.textContent = text;
   box.appendChild(div);
   while (box.childNodes.length > 2000) box.removeChild(box.firstChild);
   if (nearBottom) box.scrollTop = box.scrollHeight;
+}
+
+function _wizRawReset(boxId, cntId) {
+  const box = _vatEl(boxId);
+  if (box) box.innerHTML = '';
+  const cnt = _vatEl(cntId);
+  if (cnt) cnt.textContent = '0';
+}
+
+function _wizStat(k, v, u) {
+  return `<div class="at-stat"><div class="at-stat-k">${k}</div>
+      <div class="at-stat-v">${v}<span class="at-stat-u">${u || ''}</span></div></div>`;
 }
 
 function _vatProgress(html) {
@@ -47,9 +57,8 @@ async function openVllmAutotune() {
   _vatEl('vllmAtOverlay').classList.add('open');
   _vatEl('vllmAtProgress').innerHTML = '';
   _vatEl('vllmAtResults').innerHTML = '';
-  _vatEl('vllmAtRawLog').innerHTML = '';
-  _vatRawCount = 0;
-  _vatSetStatus('');
+  _wizRawReset('vllmAtRawLog', 'vllmAtRawCount');
+  _wizStatus('vllmAtStatus', '');
   _vatOrig = null;
   _vatResult = null;
   _vatEl('vllmAtRunBtn').style.display = '';
@@ -118,7 +127,7 @@ async function runVllmAutotune() {
   _vatEl('vllmAtResults').innerHTML = '';
   _vatEl('vllmAtRunBtn').style.display = 'none';
   _vatEl('vllmAtCancelBtn').style.display = '';
-  _vatSetStatus('Starting…');
+  _wizStatus('vllmAtStatus', 'Starting…');
   let r;
   try {
     r = await fetch(window._withAgentParam('/api/vllm/autotune/run'), {
@@ -127,7 +136,7 @@ async function runVllmAutotune() {
     }).then(_jsonOrThrow);
   } catch (e) { r = { ok: false, error: e.message || String(e) }; }
   if (!r.ok) {
-    _vatSetStatus(`⚠ ${r.error || 'run failed'}`, 'err');
+    _wizStatus('vllmAtStatus', `⚠ ${r.error || 'run failed'}`, 'err');
     _vatFinish();
     return;
   }
@@ -139,7 +148,7 @@ async function runVllmAutotune() {
   };
   _vatEventSrc.onerror = () => {
     if (_vatEventSrc && _vatEventSrc.readyState === EventSource.CLOSED) {
-      _vatSetStatus('⚠ progress stream closed', 'err');
+      _wizStatus('vllmAtStatus', '⚠ progress stream closed', 'err');
       _vatFinish();
     }
   };
@@ -149,17 +158,17 @@ function _vatHandleEvent(msg) {
   switch (msg.type) {
     case 'keepalive': return;
     case 'model_start':
-      _vatSetStatus(`Tuning ${msg.model || msg.unit}…`);
+      _wizStatus('vllmAtStatus', `Tuning ${msg.model || msg.unit}…`);
       _vatProgress(`<div class="sub">Unit <b>${_esc(msg.unit)}</b> — original --max-model-len: ${msg.original_max_len ?? '(model default)'}</div>`);
       return;
     case 'step_start':
       _vatProgress(`<div class="sub">▸ ${_esc(msg.step)}${msg.max_model_len != null ? ' @ --max-model-len ' + msg.max_model_len : ''}</div>`);
       return;
     case 'loading_progress':
-      _vatSetStatus(`${msg.step}: loading… ${Math.round(msg.elapsed_s)}s / ${msg.timeout_s}s`);
+      _wizStatus('vllmAtStatus', `${msg.step}: loading… ${Math.round(msg.elapsed_s)}s / ${msg.timeout_s}s`);
       return;
     case 'line':
-      _vatRawAppend(msg.text);
+      _wizRawAppend('vllmAtRawLog', 'vllmAtRawCount', msg.text);
       return;
     case 'kv_capacity':
       _vatProgress(`<div class="sub">KV cache capacity: <b>${Number(msg.tokens).toLocaleString()}</b> tokens</div>`);
@@ -175,7 +184,7 @@ function _vatHandleEvent(msg) {
       _vatRenderResult(msg);
       return;
     case 'done':
-      _vatSetStatus(msg.cancelled ? 'Cancelled.' : (msg.ok ? 'Done.' : 'Failed.'),
+      _wizStatus('vllmAtStatus', msg.cancelled ? 'Cancelled.' : (msg.ok ? 'Done.' : 'Failed.'),
                     msg.ok ? '' : 'err');
       _vatFinish();
       return;
@@ -188,8 +197,6 @@ function _vatRenderResult(msg) {
     el.innerHTML = `<div class="at-result-card" style="border-left-color:var(--crit);"><span style="color:var(--crit);">✕ ${_esc(msg.error || 'failed')}</span></div>`;
     return;
   }
-  const stat = (k, v, u) => `<div class="at-stat"><div class="at-stat-k">${k}</div>
-      <div class="at-stat-v">${v}<span class="at-stat-u">${u || ''}</span></div></div>`;
   const conc = msg.max_concurrency_x != null ? String(msg.max_concurrency_x) : '—';
   const actions = msg.applied
     ? `<span style="color:var(--ok);font-size:0.85em;">✓ Applied to ExecStart</span>
@@ -199,10 +206,10 @@ function _vatRenderResult(msg) {
     <div class="at-result-card">
       <div class="at-result-head"><span class="at-result-model">--max-model-len</span></div>
       <div class="at-result-grid">
-        ${stat('Recommended', Number(msg.max_model_len).toLocaleString(), 'tok')}
-        ${stat('KV capacity', Number(msg.kv_tokens).toLocaleString(), 'tok')}
-        ${stat('Concurrency', conc, '×')}
-        ${stat('Previous', msg.original_max_len != null ? Number(msg.original_max_len).toLocaleString() : 'default', msg.original_max_len != null ? 'tok' : '')}
+        ${_wizStat('Recommended', Number(msg.max_model_len).toLocaleString(), 'tok')}
+        ${_wizStat('KV capacity', Number(msg.kv_tokens).toLocaleString(), 'tok')}
+        ${_wizStat('Concurrency', conc, '×')}
+        ${_wizStat('Previous', msg.original_max_len != null ? Number(msg.original_max_len).toLocaleString() : 'default', msg.original_max_len != null ? 'tok' : '')}
       </div>
       <div class="at-result-actions">${actions}</div>
     </div>`;
@@ -239,11 +246,11 @@ function vllmAtRevert(btn) {
 }
 
 async function cancelVllmAutotune() {
-  _vatSetStatus('Cancelling…');
+  _wizStatus('vllmAtStatus', 'Cancelling…');
   try {
     await fetch(window._withAgentParam('/api/vllm/autotune/cancel'), { method: 'POST' });
   } catch (e) {
-    _vatSetStatus(`⚠ cancel failed: ${e.message || e}`, 'err');
+    _wizStatus('vllmAtStatus', `⚠ cancel failed: ${e.message || e}`, 'err');
   }
 }
 
@@ -264,17 +271,14 @@ const VBENCH_DEFAULTS = [
 
 let _vbenchEventSrc = null;
 let _vbenchSwitches = [];
-let _vbenchRawCount = 0;
 let _vbenchResult = null;
 let _vbenchModel = null;
 window._vbenchData = window._vbenchData || {};
 
 function _vbenchUrl(path) {
-  // Explicit agent pin so the global fetch wrapper's llama mapping for
-  // /api/benchmark/* never injects the wrong picker selection.
-  const aid = typeof _selectedAgent === 'function' ? (_selectedAgent('vllm') || '') : '';
+  // ?provider=vllm routes storage AND _withAgentParam's picker to vllm.
   const sep = path.includes('?') ? '&' : '?';
-  return `${path}${sep}provider=vllm&agent=${encodeURIComponent(aid)}`;
+  return `${path}${sep}provider=vllm`;
 }
 
 async function loadVllmBenchData() {
@@ -287,25 +291,6 @@ async function loadVllmBenchData() {
   } catch (e) { /* offline manager: badges simply stay hidden */ }
 }
 
-function _vbenchSetStatus(txt, cls) {
-  const el = _vatEl('vllmBenchStatus');
-  if (el) { el.textContent = txt; el.className = 'sub ' + (cls || ''); }
-}
-
-function _vbenchRawAppend(text) {
-  const box = _vatEl('vllmBenchRawLog');
-  if (!box) return;
-  _vbenchRawCount++;
-  const cnt = _vatEl('vllmBenchRawCount');
-  if (cnt) cnt.textContent = String(_vbenchRawCount);
-  const nearBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 40;
-  const div = document.createElement('div');
-  div.textContent = text;
-  box.appendChild(div);
-  while (box.childNodes.length > 2000) box.removeChild(box.firstChild);
-  if (nearBottom) box.scrollTop = box.scrollHeight;
-}
-
 function _vbenchRenderSwitches() {
   const host = _vatEl('vllmBenchSwitchList');
   if (!host) return;
@@ -315,11 +300,13 @@ function _vbenchRenderSwitches() {
     row.style.cssText = 'display:flex;gap:4px;align-items:center;flex-wrap:nowrap;';
     const flag = document.createElement('input');
     flag.type = 'text'; flag.value = s.flag;
-    flag.style.cssText = 'width:150px;flex:0 0 auto;padding:5px 8px;background:var(--bg-elev);color:var(--fg);border:1px solid var(--border);border-radius:4px;font-family:monospace;font-size:0.85em;';
+    flag.className = 'vbench-input';
+    flag.style.cssText = 'width:150px;flex:0 0 auto;';
     flag.oninput = () => { _vbenchSwitches[i].flag = flag.value; };
     const val = document.createElement('input');
     val.type = 'text'; val.value = s.value;
-    val.style.cssText = 'flex:1;min-width:0;padding:5px 8px;background:var(--bg-elev);color:var(--fg);border:1px solid var(--border);border-radius:4px;font-family:monospace;font-size:0.85em;';
+    val.className = 'vbench-input';
+    val.style.cssText = 'flex:1;min-width:0;';
     val.oninput = () => { _vbenchSwitches[i].value = val.value; };
     const rm = document.createElement('button');
     rm.className = 'btn btn-gray-muted-gradient btn-sm';
@@ -371,7 +358,8 @@ async function vllmBenchStartServer() {
   btn.disabled = true; btn.textContent = '…';
   try { await fetch('/api/vllm/server/start', { method: 'POST' }); } catch (e) { /* poll below reports it */ }
   const until = Date.now() + 90000;
-  while (Date.now() < until) {
+  while (Date.now() < until
+         && _vatEl('vllmBenchOverlay').classList.contains('open')) {
     await new Promise(r => setTimeout(r, 3000));
     try {
       const d = await fetch('/api/vllm/metrics').then(_jsonOrThrow);
@@ -385,10 +373,9 @@ async function vllmBenchStartServer() {
 function openVllmBench() {
   _vatEl('vllmBenchOverlay').classList.add('open');
   _vatEl('vllmBenchResults').innerHTML = '';
-  _vatEl('vllmBenchRawLog').innerHTML = '';
-  _vbenchRawCount = 0;
+  _wizRawReset('vllmBenchRawLog', 'vllmBenchRawCount');
   _vbenchResult = null;
-  _vbenchSetStatus('');
+  _wizStatus('vllmBenchStatus', '');
   _vatEl('vllmBenchRunBtn').style.display = '';
   _vatEl('vllmBenchCancelBtn').style.display = 'none';
   if (!_vbenchSwitches.length) _vbenchSwitches = VBENCH_DEFAULTS.map(s => ({ ...s }));
@@ -410,7 +397,7 @@ async function runVllmBench() {
   _vatEl('vllmBenchResults').innerHTML = '';
   _vatEl('vllmBenchRunBtn').style.display = 'none';
   _vatEl('vllmBenchCancelBtn').style.display = '';
-  _vbenchSetStatus('Starting…');
+  _wizStatus('vllmBenchStatus', 'Starting…');
   let r;
   try {
     r = await fetch('/api/vllm/bench/run', {
@@ -419,7 +406,7 @@ async function runVllmBench() {
     }).then(_jsonOrThrow);
   } catch (e) { r = { ok: false, error: e.message || String(e) }; }
   if (!r.ok) {
-    _vbenchSetStatus(`⚠ ${r.error || 'run failed'}`, 'err');
+    _wizStatus('vllmBenchStatus', `⚠ ${r.error || 'run failed'}`, 'err');
     _vbenchFinish();
     return;
   }
@@ -431,7 +418,7 @@ async function runVllmBench() {
   };
   _vbenchEventSrc.onerror = () => {
     if (_vbenchEventSrc && _vbenchEventSrc.readyState === EventSource.CLOSED) {
-      _vbenchSetStatus('⚠ progress stream closed', 'err');
+      _wizStatus('vllmBenchStatus', '⚠ progress stream closed', 'err');
       _vbenchFinish();
     }
   };
@@ -441,11 +428,11 @@ function _vbenchHandleEvent(msg) {
   switch (msg.type) {
     case 'keepalive': return;
     case 'model_start':
-      _vbenchSetStatus(`Benchmarking ${msg.model}…`);
-      _vbenchRawAppend(`$ ${msg.cmd}`);
+      _wizStatus('vllmBenchStatus', `Benchmarking ${msg.model}…`);
+      _wizRawAppend('vllmBenchRawLog', 'vllmBenchRawCount', `$ ${msg.cmd}`);
       return;
     case 'line':
-      _vbenchRawAppend(msg.text);
+      _wizRawAppend('vllmBenchRawLog', 'vllmBenchRawCount', msg.text);
       return;
     case 'result':
       _vbenchResult = msg;
@@ -458,35 +445,31 @@ function _vbenchHandleEvent(msg) {
       }
       return;
     case 'done':
-      _vbenchSetStatus(msg.cancelled ? 'Cancelled.' : (msg.ok ? 'Done.' : 'Failed.'),
+      _wizStatus('vllmBenchStatus', msg.cancelled ? 'Cancelled.' : (msg.ok ? 'Done.' : 'Failed.'),
                        msg.ok ? '' : 'err');
       _vbenchFinish();
       return;
   }
 }
 
-function _vbenchStat(k, v, u) {
-  return `<div class="at-stat"><div class="at-stat-k">${k}</div>
-      <div class="at-stat-v">${v}<span class="at-stat-u">${u || ''}</span></div></div>`;
-}
 
 function _vbenchFmt(x, digits = 1) {
   return (typeof x === 'number' && isFinite(x)) ? x.toFixed(digits) : '—';
 }
 
 function _vbenchRenderResult(msg) {
-  const m = msg.metrics || {};
+  const m = msg.extra || {};
   const saved = window._vbenchData[msg.model_id];
   _vatEl('vllmBenchResults').innerHTML = `
     <div class="at-result-card">
       <div class="at-result-head"><span class="at-result-model">${_esc(msg.model_id)}</span></div>
       <div class="at-result-grid">
-        ${_vbenchStat('Requests', _vbenchFmt(m.request_throughput, 2), 'req/s')}
-        ${_vbenchStat('Output', _vbenchFmt(m.output_throughput), 'tok/s')}
-        ${_vbenchStat('Total', _vbenchFmt(m.total_token_throughput), 'tok/s')}
-        ${_vbenchStat('TTFT p50/p99', `${_vbenchFmt(m.median_ttft_ms, 0)}/${_vbenchFmt(m.p99_ttft_ms, 0)}`, 'ms')}
-        ${_vbenchStat('TPOT p50/p99', `${_vbenchFmt(m.median_tpot_ms, 1)}/${_vbenchFmt(m.p99_tpot_ms, 1)}`, 'ms')}
-        ${_vbenchStat('ITL p50/p99', `${_vbenchFmt(m.median_itl_ms, 1)}/${_vbenchFmt(m.p99_itl_ms, 1)}`, 'ms')}
+        ${_wizStat('Requests', _vbenchFmt(m.request_throughput, 2), 'req/s')}
+        ${_wizStat('Output', _vbenchFmt(m.output_throughput), 'tok/s')}
+        ${_wizStat('Total', _vbenchFmt(m.total_token_throughput), 'tok/s')}
+        ${_wizStat('TTFT p50/p99', `${_vbenchFmt(m.median_ttft_ms, 0)}/${_vbenchFmt(m.p99_ttft_ms, 0)}`, 'ms')}
+        ${_wizStat('TPOT p50/p99', `${_vbenchFmt(m.median_tpot_ms, 1)}/${_vbenchFmt(m.p99_tpot_ms, 1)}`, 'ms')}
+        ${_wizStat('ITL p50/p99', `${_vbenchFmt(m.median_itl_ms, 1)}/${_vbenchFmt(m.p99_itl_ms, 1)}`, 'ms')}
       </div>
       <div class="at-result-actions">
         <button class="btn" onclick="saveVllmBench(this)">💾 Save</button>
@@ -497,7 +480,7 @@ function _vbenchRenderResult(msg) {
 
 async function saveVllmBench(btn) {
   if (!_vbenchResult) return;
-  const m = _vbenchResult.metrics || {};
+  const m = _vbenchResult.extra || {};
   btn.disabled = true; btn.textContent = '…';
   let r;
   try {
@@ -511,7 +494,7 @@ async function saveVllmBench(btn) {
         avg_ppt_tps: null,
         bench_tool: 'vllm-bench-serve',
         switches: _vbenchResult.switches || [],
-        extra_json: _vbenchResult.extra || {},
+        extra_json: m,
       }),
     }).then(_jsonOrThrow);
   } catch (e) { r = { ok: false, error: e.message || String(e) }; }
@@ -523,21 +506,22 @@ async function saveVllmBench(btn) {
 async function clearVllmBench(btn) {
   if (!_vbenchResult) return;
   btn.disabled = true;
+  let r;
   try {
-    await fetch(_vbenchUrl('/api/benchmark/results/' + encodeURIComponent(_vbenchResult.model_id)),
-                { method: 'DELETE' }).then(_jsonOrThrow);
-  } catch (e) { /* results reload below reflects the outcome */ }
+    r = await fetch(_vbenchUrl('/api/benchmark/results/' + encodeURIComponent(_vbenchResult.model_id)),
+                    { method: 'DELETE' }).then(_jsonOrThrow);
+  } catch (e) { r = { ok: false, error: e.message || String(e) }; }
   btn.disabled = false;
-  btn.textContent = '✓ Cleared';
-  loadVllmBenchData();
+  btn.textContent = r.ok ? '✓ Cleared' : `⚠ ${r.error || 'failed'}`;
+  if (r.ok) loadVllmBenchData();
 }
 
 async function cancelVllmBench() {
-  _vbenchSetStatus('Cancelling…');
+  _wizStatus('vllmBenchStatus', 'Cancelling…');
   try {
     await fetch(window._withAgentParam('/api/vllm/bench/cancel'), { method: 'POST' });
   } catch (e) {
-    _vbenchSetStatus(`⚠ cancel failed: ${e.message || e}`, 'err');
+    _wizStatus('vllmBenchStatus', `⚠ cancel failed: ${e.message || e}`, 'err');
   }
 }
 

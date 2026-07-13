@@ -102,6 +102,38 @@ def test_results_default_provider_is_llama_shape_unchanged(monkeypatch):
     assert items[0]["extra_json"] is None
 
 
+def test_provider_keyspaces_are_isolated(monkeypatch):
+    conn = _mem_db()
+    monkeypatch.setattr(manager_mod, "get_db", lambda: conn)
+    manager_mod.init_db()
+    c = _client()
+    c.post("/api/benchmark/store", json={"model_id": "org/m", "avg_gen_tps": 42.5})
+    c.post("/api/benchmark/store", json={"model_id": "org/m", "provider": "vllm",
+                                         "avg_gen_tps": 1063.9})
+    assert conn.execute("SELECT COUNT(*) FROM model_benchmarks").fetchone()[0] == 2
+    llama = c.get("/api/benchmark/results").get_json()["results"]
+    vllm_rows = c.get("/api/benchmark/results?provider=vllm").get_json()["results"]
+    assert llama[0]["avg_gen_tps"] == 42.5 and len(llama) == 1
+    assert vllm_rows[0]["avg_gen_tps"] == 1063.9 and len(vllm_rows) == 1
+    # provider-scoped delete leaves the other provider's row intact
+    c.delete("/api/benchmark/results/org/m?provider=vllm")
+    assert conn.execute(
+        "SELECT provider FROM model_benchmarks").fetchall() == [("llama",)]
+
+
+def test_provider_migration_tags_existing_rows_llama(monkeypatch):
+    conn = _mem_db()
+    conn.execute("INSERT INTO model_benchmarks (model_id, agent_id, avg_gen_tps) "
+                 "VALUES ('old/m', '', 7.5)")
+    monkeypatch.setattr(manager_mod, "get_db", lambda: conn)
+    manager_mod.init_db()
+    row = conn.execute(
+        "SELECT provider, avg_gen_tps FROM model_benchmarks WHERE model_id='old/m'"
+    ).fetchone()
+    assert row == ("llama", 7.5)
+    manager_mod.init_db()  # idempotent
+
+
 def test_delete_with_provider(monkeypatch):
     conn = _mem_db()
     monkeypatch.setattr(manager_mod, "get_db", lambda: conn)
