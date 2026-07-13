@@ -40,7 +40,10 @@ window._withAgentParam = function (url) {
     if (typeof url !== 'string') return url;
     const path = url.split('?')[0];
     if (!path.startsWith('/api/')) return url;       // leave absolute agent URLs alone
-    const provider = _providerForApiPath(path);
+    // Explicit ?provider= (provider-aware routes like /api/benchmark/*)
+    // overrides the path map's provider.
+    const provMatch = /[?&]provider=([a-z0-9_-]+)/.exec(url);
+    const provider = provMatch ? provMatch[1] : _providerForApiPath(path);
     if (!provider) return url;
     if (/[?&]agent=/.test(url)) return url;           // caller already pinned an agent
     const aid = _selectedAgent(provider);
@@ -419,6 +422,7 @@ function _selectAgent(provider, agentId) {
       if (typeof _resetVllmCharts === 'function') _resetVllmCharts();
       if (typeof fetchVllmMetrics === 'function') fetchVllmMetrics();
     }
+    if (typeof loadVllmBenchData === 'function') loadVllmBenchData();
     if (typeof _vllmLogOpen !== 'undefined' && _vllmLogOpen
         && typeof startVllmLogRefresh === 'function') startVllmLogRefresh();
     if (typeof closeVllmTerminal === 'function') {

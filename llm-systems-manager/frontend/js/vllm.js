@@ -129,10 +129,19 @@ function renderVllmModelCards(models, activeId) {
     host.innerHTML = '<div class="sub">No models served — start the vLLM unit or check Server Config.</div>';
     return;
   }
+  const benchChips = (id) => {
+    const b = (window._vbenchData || {})[id];
+    if (!b || (b.avg_gen_tps == null && b.avg_pg_tps == null)) return '';
+    return `<div style="display:flex;gap:4px;flex-wrap:wrap;margin-top:4px;">
+      ${b.avg_gen_tps != null ? `<span class="bench-badge-chip">gen ${Number(b.avg_gen_tps).toFixed(1)} t/s</span>` : ''}
+      ${b.avg_pg_tps != null ? `<span class="bench-badge-chip">total ${Number(b.avg_pg_tps).toFixed(0)} t/s</span>` : ''}
+    </div>`;
+  };
   host.innerHTML = models.map(id => `
     <div class="model-card" data-id="${_esc(id)}">
       <div class="model-card-title" style="word-break:break-all;">${_esc(id)}</div>
       <span class="status ${id === activeId ? 'status--ok' : ''}"><span class="status__dot"></span>${id === activeId ? 'serving' : 'adapter'}</span>
+      ${benchChips(id)}
     </div>`).join('');
 }
 

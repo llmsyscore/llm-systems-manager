@@ -154,7 +154,7 @@ def _local_hostname() -> str:
 # banner reads it. Bump suffix (-1, -2, …) for same-day iterations; roll
 # the date for a new day's first change.
 # ---------------------------------------------------------------------------
-__version__ = "v2026.07.12-3"
+__version__ = "v2026.07.12-4"
 
 # Wall-clock at first import (Cheroot main process); the shutdown banner
 # reads it for the uptime line.
@@ -278,18 +278,51 @@ def init_db():
             log.info("model_benchmarks migrated to per-agent schema (model_id, agent_id)")
         if "avg_pg_tps" not in cols:
             conn.execute("ALTER TABLE model_benchmarks ADD COLUMN avg_pg_tps REAL")
+        if "extra_json" not in cols:
+            conn.execute("ALTER TABLE model_benchmarks ADD COLUMN extra_json TEXT")
+        # Per-provider keyspace (#357): UNIQUE gains provider so llama and vllm
+        # results for one (model_id, agent_id) coexist; old rows become llama.
+        cols2 = [r[1] for r in conn.execute("PRAGMA table_info(model_benchmarks)").fetchall()]
+        if "provider" not in cols2:
+            conn.executescript("""
+                ALTER TABLE model_benchmarks RENAME TO _model_benchmarks_old2;
+                CREATE TABLE model_benchmarks (
+                    id          INTEGER PRIMARY KEY,
+                    model_id    TEXT NOT NULL,
+                    agent_id    TEXT NOT NULL DEFAULT '',
+                    provider    TEXT NOT NULL DEFAULT 'llama',
+                    avg_gen_tps REAL,
+                    avg_ppt_tps REAL,
+                    avg_pg_tps  REAL,
+                    bench_tool  TEXT,
+                    switches    TEXT,
+                    ts          TEXT,
+                    extra_json  TEXT,
+                    UNIQUE(model_id, agent_id, provider)
+                );
+                INSERT INTO model_benchmarks
+                    (model_id, agent_id, provider, avg_gen_tps, avg_ppt_tps, avg_pg_tps,
+                     bench_tool, switches, ts, extra_json)
+                    SELECT model_id, agent_id, 'llama', avg_gen_tps, avg_ppt_tps, avg_pg_tps,
+                           bench_tool, switches, ts, extra_json
+                    FROM _model_benchmarks_old2;
+                DROP TABLE _model_benchmarks_old2;
+            """)
+            log.info("model_benchmarks migrated to per-provider schema (model_id, agent_id, provider)")
     conn.execute("""
             CREATE TABLE IF NOT EXISTS model_benchmarks (
                 id          INTEGER PRIMARY KEY,
                 model_id    TEXT NOT NULL,
                 agent_id    TEXT NOT NULL DEFAULT '',
+                provider    TEXT NOT NULL DEFAULT 'llama',
                 avg_gen_tps REAL,
                 avg_ppt_tps REAL,
                 avg_pg_tps  REAL,
                 bench_tool  TEXT,
                 switches    TEXT,
                 ts          TEXT,
-                UNIQUE(model_id, agent_id)
+                extra_json  TEXT,
+                UNIQUE(model_id, agent_id, provider)
             )
         """)
     conn.execute("CREATE INDEX IF NOT EXISTS idx_bench_model ON model_benchmarks(model_id, agent_id)")
@@ -1562,19 +1595,30 @@ def benchmark_stream():
     return proxies.proxy_stream_to_primary("llama", "/llama/bench/stream", long_running=True)
 
 
+def _bench_provider(value: "str | None") -> "tuple[str | None, str | None]":
+    """(provider, error): default llama, must be a registered provider name."""
+    provider = (value or "llama").strip()
+    if provider not in providers.names():
+        return None, f"unknown provider: {provider}"
+    return provider, None
+
+
 @app.route("/api/benchmark/results", methods=["GET"])
 def benchmark_results():
     try:
-        agent = _request_agent("llama")
+        provider, perr = _bench_provider(flask_request.args.get("provider"))
+        if perr:
+            return jsonify({"ok": False, "error": perr}), 400
+        agent = _request_agent(provider)
         agent_id = (agent or {}).get("agent_id") or ""
         conn = get_db()
         # The selected agent's rows plus legacy ('') rows; agent-specific wins
         # per model (ORDER puts agent rows first, the dedup below keeps them).
         rows = conn.execute(
-            "SELECT model_id, avg_gen_tps, avg_ppt_tps, bench_tool, switches, ts, agent_id, avg_pg_tps "
-            "FROM model_benchmarks WHERE agent_id = ? OR agent_id = '' "
+            "SELECT model_id, avg_gen_tps, avg_ppt_tps, bench_tool, switches, ts, agent_id, avg_pg_tps, extra_json "
+            "FROM model_benchmarks WHERE provider = ? AND (agent_id = ? OR agent_id = '') "
             "ORDER BY (agent_id = '') ASC",
-            (agent_id,),
+            (provider, agent_id),
         ).fetchall()
         seen = set()
         out = []
@@ -1584,6 +1628,8 @@ def benchmark_results():
             seen.add(r[0])
             try: switches = json.loads(r[4]) if r[4] else []
             except Exception: switches = []
+            try: extra = json.loads(r[8]) if r[8] else None
+            except Exception: extra = None
             out.append({
                 "model_id":    r[0],
                 "avg_gen_tps": r[1],
@@ -1593,6 +1639,7 @@ def benchmark_results():
                 "switches":    switches,
                 "ts":          r[5],
                 "agent_id":    r[6],
+                "extra_json":  extra,
             })
         return jsonify({"results": out})
     except Exception as e:
@@ -1609,26 +1656,32 @@ def benchmark_store():
         avg_pg_tps  = data.get("avg_pg_tps")
         bench_tool  = data.get("bench_tool") or ""
         switches    = data.get("switches") or []
+        extra       = data.get("extra_json")
         if not model_id:
             return jsonify({"ok": False, "error": "model_id required"}), 400
-        agent = _request_agent("llama")
+        provider, perr = _bench_provider(data.get("provider"))
+        if perr:
+            return jsonify({"ok": False, "error": perr}), 400
+        agent = _request_agent(provider)
         agent_id = (agent or {}).get("agent_id") or ""
         from datetime import datetime, timezone
         ts = datetime.now(timezone.utc).isoformat()
         conn = get_db()
         conn.execute(
             "INSERT INTO model_benchmarks "
-            "(model_id, agent_id, avg_gen_tps, avg_ppt_tps, avg_pg_tps, bench_tool, switches, ts) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?) "
-            "ON CONFLICT(model_id, agent_id) DO UPDATE SET "
+            "(model_id, agent_id, provider, avg_gen_tps, avg_ppt_tps, avg_pg_tps, bench_tool, switches, ts, extra_json) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
+            "ON CONFLICT(model_id, agent_id, provider) DO UPDATE SET "
             "  avg_gen_tps=excluded.avg_gen_tps,"
             "  avg_ppt_tps=excluded.avg_ppt_tps,"
             "  avg_pg_tps=excluded.avg_pg_tps,"
             "  bench_tool=excluded.bench_tool,"
             "  switches=excluded.switches,"
-            "  ts=excluded.ts",
-            (model_id, agent_id, avg_gen_tps, avg_ppt_tps, avg_pg_tps, bench_tool,
-             json.dumps(switches), ts)
+            "  ts=excluded.ts,"
+            "  extra_json=excluded.extra_json",
+            (model_id, agent_id, provider, avg_gen_tps, avg_ppt_tps, avg_pg_tps, bench_tool,
+             json.dumps(switches), ts,
+             json.dumps(extra) if isinstance(extra, dict) else None)
         )
         conn.commit()
         return jsonify({"ok": True})
@@ -1639,13 +1692,16 @@ def benchmark_store():
 @app.route("/api/benchmark/results/<path:model_id>", methods=["DELETE"])
 def benchmark_delete(model_id):
     try:
-        agent = _request_agent("llama")
+        provider, perr = _bench_provider(flask_request.args.get("provider"))
+        if perr:
+            return jsonify({"ok": False, "error": perr}), 400
+        agent = _request_agent(provider)
         agent_id = (agent or {}).get("agent_id") or ""
         conn = get_db()
         # Remove what this agent's view shows: its own row + any legacy ('') row.
         conn.execute(
-            "DELETE FROM model_benchmarks WHERE model_id=? AND (agent_id=? OR agent_id='')",
-            (model_id, agent_id),
+            "DELETE FROM model_benchmarks WHERE model_id=? AND provider=? AND (agent_id=? OR agent_id='')",
+            (model_id, provider, agent_id),
         )
         conn.commit()
         return jsonify({"ok": True})
@@ -2287,6 +2343,24 @@ def vllm_autotune_stream():
 @app.route("/api/vllm/autotune/cancel", methods=["POST"])
 def vllm_autotune_cancel():
     return proxies.proxy_to_primary("vllm", "POST", "/vllm/autotune/cancel", timeout=10)
+
+
+# --- vLLM benchmark (vllm bench serve) — pure proxy, subprocess lives on the agent ---
+
+@app.route("/api/vllm/bench/run", methods=["POST"])
+def vllm_bench_run():
+    body = flask_request.get_json(force=True) or {}
+    return proxies.proxy_to_primary("vllm", "POST", "/vllm/bench/run", json=body, timeout=15)
+
+
+@app.route("/api/vllm/bench/stream")
+def vllm_bench_stream():
+    return proxies.proxy_stream_to_primary("vllm", "/vllm/bench/stream", long_running=True)
+
+
+@app.route("/api/vllm/bench/cancel", methods=["POST"])
+def vllm_bench_cancel():
+    return proxies.proxy_to_primary("vllm", "POST", "/vllm/bench/cancel", timeout=10)
 
 
 LAYOUT_FILE = DATA_DIR / "layout.json"

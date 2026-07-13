@@ -617,12 +617,12 @@
     .bench-rail-actions .btn { flex:1; }
     /* Primary Run: neutral resting, accent on hover (matches the model-card load
        button). Full-width line; emphasis via size + hover, not a neon fill. */
-    .bench-rail-actions #benchRunBtn, .bench-rail-actions #atRunBtn, .bench-rail-actions #vllmAtRunBtn {
+    .bench-rail-actions .bench-run-primary {
       flex:1 1 100%; padding:10px 14px; font-weight:600; border-radius:7px; letter-spacing:0.02em;
       background:var(--bg-card-alt); color:var(--fg); border:1px solid var(--border-strong);
       background-image:none; transition:color .15s, border-color .15s, background .15s;
     }
-    .bench-rail-actions #benchRunBtn:hover, .bench-rail-actions #atRunBtn:hover, .bench-rail-actions #vllmAtRunBtn:hover {
+    .bench-rail-actions .bench-run-primary:hover {
       border-color:var(--accent); color:var(--accent); background:var(--bg-card-alt); opacity:1;
     }
     .bench-results-pane { display:flex; flex-direction:column; gap:10px; min-width:0; }

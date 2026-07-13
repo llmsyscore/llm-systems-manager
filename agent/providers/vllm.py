@@ -3,19 +3,25 @@ svcconfig, OpenAI passthrough, opt-in LoRA."""
 
 from __future__ import annotations
 
+import json
 import logging
 import math
 import re
 import shlex
+import shutil
 import subprocess
+import tempfile
 import threading
 import time
+import uuid
 from pathlib import Path
 from typing import Any, Optional
 
 import requests
 from fastapi import Header, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
+
+from _bench_replay import BenchReplayBuffer  # type: ignore[import-not-found]  # sibling at agent root
 
 from . import _shared
 
@@ -724,12 +730,214 @@ def vllm_autotune_cancel(authorization: Optional[str] = Header(default=None)) ->
 
 
 def shutdown_children() -> None:
-    """Cancel a running autotune and wait for its ExecStart rollback."""
+    """Cancel running bench/autotune jobs; wait for autotune's ExecStart rollback."""
+    try:
+        _bench_job.cancel()
+        _bench_job.join(timeout=10)
+    except Exception:
+        log.debug("vllm bench shutdown cancel failed", exc_info=True)
     try:
         _at_job.cancel()
         _at_job.join(timeout=45)
     except Exception:
         log.debug("vllm shutdown_children failed", exc_info=True)
+
+
+# ── Benchmark (vllm bench serve) (#357) ────────────────────────────────
+
+def _bench_resolve_bin() -> "tuple[Optional[str], Optional[str]]":
+    """(vllm binary path, None) or (None, error). Order: VLLM_BENCH_BIN
+    override → svcconfig ExecStart head binary → PATH lookup."""
+    cfg = _require_ctx().config
+    override = (getattr(cfg, "VLLM_BENCH_BIN", "") or "").strip()
+    if override:
+        if Path(override).exists() or shutil.which(override):
+            return override, None
+        return None, f"VLLM_BENCH_BIN not found: {override}"
+    try:
+        head, _ = _parse_vllm_execstart(Path(_vllm_svc_file_path()).read_text())
+        if head:
+            cand = shlex.split(head)[0]
+            # Interpreter heads (python -m vllm ...) can't run "bench serve".
+            if Path(cand).name == "vllm" and Path(cand).exists():
+                return cand, None
+    except Exception:
+        log.debug("bench bin: svcconfig head unavailable", exc_info=True)
+    w = shutil.which("vllm")
+    if w:
+        return w, None
+    return None, ("vllm binary not found — set VLLM_BENCH_BIN in the agent "
+                  "config or pip install vllm[bench] on this host")
+
+
+def _bench_build_cmd(binpath: str, api_url: str, model: str,
+                     switches: list, result_dir: str) -> list:
+    cmd = [binpath, "bench", "serve",
+           "--base-url", api_url, "--model", model,
+           "--disable-tqdm",
+           "--save-result", "--result-dir", result_dir,
+           "--result-filename", "result.json"]
+    for s in switches:
+        flag = str(s.get("flag") or "").strip()
+        if not flag:
+            continue
+        cmd.append(flag)
+        value = s.get("value")
+        if value not in (None, ""):
+            cmd.append(str(value))
+    return cmd
+
+
+def _bench_extract_extra(data: dict) -> dict:
+    """Scalar fields only — drops per-request arrays from the result JSON."""
+    return {k: v for k, v in data.items()
+            if isinstance(v, (int, float, str, bool))}
+
+
+_bench_job = _shared.JobRunner("vllm-bench")
+_bench_replay = BenchReplayBuffer(maxlen=5000)
+_bench_cond = threading.Condition()
+
+
+def _bench_put(event: dict) -> None:
+    with _bench_cond:
+        _bench_replay.append(event)
+        _bench_cond.notify_all()
+
+
+def _bench_run_one(binpath: str, model: str, switches: list) -> None:
+    """Job thread: run vllm bench serve, stream lines, parse the result JSON."""
+    ok = False
+    rc: Optional[int] = None
+    error: Optional[str] = None
+    tmpdir = tempfile.mkdtemp(prefix="vllm-bench-")
+    try:
+        with _bench_cond:
+            _bench_replay.start_run(uuid.uuid4().hex[:12])
+        cmd = _bench_build_cmd(binpath, _require_ctx().config.VLLM_API_URL.rstrip("/"),
+                               model, switches, tmpdir)
+        _bench_put({"type": "model_start", "model": model,
+                    "cmd": " ".join(shlex.quote(t) for t in cmd)})
+        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE,
+                                stderr=subprocess.STDOUT, text=True,
+                                start_new_session=True)
+        _bench_job.track(proc)
+        if _bench_job.cancel_event.is_set():
+            _bench_job.kill_tracked()
+        assert proc.stdout is not None
+        for raw in iter(proc.stdout.readline, ""):
+            if _bench_job.cancel_event.is_set():
+                break
+            line = _shared.ANSI_RE.sub("", raw).rstrip()
+            if line:
+                _bench_put({"type": "line", "text": line})
+        if _bench_job.cancel_event.is_set():
+            _bench_job.kill_tracked()
+        try:
+            rc = proc.wait(timeout=30)
+        except subprocess.TimeoutExpired:
+            _bench_job.kill_tracked()
+            try:
+                rc = proc.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                error = "benchmark process did not exit after kill"
+        cancelled = _bench_job.cancel_event.is_set()
+        if rc == 0 and not cancelled and error is None:
+            try:
+                data = json.loads(Path(tmpdir, "result.json").read_text())
+                _bench_put({"type": "result", "model_id": model,
+                            "extra": _bench_extract_extra(data),
+                            "switches": switches})
+                ok = True
+            except Exception as e:
+                error = f"benchmark finished but result.json unreadable: {e}"
+        elif not cancelled and error is None:
+            error = f"vllm bench serve exited rc={rc}"
+        _bench_put({"type": "model_done", "ok": ok, "rc": rc,
+                    "cancelled": cancelled, "error": error})
+    except Exception as e:
+        _bench_put({"type": "model_done", "ok": False, "rc": rc,
+                    "cancelled": _bench_job.cancel_event.is_set(),
+                    "error": str(e)})
+    finally:
+        _bench_job.untrack()
+        shutil.rmtree(tmpdir, ignore_errors=True)
+        _bench_put({"type": "done", "ok": ok,
+                    "cancelled": _bench_job.cancel_event.is_set()})
+
+
+def vllm_bench_run(body: dict,
+                   authorization: Optional[str] = Header(default=None)) -> dict[str, Any]:
+    ctx = _require_ctx()
+    ctx.check_bearer(authorization)
+    _vllm_check_enabled()
+    switches = body.get("switches", [])
+    if not isinstance(switches, list):
+        raise HTTPException(status_code=400, detail="switches must be a list")
+    base = ctx.config.VLLM_API_URL.rstrip("/")
+    served: list = []
+    try:
+        r = _get_session().get(f"{base}/v1/models", timeout=3)
+        if r.ok:
+            served = [m.get("id") for m in (r.json().get("data") or []) if m.get("id")]
+    except Exception:
+        log.debug("vllm bench preflight: /v1/models unreachable", exc_info=True)
+    if not served:
+        return {"ok": False,
+                "error": "vLLM server is not running — start it before benchmarking"}
+    model = (body.get("model") or "").strip() or served[0]
+    binpath, err = _bench_resolve_bin()
+    if not binpath:
+        return {"ok": False, "error": err}
+    if not _bench_job.try_start(lambda: _bench_run_one(binpath, model, switches)):
+        return {"ok": False, "error": "Another benchmark is in progress"}
+    return {"ok": True}
+
+
+def vllm_bench_stream(
+    authorization: Optional[str] = Header(default=None),
+    token: Optional[str] = Query(default=None),
+    last_event_id: Optional[str] = Header(default=None, alias="Last-Event-ID"),
+) -> StreamingResponse:
+    _require_ctx().check_stream_auth(authorization, token, "/vllm/bench/stream")
+    _vllm_check_enabled()
+
+    def generate():
+        with _bench_cond:
+            cur_run = _bench_replay.run_id
+            last_seq = _bench_replay.seq_for(last_event_id)
+        while True:
+            with _bench_cond:
+                if cur_run and _bench_replay.run_id != cur_run:
+                    return
+                cur_run = _bench_replay.run_id
+                new = _bench_replay.records_after_seq(last_seq)
+                if not new:
+                    _bench_cond.wait(timeout=10)
+                    if cur_run and _bench_replay.run_id != cur_run:
+                        return
+                    new = _bench_replay.records_after_seq(last_seq)
+            if not new:
+                if not _bench_job.active:
+                    yield (b'data: {"type":"done","ok":false,'
+                           b'"error":"no active job"}\n\n')
+                    return
+                yield b'data: {"type":"keepalive"}\n\n'
+                continue
+            for rec in new:
+                yield f"id: {rec['id']}\ndata: {json.dumps(rec['event'])}\n\n".encode()
+                last_seq = rec["seq"]
+                if rec["event"].get("type") == "done":
+                    return
+
+    return _shared.pool_guarded_sse(generate())
+
+
+def vllm_bench_cancel(authorization: Optional[str] = Header(default=None)) -> dict[str, Any]:
+    _require_ctx().check_bearer(authorization)
+    _vllm_check_enabled()
+    _bench_job.cancel()
+    return {"ok": True, "active": _bench_job.active}
 
 
 # ── Route registration ─────────────────────────────────────────────────
@@ -752,6 +960,9 @@ _ROUTES: tuple = (
     ("POST", "/vllm/autotune/run",    vllm_autotune_run),
     ("GET",  "/vllm/autotune/stream", vllm_autotune_stream),
     ("POST", "/vllm/autotune/cancel", vllm_autotune_cancel),
+    ("POST", "/vllm/bench/run",       vllm_bench_run),
+    ("GET",  "/vllm/bench/stream",    vllm_bench_stream),
+    ("POST", "/vllm/bench/cancel",    vllm_bench_cancel),
 )
 
 
