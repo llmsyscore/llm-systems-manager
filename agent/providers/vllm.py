@@ -881,7 +881,7 @@ def vllm_bench_run(body: dict,
         if r.ok:
             served = [m.get("id") for m in (r.json().get("data") or []) if m.get("id")]
     except Exception:
-        pass  # unreachable server; falls through to the not-running error below
+        log.debug("vllm bench preflight: /v1/models unreachable", exc_info=True)
     if not served:
         return {"ok": False,
                 "error": "vLLM server is not running — start it before benchmarking"}
