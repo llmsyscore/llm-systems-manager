@@ -99,6 +99,18 @@ bash <(curl -fsSL https://raw.githubusercontent.com/llmsyscore/llm-systems-manag
 
 The installer is interactive: it prompts for SMTP credentials (if you want email alerts), the manager admin login, and confirms before installing system packages. It then enables the systemd units but **does not start anything automatically** — it prints the exact `systemctl start` commands so you stay in control of timing.
 
+The installer deploys the **latest [GitHub Release](https://github.com/llmsyscore/llm-systems-manager/releases)** — a source tarball whose SHA-256 checksum is verified before anything is installed; a mismatch aborts. To pin a specific version, or to track the development tip from a git clone of `main` instead (the advanced/bare-metal path — code that hasn't been cut into a release yet):
+
+```bash
+# pin a specific release
+bash <(curl -fsSL https://raw.githubusercontent.com/llmsyscore/llm-systems-manager/main/tools/installer/install.sh) --ref v1.0.0
+
+# track unreleased main (advanced)
+bash <(curl -fsSL https://raw.githubusercontent.com/llmsyscore/llm-systems-manager/main/tools/installer/install.sh) --source git
+```
+
+The same `--ref` / `--source` flags apply to every install mode and to `--update`.
+
 After install:
 
 1. Start the services if they were not started at installation, the commands to start them will be shown by the installer.

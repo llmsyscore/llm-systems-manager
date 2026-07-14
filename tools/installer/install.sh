@@ -3,8 +3,10 @@
 # install.sh — universal LLM Systems Manager installer
 #
 # This is the curl-target entry point for setting up any of the six
-# deployment shapes from a fresh box, plus update / uninstall / quit. The
-# repo is public; it's fetched over HTTPS with git — no authentication needed.
+# deployment shapes from a fresh box, plus update / uninstall / quit. Source
+# comes from the latest GitHub Release tarball, SHA-256-verified before any
+# file is installed (pin a version with --ref vX.Y.Z); --source git installs
+# from a public HTTPS git clone of main instead — no authentication needed.
 #
 # Quick start:
 #   bash <(curl -fsSL https://raw.githubusercontent.com/llmsyscore/llm-systems-manager/main/tools/installer/install.sh)
@@ -41,7 +43,7 @@ _ORIG_ARGV=("$@")
 # substantive change to this file. The self-update trampoline only re-execs
 # when the upstream copy carries a STRICTLY GREATER number, so locally-
 # modified scripts (or unpushed commits) are never silently downgraded.
-_INSTALL_SH_REVISION=20260707001
+_INSTALL_SH_REVISION=20260714001
 
 # Fallback bootstrap helpers — used until we source lib-common.sh.
 # TTY-aware colors so OK/WARN/ERR markers stand out in interactive runs and
@@ -85,6 +87,124 @@ _b_assert_clone_owner() {
     || _b_die "$dir is owned by uid $owner, not uid $(id -u) — someone else created it; remove it and re-run"
 }
 
+# ── Bootstrap source staging (release tarball default, git optional) ───────
+# Pre-lib-common mirror of lib-common.sh's acquire_source_tree family.
+# Keep the two implementations in sync.
+
+# Echo the newest release tag (e.g. v1.0.0) by following the releases/latest
+# redirect. Non-zero (and no output) when the repo has no releases.
+_b_resolve_latest_release_tag() {
+  local slug="${LLMSYS_REPO_SLUG:-llmsyscore/llm-systems-manager}" final=""
+  final="$(curl -fsSL -o /dev/null -w '%{url_effective}' \
+    "https://github.com/$slug/releases/latest" 2>/dev/null)" || return 1
+  case "$final" in
+    */releases/tag/*) printf '%s\n' "${final##*/releases/tag/}" ;;
+    *) return 1 ;;
+  esac
+}
+
+# _b_verify_sha256 SUMS_FILE — check the file(s) it lists, resolved relative
+# to its own directory. Non-zero on mismatch or missing file.
+_b_verify_sha256() {
+  local dir base
+  dir="$(cd "$(dirname "$1")" && pwd)" || return 1
+  base="$(basename "$1")"
+  if command -v sha256sum >/dev/null 2>&1; then
+    (cd "$dir" && sha256sum -c --quiet "$base")
+  else
+    (cd "$dir" && shasum -a 256 -c --quiet "$base")
+  fi
+}
+
+# _b_fetch_release_tree DEST TAG — download the TAG release tarball + .sha256,
+# verify the checksum (die on ANY failure), and unpack the tree into DEST.
+_b_fetch_release_tree() {
+  local dest="$1" tag="$2"
+  local slug="${LLMSYS_REPO_SLUG:-llmsyscore/llm-systems-manager}"
+  local base_url="${LLMSYS_RELEASE_BASE_URL:-https://github.com/$slug/releases/download}"
+  local asset="llm-systems-manager-$tag.tar.gz" work
+  command -v curl >/dev/null 2>&1 || _b_die "curl is required to download the release tarball"
+  command -v tar  >/dev/null 2>&1 || _b_die "tar is required to unpack the release tarball"
+  command -v sha256sum >/dev/null 2>&1 || command -v shasum >/dev/null 2>&1 \
+    || _b_die "need sha256sum or shasum to verify the release tarball — install coreutils, or pass --source git"
+  work="$(mktemp -d /tmp/llmsys-release.XXXXXX)"
+  _b_log "downloading release $tag ($asset)"
+  curl -fsSL "$base_url/$tag/$asset" -o "$work/$asset" \
+    || { rm -rf "$work"; _b_die "download failed: $base_url/$tag/$asset — check the tag name (releases: https://github.com/$slug/releases)"; }
+  curl -fsSL "$base_url/$tag/$asset.sha256" -o "$work/$asset.sha256" \
+    || { rm -rf "$work"; _b_die "checksum download failed: $base_url/$tag/$asset.sha256 — refusing to install an unverified tarball"; }
+  _b_verify_sha256 "$work/$asset.sha256" \
+    || { rm -rf "$work"; _b_die "SHA-256 MISMATCH for $asset — refusing to install (corrupted or tampered download)"; }
+  _b_ok "checksum verified: $asset"
+  tar -xzf "$work/$asset" -C "$work" \
+    || { rm -rf "$work"; _b_die "failed to extract $asset"; }
+  [[ -f "$work/llm-systems-manager-$tag/tools/installer/lib-common.sh" ]] \
+    || { rm -rf "$work"; _b_die "unexpected tarball layout — llm-systems-manager-$tag/tools/installer/ missing from $asset"; }
+  mv "$work/llm-systems-manager-$tag" "$dest" \
+    || { rm -rf "$work"; _b_die "failed to move the unpacked release into $dest"; }
+  printf '%s\n' "$tag" > "$dest/.llmsys-release"
+  rm -rf "$work"
+  _b_ok "staged release $tag → $dest"
+}
+
+# _b_clone_main DEST — git clone of main (pull-refresh when already cloned).
+_b_clone_main() {
+  local dest="$1" slug="${LLMSYS_REPO_SLUG:-llmsyscore/llm-systems-manager}"
+  command -v git >/dev/null 2>&1 \
+    || _b_die "git is required to fetch the repo. Install git and re-run."
+  if [[ -d "$dest/.git" ]]; then
+    _b_assert_clone_owner "$dest"
+    git -C "$dest" pull --ff-only -q \
+      || _b_die "git pull in $dest failed — remove the directory and re-run to get a fresh clone"
+    _b_ok "refreshed cached clone at $dest"
+    return 0
+  fi
+  if [[ -f "$dest/.llmsys-release" ]]; then
+    # Leftover release-staged tree from an earlier run — safe to replace.
+    _b_assert_clone_owner "$dest"
+    rm -rf "$dest"
+  elif [[ -e "$dest" ]]; then
+    _b_die "$dest exists and isn't a git repo — remove or rename it first"
+  fi
+  git clone -q "https://github.com/$slug.git" "$dest" \
+    || _b_die "git clone https://github.com/$slug.git failed"
+  _b_assert_clone_owner "$dest"
+  _b_ok "cloned $slug → $dest"
+}
+
+# _b_stage_source_tree DEST — stage the source tree at DEST: release tarball
+# by default (LLMSYS_RELEASE_TAG pin or latest), git clone when --source git.
+_b_stage_source_tree() {
+  local dest="$1" tag="${LLMSYS_RELEASE_TAG:-}"
+  if [[ "${LLMSYS_SOURCE:-release}" == "git" ]]; then
+    _b_clone_main "$dest"
+    return 0
+  fi
+  if [[ -z "$tag" ]]; then
+    tag="$(_b_resolve_latest_release_tag)" || tag=""
+    if [[ -z "$tag" ]]; then
+      _b_warn "no GitHub release found for ${LLMSYS_REPO_SLUG:-llmsyscore/llm-systems-manager} — falling back to a git clone of main"
+      _b_clone_main "$dest"
+      return 0
+    fi
+  fi
+  if [[ -f "$dest/.llmsys-release" ]] \
+     && [[ "$(cat "$dest/.llmsys-release" 2>/dev/null)" == "$tag" ]]; then
+    # Marker is written last, so its presence means a complete staged tree.
+    _b_assert_clone_owner "$dest"
+    _b_ok "release $tag already staged at $dest — reusing"
+    return 0
+  fi
+  if [[ -e "$dest" ]]; then
+    # Only replace trees this installer staged (git clone or release unpack).
+    [[ -e "$dest/.git" || -f "$dest/.llmsys-release" ]] \
+      || _b_die "$dest exists and isn't a staging tree this installer created — remove or rename it first"
+    _b_assert_clone_owner "$dest"
+    rm -rf "$dest"
+  fi
+  _b_fetch_release_tree "$dest" "$tag"
+}
+
 # Locate one of the tools/installer/*.sh helpers — looks in the running
 # checkout first, then the deployed tree. Echoes the path on stdout; non-zero
 # return when neither exists.
@@ -115,6 +235,10 @@ while [[ $# -gt 0 ]]; do
     --mode=*) MODE="${1#*=}"; shift ;;
     --user) RUN_USER_OVERRIDE="${2:-}"; shift 2 ;;
     --user=*) RUN_USER_OVERRIDE="${1#*=}"; shift ;;
+    --ref) LLMSYS_RELEASE_TAG="${2:-}"; shift 2 ;;
+    --ref=*) LLMSYS_RELEASE_TAG="${1#*=}"; shift ;;
+    --source) LLMSYS_SOURCE="${2:-}"; shift 2 ;;
+    --source=*) LLMSYS_SOURCE="${1#*=}"; shift ;;
     --uninstall) UNINSTALL=1; shift ;;
     --update)    UPDATE=1; shift ;;
     --no-self-update) NO_SELF_UPDATE=1; shift ;;
@@ -131,6 +255,12 @@ Options:
                   (default: llmsys). Created as a password-locked system user
                   if it doesn't already exist. Agent mode 5 has its own --user
                   forwarded via '-- --user USER'.
+  --ref TAG       Install a specific GitHub Release tag (e.g. --ref v1.0.0).
+                  Default: the latest release. The tarball's SHA-256 checksum
+                  is verified before anything is installed; a mismatch aborts.
+  --source SRC    Where the code comes from: 'release' (default — checksum-
+                  verified GitHub Release tarball) or 'git' (clone of the
+                  main branch; the bleeding-edge / development path).
   --update        Detect installed components and update them in place.
                   Forwards remaining args to tools/installer/update.sh.
                   Examples:
@@ -181,6 +311,20 @@ HELP
       ;;
   esac
 done
+
+# Validate the source selection and export it (plus any --ref pin) so the
+# exec'd update.sh and every sub-installer inherit the same source choice.
+case "${LLMSYS_SOURCE:-release}" in
+  release|git) ;;
+  *) _b_die "--source must be 'release' or 'git' (got: '${LLMSYS_SOURCE:-}')" ;;
+esac
+if [[ -n "${LLMSYS_RELEASE_TAG:-}" && "${LLMSYS_SOURCE:-release}" == "git" ]]; then
+  _b_die "--ref pins a release tag and conflicts with --source git"
+fi
+export LLMSYS_SOURCE="${LLMSYS_SOURCE:-release}"
+if [[ -n "${LLMSYS_RELEASE_TAG:-}" ]]; then
+  export LLMSYS_RELEASE_TAG
+fi
 
 # ── Bootstrap: locate or fetch the lib-common.sh + sub-installers ──────────
 # When run from a curl pipe, $0 is bash and we have no repo on disk yet.
@@ -299,6 +443,7 @@ _b_ok "python3 >= 3.10 ($(python3 --version 2>&1))"
 #   - the operator invoked --update or --uninstall: both already fetch
 #     fresh code from GitHub later in the script, so self-updating here
 #     would be a redundant fetch on the hot path
+#   - a --ref pin was given (pinned runs keep the entry script they started with)
 #   - the upstream copy can't be fetched (warn + continue with local)
 #
 # A revision integer is used instead of byte equality so a locally-modified
@@ -314,6 +459,7 @@ if [[ "${LLMSYS_SELF_UPDATE_DONE:-0}" != "1" \
    && "$NO_SELF_UPDATE" != "1" \
    && "$UPDATE" != "1" \
    && "$UNINSTALL" != "1" \
+   && -z "${LLMSYS_RELEASE_TAG:-}" \
    && "$_MODE_IS_META" != "1" ]]; then
   _self="${BASH_SOURCE[0]:-$0}"
   if [[ "$_self" != /* ]]; then
@@ -410,31 +556,20 @@ fi
 # us with stale bugs that were already fixed upstream.
 #
 # Sequence:
-#   1. Stage /tmp/llm-systems-manager-install with a self-contained git
-#      clone/pull. We deliberately do NOT source the on-disk lib-common here:
+#   1. Stage /tmp/llm-systems-manager-install with a self-contained fetch —
+#      checksum-verified release tarball by default, git clone/pull with
+#      --source git. We deliberately do NOT source the on-disk lib-common:
 #      a self-updated install.sh can be newer than the deployed lib-common, so
 #      calling its helpers risks a renamed/missing function. update.sh (exec'd
-#      below) sources the FRESH lib-common from the clone itself.
+#      below) sources the FRESH lib-common from the staged tree itself.
 #   2. exec the staged update.sh, passing REPO_SRC so update.sh skips
-#      its own re-clone step.
+#      its own re-fetch step.
 if [[ "$UPDATE" == "1" ]]; then
   LLMSYS_CLONE_TMP="${LLMSYS_CLONE_TMP:-/tmp/llm-systems-manager-install}"
-  command -v git >/dev/null 2>&1 \
-    || { _b_err "git is required to fetch the repo. Install git and re-run."; exit 1; }
-  if [[ -d "$LLMSYS_CLONE_TMP/.git" ]]; then
-    _b_assert_clone_owner "$LLMSYS_CLONE_TMP"
-    git -C "$LLMSYS_CLONE_TMP" pull --ff-only \
-      || _b_die "git pull in $LLMSYS_CLONE_TMP failed — remove the directory and re-run to get a fresh clone"
-  elif [[ -e "$LLMSYS_CLONE_TMP" ]]; then
-    _b_die "$LLMSYS_CLONE_TMP exists and isn't a git repo — remove it first"
-  else
-    git clone "https://github.com/${LLMSYS_REPO_SLUG:-llmsyscore/llm-systems-manager}.git" "$LLMSYS_CLONE_TMP" \
-      || _b_die "git clone failed"
-    _b_assert_clone_owner "$LLMSYS_CLONE_TMP"
-  fi
+  _b_stage_source_tree "$LLMSYS_CLONE_TMP"
   UPDATE_HELPER="$LLMSYS_CLONE_TMP/tools/installer/update.sh"
   [[ -f "$UPDATE_HELPER" ]] \
-    || _b_die "update.sh missing in staging clone at $UPDATE_HELPER — repo HEAD too old?"
+    || _b_die "update.sh missing in staged tree at $UPDATE_HELPER — repo HEAD too old?"
   _b_ok "running update helper: $UPDATE_HELPER"
   REPO_SRC="$LLMSYS_CLONE_TMP" exec bash "$UPDATE_HELPER" \
     "${FORWARD_ARGS[@]:+${FORWARD_ARGS[@]}}"
@@ -493,12 +628,9 @@ if [[ "$UNINSTALL" == "1" ]]; then
   exit "$_rc"
 fi
 
-# ── Source acquisition: public HTTPS git clone ──────────────────────────────
-# The repo is public, so a plain `git clone` over HTTPS fetches it with no auth.
-if ! command -v git >/dev/null 2>&1; then
-  _b_err "Need git to fetch the repo. Install git and re-run."
-  exit 1
-fi
+# ── Source acquisition: verified release tarball (default) or git clone ────
+# The repo is public — no authentication either way. The release path
+# downloads the tagged tarball + .sha256 and refuses to install on mismatch.
 
 # Modes 1-4 + 6 need Linux. Mode 5 supports macOS too.
 case "$MODE" in
@@ -508,9 +640,8 @@ esac
 
 printf '\n%s── Source ─────────────────────────────────────────────────────────────%s\n' "$_B_BLU" "$_B_RST"
 
-# ── Clone repo (or use the local checkout if available) ─────────────────────
+# ── Stage source (or use the local checkout if available) ───────────────────
 LLMSYS_CLONE_TMP="${LLMSYS_CLONE_TMP:-/tmp/llm-systems-manager-install}"
-REPO_SLUG="llmsyscore/llm-systems-manager"
 
 # Only treat $THIS_DIR as a valid checkout if it's a real git working tree.
 # Running install.sh from the deployed snapshot (/opt/llm-systems-manager,
@@ -533,19 +664,7 @@ if [[ -n "$_REPO_ROOT_FROM_THIS" \
   _REPO_IS_STAGING=false
   _b_ok "using local checkout: $REPO_SRC"
 else
-  if [[ -d "$LLMSYS_CLONE_TMP/.git" ]]; then
-    _b_assert_clone_owner "$LLMSYS_CLONE_TMP"
-    git -C "$LLMSYS_CLONE_TMP" pull --ff-only >/dev/null 2>&1 \
-      || _b_die "git pull in $LLMSYS_CLONE_TMP failed — remove the directory and re-run to get a fresh clone"
-    _b_ok "refreshed cached clone at $LLMSYS_CLONE_TMP"
-  elif [[ -e "$LLMSYS_CLONE_TMP" ]]; then
-    _b_die "$LLMSYS_CLONE_TMP exists and isn't a git repo — remove or rename it first"
-  else
-    git clone -q "https://github.com/$REPO_SLUG.git" "$LLMSYS_CLONE_TMP" >/dev/null 2>&1 \
-      || _b_die "git clone https://github.com/$REPO_SLUG.git failed"
-    _b_assert_clone_owner "$LLMSYS_CLONE_TMP"
-    _b_ok "cloned $REPO_SLUG → $LLMSYS_CLONE_TMP"
-  fi
+  _b_stage_source_tree "$LLMSYS_CLONE_TMP"
   REPO_SRC="$LLMSYS_CLONE_TMP"
   _REPO_IS_STAGING=true
 fi
@@ -587,7 +706,7 @@ case "$MODE" in
   AGENT_INSTALL="$REPO_SRC/agent/install/install.sh"
   [[ -f "$AGENT_INSTALL" ]] || die "Agent installer missing: $AGENT_INSTALL"
   chmod +x "$AGENT_INSTALL" || true
-  # Run as a child (not exec) so we can clean up the staging clone after
+  # Run as a child (not exec) so we can clean up the staging tree after
   # the agent installer returns. Without this, exec would replace this
   # process and /tmp/llm-systems-manager-install would be left behind on
   # every agent install.
@@ -606,7 +725,7 @@ case "$MODE" in
       sudo rm -rf "$LLMSYS_CLONE_TMP" 2>/dev/null || true
     fi
     if (( _rc == 0 )) && [[ ! -e "$LLMSYS_CLONE_TMP" ]]; then
-      ok "removed staging clone $LLMSYS_CLONE_TMP"
+      ok "removed staging tree $LLMSYS_CLONE_TMP"
     fi
   fi
   exit "$_rc"
@@ -720,7 +839,7 @@ case "$MODE" in
     # InfluxDB-only host: no manager toml is needed locally — the operator
     # copies the generated tokens to the alarm-engine host's config. We
     # deliberately do NOT call install-config-bootstrap.sh here, and we
-    # run install-influxdb.sh straight from the staging clone since
+    # run install-influxdb.sh straight from the staging tree since
     # there's no deployed copy under $LLMSYS_INSTALL_DIR/tools/.
     banner "Mode 6 — InfluxDB only"
     bash "$REPO_SRC/tools/installer/install-influxdb.sh"
@@ -1002,7 +1121,7 @@ if (( _OFFER_AGENT )); then
       AGENT_AE_URL="$(read_toml_key alarm_engine_url "$_live_toml")"
     fi
     # Prefer the deployed installer (so re-runs work after Mode 1/2/3/4),
-    # fall back to the staging clone (Mode 6 doesn't deploy agent/).
+    # fall back to the staging tree (Mode 6 doesn't deploy agent/).
     AGENT_INSTALL_BIN="$LLMSYS_INSTALL_DIR/agent/install/install.sh"
     [[ -f "$AGENT_INSTALL_BIN" ]] || AGENT_INSTALL_BIN="$REPO_SRC/agent/install/install.sh"
     AGENT_CMD=(bash "$AGENT_INSTALL_BIN" --manager-url "$AGENT_MGR_URL")
@@ -1064,7 +1183,7 @@ for entry in "${HEALTH_TARGETS[@]}"; do
 done
 echo
 
-# ── Cleanup: remove staging clone + the launcher script in /tmp ─────────────
+# ── Cleanup: remove staging tree + the launcher script in /tmp ─────────────
 # Only purge when the install completed cleanly (every probed service
 # returned its expected status). On any failure, keep the staging tree
 # around so the operator can poke at it without re-cloning.
@@ -1072,7 +1191,7 @@ if (( FAIL == 0 )); then
   banner "Cleanup"
   if [[ -d "$LLMSYS_CLONE_TMP" ]]; then
     $SUDO rm -rf "$LLMSYS_CLONE_TMP"
-    ok "removed staging clone $LLMSYS_CLONE_TMP"
+    ok "removed staging tree $LLMSYS_CLONE_TMP"
   fi
   # The install.sh launcher itself may have been curled into /tmp by the
   # one-liner — wipe it too so /tmp ends up free of repo artifacts.

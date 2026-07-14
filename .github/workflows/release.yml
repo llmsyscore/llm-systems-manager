@@ -1,0 +1,57 @@
+name: Release
+
+# On every v* tag push: build the source tarball with git archive, checksum
+# it, and publish both as a GitHub Release (the installer's default source).
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: build tarball + publish release
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build tarball + SHA-256 checksum
+        run: |
+          ASSET="llm-systems-manager-${GITHUB_REF_NAME}.tar.gz"
+          git archive --format=tar.gz \
+            --prefix="llm-systems-manager-${GITHUB_REF_NAME}/" \
+            -o "$ASSET" HEAD
+          sha256sum "$ASSET" | tee "$ASSET.sha256"
+
+      # The installer hard-depends on this layout (top-level prefix dir with
+      # tools/installer/ inside) and on the .sha256 verifying — assert both.
+      - name: Sanity-check tarball layout + checksum
+        run: |
+          ASSET="llm-systems-manager-${GITHUB_REF_NAME}.tar.gz"
+          tar -tzf "$ASSET" | grep -qx "llm-systems-manager-${GITHUB_REF_NAME}/tools/installer/install.sh"
+          tar -tzf "$ASSET" | grep -qx "llm-systems-manager-${GITHUB_REF_NAME}/tools/installer/lib-common.sh"
+          sha256sum -c "$ASSET.sha256"
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          ASSET="llm-systems-manager-${GITHUB_REF_NAME}.tar.gz"
+          cat > /tmp/release-notes.md <<EOF
+          Install this release:
+
+          \`\`\`bash
+          bash <(curl -fsSL https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/main/tools/installer/install.sh) --ref ${GITHUB_REF_NAME}
+          \`\`\`
+
+          The installer verifies \`${ASSET}.sha256\` before deploying anything.
+          EOF
+          gh release create "$GITHUB_REF_NAME" \
+            --verify-tag \
+            --title "$GITHUB_REF_NAME" \
+            --generate-notes \
+            --notes-file /tmp/release-notes.md \
+            "$ASSET" "$ASSET.sha256"
