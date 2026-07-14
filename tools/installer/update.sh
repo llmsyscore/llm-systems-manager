@@ -10,8 +10,8 @@
 # What it does:
 #   1. Detects which components are installed (manager / alarm-engine /
 #      InfluxDB / local agent) by checking systemd units + install tree.
-#   2. Fetches the latest agent/ + manager/ + alarm-engine/ + installer
-#      from upstream into /tmp/llm-systems-manager-install.
+#   2. Stages the source into /tmp/llm-systems-manager-install — SHA-256-
+#      verified release tarball by default, git main via LLMSYS_SOURCE=git.
 #   3. For each detected component, lists what would change (rsync dry-run
 #      with --checksum so a re-deploy of identical files is a no-op),
 #      shows the diff, prompts the operator, backs up critical files,
@@ -543,13 +543,11 @@ fi
 # ── Source freshness ──────────────────────────────────────────────────────
 banner "Staging fresh upstream code"
 # REPO_SRC is honored from the environment so install.sh --update can
-# pre-stage the clone and skip a redundant re-clone here. When unset,
-# we clone/pull from upstream ourselves (the standalone-invocation path).
+# pre-stage the source tree and skip a redundant re-fetch here.
 REPO_SRC="${REPO_SRC:-}"
 if [[ -z "$REPO_SRC" ]]; then
   REPO_SRC="${LLMSYS_CLONE_TMP:-/tmp/llm-systems-manager-install}"
-  require_git
-  clone_repo "$REPO_SRC"
+  acquire_source_tree "$REPO_SRC"
 fi
 ok "source tree at $REPO_SRC"
 
@@ -590,7 +588,7 @@ if $HAVE_AGENT; then
 fi
 
 if (( DOWNGRADE_DETECTED )); then
-  warn "One or more components would be DOWNGRADED. Likely cause: REPO_SRC checked out to an older commit."
+  warn "One or more components would be DOWNGRADED. Likely cause: REPO_SRC staged from an older release tag or commit (stale LLMSYS_RELEASE_TAG pin, or a lagging latest release)."
   if ! prompt_yn "Proceed with downgrade?" "n"; then
     log "Aborting per operator response."
     exit 1
@@ -1231,17 +1229,17 @@ if (( ${#FAILED_UNITS[@]} > 0 )); then
 fi
 if (( FAIL > 0 || ${#FAILED_UNITS[@]} > 0 || VERIFY_FAILURES > 0 )); then
   err "Update finished with failures."
-  err "Staging clone preserved at $REPO_SRC for inspection."
+  err "Staging tree preserved at $REPO_SRC for inspection."
   exit 1
 fi
 
-# ── Cleanup: drop the staging clone + any /tmp launcher artifacts ──────────
+# ── Cleanup: drop the staging tree + any /tmp launcher artifacts ──────────
 # Mirrors install.sh's end-of-run cleanup. Only runs on clean success so
 # operators can poke around on failure without re-cloning.
 banner "Cleanup"
 if [[ -d "$REPO_SRC" && "$REPO_SRC" == /tmp/* ]]; then
   $SUDO rm -rf "$REPO_SRC"
-  ok "removed staging clone $REPO_SRC"
+  ok "removed staging tree $REPO_SRC"
 fi
 # A curl-piped `install.sh --update` may have left install.sh in /tmp.
 for stray in /tmp/install.sh /tmp/llm-systems-manager-install.sh; do

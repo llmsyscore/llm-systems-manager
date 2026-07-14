@@ -3,8 +3,8 @@
 # tools/installer/lib-common.sh — shared helpers for the universal installer
 #
 # Sourced by install.sh and every tools/installer/install-*.sh sub-script.
-# Provides logging, prereq probing, the apt-install offer flow, public-repo
-# git clone helpers, and a few common paths.
+# Provides logging, prereq probing, the apt-install offer flow, source staging
+# (checksum-verified release tarball or git clone), and a few common paths.
 #
 # All variables here are read-only constants OR are namespaced with
 # LLMSYS_ to make sourcing safe.
@@ -445,6 +445,11 @@ clone_repo() {
       || die "git pull in $dest failed — remove the directory and re-run to get a fresh clone"
     return 0
   fi
+  if [[ -f "$dest/.llmsys-release" ]]; then
+    # Leftover release-staged tree from an earlier run — safe to replace.
+    assert_staging_dir_owner "$dest"
+    rm -rf "$dest"
+  fi
   if [[ -e "$dest" ]]; then
     if [[ -t 0 ]]; then
       if confirm "  $dest exists but isn't a git repo. Remove and re-clone?" n; then
@@ -463,6 +468,103 @@ clone_repo() {
     || die "git clone https://github.com/$slug.git → $dest failed"
   assert_staging_dir_owner "$dest"
   ok "cloned to $dest"
+}
+
+# ── GitHub Release source (tarball + SHA-256, fail-closed) ─────────────────
+
+# Echo the newest release tag (e.g. v1.0.0) by following the releases/latest
+# redirect. Non-zero (and no output) when the repo has no releases.
+resolve_latest_release_tag() {
+  local slug="${LLMSYS_REPO_SLUG:-llmsyscore/llm-systems-manager}" final=""
+  final="$(curl -fsSL -o /dev/null -w '%{url_effective}' \
+    "https://github.com/$slug/releases/latest" 2>/dev/null)" || return 1
+  case "$final" in
+    */releases/tag/*) printf '%s\n' "${final##*/releases/tag/}" ;;
+    *) return 1 ;;
+  esac
+}
+
+# verify_sha256 SUMS_FILE — check the file(s) it lists, resolved relative to
+# its own directory. Non-zero on mismatch or missing file.
+verify_sha256() {
+  local dir base
+  dir="$(cd "$(dirname "$1")" && pwd)" || return 1
+  base="$(basename "$1")"
+  if have sha256sum; then
+    (cd "$dir" && sha256sum -c --quiet "$base")
+  else
+    (cd "$dir" && shasum -a 256 -c --quiet "$base")
+  fi
+}
+
+# fetch_release_tree DEST TAG — download the TAG release tarball + .sha256,
+# verify the checksum (die on ANY failure), and unpack the tree into DEST.
+fetch_release_tree() {
+  local dest="$1" tag="$2"
+  local slug="${LLMSYS_REPO_SLUG:-llmsyscore/llm-systems-manager}"
+  local base_url="${LLMSYS_RELEASE_BASE_URL:-https://github.com/$slug/releases/download}"
+  local asset="llm-systems-manager-$tag.tar.gz" work
+  have curl || die "curl is required to download the release tarball"
+  have tar  || die "tar is required to unpack the release tarball"
+  have sha256sum || have shasum \
+    || die "need sha256sum or shasum to verify the release tarball — install coreutils, or set LLMSYS_SOURCE=git"
+  work="$(mktemp -d /tmp/llmsys-release.XXXXXX)"
+  log "downloading release $tag ($asset)"
+  curl -fsSL "$base_url/$tag/$asset" -o "$work/$asset" \
+    || { rm -rf "$work"; die "download failed: $base_url/$tag/$asset — check the tag name (releases: https://github.com/$slug/releases)"; }
+  curl -fsSL "$base_url/$tag/$asset.sha256" -o "$work/$asset.sha256" \
+    || { rm -rf "$work"; die "checksum download failed: $base_url/$tag/$asset.sha256 — refusing to install an unverified tarball"; }
+  verify_sha256 "$work/$asset.sha256" \
+    || { rm -rf "$work"; die "SHA-256 MISMATCH for $asset — refusing to install (corrupted or tampered download)"; }
+  ok "checksum verified: $asset"
+  tar -xzf "$work/$asset" -C "$work" \
+    || { rm -rf "$work"; die "failed to extract $asset"; }
+  [[ -f "$work/llm-systems-manager-$tag/tools/installer/lib-common.sh" ]] \
+    || { rm -rf "$work"; die "unexpected tarball layout — llm-systems-manager-$tag/tools/installer/ missing from $asset"; }
+  mv "$work/llm-systems-manager-$tag" "$dest" \
+    || { rm -rf "$work"; die "failed to move the unpacked release into $dest"; }
+  printf '%s\n' "$tag" > "$dest/.llmsys-release"
+  rm -rf "$work"
+  ok "staged release $tag → $dest"
+}
+
+# acquire_source_tree DEST — stage the source tree at DEST. Default fetches
+# the LLMSYS_RELEASE_TAG (or latest) release; LLMSYS_SOURCE=git clones main.
+acquire_source_tree() {
+  local dest="${1:-$LLMSYS_CLONE_TMP}" tag="${LLMSYS_RELEASE_TAG:-}"
+  case "${LLMSYS_SOURCE:-release}" in
+    release|git) ;;
+    *) die "LLMSYS_SOURCE must be 'release' or 'git' (got: '${LLMSYS_SOURCE:-}')" ;;
+  esac
+  if [[ "${LLMSYS_SOURCE:-release}" == "git" ]]; then
+    require_git
+    clone_repo "$dest"
+    return 0
+  fi
+  if [[ -z "$tag" ]]; then
+    tag="$(resolve_latest_release_tag)" || tag=""
+    if [[ -z "$tag" ]]; then
+      warn "no GitHub release found for ${LLMSYS_REPO_SLUG:-llmsyscore/llm-systems-manager} — falling back to a git clone of main"
+      require_git
+      clone_repo "$dest"
+      return 0
+    fi
+  fi
+  if [[ -f "$dest/.llmsys-release" ]] \
+     && [[ "$(cat "$dest/.llmsys-release" 2>/dev/null)" == "$tag" ]]; then
+    # Marker is written last, so its presence means a complete staged tree.
+    assert_staging_dir_owner "$dest"
+    ok "release $tag already staged at $dest — reusing"
+    return 0
+  fi
+  if [[ -e "$dest" ]]; then
+    # Only replace trees this installer staged (git clone or release unpack).
+    [[ -e "$dest/.git" || -f "$dest/.llmsys-release" ]] \
+      || die "$dest exists and isn't a staging tree this installer created — remove or rename it first"
+    assert_staging_dir_owner "$dest"
+    rm -rf "$dest"
+  fi
+  fetch_release_tree "$dest" "$tag"
 }
 
 # ── Deploy clone into INSTALL_DIR (with backup of existing config) ──────────
@@ -514,6 +616,7 @@ deploy_into_install_dir() {
               --exclude='.gitignore' --exclude='.gitattributes' \
               --exclude='.github' --exclude='.github/' \
               --exclude='.claude' --exclude='.claude/' \
+              --exclude='.llmsys-release' \
               --exclude='venv/' --exclude='__pycache__/' \
               --exclude='data/' --exclude='backups/' \
               --exclude='plans/' \
