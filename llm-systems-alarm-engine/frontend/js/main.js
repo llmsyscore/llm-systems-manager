@@ -2748,13 +2748,43 @@ const TabManager = {
 
 // ── Chart Manager ──
 
-// x-axis wheel-zoom + drag-pan bounded to data range; double-click resets
-// (wired at end of file). Touch/pinch needs Hammer.js (not vendored).
+// Box-drag zoom (XY rectangle); double-click or the reset-zoom icon resets
+// (wired at end of file). Wheel-zoom and pan are disabled.
 const _zoomOpts = {
-    zoom: { wheel: { enabled: true }, drag: { enabled: false }, mode: 'x' },
-    pan: { enabled: true, mode: 'x' },
+    zoom: {
+        wheel: { enabled: false },
+        drag: { enabled: true, borderColor: '#4ea1ff', borderWidth: 1,
+                backgroundColor: 'rgba(78,161,255,0.15)' },
+        mode: 'xy',
+        onZoomComplete: ({ chart }) => _syncResetZoomBtn(chart),
+    },
+    pan: { enabled: false },
     limits: { x: { min: 'original', max: 'original' } },
 };
+
+// Show/hide a per-chart reset-zoom icon in the chart's container based on
+// whether the chart is currently zoomed. Clicking it resets and hides.
+function _syncResetZoomBtn(chart) {
+    if (!chart || !chart.canvas) return;
+    const wrap = chart.canvas.parentElement;
+    if (!wrap) return;
+    const zoomed = typeof chart.isZoomedOrPanned === 'function' && chart.isZoomedOrPanned();
+    let btn = wrap.querySelector('.chart-reset-zoom');
+    if (!zoomed) { if (btn) btn.remove(); return; }
+    if (!btn) {
+        btn = document.createElement('button');
+        btn.className = 'chart-reset-zoom';
+        btn.type = 'button';
+        btn.textContent = '⟲';
+        btn.title = 'Reset zoom';
+        btn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            try { chart.resetZoom(); } catch (_) {}
+            _syncResetZoomBtn(chart);
+        });
+        wrap.appendChild(btn);
+    }
+}
 
 const ChartManager = {
     _mainChart: null,
@@ -3147,6 +3177,7 @@ document.addEventListener('dblclick', (e) => {
     [ChartManager._mainChart, ChartManager._historyChart, ChartManager._trendChart].forEach(c => {
         if (c && c.canvas === e.target && typeof c.resetZoom === 'function') {
             try { c.resetZoom(); } catch (_) {}
+            _syncResetZoomBtn(c);
         }
     });
 });

@@ -28,6 +28,7 @@ function thresholdAnnotations(rules, opts) {
     lines.forEach((v, i) => {
       out[`thr_${rule.rule_id}_${i}`] = {
         type: 'line', yMin: v, yMax: v, borderColor: color, borderWidth: 1.5, borderDash: [5, 5],
+        adjustScaleRange: false,
         label: { display: true, content: `${rule.name}: ${v}${unit}`, position: 'end',
           backgroundColor: color, color: '#fff', font: { size: 9 }, padding: 2 },
       };
