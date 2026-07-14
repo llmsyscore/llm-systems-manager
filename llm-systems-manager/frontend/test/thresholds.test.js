@@ -109,6 +109,16 @@ describe('host scoping — null host', () => {
   });
 });
 
+describe('lines clip to the data scale instead of forcing the axis', () => {
+  test('every emitted line has adjustScaleRange:false', () => {
+    const out = thresholdAnnotations([
+      rule({ rule_type: 'threshold_range', threshold: { lower: 10, upper: 90 } }),
+    ], CPU);
+    const flags = Object.values(out).map(a => a.adjustScaleRange);
+    expect(flags).toEqual([false, false]);
+  });
+});
+
 describe('multiple rules accumulate distinct keys', () => {
   test('two rules → two entries keyed by rule_id', () => {
     const out = thresholdAnnotations([
