@@ -1,12 +1,24 @@
 # LLM Systems Manager
 
-A highly configurable, real-time monitoring, observability, alerting, and control system for an LLM lab
+A complete, self-hosted operations platform for LLM infrastructure — monitoring, remote control, tuning, routing, alerting, and much more, all in one place.
 
-It currently integrates [llama.cpp](https://github.com/ggerganov/llama.cpp), [vLLM](https://github.com/vllm-project/vllm), [LM Studio](https://lmstudio.ai/), [stable-diffusion.cpp](https://github.com/leejet/stable-diffusion.cpp), and [OpenClaw](https://github.com/openclaw/openclaw) session telemetry, but the agent reports general host metrics for any Linux or macOS machine.
+It currently integrates [llama.cpp](https://github.com/ggerganov/llama.cpp), [vLLM](https://github.com/vllm-project/vllm), [LM Studio](https://lmstudio.ai/), [stable-diffusion.cpp](https://github.com/leejet/stable-diffusion.cpp), and [OpenClaw](https://github.com/openclaw/openclaw) session telemetry, but the agent reports general host metrics for any Linux or macOS machine. New integrations with Ollama are on the roadmap.
 
-New integrations with Ollama are on the roadmap.
+## Top features
 
-It also exposes an **OpenAI-compatible inference gateway** — a single endpoint that routes chat/completion requests across your `llama.cpp` fleet, so every backend looks like one server to your apps. See [Inference gateway](#inference-gateway) below.
+**1. OpenAI-compatible inference gateway.** One endpoint on the manager serves every `llama.cpp` host. Requests can be routed by per-model pinning, round-robined across a dedicated pool, or failed over to another live host if a backend is down. Apps target one stable URL that looks like a single server. Streaming and non-streaming both work. See [Inference gateway](#inference-gateway).
+
+**2. Benchmarking and autotuning built in.** Run throughput benchmarks across every model in your library, and let the autotuner search for the best context/slot configuration on `llama.cpp` or the largest safe `max-model-len` on vLLM. Each model ends up tuned to the hardware it actually runs on.
+
+**3. Model management with profiles, cards, and cache control.** Browse and pull models straight from Hugging Face, then prune individual files to reclaim disk. Every model keeps multiple named config profiles (e.g. chat / code / general); switching profiles from the model card reloads the running model with those settings in one click.
+
+**4. Energy and thermal control via the performance manager.** A per-host controller tracks the inference server and switches the CPU governor and cooling/fan profiles to match the load — full performance while a model is working, quiet and low energy usage when it goes idle or sleeps.
+
+**5. Remote control of the whole infrastructure.** Start/stop/restart inference servers, hot-swap models, edit per-model configurations, update and configure `llama.cpp`, tail logs, or open an in-browser terminal — for any host, from one page. One cross-platform agent covers Linux and macOS/Apple Silicon, auto-detects what each box runs, with per-agent selection. An **LLM Overall** view rolls multiple host metrics into one pane.
+
+**6. LLM-aware telemetry and alerting.** Live metrics from the inference server include slots, tokens/sec, prompt-processing, KV cache, and context, plus system and GPU/PSU/UPS/cooling metrics. A standalone alarm engine stores every sample, evaluates threshold and anomaly rules, notifies over email/toast/webhook/Discord, buffers to disk and replays when the network returns, and collapses a burst of related issues into single incidents.
+
+*Also included:* multi-user roles + admin audit log, encrypted scheduled backups, OpenClaw cost/budget analytics, an image generation tab, and TLS/mTLS on every connection — see the [full feature list](#full-included-features) below.
 
 ---
 <img width="1526" height="1050" alt="Login screen" src="docs/screenshots/login.png" />
@@ -22,6 +34,10 @@ It also exposes an **OpenAI-compatible inference gateway** — a single endpoint
 <img width="2668" height="1265" alt="Model control detail" src="docs/screenshots/model-control-2.png" />
 <img width="2767" height="1049" alt="Model control cards" src="docs/screenshots/model-control-cards.png" />
 
+**Autotune & benchmark** — search for the fastest context/slot settings per model and benchmark your whole model library.
+<img width="1170" height="1067" alt="Autotune wizard" src="docs/screenshots/autotune.png" />
+<img width="1164" height="1161" alt="Benchmark results" src="docs/screenshots/benchmark.png" />
+
 **Openclaw dashboard** - openclaw metrics and analytics
 <img width="2767" height="1270" alt="OpenClaw dashboard" src="docs/screenshots/dashboard-openclaw.png" />
 
@@ -31,32 +47,37 @@ It also exposes an **OpenAI-compatible inference gateway** — a single endpoint
 **Alarm engine** — trend graphs, rule and notification editor, alert timeline.
 <img width="2135" height="1151" alt="Alarm engine" src="docs/screenshots/alarm-console.png" />
 
-**Admin console** - agent management, user & login management, backup/restore, routing of agent tasks
-<img width="2580" height="1283" alt="Admin console" src="docs/screenshots/admin-console.png" />
+**Admin console** - agent management, user & login management, backup/restore, inference routing
+<img width="1683" height="1278" alt="Admin console" src="docs/screenshots/admin-console.png" />
+<img width="1683" height="1278" alt="Admin console — inference pool" src="docs/screenshots/admin-console-pool.png" />
 
 
 
 ---
 
-## Highlights
+## Full included features
 
-- **LLM model management.** A built-in Hugging Face interface manages your model library and allows the user to download and prune individual models and files. Each model can keep multiple named **config profiles** (e.g. chat / code / general) and swap between them from the model card, activating one applies its settings and reloads the model if it's running.
-- **Remote control without SSH.** The LLM control module allows the user to Restart the inference server daemons, update the llama.cpp installation (via a configurable per-host method — build from source, conda, Homebrew, prebuilt release binaries, or a custom script), swap running models, edit and save per-model configs and profiles, run benchmarks against all of your models, autotune ctx slot counts to find the best context settings, tail logs, or open an in-browser PTY terminal to the inference server, all without leaving the page.
-- **LLM runtime visibility.** Live state from `llama.cpp` (slots, tokens/sec, prompt-processing rate, KV cache, context, idle/awake, plus per-model properties — active chat template, modalities, total slots) and from LM Studio (loaded models, active sessions).
-- **Direct LLM chat.** Chat with the model through the embedded llama.cpp web interface.
-- **OpenClaw analytics with budget alerts.** The manager parses session logs into token-usage, cost, and tool-attribution dashboards, projects monthly spend, and — with a configured monthly budget — alerts through the alarm engine's channels when the projection crosses your warning or ceiling thresholds (cost-anomaly alerts optional).
-- **Image generation.** A dedicated tab optionally drives image generation software like stable-diffusion.cpp for text-to-image generation.
-- **Cross-platform agents.** One agent process for Linux and macOS (Apple Silicon). Auto-detects what each host runs and enables only what's relevant. Serves its API over TLS.
-- **TLS Encryption.** All Agent ↔ Manager and Agent ↔ Alarm Engine connections use TLS.
-- **Live host telemetry.** CPU, RAM, disk, network, GPU utilization, PSU, UPS battery, AIO stats.
+The six headline capabilities plus everything else that ships in the box:
+
+- **OpenAI-compatible inference gateway.** One endpoint (`/api/gateway/v1`) fronts the whole `llama.cpp` fleet — per-model pin, then pool round-robin, then pre-first-token failover route each request to a healthy backend, so every app sees one server. Dashboard-session access by default; add API keys for external clients. See [Inference gateway](#inference-gateway).
+- **Benchmarking & autotuning.** Throughput benchmarks across your entire model library, plus autotuners for `llama.cpp` context/slot counts and vLLM `max-model-len` — each model tuned to the hardware it actually runs on.
+- **Model management.** A built-in Hugging Face browser downloads and prunes models file-by-file; every model keeps named config profiles (chat / code / general) that swap and reload straight from its model card in one click.
+- **Energy & thermal control.** A per-host performance manager flips CPU governor and fan/cooling profiles with inference load — full power under work, quiet and low-draw when idle or asleep.
+- **Remote control, no SSH.** Start/stop/restart servers, hot-swap models, edit configs, update `llama.cpp` (build from source, conda, Homebrew, release binaries, or a custom script), tail logs, and open an in-browser PTY terminal — for any host, from the page.
+- **LLM runtime visibility.** Live inference internals — slots, tokens/sec, prompt-processing rate, KV cache, context, idle/awake, active chat template, modalities, total slots — plus LM Studio loaded models and active sessions.
+- **Fleet in one pane.** Run the same backend on many hosts and a picker appears to switch views and controls per agent; the **LLM Overall** tab rolls combined throughput, hottest GPU, total power, and active models into one view. A single-host lab sees no change.
+- **Cross-platform agent.** One agent for Linux and macOS/Apple Silicon auto-detects what each host runs and enables only what's relevant; a bare host just reports system metrics, all served over TLS.
+- **Live host telemetry.** CPU, RAM, disk, network, GPU utilization, PSU, UPS battery, and AIO cooling stats.
 - **Alerting that survives outages.** A standalone alarm engine persists every metric to InfluxDB, evaluates threshold and anomaly rules, and routes alerts via email, toast, webhook, or Discord. Agents buffer to disk if the engine is down and replay when it returns.
-- **Incident correlation, not alert spam.** When one event trips several rules on the same host at once (say GPU temp, VRAM, and fan-speed), the engine groups them into a single **incident** — one notification per incident instead of one per rule — and the Events table and toasts collapse the members behind a "+N related" count. Rules can opt into an explicit `correlation_group` to always group together; a time window handles the rest. Resolved alerts roll off into a separate history table with configurable retention so the active view stays fast.
-- **At-a-glance system status.** A dot beside the **Events** tab turns red while any *active* critical alert is unresolved; a dot beside **Admin** turns red when system health degrades (stale/down agents, disconnected services, cert warnings). Both update on every tab.
-- **Multi-agent.** Run the same provider (llama.cpp, LM Studio, …) on more than one host and a picker appears in the dashboard to switch the view and controls between agents — every approved agent is independently viewable and controllable, with one designated as the default. The **LLM Overall** tab rolls the whole fleet into one view (combined throughput, hottest GPU, total power, active models). A single-host lab sees no change; the picker only shows up once a second agent of a type is approved. Adding a brand-new provider is a one-file-per-side drop-in.
-- **OpenAI-compatible inference gateway.** Point any OpenAI SDK or tool at one manager endpoint (`/api/gateway/v1`) and it routes each chat/completion request to a healthy `llama.cpp` backend — honoring per-model **pins**, the **agent picker**, and **pool round-robin**, and **failing over** to the next live host before the first byte if one is down. Streaming and non-streaming both work; the whole fleet looks like a single server. Reachable from a dashboard session by default; add API keys to let external clients in. See [Inference gateway](#inference-gateway).
-- **Multi-user access control.** Multiple named accounts with **Admin** / **Operator** roles — operators can drive the LLMs and watch dashboards but are kept out of the Admin tab, agent management, secrets, and shells. Admins create / disable / delete users and reset passwords from **Admin → Users**; every user gets self-service password change and logout from the **Account** menu, with username + source-IP lockout after repeated failed logins.
-- **Admin action audit log.** Every mutating admin action (agent approve/disable/delete, service restarts, auth-mode changes, user management, config writes, exports/imports) is recorded — who, what, when, from where, and whether it succeeded — and browsable from a paginated **Admin → Audit Log** tab.
-- **Scheduled automatic backups.** The manager writes its full export archive (config, agent registry, CA, users, model profiles, benchmarks) to `data/backups/` on a configurable interval with retention pruning, optional AES-256-GCM encryption via a passphrase, and an optional mirror directory — with last/next-run status surfaced in **Admin → Backup & Restore** so a silent failure can't hide. The same archive restores through the existing Import flow.
+- **Incident correlation, not alert spam.** When one event trips several rules on a host at once (GPU temp, VRAM, fan speed), the engine groups them into a single **incident** — one notification, with the Events table and toasts collapsing members behind a "+N related" count. Resolved alerts roll into a history table with configurable retention so the active view stays fast.
+- **At-a-glance status.** A dot on the **Events** tab turns red on any active critical alert; a dot on **Admin** turns red when system health degrades (stale/down agents, disconnected services, cert warnings). Both update on every tab.
+- **Direct LLM chat.** Talk to any loaded model through the embedded `llama.cpp` web interface.
+- **OpenClaw cost analytics.** Session logs become token-usage, cost, and tool-attribution dashboards with monthly spend projection and — given a budget — warning/ceiling alerts (and optional cost-anomaly alerts) through the alarm engine.
+- **Image generation.** An optional tab drives `stable-diffusion.cpp` for text-to-image.
+- **Multi-user access control.** Named accounts with **Admin** / **Operator** roles — operators drive LLMs and watch dashboards but are kept out of the Admin tab, agent management, secrets, and shells. Self-service password change plus username + source-IP lockout after repeated failed logins.
+- **Admin audit log.** Every mutating admin action (approve/disable/delete agents, restarts, auth-mode changes, user management, config writes, exports/imports) is recorded — who, what, when, from where, success or not — and browsable in **Admin → Audit Log**.
+- **Scheduled backups.** The manager writes a full export archive (config, agent registry, CA, users, model profiles, benchmarks) on an interval with retention pruning, optional AES-256-GCM encryption, and an optional mirror directory; last/next-run status shows in **Admin → Backup & Restore**, and the same archive restores through Import.
+- **Encrypted everywhere.** All agent ↔ manager and agent ↔ alarm-engine traffic runs over TLS, with per-agent leaf certs signed by the manager's internal CA.
 
 
 ## Donations
@@ -162,13 +183,13 @@ A host with neither `llama-server` nor LM Studio just reports generic system met
 
 ## Inference gateway
 
-One OpenAI-compatible endpoint on the manager fronts every approved `llama.cpp` agent in the fleet — so instead of targeting one `llama-server` by host:port, your apps call the manager and it picks a healthy backend for each request:
+One OpenAI-compatible endpoint (http://<manager-host>:5000/api/gateway/v1) on the manager serves every approved `llama.cpp` agent in the fleet — so instead of targeting one `llama-server` by host:port, your apps call the manager and it picks a healthy backend for each request:
 
 - `POST /api/gateway/v1/chat/completions`
 - `POST /api/gateway/v1/completions`
 - `GET  /api/gateway/v1/models`
 
-Routing follows the same precedence as the dashboard: a per-model **pin** first, then an explicit `?agent=` pick, then **pool round-robin**, then the fleet **default**. If the chosen backend can't be reached — or answers `502`/`503` — before the first response byte, the gateway **fails over** to the next live agent. Both streaming (`"stream": true`) and non-streaming requests work, and each response carries an `X-Proxied-To` header naming the agent that served it.
+Routing follows the same precedence as the dashboard: a per-model **pin** first, then an explicit `?agent=` pick, then **pool round-robin**, finally the system **default**. If the chosen backend can't be reached, the gateway **fails over** to the next live agent. Both streaming (`"stream": true`) and non-streaming requests work, and each response carries an `X-Proxied-To` header naming the agent that served it.
 
 **Access.** By default the gateway is reachable from a logged-in dashboard session only. To let external OpenAI-SDK clients in, add one or more keys to `[manager.gateway].api_keys` in `config/llm-systems.toml` and restart the manager — each key is a bearer accepted only on `/api/gateway/*`:
 
@@ -204,7 +225,7 @@ curl http://<manager-host>:5000/api/gateway/v1/chat/completions \
   -d '{"model":"<model-id>","messages":[{"role":"user","content":"Hello!"}]}'
 ```
 
-The gateway forwards over the existing bearer + TLS agent channel — **no new trust surface**, and `llama-server`'s admin/control endpoints are never exposed (the agent passthrough is a two-path allowlist). It requires agents running the current version; upgrade agents fleet-wide (**Admin → Agents → Update**) before relying on it. Fronting LM Studio through the same gateway is on the roadmap.
+The gateway forwards over the existing bearer + TLS agent channel, and admin/control endpoints are never exposed. Serving LM Studio through the same gateway is on the roadmap.
 
 ---
 
@@ -276,7 +297,7 @@ InfluxDB v2 is the database for the **time-series metrics** — raw samples plus
 
 ### Frontend
 
-The frontend polls the manager every few seconds when something is active and slows down when the lab is idle, plus opens server-sent-event streams for downloads, builds, log tails, and the in-browser terminal.
+The frontend polls the manager every few seconds when something is active and slows down when the lab is idle, also opens event streams for downloads, builds, log tails, and the in-browser terminal.
 
 ---
 
