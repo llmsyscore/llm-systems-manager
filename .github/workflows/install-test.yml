@@ -9,6 +9,12 @@ name: Install tests
 #   and ci-smoke re-verifies. This is the only job that catches the
 #   "new agent/*.py missing from an install file-list → crash-loop only
 #   after upgrade" class of bug (gotcha #24).
+# - release-install: mode 1 through the DEFAULT source path — a checksum-
+#   verified release tarball built (and served over file://) exactly like
+#   release.yml. The other two jobs use the local checkout / a preset
+#   REPO_SRC, so this is the only job that runs acquire_source_tree +
+#   fetch_release_tree, and it catches files git archive drops that a real
+#   install needs (#383).
 #
 # Heavy (~15 min/job), so gated by paths: to installer/agent/requirements
 # changes; use workflow_dispatch for a manual run on anything else. A
@@ -134,6 +140,69 @@ jobs:
           got="$(curl -fsS -m 10 http://127.0.0.1:5000/health | jq -r .version)"
           echo "before=$(cat /tmp/version-before) after=$got head-source=$want"
           test "$got" = "$want"
+
+      - name: Collect service logs on failure
+        if: failure()
+        run: |
+          for u in influxdb llm-systems-alarm-engine llm-systems-manager llm-systems-agent; do
+            echo "════ journalctl -u $u ════"
+            sudo journalctl -u "$u" -n 200 --no-pager || true
+          done
+
+  release-install:
+    name: release-tarball install (mode 1)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    # TAG is a throwaway CI-only version; the tarball is built + served
+    # locally, never published. Matches the installer's asset-name contract:
+    # llm-systems-manager-<tag>.tar.gz with a llm-systems-manager-<tag>/ prefix.
+    env:
+      TAG: v0.0.0-ci
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install prerequisites
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            jq rsync wget gnupg ca-certificates openssl sqlite3 \
+            python3-venv python3-pip python3-dev build-essential
+
+      # Build the tarball + checksum exactly like release.yml, so this job
+      # doubles as a smoke test of the release artifact itself.
+      - name: Build release tarball + checksum
+        run: |
+          ASSET="llm-systems-manager-${TAG}.tar.gz"
+          mkdir -p "${RUNNER_TEMP}/serve/${TAG}"
+          git archive --format=tar.gz \
+            --prefix="llm-systems-manager-${TAG}/" \
+            -o "${RUNNER_TEMP}/serve/${TAG}/${ASSET}" HEAD
+          ( cd "${RUNNER_TEMP}/serve/${TAG}" && sha256sum "$ASSET" | tee "$ASSET.sha256" )
+
+      # git archive honors .gitattributes export-ignore and drops untracked
+      # files; assert the archive still carries files a real install needs.
+      - name: Assert tarball completeness
+        run: |
+          ASSET="${RUNNER_TEMP}/serve/${TAG}/llm-systems-manager-${TAG}.tar.gz"
+          for f in tools/installer/removed-paths.manifest \
+                   tools/installer/toml_reconcile.py \
+                   config/llm-systems.toml.example; do
+            tar -tzf "$ASSET" | grep -qx "llm-systems-manager-${TAG}/$f" \
+              || { echo "MISSING from release tarball: $f"; exit 1; }
+          done
+
+      # Run install.sh from OUTSIDE the checkout so it takes the release path;
+      # a local git tree would trigger the use-local-checkout branch instead.
+      # file:// base URL + pinned tag serve the just-built tarball to curl.
+      - name: Install from release tarball (mode 1)
+        run: |
+          cp tools/installer/install.sh "${RUNNER_TEMP}/install.sh"
+          sudo LLMSYS_RELEASE_TAG="${TAG}" \
+               LLMSYS_RELEASE_BASE_URL="file://${RUNNER_TEMP}/serve" \
+               bash "${RUNNER_TEMP}/install.sh" --mode 1 --no-self-update < /dev/null
+
+      - name: Smoke test
+        run: sudo bash tools/installer/ci-smoke.sh
 
       - name: Collect service logs on failure
         if: failure()
