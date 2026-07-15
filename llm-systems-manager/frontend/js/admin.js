@@ -1825,6 +1825,7 @@ async function adminUpdate(aid) {
   const dec = new TextDecoder();
   let buf = '';
   let doneOk = null;
+  let doneNoRestart = false;
   while (true) {
     const { value, done } = await reader.read();
     if (done) break;
@@ -1849,6 +1850,10 @@ async function adminUpdate(aid) {
         _adminUpdateLog('', 'blank');
       } else if (msg.stage === 'done') {
         doneOk = msg.ok;
+        // Frozen agents report an ok no-op ("already up to date") with no
+        // restart_eta_s — don't announce a restart that isn't coming.
+        doneNoRestart = msg.ok === true && msg.restart_eta_s == null
+          && /no restart/i.test(msg.msg || '');
         // Versions were already shown at the top of the panel; don't repeat
         // them. Just report success/failure + rc and any backend message.
         const head = msg.ok ? '✓ done' : '✗ done';
@@ -1860,7 +1865,9 @@ async function adminUpdate(aid) {
     }
   }
   if (doneOk === true) {
-    _adminUpdateLog('agent SIGTERM-ing for restart; refreshing agent list in 5s…');
+    _adminUpdateLog(doneNoRestart
+      ? 'agent already up to date; no restart needed'
+      : 'agent SIGTERM-ing for restart; refreshing agent list in 5s…');
     // Refresh the agent list but leave the panel open so the operator
     // can read the full output. Operator closes it via the X.
     setTimeout(() => { adminLoadAgents(); }, 5000);

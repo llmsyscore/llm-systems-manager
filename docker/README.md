@@ -135,3 +135,8 @@ docker compose pull && docker compose up -d
 
 Data migrations run automatically at service startup, same as a bare-metal
 update.
+
+Don't run the bare-metal updater (`tools/installer/update.sh` /
+`install.sh --update`) inside the containers — it detects container context
+and exits with the image-pull instruction above (changes inside a container
+are ephemeral and there is no systemd to restart).

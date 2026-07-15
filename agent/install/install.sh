@@ -514,6 +514,7 @@ _compute_required_install_files() {
     "$SRC_DIR/_bench_replay.py"
     "$SRC_DIR/agent_context.py"
     "$SRC_DIR/stream_pool.py"
+    "$SRC_DIR/frozen_self_update.py"
     "$SRC_DIR/unified_config_reader.py"
     "$SRC_DIR/agent_config.yaml.example"
     "$TMPL_DIR/requirements.txt"
@@ -1270,7 +1271,7 @@ if $DO_UPDATE; then
   # Same stage-then-rename swap for the top-level .py files.
   for _f in llm-systems-agent.py buffered_metric_client.py _utils.py \
             _best_effort.py _bench_replay.py agent_context.py \
-            stream_pool.py unified_config_reader.py; do
+            stream_pool.py frozen_self_update.py unified_config_reader.py; do
     $SUDO cp "$SRC_DIR/$_f" "$INSTALL_DIR/$_f.new"
     $SUDO chown "$USER_ARG:$USER_GROUP" "$INSTALL_DIR/$_f.new"
     $SUDO mv "$INSTALL_DIR/$_f.new" "$INSTALL_DIR/$_f"
@@ -3766,6 +3767,7 @@ $SUDO cp "$SRC_DIR/_best_effort.py"           "$INSTALL_DIR/"
 $SUDO cp "$SRC_DIR/_bench_replay.py"          "$INSTALL_DIR/"
 $SUDO cp "$SRC_DIR/agent_context.py"          "$INSTALL_DIR/"
 $SUDO cp "$SRC_DIR/stream_pool.py"            "$INSTALL_DIR/"
+$SUDO cp "$SRC_DIR/frozen_self_update.py"     "$INSTALL_DIR/"
 $SUDO cp "$SRC_DIR/unified_config_reader.py"  "$INSTALL_DIR/"
 $SUDO chown "$USER_ARG:$USER_GROUP" \
   "$INSTALL_DIR/llm-systems-agent.py" \
@@ -3774,6 +3776,7 @@ $SUDO chown "$USER_ARG:$USER_GROUP" \
   "$INSTALL_DIR/_best_effort.py" \
   "$INSTALL_DIR/_bench_replay.py" \
   "$INSTALL_DIR/stream_pool.py" \
+  "$INSTALL_DIR/frozen_self_update.py" \
   "$INSTALL_DIR/agent_context.py" \
   "$INSTALL_DIR/unified_config_reader.py"
 _ok "agent code installed to $INSTALL_DIR"

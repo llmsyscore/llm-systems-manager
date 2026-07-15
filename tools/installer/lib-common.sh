@@ -211,6 +211,28 @@ require_linux() {
     die "This component only runs on Linux (detected: ${LLMSYS_OS:-unknown})."
 }
 
+# Refuse in-place updates inside containers (Docker/Podman) or systemd-less
+# hosts; containerized installs update via image pull, not file sync.
+guard_not_containerized() {
+  [[ "${LLMSYS_ALLOW_CONTAINER:-0}" == "1" ]] && return 0
+  local root="${LLMSYS_CONTAINER_PROBE_ROOT:-}" reason=""
+  if [[ -f "$root/.dockerenv" || -f "$root/run/.containerenv" ]]; then
+    reason="container marker present (/.dockerenv or /run/.containerenv)"
+  elif grep -qsE '(docker|containerd|kubepods)' "$root/proc/1/cgroup"; then
+    reason="container cgroup in /proc/1/cgroup"
+  elif [[ ! -d "$root/run/systemd/system" ]]; then
+    err "refusing in-place update: systemd is not running (no /run/systemd/system) — the updater manages systemd units."
+    err "(set LLMSYS_ALLOW_CONTAINER=1 to override)"
+    exit 2
+  fi
+  [[ -z "$reason" ]] && return 0
+  err "refusing in-place update: $reason"
+  err "This is a containerized install — changes made here are ephemeral."
+  err "Update the Docker control plane with:  docker compose pull && docker compose up -d"
+  err "(bump LSM_IMAGE_TAG first if the tag is pinned; set LLMSYS_ALLOW_CONTAINER=1 to override)"
+  exit 2
+}
+
 # ── Prereq probing ──────────────────────────────────────────────────────────
 have() { command -v "$1" >/dev/null 2>&1; }
 

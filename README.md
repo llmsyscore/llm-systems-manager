@@ -151,6 +151,12 @@ sudo chown -R <run-as-user>: /opt/llm-systems-agent
 
 Then install the systemd unit from [agent/install/llm-systems-agent-binary.service.tmpl](agent/install/llm-systems-agent-binary.service.tmpl) (substitute `${AGENT_USER}`, `${AGENT_GROUP}`, `${AGENT_INSTALL_DIR}`) into `/etc/systemd/system/llm-systems-agent.service` and `systemctl enable --now llm-systems-agent`. Provider flags (`LLAMA_ENABLED`, `LMS_ENABLED`, sudo wrappers for service control, udev rules for liquidctl) are what the full installer automates — add them to `agent_config.yaml` as needed. On macOS, clear the quarantine attribute first (`xattr -d com.apple.quarantine llm-systems-agent`) and use [agent/install/com.llm-systems-agent-binary.plist.tmpl](agent/install/com.llm-systems-agent-binary.plist.tmpl) (substitute `${AGENT_USER}`, `${AGENT_USER_HOME}`, `${AGENT_INSTALL_DIR}`) as the launchd unit. Linux binaries need glibc 2.35+ (Ubuntu 22.04 / Debian 12 or newer).
 
+Binary agents built from this release onward can also be upgraded from
+**Admin → Agents → Update**: the agent downloads the latest release asset for
+its platform, verifies the `.sha256`, smoke-tests the staged binary, swaps it
+atomically (previous binary kept beside it as `.self-update.bak.<ts>`), and
+restarts. Older binaries still need one manual replacement first.
+
 Approve a second agent that runs the same provider (e.g. a second `llama.cpp` box) and a host picker automatically appears on the matching dashboard sub-tabs — every approved agent is independently viewable and controllable. One agent is the *default* (what the dashboard shows when you haven't picked); set it from **Admin**.
 
 ## Multiple Hosts
