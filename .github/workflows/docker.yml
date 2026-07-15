@@ -75,6 +75,20 @@ jobs:
             -H "Content-Type: application/json" \
             -d '{"metrics":[{"source":"cpu","metric_name":"cpu_usage","value":42.0,"unit":"%","hostname":"ci-smoke"}]}'
 
+      - name: Dashboard login (llmadmin) + admin route reachable
+        run: |
+          jar=$(mktemp)
+          login=$(curl -s -o /dev/null -w '%{http_code}' -c "$jar" \
+            --data-urlencode username=llmadmin --data-urlencode password=llmadmin \
+            http://localhost:5000/login)
+          echo "login -> HTTP $login"
+          # Successful login always 302-redirects to /; a failed one renders 401.
+          [ "$login" = "302" ] || { echo "llmadmin/llmadmin login failed" >&2; exit 1; }
+          admin=$(curl -s -o /dev/null -w '%{http_code}' -b "$jar" \
+            http://localhost:5000/api/admin/audit-log)
+          echo "admin route -> HTTP $admin"
+          [ "$admin" = "200" ] || { echo "admin route not reachable as llmadmin (got $admin)" >&2; exit 1; }
+
       - name: Dump logs on failure
         if: failure()
         run: docker compose logs --no-color

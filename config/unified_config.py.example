@@ -163,7 +163,7 @@ class ManagerAuth(BaseModel):
     # When this is anything but "auto", the TOML value is authoritative (a manual
     # edit wins on restart) and the Admin tab writes mode changes back here.
     mode: str = "auto"
-    username: str = "admin"
+    username: str = "llmadmin"
     # scrypt hash "scrypt$<salt_b64>$<dk_b64>". Empty → the built-in
     # llmadmin/llmadmin default applies (so a fresh "required" deploy can't lock
     # the operator out). Optional here for installer provisioning; the UI

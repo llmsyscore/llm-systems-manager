@@ -28,12 +28,24 @@ render_config() {
   local ae_tls="${LSM_AE_TLS_ENABLED:-true}"
   local cors="${LSM_CORS_ORIGINS:-http://localhost:5000}"
   local log_level="${LSM_LOG_LEVEL:-INFO}"
+  local admin_user="${LSM_ADMIN_USER:-llmadmin}"
+  # Default admin allowlist: loopback + private LAN ranges (172.16/12 covers
+  # the docker bridge). Override with LSM_ADMIN_CIDRS.
+  local admin_cidrs_csv="${LSM_ADMIN_CIDRS:-127.0.0.1,::1,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16}"
 
-  for v in "$influx_token" "$ingest_token" "$management_token"; do
+  for v in "$influx_token" "$ingest_token" "$management_token" "$admin_user" "$admin_cidrs_csv"; do
     case "$v" in
-      *'"'*|*'\'*) echo "[entrypoint] ERROR: tokens must not contain \" or \\" >&2; exit 1 ;;
+      *'"'*|*'\'*) echo "[entrypoint] ERROR: config values must not contain \" or \\" >&2; exit 1 ;;
     esac
   done
+
+  local cidr_toml="" _oldifs="$IFS"
+  IFS=','
+  for c in $admin_cidrs_csv; do
+    c="${c#"${c%%[![:space:]]*}"}"; c="${c%"${c##*[![:space:]]}"}"
+    [ -n "$c" ] && cidr_toml="${cidr_toml}${cidr_toml:+, }\"$c\""
+  done
+  IFS="$_oldifs"
 
   cat > "$CFG" <<EOF
 $MARKER
@@ -42,6 +54,12 @@ $MARKER
 alarm_engine_url = "$ae_url"
 cors_origins = "$cors"
 log_level = "$log_level"
+
+[manager.auth]
+username = "$admin_user"
+
+[manager.security]
+admin_cidrs = [$cidr_toml]
 
 [alarm_engine]
 manager_url = "$manager_url"
