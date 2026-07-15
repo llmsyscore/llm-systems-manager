@@ -1,0 +1,84 @@
+name: Docker
+
+# PR gate for the container packaging (#384): build both images from source and
+# prove `docker compose up` yields a working manager + alarm engine + InfluxDB.
+
+on:
+  pull_request:
+    paths:
+      - "docker/**"
+      - "docker-compose.yml"
+      - ".dockerignore"
+      - ".env.example"
+      - ".github/workflows/docker.yml"
+      - "llm-systems-manager/backend/requirements.txt"
+      - "llm-systems-alarm-engine/requirements.txt"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  compose-smoke:
+    name: build images + compose up smoke
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Create .env
+        run: |
+          {
+            echo "LSM_INFLUX_PASSWORD=$(openssl rand -hex 12)"
+            echo "LSM_INFLUX_TOKEN=$(openssl rand -hex 32)"
+            echo "LSM_AE_INGEST_TOKEN=$(openssl rand -hex 32)"
+          } > .env
+
+      - name: Build images + bring the stack up
+        run: docker compose up -d --build --wait --wait-timeout 300
+
+      - name: Manager health
+        run: curl -fsS http://localhost:5000/health
+
+      - name: Alarm engine health (HTTPS via manager-issued cert, HTTP fallback)
+        run: |
+          if curl -fsSk https://localhost:8081/health; then
+            echo "alarm engine serving HTTPS"
+            echo "AE_SCHEME=https" >> "$GITHUB_ENV"
+          else
+            echo "::warning::alarm engine fell back to HTTP"
+            curl -fsS http://localhost:8081/health
+            echo "AE_SCHEME=http" >> "$GITHUB_ENV"
+          fi
+
+      - name: AE TLS cert issued into the shared volume
+        run: |
+          for _ in $(seq 1 12); do
+            docker compose exec -T alarm-engine test -s data/ae-tls.crt && exit 0
+            sleep 5
+          done
+          echo "ae-tls.crt never appeared in the shared volume" >&2
+          exit 1
+
+      - name: InfluxDB buckets provisioned
+        run: |
+          docker compose exec -T influxdb influx bucket list --json \
+            | tee /tmp/buckets.json
+          grep -q alarm_engine_metrics /tmp/buckets.json
+          grep -q alarm_engine_metrics_rollup /tmp/buckets.json
+
+      - name: Metric ingest end-to-end (agent-style batch POST → AE)
+        run: |
+          . ./.env
+          curl -fsSk -X POST "$AE_SCHEME://localhost:8081/api/alarm/metrics/batch" \
+            -H "Authorization: Bearer $LSM_AE_INGEST_TOKEN" \
+            -H "Content-Type: application/json" \
+            -d '{"metrics":[{"source":"cpu","metric_name":"cpu_usage","value":42.0,"unit":"%","hostname":"ci-smoke"}]}'
+
+      - name: Dump logs on failure
+        if: failure()
+        run: docker compose logs --no-color
+
+      - name: Tear down
+        if: always()
+        run: docker compose down -v
