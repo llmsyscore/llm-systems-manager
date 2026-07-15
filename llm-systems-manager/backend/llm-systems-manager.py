@@ -154,7 +154,7 @@ def _local_hostname() -> str:
 # banner reads it. Bump suffix (-1, -2, …) for same-day iterations; roll
 # the date for a new day's first change.
 # ---------------------------------------------------------------------------
-__version__ = "v2026.07.15-3"
+__version__ = "v2026.07.15-4"
 
 # Wall-clock at first import (Cheroot main process); the shutdown banner
 # reads it for the uptime line.
@@ -4262,6 +4262,33 @@ def _maybe_rewrite_sse_frame(frame: bytes, latest_v: "str | None") -> bytes:
     return b"\n".join(out_lines)
 
 
+def _upstream_error_detail(upstream, limit=8192):
+    """Bounded read of a non-SSE upstream body -> human detail string.
+    Handles FastAPI {"detail":...}, {"msg"/"error"/"message":...}, or plain text."""
+    raw = b""
+    try:
+        for chunk in upstream.iter_content(chunk_size=limit):
+            if chunk:
+                raw += chunk
+                if len(raw) >= limit:
+                    break
+    except requests.exceptions.RequestException:
+        pass
+    text = raw[:limit].decode("utf-8", "replace").strip()
+    try:
+        d = json.loads(text)
+    except (ValueError, TypeError):
+        d = None
+    if isinstance(d, dict):
+        for k in ("detail", "msg", "error", "message"):
+            v = d.get(k)
+            if isinstance(v, str) and v.strip():
+                return v.strip()
+    elif isinstance(d, str) and d.strip():
+        return d.strip()
+    return text[:500]
+
+
 @app.route("/api/agents/<agent_id>/self-update", methods=["POST"])
 def agents_self_update(agent_id: str):
     """Admin-gated SSE proxy to the agent's /agent/self-update endpoint.
@@ -4297,6 +4324,26 @@ def agents_self_update(agent_id: str):
                     stream=True, timeout=(10, 60),  # agent emits a keepalive ≤10s during quiet pip phases
                     **agent_registry.agent_tls_kwargs(full),
                 )
+                # Non-SSE / error upstream (e.g. the frozen 501 JSON fallback):
+                # emit a clean done(ok:false) frame at 200, not the raw body. (#403)
+                ctype = upstream.headers.get("Content-Type", "")
+                if upstream.status_code >= 400 or "text/event-stream" not in ctype.lower():
+                    status = upstream.status_code
+                    detail = _upstream_error_detail(upstream)
+                    upstream.close()
+                    payload = {"stage": "done", "ok": False, "rc": status,
+                               "msg": f"agent returned HTTP {status}"
+                                      + (f": {detail}" if detail else "")}
+                    resp = app.response_class(
+                        iter([f"data: {json.dumps(payload)}\n\n".encode()]),
+                        mimetype="text/event-stream",
+                        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no",
+                                 "X-Proxied-To": f"{agent['agent_id'][:8]}@{agent.get('hostname','?')}"},
+                        status=200,
+                    )
+                    resp.call_on_close(stream_pool.POOL.release)
+                    slot_handed = True
+                    return resp
                 # Inject the manager's latest_agent_version into the SSE
                 # stream so the frontend sees version_to even on agents
                 # whose code predates that field. Parses each frame, mutates
