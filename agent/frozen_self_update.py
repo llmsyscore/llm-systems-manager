@@ -8,6 +8,7 @@ import os
 import re
 import shutil
 import subprocess
+import tarfile
 import tempfile
 from pathlib import Path
 
@@ -16,6 +17,7 @@ RELEASE_BASE_DEFAULT = (
 )
 STAGE_PREFIX = ".self-update.stage."
 BACKUP_PREFIX = ".self-update.bak."
+BINARY_MEMBER = "llm-systems-agent"  # the agent binary's name inside a release tarball
 
 _HEX64 = re.compile(r"^[0-9a-fA-F]{64}$")
 
@@ -54,27 +56,55 @@ def parse_sha256_line(text: str, asset: str) -> str:
     raise UpdateError(f"no valid sha256 entry for {asset} in the checksum file")
 
 
+def _extract_binary(tar_path: Path, dest_dir: Path) -> Path:
+    """Extract the single agent-binary member from a verified tarball into
+    dest_dir under a fixed basename. Never honors the archived path, so a
+    crafted tarball cannot traverse out of dest_dir."""
+    out = Path(dest_dir) / BINARY_MEMBER
+    try:
+        with tarfile.open(tar_path, "r:gz") as tar:
+            try:
+                member = tar.getmember(BINARY_MEMBER)
+            except KeyError:
+                raise UpdateError(
+                    f"tarball has no '{BINARY_MEMBER}' member — unexpected asset layout")
+            if not member.isfile():
+                raise UpdateError(f"tarball member '{BINARY_MEMBER}' is not a regular file")
+            src = tar.extractfile(member)
+            if src is None:
+                raise UpdateError(f"could not read '{BINARY_MEMBER}' from tarball")
+            with src, open(out, "wb") as f:
+                shutil.copyfileobj(src, f)
+                f.flush()
+                os.fsync(f.fileno())
+    except (tarfile.TarError, OSError) as e:
+        raise UpdateError(f"tarball extract failed: {e}")
+    return out
+
+
 def download_asset(base: str, asset: str, dest_dir: Path,
                    get=None, timeout: int = 300) -> "tuple[Path, str]":
-    """Download <asset> + <asset>.sha256 from base into dest_dir, verify the
-    checksum, chmod 0755. Returns (staged_path, sha256_hex)."""
+    """Download <asset>.tar.gz + its .sha256 from base into dest_dir, verify the
+    tarball checksum, extract the agent binary, chmod 0755. Returns
+    (staged_binary_path, tarball_sha256_hex)."""
     if get is None:
         import requests
         get = requests.get
+    tarball = f"{asset}.tar.gz"
     try:
-        r = get(f"{base}/{asset}.sha256", timeout=60)
+        r = get(f"{base}/{tarball}.sha256", timeout=60)
         r.raise_for_status()
         sha_text = r.text
     except Exception as e:
         raise UpdateError(f"checksum download failed: {e}")
-    expected = parse_sha256_line(sha_text, asset)
+    expected = parse_sha256_line(sha_text, tarball)
 
-    staged = Path(dest_dir) / asset
+    tar_path = Path(dest_dir) / tarball
     h = hashlib.sha256()
     try:
-        with get(f"{base}/{asset}", stream=True, timeout=timeout) as r:
+        with get(f"{base}/{tarball}", stream=True, timeout=timeout) as r:
             r.raise_for_status()
-            with open(staged, "wb") as f:
+            with open(tar_path, "wb") as f:
                 for chunk in r.iter_content(1 << 16):
                     if chunk:
                         f.write(chunk)
@@ -82,9 +112,15 @@ def download_asset(base: str, asset: str, dest_dir: Path,
                 f.flush()
                 os.fsync(f.fileno())
     except Exception as e:
-        raise UpdateError(f"binary download failed: {e}")
+        raise UpdateError(f"tarball download failed: {e}")
     if h.hexdigest() != expected:
         raise UpdateError("sha256 mismatch — refusing update (old binary untouched)")
+
+    staged = _extract_binary(tar_path, Path(dest_dir))
+    try:
+        tar_path.unlink()
+    except OSError:
+        pass  # best-effort: the staging tmpdir is wiped by the caller anyway
     os.chmod(staged, 0o755)
     return staged, expected
 

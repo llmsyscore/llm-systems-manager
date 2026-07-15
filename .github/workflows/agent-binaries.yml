@@ -26,15 +26,19 @@ jobs:
       matrix:
         include:
           # ubuntu-22.04 runners keep the glibc baseline old (>= 2.35 hosts).
+          # unit_tmpl: the platform's service manager template bundled in the tarball.
           - runner: ubuntu-22.04
             asset_suffix: linux-x86_64
             smoke_image: ubuntu:22.04
+            unit_tmpl: llm-systems-agent-binary.service.tmpl
           - runner: ubuntu-22.04-arm
             asset_suffix: linux-arm64
             smoke_image: ubuntu:22.04
+            unit_tmpl: llm-systems-agent-binary.service.tmpl
           - runner: macos-latest
             asset_suffix: macos-arm64
             smoke_image: ""
+            unit_tmpl: com.llm-systems-agent-binary.plist.tmpl
     steps:
       - uses: actions/checkout@v4
 
@@ -80,12 +84,34 @@ jobs:
           curl -fsS http://localhost:8082/health | grep -q '"status":"ok"'
           kill "$AGENT_PID"
 
+      # Bundle the binary + the documented example config + the platform's
+      # service-manager unit into one per-platform tarball, checksummed for
+      # offline verify.
       - name: Package + checksum
+        env:
+          UNIT: ${{ matrix.unit_tmpl }}
         run: |
           ASSET="llm-systems-agent-${{ matrix.asset_suffix }}"
-          mv dist/llm-systems-agent "$ASSET"
-          shasum -a 256 "$ASSET" > "$ASSET.sha256" 2>/dev/null \
-            || sha256sum "$ASSET" > "$ASSET.sha256"
+          mkdir -p stage
+          mv dist/llm-systems-agent stage/llm-systems-agent
+          cp agent/agent_config.yaml.example stage/agent_config.yaml.example
+          cp "agent/install/$UNIT" "stage/$UNIT"
+          tar -C stage -czf "$ASSET.tar.gz" \
+            llm-systems-agent agent_config.yaml.example "$UNIT"
+          shasum -a 256 "$ASSET.tar.gz" > "$ASSET.tar.gz.sha256" 2>/dev/null \
+            || sha256sum "$ASSET.tar.gz" > "$ASSET.tar.gz.sha256"
+
+      # Assert the layout frozen self-update expects: the binary member is
+      # named exactly 'llm-systems-agent' at the tarball root (matches
+      # frozen_self_update.BINARY_MEMBER), alongside the config + unit template.
+      - name: Sanity-check tarball layout
+        env:
+          UNIT: ${{ matrix.unit_tmpl }}
+        run: |
+          ASSET="llm-systems-agent-${{ matrix.asset_suffix }}"
+          tar -tzf "$ASSET.tar.gz" | grep -qx "llm-systems-agent"
+          tar -tzf "$ASSET.tar.gz" | grep -qx "agent_config.yaml.example"
+          tar -tzf "$ASSET.tar.gz" | grep -qx "$UNIT"
 
       # PR-gate inspection copy only; tag builds ship via the release assets.
       - uses: actions/upload-artifact@v4
@@ -93,8 +119,8 @@ jobs:
         with:
           name: llm-systems-agent-${{ matrix.asset_suffix }}
           path: |
-            llm-systems-agent-${{ matrix.asset_suffix }}
-            llm-systems-agent-${{ matrix.asset_suffix }}.sha256
+            llm-systems-agent-${{ matrix.asset_suffix }}.tar.gz
+            llm-systems-agent-${{ matrix.asset_suffix }}.tar.gz.sha256
           if-no-files-found: error
 
       # The Release workflow creates the release on the same tag push; wait for
@@ -110,5 +136,5 @@ jobs:
           done
           [ "${ok:-}" = "1" ] || { echo "release $GITHUB_REF_NAME never appeared" >&2; exit 1; }
           gh release upload "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --clobber \
-            "llm-systems-agent-${{ matrix.asset_suffix }}" \
-            "llm-systems-agent-${{ matrix.asset_suffix }}.sha256"
+            "llm-systems-agent-${{ matrix.asset_suffix }}.tar.gz" \
+            "llm-systems-agent-${{ matrix.asset_suffix }}.tar.gz.sha256"

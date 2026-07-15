@@ -148,25 +148,31 @@ The agent registers itself with the manager on first launch. From **Admin → Ag
 
 ### Agent binary (no Python required)
 
-Every [release](https://github.com/llmsyscore/llm-systems-manager/releases) also ships the agent as a self-contained single-file binary (`llm-systems-agent-linux-x86_64`, `-linux-arm64`, `-macos-arm64`) with a `.sha256` checksum — no Python or venv needed on the host. To install on Linux:
+Every [release](https://github.com/llmsyscore/llm-systems-manager/releases) also ships the agent as a per-platform tarball (`llm-systems-agent-linux-x86_64.tar.gz`, `-linux-arm64.tar.gz`, `-macos-arm64.tar.gz`) with a `.sha256` checksum — no Python or venv needed on the host. Each tarball bundles the self-contained binary, a fully documented `agent_config.yaml.example`, and the platform's service-manager unit (`llm-systems-agent-binary.service.tmpl` on Linux, `com.llm-systems-agent-binary.plist.tmpl` on macOS), so one download + extract gives you a ready-to-edit install. On Linux:
 
 ```bash
 sudo mkdir -p /opt/llm-systems-agent && cd /opt/llm-systems-agent
-sudo curl -fsSLO https://github.com/llmsyscore/llm-systems-manager/releases/latest/download/llm-systems-agent-linux-x86_64
-sudo curl -fsSLO https://github.com/llmsyscore/llm-systems-manager/releases/latest/download/llm-systems-agent-linux-x86_64.sha256
-sha256sum -c llm-systems-agent-linux-x86_64.sha256   # macOS: shasum -a 256 -c <file>.sha256
-sudo mv llm-systems-agent-linux-x86_64 llm-systems-agent && sudo chmod +x llm-systems-agent
-printf 'MANAGER_URL: "http://<manager-host>:5000"\n' | sudo tee agent_config.yaml
+sudo curl -fsSLO https://github.com/llmsyscore/llm-systems-manager/releases/latest/download/llm-systems-agent-linux-x86_64.tar.gz
+sudo curl -fsSLO https://github.com/llmsyscore/llm-systems-manager/releases/latest/download/llm-systems-agent-linux-x86_64.tar.gz.sha256
+sha256sum -c llm-systems-agent-linux-x86_64.tar.gz.sha256   # macOS: shasum -a 256 -c <file>.sha256
+sudo tar -xzf llm-systems-agent-linux-x86_64.tar.gz         # -> binary + agent_config.yaml.example + .service.tmpl
+sudo chmod +x llm-systems-agent
+sudo cp agent_config.yaml.example agent_config.yaml         # then edit: at minimum set MANAGER_URL
 sudo chown -R <run-as-user>: /opt/llm-systems-agent
 ```
 
-Then install the systemd unit from [agent/install/llm-systems-agent-binary.service.tmpl](agent/install/llm-systems-agent-binary.service.tmpl) (substitute `${AGENT_USER}`, `${AGENT_GROUP}`, `${AGENT_INSTALL_DIR}`) into `/etc/systemd/system/llm-systems-agent.service` and `systemctl enable --now llm-systems-agent`. Provider flags (`LLAMA_ENABLED`, `LMS_ENABLED`, sudo wrappers for service control, udev rules for liquidctl) are what the full installer automates — add them to `agent_config.yaml` as needed. On macOS, clear the quarantine attribute first (`xattr -d com.apple.quarantine llm-systems-agent`) and use [agent/install/com.llm-systems-agent-binary.plist.tmpl](agent/install/com.llm-systems-agent-binary.plist.tmpl) (substitute `${AGENT_USER}`, `${AGENT_USER_HOME}`, `${AGENT_INSTALL_DIR}`) as the launchd unit. Linux binaries need glibc 2.35+ (Ubuntu 22.04 / Debian 12 or newer).
+Then install the systemd unit from the extracted `llm-systems-agent-binary.service.tmpl` (substitute `${AGENT_USER}`, `${AGENT_GROUP}`, `${AGENT_INSTALL_DIR}`) into `/etc/systemd/system/llm-systems-agent.service` and `systemctl enable --now llm-systems-agent`. 
+
+Provider flags (`LLAMA_ENABLED`, `LMS_ENABLED`, sudo wrappers for service control, udev rules for liquidctl) are what the full installer automates — every option is documented inline in `agent_config.yaml.example`, so set them in your copied `agent_config.yaml` as needed. 
+
+On macOS, download the `-macos-arm64.tar.gz` tarball instead; it bundles the same binary + `agent_config.yaml.example` plus the `com.llm-systems-agent-binary.plist.tmpl` launchd unit. Clear the quarantine attribute first (`xattr -d com.apple.quarantine llm-systems-agent`), then use the extracted `com.llm-systems-agent-binary.plist.tmpl` (substitute `${AGENT_USER}`, `${AGENT_USER_HOME}`, `${AGENT_INSTALL_DIR}`) as the launchd unit. Linux binaries need glibc 2.35+ (Ubuntu 22.04 / Debian 12 or newer).
 
 Binary agents built from this release onward can also be upgraded from
-**Admin → Agents → Update**: the agent downloads the latest release asset for
-its platform, verifies the `.sha256`, smoke-tests the staged binary, swaps it
-atomically (previous binary kept beside it as `.self-update.bak.<ts>`), and
-restarts. Older binaries still need one manual replacement first.
+**Admin → Agents → Update**: the agent downloads the latest release tarball for
+its platform, verifies the `.sha256`, extracts and smoke-tests the staged
+binary, swaps it atomically (previous binary kept beside it as
+`.self-update.bak.<ts>`), and restarts. Older binaries still need one manual
+replacement first.
 
 Approve a second agent that runs the same provider (e.g. a second `llama.cpp` box) and a host picker automatically appears on the matching dashboard sub-tabs — every approved agent is independently viewable and controllable. One agent is the *default* (what the dashboard shows when you haven't picked); set it from **Admin**.
 

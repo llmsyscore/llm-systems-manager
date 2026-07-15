@@ -1,9 +1,11 @@
 """Unit tests for agent/frozen_self_update.py (loaded standalone via conftest)."""
 import hashlib
 import importlib.util
+import io
 import os
 import subprocess
 import sys
+import tarfile
 from pathlib import Path
 
 import pytest
@@ -90,9 +92,29 @@ class FakeResp:
         return False
 
 
-def _fake_get_factory(body: bytes, sha_text=None, bin_status=200, sha_status=200):
+TARBALL = f"{ASSET}.tar.gz"
+
+
+def _make_tarball(binary=b"ELF fake binary", member=fsu.BINARY_MEMBER, extra=None):
+    """Build a .tar.gz holding <member>=binary (+ optional (name, bytes) extra)."""
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w:gz") as tar:
+        info = tarfile.TarInfo(member)
+        info.size = len(binary)
+        info.mode = 0o755
+        tar.addfile(info, io.BytesIO(binary))
+        if extra is not None:
+            name, data = extra
+            ei = tarfile.TarInfo(name)
+            ei.size = len(data)
+            tar.addfile(ei, io.BytesIO(data))
+    return buf.getvalue()
+
+
+def _fake_get_factory(body: bytes = None, sha_text=None, bin_status=200, sha_status=200):
+    body = _make_tarball() if body is None else body
     sha = sha_text if sha_text is not None else \
-        f"{hashlib.sha256(body).hexdigest()}  {ASSET}\n"
+        f"{hashlib.sha256(body).hexdigest()}  {TARBALL}\n"
 
     def get(url, **kw):
         if url.endswith(".sha256"):
@@ -102,31 +124,59 @@ def _fake_get_factory(body: bytes, sha_text=None, bin_status=200, sha_status=200
 
 
 def test_download_asset_ok(tmp_path):
-    body = b"ELF fake binary"
+    binary = b"ELF fake binary"
+    body = _make_tarball(binary)
     staged, hexd = fsu.download_asset("https://x", ASSET, tmp_path,
                                       get=_fake_get_factory(body))
-    assert staged.read_bytes() == body
+    assert staged.name == fsu.BINARY_MEMBER
+    assert staged.read_bytes() == binary
     assert hexd == hashlib.sha256(body).hexdigest()
     assert os.stat(staged).st_mode & 0o111
+    assert not (tmp_path / TARBALL).exists()   # tarball cleaned up after extract
 
 
 def test_download_asset_sha_mismatch(tmp_path):
-    bad = f"{'b' * 64}  {ASSET}\n"
+    bad = f"{'b' * 64}  {TARBALL}\n"
     with pytest.raises(fsu.UpdateError, match="sha256 mismatch"):
         fsu.download_asset("https://x", ASSET, tmp_path,
-                           get=_fake_get_factory(b"data", sha_text=bad))
+                           get=_fake_get_factory(sha_text=bad))
 
 
 def test_download_asset_http_error(tmp_path):
     with pytest.raises(fsu.UpdateError, match="download failed"):
         fsu.download_asset("https://x", ASSET, tmp_path,
-                           get=_fake_get_factory(b"data", bin_status=404))
+                           get=_fake_get_factory(bin_status=404))
 
 
 def test_download_asset_sha_http_error(tmp_path):
     with pytest.raises(fsu.UpdateError, match="checksum download failed"):
         fsu.download_asset("https://x", ASSET, tmp_path,
-                           get=_fake_get_factory(b"data", sha_status=404))
+                           get=_fake_get_factory(sha_status=404))
+
+
+def test_download_asset_missing_binary_member(tmp_path):
+    body = _make_tarball(member="some-other-file")
+    with pytest.raises(fsu.UpdateError, match="no 'llm-systems-agent' member"):
+        fsu.download_asset("https://x", ASSET, tmp_path, get=_fake_get_factory(body))
+
+
+def test_download_asset_ignores_traversal_member(tmp_path):
+    # A crafted tarball carrying a path-traversal member must not escape
+    # dest_dir: extraction only pulls the fixed BINARY_MEMBER by name.
+    binary = b"ELF fake binary"
+    body = _make_tarball(binary, extra=("../evil", b"pwned"))
+    staged, _ = fsu.download_asset("https://x", ASSET, tmp_path, get=_fake_get_factory(body))
+    assert staged == tmp_path / fsu.BINARY_MEMBER
+    assert staged.read_bytes() == binary
+    assert not (tmp_path.parent / "evil").exists()
+
+
+def test_download_asset_corrupt_tarball(tmp_path):
+    # A sha-matching but non-gzip body must fail as a clean UpdateError, not a
+    # raw TarError/OSError (the caller only handles UpdateError).
+    body = b"not a gzip tarball"
+    with pytest.raises(fsu.UpdateError, match="extract failed"):
+        fsu.download_asset("https://x", ASSET, tmp_path, get=_fake_get_factory(body))
 
 
 # ---- staged_version ---------------------------------------------------------

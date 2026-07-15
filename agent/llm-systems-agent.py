@@ -64,7 +64,7 @@ except ImportError:
             os.chmod(tmp, mode)
         tmp.replace(p)
 
-VERSION = "v2026.07.15-3"
+VERSION = "v2026.07.15-4"
 
 
 def _restore_bundle_env() -> None:
@@ -2982,7 +2982,7 @@ def _frozen_self_update_response(asset: str) -> StreamingResponse:
 
             tmpdir = tempfile.mkdtemp(prefix=fsu.STAGE_PREFIX, dir=str(dest))
             try:
-                yield _sse_frame({"stage": "fetch", "msg": f"GET {base}/{asset}"})
+                yield _sse_frame({"stage": "fetch", "msg": f"GET {base}/{asset}.tar.gz"})
                 try:
                     staged, sha_hex = yield from _with_keepalive(
                         lambda: fsu.download_asset(base, asset, Path(tmpdir)))
