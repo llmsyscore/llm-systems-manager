@@ -43,7 +43,7 @@ _ORIG_ARGV=("$@")
 # substantive change to this file. The self-update trampoline only re-execs
 # when the upstream copy carries a STRICTLY GREATER number, so locally-
 # modified scripts (or unpushed commits) are never silently downgraded.
-_INSTALL_SH_REVISION=20260714001
+_INSTALL_SH_REVISION=20260715001
 
 # Fallback bootstrap helpers — used until we source lib-common.sh.
 # TTY-aware colors so OK/WARN/ERR markers stand out in interactive runs and
@@ -565,6 +565,15 @@ fi
 #   2. exec the staged update.sh, passing REPO_SRC so update.sh skips
 #      its own re-fetch step.
 if [[ "$UPDATE" == "1" ]]; then
+  # Containerized installs update via image pull; refuse before staging.
+  if [[ "$(uname -s)" == "Linux" && "${LLMSYS_ALLOW_CONTAINER:-0}" != "1" ]]; then
+    if [[ -f /.dockerenv || -f /run/.containerenv ]] \
+       || grep -qsE '(docker|containerd|kubepods)' /proc/1/cgroup \
+       || [[ ! -d /run/systemd/system ]]; then
+      _b_err "containerized (or systemd-less) host — update the Docker control plane with: docker compose pull && docker compose up -d (bump LSM_IMAGE_TAG if pinned; LLMSYS_ALLOW_CONTAINER=1 overrides)"
+      exit 2
+    fi
+  fi
   LLMSYS_CLONE_TMP="${LLMSYS_CLONE_TMP:-/tmp/llm-systems-manager-install}"
   _b_stage_source_tree "$LLMSYS_CLONE_TMP"
   UPDATE_HELPER="$LLMSYS_CLONE_TMP/tools/installer/update.sh"

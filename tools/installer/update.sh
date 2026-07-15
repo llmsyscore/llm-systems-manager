@@ -53,6 +53,7 @@ THIS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 detect_os
 require_linux
 detect_sudo
+guard_not_containerized
 
 LLMSYS_INSTALL_DIR="${LLMSYS_INSTALL_DIR:-/opt/llm-systems-manager}"
 AGENT_INSTALL_DIR="${AGENT_INSTALL_DIR:-/opt/llm-systems-agent}"

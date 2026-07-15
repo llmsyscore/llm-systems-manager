@@ -43,6 +43,7 @@ import unified_config_reader  # type: ignore
 import buffered_metric_client as bmc  # type: ignore
 import stream_pool  # type: ignore
 from _best_effort import best_effort  # type: ignore
+import frozen_self_update  # type: ignore
 # collectors.configure_all(CONFIG) + providers.configure_all(ctx) called from main().
 import collectors  # type: ignore
 import providers  # type: ignore
@@ -63,7 +64,7 @@ except ImportError:
             os.chmod(tmp, mode)
         tmp.replace(p)
 
-VERSION = "v2026.07.15-1"
+VERSION = "v2026.07.15-2"
 
 
 def _restore_bundle_env() -> None:
@@ -2912,6 +2913,135 @@ def _verify_tarball_signature(tarball_path: str, sig_b64: Optional[str],
     return True, "tarball signature verified against pinned CA"
 
 
+def _sse_frame(payload: "dict[str, Any]") -> bytes:
+    return f"data: {json.dumps(payload)}\n\n".encode()
+
+
+def _schedule_self_restart(delay_s: float = 1.5) -> None:
+    """Mark restart_pending and SIGTERM after delay_s so SSE can flush."""
+    with _runtime_lock:
+        _state["restart_pending"] = True
+
+    def _do_exit() -> None:
+        time.sleep(delay_s)
+        logger.warning("self-update complete; SIGTERM-ing for restart")
+        os.kill(os.getpid(), signal.SIGTERM)
+
+    threading.Thread(target=_do_exit, daemon=True).start()
+
+
+def _frozen_self_update_response(asset: str) -> StreamingResponse:
+    """Frozen-binary self-update: download release asset, verify, swap, restart."""
+    fsu = frozen_self_update
+    version_before = VERSION
+
+    with _runtime_lock:
+        if _state.get("self_update_running"):
+            raise HTTPException(status_code=409,
+                                detail="a self-update is already in progress")
+        _state["self_update_running"] = True
+
+    def _fail(msg: str) -> bytes:
+        logger.warning("frozen self-update failed: %s", msg)
+        return _sse_frame({"stage": "done", "ok": False,
+                           "version_before": version_before, "msg": msg})
+
+    def _with_keepalive(fn):
+        """Run fn in a worker thread, yielding a keepalive frame every 10s
+        so the manager's SSE proxy read-timeout doesn't reap the stream."""
+        box: "dict[str, Any]" = {}
+
+        def _worker() -> None:
+            try:
+                box["value"] = fn()
+            except BaseException as e:
+                box["error"] = e
+
+        t = threading.Thread(target=_worker, daemon=True)
+        t.start()
+        while True:
+            t.join(timeout=10)
+            if not t.is_alive():
+                break
+            yield _sse_frame({"keepalive": True})
+        if "error" in box:
+            raise box["error"]
+        return box.get("value")
+
+    def _gen() -> Iterator[bytes]:
+        import tempfile
+
+        try:
+            live = Path(sys.executable).resolve()
+            base = fsu.release_base()
+            try:
+                dest = fsu.ensure_writable(live)
+            except fsu.UpdateError as e:
+                yield _fail(str(e))
+                return
+
+            tmpdir = tempfile.mkdtemp(prefix=fsu.STAGE_PREFIX, dir=str(dest))
+            try:
+                yield _sse_frame({"stage": "fetch", "msg": f"GET {base}/{asset}"})
+                try:
+                    staged, sha_hex = yield from _with_keepalive(
+                        lambda: fsu.download_asset(base, asset, Path(tmpdir)))
+                except fsu.UpdateError as e:
+                    yield _fail(f"{e} — the old binary is untouched")
+                    return
+                yield _sse_frame({"line": f"sha256 verified: {sha_hex}"})
+
+                yield _sse_frame({"stage": "verify",
+                                  "msg": "running staged binary --version"})
+                try:
+                    version_to = yield from _with_keepalive(
+                        lambda: fsu.staged_version(staged))
+                except fsu.UpdateError as e:
+                    yield _fail(f"{e} — the old binary is untouched")
+                    return
+                yield _sse_frame({"line": f"version_before: {version_before}"})
+                yield _sse_frame({"line": f"version_to:     {version_to}"})
+
+                if version_to == version_before:
+                    yield _sse_frame({"stage": "done", "ok": True, "rc": 0,
+                                      "version_before": version_before,
+                                      "version_to": version_to,
+                                      "msg": f"already up to date ({version_before} "
+                                             "is the latest release asset); no restart"})
+                    return
+
+                yield _sse_frame({"stage": "deploy", "msg": f"swapping {live}"})
+                try:
+                    backup = fsu.swap_binary(staged, live, dest=dest)
+                except fsu.UpdateError as e:
+                    yield _fail(str(e))
+                    return
+                yield _sse_frame({"line": f"previous binary backed up to {backup}"})
+            finally:
+                shutil.rmtree(tmpdir, ignore_errors=True)
+
+            _schedule_self_restart()
+            yield _sse_frame({"stage": "restart",
+                              "msg": "scheduling SIGTERM in ~1.5s (the service "
+                                     "manager relaunches the new binary)"})
+            yield _sse_frame({"stage": "done", "ok": True, "rc": 0,
+                              "version_before": version_before,
+                              "version_to": version_to,
+                              "restart_eta_s": 1.5,
+                              "msg": f"binary swapped ({version_before} → {version_to}); "
+                                     "restart pending — the running version is confirmed "
+                                     "by the next heartbeat"})
+        finally:
+            with _runtime_lock:
+                _state.pop("self_update_running", None)
+
+    return StreamingResponse(
+        _gen(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
 @app.post("/agent/self-update")
 def agent_self_update(authorization: Optional[str] = Header(default=None)) -> StreamingResponse:
     """Fetch agent tarball, run install.sh --update, stream SSE, SIGTERM for restart.
@@ -2920,13 +3050,17 @@ def agent_self_update(authorization: Optional[str] = Header(default=None)) -> St
     """
     _check_bearer(authorization)
 
-    # Frozen (PyInstaller) installs have no venv/script layout to update in place.
+    # Frozen (PyInstaller) installs swap the release binary for this platform.
     if getattr(sys, "frozen", False):
-        raise HTTPException(
-            status_code=501,
-            detail="agent is a frozen binary — replace the binary from the "
-                   "GitHub Release assets instead of self-updating",
-        )
+        asset = frozen_self_update.resolve_platform_asset()
+        if not asset:
+            raise HTTPException(
+                status_code=501,
+                detail="agent is a frozen binary and no release asset matches "
+                       f"{platform.system()}/{platform.machine()} — replace the "
+                       "binary manually from the GitHub Release assets",
+            )
+        return _frozen_self_update_response(asset)
 
     if not CONFIG.LLAMA_ENABLED and not CONFIG.LMS_ENABLED and CONFIG.AGENT_ROLE == "system_only":
         logger.info("self-update requested on system-only agent")
@@ -2946,8 +3080,7 @@ def agent_self_update(authorization: Optional[str] = Header(default=None)) -> St
 
     version_before = VERSION
 
-    def _sse_event(payload: dict[str, Any]) -> bytes:
-        return f"data: {json.dumps(payload)}\n\n".encode()
+    _sse_event = _sse_frame
 
     def _gen() -> Iterator[bytes]:
         import tarfile, shutil
@@ -3086,16 +3219,7 @@ def agent_self_update(authorization: Optional[str] = Header(default=None)) -> St
             })
             return
 
-        # Schedule self-restart in 1.5s so the SSE response can flush.
-        with _runtime_lock:
-            _state["restart_pending"] = True
-
-        def _do_exit() -> None:
-            time.sleep(1.5)
-            logger.warning("self-update complete; SIGTERM-ing for restart")
-            os.kill(os.getpid(), signal.SIGTERM)
-
-        threading.Thread(target=_do_exit, daemon=True).start()
+        _schedule_self_restart()
 
         yield _sse_event({
             "stage": "restart",
@@ -3589,4 +3713,9 @@ def main() -> None:
 
 
 if __name__ == "__main__":
+    # Prints the version and exits without loading config or binding ports;
+    # frozen self-update smoke-tests staged binaries with this flag.
+    if "--version" in sys.argv[1:]:
+        print(VERSION)
+        raise SystemExit(0)
     main()
