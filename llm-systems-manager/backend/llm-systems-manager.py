@@ -154,7 +154,7 @@ def _local_hostname() -> str:
 # banner reads it. Bump suffix (-1, -2, …) for same-day iterations; roll
 # the date for a new day's first change.
 # ---------------------------------------------------------------------------
-__version__ = "v2026.07.15-1"
+__version__ = "v2026.07.15-2"
 
 # Wall-clock at first import (Cheroot main process); the shutdown banner
 # reads it for the uptime line.
@@ -3264,6 +3264,7 @@ agent_registry.set_deps(
     ctx,
     request_host_no_port=_request_host_no_port,
     rewrite_loopback_host=_rewrite_loopback_host,
+    manager_public_hosts=lambda: _manager_public_hosts(),
     set_llama_awake=set_llama_awake,
     get_interval=get_interval,
     latest_agent_version=_latest_agent_version,
@@ -4597,6 +4598,16 @@ def _ensure_ae_server_cert() -> None:
                             missing.append(f"IP:{ae_host}")
                         elif not is_ip and ae_host not in dns_names:
                             missing.append(f"DNS:{ae_host}")
+                    # Operator public hosts (agents dial the AE here in Docker/NAT).
+                    for ph in _manager_public_hosts():
+                        try:
+                            import ipaddress as _ip
+                            _ip.ip_address(ph)
+                            if _canon_host(ph) not in ip_names:
+                                missing.append(f"IP:{ph}")
+                        except ValueError:
+                            if ph not in dns_names:
+                                missing.append(f"DNS:{ph}")
                     if missing:
                         log.info(
                             "  Alarm-engine TLS cert: SAN missing %s — reissuing "
@@ -4638,6 +4649,17 @@ def _ensure_ae_server_cert() -> None:
         except ValueError:
             if ae_host not in dns_sans:
                 dns_sans.append(ae_host)
+    # Operator public hosts (agents dial the AE here in Docker/NAT); IPs
+    # canonicalized so the reissue audit's set membership matches.
+    for ph in _manager_public_hosts():
+        try:
+            import ipaddress as _ip
+            c = str(_ip.ip_address(ph))
+            if c not in ip_sans:
+                ip_sans.append(c)
+        except ValueError:
+            if ph not in dns_sans:
+                dns_sans.append(ph)
 
     ca_cert, ca_key, _pki = _pki_ensure_ca()
     cert_pem, key_pem = _pki.sign_agent_cert(

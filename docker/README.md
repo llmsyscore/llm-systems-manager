@@ -58,16 +58,17 @@ InfluxDB are reached *through* the manager, so browse to the manager, not to
 ## Native agents against a containerized manager
 
 Agents run natively on each host and dial the manager at this docker host's LAN
-address. Point each agent's `MANAGER_URL` at `http://<docker-host-LAN-IP>:5000`
-— the agent derives its alarm-engine URL from that (port 8081) automatically,
-so there is nothing to configure on the manager side for metric push.
+address. Point each agent's `MANAGER_URL` at `http://<docker-host-LAN-IP>:5000`,
+and **set `LSM_MANAGER_PUBLIC_HOST` to that same host** — this one setting makes
+native agents work end-to-end:
 
-One manager-side setting helps:
-
-- `LSM_MANAGER_PUBLIC_HOST` — the address(es) agents reach the manager at,
-  added to the manager's TLS cert SAN so the agent's automatic http→https
-  control-channel upgrade validates. Without it the manager cert only covers
-  the container's internal IP and the upgrade silently stays on http.
+- adds the host to the **manager** TLS cert SAN, so the agent's automatic
+  http→https control-channel upgrade validates;
+- adds it to the **alarm-engine** cert SAN, and makes the manager advertise the
+  AE to agents at `https://<that-host>:8081` instead of the compose-internal
+  `alarm-engine` name — so agents can actually reach the AE and push metrics
+  over TLS. Without it the manager advertises an unresolvable host and agents
+  fall back to plain HTTP against the HTTPS-only AE (metrics never flush).
 
 Do **not** set `LSM_ALARM_ENGINE_URL` to the host LAN IP — that is the URL the
 manager itself uses for its own AE calls and must stay at the compose service

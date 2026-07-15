@@ -109,6 +109,13 @@ jobs:
           grep -q "192.168.99.99" /tmp/san.txt \
             || { echo "public host missing from manager cert SAN" >&2; exit 1; }
 
+      - name: Alarm-engine TLS cert covers LSM_MANAGER_PUBLIC_HOST (#400)
+        run: |
+          docker compose cp alarm-engine:data/ae-tls.crt /tmp/aetls.crt
+          openssl x509 -in /tmp/aetls.crt -noout -ext subjectAltName | tee /tmp/aesan.txt
+          grep -q "192.168.99.99" /tmp/aesan.txt \
+            || { echo "public host missing from alarm-engine cert SAN" >&2; exit 1; }
+
       - name: Dump logs on failure
         if: failure()
         run: docker compose logs --no-color
