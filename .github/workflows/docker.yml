@@ -82,3 +82,23 @@ jobs:
       - name: Tear down
         if: always()
         run: docker compose down -v
+
+  # The compose smoke is amd64-only; this catches arm64-only failures
+  # (e.g. missing wheels forcing source builds) before a release tag does.
+  arm64-build:
+    name: arm64 image build (no push)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-qemu-action@v3
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build both targets for linux/arm64
+        run: |
+          for target in manager alarm-engine; do
+            docker buildx build --file docker/Dockerfile --target "$target" \
+              --platform linux/arm64 .
+          done

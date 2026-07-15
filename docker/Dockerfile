@@ -15,9 +15,9 @@ ENV PYTHONUNBUFFERED=1 \
 FROM base AS manager
 # gcc: some pinned deps (e.g. psutil) ship no cp314 wheel and build from source.
 COPY llm-systems-manager/backend/requirements.txt /tmp/requirements.txt
-RUN apt-get update && apt-get install -y --no-install-recommends gcc \
+RUN apt-get update && apt-get install -y --no-install-recommends gcc libc6-dev \
     && pip install --no-cache-dir -r /tmp/requirements.txt \
-    && apt-get purge -y gcc && apt-get autoremove -y && rm -rf /var/lib/apt/lists/*
+    && apt-get purge -y gcc libc6-dev && apt-get autoremove -y && rm -rf /var/lib/apt/lists/*
 COPY . .
 # unified_config.py is gitignored; images build it from the sanitized example.
 RUN cp config/unified_config.py.example config/unified_config.py \
@@ -36,9 +36,9 @@ CMD ["python3", "backend/llm-systems-manager.py"]
 
 FROM base AS alarm-engine
 COPY llm-systems-alarm-engine/requirements.txt /tmp/requirements.txt
-RUN apt-get update && apt-get install -y --no-install-recommends gcc \
+RUN apt-get update && apt-get install -y --no-install-recommends gcc libc6-dev \
     && pip install --no-cache-dir -r /tmp/requirements.txt \
-    && apt-get purge -y gcc && apt-get autoremove -y && rm -rf /var/lib/apt/lists/*
+    && apt-get purge -y gcc libc6-dev && apt-get autoremove -y && rm -rf /var/lib/apt/lists/*
 COPY . .
 RUN cp config/unified_config.py.example config/unified_config.py \
     && mkdir -p data llm-systems-alarm-engine/data /var/log/llm-systems-manager \
