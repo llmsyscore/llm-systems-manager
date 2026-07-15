@@ -63,12 +63,15 @@ except ImportError:
             os.chmod(tmp, mode)
         tmp.replace(p)
 
-VERSION = "v2026.07.13-1"
+VERSION = "v2026.07.14-1"
 
 
 def _detect_install_dir() -> str:
-    """Resolved parent dir of this script — runtime source of truth for paths."""
+    """Resolved parent dir of this script (or of the frozen binary when bundled
+    by PyInstaller) — runtime source of truth for paths."""
     try:
+        if getattr(sys, "frozen", False):
+            return str(Path(sys.executable).resolve().parent)
         return str(Path(__file__).resolve().parent)
     except Exception:
         return "/opt/llm-systems-agent"
@@ -2901,6 +2904,14 @@ def agent_self_update(authorization: Optional[str] = Header(default=None)) -> St
     SSE frames: {"stage": "fetch|deploy|restart|done", ...} | {"line": "..."}
     """
     _check_bearer(authorization)
+
+    # Frozen (PyInstaller) installs have no venv/script layout to update in place.
+    if getattr(sys, "frozen", False):
+        raise HTTPException(
+            status_code=501,
+            detail="agent is a frozen binary — replace the binary from the "
+                   "GitHub Release assets instead of self-updating",
+        )
 
     if not CONFIG.LLAMA_ENABLED and not CONFIG.LMS_ENABLED and CONFIG.AGENT_ROLE == "system_only":
         logger.info("self-update requested on system-only agent")

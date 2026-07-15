@@ -135,6 +135,22 @@ bash <(curl -fsSL https://raw.githubusercontent.com/llmsyscore/llm-systems-manag
 
 The agent registers itself with the manager on first launch. From **Admin → Agents**, click **Approve** — the manager signs a TLS cert for that agent and starts polling it.
 
+### Agent binary (no Python required)
+
+Every [release](https://github.com/llmsyscore/llm-systems-manager/releases) also ships the agent as a self-contained single-file binary (`llm-systems-agent-linux-x86_64`, `-linux-arm64`, `-macos-arm64`) with a `.sha256` checksum — no Python or venv needed on the host. To install on Linux:
+
+```bash
+sudo mkdir -p /opt/llm-systems-agent && cd /opt/llm-systems-agent
+sudo curl -fsSLO https://github.com/llmsyscore/llm-systems-manager/releases/latest/download/llm-systems-agent-linux-x86_64
+sudo curl -fsSLO https://github.com/llmsyscore/llm-systems-manager/releases/latest/download/llm-systems-agent-linux-x86_64.sha256
+sha256sum -c llm-systems-agent-linux-x86_64.sha256   # macOS: shasum -a 256 -c <file>.sha256
+sudo mv llm-systems-agent-linux-x86_64 llm-systems-agent && sudo chmod +x llm-systems-agent
+printf 'MANAGER_URL: "http://<manager-host>:5000"\n' | sudo tee agent_config.yaml
+sudo chown -R <run-as-user>: /opt/llm-systems-agent
+```
+
+Then install the systemd unit from [agent/install/llm-systems-agent-binary.service.tmpl](agent/install/llm-systems-agent-binary.service.tmpl) (substitute `${AGENT_USER}`, `${AGENT_GROUP}`, `${AGENT_INSTALL_DIR}`) into `/etc/systemd/system/llm-systems-agent.service` and `systemctl enable --now llm-systems-agent`. Provider flags (`LLAMA_ENABLED`, `LMS_ENABLED`, sudo wrappers for service control, udev rules for liquidctl) are what the full installer automates — add them to `agent_config.yaml` as needed. On macOS, clear the quarantine attribute first (`xattr -d com.apple.quarantine llm-systems-agent`) and use [agent/install/com.llm-systems-agent-binary.plist.tmpl](agent/install/com.llm-systems-agent-binary.plist.tmpl) (substitute `${AGENT_USER}`, `${AGENT_USER_HOME}`, `${AGENT_INSTALL_DIR}`) as the launchd unit. Linux binaries need glibc 2.35+ (Ubuntu 22.04 / Debian 12 or newer).
+
 Approve a second agent that runs the same provider (e.g. a second `llama.cpp` box) and a host picker automatically appears on the matching dashboard sub-tabs — every approved agent is independently viewable and controllable. One agent is the *default* (what the dashboard shows when you haven't picked); set it from **Admin**.
 
 ## Multiple Hosts

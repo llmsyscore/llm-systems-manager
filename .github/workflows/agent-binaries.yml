@@ -1,0 +1,114 @@
+name: Agent binaries
+
+# PyInstaller single-file agent builds (#386): PR gate on agent changes, and on
+# v* tags the binaries + checksums are uploaded to the GitHub Release.
+
+on:
+  pull_request:
+    paths:
+      - "agent/**"
+      - "!agent/tests/**"
+      - ".github/workflows/agent-binaries.yml"
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: build (${{ matrix.asset_suffix }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # ubuntu-22.04 runners keep the glibc baseline old (>= 2.35 hosts).
+          - runner: ubuntu-22.04
+            asset_suffix: linux-x86_64
+            smoke_image: ubuntu:22.04
+          - runner: ubuntu-22.04-arm
+            asset_suffix: linux-arm64
+            smoke_image: ubuntu:22.04
+          - runner: macos-latest
+            asset_suffix: macos-arm64
+            smoke_image: ""
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+          cache-dependency-path: agent/install/requirements*.txt
+
+      - name: Build binary
+        run: |
+          python -m pip install --upgrade pip
+          pip install pyinstaller \
+            -r agent/install/requirements.txt \
+            -r agent/install/requirements-monitor.txt
+          pyinstaller --clean --noconfirm agent/llm-systems-agent.spec
+
+      # Prove self-containedness: boot on a host with NO python and hit /health.
+      - name: Smoke test (clean container, no Python)
+        if: matrix.smoke_image != ''
+        run: |
+          docker run -d --name agent-smoke -p 18082:8082 \
+            -v "$PWD/dist:/w" -w /w "${{ matrix.smoke_image }}" ./llm-systems-agent
+          for i in $(seq 1 30); do
+            curl -fsS http://localhost:18082/health && ok=1 && break
+            sleep 2
+          done
+          [ "${ok:-}" = "1" ] || { docker logs agent-smoke; exit 1; }
+          curl -fsS http://localhost:18082/health | grep -q '"status":"ok"'
+          curl -fsS http://localhost:18082/identify | grep -q '"capabilities"'
+          docker rm -f agent-smoke
+
+      - name: Smoke test (macOS, run directly)
+        if: matrix.smoke_image == ''
+        run: |
+          ./dist/llm-systems-agent > agent-smoke.log 2>&1 &
+          AGENT_PID=$!
+          for i in $(seq 1 30); do
+            curl -fsS http://localhost:8082/health && ok=1 && break
+            sleep 2
+          done
+          [ "${ok:-}" = "1" ] || { cat agent-smoke.log; exit 1; }
+          curl -fsS http://localhost:8082/health | grep -q '"status":"ok"'
+          kill "$AGENT_PID"
+
+      - name: Package + checksum
+        run: |
+          ASSET="llm-systems-agent-${{ matrix.asset_suffix }}"
+          mv dist/llm-systems-agent "$ASSET"
+          shasum -a 256 "$ASSET" > "$ASSET.sha256" 2>/dev/null \
+            || sha256sum "$ASSET" > "$ASSET.sha256"
+
+      # PR-gate inspection copy only; tag builds ship via the release assets.
+      - uses: actions/upload-artifact@v4
+        if: ${{ !startsWith(github.ref, 'refs/tags/') }}
+        with:
+          name: llm-systems-agent-${{ matrix.asset_suffix }}
+          path: |
+            llm-systems-agent-${{ matrix.asset_suffix }}
+            llm-systems-agent-${{ matrix.asset_suffix }}.sha256
+          if-no-files-found: error
+
+      # The Release workflow creates the release on the same tag push; wait for
+      # it (GITHUB_TOKEN-created releases emit no release event to chain from).
+      - name: Upload to release
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          for i in $(seq 1 40); do
+            gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1 && ok=1 && break
+            sleep 15
+          done
+          [ "${ok:-}" = "1" ] || { echo "release $GITHUB_REF_NAME never appeared" >&2; exit 1; }
+          gh release upload "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --clobber \
+            "llm-systems-agent-${{ matrix.asset_suffix }}" \
+            "llm-systems-agent-${{ matrix.asset_suffix }}.sha256"
