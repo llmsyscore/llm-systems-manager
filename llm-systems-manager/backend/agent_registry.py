@@ -136,6 +136,8 @@ _deps = SimpleNamespace(
     alarm_engine_url=lambda: "",  # getter; URL may auto-upgrade after registration
     request_host_no_port=lambda: "",
     rewrite_loopback_host=lambda url, host: url,
+    manager_public_hosts=lambda: [],  # operator public hosts for cert/AE-URL
+
     set_llama_awake=lambda _b: None,
     get_interval=lambda: 0,
     manager_secret=lambda: b"",
@@ -1171,6 +1173,20 @@ def _agent_tarball():
     })
 
 
+def _swap_url_host(url: str, host: str) -> str:
+    """Replace url's host, preserving scheme+port; IPv6 hosts get bracketed.
+    A malformed url/port returns the url unchanged (never raises)."""
+    from urllib.parse import urlsplit, urlunsplit
+    try:
+        p = urlsplit(url)
+        port = p.port or 8081
+    except ValueError:
+        return url
+    if ":" in host and not host.startswith("["):
+        host = f"[{host}]"
+    return urlunsplit((p.scheme or "http", f"{host}:{port}", "", "", ""))
+
+
 def _agents_heartbeat():
     """Bearer-auth endpoint: agent posts liveness + state."""
     tok = bearer_from_request()
@@ -1240,6 +1256,13 @@ def _agents_heartbeat():
         _deps.alarm_engine_url() or "",
         _deps.request_host_no_port(),
     )
+    # Docker/NAT: agents can't resolve a compose-internal AE host. If the
+    # operator declared public host(s), advertise the AE at one (same port),
+    # preferring the host this agent used to reach the manager (multi-homed).
+    pubs = _deps.manager_public_hosts()
+    if pubs and ae_url_for_agent:
+        req = _deps.request_host_no_port()
+        ae_url_for_agent = _swap_url_host(ae_url_for_agent, req if req in pubs else pubs[0])
     # When the alarm engine serves TLS, advertise it as https:// so the agent
     # upgrades its metric push (it verifies the AE cert against the same CA).
     if bool(_deps.settings.alarm_engine.tls_enabled) and ae_url_for_agent.startswith("http://"):
@@ -1687,6 +1710,7 @@ def _agents_global():
 def set_deps(ctx, *,
              request_host_no_port: Callable[[], str],
              rewrite_loopback_host: Callable[[str, str], str],
+             manager_public_hosts: Callable[[], list],
              set_llama_awake: Callable[[bool], None],
              get_interval: Callable[[], int],
              latest_agent_version: Callable[[], Any],
@@ -1723,6 +1747,7 @@ def set_deps(ctx, *,
     _deps.manager_secret = ctx.manager_secret
     _deps.request_host_no_port = request_host_no_port
     _deps.rewrite_loopback_host = rewrite_loopback_host
+    _deps.manager_public_hosts = manager_public_hosts
     _deps.set_llama_awake = set_llama_awake
     _deps.get_interval = get_interval
     _deps.latest_agent_version = latest_agent_version
