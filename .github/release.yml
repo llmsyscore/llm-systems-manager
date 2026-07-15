@@ -1,0 +1,26 @@
+# Buckets PRs into sections when `gh release create --generate-notes` (or the
+# GitHub UI "Generate release notes" button) builds a release's notes.
+# Categorized by PR label. PRs in this repo don't carry labels themselves
+# (only the issue they close does, per CLAUDE.md's work-intake workflow) —
+# .github/workflows/label-pr-from-linked-issue.yml copies the linked issue's
+# release-relevant label onto the PR so this has something to match on.
+changelog:
+  exclude:
+    labels:
+      - duplicate
+      - invalid
+      - wontfix
+      - question
+  categories:
+    - title: "🐛 Bug Fixes"
+      labels:
+        - bug
+    - title: "✨ Enhancements"
+      labels:
+        - enhancement
+    - title: "📝 Documentation"
+      labels:
+        - documentation
+    - title: "Other Changes"
+      labels:
+        - "*"
