@@ -556,7 +556,8 @@ acquire_source_tree() {
   local dest="${1:-$LLMSYS_CLONE_TMP}" tag="${LLMSYS_RELEASE_TAG:-}"
   case "${LLMSYS_SOURCE:-release}" in
     release|git) ;;
-    *) die "LLMSYS_SOURCE must be 'release' or 'git' (got: '${LLMSYS_SOURCE:-}')" ;;
+    local) die "LLMSYS_SOURCE=local needs a pre-staged tree — run install.sh --source local (it passes REPO_SRC), or set REPO_SRC to the extracted tree yourself" ;;
+    *) die "LLMSYS_SOURCE must be 'release', 'git', or 'local' (got: '${LLMSYS_SOURCE:-}')" ;;
   esac
   if [[ "${LLMSYS_SOURCE:-release}" == "git" ]]; then
     require_git
