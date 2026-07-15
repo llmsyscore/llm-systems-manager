@@ -63,7 +63,22 @@ except ImportError:
             os.chmod(tmp, mode)
         tmp.replace(p)
 
-VERSION = "v2026.07.14-1"
+VERSION = "v2026.07.15-1"
+
+
+def _restore_bundle_env() -> None:
+    """Under PyInstaller, restore LD_LIBRARY_PATH/DYLD_LIBRARY_PATH from the
+    *_ORIG the bootloader saved so shelled-out SYSTEM binaries (openssl,
+    nvidia-smi, sensors, …) don't load the bundle's older libs. The agent
+    ships no bundled CLI tools, so a process-wide restore is safe."""
+    if not getattr(sys, "frozen", False):
+        return
+    for var in ("LD_LIBRARY_PATH", "DYLD_LIBRARY_PATH"):
+        orig = os.environ.get(var + "_ORIG")
+        if orig is not None:
+            os.environ[var] = orig
+        else:
+            os.environ.pop(var, None)
 
 
 def _detect_install_dir() -> str:
@@ -3487,6 +3502,7 @@ def _init_metric_client() -> Optional[bmc.BufferedMetricClient]:
 
 def main() -> None:
     global CONFIG, _metric_client
+    _restore_bundle_env()
     CONFIG = AgentConfig.load()
     collectors.configure_all(CONFIG)
     providers.configure_all(AgentContext(
