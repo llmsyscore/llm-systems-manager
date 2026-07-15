@@ -486,23 +486,37 @@ def agent_host_keys(agent: dict) -> "set[str]":
     return {k for k in keys if k}
 
 
-def colocated_infra(agent: dict) -> "list[dict]":
+def designated_host_agent_id() -> "str | None":
+    """agent_id the operator pinned as the manager's host agent (Admin tab),
+    or None. Lets containerized installs — where the manager's own hostname is
+    a container id and the host agent arrives via the bridge gateway, so
+    hostname/loopback matching never fires — still resolve the co-located
+    agent for the manager-host metrics + version pills."""
+    return ((load_agents().get("global") or {}).get("host_agent_id")) or None
+
+
+def colocated_infra(agent: dict, host_agent_id: "str | None" = None) -> "list[dict]":
     """Return [{role, version}, ...] for core services running on the
     same host as this agent. Empty list when nothing's colocated.
 
-    A service is "colocated" when its configured URL resolves to the
-    same host the agent registered from. Special case: this manager
-    process is colocated with every agent whose host keys overlap with
-    this host's gethostname()/loopback set."""
+    A service is "colocated" when its configured URL resolves to the same
+    host the agent registered from, OR the agent is the operator-designated
+    manager host agent (host_agent_id) — the latter covers containerized
+    installs where the control-plane services sit behind compose service
+    names the agent's host keys can't match."""
     from urllib.parse import urlparse
     out: "list[dict]" = []
     keys = agent_host_keys(agent)
-    if not keys:
+    if host_agent_id is None:
+        host_agent_id = designated_host_agent_id()
+    designated = bool(agent.get("agent_id") and agent.get("agent_id") == host_agent_id)
+    if not keys and not designated:
         return out
 
     local_keys = set(_deps.loopback_hosts) | {
         _deps.hostname.lower(), _deps.hostname.split(".", 1)[0].lower(),
     }
+    is_host = bool(keys & local_keys) or designated
 
     def _matches(svc_host: str) -> bool:
         svc = (svc_host or "").lower()
@@ -513,22 +527,24 @@ def colocated_infra(agent: dict) -> "list[dict]":
         # Service configured as localhost → it lives on the manager
         # host; only matches agents that are also on the manager host.
         if svc in _deps.loopback_hosts:
-            return bool(keys & local_keys)
+            return is_host
         return False
 
     # Manager itself — by definition runs on this host.
-    if keys & local_keys:
+    if is_host:
         out.append({"role": "manager", "version": _deps.version})
 
     ae_url = _deps.alarm_engine_url() or ""
     if ae_url:
         ae_host = urlparse(ae_url).hostname or ""
-        if _matches(ae_host):
+        # A designated host agent stands in for the whole control plane, so
+        # its sibling AE/influx (compose service names) count as colocated.
+        if _matches(ae_host) or designated:
             out.append({"role": "alarm_engine",
                         "version": _deps.infra_version_get("ae")})
 
     ix_host = _deps.settings.influxdb.host or ""
-    if _matches(ix_host):
+    if ix_host and (_matches(ix_host) or designated):
         out.append({"role": "influxdb",
                     "version": _deps.infra_version_get("influxdb")})
 
@@ -562,10 +578,18 @@ def self_agent_id() -> "str | None":
     """agent_id of the approved agent running on the manager's own host, so
     the frontend can scope the manager-host cards by agent id (not hostname).
     None when no such agent is registered (caller degrades to no host filter)."""
+    data = load_agents()
+    agents = data.get("agents") or {}
+    # Operator-designated host agent wins (covers containerized installs).
+    designated = (data.get("global") or {}).get("host_agent_id")
+    if designated:
+        a = agents.get(designated)
+        if a and a.get("status") == "approved":
+            return designated
     local_keys = set(_deps.loopback_hosts) | {
         _deps.hostname.lower(), _deps.hostname.split(".", 1)[0].lower(),
     }
-    for aid, a in ((load_agents().get("agents") or {}).items()):
+    for aid, a in agents.items():
         if a.get("status") != "approved":
             continue
         if agent_host_keys(a) & local_keys:
@@ -1316,6 +1340,7 @@ def _agents_list():
     latest = _deps.latest_agent_version()
     _deps.refresh_infra_versions()
     # Redact tokens — admin UI doesn't need them after approval flow.
+    hid = (data.get("global") or {}).get("host_agent_id") or None
     safe = []
     for agent in data.get("agents", {}).values():
         a = dict(agent)
@@ -1326,7 +1351,8 @@ def _agents_list():
         # reported version differs from the manager's local copy.
         cur = a.get("version")
         a["update_available"] = bool(latest and cur and cur != latest)
-        a["colocated_infra"] = colocated_infra(agent)
+        a["is_host_agent"] = bool(a.get("agent_id") and a.get("agent_id") == hid)
+        a["colocated_infra"] = colocated_infra(agent, hid)
         safe.append(a)
     return jsonify({
         "agents": safe,
@@ -1459,6 +1485,34 @@ def _agents_set_primary(agent_id: str):
         "ok": True,
         "primary": data.get("global", {}).get(f"primary_{kind}_id") or None,
     })
+
+
+def _agents_set_host(agent_id: str):
+    """Designate (or clear) the manager's host agent — the approved agent on
+    the manager's own host. Body: {"set": true|false}. Persisted as
+    global.host_agent_id so self_agent_id()/colocated_infra() resolve the
+    manager-host metrics + version pills even under Docker."""
+    deny = _deps.require_admin()
+    if deny is not None:
+        return deny
+    set_flag = bool((flask_request.get_json(force=True) or {}).get("set", True))
+    with _agents_lock:
+        data = load_agents()
+        glob = data.setdefault("global", {})
+        if set_flag:
+            agent = data.get("agents", {}).get(agent_id)
+            if not agent:
+                return jsonify({"ok": False, "error": "unknown agent"}), 404
+            if agent.get("status") != "approved":
+                return jsonify({"ok": False, "error": "agent not approved"}), 400
+            glob["host_agent_id"] = agent_id
+        elif glob.get("host_agent_id") == agent_id:
+            glob.pop("host_agent_id", None)
+        save_agents(data)
+    log.info("host_agent_id %s by %s: agent=%s",
+             "set" if set_flag else "cleared", flask_request.remote_addr, agent_id)
+    return jsonify({"ok": True,
+                    "host_agent_id": (data.get("global") or {}).get("host_agent_id") or None})
 
 
 def _agents_push_llama_state(agent_id: str):
@@ -1800,6 +1854,8 @@ def register_routes(app) -> None:
                      view_func=_agents_delete, methods=["DELETE"])
     app.add_url_rule("/api/agents/<agent_id>/role-primary", endpoint="agents_set_primary",
                      view_func=_agents_set_primary, methods=["POST"])
+    app.add_url_rule("/api/agents/<agent_id>/host-role", endpoint="agents_set_host",
+                     view_func=_agents_set_host, methods=["POST"])
     app.add_url_rule("/api/agents/<agent_id>/llama-state", endpoint="agents_push_llama_state",
                      view_func=_agents_push_llama_state, methods=["POST"])
     # One pool route per pool-picker provider, bound via functools.partial.

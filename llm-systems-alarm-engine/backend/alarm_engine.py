@@ -67,7 +67,7 @@ from .storage.influxdb_client import InfluxDBClient
 # (-1, -2, …) for same-day iterations; roll the date for a new day's first
 # change.
 # ---------------------------------------------------------------------------
-__version__ = "v2026.07.15-1"
+__version__ = "v2026.07.15-2"
 from .storage import influx_monitor as _influx_monitor
 from .models.alarm_rule import (
     AlarmRuleCreate,
@@ -931,7 +931,8 @@ def _collect_sqlite_stats() -> dict:
 
 from . import _archive as _ae_archive
 from datetime import datetime, timedelta, timezone
-from fastapi import UploadFile, File, Form, Body, HTTPException
+from fastapi import UploadFile, File, Form, Body, HTTPException, Depends
+from .api.auth import require_management_token
 
 _AE_EXPORT_DBS = ["data/ae_notif_rules.db", "data/ae_alarms.db"]
 
@@ -1238,6 +1239,30 @@ async def ae_admin_export(body: dict = Body(default_factory=dict)):
             "X-Lsmenc-Encrypted": "1" if password else "0",
         },
     )
+
+
+def _schedule_ae_self_restart(delay: float = 0.8) -> None:
+    """Spawn a daemon that SIGTERMs this process after `delay`s so the HTTP
+    response flushes first; uvicorn then shuts down cleanly and the runtime
+    respawns it. Split out so tests can stub it (no real signal)."""
+    import signal as _signal
+    import threading as _threading
+
+    def _terminate():
+        time.sleep(delay)
+        os.kill(os.getpid(), _signal.SIGTERM)
+
+    _threading.Thread(target=_terminate, daemon=True).start()
+
+
+@app.post("/api/alarm/admin/self-restart")
+async def ae_self_restart(_auth: None = Depends(require_management_token)):
+    """Restart the alarm engine process (management-token guarded). For
+    containerized installs where the manager can't systemctl a sibling
+    container — the runtime respawns it on exit (compose restart: unless-stopped)."""
+    _schedule_ae_self_restart()
+    logger.warning("AE self-restart requested via management API")
+    return {"ok": True, "restarting": True}
 
 
 from typing import NamedTuple

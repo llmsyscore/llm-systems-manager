@@ -177,9 +177,10 @@ function _renderSystemHealth(d) {
       let val;
       if (s.ok) val = s.latency_ms != null ? (s.latency_ms + 'ms') : (s.state || 'connected');
       else val = s.error ? (s.error.slice(0, 36)) : ('HTTP ' + (s.status_code || '?'));
-      // AE restart only when it runs on this host (manager can only systemctl
-      // a local unit); a split AE is restarted on its own host.
-      const action = (s.name === 'alarm_engine' && d.ae_local)
+      // AE restart when it runs on this host (manager systemctls a local unit)
+      // or under a containerized control plane (manager calls the sibling AE
+      // container's self-restart API); a split bare-metal AE restarts on its host.
+      const action = (s.name === 'alarm_engine' && (d.ae_local || d.containerized))
         ? { svc: 'alarm_engine', label: 'Alarm Engine' } : undefined;
       rows.push({ lbl, val, ok: s.ok, action });
       // Render an extra row for the alarm engine's TLS state. dot is green when
@@ -746,9 +747,17 @@ function _adminCapsAndPrimary(a) {
                onchange="adminTogglePrimary('${aid}','${pn}',this.checked)"> primary ${pn}
       </label>`;
   }).join('');
+  // Designate the agent running on the manager's own host — populates the
+  // manager-host metrics + version pills (needed for Docker, where hostname
+  // matching can't identify the native host agent).
+  const hostToggle = `<label class="${approved ? '' : 'disabled'}" title="${approved ? (a.is_host_agent ? 'this agent runs on the manager host — uncheck to clear' : 'mark the agent running on the manager host (populates host metrics + version pills; required on Docker installs)') : 'agent must be approved'}">
+        <input type="checkbox" ${a.is_host_agent ? 'checked' : ''} ${approved ? '' : 'disabled'}
+               onchange="adminToggleHostAgent('${aid}',this.checked)"> manager host
+      </label>`;
   const primary = `
     <div class="adm-primary-row">
       ${primaryChecks}
+      ${hostToggle}
       ${_adminPoolProviders.map(p => {
         const has = !!caps[p.name];
         const dis = !approved || !has;
@@ -801,6 +810,28 @@ async function adminTogglePool(provider, aid, inPool) {
     }
   } catch (e) {
     _adminLog(provider + '-pool request failed: ' + e.message);
+  }
+  adminLoadAgents();
+}
+
+// #412 — POST /api/agents/<id>/host-role to designate (or clear) the manager
+// host agent. Updates window.__MGR_AGENT so the manager-host cards repoint on
+// the next poll without a full page reload.
+async function adminToggleHostAgent(aid, isHost) {
+  try {
+    const r = await fetch(`/api/agents/${encodeURIComponent(aid)}/host-role`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ set: isHost }),
+    });
+    const d = await r.json().catch(() => ({}));
+    if (r.ok && d.ok) {
+      window.__MGR_AGENT = d.host_agent_id || null;
+    } else {
+      _adminLog('host-agent ' + (isHost ? 'set' : 'clear') + ' failed: ' + (d.error || r.status));
+    }
+  } catch (e) {
+    _adminLog('host-agent request failed: ' + e.message);
   }
   adminLoadAgents();
 }
