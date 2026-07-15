@@ -3260,11 +3260,19 @@ auth.register_auth(
     brand_palette=_brand_palette,
     brand_logo_svg=_brand_logo_svg,
 )
+
+
+def _manager_public_hosts() -> list[str]:
+    """Operator-configured extra cert-SAN hosts (getattr-guarded for old config)."""
+    raw = getattr(settings.manager, "public_hosts", None) or []
+    return [str(h).strip() for h in raw if str(h).strip()]
+
+
 agent_registry.set_deps(
     ctx,
     request_host_no_port=_request_host_no_port,
     rewrite_loopback_host=_rewrite_loopback_host,
-    manager_public_hosts=lambda: _manager_public_hosts(),
+    manager_public_hosts=_manager_public_hosts,
     set_llama_awake=set_llama_awake,
     get_interval=get_interval,
     latest_agent_version=_latest_agent_version,
@@ -4380,12 +4388,6 @@ def manager_health():
 # Manager-side TLS server bring-up
 # Defined here (before __main__) because the main block calls them.
 # ─────────────────────────────────────────────────────────────────────
-def _manager_public_hosts() -> list[str]:
-    """Operator-configured extra cert-SAN hosts (getattr-guarded for old config)."""
-    raw = getattr(settings.manager, "public_hosts", None) or []
-    return [str(h).strip() for h in raw if str(h).strip()]
-
-
 def _canon_host(h: str) -> str:
     """Canonical form for SAN comparison: IPs normalized, DNS names as-is."""
     import ipaddress
