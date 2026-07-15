@@ -38,22 +38,8 @@ AGENT_INSTALL_DIR: ""
 # -- Manager + alarm engine -------------------------------------------------
 # Set during install (or pass --manager-url to the installer). The alarm
 # engine is assumed to be on the same host as the manager, port 8081.
-MANAGER_URL:      ""
-ALARM_ENGINE_URL: ""
-# Note: when the alarm engine enforces an ingest token ([alarm_engine].ingest_token
-# in the manager's config), the agent receives that token automatically on its
-# heartbeat ack and attaches it to metric pushes - there is NO ingest-token key
-# to set here. Just keep the agent approved and heartbeating.
-#
-# TLS auto-upgrade - also no config change needed:
-#   * If the manager sets [manager].tls_port (default 5443) it advertises a
-#     `manager_https_url` in the heartbeat ack. Once the agent holds the CA
-#     bundle (delivered on first approval), it probes https://manager:5443/health
-#     against the CA and, on success, switches MANAGER_URL from http to https
-#     one-shot per process. A failed probe leaves MANAGER_URL on http.
-#   * If [alarm_engine].tls_enabled, the manager advertises an https alarm-engine
-#     URL too. The agent's metric push verifies the AE's internal-CA-signed cert
-#     and switches its push to https - same probe-before-switch safety.
+MANAGER_URL:      ""                 # Use the format http://<IP Address>:5000 for the MANAGER_URL
+ALARM_ENGINE_URL: ""                 # Use the format http://<IP Address>:8081 for the ALARM_ENGINE_URL
 
 # -- LM Studio (set LMS_ENABLED: true on hosts running LM Studio) ----------
 LMS_ENABLED: false
@@ -70,8 +56,6 @@ LLAMA_ENABLED: false
 # LLAMA_LOG_FILE:      ""    # llama-server log file, e.g. /usr/local/llama-server/llama-server.log
 # LLAMA_STATE_FILE:    "/tmp/llama-server-last-state"
 # LLAMA_SYSTEMD_UNIT:  "llama_server.service"
-#   Renaming this needs a root `install.sh --update` afterwards to re-bake
-#   the sudoers grants + svcconfig helper for the new unit name.
 # LLAMA_API_URL:       "http://localhost:8080"
 # LLAMA_BUILD_METHOD:  ""    # custom_script|source|release_binary|conda|homebrew (blank => custom_script)
 # LLAMA_BUILD_DIR:     ""    # managed install root for source/release_binary; blank => ~/.local/share/llama.cpp
@@ -90,13 +74,11 @@ LLAMA_ENABLED: false
 VLLM_ENABLED: false
 # VLLM_API_URL:      "http://localhost:8000"
 # VLLM_SYSTEMD_UNIT: "vllm.service"
-#   Renaming this needs a root `install.sh --update` afterwards to re-bake
-#   the sudoers grants + svcconfig helper for the new unit name.
 # VLLM_LORA_ENABLED: false   # expose /vllm/lora/{load,unload} (trusted env only)
 # VLLM_BENCH_BIN: ""          # vllm CLI for `vllm bench serve`; blank = auto
 #   (unit ExecStart binary if named vllm, else PATH lookup)
 
-# -- Performance controller (replaces the bash daemon) ---------------------
+# -- Performance controller ---------------------
 # Requires LLAMA_ENABLED=true and a Linux host. The agent tails
 # LLAMA_LOG_FILE, writes LLAMA_STATE_FILE, and runs:
 #     sudo systemctl reload-or-restart {PERF_TARGET_AWAKE | PERF_TARGET_SLEEP}
@@ -122,10 +104,7 @@ OPENCLAW_ENABLED:    false
 # Setting this true advertises the "image_gen" capability to the manager.
 # The manager's /proxy/imggen/ "auto" mode picks the first approved agent
 # with this capability and proxies the dashboard tab to IMGGEN_PORT on
-# that host. No URL goes here - the agent's registered IP is the source.
-# Override IMGGEN_PORT when sd-server is bound to a non-default port; the
-# agent advertises the value at registration so no manager-side TOML edit
-# is required.
+# that host.
 IMGGEN_ENABLED:      false
 # IMGGEN_PORT:         1234
 
@@ -133,10 +112,6 @@ IMGGEN_ENABLED:      false
 # HF_CLI_PATH: ""        # blank => shutil.which("hf")
 
 # -- HTTP worker pool / SSE stream cap --------------------------------------
-# Uvicorn runs sync handlers + sync-generator SSE streams in the anyio worker
-# pool. WORKER_THREADS raises it off the stock 40; concurrent SSE streams are
-# capped at WORKER_THREADS - STREAM_RESERVE_THREADS so held streams can't
-# starve sync control requests (terminal, status). Over the cap => HTTP 503.
 WORKER_THREADS:         64
 STREAM_RESERVE_THREADS: 24
 
@@ -145,7 +120,7 @@ POLL_INTERVAL_S:      5
 HEARTBEAT_INTERVAL_S: 60
 COLLECTION_ENABLED:   true     # admin can toggle at runtime via /agent/collection
 
-# -- BufferedMetricClient - alarm engine push tuning ------------------------
+# -- BufferedMetricClient ------------------------
 # The collector samples every POLL_INTERVAL_S, but the agent does NOT POST
 # every sample. Samples are queued and flushed as a batch every
 # METRIC_FLUSH_INTERVAL_S.
@@ -154,22 +129,17 @@ METRIC_MAX_MEMORY_SAMPLES: 400   # in-memory ring size before disk spill
 METRIC_BATCH_LIMIT:        1000  # max samples per POST (caps backlog drains)
 METRIC_HTTP_TIMEOUT_S:     10
 
-# Agent pushes host metrics to the manager on every collector tick. Gated
-# by this knob plus the manager's primary-llama election (only the primary
-# llama agent's push is kept) - off means the agent stays dormant.
+# Agent pushes host metrics to the manager on every collection interval
 PUSH_HOST_METRICS_ENABLED: true
 
 # -- Manager / alarm-engine / Influx self-monitor probes --------------------
 # When MONITOR_MANAGER_ENABLED, a background thread times the manager's
 # HTTP endpoints (MANAGER_URL is reused). When MONITOR_ALARM_ENGINE_ENABLED,
 # it also times the alarm engine (ALARM_ENGINE_URL is reused) and probes
-# InfluxDB directly (write + 5m/24h Flux reads + disk usage). Results land
-# in the alarm engine catalog under source=`manager_self_monitor`, available
-# for dashboard graphing and rule-based alerting.
+# InfluxDB directly (write + 5m/24h Flux reads + disk usage)
 #
 # Both default false. The installer sets them automatically when it detects
-# the corresponding systemd unit (llm-systems-manager.service /
-# llm-systems-alarm-engine.service) on the host being installed. Flip them
+# the corresponding systemd unit. Flip them
 # on independently here when the manager and alarm engine live on different
 # hosts and you want this agent to probe one but not the other.
 MONITOR_MANAGER_ENABLED:      false
@@ -177,18 +147,10 @@ MONITOR_ALARM_ENGINE_ENABLED: false
 META_PERF_INTERVAL_S:         60   # seconds between probe passes
 META_PERF_TIMEOUT_S:          5    # per-probe HTTP/InfluxDB timeout
 
-# InfluxDB on-disk-bytes probe - `du -sb /var/lib/influxdb`. Lands in
-# the alarm engine catalog as source=`influxdb`, metric_name=`bytes_on_disk`,
-# tagged with this host. Auto-enabled by the installer when influxdb.service
+# Auto-enabled by the installer when influxdb.service
 # is active on this host. On split installs where InfluxDB lives on its
 # own machine, this is the only thing that populates the disk-bytes
-# series - the AE has no /var/lib/influxdb to scan.
-#
-# Reads the influxdb data dir via `du -sb`. Plain `du` works if the dir is
-# world-readable; falls back to `sudo -n du` (the installer drops a
-# /etc/sudoers.d/llmsys-du-influxdb rule with the right NOPASSWD entry).
-# Cached for INFLUXDB_DISK_PROBE_INTERVAL_S seconds - walking thousands
-# of TSM files on every 5-second collector tick would be wasteful.
+# metrics
 MONITOR_INFLUXDB_DISK_ENABLED:    false
 # Blank - auto-detect /var/lib/influxdb then /var/lib/influxdb2. Set
 # explicitly only when InfluxDB's data is on a non-standard path.
@@ -200,9 +162,8 @@ UNIFIED_CONFIG_TOML_PATH:         ""
 
 # -- Process / service watchlist --------------------------------------------
 # Each tick the agent reports {running: 0|1, pid, rss_mb, uptime_s} for
-# each entry. Emitted under `source=processes`, `metric_name=<name>_running`
-# (etc.) so alarm rules can fire on "<name>_running == 0". Leave the list
-# blank to accept the per-OS defaults baked into the agent (llama-server,
+# each entry.
+# Leave the list blank to accept the per-OS defaults baked into the agent (llama-server,
 # influxdb, manager, alarm-engine on Linux; LM Studio + sd-server on macOS).
 PROCESS_WATCH_ENABLED: true
 # PROCESS_WATCHLIST:
@@ -217,10 +178,10 @@ PROCESS_WATCH_ENABLED: true
 #     pattern: "LM Studio"
 
 # -- Host hardware collection toggles ---------------------------------------
-# Most default true and degrade cleanly if the source is absent (AMD GPU on a
-# Mac, lm-sensors missing, no UPS). liquidctl defaults false — it shells out to
+# Most default true and degrade cleanly if the source is absent
+# liquidctl defaults false — it shells out to
 # `sudo liquidctl status`, so the installer enables it only when a supported
-# device (Kraken / HX1000i / Smart Device) is detected. Set any false to skip.
+# device is detected.
 COLLECT_GPU_ENABLED:       true
 COLLECT_SENSORS_ENABLED:   true
 COLLECT_LIQUIDCTL_ENABLED: false
@@ -233,9 +194,6 @@ COLLECT_ISCSI_ENABLED:     true
 # powermetrics without a password - for example:
 #   echo '<agent-user> ALL=(root) NOPASSWD: /usr/bin/powermetrics' \
 #     | sudo tee /etc/sudoers.d/llmsys-powermetrics
-# The agent emits the sampler block under `source=mac_power` so rules can
-# alert on thermal_pressure_n or cpu_die_temp_c. The installer flips this
-# to true automatically on macOS hosts and leaves it false on Linux.
 COLLECT_POWERMETRICS_ENABLED: false
 # POWERMETRICS_INTERVAL_MS:     5000
 
@@ -244,11 +202,6 @@ COLLECT_POWERMETRICS_ENABLED: false
 # POSTs to {ALARM_ENGINE_URL}/api/alarm/ingest as a generic alert, which is
 # then routed through the same alert_manager as internal rules (deduplicated,
 # delivered to whatever notification channels are configured).
-#
-# Per-rule offsets are persisted to data/log-watch-state.json so the agent
-# resumes after a restart instead of re-firing old matches. The very first
-# observation of a new rule jumps to EOF - historical lines never alert.
-# File rotation/truncation is detected via inode change and starts from 0.
 #
 # Per-rule fields (only `name`, `path`, `pattern` are required):
 #   name          alert name + dedup key
@@ -264,7 +217,7 @@ COLLECT_POWERMETRICS_ENABLED: false
 #
 # To enable: flip LOG_WATCH_ENABLED to true, then uncomment LOG_WATCH_RULES
 # AND every line under it (drop the leading "# " from each line). Indent is
-# significant - keep the two-space indent before the leading "-" on each
+# important - keep the two-space indent before the leading "-" on each
 # rule, and the four-space indent on each rule field.
 LOG_WATCH_ENABLED: false
 LOG_WATCH_INTERVAL_S: 10
