@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.llm-systems-agent</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>${AGENT_INSTALL_DIR}/llm-systems-agent</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>${AGENT_INSTALL_DIR}</string>
+
+    <key>RunAtLoad</key>
+    <true/>
+
+    <key>KeepAlive</key>
+    <true/>
+
+    <key>UserName</key>
+    <string>${AGENT_USER}</string>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PYTHONUNBUFFERED</key>
+        <string>1</string>
+    </dict>
+
+    <key>StandardOutPath</key>
+    <string>${AGENT_USER_HOME}/Library/Logs/llm-systems-agent/agent.stdout.log</string>
+
+    <key>StandardErrorPath</key>
+    <string>${AGENT_USER_HOME}/Library/Logs/llm-systems-agent/agent.stderr.log</string>
+</dict>
+</plist>

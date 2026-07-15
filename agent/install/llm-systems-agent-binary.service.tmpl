@@ -1,0 +1,19 @@
+[Unit]
+Description=LLM Systems Agent (single-file binary)
+After=network.target
+
+[Service]
+User=${AGENT_USER}
+Group=${AGENT_GROUP}
+WorkingDirectory=${AGENT_INSTALL_DIR}
+ExecStart="${AGENT_INSTALL_DIR}/llm-systems-agent"
+Restart=always
+RestartSec=3
+# Exit code 2 = malformed agent_config.yaml. Don't restart — operator must fix.
+RestartPreventExitStatus=2
+Environment=PYTHONUNBUFFERED=1
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
