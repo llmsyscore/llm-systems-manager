@@ -150,6 +150,10 @@ const CARD_LABELS_VLLM = {
   'vllm-requests':   'vLLM Requests',
   'vllm-kv':         'vLLM KV Cache',
   'vllm-throughput': 'vLLM Throughput',
+  'vllm-cpu':        'vLLM CPU',
+  'vllm-ram':        'vLLM RAM',
+  'vllm-network':    'vLLM Network',
+  'vllm-disk':       'vLLM Disk',
 };
 const CARD_LABELS_MANAGER = {
   'services':         'Services',
