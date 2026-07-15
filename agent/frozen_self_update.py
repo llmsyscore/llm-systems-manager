@@ -124,7 +124,7 @@ def _probe_writable(d: Path) -> bool:
             try:
                 os.remove(p)
             except OSError:
-                pass
+                pass  # best-effort: probe temp file may already be gone
         return False
 
 
@@ -150,7 +150,7 @@ def _fsync_dir(d: Path) -> None:
         finally:
             os.close(fd)
     except OSError:
-        pass
+        pass  # directory fsync is best-effort / not portable across filesystems
 
 
 def _prune_backups(dest: Path, retain: int) -> None:
@@ -160,7 +160,7 @@ def _prune_backups(dest: Path, retain: int) -> None:
         try:
             old.unlink()
         except OSError:
-            pass
+            pass  # best-effort: leaving an extra backup is harmless
 
 
 def swap_binary(staged: Path, live: Path, retain: int = 1,
@@ -183,11 +183,11 @@ def swap_binary(staged: Path, live: Path, retain: int = 1,
         try:
             backup.unlink()
         except OSError:
-            pass
+            pass  # best-effort rollback cleanup; the swap failure is what matters
         raise UpdateError(f"swap failed: {e}; old binary untouched")
     _fsync_dir(dest)
     try:
         _prune_backups(dest, retain)
     except Exception:
-        pass
+        pass  # pruning is best-effort; a completed swap must not fail here
     return str(backup)

@@ -64,7 +64,7 @@ except ImportError:
             os.chmod(tmp, mode)
         tmp.replace(p)
 
-VERSION = "v2026.07.15-2"
+VERSION = "v2026.07.15-3"
 
 
 def _restore_bundle_env() -> None:
@@ -2954,7 +2954,7 @@ def _frozen_self_update_response(asset: str) -> StreamingResponse:
         def _worker() -> None:
             try:
                 box["value"] = fn()
-            except BaseException as e:
+            except Exception as e:
                 box["error"] = e
 
         t = threading.Thread(target=_worker, daemon=True)
