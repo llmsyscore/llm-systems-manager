@@ -1236,9 +1236,11 @@ fi
 
 # ── Cleanup: drop the staging tree + any /tmp launcher artifacts ──────────
 # Mirrors install.sh's end-of-run cleanup. Only runs on clean success so
-# operators can poke around on failure without re-cloning.
+# operators can poke around on failure without re-cloning. --source local
+# trees are operator-owned — never delete them, even under /tmp.
 banner "Cleanup"
-if [[ -d "$REPO_SRC" && "$REPO_SRC" == /tmp/* ]]; then
+if [[ -d "$REPO_SRC" && "$REPO_SRC" == /tmp/* \
+      && "${LLMSYS_SOURCE:-release}" != "local" ]]; then
   $SUDO rm -rf "$REPO_SRC"
   ok "removed staging tree $REPO_SRC"
 fi

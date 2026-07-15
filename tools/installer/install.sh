@@ -7,6 +7,8 @@
 # comes from the latest GitHub Release tarball, SHA-256-verified before any
 # file is installed (pin a version with --ref vX.Y.Z); --source git installs
 # from a public HTTPS git clone of main instead — no authentication needed.
+# --source local installs the already-extracted tree this script lives in
+# (offline / air-gapped path — no GitHub access needed).
 #
 # Quick start:
 #   bash <(curl -fsSL https://raw.githubusercontent.com/llmsyscore/llm-systems-manager/main/tools/installer/install.sh)
@@ -43,7 +45,7 @@ _ORIG_ARGV=("$@")
 # substantive change to this file. The self-update trampoline only re-execs
 # when the upstream copy carries a STRICTLY GREATER number, so locally-
 # modified scripts (or unpushed commits) are never silently downgraded.
-_INSTALL_SH_REVISION=20260715001
+_INSTALL_SH_REVISION=20260715002
 
 # Fallback bootstrap helpers — used until we source lib-common.sh.
 # TTY-aware colors so OK/WARN/ERR markers stand out in interactive runs and
@@ -176,6 +178,9 @@ _b_clone_main() {
 # by default (LLMSYS_RELEASE_TAG pin or latest), git clone when --source git.
 _b_stage_source_tree() {
   local dest="$1" tag="${LLMSYS_RELEASE_TAG:-}"
+  # 'local' never stages — callers must branch to the operator's tree first.
+  [[ "${LLMSYS_SOURCE:-release}" == "local" ]] \
+    && _b_die "internal error: _b_stage_source_tree called with --source local (the local tree should be used directly)"
   if [[ "${LLMSYS_SOURCE:-release}" == "git" ]]; then
     _b_clone_main "$dest"
     return 0
@@ -259,8 +264,11 @@ Options:
                   Default: the latest release. The tarball's SHA-256 checksum
                   is verified before anything is installed; a mismatch aborts.
   --source SRC    Where the code comes from: 'release' (default — checksum-
-                  verified GitHub Release tarball) or 'git' (clone of the
-                  main branch; the bleeding-edge / development path).
+                  verified GitHub Release tarball), 'git' (clone of the
+                  main branch; the bleeding-edge / development path), or
+                  'local' (install the already-extracted tree this script
+                  lives in — the offline / air-gapped path; no GitHub
+                  access, no checksum fetch, implies --no-self-update).
   --update        Detect installed components and update them in place.
                   Forwards remaining args to tools/installer/update.sh.
                   Examples:
@@ -315,11 +323,11 @@ done
 # Validate the source selection and export it (plus any --ref pin) so the
 # exec'd update.sh and every sub-installer inherit the same source choice.
 case "${LLMSYS_SOURCE:-release}" in
-  release|git) ;;
-  *) _b_die "--source must be 'release' or 'git' (got: '${LLMSYS_SOURCE:-}')" ;;
+  release|git|local) ;;
+  *) _b_die "--source must be 'release', 'git', or 'local' (got: '${LLMSYS_SOURCE:-}')" ;;
 esac
-if [[ -n "${LLMSYS_RELEASE_TAG:-}" && "${LLMSYS_SOURCE:-release}" == "git" ]]; then
-  _b_die "--ref pins a release tag and conflicts with --source git"
+if [[ -n "${LLMSYS_RELEASE_TAG:-}" && "${LLMSYS_SOURCE:-release}" != "release" ]]; then
+  _b_die "--ref pins a release tag to download and conflicts with --source ${LLMSYS_SOURCE}"
 fi
 export LLMSYS_SOURCE="${LLMSYS_SOURCE:-release}"
 if [[ -n "${LLMSYS_RELEASE_TAG:-}" ]]; then
@@ -334,6 +342,26 @@ fi
 THIS_DIR=""
 if [[ -f "${BASH_SOURCE[0]:-}" ]]; then
   THIS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+fi
+
+# THIS_DIR == <root>/tools/installer, so the repo root is two levels up.
+# Shared by --source local validation and the local-checkout auto-detect.
+_REPO_ROOT_FROM_THIS=""
+if [[ -n "$THIS_DIR" ]]; then
+  _REPO_ROOT_FROM_THIS="$(cd "$THIS_DIR/../.." 2>/dev/null && pwd || true)"
+fi
+
+# --source local: install the tree THIS script lives in (extracted release
+# tarball or any full checkout) — no network fetch, no .git required.
+if [[ "$LLMSYS_SOURCE" == "local" ]]; then
+  [[ -n "$THIS_DIR" ]] \
+    || _b_die "--source local requires running install.sh from a file inside an extracted source tree (not a curl pipe)"
+  [[ -n "$_REPO_ROOT_FROM_THIS" && -f "$_REPO_ROOT_FROM_THIS/tools/installer/lib-common.sh" ]] \
+    || _b_die "--source local: $THIS_DIR/../.. is not a complete source tree (tools/installer/lib-common.sh missing) — extract the full release tarball and run its tools/installer/install.sh"
+  _install_dir_norm="${LLMSYS_INSTALL_DIR:-/opt/llm-systems-manager}"
+  if [[ "$_REPO_ROOT_FROM_THIS" == "${_install_dir_norm%/}" ]]; then
+    _b_die "--source local: this IS the deployed tree at $_REPO_ROOT_FROM_THIS — installing it onto itself does nothing; run install.sh from a freshly extracted release tarball instead"
+  fi
 fi
 
 cat <<'BANNER'
@@ -369,7 +397,8 @@ have() { command -v "$1" >/dev/null 2>&1; }
 
 if ! have python3; then NEEDED+=(python3 python3-venv); fi
 if have python3 && ! python3 -m venv --help >/dev/null 2>&1; then NEEDED+=(python3-venv); fi
-if ! have git;  then NEEDED+=(git);  fi
+# The offline path (--source local) never clones or falls back to git.
+if ! have git && [[ "$LLMSYS_SOURCE" != "local" ]]; then NEEDED+=(git); fi
 if ! have jq;   then NEEDED+=(jq);   fi
 if ! have curl; then NEEDED+=(curl); fi
 if ! have rsync; then NEEDED+=(rsync); fi
@@ -444,6 +473,7 @@ _b_ok "python3 >= 3.10 ($(python3 --version 2>&1))"
 #     fresh code from GitHub later in the script, so self-updating here
 #     would be a redundant fetch on the hot path
 #   - a --ref pin was given (pinned runs keep the entry script they started with)
+#   - --source local (offline path — the operator's tree is authoritative)
 #   - the upstream copy can't be fetched (warn + continue with local)
 #
 # A revision integer is used instead of byte equality so a locally-modified
@@ -459,6 +489,7 @@ if [[ "${LLMSYS_SELF_UPDATE_DONE:-0}" != "1" \
    && "$NO_SELF_UPDATE" != "1" \
    && "$UPDATE" != "1" \
    && "$UNINSTALL" != "1" \
+   && "$LLMSYS_SOURCE" != "local" \
    && -z "${LLMSYS_RELEASE_TAG:-}" \
    && "$_MODE_IS_META" != "1" ]]; then
   _self="${BASH_SOURCE[0]:-$0}"
@@ -574,13 +605,19 @@ if [[ "$UPDATE" == "1" ]]; then
       exit 2
     fi
   fi
-  LLMSYS_CLONE_TMP="${LLMSYS_CLONE_TMP:-/tmp/llm-systems-manager-install}"
-  _b_stage_source_tree "$LLMSYS_CLONE_TMP"
-  UPDATE_HELPER="$LLMSYS_CLONE_TMP/tools/installer/update.sh"
+  if [[ "$LLMSYS_SOURCE" == "local" ]]; then
+    # Offline update: run the local tree's update.sh against itself.
+    _UPDATE_SRC="$_REPO_ROOT_FROM_THIS"
+  else
+    LLMSYS_CLONE_TMP="${LLMSYS_CLONE_TMP:-/tmp/llm-systems-manager-install}"
+    _b_stage_source_tree "$LLMSYS_CLONE_TMP"
+    _UPDATE_SRC="$LLMSYS_CLONE_TMP"
+  fi
+  UPDATE_HELPER="$_UPDATE_SRC/tools/installer/update.sh"
   [[ -f "$UPDATE_HELPER" ]] \
     || _b_die "update.sh missing in staged tree at $UPDATE_HELPER — repo HEAD too old?"
   _b_ok "running update helper: $UPDATE_HELPER"
-  REPO_SRC="$LLMSYS_CLONE_TMP" exec bash "$UPDATE_HELPER" \
+  REPO_SRC="$_UPDATE_SRC" exec bash "$UPDATE_HELPER" \
     "${FORWARD_ARGS[@]:+${FORWARD_ARGS[@]}}"
 fi
 
@@ -652,21 +689,21 @@ printf '\n%s── Source ──────────────────
 # ── Stage source (or use the local checkout if available) ───────────────────
 LLMSYS_CLONE_TMP="${LLMSYS_CLONE_TMP:-/tmp/llm-systems-manager-install}"
 
-# Only treat $THIS_DIR as a valid checkout if it's a real git working tree.
-# Running install.sh from the deployed snapshot (/opt/llm-systems-manager,
-# which has no .git after deploy_into_install_dir's rsync excludes it) would
-# otherwise reuse stale installer scripts from the previous run.
-# THIS_DIR == <root>/tools/installer, so the repo root is two levels up.
-# Only treat it as a valid checkout if .git is there AND a sibling helper
-# (lib-common.sh) resolves — guards against stray "tools/installer" trees.
-_REPO_ROOT_FROM_THIS=""
-if [[ -n "$THIS_DIR" ]]; then
-  _REPO_ROOT_FROM_THIS="$(cd "$THIS_DIR/../.." 2>/dev/null && pwd || true)"
-fi
+# Only treat $_REPO_ROOT_FROM_THIS (resolved at startup) as a valid checkout
+# if it's a real git working tree. Running install.sh from the deployed
+# snapshot (/opt/llm-systems-manager, which has no .git after
+# deploy_into_install_dir's rsync excludes it) would otherwise reuse stale
+# installer scripts from the previous run. Require .git AND a sibling helper
+# (lib-common.sh) — guards against stray "tools/installer" trees.
 # _REPO_IS_STAGING flags whether REPO_SRC is a temp clone we created (safe
 # to remove after the install completes) or the operator's own working tree
 # (must be preserved).
-if [[ -n "$_REPO_ROOT_FROM_THIS" \
+if [[ "$LLMSYS_SOURCE" == "local" ]]; then
+  # Validated at startup — an extracted release tarball qualifies (no .git).
+  REPO_SRC="$_REPO_ROOT_FROM_THIS"
+  _REPO_IS_STAGING=false
+  _b_ok "using local source tree (offline): $REPO_SRC"
+elif [[ -n "$_REPO_ROOT_FROM_THIS" \
       && -e "$_REPO_ROOT_FROM_THIS/.git" \
       && -f "$_REPO_ROOT_FROM_THIS/tools/installer/lib-common.sh" ]]; then
   REPO_SRC="$_REPO_ROOT_FROM_THIS"
@@ -1198,7 +1235,9 @@ echo
 # around so the operator can poke at it without re-cloning.
 if (( FAIL == 0 )); then
   banner "Cleanup"
-  if [[ -d "$LLMSYS_CLONE_TMP" ]]; then
+  # Never delete an operator-supplied tree (--source local / local checkout).
+  if [[ -d "$LLMSYS_CLONE_TMP" ]] \
+     && { $_REPO_IS_STAGING || [[ "$LLMSYS_CLONE_TMP" != "$REPO_SRC" ]]; }; then
     $SUDO rm -rf "$LLMSYS_CLONE_TMP"
     ok "removed staging tree $LLMSYS_CLONE_TMP"
   fi

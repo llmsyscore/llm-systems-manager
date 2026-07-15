@@ -111,6 +111,17 @@ bash <(curl -fsSL https://raw.githubusercontent.com/llmsyscore/llm-systems-manag
 
 The same `--ref` / `--source` flags apply to every install mode and to `--update`.
 
+### Offline / air-gapped install
+
+Hosts with no access to GitHub can install from a release tarball staged out-of-band. On a connected machine, download `llm-systems-manager-<tag>.tar.gz` from the [Releases page](https://github.com/llmsyscore/llm-systems-manager/releases) (verify it against the published `.sha256` yourself — the offline path trusts the tree you hand it). Copy it to the target host, then:
+
+```bash
+tar -xzf llm-systems-manager-v1.0.0.tar.gz
+sudo bash llm-systems-manager-v1.0.0/tools/installer/install.sh --source local
+```
+
+`--source local` installs the extracted tree the script lives in: no release download, no git clone, no installer self-update (`git` itself is not required on the target host). It works with every install mode and with `--update` (offline update of an existing install). Note the scope: only GitHub access is eliminated — installing system packages and the Python virtualenvs still uses `apt` and `pip`, so a fully air-gapped host needs local mirrors for those (or pre-provisioned dependencies).
+
 After install:
 
 1. Start the services if they were not started at installation, the commands to start them will be shown by the installer.
