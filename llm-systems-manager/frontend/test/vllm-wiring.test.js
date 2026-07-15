@@ -209,3 +209,69 @@ describe('vllm header state pill', () => {
     expect(charts).toMatch(/toggle\('vllmStateBanner',\s*vllmOn\)/);
   });
 });
+
+// #411: vLLM tab surfaces the host system metrics (CPU / RAM / Net / Disk),
+// mirroring the LM Studio tab. Data flows agent → provider-state → frontend.
+describe('vllm host system metrics (#411)', () => {
+  const index = src('index.html');
+  const vllm = src('js/vllm.js');
+  const foundation = src('js/foundation.js');
+
+  test('index.html has the four host system cards', () => {
+    for (const c of ['vllm-cpu', 'vllm-ram', 'vllm-network', 'vllm-disk']) {
+      expect(index).toContain(`data-card="${c}"`);
+    }
+  });
+  test('index.html has the host metric element ids', () => {
+    for (const id of ['vllm-cpu-total', 'vllmCoreGrid', 'vllm-ram-pct', 'vllm-ram-sub',
+                      'vllm-swap-used', 'vllm-ram-avail', 'vllm-net-sent', 'vllm-net-recv',
+                      'vllmDiskList']) {
+      expect(index).toContain(`id="${id}"`);
+    }
+  });
+  // #364: each chart canvas must sit in a height-constrained .chart-wrap.
+  test.each(['vllmCpuChart', 'vllmRamChart', 'vllmNetChart'])('%s canvas is wrapped in .chart-wrap', (id) => {
+    const m = index.match(new RegExp(`<div class="chart-wrap"[^>]*>\\s*<canvas id="${id}"`));
+    expect(m).not.toBeNull();
+  });
+
+  test('vllm.js reads the host system block from the metrics payload', () => {
+    expect(vllm).toContain('d.system || {}');
+    expect(vllm).toContain("_setEl('vllm-cpu-total'");
+    expect(vllm).toContain("_setEl('vllm-ram-pct'");
+    expect(vllm).toContain("_setEl('vllm-net-sent'");
+    expect(vllm).toContain("getElementById('vllmDiskList')");
+    expect(vllm).toContain("getElementById('vllmCoreGrid')");
+  });
+  test('vllm.js defines and resets the three host charts', () => {
+    for (const ch of ['vllmCpuChart', 'vllmRamChart', 'vllmNetChart']) {
+      expect(vllm).toContain(`const ${ch} =`);
+    }
+    const reset = vllm.slice(vllm.indexOf('function _resetVllmCharts'));
+    const body = reset.slice(0, reset.indexOf('\n}'));
+    expect(body).toContain('vllmCpuChart');
+    expect(body).toContain('vllmRamChart');
+    expect(body).toContain('vllmNetChart');
+  });
+  test('vllm.js sets accent status on the new host cards', () => {
+    for (const c of ['vllm-cpu', 'vllm-ram', 'vllm-network', 'vllm-disk']) {
+      expect(vllm).toContain(`_dashSetStatus('${c}'`);
+    }
+  });
+  test('foundation.js registers labels for the new host cards', () => {
+    const block = foundation.slice(foundation.indexOf('CARD_LABELS_VLLM'));
+    const body = block.slice(0, block.indexOf('};'));
+    for (const c of ['vllm-cpu', 'vllm-ram', 'vllm-network', 'vllm-disk']) {
+      expect(body).toContain(`'${c}'`);
+    }
+  });
+});
+
+describe('agent forwards the system block for vLLM (#411)', () => {
+  test('_push_vllm_payload includes the system block', () => {
+    const agent = readFileSync(join(here, '..', '..', '..', 'agent', 'llm-systems-agent.py'), 'utf8');
+    const fn = agent.slice(agent.indexOf('def _push_vllm_payload'));
+    const body = fn.slice(0, fn.indexOf('\n\n\n'));
+    expect(body).toContain('"system": sample.get("system")');
+  });
+});

@@ -64,7 +64,7 @@ except ImportError:
             os.chmod(tmp, mode)
         tmp.replace(p)
 
-VERSION = "v2026.07.15-4"
+VERSION = "v2026.07.15-5"
 
 
 def _restore_bundle_env() -> None:
@@ -2177,6 +2177,7 @@ def _push_vllm_payload(sample: dict[str, Any]) -> None:
         "ts": sample.get("ts"),
         "host": sample.get("host"),
         "gpu": (sample.get("system") or {}).get("gpu") or {},
+        "system": sample.get("system"),
         "vllm": sample.get("vllm") or {},
     }
     try:

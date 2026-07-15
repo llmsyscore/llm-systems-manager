@@ -1022,6 +1022,47 @@ Backend API endpoints consumed:
         <div class="chart-wrap"><canvas id="vllmTpsChart"></canvas></div>
       </div>
 
+      <!-- vLLM host CPU -->
+      <div class="card" data-card="vllm-cpu">
+        <span class="card-handle" title="Drag to reorder">⠿</span>
+        <h3>CPU</h3>
+        <div class="stat" id="vllm-cpu-total">—</div>
+        <div class="sub">% utilization</div>
+        <div class="core-grid" id="vllmCoreGrid" style="margin-top:10px;"></div>
+        <div class="chart-wrap" style="margin-top:10px;height:80px;"><canvas id="vllmCpuChart"></canvas></div>
+      </div>
+
+      <!-- vLLM host RAM -->
+      <div class="card" data-card="vllm-ram">
+        <span class="card-handle" title="Drag to reorder">⠿</span>
+        <h3>RAM</h3>
+        <div class="stat" id="vllm-ram-pct">—</div>
+        <div class="sub" id="vllm-ram-sub">—</div>
+        <div class="stat-row cols2" style="margin-top:8px;">
+          <div><div class="sub">Swap used</div><div id="vllm-swap-used" style="color:var(--fg-muted);font-size:0.9em;">—</div></div>
+          <div><div class="sub">Available</div><div id="vllm-ram-avail" style="color:var(--fg-muted);font-size:0.9em;">—</div></div>
+        </div>
+        <div class="chart-wrap" style="margin-top:10px;height:120px;"><canvas id="vllmRamChart"></canvas></div>
+      </div>
+
+      <!-- vLLM host Network -->
+      <div class="card" data-card="vllm-network">
+        <span class="card-handle" title="Drag to reorder">⠿</span>
+        <h3>Network</h3>
+        <div class="stat-row cols2">
+          <div><div class="stat" id="vllm-net-sent">—</div><div class="sub">MiB/s out</div></div>
+          <div><div class="stat" id="vllm-net-recv">—</div><div class="sub">MiB/s in</div></div>
+        </div>
+        <div class="chart-wrap" style="margin-top:10px;height:120px;"><canvas id="vllmNetChart"></canvas></div>
+      </div>
+
+      <!-- vLLM host Disk -->
+      <div class="card" data-card="vllm-disk">
+        <span class="card-handle" title="Drag to reorder">⠿</span>
+        <h3>Disk Usage</h3>
+        <div class="disk-list" id="vllmDiskList"></div>
+      </div>
+
     </div>
   </div><!-- end dash-vllm sub-panel -->
 
@@ -1593,7 +1634,7 @@ Backend API endpoints consumed:
 </div><!-- end llmTab -->
 
 <script src="/static/js/lib/layout.js?v=2026.07.10-1"></script>
-<script src="/static/js/foundation.js?v=2026.07.13-1"></script>
+<script src="/static/js/foundation.js?v=2026.07.15-1"></script>
 <script src="/static/js/lib/series.js?v=2026.06.21-1"></script>
 <script src="/static/js/lib/benchaxis.js?v=2026.06.28-1"></script>
 <script src="/static/js/lib/thresholds.js?v=2026.06.26-3"></script>
@@ -1605,7 +1646,7 @@ Backend API endpoints consumed:
 <script src="/static/js/llmcontrol-models.js?v=2026.06.10-6"></script>
 <script src="/static/js/bench-autotune.js?v=2026.06.25-9"></script>
 <script src="/static/js/lmstudio.js?v=2026.06.26-3"></script>
-<script src="/static/js/vllm.js?v=2026.07.12-2"></script>
+<script src="/static/js/vllm.js?v=2026.07.15-1"></script>
 <script src="/static/js/vllm-bench-autotune.js?v=2026.07.12-2"></script>
 <script src="/static/js/overall.js?v=2026.07.11-1"></script>
 <script src="/static/js/dashboard-manager.js?v=2026.07.04-1"></script>
