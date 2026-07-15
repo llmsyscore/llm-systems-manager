@@ -9,28 +9,28 @@ regular installer (mode 5). See the top-level README.
 
 ## Quick start
 
+No repo checkout needed — the images carry all the code. Grab the two files
+the stack reads and go:
+
 ```bash
-git clone https://github.com/llmsyscore/llm-systems-manager.git
-cd llm-systems-manager
-cp .env.example .env
+base=https://raw.githubusercontent.com/llmsyscore/llm-systems-manager/main
+curl -O "$base/docker-compose.yml"
+curl -o .env "$base/.env.example"
 # fill in LSM_INFLUX_PASSWORD, LSM_INFLUX_TOKEN, LSM_AE_INGEST_TOKEN
 # (openssl rand -hex 32 makes good tokens)
-docker compose up -d
+docker compose up -d          # pulls the published multi-arch images
 ```
 
-Then open `http://<docker-host>:5000/`. First `up` builds the images from
-source; to use the published multi-arch images (amd64 + arm64) instead:
+Then open `http://<docker-host>:5000/` and log in (default `llmadmin` /
+`llmadmin` — change the password from Admin → Authentication).
 
-```bash
-docker compose pull && docker compose up -d
-```
-
-Images are published to ghcr.io on every release tag:
+Images are published to ghcr.io on every release tag (amd64 + arm64):
 
 - `ghcr.io/llmsyscore/llm-systems-manager/manager:<vX.Y.Z|latest>`
 - `ghcr.io/llmsyscore/llm-systems-manager/alarm-engine:<vX.Y.Z|latest>`
 
-Pin a version with `LSM_IMAGE_TAG=v1.0.0` in `.env`.
+Pin a version with `LSM_IMAGE_TAG=v1.0.0` in `.env`. To build from source
+instead of pulling, clone the repo and run `docker compose up -d --build`.
 
 ## Configuration
 
@@ -50,6 +50,28 @@ copy a generated file around, also delete its `# GENERATED …` marker line):
 
 Tokens rendered into the TOML must not contain `"` or `\` (hex/base64 tokens
 are fine).
+
+The dashboard is served by the manager on port 5000; the alarm engine and
+InfluxDB are reached *through* the manager, so browse to the manager, not to
+`:8081`/`:8086` directly.
+
+## Native agents against a containerized manager
+
+Agents run natively on each host and dial the manager/alarm engine at this
+docker host's LAN address. Two settings make that work:
+
+- `LSM_ALARM_ENGINE_URL` — the address agents push metrics to (also covered by
+  the auto-issued AE TLS cert SAN).
+- `LSM_MANAGER_PUBLIC_HOST` — the address(es) agents reach the manager at,
+  added to the manager's TLS cert SAN so the agent's automatic http→https
+  control-channel upgrade validates. Without it the manager cert only covers
+  the container's internal IP and the upgrade silently stays on http.
+
+## Notifications
+
+Set `LSM_SMTP_*` and/or `LSM_DISCORD_WEBHOOK_URL` to wire up alert delivery;
+they are only written to the config when provided. Anything else (Twilio,
+per-rule channels) is configured via a bind-mounted TOML.
 
 ## Hardening notes
 

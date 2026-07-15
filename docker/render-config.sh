@@ -28,12 +28,42 @@ render_config() {
   local ae_tls="${LSM_AE_TLS_ENABLED:-true}"
   local cors="${LSM_CORS_ORIGINS:-http://localhost:5000}"
   local log_level="${LSM_LOG_LEVEL:-INFO}"
+  local admin_user="${LSM_ADMIN_USER:-llmadmin}"
+  # Default admin allowlist: loopback + private LAN ranges (172.16/12 covers
+  # the docker bridge). Override with LSM_ADMIN_CIDRS.
+  local admin_cidrs_csv="${LSM_ADMIN_CIDRS:-127.0.0.1,::1,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16}"
+  # Externally-reachable host(s) agents dial; added to the manager cert SAN.
+  local public_hosts_csv="${LSM_MANAGER_PUBLIC_HOST:-}"
+  local smtp_server="${LSM_SMTP_SERVER:-}"
+  local smtp_port="${LSM_SMTP_PORT:-587}"
+  local smtp_user="${LSM_SMTP_USER:-}"
+  local smtp_password="${LSM_SMTP_PASSWORD:-}"
+  local discord_webhook="${LSM_DISCORD_WEBHOOK_URL:-}"
 
-  for v in "$influx_token" "$ingest_token" "$management_token"; do
+  for v in "$influx_token" "$ingest_token" "$management_token" "$admin_user" \
+           "$admin_cidrs_csv" "$public_hosts_csv" "$smtp_server" "$smtp_user" \
+           "$smtp_password" "$discord_webhook"; do
     case "$v" in
-      *'"'*|*'\'*) echo "[entrypoint] ERROR: tokens must not contain \" or \\" >&2; exit 1 ;;
+      *'"'*|*'\'*) echo "[entrypoint] ERROR: config values must not contain \" or \\" >&2; exit 1 ;;
     esac
   done
+  case "$smtp_port" in
+    ''|*[!0-9]*) echo "[entrypoint] ERROR: LSM_SMTP_PORT must be numeric" >&2; exit 1 ;;
+  esac
+
+  local _oldifs="$IFS"
+  local cidr_toml=""
+  IFS=','
+  for c in $admin_cidrs_csv; do
+    c="${c#"${c%%[![:space:]]*}"}"; c="${c%"${c##*[![:space:]]}"}"
+    [ -n "$c" ] && cidr_toml="${cidr_toml}${cidr_toml:+, }\"$c\""
+  done
+  local hosts_toml=""
+  for c in $public_hosts_csv; do
+    c="${c#"${c%%[![:space:]]*}"}"; c="${c%"${c##*[![:space:]]}"}"
+    [ -n "$c" ] && hosts_toml="${hosts_toml}${hosts_toml:+, }\"$c\""
+  done
+  IFS="$_oldifs"
 
   cat > "$CFG" <<EOF
 $MARKER
@@ -42,6 +72,13 @@ $MARKER
 alarm_engine_url = "$ae_url"
 cors_origins = "$cors"
 log_level = "$log_level"
+public_hosts = [$hosts_toml]
+
+[manager.auth]
+username = "$admin_user"
+
+[manager.security]
+admin_cidrs = [$cidr_toml]
 
 [alarm_engine]
 manager_url = "$manager_url"
@@ -64,6 +101,27 @@ admin          = "$influx_token"
 [logging]
 level = "$log_level"
 EOF
+
+  # Notification channels are only written when supplied — otherwise the
+  # defaults (example.com placeholders) would look configured but not work.
+  if [ -n "$smtp_server" ]; then
+    cat >> "$CFG" <<EOF
+
+[notifications.smtp]
+server   = "$smtp_server"
+port     = $smtp_port
+user     = "$smtp_user"
+password = "$smtp_password"
+EOF
+  fi
+  if [ -n "$discord_webhook" ]; then
+    cat >> "$CFG" <<EOF
+
+[notifications.discord]
+webhook_url = "$discord_webhook"
+EOF
+  fi
+
   chmod 600 "$CFG"
   echo "[entrypoint] rendered $CFG from environment"
 }

@@ -67,7 +67,7 @@ from .storage.influxdb_client import InfluxDBClient
 # (-1, -2, …) for same-day iterations; roll the date for a new day's first
 # change.
 # ---------------------------------------------------------------------------
-__version__ = "v2026.07.14-1"
+__version__ = "v2026.07.15-1"
 from .storage import influx_monitor as _influx_monitor
 from .models.alarm_rule import (
     AlarmRuleCreate,
@@ -385,12 +385,13 @@ async def _on_startup() -> None:
             f"rollup_bucket={settings.influxdb.metrics_rollup_bucket} "
             f"rollup={'on:'+_ds.rollup_measurement+'@'+_ds.rollup_every if _ds.rollup_enabled else 'off'}"
         )
-        # Best-effort: create the server-side rollup task. Logged but
-        # non-fatal — the read path falls back to raw scans if missing.
+        # Best-effort: ensure the rollup bucket exists, then the server-side
+        # rollup task. Non-fatal — the read path falls back to raw scans.
         try:
+            db_client.ensure_rollup_bucket()
             db_client.ensure_rollup_task()
         except Exception as e:
-            logger.warning(f"ensure_rollup_task failed (non-fatal): {e}")
+            logger.warning(f"rollup provisioning failed (non-fatal): {e}")
     except Exception as e:
         logger.warning(f"InfluxDB client unavailable, running in cache-only mode: {e}")
         db_client = None

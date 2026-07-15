@@ -163,7 +163,7 @@ class ManagerAuth(BaseModel):
     # When this is anything but "auto", the TOML value is authoritative (a manual
     # edit wins on restart) and the Admin tab writes mode changes back here.
     mode: str = "auto"
-    username: str = "admin"
+    username: str = "llmadmin"
     # scrypt hash "scrypt$<salt_b64>$<dk_b64>". Empty → the built-in
     # llmadmin/llmadmin default applies (so a fresh "required" deploy can't lock
     # the operator out). Optional here for installer provisioning; the UI
@@ -246,6 +246,9 @@ class ManagerConfig(BaseModel):
         "http://localhost:5000,http://localhost:8081"
     )
     log_level: str = "INFO"
+    # Extra hostnames/IPs added to the manager TLS cert SAN, beyond the
+    # auto-detected loopback/routable IPs (e.g. a docker host's LAN IP).
+    public_hosts: list[str] = Field(default_factory=list)
     proxies: ManagerProxies = Field(default_factory=ManagerProxies)
     gateway: ManagerGateway = Field(default_factory=ManagerGateway)
     history: ManagerHistory = Field(default_factory=ManagerHistory)

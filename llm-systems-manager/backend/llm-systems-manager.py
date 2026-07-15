@@ -154,7 +154,7 @@ def _local_hostname() -> str:
 # banner reads it. Bump suffix (-1, -2, …) for same-day iterations; roll
 # the date for a new day's first change.
 # ---------------------------------------------------------------------------
-__version__ = "v2026.07.14-1"
+__version__ = "v2026.07.15-1"
 
 # Wall-clock at first import (Cheroot main process); the shutdown banner
 # reads it for the uptime line.
@@ -4379,6 +4379,21 @@ def manager_health():
 # Manager-side TLS server bring-up
 # Defined here (before __main__) because the main block calls them.
 # ─────────────────────────────────────────────────────────────────────
+def _manager_public_hosts() -> list[str]:
+    """Operator-configured extra cert-SAN hosts (getattr-guarded for old config)."""
+    raw = getattr(settings.manager, "public_hosts", None) or []
+    return [str(h).strip() for h in raw if str(h).strip()]
+
+
+def _canon_host(h: str) -> str:
+    """Canonical form for SAN comparison: IPs normalized, DNS names as-is."""
+    import ipaddress
+    try:
+        return str(ipaddress.ip_address(h))
+    except ValueError:
+        return h
+
+
 def _ensure_manager_server_cert() -> None:
     """Generate (or refresh) data/manager-tls.{crt,key} signed by the
     internal CA. SAN includes the manager's hostname + the IP a
@@ -4408,6 +4423,15 @@ def _ensure_manager_server_cert() -> None:
                                       for n in san if isinstance(n, _x509.IPAddress))
                 if not (has_localhost and has_loopback_ip):
                     log.info("  Manager TLS cert: missing localhost/127.0.0.1 SAN — reissuing")
+                    need_new = True
+                # Reissue if a configured public host isn't already covered.
+                san_vals = {str(getattr(n, "value", "")) for n in san
+                            if isinstance(n, (_x509.DNSName, _x509.IPAddress))}
+                missing = [h for h in _manager_public_hosts()
+                           if _canon_host(h) not in san_vals]
+                if missing:
+                    log.info("  Manager TLS cert: missing public-host SAN %s — reissuing",
+                             ", ".join(missing))
                     need_new = True
             except Exception:
                 # If SAN can't be parsed, safer to reissue than to keep.
@@ -4444,6 +4468,7 @@ def _ensure_manager_server_cert() -> None:
 
     ca_cert, ca_key, _pki = _pki_ensure_ca()
     import socket
+    import ipaddress
     host = socket.gethostname()
     # gethostbyname often returns 127.0.1.1 on Debian/Ubuntu, which
     # doesn't help agents dialing from elsewhere on the LAN. Detect
@@ -4472,15 +4497,27 @@ def _ensure_manager_server_cert() -> None:
             extra_ips.append(h_ip)
     except OSError:
         pass
+    # Operator-supplied external hosts (NAT/container reachable address), split
+    # into IP vs DNS SANs so agents dialing that address validate the cert.
+    extra_dns = ["localhost"]
+    for h in _manager_public_hosts():
+        try:
+            canon = str(ipaddress.ip_address(h))  # canonical (matches cert SAN form)
+            if canon not in extra_ips:
+                extra_ips.append(canon)
+        except ValueError:
+            if h not in extra_dns:
+                extra_dns.append(h)
     cert_pem, key_pem = _pki.sign_agent_cert(
         ca_cert, ca_key,
         agent_id="llm-systems-manager",
         hostname=host,
         ip_san=routable_ip,
-        extra_dns_sans=["localhost"],
+        extra_dns_sans=extra_dns,
         extra_ip_sans=extra_ips,
     )
-    log.info("  Manager TLS cert: SAN IPs = %s", ", ".join(extra_ips))
+    log.info("  Manager TLS cert: SAN IPs = %s DNS = %s",
+             ", ".join(extra_ips), ", ".join(extra_dns))
     # Atomic-rename so a partial write doesn't leave us serving a
     # half-baked PEM.
     for path, content, mode in (

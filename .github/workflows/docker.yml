@@ -32,6 +32,7 @@ jobs:
             echo "LSM_INFLUX_PASSWORD=$(openssl rand -hex 12)"
             echo "LSM_INFLUX_TOKEN=$(openssl rand -hex 32)"
             echo "LSM_AE_INGEST_TOKEN=$(openssl rand -hex 32)"
+            echo "LSM_MANAGER_PUBLIC_HOST=192.168.99.99"
           } > .env
 
       - name: Build images + bring the stack up
@@ -60,12 +61,17 @@ jobs:
           echo "ae-tls.crt never appeared in the shared volume" >&2
           exit 1
 
-      - name: InfluxDB buckets provisioned
+      - name: InfluxDB buckets provisioned (rollup self-created by the AE)
         run: |
-          docker compose exec -T influxdb influx bucket list --json \
-            | tee /tmp/buckets.json
-          grep -q alarm_engine_metrics /tmp/buckets.json
-          grep -q alarm_engine_metrics_rollup /tmp/buckets.json
+          for _ in $(seq 1 12); do
+            docker compose exec -T influxdb influx bucket list --json > /tmp/buckets.json
+            grep -q alarm_engine_metrics /tmp/buckets.json \
+              && grep -q alarm_engine_metrics_rollup /tmp/buckets.json && exit 0
+            sleep 5
+          done
+          cat /tmp/buckets.json
+          echo "rollup bucket not provisioned by the alarm engine" >&2
+          exit 1
 
       - name: Metric ingest end-to-end (agent-style batch POST → AE)
         run: |
@@ -74,6 +80,34 @@ jobs:
             -H "Authorization: Bearer $LSM_AE_INGEST_TOKEN" \
             -H "Content-Type: application/json" \
             -d '{"metrics":[{"source":"cpu","metric_name":"cpu_usage","value":42.0,"unit":"%","hostname":"ci-smoke"}]}'
+
+      - name: Dashboard login (llmadmin) + admin route reachable
+        run: |
+          jar=$(mktemp)
+          login=$(curl -s -o /dev/null -w '%{http_code}' -c "$jar" \
+            --data-urlencode username=llmadmin --data-urlencode password=llmadmin \
+            http://localhost:5000/login)
+          echo "login -> HTTP $login"
+          # Successful login always 302-redirects to /; a failed one renders 401.
+          [ "$login" = "302" ] || { echo "llmadmin/llmadmin login failed" >&2; exit 1; }
+          admin=$(curl -s -o /dev/null -w '%{http_code}' -b "$jar" \
+            http://localhost:5000/api/admin/audit-log)
+          echo "admin route -> HTTP $admin"
+          [ "$admin" = "200" ] || { echo "admin route not reachable as llmadmin (got $admin)" >&2; exit 1; }
+
+      - name: Manager TLS cert covers LSM_MANAGER_PUBLIC_HOST
+        run: |
+          crt=/opt/llm-systems-manager/data/manager-tls.crt
+          ok=""
+          for _ in $(seq 1 12); do
+            docker compose exec -T manager test -s "$crt" && ok=1 && break
+            sleep 5
+          done
+          [ -n "$ok" ] || { echo "manager cert never appeared at $crt" >&2; exit 1; }
+          docker compose cp manager:"$crt" /tmp/mtls.crt
+          openssl x509 -in /tmp/mtls.crt -noout -ext subjectAltName | tee /tmp/san.txt
+          grep -q "192.168.99.99" /tmp/san.txt \
+            || { echo "public host missing from manager cert SAN" >&2; exit 1; }
 
       - name: Dump logs on failure
         if: failure()
