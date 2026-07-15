@@ -390,6 +390,47 @@ class InfluxDBClient:
             logger.error(f"Error querying metric statistics: {e}")
         return None
 
+    def ensure_rollup_bucket(self) -> dict[str, Any]:
+        """Idempotently ensure the rollup bucket exists (find-or-create with
+        the admin token). No-op when rollup is disabled or no admin token —
+        the read path then falls back to raw scans. Never raises.
+
+        Lets a container deployment self-provision the bucket the rollup task
+        writes into, instead of a bind-mounted influx init script.
+        """
+        if not self._rollup_enabled:
+            return {"skipped": "rollup_enabled is false"}
+        if not self._admin_token:
+            return {"skipped": "tokens.admin not set"}
+        admin_client = _InfluxDBClient(url=self.url, token=self._admin_token, org=self.org)
+        try:
+            buckets_api = admin_client.buckets_api()
+            # A missing bucket surfaces as either None or a 404 depending on
+            # the influxd/client version — both mean "create it".
+            try:
+                found = buckets_api.find_bucket_by_name(self.metrics_rollup_bucket)
+            except Exception:
+                found = None
+            if found:
+                return {"exists": self.metrics_rollup_bucket}
+            try:
+                buckets_api.create_bucket(bucket_name=self.metrics_rollup_bucket, org=self.org)
+                logger.info("created rollup bucket: %s", self.metrics_rollup_bucket)
+                return {"created": self.metrics_rollup_bucket}
+            except Exception as e:
+                # A concurrent creator (or a find that false-missed) → already there.
+                if buckets_api.find_bucket_by_name(self.metrics_rollup_bucket):
+                    return {"exists": self.metrics_rollup_bucket}
+                raise e
+        except Exception as e:
+            logger.warning("ensure_rollup_bucket failed (non-fatal): %s", e)
+            return {"error": str(e)}
+        finally:
+            try:
+                admin_client.close()
+            except Exception:
+                pass
+
     def ensure_rollup_task(self) -> dict[str, Any]:
         """Idempotently ensure the metrics rollup Flux task exists.
 

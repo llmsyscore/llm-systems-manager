@@ -10,6 +10,14 @@ x-lsm-env: &lsm-env
   LSM_AE_TLS_ENABLED: ${LSM_AE_TLS_ENABLED:-true}
   LSM_CORS_ORIGINS: ${LSM_CORS_ORIGINS:-http://localhost:5000}
   LSM_LOG_LEVEL: ${LSM_LOG_LEVEL:-INFO}
+  LSM_ADMIN_USER: ${LSM_ADMIN_USER:-}
+  LSM_ADMIN_CIDRS: ${LSM_ADMIN_CIDRS:-}
+  LSM_MANAGER_PUBLIC_HOST: ${LSM_MANAGER_PUBLIC_HOST:-}
+  LSM_SMTP_SERVER: ${LSM_SMTP_SERVER:-}
+  LSM_SMTP_PORT: ${LSM_SMTP_PORT:-}
+  LSM_SMTP_USER: ${LSM_SMTP_USER:-}
+  LSM_SMTP_PASSWORD: ${LSM_SMTP_PASSWORD:-}
+  LSM_DISCORD_WEBHOOK_URL: ${LSM_DISCORD_WEBHOOK_URL:-}
 
 services:
   influxdb:
@@ -26,7 +34,6 @@ services:
     volumes:
       - influxdb-data:/var/lib/influxdb2
       - influxdb-config:/etc/influxdb2
-      - ./docker/influxdb-init.sh:/docker-entrypoint-initdb.d/create-rollup-bucket.sh:ro
     healthcheck:
       test: ["CMD", "influx", "ping"]
       interval: 10s
