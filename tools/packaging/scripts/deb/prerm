@@ -1,0 +1,8 @@
+# deb prerm body — concatenated after common.sh by build-packages.sh.
+case "$1" in
+  remove|deconfigure)
+    llmsys_stop_disable
+    ;;
+esac
+
+exit 0

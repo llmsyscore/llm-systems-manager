@@ -246,6 +246,30 @@ else
     MANAGER_URL="http://${DETECTED_IP}:5000"
     MGR_IP="$DETECTED_IP"
   fi
+
+  # Non-interactive overrides (LLMSYS_CFG_*) — set by the .deb/.rpm postinst
+  # to feed debconf answers through the same paths as the prompts above.
+  if (( HAS_MGR )); then
+    [[ -n "${LLMSYS_CFG_ADMIN_USER:-}" ]] && ADMIN_USER="$LLMSYS_CFG_ADMIN_USER"
+    if [[ -n "${LLMSYS_CFG_ADMIN_PASSWORD:-}" ]]; then
+      _pw="$LLMSYS_CFG_ADMIN_PASSWORD"
+      _stripped_len=$(LC_ALL=C printf '%s' "$_pw" | LC_ALL=C tr -d '[:cntrl:]' | wc -c)
+      _raw_len=$(LC_ALL=C printf '%s' "$_pw" | wc -c)
+      if (( ${#_pw} < 8 )); then
+        warn "LLMSYS_CFG_ADMIN_PASSWORD shorter than 8 chars — ignored (built-in default kept)"
+      elif (( _stripped_len != _raw_len )); then
+        warn "LLMSYS_CFG_ADMIN_PASSWORD contains control characters — ignored (built-in default kept)"
+      else
+        ADMIN_PW="$_pw"
+      fi
+      unset _pw
+    fi
+  fi
+  if (( HAS_AE )); then
+    [[ -n "${LLMSYS_CFG_SMTP_SERVER:-}" ]] && SMTP_SERVER="$LLMSYS_CFG_SMTP_SERVER"
+    [[ -n "${LLMSYS_CFG_SMTP_USER:-}"   ]] && SMTP_USER="$LLMSYS_CFG_SMTP_USER"
+    [[ -n "${LLMSYS_CFG_SMTP_PASS:-}"   ]] && SMTP_PASS="$LLMSYS_CFG_SMTP_PASS"
+  fi
 fi
 
 # ── Load generated InfluxDB tokens if available ─────────────────────────────

@@ -1,0 +1,25 @@
+# deb postinst body — concatenated after common.sh by build-packages.sh.
+case "$1" in
+  configure)
+    # Pull debconf answers into the LLMSYS_CFG_* overrides the config
+    # bootstrap consumes, then drop the stored passwords.
+    if [ -f /usr/share/debconf/confmodule ]; then
+      . /usr/share/debconf/confmodule
+      for pair in admin-user:LLMSYS_CFG_ADMIN_USER \
+                  admin-password:LLMSYS_CFG_ADMIN_PASSWORD \
+                  smtp-server:LLMSYS_CFG_SMTP_SERVER \
+                  smtp-user:LLMSYS_CFG_SMTP_USER \
+                  smtp-password:LLMSYS_CFG_SMTP_PASS; do
+        RET=""
+        db_get "llm-systems-manager/${pair%%:*}" || true
+        if [ -n "${RET:-}" ]; then export "${pair##*:}=$RET"; fi
+      done
+      db_reset llm-systems-manager/admin-password || true
+      db_reset llm-systems-manager/smtp-password || true
+      db_stop || true
+    fi
+    llmsys_configure "${2:-}"
+    ;;
+esac
+
+exit 0

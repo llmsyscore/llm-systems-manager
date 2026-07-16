@@ -117,6 +117,32 @@ Log in with the default credentials:
 
 ---
 
+## Installing from Native Packages (.deb / .rpm)
+
+Each GitHub Release also ships `.deb` and `.rpm` packages that install the manager + alarm engine (the mode-2 layout: InfluxDB stays external, agents install separately). Download the package for your distro from the [Releases page](https://github.com/llmsyscore/llm-systems-manager/releases), then:
+
+**Debian / Ubuntu:**
+
+```bash
+sudo apt install ./llm-systems-manager_<version>_all.deb
+```
+
+The install prompts (via debconf) for the dashboard admin login and SMTP settings; press ENTER to accept defaults. Non-interactive installs (`DEBIAN_FRONTEND=noninteractive`) take the defaults silently.
+
+**RHEL / Rocky / Alma / Fedora:**
+
+```bash
+sudo dnf install ./llm-systems-manager-<version>-1.noarch.rpm
+```
+
+RPM installs are non-interactive: config is generated with detected defaults at `/opt/llm-systems-manager/config/llm-systems.toml` — edit it and `sudo systemctl restart llm-systems-manager` afterwards. EL9's default `python3` is 3.9; install `python3.11` (`sudo dnf install python3.11 python3.11-pip`) first — the package picks the newest Python ≥ 3.10 automatically.
+
+Both packages create the `llmsys` runtime user, install and start the two systemd units, and build the Python venvs at configure time (**network access to PyPI is required during install**). On upgrades the live config is preserved (new keys are merged in). `apt purge llm-systems-manager` removes everything including config, data, logs, and the runtime user; `dnf remove` keeps config/data behind with a notice.
+
+Packages are built by `tools/packaging/build-packages.sh` (fpm) — see that script for the build-from-source path.
+
+---
+
 ## Installing Agents on Remote Computers
 
 If you already have a manager running and want to start monitoring an additional server, install only the agent on that remote machine.

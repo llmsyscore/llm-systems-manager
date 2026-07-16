@@ -1,0 +1,18 @@
+# deb postrm body — concatenated after common.sh by build-packages.sh.
+case "$1" in
+  remove)
+    llmsys_remove_generated
+    if llmsys_systemd_ready; then systemctl daemon-reload; fi
+    ;;
+  purge)
+    llmsys_remove_generated
+    llmsys_purge_all
+    if [ -f /usr/share/debconf/confmodule ]; then
+      . /usr/share/debconf/confmodule
+      db_purge || true
+    fi
+    if llmsys_systemd_ready; then systemctl daemon-reload; fi
+    ;;
+esac
+
+exit 0

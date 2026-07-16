@@ -1,0 +1,11 @@
+# rpm %postun body — concatenated after common.sh by build-packages.sh.
+# $1 = 0 means full erase; rpm has no purge tier, so config/data are kept.
+if [ "${1:-0}" -eq 0 ]; then
+  llmsys_remove_generated
+  if llmsys_systemd_ready; then systemctl daemon-reload; fi
+  if [ -e "$LLMSYS_CFG" ] || [ -d "$LLMSYS_INSTALL_DIR/data" ]; then
+    echo "llm-systems-manager: config/data kept at $LLMSYS_INSTALL_DIR (remove manually, plus $LLMSYS_LOG_DIR and user '$LLMSYS_RUN_USER', for a full purge)"
+  fi
+fi
+
+exit 0
