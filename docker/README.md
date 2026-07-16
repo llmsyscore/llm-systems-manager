@@ -76,6 +76,23 @@ name (`http://alarm-engine:8081`, the default). Setting it to the host IP makes
 every manager→AE call fail (the container can't reach the host's own published
 port).
 
+### The manager's own host metrics
+
+The manager runs in a container, so it can't auto-detect which registered agent
+runs on its host (the container hostname is a random id and the agent arrives
+via the compose bridge). Install an agent on the docker host, approve it, then
+in **Admin → Agents** tick **manager host** on that agent's row. This scopes the
+manager-host CPU/RAM/Disk cards to it and shows the manager / alarm-engine /
+InfluxDB version pills. Without it those stay empty — the metrics gap is
+expected until you designate the host agent.
+
+### Restarting the control plane
+
+The Admin tab's **Restart** buttons work in containers: the manager restarts by
+exiting (the runtime respawns it), and the alarm engine restarts itself over its
+management API. Both rely on the compose `restart: unless-stopped` policy, so
+keep it in place (a bare `docker run` with no restart policy would just stop).
+
 ## Notifications
 
 Set `LSM_SMTP_*` and/or `LSM_DISCORD_WEBHOOK_URL` to wire up alert delivery;

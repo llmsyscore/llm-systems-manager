@@ -9,7 +9,8 @@ RUN apt-get update \
 
 WORKDIR /opt/llm-systems-manager
 ENV PYTHONUNBUFFERED=1 \
-    LLM_SYSTEMS_CONFIG=/opt/llm-systems-manager/config/llm-systems.toml
+    LLM_SYSTEMS_CONFIG=/opt/llm-systems-manager/config/llm-systems.toml \
+    LSM_CONTAINERIZED=1
 
 
 FROM base AS manager

@@ -154,7 +154,7 @@ def _local_hostname() -> str:
 # banner reads it. Bump suffix (-1, -2, …) for same-day iterations; roll
 # the date for a new day's first change.
 # ---------------------------------------------------------------------------
-__version__ = "v2026.07.15-5"
+__version__ = "v2026.07.15-7"
 
 # Wall-clock at first import (Cheroot main process); the shutdown banner
 # reads it for the uptime line.
@@ -553,6 +553,29 @@ if _AE_BEARER in ("", "REPLACE_ME"):
     _AE_BEARER = (settings.alarm_engine.ingest_token or "").strip()
 if _AE_BEARER and _AE_BEARER != "REPLACE_ME":
     _ae_session.headers["Authorization"] = f"Bearer {_AE_BEARER}"
+
+
+def _detect_containerized() -> bool:
+    """True when running inside a Docker/Podman/k8s container. Honors an
+    explicit LSM_CONTAINERIZED override, else mirrors the installer guard
+    (tools/installer/lib-common.sh): container markers or a container cgroup
+    in /proc/1/cgroup. Picks process-exit restart over systemctl (absent in
+    containers) in admin_service_restart."""
+    override = os.environ.get("LSM_CONTAINERIZED")
+    if override is not None:
+        return override.strip().lower() in ("1", "true", "yes")
+    with best_effort("containerized probe: markers"):
+        if os.path.exists("/.dockerenv") or os.path.exists("/run/.containerenv"):
+            return True
+    with best_effort("containerized probe: cgroup"):
+        with open("/proc/1/cgroup", encoding="utf-8") as fh:
+            cg = fh.read()
+        if any(m in cg for m in ("docker", "containerd", "kubepods")):
+            return True
+    return False
+
+
+_CONTAINERIZED = _detect_containerized()
 
 
 def install_topology() -> dict:
@@ -2776,17 +2799,55 @@ def _sudo_allows(unit_cmd: list) -> "tuple[bool, str]":
         return False, "sudo pre-flight failed"
 
 
+def _schedule_process_exit(delay: float = 1.0) -> None:
+    """Spawn a daemon that exits this process after `delay`s (the HTTP response
+    flushes first); the container runtime respawns it. Split out so tests can
+    stub it (no real os._exit)."""
+    def _exit():
+        time.sleep(delay)
+        os._exit(0)
+    threading.Thread(target=_exit, daemon=True).start()
+
+
+def _restart_service_containerized(svc: str):
+    """Restart under a containerized control plane (no systemd). Manager: exit
+    this process — the runtime respawns it (compose restart: unless-stopped).
+    Alarm engine: it's a sibling container, so ask it to restart itself over
+    its management API (_ae_session already carries the management bearer)."""
+    if svc == "manager":
+        _schedule_process_exit()
+        logging.warning("manager self-restart (container exit) requested via admin tab")
+        return jsonify({"ok": True, "restarting": True,
+                        "note": "manager restarting — the dashboard will be briefly unavailable"})
+    base = (_alarm_engine_url or "").rstrip("/")
+    if not base:
+        return jsonify({"ok": False, "error": "alarm engine URL not configured"}), 500
+    try:
+        r = _ae_session.post(base + "/api/alarm/admin/self-restart", timeout=10)
+        if r.ok:
+            logging.warning("alarm engine restart (container) requested via admin tab")
+            return jsonify({"ok": True, "restarting": True})
+        err = (r.text or "").strip()[:300] or f"alarm engine returned HTTP {r.status_code}"
+        return jsonify({"ok": False, "error": err}), 502
+    except Exception as e:
+        logging.exception("alarm engine container restart failed")
+        return _err_json("alarm engine restart failed", 502, exc=e)
+
+
 @app.route("/api/admin/service/<svc>/restart", methods=["POST"])
 def admin_service_restart(svc: str):
-    """Restart the manager or alarm-engine systemd unit from the admin tab.
-    Requires admin role + admin CIDR. Needs the sudoers fragment installed by
-    install-manager.sh granting NOPASSWD systemctl restart on these two units."""
+    """Restart the manager or alarm-engine from the admin tab. Requires admin
+    role + admin CIDR. On bare metal uses the sudoers NOPASSWD systemctl grant
+    from install-manager.sh; in a container restarts via process-exit + the
+    alarm engine's self-restart API (no systemd there)."""
     deny = _require_admin()
     if deny is not None:
         return deny
     unit = _RESTARTABLE_UNITS.get(svc)
     if not unit:
         return jsonify({"ok": False, "error": f"unknown service '{svc}'"}), 400
+    if _CONTAINERIZED:
+        return _restart_service_containerized(svc)
     # ae_local_unit = the AE unit file exists here, the precise precondition for
     # a local systemctl restart (reuses install_topology, no getaddrinfo).
     if svc == "alarm_engine" and not install_topology()["ae_local_unit"]:
@@ -2855,6 +2916,9 @@ def admin_system_health():
         # Whether the alarm engine unit is installed here — gates the AE restart
         # button in the admin tab (the manager can only systemctl a local unit).
         "ae_local": install_topology()["ae_local_unit"],
+        # Containerized control plane: the AE restart button is enabled too (the
+        # manager restarts the sibling AE container via its self-restart API).
+        "containerized": _CONTAINERIZED,
     }
 
     # ── Alarm engine reachability (cheap GET) ──

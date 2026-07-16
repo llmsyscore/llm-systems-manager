@@ -177,9 +177,10 @@ function _renderSystemHealth(d) {
       let val;
       if (s.ok) val = s.latency_ms != null ? (s.latency_ms + 'ms') : (s.state || 'connected');
       else val = s.error ? (s.error.slice(0, 36)) : ('HTTP ' + (s.status_code || '?'));
-      // AE restart only when it runs on this host (manager can only systemctl
-      // a local unit); a split AE is restarted on its own host.
-      const action = (s.name === 'alarm_engine' && d.ae_local)
+      // AE restart when it runs on this host (manager systemctls a local unit)
+      // or under a containerized control plane (manager calls the sibling AE
+      // container's self-restart API); a split bare-metal AE restarts on its host.
+      const action = (s.name === 'alarm_engine' && (d.ae_local || d.containerized))
         ? { svc: 'alarm_engine', label: 'Alarm Engine' } : undefined;
       rows.push({ lbl, val, ok: s.ok, action });
       // Render an extra row for the alarm engine's TLS state. dot is green when
@@ -565,6 +566,7 @@ async function adminLoadAgents() {
     if (Array.isArray(d.providers) && d.providers.length) {
       _adminProviders = d.providers;
     }
+    _adminHostAutoDetected = !!d.host_auto_detected;
     _latestAgentVersion = d.latest_agent_version || null;
     const lavEl = document.getElementById('adminLatestVersion');
     if (lavEl) lavEl.textContent = _latestAgentVersion ? `manager: ${_latestAgentVersion}` : '';
@@ -694,6 +696,13 @@ function _adminInfraChips(a) {
 
 // Capability chips + primary checkboxes inline. Replaces the old
 // separate "Capabilities" and "Primary" columns.
+// Single-select role box: offered to every eligible agent while unheld; once
+// held only the holder shows it (checked). autoHidden hides it everywhere.
+function _singleSelectShow(agentId, holderId, autoHidden) {
+  if (autoHidden) return false;
+  return !holderId || holderId === agentId;
+}
+
 function _adminCapsAndPrimary(a) {
   const caps = a.capabilities || {};
   const order = ['llama', 'lms', 'vllm', 'openclaw', 'image_gen', 'perf_controller', 'sysperf'];
@@ -733,34 +742,49 @@ function _adminCapsAndPrimary(a) {
   } else if (approved) {
     tlsBadge = `<span class="adm-chip tls-off" title="no cert issued yet — auto-distribution will happen on next heartbeat">○ HTTP</span>`;
   }
+  // Primary-X: shown on each capable agent while unheld, then only on the
+  // holder (checked). Boxes for capabilities the agent lacks aren't rendered.
   const primaryChecks = _adminProviders.map(p => {
-    const isP = _adminGlobal['primary_' + p.name + '_id'] === a.agent_id;
-    const has = !!caps[p.capability_key];
-    const dis = !approved || !has;
+    if (!caps[p.capability_key]) return '';
+    const holder = _adminGlobal['primary_' + p.name + '_id'];
+    if (!_singleSelectShow(a.agent_id, holder, false)) return '';
+    const isP = holder === a.agent_id;
     const pn = adminEsc(p.name);
-    const title = dis
-      ? (has ? 'agent must be approved' : 'agent has no ' + pn + ' capability')
-      : (isP ? 'currently primary ' + pn + ' host — uncheck to clear' : 'mark as primary ' + pn + ' host');
-    return `<label class="${dis ? 'disabled' : ''}" title="${title}">
-        <input type="checkbox" ${isP ? 'checked' : ''} ${dis ? 'disabled' : ''}
+    const title = isP ? 'currently primary ' + pn + ' host — uncheck to clear'
+                      : 'mark as primary ' + pn + ' host';
+    return `<label title="${title}">
+        <input type="checkbox" ${isP ? 'checked' : ''}
                onchange="adminTogglePrimary('${aid}','${pn}',this.checked)"> primary ${pn}
       </label>`;
   }).join('');
-  const primary = `
-    <div class="adm-primary-row">
-      ${primaryChecks}
-      ${_adminPoolProviders.map(p => {
-        const has = !!caps[p.name];
-        const dis = !approved || !has;
-        const idx = poolIdxByProv[p.name];
-        const pn = adminEsc(p.name);
-        return `<label class="${dis ? 'disabled' : ''}" title="${dis ? 'agent must be approved + advertise ' + pn : (idx >= 0 ? 'remove from ' + pn + ' pool' : 'add to ' + pn + ' pool (round-robin)')}">
-        <input type="checkbox" ${idx >= 0 ? 'checked' : ''} ${dis ? 'disabled' : ''}
+  // Manager host — hidden everywhere when the manager auto-detects its host
+  // agent by hostname (bare metal); otherwise offered/held like a primary.
+  let hostToggle = '';
+  if (_singleSelectShow(a.agent_id, _adminGlobal.host_agent_id, _adminHostAutoDetected)) {
+    const isHost = !!a.is_host_agent;
+    const title = isHost
+      ? 'this agent runs on the manager host — uncheck to clear'
+      : 'mark the agent running on the manager host (populates host metrics + version pills; required on Docker installs)';
+    hostToggle = `<label title="${title}">
+        <input type="checkbox" ${isHost ? 'checked' : ''}
+               onchange="adminToggleHostAgent('${aid}',this.checked)"> manager host
+      </label>`;
+  }
+  // Pools stay multi-select — shown on every pool-capable agent (checked if a
+  // member) so a round-robin pool can span several agents.
+  const poolChecks = _adminPoolProviders.map(p => {
+    if (!caps[p.name]) return '';
+    const idx = poolIdxByProv[p.name];
+    const pn = adminEsc(p.name);
+    const title = idx >= 0 ? 'remove from ' + pn + ' pool' : 'add to ' + pn + ' pool (round-robin)';
+    return `<label title="${title}">
+        <input type="checkbox" ${idx >= 0 ? 'checked' : ''}
                onchange="adminTogglePool('${pn}','${aid}',this.checked)"> in ${pn} pool
       </label>`;
-      }).join('')}
-    </div>
-  `;
+  }).join('');
+  const rowInner = primaryChecks + hostToggle + poolChecks;
+  const primary = (approved && rowInner.trim())
+    ? `<div class="adm-primary-row">${rowInner}</div>` : '';
   // "View dashboard" — jump to the dashboard with this agent selected, one
   // button per provider capability the (approved) agent holds.
   const viewBtns = approved
@@ -770,7 +794,7 @@ function _adminCapsAndPrimary(a) {
       }).join(' ')
     : '';
   const viewRow = viewBtns ? `<div class="adm-view-row" style="margin-top:6px;">${viewBtns}</div>` : '';
-  return `<div>${chipHtml || '<span class="adm-muted">(no capabilities)</span>'} ${poolBadge} ${tlsBadge}</div>${approved ? primary : ''}${viewRow}`;
+  return `<div>${chipHtml || '<span class="adm-muted">(no capabilities)</span>'} ${poolBadge} ${tlsBadge}</div>${primary}${viewRow}`;
 }
 
 // Jump to the dashboard with this agent selected for the provider. Only pins a
@@ -801,6 +825,28 @@ async function adminTogglePool(provider, aid, inPool) {
     }
   } catch (e) {
     _adminLog(provider + '-pool request failed: ' + e.message);
+  }
+  adminLoadAgents();
+}
+
+// #412 — POST /api/agents/<id>/host-role to designate (or clear) the manager
+// host agent. Updates window.__MGR_AGENT so the manager-host cards repoint on
+// the next poll without a full page reload.
+async function adminToggleHostAgent(aid, isHost) {
+  try {
+    const r = await fetch(`/api/agents/${encodeURIComponent(aid)}/host-role`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ set: isHost }),
+    });
+    const d = await r.json().catch(() => ({}));
+    if (r.ok && d.ok) {
+      window.__MGR_AGENT = d.host_agent_id || null;
+    } else {
+      _adminLog('host-agent ' + (isHost ? 'set' : 'clear') + ' failed: ' + (d.error || r.status));
+    }
+  } catch (e) {
+    _adminLog('host-agent request failed: ' + e.message);
   }
   adminLoadAgents();
 }
@@ -918,6 +964,7 @@ async function adminDelete(aid) {
 // as a fallback if the agent isn't in the cached list.
 let _adminAgentsCache = [];
 let _adminGlobal = {};
+let _adminHostAutoDetected = false;
 let _latestAgentVersion = null;
 // Pool-picker providers from /api/agents, plus per-card chip selections.
 let _adminPoolProviders = [{ name: 'llama', label: 'llama.cpp', pin_key: 'llama_model_pins' }];
