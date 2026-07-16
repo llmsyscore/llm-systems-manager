@@ -84,14 +84,16 @@ jobs:
           sudo test -x /opt/llm-systems-manager/llm-systems-alarm-engine/venv/bin/python3
           sudo stat -c '%U %a' /opt/llm-systems-manager/config/llm-systems.toml | grep -qx 'llmsys 600'
 
+      # The alarm engine serves HTTPS (self-signed cert pre-issued by the
+      # config bootstrap), so its probe is https + -k.
       - name: Health checks
         run: |
-          for i in $(seq 1 30); do
-            curl -fsS http://127.0.0.1:5000/health >/dev/null 2>&1 && break
-            sleep 2
-          done
-          curl -fsS http://127.0.0.1:5000/health | jq .
-          curl -fsS http://127.0.0.1:8081/health | jq .
+          set -o pipefail
+          probe() { for i in $(seq 1 30); do curl -fsSk "$1" >/dev/null 2>&1 && return 0; sleep 2; done; return 1; }
+          probe http://127.0.0.1:5000/health
+          probe https://127.0.0.1:8081/health
+          curl -fsS  http://127.0.0.1:5000/health | jq .
+          curl -fsSk https://127.0.0.1:8081/health | jq .
 
       # Upgrade must keep the live config (marker key survives) and leave
       # both services running.
@@ -103,12 +105,9 @@ jobs:
           dpkg-query -W -f='${Version}' llm-systems-manager | grep -qx 0.0.2
           sudo grep -q 'ci-upgrade-marker' /opt/llm-systems-manager/config/llm-systems.toml
           ls /opt/llm-systems-manager/config/llm-systems.toml.bak.* 2>/dev/null && exit 1 || true
-          for i in $(seq 1 30); do
-            curl -fsS http://127.0.0.1:5000/health >/dev/null 2>&1 && break
-            sleep 2
-          done
-          curl -fsS http://127.0.0.1:5000/health >/dev/null
-          curl -fsS http://127.0.0.1:8081/health >/dev/null
+          probe() { for i in $(seq 1 30); do curl -fsSk "$1" >/dev/null 2>&1 && return 0; sleep 2; done; return 1; }
+          probe http://127.0.0.1:5000/health
+          probe https://127.0.0.1:8081/health
           # try-restart must have bounced the service (fresh start timestamp).
           test "$(systemctl show -p ActiveEnterTimestamp --value llm-systems-manager)" != "$STARTED_BEFORE"
 
