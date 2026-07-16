@@ -8,6 +8,7 @@ on:
     paths:
       - "agent/**"
       - "!agent/tests/**"
+      - "tools/packaging/**"
       - ".github/workflows/agent-binaries.yml"
   push:
     tags: ["v*"]
@@ -113,6 +114,50 @@ jobs:
           tar -tzf "$ASSET.tar.gz" | grep -qx "agent_config.yaml.example"
           tar -tzf "$ASSET.tar.gz" | grep -qx "$UNIT"
 
+      # Native packages (#385): wrap this leg's binary as .deb + .rpm.
+      - name: Build native packages (.deb/.rpm)
+        if: matrix.smoke_image != ''
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends ruby rpm binutils
+          sudo gem install fpm --no-document
+          case "${{ matrix.asset_suffix }}" in
+            linux-x86_64) PKG_ARCH=amd64 ;;
+            linux-arm64)  PKG_ARCH=arm64 ;;
+          esac
+          VERSION="${GITHUB_REF_NAME#v}"
+          case "$GITHUB_REF" in refs/tags/*) ;; *) VERSION="0.0.1" ;; esac
+          tools/packaging/build-agent-package.sh \
+            --binary stage/llm-systems-agent --version "$VERSION" \
+            --arch "$PKG_ARCH" --out dist-pkg
+
+      # apt install → identity/unit/ownership/config/health asserts → purge.
+      - name: Install test (.deb)
+        if: matrix.smoke_image != ''
+        run: |
+          echo "llm-systems-agent llm-systems-agent/manager-url string http://127.0.0.1:5000" \
+            | sudo debconf-set-selections
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y ./dist-pkg/llm-systems-agent_*.deb
+          set -x
+          getent passwd llmsys
+          test -f /usr/lib/systemd/system/llm-systems-agent.service
+          systemctl is-enabled llm-systems-agent
+          sudo stat -c '%U' /opt/llm-systems-agent/llm-systems-agent | grep -qx llmsys
+          sudo grep -q 'MANAGER_URL: *"http://127.0.0.1:5000"' /opt/llm-systems-agent/agent_config.yaml
+          for i in $(seq 1 30); do
+            curl -fsS http://127.0.0.1:8082/health >/dev/null 2>&1 && break
+            sleep 2
+          done
+          curl -fsS http://127.0.0.1:8082/health | grep -q '"status":"ok"'
+          sudo apt-get purge -y llm-systems-agent
+          test ! -e /opt/llm-systems-agent
+          test ! -e /usr/lib/systemd/system/llm-systems-agent.service
+          ! getent passwd llmsys
+
+      - name: Agent service log on failure
+        if: failure() && matrix.smoke_image != ''
+        run: sudo journalctl -u llm-systems-agent --no-pager -n 200 || true
+
       # PR-gate inspection copy only; tag builds ship via the release assets.
       - uses: actions/upload-artifact@v4
         if: ${{ !startsWith(github.ref, 'refs/tags/') }}
@@ -121,6 +166,13 @@ jobs:
           path: |
             llm-systems-agent-${{ matrix.asset_suffix }}.tar.gz
             llm-systems-agent-${{ matrix.asset_suffix }}.tar.gz.sha256
+          if-no-files-found: error
+
+      - uses: actions/upload-artifact@v4
+        if: ${{ !startsWith(github.ref, 'refs/tags/') && matrix.smoke_image != '' }}
+        with:
+          name: llm-systems-agent-packages-${{ matrix.asset_suffix }}
+          path: dist-pkg/
           if-no-files-found: error
 
       # The Release workflow creates the release on the same tag push; wait for
@@ -138,3 +190,10 @@ jobs:
           gh release upload "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --clobber \
             "llm-systems-agent-${{ matrix.asset_suffix }}.tar.gz" \
             "llm-systems-agent-${{ matrix.asset_suffix }}.tar.gz.sha256"
+
+      # The release was already awaited by the tarball upload above.
+      - name: Upload packages to release
+        if: startsWith(github.ref, 'refs/tags/') && matrix.smoke_image != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --clobber dist-pkg/*

@@ -130,6 +130,7 @@ if [[ ",$FORMATS," == *,deb,* ]]; then
     --depends ca-certificates --depends curl --depends jq \
     --depends sqlite3 --depends openssl \
     --deb-priority optional --category admin \
+    --deb-recommends influxdb2 \
     --after-install "$SCRIPTS/deb-postinst" \
     --before-remove "$SCRIPTS/deb-prerm" \
     --after-remove "$SCRIPTS/deb-postrm" \
@@ -148,6 +149,7 @@ if [[ ",$FORMATS," == *,rpm,* ]]; then
     --depends ca-certificates --depends /usr/bin/curl --depends jq \
     --depends sqlite --depends openssl \
     --rpm-os linux \
+    --rpm-tag 'Recommends: influxdb2' \
     --before-install "$SCRIPTS/rpm-pre" \
     --after-install "$SCRIPTS/rpm-post" \
     --before-remove "$SCRIPTS/rpm-preun" \

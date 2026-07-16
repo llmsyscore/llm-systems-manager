@@ -107,6 +107,19 @@ llmsys_write_config() {
   fi
 }
 
+# Best-effort probe of the configured InfluxDB; loud notice when absent
+# (influxdb2 is only a weak dependency — third-party repo, may be remote).
+llmsys_influx_notice() {
+  local host port
+  host="$(awk -F'"' '/^\[influxdb\]/{s=1;next} /^\[/{s=0} s && /^host[ \t]*=/{print $2; exit}' "$LLMSYS_CFG" 2>/dev/null)"
+  port="$(awk '/^\[influxdb\]/{s=1;next} /^\[/{s=0} s && /^port[ \t]*=/{gsub(/[^0-9]/,""); print; exit}' "$LLMSYS_CFG" 2>/dev/null)"
+  curl -fsS -m 3 "http://${host:-localhost}:${port:-8086}/health" >/dev/null 2>&1 && return 0
+  echo "llm-systems-manager: NOTICE — InfluxDB is not reachable at ${host:-localhost}:${port:-8086}." >&2
+  echo "  Metric history/alarms need it: install locally (tools/installer/install-influxdb.sh or the" >&2
+  echo "  influxdb2 package from repos.influxdata.com) or point [influxdb] + [influxdb.tokens] in" >&2
+  echo "  $LLMSYS_CFG at an existing server, then restart the services." >&2
+}
+
 llmsys_enable_start() {
   llmsys_systemd_ready || return 0
   systemctl daemon-reload
@@ -142,6 +155,7 @@ llmsys_configure() {
   llmsys_write_config
   if [ -z "$upgrade" ]; then
     llmsys_enable_start
+    llmsys_influx_notice || true
     echo "llm-systems-manager: dashboard on port 5000; config: $LLMSYS_CFG (edit + 'systemctl restart llm-systems-manager')"
   else
     llmsys_restart_upgraded
@@ -157,8 +171,11 @@ llmsys_remove_generated() {
 }
 
 # Removes config, data, logs, and the runtime user (deb purge only).
+# The user is shared with the llm-systems-agent package — keep it while
+# that package's tree is still present.
 llmsys_purge_all() {
   rm -rf "$LLMSYS_INSTALL_DIR" "$LLMSYS_LOG_DIR"
+  [ -d /opt/llm-systems-agent ] && return 0
   if getent passwd "$LLMSYS_RUN_USER" >/dev/null 2>&1; then
     userdel -r "$LLMSYS_RUN_USER" 2>/dev/null || userdel "$LLMSYS_RUN_USER" 2>/dev/null || true
   fi

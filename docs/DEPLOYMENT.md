@@ -119,7 +119,7 @@ Log in with the default credentials:
 
 ## Installing from Native Packages (.deb / .rpm)
 
-Each GitHub Release also ships `.deb` and `.rpm` packages that install the manager + alarm engine (the mode-2 layout: InfluxDB stays external, agents install separately). Download the package for your distro from the [Releases page](https://github.com/llmsyscore/llm-systems-manager/releases), then:
+Each GitHub Release also ships `.deb` and `.rpm` packages: **`llm-systems-manager`** installs the manager + alarm engine (the mode-2 layout: InfluxDB stays external, agents install separately), and per-arch **`llm-systems-agent`** packages install the self-contained agent binary. The script installer remains the preferred, fully automated path — packages exist for hosts managed through apt/dnf tooling. Download the package for your distro from the [Releases page](https://github.com/llmsyscore/llm-systems-manager/releases), then:
 
 **Debian / Ubuntu:**
 
@@ -137,15 +137,35 @@ sudo dnf install ./llm-systems-manager-<version>-1.noarch.rpm
 
 RPM installs are non-interactive: config is generated with detected defaults at `/opt/llm-systems-manager/config/llm-systems.toml` — edit it and `sudo systemctl restart llm-systems-manager` afterwards. EL9's default `python3` is 3.9; install `python3.11` (`sudo dnf install python3.11 python3.11-pip`) first — the package picks the newest Python ≥ 3.10 automatically.
 
-Both packages create the `llmsys` runtime user, install and start the two systemd units, and build the Python venvs at configure time (**network access to PyPI is required during install**). On upgrades the live config is preserved (new keys are merged in). `apt purge llm-systems-manager` removes everything including config, data, logs, and the runtime user; `dnf remove` keeps config/data behind with a notice.
+Both manager packages create the `llmsys` runtime user, install and start the two systemd units, and build the Python venvs at configure time (**network access to PyPI is required during install**). On upgrades the live config is preserved (new keys are merged in). `apt purge llm-systems-manager` removes everything including config, data, logs, and the runtime user; `dnf remove` keeps config/data behind with a notice.
 
-Packages are built by `tools/packaging/build-packages.sh` (fpm) — see that script for the build-from-source path.
+**InfluxDB:** the package declares `influxdb2` only as a *Recommends* — it lives in InfluxData's third-party repo (not distro repos) and may legitimately run on another host, so a hard dependency would break both cases. If InfluxDB isn't reachable after install, the postinst prints a notice pointing at `tools/installer/install-influxdb.sh` (local install) or the `[influxdb]` config section (external server). Metric history and alarms need it; the dashboard runs without it in the meantime.
+
+**Agent package:**
+
+```bash
+sudo apt install ./llm-systems-agent_<version>_amd64.deb        # or _arm64
+sudo dnf install ./llm-systems-agent-<version>-1.x86_64.rpm     # or .aarch64
+```
+
+The deb prompts (debconf) for the manager URL; the rpm takes defaults — set `MANAGER_URL` in `/opt/llm-systems-agent/agent_config.yaml` and restart if left blank. The binary is installed owned by `llmsys` so manager-driven self-update (**Admin → Agents → Update**) keeps working; after a self-update the on-disk binary is newer than the package until the next `apt`/`dnf` upgrade re-syncs it. Provider toggles (llama.cpp/LM Studio/vLLM control, sudo wrappers) are what the script installer automates — enable them in `agent_config.yaml` per its inline docs.
+
+Packages are built by `tools/packaging/build-packages.sh` and `tools/packaging/build-agent-package.sh` (fpm) — see those scripts for the build-from-source path.
+
+---
+
+## Installing with Docker (control plane)
+
+Multi-arch images for the manager and alarm engine are published to ghcr.io on every release. No repo checkout is needed: download [`docker-compose.yml`](https://github.com/llmsyscore/llm-systems-manager/blob/main/docker-compose.yml) and [`.env.example`](https://github.com/llmsyscore/llm-systems-manager/blob/main/.env.example), fill in the secrets, and `docker compose up -d` brings up the manager + alarm engine + InfluxDB together. See [docker/README.md](../docker/README.md) for the full walkthrough. Agents still install natively on each monitored host (they need sensor/GPU/systemd access).
 
 ---
 
 ## Installing Agents on Remote Computers
 
-If you already have a manager running and want to start monitoring an additional server, install only the agent on that remote machine.
+If you already have a manager running and want to start monitoring an additional server, install only the agent on that remote machine. The script installer below is the preferred path; two alternatives exist for hosts where it doesn't fit:
+
+- **Native package** (Linux, no Python needed): `apt`/`dnf` install of the per-arch `llm-systems-agent` package — see [Installing from Native Packages](#installing-from-native-packages-deb--rpm).
+- **Binary tarball** (Linux or macOS, no Python needed): each release ships `llm-systems-agent-<platform>.tar.gz` bundling the self-contained binary, `agent_config.yaml.example`, and the service unit template — extract to `/opt/llm-systems-agent`, set `MANAGER_URL` in a copied `agent_config.yaml`, install the unit, and `systemctl enable --now llm-systems-agent`. Full steps in the [README's Agent binary section](../README.md#agent-binary-no-python-required).
 
 ### Step 1: Get the Installer on the Remote Host
 
