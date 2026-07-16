@@ -76,7 +76,8 @@ jobs:
           getent passwd llmsys
           test -f /usr/lib/systemd/system/llm-systems-manager.service
           test -f /usr/lib/systemd/system/llm-systems-alarm-engine.service
-          test -f /etc/sudoers.d/llm-systems-manager
+          # /etc/sudoers.d is root-only on the runner image — stat as root.
+          sudo test -f /etc/sudoers.d/llm-systems-manager
           sudo visudo -cf /etc/sudoers.d/llm-systems-manager
           systemctl is-enabled llm-systems-manager llm-systems-alarm-engine
           sudo test -x /opt/llm-systems-manager/llm-systems-manager/venv/bin/python3
@@ -120,7 +121,7 @@ jobs:
           test ! -e /var/log/llm-systems-manager
           test ! -e /usr/lib/systemd/system/llm-systems-manager.service
           test ! -e /usr/lib/systemd/system/llm-systems-alarm-engine.service
-          test ! -e /etc/sudoers.d/llm-systems-manager
+          sudo test ! -e /etc/sudoers.d/llm-systems-manager
           ! systemctl status llm-systems-manager >/dev/null 2>&1
 
       - name: Collect service logs on failure
