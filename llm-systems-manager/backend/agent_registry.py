@@ -574,6 +574,21 @@ def approved_agent_caps() -> dict:
     return out
 
 
+def hostname_matched_agent_id() -> "str | None":
+    """agent_id of an approved agent whose host keys match the manager's own
+    hostname/loopback — the bare-metal co-located agent, resolvable WITHOUT an
+    explicit designation. None under Docker (container hostname never matches)."""
+    local_keys = set(_deps.loopback_hosts) | {
+        _deps.hostname.lower(), _deps.hostname.split(".", 1)[0].lower(),
+    }
+    for aid, a in ((load_agents().get("agents") or {}).items()):
+        if a.get("status") != "approved":
+            continue
+        if agent_host_keys(a) & local_keys:
+            return aid
+    return None
+
+
 def self_agent_id() -> "str | None":
     """agent_id of the approved agent running on the manager's own host, so
     the frontend can scope the manager-host cards by agent id (not hostname).
@@ -586,15 +601,7 @@ def self_agent_id() -> "str | None":
         a = agents.get(designated)
         if a and a.get("status") == "approved":
             return designated
-    local_keys = set(_deps.loopback_hosts) | {
-        _deps.hostname.lower(), _deps.hostname.split(".", 1)[0].lower(),
-    }
-    for aid, a in agents.items():
-        if a.get("status") != "approved":
-            continue
-        if agent_host_keys(a) & local_keys:
-            return aid
-    return None
+    return hostname_matched_agent_id()
 
 
 # ── Public API: primary-agent resolution ─────────────────────────────
@@ -1341,6 +1348,9 @@ def _agents_list():
     _deps.refresh_infra_versions()
     # Redact tokens — admin UI doesn't need them after approval flow.
     hid = (data.get("global") or {}).get("host_agent_id") or None
+    # Auto-detected = the manager already resolves its host agent by hostname
+    # (bare metal), so the "manager host" toggle is unnecessary and hidden.
+    host_auto_detected = bool(hostname_matched_agent_id()) and not hid
     safe = []
     for agent in data.get("agents", {}).values():
         a = dict(agent)
@@ -1357,6 +1367,7 @@ def _agents_list():
     return jsonify({
         "agents": safe,
         "global": data.get("global", {"auth_disabled": False}),
+        "host_auto_detected": host_auto_detected,
         "latest_agent_version": latest,
         # Pool-picker providers, for the admin pool/pins provider chips.
         "pool_providers": [

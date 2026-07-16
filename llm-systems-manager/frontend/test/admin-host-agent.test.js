@@ -22,37 +22,80 @@ function runHarness(bootstrap) {
   return dom.window;
 }
 
-// ── Host-toggle render (no primaries/pools → the only "checked" is the toggle) ──
-const BOOT_CAPS = `
-  _adminProviders = [{ name:'llama', label:'llama.cpp', capability_key:'llama', sub_tab:'llamacpp' }];
-  _adminPoolProviders = [];
-  _adminGlobal = {};
-  const HOST    = { agent_id:'agent-H', status:'approved', is_host_agent:true,  capabilities:{ llama:true } };
-  const OTHER   = { agent_id:'agent-O', status:'approved', is_host_agent:false, capabilities:{ llama:true } };
-  const PENDING = { agent_id:'agent-P', status:'pending',  is_host_agent:false, capabilities:{ llama:true } };
-  window.__T = {
-    host:    _adminCapsAndPrimary(HOST),
-    other:   _adminCapsAndPrimary(OTHER),
-    pending: _adminCapsAndPrimary(PENDING),
-  };
-`;
+// Render one agent row's caps/checkbox HTML with explicit board state.
+// Only one checkbox can be "checked" in each scenario below, so a bare
+// /type="checkbox" checked/ match unambiguously identifies the held box.
+function render(globals, autoDetected, agent) {
+  const boot = `
+    _adminProviders = [
+      { name:'llama', label:'llama.cpp', capability_key:'llama', sub_tab:'llamacpp' },
+      { name:'vllm',  label:'vLLM',      capability_key:'vllm',  sub_tab:'vllm' },
+    ];
+    _adminPoolProviders = [{ name:'llama', label:'llama.cpp', pin_key:'llama_model_pins' }];
+    _adminGlobal = ${JSON.stringify(globals)};
+    _adminHostAutoDetected = ${autoDetected};
+    window.__T = { html: _adminCapsAndPrimary(${JSON.stringify(agent)}) };
+  `;
+  return runHarness(boot).__T.html;
+}
 
-describe('#412 manager host toggle — render', () => {
-  const T = runHarness(BOOT_CAPS).__T;
-  test('approved agents get a manager-host checkbox', () => {
-    expect(T.host).toContain("adminToggleHostAgent('agent-H',this.checked)");
-    expect(T.other).toContain("adminToggleHostAgent('agent-O',this.checked)");
+const approvedAgent = (id, extra) =>
+  ({ agent_id: id, status: 'approved', is_host_agent: false, capabilities: { llama: true }, ...extra });
+
+describe('#412 manager host toggle — exclusive visibility', () => {
+  test('unheld + not auto-detected: shown (unchecked) on an approved agent', () => {
+    const html = render({}, false, approvedAgent('agent-O'));
+    expect(html).toContain("adminToggleHostAgent('agent-O',this.checked)");
+    expect(html).not.toMatch(/type="checkbox" checked/);
   });
-  test('the designated host agent checkbox has the checked attribute', () => {
-    // match the `checked` attribute, not `this.checked` in the onchange handler;
-    // with no primaries/pools the host toggle is the only checkable input here.
-    expect(T.host).toMatch(/type="checkbox" checked/);
+  test('designated: shown checked on the holder', () => {
+    const html = render({ host_agent_id: 'agent-H' }, false,
+                        approvedAgent('agent-H', { is_host_agent: true }));
+    expect(html).toContain("adminToggleHostAgent('agent-H',this.checked)");
+    expect(html).toMatch(/type="checkbox" checked/);
   });
-  test('a non-host agent checkbox is unchecked', () => {
-    expect(T.other).not.toMatch(/type="checkbox" checked/);
+  test('designated: hidden on every other agent', () => {
+    const html = render({ host_agent_id: 'agent-H' }, false, approvedAgent('agent-O'));
+    expect(html).not.toContain('adminToggleHostAgent');
   });
-  test('a pending (unapproved) agent has no host toggle', () => {
-    expect(T.pending).not.toContain('adminToggleHostAgent');
+  test('auto-detected: hidden on all agents', () => {
+    const html = render({}, true, approvedAgent('agent-O'));
+    expect(html).not.toContain('adminToggleHostAgent');
+  });
+  test('pending (unapproved) agent: no host toggle', () => {
+    const html = render({}, false, { agent_id: 'agent-P', status: 'pending',
+                                     is_host_agent: false, capabilities: { llama: true } });
+    expect(html).not.toContain('adminToggleHostAgent');
+  });
+});
+
+describe('#412 primary checkbox — exclusive visibility', () => {
+  test('unheld: shown on every capable agent', () => {
+    const html = render({}, false, approvedAgent('agent-O', { capabilities: { llama: true, vllm: true } }));
+    expect(html).toContain("adminTogglePrimary('agent-O','llama',this.checked)");
+    expect(html).toContain("adminTogglePrimary('agent-O','vllm',this.checked)");
+  });
+  test('held: checked on the primary, hidden on others', () => {
+    const holder = render({ primary_llama_id: 'agent-H' }, false, approvedAgent('agent-H'));
+    const other = render({ primary_llama_id: 'agent-H' }, false, approvedAgent('agent-O'));
+    expect(holder).toContain("adminTogglePrimary('agent-H','llama',this.checked)");
+    expect(holder).toMatch(/type="checkbox" checked/);
+    expect(other).not.toContain("adminTogglePrimary('agent-O','llama'");
+  });
+  test('a capability the agent lacks renders no primary checkbox', () => {
+    const html = render({}, false, approvedAgent('agent-O'));   // llama only
+    expect(html).not.toContain("adminTogglePrimary('agent-O','vllm'");
+  });
+});
+
+describe('#412 pool checkbox stays multi-select', () => {
+  test('offered on other pool-capable agents even when one is already a member', () => {
+    const member = render({ llama_pool: ['agent-H'] }, false, approvedAgent('agent-H'));
+    const other = render({ llama_pool: ['agent-H'] }, false, approvedAgent('agent-O'));
+    expect(member).toContain("adminTogglePool('llama','agent-H',this.checked)");
+    expect(member).toMatch(/type="checkbox" checked/);           // the member box
+    expect(other).toContain("adminTogglePool('llama','agent-O',this.checked)");
+    expect(other).not.toMatch(/type="checkbox" checked/);        // still offerable, unchecked
   });
 });
 

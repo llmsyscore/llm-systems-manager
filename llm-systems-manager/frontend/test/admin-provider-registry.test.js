@@ -94,16 +94,16 @@ describe('#374 registry-driven admin provider UI — behavior', () => {
     expect(T.capsA).toContain("adminTogglePrimary('agent-A','tgi',this.checked)");
     expect(T.capsA).toContain('primary tgi');
   });
-  test('all four providers render a primary checkbox', () => {
-    for (const p of ['llama', 'lms', 'vllm', 'tgi']) {
+  test('a primary checkbox renders for each capability the agent has', () => {
+    for (const p of ['llama', 'vllm', 'tgi']) {
       expect(T.capsA).toContain(`adminTogglePrimary('agent-A','${p}',this.checked)`);
     }
   });
-  test('primary provider (tgi) checkbox is checked + enabled', () => {
+  test('primary provider (tgi) checkbox is checked', () => {
     expect(T.capsA).toContain('currently primary tgi host — uncheck to clear');
   });
-  test('a capability the agent lacks (lms) is present but disabled', () => {
-    expect(T.capsA).toMatch(/class="disabled"[^>]*title="agent has no lms capability"/);
+  test('a capability the agent lacks (lms) renders no primary checkbox', () => {
+    expect(T.capsA).not.toContain("adminTogglePrimary('agent-A','lms'");
   });
   test('primary llama capability chip gets the star; non-primary vllm does not', () => {
     expect(T.capsA).toContain('llama ★');

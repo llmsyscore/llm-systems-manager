@@ -24,6 +24,17 @@ HOST_AGENT = {
 }
 
 
+# Registered from loopback → host keys intersect the manager's local set, so
+# it IS auto-detected by hostname (the bare-metal co-located case).
+LOOPBACK_AGENT = {
+    "agent_id": "l" * 32,
+    "status": "approved",
+    "hostname": "lo-agent",
+    "registered_from": "127.0.0.1",
+    "capabilities": {"llama": True},
+}
+
+
 def _store(agents, glob):
     return {"agents": {a["agent_id"]: a for a in agents}, "global": glob}
 
@@ -37,6 +48,18 @@ def test_designated_host_agent_id_reads_global(monkeypatch):
 def test_designated_host_agent_id_none_when_unset(monkeypatch):
     monkeypatch.setattr(agent_registry, "load_agents", lambda: _store([HOST_AGENT], {}))
     assert agent_registry.designated_host_agent_id() is None
+
+
+def test_hostname_match_none_for_docker_agent(monkeypatch):
+    # The whole reason the toggle exists: a native host agent behind the bridge
+    # is NOT resolvable by hostname, so auto-detection returns None under Docker.
+    monkeypatch.setattr(agent_registry, "load_agents", lambda: _store([HOST_AGENT], {}))
+    assert agent_registry.hostname_matched_agent_id() is None
+
+
+def test_hostname_match_finds_loopback_agent(monkeypatch):
+    monkeypatch.setattr(agent_registry, "load_agents", lambda: _store([LOOPBACK_AGENT], {}))
+    assert agent_registry.hostname_matched_agent_id() == LOOPBACK_AGENT["agent_id"]
 
 
 def test_self_agent_id_prefers_designated(monkeypatch):
