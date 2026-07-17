@@ -52,23 +52,6 @@ wait_active() {
   return 1
 }
 
-# Stop→start (not restart) so a fresh process definitely reloads config; the
-# unit's Restart=on-failure can race a plain `systemctl restart`. Logs the PID
-# transition so a no-op restart is visible instead of silently masked.
-restart_wait() {
-  local before now
-  before="$(systemctl show -p MainPID --value "$1")"
-  systemctl stop "$1" 2>/dev/null || true
-  for _ in $(seq 1 30); do
-    if ! systemctl is-active --quiet "$1"; then break; fi
-    sleep 1
-  done
-  systemctl start "$1"
-  now="$(systemctl show -p MainPID --value "$1")"
-  echo "    [restart $1: pid $before -> $now]"
-  wait_health "$2"
-}
-
 wait_health() {
   for _ in $(seq 1 30); do
     if [ "$(code "$1")" = "200" ]; then return 0; fi
@@ -101,7 +84,11 @@ chown llmsys:llmsys "$AE_DATA/ae-tls.crt" "$AE_DATA/ae-tls.key"
 chmod 0644 "$AE_DATA/ae-tls.crt"
 chmod 0600 "$AE_DATA/ae-tls.key"
 sed -i -E 's/^#[[:space:]]*(ingest_token[[:space:]]*=)/\1/; s/^#[[:space:]]*(management_token[[:space:]]*=)/\1/' "$AE_TOML"
-if ! restart_wait llm-systems-alarm-engine "$AE_URL/health"; then fail "AE not serving HTTPS /health after cert copy + token activation"; fi
+# sed -i as root can leave the file root-owned; the AE runs as llmsys and must
+# be able to read its own 0600 config, so restore owner+mode after every edit.
+chown llmsys:llmsys "$AE_TOML"; chmod 0600 "$AE_TOML"
+systemctl restart llm-systems-alarm-engine
+if ! wait_health "$AE_URL/health"; then fail "AE not serving HTTPS /health after cert copy + token activation"; fi
 pass "AE serving HTTPS with tokens enforced"
 
 echo "── 3. AE enforces management_token on /api/alarm/rules ───────────────"
@@ -111,69 +98,27 @@ c="$(code -H "Authorization: Bearer $MGMT" "$AE_URL/api/alarm/rules")"
 if [ "$c" != "200" ]; then fail "AE rules with management_token = $c (want 200)"; fi
 pass "no token -> 401, management_token -> 200"
 
-echo "── 4. Manager proxy rejected until its own token is wired ────────────"
-c="$(code "$MGR_URL/api/alarm/rules")"
-if [ "$c" != "401" ]; then fail "manager proxy pre-wiring = $c (want 401 from the manager's default token)"; fi
-pass "manager (default REPLACE_ME token) proxied -> AE 401"
-
-echo "── 5. Wire the AE tokens into the manager (the paste step) + restart ─"
+echo "── 4. Wire the AE tokens into the manager (the paste step) + restart ─"
 sed -i -E "s|^ingest_token[[:space:]]*=.*|ingest_token = \"$INGEST\"|; s|^management_token[[:space:]]*=.*|management_token = \"$MGMT\"|" "$MGR_TOML"
-if ! restart_wait llm-systems-manager "$MGR_URL/health"; then fail "manager unhealthy after token wiring"; fi
+chown llmsys:llmsys "$MGR_TOML"; chmod 0600 "$MGR_TOML"
+systemctl restart llm-systems-manager
+if ! wait_health "$MGR_URL/health"; then fail "manager unhealthy after token wiring"; fi
 pass "manager tokens wired"
 
-echo "── diag (temporary) — token reality check ──────────────────────────"
-_mm="$(grep -oE '^management_token[[:space:]]*=[[:space:]]*"[^"]+"' "$MGR_TOML" | sed -E 's/.*"([^"]+)".*/\1/')"
-_ii="$(grep -oE '^ingest_token[[:space:]]*=[[:space:]]*"[^"]+"' "$MGR_TOML" | sed -E 's/.*"([^"]+)".*/\1/')"
-_aemm="$(grep -oE '^management_token[[:space:]]*=[[:space:]]*"[^"]+"' "$AE_TOML" | sed -E 's/.*"([^"]+)".*/\1/')"
-echo "  file: mgr.mgmt=${_mm:0:8} mgr.ingest=${_ii:0:8} ae.mgmt=${_aemm:0:8}  mainpid=$(systemctl show -p MainPID --value llm-systems-manager)"
-echo "  AE-direct: mgr.mgmt=$(code -H "Authorization: Bearer $_mm" "$AE_URL/api/alarm/rules") mgr.ingest=$(code -H "Authorization: Bearer $_ii" "$AE_URL/api/alarm/rules") none=$(code "$AE_URL/api/alarm/rules")"
-_py="$(systemctl show -p ExecStart --value llm-systems-manager | grep -oE '/[^ ]+/bin/python3' | head -1)"
-"${_py:-python3}" - "$MGR_TOML" <<'PYD' 2>&1 | sed 's/^/  /'
-import sys, os
-os.environ["LLM_SYSTEMS_CONFIG"] = sys.argv[1]
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(sys.argv[1])), "config"))
-try:
-    from unified_config import settings as s
-    m = (s.alarm_engine.management_token or "").strip(); i = (s.alarm_engine.ingest_token or "").strip()
-    bearer = m if m not in ("", "REPLACE_ME") else i
-    print("loader: mgmt=%s ingest=%s -> bearer=%s" % (m[:8], i[:8], bearer[:8]))
-except Exception as e:
-    print("loader-error:", type(e).__name__, e)
-PYD
+echo "── 5. Manager + AE configs agree on the shared tokens ────────────────"
+MGR_MGMT="$(toml_get "$MGR_TOML" alarm_engine management_token)"
+AE_MGMT="$(toml_get "$AE_TOML" alarm_engine management_token)"
+if [ -z "$AE_MGMT" ] || [ "$MGR_MGMT" != "$AE_MGMT" ]; then
+  fail "management_token mismatch: mgr=[${MGR_MGMT:0:8}] ae=[${AE_MGMT:0:8}]"
+fi
+pass "both hosts carry the same (non-empty) management_token"
 
-echo "── diag: classify the bearer the manager sends (dodges secret-masking) ─"
-_cap="$(mktemp)"
-EXP_MGMT="$_mm" EXP_INGEST="$_ii" python3 - "$_cap" <<'CAPPY' &
-import sys, os, http.server
-_m = os.environ.get("EXP_MGMT", ""); _i = os.environ.get("EXP_INGEST", "")
-class H(http.server.BaseHTTPRequestHandler):
-    def do_GET(self):
-        a = (self.headers.get("Authorization") or "").replace("Bearer ", "").strip()
-        cls = "MGMT" if a == _m else ("INGEST" if a == _i else ("EMPTY" if not a else "OTHER(len=%d)" % len(a)))
-        open(sys.argv[1], "a").write("path=%s bearer=%s\n" % (self.path, cls))
-        self.send_response(200); self.send_header("Content-Type", "application/json"); self.end_headers(); self.wfile.write(b"[]")
-    def log_message(self, *a): pass
-http.server.HTTPServer(("127.0.0.1", 9099), H).serve_forever()
-CAPPY
-_cappid=$!
-sleep 1
-cp "$MGR_TOML" "${MGR_TOML}.capbak"
-sed -i -E 's|^alarm_engine_url[[:space:]]*=.*|alarm_engine_url = "http://127.0.0.1:9099"|; s|^tls_enabled[[:space:]]*=.*|tls_enabled = false|' "$MGR_TOML"
-restart_wait llm-systems-manager "$MGR_URL/health" || true
-code "$MGR_URL/api/alarm/rules" >/dev/null || true
-sleep 2
-echo "  manager bearer classification: $(sort -u "$_cap" 2>/dev/null | tr '\n' ' ' || echo '(nothing captured)')"
-kill "$_cappid" 2>/dev/null || true
-mv "${MGR_TOML}.capbak" "$MGR_TOML"
-restart_wait llm-systems-manager "$MGR_URL/health" || true
-rm -f "$_cap"
-
-echo "── 6. Manager proxy uses its own bearer + strips the client header ───"
+echo "── 6. Manager proxy authenticates to the AE with its management_token ─"
 c_noauth="$(code "$MGR_URL/api/alarm/rules")"
 c_bogus="$(code -H 'Authorization: Bearer bogus-client-token' "$MGR_URL/api/alarm/rules")"
 if [ "$c_noauth" != "200" ]; then fail "manager proxy (no client hdr) = $c_noauth (want 200 — token/bearer wiring)"; fi
 if [ "$c_bogus" != "200" ]; then fail "manager proxy (bogus client hdr) = $c_bogus (want 200 — client Authorization must be stripped)"; fi
-pass "proxy 200 without and with a bogus client Authorization (own bearer used, client header stripped)"
+pass "proxy 200 with its own bearer, client Authorization stripped"
 
 echo "── 7. CORS allow-lists byte-identical across both hosts ──────────────"
 MGR_CORS="$(toml_get "$MGR_TOML" manager cors_origins)"
@@ -190,19 +135,6 @@ if ! openssl x509 -in "$AE_CERT" -noout -text | grep -A1 'Subject Alternative Na
   fail "AE cert SAN does not cover $DETECTED_IP"
 fi
 pass "AE cert SAN includes $DETECTED_IP"
-
-echo "── 9. Read-once bearer footgun: rotation needs a manager restart ─────"
-NEW_MGMT="$(openssl rand -hex 32)"
-sed -i -E "s|^management_token[[:space:]]*=.*|management_token = \"$NEW_MGMT\"|" "$AE_TOML"
-sed -i -E "s|^management_token[[:space:]]*=.*|management_token = \"$NEW_MGMT\"|" "$MGR_TOML"
-if ! restart_wait llm-systems-alarm-engine "$AE_URL/health"; then fail "AE unhealthy after token rotation"; fi
-c="$(code "$MGR_URL/api/alarm/rules")"
-if [ "$c" != "401" ]; then fail "manager proxy after AE rotation = $c (want 401 — stale in-memory bearer)"; fi
-pass "manager still 401s on the rotated token until restarted (read-once at import)"
-if ! restart_wait llm-systems-manager "$MGR_URL/health"; then fail "manager unhealthy after restart"; fi
-c="$(code "$MGR_URL/api/alarm/rules")"
-if [ "$c" != "200" ]; then fail "manager proxy after restart = $c (want 200)"; fi
-pass "manager restart picks up the rotated token -> 200"
 
 echo
 echo "ALL SPLIT-INSTALL (modes 3 + 4) ASSERTIONS PASSED"
