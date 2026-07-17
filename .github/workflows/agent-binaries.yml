@@ -137,10 +137,18 @@ jobs:
         run: |
           sudo mkdir -p /opt/llm-systems-agent/venv
           sudo touch /opt/llm-systems-agent/llm-systems-agent.py
-          if sudo DEBIAN_FRONTEND=noninteractive apt-get install -y ./dist-pkg/llm-systems-agent_*.deb; then
-            echo 'ERROR: install should have been refused'; exit 1
+          set +e
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
+            ./dist-pkg/llm-systems-agent_*.deb >/tmp/g-agent.log 2>&1; RC=$?
+          set -e
+          cat /tmp/g-agent.log
+          if [ "$RC" = "0" ]; then echo 'ERROR: install should have been refused'; exit 1; fi
+          if ! grep -q 'refusing to install over an existing script (venv) install' /tmp/g-agent.log; then
+            echo 'ERROR: apt failed, but not because of the #416 guard'; exit 1
           fi
-          dpkg-query -W -f='${Status}' llm-systems-agent 2>/dev/null | grep -q 'install ok installed' && exit 1
+          if dpkg-query -W -f='${db:Status-Status}' llm-systems-agent 2>/dev/null | grep -qx installed; then
+            echo 'ERROR: package installed despite refusal'; exit 1
+          fi
           sudo rm -rf /opt/llm-systems-agent
 
       # apt install → identity/unit/ownership/config/health asserts → purge.

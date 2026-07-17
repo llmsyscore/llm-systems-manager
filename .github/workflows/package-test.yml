@@ -104,7 +104,9 @@ jobs:
           sudo DEBIAN_FRONTEND=noninteractive apt-get install -y ./dist/llm-systems-manager_0.0.2_all.deb
           dpkg-query -W -f='${Version}' llm-systems-manager | grep -qx 0.0.2
           sudo grep -q 'ci-upgrade-marker' /opt/llm-systems-manager/config/llm-systems.toml
-          ls /opt/llm-systems-manager/config/llm-systems.toml.bak.* 2>/dev/null && exit 1 || true
+          if ls /opt/llm-systems-manager/config/llm-systems.toml.bak.* 2>/dev/null; then
+            echo 'ERROR: upgrade created a config backup (should reconcile in place)'; exit 1
+          fi
           probe() { for i in $(seq 1 30); do curl -fsSk "$1" >/dev/null 2>&1 && return 0; sleep 2; done; return 1; }
           probe http://127.0.0.1:5000/health
           probe https://127.0.0.1:8081/health
@@ -147,16 +149,26 @@ jobs:
           name: packages
           path: dist
 
+      # Each refusal must be attributable to the #416 guard — asserting only
+      # "apt failed" would pass on a broken package or bad filename.
       - name: Refuse fresh install over script-install state
         run: |
           sudo mkdir -p /opt/llm-systems-manager/config
           echo '# sim-script-install' | sudo tee /opt/llm-systems-manager/config/llm-systems.toml >/dev/null
           printf '[Unit]\nDescription=sim\n[Service]\nExecStart=/bin/true\n' \
             | sudo tee /etc/systemd/system/llm-systems-manager.service >/dev/null
-          if sudo DEBIAN_FRONTEND=noninteractive apt-get install -y ./dist/llm-systems-manager_0.0.1_all.deb; then
-            echo 'ERROR: install should have been refused'; exit 1
+          set +e
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
+            ./dist/llm-systems-manager_0.0.1_all.deb >/tmp/g1.log 2>&1; RC=$?
+          set -e
+          cat /tmp/g1.log
+          if [ "$RC" = "0" ]; then echo 'ERROR: install should have been refused'; exit 1; fi
+          if ! grep -q 'refusing to install over an existing non-package install' /tmp/g1.log; then
+            echo 'ERROR: apt failed, but not because of the #416 guard'; exit 1
           fi
-          dpkg-query -W -f='${Status}' llm-systems-manager 2>/dev/null | grep -q 'install ok installed' && exit 1
+          if dpkg-query -W -f='${db:Status-Status}' llm-systems-manager 2>/dev/null | grep -qx installed; then
+            echo 'ERROR: package installed despite refusal'; exit 1
+          fi
           sudo grep -q 'sim-script-install' /opt/llm-systems-manager/config/llm-systems.toml
           sudo rm -f /etc/systemd/system/llm-systems-manager.service
 
@@ -164,11 +176,19 @@ jobs:
         run: |
           sudo rm -rf /opt/llm-systems-manager
           python3 -m http.server 5000 >/dev/null 2>&1 &
-          SRV=$!; sleep 2
-          if sudo DEBIAN_FRONTEND=noninteractive apt-get install -y ./dist/llm-systems-manager_0.0.1_all.deb; then
-            echo 'ERROR: install should have been refused (port busy)'; exit 1
+          SRV=$!
+          for i in $(seq 1 15); do ss -ltnH | awk '{print $4}' | grep -qE '[:.]5000$' && break; sleep 1; done
+          ss -ltnH | awk '{print $4}' | grep -qE '[:.]5000$' || { echo 'ERROR: fixture never bound 5000'; exit 1; }
+          set +e
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
+            ./dist/llm-systems-manager_0.0.1_all.deb >/tmp/g2.log 2>&1; RC=$?
+          set -e
+          kill "$SRV" 2>/dev/null || true
+          cat /tmp/g2.log
+          if [ "$RC" = "0" ]; then echo 'ERROR: install should have been refused (port busy)'; exit 1; fi
+          if ! grep -q 'already in use' /tmp/g2.log; then
+            echo 'ERROR: refused, but not by the port check'; exit 1
           fi
-          kill "$SRV"
 
       - name: Forced adoption marks the tree and purge keeps foreign config
         run: |
@@ -240,10 +260,16 @@ jobs:
           mkdir -p /etc/systemd/system /opt/llm-systems-manager/config
           echo '# sim-script-install' > /opt/llm-systems-manager/config/llm-systems.toml
           printf '[Unit]\nDescription=sim\n' > /etc/systemd/system/llm-systems-manager.service
-          if dnf install -y ./dist/llm-systems-manager-0.0.1-1.noarch.rpm; then
-            echo 'ERROR: install should have been refused'; exit 1
+          set +e
+          dnf install -y ./dist/llm-systems-manager-0.0.1-1.noarch.rpm >/tmp/g1.log 2>&1; RC=$?
+          set -e
+          cat /tmp/g1.log
+          if [ "$RC" = "0" ]; then echo 'ERROR: install should have been refused'; exit 1; fi
+          if ! grep -q 'refusing to install over an existing non-package install' /tmp/g1.log; then
+            echo 'ERROR: dnf failed, but not because of the #416 guard'; exit 1
           fi
-          rpm -q llm-systems-manager && exit 1
+          if rpm -q llm-systems-manager; then echo 'ERROR: package installed despite refusal'; exit 1; fi
+          grep -q 'sim-script-install' /opt/llm-systems-manager/config/llm-systems.toml
           rm -f /etc/systemd/system/llm-systems-manager.service
           rm -rf /opt/llm-systems-manager
 
