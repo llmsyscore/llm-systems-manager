@@ -636,9 +636,9 @@ fi
 
 # Strict post-rewrite check: if any of the four token slots still says
 # REPLACE_ME, the alarm engine will 401 every read/write — fail now so the
-# operator sees the problem before services start. Skipped in Mode 3 where
-# the alarm engine isn't on this host.
-if (( HAS_AE )) && $SUDO test -r "$ENV_FILE"; then
+# operator sees the problem before services start. -s not -r: skip when
+# InfluxDB was skipped (empty handoff → REPLACE_ME is the intended state).
+if (( HAS_AE )) && $SUDO test -s "$ENV_FILE"; then
   STALE=$($SUDO awk '
     /^\[influxdb\.tokens\]/ { in_tokens=1; next }
     /^\[/                   { in_tokens=0 }
