@@ -45,6 +45,34 @@ confirm() {
   esac
 }
 
+# Inline copy of lib-common.sh's native-package guard (#416) — this script
+# stands alone; keep the two in sync.
+_native_package_installed() {
+  if command -v dpkg-query >/dev/null 2>&1; then
+    dpkg-query -W -f='${db:Status-Status}' "$1" 2>/dev/null \
+      | grep -qE '^(installed|unpacked|half-configured|half-installed)$' && return 0
+  fi
+  if command -v rpm >/dev/null 2>&1; then
+    rpm -q "$1" >/dev/null 2>&1 && return 0
+  fi
+  return 1
+}
+
+_guard_native_packages() {
+  [[ "${LLMSYS_IGNORE_NATIVE_PACKAGE:-0}" == "1" ]] && return 0
+  local pkg found=()
+  for pkg in llm-systems-manager llm-systems-agent; do
+    _native_package_installed "$pkg" && found+=("$pkg")
+  done
+  (( ${#found[@]} )) || return 0
+  err "refusing: ${found[*]} installed as native package(s) on this host."
+  err "This uninstaller would delete package-owned files behind the package"
+  err "manager's back (#416). Remove with:  apt purge ${found[*]}"
+  err "                             or:  dnf remove ${found[*]}"
+  err "(set LLMSYS_IGNORE_NATIVE_PACKAGE=1 to override)"
+  exit 2
+}
+
 # True only for system-range UIDs (never 0): Linux uses UID_MIN from
 # /etc/login.defs (default 1000); macOS human accounts start at 501.
 _service_account_uid_ok() {
@@ -91,6 +119,7 @@ case "$(uname -s)" in
 esac
 SUDO=""; [[ $EUID -ne 0 ]] && SUDO="sudo"
 ok "OS detected: $OS"
+_guard_native_packages
 
 # ── Detect the deployed run-as user ────────────────────────────────────────
 # Honor `install.sh --user foo` deployments — without this, uninstall would

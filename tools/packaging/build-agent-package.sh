@@ -83,11 +83,11 @@ chmod 0644 "$STAGE/usr/lib/systemd/system/llm-systems-agent.service"
 
 SCRIPTS="$WORK/scripts"
 mkdir -p "$SCRIPTS"
-for s in postinst prerm postrm; do
+for s in preinst postinst prerm postrm; do
   cat "$HERE/agent/scripts/common.sh" "$HERE/agent/scripts/deb/$s" > "$SCRIPTS/deb-$s"
   chmod 0755 "$SCRIPTS/deb-$s"
 done
-for s in post preun postun; do
+for s in pre post preun postun; do
   cat "$HERE/agent/scripts/common.sh" "$HERE/agent/scripts/rpm/$s" > "$SCRIPTS/rpm-$s"
   chmod 0755 "$SCRIPTS/rpm-$s"
 done
@@ -108,6 +108,7 @@ if [[ ",$FORMATS," == *,deb,* ]]; then
   fpm -t deb -a "$ARCH" -p "$DEB_OUT" \
     --depends ca-certificates \
     --deb-priority optional --category admin \
+    --before-install "$SCRIPTS/deb-preinst" \
     --after-install "$SCRIPTS/deb-postinst" \
     --before-remove "$SCRIPTS/deb-prerm" \
     --after-remove "$SCRIPTS/deb-postrm" \
@@ -124,6 +125,7 @@ if [[ ",$FORMATS," == *,rpm,* ]]; then
   fpm -t rpm -a "$RPM_ARCH" -p "$RPM_OUT" \
     --depends ca-certificates \
     --rpm-os linux \
+    --before-install "$SCRIPTS/rpm-pre" \
     --after-install "$SCRIPTS/rpm-post" \
     --before-remove "$SCRIPTS/rpm-preun" \
     --after-remove "$SCRIPTS/rpm-postun" \

@@ -19,6 +19,9 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=lib-common.sh
 . "$HERE/lib-common.sh"
 
+# Direct invocations must not overwrite a native package install (#416).
+guard_not_native_package llm-systems-manager "the control plane"
+
 # Standalone --user override (install.sh exports LLMSYS_RUN_USER for the
 # in-process flow; the flag is here so direct invocations work too).
 while [[ $# -gt 0 ]]; do

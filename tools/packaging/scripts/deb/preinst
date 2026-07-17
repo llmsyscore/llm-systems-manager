@@ -1,0 +1,13 @@
+# deb preinst body — concatenated after common.sh by build-packages.sh.
+case "$1" in
+  install)
+    llmsys_guard_fresh_install || exit 2
+    ;;
+  upgrade)
+    if hits="$(llmsys_foreign_state)"; then
+      echo "llm-systems-manager: WARNING — non-package install state present:$hits (#416)" >&2
+    fi
+    ;;
+esac
+
+exit 0

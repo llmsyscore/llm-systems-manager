@@ -8,6 +8,68 @@ LLMSYS_RUN_USER=llmsys
 LLMSYS_LOG_DIR=/var/log/llm-systems-manager
 LLMSYS_UNITS="llm-systems-alarm-engine.service llm-systems-manager.service"
 LLMSYS_CFG="$LLMSYS_INSTALL_DIR/config/llm-systems.toml"
+LLMSYS_PKG_MARKER="$LLMSYS_INSTALL_DIR/.llmsys-package-state"
+
+# Script-installer state this package must not silently adopt (#416).
+# Prints what was found; rc 0 = foreign state present.
+llmsys_foreign_state() {
+  local hits="" u
+  for u in $LLMSYS_UNITS; do
+    [ -e "/etc/systemd/system/$u" ] && hits="$hits /etc/systemd/system/$u"
+  done
+  if [ -f "$LLMSYS_CFG" ] && [ ! -f "$LLMSYS_PKG_MARKER" ]; then
+    hits="$hits $LLMSYS_CFG(not-package-created)"
+  fi
+  [ -n "$hits" ] || return 1
+  echo "$hits"
+}
+
+# rc 1 when something else already listens on one of the given ports
+# (script install or docker control plane on the same host).
+llmsys_ports_free() {
+  command -v ss >/dev/null 2>&1 || return 0
+  local p busy=""
+  for p in "$@"; do
+    ss -ltnH 2>/dev/null | awk '{print $4}' | grep -qE "[:.]${p}\$" && busy="$busy $p"
+  done
+  [ -z "$busy" ] && return 0
+  echo "llm-systems-manager: port(s)$busy already in use on this host — a script-installed" >&2
+  echo "or docker control plane may be running. Installing would crash-loop the services (#416)." >&2
+  return 1
+}
+
+# Fresh-install gate (deb preinst "install" / rpm %pre $1==1).
+llmsys_guard_fresh_install() {
+  [ "${LLMSYS_PACKAGE_FORCE:-0}" = "1" ] && return 0
+  local hits
+  if hits="$(llmsys_foreign_state)"; then
+    echo "llm-systems-manager: refusing to install over an existing non-package install (#416):" >&2
+    echo "  found:$hits" >&2
+    echo "  Remove it first (tools/installer/uninstall.sh) or, to force over it," >&2
+    echo "  re-run with LLMSYS_PACKAGE_FORCE=1 in the environment." >&2
+    return 1
+  fi
+  llmsys_ports_free 5000 8081 || return 1
+}
+
+# Records that this tree is package-created. adopted=1 = installed over
+# pre-existing state (LLMSYS_PACKAGE_FORCE) — purge then keeps config/data.
+llmsys_write_marker() {
+  [ -f "$LLMSYS_PKG_MARKER" ] && return 0
+  local adopted=0
+  [ "$1" = "adopted" ] && adopted=1
+  printf 'format=1\nadopted=%s\n' "$adopted" > "$LLMSYS_PKG_MARKER"
+  chmod 0644 "$LLMSYS_PKG_MARKER"
+}
+
+llmsys_warn_if_shadowed() {
+  local u
+  for u in $LLMSYS_UNITS; do
+    if [ -e "/etc/systemd/system/$u" ]; then
+      echo "llm-systems-manager: WARNING — /etc/systemd/system/$u exists and shadows the packaged unit; package upgrades will not affect the running service until it is removed (#416)." >&2
+    fi
+  done
+}
 
 # systemctl exists and PID 1 is systemd (false in containers/chroots).
 llmsys_systemd_ready() {
@@ -144,8 +206,19 @@ llmsys_stop_disable() {
 }
 
 # Full configure pass. $1 empty = fresh install, non-empty = upgrade.
+# Marker backfill: on fresh, a pre-existing config means adoption; on
+# upgrade (pre-#416 packages have no marker) only script units do.
 llmsys_configure() {
-  local upgrade="${1:-}" grp
+  local upgrade="${1:-}" grp adopt=clean u
+  if [ ! -f "$LLMSYS_PKG_MARKER" ]; then
+    if [ -z "$upgrade" ]; then
+      [ -f "$LLMSYS_CFG" ] && adopt=adopted
+    else
+      for u in $LLMSYS_UNITS; do
+        [ -e "/etc/systemd/system/$u" ] && adopt=adopted
+      done
+    fi
+  fi
   llmsys_create_user
   grp="$(llmsys_run_group)"
   install -d -m 0750 -o "$LLMSYS_RUN_USER" -g "$grp" "$LLMSYS_INSTALL_DIR/data"
@@ -153,6 +226,8 @@ llmsys_configure() {
   chown -R "$LLMSYS_RUN_USER:$grp" "$LLMSYS_INSTALL_DIR"
   llmsys_build_venvs
   llmsys_write_config
+  llmsys_write_marker "$adopt"
+  llmsys_warn_if_shadowed
   if [ -z "$upgrade" ]; then
     llmsys_enable_start
     llmsys_influx_notice || true
@@ -179,4 +254,17 @@ llmsys_purge_all() {
   if getent passwd "$LLMSYS_RUN_USER" >/dev/null 2>&1; then
     userdel -r "$LLMSYS_RUN_USER" 2>/dev/null || userdel "$LLMSYS_RUN_USER" 2>/dev/null || true
   fi
+}
+
+# Purge only when this package created the tree and no script-installer
+# state appeared since; otherwise keep config/data/logs (#416).
+llmsys_scoped_purge() {
+  if [ -f "$LLMSYS_PKG_MARKER" ] \
+     && ! grep -q '^adopted=1' "$LLMSYS_PKG_MARKER" 2>/dev/null \
+     && ! llmsys_foreign_state >/dev/null; then
+    llmsys_purge_all
+    return 0
+  fi
+  rm -f "$LLMSYS_PKG_MARKER"
+  echo "llm-systems-manager: purge kept $LLMSYS_CFG, $LLMSYS_INSTALL_DIR/data and $LLMSYS_LOG_DIR — the tree contains state this package did not create (#416). Remove manually if intended."
 }

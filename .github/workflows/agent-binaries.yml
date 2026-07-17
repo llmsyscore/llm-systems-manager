@@ -131,6 +131,18 @@ jobs:
             --binary stage/llm-systems-agent --version "$VERSION" \
             --arch "$PKG_ARCH" --out dist-pkg
 
+      # Mixed-state guards (#416): must refuse over a script (venv) install.
+      - name: Guard refuses over a venv install (.deb)
+        if: matrix.smoke_image != ''
+        run: |
+          sudo mkdir -p /opt/llm-systems-agent/venv
+          sudo touch /opt/llm-systems-agent/llm-systems-agent.py
+          if sudo DEBIAN_FRONTEND=noninteractive apt-get install -y ./dist-pkg/llm-systems-agent_*.deb; then
+            echo 'ERROR: install should have been refused'; exit 1
+          fi
+          dpkg-query -W -f='${Status}' llm-systems-agent 2>/dev/null | grep -q 'install ok installed' && exit 1
+          sudo rm -rf /opt/llm-systems-agent
+
       # apt install → identity/unit/ownership/config/health asserts → purge.
       - name: Install test (.deb)
         if: matrix.smoke_image != ''
@@ -149,14 +161,39 @@ jobs:
             sleep 2
           done
           curl -fsS http://127.0.0.1:8082/health | grep -q '"status":"ok"'
+          # Script installer must refuse this package-managed host (#416).
+          set +e
+          sudo bash agent/install/install.sh --update -y </dev/null >/tmp/agent-upd.log 2>&1; RC=$?
+          set -e
+          test "$RC" = "2"
+          grep -q 'managed by the native' /tmp/agent-upd.log
+          systemctl is-active llm-systems-agent
           sudo apt-get purge -y llm-systems-agent
           test ! -e /opt/llm-systems-agent
           test ! -e /usr/lib/systemd/system/llm-systems-agent.service
           ! getent passwd llmsys
 
+      # Tarball adoption (#416): binary+config with no unit is a supported
+      # migration — config preserved, adopted=1, purge keeps config.
+      - name: Tarball-adoption test (.deb)
+        if: matrix.smoke_image != ''
+        run: |
+          sudo mkdir -p /opt/llm-systems-agent
+          sudo cp stage/llm-systems-agent /opt/llm-systems-agent/llm-systems-agent
+          printf 'MANAGER_URL: "http://192.0.2.99:5000"\n' | sudo tee /opt/llm-systems-agent/agent_config.yaml >/dev/null
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y ./dist-pkg/llm-systems-agent_*.deb
+          sudo grep -q '^adopted=1' /opt/llm-systems-agent/.llmsys-package-state
+          sudo grep -q '192.0.2.99' /opt/llm-systems-agent/agent_config.yaml
+          sudo apt-get purge -y llm-systems-agent
+          sudo test -f /opt/llm-systems-agent/agent_config.yaml
+          sudo rm -rf /opt/llm-systems-agent
+          sudo userdel -r llmsys 2>/dev/null || true
+
       - name: Agent service log on failure
         if: failure() && matrix.smoke_image != ''
-        run: sudo journalctl -u llm-systems-agent --no-pager -n 200 || true
+        run: |
+          sudo journalctl -u llm-systems-agent --no-pager -n 200 || true
+          sudo cat /tmp/agent-upd.log 2>/dev/null || true
 
       # PR-gate inspection copy only; tag builds ship via the release assets.
       - uses: actions/upload-artifact@v4

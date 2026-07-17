@@ -483,6 +483,29 @@ else
 fi
 _ok()      { echo "  ${_C_GREEN}✓${_C_OFF} $*"; }
 _warn()    { echo "  ${_C_YELLOW}⚠${_C_OFF} $*"; }
+
+# Inline copy of lib-common.sh's native-package guard (#416); keep in sync.
+_guard_native_agent_package() {
+  [[ "$AGENT_OS" == "linux" ]] || return 0
+  [[ "${LLMSYS_IGNORE_NATIVE_PACKAGE:-0}" == "1" ]] && return 0
+  local found=1
+  if command -v dpkg-query >/dev/null 2>&1; then
+    dpkg-query -W -f='${db:Status-Status}' llm-systems-agent 2>/dev/null \
+      | grep -qE '^(installed|unpacked|half-configured|half-installed)$' && found=0
+  fi
+  if (( found )) && command -v rpm >/dev/null 2>&1; then
+    rpm -q llm-systems-agent >/dev/null 2>&1 && found=0
+  fi
+  (( found )) && return 0
+  echo "ERROR: the agent on this host is managed by the native llm-systems-agent package." >&2
+  echo "  Running this installer would shadow the packaged unit and desync the package" >&2
+  echo "  database (#416)." >&2
+  echo "  Upgrade with:  apt install <new .deb>   or   dnf upgrade <new .rpm>" >&2
+  echo "  Remove with:   apt purge llm-systems-agent   or   dnf remove llm-systems-agent" >&2
+  echo "  (set LLMSYS_IGNORE_NATIVE_PACKAGE=1 to override)" >&2
+  exit 2
+}
+_guard_native_agent_package
 _err()     { echo "  ${_C_RED}✗${_C_OFF} $*" >&2; }
 _section() { echo; echo "── $* ──────────────────────────────────────────────────"; }
 

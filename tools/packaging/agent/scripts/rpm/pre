@@ -1,0 +1,12 @@
+# rpm %pre body — concatenated after common.sh by build-agent-package.sh.
+# $1 = 1 fresh install, >= 2 upgrade.
+if [ "${1:-1}" -eq 1 ]; then
+  llmsys_agent_guard_fresh_install || exit 2
+else
+  if hits="$(llmsys_agent_foreign_state)"; then
+    echo "llm-systems-agent: WARNING — non-package install state present:$hits (#416)" >&2
+  fi
+fi
+llmsys_agent_stash_prev_version
+
+exit 0

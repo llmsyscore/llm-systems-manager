@@ -54,6 +54,7 @@ detect_os
 require_linux
 detect_sudo
 guard_not_containerized
+guard_not_native_package llm-systems-manager "the control plane"
 
 LLMSYS_INSTALL_DIR="${LLMSYS_INSTALL_DIR:-/opt/llm-systems-manager}"
 AGENT_INSTALL_DIR="${AGENT_INSTALL_DIR:-/opt/llm-systems-agent}"
@@ -519,12 +520,27 @@ is_installed_alarm_engine  && HAVE_AE=true
 is_installed_influxdb      && HAVE_INFLUX=true
 is_installed_agent         && HAVE_AGENT=true
 
+# A package-managed agent is updated via apt/dnf, not rsync (#416) — skip
+# it here rather than aborting the whole control-plane update.
+_AGENT_PKG_SKIPPED=false
+if $HAVE_AGENT && [[ "${LLMSYS_IGNORE_NATIVE_PACKAGE:-0}" != "1" ]] \
+   && native_package_installed llm-systems-agent; then
+  warn "local agent is managed by the native llm-systems-agent package — skipping it"
+  warn "(upgrade it with apt/dnf; set LLMSYS_IGNORE_NATIVE_PACKAGE=1 to override)"
+  HAVE_AGENT=false
+  _AGENT_PKG_SKIPPED=true
+fi
+
 $HAVE_MANAGER && ok "manager       installed"  || log "manager       not installed"
 $HAVE_AE      && ok "alarm-engine  installed"  || log "alarm-engine  not installed"
 $HAVE_INFLUX  && ok "influxdb      installed"  || log "influxdb      not installed"
 $HAVE_AGENT   && ok "local agent   installed"  || log "local agent   not installed"
 
 if ! $HAVE_MANAGER && ! $HAVE_AE && ! $HAVE_AGENT; then
+  if $_AGENT_PKG_SKIPPED; then
+    ok "nothing to update — the only component here (the agent) is package-managed; use apt/dnf"
+    exit 0
+  fi
   die "nothing to update — run install.sh to install components first"
 fi
 

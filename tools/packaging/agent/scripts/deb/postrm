@@ -6,7 +6,7 @@ case "$1" in
     ;;
   purge)
     llmsys_agent_remove_generated
-    llmsys_agent_purge_all
+    llmsys_agent_scoped_purge
     if [ -f /usr/share/debconf/confmodule ]; then
       . /usr/share/debconf/confmodule
       db_purge || true
