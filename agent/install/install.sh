@@ -2058,20 +2058,26 @@ else
   if ! command -v python3 >/dev/null 2>&1; then
     echo "  ⓘ python3 not on PATH — skipping uniqueness check"
   else
-    _COLLISION="$(printf '%s' "$_AGENTS_JSON" \
-      | python3 - "$_HOSTNAME_TO_REGISTER" <<'PYEOF'
-import json, sys
-name = sys.argv[1]
+    # Registry JSON via temp file (env/argv cap ~128 KiB — a large fleet would
+    # abort the installer); the program via heredoc reads the file by path. A
+    # failed check degrades to "skip" instead of killing install under set -e.
+    _agents_tmp="$(mktemp)"
+    printf '%s' "$_AGENTS_JSON" > "$_agents_tmp"
+    _COLLISION="$(_LLMSYS_COLL_NAME="$_HOSTNAME_TO_REGISTER" _LLMSYS_COLL_FILE="$_agents_tmp" python3 <<'PYEOF'
+import json, os
+name = os.environ["_LLMSYS_COLL_NAME"]
 try:
-    data = json.load(sys.stdin) or {}
+    with open(os.environ["_LLMSYS_COLL_FILE"]) as f:
+        data = json.load(f) or {}
 except Exception:
-    sys.exit(0)
+    raise SystemExit(0)
 for a in (data.get("agents") or []):
     if a.get("hostname") == name:
         print(f'{a.get("agent_id","?")}|{a.get("registered_from","?")}|{a.get("status","?")}|{a.get("last_seen","?")}')
         break
 PYEOF
-)"
+)" || _COLLISION=""
+    rm -f "$_agents_tmp"
     if [[ -n "$_COLLISION" ]]; then
       IFS='|' read -r _C_ID _C_IP _C_STATUS _C_LAST <<<"$_COLLISION"
       echo "  ⚠ A different agent is already registered with this hostname:"
@@ -2549,7 +2555,7 @@ _detect_llama() {
     # if /proc isn't available: fall back to `ps -o args=`.
     local cmdline=""
     if [[ -r "/proc/$pid/cmdline" ]]; then
-      cmdline="$(tr '\0' ' ' < /proc/$pid/cmdline 2>/dev/null || true)"
+      cmdline="$(tr '\0' ' ' < "/proc/$pid/cmdline" 2>/dev/null || true)"
     fi
     if [[ -z "$cmdline" ]]; then
       cmdline="$(ps -p "$pid" -o args= 2>/dev/null || true)"
@@ -2706,7 +2712,7 @@ _detect_llama() {
   # Detect existing install method from the binary path.
   detected_build_method="custom_script"
   case "$detected_bin" in
-    */homebrew/*|/opt/homebrew/*)            detected_build_method="homebrew" ;;
+    */homebrew/*)                            detected_build_method="homebrew" ;;
     */envs/*|*/miniconda*/*|*/anaconda*/*)   detected_build_method="conda" ;;
   esac
   if [[ "$detected_build_method" == "custom_script" \
@@ -2917,9 +2923,8 @@ _detect_lms() {
   echo
   echo "  • LM Studio"
 
-  # Tracks what auto-detect already populated, so the post-detect prompt
+  # Tracks the port auto-detect already populated, so the post-detect prompt
   # block knows what's still missing.
-  local detected_via=""
   local detected_port=""
 
   # a) process check (matches both 'lmstudio' and 'lm-studio' variants)
@@ -2928,7 +2933,6 @@ _detect_lms() {
     pid="$(pgrep -f 'lmstudio|lm-studio' | head -1)"
     echo "      ✓ found running LM Studio process (pid $pid)"
     ENABLE_LMS=true
-    detected_via="process"
 
      local _lms_bin=""
     if _lms_bin="$(_first_existing \
@@ -2987,7 +2991,6 @@ _detect_lms() {
     LMS_API_URL_OVERRIDE="http://127.0.0.1:1234"
     detected_port="1234"
     ENABLE_LMS=true
-    detected_via="http"
     # HTTP says LMS is up; find the lms CLI to drive it.
     local _lms_bin=""
     if _lms_bin="$(_first_existing \
@@ -3013,7 +3016,6 @@ _detect_lms() {
       LMS_API_URL_OVERRIDE="http://127.0.0.1:$_port"
       detected_port="$_port"
       ENABLE_LMS=true
-      detected_via="lms-status"
     else
       echo "      ⓘ lms binary present at $lms_path but server is not running"
       LMS_CMD_OVERRIDE="$lms_path"
