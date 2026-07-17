@@ -171,7 +171,7 @@ jobs:
           sudo apt-get purge -y llm-systems-agent
           test ! -e /opt/llm-systems-agent
           test ! -e /usr/lib/systemd/system/llm-systems-agent.service
-          ! getent passwd llmsys
+          if getent passwd llmsys; then echo 'ERROR: llmsys survived purge'; exit 1; fi
 
       # Tarball adoption (#416): binary+config with no unit is a supported
       # migration — config preserved, adopted=1, purge keeps config.

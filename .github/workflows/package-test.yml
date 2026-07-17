@@ -115,13 +115,16 @@ jobs:
         run: |
           sudo apt-get purge -y llm-systems-manager
           set -x
-          ! getent passwd llmsys
           test ! -e /opt/llm-systems-manager
           test ! -e /var/log/llm-systems-manager
           test ! -e /usr/lib/systemd/system/llm-systems-manager.service
           test ! -e /usr/lib/systemd/system/llm-systems-alarm-engine.service
           sudo test ! -e /etc/sudoers.d/llm-systems-manager
-          ! systemctl status llm-systems-manager >/dev/null 2>&1
+          set +x
+          if getent passwd llmsys; then echo 'ERROR: llmsys survived purge'; exit 1; fi
+          if systemctl status llm-systems-manager >/dev/null 2>&1; then
+            echo 'ERROR: manager unit still known to systemd'; exit 1
+          fi
 
       - name: Collect service logs on failure
         if: failure()
@@ -184,22 +187,31 @@ jobs:
       - name: Script tools refuse a package-managed host
         run: |
           sudo DEBIAN_FRONTEND=noninteractive apt-get install -y ./dist/llm-systems-manager_0.0.1_all.deb
+          # <label> <rc> <log> <expected message>: exit 2 AND the refusal text.
+          assert_refused() {
+            echo "--- $1 exited $2; output:"; cat "$3" || true
+            if [ "$2" != "2" ]; then echo "ERROR: $1 exited $2, expected 2 (refusal)"; exit 1; fi
+            if ! grep -q "$4" "$3"; then echo "ERROR: $1 lacked refusal message '$4'"; exit 1; fi
+            echo "--- $1 refused correctly"
+          }
           set +e
           sudo bash tools/installer/update.sh --yes </dev/null >/tmp/upd.log 2>&1; RC_UPD=$?
           sudo bash tools/installer/uninstall.sh </dev/null >/tmp/uni.log 2>&1; RC_UNI=$?
           sudo bash tools/installer/install.sh --mode 3 --source local --no-self-update </dev/null >/tmp/ins.log 2>&1; RC_INS=$?
           set -e
-          test "$RC_UPD" = "2" && grep -q 'managed by the native' /tmp/upd.log
-          test "$RC_UNI" = "2" && grep -q 'installed as native package' /tmp/uni.log
-          test "$RC_INS" = "2" && grep -q 'managed by the native' /tmp/ins.log
+          assert_refused update.sh    "$RC_UPD" /tmp/upd.log 'managed by the native'
+          assert_refused uninstall.sh "$RC_UNI" /tmp/uni.log 'installed as native package'
+          assert_refused install.sh   "$RC_INS" /tmp/ins.log 'managed by the native'
+          # The packaged service must be untouched by all three.
           systemctl is-active llm-systems-manager
+          sudo test -x /opt/llm-systems-manager/llm-systems-manager/venv/bin/python3
 
       - name: Clean purge is still a full purge (regression)
         run: |
           sudo apt-get purge -y llm-systems-manager
           test ! -e /opt/llm-systems-manager
           test ! -e /var/log/llm-systems-manager
-          ! getent passwd llmsys
+          if getent passwd llmsys; then echo 'ERROR: llmsys survived a clean purge'; exit 1; fi
 
       - name: Show logs on failure
         if: failure()
