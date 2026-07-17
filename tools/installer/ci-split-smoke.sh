@@ -57,7 +57,7 @@ echo "── 0. Both units up; manager issued the AE TLS cert ──────
 if ! wait_active llm-systems-alarm-engine; then fail "alarm-engine unit not active"; fi
 if ! wait_active llm-systems-manager;      then fail "manager unit not active"; fi
 if ! wait_health "$AE_URL/health"; then fail "AE /health never 200 on $AE_URL"; fi
-if ! wait_health "$MGR_URL/";      then fail "manager never 200 on $MGR_URL"; fi
+if ! wait_health "$MGR_URL/health";      then fail "manager never 200 on $MGR_URL"; fi
 for _ in $(seq 1 30); do
   if [ -f "$AE_CERT" ]; then break; fi
   sleep 1
@@ -92,7 +92,7 @@ pass "manager (default REPLACE_ME token) proxied -> AE 401"
 echo "── 5. Wire the AE tokens into the manager (the paste step) + restart ─"
 sed -i -E "s|^ingest_token[[:space:]]*=.*|ingest_token = \"$INGEST\"|; s|^management_token[[:space:]]*=.*|management_token = \"$MGMT\"|" "$MGR_TOML"
 systemctl restart llm-systems-manager
-if ! wait_health "$MGR_URL/"; then fail "manager unhealthy after token wiring"; fi
+if ! wait_health "$MGR_URL/health"; then fail "manager unhealthy after token wiring"; fi
 pass "manager tokens wired"
 
 echo "── 6. Manager proxy works, strips the client header, uses management_token ─"
@@ -126,7 +126,7 @@ c="$(code "$MGR_URL/api/alarm/rules")"
 if [ "$c" != "401" ]; then fail "manager proxy after AE rotation = $c (want 401 — stale in-memory bearer)"; fi
 pass "manager still 401s on the rotated token until restarted (read-once at import)"
 systemctl restart llm-systems-manager
-if ! wait_health "$MGR_URL/"; then fail "manager unhealthy after restart"; fi
+if ! wait_health "$MGR_URL/health"; then fail "manager unhealthy after restart"; fi
 c="$(code "$MGR_URL/api/alarm/rules")"
 if [ "$c" != "200" ]; then fail "manager proxy after restart = $c (want 200)"; fi
 pass "manager restart picks up the rotated token -> 200"
