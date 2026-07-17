@@ -141,6 +141,31 @@ except Exception as e:
     print("loader-error:", type(e).__name__, e)
 PYD
 
+echo "── diag: capture the exact Authorization the manager sends the AE ────"
+_cap="$(mktemp)"
+python3 - "$_cap" <<'CAPPY' &
+import sys, http.server
+class H(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):
+        open(sys.argv[1], "a").write("auth=%r path=%s\n" % (self.headers.get("Authorization"), self.path))
+        self.send_response(200); self.send_header("Content-Type", "application/json"); self.end_headers(); self.wfile.write(b"[]")
+    def log_message(self, *a): pass
+http.server.HTTPServer(("127.0.0.1", 9099), H).serve_forever()
+CAPPY
+_cappid=$!
+sleep 1
+cp "$MGR_TOML" "${MGR_TOML}.capbak"
+sed -i -E 's|^alarm_engine_url[[:space:]]*=.*|alarm_engine_url = "http://127.0.0.1:9099"|; s|^tls_enabled[[:space:]]*=.*|tls_enabled = false|' "$MGR_TOML"
+restart_wait llm-systems-manager "$MGR_URL/health" || true
+code "$MGR_URL/api/alarm/rules" >/dev/null || true
+sleep 1
+echo "  manager sent -> $(head -1 "$_cap" 2>/dev/null || echo '(nothing captured)')"
+echo "  expected     -> auth='Bearer ${_mm}'"
+kill "$_cappid" 2>/dev/null || true
+mv "${MGR_TOML}.capbak" "$MGR_TOML"
+restart_wait llm-systems-manager "$MGR_URL/health" || true
+rm -f "$_cap"
+
 echo "── 6. Manager proxy uses its own bearer + strips the client header ───"
 c_noauth="$(code "$MGR_URL/api/alarm/rules")"
 c_bogus="$(code -H 'Authorization: Bearer bogus-client-token' "$MGR_URL/api/alarm/rules")"
