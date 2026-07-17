@@ -106,6 +106,12 @@ systemctl restart llm-systems-manager
 if ! wait_health "$MGR_URL/health"; then fail "manager unhealthy after token wiring"; fi
 pass "manager tokens wired"
 
+echo "── diag (temporary) — token state before proxy assertion ────────────"
+echo "  mgr [alarm_engine] tokens:"; grep -E '^[# ]*(ingest_token|management_token)[[:space:]]*=' "$MGR_TOML" | sed 's/^/    /'
+echo "  ae  [alarm_engine] tokens:"; grep -E '^[# ]*(ingest_token|management_token)[[:space:]]*=' "$AE_TOML" | sed 's/^/    /'
+_diag_mm="$(grep -oE '^management_token[[:space:]]*=[[:space:]]*"[^"]+"' "$MGR_TOML" | sed -E 's/.*"([^"]+)".*/\1/')"
+echo "  mgr mgmt-token direct to AE: $(code -H "Authorization: Bearer $_diag_mm" "$AE_URL/api/alarm/rules") (200 = mgr TOML has the right token)"
+
 echo "── 6. Manager proxy works, strips the client header, uses management_token ─"
 c="$(code -H 'Authorization: Bearer bogus-client-token' "$MGR_URL/api/alarm/rules")"
 if [ "$c" != "200" ]; then fail "manager proxy post-wiring (bogus client hdr) = $c (want 200)"; fi
