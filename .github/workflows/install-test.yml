@@ -66,6 +66,12 @@ jobs:
       - name: Smoke test
         run: sudo bash tools/installer/ci-smoke.sh
 
+      # Mode 1 installs + starts a local agent pointed at the LAN IP, so it
+      # registers "pending". Verify it registers, gets admin-approved, reports,
+      # and upgrades to full TLS (local HTTPS serve + control-channel flip).
+      - name: Verify agent registers, is approved, and upgrades to full TLS
+        run: sudo bash tools/installer/ci-agent-tls-smoke.sh
+
       # Reinstall coverage (#352): plant every manifest entry as stale state,
       # re-run install.sh over the live tree, and assert the deploy pruned it.
       - name: Plant stale upstream-removed artifacts (reinstall fixture)
@@ -255,6 +261,25 @@ jobs:
       - name: Install manager (mode 3)
         run: sudo LLMSYS_INSTALL_DIR=/opt/llm-systems-manager-mgr bash tools/installer/install.sh --mode 3 --no-self-update < /dev/null
 
+      # A remote monitoring agent pointed at the mode-3 manager's LAN IP — the
+      # real split shape (registers "pending", not loopback-auto-approved). Wait
+      # for the manager to answer before installing (the agent's own probe is
+      # only 3×5s before it hard-exits on non-TTY stdin).
+      - name: Install monitoring agent (mode 5) pointed at the mode-3 manager
+        run: |
+          for _ in $(seq 1 30); do
+            c="$(curl -sS -o /dev/null -w '%{http_code}' -m5 "http://$DETECTED_IP:5000/api/agents" || echo 000)"
+            case "$c" in 200|401|403) break ;; esac
+            sleep 1
+          done
+          sudo bash tools/installer/install.sh --mode 5 --no-self-update -- \
+            --manager-url "http://$DETECTED_IP:5000" --hostname ci-split-agent < /dev/null
+
+      # Approve + full-TLS verification. Admin HTTP calls stay on loopback
+      # (127.0.0.1 is always in admin_cidrs); the agent itself dials the LAN IP.
+      - name: Verify agent registers, is approved, and upgrades to full TLS
+        run: sudo MGR_URL=http://127.0.0.1:5000 AGENT_HOSTNAME=ci-split-agent bash tools/installer/ci-agent-tls-smoke.sh
+
       - name: Wire the two hosts and assert cross-host coupling
         run: |
           sudo AE_DIR=/opt/llm-systems-manager-ae \
@@ -265,7 +290,7 @@ jobs:
       - name: Collect service logs on failure
         if: failure()
         run: |
-          for u in llm-systems-alarm-engine llm-systems-manager; do
+          for u in llm-systems-alarm-engine llm-systems-manager llm-systems-agent; do
             echo "════ journalctl -u $u ════"
             sudo journalctl -u "$u" -n 200 --no-pager || true
           done
