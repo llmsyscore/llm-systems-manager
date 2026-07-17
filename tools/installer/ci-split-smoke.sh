@@ -52,17 +52,20 @@ wait_active() {
   return 1
 }
 
-# Restart a unit and wait for a genuinely NEW MainPID before health-polling, so
-# an assertion never races a not-yet-reloaded process holding the old config.
+# Stop→start (not restart) so a fresh process definitely reloads config; the
+# unit's Restart=on-failure can race a plain `systemctl restart`. Logs the PID
+# transition so a no-op restart is visible instead of silently masked.
 restart_wait() {
   local before now
   before="$(systemctl show -p MainPID --value "$1")"
-  systemctl restart "$1"
-  for _ in $(seq 1 40); do
-    now="$(systemctl show -p MainPID --value "$1")"
-    if [ -n "$now" ] && [ "$now" != "0" ] && [ "$now" != "$before" ]; then break; fi
+  systemctl stop "$1" 2>/dev/null || true
+  for _ in $(seq 1 30); do
+    if ! systemctl is-active --quiet "$1"; then break; fi
     sleep 1
   done
+  systemctl start "$1"
+  now="$(systemctl show -p MainPID --value "$1")"
+  echo "    [restart $1: pid $before -> $now]"
   wait_health "$2"
 }
 
