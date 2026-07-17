@@ -52,6 +52,20 @@ wait_active() {
   return 1
 }
 
+# Restart a unit and wait for a genuinely NEW MainPID before health-polling, so
+# an assertion never races a not-yet-reloaded process holding the old config.
+restart_wait() {
+  local before now
+  before="$(systemctl show -p MainPID --value "$1")"
+  systemctl restart "$1"
+  for _ in $(seq 1 40); do
+    now="$(systemctl show -p MainPID --value "$1")"
+    if [ -n "$now" ] && [ "$now" != "0" ] && [ "$now" != "$before" ]; then break; fi
+    sleep 1
+  done
+  wait_health "$2"
+}
+
 wait_health() {
   for _ in $(seq 1 30); do
     if [ "$(code "$1")" = "200" ]; then return 0; fi
@@ -84,8 +98,7 @@ chown llmsys:llmsys "$AE_DATA/ae-tls.crt" "$AE_DATA/ae-tls.key"
 chmod 0644 "$AE_DATA/ae-tls.crt"
 chmod 0600 "$AE_DATA/ae-tls.key"
 sed -i -E 's/^#[[:space:]]*(ingest_token[[:space:]]*=)/\1/; s/^#[[:space:]]*(management_token[[:space:]]*=)/\1/' "$AE_TOML"
-systemctl restart llm-systems-alarm-engine
-if ! wait_health "$AE_URL/health"; then fail "AE not serving HTTPS /health after cert copy + token activation"; fi
+if ! restart_wait llm-systems-alarm-engine "$AE_URL/health"; then fail "AE not serving HTTPS /health after cert copy + token activation"; fi
 pass "AE serving HTTPS with tokens enforced"
 
 echo "── 3. AE enforces management_token on /api/alarm/rules ───────────────"
@@ -102,30 +115,14 @@ pass "manager (default REPLACE_ME token) proxied -> AE 401"
 
 echo "── 5. Wire the AE tokens into the manager (the paste step) + restart ─"
 sed -i -E "s|^ingest_token[[:space:]]*=.*|ingest_token = \"$INGEST\"|; s|^management_token[[:space:]]*=.*|management_token = \"$MGMT\"|" "$MGR_TOML"
-systemctl restart llm-systems-manager
-if ! wait_health "$MGR_URL/health"; then fail "manager unhealthy after token wiring"; fi
+if ! restart_wait llm-systems-manager "$MGR_URL/health"; then fail "manager unhealthy after token wiring"; fi
 pass "manager tokens wired"
 
-echo "── diag (temporary) — what the manager's loader actually returns ────"
-echo "  mainpid=$(systemctl show -p MainPID --value llm-systems-manager) active=$(systemctl show -p ActiveEnterTimestamp --value llm-systems-manager)"
-systemctl show -p Environment --value llm-systems-manager | tr ' ' '\n' | grep -iE 'token|config' | sed 's/^/  env: /' || true
-_mgr_py="$(systemctl show -p ExecStart --value llm-systems-manager | grep -oE '/[^ ]+/bin/python3' | head -1)"
-"${_mgr_py:-python3}" - "$MGR_TOML" <<'PYDIAG' 2>&1 | sed 's/^/  /'
-import sys, os
-os.environ["LLM_SYSTEMS_CONFIG"] = sys.argv[1]
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(sys.argv[1])), "config"))
-try:
-    import unified_config as uc
-    ae = uc.settings.alarm_engine
-    print("loader mgmt=", repr((ae.management_token or "")[:12]), "ingest=", repr((ae.ingest_token or "")[:12]), "tls=", ae.tls_enabled)
-except Exception as e:
-    print("loader-error:", type(e).__name__, e)
-PYDIAG
-
 echo "── 6. Manager proxy uses its own bearer + strips the client header ───"
+_mm="$(grep -oE '^management_token[[:space:]]*=[[:space:]]*"[^"]+"' "$MGR_TOML" | sed -E 's/.*"([^"]+)".*/\1/')"
+echo "    diag: mgr-token direct-to-AE=$(code -H "Authorization: Bearer $_mm" "$AE_URL/api/alarm/rules") mgr-mainpid=$(systemctl show -p MainPID --value llm-systems-manager)"
 c_noauth="$(code "$MGR_URL/api/alarm/rules")"
 c_bogus="$(code -H 'Authorization: Bearer bogus-client-token' "$MGR_URL/api/alarm/rules")"
-echo "    proxy no-header=$c_noauth  bogus-header=$c_bogus"
 if [ "$c_noauth" != "200" ]; then fail "manager proxy (no client hdr) = $c_noauth (want 200 — token/bearer wiring)"; fi
 if [ "$c_bogus" != "200" ]; then fail "manager proxy (bogus client hdr) = $c_bogus (want 200 — client Authorization must be stripped)"; fi
 pass "proxy 200 without and with a bogus client Authorization (own bearer used, client header stripped)"
@@ -150,13 +147,11 @@ echo "── 9. Read-once bearer footgun: rotation needs a manager restart ─�
 NEW_MGMT="$(openssl rand -hex 32)"
 sed -i -E "s|^management_token[[:space:]]*=.*|management_token = \"$NEW_MGMT\"|" "$AE_TOML"
 sed -i -E "s|^management_token[[:space:]]*=.*|management_token = \"$NEW_MGMT\"|" "$MGR_TOML"
-systemctl restart llm-systems-alarm-engine
-if ! wait_health "$AE_URL/health"; then fail "AE unhealthy after token rotation"; fi
+if ! restart_wait llm-systems-alarm-engine "$AE_URL/health"; then fail "AE unhealthy after token rotation"; fi
 c="$(code "$MGR_URL/api/alarm/rules")"
 if [ "$c" != "401" ]; then fail "manager proxy after AE rotation = $c (want 401 — stale in-memory bearer)"; fi
 pass "manager still 401s on the rotated token until restarted (read-once at import)"
-systemctl restart llm-systems-manager
-if ! wait_health "$MGR_URL/health"; then fail "manager unhealthy after restart"; fi
+if ! restart_wait llm-systems-manager "$MGR_URL/health"; then fail "manager unhealthy after restart"; fi
 c="$(code "$MGR_URL/api/alarm/rules")"
 if [ "$c" != "200" ]; then fail "manager proxy after restart = $c (want 200)"; fi
 pass "manager restart picks up the rotated token -> 200"
