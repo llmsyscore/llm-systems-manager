@@ -141,13 +141,16 @@ except Exception as e:
     print("loader-error:", type(e).__name__, e)
 PYD
 
-echo "── diag: capture the exact Authorization the manager sends the AE ────"
+echo "── diag: classify the bearer the manager sends (dodges secret-masking) ─"
 _cap="$(mktemp)"
-python3 - "$_cap" <<'CAPPY' &
-import sys, http.server
+EXP_MGMT="$_mm" EXP_INGEST="$_ii" python3 - "$_cap" <<'CAPPY' &
+import sys, os, http.server
+_m = os.environ.get("EXP_MGMT", ""); _i = os.environ.get("EXP_INGEST", "")
 class H(http.server.BaseHTTPRequestHandler):
     def do_GET(self):
-        open(sys.argv[1], "a").write("auth=%r path=%s\n" % (self.headers.get("Authorization"), self.path))
+        a = (self.headers.get("Authorization") or "").replace("Bearer ", "").strip()
+        cls = "MGMT" if a == _m else ("INGEST" if a == _i else ("EMPTY" if not a else "OTHER(len=%d)" % len(a)))
+        open(sys.argv[1], "a").write("path=%s bearer=%s\n" % (self.path, cls))
         self.send_response(200); self.send_header("Content-Type", "application/json"); self.end_headers(); self.wfile.write(b"[]")
     def log_message(self, *a): pass
 http.server.HTTPServer(("127.0.0.1", 9099), H).serve_forever()
@@ -158,9 +161,8 @@ cp "$MGR_TOML" "${MGR_TOML}.capbak"
 sed -i -E 's|^alarm_engine_url[[:space:]]*=.*|alarm_engine_url = "http://127.0.0.1:9099"|; s|^tls_enabled[[:space:]]*=.*|tls_enabled = false|' "$MGR_TOML"
 restart_wait llm-systems-manager "$MGR_URL/health" || true
 code "$MGR_URL/api/alarm/rules" >/dev/null || true
-sleep 1
-echo "  manager sent -> $(head -1 "$_cap" 2>/dev/null || echo '(nothing captured)')"
-echo "  expected     -> auth='Bearer ${_mm}'"
+sleep 2
+echo "  manager bearer classification: $(sort -u "$_cap" 2>/dev/null | tr '\n' ' ' || echo '(nothing captured)')"
 kill "$_cappid" 2>/dev/null || true
 mv "${MGR_TOML}.capbak" "$MGR_TOML"
 restart_wait llm-systems-manager "$MGR_URL/health" || true
