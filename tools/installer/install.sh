@@ -783,6 +783,11 @@ detect_os
 require_linux
 detect_sudo
 
+# Control-plane modes must not overwrite a native package install (#416).
+case "$MODE" in
+  1|2|3|4) guard_not_native_package llm-systems-manager "the control plane" ;;
+esac
+
 banner "Provisioning $LLMSYS_RUN_USER user"
 ensure_runas_user "$LLMSYS_RUN_USER"
 

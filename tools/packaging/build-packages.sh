@@ -102,7 +102,7 @@ fi
 # Maintainer scripts = common.sh + per-format body.
 SCRIPTS="$WORK/scripts"
 mkdir -p "$SCRIPTS"
-for s in postinst prerm postrm; do
+for s in preinst postinst prerm postrm; do
   cat "$HERE/scripts/common.sh" "$HERE/scripts/deb/$s" > "$SCRIPTS/deb-$s"
   chmod 0755 "$SCRIPTS/deb-$s"
 done
@@ -131,6 +131,7 @@ if [[ ",$FORMATS," == *,deb,* ]]; then
     --depends sqlite3 --depends openssl \
     --deb-priority optional --category admin \
     --deb-recommends influxdb2 \
+    --before-install "$SCRIPTS/deb-preinst" \
     --after-install "$SCRIPTS/deb-postinst" \
     --before-remove "$SCRIPTS/deb-prerm" \
     --after-remove "$SCRIPTS/deb-postrm" \

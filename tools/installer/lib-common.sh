@@ -233,6 +233,34 @@ guard_not_containerized() {
   exit 2
 }
 
+# native_package_installed <name> — true when a dpkg/rpm package of that
+# name has files on disk (installed/held/unpacked; not removed-config-files).
+native_package_installed() {
+  if command -v dpkg-query >/dev/null 2>&1; then
+    dpkg-query -W -f='${db:Status-Status}' "$1" 2>/dev/null \
+      | grep -qE '^(installed|unpacked|half-configured|half-installed)$' && return 0
+  fi
+  if command -v rpm >/dev/null 2>&1; then
+    rpm -q "$1" >/dev/null 2>&1 && return 0
+  fi
+  return 1
+}
+
+# guard_not_native_package <pkg> <what> — refuse when the component is
+# managed by a native .deb/.rpm (#416). LLMSYS_IGNORE_NATIVE_PACKAGE=1 overrides.
+guard_not_native_package() {
+  local pkg="$1" what="${2:-$1}"
+  [[ "${LLMSYS_IGNORE_NATIVE_PACKAGE:-0}" == "1" ]] && return 0
+  native_package_installed "$pkg" || return 0
+  err "refusing: $what on this host is managed by the native '$pkg' package."
+  err "Mixing the script installer with a package install desyncs the package"
+  err "database and shadows the packaged systemd units (#416)."
+  err "Upgrade with:  apt install <new .deb>   or   dnf upgrade <new .rpm>"
+  err "Remove with:   apt purge $pkg           or   dnf remove $pkg"
+  err "(set LLMSYS_IGNORE_NATIVE_PACKAGE=1 to override)"
+  exit 2
+}
+
 # ── Prereq probing ──────────────────────────────────────────────────────────
 have() { command -v "$1" >/dev/null 2>&1; }
 

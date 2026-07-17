@@ -6,7 +6,7 @@ case "$1" in
     ;;
   purge)
     llmsys_remove_generated
-    llmsys_purge_all
+    llmsys_scoped_purge
     if [ -f /usr/share/debconf/confmodule ]; then
       . /usr/share/debconf/confmodule
       db_purge || true

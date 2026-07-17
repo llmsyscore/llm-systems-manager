@@ -137,7 +137,7 @@ sudo dnf install ./llm-systems-manager-<version>-1.noarch.rpm
 
 RPM installs are non-interactive: config is generated with detected defaults at `/opt/llm-systems-manager/config/llm-systems.toml` — edit it and `sudo systemctl restart llm-systems-manager` afterwards. EL9's default `python3` is 3.9; install `python3.11` (`sudo dnf install python3.11 python3.11-pip`) first — the package picks the newest Python ≥ 3.10 automatically.
 
-Both manager packages create the `llmsys` runtime user, install and start the two systemd units, and build the Python venvs at configure time (**network access to PyPI is required during install**). On upgrades the live config is preserved (new keys are merged in). `apt purge llm-systems-manager` removes everything including config, data, logs, and the runtime user; `dnf remove` keeps config/data behind with a notice.
+Both manager packages create the `llmsys` runtime user, install and start the two systemd units, and build the Python venvs at configure time (**network access to PyPI is required during install**). On upgrades the live config is preserved (new keys are merged in). `apt purge llm-systems-manager` removes everything — config, data, logs, and the runtime user — when the package created the tree; state it didn't create is kept (see [Mixing install methods](#mixing-install-methods)). `dnf remove` always keeps config/data behind with a notice.
 
 **InfluxDB:** the package declares `influxdb2` only as a *Recommends* — it lives in InfluxData's third-party repo (not distro repos) and may legitimately run on another host, so a hard dependency would break both cases. If InfluxDB isn't reachable after install, the postinst prints a notice pointing at `tools/installer/install-influxdb.sh` (local install) or the `[influxdb]` config section (external server). Metric history and alarms need it; the dashboard runs without it in the meantime.
 
@@ -151,6 +151,21 @@ sudo dnf install ./llm-systems-agent-<version>-1.x86_64.rpm     # or .aarch64
 The deb prompts (debconf) for the manager URL; the rpm takes defaults — set `MANAGER_URL` in `/opt/llm-systems-agent/agent_config.yaml` and restart if left blank. The binary is installed owned by `llmsys` so manager-driven self-update (**Admin → Agents → Update**) keeps working; after a self-update the on-disk binary is newer than the package until the next `apt`/`dnf` upgrade re-syncs it. Provider toggles (llama.cpp/LM Studio/vLLM control, sudo wrappers) are what the script installer automates — enable them in `agent_config.yaml` per its inline docs.
 
 Packages are built by `tools/packaging/build-packages.sh` and `tools/packaging/build-agent-package.sh` (fpm) — see those scripts for the build-from-source path.
+
+### Mixing install methods
+
+**Install methods do not mix on one host** — the script installer, the native packages, Docker, and the agent binary tarball each own the install tree, the systemd units, and the `llmsys` user differently, and mixing them shadows units or desyncs the package database. Both sides now guard against it:
+
+- The **packages refuse a fresh install** over script-installer state (units in `/etc/systemd/system`, a config the package didn't create, a venv in the agent tree) and over busy service ports (a Docker control plane or script install still running). Override: `LLMSYS_PACKAGE_FORCE=1` in the environment — the tree is then marked *adopted* and a later `apt purge` keeps config/data instead of deleting them.
+- The **script installer, updater, and uninstaller refuse a package-managed host** and point at `apt`/`dnf` instead (the updater skips just the agent when only the agent is packaged). Override: `LLMSYS_IGNORE_NATIVE_PACKAGE=1`.
+- `apt purge` only deletes config/data/logs when the package created the tree and no script-installer state appeared since; otherwise it keeps them and says so.
+
+**Supported migrations:**
+
+- *Script install → package*: `tools/installer/uninstall.sh` first, then install the package (fresh config), or `LLMSYS_PACKAGE_FORCE=1` to adopt in place (config preserved).
+- *Binary tarball → agent package*: supported directly — a bare binary + config with no hand-made unit is adopted automatically (config/token preserved, binary replaced by the packaged one).
+- *Package → script install*: `apt purge` / `dnf remove` first, then run the script installer.
+- A **self-updated agent binary** (Admin → Agents → Update) is newer than what the package database recorded; a later package upgrade replaces it and warns if that was a downgrade — re-update from the dashboard or install a newer package.
 
 ---
 

@@ -30,6 +30,27 @@ permissions:
   contents: read
 
 jobs:
+  # The native-package guard is hand-copied into three standalone scripts
+  # (they can't source lib-common at runtime). A drift silently weakens a
+  # data-loss guard, so assert the detection + override stay identical. #416
+  guard-consistency:
+    name: guard copies in sync (#416)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: native_package_installed detection is identical across copies
+        run: |
+          files="tools/installer/lib-common.sh tools/installer/uninstall.sh agent/install/install.sh"
+          pat="db:Status-Status"
+          set="'^(installed|unpacked|half-configured|half-installed)\$'"
+          for f in $files; do
+            grep -qF "$pat" "$f" || { echo "ERROR: $f lost the $pat probe"; exit 1; }
+            grep -qF "$set" "$f" || { echo "ERROR: $f drifted from the shared status set"; exit 1; }
+            grep -qF 'LLMSYS_IGNORE_NATIVE_PACKAGE' "$f" || { echo "ERROR: $f lost the override var"; exit 1; }
+          done
+          echo "all three guard copies agree on detection + override"
+
   build:
     name: build .deb + .rpm (fpm)
     runs-on: ubuntu-latest
@@ -43,12 +64,13 @@ jobs:
           sudo apt-get install -y --no-install-recommends ruby rpm binutils
           sudo gem install fpm --no-document
 
-      # Second version (deb only — rpm-install only uses 0.0.1) so
-      # deb-install can exercise the upgrade path.
+      # 0.0.2: same-code upgrade path for deb-install. 1.0.7: version above
+      # the last release so deb-cross-version can upgrade a real v1.0.6 to it.
       - name: Build packages
         run: |
           tools/packaging/build-packages.sh --version 0.0.1 --out dist
           tools/packaging/build-packages.sh --version 0.0.2 --formats deb --out dist
+          tools/packaging/build-packages.sh --version 1.0.7 --formats deb --out dist
 
       - uses: actions/upload-artifact@v4
         with:
@@ -83,6 +105,11 @@ jobs:
           sudo test -x /opt/llm-systems-manager/llm-systems-manager/venv/bin/python3
           sudo test -x /opt/llm-systems-manager/llm-systems-alarm-engine/venv/bin/python3
           sudo stat -c '%U %a' /opt/llm-systems-manager/config/llm-systems.toml | grep -qx 'llmsys 600'
+          set +x
+          # No postinst may rewrite a package-owned file (#416). Content (md5)
+          # changes only — the deliberate chown is not a dpkg --verify finding.
+          bad="$( { sudo dpkg --verify llm-systems-manager || true; } | awk '$1 ~ /5/')"
+          if [ -n "$bad" ]; then echo "ERROR: package-owned files modified:"; echo "$bad"; exit 1; fi
 
       # The alarm engine serves HTTPS (self-signed cert pre-issued by the
       # config bootstrap), so its probe is https + -k.
@@ -104,7 +131,9 @@ jobs:
           sudo DEBIAN_FRONTEND=noninteractive apt-get install -y ./dist/llm-systems-manager_0.0.2_all.deb
           dpkg-query -W -f='${Version}' llm-systems-manager | grep -qx 0.0.2
           sudo grep -q 'ci-upgrade-marker' /opt/llm-systems-manager/config/llm-systems.toml
-          ls /opt/llm-systems-manager/config/llm-systems.toml.bak.* 2>/dev/null && exit 1 || true
+          if ls /opt/llm-systems-manager/config/llm-systems.toml.bak.* 2>/dev/null; then
+            echo 'ERROR: upgrade created a config backup (should reconcile in place)'; exit 1
+          fi
           probe() { for i in $(seq 1 30); do curl -fsSk "$1" >/dev/null 2>&1 && return 0; sleep 2; done; return 1; }
           probe http://127.0.0.1:5000/health
           probe https://127.0.0.1:8081/health
@@ -115,19 +144,178 @@ jobs:
         run: |
           sudo apt-get purge -y llm-systems-manager
           set -x
-          ! getent passwd llmsys
           test ! -e /opt/llm-systems-manager
           test ! -e /var/log/llm-systems-manager
           test ! -e /usr/lib/systemd/system/llm-systems-manager.service
           test ! -e /usr/lib/systemd/system/llm-systems-alarm-engine.service
           sudo test ! -e /etc/sudoers.d/llm-systems-manager
-          ! systemctl status llm-systems-manager >/dev/null 2>&1
+          set +x
+          if getent passwd llmsys; then echo 'ERROR: llmsys survived purge'; exit 1; fi
+          if systemctl status llm-systems-manager >/dev/null 2>&1; then
+            echo 'ERROR: manager unit still known to systemd'; exit 1
+          fi
 
       - name: Collect service logs on failure
         if: failure()
         run: |
           sudo journalctl -u llm-systems-manager --no-pager -n 200 || true
           sudo journalctl -u llm-systems-alarm-engine --no-pager -n 200 || true
+
+  # Mixed-state guards (#416): packages must refuse to damage a script
+  # install and vice versa; forced adoption must purge conservatively.
+  deb-guards:
+    name: deb mixed-state guards (#416)
+    runs-on: ubuntu-latest
+    needs: build
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: packages
+          path: dist
+
+      # Each refusal must be attributable to the #416 guard — asserting only
+      # "apt failed" would pass on a broken package or bad filename.
+      - name: Refuse fresh install over script-install state
+        run: |
+          sudo mkdir -p /opt/llm-systems-manager/config
+          echo '# sim-script-install' | sudo tee /opt/llm-systems-manager/config/llm-systems.toml >/dev/null
+          printf '[Unit]\nDescription=sim\n[Service]\nExecStart=/bin/true\n' \
+            | sudo tee /etc/systemd/system/llm-systems-manager.service >/dev/null
+          set +e
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
+            ./dist/llm-systems-manager_0.0.1_all.deb >/tmp/g1.log 2>&1; RC=$?
+          set -e
+          cat /tmp/g1.log
+          if [ "$RC" = "0" ]; then echo 'ERROR: install should have been refused'; exit 1; fi
+          if ! grep -q 'refusing to install over an existing non-package install' /tmp/g1.log; then
+            echo 'ERROR: apt failed, but not because of the #416 guard'; exit 1
+          fi
+          if dpkg-query -W -f='${db:Status-Status}' llm-systems-manager 2>/dev/null | grep -qx installed; then
+            echo 'ERROR: package installed despite refusal'; exit 1
+          fi
+          sudo grep -q 'sim-script-install' /opt/llm-systems-manager/config/llm-systems.toml
+          sudo rm -f /etc/systemd/system/llm-systems-manager.service
+
+      - name: Refuse fresh install when the ports are taken
+        run: |
+          sudo rm -rf /opt/llm-systems-manager
+          python3 -m http.server 5000 >/dev/null 2>&1 &
+          SRV=$!
+          for i in $(seq 1 15); do ss -ltnH | awk '{print $4}' | grep -qE '[:.]5000$' && break; sleep 1; done
+          ss -ltnH | awk '{print $4}' | grep -qE '[:.]5000$' || { echo 'ERROR: fixture never bound 5000'; exit 1; }
+          set +e
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
+            ./dist/llm-systems-manager_0.0.1_all.deb >/tmp/g2.log 2>&1; RC=$?
+          set -e
+          kill "$SRV" 2>/dev/null || true
+          cat /tmp/g2.log
+          if [ "$RC" = "0" ]; then echo 'ERROR: install should have been refused (port busy)'; exit 1; fi
+          if ! grep -q 'already in use' /tmp/g2.log; then
+            echo 'ERROR: refused, but not by the port check'; exit 1
+          fi
+
+      - name: Forced adoption marks the tree and purge keeps foreign config
+        run: |
+          sudo mkdir -p /opt/llm-systems-manager/config
+          echo '# sim-foreign-config' | sudo tee /opt/llm-systems-manager/config/llm-systems.toml >/dev/null
+          sudo LLMSYS_PACKAGE_FORCE=1 DEBIAN_FRONTEND=noninteractive \
+            apt-get install -y ./dist/llm-systems-manager_0.0.1_all.deb
+          sudo grep -q '^adopted=1' /opt/llm-systems-manager/.llmsys-package-state
+          sudo grep -q 'sim-foreign-config' /opt/llm-systems-manager/config/llm-systems.toml
+          sudo apt-get purge -y llm-systems-manager
+          sudo test -f /opt/llm-systems-manager/config/llm-systems.toml
+          getent passwd llmsys
+          sudo rm -rf /opt/llm-systems-manager /var/log/llm-systems-manager
+          sudo userdel -r llmsys 2>/dev/null || true
+
+      - name: Script tools refuse a package-managed host
+        run: |
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y ./dist/llm-systems-manager_0.0.1_all.deb
+          # <label> <rc> <log> <expected message>: exit 2 AND the refusal text.
+          assert_refused() {
+            echo "--- $1 exited $2; output:"; cat "$3" || true
+            if [ "$2" != "2" ]; then echo "ERROR: $1 exited $2, expected 2 (refusal)"; exit 1; fi
+            if ! grep -q "$4" "$3"; then echo "ERROR: $1 lacked refusal message '$4'"; exit 1; fi
+            echo "--- $1 refused correctly"
+          }
+          set +e
+          sudo bash tools/installer/update.sh --yes </dev/null >/tmp/upd.log 2>&1; RC_UPD=$?
+          sudo bash tools/installer/uninstall.sh </dev/null >/tmp/uni.log 2>&1; RC_UNI=$?
+          sudo bash tools/installer/install.sh --mode 3 --source local --no-self-update </dev/null >/tmp/ins.log 2>&1; RC_INS=$?
+          set -e
+          assert_refused update.sh    "$RC_UPD" /tmp/upd.log 'managed by the native'
+          assert_refused uninstall.sh "$RC_UNI" /tmp/uni.log 'installed as native package'
+          assert_refused install.sh   "$RC_INS" /tmp/ins.log 'managed by the native'
+          # The packaged service must be untouched by all three.
+          systemctl is-active llm-systems-manager
+          sudo test -x /opt/llm-systems-manager/llm-systems-manager/venv/bin/python3
+
+      - name: Clean purge is still a full purge (regression)
+        run: |
+          sudo apt-get purge -y llm-systems-manager
+          test ! -e /opt/llm-systems-manager
+          test ! -e /var/log/llm-systems-manager
+          if getent passwd llmsys; then echo 'ERROR: llmsys survived a clean purge'; exit 1; fi
+
+      - name: Show logs on failure
+        if: failure()
+        run: |
+          for f in /tmp/upd.log /tmp/uni.log /tmp/ins.log; do
+            echo "=== $f"; sudo cat "$f" 2>/dev/null || true
+          done
+          sudo journalctl -u llm-systems-manager --no-pager -n 100 || true
+
+  # Upgrading the last RELEASED package (v1.0.6, which predates the ownership
+  # marker) must backfill the marker as clean — not adopted — so purge stays
+  # full. The 0.0.1→0.0.2 path can't test this (both carry the marker code). #416
+  deb-cross-version:
+    name: deb upgrade from released v1.0.6 (#416 marker backfill)
+    runs-on: ubuntu-latest
+    needs: build
+    timeout-minutes: 30
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: packages
+          path: dist
+
+      - name: Fetch the released v1.0.6 .deb
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release download v1.0.6 --repo "$GITHUB_REPOSITORY" \
+            -p 'llm-systems-manager_1.0.6_all.deb' -D old
+
+      - name: Install v1.0.6 (pre-marker), then upgrade to the PR build
+        run: |
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y ./old/llm-systems-manager_1.0.6_all.deb
+          # v1.0.6 predates the marker — it must not exist yet.
+          if sudo test -e /opt/llm-systems-manager/.llmsys-package-state; then
+            echo 'ERROR: v1.0.6 should not have written a marker'; exit 1
+          fi
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y ./dist/llm-systems-manager_1.0.7_all.deb
+          dpkg-query -W -f='${Version}' llm-systems-manager | grep -qx 1.0.7
+
+      - name: Marker backfilled as clean (not adopted)
+        run: |
+          sudo cat /opt/llm-systems-manager/.llmsys-package-state
+          if ! sudo grep -q '^adopted=0' /opt/llm-systems-manager/.llmsys-package-state; then
+            echo 'ERROR: a cleanly-installed pre-marker package was flagged adopted — purge would wrongly become conservative'; exit 1
+          fi
+
+      - name: Purge stays full (the regression this guards)
+        run: |
+          sudo apt-get purge -y llm-systems-manager
+          test ! -e /opt/llm-systems-manager
+          test ! -e /var/log/llm-systems-manager
+          if getent passwd llmsys; then echo 'ERROR: llmsys survived purge — backfill made it conservative'; exit 1; fi
+
+      - name: Show logs on failure
+        if: failure()
+        run: sudo journalctl -u llm-systems-manager --no-pager -n 100 || true
 
   rpm-install:
     name: rpm install/erase (dnf, rocky 9)
@@ -141,10 +329,29 @@ jobs:
           name: packages
           path: dist
 
+      # %pre must refuse over simulated script-install state (#416).
+      - name: Guard refuses over script-install state
+        run: |
+          dnf install -y python3.11 python3.11-pip util-linux shadow-utils
+          mkdir -p /etc/systemd/system /opt/llm-systems-manager/config
+          echo '# sim-script-install' > /opt/llm-systems-manager/config/llm-systems.toml
+          printf '[Unit]\nDescription=sim\n' > /etc/systemd/system/llm-systems-manager.service
+          set +e
+          dnf install -y ./dist/llm-systems-manager-0.0.1-1.noarch.rpm >/tmp/g1.log 2>&1; RC=$?
+          set -e
+          cat /tmp/g1.log
+          if [ "$RC" = "0" ]; then echo 'ERROR: install should have been refused'; exit 1; fi
+          if ! grep -q 'refusing to install over an existing non-package install' /tmp/g1.log; then
+            echo 'ERROR: dnf failed, but not because of the #416 guard'; exit 1
+          fi
+          if rpm -q llm-systems-manager; then echo 'ERROR: package installed despite refusal'; exit 1; fi
+          grep -q 'sim-script-install' /opt/llm-systems-manager/config/llm-systems.toml
+          rm -f /etc/systemd/system/llm-systems-manager.service
+          rm -rf /opt/llm-systems-manager
+
       # EL9's default python3 is 3.9 — the postinst picker must find 3.11.
       - name: Install .rpm
         run: |
-          dnf install -y python3.11 python3.11-pip util-linux shadow-utils
           dnf install -y ./dist/llm-systems-manager-0.0.1-1.noarch.rpm
 
       - name: Assert install state
@@ -157,6 +364,11 @@ jobs:
           /opt/llm-systems-manager/llm-systems-manager/venv/bin/python3 -c 'import sys; assert sys.version_info >= (3, 10)'
           /opt/llm-systems-manager/llm-systems-alarm-engine/venv/bin/python3 -c 'import sys; assert sys.version_info >= (3, 10)'
           stat -c '%U %a' /opt/llm-systems-manager/config/llm-systems.toml | grep -qx 'llmsys 600'
+          set +x
+          # rpm -V checks ownership too; the deliberate chown shows as U/G —
+          # assert only content (5) changes to package-owned files (#416).
+          bad="$(rpm -V llm-systems-manager | awk '$1 ~ /5/' || true)"
+          if [ -n "$bad" ]; then echo "ERROR: package-owned files modified:"; echo "$bad"; exit 1; fi
 
       # No systemd in the container — run the manager exactly as the unit
       # would (WorkingDirectory + LLM_SYSTEMS_CONFIG) and hit /health.
