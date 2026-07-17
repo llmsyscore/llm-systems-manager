@@ -112,10 +112,13 @@ echo "  ae  [alarm_engine] tokens:"; grep -E '^[# ]*(ingest_token|management_tok
 _diag_mm="$(grep -oE '^management_token[[:space:]]*=[[:space:]]*"[^"]+"' "$MGR_TOML" | sed -E 's/.*"([^"]+)".*/\1/')"
 echo "  mgr mgmt-token direct to AE: $(code -H "Authorization: Bearer $_diag_mm" "$AE_URL/api/alarm/rules") (200 = mgr TOML has the right token)"
 
-echo "── 6. Manager proxy works, strips the client header, uses management_token ─"
-c="$(code -H 'Authorization: Bearer bogus-client-token' "$MGR_URL/api/alarm/rules")"
-if [ "$c" != "200" ]; then fail "manager proxy post-wiring (bogus client hdr) = $c (want 200)"; fi
-pass "proxy 200 with a bogus client Authorization (stripped; manager's own bearer forwarded over TLS)"
+echo "── 6. Manager proxy uses its own bearer + strips the client header ───"
+c_noauth="$(code "$MGR_URL/api/alarm/rules")"
+c_bogus="$(code -H 'Authorization: Bearer bogus-client-token' "$MGR_URL/api/alarm/rules")"
+echo "    proxy no-header=$c_noauth  bogus-header=$c_bogus"
+if [ "$c_noauth" != "200" ]; then fail "manager proxy (no client hdr) = $c_noauth (want 200 — token/bearer wiring)"; fi
+if [ "$c_bogus" != "200" ]; then fail "manager proxy (bogus client hdr) = $c_bogus (want 200 — client Authorization must be stripped)"; fi
+pass "proxy 200 without and with a bogus client Authorization (own bearer used, client header stripped)"
 
 echo "── 7. CORS allow-lists byte-identical across both hosts ──────────────"
 MGR_CORS="$(toml_get "$MGR_TOML" manager cors_origins)"
