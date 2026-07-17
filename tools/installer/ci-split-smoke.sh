@@ -106,11 +106,21 @@ systemctl restart llm-systems-manager
 if ! wait_health "$MGR_URL/health"; then fail "manager unhealthy after token wiring"; fi
 pass "manager tokens wired"
 
-echo "── diag (temporary) — token state before proxy assertion ────────────"
-echo "  mgr [alarm_engine] tokens:"; grep -E '^[# ]*(ingest_token|management_token)[[:space:]]*=' "$MGR_TOML" | sed 's/^/    /'
-echo "  ae  [alarm_engine] tokens:"; grep -E '^[# ]*(ingest_token|management_token)[[:space:]]*=' "$AE_TOML" | sed 's/^/    /'
-_diag_mm="$(grep -oE '^management_token[[:space:]]*=[[:space:]]*"[^"]+"' "$MGR_TOML" | sed -E 's/.*"([^"]+)".*/\1/')"
-echo "  mgr mgmt-token direct to AE: $(code -H "Authorization: Bearer $_diag_mm" "$AE_URL/api/alarm/rules") (200 = mgr TOML has the right token)"
+echo "── diag (temporary) — what the manager's loader actually returns ────"
+echo "  mainpid=$(systemctl show -p MainPID --value llm-systems-manager) active=$(systemctl show -p ActiveEnterTimestamp --value llm-systems-manager)"
+systemctl show -p Environment --value llm-systems-manager | tr ' ' '\n' | grep -iE 'token|config' | sed 's/^/  env: /' || true
+_mgr_py="$(systemctl show -p ExecStart --value llm-systems-manager | grep -oE '/[^ ]+/bin/python3' | head -1)"
+"${_mgr_py:-python3}" - "$MGR_TOML" <<'PYDIAG' 2>&1 | sed 's/^/  /'
+import sys, os
+os.environ["LLM_SYSTEMS_CONFIG"] = sys.argv[1]
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(sys.argv[1])), "config"))
+try:
+    import unified_config as uc
+    ae = uc.settings.alarm_engine
+    print("loader mgmt=", repr((ae.management_token or "")[:12]), "ingest=", repr((ae.ingest_token or "")[:12]), "tls=", ae.tls_enabled)
+except Exception as e:
+    print("loader-error:", type(e).__name__, e)
+PYDIAG
 
 echo "── 6. Manager proxy uses its own bearer + strips the client header ───"
 c_noauth="$(code "$MGR_URL/api/alarm/rules")"
