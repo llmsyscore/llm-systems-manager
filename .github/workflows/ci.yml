@@ -187,3 +187,81 @@ jobs:
       - name: Run frontend unit tests
         working-directory: llm-systems-manager/frontend
         run: npm test
+
+  shellcheck:
+    name: shellcheck
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    # Static analysis for the installer/packaging/agent-install shell. BLOCKING.
+    # Pinned shellcheck so findings are reproducible across runner-image bumps.
+    # -S info (not warning) so it also catches SC2086 (unquoted / word-splitting)
+    # and SC2251 (a `! cmd` that silently skips errexit). Excluded codes are
+    # deliberate idioms or analysis limits here: SC2015 (A && B || C fallbacks),
+    # SC2016 (single-quoted trap / awk bodies), SC1091 (un-followable sources).
+    # The assembled step also drops SC2317 (common.sh helpers look unreachable
+    # when concatenated with just one fragment).
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install shellcheck (pinned)
+        run: |
+          ver=0.10.0
+          curl -fsSL "https://github.com/koalaman/shellcheck/releases/download/v${ver}/shellcheck-v${ver}.linux.x86_64.tar.xz" | tar -xJ
+          sudo install "shellcheck-v${ver}/shellcheck" /usr/local/bin/shellcheck
+          shellcheck --version
+
+      # Standalone shell (real shebang): .sh files, the .sh.tmpl rendered at
+      # install time, and the #!/bin/sh debconf/config maintainer scripts.
+      # -x follows the `. lib-common.sh` sources so cross-file refs resolve.
+      - name: Shellcheck standalone scripts
+        run: |
+          mapfile -t scripts < <(git ls-files -- tools/installer tools/packaging agent/install | grep -E '\.sh$|\.sh\.tmpl$|/debconf/config$')
+          printf 'linting %d scripts\n' "${#scripts[@]}"
+          shellcheck -S info -e SC2015,SC2016,SC1091 -x "${scripts[@]}"
+
+      # The .deb/.rpm maintainer scripts are shebang-less fragments that the
+      # build concatenates onto scripts/common.sh; lint the assembled artifact
+      # (common.sh + fragment) so common.sh's helpers are in scope. Mirrors the
+      # concatenation in build-packages.sh / build-agent-package.sh.
+      - name: Shellcheck assembled maintainer scripts
+        run: |
+          tmp="$(mktemp -d)"
+          for base in tools/packaging tools/packaging/agent; do
+            for s in deb/preinst deb/postinst deb/prerm deb/postrm \
+                     rpm/pre rpm/post rpm/preun rpm/postun; do
+              cat "$base/scripts/common.sh" "$base/scripts/$s" > "$tmp/$(echo "$base/$s" | tr '/' '-')"
+            done
+          done
+          shellcheck -S info -e SC2015,SC2016,SC1091,SC2317 "$tmp"/*
+
+  actionlint:
+    name: actionlint
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    # Lints the workflow files themselves (syntax, expressions, deprecations)
+    # and runs shellcheck over every run: block — the layer that guards the
+    # CI scripts the installer shellcheck job doesn't see. BLOCKING. Both tools
+    # pinned so a runner-image bump can't silently change the gate.
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install shellcheck (pinned)
+        run: |
+          ver=0.10.0
+          curl -fsSL "https://github.com/koalaman/shellcheck/releases/download/v${ver}/shellcheck-v${ver}.linux.x86_64.tar.xz" | tar -xJ
+          sudo install "shellcheck-v${ver}/shellcheck" /usr/local/bin/shellcheck
+
+      - name: Install actionlint (pinned)
+        run: |
+          ver=1.7.7
+          curl -fsSL "https://github.com/rhysd/actionlint/releases/download/v${ver}/actionlint_${ver}_linux_amd64.tar.gz" | tar -xz actionlint
+          sudo install actionlint /usr/local/bin/actionlint
+          actionlint --version
+
+      # actionlint pipes run: blocks to shellcheck but silently SKIPS them (and
+      # still exits 0) if the binary is missing — so assert it and pass the path
+      # explicitly rather than trusting auto-detect.
+      - name: actionlint
+        run: |
+          command -v shellcheck
+          actionlint -shellcheck "$(command -v shellcheck)"

@@ -9,6 +9,7 @@ fi
 
 db_input high llm-systems-agent/manager-url || true
 db_input medium llm-systems-agent/alarm-engine-url || true
+# shellcheck disable=SC2119  # db_go is a debconf confmodule builtin, not a local function
 db_go || true
 
 exit 0

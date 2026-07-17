@@ -9,6 +9,7 @@ INSTALL_DIR="${2:-/opt/llm-systems-manager}"
 [ -f "$MANIFEST" ] || { echo "no manifest — skipping fixture"; exit 0; }
 
 planted=0
+# shellcheck disable=SC2013  # manifest file paths are whitespace-free by construction
 for rel in $(awk -F'|' '$1=="file"{print $3}' "$MANIFEST"); do
   dir="$INSTALL_DIR/$(dirname "$rel")"
   mkdir -p "$dir"

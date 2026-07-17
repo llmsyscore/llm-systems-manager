@@ -30,6 +30,7 @@ detect_sudo
 # (it captures tokens); kept on failure (path in the ERR line), removed on success.
 INFLUX_LOG="$(mktemp /tmp/llm-systems-influxdb-install.XXXXXX.log)"
 exec > >(tee -a "$INFLUX_LOG") 2> >(tee -a "$INFLUX_LOG" >&2)
+# shellcheck disable=SC2154  # rc is assigned by rc=$? within the same trap body
 trap 'rc=$?; echo "[ERR ]  install-influxdb.sh aborted at line $LINENO (exit $rc) — full log: $INFLUX_LOG" >&2' ERR
 # Single EXIT handler for the whole script: temp files always, log on success.
 trap 'rc=$?; rm -f "${TMP_BASE:-}" "${TMP_OUT:-}" "${INFLUX_TOKEN_TMP:-}" "${_setup_json:-}"; (( rc == 0 )) && rm -f "$INFLUX_LOG"' EXIT
@@ -79,7 +80,7 @@ ok "influxdb2 + influxdb2-cli installed"
 banner "InfluxDB — start service"
 $SUDO systemctl enable --now influxdb
 # Wait for health
-for i in {1..30}; do
+for _ in {1..30}; do
   code="$(probe_url "$INFLUX_URL/health")"
   [[ "$code" == "200" ]] && break
   sleep 1

@@ -116,7 +116,7 @@ jobs:
       - name: Health checks
         run: |
           set -o pipefail
-          probe() { for i in $(seq 1 30); do curl -fsSk "$1" >/dev/null 2>&1 && return 0; sleep 2; done; return 1; }
+          probe() { for _ in $(seq 1 30); do curl -fsSk "$1" >/dev/null 2>&1 && return 0; sleep 2; done; return 1; }
           probe http://127.0.0.1:5000/health
           probe https://127.0.0.1:8081/health
           curl -fsS  http://127.0.0.1:5000/health | jq .
@@ -134,7 +134,7 @@ jobs:
           if ls /opt/llm-systems-manager/config/llm-systems.toml.bak.* 2>/dev/null; then
             echo 'ERROR: upgrade created a config backup (should reconcile in place)'; exit 1
           fi
-          probe() { for i in $(seq 1 30); do curl -fsSk "$1" >/dev/null 2>&1 && return 0; sleep 2; done; return 1; }
+          probe() { for _ in $(seq 1 30); do curl -fsSk "$1" >/dev/null 2>&1 && return 0; sleep 2; done; return 1; }
           probe http://127.0.0.1:5000/health
           probe https://127.0.0.1:8081/health
           # try-restart must have bounced the service (fresh start timestamp).
@@ -185,6 +185,7 @@ jobs:
           printf '[Unit]\nDescription=sim\n[Service]\nExecStart=/bin/true\n' \
             | sudo tee /etc/systemd/system/llm-systems-manager.service >/dev/null
           set +e
+          # shellcheck disable=SC2024  # sudo output goes to /tmp (user-writable); a pipe would drop the RC=$? capture
           sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
             ./dist/llm-systems-manager_0.0.1_all.deb >/tmp/g1.log 2>&1; RC=$?
           set -e
@@ -204,9 +205,10 @@ jobs:
           sudo rm -rf /opt/llm-systems-manager
           python3 -m http.server 5000 >/dev/null 2>&1 &
           SRV=$!
-          for i in $(seq 1 15); do ss -ltnH | awk '{print $4}' | grep -qE '[:.]5000$' && break; sleep 1; done
+          for _ in $(seq 1 15); do ss -ltnH | awk '{print $4}' | grep -qE '[:.]5000$' && break; sleep 1; done
           ss -ltnH | awk '{print $4}' | grep -qE '[:.]5000$' || { echo 'ERROR: fixture never bound 5000'; exit 1; }
           set +e
+          # shellcheck disable=SC2024  # sudo output goes to /tmp (user-writable); a pipe would drop the RC=$? capture
           sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
             ./dist/llm-systems-manager_0.0.1_all.deb >/tmp/g2.log 2>&1; RC=$?
           set -e
@@ -242,8 +244,11 @@ jobs:
             echo "--- $1 refused correctly"
           }
           set +e
+          # shellcheck disable=SC2024  # sudo output goes to /tmp (user-writable); a pipe would drop the RC=$? capture
           sudo bash tools/installer/update.sh --yes </dev/null >/tmp/upd.log 2>&1; RC_UPD=$?
+          # shellcheck disable=SC2024  # sudo output goes to /tmp (user-writable); a pipe would drop the RC=$? capture
           sudo bash tools/installer/uninstall.sh </dev/null >/tmp/uni.log 2>&1; RC_UNI=$?
+          # shellcheck disable=SC2024  # sudo output goes to /tmp (user-writable); a pipe would drop the RC=$? capture
           sudo bash tools/installer/install.sh --mode 3 --source local --no-self-update </dev/null >/tmp/ins.log 2>&1; RC_INS=$?
           set -e
           assert_refused update.sh    "$RC_UPD" /tmp/upd.log 'managed by the native'
@@ -378,7 +383,7 @@ jobs:
           runuser -u llmsys -- env LLM_SYSTEMS_CONFIG=/opt/llm-systems-manager/config/llm-systems.toml \
             venv/bin/python3 backend/llm-systems-manager.py > /tmp/manager.log 2>&1 &
           MGR_PID=$!
-          for i in $(seq 1 30); do
+          for _ in $(seq 1 30); do
             curl -fsS http://127.0.0.1:5000/health >/dev/null 2>&1 && break
             sleep 2
           done

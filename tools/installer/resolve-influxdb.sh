@@ -35,8 +35,6 @@ detect_os
 require_linux
 detect_sudo
 
-INSTALL_DIR="${LLMSYS_INSTALL_DIR}"
-USER_ARG="${LLMSYS_RUN_USER}"
 ENV_FILE="$LLMSYS_INFLUXDB_TOKEN_FILE"
 LOCAL_URL="http://localhost:8086"
 
