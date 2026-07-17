@@ -284,7 +284,9 @@ INFLUX_OPERATOR_TOKEN=""
 : "${INFLUX_HOSTNAME:=}"
 : "${INFLUX_PORT:=}"
 if (( HAS_AE )); then
-  if $SUDO test -f "$ENV_FILE"; then
+  # -s not -f: install.sh always mktemps this handoff file, so it exists even
+  # empty (resolve-influxdb.sh's no-InfluxDB skip path); test non-empty instead.
+  if $SUDO test -s "$ENV_FILE"; then
     # Strict KEY=value parse of the handoff file.
     read_influx_token_file "$ENV_FILE"
     ok "loaded InfluxDB tokens from in-process handoff"
@@ -300,7 +302,7 @@ if (( HAS_AE )); then
         || warn "  Continuing anyway; you can fix /etc/hosts and re-run install."
     fi
   else
-    warn "$ENV_FILE not present — InfluxDB tokens left as REPLACE_ME"
+    warn "$ENV_FILE not present or empty — InfluxDB tokens left as REPLACE_ME"
     warn "  set [influxdb] host/port + [influxdb.tokens].* in $REAL before starting the alarm engine"
   fi
 else
@@ -634,9 +636,9 @@ fi
 
 # Strict post-rewrite check: if any of the four token slots still says
 # REPLACE_ME, the alarm engine will 401 every read/write — fail now so the
-# operator sees the problem before services start. Skipped in Mode 3 where
-# the alarm engine isn't on this host.
-if (( HAS_AE )) && $SUDO test -r "$ENV_FILE"; then
+# operator sees the problem before services start. -s not -r: skip when
+# InfluxDB was skipped (empty handoff → REPLACE_ME is the intended state).
+if (( HAS_AE )) && $SUDO test -s "$ENV_FILE"; then
   STALE=$($SUDO awk '
     /^\[influxdb\.tokens\]/ { in_tokens=1; next }
     /^\[/                   { in_tokens=0 }

@@ -66,6 +66,12 @@ jobs:
       - name: Smoke test
         run: sudo bash tools/installer/ci-smoke.sh
 
+      # Mode 1 installs + starts a local agent pointed at the LAN IP, so it
+      # registers "pending". Verify it registers, gets admin-approved, reports,
+      # and upgrades to full TLS (local HTTPS serve + control-channel flip).
+      - name: Verify agent registers, is approved, and upgrades to full TLS
+        run: sudo bash tools/installer/ci-agent-tls-smoke.sh
+
       # Reinstall coverage (#352): plant every manifest entry as stale state,
       # re-run install.sh over the live tree, and assert the deploy pruned it.
       - name: Plant stale upstream-removed artifacts (reinstall fixture)
@@ -208,6 +214,86 @@ jobs:
         if: failure()
         run: |
           for u in influxdb llm-systems-alarm-engine llm-systems-manager llm-systems-agent; do
+            echo "════ journalctl -u $u ════"
+            sudo journalctl -u "$u" -n 200 --no-pager || true
+          done
+
+  split-install:
+    name: split install (modes 3 + 4)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    # Cross-host split install on ONE runner: mode 4 (alarm engine) into one
+    # tree, mode 3 (manager) into another. Both installs share the runner's IP,
+    # so the config-bootstrap non-interactive branch auto-wires the two URLs.
+    # ci-split-smoke.sh then does the operator's manual steps (activate the AE
+    # tokens, paste them into the manager, use the manager-issued TLS cert) and
+    # asserts the manager->AE token/proxy/CORS/TLS wiring — the mode-3/4 branches
+    # and split-mode coupling the mode-1 jobs structurally cannot reach.
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install prerequisites
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            jq rsync wget gnupg ca-certificates openssl sqlite3 \
+            python3-venv python3-pip python3-dev build-essential
+
+      # Both installs must resolve to the SAME address so their auto-wired URLs,
+      # CORS lists, and the AE cert SAN all agree. Reject an empty/link-local IP.
+      - name: Pick the shared runner IP
+        run: |
+          ip="$(hostname -I | awk '{print $1}')"
+          case "${ip:-}" in
+            ""|169.254.*) echo "no routable runner IP: '${ip:-}'"; exit 1 ;;
+          esac
+          echo "DETECTED_IP=$ip" >> "$GITHUB_ENV"
+          echo "shared runner IP: $ip"
+
+      # Alarm-engine-only. No InfluxDB on the runner, so resolve-influxdb.sh
+      # takes its non-interactive skip path; the AE serves plain HTTP (no cert
+      # yet) and its /health returns 200 regardless, so the install passes.
+      - name: Install alarm engine (mode 4)
+        run: sudo LLMSYS_INSTALL_DIR=/opt/llm-systems-manager-ae bash tools/installer/install.sh --mode 4 --no-self-update < /dev/null
+
+      # Manager-only. On start it auto-issues the AE TLS cert into its own data
+      # dir (the AE is remote) and health-checks only itself.
+      - name: Install manager (mode 3)
+        run: sudo LLMSYS_INSTALL_DIR=/opt/llm-systems-manager-mgr bash tools/installer/install.sh --mode 3 --no-self-update < /dev/null
+
+      # A remote monitoring agent pointed at the mode-3 manager's LAN IP — the
+      # real split shape (registers "pending", not loopback-auto-approved). Wait
+      # for the manager to answer before installing (the agent's own probe is
+      # only 3×5s before it hard-exits on non-TTY stdin).
+      - name: Install monitoring agent pointed at the mode-3 manager
+        run: |
+          for _ in $(seq 1 30); do
+            c="$(curl -sS -o /dev/null -w '%{http_code}' -m5 "http://$DETECTED_IP:5000/api/agents" || echo 000)"
+            case "$c" in 200|401|403) break ;; esac
+            sleep 1
+          done
+          # Run the agent installer from the manager's DEPLOYED tree (/opt-mgr,
+          # llmsys-readable). `install.sh --mode 5` installs from the raw GH
+          # checkout under the runner's HOME, which the llmsys pip step can't read.
+          sudo bash /opt/llm-systems-manager-mgr/agent/install/install.sh \
+            --manager-url "http://$DETECTED_IP:5000" --hostname ci-split-agent < /dev/null
+
+      # Approve + full-TLS verification. Admin HTTP calls stay on loopback
+      # (127.0.0.1 is always in admin_cidrs); the agent itself dials the LAN IP.
+      - name: Verify agent registers, is approved, and upgrades to full TLS
+        run: sudo MGR_URL=http://127.0.0.1:5000 AGENT_HOSTNAME=ci-split-agent bash tools/installer/ci-agent-tls-smoke.sh
+
+      - name: Wire the two hosts and assert cross-host coupling
+        run: |
+          sudo AE_DIR=/opt/llm-systems-manager-ae \
+               MGR_DIR=/opt/llm-systems-manager-mgr \
+               DETECTED_IP="$DETECTED_IP" \
+               bash tools/installer/ci-split-smoke.sh
+
+      - name: Collect service logs on failure
+        if: failure()
+        run: |
+          for u in llm-systems-alarm-engine llm-systems-manager llm-systems-agent; do
             echo "════ journalctl -u $u ════"
             sudo journalctl -u "$u" -n 200 --no-pager || true
           done
