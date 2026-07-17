@@ -118,9 +118,27 @@ sed -i -E "s|^ingest_token[[:space:]]*=.*|ingest_token = \"$INGEST\"|; s|^manage
 if ! restart_wait llm-systems-manager "$MGR_URL/health"; then fail "manager unhealthy after token wiring"; fi
 pass "manager tokens wired"
 
-echo "── 6. Manager proxy uses its own bearer + strips the client header ───"
+echo "── diag (temporary) — token reality check ──────────────────────────"
 _mm="$(grep -oE '^management_token[[:space:]]*=[[:space:]]*"[^"]+"' "$MGR_TOML" | sed -E 's/.*"([^"]+)".*/\1/')"
-echo "    diag: mgr-token direct-to-AE=$(code -H "Authorization: Bearer $_mm" "$AE_URL/api/alarm/rules") mgr-mainpid=$(systemctl show -p MainPID --value llm-systems-manager)"
+_ii="$(grep -oE '^ingest_token[[:space:]]*=[[:space:]]*"[^"]+"' "$MGR_TOML" | sed -E 's/.*"([^"]+)".*/\1/')"
+_aemm="$(grep -oE '^management_token[[:space:]]*=[[:space:]]*"[^"]+"' "$AE_TOML" | sed -E 's/.*"([^"]+)".*/\1/')"
+echo "  file: mgr.mgmt=${_mm:0:8} mgr.ingest=${_ii:0:8} ae.mgmt=${_aemm:0:8}  mainpid=$(systemctl show -p MainPID --value llm-systems-manager)"
+echo "  AE-direct: mgr.mgmt=$(code -H "Authorization: Bearer $_mm" "$AE_URL/api/alarm/rules") mgr.ingest=$(code -H "Authorization: Bearer $_ii" "$AE_URL/api/alarm/rules") none=$(code "$AE_URL/api/alarm/rules")"
+_py="$(systemctl show -p ExecStart --value llm-systems-manager | grep -oE '/[^ ]+/bin/python3' | head -1)"
+"${_py:-python3}" - "$MGR_TOML" <<'PYD' 2>&1 | sed 's/^/  /'
+import sys, os
+os.environ["LLM_SYSTEMS_CONFIG"] = sys.argv[1]
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(sys.argv[1])), "config"))
+try:
+    from unified_config import settings as s
+    m = (s.alarm_engine.management_token or "").strip(); i = (s.alarm_engine.ingest_token or "").strip()
+    bearer = m if m not in ("", "REPLACE_ME") else i
+    print("loader: mgmt=%s ingest=%s -> bearer=%s" % (m[:8], i[:8], bearer[:8]))
+except Exception as e:
+    print("loader-error:", type(e).__name__, e)
+PYD
+
+echo "── 6. Manager proxy uses its own bearer + strips the client header ───"
 c_noauth="$(code "$MGR_URL/api/alarm/rules")"
 c_bogus="$(code -H 'Authorization: Bearer bogus-client-token' "$MGR_URL/api/alarm/rules")"
 if [ "$c_noauth" != "200" ]; then fail "manager proxy (no client hdr) = $c_noauth (want 200 — token/bearer wiring)"; fi
