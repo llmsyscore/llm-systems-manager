@@ -2,9 +2,13 @@
 # Split-install cross-host wiring oracle for CI (#418). Runs on ONE runner after
 # a mode-4 (alarm-engine) install into $AE_DIR and a mode-3 (manager) install
 # into $MGR_DIR. It performs the manual steps a real split operator would do
-# (activate the AE's generated tokens, paste them into the manager, use the
-# manager-issued TLS cert) and asserts the manager<->AE token / proxy / CORS /
-# TLS wiring that modes 1/2 can never exercise (they always co-locate). Run as root.
+# (copy the manager-issued TLS cert to the AE, activate the AE's generated
+# tokens, paste them into the manager) and asserts the manager<->AE token /
+# proxy / CORS / TLS wiring that modes 1/2 can never exercise. Run as root.
+#
+# The manager flips its outbound alarm_engine_url to https when tls_enabled is
+# on (the default), so the AE MUST serve HTTPS for the proxy to reach it — hence
+# the cert copy, and the AE is probed over https (-k for the internal-CA cert).
 set -euo pipefail
 
 AE_DIR="${AE_DIR:?set AE_DIR (mode-4 install dir)}"
@@ -13,16 +17,19 @@ DETECTED_IP="${DETECTED_IP:?set DETECTED_IP (runner IP shared by both installs)}
 
 AE_TOML="$AE_DIR/config/llm-systems.toml"
 MGR_TOML="$MGR_DIR/config/llm-systems.toml"
+AE_DATA="$AE_DIR/llm-systems-alarm-engine/data"
 AE_CERT="$MGR_DIR/data/ae-tls.crt"
-AE_URL="http://$DETECTED_IP:8081"
+AE_KEY="$MGR_DIR/data/ae-tls.key"
+AE_URL="https://$DETECTED_IP:8081"
 MGR_URL="http://$DETECTED_IP:5000"
 
 pass() { echo "  ✓ $*"; }
 fail() { echo "  ✗ FAIL: $*"; exit 1; }
 
-# HTTP status of a request; extra args (headers, -X) pass through to curl. A
-# connection failure prints 000 and does not abort, so callers assert on the code.
-code() { curl -s -o /dev/null -w '%{http_code}' --max-time 10 "$@" || true; }
+# HTTP status of a request; extra args (headers, -X) pass through to curl. -k
+# accepts the AE's internal-CA cert; a connection failure prints 000 and does
+# not abort, so callers assert on the code.
+code() { curl -sk -o /dev/null -w '%{http_code}' --max-time 10 "$@" || true; }
 
 # Read a dotted-section string key from a TOML file via stdlib tomllib.
 toml_get() {
@@ -56,8 +63,7 @@ wait_health() {
 echo "── 0. Both units up; manager issued the AE TLS cert ──────────────────"
 if ! wait_active llm-systems-alarm-engine; then fail "alarm-engine unit not active"; fi
 if ! wait_active llm-systems-manager;      then fail "manager unit not active"; fi
-if ! wait_health "$AE_URL/health"; then fail "AE /health never 200 on $AE_URL"; fi
-if ! wait_health "$MGR_URL/health";      then fail "manager never 200 on $MGR_URL"; fi
+if ! wait_health "$MGR_URL/health";        then fail "manager /health never 200 on $MGR_URL"; fi
 for _ in $(seq 1 30); do
   if [ -f "$AE_CERT" ]; then break; fi
   sleep 1
@@ -71,11 +77,16 @@ MGMT="$(grep -oE '^#[[:space:]]*management_token[[:space:]]*=[[:space:]]*"[^"]+"
 if [ -z "$INGEST" ] || [ -z "$MGMT" ]; then fail "could not read commented tokens from $AE_TOML"; fi
 pass "read split-AE ingest + management tokens from the AE config"
 
-echo "── 2. Activate the tokens on the AE (uncomment) + restart ────────────"
+echo "── 2. Copy the TLS cert to the AE + activate tokens + restart ────────"
+mkdir -p "$AE_DATA"
+cp "$AE_CERT" "$AE_KEY" "$AE_DATA/"
+chown llmsys:llmsys "$AE_DATA/ae-tls.crt" "$AE_DATA/ae-tls.key"
+chmod 0644 "$AE_DATA/ae-tls.crt"
+chmod 0600 "$AE_DATA/ae-tls.key"
 sed -i -E 's/^#[[:space:]]*(ingest_token[[:space:]]*=)/\1/; s/^#[[:space:]]*(management_token[[:space:]]*=)/\1/' "$AE_TOML"
 systemctl restart llm-systems-alarm-engine
-if ! wait_health "$AE_URL/health"; then fail "AE unhealthy after token activation"; fi
-pass "AE tokens activated (now enforced)"
+if ! wait_health "$AE_URL/health"; then fail "AE not serving HTTPS /health after cert copy + token activation"; fi
+pass "AE serving HTTPS with tokens enforced"
 
 echo "── 3. AE enforces management_token on /api/alarm/rules ───────────────"
 c="$(code "$AE_URL/api/alarm/rules")"
@@ -98,7 +109,7 @@ pass "manager tokens wired"
 echo "── 6. Manager proxy works, strips the client header, uses management_token ─"
 c="$(code -H 'Authorization: Bearer bogus-client-token' "$MGR_URL/api/alarm/rules")"
 if [ "$c" != "200" ]; then fail "manager proxy post-wiring (bogus client hdr) = $c (want 200)"; fi
-pass "proxy 200 with a bogus client Authorization (stripped; manager's own bearer forwarded)"
+pass "proxy 200 with a bogus client Authorization (stripped; manager's own bearer forwarded over TLS)"
 
 echo "── 7. CORS allow-lists byte-identical across both hosts ──────────────"
 MGR_CORS="$(toml_get "$MGR_TOML" manager cors_origins)"
