@@ -61,6 +61,7 @@ CLAUDE.md
 HANDOFF.md
 tools/*
 !tools/installer
+!tools/packaging
 !tools/run_tests.sh
 
 # IDE / OS

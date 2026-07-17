@@ -1,0 +1,18 @@
+#!/bin/sh
+set -e
+. /usr/share/debconf/confmodule
+
+# An existing live config is never regenerated — skip all prompts on
+# upgrades/reconfigures so postinst leaves it untouched.
+if [ -f /opt/llm-systems-manager/config/llm-systems.toml ]; then
+  exit 0
+fi
+
+db_input high llm-systems-manager/admin-user || true
+db_input high llm-systems-manager/admin-password || true
+db_input high llm-systems-manager/smtp-server || true
+db_input high llm-systems-manager/smtp-user || true
+db_input high llm-systems-manager/smtp-password || true
+db_go || true
+
+exit 0

@@ -1,0 +1,14 @@
+#!/bin/sh
+set -e
+. /usr/share/debconf/confmodule
+
+# An existing live config is never regenerated — skip prompts on upgrades.
+if [ -f /opt/llm-systems-agent/agent_config.yaml ]; then
+  exit 0
+fi
+
+db_input high llm-systems-agent/manager-url || true
+db_input medium llm-systems-agent/alarm-engine-url || true
+db_go || true
+
+exit 0

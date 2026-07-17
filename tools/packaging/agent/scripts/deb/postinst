@@ -1,0 +1,18 @@
+# deb postinst body — concatenated after common.sh by build-agent-package.sh.
+case "$1" in
+  configure)
+    if [ -f /usr/share/debconf/confmodule ]; then
+      . /usr/share/debconf/confmodule
+      for pair in manager-url:LLMSYS_CFG_MANAGER_URL \
+                  alarm-engine-url:LLMSYS_CFG_ALARM_ENGINE_URL; do
+        RET=""
+        db_get "llm-systems-agent/${pair%%:*}" || true
+        if [ -n "${RET:-}" ]; then export "${pair##*:}=$RET"; fi
+      done
+      db_stop || true
+    fi
+    llmsys_agent_configure "${2:-}"
+    ;;
+esac
+
+exit 0

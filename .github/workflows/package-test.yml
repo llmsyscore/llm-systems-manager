@@ -1,0 +1,187 @@
+name: Package tests
+
+# Native-package integration tests (#385): build the .deb/.rpm with fpm,
+# then prove the acceptance criteria on both families.
+# - deb-install: apt install ./*.deb on the systemd runner → user/units/
+#   venvs/config asserts + /health checks, an upgrade pass (config
+#   preserved, services restarted), then purge → zero leftovers.
+# - rpm-install: dnf install ./*.rpm in a rockylinux:9 container (EL9 base
+#   python3 is 3.9 — python3.11 exercises the interpreter picker). No
+#   systemd in-container, so the manager is health-checked via a direct
+#   venv launch; erase asserts the generated venvs are gone.
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - "tools/packaging/**"
+      - "tools/installer/**"
+      - "systemd/**"
+      - "llm-systems-alarm-engine/systemd/**"
+      - "**/requirements*.txt"
+      - ".github/workflows/package-test.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: package-test-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: build .deb + .rpm (fpm)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install fpm + rpmbuild
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends ruby rpm binutils
+          sudo gem install fpm --no-document
+
+      # Second version (deb only — rpm-install only uses 0.0.1) so
+      # deb-install can exercise the upgrade path.
+      - name: Build packages
+        run: |
+          tools/packaging/build-packages.sh --version 0.0.1 --out dist
+          tools/packaging/build-packages.sh --version 0.0.2 --formats deb --out dist
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: packages
+          path: dist/
+          retention-days: 3
+
+  deb-install:
+    name: deb install/upgrade/purge (apt)
+    runs-on: ubuntu-latest
+    needs: build
+    timeout-minutes: 30
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: packages
+          path: dist
+
+      - name: Install .deb (fresh)
+        run: sudo DEBIAN_FRONTEND=noninteractive apt-get install -y ./dist/llm-systems-manager_0.0.1_all.deb
+
+      - name: Assert install state
+        run: |
+          set -x
+          getent passwd llmsys
+          test -f /usr/lib/systemd/system/llm-systems-manager.service
+          test -f /usr/lib/systemd/system/llm-systems-alarm-engine.service
+          # /etc/sudoers.d is root-only on the runner image — stat as root.
+          sudo test -f /etc/sudoers.d/llm-systems-manager
+          sudo visudo -cf /etc/sudoers.d/llm-systems-manager
+          systemctl is-enabled llm-systems-manager llm-systems-alarm-engine
+          sudo test -x /opt/llm-systems-manager/llm-systems-manager/venv/bin/python3
+          sudo test -x /opt/llm-systems-manager/llm-systems-alarm-engine/venv/bin/python3
+          sudo stat -c '%U %a' /opt/llm-systems-manager/config/llm-systems.toml | grep -qx 'llmsys 600'
+
+      # The alarm engine serves HTTPS (self-signed cert pre-issued by the
+      # config bootstrap), so its probe is https + -k.
+      - name: Health checks
+        run: |
+          set -o pipefail
+          probe() { for i in $(seq 1 30); do curl -fsSk "$1" >/dev/null 2>&1 && return 0; sleep 2; done; return 1; }
+          probe http://127.0.0.1:5000/health
+          probe https://127.0.0.1:8081/health
+          curl -fsS  http://127.0.0.1:5000/health | jq .
+          curl -fsSk https://127.0.0.1:8081/health | jq .
+
+      # Upgrade must keep the live config (marker key survives) and leave
+      # both services running.
+      - name: Upgrade to 0.0.2
+        run: |
+          STARTED_BEFORE="$(systemctl show -p ActiveEnterTimestamp --value llm-systems-manager)"
+          echo '# ci-upgrade-marker' | sudo tee -a /opt/llm-systems-manager/config/llm-systems.toml >/dev/null
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y ./dist/llm-systems-manager_0.0.2_all.deb
+          dpkg-query -W -f='${Version}' llm-systems-manager | grep -qx 0.0.2
+          sudo grep -q 'ci-upgrade-marker' /opt/llm-systems-manager/config/llm-systems.toml
+          ls /opt/llm-systems-manager/config/llm-systems.toml.bak.* 2>/dev/null && exit 1 || true
+          probe() { for i in $(seq 1 30); do curl -fsSk "$1" >/dev/null 2>&1 && return 0; sleep 2; done; return 1; }
+          probe http://127.0.0.1:5000/health
+          probe https://127.0.0.1:8081/health
+          # try-restart must have bounced the service (fresh start timestamp).
+          test "$(systemctl show -p ActiveEnterTimestamp --value llm-systems-manager)" != "$STARTED_BEFORE"
+
+      - name: Purge → no leftovers
+        run: |
+          sudo apt-get purge -y llm-systems-manager
+          set -x
+          ! getent passwd llmsys
+          test ! -e /opt/llm-systems-manager
+          test ! -e /var/log/llm-systems-manager
+          test ! -e /usr/lib/systemd/system/llm-systems-manager.service
+          test ! -e /usr/lib/systemd/system/llm-systems-alarm-engine.service
+          sudo test ! -e /etc/sudoers.d/llm-systems-manager
+          ! systemctl status llm-systems-manager >/dev/null 2>&1
+
+      - name: Collect service logs on failure
+        if: failure()
+        run: |
+          sudo journalctl -u llm-systems-manager --no-pager -n 200 || true
+          sudo journalctl -u llm-systems-alarm-engine --no-pager -n 200 || true
+
+  rpm-install:
+    name: rpm install/erase (dnf, rocky 9)
+    runs-on: ubuntu-latest
+    needs: build
+    container: rockylinux:9
+    timeout-minutes: 30
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: packages
+          path: dist
+
+      # EL9's default python3 is 3.9 — the postinst picker must find 3.11.
+      - name: Install .rpm
+        run: |
+          dnf install -y python3.11 python3.11-pip util-linux shadow-utils
+          dnf install -y ./dist/llm-systems-manager-0.0.1-1.noarch.rpm
+
+      - name: Assert install state
+        run: |
+          set -x
+          getent passwd llmsys
+          test -f /usr/lib/systemd/system/llm-systems-manager.service
+          test -f /usr/lib/systemd/system/llm-systems-alarm-engine.service
+          test -f /etc/sudoers.d/llm-systems-manager
+          /opt/llm-systems-manager/llm-systems-manager/venv/bin/python3 -c 'import sys; assert sys.version_info >= (3, 10)'
+          /opt/llm-systems-manager/llm-systems-alarm-engine/venv/bin/python3 -c 'import sys; assert sys.version_info >= (3, 10)'
+          stat -c '%U %a' /opt/llm-systems-manager/config/llm-systems.toml | grep -qx 'llmsys 600'
+
+      # No systemd in the container — run the manager exactly as the unit
+      # would (WorkingDirectory + LLM_SYSTEMS_CONFIG) and hit /health.
+      - name: Direct-launch health check
+        run: |
+          cd /opt/llm-systems-manager/llm-systems-manager
+          runuser -u llmsys -- env LLM_SYSTEMS_CONFIG=/opt/llm-systems-manager/config/llm-systems.toml \
+            venv/bin/python3 backend/llm-systems-manager.py > /tmp/manager.log 2>&1 &
+          MGR_PID=$!
+          for i in $(seq 1 30); do
+            curl -fsS http://127.0.0.1:5000/health >/dev/null 2>&1 && break
+            sleep 2
+          done
+          curl -fsS http://127.0.0.1:5000/health
+          kill "$MGR_PID"
+
+      - name: Erase → generated artifacts removed
+        run: |
+          dnf remove -y llm-systems-manager
+          set -x
+          test ! -e /opt/llm-systems-manager/llm-systems-manager/venv
+          test ! -e /opt/llm-systems-manager/llm-systems-alarm-engine/venv
+          test ! -e /usr/lib/systemd/system/llm-systems-manager.service
+          test -f /opt/llm-systems-manager/config/llm-systems.toml
+
+      - name: Show manager log on failure
+        if: failure()
+        run: cat /tmp/manager.log || true

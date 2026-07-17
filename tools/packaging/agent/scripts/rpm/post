@@ -1,0 +1,9 @@
+# rpm %post body — concatenated after common.sh by build-agent-package.sh.
+# $1 is the install count: 1 = fresh install, >= 2 = upgrade.
+if [ "${1:-1}" -ge 2 ]; then
+  llmsys_agent_configure upgrade
+else
+  llmsys_agent_configure ""
+fi
+
+exit 0

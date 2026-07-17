@@ -1,0 +1,28 @@
+Template: llm-systems-manager/admin-user
+Type: string
+Default: llmadmin
+Description: Dashboard admin username:
+ Username for the manager dashboard's admin login.
+
+Template: llm-systems-manager/admin-password
+Type: password
+Description: Dashboard admin password:
+ Leave blank to keep the built-in default (llmadmin / llmadmin) and change
+ it later under Admin -> Authentication. Custom passwords need at least
+ 8 printable characters.
+
+Template: llm-systems-manager/smtp-server
+Type: string
+Description: SMTP server for email alerts:
+ Leave blank to configure later in
+ /opt/llm-systems-manager/config/llm-systems.toml.
+
+Template: llm-systems-manager/smtp-user
+Type: string
+Description: SMTP username:
+ Account used to send alert emails (e.g. you@example.com).
+
+Template: llm-systems-manager/smtp-password
+Type: password
+Description: SMTP app-password:
+ Leave blank to disable email alerts.

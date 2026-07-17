@@ -1,0 +1,9 @@
+# rpm %pre body — concatenated after common.sh by build-packages.sh.
+# EL can't express a "python3 >= 3.10" Requires, so gate here before
+# any files land (stock EL9 python3 is 3.9).
+if ! llmsys_pick_python >/dev/null; then
+  echo "llm-systems-manager: no Python >= 3.10 found — install one first (e.g. 'dnf install python3.11 python3.11-pip')." >&2
+  exit 1
+fi
+
+exit 0

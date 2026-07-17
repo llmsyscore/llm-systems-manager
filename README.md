@@ -89,6 +89,17 @@ If you find this project useful, please consider leaving a donation
 <!--END_SECTION:buy-me-a-coffee-->
 ---
 
+## Installation options
+
+The **fully automated script installer** (Quickstart below) is the preferred path — it handles prerequisites, InfluxDB, config, TLS, agents, and updates end-to-end. The alternatives cover specific scenarios:
+
+| Method | Best for |
+|---|---|
+| **Script installer** (preferred) | Everything: full stack, split installs, agents, offline installs, updates — see [Quickstart](#quickstart--single-host) |
+| [Native packages (`.deb`/`.rpm`)](#native-packages-deb--rpm) | Hosts standardized on apt/dnf package management |
+| [Docker Compose](#docker-compose-control-plane-only) | Containerized control plane (manager + alarm engine + InfluxDB) |
+| [Agent binary tarball](#agent-binary-no-python-required) | Agent-only hosts without Python (Linux/macOS), manual layout control |
+
 ## Quickstart — single host
 
 For a quick installation on one host, choose the full install option:
@@ -133,6 +144,18 @@ That's it for a single-host lab. Everything else below is for adding more hosts 
 ### Docker Compose (control plane only)
 
 Prefer containers? No repo checkout needed — `curl` down `docker-compose.yml` + `.env.example`, fill in the secrets, and `docker compose up -d` brings up the manager + alarm engine + InfluxDB from multi-arch images published to ghcr.io on every release — see [docker/README.md](docker/README.md). Agents still install natively on each host (they need sensor/GPU/systemd access).
+
+### Native packages (.deb / .rpm)
+
+Every [release](https://github.com/llmsyscore/llm-systems-manager/releases) also ships native packages for Debian/Ubuntu and RHEL-family distros: `llm-systems-manager` (manager + alarm engine; InfluxDB stays external — declared as a Recommends, with a pointer printed if it's unreachable) and per-arch `llm-systems-agent` packages built around the self-contained binary:
+
+```bash
+sudo apt install ./llm-systems-manager_<version>_all.deb        # debconf prompts for admin login + SMTP
+sudo dnf install ./llm-systems-manager-<version>-1.noarch.rpm   # EL9 needs python3.11 first; defaults, then edit config
+sudo apt install ./llm-systems-agent_<version>_amd64.deb        # agent; prompts for the manager URL
+```
+
+Packages create the `llmsys` user, install + start the systemd units, and build the Python venvs at install time (network to PyPI required; the agent package needs none — it's a single binary). Config survives upgrades; `apt purge` removes everything. Details, RPM variants, and uninstall behavior: [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md#installing-from-native-packages-deb--rpm).
 
 ---
 
