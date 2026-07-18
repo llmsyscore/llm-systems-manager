@@ -1,0 +1,30 @@
+name: Brew install test
+
+# Real user path against the published tap + latest release: tap, install,
+# service health, uninstall. Nightly + manual only — PRs here cannot change
+# already-released assets, so a PR trigger would test nothing new.
+
+on:
+  schedule:
+    - cron: "41 7 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: brew-install-test-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  brew-install:
+    runs-on: macos-latest
+    timeout-minutes: 30
+    steps:
+      - name: Tap
+        run: |
+          brew tap llmsyscore/tap
+          brew trust llmsyscore/tap || true
+      - uses: llmsyscore/homebrew-tap/.github/actions/install-test@main
+        with:
+          formula: llmsyscore/tap/llm-systems-agent
