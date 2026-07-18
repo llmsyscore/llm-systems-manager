@@ -90,7 +90,12 @@ jobs:
           path: dist
 
       - name: Install .deb (fresh)
-        run: sudo DEBIAN_FRONTEND=noninteractive apt-get install -y ./dist/llm-systems-manager_0.0.1_all.deb
+        run: sudo DEBIAN_FRONTEND=noninteractive apt-get install -y ./dist/llm-systems-manager_0.0.1_all.deb 2>&1 | tee /tmp/deb-install-fresh.log
+
+      # The postinst probes the configured InfluxDB and prints a loud notice
+      # when it's unreachable (#385). No InfluxDB runs here, so it MUST fire.
+      - name: Assert InfluxDB-unreachable notice fired (#385)
+        run: grep -F 'InfluxDB is not reachable' /tmp/deb-install-fresh.log
 
       - name: Assert install state
         run: |
