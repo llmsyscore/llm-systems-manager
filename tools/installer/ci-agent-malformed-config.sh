@@ -75,9 +75,11 @@ pass "unit reached failed (sub=$(show SubState))"
 echo "── 4. Failure is the exit-2 config path, not a restart-limit hit ─────"
 main_status="$(show ExecMainStatus)"; main_code="$(show ExecMainCode)"; result="$(show Result)"
 [ "$main_status" = "2" ] || fail "ExecMainStatus=$main_status (want 2 — malformed-config exit)"
-[ "$main_code" = "exited" ] || fail "ExecMainCode=$main_code (want exited)"
+# ExecMainCode is the waitid() si_code: 1 = CLD_EXITED (exited normally), not a
+# signal kill (CLD_KILLED=2). So exit-2 pairs with ExecMainCode=1.
+[ "$main_code" = "1" ] || fail "ExecMainCode=$main_code (want 1 = CLD_EXITED, i.e. exited not signal-killed)"
 [ "$result" = "exit-code" ] || fail "Result=$result (want exit-code, not start-limit-hit)"
-pass "ExecMainStatus=2, Result=exit-code"
+pass "ExecMainStatus=2 (exited normally), Result=exit-code"
 
 echo "── 5. No restart loop: NRestarts stays 0 across a settle window ──────"
 n="$(show NRestarts)"
