@@ -305,3 +305,115 @@ jobs:
             echo "════ journalctl -u $u ════"
             sudo journalctl -u "$u" -n 200 --no-pager || true
           done
+
+  source-local-install:
+    name: --source local install (mode 1, offline source)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    # The air-gapped path (#389/#408): install from an extracted source tree,
+    # no download, no clone, no self-update. Simulated exactly like a real
+    # operator: git archive (same as the release tarball) extracted to a
+    # neutral dir, then that tree's own install.sh --source local.
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install prerequisites
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            jq rsync wget gnupg ca-certificates openssl sqlite3 \
+            python3-venv python3-pip python3-dev build-essential
+
+      - name: Extract a release-style source tree
+        run: |
+          mkdir -p "${RUNNER_TEMP}/extract"
+          git archive --format=tar HEAD | tar -x -C "${RUNNER_TEMP}/extract"
+          test -f "${RUNNER_TEMP}/extract/tools/installer/lib-common.sh"
+
+      - name: Install from the local tree (mode 1, --source local)
+        run: |
+          sudo bash "${RUNNER_TEMP}/extract/tools/installer/install.sh" \
+            --mode 1 --source local < /dev/null 2>&1 | tee /tmp/local-install.log
+
+      - name: Assert the offline path was actually taken
+        run: |
+          # The local branch prints this line and never stages a clone/tarball.
+          grep -F 'using local source tree (offline)' /tmp/local-install.log
+          test ! -e /tmp/llm-systems-manager-install
+          # --source local implies no self-update: neither the re-exec nor the
+          # "couldn't reach GitHub" fallback may appear (no --no-self-update
+          # was passed, so a regression here would try to phone home).
+          if grep -E 'newer install.sh upstream|self-update check skipped' /tmp/local-install.log; then
+            echo 'ERROR: --source local attempted a self-update phone-home'; exit 1
+          fi
+          # The operator's tree must be preserved, never consumed (install.sh
+          # only deletes staging trees it created).
+          test -f "${RUNNER_TEMP}/extract/tools/installer/lib-common.sh"
+
+      - name: Smoke test
+        run: sudo bash tools/installer/ci-smoke.sh
+
+      - name: Collect service logs on failure
+        if: failure()
+        run: |
+          for u in influxdb llm-systems-alarm-engine llm-systems-manager llm-systems-agent; do
+            echo "════ journalctl -u $u ════"
+            sudo journalctl -u "$u" -n 200 --no-pager || true
+          done
+
+  source-git-install:
+    name: --source git install (mode 1, clone main)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    # The clone-main path. Hermetic: a url.insteadOf redirect points the
+    # installer's fixed https URL at a local repo serving THIS PR's tree, so
+    # the job tests the PR's code (not upstream main) and needs no network for
+    # the clone. install.sh runs as a lone copied file (like a curl'd
+    # bootstrap) — from inside a checkout the local-checkout auto-detect would
+    # win and the git path would never run.
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install prerequisites
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            jq rsync wget gnupg ca-certificates openssl sqlite3 \
+            python3-venv python3-pip python3-dev build-essential
+
+      - name: Serve this PR's tree as the repo's main branch
+        run: |
+          rsync -a --exclude .git ./ "${RUNNER_TEMP}/serve-src/"
+          git -C "${RUNNER_TEMP}/serve-src" init -q -b main
+          git -C "${RUNNER_TEMP}/serve-src" -c user.email=ci@local -c user.name=ci add -A
+          git -C "${RUNNER_TEMP}/serve-src" -c user.email=ci@local -c user.name=ci commit -qm "ci source"
+          # System-level so root's git (under sudo) sees it too.
+          sudo git config --system \
+            url."file://${RUNNER_TEMP}/serve-src".insteadOf \
+            "https://github.com/llmsyscore/llm-systems-manager.git"
+
+      - name: Install via git clone (mode 1, --source git)
+        run: |
+          cp tools/installer/install.sh "${RUNNER_TEMP}/install.sh"
+          sudo bash "${RUNNER_TEMP}/install.sh" \
+            --mode 1 --source git --no-self-update < /dev/null 2>&1 | tee /tmp/git-install.log
+
+      - name: Assert the git path was actually taken and deployed THIS tree
+        run: |
+          grep -F 'cloned llmsyscore/llm-systems-manager' /tmp/git-install.log
+          test -d /tmp/llm-systems-manager-install/.git
+          # The deployed backend must be byte-identical to the PR checkout —
+          # proves the clone served the PR's code, not some other source.
+          sudo cmp llm-systems-manager/backend/llm-systems-manager.py \
+            /opt/llm-systems-manager/llm-systems-manager/backend/llm-systems-manager.py
+
+      - name: Smoke test
+        run: sudo bash tools/installer/ci-smoke.sh
+
+      - name: Collect service logs on failure
+        if: failure()
+        run: |
+          for u in influxdb llm-systems-alarm-engine llm-systems-manager llm-systems-agent; do
+            echo "════ journalctl -u $u ════"
+            sudo journalctl -u "$u" -n 200 --no-pager || true
+          done
