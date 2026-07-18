@@ -160,10 +160,15 @@ if [[ "$OS" == "linux" ]]; then
     done < <(systemctl list-unit-files --no-legend 2>/dev/null \
              | awk '{print $1}' \
              | grep -E '^llm-systems-(manager|alarm-engine|agent)\.service$' || true)
-    if systemctl list-unit-files --no-legend 2>/dev/null \
-         | awk '{print $1}' | grep -qx "influxdb.service"; then
-      INFLUX_INSTALLED=true
-    fi
+  fi
+  # InfluxDB detection: the unit-file listing unreliably misses an active
+  # influxdb.service, so also key on the data dir and the dpkg package.
+  if { command -v systemctl >/dev/null 2>&1 \
+       && systemctl list-unit-files --no-legend 2>/dev/null \
+          | awk '{print $1}' | grep -qx "influxdb.service"; } \
+     || [[ -e /var/lib/influxdb ]] \
+     || dpkg-query -W -f='${db:Status-Status}\n' influxdb2 2>/dev/null | grep -qx installed; then
+    INFLUX_INSTALLED=true
   fi
   [[ -f /etc/sudoers.d/llm-systems-agent ]]   && FOUND_FILES+=("/etc/sudoers.d/llm-systems-agent")
   [[ -f /etc/sudoers.d/llm-systems-manager ]] && FOUND_FILES+=("/etc/sudoers.d/llm-systems-manager")
