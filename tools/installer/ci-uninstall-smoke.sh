@@ -30,8 +30,13 @@ command -v python3 >/dev/null 2>&1 || fail "python3 (PTY driver) not available"
 # before/after delta, not a vacuous pass against a user that never existed.
 getent passwd "$RUN_USER" >/dev/null 2>&1 \
   || fail "precondition: runtime user '$RUN_USER' not present pre-uninstall (set LLMSYS_RUN_USER for --user hosts)"
+# Robust pre-check: the influxdb2 unit-file listing is flaky (its postrm even
+# logs "Unit file influxdb.service does not exist"), so also key on the package
+# and data dir mode-1 creates — otherwise step 6 silently skips its assertion.
 INFLUX_WAS_INSTALLED=0
-if systemctl list-unit-files --no-legend 2>/dev/null | awk '{print $1}' | grep -qx influxdb.service; then
+if [ -e /var/lib/influxdb ] \
+   || dpkg-query -W -f='${db:Status-Status}\n' influxdb2 2>/dev/null | grep -qx installed \
+   || systemctl list-unit-files --no-legend 2>/dev/null | awk '{print $1}' | grep -qx influxdb.service; then
   INFLUX_WAS_INSTALLED=1
 fi
 pass "uninstall.sh present; host has an install to remove (user '$RUN_USER' present)"
