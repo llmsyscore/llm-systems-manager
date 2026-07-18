@@ -265,3 +265,30 @@ jobs:
         run: |
           command -v shellcheck
           actionlint -shellcheck "$(command -v shellcheck)"
+
+  compose-env-completeness:
+    name: compose env completeness (#396 guard)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    # Every LSM_* consumed inside the containers (render-config.sh + the
+    # entrypoints) must be forwarded by docker-compose.yml's x-lsm-env anchor,
+    # or setting it in .env silently does nothing — the #396 bug class.
+    # Allowlisted: compose-internal defaults never meant to be overridden.
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Consumed LSM_ vars are all forwarded by the x-lsm-env anchor
+        run: |
+          consumed="$(grep -hoE '\$\{LSM_[A-Z0-9_]+' docker/render-config.sh docker/entrypoint-*.sh | sed 's/^..//' | sort -u)"
+          anchor="$(awk '/^x-lsm-env:/{f=1;next} f&&/^[^ ]/{f=0} f' docker-compose.yml | grep -oE '^  LSM_[A-Z0-9_]+:' | tr -d ' :' | sort -u)"
+          [ -n "$consumed" ] || { echo '::error::extraction broke — no LSM_ vars found in docker/'; exit 1; }
+          [ -n "$anchor" ]   || { echo '::error::extraction broke — no LSM_ keys found in the x-lsm-env anchor'; exit 1; }
+          allow_re='^(LSM_INFLUX_HOST|LSM_INFLUX_PORT|LSM_MANAGER_URL)$'
+          missing="$(comm -23 <(printf '%s\n' "$consumed" | grep -vE "$allow_re" || true) <(printf '%s\n' "$anchor"))"
+          if [ -n "$missing" ]; then
+            echo "::error::consumed in docker/ but NOT forwarded by the x-lsm-env anchor (setting them in .env does nothing):"
+            printf '%s\n' "$missing"
+            exit 1
+          fi
+          printf 'OK: %s consumed vars covered (%s allowlisted as compose-internal)\n' \
+            "$(printf '%s\n' "$consumed" | wc -l)" "$(printf '%s\n' "$consumed" | grep -cE "$allow_re" || true)"
