@@ -7,8 +7,10 @@
 #
 # confirm() in uninstall.sh returns 1 the instant stdin is not a TTY, so the
 # top-level "Proceed?" gate aborts under `</dev/null` having removed NOTHING (a
-# false green). We allocate a PTY with util-linux `script` and flood 'y' so
-# every prompt (units, sudoers, dirs, caches, runtime user, InfluxDB) is taken.
+# false green). We drive it through a real PTY (a small python3 stdlib `pty`
+# helper) that answers 'y' to every prompt (units, sudoers, dirs, caches,
+# runtime user, InfluxDB), streams the output live, and reaps the child under a
+# hard timeout so a hang is a labeled failure, not an orphaned-process SIGTERM.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -22,7 +24,7 @@ fail() { echo "  ✗ FAIL: $*"; echo "---- uninstall output ----"; cat "$OUT" ||
 
 echo "── 0. Preconditions: this host is actually installed ────────────────"
 [ -f "$UNINSTALL" ] || fail "uninstall.sh not found at $UNINSTALL"
-command -v script >/dev/null 2>&1 || fail "util-linux 'script' (PTY driver) not available"
+command -v python3 >/dev/null 2>&1 || fail "python3 (PTY driver) not available"
 [ -d /opt/llm-systems-manager ] || fail "/opt/llm-systems-manager absent — nothing to uninstall (host not installed?)"
 # Snapshot the runtime user BEFORE removal so step 5's absence check is a real
 # before/after delta, not a vacuous pass against a user that never existed.
@@ -35,12 +37,52 @@ fi
 pass "uninstall.sh present; host has an install to remove (user '$RUN_USER' present)"
 
 echo "── 1. Drive the destructive uninstall through a PTY (answer y) ───────"
-# `script -e` returns the child's exit code; `yes` gets SIGPIPE when script
-# exits, so read script's status from PIPESTATUS (not the pipeline's).
+# Run uninstall.sh on a pseudo-terminal so confirm()'s `[[ -t 0 ]]` is true,
+# answering 'y' to each prompt. Output is streamed live (tee) so a failure is
+# diagnosable; the 180s cap converts a hang into a labeled non-zero exit.
+DRIVER="$(mktemp)"
+cat > "$DRIVER" <<'PY'
+import os, pty, select, sys, termios, time
+pid, fd = pty.fork()
+if pid == 0:
+    os.environ["TERM"] = "dumb"
+    os.execvp("bash", ["bash", sys.argv[1]])
+    os._exit(127)
+try:                       # echo off so our 'y' answers don't flood the log
+    a = termios.tcgetattr(fd); a[3] &= ~termios.ECHO
+    termios.tcsetattr(fd, termios.TCSANOW, a)
+except Exception:
+    pass
+os.set_blocking(fd, False)
+deadline = time.time() + 180
+while True:
+    if time.time() > deadline:
+        sys.stderr.write("\nDRIVER TIMEOUT after 180s\n")
+        os.kill(pid, 9)
+        break
+    r, _, _ = select.select([fd], [], [], 0.4)
+    if r:
+        try:
+            data = os.read(fd, 4096)
+        except OSError:
+            break          # pty master EIO: child exited
+        if not data:
+            break
+        os.write(1, data)
+    else:                  # no output for 0.4s -> child blocked on read -> answer
+        try:
+            os.write(fd, b"y\n")
+        except OSError:
+            pass
+_, status = os.waitpid(pid, 0)
+code = os.waitstatus_to_exitcode(status)
+sys.exit(code if code >= 0 else 128 - code)
+PY
 set +e
-yes 'y' | script -qec "bash '$UNINSTALL'" /dev/null > "$OUT" 2>&1
-rc="${PIPESTATUS[1]}"
+python3 "$DRIVER" "$UNINSTALL" | tee "$OUT"
+rc="${PIPESTATUS[0]}"
 set -e
+rm -f "$DRIVER"
 [ "$rc" = "0" ] || fail "uninstall.sh exited $rc (want 0)"
 grep -q "Uninstall complete" "$OUT" || fail "uninstall did not reach the 'Uninstall complete' banner"
 pass "uninstall.sh ran to completion (exit 0)"
