@@ -401,7 +401,10 @@ jobs:
       - name: Assert the git path was actually taken and deployed THIS tree
         run: |
           grep -F 'cloned llmsyscore/llm-systems-manager' /tmp/git-install.log
-          test -d /tmp/llm-systems-manager-install/.git
+          # The installer deletes the staging clone it created after a
+          # successful install (only operator-supplied trees are preserved).
+          grep -F 'removed staging tree /tmp/llm-systems-manager-install' /tmp/git-install.log
+          test ! -e /tmp/llm-systems-manager-install
           # The deployed backend must be byte-identical to the PR checkout —
           # proves the clone served the PR's code, not some other source.
           sudo cmp llm-systems-manager/backend/llm-systems-manager.py \
