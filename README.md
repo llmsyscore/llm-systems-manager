@@ -98,6 +98,7 @@ The **fully automated script installer** (Quickstart below) is the preferred pat
 | **Script installer** (preferred) | Everything: full stack, split installs, agents, offline installs, updates — see [Quickstart](#quickstart--single-host) |
 | [Native packages (`.deb`/`.rpm`)](#native-packages-deb--rpm) | Hosts standardized on apt/dnf package management |
 | [Docker Compose](#docker-compose-control-plane-only) | Containerized control plane (manager + alarm engine + InfluxDB) |
+| [Homebrew](#homebrew-macos) | macOS/Apple Silicon agent hosts — `brew install`, auto-updating |
 | [Agent binary tarball](#agent-binary-no-python-required) | Agent-only hosts without Python (Linux/macOS), manual layout control |
 
 ## Quickstart — single host
@@ -168,6 +169,24 @@ bash <(curl -fsSL https://raw.githubusercontent.com/llmsyscore/llm-systems-manag
 ```
 
 The agent registers itself with the manager on first launch. From **Admin → Agents**, click **Approve** — the manager signs a TLS cert for that agent and starts polling it.
+
+### Homebrew (macOS)
+
+On macOS (Apple Silicon), install the agent from the project's Homebrew tap:
+
+```bash
+brew tap llmsyscore/tap
+brew trust llmsyscore/tap        # newer Homebrew requires trusting third-party taps
+brew install llm-systems-agent
+```
+
+Set `MANAGER_URL` in `$(brew --prefix)/etc/llm-systems-agent/agent_config.yaml` (the fully documented `agent_config.yaml.example` is installed alongside it for reference), then run the agent as a launchd service:
+
+```bash
+brew services start llm-systems-agent
+```
+
+`brew upgrade llm-systems-agent` picks up new releases automatically — a scheduled job in the tap tracks each GitHub Release and bumps the formula. The dashboard's **Admin → Agents → Update** self-update also works, but a later `brew upgrade` replaces the binary again, so prefer `brew` on Homebrew-managed hosts. Uninstall with `brew services stop llm-systems-agent && brew uninstall llm-systems-agent`.
 
 ### Agent binary (no Python required)
 

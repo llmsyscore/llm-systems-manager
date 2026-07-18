@@ -181,6 +181,7 @@ If you already have a manager running and want to start monitoring an additional
 
 - **Native package** (Linux, no Python needed): `apt`/`dnf` install of the per-arch `llm-systems-agent` package — see [Installing from Native Packages](#installing-from-native-packages-deb--rpm).
 - **Binary tarball** (Linux or macOS, no Python needed): each release ships `llm-systems-agent-<platform>.tar.gz` bundling the self-contained binary, `agent_config.yaml.example`, and the service unit template — extract to `/opt/llm-systems-agent`, set `MANAGER_URL` in a copied `agent_config.yaml`, install the unit, and `systemctl enable --now llm-systems-agent`. Full steps in the [README's Agent binary section](../README.md#agent-binary-no-python-required).
+- **Homebrew** (macOS/Apple Silicon): `brew tap llmsyscore/tap && brew trust llmsyscore/tap && brew install llm-systems-agent`, then set `MANAGER_URL` in `$(brew --prefix)/etc/llm-systems-agent/agent_config.yaml` and `brew services start llm-systems-agent`. `brew upgrade` tracks new releases automatically. Full steps in the [README's Homebrew section](../README.md#homebrew-macos).
 
 ### Step 1: Get the Installer on the Remote Host
 
