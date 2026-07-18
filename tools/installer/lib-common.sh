@@ -675,6 +675,11 @@ deploy_into_install_dir() {
               --exclude='requirements-dev.txt' \
               --exclude='.pytest_cache/' \
               --exclude='node_modules/' --exclude='test/' \
+              --exclude='/docker/' --exclude='docker-compose.yml' \
+              --exclude='.dockerignore' --exclude='.env.example' \
+              --exclude='/design/' --exclude='/devel/' \
+              --exclude='/docs/screenshots/' --exclude='/tools/packaging/' \
+              --exclude='ci-*.sh' --exclude='/dist/' \
               "${rsync_extra[@]}" \
               "$src/" "$dest/"
   $SUDO chown -R "$LLMSYS_RUN_USER:$LLMSYS_RUN_GROUP" "$dest"
@@ -900,6 +905,10 @@ write_influx_token_file() {
     fi
     $SUDO install -m 0600 /dev/null "$path"
     printf '%s\n' "$body" | $SUDO tee "$path" >/dev/null
+  fi
+  # Owned by the run user, not root-locked, so the services can read it (#432).
+  if id "$LLMSYS_RUN_USER" >/dev/null 2>&1; then
+    ${SUDO:-} chown "$LLMSYS_RUN_USER:$LLMSYS_RUN_GROUP" "$path" 2>/dev/null || true
   fi
 }
 

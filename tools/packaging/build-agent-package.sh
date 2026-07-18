@@ -8,6 +8,8 @@ set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$HERE/../.." && pwd)"
+# shellcheck source=pkg-lib.sh
+. "$HERE/pkg-lib.sh"
 
 PKG_NAME="llm-systems-agent"
 AGENT_DIR="/opt/llm-systems-agent"
@@ -108,6 +110,7 @@ if [[ ",$FORMATS," == *,deb,* ]]; then
   fpm -t deb -a "$ARCH" -p "$DEB_OUT" \
     --depends ca-certificates \
     --deb-priority optional --category admin \
+    --deb-compression gz \
     --before-install "$SCRIPTS/deb-preinst" \
     --after-install "$SCRIPTS/deb-postinst" \
     --before-remove "$SCRIPTS/deb-prerm" \
@@ -116,6 +119,7 @@ if [[ ",$FORMATS," == *,deb,* ]]; then
     --deb-templates "$HERE/agent/debconf/templates" \
     --deb-no-default-config-files \
     "${COMMON_ARGS[@]}" .
+  strip_deb_opt_entry "$DEB_OUT"
   BUILT+=("$DEB_OUT")
 fi
 

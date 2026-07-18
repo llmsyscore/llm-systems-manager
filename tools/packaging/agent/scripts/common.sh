@@ -34,7 +34,7 @@ llmsys_agent_guard_fresh_install() {
   [ "${LLMSYS_PACKAGE_FORCE:-0}" = "1" ] && return 0
   local hits
   if hits="$(llmsys_agent_foreign_state)"; then
-    echo "llm-systems-agent: refusing to install over an existing script (venv) install (#416):" >&2
+    echo "llm-systems-agent: refusing to install over an existing non-package agent install (#416):" >&2
     echo "  found:$hits" >&2
     echo "  Remove it first (agent/install/install.sh --uninstall) or, to force over it," >&2
     echo "  re-run with LLMSYS_PACKAGE_FORCE=1 in the environment." >&2
@@ -79,11 +79,47 @@ llmsys_create_user() {
          -g "$LLMSYS_RUN_USER" "$LLMSYS_RUN_USER"
 }
 
+# Completes scheme/port on a bare host/IP or partial URL; prints nothing
+# (rc 1) when the value is unusable. Args: URL DEFAULT_PORT.
+llmsys_agent_normalize_url() {
+  local u="$1" defport="$2" scheme rest hostport host port path=""
+  case "$u" in http://*|https://*) ;; *) u="http://$u" ;; esac
+  scheme="${u%%://*}"
+  rest="${u#*://}"
+  hostport="${rest%%/*}"
+  case "$rest" in */*) path="/${rest#*/}" ;; esac
+  case "$hostport" in
+    \[*\]:*) host="${hostport%:*}";   port="${hostport##*:}" ;;
+    \[*\])   host="$hostport";        port="$defport" ;;
+    *:*)     host="${hostport%%:*}";  port="${hostport##*:}" ;;
+    *)       host="$hostport";        port="$defport" ;;
+  esac
+  case "$host" in ''|*[!]A-Za-z0-9._[:-]*) return 1 ;; esac
+  case "$port" in ''|*[!0-9]*) return 1 ;; esac
+  printf '%s://%s:%s%s' "$scheme" "$host" "$port" "$path"
+}
+
 # Generates agent_config.yaml from the packaged example, setting the
 # identity keys + manager/AE URLs (LLMSYS_CFG_* carry debconf answers).
 llmsys_agent_write_config() {
   [ -f "$LLMSYS_AGENT_CFG" ] && return 0
   local mgr="${LLMSYS_CFG_MANAGER_URL:-}" ae="${LLMSYS_CFG_ALARM_ENGINE_URL:-}" host line
+  if [ -n "$mgr" ]; then
+    if mgr="$(llmsys_agent_normalize_url "$mgr" 5000)"; then
+      :
+    else
+      echo "llm-systems-agent: WARNING — unusable manager URL '$LLMSYS_CFG_MANAGER_URL' ignored; set MANAGER_URL in $LLMSYS_AGENT_CFG (#432)." >&2
+      mgr=""
+    fi
+  fi
+  if [ -n "$ae" ]; then
+    if ae="$(llmsys_agent_normalize_url "$ae" 8081)"; then
+      :
+    else
+      echo "llm-systems-agent: WARNING — unusable alarm-engine URL '$LLMSYS_CFG_ALARM_ENGINE_URL' ignored; set ALARM_ENGINE_URL in $LLMSYS_AGENT_CFG (#432)." >&2
+      ae=""
+    fi
+  fi
   if [ -n "$mgr" ] && [ -z "$ae" ]; then
     host="${mgr#*://}"; host="${host%%/*}"; host="${host%%:*}"
     ae="http://${host}:8081"

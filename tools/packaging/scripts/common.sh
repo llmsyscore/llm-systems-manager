@@ -182,13 +182,47 @@ llmsys_influx_notice() {
   echo "  $LLMSYS_CFG at an existing server, then restart the services." >&2
 }
 
+# rc 0 when [influxdb.tokens] still carries REPLACE_ME placeholders.
+llmsys_influx_tokens_unset() {
+  awk '/^\[influxdb\.tokens\]/{s=1;next} /^\[/{s=0} s && /REPLACE_ME/{f=1} END{exit f?0:1}' \
+    "$LLMSYS_CFG" 2>/dev/null
+}
+
+# Prominent end-of-install block for the not-started alarm engine.
+llmsys_ae_gated_notice() {
+  cat >&2 <<EOF
+
+==============================================================================
+ ACTION REQUIRED — the alarm engine was NOT started
+
+ [influxdb.tokens] in $LLMSYS_CFG
+ still holds REPLACE_ME placeholders; the alarm engine needs real tokens.
+
+   1. Install InfluxDB locally:
+        sudo bash $LLMSYS_INSTALL_DIR/tools/installer/install-influxdb.sh
+      (it prints the tokens to paste), or point [influxdb] at an existing
+      server and create tokens there.
+   2. Set [influxdb] host/port + [influxdb.tokens] in the config above.
+   3. Run: systemctl start llm-systems-alarm-engine
+==============================================================================
+
+EOF
+}
+
+# Enables both units; starts the alarm engine only when the InfluxDB
+# tokens are real (sets LLMSYS_AE_GATED=1 otherwise).
 llmsys_enable_start() {
   llmsys_systemd_ready || return 0
   systemctl daemon-reload
   # shellcheck disable=SC2086
   systemctl enable $LLMSYS_UNITS >/dev/null 2>&1 || true
+  local units="$LLMSYS_UNITS"
+  if llmsys_influx_tokens_unset; then
+    units="llm-systems-manager.service"
+    LLMSYS_AE_GATED=1
+  fi
   # shellcheck disable=SC2086
-  systemctl start $LLMSYS_UNITS \
+  systemctl start $units \
     || echo "llm-systems-manager: services failed to start — check 'journalctl -u llm-systems-manager'" >&2
 }
 
@@ -232,6 +266,7 @@ llmsys_configure() {
     llmsys_enable_start
     llmsys_influx_notice || true
     echo "llm-systems-manager: dashboard on port 5000; config: $LLMSYS_CFG (edit + 'systemctl restart llm-systems-manager')"
+    if [ "${LLMSYS_AE_GATED:-0}" = "1" ]; then llmsys_ae_gated_notice; fi
   else
     llmsys_restart_upgraded
   fi

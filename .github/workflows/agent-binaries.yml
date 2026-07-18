@@ -144,7 +144,7 @@ jobs:
           set -e
           cat /tmp/g-agent.log
           if [ "$RC" = "0" ]; then echo 'ERROR: install should have been refused'; exit 1; fi
-          if ! grep -q 'refusing to install over an existing script (venv) install' /tmp/g-agent.log; then
+          if ! grep -q 'refusing to install over an existing non-package agent install' /tmp/g-agent.log; then
             echo 'ERROR: apt failed, but not because of the #416 guard'; exit 1
           fi
           if dpkg-query -W -f='${db:Status-Status}' llm-systems-agent 2>/dev/null | grep -qx installed; then
@@ -199,6 +199,46 @@ jobs:
           sudo rm -rf /opt/llm-systems-agent
           sudo userdel -r llmsys 2>/dev/null || true
 
+      # A debconf answer of a bare IP/host must land in the config as a full
+      # URL with the default ports filled in (#432).
+      - name: debconf bare-IP answer is normalized (.deb)
+        if: matrix.smoke_image != ''
+        run: |
+          echo "llm-systems-agent llm-systems-agent/manager-url string 192.0.2.10" \
+            | sudo debconf-set-selections
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y ./dist-pkg/llm-systems-agent_*.deb
+          sudo grep -q 'MANAGER_URL: *"http://192.0.2.10:5000"' /opt/llm-systems-agent/agent_config.yaml
+          sudo grep -q 'ALARM_ENGINE_URL: *"http://192.0.2.10:8081"' /opt/llm-systems-agent/agent_config.yaml
+          sudo apt-get purge -y llm-systems-agent
+          sudo userdel -r llmsys 2>/dev/null || true
+
+      # A binary install running as a different user must be refused, with
+      # its tree ownership and unit left untouched (#432).
+      - name: Foreign-unit refusal preserves ownership (.deb)
+        if: matrix.smoke_image != ''
+        run: |
+          sudo useradd --system foreignsvc 2>/dev/null || true
+          sudo mkdir -p /opt/llm-systems-agent
+          sudo cp stage/llm-systems-agent /opt/llm-systems-agent/llm-systems-agent
+          printf 'MANAGER_URL: "http://192.0.2.99:5000"\n' \
+            | sudo tee /opt/llm-systems-agent/agent_config.yaml >/dev/null
+          sudo chown -R foreignsvc:foreignsvc /opt/llm-systems-agent
+          printf '[Unit]\nDescription=sim binary agent\n[Service]\nUser=foreignsvc\nExecStart=/opt/llm-systems-agent/llm-systems-agent\n' \
+            | sudo tee /etc/systemd/system/llm-systems-agent.service >/dev/null
+          set +e
+          # shellcheck disable=SC2024  # sudo output goes to /tmp (user-writable); a pipe would drop the RC=$? capture
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
+            ./dist-pkg/llm-systems-agent_*.deb >/tmp/g-foreign.log 2>&1; RC=$?
+          set -e
+          cat /tmp/g-foreign.log
+          if [ "$RC" = "0" ]; then echo 'ERROR: install should have been refused'; exit 1; fi
+          grep -q 'refusing to install over an existing non-package agent install' /tmp/g-foreign.log
+          sudo stat -c '%U' /opt/llm-systems-agent/llm-systems-agent | grep -qx foreignsvc
+          sudo stat -c '%U' /opt/llm-systems-agent/agent_config.yaml | grep -qx foreignsvc
+          sudo rm -rf /opt/llm-systems-agent
+          sudo rm -f /etc/systemd/system/llm-systems-agent.service
+          sudo userdel foreignsvc 2>/dev/null || true
+
       - name: Agent service log on failure
         if: failure() && matrix.smoke_image != ''
         run: |
@@ -244,3 +284,39 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: gh release upload "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --clobber dist-pkg/*
+
+  # Runners keep /opt populated, so only a clean container can prove a full
+  # purge leaves /opt itself in place (#432). Package artifacts exist on
+  # non-tag builds only.
+  deb-purge-scope:
+    name: agent deb purge leaves /opt (empty-/opt host)
+    runs-on: ubuntu-latest
+    needs: build
+    if: ${{ !startsWith(github.ref, 'refs/tags/') }}
+    container: debian:12
+    timeout-minutes: 15
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: llm-systems-agent-packages-linux-x86_64
+          path: dist-pkg
+
+      - name: Package must not own the bare /opt directory
+        run: |
+          dpkg-deb -c ./dist-pkg/llm-systems-agent_*_amd64.deb | awk '{print $6}' > /tmp/payload.lst
+          if grep -qx './opt/' /tmp/payload.lst; then
+            echo 'ERROR: deb owns the bare /opt directory'; exit 1
+          fi
+          grep -qx './opt/llm-systems-agent/' /tmp/payload.lst
+
+      - name: Install, purge, and assert /opt survives
+        run: |
+          apt-get update -qq
+          if [ -n "$(ls -A /opt 2>/dev/null)" ]; then
+            echo 'NOTE: /opt not empty in this image — purge-scope assert weakened:'; ls -la /opt
+          fi
+          DEBIAN_FRONTEND=noninteractive apt-get install -y ./dist-pkg/llm-systems-agent_*_amd64.deb
+          test -d /opt/llm-systems-agent
+          DEBIAN_FRONTEND=noninteractive apt-get purge -y llm-systems-agent
+          test -d /opt
+          test ! -e /opt/llm-systems-agent

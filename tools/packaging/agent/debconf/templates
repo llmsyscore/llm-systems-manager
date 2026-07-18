@@ -1,11 +1,19 @@
 Template: llm-systems-agent/manager-url
 Type: string
 Description: Manager URL:
- URL of the LLM Systems Manager this agent reports to, e.g.
- http://192.0.2.10:5000. Leave blank to set it later in
+ Full URL, with port, of the LLM Systems Manager this agent reports to,
+ e.g. http://192.0.2.10:5000. A bare host or IP is completed to
+ http://<host>:5000. Leave blank to set it later in
  /opt/llm-systems-agent/agent_config.yaml.
 
 Template: llm-systems-agent/alarm-engine-url
 Type: string
 Description: Alarm engine URL:
- Leave blank to derive it from the manager host (port 8081).
+ Leave blank to derive it from the manager host (port 8081). A bare
+ host or IP is completed to http://<host>:8081.
+
+Template: llm-systems-agent/url-invalid
+Type: error
+Description: Invalid URL
+ "${value}" is not a usable URL. Enter http[s]://host[:port], a bare
+ host/IP (the default port is filled in), or leave the field blank.
