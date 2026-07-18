@@ -129,7 +129,17 @@ if [ "$INFLUX_WAS_INSTALLED" = 1 ]; then
     fail "influxdb.service still registered after uninstall"
   fi
   [ ! -e /var/lib/influxdb ] || fail "/var/lib/influxdb survived uninstall"
-  pass "influxdb.service removed and /var/lib/influxdb gone"
+  # Both packages must end fully purged in dpkg (no 'rc'/'half-installed'
+  # residue), and the purge must not have tripped the uninstaller's warn.
+  for pkg in influxdb2 influxdb2-cli; do
+    st="$(dpkg-query -W -f='${db:Status-Status}' "$pkg" 2>/dev/null || true)"
+    if [ -n "$st" ] && [ "$st" != "not-installed" ]; then
+      fail "$pkg left in dpkg state '$st' after uninstall (want fully purged)"
+    fi
+  done
+  ! grep -q "apt purge failed" "$OUT" || fail "uninstall warned 'apt purge failed'"
+  ! grep -q "residual dpkg state" "$OUT" || fail "uninstall warned of residual dpkg state"
+  pass "influxdb.service removed, /var/lib/influxdb gone, dpkg state clean"
 else
   pass "InfluxDB was not installed on this host — nothing to purge"
 fi

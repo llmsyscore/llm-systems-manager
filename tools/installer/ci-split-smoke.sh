@@ -113,19 +113,29 @@ if [ -z "$AE_MGMT" ] || [ "$MGR_MGMT" != "$AE_MGMT" ]; then
 fi
 pass "both hosts carry the same (non-empty) management_token"
 
-echo "── 6. Manager reaches the AE over the internal-CA-verified HTTPS link ─"
-# A real HTTP status (200/401/403) — vs 000 (unreachable) or 502 (TLS/connect
-# failure) — proves the cross-host HTTPS + cert-verification path works. We do
-# NOT assert 200 here: the manager sends the correct management_token (verified
-# by pointing it at a capture server) and the AE accepts that token on a direct
-# request, yet the AE 401s the *proxied* request in this environment — a real
-# anomaly tracked in #421, pending AE-side request tracing.
-c="$(code -H 'Authorization: Bearer bogus-client-token' "$MGR_URL/api/alarm/rules")"
-case "$c" in
-  200|401|403) : ;;
-  *) fail "manager -> AE proxy returned $c (want a real HTTP status; 000/502 = TLS/connect broken)" ;;
+echo "── 6. Manager proxies /api/alarm/* to the AE (login → proxy → 200) ───"
+# The manager's own auth gate answers /api/alarm/* before the proxy runs; its
+# 401 body carries the auth_required marker, unlike an AE-origin 401.
+resp="$(curl -sk -m 10 -w '|%{http_code}' -H 'Authorization: Bearer bogus-client-token' \
+  "$MGR_URL/api/alarm/rules" || true)"
+anon_code="${resp##*|}"; anon_body="${resp%|*}"
+case "$anon_body" in
+  *auth_required*) : ;;
+  *) fail "anonymous probe: code=${anon_code:-000} body=${anon_body:-<empty>} (want the manager auth-gate 401; 000 = connect/TLS broken)" ;;
 esac
-pass "manager reaches the AE over verified HTTPS (proxy code=$c)"
+# Log in with the seeded default admin (same as ci-agent-tls-smoke.sh), then
+# assert the real chain: session auth → proxy → management bearer → AE HTTPS.
+COOKIE_JAR="$(mktemp)"
+trap 'rm -f "$COOKIE_JAR"' EXIT
+login_code="$(code -c "$COOKIE_JAR" --data-urlencode 'username=llmadmin' \
+  --data-urlencode 'password=llmadmin' "$MGR_URL/login")"
+case "$login_code" in
+  302|303) : ;;
+  *) fail "manager login returned $login_code (want 302/303) — seeded admin missing, creds changed, or login rate-limited?" ;;
+esac
+c="$(code -b "$COOKIE_JAR" "$MGR_URL/api/alarm/rules")"
+if [ "$c" != "200" ]; then fail "authenticated manager → AE proxy = $c (want 200)"; fi
+pass "auth gate 401s anonymous probes; logged-in proxy reaches the AE (200)"
 
 echo "── 7. CORS allow-lists byte-identical across both hosts ──────────────"
 MGR_CORS="$(toml_get "$MGR_TOML" manager cors_origins)"
