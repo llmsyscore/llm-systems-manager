@@ -83,6 +83,14 @@ jobs:
       - name: Smoke test (post-reinstall)
         run: sudo bash tools/installer/ci-smoke.sh
 
+      # DESTRUCTIVE steps — keep LAST. Malformed-config breaks then restores the
+      # agent; uninstall then removes everything. Both need the full install.
+      - name: Agent malformed-config does not restart-loop (exit 2)
+        run: sudo bash tools/installer/ci-agent-malformed-config.sh
+
+      - name: Full-script uninstall leaves a clean host
+        run: sudo bash tools/installer/ci-uninstall-smoke.sh
+
       - name: Collect service logs on failure
         if: failure()
         run: |
