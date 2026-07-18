@@ -322,7 +322,28 @@ if $INFLUX_INSTALLED; then
   if confirm "Stop + apt-purge influxdb2 + influxdb2-cli?"; then
     $SUDO systemctl stop influxdb.service    2>/dev/null || true
     $SUDO systemctl disable influxdb.service 2>/dev/null || true
-    $SUDO apt-get purge -y influxdb2 influxdb2-cli 2>/dev/null || warn "apt purge failed"
+    if ! $SUDO apt-get purge -y influxdb2 influxdb2-cli 2>/dev/null; then
+      _st="$(dpkg-query -W -f='${db:Status-Status}' influxdb2 2>/dev/null || true)"
+      # half-*/config-files = influxdb2's own postrm failed (exits 1 once the
+      # unit is gone): neutralize it, take over its cleanup, purge again.
+      if [[ "$_st" == half-* || "$_st" == "config-files" ]] \
+          && $SUDO test -f /var/lib/dpkg/info/influxdb2.postrm; then
+        printf '#!/bin/sh\nexit 0\n' | $SUDO tee /var/lib/dpkg/info/influxdb2.postrm >/dev/null
+        $SUDO rm -f /etc/default/influxdb
+        $SUDO dpkg --purge influxdb2 2>/dev/null || true
+      fi
+      $SUDO apt-get purge -y influxdb2 influxdb2-cli 2>/dev/null || warn "apt purge failed"
+    fi
+    _influx_resid=""
+    for _pkg in influxdb2 influxdb2-cli; do
+      _st="$(dpkg-query -W -f='${db:Status-Status}' "$_pkg" 2>/dev/null || true)"
+      [[ -n "$_st" && "$_st" != "not-installed" ]] && _influx_resid+="$_pkg=$_st "
+    done
+    if [[ -n "$_influx_resid" ]]; then
+      warn "residual dpkg state: ${_influx_resid% } — run: dpkg --purge influxdb2 influxdb2-cli"
+    else
+      ok "influxdb2 + influxdb2-cli purged (dpkg state clean)"
+    fi
     if confirm "Also delete /var/lib/influxdb (all bucket data)?"; then
       $SUDO rm -rf /var/lib/influxdb /etc/influxdb
       ok "removed /var/lib/influxdb /etc/influxdb"
