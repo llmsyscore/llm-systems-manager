@@ -61,21 +61,32 @@ def test_open_when_no_token_configured(monkeypatch):
     assert _client().post(PATH).status_code == 200
 
 
-# #437: brew-services units are Restart=on-failure — main() must exit
-# non-zero after a scheduled self-restart or the engine stays dead.
-def test_schedule_marks_restart_pending(monkeypatch):
-    monkeypatch.setattr(ae, "_restart_pending", False)
-    _REAL_SCHEDULE(delay=600)  # SIGTERM thread never fires in-test
-    assert ae._restart_pending is True
-    assert ae._restart_exit_code() == 1
+# #440: self-restart must HARD-EXIT 1, not SIGTERM. brew-services units are
+# Restart=on-failure, and systemd excludes SIGTERM from on-failure restarts,
+# so a self-SIGTERM'd engine stays dead. os._exit(1) is a genuine failure exit.
+def test_schedule_hard_exits_nonzero(monkeypatch):
+    import time
+    codes = []
+    monkeypatch.setattr(ae.os, "_exit", lambda c: codes.append(c))
+    _REAL_SCHEDULE(delay=0)  # os._exit stubbed — thread records the code
+    for _ in range(50):
+        if codes:
+            break
+        time.sleep(0.02)
+    assert codes == [1]
 
 
-def test_exit_code_zero_without_pending_restart(monkeypatch):
-    monkeypatch.setattr(ae, "_restart_pending", False)
-    assert ae._restart_exit_code() == 0
-
-
-def test_main_exits_nonzero_on_restart_pending():
-    import inspect
-    src = inspect.getsource(ae.main)
-    assert "_restart_exit_code" in src and "SystemExit" in src
+def test_self_restart_does_not_signal(monkeypatch):
+    # Regression: the scheduler must exit, never SIGTERM itself — systemd
+    # on-failure ignores SIGTERM, so a self-signal leaves the engine dead.
+    import time
+    exits, kills = [], []
+    monkeypatch.setattr(ae.os, "_exit", lambda c: exits.append(c))
+    monkeypatch.setattr(ae.os, "kill", lambda *a: kills.append(a))
+    _REAL_SCHEDULE(delay=0)
+    for _ in range(50):
+        if exits:
+            break
+        time.sleep(0.02)
+    assert exits == [1]
+    assert kills == []
