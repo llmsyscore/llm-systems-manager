@@ -16,3 +16,13 @@ toml-key|#348|alarm_engine.timeouts.manager_proxy
 toml-key|#348|alarm_engine.timeouts.manager_keepalive
 toml-key|#348|alarm_engine.timeouts.manager_status
 toml-key|#348|alarm_engine.timeouts.manager_metric_fetch
+
+toml-key|#435|agent.dashboard_url
+toml-key|#435|agent.lmstudio_api_url
+toml-key|#435|agent.lmstudio_cli_path
+toml-key|#435|agent.post_interval
+toml-key|#435|agent.heartbeat_interval
+toml-key|#435|agent.log_dir
+toml-key|#435|agent.log_file
+toml-key|#435|agent.log_max_bytes
+toml-key|#435|agent.log_backup_count
