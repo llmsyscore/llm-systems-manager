@@ -47,6 +47,9 @@ services:
 
   manager:
     image: ghcr.io/llmsyscore/llm-systems-manager/manager:${LSM_IMAGE_TAG:-latest}
+    # A cached local :latest is never re-pulled by `up -d` otherwise — fresh
+    # installs then run a stale image until an explicit `compose pull` (#433).
+    pull_policy: ${LSM_PULL_POLICY:-always}
     build:
       context: .
       dockerfile: docker/Dockerfile
@@ -69,6 +72,7 @@ services:
 
   alarm-engine:
     image: ghcr.io/llmsyscore/llm-systems-manager/alarm-engine:${LSM_IMAGE_TAG:-latest}
+    pull_policy: ${LSM_PULL_POLICY:-always}
     build:
       context: .
       dockerfile: docker/Dockerfile

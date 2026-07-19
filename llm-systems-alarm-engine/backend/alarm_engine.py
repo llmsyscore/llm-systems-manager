@@ -67,7 +67,7 @@ from .storage.influxdb_client import InfluxDBClient
 # (-1, -2, …) for same-day iterations; roll the date for a new day's first
 # change.
 # ---------------------------------------------------------------------------
-__version__ = "v2026.07.15-2"
+__version__ = "v2026.07.18-1"
 from .storage import influx_monitor as _influx_monitor
 from .models.alarm_rule import (
     AlarmRuleCreate,
@@ -811,15 +811,34 @@ async def serve_index() -> FileResponse:
 # ── Health endpoint ─────────────────────────────────────────────
 
 def _ping_influxdb() -> tuple[str, "float | None", "str | None"]:
-    """Blocking InfluxDB /ping probe. Returns (status, latency_ms, version)."""
+    """Blocking InfluxDB probe: unauthenticated /ping for liveness + version,
+    then an authenticated read — /ping answers 204 regardless of tokens, so
+    placeholder/wrong tokens must not report "connected". Returns
+    (status, latency_ms, version)."""
     import requests
-    url = f"http://{settings.influxdb.host}:{settings.influxdb.port}/ping"
+    base = f"http://{settings.influxdb.host}:{settings.influxdb.port}"
+    timeout = settings.alarm_engine.timeouts.influxdb_ping
     try:
         t0 = time.perf_counter()
-        resp = requests.get(url, timeout=settings.alarm_engine.timeouts.influxdb_ping)
+        resp = requests.get(f"{base}/ping", timeout=timeout)
         latency_ms = round((time.perf_counter() - t0) * 1000, 1)
-        status = "connected" if resp.status_code in (200, 204) else f"http_{resp.status_code}"
-        return status, latency_ms, resp.headers.get("X-Influxdb-Version") or None
+        version = resp.headers.get("X-Influxdb-Version") or None
+        if resp.status_code not in (200, 204):
+            return f"http_{resp.status_code}", latency_ms, version
+    except Exception as e:
+        return f"unreachable: {type(e).__name__}", None, None
+    token = (settings.influxdb.tokens.metrics or "").strip()
+    if not token or token == "REPLACE_ME":
+        return "tokens_unset", latency_ms, version
+    try:
+        r2 = requests.get(f"{base}/api/v2/buckets", params={"limit": 1},
+                          headers={"Authorization": f"Token {token}"},
+                          timeout=timeout)
+        if r2.status_code == 200:
+            return "connected", latency_ms, version
+        if r2.status_code in (401, 403):
+            return "auth_failed", latency_ms, version
+        return f"http_{r2.status_code}", latency_ms, version
     except Exception as e:
         return f"unreachable: {type(e).__name__}", None, None
 

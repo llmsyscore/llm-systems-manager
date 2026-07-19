@@ -80,6 +80,12 @@ username = "$admin_user"
 [manager.security]
 admin_cidrs = [$cidr_toml]
 
+[manager.proxies]
+# "auto" = tab appears when an approved agent advertises the capability.
+llm_chat  = "auto"
+openclaw  = "auto"
+image_gen = "auto"
+
 [alarm_engine]
 manager_url = "$manager_url"
 cors_origins = "$cors"

@@ -154,7 +154,7 @@ def _local_hostname() -> str:
 # banner reads it. Bump suffix (-1, -2, …) for same-day iterations; roll
 # the date for a new day's first change.
 # ---------------------------------------------------------------------------
-__version__ = "v2026.07.15-7"
+__version__ = "v2026.07.18-1"
 
 # Wall-clock at first import (Cheroot main process); the shutdown banner
 # reads it for the uptime line.
@@ -599,8 +599,12 @@ def install_topology() -> dict:
     with best_effort("install topology: probe AE frontend dir"):
         ae_local_disk = (_REPO_ROOT_PATH / "llm-systems-alarm-engine"
                                          / "frontend").is_dir()
-    ae_local_unit = os.path.isfile(
-        "/etc/systemd/system/llm-systems-alarm-engine.service"
+    # Script installs write /etc/systemd/system; deb/rpm packages ship the
+    # unit in /usr/lib/systemd/system — both are local-AE signals.
+    ae_local_unit = any(
+        os.path.isfile(os.path.join(d, "llm-systems-alarm-engine.service"))
+        for d in ("/etc/systemd/system", "/usr/lib/systemd/system",
+                  "/lib/systemd/system")
     )
     ae_local_url = False
     if _alarm_engine_url:

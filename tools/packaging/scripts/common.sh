@@ -176,6 +176,7 @@ llmsys_influx_notice() {
   host="$(awk -F'"' '/^\[influxdb\]/{s=1;next} /^\[/{s=0} s && /^host[ \t]*=/{print $2; exit}' "$LLMSYS_CFG" 2>/dev/null)"
   port="$(awk '/^\[influxdb\]/{s=1;next} /^\[/{s=0} s && /^port[ \t]*=/{gsub(/[^0-9]/,""); print; exit}' "$LLMSYS_CFG" 2>/dev/null)"
   curl -fsS -m 3 "http://${host:-localhost}:${port:-8086}/health" >/dev/null 2>&1 && return 0
+  echo "" >&2
   echo "llm-systems-manager: NOTICE — InfluxDB is not reachable at ${host:-localhost}:${port:-8086}." >&2
   echo "  Metric history/alarms need it: install locally (tools/installer/install-influxdb.sh or the" >&2
   echo "  influxdb2 package from repos.influxdata.com) or point [influxdb] + [influxdb.tokens] in" >&2
@@ -265,7 +266,9 @@ llmsys_configure() {
   if [ -z "$upgrade" ]; then
     llmsys_enable_start
     llmsys_influx_notice || true
+    echo ""
     echo "llm-systems-manager: dashboard on port 5000; config: $LLMSYS_CFG (edit + 'systemctl restart llm-systems-manager')"
+    echo ""
     if [ "${LLMSYS_AE_GATED:-0}" = "1" ]; then llmsys_ae_gated_notice; fi
   else
     llmsys_restart_upgraded

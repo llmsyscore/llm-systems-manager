@@ -83,9 +83,9 @@ class ManagerProxies(BaseModel):
     """Per-tab reverse-proxy targets. Each value is `False | "auto" | "<url>"`.
     See [manager.proxies] in llm-systems.toml.example for the full spec."""
     model_config = _MODEL_CFG
-    llm_chat:  bool | str = False
-    openclaw:  bool | str = False
-    image_gen: bool | str = False
+    llm_chat:  bool | str = "auto"
+    openclaw:  bool | str = "auto"
+    image_gen: bool | str = "auto"
 
 
 class ManagerGateway(BaseModel):

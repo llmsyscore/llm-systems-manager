@@ -31,6 +31,7 @@ from __future__ import annotations
 import base64
 import functools
 import hashlib
+import re as _re
 import hmac as _hmac
 import json
 import logging
@@ -1339,6 +1340,26 @@ def _agents_heartbeat():
     })
 
 
+def _version_key(v: "str | None") -> "tuple[int, int, int, int] | None":
+    """Sortable key for vYYYY.MM.DD-N agent versions; None when unparseable."""
+    m = _re.match(r"^v?(\d{4})\.(\d{2})\.(\d{2})-(\d+)$", (v or "").strip())
+    if not m:
+        return None
+    return tuple(int(x) for x in m.groups())  # type: ignore[return-value]
+
+
+def agent_update_available(cur: "str | None", latest: "str | None") -> bool:
+    """True only when `latest` is strictly newer than `cur` — a manager
+    holding an older agent copy must not offer a downgrade as an update.
+    Unparseable versions fall back to plain inequality."""
+    if not cur or not latest:
+        return False
+    ck, lk = _version_key(cur), _version_key(latest)
+    if ck is not None and lk is not None:
+        return lk > ck
+    return cur != latest
+
+
 def _agents_list():
     deny = _deps.require_admin()
     if deny is not None:
@@ -1357,10 +1378,9 @@ def _agents_list():
         if a.get("token"):
             a["token"] = "<redacted>"
         a["liveness"] = agent_liveness(agent)
-        # Convenience flag for the admin tab — true iff the agent's
-        # reported version differs from the manager's local copy.
-        cur = a.get("version")
-        a["update_available"] = bool(latest and cur and cur != latest)
+        # Convenience flag for the admin tab — true iff the manager's local
+        # copy is strictly newer than the agent's reported version.
+        a["update_available"] = agent_update_available(a.get("version"), latest)
         a["is_host_agent"] = bool(a.get("agent_id") and a.get("agent_id") == hid)
         a["colocated_infra"] = colocated_infra(agent, hid)
         safe.append(a)

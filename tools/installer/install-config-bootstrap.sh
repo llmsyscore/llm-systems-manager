@@ -790,7 +790,10 @@ fi
 
 cat <<EOF
 
-Config bootstrap complete.
+────────────────────────────────────────────────────────────────────────────
+ Config bootstrap complete
+────────────────────────────────────────────────────────────────────────────
+
   Review and tune (as $USER_ARG):
     sudo -u $USER_ARG \$EDITOR $REAL
 
@@ -801,6 +804,7 @@ Config bootstrap complete.
     [alarm_engine].tls_enabled = true  # AE HTTPS (cert pre-issued above)
     [alarm_engine].ingest_token = <set by installer>  # agent push auth
     [alarm_engine].management_token = <set by installer>  # rules/alerts auth
+
 EOF
 
 # Split install (manager here, AE on another host) needs the AE TLS cert
