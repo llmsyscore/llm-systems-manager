@@ -150,14 +150,15 @@ esac
 """
 
 BREW_STUB = """#!/usr/bin/env bash
-# Stub brew: influxdb formula installed; service starts; state + prefix
+# Stub brew: influxdb@2 formula installed; service starts; state + prefix
 # come from files the test writes into $STUB_STATE.
 case "$*" in
-  "list --versions influxdb") echo "influxdb 2.7.11" ;;
-  "services start influxdb") : ;;
-  "services info influxdb --json")
-    printf '[{"name":"influxdb","status":"%s"}]\\n' "$(cat "$STUB_STATE/svc_status")" ;;
-  "services info influxdb") echo "influxdb ($(cat "$STUB_STATE/svc_status"))" ;;
+  "list --versions influxdb@2") echo "influxdb@2 2.9.1" ;;
+  "list --versions influxdb") exit 1 ;;
+  "services start influxdb@2") : ;;
+  "services info influxdb@2 --json")
+    printf '[{"name":"influxdb@2","status":"%s"}]\\n' "$(cat "$STUB_STATE/svc_status")" ;;
+  "services info influxdb@2") echo "influxdb@2 ($(cat "$STUB_STATE/svc_status"))" ;;
   "--prefix") cat "$STUB_STATE/prefix" ;;
   *) exit 64 ;;
 esac
@@ -185,7 +186,7 @@ def test_unhealthy_server_dumps_diagnostics(stub_env):
     assert "did not become healthy" in r.stderr
     # The diagnostics really ran the command (dynamic stub output), not just
     # the static section heading.
-    assert "influxdb (started)" in r.stderr
+    assert "influxdb@2 (started)" in r.stderr
     assert "influxd boom: lock timeout" in r.stderr
     assert "." in r.stderr  # progress dot from the non-error wait branch
     # Nothing was provisioned and the config is untouched.
@@ -197,20 +198,37 @@ def test_service_error_state_bails_early_with_diagnostics(stub_env):
     r = _run(config, stub_bin, state, extra_env={"LSM_INFLUX_WAIT_S": "30"})
     assert r.returncode != 0
     assert "error state" in r.stderr
-    assert "influxdb (error)" in r.stderr
+    assert "influxdb@2 (error)" in r.stderr
     assert "influxd boom: lock timeout" in r.stderr
 
 
 def test_failed_service_start_dumps_diagnostics(stub_env):
     config, stub_bin, state = _unhealthy_env(stub_env, "none")
     brew = (stub_bin / "brew").read_text().replace(
-        '"services start influxdb") : ;;',
-        '"services start influxdb") echo "Error: bootstrap failed" >&2; exit 1 ;;')
+        '"services start influxdb@2") : ;;',
+        '"services start influxdb@2") echo "Error: bootstrap failed" >&2; exit 1 ;;')
     _write_stub(stub_bin / "brew", brew)
     r = _run(config, stub_bin, state)
     assert r.returncode != 0
-    assert "brew services start influxdb failed" in r.stderr
+    assert "brew services start influxdb@2 failed" in r.stderr
     assert "influxd boom: lock timeout" in r.stderr
+
+
+def test_v3_only_install_gets_targeted_error(stub_env):
+    # Homebrew's plain `influxdb` formula is InfluxDB 3.x — no v2 API. With
+    # only that installed, the helper must say to install influxdb@2, not
+    # wait 120s for a /health that never comes.
+    config, stub_bin, state = _unhealthy_env(stub_env, "none")
+    brew = (stub_bin / "brew").read_text().replace(
+        '"list --versions influxdb@2") echo "influxdb@2 2.9.1" ;;',
+        '"list --versions influxdb@2") exit 1 ;;').replace(
+        '"list --versions influxdb") exit 1 ;;',
+        '"list --versions influxdb") echo "influxdb 3.10.0" ;;')
+    _write_stub(stub_bin / "brew", brew)
+    r = _run(config, stub_bin, state)
+    assert r.returncode != 0
+    assert "InfluxDB 3.x" in r.stderr
+    assert "brew install influxdb@2" in r.stderr
 
 
 DELAYED_CURL_STUB = """#!/usr/bin/env bash

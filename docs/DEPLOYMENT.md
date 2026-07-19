@@ -181,12 +181,12 @@ The [tap](https://github.com/llmsyscore/homebrew-tap) also carries control-plane
 
 ```bash
 brew tap llmsyscore/tap && brew trust llmsyscore/tap
-brew install llm-systems-manager llm-systems-alarm-engine influxdb influxdb-cli
+brew install llm-systems-manager llm-systems-alarm-engine influxdb@2 influxdb-cli
 ```
 
 - **Config** is shared at `$(brew --prefix)/etc/llm-systems-manager/llm-systems.toml`, seeded on first install with generated alarm-engine ingest/management tokens (equivalent to a co-located script install). It is kept across upgrades.
 - **State** (internal CA, agent registry, TLS certs, SQLite DBs) lives under `$(brew --prefix)/var/llm-systems-manager/` and also survives upgrades — the kegs hold only code + venvs.
-- **InfluxDB**: run `llm-systems-influx-setup` (installed by the manager formula) — it starts the `influxdb` service, onboards it on first boot, creates the buckets + scoped tokens, and writes them into `[influxdb.tokens]`. It needs both `influxdb` and `influxdb-cli` (the `influx` command ships in the separate `influxdb-cli` formula). Manual alternative: `brew services start influxdb`, `influx setup`, then create the buckets/tokens per [Configuration](#configuration) and fill `[influxdb]` + `[influxdb.tokens]` yourself. The manager and alarm engine run without it, but history and alert evaluation stay degraded until then.
+- **InfluxDB**: run `llm-systems-influx-setup` (installed by the manager formula) — it starts the `influxdb@2` service, onboards it on first boot, creates the buckets + scoped tokens, and writes them into `[influxdb.tokens]`. It needs both `influxdb@2` (the v2 server — Homebrew's plain `influxdb` formula is InfluxDB 3.x, whose API this stack does not speak) and `influxdb-cli` (the `influx` command ships in the separate `influxdb-cli` formula). Manual alternative: `brew services start influxdb@2`, `influx setup`, then create the buckets/tokens per [Configuration](#configuration) and fill `[influxdb]` + `[influxdb.tokens]` yourself. The manager and alarm engine run without it, but history and alert evaluation stay degraded until then.
 - **Start order**: `brew services start llm-systems-manager` first (first boot creates the internal CA and issues `ae-tls.{crt,key}` for the alarm engine), then `brew services start llm-systems-alarm-engine`.
 - Don't mix with a script/package install on the same host — both would fight over ports 5000/8081.
 

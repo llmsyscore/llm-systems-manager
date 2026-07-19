@@ -4,8 +4,9 @@
 # install and write the tokens into llm-systems.toml.
 #
 # Installed as `llm-systems-influx-setup` by the llm-systems-manager formula.
-# Run once after `brew install influxdb influxdb-cli`:
-#   - starts the influxdb brew service if nothing answers on /health
+# Run once after `brew install influxdb@2 influxdb-cli` (the plain `influxdb`
+# formula is InfluxDB 3.x now — no v2 API, so this stack can't use it):
+#   - starts the influxdb@2 brew service if nothing answers on /health
 #   - first boot: onboards via `influx setup` (generated admin password +
 #     operator token); re-runs reuse the active influx CLI config
 #   - creates the alarm_engine_metrics + alarm_engine_metrics_rollup buckets
@@ -31,6 +32,9 @@ die()  { echo "[influx-setup] ERROR: $*" >&2; exit 1; }
 
 INFLUX_URL="${INFLUX_HOST_URL:-http://localhost:8086}"
 INFLUX_ORG="${INFLUX_ORG:-llm-systems-manager}"
+# Homebrew's `influxdb` formula is InfluxDB 3.x (different API, no /health
+# on :8086); the v2 server this stack needs lives in the versioned formula.
+INFLUX_FORMULA="influxdb@2"
 
 CONFIG="${LSM_BREW_CONFIG:-}"
 if [ -z "$CONFIG" ]; then
@@ -58,30 +62,36 @@ probe() { curl -fsS -o /dev/null -w '%{http_code}' "$INFLUX_URL/health" 2>/dev/n
 
 # "started" / "error" / "none" per `brew services info --json`; empty if unknown.
 service_state() {
-  brew services info influxdb --json 2>/dev/null \
+  brew services info "$INFLUX_FORMULA" --json 2>/dev/null \
     | sed -n 's/.*"status": *"\([^"]*\)".*/\1/p' | head -n 1
 }
 
 dump_influx_diagnostics() {
-  echo "---- brew services info influxdb ----" >&2
-  brew services info influxdb 2>&1 | sed 's/^/  /' >&2 || true
-  for lg in "$(brew --prefix 2>/dev/null)"/var/log/influxdb*.log; do
+  echo "---- brew services info $INFLUX_FORMULA ----" >&2
+  brew services info "$INFLUX_FORMULA" 2>&1 | sed 's/^/  /' >&2 || true
+  # influxdb@2 logs under var/log/influxdb2/; older layouts used flat files.
+  for lg in "$(brew --prefix 2>/dev/null)"/var/log/influxdb*.log \
+            "$(brew --prefix 2>/dev/null)"/var/log/influxdb*/*.log; do
     [ -f "$lg" ] || continue
     echo "---- tail -n 40 $lg ----" >&2
     tail -n 40 "$lg" | sed 's/^/  /' >&2 || true
   done
-  echo "Hint: 'systemctl --user status homebrew.influxdb' (Linux) or 'brew services info influxdb' for the full state." >&2
+  echo "Hint: 'systemctl --user status homebrew.${INFLUX_FORMULA}' (Linux) or 'brew services info $INFLUX_FORMULA' for the full state." >&2
 }
 
 WAIT_S="${LSM_INFLUX_WAIT_S:-120}"
 if [ "$(probe)" != "200" ]; then
   command -v brew >/dev/null 2>&1 \
     || die "no InfluxDB answering on $INFLUX_URL and brew is unavailable to start one"
-  brew list --versions influxdb >/dev/null 2>&1 \
-    || die "no InfluxDB answering on $INFLUX_URL and the 'influxdb' formula is not installed: brew install influxdb"
-  log "starting influxdb via brew services…"
-  brew services start influxdb >/dev/null \
-    || { dump_influx_diagnostics; die "brew services start influxdb failed — diagnostics above"; }
+  if ! brew list --versions "$INFLUX_FORMULA" >/dev/null 2>&1; then
+    if brew list --versions influxdb >/dev/null 2>&1; then
+      die "the installed 'influxdb' formula is InfluxDB 3.x — it has no v2 API and never answers $INFLUX_URL/health. Install the v2 server: brew install $INFLUX_FORMULA"
+    fi
+    die "no InfluxDB answering on $INFLUX_URL and the '$INFLUX_FORMULA' formula is not installed: brew install $INFLUX_FORMULA"
+  fi
+  log "starting $INFLUX_FORMULA via brew services…"
+  brew services start "$INFLUX_FORMULA" >/dev/null \
+    || { dump_influx_diagnostics; die "brew services start $INFLUX_FORMULA failed — diagnostics above"; }
   log "waiting for InfluxDB on $INFLUX_URL/health (up to ${WAIT_S}s)…"
   i=0
   while [ "$i" -lt "$WAIT_S" ]; do
@@ -89,7 +99,7 @@ if [ "$(probe)" != "200" ]; then
     if [ $((i % 5)) -eq 4 ]; then
       if [ "$(service_state)" = "error" ]; then
         dump_influx_diagnostics
-        die "the influxdb brew service entered an error state — diagnostics above"
+        die "the $INFLUX_FORMULA brew service entered an error state — diagnostics above"
       fi
       printf '.' >&2
     fi

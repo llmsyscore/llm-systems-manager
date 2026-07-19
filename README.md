@@ -165,7 +165,7 @@ The manager and alarm engine also install from the project's [Homebrew tap](http
 ```bash
 brew tap llmsyscore/tap
 brew trust llmsyscore/tap        # newer Homebrew requires trusting third-party taps
-brew install llm-systems-manager llm-systems-alarm-engine influxdb influxdb-cli
+brew install llm-systems-manager llm-systems-alarm-engine influxdb@2 influxdb-cli
 ```
 
 Each formula builds its own Python venv from the release source tarball. Shared config is seeded at `$(brew --prefix)/etc/llm-systems-manager/llm-systems.toml` (alarm-engine ingest/management tokens pre-generated); state lives under `$(brew --prefix)/var/llm-systems-manager/` and survives upgrades. Bring the stack up in this order — the manager's first boot creates the internal CA and issues the alarm engine's TLS cert:
@@ -177,7 +177,7 @@ brew services start llm-systems-manager
 brew services start llm-systems-alarm-engine
 ```
 
-`llm-systems-influx-setup` (installed by the manager formula) needs both `influxdb` (the server) and `influxdb-cli` (the `influx` command ships separately). To do it by hand instead: `brew services start influxdb`, `influx setup`, create the buckets/tokens, and fill `[influxdb.tokens]` in the TOML.
+`llm-systems-influx-setup` (installed by the manager formula) needs both `influxdb@2` (the v2 server — Homebrew's plain `influxdb` formula is InfluxDB 3.x, whose API this stack does not speak) and `influxdb-cli` (the `influx` command ships separately). To do it by hand instead: `brew services start influxdb@2`, `influx setup`, create the buckets/tokens, and fill `[influxdb.tokens]` in the TOML.
 
 `brew upgrade` tracks new releases automatically (the same tap cron that bumps the agent formula bumps these). The dashboard is at `http://<host>:5000`; the alarm engine can run without InfluxDB, but history and alert evaluation stay degraded until the tokens are filled in.
 

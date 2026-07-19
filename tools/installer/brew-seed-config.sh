@@ -83,4 +83,4 @@ grep -q "^management_token = \"$MGMT_TOKEN\"" "$TMP" || { rm -f "$TMP"; die "man
 mv "$TMP" "$TARGET"
 chmod 0600 "$TARGET"
 echo "brew-seed-config: seeded $TARGET (log_dir=$LOG_DIR, AE tokens generated)"
-echo "brew-seed-config: fill [influxdb.tokens] with llm-systems-influx-setup (needs: brew install influxdb influxdb-cli)"
+echo "brew-seed-config: fill [influxdb.tokens] with llm-systems-influx-setup (needs: brew install influxdb@2 influxdb-cli)"
