@@ -67,7 +67,7 @@ from .storage.influxdb_client import InfluxDBClient
 # (-1, -2, …) for same-day iterations; roll the date for a new day's first
 # change.
 # ---------------------------------------------------------------------------
-__version__ = "v2026.07.19-1"
+__version__ = "v2026.07.19-2"
 from .storage import influx_monitor as _influx_monitor
 from .models.alarm_rule import (
     AlarmRuleCreate,
@@ -1589,10 +1589,13 @@ def main() -> None:
     # uvicorn's OWN logger stays at warning (matching the prior unit's
     # `--log-level warning`); the app logger is configured separately above from
     # settings.alarm_engine.log_level, so this doesn't quiet our own logs.
+    # Cap the post-SIGTERM wait so a self-restart/stop doesn't hang on the
+    # manager's long-lived alarm WS until systemd's 90s SIGKILL (agent parity).
     uvicorn.run(
         app, host=host, port=port,
         log_level="warning",
         access_log=False, loop="uvloop", http="httptools",
+        timeout_graceful_shutdown=10,
         **ssl_kwargs,
     )
     code = _restart_exit_code()
