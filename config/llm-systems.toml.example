@@ -6,8 +6,8 @@
 #     (gitignored, mode 0600 — contains secrets).
 #   • Set LLM_SYSTEMS_CONFIG=/some/path/llm-systems.toml to override that
 #     location (the systemd units do this).
-#   • Missing keys fall back to the defaults in config/unified_config.py — so
-#     you only need to set the values you want to change.
+#   • Missing keys fall back to the defaults in config/unified_config.py — set
+#     only the values you want to change.
 #   • Agents do NOT read this file. They use their own agent_config.yaml.
 #
 # To set up a new host:
@@ -27,117 +27,94 @@
 host = "0.0.0.0"                                         # listen address
 port = 5000                                              # listen port (HTTP)
 tls_port = 5443                                          # set to 0 to disable HTTPS
-# Worker-thread pool size for BOTH Cheroot servers (HTTP + TLS). This is a
-# FIXED pool — cheroot can't grow it at runtime, so a request (incl. every
-# held SSE stream) past the ceiling queues ~10s then is refused. Each thread
-# is a real OS thread (~8MB), so raise it for headroom, not arbitrarily high.
-# Realistic floor for a kiosk + several operators is ~32; default 64.
+
+# Fixed worker-thread pool size shared by both servers (HTTP + TLS). Each
+# worker is a real OS thread (~8 MB); requests past the ceiling queue ~10s
+# then are refused. Floor for a kiosk + several operators is ~32.
 http_threads = 64
-# Workers held back for non-stream (control/health/heartbeat) requests. Long-
-# lived SSE streams (log tail, terminal, bench, autotune, self-update) each pin
-# one worker for the stream's whole life and a healthy stream is never reaped,
-# so concurrent streams are capped at http_threads - stream_reserve_threads.
-# This guarantees control requests always have workers — the manager can't be
-# driven fully unresponsive by streams. Over the cap → stream gets 503 + retry.
+
+# Workers reserved for non-stream (control/health/heartbeat) requests. Each
+# live SSE stream pins one worker, so concurrent streams are capped at
+# http_threads - stream_reserve_threads; over the cap → 503 + retry.
 stream_reserve_threads = 24
-# Proxied SSE relay reaping. A generator blocked reading an agent can't notice a
-# departed browser, so the manager writes a keepalive every stream_keepalive_s
-# (a full-close is then detected fast) and force-ends a stream at
-# stream_max_lifetime_s (the reliable reaper for a half-closed/ACKing browser
-# whose writes never raise; the EventSource just reconnects). Terminal streams
-# use a longer internal cap since they write every ~0.4s.
+
+# Proxied SSE relay reaping: keepalive every stream_keepalive_s detects a
+# departed browser fast; stream_max_lifetime_s force-ends half-closed
+# streams (the EventSource just reconnects).
 stream_keepalive_s = 8
 stream_max_lifetime_s = 120
+
 # Lifetime cap for proxied long-running op streams (build/download/bench/
 # autotune); raise on slow hosts or large downloads.
 stream_op_max_lifetime_s = 3600
-# Standalone WebSocket proxy port — separate threaded `websockets` server, not
-# the Cheroot WSGI app. Browsers connect to it at /ws/alarm and the manager
-# bridges to the alarm-engine /ws (verifying the AE's internal-CA cert upstream).
-# Enabled by default (5444) because AE TLS is also enabled by default — without
-# this, browsers loading the dashboard over plain HTTP can't reach the wss AE
-# without trusting the internal CA in their OS/browser trust store. Set to 0
-# to disable when you've fronted the AE with a public-CA-trusted reverse proxy.
-# Always serves plain ws (the proxy's job is internal-CA termination upstream,
-# not browser-side TLS — front with nginx/Caddy + real cert if you need that).
+
+# Standalone WebSocket proxy port (browser /ws/alarm → alarm-engine /ws,
+# internal-CA cert verified upstream). Lets plain-HTTP dashboards reach the
+# wss AE without trusting the internal CA. Serves plain ws; set to 0 when a
+# public-CA reverse proxy fronts the AE.
 ws_proxy_port = 5444
-# Standalone aiohttp SSE daemon port — separate threaded server, not the Cheroot
-# WSGI app (#110). Serves /api/llama-state/stream so a held stream costs an
-# asyncio task instead of a pinned Cheroot worker. Browsers reach it via the
-# session-gated /api/llama-state/stream-info handoff (HMAC token), and fall back
-# to the Cheroot path automatically when this is 0, the daemon is down, or the
-# dashboard is served over HTTPS (plain-http daemon would be mixed-content).
-# Always serves plain http (same internal-CA-termination story as ws_proxy_port).
-# Set to 0 to disable and keep serving the stream on the Cheroot pool.
+
+# Standalone SSE daemon port for /api/llama-state/stream — a held stream
+# costs an asyncio task instead of a pinned worker. Browsers fall back to
+# the main pool when 0, the daemon is down, or the dashboard is HTTPS
+# (the daemon serves plain http).
 stream_proxy_port = 5445
-# Hard lifetime cap (seconds) for one daemon SSE stream — backstop against a
-# half-open browser; the frontend re-mints a token and reconnects on the cap.
+
+# Hard lifetime cap (s) per daemon SSE stream — backstop against half-open
+# browsers; the frontend re-mints a token and reconnects.
 stream_proxy_lifetime_s = 600
-# Dashboard polling cadence. The frontend reads /api/config every 10s and
-# applies whichever interval matches the current backend state.
-# - poll_interval: slow cadence used when llama-server is sleeping AND LM
-#   Studio is idle.
-# - fast_poll_interval: fast cadence used when either is active.
+
+# Dashboard polling cadence: poll_interval while llama-server sleeps and LM
+# Studio is idle, fast_poll_interval while either is active.
 poll_interval = 60                                       # idle cadence (seconds)
-fast_poll_interval = 15                                   # active cadence (seconds)
+fast_poll_interval = 15                                  # active cadence (seconds)
 wait_timeout = 60                                        # llama-server idle threshold (s) before "sleeping"
-# Co-located: localhost (auto-advertised to agents at the manager's reachable IP).
-# Split install: use the AE's IP, not a hostname — a hostname must resolve on every
-# agent (DNS/etc/hosts); an IP needs none and the AE TLS cert SAN auto-covers it.
+
+# Co-located: localhost (auto-advertised to agents at the manager's
+# reachable IP). Split install: use the AE's IP, not a hostname — an IP
+# needs no per-agent DNS and the AE TLS cert SAN auto-covers it.
 alarm_engine_url = "http://localhost:8081"               # where the manager finds the alarm engine
+
 cors_origins = "http://localhost:5000"
 log_level = "INFO"                                       # per-service override; falls back to [logging].level
 
 [manager.proxies]
 # Browser-facing reverse-proxy targets driving /proxy/<name>/ and /sdcpp/.
-# Each entry accepts one of these values:
-#
-#   true | "auto"       discover from the agent registry at request time:
-#                         - llm_chat  → primary llama agent's host:8080
-#                         - openclaw  → first approved agent advertising
-#                                       the "openclaw" capability (port 18789)
-#                         - image_gen → first approved agent advertising
-#                                       the "image_gen" capability (port from
-#                                       agent_config.yaml's IMGGEN_PORT, default 1234)
-#                       When no agent advertises the capability, the proxy
-#                       resolves to None and the tab stays hidden — safe
-#                       to leave on by default.
-#   false               disabled — /proxy/<name>/ returns 404 AND the
-#                       matching tab stays hidden regardless of agents.
-#   "http://<host>:<port>"
-#                       explicit URL — manager proxies straight to it.
-#
-# Defaults are "auto" so the tabs appear automatically as you approve
-# agents with the matching capabilities. Flip to false to keep a tab
-# hidden even when an agent advertises it (typical: locking down the
-# llama.cpp web UI on an exposed manager).
+# Values per entry:
+#   true | "auto"         discover from the agent registry: llm_chat → the
+#                         primary llama agent :8080; openclaw / image_gen →
+#                         first approved agent advertising that capability
+#                         (ports 18789 / IMGGEN_PORT, default 1234). No
+#                         advertising agent → the tab stays hidden.
+#   false                 disabled — /proxy/<name>/ 404s, tab stays hidden.
+#   "http://<host>:<port>" explicit upstream URL.
+# Flip to false to keep a tab hidden even when an agent advertises it.
 llm_chat  = "auto"
 openclaw  = "auto"
 image_gen = "auto"
 
-# ── Inference gateway (#214) ─────────────────────────────────────────
+# ── Inference gateway ────────────────────────────────────────────────
 # OpenAI-compatible endpoint: POST /api/gateway/v1/chat/completions.
 # Routes to a healthy llama agent (pin > ?agent= > pool > default).
 [manager.gateway]
 enabled = true
+
 # Bearer keys for external OpenAI-SDK clients (accepted only on
 # /api/gateway/*). Empty = dashboard-session access only.
 api_keys = []
+
 # Upstream read timeout per completion request (generation can take minutes).
 read_timeout_s = 600.0
 
 [manager.history]
-# In-memory history ring buffer that backs the /api/history hot path.
-# Controls how far back the landing-page charts pre-populate when the
-# browser first loads. Raising this increases manager RAM usage roughly
-# linearly (~12 fields × 12 points/min × window_minutes × ~80 B).
+# In-memory ring buffer behind /api/history; sets how far back the landing
+# charts pre-populate. RAM cost grows roughly linearly with window_minutes.
 window_minutes = 60                                      # ring depth (minutes)
 refresh_interval_s = 15.0                                # background refresher cadence
 fetch_limit = 1800                                       # alarm-engine fetch cap per series per refresh
 
 [manager.uploads]
 max_content_length = 104857600                           # bytes; default 100 MiB
-
 
 [manager.timeouts]
 generic_http = 30.0                                      # outbound HTTP default (s)
@@ -150,62 +127,64 @@ liveness_watch_interval_s = 65                           # how often the watcher
 [manager.security]
 # CIDR ranges allowed to call admin-only endpoints (rule/channel CRUD, etc.).
 admin_cidrs = ["127.0.0.1", "::1", "192.168.1.0/24", "192.168.2.0/24"]
+
 tls_rotation_warn_days = 30                              # warn when certs expire within N days
 stream_token_ttl_s = 300                                 # short-lived SSE/EventSource HMAC tokens
-# Manager-origin CSP applied to proxied HTML (llama Chat UI, AE SPA, OpenClaw,
-# image-gen) instead of stripping CSP to nothing — defense-in-depth behind any
-# upstream-side XSS. 'unsafe-inline' is required (the manager injects inline
-# shims into the AE SPA and OpenClaw UI); cdn.jsdelivr.net is allowed for the
-# SPAs' Chart.js/date-fns. Set to "" to disable and revert to stripping CSP
-# entirely if a proxied UI breaks.
+
+# CSP applied to proxied HTML (llama Chat UI, AE SPA, OpenClaw, image-gen).
+# 'unsafe-inline' is required (injected shims); cdn.jsdelivr.net serves the
+# SPAs' Chart.js/date-fns. Set to "" to strip CSP if a proxied UI breaks.
 proxy_html_csp = "default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval' https://cdn.jsdelivr.net; style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; img-src 'self' data: blob:; font-src 'self' data: https://cdn.jsdelivr.net; connect-src 'self' ws: wss:; frame-ancestors 'self'; base-uri 'self'; form-action 'self'; object-src 'none'"
 
 [manager.auth]
 # Dashboard login (single shared admin). Browser sessions are gated; agent
-# (bearer-token) calls are never gated. username/password_hash below are SEED
-# values used until the admin sets login from the Admin tab → Authentication.
+# (bearer-token) calls never are.
 #   mode = "required"      every browser must log in (default)
-#        | "disabled"      no login (legacy trusted-LAN behaviour)
-#        | "trusted_cidr"  login required EXCEPT from [manager.security].admin_cidrs
-#        | "auto"          UI-managed: data/manager_auth.json holds the live mode
-#                          and the Admin tab changes it instantly (no restart)
-# When this is anything but "auto" the TOML value wins (a manual edit applies on
-# the next manager restart) and Admin-tab mode changes are written back here,
-# which is why they prompt for a restart. NOTE: the Admin → Authentication
-# dropdown deliberately omits "auto" — switching into/out of it is a TOML edit.
+#        | "disabled"      no login (trusted-LAN behaviour)
+#        | "trusted_cidr"  login required except from [manager.security].admin_cidrs
+#        | "auto"          UI-managed: data/manager_auth.json holds the live
+#                          mode; Admin-tab changes apply instantly
+# Any non-"auto" value wins over the Admin tab (applies on restart). The
+# Admin dropdown omits "auto" — switching into/out of it is a TOML edit.
 mode = "auto"
-# Seed username for the dashboard login. Defaults to "llmadmin" to match the
-# built-in fallback credential used when password_hash is blank (llmadmin/llmadmin).
+
+# Seed username, matching the built-in fallback credential used while
+# password_hash is blank (llmadmin/llmadmin).
 username = "llmadmin"
+
 # ★ Secret. scrypt hash "scrypt$<salt_b64>$<dk_b64>". Leave blank to use the
 # dashboard's first-run setup page (or set the login from the Admin tab).
 password_hash = ""
+
 session_lifetime_days = 1
-# Role given to sessions that skip login (trusted_cidr from an admin CIDR, or
-# disabled mode): "admin" (default, legacy behaviour) or "operator".
+
+# Role for sessions that skip login (trusted_cidr from an admin CIDR, or
+# disabled mode): "admin" (default) or "operator".
 bypass_role = "admin"
-# Failed-login lockout: lock a username OR source IP after this many failures
-# within lockout_window_s seconds, for lockout_duration_s seconds.
+
+# Failed-login lockout: lock a username OR source IP after this many
+# failures within lockout_window_s, for lockout_duration_s.
 lockout_threshold = 5
 lockout_window_s = 900
 lockout_duration_s = 900
 
 [manager.branding]
-# Brand accent palette for the login page AND the logged-in dashboard logo.
+# Accent palette for the login page + dashboard logo.
 # One of: "teal" | "indigo" | "forest" | "steel" (unknown → indigo).
 palette = "indigo"
 
 [manager.backup]
-# Scheduled automatic backups: the manager writes its export archive (same
-# format as Admin → Backup & Restore → Export) to data/backups/ on an
-# interval, pruning old archives past keep_last. Archives are UNENCRYPTED
-# unless passphrase is set (12+ chars) — set one if backups leave this host.
+# Scheduled automatic backups: export archive (same format as Admin →
+# Backup & Restore) written to data/backups/, pruned past keep_last.
+# Archives are UNENCRYPTED unless passphrase is set.
 enabled = true
 interval_hours = 24.0                                    # 0 disables the scheduler
 keep_last = 7                                            # archives retained after pruning
-# ★ Secret (when set). Optional AES-256-GCM passphrase for scheduled archives;
-# also required to import them. Blank = plaintext archives.
+
+# ★ Secret (when set). AES-256-GCM passphrase (12+ chars) for scheduled
+# archives; also required to import them. Blank = plaintext archives.
 passphrase = ""
+
 # Optional second directory (e.g. a mounted NAS path) each archive is copied to.
 mirror_dir = ""
 
@@ -213,17 +192,16 @@ mirror_dir = ""
 # ────────────────────────────── OPENCLAW ──────────────────────────────────
 # Cost analytics for OpenClaw agents (Dashboard → OpenClaw sub-tab).
 [openclaw]
-# Monthly budget ceiling in USD for the whole fleet's projected spend.
-# > 0 enables: the manager pushes budget metrics (source "openclaw") to the
-# alarm engine and seeds "OpenClaw budget" rules at the AE's next start, so
-# crossing the warning/exceeded thresholds notifies via the configured
-# channels (email/webhook/Discord). 0 disables. Rules seed ONCE — changing
-# these values later means editing/deleting the seeded rules in the alarms UI.
+# Monthly budget ceiling (USD) for the fleet's projected spend. > 0 pushes
+# budget metrics to the alarm engine and seeds "OpenClaw budget" rules at
+# the AE's next start; 0 disables. Rules seed ONCE — edit later changes in
+# the alarms UI.
 monthly_budget_usd = 0.0
 budget_warning_pct = 80.0                                # warn at this % of budget
-# Also alert when a session's cost is anomalous (>2x rolling average):
-# seeds an "OpenClaw cost anomaly" rule on the anomaly-count metric.
+
+# Also alert when a session's cost is anomalous (>2x rolling average).
 notify_cost_anomalies = false
+
 metrics_push_interval_s = 300.0                          # budget metric push cadence
 
 
@@ -238,30 +216,26 @@ keepalive_interval = 30                                  # WebSocket keepalive (
 manager_url = "http://localhost:5000"                    # back-channel to the manager
 cors_origins = "http://localhost:5000"
 log_level = "INFO"                                       # per-service override
-# ★ Secret. Bearer token required on the ingest surface (agent metric POSTs +
-# OTLP /v1/* + /api/alarm/ingest). The installer generates a random token at
-# install time (openssl rand -hex 32) so ingest ships locked down out of the
-# box. BLANK or the literal "REPLACE_ME" leaves ingest OPEN (back-compat for
-# pre-existing fleets). The manager reads this same value and hands it to
-# agents on the heartbeat ack — rotation propagates within ≤60 s, no restart.
-# Mode 0600 (the whole TOML).
+
+# ★ Secret. Bearer token required on the ingest surface (agent metric POSTs
+# + OTLP /v1/* + /api/alarm/ingest); the installer generates one at install
+# time. Blank or "REPLACE_ME" leaves ingest OPEN (back-compat). The manager
+# hands it to agents on heartbeat ack — rotation propagates within ≤60 s.
 ingest_token = "REPLACE_ME"
-# ★ Secret. Bearer token for the management routes (rules/alerts/notifications).
-# Blank or "REPLACE_ME" = they accept ingest_token; open when both are unset.
+
+# ★ Secret. Bearer token for the management routes (rules/alerts/
+# notifications). Blank or "REPLACE_ME" = they accept ingest_token.
 management_token = ""
-# Serve the alarm engine over HTTPS (encrypts the agent metric-push path,
-# which carries ingest_token). Enabled by default — the installer pre-issues
-# data/ae-tls.{crt,key} from the manager's internal CA on co-located installs,
-# so no admin step is needed. On a SPLIT install (AE on a different host than
-# the manager) copy those two files into the AE host's llm-systems-alarm-engine/
-# data/ dir after running the manager installer (the manager writes them into
-# its own data/ as a copy-source when the AE data/ dir isn't local). Enabled-
-# but-cert-missing → error in the AE log + Admin tab "TLS" status, and the AE
-# falls back to plain HTTP (fail-open — never refuses to start).
+
+# Serve the AE over HTTPS (encrypts the metric-push path, which carries
+# ingest_token). Co-located installs get data/ae-tls.{crt,key} pre-issued
+# from the manager's internal CA; on a split install copy those two files
+# from the manager host into the AE host's llm-systems-alarm-engine/data/.
+# Enabled-but-cert-missing → error in log + Admin tab, falls back to HTTP.
 tls_enabled = true
-# Paths are relative to the alarm-engine package root (…/llm-systems-alarm-engine).
-# The manager auto-issues these from its internal CA at install + at startup; on
-# a split install copy them from the manager host's data/ dir to the AE host's.
+
+# Paths relative to the alarm-engine package root; auto-issued at install +
+# manager startup.
 tls_cert_file = "data/ae-tls.crt"
 tls_key_file  = "data/ae-tls.key"
 
@@ -279,12 +253,12 @@ size                          = 100000                   # max entries in the in
 ttl_s                         = 900                      # default cache entry TTL
 rule_repo_ttl_s               = 300                      # rule list memoization (5 min)
 alert_repo_ttl_s              = 300                      # active-alert list memoization (5 min)
-metric_catalog_warmup_days    = 7                        # how far back to scan at boot for the metric dropdown
+metric_catalog_warmup_days    = 7                        # boot scan depth for the metric dropdown
 websocket_queue_size          = 500                      # WS out-queue depth
 
-# ── Alert correlation / incident grouping (#215) ─────────────────────
+# ── Alert correlation / incident grouping ────────────────────────────
 [alarm_engine.correlation]
-enabled = true             # false -> every alert self-roots (pre-#215 behavior)
+enabled = true             # false → every alert self-roots
 window_seconds = 60.0      # same-host time-window join
 notify_per_incident = true # suppress channel dispatch for joiner alerts (toasts unaffected)
 
@@ -293,14 +267,14 @@ alert_history_days = 90    # purge alert_history rows older than this; 0 = keep 
 purge_interval_s = 3600.0  # how often the purge task runs
 
 [alarm_engine.api_limits]
-# Hard caps for FastAPI query parameters. Raising these lets longer/larger
-# requests succeed; lowering protects against accidental DOS via deep history.
+# Hard caps for FastAPI query parameters — raise for longer/larger
+# requests, lower to guard against accidental DOS via deep history.
 recent_alerts_limit_max      = 5000                      # /api/alarm/alerts/recent  limit cap
 history_since_minutes_max    = 43200                     # /api/alarm/metrics/{...}  since_minutes cap (30 d)
 history_limit_max            = 100000                    # /api/alarm/metrics/{...}  limit cap
-summary_window_minutes_max   = 10080                     # /api/alarm/metrics/{...}/summary window_minutes cap (7 d)
+summary_window_minutes_max   = 10080                     # /api/alarm/metrics/{...}/summary window cap (7 d)
 export_since_minutes_max     = 43200                     # /api/alarm/metrics/export since_minutes cap (30 d)
-max_request_body_bytes       = 104857600                 # HTTP body cap, all AE routes (100 MiB, matches [manager.uploads]; 0 = uncapped)
+max_request_body_bytes       = 104857600                 # HTTP body cap, all AE routes (100 MiB; 0 = uncapped)
 
 # Server-side downsampling for long history queries.
 [alarm_engine.history.downsampling]
@@ -308,11 +282,11 @@ rollup_enabled    = true                                 # set false to fall bac
 rollup_measurement = "metrics_1m"                        # measurement name in metrics_rollup_bucket
 rollup_every      = "1m"                                 # rollup bin size (Flux task `every:`)
 
-# First tier whose `max_window_s` >= the requested window wins. Larger
+# First tier whose max_window_s >= the requested window wins; larger
 # windows fall through to the last tier.
 [[alarm_engine.history.downsampling.tiers]]
 max_window_s = 21600                                     # 6 h
-every = "1m"                                             # hits the rollup; was "30s"
+every = "1m"
 [[alarm_engine.history.downsampling.tiers]]
 max_window_s = 86400                                     # 24 h
 every = "1m"
@@ -324,8 +298,8 @@ max_window_s = 2592000                                   # 30 d
 every = "30m"
 
 [alarm_engine.default_rules]
-# Seed thresholds for the default alarm rules. ONLY applied at first boot
-# when no rules exist in InfluxDB. After that, edit rules via the UI.
+# Seed thresholds for the default alarm rules, applied ONLY at first boot
+# when no rules exist. After that, edit rules via the UI.
 cpu_usage_critical = 95.0                                # %
 cpu_temp_critical  = 80.0                                # °C
 gpu_temp_critical  = 85.0                                # °C
@@ -334,33 +308,29 @@ ram_usage_critical = 90.0                                # %
 
 
 # ───────────────────────────── INFLUXDB ───────────────────────────────────
+# Metrics + their rollup only — rules, channels, deliveries, and alert
+# history live in SQLite under llm-systems-alarm-engine/data/.
 [influxdb]
 host = "localhost"
 port = 8086
 org  = "llm-systems-manager"
-metrics_bucket        = "alarm_engine_metrics"          # raw points, short retention (e.g. 7d)
-metrics_rollup_bucket = "alarm_engine_metrics_rollup"   # 1-min rollup, long retention (e.g. 90d)
-# NOTE: alarm rules, notification channels, notification configs, notification
-# deliveries, and alerts (+ history) now all live in SQLite under
-# llm-systems-alarm-engine/data/:
-#   • ae_notif_rules.db — rules / channels / configs / deliveries
-#   • ae_alarms.db      — alerts + alert history
-# InfluxDB holds only metrics + their rollup.
+metrics_bucket        = "alarm_engine_metrics"           # raw points, short retention (e.g. 7d)
+metrics_rollup_bucket = "alarm_engine_metrics_rollup"    # 1-min rollup, long retention (e.g. 90d)
 
 [influxdb.tokens]
-# ★ Secret. Per-bucket scoped tokens. Rotate by editing here + restart.
-# To generate new tokens:
+# ★ Secret. Per-bucket scoped tokens; rotate by editing here + restart.
+# Generate:
 #   influx auth create --org llm-systems-manager --read-bucket <bucket> --write-bucket <bucket>
 metrics        = "REPLACE_ME"
-# Read+write token for the rollup bucket. Leave blank to disable the rollup
-# bucket split — the read path will then fall back to raw scans.
+
+# Read+write token for the rollup bucket. Blank disables the rollup split —
+# reads fall back to raw scans.
 metrics_rollup = "REPLACE_ME"
-# OPTIONAL: operator/admin token used ONLY at startup to create the metrics
-# rollup Flux task. Bucket-scoped tokens above cannot create tasks. Leave
-# blank to skip rollup creation — query_metrics() will fall back to raw
-# scans. Generate via:
+
+# Optional operator token used ONLY at startup to create the rollup Flux
+# task (bucket-scoped tokens can't create tasks). Blank skips rollup
+# creation. Generate:
 #   influx auth create --org llm-systems-manager --all-access
-# (Or in the UI: Data → API Tokens → Generate API Token → All Access.)
 admin    = ""
 
 
@@ -396,22 +366,8 @@ log_backup_count = 5                                     # rotated copies retain
 
 # ───────────────────────────── LOGGING ────────────────────────────────────
 [logging]
-# Default level for both services. Per-service overrides live in
+# Default level for both services; per-service overrides live in
 # [manager].log_level and [alarm_engine].log_level.
 level   = "INFO"                                         # DEBUG | INFO | WARNING | ERROR | CRITICAL
 format  = "%(asctime)s [%(levelname)s] %(name)s:%(funcName)s() - %(message)s"
 datefmt = "%Y-%m-%d %H:%M:%S"
-
-
-# ───────────────────────────── AGENT (schema only) ────────────────────────
-# Documentary. The agents on remote hosts read their own agent_config.yaml.
-[agent]
-dashboard_url      = "http://localhost:5000/api/remote/lmstudio"
-lmstudio_api_url   = "http://localhost:1235"
-lmstudio_cli_path  = "/home/llmsys/.lmstudio/bin/lms"
-post_interval      = 15
-heartbeat_interval = 300
-log_dir            = "/var/logs/llm-systems-agent/"
-log_file           = "/var/logs/llm-systems-agent/llm-systems-agent.log"
-log_max_bytes      = 5242880                             # 5 MiB
-log_backup_count   = 3
