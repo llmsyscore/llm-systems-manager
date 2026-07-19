@@ -14,6 +14,9 @@ from backend import alarm_engine as ae
 
 PATH = "/api/alarm/admin/self-restart"
 
+# Real scheduler, captured before the autouse fixture stubs it per-test.
+_REAL_SCHEDULE = ae._schedule_ae_self_restart
+
 
 @pytest.fixture(autouse=True)
 def _stub_restart(monkeypatch):
@@ -56,3 +59,23 @@ def test_accepts_management_token_and_schedules(monkeypatch):
 def test_open_when_no_token_configured(monkeypatch):
     _set_tokens(monkeypatch, ingest="", management="")
     assert _client().post(PATH).status_code == 200
+
+
+# #437: brew-services units are Restart=on-failure — main() must exit
+# non-zero after a scheduled self-restart or the engine stays dead.
+def test_schedule_marks_restart_pending(monkeypatch):
+    monkeypatch.setattr(ae, "_restart_pending", False)
+    _REAL_SCHEDULE(delay=600)  # SIGTERM thread never fires in-test
+    assert ae._restart_pending is True
+    assert ae._restart_exit_code() == 1
+
+
+def test_exit_code_zero_without_pending_restart(monkeypatch):
+    monkeypatch.setattr(ae, "_restart_pending", False)
+    assert ae._restart_exit_code() == 0
+
+
+def test_main_exits_nonzero_on_restart_pending():
+    import inspect
+    src = inspect.getsource(ae.main)
+    assert "_restart_exit_code" in src and "SystemExit" in src

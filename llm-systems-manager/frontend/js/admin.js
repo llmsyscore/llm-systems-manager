@@ -177,9 +177,9 @@ function _renderSystemHealth(d) {
       let val;
       if (s.ok) val = s.latency_ms != null ? (s.latency_ms + 'ms') : (s.state || 'connected');
       else val = s.error ? (s.error.slice(0, 36)) : ('HTTP ' + (s.status_code || '?'));
-      // AE restart when it runs on this host (manager systemctls a local unit)
-      // or under a containerized control plane (manager calls the sibling AE
-      // container's self-restart API); a split bare-metal AE restarts on its host.
+      // AE restart when it runs on this host (systemctl on bare metal, the AE
+      // self-restart API on brew kegs) or under a containerized control plane
+      // (self-restart API); a split bare-metal AE restarts on its host.
       const action = (s.name === 'alarm_engine' && (d.ae_local || d.containerized))
         ? { svc: 'alarm_engine', label: 'Alarm Engine' } : undefined;
       rows.push({ lbl, val, ok: s.ok, action });

@@ -64,7 +64,7 @@ except ImportError:
             os.chmod(tmp, mode)
         tmp.replace(p)
 
-VERSION = "v2026.07.15-5"
+VERSION = "v2026.07.19-1"
 
 
 def _restore_bundle_env() -> None:
@@ -1609,6 +1609,8 @@ def _tls_write_bundle(tls: dict) -> None:
             reason, expires, CONFIG.AGENT_BIND_HOST, CONFIG.AGENT_BIND_PORT,
         )
         import threading as _th, signal as _sig
+        with _runtime_lock:
+            _state["restart_pending"] = True
         def _restart_for_tls() -> None:
             # Brief delay so the heartbeat handler can return before SIGTERM.
             time.sleep(2)
@@ -2918,6 +2920,12 @@ def _sse_frame(payload: "dict[str, Any]") -> bytes:
     return f"data: {json.dumps(payload)}\n\n".encode()
 
 
+def _restart_exit_code() -> int:
+    """1 when a self-restart is pending — non-zero so Restart=on-failure
+    supervisors (brew-services units) respawn the agent."""
+    return 1 if _state.get("restart_pending") else 0
+
+
 def _schedule_self_restart(delay_s: float = 1.5) -> None:
     """Mark restart_pending and SIGTERM after delay_s so SSE can flush."""
     with _runtime_lock:
@@ -3711,6 +3719,10 @@ def main() -> None:
                     CONFIG.AGENT_BIND_HOST, CONFIG.AGENT_BIND_PORT,
                     *_tls_paths())
     uvicorn.run(**uv_kwargs)
+    code = _restart_exit_code()
+    if code:
+        logger.warning("restart pending — exiting %d so the supervisor respawns", code)
+        raise SystemExit(code)
 
 
 if __name__ == "__main__":
