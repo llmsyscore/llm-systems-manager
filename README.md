@@ -98,7 +98,7 @@ The **fully automated script installer** (Quickstart below) is the preferred pat
 | **Script installer** (preferred) | Everything: full stack, split installs, agents, offline installs, updates — see [Quickstart](#quickstart--single-host) |
 | [Native packages (`.deb`/`.rpm`)](#native-packages-deb--rpm) | Hosts standardized on apt/dnf package management |
 | [Docker Compose](#docker-compose-control-plane-only) | Containerized control plane (manager + alarm engine + InfluxDB) |
-| [Homebrew](#homebrew-macos) | macOS/Apple Silicon agent hosts — `brew install`, auto-updating |
+| [Homebrew](#homebrew-control-plane) | brew-managed hosts (macOS Apple Silicon, Linux x86_64/arm64) — [agent](#homebrew-macos--linux) and control-plane formulas, auto-updating |
 | [Agent binary tarball](#agent-binary-no-python-required) | Agent-only hosts without Python (Linux/macOS), manual layout control |
 
 ## Quickstart — single host
@@ -158,6 +158,27 @@ sudo apt install ./llm-systems-agent_<version>_amd64.deb        # agent; prompts
 
 Packages create the `llmsys` user, install + start the systemd units, and build the Python venvs at install time (network to PyPI required; the agent package needs none — it's a single binary). Config survives upgrades; `apt purge` removes everything the package created (state from another install method is kept). Install methods don't mix — packages and the script installer refuse to overwrite each other. Details, RPM variants, and uninstall behavior: [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md#installing-from-native-packages-deb--rpm).
 
+### Homebrew (control plane)
+
+The manager and alarm engine also install from the project's [Homebrew tap](https://github.com/llmsyscore/homebrew-tap) — macOS (Apple Silicon) or Linux:
+
+```bash
+brew tap llmsyscore/tap
+brew trust llmsyscore/tap        # newer Homebrew requires trusting third-party taps
+brew install llm-systems-manager llm-systems-alarm-engine influxdb
+```
+
+Each formula builds its own Python venv from the release source tarball. Shared config is seeded at `$(brew --prefix)/etc/llm-systems-manager/llm-systems.toml` (alarm-engine ingest/management tokens pre-generated); state lives under `$(brew --prefix)/var/llm-systems-manager/` and survives upgrades. Bring the stack up in this order — the manager's first boot creates the internal CA and issues the alarm engine's TLS cert:
+
+```bash
+brew services start influxdb    # then: influx setup, and put the operator + ingest
+                                # tokens into [influxdb.tokens] in llm-systems.toml
+brew services start llm-systems-manager
+brew services start llm-systems-alarm-engine
+```
+
+`brew upgrade` tracks new releases automatically (the same tap cron that bumps the agent formula bumps these). The dashboard is at `http://<host>:5000`; the alarm engine can run without InfluxDB, but history and alert evaluation stay degraded until the tokens are filled in.
+
 ---
 
 ## Agent installation
@@ -170,9 +191,9 @@ bash <(curl -fsSL https://raw.githubusercontent.com/llmsyscore/llm-systems-manag
 
 The agent registers itself with the manager on first launch. From **Admin → Agents**, click **Approve** — the manager signs a TLS cert for that agent and starts polling it.
 
-### Homebrew (macOS)
+### Homebrew (macOS / Linux)
 
-On macOS (Apple Silicon), install the agent from the project's Homebrew tap:
+On macOS (Apple Silicon) or a Linux host with [Homebrew](https://docs.brew.sh/Homebrew-on-Linux) (x86_64 or arm64), install the agent from the project's Homebrew tap:
 
 ```bash
 brew tap llmsyscore/tap
@@ -180,7 +201,7 @@ brew trust llmsyscore/tap        # newer Homebrew requires trusting third-party 
 brew install llm-systems-agent
 ```
 
-Set `MANAGER_URL` in `$(brew --prefix)/etc/llm-systems-agent/agent_config.yaml` (the fully documented `agent_config.yaml.example` is installed alongside it for reference), then run the agent as a launchd service:
+The formula picks the right prebuilt binary for the platform. Set `MANAGER_URL` in `$(brew --prefix)/etc/llm-systems-agent/agent_config.yaml` (the fully documented `agent_config.yaml.example` is installed alongside it for reference), then run the agent as a service (launchd on macOS, a systemd user unit on Linux):
 
 ```bash
 brew services start llm-systems-agent

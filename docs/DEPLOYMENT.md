@@ -175,13 +175,30 @@ Multi-arch images for the manager and alarm engine are published to ghcr.io on e
 
 ---
 
+## Installing with Homebrew (control plane)
+
+The [tap](https://github.com/llmsyscore/homebrew-tap) also carries control-plane formulas for macOS (Apple Silicon) and Linux:
+
+```bash
+brew tap llmsyscore/tap && brew trust llmsyscore/tap
+brew install llm-systems-manager llm-systems-alarm-engine influxdb
+```
+
+- **Config** is shared at `$(brew --prefix)/etc/llm-systems-manager/llm-systems.toml`, seeded on first install with generated alarm-engine ingest/management tokens (equivalent to a co-located script install). It is kept across upgrades.
+- **State** (internal CA, agent registry, TLS certs, SQLite DBs) lives under `$(brew --prefix)/var/llm-systems-manager/` and also survives upgrades — the kegs hold only code + venvs.
+- **InfluxDB**: `brew services start influxdb`, run `influx setup`, create the buckets/tokens per [Configuration](#configuration), and fill `[influxdb]` + `[influxdb.tokens]` in the TOML. The manager and alarm engine run without it, but history and alert evaluation stay degraded until then.
+- **Start order**: `brew services start llm-systems-manager` first (first boot creates the internal CA and issues `ae-tls.{crt,key}` for the alarm engine), then `brew services start llm-systems-alarm-engine`.
+- Don't mix with a script/package install on the same host — both would fight over ports 5000/8081.
+
+---
+
 ## Installing Agents on Remote Computers
 
 If you already have a manager running and want to start monitoring an additional server, install only the agent on that remote machine. The script installer below is the preferred path; two alternatives exist for hosts where it doesn't fit:
 
 - **Native package** (Linux, no Python needed): `apt`/`dnf` install of the per-arch `llm-systems-agent` package — see [Installing from Native Packages](#installing-from-native-packages-deb--rpm).
 - **Binary tarball** (Linux or macOS, no Python needed): each release ships `llm-systems-agent-<platform>.tar.gz` bundling the self-contained binary, `agent_config.yaml.example`, and the service unit template — extract to `/opt/llm-systems-agent`, set `MANAGER_URL` in a copied `agent_config.yaml`, install the unit, and `systemctl enable --now llm-systems-agent`. Full steps in the [README's Agent binary section](../README.md#agent-binary-no-python-required).
-- **Homebrew** (macOS/Apple Silicon): `brew tap llmsyscore/tap && brew trust llmsyscore/tap && brew install llm-systems-agent`, then set `MANAGER_URL` in `$(brew --prefix)/etc/llm-systems-agent/agent_config.yaml` and `brew services start llm-systems-agent`. `brew upgrade` tracks new releases automatically. Full steps in the [README's Homebrew section](../README.md#homebrew-macos).
+- **Homebrew** (macOS/Apple Silicon, or Linux x86_64/arm64 with Homebrew): `brew tap llmsyscore/tap && brew trust llmsyscore/tap && brew install llm-systems-agent`, then set `MANAGER_URL` in `$(brew --prefix)/etc/llm-systems-agent/agent_config.yaml` and `brew services start llm-systems-agent` (launchd on macOS, systemd user unit on Linux). `brew upgrade` tracks new releases automatically. Full steps in the [README's Homebrew section](../README.md#homebrew-macos--linux).
 
 ### Step 1: Get the Installer on the Remote Host
 
