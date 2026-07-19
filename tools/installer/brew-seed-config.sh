@@ -45,7 +45,8 @@ gen_token() {
   if command -v openssl >/dev/null 2>&1; then
     openssl rand -hex 32
   else
-    LC_ALL=C tr -dc 'a-f0-9' < /dev/urandom | head -c 64
+    # head reads first so no downstream stage triggers SIGPIPE under pipefail.
+    head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n'
     echo
   fi
 }

@@ -1,9 +1,9 @@
 name: Brew install test
 
 # Real user path against the published tap + latest release: tap, install,
-# service health, uninstall — agent on macOS + Linux, control plane
-# (manager + alarm engine) on both. Nightly + manual only — PRs here cannot
-# change already-released assets, so a PR trigger would test nothing new.
+# service health, uninstall — agent + control plane (manager + alarm engine),
+# each on macOS and Linux. Nightly + manual only — PRs here cannot change
+# already-released assets, so a PR trigger would test nothing new.
 
 on:
   schedule:
@@ -26,14 +26,9 @@ jobs:
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
     steps:
-      - name: Set up Homebrew (Linux)
-        if: runner.os == 'Linux'
-        uses: Homebrew/actions/setup-homebrew@master
-      - name: Tap
-        run: |
-          brew tap llmsyscore/tap
-          brew trust llmsyscore/tap || true
-      - uses: llmsyscore/homebrew-tap/.github/actions/systemd-user-session@main
+      - uses: llmsyscore/homebrew-tap/.github/actions/setup-brew-ci@main
+        with:
+          tap: llmsyscore/tap
       - uses: llmsyscore/homebrew-tap/.github/actions/install-test@main
         with:
           formula: llmsyscore/tap/llm-systems-agent
@@ -44,14 +39,9 @@ jobs:
       matrix:
         os: [macos-latest, ubuntu-latest]
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 45
+    timeout-minutes: 30
     steps:
-      - name: Set up Homebrew (Linux)
-        if: runner.os == 'Linux'
-        uses: Homebrew/actions/setup-homebrew@master
-      - name: Tap
-        run: |
-          brew tap llmsyscore/tap
-          brew trust llmsyscore/tap || true
-      - uses: llmsyscore/homebrew-tap/.github/actions/systemd-user-session@main
+      - uses: llmsyscore/homebrew-tap/.github/actions/setup-brew-ci@main
+        with:
+          tap: llmsyscore/tap
       - uses: llmsyscore/homebrew-tap/.github/actions/manager-install-test@main
