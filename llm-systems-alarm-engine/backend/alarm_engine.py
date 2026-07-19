@@ -67,7 +67,7 @@ from .storage.influxdb_client import InfluxDBClient
 # (-1, -2, …) for same-day iterations; roll the date for a new day's first
 # change.
 # ---------------------------------------------------------------------------
-__version__ = "v2026.07.19-2"
+__version__ = "v2026.07.19-3"
 from .storage import influx_monitor as _influx_monitor
 from .models.alarm_rule import (
     AlarmRuleCreate,
@@ -1260,27 +1260,17 @@ async def ae_admin_export(body: dict = Body(default_factory=dict)):
     )
 
 
-_restart_pending = False
-
-
-def _restart_exit_code() -> int:
-    """1 when a self-restart is pending — non-zero so Restart=on-failure
-    supervisors (brew-services units) respawn the process."""
-    return 1 if _restart_pending else 0
-
-
 def _schedule_ae_self_restart(delay: float = 0.8) -> None:
-    """Spawn a daemon that SIGTERMs this process after `delay`s so the HTTP
-    response flushes first; main() then exits non-zero and the supervisor
-    respawns it. Split out so tests can stub it (no real signal)."""
-    import signal as _signal
+    """Spawn a daemon that hard-exits this process with code 1 after `delay`s
+    (the HTTP response flushes first). A non-zero EXIT — not SIGTERM — is what
+    a systemd Restart=on-failure unit (brew-services) respawns on; SIGTERM is
+    in on-failure's clean-signal exclusion list, so a self-SIGTERM never
+    restarts. Split out so tests can stub it (no real exit)."""
     import threading as _threading
-    global _restart_pending
-    _restart_pending = True
 
     def _terminate():
         time.sleep(delay)
-        os.kill(os.getpid(), _signal.SIGTERM)
+        os._exit(1)
 
     _threading.Thread(target=_terminate, daemon=True).start()
 
@@ -1288,8 +1278,9 @@ def _schedule_ae_self_restart(delay: float = 0.8) -> None:
 @app.post("/api/alarm/admin/self-restart")
 async def ae_self_restart(_auth: None = Depends(require_management_token)):
     """Restart the alarm engine process (management-token guarded). Used by the
-    manager on containerized and brew installs (no usable systemctl) — main()
-    exits non-zero afterwards so Restart=on-failure supervisors respawn it."""
+    manager on containerized and brew installs (no usable systemctl) — the
+    process hard-exits 1 so Restart=on-failure/unless-stopped supervisors
+    respawn it."""
     _schedule_ae_self_restart()
     logger.warning("AE self-restart requested via management API")
     return {"ok": True, "restarting": True}
@@ -1589,8 +1580,10 @@ def main() -> None:
     # uvicorn's OWN logger stays at warning (matching the prior unit's
     # `--log-level warning`); the app logger is configured separately above from
     # settings.alarm_engine.log_level, so this doesn't quiet our own logs.
-    # Cap the post-SIGTERM wait so a self-restart/stop doesn't hang on the
-    # manager's long-lived alarm WS until systemd's 90s SIGKILL (agent parity).
+    # Cap the post-SIGTERM wait so an EXTERNAL stop (systemctl/brew services
+    # stop, upgrade) doesn't hang on the manager's long-lived alarm WS until
+    # systemd's 90s SIGKILL (agent parity). Self-restart uses os._exit, not a
+    # signal, so it never reaches this path.
     uvicorn.run(
         app, host=host, port=port,
         log_level="warning",
@@ -1598,10 +1591,6 @@ def main() -> None:
         timeout_graceful_shutdown=10,
         **ssl_kwargs,
     )
-    code = _restart_exit_code()
-    if code:
-        logger.warning("self-restart pending — exiting %d so the supervisor respawns", code)
-        raise SystemExit(code)
 
 
 if __name__ == "__main__":
