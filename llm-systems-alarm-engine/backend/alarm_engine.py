@@ -67,7 +67,7 @@ from .storage.influxdb_client import InfluxDBClient
 # (-1, -2, …) for same-day iterations; roll the date for a new day's first
 # change.
 # ---------------------------------------------------------------------------
-__version__ = "v2026.07.18-1"
+__version__ = "v2026.07.19-1"
 from .storage import influx_monitor as _influx_monitor
 from .models.alarm_rule import (
     AlarmRuleCreate,
@@ -1260,12 +1260,23 @@ async def ae_admin_export(body: dict = Body(default_factory=dict)):
     )
 
 
+_restart_pending = False
+
+
+def _restart_exit_code() -> int:
+    """1 when a self-restart is pending — non-zero so Restart=on-failure
+    supervisors (brew-services units) respawn the process."""
+    return 1 if _restart_pending else 0
+
+
 def _schedule_ae_self_restart(delay: float = 0.8) -> None:
     """Spawn a daemon that SIGTERMs this process after `delay`s so the HTTP
-    response flushes first; uvicorn then shuts down cleanly and the runtime
+    response flushes first; main() then exits non-zero and the supervisor
     respawns it. Split out so tests can stub it (no real signal)."""
     import signal as _signal
     import threading as _threading
+    global _restart_pending
+    _restart_pending = True
 
     def _terminate():
         time.sleep(delay)
@@ -1276,9 +1287,9 @@ def _schedule_ae_self_restart(delay: float = 0.8) -> None:
 
 @app.post("/api/alarm/admin/self-restart")
 async def ae_self_restart(_auth: None = Depends(require_management_token)):
-    """Restart the alarm engine process (management-token guarded). For
-    containerized installs where the manager can't systemctl a sibling
-    container — the runtime respawns it on exit (compose restart: unless-stopped)."""
+    """Restart the alarm engine process (management-token guarded). Used by the
+    manager on containerized and brew installs (no usable systemctl) — main()
+    exits non-zero afterwards so Restart=on-failure supervisors respawn it."""
     _schedule_ae_self_restart()
     logger.warning("AE self-restart requested via management API")
     return {"ok": True, "restarting": True}
@@ -1584,6 +1595,10 @@ def main() -> None:
         access_log=False, loop="uvloop", http="httptools",
         **ssl_kwargs,
     )
+    code = _restart_exit_code()
+    if code:
+        logger.warning("self-restart pending — exiting %d so the supervisor respawns", code)
+        raise SystemExit(code)
 
 
 if __name__ == "__main__":

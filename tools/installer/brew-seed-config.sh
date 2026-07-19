@@ -20,8 +20,8 @@
 #     default the script installer also applies).
 #   - chmod 0600 — the file holds secrets.
 #
-# Does NOT touch [influxdb] host/tokens — the operator fills those in after
-# `influx setup` (REPLACE_ME placeholders are ignored/warned at runtime).
+# Does NOT touch [influxdb] host/tokens — brew-influx-setup.sh (installed as
+# llm-systems-influx-setup) fills those (REPLACE_ME is ignored/warned at runtime).
 # =============================================================================
 set -euo pipefail
 
@@ -83,4 +83,4 @@ grep -q "^management_token = \"$MGMT_TOKEN\"" "$TMP" || { rm -f "$TMP"; die "man
 mv "$TMP" "$TARGET"
 chmod 0600 "$TARGET"
 echo "brew-seed-config: seeded $TARGET (log_dir=$LOG_DIR, AE tokens generated)"
-echo "brew-seed-config: set [influxdb] host/port + [influxdb.tokens] after 'influx setup'"
+echo "brew-seed-config: fill [influxdb.tokens] with llm-systems-influx-setup (needs: brew install influxdb influxdb-cli)"

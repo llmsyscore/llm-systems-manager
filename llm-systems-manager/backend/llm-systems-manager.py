@@ -154,7 +154,7 @@ def _local_hostname() -> str:
 # banner reads it. Bump suffix (-1, -2, …) for same-day iterations; roll
 # the date for a new day's first change.
 # ---------------------------------------------------------------------------
-__version__ = "v2026.07.18-1"
+__version__ = "v2026.07.19-1"
 
 # Wall-clock at first import (Cheroot main process); the shutdown banner
 # reads it for the uptime line.
@@ -578,13 +578,35 @@ def _detect_containerized() -> bool:
 _CONTAINERIZED = _detect_containerized()
 
 
+def _detect_brew_keg() -> bool:
+    """True when this file runs out of a Homebrew keg (…/Cellar/… path).
+    Honors an explicit LSM_BREW override for tests/CI."""
+    override = os.environ.get("LSM_BREW")
+    if override is not None:
+        return override.strip().lower() in ("1", "true", "yes")
+    return "/Cellar/" in os.path.realpath(__file__)
+
+
+_BREW_KEG = _detect_brew_keg()
+
+
+def _brew_prefix() -> str:
+    """Homebrew prefix derived from this file's realpath ($PREFIX/Cellar/…).
+    LSM_BREW_PREFIX overrides for tests; empty when not a brew install."""
+    override = os.environ.get("LSM_BREW_PREFIX")
+    if override:
+        return override
+    real = os.path.realpath(__file__)
+    return real.split("/Cellar/")[0] if "/Cellar/" in real else ""
+
+
 def install_topology() -> dict:
     """One-stop snapshot of this host's deployment shape.
 
     Returns:
       {
         "ae_local_disk":  bool,   # llm-systems-alarm-engine/ deployed on disk
-        "ae_local_unit":  bool,   # llm-systems-alarm-engine.service installed
+        "ae_local_unit":  bool,   # AE service unit installed (or brew AE keg)
         "ae_local_url":   bool,   # configured _alarm_engine_url points at localhost
         "split":          bool,   # any signal says the AE is somewhere else
       }
@@ -606,6 +628,11 @@ def install_topology() -> dict:
         for d in ("/etc/systemd/system", "/usr/lib/systemd/system",
                   "/lib/systemd/system")
     )
+    # Brew installs have no system unit — an installed AE keg is the local signal.
+    if not ae_local_unit and _BREW_KEG:
+        pfx = _brew_prefix()
+        ae_local_unit = bool(pfx) and os.path.isdir(
+            os.path.join(pfx, "opt", "llm-systems-alarm-engine"))
     ae_local_url = False
     if _alarm_engine_url:
         with best_effort("install topology: classify AE url host"):
@@ -2803,24 +2830,24 @@ def _sudo_allows(unit_cmd: list) -> "tuple[bool, str]":
         return False, "sudo pre-flight failed"
 
 
-def _schedule_process_exit(delay: float = 1.0) -> None:
-    """Spawn a daemon that exits this process after `delay`s (the HTTP response
-    flushes first); the container runtime respawns it. Split out so tests can
-    stub it (no real os._exit)."""
+def _schedule_process_exit(delay: float = 1.0, code: int = 0) -> None:
+    """Spawn a daemon that exits this process with `code` after `delay`s (the
+    HTTP response flushes first); the supervisor respawns it. Split out so
+    tests can stub it (no real os._exit)."""
     def _exit():
         time.sleep(delay)
-        os._exit(0)
+        os._exit(code)
     threading.Thread(target=_exit, daemon=True).start()
 
 
-def _restart_service_containerized(svc: str):
-    """Restart under a containerized control plane (no systemd). Manager: exit
-    this process — the runtime respawns it (compose restart: unless-stopped).
-    Alarm engine: it's a sibling container, so ask it to restart itself over
-    its management API (_ae_session already carries the management bearer)."""
+def _restart_service_containerized(svc: str, exit_code: int = 0):
+    """Restart without systemctl (container or brew keg). Manager: exit this
+    process — the runtime/brew-services unit respawns it. Alarm engine: ask it
+    to restart itself over its management API (_ae_session carries the bearer).
+    exit_code=1 for brew — its units are Restart=on-failure."""
     if svc == "manager":
-        _schedule_process_exit()
-        logging.warning("manager self-restart (container exit) requested via admin tab")
+        _schedule_process_exit(code=exit_code)
+        logging.warning("manager self-restart (process exit) requested via admin tab")
         return jsonify({"ok": True, "restarting": True,
                         "note": "manager restarting — the dashboard will be briefly unavailable"})
     base = (_alarm_engine_url or "").rstrip("/")
@@ -2842,8 +2869,8 @@ def _restart_service_containerized(svc: str):
 def admin_service_restart(svc: str):
     """Restart the manager or alarm-engine from the admin tab. Requires admin
     role + admin CIDR. On bare metal uses the sudoers NOPASSWD systemctl grant
-    from install-manager.sh; in a container restarts via process-exit + the
-    alarm engine's self-restart API (no systemd there)."""
+    from install-manager.sh; containers and brew kegs restart via process-exit
+    + the alarm engine's self-restart API (no usable systemctl there)."""
     deny = _require_admin()
     if deny is not None:
         return deny
@@ -2852,6 +2879,10 @@ def admin_service_restart(svc: str):
         return jsonify({"ok": False, "error": f"unknown service '{svc}'"}), 400
     if _CONTAINERIZED:
         return _restart_service_containerized(svc)
+    if _BREW_KEG:
+        # Brew-services units are Restart=on-failure — exit non-zero so the
+        # supervisor respawns; the AE restarts itself via its management API.
+        return _restart_service_containerized(svc, exit_code=1)
     # ae_local_unit = the AE unit file exists here, the precise precondition for
     # a local systemctl restart (reuses install_topology, no getaddrinfo).
     if svc == "alarm_engine" and not install_topology()["ae_local_unit"]:
@@ -2917,8 +2948,8 @@ def admin_system_health():
         "agents": [],
         "data_flow": {},
         "warnings": [],
-        # Whether the alarm engine unit is installed here — gates the AE restart
-        # button in the admin tab (the manager can only systemctl a local unit).
+        # Whether the AE runs on this host (unit file or brew keg) — gates the
+        # AE restart button in the admin tab.
         "ae_local": install_topology()["ae_local_unit"],
         # Containerized control plane: the AE restart button is enabled too (the
         # manager restarts the sibling AE container via its self-restart API).
