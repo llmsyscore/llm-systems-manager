@@ -67,7 +67,7 @@ def _write_stub(path: Path, content: str) -> None:
     path.chmod(path.stat().st_mode | stat.S_IEXEC)
 
 
-def _run(config: Path, stub_bin: Path, state: Path, stubs_only=False):
+def _run(config: Path, stub_bin: Path, state: Path, stubs_only=False, extra_env=None):
     env = dict(os.environ)
     # stubs_only: PATH holds ONLY the stub dir, so a host-installed influx
     # can never be found (or run) when a test simulates a missing CLI.
@@ -77,6 +77,7 @@ def _run(config: Path, stub_bin: Path, state: Path, stubs_only=False):
     # Unroutable discard port — even a leak past the stubs can't reach a
     # real InfluxDB.
     env["INFLUX_HOST_URL"] = "http://127.0.0.1:9"
+    env.update(extra_env or {})
     return subprocess.run(["/bin/bash", str(SCRIPT)], env=env,
                           capture_output=True, text=True, timeout=60)
 
@@ -138,3 +139,109 @@ def test_dies_without_config(stub_env, tmp_path):
     r = _run(tmp_path / "missing.toml", stub_bin, state)
     assert r.returncode != 0
     assert "config not found" in r.stderr
+
+
+DEAD_CURL_STUB = """#!/usr/bin/env bash
+# Probe never turns healthy; no other endpoint should be reached.
+case "$*" in
+  *"%{http_code}"*) printf '000' ;;
+  *) exit 7 ;;
+esac
+"""
+
+BREW_STUB = """#!/usr/bin/env bash
+# Stub brew: influxdb formula installed; service starts; state + prefix
+# come from files the test writes into $STUB_STATE.
+case "$*" in
+  "list --versions influxdb") echo "influxdb 2.7.11" ;;
+  "services start influxdb") : ;;
+  "services info influxdb --json")
+    printf '[{"name":"influxdb","status":"%s"}]\\n' "$(cat "$STUB_STATE/svc_status")" ;;
+  "services info influxdb") echo "influxdb ($(cat "$STUB_STATE/svc_status"))" ;;
+  "--prefix") cat "$STUB_STATE/prefix" ;;
+  *) exit 64 ;;
+esac
+"""
+
+
+def _unhealthy_env(stub_env, status: str):
+    config, stub_bin, state = stub_env
+    _write_stub(stub_bin / "curl", DEAD_CURL_STUB)
+    _write_stub(stub_bin / "brew", BREW_STUB)
+    (state / "svc_status").write_text(status)
+    prefix = state / "brewprefix"
+    (prefix / "var" / "log").mkdir(parents=True)
+    (prefix / "var" / "log" / "influxdb2.log").write_text("influxd boom: lock timeout\n")
+    (state / "prefix").write_text(str(prefix))
+    return config, stub_bin, state
+
+
+def test_unhealthy_server_dumps_diagnostics(stub_env):
+    # WAIT_S=6 also drives the i%5==4 state check through its non-error
+    # branch (status "started" → keep waiting, print a progress dot).
+    config, stub_bin, state = _unhealthy_env(stub_env, "started")
+    r = _run(config, stub_bin, state, extra_env={"LSM_INFLUX_WAIT_S": "6"})
+    assert r.returncode != 0
+    assert "did not become healthy" in r.stderr
+    # The diagnostics really ran the command (dynamic stub output), not just
+    # the static section heading.
+    assert "influxdb (started)" in r.stderr
+    assert "influxd boom: lock timeout" in r.stderr
+    assert "." in r.stderr  # progress dot from the non-error wait branch
+    # Nothing was provisioned and the config is untouched.
+    assert 'metrics        = "REPLACE_ME"' in config.read_text()
+
+
+def test_service_error_state_bails_early_with_diagnostics(stub_env):
+    config, stub_bin, state = _unhealthy_env(stub_env, "error")
+    r = _run(config, stub_bin, state, extra_env={"LSM_INFLUX_WAIT_S": "30"})
+    assert r.returncode != 0
+    assert "error state" in r.stderr
+    assert "influxdb (error)" in r.stderr
+    assert "influxd boom: lock timeout" in r.stderr
+
+
+def test_failed_service_start_dumps_diagnostics(stub_env):
+    config, stub_bin, state = _unhealthy_env(stub_env, "none")
+    brew = (stub_bin / "brew").read_text().replace(
+        '"services start influxdb") : ;;',
+        '"services start influxdb") echo "Error: bootstrap failed" >&2; exit 1 ;;')
+    _write_stub(stub_bin / "brew", brew)
+    r = _run(config, stub_bin, state)
+    assert r.returncode != 0
+    assert "brew services start influxdb failed" in r.stderr
+    assert "influxd boom: lock timeout" in r.stderr
+
+
+DELAYED_CURL_STUB = """#!/usr/bin/env bash
+# Probe reports 000 for the first 8 calls, then 200 — exercises the real
+# wait loop's keep-waiting → healthy transition.
+state="$STUB_STATE"
+case "$*" in
+  *"%{http_code}"*)
+    n=$(( $(cat "$state/probe_count" 2>/dev/null || echo 0) + 1 ))
+    echo "$n" > "$state/probe_count"
+    if [ "$n" -le 8 ]; then printf '000'; else printf '200'; fi ;;
+  *"-X POST"*"/api/v2/setup"*) touch "$state/setup_ran" ;;
+  *"/api/v2/setup"*) printf '{"allowed": true}\\n' ;;
+  *) exit 22 ;;
+esac
+"""
+
+
+def test_slow_start_waits_then_provisions(stub_env):
+    config, stub_bin, state = stub_env
+    _write_stub(stub_bin / "curl", DELAYED_CURL_STUB)
+    _write_stub(stub_bin / "brew", BREW_STUB)
+    (state / "svc_status").write_text("started")
+    (state / "prefix").write_text(str(state))
+    r = _run(config, stub_bin, state)
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert "waiting for InfluxDB" in r.stdout
+    assert "." in r.stderr  # at least one progress dot before it turned healthy
+    assert int((state / "probe_count").read_text()) > 8
+    # Full provisioning still completed after the slow start.
+    assert (state / "setup_ran").exists()
+    text = config.read_text()
+    assert 'metrics        = "tok-bid_metrics"' in text
+    assert 'metrics_rollup = "tok-bid_rollup"' in text
