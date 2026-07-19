@@ -64,7 +64,7 @@ except ImportError:
             os.chmod(tmp, mode)
         tmp.replace(p)
 
-VERSION = "v2026.07.19-1"
+VERSION = "v2026.07.19-2"
 
 
 def _restore_bundle_env() -> None:
@@ -1608,14 +1608,14 @@ def _tls_write_bundle(tls: dict) -> None:
             "TLS bundle %s (expires %s) — auto-restarting to bind HTTPS on %s:%d",
             reason, expires, CONFIG.AGENT_BIND_HOST, CONFIG.AGENT_BIND_PORT,
         )
-        import threading as _th, signal as _sig
+        import threading as _th
         with _runtime_lock:
             _state["restart_pending"] = True
         def _restart_for_tls() -> None:
-            # Brief delay so the heartbeat handler can return before SIGTERM.
+            # Brief delay so the heartbeat handler can return first.
             time.sleep(2)
-            logger.info("TLS bundle received — sending SIGTERM to pick up HTTPS bind")
-            os.kill(os.getpid(), _sig.SIGTERM)
+            logger.info("TLS bundle received — requesting shutdown to pick up HTTPS bind")
+            _request_self_shutdown()
         _th.Thread(target=_restart_for_tls, name="tls-restart", daemon=True).start()
         return
 
@@ -2802,7 +2802,7 @@ async def agent_restart(authorization: Optional[str] = Header(default=None)) -> 
 
     def _do_exit():
         time.sleep(1.0)
-        os.kill(os.getpid(), signal.SIGTERM)
+        _request_self_shutdown()
 
     threading.Thread(target=_do_exit, daemon=True).start()
     return {"ok": True, "restart_eta": eta}
@@ -2926,15 +2926,32 @@ def _restart_exit_code() -> int:
     return 1 if _state.get("restart_pending") else 0
 
 
+# The running uvicorn.Server; main() assigns it so self-restart paths can
+# request a programmatic shutdown instead of a signal.
+_uvicorn_server: "Optional[uvicorn.Server]" = None
+
+
+def _request_self_shutdown() -> None:
+    """Gracefully stop the server WITHOUT a signal: should_exit lets uvicorn
+    run lifespan shutdown (metric drain, child kill) and return from run(),
+    so main() can exit 1. A self-SIGTERM never restarts under systemd
+    Restart=on-failure (SIGTERM is a clean signal) — signal is fallback only."""
+    server = _uvicorn_server
+    if server is not None:
+        server.should_exit = True
+    else:
+        os.kill(os.getpid(), signal.SIGTERM)
+
+
 def _schedule_self_restart(delay_s: float = 1.5) -> None:
-    """Mark restart_pending and SIGTERM after delay_s so SSE can flush."""
+    """Mark restart_pending and request shutdown after delay_s so SSE can flush."""
     with _runtime_lock:
         _state["restart_pending"] = True
 
     def _do_exit() -> None:
         time.sleep(delay_s)
-        logger.warning("self-update complete; SIGTERM-ing for restart")
-        os.kill(os.getpid(), signal.SIGTERM)
+        logger.warning("self-update complete; requesting shutdown for restart")
+        _request_self_shutdown()
 
     threading.Thread(target=_do_exit, daemon=True).start()
 
@@ -3718,7 +3735,18 @@ def main() -> None:
         logger.info("TLS not configured: serving http://%s:%d (drop cert + key into %s + %s to enable)",
                     CONFIG.AGENT_BIND_HOST, CONFIG.AGENT_BIND_PORT,
                     *_tls_paths())
-    uvicorn.run(**uv_kwargs)
+    # Explicit Server (not uvicorn.run) so self-restart paths can set
+    # should_exit — run() then RETURNS after graceful shutdown and the exit-1
+    # below actually executes. A signal path never gets here: uvicorn
+    # re-raises the captured signal on exit (process dies 143).
+    server = uvicorn.Server(uvicorn.Config(**uv_kwargs))
+    globals()["_uvicorn_server"] = server
+    server.run()
+    # uvicorn.run()'s post-run check, which the explicit Server drops: a
+    # failed startup must exit non-zero (uvicorn STARTUP_FAILURE=3), not 0.
+    if not server.started:
+        logger.error("server never started — exiting 3 (startup failure)")
+        raise SystemExit(3)
     code = _restart_exit_code()
     if code:
         logger.warning("restart pending — exiting %d so the supervisor respawns", code)
