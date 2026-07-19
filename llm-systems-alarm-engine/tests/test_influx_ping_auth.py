@@ -7,8 +7,6 @@ with an authenticated read and reports tokens_unset / auth_failed.
 """
 from __future__ import annotations
 
-import pytest
-
 from config.unified_config import settings
 from backend import alarm_engine as ae
 
