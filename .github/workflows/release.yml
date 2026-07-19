@@ -118,6 +118,8 @@ jobs:
       - name: Publish release
         env:
           GH_TOKEN: ${{ github.token }}
+          # No checkout in this job — gh must resolve the repo from env, not git.
+          GH_REPO: ${{ github.repository }}
         run: |
           ASSET="llm-systems-manager-${TAG}.tar.gz"
           cat > /tmp/release-notes.md <<EOF
