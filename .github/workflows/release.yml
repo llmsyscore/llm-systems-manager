@@ -1,29 +1,42 @@
 name: Release
 
-# On every v* tag push: build the source tarball with git archive, checksum
-# it, and publish both as a GitHub Release (the installer's default source).
-# The docker job publishes multi-arch control-plane images to ghcr.io (#384).
+# On every v* tag push: build the source tarball, run the brew control-plane
+# e2e against that BUILT tarball, and only then publish the GitHub Release +
+# packages + ghcr images. A build that fails the brew/systemd smoke never
+# becomes a published release (#445). workflow_dispatch (input: ref) runs
+# build + brew-verify against an existing tag WITHOUT publishing — a zero-
+# clutter dry-run of the gate.
 
 on:
   push:
     tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "Existing tag to build + brew-verify (dry-run, no publish)"
+        required: true
 
 permissions:
   contents: write
 
+env:
+  TAG: ${{ inputs.ref || github.ref_name }}
+
 jobs:
-  release:
-    name: build tarball + publish release
+  build:
+    name: build tarball + checksum
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TAG }}
 
       - name: Build tarball + SHA-256 checksum
         run: |
-          ASSET="llm-systems-manager-${GITHUB_REF_NAME}.tar.gz"
+          ASSET="llm-systems-manager-${TAG}.tar.gz"
           git archive --format=tar.gz \
-            --prefix="llm-systems-manager-${GITHUB_REF_NAME}/" \
+            --prefix="llm-systems-manager-${TAG}/" \
             -o "$ASSET" HEAD
           sha256sum "$ASSET" | tee "$ASSET.sha256"
 
@@ -31,28 +44,94 @@ jobs:
       # tools/installer/ inside) and on the .sha256 verifying — assert both.
       - name: Sanity-check tarball layout + checksum
         run: |
-          ASSET="llm-systems-manager-${GITHUB_REF_NAME}.tar.gz"
-          tar -tzf "$ASSET" | grep -qx "llm-systems-manager-${GITHUB_REF_NAME}/tools/installer/install.sh"
-          tar -tzf "$ASSET" | grep -qx "llm-systems-manager-${GITHUB_REF_NAME}/tools/installer/lib-common.sh"
+          ASSET="llm-systems-manager-${TAG}.tar.gz"
+          tar -tzf "$ASSET" | grep -qx "llm-systems-manager-${TAG}/tools/installer/install.sh"
+          tar -tzf "$ASSET" | grep -qx "llm-systems-manager-${TAG}/tools/installer/lib-common.sh"
           sha256sum -c "$ASSET.sha256"
+
+      - name: Upload tarball artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: manager-tarball
+          path: |
+            llm-systems-manager-${{ env.TAG }}.tar.gz
+            llm-systems-manager-${{ env.TAG }}.tar.gz.sha256
+          if-no-files-found: error
+
+  brew-verify:
+    name: brew control-plane e2e (pre-publish)
+    needs: build
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: manager-tarball
+          path: dist
+
+      - uses: llmsyscore/homebrew-tap/.github/actions/setup-brew-ci@main
+        with:
+          tap: llmsyscore/tap
+
+      # Point the tapped manager + alarm-engine formulas at the just-built
+      # tarball (file:// + its sha256) so the e2e installs the CANDIDATE build,
+      # not the last published release. The agent formula is untouched (its
+      # binaries come from a separate workflow — control-plane gate only).
+      - name: Repin tapped formulas at the built tarball
+        shell: bash
+        run: |
+          tb="$GITHUB_WORKSPACE/dist/llm-systems-manager-${TAG}.tar.gz"
+          test -f "$tb"
+          sha="$( { sha256sum "$tb" 2>/dev/null || shasum -a 256 "$tb"; } | awk '{print $1}')"
+          tapdir="$(brew --repository llmsyscore/tap)/Formula"
+          python3 - "$tapdir" "file://$tb" "$sha" <<'PY'
+          import pathlib, re, sys
+          tapdir, url, sha = sys.argv[1:4]
+          for name in ("llm-systems-manager", "llm-systems-alarm-engine"):
+              p = pathlib.Path(tapdir) / f"{name}.rb"
+              t = p.read_text()
+              t, n1 = re.subn(r'url ".*?"', f'url "{url}"', t, count=1)
+              t, n2 = re.subn(r'sha256 ".*?"', f'sha256 "{sha}"', t, count=1)
+              assert n1 == 1 and n2 == 1, f"{name}: url/sha256 rewrite failed"
+              p.write_text(t)
+              print(f"repinned {name} -> {url}")
+          PY
+
+      - uses: llmsyscore/homebrew-tap/.github/actions/manager-install-test@main
+
+  publish:
+    name: publish release
+    needs: [build, brew-verify]
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: manager-tarball
+          path: .
 
       - name: Publish release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          ASSET="llm-systems-manager-${GITHUB_REF_NAME}.tar.gz"
+          ASSET="llm-systems-manager-${TAG}.tar.gz"
           cat > /tmp/release-notes.md <<EOF
           Install this release:
 
           \`\`\`bash
-          bash <(curl -fsSL https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/main/tools/installer/install.sh) --ref ${GITHUB_REF_NAME}
+          bash <(curl -fsSL https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/main/tools/installer/install.sh) --ref ${TAG}
           \`\`\`
 
           The installer verifies \`${ASSET}.sha256\` before deploying anything.
           EOF
-          gh release create "$GITHUB_REF_NAME" \
+          gh release create "$TAG" \
             --verify-tag \
-            --title "$GITHUB_REF_NAME" \
+            --title "$TAG" \
             --generate-notes \
             --notes-file /tmp/release-notes.md \
             "$ASSET" "$ASSET.sha256"
@@ -60,7 +139,8 @@ jobs:
   packages:
     name: build + attach .deb/.rpm
     runs-on: ubuntu-latest
-    needs: release
+    needs: publish
+    if: github.event_name == 'push'
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
@@ -82,6 +162,8 @@ jobs:
   docker:
     name: publish ghcr images (multi-arch)
     runs-on: ubuntu-latest
+    needs: brew-verify
+    if: github.event_name == 'push'
     timeout-minutes: 90
     permissions:
       contents: read
