@@ -12,6 +12,9 @@ plans
 devel
 design
 docs
+dist
+tools/packaging
+tools/installer/ci-*.sh
 config/llm-systems.toml
 config/unified_config.py
 config/backups

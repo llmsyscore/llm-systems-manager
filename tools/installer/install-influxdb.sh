@@ -237,6 +237,9 @@ else
     "$INFLUX_URL" "$INFLUX_ORG" "$INFLUX_OPERATOR_TOKEN" \
     "${SCOPED_TOKENS[alarm_engine_metrics]:-}" \
     "${SCOPED_TOKENS[alarm_engine_metrics_rollup]:-}"
+  # Ad-hoc run (no install.sh handoff): nothing consumes the env file, so
+  # the operator needs the tokens on screen (#432).
+  if [[ "$ENV_FILE" == "$INSTALL_DIR/data/influxdb.env" ]]; then SHOW_TOKENS_AT_END=1; fi
 fi
 
 banner "InfluxDB — apply tuned config"
@@ -339,3 +342,27 @@ InfluxDB provisioned.
   Health:             $INFLUX_URL/health
   Tuned config:       $CONF  (managed block — re-run installer to refresh)
 EOF
+
+if [[ "${SHOW_TOKENS_AT_END:-0}" == "1" ]]; then
+  banner "InfluxDB — tokens for your config (copy these now)"
+  cat <<EOF
+
+  Paste into $INSTALL_DIR/config/llm-systems.toml:
+
+    [influxdb]
+    host = "localhost"
+    port = 8086
+    org  = "$INFLUX_ORG"
+
+    [influxdb.tokens]
+    metrics        = "${SCOPED_TOKENS[alarm_engine_metrics]:-}"
+    metrics_rollup = "${SCOPED_TOKENS[alarm_engine_metrics_rollup]:-}"
+    admin          = "$INFLUX_OPERATOR_TOKEN"
+
+  (Also saved to $ENV_FILE, mode 0600.)
+
+  Then apply them:
+    sudo systemctl restart llm-systems-alarm-engine llm-systems-manager
+
+EOF
+fi

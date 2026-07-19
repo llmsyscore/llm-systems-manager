@@ -7,9 +7,54 @@ if [ -f /opt/llm-systems-agent/agent_config.yaml ]; then
   exit 0
 fi
 
-db_input high llm-systems-agent/manager-url || true
-db_input medium llm-systems-agent/alarm-engine-url || true
-# shellcheck disable=SC2119  # db_go is a debconf confmodule builtin, not a local function
-db_go || true
+# Completes scheme/port on a bare host/IP or partial URL; prints nothing
+# (rc 1) when the value is unusable. Args: URL DEFAULT_PORT.
+# Kept in sync with llmsys_agent_normalize_url in agent/scripts/common.sh.
+normalize_url() {
+  u="$1"; defport="$2"; path=""
+  case "$u" in http://*|https://*) ;; *) u="http://$u" ;; esac
+  scheme="${u%%://*}"
+  rest="${u#*://}"
+  hostport="${rest%%/*}"
+  case "$rest" in */*) path="/${rest#*/}" ;; esac
+  case "$hostport" in
+    \[*\]:*) host="${hostport%:*}";   port="${hostport##*:}" ;;
+    \[*\])   host="$hostport";        port="$defport" ;;
+    *:*)     host="${hostport%%:*}";  port="${hostport##*:}" ;;
+    *)       host="$hostport";        port="$defport" ;;
+  esac
+  case "$host" in ''|*[!]A-Za-z0-9._[:-]*) return 1 ;; esac
+  case "$port" in ''|*[!0-9]*) return 1 ;; esac
+  printf '%s://%s:%s%s' "$scheme" "$host" "$port" "$path"
+}
+
+# Prompts (or reads a preseed), normalizes the answer, and re-asks up to
+# three times on an unusable value. Args: QUESTION PRIORITY DEFAULT_PORT.
+ask_url() {
+  q="llm-systems-agent/$1"; prio="$2"; defport="$3"; tries=0
+  while [ "$tries" -lt 3 ]; do
+    db_input "$prio" "$q" || true
+    # shellcheck disable=SC2119  # db_go is a debconf confmodule builtin, not a local function
+    db_go || true
+    RET=""
+    db_get "$q" || true
+    val="$RET"
+    [ -z "$val" ] && return 0
+    if norm="$(normalize_url "$val" "$defport")"; then
+      db_set "$q" "$norm" || true
+      return 0
+    fi
+    db_subst llm-systems-agent/url-invalid value "$val" || true
+    db_input critical llm-systems-agent/url-invalid || true
+    # shellcheck disable=SC2119
+    db_go || true
+    db_set "$q" "" || true
+    db_fset "$q" seen false || true
+    tries=$((tries + 1))
+  done
+}
+
+ask_url manager-url high 5000
+ask_url alarm-engine-url medium 8081
 
 exit 0

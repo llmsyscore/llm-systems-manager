@@ -5,10 +5,14 @@ case "$1" in
     if llmsys_systemd_ready; then systemctl daemon-reload; fi
     ;;
   purge)
+    # Sourced FIRST: the confmodule re-exec must run before any output or
+    # state change — raw stdout here is the debconf protocol pipe (#432).
+    if [ -f /usr/share/debconf/confmodule ]; then
+      . /usr/share/debconf/confmodule
+    fi
     llmsys_remove_generated
     llmsys_scoped_purge
     if [ -f /usr/share/debconf/confmodule ]; then
-      . /usr/share/debconf/confmodule
       db_purge || true
     fi
     if llmsys_systemd_ready; then systemctl daemon-reload; fi

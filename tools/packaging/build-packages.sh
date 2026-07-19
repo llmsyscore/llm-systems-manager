@@ -7,6 +7,8 @@ set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$HERE/../.." && pwd)"
+# shellcheck source=pkg-lib.sh
+. "$HERE/pkg-lib.sh"
 
 PKG_NAME="llm-systems-manager"
 INSTALL_DIR="/opt/llm-systems-manager"
@@ -70,6 +72,12 @@ find "$APP_STAGE" -type f \
   \( -name pytest.ini -o -name requirements-dev.txt \
      -o -name .gitignore -o -name .gitattributes -o -name .llmsys-release \) -delete
 
+# Development/CI-only trees and files — no runtime use on an installed host (#432).
+rm -rf "$APP_STAGE/docker" "$APP_STAGE/design" "$APP_STAGE/devel" \
+       "$APP_STAGE/docs/screenshots" "$APP_STAGE/tools/packaging"
+rm -f "$APP_STAGE/docker-compose.yml" "$APP_STAGE/.dockerignore" \
+      "$APP_STAGE/.env.example" "$APP_STAGE"/tools/installer/ci-*.sh
+
 # Renders @@INSTALL_DIR@@ / @@RUN_USER@@ / @@RUN_GROUP@@ into a template.
 render_template() {
   python3 - "$1" "$2" "$INSTALL_DIR" "$RUN_USER" <<'PY'
@@ -130,6 +138,7 @@ if [[ ",$FORMATS," == *,deb,* ]]; then
     --depends ca-certificates --depends curl --depends jq \
     --depends sqlite3 --depends openssl \
     --deb-priority optional --category admin \
+    --deb-compression gz \
     --deb-recommends influxdb2 \
     --before-install "$SCRIPTS/deb-preinst" \
     --after-install "$SCRIPTS/deb-postinst" \
@@ -139,6 +148,8 @@ if [[ ",$FORMATS," == *,deb,* ]]; then
     --deb-templates "$HERE/debconf/templates" \
     --deb-no-default-config-files \
     "${COMMON_ARGS[@]}" .
+  strip_deb_opt_entry "$DEB_OUT"
+  assert_deb_payload_clean "$DEB_OUT"
   BUILT+=("$DEB_OUT")
 fi
 
