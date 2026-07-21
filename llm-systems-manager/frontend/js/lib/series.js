@@ -33,7 +33,21 @@ function latchFilled(prev, rows) {
   return prev || (Array.isArray(rows) && rows.length > 0);
 }
 
+// Follow a cumulative refusal counter across polls; `recent` is true only when
+// it grew within windowMs. Counter resets and absent samples never flag recent.
+function trackRefusals(prev, count, nowMs, windowMs = 60000) {
+  const p = prev || { count: null, lastIncreaseMs: null };
+  const n = (typeof count === 'number' && isFinite(count)) ? count : null;
+  let last = p.lastIncreaseMs;
+  if (n !== null && p.count !== null && n > p.count) last = nowMs;
+  return {
+    count: n !== null ? n : p.count,
+    lastIncreaseMs: last,
+    recent: last !== null && (nowMs - last) <= windowMs,
+  };
+}
+
 if (typeof window !== 'undefined')
-  window.LMSeries = { zipByTs, bucketDate, isManagerSubActive, latchFilled };
+  window.LMSeries = { zipByTs, bucketDate, isManagerSubActive, latchFilled, trackRefusals };
 if (typeof module !== 'undefined' && module.exports)
-  module.exports = { zipByTs, bucketDate, isManagerSubActive, latchFilled };
+  module.exports = { zipByTs, bucketDate, isManagerSubActive, latchFilled, trackRefusals };
