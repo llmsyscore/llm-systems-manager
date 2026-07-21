@@ -154,7 +154,7 @@ def _local_hostname() -> str:
 # banner reads it. Bump suffix (-1, -2, …) for same-day iterations; roll
 # the date for a new day's first change.
 # ---------------------------------------------------------------------------
-__version__ = "v2026.07.20-1"
+__version__ = "v2026.07.20-2"
 
 # Wall-clock at first import (Cheroot main process); the shutdown banner
 # reads it for the uptime line.
@@ -544,6 +544,13 @@ if (bool(settings.alarm_engine.tls_enabled)
     _alarm_engine_url = "https://" + _alarm_engine_url[len("http://"):]
     log.info("AE TLS on — flipped outbound _alarm_engine_url to %s", _alarm_engine_url)
 _ae_session = requests.Session()
+# Connection pool sized to the HTTP worker fleet plus background-poller
+# headroom; the urllib3 default (10) is exceeded routinely and discards.
+_AE_POOL_MAXSIZE = int(getattr(settings.manager, "http_threads", 64) or 64) + 8
+_ae_adapter = requests.adapters.HTTPAdapter(
+    pool_connections=4, pool_maxsize=_AE_POOL_MAXSIZE)
+_ae_session.mount("http://", _ae_adapter)
+_ae_session.mount("https://", _ae_adapter)
 if bool(settings.alarm_engine.tls_enabled):
     _ae_session.verify = _AE_CA_PATH
 # Session-level bearer for the AE's token-gated routes: management_token,
