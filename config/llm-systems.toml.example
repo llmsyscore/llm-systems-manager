@@ -112,6 +112,7 @@ read_timeout_s = 600.0
 window_minutes = 60                                      # ring depth (minutes)
 refresh_interval_s = 15.0                                # background refresher cadence
 fetch_limit = 1800                                       # alarm-engine fetch cap per series per refresh
+max_response_rows = 1200                                 # /api/history rows thinned above this; 0 = raw
 
 [manager.uploads]
 max_content_length = 104857600                           # bytes; default 100 MiB

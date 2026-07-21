@@ -154,7 +154,7 @@ def _local_hostname() -> str:
 # banner reads it. Bump suffix (-1, -2, …) for same-day iterations; roll
 # the date for a new day's first change.
 # ---------------------------------------------------------------------------
-__version__ = "v2026.07.20-3"
+__version__ = "v2026.07.21-1"
 
 # Wall-clock at first import (Cheroot main process); the shutdown banner
 # reads it for the uptime line.
@@ -1128,6 +1128,22 @@ def _history_refresher_loop():
 
 # Started below in __main__ — see the startup block at the bottom of the file.
 
+# getattr guard: field may be absent from an older unified_config.py.
+_HISTORY_MAX_ROWS = int(getattr(settings.manager.history, "max_response_rows", 1200) or 0)
+
+
+def _thin_history_rows(rows: "list[dict]", max_rows: int) -> "list[dict]":
+    """Uniform-stride thin a time-ordered row list down to max_rows, keeping
+    the first and last rows; max_rows<=0 or under-cap returns rows as-is."""
+    n = len(rows)
+    if max_rows <= 0 or n <= max_rows:
+        return rows
+    if max_rows == 1:
+        return [rows[-1]]
+    idx = sorted({round(i * (n - 1) / (max_rows - 1)) for i in range(max_rows)})
+    return [rows[i] for i in idx]
+
+
 @app.route("/api/history")
 def get_history():
     """Serve metric history with a split data path:
@@ -1156,11 +1172,17 @@ def get_history():
         limit = int(flask_request.args.get("limit", 0))
     except (TypeError, ValueError):
         limit = 0
+    try:
+        max_rows = int(flask_request.args.get("max_rows", _HISTORY_MAX_ROWS))
+    except (TypeError, ValueError):
+        max_rows = _HISTORY_MAX_ROWS
     # Guard against pathological inputs.
     if since_minutes < 1:
         since_minutes = HISTORY_WINDOW_MINUTES
     if limit < 0:
         limit = 0
+    if max_rows < 0:
+        max_rows = _HISTORY_MAX_ROWS
 
     # ── Scoped: per-agent (?agent=) or fleet (?fleet=) history ──
     # These bypass the shared ring (which is default-agent-only) and fan out
@@ -1192,7 +1214,7 @@ def get_history():
                 lambda: _build_history_rows(fetch_since, fetch_limit, hostname))
         if limit and len(rows) > limit:
             rows = rows[-limit:]
-        return jsonify(rows)
+        return jsonify(_thin_history_rows(rows, max_rows))
 
     # ── Beyond-window: passthrough to alarm engine / InfluxDB ──
     if since_minutes > HISTORY_WINDOW_MINUTES:
@@ -1226,7 +1248,7 @@ def get_history():
 
         if limit and len(rows) > limit:
             rows = rows[-limit:]
-        return jsonify(rows)
+        return jsonify(_thin_history_rows(rows, max_rows))
 
     # ── In-window: serve from the ring ──
     with _history_lock:
@@ -1254,7 +1276,7 @@ def get_history():
         rows = [r for r in rows if _ts_after(r)]
     if limit and len(rows) > limit:
         rows = rows[-limit:]
-    return jsonify(rows)
+    return jsonify(_thin_history_rows(rows, max_rows))
 
 @app.route("/api/llama-state")
 def get_llama_state():
