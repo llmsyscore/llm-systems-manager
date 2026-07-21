@@ -154,7 +154,7 @@ def _local_hostname() -> str:
 # banner reads it. Bump suffix (-1, -2, …) for same-day iterations; roll
 # the date for a new day's first change.
 # ---------------------------------------------------------------------------
-__version__ = "v2026.07.20-2"
+__version__ = "v2026.07.20-3"
 
 # Wall-clock at first import (Cheroot main process); the shutdown banner
 # reads it for the uptime line.
@@ -178,35 +178,26 @@ import model_profiles  # type: ignore[import-not-found]  # noqa: E402  # leaf, n
 
 def _patch_cheroot_flush_noise() -> None:
     """Quiet 'Exception ignored' tracebacks from cheroot's BufferedWriter on
-    Python 3.13+.
+    Python 3.13+: __del__ → close() → flush of a dead fd raises OSError(EBADF).
 
-    When a Cheroot connection closes, the underlying socket goes away but the
-    BufferedWriter wrapper survives until GC. Python 3.13 made
-    io.BufferedWriter.__del__ flush more aggressively on collection, so on
-    cleanup it calls self.raw.write() against the dead fd → OSError(EBADF).
-    Because the error fires inside __del__, the interpreter prints the full
-    traceback to stderr and systemd captures it as log spam (24+ per day on
-    a normally-loaded dashboard).
-
-    Upstream cheroot/makefile.py:_flush_unlocked only catches BlockingIOError.
-    We widen the catch to OSError and discard the buffered bytes, which are
-    unrecoverable anyway because the peer already disconnected. Revisit if
-    cheroot ships a fix upstream — at that point this monkey-patch is dead
-    weight and can be removed in one revert.
+    Swallows OSError in close() only. Live write-path errors (EPIPE on a
+    disconnected SSE client) must propagate so the stream generator dies and
+    its pool slot frees promptly (#453). The raw fd is still closed: _pyio
+    close() runs raw.close() in a finally around the failing flush.
     """
     try:
         from cheroot import makefile as _cheroot_makefile
     except ImportError:
         return
-    _orig = _cheroot_makefile.BufferedWriter._flush_unlocked
+    _orig_close = _cheroot_makefile.BufferedWriter.close
 
-    def _safe_flush_unlocked(self):
+    def _quiet_close(self):
         try:
-            _orig(self)
+            _orig_close(self)
         except OSError:
-            self._write_buf = bytearray()
+            pass
 
-    _cheroot_makefile.BufferedWriter._flush_unlocked = _safe_flush_unlocked
+    _cheroot_makefile.BufferedWriter.close = _quiet_close
 
 
 _patch_cheroot_flush_noise()
