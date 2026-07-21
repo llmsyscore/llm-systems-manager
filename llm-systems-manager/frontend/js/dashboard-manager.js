@@ -499,6 +499,10 @@ async function fetchManagerAgentsCard() {
   }
 }
 
+// Refusal-counter trackers across polls: pool-wide plus one per agent row.
+let _mgrPoolRefusalTrack = null;
+let _mgrAgentRefusalTrack = {};
+
 async function fetchManagerStreamsCard() {
   if (document.hidden) return;
   // mgrStreamsTable lives only on Dashboard → Manager sub-tab. Skip the poll
@@ -520,37 +524,47 @@ async function fetchManagerStreamsCard() {
     }
     const d = await r.json();
     const pool = d.pool || {};
-    const saturated = (pool.refusals > 0) || (pool.active >= pool.limit);
+    const now = Date.now();
+    _mgrPoolRefusalTrack = LMSeries.trackRefusals(_mgrPoolRefusalTrack, pool.refusals, now);
+    const saturated = pool.active >= pool.limit;
+    const refusing = !saturated && _mgrPoolRefusalTrack.recent;
     if (badge) {
-      badge.className = 'status ' + (saturated ? 'status--crit' : 'status--ok');
-      badge.innerHTML = '<span class="status__dot"></span>' + (saturated ? 'saturated' : 'ok');
+      const mod = saturated ? 'status--crit' : refusing ? 'status--warn' : 'status--ok';
+      badge.className = 'status ' + mod;
+      badge.innerHTML = '<span class="status__dot"></span>'
+        + (saturated ? 'saturated' : refusing ? 'refusing' : 'ok');
     }
     const cell = (label, val, warn) =>
       `<div><span style="color:var(--fg-dim);">${label}:</span> <b style="${warn ? crit : ''}">${val}</b></div>`;
     const v = (x) => (x === null || x === undefined) ? '–' : x;
     summary.innerHTML =
-      cell('Pool active', `${v(pool.active)} / ${v(pool.limit)}`, pool.active >= pool.limit) +
-      cell('Peak', v(pool.peak), pool.peak >= pool.limit) +
-      cell('Refusals', v(pool.refusals), pool.refusals > 0) +
+      cell('Pool active', `${v(pool.active)} / ${v(pool.limit)}`, saturated) +
+      cell('Peak (boot)', v(pool.peak), false) +
+      cell('Refusals (boot)', v(pool.refusals), _mgrPoolRefusalTrack.recent) +
       cell('Workers busy', `${v(d.worker_threads_busy)} / ${v(d.worker_threads)}`, false) +
       cell('Worker backlog', v(d.worker_backlog), d.worker_backlog > 0) +
       cell('Browser conns', v(d.browser_connections), false) +
       cell('Agent conns', v(d.agent_connections), false) +
       cell('Off-pool SSE', d.sse_daemon_running ? `${v(d.sse_daemon_streams)} active` : 'off');
     const agents = d.agents || [];
+    const nextTrack = {};
     if (!agents.length) {
       tbody.innerHTML = '<tr><td colspan="5" style="color:var(--fg-dim);font-size:0.85em;">No agents.</td></tr>';
     } else {
       tbody.innerHTML = agents.map(a => {
         if (!a.reachable)
           return `<tr><td>${esc(a.hostname)}</td><td colspan="4" style="color:var(--fg-dim);font-size:0.85em;">unreachable</td></tr>`;
+        const key = a.agent_id || a.hostname;
+        const track = LMSeries.trackRefusals(_mgrAgentRefusalTrack[key], a.refusals, now);
+        nextTrack[key] = track;
         const aw = (a.active >= a.cap) ? crit : '';
-        const rw = (a.refusals > 0) ? crit : '';
+        const rw = track.recent ? crit : '';
         return `<tr><td>${esc(a.hostname)}</td><td style="${aw}">${v(a.active)}/${v(a.cap)}</td>`
              + `<td>${v(a.peak)}</td><td style="${rw}">${v(a.refusals)}</td><td>${v(a.terminal_sessions)}</td></tr>`;
       }).join('');
     }
-    _dashSetStatus('mgr-streams', saturated ? 'dash-crit' : 'dash-ok');
+    _mgrAgentRefusalTrack = nextTrack;
+    _dashSetStatus('mgr-streams', saturated ? 'dash-crit' : refusing ? 'dash-warn' : 'dash-ok');
   } catch (e) {
     tbody.innerHTML = `<tr><td colspan="5" style="color:var(--fg-dim);font-size:0.85em;">error: ${e.message}</td></tr>`;
     _dashSetStatus('mgr-streams', 'dash-off');
