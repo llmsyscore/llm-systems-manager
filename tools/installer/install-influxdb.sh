@@ -258,6 +258,12 @@ if $SUDO test ! -f "$CONF"; then
   $SUDO install -o root -g root -m 0644 /dev/null "$CONF"
 fi
 
+# Query concurrency scales with detected cores (floor 2, the reference-DB
+# value); queue depth follows at 16 slots per concurrent query.
+QUERY_CONCURRENCY=$(nproc 2>/dev/null || echo 2)
+if [[ "$QUERY_CONCURRENCY" -lt 2 ]]; then QUERY_CONCURRENCY=2; fi
+QUERY_QUEUE_SIZE=$(( QUERY_CONCURRENCY * 16 ))
+
 TMP_BASE="$(mktemp)"
 TMP_OUT="$(mktemp)"
 $SUDO cat "$CONF" > "$TMP_BASE"
@@ -280,9 +286,11 @@ storage-max-concurrent-compactions         = 1
 storage-compact-throughput-burst           = "16m"
 # Write path
 storage-wal-fsync-delay                    = "100ms"
-# Queries
-query-concurrency                          = 2
-query-queue-size                           = 32
+BLOCK
+  printf '# Queries (concurrency scaled to %s detected cores)\n' "$QUERY_CONCURRENCY"
+  printf 'query-concurrency                          = %s\n' "$QUERY_CONCURRENCY"
+  printf 'query-queue-size                           = %s\n' "$QUERY_QUEUE_SIZE"
+  cat <<'BLOCK'
 query-memory-bytes                         = 268435456
 query-initial-memory-bytes                 = 4194304
 # Series index cache
