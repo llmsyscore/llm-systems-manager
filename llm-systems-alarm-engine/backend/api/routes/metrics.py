@@ -38,6 +38,52 @@ _EXPORT_SINCE_MAX = _API.export_since_minutes_max
 _HIST_SINCE_MAX   = _API.history_since_minutes_max
 _HIST_LIMIT_MAX   = _API.history_limit_max
 _SUMMARY_WIN_MAX  = _API.summary_window_minutes_max
+# getattr guard: field may be absent from an older unified_config.py.
+_HIST_MAX_POINTS_DEFAULT = int(getattr(_API, "history_max_response_points", 1500) or 0)
+
+# Bin-size ladder for history downsampling; shared steps keep bucket
+# timestamps on a common epoch grid across metrics and hosts.
+_DOWNSAMPLE_LADDER_S = (5, 10, 15, 30, 60, 120, 300, 600, 900, 1800, 3600)
+
+
+def downsample_history(points: list[MetricPoint], max_points: int) -> list[dict]:
+    """Serialize points to history dicts, mean-bucketed per host onto an
+    epoch-aligned grid when over max_points; max_points<=0 means raw."""
+    if max_points <= 0 or len(points) <= max_points:
+        return [p.to_dict() for p in points]
+    by_host: dict[Optional[str], list[tuple[float, MetricPoint]]] = {}
+    ts_min = ts_max = None
+    for p in points:
+        ts = p.timestamp.timestamp()
+        by_host.setdefault(p.hostname, []).append((ts, p))
+        ts_min = ts if ts_min is None else min(ts_min, ts)
+        ts_max = ts if ts_max is None else max(ts_max, ts)
+    window_s = max(0.0, (ts_max or 0.0) - (ts_min or 0.0))
+    budget = max(1, max_points // len(by_host))
+    # +1 covers the extra bucket an aligned grid can straddle at the edges.
+    step = next((s for s in _DOWNSAMPLE_LADDER_S
+                 if (window_s / s) + 1 <= budget), None)
+    if step is None:
+        step = int(window_s // max(1, budget - 1)) + 1
+    out: list[dict] = []
+    for host, pairs in by_host.items():
+        buckets: dict[int, list[tuple[float, MetricPoint]]] = {}
+        for ts, p in pairs:
+            buckets.setdefault(int(ts // step) * step, []).append((ts, p))
+        for b, ps in buckets.items():
+            last = ps[-1][1]
+            out.append({
+                "metric_id": str(last.metric_id),
+                "source": last.source,
+                "metric_name": last.metric_name,
+                "value": sum(x.value for _, x in ps) / len(ps),
+                "unit": last.unit,
+                "timestamp": datetime.fromtimestamp(
+                    b, tz=timezone.utc).isoformat(),
+                "hostname": host,
+            })
+    out.sort(key=lambda d: (d["timestamp"], d["hostname"] or ""))
+    return out
 
 def _validate_tag(value: str, field: str) -> str:
     if not TAG_VALUE_RE.match(value):
@@ -287,9 +333,14 @@ async def get_metric_history(
     since_minutes: int = Query(60, ge=1, le=_HIST_SINCE_MAX, alias="since_minutes"),
     limit: int = Query(100000, ge=1, le=_HIST_LIMIT_MAX),
     hostname: Optional[str] = Query(None, description="Filter to a single host"),
+    max_points: int = Query(_HIST_MAX_POINTS_DEFAULT, ge=0, le=_HIST_LIMIT_MAX,
+                            description="Downsample response to at most this "
+                                        "many points (0 = raw)"),
     metric_repo: MetricRepository = Depends(get_metric_repo),
 ) -> list[dict]:
-    """Get metric history for a specific metric, optionally scoped to a host."""
+    """Get metric history for a specific metric, optionally scoped to a host.
+    Responses over max_points are mean-bucketed per host; pass max_points=0
+    for raw full-resolution points."""
     _validate_tag(source, "source")
     _validate_tag(metric_name, "metric_name")
     # Use timezone-aware UTC so .timestamp() comparison against stored
@@ -300,7 +351,7 @@ async def get_metric_history(
     points = metric_repo.get_points(
         source, metric_name, since=since, limit=limit, hostname=hostname,
     )
-    return [p.to_dict() for p in points]
+    return downsample_history(points, max_points)
 
 
 @router.get("/{source}/{metric_name}/summary")

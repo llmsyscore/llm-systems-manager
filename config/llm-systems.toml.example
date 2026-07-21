@@ -272,6 +272,7 @@ purge_interval_s = 3600.0  # how often the purge task runs
 recent_alerts_limit_max      = 5000                      # /api/alarm/alerts/recent  limit cap
 history_since_minutes_max    = 43200                     # /api/alarm/metrics/{...}  since_minutes cap (30 d)
 history_limit_max            = 100000                    # /api/alarm/metrics/{...}  limit cap
+history_max_response_points  = 1500                      # history responses mean-bucketed above this; 0 = raw
 summary_window_minutes_max   = 10080                     # /api/alarm/metrics/{...}/summary window cap (7 d)
 export_since_minutes_max     = 43200                     # /api/alarm/metrics/export since_minutes cap (30 d)
 max_request_body_bytes       = 104857600                 # HTTP body cap, all AE routes (100 MiB; 0 = uncapped)

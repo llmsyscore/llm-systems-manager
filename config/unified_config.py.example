@@ -308,6 +308,7 @@ class AlarmEngineApiLimits(BaseModel):
     recent_alerts_limit_max: int = 5000
     history_since_minutes_max: int = 43200    # 30 days
     history_limit_max: int = 100000
+    history_max_response_points: int = 1500   # downsample cap; 0 = raw
     summary_window_minutes_max: int = 10080   # 7 days
     export_since_minutes_max: int = 43200     # 30 days
     max_request_body_bytes: int = 104857600   # 100 MiB; 0 = uncapped
