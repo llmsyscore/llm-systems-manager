@@ -250,7 +250,9 @@ def resolve_proxy_target(name: str) -> "str | None":
         return None
     if sl in ("auto", "true"):
         if name == "llm_chat":
-            host = _host_from_agent(agent_registry.primary_agent("llama"))
+            # Resolved per-request via the default-agent path so the operator's
+            # primary/default llama selection applies without a restart (#466).
+            host = _host_from_agent(_default_agent("llama"))
             return f"http://{host}:8080" if host else None
         if name in ("openclaw", "image_gen"):
             cap_name = name  # capability flag key matches the proxy name
