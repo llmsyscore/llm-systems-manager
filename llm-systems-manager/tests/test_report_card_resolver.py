@@ -90,7 +90,7 @@ SAMPLE = {"system": {
 
 
 def test_snapshot_power_reads_psu_and_gpu(monkeypatch):
-    monkeypatch.setattr(rc, "_agent_sample", lambda aid: SAMPLE)
+    monkeypatch.setattr(rc, "_agent_sample", lambda aid, prov=None: SAMPLE)
     snap = rc._snapshot_power("a" * 32)
     assert snap["psu_w"] == 412.0
     assert snap["gpus"] == [{"name": "RTX 4090", "power_w": 310.5,
@@ -99,11 +99,53 @@ def test_snapshot_power_reads_psu_and_gpu(monkeypatch):
 
 def test_snapshot_power_without_psu(monkeypatch):
     monkeypatch.setattr(rc, "_agent_sample",
-                        lambda aid: {"system": {"gpu": SAMPLE["system"]["gpu"]}})
+                        lambda aid, prov=None: {"system": {"gpu": SAMPLE["system"]["gpu"]}})
     assert rc._snapshot_power("a" * 32)["psu_w"] is None
 
 
 def test_snapshot_power_empty_sample(monkeypatch):
-    monkeypatch.setattr(rc, "_agent_sample", lambda aid: {})
+    monkeypatch.setattr(rc, "_agent_sample", lambda aid, prov=None: {})
     snap = rc._snapshot_power("a" * 32)
     assert snap["psu_w"] is None and snap["gpus"] == []
+
+
+class _FakeStore:
+    def __init__(self, by_provider):
+        self._by = by_provider
+
+    def get(self, provider, agent_id):
+        return self._by.get(provider)
+
+
+def test_agent_sample_falls_back_to_other_providers(monkeypatch):
+    # A vLLM-only host has no llama bucket, but its vllm payload carries the
+    # same `system` block.
+    import provider_state
+    monkeypatch.setattr(provider_state, "STORE",
+                        _FakeStore({"vllm": {"sample": SAMPLE}}))
+    assert rc._agent_sample("a" * 32, "vllm") is SAMPLE
+    assert rc._agent_sample("a" * 32) is SAMPLE
+
+
+def test_agent_sample_prefers_the_runs_own_provider(monkeypatch):
+    import provider_state
+    other = {"system": {"gpu": {"name": "other"}}}
+    monkeypatch.setattr(provider_state, "STORE",
+                        _FakeStore({"llama": {"sample": other},
+                                    "lms": {"sample": SAMPLE}}))
+    assert rc._agent_sample("a" * 32, "lms") is SAMPLE
+    assert rc._agent_sample("a" * 32, "llama") is other
+
+
+def test_agent_sample_skips_payloads_without_system(monkeypatch):
+    import provider_state
+    monkeypatch.setattr(provider_state, "STORE",
+                        _FakeStore({"llama": {"sample": {"ps": []}},
+                                    "vllm": {"sample": SAMPLE}}))
+    assert rc._agent_sample("a" * 32, "llama") is SAMPLE
+
+
+def test_agent_sample_empty_when_nothing_reported(monkeypatch):
+    import provider_state
+    monkeypatch.setattr(provider_state, "STORE", _FakeStore({}))
+    assert rc._agent_sample("a" * 32, "llama") == {}

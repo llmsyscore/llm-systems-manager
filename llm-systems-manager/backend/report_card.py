@@ -235,16 +235,22 @@ def bench_base_url(provider: str, agent: dict) -> "tuple[str, dict]":
            {"Authorization": f"Bearer {agent.get('token') or ''}"}
 
 
-def _agent_sample(agent_id: str) -> dict:
-    """Latest host-metrics sample the agent pushed, via the provider store."""
+def _agent_sample(agent_id: str, provider: "str | None" = None) -> dict:
+    """Latest sample carrying host telemetry. Every provider payload embeds
+    `system`, so fall back across buckets for hosts with no llama capability."""
     import provider_state
-    wrapper = provider_state.STORE.get("llama", agent_id)
-    return (wrapper or {}).get("sample") or {}
+    order = ([provider] if provider else []) + [p for p in PROVIDERS
+                                                if p != provider]
+    for prov in order:
+        sample = (provider_state.STORE.get(prov, agent_id) or {}).get("sample")
+        if (sample or {}).get("system"):
+            return sample
+    return {}
 
 
-def _snapshot_power(agent_id: str) -> dict:
+def _snapshot_power(agent_id: str, provider: "str | None" = None) -> dict:
     """Normalize the live telemetry sample to {psu_w, gpus[]} for sampling."""
-    system = (_agent_sample(agent_id) or {}).get("system") or {}
+    system = (_agent_sample(agent_id, provider) or {}).get("system") or {}
     psu = ((system.get("liquidctl") or {}).get("psu") or {})
     est_in = psu.get("Estimated input power") or {}
     psu_w = est_in.get("value") if isinstance(est_in, dict) else None
@@ -532,7 +538,7 @@ def _run_job(job_id: str, req: dict) -> None:
             model = ready["model"]
             is_reference = bool(ready.get("is_reference"))
         base, headers = bench_base_url(provider, agent)
-        sampler = PowerSampler(lambda: _snapshot_power(req["agent"]))
+        sampler = PowerSampler(lambda: _snapshot_power(req["agent"], provider))
         sampler.start()
         try:
             bench = run_bench(
@@ -554,8 +560,7 @@ def _run_job(job_id: str, req: dict) -> None:
                 "eligible": mode == "standard" and is_reference,
                 "result": result}
         insert_card(_conn_factory(), card)
-        q.put({"event": "done", "card": _public_card(card),
-               "restore_model": req.get("restore")})
+        q.put({"event": "done", "card": _public_card(card)})
     except Exception as e:
         log.warning("report card run failed: %s", e)
         q.put({"event": "error", "error": str(e)[:200]})
@@ -575,10 +580,16 @@ def register_routes(app, ctx=None, db_path: "str | None" = None) -> None:
     from flask import jsonify, request as flask_request, stream_with_context
 
     path = db_path or str(Path(getattr(ctx, "data_dir", ".")) / "metrics.db")
+    tls = _threading.local()
 
+    # Per-thread connection, mirroring the manager's get_db(); bench workers
+    # each get their own rather than opening one per call.
     def conn_factory():
-        conn = sqlite3.connect(path, timeout=30.0)
-        conn.execute("PRAGMA busy_timeout=5000")
+        conn = getattr(tls, "conn", None)
+        if conn is None:
+            conn = sqlite3.connect(path, timeout=30.0)
+            conn.execute("PRAGMA busy_timeout=5000")
+            tls.conn = conn
         return conn
 
     if _conn_factory is None:

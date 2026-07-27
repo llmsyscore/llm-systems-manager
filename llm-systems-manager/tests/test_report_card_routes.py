@@ -29,7 +29,7 @@ def client(monkeypatch, tmp_path):
                         lambda *a, **k: {"ttft_s": 0.5, "prefill_tps": 1000.0,
                                          "gen_tps": 40.0, "reps": []})
     monkeypatch.setattr(rc, "_snapshot_power",
-                        lambda aid: {"psu_w": 200.0, "gpus": []})
+                        lambda aid, prov=None: {"psu_w": 200.0, "gpus": []})
     rc.register_routes(app, db_path=str(tmp_path / "t.db"))
     return app.test_client()
 
