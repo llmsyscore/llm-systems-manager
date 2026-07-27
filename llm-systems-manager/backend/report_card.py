@@ -2,8 +2,11 @@
 from __future__ import annotations
 
 import json
+import logging
 import statistics
 import time as _time
+
+log = logging.getLogger("llm-systems-manager.report_card")
 
 # ── Reference preset ─────────────────────────────────────────────────
 # Frozen once merged; changes ship as preset_v2 so the leaderboard can
@@ -201,6 +204,111 @@ def _openai_stream_post(url: str, payload: dict, headers=None, timeout=300,
     for raw in r.iter_lines(decode_unicode=True):
         if raw:
             yield raw
+
+
+# ── Provider endpoints + power sampling ──────────────────────────────
+
+PROVIDERS = ("llama", "vllm", "lms")
+LMS_OPENAI_PORT = 1235
+
+
+def bench_base_url(provider: str, agent: dict) -> "tuple[str, dict]":
+    """OpenAI-compatible base URL + auth headers for one provider/agent.
+    llama/vllm use the agent passthrough; LM Studio is dialed directly."""
+    if provider not in PROVIDERS:
+        raise ValueError(f"unknown provider: {provider}")
+    if provider == "lms":
+        import proxies
+        host = proxies._host_from_agent(agent)
+        if not host:
+            raise ValueError("no reachable host for LM Studio")
+        return f"http://{host}:{LMS_OPENAI_PORT}/v1", {}
+    import agent_registry
+    urls = agent_registry.agent_callback_urls(agent)
+    if not urls:
+        raise ValueError("no callback URL recorded for agent")
+    return f"{urls[0]}/{provider}/openai", \
+           {"Authorization": f"Bearer {agent.get('token') or ''}"}
+
+
+def _agent_sample(agent_id: str) -> dict:
+    """Latest host-metrics sample the agent pushed, via the provider store."""
+    import provider_state
+    wrapper = provider_state.STORE.get("llama", agent_id)
+    return (wrapper or {}).get("sample") or {}
+
+
+def _snapshot_power(agent_id: str) -> dict:
+    """Normalize the live telemetry sample to {psu_w, gpus[]} for sampling."""
+    system = (_agent_sample(agent_id) or {}).get("system") or {}
+    psu = ((system.get("liquidctl") or {}).get("psu") or {})
+    est_in = psu.get("Estimated input power") or {}
+    psu_w = est_in.get("value") if isinstance(est_in, dict) else None
+    gpus = []
+    gpu = system.get("gpu") or {}
+    if gpu:
+        total_bytes = gpu.get("vram_total_bytes")
+        gpus.append({
+            "name": gpu.get("name"),
+            "power_w": gpu.get("power_watts"),
+            "vram_used_mb": gpu.get("vram_used_mb"),
+            "vram_total_mb": (round(total_bytes / 1_048_576)
+                              if total_bytes else None)})
+    return {"psu_w": float(psu_w) if psu_w is not None else None, "gpus": gpus}
+
+
+class PowerSampler:
+    """Samples power during a bench window; PSU wall watts preferred."""
+
+    def __init__(self, sample_fn, interval_s: float = 2.0):
+        self._fn = sample_fn
+        self._interval = interval_s
+        self._psu: list = []
+        self._gpu_sums: list = []
+        self._last_gpus: list = []
+        self._timer = None
+        self._stopped = False
+
+    def _tick(self):
+        try:
+            snap = self._fn() or {}
+        except Exception:
+            log.debug("report card: power sample failed", exc_info=True)
+            return
+        if snap.get("psu_w") is not None:
+            self._psu.append(float(snap["psu_w"]))
+        gpus = snap.get("gpus") or []
+        if gpus:
+            self._last_gpus = gpus
+        powers = [g.get("power_w") for g in gpus if g.get("power_w") is not None]
+        if powers:
+            self._gpu_sums.append(sum(powers))
+
+    def start(self):
+        import threading
+
+        def loop():
+            if self._stopped:
+                return
+            self._tick()
+            if self._stopped:
+                return
+            self._timer = threading.Timer(self._interval, loop)
+            self._timer.daemon = True
+            self._timer.start()
+        loop()
+
+    def stop(self) -> dict:
+        self._stopped = True
+        if self._timer:
+            self._timer.cancel()
+        if self._psu:
+            return {"avg_watts": sum(self._psu) / len(self._psu),
+                    "source": "psu", "gpus": self._last_gpus}
+        if self._gpu_sums:
+            return {"avg_watts": sum(self._gpu_sums) / len(self._gpu_sums),
+                    "source": "gpu", "gpus": self._last_gpus}
+        return {"avg_watts": None, "source": None, "gpus": self._last_gpus}
 
 
 # ── Storage ──────────────────────────────────────────────────────────
