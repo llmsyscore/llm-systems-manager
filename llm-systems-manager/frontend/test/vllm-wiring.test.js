@@ -95,7 +95,12 @@ describe('index.html', () => {
 
   // #366: the vllm control panel must match the llama/LMS toolbar pattern.
   describe('vllm control panel matches llama/LMS UX', () => {
-    const panel = html.slice(html.indexOf('id="llm-vllm"'), html.indexOf('end llmTab'));
+    // Bound to the vllm panel itself: sibling sub-tab panels live between it
+    // and 'end llmTab' and are covered by their own tests.
+    const vllmStart = html.indexOf('id="llm-vllm"');
+    const nextPanel = html.indexOf('id="llm-', vllmStart + 1);
+    const panel = html.slice(vllmStart,
+      nextPanel === -1 ? html.indexOf('end llmTab') : nextPanel);
     test('server-control buttons sit in a .llm-toolbar', () => {
       expect(panel).toMatch(/<div class="llm-toolbar"[^>]*>\s*<button[^>]*vllmBtnStart/);
     });

@@ -49,8 +49,8 @@ Backend API endpoints consumed:
   <link rel="stylesheet" href="/static/vendor/xterm.min.css?v=5.3.0"/>
   <script src="/static/vendor/xterm.min.js?v=5.3.0"></script>
   <script src="/static/vendor/xterm-addon-fit.min.js?v=0.8.0"></script>
-  <link rel="stylesheet" href="/static/css/base.css?v=2026.07.12-2">
-  <link rel="stylesheet" href="/static/css/reportcard.css?v=2026.07.27-1">
+  <link rel="stylesheet" href="/static/css/base.css?v=2026.07.27-1">
+  <link rel="stylesheet" href="/static/css/reportcard.css?v=2026.07.27-2">
 </head>
 <body>
 
@@ -1672,10 +1672,23 @@ Backend API endpoints consumed:
           <input id="rcPrice" type="number" min="0" step="0.01">
         </div>
         <div class="rc-spacer"></div>
-        <button class="btn btn-stone-muted-gradient" id="rcRunBtn" onclick="rcRun(false)">▶ Run report card</button>
+        <button class="btn btn-stone-muted-gradient" id="rcRunBtn" onclick="rcRun()">▶ Run report card</button>
+        <button class="btn btn-slate-muted-gradient" id="rcCancelBtn" style="display:none;" onclick="rcCancelRun()">✕ Cancel</button>
       </div>
 
       <div class="rc-note" id="rcNote"></div>
+
+      <div class="rc-status" id="rcStatus" style="display:none;"></div>
+
+      <div class="rc-controls" id="rcDownload" style="display:none;">
+        <div>
+          <div class="rc-note" id="rcDownloadMsg"></div>
+          <div class="rc-actions">
+            <button class="btn btn-stone-muted-gradient" onclick="rcDownloadProceed()">Download and run</button>
+            <button class="btn btn-gray-muted-gradient" onclick="rcDownloadCancel()">Cancel</button>
+          </div>
+        </div>
+      </div>
 
       <div class="rc-controls" id="rcConfirm" style="display:none;">
         <div>
@@ -1725,7 +1738,7 @@ Backend API endpoints consumed:
 <script src="/static/js/lmstudio.js?v=2026.06.26-3"></script>
 <script src="/static/js/vllm.js?v=2026.07.15-1"></script>
 <script src="/static/js/vllm-bench-autotune.js?v=2026.07.12-2"></script>
-<script src="/static/js/report-card.js?v=2026.07.27-2"></script>
+<script src="/static/js/report-card.js?v=2026.07.27-3"></script>
 <script src="/static/js/overall.js?v=2026.07.11-1"></script>
 <script src="/static/js/dashboard-manager.js?v=2026.07.20-1"></script>
 

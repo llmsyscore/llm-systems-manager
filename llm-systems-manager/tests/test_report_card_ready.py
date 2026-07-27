@@ -10,35 +10,54 @@ def _deps(loaded=None, vllm_current="other-model", load_ok=True):
             "vllm_current": lambda a: vllm_current}
 
 
-def test_ready_when_reference_already_loaded():
+def test_ready_when_reference_is_registered():
     src = rc.preset_source("small", "llama")
-    out = rc.ensure_ready("llama", "a" * 32, "small", _deps(loaded=[src["file"]]))
+    out = rc.ensure_ready("llama", "a" * 32, "small",
+                          _deps(loaded=[src["model_id"]]))
     assert out["status"] == "ready"
     assert out["is_reference"] is True
 
 
-def test_llama_loads_when_not_loaded():
-    out = rc.ensure_ready("llama", "a" * 32, "small", _deps(loaded=[]))
-    assert out["status"] == "ready"     # load callable succeeded
-
-
-def test_llama_needs_download_when_load_fails():
+def test_matches_the_repo_colon_quant_id_llama_server_registers():
+    # Regression: llama.cpp registers GGUFs as "<repo>:<QUANT>", never as the
+    # .gguf filename. Matching on the filename made every standard run fail
+    # with "model not present" even after the model was installed.
     out = rc.ensure_ready("llama", "a" * 32, "small",
-                          _deps(loaded=[], load_ok=False))
-    assert out["status"] == "needs_download"
-    assert out["source"]["repo"].endswith("GGUF")
+                          _deps(loaded=["Qwen/Qwen2.5-1.5B-Instruct-GGUF:Q4_K_M"]))
+    assert out["status"] == "ready"
+    assert out["model"] == "Qwen/Qwen2.5-1.5B-Instruct-GGUF:Q4_K_M"
 
 
-def test_llama_matches_registered_id_containing_the_gguf_stem():
-    # llama-server ids come from config.ini and need not equal the filename.
+def test_repo_quant_match_is_case_insensitive():
     out = rc.ensure_ready("llama", "a" * 32, "small",
-                          _deps(loaded=["Qwen2.5-1.5B-Instruct-Q4_K_M"],
-                                load_ok=False))
+                          _deps(loaded=["qwen/qwen2.5-1.5b-instruct-gguf:q4_k_m"]))
     assert out["status"] == "ready"
 
 
-def test_lms_uses_the_same_load_path():
-    out = rc.ensure_ready("lms", "a" * 32, "mid", _deps(loaded=[]))
+def test_wrong_quant_of_the_right_repo_is_not_the_reference():
+    out = rc.ensure_ready("llama", "a" * 32, "small",
+                          _deps(loaded=["Qwen/Qwen2.5-1.5B-Instruct-GGUF:Q8_0"]))
+    assert out["status"] == "needs_download"
+
+
+def test_unregistered_model_needs_download():
+    # Downloaded-but-unregistered models are absent from the provider list.
+    out = rc.ensure_ready("llama", "a" * 32, "small", _deps(loaded=[]))
+    assert out["status"] == "needs_download"
+    assert out["source"]["repo"].endswith("GGUF")
+    assert out["source"]["quant"] == "Q4_K_M"
+
+
+def test_registered_but_unloadable_reports_load_failure():
+    out = rc.ensure_ready("llama", "a" * 32, "small",
+                          _deps(loaded=["Qwen/Qwen2.5-1.5B-Instruct-GGUF:Q4_K_M"],
+                                load_ok=False))
+    assert out["status"] == "load_failed"
+
+
+def test_lms_uses_the_same_matching():
+    src = rc.preset_source("mid", "lms")
+    out = rc.ensure_ready("lms", "a" * 32, "mid", _deps(loaded=[src["model_id"]]))
     assert out["status"] == "ready"
 
 

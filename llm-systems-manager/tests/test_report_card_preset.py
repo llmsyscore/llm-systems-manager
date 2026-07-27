@@ -41,3 +41,18 @@ def test_corpus_is_roughly_512_tokens():
     assert 1600 <= len(rc.PROMPT_CORPUS) <= 2600
     assert rc.PRESET_VERSION == "preset_v1"
     assert rc.GEN_TOKENS == 128 and rc.REPS == 3
+
+
+def test_gguf_providers_pin_a_repo_colon_quant_model_id():
+    # This is the id llama.cpp/LM Studio actually register.
+    for m in rc.REFERENCE_MODELS:
+        for p in ("llama", "lms"):
+            src = rc.preset_source(m["key"], p)
+            assert src["model_id"] == f"{src['repo']}:{src['quant']}"
+        v = rc.preset_source(m["key"], "vllm")
+        assert v["model_id"] == v["repo"]
+
+
+def test_every_model_advertises_a_download_size():
+    for m in rc.REFERENCE_MODELS:
+        assert isinstance(m["approx_gb"], (int, float)) and m["approx_gb"] > 0

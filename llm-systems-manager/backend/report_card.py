@@ -23,25 +23,37 @@ REPS = 3
 # Non-gated official Qwen repos; 4-bit class on every provider. The 7B GGUF
 # is sharded — the first shard is pinned and llama.cpp pulls the rest.
 REFERENCE_MODELS = [
-    {"key": "small", "label": "Qwen2.5-1.5B-Instruct (4-bit)", "sources": {
+    {"key": "small", "label": "Qwen2.5-1.5B-Instruct (4-bit)",
+     "approx_gb": 1.1, "sources": {
         "llama": {"repo": "Qwen/Qwen2.5-1.5B-Instruct-GGUF",
+                  "quant": "Q4_K_M",
                   "file": "qwen2.5-1.5b-instruct-q4_k_m.gguf",
+                  "model_id": "Qwen/Qwen2.5-1.5B-Instruct-GGUF:Q4_K_M",
                   "revision": "91cad51170dc346986eccefdc2dd33a9da36ead9"},
         "lms":   {"repo": "Qwen/Qwen2.5-1.5B-Instruct-GGUF",
+                  "quant": "Q4_K_M",
                   "file": "qwen2.5-1.5b-instruct-q4_k_m.gguf",
+                  "model_id": "Qwen/Qwen2.5-1.5B-Instruct-GGUF:Q4_K_M",
                   "revision": "91cad51170dc346986eccefdc2dd33a9da36ead9"},
         "vllm":  {"repo": "Qwen/Qwen2.5-1.5B-Instruct-AWQ",
-                  "file": "",
+                  "quant": "", "file": "",
+                  "model_id": "Qwen/Qwen2.5-1.5B-Instruct-AWQ",
                   "revision": "3ecffa0ceb27851800f45519bab9c457a04405e1"}}},
-    {"key": "mid", "label": "Qwen2.5-7B-Instruct (4-bit)", "sources": {
+    {"key": "mid", "label": "Qwen2.5-7B-Instruct (4-bit)",
+     "approx_gb": 4.7, "sources": {
         "llama": {"repo": "Qwen/Qwen2.5-7B-Instruct-GGUF",
+                  "quant": "Q4_K_M",
                   "file": "qwen2.5-7b-instruct-q4_k_m-00001-of-00002.gguf",
+                  "model_id": "Qwen/Qwen2.5-7B-Instruct-GGUF:Q4_K_M",
                   "revision": "bb5d59e06d9551d752d08b292a50eb208b07ab1f"},
         "lms":   {"repo": "Qwen/Qwen2.5-7B-Instruct-GGUF",
+                  "quant": "Q4_K_M",
                   "file": "qwen2.5-7b-instruct-q4_k_m-00001-of-00002.gguf",
+                  "model_id": "Qwen/Qwen2.5-7B-Instruct-GGUF:Q4_K_M",
                   "revision": "bb5d59e06d9551d752d08b292a50eb208b07ab1f"},
         "vllm":  {"repo": "Qwen/Qwen2.5-7B-Instruct-AWQ",
-                  "file": "",
+                  "quant": "", "file": "",
+                  "model_id": "Qwen/Qwen2.5-7B-Instruct-AWQ",
                   "revision": "b25037543e9394b818fdfca67ab2a00ecc7dd641"}}},
 ]
 
@@ -333,21 +345,30 @@ class PowerSampler:
 # restarting a live service, so a confirmed vLLM run benches what is served.
 
 
-def _model_matches(candidate: str, target_file: str) -> bool:
-    """True when a provider's model id refers to the preset's file."""
-    if not candidate or not target_file:
+def _norm(s: str) -> str:
+    return str(s or "").strip().lower().replace("_", "-").replace(".", "-")
+
+
+def _model_matches(candidate: str, src: dict) -> bool:
+    """True when a provider's model id refers to the preset source.
+    Providers register GGUFs as "<repo>:<QUANT>", so match on repo + quant."""
+    cand = str(candidate or "").strip()
+    if not cand or not src:
         return False
-    cand = str(candidate).strip().lower()
-    tgt = target_file.lower()
-    if cand == tgt:
+    want_id = src.get("model_id") or ""
+    if want_id and cand.lower() == want_id.lower():
         return True
-    stem = tgt.rsplit("/", 1)[-1]
-    for suffix in ("-00001-of-00002.gguf", ".gguf"):
-        if stem.endswith(suffix):
-            stem = stem[: -len(suffix)]
-            break
-    stem = stem.replace("_", "-").replace(".", "-")
-    return bool(stem) and stem in cand.replace("_", "-").replace(".", "-")
+    repo = src.get("repo") or ""
+    quant = src.get("quant") or ""
+    cand_repo, _, cand_quant = cand.partition(":")
+    if repo and _norm(cand_repo) == _norm(repo):
+        # Repo match with no pinned quant, or the quant agrees.
+        return not quant or not cand_quant or _norm(cand_quant) == _norm(quant)
+    # Fall back to the GGUF filename for providers that list files directly.
+    fname = src.get("file") or ""
+    if fname and _norm(cand).endswith(_norm(fname)):
+        return True
+    return False
 
 
 def ensure_ready(provider: str, agent_id: str, model_key: str,
@@ -364,20 +385,23 @@ def ensure_ready(provider: str, agent_id: str, model_key: str,
             return {"status": "unavailable", "model": None,
                     "reference": src["repo"], "is_reference": False,
                     "error": "vLLM is not serving a model"}
-        if current == src["repo"]:
+        if _model_matches(current, src):
             return {"status": "ready", "model": current,
-                    "reference": src["repo"], "is_reference": True}
+                    "reference": src["model_id"], "is_reference": True}
         return {"status": "needs_confirm", "model": current,
-                "reference": src["repo"],
+                "reference": src["model_id"],
                 "is_reference": False, "source": src}
-    target = src["file"]
+    target = src["model_id"]
     base = {"reference": target, "is_reference": True, "source": src}
-    loaded = deps["loaded_models"](provider, agent_id) or []
-    match = next((m for m in loaded if _model_matches(m, target)), None)
+    # Registered ids come from the provider; a downloaded-but-unregistered
+    # model is absent here and needs the download+register path.
+    known = deps["loaded_models"](provider, agent_id) or []
+    match = next((m for m in known if _model_matches(m, src)), None)
     if match:
-        return {"status": "ready", "model": match, **base}
-    if deps["load"](provider, agent_id, src):
-        return {"status": "ready", "model": target, **base}
+        if deps["load"](provider, agent_id, {**src, "model_id": match}):
+            return {"status": "ready", "model": match, **base}
+        return {"status": "load_failed", "model": match, **base,
+                "error": f"{provider} refused to load {match}"}
     return {"status": "needs_download", "model": target, **base}
 
 
@@ -407,17 +431,131 @@ def _model_ids(payload) -> "list[str]":
             if isinstance(m, dict) and m.get("id")]
 
 
+def register_llama_model(agent: dict, src: dict) -> bool:
+    """Add the preset as a config.ini section so llama-server can serve it."""
+    cfg = _agent_json(agent, "GET", "/llama/config", timeout=20)
+    if not isinstance(cfg, dict):
+        return False
+    sections = {k: v for k, v in cfg.items() if isinstance(v, dict)}
+    model_id = src["model_id"]
+    if model_id not in sections:
+        # hf-repo is derived from the section name; only the file pattern
+        # and a modest context need persisting.
+        sections[model_id] = {"hf-file": src.get("file") or "", "ctx-size": "4096"}
+    return bool(_agent_json(agent, "POST", "/llama/config", timeout=30,
+                            json=sections))
+
+
+def wait_for_model(agent: dict, provider: str, src: dict,
+                   timeout_s: float = 180.0, should_cancel=None,
+                   now=_time.monotonic, sleep=_time.sleep) -> "str | None":
+    """Poll the provider's model list until the preset appears."""
+    deadline = now() + timeout_s
+    while now() < deadline:
+        if should_cancel and should_cancel():
+            return None
+        ids = _model_ids(_agent_json(agent, "GET", f"/{provider}/models",
+                                     timeout=10))
+        match = next((m for m in ids if _model_matches(m, src)), None)
+        if match:
+            return match
+        sleep(3.0)
+    return None
+
+
+def provision_model(agent: dict, provider: str, src: dict, emit,
+                    should_cancel=None) -> dict:
+    """Download the preset, register it, restart llama.cpp, then load it.
+    Only runs after the operator confirms; llama.cpp restart is the cost."""
+    emit({"phase": "download", "repo": src["repo"], "quant": src.get("quant")})
+    body = {"repo": src["repo"]}
+    if src.get("quant"):
+        body["include"] = src["quant"]
+    if provider == "lms":
+        started = _agent_json(agent, "POST", "/lms/download", timeout=60,
+                              json={"model": src["model_id"]})
+    else:
+        started = _agent_json(agent, "POST", "/llama/download", timeout=60,
+                              json=body)
+    if not started:
+        return {"status": "error", "error": "download could not be started"}
+    emit({"phase": "downloading"})
+    if provider == "llama":
+        err = _follow_download(agent, emit, should_cancel=should_cancel)
+        if err:
+            return {"status": "error", "error": err}
+        emit({"phase": "register", "model": src["model_id"]})
+        if not register_llama_model(agent, src):
+            return {"status": "error", "error": "could not register the model"}
+        emit({"phase": "restart"})
+        if not _agent_json(agent, "POST", "/llama/server/restart", timeout=120):
+            return {"status": "error", "error": "llama.cpp restart failed"}
+    emit({"phase": "waiting"})
+    match = wait_for_model(agent, provider, src, should_cancel=should_cancel)
+    if not match:
+        return {"status": "error",
+                "error": "model did not appear after provisioning"}
+    emit({"phase": "load", "model": match})
+    res = _agent_json(agent, "POST", f"/{provider}/load", timeout=180,
+                      json={"model": match})
+    if not res or res.get("ok") is False:
+        return {"status": "error", "error": f"failed to load {match}"}
+    return {"status": "ready", "model": match}
+
+
+def _follow_download(agent: dict, emit, should_cancel=None,
+                     stream_lines=None) -> "str | None":
+    """Relay the agent's download SSE until done; returns an error or None."""
+    lines = stream_lines or _agent_download_lines
+    try:
+        for msg in lines(agent):
+            if should_cancel and should_cancel():
+                _agent_json(agent, "POST", "/llama/download/cancel", timeout=15)
+                return "cancelled"
+            kind = msg.get("type")
+            if kind == "line" and msg.get("text"):
+                emit({"phase": "download_progress", "text": msg["text"][:160]})
+            elif kind == "done":
+                if msg.get("error") or msg.get("ok") is False:
+                    return str(msg.get("error") or "download failed")[:200]
+                return None
+    except Exception as e:
+        return f"download stream failed: {str(e)[:120]}"
+    return "download stream ended without completing"
+
+
+def _agent_download_lines(agent: dict):
+    """Yield decoded JSON messages from the agent's download SSE."""
+    import agent_registry
+    import requests
+    token = agent.get("token") or ""
+    for base in agent_registry.agent_callback_urls(agent):
+        url = f"{base}/llama/download/stream"
+        try:
+            r = requests.get(url, stream=True, timeout=(5, 120),
+                             headers={"Authorization": f"Bearer {token}"},
+                             **agent_registry.agent_tls_kwargs(url))
+            r.raise_for_status()
+        except requests.exceptions.RequestException:
+            continue
+        for raw in r.iter_lines(decode_unicode=True):
+            if raw and raw.startswith("data: "):
+                try:
+                    yield json.loads(raw[6:])
+                except ValueError:
+                    continue
+        return
+    raise RuntimeError("no reachable agent stream")
+
+
 def prod_deps(agent: dict) -> dict:
     """Readiness callables bound to one agent's live endpoints."""
     def loaded_models(provider: str, _agent_id: str) -> "list[str]":
         return _model_ids(_agent_json(agent, "GET", f"/{provider}/models"))
 
     def load(provider: str, _agent_id: str, src: dict) -> bool:
-        body = {"model": src["file"]}
-        if provider == "lms":
-            body = {"model": src["file"], "repo": src["repo"]}
-        res = _agent_json(agent, "POST", f"/{provider}/load", timeout=120,
-                          json=body)
+        res = _agent_json(agent, "POST", f"/{provider}/load", timeout=180,
+                          json={"model": src["model_id"]})
         return bool(res) and res.get("ok") is not False
 
     def vllm_current(_agent_id: str) -> "str | None":
@@ -517,34 +655,65 @@ def _public_card(card: dict) -> dict:
 def _new_job() -> str:
     job_id = _uuid.uuid4().hex
     with _JOBS_LOCK:
-        _JOBS[job_id] = {"queue": _queue.Queue(), "done": False}
+        _JOBS[job_id] = {"queue": _queue.Queue(), "done": False,
+                         "cancel": _threading.Event()}
         if len(_JOBS) > _JOB_RETENTION:
             for stale in [k for k, v in list(_JOBS.items()) if v["done"]][:-8]:
                 _JOBS.pop(stale, None)
     return job_id
 
 
+class _Cancelled(Exception):
+    """Raised in the worker when the operator cancels a run."""
+
+
 def _run_job(job_id: str, req: dict) -> None:
-    q = _JOBS[job_id]["queue"]
+    job = _JOBS[job_id]
+    q, cancel = job["queue"], job["cancel"]
+    started = _time.monotonic()
+
+    def emit(ev):
+        q.put({"event": "progress", "elapsed_s": round(_time.monotonic() - started, 1),
+               **ev})
+
+    def check():
+        if cancel.is_set():
+            raise _Cancelled()
+
     try:
         agent = _agent_for(req["agent"])
         if not agent:
             raise RuntimeError("agent not found or not approved")
         provider, mode = req["provider"], req["mode"]
+        check()
         if mode == "custom":
             model, is_reference = req["model"], False
+            emit({"phase": "ready", "status": "custom", "model": model})
         else:
+            emit({"phase": "resolving"})
             ready = ensure_ready(provider, req["agent"], req["model_key"],
                                  prod_deps(agent))
-            q.put({"event": "phase", "phase": "ready",
-                   "status": ready["status"], "model": ready.get("model")})
+            emit({"phase": "ready", "status": ready["status"],
+                  "model": ready.get("model")})
+            check()
             if ready["status"] == "unavailable":
                 raise RuntimeError(ready.get("error") or "provider unavailable")
-            if ready["status"] != "ready" and not req.get("confirm_vllm"):
+            if ready["status"] == "needs_download":
+                if not req.get("confirm_download"):
+                    raise RuntimeError("reference model is not installed")
+                prov = provision_model(agent, provider, ready["source"], emit,
+                                       should_cancel=cancel.is_set)
+                if prov["status"] != "ready":
+                    if prov.get("error") == "cancelled":
+                        raise _Cancelled()
+                    raise RuntimeError(prov.get("error") or "provisioning failed")
+                ready = {**ready, "status": "ready", "model": prov["model"]}
+            elif ready["status"] != "ready" and not req.get("confirm_vllm"):
                 raise RuntimeError(ready.get("error")
                                    or f"model not ready: {ready['status']}")
             model = ready["model"]
             is_reference = bool(ready.get("is_reference"))
+        check()
         base, headers = bench_base_url(provider, agent)
         sampler = PowerSampler(lambda: _snapshot_power(req["agent"], provider))
         sampler.start()
@@ -553,7 +722,8 @@ def _run_job(job_id: str, req: dict) -> None:
             # Warmup is discarded from timings; discard its power samples too.
             if ev.get("phase") == "rep" and ev.get("n") == 1:
                 sampler.reset()
-            q.put({"event": "progress", **ev})
+            check()
+            emit(ev)
 
         try:
             bench = run_bench(
@@ -576,11 +746,14 @@ def _run_job(job_id: str, req: dict) -> None:
                 "result": result}
         insert_card(_conn_factory(), card)
         q.put({"event": "done", "card": _public_card(card)})
+    except _Cancelled:
+        log.info("report card run cancelled")
+        q.put({"event": "cancelled"})
     except Exception as e:
         log.warning("report card run failed: %s", e)
         q.put({"event": "error", "error": str(e)[:200]})
     finally:
-        _JOBS[job_id]["done"] = True
+        job["done"] = True
 
 
 def _tls_kwargs(url: str) -> dict:
@@ -660,7 +833,10 @@ def register_routes(app, ctx=None, db_path: "str | None" = None) -> None:
             return jsonify({"ok": False, "error": "invalid price_kwh"}), 400
         # vLLM is benched as served; a non-reference model needs one explicit
         # confirmation before the run (and never scores as eligible).
-        if provider == "vllm" and mode == "standard" and not body.get("confirm_vllm"):
+        needs_precheck = (mode == "standard"
+                          and not body.get("confirm_vllm")
+                          and not body.get("confirm_download"))
+        if needs_precheck:
             agent = _agent_for(agent_id)
             if not agent:
                 return jsonify({"ok": False, "error": "agent not found"}), 404
@@ -669,16 +845,35 @@ def register_routes(app, ctx=None, db_path: "str | None" = None) -> None:
                 return jsonify({"ok": True, "status": "needs_confirm",
                                 "model": ready["model"],
                                 "reference": ready["reference"]})
+            if ready["status"] == "needs_download":
+                src = ready.get("source") or {}
+                entry = next((m for m in REFERENCE_MODELS
+                              if m["key"] == model_key), {})
+                return jsonify({"ok": True, "status": "needs_download",
+                                "model": ready["model"],
+                                "repo": src.get("repo"),
+                                "quant": src.get("quant"),
+                                "approx_gb": entry.get("approx_gb"),
+                                "restarts": provider == "llama"})
             if ready["status"] == "unavailable":
                 return jsonify({"ok": False,
-                                "error": ready.get("error") or "vLLM unavailable"}), 409
+                                "error": ready.get("error") or "provider unavailable"}), 409
         job_id = _new_job()
         req = {"agent": agent_id, "provider": provider, "mode": mode,
                "model": model, "model_key": model_key, "price_kwh": price,
-               "confirm_vllm": bool(body.get("confirm_vllm"))}
+               "confirm_vllm": bool(body.get("confirm_vllm")),
+               "confirm_download": bool(body.get("confirm_download"))}
         _threading.Thread(target=_run_job, args=(job_id, req),
                           name=f"reportcard-{job_id[:8]}", daemon=True).start()
         return jsonify({"ok": True, "job_id": job_id})
+
+    @app.route("/api/reportcard/cancel/<job_id>", methods=["POST"])
+    def reportcard_cancel(job_id):
+        job = _JOBS.get(job_id)
+        if not job:
+            return jsonify({"ok": False, "error": "unknown job"}), 404
+        job["cancel"].set()
+        return jsonify({"ok": True, "cancelling": True})
 
     @app.route("/api/reportcard/stream/<job_id>")
     def reportcard_stream(job_id):
@@ -701,7 +896,7 @@ def register_routes(app, ctx=None, db_path: "str | None" = None) -> None:
                     yield ": keepalive\n\n"
                     continue
                 yield "data: " + json.dumps(ev) + "\n\n"
-                if ev.get("event") in ("done", "error"):
+                if ev.get("event") in ("done", "error", "cancelled"):
                     return
 
         resp = app.response_class(stream_with_context(generate()),

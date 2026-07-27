@@ -144,9 +144,10 @@ def test_bench_failure_emits_error_and_stores_nothing(client, monkeypatch):
 
 def test_not_ready_status_aborts_before_benching(client, monkeypatch):
     monkeypatch.setattr(rc, "ensure_ready",
-                        lambda *a, **k: {"status": "needs_download",
+                        lambda *a, **k: {"status": "load_failed",
                                          "model": "m",
-                                         "reference": "m", "is_reference": True})
+                                         "reference": "m", "is_reference": True,
+                                         "error": "llama refused to load m"})
     r = client.post("/api/reportcard/run", json={
         "agent": "a" * 32, "provider": "llama", "mode": "standard",
         "model_key": "small"})
@@ -210,3 +211,96 @@ def test_price_zero_is_honored(client):
     events = _drain(client, r.get_json()["job_id"])
     card = [e for e in events if e.get("event") == "done"][0]["card"]
     assert card["result"]["usd_per_mtok"] == 0.0
+
+
+def test_needs_download_short_circuits_with_size_and_restart_warning(client, monkeypatch):
+    src = rc.preset_source("small", "llama")
+    monkeypatch.setattr(rc, "ensure_ready",
+                        lambda *a, **k: {"status": "needs_download",
+                                         "model": src["model_id"],
+                                         "reference": src["model_id"],
+                                         "is_reference": True, "source": src})
+    r = client.post("/api/reportcard/run", json={
+        "agent": "a" * 32, "provider": "llama", "mode": "standard",
+        "model_key": "small"})
+    b = r.get_json()
+    assert b["status"] == "needs_download" and "job_id" not in b
+    assert b["repo"] == src["repo"] and b["quant"] == "Q4_K_M"
+    assert b["approx_gb"] > 0 and b["restarts"] is True
+
+
+def test_confirm_download_provisions_then_benches(client, monkeypatch):
+    src = rc.preset_source("small", "llama")
+    monkeypatch.setattr(rc, "ensure_ready",
+                        lambda *a, **k: {"status": "needs_download",
+                                         "model": src["model_id"],
+                                         "reference": src["model_id"],
+                                         "is_reference": True, "source": src})
+    seen = []
+    monkeypatch.setattr(rc, "provision_model",
+                        lambda agent, prov, s, emit, should_cancel=None:
+                            (seen.append(prov),
+                             emit({"phase": "download"}),
+                             {"status": "ready", "model": s["model_id"]})[-1])
+    r = client.post("/api/reportcard/run", json={
+        "agent": "a" * 32, "provider": "llama", "mode": "standard",
+        "model_key": "small", "confirm_download": True})
+    events = _drain(client, r.get_json()["job_id"])
+    assert seen == ["llama"]
+    assert any(e.get("phase") == "download" for e in events)
+    done = [e for e in events if e.get("event") == "done"]
+    assert done and done[0]["card"]["eligible"] is True
+
+
+def test_needs_download_without_confirmation_errors(client, monkeypatch):
+    src = rc.preset_source("small", "llama")
+    monkeypatch.setattr(rc, "ensure_ready",
+                        lambda *a, **k: {"status": "needs_download",
+                                         "model": src["model_id"],
+                                         "reference": src["model_id"],
+                                         "is_reference": True, "source": src})
+    # confirm_vllm skips the precheck but must not silently provision.
+    r = client.post("/api/reportcard/run", json={
+        "agent": "a" * 32, "provider": "llama", "mode": "standard",
+        "model_key": "small", "confirm_vllm": True})
+    events = _drain(client, r.get_json()["job_id"])
+    assert any(e.get("event") == "error" for e in events)
+
+
+def test_progress_events_carry_elapsed_seconds(client):
+    r = client.post("/api/reportcard/run", json={
+        "agent": "a" * 32, "provider": "llama", "mode": "standard",
+        "model_key": "small"})
+    events = _drain(client, r.get_json()["job_id"])
+    progress = [e for e in events if e.get("event") == "progress"]
+    assert progress and all("elapsed_s" in e for e in progress)
+    assert any(e.get("phase") == "resolving" for e in progress)
+
+
+def test_cancel_unknown_job_is_404(client):
+    assert client.post("/api/reportcard/cancel/nope").status_code == 404
+
+
+def test_cancel_stops_the_run_and_stores_nothing(client, monkeypatch):
+    import threading
+    gate = threading.Event()
+
+    def slow_bench(*a, **k):
+        cb = k.get("progress_cb")
+        if cb:
+            cb({"phase": "warmup"})
+        gate.wait(5)
+        if cb:
+            cb({"phase": "rep", "n": 1, "of": 3})   # raises _Cancelled
+        return {"ttft_s": 0.5, "prefill_tps": 1.0, "gen_tps": 1.0, "reps": []}
+
+    monkeypatch.setattr(rc, "run_bench", slow_bench)
+    r = client.post("/api/reportcard/run", json={
+        "agent": "a" * 32, "provider": "llama", "mode": "standard",
+        "model_key": "small"})
+    job = r.get_json()["job_id"]
+    assert client.post(f"/api/reportcard/cancel/{job}").get_json()["ok"] is True
+    gate.set()
+    events = _drain(client, job)
+    assert any(e.get("event") == "cancelled" for e in events)
+    assert rc.latest_card(rc._conn_factory(), "a" * 32, "llama") is None

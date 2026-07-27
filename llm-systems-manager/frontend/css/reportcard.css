@@ -27,6 +27,23 @@
   padding: 10px 12px; max-height: 150px; overflow: auto; white-space: pre-wrap;
 }
 .rc-note { font-size: 0.8em; color: var(--fg-muted); }
+
+/* Live step + elapsed time, so a long run visibly progresses. */
+.rc-status {
+  display: flex; align-items: center; gap: 8px;
+  font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 0.8em;
+  color: var(--fg); background: var(--bg-card); border: 1px solid var(--border);
+  border-left: 3px solid var(--accent); border-radius: 6px; padding: 9px 12px;
+}
+.rc-status::before {
+  content: ''; width: 7px; height: 7px; border-radius: 50%;
+  background: var(--accent); flex-shrink: 0;
+  animation: rc-pulse 1.4s ease-in-out infinite;
+}
+@keyframes rc-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.25; } }
+@media (prefers-reduced-motion: reduce) {
+  .rc-status::before { animation: none; }
+}
 .rc-note.rc-warn { color: var(--warn); }
 
 /* ── the card ───────────────────────────────────────────────────── */

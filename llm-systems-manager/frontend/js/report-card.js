@@ -6,6 +6,7 @@ let _rcEventSrc  = null;
 let _rcLastCard  = null;
 let _rcTrendChart = null;
 let _rcPreset    = null;
+let _rcJobId     = null;
 
 function _rcEl(id) { return document.getElementById(id); }
 
@@ -27,6 +28,31 @@ function _rcNote(msg, warn) {
 function _rcBusy(busy) {
   const btn = _rcEl('rcRunBtn');
   if (btn) { btn.disabled = busy; btn.textContent = busy ? 'Running…' : '▶ Run report card'; }
+  const cancel = _rcEl('rcCancelBtn');
+  if (cancel) cancel.style.display = busy ? '' : 'none';
+  if (!busy) _rcJobId = null;
+}
+
+// Human-readable step names for the progress panel.
+const RC_PHASE_TEXT = {
+  resolving: 'Checking the model on this host',
+  ready: 'Model ready',
+  download: 'Starting download',
+  downloading: 'Downloading model',
+  download_progress: null,
+  register: 'Registering the model with llama.cpp',
+  restart: 'Restarting llama.cpp',
+  waiting: 'Waiting for the model to come online',
+  load: 'Loading the model',
+  warmup: 'Warm-up pass (discarded)',
+};
+
+function _rcStatus(text, elapsed) {
+  const el = _rcEl('rcStatus');
+  if (!el) return;
+  el.style.display = text ? '' : 'none';
+  const secs = elapsed != null ? ` · ${Math.round(elapsed)}s` : '';
+  el.textContent = text ? text + secs : '';
 }
 
 // Populate the agent picker from the same enumeration the other tabs use.
@@ -81,7 +107,7 @@ function rcOnModeChange() {
     : '');
 }
 
-function rcRun(confirmVllm) {
+function rcRun(confirm) {
   const agent    = _rcEl('rcAgent')?.value || '';
   const provider = _rcEl('rcProvider')?.value || 'llama';
   const mode     = _rcEl('rcMode')?.value || 'standard';
@@ -92,7 +118,8 @@ function rcRun(confirmVllm) {
   const price = parseFloat(_rcEl('rcPrice')?.value);
   if (Number.isFinite(price)) body.price_kwh = price;
   if (mode === 'custom') body.model = (_rcEl('rcCustomModel')?.value || '').trim();
-  if (confirmVllm) body.confirm_vllm = true;
+  if (confirm === 'vllm') body.confirm_vllm = true;
+  if (confirm === 'download') body.confirm_download = true;
 
   _rcBusy(true);
   const box = _rcEl('rcProgress');
@@ -104,10 +131,13 @@ function rcRun(confirmVllm) {
   }).then(r => r.json().then(d => ({ok: r.ok, d}))).then(({ok, d}) => {
     if (!ok) { _rcBusy(false); _rcNote(d.error || 'Run failed.', true); return; }
     if (d.status === 'needs_confirm') {
-      _rcBusy(false);
-      rcShowVllmConfirm(d);
-      return;
+      _rcBusy(false); rcShowVllmConfirm(d); return;
     }
+    if (d.status === 'needs_download') {
+      _rcBusy(false); rcShowDownloadConfirm(d); return;
+    }
+    _rcJobId = d.job_id;
+    _rcStatus('Starting…', 0);
     _rcLog('run started');
     rcStream(d.job_id);
   }).catch(e => { _rcBusy(false); _rcNote('Run failed: ' + e, true); });
@@ -131,7 +161,40 @@ function rcConfirmCancel() {
 
 function rcConfirmProceed() {
   rcConfirmCancel();
-  rcRun(true);
+  rcRun('vllm');
+}
+
+// The reference model isn't installed — name the full cost before proceeding.
+function rcShowDownloadConfirm(d) {
+  const wrap = _rcEl('rcDownload');
+  if (!wrap) return;
+  const size = d.approx_gb ? `~${d.approx_gb} GB` : 'the reference model';
+  const tail = d.restarts
+    ? ', register it with llama.cpp, and restart llama.cpp'
+    : '';
+  const msg = _rcEl('rcDownloadMsg');
+  if (msg) {
+    msg.textContent = `${d.model} is not installed on this host. `
+      + `Download ${size}${tail}, then run the benchmark?`;
+  }
+  wrap.style.display = '';
+}
+
+function rcDownloadCancel() {
+  const wrap = _rcEl('rcDownload');
+  if (wrap) wrap.style.display = 'none';
+}
+
+function rcDownloadProceed() {
+  rcDownloadCancel();
+  rcRun('download');
+}
+
+function rcCancelRun() {
+  if (!_rcJobId) return;
+  _rcStatus('Cancelling…');
+  fetch('/api/reportcard/cancel/' + encodeURIComponent(_rcJobId),
+        {method: 'POST'}).catch(() => {});
 }
 
 function rcStream(jobId) {
@@ -140,19 +203,38 @@ function rcStream(jobId) {
   _rcEventSrc.onmessage = ev => {
     let d;
     try { d = JSON.parse(ev.data); } catch (e) { return; }
-    if (d.event === 'phase')    _rcLog('ready: ' + (d.status || '') + ' ' + (d.model || ''));
     if (d.event === 'progress') {
-      _rcLog(d.phase === 'warmup' ? 'warmup (discarded)'
-                                  : `repetition ${d.n}/${d.of}`);
+      let text;
+      if (d.phase === 'rep') {
+        text = `Benchmarking — repetition ${d.n} of ${d.of}`;
+      } else if (d.phase === 'download_progress') {
+        text = 'Downloading — ' + (d.text || '');
+      } else if (d.phase === 'ready') {
+        text = d.status === 'ready' ? `Model ready — ${d.model || ''}`
+                                    : `Model check: ${d.status}`;
+      } else {
+        text = RC_PHASE_TEXT[d.phase] || d.phase;
+      }
+      _rcStatus(text, d.elapsed_s);
+      _rcLog(text);
     }
     if (d.event === 'error') {
       _rcLog('error: ' + d.error);
+      _rcStatus('');
       _rcNote(d.error, true);
+      _rcBusy(false);
+      rcStopStream();
+    }
+    if (d.event === 'cancelled') {
+      _rcLog('cancelled');
+      _rcStatus('');
+      _rcNote('Run cancelled.');
       _rcBusy(false);
       rcStopStream();
     }
     if (d.event === 'done') {
       _rcLog('done');
+      _rcStatus('');
       _rcBusy(false);
       rcStopStream();
       rcRenderCard(d.card);
