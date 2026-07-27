@@ -72,6 +72,20 @@ def test_power_sampler_survives_sampler_errors():
     assert s.stop()["avg_watts"] is None
 
 
+def test_power_sampler_reset_discards_warmup_samples():
+    samples = iter([{"psu_w": 60.0, "gpus": []},      # idle
+                    {"psu_w": 200.0, "gpus": []},     # warmup
+                    {"psu_w": 210.0, "gpus": []},     # rep window
+                    {"psu_w": 210.0, "gpus": []}])    # stop()'s final tick
+    s = rc.PowerSampler(sample_fn=lambda: next(samples), interval_s=0)
+    s._tick()
+    s._tick()
+    s.reset()
+    s._tick()
+    out = s.stop()
+    assert out["avg_watts"] == 210.0 and out["source"] == "psu"
+
+
 def test_power_sampler_keeps_last_gpu_list():
     gpus = [{"name": "g", "power_w": 10.0, "vram_total_mb": 8, "vram_used_mb": 4}]
     s = rc.PowerSampler(sample_fn=lambda: {"psu_w": 50.0, "gpus": gpus},

@@ -87,8 +87,10 @@ function rcRun(confirmVllm) {
   const mode     = _rcEl('rcMode')?.value || 'standard';
   if (!agent) { _rcNote('Pick an agent first.', true); return; }
   const body = {agent, provider, mode,
-                model_key: _rcEl('rcModelKey')?.value || 'small',
-                price_kwh: parseFloat(_rcEl('rcPrice')?.value) || undefined};
+                model_key: _rcEl('rcModelKey')?.value || 'small'};
+  // Explicit finite check so an entered 0 (free power) survives the POST.
+  const price = parseFloat(_rcEl('rcPrice')?.value);
+  if (Number.isFinite(price)) body.price_kwh = price;
   if (mode === 'custom') body.model = (_rcEl('rcCustomModel')?.value || '').trim();
   if (confirmVllm) body.confirm_vllm = true;
 
@@ -161,6 +163,8 @@ function rcStream(jobId) {
 
 function rcStopStream() {
   if (_rcEventSrc) { _rcEventSrc.close(); _rcEventSrc = null; }
+  // Explicit close fires no error event, so re-enable the Run button here.
+  _rcBusy(false);
 }
 
 function rcRenderCard(card) {
@@ -192,7 +196,14 @@ function rcLoadLatest() {
   if (!agent) return;
   fetch(`/api/reportcard/latest?agent=${encodeURIComponent(agent)}`
         + `&provider=${encodeURIComponent(provider)}`)
-    .then(r => r.json()).then(d => { if (d.card) rcRenderCard(d.card); })
+    .then(r => r.json()).then(d => {
+      if (d.card) { rcRenderCard(d.card); return; }
+      // No history for this picker selection — clear any stale card.
+      _rcLastCard = null;
+      _rcEl('rcCardHost')?.replaceChildren();
+      const actions = _rcEl('rcActions');
+      if (actions) actions.style.display = 'none';
+    })
     .catch(() => {});
 }
 

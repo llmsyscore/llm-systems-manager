@@ -308,10 +308,17 @@ class PowerSampler:
             self._timer.start()
         loop()
 
+    def reset(self):
+        """Discard samples taken so far (idle/warmup); keep the GPU list."""
+        self._psu = []
+        self._gpu_sums = []
+
     def stop(self) -> dict:
         self._stopped = True
         if self._timer:
             self._timer.cancel()
+        # Final sample so a window shorter than the interval still measures.
+        self._tick()
         if self._psu:
             return {"avg_watts": sum(self._psu) / len(self._psu),
                     "source": "psu", "gpus": self._last_gpus}
@@ -348,24 +355,23 @@ def ensure_ready(provider: str, agent_id: str, model_key: str,
     """Resolve the model to bench; loads it for llama/lms, gates vLLM."""
     src = preset_source(model_key, provider)
     if not src:
-        return {"status": "unavailable", "model": None, "restore": None,
+        return {"status": "unavailable", "model": None,
                 "reference": None, "is_reference": False,
                 "error": f"no preset for {model_key}/{provider}"}
     if provider == "vllm":
         current = deps["vllm_current"](agent_id)
         if not current:
-            return {"status": "unavailable", "model": None, "restore": None,
+            return {"status": "unavailable", "model": None,
                     "reference": src["repo"], "is_reference": False,
                     "error": "vLLM is not serving a model"}
         if current == src["repo"]:
-            return {"status": "ready", "model": current, "restore": None,
+            return {"status": "ready", "model": current,
                     "reference": src["repo"], "is_reference": True}
         return {"status": "needs_confirm", "model": current,
-                "restore": current, "reference": src["repo"],
+                "reference": src["repo"],
                 "is_reference": False, "source": src}
     target = src["file"]
-    base = {"reference": target, "is_reference": True, "restore": None,
-            "source": src}
+    base = {"reference": target, "is_reference": True, "source": src}
     loaded = deps["loaded_models"](provider, agent_id) or []
     match = next((m for m in loaded if _model_matches(m, target)), None)
     if match:
@@ -532,6 +538,8 @@ def _run_job(job_id: str, req: dict) -> None:
                                  prod_deps(agent))
             q.put({"event": "phase", "phase": "ready",
                    "status": ready["status"], "model": ready.get("model")})
+            if ready["status"] == "unavailable":
+                raise RuntimeError(ready.get("error") or "provider unavailable")
             if ready["status"] != "ready" and not req.get("confirm_vllm"):
                 raise RuntimeError(ready.get("error")
                                    or f"model not ready: {ready['status']}")
@@ -540,12 +548,19 @@ def _run_job(job_id: str, req: dict) -> None:
         base, headers = bench_base_url(provider, agent)
         sampler = PowerSampler(lambda: _snapshot_power(req["agent"], provider))
         sampler.start()
+
+        def _progress(ev):
+            # Warmup is discarded from timings; discard its power samples too.
+            if ev.get("phase") == "rep" and ev.get("n") == 1:
+                sampler.reset()
+            q.put({"event": "progress", **ev})
+
         try:
             bench = run_bench(
                 base, model,
                 lambda u, p: _openai_stream_post(u, p, headers,
                                                  **_tls_kwargs(u)),
-                progress_cb=lambda ev: q.put({"event": "progress", **ev}))
+                progress_cb=_progress)
         finally:
             power = sampler.stop()
         agg = aggregate_gpus(power["gpus"])
@@ -637,11 +652,12 @@ def register_routes(app, ctx=None, db_path: "str | None" = None) -> None:
         if mode == "standard" and not preset_source(model_key, provider):
             return jsonify({"ok": False,
                             "error": f"unknown model_key: {model_key}"}), 400
+        # Explicit None check so a client-sent 0 (free power) is honored.
+        raw_price = body.get("price_kwh")
         try:
-            price = float(body.get("price_kwh") or _price_kwh())
+            price = _price_kwh() if raw_price is None else float(raw_price)
         except (TypeError, ValueError):
             return jsonify({"ok": False, "error": "invalid price_kwh"}), 400
-        restore = None
         # vLLM is benched as served; a non-reference model needs one explicit
         # confirmation before the run (and never scores as eligible).
         if provider == "vllm" and mode == "standard" and not body.get("confirm_vllm"):
@@ -652,17 +668,14 @@ def register_routes(app, ctx=None, db_path: "str | None" = None) -> None:
             if ready["status"] == "needs_confirm":
                 return jsonify({"ok": True, "status": "needs_confirm",
                                 "model": ready["model"],
-                                "restore": ready["restore"],
                                 "reference": ready["reference"]})
             if ready["status"] == "unavailable":
                 return jsonify({"ok": False,
                                 "error": ready.get("error") or "vLLM unavailable"}), 409
-            restore = ready.get("restore")
         job_id = _new_job()
         req = {"agent": agent_id, "provider": provider, "mode": mode,
                "model": model, "model_key": model_key, "price_kwh": price,
-               "confirm_vllm": bool(body.get("confirm_vllm")),
-               "restore": restore}
+               "confirm_vllm": bool(body.get("confirm_vllm"))}
         _threading.Thread(target=_run_job, args=(job_id, req),
                           name=f"reportcard-{job_id[:8]}", daemon=True).start()
         return jsonify({"ok": True, "job_id": job_id})

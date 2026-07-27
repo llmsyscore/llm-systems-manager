@@ -23,7 +23,7 @@ def client(monkeypatch, tmp_path):
     monkeypatch.setattr(rc, "prod_deps", lambda agent: {}, raising=False)
     monkeypatch.setattr(rc, "ensure_ready",
                         lambda *a, **k: {"status": "ready", "model": "m",
-                                         "restore": None, "reference": "m",
+                                         "reference": "m",
                                          "is_reference": True})
     monkeypatch.setattr(rc, "run_bench",
                         lambda *a, **k: {"ttft_s": 0.5, "prefill_tps": 1000.0,
@@ -76,7 +76,6 @@ def test_custom_mode_never_eligible(client):
 def test_non_reference_model_is_not_eligible(client, monkeypatch):
     monkeypatch.setattr(rc, "ensure_ready",
                         lambda *a, **k: {"status": "ready", "model": "served",
-                                         "restore": "served",
                                          "reference": "Qwen/Ref",
                                          "is_reference": False})
     r = client.post("/api/reportcard/run", json={
@@ -108,7 +107,7 @@ def test_custom_mode_requires_a_model(client):
 def test_vllm_needs_confirm_short_circuits_without_a_job(client, monkeypatch):
     monkeypatch.setattr(rc, "ensure_ready",
                         lambda *a, **k: {"status": "needs_confirm",
-                                         "model": "served", "restore": "served",
+                                         "model": "served",
                                          "reference": "Qwen/Ref",
                                          "is_reference": False})
     r = client.post("/api/reportcard/run", json={
@@ -116,13 +115,13 @@ def test_vllm_needs_confirm_short_circuits_without_a_job(client, monkeypatch):
         "model_key": "small"})
     body = r.get_json()
     assert r.status_code == 200 and body["status"] == "needs_confirm"
-    assert body["restore"] == "served" and "job_id" not in body
+    assert body["model"] == "served" and "job_id" not in body
 
 
 def test_vllm_proceeds_once_confirmed(client, monkeypatch):
     monkeypatch.setattr(rc, "ensure_ready",
                         lambda *a, **k: {"status": "needs_confirm",
-                                         "model": "served", "restore": "served",
+                                         "model": "served",
                                          "reference": "Qwen/Ref",
                                          "is_reference": False})
     r = client.post("/api/reportcard/run", json={
@@ -146,7 +145,7 @@ def test_bench_failure_emits_error_and_stores_nothing(client, monkeypatch):
 def test_not_ready_status_aborts_before_benching(client, monkeypatch):
     monkeypatch.setattr(rc, "ensure_ready",
                         lambda *a, **k: {"status": "needs_download",
-                                         "model": "m", "restore": None,
+                                         "model": "m",
                                          "reference": "m", "is_reference": True})
     r = client.post("/api/reportcard/run", json={
         "agent": "a" * 32, "provider": "llama", "mode": "standard",
@@ -186,3 +185,28 @@ def test_preset_endpoint_lists_reference_models(client):
     body = client.get("/api/reportcard/preset").get_json()
     assert body["preset_version"] == rc.PRESET_VERSION
     assert [m["key"] for m in body["models"]] == ["small", "mid"]
+
+
+def test_confirmed_vllm_run_still_fails_when_unavailable(client, monkeypatch):
+    # confirm_vllm only bypasses needs_confirm; unavailable stays terminal.
+    monkeypatch.setattr(rc, "ensure_ready",
+                        lambda *a, **k: {"status": "unavailable", "model": None,
+                                         "reference": "Qwen/Ref",
+                                         "is_reference": False,
+                                         "error": "vLLM is not serving a model"})
+    r = client.post("/api/reportcard/run", json={
+        "agent": "a" * 32, "provider": "vllm", "mode": "standard",
+        "model_key": "small", "confirm_vllm": True})
+    events = _drain(client, r.get_json()["job_id"])
+    errs = [e for e in events if e.get("event") == "error"]
+    assert errs and "not serving" in errs[0]["error"]
+    assert rc.latest_card(rc._conn_factory(), "a" * 32, "vllm") is None
+
+
+def test_price_zero_is_honored(client):
+    r = client.post("/api/reportcard/run", json={
+        "agent": "a" * 32, "provider": "llama", "mode": "standard",
+        "model_key": "small", "price_kwh": 0})
+    events = _drain(client, r.get_json()["job_id"])
+    card = [e for e in events if e.get("event") == "done"][0]["card"]
+    assert card["result"]["usd_per_mtok"] == 0.0

@@ -42,11 +42,11 @@ def test_lms_uses_the_same_load_path():
     assert out["status"] == "ready"
 
 
-def test_vllm_requires_confirmation_and_reports_restore_target():
+def test_vllm_requires_confirmation_and_reports_served_model():
     out = rc.ensure_ready("vllm", "a" * 32, "small",
                           _deps(vllm_current="Qwen/OtherModel"))
     assert out["status"] == "needs_confirm"
-    assert out["restore"] == "Qwen/OtherModel"
+    assert out["model"] == "Qwen/OtherModel"
 
 
 def test_vllm_confirm_benches_the_served_model_not_the_reference():
@@ -62,7 +62,7 @@ def test_vllm_ready_when_already_on_reference():
     ref = rc.preset_source("small", "vllm")["repo"]
     out = rc.ensure_ready("vllm", "a" * 32, "small", _deps(vllm_current=ref))
     assert out["status"] == "ready"
-    assert out["is_reference"] is True and out["restore"] is None
+    assert out["is_reference"] is True
 
 
 def test_vllm_unavailable_when_nothing_is_served():
