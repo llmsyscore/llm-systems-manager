@@ -3,6 +3,82 @@ from __future__ import annotations
 
 import json
 
+# ── Reference preset ─────────────────────────────────────────────────
+# Frozen once merged; changes ship as preset_v2 so the leaderboard can
+# partition by preset version.
+
+PRESET_VERSION = "preset_v1"
+GEN_TOKENS = 128
+REPS = 3
+
+# Non-gated official Qwen repos; 4-bit class on every provider. The 7B GGUF
+# is sharded — the first shard is pinned and llama.cpp pulls the rest.
+REFERENCE_MODELS = [
+    {"key": "small", "label": "Qwen2.5-1.5B-Instruct (4-bit)", "sources": {
+        "llama": {"repo": "Qwen/Qwen2.5-1.5B-Instruct-GGUF",
+                  "file": "qwen2.5-1.5b-instruct-q4_k_m.gguf",
+                  "revision": "91cad51170dc346986eccefdc2dd33a9da36ead9"},
+        "lms":   {"repo": "Qwen/Qwen2.5-1.5B-Instruct-GGUF",
+                  "file": "qwen2.5-1.5b-instruct-q4_k_m.gguf",
+                  "revision": "91cad51170dc346986eccefdc2dd33a9da36ead9"},
+        "vllm":  {"repo": "Qwen/Qwen2.5-1.5B-Instruct-AWQ",
+                  "file": "",
+                  "revision": "3ecffa0ceb27851800f45519bab9c457a04405e1"}}},
+    {"key": "mid", "label": "Qwen2.5-7B-Instruct (4-bit)", "sources": {
+        "llama": {"repo": "Qwen/Qwen2.5-7B-Instruct-GGUF",
+                  "file": "qwen2.5-7b-instruct-q4_k_m-00001-of-00002.gguf",
+                  "revision": "bb5d59e06d9551d752d08b292a50eb208b07ab1f"},
+        "lms":   {"repo": "Qwen/Qwen2.5-7B-Instruct-GGUF",
+                  "file": "qwen2.5-7b-instruct-q4_k_m-00001-of-00002.gguf",
+                  "revision": "bb5d59e06d9551d752d08b292a50eb208b07ab1f"},
+        "vllm":  {"repo": "Qwen/Qwen2.5-7B-Instruct-AWQ",
+                  "file": "",
+                  "revision": "b25037543e9394b818fdfca67ab2a00ecc7dd641"}}},
+]
+
+
+def preset_source(model_key: str, provider: str) -> "dict | None":
+    for m in REFERENCE_MODELS:
+        if m["key"] == model_key:
+            return (m["sources"] or {}).get(provider)
+    return None
+
+
+# Fixed ~512-token prompt, versioned with the preset. Never edit in place —
+# a changed corpus makes stored cards incomparable; add preset_v2 instead.
+PROMPT_CORPUS = (
+    "You are a meticulous archivist describing the history of computing. "
+    "Write a detailed, factual account of the development of operating "
+    "systems from the 1960s to the present day. Begin with mainframe batch "
+    "processing, where operators queued punched-card decks and a resident "
+    "monitor handed the processor from one job to the next without human "
+    "intervention. Explain how the economics of expensive hardware and cheap "
+    "waiting made better utilization the central design goal of the era. "
+    "Describe the arrival of time-sharing, the Compatible Time-Sharing System "
+    "at MIT, and the ambitious Multics project that followed it, noting which "
+    "of its ideas survived and which proved too costly to build. Cover the "
+    "birth of UNIX at Bell Labs, the decision to rewrite it in C, and the way "
+    "portable source code let a single system spread across incompatible "
+    "machines. Trace the divergence into Berkeley and System V lineages, the "
+    "standardization effort that produced POSIX, and the licensing disputes "
+    "that shaped which implementations universities and vendors could adopt. "
+    "Turn next to the personal computer, the small single-user monitors that "
+    "preceded it, and the gradual reintroduction of protected memory, "
+    "preemptive scheduling, and virtual memory into desktop systems that had "
+    "shipped without them. Discuss the microkernel argument, what its "
+    "advocates promised, what the measured costs turned out to be, and how "
+    "hybrid designs settled the question in practice. Describe the rise of "
+    "free and open source kernels, the collaborative development model that "
+    "sustained them, and their eventual dominance in server and embedded "
+    "deployments. Explain virtualization, from early mainframe hypervisors "
+    "through hardware-assisted extensions, and how it changed capacity "
+    "planning. Then treat security: privilege separation, mandatory access "
+    "control, sandboxing, and the mitigations added in response to "
+    "speculative execution attacks. Throughout, "
+    "identify the recurring tension between abstraction and control, and "
+    "conclude with contemporary containerized and cloud-native designs."
+)
+
 # ── Storage ──────────────────────────────────────────────────────────
 # One row per completed run; all runs retained so the table backs trending.
 
