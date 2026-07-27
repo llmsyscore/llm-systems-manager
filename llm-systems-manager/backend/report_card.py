@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import statistics
 
 # ── Reference preset ─────────────────────────────────────────────────
 # Frozen once merged; changes ship as preset_v2 so the leaderboard can
@@ -78,6 +79,57 @@ PROMPT_CORPUS = (
     "identify the recurring tension between abstraction and control, and "
     "conclude with contemporary containerized and cloud-native designs."
 )
+
+# ── Timing / energy / aggregation math ───────────────────────────────
+
+
+def rep_metrics(rep: dict) -> dict:
+    """Add prefill_tps + gen_tps to one repetition's raw timings."""
+    out = dict(rep)
+    out["prefill_tps"] = (rep["prompt_tokens"] / rep["ttft_s"]
+                          if rep.get("ttft_s") else 0.0)
+    out["gen_tps"] = (rep["gen_tokens"] / rep["gen_duration_s"]
+                      if rep.get("gen_duration_s") else 0.0)
+    return out
+
+
+def run_metrics(reps: "list[dict]") -> dict:
+    """Median TTFT / prefill / generation throughput across repetitions."""
+    ms = [rep_metrics(r) for r in reps]
+    if not ms:
+        return {"ttft_s": 0.0, "prefill_tps": 0.0, "gen_tps": 0.0}
+    return {k: statistics.median(m[k] for m in ms)
+            for k in ("ttft_s", "prefill_tps", "gen_tps")}
+
+
+def energy_metrics(avg_watts, gen_tps: float, price_kwh: float) -> dict:
+    """Tokens/joule + $/Mtok from generation throughput; None without power."""
+    if not avg_watts or avg_watts <= 0 or not gen_tps or gen_tps <= 0:
+        return {"tokens_per_joule": None, "usd_per_mtok": None,
+                "avg_watts": avg_watts}
+    return {"tokens_per_joule": gen_tps / avg_watts,
+            "usd_per_mtok": (avg_watts / 1000.0 * price_kwh)
+                            / (gen_tps * 3600.0) * 1e6,
+            "avg_watts": avg_watts}
+
+
+def aggregate_gpus(gpus: "list[dict]") -> dict:
+    """Roll per-GPU entries into one card row: summed VRAM/watts, one label."""
+    if not gpus:
+        return {"gpu_config": None, "vram_total_mb": None,
+                "vram_used_mb": None, "power_w": None}
+    names = [g.get("name") or "?" for g in gpus]
+    uniq = set(names)
+    if len(uniq) == 1:
+        label = f"{len(gpus)}× {names[0]}" if len(gpus) > 1 else names[0]
+    else:
+        label = " + ".join(sorted(uniq))
+    powers = [g.get("power_w") for g in gpus if g.get("power_w") is not None]
+    return {"gpu_config": label,
+            "vram_total_mb": sum(g.get("vram_total_mb") or 0 for g in gpus),
+            "vram_used_mb": sum(g.get("vram_used_mb") or 0 for g in gpus),
+            "power_w": sum(powers) if powers else None}
+
 
 # ── Storage ──────────────────────────────────────────────────────────
 # One row per completed run; all runs retained so the table backs trending.
