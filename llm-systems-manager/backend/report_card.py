@@ -3,8 +3,12 @@ from __future__ import annotations
 
 import json
 import logging
+import queue as _queue
 import statistics
+import threading as _threading
 import time as _time
+import uuid as _uuid
+from pathlib import Path
 
 log = logging.getLogger("llm-systems-manager.report_card")
 
@@ -465,3 +469,241 @@ def history(conn, agent_id: str, provider: str, model: str) -> "list[dict]":
         " ORDER BY ts ASC, id ASC", (agent_id, provider)).fetchall()
     return [c for c in map(_row_to_card, rows)
             if c["result"].get("model") == model]
+
+
+# ── Routes ───────────────────────────────────────────────────────────
+# Auth comes from the manager's global before_request gate; /api/* paths
+# are covered without a per-route decorator.
+
+MODES = ("standard", "custom")
+_JOBS: "dict[str, dict]" = {}
+_JOBS_LOCK = _threading.Lock()
+_JOB_RETENTION = 32
+_STREAM_MAX_S = 1800.0
+_STREAM_TICK_S = 1.0
+
+_conn_factory = None
+_price_kwh_fn = None
+
+
+def _price_kwh() -> float:
+    if _price_kwh_fn:
+        return _price_kwh_fn()
+    return 0.15
+
+
+def _agent_for(agent_id: str) -> "dict | None":
+    import agent_registry
+    return agent_registry.resolve_agent_by_id(agent_id)
+
+
+def _public_card(card: dict) -> dict:
+    """Card minus agent identity — what the UI renders and submits."""
+    return {k: v for k, v in card.items() if k != "agent_id"}
+
+
+def _new_job() -> str:
+    job_id = _uuid.uuid4().hex
+    with _JOBS_LOCK:
+        _JOBS[job_id] = {"queue": _queue.Queue(), "done": False}
+        if len(_JOBS) > _JOB_RETENTION:
+            for stale in [k for k, v in list(_JOBS.items()) if v["done"]][:-8]:
+                _JOBS.pop(stale, None)
+    return job_id
+
+
+def _run_job(job_id: str, req: dict) -> None:
+    q = _JOBS[job_id]["queue"]
+    try:
+        agent = _agent_for(req["agent"])
+        if not agent:
+            raise RuntimeError("agent not found or not approved")
+        provider, mode = req["provider"], req["mode"]
+        if mode == "custom":
+            model, is_reference = req["model"], False
+        else:
+            ready = ensure_ready(provider, req["agent"], req["model_key"],
+                                 prod_deps(agent))
+            q.put({"event": "phase", "phase": "ready",
+                   "status": ready["status"], "model": ready.get("model")})
+            if ready["status"] != "ready" and not req.get("confirm_vllm"):
+                raise RuntimeError(ready.get("error")
+                                   or f"model not ready: {ready['status']}")
+            model = ready["model"]
+            is_reference = bool(ready.get("is_reference"))
+        base, headers = bench_base_url(provider, agent)
+        sampler = PowerSampler(lambda: _snapshot_power(req["agent"]))
+        sampler.start()
+        try:
+            bench = run_bench(
+                base, model,
+                lambda u, p: _openai_stream_post(u, p, headers,
+                                                 **_tls_kwargs(u)),
+                progress_cb=lambda ev: q.put({"event": "progress", **ev}))
+        finally:
+            power = sampler.stop()
+        agg = aggregate_gpus(power["gpus"])
+        energy = energy_metrics(power["avg_watts"], bench["gen_tps"],
+                                req["price_kwh"])
+        result = {k: v for k, v in bench.items() if k != "reps"}
+        result.update({"model": model, **energy, **agg,
+                       "power_source": power["source"]})
+        card = {"ts": int(_time.time()), "agent_id": req["agent"],
+                "provider": provider, "mode": mode,
+                "preset_version": PRESET_VERSION,
+                "eligible": mode == "standard" and is_reference,
+                "result": result}
+        insert_card(_conn_factory(), card)
+        q.put({"event": "done", "card": _public_card(card),
+               "restore_model": req.get("restore")})
+    except Exception as e:
+        log.warning("report card run failed: %s", e)
+        q.put({"event": "error", "error": str(e)[:200]})
+    finally:
+        _JOBS[job_id]["done"] = True
+
+
+def _tls_kwargs(url: str) -> dict:
+    import agent_registry
+    return agent_registry.agent_tls_kwargs(url)
+
+
+def register_routes(app, ctx=None, db_path: "str | None" = None) -> None:
+    """Mount /api/reportcard/* on the manager app."""
+    global _conn_factory, _price_kwh_fn
+    import sqlite3
+    from flask import jsonify, request as flask_request, stream_with_context
+
+    path = db_path or str(Path(getattr(ctx, "data_dir", ".")) / "metrics.db")
+
+    def conn_factory():
+        conn = sqlite3.connect(path, timeout=30.0)
+        conn.execute("PRAGMA busy_timeout=5000")
+        return conn
+
+    if _conn_factory is None:
+        _conn_factory = conn_factory
+
+    def price_from_ctx() -> float:
+        # unified_config.py is deployment-local; missing block falls back.
+        manager = getattr(getattr(ctx, "settings", None), "manager", None)
+        cfg = getattr(manager, "reportcard", None)
+        try:
+            return float(getattr(cfg, "price_kwh", 0.15) or 0.15)
+        except (TypeError, ValueError):
+            return 0.15
+
+    if ctx is not None:
+        _price_kwh_fn = price_from_ctx
+
+    @app.route("/api/reportcard/preset")
+    def reportcard_preset():
+        return jsonify({"preset_version": PRESET_VERSION,
+                        "gen_tokens": GEN_TOKENS, "reps": REPS,
+                        "providers": list(PROVIDERS),
+                        "price_kwh": _price_kwh(),
+                        "models": [{"key": m["key"], "label": m["label"]}
+                                   for m in REFERENCE_MODELS]})
+
+    @app.route("/api/reportcard/run", methods=["POST"])
+    def reportcard_run():
+        body = flask_request.get_json(silent=True) or {}
+        agent_id = (body.get("agent") or "").strip()
+        provider = (body.get("provider") or "").strip()
+        mode = (body.get("mode") or "standard").strip()
+        if not agent_id:
+            return jsonify({"ok": False, "error": "agent required"}), 400
+        if provider not in PROVIDERS:
+            return jsonify({"ok": False,
+                            "error": f"unknown provider: {provider}"}), 400
+        if mode not in MODES:
+            return jsonify({"ok": False, "error": f"unknown mode: {mode}"}), 400
+        model = (body.get("model") or "").strip()
+        if mode == "custom" and not model:
+            return jsonify({"ok": False,
+                            "error": "model required in custom mode"}), 400
+        model_key = (body.get("model_key") or "small").strip()
+        if mode == "standard" and not preset_source(model_key, provider):
+            return jsonify({"ok": False,
+                            "error": f"unknown model_key: {model_key}"}), 400
+        try:
+            price = float(body.get("price_kwh") or _price_kwh())
+        except (TypeError, ValueError):
+            return jsonify({"ok": False, "error": "invalid price_kwh"}), 400
+        restore = None
+        # vLLM is benched as served; a non-reference model needs one explicit
+        # confirmation before the run (and never scores as eligible).
+        if provider == "vllm" and mode == "standard" and not body.get("confirm_vllm"):
+            agent = _agent_for(agent_id)
+            if not agent:
+                return jsonify({"ok": False, "error": "agent not found"}), 404
+            ready = ensure_ready(provider, agent_id, model_key, prod_deps(agent))
+            if ready["status"] == "needs_confirm":
+                return jsonify({"ok": True, "status": "needs_confirm",
+                                "model": ready["model"],
+                                "restore": ready["restore"],
+                                "reference": ready["reference"]})
+            if ready["status"] == "unavailable":
+                return jsonify({"ok": False,
+                                "error": ready.get("error") or "vLLM unavailable"}), 409
+            restore = ready.get("restore")
+        job_id = _new_job()
+        req = {"agent": agent_id, "provider": provider, "mode": mode,
+               "model": model, "model_key": model_key, "price_kwh": price,
+               "confirm_vllm": bool(body.get("confirm_vllm")),
+               "restore": restore}
+        _threading.Thread(target=_run_job, args=(job_id, req),
+                          name=f"reportcard-{job_id[:8]}", daemon=True).start()
+        return jsonify({"ok": True, "job_id": job_id})
+
+    @app.route("/api/reportcard/stream/<job_id>")
+    def reportcard_stream(job_id):
+        job = _JOBS.get(job_id)
+        if not job:
+            return jsonify({"ok": False, "error": "unknown job"}), 404
+
+        def generate():
+            started = _time.monotonic()
+            while True:
+                if _time.monotonic() - started > _STREAM_MAX_S:
+                    yield "data: " + json.dumps(
+                        {"event": "error", "error": "run timed out"}) + "\n\n"
+                    return
+                try:
+                    ev = job["queue"].get(timeout=_STREAM_TICK_S)
+                except _queue.Empty:
+                    if job["done"] and job["queue"].empty():
+                        return
+                    yield ": keepalive\n\n"
+                    continue
+                yield "data: " + json.dumps(ev) + "\n\n"
+                if ev.get("event") in ("done", "error"):
+                    return
+
+        resp = app.response_class(stream_with_context(generate()),
+                                  mimetype="text/event-stream")
+        resp.headers["Cache-Control"] = "no-cache"
+        resp.headers["X-Accel-Buffering"] = "no"
+        return resp
+
+    @app.route("/api/reportcard/latest")
+    def reportcard_latest():
+        agent_id = flask_request.args.get("agent") or ""
+        provider = flask_request.args.get("provider") or ""
+        if not agent_id or provider not in PROVIDERS:
+            return jsonify({"ok": False,
+                            "error": "agent and provider required"}), 400
+        card = latest_card(_conn_factory(), agent_id, provider)
+        return jsonify({"ok": True,
+                        "card": _public_card(card) if card else None})
+
+    @app.route("/api/reportcard/history")
+    def reportcard_history():
+        agent_id = flask_request.args.get("agent") or ""
+        provider = flask_request.args.get("provider") or ""
+        model = flask_request.args.get("model") or ""
+        if not agent_id or provider not in PROVIDERS or not model:
+            return jsonify({"ok": False,
+                            "error": "agent, provider and model required"}), 400
+        cards = history(_conn_factory(), agent_id, provider, model)
+        return jsonify({"ok": True, "cards": [_public_card(c) for c in cards]})
