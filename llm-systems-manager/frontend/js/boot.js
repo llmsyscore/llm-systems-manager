@@ -49,7 +49,7 @@ let _mgrPerfBackfilled = false;
 
 const _SUB_TAB_MAP = {
   dashboard: { tabId: 'dashboardTab', prefix: 'dash',  subs: ['llamacpp','lmstudio','vllm','openclaw','manager'] },
-  llm:       { tabId: 'llmTab',       prefix: 'llm',   subs: ['llamacpp','lmstudio','vllm'] },
+  llm:       { tabId: 'llmTab',       prefix: 'llm',   subs: ['llamacpp','lmstudio','vllm','reportcard'] },
   admin:     { tabId: 'adminTab',     prefix: 'admin', subs: ['agents','pool','backup','auth','users','audit'] },
 };
 
@@ -105,6 +105,16 @@ function switchSubTab(parent, sub) {
   }
   if (parent === 'dashboard' && sub === 'openclaw') {
     fetchOpenclawAnalytics();
+  }
+  // Report card populates its pickers on first open (#468).
+  if (parent === 'llm' && sub === 'reportcard'
+      && typeof initReportCard === 'function') {
+    initReportCard();
+  }
+  // Leaving the sub-tab closes any live progress stream.
+  if (!(parent === 'llm' && sub === 'reportcard')
+      && typeof rcStopStream === 'function') {
+    rcStopStream();
   }
   // Manager sub-tab is poll-gated to skip when not active; kick a one-shot
   // refresh on entry so cards aren't stale up to the 10s interval boundary.
