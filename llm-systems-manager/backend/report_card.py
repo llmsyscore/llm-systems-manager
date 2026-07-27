@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import statistics
+import time as _time
 
 # ── Reference preset ─────────────────────────────────────────────────
 # Frozen once merged; changes ship as preset_v2 so the leaderboard can
@@ -129,6 +130,77 @@ def aggregate_gpus(gpus: "list[dict]") -> dict:
             "vram_total_mb": sum(g.get("vram_total_mb") or 0 for g in gpus),
             "vram_used_mb": sum(g.get("vram_used_mb") or 0 for g in gpus),
             "power_w": sum(powers) if powers else None}
+
+
+# ── Bench driver ─────────────────────────────────────────────────────
+# Identical streamed workload against every provider's OpenAI-compatible
+# surface, so cross-provider numbers stay directly comparable.
+
+
+def bench_stream(base_url: str, model: str, http_post,
+                 now=_time.monotonic) -> dict:
+    """Drive one streamed completion; returns raw timings for one repetition."""
+    t0 = now()
+    ttft = None
+    tokens = 0
+    last = t0
+    payload = {"model": model, "stream": True, "max_tokens": GEN_TOKENS,
+               "temperature": 0,
+               "messages": [{"role": "user", "content": PROMPT_CORPUS}]}
+    url = base_url.rstrip("/") + "/chat/completions"
+    for line in http_post(url, payload):
+        if not line or not line.startswith("data: "):
+            continue
+        body = line[6:].strip()
+        if body == "[DONE]":
+            continue
+        try:
+            chunk = json.loads(body)
+        except ValueError:
+            continue
+        delta = ((chunk.get("choices") or [{}])[0].get("delta") or {})
+        if delta.get("content"):
+            tokens += 1
+            last = now()
+            if ttft is None:
+                ttft = last - t0
+    if not tokens or ttft is None:
+        raise RuntimeError("provider streamed no tokens")
+    # Prompt tokens estimated from corpus length; a constant across providers
+    # so prefill comparisons stay fair regardless of tokenizer.
+    return {"ttft_s": ttft, "prompt_tokens": len(PROMPT_CORPUS) // 4,
+            "gen_tokens": tokens,
+            "gen_duration_s": max(last - t0 - ttft, 0.0)}
+
+
+def run_bench(base_url: str, model: str, http_post, now=_time.monotonic,
+              progress_cb=None) -> dict:
+    """One discarded warmup plus REPS measured repetitions, median-reduced."""
+    emit = progress_cb or (lambda ev: None)
+    emit({"phase": "warmup"})
+    bench_stream(base_url, model, http_post, now=now)
+    reps = []
+    for i in range(REPS):
+        emit({"phase": "rep", "n": i + 1, "of": REPS})
+        reps.append(bench_stream(base_url, model, http_post, now=now))
+    out = run_metrics(reps)
+    out["reps"] = reps
+    return out
+
+
+def _openai_stream_post(url: str, payload: dict, headers=None, timeout=300,
+                        verify=None):
+    """Production http_post: streamed POST yielding decoded SSE lines."""
+    import requests
+    kwargs = {"json": payload, "headers": headers or {}, "stream": True,
+              "timeout": timeout}
+    if verify is not None:
+        kwargs["verify"] = verify
+    r = requests.post(url, **kwargs)
+    r.raise_for_status()
+    for raw in r.iter_lines(decode_unicode=True):
+        if raw:
+            yield raw
 
 
 # ── Storage ──────────────────────────────────────────────────────────
