@@ -12,6 +12,7 @@ function _rcEl(id) { return document.getElementById(id); }
 function _rcLog(msg) {
   const box = _rcEl('rcProgress');
   if (!box) return;
+  box.style.display = '';
   box.textContent += (box.textContent ? '\n' : '') + msg;
   box.scrollTop = box.scrollHeight;
 }
@@ -93,7 +94,7 @@ function rcRun(confirmVllm) {
 
   _rcBusy(true);
   const box = _rcEl('rcProgress');
-  if (box) box.textContent = '';
+  if (box) { box.textContent = ''; box.style.display = 'none'; }
   _rcNote('');
   fetch('/api/reportcard/run', {
     method: 'POST', headers: {'Content-Type': 'application/json'},
