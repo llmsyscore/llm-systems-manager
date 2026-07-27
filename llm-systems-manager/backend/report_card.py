@@ -311,6 +311,107 @@ class PowerSampler:
         return {"avg_watts": None, "source": None, "gpus": self._last_gpus}
 
 
+# ── Model readiness ──────────────────────────────────────────────────
+# vLLM is never mutated: switching its model means rewriting ExecStart and
+# restarting a live service, so a confirmed vLLM run benches what is served.
+
+
+def _model_matches(candidate: str, target_file: str) -> bool:
+    """True when a provider's model id refers to the preset's file."""
+    if not candidate or not target_file:
+        return False
+    cand = str(candidate).strip().lower()
+    tgt = target_file.lower()
+    if cand == tgt:
+        return True
+    stem = tgt.rsplit("/", 1)[-1]
+    for suffix in ("-00001-of-00002.gguf", ".gguf"):
+        if stem.endswith(suffix):
+            stem = stem[: -len(suffix)]
+            break
+    stem = stem.replace("_", "-").replace(".", "-")
+    return bool(stem) and stem in cand.replace("_", "-").replace(".", "-")
+
+
+def ensure_ready(provider: str, agent_id: str, model_key: str,
+                 deps: dict) -> dict:
+    """Resolve the model to bench; loads it for llama/lms, gates vLLM."""
+    src = preset_source(model_key, provider)
+    if not src:
+        return {"status": "unavailable", "model": None, "restore": None,
+                "reference": None, "is_reference": False,
+                "error": f"no preset for {model_key}/{provider}"}
+    if provider == "vllm":
+        current = deps["vllm_current"](agent_id)
+        if not current:
+            return {"status": "unavailable", "model": None, "restore": None,
+                    "reference": src["repo"], "is_reference": False,
+                    "error": "vLLM is not serving a model"}
+        if current == src["repo"]:
+            return {"status": "ready", "model": current, "restore": None,
+                    "reference": src["repo"], "is_reference": True}
+        return {"status": "needs_confirm", "model": current,
+                "restore": current, "reference": src["repo"],
+                "is_reference": False, "source": src}
+    target = src["file"]
+    base = {"reference": target, "is_reference": True, "restore": None,
+            "source": src}
+    loaded = deps["loaded_models"](provider, agent_id) or []
+    match = next((m for m in loaded if _model_matches(m, target)), None)
+    if match:
+        return {"status": "ready", "model": match, **base}
+    if deps["load"](provider, agent_id, src):
+        return {"status": "ready", "model": target, **base}
+    return {"status": "needs_download", "model": target, **base}
+
+
+def _agent_json(agent: dict, method: str, path: str, timeout=15, **kw):
+    """Call an agent endpoint with its machine token; None on any failure."""
+    import agent_registry
+    r, _tried, err = agent_registry.agent_request(
+        method, agent, path,
+        headers={"Authorization": f"Bearer {agent.get('token') or ''}"},
+        timeout=timeout, **kw)
+    if r is None or not r.ok:
+        log.warning("report card: %s %s failed (%s)", method, path,
+                    err or getattr(r, "status_code", "?"))
+        return None
+    try:
+        return r.json()
+    except ValueError:
+        return None
+
+
+def _model_ids(payload) -> "list[str]":
+    """Model ids out of an OpenAI /v1/models-shaped payload."""
+    data = (payload or {}).get("data") if isinstance(payload, dict) else None
+    if not isinstance(data, list):
+        return []
+    return [str(m.get("id")) for m in data
+            if isinstance(m, dict) and m.get("id")]
+
+
+def prod_deps(agent: dict) -> dict:
+    """Readiness callables bound to one agent's live endpoints."""
+    def loaded_models(provider: str, _agent_id: str) -> "list[str]":
+        return _model_ids(_agent_json(agent, "GET", f"/{provider}/models"))
+
+    def load(provider: str, _agent_id: str, src: dict) -> bool:
+        body = {"model": src["file"]}
+        if provider == "lms":
+            body = {"model": src["file"], "repo": src["repo"]}
+        res = _agent_json(agent, "POST", f"/{provider}/load", timeout=120,
+                          json=body)
+        return bool(res) and res.get("ok") is not False
+
+    def vllm_current(_agent_id: str) -> "str | None":
+        ids = _model_ids(_agent_json(agent, "GET", "/vllm/models"))
+        return ids[0] if ids else None
+
+    return {"loaded_models": loaded_models, "load": load,
+            "vllm_current": vllm_current}
+
+
 # ── Storage ──────────────────────────────────────────────────────────
 # One row per completed run; all runs retained so the table backs trending.
 
