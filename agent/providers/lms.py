@@ -334,10 +334,14 @@ def lms_download_endpoint(body: dict, authorization: Optional[str] = Header(defa
     model_id = body.get("model")
     if not model_id:
         raise HTTPException(status_code=400, detail="model required")
+    payload = {"model": model_id}
+    # Quant pin for Hugging Face URLs; LMS ignores it for catalog names.
+    if body.get("quantization"):
+        payload["quantization"] = str(body["quantization"])
     try:
         resp = _get_session().post(
             f"{ctx.config.LMS_API_URL.rstrip('/')}/api/v1/models/download",
-            json={"model": model_id}, timeout=60,
+            json=payload, timeout=60,
         )
         log.info("lms download %s: %s", model_id, resp.status_code)
         try:

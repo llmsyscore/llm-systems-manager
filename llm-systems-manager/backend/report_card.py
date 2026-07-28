@@ -530,8 +530,11 @@ def provision_model(agent: dict, provider: str, src: dict, emit,
     # Patterns are exact lowercase filenames, not case-folded globs.
     body = {"repo": src["repo"], "patterns": list(src.get("patterns") or [])}
     if provider == "lms":
+        lms_body = {"model": f"https://huggingface.co/{src['repo']}"}
+        if src.get("quant"):
+            lms_body["quantization"] = src["quant"]
         ok, err = _agent_call(agent, "POST", "/lms/download", timeout=60,
-                              json={"model": src["model_id"]})
+                              json=lms_body)
     else:
         ok, err = _agent_call(agent, "POST", "/llama/download", timeout=60,
                               json=body)
@@ -557,7 +560,9 @@ def provision_model(agent: dict, provider: str, src: dict, emit,
             return {"status": "error",
                     "error": err or "llama.cpp restart failed"}
     emit({"phase": "waiting"})
-    match = wait_for_model(agent, provider, src, should_cancel=should_cancel)
+    wait_s = 1800.0 if provider == "lms" else 180.0
+    match = wait_for_model(agent, provider, src, timeout_s=wait_s,
+                           should_cancel=should_cancel)
     if not match:
         return {"status": "error",
                 "error": "model did not appear after provisioning"}

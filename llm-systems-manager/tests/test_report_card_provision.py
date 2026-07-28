@@ -132,6 +132,18 @@ def test_lms_skips_the_llama_only_register_and_restart(monkeypatch):
     assert "/lms/download" in paths
 
 
+def test_lms_download_sends_hf_url_and_quantization(monkeypatch):
+    # Regression: LM Studio's download API takes catalog names or full HF
+    # URLs; a bare "repo:QUANT" id fails with a kebab-case artifact error.
+    calls = _calls_recorder(monkeypatch)
+    src = rc.preset_source("small", "lms")
+    rc.provision_model(AGENT, "lms", src, lambda _e: None)
+    body = next(b for _m, p, b in calls if p == "/lms/download")
+    assert body["model"] == "https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct-GGUF"
+    assert body["quantization"] == "Q4_K_M"
+    assert ":" not in body["model"].split("//", 1)[1]
+
+
 # ── download stream follower ─────────────────────────────────────────
 
 def test_follow_download_forwards_lines_and_completes():
