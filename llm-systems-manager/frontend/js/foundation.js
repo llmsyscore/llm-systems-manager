@@ -1343,6 +1343,7 @@ function switchTab(tab) {
   if (tab !== 'llm')        {
     stopLogStream(); stopPerfRefresh(); stopLmsLogRefresh();
     if (typeof stopVllmLogRefresh === 'function') stopVllmLogRefresh();
+    if (typeof rcStopStream === 'function') rcStopStream();
   }
 }
 

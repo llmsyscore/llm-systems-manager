@@ -1,0 +1,137 @@
+/* GPU report card (#468) — spec-plate treatment: monospace tabular figures,
+   hairline measurement cells, provenance strip. All colors from theme vars. */
+
+.rc-panel { display: flex; flex-direction: column; gap: 18px; }
+
+.rc-controls {
+  display: flex; flex-wrap: wrap; gap: 10px; align-items: flex-end;
+  background: var(--bg-card); border: 1px solid var(--border);
+  border-radius: 8px; padding: 14px 16px;
+}
+.rc-field { display: flex; flex-direction: column; gap: 5px; min-width: 0; }
+.rc-field > label {
+  font-size: 0.68em; letter-spacing: 0.08em; text-transform: uppercase;
+  color: var(--fg-dim);
+}
+.rc-field select, .rc-field input {
+  background: var(--bg); border: 1px solid var(--border); border-radius: 6px;
+  color: var(--fg); font-family: inherit; font-size: 0.85em; padding: 6px 8px;
+}
+.rc-field input { width: 90px; font-variant-numeric: tabular-nums; }
+.rc-controls .rc-spacer { flex: 1 1 auto; }
+
+.rc-progress {
+  font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 0.78em;
+  color: var(--fg-muted); background: var(--bg-tabnav);
+  border: 1px solid var(--border-soft); border-radius: 6px;
+  padding: 10px 12px; max-height: 150px; overflow: auto; white-space: pre-wrap;
+}
+.rc-note { font-size: 0.8em; color: var(--fg-muted); }
+
+/* Live step + elapsed time, so a long run visibly progresses. */
+.rc-status {
+  display: flex; align-items: center; gap: 8px;
+  font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 0.8em;
+  color: var(--fg); background: var(--bg-card); border: 1px solid var(--border);
+  border-left: 3px solid var(--accent); border-radius: 6px; padding: 9px 12px;
+}
+.rc-status::before {
+  content: ''; width: 7px; height: 7px; border-radius: 50%;
+  background: var(--accent); flex-shrink: 0;
+  animation: rc-pulse 1.4s ease-in-out infinite;
+}
+@keyframes rc-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.25; } }
+@media (prefers-reduced-motion: reduce) {
+  .rc-status::before { animation: none; }
+}
+.rc-note.rc-warn { color: var(--warn); }
+
+/* ── the card ───────────────────────────────────────────────────── */
+
+.rc-card {
+  background: var(--bg-card); border: 1px solid var(--border-strong);
+  border-radius: 10px; padding: 20px 22px; max-width: 460px;
+  font-variant-numeric: tabular-nums;
+}
+
+.rc-head {
+  display: flex; align-items: baseline; justify-content: space-between;
+  gap: 12px; padding-bottom: 12px; border-bottom: 1px solid var(--border);
+}
+.rc-gpu {
+  font-family: ui-monospace, Menlo, Consolas, monospace;
+  font-size: 1.05em; color: var(--fg); letter-spacing: 0.01em;
+  word-break: break-word;
+}
+.rc-provider {
+  font-size: 0.72em; letter-spacing: 0.08em;
+  color: var(--fg-dim); white-space: nowrap;
+}
+
+/* The single accent in the whole card. */
+.rc-hero { display: flex; align-items: baseline; gap: 8px; padding: 18px 0 16px; }
+.rc-hero-num {
+  font-family: ui-monospace, Menlo, Consolas, monospace;
+  font-size: 2.6em; font-weight: 600; line-height: 1; color: var(--accent);
+  letter-spacing: -0.02em;
+}
+.rc-hero-unit {
+  font-family: ui-monospace, Menlo, Consolas, monospace;
+  font-size: 0.9em; color: var(--fg-muted);
+}
+.rc-hero-label {
+  margin-left: auto; font-size: 0.7em; letter-spacing: 0.1em;
+  text-transform: uppercase; color: var(--fg-dim);
+}
+
+.rc-grid {
+  display: grid; grid-template-columns: repeat(3, 1fr); gap: 1px;
+  background: var(--border); border: 1px solid var(--border);
+  border-radius: 6px; overflow: hidden;
+}
+.rc-cell { background: var(--bg-card); padding: 11px 12px; min-width: 0; }
+.rc-fig { display: flex; align-items: baseline; gap: 4px; flex-wrap: wrap; }
+.rc-num {
+  font-family: ui-monospace, Menlo, Consolas, monospace;
+  font-size: 1.05em; color: var(--fg);
+}
+.rc-unit {
+  font-family: ui-monospace, Menlo, Consolas, monospace;
+  font-size: 0.72em; color: var(--fg-dim);
+}
+.rc-label {
+  margin-top: 4px; font-size: 0.63em; letter-spacing: 0.07em;
+  text-transform: uppercase; color: var(--fg-dim); line-height: 1.3;
+}
+
+.rc-energy {
+  display: flex; flex-wrap: wrap; gap: 6px; align-items: baseline;
+  margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--border);
+  font-family: ui-monospace, Menlo, Consolas, monospace;
+  font-size: 0.78em; color: var(--fg-muted);
+}
+.rc-energy.rc-muted { color: var(--fg-faint); font-style: italic; }
+.rc-sep { color: var(--fg-faint); }
+
+.rc-foot {
+  display: flex; flex-wrap: wrap; gap: 6px; align-items: baseline;
+  margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--border-soft);
+  font-family: ui-monospace, Menlo, Consolas, monospace;
+  font-size: 0.68em; color: var(--fg-faint);
+}
+.rc-model { word-break: break-all; }
+
+.rc-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 14px; }
+
+.rc-trends { background: var(--bg-card); border: 1px solid var(--border);
+  border-radius: 8px; padding: 14px 16px; }
+.rc-trends canvas { max-height: 260px; }
+
+@media (max-width: 560px) {
+  .rc-grid { grid-template-columns: 1fr; }
+  .rc-hero-num { font-size: 2.1em; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .rc-panel * { transition: none !important; animation: none !important; }
+}

@@ -49,7 +49,8 @@ Backend API endpoints consumed:
   <link rel="stylesheet" href="/static/vendor/xterm.min.css?v=5.3.0"/>
   <script src="/static/vendor/xterm.min.js?v=5.3.0"></script>
   <script src="/static/vendor/xterm-addon-fit.min.js?v=0.8.0"></script>
-  <link rel="stylesheet" href="/static/css/base.css?v=2026.07.12-2">
+  <link rel="stylesheet" href="/static/css/base.css?v=2026.07.27-1">
+  <link rel="stylesheet" href="/static/css/reportcard.css?v=2026.07.27-2">
 </head>
 <body>
 
@@ -1470,6 +1471,7 @@ Backend API endpoints consumed:
       <button class="sub-tab-btn active" id="subTabBtnLlmLlamacpp" onclick="switchSubTab('llm','llamacpp')">llama.cpp</button>
       <button class="sub-tab-btn" id="subTabBtnLlmLmstudio" onclick="switchSubTab('llm','lmstudio')">LM Studio</button>
       <button class="sub-tab-btn" id="subTabBtnLlmVllm" style="display:none;" onclick="switchSubTab('llm','vllm')">vLLM</button>
+      <button class="sub-tab-btn" id="subTabBtnLlmReportcard" onclick="switchSubTab('llm','reportcard')">Report Card</button>
     </div>
   </div>
 
@@ -1631,6 +1633,93 @@ Backend API endpoints consumed:
     </div>
   </div>
 
+  <!-- Report Card sub-tab (#468) — standardized cross-provider bench -->
+  <div id="llm-reportcard" class="sub-tab-panel" style="padding:8px 20px 20px;">
+    <div class="llm-section" id="rcSection">
+      <div class="llm-section-title" onclick="toggleSection('rcSection')">Report Card<span class="llm-collapse-icon">▾</span></div>
+      <div class="llm-section-body">
+    <div class="rc-panel">
+      <div class="rc-controls">
+        <div class="rc-field">
+          <label for="rcProvider">Provider</label>
+          <select id="rcProvider" onchange="rcOnProviderChange()">
+            <option value="llama">llama.cpp</option>
+            <option value="vllm">vLLM</option>
+            <option value="lms">LM Studio</option>
+          </select>
+        </div>
+        <div class="rc-field">
+          <label for="rcAgent">Host</label>
+          <select id="rcAgent" onchange="rcLoadLatest()"></select>
+        </div>
+        <div class="rc-field">
+          <label for="rcMode">Run</label>
+          <select id="rcMode" onchange="rcOnModeChange()">
+            <option value="standard">Standard preset</option>
+            <option value="custom">Any loaded model</option>
+          </select>
+        </div>
+        <div class="rc-field" id="rcModelKeyField">
+          <label for="rcModelKey">Reference model</label>
+          <select id="rcModelKey"></select>
+        </div>
+        <div class="rc-field" id="rcCustomModelField" style="display:none;">
+          <label for="rcCustomModel">Model id</label>
+          <input id="rcCustomModel" type="text" style="width:220px;" placeholder="model id as the provider reports it">
+        </div>
+        <div class="rc-field">
+          <label for="rcPrice">Electricity $/kWh</label>
+          <input id="rcPrice" type="number" min="0" step="0.01">
+        </div>
+        <div class="rc-spacer"></div>
+        <button class="btn btn-stone-muted-gradient" id="rcRunBtn" onclick="rcRun()">▶ Run report card</button>
+        <button class="btn btn-slate-muted-gradient" id="rcCancelBtn" style="display:none;" onclick="rcCancelRun()">✕ Cancel</button>
+      </div>
+
+      <div class="rc-note" id="rcNote"></div>
+
+      <div class="rc-status" id="rcStatus" style="display:none;"></div>
+
+      <div class="rc-controls" id="rcDownload" style="display:none;">
+        <div>
+          <div class="rc-note" id="rcDownloadMsg"></div>
+          <div class="rc-actions">
+            <button class="btn btn-stone-muted-gradient" onclick="rcDownloadProceed()">Download and run</button>
+            <button class="btn btn-gray-muted-gradient" onclick="rcDownloadCancel()">Cancel</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="rc-controls" id="rcConfirm" style="display:none;">
+        <div>
+          <div class="rc-note">vLLM is serving <b id="rcConfirmServed"></b>, not the reference model
+            (<span id="rcConfirmRef"></span>). The manager will not restart vLLM, so this run
+            benches the model already loaded and will not be eligible for the leaderboard.</div>
+          <div class="rc-actions">
+            <button class="btn btn-stone-muted-gradient" onclick="rcConfirmProceed()">Bench what's loaded</button>
+            <button class="btn btn-gray-muted-gradient" onclick="rcConfirmCancel()">Cancel</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="rc-progress" id="rcProgress" style="display:none;"></div>
+
+      <div id="rcCardHost"></div>
+
+      <div class="rc-actions" id="rcActions" style="display:none;">
+        <button class="btn btn-gray-muted-gradient" onclick="rcExportPng()">Save as PNG</button>
+        <button class="btn btn-gray-muted-gradient" id="rcSubmitBtn" style="display:none;">Submit to leaderboard</button>
+        <button class="btn btn-gray-muted-gradient" onclick="rcToggleTrends()">Trends</button>
+      </div>
+
+      <div class="rc-trends" id="rcTrends" style="display:none;">
+        <canvas id="rcTrendChart"></canvas>
+      </div>
+    </div>
+      </div>
+    </div>
+  </div>
+
 </div><!-- end llmTab -->
 
 <script src="/static/js/lib/layout.js?v=2026.07.10-1"></script>
@@ -1638,6 +1727,7 @@ Backend API endpoints consumed:
 <script src="/static/js/lib/series.js?v=2026.07.20-1"></script>
 <script src="/static/js/lib/benchaxis.js?v=2026.06.28-1"></script>
 <script src="/static/js/lib/thresholds.js?v=2026.06.26-3"></script>
+<script src="/static/js/lib/reportcard.js?v=2026.07.27-1"></script>
 <script src="/static/js/charts.js?v=2026.07.12-1"></script>
 <script src="/static/js/terminal.js?v=2026.07.11-1"></script>
 <script src="/static/js/llmcontrol.js?v=2026.07.11-1"></script>
@@ -1648,6 +1738,7 @@ Backend API endpoints consumed:
 <script src="/static/js/lmstudio.js?v=2026.06.26-3"></script>
 <script src="/static/js/vllm.js?v=2026.07.15-1"></script>
 <script src="/static/js/vllm-bench-autotune.js?v=2026.07.12-2"></script>
+<script src="/static/js/report-card.js?v=2026.07.28-1"></script>
 <script src="/static/js/overall.js?v=2026.07.11-1"></script>
 <script src="/static/js/dashboard-manager.js?v=2026.07.20-1"></script>
 
