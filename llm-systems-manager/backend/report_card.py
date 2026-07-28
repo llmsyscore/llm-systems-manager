@@ -13,15 +13,14 @@ from pathlib import Path
 log = logging.getLogger("llm-systems-manager.report_card")
 
 # ── Reference preset ─────────────────────────────────────────────────
-# Frozen once merged; changes ship as preset_v2 so the leaderboard can
-# partition by preset version.
+# Changing any pinned value requires a new PRESET_VERSION.
 
 PRESET_VERSION = "preset_v1"
 GEN_TOKENS = 128
 REPS = 3
 
-# Non-gated official Qwen repos; 4-bit class on every provider. The 7B GGUF
-# is sharded — the first shard is pinned and llama.cpp pulls the rest.
+# 4-bit class on every provider. The 7B GGUF ships sharded; `file` names
+# shard 1 and llama.cpp pulls the rest.
 REFERENCE_MODELS = [
     {"key": "small", "label": "Qwen2.5-1.5B-Instruct (4-bit)",
      "approx_gb": 1.1, "sources": {
@@ -69,8 +68,7 @@ def preset_source(model_key: str, provider: str) -> "dict | None":
     return None
 
 
-# Fixed ~512-token prompt, versioned with the preset. Never edit in place —
-# a changed corpus makes stored cards incomparable; add preset_v2 instead.
+# ~512-token fixed prompt corpus, versioned with PRESET_VERSION.
 PROMPT_CORPUS = (
     "You are a meticulous archivist describing the history of computing. "
     "Write a detailed, factual account of the development of operating "
@@ -156,8 +154,7 @@ def aggregate_gpus(gpus: "list[dict]") -> dict:
 
 
 # ── Bench driver ─────────────────────────────────────────────────────
-# Identical streamed workload against every provider's OpenAI-compatible
-# surface, so cross-provider numbers stay directly comparable.
+# Streams one identical completion per provider OpenAI-compatible endpoint.
 
 
 def bench_stream(base_url: str, model: str, http_post,
@@ -189,8 +186,8 @@ def bench_stream(base_url: str, model: str, http_post,
                 ttft = last - t0
     if not tokens or ttft is None:
         raise RuntimeError("provider streamed no tokens")
-    # Prompt tokens estimated from corpus length; a constant across providers
-    # so prefill comparisons stay fair regardless of tokenizer.
+    # prompt_tokens is len(PROMPT_CORPUS) // 4 — a fixed estimate, not a
+    # per-tokenizer count.
     return {"ttft_s": ttft, "prompt_tokens": len(PROMPT_CORPUS) // 4,
             "gen_tokens": tokens,
             "gen_duration_s": max(last - t0 - ttft, 0.0)}
@@ -259,8 +256,7 @@ def bench_base_url(provider: str, agent: dict, probe=None) -> "tuple[str, dict]"
     urls = agent_registry.agent_callback_urls(agent)
     if not urls:
         raise ValueError("no callback URL recorded for agent")
-    # Hostname bind_url comes first and often doesn't resolve from the
-    # manager; probe each candidate and bench the first that answers.
+    # Probes candidates in order; benches the first that answers.
     check = probe or _probe_agent
     base = next((u for u in urls if check(u)), None)
     if base is None:
@@ -302,7 +298,8 @@ def _snapshot_power(agent_id: str, provider: "str | None" = None) -> dict:
 
 
 class PowerSampler:
-    """Samples power during a bench window; PSU wall watts preferred."""
+    """Samples power during a bench window; PSU wall watts preferred.
+    Single-use: start() once, stop() once. stop() is idempotent."""
 
     def __init__(self, sample_fn, interval_s: float = 2.0):
         self._fn = sample_fn
@@ -312,59 +309,82 @@ class PowerSampler:
         self._last_gpus: list = []
         self._timer = None
         self._stopped = False
+        self._result = None
+        self._ticks = 0
+        self._failures = 0
+        self._lock = _threading.Lock()
 
     def _tick(self):
         try:
             snap = self._fn() or {}
         except Exception:
+            with self._lock:
+                self._ticks += 1
+                self._failures += 1
             log.debug("report card: power sample failed", exc_info=True)
             return
-        if snap.get("psu_w") is not None:
-            self._psu.append(float(snap["psu_w"]))
         gpus = snap.get("gpus") or []
-        if gpus:
-            self._last_gpus = gpus
         powers = [g.get("power_w") for g in gpus if g.get("power_w") is not None]
-        if powers:
-            self._gpu_sums.append(sum(powers))
+        with self._lock:
+            self._ticks += 1
+            if self._stopped:
+                return
+            if snap.get("psu_w") is not None:
+                self._psu.append(float(snap["psu_w"]))
+            if gpus:
+                self._last_gpus = gpus
+            if powers:
+                self._gpu_sums.append(sum(powers))
 
     def start(self):
-        import threading
-
         def loop():
-            if self._stopped:
-                return
+            with self._lock:
+                if self._stopped:
+                    return
             self._tick()
-            if self._stopped:
-                return
-            self._timer = threading.Timer(self._interval, loop)
-            self._timer.daemon = True
-            self._timer.start()
+            with self._lock:
+                if self._stopped:
+                    return
+                self._timer = _threading.Timer(self._interval, loop)
+                self._timer.daemon = True
+                self._timer.start()
         loop()
 
     def reset(self):
         """Discard samples taken so far (idle/warmup); keep the GPU list."""
-        self._psu = []
-        self._gpu_sums = []
+        with self._lock:
+            self._psu = []
+            self._gpu_sums = []
 
     def stop(self) -> dict:
-        self._stopped = True
-        if self._timer:
-            self._timer.cancel()
+        with self._lock:
+            if self._result is not None:
+                return self._result
+            timer = self._timer
+        if timer:
+            timer.cancel()
         # Final sample so a window shorter than the interval still measures.
         self._tick()
-        if self._psu:
-            return {"avg_watts": sum(self._psu) / len(self._psu),
-                    "source": "psu", "gpus": self._last_gpus}
-        if self._gpu_sums:
-            return {"avg_watts": sum(self._gpu_sums) / len(self._gpu_sums),
+        with self._lock:
+            self._stopped = True
+            if self._ticks and self._failures == self._ticks:
+                log.warning("report card: every power sample failed (%d ticks)"
+                            " — energy fields will be blank", self._ticks)
+            if self._psu:
+                self._result = {"avg_watts": sum(self._psu) / len(self._psu),
+                                "source": "psu", "gpus": self._last_gpus}
+            elif self._gpu_sums:
+                self._result = {
+                    "avg_watts": sum(self._gpu_sums) / len(self._gpu_sums),
                     "source": "gpu", "gpus": self._last_gpus}
-        return {"avg_watts": None, "source": None, "gpus": self._last_gpus}
+            else:
+                self._result = {"avg_watts": None, "source": None,
+                                "gpus": self._last_gpus}
+            return self._result
 
 
 # ── Model readiness ──────────────────────────────────────────────────
-# vLLM is never mutated: switching its model means rewriting ExecStart and
-# restarting a live service, so a confirmed vLLM run benches what is served.
+# vLLM is benched as served; the manager never loads or restarts it.
 
 
 def _norm(s: str) -> str:
@@ -384,8 +404,8 @@ def _model_matches(candidate: str, src: dict) -> bool:
     quant = src.get("quant") or ""
     cand_repo, _, cand_quant = cand.partition(":")
     if repo and _norm(cand_repo) == _norm(repo):
-        # Repo match with no pinned quant, or the quant agrees.
-        return not quant or not cand_quant or _norm(cand_quant) == _norm(quant)
+        # A pinned quant must be stated and agree; unlabelled is not a match.
+        return not quant or _norm(cand_quant) == _norm(quant)
     # Fall back to the GGUF filename for providers that list files directly.
     fname = src.get("file") or ""
     if fname and _norm(cand).endswith(_norm(fname)):
@@ -435,13 +455,30 @@ def _agent_json(agent: dict, method: str, path: str, timeout=15, **kw):
         headers={"Authorization": f"Bearer {agent.get('token') or ''}"},
         timeout=timeout, **kw)
     if r is None or not r.ok:
-        log.warning("report card: %s %s failed (%s)", method, path,
+        log.warning("report card: %s %s failed on agent %s (%s)", method, path,
+                    (agent.get("agent_id") or "?")[:8],
                     err or getattr(r, "status_code", "?"))
         return None
     try:
         return r.json()
     except ValueError:
         return None
+
+
+def _agent_call(agent: dict, method: str, path: str, timeout=15,
+                **kw) -> "tuple[bool, str | None]":
+    """Agent call as (ok, error). Agents report expected failures as HTTP 200
+    with {"ok": false, "error": ...}, so truthiness is not a success test."""
+    res = _agent_json(agent, method, path, timeout=timeout, **kw)
+    if res is None:
+        return False, f"{path} did not respond"
+    if isinstance(res, dict) and res.get("ok") is False:
+        err = res.get("error")
+        if not err and isinstance(res.get("response"), dict):
+            resp = res["response"]
+            err = resp.get("error") or resp.get("detail")
+        return False, str(err or f"{path} reported failure")
+    return True, None
 
 
 def _model_ids(payload) -> "list[str]":
@@ -453,19 +490,19 @@ def _model_ids(payload) -> "list[str]":
             if isinstance(m, dict) and m.get("id")]
 
 
-def register_llama_model(agent: dict, src: dict) -> bool:
+def register_llama_model(agent: dict, src: dict) -> "tuple[bool, str | None]":
     """Add the preset as a config.ini section so llama-server can serve it."""
     cfg = _agent_json(agent, "GET", "/llama/config", timeout=20)
     if not isinstance(cfg, dict):
-        return False
+        return False, "could not read the llama.cpp config"
     sections = {k: v for k, v in cfg.items() if isinstance(v, dict)}
     model_id = src["model_id"]
     if model_id not in sections:
         # hf-repo is derived from the section name; only the file pattern
         # and a modest context need persisting.
         sections[model_id] = {"hf-file": src.get("file") or "", "ctx-size": "4096"}
-    return bool(_agent_json(agent, "POST", "/llama/config", timeout=30,
-                            json=sections))
+    return _agent_call(agent, "POST", "/llama/config", timeout=30,
+                       json=sections)
 
 
 def wait_for_model(agent: dict, provider: str, src: dict,
@@ -490,39 +527,50 @@ def provision_model(agent: dict, provider: str, src: dict, emit,
     """Download the preset, register it, restart llama.cpp, then load it.
     Only runs after the operator confirms; llama.cpp restart is the cost."""
     emit({"phase": "download", "repo": src["repo"], "quant": src.get("quant")})
-    # Exact lowercase filename globs: hf --include is case-sensitive, so a
-    # "*Q4_K_M*" filter silently downloads nothing from these repos.
+    # Patterns are exact lowercase filenames, not case-folded globs.
     body = {"repo": src["repo"], "patterns": list(src.get("patterns") or [])}
     if provider == "lms":
-        started = _agent_json(agent, "POST", "/lms/download", timeout=60,
+        ok, err = _agent_call(agent, "POST", "/lms/download", timeout=60,
                               json={"model": src["model_id"]})
     else:
-        started = _agent_json(agent, "POST", "/llama/download", timeout=60,
+        ok, err = _agent_call(agent, "POST", "/llama/download", timeout=60,
                               json=body)
-    if not started:
-        return {"status": "error", "error": "download could not be started"}
+    if not ok:
+        return {"status": "error",
+                "error": err or "download could not be started"}
     emit({"phase": "downloading"})
     if provider == "llama":
         err = _follow_download(agent, emit, should_cancel=should_cancel)
+        if err is _CANCELLED:
+            return {"status": "cancelled"}
         if err:
             return {"status": "error", "error": err}
         emit({"phase": "register", "model": src["model_id"]})
-        if not register_llama_model(agent, src):
-            return {"status": "error", "error": "could not register the model"}
+        ok, err = register_llama_model(agent, src)
+        if not ok:
+            return {"status": "error",
+                    "error": err or "could not register the model"}
         emit({"phase": "restart"})
-        if not _agent_json(agent, "POST", "/llama/server/restart", timeout=120):
-            return {"status": "error", "error": "llama.cpp restart failed"}
+        ok, err = _agent_call(agent, "POST", "/llama/server/restart",
+                              timeout=120)
+        if not ok:
+            return {"status": "error",
+                    "error": err or "llama.cpp restart failed"}
     emit({"phase": "waiting"})
     match = wait_for_model(agent, provider, src, should_cancel=should_cancel)
     if not match:
         return {"status": "error",
                 "error": "model did not appear after provisioning"}
     emit({"phase": "load", "model": match})
-    res = _agent_json(agent, "POST", f"/{provider}/load", timeout=180,
-                      json={"model": match})
-    if not res or res.get("ok") is False:
-        return {"status": "error", "error": f"failed to load {match}"}
+    ok, err = _agent_call(agent, "POST", f"/{provider}/load", timeout=180,
+                          json={"model": match})
+    if not ok:
+        return {"status": "error", "error": err or f"failed to load {match}"}
     return {"status": "ready", "model": match}
+
+
+# Sentinel distinguishing an operator cancel from a download error.
+_CANCELLED = object()
 
 
 def _follow_download(agent: dict, emit, should_cancel=None,
@@ -533,7 +581,7 @@ def _follow_download(agent: dict, emit, should_cancel=None,
         for msg in lines(agent):
             if should_cancel and should_cancel():
                 _agent_json(agent, "POST", "/llama/download/cancel", timeout=15)
-                return "cancelled"
+                return _CANCELLED
             kind = msg.get("type")
             if kind == "line" and msg.get("text"):
                 emit({"phase": "download_progress", "text": msg["text"][:160]})
@@ -576,9 +624,9 @@ def prod_deps(agent: dict) -> dict:
         return _model_ids(_agent_json(agent, "GET", f"/{provider}/models"))
 
     def load(provider: str, _agent_id: str, src: dict) -> bool:
-        res = _agent_json(agent, "POST", f"/{provider}/load", timeout=180,
-                          json={"model": src["model_id"]})
-        return bool(res) and res.get("ok") is not False
+        ok, _err = _agent_call(agent, "POST", f"/{provider}/load", timeout=180,
+                               json={"model": src["model_id"]})
+        return ok
 
     def vllm_current(_agent_id: str) -> "str | None":
         ids = _model_ids(_agent_json(agent, "GET", "/vllm/models"))
@@ -589,7 +637,7 @@ def prod_deps(agent: dict) -> dict:
 
 
 # ── Storage ──────────────────────────────────────────────────────────
-# One row per completed run; all runs retained so the table backs trending.
+# One row per completed run; no pruning.
 
 _COLS = "ts, agent_id, provider, mode, preset_version, eligible, result"
 
@@ -623,9 +671,11 @@ def insert_card(conn, card: dict) -> int:
 
 
 def _row_to_card(row) -> dict:
-    return {"ts": row[0], "agent_id": row[1], "provider": row[2], "mode": row[3],
-            "preset_version": row[4], "eligible": bool(row[5]),
-            "result": json.loads(row[6])}
+    cols = [c.strip() for c in _COLS.split(",")]
+    d = dict(zip(cols, row))
+    d["eligible"] = bool(d["eligible"])
+    d["result"] = json.loads(d["result"])
+    return d
 
 
 def latest_card(conn, agent_id: str, provider: str) -> "dict | None":
@@ -644,8 +694,7 @@ def history(conn, agent_id: str, provider: str, model: str) -> "list[dict]":
 
 
 # ── Routes ───────────────────────────────────────────────────────────
-# Auth comes from the manager's global before_request gate; /api/* paths
-# are covered without a per-route decorator.
+# Auth is the manager's global before_request gate; no per-route decorator.
 
 MODES = ("standard", "custom")
 _JOBS: "dict[str, dict]" = {}
@@ -669,9 +718,13 @@ def _agent_for(agent_id: str) -> "dict | None":
     return agent_registry.resolve_agent_by_id(agent_id)
 
 
+_PUBLIC_CARD_FIELDS = ("ts", "provider", "mode", "preset_version",
+                       "eligible", "result")
+
+
 def _public_card(card: dict) -> dict:
-    """Card minus agent identity — what the UI renders and submits."""
-    return {k: v for k, v in card.items() if k != "agent_id"}
+    """Allowlisted card fields for the UI and leaderboard submission."""
+    return {k: card[k] for k in _PUBLIC_CARD_FIELDS if k in card}
 
 
 def _new_job() -> str:
@@ -725,12 +778,15 @@ def _run_job(job_id: str, req: dict) -> None:
                     raise RuntimeError("reference model is not installed")
                 prov = provision_model(agent, provider, ready["source"], emit,
                                        should_cancel=cancel.is_set)
+                if prov["status"] == "cancelled":
+                    raise _Cancelled()
                 if prov["status"] != "ready":
-                    if prov.get("error") == "cancelled":
-                        raise _Cancelled()
                     raise RuntimeError(prov.get("error") or "provisioning failed")
                 ready = {**ready, "status": "ready", "model": prov["model"]}
-            elif ready["status"] != "ready" and not req.get("confirm_vllm"):
+            elif ready["status"] == "needs_confirm" and not req.get("confirm_vllm"):
+                raise RuntimeError(ready.get("error")
+                                   or "vLLM run needs confirmation")
+            elif ready["status"] not in ("ready", "needs_confirm"):
                 raise RuntimeError(ready.get("error")
                                    or f"model not ready: {ready['status']}")
             model = ready["model"]
@@ -847,14 +903,13 @@ def register_routes(app, ctx=None, db_path: "str | None" = None) -> None:
         if mode == "standard" and not preset_source(model_key, provider):
             return jsonify({"ok": False,
                             "error": f"unknown model_key: {model_key}"}), 400
-        # Explicit None check so a client-sent 0 (free power) is honored.
+        # Falls back to config only when price_kwh is absent, not when 0.
         raw_price = body.get("price_kwh")
         try:
             price = _price_kwh() if raw_price is None else float(raw_price)
         except (TypeError, ValueError):
             return jsonify({"ok": False, "error": "invalid price_kwh"}), 400
-        # vLLM is benched as served; a non-reference model needs one explicit
-        # confirmation before the run (and never scores as eligible).
+        # needs_confirm requires confirm_vllm; such runs are never eligible.
         needs_precheck = (mode == "standard"
                           and not body.get("confirm_vllm")
                           and not body.get("confirm_download"))

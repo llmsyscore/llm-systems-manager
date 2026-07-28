@@ -114,7 +114,7 @@ function rcRun(confirm) {
   if (!agent) { _rcNote('Pick an agent first.', true); return; }
   const body = {agent, provider, mode,
                 model_key: _rcEl('rcModelKey')?.value || 'small'};
-  // Explicit finite check so an entered 0 (free power) survives the POST.
+  // price_kwh is sent only when the field parses to a finite number.
   const price = parseFloat(_rcEl('rcPrice')?.value);
   if (Number.isFinite(price)) body.price_kwh = price;
   if (mode === 'custom') body.model = (_rcEl('rcCustomModel')?.value || '').trim();
@@ -143,7 +143,6 @@ function rcRun(confirm) {
   }).catch(e => { _rcBusy(false); _rcNote('Run failed: ' + e, true); });
 }
 
-// vLLM is benched as-served; the manager never restarts it.
 function rcShowVllmConfirm(d) {
   const wrap = _rcEl('rcConfirm');
   if (!wrap) return;
@@ -164,7 +163,7 @@ function rcConfirmProceed() {
   rcRun('vllm');
 }
 
-// The reference model isn't installed — name the full cost before proceeding.
+// Renders the download prompt: target model, size, and restart cost.
 function rcShowDownloadConfirm(d) {
   const wrap = _rcEl('rcDownload');
   if (!wrap) return;
@@ -244,11 +243,17 @@ function rcStream(jobId) {
       rcRenderCard(d.card);
     }
   };
-  _rcEventSrc.onerror = () => { _rcBusy(false); rcStopStream(); };
+  _rcEventSrc.onerror = () => {
+    _rcLog('connection lost');
+    _rcStatus('');
+    _rcNote('Lost connection to the run — it may still be running. '
+            + 'Reselect the host in a moment to see the result.', true);
+    rcStopStream();
+  };
 }
 
-// Abandon the run entirely (tab switch etc.): close + re-enable the button.
-// Explicit close fires no error event, so the busy reset must happen here.
+// Abandons the run: closes the stream and re-enables the Run button.
+// An explicit close fires no onerror, so the reset happens here.
 function rcStopStream() {
   _rcCloseStream();
   _rcBusy(false);

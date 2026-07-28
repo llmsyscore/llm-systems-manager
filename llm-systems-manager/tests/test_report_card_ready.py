@@ -40,6 +40,21 @@ def test_wrong_quant_of_the_right_repo_is_not_the_reference():
     assert out["status"] == "needs_download"
 
 
+def test_unlabelled_repo_is_not_accepted_as_the_pinned_quant():
+    # A bare repo id states no quant. Accepting it would mark an arbitrary
+    # quantization as the Q4_K_M reference and ship it to the leaderboard.
+    src = rc.preset_source("small", "llama")
+    assert rc._model_matches("Qwen/Qwen2.5-1.5B-Instruct-GGUF", src) is False
+    out = rc.ensure_ready("llama", "a" * 32, "small",
+                          _deps(loaded=["Qwen/Qwen2.5-1.5B-Instruct-GGUF"]))
+    assert out["status"] == "needs_download"
+
+
+def test_vllm_pins_no_quant_so_a_bare_repo_still_matches():
+    src = rc.preset_source("small", "vllm")
+    assert rc._model_matches(src["repo"], src) is True
+
+
 def test_unregistered_model_needs_download():
     # Downloaded-but-unregistered models are absent from the provider list.
     out = rc.ensure_ready("llama", "a" * 32, "small", _deps(loaded=[]))

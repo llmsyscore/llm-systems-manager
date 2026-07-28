@@ -107,9 +107,18 @@ def test_provision_errors_when_model_never_appears(monkeypatch):
 def test_provision_stops_when_cancelled(monkeypatch):
     _calls_recorder(monkeypatch)
     monkeypatch.setattr(rc, "_follow_download",
-                        lambda a, e, should_cancel=None: "cancelled")
+                        lambda a, e, should_cancel=None: rc._CANCELLED)
     out = rc.provision_model(AGENT, "llama", SRC, lambda _e: None,
                              should_cancel=lambda: True)
+    assert out["status"] == "cancelled"
+
+
+def test_a_download_error_named_cancelled_is_not_a_cancellation(monkeypatch):
+    # Cancellation travels as a sentinel, so error text can never impersonate it.
+    _calls_recorder(monkeypatch)
+    monkeypatch.setattr(rc, "_follow_download",
+                        lambda a, e, should_cancel=None: "cancelled")
+    out = rc.provision_model(AGENT, "llama", SRC, lambda _e: None)
     assert out["status"] == "error" and out["error"] == "cancelled"
 
 
@@ -156,7 +165,7 @@ def test_follow_download_cancels_the_agent_download(monkeypatch):
     err = rc._follow_download(AGENT, lambda _e: None, should_cancel=lambda: True,
                               stream_lines=lambda _a: iter([{"type": "line",
                                                              "text": "5%"}]))
-    assert err == "cancelled" and "/llama/download/cancel" in calls
+    assert err is rc._CANCELLED and "/llama/download/cancel" in calls
 
 
 # ── wait_for_model ───────────────────────────────────────────────────
@@ -188,3 +197,73 @@ def test_wait_for_model_aborts_on_cancel(monkeypatch):
                         lambda a, m, p, timeout=15, **k: {"data": []})
     assert rc.wait_for_model(AGENT, "llama", SRC, should_cancel=lambda: True,
                              now=lambda: 0.0, sleep=lambda _s: None) is None
+
+
+# ── agents report expected failures as HTTP 200 + {"ok": false} ──────
+
+def _ok_false(monkeypatch, failing_path, payload):
+    calls = []
+
+    def fake(agent, method, path, timeout=15, **kw):
+        calls.append(path)
+        if path == failing_path:
+            return payload
+        if path == "/llama/config" and method == "GET":
+            return {}
+        if path.endswith("/models"):
+            return {"data": [{"id": SRC["model_id"]}]}
+        return {"ok": True}
+
+    monkeypatch.setattr(rc, "_agent_json", fake)
+    monkeypatch.setattr(rc, "_follow_download", lambda a, e, should_cancel=None: None)
+    monkeypatch.setattr(rc._time, "sleep", lambda *_a: None)
+    return calls
+
+
+def test_config_write_failure_is_not_treated_as_registered(monkeypatch):
+    # {"ok": false} is a truthy dict; a bare bool() check called it success
+    # and restarted llama.cpp against an unwritten config.
+    calls = _ok_false(monkeypatch, "/llama/config",
+                      {"ok": False, "error": "Permission denied"})
+    out = rc.provision_model(AGENT, "llama", SRC, lambda _e: None)
+    assert out["status"] == "error"
+    assert "Permission denied" in out["error"]
+    assert "/llama/server/restart" not in calls
+
+
+def test_restart_failure_surfaces_systemctl_stderr(monkeypatch):
+    _ok_false(monkeypatch, "/llama/server/restart",
+              {"ok": False, "error": "Job for llama.service failed"})
+    out = rc.provision_model(AGENT, "llama", SRC, lambda _e: None)
+    assert out["status"] == "error" and "llama.service" in out["error"]
+
+
+def test_lms_download_failure_is_not_treated_as_started(monkeypatch):
+    src = rc.preset_source("small", "lms")
+    calls = _ok_false(monkeypatch, "/lms/download",
+                      {"ok": False, "response": {"error": "model not found"}})
+    out = rc.provision_model(AGENT, "lms", src, lambda _e: None)
+    assert out["status"] == "error" and "model not found" in out["error"]
+    assert "/lms/load" not in calls
+
+
+def test_load_failure_surfaces_the_agent_error(monkeypatch):
+    _ok_false(monkeypatch, "/llama/load", {"ok": False, "error": "OOM"})
+    out = rc.provision_model(AGENT, "llama", SRC, lambda _e: None)
+    assert out["status"] == "error" and "OOM" in out["error"]
+
+
+def test_agent_call_maps_every_failure_shape(monkeypatch):
+    cases = [
+        (None, False),
+        ({"ok": False, "error": "boom"}, False),
+        ({"ok": False, "response": {"error": "nested"}}, False),
+        ({"ok": True}, True),
+        ({"data": []}, True),        # no ok key -> not a failure signal
+    ]
+    for payload, expect_ok in cases:
+        monkeypatch.setattr(rc, "_agent_json",
+                            lambda a, m, p, timeout=15, **k: payload)
+        ok, err = rc._agent_call(AGENT, "POST", "/x")
+        assert ok is expect_ok, payload
+        assert (err is None) is expect_ok, payload

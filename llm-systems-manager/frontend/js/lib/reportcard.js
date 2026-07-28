@@ -1,7 +1,5 @@
-// GPU report card rendering + submission helpers (#468). Pure DOM/string
-// logic; the sub-tab wiring lives in js/report-card.js.
-// IIFE-scoped: this loads as a classic script beside charts.js, which already
-// defines a global `fmt`.
+// GPU report card rendering + submission helpers (#468); sub-tab wiring is
+// in js/report-card.js. IIFE-scoped, exposed as window.RC.
 (function (root, factory) {
   const api = factory();
   if (typeof root !== 'undefined') root.RC = api;
@@ -29,8 +27,7 @@ function fmtDate(ts) {
   return new Date(ts * 1000).toISOString().slice(0, 10);
 }
 
-// el(tag, className, text) — textContent only, never innerHTML, so
-// provider-supplied model and GPU names cannot inject markup.
+// el(tag, className, text) — sets textContent only, never innerHTML.
 function el(tag, cls, text) {
   const n = document.createElement(tag);
   if (cls) n.className = cls;
@@ -104,8 +101,7 @@ function buildCard(res) {
   return frag;
 }
 
-// Only standard-preset, reference-model runs are comparable, so only those
-// get a submission link.
+// Returns '' unless card.eligible and mode === 'standard'.
 function submitUrl(card) {
   if (!card || !card.eligible || card.mode !== 'standard') return '';
   const pub = { ...card };
@@ -129,8 +125,7 @@ function trendSeries(cards) {
   };
 }
 
-// Copies computed styles onto a clone so the serialized SVG renders without
-// the page stylesheet, which foreignObject does not inherit.
+// Copies computed styles from src onto dst recursively, for SVG export.
 const _INLINE_PROPS = [
   'font-family', 'font-size', 'font-weight', 'font-variant-numeric',
   'letter-spacing', 'line-height', 'color', 'background-color', 'border',

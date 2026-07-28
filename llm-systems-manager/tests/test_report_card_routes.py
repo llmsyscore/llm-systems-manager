@@ -306,3 +306,47 @@ def test_cancel_stops_the_run_and_stores_nothing(client, monkeypatch):
     events = _drain(client, job)
     assert any(e.get("event") == "cancelled" for e in events)
     assert rc.latest_card(rc._conn_factory(), "a" * 32, "llama") is None
+
+
+def test_public_card_allowlists_fields(client):
+    # Fails closed: a field added to the card later is not published until
+    # it is explicitly allowlisted.
+    card = {"ts": 1, "agent_id": "a" * 32, "provider": "llama",
+            "mode": "standard", "preset_version": "preset_v1",
+            "eligible": True, "result": {"gen_tps": 1.0},
+            "internal_hostname": "secret-box", "token": "shh"}
+    pub = rc._public_card(card)
+    assert "agent_id" not in pub
+    assert "internal_hostname" not in pub and "token" not in pub
+    assert set(pub) == {"ts", "provider", "mode", "preset_version",
+                        "eligible", "result"}
+
+
+def test_confirm_vllm_does_not_bypass_a_load_failure(client, monkeypatch):
+    # confirm_vllm answers needs_confirm only; it must not let a model that
+    # failed to load through to the bench as an eligible card.
+    monkeypatch.setattr(rc, "ensure_ready",
+                        lambda *a, **k: {"status": "load_failed", "model": "m",
+                                         "reference": "m", "is_reference": True,
+                                         "error": "llama refused to load m"})
+    r = client.post("/api/reportcard/run", json={
+        "agent": "a" * 32, "provider": "llama", "mode": "standard",
+        "model_key": "small", "confirm_vllm": True})
+    events = _drain(client, r.get_json()["job_id"])
+    errs = [e for e in events if e.get("event") == "error"]
+    assert errs and "refused to load" in errs[0]["error"]
+    assert rc.latest_card(rc._conn_factory(), "a" * 32, "llama") is None
+
+
+def test_row_mapping_survives_column_reordering():
+    # _row_to_card maps by name from _COLS rather than fixed tuple indices.
+    import sqlite3
+    conn = sqlite3.connect(":memory:")
+    rc.init_table(conn)
+    rc.insert_card(conn, {"ts": 7, "agent_id": "b" * 32, "provider": "vllm",
+                          "mode": "custom", "preset_version": "preset_v1",
+                          "eligible": False, "result": {"model": "m"}})
+    got = rc.latest_card(conn, "b" * 32, "vllm")
+    assert got["ts"] == 7 and got["provider"] == "vllm"
+    assert got["mode"] == "custom" and got["eligible"] is False
+    assert got["result"]["model"] == "m"

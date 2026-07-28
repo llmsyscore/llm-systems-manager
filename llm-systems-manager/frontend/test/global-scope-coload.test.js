@@ -1,7 +1,5 @@
-// #468: the dashboard's js/*.js load as classic <script>s sharing one global
-// scope, so a duplicate top-level `const`/`function` is a page-breaking
-// SyntaxError. Vitest imports each file as an isolated module and cannot see
-// that, so this parses every co-loaded script together in one function scope.
+// #468: compiles every classic script the dashboard co-loads into one scope
+// to catch top-level redeclaration collisions isolated-module imports miss.
 import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
