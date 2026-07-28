@@ -197,8 +197,12 @@ function rcCancelRun() {
         {method: 'POST'}).catch(() => {});
 }
 
+function _rcCloseStream() {
+  if (_rcEventSrc) { _rcEventSrc.close(); _rcEventSrc = null; }
+}
+
 function rcStream(jobId) {
-  rcStopStream();
+  _rcCloseStream();
   _rcEventSrc = new EventSource('/api/reportcard/stream/' + encodeURIComponent(jobId));
   _rcEventSrc.onmessage = ev => {
     let d;
@@ -243,9 +247,10 @@ function rcStream(jobId) {
   _rcEventSrc.onerror = () => { _rcBusy(false); rcStopStream(); };
 }
 
+// Abandon the run entirely (tab switch etc.): close + re-enable the button.
+// Explicit close fires no error event, so the busy reset must happen here.
 function rcStopStream() {
-  if (_rcEventSrc) { _rcEventSrc.close(); _rcEventSrc = null; }
-  // Explicit close fires no error event, so re-enable the Run button here.
+  _rcCloseStream();
   _rcBusy(false);
 }
 

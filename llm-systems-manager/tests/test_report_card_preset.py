@@ -56,3 +56,15 @@ def test_gguf_providers_pin_a_repo_colon_quant_model_id():
 def test_every_model_advertises_a_download_size():
     for m in rc.REFERENCE_MODELS:
         assert isinstance(m["approx_gb"], (int, float)) and m["approx_gb"] > 0
+
+
+def test_gguf_sources_have_download_patterns_matching_their_file():
+    import fnmatch
+    for m in rc.REFERENCE_MODELS:
+        for prov in ("llama", "lms"):
+            src = rc.preset_source(m["key"], prov)
+            assert src["patterns"], (m["key"], prov)
+            assert any(fnmatch.fnmatch(src["file"], pat)
+                       for pat in src["patterns"]), (m["key"], prov)
+            # Lowercase-only globs; uppercase quant tags match nothing.
+            assert all(pat == pat.lower() for pat in src["patterns"])

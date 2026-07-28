@@ -30,6 +30,8 @@ def client(monkeypatch, tmp_path):
                                          "gen_tps": 40.0, "reps": []})
     monkeypatch.setattr(rc, "_snapshot_power",
                         lambda aid, prov=None: {"psu_w": 200.0, "gpus": []})
+    monkeypatch.setattr(rc, "bench_base_url",
+                        lambda p, a, probe=None: ("http://x/llama/openai", {}))
     rc.register_routes(app, db_path=str(tmp_path / "t.db"))
     return app.test_client()
 

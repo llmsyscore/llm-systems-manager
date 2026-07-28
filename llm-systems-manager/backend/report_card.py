@@ -28,11 +28,13 @@ REFERENCE_MODELS = [
         "llama": {"repo": "Qwen/Qwen2.5-1.5B-Instruct-GGUF",
                   "quant": "Q4_K_M",
                   "file": "qwen2.5-1.5b-instruct-q4_k_m.gguf",
+                  "patterns": ["qwen2.5-1.5b-instruct-q4_k_m.gguf"],
                   "model_id": "Qwen/Qwen2.5-1.5B-Instruct-GGUF:Q4_K_M",
                   "revision": "91cad51170dc346986eccefdc2dd33a9da36ead9"},
         "lms":   {"repo": "Qwen/Qwen2.5-1.5B-Instruct-GGUF",
                   "quant": "Q4_K_M",
                   "file": "qwen2.5-1.5b-instruct-q4_k_m.gguf",
+                  "patterns": ["qwen2.5-1.5b-instruct-q4_k_m.gguf"],
                   "model_id": "Qwen/Qwen2.5-1.5B-Instruct-GGUF:Q4_K_M",
                   "revision": "91cad51170dc346986eccefdc2dd33a9da36ead9"},
         "vllm":  {"repo": "Qwen/Qwen2.5-1.5B-Instruct-AWQ",
@@ -44,11 +46,13 @@ REFERENCE_MODELS = [
         "llama": {"repo": "Qwen/Qwen2.5-7B-Instruct-GGUF",
                   "quant": "Q4_K_M",
                   "file": "qwen2.5-7b-instruct-q4_k_m-00001-of-00002.gguf",
+                  "patterns": ["qwen2.5-7b-instruct-q4_k_m-*.gguf"],
                   "model_id": "Qwen/Qwen2.5-7B-Instruct-GGUF:Q4_K_M",
                   "revision": "bb5d59e06d9551d752d08b292a50eb208b07ab1f"},
         "lms":   {"repo": "Qwen/Qwen2.5-7B-Instruct-GGUF",
                   "quant": "Q4_K_M",
                   "file": "qwen2.5-7b-instruct-q4_k_m-00001-of-00002.gguf",
+                  "patterns": ["qwen2.5-7b-instruct-q4_k_m-*.gguf"],
                   "model_id": "Qwen/Qwen2.5-7B-Instruct-GGUF:Q4_K_M",
                   "revision": "bb5d59e06d9551d752d08b292a50eb208b07ab1f"},
         "vllm":  {"repo": "Qwen/Qwen2.5-7B-Instruct-AWQ",
@@ -228,7 +232,19 @@ PROVIDERS = ("llama", "vllm", "lms")
 LMS_OPENAI_PORT = 1235
 
 
-def bench_base_url(provider: str, agent: dict) -> "tuple[str, dict]":
+def _probe_agent(base: str) -> bool:
+    """True when the agent answers /health at this base URL."""
+    import requests
+    import agent_registry
+    url = f"{base}/health"
+    try:
+        return requests.get(url, timeout=(3, 5),
+                            **agent_registry.agent_tls_kwargs(url)).ok
+    except requests.exceptions.RequestException:
+        return False
+
+
+def bench_base_url(provider: str, agent: dict, probe=None) -> "tuple[str, dict]":
     """OpenAI-compatible base URL + auth headers for one provider/agent.
     llama/vllm use the agent passthrough; LM Studio is dialed directly."""
     if provider not in PROVIDERS:
@@ -243,7 +259,13 @@ def bench_base_url(provider: str, agent: dict) -> "tuple[str, dict]":
     urls = agent_registry.agent_callback_urls(agent)
     if not urls:
         raise ValueError("no callback URL recorded for agent")
-    return f"{urls[0]}/{provider}/openai", \
+    # Hostname bind_url comes first and often doesn't resolve from the
+    # manager; probe each candidate and bench the first that answers.
+    check = probe or _probe_agent
+    base = next((u for u in urls if check(u)), None)
+    if base is None:
+        raise ValueError("agent is not reachable on any callback URL")
+    return f"{base}/{provider}/openai", \
            {"Authorization": f"Bearer {agent.get('token') or ''}"}
 
 
@@ -468,9 +490,9 @@ def provision_model(agent: dict, provider: str, src: dict, emit,
     """Download the preset, register it, restart llama.cpp, then load it.
     Only runs after the operator confirms; llama.cpp restart is the cost."""
     emit({"phase": "download", "repo": src["repo"], "quant": src.get("quant")})
-    body = {"repo": src["repo"]}
-    if src.get("quant"):
-        body["include"] = src["quant"]
+    # Exact lowercase filename globs: hf --include is case-sensitive, so a
+    # "*Q4_K_M*" filter silently downloads nothing from these repos.
+    body = {"repo": src["repo"], "patterns": list(src.get("patterns") or [])}
     if provider == "lms":
         started = _agent_json(agent, "POST", "/lms/download", timeout=60,
                               json={"model": src["model_id"]})

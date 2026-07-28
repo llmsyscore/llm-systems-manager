@@ -47,11 +47,23 @@ def test_provision_runs_download_register_restart_load_in_order(monkeypatch):
                       "waiting", "load"]
 
 
-def test_download_request_carries_repo_and_quant_filter(monkeypatch):
+def test_download_request_carries_exact_lowercase_patterns(monkeypatch):
+    # Regression: hf --include globs are case-sensitive, so filtering on the
+    # uppercase quant tag downloaded nothing (refs/trees only, no blobs).
     calls = _calls_recorder(monkeypatch)
     rc.provision_model(AGENT, "llama", SRC, lambda _e: None)
     body = next(b for _m, p, b in calls if p == "/llama/download")
-    assert body["repo"] == SRC["repo"] and body["include"] == "Q4_K_M"
+    assert body["repo"] == SRC["repo"]
+    assert body["patterns"] == ["qwen2.5-1.5b-instruct-q4_k_m.gguf"]
+    assert "include" not in body
+
+
+def test_sharded_mid_pattern_covers_every_shard():
+    src = rc.preset_source("mid", "llama")
+    import fnmatch
+    for shard in ("qwen2.5-7b-instruct-q4_k_m-00001-of-00002.gguf",
+                  "qwen2.5-7b-instruct-q4_k_m-00002-of-00002.gguf"):
+        assert any(fnmatch.fnmatch(shard, pat) for pat in src["patterns"])
 
 
 def test_register_preserves_existing_config_sections(monkeypatch):

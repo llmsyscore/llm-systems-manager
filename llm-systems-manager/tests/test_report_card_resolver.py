@@ -11,15 +11,29 @@ AGENT = {"agent_id": "a" * 32, "registered_from": "203.0.113.7",
 
 
 def test_llama_base_url_uses_agent_openai_passthrough():
-    url, headers = rc.bench_base_url("llama", AGENT)
+    url, headers = rc.bench_base_url("llama", AGENT, probe=lambda u: True)
     # Agent route is /llama/openai/chat/completions — no /v1 segment.
     assert url.endswith("/llama/openai")
     assert headers["Authorization"] == "Bearer tok"
 
 
 def test_vllm_base_url():
-    url, _ = rc.bench_base_url("vllm", AGENT)
+    url, _ = rc.bench_base_url("vllm", AGENT, probe=lambda u: True)
     assert url.endswith("/vllm/openai")
+
+
+def test_base_url_skips_an_unreachable_hostname_bind():
+    # bind_url (hostname) is listed first; the manager often can't resolve
+    # it and must fall through to the registered_from IP candidate.
+    url, _ = rc.bench_base_url("llama", AGENT,
+                               probe=lambda u: "203.0.113.7" in u)
+    assert "203.0.113.7" in url and url.endswith("/llama/openai")
+
+
+def test_base_url_raises_when_no_candidate_answers():
+    import pytest as _pytest
+    with _pytest.raises(ValueError, match="not reachable"):
+        rc.bench_base_url("llama", AGENT, probe=lambda u: False)
 
 
 def test_lms_base_url_is_direct_lmstudio():
