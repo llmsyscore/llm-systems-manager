@@ -2,7 +2,6 @@
 the agent-request wrapper. These are stubbed out everywhere else."""
 from __future__ import annotations
 
-import json
 import types
 
 import pytest

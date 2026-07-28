@@ -340,7 +340,6 @@ def test_confirm_vllm_does_not_bypass_a_load_failure(client, monkeypatch):
 
 def test_row_mapping_survives_column_reordering():
     # _row_to_card maps by name from _COLS rather than fixed tuple indices.
-    import sqlite3
     conn = sqlite3.connect(":memory:")
     rc.init_table(conn)
     rc.insert_card(conn, {"ts": 7, "agent_id": "b" * 32, "provider": "vllm",

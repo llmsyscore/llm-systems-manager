@@ -174,6 +174,7 @@ import sse_daemon     # type: ignore[import-not-found]  # noqa: E402  # leaf, la
 # for live worker-thread + backlog counts.
 _cheroot_servers: list = []
 import model_profiles  # type: ignore[import-not-found]  # noqa: E402  # leaf, no cycle
+import report_card  # type: ignore[import-not-found]  # noqa: E402  # leaf, no cycle; #468
 
 
 def _patch_cheroot_flush_noise() -> None:
@@ -318,7 +319,6 @@ def init_db():
         """)
     conn.execute("CREATE INDEX IF NOT EXISTS idx_bench_model ON model_benchmarks(model_id, agent_id)")
     # GPU report card runs (#468); backs the card view and local trending.
-    import report_card  # type: ignore[import-not-found]  # sibling; #468
     report_card.init_table(conn)
     # Append-only admin action audit log (#217); bounded by _AUDIT_MAX_ROWS.
     conn.execute("""
@@ -3419,7 +3419,6 @@ openclaw.register_routes(app, ctx)
 model_profiles.register_routes(app, ctx, profiles_path=DATA_DIR / "model_profiles.json")
 import gateway  # type: ignore[import-not-found]  # sibling; #214
 gateway.register_routes(app, ctx)
-import report_card  # type: ignore[import-not-found]  # sibling; #468
 report_card.register_routes(app, ctx, db_path=str(DB_PATH))
 import manager_users  # type: ignore[import-not-found]  # sibling
 manager_users.init(
