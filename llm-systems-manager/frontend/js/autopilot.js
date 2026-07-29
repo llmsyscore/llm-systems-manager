@@ -102,7 +102,9 @@ function entryRow(entry) {
   removeBtn.dataset.act = 'remove';
   removeBtn.title = 'Remove entry';
   removeBtn.textContent = '✕';
-  removeBtn.addEventListener('click', () => row.remove());
+  // _renderEntries() wraps each row in .ap-entry-wrap with its statusChip;
+  // remove the wrap when present so the chip doesn't orphan, else the row.
+  removeBtn.addEventListener('click', () => (row.closest('.ap-entry-wrap') || row).remove());
   row.appendChild(removeBtn);
 
   return row;
@@ -135,8 +137,8 @@ function proposalRow(p, callbacks) {
   const row = document.createElement('div');
   row.className = 'ap-proposal-row';
 
-  // Live proposals nest reason under action (server Action dataclass);
-  // top-level p.reason wins when callers pass it directly (e.g. tests).
+  // Server always sets top-level p.reason; action.reason is a defensive
+  // fallback only, for callers that don't (e.g. hand-built fixtures).
   row.appendChild(el('div', 'ap-proposal-reason', p.reason || action.reason || ''));
 
   const meta = document.createElement('div');
