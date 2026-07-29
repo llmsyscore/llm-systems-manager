@@ -59,6 +59,40 @@ def _may_auto(entry, desired, provider) -> bool:
         return False            # vLLM never auto (spec)
     return entry["failover"] == "auto"
 
+def evaluate_autoscale(entry, placements, sat_history, now: float) -> str:
+    cfg = entry.get("autoscale")
+    if not cfg or not sat_history:
+        return "hold"
+    target = cfg["target_saturation"]
+    up_w, down_w = cfg["up_window_s"], cfg["down_window_s"]
+    def window(w):
+        pts = [s for t, s in sat_history if t >= now - w]
+        return pts
+    up_pts = window(up_w)
+    if (up_pts and all(s > target for s in up_pts)
+            and sat_history[0][0] <= now - up_w
+            and len(placements) < entry["max_replicas"]):
+        return "up"
+    down_pts = window(down_w)
+    if (down_pts and all(s < target * 0.5 for s in down_pts)
+            and sat_history[0][0] <= now - down_w
+            and len(placements) > entry["min_replicas"]):
+        return "down"
+    return "hold"
+
+def _fit_and_size(e, aid, a, free, observed):
+    # Same VRAM/capability fit check used by both the min-replica and autoscale passes.
+    size = observed.get("model_sizes_mb", {}).get(
+        f"{e['provider']}:{e['model']}")
+    if e["placement"] != "auto" and aid == e["placement"]:
+        fit = e["provider"] in a["provider_caps"] and \
+              size is not None and free.get(aid, 0) >= size + VRAM_HEADROOM_MB \
+              and (a["live"] or a["server_state"] == "sleeping")
+    else:
+        fit = _fits(e, aid, observed) and \
+              free.get(aid, 0) >= (size or 0) + VRAM_HEADROOM_MB
+    return fit, size
+
 def plan(desired: dict, observed: dict, ledger: dict, now: float) -> "list[Action]":
     actions: "list[Action]" = []
     # Track hypothetical VRAM commitments within this plan pass.
@@ -93,15 +127,7 @@ def plan(desired: dict, observed: dict, ledger: dict, now: float) -> "list[Actio
             if is_failover and in_flight + migrations_this_pass >= 1:
                 continue
             a = observed["agents"][aid]
-            size = observed.get("model_sizes_mb", {}).get(
-                f"{e['provider']}:{e['model']}")
-            if e["placement"] != "auto" and aid == e["placement"]:
-                fit = e["provider"] in a["provider_caps"] and \
-                      size is not None and free.get(aid, 0) >= size + VRAM_HEADROOM_MB \
-                      and (a["live"] or a["server_state"] == "sleeping")
-            else:
-                fit = _fits(e, aid, observed) and \
-                      free.get(aid, 0) >= (size or 0) + VRAM_HEADROOM_MB
+            fit, size = _fit_and_size(e, aid, a, free, observed)
             if not fit:
                 continue
             free[aid] -= size or 0
@@ -120,6 +146,57 @@ def plan(desired: dict, observed: dict, ledger: dict, now: float) -> "list[Actio
             touched.add(aid)
             if is_failover:
                 migrations_this_pass += 1
+    # Autoscale pass: only entries already at/above min_replicas with headroom to scale.
+    for e in entries:
+        k = _key(e)
+        if e["max_replicas"] <= e["min_replicas"]:
+            continue
+        if now < (ledger.get("backoff_until") or {}).get(k, 0):
+            continue
+        placed = _placements(e, observed)
+        if len(placed) < e["min_replicas"]:
+            continue
+        hist = (observed.get("sat_history") or {}).get(k, [])
+        decision = evaluate_autoscale(e, placed, hist, now)
+        if decision == "hold":
+            continue
+        auto = _may_auto(e, desired, e["provider"])
+        if decision == "up":
+            candidates = ([e["placement"]] if e["placement"] != "auto"
+                          else list(observed["agents"].keys()))
+            for aid in candidates:
+                if aid in placed or aid not in observed["agents"] or aid in touched:
+                    continue
+                if now - last_action_ts.get(aid, 0) < COOLDOWN_S:
+                    continue
+                a = observed["agents"][aid]
+                fit, size = _fit_and_size(e, aid, a, free, observed)
+                if not fit:
+                    continue
+                free[aid] -= size or 0
+                if a["server_state"] == "sleeping":
+                    actions.append(Action(
+                        kind="wake", provider=e["provider"], model=e["model"],
+                        agent_id=aid, reason=f"{k}: waking {aid} for scale-up",
+                        auto=auto, entry_key=k))
+                actions.append(Action(
+                    kind="scale_up", provider=e["provider"], model=e["model"],
+                    agent_id=aid, reason=f"{k}: autoscale up -> {aid}",
+                    auto=auto, entry_key=k))
+                touched.add(aid)
+                break
+        else:                                 # decision == "down"
+            pak = placed_at.get(k) or {}
+            if not pak:
+                continue
+            lru_aid, _ = min(pak.items(), key=lambda kv: kv[1])
+            if lru_aid in touched or now - last_action_ts.get(lru_aid, 0) < COOLDOWN_S:
+                continue
+            actions.append(Action(
+                kind="scale_down", provider=e["provider"], model=e["model"],
+                agent_id=lru_aid, reason=f"{k}: autoscale down -> {lru_aid}",
+                auto=auto, entry_key=k))
+            touched.add(lru_aid)
     for aid, hcfg in (desired.get("hosts") or {}).items():
         mins = hcfg.get("sleep_after_idle_min") or 0
         if mins <= 0 or aid in touched:
