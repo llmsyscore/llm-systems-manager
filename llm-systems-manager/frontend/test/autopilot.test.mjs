@@ -31,3 +31,41 @@ describe("proposalRow", () => {
     expect(onApply).toHaveBeenCalledWith("p1");
   });
 });
+
+describe("poll no longer clobbers unsaved edits (#472)", () => {
+  it("keeps a dirty toggle + added row across a poll-triggered fetchState, but still re-renders proposals", async () => {
+    document.body.innerHTML = `
+      <input type="checkbox" id="apEnabledToggle">
+      <div id="apEntriesBody"></div>
+      <div id="apProposalsBody"></div>
+      <span id="apSaveStatus"></span>
+    `;
+    const emptyState = {state: {enabled: false, entries: [], hosts: {}},
+      proposals: [], last_plan_ts: null};
+    vi.stubGlobal("fetch", vi.fn(() => Promise.resolve({
+      ok: true, json: () => Promise.resolve(emptyState),
+    })));
+
+    AP.init();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    const toggle = document.getElementById("apEnabledToggle");
+    toggle.checked = true;
+    toggle.dispatchEvent(new Event("change", {bubbles: true}));
+    AP.addEntry();
+    expect(document.querySelectorAll("#apEntriesBody .ap-entry-row")).toHaveLength(1);
+
+    // Stale marker proves _renderProposals() still ran unconditionally.
+    const proposalsBody = document.getElementById("apProposalsBody");
+    const marker = document.createElement("div");
+    marker.className = "stale-marker";
+    proposalsBody.appendChild(marker);
+
+    await AP.fetchState(); // simulates the 10s poll tick
+
+    expect(toggle.checked).toBe(true);
+    expect(document.querySelectorAll("#apEntriesBody .ap-entry-row")).toHaveLength(1);
+    expect(proposalsBody.querySelector(".stale-marker")).toBeNull();
+  });
+});

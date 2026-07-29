@@ -104,7 +104,10 @@ function entryRow(entry) {
   removeBtn.textContent = '✕';
   // _renderEntries() wraps each row in .ap-entry-wrap with its statusChip;
   // remove the wrap when present so the chip doesn't orphan, else the row.
-  removeBtn.addEventListener('click', () => (row.closest('.ap-entry-wrap') || row).remove());
+  removeBtn.addEventListener('click', () => {
+    _dirty = true;
+    (row.closest('.ap-entry-wrap') || row).remove();
+  });
   row.appendChild(removeBtn);
 
   return row;
@@ -190,6 +193,11 @@ function statusChip(entry, placements) {
 let _lastState = null;
 let _lastProposals = [];
 let _wired = false;
+// True once the editor has unsaved user edits; blocks the 10s poll from
+// clobbering them (#472). Cleared on init() and on a successful save().
+let _dirty = false;
+
+function _markDirty() { _dirty = true; }
 
 function _visible() {
   return typeof _activeTab !== 'undefined' && _activeTab === 'admin' &&
@@ -230,10 +238,14 @@ function _renderProposals() {
 }
 
 function _render() {
+  // Proposals are read-only, so they always reflect the latest poll.
+  // The editor (toggle + entries) only takes server state while clean —
+  // a dirty editor holds unsaved user edits until save() or a fresh init().
+  _renderProposals();
+  if (_dirty) return;
   const toggle = document.getElementById('apEnabledToggle');
   if (toggle && _lastState) toggle.checked = !!_lastState.enabled;
   _renderEntries();
-  _renderProposals();
 }
 
 async function fetchState() {
@@ -266,6 +278,7 @@ async function save() {
     const d = await r.json().catch(() => ({}));
     if (!r.ok) { _setStatus('✗ ' + (d.error || ('HTTP ' + r.status)), true); return; }
     _lastState = d.state || state;
+    _dirty = false;
     _setStatus('✓ saved');
     _render();
   } catch (e) {
@@ -297,6 +310,7 @@ async function planNow() {
 function addEntry() {
   const body = document.getElementById('apEntriesBody');
   if (!body) return;
+  _dirty = true;
   const wrap = document.createElement('div');
   wrap.className = 'ap-entry-wrap';
   wrap.appendChild(entryRow({ model: '', provider: 'llama', placement: 'auto',
@@ -315,11 +329,21 @@ function _wire() {
   if (plan_) plan_.addEventListener('click', planNow);
   const refresh_ = document.getElementById('apProposalsRefreshBtn');
   if (refresh_) refresh_.addEventListener('click', fetchState);
+  // Delegated so it covers rows added/removed after wiring — typing
+  // (input) and select/checkbox changes (change) both mark dirty.
+  const entries_ = document.getElementById('apEntriesBody');
+  if (entries_) {
+    entries_.addEventListener('input', _markDirty);
+    entries_.addEventListener('change', _markDirty);
+  }
+  const toggle_ = document.getElementById('apEnabledToggle');
+  if (toggle_) toggle_.addEventListener('change', _markDirty);
 }
 
 // Called on sub-tab entry (mirrors adminAuditLoad/initReportCard).
 function init() {
   _wire();
+  _dirty = false;
   fetchState();
 }
 
