@@ -163,3 +163,19 @@ def test_sleep_never_planned_for_lms_host():
     ag = _agents(**{A1: {"provider_caps": ["lms"], "idle_since": 1000.0}})
     assert pl.plan(des, {"agents": ag, "model_sizes_mb": {}}, _ledger(),
                    now=1000.0 + 31 * 60) == []
+
+def test_dead_agent_stale_sleeping_state_not_placeable():
+    # live=False blocks placement even with ample VRAM and a cached "sleeping" sample.
+    one = _agents()
+    one[A1].update({"live": False, "server_state": "sleeping"})
+    obs = {"agents": {A1: one[A1]}, "model_sizes_mb": {"llama:m1": 8000}}
+    assert pl.plan(_desired([E]), obs, _ledger(), now=1000.0) == []
+
+def test_wake_not_emitted_for_non_llama_entry_on_sleeping_host():
+    e = {**E, "provider": "vllm"}
+    obs = _obs(_agents(**{A1: {"provider_caps": ["vllm"],
+                               "server_state": "sleeping"}}),
+               sizes={"vllm:m1": 8000})
+    acts = pl.plan(_desired([e]), obs, _ledger(), now=1000.0)
+    assert [a.kind for a in acts] == ["load"]
+    assert acts[0].agent_id == A1

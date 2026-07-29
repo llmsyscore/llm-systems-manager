@@ -487,6 +487,11 @@ def _prod_vllm_svc(agent_id: str, model: str) -> bool:
     return r2 is not None and r2.ok
 
 
+# Bounds audit_log growth from this module's own inserts (separate connection).
+_AUDIT_MAX_ROWS = 10000
+_AUDIT_PRUNE_EVERY = 200
+
+
 def _prod_audit(action_str: str, target: str, outcome: str) -> None:
     """INSERT into the #217 audit_log table; write failures are logged,
     never raised."""
@@ -494,11 +499,15 @@ def _prod_audit(action_str: str, target: str, outcome: str) -> None:
         conn = sqlite3.connect(str(_METRICS_DB_PATH), timeout=5.0)
         try:
             conn.execute("PRAGMA busy_timeout=5000")
-            conn.execute(
+            cur = conn.execute(
                 "INSERT INTO audit_log (ts, actor, role, ip, method, path, action, target, status, outcome)"
                 " VALUES (?,?,?,?,?,?,?,?,?,?)",
                 (datetime.now(timezone.utc).isoformat(timespec="seconds"),
                  "autopilot", "system", "-", "", "", action_str, target, None, outcome))
+            if cur.lastrowid and cur.lastrowid % _AUDIT_PRUNE_EVERY == 0:
+                conn.execute(
+                    "DELETE FROM audit_log WHERE id <= (SELECT MAX(id) FROM audit_log) - ?",
+                    (_AUDIT_MAX_ROWS,))
             conn.commit()
         finally:
             conn.close()
@@ -589,7 +598,7 @@ def start_thread(ctx=None) -> None:
             try:
                 RECONCILER.tick(time.time())
             except Exception as e:
-                log.debug("reconciler tick failed: %s", e)
+                log.warning("reconciler tick failed: %s", e)
             time.sleep(_TICK_PERIOD_S)
 
     threading.Thread(target=_loop, name="autopilot-reconciler", daemon=True).start()

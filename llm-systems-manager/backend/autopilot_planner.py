@@ -26,9 +26,8 @@ def _placements(entry, observed) -> "list[str]":
 
 def _fits(entry, aid, observed) -> bool:
     a = observed["agents"][aid]
-    # A sleeping agent is placeable; it will be woken before the load.
-    live_or_wakeable = a["live"] or a["server_state"] == "sleeping"
-    if entry["provider"] not in a["provider_caps"] or not live_or_wakeable:
+    # live is the agent heartbeat, not the llama server's cached sleep state.
+    if entry["provider"] not in a["provider_caps"] or not a["live"]:
         return False
     size = observed.get("model_sizes_mb", {}).get(
         f"{entry['provider']}:{entry['model']}")
@@ -87,7 +86,7 @@ def _fit_and_size(e, aid, a, free, observed):
     if e["placement"] != "auto" and aid == e["placement"]:
         fit = e["provider"] in a["provider_caps"] and \
               size is not None and free.get(aid, 0) >= size + VRAM_HEADROOM_MB \
-              and (a["live"] or a["server_state"] == "sleeping")
+              and a["live"]
     else:
         fit = _fits(e, aid, observed) and \
               free.get(aid, 0) >= (size or 0) + VRAM_HEADROOM_MB
@@ -135,7 +134,7 @@ def plan(desired: dict, observed: dict, ledger: dict, now: float) -> "list[Actio
             auto = _may_auto(e, desired, e["provider"])
             reason = (f"failover: {k} recovering onto {aid}" if is_failover
                       else f"{k}: {len(placed)}/{want} replicas placed")
-            if a["server_state"] == "sleeping":
+            if e["provider"] == "llama" and a["server_state"] == "sleeping":
                 actions.append(Action(
                     kind="wake", provider=e["provider"], model=e["model"],
                     agent_id=aid, reason=f"{k}: waking {aid} for placement",
@@ -174,7 +173,7 @@ def plan(desired: dict, observed: dict, ledger: dict, now: float) -> "list[Actio
                 if not fit:
                     continue
                 free[aid] -= size or 0
-                if a["server_state"] == "sleeping":
+                if e["provider"] == "llama" and a["server_state"] == "sleeping":
                     actions.append(Action(
                         kind="wake", provider=e["provider"], model=e["model"],
                         agent_id=aid, reason=f"{k}: waking {aid} for scale-up",

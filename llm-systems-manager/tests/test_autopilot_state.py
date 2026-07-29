@@ -57,9 +57,8 @@ def test_host_policy_validated():
 
 
 def _patch_registry(monkeypatch):
-    """Fake registry store standing in for agents.json, wired the same way
-    load_agents()/save_agents() read/write it — set_state's writes are
-    visible to the next get_state() call, same as the real lock/save path."""
+    """Fake registry store standing in for agents.json, wired the same
+    way load_agents()/save_agents() read/write it."""
     store = {"agents": {}, "global": {}}
     monkeypatch.setattr(agent_registry, "load_agents", lambda: store)
     def _save(data):

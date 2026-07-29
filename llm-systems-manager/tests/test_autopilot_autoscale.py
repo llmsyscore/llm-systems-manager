@@ -79,9 +79,8 @@ def test_plan_emits_scale_up_when_saturated_for_full_window():
     assert scale_ups[0].entry_key == "m1/llama"
 
 def test_plan_scale_down_picks_lru_agent_from_placed_at():
-    # Both A1 and A2 hold the model; quiet for the full down-window
-    # (mirrors test_down_after_long_quiet_window's fixture). A1 was placed
-    # first (ts=100), so it's the LRU replica to remove.
+    # Both A1 and A2 hold the model, quiet for the full down-window;
+    # A1 was placed first (ts=100), so it's the LRU replica to remove.
     e = {**E, "min_replicas": 1, "max_replicas": 3}
     obs = _obs(_agents(**{A1: {"loaded": {"llama": ["m1"]}},
                           A2: {"loaded": {"llama": ["m1"]}}}),

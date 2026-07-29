@@ -1,5 +1,6 @@
 """#472: executor behavior matrix + audit + routing side-effects."""
 from __future__ import annotations
+import sqlite3
 import pytest
 import autopilot as ap
 from autopilot_planner import Action
@@ -88,3 +89,27 @@ def test_exception_during_routing_audits_error():
     act, entries = _act()
     assert ap.make_executor(deps, entries)(act) is False
     assert ("autopilot:load", "error") in log["audit"]
+
+# --- Post-review fix: _prod_audit prunes past its own row cap ---
+
+def test_prod_audit_prunes_past_cap(monkeypatch, tmp_path):
+    db_path = tmp_path / "metrics.db"
+    conn = sqlite3.connect(str(db_path))
+    conn.execute("""
+        CREATE TABLE audit_log (
+            id INTEGER PRIMARY KEY, ts TEXT NOT NULL, actor TEXT, role TEXT,
+            ip TEXT, method TEXT, path TEXT, action TEXT, target TEXT,
+            status INTEGER, outcome TEXT)
+    """)
+    conn.commit()
+    conn.close()
+    monkeypatch.setattr(ap, "_METRICS_DB_PATH", db_path)
+    monkeypatch.setattr(ap, "_AUDIT_MAX_ROWS", 50)
+    monkeypatch.setattr(ap, "_AUDIT_PRUNE_EVERY", 10)
+    for _ in range(120):
+        ap._prod_audit("autopilot:load", "m1", "ok")
+    check = sqlite3.connect(str(db_path))
+    count = check.execute("SELECT COUNT(*) FROM audit_log").fetchone()[0]
+    assert count <= 50 + ap._AUDIT_PRUNE_EVERY
+    assert check.execute("SELECT MAX(id) FROM audit_log").fetchone()[0] == 120
+    check.close()
