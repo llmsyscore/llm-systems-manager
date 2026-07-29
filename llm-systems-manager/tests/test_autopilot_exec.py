@@ -66,3 +66,25 @@ def test_failed_proxy_audits_fail():
     act, entries = _act()
     assert ap.make_executor(deps, entries)(act) is False
     assert ("autopilot:load", "fail") in log["audit"]
+
+# --- Post-review fixes: vllm positional rewrite + audit-on-exception ---
+
+def test_vllm_binary_rewrite_replaces_positional_leaves_flags():
+    cur = {"binary": "vllm serve /path/old",
+          "args": [{"flag": "--flag", "value": "x", "bool": False}]}
+    out = ap._vllm_rewrite_model(cur, "/path/new")
+    assert out["binary"] == "vllm serve /path/new"
+    assert out["args"] == cur["args"]
+
+def test_vllm_binary_rewrite_none_when_head_too_short():
+    assert ap._vllm_rewrite_model({"binary": "vllm"}, "/path/new") is None
+
+def _raise(*a, **k):
+    raise RuntimeError("boom")
+
+def test_exception_during_routing_audits_error():
+    log, deps = _deps()
+    deps["set_pin"] = _raise
+    act, entries = _act()
+    assert ap.make_executor(deps, entries)(act) is False
+    assert ("autopilot:load", "error") in log["audit"]

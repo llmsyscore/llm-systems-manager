@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+import shlex
 import sqlite3
 import sys
 import threading
@@ -350,14 +351,19 @@ def make_executor(deps: dict, entries_by_key):
             _audit(action, "unsupported")
             return False
 
-        if action.kind in ("load", "scale_up"):
-            ok = _load(action)
-        elif action.kind in ("scale_down", "unload"):
-            ok = _unload(action)
-        elif action.kind == "wake":
-            ok, _body = deps["proxy"](action.provider, "POST", "/llama/server/wake", {})
-        else:
-            ok = False
+        try:
+            if action.kind in ("load", "scale_up"):
+                ok = _load(action)
+            elif action.kind in ("scale_down", "unload"):
+                ok = _unload(action)
+            elif action.kind == "wake":
+                ok, _body = deps["proxy"](action.provider, "POST", "/llama/server/wake", {})
+            else:
+                ok = False
+        except Exception as e:
+            log.debug("autopilot executor raised on %s: %s", action.kind, e)
+            _audit(action, "error")
+            return False
 
         _audit(action, "ok" if ok else "fail")
         return ok
@@ -421,15 +427,26 @@ def _prod_pool_update(provider: str, agent_id: str, in_pool: bool) -> bool:
     return ok
 
 
+def _vllm_rewrite_model(cur: dict, model: str) -> "dict | None":
+    """Replace the ExecStart positional model (head_tokens[2], vllm.py's
+    autotune convention); args pass through. None if the head is too short."""
+    head_tokens = shlex.split(cur.get("binary", "") or "")
+    if len(head_tokens) <= 2:
+        return None
+    head_tokens[2] = model
+    return {"binary": " ".join(head_tokens), "args": cur.get("args") or []}
+
+
 def _prod_vllm_svc(agent_id: str, model: str) -> bool:
-    """Swap --model via the existing vllm svcconfig route (#125), restart
-    in the same POST — same mechanism the svcconfig UI modal uses."""
+    """Rewrite the ExecStart positional model + restart in the same POST —
+    vLLM has no --model flag override; the positional is authoritative."""
     r, cur = _prod_agent_call(agent_id, "GET", "/vllm/server/svcconfig")
     if r is None or not r.ok or not cur.get("ok"):
         return False
-    args = [a for a in (cur.get("args") or []) if a.get("flag") != "--model"]
-    args.append({"flag": "--model", "value": model, "bool": False})
-    body = {"binary": cur.get("binary", ""), "args": args, "restart": True}
+    rewritten = _vllm_rewrite_model(cur, model)
+    if rewritten is None:
+        return False
+    body = {**rewritten, "restart": True}
     r2, _body2 = _prod_agent_call(agent_id, "POST", "/vllm/server/svcconfig", body, timeout=60)
     return r2 is not None and r2.ok
 
