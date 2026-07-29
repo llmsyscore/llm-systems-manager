@@ -202,29 +202,35 @@ class Reconciler:
         self._sat_history: "dict[str, list]" = {}
         self.ledger = {"last_action_ts": {}, "placed_at": {},
                        "in_flight_migrations": 0, "backoff_until": {}}
+        # Coarse reentrant lock: serializes the background tick against
+        # route-triggered apply/dismiss/tick calls (#472 Task 7).
+        self._lock = threading.RLock()
+        self.last_plan_ts: "float | None" = None
 
     def tick(self, now: float) -> dict:
-        import autopilot_planner as pl
-        desired = self._get_state()
-        observed = self._observe()
-        self._prune_placed_at(observed, now)
-        self._refresh_sat_history(desired, observed, now)
-        actions = pl.plan(desired, observed, self.ledger, now)
-        sig = lambda a: (a.kind, a.provider, a.model, a.agent_id)
-        current = {sig(a) for a in actions}
-        self._proposals = {pid: p for pid, p in self._proposals.items()
-                           if tuple(p["sig"]) in current}
-        for a in actions:
-            if a.auto:
-                self._run(a, now)
-            elif not any(tuple(p["sig"]) == sig(a)
-                         for p in self._proposals.values()):
-                pid = uuid.uuid4().hex[:12]
-                self._proposals[pid] = {"id": pid, "sig": list(sig(a)),
-                                        "action": asdict(a), "created": now,
-                                        "reason": a.reason}
-        return {"actions": [asdict(a) for a in actions],
-                "proposals": self.proposals()}
+        with self._lock:
+            import autopilot_planner as pl
+            desired = self._get_state()
+            observed = self._observe()
+            self._prune_placed_at(observed, now)
+            self._refresh_sat_history(desired, observed, now)
+            actions = pl.plan(desired, observed, self.ledger, now)
+            sig = lambda a: (a.kind, a.provider, a.model, a.agent_id)
+            current = {sig(a) for a in actions}
+            self._proposals = {pid: p for pid, p in self._proposals.items()
+                               if tuple(p["sig"]) in current}
+            for a in actions:
+                if a.auto:
+                    self._run(a, now)
+                elif not any(tuple(p["sig"]) == sig(a)
+                             for p in self._proposals.values()):
+                    pid = uuid.uuid4().hex[:12]
+                    self._proposals[pid] = {"id": pid, "sig": list(sig(a)),
+                                            "action": asdict(a), "created": now,
+                                            "reason": a.reason}
+            self.last_plan_ts = now
+            return {"actions": [asdict(a) for a in actions],
+                    "proposals": self.proposals()}
 
     def _prune_placed_at(self, observed: dict, now: float) -> None:
         """Drop placed_at[k][aid] once a live agent stops reporting the
@@ -281,20 +287,23 @@ class Reconciler:
         return ok
 
     def proposals(self) -> "list[dict]":
-        return sorted(self._proposals.values(), key=lambda p: p["created"])
+        with self._lock:
+            return sorted(self._proposals.values(), key=lambda p: p["created"])
 
     def apply(self, pid: str, now: float = None) -> dict:
         import time as _t
-        p = self._proposals.pop(pid, None)
-        if not p:
-            raise KeyError(pid)
-        from autopilot_planner import Action
-        ok = self._run(Action(**p["action"]), now if now is not None
-                       else _t.time())
-        return {"ok": ok, "action": p["action"]}
+        with self._lock:
+            p = self._proposals.pop(pid, None)
+            if not p:
+                raise KeyError(pid)
+            from autopilot_planner import Action
+            ok = self._run(Action(**p["action"]), now if now is not None
+                           else _t.time())
+            return {"ok": ok, "action": p["action"]}
 
     def dismiss(self, pid: str) -> None:
-        self._proposals.pop(pid, None)
+        with self._lock:
+            self._proposals.pop(pid, None)
 
 
 # ── Executors: dispatch a planned Action to provider-specific side effects ──
@@ -493,6 +502,51 @@ def _prod_executor(action) -> bool:
 RECONCILER = Reconciler(get_state=get_state,
                         build_observed=lambda: build_observed(_prod_deps()),
                         executor=_prod_executor)
+
+
+# ── Routes: mount /api/autopilot* on the manager app ──────────────────
+
+def register_routes(app, ctx, auth) -> None:
+    """Mount /api/autopilot* on `app`, each route wrapped with `auth`."""
+    from flask import jsonify, request as flask_request
+
+    @app.route("/api/autopilot")
+    @auth
+    def autopilot_get():
+        return jsonify({"state": get_state(), "proposals": RECONCILER.proposals(),
+                        "last_plan_ts": RECONCILER.last_plan_ts})
+
+    @app.route("/api/autopilot", methods=["PUT"])
+    @auth
+    def autopilot_put():
+        body = flask_request.get_json(silent=True) or {}
+        try:
+            state = validate_state(body)
+        except ValueError as e:
+            return jsonify({"error": str(e)}), 400
+        set_state(state)
+        return jsonify({"ok": True, "state": state})
+
+    @app.route("/api/autopilot/proposals/<pid>/apply", methods=["POST"])
+    @auth
+    def autopilot_apply(pid):
+        try:
+            result = RECONCILER.apply(pid)
+        except KeyError:
+            return jsonify({"error": "unknown proposal"}), 404
+        return jsonify(result)
+
+    @app.route("/api/autopilot/proposals/<pid>/dismiss", methods=["POST"])
+    @auth
+    def autopilot_dismiss(pid):
+        RECONCILER.dismiss(pid)
+        return jsonify({"ok": True})
+
+    @app.route("/api/autopilot/tick", methods=["POST"])
+    @auth
+    def autopilot_tick():
+        return jsonify(RECONCILER.tick(time.time()))
+
 
 _TICK_PERIOD_S = 30
 

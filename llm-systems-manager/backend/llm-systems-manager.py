@@ -154,7 +154,7 @@ def _local_hostname() -> str:
 # banner reads it. Bump suffix (-1, -2, …) for same-day iterations; roll
 # the date for a new day's first change.
 # ---------------------------------------------------------------------------
-__version__ = "v2026.07.29-7"
+__version__ = "v2026.07.29-8"
 
 # Wall-clock at first import (Cheroot main process); the shutdown banner
 # reads it for the uptime line.
@@ -3435,6 +3435,22 @@ if "pytest" not in sys.modules:
 manager_users.register_routes(app, ctx)
 
 
+def _admin_route(f):
+    """Decorator form of the ctx.require_admin gate (autopilot.register_routes
+    wants `auth` as a decorator, not an inline call)."""
+    @functools.wraps(f)
+    def _wrapped(*a, **kw):
+        deny = ctx.require_admin()
+        if deny is not None:
+            return deny
+        return f(*a, **kw)
+    return _wrapped
+
+
+import autopilot  # type: ignore[import-not-found]  # sibling; #472
+autopilot.register_routes(app, ctx, auth=_admin_route)
+
+
 # _proxy_to_primary + _proxy_stream_to_primary moved to proxies.py (PR M4).
 # Call sites use proxies.proxy_to_primary(...) / proxies.proxy_stream_to_primary(...).
 
@@ -5310,6 +5326,9 @@ if __name__ == "__main__":
         name="history-refresher",
         daemon=True,
     ).start()
+
+    # Fleet autopilot reconciler (#472): ticks RECONCILER every 30s.
+    autopilot.start_thread(ctx)
 
     # Per-provider offline-edge sweep — fires the True→False latch transition
     # for any agent whose last_seen exceeds the provider's online_threshold_s.
