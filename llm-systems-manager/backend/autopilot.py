@@ -26,6 +26,22 @@ def _default_state() -> dict:
     return {"enabled": False, "entries": [], "hosts": {}}
 
 
+def _coerce_int(val, field: str) -> int:
+    """int(val) but non-numeric input (list/dict/str-garbage) raises
+    ValueError naming the field, not a TypeError the PUT route can't catch."""
+    try:
+        return int(val)
+    except (TypeError, ValueError):
+        raise ValueError(f"bad {field} {val!r}")
+
+
+def _validate_placement(val) -> str:
+    """"auto" or a non-empty, non-structured-data string (agent id)."""
+    if not isinstance(val, str) or not val.strip():
+        raise ValueError(f"bad placement {val!r}")
+    return val.strip()
+
+
 def validate_state(raw: dict) -> dict:
     out = {"enabled": bool(raw.get("enabled")), "entries": [], "hosts": {}}
     seen = set()
@@ -42,18 +58,20 @@ def validate_state(raw: dict) -> dict:
         fo = e.get("failover", "semi")
         if fo not in ("semi", "auto"):
             raise ValueError(f"bad failover {fo!r}")
-        mn = int(e.get("min_replicas", 1)); mx = int(e.get("max_replicas", mn))
+        mn = _coerce_int(e.get("min_replicas", 1), "min_replicas")
+        mx = _coerce_int(e.get("max_replicas", mn), "max_replicas")
         if mn < 1 or mx < mn:
             raise ValueError(f"bad replica range {mn}..{mx}")
         ne = {"model": model, "provider": prov,
-              "placement": e.get("placement", "auto"), "failover": fo,
-              "priority": int(e.get("priority", 100)),
+              "placement": _validate_placement(e.get("placement", "auto")),
+              "failover": fo,
+              "priority": _coerce_int(e.get("priority", 100), "priority"),
               "min_replicas": mn, "max_replicas": mx}
         if mx > mn:
             ne["autoscale"] = {**_AUTOSCALE_DEFAULTS, **(e.get("autoscale") or {})}
         out["entries"].append(ne)
     for aid, pol in (raw.get("hosts") or {}).items():
-        mins = int(pol.get("sleep_after_idle_min", 0))
+        mins = _coerce_int(pol.get("sleep_after_idle_min", 0), "sleep_after_idle_min")
         if mins < 0:
             raise ValueError("sleep_after_idle_min must be >= 0")
         out["hosts"][aid] = {"sleep_after_idle_min": mins}
@@ -206,6 +224,9 @@ class Reconciler:
         # route-triggered apply/dismiss/tick calls (#472 Task 7).
         self._lock = threading.RLock()
         self.last_plan_ts: "float | None" = None
+        # Lock-free read snapshot, reassigned whole after each mutation;
+        # proposals() reads this instead of taking self._lock.
+        self._snapshot: "list[dict]" = []
 
     def tick(self, now: float) -> dict:
         with self._lock:
@@ -229,8 +250,9 @@ class Reconciler:
                                             "action": asdict(a), "created": now,
                                             "reason": a.reason}
             self.last_plan_ts = now
+            self._refresh_snapshot()
             return {"actions": [asdict(a) for a in actions],
-                    "proposals": self.proposals()}
+                    "proposals": self._snapshot}
 
     def _prune_placed_at(self, observed: dict, now: float) -> None:
         """Drop placed_at[k][aid] once a live agent stops reporting the
@@ -286,9 +308,12 @@ class Reconciler:
             self.ledger["backoff_until"][k] = now + 300.0
         return ok
 
+    def _refresh_snapshot(self) -> None:
+        """Publish a fresh read snapshot; caller must already hold self._lock."""
+        self._snapshot = sorted(self._proposals.values(), key=lambda p: p["created"])
+
     def proposals(self) -> "list[dict]":
-        with self._lock:
-            return sorted(self._proposals.values(), key=lambda p: p["created"])
+        return self._snapshot
 
     def apply(self, pid: str, now: float = None) -> dict:
         import time as _t
@@ -299,11 +324,13 @@ class Reconciler:
             from autopilot_planner import Action
             ok = self._run(Action(**p["action"]), now if now is not None
                            else _t.time())
+            self._refresh_snapshot()
             return {"ok": ok, "action": p["action"]}
 
     def dismiss(self, pid: str) -> None:
         with self._lock:
             self._proposals.pop(pid, None)
+            self._refresh_snapshot()
 
 
 # ── Executors: dispatch a planned Action to provider-specific side effects ──

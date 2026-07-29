@@ -1,5 +1,6 @@
 """#472: tick — auto executes, semi proposes, failure backoff, stale expiry."""
 from __future__ import annotations
+import threading
 import autopilot as ap
 import autopilot_planner as pl
 
@@ -57,6 +58,31 @@ def test_duplicate_proposals_not_stacked():
     r, _, _ = _mk(auto=False)
     r.tick(now=1000.0); r.tick(now=1030.0)
     assert len(r.proposals()) == 1
+
+
+def test_proposals_read_does_not_block_on_held_lock():
+    """#472 Task 7 review: proposals() must read the lock-free snapshot,
+    not self._lock, so GET can't stall behind a long-running tick/apply."""
+    r, _, _ = _mk(auto=False)
+    r.tick(now=1000.0)
+    expected = r.proposals()
+    r._lock.acquire()
+    try:
+        done = threading.Event()
+        result = {}
+
+        def _read():
+            result["proposals"] = r.proposals()
+            done.set()
+
+        t = threading.Thread(target=_read)
+        t.start()
+        finished = done.wait(timeout=2.0)
+        t.join(timeout=2.0)
+    finally:
+        r._lock.release()
+    assert finished, "proposals() blocked while the main lock was held"
+    assert result["proposals"] == expected
 
 
 # --- Supplementary: ledger maintenance (#472 Task 4 review deferral) ---

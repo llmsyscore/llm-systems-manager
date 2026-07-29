@@ -25,10 +25,24 @@ def test_autoscale_defaults_applied_when_range_open():
     {"model": "m", "provider": "llama", "failover": "yolo"},
     {"model": "m", "provider": "llama", "min_replicas": 0},
     {"model": "m", "provider": "llama", "min_replicas": 3, "max_replicas": 2},
+    {"model": "m", "provider": "llama", "placement": ["x"]},
+    {"model": "m", "provider": "llama", "placement": {"a": 1}},
+    {"model": "m", "provider": "llama", "placement": 5},
+    {"model": "m", "provider": "llama", "placement": ""},
+    {"model": "m", "provider": "llama", "min_replicas": ["x"]},
+    {"model": "m", "provider": "llama", "max_replicas": ["x"]},
+    {"model": "m", "provider": "llama", "priority": ["x"]},
+    {"model": "m", "provider": "llama", "min_replicas": {"a": 1}},
 ])
 def test_invalid_entries_rejected(bad):
     with pytest.raises(ValueError):
         ap.validate_state({"enabled": True, "entries": [bad], "hosts": {}})
+
+
+def test_host_bad_numeric_type_rejected():
+    with pytest.raises(ValueError):
+        ap.validate_state({"enabled": True, "entries": [],
+                           "hosts": {"a" * 32: {"sleep_after_idle_min": ["x"]}}})
 
 def test_duplicate_model_provider_rejected():
     with pytest.raises(ValueError):

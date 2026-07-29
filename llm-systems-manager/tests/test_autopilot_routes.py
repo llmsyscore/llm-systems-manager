@@ -35,6 +35,16 @@ def test_put_rejects_bad_state_with_message(client):
         {"model": "", "provider": "llama"}], "hosts": {}})
     assert r.status_code == 400 and "model" in r.get_json()["error"]
 
+def test_put_rejects_structured_placement_400_not_500(client):
+    r = client.put("/api/autopilot", json={"enabled": True, "entries": [
+        {"model": "m1", "provider": "llama", "placement": ["x"]}], "hosts": {}})
+    assert r.status_code == 400 and "placement" in r.get_json()["error"]
+
+def test_put_rejects_non_numeric_min_replicas_400_not_500(client):
+    r = client.put("/api/autopilot", json={"enabled": True, "entries": [
+        {"model": "m1", "provider": "llama", "min_replicas": ["x"]}], "hosts": {}})
+    assert r.status_code == 400 and "min_replicas" in r.get_json()["error"]
+
 def test_apply_unknown_proposal_404(client):
     assert client.post("/api/autopilot/proposals/nope/apply").status_code == 404
 
