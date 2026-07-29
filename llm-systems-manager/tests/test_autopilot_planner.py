@@ -118,6 +118,23 @@ def test_one_migration_in_flight_globally():
     obs = _obs(_agents(**{A1: {"live": False}}))
     assert pl.plan(_desired([E]), obs, led, now=100000.0) == []
 
+def test_only_one_failover_load_per_plan_pass():
+    # Two entries each have a dead recorded placement; only ONE may migrate
+    # per pass even though a third agent has room and VRAM for both.
+    A3 = "c" * 32
+    e1, e2 = {**E, "model": "m1"}, {**E, "model": "m2"}
+    led = _ledger()
+    led["placed_at"]["m1/llama"] = {A1: 100.0}
+    led["placed_at"]["m2/llama"] = {A2: 100.0}
+    agents = _agents(**{A1: {"live": False}, A2: {"live": False}})
+    agents[A3] = {"provider_caps": ["llama"], "live": True, "vram_total_mb": 48000,
+                  "vram_free_mb": 48000, "loaded": {"llama": []},
+                  "server_state": "awake", "idle_since": None, "saturation": {}}
+    obs = {"agents": agents, "model_sizes_mb": {"llama:m1": 8000, "llama:m2": 8000}}
+    acts = pl.plan(_desired([e1, e2]), obs, led, now=100000.0)
+    failovers = [a for a in acts if a.reason.startswith("failover:")]
+    assert len(failovers) == 1
+
 def test_no_fail_back_when_original_agent_returns():
     # m1 now on A2 (after failover); A1 back up. Desired met -> no action.
     obs = _obs(_agents(**{A2: {"loaded": {"llama": ["m1"]}}}))

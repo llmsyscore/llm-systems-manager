@@ -66,6 +66,7 @@ def plan(desired: dict, observed: dict, ledger: dict, now: float) -> "list[Actio
     last_action_ts = ledger.get("last_action_ts") or {}
     placed_at = ledger.get("placed_at") or {}
     in_flight = ledger.get("in_flight_migrations") or 0
+    migrations_this_pass = 0             # failover loads queued so far in this pass
     touched: "set[str]" = set()          # agents with an action this pass
     entries = sorted(desired.get("entries") or [], key=lambda e: e["priority"])
     for e in entries:
@@ -81,14 +82,15 @@ def plan(desired: dict, observed: dict, ledger: dict, now: float) -> "list[Actio
         if _dwell_blocks(k, placed_at, observed, now):
             continue
         is_failover = _has_dead_candidate(e, candidates, observed)
-        if is_failover and in_flight >= 1:
-            continue
         for aid in candidates:
             if len(placed) >= want:
                 break
             if aid in placed or aid not in observed["agents"]:
                 continue
             if now - last_action_ts.get(aid, 0) < COOLDOWN_S:
+                continue
+            # Global cap: at most one failover-class load queued per pass.
+            if is_failover and in_flight + migrations_this_pass >= 1:
                 continue
             a = observed["agents"][aid]
             size = observed.get("model_sizes_mb", {}).get(
@@ -116,6 +118,8 @@ def plan(desired: dict, observed: dict, ledger: dict, now: float) -> "list[Actio
                 kind="load", provider=e["provider"], model=e["model"],
                 agent_id=aid, reason=reason, auto=auto, entry_key=k))
             touched.add(aid)
+            if is_failover:
+                migrations_this_pass += 1
     for aid, hcfg in (desired.get("hosts") or {}).items():
         mins = hcfg.get("sleep_after_idle_min") or 0
         if mins <= 0 or aid in touched:
