@@ -202,7 +202,7 @@ class Reconciler:
         import autopilot_planner as pl
         desired = self._get_state()
         observed = self._observe()
-        self._prune_placed_at(observed)
+        self._prune_placed_at(observed, now)
         self._refresh_sat_history(desired, observed, now)
         actions = pl.plan(desired, observed, self.ledger, now)
         sig = lambda a: (a.kind, a.provider, a.model, a.agent_id)
@@ -221,12 +221,15 @@ class Reconciler:
         return {"actions": [asdict(a) for a in actions],
                 "proposals": self.proposals()}
 
-    def _prune_placed_at(self, observed: dict) -> None:
+    def _prune_placed_at(self, observed: dict, now: float) -> None:
         """Drop placed_at[k][aid] once a live agent stops reporting the
-        model loaded; a dead agent's record stays (dwell/failover need it)."""
+        model loaded, past a COOLDOWN_S grace window; dead agents stay."""
+        import autopilot_planner as pl
         for k, amap in list(self.ledger["placed_at"].items()):
             model, _, provider = k.rpartition("/")
-            for aid in list(amap.keys()):
+            for aid, ts in list(amap.items()):
+                if now - ts < pl.COOLDOWN_S:
+                    continue
                 agent = observed["agents"].get(aid)
                 if agent is None or not agent["live"]:
                     continue

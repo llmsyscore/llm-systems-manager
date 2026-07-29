@@ -60,14 +60,18 @@ def test_duplicate_proposals_not_stacked():
 
 
 # --- Supplementary: ledger maintenance (#472 Task 4 review deferral) ---
-# placed_at pruning, sat_history ring, and in_flight_migrations bookkeeping
-# aren't exercised by the six verbatim tests above (their fixtures never
-# leave a stale placed_at entry or reach a failover-class action).
+# Covers placed_at pruning, sat_history ring, and in_flight_migrations.
 
-def test_placed_at_pruned_when_live_agent_no_longer_hosts_model():
+def test_placed_at_survives_within_cooldown_grace_window():
     r, _, _ = _mk(auto=False)
-    r.ledger["placed_at"]["m1/llama"] = {A1: 500.0}
-    r.tick(now=1000.0)
+    r.ledger["placed_at"]["m1/llama"] = {A1: 1000.0}
+    r.tick(now=1030.0)                                  # +30s, model still not visible
+    assert r.ledger["placed_at"]["m1/llama"][A1] == 1000.0
+
+def test_placed_at_pruned_after_grace_window_on_live_agent():
+    r, _, _ = _mk(auto=False)
+    r.ledger["placed_at"]["m1/llama"] = {A1: 1000.0}
+    r.tick(now=1000.0 + pl.COOLDOWN_S + 1)
     assert A1 not in r.ledger["placed_at"].get("m1/llama", {})
 
 def test_placed_at_not_pruned_for_dead_agent():
