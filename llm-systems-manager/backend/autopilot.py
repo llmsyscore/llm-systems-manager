@@ -2,13 +2,17 @@
 from __future__ import annotations
 
 import logging
+import sqlite3
 import sys
 import threading
 import time
 import uuid
 from dataclasses import asdict
+from datetime import datetime, timezone
+from pathlib import Path
 
 import agent_registry  # type: ignore[import-not-found]  # sibling
+import providers        # type: ignore[import-not-found]  # sibling
 
 log = logging.getLogger("llm-systems-manager.autopilot")
 
@@ -292,14 +296,186 @@ class Reconciler:
         self._proposals.pop(pid, None)
 
 
-def _no_op_executor(action) -> bool:
-    """Placeholder until Task 6 wires the real action executor; audits nothing."""
-    return False
+# ── Executors: dispatch a planned Action to provider-specific side effects ──
+
+def make_executor(deps: dict, entries_by_key):
+    """Build an executor(Action) -> bool per the #472 behavior matrix.
+    entries_by_key: dict[entry_key, entry] snapshot, or a zero-arg callable."""
+
+    def _entries() -> dict:
+        eb = entries_by_key() if callable(entries_by_key) else entries_by_key
+        return eb or {}
+
+    def _audit(action, outcome: str) -> None:
+        deps["audit"](f"autopilot:{action.kind}",
+                      f"{action.model}@{action.agent_id[:8]}", outcome)
+
+    def _route_replica(action, in_pool: bool) -> None:
+        entry = _entries().get(action.entry_key) or {}
+        if int(entry.get("max_replicas", 1)) > 1:
+            deps["pool_update"](action.provider, action.agent_id, in_pool)
+        elif in_pool:
+            deps["set_pin"](action.provider, action.model, action.agent_id)
+        else:
+            deps["set_pin"](action.provider, action.model, None)
+
+    def _load(action) -> bool:
+        provider, model, agent_id = action.provider, action.model, action.agent_id
+        if provider in ("llama", "lms"):
+            ok, _body = deps["proxy"](provider, "POST", f"/{provider}/load", {"model": model})
+        elif provider == "vllm":
+            ok = deps["vllm_svc"](agent_id, model)
+        else:
+            ok = False
+        if ok:
+            _route_replica(action, True)
+        return ok
+
+    def _unload(action) -> bool:
+        ok, _body = deps["proxy"](action.provider, "POST",
+                                  f"/{action.provider}/unload", {"model": action.model})
+        if ok:
+            _route_replica(action, False)
+        return ok
+
+    def execute(action) -> bool:
+        if action.kind == "download":
+            _audit(action, "refused")
+            return False
+        if action.provider == "vllm" and action.auto:
+            _audit(action, "refused")
+            return False
+        if action.kind == "sleep":
+            # No /llama/server/sleep agent route exists (only .../wake).
+            _audit(action, "unsupported")
+            return False
+
+        if action.kind in ("load", "scale_up"):
+            ok = _load(action)
+        elif action.kind in ("scale_down", "unload"):
+            ok = _unload(action)
+        elif action.kind == "wake":
+            ok, _body = deps["proxy"](action.provider, "POST", "/llama/server/wake", {})
+        else:
+            ok = False
+
+        _audit(action, "ok" if ok else "fail")
+        return ok
+
+    return execute
+
+
+# ── Production deps: wire make_executor's callables to real agent I/O ──────
+
+_METRICS_DB_PATH = Path(__file__).resolve().parents[2] / "data" / "metrics.db"
+
+
+def _prod_agent_call(agent_id: str, method: str, path: str,
+                     json_body: "dict | None" = None, timeout: float = 30):
+    """One HTTP hop to a specific agent id; headers match proxy_to_primary.
+    Returns (Response|None, body dict)."""
+    agent = agent_registry.resolve_agent_by_id(agent_id)
+    if not agent or not agent.get("token"):
+        return None, {}
+    headers = {"Authorization": f"Bearer {agent['token']}"}
+    r, _tried, _err = agent_registry.agent_request(
+        method, agent, path, headers=headers, timeout=timeout, json=json_body)
+    if r is None:
+        return None, {}
+    try:
+        body = r.json()
+    except Exception:
+        body = {}
+    return r, body
+
+
+def _make_prod_proxy(agent_id: str):
+    """proxy dep bound to one action's target agent_id."""
+    def _proxy(provider, method, path, json=None):
+        r, body = _prod_agent_call(agent_id, method, path, json)
+        return (r is not None and r.ok), body
+    return _proxy
+
+
+def _prod_set_pin(provider: str, model: str, agent_id: "str | None") -> None:
+    """Mutate glob[<provider>_model_pins] via the same lock+save helper
+    set_state() uses. Providers without a pin_dict_key (lms) are a no-op."""
+    spec = providers.get(provider)
+    pin_key = getattr(spec, "pin_dict_key", None)
+    if not pin_key:
+        return
+    with agent_registry.agents_lock:
+        data = agent_registry.load_agents()
+        glob = data.setdefault("global", {})
+        pins = dict(glob.get(pin_key) or {})
+        if agent_id:
+            pins[model] = agent_id
+        else:
+            pins.pop(model, None)
+        glob[pin_key] = pins
+        agent_registry.save_agents(data)
+
+
+def _prod_pool_update(provider: str, agent_id: str, in_pool: bool) -> bool:
+    ok, _err, _pool, _hostname = agent_registry.set_pool_membership(agent_id, provider, in_pool)
+    return ok
+
+
+def _prod_vllm_svc(agent_id: str, model: str) -> bool:
+    """Swap --model via the existing vllm svcconfig route (#125), restart
+    in the same POST — same mechanism the svcconfig UI modal uses."""
+    r, cur = _prod_agent_call(agent_id, "GET", "/vllm/server/svcconfig")
+    if r is None or not r.ok or not cur.get("ok"):
+        return False
+    args = [a for a in (cur.get("args") or []) if a.get("flag") != "--model"]
+    args.append({"flag": "--model", "value": model, "bool": False})
+    body = {"binary": cur.get("binary", ""), "args": args, "restart": True}
+    r2, _body2 = _prod_agent_call(agent_id, "POST", "/vllm/server/svcconfig", body, timeout=60)
+    return r2 is not None and r2.ok
+
+
+def _prod_audit(action_str: str, target: str, outcome: str) -> None:
+    """INSERT into the #217 audit_log table; write failures are logged,
+    never raised."""
+    try:
+        conn = sqlite3.connect(str(_METRICS_DB_PATH), timeout=5.0)
+        try:
+            conn.execute("PRAGMA busy_timeout=5000")
+            conn.execute(
+                "INSERT INTO audit_log (ts, actor, role, ip, method, path, action, target, status, outcome)"
+                " VALUES (?,?,?,?,?,?,?,?,?,?)",
+                (datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                 "autopilot", "system", "-", "", "", action_str, target, None, outcome))
+            conn.commit()
+        finally:
+            conn.close()
+    except Exception as e:
+        log.debug("autopilot audit write failed: %s", e)
+
+
+def _prod_executor_deps(agent_id: str) -> dict:
+    return {
+        "proxy": _make_prod_proxy(agent_id),
+        "set_pin": _prod_set_pin,
+        "pool_update": _prod_pool_update,
+        "audit": _prod_audit,
+        "vllm_svc": _prod_vllm_svc,
+    }
+
+
+def _prod_entries_by_key() -> dict:
+    return {f"{e['model']}/{e['provider']}": e for e in (get_state().get("entries") or [])}
+
+
+def _prod_executor(action) -> bool:
+    """Builds deps fresh per action (proxy bound to action.agent_id) and
+    reads entries_by_key live from get_state(), then dispatches."""
+    return make_executor(_prod_executor_deps(action.agent_id), _prod_entries_by_key)(action)
 
 
 RECONCILER = Reconciler(get_state=get_state,
                         build_observed=lambda: build_observed(_prod_deps()),
-                        executor=_no_op_executor)
+                        executor=_prod_executor)
 
 _TICK_PERIOD_S = 30
 

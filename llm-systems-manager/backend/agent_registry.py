@@ -1567,13 +1567,11 @@ def _agents_push_llama_state(agent_id: str):
     return jsonify({"ok": True, "applied": True, "state": state, "interval": _deps.get_interval()})
 
 
-def _agents_set_pool(agent_id: str, provider: str):
-    deny = _deps.require_admin()
-    if deny is not None:
-        return deny
-    body = flask_request.get_json(force=True) or {}
-    in_pool = bool(body.get("in_pool", True))
-    position = body.get("position")
+def set_pool_membership(agent_id: str, provider: str, in_pool: bool,
+                        position: "int | None" = None
+                        ) -> "tuple[bool, str | None, list | None, str | None]":
+    """Add/remove/reorder agent_id in <provider>_pool; shared by the pool
+    route and the autopilot executor. Returns (ok, error, pool, hostname)."""
     spec = providers.get(provider)
     cap = spec.capability_key if spec else provider
     pool_key = f"{provider}_pool"
@@ -1582,14 +1580,13 @@ def _agents_set_pool(agent_id: str, provider: str):
         data = load_agents()
         agent = data["agents"].get(agent_id)
         if not agent:
-            return jsonify({"ok": False, "error": "unknown agent"}), 404
+            return False, "unknown agent", None, None
         if in_pool:
             caps = agent.get("capabilities", {}) or {}
             if not caps.get(cap):
-                return jsonify({"ok": False,
-                                "error": f"agent does not advertise {cap} capability"}), 400
+                return False, f"agent does not advertise {cap} capability", None, None
             if agent.get("status") != "approved":
-                return jsonify({"ok": False, "error": "agent not approved"}), 400
+                return False, "agent not approved", None, None
 
         glob = data.setdefault("global", {})
         pool = list(glob.get(pool_key) or [])
@@ -1605,9 +1602,26 @@ def _agents_set_pool(agent_id: str, provider: str):
         glob[pool_key] = pool
         save_agents(data)
 
+    return True, None, pool, agent.get("hostname")
+
+
+def _agents_set_pool(agent_id: str, provider: str):
+    deny = _deps.require_admin()
+    if deny is not None:
+        return deny
+    body = flask_request.get_json(force=True) or {}
+    in_pool = bool(body.get("in_pool", True))
+    position = body.get("position")
+
+    ok, err, pool, hostname = set_pool_membership(agent_id, provider, in_pool, position)
+    if not ok:
+        status = 404 if err == "unknown agent" else 400
+        return jsonify({"ok": False, "error": err}), status
+
+    pool_key = f"{provider}_pool"
     log.info("%s %s by %s: agent=%s host=%s; pool=%s",
              pool_key, "add/move" if in_pool else "remove",
-             flask_request.remote_addr, agent_id, agent.get("hostname"), pool)
+             flask_request.remote_addr, agent_id, hostname, pool)
     return jsonify({"ok": True, pool_key: pool})
 
 
