@@ -63,6 +63,47 @@ function _num(field, value, min) {
   return i;
 }
 
+// Injectable model/placement datalist source (#472) — wiring populates this
+// from admin.js's provider-models endpoint + agent cache; tests inject
+// fixtures directly (AP.setCatalog) so entryRow needs no network.
+let _catalog = { models: {}, agents: [] };
+function setCatalog(catalog) {
+  _catalog = { models: (catalog && catalog.models) || {},
+               agents: (catalog && catalog.agents) || [] };
+}
+
+let _rowSeq = 0;
+
+// Model id -> hosts serving it; same option shape as admin.js's pin-editor
+// datalist (value = id, label = "on: host1, host2").
+function _fillModelOptions(dl, provider) {
+  dl.replaceChildren();
+  (_catalog.models[provider] || []).forEach(m => {
+    const opt = document.createElement('option');
+    opt.value = m.id;
+    if (m.agents && m.agents.length) opt.textContent = 'on: ' + m.agents.join(', ');
+    dl.appendChild(opt);
+  });
+}
+
+// "auto" plus every approved agent advertising provider's capability;
+// value = agent id (what readEntries needs back), label = hostname.
+function _fillPlacementOptions(dl, provider) {
+  dl.replaceChildren();
+  const auto = document.createElement('option');
+  auto.value = 'auto';
+  auto.textContent = 'auto (pool logic)';
+  dl.appendChild(auto);
+  _catalog.agents
+    .filter(a => a && a.status === 'approved' && (a.capabilities || {})[provider])
+    .forEach(a => {
+      const opt = document.createElement('option');
+      opt.value = a.agent_id;
+      opt.textContent = a.hostname || (a.agent_id || '').slice(0, 8);
+      dl.appendChild(opt);
+    });
+}
+
 // Builds one entry's editor row: inputs/selects tagged data-field, plus the
 // vLLM "manual-apply only" badge (kept live via the provider select's change).
 function entryRow(entry) {
@@ -74,13 +115,25 @@ function entryRow(entry) {
     try { row.dataset.autoscale = JSON.stringify(entry.autoscale); } catch (_) { /* ignore */ }
   }
 
-  row.appendChild(_labeled('model', _text('model', entry.model, 'ap-input ap-model', 'model id')));
+  const seq = ++_rowSeq;
+  const modelsDl = document.createElement('datalist');
+  modelsDl.id = `apModelsDl${seq}`;
+  const placementDl = document.createElement('datalist');
+  placementDl.id = `apPlacementDl${seq}`;
+
+  const modelInput = _text('model', entry.model, 'ap-input ap-model', 'model id');
+  modelInput.setAttribute('list', modelsDl.id);
+  row.appendChild(_labeled('model', modelInput));
+  row.appendChild(modelsDl);
 
   const provider = _select('provider', PROVIDERS, entry.provider || 'llama');
   row.appendChild(_labeled('provider', provider));
 
-  row.appendChild(_labeled('placement', _text('placement', entry.placement || 'auto',
-    'ap-input ap-placement', 'auto or agent id')));
+  const placementInput = _text('placement', entry.placement || 'auto',
+    'ap-input ap-placement', 'auto or agent id');
+  placementInput.setAttribute('list', placementDl.id);
+  row.appendChild(_labeled('placement', placementInput));
+  row.appendChild(placementDl);
 
   row.appendChild(_labeled('failover', _select('failover', FAILOVER, entry.failover || 'semi')));
 
@@ -88,11 +141,16 @@ function entryRow(entry) {
   row.appendChild(_labeled('min replicas', _num('min_replicas', entry.min_replicas ?? 1, 1)));
   row.appendChild(_labeled('max replicas', _num('max_replicas', entry.max_replicas ?? 1, 1)));
 
+  _fillModelOptions(modelsDl, provider.value);
+  _fillPlacementOptions(placementDl, provider.value);
+
   const badge = el('span', 'status status--warn ap-vllm-badge', 'manual-apply only');
   badge.title = 'vLLM entries can never auto-execute — proposals always need a manual Apply.';
   badge.style.display = (entry.provider === 'vllm') ? '' : 'none';
   provider.addEventListener('change', () => {
     badge.style.display = (provider.value === 'vllm') ? '' : 'none';
+    _fillModelOptions(modelsDl, provider.value);
+    _fillPlacementOptions(placementDl, provider.value);
   });
   row.appendChild(badge);
 
@@ -248,13 +306,39 @@ function _render() {
   _renderEntries();
 }
 
+// Providers with a /api/admin/<name>-models endpoint (same one admin.js's
+// pin editor uses — pool_provider_names() server-side; 'lms' has none).
+const _MODEL_LIST_PROVIDERS = ['llama', 'vllm'];
+
+// Refreshes the model/placement datalist source. Fire-and-forget, mirrors
+// admin.js's "adminLoadProviderModels(); // fire-and-forget" comment.
+async function _refreshCatalog() {
+  const models = { ..._catalog.models };
+  await Promise.all(_MODEL_LIST_PROVIDERS.map(async prov => {
+    try {
+      const r = await fetch(`/api/admin/${prov}-models`);
+      if (!r.ok) return;
+      const d = await r.json();
+      models[prov] = d.models || [];
+    } catch (_) { /* keep the previous list for this provider */ }
+  }));
+  // _adminAgentsCache is admin.js's agent cache (same script scope, kept
+  // fresh by its own 20s refresh) — reused rather than a parallel fetch.
+  const agents = typeof _adminAgentsCache !== 'undefined' ? _adminAgentsCache : _catalog.agents;
+  setCatalog({ models, agents });
+}
+
 async function fetchState() {
+  // Runs alongside the state fetch (not serially); awaited below so
+  // entries render with a fresh catalog instead of a stale/empty one.
+  const catalogP = _refreshCatalog();
   try {
     const r = await fetch('/api/autopilot');
     const d = await r.json();
     if (!r.ok) throw new Error(d.error || ('HTTP ' + r.status));
     _lastState = d.state || { enabled: false, entries: [], hosts: {} };
     _lastProposals = d.proposals || [];
+    await catalogP;
     _render();
   } catch (e) {
     _setStatus('load failed: ' + e.message, true);
@@ -300,10 +384,24 @@ async function dismissProposal(id) {
   fetchState();
 }
 
+// Surfaces the tick result on apSaveStatus — otherwise a satisfied fleet
+// (zero actions) makes "Plan now" look like a dead button (#472).
 async function planNow() {
   try {
-    await fetch('/api/autopilot/tick', { method: 'POST' });
-  } catch (_) { /* surfaced by the next fetchState() render */ }
+    const r = await fetch('/api/autopilot/tick', { method: 'POST' });
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok) {
+      _setStatus('✗ plan failed: ' + (d.error || ('HTTP ' + r.status)), true);
+    } else {
+      const actions = d.actions || [];
+      const proposals = d.proposals || [];
+      _setStatus(actions.length
+        ? `plan: ${actions.length} action(s), ${proposals.length} proposal(s) pending`
+        : 'plan: no actions needed — desired state satisfied');
+    }
+  } catch (e) {
+    _setStatus('✗ plan failed: ' + e.message, true);
+  }
   fetchState();
 }
 
@@ -354,8 +452,8 @@ function poll() {
   fetchState();
 }
 
-const AP = { entryRow, readEntries, proposalRow, statusChip, init, poll, save, addEntry,
-             applyProposal, dismissProposal, planNow, fetchState };
+const AP = { entryRow, readEntries, proposalRow, statusChip, setCatalog, init, poll, save,
+             addEntry, applyProposal, dismissProposal, planNow, fetchState };
 
 if (typeof root !== 'undefined') root.AP = AP;
 if (typeof module !== 'undefined' && module.exports) module.exports.AP = AP;
