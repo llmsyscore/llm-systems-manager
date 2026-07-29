@@ -13,6 +13,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import agent_registry  # type: ignore[import-not-found]  # sibling
+import autopilot_planner as pl  # type: ignore[import-not-found]  # sibling
 import providers        # type: ignore[import-not-found]  # sibling
 
 log = logging.getLogger("llm-systems-manager.autopilot")
@@ -230,7 +231,6 @@ class Reconciler:
 
     def tick(self, now: float) -> dict:
         with self._lock:
-            import autopilot_planner as pl
             desired = self._get_state()
             observed = self._observe()
             self._prune_placed_at(observed, now)
@@ -257,7 +257,6 @@ class Reconciler:
     def _prune_placed_at(self, observed: dict, now: float) -> None:
         """Drop placed_at[k][aid] once a live agent stops reporting the
         model loaded, past a COOLDOWN_S grace window; dead agents stay."""
-        import autopilot_planner as pl
         for k, amap in list(self.ledger["placed_at"].items()):
             model, _, provider = k.rpartition("/")
             for aid, ts in list(amap.items()):
@@ -321,8 +320,7 @@ class Reconciler:
             p = self._proposals.pop(pid, None)
             if not p:
                 raise KeyError(pid)
-            from autopilot_planner import Action
-            ok = self._run(Action(**p["action"]), now if now is not None
+            ok = self._run(pl.Action(**p["action"]), now if now is not None
                            else _t.time())
             self._refresh_snapshot()
             return {"ok": ok, "action": p["action"]}

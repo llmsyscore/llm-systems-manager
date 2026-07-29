@@ -1,7 +1,6 @@
 """#472: executor behavior matrix + audit + routing side-effects."""
 from __future__ import annotations
 import sqlite3
-import pytest
 import autopilot as ap
 from autopilot_planner import Action
 
