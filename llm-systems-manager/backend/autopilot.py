@@ -6,7 +6,10 @@ import agent_registry  # type: ignore[import-not-found]  # sibling
 _PROVIDERS = ("llama", "vllm", "lms")
 _AUTOSCALE_DEFAULTS = {"target_saturation": 0.75, "up_window_s": 120,
                        "down_window_s": 900}
-_DEFAULT_STATE = {"enabled": False, "entries": [], "hosts": {}}
+
+
+def _default_state() -> dict:
+    return {"enabled": False, "entries": [], "hosts": {}}
 
 
 def validate_state(raw: dict) -> dict:
@@ -45,7 +48,7 @@ def validate_state(raw: dict) -> dict:
 
 def get_state() -> dict:
     data = agent_registry.load_agents()
-    return (data.get("global") or {}).get("autopilot") or dict(_DEFAULT_STATE)
+    return (data.get("global") or {}).get("autopilot") or _default_state()
 
 
 def set_state(state: dict) -> None:
