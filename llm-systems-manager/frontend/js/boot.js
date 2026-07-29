@@ -50,7 +50,7 @@ let _mgrPerfBackfilled = false;
 const _SUB_TAB_MAP = {
   dashboard: { tabId: 'dashboardTab', prefix: 'dash',  subs: ['llamacpp','lmstudio','vllm','openclaw','manager'] },
   llm:       { tabId: 'llmTab',       prefix: 'llm',   subs: ['llamacpp','lmstudio','vllm','reportcard'] },
-  admin:     { tabId: 'adminTab',     prefix: 'admin', subs: ['agents','pool','backup','auth','users','audit'] },
+  admin:     { tabId: 'adminTab',     prefix: 'admin', subs: ['agents','pool','backup','auth','users','audit','autopilot'] },
 };
 
 function switchSubTab(parent, sub) {
@@ -137,6 +137,10 @@ function switchSubTab(parent, sub) {
   if (parent === 'admin' && sub === 'backup') {
     if (typeof adminLoadBackupStatus === 'function') adminLoadBackupStatus();
   }
+  // Autopilot sub-tab populates its editor + proposals on open (#472).
+  if (parent === 'admin' && sub === 'autopilot') {
+    if (typeof AP !== 'undefined' && AP.init) AP.init();
+  }
 }
 
 // Boot
@@ -191,6 +195,10 @@ function switchSubTab(parent, sub) {
   setInterval(fetchManagerAgentsCard, 10000);
   fetchManagerStreamsCard();
   setInterval(fetchManagerStreamsCard, 10000);
+  // Autopilot proposals/state poll — AP.poll() itself no-ops off-tab (#472).
+  if (typeof AP !== 'undefined' && AP.poll) {
+    setInterval(AP.poll, 10000);
+  }
   // Tab status dots (Events / Admin) update regardless of the active tab.
   refreshTabIndicators();
   setInterval(refreshTabIndicators, 30000);

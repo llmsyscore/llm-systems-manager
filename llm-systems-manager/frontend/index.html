@@ -458,6 +458,7 @@ Backend API endpoints consumed:
         <button class="sub-tab-btn"        id="subTabBtnAdminAuth"    onclick="switchSubTab('admin','auth')">Authentication</button>
         <button class="sub-tab-btn"        id="subTabBtnAdminUsers"   onclick="switchSubTab('admin','users')">Users</button>
         <button class="sub-tab-btn"        id="subTabBtnAdminAudit"   onclick="switchSubTab('admin','audit')">Audit Log</button>
+        <button class="sub-tab-btn"        id="subTabBtnAdminAutopilot" onclick="switchSubTab('admin','autopilot')">Autopilot</button>
       </div>
 
       <!-- Agents sub-tab (landing) -->
@@ -677,6 +678,35 @@ Backend API endpoints consumed:
             <button class="adm-btn" id="adminAuditOlder" onclick="adminAuditPage(1)">Older ›</button>
             <span class="adm-muted" id="adminAuditPageInfo"></span>
           </div>
+        </div>
+      </div>
+
+      <!-- Autopilot sub-tab (#472) -->
+      <div id="admin-autopilot" class="sub-tab-panel">
+        <div class="adm-card" id="apEntriesCard">
+          <div class="adm-card-hdr">
+            <div class="adm-title">Fleet Autopilot</div>
+            <div class="adm-spacer"></div>
+            <label class="adm-toggle" title="When enabled, autopilot may place, fail over, and auto-scale entries per each entry's failover setting. vLLM entries always require a manual Apply.">
+              <input type="checkbox" id="apEnabledToggle">
+              <span>Enabled</span>
+            </label>
+            <button class="adm-btn" id="apAddEntryBtn">+ Add entry</button>
+            <button class="adm-btn primary" id="apSaveBtn">Save</button>
+            <button class="adm-refresh" id="apPlanNowBtn" title="Run the planner immediately instead of waiting for the next tick">↻ Plan now</button>
+          </div>
+          <div id="apEntriesBody" class="ap-entries-body"></div>
+          <div class="adm-backup-actions" style="padding:0 20px 14px;">
+            <span class="adm-muted" id="apSaveStatus"></span>
+          </div>
+        </div>
+        <div class="adm-card" id="apProposalsCard">
+          <div class="adm-card-hdr">
+            <div class="adm-title">Pending proposals</div>
+            <div class="adm-spacer"></div>
+            <button class="adm-refresh" id="apProposalsRefreshBtn" title="Auto-refreshes every 10s">↻ Refresh</button>
+          </div>
+          <div id="apProposalsBody" class="ap-proposals-body"></div>
         </div>
       </div>
     </div>
@@ -1733,6 +1763,7 @@ Backend API endpoints consumed:
 <script src="/static/js/llmcontrol.js?v=2026.07.11-1"></script>
 <script src="/static/js/openclaw.js?v=2026.06.10-7"></script>
 <script src="/static/js/admin.js?v=2026.07.15-2"></script>
+<script src="/static/js/autopilot.js?v=2026.07.29-1"></script>
 <script src="/static/js/llmcontrol-models.js?v=2026.06.10-6"></script>
 <script src="/static/js/bench-autotune.js?v=2026.06.25-9"></script>
 <script src="/static/js/lmstudio.js?v=2026.06.26-3"></script>
