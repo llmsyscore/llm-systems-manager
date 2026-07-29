@@ -63,7 +63,8 @@ def plan(desired: dict, observed: dict, ledger: dict, now: float) -> "list[Actio
             size = observed.get("model_sizes_mb", {}).get(
                 f"{e['provider']}:{e['model']}")
             if e["placement"] != "auto" and aid == e["placement"]:
-                fit = size is not None and free.get(aid, 0) >= size + VRAM_HEADROOM_MB \
+                fit = e["provider"] in observed["agents"][aid]["provider_caps"] and \
+                      size is not None and free.get(aid, 0) >= size + VRAM_HEADROOM_MB \
                       and observed["agents"][aid]["live"]
             else:
                 fit = _fits(e, aid, observed) and \

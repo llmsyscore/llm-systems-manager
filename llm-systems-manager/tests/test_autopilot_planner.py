@@ -86,3 +86,9 @@ def test_auto_flag_carried_when_enabled():
     e = {**E, "failover": "auto"}
     acts = pl.plan(_desired([e]), _obs(_agents()), _ledger(), now=1000.0)
     assert acts[0].auto is True
+
+def test_pin_placement_enforces_provider_capability():
+    # Pin llama entry to A2 which only has vllm capability
+    e = {**E, "placement": A2}
+    obs = _obs(_agents(**{A2: {"provider_caps": ["vllm"], "vram_free_mb": 20000}}))
+    assert pl.plan(_desired([e]), obs, _ledger(), now=1000.0) == []
