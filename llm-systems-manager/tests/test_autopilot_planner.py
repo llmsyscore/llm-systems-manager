@@ -92,3 +92,57 @@ def test_pin_placement_enforces_provider_capability():
     e = {**E, "placement": A2}
     obs = _obs(_agents(**{A2: {"provider_caps": ["vllm"], "vram_free_mb": 20000}}))
     assert pl.plan(_desired([e]), obs, _ledger(), now=1000.0) == []
+
+def test_cooldown_suppresses_agent_actions():
+    led = _ledger(); led["last_action_ts"][A1] = 950.0     # 50s ago < 120s
+    led2 = _ledger()
+    obs = _obs(_agents(**{A2: {"live": False}}))
+    acts = pl.plan(_desired([E]), obs, led, now=1000.0)
+    assert acts == []
+    assert pl.plan(_desired([E]), obs, led2, now=1000.0)   # control
+
+def test_dwell_blocks_replan_of_recent_placement():
+    led = _ledger(); led["placed_at"]["m1/llama"] = {A1: 900.0}
+    obs = _obs(_agents(**{A1: {"live": False}}))            # A1 just died
+    # within DWELL_S of placement -> no migration yet
+    assert pl.plan(_desired([E]), obs, led, now=1000.0) == []
+
+def test_failover_migrates_after_dwell():
+    led = _ledger(); led["placed_at"]["m1/llama"] = {A1: 100.0}
+    obs = _obs(_agents(**{A1: {"live": False}}))
+    acts = pl.plan(_desired([E]), obs, led, now=100000.0)
+    assert [a.kind for a in acts] == ["load"] and acts[0].agent_id == A2
+
+def test_one_migration_in_flight_globally():
+    led = _ledger(); led["in_flight_migrations"] = 1
+    obs = _obs(_agents(**{A1: {"live": False}}))
+    assert pl.plan(_desired([E]), obs, led, now=100000.0) == []
+
+def test_no_fail_back_when_original_agent_returns():
+    # m1 now on A2 (after failover); A1 back up. Desired met -> no action.
+    obs = _obs(_agents(**{A2: {"loaded": {"llama": ["m1"]}}}))
+    assert pl.plan(_desired([E]), obs, _ledger(), now=100000.0) == []
+
+def test_wake_ordered_before_load_on_sleeping_host():
+    obs = _obs(_agents(**{A1: {"live": False},
+                          A2: {"server_state": "sleeping"}}))
+    acts = pl.plan(_desired([E]), obs, _ledger(), now=100000.0)
+    assert [a.kind for a in acts] == ["wake", "load"]
+    assert acts[0].agent_id == acts[1].agent_id == A2
+
+def test_idle_host_gets_sleep_proposal():
+    des = _desired([]); des["hosts"] = {A1: {"sleep_after_idle_min": 30}}
+    obs = _obs(_agents(**{A1: {"idle_since": 1000.0}}))
+    acts = pl.plan(des, obs, _ledger(), now=1000.0 + 31 * 60)
+    assert [a.kind for a in acts] == ["sleep"] and acts[0].agent_id == A1
+
+def test_idle_below_threshold_no_sleep():
+    des = _desired([]); des["hosts"] = {A1: {"sleep_after_idle_min": 30}}
+    obs = _obs(_agents(**{A1: {"idle_since": 1000.0}}))
+    assert pl.plan(des, obs, _ledger(), now=1000.0 + 29 * 60) == []
+
+def test_sleep_never_planned_for_lms_host():
+    des = _desired([]); des["hosts"] = {A1: {"sleep_after_idle_min": 30}}
+    ag = _agents(**{A1: {"provider_caps": ["lms"], "idle_since": 1000.0}})
+    assert pl.plan(des, {"agents": ag, "model_sizes_mb": {}}, _ledger(),
+                   now=1000.0 + 31 * 60) == []
