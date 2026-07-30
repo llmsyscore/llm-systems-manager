@@ -437,6 +437,62 @@ def test_build_observed_missing_size_still_blocks_placement():
     assert actions == []
 
 
+# ── #474: entry size_mb overrides -> build_observed merge ──────────────
+
+def test_build_observed_merges_size_overrides_over_discovered():
+    deps = _base_deps()
+    deps["size_overrides"] = lambda: {"vllm:big": 15000, "llama:m1": 9000}
+    observed = ap.build_observed(deps)
+    # New keys are added; an operator value beats the discovered 8000.
+    assert observed["model_sizes_mb"] == {"llama:m1": 9000, "vllm:big": 15000}
+
+
+def test_build_observed_without_size_overrides_dep_unchanged():
+    observed = ap.build_observed(_base_deps())
+    assert observed["model_sizes_mb"] == {"llama:m1": 8000}
+
+
+def test_state_size_overrides_reads_entry_size_mb(monkeypatch):
+    st = {"enabled": True, "hosts": {}, "entries": [
+        {"model": "big", "provider": "vllm", "size_mb": 15000},
+        {"model": "m1", "provider": "llama"},
+        {"model": "weird", "provider": "lms", "size_mb": "not-int"}]}
+    monkeypatch.setattr(ap, "get_state", lambda: st)
+    assert ap._state_size_overrides() == {"vllm:big": 15000}
+
+
+def test_size_override_unblocks_vllm_placement_end_to_end():
+    """#474 proof: a vLLM entry (no discovery source) becomes placeable
+    once its entry-declared size_mb flows through build_observed."""
+    def fake_agents():
+        return {"agents": {A1: {"capabilities": {"vllm": True},
+                                "status": "approved"}}}
+    deps = {"agents": fake_agents, "liveness": lambda a: "live",
+            "provider_snapshot": lambda prov, aid: {"sample": {
+                "system": {"gpu": {"vram_total_bytes": 24 * 1024 ** 3,
+                                   "vram_used_mb": 1000}}}},
+            "saturation": lambda prov, aid: {"value": None},
+            "model_sizes": lambda: {},
+            "model_gpu_layers": lambda: {},
+            "size_overrides": lambda: {"vllm:qwen3-14b": 15000}}
+    observed = ap.build_observed(deps)
+    desired = {"enabled": True, "hosts": {}, "entries": [
+        {"model": "qwen3-14b", "provider": "vllm", "placement": "auto",
+         "failover": "semi", "priority": 100, "min_replicas": 1,
+         "max_replicas": 1, "size_mb": 15000}]}
+    ledger = {"last_action_ts": {}, "placed_at": {}, "in_flight_migrations": 0,
+              "backoff_until": {}}
+    actions = pl.plan(desired, observed, ledger, now=1000.0)
+    assert len(actions) == 1
+    assert actions[0].kind == "load" and actions[0].provider == "vllm"
+    assert actions[0].auto is False          # vLLM never auto-executes
+
+    # Control: same setup minus the override stays blocked.
+    deps["size_overrides"] = lambda: {}
+    blocked = pl.plan(desired, ap.build_observed(deps), ledger, now=1000.0)
+    assert blocked == []
+
+
 def test_build_observed_prod_shaped_ram_path_unblocks_cpu_served_model():
     """End-to-end offload-aware proof (#475): a llama model with gpu_layers=0
     and zero VRAM but ample pushed RAM still gets placed, via build_observed's

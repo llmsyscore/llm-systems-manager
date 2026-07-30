@@ -33,10 +33,35 @@ def test_autoscale_defaults_applied_when_range_open():
     {"model": "m", "provider": "llama", "max_replicas": ["x"]},
     {"model": "m", "provider": "llama", "priority": ["x"]},
     {"model": "m", "provider": "llama", "min_replicas": {"a": 1}},
+    {"model": "m", "provider": "llama", "size_mb": 0},
+    {"model": "m", "provider": "llama", "size_mb": -5},
+    {"model": "m", "provider": "llama", "size_mb": ["x"]},
+    {"model": "m", "provider": "llama", "size_mb": "garbage"},
 ])
 def test_invalid_entries_rejected(bad):
     with pytest.raises(ValueError):
         ap.validate_state({"enabled": True, "entries": [bad], "hosts": {}})
+
+
+def test_entry_size_mb_kept_and_coerced():
+    st = ap.validate_state({"enabled": True, "entries": [
+        {"model": "m1", "provider": "vllm", "size_mb": 15000},
+        {"model": "m2", "provider": "llama", "size_mb": "8192"}], "hosts": {}})
+    assert st["entries"][0]["size_mb"] == 15000
+    assert st["entries"][1]["size_mb"] == 8192
+
+
+@pytest.mark.parametrize("blank", [None, ""])
+def test_entry_size_mb_blank_means_absent(blank):
+    st = ap.validate_state({"enabled": True, "entries": [
+        {"model": "m1", "provider": "vllm", "size_mb": blank}], "hosts": {}})
+    assert "size_mb" not in st["entries"][0]
+
+
+def test_entry_size_mb_absent_key_stays_absent():
+    st = ap.validate_state({"enabled": True, "entries": [
+        {"model": "m1", "provider": "vllm"}], "hosts": {}})
+    assert "size_mb" not in st["entries"][0]
 
 
 def test_host_bad_numeric_type_rejected():
