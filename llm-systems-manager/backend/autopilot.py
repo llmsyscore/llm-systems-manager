@@ -241,8 +241,13 @@ def _lms_agent_sizes(agents_map: dict) -> dict:
             continue
         snap = provider_state.STORE.get("lms", aid) or {}
         for row in (snap.get("sample") or {}).get("ps") or []:
-            model = row.get("model")
-            mb = _parse_lms_size_mb(row.get("size"))
+            if not isinstance(row, dict):
+                continue
+            try:
+                model = row.get("model")
+                mb = _parse_lms_size_mb(row.get("size"))
+            except Exception:
+                continue
             if model and mb:
                 out[model] = max(mb, out.get(model, 0))
     return out
@@ -282,6 +287,9 @@ def _prod_model_sizes() -> dict:
     except Exception as e:
         log.warning("model-size refresh failed, serving stale cache: %s", e)
         with _sizes_lock:
+            # Advance ts even on failure — a bad refresh backs off for a full
+            # TTL window instead of re-fanning-out on every subsequent call.
+            _sizes_cache["ts"] = time.time()
             _sizes_refreshing = False
         return dict(_sizes_cache["sizes"])
     with _sizes_lock:

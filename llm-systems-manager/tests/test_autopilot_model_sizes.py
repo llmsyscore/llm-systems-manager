@@ -122,6 +122,58 @@ def test_refresh_model_sizes_includes_lms_from_pushed_state(monkeypatch):
     assert merged == {"lms:qwen2.5-7b": 6656}
 
 
+# ── Review fix: a malformed lms 'ps' row must not raise (#472 follow-up) ──
+
+class _EvilRow(dict):
+    """A dict-shaped row whose .get() itself blows up — exercises the
+    try/except, not just the isinstance(row, dict) guard."""
+    def get(self, key, default=None):
+        raise RuntimeError("row.get() boom")
+
+
+def test_lms_agent_sizes_skips_malformed_rows_without_raising():
+    import provider_state
+    agents = {
+        A1: {"status": "approved", "capabilities": {"lms": True}, "hostname": "h1"},
+        A2: {"status": "approved", "capabilities": {"lms": True}, "hostname": "h2"},
+    }
+    provider_state.STORE.put("lms", A1, {"ps": [
+        "not-a-dict", 42, None, _EvilRow({"model": "evil", "size": "1 GB"}),
+        {"model": "good-model", "status": "LOADED", "size": "2.00 GB"},
+    ]})
+    provider_state.STORE.put("lms", A2, {"ps": [
+        {"model": "other-model", "status": "LOADED", "size": "1.00 GB"}]})
+    try:
+        out = ap._lms_agent_sizes(agents)          # must not raise
+    finally:
+        provider_state.STORE.evict(A1)
+        provider_state.STORE.evict(A2)
+    assert out == {"good-model": 2048, "other-model": 1024}
+
+
+def test_refresh_model_sizes_survives_malformed_lms_row_alongside_llama(monkeypatch):
+    """Other providers' sizes are still returned when one lms row is garbage."""
+    import provider_state
+    agents = {
+        A1: {"status": "approved", "capabilities": {"llama": True}, "hostname": "h1"},
+        A2: {"status": "approved", "capabilities": {"lms": True}, "hostname": "h2"},
+    }
+    monkeypatch.setattr(agent_registry, "load_agents", lambda: {"agents": agents})
+
+    class _Resp:
+        ok = True
+        def json(self_inner):
+            return {"sizes": {"m1": 4096 * 1024 * 1024}}
+    monkeypatch.setattr(agent_registry, "agent_request",
+                        lambda *a, **k: (_Resp(), [], None))
+    provider_state.STORE.put("lms", A2, {"ps": ["not-a-dict", None]})
+    try:
+        merged = ap._refresh_model_sizes()          # must not raise
+    finally:
+        provider_state.STORE.evict(A2)
+    assert merged == {"llama:m1": 4096}
+
+
 # ── _prod_model_sizes: TTL cache, in-flight guard, stale-on-failure ────
 
 def test_prod_model_sizes_no_refetch_within_ttl(monkeypatch):
@@ -167,6 +219,32 @@ def test_prod_model_sizes_serves_stale_cache_on_refresh_failure(monkeypatch):
     monkeypatch.setattr(ap, "_refresh_model_sizes", _boom)
     assert ap._prod_model_sizes() == {"llama:old": 42}
     assert ap._sizes_refreshing is False     # guard released so a later call can retry
+
+
+def test_prod_model_sizes_backs_off_after_failed_refresh_within_ttl(monkeypatch):
+    """#472 review fix: any exception during a refresh (e.g. a malformed
+    upstream body) must still advance ts, so a second call inside the TTL
+    window serves stale data instead of re-running the full agent fan-out —
+    reproduces the prior retry-storm (two calls -> two full fan-outs)."""
+    ap._sizes_cache["ts"] = 0.0
+    ap._sizes_cache["sizes"] = {"llama:old": 42}
+    agents = {A1: {"status": "approved", "capabilities": {"llama": True}, "hostname": "h1"}}
+    monkeypatch.setattr(agent_registry, "load_agents", lambda: {"agents": agents})
+
+    calls = []
+
+    def _fake_request(method, agent, path, **kw):
+        calls.append(1)
+        class _Resp:
+            ok = True
+            def json(self_inner):
+                return {"sizes": "not-a-dict"}      # malformed upstream body -> raises
+        return _Resp(), [], None
+    monkeypatch.setattr(agent_registry, "agent_request", _fake_request)
+
+    assert ap._prod_model_sizes() == {"llama:old": 42}
+    assert ap._prod_model_sizes() == {"llama:old": 42}   # no manual ts reset
+    assert len(calls) == 1        # second call served stale, no re-fan-out
 
 
 def test_prod_model_sizes_recovers_after_failed_refresh(monkeypatch):
