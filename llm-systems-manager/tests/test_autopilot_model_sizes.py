@@ -145,7 +145,7 @@ def test_refresh_model_sizes_gpu_layers_first_seen_wins_on_conflict(monkeypatch)
         gl = 0 if agent["hostname"] == "h1" else 32
         class _Resp:
             ok = True
-            def json(self_inner):
+            def json(self):
                 return {"sizes": {"m1": 1_048_576},
                         "meta": {"m1": {"gpu_layers": gl}}}
         return _Resp(), [], None

@@ -336,7 +336,7 @@ def test_fetch_model_entries_indexes_by_id(llama, monkeypatch):
                         lambda: _Ctx(ini_path="/dev/null", api_url="http://127.0.0.1:8081"))
 
     class _Resp:
-        def json(self_inner):
+        def json(self):
             return {"data": [{"id": "m1", "status": {"args": ["-ngl", "0"]}},
                              {"id": "m2"}]}
     monkeypatch.setattr(llama.requests, "get", lambda *a, **k: _Resp(), raising=False)
