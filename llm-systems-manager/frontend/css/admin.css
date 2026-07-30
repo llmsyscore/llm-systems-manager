@@ -310,7 +310,7 @@
     color:color-mix(in srgb, var(--crit) 70%, var(--fg));
   }
 
-  /* Autopilot cards on Fleet Routing (#472/#476) — entry editor + proposals queue */
+  /* Autopilot cards on Routing (#472/#476) — entry editor + proposals queue */
   #adminTab .ap-entries-body, #adminTab .ap-proposals-body {
     display:flex; flex-direction:column; gap:8px; padding:14px 20px;
   }

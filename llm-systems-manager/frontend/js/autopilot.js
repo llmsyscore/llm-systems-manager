@@ -493,7 +493,7 @@ function init() {
 }
 
 // Called by the boot-time 10s setInterval; only fetches while the
-// admin Fleet Routing sub-tab is actually visible.
+// admin Routing sub-tab is actually visible.
 function poll() {
   if (!_visible()) return;
   fetchState();

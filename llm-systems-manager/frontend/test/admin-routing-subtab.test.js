@@ -1,4 +1,4 @@
-// #476: Pools & Pins + Autopilot consolidated into one fleet-routing sub-tab,
+// #476: Pools & Pins + Autopilot consolidated into one routing sub-tab,
 // Admin sub-tabs alphabetized, Agents/Audit tables column-sortable.
 import { describe, it, expect, beforeAll } from 'vitest';
 import { readFileSync } from 'node:fs';
@@ -11,7 +11,7 @@ const adminSrc = readFileSync(join(root, 'js/admin.js'), 'utf8');
 const apSrc = readFileSync(join(root, 'js/autopilot.js'), 'utf8');
 const indexSrc = readFileSync(join(root, 'index.html'), 'utf8');
 
-describe('fleet-routing sub-tab consolidation (#476)', () => {
+describe('routing sub-tab consolidation (#476)', () => {
   beforeAll(() => {
     document.documentElement.innerHTML = indexSrc;
   });
@@ -29,10 +29,10 @@ describe('fleet-routing sub-tab consolidation (#476)', () => {
     expect(document.querySelector('#admin-routing #apProposalsBody')).toBeTruthy();
   });
 
-  it('nav has a single Fleet Routing button wired to the routing sub-tab', () => {
+  it('nav has a single Routing button wired to the routing sub-tab', () => {
     const btn = document.getElementById('subTabBtnAdminRouting');
     expect(btn).toBeTruthy();
-    expect(btn.textContent).toBe('Fleet Routing');
+    expect(btn.textContent).toBe('Routing');
     expect(btn.getAttribute('onclick')).toContain("switchSubTab('admin','routing')");
     expect(document.getElementById('subTabBtnAdminPool')).toBeNull();
     expect(document.getElementById('subTabBtnAdminAutopilot')).toBeNull();

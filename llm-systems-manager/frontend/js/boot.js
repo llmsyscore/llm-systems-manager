@@ -139,7 +139,7 @@ function switchSubTab(parent, sub) {
   if (parent === 'admin' && sub === 'backup') {
     if (typeof adminLoadBackupStatus === 'function') adminLoadBackupStatus();
   }
-  // Fleet Routing (pools/pins + autopilot, #476): the pool/pins cards render
+  // Routing (pools/pins + autopilot, #476): the pool/pins cards render
   // from the 20s agents refresh; the autopilot editor initializes on entry.
   if (parent === 'admin' && sub === 'routing') {
     if (typeof AP !== 'undefined' && AP.init) AP.init();
