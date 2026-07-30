@@ -922,7 +922,8 @@ def _locate_quant_files(model_id: str) -> "tuple[list[Path], Optional[str]]":
         else:
             matches.extend(
                 p for p in gguf_files
-                if quant_lower in p.name.lower() and not p.name.startswith("mmproj-")
+                if quant_lower in p.name.lower()
+                and not p.name.lower().startswith("mmproj-")
             )
     if not matches:
         return [], f"No quant files matched {quant!r} under {snapshots}"
@@ -966,7 +967,7 @@ def _model_gguf_size_bytes(model_id: str) -> "Optional[int]":
     return total or None
 
 
-_NGL_RE = re.compile(r"(?:--n-gpu-layers|-ngl)[=\s]+(\d+)")
+_NGL_RE = re.compile(r"(?<![\w-])(?:--n-gpu-layers|-ngl)[=\s]+(\d+)")
 
 
 def _extract_gpu_layers(node, _depth: int = 0) -> "Optional[int]":

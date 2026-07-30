@@ -162,6 +162,40 @@ def test_quant_matching_still_skips_mmproj_case_insensitively(llama, monkeypatch
     assert llama._model_gguf_size_bytes("org/repo:Q4_K_M") == 55
 
 
+def test_quant_matching_skips_uppercase_mmproj_prefix(llama, monkeypatch, tmp_path):
+    """Review fix: an UPPERCASE 'MMPROJ-' prefix must also be excluded, not
+    just a lowercase prefix with uppercase text elsewhere in the filename."""
+    cache_root = tmp_path / "hub"
+    snap = cache_root / "models--org--repo" / "snapshots" / "abc"
+    snap.mkdir(parents=True)
+    (snap / "MMPROJ-model-q4_k_m.gguf").write_bytes(b"x" * 10)
+    (snap / "model-q4_k_m.gguf").write_bytes(b"y" * 55)
+    monkeypatch.setattr(llama, "_hf_cache_root", lambda: cache_root)
+    monkeypatch.setattr(llama, "_llama_read_ini", lambda: _FakeCP({}))
+    assert llama._model_gguf_size_bytes("org/repo:Q4_K_M") == 55
+
+
+def test_delete_quant_skips_uppercase_mmproj_prefix(llama, monkeypatch, tmp_path):
+    """Same fix, delete path: an uppercase MMPROJ- file must not be swept
+    into the unlink candidates alongside the real quant file."""
+    cache_root = tmp_path / "hub"
+    snap = cache_root / "models--org--repo" / "snapshots" / "abc"
+    snap.mkdir(parents=True)
+    mmproj = snap / "MMPROJ-model-q4_k_m.gguf"
+    mmproj.write_bytes(b"x" * 10)
+    real = snap / "model-q4_k_m.gguf"
+    real.write_bytes(b"y" * 55)
+    monkeypatch.setattr(llama, "_require_ctx",
+                        lambda: (_ for _ in ()).throw(RuntimeError("no ctx")))
+    monkeypatch.setattr(llama, "_hf_cache_root", lambda: cache_root)
+    monkeypatch.setattr(llama, "_llama_read_ini", lambda: _FakeCP({}))
+    deleted, err = llama._delete_quant_from_hf_cache("org/repo:Q4_K_M")
+    assert err is None
+    assert str(real) in deleted
+    assert str(mmproj) not in deleted
+    assert mmproj.exists()          # never touched
+
+
 # ── delete behavior unchanged after the _locate_quant_files refactor ───
 
 def test_delete_quant_still_rejects_traversal(llama, monkeypatch):
@@ -271,6 +305,28 @@ def test_extract_gpu_layers_none_when_absent(llama):
 def test_extract_gpu_layers_none_for_empty_or_none(llama):
     assert llama._extract_gpu_layers({}) is None
     assert llama._extract_gpu_layers(None) is None
+
+
+# ── Review fix: _NGL_RE must not match "-ngl" as a bare substring (#472/#475) ──
+
+def test_extract_gpu_layers_ignores_ngl_as_word_substring_in_preset(llama):
+    """Reproduced false positive: 'quantized-ngl' is not the -ngl flag."""
+    entry = {"preset": "quantized-ngl 0 experimental"}
+    assert llama._extract_gpu_layers(entry) is None
+
+
+def test_extract_gpu_layers_ignores_ngl_as_word_substring_in_args(llama):
+    """Reproduced false positive: 'strong-ngl' is not the -ngl flag."""
+    entry = {"status": {"args": "strong-ngl 7b variant of the base model"}}
+    assert llama._extract_gpu_layers(entry) is None
+
+
+def test_extract_gpu_layers_still_matches_anchored_forms_after_fix(llama):
+    """The boundary fix must not regress any previously-valid form."""
+    assert llama._extract_gpu_layers({"status": {"args": "--n-gpu-layers=0"}}) == 0
+    assert llama._extract_gpu_layers({"status": {"args": ["-ngl", "999"]}}) == 999
+    assert llama._extract_gpu_layers(
+        {"status": {"args": ["--model", "x.gguf", "--n-gpu-layers", "0"]}}) == 0
 
 
 # ── _llama_fetch_model_entries: /v1/models -> {id: entry} ──────────────
