@@ -874,8 +874,9 @@ def _llama_write_ini(sections: dict[str, dict[str, Any]]) -> None:
         cp.write(f)
 
 
-def _delete_quant_from_hf_cache(model_id: str) -> "tuple[list[str], Optional[str]]":
-    """Unlink the specific quant's .gguf from the HF cache. Returns (deleted_paths, error_or_none)."""
+def _locate_quant_files(model_id: str) -> "tuple[list[Path], Optional[str]]":
+    """Resolve model_id -> its .gguf snapshot symlink(s) in the HF cache,
+    validated against path traversal. Shared by delete + size lookup."""
     repo = None
     quant = None
     try:
@@ -885,7 +886,7 @@ def _delete_quant_from_hf_cache(model_id: str) -> "tuple[list[str], Optional[str
             repo = sec.get("hf-repo") or sec.get("--hf-repo")
             quant = sec.get("hf-file") or sec.get("--hf-file")
     except Exception as e:
-        log.warning("hf-cache delete: read ini failed: %s", e, exc_info=True)
+        log.warning("hf-cache lookup: read ini failed: %s", e, exc_info=True)
 
     if not repo and ":" in model_id and "/" in model_id:
         repo, quant = model_id.rsplit(":", 1)
@@ -895,7 +896,7 @@ def _delete_quant_from_hf_cache(model_id: str) -> "tuple[list[str], Optional[str
     if not repo or not _hf_repo_valid(repo):
         return [], f"Repo missing or malformed: {repo!r}"
     if not quant:
-        return [], "Quant identifier missing — refusing to wildcard-delete the whole repo"
+        return [], "Quant identifier missing — refusing to wildcard-match the whole repo"
     # quant becomes a glob pattern under a snapshot dir; a single path component
     # only. Reject separators/parent refs so the pattern can't escape the cache.
     if "/" in quant or "\\" in quant or ".." in quant or "\x00" in quant:
@@ -907,32 +908,83 @@ def _delete_quant_from_hf_cache(model_id: str) -> "tuple[list[str], Optional[str
     if not snapshots.is_dir():
         return [], f"Snapshots dir not found: {snapshots}"
 
-    deleted: list[str] = []
+    matches: list[Path] = []
     for snap in snapshots.iterdir():
         if not snap.is_dir():
             continue
         if quant.endswith(".gguf"):
-            candidates = sorted(snap.glob(quant))
+            matches.extend(sorted(snap.glob(quant)))
         else:
-            candidates = [
+            matches.extend(
                 p for p in snap.glob(f"*{quant}*.gguf")
                 if not p.name.startswith("mmproj-")
-            ]
-        for symlink in candidates:
-            try:
-                target = symlink.resolve() if symlink.is_symlink() else None
-                symlink.unlink()
-                deleted.append(str(symlink))
-                if target and target.exists() and target.is_file():
-                    with best_effort("hf cache: unlink quant target", log=log):
-                        target.unlink()
-                        deleted.append(str(target))
-            except Exception as e:
-                return deleted, f"Failed to unlink {symlink}: {e}"
-
-    if not deleted:
+            )
+    if not matches:
         return [], f"No quant files matched {quant!r} under {snapshots}"
+    return matches, None
+
+
+def _delete_quant_from_hf_cache(model_id: str) -> "tuple[list[str], Optional[str]]":
+    """Unlink the specific quant's .gguf from the HF cache. Returns (deleted_paths, error_or_none)."""
+    candidates, err = _locate_quant_files(model_id)
+    if err:
+        return [], err
+
+    deleted: list[str] = []
+    for symlink in candidates:
+        try:
+            target = symlink.resolve() if symlink.is_symlink() else None
+            symlink.unlink()
+            deleted.append(str(symlink))
+            if target and target.exists() and target.is_file():
+                with best_effort("hf cache: unlink quant target", log=log):
+                    target.unlink()
+                    deleted.append(str(target))
+        except Exception as e:
+            return deleted, f"Failed to unlink {symlink}: {e}"
+
     return deleted, None
+
+
+def _model_gguf_size_bytes(model_id: str) -> "Optional[int]":
+    """Sum on-disk bytes of model_id's resolved .gguf snapshot file(s)."""
+    matches, err = _locate_quant_files(model_id)
+    if err:
+        return None
+    total = 0
+    for p in matches:
+        try:
+            target = p.resolve() if p.is_symlink() else p
+            total += target.stat().st_size
+        except OSError:
+            continue
+    return total or None
+
+
+_model_sizes_cache: "dict[str, Any]" = {"mtime": None, "sizes": {}}
+
+
+def _llama_all_model_sizes() -> "dict[str, int]":
+    """model_id -> gguf size bytes for every config.ini model section,
+    cached until LLAMA_CONFIG_INI's mtime changes."""
+    ini_path = _require_ctx().config.LLAMA_CONFIG_INI
+    try:
+        mtime = os.path.getmtime(ini_path)
+    except OSError:
+        mtime = None
+    if mtime is not None and _model_sizes_cache["mtime"] == mtime:
+        return _model_sizes_cache["sizes"]
+
+    sizes: dict[str, int] = {}
+    for section in _llama_read_ini().sections():
+        if section in ("*", "__DEFAULTS__"):
+            continue
+        size = _model_gguf_size_bytes(section)
+        if size:
+            sizes[section] = size
+    _model_sizes_cache["mtime"] = mtime
+    _model_sizes_cache["sizes"] = sizes
+    return sizes
 
 
 def _dl_put(msg: dict[str, Any]) -> None:
@@ -1268,6 +1320,12 @@ def llama_models_endpoint(authorization: Optional[str] = Header(default=None)) -
         return resp.json()
     except Exception as e:
         raise HTTPException(status_code=503, detail=str(e))
+
+
+def llama_model_sizes_endpoint(authorization: Optional[str] = Header(default=None)) -> dict[str, Any]:
+    """model_id -> on-disk .gguf size in bytes, for autopilot's VRAM-fit check (#472/#474)."""
+    _require_ctx().check_bearer(authorization); _llama_check_enabled()
+    return {"ok": True, "sizes": _llama_all_model_sizes()}
 
 
 async def _llama_openai_forward(sub: str, request: Request,
@@ -2666,6 +2724,7 @@ _ROUTES: tuple = (
     ("GET",    "/llama/log/tail",                 llama_log_tail),
     ("GET",    "/llama/log/stream",               llama_log_stream),
     ("GET",    "/llama/models",                   llama_models_endpoint),
+    ("GET",    "/llama/models/sizes",              llama_model_sizes_endpoint),
     ("POST",   "/llama/openai/chat/completions",  llama_openai_chat),
     ("POST",   "/llama/openai/completions",       llama_openai_completions),
     ("POST",   "/llama/load",                     llama_load_endpoint),

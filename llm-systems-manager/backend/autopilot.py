@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+import re
 import shlex
 import sqlite3
 import sys
@@ -175,10 +176,119 @@ def build_observed(deps: dict) -> dict:
     return {"agents": out, "model_sizes_mb": deps["model_sizes"]() or {}}
 
 
+_SIZES_CACHE_TTL_S = 600.0
+_sizes_cache: "dict[str, float | dict]" = {"ts": 0.0, "sizes": {}}
+_sizes_lock = threading.Lock()
+_sizes_refreshing = False
+
+
+def _llama_agent_sizes(agent: dict) -> dict:
+    """model_id -> size_mb from one agent's /llama/models/sizes; {} on any
+    failure (unreachable, old agent w/o the route, bad JSON) — isolated."""
+    r, _tried, err = agent_registry.agent_request(
+        "GET", agent, "/llama/models/sizes",
+        headers={"Authorization": f"Bearer {agent.get('token') or ''}"},
+        timeout=5)
+    if r is None or not r.ok:
+        if err:
+            log.debug("model-size fan-out: llama agent %s: %s", agent.get("hostname"), err)
+        return {}
+    try:
+        body = r.json() or {}
+    except Exception:
+        return {}
+    out: "dict[str, int]" = {}
+    for mid, size_bytes in (body.get("sizes") or {}).items():
+        try:
+            mb = round(int(size_bytes) / 1_048_576)
+        except (TypeError, ValueError):
+            continue
+        if mb:
+            out[mid] = mb
+    return out
+
+
+_LMS_SIZE_RE = re.compile(r"^([\d.]+)\s*([KMGT]?B)$", re.IGNORECASE)
+_LMS_SIZE_MULT = {"B": 1, "KB": 1024, "MB": 1024 ** 2, "GB": 1024 ** 3, "TB": 1024 ** 4}
+
+
+def _parse_lms_size_mb(val) -> "int | None":
+    """`lms ps --json` 'size' is raw bytes or a formatted string ('8.03 GB');
+    best-effort either way, None (not a hard fail) when it's neither."""
+    if isinstance(val, (int, float)) and val > 0:
+        return round(val / 1_048_576) or None
+    if not isinstance(val, str):
+        return None
+    m = _LMS_SIZE_RE.match(val.strip())
+    if not m:
+        return None
+    try:
+        b = float(m.group(1)) * _LMS_SIZE_MULT[m.group(2).upper()]
+    except (ValueError, KeyError):
+        return None
+    return round(b / 1_048_576) or None
+
+
+def _lms_agent_sizes(agents_map: dict) -> dict:
+    """model_id -> size_mb from each lms agent's already-pushed 'ps' sample
+    (provider_state.STORE) — no network I/O, so not part of the TTL cache."""
+    import provider_state  # type: ignore[import-not-found]  # sibling
+    out: "dict[str, int]" = {}
+    for aid, agent in agents_map.items():
+        if agent.get("status") != "approved":
+            continue
+        if not (agent.get("capabilities") or {}).get("lms"):
+            continue
+        snap = provider_state.STORE.get("lms", aid) or {}
+        for row in (snap.get("sample") or {}).get("ps") or []:
+            model = row.get("model")
+            mb = _parse_lms_size_mb(row.get("size"))
+            if model and mb:
+                out[model] = max(mb, out.get(model, 0))
+    return out
+
+
+def _refresh_model_sizes() -> dict:
+    """Fan out GET /llama/models/sizes to every approved llama agent, merge
+    with already-pushed lms sizes; {provider}:{model} -> size_mb, max on overlap."""
+    data = agent_registry.load_agents()
+    agents_map = data.get("agents") or {}
+    merged: "dict[str, int]" = {}
+    for agent in agents_map.values():
+        if agent.get("status") != "approved":
+            continue
+        if not (agent.get("capabilities") or {}).get("llama"):
+            continue
+        for mid, mb in _llama_agent_sizes(agent).items():
+            key = f"llama:{mid}"
+            merged[key] = max(mb, merged.get(key, 0))
+    for model, mb in _lms_agent_sizes(agents_map).items():
+        key = f"lms:{model}"
+        merged[key] = max(mb, merged.get(key, 0))
+    return merged
+
+
 def _prod_model_sizes() -> dict:
-    """No fleet-wide model-size catalog exists yet; an empty map makes
-    every size-gated fit check conservatively fail."""
-    return {}
+    """Fleet-wide {provider}:{model} -> size_mb map, TTL-cached >=600s with
+    an in-flight guard; serves the stale cache on refresh failure or overlap."""
+    global _sizes_refreshing
+    now = time.time()
+    with _sizes_lock:
+        if now - _sizes_cache["ts"] < _SIZES_CACHE_TTL_S or _sizes_refreshing:
+            return dict(_sizes_cache["sizes"])
+        _sizes_refreshing = True
+    try:
+        merged = _refresh_model_sizes()
+    except Exception as e:
+        log.warning("model-size refresh failed, serving stale cache: %s", e)
+        with _sizes_lock:
+            _sizes_refreshing = False
+        return dict(_sizes_cache["sizes"])
+    with _sizes_lock:
+        _sizes_cache["ts"] = time.time()
+        _sizes_cache["sizes"] = merged
+        _sizes_refreshing = False
+    return dict(merged)
 
 
 def _prod_saturation(provider: str, agent_id: str) -> dict:
