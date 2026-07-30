@@ -50,7 +50,7 @@ let _mgrPerfBackfilled = false;
 const _SUB_TAB_MAP = {
   dashboard: { tabId: 'dashboardTab', prefix: 'dash',  subs: ['llamacpp','lmstudio','vllm','openclaw','manager'] },
   llm:       { tabId: 'llmTab',       prefix: 'llm',   subs: ['llamacpp','lmstudio','vllm','reportcard'] },
-  admin:     { tabId: 'adminTab',     prefix: 'admin', subs: ['agents','pool','backup','auth','users','audit','autopilot'] },
+  admin:     { tabId: 'adminTab',     prefix: 'admin', subs: ['agents','pool','backup','access','audit','autopilot'] },
 };
 
 function switchSubTab(parent, sub) {
@@ -128,7 +128,9 @@ function switchSubTab(parent, sub) {
       loadManagerPerfHistory().then(ok => { if (ok) _mgrPerfBackfilled = true; });
     }
   }
-  if (parent === 'admin' && sub === 'users') {
+  // Access Control (auth + users, #477): auth card loads on admin-tab entry
+  // via foundation.js; the users table loads on sub-tab entry here.
+  if (parent === 'admin' && sub === 'access') {
     if (typeof adminUsersLoad === 'function') adminUsersLoad();
   }
   if (parent === 'admin' && sub === 'audit') {

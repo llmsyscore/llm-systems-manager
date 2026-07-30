@@ -455,8 +455,7 @@ Backend API endpoints consumed:
         <button class="sub-tab-btn active" id="subTabBtnAdminAgents"  onclick="switchSubTab('admin','agents')">Agents</button>
         <button class="sub-tab-btn"        id="subTabBtnAdminPool"    onclick="switchSubTab('admin','pool')">Pools &amp; Pins</button>
         <button class="sub-tab-btn"        id="subTabBtnAdminBackup"  onclick="switchSubTab('admin','backup')">Backup &amp; Restore</button>
-        <button class="sub-tab-btn"        id="subTabBtnAdminAuth"    onclick="switchSubTab('admin','auth')">Authentication</button>
-        <button class="sub-tab-btn"        id="subTabBtnAdminUsers"   onclick="switchSubTab('admin','users')">Users</button>
+        <button class="sub-tab-btn"        id="subTabBtnAdminAccess"  onclick="switchSubTab('admin','access')">Access Control</button>
         <button class="sub-tab-btn"        id="subTabBtnAdminAudit"   onclick="switchSubTab('admin','audit')">Audit Log</button>
         <button class="sub-tab-btn"        id="subTabBtnAdminAutopilot" onclick="switchSubTab('admin','autopilot')">Autopilot</button>
       </div>
@@ -592,8 +591,8 @@ Backend API endpoints consumed:
         </div>
       </div>
 
-      <!-- Authentication sub-tab -->
-      <div id="admin-auth" class="sub-tab-panel">
+      <!-- Access Control sub-tab (auth + users, #477) -->
+      <div id="admin-access" class="sub-tab-panel">
         <div class="adm-card" id="adminAuthCard">
           <div class="adm-card-hdr">
             <div class="adm-title">Authentication</div>
@@ -609,7 +608,7 @@ Backend API endpoints consumed:
             </label>
             <div class="adm-muted" id="adminAuthModeHint" style="font-size:11px;"></div>
             <div class="adm-auth-divider"></div>
-            <div class="adm-muted" style="font-size:12px;">Manage user accounts and passwords in the <b>Users</b> tab; change your own password from the <b>Account</b> menu (top-right).</div>
+            <div class="adm-muted" style="font-size:12px;">Manage user accounts and passwords in the <b>Users</b> section below; change your own password from the <b>Account</b> menu (top-right).</div>
             <div style="display:flex;gap:8px;align-items:center;">
               <button class="adm-btn primary" onclick="adminAuthSave()">Save</button>
               <a class="adm-btn" href="/logout" style="text-decoration:none;">Log out</a>
@@ -617,10 +616,8 @@ Backend API endpoints consumed:
           </div>
           <div id="adminAuthResult" class="adm-muted" style="margin-top:10px;font-size:12px;"></div>
         </div>
-      </div>
 
-      <!-- Users sub-tab (multi-user management, #125) -->
-      <div id="admin-users" class="sub-tab-panel">
+        <!-- Users card (multi-user management #125; merged into Access Control, #477) -->
         <div class="adm-card" id="adminUsersCard">
           <div class="adm-card-hdr">
             <div class="adm-title">Users</div>
@@ -2200,6 +2197,6 @@ Backend API endpoints consumed:
 <div id="alarmToastContainer"></div>
 
 <script src="/static/js/events-toasts.js?v=2026.07.04-2"></script>
-<script src="/static/js/boot.js?v=2026.07.11-6"></script>
+<script src="/static/js/boot.js?v=2026.07.30-1"></script>
 </body>
 </html>
