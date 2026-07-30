@@ -177,9 +177,9 @@ def build_observed(deps: dict) -> dict:
 
 
 _SIZES_CACHE_TTL_S = 600.0
-_sizes_cache: "dict[str, float | dict]" = {"ts": 0.0, "sizes": {}}
+_sizes_cache: "dict[str, float | dict | bool]" = {"ts": 0.0, "sizes": {},
+                                                  "refreshing": False}
 _sizes_lock = threading.Lock()
-_sizes_refreshing = False
 
 
 def _llama_agent_sizes(agent: dict) -> dict:
@@ -276,12 +276,11 @@ def _refresh_model_sizes() -> dict:
 def _prod_model_sizes() -> dict:
     """Fleet-wide {provider}:{model} -> size_mb map, TTL-cached >=600s with
     an in-flight guard; serves the stale cache on refresh failure or overlap."""
-    global _sizes_refreshing
     now = time.time()
     with _sizes_lock:
-        if now - _sizes_cache["ts"] < _SIZES_CACHE_TTL_S or _sizes_refreshing:
+        if now - _sizes_cache["ts"] < _SIZES_CACHE_TTL_S or _sizes_cache["refreshing"]:
             return dict(_sizes_cache["sizes"])
-        _sizes_refreshing = True
+        _sizes_cache["refreshing"] = True
     try:
         merged = _refresh_model_sizes()
     except Exception as e:
@@ -290,12 +289,12 @@ def _prod_model_sizes() -> dict:
             # Advance ts even on failure — a bad refresh backs off for a full
             # TTL window instead of re-fanning-out on every subsequent call.
             _sizes_cache["ts"] = time.time()
-            _sizes_refreshing = False
+            _sizes_cache["refreshing"] = False
         return dict(_sizes_cache["sizes"])
     with _sizes_lock:
         _sizes_cache["ts"] = time.time()
         _sizes_cache["sizes"] = merged
-        _sizes_refreshing = False
+        _sizes_cache["refreshing"] = False
     return dict(merged)
 
 

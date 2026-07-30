@@ -15,11 +15,11 @@ def _reset_sizes_cache():
     """Module-level cache/guard must not leak state between tests."""
     ap._sizes_cache["ts"] = 0.0
     ap._sizes_cache["sizes"] = {}
-    ap._sizes_refreshing = False
+    ap._sizes_cache["refreshing"] = False
     yield
     ap._sizes_cache["ts"] = 0.0
     ap._sizes_cache["sizes"] = {}
-    ap._sizes_refreshing = False
+    ap._sizes_cache["refreshing"] = False
 
 
 # ── _llama_agent_sizes: bytes -> MB, isolated failure ─────────────────
@@ -86,7 +86,7 @@ def test_refresh_model_sizes_takes_max_across_llama_agents(monkeypatch):
     def _fake_request(method, agent, path, **kw):
         class _Resp:
             ok = True
-            def json(self_inner):
+            def json(self):
                 mb = 4096 if agent["hostname"] == "h1" else 8192
                 return {"sizes": {"m1": mb * 1024 * 1024}}
         return _Resp(), [], None
@@ -162,7 +162,7 @@ def test_refresh_model_sizes_survives_malformed_lms_row_alongside_llama(monkeypa
 
     class _Resp:
         ok = True
-        def json(self_inner):
+        def json(self):
             return {"sizes": {"m1": 4096 * 1024 * 1024}}
     monkeypatch.setattr(agent_registry, "agent_request",
                         lambda *a, **k: (_Resp(), [], None))
@@ -202,12 +202,12 @@ def test_prod_model_sizes_refetches_after_ttl_expires(monkeypatch):
 def test_prod_model_sizes_inflight_guard_short_circuits(monkeypatch):
     ap._sizes_cache["ts"] = 0.0
     ap._sizes_cache["sizes"] = {"llama:stale": 9}
-    ap._sizes_refreshing = True
+    ap._sizes_cache["refreshing"] = True
     calls = []
     monkeypatch.setattr(ap, "_refresh_model_sizes", lambda: (calls.append(1), {})[1])
     assert ap._prod_model_sizes() == {"llama:stale": 9}
     assert calls == []
-    assert ap._sizes_refreshing is True     # untouched by the short-circuiting caller
+    assert ap._sizes_cache["refreshing"] is True     # untouched by the short-circuiting caller
 
 
 def test_prod_model_sizes_serves_stale_cache_on_refresh_failure(monkeypatch):
@@ -218,7 +218,7 @@ def test_prod_model_sizes_serves_stale_cache_on_refresh_failure(monkeypatch):
         raise RuntimeError("agent fleet unreachable")
     monkeypatch.setattr(ap, "_refresh_model_sizes", _boom)
     assert ap._prod_model_sizes() == {"llama:old": 42}
-    assert ap._sizes_refreshing is False     # guard released so a later call can retry
+    assert ap._sizes_cache["refreshing"] is False     # guard released so a later call can retry
 
 
 def test_prod_model_sizes_backs_off_after_failed_refresh_within_ttl(monkeypatch):
@@ -237,7 +237,7 @@ def test_prod_model_sizes_backs_off_after_failed_refresh_within_ttl(monkeypatch)
         calls.append(1)
         class _Resp:
             ok = True
-            def json(self_inner):
+            def json(self):
                 return {"sizes": "not-a-dict"}      # malformed upstream body -> raises
         return _Resp(), [], None
     monkeypatch.setattr(agent_registry, "agent_request", _fake_request)
