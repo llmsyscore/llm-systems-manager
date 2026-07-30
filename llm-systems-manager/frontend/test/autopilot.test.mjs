@@ -173,3 +173,50 @@ describe("poll no longer clobbers unsaved edits (#472)", () => {
     expect(proposalsBody.querySelector(".stale-marker")).toBeNull();
   });
 });
+
+describe("catalog refresh in-flight + 30s cadence guard (#472)", () => {
+  it("collapses overlapping fetchState() calls, throttles a too-soon follow-up, but init() always forces through", async () => {
+    document.body.innerHTML = `
+      <input type="checkbox" id="apEnabledToggle">
+      <div id="apEntriesBody"></div>
+      <div id="apProposalsBody"></div>
+      <span id="apSaveStatus"></span>
+    `;
+    let modelHits = 0;
+    vi.stubGlobal("fetch", vi.fn(url => {
+      if (String(url).includes("-models")) {
+        modelHits++;
+        return Promise.resolve({ok: true, json: () => Promise.resolve({models: []})});
+      }
+      return Promise.resolve({ok: true, json: () => Promise.resolve(
+        {state: {enabled: false, entries: [], hosts: {}}, proposals: [], last_plan_ts: null})});
+    }));
+
+    // Date.now() is mocked (not real timers) so this test controls the
+    // 30s floor precisely and stays isolated from whatever real-time
+    // refresh an earlier test in this file already did.
+    const base = Date.now();
+    let offset = 40000; // start already past the floor
+    const nowSpy = vi.spyOn(Date, "now").mockImplementation(() => base + offset);
+
+    try {
+      // Two overlapping fetchState() calls: the second's _refreshCatalog()
+      // sees the first still in-flight and is skipped, not queued.
+      await Promise.all([AP.fetchState(), AP.fetchState()]);
+      expect(modelHits).toBe(2); // one refresh x 2 providers, not two
+
+      // A follow-up call 1s later: nothing in-flight now, but well under
+      // the 30s floor — skipped by the min-interval guard.
+      offset += 1000;
+      await AP.fetchState();
+      expect(modelHits).toBe(2);
+
+      // Re-entering the tab is exempt from the interval — forces a
+      // refresh even though only 1s has passed since the last one.
+      await AP.init();
+      expect(modelHits).toBe(4);
+    } finally {
+      nowSpy.mockRestore();
+    }
+  });
+});

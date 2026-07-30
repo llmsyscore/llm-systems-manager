@@ -310,28 +310,45 @@ function _render() {
 // pin editor uses — pool_provider_names() server-side; 'lms' has none).
 const _MODEL_LIST_PROVIDERS = ['llama', 'vllm'];
 
-// Refreshes the model/placement datalist source. Fire-and-forget, mirrors
-// admin.js's "adminLoadProviderModels(); // fire-and-forget" comment.
-async function _refreshCatalog() {
-  const models = { ..._catalog.models };
-  await Promise.all(_MODEL_LIST_PROVIDERS.map(async prov => {
-    try {
-      const r = await fetch(`/api/admin/${prov}-models`);
-      if (!r.ok) return;
-      const d = await r.json();
-      models[prov] = d.models || [];
-    } catch (_) { /* keep the previous list for this provider */ }
-  }));
-  // _adminAgentsCache is admin.js's agent cache (same script scope, kept
-  // fresh by its own 20s refresh) — reused rather than a parallel fetch.
-  const agents = typeof _adminAgentsCache !== 'undefined' ? _adminAgentsCache : _catalog.agents;
-  setCatalog({ models, agents });
+// Guards against worker-thread pileup on a slow/flapping fleet (#472):
+// the backend handler is a sequential per-agent fan-out with 5s timeouts,
+// so a 10s poll cadence can otherwise stack overlapping refreshes.
+let _catalogInFlight = false;
+let _catalogLastRefresh = 0;
+const _CATALOG_MIN_INTERVAL_MS = 30000;
+
+// Refreshes the model/placement datalist source. Skips if a refresh is
+// already running, and skips a non-forced call inside the 30s floor —
+// init() (tab entry) passes force=true so re-entry always gets fresh lists.
+async function _refreshCatalog(force) {
+  if (_catalogInFlight) return;
+  if (!force && Date.now() - _catalogLastRefresh < _CATALOG_MIN_INTERVAL_MS) return;
+  _catalogInFlight = true;
+  try {
+    const models = { ..._catalog.models };
+    await Promise.all(_MODEL_LIST_PROVIDERS.map(async prov => {
+      try {
+        const r = await fetch(`/api/admin/${prov}-models`);
+        if (!r.ok) return;
+        const d = await r.json();
+        models[prov] = d.models || [];
+      } catch (_) { /* keep the previous list for this provider */ }
+    }));
+    // _adminAgentsCache is admin.js's agent cache (same script scope, kept
+    // fresh by its own 20s refresh) — reused rather than a parallel fetch.
+    const agents = typeof _adminAgentsCache !== 'undefined' ? _adminAgentsCache : _catalog.agents;
+    setCatalog({ models, agents });
+    _catalogLastRefresh = Date.now();
+  } finally {
+    _catalogInFlight = false;
+  }
 }
 
-async function fetchState() {
-  // Runs alongside the state fetch (not serially); awaited below so
-  // entries render with a fresh catalog instead of a stale/empty one.
-  const catalogP = _refreshCatalog();
+async function fetchState(forceCatalog) {
+  // Runs alongside the state fetch (not serially); awaited below so a
+  // refresh that actually ran finishes before entries render. A skipped
+  // refresh resolves immediately, so this costs nothing when guarded off.
+  const catalogP = _refreshCatalog(forceCatalog);
   try {
     const r = await fetch('/api/autopilot');
     const d = await r.json();
@@ -438,11 +455,13 @@ function _wire() {
   if (toggle_) toggle_.addEventListener('change', _markDirty);
 }
 
-// Called on sub-tab entry (mirrors adminAuditLoad/initReportCard).
+// Called on sub-tab entry (mirrors adminAuditLoad/initReportCard). Forces
+// the catalog refresh past the 30s floor so re-entry always sees fresh
+// model/agent lists; returns the promise so callers/tests can await it.
 function init() {
   _wire();
   _dirty = false;
-  fetchState();
+  return fetchState(true);
 }
 
 // Called by the boot-time 10s setInterval; only fetches while the
