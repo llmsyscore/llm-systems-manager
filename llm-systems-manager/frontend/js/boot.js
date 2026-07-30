@@ -50,7 +50,7 @@ let _mgrPerfBackfilled = false;
 const _SUB_TAB_MAP = {
   dashboard: { tabId: 'dashboardTab', prefix: 'dash',  subs: ['llamacpp','lmstudio','vllm','openclaw','manager'] },
   llm:       { tabId: 'llmTab',       prefix: 'llm',   subs: ['llamacpp','lmstudio','vllm','reportcard'] },
-  admin:     { tabId: 'adminTab',     prefix: 'admin', subs: ['agents','pool','backup','access','audit','autopilot'] },
+  admin:     { tabId: 'adminTab',     prefix: 'admin', subs: ['access','agents','audit','backup','routing'] },
 };
 
 function switchSubTab(parent, sub) {
@@ -139,8 +139,9 @@ function switchSubTab(parent, sub) {
   if (parent === 'admin' && sub === 'backup') {
     if (typeof adminLoadBackupStatus === 'function') adminLoadBackupStatus();
   }
-  // Autopilot sub-tab populates its editor + proposals on open (#472).
-  if (parent === 'admin' && sub === 'autopilot') {
+  // Fleet Routing (pools/pins + autopilot, #476): the pool/pins cards render
+  // from the 20s agents refresh; the autopilot editor initializes on entry.
+  if (parent === 'admin' && sub === 'routing') {
     if (typeof AP !== 'undefined' && AP.init) AP.init();
   }
 }
