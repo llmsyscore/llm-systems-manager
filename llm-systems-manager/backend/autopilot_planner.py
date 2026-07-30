@@ -58,40 +58,6 @@ def _may_auto(entry, desired, provider) -> bool:
         return False            # vLLM never auto (spec)
     return entry["failover"] == "auto"
 
-def _live_capable(entry, candidates, observed) -> "list[str]":
-    out = []
-    for aid in candidates:
-        a = observed["agents"].get(aid)
-        if a and entry["provider"] in a["provider_caps"] and a["live"]:
-            out.append(aid)
-    return out
-
-def entry_status(desired: dict, observed: dict) -> dict:
-    """Per-entry {placed, want, blocked} snapshot (ledger-free, no backoff
-    reason); dominant blocked reason when placed < want, else None."""
-    out: "dict[str, dict]" = {}
-    for e in desired.get("entries") or []:
-        k = _key(e)
-        placed = _placements(e, observed)
-        want = e["min_replicas"]
-        blocked = None
-        if len(placed) < want:
-            candidates = ([e["placement"]] if e["placement"] != "auto"
-                          else list(observed["agents"].keys()))
-            candidates = [aid for aid in candidates if aid not in placed]
-            live_capable = _live_capable(e, candidates, observed)
-            if not live_capable:
-                blocked = "no live agent supports this provider"
-            else:
-                size = observed.get("model_sizes_mb", {}).get(
-                    f"{e['provider']}:{e['model']}")
-                if size is None and not placed:
-                    blocked = "model size unknown"
-                elif not any(_fits(e, aid, observed) for aid in live_capable):
-                    blocked = "insufficient free VRAM on any candidate"
-        out[k] = {"placed": len(placed), "want": want, "blocked": blocked}
-    return out
-
 def evaluate_autoscale(entry, placements, sat_history, now: float) -> str:
     cfg = entry.get("autoscale")
     if not cfg or not sat_history:
@@ -125,6 +91,53 @@ def _fit_and_size(e, aid, a, free, observed):
         fit = _fits(e, aid, observed) and \
               free.get(aid, 0) >= (size or 0) + VRAM_HEADROOM_MB
     return fit, size
+
+def _live_capable(entry, candidates, observed) -> "list[str]":
+    out = []
+    for aid in candidates:
+        a = observed["agents"].get(aid)
+        if a and entry["provider"] in a["provider_caps"] and a["live"]:
+            out.append(aid)
+    return out
+
+def entry_status(desired: dict, observed: dict) -> dict:
+    """Per-entry {placed, want, blocked}; shares plan()'s priority order +
+    intra-pass VRAM budget (via _fit_and_size) so the two can't disagree."""
+    out: "dict[str, dict]" = {}
+    free = {aid: a["vram_free_mb"] for aid, a in observed["agents"].items()}
+    entries = sorted(desired.get("entries") or [], key=lambda e: e["priority"])
+    for e in entries:
+        k = _key(e)
+        placed = _placements(e, observed)
+        want = e["min_replicas"]
+        need = want - len(placed)
+        blocked = None
+        if need > 0:
+            candidates = ([e["placement"]] if e["placement"] != "auto"
+                          else list(observed["agents"].keys()))
+            candidates = [aid for aid in candidates if aid not in placed]
+            live_capable = _live_capable(e, candidates, observed)
+            if not live_capable:
+                blocked = "no live agent supports this provider"
+            else:
+                size = observed.get("model_sizes_mb", {}).get(
+                    f"{e['provider']}:{e['model']}")
+                if size is None and not placed:
+                    blocked = "model size unknown"
+                else:
+                    placeable = 0
+                    for aid in live_capable:
+                        if placeable >= need:
+                            break
+                        fit, sz = _fit_and_size(e, aid, observed["agents"][aid],
+                                                free, observed)
+                        if fit:
+                            free[aid] -= sz or 0
+                            placeable += 1
+                    if placeable < need:
+                        blocked = "insufficient free VRAM on any candidate"
+        out[k] = {"placed": len(placed), "want": want, "blocked": blocked}
+    return out
 
 def plan(desired: dict, observed: dict, ledger: dict, now: float) -> "list[Action]":
     actions: "list[Action]" = []

@@ -230,3 +230,20 @@ def test_entry_status_already_placed_agent_not_its_own_candidate():
     st = pl.entry_status(_desired([e]), obs)
     assert st["m1/llama"] == {"placed": 1, "want": 2,
                               "blocked": "insufficient free VRAM on any candidate"}
+
+def test_entry_status_matches_plan_intra_pass_vram_budget():
+    # One agent, 9200 MB free; two 1-replica entries each need 8000+1024.
+    # Only the higher-priority entry actually fits — entry_status must not
+    # disagree with plan() by calling the loser merely "pending".
+    hi = {**E, "model": "hi", "priority": 1}
+    lo = {**E, "model": "lo", "priority": 200}
+    sizes = {"llama:hi": 8000, "llama:lo": 8000}
+    one = {A1: {**_agents()[A1], "vram_free_mb": 9200}}
+    obs = {"agents": one, "model_sizes_mb": sizes}
+    st = pl.entry_status(_desired([lo, hi]), obs)
+    assert st["hi/llama"] == {"placed": 0, "want": 1, "blocked": None}
+    assert st["lo/llama"] == {"placed": 0, "want": 1,
+                              "blocked": "insufficient free VRAM on any candidate"}
+    # And plan() agrees: only the winner gets a load action.
+    acts = pl.plan(_desired([lo, hi]), obs, _ledger(), now=1000.0)
+    assert [a.model for a in acts] == ["hi"]
