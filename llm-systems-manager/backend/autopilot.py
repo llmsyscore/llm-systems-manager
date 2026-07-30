@@ -69,6 +69,12 @@ def validate_state(raw: dict) -> dict:
               "failover": fo,
               "priority": _coerce_int(e.get("priority", 100), "priority"),
               "min_replicas": mn, "max_replicas": mx}
+        sv = e.get("size_mb")
+        if sv not in (None, ""):
+            mb = _coerce_int(sv, "size_mb")
+            if mb < 1:
+                raise ValueError(f"size_mb must be >= 1, got {mb}")
+            ne["size_mb"] = mb
         if mx > mn:
             ne["autoscale"] = {**_AUTOSCALE_DEFAULTS, **(e.get("autoscale") or {})}
         out["entries"].append(ne)
@@ -185,7 +191,11 @@ def build_observed(deps: dict) -> dict:
             "idle_since": None,
             "saturation": saturation,
         }
-    return {"agents": out, "model_sizes_mb": deps["model_sizes"]() or {},
+    # Entry-declared size_mb overrides win over discovered sizes (#474).
+    sizes = dict(deps["model_sizes"]() or {})
+    ov = deps.get("size_overrides")
+    sizes.update((ov() if ov else None) or {})
+    return {"agents": out, "model_sizes_mb": sizes,
             "model_gpu_layers": deps["model_gpu_layers"]() or {}}
 
 
@@ -339,6 +349,17 @@ def _prod_model_gpu_layers() -> dict:
     return layers
 
 
+def _state_size_overrides() -> dict:
+    """Entry-declared size_mb values from the autopilot state, keyed
+    {provider}:{model} (#474); non-int/absent entries are skipped."""
+    out: "dict[str, int]" = {}
+    for e in get_state().get("entries") or []:
+        mb = e.get("size_mb")
+        if isinstance(mb, int) and mb > 0:
+            out[f"{e['provider']}:{e['model']}"] = mb
+    return out
+
+
 def _prod_saturation(provider: str, agent_id: str) -> dict:
     """Best-effort 0..1 saturation from whatever the provider already
     reports; {"value": None} where no comparable signal exists."""
@@ -362,6 +383,7 @@ def _prod_deps() -> dict:
         "provider_snapshot": provider_state.STORE.get,
         "model_sizes": _prod_model_sizes,
         "model_gpu_layers": _prod_model_gpu_layers,
+        "size_overrides": _state_size_overrides,
         "saturation": _prod_saturation,
     }
 

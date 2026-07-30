@@ -136,7 +136,7 @@ def entry_status(desired: dict, observed: dict) -> dict:
                 size = observed.get("model_sizes_mb", {}).get(
                     f"{e['provider']}:{e['model']}")
                 if size is None and not placed:
-                    blocked = "model size unknown"
+                    blocked = "model size unknown (set entry size MB)"
                 else:
                     uses_ram = _uses_ram_budget(e, observed)
                     budget = free_ram if uses_ram else free

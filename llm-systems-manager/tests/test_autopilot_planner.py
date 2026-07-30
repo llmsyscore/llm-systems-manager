@@ -207,7 +207,8 @@ def test_entry_status_model_size_unknown():
     # non-empty dict that simply omits this entry's key.
     obs = _obs(_agents(), sizes={"llama:other": 9000})
     st = pl.entry_status(_desired([E]), obs)
-    assert st["m1/llama"] == {"placed": 0, "want": 1, "blocked": "model size unknown"}
+    assert st["m1/llama"] == {"placed": 0, "want": 1,
+                              "blocked": "model size unknown (set entry size MB)"}
 
 def test_entry_status_insufficient_vram():
     obs = _obs(_agents(**{A1: {"vram_free_mb": 4000}, A2: {"vram_free_mb": 4000}}))

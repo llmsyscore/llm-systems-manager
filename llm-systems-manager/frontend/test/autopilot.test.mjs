@@ -19,6 +19,29 @@ describe("entry editor round-trip", () => {
     const el = AP.entryRow({...E, provider: "vllm"});
     expect(el.textContent).toContain("manual-apply only");
   });
+  it("size_mb round-trips as an int (#474)", () => {
+    const box = document.createElement("div");
+    box.appendChild(AP.entryRow({...E, provider: "vllm", size_mb: 15000}));
+    const out = AP.readEntries(box);
+    expect(out[0].size_mb).toBe(15000);
+  });
+  it("a blank size (MB) input is omitted, not NaN/null (#474)", () => {
+    const box = document.createElement("div");
+    box.appendChild(AP.entryRow(E));           // no size_mb
+    const row = box.querySelector(".ap-entry-row");
+    expect(row.querySelector('[data-field="size_mb"]').value).toBe("");
+    const out = AP.readEntries(box);
+    expect("size_mb" in out[0]).toBe(false);
+  });
+  it("size placeholder tracks the provider: required for vllm, auto elsewhere (#474)", () => {
+    const row = AP.entryRow({...E, provider: "vllm"});
+    const size = row.querySelector('[data-field="size_mb"]');
+    expect(size.placeholder).toBe("required");
+    const providerSel = row.querySelector("[data-field=provider]");
+    providerSel.value = "llama";
+    providerSel.dispatchEvent(new Event("change", {bubbles: true}));
+    expect(size.placeholder).toBe("auto");
+  });
 });
 
 describe("proposalRow", () => {
@@ -185,15 +208,15 @@ describe("statusChip reports honest placement/blocked status (#472)", () => {
 
   it("shows N/M plus the blocked reason when unplaceable", () => {
     const chip = AP.statusChip(entry, [],
-      { placed: 0, want: 1, blocked: "model size unknown" });
-    expect(chip.textContent).toBe("0/1 — model size unknown");
+      { placed: 0, want: 1, blocked: "model size unknown (set entry size MB)" });
+    expect(chip.textContent).toBe("0/1 — model size unknown (set entry size MB)");
     expect(chip.className).toContain("status--warn");
   });
 
   it("a pending proposal still wins over status", () => {
     const chip = AP.statusChip(entry,
       [{ entry_key: "m1/llama" }],
-      { placed: 0, want: 1, blocked: "model size unknown" });
+      { placed: 0, want: 1, blocked: "model size unknown (set entry size MB)" });
     expect(chip.textContent).toBe("1 pending");
   });
 
@@ -239,7 +262,7 @@ describe("planNow surfaces blocked entries instead of a false-satisfied message 
         return Promise.resolve({ok: true, json: () => Promise.resolve({
           actions: [], proposals: [],
           entry_status: {
-            "m1/llama": {placed: 0, want: 1, blocked: "model size unknown"},
+            "m1/llama": {placed: 0, want: 1, blocked: "model size unknown (set entry size MB)"},
             "m2/llama": {placed: 0, want: 1, blocked: "insufficient free VRAM on any candidate"},
           },
         })});

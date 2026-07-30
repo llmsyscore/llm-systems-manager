@@ -11,7 +11,7 @@ const FAILOVER = [
   { v: 'semi', label: 'semi (propose)' },
   { v: 'auto', label: 'auto (execute)' },
 ];
-const NUMERIC_FIELDS = ['priority', 'min_replicas', 'max_replicas'];
+const NUMERIC_FIELDS = ['priority', 'min_replicas', 'max_replicas', 'size_mb'];
 
 // createElement + textContent only — never innerHTML with server data.
 function el(tag, className, text) {
@@ -53,13 +53,14 @@ function _text(field, value, className, placeholder) {
   return i;
 }
 
-function _num(field, value, min) {
+function _num(field, value, min, placeholder) {
   const i = document.createElement('input');
   i.type = 'number';
   i.min = String(min);
   i.className = 'ap-input ap-num';
   i.dataset.field = field;
-  i.value = String(value);
+  i.value = value == null ? '' : String(value);
+  if (placeholder) i.placeholder = placeholder;
   return i;
 }
 
@@ -141,6 +142,14 @@ function entryRow(entry) {
   row.appendChild(_labeled('min replicas', _num('min_replicas', entry.min_replicas ?? 1, 1)));
   row.appendChild(_labeled('max replicas', _num('max_replicas', entry.max_replicas ?? 1, 1)));
 
+  // Optional VRAM-fit size override (#474); blank = discovered size.
+  // vLLM has no discovery source, so its placeholder says "required".
+  const sizeInput = _num('size_mb', entry.size_mb, 1,
+    (entry.provider === 'vllm') ? 'required' : 'auto');
+  sizeInput.title = 'Model size in MB for the VRAM-fit check. Leave blank to use the ' +
+    'discovered size; required for vLLM (no discovery source).';
+  row.appendChild(_labeled('size (MB)', sizeInput));
+
   _fillModelOptions(modelsDl, provider.value);
   _fillPlacementOptions(placementDl, provider.value);
 
@@ -149,6 +158,7 @@ function entryRow(entry) {
   badge.style.display = (entry.provider === 'vllm') ? '' : 'none';
   provider.addEventListener('change', () => {
     badge.style.display = (provider.value === 'vllm') ? '' : 'none';
+    sizeInput.placeholder = (provider.value === 'vllm') ? 'required' : 'auto';
     _fillModelOptions(modelsDl, provider.value);
     _fillPlacementOptions(placementDl, provider.value);
   });
@@ -182,6 +192,7 @@ function readEntries(container) {
       const f = input.dataset.field;
       entry[f] = NUMERIC_FIELDS.includes(f) ? parseInt(input.value, 10) : input.value;
     });
+    if (Number.isNaN(entry.size_mb)) delete entry.size_mb;
     if (row.dataset.autoscale) {
       try { entry.autoscale = JSON.parse(row.dataset.autoscale); } catch (_) { /* ignore */ }
     }
