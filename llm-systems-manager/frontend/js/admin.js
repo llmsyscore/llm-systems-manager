@@ -353,10 +353,22 @@ function adminSelectProvider(which, name) {
   }
 }
 
+// Autopilot desired-state entries from the /api/agents global blob (#476).
+function _adminApEntries() {
+  return ((_adminGlobal || {}).autopilot || {}).entries || [];
+}
+
 function adminRenderPoolOrder() {
   adminRenderProviderChips('pool');
   const ul = document.getElementById('adminPoolOrderList');
   if (!ul) return;
+  // Autopilot manages pool membership for replicated entries (#476).
+  const apBadge = document.getElementById('adminPoolApBadge');
+  if (apBadge) {
+    const managed = _adminApEntries().some(e =>
+      e.provider === _adminPoolSel && (e.max_replicas || 1) > 1);
+    apBadge.style.display = managed ? '' : 'none';
+  }
   const pool = ((_adminGlobal && _adminGlobal[_adminPoolSel + '_pool']) || []).slice();
   const idToAgent = {};
   for (const a of (_adminAgentsCache || [])) idToAgent[a.agent_id] = a;
@@ -470,8 +482,14 @@ function adminRenderPins() {
   } else {
     tbody.innerHTML = entries.map(([model, aid]) => {
       const host = idToHost[aid] || `<span class="adm-muted">${adminEsc(aid).slice(0,8)}… (unknown agent)</span>`;
+      // Single-replica autopilot entries route via this pin (#476).
+      const apManaged = _adminApEntries().some(e =>
+        e.provider === prov.name && e.model === model && (e.max_replicas || 1) <= 1);
+      const apBadge = apManaged
+        ? ' <span class="status status--info status--square ap-managed-badge" title="This pin is managed by a Model Autopilot entry — manual edits may be overridden on the next reconcile.">autopilot</span>'
+        : '';
       return `<tr>
-        <td style="font-family:ui-monospace,Menlo,Consolas,monospace;">${adminEsc(model)}</td>
+        <td style="font-family:ui-monospace,Menlo,Consolas,monospace;">${adminEsc(model)}${apBadge}</td>
         <td>${typeof host === 'string' && host.indexOf('<') === 0 ? host : adminEsc(host)}</td>
         <td style="text-align:right;">
           <button class="adm-btn-icon danger" title="Remove pin" onclick="adminClearPin('${adminEsc(model)}')">✕</button>
@@ -570,7 +588,6 @@ async function adminLoadAgents() {
     _latestAgentVersion = d.latest_agent_version || null;
     const lavEl = document.getElementById('adminLatestVersion');
     if (lavEl) lavEl.textContent = _latestAgentVersion ? `manager: ${_latestAgentVersion}` : '';
-    const tbody = document.getElementById('adminAgentsTbody');
     const agents = (d.agents || []).slice().sort((a,b) => (a.hostname||'').localeCompare(b.hostname||''));
     _adminAgentsCache = agents;
     const countEl = document.getElementById('adminAgentsCount');
@@ -582,11 +599,7 @@ async function adminLoadAgents() {
         ? `${total} registered · ${approved} approved · ${live} live`
         : 'No agents registered';
     }
-    if (!agents.length) {
-      tbody.innerHTML = '<tr><td colspan="5" style="padding:24px;color:var(--fg-muted);text-align:center;">No agents registered yet.</td></tr>';
-      return;
-    }
-    tbody.innerHTML = agents.map(a => _adminRowHtml(a)).join('');
+    _adminRenderAgentsTable();
     const stamp = document.getElementById('adminLastRefresh');
     if (stamp) stamp.textContent = 'updated ' + (new Date()).toLocaleTimeString();
     // Phase 4 #4 — keep the pin editor + pool order + model
@@ -598,6 +611,52 @@ async function adminLoadAgents() {
   } catch(e) {
     _adminLog('error: ' + e.message);
   }
+}
+
+// Column sort state + per-key sort values for the agents table (#476).
+let _adminAgentsSort = { key: 'agent', dir: 1 };
+const _ADMIN_AGENT_SORT_VALS = {
+  agent: a => a.hostname || '',
+  state: a => (a.status || '') + ':' + (a.liveness || ''),
+  caps:  a => Object.entries(a.capabilities || {})
+    .filter(([, v]) => v).map(([k]) => k).sort().join(','),
+  seen:  a => a.last_heartbeat || '',
+};
+
+// Sets data-dir on the active sortable th (CSS renders the arrow).
+function _adminSortArrows(tableId, key, dir) {
+  const table = document.getElementById(tableId);
+  if (!table) return;
+  table.querySelectorAll('th.adm-th-sort').forEach(th => {
+    if (th.dataset.key === key) th.dataset.dir = String(dir);
+    else delete th.dataset.dir;
+  });
+}
+
+function _adminRenderAgentsTable() {
+  const tbody = document.getElementById('adminAgentsTbody');
+  if (!tbody) return;
+  const { key, dir } = _adminAgentsSort;
+  _adminSortArrows('adminAgentsTable', key, dir);
+  if (!_adminAgentsCache.length) {
+    tbody.innerHTML = '<tr><td colspan="5" style="padding:24px;color:var(--fg-muted);text-align:center;">No agents registered yet.</td></tr>';
+    return;
+  }
+  const val = _ADMIN_AGENT_SORT_VALS[key] || _ADMIN_AGENT_SORT_VALS.agent;
+  const rows = _adminAgentsCache.slice()
+    .sort((a, b) => dir * String(val(a)).localeCompare(String(val(b))));
+  tbody.innerHTML = rows.map(a => _adminRowHtml(a)).join('');
+}
+
+// th onclick handler: same column toggles direction, new column starts asc.
+function adminSortAgents(th) {
+  const key = th.dataset.key;
+  if (!key) return;
+  _adminAgentsSort = {
+    key,
+    dir: _adminAgentsSort.key === key ? -_adminAgentsSort.dir : 1,
+  };
+  _adminRenderAgentsTable();
 }
 
 // Render one row of the agents table. Compact 5-column layout:
@@ -2292,6 +2351,38 @@ function _adminAuditRow(e) {
   </tr>`;
 }
 
+// Column sort for the audit table (#476): key null = server order (newest
+// first); sorting applies within the currently loaded page only.
+let _adminAuditSort = { key: null, dir: 1 };
+let _adminAuditEntries = [];
+
+function _adminRenderAuditTable() {
+  const tbody = document.getElementById('adminAuditTbody');
+  if (!tbody) return;
+  const { key, dir } = _adminAuditSort;
+  _adminSortArrows('adminAuditTable', key, dir);
+  if (!_adminAuditEntries.length) {
+    tbody.innerHTML = '<tr><td colspan="6" style="padding:14px;color:#7e8a9c;text-align:center;">No audit entries yet.</td></tr>';
+    return;
+  }
+  let rows = _adminAuditEntries;
+  if (key) {
+    rows = rows.slice().sort((a, b) =>
+      dir * String(a[key] || '').localeCompare(String(b[key] || '')));
+  }
+  tbody.innerHTML = rows.map(_adminAuditRow).join('');
+}
+
+function adminSortAudit(th) {
+  const key = th.dataset.key;
+  if (!key) return;
+  _adminAuditSort = {
+    key,
+    dir: _adminAuditSort.key === key ? -_adminAuditSort.dir : 1,
+  };
+  _adminRenderAuditTable();
+}
+
 async function adminAuditLoad(offset) {
   if (offset != null) _adminAuditOffset = Math.max(0, offset);
   const tbody = document.getElementById('adminAuditTbody');
@@ -2302,9 +2393,8 @@ async function adminAuditLoad(offset) {
     if (!r.ok || !d.ok) throw new Error(d.error || ('HTTP ' + r.status));
     _adminAuditTotal = d.total || 0;
     const entries = d.entries || [];
-    tbody.innerHTML = entries.length
-      ? entries.map(_adminAuditRow).join('')
-      : '<tr><td colspan="6" style="padding:14px;color:#7e8a9c;text-align:center;">No audit entries yet.</td></tr>';
+    _adminAuditEntries = entries;
+    _adminRenderAuditTable();
     if (status) status.textContent = _adminAuditTotal + ' entries · updated ' + new Date().toLocaleTimeString();
     const info = document.getElementById('adminAuditPageInfo');
     if (info) info.textContent = _adminAuditTotal
@@ -2315,6 +2405,8 @@ async function adminAuditLoad(offset) {
     if (newer) newer.disabled = _adminAuditOffset <= 0;
     if (older) older.disabled = _adminAuditOffset + _ADMIN_AUDIT_PAGE >= _adminAuditTotal;
   } catch (e) {
+    // A failed load empties the cached page; sort re-renders read this.
+    _adminAuditEntries = [];
     if (status) status.textContent = 'load failed: ' + e.message;
     if (tbody) tbody.innerHTML = '<tr><td colspan="6" style="padding:14px;color:#7e8a9c;text-align:center;">Failed to load audit log.</td></tr>';
   }

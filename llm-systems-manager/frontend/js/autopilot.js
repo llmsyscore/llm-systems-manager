@@ -1,4 +1,4 @@
-// Fleet Autopilot admin panel (#472) — entry editor, proposals queue, wiring.
+// Model Autopilot admin panel (#472) — entry editor, proposals queue, wiring.
 // IIFE-scoped; exposes window.AP only. Pure testables + thin DOM glue.
 (function (root) {
 
@@ -280,7 +280,7 @@ function _markDirty() { _dirty = true; }
 
 function _visible() {
   return typeof _activeTab !== 'undefined' && _activeTab === 'admin' &&
-    typeof _subTabState !== 'undefined' && _subTabState.admin === 'autopilot';
+    typeof _subTabState !== 'undefined' && _subTabState.admin === 'routing';
 }
 
 function _setStatus(msg, isErr) {
@@ -493,7 +493,7 @@ function init() {
 }
 
 // Called by the boot-time 10s setInterval; only fetches while the
-// admin/autopilot sub-tab is actually visible.
+// admin Routing sub-tab is actually visible.
 function poll() {
   if (!_visible()) return;
   fetchState();

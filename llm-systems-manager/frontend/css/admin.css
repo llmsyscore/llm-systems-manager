@@ -79,6 +79,11 @@
     text-transform:uppercase; letter-spacing:0.06em;
     border-bottom:1px solid var(--bg-card); position:sticky; top:0; z-index:1;
   }
+  /* Sortable column headers (#476): click to sort, data-dir carries the arrow */
+  #adminTab .adm-table th.adm-th-sort { cursor:pointer; user-select:none; }
+  #adminTab .adm-table th.adm-th-sort:hover { color:var(--fg); }
+  #adminTab .adm-table th.adm-th-sort[data-dir="1"]::after { content:" ▲"; font-size:10px; }
+  #adminTab .adm-table th.adm-th-sort[data-dir="-1"]::after { content:" ▼"; font-size:10px; }
   #adminTab .adm-table tbody tr { border-bottom:1px solid var(--border-soft); }
   #adminTab .adm-table tbody tr:hover { background:var(--bg-card); }
   #adminTab .adm-table tbody tr:last-child { border-bottom:none; }
@@ -305,7 +310,7 @@
     color:color-mix(in srgb, var(--crit) 70%, var(--fg));
   }
 
-  /* Autopilot sub-tab (#472) — entry editor + proposals queue */
+  /* Autopilot cards on Routing (#472/#476) — entry editor + proposals queue */
   #adminTab .ap-entries-body, #adminTab .ap-proposals-body {
     display:flex; flex-direction:column; gap:8px; padding:14px 20px;
   }

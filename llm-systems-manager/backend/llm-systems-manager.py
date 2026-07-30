@@ -154,7 +154,7 @@ def _local_hostname() -> str:
 # banner reads it. Bump suffix (-1, -2, …) for same-day iterations; roll
 # the date for a new day's first change.
 # ---------------------------------------------------------------------------
-__version__ = "v2026.07.30-9"
+__version__ = "v2026.07.30-10"
 
 # Wall-clock at first import (Cheroot main process); the shutdown banner
 # reads it for the uptime line.
@@ -5327,7 +5327,7 @@ if __name__ == "__main__":
         daemon=True,
     ).start()
 
-    # Fleet autopilot reconciler (#472): ticks RECONCILER every 30s.
+    # Model autopilot reconciler (#472): ticks RECONCILER every 30s.
     autopilot.start_thread(ctx)
 
     # Per-provider offline-edge sweep — fires the True→False latch transition
