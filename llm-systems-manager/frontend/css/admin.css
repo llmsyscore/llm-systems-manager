@@ -304,3 +304,43 @@
     border-color:color-mix(in srgb, var(--crit) 45%, transparent);
     color:color-mix(in srgb, var(--crit) 70%, var(--fg));
   }
+
+  /* Autopilot sub-tab (#472) — entry editor + proposals queue */
+  #adminTab .ap-entries-body, #adminTab .ap-proposals-body {
+    display:flex; flex-direction:column; gap:8px; padding:14px 20px;
+  }
+  #adminTab .ap-entries-body:empty::after, #adminTab .ap-proposals-body:empty::after {
+    content:"None configured."; color:var(--fg-dim); font-size:14px;
+  }
+  #adminTab .ap-entry-wrap { display:flex; align-items:center; gap:8px; }
+  #adminTab .ap-entry-row {
+    display:flex; align-items:flex-end; gap:10px; flex-wrap:wrap; flex:1;
+    background:var(--bg); border:1px solid var(--border); border-radius:6px;
+    padding:10px 12px;
+  }
+  #adminTab .ap-field-wrap { display:flex; flex-direction:column; gap:3px; }
+  #adminTab .ap-lbl {
+    font-size:11px; text-transform:uppercase; letter-spacing:0.04em;
+    color:var(--fg-dim);
+  }
+  #adminTab .ap-select, #adminTab .ap-input {
+    padding:6px 9px; background:var(--bg); color:var(--fg);
+    border:1px solid var(--border-strong); border-radius:5px;
+    font-size:13px; font-family:ui-monospace,Menlo,Consolas,monospace;
+  }
+  #adminTab .ap-model { min-width:28ch; }
+  #adminTab .ap-placement { min-width:24ch; }
+  #adminTab .ap-num { width:64px; }
+  #adminTab .ap-vllm-badge { align-self:center; }
+  #adminTab .ap-remove-btn { align-self:center; margin-left:auto; }
+  #adminTab .ap-proposal-row {
+    display:flex; align-items:center; gap:14px; flex-wrap:wrap;
+    background:var(--bg); border:1px solid var(--border); border-radius:6px;
+    padding:10px 12px;
+  }
+  #adminTab .ap-proposal-reason { flex:1; min-width:200px; color:var(--fg); font-size:14px; }
+  #adminTab .ap-proposal-meta { display:flex; align-items:center; gap:6px; flex-wrap:wrap; }
+  #adminTab .ap-proposal-model, #adminTab .ap-proposal-agent {
+    font-family:ui-monospace,Menlo,Consolas,monospace; font-size:12px; color:var(--fg-muted);
+  }
+  #adminTab .ap-proposal-actions { display:flex; gap:6px; margin-left:auto; }

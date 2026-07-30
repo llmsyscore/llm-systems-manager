@@ -1,0 +1,114 @@
+"""#472: executor behavior matrix + audit + routing side-effects."""
+from __future__ import annotations
+import sqlite3
+import autopilot as ap
+from autopilot_planner import Action
+
+def _deps():
+    log = {"proxy": [], "pin": [], "pool": [], "audit": [], "svc": []}
+    return log, {
+        "proxy": lambda p, m, path, j=None: (log["proxy"].append((p, path)), (True, {}))[1],
+        "set_pin": lambda p, mdl, aid: log["pin"].append((p, mdl, aid)),
+        "pool_update": lambda p, aid, inp: log["pool"].append((p, aid, inp)),
+        "audit": lambda a, t, o: log["audit"].append((a, o)),
+        "vllm_svc": lambda aid, mdl: (log["svc"].append((aid, mdl)), True)[1]}
+
+def _act(kind="load", provider="llama", auto=False, replicas=1):
+    a = Action(kind=kind, provider=provider, model="m1", agent_id="a" * 32,
+               reason="r", auto=auto, entry_key="m1/" + provider)
+    return a, {"m1/" + provider: {"min_replicas": replicas,
+                                  "max_replicas": replicas}}
+
+def test_llama_load_proxies_and_pins():
+    log, deps = _deps()
+    a, entries = _act()
+    assert ap.make_executor(deps, entries)(a) is True
+    assert ("llama", "/llama/load") in log["proxy"]
+    assert log["pin"] == [("llama", "m1", "a" * 32)]
+    assert ("autopilot:load", "ok") in log["audit"]
+
+def test_multireplica_load_updates_pool_not_pin():
+    log, deps = _deps()
+    a, entries = _act(kind="scale_up", replicas=2)
+    entries["m1/llama"] = {"min_replicas": 1, "max_replicas": 3}
+    ap.make_executor(deps, entries)(a)
+    assert log["pool"] == [("llama", "a" * 32, True)] and log["pin"] == []
+
+def test_vllm_auto_refused():
+    log, deps = _deps()
+    a, entries = _act(provider="vllm", auto=True)
+    assert ap.make_executor(deps, entries)(a) is False
+    assert log["svc"] == [] and ("autopilot:load", "refused") in log["audit"]
+
+def test_vllm_applied_proposal_uses_svc():
+    log, deps = _deps()
+    a, entries = _act(provider="vllm", auto=False)
+    assert ap.make_executor(deps, entries)(a) is True
+    assert log["svc"] == [("a" * 32, "m1")]
+
+def test_download_always_refused():
+    log, deps = _deps()
+    a, entries = _act(kind="download")
+    assert ap.make_executor(deps, entries)(a) is False
+    assert ("autopilot:download", "refused") in log["audit"]
+
+def test_scale_down_unloads_and_leaves_pool():
+    log, deps = _deps()
+    a, entries = _act(kind="scale_down", replicas=2)
+    entries["m1/llama"] = {"min_replicas": 1, "max_replicas": 3}
+    ap.make_executor(deps, entries)(a)
+    assert ("llama", "/llama/unload") in log["proxy"]
+    assert log["pool"] == [("llama", "a" * 32, False)]
+
+def test_failed_proxy_audits_fail():
+    log, deps = _deps()
+    deps["proxy"] = lambda *a, **k: (False, {})
+    act, entries = _act()
+    assert ap.make_executor(deps, entries)(act) is False
+    assert ("autopilot:load", "fail") in log["audit"]
+
+# --- Post-review fixes: vllm positional rewrite + audit-on-exception ---
+
+def test_vllm_binary_rewrite_replaces_positional_leaves_flags():
+    cur = {"binary": "vllm serve /path/old",
+          "args": [{"flag": "--flag", "value": "x", "bool": False}]}
+    out = ap._vllm_rewrite_model(cur, "/path/new")
+    assert out["binary"] == "vllm serve /path/new"
+    assert out["args"] == cur["args"]
+
+def test_vllm_binary_rewrite_none_when_head_too_short():
+    assert ap._vllm_rewrite_model({"binary": "vllm"}, "/path/new") is None
+
+def _raise(*a, **k):
+    raise RuntimeError("boom")
+
+def test_exception_during_routing_audits_error():
+    log, deps = _deps()
+    deps["set_pin"] = _raise
+    act, entries = _act()
+    assert ap.make_executor(deps, entries)(act) is False
+    assert ("autopilot:load", "error") in log["audit"]
+
+# --- Post-review fix: _prod_audit prunes past its own row cap ---
+
+def test_prod_audit_prunes_past_cap(monkeypatch, tmp_path):
+    db_path = tmp_path / "metrics.db"
+    conn = sqlite3.connect(str(db_path))
+    conn.execute("""
+        CREATE TABLE audit_log (
+            id INTEGER PRIMARY KEY, ts TEXT NOT NULL, actor TEXT, role TEXT,
+            ip TEXT, method TEXT, path TEXT, action TEXT, target TEXT,
+            status INTEGER, outcome TEXT)
+    """)
+    conn.commit()
+    conn.close()
+    monkeypatch.setattr(ap, "_METRICS_DB_PATH", db_path)
+    monkeypatch.setattr(ap, "_AUDIT_MAX_ROWS", 50)
+    monkeypatch.setattr(ap, "_AUDIT_PRUNE_EVERY", 10)
+    for _ in range(120):
+        ap._prod_audit("autopilot:load", "m1", "ok")
+    check = sqlite3.connect(str(db_path))
+    count = check.execute("SELECT COUNT(*) FROM audit_log").fetchone()[0]
+    assert count <= 50 + ap._AUDIT_PRUNE_EVERY
+    assert check.execute("SELECT MAX(id) FROM audit_log").fetchone()[0] == 120
+    check.close()
