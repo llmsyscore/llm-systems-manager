@@ -135,6 +135,11 @@ def _sample_gpu(sample: dict) -> dict:
     return sample.get("gpu") or (sample.get("system") or {}).get("gpu") or {}
 
 
+def _sample_ram(sample: dict) -> dict:
+    # llama pushes ram flat at top level; vllm/lms nest it under "system".
+    return sample.get("ram") or (sample.get("system") or {}).get("ram") or {}
+
+
 def build_observed(deps: dict) -> dict:
     """Snapshot agents.json + per-provider STORE samples into the agent
     dict shape autopilot_planner.plan() consumes."""
@@ -148,6 +153,7 @@ def build_observed(deps: dict) -> dict:
         saturation: "dict[str, float | None]" = {}
         server_state = None
         gpu: dict = {}
+        ram: dict = {}
         for prov in provider_caps:
             snap = deps["provider_snapshot"](prov, aid) or {}
             sample = snap.get("sample") or {}
@@ -158,33 +164,40 @@ def build_observed(deps: dict) -> dict:
                     server_state = st
             if not gpu:
                 gpu = _sample_gpu(sample)
+            if not ram:
+                ram = _sample_ram(sample)
             sat = deps["saturation"](prov, aid) or {}
             saturation[prov] = sat.get("value")
         total_mb = round((gpu.get("vram_total_bytes") or 0) / 1_048_576)
         used_mb = gpu.get("vram_used_mb") or 0
+        # available_bytes (not total-used) already excludes reclaimable
+        # cache/buffers — psutil's own definition of "free for new work".
+        ram_free_mb = round((ram.get("available_bytes") or 0) / 1_048_576)
         out[aid] = {
             "provider_caps": provider_caps,
             "live": deps["liveness"](agent) == "live",
             "vram_total_mb": total_mb,
             "vram_free_mb": max(total_mb - used_mb, 0),
+            "ram_free_mb": ram_free_mb,
             "loaded": loaded,
             "server_state": server_state,
             # No per-model idle timestamp is pushed by any provider today.
             "idle_since": None,
             "saturation": saturation,
         }
-    return {"agents": out, "model_sizes_mb": deps["model_sizes"]() or {}}
+    return {"agents": out, "model_sizes_mb": deps["model_sizes"]() or {},
+            "model_gpu_layers": deps["model_gpu_layers"]() or {}}
 
 
 _SIZES_CACHE_TTL_S = 600.0
 _sizes_cache: "dict[str, float | dict | bool]" = {"ts": 0.0, "sizes": {},
-                                                  "refreshing": False}
+                                                  "layers": {}, "refreshing": False}
 _sizes_lock = threading.Lock()
 
 
-def _llama_agent_sizes(agent: dict) -> dict:
-    """model_id -> size_mb from one agent's /llama/models/sizes; {} on any
-    failure (unreachable, old agent w/o the route, bad JSON) — isolated."""
+def _llama_agent_sizes_and_layers(agent: dict) -> "tuple[dict, dict]":
+    """(size_mb, gpu_layers) per model_id from one agent's /llama/models/sizes;
+    ({}, {}) on any failure (unreachable, old agent, bad JSON) — isolated."""
     r, _tried, err = agent_registry.agent_request(
         "GET", agent, "/llama/models/sizes",
         headers={"Authorization": f"Bearer {agent.get('token') or ''}"},
@@ -192,20 +205,28 @@ def _llama_agent_sizes(agent: dict) -> dict:
     if r is None or not r.ok:
         if err:
             log.debug("model-size fan-out: llama agent %s: %s", agent.get("hostname"), err)
-        return {}
+        return {}, {}
     try:
         body = r.json() or {}
     except Exception:
-        return {}
-    out: "dict[str, int]" = {}
+        return {}, {}
+    sizes: "dict[str, int]" = {}
     for mid, size_bytes in (body.get("sizes") or {}).items():
         try:
             mb = round(int(size_bytes) / 1_048_576)
         except (TypeError, ValueError):
             continue
         if mb:
-            out[mid] = mb
-    return out
+            sizes[mid] = mb
+    # meta is absent from old agents — a missing/malformed entry just means
+    # gpu_layers unknown for that model, never a hard failure.
+    layers: "dict[str, int | None]" = {}
+    for mid, meta in (body.get("meta") or {}).items():
+        if not isinstance(meta, dict):
+            continue
+        gl = meta.get("gpu_layers")
+        layers[mid] = int(gl) if isinstance(gl, (int, float)) else None
+    return sizes, layers
 
 
 _LMS_SIZE_RE = re.compile(r"^([\d.]+)\s*([KMGT]?B)$", re.IGNORECASE)
@@ -253,36 +274,41 @@ def _lms_agent_sizes(agents_map: dict) -> dict:
     return out
 
 
-def _refresh_model_sizes() -> dict:
-    """Fan out GET /llama/models/sizes to every approved llama agent, merge
-    with already-pushed lms sizes; {provider}:{model} -> size_mb, max on overlap."""
+def _refresh_model_sizes() -> "tuple[dict, dict]":
+    """Fan out to every approved llama agent + merge pushed lms sizes: sizes
+    take the agent-max per model, gpu_layers keeps the first value seen."""
     data = agent_registry.load_agents()
     agents_map = data.get("agents") or {}
-    merged: "dict[str, int]" = {}
+    sizes_merged: "dict[str, int]" = {}
+    layers_merged: "dict[str, int | None]" = {}
     for agent in agents_map.values():
         if agent.get("status") != "approved":
             continue
         if not (agent.get("capabilities") or {}).get("llama"):
             continue
-        for mid, mb in _llama_agent_sizes(agent).items():
+        a_sizes, a_layers = _llama_agent_sizes_and_layers(agent)
+        for mid, mb in a_sizes.items():
             key = f"llama:{mid}"
-            merged[key] = max(mb, merged.get(key, 0))
+            sizes_merged[key] = max(mb, sizes_merged.get(key, 0))
+        for mid, gl in a_layers.items():
+            key = f"llama:{mid}"
+            layers_merged.setdefault(key, gl)
     for model, mb in _lms_agent_sizes(agents_map).items():
         key = f"lms:{model}"
-        merged[key] = max(mb, merged.get(key, 0))
-    return merged
+        sizes_merged[key] = max(mb, sizes_merged.get(key, 0))
+    return sizes_merged, layers_merged
 
 
-def _prod_model_sizes() -> dict:
-    """Fleet-wide {provider}:{model} -> size_mb map, TTL-cached >=600s with
-    an in-flight guard; serves the stale cache on refresh failure or overlap."""
+def _prod_model_sizes_and_layers() -> "tuple[dict, dict]":
+    """Cache-refresh core shared by _prod_model_sizes/_prod_model_gpu_layers:
+    one fan-out, TTL >=600s, in-flight guard, stale-on-failure serving."""
     now = time.time()
     with _sizes_lock:
         if now - _sizes_cache["ts"] < _SIZES_CACHE_TTL_S or _sizes_cache["refreshing"]:
-            return dict(_sizes_cache["sizes"])
+            return dict(_sizes_cache["sizes"]), dict(_sizes_cache["layers"])
         _sizes_cache["refreshing"] = True
     try:
-        merged = _refresh_model_sizes()
+        sizes, layers = _refresh_model_sizes()
     except Exception as e:
         log.warning("model-size refresh failed, serving stale cache: %s", e)
         with _sizes_lock:
@@ -290,12 +316,27 @@ def _prod_model_sizes() -> dict:
             # TTL window instead of re-fanning-out on every subsequent call.
             _sizes_cache["ts"] = time.time()
             _sizes_cache["refreshing"] = False
-        return dict(_sizes_cache["sizes"])
+        return dict(_sizes_cache["sizes"]), dict(_sizes_cache["layers"])
     with _sizes_lock:
         _sizes_cache["ts"] = time.time()
-        _sizes_cache["sizes"] = merged
+        _sizes_cache["sizes"] = sizes
+        _sizes_cache["layers"] = layers
         _sizes_cache["refreshing"] = False
-    return dict(merged)
+    return dict(sizes), dict(layers)
+
+
+def _prod_model_sizes() -> dict:
+    """Fleet-wide {provider}:{model} -> size_mb map; see
+    _prod_model_sizes_and_layers for the TTL/in-flight/stale-cache design."""
+    sizes, _layers = _prod_model_sizes_and_layers()
+    return sizes
+
+
+def _prod_model_gpu_layers() -> dict:
+    """Fleet-wide {provider}:{model} -> gpu_layers (int|None); shares
+    _prod_model_sizes()'s cache, so it never triggers a second fan-out."""
+    _sizes, layers = _prod_model_sizes_and_layers()
+    return layers
 
 
 def _prod_saturation(provider: str, agent_id: str) -> dict:
@@ -320,6 +361,7 @@ def _prod_deps() -> dict:
         "liveness": agent_registry.agent_liveness,
         "provider_snapshot": provider_state.STORE.get,
         "model_sizes": _prod_model_sizes,
+        "model_gpu_layers": _prod_model_gpu_layers,
         "saturation": _prod_saturation,
     }
 

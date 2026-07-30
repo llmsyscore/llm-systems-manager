@@ -908,16 +908,21 @@ def _locate_quant_files(model_id: str) -> "tuple[list[Path], Optional[str]]":
     if not snapshots.is_dir():
         return [], f"Snapshots dir not found: {snapshots}"
 
+    # Case-insensitive: model_id's quant token (e.g. "Q4_K_M") doesn't always
+    # match the on-disk filename's casing (some repos ship it lowercase).
+    quant_lower = quant.lower()
     matches: list[Path] = []
     for snap in snapshots.iterdir():
         if not snap.is_dir():
             continue
+        gguf_files = [p for p in snap.iterdir() if p.suffix == ".gguf"]
         if quant.endswith(".gguf"):
-            matches.extend(sorted(snap.glob(quant)))
+            matches.extend(sorted(p for p in gguf_files
+                                  if p.name.lower() == quant_lower))
         else:
             matches.extend(
-                p for p in snap.glob(f"*{quant}*.gguf")
-                if not p.name.startswith("mmproj-")
+                p for p in gguf_files
+                if quant_lower in p.name.lower() and not p.name.startswith("mmproj-")
             )
     if not matches:
         return [], f"No quant files matched {quant!r} under {snapshots}"
@@ -961,30 +966,89 @@ def _model_gguf_size_bytes(model_id: str) -> "Optional[int]":
     return total or None
 
 
-_model_sizes_cache: "dict[str, Any]" = {"mtime": None, "sizes": {}}
+_NGL_RE = re.compile(r"(?:--n-gpu-layers|-ngl)[=\s]+(\d+)")
 
 
-def _llama_all_model_sizes() -> "dict[str, int]":
-    """model_id -> gguf size bytes for every config.ini model section,
-    cached until LLAMA_CONFIG_INI's mtime changes."""
+def _extract_gpu_layers(node, _depth: int = 0) -> "Optional[int]":
+    """Best-effort --n-gpu-layers scan of a /v1/models entry's status.args
+    or preset text (any nested string/list/dict) — None if absent."""
+    if _depth > 4:
+        return None
+    if isinstance(node, str):
+        m = _NGL_RE.search(node)
+        return int(m.group(1)) if m else None
+    if isinstance(node, list):
+        joined = " ".join(str(x) for x in node if isinstance(x, (str, int, float)))
+        found = _extract_gpu_layers(joined, _depth + 1)
+        if found is not None:
+            return found
+        for item in node:
+            found = _extract_gpu_layers(item, _depth + 1)
+            if found is not None:
+                return found
+        return None
+    if isinstance(node, dict):
+        for v in node.values():
+            found = _extract_gpu_layers(v, _depth + 1)
+            if found is not None:
+                return found
+        return None
+    return None
+
+
+def _llama_fetch_model_entries() -> "dict[str, dict]":
+    """id -> /v1/models entry (llama-swap router shape); {} on any failure —
+    gpu_layers just comes back unknown for every model."""
+    try:
+        api = _require_ctx().config.LLAMA_API_URL.rstrip("/")
+        resp = requests.get(f"{api}/v1/models", timeout=5)
+        data = (resp.json() or {}).get("data") or []
+    except Exception as e:
+        log.debug("gpu-layers lookup: /v1/models unreachable: %s", e)
+        return {}
+    return {e["id"]: e for e in data if isinstance(e, dict) and e.get("id")}
+
+
+_model_sizes_cache: "dict[str, Any]" = {"mtime": None, "sizes": {}, "layers": {}}
+
+
+def _llama_catalog_sweep() -> "tuple[dict[str, int], dict[str, Optional[int]]]":
+    """(sizes_bytes, gpu_layers) for every config.ini model section, cached
+    together until LLAMA_CONFIG_INI's mtime changes."""
     ini_path = _require_ctx().config.LLAMA_CONFIG_INI
     try:
         mtime = os.path.getmtime(ini_path)
     except OSError:
         mtime = None
     if mtime is not None and _model_sizes_cache["mtime"] == mtime:
-        return _model_sizes_cache["sizes"]
+        return _model_sizes_cache["sizes"], _model_sizes_cache["layers"]
 
+    entries = _llama_fetch_model_entries()
     sizes: dict[str, int] = {}
+    layers: "dict[str, Optional[int]]" = {}
     for section in _llama_read_ini().sections():
         if section in ("*", "__DEFAULTS__"):
             continue
         size = _model_gguf_size_bytes(section)
         if size:
             sizes[section] = size
+        layers[section] = _extract_gpu_layers(entries.get(section) or {})
     _model_sizes_cache["mtime"] = mtime
     _model_sizes_cache["sizes"] = sizes
+    _model_sizes_cache["layers"] = layers
+    return sizes, layers
+
+
+def _llama_all_model_sizes() -> "dict[str, int]":
+    """model_id -> gguf size bytes for every config.ini model section."""
+    sizes, _layers = _llama_catalog_sweep()
     return sizes
+
+
+def _llama_all_model_gpu_layers() -> "dict[str, Optional[int]]":
+    """model_id -> --n-gpu-layers (None when absent/unknown)."""
+    _sizes, layers = _llama_catalog_sweep()
+    return layers
 
 
 def _dl_put(msg: dict[str, Any]) -> None:
@@ -1323,9 +1387,12 @@ def llama_models_endpoint(authorization: Optional[str] = Header(default=None)) -
 
 
 def llama_model_sizes_endpoint(authorization: Optional[str] = Header(default=None)) -> dict[str, Any]:
-    """model_id -> on-disk .gguf size in bytes, for autopilot's VRAM-fit check (#472/#474)."""
+    """sizes (bytes) + meta.gpu_layers per model, for autopilot's offload-
+    aware fit check (#472/#474/#475); meta is additive, old readers unaffected."""
     _require_ctx().check_bearer(authorization); _llama_check_enabled()
-    return {"ok": True, "sizes": _llama_all_model_sizes()}
+    sizes, layers = _llama_catalog_sweep()
+    return {"ok": True, "sizes": sizes,
+            "meta": {mid: {"gpu_layers": gl} for mid, gl in layers.items()}}
 
 
 async def _llama_openai_forward(sub: str, request: Request,

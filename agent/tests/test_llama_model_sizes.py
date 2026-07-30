@@ -1,5 +1,5 @@
 # agent/tests/test_llama_model_sizes.py
-"""#472/#474: GET /llama/models/sizes — gguf size lookup for autopilot."""
+"""#472/#474/#475: GET /llama/models/sizes — gguf sizes + gpu_layers meta."""
 from __future__ import annotations
 
 import contextlib
@@ -59,6 +59,7 @@ def llama():
     mod = _load_llama()
     mod._model_sizes_cache["mtime"] = None
     mod._model_sizes_cache["sizes"] = {}
+    mod._model_sizes_cache["layers"] = {}
     return mod
 
 
@@ -78,8 +79,9 @@ class _FakeCP:
 
 
 class _Ctx:
-    def __init__(self, ini_path):
-        self.config = types.SimpleNamespace(LLAMA_CONFIG_INI=str(ini_path))
+    def __init__(self, ini_path, api_url="http://127.0.0.1:8080"):
+        self.config = types.SimpleNamespace(
+            LLAMA_CONFIG_INI=str(ini_path), LLAMA_API_URL=api_url)
 
 
 def _make_snapshot(root: Path, repo: str, filename: str, size: int) -> Path:
@@ -123,6 +125,41 @@ def test_model_gguf_size_bytes_uses_ini_hf_repo_file(llama, monkeypatch, tmp_pat
     monkeypatch.setattr(llama, "_hf_cache_root", lambda: cache_root)
     monkeypatch.setattr(llama, "_llama_read_ini", lambda: cp)
     assert llama._model_gguf_size_bytes("my-alias") == 2048
+
+
+# ── Review fix: case-insensitive quant<->filename matching (#472/#475) ──
+
+def test_quant_matching_case_insensitive_lowercase_repo_filename(llama, monkeypatch, tmp_path):
+    """Qwen's official GGUF repo ships a lowercase filename while the
+    model_id's quant token (from llama.cpp's -hf convention) is uppercase."""
+    cache_root = tmp_path / "hub"
+    _make_snapshot(cache_root, "Qwen/Qwen2.5-1.5B-Instruct-GGUF",
+                   "qwen2.5-1.5b-instruct-q4_k_m.gguf", 986_000_000)
+    monkeypatch.setattr(llama, "_hf_cache_root", lambda: cache_root)
+    monkeypatch.setattr(llama, "_llama_read_ini", lambda: _FakeCP({}))
+    size = llama._model_gguf_size_bytes("Qwen/Qwen2.5-1.5B-Instruct-GGUF:Q4_K_M")
+    assert size == 986_000_000
+
+
+def test_quant_matching_case_insensitive_exact_ini_filename(llama, monkeypatch, tmp_path):
+    """The .gguf-suffixed exact-match branch is also case-insensitive."""
+    cache_root = tmp_path / "hub"
+    _make_snapshot(cache_root, "org/repo", "model-q4_k_m.gguf", 777)
+    cp = _FakeCP({"my-model": {"hf-repo": "org/repo", "hf-file": "MODEL-Q4_K_M.gguf"}})
+    monkeypatch.setattr(llama, "_hf_cache_root", lambda: cache_root)
+    monkeypatch.setattr(llama, "_llama_read_ini", lambda: cp)
+    assert llama._model_gguf_size_bytes("my-model") == 777
+
+
+def test_quant_matching_still_skips_mmproj_case_insensitively(llama, monkeypatch, tmp_path):
+    cache_root = tmp_path / "hub"
+    snap = cache_root / "models--org--repo" / "snapshots" / "abc"
+    snap.mkdir(parents=True)
+    (snap / "mmproj-MODEL-q4_k_m.gguf").write_bytes(b"x" * 10)
+    (snap / "model-q4_k_m.gguf").write_bytes(b"y" * 55)
+    monkeypatch.setattr(llama, "_hf_cache_root", lambda: cache_root)
+    monkeypatch.setattr(llama, "_llama_read_ini", lambda: _FakeCP({}))
+    assert llama._model_gguf_size_bytes("org/repo:Q4_K_M") == 55
 
 
 # ── delete behavior unchanged after the _locate_quant_files refactor ───
@@ -198,9 +235,107 @@ def test_all_model_sizes_cached_until_ini_mtime_changes(llama, monkeypatch, tmp_
     assert calls["n"] == 2         # mtime bump forced a fresh sweep
 
 
+# ── _extract_gpu_layers: --n-gpu-layers parsing (#475) ──────────────────
+
+def test_extract_gpu_layers_from_status_args_list_zero(llama):
+    entry = {"id": "m1", "status": {"value": "loaded",
+             "args": ["--model", "x.gguf", "--n-gpu-layers", "0", "--mlock"]}}
+    assert llama._extract_gpu_layers(entry) == 0
+
+
+def test_extract_gpu_layers_from_status_args_string_positive(llama):
+    entry = {"status": {"args": "llama-server --n-gpu-layers 32 --ctx-size 4096"}}
+    assert llama._extract_gpu_layers(entry) == 32
+
+
+def test_extract_gpu_layers_from_short_flag_ngl(llama):
+    entry = {"status": {"args": ["-ngl", "999"]}}
+    assert llama._extract_gpu_layers(entry) == 999
+
+
+def test_extract_gpu_layers_from_equals_form(llama):
+    entry = {"status": {"args": "--n-gpu-layers=0"}}
+    assert llama._extract_gpu_layers(entry) == 0
+
+
+def test_extract_gpu_layers_from_preset_text(llama):
+    entry = {"preset": "some preset --n-gpu-layers=0 extra"}
+    assert llama._extract_gpu_layers(entry) == 0
+
+
+def test_extract_gpu_layers_none_when_absent(llama):
+    entry = {"id": "m1", "status": {"value": "loaded", "args": ["--ctx-size", "4096"]}}
+    assert llama._extract_gpu_layers(entry) is None
+
+
+def test_extract_gpu_layers_none_for_empty_or_none(llama):
+    assert llama._extract_gpu_layers({}) is None
+    assert llama._extract_gpu_layers(None) is None
+
+
+# ── _llama_fetch_model_entries: /v1/models -> {id: entry} ──────────────
+
+def test_fetch_model_entries_indexes_by_id(llama, monkeypatch):
+    monkeypatch.setattr(llama, "_require_ctx",
+                        lambda: _Ctx(ini_path="/dev/null", api_url="http://127.0.0.1:8081"))
+
+    class _Resp:
+        def json(self_inner):
+            return {"data": [{"id": "m1", "status": {"args": ["-ngl", "0"]}},
+                             {"id": "m2"}]}
+    monkeypatch.setattr(llama.requests, "get", lambda *a, **k: _Resp(), raising=False)
+    entries = llama._llama_fetch_model_entries()
+    assert set(entries.keys()) == {"m1", "m2"}
+    assert entries["m1"]["status"]["args"] == ["-ngl", "0"]
+
+
+def test_fetch_model_entries_empty_on_failure(llama, monkeypatch):
+    monkeypatch.setattr(llama, "_require_ctx",
+                        lambda: _Ctx(ini_path="/dev/null", api_url="http://127.0.0.1:8081"))
+
+    def _boom(*a, **k):
+        raise ConnectionError("down")
+    monkeypatch.setattr(llama.requests, "get", _boom, raising=False)
+    assert llama._llama_fetch_model_entries() == {}
+
+
+# ── _llama_catalog_sweep: sizes + layers merged, cached together ───────
+
+def test_catalog_sweep_merges_sizes_and_layers_cached_together(llama, monkeypatch, tmp_path):
+    cache_root = tmp_path / "hub"
+    _make_snapshot(cache_root, "org/repo", "m-Q4_K_M.gguf", 4096)
+    cp = _FakeCP({"m1": {"hf-repo": "org/repo", "hf-file": "m-Q4_K_M.gguf"}})
+    ini_path = tmp_path / "config.ini"
+    ini_path.write_text("[*]\n")
+    monkeypatch.setattr(llama, "_hf_cache_root", lambda: cache_root)
+    monkeypatch.setattr(llama, "_llama_read_ini", lambda: cp)
+    monkeypatch.setattr(llama, "_require_ctx", lambda: _Ctx(ini_path))
+
+    fetch_calls = {"n": 0}
+
+    def _fake_fetch():
+        fetch_calls["n"] += 1
+        return {"m1": {"status": {"args": ["--n-gpu-layers", "0"]}}}
+    monkeypatch.setattr(llama, "_llama_fetch_model_entries", _fake_fetch)
+
+    sizes, layers = llama._llama_catalog_sweep()
+    assert sizes == {"m1": 4096}
+    assert layers == {"m1": 0}
+
+    sizes2, layers2 = llama._llama_catalog_sweep()
+    assert (sizes2, layers2) == (sizes, layers)
+    assert fetch_calls["n"] == 1      # second call hit the mtime cache, no re-fetch
+
+
+def test_llama_all_model_gpu_layers_wraps_catalog_sweep(llama, monkeypatch):
+    monkeypatch.setattr(llama, "_llama_catalog_sweep",
+                        lambda: ({"m1": 1}, {"m1": 0, "m2": None}))
+    assert llama._llama_all_model_gpu_layers() == {"m1": 0, "m2": None}
+
+
 # ── route handler: auth + enabled gates, response shape ────────────────
 
-def test_endpoint_returns_ok_and_sizes_dict(llama, monkeypatch, tmp_path):
+def test_endpoint_returns_ok_sizes_and_gpu_layers_meta(llama, monkeypatch, tmp_path):
     ini_path = tmp_path / "config.ini"
     ini_path.write_text("[*]\n")
 
@@ -214,6 +349,8 @@ def test_endpoint_returns_ok_and_sizes_dict(llama, monkeypatch, tmp_path):
             return None
 
     monkeypatch.setattr(llama, "_require_ctx", lambda: _FakeFullCtx())
-    monkeypatch.setattr(llama, "_llama_all_model_sizes", lambda: {"m1": 999})
+    monkeypatch.setattr(llama, "_llama_catalog_sweep",
+                        lambda: ({"m1": 999}, {"m1": 0, "m2": None}))
     out = llama.llama_model_sizes_endpoint(authorization="Bearer x")
-    assert out == {"ok": True, "sizes": {"m1": 999}}
+    assert out == {"ok": True, "sizes": {"m1": 999},
+                   "meta": {"m1": {"gpu_layers": 0}, "m2": {"gpu_layers": None}}}

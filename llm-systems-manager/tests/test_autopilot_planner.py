@@ -27,8 +27,9 @@ E = {"model": "m1", "provider": "llama", "placement": "auto",
      "failover": "semi", "priority": 100, "min_replicas": 1,
      "max_replicas": 1}
 
-def _obs(agents, sizes=None):
-    return {"agents": agents, "model_sizes_mb": sizes or {"llama:m1": 8000}}
+def _obs(agents, sizes=None, gpu_layers=None):
+    return {"agents": agents, "model_sizes_mb": sizes or {"llama:m1": 8000},
+            "model_gpu_layers": gpu_layers or {}}
 
 def test_places_missing_model_on_fittest_agent():
     acts = pl.plan(_desired([E]), _obs(_agents()), _ledger(), now=1000.0)
@@ -247,3 +248,73 @@ def test_entry_status_matches_plan_intra_pass_vram_budget():
     # And plan() agrees: only the winner gets a load action.
     acts = pl.plan(_desired([lo, hi]), obs, _ledger(), now=1000.0)
     assert [a.model for a in acts] == ["hi"]
+
+# ── offload-aware fit: gpu_layers==0 -> RAM budget, not VRAM (#472/#475) ──
+
+def test_ram_fit_places_cpu_served_model_with_zero_vram():
+    # gpu_layers=0 (CPU-served): fits via ram_free_mb even though VRAM=0.
+    obs = _obs(_agents(**{A1: {"vram_free_mb": 0, "ram_free_mb": 20000},
+                          A2: {"vram_free_mb": 0, "ram_free_mb": 0}}),
+              gpu_layers={"llama:m1": 0})
+    acts = pl.plan(_desired([E]), obs, _ledger(), now=1000.0)
+    assert len(acts) == 1 and acts[0].kind == "load" and acts[0].agent_id == A1
+
+def test_ram_fit_rejects_when_no_ram_free():
+    obs = _obs(_agents(**{A1: {"vram_free_mb": 0, "ram_free_mb": 4000},
+                          A2: {"vram_free_mb": 0, "ram_free_mb": 4000}}),
+              gpu_layers={"llama:m1": 0})
+    assert pl.plan(_desired([E]), obs, _ledger(), now=1000.0) == []
+
+def test_gpu_layers_unknown_still_uses_vram_path():
+    # No model_gpu_layers entry for m1 -> unknown -> current VRAM behavior;
+    # ample RAM must NOT rescue a placement when VRAM is exhausted.
+    obs = _obs(_agents(**{A1: {"vram_free_mb": 0, "ram_free_mb": 20000},
+                          A2: {"vram_free_mb": 0, "ram_free_mb": 20000}}))
+    assert pl.plan(_desired([E]), obs, _ledger(), now=1000.0) == []
+
+def test_gpu_layers_positive_still_uses_vram_path():
+    obs = _obs(_agents(**{A1: {"vram_free_mb": 0, "ram_free_mb": 20000},
+                          A2: {"vram_free_mb": 0, "ram_free_mb": 20000}}),
+              gpu_layers={"llama:m1": 32})
+    assert pl.plan(_desired([E]), obs, _ledger(), now=1000.0) == []
+
+def test_ram_budget_contention_between_two_entries_same_pass():
+    # One agent, 9200 MB RAM free (VRAM=0); two CPU-served entries each need
+    # 8000+1024 RAM. Only the higher-priority entry fits (separate from VRAM).
+    hi = {**E, "model": "hi", "priority": 1}
+    lo = {**E, "model": "lo", "priority": 200}
+    sizes = {"llama:hi": 8000, "llama:lo": 8000}
+    layers = {"llama:hi": 0, "llama:lo": 0}
+    one = {A1: {**_agents()[A1], "vram_free_mb": 0, "ram_free_mb": 9200}}
+    obs = {"agents": one, "model_sizes_mb": sizes, "model_gpu_layers": layers}
+    acts = pl.plan(_desired([lo, hi]), obs, _ledger(), now=1000.0)
+    assert [a.model for a in acts] == ["hi"]
+
+def test_ram_and_vram_budgets_tracked_separately_same_pass():
+    # One agent: a CPU-served entry (RAM) and a GPU entry (VRAM) both fit in
+    # the same pass because their budgets don't compete with each other.
+    ram_entry = {**E, "model": "cpu-model", "priority": 1}
+    vram_entry = {**E, "model": "gpu-model", "priority": 2}
+    sizes = {"llama:cpu-model": 8000, "llama:gpu-model": 8000}
+    layers = {"llama:cpu-model": 0, "llama:gpu-model": 32}
+    one = {A1: {**_agents()[A1], "vram_free_mb": 9200, "ram_free_mb": 9200}}
+    obs = {"agents": one, "model_sizes_mb": sizes, "model_gpu_layers": layers}
+    acts = pl.plan(_desired([ram_entry, vram_entry]), obs, _ledger(), now=1000.0)
+    assert sorted(a.model for a in acts) == ["cpu-model", "gpu-model"]
+
+# ── entry_status: RAM-path blocked reason ───────────────────────────────
+
+def test_entry_status_insufficient_ram():
+    obs = _obs(_agents(**{A1: {"vram_free_mb": 0, "ram_free_mb": 4000},
+                          A2: {"vram_free_mb": 0, "ram_free_mb": 4000}}),
+              gpu_layers={"llama:m1": 0})
+    st = pl.entry_status(_desired([E]), obs)
+    assert st["m1/llama"] == {"placed": 0, "want": 1,
+                              "blocked": "insufficient free RAM on any candidate"}
+
+def test_entry_status_ram_fit_not_blocked():
+    obs = _obs(_agents(**{A1: {"vram_free_mb": 0, "ram_free_mb": 20000},
+                          A2: {"vram_free_mb": 0, "ram_free_mb": 0}}),
+              gpu_layers={"llama:m1": 0})
+    st = pl.entry_status(_desired([E]), obs)
+    assert st["m1/llama"] == {"placed": 0, "want": 1, "blocked": None}
