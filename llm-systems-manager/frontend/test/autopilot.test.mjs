@@ -174,6 +174,85 @@ describe("poll no longer clobbers unsaved edits (#472)", () => {
   });
 });
 
+describe("statusChip reports honest placement/blocked status (#472)", () => {
+  const entry = { model: "m1", provider: "llama" };
+
+  it("shows N/M placed when satisfied", () => {
+    const chip = AP.statusChip(entry, [], { placed: 1, want: 1, blocked: null });
+    expect(chip.textContent).toBe("1/1 placed");
+    expect(chip.className).toContain("status--ok");
+  });
+
+  it("shows N/M plus the blocked reason when unplaceable", () => {
+    const chip = AP.statusChip(entry, [],
+      { placed: 0, want: 1, blocked: "model size unknown" });
+    expect(chip.textContent).toBe("0/1 — model size unknown");
+    expect(chip.className).toContain("status--warn");
+  });
+
+  it("a pending proposal still wins over status", () => {
+    const chip = AP.statusChip(entry,
+      [{ entry_key: "m1/llama" }],
+      { placed: 0, want: 1, blocked: "model size unknown" });
+    expect(chip.textContent).toBe("1 pending");
+  });
+
+  it("falls back to stable/muted when no status is given (back-compat)", () => {
+    const chip = AP.statusChip(entry, []);
+    expect(chip.textContent).toBe("stable");
+    expect(chip.className).toContain("status--muted");
+  });
+
+  it("shows muted (not ok) when pending placement — under want but not blocked", () => {
+    const chip = AP.statusChip(entry, [], { placed: 0, want: 1, blocked: null });
+    expect(chip.textContent).toBe("0/1 placed");
+    expect(chip.className).toContain("status--muted");
+    expect(chip.className).not.toContain("status--ok");
+  });
+});
+
+describe("planNow surfaces blocked entries instead of a false-satisfied message (#472)", () => {
+  it("reports K blocked entries when the tick finds zero actions but entries are blocked", async () => {
+    document.body.innerHTML = '<span id="apSaveStatus"></span>';
+    vi.stubGlobal("fetch", vi.fn(url => {
+      if (String(url).includes("/tick")) {
+        return Promise.resolve({ok: true, json: () => Promise.resolve({
+          actions: [], proposals: [],
+          entry_status: {
+            "m1/llama": {placed: 0, want: 1, blocked: "no live agent supports this provider"},
+            "m2/llama": {placed: 1, want: 1, blocked: null},
+          },
+        })});
+      }
+      return Promise.resolve({ok: true, json: () => Promise.resolve(
+        {state: {enabled: false, entries: [], hosts: {}}, proposals: [], last_plan_ts: null})});
+    }));
+    await AP.planNow();
+    expect(document.getElementById("apSaveStatus").textContent)
+      .toBe("plan: no plannable actions — 1 entry blocked (see status chips)");
+  });
+
+  it("pluralizes to K entries blocked", async () => {
+    document.body.innerHTML = '<span id="apSaveStatus"></span>';
+    vi.stubGlobal("fetch", vi.fn(url => {
+      if (String(url).includes("/tick")) {
+        return Promise.resolve({ok: true, json: () => Promise.resolve({
+          actions: [], proposals: [],
+          entry_status: {
+            "m1/llama": {placed: 0, want: 1, blocked: "model size unknown"},
+            "m2/llama": {placed: 0, want: 1, blocked: "insufficient free VRAM on any candidate"},
+          },
+        })});
+      }
+      return Promise.resolve({ok: true, json: () => Promise.resolve(
+        {state: {enabled: false, entries: [], hosts: {}}, proposals: [], last_plan_ts: null})});
+    }));
+    await AP.planNow();
+    expect(document.getElementById("apSaveStatus").textContent)
+      .toBe("plan: no plannable actions — 2 entries blocked (see status chips)");
+  });
+});
+
 describe("catalog refresh in-flight + 30s cadence guard (#472)", () => {
   it("collapses overlapping fetchState() calls, throttles a too-soon follow-up, but init() always forces through", async () => {
     document.body.innerHTML = `

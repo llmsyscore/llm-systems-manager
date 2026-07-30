@@ -51,3 +51,11 @@ def test_apply_unknown_proposal_404(client):
 def test_tick_endpoint_returns_plan(client):
     j = client.post("/api/autopilot/tick").get_json()
     assert "actions" in j and "proposals" in j
+
+def test_get_reports_entry_status_for_unplaceable_entry(client):
+    r = client.put("/api/autopilot", json={"enabled": True, "entries": [
+        {"model": "m1", "provider": "llama", "min_replicas": 1}], "hosts": {}})
+    assert r.status_code == 200
+    j = client.get("/api/autopilot").get_json()
+    assert j["entry_status"] == {"m1/llama": {"placed": 0, "want": 1,
+                                              "blocked": "no live agent supports this provider"}}

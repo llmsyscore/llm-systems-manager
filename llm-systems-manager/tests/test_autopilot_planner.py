@@ -179,3 +179,54 @@ def test_wake_not_emitted_for_non_llama_entry_on_sleeping_host():
     acts = pl.plan(_desired([e]), obs, _ledger(), now=1000.0)
     assert [a.kind for a in acts] == ["load"]
     assert acts[0].agent_id == A1
+
+# ── entry_status (#472 honest plan messages) ──────────────────────────
+
+def test_entry_status_satisfied():
+    obs = _obs(_agents(**{A1: {"loaded": {"llama": ["m1"]}}}))
+    st = pl.entry_status(_desired([E]), obs)
+    assert st == {"m1/llama": {"placed": 1, "want": 1, "blocked": None}}
+
+def test_entry_status_no_live_agent():
+    obs = _obs(_agents(**{A1: {"live": False}, A2: {"live": False}}))
+    st = pl.entry_status(_desired([E]), obs)
+    assert st["m1/llama"] == {"placed": 0, "want": 1,
+                              "blocked": "no live agent supports this provider"}
+
+def test_entry_status_pin_lacking_capability():
+    # explicit-pin variant: pinned agent lacks the capability -> same reason
+    e = {**E, "placement": A2}
+    obs = _obs(_agents(**{A2: {"provider_caps": ["vllm"], "vram_free_mb": 20000}}))
+    st = pl.entry_status(_desired([e]), obs)
+    assert st["m1/llama"] == {"placed": 0, "want": 1,
+                              "blocked": "no live agent supports this provider"}
+
+def test_entry_status_model_size_unknown():
+    # sizes={} is falsy in _obs()'s "sizes or {default}" fallback, so use a
+    # non-empty dict that simply omits this entry's key.
+    obs = _obs(_agents(), sizes={"llama:other": 9000})
+    st = pl.entry_status(_desired([E]), obs)
+    assert st["m1/llama"] == {"placed": 0, "want": 1, "blocked": "model size unknown"}
+
+def test_entry_status_insufficient_vram():
+    obs = _obs(_agents(**{A1: {"vram_free_mb": 4000}, A2: {"vram_free_mb": 4000}}))
+    st = pl.entry_status(_desired([E]), obs)
+    assert st["m1/llama"] == {"placed": 0, "want": 1,
+                              "blocked": "insufficient free VRAM on any candidate"}
+
+def test_entry_status_pending_not_blocked():
+    # fits somewhere but hasn't been placed yet (e.g. cooldown) -> not "blocked"
+    obs = _obs(_agents())
+    st = pl.entry_status(_desired([E]), obs)
+    assert st["m1/llama"] == {"placed": 0, "want": 1, "blocked": None}
+
+def test_entry_status_already_placed_agent_not_its_own_candidate():
+    # want=2: A1 already hosts m1 (ample free VRAM there is irrelevant — it
+    # can't host a second replica of itself); A2 is the only real candidate
+    # and lacks VRAM -> genuinely stuck, not falsely "pending".
+    e = {**E, "min_replicas": 2, "max_replicas": 2}
+    obs = _obs(_agents(**{A1: {"loaded": {"llama": ["m1"]}},
+                          A2: {"vram_free_mb": 100}}))
+    st = pl.entry_status(_desired([e]), obs)
+    assert st["m1/llama"] == {"placed": 1, "want": 2,
+                              "blocked": "insufficient free VRAM on any candidate"}

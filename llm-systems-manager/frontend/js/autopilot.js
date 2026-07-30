@@ -233,9 +233,9 @@ function proposalRow(p, callbacks) {
   return row;
 }
 
-// Small status badge for an entry: counts proposals whose action.entry_key
-// matches model/provider — "N pending" (warn) or "stable" (muted).
-function statusChip(entry, placements) {
+// Status badge: "N pending" wins over placed/want + blocked reason;
+// "stable" only when no entry_status was passed (#472 back-compat).
+function statusChip(entry, placements, status) {
   const key = `${entry.model}/${entry.provider}`;
   const list = Array.isArray(placements) ? placements : [];
   const pending = list.filter(p => {
@@ -243,6 +243,15 @@ function statusChip(entry, placements) {
     return ek === key;
   }).length;
   if (pending > 0) return el('span', 'status status--warn', `${pending} pending`);
+  if (status) {
+    const placed = status.placed || 0;
+    const want = status.want || 0;
+    if (status.blocked) {
+      return el('span', 'status status--warn', `${placed}/${want} — ${status.blocked}`);
+    }
+    const cls = placed >= want ? 'status status--ok' : 'status status--muted';
+    return el('span', cls, `${placed}/${want} placed`);
+  }
   return el('span', 'status status--muted', 'stable');
 }
 
@@ -250,6 +259,7 @@ function statusChip(entry, placements) {
 
 let _lastState = null;
 let _lastProposals = [];
+let _lastEntryStatus = {};
 let _wired = false;
 // True once the editor has unsaved user edits; blocks the 10s poll from
 // clobbering them (#472). Cleared on init() and on a successful save().
@@ -277,7 +287,8 @@ function _renderEntries() {
     const wrap = document.createElement('div');
     wrap.className = 'ap-entry-wrap';
     wrap.appendChild(entryRow(entry));
-    wrap.appendChild(statusChip(entry, _lastProposals));
+    const status = _lastEntryStatus[`${entry.model}/${entry.provider}`];
+    wrap.appendChild(statusChip(entry, _lastProposals, status));
     body.appendChild(wrap);
   });
 }
@@ -355,6 +366,7 @@ async function fetchState(forceCatalog) {
     if (!r.ok) throw new Error(d.error || ('HTTP ' + r.status));
     _lastState = d.state || { enabled: false, entries: [], hosts: {} };
     _lastProposals = d.proposals || [];
+    _lastEntryStatus = d.entry_status || {};
     await catalogP;
     _render();
   } catch (e) {
@@ -401,8 +413,8 @@ async function dismissProposal(id) {
   fetchState();
 }
 
-// Surfaces the tick result on apSaveStatus — otherwise a satisfied fleet
-// (zero actions) makes "Plan now" look like a dead button (#472).
+// Surfaces the tick result on apSaveStatus; zero actions only reads as
+// "satisfied" when nothing is blocked, else reports the blocked count (#472).
 async function planNow() {
   try {
     const r = await fetch('/api/autopilot/tick', { method: 'POST' });
@@ -412,9 +424,14 @@ async function planNow() {
     } else {
       const actions = d.actions || [];
       const proposals = d.proposals || [];
-      _setStatus(actions.length
-        ? `plan: ${actions.length} action(s), ${proposals.length} proposal(s) pending`
-        : 'plan: no actions needed — desired state satisfied');
+      if (actions.length) {
+        _setStatus(`plan: ${actions.length} action(s), ${proposals.length} proposal(s) pending`);
+      } else {
+        const blocked = Object.values(d.entry_status || {}).filter(s => s && s.blocked).length;
+        _setStatus(blocked
+          ? `plan: no plannable actions — ${blocked} entr${blocked === 1 ? 'y' : 'ies'} blocked (see status chips)`
+          : 'plan: no actions needed — desired state satisfied');
+      }
     }
   } catch (e) {
     _setStatus('✗ plan failed: ' + e.message, true);

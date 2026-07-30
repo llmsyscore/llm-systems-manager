@@ -328,8 +328,8 @@
     border:1px solid var(--border-strong); border-radius:5px;
     font-size:13px; font-family:ui-monospace,Menlo,Consolas,monospace;
   }
-  #adminTab .ap-model { min-width:160px; }
-  #adminTab .ap-placement { min-width:140px; }
+  #adminTab .ap-model { min-width:28ch; }
+  #adminTab .ap-placement { min-width:24ch; }
   #adminTab .ap-num { width:64px; }
   #adminTab .ap-vllm-badge { align-self:center; }
   #adminTab .ap-remove-btn { align-self:center; margin-left:auto; }

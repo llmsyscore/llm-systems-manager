@@ -362,7 +362,8 @@ class Reconciler:
             self.last_plan_ts = now
             self._refresh_snapshot()
             return {"actions": [asdict(a) for a in actions],
-                    "proposals": self._snapshot}
+                    "proposals": self._snapshot,
+                    "entry_status": pl.entry_status(desired, observed)}
 
     def _prune_placed_at(self, observed: dict, now: float) -> None:
         """Drop placed_at[k][aid] once a live agent stops reporting the
@@ -423,6 +424,10 @@ class Reconciler:
 
     def proposals(self) -> "list[dict]":
         return self._snapshot
+
+    def observe(self) -> dict:
+        """A fresh, read-only observation — used by GET to compute entry_status."""
+        return self._observe()
 
     def apply(self, pid: str, now: float = None) -> dict:
         import time as _t
@@ -657,8 +662,10 @@ def register_routes(app, ctx, auth) -> None:
     @app.route("/api/autopilot")
     @auth
     def autopilot_get():
-        return jsonify({"state": get_state(), "proposals": RECONCILER.proposals(),
-                        "last_plan_ts": RECONCILER.last_plan_ts})
+        state = get_state()
+        return jsonify({"state": state, "proposals": RECONCILER.proposals(),
+                        "last_plan_ts": RECONCILER.last_plan_ts,
+                        "entry_status": pl.entry_status(state, RECONCILER.observe())})
 
     @app.route("/api/autopilot", methods=["PUT"])
     @auth
