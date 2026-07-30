@@ -1,4 +1,4 @@
-"""Fleet autopilot (#472): state, observer, executors, reconciler, routes."""
+"""Model autopilot (#472): state, observer, executors, reconciler, routes."""
 from __future__ import annotations
 
 import logging

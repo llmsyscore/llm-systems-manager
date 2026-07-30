@@ -1,4 +1,4 @@
-// Fleet Autopilot admin panel (#472) — entry editor, proposals queue, wiring.
+// Model Autopilot admin panel (#472) — entry editor, proposals queue, wiring.
 // IIFE-scoped; exposes window.AP only. Pure testables + thin DOM glue.
 (function (root) {
 

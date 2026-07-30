@@ -5327,7 +5327,7 @@ if __name__ == "__main__":
         daemon=True,
     ).start()
 
-    # Fleet autopilot reconciler (#472): ticks RECONCILER every 30s.
+    # Model autopilot reconciler (#472): ticks RECONCILER every 30s.
     autopilot.start_thread(ctx)
 
     # Per-provider offline-edge sweep — fires the True→False latch transition

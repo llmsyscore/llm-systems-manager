@@ -505,7 +505,7 @@ Backend API endpoints consumed:
           <div class="adm-card-hdr">
             <div class="adm-title">Provider pool order</div>
             <span class="adm-muted" title="Drag rows to reorder. First entry = primary; round-robin walks the list in order. Add/remove via the 'in pool' toggles in the Agents tab.">drag to reorder</span>
-            <span class="status status--info status--square" id="adminPoolApBadge" style="display:none;" title="Fleet Autopilot manages pool membership for this provider's replicated entries — manual membership edits may be overridden on the next reconcile.">autopilot-managed</span>
+            <span class="status status--info status--square" id="adminPoolApBadge" style="display:none;" title="Model Autopilot manages pool membership for this provider's replicated entries — manual membership edits may be overridden on the next reconcile.">autopilot-managed</span>
             <div class="adm-spacer"></div>
             <button class="adm-refresh" onclick="adminLoadAgents()" title="Reload from server">↻</button>
           </div>
@@ -554,7 +554,7 @@ Backend API endpoints consumed:
         <!-- Autopilot cards (#472; merged into Routing, #476) -->
         <div class="adm-card" id="apEntriesCard">
           <div class="adm-card-hdr">
-            <div class="adm-title">Fleet Autopilot</div>
+            <div class="adm-title">Model Autopilot</div>
             <div class="adm-spacer"></div>
             <label class="adm-toggle" title="When enabled, autopilot may place, fail over, and auto-scale entries per each entry's failover setting. vLLM entries always require a manual Apply.">
               <input type="checkbox" id="apEnabledToggle">

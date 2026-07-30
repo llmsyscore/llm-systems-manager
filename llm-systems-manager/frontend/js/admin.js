@@ -486,7 +486,7 @@ function adminRenderPins() {
       const apManaged = _adminApEntries().some(e =>
         e.provider === prov.name && e.model === model && (e.max_replicas || 1) <= 1);
       const apBadge = apManaged
-        ? ' <span class="status status--info status--square ap-managed-badge" title="This pin is managed by a Fleet Autopilot entry — manual edits may be overridden on the next reconcile.">autopilot</span>'
+        ? ' <span class="status status--info status--square ap-managed-badge" title="This pin is managed by a Model Autopilot entry — manual edits may be overridden on the next reconcile.">autopilot</span>'
         : '';
       return `<tr>
         <td style="font-family:ui-monospace,Menlo,Consolas,monospace;">${adminEsc(model)}${apBadge}</td>
