@@ -625,7 +625,7 @@ def _make_prod_proxy(agent_id: str):
 
 def _prod_set_pin(provider: str, model: str, agent_id: "str | None") -> None:
     """Mutate glob[<provider>_model_pins] via the same lock+save helper
-    set_state() uses. Providers without a pin_dict_key (lms) are a no-op."""
+    set_state() uses. Providers without a pin_dict_key are a no-op."""
     spec = providers.get(provider)
     pin_key = getattr(spec, "pin_dict_key", None)
     if not pin_key:

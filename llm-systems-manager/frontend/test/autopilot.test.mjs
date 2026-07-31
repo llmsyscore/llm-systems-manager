@@ -77,14 +77,43 @@ describe("model/placement datalists (#472)", () => {
     const modelInput = row.querySelector("[data-field=model]");
     const modelDl = row.querySelector("#" + modelInput.getAttribute("list"));
     expect([...modelDl.querySelectorAll("option")].map(o => o.value)).toEqual(["llama-model"]);
+  });
 
-    const placementInput = row.querySelector("[data-field=placement]");
-    const placementDl = row.querySelector("#" + placementInput.getAttribute("list"));
-    const placementValues = [...placementDl.querySelectorAll("option")].map(o => o.value);
-    expect(placementValues).toContain("auto");
-    expect(placementValues).toContain("agent-llama-aaaaaaaa");
+  it("placement is a select showing auto + capable agents by hostname", () => {
+    AP.setCatalog(catalog);
+    const row = AP.entryRow({...E, provider: "llama"});
+    const sel = row.querySelector("[data-field=placement]");
+    expect(sel.tagName).toBe("SELECT");
+    const values = [...sel.querySelectorAll("option")].map(o => o.value);
+    expect(values[0]).toBe("auto");
+    expect(values).toContain("agent-llama-aaaaaaaa");
     // Pending (unapproved) agents are never offered as a placement target.
-    expect(placementValues).not.toContain("agent-pending-aaaaaa");
+    expect(values).not.toContain("agent-pending-aaaaaa");
+    // Options display the hostname, not the raw agent id.
+    const opt = [...sel.querySelectorAll("option")].find(o => o.value === "agent-llama-aaaaaaaa");
+    expect(opt.textContent).toBe("hostA");
+    expect(sel.value).toBe("auto");
+  });
+
+  it("an unknown current placement stays selectable and labeled", () => {
+    AP.setCatalog(catalog);
+    const row = AP.entryRow({...E, placement: "gone-agent-aaaaaaaaa"});
+    const sel = row.querySelector("[data-field=placement]");
+    expect(sel.value).toBe("gone-agent-aaaaaaaaa");
+    expect(sel.selectedOptions[0].textContent).toContain("unknown agent");
+  });
+
+  it("changing provider rebuilds the placement select for the new capability", () => {
+    AP.setCatalog(catalog);
+    const row = AP.entryRow({...E, provider: "llama"});
+    const providerSel = row.querySelector("[data-field=provider]");
+    const sel = row.querySelector("[data-field=placement]");
+    providerSel.value = "vllm";
+    providerSel.dispatchEvent(new Event("change", {bubbles: true}));
+    const values = [...sel.querySelectorAll("option")].map(o => o.value);
+    expect(values).toContain("agent-vllm-aaaaaaaaa");
+    expect(values).not.toContain("agent-llama-aaaaaaaa");
+    expect(sel.value).toBe("auto");
   });
 
   it("round-trip is unaffected by the datalist wiring", () => {
@@ -305,20 +334,39 @@ describe("catalog refresh in-flight + 30s cadence guard (#472)", () => {
       // Two overlapping fetchState() calls: the second's _refreshCatalog()
       // sees the first still in-flight and is skipped, not queued.
       await Promise.all([AP.fetchState(), AP.fetchState()]);
-      expect(modelHits).toBe(2); // one refresh x 2 providers, not two
+      expect(modelHits).toBe(3); // one refresh x 3 providers (#479), not two
 
       // A follow-up call 1s later: nothing in-flight now, but well under
       // the 30s floor — skipped by the min-interval guard.
       offset += 1000;
       await AP.fetchState();
-      expect(modelHits).toBe(2);
+      expect(modelHits).toBe(3);
 
       // Re-entering the tab is exempt from the interval — forces a
       // refresh even though only 1s has passed since the last one.
       await AP.init();
-      expect(modelHits).toBe(4);
+      expect(modelHits).toBe(6);
     } finally {
       nowSpy.mockRestore();
     }
+  });
+});
+
+describe("placement select labels (#479 follow-up)", () => {
+  const catalog = {
+    models: {},
+    agents: [
+      {agent_id: "agent-pending-aaaaaa", hostname: "hostC", status: "pending",
+        capabilities: {llama: true}},
+    ],
+  };
+  it("a pending-but-capable current placement says not approved, not not-capable", () => {
+    AP.setCatalog(catalog);
+    const row = AP.entryRow({model: "m1", provider: "llama",
+      placement: "agent-pending-aaaaaa", failover: "semi", priority: 100,
+      min_replicas: 1, max_replicas: 1});
+    const sel = row.querySelector("[data-field=placement]");
+    expect(sel.value).toBe("agent-pending-aaaaaa");
+    expect(sel.selectedOptions[0].textContent).toBe("hostC (not approved)");
   });
 });

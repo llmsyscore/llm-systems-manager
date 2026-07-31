@@ -66,7 +66,8 @@ SPEC = ProviderSpec(
     capability_key="lms",
     online_threshold_s=15.0,
     push_endpoint_legacy="/api/remote/lmstudio",
-    default_picker="first_approved",
+    default_picker="pool",
+    pin_dict_key="lms_model_pins",
     sub_tab_keys=("lmstudio",),
     aggregator=_fleet_aggregate,
 )

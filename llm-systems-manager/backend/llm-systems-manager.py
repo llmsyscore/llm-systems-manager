@@ -154,7 +154,7 @@ def _local_hostname() -> str:
 # banner reads it. Bump suffix (-1, -2, …) for same-day iterations; roll
 # the date for a new day's first change.
 # ---------------------------------------------------------------------------
-__version__ = "v2026.07.31-1"
+__version__ = "v2026.07.31-4"
 
 # Wall-clock at first import (Cheroot main process); the shutdown banner
 # reads it for the uptime line.
@@ -2332,7 +2332,9 @@ def lmstudio_server_log():
 @app.route("/api/lmstudio/load", methods=["POST"])
 def lmstudio_load():
     data     = flask_request.get_json(force=True)
-    return proxies.proxy_to_primary("lms", "POST", "/lms/load", json=data, timeout=60)
+    # model_id lets lms_model_pins steer the target agent (llama parity).
+    return proxies.proxy_to_primary("lms", "POST", "/lms/load", json=data, timeout=60,
+                                    model_id=(data or {}).get("model"))
 def _valid_model_id(s) -> bool:
     return isinstance(s, str) and bool(_MODEL_ID_RE.match(s))
 
@@ -2347,7 +2349,8 @@ def _valid_hf_repo(s) -> bool:
 @app.route("/api/lmstudio/unload", methods=["POST"])
 def lmstudio_unload():
     data     = flask_request.get_json(force=True)
-    return proxies.proxy_to_primary("lms", "POST", "/lms/unload", json=data, timeout=30)
+    return proxies.proxy_to_primary("lms", "POST", "/lms/unload", json=data, timeout=30,
+                                    model_id=(data or {}).get("model"))
 
 
 @app.route("/api/lmstudio/download", methods=["POST"])
@@ -5154,7 +5157,7 @@ if __name__ == "__main__":
     # Heal split installs where the operator approved the only
     # llama/lms-capable agent before the auto-promote-on-approval
     # behaviour existed. If there's exactly one approved capability
-    # holder and no primary set (and, for llama, no pool), promote it.
+    # holder, no primary set, and (pool providers) no pool, promote it.
     # Multi-agent cases are left alone — operator picks via admin tab.
     try:
         with agent_registry.agents_lock:

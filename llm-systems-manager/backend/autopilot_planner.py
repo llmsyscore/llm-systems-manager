@@ -24,8 +24,13 @@ def _placements(entry, observed) -> "list[str]":
     return [aid for aid, a in observed["agents"].items()
             if entry["model"] in (a["loaded"].get(entry["provider"]) or [])]
 
-def _uses_ram_budget(entry, observed) -> bool:
-    # Only llama's CPU-served models (gpu_layers==0) draw from RAM, not VRAM.
+def _uses_ram_budget(entry, observed, aid=None) -> bool:
+    # RAM budget for llama's CPU-served models (gpu_layers==0) and for any
+    # candidate reporting no GPU at all (vram_total_mb==0 — unified memory).
+    if aid is not None:
+        a = observed["agents"].get(aid)
+        if a and not a.get("vram_total_mb"):
+            return True
     if entry["provider"] != "llama":
         return False
     gl = observed.get("model_gpu_layers", {}).get(
@@ -41,7 +46,7 @@ def _fits(entry, aid, observed) -> bool:
         f"{entry['provider']}:{entry['model']}")
     if size is None:
         return False
-    avail = (a.get("ram_free_mb", 0) if _uses_ram_budget(entry, observed)
+    avail = (a.get("ram_free_mb", 0) if _uses_ram_budget(entry, observed, aid)
              else a["vram_free_mb"])
     return avail >= size + VRAM_HEADROOM_MB
 
@@ -91,10 +96,10 @@ def evaluate_autoscale(entry, placements, sat_history, now: float) -> str:
 
 def _fit_and_size(e, aid, a, free, free_ram, observed):
     # Same capability/budget fit check used by both the min-replica and
-    # autoscale passes; RAM budget for llama gpu_layers==0, VRAM otherwise.
+    # autoscale passes; budget picked per (entry, candidate) — see _uses_ram_budget.
     size = observed.get("model_sizes_mb", {}).get(
         f"{e['provider']}:{e['model']}")
-    budget = free_ram if _uses_ram_budget(e, observed) else free
+    budget = free_ram if _uses_ram_budget(e, observed, aid) else free
     if e["placement"] != "auto" and aid == e["placement"]:
         fit = e["provider"] in a["provider_caps"] and \
               size is not None and budget.get(aid, 0) >= size + VRAM_HEADROOM_MB \
@@ -138,8 +143,6 @@ def entry_status(desired: dict, observed: dict) -> dict:
                 if size is None and not placed:
                     blocked = "model size unknown (set entry size MB)"
                 else:
-                    uses_ram = _uses_ram_budget(e, observed)
-                    budget = free_ram if uses_ram else free
                     placeable = 0
                     for aid in live_capable:
                         if placeable >= need:
@@ -147,11 +150,23 @@ def entry_status(desired: dict, observed: dict) -> dict:
                         fit, sz = _fit_and_size(e, aid, observed["agents"][aid],
                                                 free, free_ram, observed)
                         if fit:
+                            budget = (free_ram if _uses_ram_budget(e, observed, aid)
+                                      else free)
                             budget[aid] -= sz or 0
                             placeable += 1
                     if placeable < need:
-                        blocked = ("insufficient free RAM on any candidate" if uses_ram
-                                   else "insufficient free VRAM on any candidate")
+                        if size is None:
+                            blocked = "model size unknown (set entry size MB)"
+                        else:
+                            best = max(
+                                ((free_ram if _uses_ram_budget(e, observed, aid)
+                                  else free).get(aid, 0) for aid in live_capable),
+                                default=0)
+                            blocked = (
+                                f"insufficient free VRAM/RAM (need "
+                                f"{size + VRAM_HEADROOM_MB} MB incl. "
+                                f"{VRAM_HEADROOM_MB} MB headroom; best candidate has "
+                                f"{best} MB free)")
         out[k] = {"placed": len(placed), "want": want, "blocked": blocked}
     return out
 
@@ -193,7 +208,7 @@ def plan(desired: dict, observed: dict, ledger: dict, now: float) -> "list[Actio
             fit, size = _fit_and_size(e, aid, a, free, free_ram, observed)
             if not fit:
                 continue
-            (free_ram if _uses_ram_budget(e, observed) else free)[aid] -= size or 0
+            (free_ram if _uses_ram_budget(e, observed, aid) else free)[aid] -= size or 0
             placed.append(aid)
             auto = _may_auto(e, desired, e["provider"])
             reason = (f"failover: {k} recovering onto {aid}" if is_failover
@@ -236,7 +251,7 @@ def plan(desired: dict, observed: dict, ledger: dict, now: float) -> "list[Actio
                 fit, size = _fit_and_size(e, aid, a, free, free_ram, observed)
                 if not fit:
                     continue
-                (free_ram if _uses_ram_budget(e, observed) else free)[aid] -= size or 0
+                (free_ram if _uses_ram_budget(e, observed, aid) else free)[aid] -= size or 0
                 if e["provider"] == "llama" and a["server_state"] == "sleeping":
                     actions.append(Action(
                         kind="wake", provider=e["provider"], model=e["model"],
