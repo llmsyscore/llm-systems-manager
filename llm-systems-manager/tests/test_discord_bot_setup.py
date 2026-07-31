@@ -71,3 +71,13 @@ def test_bot_config_reads_ctx_and_stringifies_ids():
 
 def test_start_thread_is_a_pytest_noop():
     assert db.start_thread(None) is None
+
+
+def test_config_model_accepts_unquoted_snowflake_ids():
+    # Operators paste Discord "Copy ID" values unquoted; ints must not
+    # fail validation and take the whole config down with them.
+    from config.unified_config import ManagerDiscord
+    m = ManagerDiscord(enabled=True, guild_id=1486111775408656434,
+                       allowed_user_ids=[1486111775408656435, "999"])
+    assert m.guild_id == "1486111775408656434"
+    assert m.allowed_user_ids == ["1486111775408656435", "999"]

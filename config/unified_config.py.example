@@ -117,7 +117,8 @@ class ManagerEnergy(BaseModel):
 class ManagerDiscord(BaseModel):
     """Interactive Discord bot (#471). Off by default; empty allowlist
     refuses every command; model control needs its own opt-in."""
-    model_config = _MODEL_CFG
+    # Snowflake ids are pasted unquoted from Discord's Copy ID; accept ints.
+    model_config = ConfigDict(extra="ignore", coerce_numbers_to_str=True)
     enabled: bool = False
     bot_token: str = ""
     guild_id: str = ""
