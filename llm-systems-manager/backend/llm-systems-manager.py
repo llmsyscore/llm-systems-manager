@@ -154,7 +154,7 @@ def _local_hostname() -> str:
 # banner reads it. Bump suffix (-1, -2, …) for same-day iterations; roll
 # the date for a new day's first change.
 # ---------------------------------------------------------------------------
-__version__ = "v2026.07.30-10"
+__version__ = "v2026.07.30-11"
 
 # Wall-clock at first import (Cheroot main process); the shutdown banner
 # reads it for the uptime line.
@@ -1958,9 +1958,7 @@ def _build_llama_state_payload(agent_id: "str | None" = None) -> dict:
     sample = (wrapper or {}).get("sample") or {}
     last_seen = float((wrapper or {}).get("last_seen") or 0.0)
     llama = sample.get("llama") or {}
-    m = llama.get("model")
-    if isinstance(m, str):
-        m = m.replace(" (sleeping)", "").replace(" (unloaded)", "").strip() or None
+    m = providers.llama.clean_display_model(llama.get("model"))
     agent_age = (time.time() - last_seen) if last_seen else None
     agent_online = agent_age is not None and agent_age < 30.0
     return {
