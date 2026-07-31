@@ -590,23 +590,21 @@ async function openAgentSse(infoPath, fallbackPath) {
   });
 }
 
+// Mirrors backend clean_display_model(): '(unloaded)' → '' (no model);
+// strips the '(sleeping)' suffix (model still resident).
+function _cleanLlamaModelName(raw) {
+  if (typeof raw !== 'string' || /\(unloaded\)\s*$/i.test(raw)) return '';
+  const clean = raw.replace(/\s*\(sleeping\)$/i, '').trim();
+  return (!clean || clean.toLowerCase() === 'sleeping') ? '' : clean;
+}
+
 function _applyLlamaStatePayload(data) {
   if (!data || typeof data !== 'object') return;
   const state = data.state || 'unknown';
-  // Update pill model name from state endpoint — never overwrite with "sleeping".
-  // Explicitly clear when server reports no model so an old name doesn't linger.
-  if (!data.model) {
-    _pillModelName = '';
-  } else {
-    const clean = data.model.replace(/\s*\(sleeping\)$/i, '')
-                            .replace(/\s*\(unloaded\)$/i, '')
-                            .trim();
-    if (!clean || clean.toLowerCase() === 'sleeping') {
-      _pillModelName = '';
-    } else {
-      _pillModelName = clean.split('/').pop() || clean;
-    }
-  }
+  // Update pill model name from state endpoint — cleared when no model so
+  // an old name doesn't linger.
+  const _pillClean = _cleanLlamaModelName(data.model);
+  _pillModelName = _pillClean ? (_pillClean.split('/').pop() || _pillClean) : '';
   const banner = document.getElementById('serverStateBanner');
   const icon   = document.getElementById('serverStateIcon');
   const text   = document.getElementById('serverStateText');
@@ -648,7 +646,9 @@ function _applyLlamaStatePayload(data) {
       if (_pillModelName) {
         text.textContent = 'LLCPP · Active · ' + _pillModelName;
       } else {
-        text.textContent = 'LLCPP · no model loaded';   // server up, no model loaded
+        // Server up, no model loaded — muted tone, same as the LMS/vLLM pills
+        banner.className = 'state-banner state-sleeping';
+        text.textContent = 'LLCPP · no model loaded';
       }
     } else if (state === 'sleeping') {
       if (_pillModelName) {
@@ -657,8 +657,8 @@ function _applyLlamaStatePayload(data) {
         icon.textContent = '◌';
         text.textContent = 'LLCPP · Sleeping · ' + _pillModelName;
       } else {
-        // Server is sleeping but no model is loaded — show as standby/ready
-        banner.className = 'state-banner state-ready';
+        // Server up, no model loaded — muted tone, same as the LMS/vLLM pills
+        banner.className = 'state-banner state-sleeping';
         icon.textContent = '●';
         text.textContent = 'LLCPP · no model loaded';
       }
@@ -1205,14 +1205,12 @@ async function fetchMetrics() {
     const ll = m.llama || {};
     const sleeping = ll.sleeping === true;
     const modelEl = document.getElementById('llamaModel');
+    const llModelClean = _cleanLlamaModelName(ll.model);
     // Track model name for state pill — only update when awake with a real name
-    if (ll.model && !sleeping) {
-      const clean = ll.model.replace(/\s*\(sleeping\)$/i, '').trim();
-      if (clean && clean.toLowerCase() !== 'sleeping') {
-        _pillModelName = clean.split('/').pop() || clean;
-      }
+    if (llModelClean && !sleeping) {
+      _pillModelName = llModelClean.split('/').pop() || llModelClean;
     }
-    modelEl.textContent = ll.model || 'No model loaded';
+    modelEl.textContent = llModelClean || 'No model loaded';
     modelEl.style.color = sleeping ? '#444' : '#aaa';
     modelEl.title = sleeping ? 'Model is sleeping — metrics polling paused' : '';
     document.getElementById('llamaTps').textContent          = ll.tokens_per_second        != null ? ll.tokens_per_second.toFixed(1) : '—';
