@@ -329,8 +329,8 @@ function _render() {
 }
 
 // Providers with a /api/admin/<name>-models endpoint (same one admin.js's
-// pin editor uses — pool_provider_names() server-side; 'lms' has none).
-const _MODEL_LIST_PROVIDERS = ['llama', 'vllm'];
+// pin editor uses — pool_provider_names() server-side; lms since #479).
+const _MODEL_LIST_PROVIDERS = ['llama', 'vllm', 'lms'];
 
 // Guards against worker-thread pileup on a slow/flapping fleet (#472):
 // the backend handler is a sequential per-agent fan-out with 5s timeouts,

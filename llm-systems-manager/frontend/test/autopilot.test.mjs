@@ -305,18 +305,18 @@ describe("catalog refresh in-flight + 30s cadence guard (#472)", () => {
       // Two overlapping fetchState() calls: the second's _refreshCatalog()
       // sees the first still in-flight and is skipped, not queued.
       await Promise.all([AP.fetchState(), AP.fetchState()]);
-      expect(modelHits).toBe(2); // one refresh x 2 providers, not two
+      expect(modelHits).toBe(3); // one refresh x 3 providers (#479), not two
 
       // A follow-up call 1s later: nothing in-flight now, but well under
       // the 30s floor — skipped by the min-interval guard.
       offset += 1000;
       await AP.fetchState();
-      expect(modelHits).toBe(2);
+      expect(modelHits).toBe(3);
 
       // Re-entering the tab is exempt from the interval — forces a
       // refresh even though only 1s has passed since the last one.
       await AP.init();
-      expect(modelHits).toBe(4);
+      expect(modelHits).toBe(6);
     } finally {
       nowSpy.mockRestore();
     }

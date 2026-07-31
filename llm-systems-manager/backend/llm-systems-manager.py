@@ -154,7 +154,7 @@ def _local_hostname() -> str:
 # banner reads it. Bump suffix (-1, -2, …) for same-day iterations; roll
 # the date for a new day's first change.
 # ---------------------------------------------------------------------------
-__version__ = "v2026.07.31-2"
+__version__ = "v2026.07.31-3"
 
 # Wall-clock at first import (Cheroot main process); the shutdown banner
 # reads it for the uptime line.
@@ -5157,7 +5157,7 @@ if __name__ == "__main__":
     # Heal split installs where the operator approved the only
     # llama/lms-capable agent before the auto-promote-on-approval
     # behaviour existed. If there's exactly one approved capability
-    # holder and no primary set (and, for llama, no pool), promote it.
+    # holder, no primary set, and (pool providers) no pool, promote it.
     # Multi-agent cases are left alone — operator picks via admin tab.
     try:
         with agent_registry.agents_lock:
