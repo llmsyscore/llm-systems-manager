@@ -6,6 +6,16 @@ import time
 from . import ProviderSpec, register
 
 
+def clean_display_model(raw) -> "str | None":
+    """Bare model id for display. ' (unloaded)' means nothing is loaded → None;
+    ' (sleeping)' models are still resident, so the name is kept."""
+    if not isinstance(raw, str):
+        return None
+    if raw.endswith(" (unloaded)"):
+        return None
+    return raw.replace(" (sleeping)", "").strip() or None
+
+
 def _fleet_aggregate(samples: dict[str, dict]) -> dict:
     """samples: {agent_id: {"sample": dict, "last_seen": float}} from STORE.all_for('llama')."""
     now = time.time()
@@ -23,9 +33,7 @@ def _fleet_aggregate(samples: dict[str, dict]) -> dict:
         last_seen = float(wrap.get("last_seen") or 0)
         is_online = (now - last_seen) < SPEC.online_threshold_s if last_seen else False
         llama = s.get("llama") or {}
-        m = llama.get("model")
-        if isinstance(m, str):
-            m = m.replace(" (sleeping)", "").replace(" (unloaded)", "").strip() or None
+        m = clean_display_model(llama.get("model"))
         # GPU metrics live nested under sample["gpu"] (collect_system_metrics
         # shape) — the flat gpu_* names only exist post-flatten in the AE.
         gpu = s.get("gpu") or {}
