@@ -365,3 +365,21 @@ def test_blocked_message_carries_need_and_best_numbers():
                sizes={"lms:m1": 100})
     b = pl.entry_status(_desired([e]), obs)["m1/lms"]["blocked"]
     assert b is not None and "1124" in b and "1100" in b
+
+def test_partial_placement_unknown_size_reports_size_unknown():
+    # size=None with one replica already placed must say "size unknown",
+    # not fabricate "need 1024 MB" from headroom alone.
+    e = {**E, "provider": "vllm", "min_replicas": 2, "max_replicas": 2}
+    agents = {
+        A1: {"provider_caps": ["vllm"], "live": True, "vram_total_mb": 24000,
+             "vram_free_mb": 20000, "ram_free_mb": 0, "loaded": {"vllm": ["m1"]},
+             "server_state": None, "idle_since": None, "saturation": {}},
+        A2: {"provider_caps": ["vllm"], "live": True, "vram_total_mb": 24000,
+             "vram_free_mb": 2000, "ram_free_mb": 0, "loaded": {"vllm": []},
+             "server_state": None, "idle_since": None, "saturation": {}}}
+    obs = {"agents": agents, "model_sizes_mb": {"vllm:other": 9000},
+           "model_gpu_layers": {}}
+    st = pl.entry_status(_desired([e]), obs)
+    row = st["m1/vllm"]
+    assert (row["placed"], row["want"]) == (1, 2)
+    assert row["blocked"] == "model size unknown (set entry size MB)"

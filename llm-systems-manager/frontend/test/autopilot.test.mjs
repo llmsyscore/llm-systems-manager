@@ -351,3 +351,22 @@ describe("catalog refresh in-flight + 30s cadence guard (#472)", () => {
     }
   });
 });
+
+describe("placement select labels (#479 follow-up)", () => {
+  const catalog = {
+    models: {},
+    agents: [
+      {agent_id: "agent-pending-aaaaaa", hostname: "hostC", status: "pending",
+        capabilities: {llama: true}},
+    ],
+  };
+  it("a pending-but-capable current placement says not approved, not not-capable", () => {
+    AP.setCatalog(catalog);
+    const row = AP.entryRow({model: "m1", provider: "llama",
+      placement: "agent-pending-aaaaaa", failover: "semi", priority: 100,
+      min_replicas: 1, max_replicas: 1});
+    const sel = row.querySelector("[data-field=placement]");
+    expect(sel.value).toBe("agent-pending-aaaaaa");
+    expect(sel.selectedOptions[0].textContent).toBe("hostC (not approved)");
+  });
+});

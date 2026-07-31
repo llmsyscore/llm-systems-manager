@@ -155,14 +155,18 @@ def entry_status(desired: dict, observed: dict) -> dict:
                             budget[aid] -= sz or 0
                             placeable += 1
                     if placeable < need:
-                        best = max(
-                            ((free_ram if _uses_ram_budget(e, observed, aid) else free)
-                             .get(aid, 0) for aid in live_capable), default=0)
-                        blocked = (
-                            f"insufficient free VRAM/RAM (need "
-                            f"{(size or 0) + VRAM_HEADROOM_MB} MB incl. "
-                            f"{VRAM_HEADROOM_MB} MB headroom; best candidate has "
-                            f"{best} MB free)")
+                        if size is None:
+                            blocked = "model size unknown (set entry size MB)"
+                        else:
+                            best = max(
+                                ((free_ram if _uses_ram_budget(e, observed, aid)
+                                  else free).get(aid, 0) for aid in live_capable),
+                                default=0)
+                            blocked = (
+                                f"insufficient free VRAM/RAM (need "
+                                f"{size + VRAM_HEADROOM_MB} MB incl. "
+                                f"{VRAM_HEADROOM_MB} MB headroom; best candidate has "
+                                f"{best} MB free)")
         out[k] = {"placed": len(placed), "want": want, "blocked": blocked}
     return out
 

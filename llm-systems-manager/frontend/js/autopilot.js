@@ -98,9 +98,11 @@ function _placementOptions(provider, current) {
                              label: a.hostname || (a.agent_id || '').slice(0, 8)}));
   if (current && !opts.some(o => o.v === current)) {
     const known = _catalog.agents.find(a => a && a.agent_id === current);
-    opts.push({v: current, label: known
-      ? `${known.hostname || current.slice(0, 8)} (not ${provider}-capable)`
-      : `${current.slice(0, 8)}… (unknown agent)`});
+    let label;
+    if (!known) label = `${current.slice(0, 8)}… (unknown agent)`;
+    else if (known.status !== 'approved') label = `${known.hostname || current.slice(0, 8)} (not approved)`;
+    else label = `${known.hostname || current.slice(0, 8)} (not ${provider}-capable)`;
+    opts.push({v: current, label});
   }
   return opts;
 }
