@@ -1,0 +1,114 @@
+/* Energy & cost intelligence (#470) — savings hero, totals tiles, per-host
+   table, hourly chart. All colors from theme vars; en- prefix throughout. */
+
+.en-panel { display: flex; flex-direction: column; gap: 18px; }
+
+.en-controls {
+  display: flex; flex-wrap: wrap; gap: 10px; align-items: flex-end;
+  background: var(--bg-card); border: 1px solid var(--border);
+  border-radius: 8px; padding: 14px 16px;
+}
+.en-field { display: flex; flex-direction: column; gap: 5px; min-width: 0; }
+.en-field > label {
+  font-size: 0.68em; letter-spacing: 0.08em; text-transform: uppercase;
+  color: var(--fg-dim);
+}
+.en-field select, .en-field input {
+  background: var(--bg); border: 1px solid var(--border); border-radius: 6px;
+  color: var(--fg); font-family: inherit; font-size: 0.85em; padding: 6px 8px;
+}
+.en-field input { width: 90px; font-variant-numeric: tabular-nums; }
+.en-controls .en-spacer { flex: 1 1 auto; }
+.en-note { font-size: 0.8em; color: var(--fg-muted); }
+.en-note.en-warn { color: var(--warn); }
+
+/* ── savings hero ───────────────────────────────────────────────── */
+
+.en-hero-card {
+  background: var(--bg-card); border: 1px solid var(--border-strong);
+  border-radius: 10px; padding: 20px 22px;
+}
+.en-hero {
+  font-family: ui-monospace, Menlo, Consolas, monospace;
+  font-size: 2.2em; font-weight: 600; line-height: 1.15;
+  letter-spacing: -0.02em; color: var(--fg);
+}
+.en-hero--good { color: var(--accent); }
+.en-hero--warn { color: var(--warn); }
+.en-hero--muted { color: var(--fg-dim); }
+.en-hero-sub { margin-top: 8px; font-size: 0.85em; color: var(--fg-muted); }
+.en-window-label {
+  font-size: 0.7em; letter-spacing: 0.1em; text-transform: uppercase;
+  color: var(--fg-dim); margin-bottom: 6px;
+}
+
+/* ── totals tiles ───────────────────────────────────────────────── */
+
+.en-tiles {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 1px; background: var(--border); border: 1px solid var(--border);
+  border-radius: 6px; overflow: hidden;
+}
+.en-tile { background: var(--bg-card); padding: 11px 12px; min-width: 0; }
+.en-tile-num {
+  font-family: ui-monospace, Menlo, Consolas, monospace;
+  font-size: 1.15em; color: var(--fg); font-variant-numeric: tabular-nums;
+}
+.en-tile-label {
+  margin-top: 4px; font-size: 0.63em; letter-spacing: 0.07em;
+  text-transform: uppercase; color: var(--fg-dim); line-height: 1.3;
+}
+.en-tile-sub { margin-top: 3px; font-size: 0.7em; color: var(--fg-muted); }
+
+/* ── per-host table ─────────────────────────────────────────────── */
+
+.en-table-wrap {
+  background: var(--bg-card); border: 1px solid var(--border);
+  border-radius: 8px; padding: 6px 10px 10px; overflow-x: auto;
+}
+.en-table { width: 100%; border-collapse: collapse; font-size: 0.82em; }
+.en-table th {
+  text-align: left; padding: 8px 10px; font-size: 0.78em;
+  letter-spacing: 0.07em; text-transform: uppercase; color: var(--fg-dim);
+  border-bottom: 1px solid var(--border); white-space: nowrap;
+}
+.en-table td {
+  padding: 8px 10px; color: var(--fg); border-bottom: 1px solid var(--border-soft);
+  font-variant-numeric: tabular-nums; white-space: nowrap;
+}
+.en-table tr:last-child td { border-bottom: none; }
+.en-empty, .en-notes { color: var(--fg-dim); font-size: 0.92em; white-space: normal; }
+
+.en-badge {
+  display: inline-block; margin-left: 7px; padding: 1px 7px;
+  font-size: 0.72em; letter-spacing: 0.05em; border-radius: 9px;
+  background: var(--bg-tabnav); border: 1px solid var(--border);
+  color: var(--fg-muted); vertical-align: middle;
+}
+
+/* Active-share bar inside the kWh cell. */
+.en-split {
+  display: inline-block; width: 52px; height: 5px; margin-left: 8px;
+  background: var(--bg-tabnav); border: 1px solid var(--border-soft);
+  border-radius: 3px; overflow: hidden; vertical-align: middle;
+}
+.en-split-fill { display: block; height: 100%; background: var(--accent); }
+
+/* ── hourly chart ───────────────────────────────────────────────── */
+
+.en-chart-card {
+  background: var(--bg-card); border: 1px solid var(--border);
+  border-radius: 8px; padding: 14px 16px;
+}
+.en-chart-card canvas { max-height: 260px; }
+.en-coverage {
+  font-family: ui-monospace, Menlo, Consolas, monospace;
+  font-size: 0.7em; color: var(--fg-faint);
+}
+
+@media (max-width: 560px) {
+  .en-hero { font-size: 1.6em; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .en-panel * { transition: none !important; animation: none !important; }
+}

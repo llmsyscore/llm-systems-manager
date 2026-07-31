@@ -49,7 +49,7 @@ let _mgrPerfBackfilled = false;
 
 const _SUB_TAB_MAP = {
   dashboard: { tabId: 'dashboardTab', prefix: 'dash',  subs: ['llamacpp','lmstudio','vllm','openclaw','manager'] },
-  llm:       { tabId: 'llmTab',       prefix: 'llm',   subs: ['llamacpp','lmstudio','vllm','reportcard'] },
+  llm:       { tabId: 'llmTab',       prefix: 'llm',   subs: ['llamacpp','lmstudio','vllm','reportcard','energy'] },
   admin:     { tabId: 'adminTab',     prefix: 'admin', subs: ['access','agents','audit','backup','routing'] },
 };
 
@@ -115,6 +115,11 @@ function switchSubTab(parent, sub) {
   if (!(parent === 'llm' && sub === 'reportcard')
       && typeof rcStopStream === 'function') {
     rcStopStream();
+  }
+  // Energy sub-tab refreshes its summary on entry (#470).
+  if (parent === 'llm' && sub === 'energy'
+      && typeof initEnergyTab === 'function') {
+    initEnergyTab();
   }
   // Manager sub-tab is poll-gated to skip when not active; kick a one-shot
   // refresh on entry so cards aren't stale up to the 10s interval boundary.

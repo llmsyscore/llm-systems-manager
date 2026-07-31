@@ -97,6 +97,23 @@ class ManagerGateway(BaseModel):
     read_timeout_s: float = 600.0
 
 
+class ManagerReportcard(BaseModel):
+    """GPU report card (#468). price_kwh drives the $/Mtok estimate and is
+    overridable per-run from the UI."""
+    model_config = _MODEL_CFG
+    price_kwh: float = 0.15
+
+
+class ManagerEnergy(BaseModel):
+    """Energy & cost intelligence (#470). price_kwh None = inherit
+    [manager.reportcard].price_kwh; cloud prices feed the savings card."""
+    model_config = _MODEL_CFG
+    price_kwh: "float | None" = None
+    cloud_price_in_per_mtok: float = 0.15
+    cloud_price_out_per_mtok: float = 0.60
+    cloud_price_label: str = "budget cloud API tier (GPT-4o-mini class, 2026-07 list)"
+
+
 class ManagerHistory(BaseModel):
     model_config = _MODEL_CFG
     window_minutes: int = 60
@@ -252,6 +269,8 @@ class ManagerConfig(BaseModel):
     public_hosts: list[str] = Field(default_factory=list)
     proxies: ManagerProxies = Field(default_factory=ManagerProxies)
     gateway: ManagerGateway = Field(default_factory=ManagerGateway)
+    reportcard: ManagerReportcard = Field(default_factory=ManagerReportcard)
+    energy: ManagerEnergy = Field(default_factory=ManagerEnergy)
     history: ManagerHistory = Field(default_factory=ManagerHistory)
     uploads: ManagerUploads = Field(default_factory=ManagerUploads)
     timeouts: ManagerTimeouts = Field(default_factory=ManagerTimeouts)

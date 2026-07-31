@@ -64,7 +64,7 @@ except ImportError:
             os.chmod(tmp, mode)
         tmp.replace(p)
 
-VERSION = "v2026.07.30-3"
+VERSION = "v2026.07.31-1"
 
 
 def _restore_bundle_env() -> None:
@@ -2086,6 +2086,9 @@ def _push_dashboard_payload(sample: dict[str, Any]) -> None:
             "agent_user": CONFIG.AGENT_USER,
         },
     }
+    # Apple SoC watts for the manager's energy accounting (#470).
+    if sample.get("mac_power"):
+        payload["mac_power"] = sample["mac_power"]
     try:
         tok = _token_provider()
         headers = {"Authorization": f"Bearer {tok}"} if tok else {}
@@ -2141,6 +2144,9 @@ def _push_host_payload(sample: dict[str, Any]) -> None:
     if sample.get("llama"):
         sys_metric = dict(sys_metric)
         sys_metric["llama"] = sample.get("llama")
+        # Apple SoC watts for the manager's energy accounting (#470).
+        if sample.get("mac_power"):
+            sys_metric["mac_power"] = sample.get("mac_power")
     base = CONFIG.MANAGER_URL.rstrip("/")
     try:
         tok = _token_provider()
