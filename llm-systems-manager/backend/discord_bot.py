@@ -412,7 +412,6 @@ def prod_deps(ctx) -> dict:
     """Live data callables for run_job, bound to STORE/registry/AE."""
     import agent_registry
     import energy
-    import provider_state
     import providers as providers_mod
 
     def _agents() -> dict:
