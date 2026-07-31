@@ -119,6 +119,15 @@ cloud_price_in_per_mtok = 0.15
 cloud_price_out_per_mtok = 0.60
 cloud_price_label = "budget cloud API tier (GPT-4o-mini class, 2026-07 list)"
 
+[manager.discord]
+# Interactive Discord bot (#471): /fleet /host /models /alarms /ack /silence,
+# plus /load + /unload behind allow_model_control. Empty allowlist = refuse all.
+enabled = false
+bot_token = ""
+guild_id = ""
+allowed_user_ids = []
+allow_model_control = false
+
 [manager.history]
 # In-memory ring buffer behind /api/history; sets how far back the landing
 # charts pre-populate. RAM cost grows roughly linearly with window_minutes.
