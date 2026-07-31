@@ -48,8 +48,8 @@ const _subTabState = { dashboard: 'llamacpp', llm: 'llamacpp', admin: 'agents' }
 let _mgrPerfBackfilled = false;
 
 const _SUB_TAB_MAP = {
-  dashboard: { tabId: 'dashboardTab', prefix: 'dash',  subs: ['llamacpp','lmstudio','vllm','openclaw','manager'] },
-  llm:       { tabId: 'llmTab',       prefix: 'llm',   subs: ['llamacpp','lmstudio','vllm','reportcard','energy'] },
+  dashboard: { tabId: 'dashboardTab', prefix: 'dash',  subs: ['llamacpp','lmstudio','vllm','energy','openclaw','manager'] },
+  llm:       { tabId: 'llmTab',       prefix: 'llm',   subs: ['llamacpp','lmstudio','vllm','reportcard'] },
   admin:     { tabId: 'adminTab',     prefix: 'admin', subs: ['access','agents','audit','backup','routing'] },
 };
 
@@ -117,7 +117,7 @@ function switchSubTab(parent, sub) {
     rcStopStream();
   }
   // Energy sub-tab refreshes its summary on entry (#470).
-  if (parent === 'llm' && sub === 'energy'
+  if (parent === 'dashboard' && sub === 'energy'
       && typeof initEnergyTab === 'function') {
     initEnergyTab();
   }

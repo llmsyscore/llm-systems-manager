@@ -164,15 +164,15 @@ describe('coverageNote', () => {
 describe('base.css wiring', () => {
   const css = readFileSync(resolve(ROOT, 'css/base.css'), 'utf8');
 
-  it('restyles #llm-energy buttons like the sibling sub-tabs', () => {
+  it('restyles #dash-energy buttons like the sibling sub-tabs', () => {
     const block = css.split('}').find(b => b.includes('#llm-llamacpp .btn'));
-    expect(block).toContain('#llm-energy .btn');
+    expect(block).toContain('#dash-energy .btn');
   });
 
   it('hover selectors always carry :hover', () => {
     css.split('}').forEach(block => {
       block.split(',').forEach(sel => {
-        if (!sel.includes('#llm-energy .btn')) return;
+        if (!sel.includes('#dash-energy .btn')) return;
         const siblings = block.split(',').filter(s => s.includes('#llm-llamacpp'));
         if (!siblings.length) return;
         const sibHover = siblings.some(s => s.includes(':hover'));
@@ -186,7 +186,7 @@ describe('base.css wiring', () => {
     expect(html).toContain('js/lib/energy.js');
     expect(html).toContain('js/energy.js');
     expect(html).toContain('css/energy.css');
-    expect(html).toContain("switchSubTab('llm','energy')");
+    expect(html).toContain("switchSubTab('dashboard','energy')");
   });
 });
 

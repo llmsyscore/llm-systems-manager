@@ -49,7 +49,7 @@ Backend API endpoints consumed:
   <link rel="stylesheet" href="/static/vendor/xterm.min.css?v=5.3.0"/>
   <script src="/static/vendor/xterm.min.js?v=5.3.0"></script>
   <script src="/static/vendor/xterm-addon-fit.min.js?v=0.8.0"></script>
-  <link rel="stylesheet" href="/static/css/base.css?v=2026.07.31-2">
+  <link rel="stylesheet" href="/static/css/base.css?v=2026.07.31-3">
   <link rel="stylesheet" href="/static/css/reportcard.css?v=2026.07.27-2">
   <link rel="stylesheet" href="/static/css/energy.css?v=2026.07.31-1">
 </head>
@@ -106,6 +106,7 @@ Backend API endpoints consumed:
       <button class="sub-tab-btn active" id="subTabBtnDashLlamacpp" onclick="switchSubTab('dashboard','llamacpp')">llama.cpp</button>
       <button class="sub-tab-btn" id="subTabBtnDashLmstudio" onclick="switchSubTab('dashboard','lmstudio')">LM Studio</button>
       <button class="sub-tab-btn" id="subTabBtnDashVllm" style="display:none;" onclick="switchSubTab('dashboard','vllm')">vLLM</button>
+      <button class="sub-tab-btn" id="subTabBtnDashEnergy" onclick="switchSubTab('dashboard','energy')">Energy</button>
       <button class="sub-tab-btn" id="subTabBtnOpenclaw" style="display:none;" onclick="switchSubTab('dashboard','openclaw')">OpenClaw</button>
       <button class="sub-tab-btn" onclick="switchSubTab('dashboard','manager')">Manager</button>
     </div>
@@ -1254,6 +1255,66 @@ Backend API endpoints consumed:
   </div><!-- end dash-manager sub-panel -->
 
   <!-- OpenClaw analytics sub-tab -->
+  <!-- Energy & cost sub-tab (#470) — measured $/Mtok + cloud savings -->
+  <div id="dash-energy" class="sub-tab-panel" style="padding:8px 20px 20px;">
+    <div class="llm-section" id="enSection">
+      <div class="llm-section-title" onclick="toggleSection('enSection')">Energy &amp; Cost<span class="llm-collapse-icon">▾</span></div>
+      <div class="llm-section-body">
+    <div class="en-panel">
+      <div class="en-controls">
+        <div class="en-field">
+          <label for="enWindow">Window</label>
+          <select id="enWindow" onchange="enOnControlChange()"></select>
+        </div>
+        <div class="en-field">
+          <label for="enPrice">Electricity $/kWh</label>
+          <input id="enPrice" type="number" min="0" step="0.01" onchange="enOnControlChange()">
+        </div>
+        <div class="en-field">
+          <label for="enCloudIn">Cloud $/Mtok in</label>
+          <input id="enCloudIn" type="number" min="0" step="0.01" onchange="enOnControlChange()">
+        </div>
+        <div class="en-field">
+          <label for="enCloudOut">Cloud $/Mtok out</label>
+          <input id="enCloudOut" type="number" min="0" step="0.01" onchange="enOnControlChange()">
+        </div>
+        <div class="en-spacer"></div>
+        <button class="btn btn-gray-muted-gradient" onclick="enRefresh()">↺ Refresh</button>
+      </div>
+
+      <div class="en-note" id="enNote"></div>
+
+      <div class="en-hero-card">
+        <div class="en-window-label" id="enWindowLabel"></div>
+        <div class="en-hero" id="enHero">—</div>
+        <div class="en-hero-sub" id="enHeroSub"></div>
+      </div>
+
+      <div class="en-tiles" id="enTiles"></div>
+
+      <div class="en-table-wrap">
+        <table class="en-table">
+          <thead>
+            <tr>
+              <th>Host</th><th>Energy</th><th>Active</th><th>Tokens</th>
+              <th>Cost</th><th>$/Mtok</th><th>Coverage</th><th></th>
+            </tr>
+          </thead>
+          <tbody id="enHostRows"></tbody>
+        </table>
+      </div>
+
+      <div class="en-chart-card">
+        <div class="en-window-label" id="enChartLabel"></div>
+        <canvas id="enChart"></canvas>
+      </div>
+
+      <div class="en-coverage" id="enCoverage"></div>
+    </div>
+      </div>
+    </div>
+  </div>
+
   <div id="dash-openclaw" class="sub-tab-panel">
     <div style="padding:12px 20px 20px;">
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
@@ -1500,7 +1561,6 @@ Backend API endpoints consumed:
       <button class="sub-tab-btn" id="subTabBtnLlmLmstudio" onclick="switchSubTab('llm','lmstudio')">LM Studio</button>
       <button class="sub-tab-btn" id="subTabBtnLlmVllm" style="display:none;" onclick="switchSubTab('llm','vllm')">vLLM</button>
       <button class="sub-tab-btn" id="subTabBtnLlmReportcard" onclick="switchSubTab('llm','reportcard')">Report Card</button>
-      <button class="sub-tab-btn" id="subTabBtnLlmEnergy" onclick="switchSubTab('llm','energy')">Energy</button>
     </div>
   </div>
 
@@ -1744,66 +1804,6 @@ Backend API endpoints consumed:
       <div class="rc-trends" id="rcTrends" style="display:none;">
         <canvas id="rcTrendChart"></canvas>
       </div>
-    </div>
-      </div>
-    </div>
-  </div>
-
-  <!-- Energy & cost sub-tab (#470) — measured $/Mtok + cloud savings -->
-  <div id="llm-energy" class="sub-tab-panel" style="padding:8px 20px 20px;">
-    <div class="llm-section" id="enSection">
-      <div class="llm-section-title" onclick="toggleSection('enSection')">Energy &amp; Cost<span class="llm-collapse-icon">▾</span></div>
-      <div class="llm-section-body">
-    <div class="en-panel">
-      <div class="en-controls">
-        <div class="en-field">
-          <label for="enWindow">Window</label>
-          <select id="enWindow" onchange="enOnControlChange()"></select>
-        </div>
-        <div class="en-field">
-          <label for="enPrice">Electricity $/kWh</label>
-          <input id="enPrice" type="number" min="0" step="0.01" onchange="enOnControlChange()">
-        </div>
-        <div class="en-field">
-          <label for="enCloudIn">Cloud $/Mtok in</label>
-          <input id="enCloudIn" type="number" min="0" step="0.01" onchange="enOnControlChange()">
-        </div>
-        <div class="en-field">
-          <label for="enCloudOut">Cloud $/Mtok out</label>
-          <input id="enCloudOut" type="number" min="0" step="0.01" onchange="enOnControlChange()">
-        </div>
-        <div class="en-spacer"></div>
-        <button class="btn btn-gray-muted-gradient" onclick="enRefresh()">↺ Refresh</button>
-      </div>
-
-      <div class="en-note" id="enNote"></div>
-
-      <div class="en-hero-card">
-        <div class="en-window-label" id="enWindowLabel"></div>
-        <div class="en-hero" id="enHero">—</div>
-        <div class="en-hero-sub" id="enHeroSub"></div>
-      </div>
-
-      <div class="en-tiles" id="enTiles"></div>
-
-      <div class="en-table-wrap">
-        <table class="en-table">
-          <thead>
-            <tr>
-              <th>Host</th><th>Energy</th><th>Active</th><th>Tokens</th>
-              <th>Cost</th><th>$/Mtok</th><th>Coverage</th><th></th>
-            </tr>
-          </thead>
-          <tbody id="enHostRows"></tbody>
-        </table>
-      </div>
-
-      <div class="en-chart-card">
-        <div class="en-window-label" id="enChartLabel"></div>
-        <canvas id="enChart"></canvas>
-      </div>
-
-      <div class="en-coverage" id="enCoverage"></div>
     </div>
       </div>
     </div>
@@ -2261,6 +2261,6 @@ Backend API endpoints consumed:
 <div id="alarmToastContainer"></div>
 
 <script src="/static/js/events-toasts.js?v=2026.07.04-2"></script>
-<script src="/static/js/boot.js?v=2026.07.31-1"></script>
+<script src="/static/js/boot.js?v=2026.07.31-2"></script>
 </body>
 </html>
