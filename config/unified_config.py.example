@@ -114,6 +114,17 @@ class ManagerEnergy(BaseModel):
     cloud_price_label: str = "budget cloud API tier (GPT-4o-mini class, 2026-07 list)"
 
 
+class ManagerDiscord(BaseModel):
+    """Interactive Discord bot (#471). Off by default; empty allowlist
+    refuses every command; model control needs its own opt-in."""
+    model_config = _MODEL_CFG
+    enabled: bool = False
+    bot_token: str = ""
+    guild_id: str = ""
+    allowed_user_ids: list[str] = Field(default_factory=list)
+    allow_model_control: bool = False
+
+
 class ManagerHistory(BaseModel):
     model_config = _MODEL_CFG
     window_minutes: int = 60
@@ -271,6 +282,7 @@ class ManagerConfig(BaseModel):
     gateway: ManagerGateway = Field(default_factory=ManagerGateway)
     reportcard: ManagerReportcard = Field(default_factory=ManagerReportcard)
     energy: ManagerEnergy = Field(default_factory=ManagerEnergy)
+    discord: ManagerDiscord = Field(default_factory=ManagerDiscord)
     history: ManagerHistory = Field(default_factory=ManagerHistory)
     uploads: ManagerUploads = Field(default_factory=ManagerUploads)
     timeouts: ManagerTimeouts = Field(default_factory=ManagerTimeouts)

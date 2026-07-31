@@ -154,7 +154,7 @@ def _local_hostname() -> str:
 # banner reads it. Bump suffix (-1, -2, …) for same-day iterations; roll
 # the date for a new day's first change.
 # ---------------------------------------------------------------------------
-__version__ = "v2026.07.31-5"
+__version__ = "v2026.07.31-6"
 
 # Wall-clock at first import (Cheroot main process); the shutdown banner
 # reads it for the uptime line.
@@ -176,6 +176,7 @@ _cheroot_servers: list = []
 import model_profiles  # type: ignore[import-not-found]  # noqa: E402  # leaf, no cycle
 import report_card  # type: ignore[import-not-found]  # noqa: E402  # leaf, no cycle; #468
 import energy  # type: ignore[import-not-found]  # noqa: E402  # leaf, no cycle; #470
+import discord_bot  # type: ignore[import-not-found]  # noqa: E402  # leaf, no cycle; #471
 
 
 def _patch_cheroot_flush_noise() -> None:
@@ -5337,6 +5338,9 @@ if __name__ == "__main__":
 
     # Energy accumulator (#470): 10s STORE snapshots → hourly SQLite rows.
     energy.start_thread(ctx)
+
+    # Discord bot (#471): gateway thread, only when [manager.discord] enables it.
+    discord_bot.start_thread(ctx)
 
     # Per-provider offline-edge sweep — fires the True→False latch transition
     # for any agent whose last_seen exceeds the provider's online_threshold_s.
