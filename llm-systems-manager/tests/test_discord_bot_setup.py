@@ -32,8 +32,10 @@ def test_pending_ttl_expiry_and_pop():
     assert p.peek("n1", 105.0)["user_id"] == "u1"
     assert p.peek("n1", 111.0) is None
     p.put("n2", {"kind": "load"}, "u1", now=200.0)
-    assert p.pop("n2", 205.0) is not None
-    assert p.pop("n2", 205.0) is None
+    first = p.pop("n2", 205.0)
+    second = p.pop("n2", 205.0)
+    assert first is not None
+    assert second is None
 
 
 def test_pending_put_prunes_expired_entries():

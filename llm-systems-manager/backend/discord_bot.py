@@ -625,11 +625,10 @@ class GatewayBot:
         async with self._session.request(
                 method, f"{API_BASE}{path}", json=json_body,
                 headers=self._headers()) as r:
-            body = None
             try:
                 body = await r.json()
             except Exception:
-                pass
+                body = None  # 204s and HTML error pages carry no JSON body
             return r.status, body
 
     async def _register(self) -> bool:
