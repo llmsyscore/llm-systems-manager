@@ -807,11 +807,14 @@ def bot_config(ctx) -> dict:
     manager = getattr(getattr(ctx, "settings", None), "manager", None)
     d = getattr(manager, "discord", None)
     ids = getattr(d, "allowed_user_ids", None) or []
+    # Tolerate several ids pasted into one entry ("id1,id2" / "id1 id2").
+    flat = [part for u in ids
+            for part in str(u).replace(",", " ").split()]
     return {
         "enabled": bool(getattr(d, "enabled", False)),
         "bot_token": str(getattr(d, "bot_token", "") or ""),
         "guild_id": str(getattr(d, "guild_id", "") or ""),
-        "allowed_user_ids": [str(u) for u in ids],
+        "allowed_user_ids": flat,
         "allow_model_control": bool(getattr(d, "allow_model_control", False)),
     }
 

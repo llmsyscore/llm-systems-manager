@@ -73,6 +73,22 @@ def test_start_thread_is_a_pytest_noop():
     assert db.start_thread(None) is None
 
 
+def test_bot_config_splits_ids_joined_in_one_entry():
+    class _Obj:
+        pass
+
+    ctx = _Obj(); ctx.settings = _Obj(); ctx.settings.manager = _Obj()
+    d = _Obj()
+    d.enabled = True
+    d.bot_token = "tok"
+    d.guild_id = "g"
+    d.allowed_user_ids = ["111,222", " 333 ", 444]
+    d.allow_model_control = False
+    ctx.settings.manager.discord = d
+    cfg = db.bot_config(ctx)
+    assert cfg["allowed_user_ids"] == ["111", "222", "333", "444"]
+
+
 def test_config_model_accepts_unquoted_snowflake_ids():
     # Operators paste Discord "Copy ID" values unquoted; ints must not
     # fail validation and take the whole config down with them.
