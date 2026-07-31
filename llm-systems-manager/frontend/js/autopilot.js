@@ -89,20 +89,31 @@ function _fillModelOptions(dl, provider) {
 
 // "auto" plus every approved agent advertising provider's capability;
 // value = agent id (what readEntries needs back), label = hostname.
-function _fillPlacementOptions(dl, provider) {
-  dl.replaceChildren();
-  const auto = document.createElement('option');
-  auto.value = 'auto';
-  auto.textContent = 'auto (pool logic)';
-  dl.appendChild(auto);
+// An unknown current value stays selectable so an edit can't drop it.
+function _placementOptions(provider, current) {
+  const opts = [{v: 'auto', label: 'auto (pool logic)'}];
   _catalog.agents
     .filter(a => a && a.status === 'approved' && (a.capabilities || {})[provider])
-    .forEach(a => {
-      const opt = document.createElement('option');
-      opt.value = a.agent_id;
-      opt.textContent = a.hostname || (a.agent_id || '').slice(0, 8);
-      dl.appendChild(opt);
-    });
+    .forEach(a => opts.push({v: a.agent_id,
+                             label: a.hostname || (a.agent_id || '').slice(0, 8)}));
+  if (current && !opts.some(o => o.v === current)) {
+    const known = _catalog.agents.find(a => a && a.agent_id === current);
+    opts.push({v: current, label: known
+      ? `${known.hostname || current.slice(0, 8)} (not ${provider}-capable)`
+      : `${current.slice(0, 8)}… (unknown agent)`});
+  }
+  return opts;
+}
+
+function _fillPlacementSelect(sel, provider, current) {
+  sel.replaceChildren();
+  _placementOptions(provider, current).forEach(o => {
+    const opt = document.createElement('option');
+    opt.value = o.v;
+    opt.textContent = o.label;
+    sel.appendChild(opt);
+  });
+  sel.value = current || 'auto';
 }
 
 // Builds one entry's editor row: inputs/selects tagged data-field, plus the
@@ -119,8 +130,6 @@ function entryRow(entry) {
   const seq = ++_rowSeq;
   const modelsDl = document.createElement('datalist');
   modelsDl.id = `apModelsDl${seq}`;
-  const placementDl = document.createElement('datalist');
-  placementDl.id = `apPlacementDl${seq}`;
 
   const modelInput = _text('model', entry.model, 'ap-input ap-model', 'model id');
   modelInput.setAttribute('list', modelsDl.id);
@@ -130,11 +139,11 @@ function entryRow(entry) {
   const provider = _select('provider', PROVIDERS, entry.provider || 'llama');
   row.appendChild(_labeled('provider', provider));
 
-  const placementInput = _text('placement', entry.placement || 'auto',
-    'ap-input ap-placement', 'auto or agent id');
-  placementInput.setAttribute('list', placementDl.id);
-  row.appendChild(_labeled('placement', placementInput));
-  row.appendChild(placementDl);
+  const placement = document.createElement('select');
+  placement.className = 'ap-select ap-placement';
+  placement.dataset.field = 'placement';
+  _fillPlacementSelect(placement, entry.provider || 'llama', entry.placement || 'auto');
+  row.appendChild(_labeled('placement', placement));
 
   row.appendChild(_labeled('failover', _select('failover', FAILOVER, entry.failover || 'semi')));
 
@@ -146,12 +155,11 @@ function entryRow(entry) {
   // vLLM has no discovery source, so its placeholder says "required".
   const sizeInput = _num('size_mb', entry.size_mb, 1,
     (entry.provider === 'vllm') ? 'required' : 'auto');
-  sizeInput.title = 'Model size in MB for the VRAM-fit check. Leave blank to use the ' +
-    'discovered size; required for vLLM (no discovery source).';
+  sizeInput.title = 'Model size in MB for the VRAM/RAM-fit check. Leave blank to use ' +
+    'the discovered size; required for vLLM (no discovery source).';
   row.appendChild(_labeled('size (MB)', sizeInput));
 
   _fillModelOptions(modelsDl, provider.value);
-  _fillPlacementOptions(placementDl, provider.value);
 
   const badge = el('span', 'status status--warn ap-vllm-badge', 'manual-apply only');
   badge.title = 'vLLM entries can never auto-execute — proposals always need a manual Apply.';
@@ -160,7 +168,7 @@ function entryRow(entry) {
     badge.style.display = (provider.value === 'vllm') ? '' : 'none';
     sizeInput.placeholder = (provider.value === 'vllm') ? 'required' : 'auto';
     _fillModelOptions(modelsDl, provider.value);
-    _fillPlacementOptions(placementDl, provider.value);
+    _fillPlacementSelect(placement, provider.value, placement.value);
   });
   row.appendChild(badge);
 
@@ -253,17 +261,17 @@ function statusChip(entry, placements, status) {
     const ek = p && (p.entry_key || (p.action && p.action.entry_key));
     return ek === key;
   }).length;
-  if (pending > 0) return el('span', 'status status--warn', `${pending} pending`);
+  if (pending > 0) return el('span', 'status status--warn ap-entry-chip', `${pending} pending`);
   if (status) {
     const placed = status.placed || 0;
     const want = status.want || 0;
     if (status.blocked) {
-      return el('span', 'status status--warn', `${placed}/${want} — ${status.blocked}`);
+      return el('span', 'status status--warn ap-entry-chip', `${placed}/${want} — ${status.blocked}`);
     }
-    const cls = placed >= want ? 'status status--ok' : 'status status--muted';
+    const cls = placed >= want ? 'status status--ok ap-entry-chip' : 'status status--muted ap-entry-chip';
     return el('span', cls, `${placed}/${want} placed`);
   }
-  return el('span', 'status status--muted', 'stable');
+  return el('span', 'status status--muted ap-entry-chip', 'stable');
 }
 
 // ── DOM wiring (untested glue) ─────────────────────────────────────────

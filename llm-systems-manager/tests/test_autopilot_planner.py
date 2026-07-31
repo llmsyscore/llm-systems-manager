@@ -213,8 +213,11 @@ def test_entry_status_model_size_unknown():
 def test_entry_status_insufficient_vram():
     obs = _obs(_agents(**{A1: {"vram_free_mb": 4000}, A2: {"vram_free_mb": 4000}}))
     st = pl.entry_status(_desired([E]), obs)
-    assert st["m1/llama"] == {"placed": 0, "want": 1,
-                              "blocked": "insufficient free VRAM on any candidate"}
+    row = st["m1/llama"]
+    assert (row["placed"], row["want"]) == (0, 1)
+    # 8000 model + 1024 headroom = 9024 needed; best candidate has 4000.
+    assert row["blocked"].startswith("insufficient free VRAM/RAM")
+    assert "9024" in row["blocked"] and "4000" in row["blocked"]
 
 def test_entry_status_pending_not_blocked():
     # fits somewhere but hasn't been placed yet (e.g. cooldown) -> not "blocked"
@@ -230,8 +233,9 @@ def test_entry_status_already_placed_agent_not_its_own_candidate():
     obs = _obs(_agents(**{A1: {"loaded": {"llama": ["m1"]}},
                           A2: {"vram_free_mb": 100}}))
     st = pl.entry_status(_desired([e]), obs)
-    assert st["m1/llama"] == {"placed": 1, "want": 2,
-                              "blocked": "insufficient free VRAM on any candidate"}
+    row = st["m1/llama"]
+    assert (row["placed"], row["want"]) == (1, 2)
+    assert row["blocked"].startswith("insufficient free VRAM/RAM")
 
 def test_entry_status_matches_plan_intra_pass_vram_budget():
     # One agent, 9200 MB free; two 1-replica entries each need 8000+1024.
@@ -244,8 +248,11 @@ def test_entry_status_matches_plan_intra_pass_vram_budget():
     obs = {"agents": one, "model_sizes_mb": sizes}
     st = pl.entry_status(_desired([lo, hi]), obs)
     assert st["hi/llama"] == {"placed": 0, "want": 1, "blocked": None}
-    assert st["lo/llama"] == {"placed": 0, "want": 1,
-                              "blocked": "insufficient free VRAM on any candidate"}
+    row = st["lo/llama"]
+    assert (row["placed"], row["want"]) == (0, 1)
+    # Best reflects the intra-pass budget: 9200 - 8000 already committed.
+    assert row["blocked"].startswith("insufficient free VRAM/RAM")
+    assert "1200" in row["blocked"]
     # And plan() agrees: only the winner gets a load action.
     acts = pl.plan(_desired([lo, hi]), obs, _ledger(), now=1000.0)
     assert [a.model for a in acts] == ["hi"]
@@ -310,8 +317,10 @@ def test_entry_status_insufficient_ram():
                           A2: {"vram_free_mb": 0, "ram_free_mb": 4000}}),
               gpu_layers={"llama:m1": 0})
     st = pl.entry_status(_desired([E]), obs)
-    assert st["m1/llama"] == {"placed": 0, "want": 1,
-                              "blocked": "insufficient free RAM on any candidate"}
+    row = st["m1/llama"]
+    assert (row["placed"], row["want"]) == (0, 1)
+    assert row["blocked"].startswith("insufficient free VRAM/RAM")
+    assert "4000" in row["blocked"]
 
 def test_entry_status_ram_fit_not_blocked():
     obs = _obs(_agents(**{A1: {"vram_free_mb": 0, "ram_free_mb": 20000},
@@ -319,3 +328,40 @@ def test_entry_status_ram_fit_not_blocked():
               gpu_layers={"llama:m1": 0})
     st = pl.entry_status(_desired([E]), obs)
     assert st["m1/llama"] == {"placed": 0, "want": 1, "blocked": None}
+
+
+# --- #479 follow-up: per-candidate budget + numeric blocked message ---
+
+M1 = "e" * 32
+
+def _lms_agent(**over):
+    a = {"provider_caps": ["lms"], "live": True, "vram_total_mb": 0,
+         "vram_free_mb": 0, "ram_free_mb": 8000, "loaded": {"lms": []},
+         "server_state": None, "idle_since": None, "saturation": {}}
+    a.update(over)
+    return a
+
+def test_gpu_less_candidate_budgets_ram_not_vram():
+    # LM Studio on unified memory: no GPU reported -> RAM budget, not 0-VRAM.
+    e = {**E, "provider": "lms"}
+    obs = _obs({M1: _lms_agent()}, sizes={"lms:m1": 100})
+    st = pl.entry_status(_desired([e]), obs)
+    assert st["m1/lms"]["blocked"] is None
+    acts = pl.plan(_desired([e]), obs, _ledger(), now=1000.0)
+    assert len(acts) == 1 and acts[0].kind == "load" and acts[0].agent_id == M1
+
+def test_gpu_less_candidate_small_ram_still_blocks():
+    e = {**E, "provider": "lms"}
+    obs = _obs({M1: _lms_agent(ram_free_mb=900)}, sizes={"lms:m1": 100})
+    st = pl.entry_status(_desired([e]), obs)
+    assert st["m1/lms"]["blocked"] is not None
+    assert pl.plan(_desired([e]), obs, _ledger(), now=1000.0) == []
+
+def test_blocked_message_carries_need_and_best_numbers():
+    # 100 MB model + 1024 headroom = 1124 needed; best candidate has 1100.
+    e = {**E, "provider": "lms"}
+    obs = _obs({M1: _lms_agent(vram_total_mb=8000, vram_free_mb=1100,
+                               ram_free_mb=0)},
+               sizes={"lms:m1": 100})
+    b = pl.entry_status(_desired([e]), obs)["m1/lms"]["blocked"]
+    assert b is not None and "1124" in b and "1100" in b
