@@ -265,27 +265,36 @@ def bench_base_url(provider: str, agent: dict, probe=None) -> "tuple[str, dict]"
            {"Authorization": f"Bearer {agent.get('token') or ''}"}
 
 
+def _has_telemetry(sample) -> bool:
+    """True when a sample yields host watts or a GPU block, in either shape."""
+    import energy
+    if not isinstance(sample, dict) or not sample:
+        return False
+    watts, _src = energy.extract_power(sample)
+    return watts is not None or bool(energy._sys_block(sample).get("gpu"))
+
+
 def _agent_sample(agent_id: str, provider: "str | None" = None) -> dict:
-    """Latest sample carrying host telemetry. Every provider payload embeds
-    `system`, so fall back across buckets for hosts with no llama capability."""
+    """Latest sample carrying host telemetry, preferring the run's own bucket.
+    llama pushes the host fields flat; vllm/lms nest them under `system`."""
     import provider_state
     order = ([provider] if provider else []) + [p for p in PROVIDERS
                                                 if p != provider]
     for prov in order:
         sample = (provider_state.STORE.get(prov, agent_id) or {}).get("sample")
-        if (sample or {}).get("system"):
+        if _has_telemetry(sample):
             return sample
     return {}
 
 
 def _snapshot_power(agent_id: str, provider: "str | None" = None) -> dict:
-    """Normalize the live telemetry sample to {psu_w, gpus[]} for sampling."""
-    system = (_agent_sample(agent_id, provider) or {}).get("system") or {}
-    psu = ((system.get("liquidctl") or {}).get("psu") or {})
-    est_in = psu.get("Estimated input power") or {}
-    psu_w = est_in.get("value") if isinstance(est_in, dict) else None
+    """Normalize the live telemetry sample to {watts, source, gpus[]}.
+    Watts follow energy.extract_power's PSU wall > Apple SoC > GPU order."""
+    import energy
+    sample = _agent_sample(agent_id, provider) or {}
+    watts, source = energy.extract_power(sample)
     gpus = []
-    gpu = system.get("gpu") or {}
+    gpu = energy._sys_block(sample).get("gpu") or {}
     if gpu:
         total_bytes = gpu.get("vram_total_bytes")
         gpus.append({
@@ -294,7 +303,11 @@ def _snapshot_power(agent_id: str, provider: "str | None" = None) -> dict:
             "vram_used_mb": gpu.get("vram_used_mb"),
             "vram_total_mb": (round(total_bytes / 1_048_576)
                               if total_bytes else None)})
-    return {"psu_w": float(psu_w) if psu_w is not None else None, "gpus": gpus}
+    return {"watts": watts, "source": source, "gpus": gpus}
+
+
+# Preference order when one window sees more than one power source.
+_SOURCE_ORDER = ("psu", "mac", "gpu")
 
 
 class PowerSampler:
@@ -304,8 +317,7 @@ class PowerSampler:
     def __init__(self, sample_fn, interval_s: float = 2.0):
         self._fn = sample_fn
         self._interval = interval_s
-        self._psu: list = []
-        self._gpu_sums: list = []
+        self._by_source: "dict[str, list[float]]" = {}
         self._last_gpus: list = []
         self._timer = None
         self._stopped = False
@@ -324,17 +336,15 @@ class PowerSampler:
             log.debug("report card: power sample failed", exc_info=True)
             return
         gpus = snap.get("gpus") or []
-        powers = [g.get("power_w") for g in gpus if g.get("power_w") is not None]
+        watts, source = snap.get("watts"), snap.get("source")
         with self._lock:
             self._ticks += 1
             if self._stopped:
                 return
-            if snap.get("psu_w") is not None:
-                self._psu.append(float(snap["psu_w"]))
             if gpus:
                 self._last_gpus = gpus
-            if powers:
-                self._gpu_sums.append(sum(powers))
+            if source and isinstance(watts, (int, float)):
+                self._by_source.setdefault(source, []).append(float(watts))
 
     def start(self):
         def loop():
@@ -353,8 +363,7 @@ class PowerSampler:
     def reset(self):
         """Discard samples taken so far (idle/warmup); keep the GPU list."""
         with self._lock:
-            self._psu = []
-            self._gpu_sums = []
+            self._by_source = {}
 
     def stop(self) -> dict:
         with self._lock:
@@ -370,16 +379,14 @@ class PowerSampler:
             if self._ticks and self._failures == self._ticks:
                 log.warning("report card: every power sample failed (%d ticks)"
                             " — energy fields will be blank", self._ticks)
-            if self._psu:
-                self._result = {"avg_watts": sum(self._psu) / len(self._psu),
-                                "source": "psu", "gpus": self._last_gpus}
-            elif self._gpu_sums:
-                self._result = {
-                    "avg_watts": sum(self._gpu_sums) / len(self._gpu_sums),
-                    "source": "gpu", "gpus": self._last_gpus}
-            else:
-                self._result = {"avg_watts": None, "source": None,
-                                "gpus": self._last_gpus}
+            self._result = {"avg_watts": None, "source": None,
+                            "gpus": self._last_gpus}
+            for src in _SOURCE_ORDER:
+                vals = self._by_source.get(src)
+                if vals:
+                    self._result = {"avg_watts": sum(vals) / len(vals),
+                                    "source": src, "gpus": self._last_gpus}
+                    break
             return self._result
 
 

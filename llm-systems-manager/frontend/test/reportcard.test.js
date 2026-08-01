@@ -52,6 +52,20 @@ describe('buildCard', () => {
     expect(noP.textContent).toContain('no power telemetry');
   });
 
+  it('labels each power source, including Apple SoC watts', () => {
+    expect(RC.buildCard(RESULT).textContent).toContain('208 W wall');
+    expect(RC.buildCard({ ...RESULT, power_source: 'gpu' }).textContent)
+      .toContain('208 W GPU');
+    expect(RC.buildCard({ ...RESULT, power_source: 'mac' }).textContent)
+      .toContain('208 W SoC');
+  });
+
+  it('omits the source label when the source is unknown', () => {
+    const frag = RC.buildCard({ ...RESULT, power_source: null });
+    expect(frag.querySelector('.rc-energy').textContent).toContain('208 W');
+    expect(frag.textContent).not.toContain('208 W ');
+  });
+
   it('escapes provider-supplied strings rather than injecting markup', () => {
     const frag = RC.buildCard({ ...RESULT,
       gpu_config: '<img src=x onerror=alert(1)>' });

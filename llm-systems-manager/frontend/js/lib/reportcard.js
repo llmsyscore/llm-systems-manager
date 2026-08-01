@@ -9,6 +9,7 @@
 const LEADERBOARD_REPO = 'https://github.com/llmsyscore/llm-report-cards';
 
 const PROVIDER_LABEL = { llama: 'llama.cpp', vllm: 'vLLM', lms: 'LM Studio' };
+const SOURCE_LABEL = { psu: 'wall', mac: 'SoC', gpu: 'GPU' };
 
 function fmt(v, digits) {
   if (v == null || Number.isNaN(v)) return '—';
@@ -76,8 +77,9 @@ function buildCard(res) {
     energy.classList.add('rc-muted');
     energy.appendChild(el('span', null, 'no power telemetry'));
   } else {
-    const src = r.power_source === 'psu' ? 'wall' : 'GPU';
-    energy.appendChild(el('span', null, `${fmt(r.avg_watts, 0)} W ${src}`));
+    const src = SOURCE_LABEL[r.power_source];
+    energy.appendChild(el('span', null,
+                          `${fmt(r.avg_watts, 0)} W` + (src ? ` ${src}` : '')));
     energy.appendChild(el('span', 'rc-sep', '·'));
     energy.appendChild(el('span', null, `${fmt(r.tokens_per_joule, 2)} tok/J`));
     energy.appendChild(el('span', 'rc-sep', '·'));
@@ -167,5 +169,5 @@ async function exportPng(cardEl, scale) {
 }
 
 return { buildCard, submitUrl, trendSeries, exportPng, fmt, fmtMb,
-         fmtDate, LEADERBOARD_REPO, PROVIDER_LABEL };
+         fmtDate, LEADERBOARD_REPO, PROVIDER_LABEL, SOURCE_LABEL };
 });
