@@ -34,8 +34,8 @@ def _load_lms():
     _stub_if_absent("fastapi", Header=lambda **k: None,
                     HTTPException=_HTTPException,
                     Query=lambda *a, **k: None, Request=object)
-    # Synthetic parent package so lms.py's `from . import _shared` resolves
-    # without executing the real _shared (fastapi/starlette heavy).
+    # Registers a synthetic parent package whose `_shared` is a stub module,
+    # then loads lms.py as a submodule of it.
     pkg = _stub_if_absent("lms_pkg")
     pkg.__path__ = []
     pkg._shared = _stub_if_absent("lms_pkg._shared", openai_forward=None)

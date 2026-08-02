@@ -47,8 +47,7 @@ def test_forward_refused_when_lms_disabled(lms, monkeypatch):
         raise AssertionError("must not forward when disabled")
 
     monkeypatch.setattr(lms._shared, "openai_forward", fake_forward)
-    # HTTPException class varies by which fastapi stub loaded first; assert
-    # the refusal happens before forwarding, and 503 when observable.
+    # Accepts any HTTPException variant; checks status_code when present.
     with pytest.raises(Exception) as ei:
         asyncio.run(lms.lms_openai_completions(request=object(), authorization="Bearer t"))
     assert not isinstance(ei.value, AssertionError)

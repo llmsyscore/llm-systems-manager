@@ -216,6 +216,7 @@ def _fetch_provider_models(provider: str) -> list:
 _MODEL_INDEX_TTL_S = 30.0
 _model_index_lock = threading.Lock()
 _model_index: dict = {"ts": 0.0, "map": {}}
+_refresh_lock = threading.Lock()
 
 
 def _store_model_index(mapping: dict) -> None:
@@ -225,12 +226,20 @@ def _store_model_index(mapping: dict) -> None:
 
 
 def _refresh_model_index() -> dict:
-    mapping = {}
-    for p in _GATEWAY_PROVIDERS:
-        for m in _fetch_provider_models(p):
-            mapping.setdefault(m["id"], p)
-    _store_model_index(mapping)
-    return mapping
+    """Single-flight full fan-out; concurrent callers reuse the winner's map."""
+    with _refresh_lock:
+        with _model_index_lock:
+            if (time.time() - _model_index["ts"]) < _MODEL_INDEX_TTL_S:
+                return dict(_model_index["map"])
+        mapping = {}
+        for p in _GATEWAY_PROVIDERS:
+            for m in _fetch_provider_models(p):
+                owner = mapping.setdefault(m["id"], p)
+                if owner != p:
+                    log.debug("gateway: model id %s on %s shadowed by %s",
+                              m["id"], p, owner)
+        _store_model_index(mapping)
+        return mapping
 
 
 def _provider_for_model(model_id) -> str:
