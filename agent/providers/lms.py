@@ -15,7 +15,9 @@ from pathlib import Path
 from typing import Any, Optional
 
 import requests
-from fastapi import Header, HTTPException
+from fastapi import Header, HTTPException, Request
+
+from . import _shared
 
 # PR2: minimal spec the agent's heartbeat body emits — see providers/llama.py.
 PROVIDER_SPEC = {
@@ -240,6 +242,25 @@ def lms_ps_endpoint(authorization: Optional[str] = Header(default=None)) -> list
     _require_ctx().check_bearer(authorization)
     _lms_check_enabled()
     return lms_get_ps()
+
+
+async def _lms_openai_forward(sub: str, request: Request,
+                              authorization: "Optional[str]"):
+    """Narrow OpenAI passthrough to LM Studio /v1/<sub> (#493)."""
+    ctx = _require_ctx()
+    ctx.check_bearer(authorization)
+    _lms_check_enabled()
+    return await _shared.openai_forward(sub, request, ctx.config.LMS_API_URL)
+
+
+async def lms_openai_chat(request: Request,
+                          authorization: Optional[str] = Header(default=None)):
+    return await _lms_openai_forward("chat/completions", request, authorization)
+
+
+async def lms_openai_completions(request: Request,
+                                 authorization: Optional[str] = Header(default=None)):
+    return await _lms_openai_forward("completions", request, authorization)
 
 
 def lms_server_start_endpoint(authorization: Optional[str] = Header(default=None)) -> dict[str, Any]:
@@ -485,6 +506,8 @@ _ROUTES: tuple = (
     ("POST", "/lms/download",       lms_download_endpoint),
     ("POST", "/lms/unload",         lms_unload_endpoint),
     ("POST", "/lms/delete",         lms_delete_endpoint),
+    ("POST", "/lms/openai/chat/completions", lms_openai_chat),
+    ("POST", "/lms/openai/completions",      lms_openai_completions),
 )
 
 

@@ -100,6 +100,123 @@ def test_models_merge_dedupe(monkeypatch):
     assert ids == ["m1", "m2", "m3"]
 
 
+def test_models_merge_across_all_providers(monkeypatch):
+    """#493: the main /v1/models merges every gateway provider's pool."""
+    agents = {p: {"agent_id": p[0] * 32, "hostname": f"h-{p}", "token": "t"}
+              for p in gateway._GATEWAY_PROVIDERS}
+    monkeypatch.setattr(gateway, "_candidates", lambda m, a, p="llama": [agents[p]])
+    payloads = {"h-llama": {"data": [{"id": "l1"}]},
+                "h-lms": {"data": [{"id": "s1"}]},
+                "h-vllm": {"data": [{"id": "v1"}]}}
+
+    def fake_request(method, agent, path, **kw):
+        return FakeResp(200, payloads[agent["hostname"]]), [], None
+
+    monkeypatch.setattr(gateway.agent_registry, "agent_request", fake_request)
+    assert set(gateway._GATEWAY_PROVIDERS) == {"llama", "lms", "vllm"}
+    r = _client().get("/api/gateway/v1/models")
+    data = r.get_json()["data"]
+    assert {m["id"] for m in data} == {"l1", "s1", "v1"}
+    assert {m["provider"] for m in data} == {"llama", "lms", "vllm"}
+
+
+def test_provider_scoped_models_route_stays_scoped(monkeypatch):
+    agents = {p: {"agent_id": p[0] * 32, "hostname": f"h-{p}", "token": "t"}
+              for p in gateway._GATEWAY_PROVIDERS}
+    monkeypatch.setattr(gateway, "_candidates", lambda m, a, p="llama": [agents[p]])
+    payloads = {"h-llama": {"data": [{"id": "l1"}]},
+                "h-lms": {"data": [{"id": "s1"}]},
+                "h-vllm": {"data": [{"id": "v1"}]}}
+
+    def fake_request(method, agent, path, **kw):
+        return FakeResp(200, payloads[agent["hostname"]]), [], None
+
+    monkeypatch.setattr(gateway.agent_registry, "agent_request", fake_request)
+    r = _client().get("/api/gateway/vllm/v1/models")
+    assert [m["id"] for m in r.get_json()["data"]] == ["v1"]
+
+
+def _reset_model_index():
+    gateway._model_index["ts"] = 0.0
+    gateway._model_index["map"] = {}
+
+
+def test_completion_routes_to_owning_provider(monkeypatch):
+    """#493: a chat request for an lms-owned model uses the lms passthrough."""
+    _reset_model_index()
+    monkeypatch.setattr(gateway.agent_registry, "pinned_agent", lambda p, m: None)
+    monkeypatch.setattr(gateway, "_refresh_model_index", lambda: {"s1": "lms"})
+    seen_providers, seen_paths = [], []
+
+    def fake_candidates(m, a, p="llama"):
+        seen_providers.append(p)
+        return [{"agent_id": "a" * 32, "hostname": "h1", "token": "t"}]
+
+    def fake_forward(agent, path, body):
+        seen_paths.append(path)
+        return FakeResp(200, {"ok": 1}), None
+
+    monkeypatch.setattr(gateway, "_candidates", fake_candidates)
+    monkeypatch.setattr(gateway, "_forward_json", fake_forward)
+    r = _client().post("/api/gateway/v1/chat/completions", json={"model": "s1"})
+    assert r.status_code == 200
+    assert seen_providers == ["lms"]
+    assert seen_paths == ["/lms/openai/chat/completions"]
+
+
+def test_completion_unknown_model_falls_back_to_llama(monkeypatch):
+    _reset_model_index()
+    monkeypatch.setattr(gateway.agent_registry, "pinned_agent", lambda p, m: None)
+    monkeypatch.setattr(gateway, "_refresh_model_index", lambda: {})
+    seen = []
+
+    def fake_candidates(m, a, p="llama"):
+        seen.append(p)
+        return [{"agent_id": "a" * 32, "hostname": "h1", "token": "t"}]
+
+    monkeypatch.setattr(gateway, "_candidates", fake_candidates)
+    monkeypatch.setattr(gateway, "_forward_json",
+                        lambda agent, p, b: (FakeResp(200, {"ok": 1}), None))
+    r = _client().post("/api/gateway/v1/chat/completions", json={"model": "nope"})
+    assert r.status_code == 200 and seen == ["llama"]
+
+
+def test_completion_pin_selects_provider(monkeypatch):
+    _reset_model_index()
+    monkeypatch.setattr(
+        gateway.agent_registry, "pinned_agent",
+        lambda p, m: {"agent_id": "x"} if (p, m) == ("lms", "pinned-model") else None)
+    seen = []
+
+    def fake_candidates(m, a, p="llama"):
+        seen.append(p)
+        return [{"agent_id": "a" * 32, "hostname": "h1", "token": "t"}]
+
+    monkeypatch.setattr(gateway, "_candidates", fake_candidates)
+    monkeypatch.setattr(gateway, "_forward_json",
+                        lambda agent, p, b: (FakeResp(200, {"ok": 1}), None))
+    r = _client().post("/api/gateway/v1/chat/completions",
+                       json={"model": "pinned-model"})
+    assert r.status_code == 200 and seen == ["lms"]
+
+
+def test_model_index_cache_hit_skips_refresh(monkeypatch):
+    _reset_model_index()
+    monkeypatch.setattr(gateway.agent_registry, "pinned_agent", lambda p, m: None)
+    gateway._model_index["ts"] = gateway.time.time()
+    gateway._model_index["map"] = {"v1": "vllm"}
+    monkeypatch.setattr(gateway, "_refresh_model_index",
+                        lambda: (_ for _ in ()).throw(AssertionError("refresh called")))
+    assert gateway._provider_for_model("v1") == "vllm"
+
+
+def test_lms_gateway_routes_registered():
+    c = _client()
+    r = c.post("/api/gateway/lms/v1/chat/completions", data="notjson",
+               content_type="application/json")
+    assert r.status_code == 400
+
+
 class FakeUpstream:
     def __init__(self, chunks, status=200, ctype="text/event-stream"):
         self.status_code = status

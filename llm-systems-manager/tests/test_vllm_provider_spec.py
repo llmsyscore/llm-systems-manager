@@ -96,8 +96,13 @@ def test_gateway_paths_generated_from_registry():
         "chat/completions": "/vllm/openai/chat/completions",
         "completions": "/vllm/openai/completions",
     }
-    assert gateway._MODELS_PATHS == {"llama": "/llama/models", "vllm": "/vllm/models"}
-    assert "lms" not in gateway._AGENT_PATHS  # lms has no gateway
+    assert gateway._AGENT_PATHS["lms"] == {
+        "chat/completions": "/lms/openai/chat/completions",
+        "completions": "/lms/openai/completions",
+    }
+    assert gateway._MODELS_PATHS == {"llama": "/llama/models",
+                                     "lms": "/lms/models",
+                                     "vllm": "/vllm/models"}
 
 
 def test_api_config_emits_vllm_present():
