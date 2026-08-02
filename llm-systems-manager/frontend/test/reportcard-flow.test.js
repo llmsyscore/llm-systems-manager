@@ -19,7 +19,8 @@ function mountDom() {
       <option value="custom">Custom</option></select>
     <div id="rcModelKeyField"><select id="rcModelKey">
       <option value="small" selected>small</option></select></div>
-    <div id="rcCustomModelField"><input id="rcCustomModel"></div>
+    <div id="rcCustomModelField"><input id="rcCustomModel" list="rcModelOptions">
+      <datalist id="rcModelOptions"></datalist></div>
     <input id="rcPrice" value="0.15">
     <button id="rcRunBtn">▶ Run report card</button>
     <button id="rcCancelBtn" style="display:none;">✕ Cancel</button>
@@ -29,6 +30,8 @@ function mountDom() {
     <div id="rcActions" style="display:none;">
       <button id="rcSubmitBtn" style="display:none;"></button></div>
     <div id="rcDownload" style="display:none;"><div id="rcDownloadMsg"></div></div>
+    <div id="rcCleanup" style="display:none;"><div id="rcCleanupMsg"></div>
+      <button id="rcCleanupDeleteBtn"></button></div>
     <div id="rcConfirm" style="display:none;">
       <b id="rcConfirmServed"></b><span id="rcConfirmRef"></span></div>
     <div id="rcTrends" style="display:none;"><canvas id="rcTrendChart"></canvas></div>`;
@@ -52,7 +55,8 @@ function loadModule({ runResponse }) {
   })));
   // Execute the classic script with a return of the handles the test drives.
   const fn = new Function(code + `
-    ;return { rcRun, rcStream, rcStopStream, rcCancelRun };`);
+    ;return { rcRun, rcStream, rcStopStream, rcCancelRun, rcCleanupDelete,
+              rcOnModeChange, rcOnAgentChange };`);
   return { api: fn(), sources };
 }
 
@@ -119,5 +123,172 @@ describe('run flow busy state', () => {
     expect(document.getElementById('rcDownload').style.display).not.toBe('none');
     expect(document.getElementById('rcDownloadMsg').textContent)
       .toContain('restart llama.cpp');
+  });
+});
+
+describe('elapsed ticker (#491)', () => {
+  it('keeps the seconds counting between SSE events', async () => {
+    vi.useFakeTimers();
+    try {
+      const { api, sources } = loadModule({
+        runResponse: { ok: true, job_id: 'j1' } });
+      api.rcRun();
+      await vi.advanceTimersByTimeAsync(0);
+      await vi.advanceTimersByTimeAsync(0);
+      sources[0].onmessage({ data: JSON.stringify({ event: 'progress',
+        phase: 'waiting', elapsed_s: 12 }) });
+      const el = document.getElementById('rcStatus');
+      expect(el.textContent).toContain('· 12s');
+      await vi.advanceTimersByTimeAsync(5000);
+      expect(el.textContent).toContain('· 17s');
+    } finally { vi.useRealTimers(); }
+  });
+
+  it('stops ticking once the run reaches a terminal event', async () => {
+    vi.useFakeTimers();
+    try {
+      const { api, sources } = loadModule({
+        runResponse: { ok: true, job_id: 'j1' } });
+      api.rcRun();
+      await vi.advanceTimersByTimeAsync(0);
+      await vi.advanceTimersByTimeAsync(0);
+      sources[0].onmessage({ data: JSON.stringify({ event: 'progress',
+        phase: 'waiting', elapsed_s: 3 }) });
+      sources[0].onmessage({ data: JSON.stringify({ event: 'error',
+        error: 'boom' }) });
+      const el = document.getElementById('rcStatus');
+      await vi.advanceTimersByTimeAsync(5000);
+      expect(el.style.display).toBe('none');
+    } finally { vi.useRealTimers(); }
+  });
+});
+
+describe('post-run cleanup offer (#492)', () => {
+  const done = (cleanup) => ({ data: JSON.stringify({ event: 'done',
+    card: { result: {}, provider: 'llama', ts: 1, mode: 'standard',
+            preset_version: 'preset_v1', eligible: true }, cleanup }) });
+
+  it('offers deletion when the run downloaded a deletable model', async () => {
+    const { api, sources } = loadModule({
+      runResponse: { ok: true, job_id: 'j1' } });
+    api.rcRun();
+    await tick(); await tick();
+    sources[0].onmessage(done({ downloaded: true, deletable: true,
+                                model_key: 'small' }));
+    expect(document.getElementById('rcCleanup').style.display).not.toBe('none');
+    expect(document.getElementById('rcCleanupDeleteBtn').style.display)
+      .not.toBe('none');
+  });
+
+  it('hides the delete button when the host cannot purge (lms)', async () => {
+    const { api, sources } = loadModule({
+      runResponse: { ok: true, job_id: 'j1' } });
+    api.rcRun();
+    await tick(); await tick();
+    sources[0].onmessage(done({ downloaded: true, deletable: false,
+                                model_key: 'small' }));
+    expect(document.getElementById('rcCleanup').style.display).not.toBe('none');
+    expect(document.getElementById('rcCleanupDeleteBtn').style.display)
+      .toBe('none');
+  });
+
+  it('shows no offer when the model was already on the host', async () => {
+    const { api, sources } = loadModule({
+      runResponse: { ok: true, job_id: 'j1' } });
+    api.rcRun();
+    await tick(); await tick();
+    sources[0].onmessage(done({ downloaded: false, deletable: false,
+                                model_key: 'small' }));
+    expect(document.getElementById('rcCleanup').style.display).toBe('none');
+  });
+
+  it('delete POSTs the run identity to the delete-model route', async () => {
+    const { api, sources } = loadModule({
+      runResponse: { ok: true, job_id: 'j1' } });
+    api.rcRun();
+    await tick(); await tick();
+    sources[0].onmessage(done({ downloaded: true, deletable: true,
+                                model_key: 'small' }));
+    api.rcCleanupDelete();
+    await tick();
+    const call = fetch.mock.calls.find(c => c[0] === '/api/reportcard/delete-model');
+    expect(call).toBeTruthy();
+    expect(JSON.parse(call[1].body)).toEqual({
+      agent: 'a'.repeat(32), provider: 'llama', model_key: 'small' });
+    expect(document.getElementById('rcCleanup').style.display).toBe('none');
+  });
+
+  it('delete targets the run host even after the picker changes', async () => {
+    const { api, sources } = loadModule({
+      runResponse: { ok: true, job_id: 'j1' } });
+    api.rcRun();
+    await tick(); await tick();
+    sources[0].onmessage(done({ downloaded: true, deletable: true,
+                                model_key: 'small' }));
+    const sel = document.getElementById('rcAgent');
+    const other = document.createElement('option');
+    other.value = 'b'.repeat(32);
+    sel.appendChild(other);
+    sel.value = 'b'.repeat(32);
+    api.rcCleanupDelete();
+    await tick();
+    const call = fetch.mock.calls.find(c => c[0] === '/api/reportcard/delete-model');
+    expect(JSON.parse(call[1].body).agent).toBe('a'.repeat(32));
+  });
+});
+
+describe('custom-mode model datalist', () => {
+  const withModels = (models) => vi.fn(async (url) => ({
+    ok: true,
+    json: async () => String(url).startsWith('/api/reportcard/models')
+      ? { ok: true, models }
+      : { ok: true },
+  }));
+
+  it('entering custom mode populates the datalist from the host', async () => {
+    const { api } = loadModule({ runResponse: { ok: true } });
+    vi.stubGlobal('fetch', withModels(['m1', 'owner/m2']));
+    document.getElementById('rcMode').value = 'custom';
+    api.rcOnModeChange();
+    await tick(); await tick();
+    const opts = [...document.querySelectorAll('#rcModelOptions option')]
+      .map(o => o.value);
+    expect(opts).toEqual(['m1', 'owner/m2']);
+  });
+
+  it('switching hosts in custom mode refreshes the options', async () => {
+    const { api } = loadModule({ runResponse: { ok: true } });
+    document.getElementById('rcMode').value = 'custom';
+    vi.stubGlobal('fetch', withModels(['first']));
+    api.rcOnModeChange();
+    await tick(); await tick();
+    vi.stubGlobal('fetch', withModels(['second']));
+    api.rcOnAgentChange();
+    await tick(); await tick();
+    const opts = [...document.querySelectorAll('#rcModelOptions option')]
+      .map(o => o.value);
+    expect(opts).toEqual(['second']);
+  });
+
+  it('standard mode does not fetch model options on host change', async () => {
+    const { api } = loadModule({ runResponse: { ok: true } });
+    const f = withModels(['x']);
+    vi.stubGlobal('fetch', f);
+    api.rcOnAgentChange();
+    await tick();
+    const urls = f.mock.calls.map(c => c[0]);
+    expect(urls.some(u => String(u).startsWith('/api/reportcard/models')))
+      .toBe(false);
+  });
+
+  it('the input widens to fit the longest offered id', async () => {
+    const { api } = loadModule({ runResponse: { ok: true } });
+    const long = 'Qwen/Qwen2.5-1.5B-Instruct-GGUF:Q4_K_M';
+    vi.stubGlobal('fetch', withModels(['m1', long]));
+    document.getElementById('rcMode').value = 'custom';
+    api.rcOnModeChange();
+    await tick(); await tick();
+    const w = document.getElementById('rcCustomModel').style.width;
+    expect(w).toBe(Math.max(long.length + 2, 28) + 'ch');
   });
 });

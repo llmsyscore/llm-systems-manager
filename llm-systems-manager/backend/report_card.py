@@ -15,9 +15,9 @@ log = logging.getLogger("llm-systems-manager.report_card")
 # ── Reference preset ─────────────────────────────────────────────────
 # Changing any pinned value requires a new PRESET_VERSION.
 
-PRESET_VERSION = "preset_v1"
+PRESET_VERSION = "preset_v2"
 GEN_TOKENS = 128
-REPS = 3
+REPS = 10
 
 # 4-bit class on every provider. The 7B GGUF ships sharded; `file` names
 # shard 1 and llama.cpp pulls the rest.
@@ -106,12 +106,14 @@ PROMPT_CORPUS = (
 
 
 def rep_metrics(rep: dict) -> dict:
-    """Add prefill_tps + gen_tps to one repetition's raw timings."""
+    """Add prefill_tps + gen_tps to one repetition's raw timings;
+    gen_tps spans the n-1 decode gaps after the first token."""
     out = dict(rep)
     out["prefill_tps"] = (rep["prompt_tokens"] / rep["ttft_s"]
                           if rep.get("ttft_s") else 0.0)
-    out["gen_tps"] = (rep["gen_tokens"] / rep["gen_duration_s"]
-                      if rep.get("gen_duration_s") else 0.0)
+    out["gen_tps"] = ((rep["gen_tokens"] - 1) / rep["gen_duration_s"]
+                      if rep.get("gen_duration_s") and rep["gen_tokens"] > 1
+                      else 0.0)
     return out
 
 
@@ -163,9 +165,11 @@ def bench_stream(base_url: str, model: str, http_post,
     t0 = now()
     ttft = None
     tokens = 0
+    usage = None
     last = t0
     payload = {"model": model, "stream": True, "max_tokens": GEN_TOKENS,
                "temperature": 0,
+               "stream_options": {"include_usage": True},
                "messages": [{"role": "user", "content": PROMPT_CORPUS}]}
     url = base_url.rstrip("/") + "/chat/completions"
     for line in http_post(url, payload):
@@ -178,18 +182,25 @@ def bench_stream(base_url: str, model: str, http_post,
             chunk = json.loads(body)
         except ValueError:
             continue
+        if isinstance(chunk.get("usage"), dict):
+            usage = chunk["usage"]
         delta = ((chunk.get("choices") or [{}])[0].get("delta") or {})
-        if delta.get("content"):
+        # Reasoning models stream their budget as reasoning_content first;
+        # those are generated tokens too (and may be all there are).
+        if (delta.get("content") or delta.get("reasoning_content")
+                or delta.get("reasoning")):
             tokens += 1
             last = now()
             if ttft is None:
                 ttft = last - t0
     if not tokens or ttft is None:
         raise RuntimeError("provider streamed no tokens")
-    # prompt_tokens is len(PROMPT_CORPUS) // 4 — a fixed estimate, not a
-    # per-tokenizer count.
-    return {"ttft_s": ttft, "prompt_tokens": len(PROMPT_CORPUS) // 4,
-            "gen_tokens": tokens,
+    # Server-reported counts win; chunk count and chars//4 are fallbacks.
+    usage = usage or {}
+    return {"ttft_s": ttft,
+            "prompt_tokens": usage.get("prompt_tokens")
+                             or len(PROMPT_CORPUS) // 4,
+            "gen_tokens": usage.get("completion_tokens") or tokens,
             "gen_duration_s": max(last - t0 - ttft, 0.0)}
 
 
@@ -209,15 +220,26 @@ def run_bench(base_url: str, model: str, http_post, now=_time.monotonic,
 
 
 def _openai_stream_post(url: str, payload: dict, headers=None, timeout=300,
-                        verify=None):
-    """Production http_post: streamed POST yielding decoded SSE lines."""
+                        verify=None, session=None):
+    """Production http_post: streamed POST yielding decoded SSE lines;
+    reuses `session`'s pooled connection when one is passed."""
     import requests
     kwargs = {"json": payload, "headers": headers or {}, "stream": True,
               "timeout": timeout}
     if verify is not None:
         kwargs["verify"] = verify
-    r = requests.post(url, **kwargs)
-    r.raise_for_status()
+    r = (session or requests).post(url, **kwargs)
+    if not r.ok:
+        # Surface the provider's own message (e.g. LMS load guardrails)
+        # instead of a bare status code with an internal URL.
+        try:
+            msg = ((r.json() or {}).get("error") or {}).get("message")
+        except ValueError:
+            msg = None
+        detail = (msg or r.text or "").strip()[:500]
+        raise RuntimeError(
+            f"provider rejected the request (HTTP {r.status_code})"
+            + (f": {detail}" if detail else ""))
     for raw in r.iter_lines(decode_unicode=True):
         if raw:
             yield raw
@@ -398,6 +420,24 @@ def _norm(s: str) -> str:
     return str(s or "").strip().lower().replace("_", "-").replace(".", "-")
 
 
+def _preset_stems(src: dict) -> "set[str]":
+    """Normalized model-name stems LM Studio may list the preset under:
+    the GGUF file stem cut at the quant token, and the repo tail minus -GGUF."""
+    stems = set()
+    quant = _norm(src.get("quant") or "")
+    fname = src.get("file") or ""
+    if fname and quant:
+        fstem = _norm(fname[:-5] if fname.lower().endswith(".gguf") else fname)
+        cut = fstem.find("-" + quant)
+        if cut > 0:
+            stems.add(fstem[:cut])
+    repo = src.get("repo") or ""
+    tail = _norm(repo.rsplit("/", 1)[-1]) if repo else ""
+    if tail.endswith("-gguf"):
+        stems.add(tail[:-5])
+    return stems
+
+
 def _model_matches(candidate: str, src: dict) -> bool:
     """True when a provider's model id refers to the preset source.
     Providers register GGUFs as "<repo>:<QUANT>", so match on repo + quant."""
@@ -417,6 +457,18 @@ def _model_matches(candidate: str, src: dict) -> bool:
     fname = src.get("file") or ""
     if fname and _norm(cand).endswith(_norm(fname)):
         return True
+    # LM Studio virtual keys: "<stem>" or "<owner>_<model>@<quant>" (#489).
+    # A bare key carries no quant; LMS only adds @quant on multi-quant hosts.
+    base, _, at_quant = cand.partition("@")
+    if quant and at_quant and _norm(at_quant) != _norm(quant):
+        return False
+    stems = _preset_stems(src)
+    owner = _norm(repo.split("/", 1)[0]) if "/" in repo else ""
+    for nb in {_norm(base), _norm(base.rsplit("/", 1)[-1])}:
+        if nb in stems:
+            return True
+        if owner and nb.startswith(owner + "-") and nb[len(owner) + 1:] in stems:
+            return True
     return False
 
 
@@ -571,6 +623,8 @@ def provision_model(agent: dict, provider: str, src: dict, emit,
     match = wait_for_model(agent, provider, src, timeout_s=wait_s,
                            should_cancel=should_cancel)
     if not match:
+        if should_cancel and should_cancel():
+            return {"status": "cancelled"}
         return {"status": "error",
                 "error": "model did not appear after provisioning"}
     emit({"phase": "load", "model": match})
@@ -773,6 +827,7 @@ def _run_job(job_id: str, req: dict) -> None:
             raise RuntimeError("agent not found or not approved")
         provider, mode = req["provider"], req["mode"]
         check()
+        provisioned = False
         if mode == "custom":
             model, is_reference = req["model"], False
             emit({"phase": "ready", "status": "custom", "model": model})
@@ -795,6 +850,7 @@ def _run_job(job_id: str, req: dict) -> None:
                 if prov["status"] != "ready":
                     raise RuntimeError(prov.get("error") or "provisioning failed")
                 ready = {**ready, "status": "ready", "model": prov["model"]}
+                provisioned = True
             elif ready["status"] == "needs_confirm" and not req.get("confirm_vllm"):
                 raise RuntimeError(ready.get("error")
                                    or "vLLM run needs confirmation")
@@ -815,14 +871,25 @@ def _run_job(job_id: str, req: dict) -> None:
             check()
             emit(ev)
 
+        import requests as _requests
+        sess = _requests.Session()
         try:
             bench = run_bench(
                 base, model,
-                lambda u, p: _openai_stream_post(u, p, headers,
+                lambda u, p: _openai_stream_post(u, p, headers, session=sess,
                                                  **_tls_kwargs(u)),
                 progress_cb=_progress)
         finally:
+            sess.close()
             power = sampler.stop()
+            # The bench loaded the model; free the host's RAM/VRAM again.
+            if mode == "standard" and provider in ("llama", "lms"):
+                emit({"phase": "unload", "model": model})
+                ok_u, err_u = _agent_call(agent, "POST", f"/{provider}/unload",
+                                          timeout=60, json={"model": model})
+                if not ok_u:
+                    log.warning("report card: unload of %s failed: %s",
+                                model, err_u)
         agg = aggregate_gpus(power["gpus"])
         energy = energy_metrics(power["avg_watts"], bench["gen_tps"],
                                 req["price_kwh"])
@@ -835,13 +902,17 @@ def _run_job(job_id: str, req: dict) -> None:
                 "eligible": mode == "standard" and is_reference,
                 "result": result}
         insert_card(_conn_factory(), card)
-        q.put({"event": "done", "card": _public_card(card)})
+        q.put({"event": "done", "card": _public_card(card),
+               "cleanup": {"downloaded": provisioned,
+                           "deletable": provisioned
+                           and provider in ("llama", "lms"),
+                           "model_key": req.get("model_key")}})
     except _Cancelled:
         log.info("report card run cancelled")
         q.put({"event": "cancelled"})
     except Exception as e:
         log.warning("report card run failed: %s", e)
-        q.put({"event": "error", "error": str(e)[:200]})
+        q.put({"event": "error", "error": str(e)[:600]})
     finally:
         job["done"] = True
 
@@ -955,6 +1026,57 @@ def register_routes(app, ctx=None, db_path: "str | None" = None) -> None:
         _threading.Thread(target=_run_job, args=(job_id, req),
                           name=f"reportcard-{job_id[:8]}", daemon=True).start()
         return jsonify({"ok": True, "job_id": job_id})
+
+    @app.route("/api/reportcard/models")
+    def reportcard_models():
+        agent_id = flask_request.args.get("agent") or ""
+        provider = flask_request.args.get("provider") or ""
+        if not agent_id or provider not in PROVIDERS:
+            return jsonify({"ok": False,
+                            "error": "agent and provider required"}), 400
+        agent = _agent_for(agent_id)
+        if not agent:
+            return jsonify({"ok": False, "error": "agent not found"}), 404
+        ids = _model_ids(_agent_json(agent, "GET", f"/{provider}/models"))
+        return jsonify({"ok": True, "models": ids})
+
+    @app.route("/api/reportcard/delete-model", methods=["POST"])
+    def reportcard_delete_model():
+        body = flask_request.get_json(silent=True) or {}
+        agent_id = (body.get("agent") or "").strip()
+        provider = (body.get("provider") or "").strip()
+        model_key = (body.get("model_key") or "").strip()
+        if provider not in ("llama", "lms"):
+            return jsonify({"ok": False,
+                            "error": "deletion is only supported for llama.cpp"
+                                     " and LM Studio"}), 400
+        src = preset_source(model_key, provider)
+        if not agent_id or not src:
+            return jsonify({"ok": False,
+                            "error": "agent and a known model_key required"}), 400
+        agent = _agent_for(agent_id)
+        if not agent:
+            return jsonify({"ok": False, "error": "agent not found"}), 404
+        if provider == "lms":
+            # LMS lists downloads under its own virtual key; resolve it live.
+            ids = _model_ids(_agent_json(agent, "GET", "/lms/models"))
+            match = next((m for m in ids if _model_matches(m, src)), None)
+            if not match:
+                return jsonify({"ok": False,
+                                "error": "model not found on the host"}), 404
+            res = _agent_json(agent, "POST", "/lms/delete", timeout=60,
+                              json={"model": match})
+        else:
+            res = _agent_json(agent, "DELETE",
+                              f"/llama/config/{src['model_id']}?delete_cache=true",
+                              timeout=60)
+        if not isinstance(res, dict) or res.get("ok") is not True:
+            err = res.get("error") if isinstance(res, dict) else None
+            return jsonify({"ok": False,
+                            "error": err or "agent did not respond"}), 502
+        return jsonify({"ok": True,
+                        "deleted_files": len(res.get("deleted_files") or []),
+                        "cache_error": res.get("cache_error")})
 
     @app.route("/api/reportcard/cancel/<job_id>", methods=["POST"])
     def reportcard_cancel(job_id):

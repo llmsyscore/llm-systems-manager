@@ -1739,7 +1739,7 @@ Backend API endpoints consumed:
         </div>
         <div class="rc-field">
           <label for="rcAgent">Host</label>
-          <select id="rcAgent" onchange="rcLoadLatest()"></select>
+          <select id="rcAgent" onchange="rcOnAgentChange()"></select>
         </div>
         <div class="rc-field">
           <label for="rcMode">Run</label>
@@ -1754,7 +1754,8 @@ Backend API endpoints consumed:
         </div>
         <div class="rc-field" id="rcCustomModelField" style="display:none;">
           <label for="rcCustomModel">Model id</label>
-          <input id="rcCustomModel" type="text" style="width:220px;" placeholder="model id as the provider reports it">
+          <input id="rcCustomModel" type="text" style="width:220px;" list="rcModelOptions" placeholder="model id as the provider reports it">
+          <datalist id="rcModelOptions"></datalist>
         </div>
         <div class="rc-field">
           <label for="rcPrice">Electricity $/kWh</label>
@@ -1787,6 +1788,16 @@ Backend API endpoints consumed:
           <div class="rc-actions">
             <button class="btn btn-stone-muted-gradient" onclick="rcConfirmProceed()">Bench what's loaded</button>
             <button class="btn btn-gray-muted-gradient" onclick="rcConfirmCancel()">Cancel</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="rc-controls" id="rcCleanup" style="display:none;">
+        <div>
+          <div class="rc-note" id="rcCleanupMsg"></div>
+          <div class="rc-actions">
+            <button class="btn btn-stone-muted-gradient" id="rcCleanupDeleteBtn" onclick="rcCleanupDelete()">Delete model</button>
+            <button class="btn btn-gray-muted-gradient" onclick="rcCleanupKeep()">Keep model</button>
           </div>
         </div>
       </div>
@@ -1829,7 +1840,7 @@ Backend API endpoints consumed:
 <script src="/static/js/lmstudio.js?v=2026.06.26-3"></script>
 <script src="/static/js/vllm.js?v=2026.07.15-1"></script>
 <script src="/static/js/vllm-bench-autotune.js?v=2026.07.12-2"></script>
-<script src="/static/js/report-card.js?v=2026.07.28-1"></script>
+<script src="/static/js/report-card.js?v=2026.08.02-4"></script>
 <script src="/static/js/energy.js?v=2026.07.31-1"></script>
 <script src="/static/js/overall.js?v=2026.07.11-1"></script>
 <script src="/static/js/dashboard-manager.js?v=2026.07.20-1"></script>

@@ -15,12 +15,14 @@ AGENT = {"agent_id": "a" * 32, "token": "tok",
 
 
 class _Resp:
-    def __init__(self, ok=True, status=200, payload=None, lines=(), raise_exc=None):
+    def __init__(self, ok=True, status=200, payload=None, lines=(), raise_exc=None,
+                 text=""):
         self.ok = ok
         self.status_code = status
         self._payload = payload
         self._lines = lines
         self._raise = raise_exc
+        self.text = text
 
     def json(self):
         if isinstance(self._payload, Exception):
@@ -131,11 +133,27 @@ def test_stream_post_passes_verify_only_when_given(monkeypatch):
     assert seen[1]["verify"] == "/ca.crt"
 
 
-def test_stream_post_raises_on_http_error(monkeypatch):
-    import requests as real
-    err = real.exceptions.HTTPError("404 Not Found")
-    _fake_requests(monkeypatch, post=lambda url, **kw: _Resp(raise_exc=err))
-    with pytest.raises(real.exceptions.HTTPError):
+def test_stream_post_surfaces_the_providers_error_message(monkeypatch):
+    # LMS load guardrails answer 400 with a JSON error body; the operator
+    # must see that message, not a bare status + internal URL.
+    body = {"error": {"message": "Model loading was stopped due to "
+                                 "insufficient system resources."}}
+    _fake_requests(monkeypatch,
+                   post=lambda url, **kw: _Resp(ok=False, status=400,
+                                                payload=body))
+    with pytest.raises(RuntimeError) as ei:
+        list(rc._openai_stream_post("http://x", {}))
+    msg = str(ei.value)
+    assert "HTTP 400" in msg and "insufficient system resources" in msg
+    assert "http://x" not in msg
+
+
+def test_stream_post_error_without_json_body_uses_text(monkeypatch):
+    _fake_requests(monkeypatch,
+                   post=lambda url, **kw: _Resp(ok=False, status=502,
+                                                payload=ValueError("no json"),
+                                                text="upstream gone"))
+    with pytest.raises(RuntimeError, match="HTTP 502.*upstream gone"):
         list(rc._openai_stream_post("http://x", {}))
 
 
@@ -257,3 +275,22 @@ def test_prod_deps_handles_an_empty_model_list(monkeypatch):
     deps = rc.prod_deps(AGENT)
     assert deps["loaded_models"]("llama", "x") == []
     assert deps["vllm_current"]("x") is None
+
+
+def test_stream_post_keeps_the_full_guardrail_message(monkeypatch):
+    # The LMS insufficient-memory guardrail message is ~380 chars; the cap
+    # must not cut it mid-sentence.
+    long_msg = ("Failed to load model \"google/gemma-4-e4b\". Error: Model "
+                "loading was stopped due to insufficient system resources. "
+                "Under the current settings, this model requires approximately "
+                "15.92 GB of memory, and continuing to load it would likely "
+                "overload your system and cause it to freeze. If you think "
+                "this is incorrect, you can adjust the model loading "
+                "guardrails in settings.")
+    body = {"error": {"message": long_msg}}
+    _fake_requests(monkeypatch,
+                   post=lambda url, **kw: _Resp(ok=False, status=400,
+                                                payload=body))
+    with pytest.raises(RuntimeError) as ei:
+        list(rc._openai_stream_post("http://x", {}))
+    assert long_msg in str(ei.value)

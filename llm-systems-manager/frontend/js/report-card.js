@@ -7,6 +7,9 @@ let _rcLastCard  = null;
 let _rcTrendChart = null;
 let _rcPreset    = null;
 let _rcJobId     = null;
+let _rcTick      = null;
+let _rcCleanup   = null;
+let _rcRunTarget = null;
 
 function _rcEl(id) { return document.getElementById(id); }
 
@@ -45,6 +48,7 @@ const RC_PHASE_TEXT = {
   waiting: 'Waiting for the model to come online',
   load: 'Loading the model',
   warmup: 'Warm-up pass (discarded)',
+  unload: 'Unloading the model',
 };
 
 function _rcStatus(text, elapsed) {
@@ -53,6 +57,21 @@ function _rcStatus(text, elapsed) {
   el.style.display = text ? '' : 'none';
   const secs = elapsed != null ? ` · ${Math.round(elapsed)}s` : '';
   el.textContent = text ? text + secs : '';
+}
+
+// Ticks the elapsed counter locally between SSE progress events (#491).
+function _rcTickSet(text, elapsed) {
+  const timer = _rcTick?.timer || setInterval(() => {
+    if (!_rcTick) return;
+    _rcStatus(_rcTick.text, _rcTick.base + (Date.now() - _rcTick.at) / 1000);
+  }, 1000);
+  _rcTick = {text, base: elapsed != null ? elapsed : 0, at: Date.now(), timer};
+  _rcStatus(text, _rcTick.base);
+}
+
+function _rcTickStop() {
+  if (_rcTick?.timer) clearInterval(_rcTick.timer);
+  _rcTick = null;
 }
 
 // Populate the agent picker from the same enumeration the other tabs use.
@@ -76,6 +95,7 @@ function rcLoadAgents() {
       sel.appendChild(o);
     }
     rcLoadLatest();
+    rcRefreshModelOptions();
   }).catch(() => {});
 }
 
@@ -102,9 +122,34 @@ function rcOnModeChange() {
   const cf = _rcEl('rcCustomModelField');
   if (kf) kf.style.display = custom ? 'none' : '';
   if (cf) cf.style.display = custom ? '' : 'none';
+  if (custom) rcLoadModelOptions();
   _rcNote(custom
     ? 'Custom runs are for your own tracking — they are not comparable to leaderboard cards.'
     : '');
+}
+
+// Fills the custom-model datalist with the selected host's available models.
+function rcLoadModelOptions() {
+  const list = _rcEl('rcModelOptions');
+  const agent = _rcEl('rcAgent')?.value || '';
+  const provider = _rcEl('rcProvider')?.value || 'llama';
+  if (!list || !agent) return;
+  fetch(`/api/reportcard/models?agent=${encodeURIComponent(agent)}`
+        + `&provider=${encodeURIComponent(provider)}`)
+    .then(r => r.json()).then(d => {
+      list.replaceChildren();
+      (d.models || []).forEach(id => {
+        const o = document.createElement('option');
+        o.value = id;
+        list.appendChild(o);
+      });
+      // Grow the input (and its option popup) to the widest offered id.
+      const input = _rcEl('rcCustomModel');
+      const longest = Math.max(0, ...(d.models || []).map(m => String(m).length));
+      if (input && longest) {
+        input.style.width = Math.min(Math.max(longest + 2, 28), 64) + 'ch';
+      }
+    }).catch(() => {});
 }
 
 function rcRun(confirm) {
@@ -125,6 +170,7 @@ function rcRun(confirm) {
   const box = _rcEl('rcProgress');
   if (box) { box.textContent = ''; box.style.display = 'none'; }
   _rcNote('');
+  rcCleanupKeep();
   fetch('/api/reportcard/run', {
     method: 'POST', headers: {'Content-Type': 'application/json'},
     body: JSON.stringify(body),
@@ -137,7 +183,8 @@ function rcRun(confirm) {
       _rcBusy(false); rcShowDownloadConfirm(d); return;
     }
     _rcJobId = d.job_id;
-    _rcStatus('Starting…', 0);
+    _rcRunTarget = {agent, provider};
+    _rcTickSet('Starting…', 0);
     _rcLog('run started');
     rcStream(d.job_id);
   }).catch(e => { _rcBusy(false); _rcNote('Run failed: ' + e, true); });
@@ -191,7 +238,9 @@ function rcDownloadProceed() {
 
 function rcCancelRun() {
   if (!_rcJobId) return;
-  _rcStatus('Cancelling…');
+  if (_rcTick) _rcTick.text = 'Cancelling…';
+  _rcStatus('Cancelling…',
+            _rcTick ? _rcTick.base + (Date.now() - _rcTick.at) / 1000 : null);
   fetch('/api/reportcard/cancel/' + encodeURIComponent(_rcJobId),
         {method: 'POST'}).catch(() => {});
 }
@@ -218,7 +267,7 @@ function rcStream(jobId) {
       } else {
         text = RC_PHASE_TEXT[d.phase] || d.phase;
       }
-      _rcStatus(text, d.elapsed_s);
+      _rcTickSet(text, d.elapsed_s);
       _rcLog(text);
     }
     if (d.event === 'error') {
@@ -241,6 +290,7 @@ function rcStream(jobId) {
       _rcBusy(false);
       rcStopStream();
       rcRenderCard(d.card);
+      rcShowCleanup(d.cleanup);
     }
   };
   _rcEventSrc.onerror = () => {
@@ -255,8 +305,53 @@ function rcStream(jobId) {
 // Abandons the run: closes the stream and re-enables the Run button.
 // An explicit close fires no onerror, so the reset happens here.
 function rcStopStream() {
+  _rcTickStop();
   _rcCloseStream();
   _rcBusy(false);
+}
+
+// Post-run cleanup offer (#492): shown only when this run downloaded the
+// reference model; the delete button appears only where the agent can purge.
+function rcShowCleanup(c) {
+  if (!c || !c.downloaded) return;
+  const wrap = _rcEl('rcCleanup');
+  if (!wrap) return;
+  // Pin the run's own host/provider so a later picker change can't
+  // redirect the delete to another agent.
+  _rcCleanup = {...c, ...(_rcRunTarget || {})};
+  const msg = _rcEl('rcCleanupMsg');
+  if (msg) {
+    msg.textContent = c.deletable
+      ? 'The reference model downloaded for this run was unloaded after the '
+        + 'bench. Delete it from the host to free the disk space?'
+      : 'The reference model downloaded for this run was unloaded after the '
+        + 'bench. It stays on disk on this host.';
+  }
+  const del = _rcEl('rcCleanupDeleteBtn');
+  if (del) del.style.display = c.deletable ? '' : 'none';
+  wrap.style.display = '';
+}
+
+function rcCleanupKeep() {
+  const wrap = _rcEl('rcCleanup');
+  if (wrap) wrap.style.display = 'none';
+  _rcCleanup = null;
+}
+
+function rcCleanupDelete() {
+  const c = _rcCleanup;
+  rcCleanupKeep();
+  if (!c) return;
+  const agent = c.agent || _rcEl('rcAgent')?.value || '';
+  const provider = c.provider || _rcEl('rcProvider')?.value || 'llama';
+  _rcNote('Deleting the reference model…');
+  fetch('/api/reportcard/delete-model', {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({agent, provider, model_key: c.model_key}),
+  }).then(r => r.json().then(d => ({ok: r.ok, d}))).then(({ok, d}) => {
+    _rcNote(ok && d.ok ? 'Reference model deleted from the host.'
+                       : (d.error || 'Delete failed.'), !(ok && d.ok));
+  }).catch(e => _rcNote('Delete failed: ' + e, true));
 }
 
 function rcRenderCard(card) {
@@ -365,6 +460,16 @@ function rcDrawTrends(series) {
 
 function rcOnProviderChange() {
   rcLoadAgents();
+}
+
+function rcOnAgentChange() {
+  rcLoadLatest();
+  rcRefreshModelOptions();
+}
+
+// Options track the pickers only while the custom field is on screen.
+function rcRefreshModelOptions() {
+  if (_rcEl('rcMode')?.value === 'custom') rcLoadModelOptions();
 }
 
 function initReportCard() {
