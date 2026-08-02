@@ -33,6 +33,8 @@ def client(monkeypatch, tmp_path):
                                                 "source": "psu", "gpus": []})
     monkeypatch.setattr(rc, "bench_base_url",
                         lambda p, a, probe=None: ("http://x/llama/openai", {}))
+    monkeypatch.setattr(rc, "_agent_call",
+                        lambda *a, **k: (True, None), raising=False)
     rc.register_routes(app, db_path=str(tmp_path / "t.db"))
     return app.test_client()
 
@@ -350,3 +352,144 @@ def test_row_mapping_survives_column_reordering():
     assert got["ts"] == 7 and got["provider"] == "vllm"
     assert got["mode"] == "custom" and got["eligible"] is False
     assert got["result"]["model"] == "m"
+
+
+# ── #492: post-run unload + delete offer ─────────────────────────────
+
+def _unload_calls(monkeypatch):
+    calls = []
+    monkeypatch.setattr(rc, "_agent_call",
+                        lambda agent, method, path, timeout=15, **kw:
+                            (calls.append((method, path, kw.get("json"))),
+                             (True, None))[-1])
+    return calls
+
+
+def test_standard_run_unloads_the_model_after_the_bench(client, monkeypatch):
+    calls = _unload_calls(monkeypatch)
+    r = client.post("/api/reportcard/run", json={
+        "agent": "a" * 32, "provider": "llama", "mode": "standard",
+        "model_key": "small"})
+    events = _drain(client, r.get_json()["job_id"])
+    assert ("POST", "/llama/unload", {"model": "m"}) in calls
+    phases = [e.get("phase") for e in events if e.get("event") == "progress"]
+    assert "unload" in phases
+
+
+def test_custom_run_does_not_unload(client, monkeypatch):
+    calls = _unload_calls(monkeypatch)
+    r = client.post("/api/reportcard/run", json={
+        "agent": "a" * 32, "provider": "lms", "mode": "custom",
+        "model": "my-model"})
+    _drain(client, r.get_json()["job_id"])
+    assert not any(p.endswith("/unload") for _m, p, _b in calls)
+
+
+def test_vllm_run_never_unloads(client, monkeypatch):
+    calls = _unload_calls(monkeypatch)
+    r = client.post("/api/reportcard/run", json={
+        "agent": "a" * 32, "provider": "vllm", "mode": "standard",
+        "model_key": "small"})
+    _drain(client, r.get_json()["job_id"])
+    assert not any(p.endswith("/unload") for _m, p, _b in calls)
+
+
+def test_bench_failure_still_unloads(client, monkeypatch):
+    calls = _unload_calls(monkeypatch)
+
+    def boom(*a, **k):
+        raise RuntimeError("provider streamed no tokens")
+    monkeypatch.setattr(rc, "run_bench", boom)
+    r = client.post("/api/reportcard/run", json={
+        "agent": "a" * 32, "provider": "llama", "mode": "standard",
+        "model_key": "small"})
+    events = _drain(client, r.get_json()["job_id"])
+    assert any(e.get("event") == "error" for e in events)
+    assert any(p == "/llama/unload" for _m, p, _b in calls)
+
+
+def test_done_event_offers_deletion_after_a_provisioned_download(client, monkeypatch):
+    src = rc.preset_source("small", "llama")
+    monkeypatch.setattr(rc, "ensure_ready",
+                        lambda *a, **k: {"status": "needs_download",
+                                         "model": src["model_id"],
+                                         "reference": src["model_id"],
+                                         "is_reference": True, "source": src})
+    monkeypatch.setattr(rc, "provision_model",
+                        lambda agent, prov, s, emit, should_cancel=None:
+                            {"status": "ready", "model": s["model_id"]})
+    r = client.post("/api/reportcard/run", json={
+        "agent": "a" * 32, "provider": "llama", "mode": "standard",
+        "model_key": "small", "confirm_download": True})
+    events = _drain(client, r.get_json()["job_id"])
+    done = [e for e in events if e.get("event") == "done"]
+    assert done and done[0]["cleanup"] == {"downloaded": True,
+                                           "deletable": True,
+                                           "model_key": "small"}
+
+
+def test_lms_download_is_flagged_but_not_deletable(client, monkeypatch):
+    src = rc.preset_source("small", "lms")
+    monkeypatch.setattr(rc, "ensure_ready",
+                        lambda *a, **k: {"status": "needs_download",
+                                         "model": src["model_id"],
+                                         "reference": src["model_id"],
+                                         "is_reference": True, "source": src})
+    monkeypatch.setattr(rc, "provision_model",
+                        lambda agent, prov, s, emit, should_cancel=None:
+                            {"status": "ready", "model": "qwen2.5-1.5b-instruct"})
+    r = client.post("/api/reportcard/run", json={
+        "agent": "a" * 32, "provider": "lms", "mode": "standard",
+        "model_key": "small", "confirm_download": True})
+    events = _drain(client, r.get_json()["job_id"])
+    done = [e for e in events if e.get("event") == "done"]
+    assert done and done[0]["cleanup"] == {"downloaded": True,
+                                           "deletable": False,
+                                           "model_key": "small"}
+
+
+def test_preexisting_model_offers_no_deletion(client):
+    r = client.post("/api/reportcard/run", json={
+        "agent": "a" * 32, "provider": "llama", "mode": "standard",
+        "model_key": "small"})
+    events = _drain(client, r.get_json()["job_id"])
+    done = [e for e in events if e.get("event") == "done"]
+    assert done and done[0]["cleanup"]["downloaded"] is False
+
+
+def test_delete_model_calls_the_agent_with_cache_purge(client, monkeypatch):
+    seen = []
+    monkeypatch.setattr(rc, "_agent_json",
+                        lambda agent, method, path, timeout=15, **kw:
+                            (seen.append((method, path)),
+                             {"ok": True, "deleted_files": ["a.gguf"],
+                              "cache_error": None})[-1])
+    r = client.post("/api/reportcard/delete-model", json={
+        "agent": "a" * 32, "provider": "llama", "model_key": "small"})
+    assert r.status_code == 200 and r.get_json()["ok"] is True
+    method, path = seen[0]
+    assert method == "DELETE"
+    assert path.startswith("/llama/config/")
+    assert "delete_cache=true" in path
+    assert rc.preset_source("small", "llama")["model_id"] in path
+
+
+def test_delete_model_rejects_non_llama_providers(client):
+    r = client.post("/api/reportcard/delete-model", json={
+        "agent": "a" * 32, "provider": "lms", "model_key": "small"})
+    assert r.status_code == 400
+
+
+def test_delete_model_rejects_unknown_model_key(client):
+    r = client.post("/api/reportcard/delete-model", json={
+        "agent": "a" * 32, "provider": "llama", "model_key": "huge"})
+    assert r.status_code == 400
+
+
+def test_delete_model_surfaces_agent_failure(client, monkeypatch):
+    monkeypatch.setattr(rc, "_agent_json",
+                        lambda *a, **k: {"ok": False, "error": "Permission denied"})
+    r = client.post("/api/reportcard/delete-model", json={
+        "agent": "a" * 32, "provider": "llama", "model_key": "small"})
+    assert r.status_code == 502
+    assert "Permission denied" in r.get_json()["error"]

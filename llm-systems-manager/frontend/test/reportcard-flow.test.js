@@ -29,6 +29,8 @@ function mountDom() {
     <div id="rcActions" style="display:none;">
       <button id="rcSubmitBtn" style="display:none;"></button></div>
     <div id="rcDownload" style="display:none;"><div id="rcDownloadMsg"></div></div>
+    <div id="rcCleanup" style="display:none;"><div id="rcCleanupMsg"></div>
+      <button id="rcCleanupDeleteBtn"></button></div>
     <div id="rcConfirm" style="display:none;">
       <b id="rcConfirmServed"></b><span id="rcConfirmRef"></span></div>
     <div id="rcTrends" style="display:none;"><canvas id="rcTrendChart"></canvas></div>`;
@@ -52,7 +54,7 @@ function loadModule({ runResponse }) {
   })));
   // Execute the classic script with a return of the handles the test drives.
   const fn = new Function(code + `
-    ;return { rcRun, rcStream, rcStopStream, rcCancelRun };`);
+    ;return { rcRun, rcStream, rcStopStream, rcCancelRun, rcCleanupDelete };`);
   return { api: fn(), sources };
 }
 
@@ -119,5 +121,98 @@ describe('run flow busy state', () => {
     expect(document.getElementById('rcDownload').style.display).not.toBe('none');
     expect(document.getElementById('rcDownloadMsg').textContent)
       .toContain('restart llama.cpp');
+  });
+});
+
+describe('elapsed ticker (#491)', () => {
+  it('keeps the seconds counting between SSE events', async () => {
+    vi.useFakeTimers();
+    try {
+      const { api, sources } = loadModule({
+        runResponse: { ok: true, job_id: 'j1' } });
+      api.rcRun();
+      await vi.advanceTimersByTimeAsync(0);
+      await vi.advanceTimersByTimeAsync(0);
+      sources[0].onmessage({ data: JSON.stringify({ event: 'progress',
+        phase: 'waiting', elapsed_s: 12 }) });
+      const el = document.getElementById('rcStatus');
+      expect(el.textContent).toContain('· 12s');
+      await vi.advanceTimersByTimeAsync(5000);
+      expect(el.textContent).toContain('· 17s');
+    } finally { vi.useRealTimers(); }
+  });
+
+  it('stops ticking once the run reaches a terminal event', async () => {
+    vi.useFakeTimers();
+    try {
+      const { api, sources } = loadModule({
+        runResponse: { ok: true, job_id: 'j1' } });
+      api.rcRun();
+      await vi.advanceTimersByTimeAsync(0);
+      await vi.advanceTimersByTimeAsync(0);
+      sources[0].onmessage({ data: JSON.stringify({ event: 'progress',
+        phase: 'waiting', elapsed_s: 3 }) });
+      sources[0].onmessage({ data: JSON.stringify({ event: 'error',
+        error: 'boom' }) });
+      const el = document.getElementById('rcStatus');
+      await vi.advanceTimersByTimeAsync(5000);
+      expect(el.style.display).toBe('none');
+    } finally { vi.useRealTimers(); }
+  });
+});
+
+describe('post-run cleanup offer (#492)', () => {
+  const done = (cleanup) => ({ data: JSON.stringify({ event: 'done',
+    card: { result: {}, provider: 'llama', ts: 1, mode: 'standard',
+            preset_version: 'preset_v1', eligible: true }, cleanup }) });
+
+  it('offers deletion when the run downloaded a deletable model', async () => {
+    const { api, sources } = loadModule({
+      runResponse: { ok: true, job_id: 'j1' } });
+    api.rcRun();
+    await tick(); await tick();
+    sources[0].onmessage(done({ downloaded: true, deletable: true,
+                                model_key: 'small' }));
+    expect(document.getElementById('rcCleanup').style.display).not.toBe('none');
+    expect(document.getElementById('rcCleanupDeleteBtn').style.display)
+      .not.toBe('none');
+  });
+
+  it('hides the delete button when the host cannot purge (lms)', async () => {
+    const { api, sources } = loadModule({
+      runResponse: { ok: true, job_id: 'j1' } });
+    api.rcRun();
+    await tick(); await tick();
+    sources[0].onmessage(done({ downloaded: true, deletable: false,
+                                model_key: 'small' }));
+    expect(document.getElementById('rcCleanup').style.display).not.toBe('none');
+    expect(document.getElementById('rcCleanupDeleteBtn').style.display)
+      .toBe('none');
+  });
+
+  it('shows no offer when the model was already on the host', async () => {
+    const { api, sources } = loadModule({
+      runResponse: { ok: true, job_id: 'j1' } });
+    api.rcRun();
+    await tick(); await tick();
+    sources[0].onmessage(done({ downloaded: false, deletable: false,
+                                model_key: 'small' }));
+    expect(document.getElementById('rcCleanup').style.display).toBe('none');
+  });
+
+  it('delete POSTs the run identity to the delete-model route', async () => {
+    const { api, sources } = loadModule({
+      runResponse: { ok: true, job_id: 'j1' } });
+    api.rcRun();
+    await tick(); await tick();
+    sources[0].onmessage(done({ downloaded: true, deletable: true,
+                                model_key: 'small' }));
+    api.rcCleanupDelete();
+    await tick();
+    const call = fetch.mock.calls.find(c => c[0] === '/api/reportcard/delete-model');
+    expect(call).toBeTruthy();
+    expect(JSON.parse(call[1].body)).toEqual({
+      agent: 'a'.repeat(32), provider: 'llama', model_key: 'small' });
+    expect(document.getElementById('rcCleanup').style.display).toBe('none');
   });
 });

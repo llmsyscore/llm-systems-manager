@@ -805,6 +805,7 @@ def _run_job(job_id: str, req: dict) -> None:
             raise RuntimeError("agent not found or not approved")
         provider, mode = req["provider"], req["mode"]
         check()
+        provisioned = False
         if mode == "custom":
             model, is_reference = req["model"], False
             emit({"phase": "ready", "status": "custom", "model": model})
@@ -827,6 +828,7 @@ def _run_job(job_id: str, req: dict) -> None:
                 if prov["status"] != "ready":
                     raise RuntimeError(prov.get("error") or "provisioning failed")
                 ready = {**ready, "status": "ready", "model": prov["model"]}
+                provisioned = True
             elif ready["status"] == "needs_confirm" and not req.get("confirm_vllm"):
                 raise RuntimeError(ready.get("error")
                                    or "vLLM run needs confirmation")
@@ -855,6 +857,14 @@ def _run_job(job_id: str, req: dict) -> None:
                 progress_cb=_progress)
         finally:
             power = sampler.stop()
+            # The bench loaded the model; free the host's RAM/VRAM again.
+            if mode == "standard" and provider in ("llama", "lms"):
+                emit({"phase": "unload", "model": model})
+                ok_u, err_u = _agent_call(agent, "POST", f"/{provider}/unload",
+                                          timeout=60, json={"model": model})
+                if not ok_u:
+                    log.warning("report card: unload of %s failed: %s",
+                                model, err_u)
         agg = aggregate_gpus(power["gpus"])
         energy = energy_metrics(power["avg_watts"], bench["gen_tps"],
                                 req["price_kwh"])
@@ -867,7 +877,11 @@ def _run_job(job_id: str, req: dict) -> None:
                 "eligible": mode == "standard" and is_reference,
                 "result": result}
         insert_card(_conn_factory(), card)
-        q.put({"event": "done", "card": _public_card(card)})
+        # llama's delete endpoint purges config + HF cache; LMS has none yet.
+        q.put({"event": "done", "card": _public_card(card),
+               "cleanup": {"downloaded": provisioned,
+                           "deletable": provisioned and provider == "llama",
+                           "model_key": req.get("model_key")}})
     except _Cancelled:
         log.info("report card run cancelled")
         q.put({"event": "cancelled"})
@@ -987,6 +1001,33 @@ def register_routes(app, ctx=None, db_path: "str | None" = None) -> None:
         _threading.Thread(target=_run_job, args=(job_id, req),
                           name=f"reportcard-{job_id[:8]}", daemon=True).start()
         return jsonify({"ok": True, "job_id": job_id})
+
+    @app.route("/api/reportcard/delete-model", methods=["POST"])
+    def reportcard_delete_model():
+        body = flask_request.get_json(silent=True) or {}
+        agent_id = (body.get("agent") or "").strip()
+        provider = (body.get("provider") or "").strip()
+        model_key = (body.get("model_key") or "").strip()
+        if provider != "llama":
+            return jsonify({"ok": False,
+                            "error": "deletion is only supported for llama.cpp"}), 400
+        src = preset_source(model_key, provider)
+        if not agent_id or not src:
+            return jsonify({"ok": False,
+                            "error": "agent and a known model_key required"}), 400
+        agent = _agent_for(agent_id)
+        if not agent:
+            return jsonify({"ok": False, "error": "agent not found"}), 404
+        res = _agent_json(agent, "DELETE",
+                          f"/llama/config/{src['model_id']}?delete_cache=true",
+                          timeout=60)
+        if not isinstance(res, dict) or res.get("ok") is not True:
+            err = res.get("error") if isinstance(res, dict) else None
+            return jsonify({"ok": False,
+                            "error": err or "agent did not respond"}), 502
+        return jsonify({"ok": True,
+                        "deleted_files": len(res.get("deleted_files") or []),
+                        "cache_error": res.get("cache_error")})
 
     @app.route("/api/reportcard/cancel/<job_id>", methods=["POST"])
     def reportcard_cancel(job_id):
