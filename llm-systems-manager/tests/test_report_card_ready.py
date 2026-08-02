@@ -76,6 +76,40 @@ def test_lms_uses_the_same_matching():
     assert out["status"] == "ready"
 
 
+def test_lms_virtual_key_matches_the_reference():
+    # Regression (#489): LM Studio lists downloads under its own virtual key
+    # (file stem minus quant), so the provisioned model was never detected.
+    src = rc.preset_source("small", "lms")
+    assert rc._model_matches("qwen2.5-1.5b-instruct", src) is True
+    out = rc.ensure_ready("lms", "a" * 32, "small",
+                          _deps(loaded=["qwen2.5-1.5b-instruct"]))
+    assert out["status"] == "ready"
+    assert out["model"] == "qwen2.5-1.5b-instruct"
+
+
+def test_lms_owner_prefixed_quant_key_matches():
+    # Newer LMS builds disambiguate multi-quant downloads as owner_model@quant.
+    src = rc.preset_source("small", "lms")
+    assert rc._model_matches("qwen_qwen2.5-1.5b-instruct@q4_k_m", src) is True
+
+
+def test_lms_key_with_the_wrong_quant_is_rejected():
+    src = rc.preset_source("small", "lms")
+    assert rc._model_matches("qwen_qwen2.5-1.5b-instruct@q8_0", src) is False
+
+
+def test_lms_sharded_mid_key_matches_the_file_stem():
+    # Sharded GGUFs carry the quant mid-name; the stem still resolves.
+    src = rc.preset_source("mid", "lms")
+    assert rc._model_matches("qwen2.5-7b-instruct", src) is True
+
+
+def test_unrelated_lms_key_does_not_match():
+    src = rc.preset_source("small", "lms")
+    assert rc._model_matches("google/gemma-3-1b", src) is False
+    assert rc._model_matches("text-embedding-nomic-embed-text-v1.5", src) is False
+
+
 def test_vllm_requires_confirmation_and_reports_served_model():
     out = rc.ensure_ready("vllm", "a" * 32, "small",
                           _deps(vllm_current="Qwen/OtherModel"))

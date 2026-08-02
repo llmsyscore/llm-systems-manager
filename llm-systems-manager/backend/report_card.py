@@ -398,6 +398,24 @@ def _norm(s: str) -> str:
     return str(s or "").strip().lower().replace("_", "-").replace(".", "-")
 
 
+def _preset_stems(src: dict) -> "set[str]":
+    """Normalized model-name stems LM Studio may list the preset under:
+    the GGUF file stem cut at the quant token, and the repo tail minus -GGUF."""
+    stems = set()
+    quant = _norm(src.get("quant") or "")
+    fname = src.get("file") or ""
+    if fname and quant:
+        fstem = _norm(fname[:-5] if fname.lower().endswith(".gguf") else fname)
+        cut = fstem.find("-" + quant)
+        if cut > 0:
+            stems.add(fstem[:cut])
+    repo = src.get("repo") or ""
+    tail = _norm(repo.rsplit("/", 1)[-1]) if repo else ""
+    if tail.endswith("-gguf"):
+        stems.add(tail[:-5])
+    return stems
+
+
 def _model_matches(candidate: str, src: dict) -> bool:
     """True when a provider's model id refers to the preset source.
     Providers register GGUFs as "<repo>:<QUANT>", so match on repo + quant."""
@@ -417,6 +435,17 @@ def _model_matches(candidate: str, src: dict) -> bool:
     fname = src.get("file") or ""
     if fname and _norm(cand).endswith(_norm(fname)):
         return True
+    # LM Studio virtual keys: "<stem>" or "<owner>_<model>@<quant>" (#489).
+    base, _, at_quant = cand.partition("@")
+    if quant and at_quant and _norm(at_quant) != _norm(quant):
+        return False
+    stems = _preset_stems(src)
+    owner = _norm(repo.split("/", 1)[0]) if "/" in repo else ""
+    for nb in {_norm(base), _norm(base.rsplit("/", 1)[-1])}:
+        if nb in stems:
+            return True
+        if owner and nb.startswith(owner + "-") and nb[len(owner) + 1:] in stems:
+            return True
     return False
 
 
@@ -571,6 +600,8 @@ def provision_model(agent: dict, provider: str, src: dict, emit,
     match = wait_for_model(agent, provider, src, timeout_s=wait_s,
                            should_cancel=should_cancel)
     if not match:
+        if should_cancel and should_cancel():
+            return {"status": "cancelled"}
         return {"status": "error",
                 "error": "model did not appear after provisioning"}
     emit({"phase": "load", "model": match})

@@ -204,6 +204,25 @@ def test_wait_for_model_gives_up_after_the_timeout(monkeypatch):
                              sleep=lambda _s: None) is None
 
 
+def test_wait_for_model_finds_the_lms_virtual_key(monkeypatch):
+    # Regression (#489): after an LMS download the provider lists the model
+    # under its virtual key, not the preset's repo:QUANT id.
+    src = rc.preset_source("small", "lms")
+    monkeypatch.setattr(rc, "_agent_json",
+                        lambda a, m, p, timeout=15, **k:
+                            {"data": [{"id": "qwen2.5-1.5b-instruct"}]})
+    got = rc.wait_for_model(AGENT, "lms", src, now=lambda: 0.0,
+                            sleep=lambda _s: None)
+    assert got == "qwen2.5-1.5b-instruct"
+
+
+def test_a_cancel_during_the_wait_reports_cancelled_not_timeout(monkeypatch):
+    _calls_recorder(monkeypatch, models_after=[])
+    out = rc.provision_model(AGENT, "llama", SRC, lambda _e: None,
+                             should_cancel=lambda: True)
+    assert out["status"] == "cancelled"
+
+
 def test_wait_for_model_aborts_on_cancel(monkeypatch):
     monkeypatch.setattr(rc, "_agent_json",
                         lambda a, m, p, timeout=15, **k: {"data": []})
