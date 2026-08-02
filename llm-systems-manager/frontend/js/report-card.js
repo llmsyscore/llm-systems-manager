@@ -143,6 +143,12 @@ function rcLoadModelOptions() {
         o.value = id;
         list.appendChild(o);
       });
+      // Grow the input (and its option popup) to the widest offered id.
+      const input = _rcEl('rcCustomModel');
+      const longest = Math.max(0, ...(d.models || []).map(m => String(m).length));
+      if (input && longest) {
+        input.style.width = Math.min(Math.max(longest + 2, 28), 64) + 'ch';
+      }
     }).catch(() => {});
 }
 

@@ -280,4 +280,15 @@ describe('custom-mode model datalist', () => {
     expect(urls.some(u => String(u).startsWith('/api/reportcard/models')))
       .toBe(false);
   });
+
+  it('the input widens to fit the longest offered id', async () => {
+    const { api } = loadModule({ runResponse: { ok: true } });
+    const long = 'Qwen/Qwen2.5-1.5B-Instruct-GGUF:Q4_K_M';
+    vi.stubGlobal('fetch', withModels(['m1', long]));
+    document.getElementById('rcMode').value = 'custom';
+    api.rcOnModeChange();
+    await tick(); await tick();
+    const w = document.getElementById('rcCustomModel').style.width;
+    expect(w).toBe(Math.max(long.length + 2, 28) + 'ch');
+  });
 });
