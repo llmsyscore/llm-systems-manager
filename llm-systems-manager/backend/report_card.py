@@ -185,7 +185,10 @@ def bench_stream(base_url: str, model: str, http_post,
         if isinstance(chunk.get("usage"), dict):
             usage = chunk["usage"]
         delta = ((chunk.get("choices") or [{}])[0].get("delta") or {})
-        if delta.get("content"):
+        # Reasoning models stream their budget as reasoning_content first;
+        # those are generated tokens too (and may be all there are).
+        if (delta.get("content") or delta.get("reasoning_content")
+                or delta.get("reasoning")):
             tokens += 1
             last = now()
             if ttft is None:
@@ -226,7 +229,17 @@ def _openai_stream_post(url: str, payload: dict, headers=None, timeout=300,
     if verify is not None:
         kwargs["verify"] = verify
     r = (session or requests).post(url, **kwargs)
-    r.raise_for_status()
+    if not r.ok:
+        # Surface the provider's own message (e.g. LMS load guardrails)
+        # instead of a bare status code with an internal URL.
+        try:
+            msg = ((r.json() or {}).get("error") or {}).get("message")
+        except ValueError:
+            msg = None
+        detail = (msg or r.text or "").strip()[:300]
+        raise RuntimeError(
+            f"provider rejected the request (HTTP {r.status_code})"
+            + (f": {detail}" if detail else ""))
     for raw in r.iter_lines(decode_unicode=True):
         if raw:
             yield raw

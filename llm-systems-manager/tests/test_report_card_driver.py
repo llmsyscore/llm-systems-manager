@@ -59,6 +59,30 @@ def test_bench_stream_requests_and_prefers_server_usage_counts():
     assert m["gen_tps"] == pytest.approx((3 - 1) / 0.1)
 
 
+def test_bench_stream_counts_reasoning_deltas_as_tokens():
+    # Reasoning models (LMS nemotron et al.) stream reasoning_content first;
+    # a short max_tokens can be ALL reasoning, which must not read as
+    # "provider streamed no tokens".
+    clock = {"t": 0.0}
+
+    def post(url, payload):
+        clock["t"] += 0.4
+        yield "data: " + json.dumps(
+            {"choices": [{"delta": {"role": "assistant",
+                                    "reasoning_content": "The"}}]})
+        clock["t"] += 0.1
+        yield "data: " + json.dumps(
+            {"choices": [{"delta": {"reasoning_content": " user"}}]})
+        clock["t"] += 0.1
+        yield "data: " + json.dumps({"choices": [{"delta": {"content": "Hi"}}]})
+        yield "data: [DONE]"
+
+    rep = rc.bench_stream("http://x/openai", "m", post, now=lambda: clock["t"])
+    assert rep["gen_tokens"] == 3
+    assert abs(rep["ttft_s"] - 0.4) < 1e-9
+    assert abs(rep["gen_duration_s"] - 0.2) < 1e-9
+
+
 def test_gen_tps_spans_the_n_minus_1_decode_intervals():
     # 4 tokens over 0.3s = 3 inter-token gaps -> 10 tok/s, not 13.3.
     m = rc.rep_metrics({"ttft_s": 0.5, "prompt_tokens": 512,
