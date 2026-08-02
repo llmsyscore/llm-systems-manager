@@ -436,6 +436,7 @@ def _model_matches(candidate: str, src: dict) -> bool:
     if fname and _norm(cand).endswith(_norm(fname)):
         return True
     # LM Studio virtual keys: "<stem>" or "<owner>_<model>@<quant>" (#489).
+    # A bare key carries no quant; LMS only adds @quant on multi-quant hosts.
     base, _, at_quant = cand.partition("@")
     if quant and at_quant and _norm(at_quant) != _norm(quant):
         return False
