@@ -118,6 +118,36 @@ def test_delete_refuses_a_loaded_model(lms, monkeypatch):
     assert out["ok"] is False and "loaded" in out["error"]
 
 
+def test_delete_matches_a_quantless_catalog_key_when_unambiguous(lms, monkeypatch):
+    d = lms._test_root / "bartowski" / "m"
+    d.mkdir(parents=True)
+    (d / "m-q4_k_m.gguf").write_bytes(b"q")
+    _catalog(monkeypatch, lms, [{"modelKey": "bartowski_m",
+                                 "path": "bartowski/m/m-q4_k_m.gguf"}])
+    out = lms.lms_delete_endpoint({"model": "bartowski_m@q4_k_m"})
+    assert out["ok"] is True
+
+
+def test_delete_rejects_an_ambiguous_base_key(lms, monkeypatch):
+    d = lms._test_root / "b" / "m"
+    d.mkdir(parents=True)
+    (d / "a.gguf").write_bytes(b"1")
+    (d / "b.gguf").write_bytes(b"2")
+    _catalog(monkeypatch, lms, [
+        {"modelKey": "m@q4_k_m", "path": "b/m/a.gguf"},
+        {"modelKey": "m@q8_0", "path": "b/m/b.gguf"}])
+    out = lms.lms_delete_endpoint({"model": "m"})
+    assert out["ok"] is False and "catalog" in out["error"]
+
+
+def test_delete_refuses_when_a_quant_sibling_is_loaded(lms, monkeypatch):
+    monkeypatch.setattr(lms, "lms_get_ps",
+                        lambda: [{"identifier": "m@q4_k_m", "model": "m@q4_k_m",
+                                  "status": "IDLE"}])
+    out = lms.lms_delete_endpoint({"model": "m"})
+    assert out["ok"] is False and "loaded" in out["error"]
+
+
 def test_delete_errors_when_model_not_in_catalog(lms, monkeypatch):
     _catalog(monkeypatch, lms, [{"modelKey": "other", "path": "o/o.gguf"}])
     out = lms.lms_delete_endpoint({"model": "qwen2.5-1.5b-instruct"})

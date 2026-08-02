@@ -389,9 +389,12 @@ def lms_delete_endpoint(body: dict, authorization: Optional[str] = Header(defaul
         raise HTTPException(status_code=400, detail="model required")
     if not _valid_model_id(model_id):
         raise HTTPException(status_code=400, detail="invalid model id")
+    base_key = model_id.partition("@")[0]
     for p in lms_get_ps():
-        if model_id in (p.get("identifier"), p.get("model")):
-            return {"ok": False, "error": f"{model_id} is loaded — unload it first"}
+        for pk in (p.get("identifier"), p.get("model")):
+            if pk and (model_id == pk or base_key == str(pk).partition("@")[0]):
+                return {"ok": False,
+                        "error": f"{model_id} is loaded — unload it first"}
     try:
         out = subprocess.check_output(
             [ctx.config.LMS_CMD, "ls", "--json"],
@@ -399,9 +402,15 @@ def lms_delete_endpoint(body: dict, authorization: Optional[str] = Header(defaul
         entries = json.loads(out.strip())
     except Exception as e:
         return {"ok": False, "error": f"lms ls failed: {e}"}
-    entry = next((e for e in entries if isinstance(e, dict)
-                  and e.get("modelKey") == model_id), None)
-    if not entry or not entry.get("path"):
+    entries = [e for e in entries if isinstance(e, dict) and e.get("path")]
+    entry = next((e for e in entries if e.get("modelKey") == model_id), None)
+    if not entry:
+        # The CLI catalog may key without the @quant suffix; accept a base
+        # match only when it is unambiguous.
+        base_hits = [e for e in entries
+                     if str(e.get("modelKey") or "").partition("@")[0] == base_key]
+        entry = base_hits[0] if len(base_hits) == 1 else None
+    if not entry:
         return {"ok": False, "error": f"{model_id} is not in the local catalog"}
     root = _lms_models_root().resolve()
     target = (root / entry["path"]).resolve()

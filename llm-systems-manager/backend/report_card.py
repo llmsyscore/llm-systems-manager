@@ -106,8 +106,8 @@ PROMPT_CORPUS = (
 
 
 def rep_metrics(rep: dict) -> dict:
-    """Add prefill_tps + gen_tps to one repetition's raw timings.
-    The first token lands inside ttft, so the decode window spans n-1 tokens."""
+    """Add prefill_tps + gen_tps to one repetition's raw timings;
+    gen_tps spans the n-1 decode gaps after the first token."""
     out = dict(rep)
     out["prefill_tps"] = (rep["prompt_tokens"] / rep["ttft_s"]
                           if rep.get("ttft_s") else 0.0)
@@ -218,8 +218,8 @@ def run_bench(base_url: str, model: str, http_post, now=_time.monotonic,
 
 def _openai_stream_post(url: str, payload: dict, headers=None, timeout=300,
                         verify=None, session=None):
-    """Production http_post: streamed POST yielding decoded SSE lines.
-    A shared session keeps TCP/TLS setup out of the measured TTFT."""
+    """Production http_post: streamed POST yielding decoded SSE lines;
+    reuses `session`'s pooled connection when one is passed."""
     import requests
     kwargs = {"json": payload, "headers": headers or {}, "stream": True,
               "timeout": timeout}

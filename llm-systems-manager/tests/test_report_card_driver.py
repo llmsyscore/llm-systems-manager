@@ -54,6 +54,9 @@ def test_bench_stream_requests_and_prefers_server_usage_counts():
     assert seen[0]["stream_options"] == {"include_usage": True}
     assert rep["prompt_tokens"] == 531
     assert rep["gen_tokens"] == 3          # usage, not the 2 chunks counted
+    # gen_tps pairs the usage count with the first->last flush window.
+    m = rc.rep_metrics(rep)
+    assert m["gen_tps"] == pytest.approx((3 - 1) / 0.1)
 
 
 def test_gen_tps_spans_the_n_minus_1_decode_intervals():
