@@ -355,13 +355,13 @@ def lms_download_endpoint(body: dict, authorization: Optional[str] = Header(defa
 
 def _lms_home() -> Path:
     ctx = _require_ctx()
-    home = os.path.expanduser("~")
     if ctx.config.AGENT_USER:
         try:
-            home = pwd.getpwnam(ctx.config.AGENT_USER).pw_dir
+            return Path(pwd.getpwnam(ctx.config.AGENT_USER).pw_dir)
         except KeyError:
-            pass
-    return Path(home)
+            log.debug("lms home: AGENT_USER %r not in passwd db",
+                      ctx.config.AGENT_USER)
+    return Path(os.path.expanduser("~"))
 
 
 def _lms_models_root() -> Path:
@@ -370,11 +370,9 @@ def _lms_models_root() -> Path:
     ptr = home / ".lmstudio" / ".internal" / "user-concrete-model-default-directory"
     try:
         text = ptr.read_text().strip()
-        if text:
-            return Path(text)
     except OSError:
-        pass
-    return home / ".lmstudio" / "models"
+        text = ""
+    return Path(text) if text else home / ".lmstudio" / "models"
 
 
 _LMS_SHARD_RE = re.compile(r"-\d{5}-of-\d{5}(?=\.gguf$)", re.IGNORECASE)
