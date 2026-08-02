@@ -68,6 +68,7 @@ SPEC = ProviderSpec(
     push_endpoint_legacy="/api/remote/lmstudio",
     default_picker="pool",
     pin_dict_key="lms_model_pins",
+    gateway_enabled=True,
     sub_tab_keys=("lmstudio",),
     aggregator=_fleet_aggregate,
 )

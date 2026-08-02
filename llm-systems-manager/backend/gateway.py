@@ -1,11 +1,13 @@
-"""OpenAI-compatible inference gateway (#214, vllm #125). Routes
-chat/completion requests to a healthy provider agent — pool-picker providers
-(llama, vllm): pin > ?agent= picker > pool RR > default; others: picker >
-default."""
+"""OpenAI-compatible inference gateway (#214, vllm #125, multi-pool #493).
+/v1/models merges every gateway provider's pool; /v1/chat|completions resolve
+the owning provider per model (pin > model index > llama), then route within
+it: pin > ?agent= picker > pool RR > default."""
 from __future__ import annotations
 
 import json
 import logging
+import threading
+import time
 
 import requests
 from flask import Response, jsonify, request as flask_request
@@ -116,13 +118,15 @@ def _dial_stream(agent: dict, path: str, body: dict):
     return None
 
 
-def _handle_completion(sub: str, provider: str = "llama") -> Response:
+def _handle_completion(sub: str, provider=None) -> Response:
     if not _gw_enabled():
         return _oai_error("gateway disabled", 503, "disabled")
     body = flask_request.get_json(silent=True)
     if not isinstance(body, dict):
         return _oai_error("invalid JSON body", 400, "invalid_request_error")
     model_id = body.get("model") or None
+    if provider is None:
+        provider = _provider_for_model(model_id)
     agent_id = flask_request.args.get("agent") or None
     wants_stream = bool(body.get("stream"))
     path = _AGENT_PATHS[provider][sub]
@@ -186,9 +190,8 @@ def _stream_from(agent: dict, path: str, body: dict, errors: list):
             stream_pool.POOL.release()
 
 
-def _gateway_models(provider: str = "llama") -> Response:
-    if not _gw_enabled():
-        return _oai_error("gateway disabled", 503, "disabled")
+def _fetch_provider_models(provider: str) -> list:
+    """Provider-tagged model entries merged from every candidate agent."""
     merged, seen = [], set()
     for agent in _candidates(None, None, provider):
         r, _tried, _err = agent_registry.agent_request(
@@ -205,7 +208,73 @@ def _gateway_models(provider: str = "llama") -> Response:
             mid = (m or {}).get("id")
             if mid and mid not in seen:
                 seen.add(mid)
+                merged.append({**m, "provider": provider})
+    return merged
+
+
+# model id -> owning provider, rebuilt from a full-pool fan-out (TTL below).
+_MODEL_INDEX_TTL_S = 30.0
+_model_index_lock = threading.Lock()
+_model_index: dict = {"ts": 0.0, "map": {}}
+
+
+def _store_model_index(mapping: dict) -> None:
+    with _model_index_lock:
+        _model_index["ts"] = time.time()
+        _model_index["map"] = mapping
+
+
+def _refresh_model_index() -> dict:
+    mapping = {}
+    for p in _GATEWAY_PROVIDERS:
+        for m in _fetch_provider_models(p):
+            mapping.setdefault(m["id"], p)
+    _store_model_index(mapping)
+    return mapping
+
+
+def _provider_for_model(model_id) -> str:
+    """Pin > cached/fresh model index > llama fallback (#493)."""
+    if not model_id:
+        return "llama"
+    for p in _GATEWAY_PROVIDERS:
+        spec = providers.get(p)
+        try:
+            if spec and spec.pin_dict_key and agent_registry.pinned_agent(p, model_id):
+                return p
+        except Exception:
+            log.debug("gateway: pin lookup failed for %s/%s", p, model_id)
+    with _model_index_lock:
+        fresh = (time.time() - _model_index["ts"]) < _MODEL_INDEX_TTL_S
+        mapping = _model_index["map"]
+        hit = mapping.get(model_id)
+    if hit:
+        return hit
+    if not fresh:
+        try:
+            mapping = _refresh_model_index()
+        except Exception as e:
+            log.warning("gateway: model index refresh failed: %s", e)
+            mapping = {}
+        hit = mapping.get(model_id)
+        if hit:
+            return hit
+    return "llama"
+
+
+def _gateway_models(provider=None) -> Response:
+    """One provider's models, or (provider=None) all pools merged."""
+    if not _gw_enabled():
+        return _oai_error("gateway disabled", 503, "disabled")
+    provs = (provider,) if provider else _GATEWAY_PROVIDERS
+    merged, seen = [], set()
+    for p in provs:
+        for m in _fetch_provider_models(p):
+            if m["id"] not in seen:
+                seen.add(m["id"])
                 merged.append(m)
+    if provider is None:
+        _store_model_index({m["id"]: m["provider"] for m in merged})
     return jsonify({"object": "list", "data": merged})
 
 
@@ -224,14 +293,15 @@ def register_routes(app, ctx) -> None:
     def gateway_models():
         return _gateway_models()
 
-    @app.route("/api/gateway/vllm/v1/chat/completions", methods=["POST"])
-    def gateway_vllm_chat_completions():
-        return _handle_completion("chat/completions", provider="vllm")
+    def _completion_handler(sub, p):
+        def handler():
+            return _handle_completion(sub, provider=p)
+        return handler
 
-    @app.route("/api/gateway/vllm/v1/completions", methods=["POST"])
-    def gateway_vllm_completions():
-        return _handle_completion("completions", provider="vllm")
-
-    @app.route("/api/gateway/vllm/v1/models", methods=["GET"])
-    def gateway_vllm_models():
-        return _gateway_models(provider="vllm")
+    for p in _GATEWAY_PROVIDERS:
+        for sub in _GATEWAY_SUBS:
+            app.add_url_rule(f"/api/gateway/{p}/v1/{sub}",
+                             f"gateway_{p}_{sub.replace('/', '_')}",
+                             _completion_handler(sub, p), methods=["POST"])
+        app.add_url_rule(f"/api/gateway/{p}/v1/models", f"gateway_{p}_models",
+                         lambda p=p: _gateway_models(provider=p), methods=["GET"])
