@@ -236,7 +236,7 @@ def _openai_stream_post(url: str, payload: dict, headers=None, timeout=300,
             msg = ((r.json() or {}).get("error") or {}).get("message")
         except ValueError:
             msg = None
-        detail = (msg or r.text or "").strip()[:300]
+        detail = (msg or r.text or "").strip()[:500]
         raise RuntimeError(
             f"provider rejected the request (HTTP {r.status_code})"
             + (f": {detail}" if detail else ""))
@@ -912,7 +912,7 @@ def _run_job(job_id: str, req: dict) -> None:
         q.put({"event": "cancelled"})
     except Exception as e:
         log.warning("report card run failed: %s", e)
-        q.put({"event": "error", "error": str(e)[:200]})
+        q.put({"event": "error", "error": str(e)[:600]})
     finally:
         job["done"] = True
 

@@ -275,3 +275,22 @@ def test_prod_deps_handles_an_empty_model_list(monkeypatch):
     deps = rc.prod_deps(AGENT)
     assert deps["loaded_models"]("llama", "x") == []
     assert deps["vllm_current"]("x") is None
+
+
+def test_stream_post_keeps_the_full_guardrail_message(monkeypatch):
+    # The LMS insufficient-memory guardrail message is ~380 chars; the cap
+    # must not cut it mid-sentence.
+    long_msg = ("Failed to load model \"google/gemma-4-e4b\". Error: Model "
+                "loading was stopped due to insufficient system resources. "
+                "Under the current settings, this model requires approximately "
+                "15.92 GB of memory, and continuing to load it would likely "
+                "overload your system and cause it to freeze. If you think "
+                "this is incorrect, you can adjust the model loading "
+                "guardrails in settings.")
+    body = {"error": {"message": long_msg}}
+    _fake_requests(monkeypatch,
+                   post=lambda url, **kw: _Resp(ok=False, status=400,
+                                                payload=body))
+    with pytest.raises(RuntimeError) as ei:
+        list(rc._openai_stream_post("http://x", {}))
+    assert long_msg in str(ei.value)
