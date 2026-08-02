@@ -215,4 +215,22 @@ describe('post-run cleanup offer (#492)', () => {
       agent: 'a'.repeat(32), provider: 'llama', model_key: 'small' });
     expect(document.getElementById('rcCleanup').style.display).toBe('none');
   });
+
+  it('delete targets the run host even after the picker changes', async () => {
+    const { api, sources } = loadModule({
+      runResponse: { ok: true, job_id: 'j1' } });
+    api.rcRun();
+    await tick(); await tick();
+    sources[0].onmessage(done({ downloaded: true, deletable: true,
+                                model_key: 'small' }));
+    const sel = document.getElementById('rcAgent');
+    const other = document.createElement('option');
+    other.value = 'b'.repeat(32);
+    sel.appendChild(other);
+    sel.value = 'b'.repeat(32);
+    api.rcCleanupDelete();
+    await tick();
+    const call = fetch.mock.calls.find(c => c[0] === '/api/reportcard/delete-model');
+    expect(JSON.parse(call[1].body).agent).toBe('a'.repeat(32));
+  });
 });

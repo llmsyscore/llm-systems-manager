@@ -9,6 +9,7 @@ let _rcPreset    = null;
 let _rcJobId     = null;
 let _rcTick      = null;
 let _rcCleanup   = null;
+let _rcRunTarget = null;
 
 function _rcEl(id) { return document.getElementById(id); }
 
@@ -58,8 +59,7 @@ function _rcStatus(text, elapsed) {
   el.textContent = text ? text + secs : '';
 }
 
-// Keeps the elapsed counter ticking between SSE events (#491): long phases
-// like the model wait emit nothing, so a 1s timer extrapolates locally.
+// Ticks the elapsed counter locally between SSE progress events (#491).
 function _rcTickSet(text, elapsed) {
   const timer = _rcTick?.timer || setInterval(() => {
     if (!_rcTick) return;
@@ -157,6 +157,7 @@ function rcRun(confirm) {
       _rcBusy(false); rcShowDownloadConfirm(d); return;
     }
     _rcJobId = d.job_id;
+    _rcRunTarget = {agent, provider};
     _rcTickSet('Starting…', 0);
     _rcLog('run started');
     rcStream(d.job_id);
@@ -289,7 +290,9 @@ function rcShowCleanup(c) {
   if (!c || !c.downloaded) return;
   const wrap = _rcEl('rcCleanup');
   if (!wrap) return;
-  _rcCleanup = c;
+  // Pin the run's own host/provider so a later picker change can't
+  // redirect the delete to another agent.
+  _rcCleanup = {...c, ...(_rcRunTarget || {})};
   const msg = _rcEl('rcCleanupMsg');
   if (msg) {
     msg.textContent = c.deletable
@@ -314,8 +317,8 @@ function rcCleanupDelete() {
   const c = _rcCleanup;
   rcCleanupKeep();
   if (!c) return;
-  const agent = _rcEl('rcAgent')?.value || '';
-  const provider = _rcEl('rcProvider')?.value || 'llama';
+  const agent = c.agent || _rcEl('rcAgent')?.value || '';
+  const provider = c.provider || _rcEl('rcProvider')?.value || 'llama';
   _rcNote('Deleting the reference model…');
   fetch('/api/reportcard/delete-model', {
     method: 'POST', headers: {'Content-Type': 'application/json'},
