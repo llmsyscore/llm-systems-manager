@@ -299,8 +299,7 @@ function rcShowCleanup(c) {
       ? 'The reference model downloaded for this run was unloaded after the '
         + 'bench. Delete it from the host to free the disk space?'
       : 'The reference model downloaded for this run was unloaded after the '
-        + 'bench. It stays on disk — remove it in LM Studio if you don\'t '
-        + 'want to keep it.';
+        + 'bench. It stays on disk on this host.';
   }
   const del = _rcEl('rcCleanupDeleteBtn');
   if (del) del.style.display = c.deletable ? '' : 'none';

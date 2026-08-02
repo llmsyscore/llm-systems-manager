@@ -64,7 +64,7 @@ except ImportError:
             os.chmod(tmp, mode)
         tmp.replace(p)
 
-VERSION = "v2026.07.31-1"
+VERSION = "v2026.08.02-1"
 
 
 def _restore_bundle_env() -> None:
@@ -2572,7 +2572,7 @@ def _public_endpoint_map() -> dict[str, list[str]]:
             "/lms/server/status", "/lms/server/start", "/lms/server/stop",
             "/lms/server/restart", "/lms/server/log",
             "/lms/models", "/lms/ps",
-            "/lms/load", "/lms/unload", "/lms/download",
+            "/lms/load", "/lms/unload", "/lms/download", "/lms/delete",
         ],
         "llama": [
             "/llama/state",

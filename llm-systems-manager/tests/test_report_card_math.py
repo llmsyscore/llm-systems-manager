@@ -7,10 +7,11 @@ import report_card as rc
 
 
 def test_rep_metrics_computes_throughputs():
+    # The first token lands inside ttft, so 128 tokens span 127 decode gaps.
     m = rc.rep_metrics({"ttft_s": 0.5, "prompt_tokens": 512,
                         "gen_tokens": 128, "gen_duration_s": 4.0})
     assert m["prefill_tps"] == pytest.approx(1024.0)
-    assert m["gen_tps"] == pytest.approx(32.0)
+    assert m["gen_tps"] == pytest.approx(127 / 4.0)
 
 
 def test_rep_metrics_zero_durations_do_not_divide_by_zero():
@@ -24,7 +25,7 @@ def test_run_metrics_takes_medians():
              "gen_duration_s": d} for t, d in ((0.4, 4.0), (0.5, 2.0), (0.9, 8.0))]
     m = rc.run_metrics(reps)
     assert m["ttft_s"] == pytest.approx(0.5)
-    assert m["gen_tps"] == pytest.approx(32.0)  # medians of 32, 64, 16
+    assert m["gen_tps"] == pytest.approx(127 / 4.0)  # median of 31.75/63.5/15.875
 
 
 def test_energy_metrics_happy_path():

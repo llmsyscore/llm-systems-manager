@@ -428,7 +428,7 @@ def test_done_event_offers_deletion_after_a_provisioned_download(client, monkeyp
                                            "model_key": "small"}
 
 
-def test_lms_download_is_flagged_but_not_deletable(client, monkeypatch):
+def test_lms_download_is_deletable_too(client, monkeypatch):
     src = rc.preset_source("small", "lms")
     monkeypatch.setattr(rc, "ensure_ready",
                         lambda *a, **k: {"status": "needs_download",
@@ -444,7 +444,7 @@ def test_lms_download_is_flagged_but_not_deletable(client, monkeypatch):
     events = _drain(client, r.get_json()["job_id"])
     done = [e for e in events if e.get("event") == "done"]
     assert done and done[0]["cleanup"] == {"downloaded": True,
-                                           "deletable": False,
+                                           "deletable": True,
                                            "model_key": "small"}
 
 
@@ -474,10 +474,36 @@ def test_delete_model_calls_the_agent_with_cache_purge(client, monkeypatch):
     assert rc.preset_source("small", "llama")["model_id"] in path
 
 
-def test_delete_model_rejects_non_llama_providers(client):
+def test_delete_model_rejects_vllm(client):
+    r = client.post("/api/reportcard/delete-model", json={
+        "agent": "a" * 32, "provider": "vllm", "model_key": "small"})
+    assert r.status_code == 400
+
+
+def test_delete_model_resolves_the_lms_virtual_key(client, monkeypatch):
+    seen = []
+
+    def fake(agent, method, path, timeout=15, **kw):
+        seen.append((method, path, kw.get("json")))
+        if path == "/lms/models":
+            return {"data": [{"id": "google/gemma-3-1b"},
+                             {"id": "qwen2.5-1.5b-instruct"}]}
+        return {"ok": True, "deleted_files": ["qwen2.5-1.5b-instruct-q4_k_m.gguf"],
+                "freed_bytes": 1}
+    monkeypatch.setattr(rc, "_agent_json", fake)
     r = client.post("/api/reportcard/delete-model", json={
         "agent": "a" * 32, "provider": "lms", "model_key": "small"})
-    assert r.status_code == 400
+    assert r.status_code == 200 and r.get_json()["ok"] is True
+    assert ("POST", "/lms/delete", {"model": "qwen2.5-1.5b-instruct"}) in seen
+
+
+def test_delete_model_lms_404s_when_the_key_is_absent(client, monkeypatch):
+    monkeypatch.setattr(rc, "_agent_json",
+                        lambda agent, method, path, timeout=15, **kw:
+                            {"data": [{"id": "google/gemma-3-1b"}]})
+    r = client.post("/api/reportcard/delete-model", json={
+        "agent": "a" * 32, "provider": "lms", "model_key": "small"})
+    assert r.status_code == 404
 
 
 def test_delete_model_rejects_unknown_model_key(client):

@@ -39,8 +39,10 @@ def test_preset_source_unknown_returns_none():
 def test_corpus_is_roughly_512_tokens():
     # ~4 chars/token heuristic; corpus must be stable, not "roughly" per run.
     assert 1600 <= len(rc.PROMPT_CORPUS) <= 2600
-    assert rc.PRESET_VERSION == "preset_v1"
-    assert rc.GEN_TOKENS == 128 and rc.REPS == 3
+    # preset_v2 (#489 PR): reps 3 -> 10, usage-based token counts, n-1 decode
+    # window, pooled connection.
+    assert rc.PRESET_VERSION == "preset_v2"
+    assert rc.GEN_TOKENS == 128 and rc.REPS == 10
 
 
 def test_gguf_providers_pin_a_repo_colon_quant_model_id():

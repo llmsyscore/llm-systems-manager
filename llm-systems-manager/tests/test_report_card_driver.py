@@ -34,6 +34,41 @@ def test_bench_stream_times_ttft_and_generation():
     assert rep["prompt_tokens"] == len(rc.PROMPT_CORPUS) // 4
 
 
+def test_bench_stream_requests_and_prefers_server_usage_counts():
+    # preset_v2: exact server-side token counts beat chunk/char estimates.
+    clock = {"t": 0.0}
+    seen = []
+
+    def post(url, payload):
+        seen.append(payload)
+        clock["t"] += 0.5
+        yield "data: " + json.dumps({"choices": [{"delta": {"content": "a"}}]})
+        clock["t"] += 0.1
+        yield "data: " + json.dumps({"choices": [{"delta": {"content": "bc"}}]})
+        yield "data: " + json.dumps(
+            {"choices": [], "usage": {"prompt_tokens": 531,
+                                      "completion_tokens": 3}})
+        yield "data: [DONE]"
+
+    rep = rc.bench_stream("http://x/openai", "m", post, now=lambda: clock["t"])
+    assert seen[0]["stream_options"] == {"include_usage": True}
+    assert rep["prompt_tokens"] == 531
+    assert rep["gen_tokens"] == 3          # usage, not the 2 chunks counted
+
+
+def test_gen_tps_spans_the_n_minus_1_decode_intervals():
+    # 4 tokens over 0.3s = 3 inter-token gaps -> 10 tok/s, not 13.3.
+    m = rc.rep_metrics({"ttft_s": 0.5, "prompt_tokens": 512,
+                        "gen_tokens": 4, "gen_duration_s": 0.3})
+    assert abs(m["gen_tps"] - 10.0) < 1e-9
+
+
+def test_a_single_token_rep_reports_zero_gen_tps():
+    m = rc.rep_metrics({"ttft_s": 0.5, "prompt_tokens": 512,
+                        "gen_tokens": 1, "gen_duration_s": 0.0})
+    assert m["gen_tps"] == 0.0
+
+
 def test_bench_stream_posts_to_chat_completions():
     clock = {"t": 0.0}
     seen = []

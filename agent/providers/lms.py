@@ -353,6 +353,88 @@ def lms_download_endpoint(body: dict, authorization: Optional[str] = Header(defa
         return {"ok": False, "error": str(e)}
 
 
+def _lms_home() -> Path:
+    ctx = _require_ctx()
+    home = os.path.expanduser("~")
+    if ctx.config.AGENT_USER:
+        try:
+            home = pwd.getpwnam(ctx.config.AGENT_USER).pw_dir
+        except KeyError:
+            pass
+    return Path(home)
+
+
+def _lms_models_root() -> Path:
+    """LM Studio's models dir: the .internal pointer file, else the default."""
+    home = _lms_home()
+    ptr = home / ".lmstudio" / ".internal" / "user-concrete-model-default-directory"
+    try:
+        text = ptr.read_text().strip()
+        if text:
+            return Path(text)
+    except OSError:
+        pass
+    return home / ".lmstudio" / "models"
+
+
+_LMS_SHARD_RE = re.compile(r"-\d{5}-of-\d{5}(?=\.gguf$)", re.IGNORECASE)
+
+
+def lms_delete_endpoint(body: dict, authorization: Optional[str] = Header(default=None)) -> dict[str, Any]:
+    """Delete a downloaded model's files; LMS has no CLI/REST delete (#492)."""
+    ctx = _require_ctx()
+    ctx.check_bearer(authorization); _lms_check_enabled()
+    model_id = body.get("model")
+    if not model_id:
+        raise HTTPException(status_code=400, detail="model required")
+    if not _valid_model_id(model_id):
+        raise HTTPException(status_code=400, detail="invalid model id")
+    for p in lms_get_ps():
+        if model_id in (p.get("identifier"), p.get("model")):
+            return {"ok": False, "error": f"{model_id} is loaded — unload it first"}
+    try:
+        out = subprocess.check_output(
+            [ctx.config.LMS_CMD, "ls", "--json"],
+            text=True, timeout=_LMS_CLI_TIMEOUT_S, stderr=subprocess.DEVNULL)
+        entries = json.loads(out.strip())
+    except Exception as e:
+        return {"ok": False, "error": f"lms ls failed: {e}"}
+    entry = next((e for e in entries if isinstance(e, dict)
+                  and e.get("modelKey") == model_id), None)
+    if not entry or not entry.get("path"):
+        return {"ok": False, "error": f"{model_id} is not in the local catalog"}
+    root = _lms_models_root().resolve()
+    target = (root / entry["path"]).resolve()
+    if root not in target.parents:
+        return {"ok": False, "error": "resolved path escapes the models dir"}
+    if not target.is_file():
+        return {"ok": False, "error": f"model file not found: {entry['path']}"}
+    # Sharded GGUFs list shard 1; delete every sibling shard of the same stem.
+    victims = [target]
+    if _LMS_SHARD_RE.search(target.name):
+        stem = _LMS_SHARD_RE.sub("", target.name)[:-5]
+        victims = sorted(p for p in target.parent.iterdir()
+                         if p.is_file() and _LMS_SHARD_RE.search(p.name)
+                         and _LMS_SHARD_RE.sub("", p.name)[:-5] == stem)
+    deleted, freed = [], 0
+    try:
+        for v in victims:
+            freed += v.stat().st_size
+            v.unlink()
+            deleted.append(v.name)
+        # Prune now-empty model/publisher dirs, never past the models root.
+        d = target.parent
+        while d != root and d.is_dir() and not any(d.iterdir()):
+            d.rmdir()
+            d = d.parent
+    except OSError as e:
+        return {"ok": False, "error": f"delete failed: {e}",
+                "deleted_files": deleted}
+    log.info("lms delete %s: removed %d file(s), %d bytes",
+             model_id, len(deleted), freed)
+    return {"ok": True, "deleted_files": deleted, "freed_bytes": freed}
+
+
 def lms_unload_endpoint(body: dict, authorization: Optional[str] = Header(default=None)) -> dict[str, Any]:
     ctx = _require_ctx()
     ctx.check_bearer(authorization); _lms_check_enabled()
@@ -395,6 +477,7 @@ _ROUTES: tuple = (
     ("POST", "/lms/load",           lms_load_endpoint),
     ("POST", "/lms/download",       lms_download_endpoint),
     ("POST", "/lms/unload",         lms_unload_endpoint),
+    ("POST", "/lms/delete",         lms_delete_endpoint),
 )
 
 
