@@ -519,3 +519,28 @@ def test_delete_model_surfaces_agent_failure(client, monkeypatch):
         "agent": "a" * 32, "provider": "llama", "model_key": "small"})
     assert r.status_code == 502
     assert "Permission denied" in r.get_json()["error"]
+
+
+# ── custom-mode model picker (#490 follow-up) ────────────────────────
+
+def test_models_endpoint_lists_the_hosts_provider_models(client, monkeypatch):
+    monkeypatch.setattr(rc, "_agent_json",
+                        lambda agent, method, path, timeout=15, **kw:
+                            {"data": [{"id": "m1"}, {"id": "m2"}]}
+                            if path == "/llama/models" else None)
+    r = client.get("/api/reportcard/models?agent=" + "a" * 32
+                   + "&provider=llama")
+    assert r.status_code == 200
+    assert r.get_json() == {"ok": True, "models": ["m1", "m2"]}
+
+
+def test_models_endpoint_requires_agent_and_known_provider(client):
+    assert client.get("/api/reportcard/models?provider=llama").status_code == 400
+    assert client.get("/api/reportcard/models?agent=x&provider=nope").status_code == 400
+
+
+def test_models_endpoint_empty_when_agent_unreachable(client, monkeypatch):
+    monkeypatch.setattr(rc, "_agent_json", lambda *a, **k: None)
+    r = client.get("/api/reportcard/models?agent=" + "a" * 32
+                   + "&provider=lms")
+    assert r.status_code == 200 and r.get_json()["models"] == []

@@ -19,7 +19,8 @@ function mountDom() {
       <option value="custom">Custom</option></select>
     <div id="rcModelKeyField"><select id="rcModelKey">
       <option value="small" selected>small</option></select></div>
-    <div id="rcCustomModelField"><input id="rcCustomModel"></div>
+    <div id="rcCustomModelField"><input id="rcCustomModel" list="rcModelOptions">
+      <datalist id="rcModelOptions"></datalist></div>
     <input id="rcPrice" value="0.15">
     <button id="rcRunBtn">▶ Run report card</button>
     <button id="rcCancelBtn" style="display:none;">✕ Cancel</button>
@@ -54,7 +55,8 @@ function loadModule({ runResponse }) {
   })));
   // Execute the classic script with a return of the handles the test drives.
   const fn = new Function(code + `
-    ;return { rcRun, rcStream, rcStopStream, rcCancelRun, rcCleanupDelete };`);
+    ;return { rcRun, rcStream, rcStopStream, rcCancelRun, rcCleanupDelete,
+              rcOnModeChange, rcOnAgentChange };`);
   return { api: fn(), sources };
 }
 
@@ -232,5 +234,50 @@ describe('post-run cleanup offer (#492)', () => {
     await tick();
     const call = fetch.mock.calls.find(c => c[0] === '/api/reportcard/delete-model');
     expect(JSON.parse(call[1].body).agent).toBe('a'.repeat(32));
+  });
+});
+
+describe('custom-mode model datalist', () => {
+  const withModels = (models) => vi.fn(async (url) => ({
+    ok: true,
+    json: async () => String(url).startsWith('/api/reportcard/models')
+      ? { ok: true, models }
+      : { ok: true },
+  }));
+
+  it('entering custom mode populates the datalist from the host', async () => {
+    const { api } = loadModule({ runResponse: { ok: true } });
+    vi.stubGlobal('fetch', withModels(['m1', 'owner/m2']));
+    document.getElementById('rcMode').value = 'custom';
+    api.rcOnModeChange();
+    await tick(); await tick();
+    const opts = [...document.querySelectorAll('#rcModelOptions option')]
+      .map(o => o.value);
+    expect(opts).toEqual(['m1', 'owner/m2']);
+  });
+
+  it('switching hosts in custom mode refreshes the options', async () => {
+    const { api } = loadModule({ runResponse: { ok: true } });
+    document.getElementById('rcMode').value = 'custom';
+    vi.stubGlobal('fetch', withModels(['first']));
+    api.rcOnModeChange();
+    await tick(); await tick();
+    vi.stubGlobal('fetch', withModels(['second']));
+    api.rcOnAgentChange();
+    await tick(); await tick();
+    const opts = [...document.querySelectorAll('#rcModelOptions option')]
+      .map(o => o.value);
+    expect(opts).toEqual(['second']);
+  });
+
+  it('standard mode does not fetch model options on host change', async () => {
+    const { api } = loadModule({ runResponse: { ok: true } });
+    const f = withModels(['x']);
+    vi.stubGlobal('fetch', f);
+    api.rcOnAgentChange();
+    await tick();
+    const urls = f.mock.calls.map(c => c[0]);
+    expect(urls.some(u => String(u).startsWith('/api/reportcard/models')))
+      .toBe(false);
   });
 });

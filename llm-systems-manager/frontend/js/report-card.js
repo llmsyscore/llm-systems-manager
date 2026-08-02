@@ -95,6 +95,7 @@ function rcLoadAgents() {
       sel.appendChild(o);
     }
     rcLoadLatest();
+    rcRefreshModelOptions();
   }).catch(() => {});
 }
 
@@ -121,9 +122,28 @@ function rcOnModeChange() {
   const cf = _rcEl('rcCustomModelField');
   if (kf) kf.style.display = custom ? 'none' : '';
   if (cf) cf.style.display = custom ? '' : 'none';
+  if (custom) rcLoadModelOptions();
   _rcNote(custom
     ? 'Custom runs are for your own tracking — they are not comparable to leaderboard cards.'
     : '');
+}
+
+// Fills the custom-model datalist with the selected host's available models.
+function rcLoadModelOptions() {
+  const list = _rcEl('rcModelOptions');
+  const agent = _rcEl('rcAgent')?.value || '';
+  const provider = _rcEl('rcProvider')?.value || 'llama';
+  if (!list || !agent) return;
+  fetch(`/api/reportcard/models?agent=${encodeURIComponent(agent)}`
+        + `&provider=${encodeURIComponent(provider)}`)
+    .then(r => r.json()).then(d => {
+      list.replaceChildren();
+      (d.models || []).forEach(id => {
+        const o = document.createElement('option');
+        o.value = id;
+        list.appendChild(o);
+      });
+    }).catch(() => {});
 }
 
 function rcRun(confirm) {
@@ -434,6 +454,16 @@ function rcDrawTrends(series) {
 
 function rcOnProviderChange() {
   rcLoadAgents();
+}
+
+function rcOnAgentChange() {
+  rcLoadLatest();
+  rcRefreshModelOptions();
+}
+
+// Options track the pickers only while the custom field is on screen.
+function rcRefreshModelOptions() {
+  if (_rcEl('rcMode')?.value === 'custom') rcLoadModelOptions();
 }
 
 function initReportCard() {

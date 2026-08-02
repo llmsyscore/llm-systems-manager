@@ -1014,6 +1014,19 @@ def register_routes(app, ctx=None, db_path: "str | None" = None) -> None:
                           name=f"reportcard-{job_id[:8]}", daemon=True).start()
         return jsonify({"ok": True, "job_id": job_id})
 
+    @app.route("/api/reportcard/models")
+    def reportcard_models():
+        agent_id = flask_request.args.get("agent") or ""
+        provider = flask_request.args.get("provider") or ""
+        if not agent_id or provider not in PROVIDERS:
+            return jsonify({"ok": False,
+                            "error": "agent and provider required"}), 400
+        agent = _agent_for(agent_id)
+        if not agent:
+            return jsonify({"ok": False, "error": "agent not found"}), 404
+        ids = _model_ids(_agent_json(agent, "GET", f"/{provider}/models"))
+        return jsonify({"ok": True, "models": ids})
+
     @app.route("/api/reportcard/delete-model", methods=["POST"])
     def reportcard_delete_model():
         body = flask_request.get_json(silent=True) or {}
