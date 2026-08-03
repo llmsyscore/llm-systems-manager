@@ -97,7 +97,7 @@ def test_placed_at_survives_within_cooldown_grace_window():
 def test_placed_at_pruned_after_grace_window_on_live_agent():
     r, _, _ = _mk(auto=False)
     r.ledger["placed_at"]["m1/llama"] = {A1: 1000.0}
-    r.tick(now=1000.0 + pl.COOLDOWN_S + 1)
+    r.tick(now=1000.0 + pl.PLACEMENT_FRESH_S + 1)
     assert A1 not in r.ledger["placed_at"].get("m1/llama", {})
 
 def test_placed_at_not_pruned_for_dead_agent():

@@ -58,8 +58,8 @@ def _label(agent: dict) -> str:
 
 
 def _candidates(model_id, agent_id, provider="llama") -> list:
-    """Ordered failover list: resolved primary first, then remaining live
-    pool members (llama only) + default, deduped by agent_id."""
+    """Ordered failover list: pin/picker primary first, then live agents
+    serving model_id per the index, then other live, then non-live."""
     ordered, seen = [], set()
 
     def _add(agent):
@@ -89,15 +89,39 @@ def _candidates(model_id, agent_id, provider="llama") -> list:
     did = agent_registry.default_agent_id_for(provider)
     if did:
         ids.append(did)
+    cap = spec.capability_key if spec else provider
     for aid in ids:
-        agent = agent_registry.resolve_agent_by_id(aid, capability=provider)
+        agent = agent_registry.resolve_agent_by_id(aid, capability=cap)
         _add(agent)
     # Order live backends first, non-live after as failover — so a stale/down
     # agent (incl. an explicit ?agent= pick) never jumps ahead but stays reachable.
     live, rest = [], []
     for a in ordered:
         (live if agent_registry.agent_liveness(a) == "live" else rest).append(a)
+    if model_id:
+        srv = _serving_agent_ids(provider, model_id)
+        if srv:
+            # A pin or explicit ?agent= primary keeps first place; only the
+            # RR/default remainder is reordered by the serving index.
+            explicit = _explicit_primary_id(primary, agent_id, provider, model_id)
+            live.sort(key=lambda a: (a.get("agent_id") != explicit,
+                                     a.get("agent_id") not in srv))
     return live + rest
+
+
+def _explicit_primary_id(primary, agent_id, provider, model_id) -> "str | None":
+    """agent_id of the resolved primary when it came from a model pin or an
+    explicit ?agent= pick; None for RR/default picks."""
+    pid = (primary or {}).get("agent_id")
+    if not pid:
+        return None
+    if agent_id and pid == agent_id:
+        return pid
+    try:
+        pinned = agent_registry.pinned_agent(provider, model_id)
+    except Exception:
+        return None
+    return pid if (pinned and pinned.get("agent_id") == pid) else None
 
 
 def _forward_json(agent: dict, path: str, body: dict):
@@ -218,8 +242,18 @@ def _stream_from(agent: dict, path: str, body: dict, errors: list,
             stream_pool.POOL.release()
 
 
-def _fetch_provider_models(provider: str) -> list:
-    """Provider-tagged model entries merged from every candidate agent."""
+def _entry_resident(m) -> bool:
+    """False for llama-router catalog entries whose status marks the model
+    not resident on that host; entries without a status dict count."""
+    st = (m or {}).get("status")
+    if isinstance(st, dict):
+        return st.get("value") in ("loaded", "loading", "sleeping")
+    return True
+
+
+def _fetch_provider_models(provider: str, serving: "dict | None" = None) -> list:
+    """Provider-tagged model entries merged from every candidate agent.
+    When given, serving accumulates model_id -> [agent_ids] as it goes."""
     merged, seen = [], set()
     for agent in _candidates(None, None, provider):
         r, _tried, _err = agent_registry.agent_request(
@@ -234,23 +268,37 @@ def _fetch_provider_models(provider: str) -> list:
             continue
         for m in data:
             mid = (m or {}).get("id")
-            if mid and mid not in seen:
+            if not mid:
+                continue
+            if serving is not None and _entry_resident(m):
+                serving.setdefault(f"{provider}:{mid}", []).append(
+                    agent.get("agent_id"))
+            if mid not in seen:
                 seen.add(mid)
                 merged.append({**m, "provider": provider})
     return merged
 
 
-# model id -> owning provider, rebuilt from a full-pool fan-out (TTL below).
+# model id -> owning provider (+ serving agent ids), rebuilt from a
+# full-pool fan-out (TTL below).
 _MODEL_INDEX_TTL_S = 30.0
 _model_index_lock = threading.Lock()
-_model_index: dict = {"ts": 0.0, "map": {}}
+_model_index: dict = {"ts": 0.0, "map": {}, "serving": {}, "refreshing": False}
 _refresh_lock = threading.Lock()
 
 
-def _store_model_index(mapping: dict) -> None:
+def _store_model_index(mapping: dict, serving: "dict | None" = None) -> None:
     with _model_index_lock:
         _model_index["ts"] = time.time()
         _model_index["map"] = mapping
+        if serving is not None:
+            _model_index["serving"] = serving
+
+
+def _serving_agent_ids(provider, model_id) -> set:
+    with _model_index_lock:
+        return set((_model_index["serving"] or {})
+                   .get(f"{provider}:{model_id}") or ())
 
 
 def _refresh_model_index() -> dict:
@@ -259,19 +307,40 @@ def _refresh_model_index() -> dict:
         with _model_index_lock:
             if (time.time() - _model_index["ts"]) < _MODEL_INDEX_TTL_S:
                 return dict(_model_index["map"])
-        mapping = {}
+        mapping: dict = {}
+        serving: dict = {}
         for p in _GATEWAY_PROVIDERS:
-            for m in _fetch_provider_models(p):
+            for m in _fetch_provider_models(p, serving=serving):
                 owner = mapping.setdefault(m["id"], p)
                 if owner != p:
                     log.debug("gateway: model id %s on %s shadowed by %s",
                               m["id"], p, owner)
-        _store_model_index(mapping)
+        _store_model_index(mapping, serving)
         return mapping
 
 
+def _refresh_model_index_async() -> None:
+    """Kick a background index refresh; no-op when one is already running."""
+    with _model_index_lock:
+        if _model_index["refreshing"]:
+            return
+        _model_index["refreshing"] = True
+
+    def _run():
+        try:
+            _refresh_model_index()
+        except Exception as e:
+            log.debug("gateway: async model index refresh failed: %s", e)
+        finally:
+            with _model_index_lock:
+                _model_index["refreshing"] = False
+
+    threading.Thread(target=_run, name="gw-model-index", daemon=True).start()
+
+
 def _provider_for_model(model_id) -> str:
-    """Pin > cached/fresh model index > llama fallback (#493)."""
+    """Pin > cached/fresh model index > llama fallback (#493). A stale cache
+    hit is served as-is with a background refresh kicked off."""
     if not model_id:
         return "llama"
     for p in _GATEWAY_PROVIDERS:
@@ -286,6 +355,8 @@ def _provider_for_model(model_id) -> str:
         mapping = _model_index["map"]
         hit = mapping.get(model_id)
     if hit:
+        if not fresh:
+            _refresh_model_index_async()
         return hit
     if not fresh:
         try:
@@ -305,13 +376,14 @@ def _gateway_models(provider=None) -> Response:
         return _oai_error("gateway disabled", 503, "disabled")
     provs = (provider,) if provider else _GATEWAY_PROVIDERS
     merged, seen = [], set()
+    serving: dict = {}
     for p in provs:
-        for m in _fetch_provider_models(p):
+        for m in _fetch_provider_models(p, serving=serving):
             if m["id"] not in seen:
                 seen.add(m["id"])
                 merged.append(m)
     if provider is None:
-        _store_model_index({m["id"]: m["provider"] for m in merged})
+        _store_model_index({m["id"]: m["provider"] for m in merged}, serving)
     return jsonify({"object": "list", "data": merged})
 
 

@@ -148,22 +148,11 @@ def test_wake_ordered_before_load_on_sleeping_host():
     assert [a.kind for a in acts] == ["wake", "load"]
     assert acts[0].agent_id == acts[1].agent_id == A2
 
-def test_idle_host_gets_sleep_proposal():
+def test_hosts_sleep_config_never_plans_sleep():
+    # hosts sleep config plans nothing.
     des = _desired([]); des["hosts"] = {A1: {"sleep_after_idle_min": 30}}
     obs = _obs(_agents(**{A1: {"idle_since": 1000.0}}))
-    acts = pl.plan(des, obs, _ledger(), now=1000.0 + 31 * 60)
-    assert [a.kind for a in acts] == ["sleep"] and acts[0].agent_id == A1
-
-def test_idle_below_threshold_no_sleep():
-    des = _desired([]); des["hosts"] = {A1: {"sleep_after_idle_min": 30}}
-    obs = _obs(_agents(**{A1: {"idle_since": 1000.0}}))
-    assert pl.plan(des, obs, _ledger(), now=1000.0 + 29 * 60) == []
-
-def test_sleep_never_planned_for_lms_host():
-    des = _desired([]); des["hosts"] = {A1: {"sleep_after_idle_min": 30}}
-    ag = _agents(**{A1: {"provider_caps": ["lms"], "idle_since": 1000.0}})
-    assert pl.plan(des, {"agents": ag, "model_sizes_mb": {}}, _ledger(),
-                   now=1000.0 + 31 * 60) == []
+    assert pl.plan(des, obs, _ledger(), now=1000.0 + 31 * 60) == []
 
 def test_dead_agent_stale_sleeping_state_not_placeable():
     # live=False blocks placement even with ample VRAM and a cached "sleeping" sample.
@@ -238,17 +227,18 @@ def test_entry_status_already_placed_agent_not_its_own_candidate():
     assert row["blocked"].startswith("insufficient free VRAM/RAM")
 
 def test_entry_status_matches_plan_intra_pass_vram_budget():
-    # One agent, 9200 MB free; two 1-replica entries each need 8000+1024.
-    # Only the higher-priority entry actually fits — entry_status must not
-    # disagree with plan() by calling the loser merely "pending".
-    hi = {**E, "model": "hi", "priority": 1}
-    lo = {**E, "model": "lo", "priority": 200}
-    sizes = {"llama:hi": 8000, "llama:lo": 8000}
-    one = {A1: {**_agents()[A1], "vram_free_mb": 9200}}
+    # One lms agent (multi-model host), 9200 MB free; two 1-replica entries
+    # each need 8000+1024. Only the higher-priority entry actually fits —
+    # entry_status must not disagree with plan() by calling the loser "pending".
+    hi = {**E, "model": "hi", "provider": "lms", "priority": 1}
+    lo = {**E, "model": "lo", "provider": "lms", "priority": 200}
+    sizes = {"lms:hi": 8000, "lms:lo": 8000}
+    one = {A1: {**_agents()[A1], "provider_caps": ["lms"], "vram_free_mb": 9200,
+                "loaded": {"lms": []}}}
     obs = {"agents": one, "model_sizes_mb": sizes}
     st = pl.entry_status(_desired([lo, hi]), obs)
-    assert st["hi/llama"] == {"placed": 0, "want": 1, "blocked": None}
-    row = st["lo/llama"]
+    assert st["hi/lms"] == {"placed": 0, "want": 1, "blocked": None}
+    row = st["lo/lms"]
     assert (row["placed"], row["want"]) == (0, 1)
     # Best reflects the intra-pass budget: 9200 - 8000 already committed.
     assert row["blocked"].startswith("insufficient free VRAM/RAM")
@@ -299,13 +289,15 @@ def test_ram_budget_contention_between_two_entries_same_pass():
     assert [a.model for a in acts] == ["hi"]
 
 def test_ram_and_vram_budgets_tracked_separately_same_pass():
-    # One agent: a CPU-served entry (RAM) and a GPU entry (VRAM) both fit in
-    # the same pass because their budgets don't compete with each other.
+    # One dual-cap agent: a CPU-served llama entry (RAM) and an lms entry
+    # (VRAM) both fit in the same pass — their budgets don't compete.
     ram_entry = {**E, "model": "cpu-model", "priority": 1}
-    vram_entry = {**E, "model": "gpu-model", "priority": 2}
-    sizes = {"llama:cpu-model": 8000, "llama:gpu-model": 8000}
-    layers = {"llama:cpu-model": 0, "llama:gpu-model": 32}
-    one = {A1: {**_agents()[A1], "vram_free_mb": 9200, "ram_free_mb": 9200}}
+    vram_entry = {**E, "model": "gpu-model", "provider": "lms", "priority": 2}
+    sizes = {"llama:cpu-model": 8000, "lms:gpu-model": 8000}
+    layers = {"llama:cpu-model": 0}
+    one = {A1: {**_agents()[A1], "provider_caps": ["llama", "lms"],
+                "vram_free_mb": 9200, "ram_free_mb": 9200,
+                "loaded": {"llama": [], "lms": []}}}
     obs = {"agents": one, "model_sizes_mb": sizes, "model_gpu_layers": layers}
     acts = pl.plan(_desired([ram_entry, vram_entry]), obs, _ledger(), now=1000.0)
     assert sorted(a.model for a in acts) == ["cpu-model", "gpu-model"]
@@ -383,3 +375,106 @@ def test_partial_placement_unknown_size_reports_size_unknown():
     row = st["m1/vllm"]
     assert (row["placed"], row["want"]) == (1, 2)
     assert row["blocked"] == "model size unknown (set entry size MB)"
+
+# ── #500: single-resident hosts + in-flight placements ──────────────────
+
+def test_single_resident_no_same_pass_co_placement():
+    # Two llama entries, one roomy host: only the higher-priority entry may
+    # take it — llama load displaces the resident model.
+    hi = {**E, "model": "hi", "priority": 1}
+    lo = {**E, "model": "lo", "priority": 200}
+    sizes = {"llama:hi": 4000, "llama:lo": 4000}
+    one = {A1: {**_agents()[A1]}}
+    obs = {"agents": one, "model_sizes_mb": sizes}
+    acts = pl.plan(_desired([lo, hi]), obs, _ledger(), now=1000.0)
+    assert [a.model for a in acts] == ["hi"]
+
+def test_single_resident_two_entries_spread_across_hosts():
+    hi = {**E, "model": "hi", "priority": 1}
+    lo = {**E, "model": "lo", "priority": 200}
+    sizes = {"llama:hi": 4000, "llama:lo": 4000}
+    obs = {"agents": _agents(), "model_sizes_mb": sizes}
+    acts = pl.plan(_desired([lo, hi]), obs, _ledger(), now=1000.0)
+    assert sorted(a.model for a in acts) == ["hi", "lo"]
+    assert len({a.agent_id for a in acts}) == 2
+
+def test_single_resident_blocks_placement_over_managed_model():
+    # A1 already serves managed model m2 — entry m1 must not displace it.
+    m1 = {**E, "model": "m1", "priority": 1}
+    m2 = {**E, "model": "m2", "priority": 2}
+    one = {A1: {**_agents()[A1], "loaded": {"llama": ["m2"]}}}
+    obs = {"agents": one,
+           "model_sizes_mb": {"llama:m1": 4000, "llama:m2": 4000}}
+    acts = pl.plan(_desired([m1, m2]), obs, _ledger(), now=1000.0)
+    assert acts == []
+    st = pl.entry_status(_desired([m1, m2]), obs)
+    assert st["m2/llama"]["blocked"] is None
+    assert "another managed llama model" in st["m1/llama"]["blocked"]
+
+def test_single_resident_can_displace_unmanaged_model():
+    one = {A1: {**_agents()[A1], "loaded": {"llama": ["unmanaged"]}}}
+    obs = {"agents": one, "model_sizes_mb": {"llama:m1": 4000}}
+    acts = pl.plan(_desired([E]), obs, _ledger(), now=1000.0)
+    assert [a.kind for a in acts] == ["load"] and acts[0].agent_id == A1
+
+def test_lms_multi_model_co_placement_still_allowed():
+    e1 = {**E, "model": "x", "provider": "lms", "priority": 1}
+    e2 = {**E, "model": "y", "provider": "lms", "priority": 2}
+    one = {A1: {**_agents()[A1], "provider_caps": ["lms"],
+                "loaded": {"lms": []}}}
+    obs = {"agents": one, "model_sizes_mb": {"lms:x": 4000, "lms:y": 4000}}
+    acts = pl.plan(_desired([e1, e2]), obs, _ledger(), now=1000.0)
+    assert sorted(a.model for a in acts) == ["x", "y"]
+
+def test_in_flight_placement_blocks_duplicate_on_second_host():
+    # Load issued on A1 10s ago, model not yet visible: no duplicate on A2.
+    led = _ledger()
+    led["placed_at"] = {"m1/llama": {A1: 990.0}}
+    led["last_action_ts"] = {A1: 990.0}
+    obs = _obs(_agents())
+    assert pl.plan(_desired([E]), obs, led, now=1000.0) == []
+
+def test_stale_placed_at_does_not_count_as_placed():
+    led = _ledger()
+    led["placed_at"] = {"m1/llama": {A1: 1000.0 - pl.PLACEMENT_FRESH_S - 10}}
+    obs = _obs(_agents())
+    acts = pl.plan(_desired([E]), obs, led, now=1000.0)
+    assert [a.kind for a in acts] == ["load"]
+
+def test_entry_status_counts_in_flight_placements():
+    led = _ledger()
+    led["placed_at"] = {"m1/llama": {A1: 990.0}}
+    obs = _obs(_agents())
+    st = pl.entry_status(_desired([E]), obs, led, 1000.0)
+    assert st["m1/llama"] == {"placed": 1, "want": 1, "blocked": None}
+
+def test_in_flight_placement_reserves_single_resident_host():
+    # m2 must not target A1 while m1's load is still in flight there.
+    m1 = {**E, "model": "m1", "priority": 1}
+    m2 = {**E, "model": "m2", "priority": 2}
+    led = _ledger()
+    led["placed_at"] = {"m1/llama": {A1: 990.0}}
+    led["last_action_ts"] = {A1: 990.0}
+    one = {A1: _agents()[A1]}
+    obs = {"agents": one,
+           "model_sizes_mb": {"llama:m1": 4000, "llama:m2": 4000}}
+    acts = pl.plan(_desired([m1, m2]), obs, led, now=1000.0)
+    assert acts == []
+
+def test_vllm_autoscale_down_never_planned():
+    e = {"model": "m1", "provider": "vllm", "placement": "auto",
+         "failover": "semi", "priority": 100, "min_replicas": 1,
+         "max_replicas": 2,
+         "autoscale": {"target_saturation": 0.75, "up_window_s": 120,
+                       "down_window_s": 900}}
+    agents = {
+        A1: {"provider_caps": ["vllm"], "live": True, "vram_total_mb": 24000,
+             "vram_free_mb": 20000, "ram_free_mb": 0,
+             "loaded": {"vllm": ["m1"]}, "server_state": None,
+             "saturation": {"vllm": 0.05}}}
+    hist = [(0.0, 0.05), (500.0, 0.05), (1000.0, 0.05)]
+    obs = {"agents": agents, "model_sizes_mb": {"vllm:m1": 8000},
+           "sat_history": {"m1/vllm": hist}}
+    led = _ledger()
+    led["placed_at"] = {"m1/vllm": {A1: 0.0}}
+    assert pl.plan(_desired([e]), obs, led, now=1000.0) == []

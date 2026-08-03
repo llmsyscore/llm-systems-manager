@@ -112,3 +112,57 @@ def test_prod_audit_prunes_past_cap(monkeypatch, tmp_path):
     assert count <= 50 + ap._AUDIT_PRUNE_EVERY
     assert check.execute("SELECT MAX(id) FROM audit_log").fetchone()[0] == 120
     check.close()
+
+# ── #500: vllm scale_down unsupported + stale-pin cleanup on load ───────
+
+def test_vllm_scale_down_unsupported():
+    log, deps = _deps()
+    a, entries = _act(kind="scale_down", provider="vllm", replicas=2)
+    assert ap.make_executor(deps, entries)(a) is False
+    assert log["proxy"] == [] and log["svc"] == []
+    assert ("autopilot:scale_down", "unsupported") in log["audit"]
+
+def test_llama_load_clears_stale_host_pins():
+    log, deps = _deps()
+    cleared = []
+    deps["clear_host_pins"] = lambda p, aid, keep: cleared.append((p, aid, keep))
+    a, entries = _act()
+    assert ap.make_executor(deps, entries)(a) is True
+    assert cleared == [("llama", "a" * 32, "m1")]
+
+def test_lms_load_does_not_clear_host_pins():
+    log, deps = _deps()
+    cleared = []
+    deps["clear_host_pins"] = lambda p, aid, keep: cleared.append((p, aid, keep))
+    a, entries = _act(provider="lms")
+    ap.make_executor(deps, entries)(a)
+    assert cleared == []
+
+def test_failed_load_does_not_clear_host_pins():
+    log, deps = _deps()
+    cleared = []
+    deps["proxy"] = lambda *a, **k: (False, {})
+    deps["clear_host_pins"] = lambda p, aid, keep: cleared.append((p, aid, keep))
+    a, entries = _act()
+    assert ap.make_executor(deps, entries)(a) is False
+    assert cleared == []
+
+def test_prod_clear_host_pins_removes_only_stale(monkeypatch):
+    import agent_registry
+    store = {"agents": {}, "global": {"llama_model_pins": {
+        "m1": "a" * 32, "m2": "a" * 32, "m3": "b" * 32}}}
+    saved = []
+    monkeypatch.setattr(agent_registry, "load_agents", lambda: store)
+    monkeypatch.setattr(agent_registry, "save_agents", lambda d: saved.append(d))
+    ap._prod_clear_host_pins("llama", "a" * 32, "m1")
+    assert saved[-1]["global"]["llama_model_pins"] == {
+        "m1": "a" * 32, "m3": "b" * 32}
+
+def test_prod_clear_host_pins_no_write_when_nothing_stale(monkeypatch):
+    import agent_registry
+    store = {"agents": {}, "global": {"llama_model_pins": {"m1": "a" * 32}}}
+    saved = []
+    monkeypatch.setattr(agent_registry, "load_agents", lambda: store)
+    monkeypatch.setattr(agent_registry, "save_agents", lambda d: saved.append(d))
+    ap._prod_clear_host_pins("llama", "a" * 32, "m1")
+    assert saved == []

@@ -64,10 +64,13 @@ def test_entry_size_mb_absent_key_stays_absent():
     assert "size_mb" not in st["entries"][0]
 
 
-def test_host_bad_numeric_type_rejected():
-    with pytest.raises(ValueError):
-        ap.validate_state({"enabled": True, "entries": [],
-                           "hosts": {"a" * 32: {"sleep_after_idle_min": ["x"]}}})
+def test_hosts_config_dropped():
+    # Any submitted hosts shape is ignored, not validated.
+    st = ap.validate_state({"enabled": True, "entries": [],
+                            "hosts": {"a" * 32: {"sleep_after_idle_min": -5}}})
+    assert st["hosts"] == {}
+    st = ap.validate_state({"enabled": True, "entries": [], "hosts": ["junk"]})
+    assert st["hosts"] == {}
 
 def test_duplicate_model_provider_rejected():
     with pytest.raises(ValueError):
@@ -75,10 +78,19 @@ def test_duplicate_model_provider_rejected():
             {"model": "m", "provider": "llama"},
             {"model": "m", "provider": "llama"}], "hosts": {}})
 
-def test_host_policy_validated():
+def test_non_dict_entry_rejected():
     with pytest.raises(ValueError):
-        ap.validate_state({"enabled": True, "entries": [],
-                           "hosts": {"a" * 32: {"sleep_after_idle_min": -5}}})
+        ap.validate_state({"enabled": True, "entries": ["m1"], "hosts": {}})
+
+def test_non_list_entries_rejected():
+    with pytest.raises(ValueError):
+        ap.validate_state({"enabled": True, "entries": "m1", "hosts": {}})
+
+def test_non_dict_autoscale_rejected():
+    with pytest.raises(ValueError):
+        ap.validate_state({"enabled": True, "entries": [
+            {"model": "m", "provider": "llama", "min_replicas": 1,
+             "max_replicas": 2, "autoscale": "fast"}], "hosts": {}})
 
 
 def _patch_registry(monkeypatch):

@@ -644,7 +644,8 @@ def default_agent_id_for(provider: str) -> "str | None":
         a = agents_map.get(aid)
         if a and a.get("status") == "approved":
             return aid
-    cap_key = provider
+    spec = providers.get(provider)
+    cap_key = spec.capability_key if spec else provider
     for a in agents_map.values():
         if a.get("status") != "approved":
             continue
@@ -694,6 +695,9 @@ def resolve_agent_by_id(agent_id: str,
     return a
 
 
+_stale_pin_warned: "set[tuple]" = set()
+
+
 def pinned_agent(provider: str, model_id: "str | None") -> "dict | None":
     """Pin-only lookup via the provider spec's pin_dict_key: the agent a model
     is pinned to if approved+live, else None. No pool/legacy fallback."""
@@ -708,13 +712,18 @@ def pinned_agent(provider: str, model_id: "str | None") -> "dict | None":
     if not pinned_id:
         return None
     a = agents_map.get(pinned_id)
+    sig = (provider, model_id, pinned_id)
     if a and a.get("status") == "approved" and agent_liveness(a) == "live":
+        _stale_pin_warned.discard(sig)
         return a
-    log.warning("%s model %s pinned to agent %s but it's not approved+live "
-                "(status=%s liveness=%s); falling back",
-                provider, model_id, pinned_id,
-                (a or {}).get("status"),
-                agent_liveness(a) if a else "?")
+    # Warn once per stale pin, not per request.
+    if sig not in _stale_pin_warned:
+        _stale_pin_warned.add(sig)
+        log.warning("%s model %s pinned to agent %s but it's not approved+live "
+                    "(status=%s liveness=%s); falling back",
+                    provider, model_id, pinned_id,
+                    (a or {}).get("status"),
+                    agent_liveness(a) if a else "?")
     return None
 
 

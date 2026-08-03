@@ -1433,7 +1433,7 @@ def llama_load_endpoint(body: dict, authorization: Optional[str] = Header(defaul
 
         time.sleep(2)
         log.info("Loading model: %s", model_id)
-        lr = requests.post(f"{api}/models/load", json={"model": model_id}, timeout=30)
+        lr = requests.post(f"{api}/models/load", json={"model": model_id}, timeout=120)
         log.info("Load response: %s %s", lr.status_code, lr.text[:200])
 
         if lr.status_code == 404:
