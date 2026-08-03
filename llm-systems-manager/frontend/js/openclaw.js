@@ -9,8 +9,7 @@ function _opcaFmtTs(s) {
 }
 
 async function fetchOpenclawAnalytics() {
-  // In-flight guard + timeout: a slow backend must not stack requests
-  // at the dashboard poll cadence (thread-pool exhaustion on the manager).
+  // Single-flight fetch with a 12s timeout.
   if (!_claim('openclawAnalytics')) return;
   try {
     const r = await _fetchT('/api/openclaw/analytics', {}, 12000);
@@ -444,9 +443,9 @@ function renderOpcaThinkingFlows(thinking) {
 }
 
 // ---- Panel 3: Predictive Analysis ------------------------------------------
-// Shows current token velocity (burn rate over last 60 min), a monthly cost
-// projection based on the global 7-day trend, active session count, and a
-// per-agent table of individual monthly projections and trend directions.
+// Shows token velocity (burn rate over the window the backend reports),
+// a monthly projection from the global 7-day trend, active session count,
+// and a per-agent table of monthly projections and trend directions.
 function renderOpcaPredictive(data) {
   const card = document.getElementById('opcaPredictiveCard');
   if (!card) return;
@@ -508,7 +507,7 @@ function renderOpcaPredictive(data) {
         <div style="font-size:1.5em;font-weight:600;color:${velColor};margin:4px 0;">
           ${_opcaFmtN(Math.round(vpm))} <span style="font-size:0.55em;color:var(--fg-dim);">tok/min</span>
         </div>
-        <div style="font-size:0.8em;color:var(--fg-dim);">${_opcaFmtN(vel.tokens_1h || 0)} ${vel.window === 'day' ? "today (agents pre-hourly)" : 'last ~60 min'}</div>
+        <div style="font-size:0.8em;color:var(--fg-dim);">${_opcaFmtN(vel.tokens_1h || 0)} ${vel.window === 'day' ? "today (agents pre-hourly)" : vel.window === 'mixed' ? 'mixed windows (some agents pre-hourly)' : 'last ~60 min'}</div>
       </div>
       <div style="background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:12px;">
         <div style="color:var(--fg-muted);font-size:0.75em;text-transform:uppercase;letter-spacing:0.05em;">Active Sessions</div>

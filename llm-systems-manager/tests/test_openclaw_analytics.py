@@ -1,8 +1,5 @@
-"""
-OpenClaw analytics unit tests (#498): per-agent anomaly baselines,
-partial-day trend exclusion, hourly velocity windows, delivery-merge
-robustness, and the single-flight cache guard.
-"""
+"""OpenClaw analytics unit tests (#498): anomaly baselines, trend windows,
+velocity, delivery-merge robustness, and the single-flight cache guard."""
 from __future__ import annotations
 
 import threading
@@ -103,6 +100,22 @@ def test_velocity_empty_hourly_is_not_legacy():
     out = openclaw._oc_velocity_from_agents([("a", sess)])
     assert out["window"] == "1h"
     assert out["tokens_1h"] == 0
+
+
+def test_velocity_mixed_fleet_rates_each_source_over_its_own_span():
+    now = datetime.now(timezone.utc)
+    hourly_sess = {"last_ts": now.isoformat(),
+                   "hourly": {_hour_key(now): {"input": 600, "output": 600}},
+                   "daily": {}}
+    legacy_sess = {"last_ts": now.isoformat(),
+                   "daily": {now.date().isoformat(): {"input": 12000, "output": 12000}}}
+    out = openclaw._oc_velocity_from_agents([("a", hourly_sess), ("b", legacy_sess)])
+    assert out["window"] == "mixed"
+    assert out["tokens_1h"] == 25200
+    # Hourly part rates over <=120 min; day part over minutes-since-midnight.
+    # The blended rate must never treat the 24000 day tokens as one-hour data.
+    assert out["tokens_per_min"] <= 1200 / 60 + 24000 / 60
+    assert out["tokens_per_min"] >= 1200 / 120
 
 
 def test_velocity_ignores_idle_sessions():

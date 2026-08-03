@@ -3378,7 +3378,8 @@ def _oc_ts_to_day(ts_str) -> Optional[str]:
 
 
 def _oc_parse_session_file(path: Path) -> dict[str, Any]:
-    """One-pass aggregation over a session .jsonl; output schema matches manager's _parse_session_file."""
+    """One-pass aggregation over a session .jsonl into the per-session
+    dict consumed by the manager's OpenClaw analytics merge."""
     agg: dict[str, Any] = {
         "session_id": path.stem,
         "messages": 0, "user_msgs": 0, "assistant_msgs": 0,
@@ -3442,8 +3443,7 @@ def _oc_parse_session_file(path: Path) -> dict[str, Any]:
                     db["output"] += msg_out
                     db["cost"]   += msg_cost
                     db["tokens"] += (msg_in + msg_out)
-                # Per-hour token buckets (UTC hour key) feed the manager's
-                # 60-min velocity window.
+                # Per-hour token buckets keyed by UTC hour (YYYY-MM-DDTHH).
                 if isinstance(ts, str) and len(ts) >= 13 and (msg_in or msg_out):
                     hb = agg["hourly"].setdefault(ts[:13], {"input": 0, "output": 0})
                     hb["input"]  += msg_in
@@ -3467,7 +3467,7 @@ def _oc_parse_session_file(path: Path) -> dict[str, Any]:
     agg["models"] = sorted(agg["models"])
     # Wire-compat duplicate for managers that still read tool_breakdown.
     agg["tool_breakdown"] = dict(agg["tools"])
-    # Cap hourly history so long-lived sessions stay bounded.
+    # Cap hourly history to the most recent 48 hour-buckets.
     if len(agg["hourly"]) > 48:
         for k in sorted(agg["hourly"])[:-48]:
             del agg["hourly"][k]

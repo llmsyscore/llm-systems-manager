@@ -13,10 +13,11 @@ shape the frontend expects.
 Cache:
   _openclaw_agg_cache    — full aggregation payload (5 s TTL)
   _openclaw_agg_lock     — single-flight guard: one fan-out at a time,
-                           concurrent readers get the stale payload
+                           concurrent readers get the cached payload
+                           (on a cold cache they wait for the refresher)
 
-Wired by main via `openclaw.register_routes(app, ctx)`. The only cross-
-module dep beyond ctx is `agent_registry` (used by the fan-out helpers
+Wired by main via `openclaw.register_routes(app, ctx)` (ctx unused). The
+only cross-module dep is `agent_registry` (used by the fan-out helpers
 for `load_agents` and `agent_request`). No `current_app` needed — the
 route just `jsonify`s a dict.
 """
@@ -97,17 +98,8 @@ def _project_monthly_cost(daily_cost: dict):
 
 
 def _detect_cost_anomalies(sessions_by_agent: dict) -> list:
-    """Flag sessions costing more than 2x their own agent's rolling average.
-
-    For each agent, sessions are sorted by timestamp and each is compared
-    against the rolling average of up to 20 prior costed sessions of that
-    same agent — cross-agent mixing would let a cheap-model agent's sessions
-    set the baseline that flags an expensive-model agent's normal sessions.
-
-    Minimum prior window of 3 sessions required to avoid false positives on
-    early sessions with no baseline. Flags cost > 2x avg AND > $0.05.
-    Returns top 10 by ratio, descending.
-    """
+    """Flag sessions costing >2x their own agent's rolling prior average
+    (up to 20 prior costed sessions, min 3; cost > $0.05). Top 10 by ratio."""
     anomalies = []
     for agent_name, sessions in sessions_by_agent.items():
         ordered = sorted(sessions, key=lambda x: x.get("last_ts") or "")
@@ -135,12 +127,9 @@ def _detect_cost_anomalies(sessions_by_agent: dict) -> list:
 def _compute_tool_trends(agents: list) -> dict:
     """Compare per-tool call counts in the last 7 days vs the prior 7 days.
 
-    Uses each agent's daily_tools dict. Buckets are per-day when the host
-    agent reports them (accurate attribution); for older agents the whole
-    session's totals fall back onto its last-activity day (approximate).
-    Returns a dict of {tool_name: direction} where direction is one of:
-    'up', 'down', 'stable', 'new' (no prior activity), 'gone' (no recent
-    activity). Thresholds: >20% change = up/down, else stable.
+    Returns {tool_name: 'up'|'down'|'stable'|'new'|'gone'} (>20% change =
+    up/down). Buckets are per-day from the agent when reported; otherwise
+    whole-session totals land on the session's last-activity day.
     """
     today = datetime.now(timezone.utc).date()
     recent_cut = (today - timedelta(days=7)).isoformat()   # last 7 days
@@ -242,26 +231,20 @@ def _oc_merge_delivery(per_host: list[dict]) -> dict:
 
 
 def _oc_velocity_from_agents(sessions_pre: "list[tuple[str, dict]]") -> dict:
-    """Velocity from parsed session aggregates. Active = last_ts within 1 h.
-
-    Tokens come from the agent's per-hour buckets when present (window
-    "1h": hour buckets overlapping the last 60 min, rate over the actual
-    span). Older agents without hourly data fall back to the session's
-    most recent daily bucket (window "day", rate over minutes since UTC
-    midnight) — labeled distinctly by the frontend."""
+    """Velocity over sessions active in the last hour: hourly-bucket sessions
+    rate over a ~60-min window, pre-hourly sessions over a day window."""
     now = datetime.now(timezone.utc)
     cutoff = (now - timedelta(hours=1)).isoformat()
     win_floor = (now - timedelta(hours=1)).replace(minute=0, second=0, microsecond=0)
-    tokens = 0
+    h_tokens = 0  # from hourly buckets (~60-min window)
+    d_tokens = 0  # from pre-hourly agents' last daily bucket
     sessions_active = 0
-    fallback_used = False
     for _ad, parsed in sessions_pre:
         lt = parsed.get("last_ts") or ""
         if lt < cutoff:
             continue
         sessions_active += 1
-        # Key absence (not emptiness) marks a pre-hourly agent — sessions
-        # with no reported usage legitimately have an empty hourly dict.
+        # Key absence (not emptiness) marks a pre-hourly agent.
         hours = parsed.get("hourly")
         if hours is not None:
             for hk, hv in (hours or {}).items():
@@ -271,24 +254,22 @@ def _oc_velocity_from_agents(sessions_pre: "list[tuple[str, dict]]") -> dict:
                     continue
                 if hstart >= win_floor:
                     if isinstance(hv, dict):
-                        tokens += (hv.get("input", 0) or 0) + (hv.get("output", 0) or 0)
+                        h_tokens += (hv.get("input", 0) or 0) + (hv.get("output", 0) or 0)
                     else:
-                        tokens += int(hv or 0)
+                        h_tokens += int(hv or 0)
         else:
-            fallback_used = True
             days = parsed.get("daily") or {}
             if days:
                 d = days[sorted(days.keys())[-1]]
-                tokens += (d.get("input", 0) or 0) + (d.get("output", 0) or 0)
-    if fallback_used:
-        window = "day"
-        span_min = max((now - now.replace(hour=0, minute=0, second=0,
-                                          microsecond=0)).total_seconds() / 60, 60.0)
-    else:
-        window = "1h"
-        span_min = max((now - win_floor).total_seconds() / 60, 1.0)
-    return {"tokens_1h": tokens, "active_sessions": sessions_active,
-            "tokens_per_min": round(tokens / span_min, 1), "window": window}
+                d_tokens += (d.get("input", 0) or 0) + (d.get("output", 0) or 0)
+    # Each source rates over its own span so mixed fleets don't blend scales.
+    span_1h  = max((now - win_floor).total_seconds() / 60, 1.0)
+    span_day = max((now - now.replace(hour=0, minute=0, second=0,
+                                      microsecond=0)).total_seconds() / 60, 60.0)
+    tpm = h_tokens / span_1h + d_tokens / span_day
+    window = "1h" if d_tokens == 0 else ("mixed" if h_tokens else "day")
+    return {"tokens_1h": h_tokens + d_tokens, "active_sessions": sessions_active,
+            "tokens_per_min": round(tpm, 1), "window": window}
 
 
 def _openclaw_capable_agents() -> list[dict]:
@@ -309,7 +290,7 @@ def _fetch_one_agent(agent: dict) -> "dict | None":
     resp, _tried, _err = agent_registry.agent_request(
         "GET", agent, "/openclaw/aggregate",
         headers={"Authorization": f"Bearer {agent['token']}"},
-        timeout=10,
+        timeout=20,  # large jsonl-bearing hosts can take a moment
     )
     if resp is None or not resp.ok:
         # Parens needed: `if-else` binds looser than `or`, so unparenthesized
@@ -326,10 +307,8 @@ def _fetch_one_agent(agent: dict) -> "dict | None":
 
 
 def _openclaw_fetch_from_agents() -> list[dict]:
-    """Fetch /openclaw/aggregate from every capable agent in parallel and
-    return the per-host payloads. Failed hosts are dropped (they just
-    don't contribute). Parallel so one slow host bounds the whole fan-out
-    at its own timeout instead of the sum of all hosts'."""
+    """Fetch /openclaw/aggregate from every capable agent in parallel;
+    failed hosts are dropped from the merge."""
     agents = _openclaw_capable_agents()
     if not agents:
         return []
@@ -340,12 +319,8 @@ def _openclaw_fetch_from_agents() -> list[dict]:
 
 
 def _collect_openclaw_analytics() -> dict:
-    """Cached, single-flight wrapper around _do_collect_openclaw_analytics.
-
-    Only one thread runs the fan-out at a time; concurrent requests get
-    the previous payload immediately instead of stacking their own
-    fan-outs on Cheroot worker threads (the pool-exhaustion failure mode).
-    """
+    """Cached single-flight collector: one refresher at a time, concurrent
+    callers get the cached payload (on a cold cache they wait for it)."""
     cached = _openclaw_agg_cache["payload"]
     if cached and (time.time() - _openclaw_agg_cache["ts"]) < 5:
         return cached
@@ -671,9 +646,8 @@ def start_budget_monitor(push_metrics, hostname: str,
 # ── Route registration ───────────────────────────────────────────────
 
 def register_routes(app, ctx) -> None:
-    """Wire the single /api/openclaw/analytics route into ``app``. Fans
-    out to every approved openclaw-capable agent. ``ctx`` is unused but
-    kept for wiring-signature parity with the other route modules."""
+    """Wire the /api/openclaw/analytics route into ``app``. ``ctx`` is
+    unused (kept for wiring-signature parity with other route modules)."""
     del ctx
 
     @app.route("/api/openclaw/analytics")

@@ -1,6 +1,5 @@
-# agent/tests/test_openclaw_collectors.py
-# OpenClaw collector changes (#498): per-hour/per-day buckets in the session
-# parser, UTC timestamps from the sqlite/delivery collectors, cache eviction.
+# OpenClaw collector tests (#498): parser hour/day buckets, UTC timestamps
+# from the sqlite/delivery collectors, parse-cache eviction.
 from __future__ import annotations
 
 import json
