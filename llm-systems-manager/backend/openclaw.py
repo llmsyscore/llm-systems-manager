@@ -3,7 +3,7 @@
 Owns the single `/api/openclaw/analytics` endpoint and every helper that
 feeds it — cross-agent fan-out, cross-host merges, anomaly + trend
 detection. The frontend Dashboard's OpenClaw card polls this endpoint
-every 2 seconds when the OpenClaw sub-tab is visible.
+at the dashboard poll cadence while the OpenClaw sub-tab is visible.
 
 Data source: fan out to every approved agent that advertises the
 openclaw capability, fetch each host's `/openclaw/aggregate`, then merge
@@ -12,9 +12,12 @@ shape the frontend expects.
 
 Cache:
   _openclaw_agg_cache    — full aggregation payload (5 s TTL)
+  _openclaw_agg_lock     — single-flight guard: one fan-out at a time,
+                           concurrent readers get the cached payload
+                           (on a cold cache they wait for the refresher)
 
-Wired by main via `openclaw.register_routes(app, ctx)`. The only cross-
-module dep beyond ctx is `agent_registry` (used by the fan-out helpers
+Wired by main via `openclaw.register_routes(app, ctx)` (ctx unused). The
+only cross-module dep is `agent_registry` (used by the fan-out helpers
 for `load_agents` and `agent_request`). No `current_app` needed — the
 route just `jsonify`s a dict.
 """
@@ -24,8 +27,8 @@ from __future__ import annotations
 import logging
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
-from types import SimpleNamespace
 
 from flask import jsonify
 
@@ -40,11 +43,7 @@ __all__ = ["register_routes", "start_budget_monitor"]
 # ── In-process cache (TTL-invalidated on every read) ────────────────
 
 _openclaw_agg_cache: dict  = {"ts": 0, "payload": None}
-
-
-# ── Dep namespace ───────────────────────────────────────────────────
-
-_deps = SimpleNamespace()
+_openclaw_agg_lock = threading.Lock()
 
 
 def _budget_cfg() -> tuple[float, float, bool, float]:
@@ -58,10 +57,15 @@ def _budget_cfg() -> tuple[float, float, bool, float]:
 
 
 def _analyze_usage_trends(daily_tokens):
-    """Rolling 7-day trend + monthly prediction. daily_tokens: {YYYY-MM-DD: int}."""
+    """Rolling 7-day trend + monthly prediction. daily_tokens: {YYYY-MM-DD: int}.
+    Today's partial bucket is excluded when enough full days exist."""
     if not daily_tokens or len(daily_tokens) < 3:
         return {"trend": "insufficient_data", "dailyAvg": 0, "monthlyPrediction": 0}
-    recent_days = sorted(daily_tokens.items())[-7:]
+    items = sorted(daily_tokens.items())
+    today = datetime.now(timezone.utc).date().isoformat()
+    if len(items) >= 4 and items[-1][0] == today:
+        items = items[:-1]
+    recent_days = items[-7:]
     if len(recent_days) < 3:
         return {"trend": "insufficient_data", "dailyAvg": 0, "monthlyPrediction": 0}
     series = [v for _, v in recent_days]
@@ -93,54 +97,39 @@ def _project_monthly_cost(daily_cost: dict):
     return round(sum(vals) / 7 * 30, 2)
 
 
-def _detect_cost_anomalies(agents: list) -> list:
-    """Flag sessions whose cost is more than 2x the rolling prior-session average.
-
-    Collects all recent sessions across agents, sorts by timestamp, then for each
-    session computes the rolling average of the 20 sessions before it. Sessions
-    that exceed 2x that average AND cost more than $0.05 are flagged.
-
-    Minimum prior window of 3 sessions required to avoid false positives on
-    early sessions with no baseline. Returns top 10 by ratio, descending.
-    Ported from clawmetry dashboard.py _compute_session_cost_anomalies (line 10316).
-    """
-    # Flatten all recent sessions across agents, tag with agent name
-    all_sessions = sorted(
-        [dict(s, agent=a["name"]) for a in agents for s in a.get("recent", [])],
-        key=lambda x: x.get("last_ts") or "",
-    )
+def _detect_cost_anomalies(sessions_by_agent: dict) -> list:
+    """Flag sessions costing >2x their own agent's rolling prior average
+    (up to 20 prior costed sessions, min 3; cost > $0.05). Top 10 by ratio."""
     anomalies = []
-    for i, sess in enumerate(all_sessions):
-        cost = sess.get("cost", 0)
-        if cost <= 0:
-            continue
-        # Rolling window: up to 20 sessions before this one that have a cost
-        prior = [s["cost"] for s in all_sessions[max(0, i - 20):i]
-                 if s.get("cost", 0) > 0]
-        if len(prior) < 3:
-            continue  # not enough baseline data
-        avg = sum(prior) / len(prior)
-        if cost > avg * 2.0 and cost > 0.05:
-            anomalies.append({
-                "session_id": sess["id"],
-                "agent":      sess["agent"],
-                "cost":       round(cost, 4),
-                "avg":        round(avg, 4),
-                "ratio":      round(cost / avg, 1),
-                "ts":         sess.get("last_ts"),
-            })
+    for agent_name, sessions in sessions_by_agent.items():
+        ordered = sorted(sessions, key=lambda x: x.get("last_ts") or "")
+        for i, sess in enumerate(ordered):
+            cost = sess.get("cost", 0)
+            if cost <= 0:
+                continue
+            prior = [s["cost"] for s in ordered[max(0, i - 20):i]
+                     if s.get("cost", 0) > 0]
+            if len(prior) < 3:
+                continue  # not enough baseline data
+            avg = sum(prior) / len(prior)
+            if cost > avg * 2.0 and cost > 0.05:
+                anomalies.append({
+                    "session_id": sess["id"],
+                    "agent":      agent_name,
+                    "cost":       round(cost, 4),
+                    "avg":        round(avg, 4),
+                    "ratio":      round(cost / avg, 1),
+                    "ts":         sess.get("last_ts"),
+                })
     return sorted(anomalies, key=lambda x: x["ratio"], reverse=True)[:10]
 
 
 def _compute_tool_trends(agents: list) -> dict:
     """Compare per-tool call counts in the last 7 days vs the prior 7 days.
 
-    Uses each agent's daily_tools dict (date-bucketed tool counts accumulated
-    during session parsing) so attribution is accurate — not approximated from
-    all-time totals. Returns a dict of {tool_name: direction} where direction
-    is one of: 'up', 'down', 'stable', 'new' (no prior activity), 'gone'
-    (no recent activity). Thresholds: >20% change = up/down, else stable.
-    Ported from clawmetry dashboard.py _compute_plugin_trend (line 10616).
+    Returns {tool_name: 'up'|'down'|'stable'|'new'|'gone'} (>20% change =
+    up/down). Buckets are per-day from the agent when reported; otherwise
+    whole-session totals land on the session's last-activity day.
     """
     today = datetime.now(timezone.utc).date()
     recent_cut = (today - timedelta(days=7)).isoformat()   # last 7 days
@@ -227,7 +216,10 @@ def _oc_merge_delivery(per_host: list[dict]) -> dict:
             by_channel[k] = by_channel.get(k, 0) + (v or 0)
         total_retries += int(h.get("total_retries") or 0)
         for err in h.get("common_errors") or []:
-            err_counts[err["error"]] = err_counts.get(err["error"], 0) + int(err.get("count") or 0)
+            key = (err or {}).get("error") if isinstance(err, dict) else None
+            if not key:
+                continue
+            err_counts[key] = err_counts.get(key, 0) + int(err.get("count") or 0)
         oe = h.get("oldest_enqueue_iso")
         if oe and (oldest_iso is None or oe < oldest_iso):
             oldest_iso = oe
@@ -239,26 +231,45 @@ def _oc_merge_delivery(per_host: list[dict]) -> dict:
 
 
 def _oc_velocity_from_agents(sessions_pre: "list[tuple[str, dict]]") -> dict:
-    """Velocity calculation from already-parsed session aggregates: 1-hour
-    window over per-session last_ts. Active-session count = sessions whose
-    last_ts is within the last hour."""
-    cutoff = (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat()
-    tokens_1h = 0
+    """Velocity over sessions active in the last hour: hourly-bucket sessions
+    rate over a ~60-min window, pre-hourly sessions over a day window."""
+    now = datetime.now(timezone.utc)
+    cutoff = (now - timedelta(hours=1)).isoformat()
+    win_floor = (now - timedelta(hours=1)).replace(minute=0, second=0, microsecond=0)
+    h_tokens = 0  # from hourly buckets (~60-min window)
+    d_tokens = 0  # from pre-hourly agents' last daily bucket
     sessions_active = 0
     for _ad, parsed in sessions_pre:
         lt = parsed.get("last_ts") or ""
         if lt < cutoff:
             continue
         sessions_active += 1
-        # Daily buckets include per-day input+output; sum the most
-        # recent day's tokens as a 1h approximation (close enough).
-        days = parsed.get("daily") or {}
-        if days:
-            last_day = sorted(days.keys())[-1]
-            d = days[last_day]
-            tokens_1h += (d.get("input", 0) or 0) + (d.get("output", 0) or 0)
-    return {"tokens_1h": tokens_1h, "active_sessions": sessions_active,
-            "tokens_per_min": round(tokens_1h / 60, 1)}
+        # Key absence (not emptiness) marks a pre-hourly agent.
+        hours = parsed.get("hourly")
+        if hours is not None:
+            for hk, hv in (hours or {}).items():
+                try:
+                    hstart = datetime.strptime(hk, "%Y-%m-%dT%H").replace(tzinfo=timezone.utc)
+                except (ValueError, TypeError):
+                    continue
+                if hstart >= win_floor:
+                    if isinstance(hv, dict):
+                        h_tokens += (hv.get("input", 0) or 0) + (hv.get("output", 0) or 0)
+                    else:
+                        h_tokens += int(hv or 0)
+        else:
+            days = parsed.get("daily") or {}
+            if days:
+                d = days[sorted(days.keys())[-1]]
+                d_tokens += (d.get("input", 0) or 0) + (d.get("output", 0) or 0)
+    # Each source rates over its own span so mixed fleets don't blend scales.
+    span_1h  = max((now - win_floor).total_seconds() / 60, 1.0)
+    span_day = max((now - now.replace(hour=0, minute=0, second=0,
+                                      microsecond=0)).total_seconds() / 60, 60.0)
+    tpm = h_tokens / span_1h + d_tokens / span_day
+    window = "1h" if d_tokens == 0 else ("mixed" if h_tokens else "day")
+    return {"tokens_1h": h_tokens + d_tokens, "active_sessions": sessions_active,
+            "tokens_per_min": round(tpm, 1), "window": window}
 
 
 def _openclaw_capable_agents() -> list[dict]:
@@ -274,43 +285,67 @@ def _openclaw_capable_agents() -> list[dict]:
     return out
 
 
+def _fetch_one_agent(agent: dict) -> "dict | None":
+    """One agent's /openclaw/aggregate payload, or None on any failure."""
+    resp, _tried, _err = agent_registry.agent_request(
+        "GET", agent, "/openclaw/aggregate",
+        headers={"Authorization": f"Bearer {agent['token']}"},
+        timeout=20,  # large jsonl-bearing hosts can take a moment
+    )
+    if resp is None or not resp.ok:
+        # Parens needed: `if-else` binds looser than `or`, so unparenthesized
+        # the expression dropped `_err` whenever resp was None.
+        log.warning("openclaw aggregate fetch failed for %s: %s",
+                    agent.get("hostname"),
+                    _err or (resp.status_code if resp else "no-response"))
+        return None
+    try:
+        return resp.json()
+    except Exception as e:
+        log.warning("openclaw aggregate decode failed for %s: %s", agent.get("hostname"), e)
+        return None
+
+
 def _openclaw_fetch_from_agents() -> list[dict]:
-    """Hit each openclaw-capable agent's /openclaw/aggregate and return
-    the list of per-host aggregate payloads. The caller pulls each host's
-    ``sessions`` / ``flows`` / ``tasks`` / ``delivery`` sub-dicts out as
-    it needs them. Failed hosts are silently dropped (they just don't
-    contribute).
-    """
-    hosts_data: list[dict] = []
-    for agent in _openclaw_capable_agents():
-        resp, _tried, _err = agent_registry.agent_request(
-            "GET", agent, "/openclaw/aggregate",
-            headers={"Authorization": f"Bearer {agent['token']}"},
-            timeout=20,  # large jsonl-bearing hosts can take a moment
-        )
-        if resp is None or not resp.ok:
-            # Parens needed: `if-else` binds looser than `or`, so unparenthesized
-            # the expression dropped `_err` whenever resp was None.
-            log.warning("openclaw aggregate fetch failed for %s: %s",
-                        agent.get("hostname"),
-                        _err or (resp.status_code if resp else "no-response"))
-            continue
-        try:
-            hosts_data.append(resp.json())
-        except Exception as e:
-            log.warning("openclaw aggregate decode failed for %s: %s", agent.get("hostname"), e)
-    return hosts_data
+    """Fetch /openclaw/aggregate from every capable agent in parallel;
+    failed hosts are dropped from the merge."""
+    agents = _openclaw_capable_agents()
+    if not agents:
+        return []
+    with ThreadPoolExecutor(max_workers=min(8, len(agents)),
+                            thread_name_prefix="oc-fanout") as pool:
+        results = list(pool.map(_fetch_one_agent, agents))
+    return [r for r in results if r]
 
 
 def _collect_openclaw_analytics() -> dict:
+    """Cached single-flight collector: one refresher at a time, concurrent
+    callers get the cached payload (on a cold cache they wait for it)."""
+    cached = _openclaw_agg_cache["payload"]
+    if cached and (time.time() - _openclaw_agg_cache["ts"]) < 5:
+        return cached
+    if not _openclaw_agg_lock.acquire(blocking=False):
+        if cached is not None:
+            return cached  # a refresh is in flight — serve stale
+        with _openclaw_agg_lock:  # first fill: wait for the refresher
+            return _openclaw_agg_cache["payload"] or {}
+    try:
+        cached = _openclaw_agg_cache["payload"]
+        if cached and (time.time() - _openclaw_agg_cache["ts"]) < 5:
+            return cached
+        payload = _do_collect_openclaw_analytics()
+        _openclaw_agg_cache.update({"ts": time.time(), "payload": payload})
+        return payload
+    finally:
+        _openclaw_agg_lock.release()
+
+
+def _do_collect_openclaw_analytics() -> dict:
     """Fan out to every approved openclaw-capable agent, fetch each host's
     /openclaw/aggregate, then merge per-host sessions / flows / tasks /
     delivery summaries into the dashboard payload shape.
     """
     now = time.time()
-    if _openclaw_agg_cache["payload"] and (now - _openclaw_agg_cache["ts"]) < 5:
-        return _openclaw_agg_cache["payload"]
-
     agents_out = []
     totals = {"sessions": 0, "messages": 0, "input": 0, "output": 0,
               "cacheRead": 0, "cacheWrite": 0, "cost": 0.0, "tool_uses": 0}
@@ -337,6 +372,10 @@ def _collect_openclaw_analytics() -> dict:
     sessions_by_agent: dict[str, list[dict]] = {}
     for ad_name, parsed in sessions_pre:
         sessions_by_agent.setdefault(ad_name, []).append(parsed)
+
+    # All session summaries per agent (uncapped) — anomaly detection and
+    # thinking rankings read these; `recent` stays capped at 10 for the UI.
+    full_summaries_by_agent: dict[str, list[dict]] = {}
 
     for agent_dir_name in sorted(sessions_by_agent.keys()):
         parsed_list = sessions_by_agent[agent_dir_name]
@@ -404,15 +443,21 @@ def _collect_openclaw_analytics() -> dict:
                 a["daily_input"][day]  = a["daily_input"].get(day, 0)  + db.get("input", 0)
                 a["daily_output"][day] = a["daily_output"].get(day, 0) + db.get("output", 0)
 
-            # --- new: date-bucketed tool counts ---
-            # tool_breakdown is the raw {tool: count} dict from the agent's
-            # per-session aggregate. Bucket it by the session's last_ts date so
-            # _compute_tool_trends compares recent-7d vs prior-7d accurately.
-            sess_day = (parsed.get("last_ts") or "")[:10]
-            if sess_day:
-                dt = a["daily_tools"].setdefault(sess_day, {})
-                for tool, cnt in (parsed.get("tool_breakdown") or {}).items():
-                    dt[tool] = dt.get(tool, 0) + cnt
+            # Per-day tool buckets straight from the agent when available;
+            # older agents fall back to whole-session totals on the last day.
+            pdt = parsed.get("daily_tools")
+            if pdt:
+                for day, tools in pdt.items():
+                    dt = a["daily_tools"].setdefault(day, {})
+                    for tool, cnt in (tools or {}).items():
+                        dt[tool] = dt.get(tool, 0) + cnt
+            else:
+                sess_day = (parsed.get("last_ts") or "")[:10]
+                if sess_day:
+                    dt = a["daily_tools"].setdefault(sess_day, {})
+                    for tool, cnt in (parsed.get("tool_breakdown")
+                                      or parsed.get("tools") or {}).items():
+                        dt[tool] = dt.get(tool, 0) + cnt
 
             # Include thinking fields in session summaries so thinking_sessions
             # filter in the assembly block below finds them correctly.
@@ -433,6 +478,7 @@ def _collect_openclaw_analytics() -> dict:
             })
 
         session_summaries.sort(key=lambda s: s["last_ts"] or "", reverse=True)
+        full_summaries_by_agent[agent_dir_name] = session_summaries
         a["recent"]  = session_summaries[:10]
         a["models"]  = sorted(a["models"])
         a["cost"]    = round(a["cost"], 6)
@@ -489,8 +535,8 @@ def _collect_openclaw_analytics() -> dict:
         key=lambda x: x["thinking_events"], reverse=True,
     )[:10]
     thinking_sessions = sorted(
-        [dict(s, agent=ag["name"])
-         for ag in agents_out for s in ag["recent"]
+        [dict(s, agent=name)
+         for name, sums in full_summaries_by_agent.items() for s in sums
          if s.get("thinking_events", 0) > 0],
         key=lambda x: x["thinking_events"], reverse=True,
     )[:10]
@@ -511,7 +557,7 @@ def _collect_openclaw_analytics() -> dict:
     }
 
     velocity    = _oc_velocity_from_agents(sessions_pre)
-    anomalies   = _detect_cost_anomalies(agents_out)
+    anomalies   = _detect_cost_anomalies(full_summaries_by_agent)
     tool_trends = _compute_tool_trends(agents_out)
 
     # ---- budget (#216): fleet-wide projection vs configured ceiling --------
@@ -547,7 +593,6 @@ def _collect_openclaw_analytics() -> dict:
         "tool_trends":      tool_trends,
         "budget":           budget_block,
     }
-    _openclaw_agg_cache.update({"ts": now, "payload": payload})
     return payload
 
 
@@ -587,7 +632,7 @@ def start_budget_monitor(push_metrics, hostname: str,
                 payload = _collect_openclaw_analytics()
                 push_metrics(_budget_metric_points(payload, hostname))
             except Exception as e:
-                log.debug("openclaw budget monitor: %s", e)
+                log.warning("openclaw budget monitor push failed: %s", e)
             slept = 0.0
             while slept < interval and not is_shutting_down():
                 time.sleep(0.5)
@@ -601,10 +646,9 @@ def start_budget_monitor(push_metrics, hostname: str,
 # ── Route registration ───────────────────────────────────────────────
 
 def register_routes(app, ctx) -> None:
-    """Wire the single /api/openclaw/analytics route into ``app``. Fans
-    out to every approved openclaw-capable agent. No other cross-module
-    deps."""
-    _deps.ctx = ctx
+    """Wire the /api/openclaw/analytics route into ``app``. ``ctx`` is
+    unused (kept for wiring-signature parity with other route modules)."""
+    del ctx
 
     @app.route("/api/openclaw/analytics")
     def openclaw_analytics():
