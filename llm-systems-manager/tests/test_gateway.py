@@ -263,3 +263,20 @@ def test_stream_non_sse_error_relayed(monkeypatch):
     monkeypatch.setattr(gateway, "_dial_stream", lambda a, p, b: up)
     r = _client().post("/api/gateway/v1/chat/completions", json={"stream": True})
     assert r.status_code == 400
+
+
+# ── #496: usage probe injection for usage-counted stream requests ────
+
+def test_with_usage_probe_injects_when_absent():
+    body = {"model": "m", "stream": True}
+    out, injected = gateway._with_usage_probe(body)
+    assert injected is True
+    assert out["stream_options"] == {"include_usage": True}
+    assert "stream_options" not in body
+
+
+def test_with_usage_probe_respects_client_stream_options():
+    body = {"model": "m", "stream": True,
+            "stream_options": {"include_usage": False}}
+    out, injected = gateway._with_usage_probe(body)
+    assert injected is False and out is body

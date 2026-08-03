@@ -1,7 +1,8 @@
 """OpenAI-compatible inference gateway (#214, vllm #125, multi-pool #493).
 /v1/models merges every gateway provider's pool; /v1/chat|completions resolve
 the owning provider per model (pin > model index > llama), then route within
-it: pin > ?agent= picker > pool RR > default."""
+it: pin > ?agent= picker > pool RR > default. Completion responses for
+_USAGE_COUNTED_PROVIDERS also feed gateway_usage token counters (#496)."""
 from __future__ import annotations
 
 import json
@@ -13,12 +14,16 @@ import requests
 from flask import Response, jsonify, request as flask_request
 
 import agent_registry
+import gateway_usage
 import providers
 import proxies
 import stream_pool
 from config.unified_config import settings
 
 log = logging.getLogger("llm-systems-manager.gateway")
+
+# Providers whose tokens are counted from proxied response usage (#496).
+_USAGE_COUNTED_PROVIDERS = ("lms",)
 
 # Per-provider gateway sub-path -> agent passthrough route (allowlist), for
 # every gateway_enabled spec. The Flask routes stay per-provider (bottom).
@@ -118,6 +123,13 @@ def _dial_stream(agent: dict, path: str, body: dict):
     return None
 
 
+def _with_usage_probe(body: dict) -> "tuple[dict, bool]":
+    """Copy with stream_options.include_usage when the client sent none."""
+    if "stream_options" in body:
+        return body, False
+    return {**body, "stream_options": {"include_usage": True}}, True
+
+
 def _handle_completion(sub: str, provider=None) -> Response:
     if not _gw_enabled():
         return _oai_error("gateway disabled", 503, "disabled")
@@ -131,9 +143,13 @@ def _handle_completion(sub: str, provider=None) -> Response:
     wants_stream = bool(body.get("stream"))
     path = _AGENT_PATHS[provider][sub]
     errors = []
+    stream_body, injected = body, False
+    if wants_stream and provider in _USAGE_COUNTED_PROVIDERS:
+        stream_body, injected = _with_usage_probe(body)
     for agent in _candidates(model_id, agent_id, provider):
         if wants_stream:
-            resp = _stream_from(agent, path, body, errors)
+            resp = _stream_from(agent, path, stream_body, errors, provider,
+                                strip_usage=injected)
             if resp is not None:
                 return resp
             continue
@@ -144,6 +160,11 @@ def _handle_completion(sub: str, provider=None) -> Response:
         if r.status_code in (502, 503):
             errors.append(f"{_label(agent)}: {r.status_code}")
             continue
+        if (provider in _USAGE_COUNTED_PROVIDERS
+                and 200 <= r.status_code < 300):
+            u = gateway_usage.usage_from_json_bytes(r.content)
+            if u:
+                gateway_usage.record(agent.get("agent_id"), *u)
         return Response(r.content, status=r.status_code,
                         mimetype=r.headers.get("content-type") or "application/json",
                         headers={"X-Proxied-To": _label(agent)})
@@ -152,7 +173,8 @@ def _handle_completion(sub: str, provider=None) -> Response:
     return _oai_error(f"no {provider} backend available", 503)
 
 
-def _stream_from(agent: dict, path: str, body: dict, errors: list):
+def _stream_from(agent: dict, path: str, body: dict, errors: list,
+                 provider: str = "llama", strip_usage: bool = False):
     """One streaming attempt; None means try the next candidate."""
     upstream = _dial_stream(agent, path, body)
     if upstream is None:
@@ -174,9 +196,15 @@ def _stream_from(agent: dict, path: str, body: dict, errors: list):
         return _oai_error("manager at stream capacity; retry shortly", 503)
     handed_off = False
     try:
+        pumped = proxies.thread_pumped(
+            upstream, path, max_lifetime_s=proxies._STREAM_OP_MAX_LIFETIME_S)
+        if provider in _USAGE_COUNTED_PROVIDERS:
+            aid = agent.get("agent_id")
+            pumped = gateway_usage.tap_sse(
+                pumped, lambda p, g, a=aid: gateway_usage.record(a, p, g),
+                strip_usage=strip_usage)
         resp = Response(
-            proxies.thread_pumped(upstream, path,
-                                  max_lifetime_s=proxies._STREAM_OP_MAX_LIFETIME_S),
+            pumped,
             status=upstream.status_code, mimetype="text/event-stream",
             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no",
                      "X-Proxied-To": _label(agent)})

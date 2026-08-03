@@ -228,3 +228,58 @@ def test_first_ts_empty_table():
     conn = sqlite3.connect(":memory:")
     en.init_table(conn)
     assert en.first_ts(conn) is None
+
+
+# ── #496: cross-bucket counters + gateway usage source ───────────────
+
+def test_stale_duplicate_bucket_does_not_fake_restart(rig):
+    store, _, acc = rig
+    # The same vllm counter arrives via two buckets (full host sample +
+    # vllm envelope); the llama-bucket copy then goes stale-but-fresh.
+    full = {"host": "box", "gpu": {"power_watts": 100.0},
+            "vllm": {"total_tokens_generated": 1000}}
+    venv = {"host": "box", "system": {"host": "box"},
+            "vllm": {"total_tokens_generated": 1000}}
+    store.set(A1, "llama", full, 1000.0)
+    store.set(A1, "vllm", venv, 1000.0)
+    acc.tick(now=1000.0)
+    store.set(A1, "vllm", dict(venv, vllm={"total_tokens_generated": 1005}),
+              1010.0)
+    inc = acc.tick(now=1010.0)[0]
+    assert inc["tokens_gen"] == 5
+    store.set(A1, "vllm", dict(venv, vllm={"total_tokens_generated": 1010}),
+              1020.0)
+    inc = acc.tick(now=1020.0)[0]
+    assert inc["tokens_gen"] == 5
+
+
+def _lms_sample():
+    return {"system": {"host": "mac", "gpu": {}}, "ps": []}
+
+
+def test_gateway_usage_counted_for_agent():
+    store = FakeStore()
+    sunk: list = []
+    usage = {A1: {"gen": 100, "prompt": 40}}
+    acc = en.Accumulator(store, sunk.append, usage_view=lambda: usage)
+    store.set(A1, "lms", _lms_sample(), 1000.0)
+    acc.tick(now=1000.0)
+    usage[A1] = {"gen": 160, "prompt": 60}
+    store.set(A1, "lms", _lms_sample(), 1010.0)
+    inc = acc.tick(now=1010.0)[0]
+    assert inc["tokens_gen"] == 60 and inc["tokens_prompt"] == 20
+
+
+def test_gateway_usage_view_failure_does_not_break_tick():
+    store = FakeStore()
+    sunk: list = []
+
+    def boom():
+        raise RuntimeError("nope")
+
+    acc = en.Accumulator(store, sunk.append, usage_view=boom)
+    store.set(A1, "lms", _lms_sample(), 1000.0)
+    acc.tick(now=1000.0)
+    store.set(A1, "lms", _lms_sample(), 1010.0)
+    inc = acc.tick(now=1010.0)[0]
+    assert inc["tokens_gen"] == 0 and inc["observed_s"] == 10.0
