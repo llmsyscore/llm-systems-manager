@@ -207,3 +207,61 @@ describe('window options', () => {
     expect(EN.windowQuery('junk')).toEqual({});
   });
 });
+
+// ── #496: $/Mtok coverage honesty ────────────────────────────────────
+
+describe('savingsView token-coverage gate', () => {
+  it('low matched-energy coverage refuses the comparison', () => {
+    const v = EN.savingsView({
+      ...SUMMARY, savings_usd: null,
+      totals: { ...TOTALS, mtok_energy_coverage_pct: 3.2 },
+    });
+    expect(v.headline).toBe('Savings unavailable');
+    expect(v.cls).toBe('muted');
+    expect(v.sub).toContain('3.2%');
+    expect(v.sub).toContain('token');
+  });
+});
+
+describe('totalTiles $/Mtok coverage notes', () => {
+  it('unmatched fleet shows why $/Mtok is withheld', () => {
+    const tiles = EN.totalTiles({ ...TOTALS, usd_per_mtok: null,
+                                  usd_per_mtok_active: null,
+                                  mtok_energy_coverage_pct: 0.0 });
+    expect(tiles[3].value).toBe('—');
+    expect(tiles[3].sub).toContain('both');
+    expect(tiles[4].sub).toContain('both');
+  });
+  it('partial coverage is annotated on the $/Mtok tiles', () => {
+    const tiles = EN.totalTiles({ ...TOTALS,
+                                  mtok_energy_coverage_pct: 42.0 });
+    expect(tiles[3].sub).toContain('42%');
+    expect(tiles[4].sub).toContain('42%');
+  });
+  it('full coverage keeps the original subtitles', () => {
+    const tiles = EN.totalTiles({ ...TOTALS,
+                                  mtok_energy_coverage_pct: 100.0 });
+    expect(tiles[3].sub).toBe('idle power included');
+    expect(tiles[4].sub).toBe('active power only');
+  });
+});
+
+describe('savingsView with telemetry present but unmatched', () => {
+  it('does not falsely claim missing telemetry', () => {
+    const v = EN.savingsView({
+      ...SUMMARY, savings_usd: null,
+      totals: { ...TOTALS, mtok_energy_coverage_pct: null },
+    });
+    expect(v.headline).toBe('Savings unavailable');
+    expect(v.sub).not.toContain('No power telemetry');
+    expect(v.sub).not.toContain('No token telemetry');
+  });
+});
+
+describe('fmtMtokRate precision', () => {
+  it('keeps sub-cent rates visible', () => {
+    expect(EN.fmtMtokRate(0.0015)).toBe('$0.0015/Mtok');
+    expect(EN.fmtMtokRate(0.26)).toBe('$0.26/Mtok');
+    expect(EN.fmtMtokRate(984.2)).toBe('$984.2/Mtok');
+  });
+});

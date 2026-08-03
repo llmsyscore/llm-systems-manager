@@ -178,11 +178,14 @@ def first_ts(conn) -> "int | None":
 
 class Accumulator:
     """Turns periodic store_view() snapshots ({agent_id: {provider:
-    (sample, last_seen)}}) into hourly increments, persisted via sink(inc)."""
+    (sample, last_seen)}}) into hourly increments, persisted via sink(inc).
+    usage_view() optionally supplies gateway-observed cumulative token
+    counters ({agent_id: {"gen": N, "prompt": N}}) as an extra source."""
 
-    def __init__(self, store_view, sink):
+    def __init__(self, store_view, sink, usage_view=None):
         self._store_view = store_view
         self._sink = sink
+        self._usage_view = usage_view
         self._agents: dict = {}
 
     def tick(self, now: "float | None" = None) -> "list[dict]":
@@ -220,7 +223,7 @@ class Accumulator:
         dt = 0.0 if last is None else max(0.0, min(now - last, MAX_GAP_S))
 
         # Power/hostname come from the freshest bucket that reports power;
-        # busy and counters are merged across every fresh bucket.
+        # busy/counters merge across fresh buckets + gateway usage_view.
         ordered = sorted(fresh.values(), key=lambda t: t[1], reverse=True)
         watts, source = None, None
         for sample, _ls in ordered:
@@ -231,15 +234,32 @@ class Accumulator:
                          if extract_hostname(s)), None)
         busy = any(extract_busy(s) for s, _ in fresh.values())
 
-        tokens_gen = tokens_prompt = 0
-        for prov, (sample, _ls) in fresh.items():
+        # Merge duplicate counters across buckets by max per key.
+        merged: dict = {}
+        for _prov, (sample, _ls) in fresh.items():
             for key, cur in extract_counters(sample).items():
-                cst = st["counters"].setdefault(key, {"gen": None, "prompt": None})
-                d_gen, cst["gen"] = counter_delta(cst["gen"], cur["gen"])
-                d_prompt, cst["prompt"] = counter_delta(cst["prompt"],
-                                                        cur["prompt"])
-                tokens_gen += d_gen
-                tokens_prompt += d_prompt
+                m = merged.setdefault(key, {"gen": None, "prompt": None})
+                for f in ("gen", "prompt"):
+                    v = cur[f]
+                    if v is not None and (m[f] is None or v > m[f]):
+                        m[f] = v
+        if self._usage_view is not None:
+            try:
+                u = (self._usage_view() or {}).get(agent_id)
+            except Exception as e:
+                log.debug("energy: usage view failed: %s", e)
+                u = None
+            if isinstance(u, dict):
+                merged["gateway"] = {"gen": u.get("gen"),
+                                     "prompt": u.get("prompt")}
+
+        tokens_gen = tokens_prompt = 0
+        for key, cur in merged.items():
+            cst = st["counters"].setdefault(key, {"gen": None, "prompt": None})
+            d_gen, cst["gen"] = counter_delta(cst["gen"], cur["gen"])
+            d_prompt, cst["prompt"] = counter_delta(cst["prompt"], cur["prompt"])
+            tokens_gen += d_gen
+            tokens_prompt += d_prompt
 
         if dt <= 0 and not tokens_gen and not tokens_prompt:
             return None
@@ -309,9 +329,9 @@ def _derive(agg: dict, window_s: float, price_kwh: float,
                           else round(cost - active_cost, 2)),
         "tokens_gen": gen,
         "tokens_prompt": prompt,
-        "usd_per_mtok": (round(cost / gen * 1e6, 2)
+        "usd_per_mtok": (round(cost / gen * 1e6, 4)
                          if cost is not None and gen > 0 else None),
-        "usd_per_mtok_active": (round(active_cost / gen * 1e6, 2)
+        "usd_per_mtok_active": (round(active_cost / gen * 1e6, 4)
                                 if active_cost is not None and gen > 0
                                 else None),
         "cloud_cost_usd": round(cloud_cost, 2),
@@ -342,11 +362,30 @@ def summarize(rows: "list[dict]", window_s: float, price_kwh: float,
         h["hostname"] = agg["hostname"]
         hosts.append(h)
     hosts.sort(key=lambda h: (h["kwh"] or 0.0), reverse=True)
-    # Savings compare cloud list price for the tokens actually served
-    # against the full local electricity bill (idle included).
+    # Fleet $/Mtok covers matched hosts only: those reporting both
+    # power and tokens.
+    matched = [a for a in per_agent.values()
+               if a["power_s"] > 0 and (a["tokens_gen"] + a["tokens_prompt"]) > 0]
+    m_wh = sum(a["energy_wh"] for a in matched)
+    m_active_wh = sum(a["active_energy_wh"] for a in matched)
+    m_gen = sum(a["tokens_gen"] for a in matched)
+    cov = (round(100.0 * m_wh / total["energy_wh"], 1)
+           if total["energy_wh"] > 0 else None)
+    totals["mtok_energy_coverage_pct"] = cov
+    if matched and m_gen > 0:
+        totals["usd_per_mtok"] = round(m_wh / 1000.0 * price_kwh
+                                       / m_gen * 1e6, 4)
+        totals["usd_per_mtok_active"] = round(m_active_wh / 1000.0 * price_kwh
+                                              / m_gen * 1e6, 4)
+    else:
+        totals["usd_per_mtok"] = None
+        totals["usd_per_mtok_active"] = None
+    # Savings: cloud list price for served tokens vs the full local bill
+    # (idle included); rendered only at >= 95% matched-energy coverage.
     local_cost = totals["cost_usd"]
     savings = None
-    if totals["has_tokens"] and local_cost is not None:
+    if (totals["has_tokens"] and local_cost is not None
+            and cov is not None and cov >= 95.0):
         savings = round(totals["cloud_cost_usd"] - local_cost, 2)
     return {"totals": totals, "hosts": hosts,
             "savings_usd": savings}
@@ -554,8 +593,10 @@ def start_thread(ctx=None) -> None:
     if _conn_factory is None:
         log.warning("energy: register_routes must run before start_thread")
         return
+    import gateway_usage
     _ACCUM = Accumulator(store_view_from_provider_state,
-                         lambda inc: upsert_increment(_conn_factory(), inc))
+                         lambda inc: upsert_increment(_conn_factory(), inc),
+                         usage_view=gateway_usage.counters)
 
     def _loop():
         while True:

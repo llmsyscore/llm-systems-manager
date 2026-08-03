@@ -215,3 +215,39 @@ def test_month_bounds_rejects_garbage():
         en.month_bounds("garbage")
     with pytest.raises(ValueError):
         en.month_bounds("2026-13")
+
+
+# ── #496: fleet $/Mtok must compare matched hosts only ───────────────
+
+def test_fleet_mtok_none_when_energy_and_tokens_disjoint():
+    # Host a: power but no tokens; host b: tokens but no power.
+    rows = [_row(agent="a", wh=100.0, active_wh=80.0, gen=0, prompt=0),
+            _row(agent="b", power=0.0, wh=0.0, active_wh=0.0,
+                 gen=16, prompt=0, source=None)]
+    s = en.summarize(rows, 3600.0, 0.15, 0.15, 0.60)
+    t = s["totals"]
+    assert t["usd_per_mtok"] is None
+    assert t["usd_per_mtok_active"] is None
+    assert t["mtok_energy_coverage_pct"] == 0.0
+    assert s["savings_usd"] is None
+
+
+def test_fleet_mtok_from_matched_subset_only():
+    # Host a reports both; host b is power-only and must not inflate $/Mtok.
+    rows = [_row(agent="a", wh=10.0, active_wh=10.0, gen=1_000_000, prompt=0),
+            _row(agent="b", wh=990.0, active_wh=0.0, gen=0, prompt=0)]
+    s = en.summarize(rows, 3600.0, 0.15, 0.15, 0.60)
+    t = s["totals"]
+    # 10 Wh @ $0.15/kWh = $0.0015 over 1 Mtok.
+    assert t["usd_per_mtok"] == pytest.approx(0.0015, abs=1e-4)
+    assert t["mtok_energy_coverage_pct"] == 1.0
+    assert s["savings_usd"] is None
+
+
+def test_fleet_mtok_and_savings_intact_when_fully_matched():
+    s = en.summarize([_row()], 3600.0, 0.20, 0.15, 0.60)
+    t = s["totals"]
+    assert t["usd_per_mtok"] == pytest.approx(0.04)
+    assert t["usd_per_mtok_active"] == pytest.approx(0.03)
+    assert t["mtok_energy_coverage_pct"] == 100.0
+    assert s["savings_usd"] == pytest.approx(0.63)

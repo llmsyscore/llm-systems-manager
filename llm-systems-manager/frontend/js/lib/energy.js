@@ -42,7 +42,7 @@ function fmtPct(v) {
 
 function fmtMtokRate(v) {
   if (v == null || Number.isNaN(v)) return '—';
-  return fmtUsd(v, v >= 10 ? 1 : 2) + '/Mtok';
+  return fmtUsd(v, v >= 10 ? 1 : (v >= 0.1 || v === 0 ? 2 : 4)) + '/Mtok';
 }
 
 function sourceLabel(src) {
@@ -59,9 +59,18 @@ function savingsView(summary) {
              sub: 'Savings appear for windows where hosts reported power and token telemetry.' };
   }
   if (s == null) {
-    const missing = !t.has_tokens ? 'token telemetry' : 'power telemetry';
+    const cov = t.mtok_energy_coverage_pct;
+    if (t.has_tokens && t.has_power && cov != null && cov < 95) {
+      return { headline: 'Savings unavailable', cls: 'muted',
+               sub: `Only ${fmtPct(cov)} of measured energy came from hosts that also ` +
+                    'report tokens, so the comparison would not be honest.' };
+    }
+    const missing = !t.has_tokens ? 'token telemetry'
+      : (!t.has_power ? 'power telemetry' : null);
     return { headline: 'Savings unavailable', cls: 'muted',
-             sub: `No ${missing} in this window, so the comparison would not be honest.` };
+             sub: missing
+               ? `No ${missing} in this window, so the comparison would not be honest.`
+               : 'Not enough matched power + token telemetry in this window for an honest comparison.' };
   }
   const gained = s >= 0;
   return {
@@ -70,6 +79,18 @@ function savingsView(summary) {
     sub: `${fmtTokens(t.tokens_gen)} tokens generated + ${fmtTokens(t.tokens_prompt)} prompted locally ` +
          `for ${fmtUsd(t.cost_usd)} of electricity vs ~${fmtUsd(t.cloud_cost_usd)} at ${label}.`,
   };
+}
+
+// $/Mtok tile subtitle: base label, coverage caveat, or withheld reason.
+function mtokSub(t, base) {
+  const cov = t.mtok_energy_coverage_pct;
+  if (t.usd_per_mtok == null && cov != null && cov < 99.5) {
+    return 'needs hosts reporting both power + tokens';
+  }
+  if (cov != null && cov < 99.5) {
+    return `${base} · ${fmtPct(cov)} of energy token-matched`;
+  }
+  return base;
 }
 
 // Stat-tile list for the totals row; null values render as em-dashes.
@@ -84,9 +105,9 @@ function totalTiles(totals) {
     { label: 'tokens generated', value: fmtTokens(t.tokens_gen),
       sub: t.tokens_prompt ? `+ ${fmtTokens(t.tokens_prompt)} prompt` : '' },
     { label: '$/Mtok all-in', value: fmtMtokRate(t.usd_per_mtok),
-      sub: 'idle power included' },
+      sub: mtokSub(t, 'idle power included') },
     { label: '$/Mtok marginal', value: fmtMtokRate(t.usd_per_mtok_active),
-      sub: 'active power only' },
+      sub: mtokSub(t, 'active power only') },
     { label: 'avg draw', value: fmtWatts(t.avg_watts),
       sub: t.active_pct != null ? `active ${fmtPct(t.active_pct)} of uptime` : '' },
   ];
