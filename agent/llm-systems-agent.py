@@ -64,7 +64,7 @@ except ImportError:
             os.chmod(tmp, mode)
         tmp.replace(p)
 
-VERSION = "v2026.08.02-2"
+VERSION = "v2026.08.03-1"
 
 
 def _restore_bundle_env() -> None:
@@ -3389,6 +3389,7 @@ def _oc_parse_session_file(path: Path) -> dict[str, Any]:
         "tools": {}, "tool_breakdown": {},
         "thinking_events": 0, "thinking_chars": 0,
         "daily": {}, "models_cost": {},
+        "daily_tools": {}, "hourly": {},
     }
     try:
         with path.open("r", encoding="utf-8", errors="replace") as f:
@@ -3441,12 +3442,20 @@ def _oc_parse_session_file(path: Path) -> dict[str, Any]:
                     db["output"] += msg_out
                     db["cost"]   += msg_cost
                     db["tokens"] += (msg_in + msg_out)
+                # Per-hour token buckets (UTC hour key) feed the manager's
+                # 60-min velocity window.
+                if isinstance(ts, str) and len(ts) >= 13 and (msg_in or msg_out):
+                    hb = agg["hourly"].setdefault(ts[:13], {"input": 0, "output": 0})
+                    hb["input"]  += msg_in
+                    hb["output"] += msg_out
                 if model_name and model_name != "gateway-injected" and msg_cost:
                     agg["models_cost"][model_name] = agg["models_cost"].get(model_name, 0.0) + msg_cost
                 for p in _oc_extract_tool_plugins(d):
                     agg["tools"][p] = agg["tools"].get(p, 0) + 1
-                    agg["tool_breakdown"][p] = agg["tool_breakdown"].get(p, 0) + 1
                     agg["tool_uses"] += 1
+                    if day:
+                        dtb = agg["daily_tools"].setdefault(day, {})
+                        dtb[p] = dtb.get(p, 0) + 1
                 content = msg.get("content")
                 if isinstance(content, list):
                     for item in content:
@@ -3456,6 +3465,12 @@ def _oc_parse_session_file(path: Path) -> dict[str, Any]:
     except Exception as e:
         logger.warning("openclaw: failed to parse %s: %s", path, e)
     agg["models"] = sorted(agg["models"])
+    # Wire-compat duplicate for managers that still read tool_breakdown.
+    agg["tool_breakdown"] = dict(agg["tools"])
+    # Cap hourly history so long-lived sessions stay bounded.
+    if len(agg["hourly"]) > 48:
+        for k in sorted(agg["hourly"])[:-48]:
+            del agg["hourly"][k]
     return agg
 
 
@@ -3468,6 +3483,7 @@ def _oc_collect_sessions(agents_dir: Path) -> list[dict[str, Any]]:
     out: list[dict[str, Any]] = []
     if not agents_dir.exists():
         return out
+    seen: set[str] = set()
     for ad in sorted(agents_dir.iterdir()):
         if not ad.is_dir():
             continue
@@ -3482,6 +3498,7 @@ def _oc_collect_sessions(agents_dir: Path) -> list[dict[str, Any]]:
             except OSError:
                 continue
             key = str(fn)
+            seen.add(key)
             cached = _oc_file_cache.get(key)
             if cached and cached[0] == st.st_mtime and cached[1] == st.st_size:
                 parsed = cached[2]
@@ -3491,6 +3508,10 @@ def _oc_collect_sessions(agents_dir: Path) -> list[dict[str, Any]]:
             row = dict(parsed)
             row["agent_dir"] = ad.name
             out.append(row)
+    # Evict cache entries for session files that no longer exist.
+    for key in list(_oc_file_cache):
+        if key not in seen:
+            del _oc_file_cache[key]
     return out
 
 
@@ -3515,7 +3536,7 @@ def _oc_collect_flows(flows_db: Path) -> dict[str, Any]:
             recent.append({
                 "id": row["flow_id"], "status": row["status"], "goal": row["goal"],
                 "owner": row["owner_key"], "duration_s": dur,
-                "created_iso": datetime.fromtimestamp(created_ms / 1000.0).isoformat() if created_ms else None,
+                "created_iso": datetime.fromtimestamp(created_ms / 1000.0, tz=timezone.utc).isoformat() if created_ms else None,
             })
         conn.close()
         return {"total": total, "by_status": by_status, "recent": recent}
@@ -3554,7 +3575,7 @@ def _oc_collect_tasks(tasks_db: Path) -> dict[str, Any]:
                 "id": row["task_id"], "label": row["label"], "kind": row["task_kind"],
                 "runtime": row["runtime"], "status": row["status"],
                 "error": (row["error"] or "")[:500],
-                "created_iso": datetime.fromtimestamp(created_ms / 1000.0).isoformat() if created_ms else None,
+                "created_iso": datetime.fromtimestamp(created_ms / 1000.0, tz=timezone.utc).isoformat() if created_ms else None,
             })
         conn.close()
         return {"total": total, "by_status": by_status, "by_runtime": by_runtime,
@@ -3597,7 +3618,7 @@ def _oc_collect_delivery(delivery_dir: Path) -> dict[str, Any]:
         return {
             "total": count, "by_channel": by_channel, "total_retries": total_retries,
             "common_errors": [{"error": k, "count": v} for k, v in common],
-            "oldest_enqueue_iso": datetime.fromtimestamp(oldest_ms / 1000.0).isoformat() if oldest_ms else None,
+            "oldest_enqueue_iso": datetime.fromtimestamp(oldest_ms / 1000.0, tz=timezone.utc).isoformat() if oldest_ms else None,
         }
     except Exception as e:
         logger.warning("openclaw delivery: %s", e)

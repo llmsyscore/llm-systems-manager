@@ -9,12 +9,16 @@ function _opcaFmtTs(s) {
 }
 
 async function fetchOpenclawAnalytics() {
+  // In-flight guard + timeout: a slow backend must not stack requests
+  // at the dashboard poll cadence (thread-pool exhaustion on the manager).
+  if (!_claim('openclawAnalytics')) return;
   try {
-    const r = await fetch('/api/openclaw/analytics');
+    const r = await _fetchT('/api/openclaw/analytics', {}, 12000);
     if (!r.ok) return;
     const data = await r.json();
     renderOpenclawAnalytics(data);
-  } catch (e) { /* silent */ }
+  } catch (e) { /* silent — panels keep their last render */ }
+  finally { _release('openclawAnalytics'); }
 }
 
 function renderOpenclawAnalytics(data) {
@@ -176,12 +180,6 @@ function _opcaAgeFromIso(iso) {
   if (d < 3600)    return Math.floor(d/60) + 'm ago';
   if (d < 86400)   return Math.floor(d/3600) + 'h ago';
   return Math.floor(d/86400) + 'd ago';
-}
-
-function _esc(s) {
-  return String(s == null ? '' : s)
-    .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
-    .replace(/"/g,'&quot;').replace(/'/g,'&#39;');
 }
 
 function renderOpcaTasks(tasks) {
@@ -456,18 +454,12 @@ function renderOpcaPredictive(data) {
   const tr  = data.trend    || {};
   const t   = data.totals   || {};
 
-  // Compute dollar projection from token prediction + observed $/token rate.
-  // Avoids hardcoding a price — uses the actual ratio from collected data.
-  const observedRate = t.cost / Math.max(t.input + t.output, 1);
+  // Dollar projection from token prediction × observed $/token rate; only
+  // when real cost data exists. Cost-free fleets show projected tokens/mo.
+  const observedRate = (t.cost || 0) / Math.max((t.input || 0) + (t.output || 0), 1);
   const projTokens   = tr.monthlyPrediction || 0;
-  const projUsd      = projTokens > 0 ? (projTokens * observedRate).toFixed(2) : null;
-  // When projUsd is null (no cost data, e.g. all local models) we still want
-  // the tile to convey something real. Substitute the projected message
-  // throughput from velocity*60min*24h*30d so the projection panel surfaces
-  // a useful number instead of '—'.
-  const projMsgsPerMonth = (vel.tokens_per_min || 0) === 0 && t.messages
-    ? Math.round((t.messages / Math.max(t.sessions || 1, 1)) * 30)  // very rough: per-session avg × 30 days
-    : null;
+  const projUsd      = (projTokens > 0 && (t.cost || 0) > 0)
+    ? (projTokens * observedRate).toFixed(2) : null;
 
   // Trend arrow and color for the global trend
   const trendArrow = { increasing: '↑', decreasing: '↓', stable: '→' };
@@ -503,12 +495,12 @@ function renderOpcaPredictive(data) {
       <div style="background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:12px;">
         <div style="color:var(--fg-muted);font-size:0.75em;text-transform:uppercase;letter-spacing:0.05em;">Monthly Projection</div>
         <div style="font-size:1.5em;font-weight:600;color:var(--ok);margin:4px 0;">
-          ${projUsd != null ? '$' + projUsd : (projMsgsPerMonth != null ? _opcaFmtN(projMsgsPerMonth) : '—')}
+          ${projUsd != null ? '$' + projUsd : (projTokens > 0 ? _opcaFmtN(projTokens) : '—')}
         </div>
         <div style="font-size:0.8em;color:${trendColor[tDir] || 'var(--fg-dim)'};">
           ${projUsd != null
             ? `${trendArrow[tDir] || '?'} ${tDir !== 'insufficient_data' ? tDir : 'insufficient data'}`
-            : (projMsgsPerMonth != null ? 'msgs/mo (local models, no cost)' : 'no projection data')}
+            : (projTokens > 0 ? 'tokens/mo (local models, no cost)' : 'no projection data')}
         </div>
       </div>
       <div style="background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:12px;">
@@ -516,7 +508,7 @@ function renderOpcaPredictive(data) {
         <div style="font-size:1.5em;font-weight:600;color:${velColor};margin:4px 0;">
           ${_opcaFmtN(Math.round(vpm))} <span style="font-size:0.55em;color:var(--fg-dim);">tok/min</span>
         </div>
-        <div style="font-size:0.8em;color:var(--fg-dim);">${_opcaFmtN(vel.tokens_1h || 0)} last 60 min</div>
+        <div style="font-size:0.8em;color:var(--fg-dim);">${_opcaFmtN(vel.tokens_1h || 0)} ${vel.window === 'day' ? "today (agents pre-hourly)" : 'last ~60 min'}</div>
       </div>
       <div style="background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:12px;">
         <div style="color:var(--fg-muted);font-size:0.75em;text-transform:uppercase;letter-spacing:0.05em;">Active Sessions</div>
