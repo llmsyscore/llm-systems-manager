@@ -211,3 +211,25 @@ def test_route_sync_prefers_live_placement_for_new_pin():
                   "loaded": {"llama": ["m1"]}}}}
     writes = ap.route_sync_writes(_rs_desired(), obs, {}, None, None)
     assert writes == [("pin", "llama", "m1", AGENT_B)]
+
+
+def test_route_sync_multi_replica_single_placed_pins():
+    # max>1 but only one replica serving: pin it (visible + deterministic).
+    obs = _rs_observed(loaded_a=("m1",), loaded_b=())
+    glob = {"llama_pool": [AGENT_A, AGENT_B]}
+    writes = ap.route_sync_writes(_rs_desired(max_replicas=2), obs, glob)
+    assert writes == [("pin", "llama", "m1", AGENT_A)]
+
+
+def test_route_sync_multi_replica_two_placed_clears_pin():
+    obs = _rs_observed(loaded_a=("m1",), loaded_b=("m1",))
+    glob = {"llama_pool": [AGENT_A, AGENT_B],
+            "llama_model_pins": {"m1": AGENT_A}}
+    writes = ap.route_sync_writes(_rs_desired(max_replicas=2), obs, glob)
+    assert writes == [("pin", "llama", "m1", None)]
+
+
+def test_route_sync_multi_replica_two_placed_no_pin_no_write():
+    obs = _rs_observed(loaded_a=("m1",), loaded_b=("m1",))
+    glob = {"llama_pool": [AGENT_A, AGENT_B]}
+    assert ap.route_sync_writes(_rs_desired(max_replicas=2), obs, glob) == []

@@ -506,7 +506,7 @@ Backend API endpoints consumed:
         <div class="adm-card" id="adminPoolCard">
           <div class="adm-card-hdr">
             <div class="adm-title">Provider pool order</div>
-            <span class="adm-muted" title="Drag rows to reorder. First entry = primary; round-robin walks the list in order. Add/remove via the 'in pool' toggles in the Agents tab.">drag to reorder</span>
+            <span class="adm-muted" id="adminPoolDragHint" title="Drag rows to reorder. First entry = primary; round-robin walks the list in order. Add/remove via the 'in pool' toggles in the Agents tab.">drag to reorder</span>
             <span class="status status--info status--square" id="adminPoolApBadge" style="display:none;" title="Model Autopilot manages pool membership for this provider's replicated entries — reordering is disabled and manual membership edits may be overridden on the next reconcile.">autopilot-managed</span>
             <div class="adm-spacer"></div>
             <button class="adm-refresh" onclick="adminLoadAgents()" title="Reload from server">↻</button>
@@ -1833,7 +1833,7 @@ Backend API endpoints consumed:
 <script src="/static/js/terminal.js?v=2026.07.11-1"></script>
 <script src="/static/js/llmcontrol.js?v=2026.07.11-1"></script>
 <script src="/static/js/openclaw.js?v=2026.08.03-1"></script>
-<script src="/static/js/admin.js?v=2026.08.03-1"></script>
+<script src="/static/js/admin.js?v=2026.08.03-2"></script>
 <script src="/static/js/autopilot.js?v=2026.07.31-2"></script>
 <script src="/static/js/llmcontrol-models.js?v=2026.06.10-6"></script>
 <script src="/static/js/bench-autotune.js?v=2026.06.25-9"></script>

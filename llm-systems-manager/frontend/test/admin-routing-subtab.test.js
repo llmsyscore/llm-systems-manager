@@ -78,9 +78,15 @@ describe('autopilot-managed badges (#476)', () => {
     expect(document.getElementById('adminPoolApBadge')).toBeTruthy();
     expect(adminSrc).toMatch(/adminPoolApBadge/);
   });
-  it('managed = single-replica entries pin, replicated entries pool', () => {
-    expect(adminSrc).toMatch(/max_replicas[^\n]*<=\s*1/);
+  it('pins badge covers any autopilot entry; pool badge only replicated', () => {
+    // #500: pins exist for multi-replica entries while single-placed, so the
+    // pins badge matches on provider+model alone; the pool badge stays >1.
+    expect(adminSrc).not.toMatch(/max_replicas[^\n]*<=\s*1/);
     expect(adminSrc).toMatch(/max_replicas[^\n]*>\s*1/);
+  });
+  it('reorder is disabled while autopilot-managed (#500)', () => {
+    expect(adminSrc).toMatch(/if\s*\(!managed\)\s*\{\s*\n\s*_adminPoolSortable = Sortable\.create/);
+    expect(adminSrc).toMatch(/adminPoolDragHint/);
   });
 });
 

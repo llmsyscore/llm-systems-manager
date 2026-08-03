@@ -368,6 +368,8 @@ function adminRenderPoolOrder() {
     e.provider === _adminPoolSel && (e.max_replicas || 1) > 1);
   const apBadge = document.getElementById('adminPoolApBadge');
   if (apBadge) apBadge.style.display = managed ? '' : 'none';
+  const dragHint = document.getElementById('adminPoolDragHint');
+  if (dragHint) dragHint.style.display = managed ? 'none' : '';
   const pool = ((_adminGlobal && _adminGlobal[_adminPoolSel + '_pool']) || []).slice();
   const idToAgent = {};
   for (const a of (_adminAgentsCache || [])) idToAgent[a.agent_id] = a;
@@ -484,9 +486,9 @@ function adminRenderPins() {
   } else {
     tbody.innerHTML = entries.map(([model, aid]) => {
       const host = idToHost[aid] || `<span class="adm-muted">${adminEsc(aid).slice(0,8)}… (unknown agent)</span>`;
-      // Single-replica autopilot entries route via this pin (#476).
+      // Autopilot entries route via this pin while single-placed (#476, #500).
       const apManaged = _adminApEntries().some(e =>
-        e.provider === prov.name && e.model === model && (e.max_replicas || 1) <= 1);
+        e.provider === prov.name && e.model === model);
       const apBadge = apManaged
         ? ' <span class="status status--info status--square ap-managed-badge" title="This pin is managed by a Model Autopilot entry — manual edits may be overridden on the next reconcile.">autopilot</span>'
         : '';

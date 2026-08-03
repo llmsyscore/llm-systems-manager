@@ -407,25 +407,30 @@ def route_sync_writes(desired: dict, observed: dict, glob: dict,
         return writes
     for e in desired.get("entries") or []:
         prov, model = e["provider"], e["model"]
+        multi = int(e.get("max_replicas", 1)) > 1
         placed = pl._effective_placements(e, pl._key(e), observed, ledger, now)
         if not placed:
             continue
-        if int(e.get("max_replicas", 1)) > 1:
+        if multi:
             pool = glob.get(f"{prov}_pool") or []
             writes.extend(("pool_add", prov, aid) for aid in placed
                           if aid not in pool)
-        else:
-            spec = providers.get(prov)
-            pin_key = getattr(spec, "pin_dict_key", None)
-            if not pin_key:
-                continue
-            live = [aid for aid in placed
-                    if (observed["agents"].get(aid) or {}).get("live")]
-            pick_from = live or placed
-            cur = (glob.get(pin_key) or {}).get(model)
-            target = cur if cur in pick_from else pick_from[0]
-            if cur != target:
-                writes.append(("pin", prov, model, target))
+        spec = providers.get(prov)
+        pin_key = getattr(spec, "pin_dict_key", None)
+        if not pin_key:
+            continue
+        cur = (glob.get(pin_key) or {}).get(model)
+        if multi and len(placed) > 1:
+            # 2+ replicas serving: pool RR governs; a pin would defeat it.
+            if cur is not None:
+                writes.append(("pin", prov, model, None))
+            continue
+        live = [aid for aid in placed
+                if (observed["agents"].get(aid) or {}).get("live")]
+        pick_from = live or placed
+        target = cur if cur in pick_from else pick_from[0]
+        if cur != target:
+            writes.append(("pin", prov, model, target))
     return writes
 
 
@@ -835,8 +840,9 @@ def _prod_route_sync(desired: dict, observed: dict,
         if w[0] == "pin":
             _, prov, model, aid = w
             _prod_set_pin(prov, model, aid)
-            log.info("autopilot route-sync: pinned %s/%s -> %s",
-                     prov, model, aid[:8])
+            log.info("autopilot route-sync: %s %s/%s%s",
+                     "pinned" if aid else "unpinned", prov, model,
+                     f" -> {aid[:8]}" if aid else " (2+ replicas, pool RR)")
         else:
             _, prov, aid = w
             _prod_pool_update(prov, aid, True)
