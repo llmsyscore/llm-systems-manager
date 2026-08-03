@@ -362,13 +362,12 @@ function adminRenderPoolOrder() {
   adminRenderProviderChips('pool');
   const ul = document.getElementById('adminPoolOrderList');
   if (!ul) return;
-  // Autopilot manages pool membership for replicated entries (#476).
+  // Autopilot manages pool membership for replicated entries (#476);
+  // manual reordering is disabled while it does (#500).
+  const managed = _adminApEntries().some(e =>
+    e.provider === _adminPoolSel && (e.max_replicas || 1) > 1);
   const apBadge = document.getElementById('adminPoolApBadge');
-  if (apBadge) {
-    const managed = _adminApEntries().some(e =>
-      e.provider === _adminPoolSel && (e.max_replicas || 1) > 1);
-    apBadge.style.display = managed ? '' : 'none';
-  }
+  if (apBadge) apBadge.style.display = managed ? '' : 'none';
   const pool = ((_adminGlobal && _adminGlobal[_adminPoolSel + '_pool']) || []).slice();
   const idToAgent = {};
   for (const a of (_adminAgentsCache || [])) idToAgent[a.agent_id] = a;
@@ -387,7 +386,7 @@ function adminRenderPoolOrder() {
         ? '<span class="adm-chip tls-pending" style="font-size:11px;padding:0 6px;">stale</span>'
         : '<span class="adm-chip tls-off" style="font-size:11px;padding:0 6px;">' + adminEsc(a.liveness || '?') + '</span>';
     return `<li data-agent-id="${adminEsc(aid)}">
-      <span class="pool-handle" title="Drag to reorder">⠿</span>
+      ${managed ? '' : '<span class="pool-handle" title="Drag to reorder">⠿</span>'}
       <span class="pool-pos">#${i + 1}</span>
       <span class="pool-hostname">${adminEsc(a.hostname || aid.slice(0,8))}</span>
       ${livenessBadge}
@@ -396,14 +395,17 @@ function adminRenderPoolOrder() {
   }).join('');
 
   // Tear down any previous Sortable instance and re-attach to the
-  // freshly-rendered list so element refs aren't stale.
+  // freshly-rendered list so element refs aren't stale. Autopilot-managed
+  // pools render without handles and get no Sortable at all.
   if (_adminPoolSortable) { try { _adminPoolSortable.destroy(); } catch(e){} _adminPoolSortable = null; }
-  _adminPoolSortable = Sortable.create(ul, {
-    animation: 150,
-    handle: '.pool-handle',
-    ghostClass: 'dragging',
-    onEnd: adminPoolReorderCommit,
-  });
+  if (!managed) {
+    _adminPoolSortable = Sortable.create(ul, {
+      animation: 150,
+      handle: '.pool-handle',
+      ghostClass: 'dragging',
+      onEnd: adminPoolReorderCommit,
+    });
+  }
 }
 
 // Called by Sortable when a drag completes. Read the new order out of

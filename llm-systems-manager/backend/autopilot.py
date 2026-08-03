@@ -396,11 +396,45 @@ def _prod_deps() -> dict:
 _SAT_HISTORY_WINDOW_S = 1200.0  # 20 minutes
 
 
+def route_sync_writes(desired: dict, observed: dict, glob: dict,
+                      ledger: "dict | None" = None,
+                      now: "float | None" = None) -> "list[tuple]":
+    """Routing writes converging pins/pools to current placements
+    (observed samples + fresh in-flight ledger placements):
+    ("pin", provider, model, agent_id) and ("pool_add", provider, agent_id)."""
+    writes: "list[tuple]" = []
+    if not desired.get("enabled"):
+        return writes
+    for e in desired.get("entries") or []:
+        prov, model = e["provider"], e["model"]
+        placed = pl._effective_placements(e, pl._key(e), observed, ledger, now)
+        if not placed:
+            continue
+        if int(e.get("max_replicas", 1)) > 1:
+            pool = glob.get(f"{prov}_pool") or []
+            writes.extend(("pool_add", prov, aid) for aid in placed
+                          if aid not in pool)
+        else:
+            spec = providers.get(prov)
+            pin_key = getattr(spec, "pin_dict_key", None)
+            if not pin_key:
+                continue
+            live = [aid for aid in placed
+                    if (observed["agents"].get(aid) or {}).get("live")]
+            pick_from = live or placed
+            cur = (glob.get(pin_key) or {}).get(model)
+            target = cur if cur in pick_from else pick_from[0]
+            if cur != target:
+                writes.append(("pin", prov, model, target))
+    return writes
+
+
 class Reconciler:
-    def __init__(self, get_state, build_observed, executor):
+    def __init__(self, get_state, build_observed, executor, route_sync=None):
         self._get_state = get_state
         self._observe = build_observed
         self._exec = executor
+        self._route_sync = route_sync
         self._proposals: "dict[str, dict]" = {}
         self._sat_history: "dict[str, list]" = {}
         self.ledger = {"last_action_ts": {}, "placed_at": {},
@@ -436,6 +470,11 @@ class Reconciler:
                     self._proposals[pid] = {"id": pid, "sig": list(sig(a)),
                                             "action": asdict(a), "created": now,
                                             "reason": a.reason}
+            if self._route_sync:
+                try:
+                    self._route_sync(desired, observed, self.ledger, now)
+                except Exception as e:
+                    log.warning("autopilot route sync failed: %s", e)
             self.last_plan_ts = now
             self._refresh_snapshot()
             return {"actions": [asdict(a) for a in actions],
@@ -786,9 +825,28 @@ def _prod_executor(action) -> bool:
     return make_executor(_prod_executor_deps(action.agent_id), _prod_entries_by_key)(action)
 
 
+def _prod_route_sync(desired: dict, observed: dict,
+                     ledger: "dict | None" = None,
+                     now: "float | None" = None) -> None:
+    """Apply route_sync_writes via the same pin/pool helpers the executor
+    uses; every write is logged."""
+    glob = (agent_registry.load_agents().get("global") or {})
+    for w in route_sync_writes(desired, observed, glob, ledger, now):
+        if w[0] == "pin":
+            _, prov, model, aid = w
+            _prod_set_pin(prov, model, aid)
+            log.info("autopilot route-sync: pinned %s/%s -> %s",
+                     prov, model, aid[:8])
+        else:
+            _, prov, aid = w
+            _prod_pool_update(prov, aid, True)
+            log.info("autopilot route-sync: added %s to %s pool", aid[:8], prov)
+
+
 RECONCILER = Reconciler(get_state=get_state,
                         build_observed=lambda: build_observed(_prod_deps()),
-                        executor=_prod_executor)
+                        executor=_prod_executor,
+                        route_sync=_prod_route_sync)
 
 
 # ── Routes: mount /api/autopilot* on the manager app ──────────────────

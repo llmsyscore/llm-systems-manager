@@ -152,3 +152,27 @@ def test_in_flight_migrations_tracked_during_failover_execution():
     assert seen["reason"].startswith("failover:")
     assert seen["in_flight"] == 1
     assert r.ledger["in_flight_migrations"] == 0
+
+def test_tick_invokes_route_sync_with_state_and_ledger():
+    seen = []
+    state = {"enabled": True, "hosts": {}, "entries": []}
+    observed = {"agents": {}, "model_sizes_mb": {}, "sat_history": {}}
+    r = ap.Reconciler(get_state=lambda: state,
+                      build_observed=lambda: observed,
+                      executor=lambda a: True,
+                      route_sync=lambda d, o, led, now: seen.append((d, led, now)))
+    r.tick(now=1000.0)
+    assert seen and seen[0][0] is state
+    assert seen[0][1] is r.ledger and seen[0][2] == 1000.0
+
+def test_tick_survives_route_sync_failure():
+    def _boom(d, o, led, now):
+        raise RuntimeError("sync failed")
+    r = ap.Reconciler(get_state=lambda: {"enabled": True, "hosts": {},
+                                         "entries": []},
+                      build_observed=lambda: {"agents": {},
+                                              "model_sizes_mb": {},
+                                              "sat_history": {}},
+                      executor=lambda a: True, route_sync=_boom)
+    out = r.tick(now=1000.0)
+    assert out["actions"] == []
