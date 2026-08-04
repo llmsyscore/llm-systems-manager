@@ -969,9 +969,8 @@ async function loadHistory() {
   } catch(e) { console.error('History error:', e); }
 }
 
-// Backfill manager + alarm-engine self-monitor charts from the alarm
-// engine catalog so the operator sees the last 60 min instead of an empty
-// pane. Fired at startup and again on manager-tab entry until data lands.
+// Backfill manager + alarm-engine self-monitor charts from the alarm engine
+// catalog. Fired at startup and on every manager-tab entry (#506).
 async function loadManagerPerfHistory() {
   // Scope to the manager's own host by agent id (resolved server-side via the
   // alarm proxy); no id → unfiltered, fine since these series are single-host
@@ -993,9 +992,6 @@ async function loadManagerPerfHistory() {
   // Timestamp alignment lives in lib/series.js (shared with the unit tests).
   const zipByTs = LMSeries.zipByTs;
 
-  // Returns true once either chart is backfilled, so the caller can retry on a
-  // transient empty response instead of latching a failed one-shot (#131).
-  let filled = false;
   // Manager Perf (2 series)
   if (typeof mgrPerfChart !== 'undefined' && mgrPerfChart) {
     const [api, hist] = await Promise.all([
@@ -1003,7 +999,6 @@ async function loadManagerPerfHistory() {
       fetchPoints('manager_history_latency_ms'),
     ]);
     const rows = zipByTs([api, hist]);
-    filled = LMSeries.latchFilled(filled, rows);
     if (rows.length) {
       _clearChart(mgrPerfChart);  // discard any racing live point (#137)
       for (const [ts, vals] of rows) pushMulti(mgrPerfChart, ts, vals);
@@ -1020,25 +1015,25 @@ async function loadManagerPerfHistory() {
     ];
     const series = await Promise.all(names.map(fetchPoints));
     const rows = zipByTs(series);
-    filled = LMSeries.latchFilled(filled, rows);
     if (rows.length) {
       _clearChart(aePerfChart);  // discard any racing live point (#137)
       for (const [ts, vals] of rows) pushMulti(aePerfChart, ts, vals);
     }
   }
-  return filled;
 }
 
-// Per-provider /api/history?agent= chart backfill factory: generation guard
-// so only the newest in-flight call paints, reset before the fetch and again
-// after the await, then repaint the last MAX_POINTS rows.
+// Per-provider /api/history?agent= chart backfill factory: generation guard so
+// only the newest in-flight call paints, then repaint the last MAX_POINTS rows.
 function _makeHistoryBackfill(provider, defaultAgentKey, resetCharts, paintRow) {
-  let gen = 0;
+  let gen = 0, lastAgent;
   return async function () {
     const g = ++gen;
-    resetCharts();
     const sel = (typeof _selectedAgent === 'function') ? _selectedAgent(provider) : null;
     const agent = sel || window[defaultAgentKey];
+    // Clear before the fetch only when the agent changed (#121). On a
+    // same-agent re-entry a failed fetch would blank good live data (#507).
+    if (agent !== lastAgent) resetCharts();
+    lastAgent = agent;
     if (!agent) return;
     try {
       const rows = await fetch(`/api/history?agent=${encodeURIComponent(agent)}`)
@@ -1111,8 +1106,8 @@ const loadVllmHistory = _makeHistoryBackfill('vllm', '__VLLM_AGENT',
 
 // Backfill the Overall-tab llama TPS chart (Gen / Prompt) from the fleet
 // rollup so it matches the live fleet totals painted by fetchOverallMetrics.
-// Called only from the Overall tab (one-time) so the LMS dashboard makes no
-// llama calls (#142).
+// Called only from Overall-tab entry and refocus, so the LMS dashboard makes
+// no llama calls (#142, #506).
 async function loadOverallHistory() {
   if (typeof ovLlamaChart === 'undefined' || !ovLlamaChart) return;
   try {

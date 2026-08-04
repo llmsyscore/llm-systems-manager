@@ -36,8 +36,6 @@ describe('Manager sub-tab entry (#506)', () => {
   test('re-backfills the perf sparklines on every entry', () => {
     expect(branch).toContain('loadManagerPerfHistory');
   });
-  // The #131 latch retried until data landed, but also permanently blocked the
-  // re-backfill once it succeeded, so the gap could never heal.
   test('the one-shot _mgrPerfBackfilled latch is gone', () => {
     expect(boot).not.toContain('_mgrPerfBackfilled');
   });
@@ -59,9 +57,25 @@ describe('Overall tab entry (#506)', () => {
   });
 });
 
-// llama.cpp is deliberately excluded: fetchMetrics carries no view gate (#129),
-// so its charts advance off-tab and never gap. If a gate is ever added here,
-// the llama dashboard needs an entry backfill too.
+describe('_makeHistoryBackfill pre-fetch clear (#507)', () => {
+  const factory = charts.slice(charts.indexOf('function _makeHistoryBackfill'));
+  const body = factory.slice(0, factory.indexOf('\n}'));
+  test('clears before the fetch only when the selected agent changed', () => {
+    expect(body).toMatch(/if \(agent !== lastAgent\) resetCharts\(\);/);
+  });
+  // An unconditional pre-fetch reset blanks the window when the fetch fails.
+  test('has no unconditional pre-fetch resetCharts call', () => {
+    const preFetch = body.slice(0, body.indexOf('await fetch'));
+    expect(preFetch).not.toMatch(/^\s*resetCharts\(\);/m);
+  });
+  test('still repaints from a clean slate once rows arrive', () => {
+    const postFetch = body.slice(body.indexOf('await fetch'));
+    expect(postFetch).toContain('resetCharts()');
+  });
+});
+
+// llama.cpp is excluded because fetchMetrics has no view gate (#129); adding
+// one there would require an entry backfill too.
 describe('llama.cpp needs no entry backfill (#506)', () => {
   test('fetchMetrics has no view gate before its fetch', () => {
     const fn = charts.slice(charts.indexOf('async function fetchMetrics'));

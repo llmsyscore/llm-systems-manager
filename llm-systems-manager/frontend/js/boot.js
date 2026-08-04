@@ -189,9 +189,8 @@ function _rebackfillActiveView() {
   // appends bucket to the same resolution grid (#129).
   if (typeof syncInterval === 'function') await syncInterval();
   await loadHistory();
-  // Independent backfills — fired async so a slow alarm-engine response doesn't
-  // serialize startup. Each fails silently if its host isn't injected yet; a
-  // miss is re-tried when the operator enters that view (#131, #506).
+  // Independent backfills — fired async so a slow alarm engine doesn't
+  // serialize startup; a miss is re-tried on view entry (#131, #506).
   loadLmsHistory().catch(() => {});
   loadVllmHistory().catch(() => {});
   loadManagerPerfHistory().catch(() => {});
