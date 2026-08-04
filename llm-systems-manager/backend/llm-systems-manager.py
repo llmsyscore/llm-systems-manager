@@ -154,7 +154,7 @@ def _local_hostname() -> str:
 # banner reads it. Bump suffix (-1, -2, …) for same-day iterations; roll
 # the date for a new day's first change.
 # ---------------------------------------------------------------------------
-__version__ = "v2026.08.04-3"
+__version__ = "v2026.08.04-4"
 
 # Wall-clock at first import (Cheroot main process); the shutdown banner
 # reads it for the uptime line.
@@ -2339,12 +2339,12 @@ def _lms_agent_hosts() -> dict:
         return {}
 
 
-_gw_push_failed = False
+# Latch so a failing push warns once, not once per 15s interval.
+_gw_push_state = {"failed": False}
 
 
 def _push_gateway_usage_metrics(points: list) -> None:
     """POST a gateway-usage metric batch to the alarm engine (#502)."""
-    global _gw_push_failed
     if not _alarm_engine_url or not points:
         return
     # AE ingest routes accept only the ingest token — the session-level
@@ -2357,12 +2357,12 @@ def _push_gateway_usage_metrics(points: list) -> None:
         f"{_alarm_engine_url.rstrip('/')}/api/alarm/metrics/batch",
         json={"metrics": points}, headers=headers, timeout=5,
     )
-    if not r.ok and not _gw_push_failed:
-        _gw_push_failed = True
+    if not r.ok and not _gw_push_state["failed"]:
+        _gw_push_state["failed"] = True
         log.warning(f"gateway usage push failed: HTTP {r.status_code} — "
                     "lms gateway metrics will be missing from the alarm engine")
-    elif r.ok and _gw_push_failed:
-        _gw_push_failed = False
+    elif r.ok and _gw_push_state["failed"]:
+        _gw_push_state["failed"] = False
         log.info("gateway usage push recovered")
 
 
