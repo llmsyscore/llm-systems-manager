@@ -914,19 +914,42 @@ function _resetLmsCharts() {
 // shared by backfill and live push.
 let _ctxCarry = 0, _genTokensCarry = 0;
 
-let _histGen = 0;
+// Fetch a /api/history* row array, returning null on any failure. An auth-gated
+// 401 returns a JSON object, so a shape check is required, not just r.ok.
+async function _historyRows(url, label) {
+  try {
+    const r = await fetch(url);
+    if (!r.ok) {
+      console.error(`${label} history: HTTP ${r.status}`);
+      return null;
+    }
+    const rows = await r.json();
+    if (!Array.isArray(rows)) {
+      console.error(`${label} history: expected an array, got`, rows);
+      return null;
+    }
+    return rows;
+  } catch (e) {
+    console.error(`${label} history error:`, e);
+    return null;
+  }
+}
+
+let _histGen = 0, _histLastAgent;
 async function loadHistory() {
   // Generation counter: only the newest in-flight backfill may paint (#267).
   const gen = ++_histGen;
   try {
-    // Replace, don't append — charts are per-agent, so clear before backfill.
-    _resetMetricCharts();
     // Backfill the (picker-)selected llama agent's host history. No selection
     // (single-agent install) → plain /api/history = the default-agent ring,
     // byte-identical to pre-multi-agent.
     const sel = (typeof _selectedAgent === 'function') ? _selectedAgent('llama') : null;
+    // Clear before the fetch only on an agent change (#121); a same-agent
+    // re-entry keeps its live data if the fetch fails (#507).
+    if (sel !== _histLastAgent) _resetMetricCharts();
+    _histLastAgent = sel;
     const url = sel ? `/api/history?agent=${encodeURIComponent(sel)}` : '/api/history';
-    const rows = await fetch(url).then(r => r.json());
+    const rows = await _historyRows(url, 'llama');
     if (gen !== _histGen) return;
     if (!rows || !rows.length) return;
     // Clear again after the await: a live fetchMetrics tick can append a
@@ -1035,15 +1058,13 @@ function _makeHistoryBackfill(provider, defaultAgentKey, resetCharts, paintRow) 
     if (agent !== lastAgent) resetCharts();
     lastAgent = agent;
     if (!agent) return;
-    try {
-      const rows = await fetch(`/api/history?agent=${encodeURIComponent(agent)}`)
-        .then(r => r.json());
-      if (g !== gen) return;
-      if (rows && rows.length) {
-        resetCharts();
-        for (const r of rows.slice(-MAX_POINTS)) paintRow(r);
-      }
-    } catch (e) { console.error(provider + ' history error:', e); }
+    const rows = await _historyRows(
+      `/api/history?agent=${encodeURIComponent(agent)}`, provider);
+    if (g !== gen) return;
+    if (rows && rows.length) {
+      resetCharts();
+      for (const r of rows.slice(-MAX_POINTS)) paintRow(r);
+    }
   };
 }
 
@@ -1110,15 +1131,13 @@ const loadVllmHistory = _makeHistoryBackfill('vllm', '__VLLM_AGENT',
 // no llama calls (#142, #506).
 async function loadOverallHistory() {
   if (typeof ovLlamaChart === 'undefined' || !ovLlamaChart) return;
-  try {
-    const rows = await fetch('/api/history?fleet=llama').then(r => r.json());
-    if (!rows || !rows.length) return;
-    _clearChart(ovLlamaChart);  // discard any racing live point (#137)
-    for (const r of rows.slice(-MAX_POINTS)) {
-      if (r.llama_tps != null || r.llama_pps != null)
-        pushDual(ovLlamaChart, r.ts, r.llama_tps, r.llama_pps);
-    }
-  } catch (e) { console.error('Overall llama history error:', e); }
+  const rows = await _historyRows('/api/history?fleet=llama', 'Overall llama');
+  if (!rows || !rows.length) return;
+  _clearChart(ovLlamaChart);  // discard any racing live point (#137)
+  for (const r of rows.slice(-MAX_POINTS)) {
+    if (r.llama_tps != null || r.llama_pps != null)
+      pushDual(ovLlamaChart, r.ts, r.llama_tps, r.llama_pps);
+  }
 }
 
 // ---------------------------------------------------------------------------

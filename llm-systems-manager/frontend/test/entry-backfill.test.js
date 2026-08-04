@@ -65,12 +65,36 @@ describe('_makeHistoryBackfill pre-fetch clear (#507)', () => {
   });
   // An unconditional pre-fetch reset blanks the window when the fetch fails.
   test('has no unconditional pre-fetch resetCharts call', () => {
-    const preFetch = body.slice(0, body.indexOf('await fetch'));
-    expect(preFetch).not.toMatch(/^\s*resetCharts\(\);/m);
+    const idx = body.indexOf('_historyRows');
+    expect(idx).toBeGreaterThan(-1);
+    expect(body.slice(0, idx)).not.toMatch(/^\s*resetCharts\(\);/m);
   });
   test('still repaints from a clean slate once rows arrive', () => {
-    const postFetch = body.slice(body.indexOf('await fetch'));
-    expect(postFetch).toContain('resetCharts()');
+    expect(body.slice(body.indexOf('_historyRows'))).toContain('resetCharts()');
+  });
+});
+
+// An auth-gated 401 answers with a JSON object, so r.json() resolves and a
+// bare rows.length check skips the repaint with no error anywhere (#507).
+describe('history fetches detect non-array responses (#507)', () => {
+  const helper = charts.slice(charts.indexOf('async function _historyRows'));
+  const body = helper.slice(0, helper.indexOf('\n}'));
+  test('_historyRows rejects a non-ok response and logs it', () => {
+    expect(body).toContain('if (!r.ok)');
+    expect(body).toMatch(/console\.error/);
+  });
+  test('_historyRows rejects a non-array payload and logs it', () => {
+    expect(body).toContain('Array.isArray(rows)');
+  });
+  test.each([
+    ['loadHistory', 'async function loadHistory'],
+    ['_makeHistoryBackfill', 'function _makeHistoryBackfill'],
+    ['loadOverallHistory', 'async function loadOverallHistory'],
+  ])('%s routes its fetch through _historyRows', (_name, anchor) => {
+    const fn = charts.slice(charts.indexOf(anchor));
+    const fnBody = fn.slice(0, fn.indexOf('\n}'));
+    expect(fnBody).toContain('_historyRows');
+    expect(fnBody).not.toMatch(/await fetch\(/);
   });
 });
 
