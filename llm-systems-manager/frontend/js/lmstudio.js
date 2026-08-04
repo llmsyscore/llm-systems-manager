@@ -53,6 +53,13 @@ const lmsIoChart = lmsIoChartCtx ? new Chart(lmsIoChartCtx, {
   options: { animation: false, responsive: true, maintainAspectRatio: false, interaction: _sparkInteraction, scales: { x: { type: 'time', display: false }, y: { min: 0, display: true, ticks: { color: cssVar('--fg-muted'), font: { size: 10 } } } }, plugins: { legend: { display: false }, tooltip: _sparkTooltip, zoom: _zoomOpts } }
 }) : null;
 
+const lmsGpuChartCtx = document.getElementById('lmsGpuChart')?.getContext('2d');
+const lmsGpuChart = lmsGpuChartCtx ? new Chart(lmsGpuChartCtx, {
+  type: 'line',
+  data: { datasets: [{ label: 'GPU busy %', data: [], borderColor: '#a7f', borderWidth: 1.5, pointRadius: 0, pointHoverRadius: 4, fill: false, tension: 0.3 }] },
+  options: { animation: false, responsive: true, maintainAspectRatio: false, interaction: _sparkInteraction, scales: { x: { type: 'time', display: false }, y: { min: 0, max: 100, display: true, ticks: { color: cssVar('--fg-muted'), font: { size: 10 }, callback: v => v + '%' } } }, plugins: { legend: { display: false }, tooltip: _sparkTooltip, zoom: _zoomOpts } }
+}) : null;
+
 const lmsDiskUsageChartCtx = document.getElementById('lmsDiskUsageChart')?.getContext('2d');
 const lmsDiskUsageChart = lmsDiskUsageChartCtx ? new Chart(lmsDiskUsageChartCtx, {
   type: 'line',
@@ -221,7 +228,7 @@ async function fetchLMStudioMetrics() {
     if (lmsIoChart && dio.read_bytes_per_sec != null) pushDual(lmsIoChart, ts, ioR, ioW);
 
     // powermetrics card — fed by this payload's mac_power block (#502)
-    _renderLmsPowerCard(d, online);
+    _renderLmsPowerCard(d, online, ts);
 
     // Model list — use ps for status, models for IDs
     const modelListEl = document.getElementById('lmsDashModelList');
@@ -327,7 +334,7 @@ async function fetchLMStudioMetrics() {
 
 // powermetrics card painter — reads the mac_power block from the 6s metrics
 // payload (#502). Badge shows "no data" when the agent is offline or non-Mac.
-function _renderLmsPowerCard(d, online) {
+function _renderLmsPowerCard(d, online, ts) {
   const mac = (online && d.mac_power && typeof d.mac_power === 'object') ? d.mac_power : null;
   const has = !!(mac && Object.keys(mac).length);
   const v = k => (has && mac[k] != null) ? mac[k] : null;
@@ -340,6 +347,7 @@ function _renderLmsPowerCard(d, online) {
   _setEl('mpThermal', tpN == null ? '—' : ['Nominal','Fair','Serious','Critical'][Math.round(tpN)] || '—');
   const gbusy = v('gpu_busy_pct');
   _setEl('mpGpuBusyVal', gbusy != null ? gbusy.toFixed(1) + '%' : '—');
+  if (lmsGpuChart && gbusy != null) pushPoint(lmsGpuChart, ts || new Date(), gbusy);
   const pfreq = v('pcore_freq_mhz'), putil = v('pcore_util_pct');
   const efreq = v('ecore_freq_mhz'), eutil = v('ecore_util_pct');
   _setEl('mpPcore', pfreq == null && putil == null ? '—'

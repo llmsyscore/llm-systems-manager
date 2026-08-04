@@ -899,7 +899,8 @@ function _resetLmsCharts() {
    typeof lmsNetChart !== 'undefined' ? lmsNetChart : null,
    typeof lmsTpsChart !== 'undefined' ? lmsTpsChart : null,
    typeof lmsIoChart !== 'undefined' ? lmsIoChart : null,
-   typeof lmsDiskUsageChart !== 'undefined' ? lmsDiskUsageChart : null]
+   typeof lmsDiskUsageChart !== 'undefined' ? lmsDiskUsageChart : null,
+   typeof lmsGpuChart !== 'undefined' ? lmsGpuChart : null]
     .forEach(_clearChart);
 }
 
@@ -1045,9 +1046,9 @@ function _makeHistoryBackfill(provider, defaultAgentKey, resetCharts, paintRow) 
   };
 }
 
-// Backfill the LM Studio host charts (CPU/RAM/Net/IO/disk) from the selected
-// LMS agent's history. Makes no llama calls — Overall backfills separately.
-const loadLmsHistory = _makeHistoryBackfill('lms', '__LMS_AGENT',
+// Backfill the LM Studio host charts (CPU/RAM/Net/IO/disk/GPU) from the
+// selected LMS agent's history. Makes no llama calls — Overall backfills separately.
+const _loadLmsHostHistory = _makeHistoryBackfill('lms', '__LMS_AGENT',
   () => _resetLmsCharts(),
   (r) => {
     const B_PER_MIB = 1048576;
@@ -1066,7 +1067,38 @@ const loadLmsHistory = _makeHistoryBackfill('lms', '__LMS_AGENT',
     if (typeof lmsDiskUsageChart !== 'undefined' && lmsDiskUsageChart
         && r.disk_root_pct != null)
       pushPoint(lmsDiskUsageChart, r.ts, r.disk_root_pct);
+    if (typeof lmsGpuChart !== 'undefined' && lmsGpuChart
+        && r.mac_gpu_busy != null)
+      pushPoint(lmsGpuChart, r.ts, r.mac_gpu_busy);
   });
+
+// Backfill the LM Studio Server throughput chart from the manager-side
+// gateway token-rate ring (in-memory, so history spans the manager's uptime).
+let _lmsTokHistGen = 0;
+async function loadLmsTokenHistory() {
+  if (typeof lmsTpsChart === 'undefined' || !lmsTpsChart) return;
+  const gen = ++_lmsTokHistGen;
+  const sel = (typeof _selectedAgent === 'function') ? _selectedAgent('lms') : null;
+  const url = '/api/lmstudio/tokens/history'
+    + (sel ? `?agent=${encodeURIComponent(sel)}` : '');
+  try {
+    const r = await fetch(url);
+    if (!r.ok) return;
+    const d = await r.json();
+    if (gen !== _lmsTokHistGen) return;
+    const rows = (d && d.rows) || [];
+    if (!rows.length) return;
+    _clearChart(lmsTpsChart);  // discard any racing live point (#137)
+    for (const row of rows.slice(-MAX_POINTS))
+      pushDual(lmsTpsChart, row.ts, row.gen_tps, row.prompt_tps);
+  } catch (e) { console.error('lms token history error:', e); }
+}
+
+// Host history first (its reset wipes lmsTpsChart), then the token backfill.
+async function loadLmsHistory() {
+  await _loadLmsHostHistory();
+  await loadLmsTokenHistory();
+}
 
 // Backfill the vLLM KV-cache/throughput + host (CPU/RAM/Net/IO/disk) charts
 // from the selected vLLM agent's history (#358, #502).

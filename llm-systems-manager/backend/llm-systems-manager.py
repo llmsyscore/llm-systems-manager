@@ -154,7 +154,7 @@ def _local_hostname() -> str:
 # banner reads it. Bump suffix (-1, -2, …) for same-day iterations; roll
 # the date for a new day's first change.
 # ---------------------------------------------------------------------------
-__version__ = "v2026.08.03-6"
+__version__ = "v2026.08.04-1"
 
 # Wall-clock at first import (Cheroot main process); the shutdown banner
 # reads it for the uptime line.
@@ -833,6 +833,8 @@ _HISTORY_LEGACY_FIELD_MAP = [
     ("system",  "liquidctl_aio_Liquid temperature_value",  "aio_temp"),
     ("system",  "liquidctl_psu_Total power output_value",     "psu_out"),
     ("system",  "liquidctl_psu_Estimated input power_value",  "psu_in"),
+    # Apple-silicon GPU residency for the powermetrics card's chart (#502).
+    ("mac_power", "gpu_busy_pct",                              "mac_gpu_busy"),
     # Llama-server stats aren't ingested into the alarm engine yet — agents
     # push them straight to the manager's /api/remote/host-metrics. Leave
     # placeholders so the legacy field names exist; they stay None until
@@ -2318,6 +2320,16 @@ def get_lmstudio_metrics():
         data["gateway_tokens"] = (gateway_usage.counters().get(aid)
                                   or {"gen": 0, "prompt": 0})
     return jsonify(data)
+
+
+@app.route("/api/lmstudio/tokens/history")
+def lmstudio_tokens_history():
+    """Gateway token-rate ring for the primary (or ?agent=) LMS agent —
+    backfills the LM Studio Server card's throughput chart (#502)."""
+    aid = (flask_request.args.get("agent")
+           or agent_registry.default_agent_id_for("lms"))
+    return jsonify({"agent_id": aid,
+                    "rows": gateway_usage.history_rates(aid) if aid else []})
 
 
 @app.route("/api/lmstudio/models")
@@ -5349,6 +5361,9 @@ if __name__ == "__main__":
 
     # Energy accumulator (#470): 10s STORE snapshots → hourly SQLite rows.
     energy.start_thread(ctx)
+
+    # Gateway token-counter sampler (#502): 5s ring feeding tokens/history.
+    gateway_usage.start_sampler()
 
     # Discord bot (#471): gateway thread, only when [manager.discord] enables it.
     discord_bot.start_thread(ctx)
