@@ -138,11 +138,12 @@ const CARD_LABELS_OVERALL = {
 };
 const CARD_LABELS_LMS = {
   'lms-models':  'LM Studio Models',
-  'lms-active':  'Active Model',
+  'lms-active':  'LM Studio Server',
   'lms-cpu':     'LM Studio CPU',
   'lms-ram':     'LM Studio RAM',
   'lms-network': 'LM Studio Network',
   'lms-disk':    'LM Studio Disk',
+  'lms-io':      'LM Studio Disk IO',
   'lms-power':   'LM Studio powermetrics',
 };
 const CARD_LABELS_VLLM = {
@@ -154,6 +155,7 @@ const CARD_LABELS_VLLM = {
   'vllm-ram':        'vLLM RAM',
   'vllm-network':    'vLLM Network',
   'vllm-disk':       'vLLM Disk',
+  'vllm-io':         'vLLM Disk IO',
 };
 const CARD_LABELS_MANAGER = {
   'services':         'Services',

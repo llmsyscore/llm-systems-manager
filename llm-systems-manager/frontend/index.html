@@ -922,30 +922,45 @@ Backend API endpoints consumed:
         </div>
       </div>
 
-      <!-- LMS Active Model -->
+      <!-- LMS Server — model info + gateway-measured throughput (#502) -->
       <div class="card" data-card="lms-active">
         <span class="card-handle" title="Drag to reorder">⠿</span>
-        <h3>Active Model</h3>
-        <div class="sub" id="lms-active-model" style="color:var(--fg);word-break:break-all;margin-bottom:8px;">—</div>
-        <div class="stat-row cols2">
-          <div><div class="stat" id="lms-active-status" style="font-size:1.1em;">—</div><div class="sub">status</div></div>
-          <div><div class="stat" id="lms-active-size" style="font-size:1.1em;">—</div><div class="sub">size</div></div>
+        <h3>LM Studio Server</h3>
+        <div class="sub" id="lms-active-model" style="margin-bottom:10px;color:var(--fg);word-break:break-all;">—</div>
+        <div class="llama-grid">
+          <div class="llama-item"><div class="val" id="lms-pps">—</div><div class="lbl">Prompt tokens/s</div></div>
+          <div class="llama-item"><div class="val" id="lms-tps">—</div><div class="lbl">Gen tokens/s</div></div>
+          <div class="llama-item"><div class="val" id="lms-prompt-tokens">—</div><div class="lbl">Tokens prompted</div></div>
+          <div class="llama-item"><div class="val" id="lms-gen-tokens">—</div><div class="lbl">Tokens generated</div></div>
+          <div class="llama-item"><div class="val" id="lms-active-status">—</div><div class="lbl">Status</div></div>
+          <div class="llama-item"><div class="val" id="lms-active-size">—</div><div class="lbl">Size</div></div>
+          <div class="llama-item"><div class="val" id="lms-active-ctx">—</div><div class="lbl">Context</div></div>
+          <div class="llama-item"><div class="val" id="lms-active-parallel">—</div><div class="lbl">Parallel</div></div>
+          <div class="llama-item"><div class="val" id="lms-active-device">—</div><div class="lbl">Device</div></div>
+          <div class="llama-item"><div class="val" id="lms-active-port">—</div><div class="lbl">Port</div></div>
         </div>
-        <div class="stat-row cols3" style="margin-top:8px;">
-          <div><div class="sub">Context</div><div id="lms-active-ctx" style="color:var(--fg-muted);font-size:0.9em;">—</div></div>
-          <div><div class="sub">Parallel</div><div id="lms-active-parallel" style="color:var(--fg-muted);font-size:0.9em;">—</div></div>
-          <div><div class="sub">Device</div><div id="lms-active-device" style="color:var(--fg-muted);font-size:0.9em;">—</div></div>
+        <div class="legend-row" style="margin-top:10px;">
+          <span><span class="legend-dot" style="background:var(--accent)"></span>Gen t/s</span>
+          <span><span class="legend-dot" style="background:var(--warn)"></span>Prompt t/s</span>
         </div>
+        <div class="chart-wrap" style="height:140px;"><canvas id="lmsTpsChart" role="img" aria-label="LM Studio token throughput over time"></canvas></div>
+        <div class="sub" style="margin-top:4px;font-size:0.72em;color:var(--fg-dim);">Token counts measured at the manager gateway (/v1 traffic routed through it).</div>
       </div>
 
       <!-- LMS CPU -->
       <div class="card" data-card="lms-cpu">
         <span class="card-handle" title="Drag to reorder">⠿</span>
         <h3>CPU</h3>
-        <div class="stat" id="lms-cpu-total">—</div>
+        <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:4px;">
+          <div class="stat" id="lms-cpu-total">—</div>
+          <div style="text-align:right;">
+            <div class="sub" id="lms-cpu-temp" style="font-size:0.85em;color:var(--fg-muted);"></div>
+            <div class="sub" id="lms-cpu-governor" style="font-size:0.75em;color:var(--fg-dim);margin-top:2px;"></div>
+          </div>
+        </div>
         <div class="sub">% utilization</div>
+        <div class="chart-wrap"><canvas id="lmsCpuChart" role="img" aria-label="LM Studio host CPU usage over time"></canvas></div>
         <div class="core-grid" id="lmsCoreGrid" style="margin-top:10px;"></div>
-        <div class="chart-wrap" style="margin-top:10px;height:80px;"><canvas id="lmsCpuChart"></canvas></div>
       </div>
 
       <!-- LMS RAM -->
@@ -953,12 +968,14 @@ Backend API endpoints consumed:
         <span class="card-handle" title="Drag to reorder">⠿</span>
         <h3>RAM</h3>
         <div class="stat" id="lms-ram-pct">—</div>
-        <div class="sub" id="lms-ram-sub">—</div>
-        <div class="stat-row cols2" style="margin-top:8px;">
-          <div><div class="sub">Swap used</div><div id="lms-swap-used" style="color:var(--fg-muted);font-size:0.9em;">—</div></div>
-          <div><div class="sub">Available</div><div id="lms-ram-avail" style="color:var(--fg-muted);font-size:0.9em;">—</div></div>
+        <div class="sub" id="lms-ram-sub"></div>
+        <div style="margin-top:12px;font-size:0.8em;color:var(--fg-dim);display:grid;grid-template-columns:1fr 1fr;gap:5px;">
+          <div>Cached: <span id="lms-ram-cached" style="color:var(--fg-muted)">—</span></div>
+          <div>Buffers: <span id="lms-ram-buffers" style="color:var(--fg-muted)">—</span></div>
+          <div>Swap used: <span id="lms-swap-used" style="color:var(--fg-muted)">—</span></div>
+          <div>Swap free: <span id="lms-swap-free" style="color:var(--fg-muted)">—</span></div>
         </div>
-        <div class="chart-wrap" style="margin-top:10px;height:120px;"><canvas id="lmsRamChart"></canvas></div>
+        <div class="chart-wrap" style="margin-top:28px;"><canvas id="lmsRamChart" role="img" aria-label="LM Studio host RAM usage over time"></canvas></div>
       </div>
 
       <!-- LMS Network -->
@@ -969,14 +986,33 @@ Backend API endpoints consumed:
           <div><div class="stat" id="lms-net-sent">—</div><div class="sub">MiB/s out</div></div>
           <div><div class="stat" id="lms-net-recv">—</div><div class="sub">MiB/s in</div></div>
         </div>
-        <div class="chart-wrap" style="margin-top:10px;height:120px;"><canvas id="lmsNetChart"></canvas></div>
+        <div class="chart-wrap"><canvas id="lmsNetChart" role="img" aria-label="LM Studio host network throughput over time"></canvas></div>
       </div>
 
       <!-- LMS Disk -->
       <div class="card" data-card="lms-disk">
         <span class="card-handle" title="Drag to reorder">⠿</span>
-        <h3>Disk Usage</h3>
+        <h3>Disk usage</h3>
         <div class="disk-list" id="lmsDiskList"></div>
+        <div class="legend-row" style="margin-top:15px;">
+          <span><span class="legend-dot" style="background:#4a9"></span>/</span>
+        </div>
+        <div class="chart-wrap" style="margin-top:6px;"><canvas id="lmsDiskUsageChart" role="img" aria-label="LM Studio host disk usage over time"></canvas></div>
+      </div>
+
+      <!-- LMS Disk IO -->
+      <div class="card" data-card="lms-io">
+        <span class="card-handle" title="Drag to reorder">⠿</span>
+        <h3>Disk IO</h3>
+        <div class="stat-row cols2">
+          <div><div class="stat" id="lms-io-read">—</div><div class="sub">MiB/s read</div></div>
+          <div><div class="stat" id="lms-io-write">—</div><div class="sub">MiB/s write</div></div>
+        </div>
+        <div class="legend-row">
+          <span><span class="legend-dot" style="background:#a7f"></span>Read</span>
+          <span><span class="legend-dot" style="background:#f7a"></span>Write</span>
+        </div>
+        <div class="chart-wrap"><canvas id="lmsIoChart" role="img" aria-label="LM Studio host disk IO over time"></canvas></div>
       </div>
 
       <!-- powermetrics — Apple Silicon thermal/power/GPU residency.
@@ -1056,10 +1092,16 @@ Backend API endpoints consumed:
       <div class="card" data-card="vllm-cpu">
         <span class="card-handle" title="Drag to reorder">⠿</span>
         <h3>CPU</h3>
-        <div class="stat" id="vllm-cpu-total">—</div>
+        <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:4px;">
+          <div class="stat" id="vllm-cpu-total">—</div>
+          <div style="text-align:right;">
+            <div class="sub" id="vllm-cpu-temp" style="font-size:0.85em;color:var(--fg-muted);"></div>
+            <div class="sub" id="vllm-cpu-governor" style="font-size:0.75em;color:var(--fg-dim);margin-top:2px;"></div>
+          </div>
+        </div>
         <div class="sub">% utilization</div>
+        <div class="chart-wrap"><canvas id="vllmCpuChart" role="img" aria-label="vLLM host CPU usage over time"></canvas></div>
         <div class="core-grid" id="vllmCoreGrid" style="margin-top:10px;"></div>
-        <div class="chart-wrap" style="margin-top:10px;height:80px;"><canvas id="vllmCpuChart"></canvas></div>
       </div>
 
       <!-- vLLM host RAM -->
@@ -1067,12 +1109,14 @@ Backend API endpoints consumed:
         <span class="card-handle" title="Drag to reorder">⠿</span>
         <h3>RAM</h3>
         <div class="stat" id="vllm-ram-pct">—</div>
-        <div class="sub" id="vllm-ram-sub">—</div>
-        <div class="stat-row cols2" style="margin-top:8px;">
-          <div><div class="sub">Swap used</div><div id="vllm-swap-used" style="color:var(--fg-muted);font-size:0.9em;">—</div></div>
-          <div><div class="sub">Available</div><div id="vllm-ram-avail" style="color:var(--fg-muted);font-size:0.9em;">—</div></div>
+        <div class="sub" id="vllm-ram-sub"></div>
+        <div style="margin-top:12px;font-size:0.8em;color:var(--fg-dim);display:grid;grid-template-columns:1fr 1fr;gap:5px;">
+          <div>Cached: <span id="vllm-ram-cached" style="color:var(--fg-muted)">—</span></div>
+          <div>Buffers: <span id="vllm-ram-buffers" style="color:var(--fg-muted)">—</span></div>
+          <div>Swap used: <span id="vllm-swap-used" style="color:var(--fg-muted)">—</span></div>
+          <div>Swap free: <span id="vllm-swap-free" style="color:var(--fg-muted)">—</span></div>
         </div>
-        <div class="chart-wrap" style="margin-top:10px;height:120px;"><canvas id="vllmRamChart"></canvas></div>
+        <div class="chart-wrap" style="margin-top:28px;"><canvas id="vllmRamChart" role="img" aria-label="vLLM host RAM usage over time"></canvas></div>
       </div>
 
       <!-- vLLM host Network -->
@@ -1083,14 +1127,33 @@ Backend API endpoints consumed:
           <div><div class="stat" id="vllm-net-sent">—</div><div class="sub">MiB/s out</div></div>
           <div><div class="stat" id="vllm-net-recv">—</div><div class="sub">MiB/s in</div></div>
         </div>
-        <div class="chart-wrap" style="margin-top:10px;height:120px;"><canvas id="vllmNetChart"></canvas></div>
+        <div class="chart-wrap"><canvas id="vllmNetChart" role="img" aria-label="vLLM host network throughput over time"></canvas></div>
       </div>
 
       <!-- vLLM host Disk -->
       <div class="card" data-card="vllm-disk">
         <span class="card-handle" title="Drag to reorder">⠿</span>
-        <h3>Disk Usage</h3>
+        <h3>Disk usage</h3>
         <div class="disk-list" id="vllmDiskList"></div>
+        <div class="legend-row" style="margin-top:15px;">
+          <span><span class="legend-dot" style="background:#4a9"></span>/</span>
+        </div>
+        <div class="chart-wrap" style="margin-top:6px;"><canvas id="vllmDiskUsageChart" role="img" aria-label="vLLM host disk usage over time"></canvas></div>
+      </div>
+
+      <!-- vLLM host Disk IO -->
+      <div class="card" data-card="vllm-io">
+        <span class="card-handle" title="Drag to reorder">⠿</span>
+        <h3>Disk IO</h3>
+        <div class="stat-row cols2">
+          <div><div class="stat" id="vllm-io-read">—</div><div class="sub">MiB/s read</div></div>
+          <div><div class="stat" id="vllm-io-write">—</div><div class="sub">MiB/s write</div></div>
+        </div>
+        <div class="legend-row">
+          <span><span class="legend-dot" style="background:#a7f"></span>Read</span>
+          <span><span class="legend-dot" style="background:#f7a"></span>Write</span>
+        </div>
+        <div class="chart-wrap"><canvas id="vllmIoChart" role="img" aria-label="vLLM host disk IO over time"></canvas></div>
       </div>
 
     </div>
@@ -1823,13 +1886,13 @@ Backend API endpoints consumed:
 </div><!-- end llmTab -->
 
 <script src="/static/js/lib/layout.js?v=2026.07.10-1"></script>
-<script src="/static/js/foundation.js?v=2026.07.15-1"></script>
-<script src="/static/js/lib/series.js?v=2026.07.20-1"></script>
+<script src="/static/js/foundation.js?v=2026.08.03-1"></script>
+<script src="/static/js/lib/series.js?v=2026.08.03-1"></script>
 <script src="/static/js/lib/benchaxis.js?v=2026.06.28-1"></script>
 <script src="/static/js/lib/thresholds.js?v=2026.06.26-3"></script>
 <script src="/static/js/lib/reportcard.js?v=2026.07.27-1"></script>
 <script src="/static/js/lib/energy.js?v=2026.07.31-1"></script>
-<script src="/static/js/charts.js?v=2026.07.31-1"></script>
+<script src="/static/js/charts.js?v=2026.08.03-1"></script>
 <script src="/static/js/terminal.js?v=2026.07.11-1"></script>
 <script src="/static/js/llmcontrol.js?v=2026.07.11-1"></script>
 <script src="/static/js/openclaw.js?v=2026.08.03-1"></script>
@@ -1837,13 +1900,13 @@ Backend API endpoints consumed:
 <script src="/static/js/autopilot.js?v=2026.07.31-2"></script>
 <script src="/static/js/llmcontrol-models.js?v=2026.06.10-6"></script>
 <script src="/static/js/bench-autotune.js?v=2026.06.25-9"></script>
-<script src="/static/js/lmstudio.js?v=2026.06.26-3"></script>
-<script src="/static/js/vllm.js?v=2026.07.15-1"></script>
+<script src="/static/js/lmstudio.js?v=2026.08.03-1"></script>
+<script src="/static/js/vllm.js?v=2026.08.03-1"></script>
 <script src="/static/js/vllm-bench-autotune.js?v=2026.07.12-2"></script>
 <script src="/static/js/report-card.js?v=2026.08.02-4"></script>
 <script src="/static/js/energy.js?v=2026.07.31-1"></script>
 <script src="/static/js/overall.js?v=2026.07.11-1"></script>
-<script src="/static/js/dashboard-manager.js?v=2026.07.20-1"></script>
+<script src="/static/js/dashboard-manager.js?v=2026.08.03-1"></script>
 
 <!-- Settings panel — kept at body root so it's never inside a hidden tab container -->
 <div class="settings-overlay" id="settingsOverlay" onclick="if(event.target===this)closeSettings()">

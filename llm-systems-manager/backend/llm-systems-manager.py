@@ -154,7 +154,7 @@ def _local_hostname() -> str:
 # banner reads it. Bump suffix (-1, -2, …) for same-day iterations; roll
 # the date for a new day's first change.
 # ---------------------------------------------------------------------------
-__version__ = "v2026.08.03-5"
+__version__ = "v2026.08.03-6"
 
 # Wall-clock at first import (Cheroot main process); the shutdown banner
 # reads it for the uptime line.
@@ -176,6 +176,7 @@ _cheroot_servers: list = []
 import model_profiles  # type: ignore[import-not-found]  # noqa: E402  # leaf, no cycle
 import report_card  # type: ignore[import-not-found]  # noqa: E402  # leaf, no cycle; #468
 import energy  # type: ignore[import-not-found]  # noqa: E402  # leaf, no cycle; #470
+import gateway_usage  # type: ignore[import-not-found]  # noqa: E402  # leaf, no cycle; #502
 import discord_bot  # type: ignore[import-not-found]  # noqa: E402  # leaf, no cycle; #471
 
 
@@ -2303,14 +2304,21 @@ def _provider_metrics_payload(provider: str) -> dict:
                     f"[agent {aid[:8]}]")
     data["agent_online"] = online
     data["agent_age_s"]  = round(age, 1) if last_seen else None
+    data["agent_id"]     = aid
     return data
 
 
 @app.route("/api/lmstudio/metrics")
 def get_lmstudio_metrics():
     """Return latest LM Studio metrics for the primary LMS agent.
-    Optional ?agent= targets a specific LMS agent."""
-    return jsonify(_provider_metrics_payload("lms"))
+    Optional ?agent= targets a specific LMS agent. gateway_tokens carries
+    the gateway's cumulative proxied token counters for that agent (#502)."""
+    data = _provider_metrics_payload("lms")
+    aid = data.get("agent_id")
+    if aid:
+        data["gateway_tokens"] = (gateway_usage.counters().get(aid)
+                                  or {"gen": 0, "prompt": 0})
+    return jsonify(data)
 
 
 @app.route("/api/lmstudio/models")

@@ -896,7 +896,10 @@ function _resetMetricCharts() {
 function _resetLmsCharts() {
   [typeof lmsCpuChart !== 'undefined' ? lmsCpuChart : null,
    typeof lmsRamChart !== 'undefined' ? lmsRamChart : null,
-   typeof lmsNetChart !== 'undefined' ? lmsNetChart : null]
+   typeof lmsNetChart !== 'undefined' ? lmsNetChart : null,
+   typeof lmsTpsChart !== 'undefined' ? lmsTpsChart : null,
+   typeof lmsIoChart !== 'undefined' ? lmsIoChart : null,
+   typeof lmsDiskUsageChart !== 'undefined' ? lmsDiskUsageChart : null]
     .forEach(_clearChart);
 }
 
@@ -1056,6 +1059,13 @@ const loadLmsHistory = _makeHistoryBackfill('lms', '__LMS_AGENT',
       pushDual(lmsNetChart, r.ts,
         r.net_sent != null ? r.net_sent / B_PER_MIB : null,
         r.net_recv != null ? r.net_recv / B_PER_MIB : null);
+    if (typeof lmsIoChart !== 'undefined' && lmsIoChart
+        && (r.io_read != null || r.io_write != null))
+      pushDual(lmsIoChart, r.ts,
+        (r.io_read || 0) / B_PER_MIB, (r.io_write || 0) / B_PER_MIB);
+    if (typeof lmsDiskUsageChart !== 'undefined' && lmsDiskUsageChart
+        && r.disk_root_pct != null)
+      pushPoint(lmsDiskUsageChart, r.ts, r.disk_root_pct);
   });
 
 // Backfill the vLLM KV-cache + throughput charts from the selected vLLM
@@ -1063,11 +1073,27 @@ const loadLmsHistory = _makeHistoryBackfill('lms', '__LMS_AGENT',
 const loadVllmHistory = _makeHistoryBackfill('vllm', '__VLLM_AGENT',
   () => { if (typeof _resetVllmCharts === 'function') _resetVllmCharts(); },
   (r) => {
+    const B_PER_MIB = 1048576;
     if (typeof vllmKvChart !== 'undefined' && vllmKvChart && r.vllm_kv != null)
       pushPoint(vllmKvChart, r.ts, r.vllm_kv);
     if (typeof vllmTpsChart !== 'undefined' && vllmTpsChart
         && (r.vllm_tps != null || r.vllm_pps != null))
       pushDual(vllmTpsChart, r.ts, r.vllm_tps || 0, r.vllm_pps || 0);
+    if (typeof vllmCpuChart !== 'undefined' && vllmCpuChart && r.cpu_total != null)
+      pushPoint(vllmCpuChart, r.ts, r.cpu_total);
+    if (typeof vllmRamChart !== 'undefined' && vllmRamChart && r.ram_percent != null)
+      pushPoint(vllmRamChart, r.ts, r.ram_percent);
+    if (typeof vllmNetChart !== 'undefined' && vllmNetChart)
+      pushDual(vllmNetChart, r.ts,
+        r.net_sent != null ? r.net_sent / B_PER_MIB : null,
+        r.net_recv != null ? r.net_recv / B_PER_MIB : null);
+    if (typeof vllmIoChart !== 'undefined' && vllmIoChart
+        && (r.io_read != null || r.io_write != null))
+      pushDual(vllmIoChart, r.ts,
+        (r.io_read || 0) / B_PER_MIB, (r.io_write || 0) / B_PER_MIB);
+    if (typeof vllmDiskUsageChart !== 'undefined' && vllmDiskUsageChart
+        && r.disk_root_pct != null)
+      pushPoint(vllmDiskUsageChart, r.ts, r.disk_root_pct);
   });
 
 // Backfill the Overall-tab llama TPS chart (Gen / Prompt) from the fleet
