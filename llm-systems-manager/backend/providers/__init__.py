@@ -23,6 +23,8 @@ class ProviderSpec:
     push_endpoint_legacy: str = ""
     default_picker: str = "first_approved"
     pin_dict_key: Optional[str] = None
+    # True when one host serves exactly one model at a time (load displaces).
+    single_resident: bool = False
     gateway_enabled: bool = False
     sub_tab_keys: tuple = ()
     aggregator: Optional[Callable[[dict[str, dict]], dict]] = None

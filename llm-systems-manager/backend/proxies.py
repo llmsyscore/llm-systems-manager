@@ -307,7 +307,8 @@ def _resolve_target(pk: str, model_id: "str | None",
                        else None)
             return pinned, override
     if agent_id:
-        a = agent_registry.resolve_agent_by_id(agent_id, capability=pk)
+        cap = spec.capability_key if spec else pk
+        a = agent_registry.resolve_agent_by_id(agent_id, capability=cap)
         if a:
             return a, None
     # Pin already resolved/excluded above — pass model_id=None so pick_agent

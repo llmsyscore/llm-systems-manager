@@ -47,7 +47,12 @@ def _validate_placement(val) -> str:
 def validate_state(raw: dict) -> dict:
     out = {"enabled": bool(raw.get("enabled")), "entries": [], "hosts": {}}
     seen = set()
-    for e in raw.get("entries") or []:
+    entries = raw.get("entries") or []
+    if not isinstance(entries, list):
+        raise ValueError("entries must be a list")
+    for e in entries:
+        if not isinstance(e, dict):
+            raise ValueError("each entry must be an object")
         model = (e.get("model") or "").strip()
         prov = e.get("provider")
         if not model:
@@ -76,13 +81,13 @@ def validate_state(raw: dict) -> dict:
                 raise ValueError(f"size_mb must be >= 1, got {mb}")
             ne["size_mb"] = mb
         if mx > mn:
-            ne["autoscale"] = {**_AUTOSCALE_DEFAULTS, **(e.get("autoscale") or {})}
+            asc = e.get("autoscale")
+            if asc is not None and not isinstance(asc, dict):
+                raise ValueError(f"bad autoscale {asc!r}")
+            ne["autoscale"] = {**_AUTOSCALE_DEFAULTS, **(asc or {})}
         out["entries"].append(ne)
-    for aid, pol in (raw.get("hosts") or {}).items():
-        mins = _coerce_int(pol.get("sleep_after_idle_min", 0), "sleep_after_idle_min")
-        if mins < 0:
-            raise ValueError("sleep_after_idle_min must be >= 0")
-        out["hosts"][aid] = {"sleep_after_idle_min": mins}
+    # Any submitted hosts config is ignored (idle sleep is llama-server's
+    # own --sleep-idle-seconds).
     return out
 
 
@@ -187,8 +192,6 @@ def build_observed(deps: dict) -> dict:
             "ram_free_mb": ram_free_mb,
             "loaded": loaded,
             "server_state": server_state,
-            # No per-model idle timestamp is pushed by any provider today.
-            "idle_since": None,
             "saturation": saturation,
         }
     # Entry-declared size_mb overrides win over discovered sizes (#474).
@@ -393,11 +396,50 @@ def _prod_deps() -> dict:
 _SAT_HISTORY_WINDOW_S = 1200.0  # 20 minutes
 
 
+def route_sync_writes(desired: dict, observed: dict, glob: dict,
+                      ledger: "dict | None" = None,
+                      now: "float | None" = None) -> "list[tuple]":
+    """Routing writes converging pins/pools to current placements
+    (observed samples + fresh in-flight ledger placements):
+    ("pin", provider, model, agent_id) and ("pool_add", provider, agent_id)."""
+    writes: "list[tuple]" = []
+    if not desired.get("enabled"):
+        return writes
+    for e in desired.get("entries") or []:
+        prov, model = e["provider"], e["model"]
+        multi = int(e.get("max_replicas", 1)) > 1
+        placed = pl._effective_placements(e, pl._key(e), observed, ledger, now)
+        if not placed:
+            continue
+        if multi:
+            pool = glob.get(f"{prov}_pool") or []
+            writes.extend(("pool_add", prov, aid) for aid in placed
+                          if aid not in pool)
+        spec = providers.get(prov)
+        pin_key = getattr(spec, "pin_dict_key", None)
+        if not pin_key:
+            continue
+        cur = (glob.get(pin_key) or {}).get(model)
+        if multi and len(placed) > 1:
+            # 2+ replicas serving: pool RR governs; a pin would defeat it.
+            if cur is not None:
+                writes.append(("pin", prov, model, None))
+            continue
+        live = [aid for aid in placed
+                if (observed["agents"].get(aid) or {}).get("live")]
+        pick_from = live or placed
+        target = cur if cur in pick_from else pick_from[0]
+        if cur != target:
+            writes.append(("pin", prov, model, target))
+    return writes
+
+
 class Reconciler:
-    def __init__(self, get_state, build_observed, executor):
+    def __init__(self, get_state, build_observed, executor, route_sync=None):
         self._get_state = get_state
         self._observe = build_observed
         self._exec = executor
+        self._route_sync = route_sync
         self._proposals: "dict[str, dict]" = {}
         self._sat_history: "dict[str, list]" = {}
         self.ledger = {"last_action_ts": {}, "placed_at": {},
@@ -406,15 +448,18 @@ class Reconciler:
         # route-triggered apply/dismiss/tick calls (#472 Task 7).
         self._lock = threading.RLock()
         self.last_plan_ts: "float | None" = None
-        # Lock-free read snapshot, reassigned whole after each mutation;
-        # proposals() reads this instead of taking self._lock.
+        # Lock-free read snapshots, reassigned whole after each mutation;
+        # proposals()/ledger_view read these instead of taking self._lock.
         self._snapshot: "list[dict]" = []
+        self.ledger_view: dict = {"last_action_ts": {}, "placed_at": {},
+                                  "in_flight_migrations": 0, "backoff_until": {}}
 
     def tick(self, now: float) -> dict:
         with self._lock:
             desired = self._get_state()
             observed = self._observe()
             self._prune_placed_at(observed, now)
+            self._prune_stale_keys(desired, observed)
             self._refresh_sat_history(desired, observed, now)
             actions = pl.plan(desired, observed, self.ledger, now)
             sig = lambda a: (a.kind, a.provider, a.model, a.agent_id)
@@ -430,19 +475,39 @@ class Reconciler:
                     self._proposals[pid] = {"id": pid, "sig": list(sig(a)),
                                             "action": asdict(a), "created": now,
                                             "reason": a.reason}
+            if self._route_sync:
+                try:
+                    self._route_sync(desired, observed, self.ledger, now)
+                except Exception as e:
+                    log.warning("autopilot route sync failed: %s", e)
             self.last_plan_ts = now
             self._refresh_snapshot()
             return {"actions": [asdict(a) for a in actions],
                     "proposals": self._snapshot,
-                    "entry_status": pl.entry_status(desired, observed)}
+                    "entry_status": pl.entry_status(desired, observed,
+                                                    self.ledger, now)}
+
+    def _prune_stale_keys(self, desired: dict, observed: dict) -> None:
+        """Drop sat-history/ledger keys for entries and agents that no
+        longer exist."""
+        keys = {f"{e['model']}/{e['provider']}"
+                for e in desired.get("entries") or []}
+        for d in (self._sat_history, self.ledger["placed_at"],
+                  self.ledger["backoff_until"]):
+            for k in list(d):
+                if k not in keys:
+                    del d[k]
+        for aid in list(self.ledger["last_action_ts"]):
+            if aid not in observed["agents"]:
+                del self.ledger["last_action_ts"][aid]
 
     def _prune_placed_at(self, observed: dict, now: float) -> None:
         """Drop placed_at[k][aid] once a live agent stops reporting the
-        model loaded, past a COOLDOWN_S grace window; dead agents stay."""
+        model loaded, past a PLACEMENT_FRESH_S grace window; dead agents stay."""
         for k, amap in list(self.ledger["placed_at"].items()):
             model, _, provider = k.rpartition("/")
             for aid, ts in list(amap.items()):
-                if now - ts < pl.COOLDOWN_S:
+                if now - ts < pl.PLACEMENT_FRESH_S:
                     continue
                 agent = observed["agents"].get(aid)
                 if agent is None or not agent["live"]:
@@ -490,8 +555,15 @@ class Reconciler:
         return ok
 
     def _refresh_snapshot(self) -> None:
-        """Publish a fresh read snapshot; caller must already hold self._lock."""
+        """Publish fresh read snapshots; caller must already hold self._lock."""
         self._snapshot = sorted(self._proposals.values(), key=lambda p: p["created"])
+        self.ledger_view = {
+            "last_action_ts": dict(self.ledger["last_action_ts"]),
+            "placed_at": {k: dict(v)
+                          for k, v in self.ledger["placed_at"].items()},
+            "in_flight_migrations": self.ledger["in_flight_migrations"],
+            "backoff_until": dict(self.ledger["backoff_until"]),
+        }
 
     def proposals(self) -> "list[dict]":
         return self._snapshot
@@ -550,6 +622,11 @@ def make_executor(deps: dict, entries_by_key):
             ok = False
         if ok:
             _route_replica(action, True)
+            # Clear other models' pins pointing at this now-displaced host.
+            spec = providers.get(provider)
+            clear = deps.get("clear_host_pins")
+            if getattr(spec, "single_resident", False) and clear:
+                clear(provider, agent_id, model)
         return ok
 
     def _unload(action) -> bool:
@@ -566,8 +643,12 @@ def make_executor(deps: dict, entries_by_key):
         if action.provider == "vllm" and action.auto:
             _audit(action, "refused")
             return False
+        if action.provider == "vllm" and action.kind in ("scale_down", "unload"):
+            # No /vllm/unload agent route exists.
+            _audit(action, "unsupported")
+            return False
         if action.kind == "sleep":
-            # No /llama/server/sleep agent route exists (only .../wake).
+            # Idle sleep is llama-server's own --sleep-idle-seconds.
             _audit(action, "unsupported")
             return False
 
@@ -615,10 +696,16 @@ def _prod_agent_call(agent_id: str, method: str, path: str,
     return r, body
 
 
+# Covers the agent's unload(30s) + settle(2s) + load(120s) worst case.
+_LOAD_TIMEOUT_S = 180.0
+
+
 def _make_prod_proxy(agent_id: str):
-    """proxy dep bound to one action's target agent_id."""
+    """proxy dep bound to one action's target agent_id; load calls get the
+    longer model-load timeout."""
     def _proxy(provider, method, path, json=None):
-        r, body = _prod_agent_call(agent_id, method, path, json)
+        to = _LOAD_TIMEOUT_S if path.endswith("/load") else 30
+        r, body = _prod_agent_call(agent_id, method, path, json, timeout=to)
         return (r is not None and r.ok), body
     return _proxy
 
@@ -645,6 +732,29 @@ def _prod_set_pin(provider: str, model: str, agent_id: "str | None") -> None:
 def _prod_pool_update(provider: str, agent_id: str, in_pool: bool) -> bool:
     ok, _err, _pool, _hostname = agent_registry.set_pool_membership(agent_id, provider, in_pool)
     return ok
+
+
+def _prod_clear_host_pins(provider: str, agent_id: str, keep_model: str) -> None:
+    """Remove <provider>_model_pins entries pointing at agent_id for any
+    model other than keep_model."""
+    spec = providers.get(provider)
+    pin_key = getattr(spec, "pin_dict_key", None)
+    if not pin_key:
+        return
+    with agent_registry.agents_lock:
+        data = agent_registry.load_agents()
+        glob = data.setdefault("global", {})
+        pins = dict(glob.get(pin_key) or {})
+        stale = [m for m, aid in pins.items()
+                 if aid == agent_id and m != keep_model]
+        if not stale:
+            return
+        for m in stale:
+            del pins[m]
+        glob[pin_key] = pins
+        agent_registry.save_agents(data)
+    log.info("autopilot: cleared %d stale %s pin(s) on %s after loading %s",
+             len(stale), provider, agent_id[:8], keep_model)
 
 
 def _vllm_rewrite_model(cur: dict, model: str) -> "dict | None":
@@ -704,6 +814,7 @@ def _prod_executor_deps(agent_id: str) -> dict:
         "proxy": _make_prod_proxy(agent_id),
         "set_pin": _prod_set_pin,
         "pool_update": _prod_pool_update,
+        "clear_host_pins": _prod_clear_host_pins,
         "audit": _prod_audit,
         "vllm_svc": _prod_vllm_svc,
     }
@@ -719,9 +830,29 @@ def _prod_executor(action) -> bool:
     return make_executor(_prod_executor_deps(action.agent_id), _prod_entries_by_key)(action)
 
 
+def _prod_route_sync(desired: dict, observed: dict,
+                     ledger: "dict | None" = None,
+                     now: "float | None" = None) -> None:
+    """Apply route_sync_writes via the same pin/pool helpers the executor
+    uses; every write is logged."""
+    glob = (agent_registry.load_agents().get("global") or {})
+    for w in route_sync_writes(desired, observed, glob, ledger, now):
+        if w[0] == "pin":
+            _, prov, model, aid = w
+            _prod_set_pin(prov, model, aid)
+            log.info("autopilot route-sync: %s %s/%s%s",
+                     "pinned" if aid else "unpinned", prov, model,
+                     f" -> {aid[:8]}" if aid else " (2+ replicas, pool RR)")
+        else:
+            _, prov, aid = w
+            _prod_pool_update(prov, aid, True)
+            log.info("autopilot route-sync: added %s to %s pool", aid[:8], prov)
+
+
 RECONCILER = Reconciler(get_state=get_state,
                         build_observed=lambda: build_observed(_prod_deps()),
-                        executor=_prod_executor)
+                        executor=_prod_executor,
+                        route_sync=_prod_route_sync)
 
 
 # ── Routes: mount /api/autopilot* on the manager app ──────────────────
@@ -736,7 +867,9 @@ def register_routes(app, ctx, auth) -> None:
         state = get_state()
         return jsonify({"state": state, "proposals": RECONCILER.proposals(),
                         "last_plan_ts": RECONCILER.last_plan_ts,
-                        "entry_status": pl.entry_status(state, RECONCILER.observe())})
+                        "entry_status": pl.entry_status(
+                            state, RECONCILER.observe(),
+                            RECONCILER.ledger_view, time.time())})
 
     @app.route("/api/autopilot", methods=["PUT"])
     @auth

@@ -280,3 +280,56 @@ def test_with_usage_probe_respects_client_stream_options():
             "stream_options": {"include_usage": False}}
     out, injected = gateway._with_usage_probe(body)
     assert injected is False and out is body
+
+
+def test_candidates_prefer_agents_serving_model(monkeypatch):
+    # p1 is the RR-resolved primary but only p2 serves model "m" per the
+    # index: live ordering puts p2 first, p1 as failover.
+    prim = {"agent_id": "p1", "hostname": "hp"}
+    pool_b = {"agent_id": "p2", "hostname": "h2"}
+    monkeypatch.setattr(gateway.proxies, "_resolve_target",
+                        lambda pk, m, a, allow_pool=True: (prim, None))
+    monkeypatch.setattr(gateway.agent_registry, "load_agents",
+                        lambda: {"global": {"llama_pool": ["p1", "p2"]}})
+    monkeypatch.setattr(gateway.agent_registry, "default_agent_id_for", lambda p: "p2")
+    monkeypatch.setattr(gateway.agent_registry, "resolve_agent_by_id",
+                        lambda aid, capability=None: {"p1": prim, "p2": pool_b}[aid])
+    monkeypatch.setattr(gateway.agent_registry, "agent_liveness", lambda a: "live")
+    monkeypatch.setattr(gateway.agent_registry, "pinned_agent", lambda p, m: None)
+    monkeypatch.setattr(gateway, "_model_index",
+                        {"ts": 0.0, "map": {}, "refreshing": False,
+                         "serving": {"llama:m": ["p2"]}})
+    assert [a["agent_id"] for a in gateway._candidates("m", None)] == ["p2", "p1"]
+    # Unknown model: original order preserved.
+    assert [a["agent_id"] for a in gateway._candidates("other", None)] == ["p1", "p2"]
+    # Explicit ?agent= pick keeps first place despite the serving index.
+    assert [a["agent_id"] for a in gateway._candidates("m", "p1")] == ["p1", "p2"]
+    # A model pin resolving to the primary keeps first place too.
+    monkeypatch.setattr(gateway.agent_registry, "pinned_agent",
+                        lambda p, m: prim if m == "m" else None)
+    assert [a["agent_id"] for a in gateway._candidates("m", None)] == ["p1", "p2"]
+
+
+def test_models_merge_populates_serving_index(monkeypatch):
+    a1 = {"agent_id": "a" * 32, "hostname": "h1", "token": "t"}
+    a2 = {"agent_id": "b" * 32, "hostname": "h2", "token": "t"}
+    monkeypatch.setattr(gateway, "_candidates", lambda m, a, p="llama": [a1, a2])
+    monkeypatch.setattr(gateway, "_GATEWAY_PROVIDERS", ("llama",))
+    monkeypatch.setattr(gateway, "_model_index",
+                        {"ts": 0.0, "map": {}, "serving": {}, "refreshing": False})
+    # m3 is catalog-only on h2 (llama-router status "unloaded"): listed in
+    # /v1/models output but excluded from the serving index.
+    payloads = {"h1": {"data": [{"id": "m1"}, {"id": "m2"}]},
+                "h2": {"data": [{"id": "m2"},
+                                {"id": "m3", "status": {"value": "unloaded"}}]}}
+
+    def fake_request(method, agent, path, **kw):
+        return FakeResp(200, payloads[agent["hostname"]]), [], None
+
+    monkeypatch.setattr(gateway.agent_registry, "agent_request", fake_request)
+    r = _client().get("/api/gateway/v1/models")
+    assert r.status_code == 200
+    assert [m["id"] for m in r.get_json()["data"]] == ["m1", "m2", "m3"]
+    assert gateway._model_index["serving"] == {
+        "llama:m1": [a1["agent_id"]],
+        "llama:m2": [a1["agent_id"], a2["agent_id"]]}

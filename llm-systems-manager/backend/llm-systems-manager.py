@@ -154,7 +154,7 @@ def _local_hostname() -> str:
 # banner reads it. Bump suffix (-1, -2, …) for same-day iterations; roll
 # the date for a new day's first change.
 # ---------------------------------------------------------------------------
-__version__ = "v2026.08.03-2"
+__version__ = "v2026.08.03-5"
 
 # Wall-clock at first import (Cheroot main process); the shutdown banner
 # reads it for the uptime line.
@@ -1446,7 +1446,9 @@ def _request_agent(kind: str) -> "dict | None":
     except Exception:
         aid = None
     if aid:
-        a = agent_registry.resolve_agent_by_id(aid, capability=kind)
+        spec = providers.get(kind)
+        cap = spec.capability_key if spec else kind
+        a = agent_registry.resolve_agent_by_id(aid, capability=cap)
         if a:
             return a
     did = agent_registry.default_agent_id_for(kind)
@@ -3540,6 +3542,8 @@ def _admin_provider_pins(provider: str):
             agent = data["agents"].get(agent_id)
             if not agent:
                 return jsonify({"ok": False, "error": "unknown agent"}), 404
+            if agent.get("status") != "approved":
+                return jsonify({"ok": False, "error": "agent not approved"}), 400
             caps = agent.get("capabilities", {}) or {}
             if not caps.get(cap):
                 return jsonify({"ok": False,

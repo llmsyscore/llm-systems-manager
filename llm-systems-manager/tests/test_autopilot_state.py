@@ -64,10 +64,13 @@ def test_entry_size_mb_absent_key_stays_absent():
     assert "size_mb" not in st["entries"][0]
 
 
-def test_host_bad_numeric_type_rejected():
-    with pytest.raises(ValueError):
-        ap.validate_state({"enabled": True, "entries": [],
-                           "hosts": {"a" * 32: {"sleep_after_idle_min": ["x"]}}})
+def test_hosts_config_dropped():
+    # Any submitted hosts shape is ignored, not validated.
+    st = ap.validate_state({"enabled": True, "entries": [],
+                            "hosts": {"a" * 32: {"sleep_after_idle_min": -5}}})
+    assert st["hosts"] == {}
+    st = ap.validate_state({"enabled": True, "entries": [], "hosts": ["junk"]})
+    assert st["hosts"] == {}
 
 def test_duplicate_model_provider_rejected():
     with pytest.raises(ValueError):
@@ -75,10 +78,19 @@ def test_duplicate_model_provider_rejected():
             {"model": "m", "provider": "llama"},
             {"model": "m", "provider": "llama"}], "hosts": {}})
 
-def test_host_policy_validated():
+def test_non_dict_entry_rejected():
     with pytest.raises(ValueError):
-        ap.validate_state({"enabled": True, "entries": [],
-                           "hosts": {"a" * 32: {"sleep_after_idle_min": -5}}})
+        ap.validate_state({"enabled": True, "entries": ["m1"], "hosts": {}})
+
+def test_non_list_entries_rejected():
+    with pytest.raises(ValueError):
+        ap.validate_state({"enabled": True, "entries": "m1", "hosts": {}})
+
+def test_non_dict_autoscale_rejected():
+    with pytest.raises(ValueError):
+        ap.validate_state({"enabled": True, "entries": [
+            {"model": "m", "provider": "llama", "min_replicas": 1,
+             "max_replicas": 2, "autoscale": "fast"}], "hosts": {}})
 
 
 def _patch_registry(monkeypatch):
@@ -114,3 +126,110 @@ def test_set_state_get_state_roundtrip(monkeypatch):
     ap.set_state(st)
     assert store["global"]["autopilot"] == st
     assert ap.get_state() == st
+
+
+# ── #500 follow-up: route sync — pins/pools converge to placements ──────
+
+AGENT_A, AGENT_B = "a" * 32, "b" * 32
+
+
+def _rs_observed(loaded_a=("m1",), loaded_b=()):
+    return {"agents": {
+        AGENT_A: {"provider_caps": ["llama"], "live": True,
+                  "loaded": {"llama": list(loaded_a)}},
+        AGENT_B: {"provider_caps": ["llama"], "live": True,
+                  "loaded": {"llama": list(loaded_b)}}}}
+
+
+def _rs_desired(max_replicas=1, enabled=True):
+    return {"enabled": enabled, "entries": [
+        {"model": "m1", "provider": "llama", "placement": AGENT_A,
+         "failover": "semi", "priority": 1, "min_replicas": 1,
+         "max_replicas": max_replicas}], "hosts": {}}
+
+
+def test_route_sync_pins_placed_single_replica():
+    writes = ap.route_sync_writes(_rs_desired(), _rs_observed(), {})
+    assert writes == [("pin", "llama", "m1", AGENT_A)]
+
+
+def test_route_sync_noop_when_pin_matches():
+    glob = {"llama_model_pins": {"m1": AGENT_A}}
+    assert ap.route_sync_writes(_rs_desired(), _rs_observed(), glob) == []
+
+
+def test_route_sync_keeps_current_pin_when_still_placed():
+    # m1 on both agents; existing pin to B is kept, not flapped to A.
+    glob = {"llama_model_pins": {"m1": AGENT_B}}
+    obs = _rs_observed(loaded_a=("m1",), loaded_b=("m1",))
+    assert ap.route_sync_writes(_rs_desired(), obs, glob) == []
+
+
+def test_route_sync_repins_when_pinned_agent_lost_model():
+    glob = {"llama_model_pins": {"m1": AGENT_B}}
+    writes = ap.route_sync_writes(_rs_desired(), _rs_observed(), glob)
+    assert writes == [("pin", "llama", "m1", AGENT_A)]
+
+
+def test_route_sync_pool_add_for_multi_replica():
+    obs = _rs_observed(loaded_a=("m1",), loaded_b=("m1",))
+    glob = {"llama_pool": [AGENT_A]}
+    writes = ap.route_sync_writes(_rs_desired(max_replicas=2), obs, glob)
+    assert writes == [("pool_add", "llama", AGENT_B)]
+
+
+def test_route_sync_disabled_writes_nothing():
+    assert ap.route_sync_writes(_rs_desired(enabled=False),
+                                _rs_observed(), {}) == []
+
+
+def test_route_sync_unplaced_entry_leaves_pin_alone():
+    obs = _rs_observed(loaded_a=(), loaded_b=())
+    glob = {"llama_model_pins": {"m1": AGENT_B}}
+    assert ap.route_sync_writes(_rs_desired(), obs, glob) == []
+
+
+def test_route_sync_keeps_executors_fresh_pin_after_failover():
+    # Stale samples still show m1 on dead A; the executor just loaded and
+    # pinned m1 on B this tick (fresh ledger entry). No revert to A.
+    obs = {"agents": {
+        AGENT_A: {"provider_caps": ["llama"], "live": False,
+                  "loaded": {"llama": ["m1"]}},
+        AGENT_B: {"provider_caps": ["llama"], "live": True,
+                  "loaded": {"llama": []}}}}
+    glob = {"llama_model_pins": {"m1": AGENT_B}}
+    ledger = {"placed_at": {"m1/llama": {AGENT_B: 1000.0}}}
+    assert ap.route_sync_writes(_rs_desired(), obs, glob, ledger, 1000.0) == []
+
+
+def test_route_sync_prefers_live_placement_for_new_pin():
+    # Unpinned model placed on dead A (stale sample) and live B: pin B.
+    obs = {"agents": {
+        AGENT_A: {"provider_caps": ["llama"], "live": False,
+                  "loaded": {"llama": ["m1"]}},
+        AGENT_B: {"provider_caps": ["llama"], "live": True,
+                  "loaded": {"llama": ["m1"]}}}}
+    writes = ap.route_sync_writes(_rs_desired(), obs, {}, None, None)
+    assert writes == [("pin", "llama", "m1", AGENT_B)]
+
+
+def test_route_sync_multi_replica_single_placed_pins():
+    # max>1 but only one replica serving: pin it (visible + deterministic).
+    obs = _rs_observed(loaded_a=("m1",), loaded_b=())
+    glob = {"llama_pool": [AGENT_A, AGENT_B]}
+    writes = ap.route_sync_writes(_rs_desired(max_replicas=2), obs, glob)
+    assert writes == [("pin", "llama", "m1", AGENT_A)]
+
+
+def test_route_sync_multi_replica_two_placed_clears_pin():
+    obs = _rs_observed(loaded_a=("m1",), loaded_b=("m1",))
+    glob = {"llama_pool": [AGENT_A, AGENT_B],
+            "llama_model_pins": {"m1": AGENT_A}}
+    writes = ap.route_sync_writes(_rs_desired(max_replicas=2), obs, glob)
+    assert writes == [("pin", "llama", "m1", None)]
+
+
+def test_route_sync_multi_replica_two_placed_no_pin_no_write():
+    obs = _rs_observed(loaded_a=("m1",), loaded_b=("m1",))
+    glob = {"llama_pool": [AGENT_A, AGENT_B]}
+    assert ap.route_sync_writes(_rs_desired(max_replicas=2), obs, glob) == []

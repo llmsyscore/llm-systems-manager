@@ -299,3 +299,36 @@ def test_lmstudio_load_unload_pass_model_id(monkeypatch):
     c.post("/api/lmstudio/load", json={"model": "m1"})
     c.post("/api/lmstudio/unload", json={"model": "m1"})
     assert [x[2] for x in calls] == ["m1", "m1"]
+
+
+def test_pins_route_rejects_unapproved_agent(monkeypatch):
+    pending = {"agent_id": "9" * 32, "status": "pending",
+               "capabilities": {"llama": True}}
+    agents = {a["agent_id"]: a for a in (A1, A2, pending)}
+    monkeypatch.setattr(agent_registry, "load_agents",
+                        lambda: {"agents": agents, "global": {}})
+    saved = []
+    monkeypatch.setattr(agent_registry, "save_agents",
+                        lambda data: saved.append(data))
+    c = _admin_client()
+    r = c.post("/api/admin/llama-pins",
+               json={"model_id": "m1", "agent_id": pending["agent_id"]})
+    assert r.status_code == 400
+    assert "approved" in r.get_json()["error"]
+    assert saved == []
+
+
+def test_pinned_agent_stale_pin_warns_once(monkeypatch, caplog):
+    import logging
+    _patch(monkeypatch, {"llama_model_pins": {"m1": A1["agent_id"]}},
+           live=lambda a: "down")
+    agent_registry._stale_pin_warned.clear()
+    with caplog.at_level(logging.WARNING):
+        assert agent_registry.pinned_agent("llama", "m1") is None
+        assert agent_registry.pinned_agent("llama", "m1") is None
+    warns = [r for r in caplog.records if "pinned to agent" in r.message]
+    assert len(warns) == 1
+    # Pin resolving again re-arms the warning.
+    _patch(monkeypatch, {"llama_model_pins": {"m1": A1["agent_id"]}})
+    assert agent_registry.pinned_agent("llama", "m1") is not None
+    assert not agent_registry._stale_pin_warned
