@@ -62,14 +62,10 @@ const vllmDiskUsageChart = vllmDiskUsageChartCtx ? new Chart(vllmDiskUsageChartC
   options: { animation: false, responsive: true, maintainAspectRatio: false, interaction: _sparkInteraction, scales: { x: { type: 'time', display: false }, y: { min: 0, max: 100, display: true, ticks: { color: cssVar('--fg-muted'), font: { size: 10 }, callback: v => v + '%' } } }, plugins: { legend: { display: false }, tooltip: _sparkTooltip, zoom: _zoomOpts } }
 }) : null;
 
-// Clear all vLLM chart series (called on agent-picker switch).
+// Clear all vLLM chart series — labels and datasets (backfill + agent switch).
 function _resetVllmCharts() {
   [vllmKvChart, vllmTpsChart, vllmCpuChart, vllmRamChart, vllmNetChart,
-   vllmIoChart, vllmDiskUsageChart].forEach(ch => {
-    if (!ch) return;
-    ch.data.datasets.forEach(ds => { ds.data = []; });
-    ch.update('none');
-  });
+   vllmIoChart, vllmDiskUsageChart].forEach(ch => _clearChart(ch));
 }
 
 // True when a vLLM SUB-tab is the active view (cards + log live there only).
@@ -216,7 +212,8 @@ async function fetchVllmMetrics() {
       _dashSetStatus('vllm-disk',    !online ? 'dash-off' : (sys.disk ? 'dash-ok' : 'dash-off'));
       _dashSetStatus('vllm-io',      !online ? 'dash-off' : (sys.disk_io ? 'dash-ok' : 'dash-off'));
     }
-  } catch (_) {
+  } catch (e) {
+    console.warn('fetchVllmMetrics:', e);
   } finally {
     _release(_lk);
   }
