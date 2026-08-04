@@ -154,7 +154,7 @@ def _local_hostname() -> str:
 # banner reads it. Bump suffix (-1, -2, …) for same-day iterations; roll
 # the date for a new day's first change.
 # ---------------------------------------------------------------------------
-__version__ = "v2026.08.04-2"
+__version__ = "v2026.08.04-3"
 
 # Wall-clock at first import (Cheroot main process); the shutdown banner
 # reads it for the uptime line.
@@ -2339,16 +2339,31 @@ def _lms_agent_hosts() -> dict:
         return {}
 
 
+_gw_push_failed = False
+
+
 def _push_gateway_usage_metrics(points: list) -> None:
     """POST a gateway-usage metric batch to the alarm engine (#502)."""
+    global _gw_push_failed
     if not _alarm_engine_url or not points:
         return
+    # AE ingest routes accept only the ingest token — the session-level
+    # bearer is the management token, which they reject with 401.
+    headers = {}
+    ingest_tok = (settings.alarm_engine.ingest_token or "").strip()
+    if ingest_tok and ingest_tok != "REPLACE_ME":
+        headers["Authorization"] = f"Bearer {ingest_tok}"
     r = _ae_session.post(
         f"{_alarm_engine_url.rstrip('/')}/api/alarm/metrics/batch",
-        json={"metrics": points}, timeout=5,
+        json={"metrics": points}, headers=headers, timeout=5,
     )
-    if not r.ok:
-        log.debug(f"gateway usage push HTTP {r.status_code}")
+    if not r.ok and not _gw_push_failed:
+        _gw_push_failed = True
+        log.warning(f"gateway usage push failed: HTTP {r.status_code} — "
+                    "lms gateway metrics will be missing from the alarm engine")
+    elif r.ok and _gw_push_failed:
+        _gw_push_failed = False
+        log.info("gateway usage push recovered")
 
 
 @app.route("/api/lmstudio/models")

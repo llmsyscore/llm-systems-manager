@@ -2,6 +2,8 @@
 """#502: /api/lmstudio/metrics carries agent_id + gateway token counters."""
 from __future__ import annotations
 
+import types
+
 import gateway_usage
 import manager_mod
 import provider_state
@@ -84,6 +86,43 @@ def test_metric_points_emit_zeros_for_idle_agents():
         {"test-502-push-idle": "quiet-mac"}, now=3000.0)}
     assert by_name["lms_gen_tokens_total"]["value"] == 0.0
     assert by_name["lms_tokens_per_second"]["value"] == 0.0
+
+
+def test_push_sends_ingest_token_not_session_bearer(monkeypatch):
+    # AE ingest routes reject the management token the session carries (401).
+    calls = {}
+
+    def fake_post(url, json=None, headers=None, timeout=None):
+        calls["url"] = url
+        calls["headers"] = dict(headers or {})
+        return types.SimpleNamespace(ok=True, status_code=200)
+
+    monkeypatch.setattr(manager_mod._ae_session, "post", fake_post)
+    monkeypatch.setattr(manager_mod, "_alarm_engine_url", "http://ae:8081")
+    monkeypatch.setattr(
+        manager_mod, "settings",
+        types.SimpleNamespace(alarm_engine=types.SimpleNamespace(
+            ingest_token="ingest-tok-502")))
+    manager_mod._push_gateway_usage_metrics([{"source": "gateway"}])
+    assert calls["url"] == "http://ae:8081/api/alarm/metrics/batch"
+    assert calls["headers"]["Authorization"] == "Bearer ingest-tok-502"
+
+
+def test_push_skips_placeholder_ingest_token(monkeypatch):
+    calls = {}
+
+    def fake_post(url, json=None, headers=None, timeout=None):
+        calls["headers"] = dict(headers or {})
+        return types.SimpleNamespace(ok=True, status_code=200)
+
+    monkeypatch.setattr(manager_mod._ae_session, "post", fake_post)
+    monkeypatch.setattr(manager_mod, "_alarm_engine_url", "http://ae:8081")
+    monkeypatch.setattr(
+        manager_mod, "settings",
+        types.SimpleNamespace(alarm_engine=types.SimpleNamespace(
+            ingest_token="REPLACE_ME")))
+    manager_mod._push_gateway_usage_metrics([{"source": "gateway"}])
+    assert "Authorization" not in calls["headers"]
 
 
 def test_lms_agent_hosts_filters_approved_lms(monkeypatch):
