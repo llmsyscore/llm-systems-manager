@@ -31,25 +31,25 @@ function _fmtAge(iso) {
 async function fetchServicesAndInflux() {
   if (document.hidden) return;
   // The cards this populates (Services watchlist, InfluxDB, manager system,
-  // manager_self_monitor, mac_power) are manager/fleet cards — they live on the
+  // manager_self_monitor) are manager/fleet cards — they live on the
   // Overall tab and the Dashboard → Manager sub-tab ONLY, not the per-agent
   // llama/lms dashboards. Skip elsewhere so dbstats + the cross-host source
   // metrics don't fire from a per-agent dashboard (#123, #127).
   const _onMgrSub = LMSeries.isManagerSubActive(_activeTab, _subTabState);
   if (_activeTab !== 'overall' && !_onMgrSub) return;
   try {
-    // Fan out to four narrow source-filtered fetches instead of one
+    // Fan out to narrow source-filtered fetches instead of one
     // unconstrained "give me all 2000 rows" pull. compute_metric_list in
     // the alarm engine short-circuits per-source via its (source, limit)
     // cache key, so each call scans only the slice we need and the
     // results are cached independently. Net: ~10× less payload, faster
     // server scan, smaller browser-side JSON parse.
-    // mac_power left this list in #502 — the powermetrics card is painted
-    // from the LMS metrics payload in lmstudio.js now.
+    // The powermetrics card is painted from the LMS metrics payload in
+    // lmstudio.js, not from this catalog fan-out.
     const sources = ['processes', 'manager_self_monitor', 'influxdb'];
     // Manager-host system metrics are scoped by agent id (resolved to a host
     // server-side), never by a browser-held hostname (#140). The other sources
-    // are intentionally cross-host (services/influx/mac span the fleet).
+    // are intentionally cross-host (services/influx span the fleet).
     const MGR_AGENT = window.__MGR_AGENT;
     const mgrSysFetch = MGR_AGENT
       ? fetch(`/api/alarm/metrics?source=system&agent=${encodeURIComponent(MGR_AGENT)}&limit=500`)

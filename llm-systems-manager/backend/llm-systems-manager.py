@@ -2310,9 +2310,8 @@ def _provider_metrics_payload(provider: str) -> dict:
 
 @app.route("/api/lmstudio/metrics")
 def get_lmstudio_metrics():
-    """Return latest LM Studio metrics for the primary LMS agent.
-    Optional ?agent= targets a specific LMS agent. gateway_tokens carries
-    the gateway's cumulative proxied token counters for that agent (#502)."""
+    """Latest LM Studio metrics for the primary (or ?agent=) LMS agent,
+    plus gateway_tokens — the gateway's cumulative token counters for it."""
     data = _provider_metrics_payload("lms")
     aid = data.get("agent_id")
     if aid:

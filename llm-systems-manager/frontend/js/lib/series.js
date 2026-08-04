@@ -47,9 +47,8 @@ function trackRefusals(prev, count, nowMs, windowMs = 60000) {
   };
 }
 
-// Per-second rates from cumulative token counters sampled across polls.
-// Returns {track, genRate, promptRate}; rates are null on the first sample,
-// on a counter reset (drop), or when the poll gap exceeds maxGapMs.
+// Per-second rates from cumulative token counters sampled across polls; rates
+// are null on the first sample, a counter drop, or a poll gap over maxGapMs.
 function tokenRate(prev, gen, prompt, nowMs, maxGapMs = 30000) {
   const g = (typeof gen === 'number' && isFinite(gen)) ? gen : null;
   const p = (typeof prompt === 'number' && isFinite(prompt)) ? prompt : null;

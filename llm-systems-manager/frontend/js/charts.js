@@ -1045,8 +1045,8 @@ function _makeHistoryBackfill(provider, defaultAgentKey, resetCharts, paintRow) 
   };
 }
 
-// Backfill the LM Studio host charts (CPU/RAM/Net) from the selected LMS
-// agent's history. Makes no llama calls — Overall backfills separately.
+// Backfill the LM Studio host charts (CPU/RAM/Net/IO/disk) from the selected
+// LMS agent's history. Makes no llama calls — Overall backfills separately.
 const loadLmsHistory = _makeHistoryBackfill('lms', '__LMS_AGENT',
   () => _resetLmsCharts(),
   (r) => {
@@ -1068,8 +1068,8 @@ const loadLmsHistory = _makeHistoryBackfill('lms', '__LMS_AGENT',
       pushPoint(lmsDiskUsageChart, r.ts, r.disk_root_pct);
   });
 
-// Backfill the vLLM KV-cache + throughput charts from the selected vLLM
-// agent's history (#358).
+// Backfill the vLLM KV-cache/throughput + host (CPU/RAM/Net/IO/disk) charts
+// from the selected vLLM agent's history (#358, #502).
 const loadVllmHistory = _makeHistoryBackfill('vllm', '__VLLM_AGENT',
   () => { if (typeof _resetVllmCharts === 'function') _resetVllmCharts(); },
   (r) => {

@@ -1016,10 +1016,10 @@ Backend API endpoints consumed:
       </div>
 
       <!-- powermetrics — Apple Silicon thermal/power/GPU residency.
-           Populated from alarm-engine source=mac_power (requires
-           passwordless sudoers entry for /usr/bin/powermetrics on Mac).
-           Note: macOS 26+ no longer exposes die temps to powermetrics, so
-           those tiles are omitted. -->
+           Painted by lmstudio.js from the /api/lmstudio/metrics payload's
+           mac_power block (requires passwordless sudoers entry for
+           /usr/bin/powermetrics on Mac). Note: macOS 26+ no longer exposes
+           die temps to powermetrics, so those tiles are omitted. -->
       <div class="card" data-card="lms-power">
         <span class="card-handle" title="Drag to reorder">⠿</span>
         <h3>powermetrics <span class="status status--muted" id="lms-power-badge" style="font-size:0.7em;font-weight:normal;margin-left:8px;">—</span></h3>
