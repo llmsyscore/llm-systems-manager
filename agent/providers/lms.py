@@ -84,6 +84,21 @@ def lms_get_models() -> list[dict[str, Any]]:
     return []
 
 
+def _fmt_size_bytes(n: Any) -> str:
+    """Human size string from a byte count ("3.94 GB"); "" when absent."""
+    if not isinstance(n, (int, float)) or n <= 0:
+        return ""
+    if n >= 1e9:
+        return f"{n / 1e9:.2f} GB"
+    return f"{n / 1e6:.0f} MB"
+
+
+def _quant_name(q: Any) -> str:
+    if isinstance(q, dict):
+        return str(q.get("name") or "")
+    return str(q or "")
+
+
 def lms_get_ps() -> list[dict[str, Any]]:
     global _lms_ps_timeout_count
     ctx = _require_ctx()
@@ -103,10 +118,12 @@ def lms_get_ps() -> list[dict[str, Any]]:
                     "identifier": item.get("identifier", ""),
                     "model": item.get("model", item.get("identifier", "")),
                     "status": str(item.get("status", "IDLE")).upper(),
-                    "size": item.get("size", ""),
+                    "size": item.get("size") or _fmt_size_bytes(item.get("sizeBytes")),
                     "context": item.get("context", item.get("contextLength")),
                     "parallel": item.get("parallel"),
-                    "device": item.get("device", ""),
+                    "device": item.get("device") or item.get("deviceIdentifier") or "",
+                    "quant": _quant_name(item.get("quantization")),
+                    "params": item.get("paramsString") or "",
                 }
                 for item in data
             ]

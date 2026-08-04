@@ -7,7 +7,6 @@ import logging
 import sys
 import threading
 import time
-from collections import deque
 from datetime import datetime, timezone
 
 log = logging.getLogger("llm-systems-manager.gateway-usage")
@@ -15,11 +14,10 @@ log = logging.getLogger("llm-systems-manager.gateway-usage")
 _lock = threading.Lock()
 _counters: dict = {}
 
-# Per-agent ring of (epoch_s, gen_cum, prompt_cum) counter samples, appended
-# every SAMPLE_INTERVAL_S by the sampler thread; feeds history_rates().
-SAMPLE_INTERVAL_S = 5.0
-_HISTORY_MAXLEN = 720
-_history: dict = {}
+# Previous pusher snapshot per agent: (epoch_s, gen_cum, prompt_cum).
+# Touched only by the pusher thread (and tests), so no lock needed.
+PUSH_INTERVAL_S = 15.0
+_prev_push: dict = {}
 
 
 def record(agent_id: str, prompt_tokens, completion_tokens) -> None:
@@ -43,47 +41,54 @@ def counters() -> dict:
         return {aid: dict(c) for aid, c in _counters.items()}
 
 
-def sample_now(now: "float | None" = None) -> None:
-    """Append one (ts, gen, prompt) counter sample per agent to its ring."""
+def metric_points(agent_hosts: dict, now: "float | None" = None) -> list:
+    """Alarm-engine metric points for every LMS agent: cumulative token
+    totals plus tok/s rates derived from the previous call's snapshot."""
     ts = time.time() if now is None else float(now)
-    with _lock:
-        for aid, c in _counters.items():
-            ring = _history.setdefault(aid, deque(maxlen=_HISTORY_MAXLEN))
-            ring.append((ts, c["gen"], c["prompt"]))
-
-
-def history_rates(agent_id: str) -> list:
-    """[{ts, gen_tps, prompt_tps}] from consecutive ring samples; drops
-    counter resets and non-positive gaps."""
-    with _lock:
-        samples = list(_history.get(agent_id) or ())
+    iso = datetime.fromtimestamp(ts, tz=timezone.utc).isoformat()
+    counts = counters()
     out = []
-    for (t0, g0, p0), (t1, g1, p1) in zip(samples, samples[1:]):
-        dt = t1 - t0
-        if dt <= 0 or g1 < g0 or p1 < p0:
+    for aid, host in (agent_hosts or {}).items():
+        if not host:
             continue
-        out.append({
-            "ts": datetime.fromtimestamp(t1, tz=timezone.utc).isoformat(),
-            "gen_tps": round((g1 - g0) / dt, 2),
-            "prompt_tps": round((p1 - p0) / dt, 2),
-        })
+        c = counts.get(aid) or {"gen": 0, "prompt": 0}
+        prev = _prev_push.get(aid)
+        _prev_push[aid] = (ts, c["gen"], c["prompt"])
+        gen_tps = prompt_tps = 0.0
+        if (prev and ts > prev[0]
+                and c["gen"] >= prev[1] and c["prompt"] >= prev[2]):
+            dt = ts - prev[0]
+            gen_tps = (c["gen"] - prev[1]) / dt
+            prompt_tps = (c["prompt"] - prev[2]) / dt
+        for name, val, unit in (
+            ("lms_tokens_per_second",        round(gen_tps, 2),    "tok/s"),
+            ("lms_prompt_tokens_per_second", round(prompt_tps, 2), "tok/s"),
+            ("lms_gen_tokens_total",         float(c["gen"]),      "tokens"),
+            ("lms_prompt_tokens_total",      float(c["prompt"]),   "tokens"),
+        ):
+            out.append({"source": "gateway", "metric_name": name,
+                        "value": val, "unit": unit, "timestamp": iso,
+                        "hostname": host})
     return out
 
 
-def start_sampler() -> None:
-    """Daemon thread sampling counters every SAMPLE_INTERVAL_S; no-op under pytest."""
+def start_pusher(push, agent_hosts_fn, interval_s: float = PUSH_INTERVAL_S) -> None:
+    """Daemon thread pushing metric_points() batches every interval_s;
+    no-op under pytest."""
     if "pytest" in sys.modules:
         return
 
     def _loop():
         while True:
             try:
-                sample_now()
+                pts = metric_points(agent_hosts_fn() or {})
+                if pts:
+                    push(pts)
             except Exception as e:
-                log.debug("gateway usage sample failed: %s", e)
-            time.sleep(SAMPLE_INTERVAL_S)
+                log.debug("gateway usage push failed: %s", e)
+            time.sleep(interval_s)
 
-    threading.Thread(target=_loop, name="gateway-usage-sampler",
+    threading.Thread(target=_loop, name="gateway-usage-pusher",
                      daemon=True).start()
 
 

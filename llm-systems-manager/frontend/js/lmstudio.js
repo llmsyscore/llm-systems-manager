@@ -156,7 +156,7 @@ async function fetchLMStudioMetrics() {
     _setEl('lms-active-size',     activeData?.size   || '—');
     _setEl('lms-active-ctx',      activeData?.context ? activeData.context.toLocaleString() : '—');
     _setEl('lms-active-parallel', activeData?.parallel ?? '—');
-    _setEl('lms-active-device',   activeData?.device || '—');
+    _setEl('lms-active-quant',    activeData?.quant || '—');
     _setEl('lms-active-port',     d.server?.port ?? '—');
 
     // Server card — gateway-counted token throughput (#502)
@@ -463,6 +463,8 @@ function renderLMSModelCards(ps, models) {
 
     const chips = psRow ? [
       psRow.size                  && { k: 'size',     v: psRow.size },
+      psRow.quant                 && { k: 'quant',    v: psRow.quant },
+      psRow.params                && { k: 'params',   v: psRow.params },
       psRow.context               && { k: 'ctx',      v: Number(psRow.context).toLocaleString() },
       psRow.parallel != null      && { k: 'parallel', v: psRow.parallel },
       psRow.device                && { k: 'dev',      v: psRow.device },

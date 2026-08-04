@@ -43,47 +43,57 @@ def test_lms_metrics_no_agent_has_no_gateway_tokens(monkeypatch):
     assert "gateway_tokens" not in body
 
 
-def test_history_rates_from_sampled_counters():
-    aid = "test-502-ring-a"
+def test_metric_points_rates_from_consecutive_calls():
+    aid = "test-502-push-a"
+    hosts = {aid: "mac-host"}
     gateway_usage.record(aid, 100, 200)
-    gateway_usage.sample_now(now=1000.0)
+    first = gateway_usage.metric_points(hosts, now=1000.0)
+    by_name = {p["metric_name"]: p for p in first}
+    assert by_name["lms_tokens_per_second"]["value"] == 0.0   # no prior snapshot
+    assert by_name["lms_gen_tokens_total"]["value"] == 200.0
+    assert by_name["lms_gen_tokens_total"]["hostname"] == "mac-host"
+    assert by_name["lms_gen_tokens_total"]["source"] == "gateway"
+    assert by_name["lms_gen_tokens_total"]["timestamp"].endswith("+00:00")
     gateway_usage.record(aid, 50, 300)   # +50 prompt, +300 gen
-    gateway_usage.sample_now(now=1010.0)
-    rows = gateway_usage.history_rates(aid)
-    assert rows == [{"ts": rows[0]["ts"], "gen_tps": 30.0, "prompt_tps": 5.0}]
-    assert rows[0]["ts"].endswith("+00:00")
+    second = gateway_usage.metric_points(hosts, now=1010.0)
+    by_name = {p["metric_name"]: p for p in second}
+    assert by_name["lms_tokens_per_second"]["value"] == 30.0
+    assert by_name["lms_prompt_tokens_per_second"]["value"] == 5.0
 
 
-def test_history_rates_skips_counter_reset():
-    aid = "test-502-ring-b"
+def test_metric_points_counter_reset_reseeds():
+    aid = "test-502-push-b"
+    hosts = {aid: "mac-host"}
     gateway_usage.record(aid, 10, 10)
-    gateway_usage.sample_now(now=2000.0)
+    gateway_usage.metric_points(hosts, now=2000.0)
     with gateway_usage._lock:
         gateway_usage._counters[aid] = {"gen": 1, "prompt": 1}
-    gateway_usage.sample_now(now=2010.0)
+    by_name = {p["metric_name"]: p
+               for p in gateway_usage.metric_points(hosts, now=2010.0)}
+    assert by_name["lms_tokens_per_second"]["value"] == 0.0
     gateway_usage.record(aid, 4, 9)
-    gateway_usage.sample_now(now=2020.0)
-    rows = gateway_usage.history_rates(aid)
-    assert len(rows) == 1
-    assert rows[0] == {"ts": rows[0]["ts"], "gen_tps": 0.9, "prompt_tps": 0.4}
+    by_name = {p["metric_name"]: p
+               for p in gateway_usage.metric_points(hosts, now=2020.0)}
+    assert by_name["lms_tokens_per_second"]["value"] == 0.9
+    assert by_name["lms_prompt_tokens_per_second"]["value"] == 0.4
 
 
-def test_tokens_history_route(monkeypatch):
-    aid = "test-502-ring-c"
-    monkeypatch.setattr(manager_mod.agent_registry, "default_agent_id_for",
-                        lambda p: aid if p == "lms" else None)
-    gateway_usage.record(aid, 60, 120)
-    gateway_usage.sample_now(now=3000.0)
-    gateway_usage.record(aid, 60, 120)
-    gateway_usage.sample_now(now=3010.0)
-    body = _auth_client().get("/api/lmstudio/tokens/history").get_json()
-    assert body["agent_id"] == aid
-    assert body["rows"] == [{"ts": body["rows"][0]["ts"],
-                             "gen_tps": 12.0, "prompt_tps": 6.0}]
+def test_metric_points_emit_zeros_for_idle_agents():
+    # An approved LMS agent with no gateway traffic still gets a series.
+    by_name = {p["metric_name"]: p for p in gateway_usage.metric_points(
+        {"test-502-push-idle": "quiet-mac"}, now=3000.0)}
+    assert by_name["lms_gen_tokens_total"]["value"] == 0.0
+    assert by_name["lms_tokens_per_second"]["value"] == 0.0
 
 
-def test_tokens_history_route_no_agent(monkeypatch):
-    monkeypatch.setattr(manager_mod.agent_registry, "default_agent_id_for",
-                        lambda p: None)
-    body = _auth_client().get("/api/lmstudio/tokens/history").get_json()
-    assert body == {"agent_id": None, "rows": []}
+def test_lms_agent_hosts_filters_approved_lms(monkeypatch):
+    monkeypatch.setattr(manager_mod.agent_registry, "load_agents", lambda: {
+        "agents": {
+            "a1": {"status": "approved", "hostname": "mac-1",
+                   "capabilities": {"lms": True}},
+            "a2": {"status": "approved", "hostname": "linux-1",
+                   "capabilities": {"lms": False, "llama": True}},
+            "a3": {"status": "pending", "hostname": "mac-2",
+                   "capabilities": {"lms": True}},
+        }})
+    assert manager_mod._lms_agent_hosts() == {"a1": "mac-1"}
