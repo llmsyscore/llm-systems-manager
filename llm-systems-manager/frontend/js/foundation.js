@@ -1311,7 +1311,16 @@ function switchTab(tab) {
   const cg = document.getElementById('cardGrid');
   if (cg && !cg.closest('#dashboardTab')) cg.style.display = 'none';
 
-  if (tab === 'overall')    { document.getElementById('overallTab').style.display    = '';   fetchOverallMetrics(); }
+  // Overall entry re-backfills the fleet TPS chart before the live fetch — it
+  // takes no live points while another tab is showing (#506).
+  if (tab === 'overall')    {
+    document.getElementById('overallTab').style.display = '';
+    if (typeof loadOverallHistory === 'function') {
+      loadOverallHistory().finally(() => fetchOverallMetrics()).catch(() => {});
+    } else {
+      fetchOverallMetrics();
+    }
+  }
   if (tab === 'dashboard')  { document.getElementById('dashboardTab').style.display  = '';   }
   if (tab === 'events')     {
     document.getElementById('eventsTab').style.display = '';

@@ -43,10 +43,6 @@ document.addEventListener('DOMContentLoaded', () => {
 // ---------------------------------------------------------------------------
 const _subTabState = { dashboard: 'llamacpp', llm: 'llamacpp', admin: 'agents' };
 
-// Latched true once the manager perf sparklines have real history, so a failed
-// or empty boot-time backfill retries on manager-tab entry (#131).
-let _mgrPerfBackfilled = false;
-
 const _SUB_TAB_MAP = {
   dashboard: { tabId: 'dashboardTab', prefix: 'dash',  subs: ['llamacpp','lmstudio','vllm','energy','openclaw','manager'] },
   llm:       { tabId: 'llmTab',       prefix: 'llm',   subs: ['llamacpp','lmstudio','vllm','reportcard'] },
@@ -90,7 +86,13 @@ function switchSubTab(parent, sub) {
   }
   // Trigger LM Studio fetch when switching to lmstudio sub-tab
   if (sub === 'lmstudio') {
-    fetchLMStudioMetrics();
+    // Dashboard entry: re-backfill charts from history, then resume the live
+    // poll; the llm-tab lmstudio panel has no charts and keeps the plain fetch.
+    if (parent === 'dashboard' && typeof loadLmsHistory === 'function') {
+      loadLmsHistory().finally(() => fetchLMStudioMetrics()).catch(() => {});
+    } else {
+      fetchLMStudioMetrics();
+    }
     _initLMSSections();
     // Always restart log polling on every visit (timer is stopped on tab leave)
     if (_lmsLogOpen) startLmsLogRefresh();
@@ -133,10 +135,10 @@ function switchSubTab(parent, sub) {
     fetchServicesAndInflux();
     fetchManagerAgentsCard();
     fetchManagerStreamsCard();
-    // Retry the perf-sparkline backfill on entry until it lands; the boot-time
-    // shot can run before the alarm engine has history (#131).
-    if (!_mgrPerfBackfilled && typeof loadManagerPerfHistory === 'function') {
-      loadManagerPerfHistory().then(ok => { if (ok) _mgrPerfBackfilled = true; });
+    // Re-backfill the perf sparklines on every entry — the cards are poll-gated
+    // off-tab, so the series gaps whenever the operator is elsewhere (#506).
+    if (typeof loadManagerPerfHistory === 'function') {
+      loadManagerPerfHistory().catch(() => {});
     }
   }
   // Access Control (auth + users, #477): auth card loads on admin-tab entry
@@ -188,11 +190,11 @@ function _rebackfillActiveView() {
   if (typeof syncInterval === 'function') await syncInterval();
   await loadHistory();
   // Independent backfills — fired async so a slow alarm-engine response doesn't
-  // serialize startup. Each fails silently if its host isn't injected yet; the
-  // manager perf shot latches _mgrPerfBackfilled so a miss retries on entry (#131).
+  // serialize startup. Each fails silently if its host isn't injected yet; a
+  // miss is re-tried when the operator enters that view (#131, #506).
   loadLmsHistory().catch(() => {});
   loadVllmHistory().catch(() => {});
-  loadManagerPerfHistory().then(ok => { if (ok) _mgrPerfBackfilled = true; }).catch(() => {});
+  loadManagerPerfHistory().catch(() => {});
   await checkConfig();
   pollServerState();
   fetchMetrics();

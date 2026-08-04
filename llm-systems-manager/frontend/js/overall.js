@@ -5,16 +5,10 @@
 // single primary host's sample. No picker here — this tab is the whole-fleet
 // view. Live refresh piggybacks on fetchMetrics (when the tab is visible).
 // ---------------------------------------------------------------------------
-let _ovHistoryBackfilled = false;
+// Live-only fleet refresh; the TPS chart's history backfill runs on Overall
+// tab entry in switchTab, not here (#142, #506).
 async function fetchOverallMetrics() {
   try {
-    // One-time history backfill for the fleet llama TPS chart — only when the
-    // Overall tab is actually loaded, so the LMS dashboard makes no llama calls
-    // (#142). Flag set synchronously to prevent a concurrent re-entry backfill.
-    if (!_ovHistoryBackfilled && typeof loadOverallHistory === 'function') {
-      _ovHistoryBackfilled = true;
-      await loadOverallHistory();
-    }
     let llama = null, lms = null, vllm = null;
     [llama, lms, vllm] = await Promise.all([
       fetch('/api/fleet/llama/aggregate').then(r => r.ok ? r.json() : null).catch(() => null),
