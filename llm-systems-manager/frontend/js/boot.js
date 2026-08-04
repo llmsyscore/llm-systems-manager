@@ -100,8 +100,8 @@ function switchSubTab(parent, sub) {
     stopVllmLogRefresh();
   }
   if (sub === 'vllm') {
-    // Dashboard entry: re-backfill the charts from history, then resume the
-    // live poll. The llm-tab vllm panel has no charts — plain fetch there.
+    // Dashboard entry: re-backfill charts from history, then resume the live
+    // poll; the llm-tab vllm panel has no charts and keeps the plain fetch.
     if (parent === 'dashboard' && typeof loadVllmHistory === 'function') {
       loadVllmHistory().finally(() => fetchVllmMetrics()).catch(() => {});
     } else {

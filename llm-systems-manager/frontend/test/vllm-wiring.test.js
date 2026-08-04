@@ -179,8 +179,7 @@ describe('vllm history backfill (#358)', () => {
   test('boot.js backfills vllm history at startup', () => {
     expect(src('js/boot.js')).toContain('loadVllmHistory().catch');
   });
-  // #504: entering the dashboard vllm sub-tab re-backfills before resuming
-  // the live poll, so time spent on other tabs paints as history, not a gap.
+  // #504: dashboard vllm sub-tab entry re-backfills, then resumes the poll.
   test('#504 boot.js re-backfills on dashboard vllm sub-tab entry', () => {
     const boot = src('js/boot.js');
     const entry = boot.slice(boot.indexOf("if (sub === 'vllm')"));
@@ -191,8 +190,7 @@ describe('vllm history backfill (#358)', () => {
     const branch = foundation.slice(foundation.indexOf("provider === 'vllm'"));
     expect(branch.slice(0, 600)).toContain('loadVllmHistory().finally');
   });
-  // #121 parity with the LMS branch: agent switch clears the disk bar list
-  // so the previous agent's mounts don't linger under the new agent's chart.
+  // #121 parity with the LMS branch: agent switch clears the disk bar list.
   test('#504 foundation.js agent-switch clears vllmDiskList', () => {
     const foundation = src('js/foundation.js');
     const branch = foundation.slice(foundation.indexOf("provider === 'vllm'"));
@@ -273,17 +271,13 @@ describe('vllm host system metrics (#411)', () => {
     expect(body).toContain('vllmRamChart');
     expect(body).toContain('vllmNetChart');
   });
-  // #504: the reset must clear labels along with datasets. A dataset-only
-  // clear leaves a stale label; every backfill row then lands on pushPoint's
-  // same-bucket overwrite path (d[d.length-1] with length 0 = index -1, a
-  // silent no-op) and the whole history paint is discarded.
+  // #504: the reset clears labels along with datasets (via _clearChart).
   test('#504 _resetVllmCharts clears labels, not just datasets', () => {
     const reset = vllm.slice(vllm.indexOf('function _resetVllmCharts'));
     const body = reset.slice(0, reset.indexOf('\n}'));
     expect(body).toContain('_clearChart');
   });
-  // #504 parity with fetchLMStudioMetrics: fetch failures must be logged,
-  // not swallowed by a bare catch.
+  // #504 parity with fetchLMStudioMetrics: fetch failures are logged.
   test('#504 fetchVllmMetrics logs fetch errors', () => {
     const fn = vllm.slice(vllm.indexOf('async function fetchVllmMetrics'));
     const body = fn.slice(0, fn.indexOf('\n}'));
