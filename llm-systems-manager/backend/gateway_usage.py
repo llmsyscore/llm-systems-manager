@@ -18,6 +18,9 @@ _counters: dict = {}
 # Touched only by the pusher thread (and tests), so no lock needed.
 PUSH_INTERVAL_S = 15.0
 _prev_push: dict = {}
+# Last rates the pusher computed per agent — the dashboard reads these so
+# the card shows exactly what the alarm engine stores.
+_last_rates: dict = {}
 
 
 def record(agent_id: str, prompt_tokens, completion_tokens) -> None:
@@ -60,6 +63,8 @@ def metric_points(agent_hosts: dict, now: "float | None" = None) -> list:
             dt = ts - prev[0]
             gen_tps = (c["gen"] - prev[1]) / dt
             prompt_tps = (c["prompt"] - prev[2]) / dt
+        _last_rates[aid] = {"gen_tps": round(gen_tps, 2),
+                            "prompt_tps": round(prompt_tps, 2), "ts": iso}
         for name, val, unit in (
             ("lms_tokens_per_second",        round(gen_tps, 2),    "tok/s"),
             ("lms_prompt_tokens_per_second", round(prompt_tps, 2), "tok/s"),
@@ -70,6 +75,12 @@ def metric_points(agent_hosts: dict, now: "float | None" = None) -> list:
                         "value": val, "unit": unit, "timestamp": iso,
                         "hostname": host})
     return out
+
+
+def last_rates(agent_id: str) -> "dict | None":
+    """The pusher's most recent {gen_tps, prompt_tps, ts} for an agent."""
+    r = _last_rates.get(agent_id)
+    return dict(r) if r else None
 
 
 def start_pusher(push, agent_hosts_fn, interval_s: float = PUSH_INTERVAL_S) -> None:

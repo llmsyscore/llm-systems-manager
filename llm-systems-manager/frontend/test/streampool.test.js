@@ -87,7 +87,7 @@ describe('dashboard-manager badge wiring', () => {
   });
 
   it('index.html cache-busts the touched scripts with a fresh version', () => {
-    expect(indexSrc).toMatch(/js\/lib\/series\.js\?v=2026\.08\.04-1/);
+    expect(indexSrc).toMatch(/js\/lib\/series\.js\?v=2026\.08\.04-2/);
     expect(indexSrc).toMatch(/js\/dashboard-manager\.js\?v=2026\.08\.04-1/);
   });
 });

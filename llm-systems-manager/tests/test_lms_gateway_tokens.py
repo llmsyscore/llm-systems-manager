@@ -45,6 +45,23 @@ def test_lms_metrics_no_agent_has_no_gateway_tokens(monkeypatch):
     assert "gateway_tokens" not in body
 
 
+def test_lms_metrics_attaches_pusher_rates(monkeypatch):
+    aid = "test-502-rates-a"
+    monkeypatch.setattr(manager_mod.agent_registry, "default_agent_id_for",
+                        lambda p: aid if p == "lms" else None)
+    provider_state.STORE.put("lms", aid, {"ps": [], "models": []})
+    body = _auth_client().get("/api/lmstudio/metrics").get_json()
+    assert body["gateway_rates"] is None      # pusher hasn't ticked yet
+    gateway_usage.record(aid, 30, 60)          # (prompt, gen)
+    gateway_usage.metric_points({aid: "mac"}, now=5000.0)
+    gateway_usage.record(aid, 15, 90)
+    gateway_usage.metric_points({aid: "mac"}, now=5010.0)
+    body = _auth_client().get("/api/lmstudio/metrics").get_json()
+    assert body["gateway_rates"]["gen_tps"] == 9.0
+    assert body["gateway_rates"]["prompt_tps"] == 1.5
+    assert body["gateway_rates"]["ts"].endswith("+00:00")
+
+
 def test_metric_points_rates_from_consecutive_calls():
     aid = "test-502-push-a"
     hosts = {aid: "mac-host"}

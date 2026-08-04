@@ -2,8 +2,6 @@
 // LM Studio metrics — from agent
 // ---------------------------------------------------------------------------
 let _lmsMetrics = {};
-// Poll-to-poll tracker for the gateway's cumulative token counters (#502).
-let _lmsTokTrack = null;
 
 // Normalize for matching: replace slashes + hyphens with underscores, lowercase.
 // Keep the @quant suffix so q4_k_m != iq4_xs.
@@ -159,15 +157,16 @@ async function fetchLMStudioMetrics() {
     _setEl('lms-active-quant',    activeData?.quant || '—');
     _setEl('lms-active-port',     d.server?.port ?? '—');
 
-    // Server card — gateway-counted token throughput (#502)
+    // Server card — gateway-counted token throughput (#502). Rates come from
+    // the manager's AE pusher so tiles + chart match the alarm engine series.
     const gt = d.gateway_tokens || null;
-    const tr = LMSeries.tokenRate(_lmsTokTrack, gt?.gen, gt?.prompt, Date.now());
-    _lmsTokTrack = tr.track;
-    _setEl('lms-tps', tr.genRate    != null ? tr.genRate.toFixed(1)    : '—');
-    _setEl('lms-pps', tr.promptRate != null ? tr.promptRate.toFixed(1) : '—');
+    const gr = d.gateway_rates || null;
+    _setEl('lms-tps', gr && gr.gen_tps    != null ? gr.gen_tps.toFixed(1)    : '—');
+    _setEl('lms-pps', gr && gr.prompt_tps != null ? gr.prompt_tps.toFixed(1) : '—');
     _setEl('lms-gen-tokens',    gt && gt.gen    != null ? Number(gt.gen).toLocaleString()    : '—');
     _setEl('lms-prompt-tokens', gt && gt.prompt != null ? Number(gt.prompt).toLocaleString() : '—');
-    if (lmsTpsChart && tr.genRate != null) pushDual(lmsTpsChart, ts, tr.genRate, tr.promptRate);
+    if (lmsTpsChart && gr && gr.gen_tps != null)
+      pushDual(lmsTpsChart, gr.ts ? new Date(gr.ts) : ts, gr.gen_tps, gr.prompt_tps);
 
     // CPU
     _setEl('lms-cpu-total', sys.cpu_total != null ? sys.cpu_total.toFixed(1) + '%' : '—');

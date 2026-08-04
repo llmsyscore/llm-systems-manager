@@ -47,22 +47,7 @@ function trackRefusals(prev, count, nowMs, windowMs = 60000) {
   };
 }
 
-// Per-second rates from cumulative token counters sampled across polls; rates
-// are null on the first sample, a counter drop, or a poll gap over maxGapMs.
-function tokenRate(prev, gen, prompt, nowMs, maxGapMs = 30000) {
-  const g = (typeof gen === 'number' && isFinite(gen)) ? gen : null;
-  const p = (typeof prompt === 'number' && isFinite(prompt)) ? prompt : null;
-  if (g === null || p === null)
-    return { track: prev || null, genRate: null, promptRate: null };
-  const track = { t: nowMs, gen: g, prompt: p };
-  if (!prev || nowMs <= prev.t || (nowMs - prev.t) > maxGapMs
-      || g < prev.gen || p < prev.prompt)
-    return { track, genRate: null, promptRate: null };
-  const dt = (nowMs - prev.t) / 1000;
-  return { track, genRate: (g - prev.gen) / dt, promptRate: (p - prev.prompt) / dt };
-}
-
 if (typeof window !== 'undefined')
-  window.LMSeries = { zipByTs, bucketDate, isManagerSubActive, latchFilled, trackRefusals, tokenRate };
+  window.LMSeries = { zipByTs, bucketDate, isManagerSubActive, latchFilled, trackRefusals };
 if (typeof module !== 'undefined' && module.exports)
-  module.exports = { zipByTs, bucketDate, isManagerSubActive, latchFilled, trackRefusals, tokenRate };
+  module.exports = { zipByTs, bucketDate, isManagerSubActive, latchFilled, trackRefusals };

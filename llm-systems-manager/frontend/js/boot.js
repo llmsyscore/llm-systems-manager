@@ -234,6 +234,10 @@ function switchSubTab(parent, sub) {
     fetchManagerAgentsCard();
     refreshTabIndicators();
     checkConfig();
+    // Refill the LMS charts from the alarm engine so a hidden period shows
+    // as real history instead of a frozen line (#502).
+    if (typeof _lmsMetricsViewActive === 'function' && _lmsMetricsViewActive()
+        && typeof loadLmsHistory === 'function') loadLmsHistory().catch(() => {});
     if (typeof _startLlamaStateStream === 'function') _startLlamaStateStream();
     if (_logPanelOpen && _activeTab === 'llm' && _subTabState && _subTabState.llm === 'llamacpp'
         && typeof startLogStream === 'function') startLogStream();

@@ -404,9 +404,6 @@ function _selectAgent(provider, agentId) {
             || (typeof _termOpen !== 'undefined' && _termOpen))) closeTerminal();
   } else if (provider === 'lms') {
     _clearBars('lmsDiskList');
-    // Reseed the token-rate tracker so the first poll after an agent switch
-    // never diffs the new agent's counters against the old agent's.
-    if (typeof _lmsTokTrack !== 'undefined') _lmsTokTrack = null;
     // loadLmsHistory reads the picker selection (_selectedAgent('lms')) and
     // backfills that agent's host server-side via /api/history?agent= — no
     // hostname needed here (#140). Resume live only after, like llama (#121).
