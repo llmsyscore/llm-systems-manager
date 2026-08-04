@@ -420,6 +420,7 @@ function _selectAgent(provider, agentId) {
           || (_lp && _lp.style.display !== 'none')) closeLmsTerminal();
     }
   } else if (provider === 'vllm') {
+    _clearBars('vllmDiskList');
     // Backfill the new agent's history, then resume the live poll (#358) —
     // same shape as the LMS branch above.
     if (typeof loadVllmHistory === 'function') {

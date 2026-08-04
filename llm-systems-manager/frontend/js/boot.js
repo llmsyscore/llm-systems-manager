@@ -100,7 +100,13 @@ function switchSubTab(parent, sub) {
     stopVllmLogRefresh();
   }
   if (sub === 'vllm') {
-    fetchVllmMetrics();
+    // Dashboard entry: re-backfill charts from history, then resume the live
+    // poll; the llm-tab vllm panel has no charts and keeps the plain fetch.
+    if (parent === 'dashboard' && typeof loadVllmHistory === 'function') {
+      loadVllmHistory().finally(() => fetchVllmMetrics()).catch(() => {});
+    } else {
+      fetchVllmMetrics();
+    }
     if (typeof _vllmLogOpen !== 'undefined' && _vllmLogOpen) startVllmLogRefresh();
   }
   if (parent === 'dashboard' && sub === 'openclaw') {
