@@ -151,6 +151,21 @@ function switchSubTab(parent, sub) {
   }
 }
 
+// Chart re-backfill for whichever view is on screen — called on tab refocus.
+function _rebackfillActiveView() {
+  const run = fn => { if (typeof fn === 'function') Promise.resolve(fn()).catch(() => {}); };
+  if (_activeTab === 'overall') {
+    run(typeof loadOverallHistory !== 'undefined' ? loadOverallHistory : null);
+    return;
+  }
+  if (_activeTab !== 'dashboard') return;
+  const sub = _subTabState.dashboard;
+  if (sub === 'llamacpp')       run(typeof loadHistory !== 'undefined' ? loadHistory : null);
+  else if (sub === 'lmstudio')  run(typeof loadLmsHistory !== 'undefined' ? loadLmsHistory : null);
+  else if (sub === 'vllm')      run(typeof loadVllmHistory !== 'undefined' ? loadVllmHistory : null);
+  else if (sub === 'manager')   run(typeof loadManagerPerfHistory !== 'undefined' ? loadManagerPerfHistory : null);
+}
+
 // Boot
 // ---------------------------------------------------------------------------
 (async () => {
@@ -234,6 +249,9 @@ function switchSubTab(parent, sub) {
     fetchManagerAgentsCard();
     refreshTabIndicators();
     checkConfig();
+    // Re-backfill the visible tab's charts from history so a hidden period
+    // shows as real data instead of a frozen line (#502).
+    _rebackfillActiveView();
     if (typeof _startLlamaStateStream === 'function') _startLlamaStateStream();
     if (_logPanelOpen && _activeTab === 'llm' && _subTabState && _subTabState.llm === 'llamacpp'
         && typeof startLogStream === 'function') startLogStream();

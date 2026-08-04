@@ -460,9 +460,11 @@ function pushPoint(chart, ts, val) {
   chart.update('none');
 }
 
-function pushDual(chart, ts, v1, v2) {
+// bucketMs overrides the poll-interval grid for series with their own fixed
+// cadence (e.g. the 15s gateway pusher) so short bursts aren't collapsed away.
+function pushDual(chart, ts, v1, v2, bucketMs) {
   const l = chart.data.labels, d0 = chart.data.datasets[0].data, d1 = chart.data.datasets[1].data;
-  const t = _bucketDate(ts);
+  const t = bucketMs ? LMSeries.bucketDate(ts, bucketMs) : _bucketDate(ts);
   if (l.length && t.getTime() <= l[l.length - 1].getTime()) {
     d0[d0.length - 1] = v1 || 0; d1[d1.length - 1] = v2 || 0;
   } else {
@@ -471,6 +473,10 @@ function pushDual(chart, ts, v1, v2) {
   }
   chart.update('none');
 }
+
+// Bucket width for gateway-pushed token rates — matches gateway_usage
+// PUSH_INTERVAL_S on the manager.
+const GW_RATE_BUCKET_MS = 15000;
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -896,7 +902,11 @@ function _resetMetricCharts() {
 function _resetLmsCharts() {
   [typeof lmsCpuChart !== 'undefined' ? lmsCpuChart : null,
    typeof lmsRamChart !== 'undefined' ? lmsRamChart : null,
-   typeof lmsNetChart !== 'undefined' ? lmsNetChart : null]
+   typeof lmsNetChart !== 'undefined' ? lmsNetChart : null,
+   typeof lmsTpsChart !== 'undefined' ? lmsTpsChart : null,
+   typeof lmsIoChart !== 'undefined' ? lmsIoChart : null,
+   typeof lmsDiskUsageChart !== 'undefined' ? lmsDiskUsageChart : null,
+   typeof lmsGpuChart !== 'undefined' ? lmsGpuChart : null]
     .forEach(_clearChart);
 }
 
@@ -1042,8 +1052,8 @@ function _makeHistoryBackfill(provider, defaultAgentKey, resetCharts, paintRow) 
   };
 }
 
-// Backfill the LM Studio host charts (CPU/RAM/Net) from the selected LMS
-// agent's history. Makes no llama calls — Overall backfills separately.
+// Backfill the LM Studio host + gateway-throughput charts from the selected
+// LMS agent's history. Makes no llama calls — Overall backfills separately.
 const loadLmsHistory = _makeHistoryBackfill('lms', '__LMS_AGENT',
   () => _resetLmsCharts(),
   (r) => {
@@ -1056,18 +1066,47 @@ const loadLmsHistory = _makeHistoryBackfill('lms', '__LMS_AGENT',
       pushDual(lmsNetChart, r.ts,
         r.net_sent != null ? r.net_sent / B_PER_MIB : null,
         r.net_recv != null ? r.net_recv / B_PER_MIB : null);
+    if (typeof lmsIoChart !== 'undefined' && lmsIoChart
+        && (r.io_read != null || r.io_write != null))
+      pushDual(lmsIoChart, r.ts,
+        (r.io_read || 0) / B_PER_MIB, (r.io_write || 0) / B_PER_MIB);
+    if (typeof lmsDiskUsageChart !== 'undefined' && lmsDiskUsageChart
+        && r.disk_root_pct != null)
+      pushPoint(lmsDiskUsageChart, r.ts, r.disk_root_pct);
+    if (typeof lmsGpuChart !== 'undefined' && lmsGpuChart
+        && r.mac_gpu_busy != null)
+      pushPoint(lmsGpuChart, r.ts, r.mac_gpu_busy);
+    if (typeof lmsTpsChart !== 'undefined' && lmsTpsChart
+        && (r.lms_tps != null || r.lms_pps != null))
+      pushDual(lmsTpsChart, r.ts, r.lms_tps || 0, r.lms_pps || 0, GW_RATE_BUCKET_MS);
   });
 
-// Backfill the vLLM KV-cache + throughput charts from the selected vLLM
-// agent's history (#358).
+// Backfill the vLLM KV-cache/throughput + host (CPU/RAM/Net/IO/disk) charts
+// from the selected vLLM agent's history (#358, #502).
 const loadVllmHistory = _makeHistoryBackfill('vllm', '__VLLM_AGENT',
   () => { if (typeof _resetVllmCharts === 'function') _resetVllmCharts(); },
   (r) => {
+    const B_PER_MIB = 1048576;
     if (typeof vllmKvChart !== 'undefined' && vllmKvChart && r.vllm_kv != null)
       pushPoint(vllmKvChart, r.ts, r.vllm_kv);
     if (typeof vllmTpsChart !== 'undefined' && vllmTpsChart
         && (r.vllm_tps != null || r.vllm_pps != null))
       pushDual(vllmTpsChart, r.ts, r.vllm_tps || 0, r.vllm_pps || 0);
+    if (typeof vllmCpuChart !== 'undefined' && vllmCpuChart && r.cpu_total != null)
+      pushPoint(vllmCpuChart, r.ts, r.cpu_total);
+    if (typeof vllmRamChart !== 'undefined' && vllmRamChart && r.ram_percent != null)
+      pushPoint(vllmRamChart, r.ts, r.ram_percent);
+    if (typeof vllmNetChart !== 'undefined' && vllmNetChart)
+      pushDual(vllmNetChart, r.ts,
+        r.net_sent != null ? r.net_sent / B_PER_MIB : null,
+        r.net_recv != null ? r.net_recv / B_PER_MIB : null);
+    if (typeof vllmIoChart !== 'undefined' && vllmIoChart
+        && (r.io_read != null || r.io_write != null))
+      pushDual(vllmIoChart, r.ts,
+        (r.io_read || 0) / B_PER_MIB, (r.io_write || 0) / B_PER_MIB);
+    if (typeof vllmDiskUsageChart !== 'undefined' && vllmDiskUsageChart
+        && r.disk_root_pct != null)
+      pushPoint(vllmDiskUsageChart, r.ts, r.disk_root_pct);
   });
 
 // Backfill the Overall-tab llama TPS chart (Gen / Prompt) from the fleet

@@ -31,23 +31,25 @@ function _fmtAge(iso) {
 async function fetchServicesAndInflux() {
   if (document.hidden) return;
   // The cards this populates (Services watchlist, InfluxDB, manager system,
-  // manager_self_monitor, mac_power) are manager/fleet cards — they live on the
+  // manager_self_monitor) are manager/fleet cards — they live on the
   // Overall tab and the Dashboard → Manager sub-tab ONLY, not the per-agent
   // llama/lms dashboards. Skip elsewhere so dbstats + the cross-host source
   // metrics don't fire from a per-agent dashboard (#123, #127).
   const _onMgrSub = LMSeries.isManagerSubActive(_activeTab, _subTabState);
   if (_activeTab !== 'overall' && !_onMgrSub) return;
   try {
-    // Fan out to four narrow source-filtered fetches instead of one
+    // Fan out to narrow source-filtered fetches instead of one
     // unconstrained "give me all 2000 rows" pull. compute_metric_list in
     // the alarm engine short-circuits per-source via its (source, limit)
     // cache key, so each call scans only the slice we need and the
     // results are cached independently. Net: ~10× less payload, faster
     // server scan, smaller browser-side JSON parse.
-    const sources = ['processes', 'manager_self_monitor', 'influxdb', 'mac_power'];
+    // The powermetrics card is painted from the LMS metrics payload in
+    // lmstudio.js, not from this catalog fan-out.
+    const sources = ['processes', 'manager_self_monitor', 'influxdb'];
     // Manager-host system metrics are scoped by agent id (resolved to a host
     // server-side), never by a browser-held hostname (#140). The other sources
-    // are intentionally cross-host (services/influx/mac span the fleet).
+    // are intentionally cross-host (services/influx span the fleet).
     const MGR_AGENT = window.__MGR_AGENT;
     const mgrSysFetch = MGR_AGENT
       ? fetch(`/api/alarm/metrics?source=system&agent=${encodeURIComponent(MGR_AGENT)}&limit=500`)
@@ -69,7 +71,6 @@ async function fetchServicesAndInflux() {
     // their own copies of the watchlist).
     const services = {};       // "host::svc" -> {host, svc, running, pid, rss_mb, uptime_s, count, age}
     const influx = {};         // metric_name -> {value, host, age}
-    const mac    = {};         // metric_name -> {value, host, age}
     const mgrSys = {};         // metric_name -> {value, age} — system source on the manager host
     const selfMon = {};        // metric_name -> {value, age} — manager_self_monitor source (agent self-probes)
     // Manager-host system metrics from the agent-scoped fetch above — already
@@ -100,9 +101,6 @@ async function fetchServicesAndInflux() {
         if (bucket.age == null || (age != null && age < bucket.age)) bucket.age = age;
       } else if (r.source === 'influxdb' && r.metric_name) {
         const bucket = influx[r.metric_name] = { value: r.latest_value, host: r.hostname };
-        bucket.age = _fmtAge(r.latest_timestamp);
-      } else if (r.source === 'mac_power' && r.metric_name) {
-        const bucket = mac[r.metric_name] = { value: r.latest_value, host: r.hostname };
         bucket.age = _fmtAge(r.latest_timestamp);
       }
     }
@@ -234,42 +232,6 @@ async function fetchServicesAndInflux() {
       else influxCls = 'dash-ok';
     }
     _dashSetStatus('influxdb', influxCls);
-
-    // ---- Mac powermetrics card ----
-    const mpAge = mac['cpu_package_w']?.age ?? mac['soc_total_w']?.age ?? mac['thermal_pressure_n']?.age;
-    const mpStale = (mpAge == null) || (mpAge > 30);
-    const fmtW = k => mac[k]?.value != null ? mac[k].value.toFixed(2) + ' W' : '—';
-    setText('mpSocW',   fmtW('soc_total_w'));
-    setText('mpCpuPkg', fmtW('cpu_package_w'));
-    setText('mpGpuW',   fmtW('gpu_w'));
-    setText('mpAneW',   fmtW('ane_w'));
-    const tpN = mac['thermal_pressure_n']?.value;
-    setText('mpThermal', tpN == null ? '—' : ['Nominal','Fair','Serious','Critical'][Math.round(tpN)] || '—');
-    const gbusy = mac['gpu_busy_pct']?.value;
-    setText('mpGpuBusyVal', gbusy != null ? gbusy.toFixed(1) + '%' : '—');
-    const pfreq = mac['pcore_freq_mhz']?.value, putil = mac['pcore_util_pct']?.value;
-    const efreq = mac['ecore_freq_mhz']?.value, eutil = mac['ecore_util_pct']?.value;
-    setText('mpPcore', pfreq == null && putil == null ? '—'
-      : `${pfreq != null ? Math.round(pfreq) + ' MHz' : '—'}${putil != null ? ' · ' + putil.toFixed(0) + '%' : ''}`);
-    setText('mpEcore', efreq == null && eutil == null ? '—'
-      : `${efreq != null ? Math.round(efreq) + ' MHz' : '—'}${eutil != null ? ' · ' + eutil.toFixed(0) + '%' : ''}`);
-    const gfreq = mac['gpu_freq_mhz']?.value;
-    setText('mpGpuClock', gfreq != null ? Math.round(gfreq) + ' MHz' : '—');
-    const nin = mac['net_in_pkts_s']?.value, nout = mac['net_out_pkts_s']?.value;
-    setText('mpNet', nin == null && nout == null ? '—'
-      : `${nin != null ? Math.round(nin) : '—'} in / ${nout != null ? Math.round(nout) : '—'} out`);
-    const mpBadge = document.getElementById('lms-power-badge');
-    if (mpBadge) {
-      if (mpStale) { mpBadge.className = 'status status--muted'; mpBadge.textContent = 'no data'; }
-      else { mpBadge.className = 'status status--ok'; mpBadge.innerHTML = '<span class="status__dot"></span>live'; }
-    }
-    let mpCls = 'dash-off';
-    if (!mpStale) {
-      if (tpN != null && tpN >= 2) mpCls = 'dash-crit';
-      else if (tpN != null && tpN >= 1) mpCls = 'dash-warn';
-      else mpCls = 'dash-ok';
-    }
-    _dashSetStatus('lms-power', mpCls);
 
     // ---- Manager host performance cards (llm-systems-manager agent) ----
     // (`setText` and `_fmtBytesShort` / `_fmtUptime` are already in scope.)

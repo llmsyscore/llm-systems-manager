@@ -4,12 +4,23 @@ from __future__ import annotations
 
 import json
 import logging
+import sys
 import threading
+import time
+from datetime import datetime, timezone
 
 log = logging.getLogger("llm-systems-manager.gateway-usage")
 
 _lock = threading.Lock()
 _counters: dict = {}
+
+# Previous pusher snapshot per agent: (epoch_s, gen_cum, prompt_cum).
+# Touched only by the pusher thread (and tests), so no lock needed.
+PUSH_INTERVAL_S = 15.0
+_prev_push: dict = {}
+# Last rates the pusher computed per agent — the dashboard reads these so
+# the card shows exactly what the alarm engine stores.
+_last_rates: dict = {}
 
 
 def record(agent_id: str, prompt_tokens, completion_tokens) -> None:
@@ -31,6 +42,65 @@ def counters() -> dict:
     """Snapshot: {agent_id: {"gen": N, "prompt": N}}, cumulative since start."""
     with _lock:
         return {aid: dict(c) for aid, c in _counters.items()}
+
+
+def metric_points(agent_hosts: dict, now: "float | None" = None) -> list:
+    """Alarm-engine metric points for every LMS agent: cumulative token
+    totals plus tok/s rates derived from the previous call's snapshot."""
+    ts = time.time() if now is None else float(now)
+    iso = datetime.fromtimestamp(ts, tz=timezone.utc).isoformat()
+    counts = counters()
+    out = []
+    for aid, host in (agent_hosts or {}).items():
+        if not host:
+            continue
+        c = counts.get(aid) or {"gen": 0, "prompt": 0}
+        prev = _prev_push.get(aid)
+        _prev_push[aid] = (ts, c["gen"], c["prompt"])
+        gen_tps = prompt_tps = 0.0
+        if (prev and ts > prev[0]
+                and c["gen"] >= prev[1] and c["prompt"] >= prev[2]):
+            dt = ts - prev[0]
+            gen_tps = (c["gen"] - prev[1]) / dt
+            prompt_tps = (c["prompt"] - prev[2]) / dt
+        _last_rates[aid] = {"gen_tps": round(gen_tps, 2),
+                            "prompt_tps": round(prompt_tps, 2), "ts": iso}
+        for name, val, unit in (
+            ("lms_tokens_per_second",        round(gen_tps, 2),    "tok/s"),
+            ("lms_prompt_tokens_per_second", round(prompt_tps, 2), "tok/s"),
+            ("lms_gen_tokens_total",         float(c["gen"]),      "tokens"),
+            ("lms_prompt_tokens_total",      float(c["prompt"]),   "tokens"),
+        ):
+            out.append({"source": "gateway", "metric_name": name,
+                        "value": val, "unit": unit, "timestamp": iso,
+                        "hostname": host})
+    return out
+
+
+def last_rates(agent_id: str) -> "dict | None":
+    """The pusher's most recent {gen_tps, prompt_tps, ts} for an agent."""
+    r = _last_rates.get(agent_id)
+    return dict(r) if r else None
+
+
+def start_pusher(push, agent_hosts_fn, interval_s: float = PUSH_INTERVAL_S) -> None:
+    """Daemon thread pushing metric_points() batches every interval_s;
+    no-op under pytest."""
+    if "pytest" in sys.modules:
+        return
+
+    def _loop():
+        while True:
+            try:
+                pts = metric_points(agent_hosts_fn() or {})
+                if pts:
+                    push(pts)
+            except Exception as e:
+                log.debug("gateway usage push failed: %s", e)
+            time.sleep(interval_s)
+
+    threading.Thread(target=_loop, name="gateway-usage-pusher",
+                     daemon=True).start()
 
 
 def usage_from_json_bytes(content) -> "tuple[int, int] | None":

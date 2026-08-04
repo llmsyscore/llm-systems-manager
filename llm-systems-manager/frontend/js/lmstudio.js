@@ -31,6 +31,40 @@ const lmsNetChart = lmsNetChartCtx ? new Chart(lmsNetChartCtx, {
   options: { animation: false, responsive: true, maintainAspectRatio: false, interaction: _sparkInteraction, scales: { x: { type: 'time', display: false }, y: { min: 0, display: true, ticks: { color: cssVar('--fg-muted'), font: { size: 10 } } } }, plugins: { legend: { display: false }, tooltip: _sparkTooltip, zoom: _zoomOpts } }
 }) : null;
 
+const lmsTpsChartCtx = document.getElementById('lmsTpsChart')?.getContext('2d');
+const lmsTpsChart = lmsTpsChartCtx ? new Chart(lmsTpsChartCtx, {
+  type: 'line',
+  data: { datasets: [
+    { label: 'Gen t/s',    data: [], borderColor: '#7af', borderWidth: 1.5, pointRadius: 0, pointHoverRadius: 4, fill: false, tension: 0.3 },
+    { label: 'Prompt t/s', data: [], borderColor: '#fa7', borderWidth: 1.5, pointRadius: 0, pointHoverRadius: 4, fill: false, tension: 0.3 },
+  ]},
+  options: { animation: false, responsive: true, maintainAspectRatio: false, interaction: _sparkInteraction, scales: { x: { type: 'time', display: false }, y: { min: 0, display: true, ticks: { color: cssVar('--fg-muted'), font: { size: 10 } } } }, plugins: { legend: { display: false }, tooltip: _sparkTooltip, zoom: _zoomOpts } }
+}) : null;
+
+const lmsIoChartCtx = document.getElementById('lmsIoChart')?.getContext('2d');
+const lmsIoChart = lmsIoChartCtx ? new Chart(lmsIoChartCtx, {
+  type: 'line',
+  data: { datasets: [
+    { label: 'Read',  data: [], borderColor: '#a7f', borderWidth: 1.5, pointRadius: 0, pointHoverRadius: 4, fill: false, tension: 0.3 },
+    { label: 'Write', data: [], borderColor: '#f7a', borderWidth: 1.5, pointRadius: 0, pointHoverRadius: 4, fill: false, tension: 0.3 },
+  ]},
+  options: { animation: false, responsive: true, maintainAspectRatio: false, interaction: _sparkInteraction, scales: { x: { type: 'time', display: false }, y: { min: 0, display: true, ticks: { color: cssVar('--fg-muted'), font: { size: 10 } } } }, plugins: { legend: { display: false }, tooltip: _sparkTooltip, zoom: _zoomOpts } }
+}) : null;
+
+const lmsGpuChartCtx = document.getElementById('lmsGpuChart')?.getContext('2d');
+const lmsGpuChart = lmsGpuChartCtx ? new Chart(lmsGpuChartCtx, {
+  type: 'line',
+  data: { datasets: [{ label: 'GPU busy %', data: [], borderColor: '#a7f', borderWidth: 1.5, pointRadius: 0, pointHoverRadius: 4, fill: false, tension: 0.3 }] },
+  options: { animation: false, responsive: true, maintainAspectRatio: false, interaction: _sparkInteraction, scales: { x: { type: 'time', display: false }, y: { min: 0, max: 100, display: true, ticks: { color: cssVar('--fg-muted'), font: { size: 10 }, callback: v => v + '%' } } }, plugins: { legend: { display: false }, tooltip: _sparkTooltip, zoom: _zoomOpts } }
+}) : null;
+
+const lmsDiskUsageChartCtx = document.getElementById('lmsDiskUsageChart')?.getContext('2d');
+const lmsDiskUsageChart = lmsDiskUsageChartCtx ? new Chart(lmsDiskUsageChartCtx, {
+  type: 'line',
+  data: { datasets: [{ label: '/ %', data: [], borderColor: '#4a9', borderWidth: 1.5, pointRadius: 0, pointHoverRadius: 4, fill: false, tension: 0.3 }] },
+  options: { animation: false, responsive: true, maintainAspectRatio: false, interaction: _sparkInteraction, scales: { x: { type: 'time', display: false }, y: { min: 0, max: 100, display: true, ticks: { color: cssVar('--fg-muted'), font: { size: 10 }, callback: v => v + '%' } } }, plugins: { legend: { display: false }, tooltip: _sparkTooltip, zoom: _zoomOpts } }
+}) : null;
+
 const ovLlamaChartCtx = document.getElementById('ovLlamaChart')?.getContext('2d');
 const ovLlamaChart = ovLlamaChartCtx ? new Chart(ovLlamaChartCtx, {
   type: 'line',
@@ -94,9 +128,11 @@ async function fetchLMStudioMetrics() {
     const online = d.agent_online === true;
     const ts     = d.ts ? new Date(d.ts) : new Date();
 
-    // Active model — from ps output (most reliable for status)
+    // Active model — from ps output (most reliable for status); falls back
+    // to an idle-loaded row so the server card still shows model info.
     const activePs = ps.find(p => p.status && !['IDLE','STOPPED'].includes(p.status));
-    const activeData = activePs || d.active || null;
+    const loadedPs = ps.find(p => p.status && p.status !== 'STOPPED') || null;
+    const activeData = activePs || d.active || loadedPs || null;
 
     // Agent badge updates — LMS-scoped only. Earlier this used a blanket
     // .agent-badge selector, which also stomped llama-side badges
@@ -111,18 +147,31 @@ async function fetchLMStudioMetrics() {
     });
 
     // ---- LM Studio Dashboard sub-tab ----
-    // Active model
-    if (activeData) {
-      _setEl('lms-active-model',    activeData.identifier || activeData.model || '—');
-      _setEl('lms-active-status',   activeData.status || '—');
-      _setEl('lms-active-size',     activeData.size   || '—');
-      _setEl('lms-active-ctx',      activeData.context ? activeData.context.toLocaleString() : '—');
-      _setEl('lms-active-parallel', activeData.parallel ?? '—');
-      _setEl('lms-active-device',   activeData.device || '—');
-    }
+    // Server card — model info (always repainted so unloads clear the tiles)
+    _setEl('lms-active-model',    activeData ? (activeData.identifier || activeData.model || '—')
+                                             : (online ? 'no model loaded' : '—'));
+    _setEl('lms-active-status',   activeData?.status || '—');
+    _setEl('lms-active-size',     activeData?.size   || '—');
+    _setEl('lms-active-ctx',      activeData?.context ? activeData.context.toLocaleString() : '—');
+    _setEl('lms-active-parallel', activeData?.parallel ?? '—');
+    _setEl('lms-active-quant',    activeData?.quant || '—');
+    _setEl('lms-active-port',     d.server?.port ?? '—');
+
+    // Server card — gateway-counted token throughput (#502). Rates come from
+    // the manager's AE pusher so tiles + chart match the alarm engine series.
+    const gt = d.gateway_tokens || null;
+    const gr = d.gateway_rates || null;
+    _setEl('lms-tps', gr && gr.gen_tps    != null ? gr.gen_tps.toFixed(1)    : '—');
+    _setEl('lms-pps', gr && gr.prompt_tps != null ? gr.prompt_tps.toFixed(1) : '—');
+    _setEl('lms-gen-tokens',    gt && gt.gen    != null ? Number(gt.gen).toLocaleString()    : '—');
+    _setEl('lms-prompt-tokens', gt && gt.prompt != null ? Number(gt.prompt).toLocaleString() : '—');
+    if (lmsTpsChart && gr && gr.gen_tps != null)
+      pushDual(lmsTpsChart, gr.ts ? new Date(gr.ts) : ts, gr.gen_tps, gr.prompt_tps, GW_RATE_BUCKET_MS);
 
     // CPU
     _setEl('lms-cpu-total', sys.cpu_total != null ? sys.cpu_total.toFixed(1) + '%' : '—');
+    if (sys.cpu_temp_c != null) _setEl('lms-cpu-temp', sys.cpu_temp_c.toFixed(1) + '°C');
+    if (sys.cpu_governor) _setEl('lms-cpu-governor', sys.cpu_governor);
     if (lmsCpuChart && sys.cpu_total != null) pushPoint(lmsCpuChart, ts, sys.cpu_total);
     if (cpu.length && document.getElementById('lmsCoreGrid')) {
       document.getElementById('lmsCoreGrid').innerHTML = cpu.map((pct, i) => {
@@ -136,8 +185,10 @@ async function fetchLMStudioMetrics() {
     const ramPct = ram.percent != null ? ram.percent.toFixed(1) + '%' : '—';
     _setEl('lms-ram-pct',  ramPct);
     _setEl('lms-ram-sub',  ram.used_bytes ? _fmtBytes(ram.used_bytes) + ' used / ' + _fmtBytes(ram.total_bytes) + ' total' : '—');
-    _setEl('lms-swap-used', sys.swap?.used_bytes ? _fmtBytes(sys.swap.used_bytes) : '—');
-    _setEl('lms-ram-avail', ram.available_bytes  ? _fmtBytes(ram.available_bytes) : '—');
+    _setEl('lms-ram-cached',  ram.cached_bytes  != null ? _fmtBytes(ram.cached_bytes)  : '—');
+    _setEl('lms-ram-buffers', ram.buffers_bytes != null ? _fmtBytes(ram.buffers_bytes) : '—');
+    _setEl('lms-swap-used', sys.swap?.used_bytes != null ? _fmtBytes(sys.swap.used_bytes) : '—');
+    _setEl('lms-swap-free', sys.swap?.free_bytes != null ? _fmtBytes(sys.swap.free_bytes) : '—');
     if (lmsRamChart && ram.percent != null) pushPoint(lmsRamChart, ts, ram.percent);
 
     // Network
@@ -162,7 +213,21 @@ async function fetchLMStudioMetrics() {
             <span>${d.percent.toFixed(1)}%</span>
           </div>`;
         }).join('');
+      const lmsRoot = sys.disk.find(dk => dk.mountpoint === '/');
+      if (lmsDiskUsageChart && lmsRoot && lmsRoot.percent != null)
+        pushPoint(lmsDiskUsageChart, ts, lmsRoot.percent);
     }
+
+    // Disk IO
+    const dio = sys.disk_io || {};
+    const ioR = (dio.read_bytes_per_sec  || 0) / 1048576;
+    const ioW = (dio.write_bytes_per_sec || 0) / 1048576;
+    _setEl('lms-io-read',  dio.read_bytes_per_sec  != null ? ioR.toFixed(2) : '—');
+    _setEl('lms-io-write', dio.write_bytes_per_sec != null ? ioW.toFixed(2) : '—');
+    if (lmsIoChart && dio.read_bytes_per_sec != null) pushDual(lmsIoChart, ts, ioR, ioW);
+
+    // powermetrics card — fed by this payload's mac_power block (#502)
+    _renderLmsPowerCard(d, online, ts);
 
     // Model list — use ps for status, models for IDs
     const modelListEl = document.getElementById('lmsDashModelList');
@@ -253,9 +318,10 @@ async function fetchLMStudioMetrics() {
       const _lrp = ram.percent;
       _dashSetStatus('lms-ram', !online ? 'dash-off' : (_lrp != null ? (_lrp >= 90 ? 'dash-crit' : _lrp >= 75 ? 'dash-warn' : 'dash-ok') : 'dash-off'));
     }
-    // lms-network / lms-disk: ok when data present
+    // lms-network / lms-disk / lms-io: ok when data present
     _dashSetStatus('lms-network', !online ? 'dash-off' : (sys.net ? 'dash-ok' : 'dash-off'));
     _dashSetStatus('lms-disk',    !online ? 'dash-off' : (sys.disk ? 'dash-ok' : 'dash-off'));
+    _dashSetStatus('lms-io',      !online ? 'dash-off' : (sys.disk_io ? 'dash-ok' : 'dash-off'));
 
   } catch(e) {
     console.warn('fetchLMStudioMetrics:', e);
@@ -263,6 +329,43 @@ async function fetchLMStudioMetrics() {
     _release(_lk);
     syncBorrowedCards();
   }
+}
+
+// powermetrics card painter — reads the mac_power block from the 6s metrics
+// payload (#502). Badge shows "no data" when the agent is offline or non-Mac.
+function _renderLmsPowerCard(d, online, ts) {
+  const mac = (online && d.mac_power && typeof d.mac_power === 'object') ? d.mac_power : null;
+  const has = !!(mac && Object.keys(mac).length);
+  const v = k => (has && mac[k] != null) ? mac[k] : null;
+  const fmtW = k => v(k) != null ? v(k).toFixed(2) + ' W' : '—';
+  _setEl('mpSocW',   fmtW('soc_total_w'));
+  _setEl('mpCpuPkg', fmtW('cpu_package_w'));
+  _setEl('mpGpuW',   fmtW('gpu_w'));
+  _setEl('mpAneW',   fmtW('ane_w'));
+  const tpN = v('thermal_pressure_n');
+  _setEl('mpThermal', tpN == null ? '—' : ['Nominal','Fair','Serious','Critical'][Math.round(tpN)] || '—');
+  const gbusy = v('gpu_busy_pct');
+  _setEl('mpGpuBusyVal', gbusy != null ? gbusy.toFixed(1) + '%' : '—');
+  if (lmsGpuChart && gbusy != null) pushPoint(lmsGpuChart, ts || new Date(), gbusy);
+  const pfreq = v('pcore_freq_mhz'), putil = v('pcore_util_pct');
+  const efreq = v('ecore_freq_mhz'), eutil = v('ecore_util_pct');
+  _setEl('mpPcore', pfreq == null && putil == null ? '—'
+    : `${pfreq != null ? Math.round(pfreq) + ' MHz' : '—'}${putil != null ? ' · ' + putil.toFixed(0) + '%' : ''}`);
+  _setEl('mpEcore', efreq == null && eutil == null ? '—'
+    : `${efreq != null ? Math.round(efreq) + ' MHz' : '—'}${eutil != null ? ' · ' + eutil.toFixed(0) + '%' : ''}`);
+  const gfreq = v('gpu_freq_mhz');
+  _setEl('mpGpuClock', gfreq != null ? Math.round(gfreq) + ' MHz' : '—');
+  const nin = v('net_in_pkts_s'), nout = v('net_out_pkts_s');
+  _setEl('mpNet', nin == null && nout == null ? '—'
+    : `${nin != null ? Math.round(nin) : '—'} in / ${nout != null ? Math.round(nout) : '—'} out`);
+  const badge = document.getElementById('lms-power-badge');
+  if (badge) {
+    if (!has) { badge.className = 'status status--muted'; badge.textContent = 'no data'; }
+    else { badge.className = 'status status--ok'; badge.innerHTML = '<span class="status__dot"></span>live'; }
+  }
+  _dashSetStatus('lms-power', !has ? 'dash-off'
+    : (tpN != null && tpN >= 2) ? 'dash-crit'
+    : (tpN != null && tpN >= 1) ? 'dash-warn' : 'dash-ok');
 }
 
 function onLmsModelSortChange(v) {
@@ -359,6 +462,8 @@ function renderLMSModelCards(ps, models) {
 
     const chips = psRow ? [
       psRow.size                  && { k: 'size',     v: psRow.size },
+      psRow.quant                 && { k: 'quant',    v: psRow.quant },
+      psRow.params                && { k: 'params',   v: psRow.params },
       psRow.context               && { k: 'ctx',      v: Number(psRow.context).toLocaleString() },
       psRow.parallel != null      && { k: 'parallel', v: psRow.parallel },
       psRow.device                && { k: 'dev',      v: psRow.device },

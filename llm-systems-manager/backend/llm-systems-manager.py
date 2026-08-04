@@ -154,7 +154,7 @@ def _local_hostname() -> str:
 # banner reads it. Bump suffix (-1, -2, …) for same-day iterations; roll
 # the date for a new day's first change.
 # ---------------------------------------------------------------------------
-__version__ = "v2026.08.03-5"
+__version__ = "v2026.08.04-6"
 
 # Wall-clock at first import (Cheroot main process); the shutdown banner
 # reads it for the uptime line.
@@ -176,6 +176,7 @@ _cheroot_servers: list = []
 import model_profiles  # type: ignore[import-not-found]  # noqa: E402  # leaf, no cycle
 import report_card  # type: ignore[import-not-found]  # noqa: E402  # leaf, no cycle; #468
 import energy  # type: ignore[import-not-found]  # noqa: E402  # leaf, no cycle; #470
+import gateway_usage  # type: ignore[import-not-found]  # noqa: E402  # leaf, no cycle; #502
 import discord_bot  # type: ignore[import-not-found]  # noqa: E402  # leaf, no cycle; #471
 
 
@@ -832,6 +833,12 @@ _HISTORY_LEGACY_FIELD_MAP = [
     ("system",  "liquidctl_aio_Liquid temperature_value",  "aio_temp"),
     ("system",  "liquidctl_psu_Total power output_value",     "psu_out"),
     ("system",  "liquidctl_psu_Estimated input power_value",  "psu_in"),
+    # Apple-silicon GPU residency for the powermetrics card's chart (#502).
+    ("mac_power", "gpu_busy_pct",                              "mac_gpu_busy"),
+    # Gateway-counted LMS token rates, pushed per LMS host by the
+    # gateway_usage pusher (#502) — history + alarm rules live in the AE.
+    ("gateway", "lms_tokens_per_second",                       "lms_tps"),
+    ("gateway", "lms_prompt_tokens_per_second",                "lms_pps"),
     # Llama-server stats aren't ingested into the alarm engine yet — agents
     # push them straight to the manager's /api/remote/host-metrics. Leave
     # placeholders so the legacy field names exist; they stay None until
@@ -980,6 +987,7 @@ _FLEET_FIELD_AGG: dict[str, str] = {
     "net_sent": "sum", "net_recv": "sum", "io_read": "sum", "io_write": "sum",
     "llama_tps": "sum", "llama_pps": "sum", "llama_ctx": "sum",
     "llama_gen_tokens": "sum",
+    "lms_tps": "sum", "lms_pps": "sum",
     "vllm_tps": "sum", "vllm_pps": "sum", "vllm_kv": "max",
     "vllm_req_running": "sum", "vllm_req_waiting": "sum",
 }
@@ -2303,14 +2311,60 @@ def _provider_metrics_payload(provider: str) -> dict:
                     f"[agent {aid[:8]}]")
     data["agent_online"] = online
     data["agent_age_s"]  = round(age, 1) if last_seen else None
+    data["agent_id"]     = aid
     return data
 
 
 @app.route("/api/lmstudio/metrics")
 def get_lmstudio_metrics():
-    """Return latest LM Studio metrics for the primary LMS agent.
-    Optional ?agent= targets a specific LMS agent."""
-    return jsonify(_provider_metrics_payload("lms"))
+    """Latest LM Studio metrics for the primary (or ?agent=) LMS agent,
+    plus gateway_tokens — the gateway's cumulative token counters for it."""
+    data = _provider_metrics_payload("lms")
+    aid = data.get("agent_id")
+    if aid:
+        data["gateway_tokens"] = (gateway_usage.counters().get(aid)
+                                  or {"gen": 0, "prompt": 0})
+        data["gateway_rates"] = gateway_usage.last_rates(aid)
+    return jsonify(data)
+
+
+def _lms_agent_hosts() -> dict:
+    """{agent_id: hostname} for approved LMS-capable agents (#502)."""
+    try:
+        agents = (agent_registry.load_agents() or {}).get("agents") or {}
+        return {aid: a.get("hostname")
+                for aid, a in agents.items()
+                if a.get("status") == "approved" and a.get("hostname")
+                and (a.get("capabilities") or {}).get("lms")}
+    except Exception:
+        return {}
+
+
+# Latch so a failing push warns once, not once per 15s interval.
+_gw_push_state = {"failed": False}
+
+
+def _push_gateway_usage_metrics(points: list) -> None:
+    """POST a gateway-usage metric batch to the alarm engine (#502)."""
+    if not _alarm_engine_url or not points:
+        return
+    # AE ingest routes accept only the ingest token — the session-level
+    # bearer is the management token, which they reject with 401.
+    headers = {}
+    ingest_tok = (settings.alarm_engine.ingest_token or "").strip()
+    if ingest_tok and ingest_tok != "REPLACE_ME":
+        headers["Authorization"] = f"Bearer {ingest_tok}"
+    r = _ae_session.post(
+        f"{_alarm_engine_url.rstrip('/')}/api/alarm/metrics/batch",
+        json={"metrics": points}, headers=headers, timeout=5,
+    )
+    if not r.ok and not _gw_push_state["failed"]:
+        _gw_push_state["failed"] = True
+        log.warning(f"gateway usage push failed: HTTP {r.status_code} — "
+                    "lms gateway metrics will be missing from the alarm engine")
+    elif r.ok and _gw_push_state["failed"]:
+        _gw_push_state["failed"] = False
+        log.info("gateway usage push recovered")
 
 
 @app.route("/api/lmstudio/models")
@@ -5342,6 +5396,10 @@ if __name__ == "__main__":
 
     # Energy accumulator (#470): 10s STORE snapshots → hourly SQLite rows.
     energy.start_thread(ctx)
+
+    # Gateway token metrics → alarm engine per LMS host (#502): history,
+    # thresholds, and alert rules all run against source="gateway".
+    gateway_usage.start_pusher(_push_gateway_usage_metrics, _lms_agent_hosts)
 
     # Discord bot (#471): gateway thread, only when [manager.discord] enables it.
     discord_bot.start_thread(ctx)

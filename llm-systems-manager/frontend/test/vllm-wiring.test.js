@@ -222,20 +222,21 @@ describe('vllm host system metrics (#411)', () => {
   const vllm = src('js/vllm.js');
   const foundation = src('js/foundation.js');
 
-  test('index.html has the four host system cards', () => {
-    for (const c of ['vllm-cpu', 'vllm-ram', 'vllm-network', 'vllm-disk']) {
+  test('index.html has the five host system cards', () => {
+    for (const c of ['vllm-cpu', 'vllm-ram', 'vllm-network', 'vllm-disk', 'vllm-io']) {
       expect(index).toContain(`data-card="${c}"`);
     }
   });
   test('index.html has the host metric element ids', () => {
-    for (const id of ['vllm-cpu-total', 'vllmCoreGrid', 'vllm-ram-pct', 'vllm-ram-sub',
-                      'vllm-swap-used', 'vllm-ram-avail', 'vllm-net-sent', 'vllm-net-recv',
-                      'vllmDiskList']) {
+    for (const id of ['vllm-cpu-total', 'vllm-cpu-temp', 'vllm-cpu-governor', 'vllmCoreGrid',
+                      'vllm-ram-pct', 'vllm-ram-sub', 'vllm-ram-cached', 'vllm-ram-buffers',
+                      'vllm-swap-used', 'vllm-swap-free', 'vllm-net-sent', 'vllm-net-recv',
+                      'vllmDiskList', 'vllm-io-read', 'vllm-io-write']) {
       expect(index).toContain(`id="${id}"`);
     }
   });
   // #364: each chart canvas must sit in a height-constrained .chart-wrap.
-  test.each(['vllmCpuChart', 'vllmRamChart', 'vllmNetChart'])('%s canvas is wrapped in .chart-wrap', (id) => {
+  test.each(['vllmCpuChart', 'vllmRamChart', 'vllmNetChart', 'vllmIoChart', 'vllmDiskUsageChart'])('%s canvas is wrapped in .chart-wrap', (id) => {
     const m = index.match(new RegExp(`<div class="chart-wrap"[^>]*>\\s*<canvas id="${id}"`));
     expect(m).not.toBeNull();
   });

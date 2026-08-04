@@ -45,9 +45,27 @@ const vllmNetChart = vllmNetChartCtx ? new Chart(vllmNetChartCtx, {
   options: { animation: false, responsive: true, maintainAspectRatio: false, interaction: _sparkInteraction, scales: { x: { type: 'time', display: false }, y: { min: 0, display: true, ticks: { color: cssVar('--fg-muted'), font: { size: 10 } } } }, plugins: { legend: { display: false }, tooltip: _sparkTooltip, zoom: _zoomOpts } }
 }) : null;
 
+const vllmIoChartCtx = document.getElementById('vllmIoChart')?.getContext('2d');
+const vllmIoChart = vllmIoChartCtx ? new Chart(vllmIoChartCtx, {
+  type: 'line',
+  data: { datasets: [
+    { label: 'Read',  data: [], borderColor: '#a7f', borderWidth: 1.5, pointRadius: 0, pointHoverRadius: 4, fill: false, tension: 0.3 },
+    { label: 'Write', data: [], borderColor: '#f7a', borderWidth: 1.5, pointRadius: 0, pointHoverRadius: 4, fill: false, tension: 0.3 },
+  ]},
+  options: { animation: false, responsive: true, maintainAspectRatio: false, interaction: _sparkInteraction, scales: { x: { type: 'time', display: false }, y: { min: 0, display: true, ticks: { color: cssVar('--fg-muted'), font: { size: 10 } } } }, plugins: { legend: { display: false }, tooltip: _sparkTooltip, zoom: _zoomOpts } }
+}) : null;
+
+const vllmDiskUsageChartCtx = document.getElementById('vllmDiskUsageChart')?.getContext('2d');
+const vllmDiskUsageChart = vllmDiskUsageChartCtx ? new Chart(vllmDiskUsageChartCtx, {
+  type: 'line',
+  data: { datasets: [{ label: '/ %', data: [], borderColor: '#4a9', borderWidth: 1.5, pointRadius: 0, pointHoverRadius: 4, fill: false, tension: 0.3 }] },
+  options: { animation: false, responsive: true, maintainAspectRatio: false, interaction: _sparkInteraction, scales: { x: { type: 'time', display: false }, y: { min: 0, max: 100, display: true, ticks: { color: cssVar('--fg-muted'), font: { size: 10 }, callback: v => v + '%' } } }, plugins: { legend: { display: false }, tooltip: _sparkTooltip, zoom: _zoomOpts } }
+}) : null;
+
 // Clear all vLLM chart series (called on agent-picker switch).
 function _resetVllmCharts() {
-  [vllmKvChart, vllmTpsChart, vllmCpuChart, vllmRamChart, vllmNetChart].forEach(ch => {
+  [vllmKvChart, vllmTpsChart, vllmCpuChart, vllmRamChart, vllmNetChart,
+   vllmIoChart, vllmDiskUsageChart].forEach(ch => {
     if (!ch) return;
     ch.data.datasets.forEach(ds => { ds.data = []; });
     ch.update('none');
@@ -109,6 +127,8 @@ async function fetchVllmMetrics() {
     const cpu = sys.cpu_per_core || [];
 
     _setEl('vllm-cpu-total', sys.cpu_total != null ? sys.cpu_total.toFixed(1) + '%' : '—');
+    if (sys.cpu_temp_c != null) _setEl('vllm-cpu-temp', sys.cpu_temp_c.toFixed(1) + '°C');
+    if (sys.cpu_governor) _setEl('vllm-cpu-governor', sys.cpu_governor);
     if (vllmCpuChart && sys.cpu_total != null) pushPoint(vllmCpuChart, ts, sys.cpu_total);
     if (cpu.length && document.getElementById('vllmCoreGrid')) {
       document.getElementById('vllmCoreGrid').innerHTML = cpu.map((pct, i) => {
@@ -120,8 +140,10 @@ async function fetchVllmMetrics() {
 
     _setEl('vllm-ram-pct',  ram.percent != null ? ram.percent.toFixed(1) + '%' : '—');
     _setEl('vllm-ram-sub',  ram.used_bytes ? _fmtBytes(ram.used_bytes) + ' used / ' + _fmtBytes(ram.total_bytes) + ' total' : '—');
-    _setEl('vllm-swap-used', sys.swap?.used_bytes ? _fmtBytes(sys.swap.used_bytes) : '—');
-    _setEl('vllm-ram-avail', ram.available_bytes ? _fmtBytes(ram.available_bytes) : '—');
+    _setEl('vllm-ram-cached',  ram.cached_bytes  != null ? _fmtBytes(ram.cached_bytes)  : '—');
+    _setEl('vllm-ram-buffers', ram.buffers_bytes != null ? _fmtBytes(ram.buffers_bytes) : '—');
+    _setEl('vllm-swap-used', sys.swap?.used_bytes != null ? _fmtBytes(sys.swap.used_bytes) : '—');
+    _setEl('vllm-swap-free', sys.swap?.free_bytes != null ? _fmtBytes(sys.swap.free_bytes) : '—');
     if (vllmRamChart && ram.percent != null) pushPoint(vllmRamChart, ts, ram.percent);
 
     _setEl('vllm-net-sent', net.bytes_sent_per_sec != null ? (net.bytes_sent_per_sec / 1048576).toFixed(2) : '—');
@@ -142,7 +164,18 @@ async function fetchVllmMetrics() {
             <span>${dk.percent.toFixed(1)}%</span>
           </div>`;
         }).join('');
+      const vRoot = sys.disk.find(dk => dk.mountpoint === '/');
+      if (vllmDiskUsageChart && vRoot && vRoot.percent != null)
+        pushPoint(vllmDiskUsageChart, ts, vRoot.percent);
     }
+
+    // Disk IO
+    const dio = sys.disk_io || {};
+    const ioR = (dio.read_bytes_per_sec  || 0) / 1048576;
+    const ioW = (dio.write_bytes_per_sec || 0) / 1048576;
+    _setEl('vllm-io-read',  dio.read_bytes_per_sec  != null ? ioR.toFixed(2) : '—');
+    _setEl('vllm-io-write', dio.write_bytes_per_sec != null ? ioW.toFixed(2) : '—');
+    if (vllmIoChart && dio.read_bytes_per_sec != null) pushDual(vllmIoChart, ts, ioR, ioW);
 
     renderVllmModelCards(up ? (v.models || []) : [], v.model);
     _setVllmBtns(up);
@@ -181,6 +214,7 @@ async function fetchVllmMetrics() {
       _dashSetStatus('vllm-ram', !online ? 'dash-off' : (_rp != null ? (_rp >= 90 ? 'dash-crit' : _rp >= 75 ? 'dash-warn' : 'dash-ok') : 'dash-off'));
       _dashSetStatus('vllm-network', !online ? 'dash-off' : (sys.net ? 'dash-ok' : 'dash-off'));
       _dashSetStatus('vllm-disk',    !online ? 'dash-off' : (sys.disk ? 'dash-ok' : 'dash-off'));
+      _dashSetStatus('vllm-io',      !online ? 'dash-off' : (sys.disk_io ? 'dash-ok' : 'dash-off'));
     }
   } catch (_) {
   } finally {
