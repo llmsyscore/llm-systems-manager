@@ -460,9 +460,11 @@ function pushPoint(chart, ts, val) {
   chart.update('none');
 }
 
-function pushDual(chart, ts, v1, v2) {
+// bucketMs overrides the poll-interval grid for series with their own fixed
+// cadence (e.g. the 15s gateway pusher) so short bursts aren't collapsed away.
+function pushDual(chart, ts, v1, v2, bucketMs) {
   const l = chart.data.labels, d0 = chart.data.datasets[0].data, d1 = chart.data.datasets[1].data;
-  const t = _bucketDate(ts);
+  const t = bucketMs ? LMSeries.bucketDate(ts, bucketMs) : _bucketDate(ts);
   if (l.length && t.getTime() <= l[l.length - 1].getTime()) {
     d0[d0.length - 1] = v1 || 0; d1[d1.length - 1] = v2 || 0;
   } else {
@@ -471,6 +473,10 @@ function pushDual(chart, ts, v1, v2) {
   }
   chart.update('none');
 }
+
+// Bucket width for gateway-pushed token rates — matches gateway_usage
+// PUSH_INTERVAL_S on the manager.
+const GW_RATE_BUCKET_MS = 15000;
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -1072,7 +1078,7 @@ const loadLmsHistory = _makeHistoryBackfill('lms', '__LMS_AGENT',
       pushPoint(lmsGpuChart, r.ts, r.mac_gpu_busy);
     if (typeof lmsTpsChart !== 'undefined' && lmsTpsChart
         && (r.lms_tps != null || r.lms_pps != null))
-      pushDual(lmsTpsChart, r.ts, r.lms_tps || 0, r.lms_pps || 0);
+      pushDual(lmsTpsChart, r.ts, r.lms_tps || 0, r.lms_pps || 0, GW_RATE_BUCKET_MS);
   });
 
 // Backfill the vLLM KV-cache/throughput + host (CPU/RAM/Net/IO/disk) charts

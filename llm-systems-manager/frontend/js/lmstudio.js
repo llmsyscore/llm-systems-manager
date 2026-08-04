@@ -166,7 +166,7 @@ async function fetchLMStudioMetrics() {
     _setEl('lms-gen-tokens',    gt && gt.gen    != null ? Number(gt.gen).toLocaleString()    : '—');
     _setEl('lms-prompt-tokens', gt && gt.prompt != null ? Number(gt.prompt).toLocaleString() : '—');
     if (lmsTpsChart && gr && gr.gen_tps != null)
-      pushDual(lmsTpsChart, gr.ts ? new Date(gr.ts) : ts, gr.gen_tps, gr.prompt_tps);
+      pushDual(lmsTpsChart, gr.ts ? new Date(gr.ts) : ts, gr.gen_tps, gr.prompt_tps, GW_RATE_BUCKET_MS);
 
     // CPU
     _setEl('lms-cpu-total', sys.cpu_total != null ? sys.cpu_total.toFixed(1) + '%' : '—');
