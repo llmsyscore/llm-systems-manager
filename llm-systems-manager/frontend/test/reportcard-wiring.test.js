@@ -63,6 +63,36 @@ describe('report card panel', () => {
     });
   });
 
+  // #509: leaderboard submission is inert until the service ships.
+  describe('leaderboard submit button (#509)', () => {
+    const js = readFileSync(resolve(ROOT, 'js/report-card.js'), 'utf8');
+    const btn = panel.match(/<button[^>]*id="rcSubmitBtn"[^>]*>/)[0];
+
+    it('carries the disabled attribute so it cannot be clicked', () => {
+      expect(btn).toMatch(/\sdisabled\b/);
+      expect(btn).toContain('aria-disabled="true"');
+    });
+
+    // Title on both: browsers differ on whether a disabled control shows its
+    // own title or inherits the ancestor's, so carry it in both places.
+    it('carries the coming-soon tooltip on the button and its wrapper', () => {
+      const wrap = panel.match(/<span[^>]*id="rcSubmitWrap"[^>]*>/)[0];
+      expect(wrap).toMatch(/title="[^"]*coming soon[^"]*"/i);
+      expect(btn).toMatch(/title="[^"]*coming soon[^"]*"/i);
+      expect(panel.indexOf('id="rcSubmitWrap"')).toBeLessThan(panel.indexOf('id="rcSubmitBtn"'));
+    });
+
+    it('no longer wires a click handler that opens the submit URL', () => {
+      expect(js).not.toMatch(/rcSubmitBtn'\)[\s\S]{0,200}onclick/);
+      expect(js).not.toContain('window.open(url');
+    });
+
+    it('still gates visibility on card eligibility via the wrapper', () => {
+      expect(js).toContain('rcSubmitWrap');
+      expect(js).toContain('RC.submitUrl(card)');
+    });
+  });
+
   it('exposes cancel and download-confirm controls', () => {
     expect(panel).toContain('id="rcCancelBtn"');
     expect(panel).toContain('rcCancelRun()');

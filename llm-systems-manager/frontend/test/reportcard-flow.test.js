@@ -28,7 +28,8 @@ function mountDom() {
     <div id="rcProgress" style="display:none;"></div>
     <div id="rcCardHost"></div>
     <div id="rcActions" style="display:none;">
-      <button id="rcSubmitBtn" style="display:none;"></button></div>
+      <span id="rcSubmitWrap" style="display:none;" title="Leaderboard submission is coming soon in the next release."><button
+        id="rcSubmitBtn" disabled aria-disabled="true"></button></span></div>
     <div id="rcDownload" style="display:none;"><div id="rcDownloadMsg"></div></div>
     <div id="rcCleanup" style="display:none;"><div id="rcCleanupMsg"></div>
       <button id="rcCleanupDeleteBtn"></button></div>

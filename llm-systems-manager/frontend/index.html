@@ -1873,7 +1873,7 @@ Backend API endpoints consumed:
 
       <div class="rc-actions" id="rcActions" style="display:none;">
         <button class="btn btn-gray-muted-gradient" onclick="rcExportPng()">Save as PNG</button>
-        <button class="btn btn-gray-muted-gradient" id="rcSubmitBtn" style="display:none;">Submit to leaderboard</button>
+        <span id="rcSubmitWrap" style="display:none;" title="Leaderboard submission is coming soon in the next release."><button class="btn btn-gray-muted-gradient" id="rcSubmitBtn" disabled aria-disabled="true" title="Leaderboard submission is coming soon in the next release.">Submit to leaderboard</button></span>
         <button class="btn btn-gray-muted-gradient" onclick="rcToggleTrends()">Trends</button>
       </div>
 
@@ -1905,7 +1905,7 @@ Backend API endpoints consumed:
 <script src="/static/js/lmstudio.js?v=2026.08.04-4"></script>
 <script src="/static/js/vllm.js?v=2026.08.04-1"></script>
 <script src="/static/js/vllm-bench-autotune.js?v=2026.07.12-2"></script>
-<script src="/static/js/report-card.js?v=2026.08.02-4"></script>
+<script src="/static/js/report-card.js?v=2026.08.04-1"></script>
 <script src="/static/js/energy.js?v=2026.07.31-1"></script>
 <script src="/static/js/overall.js?v=2026.08.04-1"></script>
 <script src="/static/js/dashboard-manager.js?v=2026.08.04-1"></script>
