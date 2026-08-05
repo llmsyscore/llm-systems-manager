@@ -73,11 +73,23 @@ describe('report card panel', () => {
       expect(btn).toContain('aria-disabled="true"');
     });
 
-    it('carries the coming-soon tooltip on the button and its wrapper', () => {
+    // Safari renders no native tooltip for a disabled control, so the text is
+    // drawn by CSS from the wrapper's data-tip; title stays for AT only.
+    it('supplies the coming-soon text via the wrapper data-tip', () => {
       const wrap = panel.match(/<span[^>]*id="rcSubmitWrap"[^>]*>/)[0];
-      expect(wrap).toMatch(/title="[^"]*coming soon[^"]*"/i);
+      expect(wrap).toMatch(/data-tip="[^"]*coming soon[^"]*"/i);
+      expect(wrap).toContain('class="rc-soon"');
       expect(btn).toMatch(/title="[^"]*coming soon[^"]*"/i);
       expect(panel.indexOf('id="rcSubmitWrap"')).toBeLessThan(panel.indexOf('id="rcSubmitBtn"'));
+    });
+
+    it('draws the tooltip in CSS on hover', () => {
+      const rc = readFileSync(resolve(ROOT, 'css/reportcard.css'), 'utf8');
+      expect(rc).toMatch(/\.rc-soon::after\s*\{[\s\S]*?content:\s*attr\(data-tip\)/);
+      expect(rc).toMatch(/\.rc-soon:hover::after[^{]*\{[^}]*opacity:\s*1/);
+      // Pointer-events must fall through the inert button to the wrapper,
+      // otherwise the wrapper never enters :hover.
+      expect(rc).toMatch(/\.rc-soon\s*>\s*\.btn\s*\{[^}]*pointer-events:\s*none/);
     });
 
     it('no longer wires a click handler that opens the submit URL', () => {
@@ -88,6 +100,24 @@ describe('report card panel', () => {
     it('still gates visibility on card eligibility via the wrapper', () => {
       expect(js).toContain('rcSubmitWrap');
       expect(js).toContain('RC.submitUrl(card)');
+    });
+  });
+
+  // The id-scoped hover restyles outspecify .btn:disabled, so without an
+  // explicit exclusion a disabled button brightens to opacity 1 on hover.
+  describe('disabled buttons keep their greyed state on hover (#509)', () => {
+    it.each([
+      '#llm-llamacpp', '#llm-lmstudio', '#llm-reportcard', '#dash-energy', '#llm-vllm',
+    ])('%s hover restyle excludes :disabled', (tab) => {
+      const line = css.split('\n')
+        .find(l => l.includes(`${tab} .btn:not([data-act])`) && l.includes(':hover'));
+      expect(line).toBeDefined();
+      expect(line).toContain(':not(:disabled)');
+    });
+
+    it('the generic .btn:hover opacity bump excludes :disabled', () => {
+      expect(css).toContain('.btn:not(:disabled):hover { opacity: 0.8; }');
+      expect(css).not.toMatch(/^\s*\.btn:hover\s*\{/m);
     });
   });
 

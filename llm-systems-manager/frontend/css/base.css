@@ -259,7 +259,7 @@
        differentiate by hover only (Load=accent, Delete=danger). Scoped to the
        card so the global .btn-*-gradient classes stay for other components. */
     .model-card-actions .btn { background: var(--bg-card-alt); color: var(--fg-muted); border: 1px solid var(--border); border-radius: 6px; font-size: 0.78em; padding: 6px 13px; line-height: 1.4; transition: color 0.15s, border-color 0.15s, background 0.15s; }
-    .model-card-actions .btn:hover { background: var(--border); color: var(--fg); opacity: 1; }
+    .model-card-actions .btn:not(:disabled):hover { background: var(--border); color: var(--fg); opacity: 1; }
     .model-card-actions .btn[data-act="load"],
     .model-card-actions .btn[data-lmsact="load"] { color: var(--fg); border-color: var(--border-strong); }
     .model-card-actions .btn[data-act="load"]:hover,
@@ -290,12 +290,12 @@
       font-size: 0.78em; padding: 6px 13px; line-height: 1.4;
       transition: color 0.15s, border-color 0.15s, background 0.15s;
     }
-    #llm-llamacpp .btn:not([data-act]):not([data-lmsact]):not(.btn-log):hover,
-    #llm-lmstudio .btn:not([data-act]):not([data-lmsact]):not(.btn-log):hover,
-    #llm-reportcard .btn:not([data-act]):not([data-lmsact]):not(.btn-log):hover,
-    #dash-energy .btn:not([data-act]):not([data-lmsact]):not(.btn-log):hover,
-    #llm-vllm .btn:not([data-act]):not([data-lmsact]):not(.btn-log):hover,
-    .svcconfig-panel .btn:hover { background: var(--border); color: var(--fg); opacity: 1; }
+    #llm-llamacpp .btn:not([data-act]):not([data-lmsact]):not(.btn-log):not(:disabled):hover,
+    #llm-lmstudio .btn:not([data-act]):not([data-lmsact]):not(.btn-log):not(:disabled):hover,
+    #llm-reportcard .btn:not([data-act]):not([data-lmsact]):not(.btn-log):not(:disabled):hover,
+    #dash-energy .btn:not([data-act]):not([data-lmsact]):not(.btn-log):not(:disabled):hover,
+    #llm-vllm .btn:not([data-act]):not([data-lmsact]):not(.btn-log):not(:disabled):hover,
+    .svcconfig-panel .btn:not(:disabled):hover { background: var(--border); color: var(--fg); opacity: 1; }
     /* Retain a semantic hover for destructive/caution actions via their
        existing color class (Stop/Delete carry btn-red*, Restart/Wake btn-amber*). */
     #llm-llamacpp .btn[class*="btn-red"]:not([data-act]):not([data-lmsact]):hover,
@@ -310,7 +310,7 @@
     #dash-energy .btn[class*="btn-amber"]:not([data-act]):not([data-lmsact]):hover,
     #llm-vllm .btn[class*="btn-amber"]:not([data-act]):not([data-lmsact]):hover { border-color: var(--warn); color: var(--warn); background: var(--bg-card-alt); }
     .btn { border: none; border-radius: 5px; cursor: pointer; font-size: 0.8em; padding: 6px 14px; transition: opacity 0.2s; }
-    .btn:hover { opacity: 0.8; }
+    .btn:not(:disabled):hover { opacity: 0.8; }
     .btn:disabled { cursor: not-allowed; opacity: 0.3; }
     .btn-green  { background: #1a3a1a; color: var(--accent-2); }
     .btn-red    { background: #3a1a1a; color: var(--crit); }

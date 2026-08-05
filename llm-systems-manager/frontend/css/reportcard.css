@@ -123,6 +123,22 @@
 
 .rc-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 14px; }
 
+/* Coming-soon control: the button is inert, so pointer-events fall through to
+   the wrapper, which draws the tooltip Safari won't render for a title. */
+.rc-soon { position: relative; display: inline-block; cursor: not-allowed; }
+.rc-soon > .btn { pointer-events: none; }
+.rc-soon::after {
+  content: attr(data-tip);
+  position: absolute; bottom: calc(100% + 7px); left: 50%; transform: translateX(-50%);
+  padding: 6px 10px; border-radius: 6px; max-width: 260px; white-space: normal;
+  width: max-content; text-align: center; line-height: 1.35;
+  background: var(--bg-card-alt); color: var(--fg); border: 1px solid var(--border);
+  box-shadow: 0 4px 14px rgba(0,0,0,0.45);
+  font-size: 0.76em; opacity: 0; visibility: hidden; transition: opacity 0.12s ease;
+  pointer-events: none; z-index: 20;
+}
+.rc-soon:hover::after, .rc-soon:focus-within::after { opacity: 1; visibility: visible; }
+
 .rc-trends { background: var(--bg-card); border: 1px solid var(--border);
   border-radius: 8px; padding: 14px 16px; }
 .rc-trends canvas { max-height: 260px; }
