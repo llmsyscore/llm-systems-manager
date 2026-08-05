@@ -73,8 +73,6 @@ describe('report card panel', () => {
       expect(btn).toContain('aria-disabled="true"');
     });
 
-    // Title on both: browsers differ on whether a disabled control shows its
-    // own title or inherits the ancestor's, so carry it in both places.
     it('carries the coming-soon tooltip on the button and its wrapper', () => {
       const wrap = panel.match(/<span[^>]*id="rcSubmitWrap"[^>]*>/)[0];
       expect(wrap).toMatch(/title="[^"]*coming soon[^"]*"/i);
