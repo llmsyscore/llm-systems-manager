@@ -178,16 +178,23 @@ The dashboard itself is served over plain HTTP on port 5000 unless you enable
 `[manager].tls_port` (5443), and the browser is what you point at it.
 
 The alert WebSocket bridge on `[manager].ws_proxy_port` (5444) is **served as plain `ws://`
-and carries no authentication of its own.** That is deliberate on the encryption side: the
-Manager's certificate is signed by the internal CA, so terminating `wss://` there would just move
-the trust problem into the browser, which is the thing the bridge exists to avoid. Its upstream
-hop to the Alarm Engine *is* verified TLS when Alarm Engine TLS is on. The Alarm Engine's own
-`/ws` endpoint likewise accepts any connection and subscribes it to all events.
+and carries no authentication of its own** — the handler checks only that the request path starts
+with `/ws/alarm`. The plaintext part is deliberate: the Manager's certificate is signed by the
+internal CA, so terminating `wss://` there would just move the trust problem into the browser,
+which is the thing the bridge exists to avoid. Its upstream hop to the Alarm Engine *is* verified
+TLS when Alarm Engine TLS is on.
 
-The practical consequence: anyone who can reach port 5444 (or the Alarm Engine's `/ws` directly)
-can read the live alert stream — host names, metric names, and threshold values — without
-credentials. Keep both ports on a trusted network. If you need them exposed, front port 5444 with
-a reverse proxy holding a real CA certificate (nginx, Caddy, Traefik) and enforce access there.
+The Alarm Engine's own `/ws` endpoint has no token or session check either, but it is not wide
+open: it validates the handshake's `Origin` header, because CORS middleware does not apply to
+WebSocket handshakes. A browser page on another origin is rejected before the connection is
+accepted. A client that sends no `Origin` at all — `curl`, a script, anything non-browser — is
+allowed through by design, and every accepted connection is subscribed to all events.
+
+The practical consequence: any non-browser client that can reach port 5444, or the Alarm Engine's
+`/ws` directly, can read the live alert stream — host names, metric names, and threshold values —
+without credentials. Keep both ports on a trusted network. If you need them exposed, front port
+5444 with a reverse proxy holding a real CA certificate (nginx, Caddy, Traefik) and enforce access
+there.
 Setting `[manager].ws_proxy_port = 0` disables the bridge entirely. The dashboard keeps working —
 the Events and Admin status dots refresh on their own 30-second poll — but live alert toasts stop
 arriving, since those are pushed over this connection and have no polling fallback.
