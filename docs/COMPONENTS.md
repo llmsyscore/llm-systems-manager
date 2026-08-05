@@ -12,7 +12,7 @@ Each component is designed to degrade gracefully: if the Alarm Engine is tempora
 
 ### What It Does
 
-The Manager is the central hub of the system. It serves the web dashboard that operators use to monitor and control the AI lab, keeps track of every monitored computer (called an agent), and acts as the secure gateway between the browser and the rest of the fleet. All user interactions — viewing metrics, starting an AI model, changing settings — flow through the Manager.
+The Manager is the central hub of the system. It serves the web dashboard that operators use to monitor and control the AI lab, keeps track of every monitored computer (called an agent), and acts as the secure gateway between the browser and the rest of the monitored machines. All user interactions — viewing metrics, starting an AI model, changing settings — flow through the Manager.
 
 ### Key Responsibilities
 
@@ -20,7 +20,7 @@ The Manager is the central hub of the system. It serves the web dashboard that o
 - Authenticates users with username and password (two roles: Admin and Operator)
 - Maintains a registry of all agents: which computers are online, approved, and what capabilities they have
 - Forwards dashboard API requests to the appropriate agent or alarm engine
-- Runs an internal Certificate Authority that issues security certificates to every component in the fleet
+- Runs an internal Certificate Authority that issues security certificates to every component in the system
 - Collects hardware metrics from its own host machine and sends them to the alarm engine
 - Stores per-model AI configuration profiles so operators can switch between presets
 - Manages user accounts, including password changes and role assignments
@@ -40,9 +40,18 @@ The Manager is the central hub of the system. It serves the web dashboard that o
 | manager_users | Manages user accounts: creation, password hashing, role assignment, lockout tracking |
 | _pki | Implements the internal Certificate Authority: generates the root cert on first boot, signs agent and service certs |
 | _archive | Handles encrypted export and import of the system configuration for backup and restore |
-| stream_pool | Caps how many live streams (logs, terminals, progress feeds) run at once so they cannot exhaust the web server's worker threads |
+| stream_pool | Manager-side cap on concurrent long-lived SSE streams so they cannot exhaust the web server's worker threads; distinct from the agent's own `stream_pool.py`, which caps streams on the agent side instead (see Agent section) |
+| gateway | OpenAI-compatible `/v1/models`, `/v1/chat/completions`, and `/v1/completions` gateway. `/v1/models` merges every provider's pool; a completion first resolves which provider owns the requested model (pin, then the model index, then llama as fallback), then picks a host within that provider (pin, then an explicit `?agent=`, then pool round-robin, then the default) |
+| gateway_usage | In-memory cumulative token counters for gateway-proxied responses, used by providers (LM Studio) that expose no native token telemetry |
+| autopilot | Model autopilot: holds placement state, observes agents, executes load/unload/failover actions, and reconciles drift; exposes the Admin → Routing autopilot routes |
+| autopilot_planner | Pure planner for the autopilot — takes state in, returns actions out, with no I/O or clock access, so it can be unit tested deterministically |
+| energy | Energy and cost accounting: attributes measured PSU/SoC/GPU watts and token deltas to hourly per-agent rows, and produces the $/Mtok and cloud-savings figures shown on the Energy sub-tab |
+| report_card | GPU Report Card: runs a standardized cross-provider benchmark preset, stores results, and serves the history/trend routes |
+| discord_bot | Optional Discord bot: slash commands over the Discord gateway for read-only status queries and gated model control |
+| sse_daemon | Standalone aiohttp daemon that serves the `/api/llama-state/stream` SSE endpoint off its own event loop instead of pinning a web server worker thread per held stream |
+| stream_health | Aggregates the manager's stream pool, worker-thread/queue backlog, and each agent's stream state into one snapshot for the Manager sub-tab's health card |
 | `app_context.py` | Shared context dataclass that wires all modules together — carries references to the agent registry, alarm engine session, and other cross-module dependencies |
-| `providers/` | Multi-agent provider registry — defines which agent types (llama.cpp, LM Studio) are supported, how their metrics are aggregated across multiple agents, and how agents are routed |
+| `providers/` | Multi-agent provider registry — defines which agent types (llama.cpp, LM Studio, vLLM) are supported, how their metrics are aggregated across multiple agents, and how agents are routed |
 
 ### User Roles
 
@@ -55,7 +64,7 @@ Accounts are protected with industry-standard scrypt password hashing. After sev
 
 ### Dependencies
 
-The Manager talks to agents (over HTTPS) to collect live AI state and to proxy control commands. It talks to the Alarm Engine (over HTTPS) to forward metrics, retrieve alert state, and proxy history chart data to the browser. It also reads from its own local SQLite database for AI model benchmark results.
+The Manager talks to agents (over HTTPS) to collect live AI state and to proxy control commands. It talks to the Alarm Engine (over HTTPS) to forward metrics, retrieve alert state, and proxy history chart data to the browser. It also reads and writes its own local SQLite database (`data/metrics.db`), which holds `model_benchmarks` (AI model benchmark results), `report_cards` (one row per completed GPU Report Card run), and `audit_log` (a capped log of mutating admin actions) — metric history itself lives in InfluxDB via the Alarm Engine, not here.
 
 ---
 
@@ -93,7 +102,10 @@ Each Agent is tailored to its host: on a Linux machine with an AMD GPU and liqui
 |---|---|
 | llama | Full control of the llama.cpp AI server: load and unload models, read generation speed, stream server logs, manage configuration |
 | lms | Control of LM Studio: list loaded models, load/unload, read inference metrics, stream logs |
+| vllm | Control of vLLM: systemd lifecycle, Prometheus metrics, journal log streaming, service config, OpenAI passthrough, opt-in LoRA |
 | terminal | Spawns and manages interactive shell sessions (PTY) that stream input and output to the browser |
+
+The agent also has its own `stream_pool.py`, separate from the Manager's module of the same name — it caps concurrent long-lived SSE streams served *by the agent* (e.g. log tails) so they cannot exhaust the agent's own worker pool.
 
 ### Metric Buffering
 
@@ -184,19 +196,22 @@ The Web Dashboard is the browser-based interface that operators use to see every
 
 The dashboard is built entirely with standard browser technologies (HTML, CSS, and JavaScript) and requires no build tools, no compiler, and no framework. This keeps the codebase straightforward to maintain and means the UI can be served directly from the Manager without a separate build step.
 
+The JavaScript is split into two tiers that share the same `js/` directory but behave differently. Files under `js/lib/*.js` (e.g. `series.js`, `benchaxis.js`, `thresholds.js`) are dual-mode: pure data/formatting helpers written so they work as classic `<script>` globals in the browser *and* as CommonJS modules importable by the Vitest unit tests. Everything directly under `js/*.js` (e.g. `dashboard-manager.js`, `boot.js`) is a classic script that runs in one shared global scope with every other top-level script — there is no per-file module isolation, so a name like `fmt` or `cssVar` can only be defined once across all of them. A few top-level scripts opt out by wrapping themselves in an IIFE and exposing a single namespace object: `autopilot.js` does this, exporting only `window.AP`, which also lets the tests import it.
+
 ### Tabs
 
 | Tab | What It Shows / Does |
 |---|---|
-| LLM Overall | A combined summary view of all AI activity across both llama.cpp and LM Studio |
-| Dashboard — llama.cpp | Live hardware metrics, GPU stats, model status, and performance charts for the llama.cpp host |
-| Dashboard — LM Studio | Live metrics and model status for the LM Studio host |
-| LLM Control | Load and unload AI models, adjust server settings, run benchmarks, download new models |
+| LLM Overall | A combined summary view of all AI activity across llama.cpp, LM Studio, and vLLM |
+| Dashboard | Live hardware metrics, GPU stats, model status, and performance charts, split into provider sub-tabs: llama.cpp, LM Studio, vLLM, Energy, OpenClaw, and Manager |
+| LLM Control | Load and unload AI models, adjust server settings, run benchmarks, download new models, split into provider sub-tabs: llama.cpp, LM Studio, vLLM, and Report Card |
 | OpenClaw | Analytics for Claude Code usage: token counts, cost trends, tool attribution |
 | LLM Chat | Embedded chat interface connecting directly to the running AI model |
 | Image Generation | Embedded interface for the image generation server |
 | Events | Live alert feed; shows firing, acknowledged, and resolved alerts in real time |
-| Admin | Agent management, user accounts, authentication settings, system health, backups, and certificate management |
+| Admin | Split into sub-tabs: Access, Agents, Audit, Backup, and Routing (pools, pins, and Model Autopilot management) |
+
+The Dashboard → Energy sub-tab (`js/energy.js`, `js/lib/energy.js`) shows measured $/Mtok and cloud-savings figures. The LLM Control → Report Card sub-tab (`js/report-card.js`, `js/lib/reportcard.js`) drives the standardized GPU Report Card benchmark. Both Dashboard and LLM Control gained a vLLM sub-tab (`js/vllm.js`, `js/vllm-bench-autotune.js`). Model Autopilot has no dedicated top-level tab — it is a card inside Admin → Routing (`js/autopilot.js`).
 
 ### Real-Time Updates
 
@@ -206,7 +221,7 @@ The dashboard uses three different mechanisms to keep information current, each 
 
 **Server-Sent Events (SSE)** are used for long-running operations like downloading a model, running a benchmark, or tailing a log file. Instead of the browser repeatedly asking "are you done yet?", the server pushes each new line of progress as it becomes available. This gives smooth, real-time progress feedback without wasting requests.
 
-**WebSocket** is used for alert events. A persistent two-way connection is maintained between the browser and the Alarm Engine (via the Manager). When an alert fires, is acknowledged, or resolves anywhere in the fleet, that event arrives in the browser within milliseconds — no polling delay.
+**WebSocket** is used for alert events. It is served by a standalone `websockets` daemon thread running inside the Manager process (its own asyncio loop, disabled unless `[manager].ws_proxy_port` is set — default `5444`), which relays events between the browser and the Alarm Engine's WebSocket endpoint. When an alert fires, is acknowledged, or resolves anywhere in the system, that event arrives in the browser within milliseconds — no polling delay.
 
 ### Multi-Agent Support
 
@@ -224,9 +239,9 @@ All historical metric charts in the dashboard are backed by data stored in Influ
 
 ### What It Does
 
-When computers communicate over a network, **TLS** (Transport Layer Security) encrypts the connection so that data cannot be read or tampered with in transit. Normally, this encryption relies on certificates issued by a trusted third party (a "public CA" like Let's Encrypt). LLM Systems Manager instead runs its own private Certificate Authority (CA) so the fleet can encrypt all internal communications without needing certificates from the public internet.
+When computers communicate over a network, **TLS** (Transport Layer Security) encrypts the connection so that data cannot be read or tampered with in transit. Normally, this encryption relies on certificates issued by a trusted third party (a "public CA" like Let's Encrypt). LLM Systems Manager instead runs its own private Certificate Authority (CA) so the whole system can encrypt all internal communications without needing certificates from the public internet.
 
-On first startup, the Manager generates a self-signed root certificate — a cryptographic anchor that the whole fleet trusts. When a new agent is approved by an administrator, the Manager generates a unique certificate for that agent, signed by the root. The Manager signs its own HTTPS certificate the same way. The Alarm Engine also receives a certificate so its connections are encrypted.
+On first startup, the Manager generates a self-signed root certificate — a cryptographic anchor that every component trusts. When a new agent is approved by an administrator, the Manager generates a unique certificate for that agent, signed by the root. The Manager signs its own HTTPS certificate the same way. The Alarm Engine also receives a certificate so its connections are encrypted.
 
 ### Certificate Lifecycle
 
@@ -234,7 +249,7 @@ Agent certificates are issued at approval time and are valid for one year. The M
 
 ### Why This Matters
 
-Every component in the fleet uses these certificates to verify that it is talking to a genuine, approved part of the system — not an imposter on the local network. Because the Manager controls the CA, no external service is needed to issue or renew certificates; rotation is largely automatic. The certificates are used for transport encryption only; the system still requires a valid bearer token (a shared secret) for actual authentication, so encryption and identity verification work as separate, complementary layers.
+Every component in the system uses these certificates to verify that it is talking to a genuine, approved part of the system — not an imposter on the local network. Because the Manager controls the CA, no external service is needed to issue or renew certificates; rotation is largely automatic. The certificates are used for transport encryption only; the system still requires a valid bearer token (a shared secret) for actual authentication, so encryption and identity verification work as separate, complementary layers.
 
 ---
 

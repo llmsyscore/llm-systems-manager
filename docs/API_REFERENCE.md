@@ -18,6 +18,15 @@ The Manager listens on port 5000 (HTTP) and optionally port 5443 (HTTPS). The Al
 
 ---
 
+## Health
+
+### `GET /health`
+Unauthenticated liveness probe for external monitors and load balancers. Not gated by the login/session flow at all.
+
+**Response:** `{"status": "ok", "version": "<manager version>", "uptime_s": <seconds since startup>}`
+
+---
+
 ## Dashboard & Metrics
 
 ### `GET /api/metrics`
@@ -32,7 +41,7 @@ Returns historical time-series data used to draw dashboard charts. The time wind
 
 **Parameters:**
 - `?agent=<agent_id>` — return history for one specific agent (full host metric set).
-- `?fleet=llama` or `?fleet=lms` — return aggregated fleet history for all agents of that provider type (CPU/RAM/GPU values are aggregated across the fleet).
+- `?fleet=llama`, `?fleet=lms`, or `?fleet=vllm` — return aggregated history for all agents of that provider type (CPU/RAM/GPU values are aggregated across every agent of that type).
 
 ---
 
@@ -89,9 +98,7 @@ Unloads the currently active model from the llama.cpp server without stopping th
 ---
 
 ### `GET /api/llm/config`
-Returns the llama.cpp server configuration (context window size, GPU layer count, thread count, and other runtime parameters).
-
-**Parameters:** `?model=<model_id>` — return the saved config for a specific model rather than the active one.
+Returns the llama.cpp server configuration (context window size, GPU layer count, thread count, and other runtime parameters) for the currently active model. There is no query-param variant for reading another model's saved config — use `GET /api/llm/profiles` to see all saved profiles, or `POST /api/llm/config` to write one.
 
 ---
 
@@ -274,6 +281,22 @@ Cancels an in-progress Auto-Tune run.
 
 ---
 
+### `GET/POST /api/llm/server/svcconfig`
+Reads (GET) or writes (POST) the llama-server systemd unit's `ExecStart` arguments directly, for flags not exposed through `/api/llm/config`. POST daemon-reloads the unit and can restart it.
+
+**Body (POST):** A JSON object of `ExecStart` argument overrides.
+
+---
+
+### `.../stream-info` — direct-SSE handoff endpoints
+Several of the SSE endpoints above have a sibling `.../stream-info` route that mints a short-lived HMAC-signed token and returns the direct agent stream URL instead of opening the stream itself: `GET /api/llm/server/log/stream-info`, `GET /api/llm/download/stream-info`, `GET /api/llm/build/stream-info`, `GET /api/llm/autotune/stream-info`, and `GET /api/llama-state/stream-info`. The browser uses the returned URL to connect straight to the agent, bypassing the Manager's own SSE proxy pool; when the direct path isn't usable (agent down, no direct port, or a mixed-content HTTPS page) the response signals the browser to fall back to the proxied `.../stream` endpoint instead.
+
+**Response:** `{"ok": true, "url": "<agent-direct-url>?token=<token>", "expires_in": <seconds>}` on success, or `{"ok": false, ...}` when direct streaming isn't available.
+
+`/api/llama-state/stream-info` is the exception: it returns `{"enabled": true, "url": ...}` or `{"enabled": false}`, with no `expires_in`.
+
+---
+
 ## LM Studio
 
 These endpoints control and monitor the LM Studio server running on the Apple Silicon host.
@@ -332,9 +355,283 @@ Starts a model download within LM Studio.
 
 ---
 
+## vLLM Control
+
+These endpoints control the vLLM inference server, mirroring the llama.cpp control surface above.
+
+### `GET /api/vllm/metrics`
+Returns the latest vLLM sample for the default (or `?agent=`) vLLM agent.
+
+---
+
+### `GET /api/vllm/models`
+Lists all model files available on the vLLM host's model storage path.
+
+---
+
+### `GET /api/vllm/server/status`
+Returns whether the vLLM server process is currently running.
+
+---
+
+### `POST /api/vllm/server/start`
+Starts the vLLM server process.
+
+---
+
+### `POST /api/vllm/server/stop`
+Stops the vLLM server process.
+
+---
+
+### `POST /api/vllm/server/restart`
+Stops then starts the vLLM server in one call.
+
+---
+
+### `GET /api/vllm/server/log`
+Returns the most recent lines from the vLLM server's journal.
+
+---
+
+### `GET /api/vllm/log/stream`
+Opens an SSE stream that tails the vLLM server log in real time.
+
+---
+
+### `GET/POST /api/vllm/server/svcconfig`
+Reads (GET) or writes (POST) the vLLM systemd unit's `ExecStart` arguments — the vLLM equivalent of `/api/llm/server/svcconfig`.
+
+**Body (POST):** A JSON object of `ExecStart` argument overrides.
+
+---
+
+### `POST /api/vllm/lora/load`
+Loads a LoRA adapter into the running vLLM server.
+
+**Body:** LoRA load parameters (adapter path/name); passed through to the agent.
+
+---
+
+### `POST /api/vllm/lora/unload`
+Unloads a LoRA adapter from the running vLLM server.
+
+**Body:** LoRA unload parameters; passed through to the agent.
+
+---
+
+### `POST /api/vllm/autotune/run`
+Starts the `--max-model-len` Auto-Tune wizard for vLLM, which finds the largest context length the currently loaded model can sustain. Progress is streamed via `/api/vllm/autotune/stream`.
+
+---
+
+### `GET /api/vllm/autotune/stream`
+Opens an SSE stream reporting vLLM Auto-Tune progress.
+
+---
+
+### `POST /api/vllm/autotune/cancel`
+Cancels an in-progress vLLM Auto-Tune run.
+
+---
+
+### `POST /api/vllm/bench/run`
+Starts a `vllm bench serve` benchmark run against the currently loaded model. Progress is streamed via `/api/vllm/bench/stream`.
+
+---
+
+### `GET /api/vllm/bench/stream`
+Opens an SSE stream reporting vLLM benchmark progress.
+
+---
+
+### `POST /api/vllm/bench/cancel`
+Cancels an in-progress vLLM benchmark run.
+
+---
+
+### `POST /api/vllm/terminal/create`
+Opens an SSH shell session to the vLLM host, mirroring `/api/lms/terminal/create`. Returns a session ID used with the shared `/api/terminal/*` endpoints below.
+
+---
+
+## Inference Gateway
+
+An OpenAI-compatible chat/completions gateway that fans requests out to whichever backend provider (llama.cpp, LM Studio, or vLLM) is serving the requested model. Requests authenticate either with a bearer token from `[manager.gateway].api_keys`, or with a normal dashboard session cookie.
+
+### `POST /api/gateway/v1/chat/completions`
+OpenAI-compatible chat completion. The target provider is resolved from the request body's `model` field: a model pin wins first, then the live model index built from each provider's `/models` listing, then a `llama` fallback if the model is unrecognized. Within the resolved provider, the host is picked in the order: model pin, then an explicit `?agent=`, then pool round-robin, then the provider default. A pin therefore overrides an explicit `?agent=`; the gateway logs when that happens. (The dashboard's own proxy routes surface the same condition as an `X-Routing-Override: pin` response header; the gateway does not set it.) Supports `"stream": true` for SSE responses.
+
+Successful non-streaming responses carry an `X-Proxied-To: <agent_id prefix>@<hostname>` header identifying which agent actually served the request; streaming responses carry the same header on the initial SSE response.
+
+---
+
+### `POST /api/gateway/v1/completions`
+OpenAI-compatible legacy completion endpoint. Same provider-resolution and `X-Proxied-To` behavior as `/api/gateway/v1/chat/completions`.
+
+---
+
+### `GET /api/gateway/v1/models`
+Returns the merged OpenAI-style model list (`{"object": "list", "data": [...]}`) across every gateway-enabled provider's pool (currently `llama`, `lms`, `vllm`).
+
+---
+
+### Per-provider gateway twins
+Every gateway-enabled provider also gets its own fixed-provider mirror of the three routes above, skipping model-based provider resolution: `POST /api/gateway/<provider>/v1/chat/completions`, `POST /api/gateway/<provider>/v1/completions`, and `GET /api/gateway/<provider>/v1/models`, for `<provider>` in `llama`, `lms`, `vllm`.
+
+---
+
+## GPU Report Card
+
+Runs a standardized benchmark ("report card") against a reference model on a chosen agent/provider, to produce comparable tokens/sec and $/Mtok numbers across hardware. Report card jobs run asynchronously and stream progress over SSE, similar to the benchmark endpoints in the LLM Control section.
+
+### `GET /api/reportcard/preset`
+Returns the report card's fixed run parameters: `preset_version`, `gen_tokens`, `reps`, the supported `providers`, the configured `price_kwh`, and the list of reference `models` (`{"key", "label"}`) available for standard runs.
+
+---
+
+### `POST /api/reportcard/run`
+Starts a report card run. In standard mode, first checks whether the reference model is ready on the target agent — if a confirmation or download is needed, returns that status instead of starting the job; the caller resubmits with `confirm_vllm`/`confirm_download` set to proceed.
+
+**Body:** `{"agent": "<agent_id>", "provider": "llama"|"lms"|"vllm", "mode": "standard"|"custom", "model": "<model_id>" (custom mode), "model_key": "<reference key>" (standard mode), "price_kwh": <number> (optional), "confirm_vllm": <bool>, "confirm_download": <bool>}`
+
+**Response:** `{"ok": true, "job_id": "<id>"}` once the job is started, or `{"ok": true, "status": "needs_confirm"|"needs_download", ...}` when a precheck blocks the run.
+
+---
+
+### `GET /api/reportcard/models`
+Returns the model IDs currently available on a given agent/provider.
+
+**Parameters:** `?agent=<agent_id>&provider=<llama|lms|vllm>` (both required)
+
+---
+
+### `POST /api/reportcard/delete-model`
+Deletes a reference model from an agent's local storage/cache. Supported only for `llama` and `lms`.
+
+**Body:** `{"agent": "<agent_id>", "provider": "llama"|"lms", "model_key": "<reference key>"}`
+
+---
+
+### `POST /api/reportcard/cancel/<job_id>`
+Cancels an in-progress report card job.
+
+---
+
+### `GET /api/reportcard/stream/<job_id>`
+Opens an SSE stream reporting progress for a report card job. Closes when the job emits a `done`, `error`, or `cancelled` event, or after an internal timeout.
+
+---
+
+### `GET /api/reportcard/latest`
+Returns the most recent saved report card for an agent/provider pair.
+
+**Parameters:** `?agent=<agent_id>&provider=<llama|lms|vllm>` (both required)
+
+---
+
+### `GET /api/reportcard/history`
+Returns saved report card history, optionally filtered.
+
+**Parameters:** `?agent=<agent_id>`, `?provider=<llama|lms|vllm>`, `?model=<model_id>` — all three required; omitting any returns 400.
+
+---
+
+## Energy & Cost
+
+Rolls up power-draw metrics into cost figures over configurable time windows, using the configured `$/kWh` and cloud comparison pricing.
+
+### `GET /api/energy/summary`
+Returns an energy/cost summary for a time window: total energy, local $ cost, and equivalent cloud-provider cost comparison.
+
+**Parameters:**
+- `?days=<n>` or `?month=<YYYY-MM>` — select the summary window (mutually exclusive with the default trailing window)
+- `?price_kwh=<number>` — override the configured electricity price for this call
+- `?cloud_in=<number>` / `?cloud_out=<number>` — override the configured cloud $/Mtok input/output pricing for comparison
+
+---
+
+### `GET /api/energy/hourly`
+Returns hourly energy/cost data points for charting.
+
+**Parameters:**
+- `?days=<n>` or `?month=<YYYY-MM>` — mirrors the summary window
+- `?hours=<n>` — trailing-window form used when `days`/`month` are absent (default 168, capped)
+- `?agent=<agent_id>` — restrict to one agent
+
+---
+
+## Model Autopilot
+
+Automates placement of model entries across the agent pool — deciding which host(s) should serve which model, proposing changes, and (optionally) applying them. All autopilot endpoints require an admin session.
+
+### `GET /api/autopilot`
+Returns the current autopilot state, any pending proposals, the last plan timestamp, and per-entry status.
+
+**Access:** [Admin]
+
+**Response:** `{"state": <state document>, "proposals": [...], "last_plan_ts": <epoch seconds>, "entry_status": {...}}`
+
+---
+
+### `PUT /api/autopilot`
+Replaces the autopilot state document. The submitted document is validated before being saved — invalid entries are rejected with a 400 and an error message.
+
+**Access:** [Admin]
+
+**Body — state document:**
+```json
+{
+  "enabled": true,
+  "entries": [
+    {
+      "model": "<model_id>",
+      "provider": "llama",
+      "placement": "auto",
+      "failover": "semi",
+      "priority": 100,
+      "min_replicas": 1,
+      "max_replicas": 1,
+      "size_mb": 8192,
+      "autoscale": {"target_saturation": 0.75, "up_window_s": 120, "down_window_s": 900}
+    }
+  ],
+  "hosts": {}
+}
+```
+- `provider`: `llama`, `vllm`, or `lms`
+- `placement`: `"auto"` or a specific agent id
+- `failover`: `"semi"` (propose, wait for apply) or `"auto"` (apply automatically)
+- `min_replicas` / `max_replicas`: replica bounds; `max_replicas > min_replicas` enables `autoscale`
+- `size_mb`: optional explicit model size override used for placement sizing
+- `hosts`: reserved; any submitted value is currently ignored (idle sleep is llama-server's own `--sleep-idle-seconds`, not autopilot-managed)
+
+---
+
+### `POST /api/autopilot/proposals/<pid>/apply`
+Applies a pending proposal (executes the placement/pool/pin changes it describes).
+
+**Access:** [Admin]
+
+---
+
+### `POST /api/autopilot/proposals/<pid>/dismiss`
+Dismisses a pending proposal without applying it.
+
+**Access:** [Admin]
+
+---
+
+### `POST /api/autopilot/tick`
+Manually triggers one reconciler tick (observe current state, replan, refresh proposals) outside of its normal schedule.
+
+**Access:** [Admin]
+
+---
+
 ## Agent Management
 
-These endpoints manage the fleet of monitoring agents. Most are **[Admin]** only. A small number are called internally by agents themselves (marked "Agent-facing") and are not intended for manual use.
+These endpoints manage the pool of monitoring agents. Most are **[Admin]** only. A small number are called internally by agents themselves (marked "Agent-facing") and are not intended for manual use.
 
 ### `GET /api/agents`
 Returns the list of all registered agents with their status, capabilities, and last-seen timestamp.
@@ -351,7 +648,7 @@ Registers a new agent with the Manager. Called automatically by the agent on fir
 ---
 
 ### `GET /api/agents/list-by-provider`
-Returns agents grouped by provider type (llama, lms). Available to all authenticated users, including operators, so the agent picker in the dashboard works regardless of role.
+Returns agents grouped by provider type (llama, lms, vllm). Available to all authenticated users, including operators, so the agent picker in the dashboard works regardless of role.
 
 ---
 
@@ -397,12 +694,30 @@ Designates the specified agent as the default agent for its provider type. Dashb
 
 ---
 
-### `POST /api/agents/<agent_id>/llama-pool`
-Controls whether this agent participates in the llama.cpp load-balancing pool.
+### `POST /api/agents/<agent_id>/host-role`
+Designates (or clears) the specified agent as the Manager's own host agent — the approved agent running on the same machine as the Manager. Used so agent-derived host metrics and version pills resolve correctly even under Docker, where the Manager can't introspect its own host directly.
 
 **Access:** [Admin]
 
-**Body:** `{"in_pool": true}` or `{"in_pool": false}`
+**Body:** `{"set": true}` (default) or `{"set": false}` to clear.
+
+---
+
+### `POST /api/agents/<agent_id>/collection`
+Pauses or resumes metric collection on the specified agent without disabling or removing it.
+
+**Access:** [Admin]
+
+**Body:** `{"enabled": true}` or `{"enabled": false}`
+
+---
+
+### `POST /api/agents/<agent_id>/<provider>-pool`
+Controls whether this agent participates in the given provider's load-balancing pool. This is not a fixed path — one route is registered per pool-enabled provider (currently `llama`, `lms`, and `vllm`), so the actual paths are `/api/agents/<agent_id>/llama-pool`, `/api/agents/<agent_id>/lms-pool`, and `/api/agents/<agent_id>/vllm-pool`.
+
+**Access:** [Admin]
+
+**Body:** `{"in_pool": true}` or `{"in_pool": false}`, plus an optional `"position"` (integer index) to place the agent at a specific slot in the pool order.
 
 ---
 
@@ -428,7 +743,7 @@ Returns per-agent communication statistics: request counts, error rates, and lat
 ---
 
 ### `GET /api/fleet/<provider>/aggregate`
-Returns aggregated metrics across all agents for the specified provider (`llama` or `lms`). Used by the LLM Overall tab to show fleet-wide GPU utilisation, throughput, and power.
+Returns aggregated metrics across all agents for the specified provider (`llama`, `lms`, or `vllm`). Used by the LLM Overall tab to show GPU utilisation, throughput, and power aggregated across every agent of that provider type.
 
 ---
 
@@ -492,6 +807,20 @@ Pushes the current internal CA certificate to all approved agents so they can ve
 
 ### `GET /api/agents/<agent_id>/status`
 Returns detailed status for a single agent: version, uptime, capabilities, last heartbeat, TLS state, and metric buffer depth.
+
+**Access:** [Admin]
+
+---
+
+### `GET /api/agents/<agent_id>/log/stream`
+Opens an SSE proxy stream of the specified agent's own process log (the agent daemon's log, not a provider's log). Streams bytes verbatim from the agent's `/agent/log/stream`.
+
+**Access:** [Admin]
+
+---
+
+### `POST /api/agents/<agent_id>/self-update`
+Triggers an in-place agent self-update: the agent runs its installer with `--update --from-self-update` (git pull, redeploy code, refresh its venv — no systemd unit changes) and streams stdout/stderr back over SSE. On success the agent exits and systemd's `Restart=always` brings the updated code back up.
 
 **Access:** [Admin]
 
@@ -599,6 +928,40 @@ Returns a rolled-up health summary of the whole system: agent connectivity, serv
 
 ---
 
+### `GET /api/admin/audit-log`
+Returns paginated entries from the admin action audit log (who did what, from where, and the outcome).
+
+**Access:** [Admin]
+
+**Parameters:** `?limit=<n>` (default 100, max 500), `?offset=<n>` (default 0)
+
+**Response:** `{"ok": true, "total": <count>, "entries": [{"ts", "actor", "role", "ip", "method", "path", "action", "target", "status", "outcome"}, ...]}`
+
+---
+
+### `GET /api/admin/stream-stats`
+Returns live SSE-stream and connection health for the Admin tab: Manager stream pool active/peak/refusal counts, Cheroot worker-thread and backlog stats, browser/agent connection counts, and per-agent `/status` stream state.
+
+**Access:** [Admin]
+
+---
+
+### `GET /api/admin/backup-status`
+Returns the scheduled-backup configuration (enabled, interval, retention) and the list of backups currently on disk (`file`, `bytes`, `mtime` per entry).
+
+**Access:** [Admin]
+
+---
+
+### `POST /api/admin/service/<svc>/restart`
+Restarts the Manager or the (co-located) Alarm Engine service. On bare-metal installs this uses a sudoers `NOPASSWD systemctl restart` grant; under containers and Homebrew kegs it restarts by exiting the process so the supervisor respawns it — exit 0 in a container, exit 1 under a brew keg, whose units are `Restart=on-failure`. A co-located Alarm Engine restarts through its own management API rather than a process exit. Restarting the Alarm Engine this way only works when it runs on the same host as the Manager.
+
+**Access:** [Admin]
+
+**Path parameter:** `<svc>` is `manager` or `alarm_engine`.
+
+---
+
 ### `GET /api/admin/auth`
 Returns the current authentication mode (`required`, `trusted_cidr`, `disabled`, or `auto`) and whether the default credential is still active.
 
@@ -654,19 +1017,21 @@ Clears a lockout on a user account that was locked after too many failed login a
 
 ---
 
-### `GET /api/admin/llama-models`
-Returns the model registry for llama.cpp agents: which models each agent has available, with saved configs and benchmark results.
+### `GET /api/admin/<provider>-models`
+Returns the model registry for the given provider's agents: fans out to every pool member (or, if the pool is empty, every approved agent advertising that provider's capability) and returns which models each agent reports, plus any per-agent errors from the fan-out. This is not a fixed path — one route is registered per pool-enabled provider (currently `llama`, `lms`, and `vllm`): `/api/admin/llama-models`, `/api/admin/lms-models`, `/api/admin/vllm-models`.
 
 **Access:** [Admin]
+
+**Response:** `{"ok": true, "models": [{"id": "<model_id>", "agents": ["<hostname>", ...]}, ...], "errors": [{"agent": "<hostname>", "error": "<status or message>"}, ...]}`
 
 ---
 
-### `POST /api/admin/llama-pins`
-Pins a specific model to a specific agent so that requests for that model are always routed to that agent regardless of the default selection.
+### `POST /api/admin/<provider>-pins`
+Pins a specific model to a specific agent so that requests for that model are always routed to that agent regardless of the default selection. Registered per provider that declares a pin dict — currently `/api/admin/llama-pins`, `/api/admin/lms-pins`, and `/api/admin/vllm-pins`.
 
 **Access:** [Admin]
 
-**Body:** `{"model_id": "<id>", "agent_id": "<id>"}`
+**Body:** `{"model_id": "<id>", "agent_id": "<id>"}` — omit or leave `agent_id` blank to clear the pin.
 
 ---
 
@@ -1150,7 +1515,7 @@ Receives an alert from an outside system and routes it into the alarm engine. Th
 
 ## OpenTelemetry (OTLP) Ingest
 
-These endpoints accept telemetry from external pipelines that speak the OpenTelemetry protocol. They are served by the Alarm Engine directly (not under the `/api/alarm/` proxy prefix) and require the ingest bearer token when one is configured. Each payload is converted into metric points and stored alongside the fleet's own metrics.
+These endpoints accept telemetry from external pipelines that speak the OpenTelemetry protocol. They are served by the Alarm Engine directly (not under the `/api/alarm/` proxy prefix) and require the ingest bearer token when one is configured. Each payload is converted into metric points and stored alongside the agents' own metrics.
 
 ### `POST /v1/metrics`
 Ingests OpenTelemetry metrics (counters, gauges, histograms).

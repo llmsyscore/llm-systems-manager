@@ -6,28 +6,38 @@ It currently integrates [llama.cpp](https://github.com/ggerganov/llama.cpp), [vL
 
 ## Top features
 
-**1. OpenAI-compatible inference gateway.** One endpoint on the manager serves every `llama.cpp` host. Requests can be routed by per-model pinning, round-robined across a dedicated pool, or failed over to another live host if a backend is down. Apps target one stable URL that looks like a single server. Streaming and non-streaming both work. See [Inference gateway](#inference-gateway).
+**1. Model Autopilot.** Say which models should be available, and Autopilot keeps them that way — loading them on hardware that can actually hold them, bringing them back up somewhere else when a host drops out, and adding or removing copies as demand rises and falls. It checks a host has the memory for a model before placing it there, including hosts running on CPU alone. Defaults to off: it surfaces its proposals and changes nothing until you enable it. Lives in **Admin → Routing** — [screenshot below](#screenshots).
 
-**2. Benchmarking and autotuning built in.** Run throughput benchmarks across every model in your library, and let the autotuner search for the best context/slot configuration on `llama.cpp` or the largest safe `max-model-len` on vLLM. Each model ends up tuned to the hardware it actually runs on.
+**2. OpenAI-compatible inference gateway.** One endpoint on the manager fronts every backend you run — `llama.cpp`, LM Studio, and vLLM. `/v1/models` returns the merged catalog tagged by provider, and each request is routed by per-model pinning, round-robined across a pool, or failed over to another live host if a backend is down. Apps target one stable URL that looks like a single server. Streaming and non-streaming both work. See [Inference gateway](#inference-gateway).
 
-**3. Model management with profiles, cards, and cache control.** Browse and pull models straight from Hugging Face, then prune individual files to reclaim disk. Every model keeps multiple named config profiles (e.g. chat / code / general); switching profiles from the model card reloads the running model with those settings in one click.
+**3. GPU Report Card.** A standardized benchmark that produces one shareable card: time-to-first-token, prefill and generation throughput, tokens/joule, and measured $/Mtok, alongside the GPU and VRAM it ran on. The same preset runs against `llama.cpp`, LM Studio, and vLLM, so numbers are comparable across providers and across machines.
 
-**4. Energy and thermal control via the performance manager.** A per-host controller tracks the inference server and switches the CPU governor and cooling/fan profiles to match the load — full performance while a model is working, quiet and low energy usage when it goes idle or sleeps.
+**4. Energy and cost intelligence.** Measures what inference actually costs in **$/Mtok**, with a monthly-savings comparison against hosted-API pricing and idle-power accounting so unused hardware is attributed honestly. A per-host performance manager also switches the CPU governor and cooling/fan profiles to match load — full performance while a model is working, quiet and low draw when it goes idle or sleeps. [Screenshot below](#screenshots).
 
-**5. Remote control of the whole infrastructure.** Start/stop/restart inference servers, hot-swap models, edit per-model configurations, update and configure `llama.cpp`, tail logs, or open an in-browser terminal — for any host, from one page. One cross-platform agent covers Linux and macOS/Apple Silicon, auto-detects what each box runs, with per-agent selection. An **LLM Overall** view rolls multiple host metrics into one pane.
+**5. Benchmarking and autotuning built in.** Run throughput benchmarks across every model in your library, and let the autotuner search for the best context/slot configuration on `llama.cpp` or the largest safe `max-model-len` on vLLM. Each model ends up tuned to the hardware it actually runs on.
 
-**6. LLM-aware telemetry and alerting.** Live metrics from the inference server include slots, tokens/sec, prompt-processing, KV cache, and context, plus system and GPU/PSU/UPS/cooling metrics. A standalone alarm engine stores every sample, evaluates threshold and anomaly rules, notifies over email/toast/webhook/Discord, buffers to disk and replays when the network returns, and collapses a burst of related issues into single incidents.
+**6. Model management with profiles, cards, and cache control.** Browse and pull models straight from Hugging Face, then prune individual files to reclaim disk. Every model keeps multiple named config profiles (e.g. chat / code / general); switching profiles from the model card reloads the running model with those settings in one click.
+
+**7. Remote control of the whole infrastructure.** Start/stop/restart inference servers, hot-swap models, edit per-model configurations, update and configure `llama.cpp`, tail logs, or open an in-browser terminal — for any host, from one page. A Discord bot exposes the same host queries, model load/unload, and alarm acknowledgement as slash commands. One cross-platform agent covers Linux and macOS/Apple Silicon, auto-detects what each box runs, with per-agent selection. An **LLM Overall** view rolls multiple host metrics into one pane.
+
+**8. LLM-aware telemetry and alerting.** Live metrics from the inference server include slots, tokens/sec, prompt-processing, KV cache, and context, plus system and GPU/PSU/UPS/cooling metrics. A standalone alarm engine stores every sample, evaluates threshold and anomaly rules, notifies over email/toast/webhook/Discord, buffers to disk and replays when the network returns, and collapses a burst of related issues into single incidents.
 
 *Also included:* multi-user roles + admin audit log, encrypted scheduled backups, OpenClaw cost/budget analytics, an image generation tab, and TLS/mTLS on every connection — see the [full feature list](#full-included-features) below.
 
 ---
-<img width="1526" height="1050" alt="Login screen" src="docs/screenshots/login.png" />
 
-**Llama dashboard** - view real time metrics on the llama.cpp server
+## Screenshots
+
+<img width="1650" height="1205" alt="Login screen" src="docs/screenshots/login.png" />
+
+**Llama dashboard** — live metrics from the llama.cpp server and its host.
 <img width="2759" height="1270" alt="Llama dashboard" src="docs/screenshots/dashboard-llama.png" />
 
-**Lmstudio dashboard** - view real time metrics on the lmstudio server
-<img width="2767" height="1270" alt="LM Studio dashboard" src="docs/screenshots/dashboard-lmstudio.png" />
+**LM Studio dashboard** — the server card, loaded models, and host metrics, plus live Apple-silicon powermetrics (SoC / CPU / GPU / ANE watts, thermal pressure, GPU busy). Token counts are measured at the manager gateway.
+<img width="2282" height="1284" alt="LM Studio dashboard" src="docs/screenshots/dashboard-lmstudio.png" />
+
+**Energy & cost** — measured $/Mtok against your electricity price, savings versus hosted-API pricing, and hourly active-vs-idle energy. The per-host table marks which hosts report power and token telemetry, so the totals say what they're based on.
+<img width="2296" height="1273" alt="Energy and cost dashboard" src="docs/screenshots/dashboard-energy.png" />
 
 **Model control** — start/stop inference servers, change models, control the provider, manage the model library, run benchmarks, auto tune models.
 <img width="2756" height="1269" alt="Model control" src="docs/screenshots/model-control.png" />
@@ -35,10 +45,10 @@ It currently integrates [llama.cpp](https://github.com/ggerganov/llama.cpp), [vL
 <img width="2767" height="1049" alt="Model control cards" src="docs/screenshots/model-control-cards.png" />
 
 **Autotune & benchmark** — search for the fastest context/slot settings per model and benchmark your whole model library.
-<img width="1170" height="1067" alt="Autotune wizard" src="docs/screenshots/autotune.png" />
+<img width="1170" height="1057" alt="Autotune wizard" src="docs/screenshots/autotune.png" />
 <img width="1164" height="1161" alt="Benchmark results" src="docs/screenshots/benchmark.png" />
 
-**Openclaw dashboard** - openclaw metrics and analytics
+**OpenClaw dashboard** — OpenClaw session metrics, cost analytics, and tool attribution.
 <img width="2767" height="1270" alt="OpenClaw dashboard" src="docs/screenshots/dashboard-openclaw.png" />
 
 **Manager dashboard** — view overall manager and agent health.
@@ -47,9 +57,11 @@ It currently integrates [llama.cpp](https://github.com/ggerganov/llama.cpp), [vL
 **Alarm engine** — trend graphs, rule and notification editor, alert timeline.
 <img width="2135" height="1151" alt="Alarm engine" src="docs/screenshots/alarm-console.png" />
 
-**Admin console** - agent management, user & login management, backup/restore, inference routing
-<img width="1683" height="1278" alt="Admin console" src="docs/screenshots/admin-console.png" />
-<img width="1683" height="1278" alt="Admin console — inference pool" src="docs/screenshots/admin-console-pool.png" />
+**Admin console** — system health plus sub-tabs for access control, agents, the audit log, backup/restore, and routing. The agents view lists every registered host with its capabilities, pool membership, TLS state, and version.
+<img width="2283" height="1272" alt="Admin console — agents" src="docs/screenshots/admin-console.png" />
+
+**Routing & Model Autopilot** — per-provider pool order and model pins, and the Autopilot editor: one row per model with its placement, failover mode, replica range, and size, each showing whether it is currently placed. Pending proposals are listed below for approval.
+<img width="2283" height="1272" alt="Admin console — routing and Model Autopilot" src="docs/screenshots/admin-console-pool.png" />
 
 
 
@@ -57,15 +69,19 @@ It currently integrates [llama.cpp](https://github.com/ggerganov/llama.cpp), [vL
 
 ## Full included features
 
-The six headline capabilities plus everything else that ships in the box:
+The eight headline capabilities plus everything else that ships in the box:
 
-- **OpenAI-compatible inference gateway.** One endpoint (`/api/gateway/v1`) fronts the whole `llama.cpp` fleet — per-model pin, then pool round-robin, then pre-first-token failover route each request to a healthy backend, so every app sees one server. Dashboard-session access by default; add API keys for external clients. See [Inference gateway](#inference-gateway).
+- **Model Autopilot.** Declare which models should be resident and Autopilot converges on it — placement gated on a host actually having the memory (VRAM, or RAM for CPU-only hosts), failover to another host when one goes offline, extra copies added and removed as demand changes. Off by default: proposals are shown and applied only once you enable it. Lives in **Admin → Routing**.
+- **GPU Report Card.** One standardized benchmark across `llama.cpp`, LM Studio, and vLLM producing a comparable, shareable card — TTFT, prefill and generation throughput, tokens/joule, measured $/Mtok, and the GPU/VRAM it ran on. Runs are stored so you can trend them over time.
+- **Energy & cost intelligence.** Measured **$/Mtok** from real power draw, a monthly-savings card against hosted-API list pricing, and idle-power accounting. Cost is only computed across hosts reporting both power and token telemetry, so a half-instrumented host can't skew the number.
+- **Discord bot.** Slash commands for host queries, model load/unload, and alarm acknowledgement, gated by a user allowlist with model control off by default.
+- **OpenAI-compatible inference gateway.** One endpoint (`/api/gateway/v1`) fronts every provider you run — `llama.cpp`, LM Studio, and vLLM. `/v1/models` merges all pools tagged by provider and deduped; per-model pin, then pool round-robin, then pre-first-token failover route each request to a healthy backend, so every app sees one server. Dashboard-session access by default; add API keys for external clients. See [Inference gateway](#inference-gateway).
 - **Benchmarking & autotuning.** Throughput benchmarks across your entire model library, plus autotuners for `llama.cpp` context/slot counts and vLLM `max-model-len` — each model tuned to the hardware it actually runs on.
 - **Model management.** A built-in Hugging Face browser downloads and prunes models file-by-file; every model keeps named config profiles (chat / code / general) that swap and reload straight from its model card in one click.
 - **Energy & thermal control.** A per-host performance manager flips CPU governor and fan/cooling profiles with inference load — full power under work, quiet and low-draw when idle or asleep.
 - **Remote control, no SSH.** Start/stop/restart servers, hot-swap models, edit configs, update `llama.cpp` (build from source, conda, Homebrew, release binaries, or a custom script), tail logs, and open an in-browser PTY terminal — for any host, from the page.
 - **LLM runtime visibility.** Live inference internals — slots, tokens/sec, prompt-processing rate, KV cache, context, idle/awake, active chat template, modalities, total slots — plus LM Studio loaded models and active sessions.
-- **Fleet in one pane.** Run the same backend on many hosts and a picker appears to switch views and controls per agent; the **LLM Overall** tab rolls combined throughput, hottest GPU, total power, and active models into one view. A single-host lab sees no change.
+- **Every host in one pane.** Run the same backend on many hosts and a picker appears to switch views and controls per agent; the **LLM Overall** tab rolls combined throughput, hottest GPU, total power, and active models into one view. A single-host lab sees no change.
 - **Cross-platform agent.** One agent for Linux and macOS/Apple Silicon auto-detects what each host runs and enables only what's relevant; a bare host just reports system metrics, all served over TLS.
 - **Live host telemetry.** CPU, RAM, disk, network, GPU utilization, PSU, UPS battery, and AIO cooling stats.
 - **Alerting that survives outages.** A standalone alarm engine persists every metric to InfluxDB, evaluates threshold and anomaly rules, and routes alerts via email, toast, webhook, or Discord. Agents buffer to disk if the engine is down and replay when it returns.
@@ -303,13 +319,15 @@ A host with neither `llama-server` nor LM Studio just reports generic system met
 
 ## Inference gateway
 
-One OpenAI-compatible endpoint (http://<manager-host>:5000/api/gateway/v1) on the manager serves every approved `llama.cpp` agent in the fleet — so instead of targeting one `llama-server` by host:port, your apps call the manager and it picks a healthy backend for each request:
+One OpenAI-compatible endpoint (http://<manager-host>:5000/api/gateway/v1) on the manager serves every approved agent across all three providers — `llama.cpp`, LM Studio, and vLLM. Instead of targeting one backend by host:port, your apps call the manager and it picks a healthy one for each request:
 
 - `POST /api/gateway/v1/chat/completions`
 - `POST /api/gateway/v1/completions`
 - `GET  /api/gateway/v1/models`
 
-Routing follows the same precedence as the dashboard: a per-model **pin** first, then an explicit `?agent=` pick, then **pool round-robin**, finally the system **default**. If the chosen backend can't be reached, the gateway **fails over** to the next live agent. Both streaming (`"stream": true`) and non-streaming requests work, and each response carries an `X-Proxied-To` header naming the agent that served it.
+`GET /v1/models` returns the merged catalog from every pool, each entry tagged with its `provider` and deduplicated by id, and the owning provider is resolved per request from the model you ask for. Provider-scoped twins (`/api/gateway/llama/v1/*`, `/api/gateway/lms/v1/*`, `/api/gateway/vllm/v1/*`) are available when you want to force one.
+
+Routing follows the same precedence as the dashboard: a per-model **pin** first, then an explicit `?agent=` pick, then **pool round-robin**, finally the system **default**. If the chosen backend can't be reached, the gateway **fails over** to the next live agent that actually serves that model. Both streaming (`"stream": true`) and non-streaming requests work, and each response carries an `X-Proxied-To` header naming the agent that served it.
 
 **Access.** By default the gateway is reachable from a logged-in dashboard session only. To let external OpenAI-SDK clients in, add one or more keys to `[manager.gateway].api_keys` in `config/llm-systems.toml` and restart the manager — each key is a bearer accepted only on `/api/gateway/*`:
 
