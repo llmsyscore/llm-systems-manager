@@ -9,7 +9,7 @@ This guide walks you through installing, configuring, and maintaining LLM System
 ### Manager Server
 
 - **Operating system:** Ubuntu 22.04 or later (other modern Linux distributions should work)
-- **Python:** 3.11 or later
+- **Python:** 3.10 or later (the installer refuses to proceed below this)
 - **RAM:** 2 GB minimum; 4 GB recommended
 - **Disk:** At least 10 GB free for logs, metrics history, and model benchmark data
 
@@ -17,8 +17,10 @@ This guide walks you through installing, configuring, and maintaining LLM System
 
 Agents can run on:
 
-- **Linux** — Ubuntu 22.04+ or equivalent, Python 3.11+
-- **macOS** — macOS 13 (Ventura) or later, Python 3.11+
+- **Linux** — Ubuntu 22.04+ or equivalent
+- **macOS** — macOS 13 (Ventura) or later
+
+The script installer needs Python 3.10+ on the agent host. The native packages and the binary tarball bundle a self-contained agent and need no Python at all.
 
 Each agent host needs network access to ports 8081 (alarm engine) and 5000 or 5443 (manager).
 
@@ -275,6 +277,14 @@ Refer to that file when you need to understand what a setting does or when addin
 | `[notifications.smtp].user` | Account / sender address used to send alarm emails | *(not set)* |
 | `[influxdb].host` | InfluxDB server address | `localhost` |
 | `[influxdb].port` | InfluxDB port | `8086` |
+| `[manager.gateway].enabled` | OpenAI-compatible inference gateway | `true` |
+| `[manager.gateway].api_keys` | Bearer keys for external clients; empty means dashboard-session only | `[]` |
+| `[manager.reportcard].price_kwh` | Electricity price used for the Report Card's $/Mtok estimate | `0.15` |
+| `[manager.energy].cloud_price_in_per_mtok` | Hosted-API input price the savings card compares against | `0.15` |
+| `[manager.energy].cloud_price_out_per_mtok` | Hosted-API output price the savings card compares against | `0.60` |
+| `[manager.discord].enabled` | Interactive Discord bot | `false` |
+| `[manager.discord].allowed_user_ids` | Discord user IDs permitted to use the bot; empty refuses everyone | `[]` |
+| `[manager.discord].allow_model_control` | Whether the bot may load/unload models | `false` |
 
 ### Applying Changes
 
@@ -293,6 +303,101 @@ sudo systemctl restart llm-systems-alarm-engine
 ```
 
 If you changed a setting used by both (such as InfluxDB credentials), restart both.
+
+---
+
+## Setting Up the Main Features
+
+Everything below works once the manager and at least one approved agent are running. None of it is required — each feature is independent.
+
+### Inference Gateway
+
+One OpenAI-compatible endpoint fronts every provider you run (`llama.cpp`, LM Studio, vLLM), so applications target the manager instead of an individual backend.
+
+Base URL: `http://<manager-host>:5000/api/gateway/v1`
+
+- `GET /v1/models` returns the merged catalog from every pool, each entry tagged with its `provider` and deduplicated by id.
+- `POST /v1/chat/completions` and `POST /v1/completions` accept the usual OpenAI request bodies, streaming or not.
+- Provider-scoped twins exist when you want to force one backend family: `/api/gateway/llama/v1/*`, `/api/gateway/lms/v1/*`, `/api/gateway/vllm/v1/*`.
+
+The manager resolves which provider owns a model from the model id in the request, then picks a host by per-model pin, explicit `?agent=`, pool round-robin, and finally the system default. If that host can't be reached before the first token, it fails over to another live host that serves the same model. The response carries an `X-Proxied-To` header naming the host that answered.
+
+By default the gateway only accepts a logged-in dashboard session. To let external clients in, add bearer keys:
+
+```toml
+[manager.gateway]
+enabled = true
+api_keys = ["sk-your-secret-key"]
+read_timeout_s = 600.0
+```
+
+Restart the manager afterwards. These keys are accepted only on `/api/gateway/*`.
+
+### Model Autopilot
+
+**Admin → Routing → Model Autopilot.** You describe which models should be resident and where; Autopilot compares that against what is actually loaded and proposes the difference.
+
+Each entry names a model, its provider (`llama`, `vllm`, or `lms`), and a placement — either a specific host id or `auto`. Optional per-entry settings:
+
+| Field | Meaning | Default |
+|---|---|---|
+| `failover` | `semi` proposes a move for you to approve; `auto` performs it | `semi` |
+| `min_replicas` / `max_replicas` | How many copies to keep resident | `1` / same as min |
+| `priority` | Lower wins when hosts are contended | `100` |
+| `size_mb` | Size override for models the manager can't measure | *(unset)* |
+| `autoscale` | `target_saturation`, `up_window_s`, `down_window_s` | `0.75`, `120`, `900` |
+
+**Autopilot is disabled by default.** While disabled it still evaluates continuously and shows what it *would* do, so you can watch it for a while before handing it control. Enable it with the toggle on the same card once the proposals look right.
+
+Placement is gated on memory: a host is only offered a model if it has the VRAM to hold it, or the RAM if the host has no GPU. That is why a size override matters for models the manager can't measure — without a size, an entry can be skipped rather than placed badly.
+
+### GPU Report Card
+
+**LLM Control → Report Card.** Pick a provider and host, choose the standard preset, and run. The card reports time-to-first-token, prefill and generation throughput, tokens/joule, and $/Mtok, along with the GPU and VRAM it ran on.
+
+The same preset runs against every provider, so cards are comparable between machines and between backends. Results are stored, so the Trends view plots them over time. Set the electricity price used for the cost figure with:
+
+```toml
+[manager.reportcard]
+price_kwh = 0.15
+```
+
+It can also be overridden per run from the sub-tab. Leaderboard submission is present but disabled in v1.1.0.
+
+### Energy & Cost Intelligence
+
+**Dashboard → Energy.** Shows measured power draw converted to a **$/Mtok** figure, a monthly-savings comparison against hosted-API list pricing, and idle-power accounting so hardware that is powered but unused is attributed rather than ignored.
+
+```toml
+[manager.energy]
+# price_kwh = 0.15                # unset inherits [manager.reportcard].price_kwh
+cloud_price_in_per_mtok = 0.15
+cloud_price_out_per_mtok = 0.60
+cloud_price_label = "budget cloud API tier"
+```
+
+Cost is only computed across hosts that report both power and token telemetry. A host that reports one but not the other is left out rather than being allowed to skew the total. LM Studio reports no token counts of its own, so the gateway counts them as requests pass through — LM Studio traffic that bypasses the gateway is not counted.
+
+### Discord Bot
+
+Slash commands for host queries, model load/unload, and alarm acknowledgement.
+
+```toml
+[manager.discord]
+enabled = true
+bot_token = "<your-bot-token>"
+guild_id = "<your-server-id>"
+allowed_user_ids = ["111111111111111111", "222222222222222222"]
+allow_model_control = false
+```
+
+Three things to get right:
+
+- **The allowlist is fail-closed.** An empty `allowed_user_ids` refuses everyone. Each ID must be its own quoted string.
+- **Model control is separate.** Queries work with `allow_model_control = false`; loading and unloading models requires setting it to `true`.
+- **The bot invite needs both the `bot` and `applications.commands` scopes**, otherwise the slash commands never register.
+
+Restart the manager after editing this section — the bot reads its allowlist at startup.
 
 ---
 
