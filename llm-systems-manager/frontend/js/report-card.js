@@ -362,12 +362,11 @@ function rcRenderCard(card) {
   host.appendChild(RC.buildCard({...card.result, provider: card.provider,
                                  ts: card.ts,
                                  preset_version: card.preset_version}));
-  const submit = _rcEl('rcSubmitBtn');
+  // Shown for eligible cards only; the button inside stays disabled until
+  // the leaderboard ships (#509).
+  const submitWrap = _rcEl('rcSubmitWrap');
   const url = RC.submitUrl(card);
-  if (submit) {
-    submit.style.display = url ? '' : 'none';
-    submit.onclick = () => window.open(url, '_blank', 'noopener');
-  }
+  if (submitWrap) submitWrap.style.display = url ? '' : 'none';
   const actions = _rcEl('rcActions');
   if (actions) actions.style.display = '';
   if (!url) {

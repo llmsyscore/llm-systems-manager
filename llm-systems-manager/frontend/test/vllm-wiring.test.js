@@ -141,7 +141,8 @@ describe('#368 vllm control parity wiring', () => {
   test('base.css button override includes #llm-vllm', () => {
     const css = src('css/base.css');
     expect(css).toContain('#llm-vllm .btn:not([data-act]):not([data-lmsact]):not(.btn-log)');
-    expect(css).toContain('#llm-vllm .btn:not([data-act]):not([data-lmsact]):not(.btn-log):hover');
+    // :not(:disabled) added in #509 so disabled buttons stay greyed on hover.
+    expect(css).toContain('#llm-vllm .btn:not([data-act]):not([data-lmsact]):not(.btn-log):not(:disabled):hover');
   });
   test('terminal.js wires the vllm terminal to /api/vllm/terminal/create', () => {
     const term = src('js/terminal.js');

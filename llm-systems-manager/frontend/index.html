@@ -49,8 +49,8 @@ Backend API endpoints consumed:
   <link rel="stylesheet" href="/static/vendor/xterm.min.css?v=5.3.0"/>
   <script src="/static/vendor/xterm.min.js?v=5.3.0"></script>
   <script src="/static/vendor/xterm-addon-fit.min.js?v=0.8.0"></script>
-  <link rel="stylesheet" href="/static/css/base.css?v=2026.07.31-3">
-  <link rel="stylesheet" href="/static/css/reportcard.css?v=2026.07.27-2">
+  <link rel="stylesheet" href="/static/css/base.css?v=2026.08.04-1">
+  <link rel="stylesheet" href="/static/css/reportcard.css?v=2026.08.04-1">
   <link rel="stylesheet" href="/static/css/energy.css?v=2026.07.31-1">
 </head>
 <body>
@@ -1873,7 +1873,7 @@ Backend API endpoints consumed:
 
       <div class="rc-actions" id="rcActions" style="display:none;">
         <button class="btn btn-gray-muted-gradient" onclick="rcExportPng()">Save as PNG</button>
-        <button class="btn btn-gray-muted-gradient" id="rcSubmitBtn" style="display:none;">Submit to leaderboard</button>
+        <span id="rcSubmitWrap" class="rc-soon" style="display:none;" data-tip="Leaderboard submission is coming soon in the next release."><button class="btn btn-gray-muted-gradient" id="rcSubmitBtn" disabled aria-disabled="true" title="Leaderboard submission is coming soon in the next release.">Submit to leaderboard</button></span>
         <button class="btn btn-gray-muted-gradient" onclick="rcToggleTrends()">Trends</button>
       </div>
 
@@ -1905,7 +1905,7 @@ Backend API endpoints consumed:
 <script src="/static/js/lmstudio.js?v=2026.08.04-4"></script>
 <script src="/static/js/vllm.js?v=2026.08.04-1"></script>
 <script src="/static/js/vllm-bench-autotune.js?v=2026.07.12-2"></script>
-<script src="/static/js/report-card.js?v=2026.08.02-4"></script>
+<script src="/static/js/report-card.js?v=2026.08.04-1"></script>
 <script src="/static/js/energy.js?v=2026.07.31-1"></script>
 <script src="/static/js/overall.js?v=2026.08.04-1"></script>
 <script src="/static/js/dashboard-manager.js?v=2026.08.04-1"></script>
