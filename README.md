@@ -6,13 +6,13 @@ It currently integrates [llama.cpp](https://github.com/ggerganov/llama.cpp), [vL
 
 ## Top features
 
-**1. Model Autopilot.** Say which models should be available, and Autopilot keeps them that way — loading them on hardware that can actually hold them, bringing them back up somewhere else when a host drops out, and adding or removing copies as demand rises and falls. It checks a host has the memory for a model before placing it there, including hosts running on CPU alone. Defaults to off: it surfaces its proposals and changes nothing until you enable it.
+**1. Model Autopilot.** Say which models should be available, and Autopilot keeps them that way — loading them on hardware that can actually hold them, bringing them back up somewhere else when a host drops out, and adding or removing copies as demand rises and falls. It checks a host has the memory for a model before placing it there, including hosts running on CPU alone. Defaults to off: it surfaces its proposals and changes nothing until you enable it. Lives in **Admin → Routing** — [screenshot below](#screenshots).
 
 **2. OpenAI-compatible inference gateway.** One endpoint on the manager fronts every backend you run — `llama.cpp`, LM Studio, and vLLM. `/v1/models` returns the merged catalog tagged by provider, and each request is routed by per-model pinning, round-robined across a pool, or failed over to another live host if a backend is down. Apps target one stable URL that looks like a single server. Streaming and non-streaming both work. See [Inference gateway](#inference-gateway).
 
 **3. GPU Report Card.** A standardized benchmark that produces one shareable card: time-to-first-token, prefill and generation throughput, tokens/joule, and measured $/Mtok, alongside the GPU and VRAM it ran on. The same preset runs against `llama.cpp`, LM Studio, and vLLM, so numbers are comparable across providers and across machines.
 
-**4. Energy and cost intelligence.** Measures what inference actually costs in **$/Mtok**, with a monthly-savings comparison against hosted-API pricing and idle-power accounting so unused hardware is attributed honestly. A per-host performance manager also switches the CPU governor and cooling/fan profiles to match load — full performance while a model is working, quiet and low draw when it goes idle or sleeps.
+**4. Energy and cost intelligence.** Measures what inference actually costs in **$/Mtok**, with a monthly-savings comparison against hosted-API pricing and idle-power accounting so unused hardware is attributed honestly. A per-host performance manager also switches the CPU governor and cooling/fan profiles to match load — full performance while a model is working, quiet and low draw when it goes idle or sleeps. [Screenshot below](#screenshots).
 
 **5. Benchmarking and autotuning built in.** Run throughput benchmarks across every model in your library, and let the autotuner search for the best context/slot configuration on `llama.cpp` or the largest safe `max-model-len` on vLLM. Each model ends up tuned to the hardware it actually runs on.
 
@@ -25,13 +25,19 @@ It currently integrates [llama.cpp](https://github.com/ggerganov/llama.cpp), [vL
 *Also included:* multi-user roles + admin audit log, encrypted scheduled backups, OpenClaw cost/budget analytics, an image generation tab, and TLS/mTLS on every connection — see the [full feature list](#full-included-features) below.
 
 ---
-<img width="1526" height="1050" alt="Login screen" src="docs/screenshots/login.png" />
 
-**Llama dashboard** - view real time metrics on the llama.cpp server
+## Screenshots
+
+<img width="1650" height="1205" alt="Login screen" src="docs/screenshots/login.png" />
+
+**Llama dashboard** — live metrics from the llama.cpp server and its host.
 <img width="2759" height="1270" alt="Llama dashboard" src="docs/screenshots/dashboard-llama.png" />
 
-**Lmstudio dashboard** - view real time metrics on the lmstudio server
-<img width="2767" height="1270" alt="LM Studio dashboard" src="docs/screenshots/dashboard-lmstudio.png" />
+**LM Studio dashboard** — the server card, loaded models, and host metrics, plus live Apple-silicon powermetrics (SoC / CPU / GPU / ANE watts, thermal pressure, GPU busy). Token counts are measured at the manager gateway.
+<img width="2282" height="1284" alt="LM Studio dashboard" src="docs/screenshots/dashboard-lmstudio.png" />
+
+**Energy & cost** — measured $/Mtok against your electricity price, savings versus hosted-API pricing, and hourly active-vs-idle energy. The per-host table marks which hosts report power and token telemetry, so the totals say what they're based on.
+<img width="2296" height="1273" alt="Energy and cost dashboard" src="docs/screenshots/dashboard-energy.png" />
 
 **Model control** — start/stop inference servers, change models, control the provider, manage the model library, run benchmarks, auto tune models.
 <img width="2756" height="1269" alt="Model control" src="docs/screenshots/model-control.png" />
@@ -39,10 +45,10 @@ It currently integrates [llama.cpp](https://github.com/ggerganov/llama.cpp), [vL
 <img width="2767" height="1049" alt="Model control cards" src="docs/screenshots/model-control-cards.png" />
 
 **Autotune & benchmark** — search for the fastest context/slot settings per model and benchmark your whole model library.
-<img width="1170" height="1067" alt="Autotune wizard" src="docs/screenshots/autotune.png" />
+<img width="1170" height="1057" alt="Autotune wizard" src="docs/screenshots/autotune.png" />
 <img width="1164" height="1161" alt="Benchmark results" src="docs/screenshots/benchmark.png" />
 
-**Openclaw dashboard** - openclaw metrics and analytics
+**OpenClaw dashboard** — OpenClaw session metrics, cost analytics, and tool attribution.
 <img width="2767" height="1270" alt="OpenClaw dashboard" src="docs/screenshots/dashboard-openclaw.png" />
 
 **Manager dashboard** — view overall manager and agent health.
@@ -51,9 +57,11 @@ It currently integrates [llama.cpp](https://github.com/ggerganov/llama.cpp), [vL
 **Alarm engine** — trend graphs, rule and notification editor, alert timeline.
 <img width="2135" height="1151" alt="Alarm engine" src="docs/screenshots/alarm-console.png" />
 
-**Admin console** - agent management, user & login management, backup/restore, inference routing
-<img width="1683" height="1278" alt="Admin console" src="docs/screenshots/admin-console.png" />
-<img width="1683" height="1278" alt="Admin console — inference pool" src="docs/screenshots/admin-console-pool.png" />
+**Admin console** — system health plus sub-tabs for access control, agents, the audit log, backup/restore, and routing. The agents view lists every registered host with its capabilities, pool membership, TLS state, and version.
+<img width="2283" height="1272" alt="Admin console — agents" src="docs/screenshots/admin-console.png" />
+
+**Routing & Model Autopilot** — per-provider pool order and model pins, and the Autopilot editor: one row per model with its placement, failover mode, replica range, and size, each showing whether it is currently placed. Pending proposals are listed below for approval.
+<img width="2283" height="1272" alt="Admin console — routing and Model Autopilot" src="docs/screenshots/admin-console-pool.png" />
 
 
 
