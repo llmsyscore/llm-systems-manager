@@ -291,7 +291,9 @@ Reads (GET) or writes (POST) the llama-server systemd unit's `ExecStart` argumen
 ### `.../stream-info` — direct-SSE handoff endpoints
 Several of the SSE endpoints above have a sibling `.../stream-info` route that mints a short-lived HMAC-signed token and returns the direct agent stream URL instead of opening the stream itself: `GET /api/llm/server/log/stream-info`, `GET /api/llm/download/stream-info`, `GET /api/llm/build/stream-info`, `GET /api/llm/autotune/stream-info`, and `GET /api/llama-state/stream-info`. The browser uses the returned URL to connect straight to the agent, bypassing the Manager's own SSE proxy pool; when the direct path isn't usable (agent down, no direct port, or a mixed-content HTTPS page) the response signals the browser to fall back to the proxied `.../stream` endpoint instead.
 
-**Response:** `{"ok": true, "url": "<agent-direct-url>?token=<token>", "expires_in": <seconds>}` on success, or `{"ok": false, ...}` / `{"enabled": false, ...}` when direct streaming isn't available.
+**Response:** `{"ok": true, "url": "<agent-direct-url>?token=<token>", "expires_in": <seconds>}` on success, or `{"ok": false, ...}` when direct streaming isn't available.
+
+`/api/llama-state/stream-info` is the exception: it returns `{"enabled": true, "url": ...}` or `{"enabled": false}`, with no `expires_in`.
 
 ---
 
@@ -458,7 +460,7 @@ Opens an SSH shell session to the vLLM host, mirroring `/api/lms/terminal/create
 An OpenAI-compatible chat/completions gateway that fans requests out to whichever backend provider (llama.cpp, LM Studio, or vLLM) is serving the requested model. Requests authenticate either with a bearer token from `[manager.gateway].api_keys`, or with a normal dashboard session cookie.
 
 ### `POST /api/gateway/v1/chat/completions`
-OpenAI-compatible chat completion. The target provider is resolved from the request body's `model` field: a model pin wins first, then the live model index built from each provider's `/models` listing, then a `llama` fallback if the model is unrecognized. Within the resolved provider, `?agent=` (if valid) takes priority over the pin/pool default. Supports `"stream": true` for SSE responses.
+OpenAI-compatible chat completion. The target provider is resolved from the request body's `model` field: a model pin wins first, then the live model index built from each provider's `/models` listing, then a `llama` fallback if the model is unrecognized. Within the resolved provider, the host is picked in the order: model pin, then an explicit `?agent=`, then pool round-robin, then the provider default. A pin therefore overrides an explicit `?agent=`; the gateway logs when that happens. (The dashboard's own proxy routes surface the same condition as an `X-Routing-Override: pin` response header; the gateway does not set it.) Supports `"stream": true` for SSE responses.
 
 Successful non-streaming responses carry an `X-Proxied-To: <agent_id prefix>@<hostname>` header identifying which agent actually served the request; streaming responses carry the same header on the initial SSE response.
 
@@ -531,7 +533,7 @@ Returns the most recent saved report card for an agent/provider pair.
 ### `GET /api/reportcard/history`
 Returns saved report card history, optionally filtered.
 
-**Parameters:** `?agent=<agent_id>&provider=<llama|lms|vllm>` (both required), `?model=<model_id>` (optional filter)
+**Parameters:** `?agent=<agent_id>`, `?provider=<llama|lms|vllm>`, `?model=<model_id>` — all three required; omitting any returns 400.
 
 ---
 
@@ -952,7 +954,7 @@ Returns the scheduled-backup configuration (enabled, interval, retention) and th
 ---
 
 ### `POST /api/admin/service/<svc>/restart`
-Restarts the Manager or the (co-located) Alarm Engine service. On bare-metal installs this uses a sudoers `NOPASSWD systemctl restart` grant; under containers or a Homebrew keg it exits non-zero so the supervisor respawns the process instead. Restarting the Alarm Engine this way only works when it runs on the same host as the Manager.
+Restarts the Manager or the (co-located) Alarm Engine service. On bare-metal installs this uses a sudoers `NOPASSWD systemctl restart` grant; under containers and Homebrew kegs it restarts by exiting the process so the supervisor respawns it — exit 0 in a container, exit 1 under a brew keg, whose units are `Restart=on-failure`. A co-located Alarm Engine restarts through its own management API rather than a process exit. Restarting the Alarm Engine this way only works when it runs on the same host as the Manager.
 
 **Access:** [Admin]
 

@@ -41,7 +41,7 @@ The Manager is the central hub of the system. It serves the web dashboard that o
 | _pki | Implements the internal Certificate Authority: generates the root cert on first boot, signs agent and service certs |
 | _archive | Handles encrypted export and import of the system configuration for backup and restore |
 | stream_pool | Manager-side cap on concurrent long-lived SSE streams so they cannot exhaust the web server's worker threads; distinct from the agent's own `stream_pool.py`, which caps streams on the agent side instead (see Agent section) |
-| gateway | OpenAI-compatible `/v1/models`, `/v1/chat/completions`, and `/v1/completions` gateway; merges every provider's model pool and routes each request to the owning agent (pin > model index > default) |
+| gateway | OpenAI-compatible `/v1/models`, `/v1/chat/completions`, and `/v1/completions` gateway. `/v1/models` merges every provider's pool; a completion first resolves which provider owns the requested model (pin, then the model index, then llama as fallback), then picks a host within that provider (pin, then an explicit `?agent=`, then pool round-robin, then the default) |
 | gateway_usage | In-memory cumulative token counters for gateway-proxied responses, used by providers (LM Studio) that expose no native token telemetry |
 | autopilot | Model autopilot: holds placement state, observes agents, executes load/unload/failover actions, and reconciles drift; exposes the Admin → Routing autopilot routes |
 | autopilot_planner | Pure planner for the autopilot — takes state in, returns actions out, with no I/O or clock access, so it can be unit tested deterministically |
@@ -196,7 +196,7 @@ The Web Dashboard is the browser-based interface that operators use to see every
 
 The dashboard is built entirely with standard browser technologies (HTML, CSS, and JavaScript) and requires no build tools, no compiler, and no framework. This keeps the codebase straightforward to maintain and means the UI can be served directly from the Manager without a separate build step.
 
-The JavaScript is split into two tiers that share the same `js/` directory but behave differently. Files under `js/lib/*.js` (e.g. `series.js`, `benchaxis.js`, `thresholds.js`) are dual-mode: pure data/formatting helpers written so they work as classic `<script>` globals in the browser *and* as CommonJS modules importable by the Vitest unit tests. Everything directly under `js/*.js` (e.g. `dashboard-manager.js`, `autopilot.js`, `boot.js`) is a classic script that runs in one shared global scope with every other top-level script — there is no per-file module isolation, so a name like `fmt` or `cssVar` can only be defined once across all of them.
+The JavaScript is split into two tiers that share the same `js/` directory but behave differently. Files under `js/lib/*.js` (e.g. `series.js`, `benchaxis.js`, `thresholds.js`) are dual-mode: pure data/formatting helpers written so they work as classic `<script>` globals in the browser *and* as CommonJS modules importable by the Vitest unit tests. Everything directly under `js/*.js` (e.g. `dashboard-manager.js`, `boot.js`) is a classic script that runs in one shared global scope with every other top-level script — there is no per-file module isolation, so a name like `fmt` or `cssVar` can only be defined once across all of them. A few top-level scripts opt out by wrapping themselves in an IIFE and exposing a single namespace object: `autopilot.js` does this, exporting only `window.AP`, which also lets the tests import it.
 
 ### Tabs
 
