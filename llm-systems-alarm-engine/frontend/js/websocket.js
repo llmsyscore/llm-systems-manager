@@ -18,7 +18,7 @@ class WebSocketHandler {
     /**
      * Connect to WebSocket server
      */
-    connect() {
+    async connect() {
         const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
         // Embedded via /alarm/ → connect to /ws/alarm on the same origin so
         // the manager's proxy_alarm_websocket route handles the upgrade.
@@ -31,8 +31,24 @@ class WebSocketHandler {
         const wsUrl = window.ALARM_WS_URL ||
                       `${protocol}//${window.location.host}${wsPath}`;
 
+        // Appends a freshly-issued ticket when dialling the bridge (/ws/alarm);
+        // a standalone AE on its own port takes no ticket.
+        let dialUrl = wsUrl;
+        if (wsUrl.indexOf('/ws/alarm') !== -1) {
+            try {
+                const r = await fetch('/api/alarm-ws-ticket', { credentials: 'same-origin' });
+                if (!r.ok) throw new Error('ws ticket ' + r.status);
+                const sep = wsUrl.indexOf('?') === -1 ? '?' : '&';
+                dialUrl = wsUrl + sep + 'ticket=' + encodeURIComponent((await r.json()).ticket);
+            } catch (e) {
+                console.error('WebSocket ticket fetch failed:', e);
+                this._attemptReconnect();
+                return;
+            }
+        }
+
         try {
-            this.ws = new WebSocket(wsUrl);
+            this.ws = new WebSocket(dialUrl);
 
             this.ws.onopen = () => {
                 console.log('WebSocket connected');
