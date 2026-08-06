@@ -52,7 +52,7 @@ stream_op_max_lifetime_s = 3600
 # internal-CA cert verified upstream). Lets plain-HTTP dashboards reach the
 # wss AE without trusting the internal CA. Serves plain ws; set to 0 when a
 # public-CA reverse proxy fronts the AE. Handshakes require a short-lived
-# ticket from /api/alarm-ws-ticket (TTL = [manager.security] stream_token_ttl_s).
+# ticket from /api/alarm-ws-ticket (TTL = manager.security stream_token_ttl_s).
 ws_proxy_port = 5444
 
 # Standalone SSE daemon port for /api/llama-state/stream — a held stream
