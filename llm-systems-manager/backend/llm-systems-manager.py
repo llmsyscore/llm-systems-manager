@@ -68,6 +68,8 @@ Local endpoints served:
 from __future__ import annotations
 
 import functools
+import hashlib
+import hmac
 import json
 import os
 import shutil
@@ -154,7 +156,7 @@ def _local_hostname() -> str:
 # banner reads it. Bump suffix (-1, -2, …) for same-day iterations; roll
 # the date for a new day's first change.
 # ---------------------------------------------------------------------------
-__version__ = "v2026.08.04-11"
+__version__ = "v2026.08.05-1"
 
 # Wall-clock at first import (Cheroot main process); the shutdown banner
 # reads it for the uptime line.
@@ -5038,16 +5040,69 @@ def _maybe_start_manager_tls_server() -> None:
     t.start()
 
 
+# ── Alarm WS bridge tickets ───────────────────────────────────────────
+# Signed subject for the bridge handshake ticket.
+_WS_TICKET_SUBJECT = "ws|/ws/alarm"
+
+
+def _ws_ticket_ttl() -> int:
+    return int(getattr(settings.manager.security, "stream_token_ttl_s", 300) or 300)
+
+
+def _issue_ws_ticket(ttl: "int | None" = None) -> str:
+    """Short-lived "<expiry>.<sig>" ticket authorizing one bridge handshake."""
+    expiry = int(time.time()) + (ttl if ttl is not None else _ws_ticket_ttl())
+    msg = f"{_WS_TICKET_SUBJECT}|{expiry}".encode()
+    sig = hmac.new(_manager_secret(), msg, hashlib.sha256).hexdigest()
+    return f"{expiry}.{sig}"
+
+
+def _verify_ws_ticket(ticket: str) -> bool:
+    """Constant-time verify of a ticket from _issue_ws_ticket; False if
+    malformed, expired, or signed with a different secret."""
+    if not ticket or "." not in ticket:
+        return False
+    try:
+        expiry_str, sig = ticket.split(".", 1)
+        expiry = int(expiry_str)
+    except (ValueError, TypeError):
+        return False
+    if expiry < time.time():
+        return False
+    msg = f"{_WS_TICKET_SUBJECT}|{expiry}".encode()
+    expected = hmac.new(_manager_secret(), msg, hashlib.sha256).hexdigest()
+    return hmac.compare_digest(expected, sig)
+
+
+def ws_handshake_denial(req_target: str) -> "tuple[int, str] | None":
+    """Pre-bridge gate for the WS proxy: (close_code, reason) to refuse the
+    handshake, or None to bridge it."""
+    from urllib.parse import parse_qs, urlsplit
+    parts = urlsplit(req_target or "/")
+    if not parts.path.startswith("/ws/alarm"):
+        return (1008, "unknown path")
+    if not _verify_ws_ticket((parse_qs(parts.query).get("ticket") or [""])[0]):
+        return (1008, "unauthorized")
+    return None
+
+
+# Issues the ticket the WS bridge requires; gated by the before_request hook.
+@app.route("/api/alarm-ws-ticket", methods=["GET"])
+def alarm_ws_ticket():
+    return jsonify({"ticket": _issue_ws_ticket(), "ttl_s": _ws_ticket_ttl()})
+
+
 def _maybe_start_alarm_ws_proxy() -> None:
     """Standalone websockets server (separate daemon thread, own asyncio loop)
     that bridges browser → alarm-engine WS. Needed because Cheroot WSGI can't
     speak WS, so we can't proxy on the main port. Browsers hit /ws/alarm on
-    this port; the proxy opens upstream ws/wss to the AE (verifying its
-    internal-CA-signed cert when AE TLS is on) and pipes frames bidirectionally.
+    this port with a ?ticket= from /api/alarm-ws-ticket; the proxy verifies it,
+    then opens upstream ws/wss to the AE (verifying its internal-CA-signed cert
+    when AE TLS is on) and pipes frames bidirectionally.
 
-    Disabled by default ([manager].ws_proxy_port = 0); enable it when AE TLS
-    is on so browsers don't have to trust the internal CA directly. Serves wss
-    when [manager].tls_port>0 (reuses manager-tls.{crt,key}), else ws."""
+    Enabled in the shipped config ([manager].ws_proxy_port = 5444); set 0 to
+    disable, which costs live toasts but leaves the 30 s tab-dot poll intact.
+    Always serves plain ws — see the serve_ssl note below."""
     # getattr() guards upgraded deploys whose local config/unified_config.py
     # predates these fields (file is gitignored; update.sh doesn't re-render).
     ws_port = int(getattr(settings.manager, "ws_proxy_port", 0) or 0)
@@ -5088,10 +5143,16 @@ def _maybe_start_alarm_ws_proxy() -> None:
                     await dst.send(msg)
 
         async def _handler(client_ws) -> None:
-            # websockets v13+ passes the path on client_ws.request.path
-            req_path = getattr(getattr(client_ws, "request", None), "path", "/")
-            if not req_path.startswith("/ws/alarm"):
-                await client_ws.close(code=1008, reason="unknown path")
+            # websockets v13+ passes the request target (path + query) on
+            # client_ws.request.path.
+            req_target = getattr(getattr(client_ws, "request", None), "path", "/")
+            denial = ws_handshake_denial(req_target)
+            if denial is not None:
+                code, reason = denial
+                if reason == "unauthorized":
+                    peer = (getattr(client_ws, "remote_address", None) or ("?",))[0]
+                    log.warning("WS proxy: rejected handshake from %s (bad or missing ticket)", peer)
+                await client_ws.close(code=code, reason=reason)
                 return
             try:
                 async with websockets.connect(ae_ws_url, ssl=ae_ssl, open_timeout=4) as up:

@@ -204,9 +204,26 @@
         }, 1000);
     }
 
-    function connect() {
+    // Appends a freshly-issued ticket when dialling the bridge (/ws/alarm);
+    // a direct AE dial takes no ticket.
+    async function dialUrl() {
+        if (WS_URL.indexOf('/ws/alarm') === -1) return WS_URL;
+        const r = await fetch('/api/alarm-ws-ticket', { credentials: 'same-origin' });
+        if (!r.ok) throw new Error('ws ticket ' + r.status);
+        const sep = WS_URL.indexOf('?') === -1 ? '?' : '&';
+        return WS_URL + sep + 'ticket=' + encodeURIComponent((await r.json()).ticket);
+    }
+
+    async function connect() {
         let ws;
-        try { ws = new WebSocket(WS_URL); } catch(e) { setTimeout(connect, reconnectDelay); return; }
+        try {
+            ws = new WebSocket(await dialUrl());
+        } catch(e) {
+            // Backs off on a failed ticket fetch or a bad URL.
+            reconnectDelay = Math.min(reconnectDelay * 1.5, 30000);
+            setTimeout(connect, reconnectDelay);
+            return;
+        }
         ws.onopen = () => { reconnectDelay = 3000; };
         ws.onmessage = (e) => {
             try {
