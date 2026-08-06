@@ -11,14 +11,14 @@ const lmsRamChartCtx = document.getElementById('lmsRamChart')?.getContext('2d');
 const lmsRamChart = lmsRamChartCtx ? new Chart(lmsRamChartCtx, {
   type: 'line',
   data: { datasets: [{ label: 'RAM %', data: [], borderColor: '#7af', borderWidth: 1.5, pointRadius: 0, pointHoverRadius: 4, fill: false, tension: 0.3 }] },
-  options: { animation: false, responsive: true, maintainAspectRatio: false, interaction: _sparkInteraction, scales: { x: { type: 'time', display: false }, y: { min: 0, max: 100, display: true, ticks: { color: cssVar('--fg-muted'), font: { size: 10 }, callback: v => v + '%' } } }, plugins: { legend: { display: false }, tooltip: _sparkTooltip, zoom: _zoomOpts } }
+  options: { animation: false, responsive: true, maintainAspectRatio: false, interaction: _sparkInteraction, scales: { x: { type: 'time', display: false }, y: { beginAtZero: true, display: true, ticks: { color: cssVar('--fg-muted'), font: { size: 10 }, callback: _pctTick } } }, plugins: { legend: { display: false }, tooltip: _sparkTooltip, zoom: _zoomOpts, annotation: { annotations: {} } } }
 }) : null;
 
 const lmsCpuChartCtx = document.getElementById('lmsCpuChart')?.getContext('2d');
 const lmsCpuChart = lmsCpuChartCtx ? new Chart(lmsCpuChartCtx, {
   type: 'line',
   data: { datasets: [{ label: 'CPU %', data: [], borderColor: '#e05', borderWidth: 1.5, pointRadius: 0, pointHoverRadius: 4, fill: false, tension: 0.3 }] },
-  options: { animation: false, responsive: true, maintainAspectRatio: false, interaction: _sparkInteraction, scales: { x: { type: 'time', display: false }, y: { min: 0, max: 100, display: true, ticks: { color: cssVar('--fg-muted'), font: { size: 10 }, callback: v => v + '%' } } }, plugins: { legend: { display: false }, tooltip: _sparkTooltip, zoom: _zoomOpts } }
+  options: { animation: false, responsive: true, maintainAspectRatio: false, interaction: _sparkInteraction, scales: { x: { type: 'time', display: false }, y: { beginAtZero: true, display: true, ticks: { color: cssVar('--fg-muted'), font: { size: 10 }, callback: _pctTick } } }, plugins: { legend: { display: false }, tooltip: _sparkTooltip, zoom: _zoomOpts, annotation: { annotations: {} } } }
 }) : null;
 
 const lmsNetChartCtx = document.getElementById('lmsNetChart')?.getContext('2d');
@@ -55,14 +55,14 @@ const lmsGpuChartCtx = document.getElementById('lmsGpuChart')?.getContext('2d');
 const lmsGpuChart = lmsGpuChartCtx ? new Chart(lmsGpuChartCtx, {
   type: 'line',
   data: { datasets: [{ label: 'GPU busy %', data: [], borderColor: '#a7f', borderWidth: 1.5, pointRadius: 0, pointHoverRadius: 4, fill: false, tension: 0.3 }] },
-  options: { animation: false, responsive: true, maintainAspectRatio: false, interaction: _sparkInteraction, scales: { x: { type: 'time', display: false }, y: { min: 0, max: 100, display: true, ticks: { color: cssVar('--fg-muted'), font: { size: 10 }, callback: v => v + '%' } } }, plugins: { legend: { display: false }, tooltip: _sparkTooltip, zoom: _zoomOpts } }
+  options: { animation: false, responsive: true, maintainAspectRatio: false, interaction: _sparkInteraction, scales: { x: { type: 'time', display: false }, y: { beginAtZero: true, display: true, ticks: { color: cssVar('--fg-muted'), font: { size: 10 }, callback: _pctTick } } }, plugins: { legend: { display: false }, tooltip: _sparkTooltip, zoom: _zoomOpts, annotation: { annotations: {} } } }
 }) : null;
 
 const lmsDiskUsageChartCtx = document.getElementById('lmsDiskUsageChart')?.getContext('2d');
 const lmsDiskUsageChart = lmsDiskUsageChartCtx ? new Chart(lmsDiskUsageChartCtx, {
   type: 'line',
   data: { datasets: [{ label: '/ %', data: [], borderColor: '#4a9', borderWidth: 1.5, pointRadius: 0, pointHoverRadius: 4, fill: false, tension: 0.3 }] },
-  options: { animation: false, responsive: true, maintainAspectRatio: false, interaction: _sparkInteraction, scales: { x: { type: 'time', display: false }, y: { min: 0, max: 100, display: true, ticks: { color: cssVar('--fg-muted'), font: { size: 10 }, callback: v => v + '%' } } }, plugins: { legend: { display: false }, tooltip: _sparkTooltip, zoom: _zoomOpts } }
+  options: { animation: false, responsive: true, maintainAspectRatio: false, interaction: _sparkInteraction, scales: { x: { type: 'time', display: false }, y: { min: 0, max: 100, display: true, ticks: { color: cssVar('--fg-muted'), font: { size: 10 }, callback: _pctTick } } }, plugins: { legend: { display: false }, tooltip: _sparkTooltip, zoom: _zoomOpts, annotation: { annotations: {} } } }
 }) : null;
 
 const ovLlamaChartCtx = document.getElementById('ovLlamaChart')?.getContext('2d');

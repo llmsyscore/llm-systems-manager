@@ -305,13 +305,18 @@ function _syncResetZoomBtn(chart) {
   if (!chart || !chart.canvas) return;
   const wrap = chart.canvas.parentElement;
   if (!wrap) return;
+  // Mount in the card header beside the drag grip so it never overlays the
+  // plot; fall back to the chart wrap for canvases outside a card.
+  const host = chart.canvas.closest('.card') || wrap;
   const zoomed = typeof chart.isZoomedOrPanned === 'function' && chart.isZoomedOrPanned();
-  let btn = wrap.querySelector('.chart-reset-zoom');
-  if (!zoomed) { if (btn) btn.remove(); return; }
+  const key = chart.canvas.id || '';
+  let btn = host.querySelector(`.chart-reset-zoom[data-for="${key}"]`);
+  if (!zoomed) { if (btn) { btn.remove(); _layoutResetZoomBtns(host); } return; }
   if (!btn) {
     btn = document.createElement('button');
     btn.className = 'chart-reset-zoom';
     btn.type = 'button';
+    btn.dataset.for = key;
     btn.textContent = '⟲';
     btn.title = 'Reset zoom';
     btn.addEventListener('click', (e) => {
@@ -319,9 +324,30 @@ function _syncResetZoomBtn(chart) {
       try { chart.resetZoom(); } catch (_) {}
       _syncResetZoomBtn(chart);
     });
-    wrap.appendChild(btn);
+    host.appendChild(btn);
   }
+  _layoutResetZoomBtns(host);
 }
+
+// Two-chart cards can have two buttons live at once — fan them out leftward
+// from the drag grip instead of stacking them at the same coordinates.
+function _layoutResetZoomBtns(host) {
+  const btns = host.querySelectorAll('.chart-reset-zoom');
+  btns.forEach((b, i) => { b.style.right = (30 + i * 28) + 'px'; });
+}
+
+// Percent tick label: Chart.js's own numeric formatter (what the unsuffixed
+// llama axes use) plus the unit, so zoomed float bounds don't print 15 digits.
+function _pctTick(v, i, ticks) {
+  const f = window.Chart && Chart.Ticks && Chart.Ticks.formatters
+         && Chart.Ticks.formatters.numeric;
+  const n = f ? f.call(this, v, i, ticks)
+       : Number.isInteger(v) ? String(v)
+       : Math.abs(v) < 10 ? String(Number(Number(v).toFixed(1)))
+       : String(Math.round(v));
+  return n + '%';
+}
+window._pctTick = _pctTick;
 
 function mkChart(id, label, color) {
   return new Chart(document.getElementById(id).getContext('2d'), {
@@ -443,7 +469,7 @@ const diskUsageChart = new Chart(diskUsageCtx, {
   options: { animation: false, responsive: true, maintainAspectRatio: false,
     interaction: _sparkInteraction,
     plugins: { legend: { display: false }, tooltip: _sparkTooltip, zoom: _zoomOpts, annotation: { annotations: {} } },
-    scales: { x: xAxis, y: { min: 0, max: 100, ticks: { color: cssVar('--fg-muted'), font: { size: 10 }, callback: v => v + '%' }, grid: { color: cssVar('--border-soft') } } }
+    scales: { x: xAxis, y: { min: 0, max: 100, ticks: { color: cssVar('--fg-muted'), font: { size: 10 }, callback: _pctTick }, grid: { color: cssVar('--border-soft') } } }
   }
 });
 
@@ -1429,13 +1455,21 @@ async function fetchMetrics() {
 // ---------------------------------------------------------------------------
 // Alarm-rule threshold lines (chartjs-plugin-annotation)
 // ---------------------------------------------------------------------------
-// Maps each dashboard chart id to its alarm metric (source + metric_name).
-// Threshold lines come from enabled rules matching the selected host.
+// Maps each dashboard chart id to its alarm metric (source + metric_name) and
+// the provider whose selected agent supplies the host for host-scoped rules.
+// LM Studio GPU busy lives under mac_power — that host emits no system/gpu_*.
 const CHART_METRIC = {
-  cpuChart:       { source: 'system', metric_name: 'cpu_total' },
-  ramChart:       { source: 'system', metric_name: 'ram_percent' },
-  gpuChart:       { source: 'system', metric_name: 'gpu_gpu_util_percent' },
-  diskUsageChart: { source: 'system', metric_name: 'disk_root_percent' },
+  cpuChart:           { source: 'system',    metric_name: 'cpu_total',            provider: 'llama' },
+  ramChart:           { source: 'system',    metric_name: 'ram_percent',          provider: 'llama' },
+  gpuChart:           { source: 'system',    metric_name: 'gpu_gpu_util_percent', provider: 'llama' },
+  diskUsageChart:     { source: 'system',    metric_name: 'disk_root_percent',    provider: 'llama' },
+  lmsCpuChart:        { source: 'system',    metric_name: 'cpu_total',            provider: 'lms' },
+  lmsRamChart:        { source: 'system',    metric_name: 'ram_percent',          provider: 'lms' },
+  lmsDiskUsageChart:  { source: 'system',    metric_name: 'disk_root_percent',    provider: 'lms' },
+  lmsGpuChart:        { source: 'mac_power', metric_name: 'gpu_busy_pct',         provider: 'lms' },
+  vllmCpuChart:       { source: 'system',    metric_name: 'cpu_total',            provider: 'vllm' },
+  vllmRamChart:       { source: 'system',    metric_name: 'ram_percent',          provider: 'vllm' },
+  vllmDiskUsageChart: { source: 'system',    metric_name: 'disk_root_percent',    provider: 'vllm' },
 };
 let _alarmRules = [];
 
@@ -1450,24 +1484,28 @@ async function refreshAlarmRules() {
   } catch (_) {}
 }
 
-// Hostname of the selected llama agent — dashboard system metrics follow it.
-function _thresholdHost() {
+// Hostname of the selected agent for `provider` — each dashboard's system
+// metrics follow its own picker.
+function _thresholdHost(provider) {
   try {
-    const id = (typeof _selectedAgent === 'function') ? _selectedAgent('llama') : null;
-    const a = ((window._agentsByProvider || {}).llama || []).find(x => x.agent_id === id);
+    const p = provider || 'llama';
+    const id = (typeof _selectedAgent === 'function') ? _selectedAgent(p) : null;
+    const a = ((window._agentsByProvider || {})[p] || []).find(x => x.agent_id === id);
     return a ? (a.hostname || null) : null;
   } catch (_) { return null; }
 }
 
-// Redraw threshold lines on every mapped chart for the selected host.
+// Redraw threshold lines on every mapped chart, host-scoped per provider.
 function _applyThresholds() {
   if (!(window.Chart && Chart.instances && window.Thresholds)) return;
-  const host = _thresholdHost();
+  const hostCache = {};
   Object.values(Chart.instances).forEach(c => {
     const meta = c && c.canvas && CHART_METRIC[c.canvas.id];
     if (!meta || !(c.options.plugins && c.options.plugins.annotation)) return;
+    const p = meta.provider || 'llama';
+    if (!(p in hostCache)) hostCache[p] = _thresholdHost(meta.provider);
     try {
-      c.options.plugins.annotation.annotations = Thresholds.thresholdAnnotations(_alarmRules, { source: meta.source, metricName: meta.metric_name, host, hostWildcard: false });
+      c.options.plugins.annotation.annotations = Thresholds.thresholdAnnotations(_alarmRules, { source: meta.source, metricName: meta.metric_name, host: hostCache[p], hostWildcard: false });
       c.update('none');
     } catch (_) {}
   });

@@ -7,7 +7,7 @@ const vllmKvChartCtx = document.getElementById('vllmKvChart')?.getContext('2d');
 const vllmKvChart = vllmKvChartCtx ? new Chart(vllmKvChartCtx, {
   type: 'line',
   data: { datasets: [{ label: 'KV %', data: [], borderColor: '#7af', borderWidth: 1.5, pointRadius: 0, pointHoverRadius: 4, fill: false, tension: 0.3 }] },
-  options: { animation: false, responsive: true, maintainAspectRatio: false, interaction: _sparkInteraction, scales: { x: { type: 'time', display: false }, y: { min: 0, max: 100, display: true, ticks: { color: cssVar('--fg-muted'), font: { size: 10 }, callback: v => v + '%' } } }, plugins: { legend: { display: false }, tooltip: _sparkTooltip, zoom: _zoomOpts } }
+  options: { animation: false, responsive: true, maintainAspectRatio: false, interaction: _sparkInteraction, scales: { x: { type: 'time', display: false }, y: { min: 0, max: 100, display: true, ticks: { color: cssVar('--fg-muted'), font: { size: 10 }, callback: _pctTick } } }, plugins: { legend: { display: false }, tooltip: _sparkTooltip, zoom: _zoomOpts } }
 }) : null;
 
 const vllmTpsChartCtx = document.getElementById('vllmTpsChart')?.getContext('2d');
@@ -25,14 +25,14 @@ const vllmCpuChartCtx = document.getElementById('vllmCpuChart')?.getContext('2d'
 const vllmCpuChart = vllmCpuChartCtx ? new Chart(vllmCpuChartCtx, {
   type: 'line',
   data: { datasets: [{ label: 'CPU %', data: [], borderColor: '#e05', borderWidth: 1.5, pointRadius: 0, pointHoverRadius: 4, fill: false, tension: 0.3 }] },
-  options: { animation: false, responsive: true, maintainAspectRatio: false, interaction: _sparkInteraction, scales: { x: { type: 'time', display: false }, y: { min: 0, max: 100, display: true, ticks: { color: cssVar('--fg-muted'), font: { size: 10 }, callback: v => v + '%' } } }, plugins: { legend: { display: false }, tooltip: _sparkTooltip, zoom: _zoomOpts } }
+  options: { animation: false, responsive: true, maintainAspectRatio: false, interaction: _sparkInteraction, scales: { x: { type: 'time', display: false }, y: { beginAtZero: true, display: true, ticks: { color: cssVar('--fg-muted'), font: { size: 10 }, callback: _pctTick } } }, plugins: { legend: { display: false }, tooltip: _sparkTooltip, zoom: _zoomOpts, annotation: { annotations: {} } } }
 }) : null;
 
 const vllmRamChartCtx = document.getElementById('vllmRamChart')?.getContext('2d');
 const vllmRamChart = vllmRamChartCtx ? new Chart(vllmRamChartCtx, {
   type: 'line',
   data: { datasets: [{ label: 'RAM %', data: [], borderColor: '#7af', borderWidth: 1.5, pointRadius: 0, pointHoverRadius: 4, fill: false, tension: 0.3 }] },
-  options: { animation: false, responsive: true, maintainAspectRatio: false, interaction: _sparkInteraction, scales: { x: { type: 'time', display: false }, y: { min: 0, max: 100, display: true, ticks: { color: cssVar('--fg-muted'), font: { size: 10 }, callback: v => v + '%' } } }, plugins: { legend: { display: false }, tooltip: _sparkTooltip, zoom: _zoomOpts } }
+  options: { animation: false, responsive: true, maintainAspectRatio: false, interaction: _sparkInteraction, scales: { x: { type: 'time', display: false }, y: { beginAtZero: true, display: true, ticks: { color: cssVar('--fg-muted'), font: { size: 10 }, callback: _pctTick } } }, plugins: { legend: { display: false }, tooltip: _sparkTooltip, zoom: _zoomOpts, annotation: { annotations: {} } } }
 }) : null;
 
 const vllmNetChartCtx = document.getElementById('vllmNetChart')?.getContext('2d');
@@ -59,7 +59,7 @@ const vllmDiskUsageChartCtx = document.getElementById('vllmDiskUsageChart')?.get
 const vllmDiskUsageChart = vllmDiskUsageChartCtx ? new Chart(vllmDiskUsageChartCtx, {
   type: 'line',
   data: { datasets: [{ label: '/ %', data: [], borderColor: '#4a9', borderWidth: 1.5, pointRadius: 0, pointHoverRadius: 4, fill: false, tension: 0.3 }] },
-  options: { animation: false, responsive: true, maintainAspectRatio: false, interaction: _sparkInteraction, scales: { x: { type: 'time', display: false }, y: { min: 0, max: 100, display: true, ticks: { color: cssVar('--fg-muted'), font: { size: 10 }, callback: v => v + '%' } } }, plugins: { legend: { display: false }, tooltip: _sparkTooltip, zoom: _zoomOpts } }
+  options: { animation: false, responsive: true, maintainAspectRatio: false, interaction: _sparkInteraction, scales: { x: { type: 'time', display: false }, y: { min: 0, max: 100, display: true, ticks: { color: cssVar('--fg-muted'), font: { size: 10 }, callback: _pctTick } } }, plugins: { legend: { display: false }, tooltip: _sparkTooltip, zoom: _zoomOpts, annotation: { annotations: {} } } }
 }) : null;
 
 // Clear all vLLM chart series — labels and datasets (backfill + agent switch).
