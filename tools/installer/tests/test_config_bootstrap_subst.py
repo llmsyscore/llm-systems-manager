@@ -1,7 +1,5 @@
-# Regression tests for the TOML substitution heredoc inside
-# install-config-bootstrap.sh (#520): runs the shipped python against the live
-# llm-systems.toml.example and asserts keys below in-comment brackets still
-# substitute.
+# Runs the substitution heredoc from install-config-bootstrap.sh against the
+# live llm-systems.toml.example and asserts every targeted key substitutes.
 import re
 import subprocess
 import sys
@@ -47,6 +45,8 @@ MODE3_VALS = {
     "ALARM_ENGINE_URL": "http://192.0.2.20:8081",
     "INFLUX_HOSTNAME": "192.0.2.20",
     "INFLUX_PORT": "8086",
+    "ADMIN_USER": "opuser",
+    "ADMIN_PW_HASH": "scrypt$fake$hash",
 }
 
 
@@ -65,29 +65,41 @@ def test_manager_alarm_engine_url_substituted(mode3_config):
     assert mode3_config["manager"]["alarm_engine_url"] == "http://192.0.2.20:8081"
 
 
+def test_manager_auth_substituted(mode3_config):
+    # [manager.auth] sits below an in-comment bracket too; pre-fix, custom
+    # installer credentials silently fell back to the template defaults.
+    assert mode3_config["manager"]["auth"]["username"] == "opuser"
+    assert mode3_config["manager"]["auth"]["password_hash"] == "scrypt$fake$hash"
+
+
 def test_admin_cidrs_substituted(mode3_config):
     assert mode3_config["manager"]["security"]["admin_cidrs"] == [
         "127.0.0.1", "::1", "192.0.2.0/24",
     ]
 
 
-def test_every_manager_key_reachable_by_section_scan():
-    # Every scalar key in [manager] must be matchable by sub_in_section's
+def test_every_key_reachable_by_section_scan():
+    # Every scalar key in every [section] must be matchable by sub_in_section's
     # section-scan regex, no matter what brackets appear in comments above it.
     text = TEMPLATE.read_text()
-    start = re.search(r"^\[manager\]$", text, re.MULTILINE).end()
-    end = re.search(r"^\[manager\.", text, re.MULTILINE).start()
-    keys = [
-        m.group(1)
-        for m in re.finditer(r"^([a-z_]+)\s*=", text[start:end], re.MULTILINE)
-    ]
-    assert "cors_origins" in keys and "alarm_engine_url" in keys
-    for key in keys:
-        pattern = re.compile(
-            r"(^\[manager\](?:(?!^\[)[\s\S])*?\n" + re.escape(key) + r"\s*=\s*)",
-            re.MULTILINE | re.DOTALL,
-        )
-        assert pattern.search(text), f"[manager].{key} unreachable by section scan"
+    headers = list(re.finditer(r"^\[([A-Za-z0-9_.]+)\]$", text, re.MULTILINE))
+    checked = 0
+    for i, header in enumerate(headers):
+        start = header.end()
+        end = headers[i + 1].start() if i + 1 < len(headers) else len(text)
+        body = text[start:end].split("\n[[", 1)[0]
+        for m in re.finditer(r"^([a-z_]+)\s*=", body, re.MULTILINE):
+            key = m.group(1)
+            pattern = re.compile(
+                r"^\[" + re.escape(header.group(1)) + r"\](?:(?!^\[)[\s\S])*?\n"
+                + re.escape(key) + r"\s*=\s*",
+                re.MULTILINE | re.DOTALL,
+            )
+            assert pattern.search(text), (
+                f"[{header.group(1)}].{key} unreachable by section scan"
+            )
+            checked += 1
+    assert checked > 50
 
 
 def test_ae_side_still_substitutes(tmp_path):
