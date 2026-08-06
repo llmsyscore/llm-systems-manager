@@ -136,9 +136,10 @@
        false`, so they re-paint to fill this box at the monitor's DPR
        whenever the size changes. */
     .chart-wrap { position: relative; flex: 1 1 140px; min-height: 140px; }
-    /* Reset-zoom icon — shown only while a chart is zoomed. */
+    /* Reset-zoom icon — shown only while a chart is zoomed. Sits in the card
+       header left of the drag grip, clear of the plot area. */
     .chart-reset-zoom {
-      position: absolute; top: 4px; right: 4px; z-index: 5;
+      position: absolute; top: 6px; right: 30px; z-index: 5;
       background: color-mix(in srgb, var(--accent) 22%, transparent);
       color: var(--accent); border: 1px solid color-mix(in srgb, var(--accent) 45%, transparent);
       border-radius: 4px; padding: 1px 6px; font-size: 0.95em; line-height: 1.2;

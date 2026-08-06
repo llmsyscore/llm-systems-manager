@@ -129,3 +129,33 @@ describe('multiple rules accumulate distinct keys', () => {
     expect(yMins(out).sort((a, b) => a - b)).toEqual([80, 95]);
   });
 });
+
+describe('unobtrusive rendering (#517)', () => {
+  const one = (over = {}) =>
+    Object.values(thresholdAnnotations([rule({ threshold: { upper: 90 }, ...over })], CPU))[0];
+
+  test('emits no label, so nothing is painted over the series', () => {
+    expect(one().label).toBeUndefined();
+  });
+
+  test('carries no hover handlers now that there is no label to reveal', () => {
+    const a = one();
+    expect(a.enter).toBeUndefined();
+    expect(a.leave).toBeUndefined();
+  });
+
+  test('line is drawn faded rather than at full severity colour', () => {
+    expect(one({ severity: 'critical' }).borderColor).toMatch(/^rgba\(239, 68, 68, 0\.\d+\)$/);
+  });
+
+  test('warning and critical stay distinguishable by colour', () => {
+    expect(one({ severity: 'warning' }).borderColor).toMatch(/^rgba\(245, 158, 11,/);
+    expect(one({ severity: 'critical' }).borderColor).toMatch(/^rgba\(239, 68, 68,/);
+  });
+
+  test('line is thin and dashed', () => {
+    const a = one();
+    expect(a.borderWidth).toBeLessThanOrEqual(1);
+    expect(a.borderDash).toEqual([4, 4]);
+  });
+});
