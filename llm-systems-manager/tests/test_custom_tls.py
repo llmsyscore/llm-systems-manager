@@ -4,8 +4,6 @@ resolution/guards, SAN extraction, and SNI hostname matching.
 """
 from __future__ import annotations
 
-from pathlib import Path
-
 import manager_mod as M
 
 
