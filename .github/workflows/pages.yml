@@ -1,0 +1,63 @@
+name: Deploy website
+
+# Builds website/ (static org site + pre-rendered docs) and publishes it to
+# GitHub Pages. Requires the repo's Pages source to be set to "GitHub Actions".
+on:
+  push:
+    branches: [main]
+    paths:
+      - "website/**"
+      - "README.md"
+      - "docs/**"
+      - ".github/workflows/pages.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Renders README + docs/*.md into website/docs/*.html; the README's
+      # screenshots section is stripped (the site has its own gallery).
+      - name: Build docs pages
+        run: node website/build-docs.cjs
+
+      # Refresh the package filenames in the install tabs to the latest
+      # release. The page also self-updates client-side; this keeps the
+      # baked fallback current.
+      - name: Bake current release version
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag="$(gh release view --repo "$GITHUB_REPOSITORY" --json tagName --jq .tagName 2>/dev/null || true)"
+          v="${tag#v}"
+          if [ -n "$v" ]; then
+            sed -i "s|<span class=\"pkg-ver\">[0-9][0-9.]*</span>|<span class=\"pkg-ver\">${v}</span>|g" website/index.html
+            echo "baked version ${v}"
+          else
+            echo "no release found; keeping baked version"
+          fi
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: website
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

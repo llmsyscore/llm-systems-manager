@@ -1,0 +1,19 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Documentation — LLM SysCore</title>
+<meta name="robots" content="noindex">
+<script>
+  var map = { overview: "", architecture: "architecture.html", components: "components.html",
+              api: "api.html", deployment: "deployment.html" };
+  var key = new URLSearchParams(location.search).get("doc");
+  var target = "docs/" + (map[key] || "") + location.hash;
+  location.replace(target);
+</script>
+<meta http-equiv="refresh" content="0; url=docs/">
+</head>
+<body>
+<p>Documentation has moved to <a href="docs/">docs/</a>.</p>
+</body>
+</html>

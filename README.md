@@ -28,40 +28,44 @@ It currently integrates [llama.cpp](https://github.com/ggerganov/llama.cpp), [vL
 
 ## Screenshots
 
-<img width="1650" height="1205" alt="Login screen" src="docs/screenshots/login.png" />
+**Video tour** — sign-in, the overall view, every dashboard, model control, chat, image generation, events, admin, and the alarm console:
+
+https://github.com/llmsyscore/llm-systems-manager/raw/main/docs/screenshots/tour.mp4
+
+<img width="2560" height="1440" alt="Login screen" src="docs/screenshots/login.webp" />
 
 **Llama dashboard** — live metrics from the llama.cpp server and its host.
-<img width="2759" height="1270" alt="Llama dashboard" src="docs/screenshots/dashboard-llama.png" />
+<img width="2560" height="1440" alt="Llama dashboard" src="docs/screenshots/dashboard-llama.webp" />
 
 **LM Studio dashboard** — the server card, loaded models, and host metrics, plus live Apple-silicon powermetrics (SoC / CPU / GPU / ANE watts, thermal pressure, GPU busy). Token counts are measured at the manager gateway.
-<img width="2282" height="1284" alt="LM Studio dashboard" src="docs/screenshots/dashboard-lmstudio.png" />
+<img width="2560" height="1440" alt="LM Studio dashboard" src="docs/screenshots/dashboard-lmstudio.webp" />
 
 **Energy & cost** — measured $/Mtok against your electricity price, savings versus hosted-API pricing, and hourly active-vs-idle energy. The per-host table marks which hosts report power and token telemetry, so the totals say what they're based on.
-<img width="2296" height="1273" alt="Energy and cost dashboard" src="docs/screenshots/dashboard-energy.png" />
+<img width="2560" height="1440" alt="Energy and cost dashboard" src="docs/screenshots/dashboard-energy.webp" />
 
 **Model control** — start/stop inference servers, change models, control the provider, manage the model library, run benchmarks, auto tune models.
-<img width="2756" height="1269" alt="Model control" src="docs/screenshots/model-control.png" />
-<img width="2668" height="1265" alt="Model control detail" src="docs/screenshots/model-control-2.png" />
-<img width="2767" height="1049" alt="Model control cards" src="docs/screenshots/model-control-cards.png" />
+<img width="2560" height="1440" alt="Model control" src="docs/screenshots/model-control.webp" />
+<img width="2668" height="1265" alt="Model control detail" src="docs/screenshots/model-control-2.webp" />
+<img width="2767" height="1049" alt="Model control cards" src="docs/screenshots/model-control-cards.webp" />
 
 **Autotune & benchmark** — search for the fastest context/slot settings per model and benchmark your whole model library.
-<img width="1170" height="1057" alt="Autotune wizard" src="docs/screenshots/autotune.png" />
-<img width="1164" height="1161" alt="Benchmark results" src="docs/screenshots/benchmark.png" />
+<img width="1170" height="1057" alt="Autotune wizard" src="docs/screenshots/autotune.webp" />
+<img width="1164" height="1161" alt="Benchmark results" src="docs/screenshots/benchmark.webp" />
 
 **OpenClaw dashboard** — OpenClaw session metrics, cost analytics, and tool attribution.
-<img width="2767" height="1270" alt="OpenClaw dashboard" src="docs/screenshots/dashboard-openclaw.png" />
+<img width="2560" height="1440" alt="OpenClaw dashboard" src="docs/screenshots/dashboard-openclaw.webp" />
 
 **Manager dashboard** — view overall manager and agent health.
-<img width="2580" height="1279" alt="Manager dashboard" src="docs/screenshots/dashboard-manager.png" />
+<img width="2560" height="1440" alt="Manager dashboard" src="docs/screenshots/dashboard-manager.webp" />
 
-**Alarm engine** — trend graphs, rule and notification editor, alert timeline.
-<img width="2135" height="1151" alt="Alarm engine" src="docs/screenshots/alarm-console.png" />
+**Alarm engine** — live alerts, anomalies, trend graphs, rule and notification editor, alert timeline.
+<img width="2560" height="1440" alt="Alarm engine" src="docs/screenshots/alarm-console.webp" />
 
 **Admin console** — system health plus sub-tabs for access control, agents, the audit log, backup/restore, and routing. The agents view lists every registered host with its capabilities, pool membership, TLS state, and version.
-<img width="2283" height="1272" alt="Admin console — agents" src="docs/screenshots/admin-console.png" />
+<img width="2560" height="1440" alt="Admin console — agents" src="docs/screenshots/admin-console.webp" />
 
 **Routing & Model Autopilot** — per-provider pool order and model pins, and the Autopilot editor: one row per model with its placement, failover mode, replica range, and size, each showing whether it is currently placed. Pending proposals are listed below for approval.
-<img width="2283" height="1272" alt="Admin console — routing and Model Autopilot" src="docs/screenshots/admin-console-pool.png" />
+<img width="2560" height="1440" alt="Admin console — routing and Model Autopilot" src="docs/screenshots/autopilot.webp" />
 
 
 

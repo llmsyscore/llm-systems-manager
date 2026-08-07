@@ -74,7 +74,8 @@ find "$APP_STAGE" -type f \
 
 # Development/CI-only trees and files — no runtime use on an installed host (#432).
 rm -rf "$APP_STAGE/docker" "$APP_STAGE/design" "$APP_STAGE/devel" \
-       "$APP_STAGE/docs/screenshots" "$APP_STAGE/tools/packaging"
+       "$APP_STAGE/docs/screenshots" "$APP_STAGE/tools/packaging" \
+       "$APP_STAGE/website"
 rm -f "$APP_STAGE/docker-compose.yml" "$APP_STAGE/.dockerignore" \
       "$APP_STAGE/.env.example" "$APP_STAGE"/tools/installer/ci-*.sh
 
