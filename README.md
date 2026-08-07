@@ -4,6 +4,66 @@ A complete, self-hosted operations platform for LLM infrastructure — monitorin
 
 It currently integrates [llama.cpp](https://github.com/ggerganov/llama.cpp), [vLLM](https://github.com/vllm-project/vllm), [LM Studio](https://lmstudio.ai/), [stable-diffusion.cpp](https://github.com/leejet/stable-diffusion.cpp), and [OpenClaw](https://github.com/openclaw/openclaw) session telemetry, but the agent reports general host metrics for any Linux or macOS machine. New integrations with Ollama are on the roadmap.
 
+## Install
+
+The **script installer** is the preferred path — one interactive command handles prerequisites, InfluxDB, config, TLS, and agents. It enables the systemd units but never starts a service without you:
+
+```bash
+bash <(curl -fsSL https://raw.githubusercontent.com/llmsyscore/llm-systems-manager/main/tools/installer/install.sh)
+```
+
+<details>
+<summary><b>Native packages (.deb / .rpm)</b> — hosts standardized on apt or dnf</summary>
+
+Packages ship with every [release](https://github.com/llmsyscore/llm-systems-manager/releases). They create the service user, start the systemd units, and prompt for the admin login.
+
+```bash
+# Debian / Ubuntu — resolves the newest .deb from the latest release
+url=$(curl -fsSL https://api.github.com/repos/llmsyscore/llm-systems-manager/releases/latest \
+        | grep -oE '"https://[^"]+_all\.deb"' | tr -d '"')
+curl -fsSLO "$url" && sudo apt install ./"${url##*/}"
+
+# RHEL / Fedora
+url=$(curl -fsSL https://api.github.com/repos/llmsyscore/llm-systems-manager/releases/latest \
+        | grep -oE '"https://[^"]+\.noarch\.rpm"' | tr -d '"')
+curl -fsSLO "$url" && sudo dnf install ./"${url##*/}"
+```
+</details>
+
+<details>
+<summary><b>Docker Compose</b> — containerized control plane</summary>
+
+Brings up the manager, alarm engine, and InfluxDB from multi-arch images on ghcr.io. Fill in `.env` first. Agents still install natively on each host, since they need sensor, GPU, and systemd access.
+
+```bash
+curl -fsSLO https://raw.githubusercontent.com/llmsyscore/llm-systems-manager/main/docker-compose.yml
+curl -fsSL https://raw.githubusercontent.com/llmsyscore/llm-systems-manager/main/.env.example -o .env
+docker compose up -d
+```
+</details>
+
+<details>
+<summary><b>Homebrew</b> — macOS (Apple Silicon) and Linux</summary>
+
+Installs the control plane from the project tap, onboards InfluxDB, and starts both services. `brew upgrade` tracks new releases automatically.
+
+```bash
+brew tap llmsyscore/tap && brew trust llmsyscore/tap
+brew install llm-systems-manager llm-systems-alarm-engine influxdb@2 influxdb-cli
+llm-systems-influx-setup
+brew services start llm-systems-manager
+brew services start llm-systems-alarm-engine
+```
+</details>
+
+<details>
+<summary><b>Agent binary tarball</b> — agent-only hosts without Python</summary>
+
+A self-contained agent binary for Linux and macOS, for hosts where you want manual layout control. See [Agent installation](#agent-installation).
+</details>
+
+Full details for every method, including split installs, offline installs, and updates: [Installation options](#installation-options).
+
 ## Top features
 
 **1. Model Autopilot.** Say which models should be available, and Autopilot keeps them that way — loading them on hardware that can actually hold them, bringing them back up somewhere else when a host drops out, and adding or removing copies as demand rises and falls. It checks a host has the memory for a model before placing it there, including hosts running on CPU alone. Defaults to off: it surfaces its proposals and changes nothing until you enable it. Lives in **Admin → Routing** — [screenshot below](#screenshots).
@@ -30,7 +90,7 @@ It currently integrates [llama.cpp](https://github.com/ggerganov/llama.cpp), [vL
 
 **Video tour** — sign-in, the overall view, every dashboard, model control, chat, image generation, events, admin, and the alarm console:
 
-https://github.com/llmsyscore/llm-systems-manager/raw/main/docs/screenshots/tour.mp4
+<video src="https://github.com/llmsyscore/llm-systems-manager/raw/main/docs/screenshots/tour.mp4" controls muted width="900"></video>
 
 <img width="2560" height="1440" alt="Login screen" src="docs/screenshots/login.webp" />
 
