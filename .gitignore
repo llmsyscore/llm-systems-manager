@@ -73,3 +73,6 @@ tools/*
 
 # Design assets
 design/
+
+# Generated site docs (built from README + docs/ by website/build-docs.cjs)
+website/docs/
