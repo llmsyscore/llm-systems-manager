@@ -39,9 +39,14 @@ const LINKMAP = {
   "api_reference": "api.html", "deployment": "deployment.html",
 };
 
+// Strips tags by repeating until stable, then allowlists the surviving
+// characters, so no markup can reach the generated id attribute.
 function slug(text) {
-  return text.toLowerCase().replace(/<[^>]+>/g, "").trim()
-    .replace(/[^\w\s—–-]/g, "").replace(/[\s—–]+/g, "-").replace(/-+/g, "-");
+  let out = text, prev;
+  do { prev = out; out = out.replace(/<[^<>]*>/g, " "); } while (out !== prev);
+  return out.toLowerCase()
+    .replace(/[^\w\s—–-]/g, "").trim()
+    .replace(/[\s—–]+/g, "-").replace(/-+/g, "-");
 }
 
 function fixup(html) {
@@ -52,7 +57,12 @@ function fixup(html) {
     (m, lvl, inner) => `<h${lvl} id="${slug(inner)}">${inner}</h${lvl}>`);
   html = html.replace(/<table>/g, '<div class="tbl-wrap"><table>')
              .replace(/<\/table>/g, "</table></div>");
-  html = html.replace(/<a href="(https?:\/\/[^"]+)"/g, '<a href="$1" target="_blank" rel="noopener"');
+  html = html.replace(/<a\s+([^>]*href="https?:\/\/[^"]*"[^>]*)>/gi, (m, attrs) => {
+    let out = attrs;
+    if (!/\btarget\s*=/i.test(out)) out += ' target="_blank"';
+    if (!/\brel\s*=/i.test(out)) out += ' rel="noopener"';
+    return `<a ${out}>`;
+  });
   return html;
 }
 
