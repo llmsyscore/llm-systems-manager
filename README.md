@@ -4,6 +4,66 @@ A complete, self-hosted operations platform for LLM infrastructure — monitorin
 
 It currently integrates [llama.cpp](https://github.com/ggerganov/llama.cpp), [vLLM](https://github.com/vllm-project/vllm), [LM Studio](https://lmstudio.ai/), [stable-diffusion.cpp](https://github.com/leejet/stable-diffusion.cpp), and [OpenClaw](https://github.com/openclaw/openclaw) session telemetry, but the agent reports general host metrics for any Linux or macOS machine. New integrations with Ollama are on the roadmap.
 
+## Install
+
+The **script installer** is the preferred path — one interactive command handles prerequisites, InfluxDB, config, TLS, and agents. It enables the systemd units but never starts a service without you:
+
+```bash
+bash <(curl -fsSL https://raw.githubusercontent.com/llmsyscore/llm-systems-manager/main/tools/installer/install.sh)
+```
+
+<details>
+<summary><b>Native packages (.deb / .rpm)</b> — hosts standardized on apt or dnf</summary>
+
+Packages ship with every [release](https://github.com/llmsyscore/llm-systems-manager/releases). They create the service user, start the systemd units, and prompt for the admin login.
+
+```bash
+# Debian / Ubuntu — resolves the newest .deb from the latest release
+url=$(curl -fsSL https://api.github.com/repos/llmsyscore/llm-systems-manager/releases/latest \
+        | grep -oE '"https://[^"]+_all\.deb"' | tr -d '"')
+curl -fsSLO "$url" && sudo apt install ./"${url##*/}"
+
+# RHEL / Fedora
+url=$(curl -fsSL https://api.github.com/repos/llmsyscore/llm-systems-manager/releases/latest \
+        | grep -oE '"https://[^"]+\.noarch\.rpm"' | tr -d '"')
+curl -fsSLO "$url" && sudo dnf install ./"${url##*/}"
+```
+</details>
+
+<details>
+<summary><b>Docker Compose</b> — containerized control plane</summary>
+
+Brings up the manager, alarm engine, and InfluxDB from multi-arch images on ghcr.io. Fill in `.env` first. Agents still install natively on each host, since they need sensor, GPU, and systemd access.
+
+```bash
+curl -fsSLO https://raw.githubusercontent.com/llmsyscore/llm-systems-manager/main/docker-compose.yml
+curl -fsSL https://raw.githubusercontent.com/llmsyscore/llm-systems-manager/main/.env.example -o .env
+docker compose up -d
+```
+</details>
+
+<details>
+<summary><b>Homebrew</b> — macOS (Apple Silicon) and Linux</summary>
+
+Installs the control plane from the project tap, onboards InfluxDB, and starts both services. `brew upgrade` tracks new releases automatically.
+
+```bash
+brew tap llmsyscore/tap && brew trust llmsyscore/tap
+brew install llm-systems-manager llm-systems-alarm-engine influxdb@2 influxdb-cli
+llm-systems-influx-setup
+brew services start llm-systems-manager
+brew services start llm-systems-alarm-engine
+```
+</details>
+
+<details>
+<summary><b>Agent binary tarball</b> — agent-only hosts without Python</summary>
+
+A self-contained agent binary for Linux and macOS, for hosts where you want manual layout control. See [Agent installation](#agent-installation).
+</details>
+
+Full details for every method, including split installs, offline installs, and updates: [Installation options](#installation-options).
+
 ## Top features
 
 **1. Model Autopilot.** Say which models should be available, and Autopilot keeps them that way — loading them on hardware that can actually hold them, bringing them back up somewhere else when a host drops out, and adding or removing copies as demand rises and falls. It checks a host has the memory for a model before placing it there, including hosts running on CPU alone. Defaults to off: it surfaces its proposals and changes nothing until you enable it. Lives in **Admin → Routing** — [screenshot below](#screenshots).
@@ -30,7 +90,7 @@ It currently integrates [llama.cpp](https://github.com/ggerganov/llama.cpp), [vL
 
 **Video tour** — sign-in, the overall view, every dashboard, model control, chat, image generation, events, admin, and the alarm console:
 
-https://github.com/llmsyscore/llm-systems-manager/raw/main/docs/screenshots/tour.mp4
+<video src="https://github.com/user-attachments/assets/fb6f40d5-989a-4e8c-a3f4-7e0326d0a3f1" controls muted width="900"></video>
 
 <img width="2560" height="1440" alt="Login screen" src="docs/screenshots/login.webp" />
 
@@ -40,20 +100,13 @@ https://github.com/llmsyscore/llm-systems-manager/raw/main/docs/screenshots/tour
 **LM Studio dashboard** — the server card, loaded models, and host metrics, plus live Apple-silicon powermetrics (SoC / CPU / GPU / ANE watts, thermal pressure, GPU busy). Token counts are measured at the manager gateway.
 <img width="2560" height="1440" alt="LM Studio dashboard" src="docs/screenshots/dashboard-lmstudio.webp" />
 
-**Energy & cost** — measured $/Mtok against your electricity price, savings versus hosted-API pricing, and hourly active-vs-idle energy. The per-host table marks which hosts report power and token telemetry, so the totals say what they're based on.
-<img width="2560" height="1440" alt="Energy and cost dashboard" src="docs/screenshots/dashboard-energy.webp" />
-
 **Model control** — start/stop inference servers, change models, control the provider, manage the model library, run benchmarks, auto tune models.
 <img width="2560" height="1440" alt="Model control" src="docs/screenshots/model-control.webp" />
 <img width="2668" height="1265" alt="Model control detail" src="docs/screenshots/model-control-2.webp" />
 <img width="2767" height="1049" alt="Model control cards" src="docs/screenshots/model-control-cards.webp" />
 
-**Autotune & benchmark** — search for the fastest context/slot settings per model and benchmark your whole model library.
-<img width="1170" height="1057" alt="Autotune wizard" src="docs/screenshots/autotune.webp" />
-<img width="1164" height="1161" alt="Benchmark results" src="docs/screenshots/benchmark.webp" />
-
-**OpenClaw dashboard** — OpenClaw session metrics, cost analytics, and tool attribution.
-<img width="2560" height="1440" alt="OpenClaw dashboard" src="docs/screenshots/dashboard-openclaw.webp" />
+**Routing & Model Autopilot** — per-provider pool order and model pins, and the Autopilot editor: one row per model with its placement, failover mode, replica range, and size, each showing whether it is currently placed. Pending proposals are listed below for approval.
+<img width="2560" height="1440" alt="Routing and Model Autopilot" src="docs/screenshots/autopilot.webp" />
 
 **Manager dashboard** — view overall manager and agent health.
 <img width="2560" height="1440" alt="Manager dashboard" src="docs/screenshots/dashboard-manager.webp" />
@@ -64,9 +117,15 @@ https://github.com/llmsyscore/llm-systems-manager/raw/main/docs/screenshots/tour
 **Admin console** — system health plus sub-tabs for access control, agents, the audit log, backup/restore, and routing. The agents view lists every registered host with its capabilities, pool membership, TLS state, and version.
 <img width="2560" height="1440" alt="Admin console — agents" src="docs/screenshots/admin-console.webp" />
 
-**Routing & Model Autopilot** — per-provider pool order and model pins, and the Autopilot editor: one row per model with its placement, failover mode, replica range, and size, each showing whether it is currently placed. Pending proposals are listed below for approval.
-<img width="2560" height="1440" alt="Admin console — routing and Model Autopilot" src="docs/screenshots/autopilot.webp" />
+**Energy & cost** — measured $/Mtok against your electricity price, savings versus hosted-API pricing, and hourly active-vs-idle energy. The per-host table marks which hosts report power and token telemetry, so the totals say what they're based on.
+<img width="2560" height="1440" alt="Energy and cost dashboard" src="docs/screenshots/dashboard-energy.webp" />
 
+**OpenClaw dashboard** — OpenClaw session metrics, cost analytics, and tool attribution.
+<img width="2560" height="1440" alt="OpenClaw dashboard" src="docs/screenshots/dashboard-openclaw.webp" />
+
+**Autotune & benchmark** — search for the fastest context/slot settings per model and benchmark your whole model library.
+<img width="1170" height="1057" alt="Autotune wizard" src="docs/screenshots/autotune.webp" />
+<img width="1164" height="1161" alt="Benchmark results" src="docs/screenshots/benchmark.webp" />
 
 
 ---
