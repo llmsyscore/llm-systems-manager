@@ -22,3 +22,6 @@ websockets>=13.0
 # Cheroot pool (#110, sse_daemon.py). Imported lazily inside start()/_build_app
 # so a not-yet-installed dep degrades to the Cheroot path instead of crashing.
 aiohttp>=3.9.0
+# Web-push sender for the PWA companion (#522, companion.py). Imported lazily
+# inside the test-push route so a missing dep answers 503 instead of crashing.
+pywebpush>=2.0.0

@@ -126,6 +126,13 @@ class ManagerDiscord(BaseModel):
     allow_model_control: bool = False
 
 
+class ManagerCompanion(BaseModel):
+    """PWA companion (#522). push_contact is the VAPID `sub` claim sent to
+    the browser push services with every web-push message."""
+    model_config = _MODEL_CFG
+    push_contact: str = "mailto:admin@example.com"
+
+
 class ManagerHistory(BaseModel):
     model_config = _MODEL_CFG
     window_minutes: int = 60
@@ -291,6 +298,7 @@ class ManagerConfig(BaseModel):
     reportcard: ManagerReportcard = Field(default_factory=ManagerReportcard)
     energy: ManagerEnergy = Field(default_factory=ManagerEnergy)
     discord: ManagerDiscord = Field(default_factory=ManagerDiscord)
+    companion: ManagerCompanion = Field(default_factory=ManagerCompanion)
     history: ManagerHistory = Field(default_factory=ManagerHistory)
     uploads: ManagerUploads = Field(default_factory=ManagerUploads)
     timeouts: ManagerTimeouts = Field(default_factory=ManagerTimeouts)

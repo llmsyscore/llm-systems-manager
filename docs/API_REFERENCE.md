@@ -917,6 +917,50 @@ Saves the current dashboard layout. The frontend calls this automatically whenev
 
 ---
 
+## PWA Companion
+
+Installable phone companion (#522). The manifest, service worker, and app icons are served without authentication (browsers fetch them without credentials); everything else is session-gated like the rest of the API.
+
+### `GET /companion`
+The companion shell page. Unauthenticated browsers are redirected to `/login`.
+
+---
+
+### `GET /manifest.webmanifest`
+Web app manifest (`application/manifest+json`): `start_url` `/companion`, scope `/`, standalone display, 192/512 px icons. **Open (no auth).**
+
+---
+
+### `GET /sw.js`
+The service worker, stamped with the running manager version (the app-shell cache name keys off it) and served with `Cache-Control: no-cache`. **Open (no auth).**
+
+---
+
+### `GET /api/companion/push/public-key`
+Returns `{ok, key}` — the VAPID application server key (base64url) for `pushManager.subscribe()`. The underlying EC P-256 key pair is generated on first use into the manager data directory.
+
+---
+
+### `GET /api/companion/push/subscriptions`
+Returns `{ok, count, endpoints}` — registered push subscriptions (endpoints truncated).
+
+---
+
+### `POST /api/companion/push/subscribe`
+Stores a browser `PushSubscription` JSON (`endpoint` + `keys.p256dh` + `keys.auth`). Returns 400 on a malformed subscription or when the subscription cap (32) is reached.
+
+---
+
+### `POST /api/companion/push/unsubscribe`
+**Body:** `{"endpoint": "..."}`. Removes the matching subscription. Returns `{ok, removed}`.
+
+---
+
+### `POST /api/companion/push/test`
+Sends a test notification to every registered subscription via web push (VAPID). Returns `{ok, sent, failed, pruned}` — subscriptions rejected upstream with 404/410 are pruned. Returns 400 with no subscriptions and 503 when `pywebpush` is not installed. The VAPID contact claim comes from `[manager.companion] push_contact`.
+
+---
+
 ## Admin
 
 These endpoints require an admin-role session.

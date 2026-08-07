@@ -138,6 +138,11 @@ guild_id = ""
 allowed_user_ids = []
 allow_model_control = false
 
+[manager.companion]
+# PWA phone companion (#522). push_contact becomes the VAPID `sub` claim the
+# browser push services see; set it to a reachable operator address.
+push_contact = "mailto:admin@example.com"
+
 [manager.history]
 # In-memory ring buffer behind /api/history; sets how far back the landing
 # charts pre-populate. RAM cost grows roughly linearly with window_minutes.
