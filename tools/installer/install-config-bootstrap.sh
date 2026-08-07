@@ -476,7 +476,7 @@ def sub_in_section(text, section, key, new_value):
     if new_value is None or new_value == "":
         return text
     pattern = re.compile(
-        r'(^\[' + re.escape(section) + r'\][^\[]*?\n' + re.escape(key) + r'\s*=\s*)("[^"]*"|[^\n#]+)',
+        r'(^\[' + re.escape(section) + r'\](?:(?!^\[)[\s\S])*?\n' + re.escape(key) + r'\s*=\s*)("[^"]*"|[^\n#]+)',
         re.MULTILINE | re.DOTALL,
     )
     repl = lambda m: m.group(1) + ('"' + str(new_value) + '"')
@@ -486,7 +486,7 @@ def sub_numeric_in_section(text, section, key, new_value):
     if not str(new_value or "").strip():
         return text
     return re.sub(
-        r'(^\[' + re.escape(section) + r'\][^\[]*?\n' + re.escape(key) + r'\s*=\s*)(\d+)',
+        r'(^\[' + re.escape(section) + r'\](?:(?!^\[)[\s\S])*?\n' + re.escape(key) + r'\s*=\s*)(\d+)',
         lambda m: m.group(1) + str(new_value).strip(),
         text, count=1, flags=re.MULTILINE | re.DOTALL,
     )
@@ -534,7 +534,7 @@ if has_mgr:
     # admin_cidrs: keep loopback, swap the placeholder /24 with the detected one.
     if admin_cidr:
         text = re.sub(
-            r'(^\[manager\.security\][^\[]*?\nadmin_cidrs\s*=\s*)\[[^\]]*\]',
+            r'(^\[manager\.security\](?:(?!^\[)[\s\S])*?\nadmin_cidrs\s*=\s*)\[[^\]]*\]',
             lambda m: m.group(1) + f'["127.0.0.1", "::1", "{admin_cidr}"]',
             text, count=1, flags=re.MULTILINE | re.DOTALL,
         )
