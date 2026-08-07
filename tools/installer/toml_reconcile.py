@@ -13,6 +13,8 @@ SECTION_RE = re.compile(r'^\s*\[([^\]]+?)\]\s*(?:#.*)?$')
 ARRAY_SECTION_RE = re.compile(r'^\s*\[\[([^\]]+?)\]\]\s*(?:#.*)?$')
 # KEY_RE accepts dotted top-level keys (`a.b.c = ...`).
 KEY_RE = re.compile(r'^\s*([A-Za-z_][A-Za-z0-9_.-]*)\s*=')
+# Section banner rules, e.g. `# ──── MANAGER ────`; never operator prose.
+BANNER_RE = re.compile(r'^#\s*(?:[─═]{2,}|-{3,})')
 
 
 def flatten(d, prefix=""):
@@ -125,7 +127,7 @@ def merge(live_path, example_path):
         missing_by_section.setdefault(section, set()).add(key_basename)
 
     added = []
-    appended_sections = []
+    ex_order = [name for name, _h, _b in ex_secs if name]
 
     def splice_at_positions(live_body, ex_body, missing_keys):
         """Insert each missing key right after the nearest preceding example
@@ -144,13 +146,7 @@ def merge(live_path, example_path):
         # Apply in reverse so earlier inserts don't shift later anchors.
         out = list(live_body)
         for pos, lines, _key in reversed(plan):
-            addition = []
-            if pos > 0 and out[pos - 1].strip():
-                addition.append('')
-            addition.extend(lines)
-            if pos < len(out) and out[pos].strip():
-                addition.append('')
-            out[pos:pos] = addition
+            out[pos:pos] = lines
         return out, [k for _p, _l, k in plan]
 
     for section, missing_set in missing_by_section.items():
@@ -164,21 +160,47 @@ def merge(live_path, example_path):
         for k in inserted_keys:
             added.append(f"{section}.{k}")
 
-    # Sections absent from live: append only the missing keys, example order.
-    for section, missing_set in missing_by_section.items():
-        if section in live_idx:
-            continue
+    # Sections absent from live: splice in at the example's position, keeping
+    # only the missing keys and the example's own contiguous spacing.
+    def live_pos(name, last=False):
+        hits = [i for i, (n, _h, _b) in enumerate(live_secs) if n == name]
+        if not hits:
+            return None
+        return hits[-1] if last else hits[0]
+
+    for section in [s for s in ex_order if s in missing_by_section and s not in live_idx]:
+        missing_set = missing_by_section[section]
         header, ex_body = ex_by_name[section]
         body_lines = []
         inserted_keys = []
         for key, s, e, cb in keys_with_spans(ex_body):
             if key not in missing_set:
                 continue
-            if body_lines:
-                body_lines.append('')
             body_lines.extend(ex_body[cb:e])
             inserted_keys.append(key)
-        appended_sections.append((section, header, body_lines))
+        if body_lines and body_lines[-1].strip():
+            body_lines.append('')
+
+        idx = ex_order.index(section)
+        at = None
+        for prev in reversed(ex_order[:idx]):
+            p = live_pos(prev, last=True)
+            if p is not None:
+                at = p + 1
+                break
+        if at is None:
+            for nxt in ex_order[idx + 1:]:
+                p = live_pos(nxt)
+                if p is not None:
+                    at = p
+                    break
+        if at is None:
+            at = len(live_secs)
+
+        prev_body = live_secs[at - 1][2] if at > 0 else None
+        if prev_body is not None and prev_body and prev_body[-1].strip():
+            prev_body.append('')
+        live_secs.insert(at, (section, header, body_lines))
         for k in inserted_keys:
             added.append(f"{section}.{k}")
 
@@ -187,11 +209,8 @@ def merge(live_path, example_path):
         if header is not None:
             out.append(header)
         out.extend(body)
-    for name, header, body in appended_sections:
-        if out and out[-1].strip() != '':
-            out.append('')
-        out.append(header)
-        out.extend(body)
+    while out and not out[-1].strip():
+        out.pop()
     result = '\n'.join(out)
     if not result.endswith('\n'):
         result += '\n'
@@ -206,6 +225,161 @@ def merge(live_path, example_path):
     sys.stderr.write(f"ADDED={len(added)}\n")
     for p in added:
         sys.stderr.write(f"  + {p}\n")
+    sys.stdout.write(result)
+
+
+def split_body(body):
+    """Returns (head, [(key, lines, blank_before)], tail): section preamble,
+    one block per key carrying its comment block, and trailing lines."""
+    spans = list(keys_with_spans(body))
+    if not spans:
+        return list(body), [], []
+    head = body[:spans[0][3]]
+    blocks = [(k, body[cb:e], cb > 0 and not body[cb - 1].strip())
+              for k, _s, e, cb in spans]
+    tail = body[spans[-1][2]:]
+    return head, blocks, tail
+
+
+def detach_leads(secs):
+    """Moves the banner comments (and their leading blanks) that sit directly
+    above a section header out of the previous body and onto that section."""
+    out = []
+    leads = [[] for _ in secs]
+    bodies = [list(b) for _n, _h, b in secs]
+    for i in range(1, len(secs)):
+        prev = bodies[i - 1]
+        cut = len(prev)
+        while cut > 0 and prev[cut - 1].lstrip().startswith('#'):
+            cut -= 1
+        while cut > 0 and not prev[cut - 1].strip():
+            cut -= 1
+        if cut == len(prev):
+            continue
+        leads[i] = prev[cut:]
+        bodies[i - 1] = prev[:cut]
+    for i, (name, header, _b) in enumerate(secs):
+        out.append((name, header, bodies[i], leads[i]))
+    return out
+
+
+def rebuild_body(live_body, ex_body):
+    """Reorders a section's keys to the example order, adopting the example's
+    blank-line grouping; returns (lines, moved_count)."""
+    head, blocks, tail = split_body(live_body)
+    if not blocks:
+        return list(live_body), 0
+
+    ex_spans = list(keys_with_spans(ex_body)) if ex_body else []
+    order = {k: i for i, (k, _s, _e, _cb) in enumerate(ex_spans)}
+    ex_gap = {k: (cb > 0 and not ex_body[cb - 1].strip())
+              for k, _s, _e, cb in ex_spans}
+
+    known = [b for b in blocks if b[0] in order]
+    unknown = [b for b in blocks if b[0] not in order]
+    known.sort(key=lambda b: order[b[0]])
+    new_blocks = known + unknown
+    moved = sum(1 for a, b in zip(blocks, new_blocks) if a is not b)
+
+    out = list(head)
+    while out and not out[-1].strip():
+        out.pop()
+    for i, (key, lines, had_gap) in enumerate(new_blocks):
+        if i and ex_gap.get(key, had_gap):
+            out.append('')
+        out.extend(lines)
+    out.extend(tail)
+    while out and not out[-1].strip():
+        out.pop()
+    return out, moved
+
+
+def reorder(live_path, example_path):
+    """Moves sections and keys into the example's layout without changing
+    what the config parses to."""
+    live_text, live_dict = load_or_die(live_path, "live")
+    _ex_text, ex_dict = load_or_die(example_path, "example")
+
+    live_secs = split_sections(live_text)
+    ex_secs = split_sections(_ex_text)
+
+    ex_order, ex_bodies, ex_leads = [], {}, {}
+    for name, _h, body, lead in detach_leads(ex_secs):
+        if name and name not in ex_bodies:
+            ex_order.append(name)
+            ex_bodies[name] = body
+            ex_leads[name] = lead
+
+    # A key whose path is absent from the example but whose name lives under a
+    # different table can only move by changing its path, so only report it.
+    homes = {}
+    for p in flatten(ex_dict):
+        homes.setdefault(p.rsplit('.', 1)[-1], set()).add(p)
+    ex_paths = set(flatten(ex_dict))
+    misplaced = []
+    for p in sorted(set(flatten(live_dict)) - ex_paths):
+        for cand in sorted(homes.get(p.rsplit('.', 1)[-1], ())):
+            misplaced.append((p, cand))
+
+    with_leads = detach_leads(live_secs)
+    preamble = [s for s in with_leads if not s[0]]
+    rest = [s for s in with_leads if s[0]]
+    ordered = []
+    for name in ex_order:
+        ordered.extend([s for s in rest if s[0] == name])
+    placed = {id(s) for s in ordered}
+    ordered.extend([s for s in rest if id(s) not in placed])
+    moved = sum(1 for a, b in zip(rest, ordered) if a is not b)
+
+    # Each section carries its own leading blanks, so spacing travels with a
+    # moved section and an already-canonical file round-trips unchanged.
+    def banners(lines):
+        return [ln.strip() for ln in lines if BANNER_RE.match(ln.strip())]
+
+    stale = []
+    chunks = []
+    for name, header, body, lead in preamble + ordered:
+        new_body, key_moves = rebuild_body(body, ex_bodies.get(name, []))
+        moved += key_moves
+        lead_lines = list(lead)
+        # A banner that doesn't match the example's is stranded from a section
+        # that no longer exists; adopt the example's and report what went.
+        if name in ex_leads and banners(lead_lines) != banners(ex_leads[name]):
+            stale.extend(ln.strip() for ln in lead_lines if ln.strip())
+            lead_lines = list(ex_leads[name])
+        lines = lead_lines + ([header] if header is not None else []) + new_body
+        while lines and not lines[-1].strip():
+            lines.pop()
+        if lines:
+            chunks.append(lines)
+
+    out = []
+    for chunk in chunks:
+        out.extend(chunk)
+    while out and not out[0].strip():
+        out.pop(0)
+    result = '\n'.join(out)
+    if not result.endswith('\n'):
+        result += '\n'
+
+    # Refuse any reorder that changes what the config resolves to.
+    try:
+        post = tomllib.loads(result)
+    except Exception as e:
+        sys.stderr.write(f"VALIDATE_FAILED: reordered TOML doesn't parse: {e}\n")
+        sys.exit(3)
+    if post != live_dict:
+        sys.stderr.write("VALIDATE_FAILED: reordered TOML would change the config\n")
+        sys.exit(3)
+
+    for path, belongs in misplaced:
+        sys.stderr.write(
+            f"MISPLACED: {path} not moved (would change the key path); "
+            f"belongs in {belongs.rsplit('.', 1)[0]}\n"
+        )
+    for ln in stale:
+        sys.stderr.write(f"STALE_COMMENT: dropped stranded comment {ln!r}\n")
+    sys.stderr.write(f"MOVED={moved}\n")
     sys.stdout.write(result)
 
 
@@ -230,7 +404,7 @@ def prune(live_path, prune_keys):
 
     removed = set()
     pruned_secs = []
-    for name, header, body in split_sections(text):
+    for name, header, body, lead in detach_leads(split_sections(text)):
         dropidx = set()
         for key, s, e, cb in keys_with_spans(body):
             t = want.get((name, key))
@@ -238,16 +412,19 @@ def prune(live_path, prune_keys):
                 dropidx.update(range(cb, e))
                 removed.add(t)
         new_body = [ln for j, ln in enumerate(body) if j not in dropidx]
-        pruned_secs.append((name, header, new_body, bool(dropidx)))
+        pruned_secs.append((name, header, new_body, lead, bool(dropidx)))
 
-    # Drop a section header its prune emptied (only blanks/comments left).
+    # Drop a section header its prune emptied, taking its banner with it.
     out = []
-    for name, header, body, touched in pruned_secs:
+    for name, header, body, lead, touched in pruned_secs:
         if touched and header is not None and not any(True for _ in keys_with_spans(body)):
             continue
+        out.extend(lead)
         if header is not None:
             out.append(header)
         out.extend(body)
+    while out and not out[0].strip():
+        out.pop(0)
     result = '\n'.join(out)
     if not result.endswith('\n'):
         result += '\n'
@@ -275,11 +452,14 @@ def main():
     argv = sys.argv[1:]
     if len(argv) == 3 and argv[0] == "merge":
         merge(argv[1], argv[2])
+    elif len(argv) == 3 and argv[0] == "reorder":
+        reorder(argv[1], argv[2])
     elif len(argv) >= 3 and argv[0] == "prune":
         prune(argv[1], argv[2:])
     else:
         sys.stderr.write(
             "usage: toml_reconcile.py merge <live.toml> <example.toml>\n"
+            "       toml_reconcile.py reorder <live.toml> <example.toml>\n"
             "       toml_reconcile.py prune <live.toml> <dotted.key> [...]\n"
         )
         sys.exit(64)

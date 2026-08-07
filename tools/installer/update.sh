@@ -1025,6 +1025,10 @@ if $HAVE_MANAGER || $HAVE_AE; then
 
   # Prune upstream-removed keys (manifest toml-key entries) from the live TOML.
   prune_removed_toml_keys "$_live_toml" "$REPO_SRC/tools/installer/toml_reconcile.py"
+
+  # Restore the example's layout for anything an older merge misplaced (#528).
+  reorder_live_toml "$_live_toml" \
+    "$REPO_SRC/tools/installer/toml_reconcile.py" "$_example_toml"
 else
   log "skipping config reconcile — no manager or AE on this host"
 fi
