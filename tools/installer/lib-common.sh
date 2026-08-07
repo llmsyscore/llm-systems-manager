@@ -813,6 +813,56 @@ prune_removed_toml_keys() {
   fi
 }
 
+# Restores the example's section/key layout in <live_toml> via <script>.
+# Refuses any move that would change what the config parses to.
+reorder_live_toml() {
+  local live_toml="$1" script="$2" example="$3" _tmp _out _moved _bak _rc
+  [[ -f "$live_toml" && -f "$example" ]] || return 0
+  log "checking $(basename "$live_toml") layout against the upstream example"
+  if (( ${DRY_RUN:-0} )); then
+    log "[dry-run] would move any misplaced sections/keys into example order"
+    return 0
+  fi
+  _tmp="$(mktemp)"
+  if _out="$($SUDO python3 "$script" reorder "$live_toml" "$example" 2>"$_tmp")"; then
+    _rc=0
+  else
+    _rc=$?
+  fi
+  if (( _rc != 0 )); then
+    if (( _rc == 3 )); then
+      warn "layout repair refused — it would have changed the config; live TOML untouched"
+    else
+      warn "layout repair failed (exit $_rc) — live TOML untouched (see $_tmp)"
+    fi
+    grep -E '^(VALIDATE_FAILED|PARSE_FAILED)' "$_tmp" | sed 's/^/    /' || true
+    return 0
+  fi
+  _moved="$(awk -F= '/^MOVED=/{print $2}' "$_tmp")"
+  grep -E '^MISPLACED' "$_tmp" | sed 's/^/    /' || true
+  if [[ "${_moved:-0}" == "0" ]] && ! grep -q '^STALE_COMMENT' "$_tmp"; then
+    ok "config layout already matches the upstream example"
+    rm -f "$_tmp"
+    return 0
+  fi
+  if declare -F backup_path >/dev/null; then
+    _bak="$(backup_path "$live_toml")"
+  else
+    _bak="$live_toml.bak.$(date +%Y%m%d-%H%M%S)"
+    $SUDO cp -a "$live_toml" "$_bak" || {
+      warn "backup of $live_toml failed — layout repair skipped"
+      rm -f "$_tmp"; return 0
+    }
+  fi
+  [[ -n "$_bak" ]] && ok "  backed up live TOML → $_bak"
+  printf '%s\n' "$_out" | $SUDO tee "$live_toml" >/dev/null
+  $SUDO chmod 0600 "$live_toml"
+  $SUDO chown "$LLMSYS_RUN_USER:$LLMSYS_RUN_GROUP" "$live_toml"
+  ok "moved ${_moved:-0} misplaced section/key block(s) into example order"
+  grep -E '^STALE_COMMENT' "$_tmp" | sed 's/^/    /' || true
+  rm -f "$_tmp"
+}
+
 # ── URL sanitization ────────────────────────────────────────────────────────
 # Normalize operator input into a fully-qualified URL. Accepts:
 #   1.1.1.1                    → http://1.1.1.1:<default_port>
