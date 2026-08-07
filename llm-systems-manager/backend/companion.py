@@ -129,3 +129,148 @@ class SubscriptionStore:
             del data[endpoint]
             self._write(data)
         return True
+
+
+# ── web push sending ─────────────────────────────────────────────────────────
+
+def _webpush_funcs():
+    """Lazy pywebpush import — a missing dep degrades to a 503, not a crash."""
+    from pywebpush import webpush, WebPushException
+    return webpush, WebPushException
+
+
+def _push_contact(settings: Any) -> str:
+    companion_cfg = getattr(getattr(settings, "manager", None), "companion", None)
+    return (getattr(companion_cfg, "push_contact", "") or
+            "mailto:admin@example.com")
+
+
+def _send_one(webpush, WebPushException, sub: dict, payload: str,
+              pem_path: Path, contact: str) -> "tuple[bool, bool]":
+    """Send one notification. Returns (ok, prune) — prune on 404/410."""
+    try:
+        webpush(subscription_info=sub, data=payload,
+                vapid_private_key=str(pem_path),
+                vapid_claims={"sub": contact}, ttl=60)
+        return True, False
+    except WebPushException as exc:
+        status = getattr(getattr(exc, "response", None), "status_code", None)
+        log.warning("companion: push to %s failed (%s)",
+                    sub.get("endpoint", "?")[:60], status or exc)
+        return False, status in (404, 410)
+
+
+# ── routes ───────────────────────────────────────────────────────────────────
+
+# Bound by register_routes; tests monkeypatch these to a sandbox.
+_data_dir: Optional[Path] = None
+_store: Optional[SubscriptionStore] = None
+
+
+def _manifest(version: str) -> dict:
+    return {
+        "id": "/companion",
+        "name": "LLM Systems Manager",
+        "short_name": "LLM Manager",
+        "description": "Phone companion for the LLM Systems Manager dashboard",
+        "start_url": "/companion",
+        "scope": "/",
+        "display": "standalone",
+        "background_color": "#111111",
+        "theme_color": "#0d0d0d",
+        "icons": [
+            {"src": "/static/icons/icon-192.png", "sizes": "192x192",
+             "type": "image/png", "purpose": "any"},
+            {"src": "/static/icons/icon-512.png", "sizes": "512x512",
+             "type": "image/png", "purpose": "any"},
+            {"src": "/static/icons/icon-512.png", "sizes": "512x512",
+             "type": "image/png", "purpose": "maskable"},
+        ],
+    }
+
+
+def register_routes(app, ctx, static_dir: Path) -> None:
+    """Mount /companion, /manifest.webmanifest, /sw.js and
+    /api/companion/push/* on the manager app."""
+    global _data_dir, _store
+    from flask import Response, jsonify, request as flask_request
+
+    static_dir = Path(static_dir)
+    _data_dir = Path(ctx.data_dir)
+    _store = SubscriptionStore(_data_dir / _SUBS_FILE)
+    version = ctx.version
+
+    @app.route("/companion")
+    def companion_page():
+        html = (static_dir / "companion.html").read_text(encoding="utf-8")
+        return Response(html.replace("__MGR_VERSION__", version),
+                        mimetype="text/html")
+
+    @app.route("/manifest.webmanifest")
+    def companion_manifest():
+        return Response(json.dumps(_manifest(version)),
+                        mimetype="application/manifest+json")
+
+    @app.route("/sw.js")
+    def companion_sw():
+        js = (static_dir / "sw.js").read_text(encoding="utf-8")
+        resp = Response(js.replace("__MGR_VERSION__", version),
+                        mimetype="text/javascript")
+        # Always revalidate — a cached stale SW is the classic PWA trap.
+        resp.headers["Cache-Control"] = "no-cache"
+        return resp
+
+    @app.route("/api/companion/push/public-key")
+    def companion_push_key():
+        return jsonify({"ok": True, "key": vapid_public_key_b64(_data_dir)})
+
+    @app.route("/api/companion/push/subscriptions")
+    def companion_push_subs():
+        subs = _store.list()
+        return jsonify({"ok": True, "count": len(subs),
+                        "endpoints": [s["endpoint"][:48] for s in subs]})
+
+    @app.route("/api/companion/push/subscribe", methods=["POST"])
+    def companion_push_subscribe():
+        sub = flask_request.get_json(silent=True)
+        if not valid_subscription(sub):
+            return jsonify({"ok": False, "error": "invalid subscription"}), 400
+        ua = flask_request.headers.get("User-Agent", "")
+        if not _store.add(sub, ua=ua):
+            return jsonify({"ok": False,
+                            "error": "subscription limit reached"}), 400
+        return jsonify({"ok": True})
+
+    @app.route("/api/companion/push/unsubscribe", methods=["POST"])
+    def companion_push_unsubscribe():
+        body = flask_request.get_json(silent=True) or {}
+        endpoint = body.get("endpoint") or ""
+        return jsonify({"ok": True, "removed": _store.remove(endpoint)})
+
+    @app.route("/api/companion/push/test", methods=["POST"])
+    def companion_push_test():
+        subs = _store.list()
+        if not subs:
+            return jsonify({"ok": False, "error": "no subscriptions"}), 400
+        try:
+            webpush, WebPushException = _webpush_funcs()
+        except ImportError:
+            return jsonify({"ok": False,
+                            "error": "pywebpush is not installed"}), 503
+        pem = ensure_vapid_key(_data_dir)
+        contact = _push_contact(ctx.settings)
+        payload = json.dumps({
+            "title": "LLM Systems Manager",
+            "body": "Test notification — push is working.",
+            "tag": "lsm-test", "url": "/companion",
+        })
+        sent = failed = pruned = 0
+        for sub in subs:
+            ok, prune = _send_one(webpush, WebPushException, sub, payload,
+                                  pem, contact)
+            sent += ok
+            failed += not ok
+            if prune and _store.remove(sub["endpoint"]):
+                pruned += 1
+        return jsonify({"ok": failed == 0, "sent": sent,
+                        "failed": failed, "pruned": pruned})

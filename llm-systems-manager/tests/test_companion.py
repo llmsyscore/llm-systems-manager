@@ -113,3 +113,174 @@ class TestSubscriptionStore:
         store = companion.SubscriptionStore(path)
         assert store.list() == []
         assert store.add(_sub()) is True
+
+
+# ── routes ───────────────────────────────────────────────────────────────────
+
+import auth  # noqa: E402
+import manager_mod as M  # noqa: E402
+
+
+@pytest.fixture
+def sandbox(tmp_path, monkeypatch):
+    """Redirect the companion module's store + VAPID dir to tmp_path so route
+    tests never write into the live data/ directory."""
+    monkeypatch.setattr(companion, "_data_dir", tmp_path)
+    monkeypatch.setattr(
+        companion, "_store", companion.SubscriptionStore(tmp_path / "s.json"))
+    return tmp_path
+
+
+@pytest.fixture
+def anon(monkeypatch, sandbox):
+    monkeypatch.setattr(auth, "auth_mode", lambda: "required")
+    with M.app.test_client() as c:
+        yield c
+
+
+@pytest.fixture
+def client(monkeypatch, sandbox):
+    monkeypatch.setattr(auth, "auth_mode", lambda: "disabled")
+    with M.app.test_client() as c:
+        yield c
+
+
+class TestOpenSurface:
+    def test_manifest_serves_unauthenticated(self, anon):
+        r = anon.get("/manifest.webmanifest")
+        assert r.status_code == 200
+        assert r.mimetype == "application/manifest+json"
+
+    def test_manifest_members(self, anon):
+        m = json.loads(anon.get("/manifest.webmanifest").data)
+        assert m["start_url"] == "/companion"
+        assert m["display"] == "standalone"
+        assert m["scope"] == "/"
+        sizes = {i["sizes"] for i in m["icons"]}
+        assert {"192x192", "512x512"} <= sizes
+
+    def test_sw_serves_unauthenticated_with_version_stamp(self, anon):
+        r = anon.get("/sw.js")
+        assert r.status_code == 200
+        assert r.mimetype in ("text/javascript", "application/javascript")
+        assert "no-cache" in (r.headers.get("Cache-Control") or "")
+        body = r.data.decode()
+        assert M.__version__ in body
+        assert "__MGR_VERSION__" not in body
+
+    @pytest.mark.parametrize("path", [
+        "/static/icons/icon-192.png",
+        "/static/icons/icon-512.png",
+        "/static/icons/apple-touch-icon.png",
+    ])
+    def test_icon_paths_not_auth_gated(self, anon, path):
+        r = anon.get(path)
+        assert r.status_code != 401
+        assert not (r.status_code == 302 and "/login" in r.headers.get("Location", ""))
+
+
+class TestGatedSurface:
+    def test_companion_page_redirects_anon_to_login(self, anon):
+        r = anon.get("/companion")
+        assert r.status_code == 302
+        assert "/login" in r.headers["Location"]
+
+    @pytest.mark.parametrize("method,path", [
+        ("GET", "/api/companion/push/public-key"),
+        ("GET", "/api/companion/push/subscriptions"),
+        ("POST", "/api/companion/push/subscribe"),
+        ("POST", "/api/companion/push/unsubscribe"),
+        ("POST", "/api/companion/push/test"),
+    ])
+    def test_push_api_requires_auth(self, anon, method, path):
+        r = anon.open(path, method=method, json={})
+        assert r.status_code == 401
+
+    def test_companion_page_serves_authenticated(self, client):
+        r = client.get("/companion")
+        assert r.status_code == 200
+        body = r.data.decode()
+        assert 'rel="manifest"' in body
+
+
+class TestPushApi:
+    def test_public_key_round_trip(self, client, sandbox):
+        r = client.get("/api/companion/push/public-key")
+        assert r.status_code == 200
+        body = r.get_json()
+        assert body["ok"] is True
+        assert body["key"] == companion.vapid_public_key_b64(sandbox)
+
+    def test_subscribe_list_unsubscribe(self, client):
+        r = client.post("/api/companion/push/subscribe", json=_sub())
+        assert r.status_code == 200 and r.get_json()["ok"] is True
+        r = client.get("/api/companion/push/subscriptions")
+        assert r.get_json()["count"] == 1
+        r = client.post("/api/companion/push/unsubscribe",
+                        json={"endpoint": _sub()["endpoint"]})
+        assert r.get_json() == {"ok": True, "removed": True}
+        assert client.get("/api/companion/push/subscriptions").get_json()["count"] == 0
+
+    def test_subscribe_rejects_malformed(self, client):
+        r = client.post("/api/companion/push/subscribe",
+                        json={"endpoint": "http://insecure.example/e"})
+        assert r.status_code == 400
+
+    def test_test_push_503_when_pywebpush_missing(self, client, monkeypatch):
+        def _raise():
+            raise ImportError("no pywebpush")
+        monkeypatch.setattr(companion, "_webpush_funcs", _raise)
+        client.post("/api/companion/push/subscribe", json=_sub())
+        r = client.post("/api/companion/push/test")
+        assert r.status_code == 503
+
+    def test_test_push_no_subscriptions_400(self, client):
+        r = client.post("/api/companion/push/test")
+        assert r.status_code == 400
+
+    def test_test_push_sends_to_every_subscription(self, client, monkeypatch):
+        sent = []
+
+        class FakeWebPushException(Exception):
+            def __init__(self, msg, response=None):
+                super().__init__(msg)
+                self.response = response
+
+        def fake_webpush(subscription_info, **kw):
+            sent.append(subscription_info["endpoint"])
+
+        monkeypatch.setattr(companion, "_webpush_funcs",
+                            lambda: (fake_webpush, FakeWebPushException))
+        client.post("/api/companion/push/subscribe",
+                    json=_sub(endpoint="https://p.example/e1"))
+        client.post("/api/companion/push/subscribe",
+                    json=_sub(endpoint="https://p.example/e2"))
+        r = client.post("/api/companion/push/test")
+        body = r.get_json()
+        assert r.status_code == 200
+        assert body["sent"] == 2 and body["failed"] == 0
+        assert sorted(sent) == ["https://p.example/e1", "https://p.example/e2"]
+
+    def test_test_push_prunes_gone_subscription(self, client, monkeypatch):
+        class FakeWebPushException(Exception):
+            def __init__(self, msg, response=None):
+                super().__init__(msg)
+                self.response = response
+
+        class _Gone:
+            status_code = 410
+
+        def fake_webpush(subscription_info, **kw):
+            if subscription_info["endpoint"].endswith("dead"):
+                raise FakeWebPushException("gone", response=_Gone())
+
+        monkeypatch.setattr(companion, "_webpush_funcs",
+                            lambda: (fake_webpush, FakeWebPushException))
+        client.post("/api/companion/push/subscribe",
+                    json=_sub(endpoint="https://p.example/live"))
+        client.post("/api/companion/push/subscribe",
+                    json=_sub(endpoint="https://p.example/dead"))
+        body = client.post("/api/companion/push/test").get_json()
+        assert body["sent"] == 1 and body["pruned"] == 1
+        assert client.get(
+            "/api/companion/push/subscriptions").get_json()["count"] == 1
