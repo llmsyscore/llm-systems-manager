@@ -156,7 +156,7 @@ def _local_hostname() -> str:
 # banner reads it. Bump suffix (-1, -2, …) for same-day iterations; roll
 # the date for a new day's first change.
 # ---------------------------------------------------------------------------
-__version__ = "v2026.08.06-1"
+__version__ = "v2026.08.06-2"
 
 # Wall-clock at first import (Cheroot main process); the shutdown banner
 # reads it for the uptime line.
@@ -525,6 +525,24 @@ def _request_host_no_port() -> str:
         return (urlsplit(f"//{raw}").hostname or "")
     except ValueError:
         return raw.split(":", 1)[0]
+
+
+def _request_is_https() -> bool:
+    """True when the current request arrived on the TLS listener."""
+    try:
+        return bool(flask_request.is_secure)
+    except Exception:
+        return False
+
+
+def _wss_bridge_port() -> int:
+    """Port of the bridge's wss listener; 0 when it isn't running
+    (no operator cert, or the bridge is disabled)."""
+    if int(getattr(settings.manager, "ws_proxy_port", 0) or 0) <= 0:
+        return 0
+    if _custom_manager_tls_files(quiet=True) is None:
+        return 0
+    return int(getattr(settings.manager, "ws_proxy_tls_port", 0) or 0)
 
 
 # ---------------------------------------------------------------------------
@@ -3484,6 +3502,8 @@ proxies.register_routes(
     install_topology=install_topology,
     request_host_no_port=_request_host_no_port,
     rewrite_loopback_host=_rewrite_loopback_host,
+    request_is_https=_request_is_https,
+    wss_bridge_port=_wss_bridge_port,
 )
 import openclaw  # type: ignore[import-not-found]  # sibling; PR M5
 openclaw.register_routes(app, ctx)
@@ -5180,7 +5200,8 @@ def _maybe_start_alarm_ws_proxy() -> None:
 
     Enabled in the shipped config ([manager].ws_proxy_port = 5444); set 0 to
     disable, which costs live toasts but leaves the 30 s tab-dot poll intact.
-    Always serves plain ws — see the serve_ssl note below."""
+    Serves plain ws; with an operator cert (#523) a second wss listener
+    runs on [manager].ws_proxy_tls_port for https dashboards."""
     # getattr() guards upgraded deploys whose local config/unified_config.py
     # predates these fields (file is gitignored; update.sh doesn't re-render).
     ws_port = int(getattr(settings.manager, "ws_proxy_port", 0) or 0)
@@ -5207,13 +5228,21 @@ def _maybe_start_alarm_ws_proxy() -> None:
         if ae_scheme == "wss":
             ae_ssl = ssl.create_default_context(cafile=_AE_CA_PATH)
 
-        # Always serve plain ws on the proxy port. manager-tls.{crt,key} is
-        # signed by the internal CA, so terminating wss here would just push
-        # the trust problem back onto the browser — exactly what this proxy
-        # exists to avoid. Operators wanting wss end-to-end should front this
-        # port with a real-CA-cert reverse proxy (nginx/Caddy/Traefik).
-        serve_ssl: "ssl.SSLContext | None" = None
-        log.info("  WS proxy:    serving ws://0.0.0.0:%d → %s", ws_port, ae_ws_url)
+        # Plain ws stays on ws_proxy_port for http-origin dashboards; when the
+        # operator cert (#523) exists, a second wss listener serves https pages.
+        wss_port = 0
+        wss_ssl: "ssl.SSLContext | None" = None
+        custom = _custom_manager_tls_files(quiet=True)
+        if custom is not None:
+            wss_port = int(getattr(settings.manager, "ws_proxy_tls_port", 0) or 0)
+            if wss_port > 0:
+                wss_ssl = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+                wss_ssl.load_cert_chain(str(custom[0]), str(custom[1]))
+        if wss_port > 0:
+            log.info("  WS proxy:    serving ws://0.0.0.0:%d + wss://0.0.0.0:%d (operator cert) → %s",
+                     ws_port, wss_port, ae_ws_url)
+        else:
+            log.info("  WS proxy:    serving ws://0.0.0.0:%d → %s", ws_port, ae_ws_url)
 
         async def _pipe(src, dst) -> None:
             with best_effort("ws proxy: pipe frames", log=log):
@@ -5245,7 +5274,10 @@ def _maybe_start_alarm_ws_proxy() -> None:
                     await client_ws.close(code=1011, reason="upstream unavailable")
 
         async def _serve() -> None:
-            async with websockets.serve(_handler, "0.0.0.0", ws_port, ssl=serve_ssl):
+            async with websockets.serve(_handler, "0.0.0.0", ws_port):
+                if wss_port > 0:
+                    async with websockets.serve(_handler, "0.0.0.0", wss_port, ssl=wss_ssl):
+                        await asyncio.Future()  # run forever
                 await asyncio.Future()  # run forever
 
         loop = asyncio.new_event_loop()
