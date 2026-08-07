@@ -28,6 +28,11 @@ host = "0.0.0.0"                                         # listen address
 port = 5000                                              # listen port (HTTP)
 tls_port = 5443                                          # set to 0 to disable HTTPS
 
+# Operator-provided TLS cert for the HTTPS port (PEM full-chain + key), served
+# via SNI to hostnames it covers; other names/IPs still get the internal-CA cert.
+tls_cert_file = ""
+tls_key_file  = ""
+
 # Fixed worker-thread pool size shared by both servers (HTTP + TLS). Each
 # worker is a real OS thread (~8 MB); requests past the ceiling queue ~10s
 # then are refused. Floor for a kiosk + several operators is ~32.

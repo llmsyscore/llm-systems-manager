@@ -156,7 +156,7 @@ def _local_hostname() -> str:
 # banner reads it. Bump suffix (-1, -2, …) for same-day iterations; roll
 # the date for a new day's first change.
 # ---------------------------------------------------------------------------
-__version__ = "v2026.08.05-1"
+__version__ = "v2026.08.06-1"
 
 # Wall-clock at first import (Cheroot main process); the shutdown banner
 # reads it for the uptime line.
@@ -3252,19 +3252,27 @@ def admin_system_health():
                 )
 
     # Also surveil the manager's own TLS server cert when MANAGER_TLS_PORT is on.
-    mgr_crt = DATA_DIR / "manager-tls.crt"
-    if mgr_crt.is_file():
-        with best_effort("system health: manager TLS cert expiry check"):
+    _custom_pair = _custom_manager_tls_files(quiet=True)
+    _tls_checks = [("manager TLS cert", DATA_DIR / "manager-tls.crt",
+                    "restart manager to reissue", "will auto-reissue on next restart")]
+    if _custom_pair:
+        _tls_checks.append(("operator TLS cert", _custom_pair[0],
+                            "replace the configured cert/key files",
+                            "renew and replace the configured cert/key files"))
+    for _label, _crt_path, _expired_fix, _soon_fix in _tls_checks:
+        if not _crt_path.is_file():
+            continue
+        with best_effort(f"system health: {_label} expiry check"):
             from cryptography import x509 as _x509_warn
-            cur = _x509_warn.load_pem_x509_certificate(mgr_crt.read_bytes())
+            cur = _x509_warn.load_pem_x509_certificate(_crt_path.read_bytes())
             remaining_days = (cur.not_valid_after_utc - _now).total_seconds() / 86400.0
             if remaining_days < 0:
                 health["warnings"].append(
-                    f"manager TLS cert EXPIRED ({-remaining_days:.0f}d ago) — restart manager to reissue"
+                    f"{_label} EXPIRED ({-remaining_days:.0f}d ago) — {_expired_fix}"
                 )
             elif remaining_days < _cert_warn_within_days:
                 health["warnings"].append(
-                    f"manager TLS cert expires in {remaining_days:.0f}d — will auto-reissue on next restart"
+                    f"{_label} expires in {remaining_days:.0f}d — {_soon_fix}"
                 )
 
     _sp = stream_pool.POOL.stats()
@@ -4649,6 +4657,57 @@ def _canon_host(h: str) -> str:
         return h
 
 
+def _custom_manager_tls_files(quiet: bool = False) -> "tuple[Path, Path] | None":
+    """Operator [manager].tls_cert_file/tls_key_file pair, or None.
+    Relative paths resolve against the repo root."""
+    crt = str(getattr(settings.manager, "tls_cert_file", "") or "").strip()
+    key = str(getattr(settings.manager, "tls_key_file", "") or "").strip()
+    if not crt and not key:
+        return None
+    if not crt or not key:
+        if not quiet:
+            log.warning("  Manager TLS: only one of tls_cert_file/tls_key_file is set "
+                        "— ignoring; serving the internal-CA cert only")
+        return None
+    crt_p = Path(crt) if Path(crt).is_absolute() else _REPO_ROOT_PATH / crt
+    key_p = Path(key) if Path(key).is_absolute() else _REPO_ROOT_PATH / key
+    ok = (crt_p.is_file() and os.access(crt_p, os.R_OK)
+          and key_p.is_file() and os.access(key_p, os.R_OK))
+    if not ok:
+        if not quiet:
+            log.warning("  Manager TLS: tls_cert_file/tls_key_file set but unreadable "
+                        "(%s, %s) — serving the internal-CA cert only", crt_p, key_p)
+        return None
+    if not quiet and key_p.stat().st_mode & 0o077:
+        log.warning("  Manager TLS: %s is group/world-readable — consider chmod 0600", key_p)
+    return crt_p, key_p
+
+
+def _cert_san_hostnames(crt_path: Path) -> "list[str]":
+    """DNS SANs of a PEM cert, lowercased; [] on any parse failure."""
+    try:
+        from cryptography import x509 as _x
+        cert = _x.load_pem_x509_certificate(crt_path.read_bytes())
+        ext = cert.extensions.get_extension_for_oid(_x.ObjectIdentifier("2.5.29.17"))
+        return [str(n.value).lower() for n in ext.value if isinstance(n, _x.DNSName)]
+    except Exception:
+        return []
+
+
+def _sni_matches(servername: "str | None", san_hosts: "list[str]") -> bool:
+    """True when a TLS SNI hostname matches a SAN entry
+    (wildcard covers exactly one leftmost label)."""
+    if not servername:
+        return False
+    h = servername.lower().rstrip(".")
+    for san in san_hosts:
+        if san == h:
+            return True
+        if san.startswith("*.") and "." in h and h.split(".", 1)[1] == san[2:]:
+            return True
+    return False
+
+
 def _ensure_manager_server_cert() -> None:
     """Generate (or refresh) data/manager-tls.{crt,key} signed by the
     internal CA. SAN includes the manager's hostname + the IP a
@@ -5022,6 +5081,7 @@ def _maybe_start_manager_tls_server() -> None:
 
     crt = DATA_DIR / "manager-tls.crt"
     key = DATA_DIR / "manager-tls.key"
+    custom = _custom_manager_tls_files()
 
     def _serve_tls() -> None:
         from cheroot.wsgi import Server as _CherootServer
@@ -5029,7 +5089,25 @@ def _maybe_start_manager_tls_server() -> None:
         try:
             srv = _CherootServer(("0.0.0.0", tls_port), app,
                                  numthreads=int(getattr(settings.manager, "http_threads", 64) or 64))
-            srv.ssl_adapter = BuiltinSSLAdapter(str(crt), str(key))
+            adapter = BuiltinSSLAdapter(str(crt), str(key))
+            # Operator cert is served only to SNI hostnames it covers; the
+            # internal-CA cert stays the default so CA-pinned agents keep working.
+            if custom is not None:
+                import ssl as _ssl
+                c_crt, c_key = custom
+                sans = _cert_san_hostnames(c_crt)
+                cctx = _ssl.SSLContext(_ssl.PROTOCOL_TLS_SERVER)
+                cctx.load_cert_chain(str(c_crt), str(c_key))
+
+                def _pick_cert(sslobj, servername, _ctx, _cctx=cctx, _sans=sans):
+                    if _sni_matches(servername, _sans):
+                        sslobj.context = _cctx
+                    return None
+
+                adapter.context.sni_callback = _pick_cert
+                log.info("  Manager TLS: operator cert active for %s (internal-CA cert for other names/IPs)",
+                         ", ".join(sans) or "(no DNS SANs)")
+            srv.ssl_adapter = adapter
             log.info("  Manager TLS: listening on https://0.0.0.0:%d", tls_port)
             _cheroot_serve_with_keepalive(srv)
         except Exception as e:
