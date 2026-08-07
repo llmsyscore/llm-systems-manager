@@ -156,7 +156,7 @@ def _local_hostname() -> str:
 # banner reads it. Bump suffix (-1, -2, …) for same-day iterations; roll
 # the date for a new day's first change.
 # ---------------------------------------------------------------------------
-__version__ = "v2026.08.05-1"
+__version__ = "v2026.08.06-1"
 
 # Wall-clock at first import (Cheroot main process); the shutdown banner
 # reads it for the uptime line.
@@ -3252,7 +3252,8 @@ def admin_system_health():
                 )
 
     # Also surveil the manager's own TLS server cert when MANAGER_TLS_PORT is on.
-    mgr_crt = DATA_DIR / "manager-tls.crt"
+    _custom_pair = _custom_manager_tls_files()
+    mgr_crt = _custom_pair[0] if _custom_pair else DATA_DIR / "manager-tls.crt"
     if mgr_crt.is_file():
         with best_effort("system health: manager TLS cert expiry check"):
             from cryptography import x509 as _x509_warn
@@ -4649,11 +4650,30 @@ def _canon_host(h: str) -> str:
         return h
 
 
+def _custom_manager_tls_files() -> "tuple[Path, Path] | None":
+    """Operator-provided [manager].tls_cert_file/tls_key_file pair;
+    None unless both are set and readable (relative paths resolve
+    against the repo root)."""
+    crt = str(getattr(settings.manager, "tls_cert_file", "") or "").strip()
+    key = str(getattr(settings.manager, "tls_key_file", "") or "").strip()
+    if not crt or not key:
+        return None
+    crt_p = Path(crt) if Path(crt).is_absolute() else _REPO_ROOT_PATH / crt
+    key_p = Path(key) if Path(key).is_absolute() else _REPO_ROOT_PATH / key
+    if not (crt_p.is_file() and key_p.is_file()):
+        log.warning("  Manager TLS: tls_cert_file/tls_key_file set but unreadable "
+                    "(%s, %s) — falling back to the internal-CA cert", crt_p, key_p)
+        return None
+    return crt_p, key_p
+
+
 def _ensure_manager_server_cert() -> None:
     """Generate (or refresh) data/manager-tls.{crt,key} signed by the
     internal CA. SAN includes the manager's hostname + the IP a
     typical agent would dial. Re-issues automatically when within 30
-    days of expiry."""
+    days of expiry. No-op when an operator-provided cert is configured."""
+    if _custom_manager_tls_files() is not None:
+        return
     crt_path = DATA_DIR / "manager-tls.crt"
     key_path = DATA_DIR / "manager-tls.key"
 
@@ -5014,14 +5034,18 @@ def _maybe_start_manager_tls_server() -> None:
         log.info("  Manager TLS: disabled (set [manager].tls_port or MANAGER_TLS_PORT to enable)")
         return
 
-    try:
-        _ensure_manager_server_cert()
-    except Exception as e:
-        log.exception("manager server cert generation failed; skipping HTTPS: %s", e)
-        return
-
-    crt = DATA_DIR / "manager-tls.crt"
-    key = DATA_DIR / "manager-tls.key"
+    custom = _custom_manager_tls_files()
+    if custom is None:
+        try:
+            _ensure_manager_server_cert()
+        except Exception as e:
+            log.exception("manager server cert generation failed; skipping HTTPS: %s", e)
+            return
+        crt = DATA_DIR / "manager-tls.crt"
+        key = DATA_DIR / "manager-tls.key"
+    else:
+        crt, key = custom
+        log.info("  Manager TLS: serving operator-provided cert %s", crt)
 
     def _serve_tls() -> None:
         from cheroot.wsgi import Server as _CherootServer

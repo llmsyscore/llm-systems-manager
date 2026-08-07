@@ -279,6 +279,10 @@ class ManagerConfig(BaseModel):
     # Extra hostnames/IPs added to the manager TLS cert SAN, beyond the
     # auto-detected loopback/routable IPs (e.g. a docker host's LAN IP).
     public_hosts: list[str] = Field(default_factory=list)
+    # Operator-provided TLS cert/key (PEM); when both set + readable the
+    # HTTPS port serves them and internal-CA auto-issue is skipped.
+    tls_cert_file: str = ""
+    tls_key_file: str = ""
     proxies: ManagerProxies = Field(default_factory=ManagerProxies)
     gateway: ManagerGateway = Field(default_factory=ManagerGateway)
     reportcard: ManagerReportcard = Field(default_factory=ManagerReportcard)
