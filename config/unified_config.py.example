@@ -259,6 +259,9 @@ class ManagerConfig(BaseModel):
     # not browser-side TLS — front with nginx/Caddy + a real cert for that).
     # 0 disables.
     ws_proxy_port: int = 5444
+    # wss twin of ws_proxy_port; active only when tls_cert_file/tls_key_file
+    # are set (https dashboards mixed-content-block plain ws). 0 disables.
+    ws_proxy_tls_port: int = 5446
     # aiohttp SSE daemon serving /api/llama-state/stream off the Cheroot pool
     # (#110); plain HTTP via /api/llama-state/stream-info handoff. 0 disables.
     stream_proxy_port: int = 5445

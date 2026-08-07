@@ -760,12 +760,11 @@ def ae_ws_url_for_browser() -> str:
     # gitignored and update.sh doesn't re-render it).
     ws_proxy_port = int(getattr(settings.manager, "ws_proxy_port", 0) or 0)
     if ws_proxy_port > 0:
-        # The proxy always serves plain ws — manager-tls.{crt,key} is signed
-        # by the internal CA, which the browser doesn't trust by default, so
-        # serving wss here defeats the proxy's whole point (which is to hide
-        # the internal CA from the browser). For https-dashboard users who
-        # want wss end-to-end, the operator must front the proxy with a
-        # real-CA cert (nginx/Caddy) — out of scope here.
+        # https pages mixed-content-block plain ws, so when the bridge has a
+        # wss listener (operator cert, #525) secure pages are sent there.
+        wss_port = _deps.wss_bridge_port()
+        if wss_port > 0 and _deps.request_is_https():
+            return f"wss://{_deps.request_host_no_port()}:{wss_port}/ws/alarm"
         return f"ws://{_deps.request_host_no_port()}:{ws_proxy_port}/ws/alarm"
     rewritten = _deps.rewrite_loopback_host(ae_url.rstrip("/"),
                                             _deps.request_host_no_port())
@@ -805,7 +804,9 @@ def register_routes(app, ctx, *,
                     repo_root: Path,
                     install_topology: Callable[[], dict],
                     request_host_no_port: Callable[[], str],
-                    rewrite_loopback_host: Callable[[str, str], str]) -> None:
+                    rewrite_loopback_host: Callable[[str, str], str],
+                    request_is_https: "Callable[[], bool] | None" = None,
+                    wss_bridge_port: "Callable[[], int] | None" = None) -> None:
     """Wire the 7 catch-all proxy routes into `app`. Shared deps come
     from ctx (ae_session, alarm_engine_url, require_admin); the module-
     specific kwargs are repo_root (for the AE SPA dir), install_topology
@@ -820,6 +821,8 @@ def register_routes(app, ctx, *,
     _deps.install_topology = install_topology
     _deps.request_host_no_port = request_host_no_port
     _deps.rewrite_loopback_host = rewrite_loopback_host
+    _deps.request_is_https = request_is_https or (lambda: False)
+    _deps.wss_bridge_port = wss_bridge_port or (lambda: 0)
 
     _ALARM_FRONTEND_DIR = str(Path(repo_root) / "llm-systems-alarm-engine" / "frontend")
     # Make sure send_from_directory hands modules/CSS back with the right type.

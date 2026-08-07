@@ -60,6 +60,10 @@ stream_op_max_lifetime_s = 3600
 # ticket from /api/alarm-ws-ticket (TTL = manager.security stream_token_ttl_s).
 ws_proxy_port = 5444
 
+# wss twin of ws_proxy_port, active only when tls_cert_file/tls_key_file are
+# set — https dashboards mixed-content-block plain ws. 0 disables.
+ws_proxy_tls_port = 5446
+
 # Standalone SSE daemon port for /api/llama-state/stream — a held stream
 # costs an asyncio task instead of a pinned worker. Browsers fall back to
 # the main pool when 0, the daemon is down, or the dashboard is HTTPS
