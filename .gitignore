@@ -63,6 +63,7 @@ tools/*
 !tools/installer
 !tools/packaging
 !tools/run_tests.sh
+!tools/gen_pwa_icons.py
 
 # IDE / OS
 /.cache/
