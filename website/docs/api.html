@@ -1,0 +1,1013 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>API reference — LLM SysCore</title>
+<meta name="description" content="Every HTTP endpoint exposed by LLM Systems Manager and the Alarm Engine, for operators and integration authors.">
+<link rel="canonical" href="https://www.llmsyscore.com/docs/api.html">
+<meta property="og:type" content="article">
+<meta property="og:site_name" content="LLM SysCore">
+<meta property="og:title" content="API reference — LLM Systems Manager">
+<meta property="og:description" content="Every HTTP endpoint exposed by LLM Systems Manager and the Alarm Engine, for operators and integration authors.">
+<meta property="og:url" content="https://www.llmsyscore.com/docs/api.html">
+<meta property="og:image" content="https://www.llmsyscore.com/assets/og-card.png">
+<meta name="twitter:card" content="summary_large_image">
+<link rel="icon" type="image/png" href="../assets/favicon-32.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Sora:wght@400;600;700;800&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../css/site.css">
+</head>
+<body>
+
+<header class="nav">
+  <div class="wrap nav-inner">
+    <a class="nav-brand" href="../index.html" aria-label="LLM SysCore home">
+      <img src="../assets/logo.svg" alt="">
+      <span>LLM&nbsp;Sys<b class="core">Core</b></span>
+    </a>
+    <nav class="nav-links" aria-label="Main">
+      <a href="../index.html#features">Features</a>
+      <a href="../index.html#screenshots" class="nav-hide-sm">Screenshots</a>
+      <a href="./" aria-current="page">Docs</a>
+      <a href="../about.html" class="nav-hide-sm">About</a>
+      <a href="../contact.html">Contact</a>
+      <a class="btn btn-ghost" href="https://github.com/llmsyscore/llm-systems-manager">
+        <svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27s1.36.09 2 .27c1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8z"/></svg>
+        GitHub
+      </a>
+    </nav>
+  </div>
+</header>
+
+<main class="wrap docs-layout">
+  <aside class="docs-side">
+    <h4>Documentation</h4>
+    <nav aria-label="Documentation sections">
+      <a href="index.html">Documentation & quick start</a>
+      <a href="architecture.html">Architecture</a>
+      <a href="components.html">Components</a>
+      <a href="api.html" class="active" aria-current="page">API reference</a>
+      <a href="deployment.html">Deployment</a>
+    </nav>
+  </aside>
+
+  <article class="md">
+<h1 id="llm-systems-manager-api-reference">LLM Systems Manager — API Reference</h1>
+<p>This reference covers every HTTP endpoint exposed by the LLM Systems Manager and the Alarm Engine. It is written for operators, integration authors, and script writers who need to call endpoints directly — not for contributors reading the source code.</p>
+<p>The Manager listens on port 5000 (HTTP) and optionally port 5443 (HTTPS). The Alarm Engine runs on port 8081 but is always accessed through the Manager&#39;s <code>/api/alarm/*</code> proxy — you should never need to call port 8081 directly. All endpoints in this document use the Manager as the entry point.</p>
+<hr>
+<h2 id="authentication">Authentication</h2>
+<p><strong>Browser / UI sessions</strong> authenticate via a login cookie. After <code>POST /login</code> succeeds, your browser holds a signed session cookie that is checked on every subsequent request. Sessions expire based on the configured lifetime (default: several days).</p>
+<p><strong>Agent-to-Manager calls</strong> authenticate with a bearer token issued at registration: <code>Authorization: Bearer &lt;token&gt;</code>. These are internal; you do not need to manage them as an operator.</p>
+<p><strong>Admin-only endpoints</strong> are marked <strong>[Admin]</strong> throughout this document. Reaching them requires both an admin-role session and (where configured) a request originating from an allowed admin network range. Operator-role sessions receive a 403 on admin endpoints.</p>
+<p><strong>Ingest endpoints</strong> on the Alarm Engine accept a separate shared bearer token configured in <code>llm-systems.toml</code>. When the token is blank the ingest surface is open; when set, agents must present it.</p>
+<hr>
+<h2 id="health">Health</h2>
+<h3 id="get-health"><code>GET /health</code></h3>
+<p>Unauthenticated liveness probe for external monitors and load balancers. Not gated by the login/session flow at all.</p>
+<p><strong>Response:</strong> <code>{&quot;status&quot;: &quot;ok&quot;, &quot;version&quot;: &quot;&lt;manager version&gt;&quot;, &quot;uptime_s&quot;: &lt;seconds since startup&gt;}</code></p>
+<hr>
+<h2 id="dashboard-amp-metrics">Dashboard &amp; Metrics</h2>
+<h3 id="get-apimetrics"><code>GET /api/metrics</code></h3>
+<p>Returns the current hardware snapshot across all monitored agents: CPU, RAM, GPU temperature and utilisation, network throughput, disk usage, and any active LLM provider state. This is the primary polling endpoint for the dashboard.</p>
+<p><strong>Parameters:</strong> <code>?agent=&lt;agent_id&gt;</code> — restrict the response to a single agent&#39;s data.</p>
+<hr>
+<h3 id="get-apihistory"><code>GET /api/history</code></h3>
+<p>Returns historical time-series data used to draw dashboard charts. The time window and resolution are controlled by the server&#39;s configured history settings.</p>
+<p><strong>Parameters:</strong></p>
+<ul>
+<li><code>?agent=&lt;agent_id&gt;</code> — return history for one specific agent (full host metric set).</li>
+<li><code>?fleet=llama</code>, <code>?fleet=lms</code>, or <code>?fleet=vllm</code> — return aggregated history for all agents of that provider type (CPU/RAM/GPU values are aggregated across every agent of that type).</li>
+</ul>
+<hr>
+<h3 id="get-apialert"><code>GET /api/alert</code></h3>
+<p>Returns the current active alert count and the highest severity level in effect. Used by the dashboard header to show the alert badge.</p>
+<hr>
+<h3 id="get-apiconfig"><code>GET /api/config</code></h3>
+<p>Returns the current polling interval and basic server configuration the frontend needs to self-configure (for example, which provider tabs to show).</p>
+<hr>
+<h3 id="post-apiconfiginterval"><code>POST /api/config/interval</code></h3>
+<p>Updates the dashboard polling interval.</p>
+<p><strong>Body:</strong> <code>{&quot;interval&quot;: &lt;seconds&gt;}</code></p>
+<hr>
+<h2 id="llm-control-llamacpp">LLM Control (llama.cpp)</h2>
+<p>These endpoints control the llama.cpp inference server running on the GPU host. All of them are proxied transparently through the Manager to the appropriate agent; you do not need to know which agent is handling a request.</p>
+<h3 id="get-apillama-state"><code>GET /api/llama-state</code></h3>
+<p>Returns whether the llama.cpp server is currently <code>awake</code> or <code>sleeping</code>.</p>
+<p><strong>Parameters:</strong> <code>?agent=&lt;agent_id&gt;</code> — query a specific agent rather than the default.</p>
+<hr>
+<h3 id="get-apillama-statestream"><code>GET /api/llama-state/stream</code></h3>
+<p>Opens a Server-Sent Events (SSE) stream that pushes a new event each time the llama.cpp server changes state (awake ↔ sleeping) or loads a different model. Stays open until the client disconnects.</p>
+<p><strong>Parameters:</strong> <code>?agent=&lt;agent_id&gt;</code></p>
+<hr>
+<h3 id="get-apillmmodels"><code>GET /api/llm/models</code></h3>
+<p>Lists all model files available on the GPU host&#39;s model storage path.</p>
+<hr>
+<h3 id="post-apillmload"><code>POST /api/llm/load</code></h3>
+<p>Instructs the llama.cpp server to load a specific model. The server will unload any currently loaded model first.</p>
+<p><strong>Body:</strong> <code>{&quot;model&quot;: &quot;&lt;model_id&gt;&quot;}</code></p>
+<hr>
+<h3 id="post-apillmunload"><code>POST /api/llm/unload</code></h3>
+<p>Unloads the currently active model from the llama.cpp server without stopping the server process.</p>
+<hr>
+<h3 id="get-apillmconfig"><code>GET /api/llm/config</code></h3>
+<p>Returns the llama.cpp server configuration (context window size, GPU layer count, thread count, and other runtime parameters) for the currently active model. There is no query-param variant for reading another model&#39;s saved config — use <code>GET /api/llm/profiles</code> to see all saved profiles, or <code>POST /api/llm/config</code> to write one.</p>
+<hr>
+<h3 id="post-apillmconfig"><code>POST /api/llm/config</code></h3>
+<p>Saves the llama.cpp server configuration. The saved values are applied the next time the server loads that model.</p>
+<p><strong>Body:</strong> A JSON object containing the configuration fields to save (context size, GPU layers, threads, etc.).</p>
+<p>The configuration is stored in INI format. Key names correspond to llama-server command-line flags: <code>--ctx-size</code>, <code>--gpu-layers</code>, <code>--threads</code>, <code>--batch-size</code>, <code>--parallel</code>, etc. Retrieve the current config with <code>GET /api/llm/config</code> to see available keys.</p>
+<hr>
+<h3 id="delete-apillmconfigltmodel_idgt"><code>DELETE /api/llm/config/&lt;model_id&gt;</code></h3>
+<p>Deletes the saved configuration for the named model, reverting it to defaults on next load.</p>
+<hr>
+<h3 id="get-apillmserverstatus"><code>GET /api/llm/server/status</code></h3>
+<p>Returns whether the llama.cpp server process is currently running.</p>
+<hr>
+<h3 id="post-apillmserverstart"><code>POST /api/llm/server/start</code></h3>
+<p>Starts the llama.cpp server process.</p>
+<hr>
+<h3 id="post-apillmserverstop"><code>POST /api/llm/server/stop</code></h3>
+<p>Stops the llama.cpp server process.</p>
+<hr>
+<h3 id="post-apillmserverrestart"><code>POST /api/llm/server/restart</code></h3>
+<p>Stops then starts the llama.cpp server in one call.</p>
+<hr>
+<h3 id="post-apillmserverwake"><code>POST /api/llm/server/wake</code></h3>
+<p>Wakes a sleeping llama.cpp server. The server enters a low-power sleep state after an idle timeout; this call brings it back to the active (ready-to-infer) state.</p>
+<hr>
+<h3 id="get-apillmserverlogtail"><code>GET /api/llm/server/log/tail</code></h3>
+<p>Returns the most recent lines from the llama.cpp server log.</p>
+<hr>
+<h3 id="get-apillmserverlogstream"><code>GET /api/llm/server/log/stream</code></h3>
+<p>Opens an SSE stream that tails the llama.cpp server log in real time. Each event contains one or more new log lines.</p>
+<hr>
+<h3 id="post-apillmdownload"><code>POST /api/llm/download</code></h3>
+<p>Starts an asynchronous download of a model file from HuggingFace. Progress is delivered via <code>/api/llm/download/stream</code>.</p>
+<p><strong>Body:</strong> <code>{&quot;repo&quot;: &quot;&lt;huggingface-repo-id&gt;&quot;, &quot;file&quot;: &quot;&lt;filename&gt;&quot;}</code></p>
+<hr>
+<h3 id="post-apillmdownloadcancel"><code>POST /api/llm/download/cancel</code></h3>
+<p>Cancels an in-progress model download.</p>
+<hr>
+<h3 id="get-apillmdownloadstream"><code>GET /api/llm/download/stream</code></h3>
+<p>Opens an SSE stream reporting download progress (bytes downloaded, speed, estimated time remaining). The stream closes when the download completes or fails.</p>
+<hr>
+<h3 id="post-apillmbuild"><code>POST /api/llm/build</code></h3>
+<p>Starts an asynchronous build of the llama.cpp binary from source. Progress is delivered via <code>/api/llm/build/stream</code>.</p>
+<hr>
+<h3 id="get-apillmbuildstream"><code>GET /api/llm/build/stream</code></h3>
+<p>Opens an SSE stream reporting build progress and compiler output. The stream closes when the build completes or fails.</p>
+<hr>
+<h3 id="get-apillmcache"><code>GET /api/llm/cache</code></h3>
+<p>Lists model files currently held in the local model cache on the GPU host.</p>
+<hr>
+<h3 id="post-apillmcacheprune"><code>POST /api/llm/cache/prune</code></h3>
+<p>Removes cached model files that are not referenced by any saved configuration or active load, freeing disk space.</p>
+<hr>
+<h3 id="post-apillmcacherm"><code>POST /api/llm/cache/rm</code></h3>
+<p>Removes a specific file from the model cache.</p>
+<p><strong>Body:</strong> <code>{&quot;path&quot;: &quot;&lt;cache-relative-path&gt;&quot;}</code></p>
+<hr>
+<h3 id="get-apillmhf-trending"><code>GET /api/llm/hf-trending</code></h3>
+<p>Returns the current HuggingFace trending models list, useful for discovering new models to download.</p>
+<hr>
+<h3 id="get-apillmaliases"><code>GET /api/llm/aliases</code></h3>
+<p>Returns the saved model name aliases (human-readable short names mapped to model IDs).</p>
+<hr>
+<h3 id="post-apillmaliases"><code>POST /api/llm/aliases</code></h3>
+<p>Creates or updates a model name alias.</p>
+<p><strong>Body:</strong> <code>{&quot;model_id&quot;: &quot;&lt;id&gt;&quot;, &quot;alias&quot;: &quot;&lt;short name&gt;&quot;}</code></p>
+<hr>
+<h3 id="delete-apillmaliasesltmodel_idgt"><code>DELETE /api/llm/aliases/&lt;model_id&gt;</code></h3>
+<p>Removes the alias for the specified model.</p>
+<hr>
+<h3 id="post-apibenchmarkrun"><code>POST /api/benchmark/run</code></h3>
+<p>Starts a benchmark run against the currently loaded model. The benchmark measures prompt processing throughput (tokens/sec) and generation throughput at various context sizes. Results are streamed via <code>/api/benchmark/stream</code>.</p>
+<hr>
+<h3 id="get-apibenchmarkstream"><code>GET /api/benchmark/stream</code></h3>
+<p>Opens an SSE stream reporting live benchmark progress (current context size being tested, intermediate results). The stream closes when the benchmark finishes or is cancelled.</p>
+<hr>
+<h3 id="get-apibenchmarkresults"><code>GET /api/benchmark/results</code></h3>
+<p>Returns all saved benchmark results for all models.</p>
+<hr>
+<h3 id="post-apibenchmarkstore"><code>POST /api/benchmark/store</code></h3>
+<p>Saves a benchmark result to persistent storage.</p>
+<p><strong>Body:</strong> A benchmark result object as returned by the benchmark stream.</p>
+<hr>
+<h3 id="delete-apibenchmarkresultsltmodel_idgt"><code>DELETE /api/benchmark/results/&lt;model_id&gt;</code></h3>
+<p>Deletes all saved benchmark results for the specified model.</p>
+<hr>
+<h3 id="get-apibenchmarkmodels"><code>GET /api/benchmark/models</code></h3>
+<p>Returns the list of models that have at least one saved benchmark result.</p>
+<hr>
+<h3 id="post-apibenchmarkperf-mode"><code>POST /api/benchmark/perf-mode</code></h3>
+<p>Switches the GPU host between performance and power-save operating modes during benchmarking.</p>
+<p><strong>Body:</strong> <code>{&quot;mode&quot;: &quot;performance&quot;}</code> or <code>{&quot;mode&quot;: &quot;powersave&quot;}</code></p>
+<hr>
+<h3 id="post-apibenchmarkcancel"><code>POST /api/benchmark/cancel</code></h3>
+<p>Cancels an in-progress benchmark run.</p>
+<hr>
+<h3 id="post-apillmautotunerun"><code>POST /api/llm/autotune/run</code></h3>
+<p>Starts the Auto-Tune context wizard, which automatically finds the largest context window size the currently loaded model can sustain within GPU memory. Progress is streamed via <code>/api/llm/autotune/stream</code>.</p>
+<hr>
+<h3 id="get-apillmautotunestream"><code>GET /api/llm/autotune/stream</code></h3>
+<p>Opens an SSE stream reporting Auto-Tune progress (context sizes being probed, memory readings, pass/fail results).</p>
+<hr>
+<h3 id="get-apillmautotunestream-info"><code>GET /api/llm/autotune/stream-info</code></h3>
+<p>Returns metadata about the current or most recent Auto-Tune run without opening a stream.</p>
+<hr>
+<h3 id="post-apillmautotunecancel"><code>POST /api/llm/autotune/cancel</code></h3>
+<p>Cancels an in-progress Auto-Tune run.</p>
+<hr>
+<h3 id="getpost-apillmserversvcconfig"><code>GET/POST /api/llm/server/svcconfig</code></h3>
+<p>Reads (GET) or writes (POST) the llama-server systemd unit&#39;s <code>ExecStart</code> arguments directly, for flags not exposed through <code>/api/llm/config</code>. POST daemon-reloads the unit and can restart it.</p>
+<p><strong>Body (POST):</strong> A JSON object of <code>ExecStart</code> argument overrides.</p>
+<hr>
+<h3 id="stream-info-direct-sse-handoff-endpoints"><code>.../stream-info</code> — direct-SSE handoff endpoints</h3>
+<p>Several of the SSE endpoints above have a sibling <code>.../stream-info</code> route that mints a short-lived HMAC-signed token and returns the direct agent stream URL instead of opening the stream itself: <code>GET /api/llm/server/log/stream-info</code>, <code>GET /api/llm/download/stream-info</code>, <code>GET /api/llm/build/stream-info</code>, <code>GET /api/llm/autotune/stream-info</code>, and <code>GET /api/llama-state/stream-info</code>. The browser uses the returned URL to connect straight to the agent, bypassing the Manager&#39;s own SSE proxy pool; when the direct path isn&#39;t usable (agent down, no direct port, or a mixed-content HTTPS page) the response signals the browser to fall back to the proxied <code>.../stream</code> endpoint instead.</p>
+<p><strong>Response:</strong> <code>{&quot;ok&quot;: true, &quot;url&quot;: &quot;&lt;agent-direct-url&gt;?token=&lt;token&gt;&quot;, &quot;expires_in&quot;: &lt;seconds&gt;}</code> on success, or <code>{&quot;ok&quot;: false, ...}</code> when direct streaming isn&#39;t available.</p>
+<p><code>/api/llama-state/stream-info</code> is the exception: it returns <code>{&quot;enabled&quot;: true, &quot;url&quot;: ...}</code> or <code>{&quot;enabled&quot;: false}</code>, with no <code>expires_in</code>.</p>
+<hr>
+<h2 id="lm-studio">LM Studio</h2>
+<p>These endpoints control and monitor the LM Studio server running on the Apple Silicon host.</p>
+<h3 id="get-apilmstudiometrics"><code>GET /api/lmstudio/metrics</code></h3>
+<p>Returns the current LM Studio status, including which model is loaded, active requests, memory usage, and server health.</p>
+<hr>
+<h3 id="get-apilmstudiomodels"><code>GET /api/lmstudio/models</code></h3>
+<p>Lists all models available in LM Studio&#39;s model library.</p>
+<hr>
+<h3 id="get-apilmstudioserverstatus"><code>GET /api/lmstudio/server/status</code></h3>
+<p>Returns whether the LM Studio server process is running.</p>
+<hr>
+<h3 id="post-apilmstudioserverstart"><code>POST /api/lmstudio/server/start</code></h3>
+<p>Starts the LM Studio server.</p>
+<hr>
+<h3 id="post-apilmstudioserverstop"><code>POST /api/lmstudio/server/stop</code></h3>
+<p>Stops the LM Studio server.</p>
+<hr>
+<h3 id="post-apilmstudioserverrestart"><code>POST /api/lmstudio/server/restart</code></h3>
+<p>Stops then starts the LM Studio server in one call.</p>
+<hr>
+<h3 id="get-apilmstudioserverlog"><code>GET /api/lmstudio/server/log</code></h3>
+<p>Returns recent log output from the LM Studio server.</p>
+<hr>
+<h3 id="post-apilmstudioload"><code>POST /api/lmstudio/load</code></h3>
+<p>Instructs LM Studio to load a specific model.</p>
+<p><strong>Body:</strong> <code>{&quot;model&quot;: &quot;&lt;model_id&gt;&quot;}</code></p>
+<hr>
+<h3 id="post-apilmstudiounload"><code>POST /api/lmstudio/unload</code></h3>
+<p>Unloads the currently active model from LM Studio.</p>
+<hr>
+<h3 id="post-apilmstudiodownload"><code>POST /api/lmstudio/download</code></h3>
+<p>Starts a model download within LM Studio.</p>
+<p><strong>Body:</strong> <code>{&quot;model&quot;: &quot;&lt;model_id&gt;&quot;}</code></p>
+<hr>
+<h2 id="vllm-control">vLLM Control</h2>
+<p>These endpoints control the vLLM inference server, mirroring the llama.cpp control surface above.</p>
+<h3 id="get-apivllmmetrics"><code>GET /api/vllm/metrics</code></h3>
+<p>Returns the latest vLLM sample for the default (or <code>?agent=</code>) vLLM agent.</p>
+<hr>
+<h3 id="get-apivllmmodels"><code>GET /api/vllm/models</code></h3>
+<p>Lists all model files available on the vLLM host&#39;s model storage path.</p>
+<hr>
+<h3 id="get-apivllmserverstatus"><code>GET /api/vllm/server/status</code></h3>
+<p>Returns whether the vLLM server process is currently running.</p>
+<hr>
+<h3 id="post-apivllmserverstart"><code>POST /api/vllm/server/start</code></h3>
+<p>Starts the vLLM server process.</p>
+<hr>
+<h3 id="post-apivllmserverstop"><code>POST /api/vllm/server/stop</code></h3>
+<p>Stops the vLLM server process.</p>
+<hr>
+<h3 id="post-apivllmserverrestart"><code>POST /api/vllm/server/restart</code></h3>
+<p>Stops then starts the vLLM server in one call.</p>
+<hr>
+<h3 id="get-apivllmserverlog"><code>GET /api/vllm/server/log</code></h3>
+<p>Returns the most recent lines from the vLLM server&#39;s journal.</p>
+<hr>
+<h3 id="get-apivllmlogstream"><code>GET /api/vllm/log/stream</code></h3>
+<p>Opens an SSE stream that tails the vLLM server log in real time.</p>
+<hr>
+<h3 id="getpost-apivllmserversvcconfig"><code>GET/POST /api/vllm/server/svcconfig</code></h3>
+<p>Reads (GET) or writes (POST) the vLLM systemd unit&#39;s <code>ExecStart</code> arguments — the vLLM equivalent of <code>/api/llm/server/svcconfig</code>.</p>
+<p><strong>Body (POST):</strong> A JSON object of <code>ExecStart</code> argument overrides.</p>
+<hr>
+<h3 id="post-apivllmloraload"><code>POST /api/vllm/lora/load</code></h3>
+<p>Loads a LoRA adapter into the running vLLM server.</p>
+<p><strong>Body:</strong> LoRA load parameters (adapter path/name); passed through to the agent.</p>
+<hr>
+<h3 id="post-apivllmloraunload"><code>POST /api/vllm/lora/unload</code></h3>
+<p>Unloads a LoRA adapter from the running vLLM server.</p>
+<p><strong>Body:</strong> LoRA unload parameters; passed through to the agent.</p>
+<hr>
+<h3 id="post-apivllmautotunerun"><code>POST /api/vllm/autotune/run</code></h3>
+<p>Starts the <code>--max-model-len</code> Auto-Tune wizard for vLLM, which finds the largest context length the currently loaded model can sustain. Progress is streamed via <code>/api/vllm/autotune/stream</code>.</p>
+<hr>
+<h3 id="get-apivllmautotunestream"><code>GET /api/vllm/autotune/stream</code></h3>
+<p>Opens an SSE stream reporting vLLM Auto-Tune progress.</p>
+<hr>
+<h3 id="post-apivllmautotunecancel"><code>POST /api/vllm/autotune/cancel</code></h3>
+<p>Cancels an in-progress vLLM Auto-Tune run.</p>
+<hr>
+<h3 id="post-apivllmbenchrun"><code>POST /api/vllm/bench/run</code></h3>
+<p>Starts a <code>vllm bench serve</code> benchmark run against the currently loaded model. Progress is streamed via <code>/api/vllm/bench/stream</code>.</p>
+<hr>
+<h3 id="get-apivllmbenchstream"><code>GET /api/vllm/bench/stream</code></h3>
+<p>Opens an SSE stream reporting vLLM benchmark progress.</p>
+<hr>
+<h3 id="post-apivllmbenchcancel"><code>POST /api/vllm/bench/cancel</code></h3>
+<p>Cancels an in-progress vLLM benchmark run.</p>
+<hr>
+<h3 id="post-apivllmterminalcreate"><code>POST /api/vllm/terminal/create</code></h3>
+<p>Opens an SSH shell session to the vLLM host, mirroring <code>/api/lms/terminal/create</code>. Returns a session ID used with the shared <code>/api/terminal/*</code> endpoints below.</p>
+<hr>
+<h2 id="inference-gateway">Inference Gateway</h2>
+<p>An OpenAI-compatible chat/completions gateway that fans requests out to whichever backend provider (llama.cpp, LM Studio, or vLLM) is serving the requested model. Requests authenticate either with a bearer token from <code>[manager.gateway].api_keys</code>, or with a normal dashboard session cookie.</p>
+<h3 id="post-apigatewayv1chatcompletions"><code>POST /api/gateway/v1/chat/completions</code></h3>
+<p>OpenAI-compatible chat completion. The target provider is resolved from the request body&#39;s <code>model</code> field: a model pin wins first, then the live model index built from each provider&#39;s <code>/models</code> listing, then a <code>llama</code> fallback if the model is unrecognized. Within the resolved provider, the host is picked in the order: model pin, then an explicit <code>?agent=</code>, then pool round-robin, then the provider default. A pin therefore overrides an explicit <code>?agent=</code>; the gateway logs when that happens. (The dashboard&#39;s own proxy routes surface the same condition as an <code>X-Routing-Override: pin</code> response header; the gateway does not set it.) Supports <code>&quot;stream&quot;: true</code> for SSE responses.</p>
+<p>Successful non-streaming responses carry an <code>X-Proxied-To: &lt;agent_id prefix&gt;@&lt;hostname&gt;</code> header identifying which agent actually served the request; streaming responses carry the same header on the initial SSE response.</p>
+<hr>
+<h3 id="post-apigatewayv1completions"><code>POST /api/gateway/v1/completions</code></h3>
+<p>OpenAI-compatible legacy completion endpoint. Same provider-resolution and <code>X-Proxied-To</code> behavior as <code>/api/gateway/v1/chat/completions</code>.</p>
+<hr>
+<h3 id="get-apigatewayv1models"><code>GET /api/gateway/v1/models</code></h3>
+<p>Returns the merged OpenAI-style model list (<code>{&quot;object&quot;: &quot;list&quot;, &quot;data&quot;: [...]}</code>) across every gateway-enabled provider&#39;s pool (currently <code>llama</code>, <code>lms</code>, <code>vllm</code>).</p>
+<hr>
+<h3 id="per-provider-gateway-twins">Per-provider gateway twins</h3>
+<p>Every gateway-enabled provider also gets its own fixed-provider mirror of the three routes above, skipping model-based provider resolution: <code>POST /api/gateway/&lt;provider&gt;/v1/chat/completions</code>, <code>POST /api/gateway/&lt;provider&gt;/v1/completions</code>, and <code>GET /api/gateway/&lt;provider&gt;/v1/models</code>, for <code>&lt;provider&gt;</code> in <code>llama</code>, <code>lms</code>, <code>vllm</code>.</p>
+<hr>
+<h2 id="gpu-report-card">GPU Report Card</h2>
+<p>Runs a standardized benchmark (&quot;report card&quot;) against a reference model on a chosen agent/provider, to produce comparable tokens/sec and $/Mtok numbers across hardware. Report card jobs run asynchronously and stream progress over SSE, similar to the benchmark endpoints in the LLM Control section.</p>
+<h3 id="get-apireportcardpreset"><code>GET /api/reportcard/preset</code></h3>
+<p>Returns the report card&#39;s fixed run parameters: <code>preset_version</code>, <code>gen_tokens</code>, <code>reps</code>, the supported <code>providers</code>, the configured <code>price_kwh</code>, and the list of reference <code>models</code> (<code>{&quot;key&quot;, &quot;label&quot;}</code>) available for standard runs.</p>
+<hr>
+<h3 id="post-apireportcardrun"><code>POST /api/reportcard/run</code></h3>
+<p>Starts a report card run. In standard mode, first checks whether the reference model is ready on the target agent — if a confirmation or download is needed, returns that status instead of starting the job; the caller resubmits with <code>confirm_vllm</code>/<code>confirm_download</code> set to proceed.</p>
+<p><strong>Body:</strong> <code>{&quot;agent&quot;: &quot;&lt;agent_id&gt;&quot;, &quot;provider&quot;: &quot;llama&quot;|&quot;lms&quot;|&quot;vllm&quot;, &quot;mode&quot;: &quot;standard&quot;|&quot;custom&quot;, &quot;model&quot;: &quot;&lt;model_id&gt;&quot; (custom mode), &quot;model_key&quot;: &quot;&lt;reference key&gt;&quot; (standard mode), &quot;price_kwh&quot;: &lt;number&gt; (optional), &quot;confirm_vllm&quot;: &lt;bool&gt;, &quot;confirm_download&quot;: &lt;bool&gt;}</code></p>
+<p><strong>Response:</strong> <code>{&quot;ok&quot;: true, &quot;job_id&quot;: &quot;&lt;id&gt;&quot;}</code> once the job is started, or <code>{&quot;ok&quot;: true, &quot;status&quot;: &quot;needs_confirm&quot;|&quot;needs_download&quot;, ...}</code> when a precheck blocks the run.</p>
+<hr>
+<h3 id="get-apireportcardmodels"><code>GET /api/reportcard/models</code></h3>
+<p>Returns the model IDs currently available on a given agent/provider.</p>
+<p><strong>Parameters:</strong> <code>?agent=&lt;agent_id&gt;&amp;provider=&lt;llama|lms|vllm&gt;</code> (both required)</p>
+<hr>
+<h3 id="post-apireportcarddelete-model"><code>POST /api/reportcard/delete-model</code></h3>
+<p>Deletes a reference model from an agent&#39;s local storage/cache. Supported only for <code>llama</code> and <code>lms</code>.</p>
+<p><strong>Body:</strong> <code>{&quot;agent&quot;: &quot;&lt;agent_id&gt;&quot;, &quot;provider&quot;: &quot;llama&quot;|&quot;lms&quot;, &quot;model_key&quot;: &quot;&lt;reference key&gt;&quot;}</code></p>
+<hr>
+<h3 id="post-apireportcardcancelltjob_idgt"><code>POST /api/reportcard/cancel/&lt;job_id&gt;</code></h3>
+<p>Cancels an in-progress report card job.</p>
+<hr>
+<h3 id="get-apireportcardstreamltjob_idgt"><code>GET /api/reportcard/stream/&lt;job_id&gt;</code></h3>
+<p>Opens an SSE stream reporting progress for a report card job. Closes when the job emits a <code>done</code>, <code>error</code>, or <code>cancelled</code> event, or after an internal timeout.</p>
+<hr>
+<h3 id="get-apireportcardlatest"><code>GET /api/reportcard/latest</code></h3>
+<p>Returns the most recent saved report card for an agent/provider pair.</p>
+<p><strong>Parameters:</strong> <code>?agent=&lt;agent_id&gt;&amp;provider=&lt;llama|lms|vllm&gt;</code> (both required)</p>
+<hr>
+<h3 id="get-apireportcardhistory"><code>GET /api/reportcard/history</code></h3>
+<p>Returns saved report card history, optionally filtered.</p>
+<p><strong>Parameters:</strong> <code>?agent=&lt;agent_id&gt;</code>, <code>?provider=&lt;llama|lms|vllm&gt;</code>, <code>?model=&lt;model_id&gt;</code> — all three required; omitting any returns 400.</p>
+<hr>
+<h2 id="energy-amp-cost">Energy &amp; Cost</h2>
+<p>Rolls up power-draw metrics into cost figures over configurable time windows, using the configured <code>$/kWh</code> and cloud comparison pricing.</p>
+<h3 id="get-apienergysummary"><code>GET /api/energy/summary</code></h3>
+<p>Returns an energy/cost summary for a time window: total energy, local $ cost, and equivalent cloud-provider cost comparison.</p>
+<p><strong>Parameters:</strong></p>
+<ul>
+<li><code>?days=&lt;n&gt;</code> or <code>?month=&lt;YYYY-MM&gt;</code> — select the summary window (mutually exclusive with the default trailing window)</li>
+<li><code>?price_kwh=&lt;number&gt;</code> — override the configured electricity price for this call</li>
+<li><code>?cloud_in=&lt;number&gt;</code> / <code>?cloud_out=&lt;number&gt;</code> — override the configured cloud $/Mtok input/output pricing for comparison</li>
+</ul>
+<hr>
+<h3 id="get-apienergyhourly"><code>GET /api/energy/hourly</code></h3>
+<p>Returns hourly energy/cost data points for charting.</p>
+<p><strong>Parameters:</strong></p>
+<ul>
+<li><code>?days=&lt;n&gt;</code> or <code>?month=&lt;YYYY-MM&gt;</code> — mirrors the summary window</li>
+<li><code>?hours=&lt;n&gt;</code> — trailing-window form used when <code>days</code>/<code>month</code> are absent (default 168, capped)</li>
+<li><code>?agent=&lt;agent_id&gt;</code> — restrict to one agent</li>
+</ul>
+<hr>
+<h2 id="model-autopilot">Model Autopilot</h2>
+<p>Automates placement of model entries across the agent pool — deciding which host(s) should serve which model, proposing changes, and (optionally) applying them. All autopilot endpoints require an admin session.</p>
+<h3 id="get-apiautopilot"><code>GET /api/autopilot</code></h3>
+<p>Returns the current autopilot state, any pending proposals, the last plan timestamp, and per-entry status.</p>
+<p><strong>Access:</strong> [Admin]</p>
+<p><strong>Response:</strong> <code>{&quot;state&quot;: &lt;state document&gt;, &quot;proposals&quot;: [...], &quot;last_plan_ts&quot;: &lt;epoch seconds&gt;, &quot;entry_status&quot;: {...}}</code></p>
+<hr>
+<h3 id="put-apiautopilot"><code>PUT /api/autopilot</code></h3>
+<p>Replaces the autopilot state document. The submitted document is validated before being saved — invalid entries are rejected with a 400 and an error message.</p>
+<p><strong>Access:</strong> [Admin]</p>
+<p><strong>Body — state document:</strong></p>
+<pre><code class="language-json">{
+  &quot;enabled&quot;: true,
+  &quot;entries&quot;: [
+    {
+      &quot;model&quot;: &quot;&lt;model_id&gt;&quot;,
+      &quot;provider&quot;: &quot;llama&quot;,
+      &quot;placement&quot;: &quot;auto&quot;,
+      &quot;failover&quot;: &quot;semi&quot;,
+      &quot;priority&quot;: 100,
+      &quot;min_replicas&quot;: 1,
+      &quot;max_replicas&quot;: 1,
+      &quot;size_mb&quot;: 8192,
+      &quot;autoscale&quot;: {&quot;target_saturation&quot;: 0.75, &quot;up_window_s&quot;: 120, &quot;down_window_s&quot;: 900}
+    }
+  ],
+  &quot;hosts&quot;: {}
+}
+</code></pre>
+<ul>
+<li><code>provider</code>: <code>llama</code>, <code>vllm</code>, or <code>lms</code></li>
+<li><code>placement</code>: <code>&quot;auto&quot;</code> or a specific agent id</li>
+<li><code>failover</code>: <code>&quot;semi&quot;</code> (propose, wait for apply) or <code>&quot;auto&quot;</code> (apply automatically)</li>
+<li><code>min_replicas</code> / <code>max_replicas</code>: replica bounds; <code>max_replicas &gt; min_replicas</code> enables <code>autoscale</code></li>
+<li><code>size_mb</code>: optional explicit model size override used for placement sizing</li>
+<li><code>hosts</code>: reserved; any submitted value is currently ignored (idle sleep is llama-server&#39;s own <code>--sleep-idle-seconds</code>, not autopilot-managed)</li>
+</ul>
+<hr>
+<h3 id="post-apiautopilotproposalsltpidgtapply"><code>POST /api/autopilot/proposals/&lt;pid&gt;/apply</code></h3>
+<p>Applies a pending proposal (executes the placement/pool/pin changes it describes).</p>
+<p><strong>Access:</strong> [Admin]</p>
+<hr>
+<h3 id="post-apiautopilotproposalsltpidgtdismiss"><code>POST /api/autopilot/proposals/&lt;pid&gt;/dismiss</code></h3>
+<p>Dismisses a pending proposal without applying it.</p>
+<p><strong>Access:</strong> [Admin]</p>
+<hr>
+<h3 id="post-apiautopilottick"><code>POST /api/autopilot/tick</code></h3>
+<p>Manually triggers one reconciler tick (observe current state, replan, refresh proposals) outside of its normal schedule.</p>
+<p><strong>Access:</strong> [Admin]</p>
+<hr>
+<h2 id="agent-management">Agent Management</h2>
+<p>These endpoints manage the pool of monitoring agents. Most are <strong>[Admin]</strong> only. A small number are called internally by agents themselves (marked &quot;Agent-facing&quot;) and are not intended for manual use.</p>
+<h3 id="get-apiagents"><code>GET /api/agents</code></h3>
+<p>Returns the list of all registered agents with their status, capabilities, and last-seen timestamp.</p>
+<p><strong>Access:</strong> [Admin]</p>
+<hr>
+<h3 id="post-apiagentsregister"><code>POST /api/agents/register</code></h3>
+<p>Registers a new agent with the Manager. Called automatically by the agent on first start; not a UI-facing endpoint.</p>
+<p><strong>Access:</strong> (Agent-facing)</p>
+<hr>
+<h3 id="get-apiagentslist-by-provider"><code>GET /api/agents/list-by-provider</code></h3>
+<p>Returns agents grouped by provider type (llama, lms, vllm). Available to all authenticated users, including operators, so the agent picker in the dashboard works regardless of role.</p>
+<hr>
+<h3 id="get-apiagentswhoami"><code>GET /api/agents/whoami</code></h3>
+<p>Allows an agent to look up its own registration record using its bearer token. Not a UI-facing endpoint.</p>
+<p><strong>Access:</strong> (Agent-facing)</p>
+<hr>
+<h3 id="post-apiagentsheartbeat"><code>POST /api/agents/heartbeat</code></h3>
+<p>Receives a heartbeat from an agent, updating its last-seen timestamp and returning configuration updates (such as a new ingest URL or TLS bundle). Called automatically every 60 seconds by each agent.</p>
+<p><strong>Access:</strong> (Agent-facing)</p>
+<hr>
+<h3 id="post-apiagentsltagent_idgtapprove"><code>POST /api/agents/&lt;agent_id&gt;/approve</code></h3>
+<p>Approves a pending agent, allowing it to start pushing metrics and receive its TLS certificate bundle.</p>
+<p><strong>Access:</strong> [Admin]</p>
+<hr>
+<h3 id="post-apiagentsltagent_idgtdisable"><code>POST /api/agents/&lt;agent_id&gt;/disable</code></h3>
+<p>Disables an approved agent, stopping it from pushing data without removing its registration.</p>
+<p><strong>Access:</strong> [Admin]</p>
+<hr>
+<h3 id="delete-apiagentsltagent_idgt"><code>DELETE /api/agents/&lt;agent_id&gt;</code></h3>
+<p>Permanently removes an agent&#39;s registration record.</p>
+<p><strong>Access:</strong> [Admin]</p>
+<hr>
+<h3 id="post-apiagentsltagent_idgtrole-primary"><code>POST /api/agents/&lt;agent_id&gt;/role-primary</code></h3>
+<p>Designates the specified agent as the default agent for its provider type. Dashboard requests with no <code>?agent=</code> parameter will be routed here.</p>
+<p><strong>Access:</strong> [Admin]</p>
+<hr>
+<h3 id="post-apiagentsltagent_idgthost-role"><code>POST /api/agents/&lt;agent_id&gt;/host-role</code></h3>
+<p>Designates (or clears) the specified agent as the Manager&#39;s own host agent — the approved agent running on the same machine as the Manager. Used so agent-derived host metrics and version pills resolve correctly even under Docker, where the Manager can&#39;t introspect its own host directly.</p>
+<p><strong>Access:</strong> [Admin]</p>
+<p><strong>Body:</strong> <code>{&quot;set&quot;: true}</code> (default) or <code>{&quot;set&quot;: false}</code> to clear.</p>
+<hr>
+<h3 id="post-apiagentsltagent_idgtcollection"><code>POST /api/agents/&lt;agent_id&gt;/collection</code></h3>
+<p>Pauses or resumes metric collection on the specified agent without disabling or removing it.</p>
+<p><strong>Access:</strong> [Admin]</p>
+<p><strong>Body:</strong> <code>{&quot;enabled&quot;: true}</code> or <code>{&quot;enabled&quot;: false}</code></p>
+<hr>
+<h3 id="post-apiagentsltagent_idgtltprovidergt-pool"><code>POST /api/agents/&lt;agent_id&gt;/&lt;provider&gt;-pool</code></h3>
+<p>Controls whether this agent participates in the given provider&#39;s load-balancing pool. This is not a fixed path — one route is registered per pool-enabled provider (currently <code>llama</code>, <code>lms</code>, and <code>vllm</code>), so the actual paths are <code>/api/agents/&lt;agent_id&gt;/llama-pool</code>, <code>/api/agents/&lt;agent_id&gt;/lms-pool</code>, and <code>/api/agents/&lt;agent_id&gt;/vllm-pool</code>.</p>
+<p><strong>Access:</strong> [Admin]</p>
+<p><strong>Body:</strong> <code>{&quot;in_pool&quot;: true}</code> or <code>{&quot;in_pool&quot;: false}</code>, plus an optional <code>&quot;position&quot;</code> (integer index) to place the agent at a specific slot in the pool order.</p>
+<hr>
+<h3 id="post-apiagentsltagent_idgtcert-bundle"><code>POST /api/agents/&lt;agent_id&gt;/cert-bundle</code></h3>
+<p>Delivers a signed TLS certificate bundle to an approved agent. Called automatically during the approval flow; not a UI-facing endpoint.</p>
+<p><strong>Access:</strong> (Agent-facing)</p>
+<hr>
+<h3 id="post-apiagentsltagent_idgtstream-token"><code>POST /api/agents/&lt;agent_id&gt;/stream-token</code></h3>
+<p>Issues a short-lived HMAC token that allows the browser to open an SSE stream directly to the agent. EventSource connections cannot carry custom headers, so this token is appended as a query parameter instead.</p>
+<p><strong>Access:</strong> Admin-gated. Issues a short-lived authentication token for SSE streams.</p>
+<hr>
+<h3 id="get-apiagentsmetrics"><code>GET /api/agents/metrics</code></h3>
+<p>Returns per-agent communication statistics: request counts, error rates, and latency.</p>
+<p><strong>Access:</strong> [Admin]</p>
+<hr>
+<h3 id="get-apifleetltprovidergtaggregate"><code>GET /api/fleet/&lt;provider&gt;/aggregate</code></h3>
+<p>Returns aggregated metrics across all agents for the specified provider (<code>llama</code>, <code>lms</code>, or <code>vllm</code>). Used by the LLM Overall tab to show GPU utilisation, throughput, and power aggregated across every agent of that provider type.</p>
+<hr>
+<h3 id="post-apiagentsltagent_idgtstatus-check"><code>POST /api/agents/&lt;agent_id&gt;/status-check</code></h3>
+<p>Tests connectivity to the specified agent and returns a summary of whether the Manager can reach it.</p>
+<p><strong>Access:</strong> [Admin]</p>
+<hr>
+<h3 id="post-apiagentsltagent_idgtrestart"><code>POST /api/agents/&lt;agent_id&gt;/restart</code></h3>
+<p>Instructs the specified agent to restart its own process.</p>
+<p><strong>Access:</strong> [Admin]</p>
+<hr>
+<h3 id="get-apiagentsltagent_idgtconfig-file"><code>GET /api/agents/&lt;agent_id&gt;/config-file</code></h3>
+<p>Reads the raw YAML configuration file from the specified agent.</p>
+<p><strong>Access:</strong> [Admin]</p>
+<hr>
+<h3 id="put-apiagentsltagent_idgtconfig-file"><code>PUT /api/agents/&lt;agent_id&gt;/config-file</code></h3>
+<p>Writes a new YAML configuration file to the specified agent.</p>
+<p><strong>Access:</strong> [Admin]</p>
+<p><strong>Body:</strong> The full YAML content of the config file as a JSON-wrapped string or raw text.</p>
+<hr>
+<h3 id="get-apiagentsltagent_idgtlogtail"><code>GET /api/agents/&lt;agent_id&gt;/log/tail</code></h3>
+<p>Returns the most recent lines from the specified agent&#39;s log.</p>
+<p><strong>Access:</strong> [Admin]</p>
+<hr>
+<h3 id="post-apiagentsglobal"><code>POST /api/agents/global</code></h3>
+<p>Updates global agent settings that apply to all agents (for example, default poll interval).</p>
+<p><strong>Access:</strong> [Admin]</p>
+<hr>
+<h3 id="get-apiagent-tarball"><code>GET /api/agent-tarball</code></h3>
+<p>Downloads the agent installation tarball. Used by the Admin tab&#39;s self-update flow to push a new agent version.</p>
+<p><strong>(Agent-facing)</strong> Also used directly by the agent installer (<code>agent/install/install.sh --update</code>) to fetch the latest agent package; not intended for manual use.</p>
+<hr>
+<h3 id="post-apiadminpush-ca-to-agents"><code>POST /api/admin/push-ca-to-agents</code></h3>
+<p>Pushes the current internal CA certificate to all approved agents so they can verify Manager HTTPS connections.</p>
+<p><strong>Access:</strong> [Admin]</p>
+<hr>
+<h3 id="get-apiagentsltagent_idgtstatus"><code>GET /api/agents/&lt;agent_id&gt;/status</code></h3>
+<p>Returns detailed status for a single agent: version, uptime, capabilities, last heartbeat, TLS state, and metric buffer depth.</p>
+<p><strong>Access:</strong> [Admin]</p>
+<hr>
+<h3 id="get-apiagentsltagent_idgtlogstream"><code>GET /api/agents/&lt;agent_id&gt;/log/stream</code></h3>
+<p>Opens an SSE proxy stream of the specified agent&#39;s own process log (the agent daemon&#39;s log, not a provider&#39;s log). Streams bytes verbatim from the agent&#39;s <code>/agent/log/stream</code>.</p>
+<p><strong>Access:</strong> [Admin]</p>
+<hr>
+<h3 id="post-apiagentsltagent_idgtself-update"><code>POST /api/agents/&lt;agent_id&gt;/self-update</code></h3>
+<p>Triggers an in-place agent self-update: the agent runs its installer with <code>--update --from-self-update</code> (git pull, redeploy code, refresh its venv — no systemd unit changes) and streams stdout/stderr back over SSE. On success the agent exits and systemd&#39;s <code>Restart=always</code> brings the updated code back up.</p>
+<p><strong>Access:</strong> [Admin]</p>
+<hr>
+<h2 id="remote-data-push">Remote Data Push</h2>
+<p>These endpoints receive live data pushed by agents. They are not intended for manual use.</p>
+<h3 id="post-apiremotehost-metrics"><code>POST /api/remote/host-metrics</code></h3>
+<p>Legacy endpoint: receives a host metrics snapshot from an agent. Superseded by <code>/api/remote/provider-state</code> but kept for backward compatibility with older agents.</p>
+<p><strong>Access:</strong> (Agent-facing)</p>
+<hr>
+<h3 id="post-apiremoteprovider-state"><code>POST /api/remote/provider-state</code></h3>
+<p>Receives the current provider state (llama or LMS) from an agent, including model name, slots, throughput, and server state. This is the current primary path for live dashboard updates.</p>
+<p><strong>Access:</strong> (Agent-facing)</p>
+<hr>
+<h3 id="post-apiremotelmstudio"><code>POST /api/remote/lmstudio</code></h3>
+<p>Receives the LM Studio dashboard payload (model list, server status, active model metrics) from the LM Studio agent.</p>
+<p><strong>Access:</strong> (Agent-facing)</p>
+<hr>
+<h3 id="get-apiremotehost-metricslast"><code>GET /api/remote/host-metrics/last</code></h3>
+<p>Returns the most recently received host metrics snapshot for the queried agent. Useful for scripts that want the latest values without subscribing to a stream.</p>
+<p><strong>Parameters:</strong> <code>?agent=&lt;agent_id&gt;</code></p>
+<hr>
+<h2 id="terminal">Terminal</h2>
+<p>These endpoints provide browser-based terminal access. Each session is isolated and must be explicitly closed when no longer needed.</p>
+<h3 id="post-apiterminalcreate"><code>POST /api/terminal/create</code></h3>
+<p>Opens a new PTY (pseudo-terminal) shell session on the Manager host. Returns a session ID used by all other terminal endpoints.</p>
+<hr>
+<h3 id="post-apilmsterminalcreate"><code>POST /api/lms/terminal/create</code></h3>
+<p>Opens an SSH shell session to the LM Studio host. Returns a session ID.</p>
+<hr>
+<h3 id="get-apiterminaloutputltsidgt"><code>GET /api/terminal/output/&lt;sid&gt;</code></h3>
+<p>Opens an SSE stream delivering terminal output for the session. Each event contains a chunk of terminal bytes (may include ANSI escape sequences).</p>
+<hr>
+<h3 id="post-apiterminalinputltsidgt"><code>POST /api/terminal/input/&lt;sid&gt;</code></h3>
+<p>Sends keystrokes to the terminal session.</p>
+<p><strong>Body:</strong> <code>{&quot;data&quot;: &quot;&lt;characters to send&gt;&quot;}</code></p>
+<hr>
+<h3 id="post-apiterminalresizeltsidgt"><code>POST /api/terminal/resize/&lt;sid&gt;</code></h3>
+<p>Resizes the terminal window, signalling the running process to reflow output.</p>
+<p><strong>Body:</strong> <code>{&quot;rows&quot;: &lt;int&gt;, &quot;cols&quot;: &lt;int&gt;}</code></p>
+<hr>
+<h3 id="post-apiterminalcloseltsidgt"><code>POST /api/terminal/close/&lt;sid&gt;</code></h3>
+<p>Closes the terminal session and cleans up the PTY process.</p>
+<hr>
+<h2 id="openclaw-analytics">OpenClaw Analytics</h2>
+<h3 id="get-apiopenclawanalytics"><code>GET /api/openclaw/analytics</code></h3>
+<p>Returns Claude Code session analytics derived from the session log files on the Manager host: token usage, cost trends, tool attribution, daily cost history, velocity metrics, and anomaly detection. Results are cached for a short period to avoid re-parsing all session files on every request.</p>
+<hr>
+<h2 id="dashboard-layout">Dashboard Layout</h2>
+<h3 id="get-apilayout"><code>GET /api/layout</code></h3>
+<p>Returns the saved dashboard layout: card order, hidden cards, LMS card order, Overall tab card order, borrowed cards, and the active theme name.</p>
+<hr>
+<h3 id="post-apilayout"><code>POST /api/layout</code></h3>
+<p>Saves the current dashboard layout. The frontend calls this automatically whenever the user drags a card, hides a card, or changes the theme.</p>
+<p><strong>Body:</strong> A layout JSON object with <code>order</code>, <code>hidden</code>, <code>lmsOrder</code>, <code>overallOrder</code>, <code>overallBorrowed</code>, and <code>theme</code> fields.</p>
+<hr>
+<h2 id="admin">Admin</h2>
+<p>These endpoints require an admin-role session.</p>
+<h3 id="get-apiadminsystem-health"><code>GET /api/admin/system-health</code></h3>
+<p>Returns a rolled-up health summary of the whole system: agent connectivity, service availability, TLS certificate expiry, InfluxDB status, and recent error counts. Powers the red/green Admin tab indicator dot.</p>
+<p><strong>Access:</strong> [Admin]</p>
+<hr>
+<h3 id="get-apiadminaudit-log"><code>GET /api/admin/audit-log</code></h3>
+<p>Returns paginated entries from the admin action audit log (who did what, from where, and the outcome).</p>
+<p><strong>Access:</strong> [Admin]</p>
+<p><strong>Parameters:</strong> <code>?limit=&lt;n&gt;</code> (default 100, max 500), <code>?offset=&lt;n&gt;</code> (default 0)</p>
+<p><strong>Response:</strong> <code>{&quot;ok&quot;: true, &quot;total&quot;: &lt;count&gt;, &quot;entries&quot;: [{&quot;ts&quot;, &quot;actor&quot;, &quot;role&quot;, &quot;ip&quot;, &quot;method&quot;, &quot;path&quot;, &quot;action&quot;, &quot;target&quot;, &quot;status&quot;, &quot;outcome&quot;}, ...]}</code></p>
+<hr>
+<h3 id="get-apiadminstream-stats"><code>GET /api/admin/stream-stats</code></h3>
+<p>Returns live SSE-stream and connection health for the Admin tab: Manager stream pool active/peak/refusal counts, Cheroot worker-thread and backlog stats, browser/agent connection counts, and per-agent <code>/status</code> stream state.</p>
+<p><strong>Access:</strong> [Admin]</p>
+<hr>
+<h3 id="get-apiadminbackup-status"><code>GET /api/admin/backup-status</code></h3>
+<p>Returns the scheduled-backup configuration (enabled, interval, retention) and the list of backups currently on disk (<code>file</code>, <code>bytes</code>, <code>mtime</code> per entry).</p>
+<p><strong>Access:</strong> [Admin]</p>
+<hr>
+<h3 id="post-apiadminserviceltsvcgtrestart"><code>POST /api/admin/service/&lt;svc&gt;/restart</code></h3>
+<p>Restarts the Manager or the (co-located) Alarm Engine service. On bare-metal installs this uses a sudoers <code>NOPASSWD systemctl restart</code> grant; under containers and Homebrew kegs it restarts by exiting the process so the supervisor respawns it — exit 0 in a container, exit 1 under a brew keg, whose units are <code>Restart=on-failure</code>. A co-located Alarm Engine restarts through its own management API rather than a process exit. Restarting the Alarm Engine this way only works when it runs on the same host as the Manager.</p>
+<p><strong>Access:</strong> [Admin]</p>
+<p><strong>Path parameter:</strong> <code>&lt;svc&gt;</code> is <code>manager</code> or <code>alarm_engine</code>.</p>
+<hr>
+<h3 id="get-apiadminauth"><code>GET /api/admin/auth</code></h3>
+<p>Returns the current authentication mode (<code>required</code>, <code>trusted_cidr</code>, <code>disabled</code>, or <code>auto</code>) and whether the default credential is still active.</p>
+<p><strong>Access:</strong> [Admin]</p>
+<hr>
+<h3 id="post-apiadminauth"><code>POST /api/admin/auth</code></h3>
+<p>Updates the authentication mode. When the mode is set in the TOML configuration file (rather than <code>auto</code>), this call returns a <code>restart_required</code> flag and the <code>systemctl restart</code> command to apply the change.</p>
+<p><strong>Access:</strong> [Admin]</p>
+<p><strong>Body:</strong> <code>{&quot;mode&quot;: &quot;required&quot;}</code> (or <code>trusted_cidr</code> / <code>disabled</code>)</p>
+<hr>
+<h3 id="get-apiadminusers"><code>GET /api/admin/users</code></h3>
+<p>Returns the list of all user accounts with their role, enabled/disabled status, and lockout state.</p>
+<p><strong>Access:</strong> [Admin]</p>
+<hr>
+<h3 id="post-apiadminusers"><code>POST /api/admin/users</code></h3>
+<p>Creates a new user account.</p>
+<p><strong>Access:</strong> [Admin]</p>
+<p><strong>Body:</strong> <code>{&quot;username&quot;: &quot;&lt;name&gt;&quot;, &quot;password&quot;: &quot;&lt;initial password&gt;&quot;, &quot;role&quot;: &quot;admin&quot; | &quot;operator&quot;}</code></p>
+<hr>
+<h3 id="patch-apiadminusersltusernamegt"><code>PATCH /api/admin/users/&lt;username&gt;</code></h3>
+<p>Updates a user&#39;s role or enabled/disabled status.</p>
+<p><strong>Access:</strong> [Admin]</p>
+<p><strong>Body:</strong> Any combination of <code>{&quot;role&quot;: &quot;admin&quot; | &quot;operator&quot;, &quot;disabled&quot;: true | false}</code></p>
+<hr>
+<h3 id="delete-apiadminusersltusernamegt"><code>DELETE /api/admin/users/&lt;username&gt;</code></h3>
+<p>Deletes a user account. The system prevents deleting the last enabled admin account or your own account.</p>
+<p><strong>Access:</strong> [Admin]</p>
+<hr>
+<h3 id="post-apiadminusersltusernamegtunlock"><code>POST /api/admin/users/&lt;username&gt;/unlock</code></h3>
+<p>Clears a lockout on a user account that was locked after too many failed login attempts.</p>
+<p><strong>Access:</strong> [Admin]</p>
+<hr>
+<h3 id="get-apiadminltprovidergt-models"><code>GET /api/admin/&lt;provider&gt;-models</code></h3>
+<p>Returns the model registry for the given provider&#39;s agents: fans out to every pool member (or, if the pool is empty, every approved agent advertising that provider&#39;s capability) and returns which models each agent reports, plus any per-agent errors from the fan-out. This is not a fixed path — one route is registered per pool-enabled provider (currently <code>llama</code>, <code>lms</code>, and <code>vllm</code>): <code>/api/admin/llama-models</code>, <code>/api/admin/lms-models</code>, <code>/api/admin/vllm-models</code>.</p>
+<p><strong>Access:</strong> [Admin]</p>
+<p><strong>Response:</strong> <code>{&quot;ok&quot;: true, &quot;models&quot;: [{&quot;id&quot;: &quot;&lt;model_id&gt;&quot;, &quot;agents&quot;: [&quot;&lt;hostname&gt;&quot;, ...]}, ...], &quot;errors&quot;: [{&quot;agent&quot;: &quot;&lt;hostname&gt;&quot;, &quot;error&quot;: &quot;&lt;status or message&gt;&quot;}, ...]}</code></p>
+<hr>
+<h3 id="post-apiadminltprovidergt-pins"><code>POST /api/admin/&lt;provider&gt;-pins</code></h3>
+<p>Pins a specific model to a specific agent so that requests for that model are always routed to that agent regardless of the default selection. Registered per provider that declares a pin dict — currently <code>/api/admin/llama-pins</code>, <code>/api/admin/lms-pins</code>, and <code>/api/admin/vllm-pins</code>.</p>
+<p><strong>Access:</strong> [Admin]</p>
+<p><strong>Body:</strong> <code>{&quot;model_id&quot;: &quot;&lt;id&gt;&quot;, &quot;agent_id&quot;: &quot;&lt;id&gt;&quot;}</code> — omit or leave <code>agent_id</code> blank to clear the pin.</p>
+<hr>
+<h3 id="post-apiadminexportmanager"><code>POST /api/admin/export/manager</code></h3>
+<p>Exports an encrypted backup of the Manager configuration, including agent registry, model profiles, and authentication settings. Returns a downloadable archive file.</p>
+<p><strong>Access:</strong> [Admin]</p>
+<hr>
+<h3 id="post-apiadminimportmanagerpreview"><code>POST /api/admin/import/manager/preview</code></h3>
+<p>Validates an encrypted config backup archive and returns a summary of what it contains and what would change if applied. Does not modify anything.</p>
+<p><strong>Access:</strong> [Admin]</p>
+<p><strong>Body:</strong> The encrypted archive file as a multipart upload.</p>
+<hr>
+<h3 id="post-apiadminimportmanagerapply"><code>POST /api/admin/import/manager/apply</code></h3>
+<p>Applies a previously previewed config backup. Overwrites the current configuration with the archive contents.</p>
+<p><strong>Access:</strong> [Admin]</p>
+<p><strong>Body:</strong> The encrypted archive file as a multipart upload.</p>
+<hr>
+<h2 id="account-self-service">Account (Self-Service)</h2>
+<p>These endpoints are available to any logged-in user regardless of role.</p>
+<h3 id="get-apime"><code>GET /api/me</code></h3>
+<p>Returns the current user&#39;s username and role. Used by the frontend to decide which UI elements to show (for example, whether to display the Admin tab).</p>
+<hr>
+<h3 id="post-apiaccountpassword"><code>POST /api/account/password</code></h3>
+<p>Changes the current user&#39;s own password. Requires the existing password to be provided.</p>
+<p><strong>Body:</strong> <code>{&quot;current_password&quot;: &quot;&lt;current&gt;&quot;, &quot;new_password&quot;: &quot;&lt;new&gt;&quot;}</code></p>
+<hr>
+<h2 id="model-profiles">Model Profiles</h2>
+<p>Model profiles let you save named sets of llama.cpp server configuration values (context size, GPU layers, etc.) per model and switch between them quickly.</p>
+<h3 id="get-apillmprofiles"><code>GET /api/llm/profiles</code></h3>
+<p>Returns all saved profiles for all models, keyed by agent and model ID.</p>
+<hr>
+<h3 id="post-apillmprofilesltmodelgtsave"><code>POST /api/llm/profiles/&lt;model&gt;/save</code></h3>
+<p>Saves the current server configuration as a named profile for the specified model.</p>
+<p><strong>Body:</strong> <code>{&quot;profile_name&quot;: &quot;&lt;name&gt;&quot;}</code></p>
+<hr>
+<h3 id="post-apillmprofilesltmodelgtactivate"><code>POST /api/llm/profiles/&lt;model&gt;/activate</code></h3>
+<p>Activates a saved profile, writing its configuration values to the server&#39;s config file.</p>
+<p><strong>Body:</strong> <code>{&quot;profile_name&quot;: &quot;&lt;name&gt;&quot;}</code></p>
+<hr>
+<h3 id="post-apillmprofilesltmodelgtrename"><code>POST /api/llm/profiles/&lt;model&gt;/rename</code></h3>
+<p>Renames a saved profile.</p>
+<p><strong>Body:</strong> <code>{&quot;old_name&quot;: &quot;&lt;current name&gt;&quot;, &quot;new_name&quot;: &quot;&lt;new name&gt;&quot;}</code></p>
+<hr>
+<h3 id="delete-apillmprofilesltmodelgtdelete"><code>DELETE /api/llm/profiles/&lt;model&gt;/delete</code></h3>
+<p>Deletes a saved profile for the specified model.</p>
+<p><strong>Body:</strong> <code>{&quot;profile_name&quot;: &quot;&lt;name&gt;&quot;}</code></p>
+<hr>
+<h2 id="authentication-pages">Authentication Pages</h2>
+<h3 id="get-login"><code>GET /login</code></h3>
+<p>Serves the login page. If authentication is disabled or the request comes from a trusted network (when the mode is <code>trusted_cidr</code>), this redirects to the dashboard instead.</p>
+<hr>
+<h3 id="post-login"><code>POST /login</code></h3>
+<p>Submits login credentials. On success, sets the session cookie and redirects to the dashboard. On failure, returns the login page with an error.</p>
+<p><strong>Body:</strong> <code>{&quot;username&quot;: &quot;&lt;name&gt;&quot;, &quot;password&quot;: &quot;&lt;password&gt;&quot;}</code> (form-encoded)</p>
+<hr>
+<h3 id="get-logout"><code>GET /logout</code></h3>
+<p>Clears the session cookie and redirects to the login page. If authentication is disabled or not required for the current request, redirects to the dashboard instead.</p>
+<hr>
+<h2 id="proxy-routes">Proxy Routes</h2>
+<p>The Manager transparently proxies several external services, adding authentication and routing without exposing those services directly.</p>
+<h3 id="proxyllmchat"><code>/proxy/llmchat/*</code></h3>
+<p>Proxies requests to the llama.cpp built-in chat UI. Content-Security-Policy headers are stripped so the chat UI loads correctly through the proxy.</p>
+<hr>
+<h3 id="proxyopenclaw"><code>/proxy/openclaw/*</code></h3>
+<p>Proxies requests to the local OpenClaw service. Only accessible when an OpenClaw process is running on the Manager host.</p>
+<hr>
+<h3 id="proxyimggen-and-sdcpp"><code>/proxy/imggen/*</code> and <code>/sdcpp/*</code></h3>
+<p>Proxies requests to the stable-diffusion.cpp image generation server on the LM Studio host. Both prefixes map to the same upstream.</p>
+<hr>
+<h3 id="apialarm"><code>/api/alarm/*</code></h3>
+<p>Proxies all Alarm Engine API calls. Every endpoint in the <strong>Alarm Engine</strong> sections below is reached through this prefix. For example, <code>GET /api/alarm/alerts</code> reaches the Alarm Engine&#39;s alert listing endpoint.</p>
+<hr>
+<h3 id="alarm"><code>/alarm/*</code></h3>
+<p>Serves the Alarm Engine&#39;s single-page application (SPA). Navigating to <code>/alarm/</code> in a browser opens the dedicated Alarm Engine UI.</p>
+<hr>
+<h3 id="get-wsalarm"><code>GET /ws/alarm</code></h3>
+<p>Upgrades to a WebSocket connection and bridges to the Alarm Engine&#39;s live alert event stream. The Manager runs a dedicated WebSocket proxy on a separate port so the browser does not need to trust the internal CA certificate. Events include <code>alert_created</code>, <code>alert_updated</code>, <code>alert_acknowledged</code>, and <code>alert_resolved</code>.</p>
+<hr>
+<h2 id="alarm-engine-alerts">Alarm Engine — Alerts</h2>
+<p>All Alarm Engine endpoints are accessed through the <code>/api/alarm/</code> proxy prefix described above.</p>
+<h3 id="get-apialarmalerts"><code>GET /api/alarm/alerts</code></h3>
+<p>Returns a list of alerts. By default only active and acknowledged alerts are returned; pass <code>include_closed=true</code> to also include closed ones.</p>
+<p><strong>Parameters:</strong></p>
+<ul>
+<li><code>?status=</code> — filter by status (<code>active</code>, <code>acknowledged</code>, <code>closed</code>, <code>ignored</code>)</li>
+<li><code>?severity=</code> — filter by severity (<code>critical</code>, <code>warning</code>, <code>info</code>)</li>
+<li><code>?rule_id=</code> — filter to alerts raised by a specific rule</li>
+<li><code>?metric_name=</code> — filter to alerts for a specific metric</li>
+<li><code>?only_active=true</code> — return only active/unresolved alerts</li>
+<li><code>?include_closed=true</code> — include closed alerts in the result set</li>
+<li><code>?limit=</code> — maximum number of results (default 100, max 1000)</li>
+</ul>
+<hr>
+<h3 id="get-apialarmalertsactive"><code>GET /api/alarm/alerts/active</code></h3>
+<p>Returns only currently active (firing, unacknowledged) alerts.</p>
+<hr>
+<h3 id="get-apialarmalertscounters"><code>GET /api/alarm/alerts/counters</code></h3>
+<p>Returns alert counts broken down by status and severity. Used by the dashboard badge and Events tab indicator.</p>
+<hr>
+<h3 id="get-apialarmalertsexport"><code>GET /api/alarm/alerts/export</code></h3>
+<p>Downloads all alerts as a JSON file, useful for audit or analysis.</p>
+<hr>
+<h3 id="get-apialarmalertsltalert_idgt"><code>GET /api/alarm/alerts/&lt;alert_id&gt;</code></h3>
+<p>Returns full detail for a single alert, including its history of state changes.</p>
+<hr>
+<h3 id="post-apialarmalertsltalert_idgtread"><code>POST /api/alarm/alerts/&lt;alert_id&gt;/read</code></h3>
+<p>Marks an alert as read (seen) without changing its status.</p>
+<hr>
+<h3 id="post-apialarmalertsltalert_idgtacknowledge"><code>POST /api/alarm/alerts/&lt;alert_id&gt;/acknowledge</code></h3>
+<p>Acknowledges a firing alert, indicating that an operator is aware of it. The alert remains in the system until it resolves or is closed.</p>
+<hr>
+<h3 id="post-apialarmalertsltalert_idgtclose"><code>POST /api/alarm/alerts/&lt;alert_id&gt;/close</code></h3>
+<p>Closes a resolved alert, removing it from the active view. Only resolved alerts can be closed.</p>
+<hr>
+<h3 id="post-apialarmalertsltalert_idgtignore"><code>POST /api/alarm/alerts/&lt;alert_id&gt;/ignore</code></h3>
+<p>Ignores an alert, suppressing future notifications for it.</p>
+<hr>
+<h3 id="delete-apialarmalertsltalert_idgt"><code>DELETE /api/alarm/alerts/&lt;alert_id&gt;</code></h3>
+<p>Permanently deletes an alert record.</p>
+<hr>
+<h3 id="post-apialarmalertsclose-all"><code>POST /api/alarm/alerts/close-all</code></h3>
+<p>Closes all alerts that are currently in the resolved state.</p>
+<hr>
+<h3 id="post-apialarmalertsbulk"><code>POST /api/alarm/alerts/bulk</code></h3>
+<p>Performs an action on multiple alerts in one call.</p>
+<p><strong>Body:</strong> <code>{&quot;action&quot;: &quot;acknowledge&quot; | &quot;close&quot; | &quot;ignore&quot;, &quot;alert_ids&quot;: [&quot;&lt;id&gt;&quot;, ...]}</code></p>
+<hr>
+<h3 id="post-apialarmalertsignore-all"><code>POST /api/alarm/alerts/ignore-all</code></h3>
+<p>Ignores all currently firing alerts.</p>
+<hr>
+<h2 id="alarm-engine-alarm-rules">Alarm Engine — Alarm Rules</h2>
+<h3 id="get-apialarmrules"><code>GET /api/alarm/rules</code></h3>
+<p>Returns all configured alarm rules with their thresholds, severity levels, and enabled/disabled status.</p>
+<hr>
+<h3 id="post-apialarmrules"><code>POST /api/alarm/rules</code></h3>
+<p>Creates a new alarm rule.</p>
+<p><strong>Body:</strong></p>
+<pre><code class="language-json">{
+  &quot;name&quot;: &quot;GPU temperature too high&quot;,
+  &quot;description&quot;: &quot;Optional explanation&quot;,
+  &quot;metric_source&quot;: &quot;gpu&quot;,
+  &quot;metric_name&quot;: &quot;temperature_celsius&quot;,
+  &quot;rule_type&quot;: &quot;threshold_above&quot;,
+  &quot;config&quot;: {
+    &quot;threshold&quot;: {
+      &quot;value&quot;: 85.0,
+      &quot;warning&quot;: 80.0,
+      &quot;critical&quot;: 90.0
+    }
+  },
+  &quot;severity&quot;: &quot;warning&quot;,
+  &quot;enabled&quot;: true,
+  &quot;notification_channel_ids&quot;: [],
+  &quot;auto_resolve_cycles&quot;: 2
+}
+</code></pre>
+<ul>
+<li><code>metric_source</code>: <code>gpu</code>, <code>cpu</code>, <code>ram</code>, <code>disk</code>, <code>network</code>, <code>psu</code></li>
+<li><code>rule_type</code>: <code>threshold_above</code> (alert when value exceeds threshold), <code>threshold_below</code> (alert when value falls below), <code>threshold_range</code> (alert outside a range)</li>
+<li><code>severity</code>: <code>info</code>, <code>warning</code>, <code>critical</code></li>
+<li><code>auto_resolve_cycles</code>: number of consecutive OK evaluations before auto-closing the alert (0 = never auto-close)</li>
+</ul>
+<hr>
+<h3 id="get-apialarmrulesltrule_idgt"><code>GET /api/alarm/rules/&lt;rule_id&gt;</code></h3>
+<p>Returns the full definition of a single rule.</p>
+<hr>
+<h3 id="put-apialarmrulesltrule_idgt"><code>PUT /api/alarm/rules/&lt;rule_id&gt;</code></h3>
+<p>Updates an existing rule&#39;s definition.</p>
+<p><strong>Body:</strong> The same shape as the create body; all fields are replaced.</p>
+<hr>
+<h3 id="delete-apialarmrules"><code>DELETE /api/alarm/rules</code></h3>
+<p>Deletes all alarm rules. Use with caution — this cannot be undone.</p>
+<hr>
+<h3 id="delete-apialarmrulesltrule_idgt"><code>DELETE /api/alarm/rules/&lt;rule_id&gt;</code></h3>
+<p>Deletes a single alarm rule.</p>
+<hr>
+<h3 id="patch-apialarmrulesltrule_idgttoggle"><code>PATCH /api/alarm/rules/&lt;rule_id&gt;/toggle</code></h3>
+<p>Toggles a rule between enabled and disabled without deleting it. Disabled rules are not evaluated against incoming metrics.</p>
+<hr>
+<h2 id="alarm-engine-notifications">Alarm Engine — Notifications</h2>
+<h3 id="get-apialarmnotificationschannels"><code>GET /api/alarm/notifications/channels</code></h3>
+<p>Returns all configured notification channels (email, webhook, Discord).</p>
+<hr>
+<h3 id="post-apialarmnotificationschannels"><code>POST /api/alarm/notifications/channels</code></h3>
+<p>Creates a new notification channel.</p>
+<p><strong>Body — email channel:</strong></p>
+<pre><code class="language-json">{
+  &quot;name&quot;: &quot;My Email Channel&quot;,
+  &quot;channel_type&quot;: &quot;email&quot;,
+  &quot;config&quot;: {
+    &quot;email&quot;: {
+      &quot;to_email&quot;: &quot;alerts@example.com&quot;,
+      &quot;subject_prefix&quot;: &quot;[ALARM]&quot;
+    }
+  },
+  &quot;enabled&quot;: true
+}
+</code></pre>
+<p><strong>Body — webhook channel:</strong></p>
+<pre><code class="language-json">{
+  &quot;name&quot;: &quot;My Webhook&quot;,
+  &quot;channel_type&quot;: &quot;webhook&quot;,
+  &quot;config&quot;: {
+    &quot;webhook&quot;: {
+      &quot;url&quot;: &quot;https://your-endpoint.example.com/hook&quot;,
+      &quot;method&quot;: &quot;POST&quot;,
+      &quot;headers&quot;: {}
+    }
+  }
+}
+</code></pre>
+<p><strong>Body — Discord channel:</strong></p>
+<pre><code class="language-json">{
+  &quot;name&quot;: &quot;Discord Alerts&quot;,
+  &quot;channel_type&quot;: &quot;discord&quot;,
+  &quot;config&quot;: {
+    &quot;discord&quot;: {
+      &quot;webhook_url&quot;: &quot;https://discord.com/api/webhooks/...&quot;
+    }
+  }
+}
+</code></pre>
+<hr>
+<h3 id="get-apialarmnotificationschannelsltchannel_idgt"><code>GET /api/alarm/notifications/channels/&lt;channel_id&gt;</code></h3>
+<p>Returns the configuration for a single notification channel.</p>
+<hr>
+<h3 id="put-apialarmnotificationschannelsltchannel_idgt"><code>PUT /api/alarm/notifications/channels/&lt;channel_id&gt;</code></h3>
+<p>Updates a notification channel&#39;s configuration.</p>
+<p><strong>Body:</strong> The same shape as the create body.</p>
+<hr>
+<h3 id="delete-apialarmnotificationschannelsltchannel_idgt"><code>DELETE /api/alarm/notifications/channels/&lt;channel_id&gt;</code></h3>
+<p>Deletes a notification channel.</p>
+<hr>
+<h3 id="get-apialarmnotificationsconfigs"><code>GET /api/alarm/notifications/configs</code></h3>
+<p>Returns all notification policies — the rules that determine which channels receive which alerts at what severity.</p>
+<hr>
+<h3 id="post-apialarmnotificationsconfigs"><code>POST /api/alarm/notifications/configs</code></h3>
+<p>Creates a new notification policy.</p>
+<p><strong>Body:</strong> A policy object specifying which severity levels and rule tags trigger delivery to which channel.</p>
+<hr>
+<h3 id="get-apialarmnotificationsconfigsltconfig_idgt"><code>GET /api/alarm/notifications/configs/&lt;config_id&gt;</code></h3>
+<p>Returns a single notification policy.</p>
+<hr>
+<h3 id="put-apialarmnotificationsconfigsltconfig_idgt"><code>PUT /api/alarm/notifications/configs/&lt;config_id&gt;</code></h3>
+<p>Updates a notification policy.</p>
+<p><strong>Body:</strong> The same shape as the create body.</p>
+<hr>
+<h3 id="delete-apialarmnotificationsconfigsltconfig_idgt"><code>DELETE /api/alarm/notifications/configs/&lt;config_id&gt;</code></h3>
+<p>Deletes a notification policy.</p>
+<hr>
+<h3 id="get-apialarmnotificationsdelivery-history"><code>GET /api/alarm/notifications/delivery-history</code></h3>
+<p>Returns the delivery log: a record of every notification attempt with its outcome (sent, failed, retrying) and timestamp.</p>
+<hr>
+<h3 id="post-apialarmnotificationssend"><code>POST /api/alarm/notifications/send</code></h3>
+<p>Sends a notification immediately, bypassing policy evaluation. Useful for testing or manual escalation. Target either a saved policy (<code>config_id</code>) or a single channel (<code>channel_id</code>).</p>
+<p><strong>Body:</strong></p>
+<pre><code class="language-json">{
+  &quot;title&quot;: &quot;Disk almost full&quot;,
+  &quot;body&quot;: &quot;The data volume is at 95% capacity.&quot;,
+  &quot;severity&quot;: &quot;warning&quot;,
+  &quot;config_id&quot;: &quot;&lt;policy-id&gt;&quot;,
+  &quot;channel_id&quot;: &quot;&lt;channel-id&gt;&quot;,
+  &quot;metadata&quot;: {}
+}
+</code></pre>
+<ul>
+<li><code>title</code> and <code>body</code> are required</li>
+<li>supply <code>config_id</code> (a notification policy) <strong>or</strong> <code>channel_id</code> (a single channel)</li>
+<li><code>severity</code> and <code>metadata</code> are optional</li>
+</ul>
+<hr>
+<h3 id="post-apialarmnotificationstest"><code>POST /api/alarm/notifications/test</code></h3>
+<p>Sends a test message through a channel to verify it is configured correctly.</p>
+<p><strong>Body:</strong> <code>{&quot;channel_id&quot;: &quot;&lt;id&gt;&quot;}</code></p>
+<hr>
+<h2 id="alarm-engine-metrics">Alarm Engine — Metrics</h2>
+<h3 id="get-apialarmmetrics"><code>GET /api/alarm/metrics</code></h3>
+<p>Queries the time-series metric store. Returns data points for dashboard history and analysis.</p>
+<p><strong>Query parameters:</strong></p>
+<ul>
+<li><code>source</code> — (optional) filter to a specific metric source (e.g. <code>gpu</code>, <code>cpu</code>, <code>ram</code>, <code>disk</code>, <code>network</code>, <code>psu</code>)</li>
+<li><code>hostname</code> — (optional) filter to a specific host</li>
+<li><code>limit</code> — (optional, default 1000) maximum number of results to return</li>
+</ul>
+<hr>
+<h3 id="post-apialarmmetrics"><code>POST /api/alarm/metrics</code></h3>
+<p>Ingests a single metric data point.</p>
+<p><strong>Access:</strong> Requires the ingest bearer token when one is configured.</p>
+<p><strong>Body:</strong> A single <code>MetricPoint</code> object with <code>source</code>, <code>metric_name</code>, <code>value</code>, <code>timestamp</code>, and <code>tags</code>.</p>
+<hr>
+<h3 id="post-apialarmmetricsbatch"><code>POST /api/alarm/metrics/batch</code></h3>
+<p>Ingests a batch of metric data points in one call. This is the primary path used by agents — batching reduces per-request overhead.</p>
+<p><strong>Access:</strong> Requires the ingest bearer token when one is configured.</p>
+<p><strong>Body:</strong> <code>{&quot;points&quot;: [&lt;MetricPoint&gt;, ...]}</code></p>
+<hr>
+<h3 id="post-apialarmmetricsingest"><code>POST /api/alarm/metrics/ingest</code></h3>
+<p>Alternative single-point ingest path provided for compatibility with certain forwarding setups.</p>
+<p><strong>Access:</strong> Requires the ingest bearer token when one is configured.</p>
+<p><strong>Body:</strong> A single <code>MetricPoint</code> object.</p>
+<hr>
+<h3 id="get-apialarmmetricsexport"><code>GET /api/alarm/metrics/export</code></h3>
+<p>Downloads all stored metrics as a file, useful for backup or external analysis.</p>
+<hr>
+<h3 id="get-apialarmmetricsltsourcegtltmetric_namegt"><code>GET /api/alarm/metrics/&lt;source&gt;/&lt;metric_name&gt;</code></h3>
+<p>Returns the time-series history for a specific metric from a specific source host. Used by dashboard chart backfill.</p>
+<p><strong>Query parameters:</strong></p>
+<ul>
+<li><code>since_minutes</code> — how far back to look, in minutes (default: 60)</li>
+<li><code>limit</code> — maximum number of data points to return (default: 100 000)</li>
+<li><code>hostname</code> — (optional) filter to a specific host</li>
+</ul>
+<hr>
+<h3 id="get-apialarmmetricsltsourcegtltmetric_namegtsummary"><code>GET /api/alarm/metrics/&lt;source&gt;/&lt;metric_name&gt;/summary</code></h3>
+<p>Returns summary statistics for a specific metric (min, max, mean, p95) over a query window without returning the full point-by-point history.</p>
+<p><strong>Query parameters:</strong></p>
+<ul>
+<li><code>window_minutes</code> — time window in minutes to summarize over (default: 60)</li>
+</ul>
+<hr>
+<h3 id="post-apialarmingest"><code>POST /api/alarm/ingest</code></h3>
+<p>Receives an alert from an outside system and routes it into the alarm engine. The endpoint auto-detects the payload format — InfluxDB notification rules, Grafana alerting webhooks, or a generic JSON/YAML body — and maps it onto an internal alert. Useful for forwarding alerts from tools you already run into this dashboard&#39;s Events view.</p>
+<p><strong>Access:</strong> Requires the ingest bearer token when one is configured.</p>
+<hr>
+<h2 id="opentelemetry-otlp-ingest">OpenTelemetry (OTLP) Ingest</h2>
+<p>These endpoints accept telemetry from external pipelines that speak the OpenTelemetry protocol. They are served by the Alarm Engine directly (not under the <code>/api/alarm/</code> proxy prefix) and require the ingest bearer token when one is configured. Each payload is converted into metric points and stored alongside the agents&#39; own metrics.</p>
+<h3 id="post-v1metrics"><code>POST /v1/metrics</code></h3>
+<p>Ingests OpenTelemetry metrics (counters, gauges, histograms).</p>
+<h3 id="post-v1traces"><code>POST /v1/traces</code></h3>
+<p>Ingests OpenTelemetry trace spans. Each span is recorded as a duration metric.</p>
+<h3 id="post-v1logs"><code>POST /v1/logs</code></h3>
+<p>Ingests OpenTelemetry log records. Each record is recorded as a log-count metric.</p>
+
+  </article>
+</main>
+
+<footer>
+  <div class="wrap foot-base" style="border-top:none; padding-top:0">
+    <span>© 2026 LLM SysCore · AGPL-3.0</span>
+    <span><a href="mailto:support@llmsyscore.com">support@llmsyscore.com</a></span>
+  </div>
+</footer>
+
+</body>
+</html>

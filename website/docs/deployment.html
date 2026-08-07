@@ -1,0 +1,551 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Deployment — LLM SysCore</title>
+<meta name="description" content="Deployment guide for LLM Systems Manager: prerequisites, installation, TLS, and multi-host setups.">
+<link rel="canonical" href="https://www.llmsyscore.com/docs/deployment.html">
+<meta property="og:type" content="article">
+<meta property="og:site_name" content="LLM SysCore">
+<meta property="og:title" content="Deployment — LLM Systems Manager">
+<meta property="og:description" content="Deployment guide for LLM Systems Manager: prerequisites, installation, TLS, and multi-host setups.">
+<meta property="og:url" content="https://www.llmsyscore.com/docs/deployment.html">
+<meta property="og:image" content="https://www.llmsyscore.com/assets/og-card.png">
+<meta name="twitter:card" content="summary_large_image">
+<link rel="icon" type="image/png" href="../assets/favicon-32.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Sora:wght@400;600;700;800&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../css/site.css">
+</head>
+<body>
+
+<header class="nav">
+  <div class="wrap nav-inner">
+    <a class="nav-brand" href="../index.html" aria-label="LLM SysCore home">
+      <img src="../assets/logo.svg" alt="">
+      <span>LLM&nbsp;Sys<b class="core">Core</b></span>
+    </a>
+    <nav class="nav-links" aria-label="Main">
+      <a href="../index.html#features">Features</a>
+      <a href="../index.html#screenshots" class="nav-hide-sm">Screenshots</a>
+      <a href="./" aria-current="page">Docs</a>
+      <a href="../about.html" class="nav-hide-sm">About</a>
+      <a href="../contact.html">Contact</a>
+      <a class="btn btn-ghost" href="https://github.com/llmsyscore/llm-systems-manager">
+        <svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27s1.36.09 2 .27c1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8z"/></svg>
+        GitHub
+      </a>
+    </nav>
+  </div>
+</header>
+
+<main class="wrap docs-layout">
+  <aside class="docs-side">
+    <h4>Documentation</h4>
+    <nav aria-label="Documentation sections">
+      <a href="index.html">Documentation & quick start</a>
+      <a href="architecture.html">Architecture</a>
+      <a href="components.html">Components</a>
+      <a href="api.html">API reference</a>
+      <a href="deployment.html" class="active" aria-current="page">Deployment</a>
+    </nav>
+  </aside>
+
+  <article class="md">
+<h1 id="llm-systems-manager-deployment-guide">LLM Systems Manager — Deployment Guide</h1>
+<p>This guide walks you through installing, configuring, and maintaining LLM Systems Manager on your servers.</p>
+<hr>
+<h2 id="prerequisites">Prerequisites</h2>
+<h3 id="manager-server">Manager Server</h3>
+<ul>
+<li><strong>Operating system:</strong> Ubuntu 22.04 or later (other modern Linux distributions should work)</li>
+<li><strong>Python:</strong> 3.10 or later (the installer refuses to proceed below this)</li>
+<li><strong>RAM:</strong> 2 GB minimum; 4 GB recommended</li>
+<li><strong>Disk:</strong> At least 10 GB free for logs, metrics history, and model benchmark data</li>
+</ul>
+<h3 id="remote-agent-hosts">Remote Agent Hosts</h3>
+<p>Agents can run on:</p>
+<ul>
+<li><strong>Linux</strong> — Ubuntu 22.04+ or equivalent</li>
+<li><strong>macOS</strong> — macOS 13 (Ventura) or later</li>
+</ul>
+<p>The script installer needs Python 3.10+ on the agent host. The native packages and the binary tarball bundle a self-contained agent and need no Python at all.</p>
+<p>Each agent host needs network access to ports 8081 (alarm engine) and 5000 or 5443 (manager).</p>
+<h3 id="required-ports">Required Ports</h3>
+<p>The following (configurable) ports must be reachable between the components listed.</p>
+<div class="tbl-wrap"><table>
+<thead>
+<tr>
+<th>Port</th>
+<th>What it is</th>
+<th>Who needs to reach it</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>5000</td>
+<td>Manager web interface (HTTP)</td>
+<td>Browser</td>
+</tr>
+<tr>
+<td>5443</td>
+<td>Manager web interface (HTTPS, optional)</td>
+<td>Browser</td>
+</tr>
+<tr>
+<td>5444</td>
+<td>Alarm event WebSocket proxy</td>
+<td>Browser</td>
+</tr>
+<tr>
+<td>8081</td>
+<td>Alarm Engine API — receives metrics from agents</td>
+<td>Agents and Manager</td>
+</tr>
+<tr>
+<td>8082</td>
+<td>Agent API — manager contacts the agent here</td>
+<td>Manager</td>
+</tr>
+<tr>
+<td>8086</td>
+<td>InfluxDB time-series database</td>
+<td>Alarm Engine and Manager</td>
+</tr>
+</tbody></table></div>
+<hr>
+<h2 id="installing-the-full-stack">Installing the Full Stack</h2>
+<p>For a quick installation install on one host, choose the full install option:</p>
+<h3 id="step-1">Step 1:</h3>
+<pre><code class="language-bash">bash &lt;(curl -fsSL https://raw.githubusercontent.com/llmsyscore/llm-systems-manager/main/tools/installer/install.sh)
+</code></pre>
+<h3 id="step-2-choose-an-installation-mode">Step 2: Choose an Installation Mode</h3>
+<p>You will see a menu like this:</p>
+<pre><code>  Select the deployment option:
+
+    1)  Full system          manager + alarm engine + agent + InfluxDB
+    2)  Manager + alarm      manager + alarm engine (existing InfluxDB)
+    3)  Manager only         Flask manager + dashboard
+    4)  Alarm engine only    standalone FastAPI alarm engine
+    5)  Agent only           Linux + macOS host agent
+    6)  InfluxDB only        InfluxDB v2 + scoped tokens (DB host)
+    7)  Update installed     detect, diff, backup, sync-only-changed, restart
+    8)  Uninstall            remove all services and files, with confirmation prompts
+    9)  Quit                 exit with no changes
+
+Mode [1-9]:
+</code></pre>
+<p><strong>Choose option 1</strong> for a first-time setup on a single server. This installs everything you need in one step.</p>
+<h3 id="step-3-answer-configuration-prompts">Step 3: Answer Configuration Prompts</h3>
+<p>The installer will ask a few questions:</p>
+<ul>
+<li><strong>Manager address</strong> — the IP address or hostname other machines will use to reach this server</li>
+<li><strong>Admin password</strong> — the password for the initial admin account. It is stored as a secure hash, never in plain text.</li>
+<li><strong>SMTP settings</strong> (optional) — email address and credentials for alarm notifications</li>
+<li><strong>InfluxDB details</strong> — the installer can provision InfluxDB automatically in mode 1</li>
+</ul>
+<p>If you are unsure about any optional setting, you can accept the default and change it later in the configuration file.</p>
+<h3 id="step-4-start-the-services">Step 4: Start the Services</h3>
+<p>The installer enables the services but does not start them — you decide when to bring them up. Start all three services:</p>
+<pre><code class="language-bash">sudo systemctl start llm-systems-manager
+sudo systemctl start llm-systems-alarm-engine
+sudo systemctl start llm-systems-agent
+</code></pre>
+<p>Verify each one is running:</p>
+<pre><code class="language-bash">sudo systemctl status llm-systems-manager
+sudo systemctl status llm-systems-alarm-engine
+sudo systemctl status llm-systems-agent
+</code></pre>
+<p>Each should show <code>active (running)</code>. If a service failed to start, check the logs (see <a href="#viewing-logs">Viewing Logs</a> below).</p>
+<h3 id="step-5-open-the-dashboard">Step 5: Open the Dashboard</h3>
+<p>Open a browser and go to:</p>
+<pre><code>http://&lt;your-server-address&gt;:5000
+</code></pre>
+<p>Log in with the default credentials:</p>
+<ul>
+<li><strong>Username:</strong> <code>llmadmin</code></li>
+<li><strong>Password:</strong> <code>llmadmin</code></li>
+</ul>
+<p><strong>Important:</strong> Change this password immediately after your first login. Go to the account menu in the top navigation bar and choose <strong>Change Password</strong>.</p>
+<hr>
+<h2 id="installing-from-native-packages-deb-rpm">Installing from Native Packages (.deb / .rpm)</h2>
+<p>Each GitHub Release also ships <code>.deb</code> and <code>.rpm</code> packages: <strong><code>llm-systems-manager</code></strong> installs the manager + alarm engine (the mode-2 layout: InfluxDB stays external, agents install separately), and per-arch <strong><code>llm-systems-agent</code></strong> packages install the self-contained agent binary. The script installer remains the preferred, fully automated path — packages exist for hosts managed through apt/dnf tooling. Download the package for your distro from the <a href="https://github.com/llmsyscore/llm-systems-manager/releases" target="_blank" rel="noopener">Releases page</a>, then:</p>
+<p><strong>Debian / Ubuntu:</strong></p>
+<pre><code class="language-bash">sudo apt install ./llm-systems-manager_&lt;version&gt;_all.deb
+</code></pre>
+<p>The install prompts (via debconf) for the dashboard admin login and SMTP settings; press ENTER to accept defaults. Non-interactive installs (<code>DEBIAN_FRONTEND=noninteractive</code>) take the defaults silently.</p>
+<p><strong>RHEL / Rocky / Alma / Fedora:</strong></p>
+<pre><code class="language-bash">sudo dnf install ./llm-systems-manager-&lt;version&gt;-1.noarch.rpm
+</code></pre>
+<p>RPM installs are non-interactive: config is generated with detected defaults at <code>/opt/llm-systems-manager/config/llm-systems.toml</code> — edit it and <code>sudo systemctl restart llm-systems-manager</code> afterwards. EL9&#39;s default <code>python3</code> is 3.9; install <code>python3.11</code> (<code>sudo dnf install python3.11 python3.11-pip</code>) first — the package picks the newest Python ≥ 3.10 automatically.</p>
+<p>Both manager packages create the <code>llmsys</code> runtime user, install and start the two systemd units, and build the Python venvs at configure time (<strong>network access to PyPI is required during install</strong>). On upgrades the live config is preserved (new keys are merged in). <code>apt purge llm-systems-manager</code> removes everything — config, data, logs, and the runtime user — when the package created the tree; state it didn&#39;t create is kept (see <a href="#mixing-install-methods">Mixing install methods</a>). <code>dnf remove</code> always keeps config/data behind with a notice.</p>
+<p><strong>InfluxDB:</strong> the package declares <code>influxdb2</code> only as a <em>Recommends</em> — it lives in InfluxData&#39;s third-party repo (not distro repos) and may legitimately run on another host, so a hard dependency would break both cases. If InfluxDB isn&#39;t reachable after install, the postinst prints a notice pointing at <code>tools/installer/install-influxdb.sh</code> (local install) or the <code>[influxdb]</code> config section (external server). Metric history and alarms need it; the dashboard runs without it in the meantime. While <code>[influxdb.tokens]</code> still holds its <code>REPLACE_ME</code> placeholders, the alarm engine is enabled but <strong>not started</strong> — the postinst prints the steps (running <code>install-influxdb.sh</code> prints the tokens to paste); after setting the tokens, <code>systemctl start llm-systems-alarm-engine</code>.</p>
+<p><strong>Agent package:</strong></p>
+<pre><code class="language-bash">sudo apt install ./llm-systems-agent_&lt;version&gt;_amd64.deb        # or _arm64
+sudo dnf install ./llm-systems-agent-&lt;version&gt;-1.x86_64.rpm     # or .aarch64
+</code></pre>
+<p>The deb prompts (debconf) for the manager URL; the rpm takes defaults — set <code>MANAGER_URL</code> in <code>/opt/llm-systems-agent/agent_config.yaml</code> and restart if left blank. The binary is installed owned by <code>llmsys</code> so manager-driven self-update (<strong>Admin → Agents → Update</strong>) keeps working; after a self-update the on-disk binary is newer than the package until the next <code>apt</code>/<code>dnf</code> upgrade re-syncs it. Provider toggles (llama.cpp/LM Studio/vLLM control, sudo wrappers) are what the script installer automates — enable them in <code>agent_config.yaml</code> per its inline docs.</p>
+<p>Packages are built by <code>tools/packaging/build-packages.sh</code> and <code>tools/packaging/build-agent-package.sh</code> (fpm) — see those scripts for the build-from-source path.</p>
+<h3 id="mixing-install-methods">Mixing install methods</h3>
+<p><strong>Install methods do not mix on one host</strong> — the script installer, the native packages, Docker, and the agent binary tarball each own the install tree, the systemd units, and the <code>llmsys</code> user differently, and mixing them shadows units or desyncs the package database. Both sides now guard against it:</p>
+<ul>
+<li>The <strong>packages refuse a fresh install</strong> over script-installer state (units in <code>/etc/systemd/system</code>, a config the package didn&#39;t create, a venv in the agent tree) and over busy service ports (a Docker control plane or script install still running). Override: <code>LLMSYS_PACKAGE_FORCE=1</code> in the environment — the tree is then marked <em>adopted</em> and a later <code>apt purge</code> keeps config/data instead of deleting them.</li>
+<li>The <strong>script installer, updater, and uninstaller refuse a package-managed host</strong> and point at <code>apt</code>/<code>dnf</code> instead (the updater skips just the agent when only the agent is packaged). Override: <code>LLMSYS_IGNORE_NATIVE_PACKAGE=1</code>.</li>
+<li><code>apt purge</code> only deletes config/data/logs when the package created the tree and no script-installer state appeared since; otherwise it keeps them and says so.</li>
+</ul>
+<p><strong>Supported migrations:</strong></p>
+<ul>
+<li><em>Script install → package</em>: <code>tools/installer/uninstall.sh</code> first, then install the package (fresh config), or <code>LLMSYS_PACKAGE_FORCE=1</code> to adopt in place (config preserved).</li>
+<li><em>Binary tarball → agent package</em>: supported directly — a bare binary + config with no hand-made unit is adopted automatically (config/token preserved, binary replaced by the packaged one).</li>
+<li><em>Package → script install</em>: <code>apt purge</code> / <code>dnf remove</code> first, then run the script installer.</li>
+<li>A <strong>self-updated agent binary</strong> (Admin → Agents → Update) is newer than what the package database recorded; a later package upgrade replaces it and warns if that was a downgrade — re-update from the dashboard or install a newer package.</li>
+</ul>
+<hr>
+<h2 id="installing-with-docker-control-plane">Installing with Docker (control plane)</h2>
+<p>Multi-arch images for the manager and alarm engine are published to ghcr.io on every release. No repo checkout is needed: download <a href="https://github.com/llmsyscore/llm-systems-manager/blob/main/docker-compose.yml" target="_blank" rel="noopener"><code>docker-compose.yml</code></a> and <a href="https://github.com/llmsyscore/llm-systems-manager/blob/main/.env.example" target="_blank" rel="noopener"><code>.env.example</code></a>, fill in the secrets, and <code>docker compose up -d</code> brings up the manager + alarm engine + InfluxDB together. See <a href="index.html">docker/README.md</a> for the full walkthrough. Agents still install natively on each monitored host (they need sensor/GPU/systemd access).</p>
+<hr>
+<h2 id="installing-with-homebrew-control-plane">Installing with Homebrew (control plane)</h2>
+<p>The <a href="https://github.com/llmsyscore/homebrew-tap" target="_blank" rel="noopener">tap</a> also carries control-plane formulas for macOS (Apple Silicon) and Linux:</p>
+<pre><code class="language-bash">brew tap llmsyscore/tap &amp;&amp; brew trust llmsyscore/tap
+brew install llm-systems-manager llm-systems-alarm-engine influxdb@2 influxdb-cli
+</code></pre>
+<ul>
+<li><strong>Config</strong> is shared at <code>$(brew --prefix)/etc/llm-systems-manager/llm-systems.toml</code>, seeded on first install with generated alarm-engine ingest/management tokens (equivalent to a co-located script install). It is kept across upgrades.</li>
+<li><strong>State</strong> (internal CA, agent registry, TLS certs, SQLite DBs) lives under <code>$(brew --prefix)/var/llm-systems-manager/</code> and also survives upgrades — the kegs hold only code + venvs.</li>
+<li><strong>InfluxDB</strong>: run <code>llm-systems-influx-setup</code> (installed by the manager formula) — it starts the <code>influxdb@2</code> service, onboards it on first boot, creates the buckets + scoped tokens, and writes them into <code>[influxdb.tokens]</code>. It needs both <code>influxdb@2</code> (the v2 server — Homebrew&#39;s plain <code>influxdb</code> formula is InfluxDB 3.x, whose API this stack does not speak) and <code>influxdb-cli</code> (the <code>influx</code> command ships in the separate <code>influxdb-cli</code> formula). Manual alternative: <code>brew services start influxdb@2</code>, <code>influx setup</code>, then create the buckets/tokens per <a href="#configuration">Configuration</a> and fill <code>[influxdb]</code> + <code>[influxdb.tokens]</code> yourself. The manager and alarm engine run without it, but history and alert evaluation stay degraded until then.</li>
+<li><strong>Start order</strong>: <code>brew services start llm-systems-manager</code> first (first boot creates the internal CA and issues <code>ae-tls.{crt,key}</code> for the alarm engine), then <code>brew services start llm-systems-alarm-engine</code>.</li>
+<li>Don&#39;t mix with a script/package install on the same host — both would fight over ports 5000/8081.</li>
+</ul>
+<hr>
+<h2 id="installing-agents-on-remote-computers">Installing Agents on Remote Computers</h2>
+<p>If you already have a manager running and want to start monitoring an additional server, install only the agent on that remote machine. The script installer below is the preferred path; two alternatives exist for hosts where it doesn&#39;t fit:</p>
+<ul>
+<li><strong>Native package</strong> (Linux, no Python needed): <code>apt</code>/<code>dnf</code> install of the per-arch <code>llm-systems-agent</code> package — see <a href="#installing-from-native-packages-deb--rpm">Installing from Native Packages</a>.</li>
+<li><strong>Binary tarball</strong> (Linux or macOS, no Python needed): each release ships <code>llm-systems-agent-&lt;platform&gt;.tar.gz</code> bundling the self-contained binary, <code>agent_config.yaml.example</code>, and the service unit template — extract to <code>/opt/llm-systems-agent</code>, set <code>MANAGER_URL</code> in a copied <code>agent_config.yaml</code>, install the unit, and <code>systemctl enable --now llm-systems-agent</code>. Full steps in the <a href="index.html#agent-binary-no-python-required">README&#39;s Agent binary section</a>.</li>
+<li><strong>Homebrew</strong> (macOS/Apple Silicon, or Linux x86_64/arm64 with Homebrew): <code>brew tap llmsyscore/tap &amp;&amp; brew trust llmsyscore/tap &amp;&amp; brew install llm-systems-agent</code>, then set <code>MANAGER_URL</code> in <code>$(brew --prefix)/etc/llm-systems-agent/agent_config.yaml</code> and <code>brew services start llm-systems-agent</code> (launchd on macOS, systemd user unit on Linux). <code>brew upgrade</code> tracks new releases automatically. Full steps in the <a href="index.html#homebrew-macos--linux">README&#39;s Homebrew section</a>.</li>
+</ul>
+<h3 id="step-1-get-the-installer-on-the-remote-host">Step 1: Get the Installer on the Remote Host</h3>
+<p>Copy just <code>tools/installer/install.sh</code> from an existing manager installation using <code>scp</code> or another file-transfer method, then run <code>bash install.sh</code> from the directory you copied them into.</p>
+<p>The agent installer works on both Linux and macOS. It will ask for the manager server address so the agent knows where to register.</p>
+<p>Or you can optionally download and run the installer from github</p>
+<pre><code class="language-bash">bash &lt;(curl -fsSL https://raw.githubusercontent.com/llmsyscore/llm-systems-manager/main/tools/installer/install.sh)
+</code></pre>
+<h3 id="step-2-start-the-agent-if-not-started-during-the-installation">Step 2: Start the Agent (if not started during the installation)</h3>
+<p>On Linux:</p>
+<pre><code class="language-bash">sudo systemctl start llm-systems-agent
+</code></pre>
+<p>NOTE: On macOS, the installer registers a launchd service. Start it with:</p>
+<pre><code class="language-bash">launchctl start com.llm-systems-agent
+</code></pre>
+<h3 id="step-3-approve-the-agent">Step 3: Approve the Agent</h3>
+<p>New agents must be approved before the manager will accept their data. The agent should appear in the dashboard within about 30 seconds of starting.</p>
+<ol>
+<li>Open the dashboard in your browser</li>
+<li>Go to the <strong>Admin</strong> tab</li>
+<li>Click <strong>Agents</strong></li>
+<li>Find the new agent in the list and click <strong>Approve</strong></li>
+</ol>
+<p>Once approved, the agent begins sending metrics and the manager can communicate with it.</p>
+<hr>
+<h2 id="configuration">Configuration</h2>
+<p>All runtime settings for the manager and alarm engine live in a single configuration file. The installer creates this file for you. Most settings have defaults and do not need to be changed.</p>
+<h3 id="configuration-file-location">Configuration File Location</h3>
+<p>The configuration file is located at:</p>
+<pre><code>config/llm-systems.toml
+</code></pre>
+<p>It is readable only by the service user (file permission 0600).</p>
+<p>A fully documented template showing every available setting is located at:</p>
+<pre><code>config/llm-systems.toml.example
+</code></pre>
+<p>Refer to that file when you need to understand what a setting does or when adding a new key.</p>
+<h3 id="key-settings">Key Settings</h3>
+<div class="tbl-wrap"><table>
+<thead>
+<tr>
+<th>Setting path</th>
+<th>What it controls</th>
+<th>Default</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>[manager].port</code></td>
+<td>Port the manager web interface listens on</td>
+<td><code>5000</code></td>
+</tr>
+<tr>
+<td><code>[manager].tls_port</code></td>
+<td>Port for HTTPS access (set to <code>0</code> to disable)</td>
+<td><code>5443</code></td>
+</tr>
+<tr>
+<td><code>[manager.auth].mode</code></td>
+<td>Login requirement: <code>required</code>, <code>trusted_cidr</code>, or <code>disabled</code></td>
+<td><code>required</code></td>
+</tr>
+<tr>
+<td><code>[manager].alarm_engine_url</code></td>
+<td>Network address where the Manager can reach the Alarm Engine</td>
+<td><code>http://localhost:8081</code></td>
+</tr>
+<tr>
+<td><code>[alarm_engine].tls_enabled</code></td>
+<td>Whether the alarm engine uses HTTPS</td>
+<td><code>true</code></td>
+</tr>
+<tr>
+<td><code>[alarm_engine].ingest_token</code></td>
+<td>Shared token agents use to send metrics; blank means open</td>
+<td><em>(set by installer)</em></td>
+</tr>
+<tr>
+<td><code>[notifications.smtp].server</code></td>
+<td>SMTP server hostname for email alarm notifications</td>
+<td><em>(not set)</em></td>
+</tr>
+<tr>
+<td><code>[notifications.smtp].user</code></td>
+<td>Account / sender address used to send alarm emails</td>
+<td><em>(not set)</em></td>
+</tr>
+<tr>
+<td><code>[influxdb].host</code></td>
+<td>InfluxDB server address</td>
+<td><code>localhost</code></td>
+</tr>
+<tr>
+<td><code>[influxdb].port</code></td>
+<td>InfluxDB port</td>
+<td><code>8086</code></td>
+</tr>
+<tr>
+<td><code>[manager.gateway].enabled</code></td>
+<td>OpenAI-compatible inference gateway</td>
+<td><code>true</code></td>
+</tr>
+<tr>
+<td><code>[manager.gateway].api_keys</code></td>
+<td>Bearer keys for external clients; empty means dashboard-session only</td>
+<td><code>[]</code></td>
+</tr>
+<tr>
+<td><code>[manager.reportcard].price_kwh</code></td>
+<td>Electricity price used for the Report Card&#39;s $/Mtok estimate</td>
+<td><code>0.15</code></td>
+</tr>
+<tr>
+<td><code>[manager.energy].cloud_price_in_per_mtok</code></td>
+<td>Hosted-API input price the savings card compares against</td>
+<td><code>0.15</code></td>
+</tr>
+<tr>
+<td><code>[manager.energy].cloud_price_out_per_mtok</code></td>
+<td>Hosted-API output price the savings card compares against</td>
+<td><code>0.60</code></td>
+</tr>
+<tr>
+<td><code>[manager.discord].enabled</code></td>
+<td>Interactive Discord bot</td>
+<td><code>false</code></td>
+</tr>
+<tr>
+<td><code>[manager.discord].allowed_user_ids</code></td>
+<td>Discord user IDs permitted to use the bot; empty refuses everyone</td>
+<td><code>[]</code></td>
+</tr>
+<tr>
+<td><code>[manager.discord].allow_model_control</code></td>
+<td>Whether the bot may load/unload models</td>
+<td><code>false</code></td>
+</tr>
+</tbody></table></div>
+<h3 id="applying-changes">Applying Changes</h3>
+<p>After editing <code>config/llm-systems.toml</code>, restart the affected service for the changes to take effect.</p>
+<p>For changes that affect the manager:</p>
+<pre><code class="language-bash">sudo systemctl restart llm-systems-manager
+</code></pre>
+<p>For changes that affect the alarm engine:</p>
+<pre><code class="language-bash">sudo systemctl restart llm-systems-alarm-engine
+</code></pre>
+<p>If you changed a setting used by both (such as InfluxDB credentials), restart both.</p>
+<hr>
+<h2 id="setting-up-the-main-features">Setting Up the Main Features</h2>
+<p>Everything below works once the manager and at least one approved agent are running. None of it is required — each feature is independent.</p>
+<h3 id="inference-gateway">Inference Gateway</h3>
+<p>One OpenAI-compatible endpoint fronts every provider you run (<code>llama.cpp</code>, LM Studio, vLLM), so applications target the manager instead of an individual backend.</p>
+<p>Base URL: <code>http://&lt;manager-host&gt;:5000/api/gateway/v1</code></p>
+<ul>
+<li><code>GET /v1/models</code> returns the merged catalog from every pool, each entry tagged with its <code>provider</code> and deduplicated by id.</li>
+<li><code>POST /v1/chat/completions</code> and <code>POST /v1/completions</code> accept the usual OpenAI request bodies, streaming or not.</li>
+<li>Provider-scoped twins exist when you want to force one backend family: <code>/api/gateway/llama/v1/*</code>, <code>/api/gateway/lms/v1/*</code>, <code>/api/gateway/vllm/v1/*</code>.</li>
+</ul>
+<p>The manager resolves which provider owns a model from the model id in the request, then picks a host by per-model pin, explicit <code>?agent=</code>, pool round-robin, and finally the system default. If that host can&#39;t be reached before the first token, it fails over to another live host that serves the same model. The response carries an <code>X-Proxied-To</code> header naming the host that answered.</p>
+<p>By default the gateway only accepts a logged-in dashboard session. To let external clients in, add bearer keys:</p>
+<pre><code class="language-toml">[manager.gateway]
+enabled = true
+api_keys = [&quot;sk-your-secret-key&quot;]
+read_timeout_s = 600.0
+</code></pre>
+<p>Restart the manager afterwards. These keys are accepted only on <code>/api/gateway/*</code>.</p>
+<h3 id="model-autopilot">Model Autopilot</h3>
+<p><strong>Admin → Routing → Model Autopilot.</strong> You describe which models should be resident and where; Autopilot compares that against what is actually loaded and proposes the difference.</p>
+<p>Each entry names a model, its provider (<code>llama</code>, <code>vllm</code>, or <code>lms</code>), and a placement — either a specific host id or <code>auto</code>. Optional per-entry settings:</p>
+<div class="tbl-wrap"><table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Meaning</th>
+<th>Default</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>failover</code></td>
+<td><code>semi</code> proposes a move for you to approve; <code>auto</code> performs it</td>
+<td><code>semi</code></td>
+</tr>
+<tr>
+<td><code>min_replicas</code> / <code>max_replicas</code></td>
+<td>How many copies to keep resident</td>
+<td><code>1</code> / same as min</td>
+</tr>
+<tr>
+<td><code>priority</code></td>
+<td>Lower wins when hosts are contended</td>
+<td><code>100</code></td>
+</tr>
+<tr>
+<td><code>size_mb</code></td>
+<td>Size override for models the manager can&#39;t measure</td>
+<td><em>(unset)</em></td>
+</tr>
+<tr>
+<td><code>autoscale</code></td>
+<td><code>target_saturation</code>, <code>up_window_s</code>, <code>down_window_s</code></td>
+<td><code>0.75</code>, <code>120</code>, <code>900</code></td>
+</tr>
+</tbody></table></div>
+<p><strong>Autopilot is disabled by default.</strong> While disabled it still evaluates continuously and shows what it <em>would</em> do, so you can watch it for a while before handing it control. Enable it with the toggle on the same card once the proposals look right.</p>
+<p>Placement is gated on memory: a host is only offered a model if it has the VRAM to hold it, or the RAM if the host has no GPU. That is why a size override matters for models the manager can&#39;t measure — without a size, an entry can be skipped rather than placed badly.</p>
+<h3 id="gpu-report-card">GPU Report Card</h3>
+<p><strong>LLM Control → Report Card.</strong> Pick a provider and host, choose the standard preset, and run. The card reports time-to-first-token, prefill and generation throughput, tokens/joule, and $/Mtok, along with the GPU and VRAM it ran on.</p>
+<p>The same preset runs against every provider, so cards are comparable between machines and between backends. Results are stored, so the Trends view plots them over time. Set the electricity price used for the cost figure with:</p>
+<pre><code class="language-toml">[manager.reportcard]
+price_kwh = 0.15
+</code></pre>
+<p>It can also be overridden per run from the sub-tab. Leaderboard submission is present but disabled in v1.1.0.</p>
+<h3 id="energy-amp-cost-intelligence">Energy &amp; Cost Intelligence</h3>
+<p><strong>Dashboard → Energy.</strong> Shows measured power draw converted to a <strong>$/Mtok</strong> figure, a monthly-savings comparison against hosted-API list pricing, and idle-power accounting so hardware that is powered but unused is attributed rather than ignored.</p>
+<pre><code class="language-toml">[manager.energy]
+# price_kwh = 0.15                # unset inherits [manager.reportcard].price_kwh
+cloud_price_in_per_mtok = 0.15
+cloud_price_out_per_mtok = 0.60
+cloud_price_label = &quot;budget cloud API tier&quot;
+</code></pre>
+<p>Cost is only computed across hosts that report both power and token telemetry. A host that reports one but not the other is left out rather than being allowed to skew the total. LM Studio reports no token counts of its own, so the gateway counts them as requests pass through — LM Studio traffic that bypasses the gateway is not counted.</p>
+<h3 id="discord-bot">Discord Bot</h3>
+<p>Slash commands for host queries, model load/unload, and alarm acknowledgement.</p>
+<pre><code class="language-toml">[manager.discord]
+enabled = true
+bot_token = &quot;&lt;your-bot-token&gt;&quot;
+guild_id = &quot;&lt;your-server-id&gt;&quot;
+allowed_user_ids = [&quot;111111111111111111&quot;, &quot;222222222222222222&quot;]
+allow_model_control = false
+</code></pre>
+<p>Three things to get right:</p>
+<ul>
+<li><strong>The allowlist is fail-closed.</strong> An empty <code>allowed_user_ids</code> refuses everyone. Each ID must be its own quoted string.</li>
+<li><strong>Model control is separate.</strong> Queries work with <code>allow_model_control = false</code>; loading and unloading models requires setting it to <code>true</code>.</li>
+<li><strong>The bot invite needs both the <code>bot</code> and <code>applications.commands</code> scopes</strong>, otherwise the slash commands never register.</li>
+</ul>
+<p>Restart the manager after editing this section — the bot reads its allowlist at startup.</p>
+<hr>
+<h2 id="updating">Updating</h2>
+<h3 id="updating-all-components">Updating All Components</h3>
+<p>To update the manager, alarm engine, and any locally installed agent to the latest version, run the installer in update mode:</p>
+<pre><code class="language-bash">cd /opt/llm-systems-manager
+bash tools/installer/install.sh --update
+</code></pre>
+<p>The update process:</p>
+<ul>
+<li>Detects which components are currently installed</li>
+<li>Compares installed files against the latest version</li>
+<li>Backs up any files that will change</li>
+<li>Syncs only the changed files</li>
+<li>Reloads systemd units and restarts affected services</li>
+<li>Runs the smoke test to confirm the update succeeded</li>
+</ul>
+<p>You do not need to stop services first — the updater handles restarts.</p>
+<h3 id="updating-a-remote-agent">Updating a Remote Agent</h3>
+<p>To update an agent running on a remote machine without logging into that machine:</p>
+<ol>
+<li>Open the dashboard</li>
+<li>Go to the <strong>Admin</strong> tab</li>
+<li>Click <strong>Agents</strong></li>
+<li>Select the agent you want to update</li>
+<li>Click the <strong>Update</strong> button</li>
+</ol>
+<p>The agent downloads and applies the latest version of itself, then restarts.</p>
+<hr>
+<h2 id="monitoring-service-health">Monitoring Service Health</h2>
+<h3 id="checking-service-status">Checking Service Status</h3>
+<p>Check whether each service is running:</p>
+<pre><code class="language-bash">sudo systemctl status llm-systems-manager
+sudo systemctl status llm-systems-alarm-engine
+sudo systemctl status llm-systems-agent
+</code></pre>
+<p>A healthy service shows <code>active (running)</code>. A failed service shows <code>failed</code> and usually includes the last few log lines explaining why.</p>
+<h3 id="viewing-logs">Viewing Logs</h3>
+<p><strong>Manager</strong> — log file updated continuously:</p>
+<pre><code class="language-bash">tail -f /var/log/llm-systems-manager/llm-systems-manager.log
+</code></pre>
+<p>Or via journald:</p>
+<pre><code class="language-bash">journalctl -u llm-systems-manager -f
+</code></pre>
+<p><strong>Alarm Engine:</strong></p>
+<pre><code class="language-bash">journalctl -u llm-systems-alarm-engine -f
+</code></pre>
+<p><strong>Agent:</strong></p>
+<pre><code class="language-bash">journalctl -u llm-systems-agent -f
+</code></pre>
+<p>Add <code>--since &quot;1 hour ago&quot;</code> to any journalctl command to limit output to recent entries.</p>
+<h3 id="dashboard-health-page">Dashboard Health Page</h3>
+<p>The <strong>Admin</strong> tab in the dashboard includes a <strong>System Health</strong> card. It shows:</p>
+<ul>
+<li>Status of each connected agent (online, offline, stale)</li>
+<li>InfluxDB connectivity and write health</li>
+<li>Alarm engine connectivity</li>
+<li>TLS certificate status and expiry</li>
+</ul>
+<p>The Admin tab button in the navigation bar turns red when any component reports a problem — you do not need to check manually.</p>
+<hr>
+<h2 id="uninstalling">Uninstalling</h2>
+<p>To remove LLM Systems Manager from a server:</p>
+<pre><code class="language-bash">bash tools/installer/install.sh --uninstall
+</code></pre>
+<p>The uninstaller:</p>
+<ul>
+<li>Stops and disables the systemd services</li>
+<li>Removes the installed files</li>
+<li>Prompts before deleting the runtime user account and InfluxDB data, so you can preserve your data if needed</li>
+</ul>
+<hr>
+<h2 id="next-steps">Next Steps</h2>
+<p>After your deployment is up and running, refer to these documents for deeper reference:</p>
+<ul>
+<li><a href="architecture.html">ARCHITECTURE.md</a> — How the components fit together, data flow from agent to dashboard, and the multi-agent model</li>
+<li><a href="components.html">COMPONENTS.md</a> — Detailed description of each component: manager, alarm engine, and agent</li>
+<li><a href="api.html">API_REFERENCE.md</a> — Full reference for the manager and alarm engine HTTP APIs, including request/response formats</li>
+</ul>
+
+  </article>
+</main>
+
+<footer>
+  <div class="wrap foot-base" style="border-top:none; padding-top:0">
+    <span>© 2026 LLM SysCore · AGPL-3.0</span>
+    <span><a href="mailto:support@llmsyscore.com">support@llmsyscore.com</a></span>
+  </div>
+</footer>
+
+</body>
+</html>

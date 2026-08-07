@@ -1,0 +1,158 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>About — LLM SysCore</title>
+<meta name="description" content="LLM SysCore builds open-source tools for users who run language models on their own hardware.">
+<link rel="canonical" href="https://www.llmsyscore.com/about.html">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="LLM SysCore">
+<meta property="og:title" content="About — LLM SysCore">
+<meta property="og:description" content="LLM SysCore builds open-source infrastructure software for self-hosted LLMs.">
+<meta property="og:url" content="https://www.llmsyscore.com/about.html">
+<meta property="og:image" content="https://www.llmsyscore.com/assets/og-card.png">
+<meta name="twitter:card" content="summary_large_image">
+<link rel="icon" type="image/png" href="assets/favicon-32.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Sora:wght@400;600;700;800&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="css/site.css">
+</head>
+<body>
+
+<header class="nav">
+  <div class="wrap nav-inner">
+    <a class="nav-brand" href="index.html" aria-label="LLM SysCore home">
+      <img src="assets/logo.svg" alt="">
+      <span>LLM&nbsp;Sys<b class="core">Core</b></span>
+    </a>
+    <nav class="nav-links" aria-label="Main">
+      <a href="index.html#features">Features</a>
+      <a href="index.html#screenshots" class="nav-hide-sm">Screenshots</a>
+      <a href="docs/">Docs</a>
+      <a href="about.html" aria-current="page" class="nav-hide-sm">About</a>
+      <a href="contact.html">Contact</a>
+      <a class="btn btn-ghost" href="https://github.com/llmsyscore/llm-systems-manager">
+        <svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27s1.36.09 2 .27c1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8z"/></svg>
+        GitHub
+      </a>
+    </nav>
+  </div>
+</header>
+
+<main>
+
+<div class="page-head">
+  <div class="wrap">
+    <p class="sec-kicker">About</p>
+    <h1>Tools for users who run their own models</h1>
+    <p>LLM SysCore builds open-source infrastructure software for self-hosted LLMs.</p>
+  </div>
+</div>
+
+<section style="padding-top:32px">
+  <div class="wrap"><div class="prose-block">
+    <p>
+      LLM SysCore started the way most useful infrastructure does: someone was running
+      language models on their own hardware and got tired of juggling terminals, ad-hoc
+      scripts, and half a dozen browser tabs to answer simple questions. <b>Is the model
+      up? How fast is it? What is this actually costing me?</b>
+    </p>
+    <p>
+      The answer grew into <b>LLM Systems Manager</b>: a complete operations platform for
+      self-hosted LLM infrastructure. It treats a homelab GPU rig, a Mac Studio in the
+      office, and a rack of servers as infrastructure worth managing properly,
+      with real telemetry, cost accounting, and one place to control it all.
+    </p>
+    <p>
+      Everything we ship is open source under AGPL-3.0, and everything runs on your
+      hardware. No cloud dependency, no telemetry phoning home, no account required.
+    </p>
+  </div></div>
+</section>
+
+<section style="padding-top:0">
+  <div class="wrap">
+    <div class="sec-head">
+      <p class="sec-kicker">What we believe</p>
+      <h2>Four rules we build by</h2>
+    </div>
+    <div class="grid grid-values">
+      <div class="card">
+        <h3>Local-first</h3>
+        <p>Your models, your data, and your metrics stay on your machines. The whole platform works on a network with no internet access at all.</p>
+      </div>
+      <div class="card">
+        <h3>Honest measurement</h3>
+        <p>Costs come from measured watts and counted tokens, not estimates. When a number is based on partial data, the dashboard says so.</p>
+      </div>
+      <div class="card">
+        <h3>The operator stays in control</h3>
+        <p>Nothing restarts, installs, or reroutes without your approval. The platform surfaces what it wants to change, and the operator decides when it happens.</p>
+      </div>
+      <div class="card">
+        <h3>Open source, in the open</h3>
+        <p>Development, issues, and releases all happen publicly on GitHub.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section style="padding-top:0">
+  <div class="wrap">
+    <div class="sec-head">
+      <p class="sec-kicker">What we build</p>
+      <h2>The LLM SysCore stack</h2>
+    </div>
+    <div class="stack-list">
+      <div class="stack-item">
+        <span class="mono-tag">manager</span>
+        <div>
+          <h3>LLM Systems Manager</h3>
+          <p>The flagship: dashboard, OpenAI-compatible gateway, model library, benchmarking, autotuning, Autopilot routing, users and roles, backups.</p>
+        </div>
+      </div>
+      <div class="stack-item">
+        <span class="mono-tag">agent</span>
+        <div>
+          <h3>LLM Systems Agent</h3>
+          <p>One cross-platform binary for Linux and macOS that auto-detects what each host runs and reports system, GPU, PSU, and inference metrics.</p>
+        </div>
+      </div>
+      <div class="stack-item">
+        <span class="mono-tag">alarm-engine</span>
+        <div>
+          <h3>LLM Systems Alarm Engine</h3>
+          <p>A standalone service that stores every sample, evaluates threshold and anomaly rules, and notifies over email, webhook, toast, and Discord.</p>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section style="padding-top:0">
+  <div class="wrap">
+    <div class="cta-band">
+      <h2>See it on your own hardware</h2>
+      <p>The installer takes one command and keeps you in control the whole way.</p>
+      <div class="hero-ctas">
+        <a class="btn btn-primary" href="https://github.com/llmsyscore/llm-systems-manager#quickstart--single-host">Get started</a>
+        <a class="btn btn-ghost" href="contact.html">Talk to us</a>
+      </div>
+    </div>
+  </div>
+</section>
+
+</main>
+
+<footer>
+  <div class="wrap foot-base" style="border-top:none; padding-top:0">
+    <span>© 2026 LLM SysCore · AGPL-3.0</span>
+    <span><a href="mailto:support@llmsyscore.com">support@llmsyscore.com</a></span>
+  </div>
+</footer>
+
+<script src="js/site.js"></script>
+</body>
+</html>

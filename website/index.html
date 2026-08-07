@@ -1,0 +1,394 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>LLM SysCore — Self-hosted LLM infrastructure, run like a product</title>
+<meta name="description" content="LLM Systems Manager: an open-source, self-hosted operations platform for LLM infrastructure. Monitoring, remote control, tuning, routing, and alerting in one place.">
+<link rel="canonical" href="https://www.llmsyscore.com/">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="LLM SysCore">
+<meta property="og:title" content="LLM SysCore — Self-hosted LLM infrastructure">
+<meta property="og:description" content="Your hardware. Your models. One control plane. Open-source monitoring, remote control, tuning, routing, and alerting for llama.cpp, vLLM, and LM Studio.">
+<meta property="og:url" content="https://www.llmsyscore.com/">
+<meta property="og:image" content="https://www.llmsyscore.com/assets/og-card.png">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="LLM SysCore — Self-hosted LLM infrastructure">
+<meta name="twitter:description" content="Your hardware. Your models. One control plane. Open-source operations platform for self-hosted LLMs.">
+<meta name="twitter:image" content="https://www.llmsyscore.com/assets/og-card.png">
+<link rel="icon" type="image/png" href="assets/favicon-32.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Sora:wght@400;600;700;800&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="css/site.css">
+</head>
+<body>
+
+<header class="nav">
+  <div class="wrap nav-inner">
+    <a class="nav-brand" href="index.html" aria-label="LLM SysCore home">
+      <img src="assets/logo.svg" alt="">
+      <span>LLM&nbsp;Sys<b class="core">Core</b></span>
+    </a>
+    <nav class="nav-links" aria-label="Main">
+      <a href="#features">Features</a>
+      <a href="#screenshots" class="nav-hide-sm">Screenshots</a>
+      <a href="docs/">Docs</a>
+      <a href="about.html" class="nav-hide-sm">About</a>
+      <a href="contact.html">Contact</a>
+      <a class="btn btn-ghost" href="https://github.com/llmsyscore/llm-systems-manager">
+        <svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27s1.36.09 2 .27c1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8z"/></svg>
+        GitHub
+      </a>
+    </nav>
+  </div>
+</header>
+
+<main>
+
+<!-- ===== Hero ===== -->
+<section class="hero">
+  <div class="wrap hero-grid">
+    <div>
+      <span class="eyebrow"><i class="dot" aria-hidden="true"></i>Open-source LLM infrastructure management</span>
+      <h1>Your hardware. Your models. <span class="accent">One control plane.</span></h1>
+      <p class="hero-sub">
+        <strong>LLM Systems Manager</strong> is a complete, self-hosted operations platform for LLM
+        infrastructure: monitoring, remote control, tuning, routing, and alerting for
+        llama.cpp, vLLM, and LM&nbsp;Studio, all in one place.
+      </p>
+
+      <div class="hero-ctas">
+        <a class="btn btn-primary" href="https://github.com/llmsyscore/llm-systems-manager#quickstart--single-host">Install</a>
+        <a class="btn btn-ghost" href="https://github.com/llmsyscore/llm-systems-manager">View the repo</a>
+        <a class="btn btn-ghost" href="https://github.com/llmsyscore/llm-systems-manager/releases">Releases</a>
+        <a class="btn btn-ghost" href="docs/">Read the docs</a>
+      </div>
+
+      <div class="term">
+        <div class="term-head"><i></i><i></i><i></i>
+          <div class="term-tabs" role="tablist" aria-label="Install methods">
+            <button class="active" role="tab" aria-selected="true" data-pane="pane-script"
+              data-note="One command installs the full stack. The installer is interactive. It handles prerequisites, InfluxDB, TLS, and agents, and never starts a service without you.">script</button>
+            <button role="tab" aria-selected="false" data-pane="pane-pkg"
+              data-note="Packages ship with every release for Debian/Ubuntu and RHEL-family distros. They create the service user, start the systemd units, and prompt for the admin login.">.deb / .rpm</button>
+            <button role="tab" aria-selected="false" data-pane="pane-docker"
+              data-note="Brings up the control plane (manager, alarm engine, InfluxDB) from published multi-arch images. Fill in .env first; agents still install natively on each host.">docker</button>
+            <button role="tab" aria-selected="false" data-pane="pane-brew"
+              data-note="Installs the control plane on macOS (Apple Silicon) or Linux from the project tap, onboards InfluxDB, and starts both services. brew upgrade tracks new releases automatically.">homebrew</button>
+          </div>
+          <span>quick start</span>
+        </div>
+        <div class="term-body term-pane" id="pane-script">
+          <code id="install-cmd"><span class="p">$</span> bash &lt;(curl -fsSL https://raw.githubusercontent.com/llmsyscore/llm-systems-manager/main/tools/installer/install.sh)</code>
+          <button class="term-copy" data-copy="#install-cmd" aria-label="Copy install command">copy</button>
+        </div>
+        <div class="term-body term-pane" id="pane-pkg" hidden>
+          <code id="pkg-cmd"><span class="c"># Debian / Ubuntu</span>
+<span class="p">$</span> curl -fsSLO https://github.com/llmsyscore/llm-systems-manager/releases/download/v<span class="pkg-ver">1.1.0</span>/llm-systems-manager_<span class="pkg-ver">1.1.0</span>_all.deb
+<span class="p">$</span> sudo apt install ./llm-systems-manager_<span class="pkg-ver">1.1.0</span>_all.deb
+<span class="c"># RHEL / Fedora</span>
+<span class="p">$</span> curl -fsSLO https://github.com/llmsyscore/llm-systems-manager/releases/download/v<span class="pkg-ver">1.1.0</span>/llm-systems-manager-<span class="pkg-ver">1.1.0</span>-1.noarch.rpm
+<span class="p">$</span> sudo dnf install ./llm-systems-manager-<span class="pkg-ver">1.1.0</span>-1.noarch.rpm</code>
+          <button class="term-copy" data-copy="#pkg-cmd" aria-label="Copy package install commands">copy</button>
+        </div>
+        <div class="term-body term-pane" id="pane-docker" hidden>
+          <code id="docker-cmd"><span class="p">$</span> curl -fsSLO https://raw.githubusercontent.com/llmsyscore/llm-systems-manager/main/docker-compose.yml
+<span class="p">$</span> curl -fsSL https://raw.githubusercontent.com/llmsyscore/llm-systems-manager/main/.env.example -o .env
+<span class="p">$</span> docker compose up -d</code>
+          <button class="term-copy" data-copy="#docker-cmd" aria-label="Copy Docker Compose commands">copy</button>
+        </div>
+        <div class="term-body term-pane" id="pane-brew" hidden>
+          <code id="brew-cmd"><span class="p">$</span> brew tap llmsyscore/tap &amp;&amp; brew trust llmsyscore/tap
+<span class="p">$</span> brew install llm-systems-manager llm-systems-alarm-engine influxdb@2 influxdb-cli
+<span class="p">$</span> llm-systems-influx-setup
+<span class="p">$</span> brew services start llm-systems-manager
+<span class="p">$</span> brew services start llm-systems-alarm-engine</code>
+          <button class="term-copy" data-copy="#brew-cmd" aria-label="Copy Homebrew install commands">copy</button>
+        </div>
+      </div>
+      <p class="term-note" id="term-note">
+        One command installs the full stack. The installer is interactive. It handles prerequisites,
+        InfluxDB, TLS, and agents, and never starts a service without you.
+      </p>
+
+      <div class="hero-meta" style="margin-top:22px">
+        <span>AGPL-3.0 open source</span>
+        <span>Linux &amp; macOS agents</span>
+        <span>Script / .deb / .rpm / Docker / Homebrew</span>
+      </div>
+    </div>
+
+    <!-- Signature: service constellation built from the brand's orbital rings -->
+    <div class="orbit" role="img" aria-label="Diagram: the manager control plane orbited by host agents and the alarm engine">
+      <svg viewBox="0 0 400 400" fill="none" aria-hidden="true">
+        <g class="ring ring-1">
+          <circle cx="200" cy="200" r="170" stroke="#2f3d80" stroke-width="1.6" opacity="0.55" stroke-dasharray="620 448" stroke-linecap="round"/>
+        </g>
+        <g class="ring ring-2">
+          <circle cx="200" cy="200" r="125" stroke="#4257b0" stroke-width="1.8" opacity="0.8" stroke-dasharray="500 285" stroke-linecap="round"/>
+        </g>
+        <g class="ring ring-3">
+          <circle cx="200" cy="200" r="82" stroke="#5b7cfa" stroke-width="2" stroke-dasharray="360 155" stroke-linecap="round"/>
+        </g>
+        <circle cx="200" cy="200" r="34" fill="#5b7cfa" opacity="0.09"/>
+        <circle cx="200" cy="200" r="9" fill="#5b7cfa"/>
+      </svg>
+      <span class="node hub" style="left:50%; top:60%;"><i class="nd" aria-hidden="true"></i>manager · control&nbsp;plane</span>
+      <span class="node" style="left:76%; top:22%;"><i class="nd" aria-hidden="true"></i>agent · rtx-4090</span>
+      <span class="node" style="left:14%; top:38%;"><i class="nd" aria-hidden="true"></i>agent · mac-studio</span>
+      <span class="node" style="left:72%; top:84%;"><i class="nd" aria-hidden="true"></i>agent · epyc-cpu</span>
+      <span class="node" style="left:20%; top:76%;"><i class="nd" aria-hidden="true"></i>alarm engine</span>
+    </div>
+  </div>
+</section>
+
+<!-- ===== Integrations ===== -->
+<div class="integrations">
+  <div class="wrap integ-row">
+    <span class="lbl">Integrates</span>
+    <span class="tag"><b>llama.cpp</b></span>
+    <span class="tag"><b>vLLM</b></span>
+    <span class="tag"><b>LM Studio</b></span>
+    <span class="tag"><b>stable-diffusion.cpp</b></span>
+    <span class="tag"><b>OpenClaw</b> telemetry</span>
+  </div>
+</div>
+
+<!-- ===== Architecture ===== -->
+<section id="architecture">
+  <div class="wrap">
+    <div class="sec-head">
+      <p class="sec-kicker">Architecture</p>
+      <h2>Three small services, one platform</h2>
+      <p>A lightweight agent on every host, a manager as the control plane, and a standalone alarm engine, with TLS/mTLS on every connection.</p>
+    </div>
+
+    <div class="arch">
+      <div class="arch-tile">
+        <h3>agent · per host</h3>
+        <p>One cross-platform binary for Linux and macOS. Auto-detects what each box runs and reports host, GPU, PSU, and inference-server metrics.</p>
+        <ul>
+          <li>llama.cpp / vLLM / LM Studio</li>
+          <li>stable-diffusion.cpp</li>
+          <li>GPU · PSU · UPS · cooling</li>
+        </ul>
+      </div>
+      <div class="arch-link" aria-hidden="true">⇄</div>
+      <div class="arch-tile hubtile">
+        <h3>manager · control plane</h3>
+        <p>The dashboard, the OpenAI-compatible gateway, model library and profiles, Autopilot routing, users and roles, backups.</p>
+        <ul>
+          <li>web dashboard + admin console</li>
+          <li>/v1 inference gateway</li>
+          <li>Model Autopilot</li>
+        </ul>
+      </div>
+      <div class="arch-link" aria-hidden="true">→</div>
+      <div class="arch-tile">
+        <h3>alarm engine</h3>
+        <p>Stores every sample, evaluates threshold and anomaly rules, and collapses bursts of related issues into single incidents.</p>
+        <ul>
+          <li>InfluxDB history</li>
+          <li>email · toast · webhook · Discord</li>
+          <li>offline buffer + replay</li>
+        </ul>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ===== Features ===== -->
+<section id="features" style="padding-top:0">
+  <div class="wrap">
+    <div class="sec-head">
+      <p class="sec-kicker">What's inside</p>
+      <h2>Everything self-hosted inference needs, in one place</h2>
+      <p>From a single Mac to a rack of GPU hosts, with the same dashboard, gateway, and alerting.</p>
+    </div>
+
+    <div class="grid grid-features">
+      <div class="card">
+        <span class="ico"><svg viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.7" fill="none" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="m15.5 8.5-2.2 5.3-5.3 2.2 2.2-5.3z"/></svg></span>
+        <h3>Model Autopilot</h3>
+        <p>Configure which models should be available. Autopilot places them on hardware that can run them, brings them back when a host drops, and automatically scales with the demand.</p>
+      </div>
+      <div class="card">
+        <span class="ico"><svg viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.7" fill="none" stroke-linecap="round" stroke-linejoin="round"><path d="M4 6h6a4 4 0 0 1 4 4v0a4 4 0 0 0 4 4h2"/><path d="M4 18h6a4 4 0 0 0 4-4"/><path d="m17 11 3 3-3 3"/></svg></span>
+        <h3>OpenAI-compatible gateway</h3>
+        <p>One endpoint fronts every backend. A merged model catalog, per-model pinning, pooling, and failover to a live host when one goes down. Streaming included, and apps see one stable URL.</p>
+      </div>
+      <div class="card">
+        <span class="ico"><svg viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.7" fill="none" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12h4l2-6 4 12 2-6h6"/></svg></span>
+        <h3>Telemetry &amp; alerting</h3>
+        <p>LLM-aware metrics down to slots, tokens/sec, and KV cache, plus a standalone alarm engine with threshold and anomaly rules that collapses bursts into single incidents.</p>
+      </div>
+      <div class="card">
+        <span class="ico"><svg viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.7" fill="none" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2 4 14h6l-1 8 9-12h-6z"/></svg></span>
+        <h3>Energy &amp; cost intelligence</h3>
+        <p>Measures what inference actually costs in $/Mtok against your electricity price, with savings versus hosted-API pricing and per-host performance profiles that reduce power draw and noise when a system is idle.</p>
+      </div>
+      <div class="card">
+        <span class="ico"><svg viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.7" fill="none" stroke-linecap="round" stroke-linejoin="round"><path d="M4 8h10M18 8h2M4 16h2M10 16h10"/><circle cx="16" cy="8" r="2"/><circle cx="8" cy="16" r="2"/></svg></span>
+        <h3>Benchmarking &amp; autotuning</h3>
+        <p>Run throughput benchmarks across your whole model library, and let the autotuner search out the best context and slot configuration for each model on its own hardware.</p>
+      </div>
+      <div class="card">
+        <span class="ico"><svg viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.7" fill="none" stroke-linecap="round" stroke-linejoin="round"><path d="m12 3 8 4.5v9L12 21l-8-4.5v-9z"/><path d="M12 12 4 7.5M12 12l8-4.5M12 12v9"/></svg></span>
+        <h3>Model management</h3>
+        <p>Pull models straight from Hugging Face, prune files to reclaim disk, and keep named config profiles per model; switching profiles reloads the model in one click.</p>
+      </div>
+      <div class="card">
+        <span class="ico"><svg viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.7" fill="none" stroke-linecap="round" stroke-linejoin="round"><path d="m5 7 4 4-4 4"/><path d="M12 17h7"/><rect x="2" y="3" width="20" height="18" rx="2"/></svg></span>
+        <h3>Remote control</h3>
+        <p>Start, stop, hot-swap models, edit configs, tail logs, or open an in-browser terminal for any host, from one page. A Discord bot exposes the same controls as slash commands.</p>
+      </div>
+      <div class="card">
+        <span class="ico"><svg viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.7" fill="none" stroke-linecap="round" stroke-linejoin="round"><path d="M4 14a8 8 0 1 1 16 0"/><path d="m12 14 4-4"/><path d="M4 20h16"/></svg></span>
+        <h3>GPU Report Card</h3>
+        <p>A standardized benchmark that produces one shareable card: time-to-first-token, throughput, tokens/joule, and measured $/Mtok, comparable across providers and machines.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ===== Screenshots & tour ===== -->
+<section id="screenshots" style="padding-top:0">
+  <div class="wrap">
+    <div class="sec-head">
+      <p class="sec-kicker">Screenshots</p>
+      <h2>Inside the dashboard</h2>
+      <p>Captured from a live deployment. Every view shown here is part of the product.</p>
+    </div>
+
+    <div class="tour-video">
+      <video controls muted playsinline preload="metadata" poster="assets/screenshots/dashboard-llama.webp">
+        <source src="assets/tour.mp4" type="video/mp4">
+      </video>
+      <p class="gallery-caption">A guided tour through the platform: overview, dashboards, energy and cost, model control, GPU report card, chat, image generation, events, admin, and the alarm console.</p>
+    </div>
+
+    <figure style="margin:0">
+      <div class="gallery-wrap">
+        <div class="gallery-main">
+          <img id="shot-main" src="assets/screenshots/login.webp" alt="Sign-in screen">
+        </div>
+        <button class="gal-arrow gal-prev" id="gal-prev" aria-label="Previous screenshot">&#8249;</button>
+        <button class="gal-arrow gal-next" id="gal-next" aria-label="Next screenshot">&#8250;</button>
+      </div>
+      <figcaption class="gallery-caption" id="shot-caption">Sign-in screen</figcaption>
+    </figure>
+
+    <div class="thumbs" role="group" aria-label="Choose a screenshot">
+      <button class="active" data-full="assets/screenshots/login.webp" data-caption="Sign-in screen"><img loading="lazy" src="assets/screenshots/thumbs/login.webp" alt="Sign-in screen thumbnail"></button>
+      <button data-full="assets/screenshots/dashboard-llama.webp" data-caption="Llama dashboard: live metrics from the llama.cpp server and its host"><img loading="lazy" src="assets/screenshots/thumbs/dashboard-llama.webp" alt="Llama dashboard thumbnail"></button>
+      <button data-full="assets/screenshots/dashboard-lmstudio.webp" data-caption="LM Studio dashboard with live Apple-silicon power metrics"><img loading="lazy" src="assets/screenshots/thumbs/dashboard-lmstudio.webp" alt="LM Studio dashboard thumbnail"></button>
+      <button data-full="assets/screenshots/dashboard-energy.webp" data-caption="Energy and cost: measured $/Mtok, monthly savings, and hourly energy"><img loading="lazy" src="assets/screenshots/thumbs/dashboard-energy.webp" alt="Energy and cost thumbnail"></button>
+      <button data-full="assets/screenshots/model-control.webp" data-caption="LLM control: server actions, live logs, and the model library"><img loading="lazy" src="assets/screenshots/thumbs/model-control.webp" alt="LLM control thumbnail"></button>
+      <button data-full="assets/screenshots/model-control-cards.webp" data-caption="Model cards with per-model configuration profiles"><img loading="lazy" src="assets/screenshots/thumbs/model-control-cards.webp" alt="Model cards thumbnail"></button>
+      <button data-full="assets/screenshots/autotune.webp" data-caption="Autotune wizard: search for the fastest context and slot settings"><img loading="lazy" src="assets/screenshots/thumbs/autotune.webp" alt="Autotune wizard thumbnail"></button>
+      <button data-full="assets/screenshots/benchmark.webp" data-caption="Benchmark results across the model library"><img loading="lazy" src="assets/screenshots/thumbs/benchmark.webp" alt="Benchmark results thumbnail"></button>
+      <button data-full="assets/screenshots/alarm-console.webp" data-caption="Alarm engine: live alerts, anomalies, and the alert timeline"><img loading="lazy" src="assets/screenshots/thumbs/alarm-console.webp" alt="Alarm engine thumbnail"></button>
+      <button data-full="assets/screenshots/admin-console.webp" data-caption="Admin console: system health and every registered agent"><img loading="lazy" src="assets/screenshots/thumbs/admin-console.webp" alt="Admin console thumbnail"></button>
+      <button data-full="assets/screenshots/autopilot.webp" data-caption="Model Autopilot: provider pools, model pins, and placement entries"><img loading="lazy" src="assets/screenshots/thumbs/autopilot.webp" alt="Model Autopilot thumbnail"></button>
+      <button data-full="assets/screenshots/dashboard-manager.webp" data-caption="Manager dashboard: service, database, and connection health"><img loading="lazy" src="assets/screenshots/thumbs/dashboard-manager.webp" alt="Manager dashboard thumbnail"></button>
+      <button data-full="assets/screenshots/dashboard-openclaw.webp" data-caption="OpenClaw dashboard: session metrics and cost analytics"><img loading="lazy" src="assets/screenshots/thumbs/dashboard-openclaw.webp" alt="OpenClaw dashboard thumbnail"></button>
+    </div>
+  </div>
+</section>
+
+<div class="lightbox" id="lightbox" aria-hidden="true"><img src="" alt=""></div>
+
+<!-- ===== Install options ===== -->
+<section id="install" style="padding-top:0">
+  <div class="wrap">
+    <div class="sec-head">
+      <p class="sec-kicker">Installation</p>
+      <h2>Install it your way</h2>
+      <p>The script installer is the preferred path. The alternatives cover specific setups.</p>
+    </div>
+    <div class="grid grid-install">
+      <div class="card">
+        <h3>Script installer <span class="pill-rec">preferred</span></h3>
+        <p>One interactive command covers everything: full stack, split installs, agents, offline installs, and updates.</p>
+        <p><a href="https://github.com/llmsyscore/llm-systems-manager#quickstart--single-host"><b>Quickstart →</b></a></p>
+      </div>
+      <div class="card">
+        <h3>Native packages</h3>
+        <p>.deb and .rpm packages for hosts standardized on apt or dnf package management.</p>
+        <p><a href="https://github.com/llmsyscore/llm-systems-manager/releases"><b>Releases →</b></a></p>
+      </div>
+      <div class="card">
+        <h3>Docker Compose</h3>
+        <p>A containerized control plane: manager, alarm engine, and InfluxDB, with agents installed on hosts.</p>
+        <p><a href="https://github.com/llmsyscore/llm-systems-manager#docker-compose-control-plane-only"><b>Compose guide →</b></a></p>
+      </div>
+      <div class="card">
+        <h3>Homebrew</h3>
+        <p>Agents on macOS install straight from the tap, with signed release binaries.</p>
+        <p><a href="https://github.com/llmsyscore/homebrew-tap"><b>llmsyscore/homebrew-tap →</b></a></p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ===== CTA ===== -->
+<section style="padding-top:0">
+  <div class="wrap">
+    <div class="cta-band">
+      <h2>Local hardware. Private data. Full control.</h2>
+      <p>Run models on hardware you own, keep every prompt and metric on your network, and manage it all from one dashboard. Free and open source under AGPL-3.0.</p>
+      <div class="hero-ctas">
+        <a class="btn btn-primary" href="https://github.com/llmsyscore/llm-systems-manager#quickstart--single-host">Get started</a>
+        <a class="btn btn-ghost" href="docs/">Documentation</a>
+      </div>
+    </div>
+  </div>
+</section>
+
+</main>
+
+<footer>
+  <div class="wrap">
+    <div class="foot-grid">
+      <div>
+        <div class="foot-brand"><img src="assets/logo.svg" alt=""><span>LLM&nbsp;Sys<b style="color:var(--peri-soft)">Core</b></span></div>
+        <p class="foot-tag">Open-source operations platform for self-hosted LLM infrastructure.</p>
+      </div>
+      <div>
+        <h4>Product</h4>
+        <ul>
+          <li><a href="index.html#features">Features</a></li>
+          <li><a href="index.html#screenshots">Screenshots</a></li>
+          <li><a href="index.html#architecture">Architecture</a></li>
+          <li><a href="https://github.com/llmsyscore/llm-systems-manager/releases">Releases</a></li>
+        </ul>
+      </div>
+      <div>
+        <h4>Resources</h4>
+        <ul>
+          <li><a href="docs/">Documentation</a></li>
+          <li><a href="docs/api.html">API reference</a></li>
+          <li><a href="docs/deployment.html">Deployment guide</a></li>
+          <li><a href="https://github.com/llmsyscore/llm-systems-manager">GitHub</a></li>
+        </ul>
+      </div>
+      <div>
+        <h4>Company</h4>
+        <ul>
+          <li><a href="about.html">About</a></li>
+          <li><a href="contact.html">Contact</a></li>
+          <li><a href="mailto:support@llmsyscore.com">support@llmsyscore.com</a></li>
+        </ul>
+      </div>
+    </div>
+    <div class="foot-base">
+      <span>© 2026 LLM SysCore · AGPL-3.0</span>
+      <span>Self-hosted. Local-first. No analytics, no trackers.</span>
+    </div>
+  </div>
+</footer>
+
+<script src="js/site.js"></script>
+</body>
+</html>

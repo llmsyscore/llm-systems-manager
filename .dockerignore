@@ -13,6 +13,7 @@ devel
 design
 docs
 dist
+website
 tools/packaging
 tools/installer/ci-*.sh
 config/llm-systems.toml

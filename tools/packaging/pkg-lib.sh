@@ -38,7 +38,7 @@ assert_deb_payload_clean() {
   local deb="$1" bad
   command -v dpkg-deb >/dev/null 2>&1 || return 0
   bad="$(dpkg-deb -c "$deb" | grep -E \
-    '/(docker|design|devel|docs/screenshots|tools/packaging)(/|$)|docker-compose\.yml|\.env\.example|\.dockerignore|/ci-[a-z0-9-]+\.sh' \
+    '/(docker|design|devel|docs/screenshots|tools/packaging|website)(/|$)|docker-compose\.yml|\.env\.example|\.dockerignore|/ci-[a-z0-9-]+\.sh' \
     || true)"
   if [[ -n "$bad" ]]; then
     echo "ERROR: $deb ships development files:" >&2
