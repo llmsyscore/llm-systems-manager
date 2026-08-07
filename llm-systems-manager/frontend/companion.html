@@ -1,3 +1,77 @@
 <!DOCTYPE html>
-<html><head><link rel="manifest" href="/manifest.webmanifest"></head>
-<body>companion stub __MGR_VERSION__</body></html>
+<!--
+companion.html — PWA companion shell (#522 phase 1 spike).
+Installability + web-push opt-in; the five companion screens land in later
+phases. Served by /companion with __MGR_VERSION__ stamped at serve time.
+-->
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>LLM Manager</title>
+  <link rel="manifest" href="/manifest.webmanifest">
+  <meta name="theme-color" content="#0d0d0d">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="LLM Manager">
+  <link rel="apple-touch-icon" href="/static/icons/apple-touch-icon.png">
+  <link rel="icon" type="image/png" href="/static/icons/icon-192.png">
+  <link rel="stylesheet" href="/static/css/base.css">
+  <link rel="stylesheet" href="/static/css/companion.css">
+</head>
+<body class="companion">
+  <header class="cmp-header">
+    <img src="/static/icons/icon-192.png" alt="">
+    <div>
+      <div class="cmp-title">LLM Systems Manager</div>
+      <div class="cmp-version">__MGR_VERSION__</div>
+    </div>
+  </header>
+
+  <section class="card cmp-card">
+    <h2>Install</h2>
+    <div class="cmp-row">
+      <span class="cmp-label">App mode</span>
+      <span class="cmp-value" id="stInstall">…</span>
+    </div>
+    <p class="cmp-hint" id="installHint" hidden>
+      Install to the Home Screen for push notifications: tap
+      <strong>Share&nbsp;→&nbsp;Add to Home Screen</strong> (iOS) or
+      <strong>⋮&nbsp;→&nbsp;Install app</strong> (Android).
+    </p>
+  </section>
+
+  <section class="card cmp-card">
+    <h2>Notifications</h2>
+    <div class="cmp-row">
+      <span class="cmp-label">Service worker</span>
+      <span class="cmp-value" id="stSw">…</span>
+    </div>
+    <div class="cmp-row">
+      <span class="cmp-label">Permission</span>
+      <span class="cmp-value" id="stPerm">…</span>
+    </div>
+    <div class="cmp-row">
+      <span class="cmp-label">This device</span>
+      <span class="cmp-value" id="stSub">…</span>
+    </div>
+    <div class="cmp-row">
+      <span class="cmp-label">Registered devices</span>
+      <span class="cmp-value" id="stCount">…</span>
+    </div>
+    <div class="cmp-btns">
+      <button class="cmp-btn primary" id="btnEnable">Enable notifications</button>
+      <button class="cmp-btn" id="btnTest" disabled>Send test push</button>
+      <button class="cmp-btn" id="btnRemove" hidden>Disable on this device</button>
+    </div>
+    <div class="cmp-msg" id="msg"></div>
+  </section>
+
+  <footer class="cmp-foot">
+    <a href="/">Open full dashboard →</a>
+  </footer>
+
+  <script src="/static/js/lib/pushutil.js"></script>
+  <script src="/static/js/companion.js"></script>
+</body>
+</html>

@@ -1,0 +1,54 @@
+/* PWA companion shell (#522). Theme tokens from base.css only. */
+html, body { height: 100%; }
+body.companion {
+  margin: 0;
+  font-family: system-ui, -apple-system, 'Segoe UI', sans-serif;
+  padding: calc(12px + env(safe-area-inset-top)) 14px
+           calc(16px + env(safe-area-inset-bottom));
+  max-width: 480px;
+  margin-inline: auto;
+}
+.cmp-header { display: flex; align-items: center; gap: 10px; margin: 6px 2px 16px; }
+.cmp-header img { width: 40px; height: 40px; border-radius: 9px; }
+.cmp-header .cmp-title { font-size: 1.05em; font-weight: 600; letter-spacing: 0.02em; }
+.cmp-header .cmp-version {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.72em; color: var(--fg-muted);
+}
+.cmp-card { margin-bottom: 12px; }
+.cmp-card h2 {
+  margin: 0 0 10px; font-size: 0.78em; font-weight: 600;
+  text-transform: uppercase; letter-spacing: 0.08em; color: var(--fg-muted);
+}
+.cmp-row {
+  display: flex; justify-content: space-between; align-items: baseline;
+  padding: 7px 0; border-bottom: 1px solid var(--border-soft);
+  font-size: 0.92em;
+}
+.cmp-row:last-of-type { border-bottom: none; }
+.cmp-row .cmp-label { color: var(--fg-muted); }
+.cmp-row .cmp-value {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.92em;
+}
+/* Status is never color-alone: glyph + uppercase word carry the state. */
+.cmp-ok   { color: var(--ok); }
+.cmp-warn { color: var(--warn); }
+.cmp-crit { color: var(--crit); }
+.cmp-dim  { color: var(--fg-dim); }
+.cmp-btns { display: flex; flex-direction: column; gap: 10px; margin-top: 12px; }
+.cmp-btn {
+  appearance: none; border: 1px solid var(--border-strong);
+  background: var(--bg-card-alt); color: var(--fg);
+  border-radius: 9px; padding: 13px 16px; font-size: 0.95em;
+  font-weight: 600; cursor: pointer; text-align: center;
+}
+.cmp-btn.primary { background: var(--accent); border-color: var(--accent); color: var(--bg); }
+.cmp-btn:disabled { opacity: 0.45; cursor: default; }
+.cmp-msg {
+  min-height: 1.2em; margin-top: 10px; font-size: 0.85em;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+.cmp-hint { font-size: 0.82em; color: var(--fg-muted); line-height: 1.45; margin: 8px 0 0; }
+.cmp-foot { text-align: center; margin-top: 18px; }
+.cmp-foot a { color: var(--accent); font-size: 0.9em; text-decoration: none; }
