@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import base64
 import json
+import re
 
 import pytest
 
@@ -72,6 +73,16 @@ class TestValidPushEndpoint:
         assert companion.valid_push_endpoint(url) is True
 
     @pytest.mark.parametrize("url", [
+        # Shorthand / octal / overflowed IPv4 — every one of these resolves to
+        # loopback or the LAN despite "looking" like a hostname.
+        "https://127.1/x",
+        "https://0177.0.0.1/x",
+        "https://192.168.011.5/w",
+        "https://192.168.257/x",
+        "https://2130706433/x",
+        "https://169.254.169%2e254/x",               # urllib3 decodes %2e later
+        "https://push.example.net@127.0.0.1/x",      # userinfo
+        "https://dev.local/x", "https://box.lan/x", "https://svc.internal/x",
         "http://push.example.net/send/abc",          # not https
         "https://127.0.0.1/send",                    # loopback literal
         "https://192.168.1.59:8086/write",           # private literal + port
@@ -211,11 +222,28 @@ class TestOpenSurface:
         "/static/icons/icon-192.png",
         "/static/icons/icon-512.png",
         "/static/icons/apple-touch-icon.png",
+        "/static/icons/icon-maskable-512.png",
     ])
-    def test_icon_paths_not_auth_gated(self, anon, path):
+    def test_icon_paths_serve_anonymously(self, anon, path):
+        # 200, not merely "not 401" — a missing file passes the weaker check
+        # and installability breaks silently.
         r = anon.get(path)
-        assert r.status_code != 401
-        assert not (r.status_code == 302 and "/login" in r.headers.get("Location", ""))
+        assert r.status_code == 200, path
+        assert r.mimetype == "image/png"
+        assert len(r.data) > 500
+
+    def test_every_manifest_icon_exists(self, anon):
+        manifest = json.loads(anon.get("/manifest.webmanifest").data)
+        for icon in manifest["icons"]:
+            assert anon.get(icon["src"]).status_code == 200, icon["src"]
+
+    def test_every_service_worker_shell_path_serves(self, client):
+        """Every path sw.js precaches must exist, or install caches nothing."""
+        body = client.get("/sw.js").data.decode()
+        shell = re.findall(r"^\s*'(/[^']+)',", body, re.M)
+        assert len(shell) >= 5, f"SHELL list not parsed: {shell}"
+        for path in shell:
+            assert client.get(path).status_code == 200, path
 
 
 class TestStaticIconGate:
@@ -248,15 +276,79 @@ class TestStaticIconGate:
         with M.app.test_request_context(path):
             assert auth._auth_gate() is not None
 
-    def test_traversal_back_into_icons_stays_open(self):
-        with M.app.test_request_context("/static/icons/x/../icon-192.png"):
-            assert auth._auth_gate() is None
+    @pytest.mark.parametrize("path", [
+        # normpath() lands inside /static/icons/, but Werkzeug dispatches the
+        # RAW path — these reach real <path:> handlers with no session.
+        "/api/llm/profiles/../../../static/icons/p/activate",
+        "/api/llm/profiles/../../../static/icons/p/save",
+        "/api/alarm/../../static/icons/x",
+        "/proxy/openclaw/../../static/icons/x",
+    ])
+    def test_traversal_into_icons_from_another_route_is_gated(self, path):
+        with M.app.test_request_context(path, method="POST"):
+            assert auth._auth_gate() is not None
+
+    def test_unnormalized_paths_are_never_open(self):
+        # A path that isn't already normalized can never take the exemption,
+        # in either direction — that asymmetry is what produced two bypasses.
+        for path in ("/static/icons/x/../icon-192.png",
+                     "/static/icons/./icon-192.png",
+                     "/static/icons//icon-192.png"):
+            with M.app.test_request_context(path):
+                assert auth._auth_gate() is not None, path
 
     def test_sibling_static_dirs_still_gated(self):
         for path in ("/static/js/companion.js", "/static/css/base.css",
                      "/static/iconsfoo/x.png"):
             with M.app.test_request_context(path):
                 assert auth._auth_gate() is not None, path
+
+
+class TestLoginNextRedirect:
+    """?next= exists so an expired session inside the installed PWA returns to
+    /companion (standalone has no URL bar). It must never leave the origin."""
+
+    @pytest.mark.parametrize("raw", ["/companion", "/", "/companion?x=1",
+                                     "/admin/agents"])
+    def test_accepts_same_origin_paths(self, raw):
+        assert auth.safe_next(raw) == raw
+
+    @pytest.mark.parametrize("raw", [
+        "//evil.example/x",           # protocol-relative
+        "https://evil.example/x",
+        "http://evil.example",
+        "/\\evil.example",            # backslash
+        "\\\\evil.example",
+        "javascript:alert(1)",
+        "evil.example", "", None, "/ space",
+    ])
+    def test_rejects_offsite_and_malformed(self, raw):
+        assert auth.safe_next(raw) is None
+
+    def test_login_returns_to_next_after_success(self, monkeypatch, sandbox):
+        """Both flows: next carried on the GET (stashed in session) and next
+        carried on the POST query string."""
+        monkeypatch.setattr(auth, "auth_mode", lambda: "required")
+        with M.app.test_client() as c:
+            c.get("/login?next=%2Fcompanion")
+            r = c.post("/login", data={"username": "llmadmin",
+                                       "password": "llmadmin"})
+        assert r.status_code == 302
+        assert r.headers["Location"].endswith("/companion")
+
+        with M.app.test_client() as c:
+            c.get("/login")
+            r = c.post("/login?next=%2Fcompanion",
+                       data={"username": "llmadmin", "password": "llmadmin"})
+        assert r.headers["Location"].endswith("/companion")
+
+    def test_login_ignores_offsite_next(self, monkeypatch, sandbox):
+        monkeypatch.setattr(auth, "auth_mode", lambda: "required")
+        with M.app.test_client() as c:
+            c.get("/login?next=https%3A%2F%2Fevil.example%2Fx")
+            r = c.post("/login", data={"username": "llmadmin",
+                                       "password": "llmadmin"})
+        assert "evil.example" not in r.headers.get("Location", "")
 
 
 class TestGatedSurface:
@@ -305,6 +397,69 @@ class TestPushApi:
         r = client.post("/api/companion/push/subscribe",
                         json={"endpoint": "http://insecure.example/e"})
         assert r.status_code == 400
+
+    def test_subscribe_rejects_host_resolving_to_private_ip(self, client,
+                                                            monkeypatch):
+        """A public *name* pointing at a private address (nip.io-style) is
+        refused — string checks alone can't see that."""
+        monkeypatch.setattr(
+            companion, "resolves_to_public_ip", lambda host: False)
+        r = client.post("/api/companion/push/subscribe",
+                        json=_sub(endpoint="https://10.0.0.5.nip.io/x"))
+        assert r.status_code == 400
+        assert "private" in r.get_json()["error"]
+
+    def test_unsubscribe_survives_non_object_body(self, client):
+        for body in ([1, 2, 3], "x", 7):
+            r = client.post("/api/companion/push/unsubscribe", json=body)
+            assert r.status_code == 200, body
+
+    def test_push_send_refuses_redirects(self):
+        """pywebpush passes no allow_redirects, so a 302 from a push endpoint
+        would re-target scheme/host/port — the session must refuse them."""
+        sess = companion._push_session()
+        captured = {}
+
+        class _Resp:
+            status_code = 200
+
+        def fake_super_request(self, *args, **kwargs):
+            captured.update(kwargs)
+            return _Resp()
+
+        import requests
+        orig = requests.Session.request
+        requests.Session.request = fake_super_request
+        try:
+            sess.request("POST", "https://push.example.net/x")
+        finally:
+            requests.Session.request = orig
+        assert captured.get("allow_redirects") is False
+
+
+class TestResolvesToPublicIp:
+    def _fake_getaddrinfo(self, addr):
+        return lambda *a, **k: [(2, 1, 6, "", (addr, 443))]
+
+    @pytest.mark.parametrize("addr", [
+        "127.0.0.1", "10.0.0.5", "192.168.1.59", "169.254.169.254",
+        "172.16.0.1", "::1",
+    ])
+    def test_private_addresses_rejected(self, addr, monkeypatch):
+        monkeypatch.setattr(companion.socket, "getaddrinfo",
+                            self._fake_getaddrinfo(addr))
+        assert companion.resolves_to_public_ip("anything.example") is False
+
+    def test_public_address_accepted(self, monkeypatch):
+        monkeypatch.setattr(companion.socket, "getaddrinfo",
+                            self._fake_getaddrinfo("34.107.221.82"))
+        assert companion.resolves_to_public_ip("push.example.net") is True
+
+    def test_unresolvable_name_passes(self, monkeypatch):
+        def boom(*a, **k):
+            raise OSError("nxdomain")
+        monkeypatch.setattr(companion.socket, "getaddrinfo", boom)
+        assert companion.resolves_to_public_ip("nope.example") is True
 
     def test_test_push_503_when_pywebpush_missing(self, client, monkeypatch):
         def _raise():

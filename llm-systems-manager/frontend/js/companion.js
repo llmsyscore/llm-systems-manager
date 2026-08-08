@@ -13,9 +13,10 @@
   async function jfetch(url, opts) {
     const r = await fetch(url, Object.assign({ credentials: 'same-origin' }, opts));
     const body = await r.json().catch(() => ({}));
-    // Same manager-session 401 shape foundation.js keys on for its redirect.
+    // Same manager-session 401 shape foundation.js keys on for its redirect;
+    // ?next= returns here, since a standalone PWA has no URL bar to recover with.
     if (r.status === 401 && body.auth_required) {
-      location.href = '/login';
+      location.href = '/login?next=' + encodeURIComponent(location.pathname);
       throw new Error('auth');
     }
     return body;
@@ -27,6 +28,11 @@
       if (layout && layout.theme)
         document.documentElement.setAttribute('data-theme', layout.theme);
     } catch (_) { /* default theme */ }
+    // Match the browser/OS chrome to the resolved theme, not a baked color.
+    const bg = getComputedStyle(document.documentElement)
+      .getPropertyValue('--bg-tabnav').trim();
+    const meta = document.querySelector('meta[name="theme-color"]');
+    if (bg && meta) meta.setAttribute('content', bg);
   }
 
   const standalone = () =>
@@ -51,7 +57,9 @@
   async function paint(reg) {
     $('stInstall').innerHTML = standalone() ? OK('INSTALLED') : WARN('BROWSER TAB');
     $('installHint').hidden = standalone();
-    $('stSw').innerHTML = reg ? OK('ACTIVE') : CRIT('UNAVAILABLE');
+    const ready = !!(reg && reg.active);
+    $('stSw').innerHTML = ready ? OK('ACTIVE')
+      : reg ? WARN('INSTALLING') : CRIT('UNAVAILABLE');
     const perm = ('Notification' in window) ? Notification.permission : 'unsupported';
     $('stPerm').innerHTML =
       perm === 'granted' ? OK('GRANTED')
@@ -61,7 +69,7 @@
       jfetch('/api/companion/push/subscriptions').catch(() => null),
     ]);
     $('stSub').innerHTML = sub ? OK('SUBSCRIBED') : DIM('NOT SUBSCRIBED');
-    $('btnEnable').disabled = !!sub || !reg;
+    $('btnEnable').disabled = !!sub || !ready;
     $('btnTest').disabled = !sub;
     $('btnRemove').hidden = !sub;
     $('stCount').textContent = subs && subs.ok ? subs.count : '?';
@@ -83,9 +91,13 @@
       await paint(reg);
       return;
     }
+    let sub = null;
     try {
+      // The registration resolves before the worker activates; subscribing
+      // against a not-yet-active worker throws.
+      await navigator.serviceWorker.ready;
       const key = (await jfetch('/api/companion/push/public-key')).key;
-      const sub = await reg.pushManager.subscribe({
+      sub = await reg.pushManager.subscribe({
         userVisibleOnly: true,
         applicationServerKey: window.PushUtil.urlB64ToUint8Array(key),
       });
@@ -94,8 +106,15 @@
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(sub.toJSON()),
       });
-      say(res.ok ? OK('SUBSCRIBED') : CRIT((res.error || 'subscribe failed').toUpperCase()));
+      if (res.ok) {
+        say(OK('SUBSCRIBED'));
+      } else {
+        // Roll back so the browser and the server can't disagree.
+        await sub.unsubscribe().catch(() => {});
+        say(CRIT((res.error || 'subscribe failed').toUpperCase()));
+      }
     } catch (err) {
+      if (sub) await sub.unsubscribe().catch(() => {});
       say(CRIT('SUBSCRIBE FAILED') + ` — ${esc(err && err.message || err)}`);
     }
     await paint(reg);

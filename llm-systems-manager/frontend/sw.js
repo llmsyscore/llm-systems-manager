@@ -19,12 +19,12 @@ self.addEventListener('install', (e) => {
   self.skipWaiting();
   e.waitUntil((async () => {
     const c = await caches.open(CACHE);
-    for (const path of SHELL) {
+    await Promise.all(SHELL.map(async (path) => {
       try {
         const resp = await fetch(path);
         if (cacheable(resp)) await c.put(path, resp);
       } catch (_) { /* offline install — fetch-time puts backfill later */ }
-    }
+    }));
   })());
 });
 

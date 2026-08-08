@@ -12,6 +12,8 @@ import ipaddress
 import json
 import logging
 import os
+import re
+import socket
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -36,7 +38,6 @@ _SUBS_FILE = "push_subscriptions.json"
 # ── VAPID keys ───────────────────────────────────────────────────────────────
 
 _VAPID_LOCK = threading.Lock()
-_PUBKEY_CACHE: "dict[str, str]" = {}
 
 
 def ensure_vapid_key(data_dir: Path) -> Path:
@@ -66,44 +67,64 @@ def ensure_vapid_key(data_dir: Path) -> Path:
 
 def vapid_public_key_b64(data_dir: Path) -> str:
     """Application-server key: base64url (unpadded) uncompressed P-256 point.
-    Cached per key path — the key never changes for the life of the install."""
+    Read from disk every call so it can never diverge from the signing key."""
     pem_path = ensure_vapid_key(data_dir)
-    cache_key = str(pem_path)
-    cached = _PUBKEY_CACHE.get(cache_key)
-    if cached:
-        return cached
     key = serialization.load_pem_private_key(pem_path.read_bytes(), password=None)
     point = key.public_key().public_bytes(
         serialization.Encoding.X962, serialization.PublicFormat.UncompressedPoint)
-    out = base64.urlsafe_b64encode(point).rstrip(b"=").decode("ascii")
-    _PUBKEY_CACHE[cache_key] = out
-    return out
+    return base64.urlsafe_b64encode(point).rstrip(b"=").decode("ascii")
 
 
 # ── subscriptions ────────────────────────────────────────────────────────────
 
+# Dotted ASCII hostname; the last label must contain a letter, which is what
+# rejects shorthand IPv4 (127.1, 192.168.257) alongside plain dotted quads.
+_HOSTNAME_RE = re.compile(
+    r"^(?=.*[a-z])[a-z0-9]([a-z0-9-]*[a-z0-9])?"
+    r"(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$")
+_NON_PUBLIC_TLDS = (".localhost", ".local", ".internal", ".lan", ".home.arpa")
+
+
 def valid_push_endpoint(endpoint: Any) -> bool:
-    """True for a public https push-service URL. Rejects IP literals, ports
-    other than 443, and dotless/localhost names — the server POSTs here."""
+    """True for a public https push-service URL. String-only checks; the
+    server POSTs here, so anything IP-shaped or internal-looking is refused."""
     if not isinstance(endpoint, str) or not endpoint.startswith("https://"):
         return False
     try:
         parts = urlsplit(endpoint)
-    except ValueError:
-        return False
-    host = (parts.hostname or "").rstrip(".").lower()
-    if not host or "." not in host or host.endswith(".localhost"):
-        return False
-    try:
         if parts.port not in (None, 443):
             return False
     except ValueError:
         return False
+    host = (parts.hostname or "").rstrip(".").lower()
+    if not host or not _HOSTNAME_RE.match(host):
+        return False
+    if host.endswith(_NON_PUBLIC_TLDS):
+        return False
+    # A last label with letters can't be an IPv4 literal, but be explicit.
     try:
         ipaddress.ip_address(host)
+        return False
     except ValueError:
         return True
-    return False
+
+
+def resolves_to_public_ip(host: str) -> bool:
+    """False when the name resolves to any loopback/private/link-local
+    address. Unresolvable names pass — the send fails on its own."""
+    try:
+        infos = socket.getaddrinfo(host, 443, proto=socket.IPPROTO_TCP)
+    except OSError:
+        return True
+    for info in infos:
+        try:
+            ip = ipaddress.ip_address(info[4][0])
+        except ValueError:
+            return False
+        if (ip.is_private or ip.is_loopback or ip.is_link_local
+                or ip.is_reserved or ip.is_multicast or ip.is_unspecified):
+            return False
+    return True
 
 
 def valid_subscription(sub: Any) -> bool:
@@ -144,7 +165,8 @@ class SubscriptionStore:
 
     def list(self) -> list[dict]:
         return [e["subscription"] for e in self._read().values()
-                if isinstance(e, dict) and isinstance(e.get("subscription"), dict)]
+                if isinstance(e, dict) and isinstance(e.get("subscription"), dict)
+                and isinstance(e["subscription"].get("endpoint"), str)]
 
     def count(self) -> int:
         return len(self._read())
@@ -157,7 +179,9 @@ class SubscriptionStore:
             endpoint = sub["endpoint"]
             if endpoint not in data and len(data) >= MAX_SUBSCRIPTIONS:
                 return False
-            prior = data.get(endpoint, {}).get("created")
+            existing = data.get(endpoint)
+            prior = (existing.get("created")
+                     if isinstance(existing, dict) else None)
             data[endpoint] = {"subscription": sub, "ua": ua[:200],
                               "created": time.time() if prior is None else prior}
             self._write(data)
@@ -181,6 +205,22 @@ def _webpush_funcs():
     return webpush, WebPushException
 
 
+def _push_session():
+    """requests session that refuses redirects — pywebpush passes none, and a
+    3xx from a push endpoint would otherwise re-target scheme/host/port."""
+    global _PUSH_SESSION
+    if _PUSH_SESSION is None:
+        import requests
+
+        class _NoRedirect(requests.Session):
+            def request(self, *args, **kwargs):
+                kwargs["allow_redirects"] = False
+                return super().request(*args, **kwargs)
+
+        _PUSH_SESSION = _NoRedirect()
+    return _PUSH_SESSION
+
+
 def _push_contact(settings: Any) -> str:
     companion_cfg = getattr(getattr(settings, "manager", None), "companion", None)
     return (getattr(companion_cfg, "push_contact", "") or
@@ -195,7 +235,7 @@ def _send_one(sub: dict, payload: str, pem_path: Path,
         webpush(subscription_info=sub, data=payload,
                 vapid_private_key=str(pem_path),
                 vapid_claims={"sub": contact}, ttl=60,
-                timeout=PUSH_TIMEOUT_S)
+                timeout=PUSH_TIMEOUT_S, requests_session=_push_session())
         return True, False
     except WebPushException as exc:
         status = getattr(getattr(exc, "response", None), "status_code", None)
@@ -213,6 +253,7 @@ def _send_one(sub: dict, payload: str, pem_path: Path,
 # Bound by register_routes; tests monkeypatch these to a sandbox.
 _data_dir: Optional[Path] = None
 _store: Optional[SubscriptionStore] = None
+_PUSH_SESSION: Any = None
 
 
 def _manifest() -> dict:
@@ -284,6 +325,10 @@ def register_routes(app, ctx, static_dir: Path) -> None:
         sub = flask_request.get_json(silent=True)
         if not valid_subscription(sub):
             return jsonify({"ok": False, "error": "invalid subscription"}), 400
+        host = urlsplit(sub["endpoint"]).hostname or ""
+        if not resolves_to_public_ip(host):
+            return jsonify({"ok": False,
+                            "error": "endpoint resolves to a private address"}), 400
         ua = flask_request.headers.get("User-Agent", "")
         if not _store.add(sub, ua=ua):
             return jsonify({"ok": False,
@@ -292,8 +337,8 @@ def register_routes(app, ctx, static_dir: Path) -> None:
 
     @app.route("/api/companion/push/unsubscribe", methods=["POST"])
     def companion_push_unsubscribe():
-        body = flask_request.get_json(silent=True) or {}
-        endpoint = body.get("endpoint") or ""
+        body = flask_request.get_json(silent=True)
+        endpoint = (body.get("endpoint") or "") if isinstance(body, dict) else ""
         return jsonify({"ok": True, "removed": _store.remove(endpoint)})
 
     @app.route("/api/companion/push/test", methods=["POST"])

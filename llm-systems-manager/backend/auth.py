@@ -342,10 +342,11 @@ def _auth_gate():
     mode = auth_mode()
     path = flask_request.path or "/"
     # Always-open infra paths — never gated, never role-checked. The icon
-    # prefix (#522) matches the NORMALIZED path: Werkzeug collapses ".."
-    # after this gate, so a raw prefix would open the whole static tree.
+    # prefix (#522) requires an ALREADY-normalized path: the gate and
+    # Werkzeug's dispatcher disagree about "..", in both directions.
     if (path in AUTH_OPEN_PATHS or path.startswith("/api/remote/")
-            or posixpath.normpath(path).startswith(_PWA_ICON_PREFIX)):
+            or (path == posixpath.normpath(path)
+                and path.startswith(_PWA_ICON_PREFIX))):
         return None
     if path.startswith("/api/gateway/") and _gateway_key_ok():
         return None
@@ -542,13 +543,32 @@ def _login_page_needed() -> bool:
     return True
 
 
+# Same-origin relative path only: "//host" and backslashes are rejected so
+# ?next= can never become an open redirect.
+_SAFE_NEXT_RE = re.compile(r"^/[A-Za-z0-9._~!$&'()*+,;=:@%/?-]*$")
+
+
+def safe_next(raw: "str | None") -> Optional[str]:
+    """Return `raw` when it is a safe same-origin path, else None."""
+    if not raw or not raw.startswith("/") or raw.startswith("//"):
+        return None
+    if "\\" in raw or not _SAFE_NEXT_RE.match(raw):
+        return None
+    return raw
+
+
 # ── Route handlers ───────────────────────────────────────────────────
 def _manager_login():
     if flask_request.method == "GET":
+        # Carried through the POST in the session so the installed PWA
+        # returns to /companion instead of the desktop dashboard.
+        nxt = safe_next(flask_request.args.get("next"))
+        if nxt:
+            session["next_after_login"] = nxt
         # Don't strand the operator on a login page when this request wouldn't
         # be gated anyway (disabled / trusted-from-allowed-IP) — send them in.
         if not _login_page_needed():
-            return redirect("/")
+            return redirect(nxt or "/")
         return _render_login()
     form = flask_request.form
     username = (form.get("username") or "").strip()
@@ -562,7 +582,10 @@ def _manager_login():
         session["role"] = res["role"]
         log.info("manager login OK (user=%s role=%s) from %s",
                  res["username"], res["role"], flask_request.remote_addr)
-        return redirect("/")
+        # Query arg (form action kept it) or the value stashed on the GET.
+        nxt = (safe_next(flask_request.args.get("next"))
+               or session.pop("next_after_login", None))
+        return redirect(nxt or "/")
     if res.get("locked"):
         log.warning("manager login LOCKED (user=%s) from %s", username, flask_request.remote_addr)
         return _render_login(error="Too many attempts. Try again later."), 429
