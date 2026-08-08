@@ -306,12 +306,21 @@ class TestStaticIconGate:
 
 class TestLoginNextRedirect:
     """?next= exists so an expired session inside the installed PWA returns to
-    /companion (standalone has no URL bar). It must never leave the origin."""
+    /companion (standalone has no URL bar). Only allowlisted same-origin paths
+    are honored — the returned value is a constant, never request data."""
 
-    @pytest.mark.parametrize("raw", ["/companion", "/", "/companion?x=1",
-                                     "/admin/agents"])
-    def test_accepts_same_origin_paths(self, raw):
-        assert auth.safe_next(raw) == raw
+    @pytest.fixture
+    def _login_ok(self, monkeypatch):
+        # Deterministic auth: don't depend on the seeded credential, which is
+        # environment-specific (CI's fresh store isn't llmadmin/llmadmin).
+        monkeypatch.setattr(auth, "auth_mode", lambda: "required")
+        import manager_users
+        monkeypatch.setattr(
+            manager_users, "authenticate",
+            lambda u, p, ip: {"ok": True, "username": "op", "role": "admin"})
+
+    def test_accepts_allowlisted_path(self):
+        assert auth.safe_next("/companion") == "/companion"
 
     @pytest.mark.parametrize("raw", [
         "//evil.example/x",           # protocol-relative
@@ -320,35 +329,33 @@ class TestLoginNextRedirect:
         "/\\evil.example",            # backslash
         "\\\\evil.example",
         "javascript:alert(1)",
-        "evil.example", "", None, "/ space",
+        "evil.example", "", None,
+        # valid same-origin paths, but not on the allowlist → fall back to /
+        "/", "/admin/agents", "/companion?x=1", "/companion/",
     ])
-    def test_rejects_offsite_and_malformed(self, raw):
+    def test_rejects_everything_else(self, raw):
         assert auth.safe_next(raw) is None
 
-    def test_login_returns_to_next_after_success(self, monkeypatch, sandbox):
-        """Both flows: next carried on the GET (stashed in session) and next
-        carried on the POST query string."""
-        monkeypatch.setattr(auth, "auth_mode", lambda: "required")
+    def test_login_returns_to_next_on_get_then_post(self, _login_ok):
         with M.app.test_client() as c:
-            c.get("/login?next=%2Fcompanion")
-            r = c.post("/login", data={"username": "llmadmin",
-                                       "password": "llmadmin"})
+            c.get("/login?next=%2Fcompanion")   # stashed in session
+            r = c.post("/login", data={"username": "op", "password": "x"})
         assert r.status_code == 302
         assert r.headers["Location"].endswith("/companion")
 
+    def test_login_returns_to_next_on_post_query(self, _login_ok):
         with M.app.test_client() as c:
-            c.get("/login")
             r = c.post("/login?next=%2Fcompanion",
-                       data={"username": "llmadmin", "password": "llmadmin"})
+                       data={"username": "op", "password": "x"})
         assert r.headers["Location"].endswith("/companion")
 
-    def test_login_ignores_offsite_next(self, monkeypatch, sandbox):
-        monkeypatch.setattr(auth, "auth_mode", lambda: "required")
+    def test_login_ignores_offsite_next(self, _login_ok):
         with M.app.test_client() as c:
             c.get("/login?next=https%3A%2F%2Fevil.example%2Fx")
-            r = c.post("/login", data={"username": "llmadmin",
-                                       "password": "llmadmin"})
-        assert "evil.example" not in r.headers.get("Location", "")
+            r = c.post("/login", data={"username": "op", "password": "x"})
+        loc = r.headers.get("Location", "")
+        assert "evil.example" not in loc
+        assert loc.endswith("/")
 
 
 class TestGatedSurface:

@@ -543,18 +543,15 @@ def _login_page_needed() -> bool:
     return True
 
 
-# Same-origin relative path only: "//host" and backslashes are rejected so
-# ?next= can never become an open redirect.
-_SAFE_NEXT_RE = re.compile(r"^/[A-Za-z0-9._~!$&'()*+,;=:@%/?-]*$")
+# A post-login redirect may only target one of these exact same-origin paths.
+# safe_next returns the matched CONSTANT, never the request value, so the
+# redirect target carries no request-derived data — no open redirect.
+_ALLOWED_NEXT = ("/companion",)
 
 
 def safe_next(raw: "str | None") -> Optional[str]:
-    """Return `raw` when it is a safe same-origin path, else None."""
-    if not raw or not raw.startswith("/") or raw.startswith("//"):
-        return None
-    if "\\" in raw or not _SAFE_NEXT_RE.match(raw):
-        return None
-    return raw
+    """Return the allowlisted path equal to `raw`, else None."""
+    return next((p for p in _ALLOWED_NEXT if raw == p), None)
 
 
 # ── Route handlers ───────────────────────────────────────────────────
@@ -582,9 +579,10 @@ def _manager_login():
         session["role"] = res["role"]
         log.info("manager login OK (user=%s role=%s) from %s",
                  res["username"], res["role"], flask_request.remote_addr)
-        # Query arg (form action kept it) or the value stashed on the GET.
+        # Query arg (form action kept it) or the value stashed on the GET;
+        # re-validated so the redirect target is always an allowlist constant.
         nxt = (safe_next(flask_request.args.get("next"))
-               or session.pop("next_after_login", None))
+               or safe_next(session.pop("next_after_login", None)))
         return redirect(nxt or "/")
     if res.get("locked"):
         log.warning("manager login LOCKED (user=%s) from %s", username, flask_request.remote_addr)
