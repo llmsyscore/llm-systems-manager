@@ -158,6 +158,10 @@ def _send_one(webpush, WebPushException, sub: dict, payload: str,
         log.warning("companion: push to %s failed (%s)",
                     sub.get("endpoint", "?")[:60], status or exc)
         return False, status in (404, 410)
+    except Exception as exc:
+        log.warning("companion: push to %s failed (%s)",
+                    sub.get("endpoint", "?")[:60], exc)
+        return False, False
 
 
 # ── routes ───────────────────────────────────────────────────────────────────
