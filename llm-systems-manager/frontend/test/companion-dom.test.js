@@ -29,6 +29,14 @@ describe('companion DOM contract', () => {
     tabs.forEach((t) => expect(htmlIds.has('scr-' + t)).toBe(true));
   });
 
+  it('actions screen + confirm sheet expose the controller contract ids', () => {
+    for (const id of ['actionsServices', 'actionsModel', 'actionsAutopilot',
+      'actionsAgents', 'actionsGatedNote', 'actionsMsg',
+      'sheet', 'sheetTitle', 'sheetBody', 'sheetCancel']) {
+      expect(htmlIds.has(id), id).toBe(true);
+    }
+  });
+
   it('classic companion scripts co-load without a top-level name collision', () => {
     // A duplicate top-level const/function across these files is a page-break
     // SyntaxError that isolated-module vitest imports cannot see; parsing the

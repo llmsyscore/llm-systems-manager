@@ -1,6 +1,5 @@
-// Companion shell (#522): five-tab router + per-screen controllers, plus the
-// service-worker/push opt-in (now on the Admin screen). Read screens only;
-// control actions land in a follow-up. IIFE — classic global scope.
+// Companion shell (#522): five-tab router, per-screen controllers, push
+// opt-in, and the Actions control surface + confirm sheet. Classic IIFE.
 (() => {
   const $ = (id) => document.getElementById(id);
   const esc = (s) => String(s == null ? '' : s)
@@ -18,17 +17,35 @@
     return body;
   }
 
+  const jpost = (url, body, method) => jfetch(url, {
+    method: method || 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+
   // ── theme + host liveness ────────────────────────────────────────────────
+  // 'auto' follows the dashboard layout theme; 'dark'/'light' override it.
+  const themePref = () => localStorage.getItem('companionTheme') || 'auto';
+
   async function applyTheme() {
-    try {
-      const layout = await jfetch('/api/layout');
-      if (layout && layout.theme)
-        document.documentElement.setAttribute('data-theme', layout.theme);
-    } catch (_) { /* default theme */ }
+    const pref = themePref();
+    if (pref === 'dark' || pref === 'light') {
+      document.documentElement.setAttribute('data-theme', pref);
+    } else {
+      try {
+        const layout = await jfetch('/api/layout');
+        if (layout && layout.theme)
+          document.documentElement.setAttribute('data-theme', layout.theme);
+      } catch (_) { /* default theme */ }
+    }
     const bg = getComputedStyle(document.documentElement)
       .getPropertyValue('--bg-tabnav').trim();
     const meta = document.querySelector('meta[name="theme-color"]');
     if (bg && meta) meta.setAttribute('content', bg);
+    const chips = $('themeChips');
+    if (chips) {
+      chips.querySelectorAll('.chip').forEach((c) =>
+        c.classList.toggle('on', c.dataset.ctheme === pref));
+    }
   }
 
   function setLive(online, ageS) {
@@ -79,7 +96,7 @@
     render(vm) {
       $('glanceHeroN').innerHTML = `${esc(vm.hero.n)} <small>${esc(vm.hero.unit)}</small>`;
       $('glanceHeroL').textContent = vm.hero.label;
-      const sp = CS.path(this.buf, 340, 118);
+      const sp = CS.path(this.buf, 340, 118, { padTop: 58 });
       $('glanceSparkLine').setAttribute('d', sp.line);
       $('glanceSparkFill').setAttribute('d', sp.fill);
       const secs = this.buf.length * 2;
@@ -171,7 +188,7 @@
       $('energyHeroN').innerHTML = `${esc(EN.fmtWatts(tT.avg_watts).replace(' W', ''))} <small>W</small>`;
       // 24h watts strip: each hourly bucket's Wh over ~1h ≈ average watts
       const watts = (hourly.rows || []).map((r) => r.energy_wh);
-      const sp = CS.path(watts, 340, 118);
+      const sp = CS.path(watts, 340, 118, { padTop: 58 });
       $('energySparkLine').setAttribute('d', sp.line);
       $('energySparkFill').setAttribute('d', sp.fill);
 
@@ -290,6 +307,211 @@
     },
   };
 
+  // ── confirm sheet ─────────────────────────────────────────────────────────
+  // gen increments on every open/close; async fills compare it to detect the
+  // sheet being closed or repurposed while their fetch was in flight.
+  const sheet = {
+    gen: 0,
+    open(title, bodyHtml, onclick) {
+      this.gen++;
+      $('sheetTitle').textContent = title;
+      $('sheetBody').innerHTML = bodyHtml;
+      $('sheetBody').onclick = onclick || null;
+      $('sheet').hidden = false;
+      $('sheetCancel').focus();
+    },
+    close() { this.gen++; $('sheet').hidden = true; $('sheetBody').onclick = null; },
+    confirm(title, detail, label, danger, fn) {
+      this.open(title,
+        `<div class="sd">${esc(detail)}</div>`
+        + `<button class="btn ${danger ? 'danger' : 'primary'}" data-go>${esc(label)}</button>`,
+        (e) => { if (e.target.closest('[data-go]')) { this.close(); fn(); } });
+    },
+  };
+
+  // ── Actions (control surface) ─────────────────────────────────────────────
+  const actions = {
+    vm: null, ap: null,
+    async refresh() {
+      const [ls, lms, vllm, health, ap, ag] = await Promise.all([
+        jfetch('/api/llama-state').catch(() => ({})),
+        jfetch('/api/lmstudio/metrics').catch(() => null),
+        jfetch('/api/vllm/metrics').catch(() => null),
+        jfetch('/api/admin/system-health').catch(() => null),
+        jfetch('/api/autopilot').catch(() => null),
+        jfetch('/api/agents').catch(() => null),
+      ]);
+      setLive(ls.agent_online, ls.agent_age_s);
+      // Last GET payload; confirmAutopilot re-reads fresh before its PUT.
+      this.ap = ap;
+      const version = (document.querySelector('meta[name="mgr-version"]') || {}).content || '—';
+      this.vm = CV.actions({ llama: ls, lms, vllm, health, autopilot: ap, agents: ag, version });
+      this.render(this.vm);
+    },
+    msg(t, bad) {
+      const m = $('actionsMsg');
+      m.textContent = t || '';
+      m.classList.toggle('bad', !!bad);
+    },
+    async act(label, req) {
+      this.msg(label + '…');
+      try {
+        const r = await req();
+        if (r && r.ok === false) throw new Error(r.error || 'failed');
+        this.msg(label + ' ✓' + (r && r.note ? ' · ' + r.note : ''));
+      } catch (e) { this.msg(label + ' failed: ' + (e && e.message || e), true); }
+      this.refresh();
+    },
+    render(vm) {
+      $('actionsGatedNote').hidden = !vm.gated;
+      $('actionsServices').innerHTML = vm.services.map((s) =>
+        `<div class="arow"><span class="pstat ${s.status}"></span>`
+        + `<div class="atxt"><div class="an">${esc(s.name)}</div>`
+        + `<div class="ad">${esc(s.detail)}</div></div>`
+        + `<button class="btn" data-svc="${esc(s.key)}"${s.canRestart ? '' : ' disabled'}>Restart</button></div>`).join('');
+      const m = vm.model;
+      $('actionsModel').innerHTML =
+        `<div class="arow"><div class="atxt"><div class="an">${esc(m.name || 'No model')}</div>`
+        + `<div class="ad">${esc(m.detail)}</div></div>`
+        + `<button class="btn primary" data-swap>Swap…</button></div>`;
+      $('actionsAutopilot').innerHTML = vm.autopilot
+        ? `<div class="arow"><div class="atxt"><div class="an">Model autopilot</div>`
+          + `<div class="ad">${esc((vm.autopilot.on ? 'active' : 'off') + ' · ' + vm.autopilot.detail)}</div></div>`
+          + `<button class="switch" role="switch" aria-checked="${vm.autopilot.on}" `
+          + 'aria-label="Autopilot" data-ap><i></i></button></div>'
+        : '<div class="arow"><div class="atxt"><div class="an">Model autopilot</div>'
+          + '<div class="ad">needs admin</div></div></div>';
+      // "No pending agents" is only claimed when the agents read succeeded.
+      $('actionsAgents').innerHTML = vm.pending.map((p) =>
+        `<div class="card"><div class="an">${esc(p.name)} wants to join</div>`
+        + `<div class="ad">${esc(p.detail)}</div>`
+        + `<div class="approve"><button class="btn primary" data-approve="${esc(p.id)}">Approve</button>`
+        + `<button class="btn danger" data-deny="${esc(p.id)}">Deny</button></div></div>`).join('')
+        || (vm.agentsKnown ? '<div class="provwrap"><div class="arow"><div class="atxt">'
+          + '<div class="an">No pending agents</div></div></div></div>' : '');
+    },
+    confirmRestart(key) {
+      const COPY = {
+        llama: 'In-flight inference requests will be dropped while the unit restarts.',
+        lms: 'The LM Studio server restarts; loaded models reload after it returns.',
+        vllm: 'The vLLM unit restarts; its model reloads after it returns.',
+        manager: 'The dashboard and this app will briefly disconnect.',
+        alarm_engine: 'Alert evaluation pauses while the engine restarts.',
+      };
+      const ROUTE = {
+        llama: '/api/llm/server/restart',
+        lms: '/api/lmstudio/server/restart',
+        vllm: '/api/vllm/server/restart',
+      };
+      const s = ((this.vm || {}).services || []).find((x) => x.key === key) || { name: key };
+      const req = ROUTE[key]
+        ? () => jfetch(ROUTE[key], { method: 'POST' })
+        : () => jfetch(`/api/admin/service/${encodeURIComponent(key)}/restart`, { method: 'POST' });
+      sheet.confirm('Restart ' + s.name, COPY[key] || 'The service restarts now.',
+        'Restart', true, () => this.act('restart ' + s.name, req));
+    },
+    confirmAutopilot() {
+      const snap = ((this.ap || {}).state) || { enabled: false, entries: [], hosts: {} };
+      const next = !snap.enabled;
+      sheet.confirm((next ? 'Enable' : 'Disable') + ' autopilot',
+        next ? 'The reconciler will start placing declared models automatically.'
+          : 'Model placement stops; loaded models stay as they are.',
+        next ? 'Enable' : 'Disable', !next,
+        // Re-reads full state at confirm time; the PUT flips only `enabled`.
+        () => this.act('autopilot', async () => {
+          const cur = ((await jfetch('/api/autopilot')).state) || snap;
+          return jpost('/api/autopilot', Object.assign({}, cur, { enabled: next }), 'PUT');
+        }));
+    },
+    // Loads a model, surfacing the proxy's pin-override routing headers.
+    async loadModel(id) {
+      const r = await fetch('/api/llm/load', {
+        method: 'POST', credentials: 'same-origin',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ model: id }),
+      });
+      const body = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(body.error || r.status);
+      if (r.headers.get('X-Routing-Override') === 'pin') {
+        body.note = 'routed to ' + (r.headers.get('X-Proxied-To') || 'its pinned host')
+          + ' (pinned)';
+      }
+      return body;
+    },
+    async openSwap() {
+      sheet.open('Swap model', '<div class="sd">loading model list…</div>');
+      const gen = sheet.gen;
+      let list = [];
+      try { list = (await jfetch('/api/llm/models')).data || []; }
+      catch (e) {
+        if (gen === sheet.gen) {
+          $('sheetBody').innerHTML = `<div class="sd">model list failed: ${esc(e && e.message || e)}</div>`;
+        }
+        return;
+      }
+      // The sheet was closed or repurposed while the list was loading.
+      if (gen !== sheet.gen) return;
+      const vm = this.vm || {};
+      const m = vm.model || {};
+      const cur = m.name;
+      const rows = list.map((mm) => {
+        const st = ((mm.status || {}).value || '').toLowerCase();
+        const isCur = mm.id === cur || st === 'loaded' || st === 'loading';
+        return `<button class="arow" data-model="${esc(mm.id)}"${isCur ? ' disabled' : ''}>`
+          + `<div class="atxt"><div class="an">${esc(mm.id)}</div></div>`
+          + `<div class="pr">${esc(isCur ? (st || 'loaded') : st)}</div></button>`;
+      }).join('') || '<div class="sd">no models configured</div>';
+      const unload = m.resident
+        ? `<button class="btn danger" data-unload>Unload ${esc(cur)}</button>` : '';
+      const pin = (vm.primaryLlamaId && m.resident)
+        ? `<button class="btn" data-pin>${m.pinned ? 'Unpin' : 'Pin'} ${esc(cur)}</button>` : '';
+      $('sheetBody').innerHTML = `<div class="sheetlist">${rows}</div>${unload}${pin}`;
+      $('sheetBody').onclick = (e) => {
+        const b = e.target.closest('[data-model]');
+        if (b && !b.disabled) {
+          const id = b.dataset.model;
+          sheet.confirm('Load ' + id,
+            'The current model is swapped out; the first request may be slow while it loads.',
+            'Load', false, () => this.act('load', () => this.loadModel(id)));
+        } else if (e.target.closest('[data-unload]')) {
+          sheet.confirm('Unload ' + cur,
+            'Frees VRAM; requests for this model will fail until it is reloaded.',
+            'Unload', true, () => this.act('unload',
+              () => jpost('/api/llm/unload', { model: cur })));
+        } else if (e.target.closest('[data-pin]')) {
+          sheet.confirm((m.pinned ? 'Unpin ' : 'Pin ') + cur,
+            m.pinned ? 'Gateway requests for this model go back to pool routing.'
+              : 'Gateway requests for this model always route to the primary llama host.',
+            m.pinned ? 'Unpin' : 'Pin', false,
+            () => this.act(m.pinned ? 'unpin' : 'pin', () => jpost('/api/admin/llama-pins',
+              { model_id: cur, agent_id: m.pinned ? '' : vm.primaryLlamaId })));
+        }
+      };
+    },
+    start() {
+      $('scr-actions').onclick = (e) => {
+        const svc = e.target.closest('[data-svc]');
+        if (svc && !svc.disabled) return this.confirmRestart(svc.dataset.svc);
+        if (e.target.closest('[data-swap]')) return this.openSwap();
+        if (e.target.closest('[data-ap]')) return this.confirmAutopilot();
+        const ok = e.target.closest('[data-approve]');
+        if (ok) {
+          return sheet.confirm('Approve agent',
+            'Issue a token and admit this agent to the fleet.', 'Approve', false,
+            () => this.act('approve', () => jfetch(
+              `/api/agents/${encodeURIComponent(ok.dataset.approve)}/approve`, { method: 'POST' })));
+        }
+        const no = e.target.closest('[data-deny]');
+        if (no) {
+          return sheet.confirm('Deny agent',
+            'Mark this agent disabled. It can re-register later.', 'Deny', true,
+            () => this.act('deny', () => jfetch(
+              `/api/agents/${encodeURIComponent(no.dataset.deny)}/disable`, { method: 'POST' })));
+        }
+      };
+    },
+  };
+
   // ── service worker + push (Admin) ─────────────────────────────────────────
   let _reg = null;
   const standalone = () =>
@@ -353,10 +575,10 @@
 
   // ── router ────────────────────────────────────────────────────────────────
   const SCREENS = {
-    glance: { title: 'LLM Systems', ctrl: glance, interval: 2000 },
+    glance: { title: 'LLM Systems Manager', ctrl: glance, interval: 2000 },
     alerts: { title: 'Alerts', ctrl: alerts, interval: 15000 },
     energy: { title: 'Energy', ctrl: energy, interval: 30000 },
-    actions: { title: 'Actions', ctrl: null },
+    actions: { title: 'Actions', ctrl: actions, interval: 10000 },
     admin: { title: 'Admin', ctrl: admin, interval: 10000 },
   };
   let timer = null;
@@ -374,8 +596,9 @@
     $('appTitle').textContent = cfg.title;
     if (cfg.ctrl) {
       cfg.ctrl.refresh();
+      // Paused while the confirm sheet is open or the app is backgrounded.
       if (cfg.interval) timer = setInterval(() => {
-        if (document.visibilityState === 'visible') cfg.ctrl.refresh();
+        if (document.visibilityState === 'visible' && $('sheet').hidden) cfg.ctrl.refresh();
       }, cfg.interval);
     }
   }
@@ -400,6 +623,17 @@
       navigator.serviceWorker.addEventListener('controllerchange', repaint);
     }
     alerts.start();
+    actions.start();
+    $('sheet').addEventListener('click', (e) => {
+      if (e.target.closest('[data-sheet-close]')) sheet.close();
+    });
+    $('themeChips').addEventListener('click', (e) => {
+      const c = e.target.closest('[data-ctheme]');
+      if (!c) return;
+      if (c.dataset.ctheme === 'auto') localStorage.removeItem('companionTheme');
+      else localStorage.setItem('companionTheme', c.dataset.ctheme);
+      applyTheme();
+    });
     $('btnEnable').addEventListener('click', enablePush);
     $('btnTest').addEventListener('click', testPush);
     $('tabbar').querySelectorAll('.tab').forEach((b) =>

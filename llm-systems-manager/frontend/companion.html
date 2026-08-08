@@ -2,19 +2,19 @@
 <!--
 companion.html — PWA companion (#522). Five-tab phone shell; screens reuse
 existing session-authed endpoints. Served at /companion with __MGR_VERSION__
-stamped in. Control actions (Actions tab) land in a follow-up PR.
+stamped in. Actions tab controls confirm via the bottom sheet.
 -->
 <html lang="en">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-  <title>LLM Systems</title>
+  <title>LLM Systems Manager</title>
   <meta name="mgr-version" content="__MGR_VERSION__">
   <link rel="manifest" href="/manifest.webmanifest">
   <meta name="theme-color" content="#0d0d0d">
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="default">
-  <meta name="apple-mobile-web-app-title" content="LLM Manager">
+  <meta name="apple-mobile-web-app-title" content="LLM Systems Manager">
   <link rel="apple-touch-icon" href="/static/icons/apple-touch-icon.png">
   <link rel="icon" type="image/png" href="/static/icons/icon-192.png">
   <link rel="stylesheet" href="/static/css/base.css">
@@ -22,8 +22,8 @@ stamped in. Control actions (Actions tab) land in a follow-up PR.
 </head>
 <body class="companion">
   <header class="appbar">
-    <div class="logo">LS</div>
-    <div class="t" id="appTitle">LLM Systems</div>
+    <div class="logo">LSC</div>
+    <div class="t" id="appTitle">LLM Systems Manager</div>
     <div class="hostchip"><span class="livedot" id="liveDot"></span><span id="hostName">…</span></div>
   </header>
 
@@ -85,13 +85,23 @@ stamped in. Control actions (Actions tab) land in a follow-up PR.
       <div class="card"><svg class="daybars" id="energyDayBars" viewBox="0 0 312 92" role="img" aria-label="Cost per day"></svg></div>
     </section>
 
-    <!-- ACTIONS (placeholder until the controls PR) -->
+    <!-- ACTIONS -->
     <section class="screen" id="scr-actions" hidden>
-      <div class="muted-note">
-        <span class="big">Controls arrive next</span>
-        Restart a service, swap or pin a model, toggle autopilot, and approve
-        pending agents land in the next update. Monitoring is all here now.
+      <div class="sec">Services</div>
+      <div class="provwrap" id="actionsServices"></div>
+      <div class="sec">Model</div>
+      <div class="provwrap" id="actionsModel"></div>
+      <div class="sec">Autopilot</div>
+      <div class="provwrap" id="actionsAutopilot"></div>
+      <div class="sec">Agents</div>
+      <div id="actionsAgents"></div>
+      <div class="muted-note" id="actionsGatedNote" hidden>
+        <span class="big">Admin controls locked</span>
+        Manager and alarm-engine restart, autopilot, and agent approval need an
+        admin session from an allowed network. Provider restarts and model swap
+        still work.
       </div>
+      <div class="cmp-msg" id="actionsMsg" role="status"></div>
     </section>
 
     <!-- ADMIN (read-only) -->
@@ -116,6 +126,16 @@ stamped in. Control actions (Actions tab) land in a follow-up PR.
         </div>
         <div class="cmp-msg" id="pushMsg"></div>
       </div>
+      <div class="sec">Appearance</div>
+      <div class="provwrap">
+        <div class="arow"><div class="atxt"><div class="an">Theme</div>
+          <div class="ad">Auto follows the dashboard theme</div></div>
+          <div class="chips themechips" id="themeChips">
+            <button class="chip" data-ctheme="auto">Auto</button>
+            <button class="chip" data-ctheme="dark">Dark</button>
+            <button class="chip" data-ctheme="light">Light</button>
+          </div></div>
+      </div>
       <div class="sec">Dashboard</div>
       <div class="provwrap">
         <div class="arow"><div class="atxt"><div class="an">Full dashboard</div>
@@ -126,8 +146,8 @@ stamped in. Control actions (Actions tab) land in a follow-up PR.
   </main>
 
   <nav class="tabbar" id="tabbar">
-    <button class="tab on" data-tab="glance" aria-label="Glance">
-      <svg viewBox="0 0 24 24"><path d="M3 13l4-4 4 3 5-6 5 5"/><path d="M3 20h18"/></svg>Glance</button>
+    <button class="tab on" data-tab="glance" aria-label="Home">
+      <svg viewBox="0 0 24 24"><path d="M3 13l4-4 4 3 5-6 5 5"/><path d="M3 20h18"/></svg>Home</button>
     <button class="tab" data-tab="alerts" aria-label="Alerts">
       <svg viewBox="0 0 24 24"><path d="M12 3a6 6 0 0 0-6 6v4l-2 3h16l-2-3V9a6 6 0 0 0-6-6z"/><path d="M10 20a2 2 0 0 0 4 0"/></svg>Alerts<span class="badge" id="alertBadge" hidden></span></button>
     <button class="tab" data-tab="energy" aria-label="Energy">
@@ -137,6 +157,16 @@ stamped in. Control actions (Actions tab) land in a follow-up PR.
     <button class="tab" data-tab="admin" aria-label="Admin">
       <svg viewBox="0 0 24 24"><path d="M12 3l7 3v5c0 4.6-3 8.6-7 10-4-1.4-7-5.4-7-10V6z"/></svg>Admin</button>
   </nav>
+
+  <div class="sheetwrap" id="sheet" hidden>
+    <div class="sheetscrim" data-sheet-close></div>
+    <div class="sheet" role="dialog" aria-modal="true" aria-labelledby="sheetTitle">
+      <div class="sheethandle" aria-hidden="true"></div>
+      <div class="sheettitle" id="sheetTitle"></div>
+      <div class="sheetbody" id="sheetBody"></div>
+      <button class="btn sheetcancel" id="sheetCancel" data-sheet-close>Cancel</button>
+    </div>
+  </div>
 
   <script src="/static/js/lib/pushutil.js"></script>
   <script src="/static/js/lib/energy.js"></script>
