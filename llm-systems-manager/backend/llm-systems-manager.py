@@ -156,7 +156,7 @@ def _local_hostname() -> str:
 # banner reads it. Bump suffix (-1, -2, …) for same-day iterations; roll
 # the date for a new day's first change.
 # ---------------------------------------------------------------------------
-__version__ = "v2026.08.08-1"
+__version__ = "v2026.08.08-2"
 
 # Wall-clock at first import (Cheroot main process); the shutdown banner
 # reads it for the uptime line.
@@ -3090,6 +3090,8 @@ def admin_system_health():
                 "latency_ms": round(dur, 1),
                 "status_code": r.status_code,
                 "tls": _tls_info,
+                "version": info.get("version") if isinstance(info, dict) else None,
+                "uptime_s": info.get("uptime_s") if isinstance(info, dict) else None,
             })
             # Surface tls_enabled-but-missing-cert as a top-level warning so the
             # admin tab can flag it prominently (matches the user spec: "error

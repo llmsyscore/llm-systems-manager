@@ -58,13 +58,21 @@ describe('CView.glance', () => {
     expect(g.hero.label).toBe('vLLM · mixtral');
   });
 
-  it('provider rows: llama ctx + slots, lms host + gpu-busy, vllm idle', () => {
+  it('provider rows: llama ctx + slots, lms host + model count, vllm idle', () => {
     const g = CView.glance(full);
     expect(g.providers[0]).toMatchObject({ status: 'ok', name: 'llama.cpp',
       detail: 'qwen3-32b-q4_k_m · ctx 32k', rN: '2/4', rUnit: 'slots' });
     expect(g.providers[1]).toMatchObject({ status: 'ok', name: 'LM Studio',
-      detail: 'mac-studio · llama-3.3-70b', rN: '71%', rUnit: 'gpu busy' });
+      detail: 'mac-studio · llama-3.3-70b', rN: '1', rUnit: 'model' });
     expect(g.providers[2]).toMatchObject({ status: 'idle', name: 'vLLM', detail: 'unit stopped' });
+  });
+
+  it('LMS: an IDLE ps row still counts as a loaded model (real lms ps shape)', () => {
+    // Regression: real `lms ps` reports loaded-but-not-generating as "IDLE".
+    const g = CView.glance({ lms: { ps: [{ model: 'nvidia/nemotron-3-nano-4b', status: 'IDLE' }],
+      system: { host: 'mac-studio' } } });
+    expect(g.providers[1]).toMatchObject({ status: 'ok',
+      detail: 'mac-studio · nvidia/nemotron-3-nano-4b', rN: '1', rUnit: 'model' });
   });
 
   it('system tiles: temp, VRAM with total + hot flag, PSU power, energy today', () => {
@@ -117,9 +125,19 @@ describe('CView.alerts', () => {
     expect(m.firing[1]).toMatchObject({ sev: 'warn', word: 'warning · acked', ackable: false });
   });
 
-  it('badge counts only firing alerts', () => {
+  it('badge counts only unacked firing alerts', () => {
+    // a1 active + a2 acknowledged fire, but the badge is the unread count.
     const m = CView.alerts(list, NOW);
-    expect(m.counts).toMatchObject({ badge: 2, critical: 1, warning: 1 });
+    expect(m.counts).toMatchObject({ badge: 1, critical: 1, warning: 1 });
+  });
+
+  it('resolved and info rows never offer Ack, even when status is still active', () => {
+    const m = CView.alerts(list, NOW);
+    expect(m.firing.find((r) => r.id === 'a1').ackable).toBe(true);
+    expect(m.firing.find((r) => r.id === 'a2').ackable).toBe(false);
+    // a4: info alert the AE keeps status=active — shown in Earlier, no Ack.
+    expect(m.earlier.find((r) => r.id === 'a4').ackable).toBe(false);
+    expect(m.earlier.find((r) => r.id === 'a3').ackable).toBe(false);
   });
 
   it('empty list yields zero counts', () => {
@@ -232,6 +250,34 @@ describe('CView.actions', () => {
     expect(a.pending[0]).toMatchObject({ id: 'bb22', name: 'mac-mini-m4' });
     expect(a.pending[0].detail).toContain('4m ago');
     expect(a.pending[0].detail).toContain('v2026.07.30-3');
+  });
+
+  it('LMS + vLLM service rows appear between llama and manager when reported', () => {
+    const a = CView.actions({ ...full,
+      lms: { agent_id: 'lm1', agent_online: true,
+             ps: [{ model: 'nemotron-nano', status: 'IDLE' }] },
+      vllm: { agent_online: true, vllm: { state: 'running', model: 'mixtral' } } });
+    expect(a.services.map((s) => s.key))
+      .toEqual(['llama', 'lms', 'vllm', 'manager', 'alarm_engine']);
+    expect(a.services[1]).toMatchObject({ status: 'ok', detail: 'nemotron-nano', canRestart: true });
+    expect(a.services[2]).toMatchObject({ status: 'ok', detail: 'mixtral', canRestart: true });
+  });
+
+  it('no LMS/vLLM rows when no capable agent exists (agent_id null)', () => {
+    const a = CView.actions({ ...full,
+      lms: { agent_id: null, agent_online: false },
+      vllm: { agent_id: null, agent_online: false } });
+    expect(a.services.map((s) => s.key)).toEqual(['llama', 'manager', 'alarm_engine']);
+  });
+
+  it('AE row mirrors the Manager row: version · uptime from AE /health passthrough', () => {
+    const a = CView.actions({ ...full, health: { ...full.health,
+      services: [{ name: 'alarm_engine', ok: true, version: 'v2026.08.08-1',
+                   uptime_s: 12 * 86400 + 7200 }] } });
+    expect(a.services[2].detail).toContain('v2026.08.08-1');
+    expect(a.services[2].detail).toContain('12d');
+    expect(a.services[2].detail).not.toContain('reachable');
+    expect(a.services[2].detail).not.toContain('TLS');
   });
 
   it('AE stays restartable when unreachable — that is when restart matters', () => {

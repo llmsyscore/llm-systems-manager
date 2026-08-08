@@ -23,16 +23,29 @@
   });
 
   // ── theme + host liveness ────────────────────────────────────────────────
+  // 'auto' follows the dashboard layout theme; 'dark'/'light' override it.
+  const themePref = () => localStorage.getItem('companionTheme') || 'auto';
+
   async function applyTheme() {
-    try {
-      const layout = await jfetch('/api/layout');
-      if (layout && layout.theme)
-        document.documentElement.setAttribute('data-theme', layout.theme);
-    } catch (_) { /* default theme */ }
+    const pref = themePref();
+    if (pref === 'dark' || pref === 'light') {
+      document.documentElement.setAttribute('data-theme', pref);
+    } else {
+      try {
+        const layout = await jfetch('/api/layout');
+        if (layout && layout.theme)
+          document.documentElement.setAttribute('data-theme', layout.theme);
+      } catch (_) { /* default theme */ }
+    }
     const bg = getComputedStyle(document.documentElement)
       .getPropertyValue('--bg-tabnav').trim();
     const meta = document.querySelector('meta[name="theme-color"]');
     if (bg && meta) meta.setAttribute('content', bg);
+    const chips = $('themeChips');
+    if (chips) {
+      chips.querySelectorAll('.chip').forEach((c) =>
+        c.classList.toggle('on', c.dataset.ctheme === pref));
+    }
   }
 
   function setLive(online, ageS) {
@@ -83,7 +96,7 @@
     render(vm) {
       $('glanceHeroN').innerHTML = `${esc(vm.hero.n)} <small>${esc(vm.hero.unit)}</small>`;
       $('glanceHeroL').textContent = vm.hero.label;
-      const sp = CS.path(this.buf, 340, 118);
+      const sp = CS.path(this.buf, 340, 118, { padTop: 58 });
       $('glanceSparkLine').setAttribute('d', sp.line);
       $('glanceSparkFill').setAttribute('d', sp.fill);
       const secs = this.buf.length * 2;
@@ -175,7 +188,7 @@
       $('energyHeroN').innerHTML = `${esc(EN.fmtWatts(tT.avg_watts).replace(' W', ''))} <small>W</small>`;
       // 24h watts strip: each hourly bucket's Wh over ~1h ≈ average watts
       const watts = (hourly.rows || []).map((r) => r.energy_wh);
-      const sp = CS.path(watts, 340, 118);
+      const sp = CS.path(watts, 340, 118, { padTop: 58 });
       $('energySparkLine').setAttribute('d', sp.line);
       $('energySparkFill').setAttribute('d', sp.fill);
 
@@ -320,8 +333,10 @@
   const actions = {
     vm: null, ap: null,
     async refresh() {
-      const [ls, health, ap, ag] = await Promise.all([
+      const [ls, lms, vllm, health, ap, ag] = await Promise.all([
         jfetch('/api/llama-state').catch(() => ({})),
+        jfetch('/api/lmstudio/metrics').catch(() => null),
+        jfetch('/api/vllm/metrics').catch(() => null),
         jfetch('/api/admin/system-health').catch(() => null),
         jfetch('/api/autopilot').catch(() => null),
         jfetch('/api/agents').catch(() => null),
@@ -330,7 +345,7 @@
       // Last GET payload; confirmAutopilot re-reads fresh before its PUT.
       this.ap = ap;
       const version = (document.querySelector('meta[name="mgr-version"]') || {}).content || '—';
-      this.vm = CV.actions({ llama: ls, health, autopilot: ap, agents: ag, version });
+      this.vm = CV.actions({ llama: ls, lms, vllm, health, autopilot: ap, agents: ag, version });
       this.render(this.vm);
     },
     msg(t, bad) {
@@ -378,12 +393,19 @@
     confirmRestart(key) {
       const COPY = {
         llama: 'In-flight inference requests will be dropped while the unit restarts.',
+        lms: 'The LM Studio server restarts; loaded models reload after it returns.',
+        vllm: 'The vLLM unit restarts; its model reloads after it returns.',
         manager: 'The dashboard and this app will briefly disconnect.',
         alarm_engine: 'Alert evaluation pauses while the engine restarts.',
       };
+      const ROUTE = {
+        llama: '/api/llm/server/restart',
+        lms: '/api/lmstudio/server/restart',
+        vllm: '/api/vllm/server/restart',
+      };
       const s = ((this.vm || {}).services || []).find((x) => x.key === key) || { name: key };
-      const req = key === 'llama'
-        ? () => jfetch('/api/llm/server/restart', { method: 'POST' })
+      const req = ROUTE[key]
+        ? () => jfetch(ROUTE[key], { method: 'POST' })
         : () => jfetch(`/api/admin/service/${encodeURIComponent(key)}/restart`, { method: 'POST' });
       sheet.confirm('Restart ' + s.name, COPY[key] || 'The service restarts now.',
         'Restart', true, () => this.act('restart ' + s.name, req));
@@ -553,7 +575,7 @@
 
   // ── router ────────────────────────────────────────────────────────────────
   const SCREENS = {
-    glance: { title: 'LLM Systems', ctrl: glance, interval: 2000 },
+    glance: { title: 'LLM Systems Manager', ctrl: glance, interval: 2000 },
     alerts: { title: 'Alerts', ctrl: alerts, interval: 15000 },
     energy: { title: 'Energy', ctrl: energy, interval: 30000 },
     actions: { title: 'Actions', ctrl: actions, interval: 10000 },
@@ -604,6 +626,13 @@
     actions.start();
     $('sheet').addEventListener('click', (e) => {
       if (e.target.closest('[data-sheet-close]')) sheet.close();
+    });
+    $('themeChips').addEventListener('click', (e) => {
+      const c = e.target.closest('[data-ctheme]');
+      if (!c) return;
+      if (c.dataset.ctheme === 'auto') localStorage.removeItem('companionTheme');
+      else localStorage.setItem('companionTheme', c.dataset.ctheme);
+      applyTheme();
     });
     $('btnEnable').addEventListener('click', enablePush);
     $('btnTest').addEventListener('click', testPush);

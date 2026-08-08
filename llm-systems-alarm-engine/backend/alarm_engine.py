@@ -67,7 +67,7 @@ from .storage.influxdb_client import InfluxDBClient
 # (-1, -2, …) for same-day iterations; roll the date for a new day's first
 # change.
 # ---------------------------------------------------------------------------
-__version__ = "v2026.07.21-1"
+__version__ = "v2026.08.08-1"
 from .storage import influx_monitor as _influx_monitor
 from .models.alarm_rule import (
     AlarmRuleCreate,
@@ -861,6 +861,7 @@ async def health_check() -> dict:
     return {
         "status": "ok",
         "version": __version__,
+        "uptime_s": round(time.time() - _startup_ts, 1) if _startup_ts else None,
         "components": {
             "cache": "active" if cache else "inactive",
             "influxdb": influx_status,

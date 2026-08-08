@@ -388,7 +388,10 @@ def _auth_gate():
                 or path.startswith("/sdcpp") or path.startswith("/ws/")):
             return jsonify({"ok": False, "error": "authentication required",
                             "auth_required": True}), 401
-        return redirect("/login")
+        # Allowlisted pages (the companion) keep their destination through
+        # the login round-trip instead of landing on the desktop dashboard.
+        nxt = safe_next(path)
+        return redirect(f"/login?next={nxt}" if nxt else "/login")
     g.auth_role = role
     g.auth_user = session.get("user")
     if role != "admin" and _operator_denied(path):

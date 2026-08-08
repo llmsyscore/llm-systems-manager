@@ -8,13 +8,13 @@ stamped in. Actions tab controls confirm via the bottom sheet.
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-  <title>LLM Systems</title>
+  <title>LLM Systems Manager</title>
   <meta name="mgr-version" content="__MGR_VERSION__">
   <link rel="manifest" href="/manifest.webmanifest">
   <meta name="theme-color" content="#0d0d0d">
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="default">
-  <meta name="apple-mobile-web-app-title" content="LLM Manager">
+  <meta name="apple-mobile-web-app-title" content="LLM Systems Manager">
   <link rel="apple-touch-icon" href="/static/icons/apple-touch-icon.png">
   <link rel="icon" type="image/png" href="/static/icons/icon-192.png">
   <link rel="stylesheet" href="/static/css/base.css">
@@ -22,8 +22,8 @@ stamped in. Actions tab controls confirm via the bottom sheet.
 </head>
 <body class="companion">
   <header class="appbar">
-    <div class="logo">LS</div>
-    <div class="t" id="appTitle">LLM Systems</div>
+    <div class="logo">LSC</div>
+    <div class="t" id="appTitle">LLM Systems Manager</div>
     <div class="hostchip"><span class="livedot" id="liveDot"></span><span id="hostName">…</span></div>
   </header>
 
@@ -98,7 +98,7 @@ stamped in. Actions tab controls confirm via the bottom sheet.
       <div class="muted-note" id="actionsGatedNote" hidden>
         <span class="big">Admin controls locked</span>
         Manager and alarm-engine restart, autopilot, and agent approval need an
-        admin session from an allowed network. llama.cpp restart and model swap
+        admin session from an allowed network. Provider restarts and model swap
         still work.
       </div>
       <div class="cmp-msg" id="actionsMsg" role="status"></div>
@@ -126,6 +126,16 @@ stamped in. Actions tab controls confirm via the bottom sheet.
         </div>
         <div class="cmp-msg" id="pushMsg"></div>
       </div>
+      <div class="sec">Appearance</div>
+      <div class="provwrap">
+        <div class="arow"><div class="atxt"><div class="an">Theme</div>
+          <div class="ad">Auto follows the dashboard theme</div></div>
+          <div class="chips themechips" id="themeChips">
+            <button class="chip" data-ctheme="auto">Auto</button>
+            <button class="chip" data-ctheme="dark">Dark</button>
+            <button class="chip" data-ctheme="light">Light</button>
+          </div></div>
+      </div>
       <div class="sec">Dashboard</div>
       <div class="provwrap">
         <div class="arow"><div class="atxt"><div class="an">Full dashboard</div>
@@ -136,8 +146,8 @@ stamped in. Actions tab controls confirm via the bottom sheet.
   </main>
 
   <nav class="tabbar" id="tabbar">
-    <button class="tab on" data-tab="glance" aria-label="Glance">
-      <svg viewBox="0 0 24 24"><path d="M3 13l4-4 4 3 5-6 5 5"/><path d="M3 20h18"/></svg>Glance</button>
+    <button class="tab on" data-tab="glance" aria-label="Home">
+      <svg viewBox="0 0 24 24"><path d="M3 13l4-4 4 3 5-6 5 5"/><path d="M3 20h18"/></svg>Home</button>
     <button class="tab" data-tab="alerts" aria-label="Alerts">
       <svg viewBox="0 0 24 24"><path d="M12 3a6 6 0 0 0-6 6v4l-2 3h16l-2-3V9a6 6 0 0 0-6-6z"/><path d="M10 20a2 2 0 0 0 4 0"/></svg>Alerts<span class="badge" id="alertBadge" hidden></span></button>
     <button class="tab" data-tab="energy" aria-label="Energy">
