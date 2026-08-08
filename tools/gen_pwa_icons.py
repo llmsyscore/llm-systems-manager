@@ -9,7 +9,6 @@ icon-192.png (192² resize), apple-touch-icon.png (180² on opaque #111).
 from __future__ import annotations
 
 import struct
-import sys
 import zlib
 from pathlib import Path
 
@@ -164,4 +163,4 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    main()

@@ -124,7 +124,8 @@ class TestSubscriptionStore:
     def test_add_persists_and_survives_reload(self, tmp_path):
         path = tmp_path / "push_subscriptions.json"
         store = companion.SubscriptionStore(path)
-        assert store.add(_sub(), ua="TestUA") is True
+        added = store.add(_sub(), ua="TestUA")
+        assert added is True
         again = companion.SubscriptionStore(path)
         subs = again.list()
         assert len(subs) == 1
@@ -146,15 +147,19 @@ class TestSubscriptionStore:
     def test_remove_by_endpoint(self, tmp_path):
         store = companion.SubscriptionStore(tmp_path / "s.json")
         store.add(_sub())
-        assert store.remove(_sub()["endpoint"]) is True
+        removed = store.remove(_sub()["endpoint"])
+        assert removed is True
         assert store.count() == 0
-        assert store.remove(_sub()["endpoint"]) is False
+        removed_again = store.remove(_sub()["endpoint"])
+        assert removed_again is False
 
     def test_cap_at_max_subscriptions(self, tmp_path):
         store = companion.SubscriptionStore(tmp_path / "s.json")
         for i in range(companion.MAX_SUBSCRIPTIONS):
-            assert store.add(_sub(endpoint=f"https://p.example/e{i}")) is True
-        assert store.add(_sub(endpoint="https://p.example/overflow")) is False
+            added = store.add(_sub(endpoint=f"https://p.example/e{i}"))
+            assert added is True
+        overflow = store.add(_sub(endpoint="https://p.example/overflow"))
+        assert overflow is False
         assert store.count() == companion.MAX_SUBSCRIPTIONS
 
     def test_corrupt_file_treated_as_empty(self, tmp_path):
@@ -162,7 +167,8 @@ class TestSubscriptionStore:
         path.write_text("{not json")
         store = companion.SubscriptionStore(path)
         assert store.list() == []
-        assert store.add(_sub()) is True
+        added = store.add(_sub())
+        assert added is True
 
 
 # ── routes ───────────────────────────────────────────────────────────────────
@@ -235,7 +241,8 @@ class TestOpenSurface:
     def test_every_manifest_icon_exists(self, anon):
         manifest = json.loads(anon.get("/manifest.webmanifest").data)
         for icon in manifest["icons"]:
-            assert anon.get(icon["src"]).status_code == 200, icon["src"]
+            code = anon.get(icon["src"]).status_code
+            assert code == 200, icon["src"]
 
     def test_every_service_worker_shell_path_serves(self, client):
         """Every path sw.js precaches must exist, or install caches nothing."""
@@ -243,7 +250,8 @@ class TestOpenSurface:
         shell = re.findall(r"^\s*'(/[^']+)',", body, re.M)
         assert len(shell) >= 5, f"SHELL list not parsed: {shell}"
         for path in shell:
-            assert client.get(path).status_code == 200, path
+            code = client.get(path).status_code
+            assert code == 200, path
 
 
 class TestStaticIconGate:
@@ -398,7 +406,8 @@ class TestPushApi:
         r = client.post("/api/companion/push/unsubscribe",
                         json={"endpoint": _sub()["endpoint"]})
         assert r.get_json() == {"ok": True, "removed": True}
-        assert client.get("/api/companion/push/subscriptions").get_json()["count"] == 0
+        after = client.get("/api/companion/push/subscriptions").get_json()
+        assert after["count"] == 0
 
     def test_subscribe_rejects_malformed(self, client):
         r = client.post("/api/companion/push/subscribe",
@@ -549,5 +558,6 @@ class TestResolvesToPublicIp:
                     json=_sub(endpoint="https://p.example/dead"))
         body = client.post("/api/companion/push/test").get_json()
         assert body["sent"] == 1 and body["pruned"] == 1
-        assert client.get(
-            "/api/companion/push/subscriptions").get_json()["count"] == 1
+        remaining = client.get(
+            "/api/companion/push/subscriptions").get_json()["count"]
+        assert remaining == 1

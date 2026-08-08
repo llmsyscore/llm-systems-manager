@@ -356,7 +356,7 @@ def register_routes(app, ctx, static_dir: Path) -> None:
         if not subs:
             return jsonify({"ok": False, "error": "no subscriptions"}), 400
         try:
-            webpush, WebPushException = _webpush_funcs()
+            _webpush_funcs()  # import-check only; _send_one re-imports per send
         except ImportError:
             return jsonify({"ok": False,
                             "error": "pywebpush is not installed"}), 503
