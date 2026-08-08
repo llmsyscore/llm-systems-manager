@@ -60,7 +60,8 @@ body.companion {
 .strip .hero { position: absolute; left: 16px; top: 14px; }
 .strip .hero .n { font-family: var(--mono); font-size: 34px; font-weight: 600; color: var(--fg); line-height: 1; }
 .strip .hero .n small { font-size: 14px; color: var(--fg-muted); font-weight: 400; }
-.strip .hero .l { font-family: var(--mono); font-size: 10px; color: var(--fg-muted); margin-top: 5px; }
+.strip .hero .l { font-family: var(--mono); font-size: 10px; color: var(--fg-muted); margin-top: 5px;
+  max-width: 62vw; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .strip .win { position: absolute; right: 14px; top: 16px; font-family: var(--mono); font-size: 10px; color: var(--fg-dim); }
 
 .sec { font-family: var(--mono); font-size: 10px; letter-spacing: .16em; text-transform: uppercase;

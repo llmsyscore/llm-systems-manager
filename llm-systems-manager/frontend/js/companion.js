@@ -33,9 +33,12 @@
 
   function setLive(online, ageS) {
     const dot = $('liveDot'), name = $('hostName');
-    const stale = online !== false && ageS != null && ageS >= 30;
-    if (online === false) { dot.className = 'livedot down'; name.textContent = 'offline'; }
-    else if (stale) { dot.className = 'livedot stale'; name.textContent = 'reconnecting'; }
+    // Drive off age directly: agent_online flips at 30s, so a stale window is
+    // only visible via age (30–90s = reconnecting, older/absent = offline).
+    const s = (typeof ageS === 'number' && isFinite(ageS)) ? ageS : null;
+    if (online === false && (s == null || s >= 90)) { dot.className = 'livedot down'; name.textContent = 'offline'; }
+    else if (s != null && s >= 30) { dot.className = 'livedot stale'; name.textContent = 'reconnecting'; }
+    else if (s == null && online == null) { dot.className = 'livedot down'; name.textContent = 'offline'; }
     else { dot.className = 'livedot'; name.textContent = 'connected'; }
   }
 
@@ -66,12 +69,12 @@
         jfetch('/api/energy/summary?days=1').catch(() => ({})),
       ]);
       setLive(ls.agent_online, ls.agent_age_s);
-      const tps = (m.llama || {}).tokens_per_second;
-      if (typeof tps === 'number' && isFinite(tps)) {
-        this.buf.push(tps);
-        if (this.buf.length > 120) this.buf.shift();
-      }
-      this.render(CV.glance({ metrics: m, llama: ls, lms, vllm, energy: en }));
+      const vm = CV.glance({ metrics: m, llama: ls, lms, vllm, energy: en });
+      // Buffer the hero's rate (whichever provider it is) so the strip and the
+      // hero always agree.
+      this.buf.push(vm.hero.tps);
+      if (this.buf.length > 120) this.buf.shift();
+      this.render(vm);
     },
     render(vm) {
       $('glanceHeroN').innerHTML = `${esc(vm.hero.n)} <small>${esc(vm.hero.unit)}</small>`;
@@ -115,7 +118,13 @@
       $('alertsFiring').innerHTML = firing.map((r) => this.row(r)).join('');
       $('alertsEarlierWrap').hidden = !showEarlier;
       if (showEarlier) $('alertsEarlier').innerHTML = vm.earlier.map((r) => this.row(r)).join('');
-      $('alertsEmpty').hidden = !(firing.length === 0 && !showEarlier);
+      const empty = firing.length === 0 && !showEarlier;
+      $('alertsEmpty').hidden = !empty;
+      if (empty) {
+        const label = { critical: 'No critical alerts', warning: 'No warning alerts',
+          resolved: 'Nothing earlier today' }[f] || 'All clear';
+        $('alertsEmpty').querySelector('.big').textContent = label;
+      }
     },
     async ack(id) {
       try { await jfetch(`/api/alarm/alerts/${encodeURIComponent(id)}/acknowledge`,
@@ -142,6 +151,8 @@
     const b = $('alertBadge');
     if (n > 0) { b.textContent = n > 99 ? '99+' : n; b.hidden = false; }
     else b.hidden = true;
+    const tab = $('tabbar').querySelector('.tab[data-tab="alerts"]');
+    if (tab) tab.setAttribute('aria-label', n > 0 ? `Alerts, ${n} unread` : 'Alerts');
   }
 
   // ── Energy ────────────────────────────────────────────────────────────────
@@ -202,18 +213,21 @@
         + '<div class="pd">this window</div></div></div>';
     },
     dayBars(rows, price) {
-      // bucket hourly Wh by calendar day, cost = kWh × price
+      // bucket hourly Wh by LOCAL calendar day, cost = kWh × price
       const byDay = new Map();
       (rows || []).forEach((r) => {
         const d = new Date(r.hour_ts * 1000);
-        const key = d.toISOString().slice(0, 10);
-        byDay.set(key, (byDay.get(key) || 0) + (r.energy_wh || 0));
+        const key = d.getFullYear() + '-' + (d.getMonth() + 1) + '-' + d.getDate();
+        if (!byDay.has(key)) byDay.set(key, { wh: 0, d });
+        byDay.get(key).wh += (r.energy_wh || 0);
       });
-      const days = [...byDay.entries()].slice(-7)
-        .map(([k, wh]) => ({ k, cost: (wh / 1000) * (price || 0),
-          wd: new Date(k + 'T12:00:00Z').toLocaleDateString('en', { weekday: 'short' }).slice(0, 2) }));
+      const days = [...byDay.values()].slice(-7)
+        .map(({ wh, d }) => ({ cost: (wh / 1000) * (price || 0),
+          wd: d.toLocaleDateString('en', { weekday: 'short' }).slice(0, 2) }));
       const svg = $('energyDayBars');
-      if (!days.length) { svg.innerHTML = ''; return; }
+      if (!days.length) { svg.setAttribute('aria-label', 'No daily cost data'); svg.innerHTML = ''; return; }
+      svg.setAttribute('aria-label', 'Cost per day, last ' + days.length + ' days; '
+        + days.map((d, i) => (i === days.length - 1 ? 'today ' : '') + EN.fmtUsd(d.cost)).join(', '));
       const max = Math.max(...days.map((d) => d.cost), 0.01);
       const n = days.length, gap = 14, w = (312 - gap) / n - gap, x0 = gap;
       let out = '';
@@ -352,8 +366,11 @@
     if (!cfg) return;
     if (timer) { clearInterval(timer); timer = null; }
     Object.keys(SCREENS).forEach((t) => { $('scr-' + t).hidden = t !== tab; });
-    $('tabbar').querySelectorAll('.tab').forEach((b) =>
-      b.classList.toggle('on', b.dataset.tab === tab));
+    $('tabbar').querySelectorAll('.tab').forEach((b) => {
+      const on = b.dataset.tab === tab;
+      b.classList.toggle('on', on);
+      if (on) b.setAttribute('aria-current', 'page'); else b.removeAttribute('aria-current');
+    });
     $('appTitle').textContent = cfg.title;
     if (cfg.ctrl) {
       cfg.ctrl.refresh();
@@ -365,9 +382,10 @@
 
   async function pollBadge() {
     try {
-      const list = await jfetch('/api/alarm/alerts/?status=active&limit=100');
+      // only_active = active + acknowledged, the same set the Alerts screen's
+      // firing count uses (CV.alerts then drops info-category).
+      const list = await jfetch('/api/alarm/alerts/?only_active=true&limit=100');
       const arr = Array.isArray(list) ? list : (list.alerts || []);
-      // Same rule as the Alerts screen (info-category excluded from firing).
       setBadge(CV.alerts(arr).counts.badge);
     } catch (_) { /* leave badge as-is */ }
   }

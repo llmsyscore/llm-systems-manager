@@ -30,17 +30,32 @@ describe('CView.glance', () => {
       liquidctl: { psu: { 'Estimated input power': { value: 412 } } },
     },
     llama: { state: 'awake', model: 'qwen3-32b-q4_k_m' },
-    lms: { ps: [{ model: 'llama-3.3-70b', status: 'loaded' }], system: { hostname: 'mac-studio' },
+    lms: { ps: [{ model: 'llama-3.3-70b', status: 'loaded' }], system: { host: 'mac-studio' },
            mac_power: { gpu_busy_pct: 71 }, gateway_rates: { gen_tps: 12 } },
     vllm: { vllm: { state: 'stopped' } },
     energy: { price_kwh: 0.20, totals: { cost_usd: 1.84, kwh: 9.2 } },
   };
 
-  it('hero picks the fastest live provider', () => {
+  it('hero picks the fastest live provider (and exposes its rate for the strip)', () => {
     const g = CView.glance(full);
     expect(g.hero.n).toBe('42.7');
+    expect(g.hero.tps).toBeCloseTo(42.7);
     expect(g.hero.unit).toBe('tok/s');
     expect(g.hero.label).toBe('llama.cpp · qwen3-32b-q4_k_m');
+  });
+
+  it('LM Studio host comes from system.host (not hostname), never a raw UUID', () => {
+    // Regression: the agent system block key is `host`; `hostname` is absent.
+    const g = CView.glance({ lms: { ps: [{ model: 'm', status: 'loaded' }],
+      system: { host: 'mac-studio' }, agent_id: '7f3c-uuid-long' } });
+    expect(g.providers[1].detail).toBe('mac-studio · m');
+  });
+
+  it('vLLM running shows model + request count', () => {
+    const g = CView.glance({ vllm: { vllm: { state: 'running', model: 'mixtral',
+      requests_running: 3, tokens_per_second: 55 } } });
+    expect(g.providers[2]).toMatchObject({ status: 'ok', detail: 'mixtral', rN: '3', rUnit: 'running' });
+    expect(g.hero.label).toBe('vLLM · mixtral');
   });
 
   it('provider rows: llama ctx + slots, lms host + gpu-busy, vllm idle', () => {
@@ -113,38 +128,50 @@ describe('CView.alerts', () => {
 });
 
 describe('CView.admin', () => {
+  // Real /api/agents record: last_heartbeat (ISO), bind_url (https = TLS);
+  // NO last_heartbeat_age_s and NO tls field. AE service tls is a dict.
   const d = {
-    version: 'v2026.08.07-4',
+    version: 'v2026.08.07-4', now: NOW,
     agents: [
-      { agent_id: 'core', hostname: 'llm-core', liveness: 'live', is_host_agent: true },
+      { agent_id: 'core', hostname: 'llm-core', liveness: 'live', is_host_agent: true,
+        bind_url: 'https://llm-core:8082', last_heartbeat: new Date((NOW - 3) * 1000).toISOString() },
       { agent_id: 'mac', hostname: 'mac-studio', liveness: 'live', version: 'v2026.07.30-3',
-        tls: true, last_heartbeat_age_s: 4 },
+        bind_url: 'https://mac-studio:8082', last_heartbeat: new Date((NOW - 4) * 1000).toISOString() },
       { agent_id: 'new', hostname: 'mac-mini-m4', liveness: 'pending', status: 'pending' },
     ],
     health: {
       manager: { uptime_s: 3600 },
       services: [
-        { name: 'alarm_engine', ok: true, tls: true, latency_ms: 6 },
+        { name: 'alarm_engine', ok: true, tls: { enabled: true, active: true }, latency_ms: 6 },
         { name: 'influxdb', state: 'connected', via: 'co-located' },
       ],
     },
-    backup: { enabled: true, keep_last: 14, last: { ok: true, ts: 1_699_999_000 } },
+    backup: { enabled: true, keep_last: 14, last: { ok: true, ts: NOW - 20000 } },
     auth: { mode: 'session', current_user: 'llmadmin' },
   };
 
-  it('agents with liveness + heartbeat + pending warn', () => {
+  it('agents: liveness, heartbeat age from last_heartbeat, TLS from bind_url, pending warn', () => {
     const a = CView.admin(d);
     expect(a.agents[0]).toMatchObject({ status: 'ok', name: 'llm-core', detail: 'local · manager host', right: 'live' });
-    expect(a.agents[1]).toMatchObject({ right: 'live', rightSub: 'hb 4s' });
+    expect(a.agents[1]).toMatchObject({ right: 'live', rightSub: 'hb 4s', detail: 'agent v2026.07.30-3 · TLS' });
     expect(a.agents[2]).toMatchObject({ status: 'idle', right: 'pending', warn: true });
   });
 
-  it('status rows: auth, influx ok, backups, AE reachable', () => {
+  it('status rows: auth, influx ok, backups, AE reachable with TLS active', () => {
     const a = CView.admin(d);
     expect(a.rows[0]).toMatchObject({ name: 'Authentication', detail: 'session mode · llmadmin' });
     expect(a.rows[1]).toMatchObject({ name: 'InfluxDB', ok: true });
     expect(a.rows[3]).toMatchObject({ name: 'Alarm engine', ok: true });
     expect(a.rows[3].detail).toContain('TLS');
+  });
+
+  it('AE TLS badge reflects active state, not mere reachability', () => {
+    // tls dict with active:false must NOT claim TLS (default deploy)
+    const off = CView.admin({ ...d, health: { ...d.health,
+      services: [{ name: 'alarm_engine', ok: true, tls: { enabled: false, active: false } },
+                 { name: 'influxdb', state: 'connected' }] } });
+    expect(off.rows[3].detail).toContain('reachable');
+    expect(off.rows[3].detail).not.toContain('TLS');
   });
 
   it('manager version carries through', () => {

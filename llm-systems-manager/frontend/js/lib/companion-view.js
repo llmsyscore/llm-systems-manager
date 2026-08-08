@@ -20,21 +20,36 @@
     return v >= 1 ? v.toFixed(1) + ' kWh' : (v * 1000).toFixed(0) + ' Wh';
   }
 
-  // Relative age. Accepts epoch seconds, epoch ms, or an ISO string.
-  function age(ts, nowSec) {
+  // Seconds since ts (epoch s/ms or ISO string), or null if unparseable.
+  function _secs(ts, nowSec) {
     let t = null;
     if (typeof ts === 'number' && isFinite(ts)) t = ts > 1e12 ? ts / 1000 : ts;
     else if (typeof ts === 'string' && ts) {
       const p = Date.parse(ts);
       if (!Number.isNaN(p)) t = p / 1000;
     }
-    if (t == null) return '—';
+    if (t == null) return null;
     const now = nowSec == null ? Date.now() / 1000 : nowSec;
-    const s = Math.max(0, now - t);
+    return Math.max(0, now - t);
+  }
+
+  // Relative age, e.g. "2m ago".
+  function age(ts, nowSec) {
+    const s = _secs(ts, nowSec);
+    if (s == null) return '—';
     if (s < 45) return 'just now';
     if (s < 3600) return Math.round(s / 60) + 'm ago';
     if (s < 86400) return Math.round(s / 3600) + 'h ago';
     return Math.round(s / 86400) + 'd ago';
+  }
+
+  // Compact heartbeat freshness, e.g. "4s" / "2m" / "1h".
+  function hbAge(ts, nowSec) {
+    const s = _secs(ts, nowSec);
+    if (s == null) return null;
+    if (s < 90) return Math.round(s) + 's';
+    if (s < 5400) return Math.round(s / 60) + 'm';
+    return Math.round(s / 3600) + 'h';
   }
 
   // ── Glance ──────────────────────────────────────────────────────────────
@@ -83,7 +98,8 @@
         status: lmsModel ? 'ok' : 'idle',
         name: 'LM Studio',
         detail: lmsModel
-          ? ((lms.system || {}).hostname || lms.agent_id || 'lms') + ' · ' + lmsModel
+          ? ((lms.system || {}).host || (lms.hardware || {}).name || lms.agent_id || 'lms')
+            + ' · ' + lmsModel
           : 'no model',
         rN: gpuBusy != null ? Math.round(gpuBusy) + '%' : '—',
         rUnit: 'gpu busy',
@@ -123,6 +139,7 @@
     return {
       hero: {
         n: hero.tps > 0 ? hero.tps.toFixed(1) : '0.0',
+        tps: hero.tps > 0 ? hero.tps : 0,
         unit: 'tok/s',
         label: hero.model ? hero.prov + ' · ' + hero.model : 'idle · no model loaded',
       },
@@ -190,14 +207,16 @@
     const agents = (d.agents || []).map((a) => {
       const live = a.liveness === 'live';
       const pending = a.liveness === 'pending' || a.status === 'pending';
-      const hb = num(a.last_heartbeat_age_s);
+      // /api/agents has no tls flag; agents serve TLS on 8082 so bind_url is https.
+      const tls = /^https/i.test(String(a.bind_url || ''));
+      const hb = live ? hbAge(a.last_heartbeat, d.now) : null;
       return {
         status: live ? 'ok' : 'idle',
         name: a.hostname || (a.agent_id || '').slice(0, 10) || '?',
         detail: a.is_host_agent ? 'local · manager host'
-          : ('agent ' + (a.version || '?') + (a.tls ? ' · TLS' : '')),
+          : ('agent ' + (a.version || '?') + (tls ? ' · TLS' : '')),
         right: pending ? 'pending' : (live ? 'live' : (a.liveness || 'down')),
-        rightSub: (live && hb != null) ? 'hb ' + Math.round(hb) + 's' : '',
+        rightSub: hb ? 'hb ' + hb : '',
         warn: pending,
       };
     });
@@ -213,25 +232,27 @@
       { name: 'Backups',
         detail: backup.enabled === false ? 'disabled'
           : (backupLast.ok === false ? 'last failed'
-            : ('last ' + age(backupLast.ts || backupLast.mtime) + ' · '
+            : ('last ' + age(backupLast.ts || backupLast.mtime, d.now) + ' · '
                + (backup.keep_last != null ? backup.keep_last + ' kept' : 'ok'))) },
+      // AE service.tls is a dict {enabled,active,error}; active === serving HTTPS.
       { name: 'Alarm engine', ok: ae.ok === true,
         detail: (ae.ok ? 'reachable' : 'unreachable')
-          + (ae.tls ? ' · TLS' : '')
+          + ((ae.tls && ae.tls.active) ? ' · TLS' : '')
           + (num(ae.latency_ms) != null ? ' · ' + Math.round(ae.latency_ms) + 'ms' : '') },
     ];
 
     const mgr = health.manager || {};
     const uptime = num(mgr.uptime_s);
+    const now = d.now == null ? Date.now() / 1000 : d.now;
     return {
       manager: {
         version: d.version || '—',
-        uptime: uptime != null ? age(Date.now() / 1000 - uptime) : null,
+        uptime: uptime != null ? age(now - uptime, now) : null,
         updateNote: d.updateAvailable ? 'update available' : 'up to date',
       },
       agents, rows,
     };
   }
 
-  return { glance, alerts, alertRow, admin, age, _sevClass: sevClass };
+  return { glance, alerts, alertRow, admin, age, hbAge, _sevClass: sevClass };
 });
