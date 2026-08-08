@@ -12,6 +12,8 @@ import json
 import logging
 import os
 import threading
+import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any, Optional
 
@@ -20,8 +22,10 @@ from cryptography.hazmat.primitives.asymmetric import ec
 
 log = logging.getLogger("llm-systems-manager")
 
-# Hard cap on stored push subscriptions — bounds fan-out cost and abuse.
+# Hard cap on stored push subscriptions.
 MAX_SUBSCRIPTIONS = 32
+# Per-request timeout for each outbound web-push send.
+PUSH_TIMEOUT_S = 10
 
 _VAPID_KEY_FILE = "vapid-private.pem"
 _SUBS_FILE = "push_subscriptions.json"
@@ -29,35 +33,49 @@ _SUBS_FILE = "push_subscriptions.json"
 
 # ── VAPID keys ───────────────────────────────────────────────────────────────
 
+_VAPID_LOCK = threading.Lock()
+_PUBKEY_CACHE: "dict[str, str]" = {}
+
+
 def ensure_vapid_key(data_dir: Path) -> Path:
     """Return the VAPID EC P-256 private key PEM path, generating it once."""
     data_dir = Path(data_dir)
     pem_path = data_dir / _VAPID_KEY_FILE
-    if pem_path.exists():
-        return pem_path
-    key = ec.generate_private_key(ec.SECP256R1())
-    pem = key.private_bytes(
-        encoding=serialization.Encoding.PEM,
-        format=serialization.PrivateFormat.PKCS8,
-        encryption_algorithm=serialization.NoEncryption(),
-    )
-    data_dir.mkdir(parents=True, exist_ok=True)
-    fd = os.open(pem_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    try:
-        os.write(fd, pem)
-    finally:
-        os.close(fd)
+    with _VAPID_LOCK:
+        if pem_path.exists():
+            return pem_path
+        key = ec.generate_private_key(ec.SECP256R1())
+        pem = key.private_bytes(
+            encoding=serialization.Encoding.PEM,
+            format=serialization.PrivateFormat.PKCS8,
+            encryption_algorithm=serialization.NoEncryption(),
+        )
+        data_dir.mkdir(parents=True, exist_ok=True)
+        tmp = pem_path.with_suffix(".tmp")
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        try:
+            os.write(fd, pem)
+        finally:
+            os.close(fd)
+        os.replace(tmp, pem_path)
     log.info("companion: generated VAPID key at %s", pem_path)
     return pem_path
 
 
 def vapid_public_key_b64(data_dir: Path) -> str:
-    """Application-server key: base64url (unpadded) uncompressed P-256 point."""
+    """Application-server key: base64url (unpadded) uncompressed P-256 point.
+    Cached per key path — the key never changes for the life of the install."""
     pem_path = ensure_vapid_key(data_dir)
+    cache_key = str(pem_path)
+    cached = _PUBKEY_CACHE.get(cache_key)
+    if cached:
+        return cached
     key = serialization.load_pem_private_key(pem_path.read_bytes(), password=None)
     point = key.public_key().public_bytes(
         serialization.Encoding.X962, serialization.PublicFormat.UncompressedPoint)
-    return base64.urlsafe_b64encode(point).rstrip(b"=").decode("ascii")
+    out = base64.urlsafe_b64encode(point).rstrip(b"=").decode("ascii")
+    _PUBKEY_CACHE[cache_key] = out
+    return out
 
 
 # ── subscriptions ────────────────────────────────────────────────────────────
@@ -114,7 +132,6 @@ class SubscriptionStore:
             endpoint = sub["endpoint"]
             if endpoint not in data and len(data) >= MAX_SUBSCRIPTIONS:
                 return False
-            import time
             data[endpoint] = {"subscription": sub, "ua": ua[:200],
                               "created": data.get(endpoint, {}).get("created")
                               or time.time()}
@@ -134,7 +151,7 @@ class SubscriptionStore:
 # ── web push sending ─────────────────────────────────────────────────────────
 
 def _webpush_funcs():
-    """Lazy pywebpush import — a missing dep degrades to a 503, not a crash."""
+    """Import pywebpush on first use; returns (webpush, WebPushException)."""
     from pywebpush import webpush, WebPushException
     return webpush, WebPushException
 
@@ -145,13 +162,15 @@ def _push_contact(settings: Any) -> str:
             "mailto:admin@example.com")
 
 
-def _send_one(webpush, WebPushException, sub: dict, payload: str,
-              pem_path: Path, contact: str) -> "tuple[bool, bool]":
+def _send_one(sub: dict, payload: str, pem_path: Path,
+              contact: str) -> "tuple[bool, bool]":
     """Send one notification. Returns (ok, prune) — prune on 404/410."""
+    webpush, WebPushException = _webpush_funcs()
     try:
         webpush(subscription_info=sub, data=payload,
                 vapid_private_key=str(pem_path),
-                vapid_claims={"sub": contact}, ttl=60)
+                vapid_claims={"sub": contact}, ttl=60,
+                timeout=PUSH_TIMEOUT_S)
         return True, False
     except WebPushException as exc:
         status = getattr(getattr(exc, "response", None), "status_code", None)
@@ -171,7 +190,7 @@ _data_dir: Optional[Path] = None
 _store: Optional[SubscriptionStore] = None
 
 
-def _manifest(version: str) -> dict:
+def _manifest() -> dict:
     return {
         "id": "/companion",
         "name": "LLM Systems Manager",
@@ -204,23 +223,24 @@ def register_routes(app, ctx, static_dir: Path) -> None:
     _store = SubscriptionStore(_data_dir / _SUBS_FILE)
     version = ctx.version
 
+    def _stamped(name: str, mimetype: str) -> "Response":
+        text = (static_dir / name).read_text(encoding="utf-8")
+        return Response(text.replace("__MGR_VERSION__", version),
+                        mimetype=mimetype)
+
     @app.route("/companion")
     def companion_page():
-        html = (static_dir / "companion.html").read_text(encoding="utf-8")
-        return Response(html.replace("__MGR_VERSION__", version),
-                        mimetype="text/html")
+        return _stamped("companion.html", "text/html")
 
     @app.route("/manifest.webmanifest")
     def companion_manifest():
-        return Response(json.dumps(_manifest(version)),
+        return Response(json.dumps(_manifest()),
                         mimetype="application/manifest+json")
 
     @app.route("/sw.js")
     def companion_sw():
-        js = (static_dir / "sw.js").read_text(encoding="utf-8")
-        resp = Response(js.replace("__MGR_VERSION__", version),
-                        mimetype="text/javascript")
-        # Always revalidate — a cached stale SW is the classic PWA trap.
+        resp = _stamped("sw.js", "text/javascript")
+        # no-cache: browsers must revalidate the worker script on every load.
         resp.headers["Cache-Control"] = "no-cache"
         return resp
 
@@ -268,10 +288,13 @@ def register_routes(app, ctx, static_dir: Path) -> None:
             "body": "Test notification — push is working.",
             "tag": "lsm-test", "url": "/companion",
         })
+        # Bounded parallel fan-out; worst case ~PUSH_TIMEOUT_S per batch of 8
+        # instead of timeout x subscriptions on one Cheroot worker.
         sent = failed = pruned = 0
-        for sub in subs:
-            ok, prune = _send_one(webpush, WebPushException, sub, payload,
-                                  pem, contact)
+        with ThreadPoolExecutor(max_workers=min(8, len(subs))) as pool:
+            results = list(pool.map(
+                lambda s: (s, _send_one(s, payload, pem, contact)), subs))
+        for sub, (ok, prune) in results:
             sent += ok
             failed += not ok
             if prune and _store.remove(sub["endpoint"]):

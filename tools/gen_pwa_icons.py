@@ -16,14 +16,17 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parent.parent
 SRC = REPO / "design" / "brand" / "logo-badge-512.png"
 OUT_DIR = REPO / "llm-systems-manager" / "frontend" / "icons"
-BG = (0x11, 0x11, 0x11)  # apple-touch-icon backing — iOS renders alpha as black
+BG = (0x11, 0x11, 0x11)  # opaque backing color for apple-touch-icon
 
 
 def read_png_rgba(path: Path) -> "tuple[int, int, bytearray]":
+    if not path.exists():
+        raise SystemExit(f"{path}: missing (design/ is untracked; source badge "
+                         "exists only on checkouts with the brand assets)")
     data = path.read_bytes()
     if data[:8] != b"\x89PNG\r\n\x1a\n":
         raise SystemExit(f"{path}: not a PNG")
-    pos, idat, w = 8, b"", 0
+    pos, idat, w, h = 8, b"", 0, 0
     while pos < len(data):
         (ln,), typ = struct.unpack(">I", data[pos:pos + 4]), data[pos + 4:pos + 8]
         chunk = data[pos + 8:pos + 8 + ln]
@@ -34,6 +37,8 @@ def read_png_rgba(path: Path) -> "tuple[int, int, bytearray]":
         elif typ == b"IDAT":
             idat += chunk
         pos += 12 + ln
+    if not (w and h):
+        raise SystemExit(f"{path}: no IHDR chunk")
     raw = zlib.decompress(idat)
     stride = w * 4
     out = bytearray(h * stride)
@@ -83,7 +88,7 @@ def resize_rgba(px: bytearray, size: int, new: int) -> bytearray:
                     wgt = wx * wy
                     o = row + sx * 4
                     alpha = px[o + 3] / 255.0
-                    # premultiply so transparent texels don't tint edges
+                    # accumulate alpha-premultiplied color
                     acc[0] += px[o] * alpha * wgt
                     acc[1] += px[o + 1] * alpha * wgt
                     acc[2] += px[o + 2] * alpha * wgt
@@ -98,7 +103,7 @@ def resize_rgba(px: bytearray, size: int, new: int) -> bytearray:
     return out
 
 
-def flatten(px: bytearray, size: int, bg: "tuple[int, int, int]") -> bytearray:
+def flatten(px: bytearray, bg: "tuple[int, int, int]") -> bytearray:
     out = bytearray(len(px))
     for i in range(0, len(px), 4):
         a = px[i + 3] / 255.0
@@ -130,7 +135,7 @@ def main() -> None:
     OUT_DIR.mkdir(parents=True, exist_ok=True)
     (OUT_DIR / "icon-512.png").write_bytes(SRC.read_bytes())
     write_png_rgba(OUT_DIR / "icon-192.png", resize_rgba(px, w, 192), 192)
-    apple = flatten(resize_rgba(px, w, 180), 180, BG)
+    apple = flatten(resize_rgba(px, w, 180), BG)
     write_png_rgba(OUT_DIR / "apple-touch-icon.png", apple, 180)
     print(f"wrote {OUT_DIR}/icon-512.png, icon-192.png, apple-touch-icon.png")
 

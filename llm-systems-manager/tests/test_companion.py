@@ -51,6 +51,12 @@ def _sub(endpoint="https://push.example.net/send/abc", p256dh="BEx", auth_="a1")
     return {"endpoint": endpoint, "keys": {"p256dh": p256dh, "auth": auth_}}
 
 
+class FakeWebPushException(Exception):
+    def __init__(self, msg, response=None):
+        super().__init__(msg)
+        self.response = response
+
+
 class TestValidSubscription:
     def test_accepts_wellformed(self):
         assert companion.valid_subscription(_sub()) is True
@@ -241,11 +247,6 @@ class TestPushApi:
     def test_test_push_sends_to_every_subscription(self, client, monkeypatch):
         sent = []
 
-        class FakeWebPushException(Exception):
-            def __init__(self, msg, response=None):
-                super().__init__(msg)
-                self.response = response
-
         def fake_webpush(subscription_info, **kw):
             sent.append(subscription_info["endpoint"])
 
@@ -262,11 +263,6 @@ class TestPushApi:
         assert sorted(sent) == ["https://p.example/e1", "https://p.example/e2"]
 
     def test_test_push_prunes_gone_subscription(self, client, monkeypatch):
-        class FakeWebPushException(Exception):
-            def __init__(self, msg, response=None):
-                super().__init__(msg)
-                self.response = response
-
         class _Gone:
             status_code = 410
 

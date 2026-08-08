@@ -1,5 +1,4 @@
 // Companion shell logic (#522): SW registration, theme, push opt-in/test.
-// IIFE — classic scripts share one global scope with the dashboard bundle.
 (() => {
   const $ = (id) => document.getElementById(id);
   const esc = (s) => String(s).replace(/[&<>"']/g,
@@ -13,8 +12,13 @@
 
   async function jfetch(url, opts) {
     const r = await fetch(url, Object.assign({ credentials: 'same-origin' }, opts));
-    if (r.status === 401) { location.href = '/login'; throw new Error('auth'); }
-    return r.json();
+    const body = await r.json().catch(() => ({}));
+    // Same manager-session 401 shape foundation.js keys on for its redirect.
+    if (r.status === 401 && body.auth_required) {
+      location.href = '/login';
+      throw new Error('auth');
+    }
+    return body;
   }
 
   async function applyTheme() {
@@ -31,8 +35,11 @@
 
   async function registration() {
     if (!('serviceWorker' in navigator)) return null;
-    try { return await navigator.serviceWorker.register('/sw.js'); }
-    catch (_) { return null; }
+    // Scope limited to /companion: the SW never controls dashboard pages.
+    try {
+      return await navigator.serviceWorker.register('/sw.js',
+        { scope: '/companion' });
+    } catch (_) { return null; }
   }
 
   async function subscription(reg) {
@@ -49,15 +56,15 @@
     $('stPerm').innerHTML =
       perm === 'granted' ? OK('GRANTED')
         : perm === 'denied' ? CRIT('DENIED') : DIM(perm.toUpperCase());
-    const sub = await subscription(reg);
+    const [sub, subs] = await Promise.all([
+      subscription(reg),
+      jfetch('/api/companion/push/subscriptions').catch(() => null),
+    ]);
     $('stSub').innerHTML = sub ? OK('SUBSCRIBED') : DIM('NOT SUBSCRIBED');
     $('btnEnable').disabled = !!sub || !reg;
     $('btnTest').disabled = !sub;
     $('btnRemove').hidden = !sub;
-    try {
-      const subs = await jfetch('/api/companion/push/subscriptions');
-      $('stCount').textContent = subs.count;
-    } catch (_) { $('stCount').textContent = '?'; }
+    $('stCount').textContent = subs && subs.ok ? subs.count : '?';
     return sub;
   }
 
@@ -116,7 +123,7 @@
   }
 
   document.addEventListener('DOMContentLoaded', async () => {
-    applyTheme();
+    await applyTheme();
     const reg = await registration();
     await paint(reg);
     $('btnEnable').addEventListener('click', () => enable(reg));

@@ -11,9 +11,21 @@ const SHELL = [
   '/static/icons/icon-192.png',
 ];
 
+// Cacheable = 200, same-request URL (a /login redirect must never be stored
+// under an asset's cache key).
+const cacheable = (resp) => resp && resp.ok && !resp.redirected;
+
 self.addEventListener('install', (e) => {
   self.skipWaiting();
-  e.waitUntil(caches.open(CACHE).then((c) => c.addAll(SHELL)).catch(() => {}));
+  e.waitUntil((async () => {
+    const c = await caches.open(CACHE);
+    for (const path of SHELL) {
+      try {
+        const resp = await fetch(path);
+        if (cacheable(resp)) await c.put(path, resp);
+      } catch (_) { /* offline install — fetch-time puts backfill later */ }
+    }
+  })());
 });
 
 self.addEventListener('activate', (e) => {
@@ -24,17 +36,18 @@ self.addEventListener('activate', (e) => {
   })());
 });
 
-// Network-first: live responses win and refresh the shell cache; the cache
-// only answers when the network fails. API calls are never cached.
+// Network-first for SHELL paths only: live responses win and refresh the
+// cache; the cache answers when the network fails. Everything else — API
+// calls included — passes through untouched.
 self.addEventListener('fetch', (e) => {
   if (e.request.method !== 'GET') return;
   const url = new URL(e.request.url);
   if (url.origin !== self.location.origin) return;
-  if (url.pathname.startsWith('/api/')) return;
+  if (!SHELL.includes(url.pathname)) return;
   e.respondWith((async () => {
     try {
       const resp = await fetch(e.request);
-      if (resp.ok && SHELL.includes(url.pathname))
+      if (cacheable(resp))
         (await caches.open(CACHE)).put(e.request, resp.clone());
       return resp;
     } catch (err) {
@@ -65,10 +78,13 @@ self.addEventListener('notificationclick', (e) => {
   e.waitUntil((async () => {
     const wins = await self.clients.matchAll(
       { type: 'window', includeUncontrolled: true });
+    // Only reuse a window already on the companion — never navigate away
+    // from an open dashboard tab.
     for (const w of wins) {
-      if ('focus' in w) {
+      if (new URL(w.url).pathname.startsWith('/companion') && 'focus' in w) {
         await w.focus();
-        if ('navigate' in w) await w.navigate(url);
+        if ('navigate' in w && new URL(w.url).pathname !== new URL(url, w.url).pathname)
+          await w.navigate(url);
         return;
       }
     }

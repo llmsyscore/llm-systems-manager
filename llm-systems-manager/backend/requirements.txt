@@ -4,8 +4,9 @@
 Flask==3.1.3
 psutil==5.9.8
 requests==2.33.0
-# Phase 4 #3 — internal CA + per-agent cert signing for mutual TLS.
-cryptography>=42.0.0
+# Phase 4 #3 — internal CA + per-agent cert signing for mutual TLS. Floor
+# raised to 47 in #522: pywebpush 2.4 requires it, so pip resolves there anyway.
+cryptography>=47.0.0
 # Production WSGI server (threaded, native TLS — serves both port 5000
 # HTTP and the optional MANAGER_TLS_PORT HTTPS listener).
 cheroot>=10.0.0
@@ -22,6 +23,5 @@ websockets>=13.0
 # Cheroot pool (#110, sse_daemon.py). Imported lazily inside start()/_build_app
 # so a not-yet-installed dep degrades to the Cheroot path instead of crashing.
 aiohttp>=3.9.0
-# Web-push sender for the PWA companion (#522, companion.py). Imported lazily
-# inside the test-push route so a missing dep answers 503 instead of crashing.
+# Web-push sender for the PWA companion (#522, companion.py); lazy-imported.
 pywebpush>=2.0.0

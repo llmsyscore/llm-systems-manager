@@ -65,10 +65,8 @@ DEFAULT_AUTH_PASSWORD = "llmadmin"
 # dynamically by their bearer token (see _auth_gate).
 AUTH_OPEN_PATHS = frozenset({
     "/health", "/login", "/logout", "/api/agents/register",
-    # PWA static surface (#522) — browsers fetch these without credentials.
+    # PWA manifest + service worker (#522) — fetched without credentials.
     "/manifest.webmanifest", "/sw.js",
-    "/static/icons/icon-192.png", "/static/icons/icon-512.png",
-    "/static/icons/apple-touch-icon.png",
 })
 
 # Runtime gate behaviours vs. the TOML policy value. "auto" is a policy-only
@@ -340,7 +338,9 @@ def _auth_gate():
     mode = auth_mode()
     path = flask_request.path or "/"
     # Always-open infra paths — never gated, never role-checked.
-    if path in AUTH_OPEN_PATHS or path.startswith("/api/remote/"):
+    # /static/icons/ covers the PWA app icons (#522), fetched credential-less.
+    if (path in AUTH_OPEN_PATHS or path.startswith("/api/remote/")
+            or path.startswith("/static/icons/")):
         return None
     if path.startswith("/api/gateway/") and _gateway_key_ok():
         return None
