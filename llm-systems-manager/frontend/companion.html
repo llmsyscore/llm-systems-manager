@@ -85,13 +85,22 @@ stamped in. Control actions (Actions tab) land in a follow-up PR.
       <div class="card"><svg class="daybars" id="energyDayBars" viewBox="0 0 312 92" role="img" aria-label="Cost per day"></svg></div>
     </section>
 
-    <!-- ACTIONS (placeholder until the controls PR) -->
+    <!-- ACTIONS -->
     <section class="screen" id="scr-actions" hidden>
-      <div class="muted-note">
-        <span class="big">Controls arrive next</span>
-        Restart a service, swap or pin a model, toggle autopilot, and approve
-        pending agents land in the next update. Monitoring is all here now.
+      <div class="sec">Services</div>
+      <div class="provwrap" id="actionsServices"></div>
+      <div class="sec">Model</div>
+      <div class="provwrap" id="actionsModel"></div>
+      <div class="sec">Autopilot</div>
+      <div class="provwrap" id="actionsAutopilot"></div>
+      <div class="sec">Agents</div>
+      <div id="actionsAgents"></div>
+      <div class="muted-note" id="actionsGatedNote" hidden>
+        <span class="big">Admin controls locked</span>
+        Restart, autopilot, and agent approval need an admin session from an
+        allowed network. Model swap still works.
       </div>
+      <div class="cmp-msg" id="actionsMsg" role="status"></div>
     </section>
 
     <!-- ADMIN (read-only) -->
@@ -137,6 +146,16 @@ stamped in. Control actions (Actions tab) land in a follow-up PR.
     <button class="tab" data-tab="admin" aria-label="Admin">
       <svg viewBox="0 0 24 24"><path d="M12 3l7 3v5c0 4.6-3 8.6-7 10-4-1.4-7-5.4-7-10V6z"/></svg>Admin</button>
   </nav>
+
+  <div class="sheetwrap" id="sheet" hidden>
+    <div class="sheetscrim" data-sheet-close></div>
+    <div class="sheet" role="dialog" aria-modal="true" aria-labelledby="sheetTitle">
+      <div class="sheethandle" aria-hidden="true"></div>
+      <div class="sheettitle" id="sheetTitle"></div>
+      <div class="sheetbody" id="sheetBody"></div>
+      <button class="btn sheetcancel" id="sheetCancel" data-sheet-close>Cancel</button>
+    </div>
+  </div>
 
   <script src="/static/js/lib/pushutil.js"></script>
   <script src="/static/js/lib/energy.js"></script>
