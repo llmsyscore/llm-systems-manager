@@ -76,7 +76,13 @@
       return;
     }
     const perm = await Notification.requestPermission();
-    if (perm !== 'granted') { await paint(reg); return; }
+    if (perm !== 'granted') {
+      say(perm === 'denied'
+        ? CRIT('PERMISSION DENIED') + ' — re-allow notifications in site settings'
+        : WARN('PERMISSION NOT GRANTED'));
+      await paint(reg);
+      return;
+    }
     try {
       const key = (await jfetch('/api/companion/push/public-key')).key;
       const sub = await reg.pushManager.subscribe({

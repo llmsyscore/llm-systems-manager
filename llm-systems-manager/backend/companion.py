@@ -8,6 +8,7 @@ register_routes) the /companion page, /manifest.webmanifest, /sw.js and
 from __future__ import annotations
 
 import base64
+import ipaddress
 import json
 import logging
 import os
@@ -16,6 +17,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any, Optional
+from urllib.parse import urlsplit
 
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import ec
@@ -80,13 +82,36 @@ def vapid_public_key_b64(data_dir: Path) -> str:
 
 # ── subscriptions ────────────────────────────────────────────────────────────
 
+def valid_push_endpoint(endpoint: Any) -> bool:
+    """True for a public https push-service URL. Rejects IP literals, ports
+    other than 443, and dotless/localhost names — the server POSTs here."""
+    if not isinstance(endpoint, str) or not endpoint.startswith("https://"):
+        return False
+    try:
+        parts = urlsplit(endpoint)
+    except ValueError:
+        return False
+    host = (parts.hostname or "").rstrip(".").lower()
+    if not host or "." not in host or host.endswith(".localhost"):
+        return False
+    try:
+        if parts.port not in (None, 443):
+            return False
+    except ValueError:
+        return False
+    try:
+        ipaddress.ip_address(host)
+    except ValueError:
+        return True
+    return False
+
+
 def valid_subscription(sub: Any) -> bool:
     """Shape check for a browser PushSubscription.toJSON() payload."""
     if not isinstance(sub, dict):
         return False
-    endpoint = sub.get("endpoint")
     keys = sub.get("keys")
-    if not isinstance(endpoint, str) or not endpoint.startswith("https://"):
+    if not valid_push_endpoint(sub.get("endpoint")):
         return False
     if not isinstance(keys, dict):
         return False
@@ -132,9 +157,9 @@ class SubscriptionStore:
             endpoint = sub["endpoint"]
             if endpoint not in data and len(data) >= MAX_SUBSCRIPTIONS:
                 return False
+            prior = data.get(endpoint, {}).get("created")
             data[endpoint] = {"subscription": sub, "ua": ua[:200],
-                              "created": data.get(endpoint, {}).get("created")
-                              or time.time()}
+                              "created": time.time() if prior is None else prior}
             self._write(data)
         return True
 
@@ -206,7 +231,7 @@ def _manifest() -> dict:
              "type": "image/png", "purpose": "any"},
             {"src": "/static/icons/icon-512.png", "sizes": "512x512",
              "type": "image/png", "purpose": "any"},
-            {"src": "/static/icons/icon-512.png", "sizes": "512x512",
+            {"src": "/static/icons/icon-maskable-512.png", "sizes": "512x512",
              "type": "image/png", "purpose": "maskable"},
         ],
     }

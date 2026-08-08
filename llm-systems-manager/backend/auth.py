@@ -26,6 +26,7 @@ import html
 import json
 import logging
 import os
+import posixpath
 import re
 import threading
 import time
@@ -68,6 +69,9 @@ AUTH_OPEN_PATHS = frozenset({
     # PWA manifest + service worker (#522) — fetched without credentials.
     "/manifest.webmanifest", "/sw.js",
 })
+
+# PWA app icons (#522) — matched post-normalization in _auth_gate.
+_PWA_ICON_PREFIX = "/static/icons/"
 
 # Runtime gate behaviours vs. the TOML policy value. "auto" is a policy-only
 # value (not a runtime mode): it hands live control of the mode to the
@@ -337,10 +341,11 @@ def _agent_bearer_allowed(path: str) -> bool:
 def _auth_gate():
     mode = auth_mode()
     path = flask_request.path or "/"
-    # Always-open infra paths — never gated, never role-checked.
-    # /static/icons/ covers the PWA app icons (#522), fetched credential-less.
+    # Always-open infra paths — never gated, never role-checked. The icon
+    # prefix (#522) matches the NORMALIZED path: Werkzeug collapses ".."
+    # after this gate, so a raw prefix would open the whole static tree.
     if (path in AUTH_OPEN_PATHS or path.startswith("/api/remote/")
-            or path.startswith("/static/icons/")):
+            or posixpath.normpath(path).startswith(_PWA_ICON_PREFIX)):
         return None
     if path.startswith("/api/gateway/") and _gateway_key_ok():
         return None

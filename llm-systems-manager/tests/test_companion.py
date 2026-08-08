@@ -57,6 +57,39 @@ class FakeWebPushException(Exception):
         self.response = response
 
 
+class TestValidPushEndpoint:
+    """The manager POSTs to whatever endpoint is stored, so the host is
+    restricted to public dotted names on 443 (no SSRF into the LAN)."""
+
+    @pytest.mark.parametrize("url", [
+        "https://updates.push.services.mozilla.com/wpush/v2/abc",
+        "https://fcm.googleapis.com/fcm/send/abc:def",
+        "https://web.push.apple.com/QAbc123",
+        "https://sea.notify.windows.com/w/?token=abc",
+        "https://push.example.net:443/send/abc",
+    ])
+    def test_accepts_public_push_services(self, url):
+        assert companion.valid_push_endpoint(url) is True
+
+    @pytest.mark.parametrize("url", [
+        "http://push.example.net/send/abc",          # not https
+        "https://127.0.0.1/send",                    # loopback literal
+        "https://192.168.1.59:8086/write",           # private literal + port
+        "https://10.0.0.5/x",
+        "https://169.254.169.254/latest/meta-data/",  # link-local metadata
+        "https://[::1]/x",
+        "https://localhost/x",                       # dotless
+        "https://influxdb:8086/write",               # internal name + port
+        "https://manager/x",
+        "https://dev.localhost/x",
+        "https://push.example.net:8081/x",           # non-443 port
+        "https://push.example.net:notaport/x",
+        "", "   ", None, 42,
+    ])
+    def test_rejects_non_public_or_malformed(self, url):
+        assert companion.valid_push_endpoint(url) is False
+
+
 class TestValidSubscription:
     def test_accepts_wellformed(self):
         assert companion.valid_subscription(_sub()) is True
@@ -183,6 +216,47 @@ class TestOpenSurface:
         r = anon.get(path)
         assert r.status_code != 401
         assert not (r.status_code == 302 and "/login" in r.headers.get("Location", ""))
+
+
+class TestStaticIconGate:
+    """The /static/icons/ exemption must match the NORMALIZED path — Werkzeug
+    collapses ".." after the gate runs, so a raw-prefix check would serve the
+    whole login-gated static tree to anonymous clients."""
+
+    @pytest.fixture(autouse=True)
+    def _required_mode(self, monkeypatch):
+        monkeypatch.setattr(auth, "auth_mode", lambda: "required")
+
+    @pytest.mark.parametrize("path", [
+        "/static/icons/icon-192.png",
+        "/static/icons/icon-512.png",
+        "/static/icons/apple-touch-icon.png",
+        "/static/icons/icon-maskable-512.png",
+    ])
+    def test_real_icons_are_open(self, path):
+        with M.app.test_request_context(path):
+            assert auth._auth_gate() is None
+
+    @pytest.mark.parametrize("path", [
+        "/static/icons/../index.html",
+        "/static/icons/../js/companion.js",
+        "/static/icons/../css/base.css",
+        "/static/icons/../../backend/companion.py",
+        "/static/icons/subdir/../../js/companion.js",
+    ])
+    def test_traversal_out_of_icons_is_gated(self, path):
+        with M.app.test_request_context(path):
+            assert auth._auth_gate() is not None
+
+    def test_traversal_back_into_icons_stays_open(self):
+        with M.app.test_request_context("/static/icons/x/../icon-192.png"):
+            assert auth._auth_gate() is None
+
+    def test_sibling_static_dirs_still_gated(self):
+        for path in ("/static/js/companion.js", "/static/css/base.css",
+                     "/static/iconsfoo/x.png"):
+            with M.app.test_request_context(path):
+                assert auth._auth_gate() is not None, path
 
 
 class TestGatedSurface:

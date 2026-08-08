@@ -16,7 +16,8 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parent.parent
 SRC = REPO / "design" / "brand" / "logo-badge-512.png"
 OUT_DIR = REPO / "llm-systems-manager" / "frontend" / "icons"
-BG = (0x11, 0x11, 0x11)  # opaque backing color for apple-touch-icon
+BG = (0x11, 0x11, 0x11)  # opaque backing color for apple-touch/maskable icons
+SAFE_ZONE = 0.8          # maskable art occupies the center 80%
 
 
 def read_png_rgba(path: Path) -> "tuple[int, int, bytearray]":
@@ -103,6 +104,23 @@ def resize_rgba(px: bytearray, size: int, new: int) -> bytearray:
     return out
 
 
+def paste_center(src: bytearray, src_size: int, canvas_size: int,
+                 bg: "tuple[int, int, int]") -> bytearray:
+    """Center src on an opaque canvas_size square filled with bg."""
+    out = bytearray()
+    for _ in range(canvas_size * canvas_size):
+        out += bytes((bg[0], bg[1], bg[2], 255))
+    off = (canvas_size - src_size) // 2
+    for y in range(src_size):
+        for x in range(src_size):
+            s = (y * src_size + x) * 4
+            a = src[s + 3] / 255.0
+            d = ((y + off) * canvas_size + (x + off)) * 4
+            for c in range(3):
+                out[d + c] = round(src[s + c] * a + out[d + c] * (1 - a))
+    return out
+
+
 def flatten(px: bytearray, bg: "tuple[int, int, int]") -> bytearray:
     out = bytearray(len(px))
     for i in range(0, len(px), 4):
@@ -137,7 +155,12 @@ def main() -> None:
     write_png_rgba(OUT_DIR / "icon-192.png", resize_rgba(px, w, 192), 192)
     apple = flatten(resize_rgba(px, w, 180), BG)
     write_png_rgba(OUT_DIR / "apple-touch-icon.png", apple, 180)
-    print(f"wrote {OUT_DIR}/icon-512.png, icon-192.png, apple-touch-icon.png")
+    # Maskable: art inside the 80% safe zone so launcher masks can't clip it.
+    inner = round(512 * SAFE_ZONE)
+    write_png_rgba(OUT_DIR / "icon-maskable-512.png",
+                   paste_center(resize_rgba(px, w, inner), inner, 512, BG), 512)
+    print(f"wrote {OUT_DIR}/icon-512.png, icon-192.png, "
+          "apple-touch-icon.png, icon-maskable-512.png")
 
 
 if __name__ == "__main__":
