@@ -3,7 +3,6 @@
 The Flux built by query_metrics must tail-limit (sort desc -> limit ->
 re-sort asc), not head-limit an ascending sort.
 """
-import re
 import sys
 from pathlib import Path
 
@@ -12,7 +11,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from backend.storage import influxdb_client as ic
 
 
-def _built_query(monkeypatch):
+def _built_query():
     captured = {}
 
     class _QApi:
@@ -33,8 +32,8 @@ def _built_query(monkeypatch):
     return captured["q"]
 
 
-def test_limit_takes_the_tail_not_the_head(monkeypatch):
-    q = _built_query(monkeypatch)
+def test_limit_takes_the_tail_not_the_head():
+    q = _built_query()
     # Ordered pipeline: desc sort, then limit, then ascending re-sort.
     desc = q.index('sort(columns: ["_time"], desc: true)')
     lim = q.index("limit(n: 3)")
@@ -42,7 +41,7 @@ def test_limit_takes_the_tail_not_the_head(monkeypatch):
     assert desc < lim < asc
 
 
-def test_no_ascending_sort_before_limit(monkeypatch):
-    q = _built_query(monkeypatch)
+def test_no_ascending_sort_before_limit():
+    q = _built_query()
     before_limit = q[: q.index("limit(n: 3)")]
     assert 'desc: false' not in before_limit
