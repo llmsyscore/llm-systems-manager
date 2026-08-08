@@ -67,7 +67,7 @@ from .storage.influxdb_client import InfluxDBClient
 # (-1, -2, …) for same-day iterations; roll the date for a new day's first
 # change.
 # ---------------------------------------------------------------------------
-__version__ = "v2026.08.08-1"
+__version__ = "v2026.08.08-3"
 from .storage import influx_monitor as _influx_monitor
 from .models.alarm_rule import (
     AlarmRuleCreate,
@@ -1585,11 +1585,14 @@ def main() -> None:
     # stop, upgrade) doesn't hang on the manager's long-lived alarm WS until
     # systemd's 90s SIGKILL (agent parity). Self-restart uses os._exit, not a
     # signal, so it never reaches this path.
+    # Keep-alive raised past the dashboards' poll gaps so the manager's
+    # pooled connections stay valid between requests (#534).
     uvicorn.run(
         app, host=host, port=port,
         log_level="warning",
         access_log=False, loop="uvloop", http="httptools",
         timeout_graceful_shutdown=10,
+        timeout_keep_alive=75,
         **ssl_kwargs,
     )
 

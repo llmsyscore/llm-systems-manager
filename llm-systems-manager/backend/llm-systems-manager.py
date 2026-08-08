@@ -156,7 +156,7 @@ def _local_hostname() -> str:
 # banner reads it. Bump suffix (-1, -2, …) for same-day iterations; roll
 # the date for a new day's first change.
 # ---------------------------------------------------------------------------
-__version__ = "v2026.08.08-2"
+__version__ = "v2026.08.08-4"
 
 # Wall-clock at first import (Cheroot main process); the shutdown banner
 # reads it for the uptime line.
@@ -567,8 +567,14 @@ _ae_session = requests.Session()
 # Connection pool sized to the HTTP worker fleet plus background-poller
 # headroom; the urllib3 default (10) is exceeded routinely and discards.
 _AE_POOL_MAXSIZE = int(getattr(settings.manager, "http_threads", 64) or 64) + 8
+# Idempotent requests retry once on a fresh connection when a pooled
+# keep-alive died server-side (#534); writes stay non-retried.
+_AE_RETRY = requests.adapters.Retry(
+    total=2, connect=2, read=2, status=0, backoff_factor=0.1,
+    allowed_methods=frozenset({"GET", "HEAD", "OPTIONS"}),
+    raise_on_status=False)
 _ae_adapter = requests.adapters.HTTPAdapter(
-    pool_connections=4, pool_maxsize=_AE_POOL_MAXSIZE)
+    pool_connections=4, pool_maxsize=_AE_POOL_MAXSIZE, max_retries=_AE_RETRY)
 _ae_session.mount("http://", _ae_adapter)
 _ae_session.mount("https://", _ae_adapter)
 if bool(settings.alarm_engine.tls_enabled):
