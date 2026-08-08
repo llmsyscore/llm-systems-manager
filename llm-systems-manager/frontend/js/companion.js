@@ -1,184 +1,411 @@
-// Companion shell logic (#522): SW registration, theme, push opt-in/test.
+// Companion shell (#522): five-tab router + per-screen controllers, plus the
+// service-worker/push opt-in (now on the Admin screen). Read screens only;
+// control actions land in a follow-up. IIFE — classic global scope.
 (() => {
   const $ = (id) => document.getElementById(id);
-  const esc = (s) => String(s).replace(/[&<>"']/g,
-    (c) => `&#${c.charCodeAt(0)};`);
-  const enc = (cls, glyph, word) =>
-    `<span class="${cls}">${glyph} ${esc(word)}</span>`;
-  const OK = (w) => enc('cmp-ok', '✓', w);
-  const WARN = (w) => enc('cmp-warn', '▲', w);
-  const CRIT = (w) => enc('cmp-crit', '!', w);
-  const DIM = (w) => enc('cmp-dim', '·', w);
+  const esc = (s) => String(s == null ? '' : s)
+    .replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
+  const CV = window.CView, CS = window.CSpark, EN = window.EN;
 
   async function jfetch(url, opts) {
     const r = await fetch(url, Object.assign({ credentials: 'same-origin' }, opts));
     const body = await r.json().catch(() => ({}));
-    // Same manager-session 401 shape foundation.js keys on for its redirect;
-    // ?next= returns here, since a standalone PWA has no URL bar to recover with.
     if (r.status === 401 && body.auth_required) {
       location.href = '/login?next=' + encodeURIComponent(location.pathname);
       throw new Error('auth');
     }
+    if (!r.ok) throw Object.assign(new Error(body.error || r.status), { status: r.status });
     return body;
   }
 
+  // ── theme + host liveness ────────────────────────────────────────────────
   async function applyTheme() {
     try {
       const layout = await jfetch('/api/layout');
       if (layout && layout.theme)
         document.documentElement.setAttribute('data-theme', layout.theme);
     } catch (_) { /* default theme */ }
-    // Match the browser/OS chrome to the resolved theme, not a baked color.
     const bg = getComputedStyle(document.documentElement)
       .getPropertyValue('--bg-tabnav').trim();
     const meta = document.querySelector('meta[name="theme-color"]');
     if (bg && meta) meta.setAttribute('content', bg);
   }
 
+  function setLive(online, ageS) {
+    const dot = $('liveDot'), name = $('hostName');
+    // Drive off age directly: agent_online flips at 30s, so a stale window is
+    // only visible via age (30–90s = reconnecting, older/absent = offline).
+    const s = (typeof ageS === 'number' && isFinite(ageS)) ? ageS : null;
+    if (online === false && (s == null || s >= 90)) { dot.className = 'livedot down'; name.textContent = 'offline'; }
+    else if (s != null && s >= 30) { dot.className = 'livedot stale'; name.textContent = 'reconnecting'; }
+    else if (s == null && online == null) { dot.className = 'livedot down'; name.textContent = 'offline'; }
+    else { dot.className = 'livedot'; name.textContent = 'connected'; }
+  }
+
+  // ── render helpers ───────────────────────────────────────────────────────
+  function providerRow(p) {
+    return `<div class="prov"><span class="pstat ${p.status}"></span>`
+      + `<div class="atxt"><div class="pn">${esc(p.name)}</div>`
+      + `<div class="pd">${esc(p.detail)}</div></div>`
+      + `<div class="pr"><b${p.warn ? ' class="warn"' : ''}>${esc(p.rN)}</b>${esc(p.rUnit)}</div></div>`;
+  }
+  function tileEl(t) {
+    const body = t.meter != null
+      ? `<div class="meter"><i class="${t.hot ? 'hot' : ''}" style="width:${t.meter}%"></i></div>`
+      : `<div class="sub">${esc(t.sub || '')}</div>`;
+    return `<div class="tile"><div class="v">${esc(t.v)}<small>${esc(t.unit || '')}</small></div>`
+      + `<div class="k">${esc(t.k)}</div>${body}</div>`;
+  }
+
+  // ── Glance ────────────────────────────────────────────────────────────────
+  const glance = {
+    buf: [],
+    async refresh() {
+      const [m, ls, lms, vllm, en] = await Promise.all([
+        jfetch('/api/metrics').catch(() => ({})),
+        jfetch('/api/llama-state').catch(() => ({})),
+        jfetch('/api/lmstudio/metrics').catch(() => ({})),
+        jfetch('/api/vllm/metrics').catch(() => ({})),
+        jfetch('/api/energy/summary?days=1').catch(() => ({})),
+      ]);
+      setLive(ls.agent_online, ls.agent_age_s);
+      const vm = CV.glance({ metrics: m, llama: ls, lms, vllm, energy: en });
+      // Buffer the hero's rate (whichever provider it is) so the strip and the
+      // hero always agree.
+      this.buf.push(vm.hero.tps);
+      if (this.buf.length > 120) this.buf.shift();
+      this.render(vm);
+    },
+    render(vm) {
+      $('glanceHeroN').innerHTML = `${esc(vm.hero.n)} <small>${esc(vm.hero.unit)}</small>`;
+      $('glanceHeroL').textContent = vm.hero.label;
+      const sp = CS.path(this.buf, 340, 118);
+      $('glanceSparkLine').setAttribute('d', sp.line);
+      $('glanceSparkFill').setAttribute('d', sp.fill);
+      const secs = this.buf.length * 2;
+      $('glanceWin').textContent = secs < 90 ? 'live'
+        : 'last ' + Math.round(secs / 60) + 'm';
+      $('glanceProviders').innerHTML = vm.providers.map(providerRow).join('');
+      $('glanceTiles').innerHTML = vm.tiles.map(tileEl).join('');
+    },
+  };
+
+  // ── Alerts ────────────────────────────────────────────────────────────────
+  const alerts = {
+    filter: 'all', vm: { firing: [], earlier: [], counts: { badge: 0 } },
+    row(a) {
+      const ack = a.ackable
+        ? `<button class="ackbtn" data-ack="${esc(a.id)}">Ack</button>` : '';
+      return `<div class="alert"><div class="sev ${a.sev}">${esc(a.glyph)}</div>`
+        + `<div class="atext"><div class="am">${esc(a.msg)}</div>`
+        + `<div class="aw">${esc(a.meta)}</div>`
+        + `<div class="sevword ${a.sev}">${esc(a.word)}</div></div>${ack}</div>`;
+    },
+    async refresh() {
+      const list = await jfetch('/api/alarm/alerts/?limit=100&include_closed=true')
+        .catch(() => []);
+      this.vm = CV.alerts(Array.isArray(list) ? list : (list.alerts || []));
+      setBadge(this.vm.counts.badge);
+      this.apply();
+    },
+    apply() {
+      const f = this.filter, vm = this.vm;
+      let firing = vm.firing;
+      if (f === 'critical') firing = firing.filter((r) => r.sev === 'crit');
+      else if (f === 'warning') firing = firing.filter((r) => r.sev === 'warn');
+      else if (f === 'resolved') firing = [];
+      const showEarlier = (f === 'all' || f === 'resolved') && vm.earlier.length;
+      $('alertsFiring').innerHTML = firing.map((r) => this.row(r)).join('');
+      $('alertsEarlierWrap').hidden = !showEarlier;
+      if (showEarlier) $('alertsEarlier').innerHTML = vm.earlier.map((r) => this.row(r)).join('');
+      const empty = firing.length === 0 && !showEarlier;
+      $('alertsEmpty').hidden = !empty;
+      if (empty) {
+        const label = { critical: 'No critical alerts', warning: 'No warning alerts',
+          resolved: 'Nothing earlier today' }[f] || 'All clear';
+        $('alertsEmpty').querySelector('.big').textContent = label;
+      }
+    },
+    async ack(id) {
+      try { await jfetch(`/api/alarm/alerts/${encodeURIComponent(id)}/acknowledge`,
+        { method: 'POST' }); } catch (_) { /* refresh reflects state */ }
+      this.refresh();
+    },
+    start() {
+      $('alertChips').querySelectorAll('.chip').forEach((c) => {
+        c.onclick = () => {
+          this.filter = c.dataset.filter;
+          $('alertChips').querySelectorAll('.chip').forEach((x) =>
+            x.classList.toggle('on', x === c));
+          this.apply();
+        };
+      });
+      document.getElementById('scr-alerts').onclick = (e) => {
+        const b = e.target.closest('[data-ack]');
+        if (b) this.ack(b.dataset.ack);
+      };
+    },
+  };
+
+  function setBadge(n) {
+    const b = $('alertBadge');
+    if (n > 0) { b.textContent = n > 99 ? '99+' : n; b.hidden = false; }
+    else b.hidden = true;
+    const tab = $('tabbar').querySelector('.tab[data-tab="alerts"]');
+    if (tab) tab.setAttribute('aria-label', n > 0 ? `Alerts, ${n} unread` : 'Alerts');
+  }
+
+  // ── Energy ────────────────────────────────────────────────────────────────
+  const energy = {
+    async refresh() {
+      const [today, month, hourly, week] = await Promise.all([
+        jfetch('/api/energy/summary?days=1').catch(() => ({})),
+        jfetch('/api/energy/summary').catch(() => ({})),
+        jfetch('/api/energy/hourly?hours=24').catch(() => ({})),
+        jfetch('/api/energy/hourly?days=7').catch(() => ({})),
+      ]);
+      this.render(today, month, hourly, week);
+    },
+    render(today, month, hourly, week) {
+      const tT = today.totals || {}, mT = month.totals || {};
+      $('energyHeroN').innerHTML = `${esc(EN.fmtWatts(tT.avg_watts).replace(' W', ''))} <small>W</small>`;
+      // 24h watts strip: each hourly bucket's Wh over ~1h ≈ average watts
+      const watts = (hourly.rows || []).map((r) => r.energy_wh);
+      const sp = CS.path(watts, 340, 118);
+      $('energySparkLine').setAttribute('d', sp.line);
+      $('energySparkFill').setAttribute('d', sp.fill);
+
+      const price = today.price_kwh;
+      const elapsed = (month.window || {}).elapsed_s;
+      const proj = (mT.cost_usd != null && elapsed > 0)
+        ? mT.cost_usd / elapsed * 30 * 86400 : null;
+      $('energyTiles').innerHTML = [
+        { v: EN.fmtUsd(tT.cost_usd), unit: '', k: 'Today',
+          sub: tT.kwh != null ? EN.fmtKwh(tT.kwh) + (price != null ? ' · $' + price + '/kWh' : '') : 'no telemetry' },
+        { v: proj != null ? '$' + Math.round(proj) : '—', unit: proj != null ? ' proj' : '',
+          k: 'This month', sub: '30-day at current mix' },
+      ].map(tileEl).join('');
+
+      $('energyHosts').innerHTML = this.hostRows(today);
+      this.dayBars(week.rows || [], price);
+    },
+    hostRows(today) {
+      const rows = (today.hosts || []).map((h) => {
+        const src = EN.sourceLabel(h.power_source);
+        return providerRow({
+          status: h.has_power ? 'ok' : 'idle',
+          name: h.hostname || (h.agent_id || '').slice(0, 10) || '?',
+          detail: src ? src + (h.power_source === 'psu' ? ' · liquidctl' : ' · powermetrics') : 'no power telemetry',
+          rN: EN.fmtWatts(h.avg_watts), rUnit: 'avg',
+        });
+      });
+      const t = today.totals || {};
+      if (t.idle_cost_usd != null) {
+        const el = (today.window || {}).elapsed_s;
+        const perMo = el > 0 ? t.idle_cost_usd / el * 30 * 86400 : null;
+        rows.push(providerRow({
+          status: 'idle', name: 'Idle floor', detail: 'models loaded, no requests',
+          rN: perMo != null ? '≈ $' + Math.round(perMo) : '—', rUnit: '/mo',
+        }));
+      }
+      return rows.join('') || '<div class="prov"><span class="pstat idle"></span>'
+        + '<div class="atxt"><div class="pn">No power telemetry</div>'
+        + '<div class="pd">this window</div></div></div>';
+    },
+    dayBars(rows, price) {
+      // bucket hourly Wh by LOCAL calendar day, cost = kWh × price
+      const byDay = new Map();
+      (rows || []).forEach((r) => {
+        const d = new Date(r.hour_ts * 1000);
+        const key = d.getFullYear() + '-' + (d.getMonth() + 1) + '-' + d.getDate();
+        if (!byDay.has(key)) byDay.set(key, { wh: 0, d });
+        byDay.get(key).wh += (r.energy_wh || 0);
+      });
+      const days = [...byDay.values()].slice(-7)
+        .map(({ wh, d }) => ({ cost: (wh / 1000) * (price || 0),
+          wd: d.toLocaleDateString('en', { weekday: 'short' }).slice(0, 2) }));
+      const svg = $('energyDayBars');
+      if (!days.length) { svg.setAttribute('aria-label', 'No daily cost data'); svg.innerHTML = ''; return; }
+      svg.setAttribute('aria-label', 'Cost per day, last ' + days.length + ' days; '
+        + days.map((d, i) => (i === days.length - 1 ? 'today ' : '') + EN.fmtUsd(d.cost)).join(', '));
+      const max = Math.max(...days.map((d) => d.cost), 0.01);
+      const n = days.length, gap = 14, w = (312 - gap) / n - gap, x0 = gap;
+      let out = '';
+      days.forEach((d, i) => {
+        const h = Math.max(4, Math.round((d.cost / max) * 52));
+        const x = x0 + i * ((312 - gap) / n), y = 76 - h;
+        const today = i === n - 1;
+        out += `<rect class="${today ? 'today' : ''}" x="${x.toFixed(0)}" y="${y}" `
+          + `width="${w.toFixed(0)}" height="${h}" rx="4"/>`;
+        out += `<text x="${(x + w / 2).toFixed(0)}" y="89" text-anchor="middle"${today ? ' class="hot"' : ''}>${esc(today ? 'today' : d.wd)}</text>`;
+        if (today) out += `<text x="${(x + w / 2).toFixed(0)}" y="${y - 4}" text-anchor="middle" class="hot">${esc(EN.fmtUsd(d.cost))}</text>`;
+      });
+      svg.innerHTML = out;
+    },
+  };
+
+  // ── Admin (read-only) ─────────────────────────────────────────────────────
+  const admin = {
+    async refresh() {
+      const [health, agents, backup, auth] = await Promise.all([
+        jfetch('/api/admin/system-health').catch(() => null),
+        jfetch('/api/agents').catch(() => null),
+        jfetch('/api/admin/backup-status').catch(() => null),
+        jfetch('/api/admin/auth').catch(() => null),
+      ]);
+      const version = (document.querySelector('meta[name="mgr-version"]') || {}).content || '—';
+      const gated = !health && !agents && !backup && !auth;
+      const vm = CV.admin({
+        version, health: health || {}, agents: (agents || {}).agents || [],
+        backup: backup || {}, auth: auth || {},
+      });
+      this.render(vm, gated);
+      paintPush();
+    },
+    render(vm, gated) {
+      $('adminManager').innerHTML = providerRow({
+        status: 'ok', name: 'Manager',
+        detail: vm.manager.version + (vm.manager.uptime ? ' · up ' + vm.manager.uptime : ''),
+        rN: '', rUnit: vm.manager.updateNote,
+      });
+      if (gated) {
+        const note = '<div class="prov"><span class="pstat idle"></span>'
+          + '<div class="atxt"><div class="pn">Admin status hidden</div>'
+          + '<div class="pd">needs an admin session from an allowed network</div></div></div>';
+        $('adminAgents').innerHTML = note;
+        $('adminRows').innerHTML = '';
+        return;
+      }
+      $('adminAgents').innerHTML = vm.agents.map((a) => providerRow({
+        status: a.status, name: a.name, detail: a.detail,
+        rN: a.right, rUnit: a.rightSub, warn: a.warn,
+      })).join('') || '<div class="prov"><span class="pstat idle"></span>'
+        + '<div class="atxt"><div class="pn">No agents</div></div></div>';
+      $('adminRows').innerHTML = vm.rows.map((r) => {
+        const right = r.ok == null ? ''
+          : `<span class="rowstat pstat ${r.ok ? 'ok' : 'idle'}"></span>`;
+        return `<div class="arow"><div class="atxt"><div class="an">${esc(r.name)}</div>`
+          + `<div class="ad">${esc(r.detail)}</div></div>${right}</div>`;
+      }).join('');
+    },
+  };
+
+  // ── service worker + push (Admin) ─────────────────────────────────────────
+  let _reg = null;
   const standalone = () =>
     (window.matchMedia && window.matchMedia('(display-mode: standalone)').matches)
     || window.navigator.standalone === true;
 
-  async function registration() {
-    if (!('serviceWorker' in navigator)) return null;
-    // Scope limited to /companion: the SW never controls dashboard pages.
-    try {
-      return await navigator.serviceWorker.register('/sw.js',
-        { scope: '/companion' });
-    } catch (_) { return null; }
+  async function subscription() {
+    if (!_reg || !_reg.pushManager) return null;
+    try { return await _reg.pushManager.getSubscription(); } catch (_) { return null; }
   }
-
-  async function subscription(reg) {
-    if (!reg || !reg.pushManager) return null;
-    try { return await reg.pushManager.getSubscription(); }
-    catch (_) { return null; }
-  }
-
-  async function paint(reg) {
-    $('stInstall').innerHTML = standalone() ? OK('INSTALLED') : WARN('BROWSER TAB');
-    $('installHint').hidden = standalone();
-    const ready = !!(reg && reg.active);
-    $('stSw').innerHTML = ready ? OK('ACTIVE')
-      : reg ? WARN('INSTALLING') : CRIT('UNAVAILABLE');
+  async function paintPush() {
+    const ready = !!(_reg && _reg.active);
     const perm = ('Notification' in window) ? Notification.permission : 'unsupported';
-    $('stPerm').innerHTML =
-      perm === 'granted' ? OK('GRANTED')
-        : perm === 'denied' ? CRIT('DENIED') : DIM(perm.toUpperCase());
-    const [sub, subs] = await Promise.all([
-      subscription(reg),
-      jfetch('/api/companion/push/subscriptions').catch(() => null),
-    ]);
-    $('stSub').innerHTML = sub ? OK('SUBSCRIBED') : DIM('NOT SUBSCRIBED');
+    const sub = await subscription();
+    $('pushStatus').textContent = !ready ? 'service worker installing…'
+      : perm === 'denied' ? 'blocked — re-allow in site settings'
+        : sub ? 'subscribed' : (standalone() ? 'not subscribed' : 'add to Home Screen first (iOS)');
     $('btnEnable').disabled = !!sub || !ready;
     $('btnTest').disabled = !sub;
-    $('btnRemove').hidden = !sub;
-    $('stCount').textContent = subs && subs.ok ? subs.count : '?';
-    return sub;
+    try {
+      const s = await jfetch('/api/companion/push/subscriptions');
+      $('pushCount').textContent = s.count + (s.count === 1 ? ' device' : ' devices');
+    } catch (_) { $('pushCount').textContent = '—'; }
   }
-
-  function say(html) { $('msg').innerHTML = html; }
-
-  async function enable(reg) {
-    if (!('Notification' in window) || !reg || !reg.pushManager) {
-      say(CRIT('PUSH UNSUPPORTED') + ' — install to Home Screen first (iOS 16.4+)');
-      return;
+  async function enablePush() {
+    if (!('Notification' in window) || !_reg || !_reg.pushManager) {
+      $('pushMsg').textContent = 'push needs an installed app (iOS 16.4+)'; return;
     }
-    const perm = await Notification.requestPermission();
-    if (perm !== 'granted') {
-      say(perm === 'denied'
-        ? CRIT('PERMISSION DENIED') + ' — re-allow notifications in site settings'
-        : WARN('PERMISSION NOT GRANTED'));
-      await paint(reg);
-      return;
-    }
+    if (await Notification.requestPermission() !== 'granted') { paintPush(); return; }
     let sub = null;
     try {
-      // The registration resolves before the worker activates; subscribing
-      // against a not-yet-active worker throws.
       await navigator.serviceWorker.ready;
       const key = (await jfetch('/api/companion/push/public-key')).key;
-      sub = await reg.pushManager.subscribe({
+      sub = await _reg.pushManager.subscribe({
         userVisibleOnly: true,
         applicationServerKey: window.PushUtil.urlB64ToUint8Array(key),
       });
       const res = await jfetch('/api/companion/push/subscribe', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(sub.toJSON()),
       });
-      if (res.ok) {
-        say(OK('SUBSCRIBED'));
-      } else {
-        // Roll back so the browser and the server can't disagree.
-        await sub.unsubscribe().catch(() => {});
-        say(CRIT((res.error || 'subscribe failed').toUpperCase()));
-      }
+      if (!res.ok) { await sub.unsubscribe().catch(() => {}); $('pushMsg').textContent = res.error || 'failed'; }
+      else $('pushMsg').textContent = 'subscribed ✓';
     } catch (err) {
       if (sub) await sub.unsubscribe().catch(() => {});
-      say(CRIT('SUBSCRIBE FAILED') + ` — ${esc(err && err.message || err)}`);
+      $('pushMsg').textContent = 'subscribe failed: ' + (err && err.message || err);
     }
-    await paint(reg);
+    paintPush();
   }
-
-  async function testPush(reg) {
-    say(DIM('SENDING…'));
+  async function testPush() {
+    $('pushMsg').textContent = 'sending…';
     try {
-      // Target THIS device: a stale endpoint from an earlier install would
-      // otherwise fail the fan-out and report FAILED for a push that arrived.
-      const sub = await subscription(reg);
+      const sub = await subscription();
       const res = await jfetch('/api/companion/push/test', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(sub ? { endpoint: sub.endpoint } : {}),
       });
-      const pruned = res.pruned ? ` · ${res.pruned} STALE REMOVED` : '';
-      if (res.sent && !res.failed) say(OK(`SENT ${res.sent}`) + pruned);
-      else if (res.sent) say(WARN(`SENT ${res.sent} · ${res.failed} FAILED`) + pruned);
-      else say(CRIT((res.error || `failed ${res.failed}`).toUpperCase()) + pruned);
-    } catch (err) {
-      say(CRIT('SEND FAILED') + ` — ${esc(err && err.message || err)}`);
-    }
-    await paint(reg);
+      $('pushMsg').textContent = res.sent ? `sent ${res.sent} ✓` : (res.error || `failed ${res.failed}`);
+    } catch (err) { $('pushMsg').textContent = 'send failed: ' + (err && err.message || err); }
   }
 
-  async function disable(reg) {
-    const sub = await subscription(reg);
-    if (sub) {
-      try {
-        await jfetch('/api/companion/push/unsubscribe', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ endpoint: sub.endpoint }),
-        });
-        await sub.unsubscribe();
-      } catch (_) { /* repaint reflects the actual state */ }
-    }
-    say('');
-    await paint(reg);
-  }
+  // ── router ────────────────────────────────────────────────────────────────
+  const SCREENS = {
+    glance: { title: 'LLM Systems', ctrl: glance, interval: 2000 },
+    alerts: { title: 'Alerts', ctrl: alerts, interval: 15000 },
+    energy: { title: 'Energy', ctrl: energy, interval: 30000 },
+    actions: { title: 'Actions', ctrl: null },
+    admin: { title: 'Admin', ctrl: admin, interval: 10000 },
+  };
+  let timer = null;
 
-  // A first install activates after the page has already painted, so the
-  // status must follow the worker's lifecycle instead of a single snapshot.
-  function watchWorker(reg) {
-    if (!reg) return;
-    const repaint = () => paint(reg);
-    navigator.serviceWorker.ready.then(repaint).catch(() => {});
-    navigator.serviceWorker.addEventListener('controllerchange', repaint);
-    reg.addEventListener('updatefound', () => {
-      const w = reg.installing;
-      if (w) w.addEventListener('statechange', repaint);
+  function show(tab) {
+    const cfg = SCREENS[tab];
+    if (!cfg) return;
+    if (timer) { clearInterval(timer); timer = null; }
+    Object.keys(SCREENS).forEach((t) => { $('scr-' + t).hidden = t !== tab; });
+    $('tabbar').querySelectorAll('.tab').forEach((b) => {
+      const on = b.dataset.tab === tab;
+      b.classList.toggle('on', on);
+      if (on) b.setAttribute('aria-current', 'page'); else b.removeAttribute('aria-current');
     });
-    const pending = reg.installing || reg.waiting;
-    if (pending) pending.addEventListener('statechange', repaint);
+    $('appTitle').textContent = cfg.title;
+    if (cfg.ctrl) {
+      cfg.ctrl.refresh();
+      if (cfg.interval) timer = setInterval(() => {
+        if (document.visibilityState === 'visible') cfg.ctrl.refresh();
+      }, cfg.interval);
+    }
+  }
+
+  async function pollBadge() {
+    try {
+      // only_active = active + acknowledged, the same set the Alerts screen's
+      // firing count uses (CV.alerts then drops info-category).
+      const list = await jfetch('/api/alarm/alerts/?only_active=true&limit=100');
+      const arr = Array.isArray(list) ? list : (list.alerts || []);
+      setBadge(CV.alerts(arr).counts.badge);
+    } catch (_) { /* leave badge as-is */ }
   }
 
   document.addEventListener('DOMContentLoaded', async () => {
     await applyTheme();
-    const reg = await registration();
-    await paint(reg);
-    watchWorker(reg);
-    $('btnEnable').addEventListener('click', () => enable(reg));
-    $('btnTest').addEventListener('click', () => testPush(reg));
-    $('btnRemove').addEventListener('click', () => disable(reg));
+    if ('serviceWorker' in navigator) {
+      try { _reg = await navigator.serviceWorker.register('/sw.js', { scope: '/companion' }); }
+      catch (_) { _reg = null; }
+      const repaint = () => { if (!$('scr-admin').hidden) paintPush(); };
+      navigator.serviceWorker.ready.then(repaint).catch(() => {});
+      navigator.serviceWorker.addEventListener('controllerchange', repaint);
+    }
+    alerts.start();
+    $('btnEnable').addEventListener('click', enablePush);
+    $('btnTest').addEventListener('click', testPush);
+    $('tabbar').querySelectorAll('.tab').forEach((b) =>
+      b.addEventListener('click', () => show(b.dataset.tab)));
+    show('glance');
+    pollBadge();
+    setInterval(pollBadge, 30000);
   });
 })();

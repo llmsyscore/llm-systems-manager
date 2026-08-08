@@ -1,14 +1,15 @@
 <!DOCTYPE html>
 <!--
-companion.html — PWA companion shell (#522 phase 1 spike).
-Installability + web-push opt-in; the five companion screens land in later
-phases. Served by /companion with __MGR_VERSION__ stamped at serve time.
+companion.html — PWA companion (#522). Five-tab phone shell; screens reuse
+existing session-authed endpoints. Served at /companion with __MGR_VERSION__
+stamped in. Control actions (Actions tab) land in a follow-up PR.
 -->
 <html lang="en">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-  <title>LLM Manager</title>
+  <title>LLM Systems</title>
+  <meta name="mgr-version" content="__MGR_VERSION__">
   <link rel="manifest" href="/manifest.webmanifest">
   <meta name="theme-color" content="#0d0d0d">
   <meta name="apple-mobile-web-app-capable" content="yes">
@@ -20,58 +21,127 @@ phases. Served by /companion with __MGR_VERSION__ stamped at serve time.
   <link rel="stylesheet" href="/static/css/companion.css">
 </head>
 <body class="companion">
-  <header class="cmp-header">
-    <img src="/static/icons/icon-192.png" alt="">
-    <div>
-      <div class="cmp-title">LLM Systems Manager</div>
-      <div class="cmp-version">__MGR_VERSION__</div>
-    </div>
+  <header class="appbar">
+    <div class="logo">LS</div>
+    <div class="t" id="appTitle">LLM Systems</div>
+    <div class="hostchip"><span class="livedot" id="liveDot"></span><span id="hostName">…</span></div>
   </header>
 
-  <section class="card cmp-card">
-    <h2>Install</h2>
-    <div class="cmp-row">
-      <span class="cmp-label">App mode</span>
-      <span class="cmp-value" id="stInstall">…</span>
-    </div>
-    <p class="cmp-hint" id="installHint" hidden>
-      Install to the Home Screen for push notifications: tap
-      <strong>Share&nbsp;→&nbsp;Add to Home Screen</strong> (iOS) or
-      <strong>⋮&nbsp;→&nbsp;Install app</strong> (Android).
-    </p>
-  </section>
+  <main class="screens">
+    <!-- GLANCE -->
+    <section class="screen" id="scr-glance">
+      <div class="strip" id="glanceStrip">
+        <svg viewBox="0 0 340 118" preserveAspectRatio="none" aria-hidden="true">
+          <path class="spark-fill" id="glanceSparkFill" d=""></path>
+          <path class="spark-line" id="glanceSparkLine" d=""></path>
+        </svg>
+        <div class="hero">
+          <div class="n" id="glanceHeroN">—</div>
+          <div class="l" id="glanceHeroL">—</div>
+        </div>
+        <div class="win" id="glanceWin">live</div>
+      </div>
+      <div class="sec">Providers</div>
+      <div class="provwrap" id="glanceProviders"></div>
+      <div class="sec">System</div>
+      <div class="tiles" id="glanceTiles"></div>
+    </section>
 
-  <section class="card cmp-card">
-    <h2>Notifications</h2>
-    <div class="cmp-row">
-      <span class="cmp-label">Service worker</span>
-      <span class="cmp-value" id="stSw">…</span>
-    </div>
-    <div class="cmp-row">
-      <span class="cmp-label">Permission</span>
-      <span class="cmp-value" id="stPerm">…</span>
-    </div>
-    <div class="cmp-row">
-      <span class="cmp-label">This device</span>
-      <span class="cmp-value" id="stSub">…</span>
-    </div>
-    <div class="cmp-row">
-      <span class="cmp-label">Registered devices</span>
-      <span class="cmp-value" id="stCount">…</span>
-    </div>
-    <div class="cmp-btns">
-      <button class="cmp-btn primary" id="btnEnable">Enable notifications</button>
-      <button class="cmp-btn" id="btnTest" disabled>Send test push</button>
-      <button class="cmp-btn" id="btnRemove" hidden>Disable on this device</button>
-    </div>
-    <div class="cmp-msg" id="msg"></div>
-  </section>
+    <!-- ALERTS -->
+    <section class="screen" id="scr-alerts" hidden>
+      <div class="chips" id="alertChips">
+        <button class="chip on" data-filter="all">All</button>
+        <button class="chip" data-filter="critical">Critical</button>
+        <button class="chip" data-filter="warning">Warning</button>
+        <button class="chip" data-filter="resolved">Earlier</button>
+      </div>
+      <div id="alertsFiring"></div>
+      <div id="alertsEarlierWrap" hidden>
+        <div class="resolvedhead">Earlier today</div>
+        <div id="alertsEarlier"></div>
+      </div>
+      <div class="muted-note" id="alertsEmpty" hidden>
+        <span class="big">All clear</span>No firing alerts right now.
+      </div>
+    </section>
 
-  <footer class="cmp-foot">
-    <a href="/">Open full dashboard →</a>
-  </footer>
+    <!-- ENERGY -->
+    <section class="screen" id="scr-energy" hidden>
+      <div class="strip energy" id="energyStrip">
+        <svg viewBox="0 0 340 118" preserveAspectRatio="none" aria-hidden="true">
+          <path class="spark-fill" id="energySparkFill" d=""></path>
+          <path class="spark-line" id="energySparkLine" d=""></path>
+        </svg>
+        <div class="hero">
+          <div class="n" id="energyHeroN">—</div>
+          <div class="l">input power · all hosts</div>
+        </div>
+        <div class="win">last 24 h</div>
+      </div>
+      <div class="tiles" id="energyTiles"></div>
+      <div class="sec">By host</div>
+      <div class="provwrap" id="energyHosts"></div>
+      <div class="sec">Cost per day</div>
+      <div class="card"><svg class="daybars" id="energyDayBars" viewBox="0 0 312 92" role="img" aria-label="Cost per day"></svg></div>
+    </section>
+
+    <!-- ACTIONS (placeholder until the controls PR) -->
+    <section class="screen" id="scr-actions" hidden>
+      <div class="muted-note">
+        <span class="big">Controls arrive next</span>
+        Restart a service, swap or pin a model, toggle autopilot, and approve
+        pending agents land in the next update. Monitoring is all here now.
+      </div>
+    </section>
+
+    <!-- ADMIN (read-only) -->
+    <section class="screen" id="scr-admin" hidden>
+      <div class="sec">Manager</div>
+      <div class="provwrap" id="adminManager"></div>
+      <div class="sec">Agents</div>
+      <div class="provwrap" id="adminAgents"></div>
+      <div class="sec">Status</div>
+      <div class="provwrap" id="adminRows"></div>
+      <div class="sec">Notifications</div>
+      <div class="card">
+        <div class="arow" style="padding:2px 0">
+          <div class="atxt"><div class="an">Push to this device</div>
+            <div class="ad" id="pushStatus">…</div></div>
+          <button class="btn" id="btnEnable">Enable</button>
+        </div>
+        <div class="arow" style="padding:8px 0 2px">
+          <div class="atxt"><div class="an">Registered devices</div>
+            <div class="ad" id="pushCount">…</div></div>
+          <button class="btn" id="btnTest" disabled>Test</button>
+        </div>
+        <div class="cmp-msg" id="pushMsg"></div>
+      </div>
+      <div class="sec">Dashboard</div>
+      <div class="provwrap">
+        <div class="arow"><div class="atxt"><div class="an">Full dashboard</div>
+          <div class="ad">every tab, desktop layout</div></div>
+          <a class="btn primary" href="/">Open</a></div>
+      </div>
+    </section>
+  </main>
+
+  <nav class="tabbar" id="tabbar">
+    <button class="tab on" data-tab="glance" aria-label="Glance">
+      <svg viewBox="0 0 24 24"><path d="M3 13l4-4 4 3 5-6 5 5"/><path d="M3 20h18"/></svg>Glance</button>
+    <button class="tab" data-tab="alerts" aria-label="Alerts">
+      <svg viewBox="0 0 24 24"><path d="M12 3a6 6 0 0 0-6 6v4l-2 3h16l-2-3V9a6 6 0 0 0-6-6z"/><path d="M10 20a2 2 0 0 0 4 0"/></svg>Alerts<span class="badge" id="alertBadge" hidden></span></button>
+    <button class="tab" data-tab="energy" aria-label="Energy">
+      <svg viewBox="0 0 24 24"><path d="M13 2 6 13h5l-1 9 7-11h-5z"/></svg>Energy</button>
+    <button class="tab" data-tab="actions" aria-label="Actions">
+      <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9l2.1 2.1M17 17l2.1 2.1M19.1 4.9L17 7M7 17l-2.1 2.1"/></svg>Actions</button>
+    <button class="tab" data-tab="admin" aria-label="Admin">
+      <svg viewBox="0 0 24 24"><path d="M12 3l7 3v5c0 4.6-3 8.6-7 10-4-1.4-7-5.4-7-10V6z"/></svg>Admin</button>
+  </nav>
 
   <script src="/static/js/lib/pushutil.js"></script>
+  <script src="/static/js/lib/energy.js"></script>
+  <script src="/static/js/lib/companion-spark.js"></script>
+  <script src="/static/js/lib/companion-view.js"></script>
   <script src="/static/js/companion.js"></script>
 </body>
 </html>

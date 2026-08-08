@@ -1,0 +1,186 @@
+import { describe, it, expect } from 'vitest';
+import CView from '../js/lib/companion-view.js';
+
+const NOW = 1_700_000_000; // fixed epoch seconds for deterministic ages
+
+describe('CView.age', () => {
+  it('formats buckets', () => {
+    expect(CView.age(NOW - 10, NOW)).toBe('just now');
+    expect(CView.age(NOW - 120, NOW)).toBe('2m ago');
+    expect(CView.age(NOW - 3 * 3600, NOW)).toBe('3h ago');
+    expect(CView.age(NOW - 2 * 86400, NOW)).toBe('2d ago');
+  });
+  it('accepts ISO strings and epoch ms', () => {
+    const iso = new Date(NOW * 1000 - 120000).toISOString();
+    expect(CView.age(iso, NOW)).toBe('2m ago');
+    expect(CView.age((NOW - 120) * 1000, NOW)).toBe('2m ago');
+  });
+  it('returns dash for junk', () => {
+    expect(CView.age(null, NOW)).toBe('—');
+    expect(CView.age('not a date', NOW)).toBe('—');
+  });
+});
+
+describe('CView.glance', () => {
+  const full = {
+    metrics: {
+      gpu: { temperature_c: 62, vram_used_mb: 21914, vram_usage_percent: 89, power_watts: 300 },
+      llama: { model: 'qwen3-32b-q4_k_m', tokens_per_second: 42.7, n_tokens_max: 32768,
+               active_slots: 2, total_slots: 4 },
+      liquidctl: { psu: { 'Estimated input power': { value: 412 } } },
+    },
+    llama: { state: 'awake', model: 'qwen3-32b-q4_k_m' },
+    lms: { ps: [{ model: 'llama-3.3-70b', status: 'loaded' }], system: { host: 'mac-studio' },
+           mac_power: { gpu_busy_pct: 71 }, gateway_rates: { gen_tps: 12 } },
+    vllm: { vllm: { state: 'stopped' } },
+    energy: { price_kwh: 0.20, totals: { cost_usd: 1.84, kwh: 9.2 } },
+  };
+
+  it('hero picks the fastest live provider (and exposes its rate for the strip)', () => {
+    const g = CView.glance(full);
+    expect(g.hero.n).toBe('42.7');
+    expect(g.hero.tps).toBeCloseTo(42.7);
+    expect(g.hero.unit).toBe('tok/s');
+    expect(g.hero.label).toBe('llama.cpp · qwen3-32b-q4_k_m');
+  });
+
+  it('LM Studio host comes from system.host (not hostname), never a raw UUID', () => {
+    // Regression: the agent system block key is `host`; `hostname` is absent.
+    const g = CView.glance({ lms: { ps: [{ model: 'm', status: 'loaded' }],
+      system: { host: 'mac-studio' }, agent_id: '7f3c-uuid-long' } });
+    expect(g.providers[1].detail).toBe('mac-studio · m');
+  });
+
+  it('vLLM running shows model + request count', () => {
+    const g = CView.glance({ vllm: { vllm: { state: 'running', model: 'mixtral',
+      requests_running: 3, tokens_per_second: 55 } } });
+    expect(g.providers[2]).toMatchObject({ status: 'ok', detail: 'mixtral', rN: '3', rUnit: 'running' });
+    expect(g.hero.label).toBe('vLLM · mixtral');
+  });
+
+  it('provider rows: llama ctx + slots, lms host + gpu-busy, vllm idle', () => {
+    const g = CView.glance(full);
+    expect(g.providers[0]).toMatchObject({ status: 'ok', name: 'llama.cpp',
+      detail: 'qwen3-32b-q4_k_m · ctx 32k', rN: '2/4', rUnit: 'slots' });
+    expect(g.providers[1]).toMatchObject({ status: 'ok', name: 'LM Studio',
+      detail: 'mac-studio · llama-3.3-70b', rN: '71%', rUnit: 'gpu busy' });
+    expect(g.providers[2]).toMatchObject({ status: 'idle', name: 'vLLM', detail: 'unit stopped' });
+  });
+
+  it('system tiles: temp, VRAM with total + hot flag, PSU power, energy today', () => {
+    const g = CView.glance(full);
+    expect(g.tiles[0]).toMatchObject({ v: '62', unit: '°C', meter: 62, hot: false });
+    expect(g.tiles[1]).toMatchObject({ v: '21.4', unit: ' / 24 GB', meter: 89, hot: true });
+    expect(g.tiles[2]).toMatchObject({ v: '412', unit: 'W', sub: 'PSU · liquidctl' });
+    expect(g.tiles[3]).toMatchObject({ v: '$1.84', sub: '9.2 kWh · $0.2/kWh' });
+  });
+
+  it('degrades to dashes/idle on an empty payload without throwing', () => {
+    const g = CView.glance({});
+    expect(g.hero.n).toBe('0.0');
+    expect(g.hero.label).toContain('idle');
+    expect(g.providers.every((p) => p.status === 'idle')).toBe(true);
+    expect(g.tiles[0].v).toBe('—');
+    expect(g.tiles[3].sub).toBe('no telemetry');
+  });
+
+  it('flags a hot GPU at the warn threshold', () => {
+    const g = CView.glance({ metrics: { gpu: { temperature_c: 87 } } });
+    expect(g.tiles[0].hot).toBe(true);
+  });
+});
+
+describe('CView.alerts', () => {
+  const list = [
+    { alert_id: 'a1', severity: 'critical', status: 'active', message: 'GPU temperature 91 °C ≥ 90 °C',
+      metric_source: 'system', metric_name: 'gpu_temp', source_host: 'llm-core', created_at: (NOW - 120) * 1000 },
+    { alert_id: 'a2', severity: 'warning', status: 'acknowledged', message: 'VRAM 95% for 10 min',
+      metric_source: 'system', metric_name: 'vram_used_pct', source_host: 'llm-core', created_at: (NOW - 840) * 1000 },
+    { alert_id: 'a3', severity: 'critical', status: 'closed', message: 'GPU busy back under 90%',
+      metric_source: 'mac_power', metric_name: 'gpu_busy_pct', source_host: 'mac-studio', created_at: (NOW - 3600) * 1000 },
+    { alert_id: 'a4', severity: 'info', status: 'active', category: 'info', message: 'Download complete',
+      metric_source: 'manager', metric_name: 'downloads', created_at: (NOW - 10800) * 1000 },
+  ];
+
+  it('splits firing from earlier, resolved shows ✓, info counts as earlier', () => {
+    const m = CView.alerts(list, NOW);
+    expect(m.firing.map((r) => r.id)).toEqual(['a1', 'a2']);
+    expect(m.earlier.map((r) => r.id)).toEqual(['a3', 'a4']);
+    expect(m.earlier[0]).toMatchObject({ sev: 'ok', glyph: '✓', word: 'resolved' });
+    expect(m.earlier[1]).toMatchObject({ glyph: '✓', word: 'info' });
+  });
+
+  it('severity glyph + word + ack state', () => {
+    const m = CView.alerts(list, NOW);
+    expect(m.firing[0]).toMatchObject({ sev: 'crit', glyph: '!', word: 'critical · firing', ackable: true });
+    expect(m.firing[0].meta).toBe('system/gpu_temp · llm-core · 2m ago');
+    expect(m.firing[1]).toMatchObject({ sev: 'warn', word: 'warning · acked', ackable: false });
+  });
+
+  it('badge counts only firing alerts', () => {
+    const m = CView.alerts(list, NOW);
+    expect(m.counts).toMatchObject({ badge: 2, critical: 1, warning: 1 });
+  });
+
+  it('empty list yields zero counts', () => {
+    expect(CView.alerts([]).counts.badge).toBe(0);
+  });
+});
+
+describe('CView.admin', () => {
+  // Real /api/agents record: last_heartbeat (ISO), bind_url (https = TLS);
+  // NO last_heartbeat_age_s and NO tls field. AE service tls is a dict.
+  const d = {
+    version: 'v2026.08.07-4', now: NOW,
+    agents: [
+      { agent_id: 'core', hostname: 'llm-core', liveness: 'live', is_host_agent: true,
+        bind_url: 'https://llm-core:8082', last_heartbeat: new Date((NOW - 3) * 1000).toISOString() },
+      { agent_id: 'mac', hostname: 'mac-studio', liveness: 'live', version: 'v2026.07.30-3',
+        bind_url: 'https://mac-studio:8082', last_heartbeat: new Date((NOW - 4) * 1000).toISOString() },
+      { agent_id: 'new', hostname: 'mac-mini-m4', liveness: 'pending', status: 'pending' },
+    ],
+    health: {
+      manager: { uptime_s: 3600 },
+      services: [
+        { name: 'alarm_engine', ok: true, tls: { enabled: true, active: true }, latency_ms: 6 },
+        { name: 'influxdb', state: 'connected', via: 'co-located' },
+      ],
+    },
+    backup: { enabled: true, keep_last: 14, last: { ok: true, ts: NOW - 20000 } },
+    auth: { mode: 'session', current_user: 'llmadmin' },
+  };
+
+  it('agents: liveness, heartbeat age from last_heartbeat, TLS from bind_url, pending warn', () => {
+    const a = CView.admin(d);
+    expect(a.agents[0]).toMatchObject({ status: 'ok', name: 'llm-core', detail: 'local · manager host', right: 'live' });
+    expect(a.agents[1]).toMatchObject({ right: 'live', rightSub: 'hb 4s', detail: 'agent v2026.07.30-3 · TLS' });
+    expect(a.agents[2]).toMatchObject({ status: 'idle', right: 'pending', warn: true });
+  });
+
+  it('status rows: auth, influx ok, backups, AE reachable with TLS active', () => {
+    const a = CView.admin(d);
+    expect(a.rows[0]).toMatchObject({ name: 'Authentication', detail: 'session mode · llmadmin' });
+    expect(a.rows[1]).toMatchObject({ name: 'InfluxDB', ok: true });
+    expect(a.rows[3]).toMatchObject({ name: 'Alarm engine', ok: true });
+    expect(a.rows[3].detail).toContain('TLS');
+  });
+
+  it('AE TLS badge reflects active state, not mere reachability', () => {
+    // tls dict with active:false must NOT claim TLS (default deploy)
+    const off = CView.admin({ ...d, health: { ...d.health,
+      services: [{ name: 'alarm_engine', ok: true, tls: { enabled: false, active: false } },
+                 { name: 'influxdb', state: 'connected' }] } });
+    expect(off.rows[3].detail).toContain('reachable');
+    expect(off.rows[3].detail).not.toContain('TLS');
+  });
+
+  it('manager version carries through', () => {
+    expect(CView.admin(d).manager.version).toBe('v2026.08.07-4');
+  });
+
+  it('empty payload does not throw', () => {
+    const a = CView.admin({});
+    expect(a.agents).toEqual([]);
+    expect(a.rows.length).toBe(4);
+  });
+});
