@@ -7,6 +7,9 @@ const SHELL = [
   '/static/css/base.css',
   '/static/css/companion.css',
   '/static/js/lib/pushutil.js',
+  '/static/js/lib/energy.js',
+  '/static/js/lib/companion-spark.js',
+  '/static/js/lib/companion-view.js',
   '/static/js/companion.js',
   '/static/icons/icon-192.png',
 ];
