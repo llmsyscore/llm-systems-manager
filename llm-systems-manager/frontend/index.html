@@ -41,6 +41,11 @@ Backend API endpoints consumed:
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>LLM Systems Manager</title>
+  <!-- PWA (#522): Add-to-Home-Screen from the dashboard installs the
+       companion (manifest start_url), not a bare bookmark. -->
+  <link rel="manifest" href="/manifest.webmanifest">
+  <link rel="apple-touch-icon" href="/static/icons/apple-touch-icon.png">
+  <meta name="apple-mobile-web-app-title" content="LLM Manager">
   <script src="/static/vendor/chart.umd.min.js?v=4.4.7"></script>
   <script src="/static/vendor/chartjs-adapter-date-fns.bundle.min.js?v=3.0.0"></script>
   <script src="/static/vendor/chartjs-plugin-zoom.min.js?v=2.2.0"></script>
