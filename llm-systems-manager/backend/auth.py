@@ -26,6 +26,7 @@ import html
 import json
 import logging
 import os
+import posixpath
 import re
 import threading
 import time
@@ -65,7 +66,12 @@ DEFAULT_AUTH_PASSWORD = "llmadmin"
 # dynamically by their bearer token (see _auth_gate).
 AUTH_OPEN_PATHS = frozenset({
     "/health", "/login", "/logout", "/api/agents/register",
+    # PWA manifest + service worker (#522) — fetched without credentials.
+    "/manifest.webmanifest", "/sw.js",
 })
+
+# PWA app icons (#522) — matched post-normalization in _auth_gate.
+_PWA_ICON_PREFIX = "/static/icons/"
 
 # Runtime gate behaviours vs. the TOML policy value. "auto" is a policy-only
 # value (not a runtime mode): it hands live control of the mode to the
@@ -335,8 +341,12 @@ def _agent_bearer_allowed(path: str) -> bool:
 def _auth_gate():
     mode = auth_mode()
     path = flask_request.path or "/"
-    # Always-open infra paths — never gated, never role-checked.
-    if path in AUTH_OPEN_PATHS or path.startswith("/api/remote/"):
+    # Always-open infra paths — never gated, never role-checked. The icon
+    # prefix (#522) requires an ALREADY-normalized path: the gate and
+    # Werkzeug's dispatcher disagree about "..", in both directions.
+    if (path in AUTH_OPEN_PATHS or path.startswith("/api/remote/")
+            or (path == posixpath.normpath(path)
+                and path.startswith(_PWA_ICON_PREFIX))):
         return None
     if path.startswith("/api/gateway/") and _gateway_key_ok():
         return None
@@ -533,13 +543,29 @@ def _login_page_needed() -> bool:
     return True
 
 
+# A post-login redirect may only target one of these exact same-origin paths.
+# safe_next returns the matched CONSTANT, never the request value, so the
+# redirect target carries no request-derived data — no open redirect.
+_ALLOWED_NEXT = ("/companion",)
+
+
+def safe_next(raw: "str | None") -> Optional[str]:
+    """Return the allowlisted path equal to `raw`, else None."""
+    return next((p for p in _ALLOWED_NEXT if raw == p), None)
+
+
 # ── Route handlers ───────────────────────────────────────────────────
 def _manager_login():
     if flask_request.method == "GET":
+        # Carried through the POST in the session so the installed PWA
+        # returns to /companion instead of the desktop dashboard.
+        nxt = safe_next(flask_request.args.get("next"))
+        if nxt:
+            session["next_after_login"] = nxt
         # Don't strand the operator on a login page when this request wouldn't
         # be gated anyway (disabled / trusted-from-allowed-IP) — send them in.
         if not _login_page_needed():
-            return redirect("/")
+            return redirect(nxt or "/")
         return _render_login()
     form = flask_request.form
     username = (form.get("username") or "").strip()
@@ -553,7 +579,11 @@ def _manager_login():
         session["role"] = res["role"]
         log.info("manager login OK (user=%s role=%s) from %s",
                  res["username"], res["role"], flask_request.remote_addr)
-        return redirect("/")
+        # Query arg (form action kept it) or the value stashed on the GET;
+        # re-validated so the redirect target is always an allowlist constant.
+        nxt = (safe_next(flask_request.args.get("next"))
+               or safe_next(session.pop("next_after_login", None)))
+        return redirect(nxt or "/")
     if res.get("locked"):
         log.warning("manager login LOCKED (user=%s) from %s", username, flask_request.remote_addr)
         return _render_login(error="Too many attempts. Try again later."), 429

@@ -156,7 +156,7 @@ def _local_hostname() -> str:
 # banner reads it. Bump suffix (-1, -2, …) for same-day iterations; roll
 # the date for a new day's first change.
 # ---------------------------------------------------------------------------
-__version__ = "v2026.08.06-2"
+__version__ = "v2026.08.07-4"
 
 # Wall-clock at first import (Cheroot main process); the shutdown banner
 # reads it for the uptime line.
@@ -180,6 +180,7 @@ import report_card  # type: ignore[import-not-found]  # noqa: E402  # leaf, no c
 import energy  # type: ignore[import-not-found]  # noqa: E402  # leaf, no cycle; #470
 import gateway_usage  # type: ignore[import-not-found]  # noqa: E402  # leaf, no cycle; #502
 import discord_bot  # type: ignore[import-not-found]  # noqa: E402  # leaf, no cycle; #471
+import companion  # type: ignore[import-not-found]  # noqa: E402  # leaf, no cycle; #522
 
 
 def _patch_cheroot_flush_noise() -> None:
@@ -3512,6 +3513,7 @@ import gateway  # type: ignore[import-not-found]  # sibling; #214
 gateway.register_routes(app, ctx)
 report_card.register_routes(app, ctx, db_path=str(DB_PATH))
 energy.register_routes(app, ctx, db_path=str(DB_PATH))
+companion.register_routes(app, ctx, static_dir=STATIC_DIR)
 import manager_users  # type: ignore[import-not-found]  # sibling
 manager_users.init(
     DATA_DIR / "manager_users.json",
