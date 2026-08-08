@@ -133,8 +133,10 @@ body.companion {
 .daybars text { font-family: var(--mono); font-size: 9px; fill: var(--fg-dim); }
 .daybars text.hot { fill: var(--fg); }
 
-/* notifications opt-in (Admin) */
-.cmp-msg { min-height: 1.1em; margin-top: 8px; font-size: 12px; font-family: var(--mono); }
+/* notifications opt-in (Admin) + actions result line */
+.cmp-msg { min-height: 1.1em; margin-top: 8px; font-size: 12px; font-family: var(--mono);
+  color: var(--fg-muted); }
+.cmp-msg.bad { color: var(--crit); }
 
 /* tab bar */
 .tabbar { flex: none; height: calc(58px + env(safe-area-inset-bottom));
@@ -160,6 +162,8 @@ body.companion {
 @media (prefers-reduced-motion: reduce) { .switch i { transition: none; } }
 .approve { display: flex; gap: 8px; margin-top: 9px; }
 .approve .btn { margin-left: 0; flex: 1; text-align: center; }
+.card .an { font-size: 13px; font-weight: 600; }
+.card .ad { font-family: var(--mono); font-size: 10px; color: var(--fg-muted); margin-top: 2px; }
 
 /* bottom confirm sheet */
 .sheetwrap { position: fixed; inset: 0; z-index: 40; }

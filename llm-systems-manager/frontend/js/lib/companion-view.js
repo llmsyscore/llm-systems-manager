@@ -266,7 +266,7 @@
     const model = ls.model || null;
     const resident = !!model && !/unloaded/i.test(model);
     const glob = (ag || {}).global || {};
-    const pins = glob.llama_pins || {};
+    const pins = glob.llama_model_pins || {};
     const pinned = !!(model && pins[model]);
     const llamaUp = ls.agent_online === true && ls.state !== 'unknown';
 
@@ -285,12 +285,13 @@
         detail: (d.version || '—')
           + (up != null ? ' · up ' + age(now - up, now).replace(' ago', '') : ''),
         canRestart: !!health },
+      // AE restart gates on health.ae_local/containerized, not reachability.
       { key: 'alarm_engine', name: 'Alarm engine',
         status: aeSvc.ok === true ? 'ok' : 'idle',
         detail: !health ? 'status needs admin'
           : (aeSvc.ok ? 'reachable' : 'unreachable')
             + ((aeSvc.tls && aeSvc.tls.active) ? ' · TLS' : ''),
-        canRestart: !!health && aeSvc.ok === true },
+        canRestart: !!health && (health.ae_local === true || health.containerized === true) },
     ];
 
     const st = (ap || {}).state || {};
@@ -320,6 +321,7 @@
           : 'no model loaded',
       },
       autopilot, pending,
+      agentsKnown: !!ag,
       primaryLlamaId: glob.primary_llama_id || glob.default_llama_id || null,
     };
   }

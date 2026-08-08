@@ -188,7 +188,9 @@ describe('CView.admin', () => {
 describe('CView.actions', () => {
   const full = {
     llama: { state: 'awake', model: 'qwen3-32b-q4_k_m', agent_online: true, agent_age_s: 2 },
-    health: { manager: { uptime_s: 4 * 86400 },
+    // Real backend shapes: system-health carries ae_local/containerized, and
+    // the agents global pin dict key is llama_model_pins (pin_dict_key).
+    health: { manager: { uptime_s: 4 * 86400 }, ae_local: true, containerized: false,
               services: [{ name: 'alarm_engine', ok: true, tls: { enabled: true, active: true } }] },
     autopilot: { state: { enabled: true, entries: [{ model: 'a', provider: 'llama' },
       { model: 'b', provider: 'lms' }], hosts: {} }, proposals: [] },
@@ -196,7 +198,7 @@ describe('CView.actions', () => {
       { agent_id: 'aa11', hostname: 'llm-core', status: 'approved', liveness: 'live' },
       { agent_id: 'bb22', hostname: 'mac-mini-m4', status: 'pending', liveness: 'pending',
         first_seen: new Date((NOW - 240) * 1000).toISOString(), version: 'v2026.07.30-3' },
-    ], global: { llama_pins: { 'qwen3-32b-q4_k_m': 'aa11' }, primary_llama_id: 'aa11' } },
+    ], global: { llama_model_pins: { 'qwen3-32b-q4_k_m': 'aa11' }, primary_llama_id: 'aa11' } },
     version: 'v2026.08.08-1', now: NOW,
   };
 
@@ -230,6 +232,23 @@ describe('CView.actions', () => {
     expect(a.pending[0]).toMatchObject({ id: 'bb22', name: 'mac-mini-m4' });
     expect(a.pending[0].detail).toContain('4m ago');
     expect(a.pending[0].detail).toContain('v2026.07.30-3');
+  });
+
+  it('AE stays restartable when unreachable — that is when restart matters', () => {
+    const a = CView.actions({ ...full, health: { ...full.health,
+      services: [{ name: 'alarm_engine', ok: false }] } });
+    expect(a.services[2]).toMatchObject({ status: 'idle', canRestart: true });
+    expect(a.services[2].detail).toContain('unreachable');
+  });
+
+  it('AE restart disabled when it runs on a separate host (no local unit, not containerized)', () => {
+    const a = CView.actions({ ...full, health: { ...full.health, ae_local: false } });
+    expect(a.services[2].canRestart).toBe(false);
+  });
+
+  it('agentsKnown false when the agents read failed, true when it returned', () => {
+    expect(CView.actions(full).agentsKnown).toBe(true);
+    expect(CView.actions({ ...full, agents: null }).agentsKnown).toBe(false);
   });
 
   it('gated: admin reads null → llama row live, admin rows disabled, no autopilot/pending', () => {

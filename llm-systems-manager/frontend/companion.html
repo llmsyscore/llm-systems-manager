@@ -2,7 +2,7 @@
 <!--
 companion.html — PWA companion (#522). Five-tab phone shell; screens reuse
 existing session-authed endpoints. Served at /companion with __MGR_VERSION__
-stamped in. Control actions (Actions tab) land in a follow-up PR.
+stamped in. Actions tab controls confirm via the bottom sheet.
 -->
 <html lang="en">
 <head>
@@ -97,8 +97,9 @@ stamped in. Control actions (Actions tab) land in a follow-up PR.
       <div id="actionsAgents"></div>
       <div class="muted-note" id="actionsGatedNote" hidden>
         <span class="big">Admin controls locked</span>
-        Restart, autopilot, and agent approval need an admin session from an
-        allowed network. Model swap still works.
+        Manager and alarm-engine restart, autopilot, and agent approval need an
+        admin session from an allowed network. llama.cpp restart and model swap
+        still work.
       </div>
       <div class="cmp-msg" id="actionsMsg" role="status"></div>
     </section>
