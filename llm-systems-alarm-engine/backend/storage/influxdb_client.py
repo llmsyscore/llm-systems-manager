@@ -189,8 +189,9 @@ class InfluxDBClient:
               |> filter(fn: (r) => r.metric_name == "{_flux_str(metric_name)}")
               |> filter(fn: (r) => r._field == "value")
               {aggregate_clause}
-              |> sort(columns: ["_time"], desc: false)
+              |> sort(columns: ["_time"], desc: true)
               |> limit(n: {limit})
+              |> sort(columns: ["_time"], desc: false)
               |> keep(columns: ["_time", "_value", "unit", "hostname"])
         '''
 
