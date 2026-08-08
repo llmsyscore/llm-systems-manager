@@ -120,15 +120,25 @@
     await paint(reg);
   }
 
-  async function testPush() {
+  async function testPush(reg) {
     say(DIM('SENDING…'));
     try {
-      const res = await jfetch('/api/companion/push/test', { method: 'POST' });
-      say(res.ok ? OK(`SENT ${res.sent}`)
-        : CRIT((res.error || `failed ${res.failed}`).toUpperCase()));
+      // Target THIS device: a stale endpoint from an earlier install would
+      // otherwise fail the fan-out and report FAILED for a push that arrived.
+      const sub = await subscription(reg);
+      const res = await jfetch('/api/companion/push/test', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(sub ? { endpoint: sub.endpoint } : {}),
+      });
+      const pruned = res.pruned ? ` · ${res.pruned} STALE REMOVED` : '';
+      if (res.sent && !res.failed) say(OK(`SENT ${res.sent}`) + pruned);
+      else if (res.sent) say(WARN(`SENT ${res.sent} · ${res.failed} FAILED`) + pruned);
+      else say(CRIT((res.error || `failed ${res.failed}`).toUpperCase()) + pruned);
     } catch (err) {
       say(CRIT('SEND FAILED') + ` — ${esc(err && err.message || err)}`);
     }
+    await paint(reg);
   }
 
   async function disable(reg) {
@@ -147,12 +157,28 @@
     await paint(reg);
   }
 
+  // A first install activates after the page has already painted, so the
+  // status must follow the worker's lifecycle instead of a single snapshot.
+  function watchWorker(reg) {
+    if (!reg) return;
+    const repaint = () => paint(reg);
+    navigator.serviceWorker.ready.then(repaint).catch(() => {});
+    navigator.serviceWorker.addEventListener('controllerchange', repaint);
+    reg.addEventListener('updatefound', () => {
+      const w = reg.installing;
+      if (w) w.addEventListener('statechange', repaint);
+    });
+    const pending = reg.installing || reg.waiting;
+    if (pending) pending.addEventListener('statechange', repaint);
+  }
+
   document.addEventListener('DOMContentLoaded', async () => {
     await applyTheme();
     const reg = await registration();
     await paint(reg);
+    watchWorker(reg);
     $('btnEnable').addEventListener('click', () => enable(reg));
-    $('btnTest').addEventListener('click', testPush);
+    $('btnTest').addEventListener('click', () => testPush(reg));
     $('btnRemove').addEventListener('click', () => disable(reg));
   });
 })();

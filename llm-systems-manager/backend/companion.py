@@ -344,6 +344,15 @@ def register_routes(app, ctx, static_dir: Path) -> None:
     @app.route("/api/companion/push/test", methods=["POST"])
     def companion_push_test():
         subs = _store.list()
+        body = flask_request.get_json(silent=True)
+        # An explicit endpoint tests just that device, so one stale
+        # subscription can't report failure for a push that arrived.
+        target = (body.get("endpoint") or "") if isinstance(body, dict) else ""
+        if target:
+            subs = [s for s in subs if s.get("endpoint") == target]
+            if not subs:
+                return jsonify({"ok": False,
+                                "error": "this device is not subscribed"}), 404
         if not subs:
             return jsonify({"ok": False, "error": "no subscriptions"}), 400
         try:

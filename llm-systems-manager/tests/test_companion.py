@@ -473,6 +473,41 @@ class TestResolvesToPublicIp:
         r = client.post("/api/companion/push/test")
         assert r.status_code == 400
 
+    def test_test_push_targets_only_the_named_endpoint(self, client, monkeypatch):
+        """The button tests THIS device — a stale sibling subscription must
+        not turn an arrived push into a reported failure."""
+        sent = []
+
+        monkeypatch.setattr(companion, "_webpush_funcs", lambda: (
+            lambda subscription_info, **kw: sent.append(
+                subscription_info["endpoint"]), FakeWebPushException))
+        client.post("/api/companion/push/subscribe",
+                    json=_sub(endpoint="https://p.example/mine"))
+        client.post("/api/companion/push/subscribe",
+                    json=_sub(endpoint="https://p.example/stale"))
+        body = client.post("/api/companion/push/test",
+                           json={"endpoint": "https://p.example/mine"}).get_json()
+        assert body["sent"] == 1 and body["failed"] == 0
+        assert sent == ["https://p.example/mine"]
+
+    def test_test_push_unknown_endpoint_404(self, client):
+        client.post("/api/companion/push/subscribe", json=_sub())
+        r = client.post("/api/companion/push/test",
+                        json={"endpoint": "https://p.example/never-seen"})
+        assert r.status_code == 404
+
+    def test_test_push_still_fans_out_without_a_target(self, client, monkeypatch):
+        sent = []
+        monkeypatch.setattr(companion, "_webpush_funcs", lambda: (
+            lambda subscription_info, **kw: sent.append(
+                subscription_info["endpoint"]), FakeWebPushException))
+        client.post("/api/companion/push/subscribe",
+                    json=_sub(endpoint="https://p.example/a"))
+        client.post("/api/companion/push/subscribe",
+                    json=_sub(endpoint="https://p.example/b"))
+        client.post("/api/companion/push/test", json={})
+        assert sorted(sent) == ["https://p.example/a", "https://p.example/b"]
+
     def test_test_push_sends_to_every_subscription(self, client, monkeypatch):
         sent = []
 
