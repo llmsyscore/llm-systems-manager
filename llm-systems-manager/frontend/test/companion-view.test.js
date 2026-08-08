@@ -184,3 +184,71 @@ describe('CView.admin', () => {
     expect(a.rows.length).toBe(4);
   });
 });
+
+describe('CView.actions', () => {
+  const full = {
+    llama: { state: 'awake', model: 'qwen3-32b-q4_k_m', agent_online: true, agent_age_s: 2 },
+    health: { manager: { uptime_s: 4 * 86400 },
+              services: [{ name: 'alarm_engine', ok: true, tls: { enabled: true, active: true } }] },
+    autopilot: { state: { enabled: true, entries: [{ model: 'a', provider: 'llama' },
+      { model: 'b', provider: 'lms' }], hosts: {} }, proposals: [] },
+    agents: { agents: [
+      { agent_id: 'aa11', hostname: 'llm-core', status: 'approved', liveness: 'live' },
+      { agent_id: 'bb22', hostname: 'mac-mini-m4', status: 'pending', liveness: 'pending',
+        first_seen: new Date((NOW - 240) * 1000).toISOString(), version: 'v2026.07.30-3' },
+    ], global: { llama_pins: { 'qwen3-32b-q4_k_m': 'aa11' }, primary_llama_id: 'aa11' } },
+    version: 'v2026.08.08-1', now: NOW,
+  };
+
+  it('builds the three service rows, llama first', () => {
+    const a = CView.actions(full);
+    expect(a.services.map((s) => s.key)).toEqual(['llama', 'manager', 'alarm_engine']);
+    expect(a.services[0]).toMatchObject({ status: 'ok', canRestart: true });
+    expect(a.services[0].detail).toContain('qwen3-32b-q4_k_m');
+    expect(a.services[1].detail).toContain('v2026.08.08-1');
+    expect(a.services[1].detail).toContain('4d');
+    expect(a.services[2]).toMatchObject({ status: 'ok', canRestart: true });
+    expect(a.services[2].detail).toContain('reachable');
+  });
+
+  it('model row: resident + pinned via global.llama_pins', () => {
+    const a = CView.actions(full);
+    expect(a.model).toMatchObject({ name: 'qwen3-32b-q4_k_m', resident: true, pinned: true });
+    expect(a.model.detail).toContain('pinned');
+    expect(a.primaryLlamaId).toBe('aa11');
+  });
+
+  it('autopilot on with entry count', () => {
+    const a = CView.actions(full);
+    expect(a.autopilot).toMatchObject({ on: true });
+    expect(a.autopilot.detail).toContain('2 models');
+  });
+
+  it('pending agents card rows', () => {
+    const a = CView.actions(full);
+    expect(a.pending).toHaveLength(1);
+    expect(a.pending[0]).toMatchObject({ id: 'bb22', name: 'mac-mini-m4' });
+    expect(a.pending[0].detail).toContain('4m ago');
+    expect(a.pending[0].detail).toContain('v2026.07.30-3');
+  });
+
+  it('gated: admin reads null → llama row live, admin rows disabled, no autopilot/pending', () => {
+    const a = CView.actions({ llama: full.llama, health: null, autopilot: null, agents: null,
+                              version: 'v1', now: NOW });
+    expect(a.gated).toBe(true);
+    expect(a.services[0].canRestart).toBe(true);
+    expect(a.services[1].canRestart).toBe(false);
+    expect(a.services[2].canRestart).toBe(false);
+    expect(a.autopilot).toBeNull();
+    expect(a.pending).toEqual([]);
+    expect(a.model.pinned).toBe(false);
+  });
+
+  it('empty world degrades, never throws', () => {
+    const a = CView.actions({});
+    expect(a.services).toHaveLength(3);
+    expect(a.services[0].status).toBe('idle');
+    expect(a.model.name).toBeNull();
+    expect(a.model.resident).toBe(false);
+  });
+});

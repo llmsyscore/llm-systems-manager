@@ -254,5 +254,75 @@
     };
   }
 
-  return { glance, alerts, alertRow, admin, age, hbAge, _sevClass: sevClass };
+  // ── Actions (control surface) ───────────────────────────────────────────
+  function actions(d) {
+    d = d || {};
+    const ls = d.llama || {};
+    const health = d.health;
+    const ap = d.autopilot;
+    const ag = d.agents;
+    const gated = !health && !ap && !ag;
+
+    const model = ls.model || null;
+    const resident = !!model && !/unloaded/i.test(model);
+    const glob = (ag || {}).global || {};
+    const pins = glob.llama_pins || {};
+    const pinned = !!(model && pins[model]);
+    const llamaUp = ls.agent_online === true && ls.state !== 'unknown';
+
+    const mgr = (health || {}).manager || {};
+    const up = num(mgr.uptime_s);
+    const now = d.now == null ? Date.now() / 1000 : d.now;
+    const aeSvc = ((health || {}).services || []).find((s) => s.name === 'alarm_engine') || {};
+
+    const services = [
+      { key: 'llama', name: 'llama.cpp server',
+        status: llamaUp ? 'ok' : 'idle',
+        detail: llamaUp ? (ls.state || 'up') + (resident ? ' · ' + model : '')
+          : (ls.agent_online === false ? 'agent offline' : ls.state || 'unknown'),
+        canRestart: ls.agent_online === true },
+      { key: 'manager', name: 'Manager', status: 'ok',
+        detail: (d.version || '—')
+          + (up != null ? ' · up ' + age(now - up, now).replace(' ago', '') : ''),
+        canRestart: !!health },
+      { key: 'alarm_engine', name: 'Alarm engine',
+        status: aeSvc.ok === true ? 'ok' : 'idle',
+        detail: !health ? 'status needs admin'
+          : (aeSvc.ok ? 'reachable' : 'unreachable')
+            + ((aeSvc.tls && aeSvc.tls.active) ? ' · TLS' : ''),
+        canRestart: !!health && aeSvc.ok === true },
+    ];
+
+    const st = (ap || {}).state || {};
+    const entries = st.entries || [];
+    const autopilot = ap ? {
+      on: st.enabled === true,
+      detail: entries.length
+        ? entries.length + ' model' + (entries.length === 1 ? '' : 's') + ' managed'
+        : 'no models declared',
+    } : null;
+
+    const pending = ((ag || {}).agents || [])
+      .filter((a) => a.status === 'pending' || a.liveness === 'pending')
+      .map((a) => ({
+        id: a.agent_id,
+        name: a.hostname || (a.agent_id || '').slice(0, 10) || '?',
+        detail: 'registered ' + age(a.first_seen, d.now)
+          + (a.version ? ' · agent ' + a.version : '') + ' · pending approval',
+      }));
+
+    return {
+      gated, services,
+      model: {
+        name: model, resident, pinned,
+        detail: resident
+          ? 'llama.cpp · ' + (ls.state || '—') + (pinned ? ' · pinned' : '')
+          : 'no model loaded',
+      },
+      autopilot, pending,
+      primaryLlamaId: glob.primary_llama_id || glob.default_llama_id || null,
+    };
+  }
+
+  return { glance, alerts, alertRow, admin, actions, age, hbAge, _sevClass: sevClass };
 });
