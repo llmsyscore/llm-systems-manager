@@ -57,8 +57,9 @@
     const padBottom = o.padBottom == null ? 14 : o.padBottom;
     const vals = (values || []).filter((v) => typeof v === 'number' && isFinite(v));
     if (vals.length < 2) return { line: '', fill: '', pts: [] };
-    const min = Math.min(...vals);
-    const max = Math.max(...vals);
+    // min/max may be pinned so two series share one scale and stay comparable.
+    const min = o.min == null ? Math.min(...vals) : o.min;
+    const max = o.max == null ? Math.max(...vals) : o.max;
     const span = (max - min) || 1;
     const usable = h - padTop - padBottom;
     const n = vals.length;

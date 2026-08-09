@@ -41,10 +41,14 @@ stamped in. Actions tab controls confirm via the bottom sheet.
             </linearGradient>
           </defs>
           <path class="spark-fill" id="glanceSparkFill" fill="url(#glanceGrad)" d=""></path>
+          <path class="spark-line prompt" id="glanceSparkPrompt" vector-effect="non-scaling-stroke" d=""></path>
           <path class="spark-line" id="glanceSparkLine" vector-effect="non-scaling-stroke" d=""></path>
         </svg>
+        <div class="legend" id="glanceLegend" hidden>
+          <span class="k gen">generated</span><span class="k pr">prompt</span>
+        </div>
         <div class="marker" id="glanceMarker" hidden>
-          <div class="mline"></div><div class="mdot"></div>
+          <div class="mline"></div><div class="mdot alt" hidden></div><div class="mdot"></div>
         </div>
         <div class="hero">
           <div class="n" id="glanceHeroN">—</div>

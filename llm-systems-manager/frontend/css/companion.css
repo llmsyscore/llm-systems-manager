@@ -84,6 +84,16 @@ body.companion {
 .strip .spark-line { fill: none; stroke: var(--accent); stroke-width: 1.75;
   stroke-linecap: round; stroke-linejoin: round; }
 .strip .spark-fill { stroke: none; }
+.strip .spark-line.prompt { stroke: var(--accent-2); stroke-width: 1.4; opacity: .8; }
+
+/* two-series legend (Home: generated vs prompt) */
+.legend { position: absolute; right: 14px; top: 36px; display: flex; gap: 12px; }
+.legend[hidden] { display: none; }
+.legend .k { font-family: var(--mono); font-size: 10.5px; color: var(--fg-dim);
+  display: flex; align-items: center; gap: 5px; }
+.legend .k::before { content: ""; width: 10px; height: 2px; border-radius: 1px; }
+.legend .gen::before { background: var(--accent); }
+.legend .pr::before { background: var(--accent-2); }
 .strip .g0 { stop-color: var(--accent); stop-opacity: .34; }
 .strip .gm { stop-color: var(--accent); stop-opacity: .13; }
 .strip .g1 { stop-color: var(--accent); stop-opacity: 0; }
@@ -102,6 +112,9 @@ body.companion {
 .marker .mdot { position: absolute; width: 9px; height: 9px; margin: -4.5px 0 0 -4.5px;
   border-radius: 50%; background: var(--accent);
   box-shadow: 0 0 0 3px var(--bg-elev), 0 0 0 4px var(--accent); }
+.marker .mdot.alt { background: var(--accent-2);
+  box-shadow: 0 0 0 3px var(--bg-elev), 0 0 0 4px var(--accent-2); }
+.marker .mdot[hidden] { display: none; }
 .strip.energy .marker .mdot { background: var(--accent-2);
   box-shadow: 0 0 0 3px var(--bg-elev), 0 0 0 4px var(--accent-2); }
 .strip .hero { position: absolute; left: 16px; top: 14px; }

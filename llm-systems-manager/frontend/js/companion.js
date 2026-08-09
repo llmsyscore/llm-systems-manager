@@ -91,12 +91,17 @@
     let timer = null;
     const at = (clientX) => {
       const s = series();
-      const n = (s.values || []).length;
+      // pts comes from the last render and values from the live series; an
+      // async reload can leave them different lengths, so index the shorter.
+      const n = Math.min((s.values || []).length,
+        (s.pts && s.pts.length) || (s.values || []).length);
       if (!n) return;
       const r = strip.getBoundingClientRect();
       const f = Math.max(0, Math.min(1, (clientX - r.left) / r.width));
-      const i = Math.round(f * (n - 1));
-      out.textContent = s.label(i);
+      const i = Math.min(n - 1, Math.round(f * (n - 1)));
+      const text = s.label(i);
+      if (!text) return;
+      out.textContent = text;
       out.classList.add('on');
       // Snap to the point, not the finger, and clamp the bubble on its own
       // half-width so the ends stay on screen.
@@ -106,10 +111,22 @@
       out.style.left = Math.max(half + 6, Math.min(r.width - half - 6, px)) + 'px';
       if (mark && pt) {
         const py = pt.y / 118 * r.height;
+        // Second series (if any) gets its own dot; the guide line spans from
+        // whichever point is higher down to the baseline.
+        const pt2 = (s.pts2 || [])[i];
+        const py2 = pt2 ? pt2.y / 118 * r.height : null;
+        const dot2 = mark.querySelector('.mdot.alt');
         mark.hidden = false;
         mark.style.left = px + 'px';
-        mark.querySelector('.mdot').style.top = py + 'px';
-        mark.querySelector('.mline').style.top = py + 'px';
+        // :not(.alt) — the second-series dot precedes it in the DOM so the
+        // primary paints on top, and a bare .mdot would match the wrong one.
+        mark.querySelector('.mdot:not(.alt)').style.top = py + 'px';
+        if (dot2) {
+          dot2.hidden = py2 == null;
+          if (py2 != null) dot2.style.top = py2 + 'px';
+        }
+        mark.querySelector('.mline').style.top =
+          (py2 == null ? py : Math.min(py, py2)) + 'px';
       }
       clearTimeout(timer);
       timer = setTimeout(() => {
@@ -132,24 +149,30 @@
   // ── Glance ────────────────────────────────────────────────────────────────
   const glance = {
     buf: [],
-    hist: [],            // [{t: epochSec, v: fleet tok/s}] over 24 h
+    hist: [],            // [{t, v: gen tok/s, p: prompt tok/s}] over 24 h
     histAt: 0,
-    // Fleet tok/s history from the alarm engine; refreshed every 5 min, not
-    // on the 2 s poll. Falls back to the live buffer when it returns nothing.
-    async loadHistory() {
+    // Fleet token rates from the alarm engine; refreshed every 5 min on the
+    // 2 s poll, immediately on an explicit refresh. Falls back to the live
+    // buffer when it returns nothing.
+    async loadHistory(force) {
       const now = Date.now() / 1000;
-      if (now - this.histAt < 300) return;
-      this.histAt = now;
+      if (!force && now - this.histAt < 300) return;
+      const sum = (r, keys) => {
+        const v = keys.map((k) => r[k]).filter((x) => typeof x === 'number' && isFinite(x));
+        return v.length ? v.reduce((a, b) => a + b, 0) : 0;
+      };
       try {
         const rows = await jfetch('/api/history?since_minutes=1440&max_rows=180');
-        this.hist = (Array.isArray(rows) ? rows : []).map((r) => {
-          const parts = [r.llama_tps, r.lms_tps, r.vllm_tps]
-            .filter((v) => typeof v === 'number' && isFinite(v));
-          return { t: CV.tsSeconds(r.ts), v: parts.reduce((a, b) => a + b, 0) };
-        }).filter((p) => p.t != null);
+        this.hist = (Array.isArray(rows) ? rows : []).map((r) => ({
+          t: CV.tsSeconds(r.ts),
+          v: sum(r, ['llama_tps', 'lms_tps', 'vllm_tps']),
+          p: sum(r, ['llama_pps', 'lms_pps', 'vllm_pps']),
+        })).filter((x) => x.t != null);
+        // Only latch the throttle on success, so a failed read can retry.
+        this.histAt = now;
       } catch (_) { /* keep whatever we had */ }
     },
-    async refresh() {
+    async refresh(force) {
       const [m, ls, lms, vllm, en] = await Promise.all([
         jfetch('/api/metrics').catch(() => ({})),
         jfetch('/api/llama-state').catch(() => ({})),
@@ -159,10 +182,13 @@
       ]);
       setLive(ls.agent_online, ls.agent_age_s);
       const vm = CV.glance({ metrics: m, llama: ls, lms, vllm, energy: en });
-      // Live buffer backs the strip only when history is unavailable.
-      this.buf.push({ t: Date.now() / 1000, v: vm.hero.tps });
-      if (this.buf.length > 120) this.buf.shift();
-      this.loadHistory();
+      // Live buffer backs the strip only when history is unavailable. Drop
+      // samples older than the window so a backgrounded app doesn't redraw a
+      // frozen trace when it comes forward.
+      const nowS = Date.now() / 1000;
+      this.buf.push({ t: nowS, v: vm.hero.tps, p: 0 });
+      this.buf = this.buf.filter((s) => nowS - s.t < 300).slice(-150);
+      await this.loadHistory(force);
       this.render(vm);
     },
     // 24 h history when the alarm engine has it, else the live 2 s buffer.
@@ -173,11 +199,20 @@
       $('glanceHeroN').innerHTML = `${esc(vm.hero.n)}<small>${esc(vm.hero.unit)}</small>`;
       $('glanceHeroL').textContent = vm.hero.label;
       const pts = this.series();
-      const sp = CS.path(pts.map((p) => p.v), 340, 118,
-        { padTop: stripPad('glanceStrip', 'glanceHeroL') });
+      // Generation and prompt share one scale, else the two lines can't be
+      // read against each other.
+      const all = pts.map((p) => p.v).concat(pts.map((p) => p.p || 0))
+        .filter((v) => typeof v === 'number' && isFinite(v));
+      const scale = { min: Math.min(...all, 0), max: Math.max(...all, 1),
+        padTop: stripPad('glanceStrip', 'glanceHeroL') };
+      const sp = CS.path(pts.map((p) => p.v), 340, 118, scale);
+      const pp = CS.path(pts.map((p) => p.p || 0), 340, 118, scale);
       this.sp = sp;
+      this.pp = pts.some((p) => p.p > 0) ? pp : null;
       $('glanceSparkLine').setAttribute('d', sp.line);
       $('glanceSparkFill').setAttribute('d', sp.fill);
+      $('glanceSparkPrompt').setAttribute('d', pp.line);
+      $('glanceLegend').hidden = !pts.some((p) => p.p > 0);
       $('glanceWin').textContent = this.hist.length > 1 ? 'last 24 h'
         : (this.buf.length * 2 < 90 ? 'live'
           : 'last ' + Math.round(this.buf.length * 2 / 60) + 'm');
@@ -245,7 +280,7 @@
         const btn = $('alertsRefresh');
         btn.disabled = true;
         btn.classList.add('busy');
-        try { await this.refresh(); } finally {
+        try { await this.refresh(true); } finally {
           btn.disabled = false;
           btn.classList.remove('busy');
         }
@@ -785,9 +820,11 @@
   let timer = null;
   let current = 'glance';
 
-  const refreshCurrent = () => {
+  // force=true on an explicit refresh: controllers skip their own throttles so
+  // a pull-to-refresh really re-reads everything, not just the cheap polls.
+  const refreshCurrent = (force) => {
     const cfg = SCREENS[current];
-    return cfg && cfg.ctrl ? Promise.resolve(cfg.ctrl.refresh()) : Promise.resolve();
+    return cfg && cfg.ctrl ? Promise.resolve(cfg.ctrl.refresh(force)) : Promise.resolve();
   };
 
   // iOS Safari ignores user-scalable=no, so pinch has to be refused directly:
@@ -837,7 +874,7 @@
       if (!fire || busy) return;
       busy = true;
       ind.classList.add('busy');
-      try { await refreshCurrent(); } catch (_) { /* screen shows its own state */ }
+      try { await refreshCurrent(true); } catch (_) { /* screen shows its own state */ }
       ind.classList.remove('busy');
       busy = false;
     };
@@ -896,15 +933,25 @@
       return {
         values: pts.map((p) => p.v),
         pts: (glance.sp || {}).pts,
-        label: (i) => pts[i].v.toFixed(1) + ' tok/s · ' + clock(pts[i].t),
+        pts2: (glance.pp || {}).pts,
+        label: (i) => {
+          const p = pts[i];
+          if (!p) return '';
+          return 'gen ' + p.v.toFixed(1)
+            + (p.p > 0 ? ' · prompt ' + p.p.toFixed(1) : '')
+            + ' tok/s · ' + clock(p.t);
+        },
       };
     });
     attachScrub('energyStrip', 'energyReadout', 'energyMarker', () => ({
       values: energy.hourly.map((r) => energy.bucketWatts(r)),
       pts: (energy.sp || {}).pts,
-      label: (i) => EN.fmtWatts(energy.bucketWatts(energy.hourly[i])) + ' · '
-        + new Date(energy.hourly[i].hour_ts * 1000)
-          .toLocaleTimeString('en', { hour: 'numeric' }),
+      label: (i) => {
+        const r = energy.hourly[i];
+        if (!r) return '';
+        return EN.fmtWatts(energy.bucketWatts(r)) + ' · '
+          + new Date(r.hour_ts * 1000).toLocaleTimeString('en', { hour: 'numeric' });
+      },
     }));
     $('energyDayBars').addEventListener('pointerdown', (e) => {
       const svg = $('energyDayBars'), days = energy.days || [];
