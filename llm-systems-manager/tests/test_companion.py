@@ -568,14 +568,15 @@ class TestResolvesToPublicIp:
 
 @pytest.fixture
 def operator(monkeypatch, sandbox):
-    """A logged-in non-admin session (role `operator` exists in the user
-    store and the live install has one)."""
+    """A logged-in non-admin session. Deliberately carries no `user` key:
+    _live_role_for_session falls back to the cookie role when the session has
+    no named subject, so this doesn't depend on a user existing in the
+    environment's store (CI's is empty; the live box has llmoperator) and the
+    real effective_role / _require_admin still run."""
     monkeypatch.setattr(auth, "auth_mode", lambda: "required")
-    monkeypatch.setattr(auth, "effective_role", lambda: "operator")
     with M.app.test_client() as c:
         with c.session_transaction() as s:
             s["auth_ok"] = True
-            s["user"] = "llmoperator"
             s["role"] = "operator"
         yield c
 
