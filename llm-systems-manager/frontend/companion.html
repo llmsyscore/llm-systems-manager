@@ -1,8 +1,8 @@
 <!DOCTYPE html>
 <!--
-companion.html — PWA companion (#522). Five-tab phone shell; screens reuse
+companion.html — PWA companion (#522). Six-tab phone shell; screens reuse
 existing session-authed endpoints. Served at /companion with __MGR_VERSION__
-stamped in. Actions tab controls confirm via the bottom sheet.
+stamped in. Models and Admin controls confirm via the bottom sheet.
 -->
 <html lang="en">
 <head>
@@ -120,37 +120,50 @@ stamped in. Actions tab controls confirm via the bottom sheet.
       </div>
     </section>
 
-    <!-- ACTIONS -->
-    <section class="screen" id="scr-actions" hidden>
-      <div class="sec">Services</div>
-      <div class="provwrap" id="actionsServices"></div>
-      <div class="sec">Models</div>
-      <div class="provwrap" id="actionsModel"></div>
-      <div class="stack" id="actionsPinsWrap" hidden>
+    <!-- MODELS -->
+    <section class="screen" id="scr-models" hidden>
+      <div class="sec">Loaded</div>
+      <div class="provwrap" id="modelsLoaded"></div>
+      <div class="stack" id="modelsPinsWrap" hidden>
         <div class="sec">Pins on unloaded models</div>
-        <div class="provwrap" id="actionsPins"></div>
+        <div class="provwrap" id="modelsPins"></div>
       </div>
+      <div class="sec">Providers</div>
+      <div class="provwrap" id="modelsServices"></div>
       <div class="sec">Autopilot</div>
-      <div class="provwrap" id="actionsAutopilot"></div>
-      <div class="sec">Agents</div>
-      <div id="actionsAgents"></div>
-      <div class="muted-note" id="actionsGatedNote" hidden>
+      <div class="provwrap" id="modelsAutopilot"></div>
+      <div class="muted-note" id="modelsGatedNote" hidden>
         <span class="big">Admin controls locked</span>
-        Manager and alarm-engine restart, autopilot, and agent approval need an
-        admin session from an allowed network. Provider restarts and model swap
-        still work.
+        Autopilot and model pinning need an admin session from an allowed
+        network. Provider restarts and model swap still work.
       </div>
-      <div class="cmp-msg" id="actionsMsg" role="status"></div>
+      <div class="cmp-msg" id="modelsMsg" role="status"></div>
     </section>
 
-    <!-- ADMIN (read-only) -->
+    <!-- ADMIN -->
     <section class="screen" id="scr-admin" hidden>
-      <div class="sec">Manager</div>
+      <div class="sec">Services</div>
       <div class="provwrap" id="adminManager"></div>
+      <div class="stack" id="adminPendingWrap" hidden>
+        <div class="sec">Waiting to join</div>
+        <div id="adminPending"></div>
+      </div>
       <div class="sec">Agents</div>
       <div class="provwrap" id="adminAgents"></div>
       <div class="sec">Status</div>
       <div class="provwrap" id="adminRows"></div>
+      <div class="sec">Audit log</div>
+      <div class="provwrap" id="adminAudit"></div>
+      <div class="muted-note" id="adminGatedNote" hidden>
+        <span class="big">Admin status hidden</span>
+        Service health, the agent registry and the audit log need an admin
+        session from an allowed network.
+      </div>
+      <div class="cmp-msg" id="adminMsg" role="status"></div>
+    </section>
+
+    <!-- SETTINGS -->
+    <section class="screen" id="scr-settings" hidden>
       <div class="sec">Notifications</div>
       <div class="card">
         <div class="arow" style="padding:2px 0">
@@ -175,12 +188,18 @@ stamped in. Actions tab controls confirm via the bottom sheet.
             <button class="chip" data-ctheme="light">Light</button>
           </div></div>
       </div>
-      <div class="sec">Dashboard</div>
+      <div class="sec">Updates</div>
+      <div class="provwrap" id="settingsRelease"></div>
+      <div class="sec">Account</div>
       <div class="provwrap">
         <div class="arow wrap"><div class="atxt"><div class="an">Full dashboard</div>
-          <div class="ad">every tab, desktop layout</div></div>
-          <a class="btn primary" href="/">Open</a></div>
+          <div class="ad">every tab, desktop layout — opens outside this app</div></div>
+          <a class="btn" id="btnDashboard" href="/" target="_blank" rel="noopener">Open</a></div>
+        <div class="arow wrap"><div class="atxt"><div class="an">Sign out</div>
+          <div class="ad" id="settingsUser">…</div></div>
+          <a class="btn danger" href="/logout?next=%2Fcompanion">Sign out</a></div>
       </div>
+      <div class="cmp-msg" id="settingsMsg" role="status"></div>
     </section>
   </main>
 
@@ -191,10 +210,12 @@ stamped in. Actions tab controls confirm via the bottom sheet.
       <svg viewBox="0 0 24 24"><path d="M12 3a6 6 0 0 0-6 6v4l-2 3h16l-2-3V9a6 6 0 0 0-6-6z"/><path d="M10 20a2 2 0 0 0 4 0"/></svg>Alerts<span class="badge" id="alertBadge" hidden></span></button>
     <button class="tab" data-tab="energy" aria-label="Energy">
       <svg viewBox="0 0 24 24"><path d="M13 2 6 13h5l-1 9 7-11h-5z"/></svg>Energy</button>
-    <button class="tab" data-tab="actions" aria-label="Actions">
-      <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9l2.1 2.1M17 17l2.1 2.1M19.1 4.9L17 7M7 17l-2.1 2.1"/></svg>Actions</button>
+    <button class="tab" data-tab="models" aria-label="Models">
+      <svg viewBox="0 0 24 24"><path d="M12 3 3 7.5 12 12l9-4.5z"/><path d="M3 12.5 12 17l9-4.5"/><path d="M3 17 12 21.5 21 17"/></svg>Models</button>
     <button class="tab" data-tab="admin" aria-label="Admin">
       <svg viewBox="0 0 24 24"><path d="M12 3l7 3v5c0 4.6-3 8.6-7 10-4-1.4-7-5.4-7-10V6z"/></svg>Admin</button>
+    <button class="tab" data-tab="settings" aria-label="Settings">
+      <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9l2.1 2.1M17 17l2.1 2.1M19.1 4.9L17 7M7 17l-2.1 2.1"/></svg>Settings</button>
   </nav>
 
   <div class="sheetwrap" id="sheet" hidden>

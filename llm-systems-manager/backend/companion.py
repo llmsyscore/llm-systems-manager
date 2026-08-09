@@ -34,6 +34,74 @@ PUSH_TIMEOUT_S = 10
 _VAPID_KEY_FILE = "vapid-private.pem"
 _SUBS_FILE = "push_subscriptions.json"
 
+# ── Release check (#541) ─────────────────────────────────────────────────────
+_DEFAULT_RELEASE_REPO = "llmsyscore/llm-systems-manager"
+_RELEASE_TTL_S = 6 * 3600
+_RELEASE_TIMEOUT_S = 5
+# enabled=None means "not overridden at runtime, read the config value".
+_release: dict = {"enabled": None, "checked_at": 0.0, "tag": None, "error": None}
+_release_lock = threading.Lock()
+
+_VER_RE = re.compile(r"(\d+)")
+
+
+def _ver_key(tag: str) -> tuple:
+    """Numeric tuple for a vYYYY.MM.DD-N / semver tag; non-numeric parts drop."""
+    return tuple(int(n) for n in _VER_RE.findall(str(tag or "")))
+
+
+def _newer(latest: str, current: str) -> bool:
+    a, b = _ver_key(latest), _ver_key(current)
+    return bool(a) and bool(b) and a > b
+
+
+def _installed_release() -> Optional[str]:
+    """The release tag this install came from, or None when it can't be known.
+    __version__ is a build stamp (vYYYY.MM.DD-N), not a release, so comparing
+    it against a GitHub tag would be meaningless. Only a git checkout can
+    answer; brew/deb/container installs return None and get no verdict."""
+    import subprocess
+    root = Path(__file__).resolve().parents[2]
+    if not (root / ".git").exists():
+        return None
+    try:
+        out = subprocess.run(["git", "describe", "--tags", "--abbrev=0"],
+                             cwd=str(root), capture_output=True, text=True,
+                             timeout=5)
+        tag = (out.stdout or "").strip()
+        return tag if out.returncode == 0 and tag else None
+    except Exception as e:
+        log.debug("release describe failed: %s: %s", type(e).__name__, e)
+        return None
+
+
+def _latest_release(repo: str) -> "tuple[Optional[str], Optional[str]]":
+    """(tag, error) for the repo's latest release, cached for 6 h. Network
+    failures degrade to the cached tag and an error string, never an exception."""
+    now = time.time()
+    with _release_lock:
+        if _release["tag"] and now - _release["checked_at"] < _RELEASE_TTL_S:
+            return _release["tag"], _release["error"]
+    tag = err = None
+    try:
+        import requests  # lazy: only on an opted-in check
+        r = requests.get(f"https://api.github.com/repos/{repo}/releases/latest",
+                         timeout=_RELEASE_TIMEOUT_S,
+                         headers={"Accept": "application/vnd.github+json"})
+        if r.status_code == 200:
+            tag = (r.json() or {}).get("tag_name")
+        else:
+            err = f"github returned HTTP {r.status_code}"
+    except Exception as e:
+        err = type(e).__name__
+        log.debug("release check failed: %s: %s", type(e).__name__, e)
+    with _release_lock:
+        _release["checked_at"] = now
+        if tag:
+            _release["tag"] = tag
+        _release["error"] = err
+        return _release["tag"], err
+
 
 # ── VAPID keys ───────────────────────────────────────────────────────────────
 
@@ -310,13 +378,51 @@ def register_routes(app, ctx, static_dir: Path) -> None:
         resp.headers["Cache-Control"] = "no-cache"
         return resp
 
+    @app.route("/api/companion/release", methods=["GET", "PUT"])
+    def companion_release():
+        cfg = getattr(ctx.settings.manager, "companion", None)
+        repo = getattr(cfg, "release_repo", "") or _DEFAULT_RELEASE_REPO
+        if flask_request.method == "PUT":
+            deny = ctx.require_admin()
+            if deny is not None:
+                return deny
+            body = flask_request.get_json(silent=True) or {}
+            if "enabled" not in body:
+                return jsonify({"ok": False, "error": "enabled required"}), 400
+            _release["enabled"] = bool(body["enabled"])
+            _release["checked_at"] = 0.0
+            return jsonify({"ok": True, "enabled": _release["enabled"]})
+        enabled = _release["enabled"]
+        if enabled is None:
+            enabled = bool(getattr(cfg, "release_check", False))
+        installed = _installed_release()
+        out = {"ok": True, "enabled": enabled, "build": version,
+               "installed": installed, "repo": repo}
+        if not enabled:
+            return jsonify(out)
+        latest, err = _latest_release(repo)
+        out["latest"] = latest
+        # No verdict without a known installed release — say so rather than
+        # comparing a release tag against a build stamp.
+        out["update_available"] = (bool(latest and _newer(latest, installed))
+                                   if installed and latest else None)
+        if not installed:
+            out["note"] = "install has no release tag to compare"
+        if err:
+            out["error"] = err
+        return jsonify(out)
+
     @app.route("/api/companion/push/public-key")
     def companion_push_key():
         return jsonify({"ok": True, "key": vapid_public_key_b64(_data_dir)})
 
     @app.route("/api/companion/push/subscriptions")
     def companion_push_subs():
+        # Endpoint prefixes identify other people's devices, so only admins
+        # see the roster; everyone else gets the count they need for the UI.
         subs = _store.list()
+        if ctx.require_admin() is not None:
+            return jsonify({"ok": True, "count": len(subs)})
         return jsonify({"ok": True, "count": len(subs),
                         "endpoints": [s["endpoint"][:48] for s in subs]})
 
@@ -348,6 +454,10 @@ def register_routes(app, ctx, static_dir: Path) -> None:
         # An explicit endpoint tests just that device, so one stale
         # subscription can't report failure for a push that arrived.
         target = (body.get("endpoint") or "") if isinstance(body, dict) else ""
+        # Only an admin may fan a test out to every registered device.
+        if not target and ctx.require_admin() is not None:
+            return jsonify({"ok": False,
+                            "error": "send the calling device's endpoint"}), 403
         if target:
             subs = [s for s in subs if s.get("endpoint") == target]
             if not subs:

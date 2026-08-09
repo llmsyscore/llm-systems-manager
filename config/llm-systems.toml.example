@@ -142,6 +142,11 @@ allow_model_control = false
 # PWA phone companion (#522). push_contact becomes the VAPID `sub` claim the
 # browser push services see; set it to a reachable operator address.
 push_contact = "mailto:admin@example.com"
+# Opt-in: check GitHub for a newer manager release and surface it in the
+# companion's Admin tab. Off by default — it is the manager's only outbound
+# call to github.com. Toggleable from the companion's Settings tab.
+release_check = false
+release_repo = "llmsyscore/llm-systems-manager"
 
 [manager.history]
 # In-memory ring buffer behind /api/history; sets how far back the landing

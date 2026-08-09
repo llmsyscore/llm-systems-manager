@@ -561,3 +561,129 @@ class TestResolvesToPublicIp:
         remaining = client.get(
             "/api/companion/push/subscriptions").get_json()["count"]
         assert remaining == 1
+
+
+# ── #541: role gating on the push roster + the release check ──────────
+
+
+@pytest.fixture
+def operator(monkeypatch, sandbox):
+    """A logged-in non-admin session (role `operator` exists in the user
+    store and the live install has one)."""
+    monkeypatch.setattr(auth, "auth_mode", lambda: "required")
+    monkeypatch.setattr(auth, "effective_role", lambda: "operator")
+    with M.app.test_client() as c:
+        with c.session_transaction() as s:
+            s["auth_ok"] = True
+            s["user"] = "llmoperator"
+            s["role"] = "operator"
+        yield c
+
+
+class TestPushRoleGating:
+    def test_operator_gets_the_count_but_not_the_device_roster(
+            self, operator, sandbox):
+        companion._store.add(_sub(), ua="ua")
+        companion._store.add(_sub(endpoint="https://push.example.net/send/xyz"), ua="ua")
+        r = operator.get("/api/companion/push/subscriptions")
+        assert r.status_code == 200
+        body = r.get_json()
+        assert body["count"] == 2
+        # Endpoint prefixes identify other operators' devices.
+        assert "endpoints" not in body
+
+    def test_admin_still_sees_the_roster(self, client, sandbox):
+        companion._store.add(_sub(), ua="ua")
+        body = client.get("/api/companion/push/subscriptions").get_json()
+        assert body["count"] == 1
+        assert len(body["endpoints"]) == 1
+
+    def test_operator_cannot_fan_a_test_out_to_every_device(self, operator, sandbox):
+        companion._store.add(_sub(), ua="ua")
+        r = operator.post("/api/companion/push/test", json={})
+        assert r.status_code == 403
+        assert "endpoint" in (r.get_json() or {}).get("error", "")
+
+    def test_operator_may_test_its_own_device(self, operator, sandbox, monkeypatch):
+        companion._store.add(_sub(), ua="ua")
+        monkeypatch.setattr(companion, "_webpush_funcs", lambda: None)
+        monkeypatch.setattr(companion, "ensure_vapid_key", lambda d: d / "k.pem")
+        monkeypatch.setattr(companion, "_send_one", lambda *a, **k: (True, False))
+        r = operator.post("/api/companion/push/test",
+                          json={"endpoint": "https://push.example.net/send/abc"})
+        assert r.status_code == 200
+        assert r.get_json()["sent"] == 1
+
+
+class TestReleaseCheck:
+    def test_disabled_by_default_makes_no_network_call(self, client, monkeypatch):
+        called = []
+        monkeypatch.setattr(companion, "_latest_release",
+                            lambda repo: called.append(repo) or (None, None))
+        monkeypatch.setitem(companion._release, "enabled", None)
+        body = client.get("/api/companion/release").get_json()
+        assert body["enabled"] is False
+        assert "latest" not in body
+        assert called == []
+
+    def test_enabled_reports_a_newer_tag(self, client, monkeypatch):
+        monkeypatch.setattr(companion, "_latest_release", lambda repo: ("v9.9.9", None))
+        monkeypatch.setattr(companion, "_installed_release", lambda: "v1.1.1")
+        monkeypatch.setitem(companion._release, "enabled", True)
+        body = client.get("/api/companion/release").get_json()
+        assert body["latest"] == "v9.9.9"
+        assert body["update_available"] is True
+
+    def test_no_verdict_when_the_install_has_no_release_tag(self, client, monkeypatch):
+        # brew / deb / container installs aren't git checkouts. Comparing the
+        # build stamp against a release tag would be meaningless.
+        monkeypatch.setattr(companion, "_latest_release", lambda repo: ("v9.9.9", None))
+        monkeypatch.setattr(companion, "_installed_release", lambda: None)
+        monkeypatch.setitem(companion._release, "enabled", True)
+        body = client.get("/api/companion/release").get_json()
+        assert body["update_available"] is None
+        assert "note" in body
+
+    def test_same_release_is_not_an_update(self, client, monkeypatch):
+        monkeypatch.setattr(companion, "_latest_release", lambda repo: ("v1.1.1", None))
+        monkeypatch.setattr(companion, "_installed_release", lambda: "v1.1.1")
+        monkeypatch.setitem(companion._release, "enabled", True)
+        assert client.get("/api/companion/release").get_json()["update_available"] is False
+
+    def test_github_failure_degrades_without_raising(self, client, monkeypatch):
+        monkeypatch.setattr(companion, "_latest_release",
+                            lambda repo: (None, "ConnectionError"))
+        monkeypatch.setattr(companion, "_installed_release", lambda: "v1.1.1")
+        monkeypatch.setitem(companion._release, "enabled", True)
+        body = client.get("/api/companion/release").get_json()
+        assert body["ok"] is True
+        assert body["error"] == "ConnectionError"
+        assert body["update_available"] is None
+
+    def test_operator_cannot_toggle_the_check(self, operator):
+        assert operator.put("/api/companion/release",
+                            json={"enabled": True}).status_code == 403
+
+    def test_admin_toggles_and_it_sticks(self, client, monkeypatch):
+        monkeypatch.setitem(companion._release, "enabled", None)
+        assert client.put("/api/companion/release",
+                          json={"enabled": True}).get_json()["enabled"] is True
+        monkeypatch.setattr(companion, "_latest_release", lambda repo: (None, None))
+        assert client.get("/api/companion/release").get_json()["enabled"] is True
+
+    def test_put_requires_the_enabled_field(self, client):
+        assert client.put("/api/companion/release", json={}).status_code == 400
+
+
+class TestVersionCompare:
+    @pytest.mark.parametrize("latest,current,expect", [
+        ("v1.1.2", "v1.1.1", True),
+        ("v1.2.0", "v1.1.9", True),
+        ("v1.1.1", "v1.1.1", False),
+        ("v1.1.0", "v1.1.1", False),
+        ("v2.0.0", "v1.9.9", True),
+        ("junk", "v1.1.0", False),
+        ("v1.1.0", "", False),
+    ])
+    def test_newer(self, latest, current, expect):
+        assert companion._newer(latest, current) is expect

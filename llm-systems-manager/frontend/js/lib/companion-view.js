@@ -259,42 +259,81 @@
     const backup = d.backup || {};
     const auth = d.auth || {};
 
-    const agents = (d.agents || []).map((a) => {
-      const live = a.liveness === 'live';
-      const pending = a.liveness === 'pending' || a.status === 'pending';
-      // /api/agents has no tls flag; agents serve TLS on 8082 so bind_url is https.
-      const tls = /^https/i.test(String(a.bind_url || ''));
-      const hb = live ? hbAge(a.last_heartbeat, d.now) : null;
-      return {
-        status: live ? 'ok' : 'idle',
-        name: a.hostname || (a.agent_id || '').slice(0, 10) || '?',
-        detail: (a.is_host_agent ? 'local · manager host · ' : '')
-          + 'agent ' + (a.version || '?')
-          + (!a.is_host_agent && tls ? ' · TLS' : ''),
-        right: pending ? 'pending' : (live ? 'live' : (a.liveness || 'down')),
-        rightSub: hb ? 'hb ' + hb : '',
-        warn: pending,
-      };
-    });
+    const now0 = d.now == null ? Date.now() / 1000 : d.now;
+    const raw = d.agents || [];
+    const agents = raw.filter((a) => !(a.liveness === 'pending' || a.status === 'pending'))
+      .map((a) => {
+        const live = a.liveness === 'live';
+        // /api/agents has no tls flag; agents serve TLS on 8082 so bind_url is https.
+        const tls = /^https/i.test(String(a.bind_url || ''));
+        const hb = live ? hbAge(a.last_heartbeat, d.now) : null;
+        return {
+          id: a.agent_id,
+          status: live ? 'ok' : 'down',
+          name: a.hostname || (a.agent_id || '').slice(0, 10) || '?',
+          detail: (a.is_host_agent ? 'local · manager host · ' : '')
+            + 'agent ' + (a.version || '?')
+            + (!a.is_host_agent && tls ? ' · TLS' : '')
+            + (a.update_available ? ' · update available' : ''),
+          right: live ? 'live' : (a.liveness || 'down'),
+          rightSub: hb ? 'hb ' + hb : '',
+          warn: !live,
+        };
+      });
 
+    // Approve/deny cards belong here now, and only when something is waiting.
+    const pending = raw.filter((a) => a.liveness === 'pending' || a.status === 'pending')
+      .map((a) => ({
+        id: a.agent_id,
+        name: a.hostname || (a.agent_id || '').slice(0, 10) || '?',
+        detail: 'registered ' + age(a.first_seen, d.now)
+          + (a.version ? ' · agent ' + a.version : '') + ' · pending approval',
+      }));
+
+    // Manager, alarm engine and InfluxDB as one restartable service block.
+    const mgr0 = health.manager || {};
+    const up0 = num(mgr0.uptime_s);
+    const services = [
+      { key: 'manager', name: 'Manager',
+        status: 'ok',
+        detail: (d.version || '—')
+          + (up0 != null ? ' · up ' + age(now0 - up0, now0).replace(' ago', '') : ''),
+        right: d.releaseNote || '', canRestart: !!d.health },
+      { key: 'alarm_engine', name: 'Alarm engine',
+        status: ae.ok === true ? 'ok' : (d.health ? 'down' : 'idle'),
+        detail: !d.health ? 'status needs admin'
+          : (ae.ok
+            ? (ae.version || 'reachable')
+              + (num(ae.uptime_s) != null
+                ? ' · up ' + age(now0 - ae.uptime_s, now0).replace(' ago', '') : '')
+              + ((ae.tls && ae.tls.active) ? ' · TLS' : '')
+            : 'unreachable'),
+        // Gates on a local/containerized unit, not on reachability — an
+        // unreachable engine is exactly when restart matters.
+        canRestart: !!d.health
+          && (health.ae_local === true || health.containerized === true) },
+      { key: 'influxdb', name: 'InfluxDB',
+        status: (influx.state === 'connected' || influx.ok === true)
+          ? 'ok' : (d.health ? 'down' : 'idle'),
+        detail: !d.health ? 'status needs admin'
+          : (influx.version || influx.state || (influx.ok ? 'connected' : 'unknown'))
+            + (influx.state && influx.version ? ' · ' + influx.state : '')
+            + (num(influx.ping_ms) != null ? ' · ' + influx.ping_ms + 'ms' : ''),
+        canRestart: false },
+    ];
+
+    // InfluxDB and the alarm engine moved into `services`; keeping them here
+    // too would just say the same thing twice.
     const backupLast = backup.last || {};
     const rows = [
       { name: 'Authentication',
         detail: (auth.mode || 'session') + ' mode'
           + (auth.current_user ? ' · ' + auth.current_user : '') },
-      { name: 'InfluxDB', ok: influx.state === 'connected' || influx.ok === true,
-        detail: (influx.state || (influx.ok ? 'connected' : 'unknown'))
-          + (influx.via ? ' · ' + influx.via : '') },
       { name: 'Backups',
         detail: backup.enabled === false ? 'disabled'
           : (backupLast.ok === false ? 'last failed'
             : ('last ' + age(backupLast.ts || backupLast.mtime, d.now) + ' · '
                + (backup.keep_last != null ? backup.keep_last + ' kept' : 'ok'))) },
-      // AE service.tls is a dict {enabled,active,error}; active === serving HTTPS.
-      { name: 'Alarm engine', ok: ae.ok === true,
-        detail: (ae.ok ? 'reachable' : 'unreachable')
-          + ((ae.tls && ae.tls.active) ? ' · TLS' : '')
-          + (num(ae.latency_ms) != null ? ' · ' + Math.round(ae.latency_ms) + 'ms' : '') },
     ];
 
     const mgr = health.manager || {};
@@ -308,8 +347,19 @@
         updateNote: stale
           ? stale + ' agent' + (stale === 1 ? '' : 's') + ' outdated' : '',
       },
-      agents, rows,
+      services, agents, pending, rows,
     };
+  }
+
+  // Audit-log rows (#217 endpoint) -> one line each.
+  function audit(entries, nowSec) {
+    return (entries || []).slice(0, 40).map((e) => ({
+      name: (e.action || e.path || 'action'),
+      detail: [e.actor || 'unknown', e.outcome || e.status, age(e.ts, nowSec)]
+        .filter(Boolean).join(' · ')
+        + (e.target ? ' → ' + e.target : ''),
+      ok: e.outcome ? /^(ok|success|allow)/i.test(String(e.outcome)) : null,
+    }));
   }
 
   // ── Actions (control surface) ───────────────────────────────────────────
@@ -340,25 +390,10 @@
     const now = d.now == null ? Date.now() / 1000 : d.now;
     const aeSvc = ((health || {}).services || []).find((s) => s.name === 'alarm_engine') || {};
 
-    // Manager + alarm engine lead; provider units follow.
+    // Provider units only — manager/AE/InfluxDB live on the Admin screen.
     const services = [
-      { key: 'manager', name: 'Manager', status: 'ok',
-        detail: (d.version || '—')
-          + (up != null ? ' · up ' + age(now - up, now).replace(' ago', '') : ''),
-        canRestart: !!health },
-      // AE restart gates on health.ae_local/containerized, not reachability.
-      // Detail mirrors the Manager row: version · uptime (from AE /health).
-      { key: 'alarm_engine', name: 'Alarm engine',
-        status: aeSvc.ok === true ? 'ok' : 'idle',
-        detail: !health ? 'status needs admin'
-          : (aeSvc.ok
-            ? (aeSvc.version || 'reachable')
-              + (num(aeSvc.uptime_s) != null
-                ? ' · up ' + age(now - aeSvc.uptime_s, now).replace(' ago', '') : '')
-            : 'unreachable'),
-        canRestart: !!health && (health.ae_local === true || health.containerized === true) },
       { key: 'llama', name: 'llama.cpp server',
-        status: llamaUp ? 'ok' : 'idle',
+        status: llamaUp ? 'ok' : (ls.agent_online === false ? 'down' : 'idle'),
         detail: llamaUp ? (ls.state || 'up') + (resident ? ' · ' + model : '')
           : (ls.agent_online === false ? 'agent offline' : ls.state || 'unknown'),
         canRestart: ls.agent_online === true },
@@ -372,7 +407,7 @@
     if (lm && lm.agent_id) {
       services.push({
         key: 'lms', name: 'LM Studio',
-        status: (lm.agent_online === true && lmsLoaded.length) ? 'ok' : 'idle',
+        status: lm.agent_online !== true ? 'down' : (lmsLoaded.length ? 'ok' : 'idle'),
         detail: lm.agent_online === true
           ? (lmsLoaded.length
             ? (lmsLoaded[0].model || lmsLoaded[0].identifier || 'model loaded')
@@ -385,7 +420,8 @@
     if (vl && Object.keys(vl).length) {
       services.push({
         key: 'vllm', name: 'vLLM',
-        status: vllmRunning ? 'ok' : 'idle',
+        status: (d.vllm || {}).agent_online === false ? 'down'
+          : (vllmRunning ? 'ok' : 'idle'),
         detail: vllmRunning ? (vl.model || 'running') : (vl.state || 'unit stopped'),
         canRestart: (d.vllm || {}).agent_online === true });
     }
@@ -476,15 +512,6 @@
       ],
     } : null;
 
-    const pending = ((ag || {}).agents || [])
-      .filter((a) => a.status === 'pending' || a.liveness === 'pending')
-      .map((a) => ({
-        id: a.agent_id,
-        name: a.hostname || (a.agent_id || '').slice(0, 10) || '?',
-        detail: 'registered ' + age(a.first_seen, d.now)
-          + (a.version ? ' · agent ' + a.version : '') + ' · pending approval',
-      }));
-
     return {
       gated, services, models, pins: allPins,
       model: {
@@ -493,12 +520,12 @@
           ? 'llama.cpp · ' + (ls.state || '—') + (pinned ? ' · pinned' : '')
           : 'no model loaded',
       },
-      autopilot, pending,
+      autopilot,
       agentsKnown: !!ag,
       primaryLlamaId: llamaAid,
     };
   }
 
-  return { glance, alerts, alertRow, admin, actions, age, hbAge, tsSeconds,
-    _sevClass: sevClass };
+  return { glance, alerts, alertRow, admin, actions, audit, age, hbAge,
+    tsSeconds, _sevClass: sevClass };
 });
