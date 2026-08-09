@@ -169,3 +169,74 @@ def test_cfg_energy_reads_ctx_and_reportcard_fallback():
     assert cfg == {"price_kwh": 0.42, "cloud_price_in_per_mtok": 1.0,
                    "cloud_price_out_per_mtok": 2.0,
                    "cloud_price_label": "test tier"}
+
+
+# ── #541: local-day anchoring via ?tz_offset_min ──────────────────────
+
+
+class _Args(dict):
+    """Minimal werkzeug-args stand-in for _window_from_args."""
+
+
+def _win(now, **kw):
+    return en._window_from_args(_Args(kw), now)
+
+
+def test_window_without_tz_offset_is_trailing_and_utc_hour_aligned():
+    now = 1_786_294_567.0                       # mid-hour, deliberately
+    start, end, label = _win(now, days="1")
+    assert end == int(now // 3600 + 1) * 3600
+    assert end - start == 86400
+    assert label == "last 1 days"
+
+
+def test_tz_offset_anchors_the_window_to_local_midnight():
+    # 2026-08-09 17:56:07Z; at UTC-4 that is 13:56 local, so the local day
+    # runs [2026-08-09 04:00Z, 2026-08-10 04:00Z).
+    now = 1_786_312_567.0
+    start, end, label = _win(now, days="1", tz_offset_min="-240")
+    assert (end - start) == 86400
+    assert start <= now < end                   # now falls inside today
+    assert start % 3600 == 0 and end % 3600 == 0
+    assert (start - 4 * 3600) % 86400 == 0      # local midnight at UTC-4
+    assert label == "today (local)"
+
+
+def test_tz_offset_east_of_utc_and_multi_day_label():
+    now = 1_786_312_567.0
+    start, end, label = _win(now, days="7", tz_offset_min="600")   # UTC+10
+    assert (end - start) == 7 * 86400
+    assert (end + 10 * 3600) % 86400 == 0
+    assert label == "last 7 local days"
+
+
+def test_half_hour_zone_snaps_to_the_nearest_whole_hour():
+    # Hour buckets are UTC-aligned, so +5:30 can only resolve to +6 (330/60
+    # rounds to 6, not 5 — banker's rounding would give 6 as well).
+    now = 1_786_312_567.0
+    start, _, _ = _win(now, days="1", tz_offset_min="330")
+    assert (start + 6 * 3600) % 86400 == 0  # +5:30 snaps to +6
+
+
+def test_bad_or_out_of_range_tz_offset_falls_back_to_trailing():
+    now = 1_786_312_567.0
+    for bad in ("abc", "5000", "-5000", ""):
+        _, end, label = _win(now, days="1", tz_offset_min=bad)
+        assert end == int(now // 3600 + 1) * 3600, bad
+        assert label == "last 1 days", bad
+
+
+def test_tz_offset_is_ignored_for_month_windows():
+    now = 1_786_312_567.0
+    a = _win(now, tz_offset_min="-240")
+    b = _win(now)
+    assert a == b
+
+
+def test_summary_route_accepts_tz_offset_and_reports_local_label(client):
+    c, conn = client
+    _seed(conn, int(time.time() // 3600) * 3600)
+    body = c.get("/api/energy/summary?days=1&tz_offset_min=-240").get_json()
+    assert body["ok"] is True
+    assert body["window"]["label"] == "today (local)"
+    assert body["window"]["elapsed_s"] <= 86400

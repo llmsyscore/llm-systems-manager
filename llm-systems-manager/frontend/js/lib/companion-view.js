@@ -25,7 +25,9 @@
     let t = null;
     if (typeof ts === 'number' && isFinite(ts)) t = ts > 1e12 ? ts / 1000 : ts;
     else if (typeof ts === 'string' && ts) {
-      const p = Date.parse(ts);
+      // The alarm engine serializes naive-UTC datetimes with no zone; bare
+      // Date.parse reads those as local time. Mirrors the AE SPA's parseTs.
+      const p = Date.parse(/(Z|[+-]\d{2}:?\d{2})$/.test(ts) ? ts : ts + 'Z');
       if (!Number.isNaN(p)) t = p / 1000;
     }
     if (t == null) return null;
@@ -201,18 +203,23 @@
       || a.status === 'exception' || !!a.closed_at;
     const info = !resolved && (a.category === 'info' || a.severity === 'info');
     const sev = resolved ? 'ok' : (info ? 'info' : sevClass(a.severity));
+    // `tone` colors the word by original severity; `sev` keeps driving the
+    // glyph and the counts, so a resolved row still shows a green check.
+    const sevWord = info ? 'info' : String(a.severity || 'warning').toLowerCase();
+    const tone = info ? 'info' : (resolved ? sevClass(a.severity) : sev);
     let word;
-    if (resolved) word = 'resolved';
+    if (resolved) word = sevWord + ' · resolved';
     else if (info) word = 'info';
-    else word = String(a.severity || 'warning').toLowerCase()
-      + (a.status === 'acknowledged' ? ' · acked' : ' · firing');
+    else word = sevWord + (a.status === 'acknowledged' ? ' · acked' : ' · firing');
+    const when = resolved ? (a.closed_at || a.acknowledged_at || a.created_at)
+      : a.created_at;
     const host = a.source_host || '—';
     const path = [a.metric_source, a.metric_name].filter(Boolean).join('/') || 'event';
     return {
       id: a.alert_id,
-      sev, glyph: SEV_GLYPH[sev], word,
+      sev, tone, glyph: SEV_GLYPH[sev], word,
       msg: a.message || (a.rule_name || path),
-      meta: path + ' · ' + host + ' · ' + age(a.created_at, nowSec),
+      meta: path + ' · ' + host + ' · ' + age(when, nowSec),
       // Resolved/info rows never offer Ack, whatever their status field says.
       ackable: a.status === 'active' && !(resolved || info),
       acked: a.status === 'acknowledged',
@@ -256,8 +263,9 @@
       return {
         status: live ? 'ok' : 'idle',
         name: a.hostname || (a.agent_id || '').slice(0, 10) || '?',
-        detail: a.is_host_agent ? 'local · manager host'
-          : ('agent ' + (a.version || '?') + (tls ? ' · TLS' : '')),
+        detail: (a.is_host_agent ? 'local · manager host · ' : '')
+          + 'agent ' + (a.version || '?')
+          + (!a.is_host_agent && tls ? ' · TLS' : ''),
         right: pending ? 'pending' : (live ? 'live' : (a.liveness || 'down')),
         rightSub: hb ? 'hb ' + hb : '',
         warn: pending,
@@ -287,11 +295,13 @@
     const mgr = health.manager || {};
     const uptime = num(mgr.uptime_s);
     const now = d.now == null ? Date.now() / 1000 : d.now;
+    const stale = num(d.agentUpdates) || 0;
     return {
       manager: {
         version: d.version || '—',
         uptime: uptime != null ? age(now - uptime, now) : null,
-        updateNote: d.updateAvailable ? 'update available' : 'up to date',
+        updateNote: stale
+          ? stale + ' agent' + (stale === 1 ? '' : 's') + ' outdated' : '',
       },
       agents, rows,
     };

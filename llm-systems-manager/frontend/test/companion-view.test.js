@@ -19,6 +19,17 @@ describe('CView.age', () => {
     expect(CView.age(null, NOW)).toBe('—');
     expect(CView.age('not a date', NOW)).toBe('—');
   });
+  it('reads the alarm engine\'s zoneless naive-UTC strings as UTC', () => {
+    // The AE emits "2026-08-09T17:45:41.669823" with no zone. Date.parse reads
+    // a zoneless date-time as LOCAL, which put every alert in the future and
+    // clamped every age to "just now". Must hold under any host TZ.
+    const utcNow = Date.parse('2026-08-09T19:45:41Z') / 1000;
+    expect(CView.age('2026-08-09T17:45:41.669823', utcNow)).toBe('2h ago');
+    expect(CView.age('2026-08-09T19:15:41', utcNow)).toBe('30m ago');
+    // Explicit offsets must still be honoured, not double-suffixed.
+    expect(CView.age('2026-08-09T17:45:41+00:00', utcNow)).toBe('2h ago');
+    expect(CView.age('2026-08-09T19:45:41Z', utcNow)).toBe('just now');
+  });
 });
 
 describe('CView.glance', () => {
@@ -131,14 +142,29 @@ describe('CView.alerts', () => {
     const m = CView.alerts(list, NOW);
     expect(m.firing.map((r) => r.id)).toEqual(['a1', 'a2', 'a4']);
     expect(m.earlier.map((r) => r.id)).toEqual(['a3']);
-    expect(m.earlier[0]).toMatchObject({ sev: 'ok', glyph: '✓', word: 'resolved' });
+    expect(m.earlier[0]).toMatchObject({ sev: 'ok', glyph: '✓' });
     expect(m.firing[2]).toMatchObject({ sev: 'info', glyph: 'i', word: 'info', info: true });
+  });
+
+  it('a resolved alert keeps its original severity in the word and the tone', () => {
+    // Regression: resolved rows read a bare "resolved" and lost whether the
+    // thing that fired was critical or a warning.
+    const m = CView.alerts(list, NOW);
+    expect(m.earlier[0]).toMatchObject({ word: 'critical · resolved', tone: 'crit', sev: 'ok' });
+  });
+
+  it('a resolved alert is dated from closed_at, not created_at', () => {
+    const closed = { ...list[0], status: 'closed',
+      created_at: (NOW - 7200) * 1000, closed_at: (NOW - 600) * 1000 };
+    const m = CView.alerts([closed], NOW);
+    expect(m.earlier[0].meta).toContain('10m ago');
+    expect(m.earlier[0].meta).not.toContain('2h ago');
   });
 
   it('a closed info alert resolves rather than staying an info row', () => {
     const m = CView.alerts([{ ...list[3], status: 'closed' }], NOW);
     expect(m.firing).toEqual([]);
-    expect(m.earlier[0]).toMatchObject({ sev: 'ok', word: 'resolved', info: false });
+    expect(m.earlier[0]).toMatchObject({ sev: 'ok', word: 'info · resolved', info: false });
   });
 
   it('severity glyph + word + ack state', () => {
@@ -193,9 +219,24 @@ describe('CView.admin', () => {
 
   it('agents: liveness, heartbeat age from last_heartbeat, TLS from bind_url, pending warn', () => {
     const a = CView.admin(d);
-    expect(a.agents[0]).toMatchObject({ status: 'ok', name: 'llm-core', detail: 'local · manager host', right: 'live' });
+    expect(a.agents[0]).toMatchObject({ status: 'ok', name: 'llm-core', right: 'live' });
     expect(a.agents[1]).toMatchObject({ right: 'live', rightSub: 'hb 4s', detail: 'agent v2026.07.30-3 · TLS' });
     expect(a.agents[2]).toMatchObject({ status: 'idle', right: 'pending', warn: true });
+  });
+
+  it('the manager host agent shows its version too, not just its role', () => {
+    // Regression: the is_host_agent branch printed only "local · manager host"
+    // and threw away the version every other row displays.
+    const a = CView.admin({ ...d, agents: [{ ...d.agents[0], version: 'v2026.08.09-1' }] });
+    expect(a.agents[0].detail).toBe('local · manager host · agent v2026.08.09-1');
+  });
+
+  it('manager update note counts outdated agents instead of always saying up to date', () => {
+    // Regression: companion.js never passed updateAvailable, so the row was
+    // hardcoded to "up to date" in every deployment.
+    expect(CView.admin(d).manager.updateNote).toBe('');
+    expect(CView.admin({ ...d, agentUpdates: 2 }).manager.updateNote).toBe('2 agents outdated');
+    expect(CView.admin({ ...d, agentUpdates: 1 }).manager.updateNote).toBe('1 agent outdated');
   });
 
   it('status rows: auth, influx ok, backups, AE reachable with TLS active', () => {

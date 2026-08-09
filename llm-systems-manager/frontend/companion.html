@@ -41,6 +41,7 @@ stamped in. Actions tab controls confirm via the bottom sheet.
           <div class="l" id="glanceHeroL">—</div>
         </div>
         <div class="win" id="glanceWin">live</div>
+        <div class="readout" id="glanceReadout" role="status"></div>
       </div>
       <div class="sec">Providers</div>
       <div class="provwrap" id="glanceProviders"></div>
@@ -79,15 +80,20 @@ stamped in. Actions tab controls confirm via the bottom sheet.
         </svg>
         <div class="hero">
           <div class="n" id="energyHeroN">—</div>
-          <div class="l">input power · all hosts</div>
+          <div class="l" id="energyHeroL">input power · all hosts</div>
         </div>
         <div class="win">last 24 h</div>
+        <div class="readout" id="energyReadout" role="status"></div>
       </div>
       <div class="tiles" id="energyTiles"></div>
       <div class="sec">By host</div>
       <div class="provwrap" id="energyHosts"></div>
       <div class="sec">Cost per day</div>
-      <div class="card"><svg class="daybars" id="energyDayBars" viewBox="0 0 312 92" role="img" aria-label="Cost per day"></svg></div>
+      <div class="card daycard">
+        <svg class="daybars" id="energyDayBars" viewBox="0 0 340 92"
+             role="img" aria-label="Cost per day"></svg>
+        <div class="barreadout" id="energyBarReadout" role="status"></div>
+      </div>
     </section>
 
     <!-- ACTIONS -->

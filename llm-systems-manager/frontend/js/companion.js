@@ -22,6 +22,10 @@
     body: JSON.stringify(body),
   });
 
+  // Minutes east of UTC; anchors the days= energy window to the caller's local
+  // midnight so "today" means today here, not the last 24 UTC hours.
+  const TZ_Q = '&tz_offset_min=' + (-new Date().getTimezoneOffset());
+
   // ── theme + host liveness ────────────────────────────────────────────────
   // 'auto' follows the dashboard layout theme; 'dark'/'light' override it.
   const themePref = () => localStorage.getItem('companionTheme') || 'auto';
@@ -66,6 +70,40 @@
       + `<div class="pd">${esc(p.detail)}</div></div>`
       + `<div class="pr"><b${p.warn ? ' class="warn"' : ''}>${esc(p.rN)}</b>${esc(p.rUnit)}</div></div>`;
   }
+  // viewBox-space top padding that clears the hero text at any breakpoint, so
+  // the trend line can never run through the numbers.
+  function stripPad(stripId, labelId) {
+    const strip = $(stripId), label = $(labelId);
+    if (!strip || !label) return 54;
+    const sr = strip.getBoundingClientRect();
+    if (!sr.height) return 54;
+    const gap = label.getBoundingClientRect().bottom - sr.top;
+    return Math.max(12, Math.min(100, (gap + 12) / sr.height * 118));
+  }
+
+  // Tap/drag a strip to read the value under the finger. series() returns
+  // { values, label(i) }; the readout clears on release.
+  function attachScrub(stripId, readoutId, series) {
+    const strip = $(stripId), out = $(readoutId);
+    if (!strip || !out) return;
+    let timer = null;
+    const at = (clientX) => {
+      const s = series();
+      const n = (s.values || []).length;
+      if (!n) return;
+      const r = strip.getBoundingClientRect();
+      const f = Math.max(0, Math.min(1, (clientX - r.left) / r.width));
+      const i = Math.round(f * (n - 1));
+      out.textContent = s.label(i);
+      out.classList.add('on');
+      out.style.left = Math.max(6, Math.min(r.width - 6, f * r.width)) + 'px';
+      clearTimeout(timer);
+      timer = setTimeout(() => out.classList.remove('on'), 2600);
+    };
+    strip.addEventListener('pointerdown', (e) => { at(e.clientX); });
+    strip.addEventListener('pointermove', (e) => { if (e.buttons) at(e.clientX); });
+  }
+
   function tileEl(t) {
     const body = t.meter != null
       ? `<div class="meter"><i class="${t.hot ? 'hot' : ''}" style="width:${t.meter}%"></i></div>`
@@ -83,7 +121,7 @@
         jfetch('/api/llama-state').catch(() => ({})),
         jfetch('/api/lmstudio/metrics').catch(() => ({})),
         jfetch('/api/vllm/metrics').catch(() => ({})),
-        jfetch('/api/energy/summary?days=1').catch(() => ({})),
+        jfetch('/api/energy/summary?days=1' + TZ_Q).catch(() => ({})),
       ]);
       setLive(ls.agent_online, ls.agent_age_s);
       const vm = CV.glance({ metrics: m, llama: ls, lms, vllm, energy: en });
@@ -96,7 +134,7 @@
     render(vm) {
       $('glanceHeroN').innerHTML = `${esc(vm.hero.n)} <small>${esc(vm.hero.unit)}</small>`;
       $('glanceHeroL').textContent = vm.hero.label;
-      const sp = CS.path(this.buf, 340, 118, { padTop: 44 });
+      const sp = CS.path(this.buf, 340, 118, { padTop: stripPad('glanceStrip', 'glanceHeroL') });
       $('glanceSparkLine').setAttribute('d', sp.line);
       $('glanceSparkFill').setAttribute('d', sp.fill);
       const secs = this.buf.length * 2;
@@ -116,7 +154,7 @@
       return `<div class="alert"><div class="sev ${a.sev}">${esc(a.glyph)}</div>`
         + `<div class="atext"><div class="am">${esc(a.msg)}</div>`
         + `<div class="aw">${esc(a.meta)}</div>`
-        + `<div class="sevword ${a.sev}">${esc(a.word)}</div></div>${ack}</div>`;
+        + `<div class="sevword ${a.tone || a.sev}">${esc(a.word)}</div></div>${ack}</div>`;
     },
     async refresh() {
       const list = await jfetch('/api/alarm/alerts/?limit=100&include_closed=true')
@@ -184,9 +222,19 @@
 
   // ── Energy ────────────────────────────────────────────────────────────────
   const energy = {
+    hourly: [],
+    // Average watts for one hourly bucket. Wh over a full hour already IS
+    // watts; only the in-progress bucket needs scaling by elapsed wall time
+    // (observed_s can't be used — it is summed across every agent).
+    bucketWatts(r, nowS) {
+      if (!r) return null;
+      const now = nowS == null ? Date.now() / 1000 : nowS;
+      const elapsed = Math.max(60, Math.min(3600, now - r.hour_ts));
+      return (r.energy_wh || 0) * 3600 / elapsed;
+    },
     async refresh() {
       const [today, month, hourly, week] = await Promise.all([
-        jfetch('/api/energy/summary?days=1').catch(() => ({})),
+        jfetch('/api/energy/summary?days=1' + TZ_Q).catch(() => ({})),
         jfetch('/api/energy/summary').catch(() => ({})),
         jfetch('/api/energy/hourly?hours=24').catch(() => ({})),
         jfetch('/api/energy/hourly?days=7').catch(() => ({})),
@@ -195,10 +243,20 @@
     },
     render(today, month, hourly, week) {
       const tT = today.totals || {}, mT = month.totals || {};
-      $('energyHeroN').innerHTML = `${esc(EN.fmtWatts(tT.avg_watts).replace(' W', ''))} <small>W</small>`;
-      // 24h watts strip: each hourly bucket's Wh over ~1h ≈ average watts
-      const watts = (hourly.rows || []).map((r) => r.energy_wh);
-      const sp = CS.path(watts, 340, 118, { padTop: 44 });
+      // Hero reads the newest hourly bucket — the window mean barely moves.
+      // Wh/bucket is only average watts once divided by the hour actually
+      // observed; the current bucket is partial and would read far too low.
+      const rows = (hourly.rows || []).slice().sort((a, b) => a.hour_ts - b.hour_ts);
+      this.hourly = rows;
+      // A bucket younger than 5 min is too thin to scale up; use the previous
+      // complete hour until it has enough in it.
+      const last = rows[rows.length - 1];
+      const thin = last && (Date.now() / 1000 - last.hour_ts) < 300 && rows.length > 1;
+      const live = rows.length
+        ? this.bucketWatts(thin ? rows[rows.length - 2] : last) : tT.avg_watts;
+      $('energyHeroN').innerHTML = `${esc(EN.fmtWatts(live).replace(' W', ''))} <small>W</small>`;
+      const watts = rows.map((r) => this.bucketWatts(r));
+      const sp = CS.path(watts, 340, 118, { padTop: stripPad('energyStrip', 'energyHeroL') });
       $('energySparkLine').setAttribute('d', sp.line);
       $('energySparkFill').setAttribute('d', sp.fill);
 
@@ -211,7 +269,7 @@
       ].map(tileEl).join('');
 
       $('energyHosts').innerHTML = this.hostRows(today);
-      this.dayBars(week.rows || [], price);
+      this.dayBars(week.rows || [], price, week.start_ts);
     },
     // 30-day cost projection over every host the accumulator saw: month-to-date
     // spend first, then measured fleet draw (month, then today) × price.
@@ -247,7 +305,7 @@
           status: h.has_power ? 'ok' : 'idle',
           name: h.hostname || (h.agent_id || '').slice(0, 10) || '?',
           detail: src ? src + ' · ' + (VIA[h.power_source] || 'agent') : 'no power telemetry',
-          rN: EN.fmtWatts(h.avg_watts), rUnit: 'avg',
+          rN: EN.fmtWatts(h.avg_watts), rUnit: 'day avg',
         });
       });
       const t = today.totals || {};
@@ -263,33 +321,49 @@
         + '<div class="atxt"><div class="pn">No power telemetry</div>'
         + '<div class="pd">this window</div></div></div>';
     },
-    dayBars(rows, price) {
+    days: [],
+    dayKey: (d) => d.getFullYear() + '-' + (d.getMonth() + 1) + '-' + d.getDate(),
+    dayBars(rows, price, startTs) {
       // bucket hourly Wh by LOCAL calendar day, cost = kWh × price
       const byDay = new Map();
       (rows || []).forEach((r) => {
         const d = new Date(r.hour_ts * 1000);
-        const key = d.getFullYear() + '-' + (d.getMonth() + 1) + '-' + d.getDate();
-        if (!byDay.has(key)) byDay.set(key, { wh: 0, d });
+        const key = this.dayKey(d);
+        if (!byDay.has(key)) {
+          const mid = new Date(d);
+          mid.setHours(0, 0, 0, 0);
+          byDay.set(key, { wh: 0, d, key, dayStart: Math.floor(mid.getTime() / 1000) });
+        }
         byDay.get(key).wh += (r.energy_wh || 0);
       });
-      const days = [...byDay.values()].slice(-7)
-        .map(({ wh, d }) => ({ cost: (wh / 1000) * (price || 0),
-          wd: d.toLocaleDateString('en', { weekday: 'short' }).slice(0, 2) }));
+      // A trailing window opens mid-day, so its oldest day is a stub that would
+      // draw at full weight. Drop days whose midnight predates the window.
+      const todayKey = this.dayKey(new Date());
+      const days = [...byDay.values()]
+        .filter((v) => !startTs || v.dayStart >= startTs || v.key === todayKey)
+        .sort((a, b) => a.dayStart - b.dayStart)
+        .slice(-7)
+        .map(({ wh, d, key }) => ({ cost: (wh / 1000) * (price || 0), wh,
+          today: key === todayKey,
+          wd: d.toLocaleDateString('en', { weekday: 'short' }).slice(0, 2),
+          full: d.toLocaleDateString('en', { weekday: 'short', month: 'short', day: 'numeric' }) }));
+      this.days = days;
       const svg = $('energyDayBars');
       if (!days.length) { svg.setAttribute('aria-label', 'No daily cost data'); svg.innerHTML = ''; return; }
       svg.setAttribute('aria-label', 'Cost per day, last ' + days.length + ' days; '
-        + days.map((d, i) => (i === days.length - 1 ? 'today ' : '') + EN.fmtUsd(d.cost)).join(', '));
-      const max = Math.max(...days.map((d) => d.cost), 0.01);
-      const n = days.length, gap = 14, w = (312 - gap) / n - gap, x0 = gap;
+        + days.map((d) => (d.today ? 'today ' : d.wd + ' ') + EN.fmtUsd(d.cost)).join(', '));
+      const W = 340, n = days.length, slot = W / n, w = Math.max(10, slot * 0.62);
       let out = '';
       days.forEach((d, i) => {
+        const max = Math.max(...days.map((x) => x.cost), 0.01);
         const h = Math.max(4, Math.round((d.cost / max) * 52));
-        const x = x0 + i * ((312 - gap) / n), y = 76 - h;
-        const today = i === n - 1;
-        out += `<rect class="${today ? 'today' : ''}" x="${x.toFixed(0)}" y="${y}" `
-          + `width="${w.toFixed(0)}" height="${h}" rx="4"/>`;
-        out += `<text x="${(x + w / 2).toFixed(0)}" y="89" text-anchor="middle"${today ? ' class="hot"' : ''}>${esc(today ? 'today' : d.wd)}</text>`;
-        if (today) out += `<text x="${(x + w / 2).toFixed(0)}" y="${y - 4}" text-anchor="middle" class="hot">${esc(EN.fmtUsd(d.cost))}</text>`;
+        const x = i * slot + (slot - w) / 2, y = 76 - h;
+        out += `<rect class="${d.today ? 'today' : ''}" x="${x.toFixed(1)}" y="${y}" `
+          + `width="${w.toFixed(1)}" height="${h}" rx="4"/>`;
+        out += `<text x="${(x + w / 2).toFixed(1)}" y="89" text-anchor="middle"`
+          + `${d.today ? ' class="hot"' : ''}>${esc(d.today ? 'today' : d.wd)}</text>`;
+        if (d.today) out += `<text x="${(x + w / 2).toFixed(1)}" y="${y - 4}" `
+          + `text-anchor="middle" class="hot">${esc(EN.fmtUsd(d.cost))}</text>`;
       });
       svg.innerHTML = out;
     },
@@ -306,9 +380,11 @@
       ]);
       const version = (document.querySelector('meta[name="mgr-version"]') || {}).content || '—';
       const gated = !health && !agents && !backup && !auth;
+      const stale = ((agents || {}).agents || []).filter((a) => a.update_available);
       const vm = CV.admin({
         version, health: health || {}, agents: (agents || {}).agents || [],
         backup: backup || {}, auth: auth || {},
+        agentUpdates: stale.length,
       });
       this.render(vm, gated);
       paintPush();
@@ -687,7 +763,7 @@
       if (dy <= 0 || !scr || scr.scrollTop > 0) { startY = null; dy = 0; ind.style.opacity = ''; ind.style.transform = ''; return; }
       const pull = Math.min(dy * 0.5, MAX);
       ind.style.opacity = String(Math.min(1, pull / THRESHOLD));
-      ind.style.transform = `translateY(${pull - 44}px)`;
+      ind.style.transform = `translateY(${pull - 56}px)`;
       ind.classList.toggle('armed', pull >= THRESHOLD);
       if (e.cancelable) e.preventDefault();
     }, { passive: false });
@@ -752,6 +828,31 @@
     alerts.start();
     actions.start();
     initPullToRefresh();
+    // Glance buffers one sample per 2 s poll; energy holds hourly buckets.
+    attachScrub('glanceStrip', 'glanceReadout', () => ({
+      values: glance.buf,
+      label: (i) => glance.buf[i].toFixed(1) + ' tok/s · '
+        + ((glance.buf.length - 1 - i) * 2 || 0) + 's ago',
+    }));
+    attachScrub('energyStrip', 'energyReadout', () => ({
+      values: energy.hourly.map((r) => energy.bucketWatts(r)),
+      label: (i) => EN.fmtWatts(energy.bucketWatts(energy.hourly[i])) + ' · '
+        + new Date(energy.hourly[i].hour_ts * 1000)
+          .toLocaleTimeString('en', { hour: 'numeric' }),
+    }));
+    $('energyDayBars').addEventListener('pointerdown', (e) => {
+      const days = energy.days || [];
+      if (!days.length) return;
+      const r = $('energyDayBars').getBoundingClientRect();
+      const i = Math.max(0, Math.min(days.length - 1,
+        Math.floor((e.clientX - r.left) / (r.width / days.length))));
+      const out = $('energyBarReadout');
+      out.textContent = (days[i].today ? 'today' : days[i].full) + ' · '
+        + EN.fmtUsd(days[i].cost) + ' · ' + EN.fmtKwh(days[i].wh / 1000);
+      out.classList.add('on');
+      clearTimeout(energy._barT);
+      energy._barT = setTimeout(() => out.classList.remove('on'), 2600);
+    });
     $('sheet').addEventListener('click', (e) => {
       if (e.target.closest('[data-sheet-close]')) sheet.close();
     });
