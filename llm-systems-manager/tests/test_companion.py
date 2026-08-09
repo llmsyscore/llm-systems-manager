@@ -660,10 +660,16 @@ class TestReleaseCheck:
     def test_release_notes_fallback_when_the_install_cannot_name_itself(
             self, client, monkeypatch):
         # brew/deb/container with no RELEASE file: match this build stamp in
-        # the newest release's notes instead of guessing.
+        # the newest release's notes instead of guessing. The body below is
+        # the exact table release.yml publishes — see TestReleaseNotesContract.
+        notes = (
+            "Install this release:\n\n### Component versions\n\n"
+            "| Component | Version |\n| --- | --- |\n"
+            f"| Manager | `{M.__version__}` |\n"
+            "| Alarm engine | `v2026.01.01-1` |\n"
+            "| Agent | `v2026.01.01-1` |\n")
         monkeypatch.setattr(companion, "_installed_release", lambda: self._inst(None, None))
-        monkeypatch.setattr(companion, "_latest_release",
-                            lambda repo: ("v9.9.9", f"manager {M.__version__}\nAE v1", None))
+        monkeypatch.setattr(companion, "_latest_release", lambda repo: ("v9.9.9", notes, None))
         monkeypatch.setitem(companion._release, "enabled", True)
         body = client.get("/api/companion/release").get_json()
         assert body["update_available"] is False
@@ -765,3 +771,42 @@ class TestVersionCompare:
     ])
     def test_newer(self, latest, current, expect):
         assert companion._newer(latest, current) is expect
+
+
+class TestReleaseNotesContract:
+    """The companion's last-resort check greps the published release notes for
+    the running build stamp, so release.yml must keep emitting it. These guard
+    the two halves of that contract against silent drift."""
+
+    @staticmethod
+    def _workflow() -> str:
+        from pathlib import Path
+        root = Path(__file__).resolve().parents[2]
+        return (root / ".github" / "workflows" / "release.yml").read_text()
+
+    def test_release_notes_carry_all_three_component_versions(self):
+        wf = self._workflow()
+        for token in ("${MANAGER_VERSION}", "${AE_VERSION}", "${AGENT_VERSION}"):
+            assert token in wf, token
+        assert "### Component versions" in wf
+
+    def test_publish_job_receives_the_versions_from_the_build_job(self):
+        wf = self._workflow()
+        for token in ("needs.build.outputs.manager_version",
+                      "needs.build.outputs.ae_version",
+                      "needs.build.outputs.agent_version"):
+            assert token in wf, token
+
+    def test_the_stamp_reader_matches_this_repo_s_declarations(self):
+        # Mirrors the sed in release.yml: if a component ever renames or
+        # reformats its version line, this fails before a release does.
+        import re
+        from pathlib import Path
+        root = Path(__file__).resolve().parents[2]
+        for rel, name in (
+                ("llm-systems-manager/backend/llm-systems-manager.py", "__version__"),
+                ("llm-systems-alarm-engine/backend/alarm_engine.py", "__version__"),
+                ("agent/llm-systems-agent.py", "VERSION")):
+            text = (root / rel).read_text()
+            m = re.search(rf'^{name}\s*=\s*"(.*)"', text, re.M)
+            assert m and m.group(1).strip(), f"{rel}: no readable {name}"

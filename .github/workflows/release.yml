@@ -27,10 +27,34 @@ jobs:
     name: build tarball + checksum
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    outputs:
+      manager_version: ${{ steps.versions.outputs.manager }}
+      ae_version: ${{ steps.versions.outputs.ae }}
+      agent_version: ${{ steps.versions.outputs.agent }}
     steps:
       - uses: actions/checkout@v4
         with:
           ref: ${{ env.TAG }}
+
+      # The companion's release check falls back to matching its running build
+      # stamp in these notes when an install can't name its own release (#541),
+      # so the stamps have to be published, not just remembered.
+      - name: Read component version stamps
+        id: versions
+        run: |
+          read_stamp() {
+            sed -n "s/^${2}[[:space:]]*=[[:space:]]*\"\(.*\)\"/\1/p" "$1" | head -1
+          }
+          MGR=$(read_stamp llm-systems-manager/backend/llm-systems-manager.py __version__)
+          AE=$(read_stamp llm-systems-alarm-engine/backend/alarm_engine.py __version__)
+          AGENT=$(read_stamp agent/llm-systems-agent.py VERSION)
+          for v in "$MGR" "$AE" "$AGENT"; do
+            [ -n "$v" ] || { echo "::error::could not read a version stamp"; exit 1; }
+          done
+          echo "manager=$MGR" >> "$GITHUB_OUTPUT"
+          echo "ae=$AE" >> "$GITHUB_OUTPUT"
+          echo "agent=$AGENT" >> "$GITHUB_OUTPUT"
+          echo "manager=$MGR ae=$AE agent=$AGENT"
 
       - name: Build tarball + SHA-256 checksum
         run: |
@@ -120,6 +144,9 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           # No checkout in this job — gh must resolve the repo from env, not git.
           GH_REPO: ${{ github.repository }}
+          MANAGER_VERSION: ${{ needs.build.outputs.manager_version }}
+          AE_VERSION: ${{ needs.build.outputs.ae_version }}
+          AGENT_VERSION: ${{ needs.build.outputs.agent_version }}
         run: |
           ASSET="llm-systems-manager-${TAG}.tar.gz"
           cat > /tmp/release-notes.md <<EOF
@@ -130,6 +157,14 @@ jobs:
           \`\`\`
 
           The installer verifies \`${ASSET}.sha256\` before deploying anything.
+
+          ### Component versions
+
+          | Component | Version |
+          | --- | --- |
+          | Manager | \`${MANAGER_VERSION}\` |
+          | Alarm engine | \`${AE_VERSION}\` |
+          | Agent | \`${AGENT_VERSION}\` |
           EOF
           gh release create "$TAG" \
             --verify-tag \
