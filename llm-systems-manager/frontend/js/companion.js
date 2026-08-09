@@ -84,9 +84,9 @@
   }
 
   // Tap/drag a strip to read the value under the finger. series() returns
-  // { values, label(i) }; the readout clears on release.
-  function attachScrub(stripId, readoutId, series) {
-    const strip = $(stripId), out = $(readoutId);
+  // { values, label(i) }; marker + readout clear a moment after release.
+  function attachScrub(stripId, readoutId, markerId, series) {
+    const strip = $(stripId), out = $(readoutId), mark = $(markerId);
     if (!strip || !out) return;
     let timer = null;
     const at = (clientX) => {
@@ -98,11 +98,24 @@
       const i = Math.round(f * (n - 1));
       out.textContent = s.label(i);
       out.classList.add('on');
-      // Clamp on the bubble's own half-width or the ends run off-screen.
+      // Snap to the point, not the finger, and clamp the bubble on its own
+      // half-width so the ends stay on screen.
+      const pt = (s.pts || [])[i];
+      const px = pt ? pt.x / 340 * r.width : f * r.width;
       const half = out.offsetWidth / 2;
-      out.style.left = Math.max(half + 6, Math.min(r.width - half - 6, f * r.width)) + 'px';
+      out.style.left = Math.max(half + 6, Math.min(r.width - half - 6, px)) + 'px';
+      if (mark && pt) {
+        const py = pt.y / 118 * r.height;
+        mark.hidden = false;
+        mark.style.left = px + 'px';
+        mark.querySelector('.mdot').style.top = py + 'px';
+        mark.querySelector('.mline').style.top = py + 'px';
+      }
       clearTimeout(timer);
-      timer = setTimeout(() => out.classList.remove('on'), 2600);
+      timer = setTimeout(() => {
+        out.classList.remove('on');
+        if (mark) mark.hidden = true;
+      }, 2800);
     };
     strip.addEventListener('pointerdown', (e) => { at(e.clientX); });
     strip.addEventListener('pointermove', (e) => { if (e.buttons) at(e.clientX); });
@@ -162,6 +175,7 @@
       const pts = this.series();
       const sp = CS.path(pts.map((p) => p.v), 340, 118,
         { padTop: stripPad('glanceStrip', 'glanceHeroL') });
+      this.sp = sp;
       $('glanceSparkLine').setAttribute('d', sp.line);
       $('glanceSparkFill').setAttribute('d', sp.fill);
       $('glanceWin').textContent = this.hist.length > 1 ? 'last 24 h'
@@ -273,17 +287,19 @@
       // Hero reads the newest hourly bucket — the window mean barely moves.
       // Wh/bucket is only average watts once divided by the hour actually
       // observed; the current bucket is partial and would read far too low.
-      const rows = (hourly.rows || []).slice().sort((a, b) => a.hour_ts - b.hour_ts);
+      // A bucket younger than 5 min holds too little to scale up without
+      // reading as a spike or a cliff, so drop it from the series entirely.
+      const all = (hourly.rows || []).slice().sort((a, b) => a.hour_ts - b.hour_ts);
+      const tail = all[all.length - 1];
+      const rows = (all.length > 1 && tail && (Date.now() / 1000 - tail.hour_ts) < 300)
+        ? all.slice(0, -1) : all;
       this.hourly = rows;
-      // A bucket younger than 5 min is too thin to scale up; use the previous
-      // complete hour until it has enough in it.
-      const last = rows[rows.length - 1];
-      const thin = last && (Date.now() / 1000 - last.hour_ts) < 300 && rows.length > 1;
       const live = rows.length
-        ? this.bucketWatts(thin ? rows[rows.length - 2] : last) : tT.avg_watts;
+        ? this.bucketWatts(rows[rows.length - 1]) : tT.avg_watts;
       $('energyHeroN').innerHTML = `${esc(EN.fmtWatts(live).replace(' W', ''))}<small>W</small>`;
       const watts = rows.map((r) => this.bucketWatts(r));
       const sp = CS.path(watts, 340, 118, { padTop: stripPad('energyStrip', 'energyHeroL') });
+      this.sp = sp;
       $('energySparkLine').setAttribute('d', sp.line);
       $('energySparkFill').setAttribute('d', sp.fill);
 
@@ -388,7 +404,7 @@
       svg.setAttribute('viewBox', `0 0 ${W} 92`);
       const n = days.length, slot = W / n, w = Math.max(10, Math.min(34, slot * 0.5));
       const max = Math.max(...days.map((x) => x.cost), 0.01);
-      let out = '';
+      let out = `<line class="base" x1="0" y1="76.5" x2="${W}" y2="76.5"/>`;
       days.forEach((d, i) => {
         const h = Math.max(4, Math.round((d.cost / max) * 52));
         const x = i * slot + (slot - w) / 2, y = 76 - h;
@@ -774,6 +790,16 @@
     return cfg && cfg.ctrl ? Promise.resolve(cfg.ctrl.refresh()) : Promise.resolve();
   };
 
+  // iOS Safari ignores user-scalable=no, so pinch has to be refused directly:
+  // the WebKit gesture events plus any multi-touch move.
+  function blockZoom() {
+    ['gesturestart', 'gesturechange', 'gestureend'].forEach((n) =>
+      document.addEventListener(n, (e) => e.preventDefault(), { passive: false }));
+    document.addEventListener('touchmove', (e) => {
+      if (e.touches.length > 1 && e.cancelable) e.preventDefault();
+    }, { passive: false });
+  }
+
   // Pull-to-refresh: only from the top of the active screen, only on a
   // downward drag, and never while the confirm sheet is up.
   function initPullToRefresh() {
@@ -861,34 +887,42 @@
     }
     alerts.start();
     actions.start();
+    blockZoom();
     initPullToRefresh();
     const clock = (t) => new Date(t * 1000)
       .toLocaleTimeString('en', { hour: 'numeric', minute: '2-digit' });
-    attachScrub('glanceStrip', 'glanceReadout', () => {
+    attachScrub('glanceStrip', 'glanceReadout', 'glanceMarker', () => {
       const pts = glance.series();
       return {
         values: pts.map((p) => p.v),
+        pts: (glance.sp || {}).pts,
         label: (i) => pts[i].v.toFixed(1) + ' tok/s · ' + clock(pts[i].t),
       };
     });
-    attachScrub('energyStrip', 'energyReadout', () => ({
+    attachScrub('energyStrip', 'energyReadout', 'energyMarker', () => ({
       values: energy.hourly.map((r) => energy.bucketWatts(r)),
+      pts: (energy.sp || {}).pts,
       label: (i) => EN.fmtWatts(energy.bucketWatts(energy.hourly[i])) + ' · '
         + new Date(energy.hourly[i].hour_ts * 1000)
           .toLocaleTimeString('en', { hour: 'numeric' }),
     }));
     $('energyDayBars').addEventListener('pointerdown', (e) => {
-      const days = energy.days || [];
+      const svg = $('energyDayBars'), days = energy.days || [];
       if (!days.length) return;
-      const r = $('energyDayBars').getBoundingClientRect();
+      const r = svg.getBoundingClientRect();
       const i = Math.max(0, Math.min(days.length - 1,
         Math.floor((e.clientX - r.left) / (r.width / days.length))));
+      const bars = svg.querySelectorAll('rect');
+      bars.forEach((b, k) => b.classList.toggle('sel', k === i));
       const out = $('energyBarReadout');
       out.textContent = (days[i].today ? 'today' : days[i].full) + ' · '
         + EN.fmtUsd(days[i].cost) + ' · ' + EN.fmtKwh(days[i].wh / 1000);
       out.classList.add('on');
       clearTimeout(energy._barT);
-      energy._barT = setTimeout(() => out.classList.remove('on'), 2600);
+      energy._barT = setTimeout(() => {
+        out.classList.remove('on');
+        bars.forEach((b) => b.classList.remove('sel'));
+      }, 2800);
     });
     $('sheet').addEventListener('click', (e) => {
       if (e.target.closest('[data-sheet-close]')) sheet.close();

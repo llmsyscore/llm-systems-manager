@@ -11,6 +11,9 @@ body.companion {
   display: flex;
   flex-direction: column;
   overflow: hidden;
+  /* Scroll and tap, never pinch-zoom or double-tap-zoom. */
+  touch-action: pan-x pan-y;
+  -webkit-text-size-adjust: 100%;
 }
 
 /* app header */
@@ -76,10 +79,29 @@ body.companion {
   border-top: 1px solid var(--border-soft); border-bottom: 1px solid var(--border-soft);
 }
 .strip svg { display: block; width: 100%; height: 178px; }
-.strip .spark-line { fill: none; stroke: var(--accent); stroke-width: 2; }
-.strip .spark-fill { fill: var(--accent); opacity: .07; stroke: none; }
+/* non-scaling-stroke: the viewBox is stretched, so without it the line reads
+   thicker vertically than horizontally. */
+.strip .spark-line { fill: none; stroke: var(--accent); stroke-width: 1.75;
+  stroke-linecap: round; stroke-linejoin: round; }
+.strip .spark-fill { stroke: none; }
+.strip .g0 { stop-color: var(--accent); stop-opacity: .22; }
+.strip .g1 { stop-color: var(--accent); stop-opacity: 0; }
 .strip.energy .spark-line { stroke: var(--accent-2); }
-.strip.energy .spark-fill { fill: var(--accent-2); }
+.strip.energy .g0 { stop-color: var(--accent-2); stop-opacity: .22; }
+.strip.energy .g1 { stop-color: var(--accent-2); stop-opacity: 0; }
+
+/* tapped-point marker: an HTML overlay in CSS pixels, because the stretched
+   viewBox would turn an SVG circle into an ellipse. */
+.marker { position: absolute; top: 0; bottom: 0; width: 0; pointer-events: none; }
+.marker[hidden] { display: none; }
+/* Drops from the point downward, so it never crosses the hero text. */
+.marker .mline { position: absolute; bottom: 0; width: 1px;
+  background: linear-gradient(var(--border-strong), transparent); }
+.marker .mdot { position: absolute; width: 9px; height: 9px; margin: -4.5px 0 0 -4.5px;
+  border-radius: 50%; background: var(--accent);
+  box-shadow: 0 0 0 3px var(--bg-elev), 0 0 0 4px var(--accent); }
+.strip.energy .marker .mdot { background: var(--accent-2);
+  box-shadow: 0 0 0 3px var(--bg-elev), 0 0 0 4px var(--accent-2); }
 .strip .hero { position: absolute; left: 16px; top: 14px; }
 .strip .hero .n { font-family: var(--mono); font-size: 38px; font-weight: 600; color: var(--fg); line-height: 1; }
 .strip .hero .n small { font-size: 15px; color: var(--fg-muted); font-weight: 400; margin-left: 3px; }
@@ -176,10 +198,13 @@ body.companion {
 /* cost-per-day bars — span the full card, uniform scale so labels stay round */
 .daycard { position: relative; padding: 10px 6px 6px; }
 .daybars { display: block; width: 100%; height: 92px; touch-action: manipulation; }
-.daybars rect { fill: var(--accent); }
-.daybars rect.today { opacity: .55; }
+.daybars rect { fill: var(--accent); opacity: .42; transition: opacity .12s ease; }
+.daybars rect.today { opacity: .72; }
+.daybars rect.sel { opacity: 1; }
 .daybars text { font-family: var(--mono); font-size: 10.5px; fill: var(--fg-dim); }
 .daybars text.hot { fill: var(--fg); }
+.daybars .base { stroke: var(--border-soft); stroke-width: 1; }
+@media (prefers-reduced-motion: reduce) { .daybars rect { transition: none; } }
 
 /* notifications opt-in (Admin) + actions result line */
 .cmp-msg { min-height: 1.1em; margin-top: 8px; font-size: 13px; font-family: var(--mono);
