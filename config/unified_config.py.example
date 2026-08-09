@@ -128,9 +128,15 @@ class ManagerDiscord(BaseModel):
 
 class ManagerCompanion(BaseModel):
     """PWA companion (#522). push_contact is the VAPID `sub` claim sent to
-    the browser push services with every web-push message."""
+    the browser push services with every web-push message. release_check is
+    opt-in because it is the manager's only outbound call to github.com."""
     model_config = _MODEL_CFG
     push_contact: str = "mailto:admin@example.com"
+    release_check: bool = False
+    release_repo: str = "llmsyscore/llm-systems-manager"
+    # Bearer the alarm engine presents on /api/companion/push/notify (#538).
+    # Blank falls back to [alarm_engine].management_token, then ingest_token.
+    push_notify_token: str = ""
 
 
 class ManagerHistory(BaseModel):

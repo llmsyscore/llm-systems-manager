@@ -169,6 +169,26 @@ body.companion {
 .meter i { display: block; height: 100%; border-radius: 2px; background: var(--accent); }
 .meter i.hot { background: var(--warn); }
 
+/* 24 h mini trend cards (Home) */
+.minis { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.mini { background: var(--bg-card); border: 1px solid var(--border-soft);
+  border-radius: 12px; padding: 11px 12px 9px; touch-action: pan-y; }
+.mini .mh { display: flex; align-items: baseline; gap: 6px; }
+.mini .mk { font-size: 12px; color: var(--fg-muted); flex: 1; min-width: 0;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mini .mv { font-family: var(--mono); font-size: 18px; font-weight: 600; flex: none; }
+.mini .mv small { font-size: 10.5px; color: var(--fg-muted); font-weight: 400; margin-left: 2px; }
+.mini .mwrap { position: relative; margin: 7px 0 3px; }
+.mini svg { display: block; width: 100%; height: 34px; }
+/* Same treatment as the hero strip, at card scale. */
+.mini .spark-line { fill: none; stroke: var(--accent); stroke-width: 1.5;
+  stroke-linecap: round; stroke-linejoin: round; }
+.mini .spark-fill { stroke: none; }
+.mini .mguide { position: absolute; top: 0; bottom: 0; width: 1px;
+  background: var(--border-strong); pointer-events: none; }
+.mini .mguide[hidden] { display: none; }
+.mini .ms { font-family: var(--mono); font-size: 10.5px; color: var(--fg-dim); }
+
 /* alerts */
 .chiprow { display: flex; align-items: flex-start; gap: 6px; }
 .chips { display: flex; gap: 6px; padding: 2px 2px 0; flex-wrap: wrap; }
@@ -312,7 +332,7 @@ body.companion {
 /* Wide viewport (landscape phone, any tablet): tiles fill the width instead
    of staying two-up, so less of the screen needs scrolling. */
 @media (min-width: 620px) {
-  .tiles { grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); }
+  .tiles, .minis { grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); }
   .strip .hero .l { max-width: 70vw; }
 }
 @media (min-width: 900px) {

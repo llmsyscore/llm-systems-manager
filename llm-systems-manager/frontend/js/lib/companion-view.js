@@ -167,6 +167,44 @@
       ? srcs + ' · ' + perHost.size + (perHost.size === 1 ? ' host' : ' hosts')
       : (fleetW != null ? 'fleet avg · this window' : 'no telemetry');
 
+    // Cross-provider totals — the aggregate the provider rows break down.
+    const gr = lms.gateway_rates || {};
+    const total = (vals) => {
+      const f = vals.filter((v) => num(v) != null);
+      return f.length ? f.reduce((a, b) => a + b, 0) : null;
+    };
+    const genTps = total([lm.tokens_per_second, gr.gen_tps, vllm.tokens_per_second]);
+    const proTps = total([lm.prompt_tokens_per_second, gr.prompt_tps,
+      vllm.prompt_tokens_per_second]);
+    // llama reports slots and in-flight requests separately; take the larger.
+    // null (not 0) with neither present, so "no telemetry" reads as a dash.
+    const llamaBusy = (num(lm.requests_processing) == null
+      && num(lm.active_slots) == null)
+      ? null
+      : Math.max(num(lm.requests_processing) || 0, num(lm.active_slots) || 0);
+    const inflight = total([llamaBusy, vllm.requests_running]);
+    const queued = total([lm.requests_deferred, vllm.requests_waiting]);
+    const loadedOn = [llamaResident ? 'llama.cpp' : null, lmsModel ? 'LM Studio' : null,
+      (vllmRunning && vllm.model) ? 'vLLM' : null].filter(Boolean);
+    // Generated only, so the peak is the same quantity the Throughput tile
+    // leads with rather than a much larger gen+prompt total.
+    let peak = null;
+    (Array.isArray(d.hist) ? d.hist : []).forEach((h) => {
+      const v = num(h.v) || 0;
+      if (peak == null || v > peak.v) peak = { v, t: h.t };
+    });
+    const fleet = [
+      { v: genTps != null ? genTps.toFixed(1) : '—', unit: 'tok/s', k: 'Throughput',
+        sub: num(proTps) ? 'prompt ' + proTps.toFixed(1) + ' tok/s' : 'generation only' },
+      { v: inflight != null ? String(Math.round(inflight)) : '—', unit: 'req',
+        k: 'In flight',
+        sub: num(queued) ? Math.round(queued) + ' queued' : 'nothing queued' },
+      { v: String(loadedOn.length), unit: loadedOn.length === 1 ? 'model' : 'models',
+        k: 'Loaded', sub: loadedOn.join(' + ') || 'none loaded' },
+      { v: peak && peak.v > 0 ? peak.v.toFixed(0) : '—', unit: 'tok/s', k: '24 h peak',
+        sub: peak && peak.v > 0 && peak.t ? 'at ' + clockAt(peak.t) : 'no history yet' },
+    ];
+
     const tiles = [
       { v: round(temp) != null ? String(round(temp)) : '—', unit: '°C',
         k: 'GPU temperature', meter: clampPct(temp), hot: num(temp) != null && temp >= 85 },
@@ -189,8 +227,47 @@
         label: hero.model ? hero.prov + ' · ' + hero.model : 'idle · no model loaded',
       },
       providers,
+      fleet,
       tiles,
     };
+  }
+
+  // ── 24 h fleet trends (Home mini graphs) ────────────────────────────────
+  // Keys are /api/history legacy field names; the manager already aggregates
+  // each one across hosts (gpu_util mean, gpu_temp/gpu_vram max, cpu mean).
+  const TREND_SPECS = [
+    { key: 'gpu_util', name: 'GPU busy', unit: '%', dp: 0 },
+    { key: 'gpu_temp', name: 'GPU temp', unit: '°C', dp: 0 },
+    { key: 'gpu_vram', name: 'VRAM', unit: '%', dp: 0 },
+    { key: 'cpu_total', name: 'CPU', unit: '%', dp: 0 },
+  ];
+
+  function trends(rows) {
+    const list = Array.isArray(rows) ? rows : [];
+    return TREND_SPECS.map((s) => {
+      const pts = [];
+      list.forEach((r) => {
+        const t = tsSeconds((r || {}).ts);
+        const v = num((r || {})[s.key]);
+        if (t != null && v != null) pts.push({ t, v });
+      });
+      const vals = pts.map((p) => p.v);
+      // The headline is the window MEAN, not the newest sample: history lags
+      // the live tiles by a bucket, and two different "now" numbers on one
+      // screen read as a contradiction.
+      return {
+        key: s.key, name: s.name, unit: s.unit, dp: s.dp, pts,
+        avg: vals.length ? vals.reduce((a, b) => a + b, 0) / vals.length : null,
+        min: vals.length ? Math.min(...vals) : null,
+        max: vals.length ? Math.max(...vals) : null,
+      };
+    }).filter((t) => t.pts.length > 1);
+  }
+
+  // Local wall-clock label for a trend/peak timestamp.
+  function clockAt(t) {
+    return new Date(t * 1000)
+      .toLocaleTimeString('en', { hour: 'numeric', minute: '2-digit' });
   }
 
   // ── Alerts ──────────────────────────────────────────────────────────────
@@ -526,6 +603,6 @@
     };
   }
 
-  return { glance, alerts, alertRow, admin, actions, audit, age, hbAge,
-    tsSeconds, _sevClass: sevClass };
+  return { glance, trends, alerts, alertRow, admin, actions, audit, age, hbAge,
+    tsSeconds, clockAt, _sevClass: sevClass };
 });

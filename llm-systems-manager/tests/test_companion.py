@@ -10,6 +10,7 @@ from __future__ import annotations
 import base64
 import json
 import re
+from types import SimpleNamespace
 
 import pytest
 
@@ -626,6 +627,11 @@ class TestReleaseCheck:
         monkeypatch.setattr(companion, "_latest_release",
                             lambda repo: called.append(repo) or (None, None, None))
         monkeypatch.setitem(companion._release, "enabled", None)
+        # Pin the config value: the deployed TOML may have the check switched
+        # on, and this asserts the OFF behaviour, not the local setting.
+        from config.unified_config import settings as _s
+        monkeypatch.setattr(_s.manager.companion, "release_check", False,
+                            raising=False)
         body = client.get("/api/companion/release").get_json()
         assert body["enabled"] is False
         assert "latest" not in body
@@ -809,3 +815,184 @@ class TestReleaseNotesContract:
             text = (root / rel).read_text()
             m = re.search(rf'^{name}\s*=\s*"(.*)"', text, re.M)
             assert m and m.group(1).strip(), f"{rel}: no readable {name}"
+
+
+# ── #538: alarm-engine → web-push bridge ────────────────────────────────────
+
+class TestNotifyToken:
+    @staticmethod
+    def _settings(companion_tok="", management="", ingest=""):
+        return SimpleNamespace(
+            manager=SimpleNamespace(
+                companion=SimpleNamespace(push_notify_token=companion_tok)),
+            alarm_engine=SimpleNamespace(
+                management_token=management, ingest_token=ingest))
+
+    def test_companion_override_wins(self):
+        s = self._settings("own", management="mgmt", ingest="ing")
+        assert companion.notify_token(s) == "own"
+
+    def test_falls_back_to_the_management_token(self):
+        assert companion.notify_token(self._settings(management="mgmt",
+                                                     ingest="ing")) == "mgmt"
+
+    def test_falls_back_to_the_ingest_token_last(self):
+        assert companion.notify_token(self._settings(ingest="ing")) == "ing"
+
+    @pytest.mark.parametrize("placeholder", ["", "   ", "REPLACE_ME", None])
+    def test_placeholders_read_as_unset(self, placeholder):
+        s = self._settings(placeholder, management=placeholder,
+                           ingest=placeholder)
+        assert companion.notify_token(s) == ""
+
+    def test_missing_config_sections_do_not_raise(self):
+        assert companion.notify_token(SimpleNamespace()) == ""
+
+
+class TestNotifyPath:
+    """A push must never deep-link off this manager."""
+
+    @pytest.mark.parametrize("url,want", [
+        ("/companion?tab=alerts", "/companion?tab=alerts"),
+        ("/companion", "/companion"),
+        ("https://evil.example/x", "/companion"),
+        ("//evil.example/x", "/companion"),
+        ("/companion\\..\\evil", "/companion"),
+        ("javascript:alert(1)", "/companion"),
+        ("", "/companion"), (None, "/companion"), (42, "/companion"),
+    ])
+    def test_only_same_origin_paths_survive(self, url, want):
+        assert companion.notify_path(url) == want
+
+    def test_path_is_length_capped(self):
+        assert len(companion.notify_path("/" + "a" * 500)) == 200
+
+
+@pytest.fixture
+def notify(monkeypatch, sandbox):
+    """Session-less client (as the alarm engine is) with a notify token
+    configured; the actual web-push send is stubbed out."""
+    monkeypatch.setattr(auth, "auth_mode", lambda: "required")
+    monkeypatch.setattr(companion, "notify_token", lambda s: "ae-secret")
+    monkeypatch.setattr(companion, "_webpush_funcs", lambda: None)
+    monkeypatch.setattr(companion, "ensure_vapid_key", lambda d: d / "k.pem")
+    with M.app.test_client() as c:
+        yield c
+
+
+def _sent(monkeypatch, ok=True, prune=False):
+    """Capture the payload each subscription is sent."""
+    seen = []
+
+    def fake(sub, payload, pem, contact):
+        seen.append(json.loads(payload))
+        return ok, prune
+
+    monkeypatch.setattr(companion, "_send_one", fake)
+    return seen
+
+
+class TestPushNotify:
+    URL = "/api/companion/push/notify"
+    AUTH = {"Authorization": "Bearer ae-secret"}
+
+    def test_the_route_is_reachable_without_a_session(self):
+        """The alarm engine has no session cookie, so the before_request gate
+        must hand this path to the route's own bearer check."""
+        assert self.URL in auth.AUTH_OPEN_PATHS
+
+    def test_valid_bearer_fans_out_to_every_device(self, notify, monkeypatch):
+        companion._store.add(_sub(), ua="ua")
+        companion._store.add(_sub(endpoint="https://push.example.net/send/xyz"))
+        seen = _sent(monkeypatch)
+        r = notify.post(self.URL, headers=self.AUTH,
+                        json={"title": "GPU hot", "body": "gpu = 91",
+                              "severity": "critical", "tag": "lsm-alert-1",
+                              "url": "/companion?tab=alerts"})
+        assert r.status_code == 200
+        body = r.get_json()
+        assert body == {"ok": True, "sent": 2, "failed": 0, "pruned": 0,
+                        "subscriptions": 2}
+        assert seen[0]["title"] == "GPU hot"
+        assert seen[0]["url"] == "/companion?tab=alerts"
+
+    @pytest.mark.parametrize("headers", [
+        {}, {"Authorization": "Bearer wrong"}, {"Authorization": "ae-secret"},
+        {"Authorization": "Basic ae-secret"},
+    ])
+    def test_missing_or_wrong_bearer_is_refused(self, notify, headers):
+        companion._store.add(_sub(), ua="ua")
+        r = notify.post(self.URL, headers=headers, json={"title": "x"})
+        assert r.status_code == 403
+
+    def test_no_configured_token_falls_back_to_admin(self, monkeypatch, sandbox):
+        """Fail closed: a token-less install must not expose an unauthenticated
+        send-to-every-device route."""
+        monkeypatch.setattr(auth, "auth_mode", lambda: "required")
+        monkeypatch.setattr(companion, "notify_token", lambda s: "")
+        with M.app.test_client() as c:
+            r = c.post(self.URL, headers={"Authorization": "Bearer "},
+                       json={"title": "x"})
+        assert r.status_code == 403
+
+    def test_an_admin_session_may_drive_it_without_a_token(self, client,
+                                                           monkeypatch, sandbox):
+        companion._store.add(_sub(), ua="ua")
+        monkeypatch.setattr(companion, "notify_token", lambda s: "")
+        monkeypatch.setattr(companion, "_webpush_funcs", lambda: None)
+        monkeypatch.setattr(companion, "ensure_vapid_key", lambda d: d / "k.pem")
+        _sent(monkeypatch)
+        r = client.post(self.URL, json={"title": "x"})
+        assert r.status_code == 200 and r.get_json()["sent"] == 1
+
+    def test_an_operator_session_may_not(self, operator, monkeypatch, sandbox):
+        companion._store.add(_sub(), ua="ua")
+        monkeypatch.setattr(companion, "notify_token", lambda s: "")
+        r = operator.post(self.URL, json={"title": "x"})
+        assert r.status_code == 403
+
+    def test_offsite_urls_are_rewritten_to_the_companion_root(self, notify,
+                                                              monkeypatch):
+        companion._store.add(_sub(), ua="ua")
+        seen = _sent(monkeypatch)
+        notify.post(self.URL, headers=self.AUTH,
+                    json={"title": "x", "url": "https://evil.example/steal"})
+        assert seen[0]["url"] == "/companion"
+
+    def test_oversized_text_is_clamped(self, notify, monkeypatch):
+        companion._store.add(_sub(), ua="ua")
+        seen = _sent(monkeypatch)
+        notify.post(self.URL, headers=self.AUTH,
+                    json={"title": "T" * 999, "body": "B" * 999,
+                          "tag": "g" * 999, "severity": "s" * 99})
+        assert len(seen[0]["title"]) == companion._MAX_TITLE
+        assert len(seen[0]["body"]) == companion._MAX_BODY
+        assert len(seen[0]["tag"]) == companion._MAX_TAG
+        assert len(seen[0]["severity"]) == 16
+
+    def test_no_subscriptions_is_a_no_op_success(self, notify):
+        r = notify.post(self.URL, headers=self.AUTH, json={"title": "x"})
+        assert r.status_code == 200
+        assert r.get_json() == {"ok": True, "sent": 0, "failed": 0,
+                                "pruned": 0, "subscriptions": 0}
+
+    def test_non_object_bodies_are_rejected(self, notify):
+        companion._store.add(_sub(), ua="ua")
+        for bad in ([1, 2], "x", 7, None):
+            r = notify.post(self.URL, headers=self.AUTH, json=bad)
+            assert r.status_code == 400, bad
+
+    def test_expired_endpoints_are_pruned_from_the_store(self, notify,
+                                                         monkeypatch):
+        companion._store.add(_sub(), ua="ua")
+        _sent(monkeypatch, ok=False, prune=True)
+        r = notify.post(self.URL, headers=self.AUTH, json={"title": "x"})
+        assert r.get_json()["pruned"] == 1
+        assert companion._store.count() == 0
+
+    def test_a_failed_send_reports_not_ok(self, notify, monkeypatch):
+        companion._store.add(_sub(), ua="ua")
+        _sent(monkeypatch, ok=False)
+        body = notify.post(self.URL, headers=self.AUTH,
+                           json={"title": "x"}).get_json()
+        assert body["ok"] is False and body["failed"] == 1

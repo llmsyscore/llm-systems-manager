@@ -29,6 +29,22 @@ describe('companion DOM contract', () => {
     tabs.forEach((t) => expect(htmlIds.has('scr-' + t)).toBe(true));
   });
 
+  it('Home carries the cross-provider fleet tiles and the 24 h trend cards', () => {
+    for (const id of ['glanceFleet', 'glanceMinis']) {
+      expect(htmlIds.has(id), id).toBe(true);
+    }
+    // The mini sparklines reference the strip's gradient by id.
+    expect(htmlIds.has('glanceGrad')).toBe(true);
+    expect(js.includes("url(#glanceGrad)")).toBe(true);
+  });
+
+  it('a push notification can deep-link into a tab', () => {
+    const sw = read('sw.js');
+    expect(sw.includes("'lsm-open'")).toBe(true);
+    expect(js.includes("'lsm-open'")).toBe(true);
+    expect(js.includes('tabFromUrl')).toBe(true);
+  });
+
   it('models, admin and settings screens expose the controller contract ids', () => {
     for (const id of ['modelsServices', 'modelsLoaded', 'modelsAutopilot',
       'modelsPins', 'modelsPinsWrap', 'modelsGatedNote', 'modelsMsg',

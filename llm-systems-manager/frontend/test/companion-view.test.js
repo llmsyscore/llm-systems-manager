@@ -134,6 +134,111 @@ describe('CView.glance', () => {
     const g = CView.glance({ metrics: { gpu: { temperature_c: 87 } } });
     expect(g.tiles[0].hot).toBe(true);
   });
+
+  // #541: cross-provider summary above the per-provider rows.
+  describe('fleet tiles', () => {
+    const busy = {
+      metrics: { llama: { tokens_per_second: 42.7, prompt_tokens_per_second: 300,
+                          requests_processing: 2, active_slots: 3,
+                          requests_deferred: 1, model: 'qwen3-32b' } },
+      llama: { state: 'awake', model: 'qwen3-32b' },
+      lms: { ps: [{ model: 'llama-3.3-70b', status: 'loaded' }],
+             gateway_rates: { gen_tps: 12, prompt_tps: 40 } },
+      vllm: { vllm: { state: 'running', model: 'mixtral', tokens_per_second: 5,
+                      prompt_tokens_per_second: 10, requests_running: 4,
+                      requests_waiting: 2 } },
+    };
+
+    it('throughput sums generation and prompt across every provider', () => {
+      const f = CView.glance(busy).fleet;
+      expect(f[0]).toMatchObject({ k: 'Throughput', v: '59.7', unit: 'tok/s' });
+      expect(f[0].sub).toBe('prompt 350.0 tok/s');
+    });
+
+    it('in-flight takes llama\'s larger of slots/processing plus vLLM', () => {
+      const f = CView.glance(busy).fleet;
+      expect(f[1]).toMatchObject({ k: 'In flight', v: '7', unit: 'req',
+        sub: '3 queued' });
+    });
+
+    it('loaded counts and names the providers actually serving a model', () => {
+      const f = CView.glance(busy).fleet;
+      expect(f[2]).toMatchObject({ k: 'Loaded', v: '3', unit: 'models' });
+      expect(f[2].sub).toBe('llama.cpp + LM Studio + vLLM');
+    });
+
+    it('the 24 h peak measures generation — the same thing Throughput leads with', () => {
+      const f = CView.glance({ ...busy, hist: [
+        { t: NOW - 7200, v: 10, p: 500 },
+        { t: NOW - 3600, v: 80, p: 20 },
+        { t: NOW, v: 30, p: 1 },
+      ] }).fleet;
+      expect(f[3]).toMatchObject({ k: '24 h peak', v: '80', unit: 'tok/s' });
+      expect(f[3].sub).toMatch(/^at /);
+    });
+
+    it('an idle fleet reads zero, not dashes, and says so', () => {
+      const f = CView.glance({ metrics: { llama: { tokens_per_second: 0 } } }).fleet;
+      expect(f[0]).toMatchObject({ v: '0.0', sub: 'generation only' });
+      expect(f[1].sub).toBe('nothing queued');
+      expect(f[2]).toMatchObject({ v: '0', unit: 'models', sub: 'none loaded' });
+      expect(f[3]).toMatchObject({ v: '—', sub: 'no history yet' });
+    });
+
+    it('an empty payload dashes every unknown, rather than claiming zero', () => {
+      const f = CView.glance({}).fleet;
+      expect(f).toHaveLength(4);
+      expect(f.map((t) => t.v)).toEqual(['—', '—', '0', '—']);
+    });
+  });
+});
+
+describe('CView.trends', () => {
+  const rows = [
+    { ts: NOW - 7200, gpu_util: 10, gpu_temp: 50, gpu_vram: 40, cpu_total: 5 },
+    { ts: NOW - 3600, gpu_util: 90, gpu_temp: 71, gpu_vram: 88, cpu_total: 30 },
+    { ts: NOW, gpu_util: 55, gpu_temp: 64, gpu_vram: 61, cpu_total: 12 },
+  ];
+
+  it('returns one card per fleet metric with the window mean and range', () => {
+    const t = CView.trends(rows);
+    expect(t.map((x) => x.key)).toEqual(['gpu_util', 'gpu_temp', 'gpu_vram', 'cpu_total']);
+    // Mean, not the newest sample: history lags the live tiles by a bucket.
+    expect(t[0]).toMatchObject({ name: 'GPU busy', unit: '%', min: 10, max: 90 });
+    expect(t[0].avg).toBeCloseTo((10 + 90 + 55) / 3);
+    expect(t[1]).toMatchObject({ unit: '°C', min: 50, max: 71 });
+    expect(t[1].avg).toBeCloseTo((50 + 71 + 64) / 3);
+    expect(t[0].pts).toHaveLength(3);
+  });
+
+  it('drops a metric the history never carried rather than drawing a flat line', () => {
+    const t = CView.trends(rows.map(({ ts, gpu_util }) => ({ ts, gpu_util })));
+    expect(t.map((x) => x.key)).toEqual(['gpu_util']);
+  });
+
+  it('skips null samples but keeps the rest of the series', () => {
+    const t = CView.trends([
+      { ts: NOW - 60, gpu_util: 10 }, { ts: NOW - 30, gpu_util: null },
+      { ts: NOW, gpu_util: 20 },
+    ]);
+    expect(t[0].pts.map((p) => p.v)).toEqual([10, 20]);
+  });
+
+  it('needs two points before a card is worth drawing', () => {
+    expect(CView.trends([{ ts: NOW, gpu_util: 10 }])).toEqual([]);
+  });
+
+  it('parses the timestamp shapes /api/history emits', () => {
+    const iso = new Date(NOW * 1000).toISOString();
+    const t = CView.trends([{ ts: iso, gpu_util: 1 },
+      { ts: (NOW + 60) * 1000, gpu_util: 2 }]);
+    expect(t[0].pts.map((p) => p.t)).toEqual([NOW, NOW + 60]);
+  });
+
+  it('degrades to an empty list on junk input', () => {
+    expect(CView.trends(null)).toEqual([]);
+    expect(CView.trends([null, undefined, {}])).toEqual([]);
+  });
 });
 
 describe('CView.alerts', () => {

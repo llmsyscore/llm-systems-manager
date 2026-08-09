@@ -150,10 +150,27 @@
       + `<div class="k">${esc(t.k)}</div>${body}</div>`;
   }
 
+  // One 24 h mini trend card: window mean, sparkline, min–max range.
+  function miniEl(t, i) {
+    const sp = CS.path(t.pts.map((p) => p.v), 120, 34, { padTop: 5, padBottom: 5 });
+    const n = (v) => (v == null ? '—' : v.toFixed(t.dp));
+    return `<div class="mini" data-mini="${i}">`
+      + `<div class="mh"><span class="mk">${esc(t.name)}</span>`
+      + `<span class="mv">${esc(n(t.avg))}<small>${esc(t.unit)}</small></span></div>`
+      + '<div class="mwrap"><svg viewBox="0 0 120 34" preserveAspectRatio="none" aria-hidden="true">'
+      + `<path class="spark-fill" fill="url(#glanceGrad)" d="${esc(sp.fill)}"></path>`
+      + `<path class="spark-line" vector-effect="non-scaling-stroke" d="${esc(sp.line)}"></path>`
+      + '</svg><i class="mguide" hidden></i></div>'
+      + `<div class="ms">${esc(miniRange(t))}</div></div>`;
+  }
+  const miniRange = (t) => (t.min == null ? '—'
+    : 'avg · ' + t.min.toFixed(t.dp) + '–' + t.max.toFixed(t.dp) + ' ' + t.unit);
+
   // ── Glance ────────────────────────────────────────────────────────────────
   const glance = {
     buf: [],
     hist: [],            // [{t, v: gen tok/s, p: prompt tok/s}] over 24 h
+    trends: [],          // mini trend cards, derived from the same rows
     histAt: 0,
     // Fleet token rates from the alarm engine; refreshed every 5 min on the
     // 2 s poll, immediately on an explicit refresh. Falls back to the live
@@ -166,8 +183,10 @@
         return v.length ? v.reduce((a, b) => a + b, 0) : 0;
       };
       try {
-        const rows = await jfetch('/api/history?since_minutes=1440&max_rows=180');
-        this.hist = (Array.isArray(rows) ? rows : []).map((r) => ({
+        const raw = await jfetch('/api/history?since_minutes=1440&max_rows=180');
+        const rows = Array.isArray(raw) ? raw : [];
+        this.trends = CV.trends(rows);
+        this.hist = rows.map((r) => ({
           t: CV.tsSeconds(r.ts),
           v: sum(r, ['llama_tps', 'lms_tps', 'vllm_tps']),
           p: sum(r, ['llama_pps', 'lms_pps', 'vllm_pps']),
@@ -185,14 +204,16 @@
         jfetch('/api/energy/summary?days=1' + TZ_Q).catch(() => ({})),
       ]);
       setLive(ls.agent_online, ls.agent_age_s);
-      const vm = CV.glance({ metrics: m, llama: ls, lms, vllm, energy: en });
+      // Before the view model: the fleet tiles read the 24 h peak off it.
+      await this.loadHistory(force);
+      const vm = CV.glance({ metrics: m, llama: ls, lms, vllm, energy: en,
+        hist: this.hist });
       // Live buffer backs the strip only when history is unavailable. Drop
       // samples older than the window so a backgrounded app doesn't redraw a
       // frozen trace when it comes forward.
       const nowS = Date.now() / 1000;
       this.buf.push({ t: nowS, v: vm.hero.tps, p: 0 });
       this.buf = this.buf.filter((s) => nowS - s.t < 300).slice(-150);
-      await this.loadHistory(force);
       this.render(vm);
     },
     // 24 h history when the alarm engine has it, else the live 2 s buffer.
@@ -221,7 +242,45 @@
         : (this.buf.length * 2 < 90 ? 'live'
           : 'last ' + Math.round(this.buf.length * 2 / 60) + 'm');
       $('glanceProviders').innerHTML = vm.providers.map(providerRow).join('');
+      $('glanceFleet').innerHTML = vm.fleet.map(tileEl).join('');
+      // Minis only change when history reloads (5 min); re-rendering them on
+      // the 2 s poll would wipe an open scrub readout mid-touch.
+      const key = this.trends.map((t) => t.key + ':' + t.pts.length + ':' + t.avg).join('|');
+      if (key !== this._minKey) {
+        this._minKey = key;
+        $('glanceMinis').innerHTML = this.trends.map(miniEl).join('');
+      }
       $('glanceTiles').innerHTML = vm.tiles.map(tileEl).join('');
+    },
+    // Tap a mini card to read the value under the finger; the sub line
+    // carries the readout and reverts to the 24 h range on release.
+    scrubMini(e) {
+      const card = e.target.closest('[data-mini]');
+      if (!card) return;
+      const t = this.trends[+card.dataset.mini];
+      if (!t || !t.pts.length) return;
+      // Clear first: one shared timer, so moving to another card would
+      // otherwise strand the previous card's readout.
+      this.clearMiniScrub();
+      const wrap = card.querySelector('.mwrap');
+      const r = wrap.getBoundingClientRect();
+      const f = Math.max(0, Math.min(1, (e.clientX - r.left) / r.width));
+      const i = Math.min(t.pts.length - 1, Math.round(f * (t.pts.length - 1)));
+      const p = t.pts[i];
+      card.querySelector('.ms').textContent =
+        p.v.toFixed(t.dp) + ' ' + t.unit + ' · ' + CV.clockAt(p.t);
+      const g = card.querySelector('.mguide');
+      g.hidden = false;
+      g.style.left = (i / Math.max(1, t.pts.length - 1) * r.width) + 'px';
+      clearTimeout(this._miniT);
+      this._miniT = setTimeout(() => this.clearMiniScrub(), 2800);
+    },
+    clearMiniScrub() {
+      $('glanceMinis').querySelectorAll('[data-mini]').forEach((c) => {
+        const t = this.trends[+c.dataset.mini];
+        if (t) c.querySelector('.ms').textContent = miniRange(t);
+        c.querySelector('.mguide').hidden = true;
+      });
     },
   };
 
@@ -998,6 +1057,12 @@
   let timer = null;
   let current = 'glance';
 
+  // Deep link from a push notification: /companion?tab=alerts.
+  function tabFromUrl(search) {
+    const t = new URLSearchParams(search == null ? location.search : search).get('tab');
+    return (t && SCREENS[t]) ? t : null;
+  }
+
   // force=true on an explicit refresh: controllers skip their own throttles so
   // a pull-to-refresh really re-reads everything, not just the cheap polls.
   const refreshCurrent = (force) => {
@@ -1114,6 +1179,13 @@
       const repaint = () => { if (!$('scr-settings').hidden) paintPush(); };
       navigator.serviceWorker.ready.then(repaint).catch(() => {});
       navigator.serviceWorker.addEventListener('controllerchange', repaint);
+      // Tapping an alarm notification lands here when the app is already open.
+      navigator.serviceWorker.addEventListener('message', (e) => {
+        const d = e.data || {};
+        if (d.type !== 'lsm-open' || !d.url) return;
+        const t = tabFromUrl(new URL(d.url, location.origin).search);
+        if (t) show(t);
+      });
     }
     alerts.start();
     models.start();
@@ -1148,6 +1220,10 @@
           + new Date(r.hour_ts * 1000).toLocaleTimeString('en', { hour: 'numeric' });
       },
     }));
+    $('glanceMinis').addEventListener('pointerdown', (e) => glance.scrubMini(e));
+    $('glanceMinis').addEventListener('pointermove', (e) => {
+      if (e.buttons) glance.scrubMini(e);
+    });
     $('energyDayBars').addEventListener('pointerdown', (e) => {
       const svg = $('energyDayBars'), days = energy.days || [];
       if (!days.length) return;
@@ -1180,7 +1256,7 @@
     $('btnTest').addEventListener('click', testPush);
     $('tabbar').querySelectorAll('.tab').forEach((b) =>
       b.addEventListener('click', () => show(b.dataset.tab)));
-    show('glance');
+    show(tabFromUrl() || 'glance');
     pollBadge();
     setInterval(pollBadge, 30000);
   });
