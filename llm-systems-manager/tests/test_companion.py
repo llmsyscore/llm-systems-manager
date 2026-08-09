@@ -800,7 +800,6 @@ class TestReleaseNotesContract:
     def test_the_stamp_reader_matches_this_repo_s_declarations(self):
         # Mirrors the sed in release.yml: if a component ever renames or
         # reformats its version line, this fails before a release does.
-        import re
         from pathlib import Path
         root = Path(__file__).resolve().parents[2]
         for rel, name in (

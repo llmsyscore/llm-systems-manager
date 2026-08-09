@@ -51,9 +51,11 @@ jobs:
           for v in "$MGR" "$AE" "$AGENT"; do
             [ -n "$v" ] || { echo "::error::could not read a version stamp"; exit 1; }
           done
-          echo "manager=$MGR" >> "$GITHUB_OUTPUT"
-          echo "ae=$AE" >> "$GITHUB_OUTPUT"
-          echo "agent=$AGENT" >> "$GITHUB_OUTPUT"
+          {
+            echo "manager=$MGR"
+            echo "ae=$AE"
+            echo "agent=$AGENT"
+          } >> "$GITHUB_OUTPUT"
           echo "manager=$MGR ae=$AE agent=$AGENT"
 
       - name: Build tarball + SHA-256 checksum

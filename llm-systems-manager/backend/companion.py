@@ -105,6 +105,8 @@ def _installed_release() -> dict:
             out.update(tag=_base_tag(raw), describe=raw, source="release-file")
         # else: unsubstituted placeholder => this is a git checkout, fall through
     except Exception:
+        # No RELEASE file, or it is unreadable — a normal state for a git
+        # checkout. The next resolution step answers instead.
         pass
 
     # 2. git checkout.
