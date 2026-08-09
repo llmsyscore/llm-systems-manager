@@ -28,6 +28,7 @@ stamped in. Actions tab controls confirm via the bottom sheet.
   </header>
 
   <main class="screens">
+    <div class="ptr" id="ptr" aria-hidden="true"><span class="ptrspin">↻</span></div>
     <!-- GLANCE -->
     <section class="screen" id="scr-glance">
       <div class="strip" id="glanceStrip">
@@ -49,14 +50,18 @@ stamped in. Actions tab controls confirm via the bottom sheet.
 
     <!-- ALERTS -->
     <section class="screen" id="scr-alerts" hidden>
-      <div class="chips" id="alertChips">
-        <button class="chip on" data-filter="all">All</button>
-        <button class="chip" data-filter="critical">Critical</button>
-        <button class="chip" data-filter="warning">Warning</button>
-        <button class="chip" data-filter="resolved">Earlier</button>
+      <div class="chiprow">
+        <div class="chips" id="alertChips">
+          <button class="chip on" data-filter="all">All</button>
+          <button class="chip" data-filter="critical">Critical</button>
+          <button class="chip" data-filter="warning">Warning</button>
+          <button class="chip" data-filter="info">Info</button>
+          <button class="chip" data-filter="resolved">Earlier</button>
+        </div>
+        <button class="chip refreshbtn" id="alertsRefresh" aria-label="Refresh alerts">↻</button>
       </div>
       <div id="alertsFiring"></div>
-      <div id="alertsEarlierWrap" hidden>
+      <div class="stack" id="alertsEarlierWrap" hidden>
         <div class="resolvedhead">Earlier today</div>
         <div id="alertsEarlier"></div>
       </div>
@@ -89,8 +94,12 @@ stamped in. Actions tab controls confirm via the bottom sheet.
     <section class="screen" id="scr-actions" hidden>
       <div class="sec">Services</div>
       <div class="provwrap" id="actionsServices"></div>
-      <div class="sec">Model</div>
+      <div class="sec">Models</div>
       <div class="provwrap" id="actionsModel"></div>
+      <div class="stack" id="actionsPinsWrap" hidden>
+        <div class="sec">Pins on unloaded models</div>
+        <div class="provwrap" id="actionsPins"></div>
+      </div>
       <div class="sec">Autopilot</div>
       <div class="provwrap" id="actionsAutopilot"></div>
       <div class="sec">Agents</div>
@@ -128,7 +137,7 @@ stamped in. Actions tab controls confirm via the bottom sheet.
       </div>
       <div class="sec">Appearance</div>
       <div class="provwrap">
-        <div class="arow"><div class="atxt"><div class="an">Theme</div>
+        <div class="arow wrap"><div class="atxt"><div class="an">Theme</div>
           <div class="ad">Auto follows the dashboard theme</div></div>
           <div class="chips themechips" id="themeChips">
             <button class="chip" data-ctheme="auto">Auto</button>
@@ -138,7 +147,7 @@ stamped in. Actions tab controls confirm via the bottom sheet.
       </div>
       <div class="sec">Dashboard</div>
       <div class="provwrap">
-        <div class="arow"><div class="atxt"><div class="an">Full dashboard</div>
+        <div class="arow wrap"><div class="atxt"><div class="an">Full dashboard</div>
           <div class="ad">every tab, desktop layout</div></div>
           <a class="btn primary" href="/">Open</a></div>
       </div>
