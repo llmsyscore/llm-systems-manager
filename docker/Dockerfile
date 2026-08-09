@@ -11,6 +11,9 @@ WORKDIR /opt/llm-systems-manager
 ENV PYTHONUNBUFFERED=1 \
     LLM_SYSTEMS_CONFIG=/opt/llm-systems-manager/config/llm-systems.toml \
     LSM_CONTAINERIZED=1
+# COPY . bypasses git archive, so export-subst never fills RELEASE in an image;
+# the release workflow passes the tag instead.
+ARG RELEASE_TAG=
 
 
 FROM base AS manager
@@ -20,6 +23,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends gcc libc6-dev \
     && pip install --no-cache-dir -r /tmp/requirements.txt \
     && apt-get purge -y gcc libc6-dev && apt-get autoremove -y && rm -rf /var/lib/apt/lists/*
 COPY . .
+ARG RELEASE_TAG
+RUN if [ -n "$RELEASE_TAG" ]; then printf '%s\n' "$RELEASE_TAG" > RELEASE; fi
 # unified_config.py is gitignored; images build it from the sanitized example.
 RUN cp config/unified_config.py.example config/unified_config.py \
     && mkdir -p data llm-systems-alarm-engine/data /var/log/llm-systems-manager \
@@ -41,6 +46,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends gcc libc6-dev \
     && pip install --no-cache-dir -r /tmp/requirements.txt \
     && apt-get purge -y gcc libc6-dev && apt-get autoremove -y && rm -rf /var/lib/apt/lists/*
 COPY . .
+ARG RELEASE_TAG
+RUN if [ -n "$RELEASE_TAG" ]; then printf '%s\n' "$RELEASE_TAG" > RELEASE; fi
 RUN cp config/unified_config.py.example config/unified_config.py \
     && mkdir -p data llm-systems-alarm-engine/data /var/log/llm-systems-manager \
     && chown -R llmsys:llmsys /opt/llm-systems-manager /var/log/llm-systems-manager \

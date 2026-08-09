@@ -459,6 +459,11 @@
   };
 
   // ── Admin (read-only) ─────────────────────────────────────────────────────
+  // Silent unless there is genuinely something to install — "up to date" on
+  // one row and nothing on the next just read as an inconsistency.
+  const releaseNote = (rel) => (rel && rel.enabled && rel.update_available
+    ? (rel.latest || 'update') + ' available' : '');
+
   const admin = {
     async refresh() {
       // Non-admins can't read any of these; skipping the calls avoids a 403
@@ -549,7 +554,8 @@
         || '<div class="arow"><div class="atxt"><div class="an">No entries</div>'
           + '<div class="ad">admin actions are recorded here</div></div></div>';
     },
-    // Streams are overkill on a phone; the tail is one request and readable.
+    // Static snapshot by default; live tail is opt-in because an open SSE
+    // stream holds a manager worker and burns phone battery.
     async openLogs(id) {
       sheet.open('Agent log', '<div class="sd">loading…</div>');
       const gen = sheet.gen;
@@ -564,9 +570,39 @@
         return;
       }
       if (gen !== sheet.gen) return;
-      $('sheetBody').innerHTML = lines.length
-        ? `<pre class="logtail">${esc(lines.join('\n'))}</pre>`
-        : '<div class="sd">log is empty</div>';
+      $('sheetBody').innerHTML =
+        `<pre class="logtail">${esc(lines.length ? lines.join('\n') : '(log is empty)')}</pre>`
+        + '<button class="btn" data-tail>Start live tail</button>';
+      // Scoped to the sheet: the element is transient, so no global id for it.
+      const pre = $('sheetBody').querySelector('.logtail');
+      pre.scrollTop = pre.scrollHeight;
+      $('sheetBody').onclick = (e) => {
+        const b = e.target.closest('[data-tail]');
+        if (b) this.toggleTail(id, b);
+      };
+    },
+    toggleTail(id, btn) {
+      if (this._es) { this.stopTail(btn); return; }
+      const pre = $('sheetBody').querySelector('.logtail');
+      btn.textContent = 'Stop live tail';
+      btn.classList.add('danger');
+      const es = new EventSource(`/api/agents/${encodeURIComponent(id)}/log/stream`);
+      this._es = es;
+      this._esGen = sheet.gen;
+      es.onmessage = (ev) => {
+        if (sheet.gen !== this._esGen) { this.stopTail(); return; }
+        if (!pre.isConnected) { this.stopTail(); return; }
+        pre.textContent += (pre.textContent ? '\n' : '') + ev.data;
+        // Keep the buffer bounded; a chatty agent would grow it forever.
+        const ls = pre.textContent.split('\n');
+        if (ls.length > 400) pre.textContent = ls.slice(-400).join('\n');
+        pre.scrollTop = pre.scrollHeight;
+      };
+      es.onerror = () => { this.stopTail(btn); };
+    },
+    stopTail(btn) {
+      if (this._es) { this._es.close(); this._es = null; }
+      if (btn) { btn.textContent = 'Start live tail'; btn.classList.remove('danger'); }
     },
     start() {
       $('scr-admin').onclick = (e) => {
@@ -612,11 +648,6 @@
   };
 
   // ── Settings ──────────────────────────────────────────────────────────────
-  const releaseNote = (rel) => {
-    if (!rel || !rel.enabled) return '';
-    if (rel.update_available) return (rel.latest || 'update') + ' available';
-    return rel.update_available === null ? '' : 'up to date';
-  };
 
   const settings = {
     async refresh() {
@@ -638,10 +669,13 @@
       paintPush();
     },
     detail(rel) {
-      const base = 'installed ' + (rel.installed || rel.build || '—');
+      const base = rel.installed
+        ? 'installed ' + rel.installed + (rel.ahead ? ' +' + rel.ahead + ' commits' : '')
+        : (rel.install_kind || 'unknown') + ' install · build ' + (rel.build || '—');
       if (!rel.enabled) return base + ' · off — asks github.com when on';
       if (rel.error) return base + ' · check failed: ' + rel.error;
       if (rel.update_available === null) return base + ' · ' + (rel.note || 'no verdict');
+      if (rel.update_available) return base + ' · ' + (rel.latest || '—') + ' available';
       return base + ' · latest ' + (rel.latest || '—');
     },
     start() {
@@ -675,7 +709,12 @@
       $('sheet').hidden = false;
       $('sheetCancel').focus();
     },
-    close() { this.gen++; $('sheet').hidden = true; $('sheetBody').onclick = null; },
+    close() {
+      this.gen++;
+      $('sheet').hidden = true;
+      $('sheetBody').onclick = null;
+      if (admin._es) admin.stopTail();
+    },
     confirm(title, detail, label, danger, fn) {
       this.open(title,
         `<div class="sd">${esc(detail)}</div>`
@@ -1036,6 +1075,8 @@
       if (on) b.setAttribute('aria-current', 'page'); else b.removeAttribute('aria-current');
     });
     $('appTitle').textContent = cfg.title;
+    // Liveness is a Home-screen statement; on other tabs it just adds noise.
+    document.querySelector('.hostchip').hidden = tab !== 'glance';
     if (cfg.ctrl) {
       cfg.ctrl.refresh();
       // Paused while the confirm sheet is open or the app is backgrounded.

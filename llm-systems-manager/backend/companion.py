@@ -36,60 +36,136 @@ _SUBS_FILE = "push_subscriptions.json"
 
 # ── Release check (#541) ─────────────────────────────────────────────────────
 _DEFAULT_RELEASE_REPO = "llmsyscore/llm-systems-manager"
-_RELEASE_TTL_S = 6 * 3600
+_RELEASE_TTL_S = 24 * 3600
 _RELEASE_TIMEOUT_S = 5
+_RELEASE_FILE = "RELEASE"
 # enabled=None means "not overridden at runtime, read the config value".
-_release: dict = {"enabled": None, "checked_at": 0.0, "tag": None, "error": None}
+_release: dict = {"enabled": None, "checked_at": 0.0, "tag": None,
+                  "body": None, "error": None}
 _release_lock = threading.Lock()
 
 _VER_RE = re.compile(r"(\d+)")
+# A tag carrying any of these is a pre-release and must never be offered as an
+# update, whatever GitHub marked it.
+_PRE_RE = re.compile(r"[-.](rc|alpha|beta|pre)", re.I)
+# git archive rewrites this via export-subst; a git checkout keeps it literal.
+_SUBST_RE = re.compile(r"^\$Format:")
+
+
+def _base_tag(tag: str) -> str:
+    """Release portion of a tag: v1.2.0-rc1 -> v1.2.0, v1.1.1-9-gabc -> v1.1.1."""
+    return str(tag or "").strip().split("-", 1)[0]
 
 
 def _ver_key(tag: str) -> tuple:
-    """Numeric tuple for a vYYYY.MM.DD-N / semver tag; non-numeric parts drop."""
-    return tuple(int(n) for n in _VER_RE.findall(str(tag or "")))
+    """Numeric tuple for a semver-ish tag; non-numeric parts drop."""
+    return tuple(int(n) for n in _VER_RE.findall(_base_tag(tag)))
 
 
 def _newer(latest: str, current: str) -> bool:
+    """True only for a strictly newer FINAL release. Pre-releases never count:
+    keying the whole tag would rank v1.2.0-rc1 above v1.2.0."""
+    if _PRE_RE.search(str(latest or "")):
+        return False
     a, b = _ver_key(latest), _ver_key(current)
     return bool(a) and bool(b) and a > b
 
 
-def _installed_release() -> Optional[str]:
-    """The release tag this install came from, or None when it can't be known.
-    __version__ is a build stamp (vYYYY.MM.DD-N), not a release, so comparing
-    it against a GitHub tag would be meaningless. Only a git checkout can
-    answer; brew/deb/container installs return None and get no verdict."""
+def _repo_root() -> Path:
+    return Path(__file__).resolve().parents[2]
+
+
+def _run(cmd: "list[str]", cwd: "str | None" = None) -> Optional[str]:
     import subprocess
-    root = Path(__file__).resolve().parents[2]
-    if not (root / ".git").exists():
-        return None
     try:
-        out = subprocess.run(["git", "describe", "--tags", "--abbrev=0"],
-                             cwd=str(root), capture_output=True, text=True,
-                             timeout=5)
-        tag = (out.stdout or "").strip()
-        return tag if out.returncode == 0 and tag else None
-    except Exception as e:
-        log.debug("release describe failed: %s: %s", type(e).__name__, e)
+        r = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, timeout=5)
+        out = (r.stdout or "").strip()
+        return out if r.returncode == 0 and out else None
+    except Exception:
         return None
 
 
-def _latest_release(repo: str) -> "tuple[Optional[str], Optional[str]]":
-    """(tag, error) for the repo's latest release, cached for 6 h. Network
-    failures degrade to the cached tag and an error string, never an exception."""
+def _installed_release() -> dict:
+    """How this install identifies itself.
+
+    {tag, describe, ahead, source}. `source` is how it was determined:
+      release-file  a packaged build (tarball / brew / deb / rpm / image) —
+                    git archive's export-subst stamped the tag at build time
+      git           a git checkout, via `git describe`
+      dpkg / rpm    the system package database
+      None          nothing could identify it
+    """
+    out = {"tag": None, "describe": None, "ahead": 0, "source": None}
+    root = _repo_root()
+
+    # 1. Shipped RELEASE file — the only source every packaging channel shares.
+    try:
+        raw = (root / _RELEASE_FILE).read_text(encoding="utf-8").strip()
+        if raw and not _SUBST_RE.match(raw):
+            out.update(tag=_base_tag(raw), describe=raw, source="release-file")
+        # else: unsubstituted placeholder => this is a git checkout, fall through
+    except Exception:
+        pass
+
+    # 2. git checkout.
+    if not out["tag"] and (root / ".git").exists():
+        desc = _run(["git", "describe", "--tags"], cwd=str(root))
+        if desc:
+            out.update(tag=_base_tag(desc), describe=desc, source="git")
+
+    # 3. System package database.
+    if not out["tag"]:
+        for cmd, src in ((["dpkg-query", "-W", "-f=${Version}",
+                           "llm-systems-manager"], "dpkg"),
+                         (["rpm", "-q", "--qf", "%{VERSION}",
+                           "llm-systems-manager"], "rpm")):
+            v = _run(cmd)
+            if v:
+                # deb/rpm sanitize '-' to '~'; restore for comparison.
+                v = v.replace("~", "-")
+                out.update(tag=_base_tag("v" + v.lstrip("v")),
+                           describe=v, source=src)
+                break
+
+    if out["describe"]:
+        m = re.search(r"-(\d+)-g[0-9a-f]+$", out["describe"])
+        if m:
+            out["ahead"] = int(m.group(1))
+    return out
+
+
+def _install_kind() -> str:
+    """Coarse install type, for the UI and for choosing a fallback check."""
+    if os.path.exists("/.dockerenv") or os.path.exists("/run/.containerenv"):
+        return "container"
+    src = _installed_release()["source"]
+    if src == "release-file":
+        return "package"
+    if src in ("dpkg", "rpm"):
+        return src
+    if (_repo_root() / ".git").exists():
+        return "git"
+    return "unknown"
+
+
+def _latest_release(repo: str) -> "tuple[Optional[str], Optional[str], Optional[str]]":
+    """(tag, body, error) for the repo's latest release, cached 24 h. Network
+    failures degrade to the cached tag and an error string, never an exception.
+    Toggling the switch off and on clears checked_at, forcing a fresh read."""
     now = time.time()
     with _release_lock:
         if _release["tag"] and now - _release["checked_at"] < _RELEASE_TTL_S:
-            return _release["tag"], _release["error"]
-    tag = err = None
+            return _release["tag"], _release["body"], _release["error"]
+    tag = body = err = None
     try:
         import requests  # lazy: only on an opted-in check
         r = requests.get(f"https://api.github.com/repos/{repo}/releases/latest",
                          timeout=_RELEASE_TIMEOUT_S,
                          headers={"Accept": "application/vnd.github+json"})
         if r.status_code == 200:
-            tag = (r.json() or {}).get("tag_name")
+            data = r.json() or {}
+            tag = data.get("tag_name")
+            body = data.get("body") or ""
         else:
             err = f"github returned HTTP {r.status_code}"
     except Exception as e:
@@ -99,8 +175,9 @@ def _latest_release(repo: str) -> "tuple[Optional[str], Optional[str]]":
         _release["checked_at"] = now
         if tag:
             _release["tag"] = tag
+            _release["body"] = body
         _release["error"] = err
-        return _release["tag"], err
+        return _release["tag"], _release["body"], err
 
 
 # ── VAPID keys ───────────────────────────────────────────────────────────────
@@ -395,18 +472,29 @@ def register_routes(app, ctx, static_dir: Path) -> None:
         enabled = _release["enabled"]
         if enabled is None:
             enabled = bool(getattr(cfg, "release_check", False))
-        installed = _installed_release()
+        inst = _installed_release()
         out = {"ok": True, "enabled": enabled, "build": version,
-               "installed": installed, "repo": repo}
+               "installed": inst["tag"], "describe": inst["describe"],
+               "ahead": inst["ahead"], "source": inst["source"],
+               "install_kind": _install_kind(), "repo": repo}
         if not enabled:
             return jsonify(out)
-        latest, err = _latest_release(repo)
+        latest, body, err = _latest_release(repo)
         out["latest"] = latest
-        # No verdict without a known installed release — say so rather than
-        # comparing a release tag against a build stamp.
-        out["update_available"] = (bool(latest and _newer(latest, installed))
-                                   if installed and latest else None)
-        if not installed:
+        if inst["tag"] and latest:
+            out["update_available"] = _newer(latest, inst["tag"])
+        elif latest and body:
+            # Last resort for an install that can't name its release: the notes
+            # of each release carry the manager build stamp, so finding ours in
+            # the newest release's notes means we are already on it.
+            if version and version in body:
+                out["update_available"] = False
+                out["note"] = "matched this build in the latest release notes"
+            else:
+                out["update_available"] = None
+                out["note"] = "install has no release tag to compare"
+        else:
+            out["update_available"] = None
             out["note"] = "install has no release tag to compare"
         if err:
             out["error"] = err

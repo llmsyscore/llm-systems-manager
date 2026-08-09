@@ -189,6 +189,8 @@ jobs:
         uses: docker/build-push-action@v6
         with:
           context: .
+          build-args: |
+            RELEASE_TAG=${{ env.TAG }}
           file: docker/Dockerfile
           target: manager
           platforms: linux/amd64,linux/arm64
@@ -203,6 +205,8 @@ jobs:
         uses: docker/build-push-action@v6
         with:
           context: .
+          build-args: |
+            RELEASE_TAG=${{ env.TAG }}
           file: docker/Dockerfile
           target: alarm-engine
           platforms: linux/amd64,linux/arm64

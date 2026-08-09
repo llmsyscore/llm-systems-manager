@@ -60,6 +60,16 @@ Backend API endpoints consumed:
 </head>
 <body>
 
+<!-- Shown only when arrived from the companion (?from=companion). An installed
+     PWA keeps in-scope navigations inside its own window, which has no back
+     button, so the dashboard has to offer the way back itself. -->
+<a id="backToCompanion" href="/companion" hidden>&larr; Back to app</a>
+<script>
+  if (new URLSearchParams(location.search).get('from') === 'companion') {
+    document.getElementById('backToCompanion').hidden = false;
+  }
+</script>
+
 <h1>
   <a href="/" class="site-logo-link" title="Home">
     <!-- Concentric-ring "Context" logo. Colors from --brand-* :root vars

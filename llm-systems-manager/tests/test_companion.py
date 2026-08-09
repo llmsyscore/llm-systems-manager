@@ -617,10 +617,14 @@ class TestPushRoleGating:
 
 
 class TestReleaseCheck:
+    @staticmethod
+    def _inst(tag, source="git", ahead=0):
+        return {"tag": tag, "describe": tag, "ahead": ahead, "source": source}
+
     def test_disabled_by_default_makes_no_network_call(self, client, monkeypatch):
         called = []
         monkeypatch.setattr(companion, "_latest_release",
-                            lambda repo: called.append(repo) or (None, None))
+                            lambda repo: called.append(repo) or (None, None, None))
         monkeypatch.setitem(companion._release, "enabled", None)
         body = client.get("/api/companion/release").get_json()
         assert body["enabled"] is False
@@ -628,33 +632,62 @@ class TestReleaseCheck:
         assert called == []
 
     def test_enabled_reports_a_newer_tag(self, client, monkeypatch):
-        monkeypatch.setattr(companion, "_latest_release", lambda repo: ("v9.9.9", None))
-        monkeypatch.setattr(companion, "_installed_release", lambda: "v1.1.1")
+        monkeypatch.setattr(companion, "_latest_release", lambda repo: ("v9.9.9", "", None))
+        monkeypatch.setattr(companion, "_installed_release", lambda: self._inst("v1.1.1"))
         monkeypatch.setitem(companion._release, "enabled", True)
         body = client.get("/api/companion/release").get_json()
         assert body["latest"] == "v9.9.9"
         assert body["update_available"] is True
 
-    def test_no_verdict_when_the_install_has_no_release_tag(self, client, monkeypatch):
-        # brew / deb / container installs aren't git checkouts. Comparing the
-        # build stamp against a release tag would be meaningless.
-        monkeypatch.setattr(companion, "_latest_release", lambda repo: ("v9.9.9", None))
-        monkeypatch.setattr(companion, "_installed_release", lambda: None)
+    def test_a_release_candidate_is_never_offered_as_an_update(self, client, monkeypatch):
+        # Keying the whole tag ranked v1.2.0-rc1 above v1.2.0.
+        monkeypatch.setattr(companion, "_latest_release", lambda repo: ("v1.2.0-rc1", "", None))
+        monkeypatch.setattr(companion, "_installed_release", lambda: self._inst("v1.2.0"))
+        monkeypatch.setitem(companion._release, "enabled", True)
+        assert client.get("/api/companion/release").get_json()["update_available"] is False
+
+    def test_drift_past_a_tag_is_reported_but_is_not_an_update(self, client, monkeypatch):
+        monkeypatch.setattr(companion, "_latest_release", lambda repo: ("v1.1.1", "", None))
+        monkeypatch.setattr(companion, "_installed_release",
+                            lambda: {"tag": "v1.1.1", "describe": "v1.1.1-8-gabc1234",
+                                     "ahead": 8, "source": "git"})
+        monkeypatch.setitem(companion._release, "enabled", True)
+        body = client.get("/api/companion/release").get_json()
+        assert body["ahead"] == 8
+        assert body["describe"] == "v1.1.1-8-gabc1234"
+        assert body["update_available"] is False
+
+    def test_release_notes_fallback_when_the_install_cannot_name_itself(
+            self, client, monkeypatch):
+        # brew/deb/container with no RELEASE file: match this build stamp in
+        # the newest release's notes instead of guessing.
+        monkeypatch.setattr(companion, "_installed_release", lambda: self._inst(None, None))
+        monkeypatch.setattr(companion, "_latest_release",
+                            lambda repo: ("v9.9.9", f"manager {M.__version__}\nAE v1", None))
+        monkeypatch.setitem(companion._release, "enabled", True)
+        body = client.get("/api/companion/release").get_json()
+        assert body["update_available"] is False
+        assert "release notes" in body["note"]
+
+    def test_no_verdict_when_the_notes_do_not_mention_this_build(self, client, monkeypatch):
+        monkeypatch.setattr(companion, "_installed_release", lambda: self._inst(None, None))
+        monkeypatch.setattr(companion, "_latest_release",
+                            lambda repo: ("v9.9.9", "some other notes", None))
         monkeypatch.setitem(companion._release, "enabled", True)
         body = client.get("/api/companion/release").get_json()
         assert body["update_available"] is None
-        assert "note" in body
+        assert "no release tag" in body["note"]
 
     def test_same_release_is_not_an_update(self, client, monkeypatch):
-        monkeypatch.setattr(companion, "_latest_release", lambda repo: ("v1.1.1", None))
-        monkeypatch.setattr(companion, "_installed_release", lambda: "v1.1.1")
+        monkeypatch.setattr(companion, "_latest_release", lambda repo: ("v1.1.1", "", None))
+        monkeypatch.setattr(companion, "_installed_release", lambda: self._inst("v1.1.1"))
         monkeypatch.setitem(companion._release, "enabled", True)
         assert client.get("/api/companion/release").get_json()["update_available"] is False
 
     def test_github_failure_degrades_without_raising(self, client, monkeypatch):
         monkeypatch.setattr(companion, "_latest_release",
-                            lambda repo: (None, "ConnectionError"))
-        monkeypatch.setattr(companion, "_installed_release", lambda: "v1.1.1")
+                            lambda repo: (None, None, "ConnectionError"))
+        monkeypatch.setattr(companion, "_installed_release", lambda: self._inst("v1.1.1"))
         monkeypatch.setitem(companion._release, "enabled", True)
         body = client.get("/api/companion/release").get_json()
         assert body["ok"] is True
@@ -669,11 +702,55 @@ class TestReleaseCheck:
         monkeypatch.setitem(companion._release, "enabled", None)
         assert client.put("/api/companion/release",
                           json={"enabled": True}).get_json()["enabled"] is True
-        monkeypatch.setattr(companion, "_latest_release", lambda repo: (None, None))
+        monkeypatch.setattr(companion, "_latest_release", lambda repo: (None, None, None))
         assert client.get("/api/companion/release").get_json()["enabled"] is True
+
+    def test_toggling_clears_the_cache_so_the_next_read_refetches(self, client):
+        # 24 h TTL would otherwise pin a stale answer; flipping the switch is
+        # the operator's way of saying "check now".
+        companion._release["checked_at"] = 12345.0
+        client.put("/api/companion/release", json={"enabled": False})
+        assert companion._release["checked_at"] == 0.0
 
     def test_put_requires_the_enabled_field(self, client):
         assert client.put("/api/companion/release", json={}).status_code == 400
+
+
+class TestInstallIdentity:
+    def test_release_file_wins_and_marks_a_packaged_install(self, monkeypatch, tmp_path):
+        (tmp_path / "RELEASE").write_text("v1.2.3\n")
+        monkeypatch.setattr(companion, "_repo_root", lambda: tmp_path)
+        got = companion._installed_release()
+        assert got["tag"] == "v1.2.3"
+        assert got["source"] == "release-file"
+        assert companion._install_kind() == "package"
+
+    def test_unsubstituted_placeholder_is_not_a_release(self, monkeypatch, tmp_path):
+        # A git checkout keeps the literal $Format:...$ from export-subst.
+        (tmp_path / "RELEASE").write_text("$Format:%(describe:tags)$\n")
+        monkeypatch.setattr(companion, "_repo_root", lambda: tmp_path)
+        monkeypatch.setattr(companion, "_run", lambda *a, **k: None)
+        assert companion._installed_release()["source"] is None
+
+    def test_release_file_drift_suffix_is_parsed(self, monkeypatch, tmp_path):
+        (tmp_path / "RELEASE").write_text("v1.1.1-9-gfda4f2f\n")
+        monkeypatch.setattr(companion, "_repo_root", lambda: tmp_path)
+        got = companion._installed_release()
+        assert got == {"tag": "v1.1.1", "describe": "v1.1.1-9-gfda4f2f",
+                       "ahead": 9, "source": "release-file"}
+
+    def test_falls_back_to_the_package_database(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(companion, "_repo_root", lambda: tmp_path)
+        monkeypatch.setattr(companion, "_run",
+                            lambda cmd, cwd=None: "1.1.1" if cmd[0] == "dpkg-query" else None)
+        got = companion._installed_release()
+        assert got["tag"] == "v1.1.1"
+        assert got["source"] == "dpkg"
+
+    def test_nothing_identifiable_returns_no_source(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(companion, "_repo_root", lambda: tmp_path)
+        monkeypatch.setattr(companion, "_run", lambda *a, **k: None)
+        assert companion._installed_release()["tag"] is None
 
 
 class TestVersionCompare:

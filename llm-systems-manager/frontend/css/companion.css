@@ -321,3 +321,6 @@ body.companion {
   .strip { margin-left: 0; margin-right: 0; border-radius: 14px;
            border: 1px solid var(--border-soft); overflow: hidden; }
 }
+
+/* liveness pill is a Home-screen statement only */
+.hostchip[hidden] { display: none; }
