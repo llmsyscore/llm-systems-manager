@@ -84,10 +84,12 @@ body.companion {
 .strip .spark-line { fill: none; stroke: var(--accent); stroke-width: 1.75;
   stroke-linecap: round; stroke-linejoin: round; }
 .strip .spark-fill { stroke: none; }
-.strip .g0 { stop-color: var(--accent); stop-opacity: .22; }
+.strip .g0 { stop-color: var(--accent); stop-opacity: .34; }
+.strip .gm { stop-color: var(--accent); stop-opacity: .13; }
 .strip .g1 { stop-color: var(--accent); stop-opacity: 0; }
 .strip.energy .spark-line { stroke: var(--accent-2); }
-.strip.energy .g0 { stop-color: var(--accent-2); stop-opacity: .22; }
+.strip.energy .g0 { stop-color: var(--accent-2); stop-opacity: .34; }
+.strip.energy .gm { stop-color: var(--accent-2); stop-opacity: .13; }
 .strip.energy .g1 { stop-color: var(--accent-2); stop-opacity: 0; }
 
 /* tapped-point marker: an HTML overlay in CSS pixels, because the stretched
