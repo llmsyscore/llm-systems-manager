@@ -996,3 +996,94 @@ class TestPushNotify:
         body = notify.post(self.URL, headers=self.AUTH,
                            json={"title": "x"}).get_json()
         assert body["ok"] is False and body["failed"] == 1
+
+
+# ── fleet-wide history aggregation (#541 follow-up) ─────────────────────────
+
+class TestFleetAllHistory:
+    """The unscoped /api/history merge let the LAST host writing a timestamp
+    win, so an 8-host fleet's cpu_total was one arbitrary host per row and two
+    llama hosts' tok/s never summed. ?fleet=all aggregates per _FLEET_FIELD_AGG.
+    The alarm engine downsamples onto wall-clock boundaries, so every host
+    reports the same timestamps — this relies on that.
+    """
+
+    TS = "2026-08-09T23:40:00+00:00"
+
+    def _series(self, monkeypatch):
+        """Two hosts reporting cpu_total, gpu_temp and llama_tps at one ts."""
+        per_field = {
+            "cpu_total": [("h1", 10.0), ("h2", 30.0)],       # mean -> 20
+            "gpu_temp": [("h1", 50.0), ("h2", 70.0)],        # max  -> 70
+            "llama_tps": [("h1", 4.0), ("h2", 6.0)],         # sum  -> 10
+        }
+
+        def fake(base, source, metric_name, field, since_minutes, limit,
+                 hostname=None):
+            return field, [{"timestamp": self.TS, "value": v, "hostname": h}
+                           for h, v in per_field.get(field, [])]
+
+        monkeypatch.setattr(M, "_fetch_history_series", fake)
+        monkeypatch.setattr(M, "_alarm_engine_url", "http://ae.test")
+
+    def test_aggregate_combines_hosts_per_field_rule(self, monkeypatch):
+        self._series(monkeypatch)
+        rows = M._build_history_rows(1440, 100, aggregate=True)
+        assert len(rows) == 1
+        assert rows[0]["cpu_total"] == 20.0
+        assert rows[0]["gpu_temp"] == 70.0
+        assert rows[0]["llama_tps"] == 10.0
+
+    def test_the_unscoped_default_is_unchanged(self, monkeypatch):
+        """Existing callers (the dashboard) must not shift under this."""
+        self._series(monkeypatch)
+        rows = M._build_history_rows(1440, 100)
+        assert len(rows) == 1
+        # last-writer-wins, exactly as before
+        assert rows[0]["cpu_total"] == 30.0
+
+    def test_a_host_reporting_nothing_does_not_drag_the_mean(self, monkeypatch):
+        def fake(base, source, metric_name, field, since_minutes, limit,
+                 hostname=None):
+            if field != "cpu_total":
+                return field, []
+            return field, [
+                {"timestamp": self.TS, "value": 10.0, "hostname": "h1"},
+                {"timestamp": self.TS, "value": None, "hostname": "h2"},
+            ]
+
+        monkeypatch.setattr(M, "_fetch_history_series", fake)
+        monkeypatch.setattr(M, "_alarm_engine_url", "http://ae.test")
+        rows = M._build_history_rows(60, 100, aggregate=True)
+        assert rows[0]["cpu_total"] == 10.0
+
+    def test_duplicate_points_from_one_host_count_once(self, monkeypatch):
+        """A host emitting twice for the same bucket must not double its weight
+        in a mean — the per-host dict keeps the last value, not both."""
+        def fake(base, source, metric_name, field, since_minutes, limit,
+                 hostname=None):
+            if field != "cpu_total":
+                return field, []
+            return field, [
+                {"timestamp": self.TS, "value": 10.0, "hostname": "h1"},
+                {"timestamp": self.TS, "value": 20.0, "hostname": "h1"},
+                {"timestamp": self.TS, "value": 60.0, "hostname": "h2"},
+            ]
+
+        monkeypatch.setattr(M, "_fetch_history_series", fake)
+        monkeypatch.setattr(M, "_alarm_engine_url", "http://ae.test")
+        rows = M._build_history_rows(60, 100, aggregate=True)
+        assert rows[0]["cpu_total"] == 40.0  # mean(20, 60), not mean(10,20,60)
+
+    def test_route_serves_fleet_all(self, client, monkeypatch):
+        self._series(monkeypatch)
+        monkeypatch.setattr(M, "_history_scoped_cache", {})
+        r = client.get("/api/history?since_minutes=1440&fleet=all")
+        assert r.status_code == 200
+        rows = r.get_json()
+        assert rows and rows[0]["cpu_total"] == 20.0
+
+    def test_an_unknown_provider_is_still_rejected(self, client, monkeypatch):
+        monkeypatch.setattr(M, "_alarm_engine_url", "http://ae.test")
+        r = client.get("/api/history?fleet=not-a-provider")
+        assert r.status_code == 400

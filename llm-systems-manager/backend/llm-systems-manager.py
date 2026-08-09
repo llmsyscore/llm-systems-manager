@@ -156,7 +156,7 @@ def _local_hostname() -> str:
 # banner reads it. Bump suffix (-1, -2, …) for same-day iterations; roll
 # the date for a new day's first change.
 # ---------------------------------------------------------------------------
-__version__ = "v2026.08.09-4"
+__version__ = "v2026.08.09-5"
 
 # Wall-clock at first import (Cheroot main process); the shutdown banner
 # reads it for the uptime line.
@@ -972,10 +972,15 @@ def _fetch_history_series(base: str, source: str, metric_name: str, field: str,
         return field, []
 
 def _build_history_rows(since_minutes: int, limit: int,
-                        hostname: "str | None" = None) -> list[dict]:
+                        hostname: "str | None" = None,
+                        aggregate: bool = False) -> list[dict]:
     """Fan out parallel reads against the alarm engine and merge into rows.
     When hostname is set, every series is filtered to that one host (the AE's
-    /api/alarm/metrics/<source>/<name> endpoint takes a hostname query param)."""
+    /api/alarm/metrics/<source>/<name> endpoint takes a hostname query param).
+
+    aggregate=True combines every host reporting a field at the same timestamp
+    via _FLEET_FIELD_AGG instead of letting the last one written win. The AE
+    downsamples onto wall-clock boundaries, so all hosts share timestamps."""
     if not _alarm_engine_url:
         return []
     base = _alarm_engine_url.rstrip("/")
@@ -993,13 +998,25 @@ def _build_history_rows(since_minutes: int, limit: int,
                              since_minutes, limit, hostname)
         for src, name, field in fields
     ]
+    # accum[field][ts] = one value per reporting host, for the aggregate path.
+    accum: dict[str, dict[str, dict]] = {}
     for fut in futures:
         field, points = fut.result()
         for p in points:
             ts = p.get("timestamp")
             if not ts:
                 continue
-            rows_by_ts.setdefault(ts, {"ts": ts})[field] = p.get("value")
+            if aggregate:
+                host = p.get("hostname") or ""
+                accum.setdefault(field, {}).setdefault(ts, {})[host] = p.get("value")
+            else:
+                rows_by_ts.setdefault(ts, {"ts": ts})[field] = p.get("value")
+    for field, by_ts in accum.items():
+        agg = _FLEET_FIELD_AGG.get(field, "mean")
+        for ts, per_host in by_ts.items():
+            v = _agg_values(agg, list(per_host.values()))
+            if v is not None:
+                rows_by_ts.setdefault(ts, {"ts": ts})[field] = v
     return sorted(rows_by_ts.values(), key=lambda r: r["ts"])
 
 
@@ -1237,7 +1254,15 @@ def get_history():
         fetch_since = min(since_minutes, 43200)
         fetch_limit = min(limit, 10000) if limit > 0 else HISTORY_FETCH_LIMIT
         # fleet wins if both params are sent (the frontend never sends both).
-        if fleet:
+        if fleet == "all":
+            # Every reporting host, provider-agnostic: one fetch per field
+            # (each response already carries every host) aggregated per
+            # _FLEET_FIELD_AGG. Costs the same as the unscoped path.
+            rows = _history_scoped(
+                ("fleet", "all"), fetch_since, fetch_limit,
+                lambda: _build_history_rows(fetch_since, fetch_limit,
+                                            aggregate=True))
+        elif fleet:
             if fleet not in providers.names():
                 return jsonify({"ok": False, "error": f"unknown provider: {fleet}"}), 400
             rows = _history_scoped(

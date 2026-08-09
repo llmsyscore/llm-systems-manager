@@ -459,7 +459,7 @@ def _manifest() -> dict:
     return {
         "id": "/companion",
         "name": "LLM Systems Manager",
-        "short_name": "LLM Manager",
+        "short_name": "LLM Systems Manager",
         "description": "Phone companion for the LLM Systems Manager dashboard",
         "start_url": "/companion",
         "scope": "/",

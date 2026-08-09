@@ -135,6 +135,35 @@ describe('CView.glance', () => {
     expect(g.tiles[0].hot).toBe(true);
   });
 
+  // The live GPU block comes from the PRIMARY llama agent, which need not be
+  // the host holding the GPU — the tiles read blank while the minis plotted.
+  describe('GPU tiles fall back to fleet history', () => {
+    const trends = [
+      { key: 'gpu_temp', last: 56 },
+      { key: 'gpu_vram', last: 19 },
+    ];
+
+    it('uses the newest history sample when the live block has no GPU', () => {
+      const g = CView.glance({ metrics: {}, trends });
+      expect(g.tiles[0]).toMatchObject({ v: '56', unit: '°C', meter: 56 });
+      expect(g.tiles[1]).toMatchObject({ v: '19', unit: '%', meter: 19 });
+    });
+
+    it('the live sample still wins when it has one', () => {
+      const g = CView.glance({
+        metrics: { gpu: { temperature_c: 71, vram_used_mb: 12288,
+          vram_usage_percent: 50 } }, trends });
+      expect(g.tiles[0].v).toBe('71');
+      expect(g.tiles[1]).toMatchObject({ v: '12.0', unit: '/ 24 GB' });
+    });
+
+    it('still dashes when neither source has it', () => {
+      const g = CView.glance({ metrics: {}, trends: [] });
+      expect(g.tiles[0].v).toBe('—');
+      expect(g.tiles[1].v).toBe('—');
+    });
+  });
+
   // #541: cross-provider summary above the per-provider rows.
   describe('fleet tiles', () => {
     const busy = {
@@ -149,10 +178,30 @@ describe('CView.glance', () => {
                       requests_waiting: 2 } },
     };
 
-    it('throughput sums generation and prompt across every provider', () => {
+    // Rates read 0 between requests, so the headline is work done over the
+    // window, integrated from the rate series.
+    it('generated reads 24 h TOTAL tokens, not the instantaneous rate', () => {
+      const hist = [];
+      for (let i = 0; i <= 24; i++) hist.push({ t: NOW - (24 - i) * 3600, v: 10, p: 2 });
+      const f = CView.glance({ ...busy, hist }).fleet;
+      // 10 tok/s across 24 one-hour steps = 864 000 generated, 172 800 prompt.
+      expect(f[0]).toMatchObject({ k: 'Generated · 24 h', v: '864k', unit: 'tokens' });
+      expect(f[0].sub).toBe('avg 10.0 tok/s · prompt 173k');
+    });
+
+    it('a reporting gap is not counted as work done', () => {
+      // 2 h hole: integrating straight across would invent 72 000 tokens.
+      const f = CView.glance({ ...busy, hist: [
+        { t: NOW - 10800, v: 10, p: 0 }, { t: NOW - 7200, v: 10, p: 0 },
+        { t: NOW, v: 10, p: 0 },
+      ] }).fleet;
+      expect(f[0].v).toBe('36k');
+    });
+
+    it('falls back to the live rate when there is no history', () => {
       const f = CView.glance(busy).fleet;
-      expect(f[0]).toMatchObject({ k: 'Throughput', v: '59.7', unit: 'tok/s' });
-      expect(f[0].sub).toBe('prompt 350.0 tok/s');
+      expect(f[0].v).toBe('—');
+      expect(f[0].sub).toBe('idle · 59.7 tok/s now');
     });
 
     it('in-flight takes llama\'s larger of slots/processing plus vLLM', () => {
@@ -177,9 +226,9 @@ describe('CView.glance', () => {
       expect(f[3].sub).toMatch(/^at /);
     });
 
-    it('an idle fleet reads zero, not dashes, and says so', () => {
+    it('an idle fleet says so rather than showing dashes everywhere', () => {
       const f = CView.glance({ metrics: { llama: { tokens_per_second: 0 } } }).fleet;
-      expect(f[0]).toMatchObject({ v: '0.0', sub: 'generation only' });
+      expect(f[0]).toMatchObject({ v: '—', sub: 'idle · 0.0 tok/s now' });
       expect(f[1].sub).toBe('nothing queued');
       expect(f[2]).toMatchObject({ v: '0', unit: 'models', sub: 'none loaded' });
       expect(f[3]).toMatchObject({ v: '—', sub: 'no history yet' });
@@ -209,6 +258,9 @@ describe('CView.trends', () => {
     expect(t[1]).toMatchObject({ unit: '°C', min: 50, max: 71 });
     expect(t[1].avg).toBeCloseTo((50 + 71 + 64) / 3);
     expect(t[0].pts).toHaveLength(3);
+    // `last` backs the System tiles when the live GPU block is absent.
+    expect(t[0].last).toBe(55);
+    expect(t[1].last).toBe(64);
   });
 
   it('drops a metric the history never carried rather than drawing a flat line', () => {
@@ -252,6 +304,18 @@ describe('CView.alerts', () => {
     { alert_id: 'a4', severity: 'info', status: 'active', category: 'info', message: 'Download complete',
       metric_source: 'manager', metric_name: 'downloads', created_at: (NOW - 10800) * 1000 },
   ];
+
+  it('names the rule that fired, without repeating the message', () => {
+    const rows = CView.alerts([
+      { ...list[0], rule_name: 'GPU over 90 °C' },
+      { ...list[1], rule_name: 'VRAM 95% for 10 min' },   // same as its message
+      { ...list[3] },                                      // no rule at all
+    ], NOW).firing;
+    expect(rows[0].rule).toBe('GPU over 90 °C');
+    expect(rows[0].msg).toBe('GPU temperature 91 °C ≥ 90 °C');
+    expect(rows[1].rule).toBe('');
+    expect(rows[2].rule).toBe('');
+  });
 
   it('splits firing from earlier; active info alerts fire, closed ones are earlier', () => {
     const m = CView.alerts(list, NOW);

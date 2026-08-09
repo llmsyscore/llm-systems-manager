@@ -172,18 +172,20 @@
     hist: [],            // [{t, v: gen tok/s, p: prompt tok/s}] over 24 h
     trends: [],          // mini trend cards, derived from the same rows
     histAt: 0,
-    // Fleet token rates from the alarm engine; refreshed every 5 min on the
-    // 2 s poll, immediately on an explicit refresh. Falls back to the live
-    // buffer when it returns nothing.
+    // Fleet history from the alarm engine, refreshed every 60 s on the 2 s
+    // poll and immediately on an explicit refresh. Falls back to the live
+    // buffer when it returns nothing. fleet=all aggregates ACROSS hosts —
+    // the unscoped endpoint lets the last host writing a timestamp win.
     async loadHistory(force) {
       const now = Date.now() / 1000;
-      if (!force && now - this.histAt < 300) return;
+      if (!force && now - this.histAt < 60) return;
       const sum = (r, keys) => {
         const v = keys.map((k) => r[k]).filter((x) => typeof x === 'number' && isFinite(x));
         return v.length ? v.reduce((a, b) => a + b, 0) : 0;
       };
       try {
-        const raw = await jfetch('/api/history?since_minutes=1440&max_rows=180');
+        const raw = await jfetch(
+          '/api/history?since_minutes=1440&max_rows=180&fleet=all');
         const rows = Array.isArray(raw) ? raw : [];
         this.trends = CV.trends(rows);
         this.hist = rows.map((r) => ({
@@ -207,7 +209,7 @@
       // Before the view model: the fleet tiles read the 24 h peak off it.
       await this.loadHistory(force);
       const vm = CV.glance({ metrics: m, llama: ls, lms, vllm, energy: en,
-        hist: this.hist });
+        hist: this.hist, trends: this.trends });
       // Live buffer backs the strip only when history is unavailable. Drop
       // samples older than the window so a backgrounded app doesn't redraw a
       // frozen trace when it comes forward.
@@ -215,6 +217,10 @@
       this.buf.push({ t: nowS, v: vm.hero.tps, p: 0 });
       this.buf = this.buf.filter((s) => nowS - s.t < 300).slice(-150);
       this.render(vm);
+      $('glanceUpdated').textContent = 'updated ' + new Date()
+        .toLocaleTimeString('en', { hour: 'numeric', minute: '2-digit',
+          second: '2-digit' })
+        + (this.histAt ? ' · trends ' + CV.clockAt(this.histAt) : '');
     },
     // 24 h history when the alarm engine has it, else the live 2 s buffer.
     series() {
@@ -290,8 +296,9 @@
     row(a) {
       const ack = a.ackable
         ? `<button class="ackbtn" data-ack="${esc(a.id)}">Ack</button>` : '';
+      const rule = a.rule ? `<div class="aw rule">${esc(a.rule)}</div>` : '';
       return `<div class="alert"><div class="sev ${a.sev}">${esc(a.glyph)}</div>`
-        + `<div class="atext"><div class="am">${esc(a.msg)}</div>`
+        + `<div class="atext"><div class="am">${esc(a.msg)}</div>${rule}`
         + `<div class="aw">${esc(a.meta)}</div>`
         + `<div class="sevword ${a.tone || a.sev}">${esc(a.word)}</div></div>${ack}</div>`;
     },
@@ -1001,13 +1008,38 @@
     $('pushStatus').textContent = !ready ? 'service worker installing…'
       : perm === 'denied' ? 'blocked — re-allow in site settings'
         : sub ? 'subscribed' : (standalone() ? 'not subscribed' : 'add to Home Screen first (iOS)');
-    $('btnEnable').disabled = !!sub || !ready;
+    // One button, two states: the same control that opted this device in
+    // takes it back out again.
+    const btn = $('btnEnable');
+    btn.textContent = sub ? 'Disable' : 'Enable';
+    btn.classList.toggle('danger', !!sub);
+    btn.disabled = !ready;
     $('btnTest').disabled = !sub;
     try {
       const s = await jfetch('/api/companion/push/subscriptions');
       $('pushCount').textContent = s.count + (s.count === 1 ? ' device' : ' devices');
     } catch (_) { $('pushCount').textContent = '—'; }
   }
+  // Drops this device only: unsubscribe locally, then remove the stored
+  // endpoint so the manager stops sending to a subscription that is gone.
+  async function disablePush() {
+    const sub = await subscription();
+    if (!sub) { paintPush(); return; }
+    $('pushMsg').textContent = 'unregistering…';
+    try {
+      await sub.unsubscribe().catch(() => {});
+      await jpost('/api/companion/push/unsubscribe', { endpoint: sub.endpoint });
+      $('pushMsg').textContent = 'this device will no longer be notified';
+    } catch (err) {
+      $('pushMsg').textContent = 'unregister failed: ' + (err && err.message || err);
+    }
+    paintPush();
+  }
+
+  async function togglePush() {
+    return (await subscription()) ? disablePush() : enablePush();
+  }
+
   async function enablePush() {
     if (!('Notification' in window) || !_reg || !_reg.pushManager) {
       $('pushMsg').textContent = 'push needs an installed app (iOS 16.4+)'; return;
@@ -1252,7 +1284,7 @@
       else localStorage.setItem('companionTheme', c.dataset.ctheme);
       applyTheme();
     });
-    $('btnEnable').addEventListener('click', enablePush);
+    $('btnEnable').addEventListener('click', togglePush);
     $('btnTest').addEventListener('click', testPush);
     $('tabbar').querySelectorAll('.tab').forEach((b) =>
       b.addEventListener('click', () => show(b.dataset.tab)));

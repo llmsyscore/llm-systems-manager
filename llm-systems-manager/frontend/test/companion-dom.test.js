@@ -30,12 +30,23 @@ describe('companion DOM contract', () => {
   });
 
   it('Home carries the cross-provider fleet tiles and the 24 h trend cards', () => {
-    for (const id of ['glanceFleet', 'glanceMinis']) {
+    for (const id of ['glanceFleet', 'glanceMinis', 'glanceUpdated']) {
       expect(htmlIds.has(id), id).toBe(true);
     }
     // The mini sparklines reference the strip's gradient by id.
     expect(htmlIds.has('glanceGrad')).toBe(true);
     expect(js.includes("url(#glanceGrad)")).toBe(true);
+  });
+
+  it('the 24 h cards read fleet-aggregated history, not one arbitrary host', () => {
+    // The unscoped endpoint lets the last host writing a timestamp win, which
+    // interleaved 8 hosts' CPU into one series.
+    expect(js.includes('fleet=all')).toBe(true);
+  });
+
+  it('the push opt-in button also takes the device back out', () => {
+    expect(js.includes('togglePush')).toBe(true);
+    expect(js.includes("'/api/companion/push/unsubscribe'")).toBe(true);
   });
 
   it('a push notification can deep-link into a tab', () => {

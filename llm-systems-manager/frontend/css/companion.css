@@ -73,6 +73,10 @@ body.companion {
 .muted-note { color: var(--fg-muted); font-size: 13.5px; text-align: center; padding: 24px 12px; line-height: 1.5; }
 .muted-note .big { display: block; font-size: 15px; color: var(--fg); font-weight: 600; margin-bottom: 6px; }
 
+/* last-updated stamp above the hero strip */
+.updrow { font-family: var(--mono); font-size: 10.5px; color: var(--fg-dim);
+  text-align: right; padding: 0 2px; margin-bottom: -6px; }
+
 /* signature hero strip */
 .strip {
   flex: none; margin: 0 -14px 2px; position: relative; background: var(--bg-elev);
@@ -205,6 +209,9 @@ body.companion {
 .sev.info { color: var(--accent); }
 .alert .am { font-size: 14px; font-weight: 600; line-height: 1.35; }
 .alert .aw { font-family: var(--mono); font-size: 11.5px; color: var(--fg-muted); margin-top: 3px; }
+/* which rule fired, above the metric/host line */
+.alert .aw.rule { color: var(--fg-dim); }
+.alert .aw.rule::before { content: "▸ "; }
 .alert .sevword { font-family: var(--mono); font-size: 10.5px; letter-spacing: .1em; text-transform: uppercase; margin-top: 3px; }
 .alert .sevword.crit { color: var(--crit); } .alert .sevword.warn { color: var(--warn); } .alert .sevword.ok { color: var(--ok); }
 .alert .sevword.info { color: var(--accent); }

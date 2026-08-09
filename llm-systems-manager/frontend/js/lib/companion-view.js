@@ -78,6 +78,37 @@
 
   const hostKey = (s) => sysBlock(s).host || (s || {}).host || (s || {}).agent_id || null;
 
+  // 1234567 -> "1.2M". Token counts get large; the tile has ~6 characters.
+  function compact(v) {
+    if (num(v) == null) return '—';
+    const a = Math.abs(v);
+    if (a >= 1e9) return (v / 1e9).toFixed(1) + 'B';
+    if (a >= 1e6) return (v / 1e6).toFixed(1) + 'M';
+    if (a >= 1e3) return (v / 1e3).toFixed(a >= 1e4 ? 0 : 1) + 'k';
+    return String(Math.round(v));
+  }
+
+  // Totals over the 24 h rate series: tokens are the integral of tok/s, so a
+  // bursty workload reads as work done instead of a mostly-zero instant rate.
+  // A gap longer than an hour is a reporting outage, not idle time.
+  function window24(hist) {
+    const h = Array.isArray(hist) ? hist : [];
+    const out = { gen: 0, prompt: 0, seconds: 0, avgGen: 0, peak: 0, peakAt: null };
+    for (let i = 1; i < h.length; i++) {
+      const dt = (num(h[i].t) || 0) - (num(h[i - 1].t) || 0);
+      if (!(dt > 0) || dt > 3600) continue;
+      out.gen += (num(h[i].v) || 0) * dt;
+      out.prompt += (num(h[i].p) || 0) * dt;
+      out.seconds += dt;
+    }
+    h.forEach((p) => {
+      const v = num(p.v) || 0;
+      if (v > out.peak) { out.peak = v; out.peakAt = p.t; }
+    });
+    if (out.seconds > 0) out.avgGen = out.gen / out.seconds;
+    return out;
+  }
+
   // ── Glance ──────────────────────────────────────────────────────────────
   function glance(d) {
     d = d || {};
@@ -144,10 +175,19 @@
         vllmRunning ? (vllm.model || null) : null, vllmGpu),
     ];
 
-    const temp = num(gpu.temperature_c);
-    const vramPct = num(gpu.vram_usage_percent);
+    // The GPU block comes from the PRIMARY llama agent, which on a split
+    // fleet may not be the host with the GPU. Fall back to the newest fleet
+    // history sample so the tiles aren't blank while the mini graphs plot.
+    const trendLast = {};
+    (Array.isArray(d.trends) ? d.trends : []).forEach((t) => {
+      if (t && t.key) trendLast[t.key] = num(t.last);
+    });
+    const temp = num(gpu.temperature_c) != null ? gpu.temperature_c : trendLast.gpu_temp;
+    const vramPct = num(gpu.vram_usage_percent) != null
+      ? gpu.vram_usage_percent : trendLast.gpu_vram;
     const vramUsedGb = num(gpu.vram_used_mb) != null ? gpu.vram_used_mb / 1024 : null;
-    const vramTotalGb = (vramUsedGb != null && vramPct) ? vramUsedGb / (vramPct / 100) : null;
+    const vramTotalGb = (vramUsedGb != null && num(gpu.vram_usage_percent))
+      ? vramUsedGb / (gpu.vram_usage_percent / 100) : null;
     const enT = en.totals || {};
     // Input power sums every provider sample that reports power, deduped by
     // host, then falls back to the energy accumulator's fleet average.
@@ -174,8 +214,6 @@
       return f.length ? f.reduce((a, b) => a + b, 0) : null;
     };
     const genTps = total([lm.tokens_per_second, gr.gen_tps, vllm.tokens_per_second]);
-    const proTps = total([lm.prompt_tokens_per_second, gr.prompt_tps,
-      vllm.prompt_tokens_per_second]);
     // llama reports slots and in-flight requests separately; take the larger.
     // null (not 0) with neither present, so "no telemetry" reads as a dash.
     const llamaBusy = (num(lm.requests_processing) == null
@@ -186,30 +224,35 @@
     const queued = total([lm.requests_deferred, vllm.requests_waiting]);
     const loadedOn = [llamaResident ? 'llama.cpp' : null, lmsModel ? 'LM Studio' : null,
       (vllmRunning && vllm.model) ? 'vLLM' : null].filter(Boolean);
-    // Generated only, so the peak is the same quantity the Throughput tile
-    // leads with rather than a much larger gen+prompt total.
-    let peak = null;
-    (Array.isArray(d.hist) ? d.hist : []).forEach((h) => {
-      const v = num(h.v) || 0;
-      if (peak == null || v > peak.v) peak = { v, t: h.t };
-    });
+    // Rates are bursty — they read 0 between requests — so the headline is the
+    // window TOTAL, integrated from the rate series. Counters would reset on a
+    // provider restart; the rate series doesn't.
+    const win = window24(d.hist);
     const fleet = [
-      { v: genTps != null ? genTps.toFixed(1) : '—', unit: 'tok/s', k: 'Throughput',
-        sub: num(proTps) ? 'prompt ' + proTps.toFixed(1) + ' tok/s' : 'generation only' },
+      { v: win.gen > 0 ? compact(win.gen) : '—', unit: 'tokens',
+        k: 'Generated · 24 h',
+        sub: win.gen > 0
+          ? 'avg ' + win.avgGen.toFixed(1) + ' tok/s · prompt ' + compact(win.prompt)
+          : (genTps != null ? 'idle · ' + genTps.toFixed(1) + ' tok/s now'
+            : 'no history yet') },
       { v: inflight != null ? String(Math.round(inflight)) : '—', unit: 'req',
         k: 'In flight',
         sub: num(queued) ? Math.round(queued) + ' queued' : 'nothing queued' },
       { v: String(loadedOn.length), unit: loadedOn.length === 1 ? 'model' : 'models',
         k: 'Loaded', sub: loadedOn.join(' + ') || 'none loaded' },
-      { v: peak && peak.v > 0 ? peak.v.toFixed(0) : '—', unit: 'tok/s', k: '24 h peak',
-        sub: peak && peak.v > 0 && peak.t ? 'at ' + clockAt(peak.t) : 'no history yet' },
+      { v: win.peak > 0 ? win.peak.toFixed(0) : '—', unit: 'tok/s', k: '24 h peak',
+        sub: win.peak > 0 && win.peakAt ? 'at ' + clockAt(win.peakAt)
+          : 'no history yet' },
     ];
 
     const tiles = [
       { v: round(temp) != null ? String(round(temp)) : '—', unit: '°C',
         k: 'GPU temperature', meter: clampPct(temp), hot: num(temp) != null && temp >= 85 },
-      { v: vramUsedGb != null ? vramUsedGb.toFixed(1) : '—',
-        unit: vramTotalGb != null ? '/ ' + Math.round(vramTotalGb) + ' GB' : 'GB',
+      // GB when the live sample carries them, else the fleet history's percent.
+      { v: vramUsedGb != null ? vramUsedGb.toFixed(1)
+        : (num(vramPct) != null ? String(Math.round(vramPct)) : '—'),
+        unit: vramUsedGb != null
+          ? (vramTotalGb != null ? '/ ' + Math.round(vramTotalGb) + ' GB' : 'GB') : '%',
         k: 'VRAM', meter: clampPct(vramPct), hot: num(vramPct) != null && vramPct >= 85 },
       { v: round(watts) != null ? String(round(watts)) : '—', unit: 'W',
         k: 'Input power', sub: wattsSub },
@@ -258,6 +301,7 @@
       return {
         key: s.key, name: s.name, unit: s.unit, dp: s.dp, pts,
         avg: vals.length ? vals.reduce((a, b) => a + b, 0) / vals.length : null,
+        last: vals.length ? vals[vals.length - 1] : null,
         min: vals.length ? Math.min(...vals) : null,
         max: vals.length ? Math.max(...vals) : null,
       };
@@ -297,10 +341,13 @@
       : a.created_at;
     const host = a.source_host || '—';
     const path = [a.metric_source, a.metric_name].filter(Boolean).join('/') || 'event';
+    const msg = a.message || (a.rule_name || path);
     return {
       id: a.alert_id,
       sev, tone, glyph: SEV_GLYPH[sev], word,
-      msg: a.message || (a.rule_name || path),
+      msg,
+      // Which rule fired. Suppressed when the message already IS the rule name.
+      rule: (a.rule_name && a.rule_name !== msg) ? a.rule_name : '',
       meta: path + ' · ' + host + ' · ' + age(when, nowSec),
       // Resolved/info rows never offer Ack, whatever their status field says.
       ackable: a.status === 'active' && !(resolved || info),
