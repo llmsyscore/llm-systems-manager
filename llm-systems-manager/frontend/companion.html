@@ -7,7 +7,7 @@ stamped in. Actions tab controls confirm via the bottom sheet.
 <html lang="en">
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
   <title>LLM Systems Manager</title>
   <meta name="mgr-version" content="__MGR_VERSION__">
   <link rel="manifest" href="/manifest.webmanifest">
@@ -33,14 +33,29 @@ stamped in. Actions tab controls confirm via the bottom sheet.
     <section class="screen" id="scr-glance">
       <div class="strip" id="glanceStrip">
         <svg viewBox="0 0 340 118" preserveAspectRatio="none" aria-hidden="true">
-          <path class="spark-fill" id="glanceSparkFill" d=""></path>
-          <path class="spark-line" id="glanceSparkLine" d=""></path>
+          <defs>
+            <linearGradient id="glanceGrad" x1="0" y1="0" x2="0" y2="1">
+              <stop class="g0" offset="0"></stop>
+              <stop class="gm" offset="0.55"></stop>
+              <stop class="g1" offset="1"></stop>
+            </linearGradient>
+          </defs>
+          <path class="spark-fill" id="glanceSparkFill" fill="url(#glanceGrad)" d=""></path>
+          <path class="spark-line prompt" id="glanceSparkPrompt" vector-effect="non-scaling-stroke" d=""></path>
+          <path class="spark-line" id="glanceSparkLine" vector-effect="non-scaling-stroke" d=""></path>
         </svg>
+        <div class="legend" id="glanceLegend" hidden>
+          <span class="k gen">generated</span><span class="k pr">prompt</span>
+        </div>
+        <div class="marker" id="glanceMarker" hidden>
+          <div class="mline"></div><div class="mdot alt" hidden></div><div class="mdot"></div>
+        </div>
         <div class="hero">
           <div class="n" id="glanceHeroN">—</div>
           <div class="l" id="glanceHeroL">—</div>
         </div>
         <div class="win" id="glanceWin">live</div>
+        <div class="readout" id="glanceReadout" role="status"></div>
       </div>
       <div class="sec">Providers</div>
       <div class="provwrap" id="glanceProviders"></div>
@@ -74,20 +89,35 @@ stamped in. Actions tab controls confirm via the bottom sheet.
     <section class="screen" id="scr-energy" hidden>
       <div class="strip energy" id="energyStrip">
         <svg viewBox="0 0 340 118" preserveAspectRatio="none" aria-hidden="true">
-          <path class="spark-fill" id="energySparkFill" d=""></path>
-          <path class="spark-line" id="energySparkLine" d=""></path>
+          <defs>
+            <linearGradient id="energyGrad" x1="0" y1="0" x2="0" y2="1">
+              <stop class="g0" offset="0"></stop>
+              <stop class="gm" offset="0.55"></stop>
+              <stop class="g1" offset="1"></stop>
+            </linearGradient>
+          </defs>
+          <path class="spark-fill" id="energySparkFill" fill="url(#energyGrad)" d=""></path>
+          <path class="spark-line" id="energySparkLine" vector-effect="non-scaling-stroke" d=""></path>
         </svg>
+        <div class="marker" id="energyMarker" hidden>
+          <div class="mline"></div><div class="mdot"></div>
+        </div>
         <div class="hero">
           <div class="n" id="energyHeroN">—</div>
-          <div class="l">input power · all hosts</div>
+          <div class="l" id="energyHeroL">input power · all hosts</div>
         </div>
         <div class="win">last 24 h</div>
+        <div class="readout" id="energyReadout" role="status"></div>
       </div>
       <div class="tiles" id="energyTiles"></div>
       <div class="sec">By host</div>
       <div class="provwrap" id="energyHosts"></div>
       <div class="sec">Cost per day</div>
-      <div class="card"><svg class="daybars" id="energyDayBars" viewBox="0 0 312 92" role="img" aria-label="Cost per day"></svg></div>
+      <div class="card daycard">
+        <svg class="daybars" id="energyDayBars" viewBox="0 0 340 92"
+             role="img" aria-label="Cost per day"></svg>
+        <div class="barreadout" id="energyBarReadout" role="status"></div>
+      </div>
     </section>
 
     <!-- ACTIONS -->

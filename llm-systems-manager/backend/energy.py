@@ -452,17 +452,39 @@ def _float_arg(args, name: str, default: float) -> "float | None":
         return None
 
 
+def _tz_offset_hours(args) -> "int | None":
+    """?tz_offset_min=N (minutes east of UTC) snapped to whole hours, or None.
+    Hour buckets are UTC-aligned, so half-hour zones resolve to the nearest."""
+    raw = (args.get("tz_offset_min") or "").strip()
+    if not raw:
+        return None
+    try:
+        minutes = int(raw)
+    except ValueError:
+        return None
+    if not -900 <= minutes <= 900:
+        return None
+    return int(round(minutes / 60.0))
+
+
 def _window_from_args(args, now: float) -> "tuple[int, int, str] | None":
     """(start, end, label) from ?days=N / ?month=YYYY-MM (default: current
-    UTC month); None on unparseable input."""
+    UTC month); None on unparseable input. With ?tz_offset_min the days
+    window ends at the caller's local midnight instead of the next UTC hour."""
     days_raw = (args.get("days") or "").strip()
     if days_raw:
         try:
             days = max(1, min(int(days_raw), 366))
         except ValueError:
             return None
-        end = int(now // 3600 + 1) * 3600
-        return end - days * 86400, end, f"last {days} days"
+        tz_h = _tz_offset_hours(args)
+        if tz_h is None:
+            end = int(now // 3600 + 1) * 3600
+            return end - days * 86400, end, f"last {days} days"
+        off = tz_h * 3600
+        end = ((int(now) + off) // 86400 + 1) * 86400 - off
+        label = "today (local)" if days == 1 else f"last {days} local days"
+        return end - days * 86400, end, label
     month = (args.get("month") or "").strip() or current_month(now)
     try:
         start, end = month_bounds(month)

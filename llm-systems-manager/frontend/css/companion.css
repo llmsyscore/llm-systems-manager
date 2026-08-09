@@ -11,6 +11,9 @@ body.companion {
   display: flex;
   flex-direction: column;
   overflow: hidden;
+  /* Scroll and tap, never pinch-zoom or double-tap-zoom. */
+  touch-action: pan-x pan-y;
+  -webkit-text-size-adjust: 100%;
 }
 
 /* app header */
@@ -40,8 +43,8 @@ body.companion {
 /* scrolling screen area */
 .screens { flex: 1; overflow: hidden; position: relative; }
 .screen {
-  position: absolute; inset: 0; overflow-y: auto; -webkit-overflow-scrolling: touch;
-  overscroll-behavior-y: contain;
+  position: absolute; inset: 0; overflow-y: auto; overflow-x: hidden;
+  -webkit-overflow-scrolling: touch; overscroll-behavior-y: contain;
   display: flex; flex-direction: column; gap: 12px; padding: 4px 14px 16px;
 }
 .screen[hidden] { display: none; }
@@ -53,13 +56,16 @@ body.companion {
 
 /* pull-to-refresh indicator */
 .ptr {
-  position: absolute; top: 0; left: 0; right: 0; height: 44px; z-index: 2;
+  position: absolute; top: 0; left: 0; right: 0; height: 56px; z-index: 2;
   display: grid; place-items: center; pointer-events: none;
-  opacity: 0; transform: translateY(-44px);
+  opacity: 0; transform: translateY(-56px);
 }
-.ptr .ptrspin { font-family: var(--mono); font-size: 17px; color: var(--accent);
-  display: block; }
-.ptr.armed .ptrspin { color: var(--ok); }
+.ptr .ptrspin {
+  font-size: 26px; line-height: 1; color: var(--accent); display: grid;
+  place-items: center; width: 42px; height: 42px; border-radius: 50%;
+  background: var(--bg-card); border: 1px solid var(--border-strong);
+}
+.ptr.armed .ptrspin { color: var(--ok); border-color: var(--ok); }
 .ptr.busy { opacity: 1; transform: translateY(0); }
 .ptr.busy .ptrspin { animation: cmp-spin .9s linear infinite; }
 @keyframes cmp-spin { to { transform: rotate(360deg); } }
@@ -73,16 +79,63 @@ body.companion {
   border-top: 1px solid var(--border-soft); border-bottom: 1px solid var(--border-soft);
 }
 .strip svg { display: block; width: 100%; height: 178px; }
-.strip .spark-line { fill: none; stroke: var(--accent); stroke-width: 2; }
-.strip .spark-fill { fill: var(--accent); opacity: .07; stroke: none; }
+/* non-scaling-stroke: the viewBox is stretched, so without it the line reads
+   thicker vertically than horizontally. */
+.strip .spark-line { fill: none; stroke: var(--accent); stroke-width: 1.75;
+  stroke-linecap: round; stroke-linejoin: round; }
+.strip .spark-fill { stroke: none; }
+.strip .spark-line.prompt { stroke: var(--accent-2); stroke-width: 1.4; opacity: .8; }
+
+/* two-series legend (Home: generated vs prompt) */
+.legend { position: absolute; right: 14px; top: 36px; display: flex; gap: 12px; }
+.legend[hidden] { display: none; }
+.legend .k { font-family: var(--mono); font-size: 10.5px; color: var(--fg-dim);
+  display: flex; align-items: center; gap: 5px; }
+.legend .k::before { content: ""; width: 10px; height: 2px; border-radius: 1px; }
+.legend .gen::before { background: var(--accent); }
+.legend .pr::before { background: var(--accent-2); }
+.strip .g0 { stop-color: var(--accent); stop-opacity: .34; }
+.strip .gm { stop-color: var(--accent); stop-opacity: .13; }
+.strip .g1 { stop-color: var(--accent); stop-opacity: 0; }
 .strip.energy .spark-line { stroke: var(--accent-2); }
-.strip.energy .spark-fill { fill: var(--accent-2); }
+.strip.energy .g0 { stop-color: var(--accent-2); stop-opacity: .34; }
+.strip.energy .gm { stop-color: var(--accent-2); stop-opacity: .13; }
+.strip.energy .g1 { stop-color: var(--accent-2); stop-opacity: 0; }
+
+/* tapped-point marker: an HTML overlay in CSS pixels, because the stretched
+   viewBox would turn an SVG circle into an ellipse. */
+.marker { position: absolute; top: 0; bottom: 0; width: 0; pointer-events: none; }
+.marker[hidden] { display: none; }
+/* Drops from the point downward, so it never crosses the hero text. */
+.marker .mline { position: absolute; bottom: 0; width: 1px;
+  background: linear-gradient(var(--border-strong), transparent); }
+.marker .mdot { position: absolute; width: 9px; height: 9px; margin: -4.5px 0 0 -4.5px;
+  border-radius: 50%; background: var(--accent);
+  box-shadow: 0 0 0 3px var(--bg-elev), 0 0 0 4px var(--accent); }
+.marker .mdot.alt { background: var(--accent-2);
+  box-shadow: 0 0 0 3px var(--bg-elev), 0 0 0 4px var(--accent-2); }
+.marker .mdot[hidden] { display: none; }
+.strip.energy .marker .mdot { background: var(--accent-2);
+  box-shadow: 0 0 0 3px var(--bg-elev), 0 0 0 4px var(--accent-2); }
 .strip .hero { position: absolute; left: 16px; top: 14px; }
 .strip .hero .n { font-family: var(--mono); font-size: 38px; font-weight: 600; color: var(--fg); line-height: 1; }
-.strip .hero .n small { font-size: 15px; color: var(--fg-muted); font-weight: 400; margin-left: 5px; }
+.strip .hero .n small { font-size: 15px; color: var(--fg-muted); font-weight: 400; margin-left: 3px; }
 .strip .hero .l { font-family: var(--mono); font-size: 11.5px; color: var(--fg-muted); margin-top: 5px;
   max-width: 62vw; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .strip .win { position: absolute; right: 14px; top: 16px; font-family: var(--mono); font-size: 11px; color: var(--fg-dim); }
+.strip { touch-action: pan-y; }
+
+/* scrub readouts (strip + day bars) */
+.readout, .barreadout {
+  position: absolute; font-family: var(--mono); font-size: 11.5px;
+  color: var(--fg); background: var(--bg-card); border: 1px solid var(--border-strong);
+  border-radius: 8px; padding: 4px 9px; white-space: nowrap; pointer-events: none;
+  opacity: 0; transition: opacity .12s ease;
+}
+.readout { bottom: 8px; left: 50%; transform: translateX(-50%); }
+.barreadout { left: 50%; top: 4px; transform: translateX(-50%); }
+.readout.on, .barreadout.on { opacity: 1; }
+@media (prefers-reduced-motion: reduce) { .readout, .barreadout { transition: none; } }
 
 .sec { font-family: var(--mono); font-size: 11px; letter-spacing: .16em; text-transform: uppercase;
   color: var(--fg-dim); padding: 2px 4px 0; }
@@ -99,6 +152,8 @@ body.companion {
   overflow-wrap: anywhere; }
 .prov .pr, .arow .pr { margin-left: auto; font-family: var(--mono); font-size: 12px; color: var(--fg-muted); text-align: right; flex: none; }
 .prov .pr b, .arow .pr b { display: block; color: var(--fg); font-weight: 600; font-size: 14.5px; }
+.prov .pr b small, .arow .pr b small { font-size: 11px; font-weight: 400;
+  color: var(--fg-muted); margin-left: 2px; }
 .prov .pr b.warn, .arow .pr b.warn { color: var(--warn); }
 
 /* stat tiles */
@@ -155,12 +210,16 @@ body.companion {
   outline: 2px solid var(--accent); outline-offset: 2px; }
 .rowstat { margin-left: auto; flex: none; }
 
-/* cost-per-day bars */
-.daybars { display: block; width: 100%; height: 92px; }
-.daybars rect { fill: var(--accent); }
-.daybars rect.today { opacity: .55; }
+/* cost-per-day bars — span the full card, uniform scale so labels stay round */
+.daycard { position: relative; padding: 10px 6px 6px; }
+.daybars { display: block; width: 100%; height: 92px; touch-action: manipulation; }
+.daybars rect { fill: var(--accent); opacity: .42; transition: opacity .12s ease; }
+.daybars rect.today { opacity: .72; }
+.daybars rect.sel { opacity: 1; }
 .daybars text { font-family: var(--mono); font-size: 10.5px; fill: var(--fg-dim); }
 .daybars text.hot { fill: var(--fg); }
+.daybars .base { stroke: var(--border-soft); stroke-width: 1; }
+@media (prefers-reduced-motion: reduce) { .daybars rect { transition: none; } }
 
 /* notifications opt-in (Admin) + actions result line */
 .cmp-msg { min-height: 1.1em; margin-top: 8px; font-size: 13px; font-family: var(--mono);

@@ -22,6 +22,10 @@
     body: JSON.stringify(body),
   });
 
+  // Minutes east of UTC; anchors the days= energy window to the caller's local
+  // midnight so "today" means today here, not the last 24 UTC hours.
+  const TZ_Q = '&tz_offset_min=' + (-new Date().getTimezoneOffset());
+
   // ── theme + host liveness ────────────────────────────────────────────────
   // 'auto' follows the dashboard layout theme; 'dark'/'light' override it.
   const themePref = () => localStorage.getItem('companionTheme') || 'auto';
@@ -61,11 +65,79 @@
 
   // ── render helpers ───────────────────────────────────────────────────────
   function providerRow(p) {
+    const suffix = p.rSuffix ? `<small>${esc(p.rSuffix)}</small>` : '';
     return `<div class="prov"><span class="pstat ${p.status}"></span>`
       + `<div class="atxt"><div class="pn">${esc(p.name)}</div>`
       + `<div class="pd">${esc(p.detail)}</div></div>`
-      + `<div class="pr"><b${p.warn ? ' class="warn"' : ''}>${esc(p.rN)}</b>${esc(p.rUnit)}</div></div>`;
+      + `<div class="pr"><b${p.warn ? ' class="warn"' : ''}>${esc(p.rN)}${suffix}</b>`
+      + `${esc(p.rUnit)}</div></div>`;
   }
+  // viewBox-space top padding that clears the hero text at any breakpoint, so
+  // the trend line can never run through the numbers.
+  function stripPad(stripId, labelId) {
+    const strip = $(stripId), label = $(labelId);
+    if (!strip || !label) return 54;
+    const sr = strip.getBoundingClientRect();
+    if (!sr.height) return 54;
+    const gap = label.getBoundingClientRect().bottom - sr.top;
+    return Math.max(12, Math.min(100, (gap + 12) / sr.height * 118));
+  }
+
+  // Tap/drag a strip to read the value under the finger. series() returns
+  // { values, label(i) }; marker + readout clear a moment after release.
+  function attachScrub(stripId, readoutId, markerId, series) {
+    const strip = $(stripId), out = $(readoutId), mark = $(markerId);
+    if (!strip || !out) return;
+    let timer = null;
+    const at = (clientX) => {
+      const s = series();
+      // pts comes from the last render and values from the live series; an
+      // async reload can leave them different lengths, so index the shorter.
+      const n = Math.min((s.values || []).length,
+        (s.pts && s.pts.length) || (s.values || []).length);
+      if (!n) return;
+      const r = strip.getBoundingClientRect();
+      const f = Math.max(0, Math.min(1, (clientX - r.left) / r.width));
+      const i = Math.min(n - 1, Math.round(f * (n - 1)));
+      const text = s.label(i);
+      if (!text) return;
+      out.textContent = text;
+      out.classList.add('on');
+      // Snap to the point, not the finger, and clamp the bubble on its own
+      // half-width so the ends stay on screen.
+      const pt = (s.pts || [])[i];
+      const px = pt ? pt.x / 340 * r.width : f * r.width;
+      const half = out.offsetWidth / 2;
+      out.style.left = Math.max(half + 6, Math.min(r.width - half - 6, px)) + 'px';
+      if (mark && pt) {
+        const py = pt.y / 118 * r.height;
+        // Second series (if any) gets its own dot; the guide line spans from
+        // whichever point is higher down to the baseline.
+        const pt2 = (s.pts2 || [])[i];
+        const py2 = pt2 ? pt2.y / 118 * r.height : null;
+        const dot2 = mark.querySelector('.mdot.alt');
+        mark.hidden = false;
+        mark.style.left = px + 'px';
+        // :not(.alt) — the second-series dot precedes it in the DOM so the
+        // primary paints on top, and a bare .mdot would match the wrong one.
+        mark.querySelector('.mdot:not(.alt)').style.top = py + 'px';
+        if (dot2) {
+          dot2.hidden = py2 == null;
+          if (py2 != null) dot2.style.top = py2 + 'px';
+        }
+        mark.querySelector('.mline').style.top =
+          (py2 == null ? py : Math.min(py, py2)) + 'px';
+      }
+      clearTimeout(timer);
+      timer = setTimeout(() => {
+        out.classList.remove('on');
+        if (mark) mark.hidden = true;
+      }, 2800);
+    };
+    strip.addEventListener('pointerdown', (e) => { at(e.clientX); });
+    strip.addEventListener('pointermove', (e) => { if (e.buttons) at(e.clientX); });
+  }
+
   function tileEl(t) {
     const body = t.meter != null
       ? `<div class="meter"><i class="${t.hot ? 'hot' : ''}" style="width:${t.meter}%"></i></div>`
@@ -77,31 +149,73 @@
   // ── Glance ────────────────────────────────────────────────────────────────
   const glance = {
     buf: [],
-    async refresh() {
+    hist: [],            // [{t, v: gen tok/s, p: prompt tok/s}] over 24 h
+    histAt: 0,
+    // Fleet token rates from the alarm engine; refreshed every 5 min on the
+    // 2 s poll, immediately on an explicit refresh. Falls back to the live
+    // buffer when it returns nothing.
+    async loadHistory(force) {
+      const now = Date.now() / 1000;
+      if (!force && now - this.histAt < 300) return;
+      const sum = (r, keys) => {
+        const v = keys.map((k) => r[k]).filter((x) => typeof x === 'number' && isFinite(x));
+        return v.length ? v.reduce((a, b) => a + b, 0) : 0;
+      };
+      try {
+        const rows = await jfetch('/api/history?since_minutes=1440&max_rows=180');
+        this.hist = (Array.isArray(rows) ? rows : []).map((r) => ({
+          t: CV.tsSeconds(r.ts),
+          v: sum(r, ['llama_tps', 'lms_tps', 'vllm_tps']),
+          p: sum(r, ['llama_pps', 'lms_pps', 'vllm_pps']),
+        })).filter((x) => x.t != null);
+        // Only latch the throttle on success, so a failed read can retry.
+        this.histAt = now;
+      } catch (_) { /* keep whatever we had */ }
+    },
+    async refresh(force) {
       const [m, ls, lms, vllm, en] = await Promise.all([
         jfetch('/api/metrics').catch(() => ({})),
         jfetch('/api/llama-state').catch(() => ({})),
         jfetch('/api/lmstudio/metrics').catch(() => ({})),
         jfetch('/api/vllm/metrics').catch(() => ({})),
-        jfetch('/api/energy/summary?days=1').catch(() => ({})),
+        jfetch('/api/energy/summary?days=1' + TZ_Q).catch(() => ({})),
       ]);
       setLive(ls.agent_online, ls.agent_age_s);
       const vm = CV.glance({ metrics: m, llama: ls, lms, vllm, energy: en });
-      // Buffer the hero's rate (whichever provider it is) so the strip and the
-      // hero always agree.
-      this.buf.push(vm.hero.tps);
-      if (this.buf.length > 120) this.buf.shift();
+      // Live buffer backs the strip only when history is unavailable. Drop
+      // samples older than the window so a backgrounded app doesn't redraw a
+      // frozen trace when it comes forward.
+      const nowS = Date.now() / 1000;
+      this.buf.push({ t: nowS, v: vm.hero.tps, p: 0 });
+      this.buf = this.buf.filter((s) => nowS - s.t < 300).slice(-150);
+      await this.loadHistory(force);
       this.render(vm);
     },
+    // 24 h history when the alarm engine has it, else the live 2 s buffer.
+    series() {
+      return this.hist.length > 1 ? this.hist : this.buf;
+    },
     render(vm) {
-      $('glanceHeroN').innerHTML = `${esc(vm.hero.n)} <small>${esc(vm.hero.unit)}</small>`;
+      $('glanceHeroN').innerHTML = `${esc(vm.hero.n)}<small>${esc(vm.hero.unit)}</small>`;
       $('glanceHeroL').textContent = vm.hero.label;
-      const sp = CS.path(this.buf, 340, 118, { padTop: 44 });
+      const pts = this.series();
+      // Generation and prompt share one scale, else the two lines can't be
+      // read against each other.
+      const all = pts.map((p) => p.v).concat(pts.map((p) => p.p || 0))
+        .filter((v) => typeof v === 'number' && isFinite(v));
+      const scale = { min: Math.min(...all, 0), max: Math.max(...all, 1),
+        padTop: stripPad('glanceStrip', 'glanceHeroL') };
+      const sp = CS.path(pts.map((p) => p.v), 340, 118, scale);
+      const pp = CS.path(pts.map((p) => p.p || 0), 340, 118, scale);
+      this.sp = sp;
+      this.pp = pts.some((p) => p.p > 0) ? pp : null;
       $('glanceSparkLine').setAttribute('d', sp.line);
       $('glanceSparkFill').setAttribute('d', sp.fill);
-      const secs = this.buf.length * 2;
-      $('glanceWin').textContent = secs < 90 ? 'live'
-        : 'last ' + Math.round(secs / 60) + 'm';
+      $('glanceSparkPrompt').setAttribute('d', pp.line);
+      $('glanceLegend').hidden = !pts.some((p) => p.p > 0);
+      $('glanceWin').textContent = this.hist.length > 1 ? 'last 24 h'
+        : (this.buf.length * 2 < 90 ? 'live'
+          : 'last ' + Math.round(this.buf.length * 2 / 60) + 'm');
       $('glanceProviders').innerHTML = vm.providers.map(providerRow).join('');
       $('glanceTiles').innerHTML = vm.tiles.map(tileEl).join('');
     },
@@ -116,7 +230,7 @@
       return `<div class="alert"><div class="sev ${a.sev}">${esc(a.glyph)}</div>`
         + `<div class="atext"><div class="am">${esc(a.msg)}</div>`
         + `<div class="aw">${esc(a.meta)}</div>`
-        + `<div class="sevword ${a.sev}">${esc(a.word)}</div></div>${ack}</div>`;
+        + `<div class="sevword ${a.tone || a.sev}">${esc(a.word)}</div></div>${ack}</div>`;
     },
     async refresh() {
       const list = await jfetch('/api/alarm/alerts/?limit=100&include_closed=true')
@@ -166,7 +280,7 @@
         const btn = $('alertsRefresh');
         btn.disabled = true;
         btn.classList.add('busy');
-        try { await this.refresh(); } finally {
+        try { await this.refresh(true); } finally {
           btn.disabled = false;
           btn.classList.remove('busy');
         }
@@ -184,9 +298,19 @@
 
   // ── Energy ────────────────────────────────────────────────────────────────
   const energy = {
+    hourly: [],
+    // Average watts for one hourly bucket. Wh over a full hour already IS
+    // watts; only the in-progress bucket needs scaling by elapsed wall time
+    // (observed_s can't be used — it is summed across every agent).
+    bucketWatts(r, nowS) {
+      if (!r) return null;
+      const now = nowS == null ? Date.now() / 1000 : nowS;
+      const elapsed = Math.max(60, Math.min(3600, now - r.hour_ts));
+      return (r.energy_wh || 0) * 3600 / elapsed;
+    },
     async refresh() {
       const [today, month, hourly, week] = await Promise.all([
-        jfetch('/api/energy/summary?days=1').catch(() => ({})),
+        jfetch('/api/energy/summary?days=1' + TZ_Q).catch(() => ({})),
         jfetch('/api/energy/summary').catch(() => ({})),
         jfetch('/api/energy/hourly?hours=24').catch(() => ({})),
         jfetch('/api/energy/hourly?days=7').catch(() => ({})),
@@ -195,10 +319,22 @@
     },
     render(today, month, hourly, week) {
       const tT = today.totals || {}, mT = month.totals || {};
-      $('energyHeroN').innerHTML = `${esc(EN.fmtWatts(tT.avg_watts).replace(' W', ''))} <small>W</small>`;
-      // 24h watts strip: each hourly bucket's Wh over ~1h ≈ average watts
-      const watts = (hourly.rows || []).map((r) => r.energy_wh);
-      const sp = CS.path(watts, 340, 118, { padTop: 44 });
+      // Hero reads the newest hourly bucket — the window mean barely moves.
+      // Wh/bucket is only average watts once divided by the hour actually
+      // observed; the current bucket is partial and would read far too low.
+      // A bucket younger than 5 min holds too little to scale up without
+      // reading as a spike or a cliff, so drop it from the series entirely.
+      const all = (hourly.rows || []).slice().sort((a, b) => a.hour_ts - b.hour_ts);
+      const tail = all[all.length - 1];
+      const rows = (all.length > 1 && tail && (Date.now() / 1000 - tail.hour_ts) < 300)
+        ? all.slice(0, -1) : all;
+      this.hourly = rows;
+      const live = rows.length
+        ? this.bucketWatts(rows[rows.length - 1]) : tT.avg_watts;
+      $('energyHeroN').innerHTML = `${esc(EN.fmtWatts(live).replace(' W', ''))}<small>W</small>`;
+      const watts = rows.map((r) => this.bucketWatts(r));
+      const sp = CS.path(watts, 340, 118, { padTop: stripPad('energyStrip', 'energyHeroL') });
+      this.sp = sp;
       $('energySparkLine').setAttribute('d', sp.line);
       $('energySparkFill').setAttribute('d', sp.fill);
 
@@ -211,7 +347,7 @@
       ].map(tileEl).join('');
 
       $('energyHosts').innerHTML = this.hostRows(today);
-      this.dayBars(week.rows || [], price);
+      this.dayBars(week.rows || [], price, week.start_ts);
     },
     // 30-day cost projection over every host the accumulator saw: month-to-date
     // spend first, then measured fleet draw (month, then today) × price.
@@ -243,11 +379,14 @@
       const VIA = { psu: 'liquidctl', mac: 'powermetrics', gpu: 'gpu driver' };
       const rows = (today.hosts || []).map((h) => {
         const src = EN.sourceLabel(h.power_source);
+        const w = EN.fmtWatts(h.avg_watts);
         return providerRow({
           status: h.has_power ? 'ok' : 'idle',
           name: h.hostname || (h.agent_id || '').slice(0, 10) || '?',
           detail: src ? src + ' · ' + (VIA[h.power_source] || 'agent') : 'no power telemetry',
-          rN: EN.fmtWatts(h.avg_watts), rUnit: 'avg',
+          // Split the unit off so it isn't spaced by a wide monospace blank.
+          rN: w.replace(/ W$/, ''), rSuffix: w.endsWith(' W') ? 'W' : '',
+          rUnit: 'day avg',
         });
       });
       const t = today.totals || {};
@@ -263,33 +402,53 @@
         + '<div class="atxt"><div class="pn">No power telemetry</div>'
         + '<div class="pd">this window</div></div></div>';
     },
-    dayBars(rows, price) {
+    days: [],
+    dayKey: (d) => d.getFullYear() + '-' + (d.getMonth() + 1) + '-' + d.getDate(),
+    dayBars(rows, price, startTs) {
       // bucket hourly Wh by LOCAL calendar day, cost = kWh × price
       const byDay = new Map();
       (rows || []).forEach((r) => {
         const d = new Date(r.hour_ts * 1000);
-        const key = d.getFullYear() + '-' + (d.getMonth() + 1) + '-' + d.getDate();
-        if (!byDay.has(key)) byDay.set(key, { wh: 0, d });
+        const key = this.dayKey(d);
+        if (!byDay.has(key)) {
+          const mid = new Date(d);
+          mid.setHours(0, 0, 0, 0);
+          byDay.set(key, { wh: 0, d, key, dayStart: Math.floor(mid.getTime() / 1000) });
+        }
         byDay.get(key).wh += (r.energy_wh || 0);
       });
-      const days = [...byDay.values()].slice(-7)
-        .map(({ wh, d }) => ({ cost: (wh / 1000) * (price || 0),
-          wd: d.toLocaleDateString('en', { weekday: 'short' }).slice(0, 2) }));
+      // A trailing window opens mid-day, so its oldest day is a stub that would
+      // draw at full weight. Drop days whose midnight predates the window.
+      const todayKey = this.dayKey(new Date());
+      const days = [...byDay.values()]
+        .filter((v) => !startTs || v.dayStart >= startTs || v.key === todayKey)
+        .sort((a, b) => a.dayStart - b.dayStart)
+        .slice(-7)
+        .map(({ wh, d, key }) => ({ cost: (wh / 1000) * (price || 0), wh,
+          today: key === todayKey,
+          wd: d.toLocaleDateString('en', { weekday: 'short' }).slice(0, 2),
+          full: d.toLocaleDateString('en', { weekday: 'short', month: 'short', day: 'numeric' }) }));
+      this.days = days;
       const svg = $('energyDayBars');
       if (!days.length) { svg.setAttribute('aria-label', 'No daily cost data'); svg.innerHTML = ''; return; }
       svg.setAttribute('aria-label', 'Cost per day, last ' + days.length + ' days; '
-        + days.map((d, i) => (i === days.length - 1 ? 'today ' : '') + EN.fmtUsd(d.cost)).join(', '));
-      const max = Math.max(...days.map((d) => d.cost), 0.01);
-      const n = days.length, gap = 14, w = (312 - gap) / n - gap, x0 = gap;
-      let out = '';
+        + days.map((d) => (d.today ? 'today ' : d.wd + ' ') + EN.fmtUsd(d.cost)).join(', '));
+      // Draw in CSS pixels (viewBox width = measured width) so bars keep their
+      // size on a tablet instead of scaling with the card.
+      const W = Math.max(240, Math.round(svg.getBoundingClientRect().width) || 312);
+      svg.setAttribute('viewBox', `0 0 ${W} 92`);
+      const n = days.length, slot = W / n, w = Math.max(10, Math.min(34, slot * 0.5));
+      const max = Math.max(...days.map((x) => x.cost), 0.01);
+      let out = `<line class="base" x1="0" y1="76.5" x2="${W}" y2="76.5"/>`;
       days.forEach((d, i) => {
         const h = Math.max(4, Math.round((d.cost / max) * 52));
-        const x = x0 + i * ((312 - gap) / n), y = 76 - h;
-        const today = i === n - 1;
-        out += `<rect class="${today ? 'today' : ''}" x="${x.toFixed(0)}" y="${y}" `
-          + `width="${w.toFixed(0)}" height="${h}" rx="4"/>`;
-        out += `<text x="${(x + w / 2).toFixed(0)}" y="89" text-anchor="middle"${today ? ' class="hot"' : ''}>${esc(today ? 'today' : d.wd)}</text>`;
-        if (today) out += `<text x="${(x + w / 2).toFixed(0)}" y="${y - 4}" text-anchor="middle" class="hot">${esc(EN.fmtUsd(d.cost))}</text>`;
+        const x = i * slot + (slot - w) / 2, y = 76 - h;
+        out += `<rect class="${d.today ? 'today' : ''}" x="${x.toFixed(1)}" y="${y}" `
+          + `width="${w.toFixed(1)}" height="${h}" rx="4"/>`;
+        out += `<text x="${(x + w / 2).toFixed(1)}" y="89" text-anchor="middle"`
+          + `${d.today ? ' class="hot"' : ''}>${esc(d.today ? 'today' : d.wd)}</text>`;
+        if (d.today) out += `<text x="${(x + w / 2).toFixed(1)}" y="${y - 4}" `
+          + `text-anchor="middle" class="hot">${esc(EN.fmtUsd(d.cost))}</text>`;
       });
       svg.innerHTML = out;
     },
@@ -306,9 +465,11 @@
       ]);
       const version = (document.querySelector('meta[name="mgr-version"]') || {}).content || '—';
       const gated = !health && !agents && !backup && !auth;
+      const stale = ((agents || {}).agents || []).filter((a) => a.update_available);
       const vm = CV.admin({
         version, health: health || {}, agents: (agents || {}).agents || [],
         backup: backup || {}, auth: auth || {},
+        agentUpdates: stale.length,
       });
       this.render(vm, gated);
       paintPush();
@@ -659,10 +820,22 @@
   let timer = null;
   let current = 'glance';
 
-  const refreshCurrent = () => {
+  // force=true on an explicit refresh: controllers skip their own throttles so
+  // a pull-to-refresh really re-reads everything, not just the cheap polls.
+  const refreshCurrent = (force) => {
     const cfg = SCREENS[current];
-    return cfg && cfg.ctrl ? Promise.resolve(cfg.ctrl.refresh()) : Promise.resolve();
+    return cfg && cfg.ctrl ? Promise.resolve(cfg.ctrl.refresh(force)) : Promise.resolve();
   };
+
+  // iOS Safari ignores user-scalable=no, so pinch has to be refused directly:
+  // the WebKit gesture events plus any multi-touch move.
+  function blockZoom() {
+    ['gesturestart', 'gesturechange', 'gestureend'].forEach((n) =>
+      document.addEventListener(n, (e) => e.preventDefault(), { passive: false }));
+    document.addEventListener('touchmove', (e) => {
+      if (e.touches.length > 1 && e.cancelable) e.preventDefault();
+    }, { passive: false });
+  }
 
   // Pull-to-refresh: only from the top of the active screen, only on a
   // downward drag, and never while the confirm sheet is up.
@@ -687,7 +860,7 @@
       if (dy <= 0 || !scr || scr.scrollTop > 0) { startY = null; dy = 0; ind.style.opacity = ''; ind.style.transform = ''; return; }
       const pull = Math.min(dy * 0.5, MAX);
       ind.style.opacity = String(Math.min(1, pull / THRESHOLD));
-      ind.style.transform = `translateY(${pull - 44}px)`;
+      ind.style.transform = `translateY(${pull - 56}px)`;
       ind.classList.toggle('armed', pull >= THRESHOLD);
       if (e.cancelable) e.preventDefault();
     }, { passive: false });
@@ -701,7 +874,7 @@
       if (!fire || busy) return;
       busy = true;
       ind.classList.add('busy');
-      try { await refreshCurrent(); } catch (_) { /* screen shows its own state */ }
+      try { await refreshCurrent(true); } catch (_) { /* screen shows its own state */ }
       ind.classList.remove('busy');
       busy = false;
     };
@@ -751,7 +924,53 @@
     }
     alerts.start();
     actions.start();
+    blockZoom();
     initPullToRefresh();
+    const clock = (t) => new Date(t * 1000)
+      .toLocaleTimeString('en', { hour: 'numeric', minute: '2-digit' });
+    attachScrub('glanceStrip', 'glanceReadout', 'glanceMarker', () => {
+      const pts = glance.series();
+      return {
+        values: pts.map((p) => p.v),
+        pts: (glance.sp || {}).pts,
+        pts2: (glance.pp || {}).pts,
+        label: (i) => {
+          const p = pts[i];
+          if (!p) return '';
+          return 'gen ' + p.v.toFixed(1)
+            + (p.p > 0 ? ' · prompt ' + p.p.toFixed(1) : '')
+            + ' tok/s · ' + clock(p.t);
+        },
+      };
+    });
+    attachScrub('energyStrip', 'energyReadout', 'energyMarker', () => ({
+      values: energy.hourly.map((r) => energy.bucketWatts(r)),
+      pts: (energy.sp || {}).pts,
+      label: (i) => {
+        const r = energy.hourly[i];
+        if (!r) return '';
+        return EN.fmtWatts(energy.bucketWatts(r)) + ' · '
+          + new Date(r.hour_ts * 1000).toLocaleTimeString('en', { hour: 'numeric' });
+      },
+    }));
+    $('energyDayBars').addEventListener('pointerdown', (e) => {
+      const svg = $('energyDayBars'), days = energy.days || [];
+      if (!days.length) return;
+      const r = svg.getBoundingClientRect();
+      const i = Math.max(0, Math.min(days.length - 1,
+        Math.floor((e.clientX - r.left) / (r.width / days.length))));
+      const bars = svg.querySelectorAll('rect');
+      bars.forEach((b, k) => b.classList.toggle('sel', k === i));
+      const out = $('energyBarReadout');
+      out.textContent = (days[i].today ? 'today' : days[i].full) + ' · '
+        + EN.fmtUsd(days[i].cost) + ' · ' + EN.fmtKwh(days[i].wh / 1000);
+      out.classList.add('on');
+      clearTimeout(energy._barT);
+      energy._barT = setTimeout(() => {
+        out.classList.remove('on');
+        bars.forEach((b) => b.classList.remove('sel'));
+      }, 2800);
+    });
     $('sheet').addEventListener('click', (e) => {
       if (e.target.closest('[data-sheet-close]')) sheet.close();
     });
