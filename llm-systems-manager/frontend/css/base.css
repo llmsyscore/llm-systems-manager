@@ -815,3 +815,14 @@
       border-radius:6px; padding:10px 14px; font-size:0.85em; cursor:pointer;
       box-shadow:0 4px 16px rgba(0,0,0,0.4); line-height:1.4;
     }
+
+/* #541: return affordance when the dashboard is opened from the PWA companion,
+   whose standalone window has no browser chrome to go back with. */
+#backToCompanion {
+  position: fixed; left: 12px; bottom: 12px; z-index: 1000;
+  font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 13px;
+  color: var(--fg); background: var(--bg-card); text-decoration: none;
+  border: 1px solid var(--border-strong); border-radius: 99px;
+  padding: 9px 15px; box-shadow: 0 4px 14px rgba(0, 0, 0, .35);
+}
+#backToCompanion[hidden] { display: none; }

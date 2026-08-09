@@ -227,11 +227,58 @@ describe('CView.admin', () => {
     auth: { mode: 'session', current_user: 'llmadmin' },
   };
 
-  it('agents: liveness, heartbeat age from last_heartbeat, TLS from bind_url, pending warn', () => {
+  it('agents: liveness, heartbeat age from last_heartbeat, TLS from bind_url', () => {
     const a = CView.admin(d);
-    expect(a.agents[0]).toMatchObject({ status: 'ok', name: 'llm-core', right: 'live' });
+    expect(a.agents[0]).toMatchObject({ status: 'ok', name: 'llm-core', right: 'live', id: 'core' });
     expect(a.agents[1]).toMatchObject({ right: 'live', rightSub: 'hb 4s', detail: 'agent v2026.07.30-3 · TLS' });
-    expect(a.agents[2]).toMatchObject({ status: 'idle', right: 'pending', warn: true });
+  });
+
+  it('pending agents split out of the agent list into their own cards', () => {
+    const a = CView.admin(d);
+    expect(a.agents.map((x) => x.name)).not.toContain('mac-mini-m4');
+    expect(a.pending).toHaveLength(1);
+    expect(a.pending[0]).toMatchObject({ id: 'new', name: 'mac-mini-m4' });
+  });
+
+  it('no pending agents yields an empty list, not a placeholder row', () => {
+    const a = CView.admin({ ...d, agents: d.agents.slice(0, 2) });
+    expect(a.pending).toEqual([]);
+  });
+
+  it('a down agent gets the red state, not the grey idle one', () => {
+    const a = CView.admin({ ...d,
+      agents: [{ ...d.agents[1], liveness: 'down' }] });
+    expect(a.agents[0]).toMatchObject({ status: 'down', warn: true });
+  });
+
+  it('services card carries manager, alarm engine and InfluxDB with versions', () => {
+    const a = CView.admin(d);
+    expect(a.services.map((s) => s.key)).toEqual(['manager', 'alarm_engine', 'influxdb']);
+    expect(a.services[0]).toMatchObject({ name: 'Manager', canRestart: true });
+    expect(a.services[0].detail).toContain('v2026.08.07-4');
+    expect(a.services[1].detail).toContain('TLS');
+    expect(a.services[2]).toMatchObject({ name: 'InfluxDB', status: 'ok', canRestart: false });
+  });
+
+  it('InfluxDB shows its version when system-health passes one through', () => {
+    const a = CView.admin({ ...d, health: { ...d.health, services: [
+      { name: 'alarm_engine', ok: true },
+      { name: 'influxdb', state: 'connected', version: 'v2.9.1', ping_ms: 1.2 }] } });
+    expect(a.services[2].detail).toContain('v2.9.1');
+    expect(a.services[2].detail).toContain('1.2ms');
+  });
+
+  it('an unreachable alarm engine reads down and stays restartable', () => {
+    const a = CView.admin({ ...d, health: { ...d.health, ae_local: true,
+      services: [{ name: 'alarm_engine', ok: false }, { name: 'influxdb', state: 'connected' }] } });
+    expect(a.services[1]).toMatchObject({ status: 'down', canRestart: true });
+    expect(a.services[1].detail).toBe('unreachable');
+  });
+
+  it('the release note rides on the Manager row when the check is on', () => {
+    expect(CView.admin({ ...d, releaseNote: 'v1.2.0 available' }).services[0].right)
+      .toBe('v1.2.0 available');
+    expect(CView.admin(d).services[0].right).toBe('');
   });
 
   it('the manager host agent shows its version too, not just its role', () => {
@@ -249,12 +296,10 @@ describe('CView.admin', () => {
     expect(CView.admin({ ...d, agentUpdates: 1 }).manager.updateNote).toBe('1 agent outdated');
   });
 
-  it('status rows: auth, influx ok, backups, AE reachable with TLS active', () => {
+  it('status rows keep auth and backups; influx and AE moved to the services card', () => {
     const a = CView.admin(d);
+    expect(a.rows.map((r) => r.name)).toEqual(['Authentication', 'Backups']);
     expect(a.rows[0]).toMatchObject({ name: 'Authentication', detail: 'session mode · llmadmin' });
-    expect(a.rows[1]).toMatchObject({ name: 'InfluxDB', ok: true });
-    expect(a.rows[3]).toMatchObject({ name: 'Alarm engine', ok: true });
-    expect(a.rows[3].detail).toContain('TLS');
   });
 
   it('AE TLS badge reflects active state, not mere reachability', () => {
@@ -262,8 +307,8 @@ describe('CView.admin', () => {
     const off = CView.admin({ ...d, health: { ...d.health,
       services: [{ name: 'alarm_engine', ok: true, tls: { enabled: false, active: false } },
                  { name: 'influxdb', state: 'connected' }] } });
-    expect(off.rows[3].detail).toContain('reachable');
-    expect(off.rows[3].detail).not.toContain('TLS');
+    expect(off.services[1].detail).toContain('reachable');
+    expect(off.services[1].detail).not.toContain('TLS');
   });
 
   it('manager version carries through', () => {
@@ -273,7 +318,9 @@ describe('CView.admin', () => {
   it('empty payload does not throw', () => {
     const a = CView.admin({});
     expect(a.agents).toEqual([]);
-    expect(a.rows.length).toBe(4);
+    expect(a.pending).toEqual([]);
+    expect(a.rows.length).toBe(2);
+    expect(a.services.map((s) => s.key)).toEqual(['manager', 'alarm_engine', 'influxdb']);
   });
 });
 
@@ -294,15 +341,17 @@ describe('CView.actions', () => {
     version: 'v2026.08.08-1', now: NOW,
   };
 
-  it('builds the service rows with manager + alarm engine on top', () => {
+  it('services are provider units only — manager and AE live on Admin now', () => {
     const a = CView.actions(full);
-    expect(a.services.map((s) => s.key)).toEqual(['manager', 'alarm_engine', 'llama']);
-    expect(a.services[0].detail).toContain('v2026.08.08-1');
-    expect(a.services[0].detail).toContain('4d');
-    expect(a.services[1]).toMatchObject({ status: 'ok', canRestart: true });
-    expect(a.services[1].detail).toContain('reachable');
-    expect(a.services[2]).toMatchObject({ status: 'ok', canRestart: true });
-    expect(a.services[2].detail).toContain('qwen3-32b-q4_k_m');
+    expect(a.services.map((s) => s.key)).toEqual(['llama']);
+    expect(a.services[0]).toMatchObject({ status: 'ok', canRestart: true });
+    expect(a.services[0].detail).toContain('qwen3-32b-q4_k_m');
+  });
+
+  it('an offline provider agent reads down, not idle', () => {
+    const a = CView.actions({ ...full,
+      llama: { ...full.llama, agent_online: false } });
+    expect(a.services[0]).toMatchObject({ status: 'down', canRestart: false });
   });
 
   it('model row: resident + pinned via global.llama_pins', () => {
@@ -372,54 +421,30 @@ describe('CView.actions', () => {
     expect(a.autopilot.settings[1].detail).toBe('not run yet');
   });
 
-  it('pending agents card rows', () => {
-    const a = CView.actions(full);
-    expect(a.pending).toHaveLength(1);
-    expect(a.pending[0]).toMatchObject({ id: 'bb22', name: 'mac-mini-m4' });
-    expect(a.pending[0].detail).toContain('4m ago');
-    expect(a.pending[0].detail).toContain('v2026.07.30-3');
+  it('pending agents are no longer this screen\'s business', () => {
+    expect(CView.actions(full).pending).toBeUndefined();
   });
 
-  it('LMS + vLLM service rows follow the provider block, after llama', () => {
+  it('LMS + vLLM service rows follow llama', () => {
     const a = CView.actions({ ...full,
       lms: { agent_id: 'lm1', agent_online: true,
              ps: [{ model: 'nemotron-nano', status: 'IDLE' }] },
       vllm: { agent_online: true, vllm: { state: 'running', model: 'mixtral' } } });
-    expect(a.services.map((s) => s.key))
-      .toEqual(['manager', 'alarm_engine', 'llama', 'lms', 'vllm']);
-    expect(a.services[3]).toMatchObject({ status: 'ok', detail: 'nemotron-nano', canRestart: true });
-    expect(a.services[4]).toMatchObject({ status: 'ok', detail: 'mixtral', canRestart: true });
+    expect(a.services.map((s) => s.key)).toEqual(['llama', 'lms', 'vllm']);
+    expect(a.services[1]).toMatchObject({ status: 'ok', detail: 'nemotron-nano', canRestart: true });
+    expect(a.services[2]).toMatchObject({ status: 'ok', detail: 'mixtral', canRestart: true });
   });
 
   it('no LMS/vLLM rows when no capable agent exists (agent_id null)', () => {
     const a = CView.actions({ ...full,
       lms: { agent_id: null, agent_online: false },
       vllm: { agent_id: null, agent_online: false } });
-    expect(a.services.map((s) => s.key)).toEqual(['manager', 'alarm_engine', 'llama']);
+    expect(a.services.map((s) => s.key)).toEqual(['llama']);
     expect(a.models.map((r) => r.key)).toEqual(['llama']);
   });
 
-  it('AE row mirrors the Manager row: version · uptime from AE /health passthrough', () => {
-    const a = CView.actions({ ...full, health: { ...full.health,
-      services: [{ name: 'alarm_engine', ok: true, version: 'v2026.08.08-1',
-                   uptime_s: 12 * 86400 + 7200 }] } });
-    expect(a.services[1].detail).toContain('v2026.08.08-1');
-    expect(a.services[1].detail).toContain('12d');
-    expect(a.services[1].detail).not.toContain('reachable');
-    expect(a.services[1].detail).not.toContain('TLS');
-  });
 
-  it('AE stays restartable when unreachable — that is when restart matters', () => {
-    const a = CView.actions({ ...full, health: { ...full.health,
-      services: [{ name: 'alarm_engine', ok: false }] } });
-    expect(a.services[1]).toMatchObject({ status: 'idle', canRestart: true });
-    expect(a.services[1].detail).toContain('unreachable');
-  });
 
-  it('AE restart disabled when it runs on a separate host (no local unit, not containerized)', () => {
-    const a = CView.actions({ ...full, health: { ...full.health, ae_local: false } });
-    expect(a.services[1].canRestart).toBe(false);
-  });
 
   it('agentsKnown false when the agents read failed, true when it returned', () => {
     expect(CView.actions(full).agentsKnown).toBe(true);
@@ -430,21 +455,38 @@ describe('CView.actions', () => {
     const a = CView.actions({ llama: full.llama, health: null, autopilot: null, agents: null,
                               version: 'v1', now: NOW });
     expect(a.gated).toBe(true);
-    expect(a.services[0].canRestart).toBe(false);
-    expect(a.services[1].canRestart).toBe(false);
-    expect(a.services[2].canRestart).toBe(true);
+    expect(a.services[0].canRestart).toBe(true);   // provider control stays live
     expect(a.autopilot).toBeNull();
-    expect(a.pending).toEqual([]);
     expect(a.pins).toEqual([]);
     expect(a.model.pinned).toBe(false);
   });
 
   it('empty world degrades, never throws', () => {
     const a = CView.actions({});
-    expect(a.services).toHaveLength(3);
-    expect(a.services[2].status).toBe('idle');
+    expect(a.services).toHaveLength(1);
+    expect(a.services[0].status).toBe('idle');
     expect(a.models).toHaveLength(1);
     expect(a.model.name).toBeNull();
     expect(a.model.resident).toBe(false);
+  });
+});
+
+describe('CView.audit', () => {
+  it('renders one line per entry with actor, outcome and age', () => {
+    const rows = CView.audit([
+      { ts: '2026-08-09T17:45:41.669823', actor: 'llmadmin', action: 'agent.approve',
+        target: 'mac-mini-m4', outcome: 'ok' },
+      { ts: '2026-08-09T17:40:00', actor: 'llmoperator', path: '/api/admin/agents',
+        outcome: 'denied' },
+    ], Date.parse('2026-08-09T19:45:41Z') / 1000);
+    expect(rows[0]).toMatchObject({ name: 'agent.approve', ok: true });
+    expect(rows[0].detail).toBe('llmadmin · ok · 2h ago → mac-mini-m4');
+    expect(rows[1]).toMatchObject({ name: '/api/admin/agents', ok: false });
+  });
+
+  it('caps the list and never throws on junk', () => {
+    expect(CView.audit(null)).toEqual([]);
+    expect(CView.audit([{}])[0].name).toBe('action');
+    expect(CView.audit(Array.from({ length: 90 }, () => ({})))).toHaveLength(40);
   });
 });

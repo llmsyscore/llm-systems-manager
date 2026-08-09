@@ -156,7 +156,7 @@ def _local_hostname() -> str:
 # banner reads it. Bump suffix (-1, -2, …) for same-day iterations; roll
 # the date for a new day's first change.
 # ---------------------------------------------------------------------------
-__version__ = "v2026.08.09-1"
+__version__ = "v2026.08.09-3"
 
 # Wall-clock at first import (Cheroot main process); the shutdown banner
 # reads it for the uptime line.
@@ -3114,6 +3114,8 @@ def admin_system_health():
                 "ok": influx_ok,
                 "via": "alarm_engine",
                 "state": comps.get("influxdb", "unknown"),
+                "version": comps.get("influxdb_version"),
+                "ping_ms": comps.get("influxdb_ping_ms"),
             })
             if not ae_ok:
                 health["warnings"].append(f"alarm engine returned HTTP {r.status_code}")

@@ -1,5 +1,5 @@
-// Companion shell (#522): five-tab router, per-screen controllers, push
-// opt-in, and the Actions control surface + confirm sheet. Classic IIFE.
+// Companion shell (#522): six-tab router, per-screen controllers, push
+// opt-in, the Models control surface and the Admin/Settings screens. Classic IIFE.
 (() => {
   const $ = (id) => document.getElementById(id);
   const esc = (s) => String(s == null ? '' : s)
@@ -25,6 +25,10 @@
   // Minutes east of UTC; anchors the days= energy window to the caller's local
   // midnight so "today" means today here, not the last 24 UTC hours.
   const TZ_Q = '&tz_offset_min=' + (-new Date().getTimezoneOffset());
+
+  // Resolved from /api/me at boot; false until then so nothing admin-gated
+  // fires before the answer arrives.
+  let ADMIN = false;
 
   // ── theme + host liveness ────────────────────────────────────────────────
   // 'auto' follows the dashboard layout theme; 'dark'/'light' override it.
@@ -455,50 +459,240 @@
   };
 
   // ── Admin (read-only) ─────────────────────────────────────────────────────
+  // Silent unless there is genuinely something to install — "up to date" on
+  // one row and nothing on the next just read as an inconsistency.
+  const releaseNote = (rel) => (rel && rel.enabled && rel.update_available
+    ? (rel.latest || 'update') + ' available' : '');
+
   const admin = {
     async refresh() {
-      const [health, agents, backup, auth] = await Promise.all([
-        jfetch('/api/admin/system-health').catch(() => null),
-        jfetch('/api/agents').catch(() => null),
-        jfetch('/api/admin/backup-status').catch(() => null),
-        jfetch('/api/admin/auth').catch(() => null),
+      // Non-admins can't read any of these; skipping the calls avoids a 403
+      // storm and a role-denied warning in the manager log every 10 s.
+      const none = () => Promise.resolve(null);
+      const [health, agents, backup, auth, audit, rel] = await Promise.all([
+        ADMIN ? jfetch('/api/admin/system-health').catch(() => null) : none(),
+        ADMIN ? jfetch('/api/agents').catch(() => null) : none(),
+        ADMIN ? jfetch('/api/admin/backup-status').catch(() => null) : none(),
+        ADMIN ? jfetch('/api/admin/auth').catch(() => null) : none(),
+        ADMIN ? jfetch('/api/admin/audit-log?limit=25').catch(() => null) : none(),
+        jfetch('/api/companion/release').catch(() => null),
       ]);
       const version = (document.querySelector('meta[name="mgr-version"]') || {}).content || '—';
-      const gated = !health && !agents && !backup && !auth;
+      const gated = !ADMIN || (!health && !agents && !backup && !auth);
       const stale = ((agents || {}).agents || []).filter((a) => a.update_available);
       const vm = CV.admin({
         version, health: health || {}, agents: (agents || {}).agents || [],
         backup: backup || {}, auth: auth || {},
         agentUpdates: stale.length,
+        releaseNote: releaseNote(rel),
       });
-      this.render(vm, gated);
-      paintPush();
+      this.render(vm, gated, audit);
     },
-    render(vm, gated) {
-      $('adminManager').innerHTML = providerRow({
-        status: 'ok', name: 'Manager',
-        detail: vm.manager.version + (vm.manager.uptime ? ' · up ' + vm.manager.uptime : ''),
-        rN: '', rUnit: vm.manager.updateNote,
-      });
+    msg(t, bad) {
+      const m = $('adminMsg');
+      m.textContent = t || '';
+      m.classList.toggle('bad', !!bad);
+    },
+    async act(label, req) {
+      this.msg(label + '…');
+      try {
+        const r = await req();
+        if (r && r.ok === false) throw new Error(r.error || 'failed');
+        this.msg(label + ' ✓');
+      } catch (e) { this.msg(label + ' failed: ' + (e && e.message || e), true); }
+      this.refresh();
+    },
+    render(vm, gated, audit) {
+      $('adminGatedNote').hidden = !gated;
+      $('adminManager').innerHTML = vm.services.map((s) =>
+        `<div class="arow"><span class="pstat ${s.status}"></span>`
+        + `<div class="atxt"><div class="an">${esc(s.name)}</div>`
+        + `<div class="ad">${esc(s.detail)}</div></div>`
+        + (s.right ? `<div class="pr">${esc(s.right)}</div>` : '')
+        + (s.canRestart
+          ? `<button class="btn" data-svc="${esc(s.key)}">Restart</button>` : '')
+        + '</div>').join('');
+
+      const pend = vm.pending || [];
+      $('adminPendingWrap').hidden = !pend.length;
+      $('adminPending').innerHTML = pend.map((p) =>
+        `<div class="card"><div class="an">${esc(p.name)} wants to join</div>`
+        + `<div class="ad">${esc(p.detail)}</div>`
+        + `<div class="approve"><button class="btn primary" data-approve="${esc(p.id)}">Approve</button>`
+        + `<button class="btn danger" data-deny="${esc(p.id)}">Deny</button></div></div>`).join('');
+
       if (gated) {
-        const note = '<div class="prov"><span class="pstat idle"></span>'
-          + '<div class="atxt"><div class="pn">Admin status hidden</div>'
-          + '<div class="pd">needs an admin session from an allowed network</div></div></div>';
-        $('adminAgents').innerHTML = note;
+        $('adminAgents').innerHTML = '';
         $('adminRows').innerHTML = '';
+        $('adminAudit').innerHTML = '';
         return;
       }
-      $('adminAgents').innerHTML = vm.agents.map((a) => providerRow({
-        status: a.status, name: a.name, detail: a.detail,
-        rN: a.right, rUnit: a.rightSub, warn: a.warn,
-      })).join('') || '<div class="prov"><span class="pstat idle"></span>'
-        + '<div class="atxt"><div class="pn">No agents</div></div></div>';
+      $('adminAgents').innerHTML = vm.agents.map((a) =>
+        `<div class="arow wrap"><span class="pstat ${a.status}"></span>`
+        + `<div class="atxt"><div class="an">${esc(a.name)}</div>`
+        + `<div class="ad">${esc(a.detail)}</div></div>`
+        + `<div class="pr"><b${a.warn ? ' class="warn"' : ''}>${esc(a.right)}</b>`
+        + `${esc(a.rightSub)}</div>`
+        + `<button class="btn sm" data-alog="${esc(a.id)}">Logs</button>`
+        + `<button class="btn sm" data-arestart="${esc(a.id)}" `
+        + `data-aname="${esc(a.name)}">Restart</button></div>`).join('')
+        || '<div class="arow"><div class="atxt"><div class="an">No agents</div></div></div>';
       $('adminRows').innerHTML = vm.rows.map((r) => {
         const right = r.ok == null ? ''
-          : `<span class="rowstat pstat ${r.ok ? 'ok' : 'idle'}"></span>`;
+          : `<span class="rowstat pstat ${r.ok ? 'ok' : 'down'}"></span>`;
         return `<div class="arow"><div class="atxt"><div class="an">${esc(r.name)}</div>`
           + `<div class="ad">${esc(r.detail)}</div></div>${right}</div>`;
       }).join('');
+
+      const rows = CV.audit((audit || {}).entries);
+      $('adminAudit').innerHTML = rows.map((r) =>
+        `<div class="arow"><div class="atxt"><div class="an">${esc(r.name)}</div>`
+        + `<div class="ad">${esc(r.detail)}</div></div>`
+        + (r.ok == null ? ''
+          : `<span class="rowstat pstat ${r.ok ? 'ok' : 'down'}"></span>`)
+        + '</div>').join('')
+        || '<div class="arow"><div class="atxt"><div class="an">No entries</div>'
+          + '<div class="ad">admin actions are recorded here</div></div></div>';
+    },
+    // Static snapshot by default; live tail is opt-in because an open SSE
+    // stream holds a manager worker and burns phone battery.
+    async openLogs(id) {
+      sheet.open('Agent log', '<div class="sd">loading…</div>');
+      const gen = sheet.gen;
+      let lines = [];
+      try {
+        const r = await jfetch(`/api/agents/${encodeURIComponent(id)}/log/tail`);
+        lines = (r.lines || []).slice(-120);
+      } catch (e) {
+        if (gen === sheet.gen) {
+          $('sheetBody').innerHTML = `<div class="sd">log read failed: ${esc(e && e.message || e)}</div>`;
+        }
+        return;
+      }
+      if (gen !== sheet.gen) return;
+      $('sheetBody').innerHTML =
+        `<pre class="logtail">${esc(lines.length ? lines.join('\n') : '(log is empty)')}</pre>`
+        + '<button class="btn" data-tail>Start live tail</button>';
+      // Scoped to the sheet: the element is transient, so no global id for it.
+      const pre = $('sheetBody').querySelector('.logtail');
+      pre.scrollTop = pre.scrollHeight;
+      $('sheetBody').onclick = (e) => {
+        const b = e.target.closest('[data-tail]');
+        if (b) this.toggleTail(id, b);
+      };
+    },
+    toggleTail(id, btn) {
+      if (this._es) { this.stopTail(btn); return; }
+      const pre = $('sheetBody').querySelector('.logtail');
+      btn.textContent = 'Stop live tail';
+      btn.classList.add('danger');
+      const es = new EventSource(`/api/agents/${encodeURIComponent(id)}/log/stream`);
+      this._es = es;
+      this._esGen = sheet.gen;
+      es.onmessage = (ev) => {
+        if (sheet.gen !== this._esGen) { this.stopTail(); return; }
+        if (!pre.isConnected) { this.stopTail(); return; }
+        pre.textContent += (pre.textContent ? '\n' : '') + ev.data;
+        // Keep the buffer bounded; a chatty agent would grow it forever.
+        const ls = pre.textContent.split('\n');
+        if (ls.length > 400) pre.textContent = ls.slice(-400).join('\n');
+        pre.scrollTop = pre.scrollHeight;
+      };
+      es.onerror = () => { this.stopTail(btn); };
+    },
+    stopTail(btn) {
+      if (this._es) { this._es.close(); this._es = null; }
+      if (btn) { btn.textContent = 'Start live tail'; btn.classList.remove('danger'); }
+    },
+    start() {
+      $('scr-admin').onclick = (e) => {
+        const svc = e.target.closest('[data-svc]');
+        if (svc) {
+          const COPY = {
+            manager: 'The dashboard and this app will briefly disconnect.',
+            alarm_engine: 'Alert evaluation pauses while the engine restarts.',
+          };
+          return sheet.confirm('Restart ' + svc.previousElementSibling.querySelector('.an').textContent,
+            COPY[svc.dataset.svc] || 'The service restarts now.', 'Restart', true,
+            () => this.act('restart', () => jfetch(
+              `/api/admin/service/${encodeURIComponent(svc.dataset.svc)}/restart`,
+              { method: 'POST' })));
+        }
+        const lg = e.target.closest('[data-alog]');
+        if (lg) return this.openLogs(lg.dataset.alog);
+        const rs = e.target.closest('[data-arestart]');
+        if (rs) {
+          return sheet.confirm('Restart agent on ' + rs.dataset.aname,
+            'The agent process restarts. Metrics from this host pause until it '
+            + 'reconnects; the provider it manages keeps running.', 'Restart', true,
+            () => this.act('restart agent', () => jfetch(
+              `/api/agents/${encodeURIComponent(rs.dataset.arestart)}/restart`,
+              { method: 'POST' })));
+        }
+        const ok = e.target.closest('[data-approve]');
+        if (ok) {
+          return sheet.confirm('Approve agent',
+            'Issue a token and admit this agent to the fleet.', 'Approve', false,
+            () => this.act('approve', () => jfetch(
+              `/api/agents/${encodeURIComponent(ok.dataset.approve)}/approve`, { method: 'POST' })));
+        }
+        const no = e.target.closest('[data-deny]');
+        if (no) {
+          return sheet.confirm('Deny agent',
+            'Mark this agent disabled. It can re-register later.', 'Deny', true,
+            () => this.act('deny', () => jfetch(
+              `/api/agents/${encodeURIComponent(no.dataset.deny)}/disable`, { method: 'POST' })));
+        }
+      };
+    },
+  };
+
+  // ── Settings ──────────────────────────────────────────────────────────────
+
+  const settings = {
+    async refresh() {
+      const [me, rel] = await Promise.all([
+        jfetch('/api/me').catch(() => null),
+        jfetch('/api/companion/release').catch(() => null),
+      ]);
+      $('settingsUser').textContent = me
+        ? ((me.user || me.username || 'signed in')
+           + (me.role ? ' · ' + me.role : '')) : 'signed in';
+      this.rel = rel;
+      $('settingsRelease').innerHTML = rel
+        ? '<div class="arow"><div class="atxt"><div class="an">Check for new releases</div>'
+          + `<div class="ad">${esc(this.detail(rel))}</div></div>`
+          + `<button class="switch" role="switch" aria-checked="${!!rel.enabled}" `
+          + `aria-label="Release check" data-rel${ADMIN ? '' : ' disabled'}><i></i></button></div>`
+        : '<div class="arow"><div class="atxt"><div class="an">Check for new releases</div>'
+          + '<div class="ad">unavailable</div></div></div>';
+      paintPush();
+    },
+    detail(rel) {
+      const base = rel.installed
+        ? 'installed ' + rel.installed + (rel.ahead ? ' +' + rel.ahead + ' commits' : '')
+        : (rel.install_kind || 'unknown') + ' install · build ' + (rel.build || '—');
+      if (!rel.enabled) return base + ' · off — asks github.com when on';
+      if (rel.error) return base + ' · check failed: ' + rel.error;
+      if (rel.update_available === null) return base + ' · ' + (rel.note || 'no verdict');
+      if (rel.update_available) return base + ' · ' + (rel.latest || '—') + ' available';
+      return base + ' · latest ' + (rel.latest || '—');
+    },
+    start() {
+      $('scr-settings').onclick = async (e) => {
+        const t = e.target.closest('[data-rel]');
+        if (!t || t.disabled) return;
+        const next = t.getAttribute('aria-checked') !== 'true';
+        $('settingsMsg').textContent = next ? 'enabling…' : 'disabling…';
+        try {
+          await jpost('/api/companion/release', { enabled: next }, 'PUT');
+          $('settingsMsg').textContent = next
+            ? 'release check on' : 'release check off';
+        } catch (err) {
+          $('settingsMsg').textContent = 'failed: ' + (err && err.message || err);
+        }
+        this.refresh();
+      };
     },
   };
 
@@ -515,7 +709,12 @@
       $('sheet').hidden = false;
       $('sheetCancel').focus();
     },
-    close() { this.gen++; $('sheet').hidden = true; $('sheetBody').onclick = null; },
+    close() {
+      this.gen++;
+      $('sheet').hidden = true;
+      $('sheetBody').onclick = null;
+      if (admin._es) admin.stopTail();
+    },
     confirm(title, detail, label, danger, fn) {
       this.open(title,
         `<div class="sd">${esc(detail)}</div>`
@@ -525,7 +724,7 @@
   };
 
   // ── Actions (control surface) ─────────────────────────────────────────────
-  const actions = {
+  const models = {
     vm: null, ap: null,
     async refresh() {
       const [ls, lms, vllm, health, ap, ag] = await Promise.all([
@@ -544,7 +743,7 @@
       this.render(this.vm);
     },
     msg(t, bad) {
-      const m = $('actionsMsg');
+      const m = $('modelsMsg');
       m.textContent = t || '';
       m.classList.toggle('bad', !!bad);
     },
@@ -558,14 +757,14 @@
       this.refresh();
     },
     render(vm) {
-      $('actionsGatedNote').hidden = !vm.gated;
-      $('actionsServices').innerHTML = vm.services.map((s) =>
+      $('modelsGatedNote').hidden = !vm.gated;
+      $('modelsServices').innerHTML = vm.services.map((s) =>
         `<div class="arow"><span class="pstat ${s.status}"></span>`
         + `<div class="atxt"><div class="an">${esc(s.name)}</div>`
         + `<div class="ad">${esc(s.detail)}</div></div>`
         + `<button class="btn" data-svc="${esc(s.key)}"${s.canRestart ? '' : ' disabled'}>Restart</button></div>`).join('');
       // One row per provider; llama keeps the swap sheet, the others pin/unpin.
-      $('actionsModel').innerHTML = (vm.models || []).map((r) =>
+      $('modelsLoaded').innerHTML = (vm.models || []).map((r) =>
         `<div class="arow wrap"><div class="atxt"><div class="an">${esc(r.model || 'No model')}</div>`
         + `<div class="ad">${esc(r.detail)}</div></div>`
         + (r.canSwap ? '<button class="btn primary" data-swap>Swap…</button>'
@@ -574,15 +773,15 @@
         + '</div>').join('');
       // Pins on resident models already show inline above; list only the rest.
       const pins = (vm.pins || []).filter((p) => !p.resident);
-      $('actionsPinsWrap').hidden = !pins.length;
-      $('actionsPins').innerHTML = pins.map((p) =>
+      $('modelsPinsWrap').hidden = !pins.length;
+      $('modelsPins').innerHTML = pins.map((p) =>
         `<div class="arow wrap"><div class="atxt"><div class="an">${esc(p.model)}</div>`
         + `<div class="ad">${esc(p.label + ' · → ' + p.host + ' · not loaded')}</div></div>`
         + `<button class="btn" data-unpin="${esc(p.provider)}" `
         + `data-unpin-model="${esc(p.model)}">Unpin</button></div>`).join('');
 
       const ap = vm.autopilot;
-      $('actionsAutopilot').innerHTML = ap
+      $('modelsAutopilot').innerHTML = ap
         ? '<div class="arow"><div class="atxt"><div class="an">Model autopilot</div>'
           + `<div class="ad">${esc((ap.on ? 'active' : 'off') + ' · ' + ap.detail)}</div></div>`
           + `<button class="switch" role="switch" aria-checked="${ap.on}" `
@@ -597,14 +796,6 @@
             + `<div class="ad">${esc(s.detail)}</div></div></div>`).join('')
         : '<div class="arow"><div class="atxt"><div class="an">Model autopilot</div>'
           + '<div class="ad">needs admin</div></div></div>';
-      // "No pending agents" is only claimed when the agents read succeeded.
-      $('actionsAgents').innerHTML = vm.pending.map((p) =>
-        `<div class="card"><div class="an">${esc(p.name)} wants to join</div>`
-        + `<div class="ad">${esc(p.detail)}</div>`
-        + `<div class="approve"><button class="btn primary" data-approve="${esc(p.id)}">Approve</button>`
-        + `<button class="btn danger" data-deny="${esc(p.id)}">Deny</button></div></div>`).join('')
-        || (vm.agentsKnown ? '<div class="provwrap"><div class="arow"><div class="atxt">'
-          + '<div class="an">No pending agents</div></div></div></div>' : '');
     },
     confirmRestart(key) {
       const COPY = {
@@ -721,7 +912,7 @@
       };
     },
     start() {
-      $('scr-actions').onclick = (e) => {
+      $('scr-models').onclick = (e) => {
         const svc = e.target.closest('[data-svc]');
         if (svc && !svc.disabled) return this.confirmRestart(svc.dataset.svc);
         if (e.target.closest('[data-swap]')) return this.openSwap();
@@ -730,20 +921,6 @@
         const un = e.target.closest('[data-unpin]');
         if (un) return this.setPin(un.dataset.unpin, un.dataset.unpinModel, '');
         if (e.target.closest('[data-ap]')) return this.confirmAutopilot();
-        const ok = e.target.closest('[data-approve]');
-        if (ok) {
-          return sheet.confirm('Approve agent',
-            'Issue a token and admit this agent to the fleet.', 'Approve', false,
-            () => this.act('approve', () => jfetch(
-              `/api/agents/${encodeURIComponent(ok.dataset.approve)}/approve`, { method: 'POST' })));
-        }
-        const no = e.target.closest('[data-deny]');
-        if (no) {
-          return sheet.confirm('Deny agent',
-            'Mark this agent disabled. It can re-register later.', 'Deny', true,
-            () => this.act('deny', () => jfetch(
-              `/api/agents/${encodeURIComponent(no.dataset.deny)}/disable`, { method: 'POST' })));
-        }
       };
     },
   };
@@ -814,8 +991,9 @@
     glance: { title: 'LLM Systems Manager', ctrl: glance, interval: 2000 },
     alerts: { title: 'Alerts', ctrl: alerts, interval: 15000 },
     energy: { title: 'Energy', ctrl: energy, interval: 30000 },
-    actions: { title: 'Actions', ctrl: actions, interval: 10000 },
-    admin: { title: 'Admin', ctrl: admin, interval: 10000 },
+    models: { title: 'Models', ctrl: models, interval: 10000 },
+    admin: { title: 'Admin', ctrl: admin, interval: 10000, admin: true },
+    settings: { title: 'Settings', ctrl: settings, interval: 0 },
   };
   let timer = null;
   let current = 'glance';
@@ -883,7 +1061,10 @@
   }
 
   function show(tab) {
-    const cfg = SCREENS[tab];
+    let cfg = SCREENS[tab];
+    // Defensive: the tab button is hidden for non-admins, but the router must
+    // refuse the screen too rather than trusting the button.
+    if (cfg && cfg.admin && !ADMIN) { tab = 'glance'; cfg = SCREENS[tab]; }
     if (!cfg) return;
     current = tab;
     if (timer) { clearInterval(timer); timer = null; }
@@ -894,6 +1075,8 @@
       if (on) b.setAttribute('aria-current', 'page'); else b.removeAttribute('aria-current');
     });
     $('appTitle').textContent = cfg.title;
+    // Liveness is a Home-screen statement; on other tabs it just adds noise.
+    document.querySelector('.hostchip').hidden = tab !== 'glance';
     if (cfg.ctrl) {
       cfg.ctrl.refresh();
       // Paused while the confirm sheet is open or the app is backgrounded.
@@ -914,16 +1097,28 @@
   }
 
   document.addEventListener('DOMContentLoaded', async () => {
+    // Fail closed: /api/me is session-readable and reports admin_access =
+    // is_admin && admin_ip, the same pair the server-side gate checks.
+    try {
+      const me = await jfetch('/api/me');
+      ADMIN = me.admin_access === true;
+    } catch (_) { ADMIN = false; }
+    if (!ADMIN) {
+      const tab = $('tabbar').querySelector('.tab[data-tab="admin"]');
+      if (tab) tab.hidden = true;
+    }
     await applyTheme();
     if ('serviceWorker' in navigator) {
       try { _reg = await navigator.serviceWorker.register('/sw.js', { scope: '/companion' }); }
       catch (_) { _reg = null; }
-      const repaint = () => { if (!$('scr-admin').hidden) paintPush(); };
+      const repaint = () => { if (!$('scr-settings').hidden) paintPush(); };
       navigator.serviceWorker.ready.then(repaint).catch(() => {});
       navigator.serviceWorker.addEventListener('controllerchange', repaint);
     }
     alerts.start();
-    actions.start();
+    models.start();
+    admin.start();
+    settings.start();
     blockZoom();
     initPullToRefresh();
     const clock = (t) => new Date(t * 1000)

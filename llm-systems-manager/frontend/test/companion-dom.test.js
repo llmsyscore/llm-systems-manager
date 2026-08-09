@@ -25,16 +25,28 @@ describe('companion DOM contract', () => {
 
   it('every tab has a matching screen section', () => {
     const tabs = [...html.matchAll(/data-tab="([^"]+)"/g)].map((m) => m[1]);
-    expect(tabs.length).toBe(5);
+    expect(tabs).toEqual(['glance', 'alerts', 'energy', 'models', 'admin', 'settings']);
     tabs.forEach((t) => expect(htmlIds.has('scr-' + t)).toBe(true));
   });
 
-  it('actions screen + confirm sheet expose the controller contract ids', () => {
-    for (const id of ['actionsServices', 'actionsModel', 'actionsAutopilot',
-      'actionsAgents', 'actionsGatedNote', 'actionsMsg',
+  it('models, admin and settings screens expose the controller contract ids', () => {
+    for (const id of ['modelsServices', 'modelsLoaded', 'modelsAutopilot',
+      'modelsPins', 'modelsPinsWrap', 'modelsGatedNote', 'modelsMsg',
+      'adminManager', 'adminAgents', 'adminRows', 'adminAudit',
+      'adminPending', 'adminPendingWrap', 'adminGatedNote', 'adminMsg',
+      'settingsRelease', 'settingsUser', 'settingsMsg',
+      'themeChips', 'pushStatus', 'pushCount', 'btnEnable', 'btnTest',
       'sheet', 'sheetTitle', 'sheetBody', 'sheetCancel']) {
       expect(htmlIds.has(id), id).toBe(true);
     }
+  });
+
+  it('the Actions screen is gone — its ids must not linger', () => {
+    for (const id of ['scr-actions', 'actionsServices', 'actionsModel',
+      'actionsAgents', 'actionsMsg']) {
+      expect(htmlIds.has(id), id).toBe(false);
+    }
+    expect(js.includes("actions.start()")).toBe(false);
   });
 
   it('classic companion scripts co-load without a top-level name collision', () => {

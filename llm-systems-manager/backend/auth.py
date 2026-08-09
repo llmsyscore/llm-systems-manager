@@ -595,11 +595,14 @@ def _manager_login():
 
 
 def _manager_logout():
+    # Read ?next= before clearing: an installed PWA logging out must come back
+    # to /companion, not the desktop dashboard it has no way to leave.
+    nxt = safe_next(flask_request.args.get("next"))
     session.clear()
     # Redirect to the app, not /login — the gate then decides. In required mode
     # that lands on the login form; in disabled / trusted_cidr it admits the
     # request (so "Log out" doesn't dump the operator onto a dead-end prompt).
-    return redirect("/")
+    return redirect(nxt or "/")
 
 
 def _admin_auth_get():

@@ -561,3 +561,251 @@ class TestResolvesToPublicIp:
         remaining = client.get(
             "/api/companion/push/subscriptions").get_json()["count"]
         assert remaining == 1
+
+
+# ── #541: role gating on the push roster + the release check ──────────
+
+
+@pytest.fixture
+def operator(monkeypatch, sandbox):
+    """A logged-in non-admin session. Deliberately carries no `user` key:
+    _live_role_for_session falls back to the cookie role when the session has
+    no named subject, so this doesn't depend on a user existing in the
+    environment's store (CI's is empty; the live box has llmoperator) and the
+    real effective_role / _require_admin still run."""
+    monkeypatch.setattr(auth, "auth_mode", lambda: "required")
+    with M.app.test_client() as c:
+        with c.session_transaction() as s:
+            s["auth_ok"] = True
+            s["role"] = "operator"
+        yield c
+
+
+class TestPushRoleGating:
+    def test_operator_gets_the_count_but_not_the_device_roster(
+            self, operator, sandbox):
+        companion._store.add(_sub(), ua="ua")
+        companion._store.add(_sub(endpoint="https://push.example.net/send/xyz"), ua="ua")
+        r = operator.get("/api/companion/push/subscriptions")
+        assert r.status_code == 200
+        body = r.get_json()
+        assert body["count"] == 2
+        # Endpoint prefixes identify other operators' devices.
+        assert "endpoints" not in body
+
+    def test_admin_still_sees_the_roster(self, client, sandbox):
+        companion._store.add(_sub(), ua="ua")
+        body = client.get("/api/companion/push/subscriptions").get_json()
+        assert body["count"] == 1
+        assert len(body["endpoints"]) == 1
+
+    def test_operator_cannot_fan_a_test_out_to_every_device(self, operator, sandbox):
+        companion._store.add(_sub(), ua="ua")
+        r = operator.post("/api/companion/push/test", json={})
+        assert r.status_code == 403
+        assert "endpoint" in (r.get_json() or {}).get("error", "")
+
+    def test_operator_may_test_its_own_device(self, operator, sandbox, monkeypatch):
+        companion._store.add(_sub(), ua="ua")
+        monkeypatch.setattr(companion, "_webpush_funcs", lambda: None)
+        monkeypatch.setattr(companion, "ensure_vapid_key", lambda d: d / "k.pem")
+        monkeypatch.setattr(companion, "_send_one", lambda *a, **k: (True, False))
+        r = operator.post("/api/companion/push/test",
+                          json={"endpoint": "https://push.example.net/send/abc"})
+        assert r.status_code == 200
+        assert r.get_json()["sent"] == 1
+
+
+class TestReleaseCheck:
+    @staticmethod
+    def _inst(tag, source="git", ahead=0):
+        return {"tag": tag, "describe": tag, "ahead": ahead, "source": source}
+
+    def test_disabled_by_default_makes_no_network_call(self, client, monkeypatch):
+        called = []
+        monkeypatch.setattr(companion, "_latest_release",
+                            lambda repo: called.append(repo) or (None, None, None))
+        monkeypatch.setitem(companion._release, "enabled", None)
+        body = client.get("/api/companion/release").get_json()
+        assert body["enabled"] is False
+        assert "latest" not in body
+        assert called == []
+
+    def test_enabled_reports_a_newer_tag(self, client, monkeypatch):
+        monkeypatch.setattr(companion, "_latest_release", lambda repo: ("v9.9.9", "", None))
+        monkeypatch.setattr(companion, "_installed_release", lambda: self._inst("v1.1.1"))
+        monkeypatch.setitem(companion._release, "enabled", True)
+        body = client.get("/api/companion/release").get_json()
+        assert body["latest"] == "v9.9.9"
+        assert body["update_available"] is True
+
+    def test_a_release_candidate_is_never_offered_as_an_update(self, client, monkeypatch):
+        # Keying the whole tag ranked v1.2.0-rc1 above v1.2.0.
+        monkeypatch.setattr(companion, "_latest_release", lambda repo: ("v1.2.0-rc1", "", None))
+        monkeypatch.setattr(companion, "_installed_release", lambda: self._inst("v1.2.0"))
+        monkeypatch.setitem(companion._release, "enabled", True)
+        assert client.get("/api/companion/release").get_json()["update_available"] is False
+
+    def test_drift_past_a_tag_is_reported_but_is_not_an_update(self, client, monkeypatch):
+        monkeypatch.setattr(companion, "_latest_release", lambda repo: ("v1.1.1", "", None))
+        monkeypatch.setattr(companion, "_installed_release",
+                            lambda: {"tag": "v1.1.1", "describe": "v1.1.1-8-gabc1234",
+                                     "ahead": 8, "source": "git"})
+        monkeypatch.setitem(companion._release, "enabled", True)
+        body = client.get("/api/companion/release").get_json()
+        assert body["ahead"] == 8
+        assert body["describe"] == "v1.1.1-8-gabc1234"
+        assert body["update_available"] is False
+
+    def test_release_notes_fallback_when_the_install_cannot_name_itself(
+            self, client, monkeypatch):
+        # brew/deb/container with no RELEASE file: match this build stamp in
+        # the newest release's notes instead of guessing. The body below is
+        # the exact table release.yml publishes — see TestReleaseNotesContract.
+        notes = (
+            "Install this release:\n\n### Component versions\n\n"
+            "| Component | Version |\n| --- | --- |\n"
+            f"| Manager | `{M.__version__}` |\n"
+            "| Alarm engine | `v2026.01.01-1` |\n"
+            "| Agent | `v2026.01.01-1` |\n")
+        monkeypatch.setattr(companion, "_installed_release", lambda: self._inst(None, None))
+        monkeypatch.setattr(companion, "_latest_release", lambda repo: ("v9.9.9", notes, None))
+        monkeypatch.setitem(companion._release, "enabled", True)
+        body = client.get("/api/companion/release").get_json()
+        assert body["update_available"] is False
+        assert "release notes" in body["note"]
+
+    def test_no_verdict_when_the_notes_do_not_mention_this_build(self, client, monkeypatch):
+        monkeypatch.setattr(companion, "_installed_release", lambda: self._inst(None, None))
+        monkeypatch.setattr(companion, "_latest_release",
+                            lambda repo: ("v9.9.9", "some other notes", None))
+        monkeypatch.setitem(companion._release, "enabled", True)
+        body = client.get("/api/companion/release").get_json()
+        assert body["update_available"] is None
+        assert "no release tag" in body["note"]
+
+    def test_same_release_is_not_an_update(self, client, monkeypatch):
+        monkeypatch.setattr(companion, "_latest_release", lambda repo: ("v1.1.1", "", None))
+        monkeypatch.setattr(companion, "_installed_release", lambda: self._inst("v1.1.1"))
+        monkeypatch.setitem(companion._release, "enabled", True)
+        assert client.get("/api/companion/release").get_json()["update_available"] is False
+
+    def test_github_failure_degrades_without_raising(self, client, monkeypatch):
+        monkeypatch.setattr(companion, "_latest_release",
+                            lambda repo: (None, None, "ConnectionError"))
+        monkeypatch.setattr(companion, "_installed_release", lambda: self._inst("v1.1.1"))
+        monkeypatch.setitem(companion._release, "enabled", True)
+        body = client.get("/api/companion/release").get_json()
+        assert body["ok"] is True
+        assert body["error"] == "ConnectionError"
+        assert body["update_available"] is None
+
+    def test_operator_cannot_toggle_the_check(self, operator):
+        assert operator.put("/api/companion/release",
+                            json={"enabled": True}).status_code == 403
+
+    def test_admin_toggles_and_it_sticks(self, client, monkeypatch):
+        monkeypatch.setitem(companion._release, "enabled", None)
+        assert client.put("/api/companion/release",
+                          json={"enabled": True}).get_json()["enabled"] is True
+        monkeypatch.setattr(companion, "_latest_release", lambda repo: (None, None, None))
+        assert client.get("/api/companion/release").get_json()["enabled"] is True
+
+    def test_toggling_clears_the_cache_so_the_next_read_refetches(self, client):
+        # 24 h TTL would otherwise pin a stale answer; flipping the switch is
+        # the operator's way of saying "check now".
+        companion._release["checked_at"] = 12345.0
+        client.put("/api/companion/release", json={"enabled": False})
+        assert companion._release["checked_at"] == 0.0
+
+    def test_put_requires_the_enabled_field(self, client):
+        assert client.put("/api/companion/release", json={}).status_code == 400
+
+
+class TestInstallIdentity:
+    def test_release_file_wins_and_marks_a_packaged_install(self, monkeypatch, tmp_path):
+        (tmp_path / "RELEASE").write_text("v1.2.3\n")
+        monkeypatch.setattr(companion, "_repo_root", lambda: tmp_path)
+        got = companion._installed_release()
+        assert got["tag"] == "v1.2.3"
+        assert got["source"] == "release-file"
+        assert companion._install_kind() == "package"
+
+    def test_unsubstituted_placeholder_is_not_a_release(self, monkeypatch, tmp_path):
+        # A git checkout keeps the literal $Format:...$ from export-subst.
+        (tmp_path / "RELEASE").write_text("$Format:%(describe:tags)$\n")
+        monkeypatch.setattr(companion, "_repo_root", lambda: tmp_path)
+        monkeypatch.setattr(companion, "_run", lambda *a, **k: None)
+        assert companion._installed_release()["source"] is None
+
+    def test_release_file_drift_suffix_is_parsed(self, monkeypatch, tmp_path):
+        (tmp_path / "RELEASE").write_text("v1.1.1-9-gfda4f2f\n")
+        monkeypatch.setattr(companion, "_repo_root", lambda: tmp_path)
+        got = companion._installed_release()
+        assert got == {"tag": "v1.1.1", "describe": "v1.1.1-9-gfda4f2f",
+                       "ahead": 9, "source": "release-file"}
+
+    def test_falls_back_to_the_package_database(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(companion, "_repo_root", lambda: tmp_path)
+        monkeypatch.setattr(companion, "_run",
+                            lambda cmd, cwd=None: "1.1.1" if cmd[0] == "dpkg-query" else None)
+        got = companion._installed_release()
+        assert got["tag"] == "v1.1.1"
+        assert got["source"] == "dpkg"
+
+    def test_nothing_identifiable_returns_no_source(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(companion, "_repo_root", lambda: tmp_path)
+        monkeypatch.setattr(companion, "_run", lambda *a, **k: None)
+        assert companion._installed_release()["tag"] is None
+
+
+class TestVersionCompare:
+    @pytest.mark.parametrize("latest,current,expect", [
+        ("v1.1.2", "v1.1.1", True),
+        ("v1.2.0", "v1.1.9", True),
+        ("v1.1.1", "v1.1.1", False),
+        ("v1.1.0", "v1.1.1", False),
+        ("v2.0.0", "v1.9.9", True),
+        ("junk", "v1.1.0", False),
+        ("v1.1.0", "", False),
+    ])
+    def test_newer(self, latest, current, expect):
+        assert companion._newer(latest, current) is expect
+
+
+class TestReleaseNotesContract:
+    """The companion's last-resort check greps the published release notes for
+    the running build stamp, so release.yml must keep emitting it. These guard
+    the two halves of that contract against silent drift."""
+
+    @staticmethod
+    def _workflow() -> str:
+        from pathlib import Path
+        root = Path(__file__).resolve().parents[2]
+        return (root / ".github" / "workflows" / "release.yml").read_text()
+
+    def test_release_notes_carry_all_three_component_versions(self):
+        wf = self._workflow()
+        for token in ("${MANAGER_VERSION}", "${AE_VERSION}", "${AGENT_VERSION}"):
+            assert token in wf, token
+        assert "### Component versions" in wf
+
+    def test_publish_job_receives_the_versions_from_the_build_job(self):
+        wf = self._workflow()
+        for token in ("needs.build.outputs.manager_version",
+                      "needs.build.outputs.ae_version",
+                      "needs.build.outputs.agent_version"):
+            assert token in wf, token
+
+    def test_the_stamp_reader_matches_this_repo_s_declarations(self):
+        # Mirrors the sed in release.yml: if a component ever renames or
+        # reformats its version line, this fails before a release does.
+        from pathlib import Path
+        root = Path(__file__).resolve().parents[2]
+        for rel, name in (
+                ("llm-systems-manager/backend/llm-systems-manager.py", "__version__"),
+                ("llm-systems-alarm-engine/backend/alarm_engine.py", "__version__"),
+                ("agent/llm-systems-agent.py", "VERSION")):
+            text = (root / rel).read_text()
+            m = re.search(rf'^{name}\s*=\s*"(.*)"', text, re.M)
+            assert m and m.group(1).strip(), f"{rel}: no readable {name}"
