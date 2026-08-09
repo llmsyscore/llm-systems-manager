@@ -65,10 +65,12 @@
 
   // ── render helpers ───────────────────────────────────────────────────────
   function providerRow(p) {
+    const suffix = p.rSuffix ? `<small>${esc(p.rSuffix)}</small>` : '';
     return `<div class="prov"><span class="pstat ${p.status}"></span>`
       + `<div class="atxt"><div class="pn">${esc(p.name)}</div>`
       + `<div class="pd">${esc(p.detail)}</div></div>`
-      + `<div class="pr"><b${p.warn ? ' class="warn"' : ''}>${esc(p.rN)}</b>${esc(p.rUnit)}</div></div>`;
+      + `<div class="pr"><b${p.warn ? ' class="warn"' : ''}>${esc(p.rN)}${suffix}</b>`
+      + `${esc(p.rUnit)}</div></div>`;
   }
   // viewBox-space top padding that clears the hero text at any breakpoint, so
   // the trend line can never run through the numbers.
@@ -96,7 +98,9 @@
       const i = Math.round(f * (n - 1));
       out.textContent = s.label(i);
       out.classList.add('on');
-      out.style.left = Math.max(6, Math.min(r.width - 6, f * r.width)) + 'px';
+      // Clamp on the bubble's own half-width or the ends run off-screen.
+      const half = out.offsetWidth / 2;
+      out.style.left = Math.max(half + 6, Math.min(r.width - half - 6, f * r.width)) + 'px';
       clearTimeout(timer);
       timer = setTimeout(() => out.classList.remove('on'), 2600);
     };
@@ -115,6 +119,23 @@
   // ── Glance ────────────────────────────────────────────────────────────────
   const glance = {
     buf: [],
+    hist: [],            // [{t: epochSec, v: fleet tok/s}] over 24 h
+    histAt: 0,
+    // Fleet tok/s history from the alarm engine; refreshed every 5 min, not
+    // on the 2 s poll. Falls back to the live buffer when it returns nothing.
+    async loadHistory() {
+      const now = Date.now() / 1000;
+      if (now - this.histAt < 300) return;
+      this.histAt = now;
+      try {
+        const rows = await jfetch('/api/history?since_minutes=1440&max_rows=180');
+        this.hist = (Array.isArray(rows) ? rows : []).map((r) => {
+          const parts = [r.llama_tps, r.lms_tps, r.vllm_tps]
+            .filter((v) => typeof v === 'number' && isFinite(v));
+          return { t: CV.tsSeconds(r.ts), v: parts.reduce((a, b) => a + b, 0) };
+        }).filter((p) => p.t != null);
+      } catch (_) { /* keep whatever we had */ }
+    },
     async refresh() {
       const [m, ls, lms, vllm, en] = await Promise.all([
         jfetch('/api/metrics').catch(() => ({})),
@@ -125,21 +146,27 @@
       ]);
       setLive(ls.agent_online, ls.agent_age_s);
       const vm = CV.glance({ metrics: m, llama: ls, lms, vllm, energy: en });
-      // Buffer the hero's rate (whichever provider it is) so the strip and the
-      // hero always agree.
-      this.buf.push(vm.hero.tps);
+      // Live buffer backs the strip only when history is unavailable.
+      this.buf.push({ t: Date.now() / 1000, v: vm.hero.tps });
       if (this.buf.length > 120) this.buf.shift();
+      this.loadHistory();
       this.render(vm);
     },
+    // 24 h history when the alarm engine has it, else the live 2 s buffer.
+    series() {
+      return this.hist.length > 1 ? this.hist : this.buf;
+    },
     render(vm) {
-      $('glanceHeroN').innerHTML = `${esc(vm.hero.n)} <small>${esc(vm.hero.unit)}</small>`;
+      $('glanceHeroN').innerHTML = `${esc(vm.hero.n)}<small>${esc(vm.hero.unit)}</small>`;
       $('glanceHeroL').textContent = vm.hero.label;
-      const sp = CS.path(this.buf, 340, 118, { padTop: stripPad('glanceStrip', 'glanceHeroL') });
+      const pts = this.series();
+      const sp = CS.path(pts.map((p) => p.v), 340, 118,
+        { padTop: stripPad('glanceStrip', 'glanceHeroL') });
       $('glanceSparkLine').setAttribute('d', sp.line);
       $('glanceSparkFill').setAttribute('d', sp.fill);
-      const secs = this.buf.length * 2;
-      $('glanceWin').textContent = secs < 90 ? 'live'
-        : 'last ' + Math.round(secs / 60) + 'm';
+      $('glanceWin').textContent = this.hist.length > 1 ? 'last 24 h'
+        : (this.buf.length * 2 < 90 ? 'live'
+          : 'last ' + Math.round(this.buf.length * 2 / 60) + 'm');
       $('glanceProviders').innerHTML = vm.providers.map(providerRow).join('');
       $('glanceTiles').innerHTML = vm.tiles.map(tileEl).join('');
     },
@@ -254,7 +281,7 @@
       const thin = last && (Date.now() / 1000 - last.hour_ts) < 300 && rows.length > 1;
       const live = rows.length
         ? this.bucketWatts(thin ? rows[rows.length - 2] : last) : tT.avg_watts;
-      $('energyHeroN').innerHTML = `${esc(EN.fmtWatts(live).replace(' W', ''))} <small>W</small>`;
+      $('energyHeroN').innerHTML = `${esc(EN.fmtWatts(live).replace(' W', ''))}<small>W</small>`;
       const watts = rows.map((r) => this.bucketWatts(r));
       const sp = CS.path(watts, 340, 118, { padTop: stripPad('energyStrip', 'energyHeroL') });
       $('energySparkLine').setAttribute('d', sp.line);
@@ -301,11 +328,14 @@
       const VIA = { psu: 'liquidctl', mac: 'powermetrics', gpu: 'gpu driver' };
       const rows = (today.hosts || []).map((h) => {
         const src = EN.sourceLabel(h.power_source);
+        const w = EN.fmtWatts(h.avg_watts);
         return providerRow({
           status: h.has_power ? 'ok' : 'idle',
           name: h.hostname || (h.agent_id || '').slice(0, 10) || '?',
           detail: src ? src + ' · ' + (VIA[h.power_source] || 'agent') : 'no power telemetry',
-          rN: EN.fmtWatts(h.avg_watts), rUnit: 'day avg',
+          // Split the unit off so it isn't spaced by a wide monospace blank.
+          rN: w.replace(/ W$/, ''), rSuffix: w.endsWith(' W') ? 'W' : '',
+          rUnit: 'day avg',
         });
       });
       const t = today.totals || {};
@@ -352,10 +382,14 @@
       if (!days.length) { svg.setAttribute('aria-label', 'No daily cost data'); svg.innerHTML = ''; return; }
       svg.setAttribute('aria-label', 'Cost per day, last ' + days.length + ' days; '
         + days.map((d) => (d.today ? 'today ' : d.wd + ' ') + EN.fmtUsd(d.cost)).join(', '));
-      const W = 340, n = days.length, slot = W / n, w = Math.max(10, slot * 0.62);
+      // Draw in CSS pixels (viewBox width = measured width) so bars keep their
+      // size on a tablet instead of scaling with the card.
+      const W = Math.max(240, Math.round(svg.getBoundingClientRect().width) || 312);
+      svg.setAttribute('viewBox', `0 0 ${W} 92`);
+      const n = days.length, slot = W / n, w = Math.max(10, Math.min(34, slot * 0.5));
+      const max = Math.max(...days.map((x) => x.cost), 0.01);
       let out = '';
       days.forEach((d, i) => {
-        const max = Math.max(...days.map((x) => x.cost), 0.01);
         const h = Math.max(4, Math.round((d.cost / max) * 52));
         const x = i * slot + (slot - w) / 2, y = 76 - h;
         out += `<rect class="${d.today ? 'today' : ''}" x="${x.toFixed(1)}" y="${y}" `
@@ -828,12 +862,15 @@
     alerts.start();
     actions.start();
     initPullToRefresh();
-    // Glance buffers one sample per 2 s poll; energy holds hourly buckets.
-    attachScrub('glanceStrip', 'glanceReadout', () => ({
-      values: glance.buf,
-      label: (i) => glance.buf[i].toFixed(1) + ' tok/s · '
-        + ((glance.buf.length - 1 - i) * 2 || 0) + 's ago',
-    }));
+    const clock = (t) => new Date(t * 1000)
+      .toLocaleTimeString('en', { hour: 'numeric', minute: '2-digit' });
+    attachScrub('glanceStrip', 'glanceReadout', () => {
+      const pts = glance.series();
+      return {
+        values: pts.map((p) => p.v),
+        label: (i) => pts[i].v.toFixed(1) + ' tok/s · ' + clock(pts[i].t),
+      };
+    });
     attachScrub('energyStrip', 'energyReadout', () => ({
       values: energy.hourly.map((r) => energy.bucketWatts(r)),
       label: (i) => EN.fmtWatts(energy.bucketWatts(energy.hourly[i])) + ' · '

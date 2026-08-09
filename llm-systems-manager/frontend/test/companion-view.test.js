@@ -19,6 +19,16 @@ describe('CView.age', () => {
     expect(CView.age(null, NOW)).toBe('—');
     expect(CView.age('not a date', NOW)).toBe('—');
   });
+  it('tsSeconds normalizes every timestamp shape the APIs emit', () => {
+    expect(CView.tsSeconds(NOW)).toBe(NOW);
+    expect(CView.tsSeconds(NOW * 1000)).toBe(NOW);
+    expect(CView.tsSeconds('2026-08-09T17:45:41Z')).toBe(Date.parse('2026-08-09T17:45:41Z') / 1000);
+    // zoneless (alarm engine / influx history) must be read as UTC, not local
+    expect(CView.tsSeconds('2026-08-09T17:45:41')).toBe(Date.parse('2026-08-09T17:45:41Z') / 1000);
+    expect(CView.tsSeconds('nope')).toBeNull();
+    expect(CView.tsSeconds(null)).toBeNull();
+  });
+
   it('reads the alarm engine\'s zoneless naive-UTC strings as UTC', () => {
     // The AE emits "2026-08-09T17:45:41.669823" with no zone. Date.parse reads
     // a zoneless date-time as LOCAL, which put every alert in the future and

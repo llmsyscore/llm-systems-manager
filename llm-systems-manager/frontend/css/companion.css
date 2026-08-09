@@ -40,8 +40,8 @@ body.companion {
 /* scrolling screen area */
 .screens { flex: 1; overflow: hidden; position: relative; }
 .screen {
-  position: absolute; inset: 0; overflow-y: auto; -webkit-overflow-scrolling: touch;
-  overscroll-behavior-y: contain;
+  position: absolute; inset: 0; overflow-y: auto; overflow-x: hidden;
+  -webkit-overflow-scrolling: touch; overscroll-behavior-y: contain;
   display: flex; flex-direction: column; gap: 12px; padding: 4px 14px 16px;
 }
 .screen[hidden] { display: none; }
@@ -82,7 +82,7 @@ body.companion {
 .strip.energy .spark-fill { fill: var(--accent-2); }
 .strip .hero { position: absolute; left: 16px; top: 14px; }
 .strip .hero .n { font-family: var(--mono); font-size: 38px; font-weight: 600; color: var(--fg); line-height: 1; }
-.strip .hero .n small { font-size: 15px; color: var(--fg-muted); font-weight: 400; margin-left: 5px; }
+.strip .hero .n small { font-size: 15px; color: var(--fg-muted); font-weight: 400; margin-left: 3px; }
 .strip .hero .l { font-family: var(--mono); font-size: 11.5px; color: var(--fg-muted); margin-top: 5px;
   max-width: 62vw; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .strip .win { position: absolute; right: 14px; top: 16px; font-family: var(--mono); font-size: 11px; color: var(--fg-dim); }
@@ -95,7 +95,7 @@ body.companion {
   border-radius: 8px; padding: 4px 9px; white-space: nowrap; pointer-events: none;
   opacity: 0; transition: opacity .12s ease;
 }
-.readout { bottom: 8px; transform: translateX(-50%); }
+.readout { bottom: 8px; left: 50%; transform: translateX(-50%); }
 .barreadout { left: 50%; top: 4px; transform: translateX(-50%); }
 .readout.on, .barreadout.on { opacity: 1; }
 @media (prefers-reduced-motion: reduce) { .readout, .barreadout { transition: none; } }
@@ -115,6 +115,8 @@ body.companion {
   overflow-wrap: anywhere; }
 .prov .pr, .arow .pr { margin-left: auto; font-family: var(--mono); font-size: 12px; color: var(--fg-muted); text-align: right; flex: none; }
 .prov .pr b, .arow .pr b { display: block; color: var(--fg); font-weight: 600; font-size: 14.5px; }
+.prov .pr b small, .arow .pr b small { font-size: 11px; font-weight: 400;
+  color: var(--fg-muted); margin-left: 2px; }
 .prov .pr b.warn, .arow .pr b.warn { color: var(--warn); }
 
 /* stat tiles */
@@ -173,7 +175,7 @@ body.companion {
 
 /* cost-per-day bars — span the full card, uniform scale so labels stay round */
 .daycard { position: relative; padding: 10px 6px 6px; }
-.daybars { display: block; width: 100%; height: auto; touch-action: manipulation; }
+.daybars { display: block; width: 100%; height: 92px; touch-action: manipulation; }
 .daybars rect { fill: var(--accent); }
 .daybars rect.today { opacity: .55; }
 .daybars text { font-family: var(--mono); font-size: 10.5px; fill: var(--fg-dim); }

@@ -22,17 +22,22 @@
 
   // Seconds since ts (epoch s/ms or ISO string), or null if unparseable.
   function _secs(ts, nowSec) {
-    let t = null;
-    if (typeof ts === 'number' && isFinite(ts)) t = ts > 1e12 ? ts / 1000 : ts;
-    else if (typeof ts === 'string' && ts) {
-      // The alarm engine serializes naive-UTC datetimes with no zone; bare
-      // Date.parse reads those as local time. Mirrors the AE SPA's parseTs.
-      const p = Date.parse(/(Z|[+-]\d{2}:?\d{2})$/.test(ts) ? ts : ts + 'Z');
-      if (!Number.isNaN(p)) t = p / 1000;
-    }
+    // The alarm engine serializes naive-UTC datetimes with no zone; bare
+    // Date.parse reads those as local time. tsSeconds normalizes both.
+    const t = tsSeconds(ts);
     if (t == null) return null;
     const now = nowSec == null ? Date.now() / 1000 : nowSec;
     return Math.max(0, now - t);
+  }
+
+  // Epoch seconds for a timestamp in any of the shapes the APIs emit.
+  function tsSeconds(ts) {
+    if (typeof ts === 'number' && isFinite(ts)) return ts > 1e12 ? ts / 1000 : ts;
+    if (typeof ts === 'string' && ts) {
+      const p = Date.parse(/(Z|[+-]\d{2}:?\d{2})$/.test(ts) ? ts : ts + 'Z');
+      if (!Number.isNaN(p)) return p / 1000;
+    }
+    return null;
   }
 
   // Relative age, e.g. "2m ago".
@@ -494,5 +499,6 @@
     };
   }
 
-  return { glance, alerts, alertRow, admin, actions, age, hbAge, _sevClass: sevClass };
+  return { glance, alerts, alertRow, admin, actions, age, hbAge, tsSeconds,
+    _sevClass: sevClass };
 });
