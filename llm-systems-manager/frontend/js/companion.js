@@ -96,7 +96,7 @@
     render(vm) {
       $('glanceHeroN').innerHTML = `${esc(vm.hero.n)} <small>${esc(vm.hero.unit)}</small>`;
       $('glanceHeroL').textContent = vm.hero.label;
-      const sp = CS.path(this.buf, 340, 118, { padTop: 58 });
+      const sp = CS.path(this.buf, 340, 118, { padTop: 44 });
       $('glanceSparkLine').setAttribute('d', sp.line);
       $('glanceSparkFill').setAttribute('d', sp.fill);
       const secs = this.buf.length * 2;
@@ -130,6 +130,7 @@
       let firing = vm.firing;
       if (f === 'critical') firing = firing.filter((r) => r.sev === 'crit');
       else if (f === 'warning') firing = firing.filter((r) => r.sev === 'warn');
+      else if (f === 'info') firing = firing.filter((r) => r.info);
       else if (f === 'resolved') firing = [];
       const showEarlier = (f === 'all' || f === 'resolved') && vm.earlier.length;
       $('alertsFiring').innerHTML = firing.map((r) => this.row(r)).join('');
@@ -139,7 +140,7 @@
       $('alertsEmpty').hidden = !empty;
       if (empty) {
         const label = { critical: 'No critical alerts', warning: 'No warning alerts',
-          resolved: 'Nothing earlier today' }[f] || 'All clear';
+          info: 'No info alerts', resolved: 'Nothing earlier today' }[f] || 'All clear';
         $('alertsEmpty').querySelector('.big').textContent = label;
       }
     },
@@ -160,6 +161,15 @@
       document.getElementById('scr-alerts').onclick = (e) => {
         const b = e.target.closest('[data-ack]');
         if (b) this.ack(b.dataset.ack);
+      };
+      $('alertsRefresh').onclick = async () => {
+        const btn = $('alertsRefresh');
+        btn.disabled = true;
+        btn.classList.add('busy');
+        try { await this.refresh(); } finally {
+          btn.disabled = false;
+          btn.classList.remove('busy');
+        }
       };
     },
   };
@@ -188,31 +198,55 @@
       $('energyHeroN').innerHTML = `${esc(EN.fmtWatts(tT.avg_watts).replace(' W', ''))} <small>W</small>`;
       // 24h watts strip: each hourly bucket's Wh over ~1h ≈ average watts
       const watts = (hourly.rows || []).map((r) => r.energy_wh);
-      const sp = CS.path(watts, 340, 118, { padTop: 58 });
+      const sp = CS.path(watts, 340, 118, { padTop: 44 });
       $('energySparkLine').setAttribute('d', sp.line);
       $('energySparkFill').setAttribute('d', sp.fill);
 
-      const price = today.price_kwh;
-      const elapsed = (month.window || {}).elapsed_s;
-      const proj = (mT.cost_usd != null && elapsed > 0)
-        ? mT.cost_usd / elapsed * 30 * 86400 : null;
+      const price = today.price_kwh != null ? today.price_kwh : month.price_kwh;
+      const p = this.projection(today, month, price);
       $('energyTiles').innerHTML = [
         { v: EN.fmtUsd(tT.cost_usd), unit: '', k: 'Today',
           sub: tT.kwh != null ? EN.fmtKwh(tT.kwh) + (price != null ? ' · $' + price + '/kWh' : '') : 'no telemetry' },
-        { v: proj != null ? '$' + Math.round(proj) : '—', unit: proj != null ? ' proj' : '',
-          k: 'This month', sub: '30-day at current mix' },
+        { v: p.value, unit: p.unit, k: 'This month', sub: p.sub },
       ].map(tileEl).join('');
 
       $('energyHosts').innerHTML = this.hostRows(today);
       this.dayBars(week.rows || [], price);
     },
+    // 30-day cost projection over every host the accumulator saw: month-to-date
+    // spend first, then measured fleet draw (month, then today) × price.
+    projection(today, month, price) {
+      const fin = (v) => (typeof v === 'number' && isFinite(v) && v > 0 ? v : null);
+      const elapsed = fin((month.window || {}).elapsed_s);
+      const mT = month.totals || {}, tT = today.totals || {};
+      let proj = null, basis = null;
+      if (fin(mT.cost_usd) && elapsed) {
+        proj = mT.cost_usd / elapsed * 30 * 86400;
+        basis = 'month-to-date run rate';
+      } else if (fin(mT.avg_watts) && fin(price)) {
+        proj = mT.avg_watts / 1000 * 720 * price;
+        basis = EN.fmtWatts(mT.avg_watts) + ' avg this month';
+      } else if (fin(tT.avg_watts) && fin(price)) {
+        proj = tT.avg_watts / 1000 * 720 * price;
+        basis = EN.fmtWatts(tT.avg_watts) + ' avg today';
+      }
+      if (proj == null) return { value: '—', unit: '', sub: 'no power telemetry yet' };
+      const cov = mT.power_coverage_pct;
+      return {
+        value: proj >= 10 ? '$' + Math.round(proj) : EN.fmtUsd(proj),
+        unit: ' proj',
+        sub: basis + (cov != null && cov < 95
+          ? ' · ' + Math.round(cov) + '% covered' : ''),
+      };
+    },
     hostRows(today) {
+      const VIA = { psu: 'liquidctl', mac: 'powermetrics', gpu: 'gpu driver' };
       const rows = (today.hosts || []).map((h) => {
         const src = EN.sourceLabel(h.power_source);
         return providerRow({
           status: h.has_power ? 'ok' : 'idle',
           name: h.hostname || (h.agent_id || '').slice(0, 10) || '?',
-          detail: src ? src + (h.power_source === 'psu' ? ' · liquidctl' : ' · powermetrics') : 'no power telemetry',
+          detail: src ? src + ' · ' + (VIA[h.power_source] || 'agent') : 'no power telemetry',
           rN: EN.fmtWatts(h.avg_watts), rUnit: 'avg',
         });
       });
@@ -369,16 +403,37 @@
         + `<div class="atxt"><div class="an">${esc(s.name)}</div>`
         + `<div class="ad">${esc(s.detail)}</div></div>`
         + `<button class="btn" data-svc="${esc(s.key)}"${s.canRestart ? '' : ' disabled'}>Restart</button></div>`).join('');
-      const m = vm.model;
-      $('actionsModel').innerHTML =
-        `<div class="arow"><div class="atxt"><div class="an">${esc(m.name || 'No model')}</div>`
-        + `<div class="ad">${esc(m.detail)}</div></div>`
-        + `<button class="btn primary" data-swap>Swap…</button></div>`;
-      $('actionsAutopilot').innerHTML = vm.autopilot
-        ? `<div class="arow"><div class="atxt"><div class="an">Model autopilot</div>`
-          + `<div class="ad">${esc((vm.autopilot.on ? 'active' : 'off') + ' · ' + vm.autopilot.detail)}</div></div>`
-          + `<button class="switch" role="switch" aria-checked="${vm.autopilot.on}" `
+      // One row per provider; llama keeps the swap sheet, the others pin/unpin.
+      $('actionsModel').innerHTML = (vm.models || []).map((r) =>
+        `<div class="arow wrap"><div class="atxt"><div class="an">${esc(r.model || 'No model')}</div>`
+        + `<div class="ad">${esc(r.detail)}</div></div>`
+        + (r.canSwap ? '<button class="btn primary" data-swap>Swap…</button>'
+          : (r.model ? `<button class="btn" data-pinprov="${esc(r.key)}">`
+            + `${r.pinned ? 'Unpin' : 'Pin'}</button>` : ''))
+        + '</div>').join('');
+      // Pins on resident models already show inline above; list only the rest.
+      const pins = (vm.pins || []).filter((p) => !p.resident);
+      $('actionsPinsWrap').hidden = !pins.length;
+      $('actionsPins').innerHTML = pins.map((p) =>
+        `<div class="arow wrap"><div class="atxt"><div class="an">${esc(p.model)}</div>`
+        + `<div class="ad">${esc(p.label + ' · → ' + p.host + ' · not loaded')}</div></div>`
+        + `<button class="btn" data-unpin="${esc(p.provider)}" `
+        + `data-unpin-model="${esc(p.model)}">Unpin</button></div>`).join('');
+
+      const ap = vm.autopilot;
+      $('actionsAutopilot').innerHTML = ap
+        ? '<div class="arow"><div class="atxt"><div class="an">Model autopilot</div>'
+          + `<div class="ad">${esc((ap.on ? 'active' : 'off') + ' · ' + ap.detail)}</div></div>`
+          + `<button class="switch" role="switch" aria-checked="${ap.on}" `
           + 'aria-label="Autopilot" data-ap><i></i></button></div>'
+          + ap.entries.map((e) =>
+            `<div class="arow"><div class="atxt"><div class="an">${esc(e.model)}</div>`
+            + `<div class="ad">${esc(e.detail)}</div></div>`
+            + `<div class="pr"><b${e.warn ? ' class="warn"' : ''}>${esc(e.right)}</b>`
+            + `${esc(e.rightSub)}</div></div>`).join('')
+          + ap.settings.map((s) =>
+            `<div class="arow"><div class="atxt"><div class="an">${esc(s.name)}</div>`
+            + `<div class="ad">${esc(s.detail)}</div></div></div>`).join('')
         : '<div class="arow"><div class="atxt"><div class="an">Model autopilot</div>'
           + '<div class="ad">needs admin</div></div></div>';
       // "No pending agents" is only claimed when the agents read succeeded.
@@ -422,6 +477,22 @@
           const cur = ((await jfetch('/api/autopilot')).state) || snap;
           return jpost('/api/autopilot', Object.assign({}, cur, { enabled: next }), 'PUT');
         }));
+    },
+    // Pin/unpin for the non-llama providers, via /api/admin/<provider>-pins.
+    setPin(provider, model, agentId) {
+      const on = !!agentId;
+      sheet.confirm((on ? 'Pin ' : 'Unpin ') + model,
+        on ? 'Gateway requests for this model always route to this host.'
+          : 'Gateway requests for this model go back to pool routing.',
+        on ? 'Pin' : 'Unpin', false,
+        () => this.act(on ? 'pin' : 'unpin',
+          () => jpost(`/api/admin/${encodeURIComponent(provider)}-pins`,
+            { model_id: model, agent_id: agentId || '' })));
+    },
+    confirmProviderPin(key) {
+      const r = ((this.vm || {}).models || []).find((x) => x.key === key);
+      if (!r || !r.model) return;
+      this.setPin(key, r.model, r.pinned ? '' : r.agentId);
     },
     // Loads a model, surfacing the proxy's pin-override routing headers.
     async loadModel(id) {
@@ -493,6 +564,10 @@
         const svc = e.target.closest('[data-svc]');
         if (svc && !svc.disabled) return this.confirmRestart(svc.dataset.svc);
         if (e.target.closest('[data-swap]')) return this.openSwap();
+        const pp = e.target.closest('[data-pinprov]');
+        if (pp) return this.confirmProviderPin(pp.dataset.pinprov);
+        const un = e.target.closest('[data-unpin]');
+        if (un) return this.setPin(un.dataset.unpin, un.dataset.unpinModel, '');
         if (e.target.closest('[data-ap]')) return this.confirmAutopilot();
         const ok = e.target.closest('[data-approve]');
         if (ok) {
@@ -582,10 +657,62 @@
     admin: { title: 'Admin', ctrl: admin, interval: 10000 },
   };
   let timer = null;
+  let current = 'glance';
+
+  const refreshCurrent = () => {
+    const cfg = SCREENS[current];
+    return cfg && cfg.ctrl ? Promise.resolve(cfg.ctrl.refresh()) : Promise.resolve();
+  };
+
+  // Pull-to-refresh: only from the top of the active screen, only on a
+  // downward drag, and never while the confirm sheet is up.
+  function initPullToRefresh() {
+    const THRESHOLD = 62, MAX = 96;
+    const ind = $('ptr');
+    let startY = null, dy = 0, busy = false;
+    const active = () => document.querySelector('.screen:not([hidden])');
+
+    document.addEventListener('touchstart', (e) => {
+      const scr = active();
+      if (busy || !scr || e.touches.length !== 1 || !$('sheet').hidden
+          || scr.scrollTop > 0) { startY = null; return; }
+      startY = e.touches[0].clientY;
+      dy = 0;
+    }, { passive: true });
+
+    document.addEventListener('touchmove', (e) => {
+      if (startY == null) return;
+      const scr = active();
+      dy = e.touches[0].clientY - startY;
+      if (dy <= 0 || !scr || scr.scrollTop > 0) { startY = null; dy = 0; ind.style.opacity = ''; ind.style.transform = ''; return; }
+      const pull = Math.min(dy * 0.5, MAX);
+      ind.style.opacity = String(Math.min(1, pull / THRESHOLD));
+      ind.style.transform = `translateY(${pull - 44}px)`;
+      ind.classList.toggle('armed', pull >= THRESHOLD);
+      if (e.cancelable) e.preventDefault();
+    }, { passive: false });
+
+    const end = async () => {
+      if (startY == null) return;
+      const fire = dy * 0.5 >= THRESHOLD;
+      startY = null; dy = 0;
+      ind.style.opacity = ''; ind.style.transform = '';
+      ind.classList.remove('armed');
+      if (!fire || busy) return;
+      busy = true;
+      ind.classList.add('busy');
+      try { await refreshCurrent(); } catch (_) { /* screen shows its own state */ }
+      ind.classList.remove('busy');
+      busy = false;
+    };
+    document.addEventListener('touchend', end, { passive: true });
+    document.addEventListener('touchcancel', end, { passive: true });
+  }
 
   function show(tab) {
     const cfg = SCREENS[tab];
     if (!cfg) return;
+    current = tab;
     if (timer) { clearInterval(timer); timer = null; }
     Object.keys(SCREENS).forEach((t) => { $('scr-' + t).hidden = t !== tab; });
     $('tabbar').querySelectorAll('.tab').forEach((b) => {
@@ -624,6 +751,7 @@
     }
     alerts.start();
     actions.start();
+    initPullToRefresh();
     $('sheet').addEventListener('click', (e) => {
       if (e.target.closest('[data-sheet-close]')) sheet.close();
     });
