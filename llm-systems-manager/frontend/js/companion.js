@@ -74,11 +74,12 @@
     // Home shows gpu/cpu/ram inline, Energy keeps its one watts column.
     const stats = (p.stats || []).map((s) =>
       `<span><b>${esc(s.v)}</b>${esc(s.k)}</span>`).join('');
+    // pstats is a SIBLING of atxt, not a child: that lets it wrap below the
+    // text on a phone and sit in the card's free space on a tablet.
     return `<div class="prov"><span class="pstat ${p.status}"></span>`
       + `<div class="atxt"><div class="pn">${esc(p.name)}</div>`
-      + `<div class="pd">${esc(p.detail)}</div>`
+      + `<div class="pd">${esc(p.detail)}</div></div>`
       + (stats ? `<div class="pstats">${stats}</div>` : '')
-      + '</div>'
       + (p.stats ? ''
         : `<div class="pr"><b${p.warn ? ' class="warn"' : ''}>${esc(p.rN)}${suffix}</b>`
           + `${esc(p.rUnit)}</div>`)

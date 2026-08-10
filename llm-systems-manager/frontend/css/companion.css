@@ -147,7 +147,7 @@ body.companion {
 
 /* provider / list rows */
 .provwrap { background: var(--bg-card); border: 1px solid var(--border-soft); border-radius: 12px; overflow: hidden; }
-.prov { display: flex; align-items: center; gap: 12px; padding: 12px 14px; }
+.prov { display: flex; align-items: center; gap: 12px; padding: 12px 14px; flex-wrap: wrap; }
 .prov + .prov, .alert + .alert, .arow + .arow { border-top: 1px solid var(--border-soft); }
 .pstat { width: 8px; height: 8px; border-radius: 50%; flex: none; }
 .pstat.ok { background: var(--ok); } .pstat.idle { background: var(--fg-faint); }
@@ -156,8 +156,10 @@ body.companion {
 .prov .pn { font-size: 15px; font-weight: 600; }
 .prov .pd { font-family: var(--mono); font-size: 12px; color: var(--fg-muted); margin-top: 3px;
   overflow-wrap: anywhere; }
-/* gpu / cpu / ram side by side under a provider's detail line */
-.pstats { display: flex; gap: 14px; margin-top: 6px; }
+/* gpu / cpu / ram. A 100% flex basis forces its own row on a phone; the
+   wide breakpoint below moves it into the card's free space instead.
+   The 20px inset lines it up with the text, clearing the status dot. */
+.pstats { flex: 1 1 100%; display: flex; gap: 14px; margin: 6px 0 0 20px; }
 .pstats span { font-family: var(--mono); font-size: 10.5px; color: var(--fg-dim); }
 .pstats b { font-size: 13px; font-weight: 600; color: var(--fg); margin-right: 3px; }
 .prov .pr, .arow .pr { margin-left: auto; font-family: var(--mono); font-size: 12px; color: var(--fg-muted); text-align: right; flex: none; }
@@ -350,6 +352,9 @@ body.companion {
 @media (min-width: 620px) {
   .tiles, .minis { grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); }
   .strip .hero .l { max-width: 70vw; }
+  /* Enough width to sit beside the name instead of wrapping under it. */
+  .pstats { flex: 0 0 auto; margin: 0 0 0 auto; gap: 22px; }
+  .pstats span { text-align: right; min-width: 46px; }
 }
 @media (min-width: 900px) {
   .screen { align-items: center; }
