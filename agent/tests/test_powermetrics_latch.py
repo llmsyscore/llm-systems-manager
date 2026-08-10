@@ -96,10 +96,9 @@ class FakeThread:
 
 @contextlib.contextmanager
 def _best_effort(_what, **_kw):
-    try:
+    # Mirrors the agent's best_effort: swallow errors from the guarded block.
+    with contextlib.suppress(Exception):
         yield
-    except Exception:
-        pass
 
 
 @pytest.fixture
