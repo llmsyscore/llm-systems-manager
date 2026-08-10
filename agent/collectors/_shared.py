@@ -25,7 +25,8 @@ from types import SimpleNamespace
 
 log = logging.getLogger("llm-systems-agent.collectors._shared")
 
-__all__ = ["set_deps", "collect_sensors_cached", "sensors_val", "AbsenceLatch"]
+__all__ = ["set_deps", "collect_sensors_cached", "sensors_val", "AbsenceLatch",
+           "collect_enabled", "collect_is_auto", "latch_level_for"]
 
 _deps = SimpleNamespace()
 _sensors_cache: dict = {}
@@ -115,10 +116,30 @@ def set_deps(*, config) -> None:
         latch.reset()
 
 
+def collect_enabled(config, name: str, default=True) -> bool:
+    """Tri-state COLLECT_* gate: true and "auto" run the collector,
+    only an affirmative false/"false" disables it."""
+    v = getattr(config, name, default)
+    if isinstance(v, str):
+        return v.strip().lower() not in ("false", "0", "no", "off")
+    return bool(v)
+
+
+def collect_is_auto(config, name: str) -> bool:
+    """True when the flag is "auto" — the collector's own probe decides."""
+    v = getattr(config, name, None)
+    return isinstance(v, str) and v.strip().lower() == "auto"
+
+
+def latch_level_for(config, name: str) -> int:
+    """Absence log level: INFO under "auto" (absence is expected), else WARNING."""
+    return logging.INFO if collect_is_auto(config, name) else logging.WARNING
+
+
 def collect_sensors_cached() -> dict:
     """Run `sensors -j` and return parsed JSON, cached by collection interval."""
     global _sensors_cache, _sensors_last
-    if not getattr(_deps.config, "COLLECT_SENSORS_ENABLED", True):
+    if not collect_enabled(_deps.config, "COLLECT_SENSORS_ENABLED"):
         return {}
     now = time.monotonic()
     if now - _sensors_last < max(2.0, getattr(_deps.config, "POLL_INTERVAL_S", 5.0)):

@@ -48,6 +48,7 @@ import frozen_self_update  # type: ignore
 import collectors  # type: ignore
 import providers  # type: ignore
 from collectors.system import collect_system_metrics  # type: ignore
+from collectors._shared import AbsenceLatch, collect_enabled  # type: ignore
 from providers.lms import lms_get_models, lms_get_ps, lms_get_status  # type: ignore
 from providers.llama import collect_llama_for_metrics, llama_get_state  # type: ignore
 from providers.vllm import collect_vllm_for_metrics  # type: ignore
@@ -64,7 +65,7 @@ except ImportError:
             os.chmod(tmp, mode)
         tmp.replace(p)
 
-VERSION = "v2026.08.09-1"
+VERSION = "v2026.08.10-1"
 
 
 def _restore_bundle_env() -> None:
@@ -433,11 +434,13 @@ class AgentConfig:
     # connection details from. Blank => $LLM_SYSTEMS_CONFIG or the /opt default.
     UNIFIED_CONFIG_TOML_PATH: str = ""
 
-    COLLECT_GPU_ENABLED: bool = True
-    COLLECT_SENSORS_ENABLED: bool = True
-    COLLECT_LIQUIDCTL_ENABLED: bool = True
-    COLLECT_UPS_ENABLED: bool = True
-    COLLECT_ISCSI_ENABLED: bool = True
+    # Tri-state: true / false / "auto". "auto" runs the collector and lets its
+    # own hardware probe decide, re-probing absence every COLLECT_REPROBE_INTERVAL_S.
+    COLLECT_GPU_ENABLED: "bool | str" = "auto"
+    COLLECT_SENSORS_ENABLED: "bool | str" = "auto"
+    COLLECT_LIQUIDCTL_ENABLED: "bool | str" = "auto"
+    COLLECT_UPS_ENABLED: "bool | str" = "auto"
+    COLLECT_ISCSI_ENABLED: "bool | str" = "auto"
     # How often a collector retries hardware its last probe didn't find.
     COLLECT_REPROBE_INTERVAL_S: float = 900.0
     LIQUIDCTL_BIN: str = ""
@@ -876,15 +879,19 @@ _pm_lock = threading.Lock()
 _pm_latest: dict[str, Any] = {}
 _pm_proc: Optional[subprocess.Popen] = None
 _pm_thread: Optional[threading.Thread] = None
-_pm_disabled: bool = False
+# Missing binary is the only permanent disable; any other exit re-probes
+# on the AbsenceLatch interval instead of latching off for the process life.
+_pm_binary_missing: bool = False
+_pm_latch = AbsenceLatch("powermetrics (COLLECT_POWERMETRICS_ENABLED is on)",
+                         logger=logger)
 
 
 def _pm_should_run() -> bool:
-    if _pm_disabled:
+    if _pm_binary_missing:
         return False
     if sys.platform != "darwin":
         return False
-    return bool(getattr(CONFIG, "COLLECT_POWERMETRICS_ENABLED", True))
+    return collect_enabled(CONFIG, "COLLECT_POWERMETRICS_ENABLED")
 
 
 def _pm_parse_sample(raw: bytes) -> Optional[dict[str, Any]]:
@@ -975,14 +982,13 @@ def _pm_parse_sample(raw: bytes) -> Optional[dict[str, Any]]:
     return out or None
 
 
-def _pm_reader_loop() -> None:
+def _pm_reader_loop(proc: subprocess.Popen) -> None:
     """Read NUL-delimited plist samples and refresh the latest snapshot."""
-    global _pm_proc, _pm_disabled
-    assert _pm_proc is not None and _pm_proc.stdout is not None
+    assert proc.stdout is not None
     buf = bytearray()
     try:
         while True:
-            chunk = _pm_proc.stdout.read(8192)
+            chunk = proc.stdout.read(8192)
             if not chunk:
                 break
             buf.extend(chunk)
@@ -997,23 +1003,31 @@ def _pm_reader_loop() -> None:
                         with _pm_lock:
                             _pm_latest.clear()
                             _pm_latest.update(parsed)
+                        _pm_latch.record(True)
     except Exception as e:
         logger.debug("powermetrics reader error: %s", e)
     finally:
-        # Disable after any exit to avoid respawn loops when powermetrics is broken.
-        if _pm_proc is not None:
-            with best_effort("powermetrics: reap reader process"):
-                _pm_proc.wait(timeout=1)
-        rc = _pm_proc.returncode if _pm_proc is not None else None
-        _pm_disabled = True
-        logger.warning("powermetrics terminated (rc=%s) — disabling further restarts", rc)
+        # Record the outage on the latch (retried after the interval) instead
+        # of disabling for the process life; skip if a newer proc took over.
+        with best_effort("powermetrics: reap reader process"):
+            proc.wait(timeout=1)
+        with _pm_lock:
+            current = _pm_proc is proc
+            if current:
+                _pm_latest.clear()
+        if current:
+            _pm_latch.record(False, f" (reader exited rc={proc.returncode})")
+            logger.info("powermetrics terminated (rc=%s); retrying after the "
+                        "re-probe interval", proc.returncode)
 
 
 def _pm_ensure_running() -> None:
-    global _pm_proc, _pm_thread, _pm_disabled
+    global _pm_proc, _pm_thread, _pm_binary_missing
     if not _pm_should_run():
         return
     if _pm_proc is not None and _pm_proc.poll() is None:
+        return
+    if not _pm_latch.should_probe():
         return
     interval_ms = max(1000, int(getattr(CONFIG, "POWERMETRICS_INTERVAL_MS", 5000)))
     # macOS 26 removed the `smc` sampler — keep this list to surviving samplers.
@@ -1023,15 +1037,19 @@ def _pm_ensure_running() -> None:
            "-i", str(interval_ms),
            "-f", "plist"]
     try:
-        _pm_proc = subprocess.Popen(
+        proc = subprocess.Popen(
             cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
             bufsize=0,
         )
     except FileNotFoundError as e:
-        _pm_disabled = True
+        # A missing binary won't appear on its own — this one stays permanent.
+        _pm_binary_missing = True
         logger.warning("powermetrics not available: %s", e)
         return
-    _pm_thread = threading.Thread(target=_pm_reader_loop, name="pm-reader", daemon=True)
+    with _pm_lock:
+        _pm_proc = proc
+    _pm_thread = threading.Thread(target=_pm_reader_loop, args=(proc,),
+                                  name="pm-reader", daemon=True)
     _pm_thread.start()
     logger.info("powermetrics started (interval=%sms)", interval_ms)
 

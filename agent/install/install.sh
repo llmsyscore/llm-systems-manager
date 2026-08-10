@@ -3311,11 +3311,22 @@ if [[ "$ROLE" == "auto" ]]; then
   echo "─────────────────────────────────────────────────────────────────────────"
 fi
 
-COLLECT_GPU=false
-COLLECT_SENSORS=false
-COLLECT_LIQUIDCTL=false
-COLLECT_UPS=false
-COLLECT_ISCSI=false
+# Tri-state collector flags: detection upgrades "auto" to an affirmative
+# "true"; "auto" leaves the runtime probe in charge (re-probed on the
+# AbsenceLatch interval). Only macOS gets "false" — these are Linux-only.
+if [[ "$AGENT_OS" == "linux" ]]; then
+  COLLECT_GPU=auto
+  COLLECT_SENSORS=auto
+  COLLECT_LIQUIDCTL=auto
+  COLLECT_UPS=auto
+  COLLECT_ISCSI=auto
+else
+  COLLECT_GPU=false
+  COLLECT_SENSORS=false
+  COLLECT_LIQUIDCTL=false
+  COLLECT_UPS=false
+  COLLECT_ISCSI=false
+fi
 
 # _offer_apt_install LABEL PKGS BINARY DESCRIPTION
 #   Returns 0 if BINARY ends up on PATH (already there OR installed now).
@@ -3383,11 +3394,11 @@ if [[ "$AGENT_OS" == "linux" ]] && [[ "$ROLE" != "system_only" ]]; then
         COLLECT_GPU=true
         echo "    GPU:         NVIDIA detected + nvidia-smi available → COLLECT_GPU_ENABLED=true"
       else
-        echo "    GPU:         NVIDIA detected but nvidia-smi missing → COLLECT_GPU_ENABLED=false"
+        echo "    GPU:         NVIDIA detected but nvidia-smi missing → COLLECT_GPU_ENABLED=auto (re-probed at runtime)"
       fi
       ;;
     *)
-      echo "    GPU:         no AMD/NVIDIA card → COLLECT_GPU_ENABLED=false"
+      echo "    GPU:         no AMD/NVIDIA card → COLLECT_GPU_ENABLED=auto (re-probed at runtime)"
       ;;
   esac
 
@@ -3397,7 +3408,7 @@ if [[ "$AGENT_OS" == "linux" ]] && [[ "$ROLE" != "system_only" ]]; then
       COLLECT_SENSORS=true
       echo "    lm-sensors:  installed and reporting → COLLECT_SENSORS_ENABLED=true"
     else
-      echo "    lm-sensors:  installed but no sensors detected — run 'sudo sensors-detect' first → COLLECT_SENSORS_ENABLED=false"
+      echo "    lm-sensors:  installed but no sensors detected — run 'sudo sensors-detect' first → COLLECT_SENSORS_ENABLED=auto (re-probed at runtime)"
     fi
   fi
 
@@ -3409,7 +3420,7 @@ if [[ "$AGENT_OS" == "linux" ]] && [[ "$ROLE" != "system_only" ]]; then
       COLLECT_LIQUIDCTL=true
       echo "    liquidctl:   supported device found → COLLECT_LIQUIDCTL_ENABLED=true"
     else
-      echo "    liquidctl:   installed, no Kraken/HX1000i/Smart Device → COLLECT_LIQUIDCTL_ENABLED=false"
+      echo "    liquidctl:   installed, no Kraken/HX1000i/Smart Device → COLLECT_LIQUIDCTL_ENABLED=auto (re-probed at runtime)"
     fi
   fi
 
@@ -3417,19 +3428,20 @@ if [[ "$AGENT_OS" == "linux" ]] && [[ "$ROLE" != "system_only" ]]; then
     COLLECT_UPS=true
     echo "    UPS:         upower reports a UPS → COLLECT_UPS_ENABLED=true"
   else
-    echo "    UPS:         no UPS via upower → COLLECT_UPS_ENABLED=false"
+    echo "    UPS:         no UPS via upower → COLLECT_UPS_ENABLED=auto (re-probed at runtime)"
   fi
   if [[ -d /sys/class/iscsi_session ]] && [[ -n "$(ls -A /sys/class/iscsi_session 2>/dev/null)" ]]; then
     COLLECT_ISCSI=true
     echo "    iSCSI:       active session(s) → COLLECT_ISCSI_ENABLED=true"
   else
-    echo "    iSCSI:       no active sessions → COLLECT_ISCSI_ENABLED=false"
+    echo "    iSCSI:       no active sessions → COLLECT_ISCSI_ENABLED=auto (re-probed at runtime)"
   fi
   echo "─────────────────────────────────────────────────────────────────────────"
 fi
 
+# Affirmative "true" only — "auto" means nothing was detected at install time.
 _hw_monitoring=false
-if $COLLECT_GPU || $COLLECT_SENSORS || $COLLECT_LIQUIDCTL; then
+if [[ "$COLLECT_GPU" == "true" || "$COLLECT_SENSORS" == "true" || "$COLLECT_LIQUIDCTL" == "true" ]]; then
   _hw_monitoring=true
 fi
 if [[ "$AGENT_OS" == "linux" ]] \
@@ -3937,15 +3949,16 @@ _set('MONITOR_INFLUXDB_DISK_ENABLED', monitor_influxdb_disk.lower())
 # powermetrics is macOS-only — the Linux helper would just respawn-and-die.
 _set('COLLECT_POWERMETRICS_ENABLED', 'true' if agent_os == 'macos' else 'false')
 
-# Host hardware collectors — values come from install-time probes (see
-# the "Host hardware collectors" banner above). Default false when env
-# vars aren't set, which is the right thing on macOS (no Linux helpers).
+# Host hardware collectors — tri-state true/false/auto from the install-time
+# probes; "auto" defers to the collector's own runtime probe. macOS (or
+# unset env) falls back to false — these are Linux-only helpers.
 import os
-_set('COLLECT_GPU_ENABLED',       os.environ.get('COLLECT_GPU_DET',       'false'))
-_set('COLLECT_SENSORS_ENABLED',   os.environ.get('COLLECT_SENSORS_DET',   'false'))
-_set('COLLECT_LIQUIDCTL_ENABLED', os.environ.get('COLLECT_LIQUIDCTL_DET', 'false'))
-_set('COLLECT_UPS_ENABLED',       os.environ.get('COLLECT_UPS_DET',       'false'))
-_set('COLLECT_ISCSI_ENABLED',     os.environ.get('COLLECT_ISCSI_DET',     'false'))
+_hw_default = 'auto' if agent_os == 'linux' else 'false'
+_set('COLLECT_GPU_ENABLED',       os.environ.get('COLLECT_GPU_DET',       _hw_default))
+_set('COLLECT_SENSORS_ENABLED',   os.environ.get('COLLECT_SENSORS_DET',   _hw_default))
+_set('COLLECT_LIQUIDCTL_ENABLED', os.environ.get('COLLECT_LIQUIDCTL_DET', _hw_default))
+_set('COLLECT_UPS_ENABLED',       os.environ.get('COLLECT_UPS_DET',       _hw_default))
+_set('COLLECT_ISCSI_ENABLED',     os.environ.get('COLLECT_ISCSI_DET',     _hw_default))
 
 # Discover which monitorable services are actually installed on THIS
 # host. Used to (a) customize PROCESS_WATCHLIST so we only check what

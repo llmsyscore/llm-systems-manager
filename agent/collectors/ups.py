@@ -16,7 +16,7 @@ import subprocess
 from types import SimpleNamespace
 from typing import Any
 
-from ._shared import AbsenceLatch
+from ._shared import AbsenceLatch, collect_enabled, latch_level_for
 
 log = logging.getLogger("llm-systems-agent.collectors.ups")
 
@@ -64,8 +64,9 @@ def _ensure_probed() -> None:
 
 def collect_ups() -> dict:
     """Return UPS metrics; empty dict if upower or UPS isn't present."""
-    if not getattr(_deps.config, "COLLECT_UPS_ENABLED", True):
+    if not collect_enabled(_deps.config, "COLLECT_UPS_ENABLED"):
         return {}
+    _probe_latch.level = latch_level_for(_deps.config, "COLLECT_UPS_ENABLED")
     _ensure_probed()
     result = {"percent": None, "state": None, "warning_level": None,
               "on_battery": None, "time_to_empty": None, "time_to_full": None}

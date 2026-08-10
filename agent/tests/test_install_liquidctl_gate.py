@@ -23,8 +23,9 @@ def test_installer_probes_hardware_not_just_binary():
 
 
 def test_example_config_does_not_self_enable_liquidctl():
+    # "auto" defers to the runtime probe (#547); an unconditional true is the bug.
     text = _EXAMPLE.read_text()
-    assert "COLLECT_LIQUIDCTL_ENABLED: false" in text
+    assert "COLLECT_LIQUIDCTL_ENABLED: auto" in text
     assert "COLLECT_LIQUIDCTL_ENABLED: true" not in text
 
 

@@ -15,7 +15,8 @@ import subprocess
 import time
 from types import SimpleNamespace
 
-from ._shared import AbsenceLatch, collect_sensors_cached, sensors_val
+from ._shared import (AbsenceLatch, collect_enabled, collect_sensors_cached,
+                      latch_level_for, sensors_val)
 
 # Matches the tree-drawing glyphs liquidctl prefixes sensor rows with.
 _TREE_PREFIX_RE = re.compile(r"^[├└─\s]+")
@@ -59,7 +60,7 @@ def set_deps(*, config) -> None:
 
 
 def collect_smart_device_sensors() -> dict:
-    if not getattr(_deps.config, "COLLECT_SENSORS_ENABLED", True):
+    if not collect_enabled(_deps.config, "COLLECT_SENSORS_ENABLED"):
         return {"fans": []}
     data = collect_sensors_cached()
     out = {"fans": []}
@@ -150,8 +151,10 @@ def _status_or_absent(match: str) -> tuple[list[dict], "str | None"]:
 
 def collect_liquidctl() -> dict:
     global _binary_missing
-    if not getattr(_deps.config, "COLLECT_LIQUIDCTL_ENABLED", True):
+    if not collect_enabled(_deps.config, "COLLECT_LIQUIDCTL_ENABLED"):
         return {}
+    _bin_latch.level = _all_latch.level = \
+        latch_level_for(_deps.config, "COLLECT_LIQUIDCTL_ENABLED")
     if _binary_missing:
         if not _bin_latch.should_probe():
             return {}
@@ -191,7 +194,7 @@ def collect_liquidctl() -> dict:
 def get_liquidctl_cached() -> dict:
     # ~15s TTL — liquidctl USB HID queries are too slow for the 2s tick.
     global _liquidctl_cache, _liquidctl_last_poll
-    if not getattr(_deps.config, "COLLECT_LIQUIDCTL_ENABLED", True):
+    if not collect_enabled(_deps.config, "COLLECT_LIQUIDCTL_ENABLED"):
         return {}
     now = time.monotonic()
     if now - _liquidctl_last_poll < max(15.0, getattr(_deps.config, "POLL_INTERVAL_S", 5.0) * 3):

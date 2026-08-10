@@ -230,6 +230,80 @@ def test_gpu_disabled_by_config_never_probes(clock, monkeypatch):
     assert calls["n"] == 0
 
 
+# ── tri-state flags (#547) ──────────────────────────────────────────
+def test_collect_enabled_tristate():
+    for v in (True, "true", "auto", "AUTO", "yes", 1):
+        assert sh.collect_enabled(_config(COLLECT_GPU_ENABLED=v), "COLLECT_GPU_ENABLED")
+    for v in (False, "false", "FALSE", "0", "no", "off", 0):
+        assert not sh.collect_enabled(_config(COLLECT_GPU_ENABLED=v), "COLLECT_GPU_ENABLED")
+    assert sh.collect_enabled(types.SimpleNamespace(), "COLLECT_GPU_ENABLED")
+
+
+def test_gpu_auto_runs_the_collector(clock, monkeypatch):
+    calls = _stub_gpu(monkeypatch, {"present": True, "hwmon": True})
+    gpu.set_deps(config=_config(COLLECT_GPU_ENABLED="auto"))
+    assert gpu.collect_gpu()["vendor"] == "amd"
+    assert calls["n"] == 1
+
+
+def test_gpu_yaml_false_string_disables(clock, monkeypatch):
+    calls = _stub_gpu(monkeypatch, {"present": True, "hwmon": True})
+    gpu.set_deps(config=_config(COLLECT_GPU_ENABLED="false"))
+    assert gpu.collect_gpu() == {}
+    assert calls["n"] == 0
+
+
+def test_gpu_auto_absence_logs_info_not_warning(clock, monkeypatch, caplog):
+    _stub_gpu(monkeypatch, {"present": False, "hwmon": False})
+    gpu.set_deps(config=_config(COLLECT_GPU_ENABLED="auto"))
+    with caplog.at_level(logging.INFO):
+        assert gpu.collect_gpu() == {}
+    absences = [r for r in caplog.records if "not detected" in r.getMessage()]
+    assert [r.levelno for r in absences] == [logging.INFO]
+
+
+def test_gpu_explicit_true_absence_still_warns(clock, monkeypatch, caplog):
+    _stub_gpu(monkeypatch, {"present": False, "hwmon": False})
+    gpu.set_deps(config=_config(COLLECT_GPU_ENABLED=True))
+    with caplog.at_level(logging.INFO):
+        assert gpu.collect_gpu() == {}
+    absences = [r for r in caplog.records if "not detected" in r.getMessage()]
+    assert [r.levelno for r in absences] == [logging.WARNING]
+
+
+def test_gpu_auto_appearing_hardware_is_picked_up(clock, monkeypatch):
+    state = {"present": False, "hwmon": False}
+    _stub_gpu(monkeypatch, state)
+    gpu.set_deps(config=_config(COLLECT_GPU_ENABLED="auto"))
+    assert gpu.collect_gpu() == {}
+    state["present"] = state["hwmon"] = True     # nvidia-smi installed / driver up
+    clock.advance(INTERVAL + 1)
+    assert gpu.collect_gpu()["vendor"] == "amd"
+
+
+def test_liquidctl_auto_absence_logs_info_not_warning(clock, monkeypatch, caplog):
+    lq.set_deps(config=_config(COLLECT_LIQUIDCTL_ENABLED="auto"))
+    monkeypatch.setattr(
+        lq.subprocess, "check_output",
+        lambda cmd, **kw: (_ for _ in ()).throw(lq.subprocess.CalledProcessError(1, cmd)))
+    with caplog.at_level(logging.INFO):
+        lq.collect_liquidctl()
+        clock.advance(INTERVAL + 1)
+        lq.collect_liquidctl()
+    assert [r for r in caplog.records if r.levelno == logging.WARNING] == []
+    assert any("liquidctl devices" in r.getMessage()
+               for r in caplog.records if r.levelno == logging.INFO)
+
+
+def test_ups_auto_absence_logs_info_not_warning(clock, monkeypatch, caplog):
+    ups.set_deps(config=_config(COLLECT_UPS_ENABLED="auto"))
+    monkeypatch.setattr(ups, "_find_ups_device", lambda: None)
+    with caplog.at_level(logging.INFO):
+        ups.collect_ups()
+    absences = [r for r in caplog.records if "not detected" in r.getMessage()]
+    assert [r.levelno for r in absences] == [logging.INFO]
+
+
 # ── UPS ─────────────────────────────────────────────────────────────
 def test_ups_absent_is_not_reprobed_every_tick_but_recovers(clock, monkeypatch):
     state = {"dev": None}

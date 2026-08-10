@@ -178,15 +178,16 @@ PROCESS_WATCH_ENABLED: true
 #     pattern: "LM Studio"
 
 # -- Host hardware collection toggles ---------------------------------------
-# Most default true and degrade cleanly if the source is absent
-# liquidctl defaults false — it shells out to
-# `sudo liquidctl status`, so the installer enables it only when a supported
-# device is detected.
-COLLECT_GPU_ENABLED:       true
-COLLECT_SENSORS_ENABLED:   true
-COLLECT_LIQUIDCTL_ENABLED: false
-COLLECT_UPS_ENABLED:       true
-COLLECT_ISCSI_ENABLED:     true
+# Tri-state: true / false / auto. "auto" runs the collector and lets its own
+# hardware probe decide, retrying absence on COLLECT_REPROBE_INTERVAL_S — so
+# a driver or device that appears after install is picked up automatically.
+# The installer writes an affirmative true when it detects the hardware;
+# set false only to switch a collector off for good.
+COLLECT_GPU_ENABLED:       auto
+COLLECT_SENSORS_ENABLED:   auto
+COLLECT_LIQUIDCTL_ENABLED: auto
+COLLECT_UPS_ENABLED:       auto
+COLLECT_ISCSI_ENABLED:     auto
 # Hardware a probe doesn't find is retried this often (seconds), so a driver
 # or device that appears after the agent started isn't missed until a restart.
 COLLECT_REPROBE_INTERVAL_S: 900
