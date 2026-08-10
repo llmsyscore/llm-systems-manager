@@ -194,13 +194,24 @@ Engine TLS is on. Because the ticket travels in the URL of a plaintext connectio
 as a trusted-network service: on an untrusted network, front it with a reverse proxy holding a
 real CA certificate (nginx, Caddy, Traefik).
 
-The Alarm Engine's own `/ws` endpoint is a separate surface and still has **no token or session
-check**. It is not wide open — it validates the handshake's `Origin` header, because CORS
-middleware does not apply to WebSocket handshakes, so a browser page on another origin is rejected
-before the connection is accepted. But a client that sends no `Origin` at all — `curl`, a script,
-anything non-browser — is allowed through by design and subscribed to all events. A client that
-can reach port 8081 directly can therefore still read the live alert stream without credentials.
-Keep that port on a trusted network.
+The Alarm Engine's own `/ws` endpoint is a separate surface with two checks on the handshake.
+First the `Origin` header is validated (CORS middleware does not apply to WebSocket handshakes),
+so a browser page on another origin is rejected before the connection is accepted. Second, the
+handshake must carry `Authorization: Bearer <token>` satisfying the same gate as the Alarm
+Engine's management routes — `[alarm_engine].management_token`, falling back to `ingest_token`;
+when **neither** is configured the stream is open, matching the fail-open convention of every
+other token gate on port 8081. The Manager's WS bridge presents this bearer automatically on its
+upstream hop, so the dashboard path is unaffected. Two consequences of enabling a token: a
+non-browser client (`curl`, a script) must now send the bearer to subscribe, and browsers can no
+longer dial port 8081 directly (they cannot attach an `Authorization` header to a WebSocket
+handshake) — the Manager stops advertising a direct-dial URL in that configuration, so live
+toasts require the bridge. The Alarm Engine's own standalone dashboard then has no live stream
+either: its Alerts tab still refreshes on its 15-second poll (and the Metrics sub-tab on its
+60-second poll), but the overview and rules views only update on page load. A rejected
+handshake surfaces to non-browser clients as a plain HTTP 403 on the upgrade request. Two
+operational notes: the Manager reads the bearer at startup, so restart it after provisioning a
+token, and on a fleet with no tokens configured behaviour is unchanged — keep port 8081 on a
+trusted network.
 
 Setting `[manager].ws_proxy_port = 0` disables the bridge entirely. The dashboard keeps working —
 the Events and Admin status dots refresh on their own 30-second poll — but live alert toasts stop

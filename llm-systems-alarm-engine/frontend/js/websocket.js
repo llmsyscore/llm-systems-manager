@@ -19,6 +19,11 @@ class WebSocketHandler {
      * Connect to WebSocket server
      */
     async connect() {
+        // An injected empty ALARM_WS_URL marks the stream unavailable (#519).
+        if (window.ALARM_WS_URL === '') {
+            console.warn('Live stream unavailable (no browser-usable WS URL)');
+            return;
+        }
         const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
         // Embedded via /alarm/ → connect to /ws/alarm on the same origin so
         // the manager's proxy_alarm_websocket route handles the upgrade.

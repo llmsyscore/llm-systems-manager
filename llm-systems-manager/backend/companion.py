@@ -25,6 +25,8 @@ from urllib.parse import urlsplit
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import ec
 
+import ae_auth  # sibling
+
 log = logging.getLogger("llm-systems-manager")
 
 # Hard cap on stored push subscriptions.
@@ -436,16 +438,12 @@ def _fan_out(subs: "list[dict]", payload: str, pem: Path, contact: str) -> dict:
 
 def notify_token(settings: Any) -> str:
     """Bearer the alarm engine must present on the notify route: the companion
-    override, else the AE management token, else its ingest token."""
+    override, else the shared AE bearer (management, then ingest)."""
     cfg = getattr(getattr(settings, "manager", None), "companion", None)
-    ae = getattr(settings, "alarm_engine", None)
-    for raw in (getattr(cfg, "push_notify_token", ""),
-                getattr(ae, "management_token", ""),
-                getattr(ae, "ingest_token", "")):
-        tok = (raw or "").strip()
-        if tok not in _UNSET_TOKENS:
-            return tok
-    return ""
+    tok = (getattr(cfg, "push_notify_token", "") or "").strip()
+    if tok not in _UNSET_TOKENS:
+        return tok
+    return ae_auth.effective_bearer(settings)
 
 
 def _bearer(header: str) -> str:

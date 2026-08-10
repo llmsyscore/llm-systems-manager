@@ -94,6 +94,16 @@ describe('direct AE dial (no bridge)', () => {
     expect(fetchCalls).toHaveLength(0);
     expect(dialled[0]).toMatch(/:8081\/ws$/);
   });
+
+  test('an injected empty URL disables the stream entirely (#519)', async () => {
+    // "" means the AE read bearer is set and the bridge is off — a direct
+    // dial can only 1008-loop, so nothing must be dialled at all.
+    installStubs({ wsUrl: '' });
+    await runScript();
+    await vi.advanceTimersByTimeAsync(60000);
+    expect(fetchCalls).toHaveLength(0);
+    expect(dialled).toHaveLength(0);
+  });
 });
 
 describe('ticket failure handling', () => {

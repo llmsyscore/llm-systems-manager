@@ -156,7 +156,7 @@ def _local_hostname() -> str:
 # banner reads it. Bump suffix (-1, -2, …) for same-day iterations; roll
 # the date for a new day's first change.
 # ---------------------------------------------------------------------------
-__version__ = "v2026.08.10-1"
+__version__ = "v2026.08.10-3"
 
 # Wall-clock at first import (Cheroot main process); the shutdown banner
 # reads it for the uptime line.
@@ -167,6 +167,7 @@ _startup_ts: float = time.time()
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import provider_state  # type: ignore[import-not-found]  # noqa: E402  # leaf, no cycle
 from _best_effort import best_effort  # type: ignore[import-not-found]  # noqa: E402  # leaf, no cycle
+from _safe_js import safe_js  # type: ignore[import-not-found]  # noqa: E402  # leaf, no cycle
 import providers       # type: ignore[import-not-found]  # noqa: E402,F401  # side-effect: registers specs
 import stream_pool     # type: ignore[import-not-found]  # noqa: E402  # leaf, no cycle
 import stream_health   # type: ignore[import-not-found]  # noqa: E402  # leaf, no cycle
@@ -579,12 +580,10 @@ _ae_session.mount("http://", _ae_adapter)
 _ae_session.mount("https://", _ae_adapter)
 if bool(settings.alarm_engine.tls_enabled):
     _ae_session.verify = _AE_CA_PATH
-# Session-level bearer for the AE's token-gated routes: management_token,
-# else ingest_token ("" / "REPLACE_ME" count as unset).
-_AE_BEARER = (getattr(settings.alarm_engine, "management_token", "") or "").strip()
-if _AE_BEARER in ("", "REPLACE_ME"):
-    _AE_BEARER = (settings.alarm_engine.ingest_token or "").strip()
-if _AE_BEARER and _AE_BEARER != "REPLACE_ME":
+# Session-level bearer for the AE's token-gated routes; "" when unset.
+import ae_auth  # noqa: E402  # sibling
+_AE_BEARER = ae_auth.effective_bearer(settings)
+if _AE_BEARER:
     _ae_session.headers["Authorization"] = f"Bearer {_AE_BEARER}"
 
 
@@ -778,8 +777,7 @@ def index():
     # catalog/history reads by agent (resolved to a host server-side), never
     # by a browser-held hostname. json.dumps + `</` → `<\/` keeps weird
     # values from breaking out of the inline script block.
-    def _safe_js(v):
-        return json.dumps(v).replace("</", "<\\/")
+    _safe_js = safe_js
     # Same alarm-engine WS URL the AE iframe gets via _inject_alarm_ws_url —
     # the manager frontend's toast bus needs it too, otherwise it falls back
     # to a hardcoded ws://<host>:8081/ws that breaks the moment AE TLS is on
@@ -5315,8 +5313,11 @@ def _maybe_start_alarm_ws_proxy() -> None:
                     log.warning("WS proxy: rejected handshake from %s (bad or missing ticket)", peer)
                 await client_ws.close(code=code, reason=reason)
                 return
+            # Same bearer the AE's HTTP routes take (#519).
+            up_headers = {"Authorization": f"Bearer {_AE_BEARER}"} if _AE_BEARER else None
             try:
-                async with websockets.connect(ae_ws_url, ssl=ae_ssl, open_timeout=4) as up:
+                async with websockets.connect(ae_ws_url, ssl=ae_ssl, open_timeout=4,
+                                              additional_headers=up_headers) as up:
                     await asyncio.gather(
                         _pipe(client_ws, up),
                         _pipe(up, client_ws),
