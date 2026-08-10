@@ -1,7 +1,8 @@
 # agent/tests/test_liquidctl_gating.py
-"""The liquidctl collector must probe absent hardware at most once per process
-lifetime (probe-once, off until restart) so it doesn't spawn `sudo liquidctl
-status` every tick on hosts without the supporting devices."""
+"""The liquidctl collector must probe absent hardware at most once per
+re-probe interval so it doesn't spawn `sudo liquidctl status` every tick on
+hosts without the supporting devices. Retry-after-the-interval is covered in
+test_collector_reprobe.py."""
 from __future__ import annotations
 
 import importlib.util
@@ -54,7 +55,9 @@ def _reset_state():
     lq._liquidctl_cache = {}
     lq._liquidctl_last_poll = 0.0
     lq._binary_missing = False
-    lq._absent_matches = set()
+    lq._match_latches.clear()
+    lq._bin_latch.reset()
+    lq._all_latch.reset()
     yield
 
 

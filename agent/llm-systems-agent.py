@@ -64,7 +64,7 @@ except ImportError:
             os.chmod(tmp, mode)
         tmp.replace(p)
 
-VERSION = "v2026.08.04-1"
+VERSION = "v2026.08.09-1"
 
 
 def _restore_bundle_env() -> None:
@@ -438,6 +438,8 @@ class AgentConfig:
     COLLECT_LIQUIDCTL_ENABLED: bool = True
     COLLECT_UPS_ENABLED: bool = True
     COLLECT_ISCSI_ENABLED: bool = True
+    # How often a collector retries hardware its last probe didn't find.
+    COLLECT_REPROBE_INTERVAL_S: float = 900.0
     LIQUIDCTL_BIN: str = ""
 
     PUSH_HOST_METRICS_ENABLED: bool = True

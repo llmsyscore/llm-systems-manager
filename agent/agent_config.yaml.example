@@ -187,6 +187,9 @@ COLLECT_SENSORS_ENABLED:   true
 COLLECT_LIQUIDCTL_ENABLED: false
 COLLECT_UPS_ENABLED:       true
 COLLECT_ISCSI_ENABLED:     true
+# Hardware a probe doesn't find is retried this often (seconds), so a driver
+# or device that appears after the agent started isn't missed until a restart.
+COLLECT_REPROBE_INTERVAL_S: 900
 # LIQUIDCTL_BIN: ""   # optional override; default = `liquidctl` on PATH
 
 # -- macOS powermetrics (Apple Silicon thermal / power / GPU residency) ----

@@ -9,6 +9,10 @@ sibling collector — by design.
 cache TTL can read ``CONFIG.POLL_INTERVAL_S`` and the enable flag at call
 time. Main re-calls it from the ``/config/reload`` route so an in-place
 config swap doesn't leave us holding a stale reference.
+
+``AbsenceLatch`` is the shared absence memory for hardware probes — see the
+class docstring. Every instance is reset by ``set_deps``, so a
+``/config/reload`` re-probes immediately instead of waiting out the interval.
 """
 
 from __future__ import annotations
@@ -21,15 +25,90 @@ from types import SimpleNamespace
 
 log = logging.getLogger("llm-systems-agent.collectors._shared")
 
-__all__ = ["set_deps", "collect_sensors_cached", "sensors_val"]
+__all__ = ["set_deps", "collect_sensors_cached", "sensors_val", "AbsenceLatch"]
 
 _deps = SimpleNamespace()
 _sensors_cache: dict = {}
 _sensors_last: float = 0.0
 
+# Absent hardware is re-probed this often when the collector doesn't override it.
+REPROBE_INTERVAL_S = 900.0
+_latches: "list[AbsenceLatch]" = []
+
+
+class AbsenceLatch:
+    """Expiring absence memory for a hardware probe.
+
+    A probe that finds nothing is skipped until ``interval_s`` has passed,
+    instead of being disabled for the life of the process, and the outage is
+    logged once (with one recovery line when the hardware comes back).
+    """
+
+    def __init__(self, what: str, *, interval_s: "float | None" = None,
+                 level: int = logging.WARNING,
+                 logger: "logging.Logger | None" = None) -> None:
+        self.what = what
+        self.level = level
+        self._interval = interval_s
+        self._log = logger or log
+        self._absent = False
+        self._warned = False
+        self._at = 0.0
+        _latches.append(self)
+
+    @property
+    def interval_s(self) -> float:
+        if self._interval is not None:
+            return float(self._interval)
+        cfg = getattr(_deps, "config", None)
+        raw = getattr(cfg, "COLLECT_REPROBE_INTERVAL_S", REPROBE_INTERVAL_S)
+        try:
+            val = float(raw)
+        except (TypeError, ValueError):
+            return REPROBE_INTERVAL_S
+        return val if val > 0 else REPROBE_INTERVAL_S
+
+    @property
+    def absent(self) -> bool:
+        return self._absent
+
+    def should_probe(self) -> bool:
+        """False only while a recent absence result is still fresh."""
+        if not self._absent:
+            return True
+        now = time.monotonic()
+        if now - self._at < self.interval_s:
+            return False
+        # Stamp here too, so a probe that raises still waits out the interval.
+        self._at = now
+        return True
+
+    def record(self, found: bool, detail: str = "") -> None:
+        """Remember the outcome; log the first absence and the recovery."""
+        if found:
+            if self._warned:
+                self._log.info("%s detected again on re-probe", self.what)
+            self._absent = False
+            self._warned = False
+            return
+        self._absent = True
+        self._at = time.monotonic()
+        if not self._warned:
+            self._warned = True
+            self._log.log(self.level, "%s not detected%s; re-probing every %.0f min",
+                          self.what, detail, self.interval_s / 60.0)
+
+    def reset(self) -> None:
+        """Forget the absence entirely so the next call probes immediately."""
+        self._absent = False
+        self._warned = False
+        self._at = 0.0
+
 
 def set_deps(*, config) -> None:
     _deps.config = config
+    for latch in _latches:
+        latch.reset()
 
 
 def collect_sensors_cached() -> dict:
