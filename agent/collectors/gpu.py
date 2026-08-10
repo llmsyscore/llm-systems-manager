@@ -23,7 +23,7 @@ from typing import Any
 
 from _best_effort import best_effort  # type: ignore[import-not-found]  # sibling
 
-from ._shared import AbsenceLatch
+from ._shared import AbsenceLatch, collect_enabled, latch_level_for
 
 log = logging.getLogger("llm-systems-agent.collectors.gpu")
 
@@ -35,6 +35,7 @@ _deps = SimpleNamespace()
 def set_deps(*, config) -> None:
     _deps.config = config
     _probe_latch.reset()
+    _probe_latch.level = latch_level_for(config, "COLLECT_GPU_ENABLED")
 
 
 # Lazy-probed on first collect_gpu() so module import doesn't sysfs-walk on every host.
@@ -302,7 +303,7 @@ def _collect_nvidia_gpu() -> dict:
 
 def collect_gpu() -> dict:
     """GPU metrics via AMD sysfs or nvidia-smi; {} on hosts with neither."""
-    if not getattr(_deps.config, "COLLECT_GPU_ENABLED", True):
+    if not collect_enabled(_deps.config, "COLLECT_GPU_ENABLED"):
         return {}
     _ensure_probed()
     if _GPU_PATH is not None:

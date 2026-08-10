@@ -16,7 +16,7 @@ import subprocess
 from types import SimpleNamespace
 from typing import Any
 
-from ._shared import AbsenceLatch
+from ._shared import AbsenceLatch, collect_enabled, latch_level_for
 
 log = logging.getLogger("llm-systems-agent.collectors.ups")
 
@@ -28,6 +28,7 @@ _deps = SimpleNamespace()
 def set_deps(*, config) -> None:
     _deps.config = config
     _probe_latch.reset()
+    _probe_latch.level = latch_level_for(config, "COLLECT_UPS_ENABLED")
 
 
 # Lazy-probed on first collect_ups() so module import doesn't block on `upower -e`.
@@ -64,7 +65,7 @@ def _ensure_probed() -> None:
 
 def collect_ups() -> dict:
     """Return UPS metrics; empty dict if upower or UPS isn't present."""
-    if not getattr(_deps.config, "COLLECT_UPS_ENABLED", True):
+    if not collect_enabled(_deps.config, "COLLECT_UPS_ENABLED"):
         return {}
     _ensure_probed()
     result = {"percent": None, "state": None, "warning_level": None,

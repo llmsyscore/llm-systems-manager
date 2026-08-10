@@ -18,7 +18,7 @@ from typing import Any
 
 import psutil
 
-from ._shared import collect_sensors_cached, sensors_val
+from ._shared import collect_enabled, collect_sensors_cached, sensors_val
 from .gpu import collect_gpu
 from .liquidctl import get_liquidctl_cached
 from .ups import collect_ups
@@ -36,7 +36,7 @@ def set_deps(*, config) -> None:
 
 
 def collect_iscsi() -> dict:
-    if not getattr(_deps.config, "COLLECT_ISCSI_ENABLED", True):
+    if not collect_enabled(_deps.config, "COLLECT_ISCSI_ENABLED"):
         return {}
     result = {"state": None, "target": None, "session": None}
     try:
