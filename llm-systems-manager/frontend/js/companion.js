@@ -22,8 +22,40 @@
     body: JSON.stringify(body),
   });
 
-  // Minutes east of UTC; anchors the days= energy window to the caller's local
-  // midnight so "today" means today here, not the last 24 UTC hours.
+  const errMsg = (e) => (e && e.message) || String(e);
+
+  // Writes innerHTML only when it differs from the last write.
+  const patchHtml = (el, html) => {
+    if (el._html !== html) { el._html = html; el.innerHTML = html; }
+  };
+
+  // msg(text, bad) + act(label, request) pair bound to one screen's status line.
+  function actionRunner(msgId, refresh) {
+    const msg = (t, bad) => {
+      const m = $(msgId);
+      m.textContent = t || '';
+      m.classList.toggle('bad', !!bad);
+    };
+    return {
+      msg,
+      async act(label, req) {
+        msg(label + '…');
+        try {
+          const r = await req();
+          if (r && r.ok === false) throw new Error(r.error || 'failed');
+          msg(label + ' ✓' + (r && r.note ? ' · ' + r.note : ''));
+        } catch (e) { msg(label + ' failed: ' + errMsg(e), true); }
+        refresh();
+      },
+    };
+  }
+
+  const RESTART_COPY = {
+    manager: 'The dashboard and this app will briefly disconnect.',
+    alarm_engine: 'Alert evaluation pauses while the engine restarts.',
+  };
+
+  // Minutes east of UTC for the days= energy window.
   const TZ_Q = '&tz_offset_min=' + (-new Date().getTimezoneOffset());
 
   // Resolved from /api/me at boot; false until then so nothing admin-gated
@@ -58,24 +90,21 @@
 
   function setLive(online, ageS) {
     const dot = $('liveDot'), name = $('hostName');
-    // Drive off age directly: agent_online flips at 30s, so a stale window is
-    // only visible via age (30–90s = reconnecting, older/absent = offline).
+    // agent_online flips at 30s; age 30–90s reads as reconnecting,
+    // older or absent as offline.
     const s = (typeof ageS === 'number' && isFinite(ageS)) ? ageS : null;
-    if (online === false && (s == null || s >= 90)) { dot.className = 'livedot down'; name.textContent = 'offline'; }
+    if ((online === false || online == null) && (s == null || s >= 90)) { dot.className = 'livedot down'; name.textContent = 'offline'; }
     else if (s != null && s >= 30) { dot.className = 'livedot stale'; name.textContent = 'reconnecting'; }
-    else if (s == null && online == null) { dot.className = 'livedot down'; name.textContent = 'offline'; }
     else { dot.className = 'livedot'; name.textContent = 'connected'; }
   }
 
   // ── render helpers ───────────────────────────────────────────────────────
   function providerRow(p) {
     const suffix = p.rSuffix ? `<small>${esc(p.rSuffix)}</small>` : '';
-    // stats and the single right-hand column are alternatives, not both:
-    // Home shows gpu/cpu/ram inline, Energy keeps its one watts column.
+    // A row renders either inline stats or the single right-hand column.
     const stats = (p.stats || []).map((s) =>
       `<span><b>${esc(s.v)}</b>${esc(s.k)}</span>`).join('');
-    // pstats is a SIBLING of atxt, not a child: that lets it wrap below the
-    // text on a phone and sit in the card's free space on a tablet.
+    // pstats is a sibling of atxt, not a child.
     return `<div class="prov"><span class="pstat ${p.status}"></span>`
       + `<div class="atxt"><div class="pn">${esc(p.name)}</div>`
       + `<div class="pd">${esc(p.detail)}</div></div>`
@@ -85,8 +114,7 @@
           + `${esc(p.rUnit)}</div>`)
       + '</div>';
   }
-  // viewBox-space top padding that clears the hero text at any breakpoint, so
-  // the trend line can never run through the numbers.
+  // viewBox-space top padding that clears the hero text at any breakpoint.
   function stripPad(stripId, labelId) {
     const strip = $(stripId), label = $(labelId);
     if (!strip || !label) return 54;
@@ -159,9 +187,7 @@
       + `<div class="k">${esc(t.k)}</div>${body}</div>`;
   }
 
-  // One system metric: the headline is NOW, the sparkline and range are the
-  // last 24 h. Both time bases on one card, so a metric is never shown twice
-  // with two different numbers.
+  // One system metric per card: live headline, 24 h sparkline and range.
   const miniNum = (t) => (t.live == null ? '—' : t.live.toFixed(t.dp));
   function miniEl(t, i) {
     const sp = CS.path(t.pts.map((p) => p.v), 120, 34, { padTop: 5, padBottom: 5 });
@@ -188,10 +214,8 @@
     cards: [],           // trends + the live headline, as rendered
     latest: null,        // newest history row
     histAt: 0,
-    // Fleet history from the alarm engine, refreshed every 60 s on the 2 s
-    // poll and immediately on an explicit refresh. Falls back to the live
-    // buffer when it returns nothing. fleet=all aggregates ACROSS hosts —
-    // the unscoped endpoint lets the last host writing a timestamp win.
+    // 24 h fleet-wide history (fleet=all), refreshed at most every 60 s;
+    // force skips the throttle.
     async loadHistory(force) {
       const now = Date.now() / 1000;
       if (!force && now - this.histAt < 60) return;
@@ -216,22 +240,25 @@
       } catch (_) { /* keep whatever we had */ }
     },
     async refresh(force) {
+      const nowS = Date.now() / 1000;
+      // Energy summary at most every 30 s; the fast endpoints every tick.
+      const wantEn = force || nowS - (this._enAt || 0) >= 30;
       const [m, ls, lms, vllm, en] = await Promise.all([
         jfetch('/api/metrics').catch(() => ({})),
         jfetch('/api/llama-state').catch(() => ({})),
         jfetch('/api/lmstudio/metrics').catch(() => ({})),
         jfetch('/api/vllm/metrics').catch(() => ({})),
-        jfetch('/api/energy/summary?days=1' + TZ_Q).catch(() => ({})),
+        wantEn ? jfetch('/api/energy/summary?days=1' + TZ_Q).catch(() => null) : null,
       ]);
+      if (en) { this._en = en; this._enAt = nowS; }
       setLive(ls.agent_online, ls.agent_age_s);
       // Before the view model: the fleet tiles read the 24 h peak off it.
       await this.loadHistory(force);
-      const vm = CV.glance({ metrics: m, llama: ls, lms, vllm, energy: en,
+      const vm = CV.glance({ metrics: m, llama: ls, lms, vllm,
+        energy: this._en || {},
         hist: this.hist, trends: this.trends, latest: this.latest });
-      // Live buffer backs the strip only when history is unavailable. Drop
-      // samples older than the window so a backgrounded app doesn't redraw a
-      // frozen trace when it comes forward.
-      const nowS = Date.now() / 1000;
+      // Live buffer backs the strip only when history is unavailable;
+      // samples older than the 300 s window are dropped.
       this.buf.push({ t: nowS, v: vm.hero.tps, p: 0 });
       this.buf = this.buf.filter((s) => nowS - s.t < 300).slice(-150);
       this.render(vm);
@@ -248,8 +275,7 @@
       $('glanceHeroN').innerHTML = `${esc(vm.hero.n)}<small>${esc(vm.hero.unit)}</small>`;
       $('glanceHeroL').textContent = vm.hero.label;
       const pts = this.series();
-      // Generation and prompt share one scale, else the two lines can't be
-      // read against each other.
+      // Generation and prompt share one scale.
       const all = pts.map((p) => p.v).concat(pts.map((p) => p.p || 0))
         .filter((v) => typeof v === 'number' && isFinite(v));
       const scale = { min: Math.min(...all, 0), max: Math.max(...all, 1),
@@ -257,19 +283,19 @@
       const sp = CS.path(pts.map((p) => p.v), 340, 118, scale);
       const pp = CS.path(pts.map((p) => p.p || 0), 340, 118, scale);
       this.sp = sp;
-      this.pp = pts.some((p) => p.p > 0) ? pp : null;
+      const hasPrompt = pts.some((p) => p.p > 0);
+      this.pp = hasPrompt ? pp : null;
       $('glanceSparkLine').setAttribute('d', sp.line);
       $('glanceSparkFill').setAttribute('d', sp.fill);
       $('glanceSparkPrompt').setAttribute('d', pp.line);
-      $('glanceLegend').hidden = !pts.some((p) => p.p > 0);
+      $('glanceLegend').hidden = !hasPrompt;
       $('glanceWin').textContent = this.hist.length > 1 ? 'last 24 h'
         : (this.buf.length * 2 < 90 ? 'live'
           : 'last ' + Math.round(this.buf.length * 2 / 60) + 'm');
-      $('glanceProviders').innerHTML = vm.providers.map(providerRow).join('');
-      $('glanceFleet').innerHTML = vm.fleet.map(tileEl).join('');
-      // Rebuild only when the SERIES changes (history reloads every 60 s);
-      // doing it on the 2 s poll would wipe an open scrub readout mid-touch.
-      // The live headline is patched in place below instead.
+      patchHtml($('glanceProviders'), vm.providers.map(providerRow).join(''));
+      patchHtml($('glanceFleet'), vm.fleet.map(tileEl).join(''));
+      // Minis rebuild only when the series changes; the live headline is
+      // patched in place below.
       this.cards = vm.system;
       const key = vm.system.map((t) => t.key + ':' + t.pts.length).join('|');
       if (key !== this._minKey) {
@@ -283,7 +309,7 @@
         v.innerHTML = `${esc(miniNum(t))}<small>${esc(t.unit)}</small>`;
         v.classList.toggle('hot', !!t.hot);
       });
-      $('glanceTiles').innerHTML = vm.power.map(tileEl).join('');
+      patchHtml($('glanceTiles'), vm.power.map(tileEl).join(''));
     },
     // Tap a mini card to read the value under the finger; the sub line
     // carries the readout and reverts to the 24 h range on release.
@@ -292,8 +318,7 @@
       if (!card) return;
       const t = (this.cards || [])[+card.dataset.mini];
       if (!t || !t.pts.length) return;
-      // Clear first: one shared timer, so moving to another card would
-      // otherwise strand the previous card's readout.
+      // Clears any other card's readout before showing this one.
       this.clearMiniScrub();
       const wrap = card.querySelector('.mwrap');
       const r = wrap.getBoundingClientRect();
@@ -361,9 +386,8 @@
         $('alertsEmpty').querySelector('.big').textContent = label;
       }
     },
-    // Tapping a push notification lands on the alert it was about. The row
-    // may be filtered out or resolved by the time we get here, so reset the
-    // filter to All first and give up quietly if it is genuinely gone.
+    // Deep-link target from a push notification: resets the filter to All,
+    // then focuses the row if it is still listed.
     focusId: null,
     openFrom(id) {
       this.focusId = id;
@@ -424,7 +448,7 @@
         const btn = $('alertsRefresh');
         btn.disabled = true;
         btn.classList.add('busy');
-        try { await this.refresh(true); } finally {
+        try { await this.refresh(); } finally {
           btn.disabled = false;
           btn.classList.remove('busy');
         }
@@ -443,9 +467,8 @@
   // ── Energy ────────────────────────────────────────────────────────────────
   const energy = {
     hourly: [],
-    // Average watts for one hourly bucket. Wh over a full hour already IS
-    // watts; only the in-progress bucket needs scaling by elapsed wall time
-    // (observed_s can't be used — it is summed across every agent).
+    // Average watts for one hourly bucket; the in-progress bucket is scaled
+    // by elapsed wall time.
     bucketWatts(r, nowS) {
       if (!r) return null;
       const now = nowS == null ? Date.now() / 1000 : nowS;
@@ -463,11 +486,8 @@
     },
     render(today, month, hourly, week) {
       const tT = today.totals || {}, mT = month.totals || {};
-      // Hero reads the newest hourly bucket — the window mean barely moves.
-      // Wh/bucket is only average watts once divided by the hour actually
-      // observed; the current bucket is partial and would read far too low.
-      // A bucket younger than 5 min holds too little to scale up without
-      // reading as a spike or a cliff, so drop it from the series entirely.
+      // Hero reads the newest hourly bucket; a bucket younger than 5 min is
+      // dropped from the series.
       const all = (hourly.rows || []).slice().sort((a, b) => a.hour_ts - b.hour_ts);
       const tail = all[all.length - 1];
       const rows = (all.length > 1 && tail && (Date.now() / 1000 - tail.hour_ts) < 300)
@@ -475,7 +495,9 @@
       this.hourly = rows;
       const live = rows.length
         ? this.bucketWatts(rows[rows.length - 1]) : tT.avg_watts;
-      $('energyHeroN').innerHTML = `${esc(EN.fmtWatts(live).replace(' W', ''))}<small>W</small>`;
+      const lw = EN.fmtWatts(live);
+      $('energyHeroN').innerHTML = `${esc(lw.replace(/ W$/, ''))}`
+        + `<small>${lw.endsWith(' W') ? 'W' : ''}</small>`;
       const watts = rows.map((r) => this.bucketWatts(r));
       const sp = CS.path(watts, 340, 118, { padTop: stripPad('energyStrip', 'energyHeroL') });
       this.sp = sp;
@@ -487,8 +509,7 @@
       const p = this.projection(today, month, price);
       $('energyTiles').innerHTML = [
         { v: EN.fmtUsd(tT.cost_usd), unit: '', k: 'Today',
-          // Say when the figure covers only part of the fleet — a cost built
-          // from one metered host out of six is not a fleet total.
+          // Marks the figure partial when only some hosts are metered.
           sub: tT.kwh != null
             ? EN.fmtKwh(tT.kwh) + ' · ' + (cov.partial ? cov.text
               : (price != null ? '$' + price + '/kWh' : 'all hosts'))
@@ -516,7 +537,12 @@
         proj = tT.avg_watts / 1000 * 720 * price;
         basis = EN.fmtWatts(tT.avg_watts) + ' avg today';
       }
-      if (proj == null) return { value: '—', unit: '', sub: 'no power telemetry yet' };
+      if (proj == null) {
+        const noPrice = (fin(mT.avg_watts) || fin(tT.avg_watts)) && !fin(price);
+        return { value: '—', unit: '',
+          sub: noPrice ? 'set a $/kWh price to project cost'
+            : 'no power telemetry yet' };
+      }
       const cov = mT.power_coverage_pct;
       return {
         value: proj >= 10 ? '$' + Math.round(proj) : EN.fmtUsd(proj),
@@ -567,8 +593,7 @@
         }
         byDay.get(key).wh += (r.energy_wh || 0);
       });
-      // A trailing window opens mid-day, so its oldest day is a stub that would
-      // draw at full weight. Drop days whose midnight predates the window.
+      // Drops the leading partial day of the trailing window.
       const todayKey = this.dayKey(new Date());
       const days = [...byDay.values()]
         .filter((v) => !startTs || v.dayStart >= startTs || v.key === todayKey)
@@ -611,16 +636,15 @@
     ? (rel.latest || 'update') + ' available' : '');
 
   const admin = {
+    ...actionRunner('adminMsg', () => admin.refresh()),
     async refresh() {
-      // Non-admins can't read any of these; skipping the calls avoids a 403
-      // storm and a role-denied warning in the manager log every 10 s.
-      const none = () => Promise.resolve(null);
+      // Admin-only endpoints are skipped for non-admin sessions.
       const [health, agents, backup, auth, audit, rel] = await Promise.all([
-        ADMIN ? jfetch('/api/admin/system-health').catch(() => null) : none(),
-        ADMIN ? jfetch('/api/agents').catch(() => null) : none(),
-        ADMIN ? jfetch('/api/admin/backup-status').catch(() => null) : none(),
-        ADMIN ? jfetch('/api/admin/auth').catch(() => null) : none(),
-        ADMIN ? jfetch('/api/admin/audit-log?limit=25').catch(() => null) : none(),
+        ADMIN ? jfetch('/api/admin/system-health').catch(() => null) : null,
+        ADMIN ? jfetch('/api/agents').catch(() => null) : null,
+        ADMIN ? jfetch('/api/admin/backup-status').catch(() => null) : null,
+        ADMIN ? jfetch('/api/admin/auth').catch(() => null) : null,
+        ADMIN ? jfetch('/api/admin/audit-log?limit=25').catch(() => null) : null,
         jfetch('/api/companion/release').catch(() => null),
       ]);
       const version = (document.querySelector('meta[name="mgr-version"]') || {}).content || '—';
@@ -633,20 +657,6 @@
         releaseNote: releaseNote(rel),
       });
       this.render(vm, gated, audit);
-    },
-    msg(t, bad) {
-      const m = $('adminMsg');
-      m.textContent = t || '';
-      m.classList.toggle('bad', !!bad);
-    },
-    async act(label, req) {
-      this.msg(label + '…');
-      try {
-        const r = await req();
-        if (r && r.ok === false) throw new Error(r.error || 'failed');
-        this.msg(label + ' ✓');
-      } catch (e) { this.msg(label + ' failed: ' + (e && e.message || e), true); }
-      this.refresh();
     },
     render(vm, gated, audit) {
       $('adminGatedNote').hidden = !gated;
@@ -690,7 +700,10 @@
           + `<div class="ad">${esc(r.detail)}</div></div>${right}</div>`;
       }).join('');
 
-      this.loadDevices();
+      // Device roster: refreshed each poll while open, else at most every 60 s.
+      if (this.devicesOpen || Date.now() / 1000 - (this._devAt || 0) >= 60) {
+        this.loadDevices();
+      }
       const rows = CV.audit((audit || {}).entries);
       $('adminAudit').innerHTML = rows.map((r) =>
         `<div class="arow"><div class="atxt"><div class="an">${esc(r.name)}</div>`
@@ -705,6 +718,7 @@
     // people's phones, so it is shown on request, not by default.
     devicesOpen: false,
     async loadDevices() {
+      this._devAt = Date.now() / 1000;
       let subs = null;
       try { subs = await jfetch('/api/companion/push/subscriptions'); }
       catch (_) { subs = null; }
@@ -735,8 +749,7 @@
           return r;
         }));
     },
-    // Static snapshot by default; live tail is opt-in because an open SSE
-    // stream holds a manager worker and burns phone battery.
+    // Static log snapshot; the live SSE tail is opt-in.
     async openLogs(id) {
       sheet.open('Agent log', '<div class="sd">loading…</div>');
       const gen = sheet.gen;
@@ -746,7 +759,7 @@
         lines = (r.lines || []).slice(-120);
       } catch (e) {
         if (gen === sheet.gen) {
-          $('sheetBody').innerHTML = `<div class="sd">log read failed: ${esc(e && e.message || e)}</div>`;
+          $('sheetBody').innerHTML = `<div class="sd">log read failed: ${esc(errMsg(e))}</div>`;
         }
         return;
       }
@@ -795,12 +808,9 @@
         if (rm) return this.confirmRemoveDevice(rm.dataset.devrm, rm.dataset.devname);
         const svc = e.target.closest('[data-svc]');
         if (svc) {
-          const COPY = {
-            manager: 'The dashboard and this app will briefly disconnect.',
-            alarm_engine: 'Alert evaluation pauses while the engine restarts.',
-          };
-          return sheet.confirm('Restart ' + svc.previousElementSibling.querySelector('.an').textContent,
-            COPY[svc.dataset.svc] || 'The service restarts now.', 'Restart', true,
+          const name = svc.closest('.arow').querySelector('.an').textContent;
+          return sheet.confirm('Restart ' + name,
+            RESTART_COPY[svc.dataset.svc] || 'The service restarts now.', 'Restart', true,
             () => this.act('restart', () => jfetch(
               `/api/admin/service/${encodeURIComponent(svc.dataset.svc)}/restart`,
               { method: 'POST' })));
@@ -876,7 +886,7 @@
           $('settingsMsg').textContent = next
             ? 'release check on' : 'release check off';
         } catch (err) {
-          $('settingsMsg').textContent = 'failed: ' + (err && err.message || err);
+          $('settingsMsg').textContent = 'failed: ' + errMsg(err);
         }
         this.refresh();
       };
@@ -912,15 +922,17 @@
 
   // ── Actions (control surface) ─────────────────────────────────────────────
   const models = {
+    ...actionRunner('modelsMsg', () => models.refresh()),
     vm: null, ap: null,
     async refresh() {
+      // Admin-only endpoints are skipped for non-admin sessions.
       const [ls, lms, vllm, health, ap, ag] = await Promise.all([
         jfetch('/api/llama-state').catch(() => ({})),
         jfetch('/api/lmstudio/metrics').catch(() => null),
         jfetch('/api/vllm/metrics').catch(() => null),
-        jfetch('/api/admin/system-health').catch(() => null),
-        jfetch('/api/autopilot').catch(() => null),
-        jfetch('/api/agents').catch(() => null),
+        ADMIN ? jfetch('/api/admin/system-health').catch(() => null) : null,
+        ADMIN ? jfetch('/api/autopilot').catch(() => null) : null,
+        ADMIN ? jfetch('/api/agents').catch(() => null) : null,
       ]);
       setLive(ls.agent_online, ls.agent_age_s);
       // Last GET payload; confirmAutopilot re-reads fresh before its PUT.
@@ -928,20 +940,6 @@
       const version = (document.querySelector('meta[name="mgr-version"]') || {}).content || '—';
       this.vm = CV.actions({ llama: ls, lms, vllm, health, autopilot: ap, agents: ag, version });
       this.render(this.vm);
-    },
-    msg(t, bad) {
-      const m = $('modelsMsg');
-      m.textContent = t || '';
-      m.classList.toggle('bad', !!bad);
-    },
-    async act(label, req) {
-      this.msg(label + '…');
-      try {
-        const r = await req();
-        if (r && r.ok === false) throw new Error(r.error || 'failed');
-        this.msg(label + ' ✓' + (r && r.note ? ' · ' + r.note : ''));
-      } catch (e) { this.msg(label + ' failed: ' + (e && e.message || e), true); }
-      this.refresh();
     },
     render(vm) {
       $('modelsGatedNote').hidden = !vm.gated;
@@ -989,8 +987,7 @@
         llama: 'In-flight inference requests will be dropped while the unit restarts.',
         lms: 'The LM Studio server restarts; loaded models reload after it returns.',
         vllm: 'The vLLM unit restarts; its model reloads after it returns.',
-        manager: 'The dashboard and this app will briefly disconnect.',
-        alarm_engine: 'Alert evaluation pauses while the engine restarts.',
+        ...RESTART_COPY,
       };
       const ROUTE = {
         llama: '/api/llm/server/restart',
@@ -1055,7 +1052,7 @@
       try { list = (await jfetch('/api/llm/models')).data || []; }
       catch (e) {
         if (gen === sheet.gen) {
-          $('sheetBody').innerHTML = `<div class="sd">model list failed: ${esc(e && e.message || e)}</div>`;
+          $('sheetBody').innerHTML = `<div class="sd">model list failed: ${esc(errMsg(e))}</div>`;
         }
         return;
       }
@@ -1152,7 +1149,7 @@
       await jpost('/api/companion/push/unsubscribe', { endpoint: sub.endpoint });
       $('pushMsg').textContent = 'this device will no longer be notified';
     } catch (err) {
-      $('pushMsg').textContent = 'unregister failed: ' + (err && err.message || err);
+      $('pushMsg').textContent = 'unregister failed: ' + errMsg(err);
     }
     paintPush();
   }
@@ -1182,7 +1179,7 @@
       else $('pushMsg').textContent = 'subscribed ✓';
     } catch (err) {
       if (sub) await sub.unsubscribe().catch(() => {});
-      $('pushMsg').textContent = 'subscribe failed: ' + (err && err.message || err);
+      $('pushMsg').textContent = 'subscribe failed: ' + errMsg(err);
     }
     paintPush();
   }
@@ -1195,7 +1192,7 @@
         body: JSON.stringify(sub ? { endpoint: sub.endpoint } : {}),
       });
       $('pushMsg').textContent = res.sent ? `sent ${res.sent} ✓` : (res.error || `failed ${res.failed}`);
-    } catch (err) { $('pushMsg').textContent = 'send failed: ' + (err && err.message || err); }
+    } catch (err) { $('pushMsg').textContent = 'send failed: ' + errMsg(err); }
   }
 
   // ── router ────────────────────────────────────────────────────────────────
@@ -1223,8 +1220,7 @@
     return cfg && cfg.ctrl ? Promise.resolve(cfg.ctrl.refresh(force)) : Promise.resolve();
   };
 
-  // iOS Safari ignores user-scalable=no, so pinch has to be refused directly:
-  // the WebKit gesture events plus any multi-touch move.
+  // Refuses pinch zoom: WebKit gesture events plus any multi-touch move.
   function blockZoom() {
     ['gesturestart', 'gesturechange', 'gestureend'].forEach((n) =>
       document.addEventListener(n, (e) => e.preventDefault(), { passive: false }));
@@ -1280,8 +1276,8 @@
 
   function show(tab) {
     let cfg = SCREENS[tab];
-    // Defensive: the tab button is hidden for non-admins, but the router must
-    // refuse the screen too rather than trusting the button.
+    // The router refuses admin screens for non-admins, independent of the
+    // hidden tab button.
     if (cfg && cfg.admin && !ADMIN) { tab = 'glance'; cfg = SCREENS[tab]; }
     if (!cfg) return;
     current = tab;
@@ -1305,6 +1301,8 @@
   }
 
   async function pollBadge() {
+    // The Alerts screen sets the badge from its own 15 s refresh while open.
+    if (current === 'alerts') return;
     try {
       // only_active = active + acknowledged, the same set the Alerts screen's
       // firing count uses (CV.alerts then drops info-category).
@@ -1315,8 +1313,7 @@
   }
 
   document.addEventListener('DOMContentLoaded', async () => {
-    // Fail closed: /api/me is session-readable and reports admin_access =
-    // is_admin && admin_ip, the same pair the server-side gate checks.
+    // admin_access from /api/me mirrors the server-side admin gate.
     try {
       const me = await jfetch('/api/me');
       ADMIN = me.admin_access === true;
@@ -1349,8 +1346,6 @@
     settings.start();
     blockZoom();
     initPullToRefresh();
-    const clock = (t) => new Date(t * 1000)
-      .toLocaleTimeString('en', { hour: 'numeric', minute: '2-digit' });
     attachScrub('glanceStrip', 'glanceReadout', 'glanceMarker', () => {
       const pts = glance.series();
       return {
@@ -1362,7 +1357,7 @@
           if (!p) return '';
           return 'gen ' + p.v.toFixed(1)
             + (p.p > 0 ? ' · prompt ' + p.p.toFixed(1) : '')
-            + ' tok/s · ' + clock(p.t);
+            + ' tok/s · ' + CV.clockAt(p.t);
         },
       };
     });
