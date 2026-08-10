@@ -15,7 +15,7 @@ import subprocess
 import time
 from types import SimpleNamespace
 
-from ._shared import collect_sensors_cached, sensors_val
+from ._shared import AbsenceLatch, collect_sensors_cached, sensors_val
 
 # Matches the tree-drawing glyphs liquidctl prefixes sensor rows with.
 _TREE_PREFIX_RE = re.compile(r"^[├└─\s]+")
@@ -30,14 +30,32 @@ __all__ = ["set_deps", "collect_smart_device_sensors", "collect_liquidctl",
 _deps = SimpleNamespace()
 _liquidctl_cache: dict = {}
 _liquidctl_last_poll: float = 0.0
-# Probe-once absence memory (reset on process restart): skip devices/binary
-# found missing so we don't re-spawn `sudo liquidctl status` every tick.
+# Expiring absence memory: skip devices/binary found missing so we don't
+# re-spawn `sudo liquidctl status` every tick, and retry on the latch interval.
+_MATCH_AIO, _MATCH_PSU, _MATCH_SMART = "Kraken", "HX1000i", "Smart Device"
+_MATCHES = (_MATCH_AIO, _MATCH_PSU, _MATCH_SMART)
 _binary_missing: bool = False
-_absent_matches: set = set()
+_bin_latch = AbsenceLatch("liquidctl binary (COLLECT_LIQUIDCTL_ENABLED is on)", logger=log)
+_all_latch = AbsenceLatch("liquidctl devices (COLLECT_LIQUIDCTL_ENABLED is on)", logger=log)
+_match_latches: "dict[str, AbsenceLatch]" = {}
+
+
+def _latch_for(match: str) -> AbsenceLatch:
+    # Per-device absence is normal on a host that has only some of them, so
+    # these log at INFO; _all_latch carries the WARNING when none are found.
+    latch = _match_latches.get(match)
+    if latch is None:
+        latch = _match_latches[match] = AbsenceLatch(
+            f"liquidctl device {match!r}", level=logging.INFO, logger=log)
+    return latch
 
 
 def set_deps(*, config) -> None:
+    global _binary_missing
     _deps.config = config
+    _binary_missing = False
+    for latch in (_bin_latch, _all_latch, *_match_latches.values()):
+        latch.reset()
 
 
 def collect_smart_device_sensors() -> dict:
@@ -76,12 +94,15 @@ def _run_liquidctl_status(match: str) -> tuple[list[dict], "str | None", bool]:
         )
     except FileNotFoundError:
         _binary_missing = True
+        _bin_latch.record(False, " on PATH")
         return results, device_name, True
     except subprocess.CalledProcessError:
+        _bin_latch.record(True)
         return results, device_name, True
     except Exception as e:
         log.debug("liquidctl %s: %s", match, e)
         return results, device_name, False
+    _bin_latch.record(True)
     for line in out.splitlines():
         line = _TREE_PREFIX_RE.sub("", line.strip()).strip()
         # Skip blank lines, device-header lines (NZXT/Corsair/etc.), and any
@@ -115,27 +136,37 @@ def _parse_liquidctl_rows(rows: list[dict], keys: list[str]) -> dict:
 
 
 def _status_or_absent(match: str) -> tuple[list[dict], "str | None"]:
-    # Skip a probe we've already found absent; remember new absences.
-    if _binary_missing or match in _absent_matches:
+    # Skip a device found absent until its latch expires; remember new absences.
+    if _binary_missing:
+        return [], None
+    latch = _latch_for(match)
+    if not latch.should_probe():
         return [], None
     rows, name, definitive = _run_liquidctl_status(match)
-    if definitive and not _binary_missing and not rows and name is None:
-        _absent_matches.add(match)
+    if definitive and not _binary_missing:
+        latch.record(bool(rows) or name is not None)
     return rows, name
 
 
 def collect_liquidctl() -> dict:
+    global _binary_missing
     if not getattr(_deps.config, "COLLECT_LIQUIDCTL_ENABLED", True):
         return {}
     if _binary_missing:
-        return {}
-    kr_rows, kr_name = _status_or_absent("Kraken")
-    psu_rows, psu_name = _status_or_absent("HX1000i")
-    smart_rows, smart_name = _status_or_absent("Smart Device")
+        if not _bin_latch.should_probe():
+            return {}
+        _binary_missing = False
+    kr_rows, kr_name = _status_or_absent(_MATCH_AIO)
+    psu_rows, psu_name = _status_or_absent(_MATCH_PSU)
+    smart_rows, smart_name = _status_or_absent(_MATCH_SMART)
     if _binary_missing:
         return {}
     if not (kr_rows or kr_name or psu_rows or psu_name or smart_rows or smart_name):
+        # Only a definitive all-absent read is an outage; a transient one isn't.
+        if all(_latch_for(m).absent for m in _MATCHES):
+            _all_latch.record(False)
         return {}
+    _all_latch.record(True)
     aio = _parse_liquidctl_rows(kr_rows,
         ["Liquid temperature", "Pump speed", "Pump duty", "Fan speed", "Fan duty"])
     if kr_name: aio["_name"] = kr_name

@@ -1,11 +1,12 @@
 """UPS metrics via ``upower``; degrades cleanly when neither upower nor a
 UPS device is present.
 
-``_UPS_DEVICE`` is probed once at import via ``upower -e`` and cached for
-the lifetime of the process. ``None`` means upower isn't installed or no
-UPS device was advertised — ``collect_ups()`` returns the all-None result
-dict so downstream callers don't need to distinguish "no UPS" from "UPS
-unreachable this tick".
+``_UPS_DEVICE`` is probed on the first ``collect_ups()`` via ``upower -e``
+and kept for the lifetime of the process. ``None`` means upower isn't
+installed or no UPS device was advertised — ``collect_ups()`` returns the
+all-None result dict so downstream callers don't need to distinguish "no
+UPS" from "UPS unreachable this tick", and re-probes on the
+``AbsenceLatch`` interval so a UPS plugged in later is picked up.
 """
 
 from __future__ import annotations
@@ -14,6 +15,8 @@ import logging
 import subprocess
 from types import SimpleNamespace
 from typing import Any
+
+from ._shared import AbsenceLatch
 
 log = logging.getLogger("llm-systems-agent.collectors.ups")
 
@@ -24,6 +27,7 @@ _deps = SimpleNamespace()
 
 def set_deps(*, config) -> None:
     _deps.config = config
+    _probe_latch.reset()
 
 
 # Lazy-probed on first collect_ups() so module import doesn't block on `upower -e`.
@@ -31,8 +35,11 @@ _UNPROBED = object()
 _UPS_DEVICE: Any = _UNPROBED
 
 
+_probe_latch = AbsenceLatch("UPS (COLLECT_UPS_ENABLED is on)", logger=log)
+
+
 def _find_ups_device():
-    """Probe a UPS device path via `upower -e`; result cached for process lifetime."""
+    """Probe a UPS device path via `upower -e`; result cached until it changes."""
     try:
         out = subprocess.check_output(["upower", "-e"], text=True, timeout=3, close_fds=True)
         for line in out.splitlines():
@@ -46,9 +53,13 @@ def _find_ups_device():
 
 
 def _ensure_probed() -> None:
+    # Re-run `upower -e` on the latch interval while no UPS is advertised.
     global _UPS_DEVICE
-    if _UPS_DEVICE is _UNPROBED:
-        _UPS_DEVICE = _find_ups_device()
+    if (_UPS_DEVICE is not _UNPROBED and _UPS_DEVICE is not None) \
+            or not _probe_latch.should_probe():
+        return
+    _UPS_DEVICE = _find_ups_device()
+    _probe_latch.record(_UPS_DEVICE is not None)
 
 
 def collect_ups() -> dict:
