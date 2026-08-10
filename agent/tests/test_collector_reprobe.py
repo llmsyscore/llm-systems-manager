@@ -127,6 +127,20 @@ def test_latch_probe_that_raises_still_waits_out_the_interval(clock):
     assert latch.should_probe() is False     # not retried on the very next tick
 
 
+def test_latch_states_the_retry_cadence_in_readable_units(clock, caplog):
+    # "%.0f min" of a 30s interval reads "every 0 min".
+    sh.set_deps(config=_config(COLLECT_REPROBE_INTERVAL_S=30))
+    with caplog.at_level(logging.WARNING):
+        sh.AbsenceLatch("thing").record(False)
+    assert "re-probing every 30s" in caplog.records[0].getMessage()
+
+    caplog.clear()
+    sh.set_deps(config=_config())
+    with caplog.at_level(logging.WARNING):
+        sh.AbsenceLatch("thing").record(False)
+    assert "re-probing every 15 min" in caplog.records[0].getMessage()
+
+
 def test_latch_level_is_configurable(clock, caplog):
     latch = sh.AbsenceLatch("optional device", level=logging.INFO)
     with caplog.at_level(logging.INFO):

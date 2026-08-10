@@ -36,6 +36,10 @@ REPROBE_INTERVAL_S = 900.0
 _latches: "list[AbsenceLatch]" = []
 
 
+def _fmt_interval(seconds: float) -> str:
+    return f"{seconds:.0f}s" if seconds < 120 else f"{seconds / 60:.0f} min"
+
+
 class AbsenceLatch:
     """Expiring absence memory for a hardware probe.
 
@@ -95,8 +99,8 @@ class AbsenceLatch:
         self._at = time.monotonic()
         if not self._warned:
             self._warned = True
-            self._log.log(self.level, "%s not detected%s; re-probing every %.0f min",
-                          self.what, detail, self.interval_s / 60.0)
+            self._log.log(self.level, "%s not detected%s; re-probing every %s",
+                          self.what, detail, _fmt_interval(self.interval_s))
 
     def reset(self) -> None:
         """Forget the absence entirely so the next call probes immediately."""
