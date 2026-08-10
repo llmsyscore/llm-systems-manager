@@ -70,11 +70,20 @@
   // ── render helpers ───────────────────────────────────────────────────────
   function providerRow(p) {
     const suffix = p.rSuffix ? `<small>${esc(p.rSuffix)}</small>` : '';
+    // stats and the single right-hand column are alternatives, not both:
+    // Home shows gpu/cpu/ram inline, Energy keeps its one watts column.
+    const stats = (p.stats || []).map((s) =>
+      `<span><b>${esc(s.v)}</b>${esc(s.k)}</span>`).join('');
+    // pstats is a SIBLING of atxt, not a child: that lets it wrap below the
+    // text on a phone and sit in the card's free space on a tablet.
     return `<div class="prov"><span class="pstat ${p.status}"></span>`
       + `<div class="atxt"><div class="pn">${esc(p.name)}</div>`
       + `<div class="pd">${esc(p.detail)}</div></div>`
-      + `<div class="pr"><b${p.warn ? ' class="warn"' : ''}>${esc(p.rN)}${suffix}</b>`
-      + `${esc(p.rUnit)}</div></div>`;
+      + (stats ? `<div class="pstats">${stats}</div>` : '')
+      + (p.stats ? ''
+        : `<div class="pr"><b${p.warn ? ' class="warn"' : ''}>${esc(p.rN)}${suffix}</b>`
+          + `${esc(p.rUnit)}</div>`)
+      + '</div>';
   }
   // viewBox-space top padding that clears the hero text at any breakpoint, so
   // the trend line can never run through the numbers.
@@ -150,24 +159,54 @@
       + `<div class="k">${esc(t.k)}</div>${body}</div>`;
   }
 
+  // One system metric: the headline is NOW, the sparkline and range are the
+  // last 24 h. Both time bases on one card, so a metric is never shown twice
+  // with two different numbers.
+  const miniNum = (t) => (t.live == null ? '—' : t.live.toFixed(t.dp));
+  function miniEl(t, i) {
+    const sp = CS.path(t.pts.map((p) => p.v), 120, 34, { padTop: 5, padBottom: 5 });
+    return `<div class="mini" data-mini="${i}">`
+      + `<div class="mh"><span class="mk">${esc(t.name)}</span>`
+      + `<span class="mv${t.hot ? ' hot' : ''}">${esc(miniNum(t))}`
+      + `<small>${esc(t.unit)}</small></span></div>`
+      + '<div class="mwrap"><svg viewBox="0 0 120 34" preserveAspectRatio="none" aria-hidden="true">'
+      + `<path class="spark-fill" fill="url(#glanceGrad)" d="${esc(sp.fill)}"></path>`
+      + `<path class="spark-line" vector-effect="non-scaling-stroke" d="${esc(sp.line)}"></path>`
+      + '</svg><i class="mguide" hidden></i></div>'
+      + `<div class="ms">${esc(miniRange(t))}</div></div>`;
+  }
+  // The 24 h series is the busiest host per bucket, not a fleet average.
+  const miniRange = (t) => (t.min == null ? '—'
+    : '24h ' + t.min.toFixed(t.dp) + '–' + t.max.toFixed(t.dp) + ' ' + t.unit
+      + (t.extra ? ' · ' + t.extra : ''));
+
   // ── Glance ────────────────────────────────────────────────────────────────
   const glance = {
     buf: [],
     hist: [],            // [{t, v: gen tok/s, p: prompt tok/s}] over 24 h
+    trends: [],          // 24 h series per system metric
+    cards: [],           // trends + the live headline, as rendered
+    latest: null,        // newest history row
     histAt: 0,
-    // Fleet token rates from the alarm engine; refreshed every 5 min on the
-    // 2 s poll, immediately on an explicit refresh. Falls back to the live
-    // buffer when it returns nothing.
+    // Fleet history from the alarm engine, refreshed every 60 s on the 2 s
+    // poll and immediately on an explicit refresh. Falls back to the live
+    // buffer when it returns nothing. fleet=all aggregates ACROSS hosts —
+    // the unscoped endpoint lets the last host writing a timestamp win.
     async loadHistory(force) {
       const now = Date.now() / 1000;
-      if (!force && now - this.histAt < 300) return;
+      if (!force && now - this.histAt < 60) return;
       const sum = (r, keys) => {
         const v = keys.map((k) => r[k]).filter((x) => typeof x === 'number' && isFinite(x));
         return v.length ? v.reduce((a, b) => a + b, 0) : 0;
       };
       try {
-        const rows = await jfetch('/api/history?since_minutes=1440&max_rows=180');
-        this.hist = (Array.isArray(rows) ? rows : []).map((r) => ({
+        const raw = await jfetch(
+          '/api/history?since_minutes=1440&max_rows=180&fleet=all');
+        const rows = Array.isArray(raw) ? raw : [];
+        this.trends = CV.trends(rows);
+        // Newest row: absolute VRAM and anything else the live payloads lack.
+        this.latest = rows.length ? rows[rows.length - 1] : null;
+        this.hist = rows.map((r) => ({
           t: CV.tsSeconds(r.ts),
           v: sum(r, ['llama_tps', 'lms_tps', 'vllm_tps']),
           p: sum(r, ['llama_pps', 'lms_pps', 'vllm_pps']),
@@ -185,15 +224,21 @@
         jfetch('/api/energy/summary?days=1' + TZ_Q).catch(() => ({})),
       ]);
       setLive(ls.agent_online, ls.agent_age_s);
-      const vm = CV.glance({ metrics: m, llama: ls, lms, vllm, energy: en });
+      // Before the view model: the fleet tiles read the 24 h peak off it.
+      await this.loadHistory(force);
+      const vm = CV.glance({ metrics: m, llama: ls, lms, vllm, energy: en,
+        hist: this.hist, trends: this.trends, latest: this.latest });
       // Live buffer backs the strip only when history is unavailable. Drop
       // samples older than the window so a backgrounded app doesn't redraw a
       // frozen trace when it comes forward.
       const nowS = Date.now() / 1000;
       this.buf.push({ t: nowS, v: vm.hero.tps, p: 0 });
       this.buf = this.buf.filter((s) => nowS - s.t < 300).slice(-150);
-      await this.loadHistory(force);
       this.render(vm);
+      $('glanceUpdated').textContent = 'updated ' + new Date()
+        .toLocaleTimeString('en', { hour: 'numeric', minute: '2-digit',
+          second: '2-digit' })
+        + (this.histAt ? ' · trends ' + CV.clockAt(this.histAt) : '');
     },
     // 24 h history when the alarm engine has it, else the live 2 s buffer.
     series() {
@@ -221,7 +266,54 @@
         : (this.buf.length * 2 < 90 ? 'live'
           : 'last ' + Math.round(this.buf.length * 2 / 60) + 'm');
       $('glanceProviders').innerHTML = vm.providers.map(providerRow).join('');
-      $('glanceTiles').innerHTML = vm.tiles.map(tileEl).join('');
+      $('glanceFleet').innerHTML = vm.fleet.map(tileEl).join('');
+      // Rebuild only when the SERIES changes (history reloads every 60 s);
+      // doing it on the 2 s poll would wipe an open scrub readout mid-touch.
+      // The live headline is patched in place below instead.
+      this.cards = vm.system;
+      const key = vm.system.map((t) => t.key + ':' + t.pts.length).join('|');
+      if (key !== this._minKey) {
+        this._minKey = key;
+        $('glanceMinis').innerHTML = vm.system.map(miniEl).join('');
+      }
+      $('glanceMinis').querySelectorAll('[data-mini]').forEach((c, i) => {
+        const t = vm.system[i];
+        if (!t) return;
+        const v = c.querySelector('.mv');
+        v.innerHTML = `${esc(miniNum(t))}<small>${esc(t.unit)}</small>`;
+        v.classList.toggle('hot', !!t.hot);
+      });
+      $('glanceTiles').innerHTML = vm.power.map(tileEl).join('');
+    },
+    // Tap a mini card to read the value under the finger; the sub line
+    // carries the readout and reverts to the 24 h range on release.
+    scrubMini(e) {
+      const card = e.target.closest('[data-mini]');
+      if (!card) return;
+      const t = (this.cards || [])[+card.dataset.mini];
+      if (!t || !t.pts.length) return;
+      // Clear first: one shared timer, so moving to another card would
+      // otherwise strand the previous card's readout.
+      this.clearMiniScrub();
+      const wrap = card.querySelector('.mwrap');
+      const r = wrap.getBoundingClientRect();
+      const f = Math.max(0, Math.min(1, (e.clientX - r.left) / r.width));
+      const i = Math.min(t.pts.length - 1, Math.round(f * (t.pts.length - 1)));
+      const p = t.pts[i];
+      card.querySelector('.ms').textContent =
+        p.v.toFixed(t.dp) + ' ' + t.unit + ' · ' + CV.clockAt(p.t);
+      const g = card.querySelector('.mguide');
+      g.hidden = false;
+      g.style.left = (i / Math.max(1, t.pts.length - 1) * r.width) + 'px';
+      clearTimeout(this._miniT);
+      this._miniT = setTimeout(() => this.clearMiniScrub(), 2800);
+    },
+    clearMiniScrub() {
+      $('glanceMinis').querySelectorAll('[data-mini]').forEach((c) => {
+        const t = (this.cards || [])[+c.dataset.mini];
+        if (t) c.querySelector('.ms').textContent = miniRange(t);
+        c.querySelector('.mguide').hidden = true;
+      });
     },
   };
 
@@ -231,10 +323,16 @@
     row(a) {
       const ack = a.ackable
         ? `<button class="ackbtn" data-ack="${esc(a.id)}">Ack</button>` : '';
-      return `<div class="alert"><div class="sev ${a.sev}">${esc(a.glyph)}</div>`
-        + `<div class="atext"><div class="am">${esc(a.msg)}</div>`
+      const close = (ADMIN && a.closable)
+        ? `<button class="ackbtn danger" data-close="${esc(a.id)}">Close</button>` : '';
+      const rule = a.rule ? `<div class="aw rule">${esc(a.rule)}</div>` : '';
+      return `<div class="alert" data-alert="${esc(a.id)}">`
+        + `<div class="sev ${a.sev}">${esc(a.glyph)}</div>`
+        + `<div class="atext"><div class="am">${esc(a.msg)}</div>${rule}`
         + `<div class="aw">${esc(a.meta)}</div>`
-        + `<div class="sevword ${a.tone || a.sev}">${esc(a.word)}</div></div>${ack}</div>`;
+        + `<div class="sevword ${a.tone || a.sev}">${esc(a.word)}</div></div>`
+        + (ack || close ? `<div class="acts">${ack}${close}</div>` : '')
+        + '</div>';
     },
     async refresh() {
       const list = await jfetch('/api/alarm/alerts/?limit=100&include_closed=true')
@@ -254,6 +352,7 @@
       $('alertsFiring').innerHTML = firing.map((r) => this.row(r)).join('');
       $('alertsEarlierWrap').hidden = !showEarlier;
       if (showEarlier) $('alertsEarlier').innerHTML = vm.earlier.map((r) => this.row(r)).join('');
+      if (this.focusId) this.focus(this.focusId);
       const empty = firing.length === 0 && !showEarlier;
       $('alertsEmpty').hidden = !empty;
       if (empty) {
@@ -262,10 +361,45 @@
         $('alertsEmpty').querySelector('.big').textContent = label;
       }
     },
+    // Tapping a push notification lands on the alert it was about. The row
+    // may be filtered out or resolved by the time we get here, so reset the
+    // filter to All first and give up quietly if it is genuinely gone.
+    focusId: null,
+    openFrom(id) {
+      this.focusId = id;
+      if (this.filter !== 'all') {
+        this.filter = 'all';
+        $('alertChips').querySelectorAll('.chip').forEach((x) =>
+          x.classList.toggle('on', x.dataset.filter === 'all'));
+      }
+      this.apply();
+    },
+    focus(id) {
+      const row = $('scr-alerts').querySelector(
+        `[data-alert="${(window.CSS && CSS.escape) ? CSS.escape(id) : id}"]`);
+      if (!row) return;
+      this.focusId = null;
+      row.classList.add('focus');
+      row.scrollIntoView({ block: 'center', behavior: 'smooth' });
+      clearTimeout(this._focusT);
+      this._focusT = setTimeout(() => row.classList.remove('focus'), 4000);
+    },
     async ack(id) {
       try { await jfetch(`/api/alarm/alerts/${encodeURIComponent(id)}/acknowledge`,
         { method: 'POST' }); } catch (_) { /* refresh reflects state */ }
       this.refresh();
+    },
+    confirmClose(id, msg) {
+      sheet.confirm('Close alert',
+        'Retires "' + msg + '" for everyone, not just this device. It '
+        + 'reappears only if the rule fires again.', 'Close', true,
+        async () => {
+          try {
+            await jfetch(`/api/alarm/alerts/${encodeURIComponent(id)}/close`,
+              { method: 'POST' });
+          } catch (_) { /* refresh reflects state */ }
+          this.refresh();
+        });
     },
     start() {
       $('alertChips').querySelectorAll('.chip').forEach((c) => {
@@ -278,7 +412,13 @@
       });
       document.getElementById('scr-alerts').onclick = (e) => {
         const b = e.target.closest('[data-ack]');
-        if (b) this.ack(b.dataset.ack);
+        if (b) return this.ack(b.dataset.ack);
+        const c = e.target.closest('[data-close]');
+        if (c) {
+          const all = this.vm.firing.concat(this.vm.earlier);
+          const row = all.find((r) => String(r.id) === c.dataset.close);
+          return this.confirmClose(c.dataset.close, (row && row.msg) || 'this alert');
+        }
       };
       $('alertsRefresh').onclick = async () => {
         const btn = $('alertsRefresh');
@@ -343,10 +483,16 @@
       $('energySparkFill').setAttribute('d', sp.fill);
 
       const price = today.price_kwh != null ? today.price_kwh : month.price_kwh;
+      const cov = CV.powerCoverage(today);
       const p = this.projection(today, month, price);
       $('energyTiles').innerHTML = [
         { v: EN.fmtUsd(tT.cost_usd), unit: '', k: 'Today',
-          sub: tT.kwh != null ? EN.fmtKwh(tT.kwh) + (price != null ? ' · $' + price + '/kWh' : '') : 'no telemetry' },
+          // Say when the figure covers only part of the fleet — a cost built
+          // from one metered host out of six is not a fleet total.
+          sub: tT.kwh != null
+            ? EN.fmtKwh(tT.kwh) + ' · ' + (cov.partial ? cov.text
+              : (price != null ? '$' + price + '/kWh' : 'all hosts'))
+            : 'no telemetry' },
         { v: p.value, unit: p.unit, k: 'This month', sub: p.sub },
       ].map(tileEl).join('');
 
@@ -544,6 +690,7 @@
           + `<div class="ad">${esc(r.detail)}</div></div>${right}</div>`;
       }).join('');
 
+      this.loadDevices();
       const rows = CV.audit((audit || {}).entries);
       $('adminAudit').innerHTML = rows.map((r) =>
         `<div class="arow"><div class="atxt"><div class="an">${esc(r.name)}</div>`
@@ -553,6 +700,40 @@
         + '</div>').join('')
         || '<div class="arow"><div class="atxt"><div class="an">No entries</div>'
           + '<div class="ad">admin actions are recorded here</div></div></div>';
+    },
+    // Push-device roster. Hidden behind a button: the list identifies other
+    // people's phones, so it is shown on request, not by default.
+    devicesOpen: false,
+    async loadDevices() {
+      let subs = null;
+      try { subs = await jfetch('/api/companion/push/subscriptions'); }
+      catch (_) { subs = null; }
+      const n = subs ? subs.count : null;
+      $('adminDeviceCount').textContent = n == null ? 'unavailable'
+        : n + (n === 1 ? ' device' : ' devices') + ' can be notified';
+      const mine = await subscription();
+      const rows = CV.devices((subs || {}).devices, mine && mine.endpoint);
+      $('adminDevices').hidden = !this.devicesOpen;
+      $('btnDevices').textContent = this.devicesOpen ? 'Hide' : 'Show';
+      if (!this.devicesOpen) return;
+      $('adminDevices').innerHTML = rows.map((d) =>
+        `<div class="arow"><div class="atxt">`
+        + `<div class="an">${esc(d.name)}${d.self ? ' · this device' : ''}</div>`
+        + `<div class="ad">${esc(d.detail)}</div></div>`
+        + `<button class="btn danger" data-devrm="${esc(d.endpoint)}" `
+        + `data-devname="${esc(d.name)}">Remove</button></div>`).join('')
+        || '<div class="arow"><div class="atxt"><div class="an">No devices</div>'
+          + '<div class="ad">enable push from a phone\'s Settings tab</div></div></div>';
+    },
+    confirmRemoveDevice(endpoint, name) {
+      sheet.confirm('Remove ' + name,
+        'This device stops receiving alarm notifications. It can opt back in '
+        + 'from its own Settings tab.', 'Remove', true,
+        () => this.act('remove device', async () => {
+          const r = await jpost('/api/companion/push/unsubscribe', { endpoint });
+          await this.loadDevices();
+          return r;
+        }));
     },
     // Static snapshot by default; live tail is opt-in because an open SSE
     // stream holds a manager worker and burns phone battery.
@@ -606,6 +787,12 @@
     },
     start() {
       $('scr-admin').onclick = (e) => {
+        if (e.target.closest('#btnDevices')) {
+          this.devicesOpen = !this.devicesOpen;
+          return this.loadDevices();
+        }
+        const rm = e.target.closest('[data-devrm]');
+        if (rm) return this.confirmRemoveDevice(rm.dataset.devrm, rm.dataset.devname);
         const svc = e.target.closest('[data-svc]');
         if (svc) {
           const COPY = {
@@ -942,13 +1129,38 @@
     $('pushStatus').textContent = !ready ? 'service worker installing…'
       : perm === 'denied' ? 'blocked — re-allow in site settings'
         : sub ? 'subscribed' : (standalone() ? 'not subscribed' : 'add to Home Screen first (iOS)');
-    $('btnEnable').disabled = !!sub || !ready;
+    // One button, two states: the same control that opted this device in
+    // takes it back out again.
+    const btn = $('btnEnable');
+    btn.textContent = sub ? 'Disable' : 'Enable';
+    btn.classList.toggle('danger', !!sub);
+    btn.disabled = !ready;
     $('btnTest').disabled = !sub;
     try {
       const s = await jfetch('/api/companion/push/subscriptions');
       $('pushCount').textContent = s.count + (s.count === 1 ? ' device' : ' devices');
     } catch (_) { $('pushCount').textContent = '—'; }
   }
+  // Drops this device only: unsubscribe locally, then remove the stored
+  // endpoint so the manager stops sending to a subscription that is gone.
+  async function disablePush() {
+    const sub = await subscription();
+    if (!sub) { paintPush(); return; }
+    $('pushMsg').textContent = 'unregistering…';
+    try {
+      await sub.unsubscribe().catch(() => {});
+      await jpost('/api/companion/push/unsubscribe', { endpoint: sub.endpoint });
+      $('pushMsg').textContent = 'this device will no longer be notified';
+    } catch (err) {
+      $('pushMsg').textContent = 'unregister failed: ' + (err && err.message || err);
+    }
+    paintPush();
+  }
+
+  async function togglePush() {
+    return (await subscription()) ? disablePush() : enablePush();
+  }
+
   async function enablePush() {
     if (!('Notification' in window) || !_reg || !_reg.pushManager) {
       $('pushMsg').textContent = 'push needs an installed app (iOS 16.4+)'; return;
@@ -997,6 +1209,12 @@
   };
   let timer = null;
   let current = 'glance';
+
+  // Deep link from a push notification: /companion?tab=alerts.
+  function tabFromUrl(search) {
+    const t = new URLSearchParams(search == null ? location.search : search).get('tab');
+    return (t && SCREENS[t]) ? t : null;
+  }
 
   // force=true on an explicit refresh: controllers skip their own throttles so
   // a pull-to-refresh really re-reads everything, not just the cheap polls.
@@ -1114,6 +1332,16 @@
       const repaint = () => { if (!$('scr-settings').hidden) paintPush(); };
       navigator.serviceWorker.ready.then(repaint).catch(() => {});
       navigator.serviceWorker.addEventListener('controllerchange', repaint);
+      // Tapping an alarm notification lands here when the app is already open.
+      navigator.serviceWorker.addEventListener('message', (e) => {
+        const d = e.data || {};
+        if (d.type !== 'lsm-open' || !d.url) return;
+        const q = new URL(d.url, location.origin).search;
+        const id = new URLSearchParams(q).get('alert');
+        if (id) alerts.openFrom(id);
+        const t = tabFromUrl(q);
+        if (t) show(t);
+      });
     }
     alerts.start();
     models.start();
@@ -1148,6 +1376,10 @@
           + new Date(r.hour_ts * 1000).toLocaleTimeString('en', { hour: 'numeric' });
       },
     }));
+    $('glanceMinis').addEventListener('pointerdown', (e) => glance.scrubMini(e));
+    $('glanceMinis').addEventListener('pointermove', (e) => {
+      if (e.buttons) glance.scrubMini(e);
+    });
     $('energyDayBars').addEventListener('pointerdown', (e) => {
       const svg = $('energyDayBars'), days = energy.days || [];
       if (!days.length) return;
@@ -1176,11 +1408,13 @@
       else localStorage.setItem('companionTheme', c.dataset.ctheme);
       applyTheme();
     });
-    $('btnEnable').addEventListener('click', enablePush);
+    $('btnEnable').addEventListener('click', togglePush);
     $('btnTest').addEventListener('click', testPush);
     $('tabbar').querySelectorAll('.tab').forEach((b) =>
       b.addEventListener('click', () => show(b.dataset.tab)));
-    show('glance');
+    const deep = new URLSearchParams(location.search).get('alert');
+    if (deep) alerts.openFrom(deep);
+    show(tabFromUrl() || 'glance');
     pollBadge();
     setInterval(pollBadge, 30000);
   });

@@ -258,18 +258,22 @@ async def test_channel(payload: TestPayload) -> dict:
                 recipient = cfg.webhook.url
             elif channel_type == NotificationChannelType.DISCORD and cfg.discord:
                 recipient = cfg.discord.webhook_url
+            elif channel_type == NotificationChannelType.WEBPUSH and cfg.webpush:
+                from ...engine.notification_dispatcher import _webpush_url
+                recipient = _webpush_url(cfg.webpush)
             resolved_from_saved_channel = True
 
     # Reject test dispatches whose URL-bearing recipient comes from the request
     # body. Without this, /test is an open SSRF: an attacker could supply
     # channel_type=webhook|discord plus any URL and the dispatcher would POST
     # to it from the alarm engine host, reaching localhost / RFC1918 services.
-    if channel_type in (NotificationChannelType.WEBHOOK, NotificationChannelType.DISCORD) \
+    if channel_type in (NotificationChannelType.WEBHOOK, NotificationChannelType.DISCORD,
+                        NotificationChannelType.WEBPUSH) \
             and not resolved_from_saved_channel:
         raise HTTPException(
             status_code=400,
-            detail="Testing webhook/discord channels requires a saved channel_id; "
-                   "free-form recipient URLs are not accepted.",
+            detail="Testing webhook/discord/webpush channels requires a saved "
+                   "channel_id; free-form recipient URLs are not accepted.",
         )
 
     dispatcher = NotificationDispatcher(websocket_send=_ws_send)

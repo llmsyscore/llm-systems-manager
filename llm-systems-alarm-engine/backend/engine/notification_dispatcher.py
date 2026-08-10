@@ -39,6 +39,68 @@ def _spawn_dispatch(coro) -> None:
     task.add_done_callback(_dispatch_tasks.discard)
 
 
+def _alert_headline(alert: Alert, event: str) -> "tuple[str, str, str]":
+    """(title, body, severity) for one alert event. Shared by the toast and
+    web-push channels; resolved/acknowledged events read as info."""
+    is_clear = (event == "resolved")
+    is_ack = (event == "acknowledged")
+    severity = ("info" if (is_clear or is_ack)
+                else str(getattr(alert, "severity", "warning")).lower())
+    title = getattr(alert, "rule_name", None) or "Alert"
+    if is_clear:
+        title = f"Cleared: {title}"
+    elif is_ack:
+        title = f"Acknowledged: {title}"
+
+    # Host, source and metric=value, so the notification names the device and
+    # the measurement without opening the events tab.
+    parts = []
+    host = getattr(alert, "source_host", None)
+    if host:
+        parts.append(host)
+    if alert.metric_source:
+        parts.append(alert.metric_source)
+    if alert.metric_name and alert.current_value is not None:
+        try:
+            val_str = f"{round(float(alert.current_value), 2)}"
+        except (TypeError, ValueError):
+            val_str = str(alert.current_value)
+        parts.append(f"{alert.metric_name} = {val_str}")
+    body = " · ".join(parts) if parts else (getattr(alert, "message", "") or "")
+    if is_clear:
+        body = (body + " (alarm cleared)").strip()
+    elif is_ack:
+        body = (body + " (acknowledged — further alerts suppressed)").strip()
+    return title, body, severity
+
+
+# ── web push (#538) ─────────────────────────────────────────────────────────
+# Tokens that read as "not configured", matching the ingest/management gate.
+_UNSET_TOKENS = {"", "REPLACE_ME"}
+
+
+def _webpush_url(config) -> str:
+    """Manager notify endpoint. Blank config falls back to the co-located
+    manager on loopback, which is the single-host deployment."""
+    url = (getattr(config, "url", "") or "").strip()
+    if url:
+        return url
+    port = int(getattr(settings.manager, "port", 5000) or 5000)
+    return f"http://127.0.0.1:{port}/api/companion/push/notify"
+
+
+def _webpush_token(config) -> str:
+    """Bearer for the notify endpoint: the channel's own, else the shared
+    alarm-engine token the manager already accepts."""
+    for raw in (getattr(config, "token", None),
+                getattr(settings.alarm_engine, "management_token", ""),
+                getattr(settings.alarm_engine, "ingest_token", "")):
+        tok = (raw or "").strip()
+        if tok not in _UNSET_TOKENS:
+            return tok
+    return ""
+
+
 class NotificationDispatcher:
     """Dispatches notifications through configured channels."""
 
@@ -83,6 +145,7 @@ class NotificationDispatcher:
             "sms": False,
             "webhook": False,
             "discord": False,
+            "webpush": False,
         }
 
         # Custom notification rules (rule_id -> list of channel_ids)
@@ -132,6 +195,8 @@ class NotificationDispatcher:
                 self._channels_enabled["webhook"] = channel.enabled
             elif channel.channel_type == ChannelType.DISCORD:
                 self._channels_enabled["discord"] = channel.enabled
+            elif channel.channel_type == ChannelType.WEBPUSH:
+                self._channels_enabled["webpush"] = channel.enabled
 
     async def _get_all_channels_async(self) -> list[NotificationChannel]:
         """Async version: load channels from repository if wired, otherwise fall back to in-memory."""
@@ -405,8 +470,9 @@ class NotificationDispatcher:
         sms_channels     = [c for c in channels if c.channel_type == ChannelType.SMS     and c.enabled and _passes_policy(c)]
         webhook_channels = [c for c in channels if c.channel_type == ChannelType.WEBHOOK and c.enabled and _passes_policy(c)]
         discord_channels = [c for c in channels if c.channel_type == ChannelType.DISCORD and c.enabled and _passes_policy(c)]
+        webpush_channels = [c for c in channels if c.channel_type == ChannelType.WEBPUSH and c.enabled and _passes_policy(c)]
 
-        if matched_channel_ids and not (email_channels or sms_channels or webhook_channels or discord_channels):
+        if matched_channel_ids and not (email_channels or sms_channels or webhook_channels or discord_channels or webpush_channels):
             # Policies matched but every selected channel is either disabled
             # or has no representation in the loaded channel list. Surface
             # both the policy-selected IDs and what's actually loaded so the
@@ -443,6 +509,8 @@ class NotificationDispatcher:
             tasks.append(self._send_webhook_channels(alert, webhook_channels, event=event))
         if discord_channels:
             tasks.append(self._send_discord_channels(alert, discord_channels, event=event))
+        if webpush_channels:
+            tasks.append(self._send_webpush_channels(alert, webpush_channels, event=event))
 
         if tasks:
             await self._run_all(tasks)
@@ -469,35 +537,8 @@ class NotificationDispatcher:
         if not self.websocket_send:
             return
 
-        is_clear = (event == "resolved")
-        is_ack = (event == "acknowledged")
-        severity = "info" if (is_clear or is_ack) else str(getattr(alert, "severity", "warning")).lower()
-        rule_name = alert.rule_name or "Alert"
-        if is_clear:
-            rule_name = f"Cleared: {rule_name}"
-        elif is_ack:
-            rule_name = f"Acknowledged: {rule_name}"
-
-        # Build a body that shows host, source, and metric=value so the user
-        # knows which device/metric triggered the alert without opening the
-        # events tab. Hostname leads when present.
-        body_parts = []
+        rule_name, body, severity = _alert_headline(alert, event)
         host = getattr(alert, "source_host", None)
-        if host:
-            body_parts.append(host)
-        if alert.metric_source:
-            body_parts.append(alert.metric_source)
-        if alert.metric_name and alert.current_value is not None:
-            try:
-                val_str = f"{round(float(alert.current_value), 2)}"
-            except (TypeError, ValueError):
-                val_str = str(alert.current_value)
-            body_parts.append(f"{alert.metric_name} = {val_str}")
-        body = " · ".join(body_parts) if body_parts else (alert.message or "")
-        if is_clear:
-            body = (body + " (alarm cleared)").strip()
-        elif is_ack:
-            body = (body + " (acknowledged — further alerts suppressed)").strip()
 
         toast_data = {
             "type": "notification",
@@ -695,6 +736,49 @@ Time: {alert.created_at}
                                   success=err is None, error_message=err,
                                   event=event)
 
+    async def _send_webpush_channels(self, alert: Alert, channels: list[NotificationChannel],
+                                     event: str = "firing") -> None:
+        """Hand each alert to the manager's companion notify endpoint, which
+        owns the VAPID key and the device subscriptions and does the sending."""
+        for channel in channels:
+            config = channel.config
+            if not config.webpush or not config.webpush.enabled:
+                continue
+            url = _webpush_url(config.webpush)
+            token = _webpush_token(config.webpush)
+            title, body, severity = _alert_headline(alert, event)
+            payload = {
+                "title": title,
+                "body": body,
+                "severity": severity,
+                # One tag per alert, so a re-fire replaces the phone's existing
+                # notification instead of stacking a duplicate.
+                "tag": f"lsm-alert-{alert.alert_id}",
+                # Deep link to this alert, not just the Alerts tab.
+                "url": f"/companion?tab=alerts&alert={alert.alert_id}",
+                "alert_id": str(alert.alert_id),
+                "event": event,
+            }
+            headers = {"Authorization": f"Bearer {token}"} if token else {}
+            err = None
+            try:
+                async with httpx.AsyncClient(
+                        timeout=settings.notifications.timeouts.http,
+                        verify=bool(getattr(config.webpush, "verify_tls", True))) as client:
+                    resp = await client.post(url, json=payload, headers=headers)
+                if 200 <= resp.status_code < 300:
+                    logger.info("Web push handed off for alert %s", alert.alert_id)
+                else:
+                    err = f"HTTP {resp.status_code}"
+                    logger.error("Web push notify for alert %s returned %s",
+                                 alert.alert_id, resp.status_code)
+            except Exception as e:
+                err = str(e)
+                logger.error(f"Failed to hand off web push: {e}")
+            self._record_delivery(alert, channel, "webpush", url, title, body,
+                                  success=err is None, error_message=err,
+                                  event=event)
+
     def _send_sync_email(self, msg: MIMEText, config) -> None:
         """Synchronous email send (run in thread). Reads SMTP host/port/
         user/password from [notifications.smtp] in llm-systems.toml; falls
@@ -838,6 +922,17 @@ Time: {alert.created_at}
                 }
                 async with httpx.AsyncClient(timeout=settings.notifications.timeouts.http) as client:
                     resp = await client.post(recipient or "https://discord.com/api/webhooks/fake", json={"embeds": [embed]})
+                    response_code = resp.status_code
+                    success = 200 <= resp.status_code < 300
+
+            elif channel_type == ChannelType.WEBPUSH:
+                token = _webpush_token(None)
+                async with httpx.AsyncClient(timeout=settings.notifications.timeouts.http) as client:
+                    resp = await client.post(
+                        recipient or _webpush_url(None),
+                        json={"title": title, "body": body, "severity": severity,
+                              "tag": "lsm-test", "url": "/companion?tab=alerts"},
+                        headers={"Authorization": f"Bearer {token}"} if token else {})
                     response_code = resp.status_code
                     success = 200 <= resp.status_code < 300
 

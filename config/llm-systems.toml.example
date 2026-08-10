@@ -147,6 +147,11 @@ push_contact = "mailto:admin@example.com"
 # call to github.com. Toggleable from the companion's Settings tab.
 release_check = false
 release_repo = "llmsyscore/llm-systems-manager"
+# Bearer the alarm engine presents on /api/companion/push/notify when it
+# delivers an alert to subscribed phones (#538). Blank falls back to
+# [alarm_engine].management_token, then ingest_token — a co-located install
+# needs nothing here.
+push_notify_token = ""
 
 [manager.history]
 # In-memory ring buffer behind /api/history; sets how far back the landing

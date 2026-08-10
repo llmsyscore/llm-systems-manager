@@ -78,6 +78,51 @@
 
   const hostKey = (s) => sysBlock(s).host || (s || {}).host || (s || {}).agent_id || null;
 
+  // How much of the fleet the energy figure actually covers. A cost built
+  // from one reporting host out of six is not wrong arithmetic, but reading
+  // it as a fleet total is — so a partial window says so on the tile.
+  function powerCoverage(en) {
+    const hosts = ((en || {}).hosts) || [];
+    if (!hosts.length) return { partial: false, with: 0, total: 0, text: '' };
+    const withPower = hosts.filter((h) => h && h.has_power).length;
+    return {
+      partial: withPower < hosts.length,
+      with: withPower, total: hosts.length,
+      text: withPower + ' of ' + hosts.length + ' hosts metered',
+    };
+  }
+
+  // 1234567 -> "1.2M". Token counts get large; the tile has ~6 characters.
+  function compact(v) {
+    if (num(v) == null) return '—';
+    const a = Math.abs(v);
+    if (a >= 1e9) return (v / 1e9).toFixed(1) + 'B';
+    if (a >= 1e6) return (v / 1e6).toFixed(1) + 'M';
+    if (a >= 1e3) return (v / 1e3).toFixed(a >= 1e4 ? 0 : 1) + 'k';
+    return String(Math.round(v));
+  }
+
+  // Totals over the 24 h rate series: tokens are the integral of tok/s, so a
+  // bursty workload reads as work done instead of a mostly-zero instant rate.
+  // A gap longer than an hour is a reporting outage, not idle time.
+  function window24(hist) {
+    const h = Array.isArray(hist) ? hist : [];
+    const out = { gen: 0, prompt: 0, seconds: 0, avgGen: 0, peak: 0, peakAt: null };
+    for (let i = 1; i < h.length; i++) {
+      const dt = (num(h[i].t) || 0) - (num(h[i - 1].t) || 0);
+      if (!(dt > 0) || dt > 3600) continue;
+      out.gen += (num(h[i].v) || 0) * dt;
+      out.prompt += (num(h[i].p) || 0) * dt;
+      out.seconds += dt;
+    }
+    h.forEach((p) => {
+      const v = num(p.v) || 0;
+      if (v > out.peak) { out.peak = v; out.peakAt = p.t; }
+    });
+    if (out.seconds > 0) out.avgGen = out.gen / out.seconds;
+    return out;
+  }
+
   // ── Glance ──────────────────────────────────────────────────────────────
   function glance(d) {
     d = d || {};
@@ -123,31 +168,62 @@
       || lmsLoaded.some((p) => !/^idle$/i.test(String(p.status || '')));
     const vllmGen = num(vllm.requests_running) > 0 || num(vllm.tokens_per_second) > 0;
 
-    const provRow = (name, ok, word, model, g) => ({
-      status: ok ? 'ok' : 'idle',
-      name,
-      detail: model ? word + ' · ' + model : word,
-      rN: g == null ? '—' : Math.round(g) + '%',
-      rUnit: 'gpu',
-    });
+    // Host load per provider. cpu_total is a float on the system block;
+    // RAM is nested under ram.percent (charts.js reads the same pair).
+    const hostLoad = (s) => {
+      const b = sysBlock(s);
+      return { cpu: num(b.cpu_total), ram: num((b.ram || {}).percent) };
+    };
+    const pct = (v) => (num(v) == null ? '—' : Math.round(v) + '%');
+    const provRow = (name, ok, word, model, g, s) => {
+      const load = hostLoad(s);
+      return {
+        status: ok ? 'ok' : 'idle',
+        name,
+        detail: model ? word + ' · ' + model : word,
+        // GPU, CPU and RAM read side by side; the caller drops the single
+        // right-hand column when it passes these.
+        stats: [{ k: 'gpu', v: pct(g) }, { k: 'cpu', v: pct(load.cpu) },
+          { k: 'ram', v: pct(load.ram) }],
+      };
+    };
     const providers = [
       provRow('llama.cpp', llamaAwake && llamaResident,
         llamaResident ? (llamaGen ? 'generating' : 'idle')
           : (ls.state === 'sleeping' ? 'sleeping' : 'no model'),
-        llamaResident ? llamaModel : null, llamaGpu),
+        llamaResident ? llamaModel : null, llamaGpu, m),
       provRow('LM Studio', !!lmsModel,
         lmsModel ? (lmsGen ? 'generating' : 'idle') : 'no model',
-        lmsModel, lmsGpu),
+        lmsModel, lmsGpu, lms),
       provRow('vLLM', vllmRunning,
         vllmRunning ? (vllmGen ? 'generating' : 'idle')
           : (vllm.state ? String(vllm.state) : 'stopped'),
-        vllmRunning ? (vllm.model || null) : null, vllmGpu),
+        vllmRunning ? (vllm.model || null) : null, vllmGpu, vs),
     ];
 
-    const temp = num(gpu.temperature_c);
-    const vramPct = num(gpu.vram_usage_percent);
+    // The GPU block comes from the PRIMARY llama agent, which on a split
+    // fleet may not be the host with the GPU. Fall back to the newest fleet
+    // history sample so the tiles aren't blank while the mini graphs plot.
+    const trendLast = {};
+    (Array.isArray(d.trends) ? d.trends : []).forEach((t) => {
+      if (t && t.key) trendLast[t.key] = num(t.last);
+    });
+    const temp = num(gpu.temperature_c) != null ? gpu.temperature_c : trendLast.gpu_temp;
+    const vramPct = num(gpu.vram_usage_percent) != null
+      ? gpu.vram_usage_percent : trendLast.gpu_vram;
     const vramUsedGb = num(gpu.vram_used_mb) != null ? gpu.vram_used_mb / 1024 : null;
-    const vramTotalGb = (vramUsedGb != null && vramPct) ? vramUsedGb / (vramPct / 100) : null;
+    const vramTotalGb = (vramUsedGb != null && num(gpu.vram_usage_percent))
+      ? vramUsedGb / (gpu.vram_usage_percent / 100) : null;
+    // "12.0 / 24 GB" for the VRAM card's sub-line. The live GPU block belongs
+    // to the primary llama agent, which may not be the host holding the GPU,
+    // so absolute VRAM also comes through fleet history as a fallback.
+    const latest = d.latest || {};
+    const gib = (b) => (num(b) == null ? null : b / 1073741824);
+    const usedGb = vramUsedGb != null ? vramUsedGb : gib(latest.gpu_vram_used);
+    const totalGb = vramTotalGb != null ? vramTotalGb : gib(latest.gpu_vram_total);
+    const vramGb = usedGb == null ? ''
+      : usedGb.toFixed(usedGb < 10 ? 1 : 0) + (totalGb != null
+        ? ' / ' + totalGb.toFixed(totalGb < 10 ? 1 : 0) + ' GB' : ' GB');
     const enT = en.totals || {};
     // Input power sums every provider sample that reports power, deduped by
     // host, then falls back to the energy accumulator's fleet average.
@@ -167,19 +243,90 @@
       ? srcs + ' · ' + perHost.size + (perHost.size === 1 ? ' host' : ' hosts')
       : (fleetW != null ? 'fleet avg · this window' : 'no telemetry');
 
-    const tiles = [
-      { v: round(temp) != null ? String(round(temp)) : '—', unit: '°C',
-        k: 'GPU temperature', meter: clampPct(temp), hot: num(temp) != null && temp >= 85 },
-      { v: vramUsedGb != null ? vramUsedGb.toFixed(1) : '—',
-        unit: vramTotalGb != null ? '/ ' + Math.round(vramTotalGb) + ' GB' : 'GB',
-        k: 'VRAM', meter: clampPct(vramPct), hot: num(vramPct) != null && vramPct >= 85 },
+    // Cross-provider totals — the aggregate the provider rows break down.
+    const gr = lms.gateway_rates || {};
+    const total = (vals) => {
+      const f = vals.filter((v) => num(v) != null);
+      return f.length ? f.reduce((a, b) => a + b, 0) : null;
+    };
+    const genTps = total([lm.tokens_per_second, gr.gen_tps, vllm.tokens_per_second]);
+    // llama reports slots and in-flight requests separately; take the larger.
+    // null (not 0) with neither present, so "no telemetry" reads as a dash.
+    const llamaBusy = (num(lm.requests_processing) == null
+      && num(lm.active_slots) == null)
+      ? null
+      : Math.max(num(lm.requests_processing) || 0, num(lm.active_slots) || 0);
+    // LM Studio reports no request or queue counters of its own, so its share
+    // comes from the manager gateway's in-flight tally — which sees only
+    // gateway-routed traffic. Name the providers actually counted rather than
+    // letting a 0 read as "the fleet is idle".
+    const lmsInflight = num(lms.gateway_inflight);
+    const inflight = total([llamaBusy, vllm.requests_running, lmsInflight]);
+    const queued = total([lm.requests_deferred, vllm.requests_waiting]);
+    const counted = [llamaBusy != null ? 'llama.cpp' : null,
+      lmsInflight != null ? 'LM Studio' : null,
+      num(vllm.requests_running) != null ? 'vLLM' : null].filter(Boolean);
+    const loadedOn = [llamaResident ? 'llama.cpp' : null, lmsModel ? 'LM Studio' : null,
+      (vllmRunning && vllm.model) ? 'vLLM' : null].filter(Boolean);
+    // Rates are bursty — they read 0 between requests — so the headline is the
+    // window TOTAL, integrated from the rate series. Counters would reset on a
+    // provider restart; the rate series doesn't.
+    const win = window24(d.hist);
+    const fleet = [
+      { v: win.gen > 0 ? compact(win.gen) : '—', unit: 'tokens',
+        k: 'Generated · 24 h',
+        sub: win.gen > 0
+          ? 'avg ' + win.avgGen.toFixed(1) + ' tok/s · prompt ' + compact(win.prompt)
+          : (genTps != null ? 'idle · ' + genTps.toFixed(1) + ' tok/s now'
+            : 'no history yet') },
+      { v: inflight != null ? String(Math.round(inflight)) : '—', unit: 'req',
+        k: 'In flight',
+        sub: num(queued) ? Math.round(queued) + ' queued'
+          : (counted.length ? 'via ' + counted.join(' + ') : 'no request counters') },
+      { v: String(loadedOn.length), unit: loadedOn.length === 1 ? 'model' : 'models',
+        k: 'Loaded', sub: loadedOn.join(' + ') || 'none loaded' },
+      { v: win.peak > 0 ? win.peak.toFixed(0) : '—', unit: 'tok/s', k: '24 h peak',
+        sub: win.peak > 0 && win.peakAt ? 'at ' + clockAt(win.peakAt)
+          : 'no history yet' },
+    ];
+
+    // Power is the only pair left that is neither a per-provider reading nor
+    // a trended one, so it gets its own short section.
+    const cov = powerCoverage(en);
+    const power = [
       { v: round(watts) != null ? String(round(watts)) : '—', unit: 'W',
         k: 'Input power', sub: wattsSub },
       { v: usd(enT.cost_usd), k: 'Energy today',
         sub: num(enT.kwh) != null
-          ? kwh(enT.kwh) + (num(en.price_kwh) != null ? ' · $' + en.price_kwh + '/kWh' : '')
+          ? kwh(enT.kwh) + ' · ' + (cov.partial
+            ? cov.text : (num(en.price_kwh) != null ? '$' + en.price_kwh + '/kWh' : 'all hosts'))
           : 'no telemetry' },
     ];
+
+    // One card per system metric: the headline is NOW, the sparkline and the
+    // range beneath it are the last 24 h. Previously these lived in two grids
+    // and GPU temp / VRAM appeared in both, showing two different numbers.
+    const busiest = (vals) => {
+      const f = vals.filter((v) => num(v) != null);
+      return f.length ? Math.max(...f) : null;
+    };
+    const liveNow = {
+      gpu_util: busiest([llamaGpu, lmsGpu, vllmGpu]),
+      gpu_temp: num(temp) != null ? temp : null,
+      gpu_vram: num(vramPct) != null ? vramPct : null,
+      cpu_total: busiest([hostLoad(m).cpu, hostLoad(lms).cpu, hostLoad(vs).cpu]),
+    };
+    const HOT = { gpu_temp: 85, gpu_vram: 85, gpu_util: null, cpu_total: null };
+    const system = (Array.isArray(d.trends) ? d.trends : []).map((t) => {
+      const live = liveNow[t.key] != null ? liveNow[t.key] : t.last;
+      const extra = (t.key === 'gpu_vram') ? vramGb : '';
+      return Object.assign({}, t, {
+        live,
+        extra,
+        hot: HOT[t.key] != null && num(live) != null && live >= HOT[t.key],
+      });
+    });
+
 
     return {
       hero: {
@@ -189,8 +336,59 @@
         label: hero.model ? hero.prov + ' · ' + hero.model : 'idle · no model loaded',
       },
       providers,
-      tiles,
+      fleet,
+      system,
+      power,
     };
+  }
+
+  // ── 24 h fleet trends (Home mini graphs) ────────────────────────────────
+  // Keys are /api/history legacy field names, already aggregated across hosts
+  // by ?fleet=all (utilization takes the busiest host, temps the hottest).
+  // GPU residency arrives under DIFFERENT metric names per GPU family —
+  // gpu_util is the CUDA/ROCm path, mac_gpu_busy the Apple SoC one — so a card
+  // reading only the first is blind to every Mac in the fleet.
+  const TREND_SPECS = [
+    { keys: ['gpu_util', 'mac_gpu_busy'], name: 'GPU busy', unit: '%', dp: 0 },
+    { keys: ['gpu_temp'], name: 'GPU temp', unit: '°C', dp: 0 },
+    { keys: ['gpu_vram'], name: 'VRAM', unit: '%', dp: 0 },
+    { keys: ['cpu_total'], name: 'CPU', unit: '%', dp: 0 },
+  ];
+
+  function trends(rows) {
+    const list = Array.isArray(rows) ? rows : [];
+    return TREND_SPECS.map((s) => {
+      const pts = [];
+      list.forEach((r) => {
+        const t = tsSeconds((r || {}).ts);
+        // Each key is already a per-family fleet aggregate; the busiest wins.
+        let v = null;
+        s.keys.forEach((k) => {
+          const x = num((r || {})[k]);
+          if (x != null && (v == null || x > v)) v = x;
+        });
+        if (t != null && v != null) pts.push({ t, v });
+      });
+      const vals = pts.map((p) => p.v);
+      // The headline is the window MEAN, not the newest sample: history lags
+      // the live tiles by a bucket, and two different "now" numbers on one
+      // screen read as a contradiction.
+      return {
+        // key stays the primary field name — the System tiles look up their
+        // GPU fallbacks by it.
+        key: s.keys[0], name: s.name, unit: s.unit, dp: s.dp, pts,
+        avg: vals.length ? vals.reduce((a, b) => a + b, 0) / vals.length : null,
+        last: vals.length ? vals[vals.length - 1] : null,
+        min: vals.length ? Math.min(...vals) : null,
+        max: vals.length ? Math.max(...vals) : null,
+      };
+    }).filter((t) => t.pts.length > 1);
+  }
+
+  // Local wall-clock label for a trend/peak timestamp.
+  function clockAt(t) {
+    return new Date(t * 1000)
+      .toLocaleTimeString('en', { hour: 'numeric', minute: '2-digit' });
   }
 
   // ── Alerts ──────────────────────────────────────────────────────────────
@@ -220,13 +418,19 @@
       : a.created_at;
     const host = a.source_host || '—';
     const path = [a.metric_source, a.metric_name].filter(Boolean).join('/') || 'event';
+    const msg = a.message || (a.rule_name || path);
     return {
       id: a.alert_id,
       sev, tone, glyph: SEV_GLYPH[sev], word,
-      msg: a.message || (a.rule_name || path),
+      msg,
+      // Which rule fired. Suppressed when the message already IS the rule name.
+      rule: (a.rule_name && a.rule_name !== msg) ? a.rule_name : '',
       meta: path + ' · ' + host + ' · ' + age(when, nowSec),
       // Resolved/info rows never offer Ack, whatever their status field says.
       ackable: a.status === 'active' && !(resolved || info),
+      // Closing retires the alert for everyone, so the UI offers it only to
+      // admins — the manager gates the proxied route the same way.
+      closable: !resolved,
       acked: a.status === 'acknowledged',
       info,
       resolved,
@@ -349,6 +553,30 @@
       },
       services, agents, pending, rows,
     };
+  }
+
+  // Push-subscription roster -> one row per device. The endpoint is opaque
+  // and long, so a device is named by its browser/OS with a short endpoint
+  // fragment to disambiguate two identical clients.
+  const _UA_OS = [[/iPhone/i, 'iPhone'], [/iPad/i, 'iPad'], [/Macintosh/i, 'Mac'],
+    [/Android/i, 'Android'], [/Windows/i, 'Windows'], [/Linux/i, 'Linux']];
+  const _UA_APP = [[/CriOS|Chrome/i, 'Chrome'], [/FxiOS|Firefox/i, 'Firefox'],
+    [/Edg/i, 'Edge'], [/Safari/i, 'Safari']];
+
+  function deviceLabel(ua) {
+    const pick = (table) => (table.find(([re]) => re.test(String(ua || ''))) || [])[1];
+    const os = pick(_UA_OS), app = pick(_UA_APP);
+    return [os, app].filter(Boolean).join(' · ') || 'unknown device';
+  }
+
+  function devices(list, selfEndpoint, nowSec) {
+    return (list || []).map((d) => ({
+      endpoint: d.endpoint,
+      name: deviceLabel(d.ua),
+      detail: 'added ' + age(d.created, nowSec)
+        + ' · …' + String(d.endpoint || '').slice(-10),
+      self: !!selfEndpoint && d.endpoint === selfEndpoint,
+    }));
   }
 
   // Audit-log rows (#217 endpoint) -> one line each.
@@ -526,6 +754,6 @@
     };
   }
 
-  return { glance, alerts, alertRow, admin, actions, audit, age, hbAge,
-    tsSeconds, _sevClass: sevClass };
+  return { glance, trends, alerts, alertRow, admin, actions, audit, devices,
+    deviceLabel, powerCoverage, age, hbAge, tsSeconds, clockAt, _sevClass: sevClass };
 });

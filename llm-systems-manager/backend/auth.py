@@ -68,6 +68,9 @@ AUTH_OPEN_PATHS = frozenset({
     "/health", "/login", "/logout", "/api/agents/register",
     # PWA manifest + service worker (#522) — fetched without credentials.
     "/manifest.webmanifest", "/sw.js",
+    # Alarm-engine web-push bridge (#538): self-gated on a bearer token, and
+    # falls back to _require_admin when no token is configured.
+    "/api/companion/push/notify",
 })
 
 # PWA app icons (#522) — matched post-normalization in _auth_gate.

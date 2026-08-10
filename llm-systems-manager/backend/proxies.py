@@ -684,6 +684,35 @@ def _resolve_alarm_agent_param(path: str, args) -> list:
     return params
 
 
+# Retiring an alert removes it from EVERY user's view, so it is admin-only,
+# while acknowledging (which only silences it) stays open to operators.
+_ALARM_RETIRE_SUFFIXES = ("/close", "/ignore")
+_ALARM_RETIRE_PATHS = ("alerts/close-all", "alerts/ignore-all")
+_ALARM_RETIRE_ACTIONS = {"close", "ignore"}
+
+
+def _alarm_admin_required(path: str) -> bool:
+    """True when this proxied alarm-engine call needs the admin gate."""
+    if path.startswith("admin/") or path.startswith("dbstats"):
+        return True
+    if flask_request.method not in ("POST", "PUT", "PATCH", "DELETE"):
+        return False
+    p = path.strip("/")
+    if p in _ALARM_RETIRE_PATHS or p.endswith(_ALARM_RETIRE_SUFFIXES):
+        return True
+    # DELETE /alerts/<id> retires an alert too, but /alerts alone is a purge
+    # that already lives behind the same reasoning.
+    if flask_request.method == "DELETE" and p.startswith("alerts"):
+        return True
+    # bulk carries the verb in the body, so the path alone can't classify it.
+    if p == "alerts/bulk":
+        body = flask_request.get_json(silent=True)
+        if not isinstance(body, dict):
+            return False
+        return str(body.get("action") or "").lower() in _ALARM_RETIRE_ACTIONS
+    return False
+
+
 def _proxy_alarm_engine(path: str):
     """Proxy /api/alarm/* requests to the alarm engine via the shared
     ctx.ae_session (which verifies against the internal CA when AE TLS
@@ -868,8 +897,8 @@ def register_routes(app, ctx, *,
     def proxy_alarm_engine(path):
         """Catch-all proxy for /api/alarm/... → alarm engine. admin/* and
         dbstats (DB internals) get the same IP gate as native admin routes
-        before forwarding (security #124)."""
-        if path.startswith("admin/") or path.startswith("dbstats"):
+        before forwarding (security #124), as does retiring an alert."""
+        if _alarm_admin_required(path):
             deny = _deps.ctx.require_admin()
             if deny is not None:
                 return deny

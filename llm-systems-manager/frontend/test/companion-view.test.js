@@ -77,19 +77,26 @@ describe('CView.glance', () => {
       metrics: { ...full.metrics, gpu: { ...full.metrics.gpu, gpu_util_percent: 96 } },
       vllm: { vllm: { state: 'running', model: 'mixtral' },
               system: { gpu: { gpu_util_percent: 12 } } } });
-    expect(g.providers.map((p) => p.rUnit)).toEqual(['gpu', 'gpu', 'gpu']);
+    // Every row reads gpu / cpu / ram for its own host.
+    expect(g.providers.map((p) => p.stats.map((s) => s.k)))
+      .toEqual([['gpu', 'cpu', 'ram'], ['gpu', 'cpu', 'ram'], ['gpu', 'cpu', 'ram']]);
     expect(g.providers[0]).toMatchObject({ status: 'ok', name: 'llama.cpp',
-      detail: 'generating · qwen3-32b-q4_k_m', rN: '96%' });
+      detail: 'generating · qwen3-32b-q4_k_m' });
+    expect(g.providers[0].stats[0]).toEqual({ k: 'gpu', v: '96%' });
     expect(g.providers[1]).toMatchObject({ status: 'ok', name: 'LM Studio',
-      detail: 'generating · llama-3.3-70b', rN: '71%' });
+      detail: 'generating · llama-3.3-70b' });
+    expect(g.providers[1].stats[0]).toEqual({ k: 'gpu', v: '71%' });
     expect(g.providers[2]).toMatchObject({ status: 'ok', name: 'vLLM',
-      detail: 'idle · mixtral', rN: '12%' });
+      detail: 'idle · mixtral' });
+    expect(g.providers[2].stats[0]).toEqual({ k: 'gpu', v: '12%' });
   });
 
   it('a provider with no GPU telemetry dashes its GPU cell, keeps its status', () => {
     const g = CView.glance(full);
     expect(g.providers[2]).toMatchObject({ status: 'idle', name: 'vLLM',
-      detail: 'stopped', rN: '—', rUnit: 'gpu' });
+      detail: 'stopped' });
+    expect(g.providers[2].stats).toEqual([{ k: 'gpu', v: '—' },
+      { k: 'cpu', v: '—' }, { k: 'ram', v: '—' }]);
   });
 
   it('LMS: an IDLE ps row is loaded-not-generating, not absent', () => {
@@ -97,26 +104,28 @@ describe('CView.glance', () => {
     const g = CView.glance({ lms: { ps: [{ model: 'nvidia/nemotron-3-nano-4b', status: 'IDLE' }],
       system: { host: 'mac-studio' }, mac_power: { gpu_busy_pct: 4 } } });
     expect(g.providers[1]).toMatchObject({ status: 'ok',
-      detail: 'idle · nvidia/nemotron-3-nano-4b', rN: '4%' });
+      detail: 'idle · nvidia/nemotron-3-nano-4b' });
+    expect(g.providers[1].stats[0]).toEqual({ k: 'gpu', v: '4%' });
   });
 
-  it('system tiles: temp, VRAM with total + hot flag, PSU power, energy today', () => {
+  it('power is its own pair: live input watts + today\'s energy', () => {
     const g = CView.glance(full);
-    expect(g.tiles[0]).toMatchObject({ v: '62', unit: '°C', meter: 62, hot: false });
-    expect(g.tiles[1]).toMatchObject({ v: '21.4', unit: '/ 24 GB', meter: 89, hot: true });
-    expect(g.tiles[2]).toMatchObject({ v: '412', unit: 'W', sub: 'PSU · 1 host' });
-    expect(g.tiles[3]).toMatchObject({ v: '$1.84', sub: '9.2 kWh · $0.2/kWh' });
+    expect(g.power).toHaveLength(2);
+    expect(g.power[0]).toMatchObject({ v: '412', unit: 'W', k: 'Input power',
+      sub: 'PSU · 1 host' });
+    expect(g.power[1]).toMatchObject({ v: '$1.84', k: 'Energy today',
+      sub: '9.2 kWh · $0.2/kWh' });
   });
 
   it('input power sums every reporting host, deduped, not just llama.cpp', () => {
     const g = CView.glance({ ...full,
       lms: { ...full.lms, mac_power: { gpu_busy_pct: 71, soc_total_w: 38 } } });
-    expect(g.tiles[2]).toMatchObject({ v: '450', unit: 'W', sub: 'PSU + SoC · 2 hosts' });
+    expect(g.power[0]).toMatchObject({ v: '450', unit: 'W', sub: 'PSU + SoC · 2 hosts' });
   });
 
   it('input power falls back to the energy accumulator when no sample has watts', () => {
     const g = CView.glance({ energy: { totals: { avg_watts: 118.4 } } });
-    expect(g.tiles[2]).toMatchObject({ v: '118', sub: 'fleet avg · this window' });
+    expect(g.power[0]).toMatchObject({ v: '118', sub: 'fleet avg · this window' });
   });
 
   it('degrades to dashes/idle on an empty payload without throwing', () => {
@@ -124,15 +133,274 @@ describe('CView.glance', () => {
     expect(g.hero.n).toBe('0.0');
     expect(g.hero.label).toContain('idle');
     expect(g.providers.every((p) => p.status === 'idle')).toBe(true);
-    expect(g.providers.every((p) => p.rN === '—')).toBe(true);
-    expect(g.tiles[0].v).toBe('—');
-    expect(g.tiles[2]).toMatchObject({ v: '—', sub: 'no telemetry' });
-    expect(g.tiles[3].sub).toBe('no telemetry');
+    expect(g.providers.every((p) => p.stats.every((s) => s.v === '—'))).toBe(true);
+    expect(g.system).toEqual([]);
+    expect(g.power[0]).toMatchObject({ v: '—', sub: 'no telemetry' });
+    expect(g.power[1].sub).toBe('no telemetry');
   });
 
   it('flags a hot GPU at the warn threshold', () => {
-    const g = CView.glance({ metrics: { gpu: { temperature_c: 87 } } });
-    expect(g.tiles[0].hot).toBe(true);
+    const g = CView.glance({ metrics: { gpu: { temperature_c: 87 } },
+      trends: [{ key: 'gpu_temp', name: 'GPU temp', unit: '°C', dp: 0, pts: [], last: 60 }] });
+    expect(g.system[0]).toMatchObject({ live: 87, hot: true });
+  });
+
+  // One card per metric: headline is NOW, the series beneath it is the last
+  // 24 h. Previously these lived in two grids and GPU temp / VRAM appeared in
+  // both, showing two different numbers for the same thing.
+  describe('system cards merge the live reading with its 24 h series', () => {
+    const trends = [
+      { key: 'gpu_temp', name: 'GPU temp', unit: '°C', dp: 0, pts: [], last: 56,
+        min: 52, max: 59 },
+      { key: 'gpu_vram', name: 'VRAM', unit: '%', dp: 0, pts: [], last: 19,
+        min: 19, max: 19 },
+    ];
+
+    it('carries the 24 h series through alongside the live headline', () => {
+      const g = CView.glance({
+        metrics: { gpu: { temperature_c: 71 } }, trends });
+      expect(g.system[0]).toMatchObject({ name: 'GPU temp', live: 71,
+        min: 52, max: 59 });
+    });
+
+    it('falls back to the newest history sample when the live block has none', () => {
+      // The gpu block belongs to the PRIMARY llama agent, which need not be
+      // the host that has the GPU.
+      const g = CView.glance({ metrics: {}, trends });
+      expect(g.system.map((c) => c.live)).toEqual([56, 19]);
+    });
+
+    it('keeps the GB detail as a sub-line extra, not as the headline', () => {
+      const g = CView.glance({
+        metrics: { gpu: { vram_used_mb: 12288, vram_usage_percent: 50 } },
+        trends });
+      expect(g.system[1]).toMatchObject({ live: 50, unit: '%',
+        extra: '12 / 24 GB' });
+    });
+
+    it('takes absolute VRAM from fleet history when the live block has none', () => {
+      // The host with the GPU need not be the primary llama agent, so the
+      // live payloads can carry a percent with no bytes behind it.
+      const g = CView.glance({ metrics: {}, trends,
+        latest: { gpu_vram_used: 12 * 1073741824, gpu_vram_total: 24 * 1073741824 } });
+      expect(g.system[1].extra).toBe('12 / 24 GB');
+    });
+
+    it('keeps a decimal on a small GPU, where rounding would read as zero', () => {
+      const g = CView.glance({ metrics: {}, trends,
+        latest: { gpu_vram_used: 102031360, gpu_vram_total: 536870912 } });
+      expect(g.system[1].extra).toBe('0.1 / 0.5 GB');
+    });
+
+    it('shows used alone when no total is known', () => {
+      const g = CView.glance({ metrics: {}, trends,
+        latest: { gpu_vram_used: 12 * 1073741824 } });
+      expect(g.system[1].extra).toBe('12 GB');
+    });
+
+    it('has no extra when neither source carries a GB figure', () => {
+      expect(CView.glance({ metrics: {}, trends }).system[1].extra).toBe('');
+    });
+
+    it('a metric with neither source reads as a dash-able null', () => {
+      const g = CView.glance({ metrics: {},
+        trends: [{ key: 'gpu_temp', name: 'GPU temp', unit: '°C', dp: 0, pts: [] }] });
+      expect(g.system[0].live).toBeUndefined();
+    });
+
+    it('GPU busy and CPU take the busiest provider host, live', () => {
+      const g = CView.glance({
+        metrics: { gpu: { gpu_util_percent: 30 }, cpu_total: 4 },
+        lms: { ps: [{ model: 'm', status: 'IDLE' }], system: { cpu_total: 22 },
+          mac_power: { gpu_busy_pct: 99 } },
+        trends: [
+          { key: 'gpu_util', name: 'GPU busy', unit: '%', dp: 0, pts: [], last: 5 },
+          { key: 'cpu_total', name: 'CPU', unit: '%', dp: 0, pts: [], last: 3 },
+        ] });
+      expect(g.system[0].live).toBe(99);
+      expect(g.system[1].live).toBe(22);
+    });
+  });
+
+  // #541: cross-provider summary above the per-provider rows.
+  describe('fleet tiles', () => {
+    const busy = {
+      metrics: { llama: { tokens_per_second: 42.7, prompt_tokens_per_second: 300,
+                          requests_processing: 2, active_slots: 3,
+                          requests_deferred: 1, model: 'qwen3-32b' } },
+      llama: { state: 'awake', model: 'qwen3-32b' },
+      lms: { ps: [{ model: 'llama-3.3-70b', status: 'loaded' }],
+             gateway_rates: { gen_tps: 12, prompt_tps: 40 } },
+      vllm: { vllm: { state: 'running', model: 'mixtral', tokens_per_second: 5,
+                      prompt_tokens_per_second: 10, requests_running: 4,
+                      requests_waiting: 2 } },
+    };
+
+    // Rates read 0 between requests, so the headline is work done over the
+    // window, integrated from the rate series.
+    it('generated reads 24 h TOTAL tokens, not the instantaneous rate', () => {
+      const hist = [];
+      for (let i = 0; i <= 24; i++) hist.push({ t: NOW - (24 - i) * 3600, v: 10, p: 2 });
+      const f = CView.glance({ ...busy, hist }).fleet;
+      // 10 tok/s across 24 one-hour steps = 864 000 generated, 172 800 prompt.
+      expect(f[0]).toMatchObject({ k: 'Generated · 24 h', v: '864k', unit: 'tokens' });
+      expect(f[0].sub).toBe('avg 10.0 tok/s · prompt 173k');
+    });
+
+    it('a reporting gap is not counted as work done', () => {
+      // 2 h hole: integrating straight across would invent 72 000 tokens.
+      const f = CView.glance({ ...busy, hist: [
+        { t: NOW - 10800, v: 10, p: 0 }, { t: NOW - 7200, v: 10, p: 0 },
+        { t: NOW, v: 10, p: 0 },
+      ] }).fleet;
+      expect(f[0].v).toBe('36k');
+    });
+
+    it('falls back to the live rate when there is no history', () => {
+      const f = CView.glance(busy).fleet;
+      expect(f[0].v).toBe('—');
+      expect(f[0].sub).toBe('idle · 59.7 tok/s now');
+    });
+
+    it('in-flight takes llama\'s larger of slots/processing plus vLLM', () => {
+      const f = CView.glance(busy).fleet;
+      expect(f[1]).toMatchObject({ k: 'In flight', v: '7', unit: 'req',
+        sub: '3 queued' });
+    });
+
+    // LM Studio publishes no request or queue counters, so its share comes
+    // from the manager gateway's in-flight tally; without it the card read 0
+    // while the LMS host was serving.
+    it('counts LM Studio via the gateway in-flight tally', () => {
+      const f = CView.glance({ ...busy,
+        lms: { ...busy.lms, gateway_inflight: 4 } }).fleet;
+      expect(f[1].v).toBe('11');   // llama 3 + vLLM 4 + LM Studio 4
+    });
+
+    it('names the providers whose requests are actually counted', () => {
+      const f = CView.glance({
+        lms: { ps: [{ model: 'm', status: 'IDLE' }], gateway_inflight: 0 },
+      }).fleet;
+      expect(f[1]).toMatchObject({ v: '0', sub: 'via LM Studio' });
+    });
+
+    it('a provider with no counter is left out of the coverage line', () => {
+      const f = CView.glance({
+        metrics: { llama: { active_slots: 2 } },
+        lms: { ps: [{ model: 'm', status: 'IDLE' }] },   // no gateway_inflight
+      }).fleet;
+      expect(f[1]).toMatchObject({ v: '2', sub: 'via llama.cpp' });
+    });
+
+    it('loaded counts and names the providers actually serving a model', () => {
+      const f = CView.glance(busy).fleet;
+      expect(f[2]).toMatchObject({ k: 'Loaded', v: '3', unit: 'models' });
+      expect(f[2].sub).toBe('llama.cpp + LM Studio + vLLM');
+    });
+
+    it('the 24 h peak measures generation — the same thing Throughput leads with', () => {
+      const f = CView.glance({ ...busy, hist: [
+        { t: NOW - 7200, v: 10, p: 500 },
+        { t: NOW - 3600, v: 80, p: 20 },
+        { t: NOW, v: 30, p: 1 },
+      ] }).fleet;
+      expect(f[3]).toMatchObject({ k: '24 h peak', v: '80', unit: 'tok/s' });
+      expect(f[3].sub).toMatch(/^at /);
+    });
+
+    it('an idle fleet says so rather than showing dashes everywhere', () => {
+      const f = CView.glance({ metrics: { llama: { tokens_per_second: 0 } } }).fleet;
+      expect(f[0]).toMatchObject({ v: '—', sub: 'idle · 0.0 tok/s now' });
+      // No provider reported a request counter at all — say that, rather
+      // than letting a 0 read as "nothing is running".
+      expect(f[1]).toMatchObject({ v: '—', sub: 'no request counters' });
+      expect(f[2]).toMatchObject({ v: '0', unit: 'models', sub: 'none loaded' });
+      expect(f[3]).toMatchObject({ v: '—', sub: 'no history yet' });
+    });
+
+    it('an empty payload dashes every unknown, rather than claiming zero', () => {
+      const f = CView.glance({}).fleet;
+      expect(f).toHaveLength(4);
+      expect(f.map((t) => t.v)).toEqual(['—', '—', '0', '—']);
+    });
+  });
+});
+
+describe('CView.trends', () => {
+  const rows = [
+    { ts: NOW - 7200, gpu_util: 10, gpu_temp: 50, gpu_vram: 40, cpu_total: 5 },
+    { ts: NOW - 3600, gpu_util: 90, gpu_temp: 71, gpu_vram: 88, cpu_total: 30 },
+    { ts: NOW, gpu_util: 55, gpu_temp: 64, gpu_vram: 61, cpu_total: 12 },
+  ];
+
+  it('returns one card per fleet metric with the window mean and range', () => {
+    const t = CView.trends(rows);
+    expect(t.map((x) => x.key)).toEqual(['gpu_util', 'gpu_temp', 'gpu_vram', 'cpu_total']);
+    // Mean, not the newest sample: history lags the live tiles by a bucket.
+    expect(t[0]).toMatchObject({ name: 'GPU busy', unit: '%', min: 10, max: 90 });
+    expect(t[0].avg).toBeCloseTo((10 + 90 + 55) / 3);
+    expect(t[1]).toMatchObject({ unit: '°C', min: 50, max: 71 });
+    expect(t[1].avg).toBeCloseTo((50 + 71 + 64) / 3);
+    expect(t[0].pts).toHaveLength(3);
+    // `last` backs the System tiles when the live GPU block is absent.
+    expect(t[0].last).toBe(55);
+    expect(t[1].last).toBe(64);
+  });
+
+  it('drops a metric the history never carried rather than drawing a flat line', () => {
+    const t = CView.trends(rows.map(({ ts, gpu_util }) => ({ ts, gpu_util })));
+    expect(t.map((x) => x.key)).toEqual(['gpu_util']);
+  });
+
+  it('skips null samples but keeps the rest of the series', () => {
+    const t = CView.trends([
+      { ts: NOW - 60, gpu_util: 10 }, { ts: NOW - 30, gpu_util: null },
+      { ts: NOW, gpu_util: 20 },
+    ]);
+    expect(t[0].pts.map((p) => p.v)).toEqual([10, 20]);
+  });
+
+  it('needs two points before a card is worth drawing', () => {
+    expect(CView.trends([{ ts: NOW, gpu_util: 10 }])).toEqual([]);
+  });
+
+  // GPU residency arrives under a different metric name per GPU family; the
+  // card read only the CUDA one, so an Apple host at 100% showed as ~5%.
+  it('GPU busy takes the busiest of the CUDA and Apple Silicon series', () => {
+    const t = CView.trends([
+      { ts: NOW - 600, gpu_util: 5, mac_gpu_busy: 99 },
+      { ts: NOW, gpu_util: 12, mac_gpu_busy: 40 },
+    ]);
+    expect(t[0].key).toBe('gpu_util');
+    expect(t[0].pts.map((p) => p.v)).toEqual([99, 40]);
+    expect(t[0].max).toBe(99);
+  });
+
+  it('a fleet with only Apple GPUs still plots a GPU busy card', () => {
+    const t = CView.trends([
+      { ts: NOW - 600, mac_gpu_busy: 30 }, { ts: NOW, mac_gpu_busy: 100 },
+    ]);
+    expect(t.map((x) => x.key)).toEqual(['gpu_util']);
+    expect(t[0].pts.map((p) => p.v)).toEqual([30, 100]);
+  });
+
+  it('a fleet with only CUDA GPUs is unaffected', () => {
+    const t = CView.trends([
+      { ts: NOW - 600, gpu_util: 30 }, { ts: NOW, gpu_util: 70 },
+    ]);
+    expect(t[0].pts.map((p) => p.v)).toEqual([30, 70]);
+  });
+
+  it('parses the timestamp shapes /api/history emits', () => {
+    const iso = new Date(NOW * 1000).toISOString();
+    const t = CView.trends([{ ts: iso, gpu_util: 1 },
+      { ts: (NOW + 60) * 1000, gpu_util: 2 }]);
+    expect(t[0].pts.map((p) => p.t)).toEqual([NOW, NOW + 60]);
+  });
+
+  it('degrades to an empty list on junk input', () => {
+    expect(CView.trends(null)).toEqual([]);
+    expect(CView.trends([null, undefined, {}])).toEqual([]);
   });
 });
 
@@ -147,6 +415,18 @@ describe('CView.alerts', () => {
     { alert_id: 'a4', severity: 'info', status: 'active', category: 'info', message: 'Download complete',
       metric_source: 'manager', metric_name: 'downloads', created_at: (NOW - 10800) * 1000 },
   ];
+
+  it('names the rule that fired, without repeating the message', () => {
+    const rows = CView.alerts([
+      { ...list[0], rule_name: 'GPU over 90 °C' },
+      { ...list[1], rule_name: 'VRAM 95% for 10 min' },   // same as its message
+      { ...list[3] },                                      // no rule at all
+    ], NOW).firing;
+    expect(rows[0].rule).toBe('GPU over 90 °C');
+    expect(rows[0].msg).toBe('GPU temperature 91 °C ≥ 90 °C');
+    expect(rows[1].rule).toBe('');
+    expect(rows[2].rule).toBe('');
+  });
 
   it('splits firing from earlier; active info alerts fire, closed ones are earlier', () => {
     const m = CView.alerts(list, NOW);
@@ -488,5 +768,82 @@ describe('CView.audit', () => {
     expect(CView.audit(null)).toEqual([]);
     expect(CView.audit([{}])[0].name).toBe('action');
     expect(CView.audit(Array.from({ length: 90 }, () => ({})))).toHaveLength(40);
+  });
+});
+
+describe('CView.devices', () => {
+  const list = [
+    { endpoint: 'https://web.push.apple.com/AAAA111122223333', created: NOW - 7200,
+      ua: 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605 Version/17.5 Mobile Safari/604' },
+    { endpoint: 'https://fcm.googleapis.com/fcm/send/BBBB444455556666', created: NOW - 60,
+      ua: 'Mozilla/5.0 (Linux; Android 14) AppleWebKit/537 Chrome/126 Mobile Safari/537' },
+  ];
+
+  it('names a device by OS and browser, not by its opaque endpoint', () => {
+    const rows = CView.devices(list, null, NOW);
+    expect(rows[0].name).toBe('iPhone · Safari');
+    expect(rows[1].name).toBe('Android · Chrome');
+  });
+
+  it('shows an age and an endpoint tail so two identical clients differ', () => {
+    const rows = CView.devices(list, null, NOW);
+    expect(rows[0].detail).toBe('added 2h ago · …1122223333');
+    expect(rows[1].detail).toBe('added 1m ago · …4455556666');
+  });
+
+  it('flags the calling device so an admin does not cut themselves off blind', () => {
+    const rows = CView.devices(list, list[1].endpoint, NOW);
+    expect(rows.map((r) => r.self)).toEqual([false, true]);
+  });
+
+  it('keeps the full endpoint, which is what removal is keyed on', () => {
+    expect(CView.devices(list, null, NOW)[0].endpoint).toBe(list[0].endpoint);
+  });
+
+  it('degrades rather than throwing on junk', () => {
+    expect(CView.devices(null, null, NOW)).toEqual([]);
+    const [row] = CView.devices([{ endpoint: 'https://x.example/e' }], null, NOW);
+    expect(row.name).toBe('unknown device');
+  });
+
+  it('Chrome on iOS reads as Chrome, not Safari', () => {
+    // CriOS carries "Safari" in the UA too, so order matters.
+    expect(CView.deviceLabel('Mozilla/5.0 (iPhone) CriOS/126 Mobile/15E148 Safari/604'))
+      .toBe('iPhone · Chrome');
+  });
+});
+
+describe('CView.powerCoverage', () => {
+  const hosts = (n, withPower) => Array.from({ length: n },
+    (_, i) => ({ hostname: 'h' + i, has_power: i < withPower }));
+
+  it('flags a partial fleet, which is what makes a low cost explicable', () => {
+    // Live symptom: energy read $0.02 all day because five of six hosts
+    // reported no power at all, not because the arithmetic was wrong.
+    const c = CView.powerCoverage({ hosts: hosts(6, 1) });
+    expect(c).toMatchObject({ partial: true, with: 1, total: 6 });
+    expect(c.text).toBe('1 of 6 hosts metered');
+  });
+
+  it('is quiet when every host is metered', () => {
+    expect(CView.powerCoverage({ hosts: hosts(3, 3) }).partial).toBe(false);
+  });
+
+  it('does not claim a partial fleet when there are no hosts at all', () => {
+    expect(CView.powerCoverage({}).partial).toBe(false);
+    expect(CView.powerCoverage(null).partial).toBe(false);
+  });
+
+  it('surfaces on the Home energy tile', () => {
+    const g = CView.glance({ energy: { totals: { cost_usd: 0.02, kwh: 0.148 },
+      price_kwh: 0.15, hosts: hosts(6, 1) } });
+    expect(g.power[1]).toMatchObject({ v: '$0.02' });
+    expect(g.power[1].sub).toBe('148 Wh · 1 of 6 hosts metered');
+  });
+
+  it('shows the price instead once coverage is complete', () => {
+    const g = CView.glance({ energy: { totals: { cost_usd: 1.84, kwh: 9.2 },
+      price_kwh: 0.2, hosts: hosts(6, 6) } });
+    expect(g.power[1].sub).toBe('9.2 kWh · $0.2/kWh');
   });
 });

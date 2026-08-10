@@ -31,6 +31,7 @@ stamped in. Models and Admin controls confirm via the bottom sheet.
     <div class="ptr" id="ptr" aria-hidden="true"><span class="ptrspin">↻</span></div>
     <!-- GLANCE -->
     <section class="screen" id="scr-glance">
+      <div class="updrow"><span id="glanceUpdated">…</span></div>
       <div class="strip" id="glanceStrip">
         <svg viewBox="0 0 340 118" preserveAspectRatio="none" aria-hidden="true">
           <defs>
@@ -57,9 +58,13 @@ stamped in. Models and Admin controls confirm via the bottom sheet.
         <div class="win" id="glanceWin">live</div>
         <div class="readout" id="glanceReadout" role="status"></div>
       </div>
+      <div class="sec">Overview</div>
+      <div class="tiles" id="glanceFleet"></div>
       <div class="sec">Providers</div>
       <div class="provwrap" id="glanceProviders"></div>
       <div class="sec">System</div>
+      <div class="minis" id="glanceMinis"></div>
+      <div class="sec">Power</div>
       <div class="tiles" id="glanceTiles"></div>
     </section>
 
@@ -152,6 +157,13 @@ stamped in. Models and Admin controls confirm via the bottom sheet.
       <div class="provwrap" id="adminAgents"></div>
       <div class="sec">Status</div>
       <div class="provwrap" id="adminRows"></div>
+      <div class="sec">Notifications</div>
+      <div class="provwrap">
+        <div class="arow"><div class="atxt"><div class="an">Registered devices</div>
+          <div class="ad" id="adminDeviceCount">…</div></div>
+          <button class="btn" id="btnDevices">Show</button></div>
+        <div id="adminDevices" hidden></div>
+      </div>
       <div class="sec">Audit log</div>
       <div class="provwrap" id="adminAudit"></div>
       <div class="muted-note" id="adminGatedNote" hidden>

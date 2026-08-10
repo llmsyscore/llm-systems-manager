@@ -86,8 +86,9 @@ self.addEventListener('notificationclick', (e) => {
     for (const w of wins) {
       if (new URL(w.url).pathname.startsWith('/companion') && 'focus' in w) {
         await w.focus();
-        if ('navigate' in w && new URL(w.url).pathname !== new URL(url, w.url).pathname)
-          await w.navigate(url);
+        // Already on the companion: ask it to switch tabs rather than reload.
+        try { w.postMessage({ type: 'lsm-open', url }); return; } catch (_) { /* navigate */ }
+        if ('navigate' in w) await w.navigate(url);
         return;
       }
     }

@@ -8,6 +8,7 @@ register_routes) the /companion page, /manifest.webmanifest, /sw.js and
 from __future__ import annotations
 
 import base64
+import hmac
 import ipaddress
 import json
 import logging
@@ -33,6 +34,11 @@ PUSH_TIMEOUT_S = 10
 
 _VAPID_KEY_FILE = "vapid-private.pem"
 _SUBS_FILE = "push_subscriptions.json"
+
+# Caps on the alert text the alarm engine may put in a notification (#538).
+_MAX_TITLE, _MAX_BODY, _MAX_TAG = 120, 400, 80
+# Tokens that read as "not configured", matching the alarm engine's own gate.
+_UNSET_TOKENS = {"", "REPLACE_ME"}
 
 # ── Release check (#541) ─────────────────────────────────────────────────────
 _DEFAULT_RELEASE_REPO = "llmsyscore/llm-systems-manager"
@@ -315,6 +321,21 @@ class SubscriptionStore:
                 if isinstance(e, dict) and isinstance(e.get("subscription"), dict)
                 and isinstance(e["subscription"].get("endpoint"), str)]
 
+    def devices(self) -> list[dict]:
+        """Roster for the admin screen: endpoint plus the user-agent and
+        registration time that let an operator tell one device from another."""
+        out = []
+        for entry in self._read().values():
+            if not isinstance(entry, dict):
+                continue
+            sub = entry.get("subscription")
+            if not isinstance(sub, dict) or not isinstance(sub.get("endpoint"), str):
+                continue
+            out.append({"endpoint": sub["endpoint"],
+                        "ua": str(entry.get("ua") or "")[:200],
+                        "created": entry.get("created")})
+        return sorted(out, key=lambda d: d.get("created") or 0)
+
     def count(self) -> int:
         return len(self._read())
 
@@ -395,6 +416,52 @@ def _send_one(sub: dict, payload: str, pem_path: Path,
         return False, False
 
 
+def _fan_out(subs: "list[dict]", payload: str, pem: Path, contact: str) -> dict:
+    """Send one payload to every subscription, pruning dead endpoints.
+    Bounded parallelism: worst case ~PUSH_TIMEOUT_S per batch of 8 instead of
+    timeout x subscriptions on one Cheroot worker."""
+    sent = failed = pruned = 0
+    with ThreadPoolExecutor(max_workers=min(8, len(subs))) as pool:
+        results = list(pool.map(
+            lambda s: (s, _send_one(s, payload, pem, contact)), subs))
+    for sub, (ok, prune) in results:
+        sent += ok
+        failed += not ok
+        if prune and _store.remove(sub["endpoint"]):
+            pruned += 1
+    return {"sent": sent, "failed": failed, "pruned": pruned}
+
+
+# ── alarm-engine notify bridge (#538) ────────────────────────────────────────
+
+def notify_token(settings: Any) -> str:
+    """Bearer the alarm engine must present on the notify route: the companion
+    override, else the AE management token, else its ingest token."""
+    cfg = getattr(getattr(settings, "manager", None), "companion", None)
+    ae = getattr(settings, "alarm_engine", None)
+    for raw in (getattr(cfg, "push_notify_token", ""),
+                getattr(ae, "management_token", ""),
+                getattr(ae, "ingest_token", "")):
+        tok = (raw or "").strip()
+        if tok not in _UNSET_TOKENS:
+            return tok
+    return ""
+
+
+def _bearer(header: str) -> str:
+    h = header or ""
+    return h[len("Bearer "):].strip() if h.startswith("Bearer ") else ""
+
+
+def notify_path(url: Any) -> str:
+    """Same-origin path the notification opens. A push must never deep-link
+    off this manager, so anything else degrades to the companion root."""
+    u = str(url or "")
+    if u.startswith("/") and not u.startswith("//") and "\\" not in u:
+        return u[:200]
+    return "/companion"
+
+
 # ── routes ───────────────────────────────────────────────────────────────────
 
 # Bound by register_routes; tests monkeypatch these to a sandbox.
@@ -407,7 +474,7 @@ def _manifest() -> dict:
     return {
         "id": "/companion",
         "name": "LLM Systems Manager",
-        "short_name": "LLM Manager",
+        "short_name": "LLM Systems Manager",
         "description": "Phone companion for the LLM Systems Manager dashboard",
         "start_url": "/companion",
         "scope": "/",
@@ -513,8 +580,10 @@ def register_routes(app, ctx, static_dir: Path) -> None:
         subs = _store.list()
         if ctx.require_admin() is not None:
             return jsonify({"ok": True, "count": len(subs)})
+        # Admins also get the roster they need to identify and retire a device.
         return jsonify({"ok": True, "count": len(subs),
-                        "endpoints": [s["endpoint"][:48] for s in subs]})
+                        "endpoints": [s["endpoint"][:48] for s in subs],
+                        "devices": _store.devices()})
 
     @app.route("/api/companion/push/subscribe", methods=["POST"])
     def companion_push_subscribe():
@@ -567,16 +636,47 @@ def register_routes(app, ctx, static_dir: Path) -> None:
             "body": "Test notification — push is working.",
             "tag": "lsm-test", "url": "/companion",
         })
-        # Bounded parallel fan-out; worst case ~PUSH_TIMEOUT_S per batch of 8
-        # instead of timeout x subscriptions on one Cheroot worker.
-        sent = failed = pruned = 0
-        with ThreadPoolExecutor(max_workers=min(8, len(subs))) as pool:
-            results = list(pool.map(
-                lambda s: (s, _send_one(s, payload, pem, contact)), subs))
-        for sub, (ok, prune) in results:
-            sent += ok
-            failed += not ok
-            if prune and _store.remove(sub["endpoint"]):
-                pruned += 1
-        return jsonify({"ok": failed == 0, "sent": sent,
-                        "failed": failed, "pruned": pruned})
+        out = _fan_out(subs, payload, pem, contact)
+        return jsonify({"ok": out["failed"] == 0, **out})
+
+    @app.route("/api/companion/push/notify", methods=["POST"])
+    def companion_push_notify():
+        """Alarm-engine bridge (#538): fan one alert out to every subscribed
+        device. Bearer-gated on the shared alarm-engine token so the VAPID
+        key and the subscription store never leave the manager."""
+        expected = notify_token(ctx.settings)
+        provided = _bearer(flask_request.headers.get("Authorization", ""))
+        # Compare as bytes: compare_digest rejects non-ASCII str outright.
+        authed = bool(expected and provided and hmac.compare_digest(
+            provided.encode("utf-8"), expected.encode("utf-8")))
+        # No token configured anywhere: fall back to an admin session rather
+        # than opening a send-to-every-device route.
+        if not authed and ctx.require_admin() is not None:
+            if not expected:
+                log.warning("companion: notify refused — no alarm-engine token "
+                            "configured; set [alarm_engine].management_token")
+            return jsonify({"ok": False,
+                            "error": "notify authentication required"}), 403
+        body = flask_request.get_json(silent=True)
+        if not isinstance(body, dict):
+            return jsonify({"ok": False, "error": "json object required"}), 400
+        subs = _store.list()
+        if not subs:
+            return jsonify({"ok": True, "sent": 0, "failed": 0, "pruned": 0,
+                            "subscriptions": 0})
+        try:
+            _webpush_funcs()  # import-check only; _send_one re-imports per send
+        except ImportError:
+            return jsonify({"ok": False,
+                            "error": "pywebpush is not installed"}), 503
+        payload = json.dumps({
+            "title": str(body.get("title") or "LLM Systems Manager")[:_MAX_TITLE],
+            "body": str(body.get("body") or "")[:_MAX_BODY],
+            "severity": str(body.get("severity") or "info")[:16],
+            "tag": str(body.get("tag") or "lsm-alert")[:_MAX_TAG],
+            "url": notify_path(body.get("url")),
+        })
+        out = _fan_out(subs, payload, ensure_vapid_key(_data_dir),
+                       _push_contact(ctx.settings))
+        return jsonify({"ok": out["failed"] == 0,
+                        "subscriptions": len(subs), **out})

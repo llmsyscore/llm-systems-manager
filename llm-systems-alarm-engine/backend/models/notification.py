@@ -16,6 +16,7 @@ class ChannelType(str, Enum):
     EMAIL = "email"
     WEBHOOK = "webhook"
     DISCORD = "discord"
+    WEBPUSH = "webpush"
 
 
 # Alias for backwards compatibility
@@ -57,6 +58,16 @@ class DiscordConfig(BaseModel):
     avatar_url: Optional[str] = Field(default=None, description="Override bot avatar")
 
 
+class WebPushConfig(BaseModel):
+    """Web push to the PWA companion's subscribed devices (#538). The manager
+    owns the VAPID key and the subscription store, so this posts the alert to
+    its notify endpoint rather than sending to browsers directly."""
+    enabled: bool = True
+    url: str = Field(default="", description="Manager notify endpoint; blank = the local manager")
+    token: Optional[str] = Field(default=None, description="Bearer; blank = the shared alarm-engine token")
+    verify_tls: bool = Field(default=True, description="Verify the manager's TLS certificate")
+
+
 class ChannelSpecificConfig(BaseModel):
     """Channel-specific configuration."""
     toast: Optional[ToastConfig] = None
@@ -64,6 +75,7 @@ class ChannelSpecificConfig(BaseModel):
     email: Optional[EmailConfig] = None
     webhook: Optional[WebhookConfig] = None
     discord: Optional[DiscordConfig] = None
+    webpush: Optional[WebPushConfig] = None
 
 
 class NotificationChannelCreate(BaseModel):

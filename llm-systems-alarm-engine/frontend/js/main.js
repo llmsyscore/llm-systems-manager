@@ -2025,6 +2025,7 @@ const ModalManager = {
                     <option value="sms">SMS</option>
                     <option value="webhook">Webhook</option>
                     <option value="discord">Discord</option>
+                    <option value="webpush">Phone push (companion app)</option>
                 </select>
             </div>
         </div>
@@ -2069,6 +2070,22 @@ const ModalManager = {
             <div class="form-group">
                 <label>Bot username (optional)</label>
                 <input id="form-ch-dc-user" type="text" placeholder="Alarm Bot">
+            </div>
+        </div>
+        <div data-ch-type="webpush">
+            <div class="form-group">
+                <label>Manager notify URL</label>
+                <input id="form-ch-wp-url" type="url"
+                       placeholder="blank = the local manager">
+            </div>
+            <div class="form-group">
+                <label>Bearer token (optional)</label>
+                <input id="form-ch-wp-token" type="password"
+                       placeholder="blank = the shared alarm-engine token">
+            </div>
+            <div class="form-hint">
+                Delivers to every device subscribed in the companion app's
+                Settings tab. The manager holds the push keys and does the send.
             </div>
         </div>
         <div class="checkbox-item">
@@ -2126,6 +2143,9 @@ const ModalManager = {
         // Discord
         setIf('form-ch-dc-url', cfgData.discord?.webhook_url);
         setIf('form-ch-dc-user', cfgData.discord?.username);
+        // Web push
+        setIf('form-ch-wp-url', cfgData.webpush?.url);
+        setIf('form-ch-wp-token', cfgData.webpush?.token);
     },
 
     _collectChannelForm() {
@@ -2154,6 +2174,11 @@ const ModalManager = {
             if (!webhook_url) throw new Error('Discord webhook URL is required');
             const username = (document.getElementById('form-ch-dc-user')?.value || '').trim() || null;
             config.discord = { webhook_url, username };
+        } else if (channel_type === 'webpush') {
+            // Both fields optional: blank means "the local manager, shared token".
+            const url = (document.getElementById('form-ch-wp-url')?.value || '').trim();
+            const token = (document.getElementById('form-ch-wp-token')?.value || '').trim() || null;
+            config.webpush = { url, token, verify_tls: true };
         }
         return { name, channel_type, config, enabled };
     },
@@ -2601,6 +2626,7 @@ const TabManager = {
             sms:     { icon: '📱', label: 'SMS' },
             webhook: { icon: '🔗', label: 'Webhook' },
             discord: { icon: '💬', label: 'Discord' },
+            webpush: { icon: '📲', label: 'Phone push' },
         };
 
         const channelsList = document.getElementById('channelsList');
@@ -2668,7 +2694,8 @@ const TabManager = {
             if (deliveries.length === 0) {
                 tbody.innerHTML = '<tr><td colspan="5" class="empty-row">No delivery history — send a test notification to see records here</td></tr>';
             } else {
-                const CH_META = { toast: '🔔', email: '📧', sms: '📱', webhook: '🔗', discord: '💬' };
+                const CH_META = { toast: '🔔', email: '📧', sms: '📱', webhook: '🔗',
+                    discord: '💬', webpush: '📲' };
                 tbody.innerHTML = slice.map(d => {
                     const ts = d.delivered_at
                         ? (parseTs(d.delivered_at)?.toLocaleString(undefined, { dateStyle: 'short', timeStyle: 'medium' }) ?? '—')

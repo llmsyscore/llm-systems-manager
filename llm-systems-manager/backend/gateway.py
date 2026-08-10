@@ -177,7 +177,12 @@ def _handle_completion(sub: str, provider=None) -> Response:
             if resp is not None:
                 return resp
             continue
-        r, err = _forward_json(agent, path, body)
+        aid = agent.get("agent_id")
+        gateway_usage.begin(aid)
+        try:
+            r, err = _forward_json(agent, path, body)
+        finally:
+            gateway_usage.end(aid)
         if r is None:
             errors.append(f"{_label(agent)}: {err}")
             continue
@@ -188,7 +193,7 @@ def _handle_completion(sub: str, provider=None) -> Response:
                 and 200 <= r.status_code < 300):
             u = gateway_usage.usage_from_json_bytes(r.content)
             if u:
-                gateway_usage.record(agent.get("agent_id"), *u)
+                gateway_usage.record(aid, *u)
         return Response(r.content, status=r.status_code,
                         mimetype=r.headers.get("content-type") or "application/json",
                         headers={"X-Proxied-To": _label(agent)})
@@ -233,6 +238,13 @@ def _stream_from(agent: dict, path: str, body: dict, errors: list,
             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no",
                      "X-Proxied-To": _label(agent)})
         resp.call_on_close(stream_pool.POOL.release)
+        # Same lifecycle as the stream slot: a streamed request is in flight
+        # until the response closes, not until this function returns.
+        gw_aid = agent.get("agent_id")
+        resp.call_on_close(lambda a=gw_aid: gateway_usage.end(a))
+        # Increment last: nothing below can raise, so the pair can't leak if
+        # the response ends up discarded instead of returned.
+        gateway_usage.begin(gw_aid)
         handed_off = True
         return resp
     finally:

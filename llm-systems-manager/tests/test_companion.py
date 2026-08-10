@@ -10,6 +10,7 @@ from __future__ import annotations
 import base64
 import json
 import re
+from types import SimpleNamespace
 
 import pytest
 
@@ -626,6 +627,11 @@ class TestReleaseCheck:
         monkeypatch.setattr(companion, "_latest_release",
                             lambda repo: called.append(repo) or (None, None, None))
         monkeypatch.setitem(companion._release, "enabled", None)
+        # Pin the config value: the deployed TOML may have the check switched
+        # on, and this asserts the OFF behaviour, not the local setting.
+        from config.unified_config import settings as _s
+        monkeypatch.setattr(_s.manager.companion, "release_check", False,
+                            raising=False)
         body = client.get("/api/companion/release").get_json()
         assert body["enabled"] is False
         assert "latest" not in body
@@ -809,3 +815,404 @@ class TestReleaseNotesContract:
             text = (root / rel).read_text()
             m = re.search(rf'^{name}\s*=\s*"(.*)"', text, re.M)
             assert m and m.group(1).strip(), f"{rel}: no readable {name}"
+
+
+# ── #538: alarm-engine → web-push bridge ────────────────────────────────────
+
+class TestNotifyToken:
+    @staticmethod
+    def _settings(companion_tok="", management="", ingest=""):
+        return SimpleNamespace(
+            manager=SimpleNamespace(
+                companion=SimpleNamespace(push_notify_token=companion_tok)),
+            alarm_engine=SimpleNamespace(
+                management_token=management, ingest_token=ingest))
+
+    def test_companion_override_wins(self):
+        s = self._settings("own", management="mgmt", ingest="ing")
+        assert companion.notify_token(s) == "own"
+
+    def test_falls_back_to_the_management_token(self):
+        assert companion.notify_token(self._settings(management="mgmt",
+                                                     ingest="ing")) == "mgmt"
+
+    def test_falls_back_to_the_ingest_token_last(self):
+        assert companion.notify_token(self._settings(ingest="ing")) == "ing"
+
+    @pytest.mark.parametrize("placeholder", ["", "   ", "REPLACE_ME", None])
+    def test_placeholders_read_as_unset(self, placeholder):
+        s = self._settings(placeholder, management=placeholder,
+                           ingest=placeholder)
+        assert companion.notify_token(s) == ""
+
+    def test_missing_config_sections_do_not_raise(self):
+        assert companion.notify_token(SimpleNamespace()) == ""
+
+
+class TestNotifyPath:
+    """A push must never deep-link off this manager."""
+
+    @pytest.mark.parametrize("url,want", [
+        ("/companion?tab=alerts", "/companion?tab=alerts"),
+        ("/companion", "/companion"),
+        ("https://evil.example/x", "/companion"),
+        ("//evil.example/x", "/companion"),
+        ("/companion\\..\\evil", "/companion"),
+        ("javascript:alert(1)", "/companion"),
+        ("", "/companion"), (None, "/companion"), (42, "/companion"),
+    ])
+    def test_only_same_origin_paths_survive(self, url, want):
+        assert companion.notify_path(url) == want
+
+    def test_path_is_length_capped(self):
+        assert len(companion.notify_path("/" + "a" * 500)) == 200
+
+
+@pytest.fixture
+def notify(monkeypatch, sandbox):
+    """Session-less client (as the alarm engine is) with a notify token
+    configured; the actual web-push send is stubbed out."""
+    monkeypatch.setattr(auth, "auth_mode", lambda: "required")
+    monkeypatch.setattr(companion, "notify_token", lambda s: "ae-secret")
+    monkeypatch.setattr(companion, "_webpush_funcs", lambda: None)
+    monkeypatch.setattr(companion, "ensure_vapid_key", lambda d: d / "k.pem")
+    with M.app.test_client() as c:
+        yield c
+
+
+def _sent(monkeypatch, ok=True, prune=False):
+    """Capture the payload each subscription is sent."""
+    seen = []
+
+    def fake(sub, payload, pem, contact):
+        seen.append(json.loads(payload))
+        return ok, prune
+
+    monkeypatch.setattr(companion, "_send_one", fake)
+    return seen
+
+
+class TestPushNotify:
+    URL = "/api/companion/push/notify"
+    AUTH = {"Authorization": "Bearer ae-secret"}
+
+    def test_the_route_is_reachable_without_a_session(self):
+        """The alarm engine has no session cookie, so the before_request gate
+        must hand this path to the route's own bearer check."""
+        assert self.URL in auth.AUTH_OPEN_PATHS
+
+    def test_valid_bearer_fans_out_to_every_device(self, notify, monkeypatch):
+        companion._store.add(_sub(), ua="ua")
+        companion._store.add(_sub(endpoint="https://push.example.net/send/xyz"))
+        seen = _sent(monkeypatch)
+        r = notify.post(self.URL, headers=self.AUTH,
+                        json={"title": "GPU hot", "body": "gpu = 91",
+                              "severity": "critical", "tag": "lsm-alert-1",
+                              "url": "/companion?tab=alerts"})
+        assert r.status_code == 200
+        body = r.get_json()
+        assert body == {"ok": True, "sent": 2, "failed": 0, "pruned": 0,
+                        "subscriptions": 2}
+        assert seen[0]["title"] == "GPU hot"
+        assert seen[0]["url"] == "/companion?tab=alerts"
+
+    @pytest.mark.parametrize("headers", [
+        {}, {"Authorization": "Bearer wrong"}, {"Authorization": "ae-secret"},
+        {"Authorization": "Basic ae-secret"},
+    ])
+    def test_missing_or_wrong_bearer_is_refused(self, notify, headers):
+        companion._store.add(_sub(), ua="ua")
+        r = notify.post(self.URL, headers=headers, json={"title": "x"})
+        assert r.status_code == 403
+
+    def test_no_configured_token_falls_back_to_admin(self, monkeypatch, sandbox):
+        """Fail closed: a token-less install must not expose an unauthenticated
+        send-to-every-device route."""
+        monkeypatch.setattr(auth, "auth_mode", lambda: "required")
+        monkeypatch.setattr(companion, "notify_token", lambda s: "")
+        with M.app.test_client() as c:
+            r = c.post(self.URL, headers={"Authorization": "Bearer "},
+                       json={"title": "x"})
+        assert r.status_code == 403
+
+    def test_an_admin_session_may_drive_it_without_a_token(self, client,
+                                                           monkeypatch, sandbox):
+        companion._store.add(_sub(), ua="ua")
+        monkeypatch.setattr(companion, "notify_token", lambda s: "")
+        monkeypatch.setattr(companion, "_webpush_funcs", lambda: None)
+        monkeypatch.setattr(companion, "ensure_vapid_key", lambda d: d / "k.pem")
+        _sent(monkeypatch)
+        r = client.post(self.URL, json={"title": "x"})
+        assert r.status_code == 200 and r.get_json()["sent"] == 1
+
+    def test_an_operator_session_may_not(self, operator, monkeypatch, sandbox):
+        companion._store.add(_sub(), ua="ua")
+        monkeypatch.setattr(companion, "notify_token", lambda s: "")
+        r = operator.post(self.URL, json={"title": "x"})
+        assert r.status_code == 403
+
+    def test_offsite_urls_are_rewritten_to_the_companion_root(self, notify,
+                                                              monkeypatch):
+        companion._store.add(_sub(), ua="ua")
+        seen = _sent(monkeypatch)
+        notify.post(self.URL, headers=self.AUTH,
+                    json={"title": "x", "url": "https://evil.example/steal"})
+        assert seen[0]["url"] == "/companion"
+
+    def test_oversized_text_is_clamped(self, notify, monkeypatch):
+        companion._store.add(_sub(), ua="ua")
+        seen = _sent(monkeypatch)
+        notify.post(self.URL, headers=self.AUTH,
+                    json={"title": "T" * 999, "body": "B" * 999,
+                          "tag": "g" * 999, "severity": "s" * 99})
+        assert len(seen[0]["title"]) == companion._MAX_TITLE
+        assert len(seen[0]["body"]) == companion._MAX_BODY
+        assert len(seen[0]["tag"]) == companion._MAX_TAG
+        assert len(seen[0]["severity"]) == 16
+
+    def test_no_subscriptions_is_a_no_op_success(self, notify):
+        r = notify.post(self.URL, headers=self.AUTH, json={"title": "x"})
+        assert r.status_code == 200
+        assert r.get_json() == {"ok": True, "sent": 0, "failed": 0,
+                                "pruned": 0, "subscriptions": 0}
+
+    def test_non_object_bodies_are_rejected(self, notify):
+        companion._store.add(_sub(), ua="ua")
+        for bad in ([1, 2], "x", 7, None):
+            r = notify.post(self.URL, headers=self.AUTH, json=bad)
+            assert r.status_code == 400, bad
+
+    def test_expired_endpoints_are_pruned_from_the_store(self, notify,
+                                                         monkeypatch):
+        companion._store.add(_sub(), ua="ua")
+        _sent(monkeypatch, ok=False, prune=True)
+        r = notify.post(self.URL, headers=self.AUTH, json={"title": "x"})
+        assert r.get_json()["pruned"] == 1
+        assert companion._store.count() == 0
+
+    def test_a_failed_send_reports_not_ok(self, notify, monkeypatch):
+        companion._store.add(_sub(), ua="ua")
+        _sent(monkeypatch, ok=False)
+        body = notify.post(self.URL, headers=self.AUTH,
+                           json={"title": "x"}).get_json()
+        assert body["ok"] is False and body["failed"] == 1
+
+
+# ── fleet-wide history aggregation (#541 follow-up) ─────────────────────────
+
+class TestFleetAllHistory:
+    """The unscoped /api/history merge let the LAST host writing a timestamp
+    win, so an 8-host fleet's cpu_total was one arbitrary host per row and two
+    llama hosts' tok/s never summed. ?fleet=all aggregates per _FLEET_FIELD_AGG.
+    The alarm engine downsamples onto wall-clock boundaries, so every host
+    reports the same timestamps — this relies on that.
+    """
+
+    TS = "2026-08-09T23:40:00+00:00"
+
+    @pytest.fixture(autouse=True)
+    def _caps(self, monkeypatch):
+        """_build_history_rows drops provider-sourced fields with no approved
+        capable agent, so the field set otherwise depends on whatever is
+        registered — llama_tps exists on the live box and not in CI."""
+        monkeypatch.setattr(M.agent_registry, "approved_agent_caps",
+                            lambda: {p: True for p in M.providers.PROVIDERS})
+
+    def _series(self, monkeypatch):
+        """Two hosts reporting cpu_total, gpu_temp and llama_tps at one ts."""
+        per_field = {
+            "cpu_total": [("h1", 10.0), ("h2", 30.0)],       # busiest -> 30
+            "gpu_temp": [("h1", 50.0), ("h2", 70.0)],        # max     -> 70
+            "llama_tps": [("h1", 4.0), ("h2", 6.0)],         # sum     -> 10
+        }
+
+        def fake(base, source, metric_name, field, since_minutes, limit,
+                 hostname=None):
+            return field, [{"timestamp": self.TS, "value": v, "hostname": h}
+                           for h, v in per_field.get(field, [])]
+
+        monkeypatch.setattr(M, "_fetch_history_series", fake)
+        monkeypatch.setattr(M, "_alarm_engine_url", "http://ae.test")
+
+    def test_aggregate_combines_hosts_per_field_rule(self, monkeypatch):
+        self._series(monkeypatch)
+        rows = M._build_history_rows(1440, 100, aggregate=True)
+        assert len(rows) == 1
+        assert rows[0]["gpu_temp"] == 70.0
+        assert rows[0]["llama_tps"] == 10.0
+
+    def test_utilization_reports_the_busiest_host_not_the_mean(self, monkeypatch):
+        """A mean over mostly-idle hosts hides the one doing the work: the live
+        fleet averaged 2.4% CPU while the two hosts running inference sat at
+        6-7%, so the card read as though nothing was happening."""
+        self._series(monkeypatch)
+        rows = M._build_history_rows(1440, 100, aggregate=True)
+        assert rows[0]["cpu_total"] == 30.0
+        # ...and the per-provider fleet view keeps its own mean semantics.
+        assert M._FLEET_FIELD_AGG["cpu_total"] == "mean"
+
+    def test_the_unscoped_default_is_unchanged(self, monkeypatch):
+        """Existing callers (the dashboard) must not shift under this."""
+        self._series(monkeypatch)
+        rows = M._build_history_rows(1440, 100)
+        assert len(rows) == 1
+        # last-writer-wins, exactly as before
+        assert rows[0]["cpu_total"] == 30.0
+
+    def test_a_host_reporting_nothing_is_skipped_not_counted_as_zero(self, monkeypatch):
+        def fake(base, source, metric_name, field, since_minutes, limit,
+                 hostname=None):
+            if field != "cpu_total":
+                return field, []
+            return field, [
+                {"timestamp": self.TS, "value": 10.0, "hostname": "h1"},
+                {"timestamp": self.TS, "value": None, "hostname": "h2"},
+            ]
+
+        monkeypatch.setattr(M, "_fetch_history_series", fake)
+        monkeypatch.setattr(M, "_alarm_engine_url", "http://ae.test")
+        rows = M._build_history_rows(60, 100, aggregate=True)
+        assert rows[0]["cpu_total"] == 10.0
+
+    def test_duplicate_points_from_one_host_count_once(self, monkeypatch):
+        """A host emitting twice for the same bucket must not count twice in a
+        sum — the per-host dict keeps its last value, not both. Asserted on a
+        summed field, since a max would hide the double-count."""
+        def fake(base, source, metric_name, field, since_minutes, limit,
+                 hostname=None):
+            if field != "llama_tps":
+                return field, []
+            return field, [
+                {"timestamp": self.TS, "value": 10.0, "hostname": "h1"},
+                {"timestamp": self.TS, "value": 20.0, "hostname": "h1"},
+                {"timestamp": self.TS, "value": 60.0, "hostname": "h2"},
+            ]
+
+        monkeypatch.setattr(M, "_fetch_history_series", fake)
+        monkeypatch.setattr(M, "_alarm_engine_url", "http://ae.test")
+        rows = M._build_history_rows(60, 100, aggregate=True)
+        assert rows[0]["llama_tps"] == 80.0  # 20 + 60, not 10 + 20 + 60
+
+    def test_route_serves_fleet_all(self, client, monkeypatch):
+        self._series(monkeypatch)
+        monkeypatch.setattr(M, "_history_scoped_cache", {})
+        r = client.get("/api/history?since_minutes=1440&fleet=all")
+        assert r.status_code == 200
+        rows = r.get_json()
+        assert rows and rows[0]["cpu_total"] == 30.0
+
+    def test_an_unknown_provider_is_still_rejected(self, client, monkeypatch):
+        monkeypatch.setattr(M, "_alarm_engine_url", "http://ae.test")
+        r = client.get("/api/history?fleet=not-a-provider")
+        assert r.status_code == 400
+
+
+# ── alert retirement is admin-only; ack stays open ──────────────────────────
+
+class TestAlarmProxyAdminGate:
+    """Closing or ignoring an alert removes it from EVERY user's view, so the
+    proxy gates it like a native admin route. Acknowledging only silences it
+    for the acker and stays open to operators. Client-side hiding is cosmetic —
+    these assert the server-side gate.
+    """
+
+    @staticmethod
+    def _ctx(path, method="POST", json_body=None):
+        import proxies
+        kwargs = {"method": method}
+        if json_body is not None:
+            kwargs["json"] = json_body
+        with M.app.test_request_context("/api/alarm/" + path, **kwargs):
+            return proxies._alarm_admin_required(path)
+
+    @pytest.mark.parametrize("path", [
+        "alerts/abc-123/close",
+        "alerts/abc-123/ignore",
+        "alerts/close-all",
+        "alerts/ignore-all",
+        "admin/self-restart",
+        "dbstats",
+    ])
+    def test_retiring_routes_require_admin(self, path):
+        assert self._ctx(path) is True
+
+    @pytest.mark.parametrize("path", [
+        "alerts/abc-123/acknowledge",
+        "alerts/abc-123/read",
+    ])
+    def test_acknowledge_and_read_stay_open(self, path):
+        assert self._ctx(path) is False
+
+    def test_reads_are_never_gated(self):
+        for path in ("alerts/", "alerts/active", "rules", "metrics/system/cpu_total"):
+            assert self._ctx(path, method="GET") is False, path
+
+    def test_delete_of_an_alert_is_gated(self):
+        assert self._ctx("alerts/abc-123", method="DELETE") is True
+
+    def test_bulk_is_classified_by_its_body_not_its_path(self):
+        """The verb lives in the payload, so the path alone cannot decide."""
+        assert self._ctx("alerts/bulk", json_body={"action": "close"}) is True
+        assert self._ctx("alerts/bulk", json_body={"action": "ignore"}) is True
+        assert self._ctx("alerts/bulk", json_body={"action": "acknowledge"}) is False
+
+    def test_a_bulk_body_that_is_not_an_object_does_not_crash_the_gate(self):
+        for body in ([1, 2], "x", 7):
+            assert self._ctx("alerts/bulk", json_body=body) is False
+
+    def test_a_trailing_slash_does_not_slip_past(self):
+        assert self._ctx("alerts/abc-123/close/") is True
+
+    def test_the_operator_is_actually_refused_end_to_end(self, operator):
+        r = operator.post("/api/alarm/alerts/abc-123/close")
+        assert r.status_code == 403
+
+    def test_the_operator_may_still_acknowledge(self, operator, monkeypatch):
+        """Not a 403: it reaches the proxy, which is all this asserts."""
+        import proxies
+        monkeypatch.setattr(proxies, "_proxy_alarm_engine",
+                            lambda path: ("relayed", 200))
+        r = operator.post("/api/alarm/alerts/abc-123/acknowledge")
+        assert r.status_code == 200
+
+
+class TestPushDeviceRoster:
+    def test_admins_get_the_full_endpoint_and_identifying_metadata(
+            self, client, sandbox):
+        companion._store.add(_sub(), ua="Mozilla/5.0 (iPhone) Safari/604")
+        body = client.get("/api/companion/push/subscriptions").get_json()
+        assert body["devices"][0]["endpoint"] == _sub()["endpoint"]
+        assert "iPhone" in body["devices"][0]["ua"]
+        assert body["devices"][0]["created"] > 0
+
+    def test_a_non_admin_gets_no_roster_at_all(self, operator, sandbox):
+        companion._store.add(_sub(), ua="ua")
+        body = operator.get("/api/companion/push/subscriptions").get_json()
+        assert "devices" not in body and "endpoints" not in body
+        assert body["count"] == 1
+
+    def test_the_roster_is_ordered_oldest_first(self, sandbox):
+        store = companion.SubscriptionStore(sandbox / "d.json")
+        store.add(_sub(endpoint="https://p.example/old"))
+        store.add(_sub(endpoint="https://p.example/new"))
+        eps = [d["endpoint"] for d in store.devices()]
+        assert eps == ["https://p.example/old", "https://p.example/new"]
+
+    def test_a_corrupt_entry_is_skipped_not_fatal(self, sandbox):
+        path = sandbox / "d.json"
+        path.write_text(json.dumps({
+            "https://p.example/ok": {"subscription": _sub(
+                endpoint="https://p.example/ok"), "ua": "x", "created": 1},
+            "junk": "not a dict",
+            "https://p.example/bad": {"subscription": {"no": "endpoint"}},
+        }))
+        devices = companion.SubscriptionStore(path).devices()
+        assert [d["endpoint"] for d in devices] == ["https://p.example/ok"]
+
+    def test_removal_uses_the_endpoint_the_roster_hands_back(self, client, sandbox):
+        companion._store.add(_sub(), ua="ua")
+        endpoint = client.get(
+            "/api/companion/push/subscriptions").get_json()["devices"][0]["endpoint"]
+        r = client.post("/api/companion/push/unsubscribe", json={"endpoint": endpoint})
+        assert r.get_json() == {"ok": True, "removed": True}
+        assert companion._store.count() == 0

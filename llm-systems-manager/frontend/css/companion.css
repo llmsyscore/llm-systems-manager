@@ -73,6 +73,10 @@ body.companion {
 .muted-note { color: var(--fg-muted); font-size: 13.5px; text-align: center; padding: 24px 12px; line-height: 1.5; }
 .muted-note .big { display: block; font-size: 15px; color: var(--fg); font-weight: 600; margin-bottom: 6px; }
 
+/* last-updated stamp above the hero strip */
+.updrow { font-family: var(--mono); font-size: 10.5px; color: var(--fg-dim);
+  text-align: right; padding: 0 2px; margin-bottom: -6px; }
+
 /* signature hero strip */
 .strip {
   flex: none; margin: 0 -14px 2px; position: relative; background: var(--bg-elev);
@@ -143,7 +147,7 @@ body.companion {
 
 /* provider / list rows */
 .provwrap { background: var(--bg-card); border: 1px solid var(--border-soft); border-radius: 12px; overflow: hidden; }
-.prov { display: flex; align-items: center; gap: 12px; padding: 12px 14px; }
+.prov { display: flex; align-items: center; gap: 12px; padding: 12px 14px; flex-wrap: wrap; }
 .prov + .prov, .alert + .alert, .arow + .arow { border-top: 1px solid var(--border-soft); }
 .pstat { width: 8px; height: 8px; border-radius: 50%; flex: none; }
 .pstat.ok { background: var(--ok); } .pstat.idle { background: var(--fg-faint); }
@@ -152,6 +156,12 @@ body.companion {
 .prov .pn { font-size: 15px; font-weight: 600; }
 .prov .pd { font-family: var(--mono); font-size: 12px; color: var(--fg-muted); margin-top: 3px;
   overflow-wrap: anywhere; }
+/* gpu / cpu / ram. A 100% flex basis forces its own row on a phone; the
+   wide breakpoint below moves it into the card's free space instead.
+   The 20px inset lines it up with the text, clearing the status dot. */
+.pstats { flex: 1 1 100%; display: flex; gap: 14px; margin: 6px 0 0 20px; }
+.pstats span { font-family: var(--mono); font-size: 10.5px; color: var(--fg-dim); }
+.pstats b { font-size: 13px; font-weight: 600; color: var(--fg); margin-right: 3px; }
 .prov .pr, .arow .pr { margin-left: auto; font-family: var(--mono); font-size: 12px; color: var(--fg-muted); text-align: right; flex: none; }
 .prov .pr b, .arow .pr b { display: block; color: var(--fg); font-weight: 600; font-size: 14.5px; }
 .prov .pr b small, .arow .pr b small { font-size: 11px; font-weight: 400;
@@ -169,6 +179,28 @@ body.companion {
 .meter i { display: block; height: 100%; border-radius: 2px; background: var(--accent); }
 .meter i.hot { background: var(--warn); }
 
+/* 24 h mini trend cards (Home) */
+.minis { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.mini { background: var(--bg-card); border: 1px solid var(--border-soft);
+  border-radius: 12px; padding: 11px 12px 9px; touch-action: pan-y; }
+.mini .mh { display: flex; align-items: baseline; gap: 6px; }
+.mini .mk { font-size: 12px; color: var(--fg-muted); flex: 1; min-width: 0;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mini .mv { font-family: var(--mono); font-size: 18px; font-weight: 600; flex: none; }
+.mini .mv small { font-size: 10.5px; color: var(--fg-muted); font-weight: 400; margin-left: 2px; }
+/* live headline crossed its warn threshold */
+.mini .mv.hot { color: var(--warn); }
+.mini .mwrap { position: relative; margin: 7px 0 3px; }
+.mini svg { display: block; width: 100%; height: 34px; }
+/* Same treatment as the hero strip, at card scale. */
+.mini .spark-line { fill: none; stroke: var(--accent); stroke-width: 1.5;
+  stroke-linecap: round; stroke-linejoin: round; }
+.mini .spark-fill { stroke: none; }
+.mini .mguide { position: absolute; top: 0; bottom: 0; width: 1px;
+  background: var(--border-strong); pointer-events: none; }
+.mini .mguide[hidden] { display: none; }
+.mini .ms { font-family: var(--mono); font-size: 10.5px; color: var(--fg-dim); }
+
 /* alerts */
 .chiprow { display: flex; align-items: flex-start; gap: 6px; }
 .chips { display: flex; gap: 6px; padding: 2px 2px 0; flex-wrap: wrap; }
@@ -185,13 +217,24 @@ body.companion {
 .sev.info { color: var(--accent); }
 .alert .am { font-size: 14px; font-weight: 600; line-height: 1.35; }
 .alert .aw { font-family: var(--mono); font-size: 11.5px; color: var(--fg-muted); margin-top: 3px; }
+/* which rule fired, above the metric/host line */
+.alert .aw.rule { color: var(--fg-dim); }
+.alert .aw.rule::before { content: "▸ "; }
 .alert .sevword { font-family: var(--mono); font-size: 10.5px; letter-spacing: .1em; text-transform: uppercase; margin-top: 3px; }
 .alert .sevword.crit { color: var(--crit); } .alert .sevword.warn { color: var(--warn); } .alert .sevword.ok { color: var(--ok); }
 .alert .sevword.info { color: var(--accent); }
 .alert .atext { min-width: 0; }
+/* the alert a push notification pointed at */
+.alert.focus { background: var(--bg-card-alt);
+  box-shadow: inset 3px 0 0 var(--accent); }
 .ackbtn { margin-left: auto; align-self: center; flex: none; font-family: var(--mono); font-size: 12px; color: var(--fg);
   background: var(--bg-card-alt); border: 1px solid var(--border-strong); border-radius: 8px; padding: 6px 10px; cursor: pointer; }
 .ackbtn[disabled] { opacity: .5; }
+.ackbtn.danger { color: var(--crit); border-color: var(--crit); }
+/* Ack + Close stack on a phone rather than squeezing the message column. */
+.alert .acts { margin-left: auto; align-self: center; flex: none;
+  display: flex; flex-direction: column; gap: 6px; }
+.alert .acts .ackbtn { margin-left: 0; }
 .resolvedhead { display: flex; align-items: center; gap: 8px; color: var(--fg-dim); font-family: var(--mono);
   font-size: 11px; letter-spacing: .14em; text-transform: uppercase; padding: 6px 4px 0; }
 .resolvedhead::after { content: ""; flex: 1; height: 1px; background: var(--border-soft); }
@@ -312,8 +355,11 @@ body.companion {
 /* Wide viewport (landscape phone, any tablet): tiles fill the width instead
    of staying two-up, so less of the screen needs scrolling. */
 @media (min-width: 620px) {
-  .tiles { grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); }
+  .tiles, .minis { grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); }
   .strip .hero .l { max-width: 70vw; }
+  /* Enough width to sit beside the name instead of wrapping under it. */
+  .pstats { flex: 0 0 auto; margin: 0 0 0 auto; gap: 22px; }
+  .pstats span { text-align: right; min-width: 46px; }
 }
 @media (min-width: 900px) {
   .screen { align-items: center; }

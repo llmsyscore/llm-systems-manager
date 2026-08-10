@@ -29,11 +29,58 @@ describe('companion DOM contract', () => {
     tabs.forEach((t) => expect(htmlIds.has('scr-' + t)).toBe(true));
   });
 
+  it('Home carries the cross-provider fleet tiles and the 24 h trend cards', () => {
+    for (const id of ['glanceFleet', 'glanceMinis', 'glanceUpdated']) {
+      expect(htmlIds.has(id), id).toBe(true);
+    }
+    // The mini sparklines reference the strip's gradient by id.
+    expect(htmlIds.has('glanceGrad')).toBe(true);
+    expect(js.includes("url(#glanceGrad)")).toBe(true);
+  });
+
+  it('the 24 h cards read fleet-aggregated history, not one arbitrary host', () => {
+    // The unscoped endpoint lets the last host writing a timestamp win, which
+    // interleaved 8 hosts' CPU into one series.
+    expect(js.includes('fleet=all')).toBe(true);
+  });
+
+  it('the Close control is admin-gated in the client too', () => {
+    // The manager gates the proxied route; this keeps the button from being
+    // offered to an operator who could only ever get a 403 from it.
+    expect(js).toMatch(/ADMIN && a\.closable/);
+    expect(js.includes('/close')).toBe(true);
+  });
+
+  it('the push opt-in button also takes the device back out', () => {
+    expect(js.includes('togglePush')).toBe(true);
+    expect(js.includes("'/api/companion/push/unsubscribe'")).toBe(true);
+  });
+
+  it('a push notification can deep-link into a tab', () => {
+    const sw = read('sw.js');
+    expect(sw.includes("'lsm-open'")).toBe(true);
+    expect(js.includes("'lsm-open'")).toBe(true);
+    expect(js.includes('tabFromUrl')).toBe(true);
+  });
+
+  it('a push notification deep-links to the ALERT, not just the tab', () => {
+    // Rows carry the id the ?alert= parameter is matched against, and both
+    // entry points (cold boot and an already-open app) route through it.
+    expect(js.includes('data-alert=')).toBe(true);
+    expect(js.includes('openFrom')).toBe(true);
+    expect((js.match(/getElementById\('scr-alerts'\)|\$\('scr-alerts'\)/g) || []).length)
+      .toBeGreaterThan(0);
+    const ae = fs.readFileSync(path.resolve(root,
+      '../../llm-systems-alarm-engine/backend/engine/notification_dispatcher.py'), 'utf8');
+    expect(ae).toMatch(/tab=alerts&alert=/);
+  });
+
   it('models, admin and settings screens expose the controller contract ids', () => {
     for (const id of ['modelsServices', 'modelsLoaded', 'modelsAutopilot',
       'modelsPins', 'modelsPinsWrap', 'modelsGatedNote', 'modelsMsg',
       'adminManager', 'adminAgents', 'adminRows', 'adminAudit',
       'adminPending', 'adminPendingWrap', 'adminGatedNote', 'adminMsg',
+      'adminDevices', 'adminDeviceCount', 'btnDevices',
       'settingsRelease', 'settingsUser', 'settingsMsg',
       'themeChips', 'pushStatus', 'pushCount', 'btnEnable', 'btnTest',
       'sheet', 'sheetTitle', 'sheetBody', 'sheetCancel']) {

@@ -156,7 +156,7 @@ def _local_hostname() -> str:
 # banner reads it. Bump suffix (-1, -2, …) for same-day iterations; roll
 # the date for a new day's first change.
 # ---------------------------------------------------------------------------
-__version__ = "v2026.08.09-3"
+__version__ = "v2026.08.09-10"
 
 # Wall-clock at first import (Cheroot main process); the shutdown banner
 # reads it for the uptime line.
@@ -840,6 +840,10 @@ _HISTORY_LEGACY_FIELD_MAP = [
     ("system",  "ram_percent",                                "ram_percent"),
     ("system",  "gpu_gpu_util_percent",                       "gpu_util"),
     ("system",  "gpu_vram_usage_percent",                     "gpu_vram"),
+    # Absolute VRAM, so a percent can be shown as GB on a host whose GPU
+    # block never reaches the companion's live provider payloads.
+    ("system",  "gpu_vram_used_bytes",                        "gpu_vram_used"),
+    ("system",  "gpu_vram_total_bytes",                       "gpu_vram_total"),
     ("system",  "gpu_temperature_c",                          "gpu_temp"),
     ("system",  "gpu_power_watts",                            "gpu_power"),
     ("system",  "net_bytes_sent_per_s",                       "net_sent"),
@@ -972,10 +976,15 @@ def _fetch_history_series(base: str, source: str, metric_name: str, field: str,
         return field, []
 
 def _build_history_rows(since_minutes: int, limit: int,
-                        hostname: "str | None" = None) -> list[dict]:
+                        hostname: "str | None" = None,
+                        aggregate: bool = False) -> list[dict]:
     """Fan out parallel reads against the alarm engine and merge into rows.
     When hostname is set, every series is filtered to that one host (the AE's
-    /api/alarm/metrics/<source>/<name> endpoint takes a hostname query param)."""
+    /api/alarm/metrics/<source>/<name> endpoint takes a hostname query param).
+
+    aggregate=True combines every host reporting a field at the same timestamp
+    via _FLEET_FIELD_AGG instead of letting the last one written win. The AE
+    downsamples onto wall-clock boundaries, so all hosts share timestamps."""
     if not _alarm_engine_url:
         return []
     base = _alarm_engine_url.rstrip("/")
@@ -993,13 +1002,25 @@ def _build_history_rows(since_minutes: int, limit: int,
                              since_minutes, limit, hostname)
         for src, name, field in fields
     ]
+    # accum[field][ts] = one value per reporting host, for the aggregate path.
+    accum: dict[str, dict[str, dict]] = {}
     for fut in futures:
         field, points = fut.result()
         for p in points:
             ts = p.get("timestamp")
             if not ts:
                 continue
-            rows_by_ts.setdefault(ts, {"ts": ts})[field] = p.get("value")
+            if aggregate:
+                host = p.get("hostname") or ""
+                accum.setdefault(field, {}).setdefault(ts, {})[host] = p.get("value")
+            else:
+                rows_by_ts.setdefault(ts, {"ts": ts})[field] = p.get("value")
+    for field, by_ts in accum.items():
+        agg = _FLEET_ALL_AGG.get(field) or _FLEET_FIELD_AGG.get(field, "mean")
+        for ts, per_host in by_ts.items():
+            v = _agg_values(agg, list(per_host.values()))
+            if v is not None:
+                rows_by_ts.setdefault(ts, {"ts": ts})[field] = v
     return sorted(rows_by_ts.values(), key=lambda r: r["ts"])
 
 
@@ -1009,6 +1030,7 @@ _FLEET_FIELD_AGG: dict[str, str] = {
     "cpu_total": "mean", "ram_percent": "mean", "ups_percent": "mean",
     "gpu_util": "mean",
     "gpu_temp": "max", "gpu_vram": "max", "aio_temp": "max",
+    "gpu_vram_used": "max", "gpu_vram_total": "max",
     "disk_root_pct": "max", "disk_iscsi_pct": "max",
     "gpu_power": "sum", "psu_out": "sum", "psu_in": "sum",
     "net_sent": "sum", "net_recv": "sum", "io_read": "sum", "io_write": "sum",
@@ -1019,6 +1041,15 @@ _FLEET_FIELD_AGG: dict[str, str] = {
     "vllm_req_running": "sum", "vllm_req_waiting": "sum",
 }
 _FLEET_BUCKET_S = 5.0
+
+# Overrides applied ONLY to the every-host (?fleet=all) view. A mean over a
+# fleet of mostly-idle hosts hides the one that is working: 8 hosts averaged
+# 2.4% CPU while the two doing inference sat at 6-7%. For utilization the
+# useful question is "how loaded is the busiest host", so these take the max.
+_FLEET_ALL_AGG: dict[str, str] = {
+    "cpu_total": "max", "ram_percent": "max",
+    "gpu_util": "max", "mac_gpu_busy": "max",
+}
 
 
 def _bucket_iso(iso_ts: str, bucket_s: float) -> str:
@@ -1237,7 +1268,15 @@ def get_history():
         fetch_since = min(since_minutes, 43200)
         fetch_limit = min(limit, 10000) if limit > 0 else HISTORY_FETCH_LIMIT
         # fleet wins if both params are sent (the frontend never sends both).
-        if fleet:
+        if fleet == "all":
+            # Every reporting host, provider-agnostic: one fetch per field
+            # (each response already carries every host) aggregated per
+            # _FLEET_FIELD_AGG. Costs the same as the unscoped path.
+            rows = _history_scoped(
+                ("fleet", "all"), fetch_since, fetch_limit,
+                lambda: _build_history_rows(fetch_since, fetch_limit,
+                                            aggregate=True))
+        elif fleet:
             if fleet not in providers.names():
                 return jsonify({"ok": False, "error": f"unknown provider: {fleet}"}), 400
             rows = _history_scoped(
@@ -2352,6 +2391,9 @@ def get_lmstudio_metrics():
         data["gateway_tokens"] = (gateway_usage.counters().get(aid)
                                   or {"gen": 0, "prompt": 0})
         data["gateway_rates"] = gateway_usage.last_rates(aid)
+        # LM Studio publishes no request/queue telemetry, so gateway-proxied
+        # requests are the only in-flight signal that exists for it.
+        data["gateway_inflight"] = gateway_usage.inflight(aid)
     return jsonify(data)
 
 
