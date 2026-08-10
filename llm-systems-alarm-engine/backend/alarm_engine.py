@@ -67,7 +67,7 @@ from .storage.influxdb_client import InfluxDBClient
 # (-1, -2, …) for same-day iterations; roll the date for a new day's first
 # change.
 # ---------------------------------------------------------------------------
-__version__ = "v2026.08.09-3"
+__version__ = "v2026.08.10-1"
 from .storage import influx_monitor as _influx_monitor
 from .models.alarm_rule import (
     AlarmRuleCreate,
@@ -952,7 +952,7 @@ def _collect_sqlite_stats() -> dict:
 from . import _archive as _ae_archive
 from datetime import datetime, timedelta, timezone
 from fastapi import UploadFile, File, Form, Body, HTTPException, Depends
-from .api.auth import require_management_token
+from .api.auth import management_bearer_ok, require_management_token
 
 _AE_EXPORT_DBS = ["data/ae_notif_rules.db", "data/ae_alarms.db"]
 
@@ -1498,6 +1498,11 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
     if not _ws_origin_allowed(websocket):
         # Close before accept() so no event data is leaked to a rejected peer.
         await websocket.close(code=1008, reason="origin not allowed")
+        return
+    # #519: the live stream is a read surface — same bearer gate as the
+    # management routes (management_token, else ingest_token; open when unset).
+    if not management_bearer_ok(websocket.headers.get("authorization")):
+        await websocket.close(code=1008, reason="authentication required")
         return
     await websocket_endpoint_impl(websocket, ws_manager)
 

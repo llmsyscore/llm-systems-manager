@@ -156,7 +156,7 @@ def _local_hostname() -> str:
 # banner reads it. Bump suffix (-1, -2, …) for same-day iterations; roll
 # the date for a new day's first change.
 # ---------------------------------------------------------------------------
-__version__ = "v2026.08.10-1"
+__version__ = "v2026.08.10-2"
 
 # Wall-clock at first import (Cheroot main process); the shutdown banner
 # reads it for the uptime line.
@@ -5315,8 +5315,11 @@ def _maybe_start_alarm_ws_proxy() -> None:
                     log.warning("WS proxy: rejected handshake from %s (bad or missing ticket)", peer)
                 await client_ws.close(code=code, reason=reason)
                 return
+            # #519: the AE /ws gate takes the same bearer as its HTTP routes.
+            up_headers = {"Authorization": f"Bearer {_AE_BEARER}"} if _AE_BEARER else None
             try:
-                async with websockets.connect(ae_ws_url, ssl=ae_ssl, open_timeout=4) as up:
+                async with websockets.connect(ae_ws_url, ssl=ae_ssl, open_timeout=4,
+                                              additional_headers=up_headers) as up:
                     await asyncio.gather(
                         _pipe(client_ws, up),
                         _pipe(up, client_ws),

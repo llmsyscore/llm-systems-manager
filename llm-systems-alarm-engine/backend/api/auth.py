@@ -59,12 +59,18 @@ def require_ingest_token(authorization: Optional[str] = Header(default=None)) ->
         raise HTTPException(status_code=401, detail="ingest authentication required")
 
 
+def management_bearer_ok(authorization: Optional[str]) -> bool:
+    """True when the Authorization header satisfies the management gate:
+    `management_token`, else `ingest_token`; open when neither is set."""
+    expected = _configured_management_token() or _configured_token()
+    if not expected:
+        return True
+    provided = _provided_bearer(authorization)
+    return bool(provided) and hmac.compare_digest(provided, expected)
+
+
 def require_management_token(authorization: Optional[str] = Header(default=None)) -> None:
     """FastAPI dependency for the management routes (rules/alerts/notifications):
     enforces `management_token`, else `ingest_token`; no-op when neither is set."""
-    expected = _configured_management_token() or _configured_token()
-    if not expected:
-        return
-    provided = _provided_bearer(authorization)
-    if not provided or not hmac.compare_digest(provided, expected):
+    if not management_bearer_ok(authorization):
         raise HTTPException(status_code=401, detail="management authentication required")

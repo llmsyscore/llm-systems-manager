@@ -68,9 +68,15 @@ class WebSocketHandler {
                 }
             };
 
-            this.ws.onclose = () => {
+            this.ws.onclose = (ev) => {
                 console.log('WebSocket disconnected');
                 if (this.onDisconnect) this.onDisconnect();
+                // 1008 = policy rejection (origin/auth, #519) — retrying
+                // can never succeed, so stop instead of looping forever.
+                if (ev && ev.code === 1008) {
+                    console.warn('WebSocket rejected (policy):', ev.reason || '1008');
+                    return;
+                }
                 this._attemptReconnect();
             };
 

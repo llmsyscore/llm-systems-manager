@@ -795,6 +795,13 @@ def ae_ws_url_for_browser() -> str:
         if wss_port > 0 and _deps.request_is_https():
             return f"wss://{_deps.request_host_no_port()}:{wss_port}/ws/alarm"
         return f"ws://{_deps.request_host_no_port()}:{ws_proxy_port}/ws/alarm"
+    # #519: with a bearer configured the AE /ws rejects browsers (they can't
+    # send Authorization on a handshake) — no bridge means no usable URL.
+    _tok = (getattr(settings.alarm_engine, "management_token", "") or "").strip()
+    if _tok in ("", "REPLACE_ME"):
+        _tok = (getattr(settings.alarm_engine, "ingest_token", "") or "").strip()
+    if _tok and _tok != "REPLACE_ME":
+        return ""
     rewritten = _deps.rewrite_loopback_host(ae_url.rstrip("/"),
                                             _deps.request_host_no_port())
     parts = urlsplit(rewritten)
