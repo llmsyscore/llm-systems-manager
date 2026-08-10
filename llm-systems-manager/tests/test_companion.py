@@ -1010,6 +1010,14 @@ class TestFleetAllHistory:
 
     TS = "2026-08-09T23:40:00+00:00"
 
+    @pytest.fixture(autouse=True)
+    def _caps(self, monkeypatch):
+        """_build_history_rows drops provider-sourced fields with no approved
+        capable agent, so the field set otherwise depends on whatever is
+        registered — llama_tps exists on the live box and not in CI."""
+        monkeypatch.setattr(M.agent_registry, "approved_agent_caps",
+                            lambda: {p: True for p in M.providers.PROVIDERS})
+
     def _series(self, monkeypatch):
         """Two hosts reporting cpu_total, gpu_temp and llama_tps at one ts."""
         per_field = {
