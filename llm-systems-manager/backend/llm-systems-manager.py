@@ -156,7 +156,7 @@ def _local_hostname() -> str:
 # banner reads it. Bump suffix (-1, -2, …) for same-day iterations; roll
 # the date for a new day's first change.
 # ---------------------------------------------------------------------------
-__version__ = "v2026.08.10-2"
+__version__ = "v2026.08.10-3"
 
 # Wall-clock at first import (Cheroot main process); the shutdown banner
 # reads it for the uptime line.
@@ -167,6 +167,7 @@ _startup_ts: float = time.time()
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import provider_state  # type: ignore[import-not-found]  # noqa: E402  # leaf, no cycle
 from _best_effort import best_effort  # type: ignore[import-not-found]  # noqa: E402  # leaf, no cycle
+from _safe_js import safe_js  # type: ignore[import-not-found]  # noqa: E402  # leaf, no cycle
 import providers       # type: ignore[import-not-found]  # noqa: E402,F401  # side-effect: registers specs
 import stream_pool     # type: ignore[import-not-found]  # noqa: E402  # leaf, no cycle
 import stream_health   # type: ignore[import-not-found]  # noqa: E402  # leaf, no cycle
@@ -776,8 +777,7 @@ def index():
     # catalog/history reads by agent (resolved to a host server-side), never
     # by a browser-held hostname. json.dumps + `</` → `<\/` keeps weird
     # values from breaking out of the inline script block.
-    def _safe_js(v):
-        return json.dumps(v).replace("</", "<\\/")
+    _safe_js = safe_js
     # Same alarm-engine WS URL the AE iframe gets via _inject_alarm_ws_url —
     # the manager frontend's toast bus needs it too, otherwise it falls back
     # to a hardcoded ws://<host>:8081/ws that breaks the moment AE TLS is on

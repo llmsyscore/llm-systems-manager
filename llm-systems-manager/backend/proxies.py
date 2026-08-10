@@ -56,6 +56,7 @@ from _best_effort import best_effort  # type: ignore[import-not-found]  # siblin
 from config.unified_config import settings  # type: ignore[import-not-found]
 
 import ae_auth  # type: ignore[import-not-found]  # sibling
+from _safe_js import safe_js  # type: ignore[import-not-found]  # sibling
 
 log = logging.getLogger("llm-systems-manager.proxies")
 
@@ -825,7 +826,7 @@ def _inject_alarm_ws_url(html_bytes: bytes) -> bytes:
     # instead of falling back to the manager's 426 /ws/alarm stub (#519).
     ws = ae_ws_url_for_browser()
     snippet = (b'<script>window.ALARM_WS_URL='
-               + repr(ws).encode("utf-8")
+               + safe_js(ws).encode("utf-8")
                + b';</script></head>')
     if b"</head>" not in html_bytes:
         return html_bytes
