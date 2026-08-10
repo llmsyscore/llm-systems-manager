@@ -186,6 +186,7 @@
     hist: [],            // [{t, v: gen tok/s, p: prompt tok/s}] over 24 h
     trends: [],          // 24 h series per system metric
     cards: [],           // trends + the live headline, as rendered
+    latest: null,        // newest history row
     histAt: 0,
     // Fleet history from the alarm engine, refreshed every 60 s on the 2 s
     // poll and immediately on an explicit refresh. Falls back to the live
@@ -203,6 +204,8 @@
           '/api/history?since_minutes=1440&max_rows=180&fleet=all');
         const rows = Array.isArray(raw) ? raw : [];
         this.trends = CV.trends(rows);
+        // Newest row: absolute VRAM and anything else the live payloads lack.
+        this.latest = rows.length ? rows[rows.length - 1] : null;
         this.hist = rows.map((r) => ({
           t: CV.tsSeconds(r.ts),
           v: sum(r, ['llama_tps', 'lms_tps', 'vllm_tps']),
@@ -224,7 +227,7 @@
       // Before the view model: the fleet tiles read the 24 h peak off it.
       await this.loadHistory(force);
       const vm = CV.glance({ metrics: m, llama: ls, lms, vllm, energy: en,
-        hist: this.hist, trends: this.trends });
+        hist: this.hist, trends: this.trends, latest: this.latest });
       // Live buffer backs the strip only when history is unavailable. Drop
       // samples older than the window so a backgrounded app doesn't redraw a
       // frozen trace when it comes forward.
@@ -323,7 +326,8 @@
       const close = (ADMIN && a.closable)
         ? `<button class="ackbtn danger" data-close="${esc(a.id)}">Close</button>` : '';
       const rule = a.rule ? `<div class="aw rule">${esc(a.rule)}</div>` : '';
-      return `<div class="alert"><div class="sev ${a.sev}">${esc(a.glyph)}</div>`
+      return `<div class="alert" data-alert="${esc(a.id)}">`
+        + `<div class="sev ${a.sev}">${esc(a.glyph)}</div>`
         + `<div class="atext"><div class="am">${esc(a.msg)}</div>${rule}`
         + `<div class="aw">${esc(a.meta)}</div>`
         + `<div class="sevword ${a.tone || a.sev}">${esc(a.word)}</div></div>`
@@ -348,6 +352,7 @@
       $('alertsFiring').innerHTML = firing.map((r) => this.row(r)).join('');
       $('alertsEarlierWrap').hidden = !showEarlier;
       if (showEarlier) $('alertsEarlier').innerHTML = vm.earlier.map((r) => this.row(r)).join('');
+      if (this.focusId) this.focus(this.focusId);
       const empty = firing.length === 0 && !showEarlier;
       $('alertsEmpty').hidden = !empty;
       if (empty) {
@@ -355,6 +360,29 @@
           info: 'No info alerts', resolved: 'Nothing earlier today' }[f] || 'All clear';
         $('alertsEmpty').querySelector('.big').textContent = label;
       }
+    },
+    // Tapping a push notification lands on the alert it was about. The row
+    // may be filtered out or resolved by the time we get here, so reset the
+    // filter to All first and give up quietly if it is genuinely gone.
+    focusId: null,
+    openFrom(id) {
+      this.focusId = id;
+      if (this.filter !== 'all') {
+        this.filter = 'all';
+        $('alertChips').querySelectorAll('.chip').forEach((x) =>
+          x.classList.toggle('on', x.dataset.filter === 'all'));
+      }
+      this.apply();
+    },
+    focus(id) {
+      const row = $('scr-alerts').querySelector(
+        `[data-alert="${(window.CSS && CSS.escape) ? CSS.escape(id) : id}"]`);
+      if (!row) return;
+      this.focusId = null;
+      row.classList.add('focus');
+      row.scrollIntoView({ block: 'center', behavior: 'smooth' });
+      clearTimeout(this._focusT);
+      this._focusT = setTimeout(() => row.classList.remove('focus'), 4000);
     },
     async ack(id) {
       try { await jfetch(`/api/alarm/alerts/${encodeURIComponent(id)}/acknowledge`,
@@ -455,10 +483,16 @@
       $('energySparkFill').setAttribute('d', sp.fill);
 
       const price = today.price_kwh != null ? today.price_kwh : month.price_kwh;
+      const cov = CV.powerCoverage(today);
       const p = this.projection(today, month, price);
       $('energyTiles').innerHTML = [
         { v: EN.fmtUsd(tT.cost_usd), unit: '', k: 'Today',
-          sub: tT.kwh != null ? EN.fmtKwh(tT.kwh) + (price != null ? ' · $' + price + '/kWh' : '') : 'no telemetry' },
+          // Say when the figure covers only part of the fleet — a cost built
+          // from one metered host out of six is not a fleet total.
+          sub: tT.kwh != null
+            ? EN.fmtKwh(tT.kwh) + ' · ' + (cov.partial ? cov.text
+              : (price != null ? '$' + price + '/kWh' : 'all hosts'))
+            : 'no telemetry' },
         { v: p.value, unit: p.unit, k: 'This month', sub: p.sub },
       ].map(tileEl).join('');
 
@@ -1302,7 +1336,10 @@
       navigator.serviceWorker.addEventListener('message', (e) => {
         const d = e.data || {};
         if (d.type !== 'lsm-open' || !d.url) return;
-        const t = tabFromUrl(new URL(d.url, location.origin).search);
+        const q = new URL(d.url, location.origin).search;
+        const id = new URLSearchParams(q).get('alert');
+        if (id) alerts.openFrom(id);
+        const t = tabFromUrl(q);
         if (t) show(t);
       });
     }
@@ -1375,6 +1412,8 @@
     $('btnTest').addEventListener('click', testPush);
     $('tabbar').querySelectorAll('.tab').forEach((b) =>
       b.addEventListener('click', () => show(b.dataset.tab)));
+    const deep = new URLSearchParams(location.search).get('alert');
+    if (deep) alerts.openFrom(deep);
     show(tabFromUrl() || 'glance');
     pollBadge();
     setInterval(pollBadge, 30000);

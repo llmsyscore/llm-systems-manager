@@ -754,7 +754,8 @@ Time: {alert.created_at}
                 # One tag per alert, so a re-fire replaces the phone's existing
                 # notification instead of stacking a duplicate.
                 "tag": f"lsm-alert-{alert.alert_id}",
-                "url": "/companion?tab=alerts",
+                # Deep link to this alert, not just the Alerts tab.
+                "url": f"/companion?tab=alerts&alert={alert.alert_id}",
                 "alert_id": str(alert.alert_id),
                 "event": event,
             }

@@ -63,6 +63,18 @@ describe('companion DOM contract', () => {
     expect(js.includes('tabFromUrl')).toBe(true);
   });
 
+  it('a push notification deep-links to the ALERT, not just the tab', () => {
+    // Rows carry the id the ?alert= parameter is matched against, and both
+    // entry points (cold boot and an already-open app) route through it.
+    expect(js.includes('data-alert=')).toBe(true);
+    expect(js.includes('openFrom')).toBe(true);
+    expect((js.match(/getElementById\('scr-alerts'\)|\$\('scr-alerts'\)/g) || []).length)
+      .toBeGreaterThan(0);
+    const ae = fs.readFileSync(path.resolve(root,
+      '../../llm-systems-alarm-engine/backend/engine/notification_dispatcher.py'), 'utf8');
+    expect(ae).toMatch(/tab=alerts&alert=/);
+  });
+
   it('models, admin and settings screens expose the controller contract ids', () => {
     for (const id of ['modelsServices', 'modelsLoaded', 'modelsAutopilot',
       'modelsPins', 'modelsPinsWrap', 'modelsGatedNote', 'modelsMsg',

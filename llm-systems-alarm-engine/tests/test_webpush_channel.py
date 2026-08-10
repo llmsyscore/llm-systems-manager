@@ -190,7 +190,8 @@ class TestSendWebPush:
         assert call["headers"]["Authorization"] == "Bearer mgmt"
         assert call["json"]["title"] == "GPU hot"
         assert call["json"]["severity"] == "critical"
-        assert call["json"]["url"] == "/companion?tab=alerts"
+        # Deep-links to the alert itself, not just the Alerts tab.
+        assert call["json"]["url"] == f"/companion?tab=alerts&alert={alert.alert_id}"
         assert call["json"]["alert_id"] == str(alert.alert_id)
         assert rec.calls[0]["success"] is True
         assert rec.calls[0]["channel_type"] == "webpush"

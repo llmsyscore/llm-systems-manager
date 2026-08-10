@@ -174,10 +174,31 @@ describe('CView.glance', () => {
       const g = CView.glance({
         metrics: { gpu: { vram_used_mb: 12288, vram_usage_percent: 50 } },
         trends });
-      expect(g.system[1]).toMatchObject({ live: 50, unit: '%', extra: '12.0 GB' });
+      expect(g.system[1]).toMatchObject({ live: 50, unit: '%',
+        extra: '12 / 24 GB' });
     });
 
-    it('has no extra when the live sample carries no GB figure', () => {
+    it('takes absolute VRAM from fleet history when the live block has none', () => {
+      // The host with the GPU need not be the primary llama agent, so the
+      // live payloads can carry a percent with no bytes behind it.
+      const g = CView.glance({ metrics: {}, trends,
+        latest: { gpu_vram_used: 12 * 1073741824, gpu_vram_total: 24 * 1073741824 } });
+      expect(g.system[1].extra).toBe('12 / 24 GB');
+    });
+
+    it('keeps a decimal on a small GPU, where rounding would read as zero', () => {
+      const g = CView.glance({ metrics: {}, trends,
+        latest: { gpu_vram_used: 102031360, gpu_vram_total: 536870912 } });
+      expect(g.system[1].extra).toBe('0.1 / 0.5 GB');
+    });
+
+    it('shows used alone when no total is known', () => {
+      const g = CView.glance({ metrics: {}, trends,
+        latest: { gpu_vram_used: 12 * 1073741824 } });
+      expect(g.system[1].extra).toBe('12 GB');
+    });
+
+    it('has no extra when neither source carries a GB figure', () => {
       expect(CView.glance({ metrics: {}, trends }).system[1].extra).toBe('');
     });
 
@@ -789,5 +810,40 @@ describe('CView.devices', () => {
     // CriOS carries "Safari" in the UA too, so order matters.
     expect(CView.deviceLabel('Mozilla/5.0 (iPhone) CriOS/126 Mobile/15E148 Safari/604'))
       .toBe('iPhone · Chrome');
+  });
+});
+
+describe('CView.powerCoverage', () => {
+  const hosts = (n, withPower) => Array.from({ length: n },
+    (_, i) => ({ hostname: 'h' + i, has_power: i < withPower }));
+
+  it('flags a partial fleet, which is what makes a low cost explicable', () => {
+    // Live symptom: energy read $0.02 all day because five of six hosts
+    // reported no power at all, not because the arithmetic was wrong.
+    const c = CView.powerCoverage({ hosts: hosts(6, 1) });
+    expect(c).toMatchObject({ partial: true, with: 1, total: 6 });
+    expect(c.text).toBe('1 of 6 hosts metered');
+  });
+
+  it('is quiet when every host is metered', () => {
+    expect(CView.powerCoverage({ hosts: hosts(3, 3) }).partial).toBe(false);
+  });
+
+  it('does not claim a partial fleet when there are no hosts at all', () => {
+    expect(CView.powerCoverage({}).partial).toBe(false);
+    expect(CView.powerCoverage(null).partial).toBe(false);
+  });
+
+  it('surfaces on the Home energy tile', () => {
+    const g = CView.glance({ energy: { totals: { cost_usd: 0.02, kwh: 0.148 },
+      price_kwh: 0.15, hosts: hosts(6, 1) } });
+    expect(g.power[1]).toMatchObject({ v: '$0.02' });
+    expect(g.power[1].sub).toBe('148 Wh · 1 of 6 hosts metered');
+  });
+
+  it('shows the price instead once coverage is complete', () => {
+    const g = CView.glance({ energy: { totals: { cost_usd: 1.84, kwh: 9.2 },
+      price_kwh: 0.2, hosts: hosts(6, 6) } });
+    expect(g.power[1].sub).toBe('9.2 kWh · $0.2/kWh');
   });
 });

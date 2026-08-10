@@ -78,6 +78,20 @@
 
   const hostKey = (s) => sysBlock(s).host || (s || {}).host || (s || {}).agent_id || null;
 
+  // How much of the fleet the energy figure actually covers. A cost built
+  // from one reporting host out of six is not wrong arithmetic, but reading
+  // it as a fleet total is — so a partial window says so on the tile.
+  function powerCoverage(en) {
+    const hosts = ((en || {}).hosts) || [];
+    if (!hosts.length) return { partial: false, with: 0, total: 0, text: '' };
+    const withPower = hosts.filter((h) => h && h.has_power).length;
+    return {
+      partial: withPower < hosts.length,
+      with: withPower, total: hosts.length,
+      text: withPower + ' of ' + hosts.length + ' hosts metered',
+    };
+  }
+
   // 1234567 -> "1.2M". Token counts get large; the tile has ~6 characters.
   function compact(v) {
     if (num(v) == null) return '—';
@@ -200,6 +214,16 @@
     const vramUsedGb = num(gpu.vram_used_mb) != null ? gpu.vram_used_mb / 1024 : null;
     const vramTotalGb = (vramUsedGb != null && num(gpu.vram_usage_percent))
       ? vramUsedGb / (gpu.vram_usage_percent / 100) : null;
+    // "12.0 / 24 GB" for the VRAM card's sub-line. The live GPU block belongs
+    // to the primary llama agent, which may not be the host holding the GPU,
+    // so absolute VRAM also comes through fleet history as a fallback.
+    const latest = d.latest || {};
+    const gib = (b) => (num(b) == null ? null : b / 1073741824);
+    const usedGb = vramUsedGb != null ? vramUsedGb : gib(latest.gpu_vram_used);
+    const totalGb = vramTotalGb != null ? vramTotalGb : gib(latest.gpu_vram_total);
+    const vramGb = usedGb == null ? ''
+      : usedGb.toFixed(usedGb < 10 ? 1 : 0) + (totalGb != null
+        ? ' / ' + totalGb.toFixed(totalGb < 10 ? 1 : 0) + ' GB' : ' GB');
     const enT = en.totals || {};
     // Input power sums every provider sample that reports power, deduped by
     // host, then falls back to the energy accumulator's fleet average.
@@ -268,12 +292,14 @@
 
     // Power is the only pair left that is neither a per-provider reading nor
     // a trended one, so it gets its own short section.
+    const cov = powerCoverage(en);
     const power = [
       { v: round(watts) != null ? String(round(watts)) : '—', unit: 'W',
         k: 'Input power', sub: wattsSub },
       { v: usd(enT.cost_usd), k: 'Energy today',
         sub: num(enT.kwh) != null
-          ? kwh(enT.kwh) + (num(en.price_kwh) != null ? ' · $' + en.price_kwh + '/kWh' : '')
+          ? kwh(enT.kwh) + ' · ' + (cov.partial
+            ? cov.text : (num(en.price_kwh) != null ? '$' + en.price_kwh + '/kWh' : 'all hosts'))
           : 'no telemetry' },
     ];
 
@@ -293,8 +319,7 @@
     const HOT = { gpu_temp: 85, gpu_vram: 85, gpu_util: null, cpu_total: null };
     const system = (Array.isArray(d.trends) ? d.trends : []).map((t) => {
       const live = liveNow[t.key] != null ? liveNow[t.key] : t.last;
-      const extra = (t.key === 'gpu_vram' && vramUsedGb != null)
-        ? vramUsedGb.toFixed(1) + ' GB' : '';
+      const extra = (t.key === 'gpu_vram') ? vramGb : '';
       return Object.assign({}, t, {
         live,
         extra,
@@ -730,5 +755,5 @@
   }
 
   return { glance, trends, alerts, alertRow, admin, actions, audit, devices,
-    deviceLabel, age, hbAge, tsSeconds, clockAt, _sevClass: sevClass };
+    deviceLabel, powerCoverage, age, hbAge, tsSeconds, clockAt, _sevClass: sevClass };
 });

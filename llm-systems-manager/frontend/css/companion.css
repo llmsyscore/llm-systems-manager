@@ -224,6 +224,9 @@ body.companion {
 .alert .sevword.crit { color: var(--crit); } .alert .sevword.warn { color: var(--warn); } .alert .sevword.ok { color: var(--ok); }
 .alert .sevword.info { color: var(--accent); }
 .alert .atext { min-width: 0; }
+/* the alert a push notification pointed at */
+.alert.focus { background: var(--bg-card-alt);
+  box-shadow: inset 3px 0 0 var(--accent); }
 .ackbtn { margin-left: auto; align-self: center; flex: none; font-family: var(--mono); font-size: 12px; color: var(--fg);
   background: var(--bg-card-alt); border: 1px solid var(--border-strong); border-radius: 8px; padding: 6px 10px; cursor: pointer; }
 .ackbtn[disabled] { opacity: .5; }
