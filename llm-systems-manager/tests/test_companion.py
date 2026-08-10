@@ -1105,3 +1105,114 @@ class TestFleetAllHistory:
         monkeypatch.setattr(M, "_alarm_engine_url", "http://ae.test")
         r = client.get("/api/history?fleet=not-a-provider")
         assert r.status_code == 400
+
+
+# ── alert retirement is admin-only; ack stays open ──────────────────────────
+
+class TestAlarmProxyAdminGate:
+    """Closing or ignoring an alert removes it from EVERY user's view, so the
+    proxy gates it like a native admin route. Acknowledging only silences it
+    for the acker and stays open to operators. Client-side hiding is cosmetic —
+    these assert the server-side gate.
+    """
+
+    @staticmethod
+    def _ctx(path, method="POST", json_body=None):
+        import proxies
+        kwargs = {"method": method}
+        if json_body is not None:
+            kwargs["json"] = json_body
+        with M.app.test_request_context("/api/alarm/" + path, **kwargs):
+            return proxies._alarm_admin_required(path)
+
+    @pytest.mark.parametrize("path", [
+        "alerts/abc-123/close",
+        "alerts/abc-123/ignore",
+        "alerts/close-all",
+        "alerts/ignore-all",
+        "admin/self-restart",
+        "dbstats",
+    ])
+    def test_retiring_routes_require_admin(self, path):
+        assert self._ctx(path) is True
+
+    @pytest.mark.parametrize("path", [
+        "alerts/abc-123/acknowledge",
+        "alerts/abc-123/read",
+    ])
+    def test_acknowledge_and_read_stay_open(self, path):
+        assert self._ctx(path) is False
+
+    def test_reads_are_never_gated(self):
+        for path in ("alerts/", "alerts/active", "rules", "metrics/system/cpu_total"):
+            assert self._ctx(path, method="GET") is False, path
+
+    def test_delete_of_an_alert_is_gated(self):
+        assert self._ctx("alerts/abc-123", method="DELETE") is True
+
+    def test_bulk_is_classified_by_its_body_not_its_path(self):
+        """The verb lives in the payload, so the path alone cannot decide."""
+        assert self._ctx("alerts/bulk", json_body={"action": "close"}) is True
+        assert self._ctx("alerts/bulk", json_body={"action": "ignore"}) is True
+        assert self._ctx("alerts/bulk", json_body={"action": "acknowledge"}) is False
+
+    def test_a_bulk_body_that_is_not_an_object_does_not_crash_the_gate(self):
+        for body in ([1, 2], "x", 7):
+            assert self._ctx("alerts/bulk", json_body=body) is False
+
+    def test_a_trailing_slash_does_not_slip_past(self):
+        assert self._ctx("alerts/abc-123/close/") is True
+
+    def test_the_operator_is_actually_refused_end_to_end(self, operator):
+        r = operator.post("/api/alarm/alerts/abc-123/close")
+        assert r.status_code == 403
+
+    def test_the_operator_may_still_acknowledge(self, operator, monkeypatch):
+        """Not a 403: it reaches the proxy, which is all this asserts."""
+        import proxies
+        monkeypatch.setattr(proxies, "_proxy_alarm_engine",
+                            lambda path: ("relayed", 200))
+        r = operator.post("/api/alarm/alerts/abc-123/acknowledge")
+        assert r.status_code == 200
+
+
+class TestPushDeviceRoster:
+    def test_admins_get_the_full_endpoint_and_identifying_metadata(
+            self, client, sandbox):
+        companion._store.add(_sub(), ua="Mozilla/5.0 (iPhone) Safari/604")
+        body = client.get("/api/companion/push/subscriptions").get_json()
+        assert body["devices"][0]["endpoint"] == _sub()["endpoint"]
+        assert "iPhone" in body["devices"][0]["ua"]
+        assert body["devices"][0]["created"] > 0
+
+    def test_a_non_admin_gets_no_roster_at_all(self, operator, sandbox):
+        companion._store.add(_sub(), ua="ua")
+        body = operator.get("/api/companion/push/subscriptions").get_json()
+        assert "devices" not in body and "endpoints" not in body
+        assert body["count"] == 1
+
+    def test_the_roster_is_ordered_oldest_first(self, sandbox):
+        store = companion.SubscriptionStore(sandbox / "d.json")
+        store.add(_sub(endpoint="https://p.example/old"))
+        store.add(_sub(endpoint="https://p.example/new"))
+        eps = [d["endpoint"] for d in store.devices()]
+        assert eps == ["https://p.example/old", "https://p.example/new"]
+
+    def test_a_corrupt_entry_is_skipped_not_fatal(self, sandbox):
+        path = sandbox / "d.json"
+        path.write_text(json.dumps({
+            "https://p.example/ok": {"subscription": _sub(
+                endpoint="https://p.example/ok"), "ua": "x", "created": 1},
+            "junk": "not a dict",
+            "https://p.example/bad": {"subscription": {"no": "endpoint"}},
+        }))
+        devices = companion.SubscriptionStore(path).devices()
+        assert [d["endpoint"] for d in devices] == ["https://p.example/ok"]
+
+    def test_removal_uses_the_endpoint_the_roster_hands_back(self, client, sandbox):
+        companion._store.add(_sub(), ua="ua")
+        endpoint = client.get(
+            "/api/companion/push/subscriptions").get_json()["devices"][0]["endpoint"]
+        r = client.post("/api/companion/push/unsubscribe", json={"endpoint": endpoint})
+        assert r.get_json() == {"ok": True, "removed": True}
+        assert companion._store.count() == 0

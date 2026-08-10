@@ -321,6 +321,21 @@ class SubscriptionStore:
                 if isinstance(e, dict) and isinstance(e.get("subscription"), dict)
                 and isinstance(e["subscription"].get("endpoint"), str)]
 
+    def devices(self) -> list[dict]:
+        """Roster for the admin screen: endpoint plus the user-agent and
+        registration time that let an operator tell one device from another."""
+        out = []
+        for entry in self._read().values():
+            if not isinstance(entry, dict):
+                continue
+            sub = entry.get("subscription")
+            if not isinstance(sub, dict) or not isinstance(sub.get("endpoint"), str):
+                continue
+            out.append({"endpoint": sub["endpoint"],
+                        "ua": str(entry.get("ua") or "")[:200],
+                        "created": entry.get("created")})
+        return sorted(out, key=lambda d: d.get("created") or 0)
+
     def count(self) -> int:
         return len(self._read())
 
@@ -565,8 +580,10 @@ def register_routes(app, ctx, static_dir: Path) -> None:
         subs = _store.list()
         if ctx.require_admin() is not None:
             return jsonify({"ok": True, "count": len(subs)})
+        # Admins also get the roster they need to identify and retire a device.
         return jsonify({"ok": True, "count": len(subs),
-                        "endpoints": [s["endpoint"][:48] for s in subs]})
+                        "endpoints": [s["endpoint"][:48] for s in subs],
+                        "devices": _store.devices()})
 
     @app.route("/api/companion/push/subscribe", methods=["POST"])
     def companion_push_subscribe():

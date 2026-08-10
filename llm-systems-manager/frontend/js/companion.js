@@ -70,11 +70,19 @@
   // ── render helpers ───────────────────────────────────────────────────────
   function providerRow(p) {
     const suffix = p.rSuffix ? `<small>${esc(p.rSuffix)}</small>` : '';
+    // stats and the single right-hand column are alternatives, not both:
+    // Home shows gpu/cpu/ram inline, Energy keeps its one watts column.
+    const stats = (p.stats || []).map((s) =>
+      `<span><b>${esc(s.v)}</b>${esc(s.k)}</span>`).join('');
     return `<div class="prov"><span class="pstat ${p.status}"></span>`
       + `<div class="atxt"><div class="pn">${esc(p.name)}</div>`
-      + `<div class="pd">${esc(p.detail)}</div></div>`
-      + `<div class="pr"><b${p.warn ? ' class="warn"' : ''}>${esc(p.rN)}${suffix}</b>`
-      + `${esc(p.rUnit)}</div></div>`;
+      + `<div class="pd">${esc(p.detail)}</div>`
+      + (stats ? `<div class="pstats">${stats}</div>` : '')
+      + '</div>'
+      + (p.stats ? ''
+        : `<div class="pr"><b${p.warn ? ' class="warn"' : ''}>${esc(p.rN)}${suffix}</b>`
+          + `${esc(p.rUnit)}</div>`)
+      + '</div>';
   }
   // viewBox-space top padding that clears the hero text at any breakpoint, so
   // the trend line can never run through the numbers.
@@ -298,11 +306,15 @@
     row(a) {
       const ack = a.ackable
         ? `<button class="ackbtn" data-ack="${esc(a.id)}">Ack</button>` : '';
+      const close = (ADMIN && a.closable)
+        ? `<button class="ackbtn danger" data-close="${esc(a.id)}">Close</button>` : '';
       const rule = a.rule ? `<div class="aw rule">${esc(a.rule)}</div>` : '';
       return `<div class="alert"><div class="sev ${a.sev}">${esc(a.glyph)}</div>`
         + `<div class="atext"><div class="am">${esc(a.msg)}</div>${rule}`
         + `<div class="aw">${esc(a.meta)}</div>`
-        + `<div class="sevword ${a.tone || a.sev}">${esc(a.word)}</div></div>${ack}</div>`;
+        + `<div class="sevword ${a.tone || a.sev}">${esc(a.word)}</div></div>`
+        + (ack || close ? `<div class="acts">${ack}${close}</div>` : '')
+        + '</div>';
     },
     async refresh() {
       const list = await jfetch('/api/alarm/alerts/?limit=100&include_closed=true')
@@ -335,6 +347,18 @@
         { method: 'POST' }); } catch (_) { /* refresh reflects state */ }
       this.refresh();
     },
+    confirmClose(id, msg) {
+      sheet.confirm('Close alert',
+        'Retires "' + msg + '" for everyone, not just this device. It '
+        + 'reappears only if the rule fires again.', 'Close', true,
+        async () => {
+          try {
+            await jfetch(`/api/alarm/alerts/${encodeURIComponent(id)}/close`,
+              { method: 'POST' });
+          } catch (_) { /* refresh reflects state */ }
+          this.refresh();
+        });
+    },
     start() {
       $('alertChips').querySelectorAll('.chip').forEach((c) => {
         c.onclick = () => {
@@ -346,7 +370,13 @@
       });
       document.getElementById('scr-alerts').onclick = (e) => {
         const b = e.target.closest('[data-ack]');
-        if (b) this.ack(b.dataset.ack);
+        if (b) return this.ack(b.dataset.ack);
+        const c = e.target.closest('[data-close]');
+        if (c) {
+          const all = this.vm.firing.concat(this.vm.earlier);
+          const row = all.find((r) => String(r.id) === c.dataset.close);
+          return this.confirmClose(c.dataset.close, (row && row.msg) || 'this alert');
+        }
       };
       $('alertsRefresh').onclick = async () => {
         const btn = $('alertsRefresh');
@@ -612,6 +642,7 @@
           + `<div class="ad">${esc(r.detail)}</div></div>${right}</div>`;
       }).join('');
 
+      this.loadDevices();
       const rows = CV.audit((audit || {}).entries);
       $('adminAudit').innerHTML = rows.map((r) =>
         `<div class="arow"><div class="atxt"><div class="an">${esc(r.name)}</div>`
@@ -621,6 +652,40 @@
         + '</div>').join('')
         || '<div class="arow"><div class="atxt"><div class="an">No entries</div>'
           + '<div class="ad">admin actions are recorded here</div></div></div>';
+    },
+    // Push-device roster. Hidden behind a button: the list identifies other
+    // people's phones, so it is shown on request, not by default.
+    devicesOpen: false,
+    async loadDevices() {
+      let subs = null;
+      try { subs = await jfetch('/api/companion/push/subscriptions'); }
+      catch (_) { subs = null; }
+      const n = subs ? subs.count : null;
+      $('adminDeviceCount').textContent = n == null ? 'unavailable'
+        : n + (n === 1 ? ' device' : ' devices') + ' can be notified';
+      const mine = await subscription();
+      const rows = CV.devices((subs || {}).devices, mine && mine.endpoint);
+      $('adminDevices').hidden = !this.devicesOpen;
+      $('btnDevices').textContent = this.devicesOpen ? 'Hide' : 'Show';
+      if (!this.devicesOpen) return;
+      $('adminDevices').innerHTML = rows.map((d) =>
+        `<div class="arow"><div class="atxt">`
+        + `<div class="an">${esc(d.name)}${d.self ? ' · this device' : ''}</div>`
+        + `<div class="ad">${esc(d.detail)}</div></div>`
+        + `<button class="btn danger" data-devrm="${esc(d.endpoint)}" `
+        + `data-devname="${esc(d.name)}">Remove</button></div>`).join('')
+        || '<div class="arow"><div class="atxt"><div class="an">No devices</div>'
+          + '<div class="ad">enable push from a phone\'s Settings tab</div></div></div>';
+    },
+    confirmRemoveDevice(endpoint, name) {
+      sheet.confirm('Remove ' + name,
+        'This device stops receiving alarm notifications. It can opt back in '
+        + 'from its own Settings tab.', 'Remove', true,
+        () => this.act('remove device', async () => {
+          const r = await jpost('/api/companion/push/unsubscribe', { endpoint });
+          await this.loadDevices();
+          return r;
+        }));
     },
     // Static snapshot by default; live tail is opt-in because an open SSE
     // stream holds a manager worker and burns phone battery.
@@ -674,6 +739,12 @@
     },
     start() {
       $('scr-admin').onclick = (e) => {
+        if (e.target.closest('#btnDevices')) {
+          this.devicesOpen = !this.devicesOpen;
+          return this.loadDevices();
+        }
+        const rm = e.target.closest('[data-devrm]');
+        if (rm) return this.confirmRemoveDevice(rm.dataset.devrm, rm.dataset.devname);
         const svc = e.target.closest('[data-svc]');
         if (svc) {
           const COPY = {

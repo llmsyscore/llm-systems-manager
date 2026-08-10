@@ -156,7 +156,7 @@ def _local_hostname() -> str:
 # banner reads it. Bump suffix (-1, -2, …) for same-day iterations; roll
 # the date for a new day's first change.
 # ---------------------------------------------------------------------------
-__version__ = "v2026.08.09-6"
+__version__ = "v2026.08.09-7"
 
 # Wall-clock at first import (Cheroot main process); the shutdown banner
 # reads it for the uptime line.
@@ -2386,6 +2386,9 @@ def get_lmstudio_metrics():
         data["gateway_tokens"] = (gateway_usage.counters().get(aid)
                                   or {"gen": 0, "prompt": 0})
         data["gateway_rates"] = gateway_usage.last_rates(aid)
+        # LM Studio publishes no request/queue telemetry, so gateway-proxied
+        # requests are the only in-flight signal that exists for it.
+        data["gateway_inflight"] = gateway_usage.inflight(aid)
     return jsonify(data)
 
 

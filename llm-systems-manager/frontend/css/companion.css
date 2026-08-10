@@ -156,6 +156,10 @@ body.companion {
 .prov .pn { font-size: 15px; font-weight: 600; }
 .prov .pd { font-family: var(--mono); font-size: 12px; color: var(--fg-muted); margin-top: 3px;
   overflow-wrap: anywhere; }
+/* gpu / cpu / ram side by side under a provider's detail line */
+.pstats { display: flex; gap: 14px; margin-top: 6px; }
+.pstats span { font-family: var(--mono); font-size: 10.5px; color: var(--fg-dim); }
+.pstats b { font-size: 13px; font-weight: 600; color: var(--fg); margin-right: 3px; }
 .prov .pr, .arow .pr { margin-left: auto; font-family: var(--mono); font-size: 12px; color: var(--fg-muted); text-align: right; flex: none; }
 .prov .pr b, .arow .pr b { display: block; color: var(--fg); font-weight: 600; font-size: 14.5px; }
 .prov .pr b small, .arow .pr b small { font-size: 11px; font-weight: 400;
@@ -219,6 +223,11 @@ body.companion {
 .ackbtn { margin-left: auto; align-self: center; flex: none; font-family: var(--mono); font-size: 12px; color: var(--fg);
   background: var(--bg-card-alt); border: 1px solid var(--border-strong); border-radius: 8px; padding: 6px 10px; cursor: pointer; }
 .ackbtn[disabled] { opacity: .5; }
+.ackbtn.danger { color: var(--crit); border-color: var(--crit); }
+/* Ack + Close stack on a phone rather than squeezing the message column. */
+.alert .acts { margin-left: auto; align-self: center; flex: none;
+  display: flex; flex-direction: column; gap: 6px; }
+.alert .acts .ackbtn { margin-left: 0; }
 .resolvedhead { display: flex; align-items: center; gap: 8px; color: var(--fg-dim); font-family: var(--mono);
   font-size: 11px; letter-spacing: .14em; text-transform: uppercase; padding: 6px 4px 0; }
 .resolvedhead::after { content: ""; flex: 1; height: 1px; background: var(--border-soft); }

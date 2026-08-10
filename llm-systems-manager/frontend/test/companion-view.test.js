@@ -77,19 +77,26 @@ describe('CView.glance', () => {
       metrics: { ...full.metrics, gpu: { ...full.metrics.gpu, gpu_util_percent: 96 } },
       vllm: { vllm: { state: 'running', model: 'mixtral' },
               system: { gpu: { gpu_util_percent: 12 } } } });
-    expect(g.providers.map((p) => p.rUnit)).toEqual(['gpu', 'gpu', 'gpu']);
+    // Every row reads gpu / cpu / ram for its own host.
+    expect(g.providers.map((p) => p.stats.map((s) => s.k)))
+      .toEqual([['gpu', 'cpu', 'ram'], ['gpu', 'cpu', 'ram'], ['gpu', 'cpu', 'ram']]);
     expect(g.providers[0]).toMatchObject({ status: 'ok', name: 'llama.cpp',
-      detail: 'generating · qwen3-32b-q4_k_m', rN: '96%' });
+      detail: 'generating · qwen3-32b-q4_k_m' });
+    expect(g.providers[0].stats[0]).toEqual({ k: 'gpu', v: '96%' });
     expect(g.providers[1]).toMatchObject({ status: 'ok', name: 'LM Studio',
-      detail: 'generating · llama-3.3-70b', rN: '71%' });
+      detail: 'generating · llama-3.3-70b' });
+    expect(g.providers[1].stats[0]).toEqual({ k: 'gpu', v: '71%' });
     expect(g.providers[2]).toMatchObject({ status: 'ok', name: 'vLLM',
-      detail: 'idle · mixtral', rN: '12%' });
+      detail: 'idle · mixtral' });
+    expect(g.providers[2].stats[0]).toEqual({ k: 'gpu', v: '12%' });
   });
 
   it('a provider with no GPU telemetry dashes its GPU cell, keeps its status', () => {
     const g = CView.glance(full);
     expect(g.providers[2]).toMatchObject({ status: 'idle', name: 'vLLM',
-      detail: 'stopped', rN: '—', rUnit: 'gpu' });
+      detail: 'stopped' });
+    expect(g.providers[2].stats).toEqual([{ k: 'gpu', v: '—' },
+      { k: 'cpu', v: '—' }, { k: 'ram', v: '—' }]);
   });
 
   it('LMS: an IDLE ps row is loaded-not-generating, not absent', () => {
@@ -97,7 +104,8 @@ describe('CView.glance', () => {
     const g = CView.glance({ lms: { ps: [{ model: 'nvidia/nemotron-3-nano-4b', status: 'IDLE' }],
       system: { host: 'mac-studio' }, mac_power: { gpu_busy_pct: 4 } } });
     expect(g.providers[1]).toMatchObject({ status: 'ok',
-      detail: 'idle · nvidia/nemotron-3-nano-4b', rN: '4%' });
+      detail: 'idle · nvidia/nemotron-3-nano-4b' });
+    expect(g.providers[1].stats[0]).toEqual({ k: 'gpu', v: '4%' });
   });
 
   it('system tiles: temp, VRAM with total + hot flag, PSU power, energy today', () => {
@@ -124,7 +132,7 @@ describe('CView.glance', () => {
     expect(g.hero.n).toBe('0.0');
     expect(g.hero.label).toContain('idle');
     expect(g.providers.every((p) => p.status === 'idle')).toBe(true);
-    expect(g.providers.every((p) => p.rN === '—')).toBe(true);
+    expect(g.providers.every((p) => p.stats.every((s) => s.v === '—'))).toBe(true);
     expect(g.tiles[0].v).toBe('—');
     expect(g.tiles[2]).toMatchObject({ v: '—', sub: 'no telemetry' });
     expect(g.tiles[3].sub).toBe('no telemetry');
@@ -210,6 +218,30 @@ describe('CView.glance', () => {
         sub: '3 queued' });
     });
 
+    // LM Studio publishes no request or queue counters, so its share comes
+    // from the manager gateway's in-flight tally; without it the card read 0
+    // while the LMS host was serving.
+    it('counts LM Studio via the gateway in-flight tally', () => {
+      const f = CView.glance({ ...busy,
+        lms: { ...busy.lms, gateway_inflight: 4 } }).fleet;
+      expect(f[1].v).toBe('11');   // llama 3 + vLLM 4 + LM Studio 4
+    });
+
+    it('names the providers whose requests are actually counted', () => {
+      const f = CView.glance({
+        lms: { ps: [{ model: 'm', status: 'IDLE' }], gateway_inflight: 0 },
+      }).fleet;
+      expect(f[1]).toMatchObject({ v: '0', sub: 'via LM Studio' });
+    });
+
+    it('a provider with no counter is left out of the coverage line', () => {
+      const f = CView.glance({
+        metrics: { llama: { active_slots: 2 } },
+        lms: { ps: [{ model: 'm', status: 'IDLE' }] },   // no gateway_inflight
+      }).fleet;
+      expect(f[1]).toMatchObject({ v: '2', sub: 'via llama.cpp' });
+    });
+
     it('loaded counts and names the providers actually serving a model', () => {
       const f = CView.glance(busy).fleet;
       expect(f[2]).toMatchObject({ k: 'Loaded', v: '3', unit: 'models' });
@@ -229,7 +261,9 @@ describe('CView.glance', () => {
     it('an idle fleet says so rather than showing dashes everywhere', () => {
       const f = CView.glance({ metrics: { llama: { tokens_per_second: 0 } } }).fleet;
       expect(f[0]).toMatchObject({ v: '—', sub: 'idle · 0.0 tok/s now' });
-      expect(f[1].sub).toBe('nothing queued');
+      // No provider reported a request counter at all — say that, rather
+      // than letting a 0 read as "nothing is running".
+      expect(f[1]).toMatchObject({ v: '—', sub: 'no request counters' });
       expect(f[2]).toMatchObject({ v: '0', unit: 'models', sub: 'none loaded' });
       expect(f[3]).toMatchObject({ v: '—', sub: 'no history yet' });
     });
@@ -684,5 +718,47 @@ describe('CView.audit', () => {
     expect(CView.audit(null)).toEqual([]);
     expect(CView.audit([{}])[0].name).toBe('action');
     expect(CView.audit(Array.from({ length: 90 }, () => ({})))).toHaveLength(40);
+  });
+});
+
+describe('CView.devices', () => {
+  const list = [
+    { endpoint: 'https://web.push.apple.com/AAAA111122223333', created: NOW - 7200,
+      ua: 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605 Version/17.5 Mobile Safari/604' },
+    { endpoint: 'https://fcm.googleapis.com/fcm/send/BBBB444455556666', created: NOW - 60,
+      ua: 'Mozilla/5.0 (Linux; Android 14) AppleWebKit/537 Chrome/126 Mobile Safari/537' },
+  ];
+
+  it('names a device by OS and browser, not by its opaque endpoint', () => {
+    const rows = CView.devices(list, null, NOW);
+    expect(rows[0].name).toBe('iPhone · Safari');
+    expect(rows[1].name).toBe('Android · Chrome');
+  });
+
+  it('shows an age and an endpoint tail so two identical clients differ', () => {
+    const rows = CView.devices(list, null, NOW);
+    expect(rows[0].detail).toBe('added 2h ago · …1122223333');
+    expect(rows[1].detail).toBe('added 1m ago · …4455556666');
+  });
+
+  it('flags the calling device so an admin does not cut themselves off blind', () => {
+    const rows = CView.devices(list, list[1].endpoint, NOW);
+    expect(rows.map((r) => r.self)).toEqual([false, true]);
+  });
+
+  it('keeps the full endpoint, which is what removal is keyed on', () => {
+    expect(CView.devices(list, null, NOW)[0].endpoint).toBe(list[0].endpoint);
+  });
+
+  it('degrades rather than throwing on junk', () => {
+    expect(CView.devices(null, null, NOW)).toEqual([]);
+    const [row] = CView.devices([{ endpoint: 'https://x.example/e' }], null, NOW);
+    expect(row.name).toBe('unknown device');
+  });
+
+  it('Chrome on iOS reads as Chrome, not Safari', () => {
+    // CriOS carries "Safari" in the UA too, so order matters.
+    expect(CView.deviceLabel('Mozilla/5.0 (iPhone) CriOS/126 Mobile/15E148 Safari/604'))
+      .toBe('iPhone · Chrome');
   });
 });

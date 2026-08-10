@@ -154,25 +154,37 @@
       || lmsLoaded.some((p) => !/^idle$/i.test(String(p.status || '')));
     const vllmGen = num(vllm.requests_running) > 0 || num(vllm.tokens_per_second) > 0;
 
-    const provRow = (name, ok, word, model, g) => ({
-      status: ok ? 'ok' : 'idle',
-      name,
-      detail: model ? word + ' · ' + model : word,
-      rN: g == null ? '—' : Math.round(g) + '%',
-      rUnit: 'gpu',
-    });
+    // Host load per provider. cpu_total is a float on the system block;
+    // RAM is nested under ram.percent (charts.js reads the same pair).
+    const hostLoad = (s) => {
+      const b = sysBlock(s);
+      return { cpu: num(b.cpu_total), ram: num((b.ram || {}).percent) };
+    };
+    const pct = (v) => (num(v) == null ? '—' : Math.round(v) + '%');
+    const provRow = (name, ok, word, model, g, s) => {
+      const load = hostLoad(s);
+      return {
+        status: ok ? 'ok' : 'idle',
+        name,
+        detail: model ? word + ' · ' + model : word,
+        // GPU, CPU and RAM read side by side; the caller drops the single
+        // right-hand column when it passes these.
+        stats: [{ k: 'gpu', v: pct(g) }, { k: 'cpu', v: pct(load.cpu) },
+          { k: 'ram', v: pct(load.ram) }],
+      };
+    };
     const providers = [
       provRow('llama.cpp', llamaAwake && llamaResident,
         llamaResident ? (llamaGen ? 'generating' : 'idle')
           : (ls.state === 'sleeping' ? 'sleeping' : 'no model'),
-        llamaResident ? llamaModel : null, llamaGpu),
+        llamaResident ? llamaModel : null, llamaGpu, m),
       provRow('LM Studio', !!lmsModel,
         lmsModel ? (lmsGen ? 'generating' : 'idle') : 'no model',
-        lmsModel, lmsGpu),
+        lmsModel, lmsGpu, lms),
       provRow('vLLM', vllmRunning,
         vllmRunning ? (vllmGen ? 'generating' : 'idle')
           : (vllm.state ? String(vllm.state) : 'stopped'),
-        vllmRunning ? (vllm.model || null) : null, vllmGpu),
+        vllmRunning ? (vllm.model || null) : null, vllmGpu, vs),
     ];
 
     // The GPU block comes from the PRIMARY llama agent, which on a split
@@ -220,8 +232,16 @@
       && num(lm.active_slots) == null)
       ? null
       : Math.max(num(lm.requests_processing) || 0, num(lm.active_slots) || 0);
-    const inflight = total([llamaBusy, vllm.requests_running]);
+    // LM Studio reports no request or queue counters of its own, so its share
+    // comes from the manager gateway's in-flight tally — which sees only
+    // gateway-routed traffic. Name the providers actually counted rather than
+    // letting a 0 read as "the fleet is idle".
+    const lmsInflight = num(lms.gateway_inflight);
+    const inflight = total([llamaBusy, vllm.requests_running, lmsInflight]);
     const queued = total([lm.requests_deferred, vllm.requests_waiting]);
+    const counted = [llamaBusy != null ? 'llama.cpp' : null,
+      lmsInflight != null ? 'LM Studio' : null,
+      num(vllm.requests_running) != null ? 'vLLM' : null].filter(Boolean);
     const loadedOn = [llamaResident ? 'llama.cpp' : null, lmsModel ? 'LM Studio' : null,
       (vllmRunning && vllm.model) ? 'vLLM' : null].filter(Boolean);
     // Rates are bursty — they read 0 between requests — so the headline is the
@@ -237,7 +257,8 @@
             : 'no history yet') },
       { v: inflight != null ? String(Math.round(inflight)) : '—', unit: 'req',
         k: 'In flight',
-        sub: num(queued) ? Math.round(queued) + ' queued' : 'nothing queued' },
+        sub: num(queued) ? Math.round(queued) + ' queued'
+          : (counted.length ? 'via ' + counted.join(' + ') : 'no request counters') },
       { v: String(loadedOn.length), unit: loadedOn.length === 1 ? 'model' : 'models',
         k: 'Loaded', sub: loadedOn.join(' + ') || 'none loaded' },
       { v: win.peak > 0 ? win.peak.toFixed(0) : '—', unit: 'tok/s', k: '24 h peak',
@@ -361,6 +382,9 @@
       meta: path + ' · ' + host + ' · ' + age(when, nowSec),
       // Resolved/info rows never offer Ack, whatever their status field says.
       ackable: a.status === 'active' && !(resolved || info),
+      // Closing retires the alert for everyone, so the UI offers it only to
+      // admins — the manager gates the proxied route the same way.
+      closable: !resolved,
       acked: a.status === 'acknowledged',
       info,
       resolved,
@@ -483,6 +507,30 @@
       },
       services, agents, pending, rows,
     };
+  }
+
+  // Push-subscription roster -> one row per device. The endpoint is opaque
+  // and long, so a device is named by its browser/OS with a short endpoint
+  // fragment to disambiguate two identical clients.
+  const _UA_OS = [[/iPhone/i, 'iPhone'], [/iPad/i, 'iPad'], [/Macintosh/i, 'Mac'],
+    [/Android/i, 'Android'], [/Windows/i, 'Windows'], [/Linux/i, 'Linux']];
+  const _UA_APP = [[/CriOS|Chrome/i, 'Chrome'], [/FxiOS|Firefox/i, 'Firefox'],
+    [/Edg/i, 'Edge'], [/Safari/i, 'Safari']];
+
+  function deviceLabel(ua) {
+    const pick = (table) => (table.find(([re]) => re.test(String(ua || ''))) || [])[1];
+    const os = pick(_UA_OS), app = pick(_UA_APP);
+    return [os, app].filter(Boolean).join(' · ') || 'unknown device';
+  }
+
+  function devices(list, selfEndpoint, nowSec) {
+    return (list || []).map((d) => ({
+      endpoint: d.endpoint,
+      name: deviceLabel(d.ua),
+      detail: 'added ' + age(d.created, nowSec)
+        + ' · …' + String(d.endpoint || '').slice(-10),
+      self: !!selfEndpoint && d.endpoint === selfEndpoint,
+    }));
   }
 
   // Audit-log rows (#217 endpoint) -> one line each.
@@ -660,6 +708,6 @@
     };
   }
 
-  return { glance, trends, alerts, alertRow, admin, actions, audit, age, hbAge,
-    tsSeconds, clockAt, _sevClass: sevClass };
+  return { glance, trends, alerts, alertRow, admin, actions, audit, devices,
+    deviceLabel, age, hbAge, tsSeconds, clockAt, _sevClass: sevClass };
 });

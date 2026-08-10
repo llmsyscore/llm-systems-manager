@@ -44,6 +44,13 @@ describe('companion DOM contract', () => {
     expect(js.includes('fleet=all')).toBe(true);
   });
 
+  it('the Close control is admin-gated in the client too', () => {
+    // The manager gates the proxied route; this keeps the button from being
+    // offered to an operator who could only ever get a 403 from it.
+    expect(js).toMatch(/ADMIN && a\.closable/);
+    expect(js.includes('/close')).toBe(true);
+  });
+
   it('the push opt-in button also takes the device back out', () => {
     expect(js.includes('togglePush')).toBe(true);
     expect(js.includes("'/api/companion/push/unsubscribe'")).toBe(true);
@@ -61,6 +68,7 @@ describe('companion DOM contract', () => {
       'modelsPins', 'modelsPinsWrap', 'modelsGatedNote', 'modelsMsg',
       'adminManager', 'adminAgents', 'adminRows', 'adminAudit',
       'adminPending', 'adminPendingWrap', 'adminGatedNote', 'adminMsg',
+      'adminDevices', 'adminDeviceCount', 'btnDevices',
       'settingsRelease', 'settingsUser', 'settingsMsg',
       'themeChips', 'pushStatus', 'pushCount', 'btnEnable', 'btnTest',
       'sheet', 'sheetTitle', 'sheetBody', 'sheetCancel']) {

@@ -44,6 +44,39 @@ def counters() -> dict:
         return {aid: dict(c) for aid, c in _counters.items()}
 
 
+# In-flight gateway requests per agent. LM Studio publishes no request or
+# queue telemetry of its own — the only lms metric that reaches the alarm
+# engine is server_port — so proxied requests are the one countable signal.
+_inflight: dict = {}
+
+
+def begin(agent_id: str) -> None:
+    if not agent_id:
+        return
+    with _lock:
+        _inflight[agent_id] = _inflight.get(agent_id, 0) + 1
+
+
+def end(agent_id: str) -> None:
+    """Idempotent below zero: a double-close must not drive the count negative."""
+    if not agent_id:
+        return
+    with _lock:
+        n = _inflight.get(agent_id, 0) - 1
+        if n > 0:
+            _inflight[agent_id] = n
+        else:
+            _inflight.pop(agent_id, None)
+
+
+def inflight(agent_id: "str | None" = None):
+    """Count for one agent, or the whole {agent_id: n} snapshot."""
+    with _lock:
+        if agent_id is not None:
+            return _inflight.get(agent_id, 0)
+        return dict(_inflight)
+
+
 def metric_points(agent_hosts: dict, now: "float | None" = None) -> list:
     """Alarm-engine metric points for every LMS agent: cumulative token
     totals plus tok/s rates derived from the previous call's snapshot."""
