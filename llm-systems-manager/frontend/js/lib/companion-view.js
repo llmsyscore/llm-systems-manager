@@ -276,13 +276,16 @@
   }
 
   // ── 24 h fleet trends (Home mini graphs) ────────────────────────────────
-  // Keys are /api/history legacy field names; the manager already aggregates
-  // each one across hosts (gpu_util mean, gpu_temp/gpu_vram max, cpu mean).
+  // Keys are /api/history legacy field names, already aggregated across hosts
+  // by ?fleet=all (utilization takes the busiest host, temps the hottest).
+  // GPU residency arrives under DIFFERENT metric names per GPU family —
+  // gpu_util is the CUDA/ROCm path, mac_gpu_busy the Apple SoC one — so a card
+  // reading only the first is blind to every Mac in the fleet.
   const TREND_SPECS = [
-    { key: 'gpu_util', name: 'GPU busy', unit: '%', dp: 0 },
-    { key: 'gpu_temp', name: 'GPU temp', unit: '°C', dp: 0 },
-    { key: 'gpu_vram', name: 'VRAM', unit: '%', dp: 0 },
-    { key: 'cpu_total', name: 'CPU', unit: '%', dp: 0 },
+    { keys: ['gpu_util', 'mac_gpu_busy'], name: 'GPU busy', unit: '%', dp: 0 },
+    { keys: ['gpu_temp'], name: 'GPU temp', unit: '°C', dp: 0 },
+    { keys: ['gpu_vram'], name: 'VRAM', unit: '%', dp: 0 },
+    { keys: ['cpu_total'], name: 'CPU', unit: '%', dp: 0 },
   ];
 
   function trends(rows) {
@@ -291,7 +294,12 @@
       const pts = [];
       list.forEach((r) => {
         const t = tsSeconds((r || {}).ts);
-        const v = num((r || {})[s.key]);
+        // Each key is already a per-family fleet aggregate; the busiest wins.
+        let v = null;
+        s.keys.forEach((k) => {
+          const x = num((r || {})[k]);
+          if (x != null && (v == null || x > v)) v = x;
+        });
         if (t != null && v != null) pts.push({ t, v });
       });
       const vals = pts.map((p) => p.v);
@@ -299,7 +307,9 @@
       // the live tiles by a bucket, and two different "now" numbers on one
       // screen read as a contradiction.
       return {
-        key: s.key, name: s.name, unit: s.unit, dp: s.dp, pts,
+        // key stays the primary field name — the System tiles look up their
+        // GPU fallbacks by it.
+        key: s.keys[0], name: s.name, unit: s.unit, dp: s.dp, pts,
         avg: vals.length ? vals.reduce((a, b) => a + b, 0) / vals.length : null,
         last: vals.length ? vals[vals.length - 1] : null,
         min: vals.length ? Math.min(...vals) : null,

@@ -163,8 +163,10 @@
       + '</svg><i class="mguide" hidden></i></div>'
       + `<div class="ms">${esc(miniRange(t))}</div></div>`;
   }
+  // The series is the busiest host per bucket, so say so — the number is not
+  // a fleet average and reading it as one understates a loaded box.
   const miniRange = (t) => (t.min == null ? '—'
-    : 'avg · ' + t.min.toFixed(t.dp) + '–' + t.max.toFixed(t.dp) + ' ' + t.unit);
+    : 'busiest · ' + t.min.toFixed(t.dp) + '–' + t.max.toFixed(t.dp) + ' ' + t.unit);
 
   // ── Glance ────────────────────────────────────────────────────────────────
   const glance = {

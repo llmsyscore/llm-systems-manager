@@ -280,6 +280,33 @@ describe('CView.trends', () => {
     expect(CView.trends([{ ts: NOW, gpu_util: 10 }])).toEqual([]);
   });
 
+  // GPU residency arrives under a different metric name per GPU family; the
+  // card read only the CUDA one, so an Apple host at 100% showed as ~5%.
+  it('GPU busy takes the busiest of the CUDA and Apple Silicon series', () => {
+    const t = CView.trends([
+      { ts: NOW - 600, gpu_util: 5, mac_gpu_busy: 99 },
+      { ts: NOW, gpu_util: 12, mac_gpu_busy: 40 },
+    ]);
+    expect(t[0].key).toBe('gpu_util');
+    expect(t[0].pts.map((p) => p.v)).toEqual([99, 40]);
+    expect(t[0].max).toBe(99);
+  });
+
+  it('a fleet with only Apple GPUs still plots a GPU busy card', () => {
+    const t = CView.trends([
+      { ts: NOW - 600, mac_gpu_busy: 30 }, { ts: NOW, mac_gpu_busy: 100 },
+    ]);
+    expect(t.map((x) => x.key)).toEqual(['gpu_util']);
+    expect(t[0].pts.map((p) => p.v)).toEqual([30, 100]);
+  });
+
+  it('a fleet with only CUDA GPUs is unaffected', () => {
+    const t = CView.trends([
+      { ts: NOW - 600, gpu_util: 30 }, { ts: NOW, gpu_util: 70 },
+    ]);
+    expect(t[0].pts.map((p) => p.v)).toEqual([30, 70]);
+  });
+
   it('parses the timestamp shapes /api/history emits', () => {
     const iso = new Date(NOW * 1000).toISOString();
     const t = CView.trends([{ ts: iso, gpu_util: 1 },

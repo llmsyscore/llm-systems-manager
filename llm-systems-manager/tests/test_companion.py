@@ -1021,9 +1021,9 @@ class TestFleetAllHistory:
     def _series(self, monkeypatch):
         """Two hosts reporting cpu_total, gpu_temp and llama_tps at one ts."""
         per_field = {
-            "cpu_total": [("h1", 10.0), ("h2", 30.0)],       # mean -> 20
-            "gpu_temp": [("h1", 50.0), ("h2", 70.0)],        # max  -> 70
-            "llama_tps": [("h1", 4.0), ("h2", 6.0)],         # sum  -> 10
+            "cpu_total": [("h1", 10.0), ("h2", 30.0)],       # busiest -> 30
+            "gpu_temp": [("h1", 50.0), ("h2", 70.0)],        # max     -> 70
+            "llama_tps": [("h1", 4.0), ("h2", 6.0)],         # sum     -> 10
         }
 
         def fake(base, source, metric_name, field, since_minutes, limit,
@@ -1038,9 +1038,18 @@ class TestFleetAllHistory:
         self._series(monkeypatch)
         rows = M._build_history_rows(1440, 100, aggregate=True)
         assert len(rows) == 1
-        assert rows[0]["cpu_total"] == 20.0
         assert rows[0]["gpu_temp"] == 70.0
         assert rows[0]["llama_tps"] == 10.0
+
+    def test_utilization_reports_the_busiest_host_not_the_mean(self, monkeypatch):
+        """A mean over mostly-idle hosts hides the one doing the work: the live
+        fleet averaged 2.4% CPU while the two hosts running inference sat at
+        6-7%, so the card read as though nothing was happening."""
+        self._series(monkeypatch)
+        rows = M._build_history_rows(1440, 100, aggregate=True)
+        assert rows[0]["cpu_total"] == 30.0
+        # ...and the per-provider fleet view keeps its own mean semantics.
+        assert M._FLEET_FIELD_AGG["cpu_total"] == "mean"
 
     def test_the_unscoped_default_is_unchanged(self, monkeypatch):
         """Existing callers (the dashboard) must not shift under this."""
@@ -1050,7 +1059,7 @@ class TestFleetAllHistory:
         # last-writer-wins, exactly as before
         assert rows[0]["cpu_total"] == 30.0
 
-    def test_a_host_reporting_nothing_does_not_drag_the_mean(self, monkeypatch):
+    def test_a_host_reporting_nothing_is_skipped_not_counted_as_zero(self, monkeypatch):
         def fake(base, source, metric_name, field, since_minutes, limit,
                  hostname=None):
             if field != "cpu_total":
@@ -1066,11 +1075,12 @@ class TestFleetAllHistory:
         assert rows[0]["cpu_total"] == 10.0
 
     def test_duplicate_points_from_one_host_count_once(self, monkeypatch):
-        """A host emitting twice for the same bucket must not double its weight
-        in a mean — the per-host dict keeps the last value, not both."""
+        """A host emitting twice for the same bucket must not count twice in a
+        sum — the per-host dict keeps its last value, not both. Asserted on a
+        summed field, since a max would hide the double-count."""
         def fake(base, source, metric_name, field, since_minutes, limit,
                  hostname=None):
-            if field != "cpu_total":
+            if field != "llama_tps":
                 return field, []
             return field, [
                 {"timestamp": self.TS, "value": 10.0, "hostname": "h1"},
@@ -1081,7 +1091,7 @@ class TestFleetAllHistory:
         monkeypatch.setattr(M, "_fetch_history_series", fake)
         monkeypatch.setattr(M, "_alarm_engine_url", "http://ae.test")
         rows = M._build_history_rows(60, 100, aggregate=True)
-        assert rows[0]["cpu_total"] == 40.0  # mean(20, 60), not mean(10,20,60)
+        assert rows[0]["llama_tps"] == 80.0  # 20 + 60, not 10 + 20 + 60
 
     def test_route_serves_fleet_all(self, client, monkeypatch):
         self._series(monkeypatch)
@@ -1089,7 +1099,7 @@ class TestFleetAllHistory:
         r = client.get("/api/history?since_minutes=1440&fleet=all")
         assert r.status_code == 200
         rows = r.get_json()
-        assert rows and rows[0]["cpu_total"] == 20.0
+        assert rows and rows[0]["cpu_total"] == 30.0
 
     def test_an_unknown_provider_is_still_rejected(self, client, monkeypatch):
         monkeypatch.setattr(M, "_alarm_engine_url", "http://ae.test")

@@ -156,7 +156,7 @@ def _local_hostname() -> str:
 # banner reads it. Bump suffix (-1, -2, …) for same-day iterations; roll
 # the date for a new day's first change.
 # ---------------------------------------------------------------------------
-__version__ = "v2026.08.09-5"
+__version__ = "v2026.08.09-6"
 
 # Wall-clock at first import (Cheroot main process); the shutdown banner
 # reads it for the uptime line.
@@ -1012,7 +1012,7 @@ def _build_history_rows(since_minutes: int, limit: int,
             else:
                 rows_by_ts.setdefault(ts, {"ts": ts})[field] = p.get("value")
     for field, by_ts in accum.items():
-        agg = _FLEET_FIELD_AGG.get(field, "mean")
+        agg = _FLEET_ALL_AGG.get(field) or _FLEET_FIELD_AGG.get(field, "mean")
         for ts, per_host in by_ts.items():
             v = _agg_values(agg, list(per_host.values()))
             if v is not None:
@@ -1036,6 +1036,15 @@ _FLEET_FIELD_AGG: dict[str, str] = {
     "vllm_req_running": "sum", "vllm_req_waiting": "sum",
 }
 _FLEET_BUCKET_S = 5.0
+
+# Overrides applied ONLY to the every-host (?fleet=all) view. A mean over a
+# fleet of mostly-idle hosts hides the one that is working: 8 hosts averaged
+# 2.4% CPU while the two doing inference sat at 6-7%. For utilization the
+# useful question is "how loaded is the busiest host", so these take the max.
+_FLEET_ALL_AGG: dict[str, str] = {
+    "cpu_total": "max", "ram_percent": "max",
+    "gpu_util": "max", "mac_gpu_busy": "max",
+}
 
 
 def _bucket_iso(iso_ts: str, bucket_s: float) -> str:
