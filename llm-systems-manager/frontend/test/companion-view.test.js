@@ -108,23 +108,24 @@ describe('CView.glance', () => {
     expect(g.providers[1].stats[0]).toEqual({ k: 'gpu', v: '4%' });
   });
 
-  it('system tiles: temp, VRAM with total + hot flag, PSU power, energy today', () => {
+  it('power is its own pair: live input watts + today\'s energy', () => {
     const g = CView.glance(full);
-    expect(g.tiles[0]).toMatchObject({ v: '62', unit: '°C', meter: 62, hot: false });
-    expect(g.tiles[1]).toMatchObject({ v: '21.4', unit: '/ 24 GB', meter: 89, hot: true });
-    expect(g.tiles[2]).toMatchObject({ v: '412', unit: 'W', sub: 'PSU · 1 host' });
-    expect(g.tiles[3]).toMatchObject({ v: '$1.84', sub: '9.2 kWh · $0.2/kWh' });
+    expect(g.power).toHaveLength(2);
+    expect(g.power[0]).toMatchObject({ v: '412', unit: 'W', k: 'Input power',
+      sub: 'PSU · 1 host' });
+    expect(g.power[1]).toMatchObject({ v: '$1.84', k: 'Energy today',
+      sub: '9.2 kWh · $0.2/kWh' });
   });
 
   it('input power sums every reporting host, deduped, not just llama.cpp', () => {
     const g = CView.glance({ ...full,
       lms: { ...full.lms, mac_power: { gpu_busy_pct: 71, soc_total_w: 38 } } });
-    expect(g.tiles[2]).toMatchObject({ v: '450', unit: 'W', sub: 'PSU + SoC · 2 hosts' });
+    expect(g.power[0]).toMatchObject({ v: '450', unit: 'W', sub: 'PSU + SoC · 2 hosts' });
   });
 
   it('input power falls back to the energy accumulator when no sample has watts', () => {
     const g = CView.glance({ energy: { totals: { avg_watts: 118.4 } } });
-    expect(g.tiles[2]).toMatchObject({ v: '118', sub: 'fleet avg · this window' });
+    expect(g.power[0]).toMatchObject({ v: '118', sub: 'fleet avg · this window' });
   });
 
   it('degrades to dashes/idle on an empty payload without throwing', () => {
@@ -133,42 +134,70 @@ describe('CView.glance', () => {
     expect(g.hero.label).toContain('idle');
     expect(g.providers.every((p) => p.status === 'idle')).toBe(true);
     expect(g.providers.every((p) => p.stats.every((s) => s.v === '—'))).toBe(true);
-    expect(g.tiles[0].v).toBe('—');
-    expect(g.tiles[2]).toMatchObject({ v: '—', sub: 'no telemetry' });
-    expect(g.tiles[3].sub).toBe('no telemetry');
+    expect(g.system).toEqual([]);
+    expect(g.power[0]).toMatchObject({ v: '—', sub: 'no telemetry' });
+    expect(g.power[1].sub).toBe('no telemetry');
   });
 
   it('flags a hot GPU at the warn threshold', () => {
-    const g = CView.glance({ metrics: { gpu: { temperature_c: 87 } } });
-    expect(g.tiles[0].hot).toBe(true);
+    const g = CView.glance({ metrics: { gpu: { temperature_c: 87 } },
+      trends: [{ key: 'gpu_temp', name: 'GPU temp', unit: '°C', dp: 0, pts: [], last: 60 }] });
+    expect(g.system[0]).toMatchObject({ live: 87, hot: true });
   });
 
-  // The live GPU block comes from the PRIMARY llama agent, which need not be
-  // the host holding the GPU — the tiles read blank while the minis plotted.
-  describe('GPU tiles fall back to fleet history', () => {
+  // One card per metric: headline is NOW, the series beneath it is the last
+  // 24 h. Previously these lived in two grids and GPU temp / VRAM appeared in
+  // both, showing two different numbers for the same thing.
+  describe('system cards merge the live reading with its 24 h series', () => {
     const trends = [
-      { key: 'gpu_temp', last: 56 },
-      { key: 'gpu_vram', last: 19 },
+      { key: 'gpu_temp', name: 'GPU temp', unit: '°C', dp: 0, pts: [], last: 56,
+        min: 52, max: 59 },
+      { key: 'gpu_vram', name: 'VRAM', unit: '%', dp: 0, pts: [], last: 19,
+        min: 19, max: 19 },
     ];
 
-    it('uses the newest history sample when the live block has no GPU', () => {
-      const g = CView.glance({ metrics: {}, trends });
-      expect(g.tiles[0]).toMatchObject({ v: '56', unit: '°C', meter: 56 });
-      expect(g.tiles[1]).toMatchObject({ v: '19', unit: '%', meter: 19 });
-    });
-
-    it('the live sample still wins when it has one', () => {
+    it('carries the 24 h series through alongside the live headline', () => {
       const g = CView.glance({
-        metrics: { gpu: { temperature_c: 71, vram_used_mb: 12288,
-          vram_usage_percent: 50 } }, trends });
-      expect(g.tiles[0].v).toBe('71');
-      expect(g.tiles[1]).toMatchObject({ v: '12.0', unit: '/ 24 GB' });
+        metrics: { gpu: { temperature_c: 71 } }, trends });
+      expect(g.system[0]).toMatchObject({ name: 'GPU temp', live: 71,
+        min: 52, max: 59 });
     });
 
-    it('still dashes when neither source has it', () => {
-      const g = CView.glance({ metrics: {}, trends: [] });
-      expect(g.tiles[0].v).toBe('—');
-      expect(g.tiles[1].v).toBe('—');
+    it('falls back to the newest history sample when the live block has none', () => {
+      // The gpu block belongs to the PRIMARY llama agent, which need not be
+      // the host that has the GPU.
+      const g = CView.glance({ metrics: {}, trends });
+      expect(g.system.map((c) => c.live)).toEqual([56, 19]);
+    });
+
+    it('keeps the GB detail as a sub-line extra, not as the headline', () => {
+      const g = CView.glance({
+        metrics: { gpu: { vram_used_mb: 12288, vram_usage_percent: 50 } },
+        trends });
+      expect(g.system[1]).toMatchObject({ live: 50, unit: '%', extra: '12.0 GB' });
+    });
+
+    it('has no extra when the live sample carries no GB figure', () => {
+      expect(CView.glance({ metrics: {}, trends }).system[1].extra).toBe('');
+    });
+
+    it('a metric with neither source reads as a dash-able null', () => {
+      const g = CView.glance({ metrics: {},
+        trends: [{ key: 'gpu_temp', name: 'GPU temp', unit: '°C', dp: 0, pts: [] }] });
+      expect(g.system[0].live).toBeUndefined();
+    });
+
+    it('GPU busy and CPU take the busiest provider host, live', () => {
+      const g = CView.glance({
+        metrics: { gpu: { gpu_util_percent: 30 }, cpu_total: 4 },
+        lms: { ps: [{ model: 'm', status: 'IDLE' }], system: { cpu_total: 22 },
+          mac_power: { gpu_busy_pct: 99 } },
+        trends: [
+          { key: 'gpu_util', name: 'GPU busy', unit: '%', dp: 0, pts: [], last: 5 },
+          { key: 'cpu_total', name: 'CPU', unit: '%', dp: 0, pts: [], last: 3 },
+        ] });
+      expect(g.system[0].live).toBe(99);
+      expect(g.system[1].live).toBe(22);
     });
   });
 

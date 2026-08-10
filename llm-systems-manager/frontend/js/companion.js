@@ -159,29 +159,33 @@
       + `<div class="k">${esc(t.k)}</div>${body}</div>`;
   }
 
-  // One 24 h mini trend card: window mean, sparkline, min–max range.
+  // One system metric: the headline is NOW, the sparkline and range are the
+  // last 24 h. Both time bases on one card, so a metric is never shown twice
+  // with two different numbers.
+  const miniNum = (t) => (t.live == null ? '—' : t.live.toFixed(t.dp));
   function miniEl(t, i) {
     const sp = CS.path(t.pts.map((p) => p.v), 120, 34, { padTop: 5, padBottom: 5 });
-    const n = (v) => (v == null ? '—' : v.toFixed(t.dp));
     return `<div class="mini" data-mini="${i}">`
       + `<div class="mh"><span class="mk">${esc(t.name)}</span>`
-      + `<span class="mv">${esc(n(t.avg))}<small>${esc(t.unit)}</small></span></div>`
+      + `<span class="mv${t.hot ? ' hot' : ''}">${esc(miniNum(t))}`
+      + `<small>${esc(t.unit)}</small></span></div>`
       + '<div class="mwrap"><svg viewBox="0 0 120 34" preserveAspectRatio="none" aria-hidden="true">'
       + `<path class="spark-fill" fill="url(#glanceGrad)" d="${esc(sp.fill)}"></path>`
       + `<path class="spark-line" vector-effect="non-scaling-stroke" d="${esc(sp.line)}"></path>`
       + '</svg><i class="mguide" hidden></i></div>'
       + `<div class="ms">${esc(miniRange(t))}</div></div>`;
   }
-  // The series is the busiest host per bucket, so say so — the number is not
-  // a fleet average and reading it as one understates a loaded box.
+  // The 24 h series is the busiest host per bucket, not a fleet average.
   const miniRange = (t) => (t.min == null ? '—'
-    : 'busiest · ' + t.min.toFixed(t.dp) + '–' + t.max.toFixed(t.dp) + ' ' + t.unit);
+    : '24h ' + t.min.toFixed(t.dp) + '–' + t.max.toFixed(t.dp) + ' ' + t.unit
+      + (t.extra ? ' · ' + t.extra : ''));
 
   // ── Glance ────────────────────────────────────────────────────────────────
   const glance = {
     buf: [],
     hist: [],            // [{t, v: gen tok/s, p: prompt tok/s}] over 24 h
-    trends: [],          // mini trend cards, derived from the same rows
+    trends: [],          // 24 h series per system metric
+    cards: [],           // trends + the live headline, as rendered
     histAt: 0,
     // Fleet history from the alarm engine, refreshed every 60 s on the 2 s
     // poll and immediately on an explicit refresh. Falls back to the live
@@ -260,21 +264,30 @@
           : 'last ' + Math.round(this.buf.length * 2 / 60) + 'm');
       $('glanceProviders').innerHTML = vm.providers.map(providerRow).join('');
       $('glanceFleet').innerHTML = vm.fleet.map(tileEl).join('');
-      // Minis only change when history reloads (5 min); re-rendering them on
-      // the 2 s poll would wipe an open scrub readout mid-touch.
-      const key = this.trends.map((t) => t.key + ':' + t.pts.length + ':' + t.avg).join('|');
+      // Rebuild only when the SERIES changes (history reloads every 60 s);
+      // doing it on the 2 s poll would wipe an open scrub readout mid-touch.
+      // The live headline is patched in place below instead.
+      this.cards = vm.system;
+      const key = vm.system.map((t) => t.key + ':' + t.pts.length).join('|');
       if (key !== this._minKey) {
         this._minKey = key;
-        $('glanceMinis').innerHTML = this.trends.map(miniEl).join('');
+        $('glanceMinis').innerHTML = vm.system.map(miniEl).join('');
       }
-      $('glanceTiles').innerHTML = vm.tiles.map(tileEl).join('');
+      $('glanceMinis').querySelectorAll('[data-mini]').forEach((c, i) => {
+        const t = vm.system[i];
+        if (!t) return;
+        const v = c.querySelector('.mv');
+        v.innerHTML = `${esc(miniNum(t))}<small>${esc(t.unit)}</small>`;
+        v.classList.toggle('hot', !!t.hot);
+      });
+      $('glanceTiles').innerHTML = vm.power.map(tileEl).join('');
     },
     // Tap a mini card to read the value under the finger; the sub line
     // carries the readout and reverts to the 24 h range on release.
     scrubMini(e) {
       const card = e.target.closest('[data-mini]');
       if (!card) return;
-      const t = this.trends[+card.dataset.mini];
+      const t = (this.cards || [])[+card.dataset.mini];
       if (!t || !t.pts.length) return;
       // Clear first: one shared timer, so moving to another card would
       // otherwise strand the previous card's readout.
@@ -294,7 +307,7 @@
     },
     clearMiniScrub() {
       $('glanceMinis').querySelectorAll('[data-mini]').forEach((c) => {
-        const t = this.trends[+c.dataset.mini];
+        const t = (this.cards || [])[+c.dataset.mini];
         if (t) c.querySelector('.ms').textContent = miniRange(t);
         c.querySelector('.mguide').hidden = true;
       });

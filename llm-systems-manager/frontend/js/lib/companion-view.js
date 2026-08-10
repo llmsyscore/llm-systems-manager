@@ -266,15 +266,9 @@
           : 'no history yet' },
     ];
 
-    const tiles = [
-      { v: round(temp) != null ? String(round(temp)) : '—', unit: '°C',
-        k: 'GPU temperature', meter: clampPct(temp), hot: num(temp) != null && temp >= 85 },
-      // GB when the live sample carries them, else the fleet history's percent.
-      { v: vramUsedGb != null ? vramUsedGb.toFixed(1)
-        : (num(vramPct) != null ? String(Math.round(vramPct)) : '—'),
-        unit: vramUsedGb != null
-          ? (vramTotalGb != null ? '/ ' + Math.round(vramTotalGb) + ' GB' : 'GB') : '%',
-        k: 'VRAM', meter: clampPct(vramPct), hot: num(vramPct) != null && vramPct >= 85 },
+    // Power is the only pair left that is neither a per-provider reading nor
+    // a trended one, so it gets its own short section.
+    const power = [
       { v: round(watts) != null ? String(round(watts)) : '—', unit: 'W',
         k: 'Input power', sub: wattsSub },
       { v: usd(enT.cost_usd), k: 'Energy today',
@@ -282,6 +276,32 @@
           ? kwh(enT.kwh) + (num(en.price_kwh) != null ? ' · $' + en.price_kwh + '/kWh' : '')
           : 'no telemetry' },
     ];
+
+    // One card per system metric: the headline is NOW, the sparkline and the
+    // range beneath it are the last 24 h. Previously these lived in two grids
+    // and GPU temp / VRAM appeared in both, showing two different numbers.
+    const busiest = (vals) => {
+      const f = vals.filter((v) => num(v) != null);
+      return f.length ? Math.max(...f) : null;
+    };
+    const liveNow = {
+      gpu_util: busiest([llamaGpu, lmsGpu, vllmGpu]),
+      gpu_temp: num(temp) != null ? temp : null,
+      gpu_vram: num(vramPct) != null ? vramPct : null,
+      cpu_total: busiest([hostLoad(m).cpu, hostLoad(lms).cpu, hostLoad(vs).cpu]),
+    };
+    const HOT = { gpu_temp: 85, gpu_vram: 85, gpu_util: null, cpu_total: null };
+    const system = (Array.isArray(d.trends) ? d.trends : []).map((t) => {
+      const live = liveNow[t.key] != null ? liveNow[t.key] : t.last;
+      const extra = (t.key === 'gpu_vram' && vramUsedGb != null)
+        ? vramUsedGb.toFixed(1) + ' GB' : '';
+      return Object.assign({}, t, {
+        live,
+        extra,
+        hot: HOT[t.key] != null && num(live) != null && live >= HOT[t.key],
+      });
+    });
+
 
     return {
       hero: {
@@ -292,7 +312,8 @@
       },
       providers,
       fleet,
-      tiles,
+      system,
+      power,
     };
   }
 
