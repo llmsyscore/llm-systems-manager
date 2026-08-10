@@ -12,6 +12,32 @@
 const API_BASE = '/api/alarm';
 
 const ApiClient = {
+    // Readable text for an error body. FastAPI sends `detail` as a STRING for
+    // HTTPException but as an ARRAY of {loc, msg, type} for 422 validation
+    // errors, and the manager's proxy sends {ok:false, error} — passing any of
+    // the non-string shapes to Error() renders "[object Object]" in the UI.
+    _errorText(body, status, statusText) {
+        const detail = body && body.detail;
+        if (typeof detail === 'string' && detail.trim()) return detail;
+        if (Array.isArray(detail) && detail.length) {
+            return detail.map((e) => {
+                if (typeof e === 'string') return e;
+                // Drop the "body"/"query" prefix; the field path is the useful part.
+                const at = Array.isArray(e && e.loc)
+                    ? e.loc.filter((p) => p !== 'body' && p !== 'query').join('.') : '';
+                const msg = (e && e.msg) || JSON.stringify(e);
+                return at ? `${at}: ${msg}` : msg;
+            }).join('; ');
+        }
+        if (body && typeof body.error === 'string' && body.error.trim()) return body.error;
+        // A plain object detail still beats the status line; a blank string or
+        // an empty array carries nothing, so those fall through to it.
+        if (detail && typeof detail === 'object' && !Array.isArray(detail)) {
+            return JSON.stringify(detail);
+        }
+        return `HTTP ${status}: ${statusText}`;
+    },
+
     // ── Generic Request Helper ──
     async _request(endpoint, options = {}) {
         const url = `${API_BASE}${endpoint}`;
@@ -24,7 +50,8 @@ const ApiClient = {
             const response = await fetch(url, config);
             if (!response.ok) {
                 const errorBody = await response.json().catch(() => ({}));
-                throw new Error(errorBody.detail || `HTTP ${response.status}: ${response.statusText}`);
+                throw new Error(ApiClient._errorText(
+                    errorBody, response.status, response.statusText));
             }
             // 204 No Content
             if (response.status === 204) return null;
