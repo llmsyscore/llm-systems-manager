@@ -28,6 +28,7 @@ _deps = SimpleNamespace()
 def set_deps(*, config) -> None:
     _deps.config = config
     _probe_latch.reset()
+    _probe_latch.level = latch_level_for(config, "COLLECT_UPS_ENABLED")
 
 
 # Lazy-probed on first collect_ups() so module import doesn't block on `upower -e`.
@@ -66,7 +67,6 @@ def collect_ups() -> dict:
     """Return UPS metrics; empty dict if upower or UPS isn't present."""
     if not collect_enabled(_deps.config, "COLLECT_UPS_ENABLED"):
         return {}
-    _probe_latch.level = latch_level_for(_deps.config, "COLLECT_UPS_ENABLED")
     _ensure_probed()
     result = {"percent": None, "state": None, "warning_level": None,
               "on_battery": None, "time_to_empty": None, "time_to_full": None}

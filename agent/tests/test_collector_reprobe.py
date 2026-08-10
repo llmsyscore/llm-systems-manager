@@ -304,6 +304,47 @@ def test_ups_auto_absence_logs_info_not_warning(clock, monkeypatch, caplog):
     assert [r.levelno for r in absences] == [logging.INFO]
 
 
+def test_sensors_missing_binary_backs_off_and_recovers(clock, monkeypatch):
+    sh._sensors_cache = {}
+    sh._sensors_last = 0.0
+    sh.set_deps(config=_config(COLLECT_SENSORS_ENABLED="auto"))
+    calls = {"n": 0}
+    state = {"installed": False}
+
+    def fake(cmd, **kw):
+        calls["n"] += 1
+        if not state["installed"]:
+            raise FileNotFoundError("sensors")
+        return '{"chip": {"temp1": {"temp1_input": 42.0}}}'
+
+    monkeypatch.setattr(sh.subprocess, "check_output", fake)
+    for _ in range(10):
+        assert sh.collect_sensors_cached() == {}
+        clock.advance(6)                         # past the TTL cache each tick
+    assert calls["n"] == 1                       # latched, not re-exec'd per tick
+
+    state["installed"] = True
+    clock.advance(INTERVAL + 1)
+    assert sh.collect_sensors_cached()["chip"]["temp1"]["temp1_input"] == 42.0
+
+
+def test_sensors_empty_report_is_latched_absent(clock, monkeypatch):
+    sh._sensors_cache = {}
+    sh._sensors_last = 0.0
+    sh.set_deps(config=_config(COLLECT_SENSORS_ENABLED="auto"))
+    calls = {"n": 0}
+
+    def fake(cmd, **kw):
+        calls["n"] += 1
+        return "{}"
+
+    monkeypatch.setattr(sh.subprocess, "check_output", fake)
+    for _ in range(5):
+        assert sh.collect_sensors_cached() == {}
+        clock.advance(6)
+    assert calls["n"] == 1
+
+
 # ── UPS ─────────────────────────────────────────────────────────────
 def test_ups_absent_is_not_reprobed_every_tick_but_recovers(clock, monkeypatch):
     state = {"dev": None}

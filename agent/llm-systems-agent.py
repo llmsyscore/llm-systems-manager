@@ -306,6 +306,23 @@ def _probe_and_autoconfigure(cfg: "AgentConfig") -> None:
     print("─────────────────────────────────────────────────────────────────────────")
 
 
+# Flags that accept true / false / "auto" (see collectors/_shared.py).
+_TRISTATE_COLLECT_KEYS = frozenset({
+    "COLLECT_GPU_ENABLED", "COLLECT_SENSORS_ENABLED",
+    "COLLECT_LIQUIDCTL_ENABLED", "COLLECT_UPS_ENABLED", "COLLECT_ISCSI_ENABLED",
+})
+
+
+def _coerce_tristate(value):
+    """"auto" stays a string; anything else coerces to a strict bool."""
+    if isinstance(value, bool):
+        return value
+    v = str(value).strip().lower()
+    if v == "auto":
+        return "auto"
+    return v in ("1", "true", "yes", "on")
+
+
 class AgentConfig:
     """Effective configuration. Resolution: defaults < YAML < env vars."""
 
@@ -514,7 +531,10 @@ class AgentConfig:
             if env_key in os.environ:
                 raw = os.environ[env_key]
                 cur = getattr(cfg, k)
-                if isinstance(cur, bool):
+                # Tri-state keys keep "auto"; normalized to bool/"auto" below.
+                if k in _TRISTATE_COLLECT_KEYS:
+                    setattr(cfg, k, raw)
+                elif isinstance(cur, bool):
                     setattr(cfg, k, raw.lower() in ("1", "true", "yes", "on"))
                 elif isinstance(cur, int):
                     try:
@@ -540,6 +560,11 @@ class AgentConfig:
                     {"name": "manager",        "match": "systemd", "unit": "llm-systems-manager.service"},
                     {"name": "alarm-engine",   "match": "systemd", "unit": "llm-systems-alarm-engine.service"},
                 ]
+
+        # Normalize tri-state flags: "auto" stays, any other string coerces
+        # to a strict bool so typos fail closed instead of enabling.
+        for k in _TRISTATE_COLLECT_KEYS:
+            setattr(cfg, k, _coerce_tristate(getattr(cfg, k)))
 
         # Probe AFTER YAML/env so explicit user choices win over auto-detection.
         if (cfg.AGENT_ROLE or "").lower() == "auto":

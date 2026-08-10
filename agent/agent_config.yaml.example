@@ -179,10 +179,9 @@ PROCESS_WATCH_ENABLED: true
 
 # -- Host hardware collection toggles ---------------------------------------
 # Tri-state: true / false / auto. "auto" runs the collector and lets its own
-# hardware probe decide, retrying absence on COLLECT_REPROBE_INTERVAL_S — so
-# a driver or device that appears after install is picked up automatically.
-# The installer writes an affirmative true when it detects the hardware;
-# set false only to switch a collector off for good.
+# hardware probe decide, retrying absence on COLLECT_REPROBE_INTERVAL_S.
+# The installer writes an affirmative true when it detects hardware; set
+# false only to switch a collector off for good.
 COLLECT_GPU_ENABLED:       auto
 COLLECT_SENSORS_ENABLED:   auto
 COLLECT_LIQUIDCTL_ENABLED: auto

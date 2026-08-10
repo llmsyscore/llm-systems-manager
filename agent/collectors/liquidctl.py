@@ -57,6 +57,8 @@ def set_deps(*, config) -> None:
     _binary_missing = False
     for latch in (_bin_latch, _all_latch, *_match_latches.values()):
         latch.reset()
+    _bin_latch.level = _all_latch.level = \
+        latch_level_for(config, "COLLECT_LIQUIDCTL_ENABLED")
 
 
 def collect_smart_device_sensors() -> dict:
@@ -153,8 +155,6 @@ def collect_liquidctl() -> dict:
     global _binary_missing
     if not collect_enabled(_deps.config, "COLLECT_LIQUIDCTL_ENABLED"):
         return {}
-    _bin_latch.level = _all_latch.level = \
-        latch_level_for(_deps.config, "COLLECT_LIQUIDCTL_ENABLED")
     if _binary_missing:
         if not _bin_latch.should_probe():
             return {}

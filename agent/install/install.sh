@@ -3311,22 +3311,15 @@ if [[ "$ROLE" == "auto" ]]; then
   echo "─────────────────────────────────────────────────────────────────────────"
 fi
 
-# Tri-state collector flags: detection upgrades "auto" to an affirmative
-# "true"; "auto" leaves the runtime probe in charge (re-probed on the
-# AbsenceLatch interval). Only macOS gets "false" — these are Linux-only.
-if [[ "$AGENT_OS" == "linux" ]]; then
-  COLLECT_GPU=auto
-  COLLECT_SENSORS=auto
-  COLLECT_LIQUIDCTL=auto
-  COLLECT_UPS=auto
-  COLLECT_ISCSI=auto
-else
-  COLLECT_GPU=false
-  COLLECT_SENSORS=false
-  COLLECT_LIQUIDCTL=false
-  COLLECT_UPS=false
-  COLLECT_ISCSI=false
-fi
+# Tri-state collector flags: "auto" defers to the runtime probe; detection
+# upgrades it to an affirmative "true". macOS gets "false" (Linux-only helpers).
+_hw_default=auto
+[[ "$AGENT_OS" == "linux" ]] || _hw_default=false
+COLLECT_GPU=$_hw_default
+COLLECT_SENSORS=$_hw_default
+COLLECT_LIQUIDCTL=$_hw_default
+COLLECT_UPS=$_hw_default
+COLLECT_ISCSI=$_hw_default
 
 # _offer_apt_install LABEL PKGS BINARY DESCRIPTION
 #   Returns 0 if BINARY ends up on PATH (already there OR installed now).
@@ -3950,8 +3943,7 @@ _set('MONITOR_INFLUXDB_DISK_ENABLED', monitor_influxdb_disk.lower())
 _set('COLLECT_POWERMETRICS_ENABLED', 'true' if agent_os == 'macos' else 'false')
 
 # Host hardware collectors — tri-state true/false/auto from the install-time
-# probes; "auto" defers to the collector's own runtime probe. macOS (or
-# unset env) falls back to false — these are Linux-only helpers.
+# probes; "auto" defers to the runtime probe. macOS / unset env → false.
 import os
 _hw_default = 'auto' if agent_os == 'linux' else 'false'
 _set('COLLECT_GPU_ENABLED',       os.environ.get('COLLECT_GPU_DET',       _hw_default))

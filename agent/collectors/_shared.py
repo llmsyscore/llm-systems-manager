@@ -114,12 +114,13 @@ def set_deps(*, config) -> None:
     _deps.config = config
     for latch in _latches:
         latch.reset()
+    _sensors_latch.level = latch_level_for(config, "COLLECT_SENSORS_ENABLED")
 
 
-def collect_enabled(config, name: str, default=True) -> bool:
+def collect_enabled(config, name: str) -> bool:
     """Tri-state COLLECT_* gate: true and "auto" run the collector,
     only an affirmative false/"false" disables it."""
-    v = getattr(config, name, default)
+    v = getattr(config, name, True)
     if isinstance(v, str):
         return v.strip().lower() not in ("false", "0", "no", "off")
     return bool(v)
@@ -136,10 +137,16 @@ def latch_level_for(config, name: str) -> int:
     return logging.INFO if collect_is_auto(config, name) else logging.WARNING
 
 
+_sensors_latch = AbsenceLatch("lm-sensors (COLLECT_SENSORS_ENABLED is on)")
+
+
 def collect_sensors_cached() -> dict:
-    """Run `sensors -j` and return parsed JSON, cached by collection interval."""
+    """Run `sensors -j` and return parsed JSON, cached by collection interval.
+    A missing binary or empty report backs off on the latch interval."""
     global _sensors_cache, _sensors_last
     if not collect_enabled(_deps.config, "COLLECT_SENSORS_ENABLED"):
+        return {}
+    if not _sensors_latch.should_probe():
         return {}
     now = time.monotonic()
     if now - _sensors_last < max(2.0, getattr(_deps.config, "POLL_INTERVAL_S", 5.0)):
@@ -152,9 +159,12 @@ def collect_sensors_cached() -> dict:
         )
         _sensors_cache = json.loads(out)
     except FileNotFoundError:
+        _sensors_latch.record(False, " on PATH")
         return {}
     except Exception as e:
         log.debug("sensors -j error: %s", e)
+        return _sensors_cache
+    _sensors_latch.record(bool(_sensors_cache))
     return _sensors_cache
 
 

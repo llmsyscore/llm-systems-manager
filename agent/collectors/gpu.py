@@ -35,6 +35,7 @@ _deps = SimpleNamespace()
 def set_deps(*, config) -> None:
     _deps.config = config
     _probe_latch.reset()
+    _probe_latch.level = latch_level_for(config, "COLLECT_GPU_ENABLED")
 
 
 # Lazy-probed on first collect_gpu() so module import doesn't sysfs-walk on every host.
@@ -304,7 +305,6 @@ def collect_gpu() -> dict:
     """GPU metrics via AMD sysfs or nvidia-smi; {} on hosts with neither."""
     if not collect_enabled(_deps.config, "COLLECT_GPU_ENABLED"):
         return {}
-    _probe_latch.level = latch_level_for(_deps.config, "COLLECT_GPU_ENABLED")
     _ensure_probed()
     if _GPU_PATH is not None:
         vram_used, vram_total, vram_pct = _gpu_vram()
