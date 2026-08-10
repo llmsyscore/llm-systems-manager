@@ -5,6 +5,7 @@ from __future__ import annotations
 import inspect
 from types import SimpleNamespace
 
+import ae_auth
 import manager_mod as M
 import proxies
 
@@ -36,8 +37,6 @@ def test_placeholder_token_keeps_direct_dial(monkeypatch):
 
 
 def test_ingest_token_suppresses_direct_dial(monkeypatch):
-    # A browser can't attach Authorization to a WS handshake, so a direct
-    # URL would just 1008-loop against the gated AE.
     _wire(monkeypatch, ingest="sekrit")
     assert proxies.ae_ws_url_for_browser() == ""
 
@@ -57,3 +56,23 @@ def test_bridge_presents_bearer_upstream():
     assert "additional_headers" in src, \
         "bridge dials the AE without the read bearer — gated /ws would 1008 it"
     assert "_AE_BEARER" in src
+
+
+def _settings_ns(ingest="", management=""):
+    return SimpleNamespace(alarm_engine=SimpleNamespace(
+        ingest_token=ingest, management_token=management))
+
+
+def test_effective_bearer_fallback_chain():
+    assert ae_auth.effective_bearer(_settings_ns()) == ""
+    assert ae_auth.effective_bearer(_settings_ns(ingest="i")) == "i"
+    assert ae_auth.effective_bearer(_settings_ns(ingest="i", management="m")) == "m"
+    assert ae_auth.effective_bearer(_settings_ns(ingest="i", management=" ")) == "i"
+
+
+def test_effective_bearer_treats_placeholder_as_unset():
+    # A half-rendered config must never surface REPLACE_ME as a credential.
+    assert ae_auth.effective_bearer(_settings_ns(ingest="REPLACE_ME")) == ""
+    assert ae_auth.effective_bearer(
+        _settings_ns(ingest="i", management="REPLACE_ME")) == "i"
+    assert ae_auth.effective_bearer(SimpleNamespace()) == ""

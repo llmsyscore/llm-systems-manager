@@ -55,6 +55,8 @@ from _best_effort import best_effort  # type: ignore[import-not-found]  # siblin
 # Shared with main; proxies.py and main both reach the same Settings singleton.
 from config.unified_config import settings  # type: ignore[import-not-found]
 
+import ae_auth  # type: ignore[import-not-found]  # sibling
+
 log = logging.getLogger("llm-systems-manager.proxies")
 
 __all__ = [
@@ -795,12 +797,8 @@ def ae_ws_url_for_browser() -> str:
         if wss_port > 0 and _deps.request_is_https():
             return f"wss://{_deps.request_host_no_port()}:{wss_port}/ws/alarm"
         return f"ws://{_deps.request_host_no_port()}:{ws_proxy_port}/ws/alarm"
-    # #519: with a bearer configured the AE /ws rejects browsers (they can't
-    # send Authorization on a handshake) — no bridge means no usable URL.
-    _tok = (getattr(settings.alarm_engine, "management_token", "") or "").strip()
-    if _tok in ("", "REPLACE_ME"):
-        _tok = (getattr(settings.alarm_engine, "ingest_token", "") or "").strip()
-    if _tok and _tok != "REPLACE_ME":
+    # No bridge + AE bearer configured → no browser-usable URL (#519).
+    if ae_auth.effective_bearer(settings):
         return ""
     rewritten = _deps.rewrite_loopback_host(ae_url.rstrip("/"),
                                             _deps.request_host_no_port())
@@ -823,9 +821,9 @@ def _inject_alarm_ws_url(html_bytes: bytes) -> bytes:
     """Insert `<script>window.ALARM_WS_URL=...</script>` just before </head>
     so the AE frontend's websocket.js opens its WebSocket against the
     real AE host instead of the manager (which can't proxy WS frames)."""
+    # "" is injected too — websocket.js reads it as "no stream, don't dial",
+    # instead of falling back to the manager's 426 /ws/alarm stub (#519).
     ws = ae_ws_url_for_browser()
-    if not ws:
-        return html_bytes
     snippet = (b'<script>window.ALARM_WS_URL='
                + repr(ws).encode("utf-8")
                + b';</script></head>')

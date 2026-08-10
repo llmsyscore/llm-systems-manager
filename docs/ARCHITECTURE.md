@@ -205,8 +205,12 @@ upstream hop, so the dashboard path is unaffected. Two consequences of enabling 
 non-browser client (`curl`, a script) must now send the bearer to subscribe, and browsers can no
 longer dial port 8081 directly (they cannot attach an `Authorization` header to a WebSocket
 handshake) — the Manager stops advertising a direct-dial URL in that configuration, so live
-toasts require the bridge, and the Alarm Engine's own standalone dashboard falls back to
-polling. On a fleet with no tokens configured, behaviour is unchanged: keep port 8081 on a
+toasts require the bridge. The Alarm Engine's own standalone dashboard then has no live stream
+either: its Alerts tab still refreshes on its 15-second poll (and the Metrics sub-tab on its
+60-second poll), but the overview and rules views only update on page load. A rejected
+handshake surfaces to non-browser clients as a plain HTTP 403 on the upgrade request. Two
+operational notes: the Manager reads the bearer at startup, so restart it after provisioning a
+token, and on a fleet with no tokens configured behaviour is unchanged — keep port 8081 on a
 trusted network.
 
 Setting `[manager].ws_proxy_port = 0` disables the bridge entirely. The dashboard keeps working —

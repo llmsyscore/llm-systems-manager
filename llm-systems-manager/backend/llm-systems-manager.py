@@ -579,12 +579,10 @@ _ae_session.mount("http://", _ae_adapter)
 _ae_session.mount("https://", _ae_adapter)
 if bool(settings.alarm_engine.tls_enabled):
     _ae_session.verify = _AE_CA_PATH
-# Session-level bearer for the AE's token-gated routes: management_token,
-# else ingest_token ("" / "REPLACE_ME" count as unset).
-_AE_BEARER = (getattr(settings.alarm_engine, "management_token", "") or "").strip()
-if _AE_BEARER in ("", "REPLACE_ME"):
-    _AE_BEARER = (settings.alarm_engine.ingest_token or "").strip()
-if _AE_BEARER and _AE_BEARER != "REPLACE_ME":
+# Session-level bearer for the AE's token-gated routes; "" when unset.
+import ae_auth  # noqa: E402  # sibling
+_AE_BEARER = ae_auth.effective_bearer(settings)
+if _AE_BEARER:
     _ae_session.headers["Authorization"] = f"Bearer {_AE_BEARER}"
 
 
@@ -5315,7 +5313,7 @@ def _maybe_start_alarm_ws_proxy() -> None:
                     log.warning("WS proxy: rejected handshake from %s (bad or missing ticket)", peer)
                 await client_ws.close(code=code, reason=reason)
                 return
-            # #519: the AE /ws gate takes the same bearer as its HTTP routes.
+            # Same bearer the AE's HTTP routes take (#519).
             up_headers = {"Authorization": f"Bearer {_AE_BEARER}"} if _AE_BEARER else None
             try:
                 async with websockets.connect(ae_ws_url, ssl=ae_ssl, open_timeout=4,

@@ -19,6 +19,11 @@ class WebSocketHandler {
      * Connect to WebSocket server
      */
     async connect() {
+        // An injected empty ALARM_WS_URL marks the stream unavailable (#519).
+        if (window.ALARM_WS_URL === '') {
+            console.warn('Live stream unavailable (no browser-usable WS URL)');
+            return;
+        }
         const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
         // Embedded via /alarm/ → connect to /ws/alarm on the same origin so
         // the manager's proxy_alarm_websocket route handles the upgrade.
@@ -68,15 +73,9 @@ class WebSocketHandler {
                 }
             };
 
-            this.ws.onclose = (ev) => {
+            this.ws.onclose = () => {
                 console.log('WebSocket disconnected');
                 if (this.onDisconnect) this.onDisconnect();
-                // 1008 = policy rejection (origin/auth, #519) — retrying
-                // can never succeed, so stop instead of looping forever.
-                if (ev && ev.code === 1008) {
-                    console.warn('WebSocket rejected (policy):', ev.reason || '1008');
-                    return;
-                }
                 this._attemptReconnect();
             };
 

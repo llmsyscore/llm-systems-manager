@@ -9,8 +9,8 @@
     // the AE iframe gets via _inject_alarm_ws_url). It already accounts for
     // the WS proxy and the AE's actual scheme. Fall back to a direct dial
     // only when the backend didn't inject one (older manager, AE TLS off).
-    // An injected empty string means "no browser-usable stream" (#519: AE
-    // bearer set, bridge off) — only a missing injection falls back to :8081.
+    // An injected "" means no browser-usable stream (#519); only a missing
+    // injection falls back to the direct :8081 dial.
     const WS_URL = (typeof window !== 'undefined' && window.__AE_WS_URL__ !== undefined)
         ? window.__AE_WS_URL__
         : `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.hostname}:8081/ws`;
@@ -265,7 +265,6 @@
         ws.onerror = () => ws.close();
     }
 
-    // Defer connection slightly so page renders first. An empty WS_URL means
-    // no browser-usable stream exists — the 30s tab-dot poll still covers.
+    // Defer connection slightly so page renders first; skip when no stream.
     if (WS_URL) setTimeout(connect, 1500);
 })();

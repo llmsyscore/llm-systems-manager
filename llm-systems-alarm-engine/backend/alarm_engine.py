@@ -1499,8 +1499,7 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
         # Close before accept() so no event data is leaked to a rejected peer.
         await websocket.close(code=1008, reason="origin not allowed")
         return
-    # #519: the live stream is a read surface — same bearer gate as the
-    # management routes (management_token, else ingest_token; open when unset).
+    # Same bearer gate as the management routes (#519); closes pre-accept.
     if not management_bearer_ok(websocket.headers.get("authorization")):
         await websocket.close(code=1008, reason="authentication required")
         return
