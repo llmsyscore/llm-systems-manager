@@ -191,7 +191,14 @@
     /* z-index sits above the fixed-position tab panels (events/llmchat/
        imggen/admin/openclaw, all z-index:10 at top:88px) so the active
        tab's 2px bottom highlight isn't clipped by the panel above it. */
-    .tab-nav { display: flex; gap: 2px; padding: 0 20px; background: var(--bg-tabnav); border-bottom: 1px solid var(--border-strong); position: relative; z-index: 20; }
+    .tab-nav { display: flex; gap: 2px; padding: 0 20px; background: var(--bg-tabnav); border-bottom: 1px solid var(--border-strong); position: relative; z-index: 20; justify-content: center; }
+    /* Events/Admin/Account keep the right corner while the main tabs center;
+       below 1500px the whole bar reverts to left-aligned. */
+    .tab-nav-right { display: flex; gap: 2px; position: absolute; right: 20px; top: 0; bottom: 0; }
+    @media (max-width: 1500px) {
+      .tab-nav { justify-content: flex-start; }
+      .tab-nav-right { position: static; margin-left: auto; }
+    }
     .tab-btn { background: none; border: none; border-bottom: 2px solid transparent; color: var(--fg-dim); cursor: pointer; font-size: 0.85em; letter-spacing: 0.05em; padding: 10px 18px; text-transform: uppercase; transition: color 0.2s, border-color 0.2s; }
     .tab-btn:hover { color: var(--fg); }
     .tab-btn.active { border-bottom-color: var(--accent); color: var(--accent); }
@@ -201,7 +208,7 @@
     .tab-dot.alert{ background: var(--crit); box-shadow: 0 0 6px color-mix(in srgb, var(--crit) 50%, transparent); }
     .tab-dot.warn { background: var(--warn); box-shadow: 0 0 6px color-mix(in srgb, var(--warn) 50%, transparent); }
     /* Sub-tabs within Dashboard and LLM Control */
-    .sub-tab-nav { display: flex; gap: 2px; padding: 0 4px 12px; border-bottom: 1px solid var(--border-soft); margin-bottom: 16px; }
+    .sub-tab-nav { display: flex; gap: 2px; padding: 0 4px 12px; border-bottom: 1px solid var(--border-soft); margin-bottom: 16px; justify-content: center; }
     .sub-tab-btn { background: none; border: none; border-bottom: 2px solid transparent; color: var(--fg-dim); cursor: pointer; font-size: 0.78em; letter-spacing: 0.05em; padding: 6px 14px; text-transform: uppercase; transition: color 0.2s, border-color 0.2s; }
     .sub-tab-btn:hover { color: var(--fg-muted); }
     .sub-tab-btn.active { border-bottom-color: var(--accent-2); color: var(--accent-2); }
