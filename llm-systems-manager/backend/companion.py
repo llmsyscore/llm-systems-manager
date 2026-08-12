@@ -93,7 +93,7 @@ def _run(cmd: "list[str]", cwd: "str | None" = None) -> Optional[str]:
         return None
 
 
-_installed_cache: "Optional[dict]" = None
+_installed: dict = {"cache": None}
 
 
 def _installed_release() -> dict:
@@ -106,9 +106,8 @@ def _installed_release() -> dict:
       dpkg / rpm    the system package database
       None          nothing could identify it
     """
-    global _installed_cache
-    if _installed_cache is not None:
-        return _installed_cache
+    if _installed["cache"] is not None:
+        return _installed["cache"]
     out = {"tag": None, "describe": None, "ahead": 0, "source": None}
     root = _repo_root()
 
@@ -147,7 +146,7 @@ def _installed_release() -> dict:
         m = re.search(r"-(\d+)-g[0-9a-f]+$", out["describe"])
         if m:
             out["ahead"] = int(m.group(1))
-    _installed_cache = out
+    _installed["cache"] = out
     return out
 
 
