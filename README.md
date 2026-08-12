@@ -92,13 +92,115 @@ Full details for every method, including split installs, offline installs, and u
 
 <video src="https://github.com/user-attachments/assets/fb6f40d5-989a-4e8c-a3f4-7e0326d0a3f1" controls muted width="900"></video>
 
-**Screenshot viewer** — every screen, one at a time. Click **Next &rsaquo;** to step through all 14.
-
 <img width="2560" height="1440" alt="Sign-in screen" src="docs/screenshots/login.webp" />
 
-**Sign-in screen** — roles, lockout, and session sign-in.
+**[▶ Open the screenshot viewer](https://www.llmsyscore.com/#screenshots)** — step through all 14 screens full-size with the arrows.
 
-**1 / 14** &nbsp;&nbsp; [**&lsaquo; Prev**](docs/gallery/14-benchmark.md) &nbsp;&middot;&nbsp; [**Index**](docs/gallery/README.md) &nbsp;&middot;&nbsp; [**Next &rsaquo;**](docs/gallery/02-dashboard-llama.md)
+Or open any screen right here:
+
+<details>
+<summary><b>Llama dashboard</b> — live metrics from the `llama.cpp` server and its host</summary>
+
+Live metrics from the `llama.cpp` server and its host.
+
+<img width="2560" height="1440" alt="Llama dashboard" src="docs/screenshots/dashboard-llama.webp" />
+</details>
+
+<details>
+<summary><b>LM Studio dashboard</b> — loaded models, host metrics, and Apple-silicon powermetrics</summary>
+
+The server card, loaded models, and host metrics, plus live Apple-silicon powermetrics (SoC / CPU / GPU / ANE watts, thermal pressure, GPU busy). Token counts are measured at the manager gateway.
+
+<img width="2560" height="1440" alt="LM Studio dashboard" src="docs/screenshots/dashboard-lmstudio.webp" />
+</details>
+
+<details>
+<summary><b>Model control</b> — run the servers, swap models, and manage the library</summary>
+
+Start/stop inference servers, change models, control the provider, manage the model library, run benchmarks, auto tune models.
+
+<img width="2560" height="1440" alt="Model control" src="docs/screenshots/model-control.webp" />
+</details>
+
+<details>
+<summary><b>Model control — detail</b> — per-model configuration and provider controls</summary>
+
+Per-model configuration and provider controls.
+
+<img width="2668" height="1265" alt="Model control — detail" src="docs/screenshots/model-control-2.webp" />
+</details>
+
+<details>
+<summary><b>Model control — cards</b> — the library as cards, with named config profiles</summary>
+
+The model library as cards, with named config profiles (chat / code / general) that swap and reload in one click.
+
+<img width="2767" height="1049" alt="Model control — cards" src="docs/screenshots/model-control-cards.webp" />
+</details>
+
+<details>
+<summary><b>Routing & Model Autopilot</b> — pool order, model pins, and the Autopilot editor</summary>
+
+Per-provider pool order and model pins, and the Autopilot editor: one row per model with its placement, failover mode, replica range, and size, each showing whether it is currently placed. Pending proposals are listed below for approval.
+
+<img width="2560" height="1440" alt="Routing & Model Autopilot" src="docs/screenshots/autopilot.webp" />
+</details>
+
+<details>
+<summary><b>Manager dashboard</b> — manager and agent health at a glance</summary>
+
+Overall manager and agent health.
+
+<img width="2560" height="1440" alt="Manager dashboard" src="docs/screenshots/dashboard-manager.webp" />
+</details>
+
+<details>
+<summary><b>Alarm engine</b> — alerts, anomalies, trend graphs, and the rule editor</summary>
+
+Live alerts, anomalies, trend graphs, rule and notification editor, alert timeline.
+
+<img width="2560" height="1440" alt="Alarm engine" src="docs/screenshots/alarm-console.webp" />
+</details>
+
+<details>
+<summary><b>Admin console</b> — system health, access control, agents, and the audit log</summary>
+
+System health plus sub-tabs for access control, agents, the audit log, backup/restore, and routing. The agents view lists every registered host with its capabilities, pool membership, TLS state, and version.
+
+<img width="2560" height="1440" alt="Admin console" src="docs/screenshots/admin-console.webp" />
+</details>
+
+<details>
+<summary><b>Energy & cost dashboard</b> — measured $/Mtok, savings, and active-vs-idle energy</summary>
+
+Measured $/Mtok against your electricity price, savings versus hosted-API pricing, and hourly active-vs-idle energy. The per-host table marks which hosts report power and token telemetry, so the totals say what they're based on.
+
+<img width="2560" height="1440" alt="Energy & cost dashboard" src="docs/screenshots/dashboard-energy.webp" />
+</details>
+
+<details>
+<summary><b>OpenClaw dashboard</b> — session cost analytics and tool attribution</summary>
+
+OpenClaw session metrics, cost analytics, and tool attribution.
+
+<img width="2560" height="1440" alt="OpenClaw dashboard" src="docs/screenshots/dashboard-openclaw.webp" />
+</details>
+
+<details>
+<summary><b>Autotune wizard</b> — search for the fastest context/slot settings per model</summary>
+
+Search for the fastest context/slot settings per model.
+
+<img width="1170" height="1057" alt="Autotune wizard" src="docs/screenshots/autotune.webp" />
+</details>
+
+<details>
+<summary><b>Benchmark results</b> — throughput benchmarks across your whole model library</summary>
+
+Throughput benchmarks across your whole model library.
+
+<img width="1164" height="1161" alt="Benchmark results" src="docs/screenshots/benchmark.webp" />
+</details>
 
 ---
 
