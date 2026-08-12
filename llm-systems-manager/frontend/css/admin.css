@@ -301,6 +301,7 @@
     padding:6px 10px; border-radius:4px;
     border-left:3px solid var(--warn);
   }
+  #adminTab .adm-health-warnings .warn-row a { color:inherit; text-decoration:underline; }
 
   #adminTab .adm-mini { font-size:11px; padding:3px 7px; margin-left:4px; border-radius:6px;
     border:1px solid var(--border); background:var(--bg-card); color:var(--fg); cursor:pointer; }

@@ -419,12 +419,15 @@
     const host = a.source_host || '—';
     const path = [a.metric_source, a.metric_name].filter(Boolean).join('/') || 'event';
     const msg = a.message || (a.rule_name || path);
+    // Which rule fired. Suppressed when the message already IS the rule name.
+    const rule = (a.rule_name && a.rule_name !== msg) ? a.rule_name : '';
     return {
       id: a.alert_id,
       sev, tone, glyph: SEV_GLYPH[sev], word,
       msg,
-      // Which rule fired. Suppressed when the message already IS the rule name.
-      rule: (a.rule_name && a.rule_name !== msg) ? a.rule_name : '',
+      rule,
+      // Active rows lead with the rule; resolved rows stay message-first.
+      ruleFirst: !resolved && !!rule,
       meta: path + ' · ' + host + ' · ' + age(when, nowSec),
       // Resolved/info rows never offer Ack, whatever their status field says.
       ackable: a.status === 'active' && !(resolved || info),

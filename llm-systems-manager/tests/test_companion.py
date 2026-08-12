@@ -729,6 +729,11 @@ class TestReleaseCheck:
 
 
 class TestInstallIdentity:
+    @pytest.fixture(autouse=True)
+    def _fresh_cache(self, monkeypatch):
+        # _installed_release memoizes for the process lifetime.
+        monkeypatch.setitem(companion._installed, "cache", None)
+
     def test_release_file_wins_and_marks_a_packaged_install(self, monkeypatch, tmp_path):
         (tmp_path / "RELEASE").write_text("v1.2.3\n")
         monkeypatch.setattr(companion, "_repo_root", lambda: tmp_path)

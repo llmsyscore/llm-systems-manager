@@ -220,6 +220,7 @@ body.companion {
 /* which rule fired, above the metric/host line */
 .alert .aw.rule { color: var(--fg-dim); }
 .alert .aw.rule::before { content: "▸ "; }
+.alert .amsg { font-size: 12.5px; color: var(--fg-muted); margin-top: 3px; line-height: 1.35; }
 .alert .sevword { font-family: var(--mono); font-size: 10.5px; letter-spacing: .1em; text-transform: uppercase; margin-top: 3px; }
 .alert .sevword.crit { color: var(--crit); } .alert .sevword.warn { color: var(--warn); } .alert .sevword.ok { color: var(--ok); }
 .alert .sevword.info { color: var(--accent); }
