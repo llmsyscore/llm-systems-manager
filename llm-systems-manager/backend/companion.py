@@ -49,7 +49,7 @@ _RELEASE_TIMEOUT_S = 5
 _RELEASE_FILE = "RELEASE"
 # enabled=None means "not overridden at runtime, read the config value".
 _release: dict = {"enabled": None, "checked_at": 0.0, "tag": None,
-                  "body": None, "error": None}
+                  "body": None, "error": None, "fetching": False}
 _release_lock = threading.Lock()
 
 _VER_RE = re.compile(r"(\d+)")
@@ -93,8 +93,11 @@ def _run(cmd: "list[str]", cwd: "str | None" = None) -> Optional[str]:
         return None
 
 
+_installed_cache: "Optional[dict]" = None
+
+
 def _installed_release() -> dict:
-    """How this install identifies itself.
+    """How this install identifies itself. Cached for the process lifetime.
 
     {tag, describe, ahead, source}. `source` is how it was determined:
       release-file  a packaged build (tarball / brew / deb / rpm / image) —
@@ -103,6 +106,9 @@ def _installed_release() -> dict:
       dpkg / rpm    the system package database
       None          nothing could identify it
     """
+    global _installed_cache
+    if _installed_cache is not None:
+        return _installed_cache
     out = {"tag": None, "describe": None, "ahead": 0, "source": None}
     root = _repo_root()
 
@@ -141,6 +147,7 @@ def _installed_release() -> dict:
         m = re.search(r"-(\d+)-g[0-9a-f]+$", out["describe"])
         if m:
             out["ahead"] = int(m.group(1))
+    _installed_cache = out
     return out
 
 
@@ -166,6 +173,11 @@ def _latest_release(repo: str) -> "tuple[Optional[str], Optional[str], Optional[
     with _release_lock:
         if _release["tag"] and now - _release["checked_at"] < _RELEASE_TTL_S:
             return _release["tag"], _release["body"], _release["error"]
+        # Single flight: concurrent callers get the cached answer while one
+        # thread does the network read.
+        if _release["fetching"]:
+            return _release["tag"], _release["body"], _release["error"]
+        _release["fetching"] = True
     tag = body = err = None
     try:
         import requests  # lazy: only on an opted-in check
@@ -182,6 +194,7 @@ def _latest_release(repo: str) -> "tuple[Optional[str], Optional[str], Optional[
         err = type(e).__name__
         log.debug("release check failed: %s: %s", type(e).__name__, e)
     with _release_lock:
+        _release["fetching"] = False
         _release["checked_at"] = now
         if tag:
             _release["tag"] = tag

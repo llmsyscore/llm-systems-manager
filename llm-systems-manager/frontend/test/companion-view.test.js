@@ -428,6 +428,17 @@ describe('CView.alerts', () => {
     expect(rows[2].rule).toBe('');
   });
 
+  it('active rows lead with the rule; resolved and rule-less rows do not', () => {
+    const m = CView.alerts([
+      { ...list[0], rule_name: 'GPU over 90 °C' },
+      { ...list[1], rule_name: 'VRAM 95% for 10 min' },   // suppressed rule
+      { ...list[2], rule_name: 'Disk almost full' },      // resolved
+    ], NOW);
+    expect(m.firing[0].ruleFirst).toBe(true);
+    expect(m.firing[1].ruleFirst).toBe(false);
+    expect(m.earlier[0].ruleFirst).toBe(false);
+  });
+
   it('splits firing from earlier; active info alerts fire, closed ones are earlier', () => {
     const m = CView.alerts(list, NOW);
     expect(m.firing.map((r) => r.id)).toEqual(['a1', 'a2', 'a4']);

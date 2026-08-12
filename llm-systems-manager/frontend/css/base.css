@@ -199,6 +199,7 @@
     .tab-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 7px; vertical-align: middle; background: var(--fg-faint); transition: background 0.3s, box-shadow 0.3s; }
     .tab-dot.ok   { background: var(--ok);   box-shadow: 0 0 6px color-mix(in srgb, var(--ok)   45%, transparent); }
     .tab-dot.alert{ background: var(--crit); box-shadow: 0 0 6px color-mix(in srgb, var(--crit) 50%, transparent); }
+    .tab-dot.warn { background: var(--warn); box-shadow: 0 0 6px color-mix(in srgb, var(--warn) 50%, transparent); }
     /* Sub-tabs within Dashboard and LLM Control */
     .sub-tab-nav { display: flex; gap: 2px; padding: 0 4px 12px; border-bottom: 1px solid var(--border-soft); margin-bottom: 16px; }
     .sub-tab-btn { background: none; border: none; border-bottom: 2px solid transparent; color: var(--fg-dim); cursor: pointer; font-size: 0.78em; letter-spacing: 0.05em; padding: 6px 14px; text-transform: uppercase; transition: color 0.2s, border-color 0.2s; }

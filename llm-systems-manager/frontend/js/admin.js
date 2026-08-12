@@ -102,13 +102,43 @@ function _adminLog(msg, level = 'ok') {
 // ── System Health card (Phase 2.5) ────────────────────────────────────
 async function adminLoadHealth() {
   try {
-    const r = await fetch('/api/admin/system-health');
+    const [r, rel] = await Promise.all([
+      fetch('/api/admin/system-health'), _adminFetchRelease(),
+    ]);
     if (!r.ok) return;
-    const d = await r.json();
-    _renderSystemHealth(d);
+    _renderSystemHealth(await r.json(), rel);
   } catch (e) {
     /* keep last successful render */
   }
+}
+
+// Release info via the companion endpoint (server caches GitHub for 24 h);
+// cached 5 min here — failures included — and deduped across callers.
+let _adminRelCache = { at: 0, data: null };
+let _adminRelInflight = null;
+function _adminFetchRelease() {
+  if (Date.now() - _adminRelCache.at < 300000) return Promise.resolve(_adminRelCache.data);
+  if (!_adminRelInflight) {
+    _adminRelInflight = (async () => {
+      const ctl = new AbortController();
+      const t = setTimeout(() => ctl.abort(), 10000);
+      try {
+        const r = await fetch('/api/companion/release', { signal: ctl.signal });
+        if (r.ok) _adminRelCache = { at: Date.now(), data: await r.json() };
+        else _adminRelCache.at = Date.now();
+      } catch (_) {
+        _adminRelCache.at = Date.now();
+      } finally {
+        clearTimeout(t);
+        _adminRelInflight = null;
+      }
+      return _adminRelCache.data;
+    })();
+  }
+  return _adminRelInflight;
+}
+function _adminUpdateAvailable(rel) {
+  return !!(rel && rel.enabled && rel.update_available === true);
 }
 
 function _healthDot(ok) {
@@ -123,8 +153,8 @@ function _healthDot(ok) {
 function _setTabDot(id, state) {
   const el = document.getElementById(id);
   if (!el) return;
-  el.classList.remove('ok', 'alert');
-  if (state === 'ok' || state === 'alert') el.classList.add(state);
+  el.classList.remove('ok', 'alert', 'warn');
+  if (state === 'ok' || state === 'alert' || state === 'warn') el.classList.add(state);
 }
 async function refreshTabIndicators() {
   // Events — active critical alerts only. status=active excludes acknowledged
@@ -137,19 +167,23 @@ async function refreshTabIndicators() {
       _setTabDot('tabDotEvents', (Array.isArray(arr) && arr.length > 0) ? 'alert' : 'ok');
     } catch (_) { /* keep prior state */ }
   })();
-  // Admin — system-health roll-up ("ok" | "warn" | "down").
+  // Admin — system-health roll-up mapped to the dot (down → red,
+  // warn → amber, ok → green), and amber when a newer release is available.
   (async () => {
     if (window._me && window._me.admin_access === false) { _setTabDot('tabDotAdmin', 'ok'); return; }
     try {
       const r = await fetch('/api/admin/system-health');
       if (!r.ok) return;
       const d = await r.json();
-      _setTabDot('tabDotAdmin', d.overall === 'ok' ? 'ok' : 'alert');
+      if (d.overall === 'warn') { _setTabDot('tabDotAdmin', 'warn'); return; }
+      if (d.overall !== 'ok') { _setTabDot('tabDotAdmin', 'alert'); return; }
+      const rel = await _adminFetchRelease();
+      _setTabDot('tabDotAdmin', _adminUpdateAvailable(rel) ? 'warn' : 'ok');
     } catch (_) { /* keep prior state */ }
   })();
 }
 
-function _renderSystemHealth(d) {
+function _renderSystemHealth(d, rel) {
   // Overall pill
   const pill = document.getElementById('adminHealthOverall');
   if (pill) {
@@ -265,15 +299,19 @@ function _renderSystemHealth(d) {
     dfEl.innerHTML = rows.map(_healthRowHtml).join('');
   }
 
-  // Warnings
+  // Warnings — release availability first, then the health roll-up's own.
   const warnEl = document.getElementById('adminHealthWarnings');
   if (warnEl) {
-    const ws = d.warnings || [];
-    if (ws.length === 0) {
-      warnEl.innerHTML = '<div style="color:var(--ok); padding:8px 0;">✓ All systems nominal</div>';
-    } else {
-      warnEl.innerHTML = ws.map(w => `<div class="warn-row">${adminEsc(w)}</div>`).join('');
+    const rows = (d.warnings || []).map(w => `<div class="warn-row">${adminEsc(w)}</div>`);
+    if (_adminUpdateAvailable(rel)) {
+      const url = `https://github.com/${rel.repo || ''}/releases/latest`;
+      rows.unshift(`<div class="warn-row">⬆ New release ${adminEsc(rel.latest || '')} available`
+        + (rel.installed ? ` (installed ${adminEsc(rel.installed)})` : '')
+        + ` · <a href="${adminEsc(url)}" target="_blank" rel="noopener">release notes</a></div>`);
     }
+    warnEl.innerHTML = rows.length
+      ? rows.join('')
+      : '<div style="color:var(--ok); padding:8px 0;">✓ All systems nominal</div>';
   }
 }
 
