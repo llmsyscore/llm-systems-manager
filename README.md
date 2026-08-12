@@ -66,21 +66,21 @@ Full details for every method, including split installs, offline installs, and u
 
 ## Top features
 
-**1. Model Autopilot.** Say which models should be available, and Autopilot keeps them that way — loading them on hardware that can actually hold them, bringing them back up somewhere else when a host drops out, and adding or removing copies as demand rises and falls. It checks a host has the memory for a model before placing it there, including hosts running on CPU alone. Defaults to off: it surfaces its proposals and changes nothing until you enable it. Lives in **Admin → Routing** — [screenshot below](#screenshots).
+**1. Model Autopilot.** Declare which models should stay available; Autopilot places each one only on a host with the memory to hold it (VRAM, or RAM on CPU-only hosts), rebuilds it elsewhere when a host drops out, and scales copies with demand. Off by default — it proposes, you approve. **Admin → Routing** ([screenshot](#screenshots)).
 
-**2. OpenAI-compatible inference gateway.** One endpoint on the manager fronts every backend you run — `llama.cpp`, LM Studio, and vLLM. `/v1/models` returns the merged catalog tagged by provider, and each request is routed by per-model pinning, round-robined across a pool, or failed over to another live host if a backend is down. Apps target one stable URL that looks like a single server. Streaming and non-streaming both work. See [Inference gateway](#inference-gateway).
+**2. OpenAI-compatible inference gateway.** One endpoint fronts `llama.cpp`, LM Studio, and vLLM together. `/v1/models` returns the merged catalog; requests route by per-model pin, pool round-robin, or failover to a live host. Apps target one stable URL, streaming or not. See [Inference gateway](#inference-gateway).
 
-**3. GPU Report Card.** A standardized benchmark that produces one shareable card: time-to-first-token, prefill and generation throughput, tokens/joule, and measured $/Mtok, alongside the GPU and VRAM it ran on. The same preset runs against `llama.cpp`, LM Studio, and vLLM, so numbers are comparable across providers and across machines.
+**3. GPU Report Card.** One standardized benchmark, one shareable card — time-to-first-token, prefill and generation throughput, tokens/joule, measured $/Mtok, and the GPU it ran on. The same preset runs on all three providers, so results compare across machines.
 
-**4. Energy and cost intelligence.** Measures what inference actually costs in **$/Mtok**, with a monthly-savings comparison against hosted-API pricing and idle-power accounting so unused hardware is attributed honestly. A per-host performance manager also switches the CPU governor and cooling/fan profiles to match load — full performance while a model is working, quiet and low draw when it goes idle or sleeps. [Screenshot below](#screenshots).
+**4. Energy and cost intelligence.** What inference really costs in **$/Mtok**, with monthly savings against hosted-API pricing and idle power attributed honestly. A per-host performance manager matches CPU governor and cooling profile to load — full speed under work, quiet when idle ([screenshot](#screenshots)).
 
-**5. Benchmarking and autotuning built in.** Run throughput benchmarks across every model in your library, and let the autotuner search for the best context/slot configuration on `llama.cpp` or the largest safe `max-model-len` on vLLM. Each model ends up tuned to the hardware it actually runs on.
+**5. Benchmarking and autotuning built in.** Benchmark your whole model library, and let the autotuner find the best context/slot configuration on `llama.cpp` or the largest safe `max-model-len` on vLLM — every model tuned to the hardware it runs on.
 
-**6. Model management with profiles, cards, and cache control.** Browse and pull models straight from Hugging Face, then prune individual files to reclaim disk. Every model keeps multiple named config profiles (e.g. chat / code / general); switching profiles from the model card reloads the running model with those settings in one click.
+**6. Model management with profiles and cache control.** Pull models straight from Hugging Face and prune files to reclaim disk. Every model keeps named profiles (chat / code / general) that reload it with those settings in one click.
 
-**7. Remote control of the whole infrastructure.** Start/stop/restart inference servers, hot-swap models, edit per-model configurations, update and configure `llama.cpp`, tail logs, or open an in-browser terminal — for any host, from one page. A Discord bot exposes the same host queries, model load/unload, and alarm acknowledgement as slash commands. One cross-platform agent covers Linux and macOS/Apple Silicon, auto-detects what each box runs, with per-agent selection. An **LLM Overall** view rolls multiple host metrics into one pane.
+**7. Remote control of the whole infrastructure.** Run the servers, hot-swap models, edit configs, update `llama.cpp`, tail logs, and open an in-browser terminal — any host, one page. A Discord bot exposes the same commands, one agent covers Linux and macOS/Apple Silicon, and **LLM Overall** rolls every host into a single pane.
 
-**8. LLM-aware telemetry and alerting.** Live metrics from the inference server include slots, tokens/sec, prompt-processing, KV cache, and context, plus system and GPU/PSU/UPS/cooling metrics. A standalone alarm engine stores every sample, evaluates threshold and anomaly rules, notifies over email/toast/webhook/Discord, buffers to disk and replays when the network returns, and collapses a burst of related issues into single incidents.
+**8. LLM-aware telemetry and alerting.** Live inference internals — slots, tokens/sec, prompt processing, KV cache, context — beside GPU, PSU, UPS, and cooling stats. A standalone alarm engine stores every sample, evaluates threshold and anomaly rules, notifies by email/toast/webhook/Discord, buffers through outages, and collapses related issues into one incident.
 
 *Also included:* multi-user roles + admin audit log, encrypted scheduled backups, OpenClaw cost/budget analytics, an image generation tab, and TLS/mTLS on every connection — see the [full feature list](#full-included-features) below.
 
@@ -92,41 +92,115 @@ Full details for every method, including split installs, offline installs, and u
 
 <video src="https://github.com/user-attachments/assets/fb6f40d5-989a-4e8c-a3f4-7e0326d0a3f1" controls muted width="900"></video>
 
-<img width="2560" height="1440" alt="Login screen" src="docs/screenshots/login.webp" />
+<img width="2560" height="1440" alt="Sign-in screen" src="docs/screenshots/login.webp" />
 
-**Llama dashboard** — live metrics from the llama.cpp server and its host.
+**[▶ Open the screenshot viewer](https://www.llmsyscore.com/#screenshots)** — step through all 14 screens full-size with the arrows.
+
+Or open any screen right here:
+
+<details>
+<summary><b>Llama dashboard</b> — live metrics from the `llama.cpp` server and its host</summary>
+
+Live metrics from the `llama.cpp` server and its host.
+
 <img width="2560" height="1440" alt="Llama dashboard" src="docs/screenshots/dashboard-llama.webp" />
+</details>
 
-**LM Studio dashboard** — the server card, loaded models, and host metrics, plus live Apple-silicon powermetrics (SoC / CPU / GPU / ANE watts, thermal pressure, GPU busy). Token counts are measured at the manager gateway.
+<details>
+<summary><b>LM Studio dashboard</b> — loaded models, host metrics, and Apple-silicon powermetrics</summary>
+
+The server card, loaded models, and host metrics, plus live Apple-silicon powermetrics (SoC / CPU / GPU / ANE watts, thermal pressure, GPU busy). Token counts are measured at the manager gateway.
+
 <img width="2560" height="1440" alt="LM Studio dashboard" src="docs/screenshots/dashboard-lmstudio.webp" />
+</details>
 
-**Model control** — start/stop inference servers, change models, control the provider, manage the model library, run benchmarks, auto tune models.
+<details>
+<summary><b>Model control</b> — run the servers, swap models, and manage the library</summary>
+
+Start/stop inference servers, change models, control the provider, manage the model library, run benchmarks, auto tune models.
+
 <img width="2560" height="1440" alt="Model control" src="docs/screenshots/model-control.webp" />
-<img width="2668" height="1265" alt="Model control detail" src="docs/screenshots/model-control-2.webp" />
-<img width="2767" height="1049" alt="Model control cards" src="docs/screenshots/model-control-cards.webp" />
+</details>
 
-**Routing & Model Autopilot** — per-provider pool order and model pins, and the Autopilot editor: one row per model with its placement, failover mode, replica range, and size, each showing whether it is currently placed. Pending proposals are listed below for approval.
-<img width="2560" height="1440" alt="Routing and Model Autopilot" src="docs/screenshots/autopilot.webp" />
+<details>
+<summary><b>Model control — detail</b> — per-model configuration and provider controls</summary>
 
-**Manager dashboard** — view overall manager and agent health.
+Per-model configuration and provider controls.
+
+<img width="2668" height="1265" alt="Model control — detail" src="docs/screenshots/model-control-2.webp" />
+</details>
+
+<details>
+<summary><b>Model control — cards</b> — the library as cards, with named config profiles</summary>
+
+The model library as cards, with named config profiles (chat / code / general) that swap and reload in one click.
+
+<img width="2767" height="1049" alt="Model control — cards" src="docs/screenshots/model-control-cards.webp" />
+</details>
+
+<details>
+<summary><b>Routing & Model Autopilot</b> — pool order, model pins, and the Autopilot editor</summary>
+
+Per-provider pool order and model pins, and the Autopilot editor: one row per model with its placement, failover mode, replica range, and size, each showing whether it is currently placed. Pending proposals are listed below for approval.
+
+<img width="2560" height="1440" alt="Routing & Model Autopilot" src="docs/screenshots/autopilot.webp" />
+</details>
+
+<details>
+<summary><b>Manager dashboard</b> — manager and agent health at a glance</summary>
+
+Overall manager and agent health.
+
 <img width="2560" height="1440" alt="Manager dashboard" src="docs/screenshots/dashboard-manager.webp" />
+</details>
 
-**Alarm engine** — live alerts, anomalies, trend graphs, rule and notification editor, alert timeline.
+<details>
+<summary><b>Alarm engine</b> — alerts, anomalies, trend graphs, and the rule editor</summary>
+
+Live alerts, anomalies, trend graphs, rule and notification editor, alert timeline.
+
 <img width="2560" height="1440" alt="Alarm engine" src="docs/screenshots/alarm-console.webp" />
+</details>
 
-**Admin console** — system health plus sub-tabs for access control, agents, the audit log, backup/restore, and routing. The agents view lists every registered host with its capabilities, pool membership, TLS state, and version.
-<img width="2560" height="1440" alt="Admin console — agents" src="docs/screenshots/admin-console.webp" />
+<details>
+<summary><b>Admin console</b> — system health, access control, agents, and the audit log</summary>
 
-**Energy & cost** — measured $/Mtok against your electricity price, savings versus hosted-API pricing, and hourly active-vs-idle energy. The per-host table marks which hosts report power and token telemetry, so the totals say what they're based on.
-<img width="2560" height="1440" alt="Energy and cost dashboard" src="docs/screenshots/dashboard-energy.webp" />
+System health plus sub-tabs for access control, agents, the audit log, backup/restore, and routing. The agents view lists every registered host with its capabilities, pool membership, TLS state, and version.
 
-**OpenClaw dashboard** — OpenClaw session metrics, cost analytics, and tool attribution.
+<img width="2560" height="1440" alt="Admin console" src="docs/screenshots/admin-console.webp" />
+</details>
+
+<details>
+<summary><b>Energy & cost dashboard</b> — measured $/Mtok, savings, and active-vs-idle energy</summary>
+
+Measured $/Mtok against your electricity price, savings versus hosted-API pricing, and hourly active-vs-idle energy. The per-host table marks which hosts report power and token telemetry, so the totals say what they're based on.
+
+<img width="2560" height="1440" alt="Energy & cost dashboard" src="docs/screenshots/dashboard-energy.webp" />
+</details>
+
+<details>
+<summary><b>OpenClaw dashboard</b> — session cost analytics and tool attribution</summary>
+
+OpenClaw session metrics, cost analytics, and tool attribution.
+
 <img width="2560" height="1440" alt="OpenClaw dashboard" src="docs/screenshots/dashboard-openclaw.webp" />
+</details>
 
-**Autotune & benchmark** — search for the fastest context/slot settings per model and benchmark your whole model library.
+<details>
+<summary><b>Autotune wizard</b> — search for the fastest context/slot settings per model</summary>
+
+Search for the fastest context/slot settings per model.
+
 <img width="1170" height="1057" alt="Autotune wizard" src="docs/screenshots/autotune.webp" />
-<img width="1164" height="1161" alt="Benchmark results" src="docs/screenshots/benchmark.webp" />
+</details>
 
+<details>
+<summary><b>Benchmark results</b> — throughput benchmarks across your whole model library</summary>
+
+Throughput benchmarks across your whole model library.
+
+<img width="1164" height="1161" alt="Benchmark results" src="docs/screenshots/benchmark.webp" />
+</details>
 
 ---
 
@@ -134,28 +208,28 @@ Full details for every method, including split installs, offline installs, and u
 
 The eight headline capabilities plus everything else that ships in the box:
 
-- **Model Autopilot.** Declare which models should be resident and Autopilot converges on it — placement gated on a host actually having the memory (VRAM, or RAM for CPU-only hosts), failover to another host when one goes offline, extra copies added and removed as demand changes. Off by default: proposals are shown and applied only once you enable it. Lives in **Admin → Routing**.
-- **GPU Report Card.** One standardized benchmark across `llama.cpp`, LM Studio, and vLLM producing a comparable, shareable card — TTFT, prefill and generation throughput, tokens/joule, measured $/Mtok, and the GPU/VRAM it ran on. Runs are stored so you can trend them over time.
-- **Energy & cost intelligence.** Measured **$/Mtok** from real power draw, a monthly-savings card against hosted-API list pricing, and idle-power accounting. Cost is only computed across hosts reporting both power and token telemetry, so a half-instrumented host can't skew the number.
-- **Discord bot.** Slash commands for host queries, model load/unload, and alarm acknowledgement, gated by a user allowlist with model control off by default.
-- **OpenAI-compatible inference gateway.** One endpoint (`/api/gateway/v1`) fronts every provider you run — `llama.cpp`, LM Studio, and vLLM. `/v1/models` merges all pools tagged by provider and deduped; per-model pin, then pool round-robin, then pre-first-token failover route each request to a healthy backend, so every app sees one server. Dashboard-session access by default; add API keys for external clients. See [Inference gateway](#inference-gateway).
-- **Benchmarking & autotuning.** Throughput benchmarks across your entire model library, plus autotuners for `llama.cpp` context/slot counts and vLLM `max-model-len` — each model tuned to the hardware it actually runs on.
-- **Model management.** A built-in Hugging Face browser downloads and prunes models file-by-file; every model keeps named config profiles (chat / code / general) that swap and reload straight from its model card in one click.
-- **Energy & thermal control.** A per-host performance manager flips CPU governor and fan/cooling profiles with inference load — full power under work, quiet and low-draw when idle or asleep.
-- **Remote control, no SSH.** Start/stop/restart servers, hot-swap models, edit configs, update `llama.cpp` (build from source, conda, Homebrew, release binaries, or a custom script), tail logs, and open an in-browser PTY terminal — for any host, from the page.
-- **LLM runtime visibility.** Live inference internals — slots, tokens/sec, prompt-processing rate, KV cache, context, idle/awake, active chat template, modalities, total slots — plus LM Studio loaded models and active sessions.
-- **Every host in one pane.** Run the same backend on many hosts and a picker appears to switch views and controls per agent; the **LLM Overall** tab rolls combined throughput, hottest GPU, total power, and active models into one view. A single-host lab sees no change.
-- **Cross-platform agent.** One agent for Linux and macOS/Apple Silicon auto-detects what each host runs and enables only what's relevant; a bare host just reports system metrics, all served over TLS.
+- **Model Autopilot.** Declared-state model placement gated on a host actually having the memory, with failover when one goes offline and replicas added or removed as demand changes. Off by default. **Admin → Routing**.
+- **GPU Report Card.** One standardized benchmark across all three providers producing a comparable, shareable card — TTFT, throughput, tokens/joule, measured $/Mtok, and the GPU it ran on. Runs are stored so you can trend them.
+- **Energy & cost intelligence.** Measured **$/Mtok** from real power draw, monthly savings against hosted-API pricing, and idle-power accounting. Only hosts reporting both power and token telemetry count, so a half-instrumented host can't skew the number.
+- **Discord bot.** Slash commands for host queries, model load/unload, and alarm acknowledgement, behind a user allowlist with model control off by default.
+- **OpenAI-compatible inference gateway.** One endpoint (`/api/gateway/v1`) fronts every provider; `/v1/models` merges all pools, deduped and tagged. Per-model pin, then pool round-robin, then pre-first-token failover. Dashboard sessions by default, API keys for external clients. See [Inference gateway](#inference-gateway).
+- **Benchmarking & autotuning.** Library-wide throughput benchmarks, plus autotuners for `llama.cpp` context/slot counts and vLLM `max-model-len`.
+- **Model management.** A built-in Hugging Face browser downloads and prunes models file-by-file; named profiles (chat / code / general) swap and reload from the model card in one click.
+- **Energy & thermal control.** A per-host performance manager flips CPU governor and fan profiles with inference load — full power under work, quiet when idle.
+- **Remote control, no SSH.** Run the servers, hot-swap models, edit configs, update `llama.cpp` (source, conda, Homebrew, release binaries, or your own script), tail logs, and open an in-browser PTY terminal.
+- **LLM runtime visibility.** Slots, tokens/sec, prompt-processing rate, KV cache, context, idle/awake, chat template, and modalities, plus LM Studio loaded models and sessions.
+- **Every host in one pane.** A picker switches views and controls per agent, and **LLM Overall** rolls combined throughput, hottest GPU, total power, and active models into one view. A single-host lab sees no change.
+- **Cross-platform agent.** One agent for Linux and macOS/Apple Silicon auto-detects what each host runs and enables only what's relevant — a bare host just reports system metrics, all over TLS.
 - **Live host telemetry.** CPU, RAM, disk, network, GPU utilization, PSU, UPS battery, and AIO cooling stats.
-- **Alerting that survives outages.** A standalone alarm engine persists every metric to InfluxDB, evaluates threshold and anomaly rules, and routes alerts via email, toast, webhook, or Discord. Agents buffer to disk if the engine is down and replay when it returns.
-- **Incident correlation, not alert spam.** When one event trips several rules on a host at once (GPU temp, VRAM, fan speed), the engine groups them into a single **incident** — one notification, with the Events table and toasts collapsing members behind a "+N related" count. Resolved alerts roll into a history table with configurable retention so the active view stays fast.
-- **At-a-glance status.** A dot on the **Events** tab turns red on any active critical alert; a dot on **Admin** turns red when system health degrades (stale/down agents, disconnected services, cert warnings). Both update on every tab.
+- **Alerting that survives outages.** A standalone alarm engine persists every metric to InfluxDB, evaluates threshold and anomaly rules, and routes alerts by email, toast, webhook, or Discord. Agents buffer to disk when it's down and replay when it returns.
+- **Incident correlation, not alert spam.** Several rules tripping on one host at once become a single **incident** — one notification, with the Events table collapsing members behind a "+N related" count. Resolved alerts roll into a retention-managed history.
+- **At-a-glance status.** Dots on the **Events** and **Admin** tabs turn red on active critical alerts or degraded system health, and amber when a new release is available. Both update from any tab.
 - **Direct LLM chat.** Talk to any loaded model through the embedded `llama.cpp` web interface.
-- **OpenClaw cost analytics.** Session logs become token-usage, cost, and tool-attribution dashboards with monthly spend projection and — given a budget — warning/ceiling alerts (and optional cost-anomaly alerts) through the alarm engine.
+- **OpenClaw cost analytics.** Session logs become token-usage, cost, and tool-attribution dashboards with monthly spend projection and — given a budget — warning, ceiling, and cost-anomaly alerts.
 - **Image generation.** An optional tab drives `stable-diffusion.cpp` for text-to-image.
-- **Multi-user access control.** Named accounts with **Admin** / **Operator** roles — operators drive LLMs and watch dashboards but are kept out of the Admin tab, agent management, secrets, and shells. Self-service password change plus username + source-IP lockout after repeated failed logins.
-- **Admin audit log.** Every mutating admin action (approve/disable/delete agents, restarts, auth-mode changes, user management, config writes, exports/imports) is recorded — who, what, when, from where, success or not — and browsable in **Admin → Audit Log**.
-- **Scheduled backups.** The manager writes a full export archive (config, agent registry, CA, users, model profiles, benchmarks) on an interval with retention pruning, optional AES-256-GCM encryption, and an optional mirror directory; last/next-run status shows in **Admin → Backup & Restore**, and the same archive restores through Import.
+- **Multi-user access control.** **Admin** / **Operator** roles — operators drive LLMs and watch dashboards but stay out of the Admin tab, agent management, secrets, and shells. Self-service password change plus username + source-IP lockout.
+- **Admin audit log.** Every mutating admin action is recorded — who, what, when, from where, success or not — and browsable in **Admin → Audit Log**.
+- **Scheduled backups.** Full export archives (config, agent registry, CA, users, model profiles, benchmarks) on an interval, with retention pruning, optional AES-256-GCM encryption, and an optional mirror directory. The same archive restores through Import.
 - **Encrypted everywhere.** All agent ↔ manager and agent ↔ alarm-engine traffic runs over TLS, with per-agent leaf certs signed by the manager's internal CA.
 
 
