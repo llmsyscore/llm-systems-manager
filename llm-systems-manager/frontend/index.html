@@ -54,7 +54,7 @@ Backend API endpoints consumed:
   <link rel="stylesheet" href="/static/vendor/xterm.min.css?v=5.3.0"/>
   <script src="/static/vendor/xterm.min.js?v=5.3.0"></script>
   <script src="/static/vendor/xterm-addon-fit.min.js?v=0.8.0"></script>
-  <link rel="stylesheet" href="/static/css/base.css?v=2026.08.12-1">
+  <link rel="stylesheet" href="/static/css/base.css?v=2026.08.12-2">
   <link rel="stylesheet" href="/static/css/reportcard.css?v=2026.08.04-1">
   <link rel="stylesheet" href="/static/css/energy.css?v=2026.07.31-1">
 </head>
@@ -107,10 +107,11 @@ Backend API endpoints consumed:
   <button class="tab-btn" id="tabBtnOpenclaw" style="display:none;" onclick="switchTab('openclaw')">OpenClaw</button>
   <button class="tab-btn" id="tabBtnLlmchat"  style="display:none;" onclick="switchTab('llmchat')">LLM Chat</button>
   <button class="tab-btn" id="tabBtnImggen"   style="display:none;" onclick="switchTab('imggen')">Image Generation</button>
-  <span style="flex:1;"></span>
-  <button class="tab-btn" id="tabBtnEvents" onclick="switchTab('events')"><span class="tab-dot" id="tabDotEvents"></span>Events</button>
-  <button class="tab-btn" id="tabBtnAdmin" onclick="switchTab('admin')"><span class="tab-dot" id="tabDotAdmin"></span>Admin</button>
-  <button class="tab-btn" id="tabBtnAccount" style="display:none;" onclick="accountMenu()">Account</button>
+  <span class="tab-nav-right">
+    <button class="tab-btn" id="tabBtnEvents" onclick="switchTab('events')"><span class="tab-dot" id="tabDotEvents"></span>Events</button>
+    <button class="tab-btn" id="tabBtnAdmin" onclick="switchTab('admin')"><span class="tab-dot" id="tabDotAdmin"></span>Admin</button>
+    <button class="tab-btn" id="tabBtnAccount" style="display:none;" onclick="accountMenu()">Account</button>
+  </span>
 </div>
 
 
