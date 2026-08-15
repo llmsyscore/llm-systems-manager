@@ -89,9 +89,12 @@ _LLAMA_LOG_IGNORE = (
     "update_slots: all slots are idle",
 )
 
-# Download-console PTY geometry and the emit floor for \r progress frames.
+# Download-console PTY geometry and the emit floor for progress frames.
 _DL_PTY_ROWS, _DL_PTY_COLS = 32, 140
 _DL_FRAME_INTERVAL_S = 1.0
+# Progress-bar shaped line: "NN%|", tqdm block glyphs, or "| <size>B" — multi-
+# bar redraws arrive \n-separated (cursor-up codes stripped), not just \r.
+_DL_FRAME_RE = re.compile(r"\d+%\||[▏▎▍▌▋▊▉█]|\|\s*\d+(?:\.\d+)?\s*[KMGT]?i?B\b")
 
 _dl_queue: "_queue_lib.Queue[dict[str, Any]]" = _queue_lib.Queue(maxsize=2000)
 _dl_lock = threading.Lock()
@@ -1163,13 +1166,13 @@ def _llama_run_command(cmd: list, stdin_input: "Optional[bytes]" = None,
                         buf = (buf + text).replace("\r\n", "\n")
                         parts = re.split(r"([\r\n])", buf)
                         buf = parts[-1]
-                        # \n lines emit as-is; \r frames are keyed by bar prefix
-                        # and flushed together at most once per _DL_FRAME_INTERVAL_S.
+                        # Plain lines emit as-is; frame-shaped lines are keyed by
+                        # bar prefix, flushed at most once per _DL_FRAME_INTERVAL_S.
                         for seg, sep in zip(parts[0::2], parts[1::2]):
                             line = seg.strip()
                             if not line or line == last_line:
                                 continue
-                            if sep == "\r":
+                            if sep == "\r" or _DL_FRAME_RE.search(line):
                                 frames[line.split(":", 1)[0]] = line
                                 if now - frame_ts >= _DL_FRAME_INTERVAL_S:
                                     _flush_frames()

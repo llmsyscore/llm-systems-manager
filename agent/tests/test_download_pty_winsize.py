@@ -130,6 +130,29 @@ w('done\\n')
     assert not tagged["done"]
 
 
+def test_newline_separated_bar_redraws_are_frames(llama):
+    # Multi-bar tqdm redraws via cursor-up + \n (ANSI stripped): bar-shaped
+    # lines must still be tagged progress and throttled, not passed through.
+    script = """\
+import sys
+w = sys.stdout.write
+for i in range(40):
+    w(f'Downloading bytes: {"#" * (i % 9)}| {i}MB, 99MB/s\\n')
+    w(f'Fetching 1 files: {i}%| | {i}/40\\n')
+    sys.stdout.flush()
+w('path: /tmp/somewhere\\n')
+"""
+    llama._llama_run_command([sys.executable, "-c", script])
+    msgs = _drain(llama._dl_queue)
+    lines = [m for m in msgs if m.get("type") == "line"]
+    bars = [m for m in lines if m["text"].startswith(("Downloading", "Fetching"))]
+    assert bars and len(bars) <= 8, f"expected throttled bar lines, got {len(bars)}"
+    assert all(m.get("progress") for m in bars)
+    assert any(m["text"].startswith("Fetching 1 files: 39%") for m in bars)
+    plain = [m for m in lines if m["text"].startswith("path:")]
+    assert plain and not plain[0].get("progress")
+
+
 def test_concurrent_bars_keep_separate_frames(llama):
     # Alternating \r frames from two bars: each bar's newest frame survives
     # the throttle window instead of one bar clobbering the other.
