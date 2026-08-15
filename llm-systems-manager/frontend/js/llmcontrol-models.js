@@ -1202,8 +1202,10 @@ async function startDownload() {
   let _dlBuffer = '';
   let _dlBase = '';
   // progress-tagged lines render as a live block at the tail, one line per
-  // bar (keyed by prefix), updated in place like a real terminal.
+  // bar (keyed by prefix), updated in place like a real terminal. _dlFolded
+  // remembers each bar's folded text so teardown re-renders are dropped.
   const _dlBars = new Map();
+  const _dlFolded = new Map();
   const _isDryRun = dryRun;
 
   const _renderLog = () => {
@@ -1211,6 +1213,7 @@ async function startDownload() {
     log.scrollTop = log.scrollHeight;
   };
   const _foldBars = () => {
+    for (const [k, v] of _dlBars) _dlFolded.set(k, v);
     _dlBase += [..._dlBars.values()].map(t => t + '\n').join('');
     _dlBars.clear();
   };
@@ -1221,15 +1224,22 @@ async function startDownload() {
     if (msg.type === 'start') {
       _dlBase = `$ ${msg.cmd}\n\n`;
       _dlBars.clear();
+      _dlFolded.clear();
       _renderLog();
     } else if (msg.type === 'line') {
       if (!_isDryRun) {
         if (msg.progress) {
-          _dlBars.set(msg.text.split(':')[0], msg.text);
+          const k = msg.text.split(':')[0];
+          const prev = _dlFolded.get(k);
+          // A folded line starting with this text is a stale teardown
+          // re-render of an already-shown final bar state — drop it.
+          if (!(prev && prev.startsWith(msg.text))) _dlBars.set(k, msg.text);
         } else {
           // A plain line identical to a held bar frame supersedes it (tqdm
           // reprints the final bar state with \n) — drop the bar copy.
-          for (const [k, v] of _dlBars) if (v === msg.text) _dlBars.delete(k);
+          for (const [k, v] of _dlBars) {
+            if (v === msg.text) { _dlFolded.set(k, v); _dlBars.delete(k); }
+          }
           _foldBars();
           _dlBase += msg.text + '\n';
         }

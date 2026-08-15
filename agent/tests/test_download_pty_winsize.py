@@ -153,6 +153,24 @@ w('path: /tmp/somewhere\\n')
     assert plain and not plain[0].get("progress")
 
 
+def test_unchanged_frame_not_resent_across_flushes(llama):
+    # The same frame re-rendered in a later flush window (hf teardown redraw)
+    # must not be emitted twice for that bar.
+    script = """\
+import sys, time
+w = sys.stdout.write
+w('BAR: 50%| | 5MB\\r'); sys.stdout.flush()
+time.sleep(1.2)
+w('BAR: 50%| | 5MB\\r'); sys.stdout.flush()
+time.sleep(1.2)
+w('done\\n')
+"""
+    llama._llama_run_command([sys.executable, "-c", script])
+    lines = _lines(_drain(llama._dl_queue))
+    assert lines.count("BAR: 50%| | 5MB") == 1, lines
+    assert "done" in lines
+
+
 def test_concurrent_bars_keep_separate_frames(llama):
     # Alternating \r frames from two bars: each bar's newest frame survives
     # the throttle window instead of one bar clobbering the other.

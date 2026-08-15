@@ -1134,14 +1134,18 @@ def _llama_run_command(cmd: list, stdin_input: "Optional[bytes]" = None,
                 frames: "dict[str, str]" = {}  # newest \r frame per bar, held by the throttle
                 frame_ts = 0.0
 
+                sent_frames: "dict[str, str]" = {}
+
                 def _flush_frames() -> None:
                     # Emit held-back frames tagged progress=True so the console
-                    # can update each bar's line in place instead of appending.
+                    # can update each bar's line in place; unchanged frames for
+                    # a bar are not re-sent.
                     nonlocal last_line
-                    for f in frames.values():
-                        if f != last_line:
+                    for k, f in frames.items():
+                        if f != last_line and sent_frames.get(k) != f:
                             _dl_put({"type": "line", "text": f, "progress": True})
                             last_line = f
+                            sent_frames[k] = f
                     frames.clear()
 
                 while True:
