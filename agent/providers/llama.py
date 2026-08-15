@@ -89,6 +89,10 @@ _LLAMA_LOG_IGNORE = (
     "update_slots: all slots are idle",
 )
 
+# Download-console PTY geometry and the emit floor for \r progress frames.
+_DL_PTY_ROWS, _DL_PTY_COLS = 32, 140
+_DL_FRAME_INTERVAL_S = 1.0
+
 _dl_queue: "_queue_lib.Queue[dict[str, Any]]" = _queue_lib.Queue(maxsize=2000)
 _dl_lock = threading.Lock()
 _dl_active = False
@@ -1096,11 +1100,18 @@ def _llama_run_command(cmd: list, stdin_input: "Optional[bytes]" = None,
                     _dl_put({"type": "line", "text": line})
             proc.wait()
         else:
+            import fcntl
             import pty
             import select as _select
+            import struct
+            import termios
 
             env["TERM"] = "xterm-256color"
+            env["COLUMNS"], env["LINES"] = str(_DL_PTY_COLS), str(_DL_PTY_ROWS)
             master_fd, slave_fd = pty.openpty()
+            with best_effort("download: set pty winsize", log=log):
+                fcntl.ioctl(slave_fd, termios.TIOCSWINSZ,
+                            struct.pack("HHHH", _DL_PTY_ROWS, _DL_PTY_COLS, 0, 0))
             proc = None
             try:
                 proc = subprocess.Popen(
@@ -1117,9 +1128,15 @@ def _llama_run_command(cmd: list, stdin_input: "Optional[bytes]" = None,
 
                 buf = ""
                 last_line = ""
+                frame = ""       # newest \r progress frame held back by the throttle
+                frame_ts = 0.0
                 while True:
                     try:
                         r, _, _ = _select.select([master_fd], [], [], 0.5)
+                        now = time.monotonic()
+                        if frame and now - frame_ts >= _DL_FRAME_INTERVAL_S:
+                            _dl_put({"type": "line", "text": frame})
+                            last_line, frame, frame_ts = frame, "", now
                         if not r:
                             if proc.poll() is not None:
                                 break
@@ -1132,19 +1149,32 @@ def _llama_run_command(cmd: list, stdin_input: "Optional[bytes]" = None,
                             break
                         text = data.decode("utf-8", errors="replace")
                         text = llama_install.strip_ansi(text)
-                        buf += text
-                        parts = buf.replace("\r\n", "\n").replace("\r", "\n").split("\n")
+                        buf = (buf + text).replace("\r\n", "\n")
+                        parts = re.split(r"([\r\n])", buf)
                         buf = parts[-1]
-                        for line in parts[:-1]:
-                            line = line.strip()
-                            if line and line != last_line:
-                                _dl_put({"type": "line", "text": line})
-                                last_line = line
+                        # \n lines emit as-is; \r frames emit at most one per
+                        # _DL_FRAME_INTERVAL_S, latest frame kept while held back.
+                        for seg, sep in zip(parts[0::2], parts[1::2]):
+                            line = seg.strip()
+                            if not line or line == last_line:
+                                continue
+                            if sep == "\r":
+                                if now - frame_ts < _DL_FRAME_INTERVAL_S:
+                                    frame = line
+                                    continue
+                                frame_ts = now
+                            elif frame and frame != line:
+                                _dl_put({"type": "line", "text": frame})
+                            frame = ""
+                            _dl_put({"type": "line", "text": line})
+                            last_line = line
                     except (OSError,):
                         break
 
-                if buf.strip() and buf.strip() != last_line:
-                    _dl_put({"type": "line", "text": buf.strip()})
+                for tail in (frame, buf.strip()):
+                    if tail and tail != last_line:
+                        _dl_put({"type": "line", "text": tail})
+                        last_line = tail
             finally:
                 if proc is not None:
                     try: proc.wait(timeout=5)
