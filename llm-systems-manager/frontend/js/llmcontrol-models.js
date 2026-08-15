@@ -1227,6 +1227,9 @@ async function startDownload() {
         if (msg.progress) {
           _dlBars.set(msg.text.split(':')[0], msg.text);
         } else {
+          // A plain line identical to a held bar frame supersedes it (tqdm
+          // reprints the final bar state with \n) — drop the bar copy.
+          for (const [k, v] of _dlBars) if (v === msg.text) _dlBars.delete(k);
           _foldBars();
           _dlBase += msg.text + '\n';
         }
