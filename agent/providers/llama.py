@@ -89,6 +89,13 @@ _LLAMA_LOG_IGNORE = (
     "update_slots: all slots are idle",
 )
 
+# Download-console PTY geometry and the emit floor for progress frames.
+_DL_PTY_ROWS, _DL_PTY_COLS = 32, 140
+_DL_FRAME_INTERVAL_S = 1.0
+# Progress-bar shaped line: "NN%|", tqdm block glyphs, or "| <size>B" — multi-
+# bar redraws arrive \n-separated (cursor-up codes stripped), not just \r.
+_DL_FRAME_RE = re.compile(r"\d+%\||[▏▎▍▌▋▊▉█]|\|\s*\d+(?:\.\d+)?\s*[KMGT]?i?B\b")
+
 _dl_queue: "_queue_lib.Queue[dict[str, Any]]" = _queue_lib.Queue(maxsize=2000)
 _dl_lock = threading.Lock()
 _dl_active = False
@@ -1096,11 +1103,18 @@ def _llama_run_command(cmd: list, stdin_input: "Optional[bytes]" = None,
                     _dl_put({"type": "line", "text": line})
             proc.wait()
         else:
+            import fcntl
             import pty
             import select as _select
+            import struct
+            import termios
 
             env["TERM"] = "xterm-256color"
+            env["COLUMNS"], env["LINES"] = str(_DL_PTY_COLS), str(_DL_PTY_ROWS)
             master_fd, slave_fd = pty.openpty()
+            with best_effort("download: set pty winsize", log=log):
+                fcntl.ioctl(slave_fd, termios.TIOCSWINSZ,
+                            struct.pack("HHHH", _DL_PTY_ROWS, _DL_PTY_COLS, 0, 0))
             proc = None
             try:
                 proc = subprocess.Popen(
@@ -1117,9 +1131,30 @@ def _llama_run_command(cmd: list, stdin_input: "Optional[bytes]" = None,
 
                 buf = ""
                 last_line = ""
+                frames: "dict[str, str]" = {}  # newest \r frame per bar, held by the throttle
+                frame_ts = 0.0
+
+                sent_frames: "dict[str, str]" = {}
+
+                def _flush_frames() -> None:
+                    # Emit held-back frames tagged progress=True so the console
+                    # can update each bar's line in place; unchanged frames for
+                    # a bar are not re-sent.
+                    nonlocal last_line
+                    for k, f in frames.items():
+                        if f != last_line and sent_frames.get(k) != f:
+                            _dl_put({"type": "line", "text": f, "progress": True})
+                            last_line = f
+                            sent_frames[k] = f
+                    frames.clear()
+
                 while True:
                     try:
                         r, _, _ = _select.select([master_fd], [], [], 0.5)
+                        now = time.monotonic()
+                        if frames and now - frame_ts >= _DL_FRAME_INTERVAL_S:
+                            _flush_frames()
+                            frame_ts = now
                         if not r:
                             if proc.poll() is not None:
                                 break
@@ -1132,19 +1167,31 @@ def _llama_run_command(cmd: list, stdin_input: "Optional[bytes]" = None,
                             break
                         text = data.decode("utf-8", errors="replace")
                         text = llama_install.strip_ansi(text)
-                        buf += text
-                        parts = buf.replace("\r\n", "\n").replace("\r", "\n").split("\n")
+                        buf = (buf + text).replace("\r\n", "\n")
+                        parts = re.split(r"([\r\n])", buf)
                         buf = parts[-1]
-                        for line in parts[:-1]:
-                            line = line.strip()
-                            if line and line != last_line:
-                                _dl_put({"type": "line", "text": line})
-                                last_line = line
+                        # Plain lines emit as-is; frame-shaped lines are keyed by
+                        # bar prefix, flushed at most once per _DL_FRAME_INTERVAL_S.
+                        for seg, sep in zip(parts[0::2], parts[1::2]):
+                            line = seg.strip()
+                            if not line or line == last_line:
+                                continue
+                            if sep == "\r" or _DL_FRAME_RE.search(line):
+                                frames[line.split(":", 1)[0]] = line
+                                if now - frame_ts >= _DL_FRAME_INTERVAL_S:
+                                    _flush_frames()
+                                    frame_ts = now
+                                continue
+                            _flush_frames()
+                            _dl_put({"type": "line", "text": line})
+                            last_line = line
                     except (OSError,):
                         break
 
-                if buf.strip() and buf.strip() != last_line:
-                    _dl_put({"type": "line", "text": buf.strip()})
+                _flush_frames()
+                tail = buf.strip()
+                if tail and tail != last_line:
+                    _dl_put({"type": "line", "text": tail})
             finally:
                 if proc is not None:
                     try: proc.wait(timeout=5)

@@ -65,7 +65,7 @@ except ImportError:
             os.chmod(tmp, mode)
         tmp.replace(p)
 
-VERSION = "v2026.08.10-1"
+VERSION = "v2026.08.15-3"
 
 
 def _restore_bundle_env() -> None:

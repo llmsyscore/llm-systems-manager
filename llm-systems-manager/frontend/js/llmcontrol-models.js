@@ -1200,20 +1200,54 @@ async function startDownload() {
   _dlEventSrc = src;
   const log = document.getElementById('dlLog');
   let _dlBuffer = '';
+  let _dlBase = '';
+  // progress-tagged lines render as a live block at the tail, one line per
+  // bar (keyed by prefix), updated in place like a real terminal. _dlFolded
+  // remembers each bar's folded text so teardown re-renders are dropped.
+  const _dlBars = new Map();
+  const _dlFolded = new Map();
   const _isDryRun = dryRun;
+
+  const _renderLog = () => {
+    log.textContent = _dlBase + [..._dlBars.values()].map(t => t + '\n').join('');
+    log.scrollTop = log.scrollHeight;
+  };
+  const _foldBars = () => {
+    for (const [k, v] of _dlBars) _dlFolded.set(k, v);
+    _dlBase += [..._dlBars.values()].map(t => t + '\n').join('');
+    _dlBars.clear();
+  };
 
   src.onmessage = e => {
     const msg = JSON.parse(e.data);
     if (msg.type === 'keepalive') return;
     if (msg.type === 'start') {
-      log.textContent = `$ ${msg.cmd}\n\n`;
+      _dlBase = `$ ${msg.cmd}\n\n`;
+      _dlBars.clear();
+      _dlFolded.clear();
+      _renderLog();
     } else if (msg.type === 'line') {
       if (!_isDryRun) {
-        log.textContent += msg.text + '\n';
+        if (msg.progress) {
+          const k = msg.text.split(':')[0];
+          const prev = _dlFolded.get(k);
+          // A folded line starting with this text is a stale teardown
+          // re-render of an already-shown final bar state — drop it.
+          if (!(prev && prev.startsWith(msg.text))) _dlBars.set(k, msg.text);
+        } else {
+          // A plain line identical to a held bar frame supersedes it (tqdm
+          // reprints the final bar state with \n) — drop the bar copy.
+          for (const [k, v] of _dlBars) {
+            if (v === msg.text) { _dlFolded.set(k, v); _dlBars.delete(k); }
+          }
+          _foldBars();
+          _dlBase += msg.text + '\n';
+        }
+        _renderLog();
       } else {
         _dlBuffer += msg.text + '\n';
+        log.scrollTop = log.scrollHeight;
       }
-      log.scrollTop = log.scrollHeight;
     } else if (msg.type === 'done') {
       if (_isDryRun) {
         // Dry run uses --format json — extract the JSON payload and format it
@@ -1234,14 +1268,16 @@ async function startDownload() {
         log.textContent += '\n✓ Dry run complete — no files downloaded.\n';
       } else {
         // Real download — output was already streamed line by line
+        _foldBars();
         if (msg.cancelled) {
-          log.textContent += '\n✕ Cancelled.\n';
+          _dlBase += '\n✕ Cancelled.\n';
         } else if (msg.ok) {
-          log.textContent += '\n✓ Download complete.\n';
+          _dlBase += '\n✓ Download complete.\n';
           _renderAddDownloadedButtons();
         } else {
-          log.textContent += `\n✗ Failed (exit ${msg.rc || msg.error}).\n`;
+          _dlBase += `\n✗ Failed (exit ${msg.rc || msg.error}).\n`;
         }
+        _renderLog();
       }
       document.getElementById('dlBtn').disabled = false;
       _setDlRunning(false);
