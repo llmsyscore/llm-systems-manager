@@ -111,13 +111,13 @@ def test_pty_child_sees_matching_columns_env(llama):
 def test_cr_progress_frames_are_throttled(llama):
     # 60 rapid \r frames then a final \n line: only the first frame passes the
     # throttle window; the newest held-back frame flushes before "done".
-    llama._llama_run_command([
-        sys.executable, "-c",
-        "import sys\n"
-        "w = sys.stdout.write\n"
-        "[w(f'PROG: {i}\\r') or sys.stdout.flush() for i in range(60)]\n"
-        "w('done\\n')",
-    ])
+    script = """\
+import sys
+w = sys.stdout.write
+[w(f'PROG: {i}\\r') or sys.stdout.flush() for i in range(60)]
+w('done\\n')
+"""
+    llama._llama_run_command([sys.executable, "-c", script])
     msgs = _drain(llama._dl_queue)
     lines = _lines(msgs)
     prog = [t for t in lines if t.startswith("PROG")]
@@ -133,14 +133,14 @@ def test_cr_progress_frames_are_throttled(llama):
 def test_concurrent_bars_keep_separate_frames(llama):
     # Alternating \r frames from two bars: each bar's newest frame survives
     # the throttle window instead of one bar clobbering the other.
-    llama._llama_run_command([
-        sys.executable, "-c",
-        "import sys\n"
-        "w = sys.stdout.write\n"
-        "for i in range(30):\n"
-        "    w(f'Down: {i}\\r'); w(f'Recon: {i}\\r'); sys.stdout.flush()\n"
-        "w('done\\n')",
-    ])
+    script = """\
+import sys
+w = sys.stdout.write
+for i in range(30):
+    w(f'Down: {i}\\r'); w(f'Recon: {i}\\r'); sys.stdout.flush()
+w('done\\n')
+"""
+    llama._llama_run_command([sys.executable, "-c", script])
     lines = _lines(_drain(llama._dl_queue))
     assert "Down: 29" in lines and "Recon: 29" in lines
     assert "done" in lines
