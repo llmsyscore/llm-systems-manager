@@ -1128,15 +1128,26 @@ def _llama_run_command(cmd: list, stdin_input: "Optional[bytes]" = None,
 
                 buf = ""
                 last_line = ""
-                frame = ""       # newest \r progress frame held back by the throttle
+                frames: "dict[str, str]" = {}  # newest \r frame per bar, held by the throttle
                 frame_ts = 0.0
+
+                def _flush_frames() -> None:
+                    # Emit held-back frames tagged progress=True so the console
+                    # can update each bar's line in place instead of appending.
+                    nonlocal last_line
+                    for f in frames.values():
+                        if f != last_line:
+                            _dl_put({"type": "line", "text": f, "progress": True})
+                            last_line = f
+                    frames.clear()
+
                 while True:
                     try:
                         r, _, _ = _select.select([master_fd], [], [], 0.5)
                         now = time.monotonic()
-                        if frame and now - frame_ts >= _DL_FRAME_INTERVAL_S:
-                            _dl_put({"type": "line", "text": frame})
-                            last_line, frame, frame_ts = frame, "", now
+                        if frames and now - frame_ts >= _DL_FRAME_INTERVAL_S:
+                            _flush_frames()
+                            frame_ts = now
                         if not r:
                             if proc.poll() is not None:
                                 break
@@ -1152,29 +1163,28 @@ def _llama_run_command(cmd: list, stdin_input: "Optional[bytes]" = None,
                         buf = (buf + text).replace("\r\n", "\n")
                         parts = re.split(r"([\r\n])", buf)
                         buf = parts[-1]
-                        # \n lines emit as-is; \r frames emit at most one per
-                        # _DL_FRAME_INTERVAL_S, latest frame kept while held back.
+                        # \n lines emit as-is; \r frames are keyed by bar prefix
+                        # and flushed together at most once per _DL_FRAME_INTERVAL_S.
                         for seg, sep in zip(parts[0::2], parts[1::2]):
                             line = seg.strip()
                             if not line or line == last_line:
                                 continue
                             if sep == "\r":
-                                if now - frame_ts < _DL_FRAME_INTERVAL_S:
-                                    frame = line
-                                    continue
-                                frame_ts = now
-                            elif frame and frame != line:
-                                _dl_put({"type": "line", "text": frame})
-                            frame = ""
+                                frames[line.split(":", 1)[0]] = line
+                                if now - frame_ts >= _DL_FRAME_INTERVAL_S:
+                                    _flush_frames()
+                                    frame_ts = now
+                                continue
+                            _flush_frames()
                             _dl_put({"type": "line", "text": line})
                             last_line = line
                     except (OSError,):
                         break
 
-                for tail in (frame, buf.strip()):
-                    if tail and tail != last_line:
-                        _dl_put({"type": "line", "text": tail})
-                        last_line = tail
+                _flush_frames()
+                tail = buf.strip()
+                if tail and tail != last_line:
+                    _dl_put({"type": "line", "text": tail})
             finally:
                 if proc is not None:
                     try: proc.wait(timeout=5)

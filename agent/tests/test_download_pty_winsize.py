@@ -115,12 +115,32 @@ def test_cr_progress_frames_are_throttled(llama):
         sys.executable, "-c",
         "import sys\n"
         "w = sys.stdout.write\n"
-        "[w(f'PROG {i}\\r') or sys.stdout.flush() for i in range(60)]\n"
+        "[w(f'PROG: {i}\\r') or sys.stdout.flush() for i in range(60)]\n"
         "w('done\\n')",
     ])
-    lines = _lines(_drain(llama._dl_queue))
+    msgs = _drain(llama._dl_queue)
+    lines = _lines(msgs)
     prog = [t for t in lines if t.startswith("PROG")]
     assert "done" in lines
     assert lines.index("done") > lines.index(prog[-1])
     assert 1 <= len(prog) <= 5, f"expected throttled frames, got {len(prog)}: {prog}"
-    assert prog[-1] == "PROG 59"
+    assert prog[-1] == "PROG: 59"
+    tagged = {m["text"]: m.get("progress") for m in msgs if m.get("type") == "line"}
+    assert all(tagged[t] for t in prog)
+    assert not tagged["done"]
+
+
+def test_concurrent_bars_keep_separate_frames(llama):
+    # Alternating \r frames from two bars: each bar's newest frame survives
+    # the throttle window instead of one bar clobbering the other.
+    llama._llama_run_command([
+        sys.executable, "-c",
+        "import sys\n"
+        "w = sys.stdout.write\n"
+        "for i in range(30):\n"
+        "    w(f'Down: {i}\\r'); w(f'Recon: {i}\\r'); sys.stdout.flush()\n"
+        "w('done\\n')",
+    ])
+    lines = _lines(_drain(llama._dl_queue))
+    assert "Down: 29" in lines and "Recon: 29" in lines
+    assert "done" in lines
