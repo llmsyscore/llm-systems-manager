@@ -1685,6 +1685,7 @@ def _machine_identity() -> str:
     try:
         ident = ident_path.read_text().strip()
     except OSError:
+        # No readable identity file (first run) — generated and persisted below.
         pass
     if not ident:
         ident = os.urandom(32).hex()
