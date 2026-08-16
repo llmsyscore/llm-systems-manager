@@ -91,6 +91,8 @@ _agents_lock = threading.Lock()
 # from inside its own critical section during the v2 schema migration.
 _agents_cache_lock = threading.RLock()
 _agents_cache: "dict[str, Any]" = {"mtime": 0.0, "data": None, "by_token": {}}
+# Serializes save_agents' tmp-write+rename across all callers.
+_save_io_lock = threading.Lock()
 
 # Public aliases: main keeps a few admin routes that mutate agents.json
 # (llama-pins, post-restart auto-promotion) and need to coordinate with
@@ -170,6 +172,71 @@ def _migrate_agents_schema(data: dict) -> bool:
     return changed
 
 
+def _reconcile_agent_refs(data: dict) -> bool:
+    """Prune global references to agent ids absent from agents{}: primary/
+    default ids, host_agent_id, pool entries, model pins, autopilot
+    placements. Tolerates hand-edited/corrupt value shapes. True if changed."""
+    agents = data.get("agents")
+    glob = data.get("global")
+    if not isinstance(agents, dict) or not isinstance(glob, dict):
+        return False
+
+    def _dangling(aid) -> bool:
+        return isinstance(aid, str) and bool(aid) and aid not in agents
+
+    changed = False
+    for name in providers.names():
+        for key in (f"primary_{name}_id", f"default_{name}_id"):
+            aid = glob.get(key)
+            if _dangling(aid):
+                glob[key] = ""
+                changed = True
+                log.warning("registry reconcile: cleared %s (dangling agent %s)",
+                            key, aid[:8])
+        spec = providers.get(name)
+        pin_key = spec.pin_dict_key if spec else None
+        pins = glob.get(pin_key) if pin_key else None
+        if isinstance(pins, dict):
+            for model in [m for m, aid in pins.items() if _dangling(aid)]:
+                dropped = pins.pop(model)
+                changed = True
+                log.warning("registry reconcile: dropped %s pin %s (dangling agent %s)",
+                            pin_key, model, dropped[:8])
+    for name in providers.pool_provider_names():
+        pool_key = f"{name}_pool"
+        pool = glob.get(pool_key)
+        if not isinstance(pool, list):
+            continue
+        kept = [aid for aid in pool if isinstance(aid, str) and aid in agents]
+        if len(kept) != len(pool):
+            glob[pool_key] = kept
+            changed = True
+            log.warning("registry reconcile: removed %d dangling entr%s from %s",
+                        len(pool) - len(kept),
+                        "y" if len(pool) - len(kept) == 1 else "ies", pool_key)
+    hid = glob.get("host_agent_id")
+    if _dangling(hid):
+        glob.pop("host_agent_id", None)
+        changed = True
+        log.warning("registry reconcile: cleared host_agent_id (dangling agent %s)",
+                    hid[:8])
+    # Autopilot entries pin via placement=<agent id> ("auto" = planner's pick);
+    # a dangling pin resets to "auto" so the entry re-places instead of stalling.
+    ap = glob.get("autopilot")
+    entries = ap.get("entries") if isinstance(ap, dict) else None
+    for e in (entries if isinstance(entries, list) else []):
+        if not isinstance(e, dict):
+            continue
+        placement = e.get("placement")
+        if placement != "auto" and _dangling(placement):
+            e["placement"] = "auto"
+            changed = True
+            log.warning("registry reconcile: reset autopilot placement %s/%s "
+                        "(dangling agent %s)",
+                        e.get("model"), e.get("provider"), placement[:8])
+    return changed
+
+
 def load_agents() -> dict:
     if AGENTS_FILE is None:
         return {"agents": {}, "global": {"auth_disabled": False}, "schema_version": 2}
@@ -190,17 +257,21 @@ def load_agents() -> dict:
         except Exception as e:
             log.warning("agents.json unreadable, starting fresh: %s", e)
             data = {"agents": {}, "global": {"auth_disabled": False}, "schema_version": 2}
-        # Apply v2 migration in-place; persist if anything was upgraded.
+        # Apply v2 migration + dangling-reference reconcile in-place;
+        # persist if anything changed.
         try:
-            if _migrate_agents_schema(data):
+            migrated = _migrate_agents_schema(data)
+            reconciled = _reconcile_agent_refs(data)
+            if migrated or reconciled:
                 save_agents(data)
                 try:
                     mt = AGENTS_FILE.stat().st_mtime
                 except OSError:
                     pass
-                log.info("agents.json migrated to schema_version=2")
+                if migrated:
+                    log.info("agents.json migrated to schema_version=2")
         except Exception as e:
-            log.warning("agents.json schema migration failed: %s", e)
+            log.warning("agents.json schema migration/reconcile failed: %s", e)
         _agents_cache["data"] = data
         _agents_cache["mtime"] = mt
         _agents_cache["by_token"] = {
@@ -214,17 +285,20 @@ def load_agents() -> dict:
 def save_agents(data: dict) -> None:
     if AGENTS_FILE is None:
         raise RuntimeError("agent_registry not initialised (call set_deps first)")
-    AGENTS_FILE.parent.mkdir(parents=True, exist_ok=True)
-    tmp = AGENTS_FILE.with_suffix(".json.tmp")
-    tmp.write_text(json.dumps(data, indent=2))
-    # Bearer tokens for every approved agent live in this file — restrict to
-    # owner-only so a misconfigured shared host doesn't leak them. The chmod
-    # runs on the tmp before os.replace so the rename is atomic AND the
-    # destination's mode lands as 0o600 in one shot, matching auth.auth_write's
-    # convention for data/manager_auth.json.
-    import os as _os
-    _os.chmod(tmp, 0o600)
-    tmp.replace(AGENTS_FILE)
+    # One tmp-file writer at a time — in-load reconcile saves don't hold
+    # _agents_lock, so the write+rename itself must be serialized here.
+    with _save_io_lock:
+        AGENTS_FILE.parent.mkdir(parents=True, exist_ok=True)
+        tmp = AGENTS_FILE.with_suffix(".json.tmp")
+        tmp.write_text(json.dumps(data, indent=2))
+        # Bearer tokens for every approved agent live in this file — restrict to
+        # owner-only so a misconfigured shared host doesn't leak them. The chmod
+        # runs on the tmp before os.replace so the rename is atomic AND the
+        # destination's mode lands as 0o600 in one shot, matching auth.auth_write's
+        # convention for data/manager_auth.json.
+        import os as _os
+        _os.chmod(tmp, 0o600)
+        tmp.replace(AGENTS_FILE)
     # Refresh the cache eagerly so the next load_agents inside this
     # process sees its own write without paying for another mtime miss
     # → reparse cycle.
@@ -1484,6 +1558,10 @@ def _agents_delete(agent_id: str):
         data = load_agents()
         if agent_id in data.get("agents", {}):
             del data["agents"][agent_id]
+            # Cascade-clean every global reference; a reconcile error must
+            # not abort the delete + save.
+            with best_effort("agent delete: reconcile refs", log=log):
+                _reconcile_agent_refs(data)
             save_agents(data)
     provider_state.STORE.evict(agent_id)
     log.warning("agent deleted by %s: id=%s", flask_request.remote_addr, agent_id)
@@ -1588,9 +1666,11 @@ def set_pool_membership(agent_id: str, provider: str, in_pool: bool,
     with _agents_lock:
         data = load_agents()
         agent = data["agents"].get(agent_id)
-        if not agent:
-            return False, "unknown agent", None, None
+        # Removal is allowed for ids no longer in the registry (dangling pool
+        # entries); only additions require a real, capable, approved agent.
         if in_pool:
+            if not agent:
+                return False, "unknown agent", None, None
             caps = agent.get("capabilities", {}) or {}
             if not caps.get(cap):
                 return False, f"agent does not advertise {cap} capability", None, None
@@ -1611,7 +1691,7 @@ def set_pool_membership(agent_id: str, provider: str, in_pool: bool,
         glob[pool_key] = pool
         save_agents(data)
 
-    return True, None, pool, agent.get("hostname")
+    return True, None, pool, (agent or {}).get("hostname")
 
 
 def _agents_set_pool(agent_id: str, provider: str):

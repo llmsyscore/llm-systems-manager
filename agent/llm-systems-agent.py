@@ -65,7 +65,7 @@ except ImportError:
             os.chmod(tmp, mode)
         tmp.replace(p)
 
-VERSION = "v2026.08.15-3"
+VERSION = "v2026.08.16-1"
 
 
 def _restore_bundle_env() -> None:
@@ -1670,8 +1670,37 @@ def _tls_write_bundle(tls: dict) -> None:
     )
 
 
+_machine_identity_value: Optional[str] = None
+
+
+def _machine_identity() -> str:
+    """Random per-install secret persisted beside the token (0600); NOT derived
+    from readable host facts (machine-id/hostname), so it can't be computed
+    remotely to forge the manager's fingerprint re-auth factor."""
+    global _machine_identity_value
+    if _machine_identity_value:
+        return _machine_identity_value
+    ident_path = Path(CONFIG.TOKEN_FILE).parent / "machine-identity"
+    ident = ""
+    try:
+        ident = ident_path.read_text().strip()
+    except OSError:
+        # No readable identity file (first run) — generated and persisted below.
+        pass
+    if not ident:
+        ident = os.urandom(32).hex()
+        try:
+            ident_path.parent.mkdir(parents=True, exist_ok=True)
+            atomic_write_text(ident_path, ident, mode=0o600)
+        except OSError as e:
+            logger.warning("could not persist machine identity to %s: %s", ident_path, e)
+    _machine_identity_value = ident
+    return ident
+
+
 def _registration_body() -> dict[str, Any]:
-    fp_input = f"{CONFIG.AGENT_HOSTNAME}|{CONFIG.AGENT_OS}|{platform.uname()}|{psutil.boot_time()}"
+    # Reboot-stable fingerprint (manager re-auth factor): no boot_time/kernel/IP inputs.
+    fp_input = f"{CONFIG.AGENT_HOSTNAME}|{CONFIG.AGENT_OS}|{_machine_identity()}"
     import hashlib
     fingerprint = "sha256:" + hashlib.sha256(fp_input.encode()).hexdigest()
     scheme = "https" if _tls_enabled() else "http"
@@ -1804,6 +1833,7 @@ def registry_register_blocking() -> None:
                         rr = _post_session.post(
                             f"{CONFIG.MANAGER_URL.rstrip('/')}/api/agents/register",
                             json=body, timeout=5,
+                            headers={"Authorization": f"Bearer {cached}"},
                         )
                         if rr.ok:
                             logger.info("registration refresh OK (bind_url=%s)", body.get("bind_url"))
@@ -1817,11 +1847,13 @@ def registry_register_blocking() -> None:
             logger.debug("whoami check failed (will re-register): %s", e)
 
     body = _registration_body()
+    # Cached token (if any) rides along as the re-registration auth factor.
+    reg_headers = {"Authorization": f"Bearer {cached}"} if cached else {}
     while True:
         try:
             r = _post_session.post(
                 f"{CONFIG.MANAGER_URL.rstrip('/')}/api/agents/register",
-                json=body, timeout=10,
+                json=body, timeout=10, headers=reg_headers,
             )
             if r.ok:
                 d = r.json()
@@ -1851,11 +1883,11 @@ def registry_register_blocking() -> None:
                     if _now - _register_403_last >= 300:
                         _register_403_last = _now
                         try:
-                            body = r.json() or {}
+                            err_body = r.json() or {}
                         except Exception:
-                            body = {}
-                        stale_id = body.get("agent_id") or "<unknown>"
-                        stale_status = body.get("status") or "<unknown>"
+                            err_body = {}
+                        stale_id = err_body.get("agent_id") or "<unknown>"
+                        stale_status = err_body.get("status") or "<unknown>"
                         base = (CONFIG.MANAGER_URL or "").rstrip("/")
                         logger.critical(
                             "registration BLOCKED by stale record on the manager.\n"

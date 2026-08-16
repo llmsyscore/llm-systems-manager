@@ -419,18 +419,23 @@ function adminRenderPoolOrder() {
   }
 
   ul.innerHTML = pool.map((aid, i) => {
+    const unknown = !idToAgent[aid];
     const a = idToAgent[aid] || { hostname: '(unknown agent ' + aid.slice(0,8) + '…)', liveness: null, version: '' };
     const livenessBadge = a.liveness === 'live'
       ? '<span class="adm-chip tls-on" style="font-size:11px;padding:0 6px;">live</span>'
       : a.liveness === 'stale'
         ? '<span class="adm-chip tls-pending" style="font-size:11px;padding:0 6px;">stale</span>'
         : '<span class="adm-chip tls-off" style="font-size:11px;padding:0 6px;">' + adminEsc(a.liveness || '?') + '</span>';
+    const removeBtn = unknown
+      ? `<button class="adm-chip" style="cursor:pointer;border:none;" title="Remove this deleted agent from the pool" onclick="adminTogglePool('${adminEsc(_adminPoolSel)}','${adminEsc(aid)}',false)">✕ remove</button>`
+      : '';
     return `<li data-agent-id="${adminEsc(aid)}">
       ${managed ? '' : '<span class="pool-handle" title="Drag to reorder">⠿</span>'}
       <span class="pool-pos">#${i + 1}</span>
       <span class="pool-hostname">${adminEsc(a.hostname || aid.slice(0,8))}</span>
       ${livenessBadge}
       <span class="pool-meta">${adminEsc(a.version || '')}</span>
+      ${removeBtn}
     </li>`;
   }).join('');
 
@@ -799,9 +804,16 @@ function _adminInfraChips(a) {
 // separate "Capabilities" and "Primary" columns.
 // Single-select role box: offered to every eligible agent while unheld; once
 // held only the holder shows it (checked). autoHidden hides it everywhere.
+// True when holderId exists in the loaded agent list (empty list = unknown → true).
+function _adminAgentKnown(aid) {
+  const list = _adminAgentsCache || [];
+  return !list.length || list.some(a => a.agent_id === aid);
+}
+
 function _singleSelectShow(agentId, holderId, autoHidden) {
   if (autoHidden) return false;
-  return !holderId || holderId === agentId;
+  // A dangling holder (deleted agent) counts as unheld so the control returns.
+  return !holderId || holderId === agentId || !_adminAgentKnown(holderId);
 }
 
 function _adminCapsAndPrimary(a) {
