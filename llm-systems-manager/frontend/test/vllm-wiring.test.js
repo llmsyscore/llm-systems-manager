@@ -38,7 +38,9 @@ describe('overall.js', () => {
   const overall = src('js/overall.js');
   test('fetches the vllm fleet aggregate and paints the tile', () => {
     expect(overall).toContain('/api/fleet/vllm/aggregate');
-    expect(overall).toContain('updateOverallVllmFleet');
+    // #565: tiles render through the OV transforms in the fleet band.
+    expect(overall).toContain('_ovPaintTiles');
+    expect(overall).toContain('OV.tiles');
   });
 });
 

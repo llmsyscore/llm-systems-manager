@@ -1,27 +1,125 @@
 // ---------------------------------------------------------------------------
-// LLM Overall tab — fleet aggregates (PR4)
+// LLM Overall tab — fleet band (#565)
 //
-// Reads /api/fleet/<provider>/aggregate (server-side rollups) rather than a
-// single primary host's sample. No picker here — this tab is the whole-fleet
-// view. Live refresh piggybacks on fetchMetrics (when the tab is visible).
+// Renders the fixed fleet-status band (toplines, hero append, provider
+// tiles, agents strip, alerts strip) from /api/fleet/<p>/aggregate via the
+// pure transforms in js/lib/overall-view.js (window.OV). Live refresh
+// piggybacks on fetchMetrics while the tab is visible; the hero's 24h
+// backfill runs on tab entry via loadOverallHistory (#142, #506).
 // ---------------------------------------------------------------------------
-// Live-only fleet refresh; the TPS chart's history backfill runs on Overall
-// tab entry in switchTab, not here (#142, #506).
+
+// Energy summary cache — refreshed at most once a minute from the band paint.
+let _ovEnergy = null;
+let _ovEnergyTs = 0;
+async function _ovRefreshEnergy() {
+  if (Date.now() - _ovEnergyTs < 60000) return;
+  _ovEnergyTs = Date.now();
+  try {
+    _ovEnergy = await fetch('/api/energy/summary?days=1').then(r => r.json());
+  } catch (_) { _ovEnergy = null; }
+}
+
 async function fetchOverallMetrics() {
   try {
+    _ovRefreshEnergy();
     let llama = null, lms = null, vllm = null;
     [llama, lms, vllm] = await Promise.all([
       fetch('/api/fleet/llama/aggregate').then(r => r.ok ? r.json() : null).catch(() => null),
       fetch('/api/fleet/lms/aggregate').then(r => r.ok ? r.json() : null).catch(() => null),
       fetch('/api/fleet/vllm/aggregate').then(r => r.ok ? r.json() : null).catch(() => null),
     ]);
-    updateOverallLlamaFleet(llama);
-    updateOverallLmsFleet(lms);
-    updateOverallVllmFleet(vllm);
-    updateOverallFleet(llama, lms, vllm);
+    _ovPaintBand(llama, lms, vllm);
+    if (typeof ovHeroChart !== 'undefined' && ovHeroChart && llama) {
+      const tp = llama.throughput || {}, vtp = (vllm && vllm.throughput) || {};
+      pushDual(ovHeroChart, new Date(),
+        (tp.total_tps || 0) + (vtp.total_tps || 0),
+        (tp.total_pps || 0) + (vtp.total_pps || 0), HERO_BUCKET_MS);
+    }
     const el = document.getElementById('overallLastUpdate');
     if (el) el.textContent = 'Updated ' + new Date().toLocaleTimeString();
   } catch (_) {}
+}
+
+function _ovPaintBand(llama, lms, vllm) {
+  if (typeof OV === 'undefined') return;
+  _ovPaintToplines(OV.toplines(llama, lms, vllm, _ovEnergy));
+  _ovPaintTiles(OV.tiles(llama, lms, vllm));
+  _ovPaintAgents(OV.agentRows([llama, lms, vllm], window._agentsByProvider || {}));
+  _ovPaintAlerts();
+}
+
+function _ovPaintToplines(stats) {
+  const el = document.getElementById('ovToplines');
+  if (!el) return;
+  el.innerHTML = stats.map(s => `
+    <div class="ov-topline">
+      <div class="stat">${_esc(s.v)}</div>
+      <div class="sub">${_esc(s.l)}</div>
+    </div>`).join('');
+}
+
+function _ovPaintTiles(tiles) {
+  const el = document.getElementById('ovTiles');
+  if (!el) return;
+  el.innerHTML = tiles.map(t => `
+    <div class="ov-tile ov-${t.accent}" data-prov="${_esc(t.key)}">
+      <div class="ov-tile-head">
+        <span class="ov-eyebrow">${_esc(t.label)}</span>
+        <span class="ov-tile-online">${t.online}/${t.total} online</span>
+      </div>
+      <div class="ov-tile-stats">
+        ${t.stats.map(s => `<div><div class="stat">${_esc(s.v)}</div><div class="sub">${_esc(s.l)}</div></div>`).join('')}
+      </div>
+    </div>`).join('');
+}
+
+function _ovAge(s) {
+  if (s == null) return '';
+  if (s < 60) return Math.round(s) + 's ago';
+  if (s < 3600) return Math.floor(s / 60) + 'm ago';
+  return Math.floor(s / 3600) + 'h ago';
+}
+
+function _ovPaintAgents(rows) {
+  const el = document.getElementById('ovAgentsStrip');
+  if (!el) return;
+  if (!rows.length) {
+    el.innerHTML = '<div class="ov-agents-empty">No approved agents yet.</div>';
+    return;
+  }
+  el.innerHTML = rows.map(r => `
+    <div class="ov-agent-row${r.online ? '' : ' ov-agent-off'}">
+      <span class="dot dot--${r.online ? 'ok' : 'muted'}"></span>
+      <span class="ov-agent-host">${_esc(r.hostname)}</span>
+      <span class="ov-agent-provs">${r.provs.map(p =>
+        `<span class="ov-agent-prov"><b>${_esc(OV.PROVIDER_LABEL[p.prov] || p.prov)}</b>${_esc(p.detail)}</span>`).join('')}</span>
+      <span class="ov-agent-age">${r.online ? _ovAge(r.ageS) : 'offline'}</span>
+    </div>`).join('');
+}
+
+function _ovPaintAlerts() {
+  const el = document.getElementById('ovAlertsStrip');
+  if (!el) return;
+  if (window._activeAlerts === undefined) {
+    el.className = 'ov-alerts';
+    el.innerHTML = '<span>Alerts unavailable.</span>';
+    return;
+  }
+  const s = OV.alertsSummary(window._activeAlerts);
+  el.className = 'ov-alerts' + (s.worst === 'critical' ? ' ov-alerts-critical'
+    : s.worst === 'warning' ? ' ov-alerts-warning' : '');
+  if (!s.total) {
+    el.innerHTML = '<span>No active alerts.</span>';
+    return;
+  }
+  const parts = [];
+  if (s.counts.critical) parts.push(`<b>${s.counts.critical}</b> critical`);
+  if (s.counts.warning) parts.push(`<b>${s.counts.warning}</b> warning`);
+  if (s.counts.info) parts.push(`<b>${s.counts.info}</b> info`);
+  el.innerHTML = `
+    <span class="ov-alert-count">${parts.join(' · ')}</span>
+    ${s.newest.map(a => `<span>${_esc(a.rule)} <span class="sub">(${_esc(a.severity)})</span></span>`).join('')}
+    <a onclick="switchTab('events')">Open Events →</a>`;
 }
 
 // Enable/disable llama.cpp server control buttons.
@@ -48,116 +146,12 @@ function _setLmsBtns(serverUp) {
   if (start) start.disabled = serverUp;
 }
 
-function _ovSetStatus(cardId, cls) {
-  const el = document.querySelector(`#overallGrid [data-card="${cardId}"]`);
-  if (!el) return;
-  el.classList.remove('ov-ok','ov-warn','ov-crit','ov-off');
-  if (cls) el.classList.add(cls);
-}
-
-// Applies severity accent border to Dashboard (cardGrid + lmsCardGrid) cards.
+// Applies severity accent border to Dashboard cards, including any card
+// currently adopted into the Overall pinned grid (#565).
 // cls: 'dash-ok' | 'dash-warn' | 'dash-crit' | 'dash-off'
 function _dashSetStatus(cardId, cls) {
-  const el = document.querySelector(`#cardGrid [data-card="${cardId}"], #lmsCardGrid [data-card="${cardId}"], #vllmCardGrid [data-card="${cardId}"], #managerCardGrid [data-card="${cardId}"]`);
+  const el = document.querySelector(`#cardGrid [data-card="${cardId}"], #lmsCardGrid [data-card="${cardId}"], #vllmCardGrid [data-card="${cardId}"], #managerCardGrid [data-card="${cardId}"], #overallGrid [data-card="${cardId}"]`);
   if (!el) return;
   el.classList.remove('dash-ok','dash-warn','dash-crit','dash-off');
   if (cls) el.classList.add(cls);
-}
-
-function updateOverallLlamaFleet(agg) {
-  if (!agg) {
-    ['ov-llama-tps','ov-llama-pps','ov-gpu-temp','ov-gpu-vram','ov-gpu-power','ov-llama-active-n'].forEach(id => _setEl(id, '—'));
-    _setEl('ov-llama-agents', '—');
-    _setEl('ov-llama-awake', 'awake —');
-    _setEl('ov-llama-models-n', 'models —');
-    const listEl = document.getElementById('ov-llama-active-list');
-    if (listEl) listEl.textContent = '—';
-    ['ov-llama-fleet','ov-llama-gpu','ov-llama-active','ov-llama-chart'].forEach(c => _ovSetStatus(c, 'ov-off'));
-    return;
-  }
-  const online = agg.agent_count_online || 0;
-  const total  = agg.agent_count_total  || 0;
-  const awake  = agg.awake_agent_count  || 0;
-  const tp  = agg.throughput || {};
-  const gpu = agg.gpu || {};
-
-  // Fleet card
-  _setEl('ov-llama-agents', `${online}/${total} online`);
-  _setEl('ov-llama-tps', (tp.total_tps || 0).toFixed(1));
-  _setEl('ov-llama-pps', (tp.total_pps || 0).toFixed(1));
-  _setEl('ov-llama-awake', `awake ${awake}`);
-  _setEl('ov-llama-models-n', `models ${agg.active_model_count || 0}`);
-  _ovSetStatus('ov-llama-fleet', online > 0 ? (awake > 0 ? 'ov-ok' : 'ov-warn') : 'ov-off');
-
-  // GPU card — max temp / max vram% / total power across the fleet
-  const t = gpu.max_temp_c;
-  _setEl('ov-gpu-temp',  t > 0 ? t.toFixed(1) + '°C' : '—');
-  _setEl('ov-gpu-vram',  gpu.max_vram_pct > 0 ? gpu.max_vram_pct.toFixed(1) + '%' : '—');
-  _setEl('ov-gpu-power', gpu.total_power_watts > 0 ? gpu.total_power_watts.toFixed(0) + ' W' : '—');
-  _ovSetStatus('ov-llama-gpu', t > 0 ? (t >= 85 ? 'ov-crit' : t >= 70 ? 'ov-warn' : 'ov-ok') : 'ov-off');
-
-  // Active models card
-  const models = agg.active_models || [];
-  _setEl('ov-llama-active-n', String(agg.active_model_count || 0));
-  const listEl = document.getElementById('ov-llama-active-list');
-  if (listEl) listEl.textContent = models.length ? models.join(', ') : '—';
-  _ovSetStatus('ov-llama-active', models.length ? 'ov-ok' : 'ov-off');
-
-  // Throughput chart — fleet totals
-  if (ovLlamaChart) pushDual(ovLlamaChart, new Date(), tp.total_tps || 0, tp.total_pps || 0);
-  _ovSetStatus('ov-llama-chart', online > 0 ? 'ov-ok' : 'ov-off');
-}
-
-function updateOverallLmsFleet(agg) {
-  if (!agg) {
-    ['ov-lms-servers','ov-lms-loaded'].forEach(id => _setEl(id, '—'));
-    _setEl('ov-lms-agents', '—');
-    _setEl('ov-lms-busy', 'busy —');
-    _setEl('ov-lms-procs', 'processes —');
-    _ovSetStatus('ov-lms-fleet', 'ov-off');
-    return;
-  }
-  const online = agg.agent_count_online || 0;
-  const total  = agg.agent_count_total  || 0;
-  _setEl('ov-lms-agents', `${online}/${total} online`);
-  _setEl('ov-lms-servers', String(agg.server_on_count || 0));
-  _setEl('ov-lms-loaded',  String(agg.loaded_model_count_total || 0));
-  _setEl('ov-lms-busy',    `busy ${agg.busy_agent_count || 0}`);
-  _setEl('ov-lms-procs',   `processes ${agg.process_count_total || 0}`);
-  _ovSetStatus('ov-lms-fleet', online > 0 ? ((agg.busy_process_count_total || 0) > 0 ? 'ov-ok' : 'ov-warn') : 'ov-off');
-}
-
-function updateOverallVllmFleet(agg) {
-  if (!agg) {
-    ['ov-vllm-servers','ov-vllm-running'].forEach(id => _setEl(id, '—'));
-    _setEl('ov-vllm-agents', '—');
-    _setEl('ov-vllm-kv', 'kv cache —');
-    _setEl('ov-vllm-tps', 'tps —');
-    _ovSetStatus('ov-vllm-fleet', 'ov-off');
-    return;
-  }
-  const online = agg.agent_count_online || 0;
-  const total  = agg.agent_count_total  || 0;
-  const tps = (agg.throughput || {}).total_tps || 0;
-  _setEl('ov-vllm-agents', `${online}/${total} online`);
-  _setEl('ov-vllm-servers', String(agg.server_on_count || 0));
-  _setEl('ov-vllm-running', String(agg.requests_running_total || 0));
-  _setEl('ov-vllm-kv', `kv cache ${(agg.max_kv_cache_pct || 0).toFixed(0)}%`);
-  _setEl('ov-vllm-tps', `tps ${tps.toFixed(1)}`);
-  _ovSetStatus('ov-vllm-fleet', online > 0 ? ((agg.requests_running_total || 0) > 0 ? 'ov-ok' : 'ov-warn') : 'ov-off');
-}
-
-// Combined whole-fleet overview card (llama + lms + vllm).
-function updateOverallFleet(llama, lms, vllm) {
-  const lOn   = (llama && llama.agent_count_online) || 0;
-  const mOn   = (lms   && lms.agent_count_online)   || 0;
-  const vOn   = (vllm  && vllm.agent_count_online)  || 0;
-  const models = ((llama && llama.active_model_count) || 0)
-               + ((vllm && vllm.active_model_count) || 0);
-  const power  = ((llama && llama.gpu && llama.gpu.total_power_watts) || 0)
-               + ((vllm && vllm.total_gpu_power_watts) || 0);
-  _setEl('ov-fleet-agents', String(lOn + mOn + vOn));
-  _setEl('ov-fleet-models', String(models));
-  _setEl('ov-fleet-power',  power > 0 ? power.toFixed(0) + ' W' : '—');
-  _ovSetStatus('ov-fleet', (lOn + mOn + vOn) > 0 ? 'ov-ok' : 'ov-off');
 }

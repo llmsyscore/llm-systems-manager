@@ -428,6 +428,37 @@ function mkDualChart(id, l1, c1, l2, c2) {
   });
 }
 
+// Overall-tab hero: cross-provider 24h throughput. Gen keeps the fleet
+// accent with a soft area fill; prompt rides as a plain line (#565).
+function _mkHeroChart() {
+  const canvas = document.getElementById('ovHeroChart');
+  if (!canvas) return null;
+  const genColor = cssVar('--accent'), promptColor = cssVar('--warn');
+  return new Chart(canvas.getContext('2d'), {
+    type: 'line',
+    data: { labels: [], datasets: [
+      { label: 'Gen t/s', data: [], borderColor: genColor, borderWidth: 2,
+        pointRadius: 0, pointHoverRadius: 4, tension: 0.25, fill: 'origin',
+        backgroundColor: (ctx) => {
+          const { chartArea, ctx: c } = ctx.chart;
+          if (!chartArea) return 'transparent';
+          const g = c.createLinearGradient(0, chartArea.top, 0, chartArea.bottom);
+          g.addColorStop(0, genColor + '2e');
+          g.addColorStop(1, genColor + '00');
+          return g;
+        } },
+      { label: 'Prompt t/s', data: [], borderColor: promptColor, borderWidth: 1.5,
+        pointRadius: 0, pointHoverRadius: 4, tension: 0.25, fill: false },
+    ]},
+    options: { animation: false, responsive: true, maintainAspectRatio: false,
+      interaction: _sparkInteraction,
+      plugins: { legend: { display: false }, tooltip: _sparkTooltip, zoom: _zoomOpts, annotation: { annotations: {} } },
+      scales: { x: xAxis, y: { beginAtZero: true, ticks: { color: cssVar('--fg-muted'), font: { size: 10 } }, grid: { color: cssVar('--border-soft') } } }
+    }
+  });
+}
+const ovHeroChart = _mkHeroChart();
+
 const cpuChart      = mkChart('cpuChart',      'CPU %',       '#e05');
 const ramChart      = mkChart('ramChart',      'RAM %',       '#05e');
 const gpuChart      = mkChart('gpuChart',      'GPU util %',  '#0e5');
@@ -1151,20 +1182,22 @@ const loadVllmHistory = _makeHistoryBackfill('vllm', '__VLLM_AGENT',
       pushPoint(vllmDiskUsageChart, r.ts, r.disk_root_pct);
   });
 
-// Backfill the Overall-tab llama TPS chart (Gen / Prompt) from the fleet
-// rollup so it matches the live fleet totals painted by fetchOverallMetrics.
-// Called only from Overall-tab entry and refocus, so the LMS dashboard makes
-// no llama calls (#142, #506).
+// Backfill the Overall-tab hero (cross-provider Gen / Prompt totals) from
+// fleet=all history. Called only from Overall-tab entry and refocus (#506).
 async function loadOverallHistory() {
-  if (typeof ovLlamaChart === 'undefined' || !ovLlamaChart) return;
-  const rows = await _historyRows('/api/history?fleet=llama', 'Overall llama');
+  if (typeof ovHeroChart === 'undefined' || !ovHeroChart) return;
+  const rows = await _historyRows('/api/history?since_minutes=1440&max_rows=180&fleet=all', 'Overall fleet');
   if (!rows || !rows.length) return;
-  _clearChart(ovLlamaChart);  // discard any racing live point (#137)
-  for (const r of rows.slice(-MAX_POINTS)) {
-    if (r.llama_tps != null || r.llama_pps != null)
-      pushDual(ovLlamaChart, r.ts, r.llama_tps, r.llama_pps);
+  _clearChart(ovHeroChart);  // discard any racing live point (#137)
+  for (const p of OV.heroSeries(rows).slice(-MAX_POINTS)) {
+    if (p.gen != null || p.prompt != null)
+      pushDual(ovHeroChart, p.ts, p.gen, p.prompt, HERO_BUCKET_MS);
   }
 }
+
+// Hero bucket = the fleet=all backfill resolution (1440 min / 180 rows), so
+// 2s live appends update the current bucket instead of eroding the window.
+const HERO_BUCKET_MS = 480000;
 
 // ---------------------------------------------------------------------------
 // Main fetch
@@ -1220,7 +1253,7 @@ async function fetchMetrics() {
 
     // GPU
     const g = m.gpu || {};
-    _setCardTitle('gpuCardTitle',   g.name, 'GPU', ['gpu', 'ov-llama-gpu']);
+    _setCardTitle('gpuCardTitle',   g.name, 'GPU', 'gpu');
     document.getElementById('gpuTemp').textContent            = g.temperature_c           != null ? g.temperature_c.toFixed(1) : '—';
     document.getElementById('gpuTempJunction').textContent    = g.temperature_junction_c  != null ? g.temperature_junction_c.toFixed(1) : '—';
     document.getElementById('gpuTempMemory').textContent      = g.temperature_memory_c    != null ? g.temperature_memory_c.toFixed(1) : '—';
