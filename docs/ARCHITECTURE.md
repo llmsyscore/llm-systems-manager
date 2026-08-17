@@ -156,6 +156,7 @@ subsystems, each in its own module:
 | **Energy & cost accounting** | `energy.py` | Attributes measured PSU/GPU power draw and token counts to hourly per-agent rows, producing measured $/Mtok, idle/active split, and cloud-savings estimates across llama.cpp, LM Studio, and vLLM. |
 | **GPU Report Card** | `report_card.py` | Runs a standardized benchmark preset across llama.cpp, vLLM, and LM Studio, producing a shareable card (TTFT, tok/s, VRAM, watts, tokens/joule, $/Mtok) with local trending. |
 | **Discord bot** | `discord_bot.py` | Opt-in interactive slash commands (status queries and, behind a separate confirmation gate, model load/unload) driven over the inference gateway. |
+| **PWA companion** | `companion.py` | Serves the installable phone app (`/companion`, manifest, service worker), stores web-push subscriptions, fans alarm-engine alerts out to devices via VAPID web push, and runs the opt-in release-availability check. |
 
 ---
 
@@ -175,7 +176,11 @@ dashboard streams (SSE) because browser APIs for those connections cannot send c
 ### Two exceptions worth knowing about
 
 The dashboard itself is served over plain HTTP on port 5000 unless you enable
-`[manager].tls_port` (5443), and the browser is what you point at it.
+`[manager].tls_port` (5443), and the browser is what you point at it. The HTTPS port serves an
+internal-CA certificate by default; setting `[manager].tls_cert_file`/`tls_key_file` adds an
+operator-provided certificate selected by SNI for the hostnames it covers, giving browsers a
+publicly trusted origin (required for the PWA companion and web push) without changing what
+CA-pinned agents see.
 
 The alert WebSocket bridge on `[manager].ws_proxy_port` (5444) is **served as plain `ws://`, and
 requires a short-lived ticket on every handshake.** The browser first calls
