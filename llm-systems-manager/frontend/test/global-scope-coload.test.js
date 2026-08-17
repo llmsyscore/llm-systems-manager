@@ -30,6 +30,12 @@ describe('classic-script global scope', () => {
     expect(scripts).toContain('js/report-card.js');
   });
 
+  it('index.html lists the overall fleet-band scripts (#565)', () => {
+    const scripts = coLoadedScripts();
+    expect(scripts).toContain('js/lib/overall-view.js');
+    expect(scripts).toContain('js/overall.js');
+  });
+
   it('every co-loaded dashboard script shares one scope without collisions', () => {
     const scripts = coLoadedScripts();
     const sources = scripts.map(s => readFileSync(resolve(ROOT, s), 'utf8'));
