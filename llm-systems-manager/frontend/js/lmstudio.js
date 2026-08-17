@@ -317,7 +317,6 @@ async function fetchLMStudioMetrics() {
     console.warn('fetchLMStudioMetrics:', e);
   } finally {
     _release(_lk);
-    syncBorrowedCards();
   }
 }
 

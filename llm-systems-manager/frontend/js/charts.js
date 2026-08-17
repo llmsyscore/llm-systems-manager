@@ -1481,7 +1481,6 @@ async function fetchMetrics() {
     console.error('Fetch error:', e);
   } finally {
     _release(_mk);
-    syncBorrowedCards();
   }
 }
 

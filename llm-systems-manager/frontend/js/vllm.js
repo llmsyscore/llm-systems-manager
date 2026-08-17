@@ -217,7 +217,6 @@ async function fetchVllmMetrics() {
   } finally {
     _release(_lk);
   }
-  if (typeof syncBorrowedCards === 'function') syncBorrowedCards();
 }
 
 // Enable/disable vLLM server control buttons (Start only when down).
