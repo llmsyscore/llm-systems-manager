@@ -511,6 +511,18 @@ const aePerfChart = mkMultiChart('aePerfChart', [
   { label: 'influx_query_24h',  color: '#b88aff' },  // lavender
 ]);
 
+// Toggle the /mnt/iscsi series + legend entry; the series only shows for
+// agents whose collector actually discovered the mount (#565 feedback).
+function _setIscsiSeriesVisible(on) {
+  if (typeof diskUsageChart === 'undefined' || !diskUsageChart) return;
+  if (diskUsageChart.data.datasets[1].hidden !== !on) {
+    diskUsageChart.data.datasets[1].hidden = !on;
+    diskUsageChart.update('none');
+  }
+  const leg = document.getElementById('diskIscsiLegend');
+  if (leg) leg.style.display = on ? '' : 'none';
+}
+
 // Dual-line disk usage chart — root + iscsi target.
 const diskUsageCtx = document.getElementById('diskUsageChart').getContext('2d');
 const diskUsageChart = new Chart(diskUsageCtx, {
@@ -1039,6 +1051,7 @@ async function loadHistory() {
     // live-fetch unit (see net/io conversion in fetchMetrics around line 3550).
     const B_PER_MIB = 1048576;
     _genTokensCarry = 0;
+    let _sawIscsiHistory = false;
     for (const r of rows.slice(-MAX_POINTS)) {
       pushPoint(cpuChart,  r.ts, r.cpu_total   || 0);
       pushPoint(ramChart,  r.ts, r.ram_percent || 0);
@@ -1062,11 +1075,13 @@ async function loadHistory() {
       // Disk usage — / and /mnt/iscsi percent over time.
       if (typeof diskUsageChart !== 'undefined'
           && (r.disk_root_pct != null || r.disk_iscsi_pct != null)) {
+        if (r.disk_iscsi_pct != null) _sawIscsiHistory = true;
         pushDual(diskUsageChart, r.ts,
                  r.disk_root_pct  != null ? r.disk_root_pct  : 0,
                  r.disk_iscsi_pct != null ? r.disk_iscsi_pct : 0);
       }
     }
+    _setIscsiSeriesVisible(_sawIscsiHistory);
   } catch(e) { console.error('History error:', e); }
 }
 
@@ -1300,7 +1315,9 @@ async function fetchMetrics() {
     document.getElementById('netRecv').textContent = rMiB.toFixed(2);
     pushPoint(netChart, ts, sMiB + rMiB);
 
-    // Disk usage
+    // Disk usage — the iSCSI series/row only render when the agent actually
+    // discovered a /mnt/iscsi mount (or reports a live session).
+    let _hasIscsiMount = false;
     if (m.disk && m.disk.length) {
       document.getElementById('diskList').innerHTML = m.disk.map(d =>
         `<div class="disk-row">
@@ -1310,14 +1327,18 @@ async function fetchMetrics() {
         </div>`
       ).join('');
       const byMount = Object.fromEntries(m.disk.map(d => [d.mountpoint, d.percent]));
+      _hasIscsiMount = byMount['/mnt/iscsi'] != null;
       pushDual(diskUsageChart, ts,
         byMount['/'] || 0,
         byMount['/mnt/iscsi'] || 0,
       );
+      _setIscsiSeriesVisible(_hasIscsiMount);
     }
 
-    // iSCSI
+    // iSCSI status line — hidden entirely for agents with no session/mount.
     const isc = m.iscsi || {};
+    const iscsiRowEl = document.getElementById('iscsiRow');
+    if (iscsiRowEl) iscsiRowEl.style.display = (isc.state || _hasIscsiMount) ? '' : 'none';
     const iscsiStateEl = document.getElementById('iscsiState');
     iscsiStateEl.textContent = isc.state || '—';
     iscsiStateEl.style.color = isc.state === 'LOGGED_IN' ? '#4e9' : '#f55';

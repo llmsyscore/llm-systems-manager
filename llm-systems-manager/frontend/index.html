@@ -845,14 +845,14 @@ Backend API endpoints consumed:
     <span class="card-handle">⠿</span>
     <h3>Disk usage</h3>
     <div class="disk-list" id="diskList"></div>
-    <div style="margin-bottom:5px;margin-top:60px;font-size:0.8em;color:var(--fg-dim);">
+    <div id="iscsiRow" style="display:none;margin-bottom:5px;margin-top:60px;font-size:0.8em;color:var(--fg-dim);">
       <span>iSCSI: </span>
       <span id="iscsiState" style="color:var(--fg-muted)">—</span>
       <span style="margin-left:8px;font-size:0.85em;" id="iscsiTarget"></span>
     </div>
     <div class="legend-row" style="margin-top:15px;">
       <span><span class="legend-dot" style="background:#4a9"></span>/</span>
-      <span><span class="legend-dot" style="background:var(--accent)"></span>/mnt/iscsi</span>
+      <span id="diskIscsiLegend" style="display:none;"><span class="legend-dot" style="background:var(--accent)"></span>/mnt/iscsi</span>
     </div>
     <div class="chart-wrap" style="margin-top:6px;"><canvas id="diskUsageChart" role="img" aria-label="Disk usage over time"></canvas></div>
   </div>
@@ -1857,7 +1857,7 @@ Backend API endpoints consumed:
 <script src="/static/js/lib/reportcard.js?v=2026.07.27-1"></script>
 <script src="/static/js/lib/energy.js?v=2026.07.31-1"></script>
 <script src="/static/js/lib/overall-view.js?v=2026.08.17-1"></script>
-<script src="/static/js/charts.js?v=2026.08.17-3"></script>
+<script src="/static/js/charts.js?v=2026.08.17-4"></script>
 <script src="/static/js/terminal.js?v=2026.07.11-1"></script>
 <script src="/static/js/llmcontrol.js?v=2026.07.11-1"></script>
 <script src="/static/js/openclaw.js?v=2026.08.03-1"></script>
