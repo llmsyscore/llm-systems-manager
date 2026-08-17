@@ -470,7 +470,7 @@ function _notePinOverride(resp, modelId) {
 
 const VALID_THEMES = ['dark', 'medium', 'light', 'modern', 'classic', 'slate', 'enterprise'];
 function applyTheme(name, save) {
-  if (!VALID_THEMES.includes(name)) name = 'dark';
+  if (!VALID_THEMES.includes(name)) name = 'modern';
   document.documentElement.setAttribute('data-theme', name);
   const sel = document.getElementById('themeSelect');
   if (sel && sel.value !== name) sel.value = name;
@@ -1221,7 +1221,7 @@ function openSettings() {
   renderSettingsPanel();
   _syncIntervalUI();
   const sel = document.getElementById('themeSelect');
-  if (sel) sel.value = (layout && layout.theme) || 'dark';
+  if (sel) sel.value = (layout && layout.theme) || 'modern';
   document.getElementById('settingsOverlay').classList.add('open');
 }
 function closeSettings() {
