@@ -798,6 +798,25 @@ function returnPinnedCards() {
   [..._ovAdopted].forEach(_returnOneAdopted);
 }
 
+// Backfill home-provider chart history + kick the manager one-shots for
+// pinned cards, so adopted cards are live even if their home dashboard was
+// never visited this session (#565, #506 pattern).
+function _ovBackfillPinnedProviders() {
+  const b = (window.layout && layout.overallBorrowed) || [];
+  if (!b.length) return;
+  const run = fn => { if (typeof fn === 'function') Promise.resolve(fn()).catch(() => {}); };
+  const hasIn = map => b.some(id => map && map[id] !== undefined);
+  if (hasIn(CARD_LABELS))         run(window.loadHistory);
+  if (hasIn(CARD_LABELS_LMS))     run(window.loadLmsHistory);
+  if (hasIn(CARD_LABELS_VLLM))    run(window.loadVllmHistory);
+  if (hasIn(CARD_LABELS_MANAGER)) {
+    run(window.loadManagerPerfHistory);
+    run(window.fetchServicesAndInflux);
+    run(window.fetchManagerAgentsCard);
+    run(window.fetchManagerStreamsCard);
+  }
+}
+
 function addBorrowedCard(cardId) {
   if (!layout.overallBorrowed) layout.overallBorrowed = [];
   if (layout.overallBorrowed.includes(cardId)) return;
@@ -1240,6 +1259,7 @@ function switchTab(tab) {
   if (tab === 'overall')    {
     document.getElementById('overallTab').style.display = '';
     if (typeof adoptPinnedCards === 'function') adoptPinnedCards();
+    _ovBackfillPinnedProviders();
     if (typeof loadOverallHistory === 'function') {
       loadOverallHistory().finally(() => fetchOverallMetrics()).catch(() => {});
     } else {
