@@ -30,11 +30,23 @@ function initSortable() {
   Sortable.create(document.getElementById('overallGrid'), {
     handle: '.card-handle', animation: 150, ghostClass: 'sortable-ghost',
     onEnd: () => {
-      layout.overallOrder = [...document.querySelectorAll('#overallGrid [data-card]')]
+      layout.overallOrder = [...document.querySelectorAll('#overallGrid > [data-card]')]
         .map(c => c.dataset.card);
       saveLayout();
     },
   });
+  // Fleet-band strips drag as whole units (#565).
+  const band = document.querySelector('.ov-band');
+  if (band) {
+    Sortable.create(band, {
+      handle: '.ov-strip-handle', animation: 150, ghostClass: 'sortable-ghost',
+      onEnd: () => {
+        layout.overallBandOrder = [...band.children]
+          .map(s => s.dataset && s.dataset.strip).filter(Boolean);
+        saveLayout();
+      },
+    });
+  }
   const lmsGrid = document.getElementById('lmsCardGrid');
   if (lmsGrid) {
     Sortable.create(lmsGrid, {
@@ -149,7 +161,9 @@ function _resizeChartsIn(root) {
   });
 }
 function _ensureSizeBtn(card) {
-  if (card.querySelector('.card-size-btn')) return;
+  // Direct-child check only — an adopted card's own button inside a shell
+  // must not satisfy the shell's guard (#565).
+  if (card.querySelector(':scope > .card-size-btn')) return;
   const btn = document.createElement('button');
   btn.className = 'card-size-btn';
   btn.type = 'button';

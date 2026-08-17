@@ -57,7 +57,7 @@ Backend API endpoints consumed:
   <link rel="stylesheet" href="/static/css/base.css?v=2026.08.17-1">
   <link rel="stylesheet" href="/static/css/reportcard.css?v=2026.08.04-1">
   <link rel="stylesheet" href="/static/css/energy.css?v=2026.07.31-1">
-  <link rel="stylesheet" href="/static/css/overall.css?v=2026.08.17-1">
+  <link rel="stylesheet" href="/static/css/overall.css?v=2026.08.17-2">
 </head>
 <body>
 
@@ -1545,7 +1545,8 @@ Backend API endpoints consumed:
 <!-- LLM Overall Tab -->
 <div id="overallTab" style="display:none;">
   <div class="ov-band">
-    <section class="ov-hero" aria-label="Fleet throughput, last 24 hours">
+    <section class="ov-hero" data-strip="hero" aria-label="Fleet throughput, last 24 hours">
+      <span class="ov-strip-handle" title="Drag to reorder">⠿</span>
       <div class="ov-hero-head">
         <span class="ov-eyebrow">Fleet — last 24 h</span>
         <div class="legend-row ov-hero-legend">
@@ -1558,12 +1559,19 @@ Backend API endpoints consumed:
       <div class="ov-hero-chart"><canvas id="ovHeroChart" role="img"
            aria-label="Fleet token throughput, last 24 hours"></canvas></div>
     </section>
-    <section class="ov-tiles" id="ovTiles" aria-label="Providers"></section>
-    <section class="ov-agents" aria-label="Agents">
+    <section class="ov-tiles-strip" data-strip="tiles" aria-label="Providers">
+      <span class="ov-strip-handle" title="Drag to reorder">⠿</span>
+      <div class="ov-tiles" id="ovTiles"></div>
+    </section>
+    <section class="ov-agents" data-strip="agents" aria-label="Agents">
+      <span class="ov-strip-handle" title="Drag to reorder">⠿</span>
       <span class="ov-eyebrow">Agents</span>
       <div class="ov-agent-rows" id="ovAgentsStrip"></div>
     </section>
-    <section class="ov-alerts" id="ovAlertsStrip" aria-label="Active alerts"></section>
+    <section class="ov-alerts-strip" data-strip="alerts" aria-label="Active alerts">
+      <span class="ov-strip-handle" title="Drag to reorder">⠿</span>
+      <div class="ov-alerts" id="ovAlertsStrip"></div>
+    </section>
   </div>
   <div class="grid" id="overallGrid"></div>
 </div>
@@ -1838,14 +1846,14 @@ Backend API endpoints consumed:
 </div><!-- end llmTab -->
 
 <script src="/static/js/lib/layout.js?v=2026.07.10-1"></script>
-<script src="/static/js/foundation.js?v=2026.08.17-1"></script>
+<script src="/static/js/foundation.js?v=2026.08.17-2"></script>
 <script src="/static/js/lib/series.js?v=2026.08.04-2"></script>
 <script src="/static/js/lib/benchaxis.js?v=2026.06.28-1"></script>
 <script src="/static/js/lib/thresholds.js?v=2026.08.05-1"></script>
 <script src="/static/js/lib/reportcard.js?v=2026.07.27-1"></script>
 <script src="/static/js/lib/energy.js?v=2026.07.31-1"></script>
 <script src="/static/js/lib/overall-view.js?v=2026.08.17-1"></script>
-<script src="/static/js/charts.js?v=2026.08.17-1"></script>
+<script src="/static/js/charts.js?v=2026.08.17-2"></script>
 <script src="/static/js/terminal.js?v=2026.07.11-1"></script>
 <script src="/static/js/llmcontrol.js?v=2026.07.11-1"></script>
 <script src="/static/js/openclaw.js?v=2026.08.03-1"></script>

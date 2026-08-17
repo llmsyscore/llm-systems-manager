@@ -688,6 +688,9 @@ function applyLayout() {
     c.style.display = hiddenMgr.includes(c.dataset.card) ? 'none' : '';
   });
 
+  // Fleet-band strip order (#565)
+  _applyBandOrder();
+
   // Recreate pinned-card shells in overallGrid
   const overallGrid = document.getElementById('overallGrid');
   if (overallGrid) {
@@ -780,6 +783,9 @@ function adoptPinnedCards() {
     home.parentNode.insertBefore(mark, home);
     _ovHomeMarks[id] = mark;
     shell.appendChild(home);
+    // A pinned card is always visible on Overall — clear any hidden-at-home
+    // inline display; the home state is re-applied on return.
+    home.style.display = '';
     _ensureSizeBtn(shell);
     _ovAdopted.add(id);
   });
@@ -790,14 +796,39 @@ function _returnOneAdopted(id) {
   const shell = document.querySelector(`#overallGrid [data-card="ov-borrow-${id}"]`);
   const card = shell && shell.querySelector(`:scope > [data-card="${id}"]`);
   const mark = _ovHomeMarks[id];
-  if (card && mark && mark.parentNode) mark.parentNode.replaceChild(card, mark);
-  else if (mark && mark.parentNode) mark.remove();
+  if (card && mark && mark.parentNode) {
+    mark.parentNode.replaceChild(card, mark);
+    // Re-apply the home grid's hidden state (adoption cleared it).
+    const keys = { cardGrid: 'hidden', lmsCardGrid: 'lmsHidden',
+                   vllmCardGrid: 'vllmHidden', managerCardGrid: 'managerHidden' };
+    const grid = card.closest('.grid');
+    if (grid && keys[grid.id] && typeof _applyHiddenForGrid === 'function') {
+      _applyHiddenForGrid(grid.id, keys[grid.id]);
+    }
+  } else if (mark && mark.parentNode) mark.remove();
   delete _ovHomeMarks[id];
   _ovAdopted.delete(id);
 }
 
 function returnPinnedCards() {
   [..._ovAdopted].forEach(_returnOneAdopted);
+}
+
+// Reorder the fleet-band strips per layout.overallBandOrder (#565). Unknown
+// ids are skipped; strips missing from the saved order append in DOM order.
+function _applyBandOrder() {
+  const lay = (typeof layout !== 'undefined' && layout) || window.layout;
+  const band = document.querySelector('.ov-band');
+  const saved = (lay && lay.overallBandOrder) || [];
+  if (!band || !saved.length) return;
+  const all = [...band.children].filter(s => s.dataset && s.dataset.strip);
+  const ordered = [];
+  saved.forEach(id => {
+    const s = all.find(x => x.dataset.strip === id);
+    if (s) ordered.push(s);
+  });
+  all.forEach(s => { if (!ordered.includes(s)) ordered.push(s); });
+  ordered.forEach(s => band.appendChild(s));
 }
 
 // Backfill home-provider chart history + kick the manager one-shots for

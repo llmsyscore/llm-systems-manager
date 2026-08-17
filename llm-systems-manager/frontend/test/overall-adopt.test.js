@@ -8,10 +8,11 @@ import { dirname, join } from 'node:path';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const foundation = readFileSync(join(here, '..', 'js', 'foundation.js'), 'utf8');
+const charts = readFileSync(join(here, '..', 'js', 'charts.js'), 'utf8');
 
-function fnSrc(name) {
-  const m = foundation.match(new RegExp(`function ${name}\\([^)]*\\) \\{[\\s\\S]*?\\n\\}`));
-  expect(m, `${name} not found in foundation.js`).toBeTruthy();
+function fnSrc(name, src = foundation) {
+  const m = src.match(new RegExp(`function ${name}\\([^)]*\\) \\{[\\s\\S]*?\\n\\}`));
+  expect(m, `${name} not found`).toBeTruthy();
   return m[0];
 }
 
@@ -22,10 +23,10 @@ function loadAdoption() {
     'window._ovAdopted = new Set(); window._ovHomeMarks = {};',
     fnSrc('_homeCardEl'), fnSrc('_returnOneAdopted'),
     fnSrc('adoptPinnedCards'), fnSrc('returnPinnedCards'),
-    fnSrc('_ovPinned'),
+    fnSrc('_ovPinned'), fnSrc('_applyBandOrder'),
     'window._homeCardEl = _homeCardEl; window._returnOneAdopted = _returnOneAdopted;',
     'window.adoptPinnedCards = adoptPinnedCards; window.returnPinnedCards = returnPinnedCards;',
-    'window._ovPinned = _ovPinned;',
+    'window._ovPinned = _ovPinned; window._applyBandOrder = _applyBandOrder;',
   ].join('\n');
   (0, eval)(src);
 }
@@ -42,6 +43,12 @@ beforeEach(() => {
       </div>
     </div>
     <div id="overallTab">
+      <div class="ov-band">
+        <section data-strip="hero"></section>
+        <section data-strip="tiles"></section>
+        <section data-strip="agents"></section>
+        <section data-strip="alerts"></section>
+      </div>
       <div class="grid" id="overallGrid">
         <div class="card ov-shell" data-card="ov-borrow-gpu"></div>
         <div class="card ov-shell" data-card="ov-borrow-mgr-agents"></div>
@@ -51,6 +58,7 @@ beforeEach(() => {
   window.layout = { overallBorrowed: ['gpu', 'mgr-agents', 'lms-power'] };
   window._ensureSizeBtn = () => {};
   window._resizeChartsIn = () => {};
+  window._applyHiddenForGrid = () => {};
   loadAdoption();
 });
 
@@ -129,5 +137,69 @@ describe('_ovPinned', () => {
     expect(_ovPinned('nope')).toBe(false);
     window.layout = null;
     expect(_ovPinned('mgr-agents')).toBe(false);
+  });
+});
+
+describe('adoption visibility (hidden-at-home cards)', () => {
+  it('clears a stale home display:none so the pinned card shows on Overall', () => {
+    const gpu = document.querySelector('#cardGrid [data-card="gpu"]');
+    gpu.style.display = 'none';
+    adoptPinnedCards();
+    const adopted = document.querySelector('#overallGrid [data-card="ov-borrow-gpu"] [data-card="gpu"]');
+    expect(adopted).toBeTruthy();
+    expect(adopted.style.display).toBe('');
+  });
+
+  it('re-applies the home grid hidden state on return', () => {
+    const gpu = document.querySelector('#cardGrid [data-card="gpu"]');
+    gpu.style.display = 'none';
+    const calls = [];
+    window._applyHiddenForGrid = (gridId, key) => calls.push([gridId, key]);
+    adoptPinnedCards();
+    returnPinnedCards();
+    expect(calls).toContainEqual(['cardGrid', 'hidden']);
+    expect(calls).toContainEqual(['managerCardGrid', 'managerHidden']);
+  });
+});
+
+describe('_ensureSizeBtn on shells', () => {
+  it('gives the shell its own direct-child button even when the adopted card has one', () => {
+    (0, eval)(fnSrc('_ensureSizeBtn', charts) + '\nwindow._ensureSizeBtn = _ensureSizeBtn;');
+    const shell = document.querySelector('#overallGrid [data-card="ov-borrow-gpu"]');
+    const inner = document.createElement('div');
+    inner.className = 'card';
+    inner.dataset.card = 'gpu';
+    const innerBtn = document.createElement('button');
+    innerBtn.className = 'card-size-btn';
+    inner.appendChild(innerBtn);
+    shell.appendChild(inner);
+    window._ensureSizeBtn(shell);
+    const direct = [...shell.children].filter(k => k.classList && k.classList.contains('card-size-btn'));
+    expect(direct.length).toBe(1);
+  });
+});
+
+describe('_applyBandOrder', () => {
+  const order = () => [...document.querySelector('.ov-band').children].map(s => s.dataset.strip);
+
+  it('reorders strips per layout.overallBandOrder', () => {
+    window.layout.overallBandOrder = ['alerts', 'agents', 'tiles', 'hero'];
+    _applyBandOrder();
+    expect(order()).toEqual(['alerts', 'agents', 'tiles', 'hero']);
+  });
+
+  it('tolerates unknown ids and appends missing strips in current order', () => {
+    window.layout.overallBandOrder = ['agents', 'bogus', 'hero'];
+    _applyBandOrder();
+    expect(order()).toEqual(['agents', 'hero', 'tiles', 'alerts']);
+  });
+
+  it('no-ops without a saved order or without the band', () => {
+    delete window.layout.overallBandOrder;
+    _applyBandOrder();
+    expect(order()).toEqual(['hero', 'tiles', 'agents', 'alerts']);
+    document.querySelector('.ov-band').remove();
+    window.layout.overallBandOrder = ['hero'];
+    expect(() => _applyBandOrder()).not.toThrow();
   });
 });
