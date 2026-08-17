@@ -485,7 +485,7 @@ const cpuChart      = mkChart('cpuChart',      'CPU %',       '#e05');
 const ramChart      = mkChart('ramChart',      'RAM %',       '#05e');
 const gpuChart      = mkChart('gpuChart',      'GPU util %',  '#0e5');
 const netChart      = mkChart('netChart',      'MB/s',        '#e50');
-const ctxChart      = mkChart('ctxChart',      'Peak ctx',    '#88f');
+const llamaSrvChart = mkDualChart('llamaSrvChart', 'Gen t/s',  '#7af', 'Prompt t/s', '#fa7');
 const aioTempChart = mkChart('aioTempChart', 'Liquid °C', '#4dd');
 const genTokensChart  = mkChart('genTokensChart',  'Tokens gen', '#7af');
 const llamaChart    = mkDualChart('llamaChart',    'Gen t/s',  '#7af', 'Prompt t/s', '#fa7');
@@ -971,7 +971,7 @@ function _clearChart(ch) {
 // per-agent backfill never blends onto the previously-selected agent's lines
 // (#121); a no-op at boot when the charts are already empty.
 function _resetMetricCharts() {
-  [cpuChart, ramChart, gpuChart, netChart, ctxChart, aioTempChart,
+  [cpuChart, ramChart, gpuChart, netChart, llamaSrvChart, aioTempChart,
    genTokensChart, llamaChart, ioChart, psuPowerChart, diskUsageChart]
     .forEach(_clearChart);
 }
@@ -989,9 +989,9 @@ function _resetLmsCharts() {
     .forEach(_clearChart);
 }
 
-// Carry-forward state for the sparse llama charts (ctx peak, gen total),
-// shared by backfill and live push.
-let _ctxCarry = 0, _genTokensCarry = 0;
+// Carry-forward state for the sparse gen-total llama chart, shared by
+// backfill and live push.
+let _genTokensCarry = 0;
 
 // Fetch a /api/history* row array, returning null on any failure. An auth-gated
 // 401 returns a JSON object, so a shape check is required, not just r.ok.
@@ -1038,7 +1038,7 @@ async function loadHistory() {
     // Convert bytes-per-second → MiB-per-second so backfill points match the
     // live-fetch unit (see net/io conversion in fetchMetrics around line 3550).
     const B_PER_MIB = 1048576;
-    _ctxCarry = 0; _genTokensCarry = 0;
+    _genTokensCarry = 0;
     for (const r of rows.slice(-MAX_POINTS)) {
       pushPoint(cpuChart,  r.ts, r.cpu_total   || 0);
       pushPoint(ramChart,  r.ts, r.ram_percent || 0);
@@ -1054,11 +1054,10 @@ async function loadHistory() {
         pushPoint(aioTempChart, r.ts, r.aio_temp);
       if (typeof psuPowerChart !== 'undefined' && (r.psu_out != null || r.psu_in != null))
         pushDual(psuPowerChart, r.ts, r.psu_out || 0, r.psu_in || 0);
-      // Detailed llama charts — carry the last value (default 0) across idle
-      // rows so the line is continuous, not a single active-only point.
-      if (r.llama_ctx != null) _ctxCarry = r.llama_ctx;
+      // Detailed llama charts — the server-card throughput spark mirrors
+      // llamaChart; gen total carries its last value across idle rows.
+      if (typeof llamaSrvChart !== 'undefined') pushDual(llamaSrvChart, r.ts, r.llama_tps, r.llama_pps);
       if (r.llama_gen_tokens != null) _genTokensCarry = r.llama_gen_tokens;
-      if (typeof ctxChart !== 'undefined') pushPoint(ctxChart, r.ts, _ctxCarry);
       if (typeof genTokensChart !== 'undefined') pushPoint(genTokensChart, r.ts, _genTokensCarry);
       // Disk usage — / and /mnt/iscsi percent over time.
       if (typeof diskUsageChart !== 'undefined'
@@ -1386,9 +1385,8 @@ async function fetchMetrics() {
     document.getElementById('llamaProcessing').innerHTML = fmtWithPeak(ll.requests_processing, 'requests_processing');
     document.getElementById('llamaDeferred').innerHTML   = fmtWithPeak(ll.requests_deferred,   'requests_deferred');
     pushDual(llamaChart, ts, ll.tokens_per_second, ll.prompt_tokens_per_second);
-    if (ll.n_tokens_max != null) _ctxCarry = ll.n_tokens_max;
+    pushDual(llamaSrvChart, ts, ll.tokens_per_second, ll.prompt_tokens_per_second);
     if (ll.total_tokens_generated != null) _genTokensCarry = ll.total_tokens_generated;
-    pushPoint(ctxChart, ts, _ctxCarry);
     pushPoint(genTokensChart, ts, _genTokensCarry);
 
     // UPS

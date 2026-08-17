@@ -753,7 +753,11 @@ Backend API endpoints consumed:
       <div class="llama-item"><div class="val" id="llamaModalities">—</div><div class="lbl">Modalities</div></div>
       <div class="llama-item"><div class="val" id="llamaChatTemplate">—</div><div class="lbl">Chat template</div></div>
     </div>
-    <div class="chart-wrap" style="height:80px;margin-top:10px;"><canvas id="ctxChart" role="img" aria-label="Peak context tokens over time"></canvas></div>
+    <div class="legend-row" style="margin-top:10px;">
+      <span><span class="legend-dot" style="background:var(--accent)"></span>Gen t/s</span>
+      <span><span class="legend-dot" style="background:var(--warn)"></span>Prompt t/s</span>
+    </div>
+    <div class="chart-wrap" style="height:80px;"><canvas id="llamaSrvChart" role="img" aria-label="Llama token throughput over time"></canvas></div>
   </div>
 
   <div class="card" data-card="llama-throughput">
@@ -1853,7 +1857,7 @@ Backend API endpoints consumed:
 <script src="/static/js/lib/reportcard.js?v=2026.07.27-1"></script>
 <script src="/static/js/lib/energy.js?v=2026.07.31-1"></script>
 <script src="/static/js/lib/overall-view.js?v=2026.08.17-1"></script>
-<script src="/static/js/charts.js?v=2026.08.17-2"></script>
+<script src="/static/js/charts.js?v=2026.08.17-3"></script>
 <script src="/static/js/terminal.js?v=2026.07.11-1"></script>
 <script src="/static/js/llmcontrol.js?v=2026.07.11-1"></script>
 <script src="/static/js/openclaw.js?v=2026.08.03-1"></script>
