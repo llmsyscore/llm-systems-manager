@@ -428,6 +428,12 @@ function mkDualChart(id, l1, c1, l2, c2) {
   });
 }
 
+// Expand a 3-digit hex token to 6 digits so an alpha byte can be appended.
+function _hex6(c) {
+  const m = String(c || '').trim().match(/^#([0-9a-fA-F]{3})$/);
+  return m ? '#' + [...m[1]].map(ch => ch + ch).join('') : String(c || '').trim();
+}
+
 // Overall-tab hero: cross-provider 24h throughput. Gen keeps the fleet
 // accent with a soft area fill; prompt rides as a plain line (#565).
 function _mkHeroChart() {
@@ -442,10 +448,12 @@ function _mkHeroChart() {
         backgroundColor: (ctx) => {
           const { chartArea, ctx: c } = ctx.chart;
           if (!chartArea) return 'transparent';
-          const g = c.createLinearGradient(0, chartArea.top, 0, chartArea.bottom);
-          g.addColorStop(0, genColor + '2e');
-          g.addColorStop(1, genColor + '00');
-          return g;
+          try {
+            const g = c.createLinearGradient(0, chartArea.top, 0, chartArea.bottom);
+            g.addColorStop(0, _hex6(genColor) + '2e');
+            g.addColorStop(1, _hex6(genColor) + '00');
+            return g;
+          } catch (_) { return 'transparent'; }
         } },
       { label: 'Prompt t/s', data: [], borderColor: promptColor, borderWidth: 1.5,
         pointRadius: 0, pointHoverRadius: 4, tension: 0.25, fill: false },

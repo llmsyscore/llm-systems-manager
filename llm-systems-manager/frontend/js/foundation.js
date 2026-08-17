@@ -755,7 +755,8 @@ const _ovHomeMarks = {};
 window._ovAdopted = new Set();
 
 function _ovPinned(id) {
-  return !!(window.layout && (layout.overallBorrowed || []).includes(id));
+  const lay = (typeof layout !== 'undefined' && layout) || window.layout;
+  return !!(lay && (lay.overallBorrowed || []).includes(id));
 }
 
 function _homeCardEl(id) {
@@ -765,7 +766,8 @@ function _homeCardEl(id) {
 }
 
 function adoptPinnedCards() {
-  ((window.layout && layout.overallBorrowed) || []).forEach(id => {
+  const lay = (typeof layout !== 'undefined' && layout) || window.layout;
+  ((lay && lay.overallBorrowed) || []).forEach(id => {
     const shell = document.querySelector(`#overallGrid [data-card="ov-borrow-${id}"]`);
     if (!shell || _ovAdopted.has(id)) return;
     const home = _homeCardEl(id);
@@ -802,7 +804,8 @@ function returnPinnedCards() {
 // pinned cards, so adopted cards are live even if their home dashboard was
 // never visited this session (#565, #506 pattern).
 function _ovBackfillPinnedProviders() {
-  const b = (window.layout && layout.overallBorrowed) || [];
+  const lay = (typeof layout !== 'undefined' && layout) || window.layout;
+  const b = (lay && lay.overallBorrowed) || [];
   if (!b.length) return;
   const run = fn => { if (typeof fn === 'function') Promise.resolve(fn()).catch(() => {}); };
   const hasIn = map => b.some(id => map && map[id] !== undefined);
