@@ -127,15 +127,6 @@ function _actionRelease(key) { _actionInflight.delete(key); }
 
 let _activeTab = 'overall';   // tracks which top-level tab is visible
 
-const CARD_LABELS_OVERALL = {
-  'ov-llama-fleet':  'llama.cpp Fleet',
-  'ov-llama-gpu':    'llama.cpp Fleet — GPU',
-  'ov-llama-active': 'llama.cpp Fleet — Active Models',
-  'ov-llama-chart':  'llama.cpp Fleet — Throughput',
-  'ov-lms-fleet':    'LM Studio Fleet',
-  'ov-vllm-fleet':   'vLLM Fleet',
-  'ov-fleet':        'Fleet Overview',
-};
 const CARD_LABELS_LMS = {
   'lms-models':  'LM Studio Models',
   'lms-active':  'LM Studio Server',
@@ -221,14 +212,8 @@ async function loadLayout() {
 // next saveLayout() writes the new id.
 const _LEGACY_CARD_RENAMES = {
   'kraken': 'aio',
-  // PR4: Overall-tab single-host cards → fleet-aggregate cards. ov-llama-chart
-  // keeps its id (relabeled only). Saved overallOrder/hiddenOverall/
-  // overallBorrowed/cardSizes entries rewrite in place so layouts survive.
-  'ov-llama':     'ov-llama-fleet',
-  'ov-gpu':       'ov-llama-gpu',
-  'ov-llcpp-sys': 'ov-llama-active',
-  'ov-lms':       'ov-lms-fleet',
-  'ov-lms-sys':   'ov-fleet',
+  // #565 retired the native ov-* aggregate cards (fleet band replaces them);
+  // stale saved ids simply match no card and are pruned on the next save.
 };
 function _migrateLegacyCardIds(lay) {
   const swap = arr => Array.isArray(arr) && arr.forEach((id, i) => {
@@ -973,8 +958,7 @@ function applyManagerLayout(savedOrder) {
 
 function toggleCard(cardId, visible) {
   let hiddenKey = 'hidden';
-  if (CARD_LABELS_OVERALL[cardId]) hiddenKey = 'hiddenOverall';
-  else if (CARD_LABELS_LMS[cardId]) hiddenKey = 'lmsHidden';
+  if (CARD_LABELS_LMS[cardId]) hiddenKey = 'lmsHidden';
   else if (CARD_LABELS_VLLM[cardId]) hiddenKey = 'vllmHidden';
   else if (CARD_LABELS_MANAGER[cardId]) hiddenKey = 'managerHidden';
   const list = _hiddenList(hiddenKey);
@@ -1063,7 +1047,7 @@ function renderSettingsPanel() {
 
   let label, map, hiddenKey, colsKey;
   if (_activeTab === 'overall') {
-    label    = 'LLM Overall'; map = CARD_LABELS_OVERALL;
+    label    = 'LLM Overall'; map = {};
     hiddenKey = 'hiddenOverall'; colsKey = 'overallCols';
   } else if (_activeTab === 'dashboard') {
     const sub = _getDashSubTab();
@@ -1141,7 +1125,7 @@ function renderSettingsPanel() {
   const presetOpts = Object.entries(LAYOUT_PRESETS).map(([id, p]) =>
     `<option value="${id}">${_esc(p.label)}</option>`).join('');
 
-  list.innerHTML = `
+  const visibleSection = Object.keys(map).length ? `
     <div class="settings-section-title" style="border-top:none;padding-top:0;margin-top:0;">Visible cards</div>
     <div class="settings-collapse-hdr open" id="sColHdr" onclick="_settingsCollapseToggle(this, document.getElementById('sColBody'))">
       <span style="font-size:0.78em;color:inherit;">${Object.keys(map).length} cards — click to collapse</span>
@@ -1149,7 +1133,9 @@ function renderSettingsPanel() {
     </div>
     <div class="settings-collapse-body" id="sColBody" style="max-height:400px;">
       <div class="card-chips">${chips}</div>
-    </div>
+    </div>` : '';
+  list.innerHTML = `
+    ${visibleSection}
     ${borrowSection}
     <div class="settings-section-title">Layout preset — ${label}</div>
     <div style="display:flex;gap:8px;align-items:center;margin-bottom:8px;">
@@ -1187,7 +1173,7 @@ async function resetCurrentTabLayout() {
   let scope, map;
   if (_activeTab === 'overall') {
     scope = { hidden: 'hiddenOverall', order: 'overallOrder', cols: 'overallCols', borrowed: 'overallBorrowed' };
-    map = CARD_LABELS_OVERALL;
+    map = {};
   } else if (_activeTab === 'dashboard') {
     const sub = _getDashSubTab();
     if (sub === 'lmstudio') {
@@ -1218,9 +1204,15 @@ async function resetCurrentTabLayout() {
   layout[scope.order]  = [];
   delete layout[scope.cols];
   if (scope.borrowed) layout[scope.borrowed] = [];
-  // Drop cardSizes entries for ids in this tab's label map.
+  // Drop cardSizes entries for ids in this tab's label map; the Overall
+  // tab's sizes live under ov-borrow-* shell keys instead.
   if (layout.cardSizes) {
     for (const id of Object.keys(map)) delete layout.cardSizes[id];
+    if (_activeTab === 'overall') {
+      for (const id of Object.keys(layout.cardSizes)) {
+        if (id.startsWith('ov-')) delete layout.cardSizes[id];
+      }
+    }
   }
   // Per-agent surfaces: also clear the selected agent's own hidden/order/size sets.
   const _resetProv = (window.LMLayout && LMLayout.PER_AGENT_HIDDEN[scope.hidden]) || null;

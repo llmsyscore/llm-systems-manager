@@ -1,0 +1,81 @@
+/* Overall-tab fleet band (#565). Theme tokens only — all 7 themes. */
+.ov-band { padding: 12px 20px 4px; display: flex; flex-direction: column; gap: 14px; }
+.ov-eyebrow {
+  font-size: clamp(0.58em, 0.8vw, 0.68em); text-transform: uppercase;
+  letter-spacing: 0.12em; color: var(--fg-dim); white-space: nowrap;
+}
+
+/* Hero: topline stats above a full-width 24h throughput chart. */
+.ov-hero {
+  border: 1px solid var(--border); border-left: 3px solid var(--border);
+  border-radius: 8px; padding: 14px 16px 10px;
+  background: linear-gradient(160deg, var(--bg-card) 0%, color-mix(in srgb, var(--bg) 60%, var(--bg-card)) 100%);
+}
+.ov-hero-head { display: flex; align-items: baseline; gap: 16px; margin-bottom: 10px; }
+.ov-hero-legend { margin-bottom: 0; margin-left: auto; }
+.ov-updated { font-size: 0.72em; color: var(--fg-dim); white-space: nowrap; }
+.ov-toplines { display: flex; flex-wrap: wrap; gap: 8px 34px; margin-bottom: 10px; }
+.ov-topline .stat { font-size: 1.45em; margin-bottom: 1px; }
+.ov-hero-chart { position: relative; height: 170px; }
+
+/* Provider tiles: same severity grammar as dashboard cards (left rail). */
+.ov-tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 14px; }
+.ov-tile {
+  border: 1px solid var(--border); border-left: 3px solid var(--border);
+  border-radius: 8px; padding: 12px 14px;
+  background: linear-gradient(160deg, var(--bg-card) 0%, color-mix(in srgb, var(--bg) 60%, var(--bg-card)) 100%);
+  transition: border-color 0.4s;
+}
+.ov-tile.ov-ok   { border-left-color: color-mix(in srgb, var(--ok)   55%, var(--border)); }
+.ov-tile.ov-warn { border-left-color: color-mix(in srgb, var(--warn) 55%, var(--border)); }
+.ov-tile.ov-crit { border-left-color: color-mix(in srgb, var(--crit) 55%, var(--border)); }
+.ov-tile-head { display: flex; align-items: baseline; gap: 8px; margin-bottom: 10px; }
+.ov-tile-head .ov-eyebrow { color: var(--fg-muted); }
+.ov-tile-online { font-size: 0.72em; color: var(--fg-dim); margin-left: auto; white-space: nowrap; }
+.ov-tile-stats { display: grid; grid-template-columns: 1fr 1fr; gap: 6px 12px; }
+.ov-tile-stats .stat { font-size: 1.15em; margin-bottom: 0; }
+
+/* Agents strip: dense host rows; hostnames in the machine's own type. */
+.ov-agents { display: flex; flex-direction: column; gap: 6px; }
+.ov-agent-rows { display: flex; flex-direction: column; }
+.ov-agent-row {
+  display: flex; align-items: center; gap: 10px; padding: 5px 10px;
+  border-bottom: 1px solid var(--border-soft); font-size: 0.82em;
+}
+.ov-agent-row:last-child { border-bottom: none; }
+.ov-agent-row.ov-agent-off { opacity: 0.55; }
+.ov-agent-host {
+  font-family: ui-monospace, 'SFMono-Regular', Menlo, Consolas, monospace;
+  color: var(--fg); min-width: 200px;
+}
+.ov-agent-provs { display: flex; flex-wrap: wrap; gap: 6px 14px; color: var(--fg-muted); }
+.ov-agent-prov b { color: var(--fg-dim); font-weight: 600; margin-right: 5px; }
+.ov-agent-age { margin-left: auto; color: var(--fg-dim); font-size: 0.9em; white-space: nowrap; }
+.ov-agents-empty { color: var(--fg-dim); font-size: 0.82em; padding: 4px 10px; }
+
+/* Alerts strip: quiet single line when calm, severity-tinted when firing. */
+.ov-alerts {
+  display: flex; align-items: center; flex-wrap: wrap; gap: 6px 14px;
+  border: 1px solid var(--border-soft); border-left: 3px solid var(--border);
+  border-radius: 6px; padding: 6px 12px; font-size: 0.8em; color: var(--fg-dim);
+}
+.ov-alerts.ov-alerts-warning  { border-left-color: var(--warn); color: var(--fg-muted); }
+.ov-alerts.ov-alerts-critical { border-left-color: var(--crit); color: var(--fg-muted); }
+.ov-alerts a { color: var(--accent); text-decoration: none; cursor: pointer; }
+.ov-alerts a:hover { text-decoration: underline; }
+.ov-alert-count b { color: var(--fg); }
+
+/* Pinned-card shells: transparent grid items; the adopted card is the chrome. */
+#overallGrid .card.ov-shell { padding: 0; border: none; background: none; }
+.ov-shell > .card { height: 100%; }
+.ov-shell > .card > .card-size-btn { display: none; }
+.ov-missing {
+  color: var(--fg-dim); font-size: 0.8em; font-style: italic;
+  border: 1px dashed var(--border); border-radius: 8px;
+  display: flex; align-items: center; justify-content: center; min-height: 120px;
+}
+
+@media (max-width: 700px) {
+  .ov-agent-host { min-width: 130px; }
+  .ov-hero-chart { height: 130px; }
+}

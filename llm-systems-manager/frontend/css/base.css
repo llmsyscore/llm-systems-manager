@@ -504,10 +504,10 @@
       grid-template-columns: repeat(auto-fill, minmax(clamp(220px, 28vw, 340px), 1fr));
     }
     /* Status-driven accent borders applied by JS */
-    #overallGrid .ov-ok,   #cardGrid .dash-ok,   #lmsCardGrid .dash-ok,   #managerCardGrid .dash-ok   { border-left-color: color-mix(in srgb, var(--ok)   55%, var(--border)); }
-    #overallGrid .ov-warn, #cardGrid .dash-warn, #lmsCardGrid .dash-warn, #managerCardGrid .dash-warn { border-left-color: color-mix(in srgb, var(--warn) 55%, var(--border)); }
-    #overallGrid .ov-crit, #cardGrid .dash-crit, #lmsCardGrid .dash-crit, #managerCardGrid .dash-crit { border-left-color: color-mix(in srgb, var(--crit) 55%, var(--border)); }
-    #overallGrid .ov-off,  #cardGrid .dash-off,  #lmsCardGrid .dash-off,  #managerCardGrid .dash-off  { border-left-color: var(--border); }
+    #overallGrid .dash-ok,   #cardGrid .dash-ok,   #lmsCardGrid .dash-ok,   #managerCardGrid .dash-ok   { border-left-color: color-mix(in srgb, var(--ok)   55%, var(--border)); }
+    #overallGrid .dash-warn, #cardGrid .dash-warn, #lmsCardGrid .dash-warn, #managerCardGrid .dash-warn { border-left-color: color-mix(in srgb, var(--warn) 55%, var(--border)); }
+    #overallGrid .dash-crit, #cardGrid .dash-crit, #lmsCardGrid .dash-crit, #managerCardGrid .dash-crit { border-left-color: color-mix(in srgb, var(--crit) 55%, var(--border)); }
+    #overallGrid .dash-off,  #cardGrid .dash-off,  #lmsCardGrid .dash-off,  #managerCardGrid .dash-off  { border-left-color: var(--border); }
 
     /* ===== Settings panel additions ===== */
     .settings-section-title {

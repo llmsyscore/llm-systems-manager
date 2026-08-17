@@ -174,7 +174,7 @@ function initCardResize() {
 function _activeTabLayoutKeys() {
   if (_activeTab === 'overall') {
     return {
-      label: 'LLM Overall', map: CARD_LABELS_OVERALL,
+      label: 'LLM Overall', map: {},
       hidden: 'hiddenOverall', order: 'overallOrder', cols: 'overallCols', borrowed: 'overallBorrowed',
       grid: document.getElementById('overallGrid'),
     };

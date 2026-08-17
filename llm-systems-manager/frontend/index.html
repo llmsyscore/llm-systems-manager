@@ -54,9 +54,10 @@ Backend API endpoints consumed:
   <link rel="stylesheet" href="/static/vendor/xterm.min.css?v=5.3.0"/>
   <script src="/static/vendor/xterm.min.js?v=5.3.0"></script>
   <script src="/static/vendor/xterm-addon-fit.min.js?v=0.8.0"></script>
-  <link rel="stylesheet" href="/static/css/base.css?v=2026.08.12-2">
+  <link rel="stylesheet" href="/static/css/base.css?v=2026.08.17-1">
   <link rel="stylesheet" href="/static/css/reportcard.css?v=2026.08.04-1">
   <link rel="stylesheet" href="/static/css/energy.css?v=2026.07.31-1">
+  <link rel="stylesheet" href="/static/css/overall.css?v=2026.08.17-1">
 </head>
 <body>
 
@@ -1543,95 +1544,28 @@ Backend API endpoints consumed:
 
 <!-- LLM Overall Tab -->
 <div id="overallTab" style="display:none;">
-  <div style="display:flex;justify-content:flex-end;padding:8px 20px 0;">
-    <div style="font-size:0.8em;color:var(--fg-muted);" id="overallLastUpdate">—</div>
+  <div class="ov-band">
+    <section class="ov-hero" aria-label="Fleet throughput, last 24 hours">
+      <div class="ov-hero-head">
+        <span class="ov-eyebrow">Fleet — last 24 h</span>
+        <div class="legend-row ov-hero-legend">
+          <span><span class="legend-dot" style="background:var(--accent)"></span>Gen t/s</span>
+          <span><span class="legend-dot" style="background:var(--warn)"></span>Prompt t/s</span>
+        </div>
+        <span class="ov-updated" id="overallLastUpdate">—</span>
+      </div>
+      <div class="ov-toplines" id="ovToplines"></div>
+      <div class="ov-hero-chart"><canvas id="ovHeroChart" role="img"
+           aria-label="Fleet token throughput, last 24 hours"></canvas></div>
+    </section>
+    <section class="ov-tiles" id="ovTiles" aria-label="Providers"></section>
+    <section class="ov-agents" aria-label="Agents">
+      <span class="ov-eyebrow">Agents</span>
+      <div class="ov-agent-rows" id="ovAgentsStrip"></div>
+    </section>
+    <section class="ov-alerts" id="ovAlertsStrip" aria-label="Active alerts"></section>
   </div>
-  <div class="grid" id="overallGrid">
-
-    <!-- llama.cpp fleet -->
-    <div class="card" data-card="ov-llama-fleet">
-      <span class="card-handle" title="Drag to reorder">⠿</span>
-      <h3>llama.cpp Fleet <span class="sub" id="ov-llama-agents" style="font-weight:normal;">—</span></h3>
-      <div class="stat-row cols2">
-        <div><div class="stat" id="ov-llama-tps" style="color:var(--accent-2);">—</div><div class="sub">total gen t/s</div></div>
-        <div><div class="stat" id="ov-llama-pps" style="color:var(--accent);">—</div><div class="sub">total prompt t/s</div></div>
-      </div>
-      <div class="stat-row cols2" style="margin-top:8px;">
-        <div><div class="sub" id="ov-llama-awake">awake —</div></div>
-        <div><div class="sub" id="ov-llama-models-n">models —</div></div>
-      </div>
-    </div>
-
-    <!-- vLLM fleet -->
-    <div class="card" data-card="ov-vllm-fleet">
-      <span class="card-handle" title="Drag to reorder">⠿</span>
-      <h3>vLLM Fleet <span class="sub" id="ov-vllm-agents" style="font-weight:normal;">—</span></h3>
-      <div class="stat-row cols2">
-        <div><div class="stat" id="ov-vllm-servers">—</div><div class="sub">servers on</div></div>
-        <div><div class="stat" id="ov-vllm-running">—</div><div class="sub">requests running</div></div>
-      </div>
-      <div class="stat-row cols2" style="margin-top:8px;">
-        <div><div class="sub" id="ov-vllm-kv">kv cache —</div></div>
-        <div><div class="sub" id="ov-vllm-tps">tps —</div></div>
-      </div>
-    </div>
-
-    <!-- LM Studio fleet -->
-    <div class="card" data-card="ov-lms-fleet">
-      <span class="card-handle" title="Drag to reorder">⠿</span>
-      <h3>LM Studio Fleet <span class="sub" id="ov-lms-agents" style="font-weight:normal;">—</span></h3>
-      <div class="stat-row cols2">
-        <div><div class="stat" id="ov-lms-servers">—</div><div class="sub">servers on</div></div>
-        <div><div class="stat" id="ov-lms-loaded">—</div><div class="sub">models loaded</div></div>
-      </div>
-      <div class="stat-row cols2" style="margin-top:8px;">
-        <div><div class="sub" id="ov-lms-busy">busy —</div></div>
-        <div><div class="sub" id="ov-lms-procs">processes —</div></div>
-      </div>
-    </div>
-
-    <!-- llama.cpp fleet GPU -->
-    <div class="card" data-card="ov-llama-gpu">
-      <span class="card-handle" title="Drag to reorder">⠿</span>
-      <h3>llama.cpp Fleet — GPU</h3>
-      <div class="stat-row cols3">
-        <div><div class="stat" id="ov-gpu-temp">—</div><div class="sub">max °C</div></div>
-        <div><div class="stat" id="ov-gpu-vram">—</div><div class="sub">max VRAM %</div></div>
-        <div><div class="stat" id="ov-gpu-power">—</div><div class="sub">total W</div></div>
-      </div>
-    </div>
-
-    <!-- llama throughput chart (fleet totals) -->
-    <div class="card" data-card="ov-llama-chart">
-      <span class="card-handle" title="Drag to reorder">⠿</span>
-      <h3>llama.cpp Fleet — Throughput</h3>
-      <div class="legend-row">
-        <span><span class="legend-dot" style="background:var(--accent)"></span>Gen t/s</span>
-        <span><span class="legend-dot" style="background:var(--warn)"></span>Prompt t/s</span>
-      </div>
-      <div class="chart-wrap"><canvas id="ovLlamaChart"></canvas></div>
-    </div>
-
-    <!-- llama.cpp fleet active models -->
-    <div class="card" data-card="ov-llama-active">
-      <span class="card-handle" title="Drag to reorder">⠿</span>
-      <h3>llama.cpp Fleet — Active Models</h3>
-      <div><div class="stat" id="ov-llama-active-n">—</div><div class="sub">models in flight</div></div>
-      <div class="sub" id="ov-llama-active-list" style="color:var(--fg);word-break:break-word;margin-top:8px;">—</div>
-    </div>
-
-    <!-- fleet overview -->
-    <div class="card" data-card="ov-fleet">
-      <span class="card-handle" title="Drag to reorder">⠿</span>
-      <h3>Fleet Overview</h3>
-      <div class="stat-row cols3">
-        <div><div class="stat" id="ov-fleet-agents">—</div><div class="sub">agents online</div></div>
-        <div><div class="stat" id="ov-fleet-models">—</div><div class="sub">active models</div></div>
-        <div><div class="stat" id="ov-fleet-power">—</div><div class="sub">total W</div></div>
-      </div>
-    </div>
-
-  </div>
+  <div class="grid" id="overallGrid"></div>
 </div>
 
 <!-- LLM Control Tab — with sub-tabs -->
@@ -1904,7 +1838,7 @@ Backend API endpoints consumed:
 </div><!-- end llmTab -->
 
 <script src="/static/js/lib/layout.js?v=2026.07.10-1"></script>
-<script src="/static/js/foundation.js?v=2026.08.04-4"></script>
+<script src="/static/js/foundation.js?v=2026.08.17-1"></script>
 <script src="/static/js/lib/series.js?v=2026.08.04-2"></script>
 <script src="/static/js/lib/benchaxis.js?v=2026.06.28-1"></script>
 <script src="/static/js/lib/thresholds.js?v=2026.08.05-1"></script>
