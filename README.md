@@ -82,7 +82,7 @@ Full details for every method, including split installs, offline installs, and u
 
 **8. LLM-aware telemetry and alerting.** Live inference internals — slots, tokens/sec, prompt processing, KV cache, context — beside GPU, PSU, UPS, and cooling stats. A standalone alarm engine stores every sample, evaluates threshold and anomaly rules, notifies by email/toast/webhook/Discord, buffers through outages, and collapses related issues into one incident.
 
-*Also included:* multi-user roles + admin audit log, encrypted scheduled backups, OpenClaw cost/budget analytics, an image generation tab, and TLS/mTLS on every connection — see the [full feature list](#full-included-features) below.
+*Also included:* an installable phone companion (PWA) with push alerts, multi-user roles + admin audit log, encrypted scheduled backups, OpenClaw cost/budget analytics, an image generation tab, and TLS/mTLS on every connection — see the [full feature list](#full-included-features) below.
 
 ---
 
@@ -224,6 +224,7 @@ The eight headline capabilities plus everything else that ships in the box:
 - **Alerting that survives outages.** A standalone alarm engine persists every metric to InfluxDB, evaluates threshold and anomaly rules, and routes alerts by email, toast, webhook, or Discord. Agents buffer to disk when it's down and replay when it returns.
 - **Incident correlation, not alert spam.** Several rules tripping on one host at once become a single **incident** — one notification, with the Events table collapsing members behind a "+N related" count. Resolved alerts roll into a retention-managed history.
 - **At-a-glance status.** Dots on the **Events** and **Admin** tabs turn red on active critical alerts or degraded system health, and amber when a new release is available. Both update from any tab.
+- **Phone companion (PWA).** An installable app at `/companion` — Home, Alerts, Energy, Models, Admin, and Settings screens sized for a phone, with alarm-engine alerts delivered as native push notifications even when the app is closed. Model swaps, pins, autopilot approvals, and service restarts each sit behind a confirm sheet, gated to the admin role. See [Phone companion](#phone-companion-pwa).
 - **Direct LLM chat.** Talk to any loaded model through the embedded `llama.cpp` web interface.
 - **OpenClaw cost analytics.** Session logs become token-usage, cost, and tool-attribution dashboards with monthly spend projection and — given a budget — warning, ceiling, and cost-anomaly alerts.
 - **Image generation.** An optional tab drives `stable-diffusion.cpp` for text-to-image.
@@ -231,6 +232,7 @@ The eight headline capabilities plus everything else that ships in the box:
 - **Admin audit log.** Every mutating admin action is recorded — who, what, when, from where, success or not — and browsable in **Admin → Audit Log**.
 - **Scheduled backups.** Full export archives (config, agent registry, CA, users, model profiles, benchmarks) on an interval, with retention pruning, optional AES-256-GCM encryption, and an optional mirror directory. The same archive restores through Import.
 - **Encrypted everywhere.** All agent ↔ manager and agent ↔ alarm-engine traffic runs over TLS, with per-agent leaf certs signed by the manager's internal CA.
+- **Bring your own TLS certificate.** Point `[manager].tls_cert_file`/`tls_key_file` at a public or corporate-CA cert and the HTTPS port serves it via SNI for the hostnames it covers, while agents pinned to the internal CA keep working untouched. Required for installing the phone companion from another device.
 
 
 ## Donations
@@ -504,6 +506,20 @@ The gateway forwards over the existing bearer + TLS agent channel, and admin/con
 
 ---
 
+## Phone companion (PWA)
+
+`/companion` serves an installable phone app built from the same manager — no app store, no separate service. Six screens sized for a phone: **Home** (fleet at-a-glance with live graphs), **Alerts**, **Energy**, **Models**, **Admin**, and **Settings**. Alarm-engine alerts arrive as native push notifications even when the app is closed, and control actions — swap or pin a model, approve autopilot proposals, restart a service or agent — each sit behind a confirm sheet and require the admin role. Operators get the read-only screens.
+
+To install it on a phone:
+
+1. **Serve trusted HTTPS.** Browsers only install a PWA (and only deliver web push) from a certificate the device already trusts. Set `[manager].tls_cert_file` / `tls_key_file` to a PEM full-chain + key for your domain — a Let's Encrypt or corporate-CA cert both work. The cert is selected by SNI for the hostnames it covers; agents dialing by IP or internal names still get the internal-CA cert, so nothing else changes. Set `[manager].ws_proxy_tls_port` (default `5446`) so the alerts screen's WebSocket isn't mixed-content-blocked on the HTTPS page.
+2. **Open `https://<your-domain>:5443/companion`** on the phone, sign in, and use the browser's *Add to Home Screen* / *Install* prompt.
+3. **Enable push** from the Settings screen (set `[manager.companion].push_contact` to a reachable operator address first). The **Send test notification** button confirms end-to-end delivery.
+
+An opt-in release check (`[manager.companion].release_check`, also toggleable from Settings) surfaces a newer manager release on the Admin screen — it is the manager's only outbound call to github.com and defaults to off.
+
+---
+
 ## Architecture
 
 ```
@@ -564,9 +580,9 @@ InfluxDB v2 is the database for the **time-series metrics** — raw samples plus
 
 - **Dashboard login & roles.** The web UI supports multiple named users with two roles — **Admin** (full access) and **Operator** (can operate the LLMs and view dashboards, but no Admin tab, agent management, secrets, user management, or shells). Admins manage accounts in **Admin → Users** (create / set role / disable / delete / reset password / unlock); every user can change their own password and log out from the top-nav **Account** menu. Fresh installs ship with a default Admin account. Passwords are stored only as an scrypt hash, never in plaintext. Repeated failed logins lock out the username and source IP for a configurable window. Login mode is configurable: `required` (default), `trusted_cidr` (skip login for requests from your admin CIDRs), `disabled`, or `auto` (controlled via the Admin tab in the GUI).
 - **Agent auth.** Each agent gets a bearer token at registration, stored locally with restrictive permissions, plus a per-agent TLS leaf cert signed by the manager's internal CA on approval.
-- **Manager TLS.** A second HTTPS server runs on the `[manager].tls_port` (default `5443`) using an auto-rotated cert from the internal CA. Approved agents auto-upgrade their control channel from `http://manager:5000` to `https://manager:5443` once they hold the CA.
+- **Manager TLS.** A second HTTPS server runs on the `[manager].tls_port` (default `5443`) using an auto-rotated cert from the internal CA. Approved agents auto-upgrade their control channel from `http://manager:5000` to `https://manager:5443` once they hold the CA. Optionally set `[manager].tls_cert_file`/`tls_key_file` to an operator-provided cert (PEM full-chain + key): it is served via SNI only to the hostnames its DNS SANs cover, so browsers by name get your public cert while agents — which pin the internal CA — are untouched. Unreadable or half-configured pairs warn and fall back to the internal CA, and the system-health cert-expiry warning tracks whichever cert is actually served.
 - **Alarm-engine ingest token.** Agents push metrics directly to the alarm engine (port 8081), so its ingest endpoints are gated by a shared bearer token (`[alarm_engine].ingest_token`). The installer generates one when manager + alarm engine are co-located; agents receive it from the manager on their heartbeat. Left blank, ingest stays open for backward compatibility. `[alarm_engine].tls_enabled` (default `true`) additionally serves the alarm engine over HTTPS using a cert the manager signs from its internal CA.
-- **WebSocket proxy.** `[manager].ws_proxy_port` (default `5444`, set `0` to disable) runs a standalone thread that terminates the alarm engine's internal-CA `wss` upstream on the browser's behalf, so the dashboard's Events tab works without you installing the internal CA in your browser. Every handshake must carry a short-lived HMAC ticket issued by the session-gated `/api/alarm-ws-ticket`; missing, expired, or tampered tickets are rejected before the bridge dials upstream. Front it with a real-CA reverse proxy (nginx/Caddy/etc.) for end-to-end `wss`.
+- **WebSocket proxy.** `[manager].ws_proxy_port` (default `5444`, set `0` to disable) runs a standalone thread that terminates the alarm engine's internal-CA `wss` upstream on the browser's behalf, so the dashboard's Events tab works without you installing the internal CA in your browser. Every handshake must carry a short-lived HMAC ticket issued by the session-gated `/api/alarm-ws-ticket`; missing, expired, or tampered tickets are rejected before the bridge dials upstream. When an operator cert is configured, `[manager].ws_proxy_tls_port` (default `5446`) serves a `wss` twin of the bridge so HTTPS dashboards aren't mixed-content-blocked; alternatively front the plain port with a real-CA reverse proxy (nginx/Caddy/etc.) for end-to-end `wss`.
 - **Inference-gateway keys.** The OpenAI-compatible gateway (`/api/gateway/*`) is reachable from a dashboard session only until you add bearer keys to `[manager.gateway].api_keys`; each key is compared in constant time and accepted only on gateway paths. It reuses the existing agent bearer + TLS channel to reach backends, so it adds no new trust surface.
 - **Secrets** (InfluxDB tokens, SMTP password) live in a single config file with restrictive permissions. A documented example template ships in the repo.
 

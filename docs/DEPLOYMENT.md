@@ -269,6 +269,8 @@ Refer to that file when you need to understand what a setting does or when addin
 |---|---|---|
 | `[manager].port` | Port the manager web interface listens on | `5000` |
 | `[manager].tls_port` | Port for HTTPS access (set to `0` to disable) | `5443` |
+| `[manager].tls_cert_file` / `tls_key_file` | Operator-provided TLS cert + key (PEM) served on the HTTPS port via SNI; blank uses the internal CA | *(not set)* |
+| `[manager].ws_proxy_tls_port` | `wss` twin of the alert WebSocket bridge, active only with an operator cert | `5446` |
 | `[manager.auth].mode` | Login requirement: `required`, `trusted_cidr`, or `disabled` | `required` |
 | `[manager].alarm_engine_url` | Network address where the Manager can reach the Alarm Engine | `http://localhost:8081` |
 | `[alarm_engine].tls_enabled` | Whether the alarm engine uses HTTPS | `true` |
@@ -285,6 +287,8 @@ Refer to that file when you need to understand what a setting does or when addin
 | `[manager.discord].enabled` | Interactive Discord bot | `false` |
 | `[manager.discord].allowed_user_ids` | Discord user IDs permitted to use the bot; empty refuses everyone | `[]` |
 | `[manager.discord].allow_model_control` | Whether the bot may load/unload models | `false` |
+| `[manager.companion].push_contact` | Contact address browser push services see (the VAPID `sub` claim) | `mailto:admin@example.com` |
+| `[manager.companion].release_check` | Opt-in GitHub check for a newer release, shown in the companion | `false` |
 
 ### Applying Changes
 
@@ -398,6 +402,44 @@ Three things to get right:
 - **The bot invite needs both the `bot` and `applications.commands` scopes**, otherwise the slash commands never register.
 
 Restart the manager after editing this section — the bot reads its allowlist at startup.
+
+### Operator-Provided TLS Certificate
+
+By default the HTTPS port (`[manager].tls_port`, 5443) serves a certificate from the manager's internal CA, which browsers on other devices do not trust. To serve a certificate they do trust — a Let's Encrypt cert for your domain, or one from a corporate CA:
+
+```toml
+[manager]
+tls_cert_file = "/etc/ssl/private/lab.example.com.fullchain.pem"
+tls_key_file  = "/etc/ssl/private/lab.example.com.key.pem"
+```
+
+How it behaves:
+
+- **Selection is by SNI.** The operator cert is served only for hostnames its DNS SANs cover (a wildcard matches one label). Requests by IP or by names outside the SANs — including every agent, which pins the internal CA — still get the internal-CA cert, so configuring this never breaks the agent control channel.
+- **Both keys must be set and readable** by the service user. A half-set pair or unreadable files log a warning and fall back to the internal CA. Relative paths resolve against the install root, and a group/world-readable key file is warned about.
+- **Renewals are your job.** The internal-CA cert auto-rotates; an operator cert does not — the Admin system-health card tracks the expiry of whichever cert is actually served and says so. Point the config at the live paths your ACME client maintains and restart the manager after renewal.
+- **Set `[manager].ws_proxy_tls_port`** (default `5446`) so the Events/alerts WebSocket has a `wss` endpoint — an HTTPS page cannot open a plain `ws://` connection.
+
+This is also the prerequisite for installing the phone companion below.
+
+### Phone Companion (PWA)
+
+The companion at `/companion` installs to a phone's home screen and receives alarm push notifications. It needs a trusted HTTPS origin (previous section) — service workers and web push do not work from an untrusted certificate.
+
+```toml
+[manager.companion]
+push_contact = "mailto:you@example.com"   # VAPID contact browser push services see
+release_check = false                     # opt-in GitHub release check (Settings toggle)
+push_notify_token = ""                    # blank = fall back to the alarm-engine tokens
+```
+
+Setup:
+
+1. On the phone, open `https://<your-domain>:5443/companion`, sign in, and use the browser's **Add to Home Screen** / **Install** prompt.
+2. Enable notifications from the companion's **Settings** screen, then use **Send test notification** to confirm delivery end-to-end.
+3. Alerts are pushed by the alarm engine through the manager's `/api/companion/push/notify` bridge. A co-located install needs no token configuration; a split install presents `[alarm_engine].management_token` (or `push_notify_token` if you set one).
+
+Home, Alerts, Energy, and Models screens work for every role; control actions (model swap/pin, autopilot approval, restarts) and the Admin screen require an admin session, and every action confirms in a sheet before it runs. `pywebpush` must be installed in the manager venv for push delivery — the installer includes it.
 
 ---
 

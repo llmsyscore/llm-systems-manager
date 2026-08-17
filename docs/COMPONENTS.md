@@ -48,6 +48,7 @@ The Manager is the central hub of the system. It serves the web dashboard that o
 | energy | Energy and cost accounting: attributes measured PSU/SoC/GPU watts and token deltas to hourly per-agent rows, and produces the $/Mtok and cloud-savings figures shown on the Energy sub-tab |
 | report_card | GPU Report Card: runs a standardized cross-provider benchmark preset, stores results, and serves the history/trend routes |
 | discord_bot | Optional Discord bot: slash commands over the Discord gateway for read-only status queries and gated model control |
+| companion | PWA phone companion: serves the app shell/manifest/service worker, manages web-push subscriptions and VAPID keys, fans alarm alerts out to devices, and runs the opt-in release check |
 | sse_daemon | Standalone aiohttp daemon that serves the `/api/llama-state/stream` SSE endpoint off its own event loop instead of pinning a web server worker thread per held stream |
 | stream_health | Aggregates the manager's stream pool, worker-thread/queue backlog, and each agent's stream state into one snapshot for the Manager sub-tab's health card |
 | `app_context.py` | Shared context dataclass that wires all modules together — carries references to the agent registry, alarm engine session, and other cross-module dependencies |
@@ -212,6 +213,10 @@ The JavaScript is split into two tiers that share the same `js/` directory but b
 | Admin | Split into sub-tabs: Access, Agents, Audit, Backup, and Routing (pools, pins, and Model Autopilot management) |
 
 The Dashboard → Energy sub-tab (`js/energy.js`, `js/lib/energy.js`) shows measured $/Mtok and cloud-savings figures. The LLM Control → Report Card sub-tab (`js/report-card.js`, `js/lib/reportcard.js`) drives the standardized GPU Report Card benchmark. Both Dashboard and LLM Control gained a vLLM sub-tab (`js/vllm.js`, `js/vllm-bench-autotune.js`). Model Autopilot has no dedicated top-level tab — it is a card inside Admin → Routing (`js/autopilot.js`).
+
+### Phone Companion (PWA)
+
+A separate phone-sized app shell at `/companion` (`companion.html`, `js/companion.js`, with view-model transforms in `js/lib/companion-view.js` and sparkline helpers in `js/lib/companion-spark.js`) installs to a home screen as a Progressive Web App. Its service worker (`sw.js`) caches the app shell keyed on the manager version, and a web-push subscription delivers alarm notifications even when the app is closed. Six screens — Home, Alerts, Energy, Models, Admin, Settings — reuse the manager's existing session-gated APIs; control actions (model swap/pin, autopilot approval, service/agent restarts) require the admin role and confirm in a bottom sheet before running. Installing it requires the manager to serve an operator-provided (publicly trusted) TLS certificate.
 
 ### Real-Time Updates
 

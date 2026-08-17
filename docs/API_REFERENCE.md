@@ -936,6 +936,23 @@ The service worker, stamped with the running manager version (the app-shell cach
 
 ---
 
+### `GET /api/companion/release`
+Release-availability status for the companion's Admin screen. Always returns `{ok, enabled, build, installed, describe, ahead, source, install_kind, repo}`; when the check is enabled it adds `latest` and `update_available` (`true`/`false`/`null`, with a `note` when the install has no release tag to compare — as a last resort the running build stamp is matched against the newest release's notes). The GitHub query result is cached for 24 hours (toggling the switch forces a fresh read) and runs only when enabled (`[manager.companion] release_check`, default off).
+
+---
+
+### `PUT /api/companion/release`
+**Body:** `{"enabled": true|false}`. Toggles the release check at runtime (the Settings-screen switch); overrides the config value until restart. Returns 400 without `enabled`.
+
+**Access:** [Admin]
+
+---
+
+### `POST /api/companion/push/notify`
+Alarm-engine bridge (#538): fans one alert out to every subscribed device. **Bearer-gated**, not session-gated — the caller presents `[manager.companion] push_notify_token` (falling back to `[alarm_engine].management_token`, then `ingest_token`); with no token configured anywhere, an admin session is required instead. **Body:** `{"title", "body", "severity", "tag", "url"}` (all optional, length-capped; `url` is normalized to a same-origin path). Returns `{ok, subscriptions, sent, failed, pruned}`, 400 on a non-object body, 503 when `pywebpush` is not installed.
+
+---
+
 ### `GET /api/companion/push/public-key`
 Returns `{ok, key}` — the VAPID application server key (base64url) for `pushManager.subscribe()`. The underlying EC P-256 key pair is generated on first use into the manager data directory.
 
