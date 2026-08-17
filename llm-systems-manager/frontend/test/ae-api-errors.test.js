@@ -90,9 +90,13 @@ describe('AE ApiClient._errorText', () => {
 
 describe('AE ApiClient._request error surfacing', () => {
   const { api: client, ctx } = loadApiClient();
+  let errSpy;
 
   beforeEach(() => {
     ctx.fetch = vi.fn();
+    // _request console.errors before rethrowing; capture it instead of
+    // printing so a passing run stays clean.
+    errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
   });
   afterEach(() => {
     ctx.fetch = undefined;
@@ -107,6 +111,9 @@ describe('AE ApiClient._request error surfacing', () => {
     });
     await expect(client._request('/notifications/channels', { method: 'POST' }))
       .rejects.toThrow('name: Field required');
+    // The Error comes from the vm realm, so match its text, not its class.
+    expect(errSpy.mock.calls[0][0]).toBe('API Error (/notifications/channels):');
+    expect(String(errSpy.mock.calls[0][1])).toContain('name: Field required');
   });
 
   it('does not choke when the error body is not JSON at all', async () => {
@@ -115,5 +122,7 @@ describe('AE ApiClient._request error surfacing', () => {
       json: async () => { throw new SyntaxError('not json'); },
     });
     await expect(client._request('/rules')).rejects.toThrow('HTTP 502: Bad Gateway');
+    expect(errSpy.mock.calls[0][0]).toBe('API Error (/rules):');
+    expect(String(errSpy.mock.calls[0][1])).toContain('HTTP 502: Bad Gateway');
   });
 });
