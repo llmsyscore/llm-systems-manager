@@ -1,11 +1,13 @@
 /* Overall-tab fleet band (#565). Theme tokens only — all 7 themes. */
 .ov-band { padding: 12px 20px 4px; display: flex; flex-direction: column; gap: 14px; }
-.ov-band > section { position: relative; padding-left: 20px; }
+.ov-band > section { position: relative; }
+/* Overlaid at top center — takes no layout space and never shifts content. */
 .ov-strip-handle {
-  position: absolute; left: 0; top: 50%; transform: translateY(-50%);
-  cursor: grab; color: var(--fg-faint); font-size: 0.9em; user-select: none;
+  position: absolute; top: 0; left: 50%; transform: translateX(-50%);
+  cursor: grab; color: var(--fg-faint); font-size: 0.8em; line-height: 1;
+  padding: 1px 10px; user-select: none; z-index: 3; opacity: 0.6;
 }
-.ov-strip-handle:hover { color: var(--fg-muted); }
+.ov-strip-handle:hover { color: var(--fg-muted); opacity: 1; }
 .ov-eyebrow {
   font-size: clamp(0.58em, 0.8vw, 0.68em); text-transform: uppercase;
   letter-spacing: 0.12em; color: var(--fg-dim); white-space: nowrap;
