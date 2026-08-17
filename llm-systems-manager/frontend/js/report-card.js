@@ -80,7 +80,9 @@ function rcLoadAgents() {
   const sel = _rcEl('rcAgent');
   if (!sel) return;
   fetch('/api/agents/list-by-provider').then(r => r.json()).then(d => {
-    const list = d[provider] || [];
+    // Primary agent first, matching the dashboard pickers.
+    const list = (typeof _defaultFirst === 'function')
+      ? _defaultFirst(d[provider]) : (d[provider] || []);
     sel.replaceChildren();
     list.forEach(a => {
       const o = document.createElement('option');

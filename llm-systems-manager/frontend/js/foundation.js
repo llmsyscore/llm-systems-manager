@@ -266,10 +266,17 @@ const _AGENT_PICKER_CONTAINERS = {
   vllm:  ['agentPickerDashVllm', 'agentPickerCtrlVllm'],
 };
 
+// Primary (is_default) agent first; stable backend order for the rest.
+function _defaultFirst(list) {
+  return (list || []).slice().sort((a, b) => (b.is_default ? 1 : 0) - (a.is_default ? 1 : 0));
+}
+
 async function _loadAgentsByProvider() {
   try {
     const data = await fetch('/api/agents/list-by-provider').then(r => r.json());
-    window._agentsByProvider = { llama: data.llama || [], lms: data.lms || [], vllm: data.vllm || [] };
+    window._agentsByProvider = {
+      llama: _defaultFirst(data.llama), lms: _defaultFirst(data.lms), vllm: _defaultFirst(data.vllm),
+    };
     // Restore persisted selection; else fall back to the provider default.
     ['llama', 'lms', 'vllm'].forEach(prov => {
       const list = window._agentsByProvider[prov] || [];
