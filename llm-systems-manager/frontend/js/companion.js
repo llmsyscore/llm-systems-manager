@@ -73,8 +73,8 @@
     } else {
       try {
         const layout = await jfetch('/api/layout');
-        if (layout && layout.theme)
-          document.documentElement.setAttribute('data-theme', layout.theme);
+        document.documentElement.setAttribute('data-theme',
+          (layout && layout.theme) || 'modern');
       } catch (_) { /* default theme */ }
     }
     const bg = getComputedStyle(document.documentElement)

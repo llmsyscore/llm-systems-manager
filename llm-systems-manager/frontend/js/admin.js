@@ -157,14 +157,16 @@ function _setTabDot(id, state) {
   if (state === 'ok' || state === 'alert' || state === 'warn') el.classList.add(state);
 }
 async function refreshTabIndicators() {
-  // Events — active critical alerts only. status=active excludes acknowledged
-  // (an acked critical is being handled, so it shouldn't hold the dot red).
+  // Events dot + Overall alerts strip share one active-alerts pull (#565).
+  // status=active excludes acknowledged (being handled ≠ red dot).
   (async () => {
     try {
-      const r = await fetch('/api/alarm/alerts/?severity=critical&status=active&limit=1');
+      const r = await fetch('/api/alarm/alerts/?status=active&limit=50');
       if (!r.ok) return;
       const arr = await r.json();
-      _setTabDot('tabDotEvents', (Array.isArray(arr) && arr.length > 0) ? 'alert' : 'ok');
+      window._activeAlerts = Array.isArray(arr) ? arr : [];
+      const crit = window._activeAlerts.some(a => a && a.severity === 'critical');
+      _setTabDot('tabDotEvents', crit ? 'alert' : 'ok');
     } catch (_) { /* keep prior state */ }
   })();
   // Admin — system-health roll-up mapped to the dot (down → red,

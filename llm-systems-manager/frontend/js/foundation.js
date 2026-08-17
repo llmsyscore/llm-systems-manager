@@ -127,15 +127,6 @@ function _actionRelease(key) { _actionInflight.delete(key); }
 
 let _activeTab = 'overall';   // tracks which top-level tab is visible
 
-const CARD_LABELS_OVERALL = {
-  'ov-llama-fleet':  'llama.cpp Fleet',
-  'ov-llama-gpu':    'llama.cpp Fleet — GPU',
-  'ov-llama-active': 'llama.cpp Fleet — Active Models',
-  'ov-llama-chart':  'llama.cpp Fleet — Throughput',
-  'ov-lms-fleet':    'LM Studio Fleet',
-  'ov-vllm-fleet':   'vLLM Fleet',
-  'ov-fleet':        'Fleet Overview',
-};
 const CARD_LABELS_LMS = {
   'lms-models':  'LM Studio Models',
   'lms-active':  'LM Studio Server',
@@ -221,14 +212,8 @@ async function loadLayout() {
 // next saveLayout() writes the new id.
 const _LEGACY_CARD_RENAMES = {
   'kraken': 'aio',
-  // PR4: Overall-tab single-host cards → fleet-aggregate cards. ov-llama-chart
-  // keeps its id (relabeled only). Saved overallOrder/hiddenOverall/
-  // overallBorrowed/cardSizes entries rewrite in place so layouts survive.
-  'ov-llama':     'ov-llama-fleet',
-  'ov-gpu':       'ov-llama-gpu',
-  'ov-llcpp-sys': 'ov-llama-active',
-  'ov-lms':       'ov-lms-fleet',
-  'ov-lms-sys':   'ov-fleet',
+  // #565 retired the native ov-* aggregate cards (fleet band replaces them);
+  // stale saved ids simply match no card and are pruned on the next save.
 };
 function _migrateLegacyCardIds(lay) {
   const swap = arr => Array.isArray(arr) && arr.forEach((id, i) => {
@@ -281,10 +266,17 @@ const _AGENT_PICKER_CONTAINERS = {
   vllm:  ['agentPickerDashVllm', 'agentPickerCtrlVllm'],
 };
 
+// Primary (is_default) agent first; stable backend order for the rest.
+function _defaultFirst(list) {
+  return (list || []).slice().sort((a, b) => (b.is_default ? 1 : 0) - (a.is_default ? 1 : 0));
+}
+
 async function _loadAgentsByProvider() {
   try {
     const data = await fetch('/api/agents/list-by-provider').then(r => r.json());
-    window._agentsByProvider = { llama: data.llama || [], lms: data.lms || [], vllm: data.vllm || [] };
+    window._agentsByProvider = {
+      llama: _defaultFirst(data.llama), lms: _defaultFirst(data.lms), vllm: _defaultFirst(data.vllm),
+    };
     // Restore persisted selection; else fall back to the provider default.
     ['llama', 'lms', 'vllm'].forEach(prov => {
       const list = window._agentsByProvider[prov] || [];
@@ -485,7 +477,7 @@ function _notePinOverride(resp, modelId) {
 
 const VALID_THEMES = ['dark', 'medium', 'light', 'modern', 'classic', 'slate', 'enterprise'];
 function applyTheme(name, save) {
-  if (!VALID_THEMES.includes(name)) name = 'dark';
+  if (!VALID_THEMES.includes(name)) name = 'modern';
   document.documentElement.setAttribute('data-theme', name);
   const sel = document.getElementById('themeSelect');
   if (sel && sel.value !== name) sel.value = name;
@@ -703,13 +695,16 @@ function applyLayout() {
     c.style.display = hiddenMgr.includes(c.dataset.card) ? 'none' : '';
   });
 
-  // Recreate borrowed-card mirror shells in overallGrid
+  // Fleet-band strip order (#565)
+  _applyBandOrder();
+
+  // Recreate pinned-card shells in overallGrid
   const overallGrid = document.getElementById('overallGrid');
   if (overallGrid) {
     (layout.overallBorrowed || []).forEach(cardId => {
       if (document.querySelector(`#overallGrid [data-card="ov-borrow-${cardId}"]`)) return;
       const shell = document.createElement('div');
-      shell.className = 'card';
+      shell.className = 'card ov-shell';
       shell.dataset.card = 'ov-borrow-' + cardId;
       shell.style.minHeight = '120px';
       overallGrid.appendChild(shell);
@@ -725,8 +720,8 @@ function applyLayout() {
       all.forEach(c => { if (!ordered.includes(c)) ordered.push(c); });
       ordered.forEach(c => overallGrid.appendChild(c));
     }
-    // Sync content now that shells exist
-    if (typeof syncBorrowedCards === 'function') syncBorrowedCards();
+    // Adopt into the fresh shells when the Overall tab is showing
+    if (_activeTab === 'overall' && typeof adoptPinnedCards === 'function') adoptPinnedCards();
   }
 }
 
@@ -761,125 +756,106 @@ async function saveLayout() {
 }
 
 // ---------------------------------------------------------------------------
-// Borrowed cards — mirror any Dashboard card into the LLM Overall tab.
-// Home card in #cardGrid or #lmsCardGrid keeps getting updated by the existing
-// fetchMetrics / fetchLMStudioMetrics functions. After each update cycle,
-// syncBorrowedCards() copies innerHTML from each home card to its mirror shell
-// in #overallGrid, then uses canvas.drawImage to mirror any Chart.js canvases.
+// Pinned cards — DOM adoption (#565). While Overall is active each pinned
+// card's real node lives inside its ov-borrow shell in #overallGrid; a
+// comment marker holds its home slot for the return trip. Only one tab is
+// visible at a time, so the card is never needed in two places at once.
 // ---------------------------------------------------------------------------
-function syncBorrowedCards() {
-  const borrowed = (layout && layout.overallBorrowed) || [];
-  if (!borrowed.length) return;
-  const pairs = [];
-  borrowed.forEach(id => {
-    const home   = document.querySelector(`#cardGrid [data-card="${id}"], #lmsCardGrid [data-card="${id}"], #managerCardGrid [data-card="${id}"]`);
-    const mirror = document.querySelector(`#overallGrid [data-card="ov-borrow-${id}"]`);
-    if (home && mirror) pairs.push([home, mirror]);
-  });
-  if (!pairs.length) return;
+const _ovHomeMarks = {};
+window._ovAdopted = new Set();
 
-  // Copy rendered HTML (text, stats, bars). This also resets canvases, so we
-  // re-paint them from the home canvases on the next animation frame.
-  pairs.forEach(([home, mirror]) => {
-    mirror.innerHTML = home.innerHTML;
-    // Override any Chart.js inline pixel widths so canvases fill the mirror
-    // card's container width rather than the home card's (different column count).
-    mirror.querySelectorAll('canvas').forEach(c => {
-      c.style.width = '100%';
-      c.style.height = '';
-      if (c.width && c.height) c.style.aspectRatio = c.width + ' / ' + c.height;
-    });
-    // innerHTML copied the home card's size button (an unwired clone) —
-    // drop it and add a fresh one bound to this mirror so the user can
-    // resize borrowed cards independently of their home.
-    mirror.querySelectorAll(':scope > .card-size-btn').forEach(b => b.remove());
-    _ensureSizeBtn(mirror);
-  });
-
-  requestAnimationFrame(() => {
-    pairs.forEach(([home, mirror]) => {
-      const homeCanvases   = home.querySelectorAll('canvas');
-      const mirrorCanvases = mirror.querySelectorAll('canvas');
-      homeCanvases.forEach((src, i) => {
-        const dst = mirrorCanvases[i];
-        if (!dst) return;
-        if (src.width && src.height) {
-          dst.width  = src.width;
-          dst.height = src.height;
-          try { dst.getContext('2d')?.drawImage(src, 0, 0); } catch(_) {}
-          // Re-apply after pixel buffer assignment; setting .width clears inline style.
-          dst.style.width = '100%';
-          dst.style.height = '';
-          dst.style.aspectRatio = src.width + ' / ' + src.height;
-        }
-        // Borrowed-card hover stopgap: the mirror is a bitmap copy with no
-        // Chart.js instance, so native tooltips don't fire. Forward the
-        // hover position to the home chart, read its data at the nearest
-        // index, and render a small native tooltip on the mirror.
-        _attachBorrowedHover(dst, src);
-      });
-    });
-  });
+function _ovPinned(id) {
+  const lay = (typeof layout !== 'undefined' && layout) || window.layout;
+  return !!(lay && (lay.overallBorrowed || []).includes(id));
 }
 
-let _borrowedTooltipEl = null;
-function _borrowedTooltip() {
-  if (_borrowedTooltipEl) return _borrowedTooltipEl;
-  const el = document.createElement('div');
-  el.id = 'borrowedHoverTooltip';
-  el.style.cssText = 'position:fixed;pointer-events:none;z-index:9999;'
-    + 'background:rgba(18,18,22,0.97);color:var(--fg);'
-    + 'border:1px solid var(--border);border-radius:4px;'
-    + 'padding:6px 8px;font-size:11px;line-height:1.45;'
-    + 'font-family:system-ui,-apple-system,sans-serif;'
-    + 'box-shadow:0 4px 12px rgba(0,0,0,0.5);display:none;'
-    + 'white-space:nowrap;';
-  document.body.appendChild(el);
-  _borrowedTooltipEl = el;
-  return el;
+function _homeCardEl(id) {
+  return document.querySelector(
+    `#cardGrid [data-card="${id}"], #lmsCardGrid [data-card="${id}"], ` +
+    `#vllmCardGrid [data-card="${id}"], #managerCardGrid [data-card="${id}"]`);
 }
 
-function _fmtBorrowed(v) {
-  if (v == null) return '—';
-  const a = Math.abs(v);
-  return a >= 100 ? v.toFixed(0) : a >= 10 ? v.toFixed(1) : v.toFixed(2);
-}
-
-function _attachBorrowedHover(mirror, homeCanvas) {
-  // Resolve the home chart once. If the home canvas isn't a Chart.js
-  // canvas (some cards have static SVGs), skip — nothing to mirror.
-  const chart = (typeof Chart !== 'undefined' && Chart.getChart) ? Chart.getChart(homeCanvas) : null;
-  if (!chart) return;
-  const tip = _borrowedTooltip();
-  mirror.addEventListener('mousemove', (e) => {
-    const labels = chart.data.labels;
-    if (!labels || !labels.length) { tip.style.display = 'none'; return; }
-    const rect = mirror.getBoundingClientRect();
-    const xRatio = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
-    // Snap to the nearest data index — proportional, since the mirror
-    // can be a different pixel width than the home canvas (it picks up
-    // 100% of the borrowed card's column width).
-    const idx = Math.round(xRatio * (labels.length - 1));
-    const ts = labels[idx];
-    const tsStr = ts instanceof Date
-      ? ts.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit', second: '2-digit' })
-      : String(ts);
-    let html = `<div style="color:var(--fg);font-weight:600;margin-bottom:3px;">${tsStr}</div>`;
-    for (const ds of chart.data.datasets) {
-      const v = ds.data[idx];
-      const swatch = `<span style="display:inline-block;width:9px;height:9px;background:${ds.borderColor};border-radius:2px;margin-right:6px;vertical-align:middle;"></span>`;
-      html += `<div>${swatch}${ds.label}: ${_fmtBorrowed(v)}</div>`;
+function adoptPinnedCards() {
+  const lay = (typeof layout !== 'undefined' && layout) || window.layout;
+  ((lay && lay.overallBorrowed) || []).forEach(id => {
+    const shell = document.querySelector(`#overallGrid [data-card="ov-borrow-${id}"]`);
+    if (!shell || _ovAdopted.has(id)) return;
+    const home = _homeCardEl(id);
+    shell.textContent = '';
+    if (!home) {
+      shell.innerHTML = '<div class="ov-missing">card unavailable</div>';
+      return;
     }
-    tip.innerHTML = html;
-    tip.style.display = 'block';
-    // Offset 12px from cursor; flip to the left if we'd overflow the viewport.
-    const tipW = tip.offsetWidth, tipH = tip.offsetHeight;
-    const left = (e.clientX + 12 + tipW > window.innerWidth) ? e.clientX - tipW - 12 : e.clientX + 12;
-    const top  = (e.clientY + 12 + tipH > window.innerHeight) ? e.clientY - tipH - 12 : e.clientY + 12;
-    tip.style.left = left + 'px';
-    tip.style.top  = top + 'px';
+    const mark = document.createComment('ov-home:' + id);
+    home.parentNode.insertBefore(mark, home);
+    _ovHomeMarks[id] = mark;
+    shell.appendChild(home);
+    // A pinned card is always visible on Overall — clear any hidden-at-home
+    // inline display; the home state is re-applied on return.
+    home.style.display = '';
+    _ensureSizeBtn(shell);
+    _ovAdopted.add(id);
   });
-  mirror.addEventListener('mouseleave', () => { tip.style.display = 'none'; });
+  if (typeof _resizeChartsIn === 'function') _resizeChartsIn(document.getElementById('overallGrid'));
+}
+
+function _returnOneAdopted(id) {
+  const shell = document.querySelector(`#overallGrid [data-card="ov-borrow-${id}"]`);
+  const card = shell && shell.querySelector(`:scope > [data-card="${id}"]`);
+  const mark = _ovHomeMarks[id];
+  if (card && mark && mark.parentNode) {
+    mark.parentNode.replaceChild(card, mark);
+    // Re-apply the home grid's hidden state (adoption cleared it).
+    const keys = { cardGrid: 'hidden', lmsCardGrid: 'lmsHidden',
+                   vllmCardGrid: 'vllmHidden', managerCardGrid: 'managerHidden' };
+    const grid = card.closest('.grid');
+    if (grid && keys[grid.id] && typeof _applyHiddenForGrid === 'function') {
+      _applyHiddenForGrid(grid.id, keys[grid.id]);
+    }
+  } else if (mark && mark.parentNode) mark.remove();
+  delete _ovHomeMarks[id];
+  _ovAdopted.delete(id);
+}
+
+function returnPinnedCards() {
+  [..._ovAdopted].forEach(_returnOneAdopted);
+}
+
+// Reorder the fleet-band strips per layout.overallBandOrder (#565). Unknown
+// ids are skipped; strips missing from the saved order append in DOM order.
+function _applyBandOrder() {
+  const lay = (typeof layout !== 'undefined' && layout) || window.layout;
+  const band = document.querySelector('.ov-band');
+  const saved = (lay && lay.overallBandOrder) || [];
+  if (!band || !saved.length) return;
+  const all = [...band.children].filter(s => s.dataset && s.dataset.strip);
+  const ordered = [];
+  saved.forEach(id => {
+    const s = all.find(x => x.dataset.strip === id);
+    if (s) ordered.push(s);
+  });
+  all.forEach(s => { if (!ordered.includes(s)) ordered.push(s); });
+  ordered.forEach(s => band.appendChild(s));
+}
+
+// Backfill home-provider chart history + kick the manager one-shots for
+// pinned cards, so adopted cards are live even if their home dashboard was
+// never visited this session (#565, #506 pattern).
+function _ovBackfillPinnedProviders() {
+  const lay = (typeof layout !== 'undefined' && layout) || window.layout;
+  const b = (lay && lay.overallBorrowed) || [];
+  if (!b.length) return;
+  const run = fn => { if (typeof fn === 'function') Promise.resolve(fn()).catch(() => {}); };
+  const hasIn = map => b.some(id => map && map[id] !== undefined);
+  if (hasIn(CARD_LABELS))         run(window.loadHistory);
+  if (hasIn(CARD_LABELS_LMS))     run(window.loadLmsHistory);
+  if (hasIn(CARD_LABELS_VLLM))    run(window.loadVllmHistory);
+  if (hasIn(CARD_LABELS_MANAGER)) {
+    run(window.loadManagerPerfHistory);
+    run(window.fetchServicesAndInflux);
+    run(window.fetchManagerAgentsCard);
+    run(window.fetchManagerStreamsCard);
+  }
 }
 
 function addBorrowedCard(cardId) {
@@ -889,25 +865,23 @@ function addBorrowedCard(cardId) {
   const grid = document.getElementById('overallGrid');
   if (!grid) return;
   const shell = document.createElement('div');
-  shell.className = 'card';
+  shell.className = 'card ov-shell';
   shell.dataset.card = 'ov-borrow-' + cardId;
   shell.style.minHeight = '120px';
   grid.appendChild(shell);
-  // Give the new shell its resize button and apply any previously-saved
-  // size (e.g. user added → resized → reloaded). syncBorrowedCards()
-  // below will re-add the button after innerHTML copy, but doing it now
-  // means it's available for the brief window before the first sync.
   _ensureSizeBtn(shell);
   const saved = (layout.cardSizes || {})['ov-borrow-' + cardId];
   if (saved) _applyCardSize(shell, saved);
-  syncBorrowedCards();
+  if (_activeTab === 'overall') adoptPinnedCards();
   saveLayout();
 }
 
 function removeBorrowedCard(cardId) {
+  // Return the live card to its home grid before dropping the shell.
+  if (window._ovAdopted && _ovAdopted.has(cardId)) _returnOneAdopted(cardId);
   layout.overallBorrowed = (layout.overallBorrowed || []).filter(id => id !== cardId);
-  const mirror = document.querySelector(`#overallGrid [data-card="ov-borrow-${cardId}"]`);
-  if (mirror) mirror.remove();
+  const shell = document.querySelector(`#overallGrid [data-card="ov-borrow-${cardId}"]`);
+  if (shell) shell.remove();
   // Also prune from saved order
   layout.overallOrder = (layout.overallOrder || []).filter(id => id !== 'ov-borrow-' + cardId);
   saveLayout();
@@ -973,8 +947,7 @@ function applyManagerLayout(savedOrder) {
 
 function toggleCard(cardId, visible) {
   let hiddenKey = 'hidden';
-  if (CARD_LABELS_OVERALL[cardId]) hiddenKey = 'hiddenOverall';
-  else if (CARD_LABELS_LMS[cardId]) hiddenKey = 'lmsHidden';
+  if (CARD_LABELS_LMS[cardId]) hiddenKey = 'lmsHidden';
   else if (CARD_LABELS_VLLM[cardId]) hiddenKey = 'vllmHidden';
   else if (CARD_LABELS_MANAGER[cardId]) hiddenKey = 'managerHidden';
   const list = _hiddenList(hiddenKey);
@@ -1063,7 +1036,7 @@ function renderSettingsPanel() {
 
   let label, map, hiddenKey, colsKey;
   if (_activeTab === 'overall') {
-    label    = 'LLM Overall'; map = CARD_LABELS_OVERALL;
+    label    = 'LLM Overall'; map = {};
     hiddenKey = 'hiddenOverall'; colsKey = 'overallCols';
   } else if (_activeTab === 'dashboard') {
     const sub = _getDashSubTab();
@@ -1141,7 +1114,7 @@ function renderSettingsPanel() {
   const presetOpts = Object.entries(LAYOUT_PRESETS).map(([id, p]) =>
     `<option value="${id}">${_esc(p.label)}</option>`).join('');
 
-  list.innerHTML = `
+  const visibleSection = Object.keys(map).length ? `
     <div class="settings-section-title" style="border-top:none;padding-top:0;margin-top:0;">Visible cards</div>
     <div class="settings-collapse-hdr open" id="sColHdr" onclick="_settingsCollapseToggle(this, document.getElementById('sColBody'))">
       <span style="font-size:0.78em;color:inherit;">${Object.keys(map).length} cards — click to collapse</span>
@@ -1149,7 +1122,9 @@ function renderSettingsPanel() {
     </div>
     <div class="settings-collapse-body" id="sColBody" style="max-height:400px;">
       <div class="card-chips">${chips}</div>
-    </div>
+    </div>` : '';
+  list.innerHTML = `
+    ${visibleSection}
     ${borrowSection}
     <div class="settings-section-title">Layout preset — ${label}</div>
     <div style="display:flex;gap:8px;align-items:center;margin-bottom:8px;">
@@ -1187,7 +1162,7 @@ async function resetCurrentTabLayout() {
   let scope, map;
   if (_activeTab === 'overall') {
     scope = { hidden: 'hiddenOverall', order: 'overallOrder', cols: 'overallCols', borrowed: 'overallBorrowed' };
-    map = CARD_LABELS_OVERALL;
+    map = {};
   } else if (_activeTab === 'dashboard') {
     const sub = _getDashSubTab();
     if (sub === 'lmstudio') {
@@ -1218,9 +1193,15 @@ async function resetCurrentTabLayout() {
   layout[scope.order]  = [];
   delete layout[scope.cols];
   if (scope.borrowed) layout[scope.borrowed] = [];
-  // Drop cardSizes entries for ids in this tab's label map.
+  // Drop cardSizes entries for ids in this tab's label map; the Overall
+  // tab's sizes live under ov-borrow-* shell keys instead.
   if (layout.cardSizes) {
     for (const id of Object.keys(map)) delete layout.cardSizes[id];
+    if (_activeTab === 'overall') {
+      for (const id of Object.keys(layout.cardSizes)) {
+        if (id.startsWith('ov-')) delete layout.cardSizes[id];
+      }
+    }
   }
   // Per-agent surfaces: also clear the selected agent's own hidden/order/size sets.
   const _resetProv = (window.LMLayout && LMLayout.PER_AGENT_HIDDEN[scope.hidden]) || null;
@@ -1247,7 +1228,7 @@ function openSettings() {
   renderSettingsPanel();
   _syncIntervalUI();
   const sel = document.getElementById('themeSelect');
-  if (sel) sel.value = (layout && layout.theme) || 'dark';
+  if (sel) sel.value = (layout && layout.theme) || 'modern';
   document.getElementById('settingsOverlay').classList.add('open');
 }
 function closeSettings() {
@@ -1298,6 +1279,9 @@ function applyAllGridCols() {
 // switchTab — tab dispatcher (moved here so tab batches can rely on it)
 function switchTab(tab) {
   if (tab === 'admin' && window._me && window._me.admin_access === false) { tab = 'overall'; }
+  // Leaving Overall: pinned cards go back to their home grids first (#565).
+  if (_activeTab === 'overall' && tab !== 'overall'
+      && typeof returnPinnedCards === 'function') returnPinnedCards();
   _activeTab = tab;
   document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
   document.querySelector(`.tab-btn[onclick="switchTab('${tab}')"]`).classList.add('active');
@@ -1315,6 +1299,8 @@ function switchTab(tab) {
   // takes no live points while another tab is showing (#506).
   if (tab === 'overall')    {
     document.getElementById('overallTab').style.display = '';
+    if (typeof adoptPinnedCards === 'function') adoptPinnedCards();
+    _ovBackfillPinnedProviders();
     if (typeof loadOverallHistory === 'function') {
       loadOverallHistory().finally(() => fetchOverallMetrics()).catch(() => {});
     } else {

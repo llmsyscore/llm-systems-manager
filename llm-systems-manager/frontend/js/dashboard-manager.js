@@ -410,10 +410,10 @@ async function fetchServicesAndInflux() {
 // agents, or the registration status otherwise.
 async function fetchManagerAgentsCard() {
   if (document.hidden) return;
-  // mgrAgentsTable lives only on Dashboard → Manager sub-tab. Skip the
-  // poll on every other tab/sub-tab so the 10s tick doesn't slam the
-  // backend while the user is somewhere else.
-  if (!LMSeries.isManagerSubActive(_activeTab, _subTabState)) return;
+  // Poll only where the card can be seen: the Manager sub-tab, or the
+  // Overall tab when the card is pinned there (#565).
+  const _onOverallPinned = _activeTab === 'overall' && _ovPinned('mgr-agents');
+  if (!LMSeries.isManagerSubActive(_activeTab, _subTabState) && !_onOverallPinned) return;
   const tbody = document.getElementById('mgrAgentsTable');
   if (!tbody) return;
   try {
@@ -467,10 +467,10 @@ let _mgrAgentRefusalTrack = {};
 
 async function fetchManagerStreamsCard() {
   if (document.hidden) return;
-  // mgrStreamsTable lives only on Dashboard → Manager sub-tab. Skip the poll
-  // on every other tab/sub-tab so the 10s tick doesn't fan out to every agent
-  // while the card isn't visible (and 403 for operator sessions).
-  if (!LMSeries.isManagerSubActive(_activeTab, _subTabState)) return;
+  // Poll only where the card can be seen: the Manager sub-tab, or the
+  // Overall tab when the card is pinned there (#565).
+  const _onOverallPinned = _activeTab === 'overall' && _ovPinned('mgr-streams');
+  if (!LMSeries.isManagerSubActive(_activeTab, _subTabState) && !_onOverallPinned) return;
   const summary = document.getElementById('mgrStreamsSummary');
   const tbody = document.getElementById('mgrStreamsTable');
   const badge = document.getElementById('mgrStreamsBadge');

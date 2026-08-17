@@ -65,16 +65,6 @@ const lmsDiskUsageChart = lmsDiskUsageChartCtx ? new Chart(lmsDiskUsageChartCtx,
   options: { animation: false, responsive: true, maintainAspectRatio: false, interaction: _sparkInteraction, scales: { x: { type: 'time', display: false }, y: { min: 0, max: 100, display: true, ticks: { color: cssVar('--fg-muted'), font: { size: 10 }, callback: _pctTick } } }, plugins: { legend: { display: false }, tooltip: _sparkTooltip, zoom: _zoomOpts, annotation: { annotations: {} } } }
 }) : null;
 
-const ovLlamaChartCtx = document.getElementById('ovLlamaChart')?.getContext('2d');
-const ovLlamaChart = ovLlamaChartCtx ? new Chart(ovLlamaChartCtx, {
-  type: 'line',
-  data: { datasets: [
-    { label: 'Gen t/s',    data: [], borderColor: '#7af', borderWidth: 1.5, pointRadius: 0, pointHoverRadius: 4, fill: false, tension: 0.3 },
-    { label: 'Prompt t/s', data: [], borderColor: '#fa7', borderWidth: 1.5, pointRadius: 0, pointHoverRadius: 4, fill: false, tension: 0.3 },
-  ]},
-  options: { animation: false, responsive: true, maintainAspectRatio: false, interaction: _sparkInteraction, scales: { x: { type: 'time', display: false }, y: { min: 0, display: true, ticks: { color: cssVar('--fg-muted'), font: { size: 10 } } } }, plugins: { legend: { display: false }, tooltip: _sparkTooltip, zoom: _zoomOpts } }
-}) : null;
-
 function _fmtBytes(b) {
   if (!b) return '—';
   if (b > 1e9) return (b / 1e9).toFixed(1) + ' GB';
@@ -327,7 +317,6 @@ async function fetchLMStudioMetrics() {
     console.warn('fetchLMStudioMetrics:', e);
   } finally {
     _release(_lk);
-    syncBorrowedCards();
   }
 }
 
