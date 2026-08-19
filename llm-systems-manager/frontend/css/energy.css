@@ -15,12 +15,13 @@
 }
 .en-field select, .en-field input {
   background: var(--bg); border: 1px solid var(--border); border-radius: 6px;
-  color: var(--fg); font-family: inherit; font-size: 0.85em; padding: 6px 8px;
+  color: var(--fg); font-family: inherit; font-size: 0.85em; padding: 0 8px;
+  height: 30px; box-sizing: border-box;
 }
 .en-field input { width: 90px; font-variant-numeric: tabular-nums; }
 /* Native date pickers render with the theme's scheme, sized like siblings. */
 .en-field input[type="date"] {
-  width: 132px; color-scheme: var(--scheme, dark); padding: 5px 8px;
+  width: 132px; color-scheme: var(--scheme, dark);
 }
 .en-field input[type="date"]::-webkit-calendar-picker-indicator {
   opacity: 0.55; cursor: pointer;
