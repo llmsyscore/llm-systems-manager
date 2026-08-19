@@ -485,6 +485,27 @@ def _window_from_args(args, now: float) -> "tuple[int, int, str] | None":
         end = ((int(now) + off) // 86400 + 1) * 86400 - off
         label = "today (local)" if days == 1 else f"last {days} local days"
         return end - days * 86400, end, label
+    ytd_raw = (args.get("ytd") or "").strip()
+    if ytd_raw.lower() in ("1", "true", "yes"):
+        off = (_tz_offset_hours(args) or 0) * 3600
+        year = _time.gmtime(int(now) + off).tm_year
+        start = calendar.timegm((year, 1, 1, 0, 0, 0)) - off
+        return start, int(now // 3600 + 1) * 3600, f"YTD {year}"
+    start_raw = (args.get("start") or "").strip()
+    end_raw = (args.get("end") or "").strip()
+    if start_raw or end_raw:
+        try:
+            s = _time.strptime(start_raw, "%Y-%m-%d")
+            e = _time.strptime(end_raw, "%Y-%m-%d")
+        except ValueError:
+            return None
+        off = (_tz_offset_hours(args) or 0) * 3600
+        start = calendar.timegm(s[:6]) - off
+        # The end date is inclusive: the window closes at its next midnight.
+        end = calendar.timegm(e[:6]) + 86400 - off
+        if end <= start or end - start > 366 * 86400:
+            return None
+        return start, end, f"{start_raw} → {end_raw}"
     month = (args.get("month") or "").strip() or current_month(now)
     try:
         start, end = month_bounds(month)
@@ -540,7 +561,7 @@ def register_routes(app, ctx=None, db_path: "str | None" = None) -> None:
         window = _window_from_args(args, now)
         if window is None:
             return jsonify({"ok": False,
-                            "error": "invalid days / month (YYYY-MM)"}), 400
+                            "error": "invalid window parameters"}), 400
         start, end, label = window
         # Elapsed window only, so coverage isn't diluted by the future
         # hours of a month in progress.
@@ -562,15 +583,19 @@ def register_routes(app, ctx=None, db_path: "str | None" = None) -> None:
     def energy_hourly():
         args = flask_request.args
         now = _time.time()
-        # ?days=/?month= mirror the summary window; bare ?hours= (default
-        # 168) keeps the trailing-window form.
-        if (args.get("days") or "").strip() or (args.get("month") or "").strip():
+        # ?days=/?month=/?ytd=/?start+end mirror the summary window; bare
+        # ?hours= (default 168) keeps the trailing-window form.
+        truncated = False
+        if any((args.get(k) or "").strip()
+               for k in ("days", "month", "ytd", "start", "end")):
             window = _window_from_args(args, now)
             if window is None:
                 return jsonify({"ok": False,
-                                "error": "invalid days / month (YYYY-MM)"}), 400
+                                "error": "invalid window parameters"}), 400
             start, end, label = window
-            start = max(start, end - _HOURLY_MAX_H * 3600)
+            floor = end - _HOURLY_MAX_H * 3600
+            truncated = start < floor
+            start = max(start, floor)
         else:
             try:
                 hours = max(1, min(int(args.get("hours") or 168),
@@ -601,7 +626,8 @@ def register_routes(app, ctx=None, db_path: "str | None" = None) -> None:
                     observed_s=round(b["observed_s"], 1),
                     active_s=round(b["active_s"], 1))
                for b in sorted(by_hour.values(), key=lambda b: b["hour_ts"])]
-        return jsonify({"ok": True, "label": label,
+        return jsonify({"ok": True, "label": label, "truncated": truncated,
+                        "cap_days": _HOURLY_MAX_H // 24,
                         "hours": int((end - start) // 3600),
                         "start_ts": start, "end_ts": end, "rows": out})
 

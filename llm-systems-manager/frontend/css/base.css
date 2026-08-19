@@ -2,6 +2,7 @@
        Phase 1 ships the variable layer + picker; dark renders byte-identical
        to pre-refactor. Other themes are stubs filled in by Phase 2. */
     :root, :root[data-theme="dark"] {
+      --scheme:        dark;
       --bg:            #111;
       --bg-card:       #1a1a1a;
       --bg-card-alt:   #222;
@@ -28,6 +29,7 @@
       --accent: #8cf; --accent-2: #6eb; --ok: #4e9; --warn: #fb8; --crit: #f77; --note: #fd4;
     }
     :root[data-theme="light"] {
+      --scheme: light;
       --bg: #f4f5f7; --bg-card: #ffffff; --bg-card-alt: #f0f1f3; --bg-elev: #e9eaee;
       --bg-tabnav: #ebecf0; --border: #d4d6dc; --border-soft: #e2e4ea; --border-strong: #c2c4ca;
       --fg: #1a1d22; --fg-muted: #555a64; --fg-dim: #7a808a; --fg-faint: #a8aeb8;

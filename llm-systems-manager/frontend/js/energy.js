@@ -14,8 +14,20 @@ function _enNote(msg, warn) {
   n.classList.toggle('en-warn', !!warn);
 }
 
+function _enWindowParams() {
+  const v = _enEl('enWindow')?.value || '';
+  const custom = { start: _enEl('enCustomFrom')?.value,
+                   end: _enEl('enCustomTo')?.value };
+  const params = new URLSearchParams(EN.windowQuery(v, custom));
+  // Only local-anchored windows resolve against the caller's timezone.
+  if (v === 'today' || v === 'ytd' || v === 'custom') {
+    params.set('tz_offset_min', String(-new Date().getTimezoneOffset()));
+  }
+  return params;
+}
+
 function _enParams() {
-  const params = new URLSearchParams(EN.windowQuery(_enEl('enWindow')?.value));
+  const params = _enWindowParams();
   for (const [id, key] of [['enPrice', 'price_kwh'], ['enCloudIn', 'cloud_in'],
                            ['enCloudOut', 'cloud_out']]) {
     const raw = _enEl(id)?.value;
@@ -27,6 +39,11 @@ function _enParams() {
 }
 
 function enRefresh() {
+  if (_enEl('enWindow')?.value === 'custom'
+      && !(_enEl('enCustomFrom')?.value && _enEl('enCustomTo')?.value)) {
+    _enNote('Pick both dates for the custom range.');
+    return;
+  }
   const params = _enParams();
   fetch('/api/energy/summary?' + params.toString())
     .then(r => r.json())
@@ -37,13 +54,13 @@ function enRefresh() {
     })
     .catch(e => _enNote('Failed to load energy summary: ' + e, true));
   // Chart follows the same selected window as the summary above it.
-  const winParams = new URLSearchParams(EN.windowQuery(_enEl('enWindow')?.value));
-  fetch('/api/energy/hourly?' + winParams.toString())
+  fetch('/api/energy/hourly?' + _enWindowParams().toString())
     .then(r => r.json())
     .then(d => {
       if (!d.ok) return;
       const label = _enEl('enChartLabel');
-      if (label) label.textContent = 'Hourly energy · ' + (d.label || '');
+      if (label) label.textContent = 'Hourly energy · ' + (d.label || '')
+        + (d.truncated ? ` (chart: last ${d.cap_days || 45} days of range)` : '');
       _enDrawChart(EN.hourlySeries(d.rows));
     })
     .catch(() => {});
@@ -192,6 +209,11 @@ function _enDrawChart(series) {
 }
 
 function enOnControlChange() {
+  const isCustom = _enEl('enWindow')?.value === 'custom';
+  for (const id of ['enCustomFromField', 'enCustomToField']) {
+    const el = _enEl(id);
+    if (el) el.style.display = isCustom ? '' : 'none';
+  }
   enRefresh();
 }
 
