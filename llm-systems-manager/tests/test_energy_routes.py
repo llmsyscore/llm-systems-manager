@@ -240,3 +240,73 @@ def test_summary_route_accepts_tz_offset_and_reports_local_label(client):
     assert body["ok"] is True
     assert body["window"]["label"] == "today (local)"
     assert body["window"]["elapsed_s"] <= 86400
+
+
+def test_window_ytd_starts_at_local_jan_first():
+    import calendar
+    now = calendar.timegm((2026, 8, 19, 16, 30, 0))
+    start, end, label = en._window_from_args({"ytd": "1"}, now)
+    assert label == "YTD 2026"
+    assert start == calendar.timegm((2026, 1, 1, 0, 0, 0))
+    assert end == (now // 3600 + 1) * 3600
+    # EDT (UTC-4): local Jan 1 midnight is 05:00 UTC.
+    s2, _, _ = en._window_from_args({"ytd": "1", "tz_offset_min": "-240"}, now)
+    assert s2 == start + 4 * 3600
+
+
+def test_window_custom_range_is_end_inclusive():
+    import calendar
+    now = calendar.timegm((2026, 8, 19, 16, 30, 0))
+    start, end, label = en._window_from_args(
+        {"start": "2026-06-01", "end": "2026-06-10"}, now)
+    assert start == calendar.timegm((2026, 6, 1, 0, 0, 0))
+    assert end == calendar.timegm((2026, 6, 11, 0, 0, 0))
+    assert label == "2026-06-01 → 2026-06-10"
+
+
+def test_window_custom_rejects_junk():
+    now = time.time()
+    assert en._window_from_args({"start": "junk", "end": "2026-06-10"}, now) is None
+    assert en._window_from_args({"start": "2026-06-10", "end": "2026-06-01"}, now) is None
+    assert en._window_from_args({"start": "2026-06-01"}, now) is None
+
+
+def test_summary_accepts_ytd_and_custom(client):
+    c, conn = client
+    assert c.get("/api/energy/summary?ytd=1").status_code == 200
+    r = c.get("/api/energy/summary?start=2026-06-01&end=2026-06-10")
+    assert r.status_code == 200
+    assert c.get("/api/energy/summary?start=x&end=y").status_code == 400
+
+
+def test_hourly_flags_truncation_for_long_windows(client):
+    c, conn = client
+    long = c.get("/api/energy/hourly?start=2026-01-01&end=2026-08-01").get_json()
+    assert long["ok"] and long["truncated"] is True
+    short = c.get("/api/energy/hourly?start=2026-06-01&end=2026-06-10").get_json()
+    assert short["ok"] and short["truncated"] is False
+
+
+def test_window_ytd_falsy_falls_through_to_month():
+    import calendar
+    now = calendar.timegm((2026, 8, 19, 16, 30, 0))
+    start, end, label = en._window_from_args({"ytd": "0"}, now)
+    assert label == "2026-08"
+
+
+def test_window_custom_rejects_spans_over_a_year():
+    now = time.time()
+    assert en._window_from_args(
+        {"start": "2020-01-01", "end": "2026-01-01"}, now) is None
+
+
+def test_hourly_reports_the_cap(client):
+    c, conn = client
+    body = c.get("/api/energy/hourly?start=2026-06-01&end=2026-06-10").get_json()
+    assert body["cap_days"] == 45
+
+
+def test_summary_error_mentions_window_parameters(client):
+    c, conn = client
+    body = c.get("/api/energy/summary?start=x&end=y").get_json()
+    assert body["error"] == "invalid window parameters"

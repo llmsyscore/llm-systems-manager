@@ -265,3 +265,29 @@ describe('fmtMtokRate precision', () => {
     expect(EN.fmtMtokRate(984.2)).toBe('$984.2/Mtok');
   });
 });
+
+describe('EN.windowOptions new entries (#575)', () => {
+  it('offers today, ytd, and custom', () => {
+    const vals = EN.windowOptions('2026-08-19T12:00:00Z').map(o => o.value);
+    expect(vals).toContain('today');
+    expect(vals).toContain('ytd');
+    expect(vals).toContain('custom');
+  });
+});
+
+describe('EN.windowQuery new kinds (#575)', () => {
+  it('today maps to a one-day window', () => {
+    expect(EN.windowQuery('today')).toEqual({ days: 1 });
+  });
+  it('ytd maps to the ytd flag', () => {
+    expect(EN.windowQuery('ytd')).toEqual({ ytd: 1 });
+  });
+  it('custom passes through picked dates', () => {
+    expect(EN.windowQuery('custom', { start: '2026-06-01', end: '2026-06-10' }))
+      .toEqual({ start: '2026-06-01', end: '2026-06-10' });
+  });
+  it('custom without both dates yields no params', () => {
+    expect(EN.windowQuery('custom', { start: '2026-06-01' })).toEqual({});
+    expect(EN.windowQuery('custom')).toEqual({});
+  });
+});

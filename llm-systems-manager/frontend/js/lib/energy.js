@@ -171,13 +171,24 @@ function windowOptions(now) {
   return [
     { value: 'month:' + cur, label: 'This month (' + cur + ')' },
     { value: 'month:' + prev, label: 'Previous month (' + prev + ')' },
+    { value: 'today', label: 'Today' },
     { value: 'days:7', label: 'Last 7 days' },
     { value: 'days:30', label: 'Last 30 days' },
+    { value: 'ytd', label: 'Year to date' },
+    { value: 'custom', label: 'Custom range…' },
   ];
 }
 
-function windowQuery(value) {
-  const [kind, arg] = String(value || '').split(':');
+// custom: {start, end} (YYYY-MM-DD) from the pickers, used only for 'custom'.
+function windowQuery(value, custom) {
+  const v = String(value || '');
+  if (v === 'today') return { days: 1 };
+  if (v === 'ytd') return { ytd: 1 };
+  if (v === 'custom') {
+    const c = custom || {};
+    return (c.start && c.end) ? { start: c.start, end: c.end } : {};
+  }
+  const [kind, arg] = v.split(':');
   if (kind === 'month' && arg) return { month: arg };
   if (kind === 'days' && arg) return { days: arg };
   return {};
