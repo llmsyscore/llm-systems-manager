@@ -2,9 +2,9 @@
 # The agent reports its llama API port in the pushed sample (#572).
 from __future__ import annotations
 
-import test_llama_props  # noqa: F401  loads providers.llama with stubbed deps
+import test_llama_props
 
-from providers.llama import llama_api_port
+llama_api_port = test_llama_props.llama.llama_api_port
 
 
 def test_parses_the_port():
