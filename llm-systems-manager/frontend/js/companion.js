@@ -350,12 +350,11 @@
         ? `<button class="ackbtn" data-ack="${esc(a.id)}">Ack</button>` : '';
       const close = (ADMIN && a.closable)
         ? `<button class="ackbtn danger" data-close="${esc(a.id)}">Close</button>` : '';
-      // Active alarms lead with the rule, message underneath; resolved rows
-      // keep the message-first layout.
+      // Rows with a rule lead with it, message underneath; rule-less rows
+      // show just the message.
       const text = a.ruleFirst
         ? `<div class="am">${esc(a.rule)}</div><div class="amsg">${esc(a.msg)}</div>`
-        : `<div class="am">${esc(a.msg)}</div>`
-          + (a.rule ? `<div class="aw rule">${esc(a.rule)}</div>` : '');
+        : `<div class="am">${esc(a.msg)}</div>`;
       return `<div class="alert" data-alert="${esc(a.id)}">`
         + `<div class="sev ${a.sev}">${esc(a.glyph)}</div>`
         + `<div class="atext">${text}`
