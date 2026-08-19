@@ -49,9 +49,6 @@ function ovToggleOverlay() {
   const energy = !!document.getElementById('ovShowEnergy')?.checked;
   if (ovHeroChart.data.datasets[2]) ovHeroChart.data.datasets[2].hidden = !power;
   if (ovHeroChart.data.datasets[3]) ovHeroChart.data.datasets[3].hidden = !energy;
-  const wrap = document.querySelector('.ov-hero-chart');
-  if (wrap) wrap.classList.toggle('ov-tall', power || energy);
-  ovHeroChart.resize();
   ovHeroChart.update('none');
 }
 

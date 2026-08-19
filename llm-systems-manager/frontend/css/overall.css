@@ -24,8 +24,7 @@
 .ov-updated { font-size: 0.72em; color: var(--fg-dim); white-space: nowrap; }
 .ov-toplines { display: flex; flex-wrap: wrap; gap: 8px 34px; margin-bottom: 10px; }
 .ov-topline .stat { font-size: 1.45em; margin-bottom: 1px; }
-.ov-hero-chart { position: relative; height: 170px; }
-.ov-hero-chart.ov-tall { height: 250px; }
+.ov-hero-chart { position: relative; height: 250px; }
 .ov-ovl { display: inline-flex; align-items: center; gap: 4px; cursor: pointer; }
 .ov-ovl input { margin: 0 2px 0 0; accent-color: var(--accent); }
 
@@ -89,6 +88,5 @@
 
 @media (max-width: 700px) {
   .ov-agent-host { min-width: 130px; }
-  .ov-hero-chart { height: 130px; }
-  .ov-hero-chart.ov-tall { height: 190px; }
+  .ov-hero-chart { height: 190px; }
 }
