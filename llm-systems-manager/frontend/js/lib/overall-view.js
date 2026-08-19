@@ -134,12 +134,13 @@ function _agentDetail(prov, row) {
   }
   if (prov === 'lms') {
     if (!row.server_on) return 'server off';
+    const state = (row.busy_process_count || 0) > 0 ? 'busy' : 'idle';
     const count = row.loaded_model_count || 0;
     const names = (row.loaded_models || []).slice(0, 3);
-    if (!names.length) return `${count} model${count === 1 ? '' : 's'}`;
+    if (!names.length) return `${state} · ${count} model${count === 1 ? '' : 's'}`;
     // +N covers models beyond the display cap or without a reported name.
     const extra = Math.max(0, count - names.length);
-    return extra ? `${names.join(' · ')} +${extra}` : names.join(' · ');
+    return `${state} · ${names.join(' · ')}` + (extra ? ` +${extra}` : '');
   }
   const req = _num(row.requests_running);
   if (!row.server_on) return 'server off';

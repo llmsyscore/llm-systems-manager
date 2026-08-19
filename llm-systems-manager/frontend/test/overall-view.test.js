@@ -269,12 +269,12 @@ describe('OV.agentRows model names (#571)', () => {
     const rows = OV.agentRows([null, { agents: [{ agent_id: 'x', online: true,
       server_on: true, loaded_model_count: 2,
       loaded_models: ['qwen3-30b', 'llama-8b'] }] }, null], {});
-    expect(rows[0].provs[0].detail).toBe('qwen3-30b · llama-8b');
+    expect(rows[0].provs[0].detail).toBe('idle · qwen3-30b · llama-8b');
   });
   it('lms falls back to the count when names are absent', () => {
     const rows = OV.agentRows([null, { agents: [{ agent_id: 'x', online: true,
       server_on: true, loaded_model_count: 1 }] }, null], {});
-    expect(rows[0].provs[0].detail).toBe('1 model');
+    expect(rows[0].provs[0].detail).toBe('idle · 1 model');
   });
   it('vllm rows append the running model name', () => {
     const rows = OV.agentRows([null, null, { agents: [{ agent_id: 'y',
@@ -294,12 +294,21 @@ describe('OV.agentRows model-name caps (#571)', () => {
     const rows = OV.agentRows([null, { agents: [{ agent_id: 'x', online: true,
       server_on: true, loaded_model_count: 2,
       loaded_models: ['qwen3-30b'] }] }, null], {});
-    expect(rows[0].provs[0].detail).toBe('qwen3-30b +1');
+    expect(rows[0].provs[0].detail).toBe('idle · qwen3-30b +1');
   });
   it('long lists cap at three names plus a remainder', () => {
     const rows = OV.agentRows([null, { agents: [{ agent_id: 'x', online: true,
       server_on: true, loaded_model_count: 5,
       loaded_models: ['a', 'b', 'c', 'd', 'e'] }] }, null], {});
-    expect(rows[0].provs[0].detail).toBe('a · b · c +2');
+    expect(rows[0].provs[0].detail).toBe('idle · a · b · c +2');
+  });
+});
+
+describe('OV.agentRows lms state prefix (#571)', () => {
+  it('busy agents lead with busy instead of idle', () => {
+    const rows = OV.agentRows([null, { agents: [{ agent_id: 'x', online: true,
+      server_on: true, busy_process_count: 1, loaded_model_count: 1,
+      loaded_models: ['qwen3-30b'] }] }, null], {});
+    expect(rows[0].provs[0].detail).toBe('busy · qwen3-30b');
   });
 });
