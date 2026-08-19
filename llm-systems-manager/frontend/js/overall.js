@@ -42,6 +42,19 @@ async function fetchOverallMetrics() {
   } catch (_) {}
 }
 
+// Hero overlay toggles: power/energy datasets ride a second y-axis.
+function ovToggleOverlay() {
+  if (typeof ovHeroChart === 'undefined' || !ovHeroChart) return;
+  const power = !!document.getElementById('ovShowPower')?.checked;
+  const energy = !!document.getElementById('ovShowEnergy')?.checked;
+  if (ovHeroChart.data.datasets[2]) ovHeroChart.data.datasets[2].hidden = !power;
+  if (ovHeroChart.data.datasets[3]) ovHeroChart.data.datasets[3].hidden = !energy;
+  const wrap = document.querySelector('.ov-hero-chart');
+  if (wrap) wrap.classList.toggle('ov-tall', power || energy);
+  ovHeroChart.resize();
+  ovHeroChart.update('none');
+}
+
 function _ovPaintBand(llama, lms, vllm) {
   if (typeof OV === 'undefined') return;
   _ovPaintToplines(OV.toplines(llama, lms, vllm, _ovEnergy));

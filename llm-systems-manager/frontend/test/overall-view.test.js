@@ -108,7 +108,7 @@ describe('OV.heroSeries', () => {
   it('sums present provider fields null-safely', () => {
     const out = OV.heroSeries(HISTORY_ROWS);
     expect(out).toHaveLength(2);
-    expect(out[0]).toEqual({ ts: '2026-08-16T19:20:00+00:00', gen: 12.0, prompt: 4.75 });
+    expect(out[0]).toMatchObject({ ts: '2026-08-16T19:20:00+00:00', gen: 12.0, prompt: 4.75 });
   });
   it('keeps gaps when no provider reported', () => {
     const out = OV.heroSeries(HISTORY_ROWS);
@@ -310,5 +310,39 @@ describe('OV.agentRows lms state prefix (#571)', () => {
       server_on: true, busy_process_count: 1, loaded_model_count: 1,
       loaded_models: ['qwen3-30b'] }] }, null], {});
     expect(rows[0].provs[0].detail).toBe('busy · qwen3-30b');
+  });
+});
+
+describe('OV.heroSeries power overlay (#577)', () => {
+  const rows = [
+    { ts: '2026-08-16T19:00:00+00:00', llama_tps: 1, psu_in: 220, gpu_power: 90 },
+    { ts: '2026-08-16T19:03:00+00:00', llama_tps: 1, gpu_power: 120 },
+    { ts: '2026-08-16T19:09:00+00:00', llama_tps: 1 },
+  ];
+  it('takes the larger of wall/gpu sums, keeps the bucket peak', () => {
+    const out = OV.heroSeries(rows, 480000);
+    expect(out[0].power).toBe(220);
+    expect(out[1].power).toBeNull();
+    expect(OV.heroSeries([
+      { ts: '2026-08-16T19:00:00+00:00', psu_in: 100, gpu_power: 300 },
+    ])[0].power).toBe(300);
+  });
+  it('unbucketed rows carry power too', () => {
+    expect(OV.heroSeries(rows)[1].power).toBe(120);
+  });
+});
+
+describe('OV.energySeries (#577)', () => {
+  it('maps chart labels onto their hourly Wh bucket', () => {
+    const hourly = [
+      { hour_ts: 360000, energy_wh: 50 },
+      { hour_ts: 363600, energy_wh: 20 },
+    ];
+    const labels = [360000000, 360480000, 363660000, 367200000];
+    expect(OV.energySeries(hourly, labels)).toEqual([50, 50, 20, null]);
+  });
+  it('degrades to empty on junk input', () => {
+    expect(OV.energySeries(null, [1])).toEqual([null]);
+    expect(OV.energySeries([], [])).toEqual([]);
   });
 });
