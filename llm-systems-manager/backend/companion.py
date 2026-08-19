@@ -93,11 +93,22 @@ def _run(cmd: "list[str]", cwd: "str | None" = None) -> Optional[str]:
         return None
 
 
-_installed: dict = {"cache": None}
+_installed: dict = {"cache": None, "at": 0.0}
+_installed_lock = threading.Lock()
+# git checkouts re-describe after this long; packaged sources cache forever.
+_INSTALLED_GIT_TTL_S = 60.0
+
+
+def _installed_fresh(cached: "Optional[dict]") -> bool:
+    """True while the cached answer needs no recompute."""
+    return cached is not None and (
+        cached["source"] != "git"
+        or time.monotonic() - _installed["at"] < _INSTALLED_GIT_TTL_S)
 
 
 def _installed_release() -> dict:
-    """How this install identifies itself. Cached for the process lifetime.
+    """How this install identifies itself. Cached for the process lifetime,
+    except the git source, which re-describes after _INSTALLED_GIT_TTL_S.
 
     {tag, describe, ahead, source}. `source` is how it was determined:
       release-file  a packaged build (tarball / brew / deb / rpm / image) —
@@ -106,8 +117,30 @@ def _installed_release() -> dict:
       dpkg / rpm    the system package database
       None          nothing could identify it
     """
-    if _installed["cache"] is not None:
-        return _installed["cache"]
+    cached = _installed["cache"]
+    if _installed_fresh(cached):
+        return cached
+    # Single flight: while one thread probes, a stale answer still serves.
+    if not _installed_lock.acquire(blocking=cached is None):
+        return cached
+    try:
+        cached = _installed["cache"]
+        if _installed_fresh(cached):
+            return cached
+        out = _probe_install()
+        # A git answer only refreshes from git; a failed probe keeps the
+        # last good one and retries after the TTL.
+        if cached is not None and out["source"] != "git":
+            out = cached
+        _installed["cache"] = out
+        _installed["at"] = time.monotonic()
+        return out
+    finally:
+        _installed_lock.release()
+
+
+def _probe_install() -> dict:
+    """One uncached resolution pass over the sources _installed_release names."""
     out = {"tag": None, "describe": None, "ahead": 0, "source": None}
     root = _repo_root()
 
@@ -146,15 +179,14 @@ def _installed_release() -> dict:
         m = re.search(r"-(\d+)-g[0-9a-f]+$", out["describe"])
         if m:
             out["ahead"] = int(m.group(1))
-    _installed["cache"] = out
     return out
 
 
-def _install_kind() -> str:
+def _install_kind(inst: "Optional[dict]" = None) -> str:
     """Coarse install type, for the UI and for choosing a fallback check."""
     if os.path.exists("/.dockerenv") or os.path.exists("/run/.containerenv"):
         return "container"
-    src = _installed_release()["source"]
+    src = (inst if inst is not None else _installed_release())["source"]
     if src == "release-file":
         return "package"
     if src in ("dpkg", "rpm"):
@@ -555,7 +587,7 @@ def register_routes(app, ctx, static_dir: Path) -> None:
         out = {"ok": True, "enabled": enabled, "build": version,
                "installed": inst["tag"], "describe": inst["describe"],
                "ahead": inst["ahead"], "source": inst["source"],
-               "install_kind": _install_kind(), "repo": repo}
+               "install_kind": _install_kind(inst), "repo": repo}
         if not enabled:
             return jsonify(out)
         latest, body, err = _latest_release(repo)

@@ -733,6 +733,7 @@ class TestInstallIdentity:
     def _fresh_cache(self, monkeypatch):
         # _installed_release memoizes for the process lifetime.
         monkeypatch.setitem(companion._installed, "cache", None)
+        monkeypatch.setitem(companion._installed, "at", 0.0)
 
     def test_release_file_wins_and_marks_a_packaged_install(self, monkeypatch, tmp_path):
         (tmp_path / "RELEASE").write_text("v1.2.3\n")
@@ -1221,3 +1222,59 @@ class TestPushDeviceRoster:
         r = client.post("/api/companion/push/unsubscribe", json={"endpoint": endpoint})
         assert r.get_json() == {"ok": True, "removed": True}
         assert companion._store.count() == 0
+
+
+# ── Installed-release cache (#570) ───────────────────────────────────────────
+
+class TestInstalledReleaseCache:
+    """A git checkout's HEAD moves under a running process; packaged installs
+    can't change without a reinstall."""
+
+    def _git_root(self, tmp_path):
+        (tmp_path / ".git").mkdir(exist_ok=True)
+        return tmp_path
+
+    def test_git_source_recomputes_after_ttl(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(companion, "_repo_root",
+                            lambda: self._git_root(tmp_path))
+        monkeypatch.setattr(companion, "_installed", {"cache": None, "at": 0.0})
+        describes = iter(["v1.1.1-18-gabc1234", "v1.2.0"])
+        monkeypatch.setattr(companion, "_run",
+                            lambda cmd, cwd=None: next(describes))
+        first = companion._installed_release()
+        assert (first["tag"], first["source"]) == ("v1.1.1", "git")
+        # Within the TTL the cache answers; the second describe is not consumed.
+        assert companion._installed_release()["tag"] == "v1.1.1"
+        companion._installed["at"] -= companion._INSTALLED_GIT_TTL_S + 1
+        assert companion._installed_release()["tag"] == "v1.2.0"
+
+    def test_transient_git_failure_keeps_last_answer(self, tmp_path,
+                                                     monkeypatch):
+        monkeypatch.setattr(companion, "_repo_root",
+                            lambda: self._git_root(tmp_path))
+        monkeypatch.setattr(companion, "_installed", {"cache": None, "at": 0.0})
+        describes = iter(["v1.2.0", None, "v1.2.1"])
+        monkeypatch.setattr(
+            companion, "_run",
+            lambda cmd, cwd=None: next(describes, None) if cmd[0] == "git"
+            else None)
+        assert companion._installed_release()["tag"] == "v1.2.0"
+        companion._installed["at"] -= companion._INSTALLED_GIT_TTL_S + 1
+        # git describe fails (and dpkg/rpm return nothing): keep the last
+        # good answer instead of caching an empty one.
+        kept = companion._installed_release()
+        assert (kept["tag"], kept["source"]) == ("v1.2.0", "git")
+        companion._installed["at"] -= companion._INSTALLED_GIT_TTL_S + 1
+        assert companion._installed_release()["tag"] == "v1.2.1"
+
+    def test_release_file_source_caches_for_process_lifetime(self, tmp_path,
+                                                             monkeypatch):
+        (tmp_path / "RELEASE").write_text("v1.2.0\n", encoding="utf-8")
+        monkeypatch.setattr(companion, "_repo_root", lambda: tmp_path)
+        monkeypatch.setattr(companion, "_installed", {"cache": None, "at": 0.0})
+        first = companion._installed_release()
+        assert (first["tag"], first["source"]) == ("v1.2.0", "release-file")
+        # Even far past the git TTL, a packaged source never recomputes.
+        companion._installed["at"] -= companion._INSTALLED_GIT_TTL_S * 100
+        (tmp_path / "RELEASE").write_text("v9.9.9\n", encoding="utf-8")
+        assert companion._installed_release()["tag"] == "v1.2.0"
