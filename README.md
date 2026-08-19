@@ -439,7 +439,7 @@ Common keys:
 
 | Key | What it points at | Default |
 |---|---|---|
-| `LLAMA_API_URL` | Your `llama-server` HTTP endpoint | `http://localhost:8080` |
+| `LLAMA_API_URL` | Your `llama-server` HTTP endpoint (llama.cpp has announced the default port moves to `:9931`) | `http://localhost:8080` |
 | `LMS_API_URL` | Your LM Studio API endpoint | `http://localhost:1235` |
 | `LLAMA_BIN` | Path to the `llama-server` binary (only needed for the agent's auto-restart / config-edit flows) | auto-detected |
 | `LLAMA_CONFIG_INI` | Path to `config.ini` driving `llama-server` | auto-detected |

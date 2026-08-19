@@ -92,7 +92,7 @@ log_level = "INFO"                                       # per-service override;
 # Browser-facing reverse-proxy targets driving /proxy/<name>/ and /sdcpp/.
 # Values per entry:
 #   true | "auto"         discover from the agent registry: llm_chat → the
-#                         primary llama agent :8080; openclaw / image_gen →
+#                         primary llama agent's reported port; openclaw / image_gen →
 #                         first approved agent advertising that capability
 #                         (ports 18789 / IMGGEN_PORT, default 1234). No
 #                         advertising agent → the tab stays hidden.

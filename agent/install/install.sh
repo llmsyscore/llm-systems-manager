@@ -181,7 +181,7 @@ INSTALL — agent identity
   --role auto|llama_host|lms_host|mixed
       Role label sent in the registration. Default: auto.
       With 'auto', the installer probes the host:
-        - llama.cpp:  pgrep llama-server, then HTTP probe at 127.0.0.1:8080,
+        - llama.cpp:  pgrep llama-server, then HTTP probe at 127.0.0.1:8080/:9931,
                       then prompt for paths. Verifies --metrics flag is set
                       on the systemd unit.
         - LM Studio:  pgrep lmstudio/lm-studio, then HTTP at 127.0.0.1:1234,
@@ -2583,8 +2583,9 @@ _detect_llama() {
 
   # Last-resort port discovery: HTTP probe of common ports + lsof.
   # Done after the cmdline parse so an explicit --port wins.
+  local _llama_probe_ports="8080 9931 8081"
   if [[ -n "$pid" && -z "$detected_port" ]]; then
-    for _try_port in 8080 8081; do
+    for _try_port in $_llama_probe_ports; do
       if [[ "$(_probe_http_code "http://127.0.0.1:$_try_port/v1/models")" == "200" ]]; then
         detected_port="$_try_port"
         echo "      ✓ port $_try_port discovered via HTTP probe"
@@ -2611,10 +2612,18 @@ _detect_llama() {
       echo "        ⓘ port not auto-discovered — prompt will default to 8080 (override at the prompt)"
     fi
     found=true
-  elif [[ "$(_probe_http_code http://127.0.0.1:8080/v1/models)" == "200" ]]; then
-    echo "      ✓ HTTP API responding at http://127.0.0.1:8080"
-    detected_port="8080"
+  elif [[ -n "$detected_port" ]]; then
+    echo "      ✓ llama-server (pid $pid) listening on :$detected_port"
     found=true
+  else
+    for _try_port in $_llama_probe_ports; do
+      if [[ "$(_probe_http_code "http://127.0.0.1:$_try_port/v1/models")" == "200" ]]; then
+        echo "      ✓ HTTP API responding at http://127.0.0.1:$_try_port"
+        detected_port="$_try_port"
+        found=true
+        break
+      fi
+    done
   fi
 
   # If we have no binary yet (HTTP-only detection, or pid-extraction
@@ -2641,7 +2650,7 @@ _detect_llama() {
   fi
 
   if ! $found; then
-    echo "      ✗ no llama-server process; HTTP probe on :8080 failed"
+    echo "      ✗ no llama-server process; HTTP probes on common ports failed"
     local _llama_just_installed=false _llama_installed_method="" _llama_installed_backend=""
     local _llama_installed_build_dir=""
     local _want_install=false

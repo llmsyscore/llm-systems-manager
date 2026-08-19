@@ -48,6 +48,7 @@ from flask import (Response, current_app, has_request_context, jsonify,
                    request as flask_request, send_from_directory)
 
 import agent_registry  # type: ignore[import-not-found]  # sibling
+import provider_state  # type: ignore[import-not-found]  # sibling
 import providers  # type: ignore[import-not-found]  # sibling
 import stream_pool  # type: ignore[import-not-found]  # sibling
 from _best_effort import best_effort  # type: ignore[import-not-found]  # sibling
@@ -255,8 +256,12 @@ def resolve_proxy_target(name: str) -> "str | None":
         if name == "llm_chat":
             # Resolved per-request via the default-agent path so the operator's
             # primary/default llama selection applies without a restart (#466).
-            host = _host_from_agent(_default_agent("llama"))
-            return f"http://{host}:8080" if host else None
+            agent = _default_agent("llama")
+            host = _host_from_agent(agent)
+            if not host:
+                return None
+            port = provider_state.llama_port_for((agent or {}).get("agent_id"))
+            return f"http://{host}:{port}"
         if name in ("openclaw", "image_gen"):
             cap_name = name  # capability flag key matches the proxy name
             default_port = 18789 if name == "openclaw" else 1234
