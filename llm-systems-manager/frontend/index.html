@@ -57,7 +57,7 @@ Backend API endpoints consumed:
   <link rel="stylesheet" href="/static/css/base.css?v=2026.08.19-1">
   <link rel="stylesheet" href="/static/css/reportcard.css?v=2026.08.04-1">
   <link rel="stylesheet" href="/static/css/energy.css?v=2026.08.19-2">
-  <link rel="stylesheet" href="/static/css/overall.css?v=2026.08.19-1">
+  <link rel="stylesheet" href="/static/css/overall.css?v=2026.08.19-3">
 </head>
 <body>
 
@@ -1560,10 +1560,12 @@ Backend API endpoints consumed:
     <section class="ov-hero" data-strip="hero" aria-label="Fleet throughput, last 24 hours">
       <span class="ov-strip-handle" title="Drag to reorder">⠿</span>
       <div class="ov-hero-head">
-        <span class="ov-eyebrow">Fleet — last 24 h</span>
+        <span class="ov-eyebrow">Last 24 Hours</span>
         <div class="legend-row ov-hero-legend">
           <span><span class="legend-dot" style="background:var(--accent)"></span>Gen t/s</span>
           <span><span class="legend-dot" style="background:var(--warn)"></span>Prompt t/s</span>
+          <label class="ov-ovl"><input type="checkbox" id="ovShowPower" onchange="ovToggleOverlay()"><span class="legend-dot" style="background:var(--accent-2)"></span>Power W</label>
+          <label class="ov-ovl"><input type="checkbox" id="ovShowEnergy" onchange="ovToggleOverlay()"><span class="legend-dot" style="background:var(--note)"></span>Energy Wh/h</label>
         </div>
         <span class="ov-updated" id="overallLastUpdate">—</span>
       </div>
@@ -1864,8 +1866,8 @@ Backend API endpoints consumed:
 <script src="/static/js/lib/thresholds.js?v=2026.08.05-1"></script>
 <script src="/static/js/lib/reportcard.js?v=2026.07.27-1"></script>
 <script src="/static/js/lib/energy.js?v=2026.08.19-1"></script>
-<script src="/static/js/lib/overall-view.js?v=2026.08.19-3"></script>
-<script src="/static/js/charts.js?v=2026.08.19-1"></script>
+<script src="/static/js/lib/overall-view.js?v=2026.08.19-5"></script>
+<script src="/static/js/charts.js?v=2026.08.19-2"></script>
 <script src="/static/js/terminal.js?v=2026.08.19-1"></script>
 <script src="/static/js/llmcontrol.js?v=2026.07.11-1"></script>
 <script src="/static/js/openclaw.js?v=2026.08.03-1"></script>
@@ -1878,7 +1880,7 @@ Backend API endpoints consumed:
 <script src="/static/js/vllm-bench-autotune.js?v=2026.07.12-2"></script>
 <script src="/static/js/report-card.js?v=2026.08.17-1"></script>
 <script src="/static/js/energy.js?v=2026.08.19-1"></script>
-<script src="/static/js/overall.js?v=2026.08.19-1"></script>
+<script src="/static/js/overall.js?v=2026.08.19-3"></script>
 <script src="/static/js/dashboard-manager.js?v=2026.08.17-1"></script>
 
 <!-- Settings panel — kept at body root so it's never inside a hidden tab container -->

@@ -471,11 +471,21 @@ function _mkHeroChart() {
         } },
       { label: 'Prompt t/s', data: [], borderColor: promptColor, borderWidth: 1.5,
         pointRadius: 0, pointHoverRadius: 4, tension: 0.25, fill: false },
+      { label: 'Power W', data: [], borderColor: cssVar('--accent-2'),
+        borderWidth: 1.5, borderDash: [5, 3], pointRadius: 0, pointHoverRadius: 4,
+        tension: 0.25, fill: false, hidden: true, yAxisID: 'y1', spanGaps: true },
+      { label: 'Energy Wh/h', data: [], borderColor: cssVar('--note'),
+        borderWidth: 1.5, borderDash: [2, 3], pointRadius: 0, pointHoverRadius: 4,
+        stepped: true, fill: false, hidden: true, yAxisID: 'y1', spanGaps: true },
     ]},
     options: { animation: false, responsive: true, maintainAspectRatio: false,
       interaction: _sparkInteraction,
       plugins: { legend: { display: false }, tooltip: _sparkTooltip, zoom: _zoomOpts, annotation: { annotations: {} } },
-      scales: { x: xAxis, y: { beginAtZero: true, ticks: { color: cssVar('--fg-muted'), font: { size: 10 } }, grid: { color: cssVar('--border-soft') } } }
+      scales: { x: xAxis,
+        y: { beginAtZero: true, ticks: { color: cssVar('--fg-muted'), font: { size: 10 } }, grid: { color: cssVar('--border-soft') } },
+        y1: { display: 'auto', position: 'right', beginAtZero: true,
+              ticks: { color: cssVar('--fg-muted'), font: { size: 10 } },
+              grid: { display: false } } }
     }
   });
 }
@@ -1231,10 +1241,25 @@ async function loadOverallHistory() {
   const rows = await _historyRows('/api/history?since_minutes=1440&max_rows=1440&fleet=all', 'Overall fleet');
   if (!rows || !rows.length) return;
   _clearChart(ovHeroChart);  // discard any racing live point (#137)
+  // Overlay datasets fill here only; live polls advance just gen/prompt.
+  const dsPower = ovHeroChart.data.datasets[2];
   for (const p of OV.heroSeries(rows, HERO_BUCKET_MS).slice(-MAX_POINTS)) {
-    if (p.gen != null || p.prompt != null)
-      pushDual(ovHeroChart, p.ts, p.gen, p.prompt, HERO_BUCKET_MS, 'max');
+    if (p.gen == null && p.prompt == null && p.power == null) continue;
+    pushDual(ovHeroChart, p.ts, p.gen, p.prompt, HERO_BUCKET_MS, 'max');
+    if (dsPower) dsPower.data.push(p.power != null ? p.power : null);
   }
+  _ovLoadEnergyOverlay();
+}
+
+// Fills the hero's hourly-energy overlay dataset from /api/energy/hourly.
+async function _ovLoadEnergyOverlay() {
+  try {
+    const d = await fetch('/api/energy/hourly?hours=24').then(r => r.json());
+    if (!d.ok || !ovHeroChart || !ovHeroChart.data.datasets[3]) return;
+    const labels = ovHeroChart.data.labels.map(t => t.getTime());
+    ovHeroChart.data.datasets[3].data = OV.energySeries(d.rows, labels);
+    ovHeroChart.update('none');
+  } catch (_) {}
 }
 
 // Hero display bucket: 1m backfill rows and 2s live appends collapse onto

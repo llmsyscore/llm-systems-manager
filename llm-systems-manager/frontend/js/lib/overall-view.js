@@ -40,14 +40,21 @@ function _maxOrNull(a, b) {
   return Math.max(a, b);
 }
 
-// Rows from /api/history?fleet=all → [{ts, gen, prompt}] with chart gaps.
-// With bucketMs, each bucket keeps the peak provider-sum (one point each).
+// Fleet watts for one history row: the larger of the wall-metered and GPU
+// cross-host sums, so GPU-only hosts still count in mixed fleets.
+function _powerOf(r) {
+  return _maxOrNull(_num(r.psu_in), _num(r.gpu_power));
+}
+
+// Rows from /api/history?fleet=all → [{ts, gen, prompt, power}] with chart
+// gaps. With bucketMs, each bucket keeps the peak values (one point each).
 function heroSeries(rows, bucketMs) {
   if (!Array.isArray(rows)) return [];
   const pts = rows.map(r => ({
     ts: r.ts,
     gen: _sumOrNull(r.llama_tps, r.vllm_tps, r.lms_tps),
     prompt: _sumOrNull(r.llama_pps, r.vllm_pps, r.lms_pps),
+    power: _powerOf(r),
   }));
   if (!bucketMs) return pts;
   const out = [];
@@ -59,12 +66,27 @@ function heroSeries(rows, bucketMs) {
       const last = out[out.length - 1];
       last.gen = _maxOrNull(last.gen, p.gen);
       last.prompt = _maxOrNull(last.prompt, p.prompt);
+      last.power = _maxOrNull(last.power, p.power);
     } else {
       lastKey = key;
-      out.push({ ts: new Date(key).toISOString(), gen: p.gen, prompt: p.prompt });
+      out.push({ ts: new Date(key).toISOString(), gen: p.gen,
+                 prompt: p.prompt, power: p.power });
     }
   }
   return out;
+}
+
+// Hourly energy rows mapped onto chart label times (ms): each label gets
+// the Wh of the hour bucket it falls in, null when unmetered.
+function energySeries(hourlyRows, labelsMs) {
+  const byHour = {};
+  (Array.isArray(hourlyRows) ? hourlyRows : []).forEach(r => {
+    if (r && r.hour_ts != null) byHour[r.hour_ts] = _num(r.energy_wh);
+  });
+  return (labelsMs || []).map(ms => {
+    const v = byHour[Math.floor(ms / 3600000) * 3600];
+    return v == null ? null : v;
+  });
 }
 
 function _fmt1(v) { return v != null ? Number(v).toFixed(1) : '—'; }
@@ -217,10 +239,10 @@ function toplines(llama, lms, vllm, energy) {
     { v: String(online), l: 'agents online' },
     { v: String(models), l: 'models in flight' },
     { v: watts > 0 ? watts.toFixed(0) + ' W' : '—', l: 'fleet GPU power' },
-    { v: chip ? `${chip.kwh} · ${chip.cost}` : '—', l: 'energy today' },
+    { v: chip ? `${chip.kwh} · ${chip.cost}` : '—', l: 'energy consumption' },
   ];
 }
 
-return { heroSeries, tiles, agentRows, alertsSummary, energyChip, toplines,
-         PROVIDER_LABEL };
+return { heroSeries, energySeries, tiles, agentRows, alertsSummary, energyChip,
+         toplines, PROVIDER_LABEL };
 });
