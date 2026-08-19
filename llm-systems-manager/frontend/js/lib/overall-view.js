@@ -239,7 +239,7 @@ function toplines(llama, lms, vllm, energy) {
     { v: String(online), l: 'agents online' },
     { v: String(models), l: 'models in flight' },
     { v: watts > 0 ? watts.toFixed(0) + ' W' : '—', l: 'fleet GPU power' },
-    { v: chip ? `${chip.kwh} · ${chip.cost}` : '—', l: 'energy today' },
+    { v: chip ? `${chip.kwh} · ${chip.cost}` : '—', l: 'energy consumption' },
   ];
 }
 
