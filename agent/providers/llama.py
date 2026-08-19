@@ -110,7 +110,7 @@ _LLAMA_VALUE_FLAGS = {
     "--models-preset", "--model",
     "--api-key", "--keep", "--ctx-size", "--batch-size",
     "--gpu-layers", "--tensor-parallel", "-t", "-c", "-ngl",
-    "--mmap", "--no-mmap", "--log-disable", "--cont-batch",
+    "--mmap", "--no-mmap", "--load-mode", "-lm", "--log-disable", "--cont-batch",
     "--embedding", "--no-display", "--simple-io",
     "--chat-template",
 }
@@ -246,6 +246,15 @@ def _llama_metric_val(line: str) -> "float | None":
         return None
 
 
+def llama_api_port(url: "str | None") -> "int | None":
+    """TCP port of a llama API base URL, or None when unparseable."""
+    from urllib.parse import urlsplit
+    try:
+        return urlsplit(str(url or "")).port
+    except ValueError:
+        return None
+
+
 def collect_llama_for_metrics() -> dict[str, Any]:
     """Agent-side rich llama snapshot; skips /metrics + /slots when sleeping or token-idle."""
     if not _require_ctx().config.LLAMA_ENABLED:
@@ -268,6 +277,7 @@ def collect_llama_for_metrics() -> dict[str, Any]:
 
     llama: dict[str, Any] = {
         "state": state,
+        "port": llama_api_port(api_base),
         "model": None,
         "sleeping": False,
         "tokens_per_second": None,
@@ -822,7 +832,7 @@ def llama_state_endpoint(authorization: Optional[str] = Header(default=None)) ->
         raise HTTPException(status_code=503, detail="llama not enabled on this agent")
     return {
         "state": llama_get_state(),
-        "port": int(_require_ctx().config.LLAMA_API_URL.rsplit(":", 1)[-1]) if ":" in _require_ctx().config.LLAMA_API_URL else None,
+        "port": llama_api_port(_require_ctx().config.LLAMA_API_URL),
         "perf_controller_enabled": _require_ctx().config.PERF_CONTROLLER_ENABLED,
         "last_transition": _require_ctx().state.get("perf_last_transition"),
         "sse_connected": _llama_sse_authoritative(),
@@ -2125,6 +2135,8 @@ def _autotune_build_optional_args(params: dict) -> list:
     if not isinstance(params, dict):
         return out
     p = params
+    if p.get("load_mode"):
+        out += ["--load-mode", str(p["load_mode"])]
     if p.get("mlock"):
         out.append("--mlock")
     if p.get("no_mmap"):

@@ -51,3 +51,22 @@ def test_llmchat_explicit_url_untouched(monkeypatch):
 def test_llmchat_disabled_returns_none(monkeypatch):
     _patch(monkeypatch, {"default_llama_id": A2["agent_id"]}, llm_chat=False)
     assert proxies.resolve_proxy_target("llm_chat") is None
+
+
+def test_llmchat_uses_reported_agent_port(monkeypatch):
+    import provider_state
+    _patch(monkeypatch, {"default_llama_id": A2["agent_id"],
+                         "llama_pool": [A1["agent_id"], A2["agent_id"]]})
+    monkeypatch.setattr(provider_state, "STORE", SimpleNamespace(
+        get=lambda prov, aid: {"sample": {"llama": {"port": 9931}}}
+        if aid == A2["agent_id"] else None))
+    assert proxies.resolve_proxy_target("llm_chat") == "http://10.0.0.2:9931"
+
+
+def test_llmchat_port_defaults_when_agent_reports_none(monkeypatch):
+    import provider_state
+    _patch(monkeypatch, {"default_llama_id": A2["agent_id"],
+                         "llama_pool": [A1["agent_id"], A2["agent_id"]]})
+    monkeypatch.setattr(provider_state, "STORE",
+                        SimpleNamespace(get=lambda prov, aid: None))
+    assert proxies.resolve_proxy_target("llm_chat") == "http://10.0.0.2:8080"

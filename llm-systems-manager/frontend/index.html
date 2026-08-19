@@ -267,11 +267,15 @@ Backend API endpoints consumed:
           <div class="form-field"><label>Ubatch Size</label><input id="ef-ubatch-size" type="number" min="1" /></div>
           <div class="form-field"><label>GPU Layers (99=all)</label><input id="ef-n-gpu-layers" type="number" min="0" max="999" /></div>
           <div class="form-field"><label>Max Predict (-1=∞)</label><input id="ef-predict" type="number" min="-1" /></div>
-          <div class="form-field"><label>Memory Map</label>
-            <select id="ef-mmap"><option value="on">on</option><option value="off">off</option></select>
-          </div>
-          <div class="form-field"><label>Direct IO</label>
-            <select id="ef-direct-io"><option value="off">off</option><option value="on">on</option></select>
+          <div class="form-field"><label>Load Mode</label>
+            <select id="ef-load-mode">
+              <option value="auto">auto</option>
+              <option value="none">none</option>
+              <option value="mmap">mmap</option>
+              <option value="mlock">mlock</option>
+              <option value="mmap+mlock">mmap+mlock</option>
+              <option value="dio">dio (DirectIO)</option>
+            </select>
           </div>
           <div class="form-field"><label>Fit</label>
             <select id="ef-fit"><option value="on">on</option><option value="off">off</option></select>
@@ -1862,19 +1866,19 @@ Backend API endpoints consumed:
 <script src="/static/js/lib/layout.js?v=2026.07.10-1"></script>
 <script src="/static/js/foundation.js?v=2026.08.17-4"></script>
 <script src="/static/js/lib/series.js?v=2026.08.04-2"></script>
-<script src="/static/js/lib/benchaxis.js?v=2026.06.28-1"></script>
+<script src="/static/js/lib/benchaxis.js?v=2026.08.19-1"></script>
 <script src="/static/js/lib/thresholds.js?v=2026.08.05-1"></script>
 <script src="/static/js/lib/reportcard.js?v=2026.07.27-1"></script>
 <script src="/static/js/lib/energy.js?v=2026.08.19-1"></script>
 <script src="/static/js/lib/overall-view.js?v=2026.08.19-5"></script>
 <script src="/static/js/charts.js?v=2026.08.19-2"></script>
 <script src="/static/js/terminal.js?v=2026.08.19-1"></script>
-<script src="/static/js/llmcontrol.js?v=2026.07.11-1"></script>
+<script src="/static/js/llmcontrol.js?v=2026.08.19-1"></script>
 <script src="/static/js/openclaw.js?v=2026.08.03-1"></script>
 <script src="/static/js/admin.js?v=2026.08.17-1"></script>
 <script src="/static/js/autopilot.js?v=2026.07.31-2"></script>
-<script src="/static/js/llmcontrol-models.js?v=2026.08.15-2"></script>
-<script src="/static/js/bench-autotune.js?v=2026.06.25-9"></script>
+<script src="/static/js/llmcontrol-models.js?v=2026.08.19-1"></script>
+<script src="/static/js/bench-autotune.js?v=2026.08.19-1"></script>
 <script src="/static/js/lmstudio.js?v=2026.08.17-1"></script>
 <script src="/static/js/vllm.js?v=2026.08.17-1"></script>
 <script src="/static/js/vllm-bench-autotune.js?v=2026.07.12-2"></script>
@@ -2074,12 +2078,16 @@ Backend API endpoints consumed:
       <summary>Optional params<span id="atOptCount"></span></summary>
       <div style="padding:8px 4px;display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:4px 16px;">
         <div class="at-opt-row">
-          <input type="checkbox" id="atEn_mlock">
-          <label class="at-opt-label" for="atEn_mlock">--mlock</label>
-        </div>
-        <div class="at-opt-row">
-          <input type="checkbox" id="atEn_no_mmap">
-          <label class="at-opt-label" for="atEn_no_mmap">--no-mmap</label>
+          <input type="checkbox" id="atEn_load_mode">
+          <label class="at-opt-label" for="atEn_load_mode">--load-mode</label>
+          <select id="atV_load_mode">
+            <option value="auto">auto</option>
+            <option value="none">none</option>
+            <option value="mmap">mmap</option>
+            <option value="mlock">mlock</option>
+            <option value="mmap+mlock">mmap+mlock</option>
+            <option value="dio">dio</option>
+          </select>
         </div>
         <div class="at-opt-row">
           <input type="checkbox" id="atEn_kv_unified">

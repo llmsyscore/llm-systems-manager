@@ -19,7 +19,7 @@ function computeBenchAxisOptions(rows, switches, labelFn) {
   // use the canonical field name (e.g. -d -> n_depth) that actually has data.
   const FLAG_TO_FIELD = {
     p: 'n_prompt', n: 'n_gen', d: 'n_depth', b: 'n_batch', ub: 'n_ubatch',
-    t: 'n_threads', ngl: 'n_gpu_layers', fa: 'flash_attn', ctk: 'type_k', ctv: 'type_v', mmp: 'no_mmap',
+    t: 'n_threads', ngl: 'n_gpu_layers', fa: 'flash_attn', ctk: 'type_k', ctv: 'type_v', mmp: 'no_mmap', lm: 'load_mode',
   };
   const switchKeys = [];
   (switches || []).forEach((sw) => {

@@ -50,7 +50,7 @@ import providers  # type: ignore
 from collectors.system import collect_system_metrics  # type: ignore
 from collectors._shared import AbsenceLatch, collect_enabled  # type: ignore
 from providers.lms import lms_get_models, lms_get_ps, lms_get_status  # type: ignore
-from providers.llama import collect_llama_for_metrics, llama_get_state  # type: ignore
+from providers.llama import collect_llama_for_metrics, llama_api_port, llama_get_state  # type: ignore
 from providers.vllm import collect_vllm_for_metrics  # type: ignore
 from agent_context import AgentContext  # type: ignore
 try:
@@ -65,7 +65,7 @@ except ImportError:
             os.chmod(tmp, mode)
         tmp.replace(p)
 
-VERSION = "v2026.08.19-2"
+VERSION = "v2026.08.19-4"
 
 
 def _restore_bundle_env() -> None:
@@ -2129,7 +2129,8 @@ def _build_metric_sample() -> dict[str, Any]:
     if CONFIG.LLAMA_ENABLED:
         rich = collect_llama_for_metrics()
         if not rich:
-            rich = {"state": llama_get_state()}
+            rich = {"state": llama_get_state(),
+                    "port": llama_api_port(CONFIG.LLAMA_API_URL)}
         sample["llama"] = rich
     if CONFIG.VLLM_ENABLED:
         v = collect_vllm_for_metrics()

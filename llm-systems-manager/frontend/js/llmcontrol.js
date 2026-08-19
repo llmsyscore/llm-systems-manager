@@ -13,6 +13,7 @@ const _SVC_ARG_DESCS = {
   '--parallel':            'Max parallel inference slots',
   '--models-max':          'Max models loaded simultaneously',
   '--mlock':               'Lock model weights in RAM (prevents swap)',
+  '--load-mode':           'Model loading mode (auto/none/mmap/mlock/mmap+mlock/dio)',
   '--models-preset':       'Path to model config INI file',
   '--metrics':             'Enable /metrics Prometheus endpoint',
   '--flash-attn':          'Enable flash attention (faster, less VRAM)',

@@ -58,3 +58,22 @@ def test_fleet_aggregate_awake_model_still_counted():
     agg = _fleet_aggregate(samples)
     assert agg["agents"][0]["model"] == "qwen3-8b"
     assert agg["active_models"] == ["qwen3-8b"]
+
+
+def test_state_payload_uses_reported_port(monkeypatch):
+    wrapper = {"sample": {"llama": {"state": "ready", "port": 9931}},
+               "last_seen": time.time()}
+    monkeypatch.setattr(M.provider_state.STORE, "get", lambda kind, aid: wrapper)
+    assert M._build_llama_state_payload("agent-123")["port"] == 9931
+
+
+def test_state_payload_port_defaults_to_8080(monkeypatch):
+    payload = _payload_for("qwen3-8b", monkeypatch=monkeypatch)
+    assert payload["port"] == 8080
+
+
+def test_state_payload_junk_port_defaults(monkeypatch):
+    wrapper = {"sample": {"llama": {"state": "ready", "port": "auto"}},
+               "last_seen": time.time()}
+    monkeypatch.setattr(M.provider_state.STORE, "get", lambda kind, aid: wrapper)
+    assert M._build_llama_state_payload("agent-123")["port"] == 8080

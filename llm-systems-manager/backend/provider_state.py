@@ -218,3 +218,14 @@ class _ProviderSampleStore:
 
 
 STORE = _ProviderSampleStore()
+
+
+def llama_port_for(agent_id: "str | None", default: int = 8080) -> int:
+    """The agent's reported llama API port from its latest sample; default
+    when the agent predates port reporting or has no sample yet."""
+    try:
+        w = STORE.get("llama", agent_id) if agent_id else None
+        port = (((w or {}).get("sample") or {}).get("llama") or {}).get("port")
+        return int(port) if port else default
+    except (TypeError, ValueError):
+        return default
