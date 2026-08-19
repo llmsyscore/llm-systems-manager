@@ -133,12 +133,18 @@ function _agentDetail(prov, row) {
     return row.model ? `${state} · ${row.model}` : state;
   }
   if (prov === 'lms') {
-    return row.server_on
-      ? `${row.loaded_model_count || 0} model${(row.loaded_model_count || 0) === 1 ? '' : 's'}`
-      : 'server off';
+    if (!row.server_on) return 'server off';
+    const count = row.loaded_model_count || 0;
+    const names = (row.loaded_models || []).slice(0, 3);
+    if (!names.length) return `${count} model${count === 1 ? '' : 's'}`;
+    // +N covers models beyond the display cap or without a reported name.
+    const extra = Math.max(0, count - names.length);
+    return extra ? `${names.join(' · ')} +${extra}` : names.join(' · ');
   }
   const req = _num(row.requests_running);
-  return row.server_on ? `${req != null ? req : 0} req` : 'server off';
+  if (!row.server_on) return 'server off';
+  const base = `${req != null ? req : 0} req`;
+  return row.model ? `${base} · ${row.model}` : base;
 }
 
 // Aggregates' per-agent rows joined with list-by-provider hostnames →

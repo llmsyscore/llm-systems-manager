@@ -56,7 +56,8 @@
   font-family: ui-monospace, 'SFMono-Regular', Menlo, Consolas, monospace;
   color: var(--fg); min-width: 200px;
 }
-.ov-agent-provs { display: flex; flex-wrap: wrap; gap: 6px 14px; color: var(--fg-muted); }
+.ov-agent-provs { display: flex; flex-wrap: wrap; gap: 6px 14px; color: var(--fg-muted); min-width: 0; }
+.ov-agent-prov { overflow-wrap: anywhere; }
 .ov-agent-prov b { color: var(--fg-dim); font-weight: 600; margin-right: 5px; }
 .ov-agent-age { margin-left: auto; color: var(--fg-dim); font-size: 0.9em; white-space: nowrap; }
 .ov-agents-empty { color: var(--fg-dim); font-size: 0.82em; padding: 4px 10px; }

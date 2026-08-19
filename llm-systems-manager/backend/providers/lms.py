@@ -27,9 +27,11 @@ def _fleet_aggregate(samples: dict[str, dict]) -> dict:
         srv_on = bool((s.get("server") or {}).get("on") or len(models) > 0)
         # Loaded models come from `ps` (loaded instances), not `models`
         # (the /v1/models download catalog). STOPPED rows are unloaded.
-        loaded_now = sum(1 for p in ps if str(p.get("status", "")).upper() != "STOPPED")
-        busy_now = sum(1 for p in ps
-                       if str(p.get("status", "")).upper() not in ("IDLE", "STOPPED", ""))
+        active = [p for p in ps if str(p.get("status", "")).upper() != "STOPPED"]
+        loaded_now = len(active)
+        loaded_models = sorted(str(p["model"]) for p in active if p.get("model"))
+        busy_now = sum(1 for p in active
+                       if str(p.get("status", "")).upper() not in ("IDLE", ""))
         if is_online:
             online += 1
             if srv_on:
@@ -46,6 +48,7 @@ def _fleet_aggregate(samples: dict[str, dict]) -> dict:
             "online": is_online,
             "server_on": srv_on if is_online else False,
             "loaded_model_count": loaded_now if is_online else 0,
+            "loaded_models": loaded_models if is_online else [],
             "busy_process_count": busy_now if is_online else 0,
             "age_s": round(now - last_seen, 1) if last_seen else None,
         })

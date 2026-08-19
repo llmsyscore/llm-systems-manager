@@ -116,7 +116,7 @@ def lms_get_ps() -> list[dict[str, Any]]:
             return [
                 {
                     "identifier": item.get("identifier", ""),
-                    "model": item.get("model", item.get("identifier", "")),
+                    "model": item.get("model") or item.get("identifier") or "",
                     "status": str(item.get("status", "IDLE")).upper(),
                     "size": item.get("size") or _fmt_size_bytes(item.get("sizeBytes")),
                     "context": item.get("context", item.get("contextLength")),
