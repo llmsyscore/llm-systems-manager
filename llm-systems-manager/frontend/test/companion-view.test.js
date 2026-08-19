@@ -428,7 +428,7 @@ describe('CView.alerts', () => {
     expect(rows[2].rule).toBe('');
   });
 
-  it('active rows lead with the rule; resolved and rule-less rows do not', () => {
+  it('rows with a rule lead with it, active or resolved; rule-less rows do not', () => {
     const m = CView.alerts([
       { ...list[0], rule_name: 'GPU over 90 °C' },
       { ...list[1], rule_name: 'VRAM 95% for 10 min' },   // suppressed rule
@@ -436,7 +436,8 @@ describe('CView.alerts', () => {
     ], NOW);
     expect(m.firing[0].ruleFirst).toBe(true);
     expect(m.firing[1].ruleFirst).toBe(false);
-    expect(m.earlier[0].ruleFirst).toBe(false);
+    expect(m.earlier[0].ruleFirst).toBe(true);
+    expect(m.earlier[0].rule).toBe('Disk almost full');
   });
 
   it('splits firing from earlier; active info alerts fire, closed ones are earlier', () => {

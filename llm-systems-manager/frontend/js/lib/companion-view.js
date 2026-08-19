@@ -426,8 +426,8 @@
       sev, tone, glyph: SEV_GLYPH[sev], word,
       msg,
       rule,
-      // Active rows lead with the rule; resolved rows stay message-first.
-      ruleFirst: !resolved && !!rule,
+      // Any row with a rule leads with it, then the breach message.
+      ruleFirst: !!rule,
       meta: path + ' · ' + host + ' · ' + age(when, nowSec),
       // Resolved/info rows never offer Ack, whatever their status field says.
       ackable: a.status === 'active' && !(resolved || info),
