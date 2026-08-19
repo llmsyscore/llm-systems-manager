@@ -135,7 +135,18 @@ def _term_reader(sid: str, master_fd: int, q: "_queue_lib.Queue", proc: subproce
 
 # ── Route handlers (module top-level so __qualname__ is stable) ────────
 
+def _requested_winsize(body: "Optional[dict]") -> "tuple[int, int]":
+    """(rows, cols) from a create body, clamped; defaults to 24x80."""
+    try:
+        rows = int((body or {}).get("rows") or 24)
+        cols = int((body or {}).get("cols") or 80)
+    except (TypeError, ValueError):
+        return 24, 80
+    return max(4, min(500, rows)), max(20, min(1000, cols))
+
+
 def terminal_create_endpoint(
+    body: Optional[dict] = None,
     authorization: Optional[str] = Header(default=None),
 ) -> dict[str, Any]:
     ctx = _require_ctx()
@@ -167,10 +178,11 @@ def terminal_create_endpoint(
     if not os.path.isfile(shell):
         shell = os.environ.get("SHELL") or "/bin/bash"
 
+    rows, cols = _requested_winsize(body)
     try:
         master_fd, slave_fd = _pty_mod.openpty()
         _fcntl_mod.ioctl(slave_fd, _termios_mod.TIOCSWINSZ,
-                         _struct_mod.pack("HHHH", 24, 80, 0, 0))
+                         _struct_mod.pack("HHHH", rows, cols, 0, 0))
 
         def _child_setup() -> None:
             os.setsid()
@@ -183,7 +195,7 @@ def terminal_create_endpoint(
             close_fds=True,
             preexec_fn=_child_setup,
             env={**os.environ, "TERM": "xterm-256color",
-                 "COLUMNS": "80", "LINES": "24"},
+                 "COLUMNS": str(cols), "LINES": str(rows)},
         )
         os.close(slave_fd)
     except Exception as e:
@@ -284,8 +296,7 @@ def terminal_resize_endpoint(
         sess = _term_sessions.get(sid)
     if not sess:
         raise HTTPException(status_code=404, detail="session not found")
-    rows = int(body.get("rows", 24))
-    cols = int(body.get("cols", 80))
+    rows, cols = _requested_winsize(body)
     try:
         _fcntl_mod.ioctl(sess["master_fd"], _termios_mod.TIOCSWINSZ,
                          _struct_mod.pack("HHHH", rows, cols, 0, 0))
