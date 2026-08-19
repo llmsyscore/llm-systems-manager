@@ -116,6 +116,25 @@ def last_rates(agent_id: str) -> "dict | None":
     return dict(r) if r else None
 
 
+def fleet_rates(agent_ids, max_age_s: float = 60.0) -> dict:
+    """Summed fresh gen/prompt tok/s across agents; stale entries drop out."""
+    now = datetime.now(timezone.utc)
+    tps = pps = 0.0
+    for aid in agent_ids or ():
+        r = _last_rates.get(aid)
+        if not r:
+            continue
+        try:
+            age = (now - datetime.fromisoformat(r["ts"])).total_seconds()
+        except Exception:
+            continue
+        if age > max_age_s:
+            continue
+        tps += float(r.get("gen_tps") or 0.0)
+        pps += float(r.get("prompt_tps") or 0.0)
+    return {"total_tps": round(tps, 2), "total_pps": round(pps, 2)}
+
+
 def start_pusher(push, agent_hosts_fn, interval_s: float = PUSH_INTERVAL_S) -> None:
     """Daemon thread pushing metric_points() batches every interval_s;
     no-op under pytest."""

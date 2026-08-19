@@ -105,3 +105,21 @@ def test_tap_sse_strip_keeps_usage_on_content_chunks():
                               lambda p, g: got.append((p, g)),
                               strip_usage=True))
     assert out == sse and got == [(1, 2)]
+
+
+def test_fleet_rates_sums_fresh_and_skips_stale_or_missing():
+    from datetime import datetime, timedelta, timezone
+    now = datetime.now(timezone.utc)
+    gu._last_rates["a" * 32] = {"gen_tps": 10.0, "prompt_tps": 2.5,
+                                "ts": now.isoformat()}
+    gu._last_rates["b" * 32] = {"gen_tps": 4.0, "prompt_tps": 1.0,
+                                "ts": now.isoformat()}
+    gu._last_rates["c" * 32] = {"gen_tps": 99.0, "prompt_tps": 9.0,
+                                "ts": (now - timedelta(seconds=300)).isoformat()}
+    out = gu.fleet_rates(["a" * 32, "b" * 32, "c" * 32, "d" * 32])
+    assert out == {"total_tps": 14.0, "total_pps": 3.5}
+
+
+def test_fleet_rates_empty_inputs():
+    assert gu.fleet_rates([]) == {"total_tps": 0.0, "total_pps": 0.0}
+    assert gu.fleet_rates(None) == {"total_tps": 0.0, "total_pps": 0.0}

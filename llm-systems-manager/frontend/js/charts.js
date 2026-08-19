@@ -553,11 +553,17 @@ function pushPoint(chart, ts, val) {
 
 // bucketMs overrides the poll-interval grid for series with their own fixed
 // cadence (e.g. the 15s gateway pusher) so short bursts aren't collapsed away.
-function pushDual(chart, ts, v1, v2, bucketMs) {
+// agg 'max' keeps the in-bucket peak instead of the latest sample.
+function pushDual(chart, ts, v1, v2, bucketMs, agg) {
   const l = chart.data.labels, d0 = chart.data.datasets[0].data, d1 = chart.data.datasets[1].data;
   const t = bucketMs ? LMSeries.bucketDate(ts, bucketMs) : _bucketDate(ts);
   if (l.length && t.getTime() <= l[l.length - 1].getTime()) {
-    d0[d0.length - 1] = v1 || 0; d1[d1.length - 1] = v2 || 0;
+    if (agg === 'max') {
+      d0[d0.length - 1] = Math.max(d0[d0.length - 1] || 0, v1 || 0);
+      d1[d1.length - 1] = Math.max(d1[d1.length - 1] || 0, v2 || 0);
+    } else {
+      d0[d0.length - 1] = v1 || 0; d1[d1.length - 1] = v2 || 0;
+    }
   } else {
     d0.push(v1 || 0); d1.push(v2 || 0); l.push(t);
     if (l.length > MAX_POINTS) { l.shift(); d0.shift(); d1.shift(); }
@@ -1222,17 +1228,17 @@ const loadVllmHistory = _makeHistoryBackfill('vllm', '__VLLM_AGENT',
 // fleet=all history. Called only from Overall-tab entry and refocus (#506).
 async function loadOverallHistory() {
   if (typeof ovHeroChart === 'undefined' || !ovHeroChart) return;
-  const rows = await _historyRows('/api/history?since_minutes=1440&max_rows=180&fleet=all', 'Overall fleet');
+  const rows = await _historyRows('/api/history?since_minutes=1440&max_rows=1440&fleet=all', 'Overall fleet');
   if (!rows || !rows.length) return;
   _clearChart(ovHeroChart);  // discard any racing live point (#137)
-  for (const p of OV.heroSeries(rows).slice(-MAX_POINTS)) {
+  for (const p of OV.heroSeries(rows, HERO_BUCKET_MS).slice(-MAX_POINTS)) {
     if (p.gen != null || p.prompt != null)
-      pushDual(ovHeroChart, p.ts, p.gen, p.prompt, HERO_BUCKET_MS);
+      pushDual(ovHeroChart, p.ts, p.gen, p.prompt, HERO_BUCKET_MS, 'max');
   }
 }
 
-// Hero bucket = the fleet=all backfill resolution (1440 min / 180 rows), so
-// 2s live appends update the current bucket instead of eroding the window.
+// Hero display bucket: 1m backfill rows and 2s live appends collapse onto
+// this 8-min grid, each bucket keeping its peak.
 const HERO_BUCKET_MS = 480000;
 
 // ---------------------------------------------------------------------------

@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import time
 
+import gateway_usage  # type: ignore[import-not-found]  # sibling
+
 from . import ProviderSpec, register
 
 
@@ -49,6 +51,8 @@ def _fleet_aggregate(samples: dict[str, dict]) -> dict:
         })
     return {
         "provider": "lms",
+        # Gateway-observed tok/s; same shape as llama/vllm throughput.
+        "throughput": gateway_usage.fleet_rates(samples.keys()),
         "agent_count_total": len(samples),
         "agent_count_online": online,
         "server_on_count": server_on,
