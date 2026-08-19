@@ -7,6 +7,28 @@ let _termSid  = null;   // current session ID
 let _termEvt  = null;   // EventSource for output
 let _termOpen = false;
 
+function _termPostSize(sid, term) {
+  // Sync the PTY winsize to the fitted terminal.
+  if (!sid || !term) return;
+  fetch(`/api/terminal/resize/${sid}`, {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({rows: term.rows, cols: term.cols}),
+  }).catch(()=>{});
+}
+
+let _termRefitT = null;
+function _termRefitAll() {
+  const vis = id => { const el = document.getElementById(id);
+    return !!el && el.style.display !== 'none' && el.offsetParent !== null; };
+  if (_term && _termFit && vis('terminalPanel')) _termFit.fit();
+  if (_lmsTerm && _lmsTermFit && vis('lmsTerminalPanel')) _lmsTermFit.fit();
+  if (_vllmTerm && _vllmTermFit && vis('vllmTerminalPanel')) _vllmTermFit.fit();
+}
+window.addEventListener('resize', () => {
+  clearTimeout(_termRefitT);
+  _termRefitT = setTimeout(_termRefitAll, 150);
+});
+
 function _termMkXterm(mountEl) {
   if (_term) { _term.dispose(); _term = null; }
   _term = new Terminal({
@@ -34,9 +56,13 @@ async function _termStart(mountEl) {
   _termMkXterm(mountEl);
   _term.write('\r\n\x1b[90mConnecting…\x1b[0m\r\n');
   try {
-    const r = await _jsonOrThrow(await fetch('/api/terminal/create', {method:'POST'}));
+    const r = await _jsonOrThrow(await fetch('/api/terminal/create', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({rows: _term.rows, cols: _term.cols}),
+    }));
     if (!r.ok) throw new Error(r.error || 'create failed');
     _termSid = r.sid;
+    _termPostSize(_termSid, _term);
   } catch(e) {
     _term.write(`\r\n\x1b[31m● Failed: ${e.message}\x1b[0m\r\n`);
     return;
@@ -120,9 +146,10 @@ function popOutTerminal() {
     fit.fit();
     term.write('\\r\\n\\x1b[90mConnecting\\u2026\\x1b[0m\\r\\n');
     try {
-      const r = await fetch(base+'/api/terminal/create${agentParam}',{method:'POST'}).then(r=>r.json());
+      const r = await fetch(base+'/api/terminal/create${agentParam}',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({rows:term.rows,cols:term.cols})}).then(r=>r.json());
       if(!r.ok) throw new Error(r.error||'create failed');
       const sid = r.sid;
+      fetch(base+'/api/terminal/resize/'+sid,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({rows:term.rows,cols:term.cols})}).catch(()=>{});
       const evt = new EventSource(base+'/api/terminal/output/'+sid);
       evt.onmessage = e => term.write(JSON.parse(e.data));
       evt.onerror   = () => term.write(evt.readyState === EventSource.CLOSED ? '\\r\\n\\x1b[31m● Stream closed — session expired; reopen the terminal\\x1b[0m\\r\\n' : '\\r\\n\\x1b[33m● Stream interrupted — reconnecting\\u2026\\x1b[0m\\r\\n');
@@ -166,8 +193,12 @@ async function _lmsTermStart(mountEl) {
   _lmsTermInit(mountEl);
   _lmsTerm.write('\r\n\x1b[90mConnecting to the LM Studio host…\x1b[0m\r\n');
   try {
-    const r = await _jsonOrThrow(await fetch('/api/lms/terminal/create', {method:'POST'}));
+    const r = await _jsonOrThrow(await fetch('/api/lms/terminal/create', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({rows: _lmsTerm.rows, cols: _lmsTerm.cols}),
+    }));
     _lmsTermSid = r.sid;
+    _termPostSize(_lmsTermSid, _lmsTerm);
     _lmsTermEvt = new EventSource(`/api/terminal/output/${_lmsTermSid}`);
     _lmsTermEvt.onmessage = e => { if (_lmsTerm) _lmsTerm.write(JSON.parse(e.data)); };
     _lmsTermEvt.onerror   = () => {
@@ -236,9 +267,10 @@ function popOutLmsTerminal() {
     fit.fit();
     term.write('\\r\\n\\x1b[90mConnecting to Agent\\u2026\\x1b[0m\\r\\n');
     try {
-      const r = await fetch(base+'/api/lms/terminal/create${agentParam}',{method:'POST'}).then(r=>r.json());
+      const r = await fetch(base+'/api/lms/terminal/create${agentParam}',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({rows:term.rows,cols:term.cols})}).then(r=>r.json());
       if(!r.ok) throw new Error(r.error||'create failed');
       const sid = r.sid;
+      fetch(base+'/api/terminal/resize/'+sid,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({rows:term.rows,cols:term.cols})}).catch(()=>{});
       const evt = new EventSource(base+'/api/terminal/output/'+sid);
       evt.onmessage = e => term.write(JSON.parse(e.data));
       evt.onerror   = () => term.write(evt.readyState === EventSource.CLOSED ? '\\r\\n\\x1b[31m● Stream closed — session expired; reopen the terminal\\x1b[0m\\r\\n' : '\\r\\n\\x1b[33m● Stream interrupted — reconnecting\\u2026\\x1b[0m\\r\\n');
@@ -282,8 +314,12 @@ async function _vllmTermStart(mountEl) {
   _vllmTermInit(mountEl);
   _vllmTerm.write('\r\n\x1b[90mConnecting to the vLLM host…\x1b[0m\r\n');
   try {
-    const r = await _jsonOrThrow(await fetch('/api/vllm/terminal/create', {method:'POST'}));
+    const r = await _jsonOrThrow(await fetch('/api/vllm/terminal/create', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({rows: _vllmTerm.rows, cols: _vllmTerm.cols}),
+    }));
     _vllmTermSid = r.sid;
+    _termPostSize(_vllmTermSid, _vllmTerm);
     _vllmTermEvt = new EventSource(`/api/terminal/output/${_vllmTermSid}`);
     _vllmTermEvt.onmessage = e => { if (_vllmTerm) _vllmTerm.write(JSON.parse(e.data)); };
     _vllmTermEvt.onerror   = () => {
@@ -350,9 +386,10 @@ function popOutVllmTerminal() {
     fit.fit();
     term.write('\\r\\n\\x1b[90mConnecting to Agent\\u2026\\x1b[0m\\r\\n');
     try {
-      const r = await fetch(base+'/api/vllm/terminal/create${agentParam}',{method:'POST'}).then(r=>r.json());
+      const r = await fetch(base+'/api/vllm/terminal/create${agentParam}',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({rows:term.rows,cols:term.cols})}).then(r=>r.json());
       if(!r.ok) throw new Error(r.error||'create failed');
       const sid = r.sid;
+      fetch(base+'/api/terminal/resize/'+sid,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({rows:term.rows,cols:term.cols})}).catch(()=>{});
       const evt = new EventSource(base+'/api/terminal/output/'+sid);
       evt.onmessage = e => term.write(JSON.parse(e.data));
       evt.onerror   = () => term.write(evt.readyState === EventSource.CLOSED ? '\\r\\n\\x1b[31m● Stream closed — session expired; reopen the terminal\\x1b[0m\\r\\n' : '\\r\\n\\x1b[33m● Stream interrupted — reconnecting\\u2026\\x1b[0m\\r\\n');

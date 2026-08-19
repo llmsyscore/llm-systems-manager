@@ -93,9 +93,10 @@ def _pick_agent(default_kind: str) -> "tuple[dict | None, str | None]":
     return agent, None
 
 
-def _proxy_create(default_kind: str, agent_path: str = "/terminal/create"):
+def _proxy_create(default_kind: str, agent_path: str = "/terminal/create",
+                  json_body: "dict | None" = None):
     """Pick the target agent, POST a create, stash sid -> agent_id on
-    success."""
+    success. json_body carries the client's initial winsize when given."""
     agent, err = _pick_agent(default_kind)
     if err:
         return jsonify({"ok": False, "error": err}), 503
@@ -105,6 +106,7 @@ def _proxy_create(default_kind: str, agent_path: str = "/terminal/create"):
     r, tried, last_err = agent_registry.agent_request(
         "POST", agent, agent_path,
         headers={"Authorization": f"Bearer {agent['token']}"},
+        json=json_body,
         timeout=15,
     )
     if r is None:
@@ -232,17 +234,20 @@ def register_routes(app, ctx) -> None:
 
     @app.route("/api/terminal/create", methods=["POST"])
     def terminal_create():
-        return _proxy_create("llama", "/terminal/create")
+        return _proxy_create("llama", "/terminal/create",
+                             flask_request.get_json(silent=True))
 
     @app.route("/api/lms/terminal/create", methods=["POST"])
     def lms_terminal_create():
         """Open a PTY on the primary lms agent (SSH to llm-systems-lmstudio)."""
-        return _proxy_create("lms", "/terminal/create")
+        return _proxy_create("lms", "/terminal/create",
+                             flask_request.get_json(silent=True))
 
     @app.route("/api/vllm/terminal/create", methods=["POST"])
     def vllm_terminal_create():
         """Open a PTY on the primary vllm agent host."""
-        return _proxy_create("vllm", "/terminal/create")
+        return _proxy_create("vllm", "/terminal/create",
+                             flask_request.get_json(silent=True))
 
     @app.route("/api/terminal/output/<sid>")
     def terminal_output_sse(sid):
