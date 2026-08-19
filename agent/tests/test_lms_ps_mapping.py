@@ -99,3 +99,10 @@ def test_fmt_size_bytes_boundaries(lms):
     assert lms._fmt_size_bytes(0) == ""
     assert lms._fmt_size_bytes(500_000_000) == "500 MB"
     assert lms._fmt_size_bytes(19_200_000_000) == "19.20 GB"
+
+
+def test_ps_model_null_falls_back_to_identifier(lms, monkeypatch):
+    _mock_ps(lms, monkeypatch, [{
+        "identifier": "qwen3-30b", "model": None, "status": "IDLE",
+    }])
+    assert lms.lms_get_ps()[0]["model"] == "qwen3-30b"
