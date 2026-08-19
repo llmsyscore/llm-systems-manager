@@ -223,3 +223,43 @@ describe('OV.toplines', () => {
     expect(t[3].v).toBe('—');
   });
 });
+
+describe('OV.heroSeries with a bucket width (#576)', () => {
+  const rows = [
+    { ts: '2026-08-16T19:00:30+00:00', llama_tps: 2, llama_pps: 1 },
+    { ts: '2026-08-16T19:03:00+00:00', llama_tps: 60, llama_pps: 20 },
+    { ts: '2026-08-16T19:07:30+00:00', llama_tps: 5, llama_pps: 2 },
+    { ts: '2026-08-16T19:09:00+00:00', llama_tps: 9, vllm_tps: 1, llama_pps: 3 },
+    { ts: '2026-08-16T19:12:00+00:00' },
+  ];
+  it('keeps the peak provider-sum inside each bucket', () => {
+    const out = OV.heroSeries(rows, 480000);
+    expect(out).toHaveLength(3);
+    expect(out[0].gen).toBe(60);
+    expect(out[0].prompt).toBe(20);
+    expect(out[1].gen).toBe(10);
+    expect(out[1].prompt).toBe(3);
+  });
+  it('a bucket with no reporting rows stays null', () => {
+    const out = OV.heroSeries(rows, 480000);
+    expect(out[2].gen).toBeNull();
+    expect(out[2].prompt).toBeNull();
+  });
+  it('bucket timestamps land on the bucket grid', () => {
+    const out = OV.heroSeries(rows, 480000);
+    expect(new Date(out[0].ts).getTime() % 480000).toBe(0);
+    expect(new Date(out[1].ts).getTime()).toBeGreaterThan(new Date(out[0].ts).getTime());
+  });
+});
+
+describe('OV.heroSeries junk timestamps (#576)', () => {
+  it('skips rows whose ts cannot be bucketed', () => {
+    const out = OV.heroSeries([
+      { ts: 'not-a-date', llama_tps: 50 },
+      { ts: '2026-08-16T19:03:00+00:00', llama_tps: 7 },
+      { llama_tps: 9 },
+    ], 480000);
+    expect(out).toHaveLength(1);
+    expect(out[0].gen).toBe(7);
+  });
+});

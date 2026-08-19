@@ -29,11 +29,13 @@ async function fetchOverallMetrics() {
       fetch('/api/fleet/vllm/aggregate').then(r => r.ok ? r.json() : null).catch(() => null),
     ]);
     _ovPaintBand(llama, lms, vllm);
-    if (typeof ovHeroChart !== 'undefined' && ovHeroChart && llama) {
-      const tp = llama.throughput || {}, vtp = (vllm && vllm.throughput) || {};
+    if (typeof ovHeroChart !== 'undefined' && ovHeroChart && (llama || lms || vllm)) {
+      const tp = (llama && llama.throughput) || {}, vtp = (vllm && vllm.throughput) || {};
+      const ltp = (lms && lms.throughput) || {};
       pushDual(ovHeroChart, new Date(),
-        (tp.total_tps || 0) + (vtp.total_tps || 0),
-        (tp.total_pps || 0) + (vtp.total_pps || 0), HERO_BUCKET_MS);
+        (tp.total_tps || 0) + (vtp.total_tps || 0) + (ltp.total_tps || 0),
+        (tp.total_pps || 0) + (vtp.total_pps || 0) + (ltp.total_pps || 0),
+        HERO_BUCKET_MS, 'max');
     }
     const el = document.getElementById('overallLastUpdate');
     if (el) el.textContent = 'Updated ' + new Date().toLocaleTimeString();

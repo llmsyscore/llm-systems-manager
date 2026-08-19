@@ -8,6 +8,10 @@
 
 const PROVIDER_LABEL = { llama: 'llama.cpp', lms: 'LM Studio', vllm: 'vLLM' };
 
+// Shared time-bucket helper: window global in the browser, sibling in Node.
+const _series = (typeof window !== 'undefined' && window.LMSeries)
+  || (typeof require === 'function' ? require('./series.js') : null);
+
 function _num(v) { return (typeof v === 'number' && !Number.isNaN(v)) ? v : null; }
 
 // Null-safe sum: null when every input is null, else the numeric sum.
@@ -29,14 +33,38 @@ function _fmtUsd(v) {
   return sign + '$' + Math.abs(v).toFixed(2);
 }
 
+// Null-safe max: null only when both inputs are null.
+function _maxOrNull(a, b) {
+  if (a == null) return b;
+  if (b == null) return a;
+  return Math.max(a, b);
+}
+
 // Rows from /api/history?fleet=all → [{ts, gen, prompt}] with chart gaps.
-function heroSeries(rows) {
+// With bucketMs, each bucket keeps the peak provider-sum (one point each).
+function heroSeries(rows, bucketMs) {
   if (!Array.isArray(rows)) return [];
-  return rows.map(r => ({
+  const pts = rows.map(r => ({
     ts: r.ts,
     gen: _sumOrNull(r.llama_tps, r.vllm_tps, r.lms_tps),
     prompt: _sumOrNull(r.llama_pps, r.vllm_pps, r.lms_pps),
   }));
+  if (!bucketMs) return pts;
+  const out = [];
+  let lastKey = null;
+  for (const p of pts) {
+    const key = _series.bucketDate(p.ts, bucketMs).getTime();
+    if (!Number.isFinite(key)) continue;
+    if (key === lastKey) {
+      const last = out[out.length - 1];
+      last.gen = _maxOrNull(last.gen, p.gen);
+      last.prompt = _maxOrNull(last.prompt, p.prompt);
+    } else {
+      lastKey = key;
+      out.push({ ts: new Date(key).toISOString(), gen: p.gen, prompt: p.prompt });
+    }
+  }
+  return out;
 }
 
 function _fmt1(v) { return v != null ? Number(v).toFixed(1) : '—'; }
