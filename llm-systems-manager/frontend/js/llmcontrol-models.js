@@ -795,7 +795,22 @@ const EF_DEFAULTS = {
 };
 
 // Some fields should default to "on" or "off" instead of a numeric value, even if the global default is numeric. This allows them to be toggled on by default for models that support them, without having to set a numeric default that may not make sense for all models.
-const EF_SPECIAL_DEFAULTS = { 'mmap': 'on', 'direct-io': 'off' };
+const EF_SPECIAL_DEFAULTS = { 'load-mode': 'auto' };
+
+// Legacy mmap/direct-io/mlock profile keys collapse onto one --load-mode value.
+function efLoadModeFromCfg(cfg) {
+  if (cfg['load-mode']) return cfg['load-mode'];
+  const noMmap = cfg['no-mmap'] === 'on';
+  if (cfg['direct-io'] === 'on') return 'dio';
+  if (cfg['mlock'] === 'on' || cfg['mlock'] === 'true') return noMmap ? 'mlock' : 'mmap+mlock';
+  if (noMmap) return 'none';
+  return EF_SPECIAL_DEFAULTS['load-mode'];
+}
+
+function efSetLoadMode(cfg) {
+  const sel = document.getElementById('ef-load-mode');
+  if (sel) sel.value = efLoadModeFromCfg(cfg || {});
+}
 // Validation rules for editor fields: min/max values, whether they should be parsed as float or int, etc. Used to validate and clamp values on blur, and to show warnings if values are out of range when saving.
 const EF_VALIDATION = {
   'temperature':      { min: 0,    max: 2,   float: true },
@@ -912,24 +927,14 @@ function openEditModel(modelId) {
 
   EF_FIELDS.forEach(k => setField(k, cfg[k] ?? EF_DEFAULTS[k] ?? ''));
 
-  const mmapSel = document.getElementById('ef-mmap');
-  if (mmapSel) {
-    if (cfg['no-mmap'] === 'on') mmapSel.value = 'off';
-    else if (cfg['mmap']) mmapSel.value = cfg['mmap'];
-    else mmapSel.value = EF_SPECIAL_DEFAULTS['mmap'];
-  }
+  efSetLoadMode(cfg);
 
-  const dioSel = document.getElementById('ef-direct-io');
-  if (dioSel) {
-    if (cfg['direct-io'] === 'on') dioSel.value = 'on';
-    else if (cfg['no-direct-io'] === 'on') dioSel.value = 'off';
-    else dioSel.value = EF_SPECIAL_DEFAULTS['direct-io'];
-  }
 
   const customContainer = document.getElementById('ef-custom-params');
   if (customContainer) customContainer.innerHTML = '';
   const knownKeys = new Set([
-    ...EF_FIELDS, 'mmap', 'no-mmap', 'direct-io', 'no-direct-io', 'hf-repo'
+    ...EF_FIELDS, 'load-mode', 'mmap', 'no-mmap', 'direct-io',
+    'no-direct-io', 'mlock', 'hf-repo'
   ]);
   Object.entries(cfg).forEach(([k, v]) => { if (!knownKeys.has(k)) addCustomParam(k, v); });
 
@@ -951,10 +956,7 @@ function openAddModel() {
 
   EF_FIELDS.forEach(k => setField(k, EF_DEFAULTS[k] ?? ''));
 
-  const mmapSel = document.getElementById('ef-mmap');
-  if (mmapSel) mmapSel.value = EF_SPECIAL_DEFAULTS['mmap'];
-  const dioSel = document.getElementById('ef-direct-io');
-  if (dioSel) dioSel.value = EF_SPECIAL_DEFAULTS['direct-io'];
+  efSetLoadMode({});
 
   const customContainer = document.getElementById('ef-custom-params');
   if (customContainer) customContainer.innerHTML = '';
@@ -992,23 +994,13 @@ function copyFromProfile() {
   // operator's new Model ID stays put.
   EF_FIELDS.forEach(k => setField(k, cfg[k] ?? EF_DEFAULTS[k] ?? ''));
 
-  const mmapSel = document.getElementById('ef-mmap');
-  if (mmapSel) {
-    if (cfg['no-mmap'] === 'on') mmapSel.value = 'off';
-    else if (cfg['mmap']) mmapSel.value = cfg['mmap'];
-    else mmapSel.value = EF_SPECIAL_DEFAULTS['mmap'];
-  }
-  const dioSel = document.getElementById('ef-direct-io');
-  if (dioSel) {
-    if (cfg['direct-io'] === 'on') dioSel.value = 'on';
-    else if (cfg['no-direct-io'] === 'on') dioSel.value = 'off';
-    else dioSel.value = EF_SPECIAL_DEFAULTS['direct-io'];
-  }
+  efSetLoadMode(cfg);
 
   const customContainer = document.getElementById('ef-custom-params');
   if (customContainer) customContainer.innerHTML = '';
   const knownKeys = new Set([
-    ...EF_FIELDS, 'mmap', 'no-mmap', 'direct-io', 'no-direct-io', 'hf-repo'
+    ...EF_FIELDS, 'load-mode', 'mmap', 'no-mmap', 'direct-io',
+    'no-direct-io', 'mlock', 'hf-repo'
   ]);
   Object.entries(cfg).forEach(([k, v]) => { if (!knownKeys.has(k)) addCustomParam(k, v); });
 }
@@ -1032,15 +1024,9 @@ function collectEditorValues() {
     if (v !== '') values[k] = v;
   });
 
-  const mmapVal = document.getElementById('ef-mmap')?.value;
   delete values['mmap']; delete values['no-mmap'];
-  if (mmapVal === 'off') values['no-mmap'] = 'on';
-  else values['mmap'] = 'on';
-
-  const dioVal = document.getElementById('ef-direct-io')?.value;
-  delete values['direct-io']; delete values['no-direct-io'];
-  if (dioVal === 'off') values['no-direct-io'] = 'on';
-  else values['direct-io'] = 'on';
+  delete values['direct-io']; delete values['no-direct-io']; delete values['mlock'];
+  values['load-mode'] = document.getElementById('ef-load-mode')?.value || 'auto';
 
   document.querySelectorAll('#ef-custom-params .custom-param-row').forEach(row => {
     const k = row.querySelector('.cp-key').value.trim();

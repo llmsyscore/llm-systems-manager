@@ -149,6 +149,7 @@ const _BENCH_AXIS_LABELS = {
   n_gpu_layers:'GPU layers offloaded',
   flash_attn:  'Flash-attention enabled',
   no_mmap:     'No-mmap enabled',
+  load_mode:   'Load mode (--load-mode)',
   avg_ts:      'Avg tokens/sec',
   stddev_ts:   'Std-dev tokens/sec',
   // Custom-switch shortcuts the user types in the switches panel
@@ -159,6 +160,7 @@ const _BENCH_AXIS_LABELS = {
   ctv:         'KV cache type — V (-ctv)',
   ncmoe:       'Non-cache MoE experts (-ncmoe)',
   mmp:         'No-mmap (-mmp)',
+  lm:          'Load mode (-lm)',
   c:           'Context size (-c)',
   p:           'Prompt batch (p)',
   n:           'Gen tokens (n)',
@@ -183,6 +185,7 @@ const _BENCH_AXIS_SHORT = {
   n_gpu_layers: 'ngl',
   flash_attn:   'fa',
   no_mmap:      'mmp',
+  load_mode:    'lm',
   type_k:       'ctk',
   type_v:       'ctv',
 };
@@ -207,7 +210,7 @@ function _benchAxisOptsFallback(rows, switches, labelFn) {
   const varied = Object.keys(distinct).filter((k) => distinct[k].size >= 2);
   const FLAG_TO_FIELD = {
     p: 'n_prompt', n: 'n_gen', d: 'n_depth', b: 'n_batch', ub: 'n_ubatch',
-    t: 'n_threads', ngl: 'n_gpu_layers', fa: 'flash_attn', ctk: 'type_k', ctv: 'type_v', mmp: 'no_mmap',
+    t: 'n_threads', ngl: 'n_gpu_layers', fa: 'flash_attn', ctk: 'type_k', ctv: 'type_v', mmp: 'no_mmap', lm: 'load_mode',
   };
   const switchKeys = [];
   (switches || []).forEach((sw) => {
@@ -318,6 +321,7 @@ function _benchFormatLine(text) {
       '-t': 'n_threads', '--threads': 'n_threads',
       '-ngl': 'n_gpu_layers', '--n-gpu-layers': 'n_gpu_layers',
       '-mmp': 'no_mmap', '--no-mmap': 'no_mmap',
+      '-lm': 'load_mode', '--load-mode': 'load_mode',
       '-fa': 'flash_attn', '--flash-attn': 'flash_attn',
       '-ctk': 'type_k', '--cache-type-k': 'type_k',
       '-ctv': 'type_v', '--cache-type-v': 'type_v',
@@ -831,8 +835,7 @@ function _atCollectOptionalParams() {
   const p = {};
   const en = id => document.getElementById('atEn_' + id)?.checked;
   const v  = id => (document.getElementById('atV_' + id)?.value || '').trim();
-  if (en('mlock'))      p.mlock      = true;
-  if (en('no_mmap'))    p.no_mmap    = true;
+  if (en('load_mode') && v('load_mode') !== '') p.load_mode = v('load_mode');
   if (en('kv_unified')) p.kv_unified = true;
   if (en('parallel')   && v('parallel')   !== '') p.parallel   = parseInt(v('parallel'), 10);
   if (en('cache_ram')  && v('cache_ram')  !== '') p.cache_ram  = parseInt(v('cache_ram'), 10);
@@ -871,6 +874,7 @@ function _atCollectOptionalParams() {
 function _atParamsToConfigKeys(p) {
   const out = {};
   if (!p) return out;
+  if (p.load_mode)             out['load-mode']  = p.load_mode;
   if (p.mlock)                 out['mlock']      = 'true';
   if (p.no_mmap)               out['no-mmap']    = 'true';
   if (p.kv_unified)            out['kv-unified'] = 'true';

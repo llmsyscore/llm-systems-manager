@@ -110,7 +110,7 @@ _LLAMA_VALUE_FLAGS = {
     "--models-preset", "--model",
     "--api-key", "--keep", "--ctx-size", "--batch-size",
     "--gpu-layers", "--tensor-parallel", "-t", "-c", "-ngl",
-    "--mmap", "--no-mmap", "--log-disable", "--cont-batch",
+    "--mmap", "--no-mmap", "--load-mode", "-lm", "--log-disable", "--cont-batch",
     "--embedding", "--no-display", "--simple-io",
     "--chat-template",
 }
@@ -2135,6 +2135,8 @@ def _autotune_build_optional_args(params: dict) -> list:
     if not isinstance(params, dict):
         return out
     p = params
+    if p.get("load_mode"):
+        out += ["--load-mode", str(p["load_mode"])]
     if p.get("mlock"):
         out.append("--mlock")
     if p.get("no_mmap"):
