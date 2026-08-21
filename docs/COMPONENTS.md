@@ -165,7 +165,7 @@ Once the dwell time is satisfied, the alert moves to the **firing** state and th
 | Store | Contents | Who Owns It |
 |---|---|---|
 | InfluxDB (metrics bucket) | Raw time-series measurements from all agents | Alarm Engine writes; Manager reads via proxy |
-| InfluxDB (rollup bucket) | 1-minute downsampled averages for efficient long-range charts | Alarm Engine writes via a Flux task |
+| InfluxDB (rollup bucket) | 1-minute downsampled averages and 1-minute maxima, in parallel measurements, for efficient long-range charts | Alarm Engine writes via two Flux tasks (mean and max) |
 | SQLite ae_alarms.db | All alerts: current state, history of every state change | Alarm Engine |
 | SQLite ae_notif_rules.db | Alarm rules, notification channels, delivery history | Alarm Engine |
 

@@ -370,7 +370,7 @@ It can also be overridden per run from the sub-tab. Leaderboard submission is pr
 
 ### Energy & Cost Intelligence
 
-**Dashboard → Energy.** Shows measured power draw converted to a **$/Mtok** figure, a monthly-savings comparison against hosted-API list pricing, and idle-power accounting so hardware that is powered but unused is attributed rather than ignored.
+**Dashboard → Energy.** Shows measured power draw converted to a **$/Mtok** figure, a monthly-savings comparison against hosted-API list pricing, and idle-power accounting so hardware that is powered but unused is attributed rather than ignored. The window selector covers trailing spans, **Today** (local midnight to now), **Year to date**, and a **Custom** range of up to 366 days; the hourly chart itself is capped at 45 days and says so in its label when a wider window truncates it.
 
 ```toml
 [manager.energy]
