@@ -18,7 +18,6 @@ from collections import deque
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Callable, Optional
-from urllib.parse import urlsplit
 
 import requests
 
@@ -138,20 +137,24 @@ class BufferStore:
         # open; commit() then skips applying the claim's stale disk offsets.
         self._claim_stale = False
 
+    def _reset_disk_state(self) -> None:
+        """Zero all disk bookkeeping; marks any open claim stale."""
+        self._offset = 0
+        self._disk_count = 0
+        self._disk_bytes = 0
+        if self._claim_open:
+            self._claim_stale = True
+
     def _resync_if_rotated(self) -> bool:
-        """Re-align bookkeeping when the cache file was deleted or truncated
-        externally. Returns True when a resync happened."""
-        if self._disk_count == 0 and self._offset == 0 and self._disk_bytes == 0:
-            return False
+        """Re-align bookkeeping when the cache file was deleted, truncated,
+        or written outside this store. Returns True when a resync happened."""
         try:
             size = self.cache_file.stat().st_size
         except FileNotFoundError:
+            if self._disk_count == 0 and self._offset == 0 and self._disk_bytes == 0:
+                return False
             lost = self._disk_count
-            self._offset = 0
-            self._disk_count = 0
-            self._disk_bytes = 0
-            if self._claim_open:
-                self._claim_stale = True
+            self._reset_disk_state()
             if lost:
                 logger.warning(
                     "disk cache %s removed externally — %d buffered samples lost",
@@ -160,16 +163,18 @@ class BufferStore:
             return True
         except OSError:
             return False
-        if size >= self._offset and size >= self._disk_bytes:
+        if size == self._disk_bytes and size >= self._offset:
             return False
         old_count = self._disk_count
-        self._offset = 0
+        if size < self._offset or size < self._disk_bytes:
+            # Shrunk or replaced: the consumed-offset cursor is meaningless.
+            self._offset = 0
         self._disk_bytes = size
-        self._disk_count = self._scan_disk_count()
+        self._disk_count = self._count_lines_from(self._offset)
         if self._claim_open:
             self._claim_stale = True
         logger.warning(
-            "disk cache %s rotated externally — resynced to %d lines (was %d)",
+            "disk cache %s changed externally — resynced to %d unread lines (was %d)",
             self.cache_file, self._disk_count, old_count,
         )
         return True
@@ -235,8 +240,7 @@ class BufferStore:
                         except json.JSONDecodeError:
                             continue
             except FileNotFoundError:
-                self._disk_count = 0
-                self._offset = 0
+                self._reset_disk_state()
                 disk_lines = 0
                 new_offset = 0
         mem_consumed = 0
@@ -255,7 +259,8 @@ class BufferStore:
 
         Returns the deferred spill's (spilled, was_first, evicted) tuple.
         """
-        stale = self._claim_stale or self._resync_if_rotated()
+        rotated = self._resync_if_rotated()
+        stale = self._claim_stale or rotated
         self._claim_stale = False
         if claim.disk_lines and not stale:
             self._offset = claim.new_offset
@@ -280,6 +285,7 @@ class BufferStore:
 
         Returns the deferred spill's (spilled, was_first, evicted) tuple.
         """
+        self._resync_if_rotated()
         self._claim_open = False
         self._claimed_mem = 0
         self._claim_stale = False
@@ -292,12 +298,15 @@ class BufferStore:
         return len(self._memory)
 
     def disk_count(self) -> int:
+        self._resync_if_rotated()
         return self._disk_count
 
     def total(self) -> int:
+        self._resync_if_rotated()
         return self._disk_count + len(self._memory)
 
     def breakdown(self) -> tuple[int, int]:
+        self._resync_if_rotated()
         return len(self._memory), self._disk_count
 
     def _append_disk(self, samples: list[dict[str, Any]]) -> int:
@@ -396,13 +405,15 @@ class BufferStore:
             pass
         except OSError:
             logger.exception("failed to unlink disk cache %s", self.cache_file)
-        self._offset = 0
-        self._disk_count = 0
-        self._disk_bytes = 0
+        self._reset_disk_state()
 
     def _scan_disk_count(self) -> int:
+        return self._count_lines_from(0)
+
+    def _count_lines_from(self, offset: int) -> int:
         try:
             with self.cache_file.open("rb") as f:
+                f.seek(offset)
                 return sum(1 for _ in f)
         except FileNotFoundError:
             return 0
@@ -427,13 +438,11 @@ class BufferedMetricClient:
         on_flush_success: Optional[Callable[[int], None]] = None,
         on_flush_failure: Optional[Callable[[Exception], None]] = None,
         auth_token_provider: Optional[Callable[[], Optional[str]]] = None,
+        ingest_path: str = INGEST_PATH,
     ) -> None:
         self.endpoint_url = endpoint_url.rstrip("/")
-        # Path (+query) of the initial endpoint, reapplied on AE retarget so
-        # custom/proxied ingest paths survive update_alarm_engine_url().
-        parts = urlsplit(self.endpoint_url)
-        self._ingest_path = (parts.path or INGEST_PATH) + (
-            f"?{parts.query}" if parts.query else "")
+        # Path appended to the AE base URL on update_alarm_engine_url().
+        self._ingest_path = ingest_path or INGEST_PATH
         self.host = host
         self.cache_dir = Path(cache_dir)
         self.cache_dir.mkdir(parents=True, exist_ok=True)
