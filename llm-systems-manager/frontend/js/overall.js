@@ -35,11 +35,33 @@ async function fetchOverallMetrics() {
       pushDual(ovHeroChart, new Date(),
         (tp.total_tps || 0) + (vtp.total_tps || 0) + (ltp.total_tps || 0),
         (tp.total_pps || 0) + (vtp.total_pps || 0) + (ltp.total_pps || 0),
-        HERO_BUCKET_MS, 'max');
+        ovHeroBucketMs(), 'max');
+      ovHeroBucketSync();
     }
     const el = document.getElementById('overallLastUpdate');
     if (el) el.textContent = 'Updated ' + new Date().toLocaleTimeString();
   } catch (_) {}
+}
+
+// Hero bucket width: session-only view control — every page load starts
+// back at the 5m default. OV-validated.
+let _ovHeroBucketMs = null;
+function ovHeroBucketMs() {
+  return OV.heroBucketMs(_ovHeroBucketMs);
+}
+
+// Keeps #ovHeroBucket showing the applied width across band repaints.
+function ovHeroBucketSync() {
+  const sel = document.getElementById('ovHeroBucket');
+  if (sel && sel.value !== String(ovHeroBucketMs())) sel.value = String(ovHeroBucketMs());
+}
+
+// Selector change: re-bucket from cached rows.
+function ovHeroBucketChange(sel) {
+  _ovHeroBucketMs = OV.heroBucketMs(sel.value);
+  ovHeroBucketSync();
+  if (typeof _ovHeroRows !== 'undefined' && _ovHeroRows) _ovHeroRender();
+  else if (typeof loadOverallHistory === 'function') loadOverallHistory().catch(() => {});
 }
 
 // Hero overlay toggles: power/energy datasets ride a second y-axis.

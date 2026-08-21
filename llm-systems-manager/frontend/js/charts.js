@@ -277,9 +277,39 @@ const xAxis = {
 // surfaces the tooltip whenever the cursor is over the matching x-axis
 // position. hoverRadius makes the matching point visible on hover.
 const _sparkInteraction = { mode: 'index', intersect: false };
+function _crEsc(s) {
+  return String(s).replace(/[&<>"']/g,
+    ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]));
+}
+
+// External tooltip: a readout pinned to the top center of the hosting
+// card, above the plot, so it never covers any data point.
+function _readoutTooltip(ctx) {
+  const { chart, tooltip } = ctx;
+  const host = chart.canvas.closest('.card, .ov-band > section') || chart.canvas.parentElement;
+  if (!host) return;
+  let el = host.querySelector(':scope > .chart-readout');
+  if (!el) {
+    el = document.createElement('div');
+    el.className = 'chart-readout';
+    host.appendChild(el);
+  }
+  if (!tooltip || tooltip.opacity === 0) { el.style.opacity = '0'; return; }
+  const title = (tooltip.title || []).join(' ');
+  const rows = (tooltip.body || []).map((b, i) => {
+    const c = (tooltip.labelColors && tooltip.labelColors[i]) || {};
+    const color = c.borderColor || c.backgroundColor || 'transparent';
+    return `<span class="cr-item"><span class="cr-dot" style="background:${_crEsc(color)}"></span>${_crEsc(b.lines.join(' '))}</span>`;
+  }).join('');
+  el.innerHTML = `<span class="cr-title">${_crEsc(title)}</span>${rows}`;
+  el.style.opacity = '1';
+}
+
 const _sparkTooltip = {
   mode: 'index',
   intersect: false,
+  enabled: false,
+  external: _readoutTooltip,
   // Default Chart.js label callback returns an empty value string for null
   // parsed.y — visually that turns into "label: " and some versions hide
   // the line entirely. Force "—" for missing values so every dataset in
@@ -1234,37 +1264,63 @@ const loadVllmHistory = _makeHistoryBackfill('vllm', '__VLLM_AGENT',
       pushPoint(vllmDiskUsageChart, r.ts, r.disk_root_pct);
   });
 
+// Last-fetched hero history + hourly-energy rows; _ovHeroRender re-buckets
+// from these without refetching.
+let _ovHeroRows = null;
+let _ovEnergyRows = null;
+let _ovHistoryGen = 0;
+
 // Backfill the Overall-tab hero (cross-provider Gen / Prompt totals) from
 // fleet=all history. Called only from Overall-tab entry and refocus (#506).
 async function loadOverallHistory() {
   if (typeof ovHeroChart === 'undefined' || !ovHeroChart) return;
+  const gen = ++_ovHistoryGen;
   const rows = await _historyRows('/api/history?since_minutes=1440&max_rows=1440&fleet=all', 'Overall fleet');
+  if (gen !== _ovHistoryGen) return;  // only the newest in-flight call paints
   if (!rows || !rows.length) return;
-  _clearChart(ovHeroChart);  // discard any racing live point (#137)
-  // Overlay datasets fill here only; live polls advance just gen/prompt.
-  const dsPower = ovHeroChart.data.datasets[2];
-  for (const p of OV.heroSeries(rows, HERO_BUCKET_MS).slice(-MAX_POINTS)) {
-    if (p.gen == null && p.prompt == null && p.power == null) continue;
-    pushDual(ovHeroChart, p.ts, p.gen, p.prompt, HERO_BUCKET_MS, 'max');
-    if (dsPower) dsPower.data.push(p.power != null ? p.power : null);
-  }
+  _ovHeroRows = rows;
+  _ovHeroRender();
   _ovLoadEnergyOverlay();
 }
 
-// Fills the hero's hourly-energy overlay dataset from /api/energy/hourly.
+// Repaint the hero from the cached rows at the current bucket width.
+// Overlay datasets fill here only; live polls advance just gen/prompt.
+function _ovHeroRender() {
+  if (typeof ovHeroChart === 'undefined' || !ovHeroChart || !_ovHeroRows) return;
+  _clearChart(ovHeroChart);  // discard any racing live point (#137)
+  const bucketMs = ovHeroBucketMs();
+  const l = ovHeroChart.data.labels;
+  const d0 = ovHeroChart.data.datasets[0].data, d1 = ovHeroChart.data.datasets[1].data;
+  const dsPower = ovHeroChart.data.datasets[2];
+  for (const p of OV.heroSeries(_ovHeroRows, bucketMs).slice(-MAX_POINTS)) {
+    if (p.gen == null && p.prompt == null && p.power == null) continue;
+    l.push(new Date(p.ts));
+    d0.push(p.gen || 0);
+    d1.push(p.prompt || 0);
+    if (dsPower) dsPower.data.push(p.power != null ? p.power : null);
+  }
+  _ovRenderEnergyOverlay();
+  ovHeroChart.update('none');
+}
+
+// Fetches /api/energy/hourly into the cache, then paints the overlay.
 async function _ovLoadEnergyOverlay() {
   try {
     const d = await fetch('/api/energy/hourly?hours=24').then(r => r.json());
-    if (!d.ok || !ovHeroChart || !ovHeroChart.data.datasets[3]) return;
-    const labels = ovHeroChart.data.labels.map(t => t.getTime());
-    ovHeroChart.data.datasets[3].data = OV.energySeries(d.rows, labels);
-    ovHeroChart.update('none');
+    if (!d.ok) return;
+    _ovEnergyRows = d.rows;
+    _ovRenderEnergyOverlay();
+    if (ovHeroChart) ovHeroChart.update('none');
   } catch (_) {}
 }
 
-// Hero display bucket: 1m backfill rows and 2s live appends collapse onto
-// this 8-min grid, each bucket keeping its peak.
-const HERO_BUCKET_MS = 480000;
+// Maps the cached hourly-energy rows onto the hero's current labels.
+function _ovRenderEnergyOverlay() {
+  if (!ovHeroChart || !ovHeroChart.data.datasets[3] || !_ovEnergyRows) return;
+  const labels = ovHeroChart.data.labels.map(t => t.getTime());
+  ovHeroChart.data.datasets[3].data = OV.energySeries(_ovEnergyRows, labels);
+}
+
 
 // ---------------------------------------------------------------------------
 // Main fetch

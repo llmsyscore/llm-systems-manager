@@ -8,6 +8,16 @@
 
 const PROVIDER_LABEL = { llama: 'llama.cpp', lms: 'LM Studio', vllm: 'vLLM' };
 
+// Hero bucket widths (ms) offered by #ovHeroBucket; 5 minutes by default.
+const HERO_BUCKET_CHOICES = [60000, 300000, 900000, 3600000];
+const HERO_BUCKET_DEFAULT_MS = 300000;
+
+// Any stored/DOM value → a valid bucket width, falling back to the default.
+function heroBucketMs(raw) {
+  const v = parseInt(raw, 10);
+  return HERO_BUCKET_CHOICES.includes(v) ? v : HERO_BUCKET_DEFAULT_MS;
+}
+
 // Shared time-bucket helper: window global in the browser, sibling in Node.
 const _series = (typeof window !== 'undefined' && window.LMSeries)
   || (typeof require === 'function' ? require('./series.js') : null);
@@ -244,5 +254,6 @@ function toplines(llama, lms, vllm, energy) {
 }
 
 return { heroSeries, energySeries, tiles, agentRows, alertsSummary, energyChip,
-         toplines, PROVIDER_LABEL };
+         toplines, heroBucketMs, PROVIDER_LABEL, HERO_BUCKET_CHOICES,
+         HERO_BUCKET_DEFAULT_MS };
 });
