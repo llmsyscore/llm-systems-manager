@@ -18,6 +18,7 @@ from collections import deque
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Callable, Optional
+from urllib.parse import urlsplit
 
 import requests
 
@@ -133,6 +134,45 @@ class BufferStore:
         # until commit()/abort(). _claimed_mem = deque-front items claimed.
         self._claim_open = False
         self._claimed_mem = 0
+        # Set when the cache file was externally rotated while a claim was
+        # open; commit() then skips applying the claim's stale disk offsets.
+        self._claim_stale = False
+
+    def _resync_if_rotated(self) -> bool:
+        """Re-align bookkeeping when the cache file was deleted or truncated
+        externally. Returns True when a resync happened."""
+        if self._disk_count == 0 and self._offset == 0 and self._disk_bytes == 0:
+            return False
+        try:
+            size = self.cache_file.stat().st_size
+        except FileNotFoundError:
+            lost = self._disk_count
+            self._offset = 0
+            self._disk_count = 0
+            self._disk_bytes = 0
+            if self._claim_open:
+                self._claim_stale = True
+            if lost:
+                logger.warning(
+                    "disk cache %s removed externally — %d buffered samples lost",
+                    self.cache_file, lost,
+                )
+            return True
+        except OSError:
+            return False
+        if size >= self._offset and size >= self._disk_bytes:
+            return False
+        old_count = self._disk_count
+        self._offset = 0
+        self._disk_bytes = size
+        self._disk_count = self._scan_disk_count()
+        if self._claim_open:
+            self._claim_stale = True
+        logger.warning(
+            "disk cache %s rotated externally — resynced to %d lines (was %d)",
+            self.cache_file, self._disk_count, old_count,
+        )
+        return True
 
     @property
     def claim_open(self) -> bool:
@@ -174,6 +214,7 @@ class BufferStore:
         """
         if limit <= 0 or self._claim_open:
             return [], _Claim(0, self._offset, 0)
+        self._resync_if_rotated()
         out: list[dict[str, Any]] = []
         disk_lines = 0
         new_offset = self._offset
@@ -214,7 +255,9 @@ class BufferStore:
 
         Returns the deferred spill's (spilled, was_first, evicted) tuple.
         """
-        if claim.disk_lines:
+        stale = self._claim_stale or self._resync_if_rotated()
+        self._claim_stale = False
+        if claim.disk_lines and not stale:
             self._offset = claim.new_offset
             self._disk_count = max(0, self._disk_count - claim.disk_lines)
         if claim.mem:
@@ -239,6 +282,7 @@ class BufferStore:
         """
         self._claim_open = False
         self._claimed_mem = 0
+        self._claim_stale = False
         result = self._spill_overflow()
         if self._disk_bytes > self.max_disk_bytes:
             self._enforce_budget()
@@ -258,6 +302,7 @@ class BufferStore:
 
     def _append_disk(self, samples: list[dict[str, Any]]) -> int:
         """Append samples; return bytes written (0 on error)."""
+        self._resync_if_rotated()
         try:
             with self.cache_file.open("a", encoding="utf-8") as f:
                 start = f.tell()
@@ -384,6 +429,11 @@ class BufferedMetricClient:
         auth_token_provider: Optional[Callable[[], Optional[str]]] = None,
     ) -> None:
         self.endpoint_url = endpoint_url.rstrip("/")
+        # Path (+query) of the initial endpoint, reapplied on AE retarget so
+        # custom/proxied ingest paths survive update_alarm_engine_url().
+        parts = urlsplit(self.endpoint_url)
+        self._ingest_path = (parts.path or INGEST_PATH) + (
+            f"?{parts.query}" if parts.query else "")
         self.host = host
         self.cache_dir = Path(cache_dir)
         self.cache_dir.mkdir(parents=True, exist_ok=True)
@@ -427,7 +477,7 @@ class BufferedMetricClient:
         if not new_ae:
             return
         with self._lock:
-            self.endpoint_url = new_ae + INGEST_PATH
+            self.endpoint_url = new_ae + self._ingest_path
 
     def enqueue(self, sample: dict[str, Any]) -> None:
         if not isinstance(sample, dict):
