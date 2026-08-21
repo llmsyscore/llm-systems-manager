@@ -644,6 +644,23 @@ const lastNonZero = {
   requests_deferred: { val: null, ts: null },
 };
 
+// Rolling 15-min peaks for the Llama server card's Gen/Prompt tokens/s.
+// Seeded from the history backfill, advanced by live polls, reset with
+// the metric charts on agent switch.
+const _LLAMA_PEAK_WINDOW_MS = 900000;
+const _llamaPeaks = {
+  tps: LMPeaks.makeTracker(_LLAMA_PEAK_WINDOW_MS),
+  pps: LMPeaks.makeTracker(_LLAMA_PEAK_WINDOW_MS),
+};
+
+// "12.3 (peak 45.6 3m ago)" — the window peak stays visible at all times.
+function fmtLivePeak(cur, tracker) {
+  const live = cur != null ? cur.toFixed(1) : '—';
+  const p = tracker.peak(Date.now());
+  if (!p) return live;
+  return `${live} <span style="font-size:0.7em;color:var(--fg-dim)">(peak ${p.v.toFixed(1)} ${timeSince(new Date(p.t).toISOString())})</span>`;
+}
+
 function updateNonZero(key, val) {
   if (val !== null && val !== 0) lastNonZero[key] = { val, ts: new Date().toISOString() };
 }
@@ -1032,6 +1049,8 @@ function _resetMetricCharts() {
   [cpuChart, ramChart, gpuChart, netChart, llamaSrvChart, aioTempChart,
    genTokensChart, llamaChart, ioChart, psuPowerChart, diskUsageChart]
     .forEach(_clearChart);
+  _llamaPeaks.tps.reset();
+  _llamaPeaks.pps.reset();
 }
 
 // LM Studio dashboard time-series. Cleared at the top of loadLmsHistory so an
@@ -1104,6 +1123,8 @@ async function loadHistory() {
       pushPoint(gpuChart,  r.ts, r.gpu_util    || 0);
       pushPoint(netChart,  r.ts, ((r.net_sent || 0) + (r.net_recv || 0)) / B_PER_MIB);
       pushDual(llamaChart, r.ts, r.llama_tps,  r.llama_pps);
+      if (r.llama_tps != null) _llamaPeaks.tps.push(r.ts, r.llama_tps);
+      if (r.llama_pps != null) _llamaPeaks.pps.push(r.ts, r.llama_pps);
       pushDual(ioChart,    r.ts, (r.io_read  || 0) / B_PER_MIB,
                                   (r.io_write || 0) / B_PER_MIB);
       // Hardware sensor charts (AIO liquid temp + PSU power draw).
@@ -1454,8 +1475,10 @@ async function fetchMetrics() {
     modelEl.textContent = llModelClean || 'No model loaded';
     modelEl.style.color = sleeping ? '#444' : '#aaa';
     modelEl.title = sleeping ? 'Model is sleeping — metrics polling paused' : '';
-    document.getElementById('llamaTps').textContent          = ll.tokens_per_second        != null ? ll.tokens_per_second.toFixed(1) : '—';
-    document.getElementById('llamaPps').textContent          = ll.prompt_tokens_per_second != null ? ll.prompt_tokens_per_second.toFixed(1) : '—';
+    if (ll.tokens_per_second != null) _llamaPeaks.tps.push(ts, ll.tokens_per_second);
+    if (ll.prompt_tokens_per_second != null) _llamaPeaks.pps.push(ts, ll.prompt_tokens_per_second);
+    document.getElementById('llamaTps').innerHTML            = fmtLivePeak(ll.tokens_per_second, _llamaPeaks.tps);
+    document.getElementById('llamaPps').innerHTML            = fmtLivePeak(ll.prompt_tokens_per_second, _llamaPeaks.pps);
     document.getElementById('llamaGenTokens').textContent    = ll.total_tokens_generated   != null ? ll.total_tokens_generated.toLocaleString() : '—';
     document.getElementById('llamaPromptTokens').textContent = ll.total_tokens_prompted    != null ? ll.total_tokens_prompted.toLocaleString() : '—';
     document.getElementById('llamaDecodes').textContent      = ll.n_decode_total           != null ? ll.n_decode_total.toLocaleString() : '—';
