@@ -5,7 +5,7 @@ import time
 
 import gateway_usage  # type: ignore[import-not-found]  # sibling
 
-from . import ProviderSpec, register
+from . import ProviderSpec, int_or_none, register
 
 
 def _fleet_aggregate(samples: dict[str, dict]) -> dict:
@@ -47,6 +47,8 @@ def _fleet_aggregate(samples: dict[str, dict]) -> dict:
         ctxs = [p.get("context") for p in active
                 if isinstance(p.get("context"), (int, float))]
         totals = usage_totals.get(aid) or {}
+        gen_total = int_or_none(totals.get("gen"))
+        prompt_total = int_or_none(totals.get("prompt"))
         agent_rows.append({
             "agent_id": aid,
             "online": is_online,
@@ -55,8 +57,8 @@ def _fleet_aggregate(samples: dict[str, dict]) -> dict:
             "loaded_models": loaded_models if is_online else [],
             "busy_process_count": busy_now if is_online else 0,
             "ctx": int(max(ctxs)) if (is_online and ctxs) else None,
-            "total_tokens_generated": int(totals.get("gen")) if (is_online and totals.get("gen")) else None,
-            "total_tokens_prompted": int(totals.get("prompt")) if (is_online and totals.get("prompt")) else None,
+            "total_tokens_generated": gen_total if is_online else None,
+            "total_tokens_prompted": prompt_total if is_online else None,
             "age_s": round(now - last_seen, 1) if last_seen else None,
         })
     return {

@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import time
 
-from . import ProviderSpec, register
+from . import ProviderSpec, int_or_none, register
 
 
 def clean_display_model(raw) -> "str | None":
@@ -59,8 +59,6 @@ def _fleet_aggregate(samples: dict[str, dict]) -> dict:
             p = gpu.get("power_watts")
             if isinstance(p, (int, float)):
                 total_power += float(p)
-        def _i(v):
-            return int(v) if isinstance(v, (int, float)) else None
         agent_rows.append({
             "agent_id": aid,
             "online": is_online,
@@ -71,9 +69,9 @@ def _fleet_aggregate(samples: dict[str, dict]) -> dict:
             "model": m if is_online else None,
             "tokens_per_second": tps if isinstance(tps, (int, float)) else None,
             "prompt_tokens_per_second": pps if isinstance(pps, (int, float)) else None,
-            "ctx": _i(llama.get("n_ctx")) if is_online else None,
-            "total_tokens_generated": _i(llama.get("total_tokens_generated")) if is_online else None,
-            "total_tokens_prompted": _i(llama.get("total_tokens_prompted")) if is_online else None,
+            "ctx": int_or_none(llama.get("n_ctx")) if is_online else None,
+            "total_tokens_generated": int_or_none(llama.get("total_tokens_generated")) if is_online else None,
+            "total_tokens_prompted": int_or_none(llama.get("total_tokens_prompted")) if is_online else None,
             "age_s": round(now - last_seen, 1) if last_seen else None,
         })
     return {

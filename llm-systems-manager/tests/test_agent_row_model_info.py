@@ -81,3 +81,18 @@ def test_lms_rows_without_context_or_usage_stay_null():
     row = out["agents"][0]
     assert row["ctx"] is None
     assert row["total_tokens_generated"] is None
+
+
+def test_lms_zero_generation_total_renders_as_zero():
+    aid = "g" * 32
+    gateway_usage.record(aid, 50, 0)
+    try:
+        out = lms_agg({aid: _wrap({
+            "server": {"on": True},
+            "ps": [{"model": "m", "status": "IDLE"}],
+        })})
+        row = out["agents"][0]
+        assert row["total_tokens_generated"] == 0
+        assert row["total_tokens_prompted"] == 50
+    finally:
+        gateway_usage._counters.pop(aid, None)

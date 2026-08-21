@@ -146,7 +146,8 @@ def collect_vllm_for_metrics() -> dict[str, Any]:
             out["state"] = "running"
             out["models"] = ids
             out["model"] = ids[0] if ids else None
-            mml = data[0].get("max_model_len") if data else None
+            first = next((m for m in data if m.get("id")), None)
+            mml = first.get("max_model_len") if first else None
             out["max_model_len"] = int(mml) if isinstance(mml, (int, float)) else None
     except Exception as e:
         log.debug("vllm /v1/models unreachable: %s", e)

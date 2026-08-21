@@ -34,6 +34,11 @@ class ProviderSpec:
 PROVIDERS: dict[str, ProviderSpec] = {}
 
 
+def int_or_none(v):
+    """int(v) for real numbers, None for everything else."""
+    return int(v) if isinstance(v, (int, float)) else None
+
+
 def register(spec: ProviderSpec) -> None:
     PROVIDERS[spec.name] = spec
 
