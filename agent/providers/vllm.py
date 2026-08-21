@@ -141,10 +141,13 @@ def collect_vllm_for_metrics() -> dict[str, Any]:
     try:
         r = _get_session().get(f"{base}/v1/models", timeout=3)
         if r.ok:
-            ids = [m.get("id") for m in (r.json().get("data") or []) if m.get("id")]
+            data = r.json().get("data") or []
+            ids = [m.get("id") for m in data if m.get("id")]
             out["state"] = "running"
             out["models"] = ids
             out["model"] = ids[0] if ids else None
+            mml = data[0].get("max_model_len") if data else None
+            out["max_model_len"] = int(mml) if isinstance(mml, (int, float)) else None
     except Exception as e:
         log.debug("vllm /v1/models unreachable: %s", e)
     if out["state"] == "running":

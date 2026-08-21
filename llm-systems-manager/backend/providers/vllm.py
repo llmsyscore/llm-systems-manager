@@ -52,6 +52,8 @@ def _fleet_aggregate(samples: dict[str, dict]) -> dict:
             if isinstance(p, (int, float)):
                 total_power += float(p)
         # Offline agents report zeroed/None per-row values.
+        def _i(x):
+            return int(x) if isinstance(x, (int, float)) else None
         agent_rows.append({
             "agent_id": aid,
             "online": is_online,
@@ -59,6 +61,9 @@ def _fleet_aggregate(samples: dict[str, dict]) -> dict:
             "model": m if (is_online and running) else None,
             "requests_running": int(rr) if (is_online and isinstance(rr, (int, float))) else None,
             "tokens_per_second": tps if isinstance(tps, (int, float)) else None,
+            "ctx": _i(v.get("max_model_len")) if (is_online and running) else None,
+            "total_tokens_generated": _i(v.get("total_tokens_generated")) if is_online else None,
+            "total_tokens_prompted": _i(v.get("total_tokens_prompted")) if is_online else None,
             "age_s": round(now - last_seen, 1) if last_seen else None,
         })
     return {

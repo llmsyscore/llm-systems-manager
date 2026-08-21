@@ -63,7 +63,7 @@
 .ov-agent-row.ov-agent-off { opacity: 0.55; }
 .ov-agent-host {
   font-family: ui-monospace, 'SFMono-Regular', Menlo, Consolas, monospace;
-  color: var(--fg); min-width: 200px;
+  color: var(--fg); flex: 0 0 240px; overflow-wrap: anywhere;
 }
 .ov-agent-provs { display: flex; flex-wrap: wrap; gap: 6px 14px; color: var(--fg-muted); min-width: 0; }
 .ov-agent-prov { overflow-wrap: anywhere; }
@@ -94,6 +94,6 @@
 }
 
 @media (max-width: 700px) {
-  .ov-agent-host { min-width: 130px; }
+  .ov-agent-host { flex-basis: 130px; }
   .ov-hero-chart { height: 190px; }
 }

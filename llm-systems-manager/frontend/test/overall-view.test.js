@@ -393,3 +393,53 @@ describe('OV.tiles unified layout + peaks (#591)', () => {
     expect(lms.stats[1].v).toBe('30.2');
   });
 });
+
+describe('OV agent-row model extras (#593)', () => {
+  it('fmtShort scales k/M/B and rejects junk', () => {
+    expect(OV.fmtShort(1234567)).toBe('1.2M');
+    expect(OV.fmtShort(89012)).toBe('89.0k');
+    expect(OV.fmtShort(512)).toBe('512');
+    expect(OV.fmtShort(3200000000)).toBe('3.2B');
+    expect(OV.fmtShort(null)).toBeNull();
+    expect(OV.fmtShort(NaN)).toBeNull();
+  });
+
+  it('llama rows append ctx and totals after the model name', () => {
+    const aggs = [{ agents: [{ agent_id: 'x', online: true, state: 'awake',
+      model: 'qwen3-30b', ctx: 32768,
+      total_tokens_generated: 1234567, total_tokens_prompted: 89012 }] }, null, null];
+    const [row] = OV.agentRows(aggs, {});
+    expect(row.provs[0].detail)
+      .toBe('awake · qwen3-30b · 32k ctx · 1.2M gen · 89.0k prompt');
+  });
+
+  it('extras are omitted piecewise when fields are absent (old agents)', () => {
+    const aggs = [{ agents: [{ agent_id: 'x', online: true, state: 'awake',
+      model: 'm', total_tokens_generated: 500 }] }, null, null];
+    const [row] = OV.agentRows(aggs, {});
+    expect(row.provs[0].detail).toBe('awake · m · 500 gen');
+  });
+
+  it('no extras without a loaded model', () => {
+    const aggs = [{ agents: [{ agent_id: 'x', online: true, state: 'sleeping',
+      model: null, ctx: 32768 }] }, null, null];
+    const [row] = OV.agentRows(aggs, {});
+    expect(row.provs[0].detail).toBe('sleeping');
+  });
+
+  it('vllm rows append ctx from max_model_len mapping', () => {
+    const aggs = [null, null, { agents: [{ agent_id: 'y', online: true,
+      server_on: true, model: 'nemotron', requests_running: 2,
+      ctx: 131072, total_tokens_generated: 555 }] }];
+    const [row] = OV.agentRows(aggs, {});
+    expect(row.provs[0].detail).toBe('2 req · nemotron · 128k ctx · 555 gen');
+  });
+
+  it('lms rows append extras after the model list', () => {
+    const aggs = [null, { agents: [{ agent_id: 'z', online: true, server_on: true,
+      busy_process_count: 0, loaded_model_count: 1, loaded_models: ['big'],
+      ctx: 32768, total_tokens_generated: 900, total_tokens_prompted: 300 }] }, null];
+    const [row] = OV.agentRows(aggs, {});
+    expect(row.provs[0].detail).toBe('idle · big · 32k ctx · 900 gen · 300 prompt');
+  });
+});
