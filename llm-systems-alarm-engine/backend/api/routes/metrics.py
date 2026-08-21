@@ -46,9 +46,10 @@ _HIST_MAX_POINTS_DEFAULT = int(getattr(_API, "history_max_response_points", 1500
 _DOWNSAMPLE_LADDER_S = (5, 10, 15, 30, 60, 120, 300, 600, 900, 1800, 3600)
 
 
-def downsample_history(points: list[MetricPoint], max_points: int) -> list[dict]:
-    """Serialize points to history dicts, mean-bucketed per host onto an
-    epoch-aligned grid when over max_points; max_points<=0 means raw."""
+def downsample_history(points: list[MetricPoint], max_points: int,
+                       agg: str = "mean") -> list[dict]:
+    """Serialize points to history dicts, mean- (or max-) bucketed per host
+    onto an epoch-aligned grid when over max_points; max_points<=0 means raw."""
     if max_points <= 0 or len(points) <= max_points:
         return [p.to_dict() for p in points]
     by_host: dict[Optional[str], list[tuple[float, MetricPoint]]] = {}
@@ -76,7 +77,8 @@ def downsample_history(points: list[MetricPoint], max_points: int) -> list[dict]
                 "metric_id": str(last.metric_id),
                 "source": last.source,
                 "metric_name": last.metric_name,
-                "value": sum(x.value for _, x in ps) / len(ps),
+                "value": (max(x.value for _, x in ps) if agg == "max"
+                          else sum(x.value for _, x in ps) / len(ps)),
                 "unit": last.unit,
                 "timestamp": datetime.fromtimestamp(
                     b, tz=timezone.utc).isoformat(),
@@ -336,11 +338,14 @@ async def get_metric_history(
     max_points: int = Query(_HIST_MAX_POINTS_DEFAULT, ge=0, le=_HIST_LIMIT_MAX,
                             description="Downsample response to at most this "
                                         "many points (0 = raw)"),
+    agg: str = Query("mean", pattern="^(mean|max)$",
+                     description="Downsample aggregate: mean (default) or "
+                                 "max for burst peaks"),
     metric_repo: MetricRepository = Depends(get_metric_repo),
 ) -> list[dict]:
     """Get metric history for a specific metric, optionally scoped to a host.
-    Responses over max_points are mean-bucketed per host; pass max_points=0
-    for raw full-resolution points."""
+    Responses over max_points are mean- (or max-) bucketed per host; pass
+    max_points=0 for raw full-resolution points."""
     _validate_tag(source, "source")
     _validate_tag(metric_name, "metric_name")
     # Use timezone-aware UTC so .timestamp() comparison against stored
@@ -350,8 +355,9 @@ async def get_metric_history(
     since = datetime.now(timezone.utc) - timedelta(minutes=since_minutes)
     points = metric_repo.get_points(
         source, metric_name, since=since, limit=limit, hostname=hostname,
+        agg=agg,
     )
-    return downsample_history(points, max_points)
+    return downsample_history(points, max_points, agg=agg)
 
 
 @router.get("/{source}/{metric_name}/summary")

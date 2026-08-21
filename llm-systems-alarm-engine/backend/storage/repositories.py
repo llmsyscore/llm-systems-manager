@@ -1206,8 +1206,11 @@ class MetricRepository:
         since: Optional[datetime] = None,
         limit: int = 1000,
         hostname: Optional[str] = None,
+        agg: str = "mean",
     ) -> list[MetricPoint]:
-        """Get metric points, optionally filtered by hostname.
+        """Get metric points, optionally filtered by hostname. agg ("mean"
+        or "max") picks the downsample aggregate on the InfluxDB path only —
+        in-cache windows return raw full-resolution points either way.
 
         Routing rule: if the requested window fits within the cache's TTL,
         serve from the in-memory cache; otherwise query InfluxDB. This keeps
@@ -1261,6 +1264,7 @@ class MetricRepository:
         try:
             db_points = self.db.query_metrics(
                 source, metric_name, start=since, limit=limit, every=every,
+                agg=agg,
             )
         except Exception as e:
             logger.warning(f"DB metric query failed for {source}/{metric_name}: {e}")
