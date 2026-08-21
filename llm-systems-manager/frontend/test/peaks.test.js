@@ -75,14 +75,15 @@ describe('llama card wiring (#590)', () => {
   const charts = readFileSync(join(here, '..', 'js', 'charts.js'), 'utf8');
   const html = readFileSync(join(here, '..', 'index.html'), 'utf8');
 
-  it('live poll pushes into the trackers and renders live+peak', () => {
-    expect(charts).toMatch(/_llamaPeaks\.tps\.push\(ts, ll\.tokens_per_second\)/);
+  it('live poll pushes browser-clock samples and renders live+peak', () => {
+    expect(charts).toMatch(/_llamaPeaks\.tps\.push\(Date\.now\(\), ll\.tokens_per_second\)/);
     expect(charts).toMatch(/fmtLivePeak\(ll\.tokens_per_second, _llamaPeaks\.tps\)/);
     expect(charts).toMatch(/fmtLivePeak\(ll\.prompt_tokens_per_second, _llamaPeaks\.pps\)/);
   });
 
-  it('backfill seeds and agent-switch resets the trackers', () => {
-    expect(charts).toMatch(/_llamaPeaks\.tps\.push\(r\.ts, r\.llama_tps\)/);
+  it('backfill seeds clock-normalized rows; agent switch resets the trackers', () => {
+    expect(charts).toMatch(/_llamaPeaks\.tps\.push\(_peakSeedTs\(r\.ts\), r\.llama_tps\)/);
+    expect(charts).toMatch(/_peakSkewMs = Number\.isFinite/);
     expect(charts).toMatch(/_llamaPeaks\.tps\.reset\(\);/);
   });
 
