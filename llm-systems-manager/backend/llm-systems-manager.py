@@ -156,7 +156,7 @@ def _local_hostname() -> str:
 # banner reads it. Bump suffix (-1, -2, …) for same-day iterations; roll
 # the date for a new day's first change.
 # ---------------------------------------------------------------------------
-__version__ = "v2026.08.21-9"
+__version__ = "v2026.08.21-13"
 
 # Wall-clock at first import (Cheroot main process); the shutdown banner
 # reads it for the uptime line.
@@ -868,10 +868,7 @@ _HISTORY_LEGACY_FIELD_MAP = [
     # gateway_usage pusher (#502) — history + alarm rules live in the AE.
     ("gateway", "lms_tokens_per_second",                       "lms_tps"),
     ("gateway", "lms_prompt_tokens_per_second",                "lms_pps"),
-    # Llama-server stats aren't ingested into the alarm engine yet — agents
-    # push them straight to the manager's /api/remote/host-metrics. Leave
-    # placeholders so the legacy field names exist; they stay None until
-    # the agent → AE wiring lands.
+    # Llama-server stats, ingested under source="llama".
     ("llama",   "tokens_per_second",                          "llama_tps"),
     ("llama",   "prompt_tokens_per_second",                   "llama_pps"),
     ("llama",   "n_tokens_max",                               "llama_ctx"),

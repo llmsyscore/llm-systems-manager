@@ -346,3 +346,50 @@ describe('OV.energySeries (#577)', () => {
     expect(OV.energySeries([], [])).toEqual([]);
   });
 });
+
+describe('OV.tiles unified layout + peaks (#591)', () => {
+  const NOW = Date.UTC(2026, 7, 21, 18, 0, 0);
+  const PEAKS = {
+    llama: { gen: { v: 51.3, t: NOW - 3 * 60000 }, prompt: { v: 452.5, t: NOW - 3 * 60000 } },
+    lms: { gen: null, prompt: null },
+    vllm: { gen: { v: 12, t: NOW - 90000 }, prompt: null },
+  };
+
+  it('every tile leads with gen and prompt t/s', () => {
+    for (const t of OV.tiles(LLAMA_AGG, LMS_AGG, VLLM_AGG, PEAKS, NOW)) {
+      expect(t.stats[0].l).toBe('gen t/s');
+      expect(t.stats[1].l).toBe('prompt t/s');
+      expect(t.stats).toHaveLength(4);
+    }
+  });
+
+  it('renders peak sub-lines with value and age', () => {
+    const [llama, lms, vllm] = OV.tiles(LLAMA_AGG, LMS_AGG, VLLM_AGG, PEAKS, NOW);
+    expect(llama.stats[0].p).toBe('peak 51.3 · 3m ago');
+    expect(llama.stats[1].p).toBe('peak 452.5 · 3m ago');
+    expect(vllm.stats[0].p).toBe('peak 12.0 · 1m ago');
+    expect(lms.stats[0].p).toBeNull();
+    expect(vllm.stats[1].p).toBeNull();
+  });
+
+  it('provider-specific stats carry no peak field', () => {
+    const [llama, lms, vllm] = OV.tiles(LLAMA_AGG, LMS_AGG, VLLM_AGG, PEAKS, NOW);
+    expect(llama.stats[2].p).toBeUndefined();
+    expect(lms.stats[2].l).toBe('servers');
+    expect(lms.stats[3].l).toBe('models');
+    expect(vllm.stats[2].l).toBe('requests');
+    expect(vllm.stats[3].l).toBe('kv cache');
+  });
+
+  it('missing peaks argument keeps tiles renderable', () => {
+    const [llama] = OV.tiles(LLAMA_AGG, null, null);
+    expect(llama.stats[0].p).toBeNull();
+  });
+
+  it('lms tile reads its gateway throughput block', () => {
+    const withTp = { ...LMS_AGG, throughput: { total_tps: 7.5, total_pps: 30.2 } };
+    const [, lms] = OV.tiles(null, withTp, null, {}, NOW);
+    expect(lms.stats[0].v).toBe('7.5');
+    expect(lms.stats[1].v).toBe('30.2');
+  });
+});

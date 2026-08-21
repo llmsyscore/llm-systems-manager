@@ -634,10 +634,7 @@ function timeSince(ts) {
   if (ts == null || ts === '') return '';
   const ms = typeof ts === 'number' ? ts : new Date(ts).getTime();
   if (!Number.isFinite(ms)) return '';
-  const secs = Math.max(0, Math.floor((Date.now() - ms) / 1000));
-  if (secs < 60) return `${secs}s ago`;
-  if (secs < 3600) return `${Math.floor(secs/60)}m ago`;
-  return `${Math.floor(secs/3600)}h ago`;
+  return LMPeaks.agoText(Date.now() - ms);
 }
 
 // Muted "(peak N Xm ago)" suffix shared by fmtWithPeak and fmtLivePeak.
@@ -1133,9 +1130,7 @@ async function loadHistory() {
     // Convert bytes-per-second → MiB-per-second so backfill points match the
     // live-fetch unit (see net/io conversion in fetchMetrics around line 3550).
     const B_PER_MIB = 1048576;
-    const _lastRowMs = new Date(rows[rows.length - 1].ts).getTime();
-    const _peakSkewMs = Number.isFinite(_lastRowMs) ? Date.now() - _lastRowMs : 0;
-    const _peakSeedTs = (t) => new Date(t).getTime() + _peakSkewMs;
+    const _peakSeedTs = LMPeaks.rowClock(rows, Date.now());
     _genTokensCarry = 0;
     let _sawIscsiHistory = false;
     for (const r of rows.slice(-MAX_POINTS)) {

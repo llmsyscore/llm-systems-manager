@@ -83,7 +83,7 @@ describe('llama card wiring (#590)', () => {
 
   it('backfill seeds clock-normalized rows; agent switch resets the trackers', () => {
     expect(charts).toMatch(/_llamaPeaks\.tps\.push\(_peakSeedTs\(r\.ts\), r\.llama_tps\)/);
-    expect(charts).toMatch(/_peakSkewMs = Number\.isFinite/);
+    expect(charts).toMatch(/_peakSeedTs = LMPeaks\.rowClock\(rows, Date\.now\(\)\)/);
     expect(charts).toMatch(/_llamaPeaks\.tps\.reset\(\);/);
   });
 
@@ -92,5 +92,41 @@ describe('llama card wiring (#590)', () => {
     const chartsAt = html.indexOf('js/charts.js?v');
     expect(peaksAt).toBeGreaterThan(-1);
     expect(peaksAt).toBeLessThan(chartsAt);
+  });
+});
+
+describe('LMPeaks.agoText / rowClock (#591)', () => {
+  it('formats the s/m/h ladder and clamps negatives', () => {
+    expect(LMPeaks.agoText(5000)).toBe('5s ago');
+    expect(LMPeaks.agoText(180000)).toBe('3m ago');
+    expect(LMPeaks.agoText(7200000)).toBe('2h ago');
+    expect(LMPeaks.agoText(-4000)).toBe('0s ago');
+  });
+
+  it('rowClock shifts rows by small offsets onto the caller clock', () => {
+    const now = T0 + 30000;
+    const rows = [{ ts: new Date(T0 - MIN).toISOString() }, { ts: new Date(T0).toISOString() }];
+    const clk = LMPeaks.rowClock(rows, now);
+    expect(clk(rows[1].ts)).toBe(now);
+    expect(clk(rows[0].ts)).toBe(now - MIN);
+  });
+
+  it('rowClock refuses to freshen a stale feed', () => {
+    const now = T0 + 30 * MIN;
+    const rows = [{ ts: new Date(T0).toISOString() }];
+    const clk = LMPeaks.rowClock(rows, now);
+    expect(clk(rows[0].ts)).toBe(T0);
+  });
+
+  it('rowClock pulls future-stamped rows fully back', () => {
+    const now = T0;
+    const rows = [{ ts: new Date(T0 + 30 * MIN).toISOString() }];
+    const clk = LMPeaks.rowClock(rows, now);
+    expect(clk(rows[0].ts)).toBe(now);
+  });
+
+  it('rowClock tolerates empty input', () => {
+    const clk = LMPeaks.rowClock([], T0);
+    expect(clk(new Date(T0).toISOString())).toBe(T0);
   });
 });

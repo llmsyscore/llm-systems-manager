@@ -8,6 +8,58 @@
 // backfill runs on tab entry via loadOverallHistory (#142, #506).
 // ---------------------------------------------------------------------------
 
+// Rolling 15-min gen/prompt peaks per provider tile (#591); browser-clock
+// timestamps throughout, like the llama card's trackers.
+const _OV_TILE_PEAK_WINDOW_MS = 900000;
+const _ovTilePeaks = {};
+['llama', 'lms', 'vllm'].forEach(k => {
+  _ovTilePeaks[k] = {
+    gen: LMPeaks.makeTracker(_OV_TILE_PEAK_WINDOW_MS),
+    prompt: LMPeaks.makeTracker(_OV_TILE_PEAK_WINDOW_MS),
+  };
+});
+
+// Seeds the tile trackers from fleet history rows on the browser clock;
+// only rows landing inside the peak window are pushed.
+let _ovTileSeedRows = null;
+function ovSeedTilePeaks(rows) {
+  if (!Array.isArray(rows) || !rows.length) return;
+  const now = Date.now();
+  const clk = LMPeaks.rowClock(rows, now);
+  const cutoff = now - _OV_TILE_PEAK_WINDOW_MS;
+  let start = rows.length;
+  while (start > 0 && clk(rows[start - 1].ts) >= cutoff) start--;
+  for (const r of rows.slice(start)) {
+    const t = clk(r.ts);
+    _ovTilePeaks.llama.gen.push(t, r.llama_tps);
+    _ovTilePeaks.llama.prompt.push(t, r.llama_pps);
+    _ovTilePeaks.lms.gen.push(t, r.lms_tps);
+    _ovTilePeaks.lms.prompt.push(t, r.lms_pps);
+    _ovTilePeaks.vllm.gen.push(t, r.vllm_tps);
+    _ovTilePeaks.vllm.prompt.push(t, r.vllm_pps);
+  }
+}
+
+// Live aggregates → tracker pushes; returns the OV.tiles `peaks` shape.
+// Seeds once per fresh hero backfill (charts.js caches rows in _ovHeroRows).
+function _ovTilePeaksPush(llama, lms, vllm) {
+  if (typeof _ovHeroRows !== 'undefined' && _ovHeroRows && _ovHeroRows !== _ovTileSeedRows) {
+    _ovTileSeedRows = _ovHeroRows;
+    ovSeedTilePeaks(_ovHeroRows);
+  }
+  const now = Date.now();
+  const aggs = { llama, lms, vllm };
+  const out = {};
+  for (const k of ['llama', 'lms', 'vllm']) {
+    const tp = (aggs[k] && aggs[k].throughput) || {};
+    _ovTilePeaks[k].gen.push(now, tp.total_tps);
+    _ovTilePeaks[k].prompt.push(now, tp.total_pps);
+    out[k] = { gen: _ovTilePeaks[k].gen.peak(now),
+               prompt: _ovTilePeaks[k].prompt.peak(now) };
+  }
+  return out;
+}
+
 // Energy summary cache — refreshed at most once a minute from the band paint.
 let _ovEnergy = null;
 let _ovEnergyTs = 0;
@@ -77,7 +129,8 @@ function ovToggleOverlay() {
 function _ovPaintBand(llama, lms, vllm) {
   if (typeof OV === 'undefined') return;
   _ovPaintToplines(OV.toplines(llama, lms, vllm, _ovEnergy));
-  _ovPaintTiles(OV.tiles(llama, lms, vllm));
+  const peaks = _ovTilePeaksPush(llama, lms, vllm);
+  _ovPaintTiles(OV.tiles(llama, lms, vllm, peaks, Date.now()));
   _ovPaintAgents(OV.agentRows([llama, lms, vllm], window._agentsByProvider || {}));
   _ovPaintAlerts();
 }
@@ -102,16 +155,13 @@ function _ovPaintTiles(tiles) {
         <span class="ov-tile-online">${t.online}/${t.total} online</span>
       </div>
       <div class="ov-tile-stats">
-        ${t.stats.map(s => `<div><div class="stat">${_esc(s.v)}</div><div class="sub">${_esc(s.l)}</div></div>`).join('')}
+        ${t.stats.map(s => `<div><div class="stat">${_esc(s.v)}</div><div class="sub">${_esc(s.l)}</div>${s.p !== undefined ? `<div class="ov-tile-peak">${_esc(s.p || '—')}</div>` : ''}</div>`).join('')}
       </div>
     </div>`).join('');
 }
 
 function _ovAge(s) {
-  if (s == null) return '';
-  if (s < 60) return Math.round(s) + 's ago';
-  if (s < 3600) return Math.floor(s / 60) + 'm ago';
-  return Math.floor(s / 3600) + 'h ago';
+  return s == null ? '' : LMPeaks.agoText(s * 1000);
 }
 
 function _ovPaintAgents(rows) {
