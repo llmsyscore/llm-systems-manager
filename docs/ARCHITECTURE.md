@@ -29,7 +29,7 @@ GPU Report Card. See "Manager Feature Subsystems" below.
 | **Manager** | The central hub. Hosts the web dashboard that operators use in their browser. Keeps track of which Agents are registered and approved. Forwards metric history requests to the Alarm Engine and proxies LLM control commands to Agents. Also hosts its own feature subsystems — an inference gateway, Model Autopilot, energy/cost accounting, a Discord bot, and the GPU Report Card (see below). Runs on ports 5000 (HTTP) and 5443 (HTTPS), plus a small standalone WebSocket proxy on port 5444 for live alert streaming. |
 | **Agent** | A lightweight program installed on each monitored computer. Reads hardware sensors (CPU, GPU, RAM, temperatures, fans, power) every 5 seconds and ships those readings to the Alarm Engine and the Manager. Also exposes controls so operators can start, stop, and configure AI models (llama.cpp, LM Studio, or vLLM) on that machine. Runs on port 8082 (HTTPS only). |
 | **Alarm Engine** | Receives all incoming metric batches, stores them in InfluxDB, and checks every reading against configured alarm rules. When a threshold is crossed, it creates an alert, sends notifications (email, webhook, Discord), and streams the event live to the dashboard. Runs on port 8081 (HTTPS). |
-| **Time-Series Database** | InfluxDB stores every metric reading over time so the dashboard can display history charts. It keeps two copies of the data: full-resolution readings (one every 5 seconds) and a compressed summary (one per minute) for longer time windows. Runs on port 8086. |
+| **Time-Series Database** | InfluxDB stores every metric reading over time so the dashboard can display history charts. It keeps two copies of the data: full-resolution readings (one every 5 seconds) and a compressed summary for longer time windows that records both the average and the peak of each minute, so a long-range chart can show real bursts instead of flattening them. Runs on port 8086. |
 
 ---
 
@@ -234,7 +234,7 @@ automatic lockout after repeated failed login attempts to resist brute-force att
 
 | What | Where | Purpose |
 |---|---|---|
-| **Performance metric history** | InfluxDB — two buckets: raw (5 s resolution) and rollup (1-min averages) | Feeds all dashboard history charts and alarm rule evaluation |
+| **Performance metric history** | InfluxDB — two buckets: raw (5 s resolution) and rollup, which holds parallel 1-min mean and 1-min max measurements | Feeds all dashboard history charts and alarm rule evaluation; a history request selects mean or max per chart |
 | **Active alerts and alert history** | SQLite — `ae_alarms.db` (owned by Alarm Engine) | Records when alerts fired, were acknowledged, and were resolved |
 | **Alarm rules, notification channels, delivery log** | SQLite — `ae_notif_rules.db` (owned by Alarm Engine) | Defines what triggers an alert and where notifications are sent |
 | **User accounts and roles** | JSON file — `data/manager_users.json` (access-restricted) | Stores scrypt-hashed passwords and Admin/Operator role assignments |
