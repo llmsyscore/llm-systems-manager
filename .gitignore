@@ -59,6 +59,7 @@ devel/
 .claude/
 CLAUDE.md
 HANDOFF.md
+AGENTS.md
 tools/*
 !tools/installer
 !tools/packaging
