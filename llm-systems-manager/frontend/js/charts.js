@@ -277,21 +277,39 @@ const xAxis = {
 // surfaces the tooltip whenever the cursor is over the matching x-axis
 // position. hoverRadius makes the matching point visible on hover.
 const _sparkInteraction = { mode: 'index', intersect: false };
-// Tooltip anchored to the top chart corner opposite the cursor, so the
-// box never covers the hovered column at any peak height.
-Chart.Tooltip.positioners.ovReadout = function (items, evtPos) {
-  const area = this.chart.chartArea;
-  if (!area) return { x: evtPos.x, y: evtPos.y };
-  const cursorLeft = evtPos.x < (area.left + area.right) / 2;
-  return { x: cursorLeft ? area.right : area.left, y: area.top,
-           xAlign: cursorLeft ? 'right' : 'left', yAlign: 'top' };
-};
+function _crEsc(s) {
+  return String(s).replace(/[&<>"']/g,
+    ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]));
+}
+
+// External tooltip: a readout pinned to the top center of the hosting
+// card, above the plot, so it never covers any data point.
+function _readoutTooltip(ctx) {
+  const { chart, tooltip } = ctx;
+  const host = chart.canvas.closest('.card, .ov-band > section') || chart.canvas.parentElement;
+  if (!host) return;
+  let el = host.querySelector(':scope > .chart-readout');
+  if (!el) {
+    el = document.createElement('div');
+    el.className = 'chart-readout';
+    host.appendChild(el);
+  }
+  if (!tooltip || tooltip.opacity === 0) { el.style.opacity = '0'; return; }
+  const title = (tooltip.title || []).join(' ');
+  const rows = (tooltip.body || []).map((b, i) => {
+    const c = (tooltip.labelColors && tooltip.labelColors[i]) || {};
+    const color = c.borderColor || c.backgroundColor || 'transparent';
+    return `<span class="cr-item"><span class="cr-dot" style="background:${_crEsc(color)}"></span>${_crEsc(b.lines.join(' '))}</span>`;
+  }).join('');
+  el.innerHTML = `<span class="cr-title">${_crEsc(title)}</span>${rows}`;
+  el.style.opacity = '1';
+}
 
 const _sparkTooltip = {
   mode: 'index',
   intersect: false,
-  position: 'ovReadout',
-  caretSize: 0,
+  enabled: false,
+  external: _readoutTooltip,
   // Default Chart.js label callback returns an empty value string for null
   // parsed.y — visually that turns into "label: " and some versions hide
   // the line entirely. Force "—" for missing values so every dataset in
