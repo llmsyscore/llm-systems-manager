@@ -35,11 +35,35 @@ async function fetchOverallMetrics() {
       pushDual(ovHeroChart, new Date(),
         (tp.total_tps || 0) + (vtp.total_tps || 0) + (ltp.total_tps || 0),
         (tp.total_pps || 0) + (vtp.total_pps || 0) + (ltp.total_pps || 0),
-        HERO_BUCKET_MS, 'max');
+        ovHeroBucketMs(), 'max');
+      ovHeroBucketSync();
     }
     const el = document.getElementById('overallLastUpdate');
     if (el) el.textContent = 'Updated ' + new Date().toLocaleTimeString();
   } catch (_) {}
+}
+
+// Hero bucket width: layout-persisted (like layout.modelSort), OV-validated.
+function ovHeroBucketMs() {
+  return OV.heroBucketMs(typeof layout !== 'undefined' && layout && layout.heroBucketMs);
+}
+
+// Keeps #ovHeroBucket showing the applied width across band repaints.
+function ovHeroBucketSync() {
+  const sel = document.getElementById('ovHeroBucket');
+  if (sel && sel.value !== String(ovHeroBucketMs())) sel.value = String(ovHeroBucketMs());
+}
+
+// Selector change: persist to the layout store, re-bucket from cached rows.
+function ovHeroBucketChange(sel) {
+  const v = OV.heroBucketMs(sel.value);
+  if (typeof layout !== 'undefined' && layout) {
+    layout.heroBucketMs = v;
+    if (typeof saveLayout === 'function') saveLayout();
+  }
+  ovHeroBucketSync();
+  if (typeof _ovHeroRows !== 'undefined' && _ovHeroRows) _ovHeroRender();
+  else if (typeof loadOverallHistory === 'function') loadOverallHistory().catch(() => {});
 }
 
 // Hero overlay toggles: power/energy datasets ride a second y-axis.

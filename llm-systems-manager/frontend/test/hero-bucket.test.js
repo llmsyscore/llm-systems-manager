@@ -1,89 +1,116 @@
-// #589: hero bucket-size selector — default 5m, persisted choice, and
-// re-bucketing on change. Runs the real charts.js declarations in jsdom.
+// #589: hero bucket-size selector — 5m default, layout-persisted choice,
+// local re-bucketing. Validation is pure (OV.heroBucketMs); the handler
+// runs as real overall.js source in jsdom, per the wiring-test pattern.
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
+import OV from '../js/lib/overall-view.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
+const overall = readFileSync(join(here, '..', 'js', 'overall.js'), 'utf8');
 const charts = readFileSync(join(here, '..', 'js', 'charts.js'), 'utf8');
 const html = readFileSync(join(here, '..', 'index.html'), 'utf8');
 
-function block(re) {
-  const m = charts.match(re);
-  expect(m, `${re} not found in charts.js`).toBeTruthy();
+describe('OV.heroBucketMs (#589)', () => {
+  it('defaults to 5 minutes', () => {
+    expect(OV.HERO_BUCKET_DEFAULT_MS).toBe(300000);
+    expect(OV.heroBucketMs(undefined)).toBe(300000);
+    expect(OV.heroBucketMs(null)).toBe(300000);
+  });
+  it('accepts each offered width, string or number', () => {
+    for (const v of OV.HERO_BUCKET_CHOICES) {
+      expect(OV.heroBucketMs(v)).toBe(v);
+      expect(OV.heroBucketMs(String(v))).toBe(v);
+    }
+  });
+  it('clamps junk to the default', () => {
+    expect(OV.heroBucketMs('123456')).toBe(300000);
+    expect(OV.heroBucketMs('bogus')).toBe(300000);
+    expect(OV.heroBucketMs('')).toBe(300000);
+  });
+});
+
+function fnSrc(name) {
+  const m = overall.match(new RegExp(`function ${name}\\([^)]*\\) \\{[\\s\\S]*?\\n\\}`));
+  expect(m, `${name} not found in overall.js`).toBeTruthy();
   return m[0];
 }
 
-// The bucket const/let declarations + the two ovHeroBucket* functions.
-const SRC = [
-  block(/const HERO_BUCKET_DEFAULT_MS[\s\S]*?let HERO_BUCKET_MS = \(\(\) => \{[\s\S]*?\}\)\(\);/),
-  block(/function ovHeroBucketInit\([\s\S]*?\n\}/),
-  block(/function ovHeroBucketChange\([\s\S]*?\n\}/),
-  'window._getBucket = () => HERO_BUCKET_MS;',
-  'window.ovHeroBucketInit = ovHeroBucketInit; window.ovHeroBucketChange = ovHeroBucketChange;',
-].join('\n');
-
-function loadWithDom() {
+function loadHandlers() {
   document.body.innerHTML = `
     <select id="ovHeroBucket">
       <option value="60000">1m</option><option value="300000">5m</option>
       <option value="900000">15m</option><option value="3600000">1h</option>
     </select>`;
-  (0, eval)(SRC);
-  ovHeroBucketInit();
+  window.OV = OV;
+  (0, eval)([
+    fnSrc('ovHeroBucketMs'), fnSrc('ovHeroBucketSync'), fnSrc('ovHeroBucketChange'),
+    'window.ovHeroBucketMs = ovHeroBucketMs;',
+    'window.ovHeroBucketSync = ovHeroBucketSync;',
+    'window.ovHeroBucketChange = ovHeroBucketChange;',
+  ].join('\n'));
 }
 
-beforeEach(() => {
-  localStorage.clear();
-  window.loadOverallHistory = vi.fn(() => Promise.resolve());
-});
-
-describe('hero bucket selector (#589)', () => {
-  it('defaults to 5 minutes', () => {
-    loadWithDom();
-    expect(window._getBucket()).toBe(300000);
-    expect(document.getElementById('ovHeroBucket').value).toBe('300000');
+describe('hero bucket handlers (#589)', () => {
+  beforeEach(() => {
+    window.layout = {};
+    window.saveLayout = vi.fn();
+    window._ovHeroRows = [{ ts: '2026-08-21T10:00:00Z' }];
+    window._ovHeroRender = vi.fn();
+    window.loadOverallHistory = vi.fn(() => Promise.resolve());
+    loadHandlers();
   });
 
-  it('restores a persisted choice and reflects it in the selector', () => {
-    localStorage.setItem('ovHeroBucketMs', '900000');
-    loadWithDom();
-    expect(window._getBucket()).toBe(900000);
-    expect(document.getElementById('ovHeroBucket').value).toBe('900000');
+  it('reads the width from layout, clamped', () => {
+    expect(window.ovHeroBucketMs()).toBe(300000);
+    window.layout.heroBucketMs = 900000;
+    expect(window.ovHeroBucketMs()).toBe(900000);
+    window.layout.heroBucketMs = 42;
+    expect(window.ovHeroBucketMs()).toBe(300000);
   });
 
-  it('rejects junk in storage and falls back to the default', () => {
-    localStorage.setItem('ovHeroBucketMs', '123456');
-    loadWithDom();
-    expect(window._getBucket()).toBe(300000);
+  it('sync reflects the applied width in the selector', () => {
+    window.layout.heroBucketMs = 3600000;
+    window.ovHeroBucketSync();
+    expect(document.getElementById('ovHeroBucket').value).toBe('3600000');
   });
 
-  it('change persists the value and re-buckets from history', () => {
-    loadWithDom();
-    document.getElementById('ovHeroBucket').value = '60000';
-    ovHeroBucketChange();
-    expect(window._getBucket()).toBe(60000);
-    expect(localStorage.getItem('ovHeroBucketMs')).toBe('60000');
-    expect(window.loadOverallHistory).toHaveBeenCalledTimes(1);
-  });
-
-  it('same-value change is a no-op', () => {
-    loadWithDom();
-    document.getElementById('ovHeroBucket').value = '300000';
-    ovHeroBucketChange();
+  it('change persists to layout and re-buckets locally from cached rows', () => {
+    const sel = document.getElementById('ovHeroBucket');
+    sel.value = '60000';
+    window.ovHeroBucketChange(sel);
+    expect(window.layout.heroBucketMs).toBe(60000);
+    expect(window.saveLayout).toHaveBeenCalledTimes(1);
+    expect(window._ovHeroRender).toHaveBeenCalledTimes(1);
     expect(window.loadOverallHistory).not.toHaveBeenCalled();
   });
 
-  it('index.html carries the selector with the 5m default option', () => {
-    expect(html).toContain('id="ovHeroBucket"');
-    expect(html).toMatch(/<option value="300000" selected>/);
-    expect(html).toContain('onchange="ovHeroBucketChange()"');
+  it('change without cached rows falls back to the history backfill', () => {
+    window._ovHeroRows = null;
+    const sel = document.getElementById('ovHeroBucket');
+    sel.value = '900000';
+    window.ovHeroBucketChange(sel);
+    expect(window.loadOverallHistory).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('hero bucket wiring (#589)', () => {
+  it('index.html option values match OV.HERO_BUCKET_CHOICES', () => {
+    const m = html.match(/<select id="ovHeroBucket"[\s\S]*?<\/select>/);
+    expect(m).toBeTruthy();
+    const values = [...m[0].matchAll(/<option value="(\d+)"/g)].map(x => Number(x[1]));
+    expect(values).toEqual(OV.HERO_BUCKET_CHOICES);
+    expect(m[0]).toContain('onchange="ovHeroBucketChange(this)"');
   });
 
-  it('backfill and live append both use HERO_BUCKET_MS', () => {
-    expect(charts).toMatch(/OV\.heroSeries\(rows, HERO_BUCKET_MS\)/);
-    const overall = readFileSync(join(here, '..', 'js', 'overall.js'), 'utf8');
-    expect(overall).toMatch(/HERO_BUCKET_MS, 'max'/);
+  it('backfill re-buckets via the selected width with a generation guard', () => {
+    expect(charts).toMatch(/OV\.heroSeries\(_ovHeroRows, bucketMs\)/);
+    expect(charts).toMatch(/const bucketMs = ovHeroBucketMs\(\)/);
+    expect(charts).toMatch(/gen !== _ovHistoryGen/);
+  });
+
+  it('live append uses the selected width', () => {
+    expect(overall).toMatch(/ovHeroBucketMs\(\), 'max'/);
   });
 });

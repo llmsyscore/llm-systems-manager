@@ -19,7 +19,7 @@
   border-radius: 8px; padding: 14px 16px 10px;
   background: linear-gradient(160deg, var(--bg-card) 0%, color-mix(in srgb, var(--bg) 60%, var(--bg-card)) 100%);
 }
-.ov-hero-head { display: flex; align-items: baseline; gap: 16px; margin-bottom: 10px; }
+.ov-hero-head { display: flex; align-items: baseline; gap: 16px; margin-bottom: 10px; flex-wrap: wrap; }
 .ov-hero-legend { margin-bottom: 0; margin-left: auto; }
 .ov-updated { font-size: 0.72em; color: var(--fg-dim); white-space: nowrap; }
 .ov-toplines { display: flex; flex-wrap: wrap; gap: 8px 34px; margin-bottom: 10px; }

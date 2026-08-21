@@ -1565,10 +1565,10 @@ Backend API endpoints consumed:
       <span class="ov-strip-handle" title="Drag to reorder">⠿</span>
       <div class="ov-hero-head">
         <span class="ov-eyebrow">Last 24 Hours</span>
-        <select id="ovHeroBucket" class="ov-bucket-sel" onchange="ovHeroBucketChange()"
+        <select id="ovHeroBucket" class="ov-bucket-sel" onchange="ovHeroBucketChange(this)"
                 aria-label="Chart bucket size">
           <option value="60000">1m buckets</option>
-          <option value="300000" selected>5m buckets</option>
+          <option value="300000">5m buckets</option>
           <option value="900000">15m buckets</option>
           <option value="3600000">1h buckets</option>
         </select>
@@ -1877,7 +1877,7 @@ Backend API endpoints consumed:
 <script src="/static/js/lib/thresholds.js?v=2026.08.05-1"></script>
 <script src="/static/js/lib/reportcard.js?v=2026.07.27-1"></script>
 <script src="/static/js/lib/energy.js?v=2026.08.19-1"></script>
-<script src="/static/js/lib/overall-view.js?v=2026.08.19-5"></script>
+<script src="/static/js/lib/overall-view.js?v=2026.08.21-1"></script>
 <script src="/static/js/charts.js?v=2026.08.21-1"></script>
 <script src="/static/js/terminal.js?v=2026.08.19-1"></script>
 <script src="/static/js/llmcontrol.js?v=2026.08.19-1"></script>
@@ -1891,7 +1891,7 @@ Backend API endpoints consumed:
 <script src="/static/js/vllm-bench-autotune.js?v=2026.07.12-2"></script>
 <script src="/static/js/report-card.js?v=2026.08.17-1"></script>
 <script src="/static/js/energy.js?v=2026.08.19-1"></script>
-<script src="/static/js/overall.js?v=2026.08.19-3"></script>
+<script src="/static/js/overall.js?v=2026.08.21-1"></script>
 <script src="/static/js/dashboard-manager.js?v=2026.08.17-1"></script>
 
 <!-- Settings panel — kept at body root so it's never inside a hidden tab container -->
