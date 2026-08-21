@@ -280,6 +280,10 @@ const _sparkInteraction = { mode: 'index', intersect: false };
 const _sparkTooltip = {
   mode: 'index',
   intersect: false,
+  // Anchor on the nearest point and stand the box off it so the tip
+  // never sits on top of the hovered point, even at tall peaks.
+  position: 'nearest',
+  caretPadding: 14,
   // Default Chart.js label callback returns an empty value string for null
   // parsed.y — visually that turns into "label: " and some versions hide
   // the line entirely. Force "—" for missing values so every dataset in
