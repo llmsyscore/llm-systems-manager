@@ -150,7 +150,7 @@ function tiles(llama, lms, vllm, peaks, nowMs) {
       online, total: a.agent_count_total || 0, accent,
       stats: [
         ...tpStats(a, 'lms'),
-        { v: String(a.server_on_count || 0), l: 'servers on' },
+        { v: String(a.server_on_count || 0), l: 'servers' },
         { v: String(a.loaded_model_count_total || 0), l: 'models' },
       ],
     });
