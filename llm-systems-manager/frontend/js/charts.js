@@ -654,6 +654,8 @@ const lastNonZero = {
 // Rolling 15-min peaks for the Llama server card's Gen/Prompt tokens/s;
 // all samples carry browser-clock timestamps.
 const _LLAMA_PEAK_WINDOW_MS = 900000;
+// Server-card spark bucket: peak-per-minute so short bursts stay visible.
+const _LLAMA_SRV_BUCKET_MS = 60000;
 const _llamaPeaks = {
   tps: LMPeaks.makeTracker(_LLAMA_PEAK_WINDOW_MS),
   pps: LMPeaks.makeTracker(_LLAMA_PEAK_WINDOW_MS),
@@ -1155,7 +1157,7 @@ async function loadHistory() {
         pushDual(psuPowerChart, r.ts, r.psu_out || 0, r.psu_in || 0);
       // Detailed llama charts — the server-card throughput spark mirrors
       // llamaChart; gen total carries its last value across idle rows.
-      if (typeof llamaSrvChart !== 'undefined') pushDual(llamaSrvChart, r.ts, r.llama_tps, r.llama_pps);
+      if (typeof llamaSrvChart !== 'undefined') pushDual(llamaSrvChart, r.ts, r.llama_tps, r.llama_pps, _LLAMA_SRV_BUCKET_MS, 'max');
       if (r.llama_gen_tokens != null) _genTokensCarry = r.llama_gen_tokens;
       if (typeof genTokensChart !== 'undefined') pushPoint(genTokensChart, r.ts, _genTokensCarry);
       // Disk usage — / and /mnt/iscsi percent over time.
@@ -1535,7 +1537,7 @@ async function fetchMetrics() {
     document.getElementById('llamaProcessing').innerHTML = fmtWithPeak(ll.requests_processing, 'requests_processing');
     document.getElementById('llamaDeferred').innerHTML   = fmtWithPeak(ll.requests_deferred,   'requests_deferred');
     pushDual(llamaChart, ts, ll.tokens_per_second, ll.prompt_tokens_per_second);
-    pushDual(llamaSrvChart, ts, ll.tokens_per_second, ll.prompt_tokens_per_second);
+    pushDual(llamaSrvChart, ts, ll.tokens_per_second, ll.prompt_tokens_per_second, _LLAMA_SRV_BUCKET_MS, 'max');
     if (ll.total_tokens_generated != null) _genTokensCarry = ll.total_tokens_generated;
     pushPoint(genTokensChart, ts, _genTokensCarry);
 
