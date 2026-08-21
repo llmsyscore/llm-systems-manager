@@ -135,7 +135,7 @@ function tiles(llama, lms, vllm, peaks, nowMs) {
       online, total: a.agent_count_total || 0, accent,
       stats: [
         ...tpStats(a, 'llama'),
-        { v: String(a.awake_agent_count || 0), l: 'awake' },
+        { v: String(a.awake_agent_count || 0), l: 'servers' },
         { v: String(a.active_model_count || 0), l: 'models' },
       ],
     });
@@ -151,7 +151,7 @@ function tiles(llama, lms, vllm, peaks, nowMs) {
       stats: [
         ...tpStats(a, 'lms'),
         { v: String(a.server_on_count || 0), l: 'servers on' },
-        { v: String(a.loaded_model_count_total || 0), l: 'models loaded' },
+        { v: String(a.loaded_model_count_total || 0), l: 'models' },
       ],
     });
   }

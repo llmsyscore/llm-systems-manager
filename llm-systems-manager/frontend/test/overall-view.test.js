@@ -376,7 +376,7 @@ describe('OV.tiles unified layout + peaks (#591)', () => {
     const [llama, lms, vllm] = OV.tiles(LLAMA_AGG, LMS_AGG, VLLM_AGG, PEAKS, NOW);
     expect(llama.stats[2].p).toBeUndefined();
     expect(lms.stats[2].l).toBe('servers on');
-    expect(lms.stats[3].l).toBe('models loaded');
+    expect(lms.stats[3].l).toBe('models');
     expect(vllm.stats[2].l).toBe('requests');
     expect(vllm.stats[3].l).toBe('kv cache');
   });
