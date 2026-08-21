@@ -156,7 +156,7 @@ def _local_hostname() -> str:
 # banner reads it. Bump suffix (-1, -2, …) for same-day iterations; roll
 # the date for a new day's first change.
 # ---------------------------------------------------------------------------
-__version__ = "v2026.08.21-14"
+__version__ = "v2026.08.21-15"
 
 # Wall-clock at first import (Cheroot main process); the shutdown banner
 # reads it for the uptime line.
@@ -886,6 +886,12 @@ _HISTORY_LEGACY_FIELD_MAP = [
 _CPU_ALERT_SOURCE, _CPU_ALERT_METRIC = next(
     (s, n) for s, n, f in _HISTORY_LEGACY_FIELD_MAP if f == "cpu_total")
 
+# Throughput fields fetched with agg=max (#596): long-window AE reads then
+# hit the max rollup so burst peaks survive downsampling.
+_HISTORY_PEAK_FIELDS = frozenset({
+    "llama_tps", "llama_pps", "vllm_tps", "vllm_pps", "lms_tps", "lms_pps",
+})
+
 
 # ---------------------------------------------------------------------------
 # /api/history — 60-minute in-memory ring buffer.
@@ -955,6 +961,10 @@ def _fetch_history_series(base: str, source: str, metric_name: str, field: str,
     src_enc = urllib.parse.quote(source, safe="")
     name_enc = urllib.parse.quote(metric_name, safe="")
     params = {"since_minutes": since_minutes, "limit": limit}
+    # Older AEs without the agg param ignore it (FastAPI drops unknown
+    # query params) and keep serving mean — safe on mixed versions.
+    if field in _HISTORY_PEAK_FIELDS:
+        params["agg"] = "max"
     if hostname:
         params["hostname"] = hostname
     try:

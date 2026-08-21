@@ -26,6 +26,7 @@ def _built_query():
     cli._rollup_query = _QApi()
     cli._rollup_enabled = False
     cli._rollup_measurement = "metrics_1m"
+    cli._max_measurement = "metrics_1m_max"
     cli._rollup_read_bucket = "rb"
     cli._rollup_every = "1m"
     cli.query_metrics("system", "cpu_total", limit=3)

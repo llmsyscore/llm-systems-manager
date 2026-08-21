@@ -1,6 +1,7 @@
 """InfluxDB v2 client for persistent storage."""
 
 import logging
+import threading
 from datetime import datetime, timedelta
 from .._best_effort import best_effort
 from .._time import now_utc
@@ -36,6 +37,8 @@ class InfluxDBClient:
     """
 
     _ROLLUP_GRAINS = _DEFAULT_ROLLUP_GRAINS
+    # Day-chunks of raw history seeded into the max rollup on first creation.
+    _MAX_BACKFILL_DAYS = 30
 
     def __init__(
         self,
@@ -87,6 +90,8 @@ class InfluxDBClient:
         # admin token is optional and only used by ensure_rollup_task().
         self._rollup_enabled = rollup_enabled
         self._rollup_measurement = rollup_measurement
+        # Parallel max-aggregate rollup (#596): same bucket/cadence, fn: max.
+        self._max_measurement = f"{rollup_measurement}_max"
         self._rollup_every = rollup_every
         self._admin_token = admin_token
 
@@ -128,19 +133,23 @@ class InfluxDBClient:
         end: Optional[datetime] = None,
         limit: int = 1000,
         every: Optional[str] = None,
+        agg: str = "mean",
+        _force_raw: bool = False,
     ) -> list[dict[str, Any]]:
         """Query metric data points from InfluxDB.
 
         When `every` is set (a Flux duration like "30s", "1m", "5m", "30m"),
-        the result is server-side downsampled via aggregateWindow(mean).
+        the result is server-side downsampled via aggregateWindow with `agg`
+        ("mean" default, or "max" for honest burst peaks — #596).
         Hostname and unit are tag columns and stay in the group key through
         aggregation, so multi-host series remain distinct after downsampling.
         Pass `every=None` (default) for full-resolution raw points.
 
         When the rollup feature is enabled and the requested grain is >= the
         rollup bin size, this method reads the pre-aggregated rollup
-        measurement (default "metrics_1m") instead of raw "metrics". That
-        cuts the on-disk scan ~12x at 5s collection cadence.
+        measurement ("metrics_1m", or "metrics_1m_max" when agg="max")
+        instead of raw "metrics". That cuts the on-disk scan ~12x at 5s
+        collection cadence.
         """
         start = start or now_utc() - timedelta(hours=24)
         end = end or now_utc()
@@ -153,6 +162,9 @@ class InfluxDBClient:
         if every is not None and every not in allowed_every:
             logger.warning("query_metrics: ignoring disallowed every=%r", every)
             every = None
+        if agg not in ("mean", "max"):
+            logger.warning("query_metrics: ignoring disallowed agg=%r", agg)
+            agg = "mean"
 
         # Route to the rollup measurement when (a) it's enabled, (b) the
         # client requested a grain >= the rollup bin, and (c) the rollup
@@ -165,10 +177,12 @@ class InfluxDBClient:
         skip_aggregate = False
         if (
             self._rollup_enabled
+            and not _force_raw
             and every is not None
             and every in self._ROLLUP_GRAINS
         ):
-            measurement = self._rollup_measurement
+            measurement = (self._max_measurement if agg == "max"
+                           else self._rollup_measurement)
             bucket = self._rollup_read_bucket
             query_api = self._rollup_query
             # The rollup is already at rollup_every grain. Only aggregate
@@ -177,7 +191,7 @@ class InfluxDBClient:
                 skip_aggregate = True
 
         aggregate_clause = (
-            f"|> aggregateWindow(every: {every}, fn: mean, createEmpty: false)"
+            f"|> aggregateWindow(every: {every}, fn: {agg}, createEmpty: false)"
             if every and not skip_aggregate else ""
         )
 
@@ -212,26 +226,20 @@ class InfluxDBClient:
             return []
 
         # Rollup may be empty (task missing, just created, or admin token
-        # unset). Falling back to raw avoids blank charts. The recursive
-        # call sets measurement="metrics" because `every` lookups in
-        # _ROLLUP_GRAINS only happen when self._rollup_enabled is True.
+        # unset). Falling back to raw avoids blank charts.
         if (
             not results
-            and measurement == self._rollup_measurement
-            and self._rollup_enabled
+            and measurement in (self._rollup_measurement, self._max_measurement)
         ):
             logger.debug(
                 "rollup %s empty for %s/%s; falling back to raw metrics",
-                self._rollup_measurement, source, metric_name,
+                measurement, source, metric_name,
             )
-            self._rollup_enabled = False
-            try:
-                return self.query_metrics(
-                    source=source, metric_name=metric_name,
-                    start=start, end=end, limit=limit, every=every,
-                )
-            finally:
-                self._rollup_enabled = True
+            return self.query_metrics(
+                source=source, metric_name=metric_name,
+                start=start, end=end, limit=limit, every=every, agg=agg,
+                _force_raw=True,
+            )
         return results
 
     def warm_metric_history(self, minutes: int = 60, prefer_rollup: bool = True
@@ -433,13 +441,14 @@ class InfluxDBClient:
                 pass
 
     def ensure_rollup_task(self) -> dict[str, Any]:
-        """Idempotently ensure the metrics rollup Flux task exists.
+        """Idempotently ensure the metrics rollup Flux tasks exist — the mean
+        rollup (rollup_measurement) and its parallel max twin (#596).
 
-        The task runs inside InfluxDB on a fixed cadence (rollup_every),
-        reads raw `metrics`, applies aggregateWindow(mean), and writes the
-        result back under measurement = rollup_measurement (default
-        "metrics_1m"). Read-path lookups for grains >= rollup_every then
-        hit the rollup instead of scanning raw points.
+        Each task runs inside InfluxDB on a fixed cadence (rollup_every),
+        reads raw `metrics`, applies aggregateWindow(mean|max), and writes
+        the result under its own measurement ("metrics_1m" / "metrics_1m_max").
+        Read-path lookups for grains >= rollup_every then hit the rollup
+        instead of scanning raw points.
 
         Requires an operator/admin token (tokens.admin in llm-systems.toml).
         Bucket-scoped tokens can't create tasks in InfluxDB 2.x. If the
@@ -449,10 +458,12 @@ class InfluxDBClient:
             back to raw `metrics` scans
           - returns {"skipped": "..."} (non-fatal)
 
-        Idempotent: existing task is left untouched. To change rollup_every,
-        delete the task in the InfluxDB UI and restart.
+        Idempotent: existing tasks are left untouched. To change rollup_every,
+        delete the task in the InfluxDB UI and restart. When the max task is
+        first created, a one-shot background backfill seeds it from raw
+        history so long-window peak charts aren't truncated at upgrade time.
 
-        Returns the task dict on success or {"skipped"/"error": ...}.
+        Returns {"mean": {...}, "max": {...}} or {"skipped"/"error": ...}.
         Never raises.
         """
         if not self._rollup_enabled:
@@ -469,65 +480,24 @@ class InfluxDBClient:
             self._rollup_enabled = False
             return {"skipped": "tokens.admin not set; rollup disabled at runtime"}
 
-        # Build a one-shot admin-scoped client just for the task API call.
+        # Build a one-shot admin-scoped client just for the task API calls.
         admin_client = _InfluxDBClient(url=self.url, token=self._admin_token, org=self.org)
         try:
             tasks_api = admin_client.tasks_api()
-            # Suffix bumped from "<measurement>_rollup" to "..._v2" so that
-            # splitting the rollup into its own bucket (alarm_engine_metrics
-            # → alarm_engine_metrics_rollup) creates a fresh task rather than
-            # reusing the legacy one that wrote into the raw bucket.
-            task_name = f"{self._rollup_measurement}_rollup_v2"
-
-            existing = tasks_api.find_tasks(name=task_name)
-            if existing:
-                t = existing[0]
-                logger.info(
-                    "rollup task already present: name=%s id=%s status=%s every=%s",
-                    t.name, t.id, t.status, getattr(t, "every", "?"),
-                )
-                return {"name": t.name, "id": t.id, "status": t.status,
-                        "every": getattr(t, "every", None)}
-
-            # The body Flux passed to create_task_every() must NOT include
-            # the `option task = {...}` block — that's generated from the
-            # name/every kwargs. range(-2m) overlaps prior windows so a
-            # missed run (e.g. influxd restart) doesn't leave a hole.
-            flux_body = (
-                f'from(bucket: "{self.metrics_bucket}")\n'
-                f'  |> range(start: -2m)\n'
-                f'  |> filter(fn: (r) => r._measurement == "metrics" '
-                f'and r._field == "value")\n'
-                f'  |> aggregateWindow(every: {self._rollup_every}, fn: mean, '
-                f'createEmpty: false)\n'
-                f'  |> set(key: "_measurement", value: "{self._rollup_measurement}")\n'
-                f'  |> to(bucket: "{self.metrics_rollup_bucket}")\n'
-            )
-
-            # Build the task directly via TaskCreateRequest so we can pass
-            # the org by NAME. create_task_every() requires an Organization
-            # object with .id, which forces an org/bucket lookup that
-            # silently fails when the admin token can't list orgs or when
-            # the buckets API returns Bucket objects with empty org_id
-            # (observed with all-access tokens on influxdb-client 1.x).
-            from influxdb_client.domain.task_create_request import TaskCreateRequest
-
-            flux_with_option = (
-                f'{flux_body}\n\n'
-                f'option task = {{name: "{task_name}", every: {self._rollup_every}}}'
-            )
-            req = TaskCreateRequest(
-                flux=flux_with_option,
-                org=self.org,
-                status="active",
-            )
-            t = tasks_api.create_task(task_create_request=req)
-            logger.info(
-                "created rollup task: name=%s id=%s every=%s",
-                t.name, t.id, self._rollup_every,
-            )
-            return {"name": t.name, "id": t.id, "status": getattr(t, "status", None),
-                    "every": self._rollup_every}
+            results: dict[str, Any] = {}
+            # Per-task isolation: a transient failure on one task must not
+            # mask the other's result or skip the backfill trigger.
+            for fn, measurement in (("mean", self._rollup_measurement),
+                                    ("max", self._max_measurement)):
+                try:
+                    results[fn] = self._ensure_one_rollup_task(
+                        tasks_api, fn, measurement)
+                except Exception as e:
+                    logger.error("ensure_rollup_task(%s) failed: %s", fn, e)
+                    results[fn] = {"error": str(e)}
+            if results["max"].get("created"):
+                self._start_max_backfill()
+            return results
         except Exception as e:
             logger.error("ensure_rollup_task failed: %s", e)
             # Don't disable rollup here — the task might just be transiently
@@ -537,6 +507,97 @@ class InfluxDBClient:
         finally:
             with best_effort("close rollup admin client", log=logger):
                 admin_client.close()
+
+    def _rollup_flux(self, range_clause: str, fn: str, measurement: str) -> str:
+        """One rollup Flux pipeline: raw `metrics` → aggregateWindow(fn) →
+        `measurement` in the rollup bucket."""
+        return (
+            f'from(bucket: "{self.metrics_bucket}")\n'
+            f'  |> range({range_clause})\n'
+            f'  |> filter(fn: (r) => r._measurement == "metrics" '
+            f'and r._field == "value")\n'
+            f'  |> aggregateWindow(every: {self._rollup_every}, fn: {fn}, '
+            f'createEmpty: false)\n'
+            f'  |> set(key: "_measurement", value: "{measurement}")\n'
+            f'  |> to(bucket: "{self.metrics_rollup_bucket}")\n'
+        )
+
+    def _ensure_one_rollup_task(self, tasks_api, fn: str,
+                                measurement: str) -> dict[str, Any]:
+        """Find-or-create one rollup task (aggregateWindow fn → measurement).
+        Returns the task info dict, with "created": True on fresh creation."""
+        # "_v2" suffix: the legacy unsuffixed task wrote into the raw bucket.
+        task_name = f"{measurement}_rollup_v2"
+
+        existing = tasks_api.find_tasks(name=task_name)
+        if existing:
+            t = existing[0]
+            logger.info(
+                "rollup task already present: name=%s id=%s status=%s every=%s",
+                t.name, t.id, t.status, getattr(t, "every", "?"),
+            )
+            return {"name": t.name, "id": t.id, "status": t.status,
+                    "every": getattr(t, "every", None)}
+
+        # range(-2m) overlaps prior windows so a missed run (e.g. influxd
+        # restart) doesn't leave a hole.
+        flux_body = self._rollup_flux("start: -2m", fn, measurement)
+
+        # TaskCreateRequest passes the org by NAME — create_task_every()'s
+        # org/bucket lookup fails silently with all-access tokens.
+        from influxdb_client.domain.task_create_request import TaskCreateRequest
+
+        flux_with_option = (
+            f'{flux_body}\n\n'
+            f'option task = {{name: "{task_name}", every: {self._rollup_every}}}'
+        )
+        req = TaskCreateRequest(
+            flux=flux_with_option,
+            org=self.org,
+            status="active",
+        )
+        t = tasks_api.create_task(task_create_request=req)
+        logger.info(
+            "created rollup task: name=%s id=%s every=%s",
+            t.name, t.id, self._rollup_every,
+        )
+        return {"name": t.name, "id": t.id, "status": getattr(t, "status", None),
+                "every": self._rollup_every, "created": True}
+
+    def _start_max_backfill(self) -> None:
+        """Seed the max rollup from raw history in a daemon thread so AE
+        startup isn't blocked by the day-chunked Flux queries."""
+        threading.Thread(target=self._backfill_max_rollup,
+                         name="max-rollup-backfill", daemon=True).start()
+
+    def _backfill_max_rollup(self, days: Optional[int] = None) -> None:
+        """One-shot backfill: aggregate raw `metrics` into the max rollup
+        measurement, one day per query, newest day first. Never raises."""
+        days = self._MAX_BACKFILL_DAYS if days is None else days
+        client = _InfluxDBClient(url=self.url, token=self._admin_token, org=self.org)
+        try:
+            api = client.query_api()
+            fmt = "%Y-%m-%dT%H:%M:%SZ"
+            end = now_utc().replace(microsecond=0)
+            done = 0
+            for d in range(days):
+                stop = end - timedelta(days=d)
+                start = end - timedelta(days=d + 1)
+                flux = self._rollup_flux(
+                    f"start: {start.strftime(fmt)}, stop: {stop.strftime(fmt)}",
+                    "max", self._max_measurement)
+                try:
+                    api.query(flux, org=self.org)
+                    done += 1
+                except Exception as e:
+                    logger.warning("max-rollup backfill day -%d failed: %s", d + 1, e)
+            logger.info("max-rollup backfill complete: %d/%d day chunks into %s",
+                        done, days, self._max_measurement)
+        except Exception as e:
+            logger.warning("max-rollup backfill aborted: %s", e)
+        finally:
+            with best_effort("close backfill admin client", log=logger):
+                client.close()
 
     def close(self) -> None:
         """Close all per-bucket InfluxDB clients."""

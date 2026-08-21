@@ -64,6 +64,14 @@ def test_bucket_values_are_means():
     assert abs(out[0]["value"] - expected) < 1e-9
 
 
+def test_bucket_values_are_maxes_with_agg_max():
+    # Same series; agg="max" keeps the bucket's peak (offset 25), #596.
+    pts = [_mk("h", i, float(i)) for i in range(0, 100, 5)]
+    out = metrics.downsample_history(pts, 5, agg="max")
+    assert len(out) <= 5
+    assert abs(out[0]["value"] - 25.0) < 1e-9
+
+
 def test_timestamps_epoch_aligned_and_sorted():
     pts = _series(hosts=7, seconds=3600)
     out = metrics.downsample_history(pts, 1500)
@@ -133,4 +141,24 @@ def test_route_custom_max_points():
                    params={"since_minutes": 60, "max_points": 100})
     assert r.status_code == 200
     assert 0 < len(r.json()) <= 100
+    metrics.set_repository(None)
+
+
+def test_route_agg_max_buckets_peaks():
+    # Values cycle 0..99; mean-bucketed values sit near 50, max-bucketed
+    # values must reach the cycle peak (#596).
+    client = _client_with_seeded_repo(n_hosts=1)
+    r = client.get("/api/alarm/metrics/system/cpu_total",
+                   params={"since_minutes": 60, "max_points": 20, "agg": "max"})
+    assert r.status_code == 200
+    body = r.json()
+    assert body and max(p["value"] for p in body) >= 95.0
+    metrics.set_repository(None)
+
+
+def test_route_agg_rejects_unknown():
+    client = _client_with_seeded_repo(n_hosts=1)
+    r = client.get("/api/alarm/metrics/system/cpu_total",
+                   params={"since_minutes": 60, "agg": "p99"})
+    assert r.status_code == 422
     metrics.set_repository(None)
