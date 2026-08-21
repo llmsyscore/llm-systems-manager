@@ -1161,6 +1161,18 @@ class NotificationRepository:
         )
 
 
+def _downsample_every(window_seconds: float, tiers) -> Optional[str]:
+    """Tier-ladder lookup for the downsample grain. Applies the same 1-second
+    boundary slack as the cache check: `since = now - N` is re-measured
+    against a later `now`, so an N-second request lands a few ms past N."""
+    for tier in tiers or ():
+        if window_seconds <= tier.max_window_s + 1.0:
+            return tier.every
+    # Beyond the last tier → largest configured bucket so 30-day-plus
+    # requests still get a usable chart.
+    return tiers[-1].every if tiers else None
+
+
 class MetricRepository:
     """Repository for metric data points."""
 
@@ -1243,16 +1255,8 @@ class MetricRepository:
         # for ≤1h windows (those come from the in-memory cache above and
         # never reach this branch). Tier ladder is configurable via
         # [[alarm_engine.history.downsampling.tiers]] in llm-systems.toml.
-        ws = window_seconds
-        every: Optional[str] = None
-        for tier in settings.alarm_engine.history.downsampling.tiers:
-            if ws <= tier.max_window_s:
-                every = tier.every
-                break
-        # ws beyond the last tier → fall through to the largest configured
-        # bucket so 30-day-plus requests still get a usable chart.
-        if every is None and settings.alarm_engine.history.downsampling.tiers:
-            every = settings.alarm_engine.history.downsampling.tiers[-1].every
+        every = _downsample_every(
+            window_seconds, settings.alarm_engine.history.downsampling.tiers)
 
         try:
             db_points = self.db.query_metrics(
