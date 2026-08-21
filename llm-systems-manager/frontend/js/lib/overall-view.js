@@ -101,14 +101,39 @@ function energySeries(hourlyRows, labelsMs) {
 
 function _fmt1(v) { return v != null ? Number(v).toFixed(1) : '—'; }
 
+// Compact "3m ago"-style age for the tile peak sub-lines.
+function _fmtAgo(deltaMs) {
+  const secs = Math.max(0, Math.floor(deltaMs / 1000));
+  if (secs < 60) return secs + 's ago';
+  if (secs < 3600) return Math.floor(secs / 60) + 'm ago';
+  return Math.floor(secs / 3600) + 'h ago';
+}
+
+// {v, t} peak sample → "peak 45.6 · 3m ago", or null placeholder.
+function _peakLine(p, nowMs) {
+  if (!p || typeof p.v !== 'number') return null;
+  return `peak ${_fmt1(p.v)} · ${_fmtAgo((nowMs || 0) - p.t)}`;
+}
+
 // The three /api/fleet/<p>/aggregate payloads → provider tile view-models.
-function tiles(llama, lms, vllm) {
+// Every tile leads with gen/prompt t/s (live + window peak from `peaks`,
+// shape {llama: {gen: {v,t}, prompt: {v,t}}, lms, vllm}) then two
+// provider-specific stats.
+function tiles(llama, lms, vllm, peaks, nowMs) {
+  const pk = peaks || {};
   const out = [];
+  const tpStats = (a, key) => {
+    const tp = (a && a.throughput) || {};
+    const p = pk[key] || {};
+    return [
+      { v: _fmt1(tp.total_tps), l: 'gen t/s', p: _peakLine(p.gen, nowMs) },
+      { v: _fmt1(tp.total_pps), l: 'prompt t/s', p: _peakLine(p.prompt, nowMs) },
+    ];
+  };
   {
     const a = llama || {};
     const online = a.agent_count_online || 0;
     const gpu = a.gpu || {};
-    const tp = a.throughput || {};
     let accent = 'off';
     if (online > 0) accent = (a.awake_agent_count || 0) > 0 ? 'ok' : 'warn';
     if (online > 0 && _num(gpu.max_temp_c) != null && gpu.max_temp_c >= 85) accent = 'crit';
@@ -116,8 +141,7 @@ function tiles(llama, lms, vllm) {
       key: 'llama', label: PROVIDER_LABEL.llama,
       online, total: a.agent_count_total || 0, accent,
       stats: [
-        { v: _fmt1(tp.total_tps), l: 'gen t/s' },
-        { v: _fmt1(tp.total_pps), l: 'prompt t/s' },
+        ...tpStats(a, 'llama'),
         { v: String(a.awake_agent_count || 0), l: 'awake' },
         { v: String(a.active_model_count || 0), l: 'models' },
       ],
@@ -132,26 +156,23 @@ function tiles(llama, lms, vllm) {
       key: 'lms', label: PROVIDER_LABEL.lms,
       online, total: a.agent_count_total || 0, accent,
       stats: [
+        ...tpStats(a, 'lms'),
         { v: String(a.server_on_count || 0), l: 'servers on' },
         { v: String(a.loaded_model_count_total || 0), l: 'models loaded' },
-        { v: String(a.busy_agent_count || 0), l: 'busy' },
-        { v: String(a.process_count_total || 0), l: 'processes' },
       ],
     });
   }
   {
     const a = vllm || {};
     const online = a.agent_count_online || 0;
-    const tp = a.throughput || {};
     const accent = online > 0
       ? ((a.requests_running_total || 0) > 0 ? 'ok' : 'warn') : 'off';
     out.push({
       key: 'vllm', label: PROVIDER_LABEL.vllm,
       online, total: a.agent_count_total || 0, accent,
       stats: [
-        { v: String(a.server_on_count || 0), l: 'servers on' },
+        ...tpStats(a, 'vllm'),
         { v: String(a.requests_running_total || 0), l: 'requests' },
-        { v: _fmt1(tp.total_tps), l: 'gen t/s' },
         { v: (_num(a.max_kv_cache_pct) != null ? a.max_kv_cache_pct.toFixed(0) + '%' : '—'), l: 'kv cache' },
       ],
     });

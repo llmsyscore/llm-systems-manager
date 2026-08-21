@@ -1321,6 +1321,7 @@ async function loadOverallHistory() {
   if (gen !== _ovHistoryGen) return;  // only the newest in-flight call paints
   if (!rows || !rows.length) return;
   _ovHeroRows = rows;
+  if (typeof ovSeedTilePeaks === 'function') ovSeedTilePeaks(rows);
   _ovHeroRender();
   _ovLoadEnergyOverlay();
 }
