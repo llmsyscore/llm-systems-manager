@@ -19,14 +19,18 @@ const _ovTilePeaks = {};
   };
 });
 
-// Seeds the tile trackers from fleet history rows, shifted onto the
-// browser clock by the newest-row offset. Called from loadOverallHistory.
+// Seeds the tile trackers from fleet history rows on the browser clock;
+// only rows landing inside the peak window are pushed.
+let _ovTileSeedRows = null;
 function ovSeedTilePeaks(rows) {
   if (!Array.isArray(rows) || !rows.length) return;
-  const lastMs = new Date(rows[rows.length - 1].ts).getTime();
-  const skew = Number.isFinite(lastMs) ? Date.now() - lastMs : 0;
-  for (const r of rows) {
-    const t = new Date(r.ts).getTime() + skew;
+  const now = Date.now();
+  const clk = LMPeaks.rowClock(rows, now);
+  const cutoff = now - _OV_TILE_PEAK_WINDOW_MS;
+  let start = rows.length;
+  while (start > 0 && clk(rows[start - 1].ts) >= cutoff) start--;
+  for (const r of rows.slice(start)) {
+    const t = clk(r.ts);
     _ovTilePeaks.llama.gen.push(t, r.llama_tps);
     _ovTilePeaks.llama.prompt.push(t, r.llama_pps);
     _ovTilePeaks.lms.gen.push(t, r.lms_tps);
@@ -37,16 +41,19 @@ function ovSeedTilePeaks(rows) {
 }
 
 // Live aggregates → tracker pushes; returns the OV.tiles `peaks` shape.
+// Seeds once per fresh hero backfill (charts.js caches rows in _ovHeroRows).
 function _ovTilePeaksPush(llama, lms, vllm) {
+  if (typeof _ovHeroRows !== 'undefined' && _ovHeroRows && _ovHeroRows !== _ovTileSeedRows) {
+    _ovTileSeedRows = _ovHeroRows;
+    ovSeedTilePeaks(_ovHeroRows);
+  }
   const now = Date.now();
   const aggs = { llama, lms, vllm };
   const out = {};
   for (const k of ['llama', 'lms', 'vllm']) {
     const tp = (aggs[k] && aggs[k].throughput) || {};
-    if (aggs[k]) {
-      _ovTilePeaks[k].gen.push(now, tp.total_tps);
-      _ovTilePeaks[k].prompt.push(now, tp.total_pps);
-    }
+    _ovTilePeaks[k].gen.push(now, tp.total_tps);
+    _ovTilePeaks[k].prompt.push(now, tp.total_pps);
     out[k] = { gen: _ovTilePeaks[k].gen.peak(now),
                prompt: _ovTilePeaks[k].prompt.peak(now) };
   }
@@ -154,10 +161,7 @@ function _ovPaintTiles(tiles) {
 }
 
 function _ovAge(s) {
-  if (s == null) return '';
-  if (s < 60) return Math.round(s) + 's ago';
-  if (s < 3600) return Math.floor(s / 60) + 'm ago';
-  return Math.floor(s / 3600) + 'h ago';
+  return s == null ? '' : LMPeaks.agoText(s * 1000);
 }
 
 function _ovPaintAgents(rows) {

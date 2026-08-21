@@ -50,5 +50,28 @@ function makeTracker(windowMs) {
   return { push, peak, reset };
 }
 
-return { makeTracker };
+// Clamped "Ns/Nm/Nh ago" ladder shared by every peak display.
+function agoText(deltaMs) {
+  const secs = Math.max(0, Math.floor(deltaMs / 1000));
+  if (secs < 60) return secs + 's ago';
+  if (secs < 3600) return Math.floor(secs / 60) + 'm ago';
+  return Math.floor(secs / 3600) + 'h ago';
+}
+
+// Positive offsets beyond this bound are data staleness, not clock skew,
+// and must not shift old rows into the live window.
+const MAX_ROW_SKEW_MS = 120000;
+
+// History-row ts → caller-clock ms, shifted by the newest-row-to-now
+// offset. Stale feeds (large positive offset) keep their real age;
+// future-stamped rows (server clock ahead) are pulled back fully.
+function rowClock(rows, nowMs) {
+  const last = (rows && rows.length)
+    ? new Date(rows[rows.length - 1].ts).getTime() : NaN;
+  let skew = Number.isFinite(last) ? nowMs - last : 0;
+  if (skew > MAX_ROW_SKEW_MS) skew = 0;
+  return (ts) => new Date(ts).getTime() + skew;
+}
+
+return { makeTracker, agoText, rowClock, MAX_ROW_SKEW_MS };
 });

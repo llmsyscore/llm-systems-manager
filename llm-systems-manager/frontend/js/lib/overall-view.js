@@ -21,6 +21,9 @@ function heroBucketMs(raw) {
 // Shared time-bucket helper: window global in the browser, sibling in Node.
 const _series = (typeof window !== 'undefined' && window.LMSeries)
   || (typeof require === 'function' ? require('./series.js') : null);
+// Shared peak helpers (age ladder), same dual-mode resolution.
+const _peaks = (typeof window !== 'undefined' && window.LMPeaks)
+  || (typeof require === 'function' ? require('./peaks.js') : null);
 
 function _num(v) { return (typeof v === 'number' && !Number.isNaN(v)) ? v : null; }
 
@@ -101,24 +104,14 @@ function energySeries(hourlyRows, labelsMs) {
 
 function _fmt1(v) { return v != null ? Number(v).toFixed(1) : '—'; }
 
-// Compact "3m ago"-style age for the tile peak sub-lines.
-function _fmtAgo(deltaMs) {
-  const secs = Math.max(0, Math.floor(deltaMs / 1000));
-  if (secs < 60) return secs + 's ago';
-  if (secs < 3600) return Math.floor(secs / 60) + 'm ago';
-  return Math.floor(secs / 3600) + 'h ago';
-}
-
 // {v, t} peak sample → "peak 45.6 · 3m ago", or null placeholder.
 function _peakLine(p, nowMs) {
-  if (!p || typeof p.v !== 'number') return null;
-  return `peak ${_fmt1(p.v)} · ${_fmtAgo((nowMs || 0) - p.t)}`;
+  if (!p || typeof p.v !== 'number' || typeof p.t !== 'number') return null;
+  return `peak ${_fmt1(p.v)} · ${_peaks.agoText(nowMs - p.t)}`;
 }
 
-// The three /api/fleet/<p>/aggregate payloads → provider tile view-models.
-// Every tile leads with gen/prompt t/s (live + window peak from `peaks`,
-// shape {llama: {gen: {v,t}, prompt: {v,t}}, lms, vllm}) then two
-// provider-specific stats.
+// Aggregates + peaks ({llama:{gen:{v,t},prompt:{v,t}},lms,vllm}) → tile
+// view-models: gen/prompt t/s live+peak first, then two per-provider stats.
 function tiles(llama, lms, vllm, peaks, nowMs) {
   const pk = peaks || {};
   const out = [];
