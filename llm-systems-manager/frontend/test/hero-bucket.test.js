@@ -45,6 +45,7 @@ function loadHandlers() {
     </select>`;
   window.OV = OV;
   (0, eval)([
+    'let _ovHeroBucketMs = null;',
     fnSrc('ovHeroBucketMs'), fnSrc('ovHeroBucketSync'), fnSrc('ovHeroBucketChange'),
     'window.ovHeroBucketMs = ovHeroBucketMs;',
     'window.ovHeroBucketSync = ovHeroBucketSync;',
@@ -54,36 +55,33 @@ function loadHandlers() {
 
 describe('hero bucket handlers (#589)', () => {
   beforeEach(() => {
-    window.layout = {};
-    window.saveLayout = vi.fn();
     window._ovHeroRows = [{ ts: '2026-08-21T10:00:00Z' }];
     window._ovHeroRender = vi.fn();
     window.loadOverallHistory = vi.fn(() => Promise.resolve());
     loadHandlers();
   });
 
-  it('reads the width from layout, clamped', () => {
+  it('every page load starts at the 5m default', () => {
     expect(window.ovHeroBucketMs()).toBe(300000);
-    window.layout.heroBucketMs = 900000;
-    expect(window.ovHeroBucketMs()).toBe(900000);
-    window.layout.heroBucketMs = 42;
-    expect(window.ovHeroBucketMs()).toBe(300000);
-  });
-
-  it('sync reflects the applied width in the selector', () => {
-    window.layout.heroBucketMs = 3600000;
     window.ovHeroBucketSync();
-    expect(document.getElementById('ovHeroBucket').value).toBe('3600000');
+    expect(document.getElementById('ovHeroBucket').value).toBe('300000');
   });
 
-  it('change persists to layout and re-buckets locally from cached rows', () => {
+  it('change applies for the session and re-buckets locally from cached rows', () => {
     const sel = document.getElementById('ovHeroBucket');
     sel.value = '60000';
     window.ovHeroBucketChange(sel);
-    expect(window.layout.heroBucketMs).toBe(60000);
-    expect(window.saveLayout).toHaveBeenCalledTimes(1);
+    expect(window.ovHeroBucketMs()).toBe(60000);
+    expect(sel.value).toBe('60000');
     expect(window._ovHeroRender).toHaveBeenCalledTimes(1);
     expect(window.loadOverallHistory).not.toHaveBeenCalled();
+  });
+
+  it('junk select values clamp to the default', () => {
+    const sel = document.getElementById('ovHeroBucket');
+    sel.value = '';
+    window.ovHeroBucketChange(sel);
+    expect(window.ovHeroBucketMs()).toBe(300000);
   });
 
   it('change without cached rows falls back to the history backfill', () => {

@@ -43,9 +43,11 @@ async function fetchOverallMetrics() {
   } catch (_) {}
 }
 
-// Hero bucket width: layout-persisted (like layout.modelSort), OV-validated.
+// Hero bucket width: session-only view control — every page load starts
+// back at the 5m default. OV-validated.
+let _ovHeroBucketMs = null;
 function ovHeroBucketMs() {
-  return OV.heroBucketMs(typeof layout !== 'undefined' && layout && layout.heroBucketMs);
+  return OV.heroBucketMs(_ovHeroBucketMs);
 }
 
 // Keeps #ovHeroBucket showing the applied width across band repaints.
@@ -54,13 +56,9 @@ function ovHeroBucketSync() {
   if (sel && sel.value !== String(ovHeroBucketMs())) sel.value = String(ovHeroBucketMs());
 }
 
-// Selector change: persist to the layout store, re-bucket from cached rows.
+// Selector change: re-bucket from cached rows.
 function ovHeroBucketChange(sel) {
-  const v = OV.heroBucketMs(sel.value);
-  if (typeof layout !== 'undefined' && layout) {
-    layout.heroBucketMs = v;
-    if (typeof saveLayout === 'function') saveLayout();
-  }
+  _ovHeroBucketMs = OV.heroBucketMs(sel.value);
   ovHeroBucketSync();
   if (typeof _ovHeroRows !== 'undefined' && _ovHeroRows) _ovHeroRender();
   else if (typeof loadOverallHistory === 'function') loadOverallHistory().catch(() => {});
