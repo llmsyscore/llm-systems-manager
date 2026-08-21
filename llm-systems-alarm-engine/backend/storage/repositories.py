@@ -1264,7 +1264,7 @@ class MetricRepository:
         try:
             db_points = self.db.query_metrics(
                 source, metric_name, start=since, limit=limit, every=every,
-                agg=agg,
+                agg=agg, hostname=hostname,
             )
         except Exception as e:
             logger.warning(f"DB metric query failed for {source}/{metric_name}: {e}")
@@ -1289,6 +1289,7 @@ class MetricRepository:
                     hostname=p.get("hostname"),
                 )
             )
+        # Defense-in-depth behind the Flux-side hostname filter.
         if hostname:
             result = [p for p in result if p.hostname == hostname]
         return result

@@ -134,6 +134,7 @@ class InfluxDBClient:
         limit: int = 1000,
         every: Optional[str] = None,
         agg: str = "mean",
+        hostname: Optional[str] = None,
         _force_raw: bool = False,
     ) -> list[dict[str, Any]]:
         """Query metric data points from InfluxDB.
@@ -143,7 +144,8 @@ class InfluxDBClient:
         ("mean" default, or "max" for honest burst peaks — #596).
         Hostname and unit are tag columns and stay in the group key through
         aggregation, so multi-host series remain distinct after downsampling.
-        Pass `every=None` (default) for full-resolution raw points.
+        Pass `every=None` (default) for full-resolution raw points, and
+        `hostname` to filter to one host inside the Flux query (#602).
 
         When the rollup feature is enabled and the requested grain is >= the
         rollup bin size, this method reads the pre-aggregated rollup
@@ -194,6 +196,11 @@ class InfluxDBClient:
             f"|> aggregateWindow(every: {every}, fn: {agg}, createEmpty: false)"
             if every and not skip_aggregate else ""
         )
+        # Host-scoped reads filter by hostname inside the Flux query (#602).
+        hostname_clause = (
+            f'|> filter(fn: (r) => r.hostname == "{_flux_str(hostname)}")'
+            if hostname else ""
+        )
 
         query = f'''
             from(bucket: "{bucket}")
@@ -202,6 +209,7 @@ class InfluxDBClient:
               |> filter(fn: (r) => r.source == "{_flux_str(source)}")
               |> filter(fn: (r) => r.metric_name == "{_flux_str(metric_name)}")
               |> filter(fn: (r) => r._field == "value")
+              {hostname_clause}
               {aggregate_clause}
               |> sort(columns: ["_time"], desc: true)
               |> limit(n: {limit})
@@ -238,7 +246,7 @@ class InfluxDBClient:
             return self.query_metrics(
                 source=source, metric_name=metric_name,
                 start=start, end=end, limit=limit, every=every, agg=agg,
-                _force_raw=True,
+                hostname=hostname, _force_raw=True,
             )
         return results
 
