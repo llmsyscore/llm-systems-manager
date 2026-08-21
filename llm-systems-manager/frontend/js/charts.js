@@ -1263,8 +1263,32 @@ async function _ovLoadEnergyOverlay() {
 }
 
 // Hero display bucket: 1m backfill rows and 2s live appends collapse onto
-// this 8-min grid, each bucket keeping its peak.
-const HERO_BUCKET_MS = 480000;
+// this grid, each bucket keeping its peak. Selectable via #ovHeroBucket.
+const HERO_BUCKET_DEFAULT_MS = 300000;
+const HERO_BUCKET_CHOICES = [60000, 300000, 900000, 3600000];
+let HERO_BUCKET_MS = (() => {
+  try {
+    const v = parseInt(localStorage.getItem('ovHeroBucketMs'), 10);
+    return HERO_BUCKET_CHOICES.includes(v) ? v : HERO_BUCKET_DEFAULT_MS;
+  } catch (_) { return HERO_BUCKET_DEFAULT_MS; }
+})();
+
+// Reflect the persisted bucket in the selector; scripts load after the DOM.
+function ovHeroBucketInit() {
+  const sel = document.getElementById('ovHeroBucket');
+  if (sel) sel.value = String(HERO_BUCKET_MS);
+}
+ovHeroBucketInit();
+
+// Selector change: persist, then re-bucket the hero from 24h history.
+function ovHeroBucketChange() {
+  const sel = document.getElementById('ovHeroBucket');
+  const v = parseInt(sel && sel.value, 10);
+  if (!HERO_BUCKET_CHOICES.includes(v) || v === HERO_BUCKET_MS) return;
+  HERO_BUCKET_MS = v;
+  try { localStorage.setItem('ovHeroBucketMs', String(v)); } catch (_) {}
+  if (typeof loadOverallHistory === 'function') loadOverallHistory().catch(() => {});
+}
 
 // ---------------------------------------------------------------------------
 // Main fetch

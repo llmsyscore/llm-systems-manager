@@ -57,7 +57,7 @@ Backend API endpoints consumed:
   <link rel="stylesheet" href="/static/css/base.css?v=2026.08.19-1">
   <link rel="stylesheet" href="/static/css/reportcard.css?v=2026.08.04-1">
   <link rel="stylesheet" href="/static/css/energy.css?v=2026.08.19-2">
-  <link rel="stylesheet" href="/static/css/overall.css?v=2026.08.19-3">
+  <link rel="stylesheet" href="/static/css/overall.css?v=2026.08.21-1">
 </head>
 <body>
 
@@ -1565,6 +1565,13 @@ Backend API endpoints consumed:
       <span class="ov-strip-handle" title="Drag to reorder">⠿</span>
       <div class="ov-hero-head">
         <span class="ov-eyebrow">Last 24 Hours</span>
+        <select id="ovHeroBucket" class="ov-bucket-sel" onchange="ovHeroBucketChange()"
+                aria-label="Chart bucket size">
+          <option value="60000">1m buckets</option>
+          <option value="300000" selected>5m buckets</option>
+          <option value="900000">15m buckets</option>
+          <option value="3600000">1h buckets</option>
+        </select>
         <div class="legend-row ov-hero-legend">
           <span><span class="legend-dot" style="background:var(--accent)"></span>Gen t/s</span>
           <span><span class="legend-dot" style="background:var(--warn)"></span>Prompt t/s</span>
@@ -1871,7 +1878,7 @@ Backend API endpoints consumed:
 <script src="/static/js/lib/reportcard.js?v=2026.07.27-1"></script>
 <script src="/static/js/lib/energy.js?v=2026.08.19-1"></script>
 <script src="/static/js/lib/overall-view.js?v=2026.08.19-5"></script>
-<script src="/static/js/charts.js?v=2026.08.19-2"></script>
+<script src="/static/js/charts.js?v=2026.08.21-1"></script>
 <script src="/static/js/terminal.js?v=2026.08.19-1"></script>
 <script src="/static/js/llmcontrol.js?v=2026.08.19-1"></script>
 <script src="/static/js/openclaw.js?v=2026.08.03-1"></script>

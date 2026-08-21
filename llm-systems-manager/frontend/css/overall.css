@@ -27,6 +27,11 @@
 .ov-hero-chart { position: relative; height: 250px; }
 .ov-ovl { display: inline-flex; align-items: center; gap: 4px; cursor: pointer; }
 .ov-ovl input { margin: 0 2px 0 0; accent-color: var(--accent); }
+.ov-bucket-sel {
+  font-size: 0.72em; padding: 1px 4px; border-radius: 5px;
+  background: var(--bg-card-alt); color: var(--fg-dim);
+  border: 1px solid var(--border); cursor: pointer;
+}
 
 /* Provider tiles: same severity grammar as dashboard cards (left rail). */
 .ov-tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 14px; }
