@@ -630,12 +630,19 @@ function lqVal(obj, key) {
   return v != null ? (typeof v === 'number' ? v.toFixed(1) : v) : '—';
 }
 
-function timeSince(isoStr) {
-  if (!isoStr) return '';
-  const secs = Math.floor((Date.now() - new Date(isoStr).getTime()) / 1000);
+function timeSince(ts) {
+  if (ts == null || ts === '') return '';
+  const ms = typeof ts === 'number' ? ts : new Date(ts).getTime();
+  if (!Number.isFinite(ms)) return '';
+  const secs = Math.max(0, Math.floor((Date.now() - ms) / 1000));
   if (secs < 60) return `${secs}s ago`;
   if (secs < 3600) return `${Math.floor(secs/60)}m ago`;
   return `${Math.floor(secs/3600)}h ago`;
+}
+
+// Muted "(peak N Xm ago)" suffix shared by fmtWithPeak and fmtLivePeak.
+function _peakSpan(valText, ts) {
+  return `<span style="font-size:0.7em;color:var(--fg-dim)">(peak ${valText} ${timeSince(ts)})</span>`;
 }
 
 const lastNonZero = {
@@ -644,6 +651,32 @@ const lastNonZero = {
   requests_deferred: { val: null, ts: null },
 };
 
+// Rolling 15-min peaks for the Llama server card's Gen/Prompt tokens/s;
+// all samples carry browser-clock timestamps.
+const _LLAMA_PEAK_WINDOW_MS = 900000;
+// Server-card spark bucket: peak-per-minute so short bursts stay visible.
+const _LLAMA_SRV_BUCKET_MS = 60000;
+const _llamaPeaks = {
+  tps: LMPeaks.makeTracker(_LLAMA_PEAK_WINDOW_MS),
+  pps: LMPeaks.makeTracker(_LLAMA_PEAK_WINDOW_MS),
+};
+
+// "12.3 (peak 45.6 3m ago)" — the window peak stays visible at all times.
+function fmtLivePeak(cur, tracker) {
+  const live = cur != null ? cur.toFixed(1) : '—';
+  const p = tracker.peak(Date.now());
+  if (!p) return live;
+  return `${live} ${_peakSpan(p.v.toFixed(1), p.t)}`;
+}
+
+// Writes innerHTML only when the rendered string changed.
+const _livePeakLast = {};
+function _setLivePeak(id, html) {
+  if (_livePeakLast[id] === html) return;
+  _livePeakLast[id] = html;
+  document.getElementById(id).innerHTML = html;
+}
+
 function updateNonZero(key, val) {
   if (val !== null && val !== 0) lastNonZero[key] = { val, ts: new Date().toISOString() };
 }
@@ -651,7 +684,7 @@ function updateNonZero(key, val) {
 function fmtWithPeak(current, key) {
   const p = lastNonZero[key];
   if (current !== null && current !== 0) return String(current);
-  if (p && p.val !== null) return `0 <span style="font-size:0.7em;color:var(--fg-dim)">(peak ${p.val} ${timeSince(p.ts)})</span>`;
+  if (p && p.val !== null) return `0 ${_peakSpan(p.val, p.ts)}`;
   return '0';
 }
 
@@ -1083,7 +1116,11 @@ async function loadHistory() {
     const sel = (typeof _selectedAgent === 'function') ? _selectedAgent('llama') : null;
     // Clear before the fetch only on an agent change (#121); a same-agent
     // re-entry keeps its live data if the fetch fails (#507).
-    if (sel !== _histLastAgent) _resetMetricCharts();
+    if (sel !== _histLastAgent) {
+      _resetMetricCharts();
+      _llamaPeaks.tps.reset();
+      _llamaPeaks.pps.reset();
+    }
     _histLastAgent = sel;
     const url = sel ? `/api/history?agent=${encodeURIComponent(sel)}` : '/api/history';
     const rows = await _historyRows(url, 'llama');
@@ -1096,6 +1133,9 @@ async function loadHistory() {
     // Convert bytes-per-second → MiB-per-second so backfill points match the
     // live-fetch unit (see net/io conversion in fetchMetrics around line 3550).
     const B_PER_MIB = 1048576;
+    const _lastRowMs = new Date(rows[rows.length - 1].ts).getTime();
+    const _peakSkewMs = Number.isFinite(_lastRowMs) ? Date.now() - _lastRowMs : 0;
+    const _peakSeedTs = (t) => new Date(t).getTime() + _peakSkewMs;
     _genTokensCarry = 0;
     let _sawIscsiHistory = false;
     for (const r of rows.slice(-MAX_POINTS)) {
@@ -1104,6 +1144,8 @@ async function loadHistory() {
       pushPoint(gpuChart,  r.ts, r.gpu_util    || 0);
       pushPoint(netChart,  r.ts, ((r.net_sent || 0) + (r.net_recv || 0)) / B_PER_MIB);
       pushDual(llamaChart, r.ts, r.llama_tps,  r.llama_pps);
+      _llamaPeaks.tps.push(_peakSeedTs(r.ts), r.llama_tps);
+      _llamaPeaks.pps.push(_peakSeedTs(r.ts), r.llama_pps);
       pushDual(ioChart,    r.ts, (r.io_read  || 0) / B_PER_MIB,
                                   (r.io_write || 0) / B_PER_MIB);
       // Hardware sensor charts (AIO liquid temp + PSU power draw).
@@ -1115,7 +1157,7 @@ async function loadHistory() {
         pushDual(psuPowerChart, r.ts, r.psu_out || 0, r.psu_in || 0);
       // Detailed llama charts — the server-card throughput spark mirrors
       // llamaChart; gen total carries its last value across idle rows.
-      if (typeof llamaSrvChart !== 'undefined') pushDual(llamaSrvChart, r.ts, r.llama_tps, r.llama_pps);
+      if (typeof llamaSrvChart !== 'undefined') pushDual(llamaSrvChart, r.ts, r.llama_tps, r.llama_pps, _LLAMA_SRV_BUCKET_MS, 'max');
       if (r.llama_gen_tokens != null) _genTokensCarry = r.llama_gen_tokens;
       if (typeof genTokensChart !== 'undefined') pushPoint(genTokensChart, r.ts, _genTokensCarry);
       // Disk usage — / and /mnt/iscsi percent over time.
@@ -1454,8 +1496,10 @@ async function fetchMetrics() {
     modelEl.textContent = llModelClean || 'No model loaded';
     modelEl.style.color = sleeping ? '#444' : '#aaa';
     modelEl.title = sleeping ? 'Model is sleeping — metrics polling paused' : '';
-    document.getElementById('llamaTps').textContent          = ll.tokens_per_second        != null ? ll.tokens_per_second.toFixed(1) : '—';
-    document.getElementById('llamaPps').textContent          = ll.prompt_tokens_per_second != null ? ll.prompt_tokens_per_second.toFixed(1) : '—';
+    _llamaPeaks.tps.push(Date.now(), ll.tokens_per_second);
+    _llamaPeaks.pps.push(Date.now(), ll.prompt_tokens_per_second);
+    _setLivePeak('llamaTps', fmtLivePeak(ll.tokens_per_second, _llamaPeaks.tps));
+    _setLivePeak('llamaPps', fmtLivePeak(ll.prompt_tokens_per_second, _llamaPeaks.pps));
     document.getElementById('llamaGenTokens').textContent    = ll.total_tokens_generated   != null ? ll.total_tokens_generated.toLocaleString() : '—';
     document.getElementById('llamaPromptTokens').textContent = ll.total_tokens_prompted    != null ? ll.total_tokens_prompted.toLocaleString() : '—';
     document.getElementById('llamaDecodes').textContent      = ll.n_decode_total           != null ? ll.n_decode_total.toLocaleString() : '—';
@@ -1493,7 +1537,7 @@ async function fetchMetrics() {
     document.getElementById('llamaProcessing').innerHTML = fmtWithPeak(ll.requests_processing, 'requests_processing');
     document.getElementById('llamaDeferred').innerHTML   = fmtWithPeak(ll.requests_deferred,   'requests_deferred');
     pushDual(llamaChart, ts, ll.tokens_per_second, ll.prompt_tokens_per_second);
-    pushDual(llamaSrvChart, ts, ll.tokens_per_second, ll.prompt_tokens_per_second);
+    pushDual(llamaSrvChart, ts, ll.tokens_per_second, ll.prompt_tokens_per_second, _LLAMA_SRV_BUCKET_MS, 'max');
     if (ll.total_tokens_generated != null) _genTokensCarry = ll.total_tokens_generated;
     pushPoint(genTokensChart, ts, _genTokensCarry);
 
