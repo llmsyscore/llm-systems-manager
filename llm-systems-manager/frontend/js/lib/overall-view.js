@@ -173,10 +173,36 @@ function tiles(llama, lms, vllm, peaks, nowMs) {
   return out;
 }
 
+// 1234567 → "1.2M", 89012 → "89.0k"; integers below 1k stay plain.
+function fmtShort(v) {
+  if (typeof v !== 'number' || !Number.isFinite(v)) return null;
+  if (Math.abs(v) >= 1e9) return (v / 1e9).toFixed(1) + 'B';
+  if (Math.abs(v) >= 1e6) return (v / 1e6).toFixed(1) + 'M';
+  if (Math.abs(v) >= 1e3) return (v / 1e3).toFixed(1) + 'k';
+  return String(Math.round(v));
+}
+
+// Context sizes are binary: 32768 → "32k", 131072 → "128k".
+function _fmtCtx(v) {
+  return v >= 1024 ? Math.round(v / 1024) + 'k' : String(v);
+}
+
+// Loaded-model extras (#593): " · 32k ctx · 1.2M gen · 89.0k prompt",
+// each part present only when its field is reported.
+function _modelExtras(row) {
+  const parts = [];
+  if (typeof row.ctx === 'number') parts.push(`${_fmtCtx(row.ctx)} ctx`);
+  const gen = fmtShort(row.total_tokens_generated);
+  if (gen != null) parts.push(`${gen} gen`);
+  const prompt = fmtShort(row.total_tokens_prompted);
+  if (prompt != null) parts.push(`${prompt} prompt`);
+  return parts.length ? ` · ${parts.join(' · ')}` : '';
+}
+
 function _agentDetail(prov, row) {
   if (prov === 'llama') {
     const state = row.state || 'unknown';
-    return row.model ? `${state} · ${row.model}` : state;
+    return row.model ? `${state} · ${row.model}${_modelExtras(row)}` : state;
   }
   if (prov === 'lms') {
     if (!row.server_on) return 'server off';
@@ -186,12 +212,13 @@ function _agentDetail(prov, row) {
     if (!names.length) return `${state} · ${count} model${count === 1 ? '' : 's'}`;
     // +N covers models beyond the display cap or without a reported name.
     const extra = Math.max(0, count - names.length);
-    return `${state} · ${names.join(' · ')}` + (extra ? ` +${extra}` : '');
+    return `${state} · ${names.join(' · ')}` + (extra ? ` +${extra}` : '')
+      + _modelExtras(row);
   }
   const req = _num(row.requests_running);
   if (!row.server_on) return 'server off';
   const base = `${req != null ? req : 0} req`;
-  return row.model ? `${base} · ${row.model}` : base;
+  return row.model ? `${base} · ${row.model}${_modelExtras(row)}` : base;
 }
 
 // Aggregates' per-agent rows joined with list-by-provider hostnames →
@@ -268,6 +295,6 @@ function toplines(llama, lms, vllm, energy) {
 }
 
 return { heroSeries, energySeries, tiles, agentRows, alertsSummary, energyChip,
-         toplines, heroBucketMs, PROVIDER_LABEL, HERO_BUCKET_CHOICES,
+         toplines, heroBucketMs, fmtShort, PROVIDER_LABEL, HERO_BUCKET_CHOICES,
          HERO_BUCKET_DEFAULT_MS };
 });

@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import time
 
-from . import ProviderSpec, register
+from . import ProviderSpec, int_or_none, register
 
 
 def _fleet_aggregate(samples: dict[str, dict]) -> dict:
@@ -59,6 +59,9 @@ def _fleet_aggregate(samples: dict[str, dict]) -> dict:
             "model": m if (is_online and running) else None,
             "requests_running": int(rr) if (is_online and isinstance(rr, (int, float))) else None,
             "tokens_per_second": tps if isinstance(tps, (int, float)) else None,
+            "ctx": int_or_none(v.get("max_model_len")) if (is_online and running) else None,
+            "total_tokens_generated": int_or_none(v.get("total_tokens_generated")) if is_online else None,
+            "total_tokens_prompted": int_or_none(v.get("total_tokens_prompted")) if is_online else None,
             "age_s": round(now - last_seen, 1) if last_seen else None,
         })
     return {

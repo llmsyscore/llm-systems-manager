@@ -301,6 +301,7 @@ def collect_llama_for_metrics() -> dict[str, Any]:
         "modalities": None,
         "total_slots": None,
         "is_sleeping": None,
+        "n_ctx": None,
     }
 
     sse_snap = dict(_require_ctx().state.get("llama_sse") or {})
@@ -379,6 +380,10 @@ def collect_llama_for_metrics() -> dict[str, Any]:
                 n_slots = props.get("total_slots")
                 if isinstance(n_slots, int):
                     llama["total_slots"] = n_slots
+                dgs = props.get("default_generation_settings") or {}
+                n_ctx = dgs.get("n_ctx")
+                if isinstance(n_ctx, (int, float)):
+                    llama["n_ctx"] = int(n_ctx)
                 if isinstance(props.get("is_sleeping"), bool):
                     llama["is_sleeping"] = props["is_sleeping"]
                     # Direct API sleep signal corroborates the state-file value.
