@@ -25,3 +25,6 @@ websockets>=13.0
 aiohttp>=3.9.0
 # Web-push sender for the PWA companion (#522, companion.py); lazy-imported.
 pywebpush>=2.0.0
+
+# Comment-preserving TOML round-trip for the Admin → Settings editor (#606).
+tomlkit>=0.12
