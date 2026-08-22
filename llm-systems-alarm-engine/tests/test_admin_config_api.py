@@ -76,3 +76,18 @@ def test_put_requires_changes(monkeypatch, cfg):
     r = _client().put(PATH, headers={"Authorization": "Bearer mgmt-secret"},
                       json={"changes": {}})
     assert r.status_code == 400
+
+
+def test_config_endpoints_fail_closed_without_tokens(monkeypatch, cfg):
+    _set_tokens(monkeypatch, ingest="", management="")
+    assert _client().get(PATH).status_code == 403
+    r = _client().put(PATH, json={"changes": {"alarm_engine.evaluation_interval": 21}})
+    assert r.status_code == 403
+    assert "evaluation_interval = 21" not in cfg.read_text()
+
+
+def test_put_null_secret_clear_yields_400_not_500(monkeypatch, cfg):
+    _set_tokens(monkeypatch, management="mgmt-secret")
+    r = _client().put(PATH, headers={"Authorization": "Bearer mgmt-secret"},
+                      json={"changes": {"alarm_engine.ingest_token": None}})
+    assert r.status_code == 400

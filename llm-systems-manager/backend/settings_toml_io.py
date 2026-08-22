@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import shutil
 import threading
 import time
@@ -56,7 +57,10 @@ def _set_dotted(doc, dotted: str, value) -> None:
         if key not in node:
             node[key] = tomlkit.table()
         node = node[key]
-    node[parts[-1]] = value
+    try:
+        node[parts[-1]] = value
+    except Exception as e:
+        raise SettingsValidationError({dotted: f"unsupported value: {e}"}) from e
 
 
 def _validate(text: str) -> None:
@@ -65,8 +69,7 @@ def _validate(text: str) -> None:
     except Exception as e:
         raise SettingsValidationError({"_toml": str(e)}) from e
     try:
-        # Init kwargs outrank pydantic-settings' file/env sources, so this
-        # validates the candidate document, not the on-disk file.
+        # Validates the candidate document via init kwargs, not the on-disk file.
         Settings(**data)
     except Exception as e:
         raise SettingsValidationError({"_schema": str(e)[:500]}) from e
@@ -85,7 +88,10 @@ def _backup(path: Path) -> None:
             n += 1
             dst = bdir / f"{path.name}.{ts}-{n}"
         shutil.copy2(path, dst)
-        for old in sorted(bdir.glob(path.name + ".*"))[:-_BACKUP_KEEP]:
+        # Prune only our own timestamped backups, never other files in backups/.
+        pat = re.compile(re.escape(path.name) + r"\.\d{8}-\d{6}(-\d+)?$")
+        ours = sorted(p for p in bdir.iterdir() if pat.fullmatch(p.name))
+        for old in ours[:-_BACKUP_KEEP]:
             old.unlink()
     except Exception:
         log.exception("settings backup failed (continuing)")

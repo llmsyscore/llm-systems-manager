@@ -161,6 +161,13 @@ def entry_for(path: str) -> Optional[dict]:
     return _BY_PATH.get(path)
 
 
+def secret_status(value) -> str:
+    """'set' / 'unset' chip for a secret's current value."""
+    if isinstance(value, list):
+        return "set" if value else "unset"
+    return "unset" if (value or "") in _UNSET_SECRETS else "set"
+
+
 def _current(path: str):
     node = settings
     for part in path.split("."):
@@ -176,10 +183,7 @@ def describe() -> dict:
     for e in CATALOG:
         cur = _current(e["path"])
         if e["secret"]:
-            if isinstance(cur, list):
-                secrets[e["path"]] = "set" if cur else "unset"
-            else:
-                secrets[e["path"]] = "unset" if (cur or "") in _UNSET_SECRETS else "set"
+            secrets[e["path"]] = secret_status(cur)
         elif cur is not None:
             values[e["path"]] = cur
     return {

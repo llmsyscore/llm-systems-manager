@@ -69,6 +69,11 @@ def management_bearer_ok(authorization: Optional[str]) -> bool:
     return bool(provided) and hmac.compare_digest(provided, expected)
 
 
+def management_auth_active() -> bool:
+    """True when a management or ingest token is configured (gate enforcing)."""
+    return bool(_configured_management_token() or _configured_token())
+
+
 def require_management_token(authorization: Optional[str] = Header(default=None)) -> None:
     """FastAPI dependency for the management routes (rules/alerts/notifications):
     enforces `management_token`, else `ingest_token`; no-op when neither is set."""

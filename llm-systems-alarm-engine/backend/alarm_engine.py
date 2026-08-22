@@ -952,7 +952,7 @@ def _collect_sqlite_stats() -> dict:
 from . import _archive as _ae_archive
 from datetime import datetime, timedelta, timezone
 from fastapi import UploadFile, File, Form, Body, HTTPException, Depends
-from .api.auth import management_bearer_ok, require_management_token
+from .api.auth import management_auth_active, management_bearer_ok, require_management_token
 
 _AE_EXPORT_DBS = ["data/ae_notif_rules.db", "data/ae_alarms.db"]
 
@@ -1291,9 +1291,18 @@ async def ae_self_restart(_auth: None = Depends(require_management_token)):
 _AE_CONFIG_PREFIXES = ("alarm_engine", "influxdb", "notifications", "logging")
 
 
+def _require_configured_management_auth() -> None:
+    """Config read/write is fail-closed: refused until a token is provisioned."""
+    if not management_auth_active():
+        raise HTTPException(
+            status_code=403,
+            detail="management token required — set [alarm_engine].management_token")
+
+
 @app.get("/api/alarm/admin/config")
 async def ae_config_get(_auth: None = Depends(require_management_token)):
     from . import settings_toml_io as _sio
+    _require_configured_management_auth()
     return {"ok": True, "sections": _sio.read_sections(_AE_CONFIG_PREFIXES)}
 
 
@@ -1301,6 +1310,7 @@ async def ae_config_get(_auth: None = Depends(require_management_token)):
 async def ae_config_put(body: dict = Body(...),
                         _auth: None = Depends(require_management_token)):
     from . import settings_toml_io as _sio
+    _require_configured_management_auth()
     changes = body.get("changes") or {}
     if not isinstance(changes, dict) or not changes:
         raise HTTPException(status_code=400, detail="changes object required")

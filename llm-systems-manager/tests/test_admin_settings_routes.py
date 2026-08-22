@@ -22,8 +22,11 @@ def client(monkeypatch, tmp_path):
         yield c, cfg
 
 
-def test_get_masks_secrets_and_reports_topology(client):
+def test_get_masks_secrets_and_reports_topology(client, monkeypatch):
     c, _ = client
+    monkeypatch.setattr(manager_mod, "install_topology", lambda: {
+        "ae_local_disk": True, "ae_local_unit": True,
+        "ae_local_url": True, "split": False})
     d = c.get("/api/admin/settings").get_json()
     assert d["ok"] is True
     assert "alarm_engine.ingest_token" not in d["values"]
@@ -172,3 +175,18 @@ def test_split_restart_uses_ae_self_restart(client, monkeypatch):
     r = c.post("/api/admin/service/alarm_engine/restart")
     assert r.status_code == 200 and r.get_json()["ok"] is True
     assert called["url"].endswith("/api/alarm/admin/self-restart")
+
+
+def test_split_put_failed_forward_excludes_remote_only_from_applied(client, monkeypatch):
+    c, _ = client
+    _force_split(monkeypatch)
+
+    def _boom(url, **kw):
+        raise OSError("down")
+    monkeypatch.setattr(manager_mod._ae_session, "put", _boom)
+    d = c.put("/api/admin/settings", json={"changes": {
+        "alarm_engine.evaluation_interval": 20,
+        "manager.poll_interval": 30}}).get_json()
+    assert d["ok"] is True and d["ae_sync_failed"]
+    assert d["applied"] == ["manager.poll_interval"]
+    assert d["restart_required"] == ["manager"]

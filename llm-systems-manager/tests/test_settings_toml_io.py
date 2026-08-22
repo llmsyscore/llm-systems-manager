@@ -75,3 +75,13 @@ def test_missing_file_starts_from_example_or_empty(tmp_path):
 def test_read_sections_filters_by_prefix(cfg):
     out = sio.read_sections(("manager",), config_path=cfg)
     assert "unknown_section" not in out
+
+
+def test_backup_prune_ignores_foreign_files(cfg):
+    bdir = cfg.parent / "backups"
+    bdir.mkdir(exist_ok=True)
+    foreign = bdir / "llm-systems.toml.example"
+    foreign.write_text("keep me")
+    for i in range(13):
+        sio.apply_patches({"manager.port": 5100 + i}, config_path=cfg)
+    assert foreign.read_text() == "keep me"

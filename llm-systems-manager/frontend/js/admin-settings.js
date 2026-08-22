@@ -1,19 +1,14 @@
 // Admin → Settings sub-tab (#606): catalog-driven TOML settings editor.
-// Talks to GET/PUT /api/admin/settings; restart buttons reuse _restartService.
+// Talks to GET/PUT /api/admin/settings; restarts go through the service API.
 (() => {
   'use strict';
 
   let _data = null;
+  let _entryByPath = new Map();
   const _dirty = new Map();   // path -> raw value to submit (null = clear secret)
 
-  function esc(s) {
-    return String(s).replace(/[&<>"']/g,
-      c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
-  }
-
-  function entryFor(path) {
-    return _data.entries.find(e => e.path === path);
-  }
+  // Shared escaper from foundation.js (loads before this file).
+  const esc = s => _esc(String(s ?? ''));
 
   async function load() {
     if (_dirty.size && !window.confirm('Discard unsaved settings changes?')) return;
@@ -27,9 +22,10 @@
       if (!_data.ok) throw new Error(_data.error || 'request failed');
     } catch (e) {
       root.innerHTML = `<div class="adm-card" style="padding:16px;color:var(--crit);">` +
-        `Failed to load settings — ${esc(String(e && e.message || e))}</div>`;
+        `Failed to load settings — ${esc(e && e.message || e)}</div>`;
       return;
     }
+    _entryByPath = new Map(_data.entries.map(e => [e.path, e]));
     render(root);
   }
 
@@ -47,9 +43,9 @@
   }
 
   function secretChip(e) {
-    const isSet = (_data.secrets[e.path] || 'unset') === 'set';
-    return `<span class="status ${isSet ? 'status--ok' : 'status--muted'} status--square">` +
-      `${isSet ? 'set' : 'not set'}</span>`;
+    const st = _data.secrets[e.path];   // undefined = unknown (AE unreachable)
+    const cls = st === 'set' ? 'status--ok' : 'status--muted';
+    return `<span class="status ${cls} status--square">${st ? (st === 'set' ? 'set' : 'not set') : 'unknown'}</span>`;
   }
 
   function secretInput(e) {
@@ -68,8 +64,9 @@
 
   function inputFor(e) {
     if (aeLocked(e)) {
+      const v = _data.values[e.path];
       const shown = e.secret ? secretChip(e)
-        : esc(Array.isArray(currentValue(e)) ? currentValue(e).join(', ') : String(currentValue(e)));
+        : esc(v === undefined ? 'unknown' : (Array.isArray(v) ? v.join(', ') : String(v)));
       return `<span class="adm-muted">🔒 ${shown}` +
         ` — alarm engine unreachable; edit the TOML on its host</span>`;
     }
@@ -132,41 +129,33 @@
     root.innerHTML = html;
     renderBanner();
     updateSaveBar();
-    if (!root._stWired) {
-      root._stWired = true;
-      root.addEventListener('input', onInput);
-      root.addEventListener('change', onInput);
-      root.addEventListener('click', onClick);
-    }
   }
 
   // ── editing ───────────────────────────────────────────────────────
 
   function readInput(el, entry) {
-    if (entry.type === 'bool' && !entry.secret) return el.checked;
-    if (entry.type === 'list') {
-      return el.value.split('\n').map(s => s.trim()).filter(Boolean);
+    switch (entry.type) {
+      case 'bool': return el.checked;
+      case 'list': return el.value.split('\n').map(s => s.trim()).filter(Boolean);
+      case 'int':
+      case 'float': return el.value === '' ? null : Number(el.value);
+      default: return el.value;
     }
-    if (!entry.secret && (entry.type === 'int' || entry.type === 'float')) {
-      return el.value === '' ? null : Number(el.value);
-    }
-    return el.value;
   }
 
   function onInput(ev) {
     const el = ev.target.closest('.st-input');
     if (!el || !_data) return;
-    const entry = entryFor(el.dataset.path);
+    const entry = _entryByPath.get(el.dataset.path);
     if (!entry) return;
-    const cur = readInput(el, entry);
+    const cur = entry.secret && entry.type !== 'list' ? el.value : readInput(el, entry);
     if (entry.secret) {
       // Blank secret input = leave unchanged (unless a Clear queued null).
-      const blank = entry.type === 'list' ? !cur.length : cur === '';
+      const blank = Array.isArray(cur) ? !cur.length : cur === '';
       if (blank && _dirty.get(entry.path) !== null) _dirty.delete(entry.path);
       else if (!blank) _dirty.set(entry.path, cur);
     } else {
-      const orig = currentValue(entry);
-      const same = JSON.stringify(cur) === JSON.stringify(orig);
+      const same = JSON.stringify(cur) === JSON.stringify(currentValue(entry));
       if (same) _dirty.delete(entry.path);
       else _dirty.set(entry.path, cur);
     }
@@ -174,13 +163,20 @@
   }
 
   function onClick(ev) {
-    const btn = ev.target.closest('[data-clear]');
-    if (!btn) return;
-    ev.preventDefault();
-    _dirty.set(btn.dataset.clear, null);   // null = explicit clear (server contract)
-    btn.textContent = 'Clear queued';
-    btn.disabled = true;
-    updateSaveBar();
+    const clr = ev.target.closest('[data-clear]');
+    if (clr) {
+      ev.preventDefault();
+      _dirty.set(clr.dataset.clear, null);   // null = explicit clear (server contract)
+      clr.textContent = 'Clear queued';
+      clr.disabled = true;
+      updateSaveBar();
+      return;
+    }
+    const rst = ev.target.closest('[data-restart]');
+    if (rst) {
+      ev.preventDefault();
+      restartService(rst.dataset.restart);
+    }
   }
 
   function updateSaveBar() {
@@ -192,14 +188,16 @@
       bar.style.cssText = 'position:sticky;bottom:0;display:flex;gap:12px;align-items:center;' +
         'padding:12px 16px;margin-top:12px;background:var(--bg-card);' +
         'border:1px solid var(--border-strong);border-radius:8px;z-index:5;';
+      bar.innerHTML = `<span id="adminSettingsDirtyCount" style="color:var(--fg);"></span>
+        <button class="adm-btn primary" id="adminSettingsSaveBtn">Save</button>
+        <button class="adm-btn" id="adminSettingsDiscardBtn">Discard</button>
+        <span class="adm-muted" id="adminSettingsSaveMsg"></span>`;
       document.getElementById('adminSettingsRoot').appendChild(bar);
+      document.getElementById('adminSettingsSaveBtn').onclick = save;
+      document.getElementById('adminSettingsDiscardBtn').onclick = () => { _dirty.clear(); load(); };
     }
-    bar.innerHTML = `<span style="color:var(--fg);">${_dirty.size} unsaved change${_dirty.size > 1 ? 's' : ''}</span>
-      <button class="adm-btn primary" id="adminSettingsSaveBtn">Save</button>
-      <button class="adm-btn" id="adminSettingsDiscardBtn">Discard</button>
-      <span class="adm-muted" id="adminSettingsSaveMsg"></span>`;
-    document.getElementById('adminSettingsSaveBtn').onclick = save;
-    document.getElementById('adminSettingsDiscardBtn').onclick = () => { _dirty.clear(); load(); };
+    document.getElementById('adminSettingsDirtyCount').textContent =
+      `${_dirty.size} unsaved change${_dirty.size > 1 ? 's' : ''}`;
   }
 
   async function save() {
@@ -257,6 +255,51 @@
   const _UNIT = { manager: 'llm-systems-manager', alarm_engine: 'llm-systems-alarm-engine' };
   const _LABEL = { manager: 'Manager', alarm_engine: 'Alarm Engine' };
 
+  function bannerMsg(text, isErr) {
+    const el = document.getElementById('adminSettingsRestartMsg');
+    if (el) {
+      el.textContent = text;
+      el.style.color = isErr ? 'var(--crit)' : 'var(--fg-dim)';
+    }
+  }
+
+  async function restartService(svc) {
+    const label = _LABEL[svc] || svc;
+    const okGo = typeof _themedConfirm === 'function'
+      ? await _themedConfirm({
+          title: `Restart ${label}?`,
+          bodyHtml: svc === 'manager'
+            ? 'The manager will restart and the dashboard will be briefly unavailable.'
+            : 'The alarm engine will restart. Agents buffer and retry, so no data is lost.',
+          confirmLabel: 'Restart', cancelLabel: 'Cancel', danger: true,
+        })
+      : window.confirm(`Restart ${label}?`);
+    if (!okGo) return;
+    bannerMsg(`restarting ${label}…`);
+    try {
+      const r = await fetch(`/api/admin/service/${svc}/restart`, { method: 'POST' });
+      const d = await r.json().catch(() => ({}));
+      if (r.ok && d.ok) {
+        if (svc === 'manager') {
+          bannerMsg('manager restarting — reloading in ~6s');
+          setTimeout(() => location.reload(), 6000);
+        } else {
+          bannerMsg(`✓ ${label} restart requested`);
+          setTimeout(load, 4000);
+        }
+      } else {
+        bannerMsg(`${label} restart failed — ${d.error || `HTTP ${r.status}`}`, true);
+      }
+    } catch (e) {
+      if (svc === 'manager') {
+        bannerMsg('manager restarting — reloading in ~6s');
+        setTimeout(() => location.reload(), 6000);
+      } else {
+        bannerMsg(`${label} restart error — ${e}`, true);
+      }
+    }
+  }
+
   function renderBanner() {
     const old = document.getElementById('adminSettingsRestartBanner');
     if (old) old.remove();
@@ -274,11 +317,19 @@
           `sudo systemctl restart ${_UNIT[svc]}`;
         return `<div style="margin-top:6px;display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
           <code style="color:var(--fg-dim);">${esc(cmd)}</code>
-          <button class="adm-btn warn" onclick="_restartService('${svc}')">Restart ${_LABEL[svc]}</button>
+          <button class="adm-btn warn" data-restart="${esc(svc)}">Restart ${esc(_LABEL[svc])}</button>
         </div>`;
-      }).join('');
+      }).join('') +
+      `<div class="adm-muted" id="adminSettingsRestartMsg" style="margin-top:6px;font-size:12px;"></div>`;
     const root = document.getElementById('adminSettingsRoot');
     root.insertBefore(bar, root.firstChild);
+  }
+
+  const _root = document.getElementById('adminSettingsRoot');
+  if (_root) {
+    _root.addEventListener('input', onInput);
+    _root.addEventListener('change', onInput);
+    _root.addEventListener('click', onClick);
   }
 
   window.adminSettingsLoad = load;
