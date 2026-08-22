@@ -73,3 +73,27 @@ def test_services_for():
     assert sc.services_for(["manager.port"]) == {"manager"}
     assert sc.services_for(["alarm_engine.port"]) == {"alarm_engine"}
     assert sc.services_for(["influxdb.host"]) == {"manager", "alarm_engine"}
+
+
+def test_int_rejects_bool_and_fractional_float():
+    _, errors = sc.validate_and_coerce({"manager.port": True})
+    assert "manager.port" in errors
+    _, errors = sc.validate_and_coerce({"manager.port": 5001.9})
+    assert "manager.port" in errors
+    clean, errors = sc.validate_and_coerce({"manager.port": 5001.0})
+    assert errors == {} and clean["manager.port"] == 5001
+
+
+def test_float_rejects_nan_and_inf():
+    for bad in ("nan", "inf", float("nan"), float("inf")):
+        _, errors = sc.validate_and_coerce({"manager.reportcard.price_kwh": bad})
+        assert "manager.reportcard.price_kwh" in errors, bad
+
+
+def test_describe_reads_fresh_file_values(monkeypatch, tmp_path):
+    import settings_toml_io as sio
+    p = tmp_path / "llm-systems.toml"
+    p.write_text("[manager.history]\nwindow_minutes = 123\n")
+    monkeypatch.setattr(sio, "resolve_config_path", lambda: p)
+    d = sc.describe()
+    assert d["values"]["manager.history.window_minutes"] == 123

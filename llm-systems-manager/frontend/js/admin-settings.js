@@ -150,10 +150,11 @@
     if (!entry) return;
     const cur = entry.secret && entry.type !== 'list' ? el.value : readInput(el, entry);
     if (entry.secret) {
-      // Blank secret input = leave unchanged (unless a Clear queued null).
+      // Blank secret input = leave unchanged; typing overrides a queued Clear.
       const blank = Array.isArray(cur) ? !cur.length : cur === '';
-      if (blank && _dirty.get(entry.path) !== null) _dirty.delete(entry.path);
-      else if (!blank) _dirty.set(entry.path, cur);
+      if (blank) _dirty.delete(entry.path);
+      else _dirty.set(entry.path, cur);
+      syncClearButton(entry.path);
     } else {
       const same = JSON.stringify(cur) === JSON.stringify(currentValue(entry));
       if (same) _dirty.delete(entry.path);
@@ -162,13 +163,20 @@
     updateSaveBar();
   }
 
+  function syncClearButton(path) {
+    const btn = document.querySelector(`[data-clear="${CSS.escape(path)}"]`);
+    if (!btn) return;
+    const queued = _dirty.get(path) === null;
+    btn.textContent = queued ? 'Clear queued' : 'Clear';
+    btn.disabled = queued;
+  }
+
   function onClick(ev) {
     const clr = ev.target.closest('[data-clear]');
     if (clr) {
       ev.preventDefault();
       _dirty.set(clr.dataset.clear, null);   // null = explicit clear (server contract)
-      clr.textContent = 'Clear queued';
-      clr.disabled = true;
+      syncClearButton(clr.dataset.clear);
       updateSaveBar();
       return;
     }
@@ -217,6 +225,16 @@
       return;
     }
     if (r.ok && d.ok) {
+      if (d.ae_sync_failed) {
+        // Keep unapplied (AE-side) edits in the form so they aren't lost.
+        (d.applied || []).forEach(p => _dirty.delete(p));
+        if (_dirty.size) {
+          updateSaveBar();
+          const m = document.getElementById('adminSettingsSaveMsg');
+          if (m) m.textContent = `saved locally; AE sync failed: ${d.ae_sync_failed}`;
+          return;
+        }
+      }
       _dirty.clear();
       await load();
       showResult(d);

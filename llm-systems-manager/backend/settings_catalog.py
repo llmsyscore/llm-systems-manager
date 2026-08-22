@@ -1,9 +1,11 @@
 """Curated settings catalog driving the Admin → Settings tab (#606)."""
 from __future__ import annotations
 
+import math
+import tomllib
 from typing import Any, Optional
 
-from config.unified_config import settings
+from config.unified_config import Settings, settings
 
 _UNSET_SECRETS = {"", "REPLACE_ME"}
 
@@ -116,9 +118,11 @@ CATALOG: list[dict] = [
     _e("alarm_engine.evaluation_interval", "int", "Rule eval interval (s)", "Alert rule evaluation cadence.", "alarm_engine", AE, min=5, max=3600),
     _e("alarm_engine.manager_url", "str", "Manager URL", "AE's back-channel to the manager.", "alarm_engine", AE),
     _e("alarm_engine.cors_origins", "str", "AE CORS origins", "Allowed browser origins for the AE API.", "alarm_engine", AE),
-    _e("alarm_engine.ingest_token", "str", "Ingest token", "Bearer gating agent metric pushes; blank leaves ingest OPEN. Propagates to agents within ≤60 s.", "alarm_engine", AE, secret=True),
-    _e("alarm_engine.management_token", "str", "Management token", "Bearer for AE management routes; blank = ingest token accepted.", "alarm_engine", AE, secret=True),
-    _e("alarm_engine.tls_enabled", "bool", "AE TLS", "Serve the AE over HTTPS (encrypts the ingest-token path).", "alarm_engine", AE),
+    # The manager reads these three too (bearer, agent handoff, URL scheme),
+    # so they are written to both files on a split install.
+    _e("alarm_engine.ingest_token", "str", "Ingest token", "Bearer gating agent metric pushes; blank leaves ingest OPEN. Propagates to agents within ≤60 s.", "alarm_engine", BOTH, secret=True),
+    _e("alarm_engine.management_token", "str", "Management token", "Bearer for AE management routes; blank = ingest token accepted.", "alarm_engine", BOTH, secret=True),
+    _e("alarm_engine.tls_enabled", "bool", "AE TLS", "Serve the AE over HTTPS (encrypts the ingest-token path).", "alarm_engine", BOTH),
     # ae behaviour
     _e("alarm_engine.correlation.enabled", "bool", "Alert correlation", "false = every alert self-roots.", "ae_behaviour", AE),
     _e("alarm_engine.correlation.window_seconds", "float", "Correlation window (s)", "Same-host time-window join.", "ae_behaviour", AE, min=1, max=3600),
@@ -168,8 +172,21 @@ def secret_status(value) -> str:
     return "unset" if (value or "") in _UNSET_SECRETS else "set"
 
 
-def _current(path: str):
-    node = settings
+def _snapshot():
+    """Typed snapshot of the on-disk config so reads reflect saved-but-unapplied
+    edits; falls back to the boot-time singleton."""
+    try:
+        import settings_toml_io
+        path = settings_toml_io.resolve_config_path()
+        if path.is_file():
+            return Settings(**tomllib.loads(path.read_text(encoding="utf-8")))
+    except Exception:
+        pass
+    return settings
+
+
+def _current(path: str, root=None):
+    node = root if root is not None else settings
     for part in path.split("."):
         node = getattr(node, part, None)
         if node is None:
@@ -180,8 +197,9 @@ def _current(path: str):
 def describe() -> dict:
     values: dict[str, Any] = {}
     secrets: dict[str, str] = {}
+    snap = _snapshot()
     for e in CATALOG:
-        cur = _current(e["path"])
+        cur = _current(e["path"], snap)
         if e["secret"]:
             secrets[e["path"]] = secret_status(cur)
         elif cur is not None:
@@ -201,9 +219,17 @@ def _coerce(entry: dict, value: Any):
             return value
         raise ValueError("expected true/false")
     if typ == "int":
+        if isinstance(value, bool):
+            raise ValueError("expected a number")
         v = int(value)
+        if isinstance(value, float) and value != v:
+            raise ValueError("expected a whole number")
     elif typ == "float":
+        if isinstance(value, bool):
+            raise ValueError("expected a number")
         v = float(value)
+        if not math.isfinite(v):
+            raise ValueError("must be a finite number")
     elif typ in ("str", "choice"):
         if not isinstance(value, str):
             raise ValueError("expected a string")

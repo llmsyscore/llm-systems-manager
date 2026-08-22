@@ -1303,7 +1303,10 @@ def _require_configured_management_auth() -> None:
 async def ae_config_get(_auth: None = Depends(require_management_token)):
     from . import settings_toml_io as _sio
     _require_configured_management_auth()
-    return {"ok": True, "sections": _sio.read_sections(_AE_CONFIG_PREFIXES)}
+    try:
+        return {"ok": True, "sections": _sio.read_sections(_AE_CONFIG_PREFIXES)}
+    except _sio.SettingsIOError:
+        raise HTTPException(status_code=500, detail="config file unparseable")
 
 
 @app.put("/api/alarm/admin/config")

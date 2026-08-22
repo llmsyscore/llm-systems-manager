@@ -12,9 +12,14 @@ import tomllib
 from pathlib import Path
 from typing import Optional
 
-import tomlkit
-
 from config.unified_config import CONFIG_PATH, Settings
+
+
+def _tomlkit():
+    """Deferred import: a deploy that skipped pip install degrades to a clear
+    per-request error instead of failing the whole service at import."""
+    import tomlkit
+    return tomlkit
 
 log = logging.getLogger(__name__)
 
@@ -38,7 +43,8 @@ def resolve_config_path() -> Path:
     return Path(__file__).resolve().parent.parent.parent / "config" / "llm-systems.toml"
 
 
-def _load_doc(path: Path) -> tomlkit.TOMLDocument:
+def _load_doc(path: Path):
+    tomlkit = _tomlkit()
     if path.is_file():
         try:
             return tomlkit.parse(path.read_text(encoding="utf-8"))
@@ -51,6 +57,7 @@ def _load_doc(path: Path) -> tomlkit.TOMLDocument:
 
 
 def _set_dotted(doc, dotted: str, value) -> None:
+    tomlkit = _tomlkit()
     parts = dotted.split(".")
     node = doc
     for key in parts[:-1]:
@@ -98,7 +105,7 @@ def _backup(path: Path) -> None:
 
 
 def _atomic_write(path: Path, text: str) -> None:
-    tmp = path.with_name(path.name + ".tmp")
+    tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
     fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as f:
@@ -117,7 +124,7 @@ def apply_patches(changes: dict[str, object],
         doc = _load_doc(path)
         for dotted, value in changes.items():
             _set_dotted(doc, dotted, value)
-        text = tomlkit.dumps(doc)
+        text = _tomlkit().dumps(doc)
         _validate(text)
         _backup(path)
         _atomic_write(path, text)
@@ -129,5 +136,8 @@ def read_sections(prefixes: tuple[str, ...],
     path = Path(config_path) if config_path else resolve_config_path()
     if not path.is_file():
         return {}
-    data = tomllib.loads(path.read_text(encoding="utf-8"))
+    try:
+        data = tomllib.loads(path.read_text(encoding="utf-8"))
+    except Exception as e:
+        raise SettingsIOError(f"config file unparseable: {e}") from e
     return {k: v for k, v in data.items() if k in prefixes}
