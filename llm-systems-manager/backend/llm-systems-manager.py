@@ -182,6 +182,8 @@ import energy  # type: ignore[import-not-found]  # noqa: E402  # leaf, no cycle;
 import gateway_usage  # type: ignore[import-not-found]  # noqa: E402  # leaf, no cycle; #502
 import discord_bot  # type: ignore[import-not-found]  # noqa: E402  # leaf, no cycle; #471
 import companion  # type: ignore[import-not-found]  # noqa: E402  # leaf, no cycle; #522
+import settings_catalog  # type: ignore[import-not-found]  # noqa: E402  # leaf, no cycle; #606
+import settings_toml_io  # type: ignore[import-not-found]  # noqa: E402  # leaf, no cycle; #606
 
 
 def _patch_cheroot_flush_noise() -> None:
@@ -2769,6 +2771,7 @@ _AUDIT_ROUTES: list[tuple[str | None, "re.Pattern[str]", str]] = [
     ("POST",   re.compile(r"^/api/admin/users/(?P<t>[^/]+)/unlock$"),  "user.unlock"),
     ("POST",   re.compile(r"^/api/admin/export/manager$"),             "backup.export"),
     ("POST",   re.compile(r"^/api/admin/import/manager/apply$"),       "backup.import-apply"),
+    ("PUT",    re.compile(r"^/api/admin/settings$"),                   "config.settings"),
     ("POST",   re.compile(r"^/api/llm/server/svcconfig$"),             "config.svcconfig"),
     ("POST",   re.compile(r"^/api/config/interval$"),                  "config.interval"),
 ]
@@ -3035,6 +3038,8 @@ def admin_service_restart(svc: str):
     unit = _RESTARTABLE_UNITS.get(svc)
     if not unit:
         return jsonify({"ok": False, "error": f"unknown service '{svc}'"}), 400
+    # Settings-tab banner: a requested restart clears the pending flag.
+    _SETTINGS_RESTART_PENDING.discard(svc)
     if _CONTAINERIZED:
         return _restart_service_containerized(svc)
     if _BREW_KEG:
@@ -3080,6 +3085,83 @@ def admin_service_restart(svc: str):
     except Exception as e:
         logging.exception("alarm engine restart failed")
         return _err_json("alarm engine restart failed", 500, exc=e)
+
+
+# ---------------------------------------------------------------------------
+# Admin → Settings tab (#606): catalog-driven TOML read/write.
+# ---------------------------------------------------------------------------
+
+# Services with saved-but-unapplied settings; cleared when a restart is requested.
+_SETTINGS_RESTART_PENDING: set = set()
+
+
+@app.route("/api/admin/settings", methods=["GET"])
+def admin_settings_get():
+    deny = _require_admin()
+    if deny is not None:
+        return deny
+    payload = settings_catalog.describe()
+    topo = install_topology()
+    ae_reachable = not topo["split"]
+    payload["ok"] = True
+    payload["topology"] = {"split": topo["split"], "ae_config_reachable": ae_reachable}
+    payload["restart_pending"] = sorted(_SETTINGS_RESTART_PENDING)
+    return jsonify(payload)
+
+
+@app.route("/api/admin/settings", methods=["PUT"])
+def admin_settings_put():
+    deny = _require_admin()
+    if deny is not None:
+        return deny
+    body = flask_request.get_json(silent=True) or {}
+    changes = body.get("changes") or {}
+    if not isinstance(changes, dict):
+        return jsonify({"ok": False, "error": "changes must be an object"}), 400
+    clean, errors = settings_catalog.validate_and_coerce(changes)
+    if errors:
+        return jsonify({"ok": False, "errors": errors}), 400
+    if not clean:
+        return jsonify({"ok": True, "applied": [], "restart_required": [], "errors": {}})
+    local, remote = _partition_settings_changes(clean)
+    try:
+        if local:
+            settings_toml_io.apply_patches(local)
+    except settings_toml_io.SettingsValidationError as e:
+        return jsonify({"ok": False, "errors": e.errors}), 400
+    except settings_toml_io.SettingsIOError as e:
+        return _err_json("config file unreadable", 500, exc=e)
+    result = {"ok": True, "applied": sorted(clean), "errors": {}}
+    ae_failed = _forward_settings_to_ae(remote)
+    if ae_failed:
+        result["ae_sync_failed"] = ae_failed
+    restart = settings_catalog.services_for(clean)
+    _SETTINGS_RESTART_PENDING.update(restart)
+    result["restart_required"] = sorted(restart)
+    return jsonify(result)
+
+
+def _partition_settings_changes(clean: dict) -> tuple[dict, dict]:
+    """Co-located: one shared file. Split: AE-owned paths forward to the AE's
+    config API; `both` sections are written to both files."""
+    topo = install_topology()
+    if not topo["split"]:
+        return dict(clean), {}
+    local, remote = {}, {}
+    for path, value in clean.items():
+        svc = settings_catalog.entry_for(path)["service"]
+        if svc in ("manager", "both"):
+            local[path] = value
+        if svc in ("alarm_engine", "both"):
+            remote[path] = value
+    return local, remote
+
+
+def _forward_settings_to_ae(remote: dict):
+    """Returns an error string on failure, None on success/no-op (Task 5)."""
+    if not remote:
+        return None
+    return "split-install AE sync not yet implemented"
 
 
 @app.route("/api/admin/system-health", methods=["GET"])
