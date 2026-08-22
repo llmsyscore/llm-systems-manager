@@ -46,7 +46,7 @@ const _subTabState = { dashboard: 'llamacpp', llm: 'llamacpp', admin: 'agents' }
 const _SUB_TAB_MAP = {
   dashboard: { tabId: 'dashboardTab', prefix: 'dash',  subs: ['llamacpp','lmstudio','vllm','energy','openclaw','manager'] },
   llm:       { tabId: 'llmTab',       prefix: 'llm',   subs: ['llamacpp','lmstudio','vllm','reportcard'] },
-  admin:     { tabId: 'adminTab',     prefix: 'admin', subs: ['access','agents','audit','backup','routing'] },
+  admin:     { tabId: 'adminTab',     prefix: 'admin', subs: ['access','agents','audit','backup','routing','settings'] },
 };
 
 function switchSubTab(parent, sub) {
@@ -156,6 +156,10 @@ function switchSubTab(parent, sub) {
   // from the 20s agents refresh; the autopilot editor initializes on entry.
   if (parent === 'admin' && sub === 'routing') {
     if (typeof AP !== 'undefined' && AP.init) AP.init();
+  }
+  // Settings (TOML editor, #606): loads on sub-tab entry.
+  if (parent === 'admin' && sub === 'settings') {
+    if (typeof adminSettingsLoad === 'function') adminSettingsLoad();
   }
 }
 
