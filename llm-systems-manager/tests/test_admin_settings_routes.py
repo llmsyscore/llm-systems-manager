@@ -83,3 +83,92 @@ def test_admin_gate_enforced(monkeypatch, tmp_path):
     with manager_mod.app.test_client() as c:
         r = c.put("/api/admin/settings", json={"changes": {}})
         assert r.status_code in (401, 403)
+
+
+# --- split-install behaviour (#606, Task 5) ---
+
+class _FakeResp:
+    def __init__(self, ok=True, status_code=200, payload=None):
+        self.ok, self.status_code = ok, status_code
+        self._payload = payload or {"ok": True}
+        self.text = ""
+
+    def json(self):
+        return self._payload
+
+
+def _force_split(monkeypatch):
+    monkeypatch.setattr(manager_mod, "install_topology", lambda: {
+        "ae_local_disk": False, "ae_local_unit": False,
+        "ae_local_url": False, "split": True})
+    monkeypatch.setattr(manager_mod, "_CONTAINERIZED", False, raising=False)
+    monkeypatch.setattr(manager_mod, "_BREW_KEG", False, raising=False)
+
+
+def test_split_put_forwards_ae_paths(client, monkeypatch):
+    c, cfg = client
+    _force_split(monkeypatch)
+    sent = {}
+    monkeypatch.setattr(manager_mod._ae_session, "put",
+                        lambda url, **kw: sent.update(url=url, **kw) or _FakeResp())
+    d = c.put("/api/admin/settings", json={"changes": {
+        "alarm_engine.evaluation_interval": 20,
+        "influxdb.host": "10.0.0.9",
+        "manager.poll_interval": 30}}).get_json()
+    assert d["ok"] is True and "ae_sync_failed" not in d
+    assert sent["url"].endswith("/api/alarm/admin/config")
+    fwd = sent["json"]["changes"]
+    assert set(fwd) == {"alarm_engine.evaluation_interval", "influxdb.host"}
+    text = cfg.read_text()  # local file: manager + both paths, NOT ae-only
+    assert "poll_interval = 30" in text and 'host = "10.0.0.9"' in text
+    assert "evaluation_interval" not in text
+    assert sorted(d["restart_required"]) == ["alarm_engine", "manager"]
+
+
+def test_split_put_reports_ae_sync_failure_after_local_commit(client, monkeypatch):
+    c, cfg = client
+    _force_split(monkeypatch)
+
+    def _boom(url, **kw):
+        raise OSError("connection refused")
+    monkeypatch.setattr(manager_mod._ae_session, "put", _boom)
+    d = c.put("/api/admin/settings",
+              json={"changes": {"influxdb.host": "10.0.0.9"}}).get_json()
+    assert d["ok"] is True and d["ae_sync_failed"]
+    assert 'host = "10.0.0.9"' in cfg.read_text()
+
+
+def test_split_get_merges_ae_values_and_reachability(client, monkeypatch):
+    c, _ = client
+    _force_split(monkeypatch)
+    monkeypatch.setattr(manager_mod._ae_session, "get",
+                        lambda url, **kw: _FakeResp(payload={"ok": True, "sections": {
+                            "alarm_engine": {"evaluation_interval": 25,
+                                             "ingest_token": "SEKRIT"}}}))
+    d = c.get("/api/admin/settings").get_json()
+    assert d["topology"]["ae_config_reachable"] is True
+    assert d["values"]["alarm_engine.evaluation_interval"] == 25
+    assert "alarm_engine.ingest_token" not in d["values"]  # masked
+    assert d["secrets"]["alarm_engine.ingest_token"] == "set"
+
+
+def test_split_get_unreachable_ae(client, monkeypatch):
+    c, _ = client
+    _force_split(monkeypatch)
+
+    def _boom(url, **kw):
+        raise OSError("no route")
+    monkeypatch.setattr(manager_mod._ae_session, "get", _boom)
+    d = c.get("/api/admin/settings").get_json()
+    assert d["topology"]["ae_config_reachable"] is False
+
+
+def test_split_restart_uses_ae_self_restart(client, monkeypatch):
+    c, _ = client
+    _force_split(monkeypatch)
+    called = {}
+    monkeypatch.setattr(manager_mod._ae_session, "post",
+                        lambda url, **kw: called.update(url=url) or _FakeResp())
+    r = c.post("/api/admin/service/alarm_engine/restart")
+    assert r.status_code == 200 and r.get_json()["ok"] is True
+    assert called["url"].endswith("/api/alarm/admin/self-restart")

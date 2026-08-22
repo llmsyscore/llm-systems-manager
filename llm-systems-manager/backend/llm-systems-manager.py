@@ -3048,9 +3048,10 @@ def admin_service_restart(svc: str):
         return _restart_service_containerized(svc, exit_code=1)
     # ae_local_unit = the AE unit file exists here, the precise precondition for
     # a local systemctl restart (reuses install_topology, no getaddrinfo).
+    # Remote AE (#606): no local unit → ask the AE to restart itself over
+    # its management API, same as the containerized path.
     if svc == "alarm_engine" and not install_topology()["ae_local_unit"]:
-        return jsonify({"ok": False,
-                        "error": "alarm engine runs on a separate host — restart it there"}), 400
+        return _restart_service_containerized(svc)
     # Absolute path so the invocation matches the sudoers grant exactly — sudo
     # matches the resolved binary path, and the agent uses /usr/bin/systemctl too.
     unit_cmd = ["/usr/bin/systemctl", "--no-block", "restart", unit]
@@ -3103,6 +3104,19 @@ def admin_settings_get():
     payload = settings_catalog.describe()
     topo = install_topology()
     ae_reachable = not topo["split"]
+    if topo["split"]:
+        ae_flat = _fetch_ae_settings_values()
+        ae_reachable = ae_flat is not None
+        if ae_flat:
+            for e in settings_catalog.CATALOG:
+                if e["service"] != "alarm_engine" or e["path"] not in ae_flat:
+                    continue
+                cur = ae_flat[e["path"]]
+                if e["secret"]:
+                    unset = (not cur) if isinstance(cur, list) else cur in ("", "REPLACE_ME")
+                    payload["secrets"][e["path"]] = "unset" if unset else "set"
+                else:
+                    payload["values"][e["path"]] = cur
     payload["ok"] = True
     payload["topology"] = {"split": topo["split"], "ae_config_reachable": ae_reachable}
     payload["restart_pending"] = sorted(_SETTINGS_RESTART_PENDING)
@@ -3158,10 +3172,45 @@ def _partition_settings_changes(clean: dict) -> tuple[dict, dict]:
 
 
 def _forward_settings_to_ae(remote: dict):
-    """Returns an error string on failure, None on success/no-op (Task 5)."""
+    """Returns an error string on failure, None on success/no-op."""
     if not remote:
         return None
-    return "split-install AE sync not yet implemented"
+    base = (_alarm_engine_url or "").rstrip("/")
+    if not base:
+        return "alarm engine URL not configured"
+    try:
+        r = _ae_session.put(base + "/api/alarm/admin/config",
+                            json={"changes": remote}, timeout=15)
+        if r.ok:
+            return None
+        return f"alarm engine rejected the update (HTTP {r.status_code})"
+    except Exception:
+        logging.exception("settings AE forward failed")
+        return "alarm engine unreachable — update its host's config there"
+
+
+def _fetch_ae_settings_values() -> "dict | None":
+    """Flat {dotted.path: value} from the remote AE's whitelisted sections."""
+    base = (_alarm_engine_url or "").rstrip("/")
+    if not base:
+        return None
+    try:
+        r = _ae_session.get(base + "/api/alarm/admin/config", timeout=10)
+        if not r.ok:
+            return None
+        sections = (r.json() or {}).get("sections") or {}
+    except Exception:
+        return None
+    flat: dict = {}
+
+    def _walk(node, prefix):
+        for k, v in node.items():
+            if isinstance(v, dict):
+                _walk(v, f"{prefix}{k}.")
+            else:
+                flat[f"{prefix}{k}"] = v
+    _walk(sections, "")
+    return flat
 
 
 @app.route("/api/admin/system-health", methods=["GET"])
