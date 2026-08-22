@@ -1,0 +1,75 @@
+"""Settings catalog: schema consistency + validation semantics (#606)."""
+from __future__ import annotations
+
+import pytest
+
+import manager_mod  # noqa: F401
+import settings_catalog as sc
+from config.unified_config import settings as live_settings
+
+
+def _exists(path):
+    node = live_settings
+    parts = path.split(".")
+    for part in parts[:-1]:
+        node = getattr(node, part, None)
+        if node is None:
+            return False
+    return hasattr(node, parts[-1])
+
+
+def test_every_catalog_path_exists_in_schema():
+    missing = [e["path"] for e in sc.CATALOG if not _exists(e["path"])]
+    assert missing == []
+
+
+def test_groups_cover_all_entries_and_are_ordered():
+    keys = [k for k, _ in sc.GROUPS]
+    assert len(keys) == len(set(keys))
+    assert {e["group"] for e in sc.CATALOG} <= set(keys)
+
+
+def test_describe_masks_secrets():
+    d = sc.describe()
+    secret_paths = {e["path"] for e in sc.CATALOG if e["secret"]}
+    for p in secret_paths:
+        assert p not in d["values"]
+        assert d["secrets"][p] in ("set", "unset")
+    assert "manager.port" in d["values"]
+
+
+def test_validate_coerces_types_and_ranges():
+    clean, errors = sc.validate_and_coerce({"manager.port": "5001"})
+    assert errors == {} and clean["manager.port"] == 5001
+    _, errors = sc.validate_and_coerce({"manager.history.window_minutes": 0})
+    assert "manager.history.window_minutes" in errors
+
+
+def test_validate_rejects_unknown_path_and_bad_choice():
+    _, errors = sc.validate_and_coerce({"manager.http_threads": 32})
+    assert "manager.http_threads" in errors  # tuning knob: not in catalog
+    _, errors = sc.validate_and_coerce({"manager.branding.palette": "magenta"})
+    assert "manager.branding.palette" in errors
+
+
+def test_secret_semantics():
+    clean, errors = sc.validate_and_coerce({"alarm_engine.ingest_token": ""})
+    assert errors == {} and "alarm_engine.ingest_token" not in clean  # unchanged
+    clean, _ = sc.validate_and_coerce({"alarm_engine.ingest_token": None})
+    assert clean["alarm_engine.ingest_token"] == ""                   # cleared
+    clean, _ = sc.validate_and_coerce({"manager.gateway.api_keys": None})
+    assert clean["manager.gateway.api_keys"] == []                    # list secret clears to []
+
+
+def test_list_coercion():
+    clean, errors = sc.validate_and_coerce(
+        {"manager.security.admin_cidrs": ["127.0.0.1", "10.0.0.0/8"]})
+    assert errors == {} and clean["manager.security.admin_cidrs"] == ["127.0.0.1", "10.0.0.0/8"]
+    _, errors = sc.validate_and_coerce({"manager.security.admin_cidrs": "not-a-list"})
+    assert "manager.security.admin_cidrs" in errors
+
+
+def test_services_for():
+    assert sc.services_for(["manager.port"]) == {"manager"}
+    assert sc.services_for(["alarm_engine.port"]) == {"alarm_engine"}
+    assert sc.services_for(["influxdb.host"]) == {"manager", "alarm_engine"}
