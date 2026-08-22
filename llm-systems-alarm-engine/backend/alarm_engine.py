@@ -1287,6 +1287,38 @@ async def ae_self_restart(_auth: None = Depends(require_management_token)):
     return {"ok": True, "restarting": True}
 
 
+# Sections the manager's Settings tab may read/write on this host (#606).
+_AE_CONFIG_PREFIXES = ("alarm_engine", "influxdb", "notifications", "logging")
+
+
+@app.get("/api/alarm/admin/config")
+async def ae_config_get(_auth: None = Depends(require_management_token)):
+    from . import settings_toml_io as _sio
+    return {"ok": True, "sections": _sio.read_sections(_AE_CONFIG_PREFIXES)}
+
+
+@app.put("/api/alarm/admin/config")
+async def ae_config_put(body: dict = Body(...),
+                        _auth: None = Depends(require_management_token)):
+    from . import settings_toml_io as _sio
+    changes = body.get("changes") or {}
+    if not isinstance(changes, dict) or not changes:
+        raise HTTPException(status_code=400, detail="changes object required")
+    bad = sorted(p for p in changes
+                 if p.split(".", 1)[0] not in _AE_CONFIG_PREFIXES)
+    if bad:
+        raise HTTPException(status_code=400,
+                            detail=f"paths not editable via this endpoint: {bad}")
+    try:
+        _sio.apply_patches(changes)
+    except _sio.SettingsValidationError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except _sio.SettingsIOError:
+        raise HTTPException(status_code=500, detail="config file unreadable")
+    logger.info("AE config updated via management API: %s", sorted(changes))
+    return {"ok": True, "applied": sorted(changes)}
+
+
 from typing import NamedTuple
 
 class _DecodedAE(NamedTuple):
