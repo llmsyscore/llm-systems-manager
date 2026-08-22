@@ -32,3 +32,6 @@ scipy>=1.14.0
 # AES-GCM + scrypt for the admin backup/restore archive format
 # (backend/_archive.py).
 cryptography>=42.0.0
+
+# Comment-preserving TOML round-trip for the config management API (#606).
+tomlkit>=0.12

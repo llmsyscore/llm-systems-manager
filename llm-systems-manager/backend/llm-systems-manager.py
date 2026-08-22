@@ -156,7 +156,7 @@ def _local_hostname() -> str:
 # banner reads it. Bump suffix (-1, -2, …) for same-day iterations; roll
 # the date for a new day's first change.
 # ---------------------------------------------------------------------------
-__version__ = "v2026.08.21-15"
+__version__ = "v2026.08.21-16"
 
 # Wall-clock at first import (Cheroot main process); the shutdown banner
 # reads it for the uptime line.
@@ -182,6 +182,8 @@ import energy  # type: ignore[import-not-found]  # noqa: E402  # leaf, no cycle;
 import gateway_usage  # type: ignore[import-not-found]  # noqa: E402  # leaf, no cycle; #502
 import discord_bot  # type: ignore[import-not-found]  # noqa: E402  # leaf, no cycle; #471
 import companion  # type: ignore[import-not-found]  # noqa: E402  # leaf, no cycle; #522
+import settings_catalog  # type: ignore[import-not-found]  # noqa: E402  # leaf, no cycle; #606
+import settings_toml_io  # type: ignore[import-not-found]  # noqa: E402  # leaf, no cycle; #606
 
 
 def _patch_cheroot_flush_noise() -> None:
@@ -2769,6 +2771,7 @@ _AUDIT_ROUTES: list[tuple[str | None, "re.Pattern[str]", str]] = [
     ("POST",   re.compile(r"^/api/admin/users/(?P<t>[^/]+)/unlock$"),  "user.unlock"),
     ("POST",   re.compile(r"^/api/admin/export/manager$"),             "backup.export"),
     ("POST",   re.compile(r"^/api/admin/import/manager/apply$"),       "backup.import-apply"),
+    ("PUT",    re.compile(r"^/api/admin/settings$"),                   "config.settings"),
     ("POST",   re.compile(r"^/api/llm/server/svcconfig$"),             "config.svcconfig"),
     ("POST",   re.compile(r"^/api/config/interval$"),                  "config.interval"),
 ]
@@ -3036,16 +3039,19 @@ def admin_service_restart(svc: str):
     if not unit:
         return jsonify({"ok": False, "error": f"unknown service '{svc}'"}), 400
     if _CONTAINERIZED:
-        return _restart_service_containerized(svc)
+        return _settings_pending_after(svc, _restart_service_containerized(svc))
     if _BREW_KEG:
         # Brew-services units are Restart=on-failure — exit non-zero so the
         # supervisor respawns; the AE restarts itself via its management API.
-        return _restart_service_containerized(svc, exit_code=1)
-    # ae_local_unit = the AE unit file exists here, the precise precondition for
-    # a local systemctl restart (reuses install_topology, no getaddrinfo).
-    if svc == "alarm_engine" and not install_topology()["ae_local_unit"]:
+        return _settings_pending_after(svc, _restart_service_containerized(svc, exit_code=1))
+    topo = install_topology()
+    # No local AE unit: a remote AE (non-loopback URL) self-restarts over its
+    # management API; a unit-less local AE has no supervisor, so refuse.
+    if svc == "alarm_engine" and not topo["ae_local_unit"]:
+        if not topo["ae_local_url"]:
+            return _settings_pending_after(svc, _restart_service_containerized(svc))
         return jsonify({"ok": False,
-                        "error": "alarm engine runs on a separate host — restart it there"}), 400
+                        "error": "no local alarm-engine unit — restart it manually"}), 400
     # Absolute path so the invocation matches the sudoers grant exactly — sudo
     # matches the resolved binary path, and the agent uses /usr/bin/systemctl too.
     unit_cmd = ["/usr/bin/systemctl", "--no-block", "restart", unit]
@@ -3068,18 +3074,159 @@ def admin_service_restart(svc: str):
                 logging.exception("manager self-restart spawn failed")
         threading.Thread(target=_delayed_self_restart, daemon=True).start()
         logging.warning("manager self-restart requested via admin tab")
+        _SETTINGS_RESTART_PENDING.discard(svc)
         return jsonify({"ok": True, "restarting": True,
                         "note": "manager restarting — the dashboard will be briefly unavailable"})
     try:
         p = subprocess.run(sysctl, capture_output=True, text=True, timeout=15)
         if p.returncode == 0:
             logging.warning("alarm engine restart requested via admin tab")
+            _SETTINGS_RESTART_PENDING.discard(svc)
             return jsonify({"ok": True, "restarting": True})
         err = (p.stderr or p.stdout or "").strip()[:300] or f"systemctl exited {p.returncode}"
         return jsonify({"ok": False, "error": err}), 500
     except Exception as e:
         logging.exception("alarm engine restart failed")
         return _err_json("alarm engine restart failed", 500, exc=e)
+
+
+# ---------------------------------------------------------------------------
+# Admin → Settings tab (#606): catalog-driven TOML read/write.
+# ---------------------------------------------------------------------------
+
+# Services with saved-but-unapplied settings; cleared on a successful restart request.
+_SETTINGS_RESTART_PENDING: set = set()
+
+
+def _settings_pending_after(svc: str, resp):
+    """Clears the pending-restart flag only when the restart response is 2xx."""
+    status = resp[1] if isinstance(resp, tuple) else getattr(resp, "status_code", 200)
+    if 200 <= int(status) < 300:
+        _SETTINGS_RESTART_PENDING.discard(svc)
+    return resp
+
+
+@app.route("/api/admin/settings", methods=["GET"])
+def admin_settings_get():
+    deny = _require_admin()
+    if deny is not None:
+        return deny
+    payload = settings_catalog.describe()
+    topo = install_topology()
+    ae_reachable = not topo["split"]
+    if topo["split"]:
+        ae_flat = _fetch_ae_settings_values()
+        ae_reachable = ae_flat is not None
+        # AE-owned values come from the AE itself; unreachable → unknown, not
+        # this host's local copy.
+        for e in settings_catalog.CATALOG:
+            if e["service"] != "alarm_engine":
+                continue
+            p = e["path"]
+            if ae_flat is not None and p in ae_flat:
+                if e["secret"]:
+                    payload["secrets"][p] = settings_catalog.secret_status(ae_flat[p])
+                else:
+                    payload["values"][p] = ae_flat[p]
+            elif ae_flat is None:
+                payload["values"].pop(p, None)
+                payload["secrets"].pop(p, None)
+    payload["ok"] = True
+    payload["topology"] = {"split": topo["split"], "ae_config_reachable": ae_reachable}
+    payload["restart_pending"] = sorted(_SETTINGS_RESTART_PENDING)
+    return jsonify(payload)
+
+
+@app.route("/api/admin/settings", methods=["PUT"])
+def admin_settings_put():
+    deny = _require_admin()
+    if deny is not None:
+        return deny
+    body = flask_request.get_json(silent=True) or {}
+    changes = body.get("changes") or {}
+    if not isinstance(changes, dict):
+        return jsonify({"ok": False, "error": "changes must be an object"}), 400
+    clean, errors = settings_catalog.validate_and_coerce(changes)
+    if errors:
+        return jsonify({"ok": False, "errors": errors}), 400
+    if not clean:
+        return jsonify({"ok": True, "applied": [], "restart_required": [], "errors": {}})
+    local, remote = _partition_settings_changes(clean)
+    try:
+        if local:
+            settings_toml_io.apply_patches(local)
+    except settings_toml_io.SettingsValidationError as e:
+        return jsonify({"ok": False, "errors": e.errors}), 400
+    except settings_toml_io.SettingsIOError as e:
+        return _err_json("config file unreadable", 500, exc=e)
+    ae_failed = _forward_settings_to_ae(remote)
+    # A failed AE forward means AE-only paths were not applied anywhere.
+    applied = sorted(clean) if not ae_failed else sorted(local)
+    result = {"ok": True, "applied": applied, "errors": {}}
+    if ae_failed:
+        result["ae_sync_failed"] = ae_failed
+    restart = settings_catalog.services_for(applied)
+    _SETTINGS_RESTART_PENDING.update(restart)
+    result["restart_required"] = sorted(restart)
+    return jsonify(result)
+
+
+def _partition_settings_changes(clean: dict) -> tuple[dict, dict]:
+    """Co-located: one shared file. Split: AE-owned paths forward to the AE's
+    config API; `both` sections are written to both files."""
+    topo = install_topology()
+    if not topo["split"]:
+        return clean, {}
+    local, remote = {}, {}
+    for path, value in clean.items():
+        svc = settings_catalog.entry_for(path)["service"]
+        if svc in ("manager", "both"):
+            local[path] = value
+        if svc in ("alarm_engine", "both"):
+            remote[path] = value
+    return local, remote
+
+
+def _forward_settings_to_ae(remote: dict):
+    """Returns an error string on failure, None on success/no-op."""
+    if not remote:
+        return None
+    base = (_alarm_engine_url or "").rstrip("/")
+    if not base:
+        return "alarm engine URL not configured"
+    try:
+        r = _ae_session.put(base + "/api/alarm/admin/config",
+                            json={"changes": remote}, timeout=(3, 10))
+        if r.ok:
+            return None
+        return f"alarm engine rejected the update (HTTP {r.status_code})"
+    except Exception:
+        logging.exception("settings AE forward failed")
+        return "alarm engine unreachable — update its host's config there"
+
+
+def _fetch_ae_settings_values() -> "dict | None":
+    """Flat {dotted.path: value} from the remote AE's whitelisted sections."""
+    base = (_alarm_engine_url or "").rstrip("/")
+    if not base:
+        return None
+    try:
+        r = _ae_session.get(base + "/api/alarm/admin/config", timeout=(2, 5))
+        if not r.ok:
+            return None
+        sections = (r.json() or {}).get("sections") or {}
+    except Exception:
+        return None
+    flat: dict = {}
+
+    def _walk(node, prefix):
+        for k, v in node.items():
+            if isinstance(v, dict):
+                _walk(v, f"{prefix}{k}.")
+            else:
+                flat[f"{prefix}{k}"] = v
+    _walk(sections, "")
+    return flat
 
 
 @app.route("/api/admin/system-health", methods=["GET"])

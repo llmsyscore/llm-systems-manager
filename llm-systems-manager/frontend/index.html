@@ -481,6 +481,7 @@ Backend API endpoints consumed:
         <button class="sub-tab-btn"        id="subTabBtnAdminAudit"   onclick="switchSubTab('admin','audit')">Audit Log</button>
         <button class="sub-tab-btn"        id="subTabBtnAdminBackup"  onclick="switchSubTab('admin','backup')">Backup &amp; Restore</button>
         <button class="sub-tab-btn"        id="subTabBtnAdminRouting" onclick="switchSubTab('admin','routing')">Routing</button>
+        <button class="sub-tab-btn"        id="subTabBtnAdminSettings" onclick="switchSubTab('admin','settings')">Settings</button>
       </div>
 
       <!-- Agents sub-tab (landing) -->
@@ -726,6 +727,13 @@ Backend API endpoints consumed:
             <button class="adm-btn" id="adminAuditOlder" onclick="adminAuditPage(1)">Older ›</button>
             <span class="adm-muted" id="adminAuditPageInfo"></span>
           </div>
+        </div>
+      </div>
+
+      <!-- Settings sub-tab (TOML editor, #606) -->
+      <div id="admin-settings" class="sub-tab-panel">
+        <div id="adminSettingsRoot" style="max-width:980px;">
+          <div class="adm-muted" style="padding:24px;">Loading settings…</div>
         </div>
       </div>
 
@@ -1887,6 +1895,7 @@ Backend API endpoints consumed:
 <script src="/static/js/llmcontrol.js?v=2026.08.19-1"></script>
 <script src="/static/js/openclaw.js?v=2026.08.03-1"></script>
 <script src="/static/js/admin.js?v=2026.08.17-1"></script>
+<script src="/static/js/admin-settings.js?v=2026.08.21-4"></script>
 <script src="/static/js/autopilot.js?v=2026.07.31-2"></script>
 <script src="/static/js/llmcontrol-models.js?v=2026.08.19-1"></script>
 <script src="/static/js/bench-autotune.js?v=2026.08.19-1"></script>
@@ -2329,6 +2338,6 @@ Backend API endpoints consumed:
 <div id="alarmToastContainer"></div>
 
 <script src="/static/js/events-toasts.js?v=2026.07.04-2"></script>
-<script src="/static/js/boot.js?v=2026.08.17-1"></script>
+<script src="/static/js/boot.js?v=2026.08.21-1"></script>
 </body>
 </html>
