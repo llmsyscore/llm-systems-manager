@@ -67,13 +67,15 @@
   }
 
   function inputFor(e) {
+    if (aeLocked(e)) {
+      const shown = e.secret ? secretChip(e)
+        : esc(Array.isArray(currentValue(e)) ? currentValue(e).join(', ') : String(currentValue(e)));
+      return `<span class="adm-muted">🔒 ${shown}` +
+        ` — alarm engine unreachable; edit the TOML on its host</span>`;
+    }
     if (e.secret) return secretInput(e);
     const p = esc(e.path);
     const v = currentValue(e);
-    if (aeLocked(e)) {
-      return `<span class="adm-muted">🔒 ${esc(Array.isArray(v) ? v.join(', ') : String(v))}` +
-        ` — alarm engine unreachable; edit the TOML on its host</span>`;
-    }
     if (e.type === 'bool') {
       return `<input type="checkbox" class="st-input" data-path="${p}" ${v ? 'checked' : ''}>`;
     }
