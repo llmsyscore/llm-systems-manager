@@ -121,7 +121,7 @@ CATALOG: list[dict] = [
     # The manager reads these three too (bearer, agent handoff, URL scheme),
     # so they are written to both files on a split install.
     _e("alarm_engine.ingest_token", "str", "Ingest token", "Bearer gating agent metric pushes; blank leaves ingest OPEN. Propagates to agents within ≤60 s.", "alarm_engine", BOTH, secret=True),
-    _e("alarm_engine.management_token", "str", "Management token", "Bearer for AE management routes; blank = ingest token accepted.", "alarm_engine", BOTH, secret=True),
+    _e("alarm_engine.management_token", "str", "Management token", "Bearer for AE management routes; blank = ingest token accepted. Required (no ingest fallback) for split-install settings sync.", "alarm_engine", BOTH, secret=True),
     _e("alarm_engine.tls_enabled", "bool", "AE TLS", "Serve the AE over HTTPS (encrypts the ingest-token path).", "alarm_engine", BOTH),
     # ae behaviour
     _e("alarm_engine.correlation.enabled", "bool", "Alert correlation", "false = every alert self-roots.", "ae_behaviour", AE),

@@ -74,6 +74,20 @@ def management_auth_active() -> bool:
     return bool(_configured_management_token() or _configured_token())
 
 
+def require_strict_management_token(
+        authorization: Optional[str] = Header(default=None)) -> None:
+    """FastAPI dependency for the config surface: requires the dedicated
+    management_token — no ingest-token fallback, fail-closed when unset."""
+    expected = _configured_management_token()
+    if not expected:
+        raise HTTPException(
+            status_code=403,
+            detail="management token required — set [alarm_engine].management_token")
+    provided = _provided_bearer(authorization)
+    if not provided or not hmac.compare_digest(provided, expected):
+        raise HTTPException(status_code=401, detail="management authentication required")
+
+
 def require_management_token(authorization: Optional[str] = Header(default=None)) -> None:
     """FastAPI dependency for the management routes (rules/alerts/notifications):
     enforces `management_token`, else `ingest_token`; no-op when neither is set."""

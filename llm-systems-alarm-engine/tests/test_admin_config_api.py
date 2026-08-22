@@ -91,3 +91,16 @@ def test_put_null_secret_clear_yields_400_not_500(monkeypatch, cfg):
     r = _client().put(PATH, headers={"Authorization": "Bearer mgmt-secret"},
                       json={"changes": {"alarm_engine.ingest_token": None}})
     assert r.status_code == 400
+
+
+def test_config_endpoints_refuse_ingest_token_fallback(monkeypatch, cfg):
+    _set_tokens(monkeypatch, ingest="ingest-secret", management="")
+    hdr = {"Authorization": "Bearer ingest-secret"}
+    assert _client().get(PATH, headers=hdr).status_code == 403
+    r = _client().put(PATH, headers=hdr,
+                      json={"changes": {"alarm_engine.evaluation_interval": 22}})
+    assert r.status_code == 403
+    assert "evaluation_interval = 22" not in cfg.read_text()
+    # Self-restart keeps its documented ingest fallback (scheduler stubbed).
+    monkeypatch.setattr(ae, "_schedule_ae_self_restart", lambda *a, **k: None)
+    assert _client().post("/api/alarm/admin/self-restart", headers=hdr).status_code == 200
