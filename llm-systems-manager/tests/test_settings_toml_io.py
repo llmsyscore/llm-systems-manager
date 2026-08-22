@@ -6,7 +6,6 @@ import stat
 
 import pytest
 
-import manager_mod  # noqa: F401  # conftest puts backend/ on sys.path
 import settings_toml_io as sio
 
 SAMPLE = '''# top comment survives

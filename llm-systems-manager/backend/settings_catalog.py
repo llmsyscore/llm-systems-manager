@@ -172,6 +172,17 @@ def secret_status(value) -> str:
     return "unset" if (value or "") in _UNSET_SECRETS else "set"
 
 
+class _FileOnlySettings(Settings):
+    """Settings variant fed ONLY by init kwargs — no env/file sources."""
+    model_config = {"toml_file": None}
+
+    @classmethod
+    def settings_customise_sources(cls, settings_cls, init_settings,
+                                   env_settings, dotenv_settings,
+                                   file_secret_settings):
+        return (init_settings,)
+
+
 def _snapshot():
     """Typed snapshot of the on-disk config so reads reflect saved-but-unapplied
     edits; falls back to the boot-time singleton."""
@@ -179,9 +190,9 @@ def _snapshot():
         import settings_toml_io
         path = settings_toml_io.resolve_config_path()
         if path.is_file():
-            return Settings(**tomllib.loads(path.read_text(encoding="utf-8")))
+            return _FileOnlySettings(**tomllib.loads(path.read_text(encoding="utf-8")))
     except Exception:
-        pass
+        pass  # unreadable/invalid file: serve the boot-time values below
     return settings
 
 

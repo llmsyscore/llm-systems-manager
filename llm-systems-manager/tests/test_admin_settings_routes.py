@@ -152,7 +152,9 @@ def test_split_get_merges_ae_values_and_reachability(client, monkeypatch):
     assert d["topology"]["ae_config_reachable"] is True
     assert d["values"]["alarm_engine.evaluation_interval"] == 25
     assert "alarm_engine.ingest_token" not in d["values"]  # masked
-    assert d["secrets"]["alarm_engine.ingest_token"] == "set"
+    # Both-owned secret: status comes from the LOCAL file (empty here), never
+    # from the AE payload's raw value.
+    assert d["secrets"]["alarm_engine.ingest_token"] == "unset"
 
 
 def test_split_get_unreachable_ae(client, monkeypatch):

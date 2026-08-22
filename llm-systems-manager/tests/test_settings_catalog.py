@@ -1,9 +1,7 @@
 """Settings catalog: schema consistency + validation semantics (#606)."""
 from __future__ import annotations
 
-import pytest
 
-import manager_mod  # noqa: F401
 import settings_catalog as sc
 from config.unified_config import settings as live_settings
 
