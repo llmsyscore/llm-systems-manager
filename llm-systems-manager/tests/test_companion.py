@@ -59,6 +59,14 @@ class FakeWebPushException(Exception):
         self.response = response
 
 
+@pytest.fixture(autouse=True)
+def public_dns(monkeypatch):
+    """Deterministic public DNS answer for every test; tests that care about
+    resolution patch getaddrinfo again themselves."""
+    monkeypatch.setattr(companion.socket, "getaddrinfo",
+                        lambda *a, **k: [(2, 1, 6, "", ("34.107.221.82", 443))])
+
+
 class TestValidPushEndpoint:
     """The manager POSTs to whatever endpoint is stored, so the host is
     restricted to public dotted names on 443 (no SSRF into the LAN)."""
@@ -434,7 +442,7 @@ class TestPushApi:
     def test_push_send_refuses_redirects(self):
         """pywebpush passes no allow_redirects, so a 302 from a push endpoint
         would re-target scheme/host/port — the session must refuse them."""
-        sess = companion._push_session()
+        sess = companion._push_session("https://push.example.net/x")
         captured = {}
 
         class _Resp:
@@ -452,6 +460,90 @@ class TestPushApi:
         finally:
             requests.Session.request = orig
         assert captured.get("allow_redirects") is False
+
+
+class TestSendTimeValidation:
+    """#607/#608: every send re-validates its endpoint on a fresh session and
+    pins the connection to the address that passed the check."""
+
+    ENDPOINT = "https://push.example.net/send/abc"
+
+    def test_send_refused_when_dns_turns_private(self, monkeypatch):
+        """An endpoint that passed at subscribe but now resolves privately
+        (DNS rebinding) must never be connected."""
+        monkeypatch.setattr(companion.socket, "getaddrinfo",
+                            lambda *a, **k: [(2, 1, 6, "", ("127.0.0.1", 443))])
+        calls = []
+        monkeypatch.setattr(companion, "_webpush_funcs", lambda: (
+            lambda **kw: calls.append(kw), FakeWebPushException))
+        ok, prune = companion._send_one(_sub(), "{}", "k.pem", "mailto:x@y")
+        assert (ok, prune) == (False, False)
+        assert calls == []
+
+    def test_send_refused_when_endpoint_unresolvable(self, monkeypatch):
+        def boom(*a, **k):
+            raise OSError("nxdomain")
+        monkeypatch.setattr(companion.socket, "getaddrinfo", boom)
+        calls = []
+        monkeypatch.setattr(companion, "_webpush_funcs", lambda: (
+            lambda **kw: calls.append(kw), FakeWebPushException))
+        ok, prune = companion._send_one(_sub(), "{}", "k.pem", "mailto:x@y")
+        assert (ok, prune) == (False, False)
+        assert calls == []
+
+    def test_session_pins_the_validated_address(self, monkeypatch):
+        """The POST goes to the address that passed validation; SNI/Host stay
+        on the original hostname."""
+        import requests
+        from requests.adapters import HTTPAdapter
+
+        sess = companion._push_session(self.ENDPOINT)
+        captured = {}
+
+        def fake_send(adapter, request, **kw):
+            captured["url"] = request.url
+            captured["host"] = request.headers.get("Host")
+            resp = requests.Response()
+            resp.status_code = 201
+            resp.request = request
+            resp.url = request.url
+            return resp
+
+        monkeypatch.setattr(HTTPAdapter, "send", fake_send)
+        sess.post(self.ENDPOINT)
+        assert captured["url"] == "https://34.107.221.82/send/abc"
+        assert captured["host"] == "push.example.net"
+
+    def test_each_send_gets_its_own_session(self):
+        s1 = companion._push_session(self.ENDPOINT)
+        s2 = companion._push_session(self.ENDPOINT)
+        assert s1 is not s2
+
+    def test_invalid_endpoint_refused_before_resolving(self):
+        with pytest.raises(companion.PushEndpointRefused):
+            companion._push_session("http://insecure.example/x")
+
+    def test_session_ignores_proxy_env(self):
+        """HTTPS_PROXY would route around the pinned pool entirely."""
+        assert companion._push_session(self.ENDPOINT).trust_env is False
+
+    def test_unexpected_session_error_fails_only_that_send(self, monkeypatch):
+        monkeypatch.setattr(companion, "_webpush_funcs", lambda: (
+            lambda **kw: None, FakeWebPushException))
+
+        def boom(endpoint):
+            raise RuntimeError("adapter setup blew up")
+        monkeypatch.setattr(companion, "_push_session", boom)
+        assert companion._send_one(_sub(), "{}", "k.pem", "m:x") == (False, False)
+
+    def test_unencodable_hostname_is_unresolvable_not_a_crash(self, monkeypatch):
+        """getaddrinfo raises UnicodeError for labels idna can't encode."""
+        def boom(*a, **k):
+            raise UnicodeError("label too long")
+        monkeypatch.setattr(companion.socket, "getaddrinfo", boom)
+        assert companion.resolves_to_public_ip("a" * 64 + ".example") is True
+        with pytest.raises(companion.PushEndpointRefused):
+            companion._push_session(f"https://{'a' * 64}.example.com/x")
 
 
 class TestResolvesToPublicIp:
@@ -614,7 +706,32 @@ class TestPushRoleGating:
         r = operator.post("/api/companion/push/test",
                           json={"endpoint": "https://push.example.net/send/abc"})
         assert r.status_code == 200
-        assert r.get_json()["sent"] == 1
+        # Counts are a reachability oracle for attacker-supplied endpoints
+        # (#607): non-admins get only the boolean.
+        assert r.get_json() == {"ok": True}
+
+    def test_operator_self_test_logs_no_admin_denial(self, operator, sandbox,
+                                                     monkeypatch, caplog):
+        """The response-shaping role check must not warn like a denied
+        admin-route attempt on every ordinary self-test."""
+        companion._store.add(_sub(), ua="ua")
+        monkeypatch.setattr(companion, "_webpush_funcs", lambda: None)
+        monkeypatch.setattr(companion, "ensure_vapid_key", lambda d: d / "k.pem")
+        monkeypatch.setattr(companion, "_send_one", lambda *a, **k: (True, False))
+        with caplog.at_level("WARNING"):
+            r = operator.post("/api/companion/push/test",
+                              json={"endpoint": _sub()["endpoint"]})
+        assert r.status_code == 200
+        assert not [m for m in caplog.messages if "admin route" in m]
+
+    def test_admin_test_response_keeps_the_counts(self, client, sandbox,
+                                                  monkeypatch):
+        companion._store.add(_sub(), ua="ua")
+        monkeypatch.setattr(companion, "_webpush_funcs", lambda: None)
+        monkeypatch.setattr(companion, "ensure_vapid_key", lambda d: d / "k.pem")
+        monkeypatch.setattr(companion, "_send_one", lambda *a, **k: (True, False))
+        body = client.post("/api/companion/push/test", json={}).get_json()
+        assert body["ok"] is True and body["sent"] == 1
 
 
 class TestReleaseCheck:
@@ -1266,6 +1383,20 @@ class TestInstalledReleaseCache:
         assert (kept["tag"], kept["source"]) == ("v1.2.0", "git")
         companion._installed["at"] -= companion._INSTALLED_GIT_TTL_S + 1
         assert companion._installed_release()["tag"] == "v1.2.1"
+
+    def test_unknown_source_retries_after_ttl(self, tmp_path, monkeypatch):
+        """#609: a failed first probe (source=None) must not cache forever —
+        a later successful probe fills in the real identity."""
+        monkeypatch.setattr(companion, "_repo_root", lambda: tmp_path)
+        monkeypatch.setattr(companion, "_installed", {"cache": None, "at": 0.0})
+        monkeypatch.setattr(companion, "_run", lambda *a, **k: None)
+        assert companion._installed_release()["source"] is None
+        (tmp_path / "RELEASE").write_text("v1.2.0\n", encoding="utf-8")
+        # Within the TTL the unknown answer still serves from cache.
+        assert companion._installed_release()["source"] is None
+        companion._installed["at"] -= companion._INSTALLED_UNKNOWN_TTL_S + 1
+        got = companion._installed_release()
+        assert (got["tag"], got["source"]) == ("v1.2.0", "release-file")
 
     def test_release_file_source_caches_for_process_lifetime(self, tmp_path,
                                                              monkeypatch):

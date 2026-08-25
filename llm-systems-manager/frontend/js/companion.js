@@ -1187,6 +1187,12 @@
     }
     paintPush();
   }
+  // Admin responses carry counts; non-admin responses carry only `ok`.
+  function pushResultMsg(res) {
+    if (res.sent) return `sent ${res.sent} ✓`;
+    if (res.ok) return 'sent ✓';
+    return res.error || (res.failed ? `failed ${res.failed}` : 'failed');
+  }
   async function testPush() {
     $('pushMsg').textContent = 'sending…';
     try {
@@ -1195,7 +1201,7 @@
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(sub ? { endpoint: sub.endpoint } : {}),
       });
-      $('pushMsg').textContent = res.sent ? `sent ${res.sent} ✓` : (res.error || `failed ${res.failed}`);
+      $('pushMsg').textContent = pushResultMsg(res);
     } catch (err) { $('pushMsg').textContent = 'send failed: ' + errMsg(err); }
   }
 
