@@ -156,7 +156,7 @@ def _local_hostname() -> str:
 # banner reads it. Bump suffix (-1, -2, …) for same-day iterations; roll
 # the date for a new day's first change.
 # ---------------------------------------------------------------------------
-__version__ = "v2026.08.25-1"
+__version__ = "v2026.08.25-2"
 
 # Wall-clock at first import (Cheroot main process); the shutdown banner
 # reads it for the uptime line.
@@ -3113,9 +3113,9 @@ def admin_settings_get():
         return deny
     payload = settings_catalog.describe()
     topo = install_topology()
+    ae_flat, ae_pending = _fetch_ae_settings_state()
     ae_reachable = not topo["split"]
     if topo["split"]:
-        ae_flat = _fetch_ae_settings_values()
         ae_reachable = ae_flat is not None
         # AE-owned values come from the AE itself; unreachable → unknown, not
         # this host's local copy.
@@ -3131,10 +3131,49 @@ def admin_settings_get():
             elif ae_flat is None:
                 payload["values"].pop(p, None)
                 payload["secrets"].pop(p, None)
+    file_vals = settings_catalog.file_catalog_values()
+    if topo["split"] and ae_flat is not None:
+        payload["drift"] = _settings_drift(ae_flat, file_vals)
     payload["ok"] = True
     payload["topology"] = {"split": topo["split"], "ae_config_reachable": ae_reachable}
-    payload["restart_pending"] = sorted(_SETTINGS_RESTART_PENDING)
+    # Manager pending derives from file drift vs boot; AE pending comes from
+    # the AE's own comparison, falling back to local drift + in-memory flag.
+    derived = settings_catalog.pending_restart_services(file_vals)
+    pending = {"manager"} & derived
+    if ae_pending is True:
+        pending.add("alarm_engine")
+    elif ae_pending is None and (
+            "alarm_engine" in derived
+            or "alarm_engine" in _SETTINGS_RESTART_PENDING):
+        pending.add("alarm_engine")
+    payload["restart_pending"] = sorted(pending)
     return jsonify(payload)
+
+
+def _settings_drift(ae_flat: dict, file_vals: "dict | None") -> dict:
+    """{path: {local, ae}} for both-owned settings whose two copies differ.
+    Secrets report set/unset chips, never values."""
+    if file_vals is None:
+        return {}  # local file unreadable: no basis for a comparison
+    local_vals = file_vals
+    out: dict = {}
+    for e in settings_catalog.CATALOG:
+        if e["service"] != "both":
+            continue
+        p = e["path"]
+        local = local_vals.get(p)
+        if local is settings_catalog._MISSING:
+            local = None
+        ae = ae_flat.get(p)
+        if local == ae:
+            continue
+        if e["secret"]:
+            out[p] = {"secret": True,
+                      "local": settings_catalog.secret_status(local),
+                      "ae": settings_catalog.secret_status(ae)}
+        else:
+            out[p] = {"local": local, "ae": ae}
+    return out
 
 
 @app.route("/api/admin/settings", methods=["PUT"])
@@ -3146,29 +3185,70 @@ def admin_settings_put():
     changes = body.get("changes") or {}
     if not isinstance(changes, dict):
         return jsonify({"ok": False, "error": "changes must be an object"}), 400
+    resync = body.get("resync_ae") or []
+    if not isinstance(resync, list):
+        return jsonify({"ok": False, "error": "resync_ae must be a list"}), 400
     clean, errors = settings_catalog.validate_and_coerce(changes)
+    for p in resync:
+        e = settings_catalog.entry_for(str(p))
+        if e is None or e["service"] != "both":
+            errors[str(p)] = "not a shared setting"
     if errors:
         return jsonify({"ok": False, "errors": errors}), 400
-    if not clean:
+    if not clean and not resync:
         return jsonify({"ok": True, "applied": [], "restart_required": [], "errors": {}})
     local, remote = _partition_settings_changes(clean)
+    # None = remove the key so the model default / inherit applies again.
+    local_sets = {k: v for k, v in local.items() if v is not None}
+    local_dels = [k for k, v in local.items() if v is None]
     try:
-        if local:
-            settings_toml_io.apply_patches(local)
+        if local_sets or local_dels:
+            settings_toml_io.apply_patches(local_sets, removals=local_dels)
     except settings_toml_io.SettingsValidationError as e:
         return jsonify({"ok": False, "errors": e.errors}), 400
     except settings_toml_io.SettingsIOError as e:
         return _err_json("config file unreadable", 500, exc=e)
-    ae_failed = _forward_settings_to_ae(remote)
+    resync_sets, resync_dels = _settings_resync_values(resync)
+    if resync_sets is None:
+        return jsonify({"ok": False, "error": "local config file unreadable"}), 500
+    remote_sets = {**resync_sets, **{k: v for k, v in remote.items() if v is not None}}
+    remote_dels = resync_dels + [k for k, v in remote.items() if v is None]
+    ae_failed = _forward_settings_to_ae(remote_sets, remote_dels)
     # A failed AE forward means AE-only paths were not applied anywhere.
     applied = sorted(clean) if not ae_failed else sorted(local)
     result = {"ok": True, "applied": applied, "errors": {}}
     if ae_failed:
         result["ae_sync_failed"] = ae_failed
+    elif resync:
+        result["resynced"] = sorted(str(p) for p in resync)
     restart = settings_catalog.services_for(applied)
-    _SETTINGS_RESTART_PENDING.update(restart)
+    if resync and not ae_failed:
+        restart.add("alarm_engine")
+    # Manager pending is derived from file drift; only the AE fallback flag
+    # lives in memory.
+    _SETTINGS_RESTART_PENDING.update(restart & {"alarm_engine"})
     result["restart_required"] = sorted(restart)
     return jsonify(result)
+
+
+def _settings_resync_values(paths) -> "tuple[dict | None, list]":
+    """(sets, removals) mirroring the local file for both-owned paths queued
+    for an AE re-sync; a locally-unset key becomes a removal on the AE.
+    (None, []) when the local file can't be read."""
+    if not paths:
+        return {}, []
+    local_vals = settings_catalog.file_catalog_values()
+    if local_vals is None:
+        return None, []
+    sets: dict = {}
+    dels: list = []
+    for p in paths:
+        v = local_vals.get(str(p), settings_catalog._MISSING)
+        if v is settings_catalog._MISSING:
+            dels.append(str(p))
+        else:
+            sets[str(p)] = v
+    return sets, dels
 
 
 def _partition_settings_changes(clean: dict) -> tuple[dict, dict]:
@@ -3187,16 +3267,17 @@ def _partition_settings_changes(clean: dict) -> tuple[dict, dict]:
     return local, remote
 
 
-def _forward_settings_to_ae(remote: dict):
+def _forward_settings_to_ae(remote: dict, removals: "list | None" = None):
     """Returns an error string on failure, None on success/no-op."""
-    if not remote:
+    if not remote and not removals:
         return None
     base = (_alarm_engine_url or "").rstrip("/")
     if not base:
         return "alarm engine URL not configured"
     try:
         r = _ae_session.put(base + "/api/alarm/admin/config",
-                            json={"changes": remote}, timeout=(3, 10))
+                            json={"changes": remote,
+                                  "removals": removals or []}, timeout=(3, 10))
         if r.ok:
             return None
         return f"alarm engine rejected the update (HTTP {r.status_code})"
@@ -3205,18 +3286,20 @@ def _forward_settings_to_ae(remote: dict):
         return "alarm engine unreachable — update its host's config there"
 
 
-def _fetch_ae_settings_values() -> "dict | None":
-    """Flat {dotted.path: value} from the remote AE's whitelisted sections."""
+def _fetch_ae_settings_state() -> "tuple[dict | None, bool | None]":
+    """(flat {dotted.path: value}, restart_pending) from the AE's config API;
+    (None, None) when unreachable or unauthorized."""
     base = (_alarm_engine_url or "").rstrip("/")
     if not base:
-        return None
+        return None, None
     try:
-        r = _ae_session.get(base + "/api/alarm/admin/config", timeout=(2, 5))
+        r = _ae_session.get(base + "/api/alarm/admin/config", timeout=(1, 3))
         if not r.ok:
-            return None
-        sections = (r.json() or {}).get("sections") or {}
+            return None, None
+        data = r.json() or {}
+        sections = data.get("sections") or {}
     except Exception:
-        return None
+        return None, None
     flat: dict = {}
 
     def _walk(node, prefix):
@@ -3226,7 +3309,8 @@ def _fetch_ae_settings_values() -> "dict | None":
             else:
                 flat[f"{prefix}{k}"] = v
     _walk(sections, "")
-    return flat
+    pending = data.get("restart_pending")
+    return flat, (bool(pending) if pending is not None else None)
 
 
 @app.route("/api/admin/system-health", methods=["GET"])

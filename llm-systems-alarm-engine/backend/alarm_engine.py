@@ -67,7 +67,7 @@ from .storage.influxdb_client import InfluxDBClient
 # (-1, -2, …) for same-day iterations; roll the date for a new day's first
 # change.
 # ---------------------------------------------------------------------------
-__version__ = "v2026.08.21-4"
+__version__ = "v2026.08.25-1"
 from .storage import influx_monitor as _influx_monitor
 from .models.alarm_rule import (
     AlarmRuleCreate,
@@ -1292,13 +1292,28 @@ async def ae_self_restart(_auth: None = Depends(require_management_token)):
 _AE_CONFIG_PREFIXES = ("alarm_engine", "influxdb", "notifications", "logging")
 
 
+def _config_sections_snapshot() -> "dict | None":
+    from . import settings_toml_io as _sio
+    try:
+        return _sio.read_sections(_AE_CONFIG_PREFIXES)
+    except Exception:
+        return None
+
+
+# Whitelisted sections as loaded at boot; restart_pending derives from drift.
+_BOOT_CONFIG_SECTIONS = _config_sections_snapshot()
+
+
 @app.get("/api/alarm/admin/config")
 async def ae_config_get(_auth: None = Depends(require_strict_management_token)):
     from . import settings_toml_io as _sio
     try:
-        return {"ok": True, "sections": _sio.read_sections(_AE_CONFIG_PREFIXES)}
+        sections = _sio.read_sections(_AE_CONFIG_PREFIXES)
     except _sio.SettingsIOError:
         raise HTTPException(status_code=500, detail="config file unparseable")
+    pending = (_BOOT_CONFIG_SECTIONS is not None
+               and sections != _BOOT_CONFIG_SECTIONS)
+    return {"ok": True, "sections": sections, "restart_pending": pending}
 
 
 @app.put("/api/alarm/admin/config")
@@ -1306,21 +1321,27 @@ async def ae_config_put(body: dict = Body(...),
                         _auth: None = Depends(require_strict_management_token)):
     from . import settings_toml_io as _sio
     changes = body.get("changes") or {}
-    if not isinstance(changes, dict) or not changes:
+    removals = body.get("removals") or []
+    if not isinstance(changes, dict) or not isinstance(removals, list):
         raise HTTPException(status_code=400, detail="changes object required")
-    bad = sorted(p for p in changes
-                 if p.split(".", 1)[0] not in _AE_CONFIG_PREFIXES)
+    if not changes and not removals:
+        raise HTTPException(status_code=400, detail="changes object required")
+    # Removals must name a key, never a bare section prefix.
+    bad = sorted({str(p) for p in list(changes) + [str(r) for r in removals]
+                  if str(p).split(".", 1)[0] not in _AE_CONFIG_PREFIXES}
+                 | {str(r) for r in removals if "." not in str(r)})
     if bad:
         raise HTTPException(status_code=400,
                             detail=f"paths not editable via this endpoint: {bad}")
     try:
-        _sio.apply_patches(changes)
+        _sio.apply_patches(changes, removals=[str(r) for r in removals])
     except _sio.SettingsValidationError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except _sio.SettingsIOError:
         raise HTTPException(status_code=500, detail="config file unreadable")
-    logger.info("AE config updated via management API: %s", sorted(changes))
-    return {"ok": True, "applied": sorted(changes)}
+    applied = sorted(list(changes) + [str(r) for r in removals])
+    logger.info("AE config updated via management API: %s", applied)
+    return {"ok": True, "applied": applied}
 
 
 from typing import NamedTuple

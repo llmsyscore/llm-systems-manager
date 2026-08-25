@@ -93,6 +93,42 @@ def test_put_null_secret_clear_yields_400_not_500(monkeypatch, cfg):
     assert r.status_code == 400
 
 
+def test_put_removals_delete_whitelisted_keys(monkeypatch, cfg):
+    _set_tokens(monkeypatch, management="mgmt-secret")
+    r = _client().put(PATH, headers={"Authorization": "Bearer mgmt-secret"},
+                      json={"changes": {}, "removals": ["influxdb.host"]})
+    assert r.status_code == 200
+    assert r.json()["applied"] == ["influxdb.host"]
+    assert "host" not in cfg.read_text()
+
+
+def test_put_removals_respect_the_whitelist(monkeypatch, cfg):
+    _set_tokens(monkeypatch, management="mgmt-secret")
+    before = cfg.read_text()
+    for bad in (["manager.port"], ["alarm_engine"]):
+        r = _client().put(PATH, headers={"Authorization": "Bearer mgmt-secret"},
+                          json={"changes": {}, "removals": bad})
+        assert r.status_code == 400, bad
+    assert cfg.read_text() == before
+
+
+def test_get_reports_restart_pending_from_boot_drift(monkeypatch, cfg):
+    _set_tokens(monkeypatch, management="mgmt-secret")
+    monkeypatch.setattr(ae, "_BOOT_CONFIG_SECTIONS", ae._config_sections_snapshot())
+    hdr = {"Authorization": "Bearer mgmt-secret"}
+    assert _client().get(PATH, headers=hdr).json()["restart_pending"] is False
+    _client().put(PATH, headers=hdr,
+                  json={"changes": {"alarm_engine.evaluation_interval": 45}})
+    assert _client().get(PATH, headers=hdr).json()["restart_pending"] is True
+
+
+def test_restart_pending_false_when_boot_snapshot_unavailable(monkeypatch, cfg):
+    _set_tokens(monkeypatch, management="mgmt-secret")
+    monkeypatch.setattr(ae, "_BOOT_CONFIG_SECTIONS", None)
+    r = _client().get(PATH, headers={"Authorization": "Bearer mgmt-secret"})
+    assert r.json()["restart_pending"] is False
+
+
 def test_config_endpoints_refuse_ingest_token_fallback(monkeypatch, cfg):
     _set_tokens(monkeypatch, ingest="ingest-secret", management="")
     hdr = {"Authorization": "Bearer ingest-secret"}

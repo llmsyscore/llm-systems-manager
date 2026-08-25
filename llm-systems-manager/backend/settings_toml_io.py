@@ -70,6 +70,17 @@ def _set_dotted(doc, dotted: str, value) -> None:
         raise SettingsValidationError({dotted: f"unsupported value: {e}"}) from e
 
 
+def _remove_dotted(doc, dotted: str) -> None:
+    parts = dotted.split(".")
+    node = doc
+    try:
+        for key in parts[:-1]:
+            node = node[key]
+        del node[parts[-1]]
+    except (KeyError, TypeError):
+        pass  # absent path or non-table intermediate: nothing to remove
+
+
 def _validate(text: str) -> None:
     try:
         data = tomllib.loads(text)
@@ -118,17 +129,21 @@ def _atomic_write(path: Path, text: str) -> None:
 
 
 def apply_patches(changes: dict[str, object],
-                  config_path: Optional[Path] = None) -> None:
+                  config_path: Optional[Path] = None,
+                  removals: "tuple[str, ...] | list[str]" = ()) -> None:
     path = Path(config_path) if config_path else resolve_config_path()
     with _LOCK:
         doc = _load_doc(path)
         for dotted, value in changes.items():
             _set_dotted(doc, dotted, value)
+        for dotted in removals:
+            _remove_dotted(doc, dotted)
         text = _tomlkit().dumps(doc)
         _validate(text)
         _backup(path)
         _atomic_write(path, text)
-    log.info("settings updated: %s", ", ".join(sorted(changes)))
+    log.info("settings updated: %s",
+             ", ".join(sorted(list(changes) + list(removals))))
 
 
 def read_sections(prefixes: tuple[str, ...],

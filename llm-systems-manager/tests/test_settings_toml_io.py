@@ -76,6 +76,28 @@ def test_read_sections_filters_by_prefix(cfg):
     assert "unknown_section" not in out
 
 
+def test_removals_delete_key_and_survive_absent_targets(cfg):
+    sio.apply_patches({}, config_path=cfg,
+                      removals=["manager.tls_port",
+                                "manager.energy.price_kwh",   # absent leaf
+                                "no_such.section.key"])       # absent table
+    text = cfg.read_text()
+    assert "tls_port" not in text
+    assert "port = 5000" in text
+    assert "# top comment survives" in text
+
+
+def test_removal_through_non_table_intermediate_fails_cleanly(tmp_path):
+    """A string where a table is expected must surface as a validation error
+    (from the schema check), never an unhandled TypeError from the removal."""
+    p = tmp_path / "llm-systems.toml"
+    p.write_text('[manager]\nenergy = "not-a-table"\n')
+    with pytest.raises(sio.SettingsValidationError):
+        sio.apply_patches({}, config_path=p,
+                          removals=["manager.energy.price_kwh"])
+    assert 'energy = "not-a-table"' in p.read_text()
+
+
 def test_backup_prune_ignores_foreign_files(cfg):
     bdir = cfg.parent / "backups"
     bdir.mkdir(exist_ok=True)

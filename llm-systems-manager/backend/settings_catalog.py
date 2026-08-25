@@ -34,7 +34,8 @@ MANAGER, AE, BOTH = "manager", "alarm_engine", "both"
 
 def _e(path: str, typ: str, label: str, help_: str, group: str, service: str,
        secret: bool = False, choices: Optional[list] = None,
-       min: Optional[float] = None, max: Optional[float] = None) -> dict:
+       min: Optional[float] = None, max: Optional[float] = None,
+       nullable: bool = False) -> dict:
     d = {"path": path, "type": typ, "label": label, "help": help_,
          "group": group, "service": service, "secret": secret}
     if choices is not None:
@@ -43,6 +44,8 @@ def _e(path: str, typ: str, label: str, help_: str, group: str, service: str,
         d["min"] = min
     if max is not None:
         d["max"] = max
+    if nullable:
+        d["nullable"] = True
     return d
 
 
@@ -78,7 +81,7 @@ CATALOG: list[dict] = [
     _e("manager.history.max_response_rows", "int", "Max response rows", "/api/history rows thinned above this; 0 = raw.", "history", MANAGER, min=0, max=100000),
     # energy
     _e("manager.reportcard.price_kwh", "float", "Report-card $/kWh", "Electricity price for the report card's $/Mtok estimate.", "energy", MANAGER, min=0, max=10),
-    _e("manager.energy.price_kwh", "float", "Energy $/kWh", "Energy-tab price; unset inherits the report card's.", "energy", MANAGER, min=0, max=10),
+    _e("manager.energy.price_kwh", "float", "Energy $/kWh", "Energy-tab price; blank inherits the report card's.", "energy", MANAGER, min=0, max=10, nullable=True),
     _e("manager.energy.cloud_price_in_per_mtok", "float", "Cloud $/Mtok in", "Cloud list price (input tokens) for the savings card.", "energy", MANAGER, min=0, max=1000),
     _e("manager.energy.cloud_price_out_per_mtok", "float", "Cloud $/Mtok out", "Cloud list price (output tokens).", "energy", MANAGER, min=0, max=1000),
     _e("manager.energy.cloud_price_label", "str", "Cloud price label", "As-of-dated label shown beside the savings figures.", "energy", MANAGER),
@@ -275,6 +278,9 @@ def validate_and_coerce(changes: dict) -> tuple[dict, dict]:
                 clean[path] = [] if entry["type"] == "list" else ""
                 continue
         elif value is None:
+            if entry.get("nullable"):
+                clean[path] = None  # None = remove the key (inherit/default)
+                continue
             errors[path] = "value required"
             continue
         try:
@@ -282,6 +288,48 @@ def validate_and_coerce(changes: dict) -> tuple[dict, dict]:
         except (ValueError, TypeError) as e:
             errors[path] = str(e)
     return clean, errors
+
+
+_MISSING = object()
+
+
+def file_catalog_values() -> "Optional[dict]":
+    """Raw on-disk value per catalog path (_MISSING when the key is absent);
+    None when the file can't be read."""
+    try:
+        import settings_toml_io
+        path = settings_toml_io.resolve_config_path()
+        data = tomllib.loads(path.read_text(encoding="utf-8")) if path.is_file() else {}
+    except Exception:
+        return None
+    out: dict[str, Any] = {}
+    for e in CATALOG:
+        node: Any = data
+        for part in e["path"].split("."):
+            if not isinstance(node, dict) or part not in node:
+                node = _MISSING
+                break
+            node = node[part]
+        out[e["path"]] = node
+    return out
+
+
+# Raw file values at process start; pending_restart derives from drift off this.
+_BOOT_FILE_VALUES = file_catalog_values()
+
+
+def pending_restart_services(now: "Optional[dict]" = None) -> set[str]:
+    """Services whose on-disk catalog values differ from the file this process
+    started with. Stateless across UI saves, hand edits, and shell restarts."""
+    if _BOOT_FILE_VALUES is None:
+        return set()
+    if now is None:
+        now = file_catalog_values()
+    if now is None:
+        return set()
+    changed = [p for p, v in now.items()
+               if v != _BOOT_FILE_VALUES.get(p, _MISSING)]
+    return services_for(changed)
 
 
 def services_for(paths) -> set[str]:
