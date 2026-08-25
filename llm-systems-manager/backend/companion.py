@@ -20,7 +20,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any, Optional
-from urllib.parse import urlsplit
+from urllib.parse import urlsplit, urlunsplit
 
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import ec
@@ -97,13 +97,19 @@ _installed: dict = {"cache": None, "at": 0.0}
 _installed_lock = threading.Lock()
 # git checkouts re-describe after this long; packaged sources cache forever.
 _INSTALLED_GIT_TTL_S = 60.0
+# an unidentified install (source=None) re-probes after this long.
+_INSTALLED_UNKNOWN_TTL_S = 300.0
 
 
 def _installed_fresh(cached: "Optional[dict]") -> bool:
     """True while the cached answer needs no recompute."""
-    return cached is not None and (
-        cached["source"] != "git"
-        or time.monotonic() - _installed["at"] < _INSTALLED_GIT_TTL_S)
+    if cached is None:
+        return False
+    if cached["source"] == "git":
+        return time.monotonic() - _installed["at"] < _INSTALLED_GIT_TTL_S
+    if cached["source"] is None:
+        return time.monotonic() - _installed["at"] < _INSTALLED_UNKNOWN_TTL_S
+    return True
 
 
 def _installed_release() -> dict:
@@ -128,9 +134,10 @@ def _installed_release() -> dict:
         if _installed_fresh(cached):
             return cached
         out = _probe_install()
-        # A git answer only refreshes from git; a failed probe keeps the
-        # last good one and retries after the TTL.
-        if cached is not None and out["source"] != "git":
+        # A git answer only refreshes from git; a failed probe keeps the last
+        # good one. A source=None cache never counts as a good answer.
+        if (cached is not None and cached["source"] is not None
+                and out["source"] != "git"):
             out = cached
         _installed["cache"] = out
         _installed["at"] = time.monotonic()
@@ -295,7 +302,7 @@ def valid_push_endpoint(endpoint: Any) -> bool:
             return False
     except ValueError:
         return False
-    host = (parts.hostname or "").rstrip(".").lower()
+    host = _endpoint_host(endpoint)
     if not host or not _HOSTNAME_RE.match(host):
         return False
     if host.endswith(_NON_PUBLIC_TLDS):
@@ -308,22 +315,47 @@ def valid_push_endpoint(endpoint: Any) -> bool:
         return True
 
 
-def resolves_to_public_ip(host: str) -> bool:
-    """False when the name resolves to any loopback/private/link-local
-    address. Unresolvable names pass — the send fails on its own."""
+class PushEndpointRefused(Exception):
+    """Endpoint failed send-time validation; nothing was connected."""
+
+
+def _endpoint_host(endpoint: str) -> str:
+    """Normalized hostname of a push-endpoint URL."""
+    try:
+        return (urlsplit(endpoint).hostname or "").rstrip(".").lower()
+    except ValueError:
+        return ""
+
+
+def _resolve_public_addr(host: str) -> Optional[str]:
+    """First resolved address for host:443, None when the name doesn't
+    resolve. Raises PushEndpointRefused when any answer is non-public."""
     try:
         infos = socket.getaddrinfo(host, 443, proto=socket.IPPROTO_TCP)
-    except OSError:
-        return True
+    except (OSError, UnicodeError):
+        # getaddrinfo raises UnicodeError for hosts idna can't encode.
+        return None
+    addrs = []
     for info in infos:
         try:
             ip = ipaddress.ip_address(info[4][0])
         except ValueError:
-            return False
+            raise PushEndpointRefused(f"{host} resolved to a non-IP answer")
         if (ip.is_private or ip.is_loopback or ip.is_link_local
                 or ip.is_reserved or ip.is_multicast or ip.is_unspecified):
-            return False
-    return True
+            raise PushEndpointRefused(f"{host} resolves to a non-public address")
+        addrs.append(info[4][0])
+    return addrs[0] if addrs else None
+
+
+def resolves_to_public_ip(host: str) -> bool:
+    """False when the name resolves to any loopback/private/link-local
+    address. Unresolvable names pass — the send fails on its own."""
+    try:
+        _resolve_public_addr(host)
+        return True
+    except PushEndpointRefused:
+        return False
 
 
 def valid_subscription(sub: Any) -> bool:
@@ -419,20 +451,45 @@ def _webpush_funcs():
     return webpush, WebPushException
 
 
-def _push_session():
-    """requests session that refuses redirects — pywebpush passes none, and a
-    3xx from a push endpoint would otherwise re-target scheme/host/port."""
-    global _PUSH_SESSION
-    if _PUSH_SESSION is None:
-        import requests
+def _push_session(endpoint: str):
+    """Fresh single-use session for one endpoint: refuses redirects,
+    re-validates the endpoint, and pins the connection to the validated
+    address (TLS SNI + certificate checks stay on the hostname)."""
+    import requests
+    from requests.adapters import HTTPAdapter
 
-        class _NoRedirect(requests.Session):
-            def request(self, *args, **kwargs):
-                kwargs["allow_redirects"] = False
-                return super().request(*args, **kwargs)
+    if not valid_push_endpoint(endpoint):
+        raise PushEndpointRefused("invalid push endpoint")
+    host = _endpoint_host(endpoint)
+    addr = _resolve_public_addr(host)
+    if addr is None:
+        raise PushEndpointRefused(f"{host} does not resolve")
 
-        _PUSH_SESSION = _NoRedirect()
-    return _PUSH_SESSION
+    class _NoRedirect(requests.Session):
+        def request(self, *args, **kwargs):
+            kwargs["allow_redirects"] = False
+            return super().request(*args, **kwargs)
+
+    class _PinnedAdapter(HTTPAdapter):
+        """Connects to the pinned address; SNI + cert checks stay on host."""
+
+        def init_poolmanager(self, connections, maxsize, block=False, **kw):
+            kw["server_hostname"] = host
+            super().init_poolmanager(connections, maxsize, block, **kw)
+
+        def send(self, request, **kwargs):
+            parts = urlsplit(request.url)
+            netloc = f"[{addr}]" if ":" in addr else addr
+            request.url = urlunsplit((parts.scheme, netloc, parts.path,
+                                      parts.query, parts.fragment))
+            request.headers["Host"] = host
+            return super().send(request, **kwargs)
+
+    session = _NoRedirect()
+    # Env proxies (HTTPS_PROXY) would route around the pinned pool.
+    session.trust_env = False
+    session.mount("https://", _PinnedAdapter())
+    return session
 
 
 def _push_contact(settings: Any) -> str:
@@ -445,21 +502,29 @@ def _send_one(sub: dict, payload: str, pem_path: Path,
               contact: str) -> "tuple[bool, bool]":
     """Send one notification. Returns (ok, prune) — prune on 404/410."""
     webpush, WebPushException = _webpush_funcs()
+    endpoint = str(sub.get("endpoint") or "?")
+    session = None
     try:
+        session = _push_session(endpoint)
         webpush(subscription_info=sub, data=payload,
                 vapid_private_key=str(pem_path),
                 vapid_claims={"sub": contact}, ttl=60,
-                timeout=PUSH_TIMEOUT_S, requests_session=_push_session())
+                timeout=PUSH_TIMEOUT_S, requests_session=session)
         return True, False
+    except PushEndpointRefused as exc:
+        log.warning("companion: push to %s refused (%s)", endpoint[:60], exc)
+        return False, False
     except WebPushException as exc:
         status = getattr(getattr(exc, "response", None), "status_code", None)
         log.warning("companion: push to %s failed (%s)",
-                    sub.get("endpoint", "?")[:60], status or exc)
+                    endpoint[:60], status or exc)
         return False, status in (404, 410)
     except Exception as exc:
-        log.warning("companion: push to %s failed (%s)",
-                    sub.get("endpoint", "?")[:60], exc)
+        log.warning("companion: push to %s failed (%s)", endpoint[:60], exc)
         return False, False
+    finally:
+        if session is not None:
+            session.close()
 
 
 def _fan_out(subs: "list[dict]", payload: str, pem: Path, contact: str) -> dict:
@@ -509,7 +574,6 @@ def notify_path(url: Any) -> str:
 # Bound by register_routes; tests monkeypatch these to a sandbox.
 _data_dir: Optional[Path] = None
 _store: Optional[SubscriptionStore] = None
-_PUSH_SESSION: Any = None
 
 
 def _manifest() -> dict:
@@ -539,6 +603,8 @@ def register_routes(app, ctx, static_dir: Path) -> None:
     /api/companion/push/* on the manager app."""
     global _data_dir, _store
     from flask import Response, jsonify, request as flask_request
+
+    import auth  # sibling
 
     static_dir = Path(static_dir)
     _data_dir = Path(ctx.data_dir)
@@ -632,7 +698,7 @@ def register_routes(app, ctx, static_dir: Path) -> None:
         sub = flask_request.get_json(silent=True)
         if not valid_subscription(sub):
             return jsonify({"ok": False, "error": "invalid subscription"}), 400
-        host = urlsplit(sub["endpoint"]).hostname or ""
+        host = _endpoint_host(sub["endpoint"])
         if not resolves_to_public_ip(host):
             return jsonify({"ok": False,
                             "error": "endpoint resolves to a private address"}), 400
@@ -655,8 +721,11 @@ def register_routes(app, ctx, static_dir: Path) -> None:
         # An explicit endpoint tests just that device, so one stale
         # subscription can't report failure for a push that arrived.
         target = (body.get("endpoint") or "") if isinstance(body, dict) else ""
+        # Quiet admin check — ctx.require_admin() warn-logs every denial.
+        is_admin = (auth.effective_role() == "admin"
+                    and ctx.admin_ip_allowed(flask_request.remote_addr or ""))
         # Only an admin may fan a test out to every registered device.
-        if not target and ctx.require_admin() is not None:
+        if not target and not is_admin:
             return jsonify({"ok": False,
                             "error": "send the calling device's endpoint"}), 403
         if target:
@@ -679,6 +748,9 @@ def register_routes(app, ctx, static_dir: Path) -> None:
             "tag": "lsm-test", "url": "/companion",
         })
         out = _fan_out(subs, payload, pem, contact)
+        # Non-admins get only the ok boolean, not per-endpoint counts.
+        if not is_admin:
+            return jsonify({"ok": out["failed"] == 0})
         return jsonify({"ok": out["failed"] == 0, **out})
 
     @app.route("/api/companion/push/notify", methods=["POST"])

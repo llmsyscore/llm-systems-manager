@@ -974,7 +974,7 @@ Stores a browser `PushSubscription` JSON (`endpoint` + `keys.p256dh` + `keys.aut
 ---
 
 ### `POST /api/companion/push/test`
-Sends a test notification to every registered subscription via web push (VAPID). Returns `{ok, sent, failed, pruned}` — subscriptions rejected upstream with 404/410 are pruned. Returns 400 with no subscriptions and 503 when `pywebpush` is not installed. The VAPID contact claim comes from `[manager.companion] push_contact`.
+Sends a test notification via web push (VAPID). **Body (optional):** `{"endpoint": "..."}` targets one subscription; non-admins must supply their own device's endpoint (403 without one). Admins get `{ok, sent, failed, pruned}` — subscriptions rejected upstream with 404/410 are pruned; non-admins get only `{ok}`. Returns 400 with no subscriptions, 404 for an unknown endpoint, and 503 when `pywebpush` is not installed. The VAPID contact claim comes from `[manager.companion] push_contact`.
 
 ---
 
