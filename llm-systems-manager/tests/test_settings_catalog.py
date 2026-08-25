@@ -95,3 +95,45 @@ def test_describe_reads_fresh_file_values(monkeypatch, tmp_path):
     monkeypatch.setattr(sio, "resolve_config_path", lambda: p)
     d = sc.describe()
     assert d["values"]["manager.history.window_minutes"] == 123
+
+
+# --- nullable entries (#613) ---
+
+
+def test_nullable_none_passes_validation():
+    clean, errors = sc.validate_and_coerce({"manager.energy.price_kwh": None})
+    assert errors == {}
+    assert clean == {"manager.energy.price_kwh": None}
+
+
+def test_non_nullable_none_rejected():
+    clean, errors = sc.validate_and_coerce({"manager.poll_interval": None})
+    assert "manager.poll_interval" in errors and clean == {}
+
+
+def test_nullable_flag_exposed_in_describe():
+    entries = {e["path"]: e for e in sc.describe()["entries"]}
+    assert entries["manager.energy.price_kwh"].get("nullable") is True
+    assert "nullable" not in entries["manager.poll_interval"]
+
+
+# --- derived pending restart (#611) ---
+
+
+def test_pending_restart_derives_from_file_drift(tmp_path, monkeypatch):
+    import settings_toml_io as sio
+    cfg = tmp_path / "llm-systems.toml"
+    cfg.write_text("[manager]\npoll_interval = 30\n")
+    monkeypatch.setattr(sio, "resolve_config_path", lambda: cfg)
+    monkeypatch.setattr(sc, "_BOOT_FILE_VALUES", sc.file_catalog_values())
+    assert sc.pending_restart_services() == set()
+    cfg.write_text("[manager]\npoll_interval = 60\n")
+    assert sc.pending_restart_services() == {"manager"}
+    cfg.write_text("[manager]\npoll_interval = 60\n"
+                   "[influxdb]\nhost = \"elsewhere\"\n")
+    assert sc.pending_restart_services() == {"manager", "alarm_engine"}
+
+
+def test_pending_restart_empty_when_file_unreadable(monkeypatch):
+    monkeypatch.setattr(sc, "file_catalog_values", lambda: None)
+    assert sc.pending_restart_services() == set()

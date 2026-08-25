@@ -4,7 +4,12 @@ from __future__ import annotations
 import pytest
 
 import manager_mod
+import settings_catalog
 import settings_toml_io as sio
+
+
+def _ae_unreachable(url, **kw):
+    raise OSError("no route")
 
 
 @pytest.fixture
@@ -12,6 +17,11 @@ def client(monkeypatch, tmp_path):
     cfg = tmp_path / "llm-systems.toml"
     cfg.write_text("[manager]\nport = 5000\n")
     monkeypatch.setattr(sio, "resolve_config_path", lambda: cfg)
+    # Boot snapshot matches the sandbox file, so pending starts empty; the AE
+    # probe fails by default (tests override _ae_session.get as needed).
+    monkeypatch.setattr(settings_catalog, "_BOOT_FILE_VALUES",
+                        settings_catalog.file_catalog_values())
+    monkeypatch.setattr(manager_mod._ae_session, "get", _ae_unreachable)
     monkeypatch.setattr(manager_mod, "_require_admin", lambda: None)
     manager_mod._SETTINGS_RESTART_PENDING.clear()
     manager_mod.app.config["TESTING"] = True
@@ -192,3 +202,173 @@ def test_split_put_failed_forward_excludes_remote_only_from_applied(client, monk
     assert d["ok"] is True and d["ae_sync_failed"]
     assert d["applied"] == ["manager.poll_interval"]
     assert d["restart_required"] == ["manager"]
+
+
+# --- derived pending-restart (#611) ---
+
+
+def test_pending_clears_after_simulated_restart(client, monkeypatch):
+    c, _ = client
+    c.put("/api/admin/settings",
+          json={"changes": {"manager.history.window_minutes": 90}})
+    assert c.get("/api/admin/settings").get_json()["restart_pending"] == ["manager"]
+    # A restart re-reads the file at boot: refresh the boot snapshot.
+    monkeypatch.setattr(settings_catalog, "_BOOT_FILE_VALUES",
+                        settings_catalog.file_catalog_values())
+    manager_mod._SETTINGS_RESTART_PENDING.clear()
+    assert c.get("/api/admin/settings").get_json()["restart_pending"] == []
+
+
+def test_hand_edit_flags_manager_pending(client):
+    c, cfg = client
+    cfg.write_text("[manager]\nport = 5001\n")
+    assert c.get("/api/admin/settings").get_json()["restart_pending"] == ["manager"]
+
+
+def test_manager_pending_survives_inmemory_wipe(client):
+    c, _ = client
+    c.put("/api/admin/settings",
+          json={"changes": {"manager.history.window_minutes": 90}})
+    manager_mod._SETTINGS_RESTART_PENDING.clear()   # simulated manager restart amnesia
+    assert c.get("/api/admin/settings").get_json()["restart_pending"] == ["manager"]
+
+
+def test_ae_pending_comes_from_ae_endpoint(client, monkeypatch):
+    c, _ = client
+    _force_split(monkeypatch)
+    monkeypatch.setattr(manager_mod._ae_session, "get",
+                        lambda url, **kw: _FakeResp(payload={
+                            "ok": True, "sections": {}, "restart_pending": True}))
+    assert c.get("/api/admin/settings").get_json()["restart_pending"] == ["alarm_engine"]
+
+
+def test_ae_pending_false_overrides_inmemory_flag(client, monkeypatch):
+    c, _ = client
+    _force_split(monkeypatch)
+    manager_mod._SETTINGS_RESTART_PENDING.add("alarm_engine")
+    monkeypatch.setattr(manager_mod._ae_session, "get",
+                        lambda url, **kw: _FakeResp(payload={
+                            "ok": True, "sections": {}, "restart_pending": False}))
+    assert c.get("/api/admin/settings").get_json()["restart_pending"] == []
+
+
+def test_ae_pending_falls_back_to_inmemory_when_unreachable(client):
+    c, _ = client
+    manager_mod._SETTINGS_RESTART_PENDING.add("alarm_engine")
+    assert c.get("/api/admin/settings").get_json()["restart_pending"] == ["alarm_engine"]
+
+
+# --- shared-section drift + re-sync (#612) ---
+
+
+def test_split_get_reports_drift_masking_secrets(client, monkeypatch):
+    c, cfg = client
+    cfg.write_text('[manager]\nport = 5000\n'
+                   '[influxdb]\nhost = "local-influx"\n'
+                   '[alarm_engine]\ningest_token = "LOCAL-SECRET"\n')
+    _force_split(monkeypatch)
+    monkeypatch.setattr(manager_mod._ae_session, "get",
+                        lambda url, **kw: _FakeResp(payload={"ok": True, "sections": {
+                            "influxdb": {"host": "ae-influx"},
+                            "alarm_engine": {"ingest_token": "AE-SECRET"}}}))
+    r = c.get("/api/admin/settings")
+    d = r.get_json()
+    drift = d["drift"]
+    assert drift["influxdb.host"] == {"local": "local-influx", "ae": "ae-influx"}
+    assert drift["alarm_engine.ingest_token"] == {
+        "secret": True, "local": "set", "ae": "set"}
+    assert b"LOCAL-SECRET" not in r.data and b"AE-SECRET" not in r.data
+
+
+def test_split_get_no_drift_when_copies_match(client, monkeypatch):
+    c, cfg = client
+    cfg.write_text('[manager]\nport = 5000\n[influxdb]\nhost = "same"\n')
+    _force_split(monkeypatch)
+    monkeypatch.setattr(manager_mod._ae_session, "get",
+                        lambda url, **kw: _FakeResp(payload={"ok": True, "sections": {
+                            "influxdb": {"host": "same"}}}))
+    assert c.get("/api/admin/settings").get_json()["drift"] == {}
+
+
+def test_resync_forwards_local_values_including_secrets(client, monkeypatch):
+    c, cfg = client
+    cfg.write_text('[manager]\nport = 5000\n'
+                   '[influxdb]\nhost = "local-influx"\n'
+                   '[alarm_engine]\ningest_token = "LOCAL-SECRET"\n')
+    _force_split(monkeypatch)
+    sent = {}
+    monkeypatch.setattr(manager_mod._ae_session, "put",
+                        lambda url, **kw: sent.update(url=url, **kw) or _FakeResp())
+    d = c.put("/api/admin/settings", json={
+        "resync_ae": ["influxdb.host", "alarm_engine.ingest_token"]}).get_json()
+    assert d["ok"] is True
+    assert sorted(d["resynced"]) == ["alarm_engine.ingest_token", "influxdb.host"]
+    assert d["restart_required"] == ["alarm_engine"]
+    fwd = sent["json"]["changes"]
+    assert fwd == {"influxdb.host": "local-influx",
+                   "alarm_engine.ingest_token": "LOCAL-SECRET"}
+
+
+def test_resync_rejects_non_shared_paths(client, monkeypatch):
+    c, _ = client
+    _force_split(monkeypatch)
+    r = c.put("/api/admin/settings", json={"resync_ae": ["manager.port"]})
+    assert r.status_code == 400
+    assert "manager.port" in r.get_json()["errors"]
+
+
+def test_bad_resync_path_blocks_the_whole_write(client, monkeypatch):
+    c, cfg = client
+    _force_split(monkeypatch)
+    before = cfg.read_text()
+    r = c.put("/api/admin/settings", json={
+        "changes": {"manager.poll_interval": 30},
+        "resync_ae": ["manager.poll_interval"]})
+    assert r.status_code == 400
+    assert cfg.read_text() == before
+
+
+def test_resync_of_locally_unset_path_becomes_ae_removal(client, monkeypatch):
+    c, cfg = client
+    cfg.write_text('[manager]\nport = 5000\n')   # influxdb.host unset locally
+    _force_split(monkeypatch)
+    sent = {}
+    monkeypatch.setattr(manager_mod._ae_session, "put",
+                        lambda url, **kw: sent.update(url=url, **kw) or _FakeResp())
+    d = c.put("/api/admin/settings",
+              json={"resync_ae": ["influxdb.host"]}).get_json()
+    assert d["ok"] is True and d["resynced"] == ["influxdb.host"]
+    assert sent["json"]["changes"] == {}
+    assert sent["json"]["removals"] == ["influxdb.host"]
+
+
+def test_hand_edited_both_path_flags_ae_pending_when_ae_unreachable(client):
+    c, cfg = client
+    cfg.write_text('[manager]\nport = 5000\n[influxdb]\nhost = "moved"\n')
+    pending = c.get("/api/admin/settings").get_json()["restart_pending"]
+    assert pending == ["alarm_engine", "manager"]
+
+
+# --- nullable clearing (#613) ---
+
+
+def test_put_null_clears_nullable_field(client):
+    c, cfg = client
+    d = c.put("/api/admin/settings",
+              json={"changes": {"manager.energy.price_kwh": 0.25}}).get_json()
+    assert d["ok"] is True
+    assert "price_kwh = 0.25" in cfg.read_text()
+    d = c.put("/api/admin/settings",
+              json={"changes": {"manager.energy.price_kwh": None}}).get_json()
+    assert d["ok"] is True and d["applied"] == ["manager.energy.price_kwh"]
+    assert "price_kwh" not in cfg.read_text()
+    g = c.get("/api/admin/settings").get_json()
+    assert "manager.energy.price_kwh" not in g["values"]
+
+
+def test_put_null_still_rejected_for_non_nullable(client):
+    c, _ = client
+    r = c.put("/api/admin/settings",
+              json={"changes": {"manager.poll_interval": None}})
+    assert r.status_code == 400
+    assert "manager.poll_interval" in r.get_json()["errors"]

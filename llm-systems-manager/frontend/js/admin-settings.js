@@ -39,6 +39,7 @@
   function currentValue(e) {
     const v = _data.values[e.path];
     if (v !== undefined) return v;
+    if (e.nullable) return null;   // absent = inherit/default
     return e.type === 'list' ? [] : '';
   }
 
@@ -89,8 +90,9 @@
     const step = e.type === 'float' ? ' step="any"' : '';
     const lim = (e.min !== undefined ? ` min="${e.min}"` : '') +
                 (e.max !== undefined ? ` max="${e.max}"` : '');
+    const ph = e.nullable ? ' placeholder="inherit"' : '';
     const width = typ === 'number' ? 'width:120px;' : 'width:min(340px,100%);';
-    return `<input type="${typ}"${step}${lim} class="ap-input st-input" data-path="${p}"
+    return `<input type="${typ}"${step}${lim}${ph} class="ap-input st-input" data-path="${p}"
       style="${width}" value="${esc(v ?? '')}">`;
   }
 
@@ -102,6 +104,20 @@
     return '';
   }
 
+  function driftVal(v) {
+    if (v === null || v === undefined) return 'unset';
+    return Array.isArray(v) ? v.join(', ') : String(v);
+  }
+
+  function driftNote(e) {
+    const d = _data.drift && _data.drift[e.path];
+    if (!d) return '';
+    const detail = d.secret ? `local ${d.local} / AE ${d.ae}`
+      : `local ${driftVal(d.local)} / AE ${driftVal(d.ae)}`;
+    return `<div style="font-size:12px;margin-top:3px;color:var(--warn);">` +
+      `⚠ differs on the alarm-engine host — ${esc(detail)}</div>`;
+  }
+
   function renderField(e) {
     return `<div class="settings-row" data-path="${esc(e.path)}"
         style="display:flex;gap:14px;padding:8px 0;border-bottom:1px solid var(--border-soft);align-items:flex-start;">
@@ -109,7 +125,7 @@
         <div style="color:var(--fg);">${esc(e.label)}</div>
         <div class="adm-muted" style="font-size:12px;">${esc(e.help)}</div>
       </div>
-      <div style="flex:1;min-width:220px;">${inputFor(e)}${bothNote(e)}</div>
+      <div style="flex:1;min-width:220px;">${inputFor(e)}${bothNote(e)}${driftNote(e)}</div>
     </div>`;
   }
 
@@ -128,6 +144,7 @@
     }
     root.innerHTML = html;
     renderBanner();
+    renderDriftBanner();
     updateSaveBar();
   }
 
@@ -139,7 +156,7 @@
       case 'list': return el.value.split('\n').map(s => s.trim()).filter(Boolean);
       case 'int':
       case 'float': return el.value === '' ? null : Number(el.value);
-      default: return el.value;
+      default: return (entry.nullable && el.value === '') ? null : el.value;
     }
   }
 
@@ -341,6 +358,48 @@
       `<div class="adm-muted" id="adminSettingsRestartMsg" style="margin-top:6px;font-size:12px;"></div>`;
     const root = document.getElementById('adminSettingsRoot');
     root.insertBefore(bar, root.firstChild);
+  }
+
+  // ── shared-section drift (#612, split installs) ───────────────────
+
+  function renderDriftBanner() {
+    const old = document.getElementById('adminSettingsDriftBanner');
+    if (old) old.remove();
+    const drift = _data.drift || {};
+    const paths = Object.keys(drift);
+    if (!paths.length) return;
+    const names = paths.map(p => esc((_entryByPath.get(p) || { label: p }).label)).join(', ');
+    const bar = document.createElement('div');
+    bar.id = 'adminSettingsDriftBanner';
+    bar.className = 'adm-card';
+    bar.style.cssText = 'padding:12px 16px;margin-bottom:14px;border-left:4px solid var(--warn);';
+    bar.innerHTML = `<div style="color:var(--fg);"><b>Config drift</b> — ` +
+      `${paths.length} shared setting${paths.length > 1 ? 's' : ''} differ between this host and the alarm engine:</div>` +
+      `<div class="adm-muted" style="font-size:12px;margin-top:4px;">${names}</div>` +
+      `<div style="margin-top:8px;display:flex;gap:10px;align-items:center;flex-wrap:wrap;">
+        <button class="adm-btn warn" id="adminSettingsResyncBtn">Re-sync local values to AE</button>
+        <span class="adm-muted" id="adminSettingsResyncMsg" style="font-size:12px;"></span></div>`;
+    const root = document.getElementById('adminSettingsRoot');
+    root.insertBefore(bar, root.firstChild);
+    document.getElementById('adminSettingsResyncBtn').onclick = () => resyncDrift(paths);
+  }
+
+  async function resyncDrift(paths) {
+    const msg = document.getElementById('adminSettingsResyncMsg');
+    if (msg) msg.textContent = 're-syncing…';
+    let r, d;
+    try {
+      r = await fetch('/api/admin/settings', {
+        method: 'PUT', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ changes: {}, resync_ae: paths }),
+      });
+      d = await r.json().catch(() => ({}));
+    } catch (e) {
+      if (msg) msg.textContent = `re-sync failed — ${e}`;
+      return;
+    }
+    if (r.ok && d.ok && !d.ae_sync_failed) { await load(); return; }
+    if (msg) msg.textContent = `re-sync failed — ${d.ae_sync_failed || d.error || `HTTP ${r.status}`}`;
   }
 
   const _root = document.getElementById('adminSettingsRoot');
