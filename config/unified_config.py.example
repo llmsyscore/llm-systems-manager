@@ -95,6 +95,7 @@ class ManagerGateway(BaseModel):
     enabled: bool = True
     api_keys: list[str] = Field(default_factory=list)
     read_timeout_s: float = 600.0
+    expose_proxied_to: bool = True
 
 
 class ManagerReportcard(BaseModel):
