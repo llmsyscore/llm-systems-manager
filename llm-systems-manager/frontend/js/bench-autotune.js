@@ -596,17 +596,122 @@ function switchBenchTab(tool) {
   _updateBenchAxisOpts();   // populate axis dropdowns from the default switches on open
 }
 
-// Render the list of benchmark switches in the UI, allowing editing and deletion
+// Known switches per tool for the structured editor; type drives the control.
+const _BENCH_KV_QUANTS = ['f16', 'bf16', 'q8_0', 'q5_1', 'q5_0', 'q4_1', 'q4_0'];
+const BENCH_SWITCH_DEFS = {
+  'llama-bench': [
+    {flag:'-ngl', label:'-ngl (gpu layers)', type:'number'},
+    {flag:'-fa',  label:'-fa (flash attn)',  type:'select', options:['0','1']},
+    {flag:'-pg',  label:'-pg (prompt,gen)',  type:'text'},
+    {flag:'-p',   label:'-p (prompt sizes)', type:'text'},
+    {flag:'-n',   label:'-n (gen sizes)',    type:'text'},
+    {flag:'-d',   label:'-d (depths)',       type:'text'},
+    {flag:'-b',   label:'-b (batch)',        type:'text'},
+    {flag:'-ub',  label:'-ub (ubatch)',      type:'text'},
+    {flag:'-ctk', label:'-ctk (K quant)',    type:'select', options:_BENCH_KV_QUANTS},
+    {flag:'-ctv', label:'-ctv (V quant)',    type:'select', options:_BENCH_KV_QUANTS},
+    {flag:'-t',   label:'-t (threads)',      type:'text'},
+  ],
+  'llama-batched-bench': [
+    {flag:'-npp', label:'-npp (prompt sizes)', type:'text'},
+    {flag:'-ntg', label:'-ntg (gen sizes)',    type:'text'},
+    {flag:'-npl', label:'-npl (parallel)',     type:'text'},
+    {flag:'-b',   label:'-b (batch)',          type:'text'},
+    {flag:'-ub',  label:'-ub (ubatch)',        type:'text'},
+    {flag:'-ngl', label:'-ngl (gpu layers)',   type:'number'},
+    {flag:'-fa',  label:'-fa (flash attn)',    type:'select', options:['0','1']},
+    {flag:'-t',   label:'-t (threads)',        type:'text'},
+  ],
+};
+
+function _benchActiveTool() {
+  return document.querySelector('.bench-tab.active')?.dataset.tab || 'llama-bench';
+}
+
+function _benchDefaultFor(tool, flag) {
+  return (BENCH_DEFAULTS[tool] || []).find(s => s.flag === flag)?.value ?? '';
+}
+
+// Render the switches editor: one typed row per known switch (checkbox +
+// label + input/select), then a free-form custom section at the bottom.
 function _renderBenchSwitches() {
   const list = document.getElementById('benchSwitchList');
   if (!list) return;
   list.innerHTML = '';
+  const tool = _benchActiveTool();
+  const defs = BENCH_SWITCH_DEFS[tool] || [];
+  const knownFlags = new Set(defs.map(d => d.flag));
+
+  const refresh = () => { _updateBenchSwitchLabel(); _updateBenchAxisOpts(); };
+
+  defs.forEach(def => {
+    const entry = _benchSwitches.find(s => s.flag === def.flag);
+    const row = document.createElement('div');
+    row.className = 'bench-opt-row';
+
+    const cb = document.createElement('input');
+    cb.type = 'checkbox';
+    cb.checked = !!entry;
+
+    const lbl = document.createElement('label');
+    lbl.className = 'bench-opt-label';
+    lbl.textContent = def.label;
+    lbl.addEventListener('click', () => cb.click());
+
+    let input;
+    if (def.type === 'select') {
+      input = document.createElement('select');
+      const opts = [...def.options];
+      const cur = entry?.value ?? _benchDefaultFor(tool, def.flag);
+      if (cur !== '' && !opts.includes(cur)) opts.unshift(cur);
+      opts.forEach(v => {
+        const o = document.createElement('option');
+        o.value = v; o.textContent = v;
+        input.appendChild(o);
+      });
+      input.value = cur;
+    } else {
+      input = document.createElement('input');
+      input.type = def.type === 'number' ? 'number' : 'text';
+      input.value = entry?.value ?? _benchDefaultFor(tool, def.flag);
+    }
+    input.className = 'bench-input';
+    input.disabled = !entry;
+    input.addEventListener('change', () => {
+      const sw = _benchSwitches.find(s => s.flag === def.flag);
+      if (sw) { sw.value = input.value; refresh(); }
+    });
+
+    cb.addEventListener('change', () => {
+      if (cb.checked) {
+        _benchSwitches.push({flag: def.flag, value: input.value || _benchDefaultFor(tool, def.flag)});
+      } else {
+        _benchSwitches = _benchSwitches.filter(s => s.flag !== def.flag);
+      }
+      input.disabled = !cb.checked;
+      refresh();
+    });
+
+    row.appendChild(cb);
+    row.appendChild(lbl);
+    row.appendChild(input);
+    list.appendChild(row);
+  });
+
+  // Custom section: free-form rows for anything outside the known set.
+  const head = document.createElement('div');
+  head.className = 'bench-opt-custom-h';
+  head.textContent = 'Custom';
+  list.appendChild(head);
+
   _benchSwitches.forEach((sw, i) => {
+    if (knownFlags.has(sw.flag)) return;
     const row = document.createElement('div');
     row.className = 'bench-switch-row';
 
     const flagInput = document.createElement('input');
     flagInput.className = 'bench-input';
+    flagInput.placeholder = '-flag';
     flagInput.value = sw.flag || '';
     flagInput.addEventListener('change', () => {
       _benchSwitches[i].flag = flagInput.value;
@@ -615,6 +720,7 @@ function _renderBenchSwitches() {
 
     const valInput = document.createElement('input');
     valInput.className = 'bench-input';
+    valInput.placeholder = 'value';
     valInput.value = sw.value || '';
     valInput.addEventListener('change', () => { _benchSwitches[i].value = valInput.value; });
 
@@ -639,16 +745,15 @@ function _renderBenchSwitches() {
   });
 }
 
-// Add a new empty switch to the list and open the switch edit dropdown
+// Add a new empty custom switch and focus its flag input
 function addBenchSwitch() {
   _benchSwitches.push({flag:'', value:''});
   _renderBenchSwitches();
   _updateBenchSwitchLabel();
   _updateBenchAxisOpts();
-  // Open switches dropdown and focus the new flag input
   document.getElementById('benchSwitchPanel').classList.add('open');
-  const inputs = document.querySelectorAll('#benchSwitchList .bench-input');
-  if (inputs.length) inputs[(_benchSwitches.length - 1) * 2].focus();
+  const rows = document.querySelectorAll('#benchSwitchList .bench-switch-row .bench-input');
+  if (rows.length) rows[rows.length - 2].focus();
 }
 
 // Set the performance mode on the backend (performance, powersave, etc.) to optimize for benchmarking or normal use
