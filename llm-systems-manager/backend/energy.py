@@ -55,6 +55,11 @@ def extract_power(sample: dict) -> "tuple[float | None, str | None]":
     return None, None
 
 
+# LMS ps status substrings that count as inference activity; transitional
+# states (LOADING/UNLOADING/DOWNLOADING) are not busy (#619).
+LMS_BUSY_MARKERS = ("PROMPT", "STREAM", "GENERAT", "PREDICT", "QUEUE")
+
+
 def extract_busy(sample: dict) -> bool:
     """True when the sample shows inference activity on any provider block."""
     s = sample or {}
@@ -66,8 +71,8 @@ def extract_busy(sample: dict) -> bool:
             if isinstance(v, (int, float)) and v > 0:
                 return True
     for row in s.get("ps") or []:
-        if isinstance(row, dict) and (row.get("status") or "") not in (
-                "IDLE", "STOPPED", ""):
+        st = (row.get("status") or "") if isinstance(row, dict) else ""
+        if any(m in st for m in LMS_BUSY_MARKERS):
             return True
     return False
 
@@ -329,6 +334,8 @@ def _derive(agg: dict, window_s: float, price_kwh: float,
                           else round(cost - active_cost, 2)),
         "tokens_gen": gen,
         "tokens_prompt": prompt,
+        # usd_per_mtok divides by generated tokens only; cloud_cost_usd
+        # prices prompt+gen at their separate rates (#618).
         "usd_per_mtok": (round(cost / gen * 1e6, 4)
                          if cost is not None and gen > 0 else None),
         "usd_per_mtok_active": (round(active_cost / gen * 1e6, 4)
@@ -380,13 +387,15 @@ def summarize(rows: "list[dict]", window_s: float, price_kwh: float,
     else:
         totals["usd_per_mtok"] = None
         totals["usd_per_mtok_active"] = None
-    # Savings: cloud list price for served tokens vs the full local bill
-    # (idle included); rendered only at >= 95% matched-energy coverage.
+    # Savings: cloud list price for matched hosts' tokens vs the full local
+    # bill — a token-only host with no power sample can't inflate it (#617).
     local_cost = totals["cost_usd"]
     savings = None
     if (totals["has_tokens"] and local_cost is not None
             and cov is not None and cov >= 95.0):
-        savings = round(totals["cloud_cost_usd"] - local_cost, 2)
+        m_prompt = sum(a["tokens_prompt"] for a in matched)
+        m_cloud = (m_prompt / 1e6) * cloud_in + (m_gen / 1e6) * cloud_out
+        savings = round(m_cloud - local_cost, 2)
     return {"totals": totals, "hosts": hosts,
             "savings_usd": savings}
 

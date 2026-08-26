@@ -241,8 +241,8 @@ describe('totalTiles $/Mtok coverage notes', () => {
   it('full coverage keeps the original subtitles', () => {
     const tiles = EN.totalTiles({ ...TOTALS,
                                   mtok_energy_coverage_pct: 100.0 });
-    expect(tiles[3].sub).toBe('idle power included');
-    expect(tiles[4].sub).toBe('active power only');
+    expect(tiles[3].sub).toBe('idle power included, per generated Mtok');
+    expect(tiles[4].sub).toBe('active power only, per generated Mtok');
   });
 });
 

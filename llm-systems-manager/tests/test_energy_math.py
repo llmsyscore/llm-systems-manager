@@ -251,3 +251,33 @@ def test_fleet_mtok_and_savings_intact_when_fully_matched():
     assert t["usd_per_mtok_active"] == pytest.approx(0.03)
     assert t["mtok_energy_coverage_pct"] == 100.0
     assert s["savings_usd"] == pytest.approx(0.63)
+
+
+# ── #617/#619: savings matching + busy allowlist ─────────────────────
+
+def test_busy_allowlist_ignores_transitional_statuses():
+    for st in ("UNLOADING", "DOWNLOADING", "LOADING", "LOADED"):
+        assert en.extract_busy({"ps": [{"status": st}]}) is False
+    for st in ("PROCESSINGPROMPT", "STREAMING", "GENERATING", "PREDICTING",
+               "QUEUED"):
+        assert en.extract_busy({"ps": [{"status": st}]}) is True
+
+
+def test_savings_excludes_token_only_hosts():
+    # Host a: matched (power + tokens). Host b: tokens through the gateway
+    # but zero power samples — its cloud comparator must not inflate savings.
+    rows = [_row(agent="a"),
+            _row(agent="b", power=0.0, wh=0.0, active_wh=0.0,
+                 gen=10_000_000, prompt=5_000_000, host="tokonly")]
+    s = en.summarize(rows, 3600.0, 0.20, 0.15, 0.60)
+    # Matched-energy coverage still 100% (host b contributes no energy).
+    assert s["totals"]["mtok_energy_coverage_pct"] == 100.0
+    # Savings = host a's cloud (0.675) - fleet local cost (0.04) = 0.63 —
+    # NOT host b's 6.75 cloud dollars.
+    assert s["savings_usd"] == pytest.approx(0.63)
+
+
+def test_savings_unchanged_when_fully_matched():
+    rows = [_row(agent="a"), _row(agent="b", host="box2")]
+    s = en.summarize(rows, 3600.0, 0.20, 0.15, 0.60)
+    assert s["savings_usd"] == pytest.approx(2 * 0.675 - 2 * 0.04, abs=0.01)
