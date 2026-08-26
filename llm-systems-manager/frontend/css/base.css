@@ -759,7 +759,7 @@
        throughput never gets pushed to its own line in the narrow results pane. */
     .bench-log-result { display:flex; align-items:center; gap:10px; padding:4px 0; border-bottom:1px solid var(--border-soft); flex-wrap:nowrap; min-width:max-content; }
     .bench-log-result:last-child { border-bottom:none; }
-    .bench-log-fields { flex:1 1 auto; display:flex; flex-wrap:nowrap; gap:8px; }
+    .bench-log-fields { flex:0 0 auto; display:flex; flex-wrap:nowrap; gap:8px; }
     .bench-log-type { font-size:11px; padding:2px 7px; border-radius:3px; font-weight:700; letter-spacing:0.03em; flex-shrink:0; min-width:30px; text-align:center; }
     .bench-log-type.gen  { color:var(--accent); background:color-mix(in srgb, var(--accent) 15%, transparent); border:1px solid color-mix(in srgb, var(--accent) 35%, transparent); }
     .bench-log-type.ppt  { color:var(--warn);   background:color-mix(in srgb, var(--warn)   15%, transparent); border:1px solid color-mix(in srgb, var(--warn)   35%, transparent); }
@@ -767,9 +767,9 @@
     .bench-log-field { font-size:11px; min-width:44px; display:inline-block; white-space:nowrap; }
     .bench-log-field span { color:var(--accent); font-weight:600; }
     .bench-log-field b { color:var(--fg); font-weight:600; }
-    /* Fixed-width right column: the divider lands at the same x on every row
-       and the values right-align so digits line up. */
-    .bench-log-tps  { display:flex; align-items:baseline; gap:6px; min-width:200px; font-size:12px; font-weight:700; color:var(--accent); white-space:nowrap; flex-shrink:0; }
+    /* Value column hugs the fields: divider right after them, values
+       right-aligned in a slim fixed column so digits line up. */
+    .bench-log-tps  { display:flex; align-items:baseline; gap:6px; margin-left:8px; min-width:150px; font-size:12px; font-weight:700; color:var(--accent); white-space:nowrap; flex-shrink:0; }
     .bench-log-tps::before { content:'│'; color:var(--fg-faint); font-weight:400; margin-right:auto; }
     /* Run-status indicator as a site status chip (shared by bench + autotune #atStatus). */
     .bench-status-pill {
