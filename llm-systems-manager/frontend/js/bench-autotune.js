@@ -321,6 +321,8 @@ function _benchFormatLine(text) {
   if (!text) return '';
   const t = text.trim();
   if (!t.startsWith('{')) {
+    // Backend-loader chatter adds no benchmark signal — keep it out of the log.
+    if (/^(ggml_[\w.]*:|load_backend:)/.test(t)) return '';
     // Plain text (stderr, command echo, etc.)
     return `<span class="bench-log-text">${_hEsc(t)}</span>`;
   }
@@ -368,8 +370,8 @@ function _benchFormatLine(text) {
     });
     const fields = _benchLogFieldSpans(baseFields);
     const yType = document.getElementById('benchYAxis')?.value;
-    const dispVal = yType === 'ms_tok' ? (ts > 0 ? (1000/ts).toFixed(2) + ' ms/tok' : '—')
-                                       : ts.toFixed(2) + ' t/s';
+    const dispVal = yType === 'ms_tok' ? (ts > 0 ? (1000/ts).toFixed(2).padStart(8) + ' ms/tok' : '—')
+                                       : ts.toFixed(2).padStart(8) + ' t/s';
     return `<div class="bench-log-result">
       <span class="bench-log-type ${typeCls}">${typeLabel}</span>
       <span class="bench-log-fields">${fields}</span>
@@ -387,7 +389,7 @@ function _benchFormatLine(text) {
     return `<div class="bench-log-result">
       <span class="bench-log-type pg">pg</span>
       <span class="bench-log-fields">${fields}</span>
-      <span class="bench-log-tps">${Number(obj.speed).toFixed(2)} t/s <span style="color:var(--fg-faint)">(${parts})</span></span>
+      <span class="bench-log-tps">${Number(obj.speed).toFixed(2).padStart(8)} t/s <span style="color:var(--fg-faint)">(${parts})</span></span>
     </div>`;
   }
 
@@ -405,11 +407,18 @@ function _benchFormatLine(text) {
   return `<div class="bench-log-info">${kvs.join('')}</div>`;
 }
 
-// Renders [key, value] pairs as the log line's field spans.
+// Per-key value slot widths (chars) so monospace log rows form exact columns.
+const _BENCH_FIELD_PAD = { p:7, n:7, d:7, b:6, ub:6, ngl:4, fa:3, pg:10, ctk:6, ctv:6, t:4, pp:6, tg:6, pl:4 };
+
+// Renders [key, value] pairs as the log line's field spans, space-padded to
+// each key's slot width so columns align across rows.
 function _benchLogFieldSpans(pairs) {
-  return pairs.map(([k, v]) =>
-    `<span class="bench-log-field"><span>${_hEsc(String(k))}:</span><b>${_hEsc(String(v))}</b></span>`
-  ).join('');
+  return pairs.map(([k, v]) => {
+    const txt = String(v);
+    const slot = _BENCH_FIELD_PAD[k] ?? (txt.length + 2);
+    const pad = ' '.repeat(Math.max(2, slot - txt.length + 2));
+    return `<span class="bench-log-field"><span>${_hEsc(String(k))}:</span><b>${_hEsc(txt)}${pad}</b></span>`;
+  }).join('');
 }
 
 function _hEsc(s) {
