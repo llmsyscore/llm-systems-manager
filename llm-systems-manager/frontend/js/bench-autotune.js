@@ -5,17 +5,26 @@ let _benchEventSrc      = null;
 let _benchChart         = null;
 let _benchData          = {};   // model_id → stored results (DB)
 let _benchSwitches      = [];   // current editable switch list
-let _benchModelDatasets = {};   // model_id → dataset index pair
+let _benchModelDatasets = {};   // model_id → base index of its [ppt, gen, pg] dataset triple
 let _benchRawRows       = [];   // all result rows for axis re-render: {model_id, ts, seq, gen_tps, ppt_tps, n_prompt, n_gen, n_depth, n_batch, n_ubatch, avg_ts}
 let _benchAxisTouched   = false; // true once the user picks an axis; until then dropdowns honor the computed default (n_depth / avg_ts)
 
-const BENCH_COLOR_PAIRS = [
-  {gen: '#5a8fc2', ppt: '#c28a3a'},   // steel blue / warm amber
-  {gen: '#a05ac2', ppt: '#3aaa7a'},   // muted purple / teal
-  {gen: '#c25a6a', ppt: '#5aaac2'},   // dusty rose / sky
-  {gen: '#7a9a3a', ppt: '#c27a3a'},   // olive / terra
-  {gen: '#3a7ac2', ppt: '#c25a9a'},   // cobalt / mauve
+const BENCH_SERIES_COLORS = [
+  {gen: '#5a8fc2', ppt: '#c28a3a', pg: '#5ac27a'},   // steel blue / warm amber / mint
+  {gen: '#a05ac2', ppt: '#3aaa7a', pg: '#c2b03a'},   // muted purple / teal / gold
+  {gen: '#c25a6a', ppt: '#5aaac2', pg: '#7ac23a'},   // dusty rose / sky / lime
+  {gen: '#7a9a3a', ppt: '#c27a3a', pg: '#3a9ac2'},   // olive / terra / azure
+  {gen: '#3a7ac2', ppt: '#c25a9a', pg: '#3ac28a'},   // cobalt / mauve / seafoam
 ];
+
+// Offset of a result row within its model's [ppt, gen, pg] dataset triple.
+const _BENCH_SERIES_NAMES = ['ppt', 'gen', 'pg'];
+function _benchSeriesOffset(nP, nG) {
+  if (nP > 0 && nG > 0) return 2;
+  if (nP > 0) return 0;
+  if (nG > 0) return 1;
+  return null;
+}
 
 function _mkBenchChart(id, xAxisType) {
   const ctx = document.getElementById(id)?.getContext('2d');
@@ -122,11 +131,8 @@ function _rechartBench() {
     if (dsIdx === undefined) return;
     const x = String(_benchGetX(r));   // bar chart needs category (string) x values
     const y = _benchGetY(r);
-    if (r.n_gen > 0) {
-      _benchChart.data.datasets[dsIdx].data.push({x, y});
-    } else if (r.n_prompt > 0) {
-      _benchChart.data.datasets[dsIdx + 1].data.push({x, y});
-    }
+    const off = _benchSeriesOffset(r.n_prompt ?? 0, r.n_gen ?? 0);
+    if (off !== null) _benchChart.data.datasets[dsIdx + off].data.push({x, y});
   });
   _benchChart.update('none');
 }
@@ -261,16 +267,14 @@ function _benchAddModelDatasets(modelId) {
   if (!_benchChart) { try { _benchChart = _mkBenchChart('benchChart'); } catch (e) { console.warn('benchChart init failed', e); } }
   if (!_benchChart) return;
   if (_benchModelDatasets[modelId] !== undefined) return;
-  const colorIdx = Object.keys(_benchModelDatasets).length % BENCH_COLOR_PAIRS.length;
-  const colors = BENCH_COLOR_PAIRS[colorIdx];
+  const colorIdx = Object.keys(_benchModelDatasets).length % BENCH_SERIES_COLORS.length;
+  const colors = BENCH_SERIES_COLORS[colorIdx];
   const shortName = modelId.split('/').pop() || modelId;
   _benchModelDatasets[modelId] = _benchChart.data.datasets.length;
-  _benchChart.data.datasets.push(
-    { label: shortName + ' ppt', data: [], borderColor: colors.ppt, backgroundColor: colors.ppt + '40',
-      borderWidth: 1, pointRadius: 3, pointHoverRadius: 7, fill: false },
-    { label: shortName + ' gen', data: [], borderColor: colors.gen, backgroundColor: colors.gen + '40',
-      borderWidth: 1, pointRadius: 3, pointHoverRadius: 7, fill: false },
-  );
+  _benchChart.data.datasets.push(..._BENCH_SERIES_NAMES.map(s => (
+    { label: shortName + ' ' + s, data: [], borderColor: colors[s], backgroundColor: colors[s] + '40',
+      borderWidth: 1, pointRadius: 3, pointHoverRadius: 7, fill: false }
+  )));
   _benchChart.update('none');
 }
 
@@ -305,10 +309,8 @@ function _benchFormatLine(text) {
     const nB = obj.n_batch ?? 0, nU = obj.n_ubatch ?? 0;
     const ts = Number(obj.avg_ts ?? 0);
     const sd = obj.stddev_ts != null ? ` <span style="color:var(--fg-faint)">±${Number(obj.stddev_ts).toFixed(1)}</span>` : '';
-    let typeLabel, typeCls;
-    if (nG > 0 && nP === 0)  { typeLabel = 'gen'; typeCls = 'gen'; }
-    else if (nP > 0 && nG === 0) { typeLabel = 'ppt'; typeCls = 'ppt'; }
-    else                     { typeLabel = 'pg';  typeCls = 'pg';  }
+    const typeLabel = _BENCH_SERIES_NAMES[_benchSeriesOffset(nP, nG) ?? 2];
+    const typeCls = typeLabel;
     // Always-visible llama-bench params
     const baseFields = [
       ['p', nP], ['n', nG], ['d', nD], ['b', nB], ['ub', nU],
@@ -386,11 +388,8 @@ function _benchPushPoint(msg) {
   let x = _benchGetX(raw);
   const y = _benchGetY(raw);
   x = String(x);
-  if ((msg.n_gen ?? 0) > 0) {
-    _benchChart.data.datasets[dsIdx].data.push({x, y});
-  } else if ((msg.n_prompt ?? 0) > 0) {
-    _benchChart.data.datasets[dsIdx + 1].data.push({x, y});
-  }
+  const off = _benchSeriesOffset(msg.n_prompt ?? 0, msg.n_gen ?? 0);
+  if (off !== null) _benchChart.data.datasets[dsIdx + off].data.push({x, y});
   _benchChart.update('none');
 }
 
@@ -1547,9 +1546,10 @@ function _benchAddModelResultRow(modelId, _unused1, _unused2, tool) {
     const vals = modelRows.filter(fn).map(r => r.avg_ts ?? 0);
     return vals.length ? Math.max(...vals) : null;
   };
-  const maxPpt = maxOf(r => (r.n_prompt ?? 0) > 0 && (r.n_gen ?? 0) === 0);
-  const maxGen = maxOf(r => (r.n_gen ?? 0) > 0 && (r.n_prompt ?? 0) === 0);
-  const maxPg  = maxOf(r => (r.n_prompt ?? 0) > 0 && (r.n_gen ?? 0) > 0);
+  const offOf  = r => _benchSeriesOffset(r.n_prompt ?? 0, r.n_gen ?? 0);
+  const maxPpt = maxOf(r => offOf(r) === 0);
+  const maxGen = maxOf(r => offOf(r) === 1);
+  const maxPg  = maxOf(r => offOf(r) === 2);
 
   const rows = document.getElementById('benchResultRows');
 
