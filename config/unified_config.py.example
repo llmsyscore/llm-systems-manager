@@ -110,6 +110,7 @@ class ManagerEnergy(BaseModel):
     [manager.reportcard].price_kwh; cloud prices feed the savings card."""
     model_config = _MODEL_CFG
     price_kwh: "float | None" = None
+    retention_days: "int | None" = None
     cloud_price_in_per_mtok: float = 0.15
     cloud_price_out_per_mtok: float = 0.60
     cloud_price_label: str = "budget cloud API tier (GPT-4o-mini class, 2026-07 list)"

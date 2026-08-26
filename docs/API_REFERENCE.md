@@ -541,6 +541,8 @@ Returns saved report card history, optionally filtered.
 
 Rolls up power-draw metrics into cost figures over configurable time windows, using the configured `$/kWh` and cloud comparison pricing.
 
+> **LM Studio token telemetry comes only from the manager's OpenAI gateway proxy** (`/api/gateway/...`). Requests sent directly to an LM Studio server bypass the gateway's usage counters and are invisible to the energy $/Mtok and cloud-savings math — a low or zero savings figure on a direct-traffic setup reflects missing telemetry, not missing savings. The gateway counters reset on manager restart; the hourly accumulator handles that reset without double-counting. Hourly rows are kept forever by default; set `manager.energy.retention_days` to prune old rows.
+
 ### `GET /api/energy/summary`
 Returns an energy/cost summary for a time window: total energy, local $ cost, and equivalent cloud-provider cost comparison.
 

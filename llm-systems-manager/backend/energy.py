@@ -16,6 +16,10 @@ log = logging.getLogger("llm-systems-manager.energy")
 TICK_S = 10.0
 FRESH_S = 90.0
 MAX_GAP_S = 120.0
+# Per-agent accumulator state is dropped after this long without a fresh
+# sample; counter baselines re-seed if the agent returns (#621).
+AGENT_EVICT_S = 24 * 3600.0
+PRUNE_INTERVAL_S = 3600.0
 
 PROVIDERS = ("llama", "vllm", "lms")
 
@@ -142,8 +146,7 @@ def init_table(conn) -> None:
     conn.commit()
 
 
-def upsert_increment(conn, inc: dict) -> None:
-    conn.execute("""
+_UPSERT_SQL = """
         INSERT INTO energy_hourly (hour_ts, agent_id, hostname, observed_s,
             active_s, power_s, energy_wh, active_energy_wh, tokens_gen,
             tokens_prompt, power_source, samples)
@@ -161,8 +164,28 @@ def upsert_increment(conn, inc: dict) -> None:
             tokens_prompt = tokens_prompt + excluded.tokens_prompt,
             power_source = COALESCE(excluded.power_source, power_source),
             samples = samples + 1
-        """, inc)
+        """
+
+
+def upsert_increment(conn, inc: dict) -> None:
+    conn.execute(_UPSERT_SQL, inc)
     conn.commit()
+
+
+def upsert_increments(conn, incs: "list[dict]") -> None:
+    """All of one tick's rows under a single commit (#621)."""
+    for inc in incs:
+        conn.execute(_UPSERT_SQL, inc)
+    conn.commit()
+
+
+def prune(conn, retention_days: float, now: "float | None" = None) -> int:
+    """Delete hourly rows older than retention_days; returns rows deleted (#620)."""
+    now = _time.time() if now is None else now
+    cutoff = int(now - retention_days * 86400)
+    cur = conn.execute("DELETE FROM energy_hourly WHERE hour_ts < ?", (cutoff,))
+    conn.commit()
+    return cur.rowcount
 
 
 def query_rows(conn, start_ts: int, end_ts: int) -> "list[dict]":
@@ -183,9 +206,9 @@ def first_ts(conn) -> "int | None":
 
 class Accumulator:
     """Turns periodic store_view() snapshots ({agent_id: {provider:
-    (sample, last_seen)}}) into hourly increments, persisted via sink(inc).
-    usage_view() optionally supplies gateway-observed cumulative token
-    counters ({agent_id: {"gen": N, "prompt": N}}) as an extra source."""
+    (sample, last_seen)}}) into hourly increments, persisted via one
+    sink(incs) call per tick. usage_view() optionally supplies gateway
+    cumulative token counters ({agent_id: {"gen": N, "prompt": N}})."""
 
     def __init__(self, store_view, sink, usage_view=None):
         self._store_view = store_view
@@ -210,11 +233,21 @@ class Accumulator:
                 continue
             if inc:
                 out.append(inc)
-                try:
-                    self._sink(inc)
-                except Exception as e:
-                    log.warning("energy: persist failed: %s", e)
+        if out:
+            # One sink call per tick: the DB sink commits all rows at once (#621).
+            try:
+                self._sink(out)
+            except Exception as e:
+                log.warning("energy: persist failed: %s", e)
+        self._evict(now)
         return out
+
+    def _evict(self, now: float) -> None:
+        """Drop per-agent state with no fresh sample for AGENT_EVICT_S (#621)."""
+        stale = [aid for aid, st in self._agents.items()
+                 if (now - (st.get("last") or 0)) > AGENT_EVICT_S]
+        for aid in stale:
+            del self._agents[aid]
 
     def _tick_agent(self, agent_id: str, buckets: dict,
                     now: float) -> "dict | None":
@@ -450,6 +483,18 @@ def _cfg_energy(ctx) -> dict:
             "cloud_price_label": str(label)}
 
 
+def _retention_days(ctx) -> "float | None":
+    """energy.retention_days from config; None/0/invalid = keep forever."""
+    en_cfg = getattr(getattr(getattr(ctx, "settings", None), "manager", None),
+                     "energy", None)
+    try:
+        v = getattr(en_cfg, "retention_days", None)
+        v = float(v) if v is not None else None
+    except (TypeError, ValueError):
+        return None
+    return v if v and v > 0 else None
+
+
 def _float_arg(args, name: str, default: float) -> "float | None":
     """Query override; None signals a parse error."""
     raw = args.get(name)
@@ -652,15 +697,26 @@ def start_thread(ctx=None) -> None:
         return
     import gateway_usage
     _ACCUM = Accumulator(store_view_from_provider_state,
-                         lambda inc: upsert_increment(_conn_factory(), inc),
+                         lambda incs: upsert_increments(_conn_factory(), incs),
                          usage_view=gateway_usage.counters)
 
     def _loop():
+        last_prune = 0.0
         while True:
             try:
                 _ACCUM.tick()
             except Exception as e:
                 log.warning("energy accumulator tick failed: %s", e)
+            try:
+                days = _retention_days(ctx)
+                if days and (_time.time() - last_prune) >= PRUNE_INTERVAL_S:
+                    last_prune = _time.time()
+                    n = prune(_conn_factory(), days)
+                    if n:
+                        log.info("energy: pruned %d hourly rows older than "
+                                 "%g days", n, days)
+            except Exception as e:
+                log.warning("energy: prune failed: %s", e)
             _time.sleep(TICK_S)
 
     _threading.Thread(target=_loop, name="energy-accumulator",

@@ -26,7 +26,7 @@ class FakeStore:
 def rig():
     store = FakeStore()
     sunk: list = []
-    acc = en.Accumulator(store, sunk.append)
+    acc = en.Accumulator(store, sunk.extend)
     return store, sunk, acc
 
 
@@ -175,14 +175,13 @@ def test_hour_bucket_assignment(rig):
     assert inc["hour_ts"] == 7200
 
 
-def test_sink_failure_does_not_stop_other_agents(rig):
-    store, _, acc = rig
+def test_sink_failure_does_not_crash_tick(rig):
+    store, _, _ = rig
     calls = []
 
-    def sink(inc):
-        calls.append(inc["agent_id"])
-        if inc["agent_id"] == calls[0]:
-            raise RuntimeError("disk full")
+    def sink(incs):
+        calls.append(list(incs))
+        raise RuntimeError("disk full")
 
     acc = en.Accumulator(store, sink)
     store.set(A1, "llama", _llama_sample(), 1000.0)
@@ -191,7 +190,7 @@ def test_sink_failure_does_not_stop_other_agents(rig):
     store.set(A1, "llama", _llama_sample(), 1010.0)
     store.set(A2, "llama", _llama_sample(host="other"), 1010.0)
     out = acc.tick(now=1010.0)
-    assert len(out) == 2 and len(calls) == 2
+    assert len(out) == 2 and calls[-1] == out
 
 
 def test_store_view_failure_returns_empty(rig):
@@ -261,7 +260,7 @@ def test_gateway_usage_counted_for_agent():
     store = FakeStore()
     sunk: list = []
     usage = {A1: {"gen": 100, "prompt": 40}}
-    acc = en.Accumulator(store, sunk.append, usage_view=lambda: usage)
+    acc = en.Accumulator(store, sunk.extend, usage_view=lambda: usage)
     store.set(A1, "lms", _lms_sample(), 1000.0)
     acc.tick(now=1000.0)
     usage[A1] = {"gen": 160, "prompt": 60}
@@ -277,9 +276,103 @@ def test_gateway_usage_view_failure_does_not_break_tick():
     def boom():
         raise RuntimeError("nope")
 
-    acc = en.Accumulator(store, sunk.append, usage_view=boom)
+    acc = en.Accumulator(store, sunk.extend, usage_view=boom)
     store.set(A1, "lms", _lms_sample(), 1000.0)
     acc.tick(now=1000.0)
     store.set(A1, "lms", _lms_sample(), 1010.0)
     inc = acc.tick(now=1010.0)[0]
     assert inc["tokens_gen"] == 0 and inc["observed_s"] == 10.0
+
+
+# ── #620/#621: retention pruning, batched sink, agent eviction ───────
+
+def test_prune_deletes_only_old_rows():
+    import sqlite3
+    conn = sqlite3.connect(":memory:")
+    en.init_table(conn)
+    now = 100 * 86400.0
+    old_hour = int((now - 60 * 86400) // 3600) * 3600
+    new_hour = int(now // 3600) * 3600
+    for hour in (old_hour, new_hour):
+        en.upsert_increment(conn, {
+            "hour_ts": hour, "agent_id": "a", "hostname": "box",
+            "observed_s": 10.0, "active_s": 0.0, "power_s": 10.0,
+            "energy_wh": 1.0, "active_energy_wh": 0.0,
+            "tokens_gen": 0, "tokens_prompt": 0, "power_source": "psu"})
+    assert en.prune(conn, 45, now=now) == 1
+    left = conn.execute("SELECT hour_ts FROM energy_hourly").fetchall()
+    assert [r[0] for r in left] == [new_hour]
+    assert en.prune(conn, 45, now=now) == 0
+
+
+def test_upsert_increments_single_commit():
+    import sqlite3
+
+    class Spy:
+        def __init__(self):
+            self.conn = sqlite3.connect(":memory:")
+            self.commits = 0
+
+        def execute(self, *a):
+            return self.conn.execute(*a)
+
+        def commit(self):
+            self.commits += 1
+            self.conn.commit()
+
+    spy = Spy()
+    en.init_table(spy)
+    base = {"hostname": "box", "observed_s": 10.0, "active_s": 0.0,
+            "power_s": 10.0, "energy_wh": 1.0, "active_energy_wh": 0.0,
+            "tokens_gen": 0, "tokens_prompt": 0, "power_source": "psu"}
+    spy.commits = 0
+    en.upsert_increments(spy, [{**base, "hour_ts": 0, "agent_id": a}
+                               for a in ("a", "b", "c")])
+    assert spy.commits == 1
+    n = spy.execute("SELECT COUNT(*) FROM energy_hourly").fetchone()[0]
+    assert n == 3
+
+
+def test_tick_calls_sink_once_with_all_incs():
+    store = FakeStore()
+    calls: list = []
+    acc = en.Accumulator(store, calls.append)
+    store.set(A1, "llama", _llama_sample(), 1000.0)
+    store.set("b" * 32, "llama", _llama_sample(host="box2"), 1000.0)
+    acc.tick(now=1000.0)
+    calls.clear()
+    out = acc.tick(now=1010.0)
+    assert len(out) == 2
+    assert len(calls) == 1 and calls[0] == out
+
+
+def test_stale_agent_state_evicted():
+    store = FakeStore()
+    sunk: list = []
+    acc = en.Accumulator(store, sunk.extend)
+    store.set(A1, "llama", _llama_sample(gen=100), 1000.0)
+    acc.tick(now=1000.0)
+    assert A1 in acc._agents
+    # Sample goes stale: no fresh buckets for > AGENT_EVICT_S → evicted.
+    acc.tick(now=1000.0 + en.AGENT_EVICT_S + 60)
+    assert A1 not in acc._agents
+    # Agent returns: first tick re-baselines without attributing tokens.
+    t = 1000.0 + en.AGENT_EVICT_S + 120
+    store.set(A1, "llama", _llama_sample(gen=999_999), t)
+    out = acc.tick(now=t)
+    assert out == []
+
+
+def test_retention_days_parses_and_guards():
+    import types as _t
+
+    def ctx(v):
+        return _t.SimpleNamespace(settings=_t.SimpleNamespace(
+            manager=_t.SimpleNamespace(energy=_t.SimpleNamespace(
+                retention_days=v))))
+
+    assert en._retention_days(ctx(365)) == 365.0
+    assert en._retention_days(ctx(None)) is None
+    assert en._retention_days(ctx(0)) is None
+    assert en._retention_days(ctx("bogus")) is None
+    assert en._retention_days(object()) is None
