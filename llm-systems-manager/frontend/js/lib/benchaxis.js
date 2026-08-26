@@ -2,7 +2,7 @@
 // keeps seq as the ordinal fallback, and picks sane defaults (n_depth x avg_ts).
 function computeBenchAxisOptions(rows, switches, labelFn) {
   // avg_ts/ms_tok are throughput metrics (Y only), never sweep dimensions.
-  const SKIP = new Set(['ts', 'seq', 'gen_tps', 'ppt_tps', 'model_id', 'avg_ts', 'ms_tok']);
+  const SKIP = new Set(['ts', 'seq', 'gen_tps', 'ppt_tps', 'pg_tps', 'model_id', 'avg_ts', 'ms_tok']);
   const label = typeof labelFn === 'function' ? labelFn : (k) => k;
   rows = Array.isArray(rows) ? rows : [];
 
@@ -20,6 +20,7 @@ function computeBenchAxisOptions(rows, switches, labelFn) {
   const FLAG_TO_FIELD = {
     p: 'n_prompt', n: 'n_gen', d: 'n_depth', b: 'n_batch', ub: 'n_ubatch',
     t: 'n_threads', ngl: 'n_gpu_layers', fa: 'flash_attn', ctk: 'type_k', ctv: 'type_v', mmp: 'no_mmap', lm: 'load_mode',
+    npp: 'pp', ntg: 'tg', npl: 'pl',
   };
   const switchKeys = [];
   (switches || []).forEach((sw) => {

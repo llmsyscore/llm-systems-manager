@@ -26,6 +26,13 @@ function _benchSeriesOffset(nP, nG) {
   return null;
 }
 
+// Row → triple offset: explicit series tag (batched-bench) wins, else n_prompt/n_gen.
+function _benchRowOffset(row) {
+  const byName = _BENCH_SERIES_NAMES.indexOf(row.series);
+  if (byName !== -1) return byName;
+  return _benchSeriesOffset(row.n_prompt ?? 0, row.n_gen ?? 0);
+}
+
 function _mkBenchChart(id, xAxisType) {
   const ctx = document.getElementById(id)?.getContext('2d');
   if (!ctx) return null;
@@ -131,7 +138,7 @@ function _rechartBench() {
     if (dsIdx === undefined) return;
     const x = String(_benchGetX(r));   // bar chart needs category (string) x values
     const y = _benchGetY(r);
-    const off = _benchSeriesOffset(r.n_prompt ?? 0, r.n_gen ?? 0);
+    const off = _benchRowOffset(r);
     if (off !== null) _benchChart.data.datasets[dsIdx + off].data.push({x, y});
   });
   _benchChart.update('none');
@@ -158,6 +165,11 @@ const _BENCH_AXIS_LABELS = {
   load_mode:   'Load mode (--load-mode)',
   avg_ts:      'Avg tokens/sec',
   stddev_ts:   'Std-dev tokens/sec',
+  // llama-batched-bench JSONL fields
+  pp:          'Prompt tokens per seq (pp)',
+  tg:          'Gen tokens per seq (tg)',
+  pl:          'Parallel sequences (pl)',
+  n_kv_max:    'Max KV cache (n_kv_max)',
   // Custom-switch shortcuts the user types in the switches panel
   t:           'CPU threads (-t)',
   ngl:         'GPU layers (-ngl)',
@@ -173,6 +185,9 @@ const _BENCH_AXIS_LABELS = {
   d:           'Depth (d)',
   b:           'Batch (b)',
   ub:          'Micro-batch (ub)',
+  npp:         'Prompt tokens per seq (-npp)',
+  ntg:         'Gen tokens per seq (-ntg)',
+  npl:         'Parallel sequences (-npl)',
 };
 function _benchAxisLabel(key) {
   return _BENCH_AXIS_LABELS[key] || key;
@@ -203,7 +218,7 @@ const _BENCH_AXIS_SHORT = {
 // when that script failed to load, so axis dropdowns still populate. benchaxis.js
 // stays the canonical unit-tested source when present.
 function _benchAxisOptsFallback(rows, switches, labelFn) {
-  const SKIP = new Set(['ts', 'seq', 'gen_tps', 'ppt_tps', 'model_id', 'avg_ts', 'ms_tok']);
+  const SKIP = new Set(['ts', 'seq', 'gen_tps', 'ppt_tps', 'pg_tps', 'model_id', 'avg_ts', 'ms_tok']);
   const label = typeof labelFn === 'function' ? labelFn : (k) => k;
   rows = Array.isArray(rows) ? rows : [];
   const distinct = {};
@@ -217,6 +232,7 @@ function _benchAxisOptsFallback(rows, switches, labelFn) {
   const FLAG_TO_FIELD = {
     p: 'n_prompt', n: 'n_gen', d: 'n_depth', b: 'n_batch', ub: 'n_ubatch',
     t: 'n_threads', ngl: 'n_gpu_layers', fa: 'flash_attn', ctk: 'type_k', ctv: 'type_v', mmp: 'no_mmap', lm: 'load_mode',
+    npp: 'pp', ntg: 'tg', npl: 'pl',
   };
   const switchKeys = [];
   (switches || []).forEach((sw) => {
@@ -340,9 +356,7 @@ function _benchFormatLine(text) {
       if (['p', 'n', 'd', 'b', 'ub'].includes(label)) return;
       baseFields.push([label, val]);
     });
-    const fields = baseFields.map(([k, v]) =>
-      `<span class="bench-log-field"><span>${_hEsc(String(k))}:</span><b>${_hEsc(String(v))}</b></span>`
-    ).join('');
+    const fields = _benchLogFieldSpans(baseFields);
     const yType = document.getElementById('benchYAxis')?.value;
     const dispVal = yType === 'ms_tok' ? (ts > 0 ? (1000/ts).toFixed(2) + ' ms/tok' : '—')
                                        : ts.toFixed(2) + ' t/s';
@@ -350,6 +364,20 @@ function _benchFormatLine(text) {
       <span class="bench-log-type ${typeCls}">${typeLabel}</span>
       <span class="bench-log-fields">${fields}</span>
       <span class="bench-log-tps">${dispVal}${sd}</span>
+    </div>`;
+  }
+
+  // Batched-bench result row — one line per config with pp/tg/combined speeds
+  if (obj.pp !== undefined && obj.tg !== undefined && obj.speed !== undefined) {
+    const fields = _benchLogFieldSpans([
+      ['pp', obj.pp], ['tg', obj.tg], ['pl', obj.pl ?? 0],
+      ['b', obj.n_batch ?? 0], ['ub', obj.n_ubatch ?? 0],
+    ]);
+    const parts = `pp ${Number(obj.speed_pp ?? 0).toFixed(1)} · tg ${Number(obj.speed_tg ?? 0).toFixed(1)}`;
+    return `<div class="bench-log-result">
+      <span class="bench-log-type pg">pg</span>
+      <span class="bench-log-fields">${fields}</span>
+      <span class="bench-log-tps">${Number(obj.speed).toFixed(2)} t/s <span style="color:var(--fg-faint)">(${parts})</span></span>
     </div>`;
   }
 
@@ -367,6 +395,13 @@ function _benchFormatLine(text) {
   return `<div class="bench-log-info">${kvs.join('')}</div>`;
 }
 
+// Renders [key, value] pairs as the log line's field spans.
+function _benchLogFieldSpans(pairs) {
+  return pairs.map(([k, v]) =>
+    `<span class="bench-log-field"><span>${_hEsc(String(k))}:</span><b>${_hEsc(String(v))}</b></span>`
+  ).join('');
+}
+
 function _hEsc(s) {
   return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
 }
@@ -374,9 +409,10 @@ function _hEsc(s) {
 function _benchPushPoint(msg) {
   // Build raw row — capture all numeric fields from JSONL result for dynamic axis options
   const raw = { model_id: msg.model_id, ts: Date.now(), seq: _benchRawRows.length,
-                gen_tps: msg.gen_tps, ppt_tps: msg.ppt_tps };
+                gen_tps: msg.gen_tps, ppt_tps: msg.ppt_tps, pg_tps: msg.pg_tps,
+                series: msg.series };
   Object.entries(msg).forEach(([k, v]) => {
-    if (typeof v === 'number' && k !== 'gen_tps' && k !== 'ppt_tps') raw[k] = v;
+    if (typeof v === 'number' && k !== 'gen_tps' && k !== 'ppt_tps' && k !== 'pg_tps') raw[k] = v;
   });
   _benchRawRows.push(raw);
   // Axis-option update is a side-effect — never let it abort chart plotting below.
@@ -388,7 +424,7 @@ function _benchPushPoint(msg) {
   let x = _benchGetX(raw);
   const y = _benchGetY(raw);
   x = String(x);
-  const off = _benchSeriesOffset(msg.n_prompt ?? 0, msg.n_gen ?? 0);
+  const off = _benchRowOffset(msg);
   if (off !== null) _benchChart.data.datasets[dsIdx + off].data.push({x, y});
   _benchChart.update('none');
 }
@@ -725,7 +761,7 @@ async function runBenchmark() {
         const html = _benchFormatLine(msg.text || '');
         if (html) _benchLogAppend(html);
       } else if (msg.type === 'result') {
-        if (msg.model_id && (msg.gen_tps != null || msg.ppt_tps != null)) {
+        if (msg.model_id && (msg.gen_tps != null || msg.ppt_tps != null || msg.pg_tps != null)) {
           _benchPushPoint(msg);
         }
       } else if (msg.type === 'model_done') {
@@ -1546,10 +1582,9 @@ function _benchAddModelResultRow(modelId, _unused1, _unused2, tool) {
     const vals = modelRows.filter(fn).map(r => r.avg_ts ?? 0);
     return vals.length ? Math.max(...vals) : null;
   };
-  const offOf  = r => _benchSeriesOffset(r.n_prompt ?? 0, r.n_gen ?? 0);
-  const maxPpt = maxOf(r => offOf(r) === 0);
-  const maxGen = maxOf(r => offOf(r) === 1);
-  const maxPg  = maxOf(r => offOf(r) === 2);
+  const maxPpt = maxOf(r => _benchRowOffset(r) === 0);
+  const maxGen = maxOf(r => _benchRowOffset(r) === 1);
+  const maxPg  = maxOf(r => _benchRowOffset(r) === 2);
 
   const rows = document.getElementById('benchResultRows');
 

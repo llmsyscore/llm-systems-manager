@@ -62,6 +62,18 @@ describe('benchmark chart series routing', () => {
     expect(bySuffix(datasets, 'pg').data[0].x).toBe('512');
   });
 
+  it('routes series-tagged batched-bench rows by their series field', () => {
+    const batched = [
+      { series: 'ppt', ppt_tps: 3413.3, avg_ts: 3413.3, pp: 512, tg: 128, pl: 4 },
+      { series: 'gen', gen_tps: 160.0, avg_ts: 160.0, pp: 512, tg: 128, pl: 4 },
+      { series: 'pg', pg_tps: 764.2, avg_ts: 764.2, pp: 512, tg: 128, pl: 4 },
+    ].map(r => ({ type: 'result', model_id: MODEL, ...r }));
+    const datasets = runBench(`${JSON.stringify(batched)}.forEach(r => _benchPushPoint(r));`);
+    expect(ys(bySuffix(datasets, 'ppt'))).toEqual([769.87, 3413.3]);
+    expect(ys(bySuffix(datasets, 'gen'))).toEqual([40.02, 160.0]);
+    expect(ys(bySuffix(datasets, 'pg'))).toEqual([370.08, 764.2]);
+  });
+
   it('drops rows with neither n_prompt nor n_gen without throwing', () => {
     const datasets = runBench(`_benchPushPoint({ type: 'result', model_id: ${JSON.stringify(MODEL)},
       gen_tps: 12.5, ppt_tps: null, n_prompt: 0, n_gen: 0, avg_ts: 12.5 });`);
