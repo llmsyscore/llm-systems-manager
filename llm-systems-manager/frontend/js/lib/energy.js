@@ -105,9 +105,9 @@ function totalTiles(totals) {
     { label: 'tokens generated', value: fmtTokens(t.tokens_gen),
       sub: t.tokens_prompt ? `+ ${fmtTokens(t.tokens_prompt)} prompt` : '' },
     { label: '$/Mtok all-in', value: fmtMtokRate(t.usd_per_mtok),
-      sub: mtokSub(t, 'idle power included') },
+      sub: mtokSub(t, 'idle power included, per generated Mtok') },
     { label: '$/Mtok marginal', value: fmtMtokRate(t.usd_per_mtok_active),
-      sub: mtokSub(t, 'active power only') },
+      sub: mtokSub(t, 'active power only, per generated Mtok') },
     { label: 'avg draw', value: fmtWatts(t.avg_watts),
       sub: t.active_pct != null ? `active ${fmtPct(t.active_pct)} of uptime` : '' },
   ];

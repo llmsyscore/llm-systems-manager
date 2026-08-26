@@ -65,7 +65,11 @@ except ImportError:
             os.chmod(tmp, mode)
         tmp.replace(p)
 
-VERSION = "v2026.08.26-1"
+VERSION = "v2026.08.26-2"
+
+# LMS ps busy-status substrings, mirroring manager energy.LMS_BUSY_MARKERS;
+# transitional states (LOADING/UNLOADING/DOWNLOADING) are not busy (#619).
+_LMS_BUSY_MARKERS = ("PROMPT", "STREAM", "GENERAT", "PREDICT", "QUEUE")
 
 
 def _restore_bundle_env() -> None:
@@ -2155,7 +2159,8 @@ def _push_dashboard_payload(sample: dict[str, Any]) -> None:
         "models": lms.get("models", []),
         "ps": lms.get("ps", []),
         "active": next(
-            (r for r in (lms.get("ps") or []) if r.get("status") not in ("IDLE", "STOPPED", "")),
+            (r for r in (lms.get("ps") or [])
+             if any(m in (r.get("status") or "") for m in _LMS_BUSY_MARKERS)),
             None,
         ),
         "system": sample.get("system"),
