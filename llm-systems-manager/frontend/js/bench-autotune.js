@@ -26,6 +26,15 @@ function _benchSeriesOffset(nP, nG) {
   return null;
 }
 
+// Orders the category X axis ascending (numeric when every label is numeric).
+function _benchSyncChartLabels() {
+  if (!_benchChart) return;
+  const xs = [...new Set(_benchChart.data.datasets.flatMap(d => d.data.map(p => p.x)))];
+  const numeric = xs.length > 0 && xs.every(v => v !== '' && !isNaN(Number(v)));
+  xs.sort(numeric ? (a, b) => Number(a) - Number(b) : (a, b) => String(a).localeCompare(String(b)));
+  _benchChart.data.labels = xs;
+}
+
 // Row → triple offset: explicit series tag (batched-bench) wins, else n_prompt/n_gen.
 function _benchRowOffset(row) {
   const byName = _BENCH_SERIES_NAMES.indexOf(row.series);
@@ -141,6 +150,7 @@ function _rechartBench() {
     const off = _benchRowOffset(r);
     if (off !== null) _benchChart.data.datasets[dsIdx + off].data.push({x, y});
   });
+  _benchSyncChartLabels();
   _benchChart.update('none');
 }
 
@@ -426,6 +436,7 @@ function _benchPushPoint(msg) {
   x = String(x);
   const off = _benchRowOffset(msg);
   if (off !== null) _benchChart.data.datasets[dsIdx + off].data.push({x, y});
+  _benchSyncChartLabels();
   _benchChart.update('none');
 }
 
@@ -514,6 +525,7 @@ async function openBench(modelId) {
   _benchAxisTouched = false;
   if (_benchChart) {
     _benchChart.data.datasets = [];
+    _benchChart.data.labels = [];
     _benchChart.update('none');
   }
   switchBenchTab('llama-bench');
@@ -724,6 +736,7 @@ async function runBenchmark() {
   _benchLogClear();
   if (_benchChart) {
     _benchChart.data.datasets = [];
+    _benchChart.data.labels = [];
     _benchChart.update('none');
   }
   _benchModelDatasets = {};
