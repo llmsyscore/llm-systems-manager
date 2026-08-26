@@ -120,6 +120,10 @@ read_timeout_s = 600.0
 # Set false to hide backend topology from gateway clients.
 expose_proxied_to = true
 
+# Inject stream_options.include_usage on usage-counted streams (token
+# counters). Set false if a backend rejects unknown stream_options fields.
+usage_probe = true
+
 [manager.reportcard]
 # Electricity price used for the GPU report card's $/Mtok estimate
 # (#468). Overridable per-run from the Report Card sub-tab.
