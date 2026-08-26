@@ -48,12 +48,13 @@ def _client():
     return app.test_client()
 
 
-def test_gateway_vllm_no_candidates_503(monkeypatch):
+def test_gateway_vllm_no_candidates_404_no_backend(monkeypatch):
+    # #650: zero candidates is a config state — non-retryable 404/no_backend.
     monkeypatch.setattr(gateway, "_candidates", lambda m, a, p="llama": [])
     r = _client().post("/api/gateway/vllm/v1/chat/completions", json={"model": "x"})
-    assert r.status_code == 503
+    assert r.status_code == 404
     err = r.get_json()["error"]
-    assert err["code"] == 503
+    assert err["code"] == 404 and err["type"] == "no_backend"
 
 
 def test_gateway_paths_map_per_provider():

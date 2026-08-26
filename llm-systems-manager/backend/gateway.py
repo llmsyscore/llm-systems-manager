@@ -50,6 +50,7 @@ def _warn_pool_read_failed(e: Exception) -> None:
 
 # Per-provider gateway sub-path -> agent passthrough route (allowlist), for
 # every gateway_enabled spec. The Flask routes stay per-provider (bottom).
+# Built once at import; a gateway_enabled change takes effect on restart (#651).
 _GATEWAY_SUBS = ("chat/completions", "completions")
 _GATEWAY_PROVIDERS = tuple(
     p for p in providers.names()
@@ -91,7 +92,7 @@ def _proxied_to_header(agent: dict) -> dict:
 def _candidates(model_id, agent_id, provider="llama", advance_rr=True) -> list:
     """Ordered failover list: pin/picker primary first, then live agents
     serving model_id per the index, then other live, then non-live.
-    advance_rr=False (models fan-out) skips the RR-advancing resolve (#625)."""
+    advance_rr=False resolves pin/picker but never advances pool RR (#625, #652)."""
     ordered, seen = [], set()
 
     def _add(agent):
@@ -104,7 +105,8 @@ def _candidates(model_id, agent_id, provider="llama", advance_rr=True) -> list:
     if advance_rr or model_id or agent_id:
         try:
             primary, override = proxies._resolve_target(provider, model_id,
-                                                        agent_id, allow_pool=True)
+                                                        agent_id,
+                                                        allow_pool=advance_rr)
             if override == "pin":
                 log.info("gateway: model pin overrode ?agent=%s for model %s",
                          (agent_id or "")[:8], model_id)
@@ -203,7 +205,8 @@ def _handle_completion(sub: str, provider=None) -> Response:
     path = _AGENT_PATHS[provider][sub]
     errors = []
     stream_body, injected = body, False
-    if wants_stream and provider in _USAGE_COUNTED_PROVIDERS:
+    if (wants_stream and provider in _USAGE_COUNTED_PROVIDERS
+            and bool(getattr(_gw_cfg(), "usage_probe", True))):
         stream_body, injected = _with_usage_probe(body)
     for agent in _candidates(model_id, agent_id, provider):
         if wants_stream:
@@ -234,6 +237,12 @@ def _handle_completion(sub: str, provider=None) -> Response:
                         headers=_proxied_to_header(agent))
     log.warning("gateway %s: no usable %s agent (%s)",
                 sub, provider, "; ".join(errors) or "no candidates")
+    if not errors:
+        # Zero candidates = nothing registered/configured for the provider —
+        # a config state, not transient: non-retryable status + distinct type.
+        return _oai_error(
+            f"no {provider} backend registered — register an agent or set a "
+            f"default/pool", 404, "no_backend")
     return _oai_error(f"no {provider} backend available", 503)
 
 
@@ -253,6 +262,11 @@ def _stream_from(agent: dict, path: str, body: dict, errors: list,
         # Upstream answered non-stream (e.g. 400 validation error): relay as-is.
         content, status = upstream.content, upstream.status_code
         upstream.close()
+        if status == 400 and strip_usage:
+            log.warning("gateway: %s answered 400 after stream_options."
+                        "include_usage injection — backend may reject "
+                        "stream_options (disable gateway.usage_probe)",
+                        _label(agent))
         return Response(content, status=status,
                         mimetype=ctype or "application/json")
     if not stream_pool.POOL.try_acquire():
@@ -334,16 +348,28 @@ def _fetch_provider_models(provider: str, serving: "dict | None" = None) -> list
 # full-pool fan-out (TTL below).
 _MODEL_INDEX_TTL_S = 30.0
 _model_index_lock = threading.Lock()
-_model_index: dict = {"ts": 0.0, "map": {}, "serving": {}, "refreshing": False}
+_model_index: dict = {"ts": 0.0, "map": {}, "serving": {}, "entries": None,
+                      "refreshing": False}
 _refresh_lock = threading.Lock()
 
 
-def _store_model_index(mapping: dict, serving: "dict | None" = None) -> None:
+def _store_model_index(mapping: dict, serving: "dict | None" = None,
+                       entries: "list | None" = None) -> None:
     with _model_index_lock:
         _model_index["ts"] = time.time()
         _model_index["map"] = mapping
         if serving is not None:
             _model_index["serving"] = serving
+        if entries is not None:
+            _model_index["entries"] = entries
+
+
+def _cached_model_entries() -> "list | None":
+    """The merged entries list when the index is fresh, else None (#648)."""
+    with _model_index_lock:
+        fresh = (time.time() - _model_index["ts"]) < _MODEL_INDEX_TTL_S
+        entries = _model_index.get("entries")
+    return list(entries) if (fresh and entries is not None) else None
 
 
 def _serving_agent_ids(provider, model_id) -> set:
@@ -360,13 +386,16 @@ def _refresh_model_index() -> dict:
                 return dict(_model_index["map"])
         mapping: dict = {}
         serving: dict = {}
+        entries: list = []
         for p in _GATEWAY_PROVIDERS:
             for m in _fetch_provider_models(p, serving=serving):
                 owner = mapping.setdefault(m["id"], p)
                 if owner != p:
                     log.debug("gateway: model id %s on %s shadowed by %s",
                               m["id"], p, owner)
-        _store_model_index(mapping, serving)
+                else:
+                    entries.append(m)
+        _store_model_index(mapping, serving, entries)
         return mapping
 
 
@@ -435,9 +464,14 @@ def prewarm_model_index() -> None:
 
 
 def _gateway_models(provider=None) -> Response:
-    """One provider's models, or (provider=None) all pools merged."""
+    """One provider's models, or (provider=None) all pools merged. The merged
+    path serves the fresh cached index instead of re-fanning out (#648)."""
     if not _gw_enabled():
         return _oai_error("gateway disabled", 503, "disabled")
+    if provider is None:
+        cached = _cached_model_entries()
+        if cached is not None:
+            return jsonify({"object": "list", "data": cached})
     provs = (provider,) if provider else _GATEWAY_PROVIDERS
     merged, seen = [], set()
     serving: dict = {}
@@ -447,7 +481,8 @@ def _gateway_models(provider=None) -> Response:
                 seen.add(m["id"])
                 merged.append(m)
     if provider is None:
-        _store_model_index({m["id"]: m["provider"] for m in merged}, serving)
+        _store_model_index({m["id"]: m["provider"] for m in merged}, serving,
+                           merged)
     return jsonify({"object": "list", "data": merged})
 
 
