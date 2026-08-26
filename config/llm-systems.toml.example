@@ -129,6 +129,10 @@ price_kwh = 0.15
 # Energy & cost intelligence (#470). price_kwh unset = inherit reportcard's;
 # cloud $/Mtok list prices drive the savings card. All overridable per view.
 # price_kwh = 0.15
+
+# Prune energy_hourly rows older than this many days; unset = keep forever.
+# retention_days = 365
+
 cloud_price_in_per_mtok = 0.15
 cloud_price_out_per_mtok = 0.60
 cloud_price_label = "budget cloud API tier (GPT-4o-mini class, 2026-07 list)"

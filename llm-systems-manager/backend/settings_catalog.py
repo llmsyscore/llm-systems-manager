@@ -82,6 +82,7 @@ CATALOG: list[dict] = [
     # energy
     _e("manager.reportcard.price_kwh", "float", "Report-card $/kWh", "Electricity price for the report card's $/Mtok estimate.", "energy", MANAGER, min=0, max=10),
     _e("manager.energy.price_kwh", "float", "Energy $/kWh", "Energy-tab price; blank inherits the report card's.", "energy", MANAGER, min=0, max=10, nullable=True),
+    _e("manager.energy.retention_days", "int", "Hourly retention (days)", "Prune energy_hourly rows older than this; blank keeps them forever.", "energy", MANAGER, min=45, max=3650, nullable=True),
     _e("manager.energy.cloud_price_in_per_mtok", "float", "Cloud $/Mtok in", "Cloud list price (input tokens) for the savings card.", "energy", MANAGER, min=0, max=1000),
     _e("manager.energy.cloud_price_out_per_mtok", "float", "Cloud $/Mtok out", "Cloud list price (output tokens).", "energy", MANAGER, min=0, max=1000),
     _e("manager.energy.cloud_price_label", "str", "Cloud price label", "As-of-dated label shown beside the savings figures.", "energy", MANAGER),
