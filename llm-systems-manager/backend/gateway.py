@@ -25,6 +25,29 @@ log = logging.getLogger("llm-systems-manager.gateway")
 # Providers whose tokens are counted from proxied response usage (#496).
 _USAGE_COUNTED_PROVIDERS = ("lms",)
 
+# Upstream statuses that advance failover to the next candidate; every other
+# status (incl. 500/504) is relayed verbatim to the client (#630).
+_FAILOVER_STATUSES = (502, 503)
+
+# Client hint on stream-pool 503s; slots normally drain within seconds (#628).
+_POOL_RETRY_AFTER_S = 5
+
+_POOL_READ_WARN_INTERVAL_S = 60.0
+_pool_read_warn = {"ts": 0.0}
+_pool_read_warn_lock = threading.Lock()
+
+
+def _warn_pool_read_failed(e: Exception) -> None:
+    """Rate-limited warning for pool-id read failures in _candidates (#632)."""
+    with _pool_read_warn_lock:
+        now = time.monotonic()
+        if now - _pool_read_warn["ts"] < _POOL_READ_WARN_INTERVAL_S:
+            return
+        _pool_read_warn["ts"] = now
+    log.warning("gateway: pool id read failed (%s: %s); treating pool as empty",
+                type(e).__name__, e)
+
+
 # Per-provider gateway sub-path -> agent passthrough route (allowlist), for
 # every gateway_enabled spec. The Flask routes stay per-provider (bottom).
 _GATEWAY_SUBS = ("chat/completions", "completions")
@@ -57,6 +80,14 @@ def _label(agent: dict) -> str:
     return f"{(agent.get('agent_id') or '')[:8]}@{agent.get('hostname') or '?'}"
 
 
+def _proxied_to_header(agent: dict) -> dict:
+    """X-Proxied-To header dict, or {} when gateway.expose_proxied_to
+    is off (#631)."""
+    if bool(getattr(_gw_cfg(), "expose_proxied_to", True)):
+        return {"X-Proxied-To": _label(agent)}
+    return {}
+
+
 def _candidates(model_id, agent_id, provider="llama") -> list:
     """Ordered failover list: pin/picker primary first, then live agents
     serving model_id per the index, then other live, then non-live."""
@@ -84,7 +115,8 @@ def _candidates(model_id, agent_id, provider="llama") -> list:
         try:
             data = agent_registry.load_agents()
             ids = list((data.get("global") or {}).get(f"{provider}_pool") or [])
-        except Exception:
+        except Exception as e:
+            _warn_pool_read_failed(e)
             ids = []
     did = agent_registry.default_agent_id_for(provider)
     if did:
@@ -186,7 +218,7 @@ def _handle_completion(sub: str, provider=None) -> Response:
         if r is None:
             errors.append(f"{_label(agent)}: {err}")
             continue
-        if r.status_code in (502, 503):
+        if r.status_code in _FAILOVER_STATUSES:
             errors.append(f"{_label(agent)}: {r.status_code}")
             continue
         if (provider in _USAGE_COUNTED_PROVIDERS
@@ -196,7 +228,7 @@ def _handle_completion(sub: str, provider=None) -> Response:
                 gateway_usage.record(aid, *u)
         return Response(r.content, status=r.status_code,
                         mimetype=r.headers.get("content-type") or "application/json",
-                        headers={"X-Proxied-To": _label(agent)})
+                        headers=_proxied_to_header(agent))
     log.warning("gateway %s: no usable %s agent (%s)",
                 sub, provider, "; ".join(errors) or "no candidates")
     return _oai_error(f"no {provider} backend available", 503)
@@ -209,7 +241,7 @@ def _stream_from(agent: dict, path: str, body: dict, errors: list,
     if upstream is None:
         errors.append(f"{_label(agent)}: unreachable")
         return None
-    if upstream.status_code in (502, 503):
+    if upstream.status_code in _FAILOVER_STATUSES:
         upstream.close()
         errors.append(f"{_label(agent)}: {upstream.status_code}")
         return None
@@ -222,7 +254,11 @@ def _stream_from(agent: dict, path: str, body: dict, errors: list,
                         mimetype=ctype or "application/json")
     if not stream_pool.POOL.try_acquire():
         upstream.close()
-        return _oai_error("manager at stream capacity; retry shortly", 503)
+        log.warning("gateway: stream pool at capacity, rejecting %s: %s",
+                    _label(agent), stream_pool.POOL.stats())
+        resp = _oai_error("manager at stream capacity; retry shortly", 503)
+        resp.headers["Retry-After"] = str(_POOL_RETRY_AFTER_S)
+        return resp
     handed_off = False
     try:
         pumped = proxies.thread_pumped(
@@ -236,7 +272,7 @@ def _stream_from(agent: dict, path: str, body: dict, errors: list,
             pumped,
             status=upstream.status_code, mimetype="text/event-stream",
             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no",
-                     "X-Proxied-To": _label(agent)})
+                     **_proxied_to_header(agent)})
         resp.call_on_close(stream_pool.POOL.release)
         # Same lifecycle as the stream slot: a streamed request is in flight
         # until the response closes, not until this function returns.

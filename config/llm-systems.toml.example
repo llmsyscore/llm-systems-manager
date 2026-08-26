@@ -116,6 +116,10 @@ api_keys = []
 # Upstream read timeout per completion request (generation can take minutes).
 read_timeout_s = 600.0
 
+# Include the X-Proxied-To response header (agent short-id + hostname).
+# Set false to hide backend topology from gateway clients.
+expose_proxied_to = true
+
 [manager.reportcard]
 # Electricity price used for the GPU report card's $/Mtok estimate
 # (#468). Overridable per-run from the Report Card sub-tab.

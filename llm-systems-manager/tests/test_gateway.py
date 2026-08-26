@@ -333,3 +333,82 @@ def test_models_merge_populates_serving_index(monkeypatch):
     assert gateway._model_index["serving"] == {
         "llama:m1": [a1["agent_id"]],
         "llama:m2": [a1["agent_id"], a2["agent_id"]]}
+
+
+# ── #628/#630/#631/#632: gateway hardening ───────────────────────────
+
+def test_stream_pool_exhausted_503_retry_after_and_log(monkeypatch, caplog):
+    agent = {"agent_id": "a" * 32, "hostname": "h1", "token": "t"}
+    monkeypatch.setattr(gateway, "_candidates", lambda m, a, p="llama": [agent])
+    up = FakeUpstream([b"data: [DONE]\n\n"])
+    monkeypatch.setattr(gateway, "_dial_stream", lambda a, p, b: up)
+    monkeypatch.setattr(gateway.stream_pool.POOL, "try_acquire", lambda: False)
+    with caplog.at_level("WARNING", logger="llm-systems-manager.gateway"):
+        r = _client().post("/api/gateway/v1/chat/completions",
+                           json={"stream": True})
+    assert r.status_code == 503 and up.closed
+    assert r.headers["Retry-After"] == str(gateway._POOL_RETRY_AFTER_S)
+    assert any("stream pool at capacity" in m for m in caplog.messages)
+
+
+def test_500_relayed_verbatim_without_failover(monkeypatch):
+    a1 = {"agent_id": "a" * 32, "hostname": "h1", "token": "t"}
+    a2 = {"agent_id": "b" * 32, "hostname": "h2", "token": "t"}
+    monkeypatch.setattr(gateway, "_candidates", lambda m, a, p="llama": [a1, a2])
+    calls = []
+
+    def fake_forward(agent, path, body):
+        calls.append(agent["hostname"])
+        return FakeResp(500, {"error": {"message": "engine crash"}}), None
+
+    monkeypatch.setattr(gateway, "_forward_json", fake_forward)
+    r = _client().post("/api/gateway/v1/completions", json={})
+    assert r.status_code == 500 and calls == ["h1"]
+
+
+def test_proxied_to_header_suppressed_when_disabled(monkeypatch):
+    agent = {"agent_id": "a" * 32, "hostname": "h1", "token": "t"}
+    monkeypatch.setattr(gateway, "_candidates", lambda m, a, p="llama": [agent])
+    monkeypatch.setattr(gateway, "_forward_json",
+                        lambda a, p, b: (FakeResp(200, {"ok": 1}), None))
+    monkeypatch.setattr(gateway, "_gw_cfg",
+                        lambda: types.SimpleNamespace(expose_proxied_to=False))
+    r = _client().post("/api/gateway/v1/chat/completions", json={"model": "m"})
+    assert r.status_code == 200 and "X-Proxied-To" not in r.headers
+
+
+def test_stream_proxied_to_header_suppressed_when_disabled(monkeypatch):
+    agent = {"agent_id": "a" * 32, "hostname": "h1", "token": "t"}
+    monkeypatch.setattr(gateway, "_candidates", lambda m, a, p="llama": [agent])
+    up = FakeUpstream([b"data: [DONE]\n\n"])
+    monkeypatch.setattr(gateway, "_dial_stream", lambda a, p, b: up)
+    monkeypatch.setattr(gateway, "_gw_cfg",
+                        lambda: types.SimpleNamespace(expose_proxied_to=False))
+    r = _client().post("/api/gateway/v1/chat/completions", json={"stream": True})
+    assert r.status_code == 200 and "X-Proxied-To" not in r.headers
+
+
+def test_candidates_pool_read_failure_warns(monkeypatch, caplog):
+    monkeypatch.setitem(gateway._pool_read_warn, "ts", 0.0)
+    monkeypatch.setattr(gateway.proxies, "_resolve_target",
+                        lambda pk, m, a, allow_pool=True: (None, None))
+
+    def boom():
+        raise OSError("disk gone")
+
+    monkeypatch.setattr(gateway.agent_registry, "load_agents", boom)
+    monkeypatch.setattr(gateway.agent_registry, "default_agent_id_for",
+                        lambda p: None)
+    with caplog.at_level("WARNING", logger="llm-systems-manager.gateway"):
+        assert gateway._candidates("m", None) == []
+    assert any("pool id read failed" in m and "disk gone" in m
+               for m in caplog.messages)
+
+
+def test_pool_read_warn_is_rate_limited(monkeypatch, caplog):
+    monkeypatch.setitem(gateway._pool_read_warn, "ts", 0.0)
+    with caplog.at_level("WARNING", logger="llm-systems-manager.gateway"):
+        gateway._warn_pool_read_failed(OSError("first"))
+        gateway._warn_pool_read_failed(OSError("second"))
+    msgs = [m for m in caplog.messages if "pool id read failed" in m]
+    assert len(msgs) == 1 and "first" in msgs[0]
