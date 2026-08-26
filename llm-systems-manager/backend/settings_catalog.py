@@ -108,6 +108,7 @@ CATALOG: list[dict] = [
     _e("manager.gateway.api_keys", "list", "Gateway API keys", "Bearer keys for external clients; empty = dashboard sessions only. One per line.", "gateway", MANAGER, secret=True),
     _e("manager.gateway.read_timeout_s", "float", "Read timeout (s)", "Upstream cap per completion request.", "gateway", MANAGER, min=10, max=7200),
     _e("manager.gateway.expose_proxied_to", "bool", "Expose X-Proxied-To", "Response header naming the serving agent; off hides backend hostnames.", "gateway", MANAGER),
+    _e("manager.gateway.usage_probe", "bool", "Usage probe on streams", "Inject stream_options.include_usage on usage-counted streams; off if a backend rejects stream_options.", "gateway", MANAGER),
     # proxies
     _e("manager.proxies.llm_chat", "str", "Llama Chat UI", "auto | false | explicit http URL.", "proxies", MANAGER),
     _e("manager.proxies.openclaw", "str", "OpenClaw UI", "auto | false | explicit http URL.", "proxies", MANAGER),

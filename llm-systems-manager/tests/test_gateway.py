@@ -24,12 +24,24 @@ def _client():
     return app.test_client()
 
 
-def test_no_candidates_returns_openai_shaped_503(monkeypatch):
+def test_no_candidates_returns_nonretryable_no_backend(monkeypatch):
+    # #650: zero candidates is a config state — 404/no_backend, not a
+    # retryable 503.
     monkeypatch.setattr(gateway, "_candidates", lambda m, a, p="llama", **kw: [])
     r = _client().post("/api/gateway/v1/chat/completions", json={"model": "x"})
-    assert r.status_code == 503
+    assert r.status_code == 404
     err = r.get_json()["error"]
-    assert err["code"] == 503 and err["type"] == "unavailable"
+    assert err["code"] == 404 and err["type"] == "no_backend"
+
+
+def test_all_candidates_failed_stays_retryable_503(monkeypatch):
+    # #650: candidates existed but all failed — transient, stays 503.
+    a1 = {"agent_id": "a" * 32, "hostname": "h1", "token": "t"}
+    monkeypatch.setattr(gateway, "_candidates", lambda m, a, p="llama", **kw: [a1])
+    monkeypatch.setattr(gateway, "_forward_json", lambda agent, p, b: (None, "refused"))
+    r = _client().post("/api/gateway/v1/chat/completions", json={"model": "x"})
+    assert r.status_code == 503
+    assert r.get_json()["error"]["type"] == "unavailable"
 
 
 def test_invalid_body_400():
@@ -85,6 +97,7 @@ def test_candidates_order_and_dedupe(monkeypatch):
 
 
 def test_models_merge_dedupe(monkeypatch):
+    _reset_model_index()
     a1 = {"agent_id": "a" * 32, "hostname": "h1", "token": "t"}
     a2 = {"agent_id": "b" * 32, "hostname": "h2", "token": "t"}
     monkeypatch.setattr(gateway, "_candidates", lambda m, a, p="llama", **kw: [a1, a2])
@@ -102,6 +115,7 @@ def test_models_merge_dedupe(monkeypatch):
 
 def test_models_merge_across_all_providers(monkeypatch):
     """#493: the main /v1/models merges every gateway provider's pool."""
+    _reset_model_index()
     agents = {p: {"agent_id": p[0] * 32, "hostname": f"h-{p}", "token": "t"}
               for p in gateway._GATEWAY_PROVIDERS}
     monkeypatch.setattr(gateway, "_candidates", lambda m, a, p="llama", **kw: [agents[p]])
@@ -139,6 +153,7 @@ def test_provider_scoped_models_route_stays_scoped(monkeypatch):
 def _reset_model_index():
     gateway._model_index["ts"] = 0.0
     gateway._model_index["map"] = {}
+    gateway._model_index["entries"] = None
 
 
 def test_completion_routes_to_owning_provider(monkeypatch):
@@ -510,3 +525,84 @@ def test_usage_recorded_for_completion_body(monkeypatch):
                         lambda aid, p, g: recorded.append((aid, p, g)))
     r = _client().post("/api/gateway/lms/v1/chat/completions", json={"model": "m"})
     assert r.status_code == 200 and recorded == [(agent["agent_id"], 5, 7)]
+
+
+# ── #648/#649/#652: audit follow-ups ─────────────────────────────────
+
+def test_candidates_no_rr_with_model_id_skips_pool(monkeypatch):
+    # #652: advance_rr=False with a model_id resolves pin/picker but must
+    # not allow the pool-RR pick.
+    seen = {}
+
+    def fake_resolve(pk, m, a, allow_pool=True):
+        seen["allow_pool"] = allow_pool
+        return None, None
+
+    monkeypatch.setattr(gateway.proxies, "_resolve_target", fake_resolve)
+    monkeypatch.setattr(gateway.agent_registry, "load_agents",
+                        lambda: {"global": {}})
+    monkeypatch.setattr(gateway.agent_registry, "default_agent_id_for",
+                        lambda p: None)
+    gateway._candidates("m", None, advance_rr=False)
+    assert seen["allow_pool"] is False
+    gateway._candidates("m", None, advance_rr=True)
+    assert seen["allow_pool"] is True
+
+
+def test_models_merged_served_from_fresh_cache(monkeypatch):
+    # #648: the merged /v1/models path serves the fresh index instead of
+    # re-fanning out to every agent.
+    _reset_model_index()
+    a1 = {"agent_id": "a" * 32, "hostname": "h1", "token": "t"}
+    monkeypatch.setattr(gateway, "_candidates", lambda m, a, p="llama", **kw: [a1])
+    monkeypatch.setattr(gateway, "_GATEWAY_PROVIDERS", ("llama",))
+    calls = []
+
+    def fake_request(method, agent, path, **kw):
+        calls.append(path)
+        return FakeResp(200, {"data": [{"id": "m1"}]}), [], None
+
+    monkeypatch.setattr(gateway.agent_registry, "agent_request", fake_request)
+    c = _client()
+    r1 = c.get("/api/gateway/v1/models")
+    n_first = len(calls)
+    r2 = c.get("/api/gateway/v1/models")
+    assert r1.get_json() == r2.get_json()
+    assert [m["id"] for m in r2.get_json()["data"]] == ["m1"]
+    assert n_first > 0 and len(calls) == n_first
+    _reset_model_index()
+
+
+def test_usage_probe_config_off_skips_injection(monkeypatch):
+    # #649: gateway.usage_probe=false must leave the stream body untouched.
+    import types as _types
+    agent = {"agent_id": "a" * 32, "hostname": "h1", "token": "t"}
+    monkeypatch.setattr(gateway, "_candidates", lambda m, a, p="llama", **kw: [agent])
+    monkeypatch.setattr(gateway, "_gw_cfg",
+                        lambda: _types.SimpleNamespace(usage_probe=False))
+    seen = {}
+
+    def fake_stream(a, path, body, errors, provider="llama", strip_usage=False):
+        seen["body"], seen["strip_usage"] = body, strip_usage
+        return gateway.Response("ok")
+
+    monkeypatch.setattr(gateway, "_stream_from", fake_stream)
+    r = _client().post("/api/gateway/lms/v1/chat/completions",
+                       json={"model": "m", "stream": True})
+    assert r.status_code == 200
+    assert "stream_options" not in seen["body"] and seen["strip_usage"] is False
+
+
+def test_stream_400_after_injection_logs_hint(monkeypatch, caplog):
+    # #649: a 400 relayed after include_usage injection names the backend.
+    import logging
+    agent = {"agent_id": "a" * 32, "hostname": "h1", "token": "t"}
+    monkeypatch.setattr(gateway, "_candidates", lambda m, a, p="llama", **kw: [agent])
+    up = FakeUpstream([], status=400, ctype="application/json")
+    up.content = b'{"error":{"message":"unknown field stream_options"}}'
+    monkeypatch.setattr(gateway, "_dial_stream", lambda a, p, b: up)
+    with caplog.at_level(logging.WARNING, logger=gateway.log.name):
+        r = _client().post("/api/gateway/lms/v1/chat/completions",
+                           json={"model": "m", "stream": True})
+    assert r.status_code == 400
+    assert any("include_usage injection" in m for m in caplog.messages)
