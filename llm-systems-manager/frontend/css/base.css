@@ -637,6 +637,10 @@
       display: flex; flex-direction: column; gap: 12px;
     }
     .bench-panel h2 { font-size: 0.95em; font-weight: 500; color: var(--fg); margin: 0; display:flex; align-items:center; gap:8px; }
+    /* Benchmark modal only: wider panel + slimmer config rail so result-log
+       rows fit on one line; horizontal scroll stays the fallback. */
+    #benchOverlay .bench-panel { width: 1380px; }
+    #benchOverlay .bench-body { grid-template-columns: minmax(240px,26%) 1fr; }
     /* Two-pane report layout: header spans the top, a config sidebar sits left
        of the results/chart pane. Header carries a one-line subtitle. */
     .bench-header { display:flex; align-items:flex-start; justify-content:space-between; }
@@ -711,7 +715,15 @@
       box-shadow: 0 6px 24px rgba(0,0,0,0.6);
     }
     .bench-drop-panel.open { display: block; }
-    #benchSwitchPanel { min-width: 360px; max-height: 340px; }
+    #benchSwitchPanel { min-width: 380px; max-height: 420px; }
+    /* Typed switch rows — mirrors the Auto-Tune optional-params look */
+    .bench-opt-row { display:flex; align-items:center; gap:8px; padding:4px 0; }
+    .bench-opt-row .bench-opt-label { min-width:150px; font-size:0.85em; cursor:pointer; user-select:none; }
+    .bench-opt-row input[type=checkbox] { accent-color:var(--accent); cursor:pointer; flex-shrink:0; }
+    .bench-opt-row .bench-input { flex:1 1 auto; }
+    .bench-opt-row .bench-input:disabled { opacity:0.45; }
+    select.bench-input { cursor:pointer; }
+    .bench-opt-custom-h { font-size:0.72em; text-transform:uppercase; letter-spacing:0.06em; color:var(--fg-faint); margin:8px 0 2px; padding-top:6px; border-top:1px solid var(--border-soft); }
     /* Model checkboxes inside dropdown */
     .bench-model-item { display:flex; align-items:center; gap:7px; font-size:0.82em; padding:3px 4px; border-radius:3px; cursor:pointer; }
     .bench-model-item:hover { background:var(--bg-card-alt); }
@@ -743,7 +755,7 @@
     /* Idle: collapse the 460px void into a slim dashed placeholder. */
     .bench-chart-wrap.idle { height:120px; border-style:dashed; display:flex; align-items:center; justify-content:center; }
     .bench-chart-empty { font-size:0.78em; color:var(--fg-faint); text-align:center; max-width:280px; line-height:1.5; }
-    #benchLog { background:var(--bg); border:1px solid var(--border-soft); border-radius:6px; padding:8px; font-size:12px; line-height:1.55; font-family:monospace; overflow-y:auto; height:260px; color:var(--fg); margin:0; }
+    #benchLog { background:var(--bg); border:1px solid var(--border-soft); border-radius:6px; padding:8px; font-size:12px; line-height:1.55; font-family:monospace; overflow-y:auto; overflow-x:auto; height:260px; color:var(--fg); margin:0; }
     #benchLog:empty { display:none; }
     .bench-log-cmd  { color:var(--ok); white-space:pre-wrap; word-break:break-all; }
     .bench-log-sep  { color:var(--fg-faint); border-top:1px solid var(--border-soft); margin:4px 0 2px; padding-top:3px; }
@@ -753,17 +765,20 @@
     .bench-log-info-kv b { color:var(--fg); font-weight:600; }
     /* Row stays one line: type + a wrapping fields column + a pinned t/s, so the
        throughput never gets pushed to its own line in the narrow results pane. */
-    .bench-log-result { display:flex; align-items:flex-start; gap:10px; padding:3px 0; border-bottom:1px solid var(--border-soft); flex-wrap:nowrap; }
+    .bench-log-result { display:flex; align-items:center; gap:10px; padding:4px 0; border-bottom:1px solid var(--border-soft); flex-wrap:nowrap; min-width:max-content; }
     .bench-log-result:last-child { border-bottom:none; }
-    .bench-log-fields { flex:1 1 auto; min-width:0; display:flex; flex-wrap:wrap; gap:3px 10px; }
-    .bench-log-type { font-size:11px; padding:2px 7px; border-radius:3px; font-weight:700; letter-spacing:0.03em; flex-shrink:0; min-width:30px; text-align:center; }
+    .bench-log-fields { flex:0 0 auto; display:flex; flex-wrap:nowrap; }
+    .bench-log-type { font-size:11px; padding:2px 0; border-radius:3px; font-weight:700; letter-spacing:0.03em; flex-shrink:0; width:38px; text-align:center; }
     .bench-log-type.gen  { color:var(--accent); background:color-mix(in srgb, var(--accent) 15%, transparent); border:1px solid color-mix(in srgb, var(--accent) 35%, transparent); }
     .bench-log-type.ppt  { color:var(--warn);   background:color-mix(in srgb, var(--warn)   15%, transparent); border:1px solid color-mix(in srgb, var(--warn)   35%, transparent); }
     .bench-log-type.pg   { color:var(--accent-2); background:color-mix(in srgb, var(--accent-2) 15%, transparent); border:1px solid color-mix(in srgb, var(--accent-2) 35%, transparent); }
-    .bench-log-field { font-size:11px; min-width:48px; display:inline-block; }
+    .bench-log-field { font-size:11px; display:inline-block; white-space:pre; }
     .bench-log-field span { color:var(--accent); font-weight:600; }
     .bench-log-field b { color:var(--fg); font-weight:600; }
-    .bench-log-tps  { font-size:12px; font-weight:700; color:var(--accent); margin-left:auto; white-space:nowrap; flex-shrink:0; }
+    /* Value hugs the fields: divider right after them, numbers right-aligned
+       by monospace padding so digits line up. */
+    .bench-log-tps  { font-size:12px; font-weight:700; color:var(--accent); white-space:pre; flex-shrink:0; }
+    .bench-log-tps::before { content:'│'; color:var(--fg-faint); font-weight:400; margin-right:10px; }
     /* Run-status indicator as a site status chip (shared by bench + autotune #atStatus). */
     .bench-status-pill {
       display:inline-flex; align-items:center; gap:5px; padding:2px 9px; border-radius:11px;

@@ -64,6 +64,25 @@ describe('computeBenchAxisOptions', () => {
     expect(computeBenchAxisOptions(rows, []).defaultX).toBe('n_depth');
   });
 
+  it('never offers pg_tps as a sweep dimension', () => {
+    const rows = [
+      { pp: 512, pg_tps: 764.2, avg_ts: 764.2 },
+      { pp: 1024, pg_tps: 700.1, avg_ts: 700.1 },
+    ];
+    const r = computeBenchAxisOptions(rows, []);
+    expect(xv(r)).not.toContain('pg_tps');
+    expect(xv(r)).toContain('pp');
+  });
+
+  it('maps batched-bench flags to their JSONL fields (-npp -> pp)', () => {
+    const r = computeBenchAxisOptions([{ avg_ts: 1 }, { avg_ts: 2 }],
+      [{ flag: '-npp', value: '128,512' }, { flag: '-ntg', value: '128' }, { flag: '-npl', value: '1,2' }]);
+    expect(xv(r)).toContain('pp');
+    expect(xv(r)).toContain('tg');
+    expect(xv(r)).toContain('pl');
+    expect(xv(r)).not.toContain('npp');
+  });
+
   it('ignores non-string switch flags', () => {
     const r = computeBenchAxisOptions([{ avg_ts: 1 }, { avg_ts: 2 }], [{ flag: {}, value: '4' }]);
     expect(xv(r)).not.toContain('[object Object]');

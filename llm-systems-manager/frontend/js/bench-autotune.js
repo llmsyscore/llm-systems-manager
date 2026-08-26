@@ -5,17 +5,42 @@ let _benchEventSrc      = null;
 let _benchChart         = null;
 let _benchData          = {};   // model_id → stored results (DB)
 let _benchSwitches      = [];   // current editable switch list
-let _benchModelDatasets = {};   // model_id → dataset index pair
+let _benchModelDatasets = {};   // model_id → base index of its [ppt, gen, pg] dataset triple
 let _benchRawRows       = [];   // all result rows for axis re-render: {model_id, ts, seq, gen_tps, ppt_tps, n_prompt, n_gen, n_depth, n_batch, n_ubatch, avg_ts}
 let _benchAxisTouched   = false; // true once the user picks an axis; until then dropdowns honor the computed default (n_depth / avg_ts)
 
-const BENCH_COLOR_PAIRS = [
-  {gen: '#5a8fc2', ppt: '#c28a3a'},   // steel blue / warm amber
-  {gen: '#a05ac2', ppt: '#3aaa7a'},   // muted purple / teal
-  {gen: '#c25a6a', ppt: '#5aaac2'},   // dusty rose / sky
-  {gen: '#7a9a3a', ppt: '#c27a3a'},   // olive / terra
-  {gen: '#3a7ac2', ppt: '#c25a9a'},   // cobalt / mauve
+const BENCH_SERIES_COLORS = [
+  {gen: '#5a8fc2', ppt: '#c28a3a', pg: '#5ac27a'},   // steel blue / warm amber / mint
+  {gen: '#a05ac2', ppt: '#3aaa7a', pg: '#c2b03a'},   // muted purple / teal / gold
+  {gen: '#c25a6a', ppt: '#5aaac2', pg: '#7ac23a'},   // dusty rose / sky / lime
+  {gen: '#7a9a3a', ppt: '#c27a3a', pg: '#3a9ac2'},   // olive / terra / azure
+  {gen: '#3a7ac2', ppt: '#c25a9a', pg: '#3ac28a'},   // cobalt / mauve / seafoam
 ];
+
+// Offset of a result row within its model's [ppt, gen, pg] dataset triple.
+const _BENCH_SERIES_NAMES = ['ppt', 'gen', 'pg'];
+function _benchSeriesOffset(nP, nG) {
+  if (nP > 0 && nG > 0) return 2;
+  if (nP > 0) return 0;
+  if (nG > 0) return 1;
+  return null;
+}
+
+// Orders the category X axis ascending (numeric when every label is numeric).
+function _benchSyncChartLabels() {
+  if (!_benchChart) return;
+  const xs = [...new Set(_benchChart.data.datasets.flatMap(d => d.data.map(p => p.x)))];
+  const numeric = xs.length > 0 && xs.every(v => v !== '' && !isNaN(Number(v)));
+  xs.sort(numeric ? (a, b) => Number(a) - Number(b) : (a, b) => String(a).localeCompare(String(b)));
+  _benchChart.data.labels = xs;
+}
+
+// Row → triple offset: explicit series tag (batched-bench) wins, else n_prompt/n_gen.
+function _benchRowOffset(row) {
+  const byName = _BENCH_SERIES_NAMES.indexOf(row.series);
+  if (byName !== -1) return byName;
+  return _benchSeriesOffset(row.n_prompt ?? 0, row.n_gen ?? 0);
+}
 
 function _mkBenchChart(id, xAxisType) {
   const ctx = document.getElementById(id)?.getContext('2d');
@@ -122,12 +147,10 @@ function _rechartBench() {
     if (dsIdx === undefined) return;
     const x = String(_benchGetX(r));   // bar chart needs category (string) x values
     const y = _benchGetY(r);
-    if (r.n_gen > 0) {
-      _benchChart.data.datasets[dsIdx].data.push({x, y});
-    } else if (r.n_prompt > 0) {
-      _benchChart.data.datasets[dsIdx + 1].data.push({x, y});
-    }
+    const off = _benchRowOffset(r);
+    if (off !== null) _benchChart.data.datasets[dsIdx + off].data.push({x, y});
   });
+  _benchSyncChartLabels();
   _benchChart.update('none');
 }
 
@@ -152,6 +175,11 @@ const _BENCH_AXIS_LABELS = {
   load_mode:   'Load mode (--load-mode)',
   avg_ts:      'Avg tokens/sec',
   stddev_ts:   'Std-dev tokens/sec',
+  // llama-batched-bench JSONL fields
+  pp:          'Prompt tokens per seq (pp)',
+  tg:          'Gen tokens per seq (tg)',
+  pl:          'Parallel sequences (pl)',
+  n_kv_max:    'Max KV cache (n_kv_max)',
   // Custom-switch shortcuts the user types in the switches panel
   t:           'CPU threads (-t)',
   ngl:         'GPU layers (-ngl)',
@@ -167,6 +195,9 @@ const _BENCH_AXIS_LABELS = {
   d:           'Depth (d)',
   b:           'Batch (b)',
   ub:          'Micro-batch (ub)',
+  npp:         'Prompt tokens per seq (-npp)',
+  ntg:         'Gen tokens per seq (-ntg)',
+  npl:         'Parallel sequences (-npl)',
 };
 function _benchAxisLabel(key) {
   return _BENCH_AXIS_LABELS[key] || key;
@@ -197,7 +228,7 @@ const _BENCH_AXIS_SHORT = {
 // when that script failed to load, so axis dropdowns still populate. benchaxis.js
 // stays the canonical unit-tested source when present.
 function _benchAxisOptsFallback(rows, switches, labelFn) {
-  const SKIP = new Set(['ts', 'seq', 'gen_tps', 'ppt_tps', 'model_id', 'avg_ts', 'ms_tok']);
+  const SKIP = new Set(['ts', 'seq', 'gen_tps', 'ppt_tps', 'pg_tps', 'model_id', 'avg_ts', 'ms_tok']);
   const label = typeof labelFn === 'function' ? labelFn : (k) => k;
   rows = Array.isArray(rows) ? rows : [];
   const distinct = {};
@@ -211,6 +242,7 @@ function _benchAxisOptsFallback(rows, switches, labelFn) {
   const FLAG_TO_FIELD = {
     p: 'n_prompt', n: 'n_gen', d: 'n_depth', b: 'n_batch', ub: 'n_ubatch',
     t: 'n_threads', ngl: 'n_gpu_layers', fa: 'flash_attn', ctk: 'type_k', ctv: 'type_v', mmp: 'no_mmap', lm: 'load_mode',
+    npp: 'pp', ntg: 'tg', npl: 'pl',
   };
   const switchKeys = [];
   (switches || []).forEach((sw) => {
@@ -261,16 +293,14 @@ function _benchAddModelDatasets(modelId) {
   if (!_benchChart) { try { _benchChart = _mkBenchChart('benchChart'); } catch (e) { console.warn('benchChart init failed', e); } }
   if (!_benchChart) return;
   if (_benchModelDatasets[modelId] !== undefined) return;
-  const colorIdx = Object.keys(_benchModelDatasets).length % BENCH_COLOR_PAIRS.length;
-  const colors = BENCH_COLOR_PAIRS[colorIdx];
+  const colorIdx = Object.keys(_benchModelDatasets).length % BENCH_SERIES_COLORS.length;
+  const colors = BENCH_SERIES_COLORS[colorIdx];
   const shortName = modelId.split('/').pop() || modelId;
   _benchModelDatasets[modelId] = _benchChart.data.datasets.length;
-  _benchChart.data.datasets.push(
-    { label: shortName + ' ppt', data: [], borderColor: colors.ppt, backgroundColor: colors.ppt + '40',
-      borderWidth: 1, pointRadius: 3, pointHoverRadius: 7, fill: false },
-    { label: shortName + ' gen', data: [], borderColor: colors.gen, backgroundColor: colors.gen + '40',
-      borderWidth: 1, pointRadius: 3, pointHoverRadius: 7, fill: false },
-  );
+  _benchChart.data.datasets.push(..._BENCH_SERIES_NAMES.map(s => (
+    { label: shortName + ' ' + s, data: [], borderColor: colors[s], backgroundColor: colors[s] + '40',
+      borderWidth: 1, pointRadius: 3, pointHoverRadius: 7, fill: false }
+  )));
   _benchChart.update('none');
 }
 
@@ -291,6 +321,8 @@ function _benchFormatLine(text) {
   if (!text) return '';
   const t = text.trim();
   if (!t.startsWith('{')) {
+    // Backend-loader chatter adds no benchmark signal — keep it out of the log.
+    if (/^(ggml_[\w.]*:|load_backend:)/.test(t)) return '';
     // Plain text (stderr, command echo, etc.)
     return `<span class="bench-log-text">${_hEsc(t)}</span>`;
   }
@@ -305,10 +337,8 @@ function _benchFormatLine(text) {
     const nB = obj.n_batch ?? 0, nU = obj.n_ubatch ?? 0;
     const ts = Number(obj.avg_ts ?? 0);
     const sd = obj.stddev_ts != null ? ` <span style="color:var(--fg-faint)">±${Number(obj.stddev_ts).toFixed(1)}</span>` : '';
-    let typeLabel, typeCls;
-    if (nG > 0 && nP === 0)  { typeLabel = 'gen'; typeCls = 'gen'; }
-    else if (nP > 0 && nG === 0) { typeLabel = 'ppt'; typeCls = 'ppt'; }
-    else                     { typeLabel = 'pg';  typeCls = 'pg';  }
+    const typeLabel = _BENCH_SERIES_NAMES[_benchSeriesOffset(nP, nG) ?? 2];
+    const typeCls = typeLabel;
     // Always-visible llama-bench params
     const baseFields = [
       ['p', nP], ['n', nG], ['d', nD], ['b', nB], ['ub', nU],
@@ -338,16 +368,28 @@ function _benchFormatLine(text) {
       if (['p', 'n', 'd', 'b', 'ub'].includes(label)) return;
       baseFields.push([label, val]);
     });
-    const fields = baseFields.map(([k, v]) =>
-      `<span class="bench-log-field"><span>${_hEsc(String(k))}:</span><b>${_hEsc(String(v))}</b></span>`
-    ).join('');
+    const fields = _benchLogFieldSpans(baseFields);
     const yType = document.getElementById('benchYAxis')?.value;
-    const dispVal = yType === 'ms_tok' ? (ts > 0 ? (1000/ts).toFixed(2) + ' ms/tok' : '—')
-                                       : ts.toFixed(2) + ' t/s';
+    const dispVal = yType === 'ms_tok' ? (ts > 0 ? (1000/ts).toFixed(2).padStart(8) + ' ms/tok' : '—')
+                                       : ts.toFixed(2).padStart(8) + ' t/s';
     return `<div class="bench-log-result">
       <span class="bench-log-type ${typeCls}">${typeLabel}</span>
       <span class="bench-log-fields">${fields}</span>
       <span class="bench-log-tps">${dispVal}${sd}</span>
+    </div>`;
+  }
+
+  // Batched-bench result row — one line per config with pp/tg/combined speeds
+  if (obj.pp !== undefined && obj.tg !== undefined && obj.speed !== undefined) {
+    const fields = _benchLogFieldSpans([
+      ['pp', obj.pp], ['tg', obj.tg], ['pl', obj.pl ?? 0],
+      ['b', obj.n_batch ?? 0], ['ub', obj.n_ubatch ?? 0],
+    ]);
+    const parts = `pp ${Number(obj.speed_pp ?? 0).toFixed(1)} · tg ${Number(obj.speed_tg ?? 0).toFixed(1)}`;
+    return `<div class="bench-log-result">
+      <span class="bench-log-type pg">pg</span>
+      <span class="bench-log-fields">${fields}</span>
+      <span class="bench-log-tps">${Number(obj.speed).toFixed(2).padStart(8)} t/s <span style="color:var(--fg-faint)">(${parts})</span></span>
     </div>`;
   }
 
@@ -365,6 +407,20 @@ function _benchFormatLine(text) {
   return `<div class="bench-log-info">${kvs.join('')}</div>`;
 }
 
+// Per-key value slot widths (chars) so monospace log rows form exact columns.
+const _BENCH_FIELD_PAD = { p:7, n:7, d:7, b:6, ub:6, ngl:4, fa:3, pg:10, ctk:6, ctv:6, t:4, pp:6, tg:6, pl:4 };
+
+// Renders [key, value] pairs as the log line's field spans, space-padded to
+// each key's slot width so columns align across rows.
+function _benchLogFieldSpans(pairs) {
+  return pairs.map(([k, v]) => {
+    const txt = String(v);
+    const slot = _BENCH_FIELD_PAD[k] ?? (txt.length + 2);
+    const pad = ' '.repeat(Math.max(2, slot - txt.length + 2));
+    return `<span class="bench-log-field"><span>${_hEsc(String(k))}:</span><b>${_hEsc(txt)}${pad}</b></span>`;
+  }).join('');
+}
+
 function _hEsc(s) {
   return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
 }
@@ -372,9 +428,10 @@ function _hEsc(s) {
 function _benchPushPoint(msg) {
   // Build raw row — capture all numeric fields from JSONL result for dynamic axis options
   const raw = { model_id: msg.model_id, ts: Date.now(), seq: _benchRawRows.length,
-                gen_tps: msg.gen_tps, ppt_tps: msg.ppt_tps };
+                gen_tps: msg.gen_tps, ppt_tps: msg.ppt_tps, pg_tps: msg.pg_tps,
+                series: msg.series };
   Object.entries(msg).forEach(([k, v]) => {
-    if (typeof v === 'number' && k !== 'gen_tps' && k !== 'ppt_tps') raw[k] = v;
+    if (typeof v === 'number' && k !== 'gen_tps' && k !== 'ppt_tps' && k !== 'pg_tps') raw[k] = v;
   });
   _benchRawRows.push(raw);
   // Axis-option update is a side-effect — never let it abort chart plotting below.
@@ -386,11 +443,9 @@ function _benchPushPoint(msg) {
   let x = _benchGetX(raw);
   const y = _benchGetY(raw);
   x = String(x);
-  if ((msg.n_gen ?? 0) > 0) {
-    _benchChart.data.datasets[dsIdx].data.push({x, y});
-  } else if ((msg.n_prompt ?? 0) > 0) {
-    _benchChart.data.datasets[dsIdx + 1].data.push({x, y});
-  }
+  const off = _benchRowOffset(msg);
+  if (off !== null) _benchChart.data.datasets[dsIdx + off].data.push({x, y});
+  _benchSyncChartLabels();
   _benchChart.update('none');
 }
 
@@ -479,6 +534,7 @@ async function openBench(modelId) {
   _benchAxisTouched = false;
   if (_benchChart) {
     _benchChart.data.datasets = [];
+    _benchChart.data.labels = [];
     _benchChart.update('none');
   }
   switchBenchTab('llama-bench');
@@ -540,17 +596,122 @@ function switchBenchTab(tool) {
   _updateBenchAxisOpts();   // populate axis dropdowns from the default switches on open
 }
 
-// Render the list of benchmark switches in the UI, allowing editing and deletion
+// Known switches per tool for the structured editor; type drives the control.
+const _BENCH_KV_QUANTS = ['f16', 'bf16', 'q8_0', 'q5_1', 'q5_0', 'q4_1', 'q4_0'];
+const BENCH_SWITCH_DEFS = {
+  'llama-bench': [
+    {flag:'-ngl', label:'-ngl (gpu layers)', type:'number'},
+    {flag:'-fa',  label:'-fa (flash attn)',  type:'select', options:['0','1']},
+    {flag:'-pg',  label:'-pg (prompt,gen)',  type:'text'},
+    {flag:'-p',   label:'-p (prompt sizes)', type:'text'},
+    {flag:'-n',   label:'-n (gen sizes)',    type:'text'},
+    {flag:'-d',   label:'-d (depths)',       type:'text'},
+    {flag:'-b',   label:'-b (batch)',        type:'text'},
+    {flag:'-ub',  label:'-ub (ubatch)',      type:'text'},
+    {flag:'-ctk', label:'-ctk (K quant)',    type:'select', options:_BENCH_KV_QUANTS},
+    {flag:'-ctv', label:'-ctv (V quant)',    type:'select', options:_BENCH_KV_QUANTS},
+    {flag:'-t',   label:'-t (threads)',      type:'text'},
+  ],
+  'llama-batched-bench': [
+    {flag:'-npp', label:'-npp (prompt sizes)', type:'text'},
+    {flag:'-ntg', label:'-ntg (gen sizes)',    type:'text'},
+    {flag:'-npl', label:'-npl (parallel)',     type:'text'},
+    {flag:'-b',   label:'-b (batch)',          type:'text'},
+    {flag:'-ub',  label:'-ub (ubatch)',        type:'text'},
+    {flag:'-ngl', label:'-ngl (gpu layers)',   type:'number'},
+    {flag:'-fa',  label:'-fa (flash attn)',    type:'select', options:['0','1']},
+    {flag:'-t',   label:'-t (threads)',        type:'text'},
+  ],
+};
+
+function _benchActiveTool() {
+  return document.querySelector('.bench-tab.active')?.dataset.tab || 'llama-bench';
+}
+
+function _benchDefaultFor(tool, flag) {
+  return (BENCH_DEFAULTS[tool] || []).find(s => s.flag === flag)?.value ?? '';
+}
+
+// Render the switches editor: one typed row per known switch (checkbox +
+// label + input/select), then a free-form custom section at the bottom.
 function _renderBenchSwitches() {
   const list = document.getElementById('benchSwitchList');
   if (!list) return;
   list.innerHTML = '';
+  const tool = _benchActiveTool();
+  const defs = BENCH_SWITCH_DEFS[tool] || [];
+  const knownFlags = new Set(defs.map(d => d.flag));
+
+  const refresh = () => { _updateBenchSwitchLabel(); _updateBenchAxisOpts(); };
+
+  defs.forEach(def => {
+    const entry = _benchSwitches.find(s => s.flag === def.flag);
+    const row = document.createElement('div');
+    row.className = 'bench-opt-row';
+
+    const cb = document.createElement('input');
+    cb.type = 'checkbox';
+    cb.checked = !!entry;
+
+    const lbl = document.createElement('label');
+    lbl.className = 'bench-opt-label';
+    lbl.textContent = def.label;
+    lbl.addEventListener('click', () => cb.click());
+
+    let input;
+    if (def.type === 'select') {
+      input = document.createElement('select');
+      const opts = [...def.options];
+      const cur = entry?.value ?? _benchDefaultFor(tool, def.flag);
+      if (cur !== '' && !opts.includes(cur)) opts.unshift(cur);
+      opts.forEach(v => {
+        const o = document.createElement('option');
+        o.value = v; o.textContent = v;
+        input.appendChild(o);
+      });
+      input.value = cur;
+    } else {
+      input = document.createElement('input');
+      input.type = def.type === 'number' ? 'number' : 'text';
+      input.value = entry?.value ?? _benchDefaultFor(tool, def.flag);
+    }
+    input.className = 'bench-input';
+    input.disabled = !entry;
+    input.addEventListener('change', () => {
+      const sw = _benchSwitches.find(s => s.flag === def.flag);
+      if (sw) { sw.value = input.value; refresh(); }
+    });
+
+    cb.addEventListener('change', () => {
+      if (cb.checked) {
+        _benchSwitches.push({flag: def.flag, value: input.value || _benchDefaultFor(tool, def.flag)});
+      } else {
+        _benchSwitches = _benchSwitches.filter(s => s.flag !== def.flag);
+      }
+      input.disabled = !cb.checked;
+      refresh();
+    });
+
+    row.appendChild(cb);
+    row.appendChild(lbl);
+    row.appendChild(input);
+    list.appendChild(row);
+  });
+
+  // Custom section: free-form rows for anything outside the known set.
+  const head = document.createElement('div');
+  head.className = 'bench-opt-custom-h';
+  head.textContent = 'Custom';
+  list.appendChild(head);
+
   _benchSwitches.forEach((sw, i) => {
+    if (knownFlags.has(sw.flag)) return;
     const row = document.createElement('div');
     row.className = 'bench-switch-row';
 
     const flagInput = document.createElement('input');
     flagInput.className = 'bench-input';
+    flagInput.placeholder = '-flag';
     flagInput.value = sw.flag || '';
     flagInput.addEventListener('change', () => {
       _benchSwitches[i].flag = flagInput.value;
@@ -559,6 +720,7 @@ function _renderBenchSwitches() {
 
     const valInput = document.createElement('input');
     valInput.className = 'bench-input';
+    valInput.placeholder = 'value';
     valInput.value = sw.value || '';
     valInput.addEventListener('change', () => { _benchSwitches[i].value = valInput.value; });
 
@@ -583,16 +745,15 @@ function _renderBenchSwitches() {
   });
 }
 
-// Add a new empty switch to the list and open the switch edit dropdown
+// Add a new empty custom switch and focus its flag input
 function addBenchSwitch() {
   _benchSwitches.push({flag:'', value:''});
   _renderBenchSwitches();
   _updateBenchSwitchLabel();
   _updateBenchAxisOpts();
-  // Open switches dropdown and focus the new flag input
   document.getElementById('benchSwitchPanel').classList.add('open');
-  const inputs = document.querySelectorAll('#benchSwitchList .bench-input');
-  if (inputs.length) inputs[(_benchSwitches.length - 1) * 2].focus();
+  const rows = document.querySelectorAll('#benchSwitchList .bench-switch-row .bench-input');
+  if (rows.length) rows[rows.length - 2].focus();
 }
 
 // Set the performance mode on the backend (performance, powersave, etc.) to optimize for benchmarking or normal use
@@ -689,6 +850,7 @@ async function runBenchmark() {
   _benchLogClear();
   if (_benchChart) {
     _benchChart.data.datasets = [];
+    _benchChart.data.labels = [];
     _benchChart.update('none');
   }
   _benchModelDatasets = {};
@@ -726,7 +888,7 @@ async function runBenchmark() {
         const html = _benchFormatLine(msg.text || '');
         if (html) _benchLogAppend(html);
       } else if (msg.type === 'result') {
-        if (msg.model_id && (msg.gen_tps != null || msg.ppt_tps != null)) {
+        if (msg.model_id && (msg.gen_tps != null || msg.ppt_tps != null || msg.pg_tps != null)) {
           _benchPushPoint(msg);
         }
       } else if (msg.type === 'model_done') {
@@ -1547,9 +1709,9 @@ function _benchAddModelResultRow(modelId, _unused1, _unused2, tool) {
     const vals = modelRows.filter(fn).map(r => r.avg_ts ?? 0);
     return vals.length ? Math.max(...vals) : null;
   };
-  const maxPpt = maxOf(r => (r.n_prompt ?? 0) > 0 && (r.n_gen ?? 0) === 0);
-  const maxGen = maxOf(r => (r.n_gen ?? 0) > 0 && (r.n_prompt ?? 0) === 0);
-  const maxPg  = maxOf(r => (r.n_prompt ?? 0) > 0 && (r.n_gen ?? 0) > 0);
+  const maxPpt = maxOf(r => _benchRowOffset(r) === 0);
+  const maxGen = maxOf(r => _benchRowOffset(r) === 1);
+  const maxPg  = maxOf(r => _benchRowOffset(r) === 2);
 
   const rows = document.getElementById('benchResultRows');
 

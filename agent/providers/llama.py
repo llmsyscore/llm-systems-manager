@@ -1861,22 +1861,27 @@ def _bench_get_hf_arg(model_id: str) -> "Optional[str]":
 
 
 def _bench_parse_row(row: dict, tool: str):
+    """(gen_tps, ppt_tps, pg_tps) for one JSONL row; all None when not a result row."""
     if not isinstance(row, dict):
-        return (None, None)
+        return (None, None, None)
     if tool == "llama-bench":
         ts_val = row.get("avg_ts") or row.get("t_s")
         if ts_val is None:
-            return (None, None)
+            return (None, None, None)
         n_p = int(row.get("n_prompt", 0) or 0)
         n_g = int(row.get("n_gen", 0) or 0)
-        if n_p > 0 and n_g == 0: return (None, float(ts_val))
-        if n_g > 0 and n_p == 0: return (float(ts_val), None)
-        if n_p > 0 and n_g > 0:  return (float(ts_val), None)
-        return (None, None)
-    pp = row.get("pp_tps") or row.get("avg_pp_tps") or row.get("t_pp")
-    tg = row.get("tg_tps") or row.get("avg_tg_tps") or row.get("t_tg")
+        if n_p > 0 and n_g == 0: return (None, float(ts_val), None)
+        if n_g > 0 and n_p == 0: return (float(ts_val), None, None)
+        if n_p > 0 and n_g > 0:  return (None, None, float(ts_val))
+        return (None, None, None)
+    def _first(*keys):
+        return next((row[k] for k in keys if row.get(k) is not None), None)
+    pp = _first("speed_pp", "pp_tps", "avg_pp_tps")
+    tg = _first("speed_tg", "tg_tps", "avg_tg_tps")
+    pg = _first("speed")
     return (float(tg) if tg is not None else None,
-            float(pp) if pp is not None else None)
+            float(pp) if pp is not None else None,
+            float(pg) if pg is not None else None)
 
 
 def _bench_tool_path(tool: str) -> "tuple[str, bool]":
@@ -1936,6 +1941,7 @@ def _bench_run_one(model_id: str, tool: str, switches: list, env: dict) -> None:
 
     latest_gen = None
     latest_ppt = None
+    latest_pg = None
     result_rows: list = []
 
     def _drain_stderr():
@@ -1960,22 +1966,39 @@ def _bench_run_one(model_id: str, tool: str, switches: list, env: dict) -> None:
             row = json.loads(line)
         except Exception:
             continue
-        gen_tps, ppt_tps = _bench_parse_row(row, tool)
-        if gen_tps is None and ppt_tps is None:
+        gen_tps, ppt_tps, pg_tps = _bench_parse_row(row, tool)
+        if gen_tps is None and ppt_tps is None and pg_tps is None:
             continue
         if gen_tps is not None: latest_gen = gen_tps
         if ppt_tps is not None: latest_ppt = ppt_tps
-        result_row = {
-            "n_prompt": int(row.get("n_prompt", 0) or 0),
-            "n_gen":    int(row.get("n_gen", 0) or 0),
-            "n_depth":  int(row.get("n_depth", 0) or 0),
-            "n_batch":  int(row.get("n_batch", 0) or 0),
-            "n_ubatch": int(row.get("n_ubatch", 0) or 0),
-            "avg_ts":   float(row.get("avg_ts", 0) or 0),
-        }
-        result_rows.append(result_row)
-        _bench_put({"type": "result", "model_id": model_id,
-                    "gen_tps": gen_tps, "ppt_tps": ppt_tps, **result_row})
+        if pg_tps is not None: latest_pg = pg_tps
+        if tool == "llama-bench":
+            result_row = {
+                "n_prompt": int(row.get("n_prompt", 0) or 0),
+                "n_gen":    int(row.get("n_gen", 0) or 0),
+                "n_depth":  int(row.get("n_depth", 0) or 0),
+                "n_batch":  int(row.get("n_batch", 0) or 0),
+                "n_ubatch": int(row.get("n_ubatch", 0) or 0),
+                "avg_ts":   float(row.get("avg_ts", 0) or 0),
+            }
+            result_rows.append(result_row)
+            _bench_put({"type": "result", "model_id": model_id,
+                        "gen_tps": gen_tps, "ppt_tps": ppt_tps, "pg_tps": pg_tps,
+                        **result_row})
+        else:
+            # batched-bench: one JSONL row holds pp/tg/combined speeds; emit one
+            # series-tagged result per speed so each plots on its own chart series.
+            sweep = {k: int(row.get(k, 0) or 0)
+                     for k in ("pp", "tg", "pl", "n_kv_max", "n_batch", "n_ubatch")}
+            for series, tps in (("ppt", ppt_tps), ("gen", gen_tps), ("pg", pg_tps)):
+                if tps is None:
+                    continue
+                result_row = {"series": series, "avg_ts": float(tps), **sweep}
+                result_rows.append(result_row)
+                tps_slots = {"gen_tps": None, "ppt_tps": None, "pg_tps": None,
+                             f"{series}_tps": tps}
+                _bench_put({"type": "result", "model_id": model_id,
+                            **tps_slots, **result_row})
 
     proc.wait()
     _bench_proc = None
@@ -1984,7 +2007,7 @@ def _bench_run_one(model_id: str, tool: str, switches: list, env: dict) -> None:
                 "ok": (not cancelled) and proc.returncode == 0,
                 "rc": proc.returncode, "cancelled": cancelled,
                 "last_gen_tps": latest_gen, "last_ppt_tps": latest_ppt,
-                "results": result_rows})
+                "last_pg_tps": latest_pg, "results": result_rows})
 
 
 def _bench_run_all(model_ids: list, tool: str, switches: list):
