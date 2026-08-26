@@ -389,7 +389,7 @@ def test_stream_proxied_to_header_suppressed_when_disabled(monkeypatch):
 
 
 def test_candidates_pool_read_failure_warns(monkeypatch, caplog):
-    monkeypatch.setattr(gateway, "_pool_read_last_warn", 0.0)
+    monkeypatch.setitem(gateway._pool_read_warn, "ts", 0.0)
     monkeypatch.setattr(gateway.proxies, "_resolve_target",
                         lambda pk, m, a, allow_pool=True: (None, None))
 
@@ -406,7 +406,7 @@ def test_candidates_pool_read_failure_warns(monkeypatch, caplog):
 
 
 def test_pool_read_warn_is_rate_limited(monkeypatch, caplog):
-    monkeypatch.setattr(gateway, "_pool_read_last_warn", 0.0)
+    monkeypatch.setitem(gateway._pool_read_warn, "ts", 0.0)
     with caplog.at_level("WARNING", logger="llm-systems-manager.gateway"):
         gateway._warn_pool_read_failed(OSError("first"))
         gateway._warn_pool_read_failed(OSError("second"))

@@ -33,20 +33,20 @@ _FAILOVER_STATUSES = (502, 503)
 _POOL_RETRY_AFTER_S = 5
 
 _POOL_READ_WARN_INTERVAL_S = 60.0
-_pool_read_last_warn = 0.0
+_pool_read_warn = {"ts": 0.0}
 _pool_read_warn_lock = threading.Lock()
 
 
 def _warn_pool_read_failed(e: Exception) -> None:
     """Rate-limited warning for pool-id read failures in _candidates (#632)."""
-    global _pool_read_last_warn
     with _pool_read_warn_lock:
         now = time.monotonic()
-        if now - _pool_read_last_warn < _POOL_READ_WARN_INTERVAL_S:
+        if now - _pool_read_warn["ts"] < _POOL_READ_WARN_INTERVAL_S:
             return
-        _pool_read_last_warn = now
+        _pool_read_warn["ts"] = now
     log.warning("gateway: pool id read failed (%s: %s); treating pool as empty",
                 type(e).__name__, e)
+
 
 # Per-provider gateway sub-path -> agent passthrough route (allowlist), for
 # every gateway_enabled spec. The Flask routes stay per-provider (bottom).
