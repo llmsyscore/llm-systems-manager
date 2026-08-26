@@ -496,6 +496,10 @@ Backend API endpoints consumed:
               <input type="checkbox" id="adminAuthDisabled" onchange="adminToggleAuth(this.checked)">
               <span>Disable agent auth</span>
             </label>
+            <button class="adm-refresh" onclick="adminUpdateAll()"
+              title="Update every agent needing an upgrade, one at a time; each must come back on the new version before the next starts. Stops on the first failure.">
+              ⇈ Update all
+            </button>
             <button class="adm-refresh" onclick="adminPushCaToAgents()"
               title="Force every approved agent to fetch the current cert+key+CA bundle on its next heartbeat (≤60s). Use this after rotating the manager's internal CA so agents update their stored tls-ca.pem without revoke+re-approve.">
               ⤴ Push CA to agents
@@ -1894,7 +1898,7 @@ Backend API endpoints consumed:
 <script src="/static/js/terminal.js?v=2026.08.19-1"></script>
 <script src="/static/js/llmcontrol.js?v=2026.08.19-1"></script>
 <script src="/static/js/openclaw.js?v=2026.08.03-1"></script>
-<script src="/static/js/admin.js?v=2026.08.17-1"></script>
+<script src="/static/js/admin.js?v=2026.08.26-1"></script>
 <script src="/static/js/admin-settings.js?v=2026.08.25-1"></script>
 <script src="/static/js/autopilot.js?v=2026.07.31-2"></script>
 <script src="/static/js/llmcontrol-models.js?v=2026.08.19-1"></script>

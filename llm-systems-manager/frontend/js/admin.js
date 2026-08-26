@@ -1963,23 +1963,42 @@ async function adminUpdate(aid) {
 
   _adminUpdateOpen(name);
   _adminUpdateLog(`Updating ${curV} → ${newV}`, 'stage');
+  const res = await _adminStreamUpdate(aid);
+  if (res.transport) return;
+  if (res.ok === true) {
+    _adminUpdateLog(res.noRestart
+      ? 'agent already up to date; no restart needed'
+      : 'agent SIGTERM-ing for restart; refreshing agent list in 5s…');
+    // Refresh the agent list but leave the panel open so the operator
+    // can read the full output. Operator closes it via the X.
+    setTimeout(() => { adminLoadAgents(); }, 5000);
+  } else if (res.ok === false) {
+    _adminUpdateLog('install failed; agent kept running with old code', 'err');
+  } else {
+    _adminUpdateLog('stream ended without a `done` frame', 'err');
+  }
+}
 
+// One self-update stream into the open panel (#637 refactor). Returns
+// {ok: true|false|null, noRestart, transport} — transport = failed
+// before any SSE frame (already logged); ok null = no `done` frame.
+async function _adminStreamUpdate(aid) {
   let r;
   try {
     r = await fetch(`/api/agents/${aid}/self-update`, { method: 'POST' });
   } catch (e) {
     _adminUpdateLog(`✗ request failed: ${e.message}`, 'err');
-    return;
+    return { ok: false, noRestart: false, transport: true };
   }
   if (!r.ok) {
     let body = '';
     try { body = await r.text(); } catch {}
     _adminUpdateLog(`✗ HTTP ${r.status}: ${body.slice(0, 500)}`, 'err');
-    return;
+    return { ok: false, noRestart: false, transport: true };
   }
   if (!r.body) {
     _adminUpdateLog('✗ no response body — proxy did not stream', 'err');
-    return;
+    return { ok: false, noRestart: false, transport: true };
   }
 
   // Parse SSE frames out of the streamed body.
@@ -2026,18 +2045,96 @@ async function adminUpdate(aid) {
       }
     }
   }
-  if (doneOk === true) {
-    _adminUpdateLog(doneNoRestart
-      ? 'agent already up to date; no restart needed'
-      : 'agent SIGTERM-ing for restart; refreshing agent list in 5s…');
-    // Refresh the agent list but leave the panel open so the operator
-    // can read the full output. Operator closes it via the X.
-    setTimeout(() => { adminLoadAgents(); }, 5000);
-  } else if (doneOk === false) {
-    _adminUpdateLog('install failed; agent kept running with old code', 'err');
-  } else {
-    _adminUpdateLog('stream ended without a `done` frame', 'err');
+  return { ok: doneOk, noRestart: doneNoRestart, transport: false };
+}
+
+// Poll /api/agents until the agent reports targetV; true on success (#637).
+async function _adminAwaitAgentVersion(aid, targetV, timeoutMs = 120000) {
+  const t0 = Date.now();
+  while (Date.now() - t0 < timeoutMs) {
+    await new Promise(res => setTimeout(res, 3000));
+    try {
+      const r = await fetch('/api/agents');
+      if (!r.ok) continue;
+      const d = await r.json();
+      const a = (d.agents || []).find(x => x.agent_id === aid);
+      if (a && a.version === targetV) return true;
+    } catch {}
   }
+  return false;
+}
+
+// #637: sequential fleet-wide update — one agent at a time, each verified
+// back on the new version before the next starts; stops on first failure.
+let _adminUpdateAllRunning = false;
+async function adminUpdateAll() {
+  if (_adminUpdateAllRunning) {
+    _themedToast('Update all is already running', { kind: 'warn' });
+    return;
+  }
+  const newV = _latestAgentVersion;
+  const todo = (_adminAgentsCache || []).filter(a => a.update_available);
+  if (!todo.length || !newV) {
+    _themedToast('All agents are already up to date');
+    return;
+  }
+  const listHtml = todo.map(a =>
+    `<div>${adminEsc(a.hostname || a.agent_id.slice(0, 8))}: ` +
+    `${adminEsc(a.version || '?')} → ${adminEsc(newV)}</div>`).join('');
+  const ok = await _themedConfirm({
+    title: `Update ${todo.length} agent${todo.length > 1 ? 's' : ''}?`,
+    bodyHtml:
+      `<div style="font-family:monospace;background:var(--bg);border:1px solid var(--border);` +
+      `border-radius:6px;padding:10px 12px;margin-bottom:12px;max-height:200px;overflow-y:auto;">${listHtml}</div>` +
+      `<div>Agents update one at a time; each must come back on the new version ` +
+      `before the next starts. The sequence stops on the first failure.</div>`,
+    confirmLabel: 'Update all',
+    cancelLabel: 'Cancel',
+  });
+  if (!ok) return;
+
+  _adminUpdateAllRunning = true;
+  _adminUpdateOpen(`all agents (${todo.length})`);
+  const results = [];
+  try {
+    for (let i = 0; i < todo.length; i++) {
+      const a = todo[i];
+      const name = a.hostname || a.agent_id.slice(0, 8);
+      if (i) _adminUpdateLog('', 'blank');
+      _adminUpdateLog(`── [${i + 1}/${todo.length}] ${name}: ${a.version || '?'} → ${newV}`, 'stage');
+      const res = await _adminStreamUpdate(a.agent_id);
+      let okAgent = res.ok === true;
+      if (okAgent && !res.noRestart) {
+        _adminUpdateLog(`waiting for ${name} to come back on ${newV}…`);
+        okAgent = await _adminAwaitAgentVersion(a.agent_id, newV);
+        _adminUpdateLog(okAgent
+          ? `✓ ${name} is back on ${newV}`
+          : `✗ ${name} did not report ${newV} within 2 minutes`,
+          okAgent ? 'ok' : 'err');
+      } else if (okAgent) {
+        _adminUpdateLog(`✓ ${name} already up to date; no restart needed`, 'ok');
+      }
+      results.push({ name, state: okAgent ? 'updated' : 'failed' });
+      if (!okAgent) {
+        for (const rest of todo.slice(i + 1)) {
+          results.push({ name: rest.hostname || rest.agent_id.slice(0, 8),
+                         state: 'skipped' });
+        }
+        break;
+      }
+    }
+  } finally {
+    _adminUpdateAllRunning = false;
+  }
+  const updated = results.filter(r => r.state === 'updated').map(r => r.name);
+  const failed = results.filter(r => r.state === 'failed').map(r => r.name);
+  const skipped = results.filter(r => r.state === 'skipped').map(r => r.name);
+  _adminUpdateLog('', 'blank');
+  _adminUpdateLog(`── Update all finished: ${updated.length} updated`
+    + (failed.length ? `, failed: ${failed.join(', ')}` : '')
+    + (skipped.length ? `, skipped: ${skipped.join(', ')}` : ''),
+    failed.length ? 'err' : 'ok');
+  adminLoadAgents();
 }
 
 // ── Agent log viewer (streams /api/agents/<id>/log/stream) ────────────
