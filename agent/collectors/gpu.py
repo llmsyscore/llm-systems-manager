@@ -179,15 +179,17 @@ def _lspci_amd_name() -> "str | None":
     try:
         slot = _GPU_PATH.resolve().name
         out = subprocess.check_output(
-            ["lspci", "-s", slot, "-mm", "-nn"],
+            ["lspci", "-s", slot, "-vmm"],
             text=True, timeout=3, stderr=subprocess.DEVNULL, close_fds=True,
         ).strip()
     except Exception as e:
         log.debug("lspci amd name: %s", e)
         return None
-    parts = [p[0] or p[1] for p in re.findall(r'"([^"]*)"|(\S+)', out)]
-    if len(parts) >= 3:
-        return parts[2]
+    # -vmm emits position-independent "Device:\t<model>" key lines.
+    for line in out.splitlines():
+        key, _, value = line.partition(":")
+        if key.strip() == "Device" and value.strip():
+            return value.strip()
     return None
 
 
