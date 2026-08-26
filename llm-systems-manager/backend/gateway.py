@@ -88,9 +88,10 @@ def _proxied_to_header(agent: dict) -> dict:
     return {}
 
 
-def _candidates(model_id, agent_id, provider="llama") -> list:
+def _candidates(model_id, agent_id, provider="llama", advance_rr=True) -> list:
     """Ordered failover list: pin/picker primary first, then live agents
-    serving model_id per the index, then other live, then non-live."""
+    serving model_id per the index, then other live, then non-live.
+    advance_rr=False (models fan-out) skips the RR-advancing resolve (#625)."""
     ordered, seen = [], set()
 
     def _add(agent):
@@ -99,15 +100,17 @@ def _candidates(model_id, agent_id, provider="llama") -> list:
             seen.add(aid)
             ordered.append(agent)
 
-    try:
-        primary, override = proxies._resolve_target(provider, model_id, agent_id,
-                                                    allow_pool=True)
-        if override == "pin":
-            log.info("gateway: model pin overrode ?agent=%s for model %s",
-                     (agent_id or "")[:8], model_id)
-    except Exception as e:
-        log.warning("gateway: resolve failed: %s", e)
-        primary = None
+    primary = None
+    if advance_rr or model_id or agent_id:
+        try:
+            primary, override = proxies._resolve_target(provider, model_id,
+                                                        agent_id, allow_pool=True)
+            if override == "pin":
+                log.info("gateway: model pin overrode ?agent=%s for model %s",
+                         (agent_id or "")[:8], model_id)
+        except Exception as e:
+            log.warning("gateway: resolve failed: %s", e)
+            primary = None
     _add(primary)
     ids: list = []
     spec = providers.get(provider)
@@ -223,7 +226,7 @@ def _handle_completion(sub: str, provider=None) -> Response:
             continue
         if (provider in _USAGE_COUNTED_PROVIDERS
                 and 200 <= r.status_code < 300):
-            u = gateway_usage.usage_from_json_bytes(r.content)
+            u = gateway_usage.completion_usage_from_json_bytes(r.content)
             if u:
                 gateway_usage.record(aid, *u)
         return Response(r.content, status=r.status_code,
@@ -303,7 +306,7 @@ def _fetch_provider_models(provider: str, serving: "dict | None" = None) -> list
     """Provider-tagged model entries merged from every candidate agent.
     When given, serving accumulates model_id -> [agent_ids] as it goes."""
     merged, seen = [], set()
-    for agent in _candidates(None, None, provider):
+    for agent in _candidates(None, None, provider, advance_rr=False):
         r, _tried, _err = agent_registry.agent_request(
             "GET", agent, _MODELS_PATHS[provider],
             headers={"Authorization": f"Bearer {agent.get('token') or ''}"},
@@ -399,7 +402,8 @@ def _provider_for_model(model_id) -> str:
         except Exception:
             log.debug("gateway: pin lookup failed for %s/%s", p, model_id)
     with _model_index_lock:
-        fresh = (time.time() - _model_index["ts"]) < _MODEL_INDEX_TTL_S
+        ts = _model_index["ts"]
+        fresh = (time.time() - ts) < _MODEL_INDEX_TTL_S
         mapping = _model_index["map"]
         hit = mapping.get(model_id)
     if hit:
@@ -407,15 +411,27 @@ def _provider_for_model(model_id) -> str:
             _refresh_model_index_async()
         return hit
     if not fresh:
-        try:
-            mapping = _refresh_model_index()
-        except Exception as e:
-            log.warning("gateway: model index refresh failed: %s", e)
-            mapping = {}
-        hit = mapping.get(model_id)
-        if hit:
-            return hit
+        # Never-built index (ts == 0): build synchronously so the first
+        # request routes correctly. Stale-but-built: refresh in the
+        # background and serve the llama fallback now (#627).
+        if ts == 0.0:
+            try:
+                mapping = _refresh_model_index()
+            except Exception as e:
+                log.warning("gateway: model index refresh failed: %s", e)
+                mapping = {}
+            hit = mapping.get(model_id)
+            if hit:
+                return hit
+        else:
+            _refresh_model_index_async()
     return "llama"
+
+
+def prewarm_model_index() -> None:
+    """Kick the async index build at service startup so the first completion
+    doesn't pay the full fan-out (#627)."""
+    _refresh_model_index_async()
 
 
 def _gateway_models(provider=None) -> Response:

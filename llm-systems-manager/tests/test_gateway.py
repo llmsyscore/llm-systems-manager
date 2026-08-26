@@ -25,7 +25,7 @@ def _client():
 
 
 def test_no_candidates_returns_openai_shaped_503(monkeypatch):
-    monkeypatch.setattr(gateway, "_candidates", lambda m, a, p="llama": [])
+    monkeypatch.setattr(gateway, "_candidates", lambda m, a, p="llama", **kw: [])
     r = _client().post("/api/gateway/v1/chat/completions", json={"model": "x"})
     assert r.status_code == 503
     err = r.get_json()["error"]
@@ -47,7 +47,7 @@ def test_disabled_503(monkeypatch):
 def test_failover_to_second_agent(monkeypatch):
     a1 = {"agent_id": "a" * 32, "hostname": "h1", "token": "t"}
     a2 = {"agent_id": "b" * 32, "hostname": "h2", "token": "t"}
-    monkeypatch.setattr(gateway, "_candidates", lambda m, a, p="llama": [a1, a2])
+    monkeypatch.setattr(gateway, "_candidates", lambda m, a, p="llama", **kw: [a1, a2])
     calls = []
 
     def fake_forward(agent, path, body):
@@ -63,7 +63,7 @@ def test_failover_to_second_agent(monkeypatch):
 def test_502_from_agent_fails_over(monkeypatch):
     a1 = {"agent_id": "a" * 32, "hostname": "h1", "token": "t"}
     a2 = {"agent_id": "b" * 32, "hostname": "h2", "token": "t"}
-    monkeypatch.setattr(gateway, "_candidates", lambda m, a, p="llama": [a1, a2])
+    monkeypatch.setattr(gateway, "_candidates", lambda m, a, p="llama", **kw: [a1, a2])
     monkeypatch.setattr(gateway, "_forward_json", lambda agent, p, b:
                         (FakeResp(502), None) if agent is a1 else (FakeResp(200, {"ok": 1}), None))
     r = _client().post("/api/gateway/v1/completions", json={})
@@ -87,7 +87,7 @@ def test_candidates_order_and_dedupe(monkeypatch):
 def test_models_merge_dedupe(monkeypatch):
     a1 = {"agent_id": "a" * 32, "hostname": "h1", "token": "t"}
     a2 = {"agent_id": "b" * 32, "hostname": "h2", "token": "t"}
-    monkeypatch.setattr(gateway, "_candidates", lambda m, a, p="llama": [a1, a2])
+    monkeypatch.setattr(gateway, "_candidates", lambda m, a, p="llama", **kw: [a1, a2])
     payloads = {"h1": {"data": [{"id": "m1"}, {"id": "m2"}]},
                 "h2": {"data": [{"id": "m2"}, {"id": "m3"}]}}
 
@@ -104,7 +104,7 @@ def test_models_merge_across_all_providers(monkeypatch):
     """#493: the main /v1/models merges every gateway provider's pool."""
     agents = {p: {"agent_id": p[0] * 32, "hostname": f"h-{p}", "token": "t"}
               for p in gateway._GATEWAY_PROVIDERS}
-    monkeypatch.setattr(gateway, "_candidates", lambda m, a, p="llama": [agents[p]])
+    monkeypatch.setattr(gateway, "_candidates", lambda m, a, p="llama", **kw: [agents[p]])
     payloads = {"h-llama": {"data": [{"id": "l1"}]},
                 "h-lms": {"data": [{"id": "s1"}]},
                 "h-vllm": {"data": [{"id": "v1"}]}}
@@ -123,7 +123,7 @@ def test_models_merge_across_all_providers(monkeypatch):
 def test_provider_scoped_models_route_stays_scoped(monkeypatch):
     agents = {p: {"agent_id": p[0] * 32, "hostname": f"h-{p}", "token": "t"}
               for p in gateway._GATEWAY_PROVIDERS}
-    monkeypatch.setattr(gateway, "_candidates", lambda m, a, p="llama": [agents[p]])
+    monkeypatch.setattr(gateway, "_candidates", lambda m, a, p="llama", **kw: [agents[p]])
     payloads = {"h-llama": {"data": [{"id": "l1"}]},
                 "h-lms": {"data": [{"id": "s1"}]},
                 "h-vllm": {"data": [{"id": "v1"}]}}
@@ -233,7 +233,7 @@ class FakeUpstream:
 
 def test_stream_pipes_chunks(monkeypatch):
     agent = {"agent_id": "a" * 32, "hostname": "h1", "token": "t"}
-    monkeypatch.setattr(gateway, "_candidates", lambda m, a, p="llama": [agent])
+    monkeypatch.setattr(gateway, "_candidates", lambda m, a, p="llama", **kw: [agent])
     up = FakeUpstream([b'data: {"c":1}\n\n', b"data: [DONE]\n\n"])
     monkeypatch.setattr(gateway, "_dial_stream", lambda a, p, b: up)
     r = _client().post("/api/gateway/v1/chat/completions", json={"stream": True})
@@ -246,7 +246,7 @@ def test_stream_pipes_chunks(monkeypatch):
 def test_stream_503_upstream_fails_over(monkeypatch):
     a1 = {"agent_id": "a" * 32, "hostname": "h1", "token": "t"}
     a2 = {"agent_id": "b" * 32, "hostname": "h2", "token": "t"}
-    monkeypatch.setattr(gateway, "_candidates", lambda m, a, p="llama": [a1, a2])
+    monkeypatch.setattr(gateway, "_candidates", lambda m, a, p="llama", **kw: [a1, a2])
     bad = FakeUpstream([], status=503, ctype="application/json")
     good = FakeUpstream([b"data: [DONE]\n\n"])
     monkeypatch.setattr(gateway, "_dial_stream",
@@ -257,7 +257,7 @@ def test_stream_503_upstream_fails_over(monkeypatch):
 
 def test_stream_non_sse_error_relayed(monkeypatch):
     agent = {"agent_id": "a" * 32, "hostname": "h1", "token": "t"}
-    monkeypatch.setattr(gateway, "_candidates", lambda m, a, p="llama": [agent])
+    monkeypatch.setattr(gateway, "_candidates", lambda m, a, p="llama", **kw: [agent])
     up = FakeUpstream([], status=400, ctype="application/json")
     up.content = b'{"error":{"message":"bad request"}}'
     monkeypatch.setattr(gateway, "_dial_stream", lambda a, p, b: up)
@@ -313,7 +313,7 @@ def test_candidates_prefer_agents_serving_model(monkeypatch):
 def test_models_merge_populates_serving_index(monkeypatch):
     a1 = {"agent_id": "a" * 32, "hostname": "h1", "token": "t"}
     a2 = {"agent_id": "b" * 32, "hostname": "h2", "token": "t"}
-    monkeypatch.setattr(gateway, "_candidates", lambda m, a, p="llama": [a1, a2])
+    monkeypatch.setattr(gateway, "_candidates", lambda m, a, p="llama", **kw: [a1, a2])
     monkeypatch.setattr(gateway, "_GATEWAY_PROVIDERS", ("llama",))
     monkeypatch.setattr(gateway, "_model_index",
                         {"ts": 0.0, "map": {}, "serving": {}, "refreshing": False})
@@ -339,7 +339,7 @@ def test_models_merge_populates_serving_index(monkeypatch):
 
 def test_stream_pool_exhausted_503_retry_after_and_log(monkeypatch, caplog):
     agent = {"agent_id": "a" * 32, "hostname": "h1", "token": "t"}
-    monkeypatch.setattr(gateway, "_candidates", lambda m, a, p="llama": [agent])
+    monkeypatch.setattr(gateway, "_candidates", lambda m, a, p="llama", **kw: [agent])
     up = FakeUpstream([b"data: [DONE]\n\n"])
     monkeypatch.setattr(gateway, "_dial_stream", lambda a, p, b: up)
     monkeypatch.setattr(gateway.stream_pool.POOL, "try_acquire", lambda: False)
@@ -354,7 +354,7 @@ def test_stream_pool_exhausted_503_retry_after_and_log(monkeypatch, caplog):
 def test_500_relayed_verbatim_without_failover(monkeypatch):
     a1 = {"agent_id": "a" * 32, "hostname": "h1", "token": "t"}
     a2 = {"agent_id": "b" * 32, "hostname": "h2", "token": "t"}
-    monkeypatch.setattr(gateway, "_candidates", lambda m, a, p="llama": [a1, a2])
+    monkeypatch.setattr(gateway, "_candidates", lambda m, a, p="llama", **kw: [a1, a2])
     calls = []
 
     def fake_forward(agent, path, body):
@@ -368,7 +368,7 @@ def test_500_relayed_verbatim_without_failover(monkeypatch):
 
 def test_proxied_to_header_suppressed_when_disabled(monkeypatch):
     agent = {"agent_id": "a" * 32, "hostname": "h1", "token": "t"}
-    monkeypatch.setattr(gateway, "_candidates", lambda m, a, p="llama": [agent])
+    monkeypatch.setattr(gateway, "_candidates", lambda m, a, p="llama", **kw: [agent])
     monkeypatch.setattr(gateway, "_forward_json",
                         lambda a, p, b: (FakeResp(200, {"ok": 1}), None))
     monkeypatch.setattr(gateway, "_gw_cfg",
@@ -379,7 +379,7 @@ def test_proxied_to_header_suppressed_when_disabled(monkeypatch):
 
 def test_stream_proxied_to_header_suppressed_when_disabled(monkeypatch):
     agent = {"agent_id": "a" * 32, "hostname": "h1", "token": "t"}
-    monkeypatch.setattr(gateway, "_candidates", lambda m, a, p="llama": [agent])
+    monkeypatch.setattr(gateway, "_candidates", lambda m, a, p="llama", **kw: [agent])
     up = FakeUpstream([b"data: [DONE]\n\n"])
     monkeypatch.setattr(gateway, "_dial_stream", lambda a, p, b: up)
     monkeypatch.setattr(gateway, "_gw_cfg",
@@ -412,3 +412,101 @@ def test_pool_read_warn_is_rate_limited(monkeypatch, caplog):
         gateway._warn_pool_read_failed(OSError("second"))
     msgs = [m for m in caplog.messages if "pool id read failed" in m]
     assert len(msgs) == 1 and "first" in msgs[0]
+
+
+# ── #625/#627/#629: gateway routing bug fixes ────────────────────────
+
+def test_models_fanout_does_not_advance_pool_rr(monkeypatch):
+    calls = []
+    monkeypatch.setattr(gateway.proxies, "_resolve_target",
+                        lambda *a, **k: calls.append(a) or (None, None))
+    monkeypatch.setattr(gateway.agent_registry, "load_agents",
+                        lambda: {"global": {}})
+    monkeypatch.setattr(gateway.agent_registry, "default_agent_id_for",
+                        lambda p: None)
+    monkeypatch.setattr(gateway, "_model_index",
+                        {"ts": 0.0, "map": {}, "serving": {}, "refreshing": False})
+    r = _client().get("/api/gateway/v1/models")
+    assert r.status_code == 200 and calls == []
+
+
+def test_candidates_no_rr_still_lists_pool_and_default(monkeypatch):
+    p1 = {"agent_id": "p1", "hostname": "h1"}
+    p2 = {"agent_id": "p2", "hostname": "h2"}
+
+    def _no_resolve(*a, **k):
+        raise AssertionError("resolve_target must not run with advance_rr=False")
+
+    monkeypatch.setattr(gateway.proxies, "_resolve_target", _no_resolve)
+    monkeypatch.setattr(gateway.agent_registry, "load_agents",
+                        lambda: {"global": {"llama_pool": ["p1"]}})
+    monkeypatch.setattr(gateway.agent_registry, "default_agent_id_for",
+                        lambda p: "p2")
+    monkeypatch.setattr(gateway.agent_registry, "resolve_agent_by_id",
+                        lambda aid, capability=None: {"p1": p1, "p2": p2}[aid])
+    monkeypatch.setattr(gateway.agent_registry, "agent_liveness", lambda a: "live")
+    out = gateway._candidates(None, None, advance_rr=False)
+    assert [a["agent_id"] for a in out] == ["p1", "p2"]
+
+
+def test_stale_built_index_miss_serves_llama_and_kicks_async(monkeypatch):
+    monkeypatch.setattr(gateway.agent_registry, "pinned_agent", lambda p, m: None)
+    monkeypatch.setattr(gateway, "_model_index",
+                        {"ts": 1.0, "map": {"other": "lms"},
+                         "serving": {}, "refreshing": False})
+    kicked = []
+    monkeypatch.setattr(gateway, "_refresh_model_index_async",
+                        lambda: kicked.append(1))
+
+    def _no_sync():
+        raise AssertionError("sync refresh must not run on a stale-built index")
+
+    monkeypatch.setattr(gateway, "_refresh_model_index", _no_sync)
+    assert gateway._provider_for_model("mystery") == "llama"
+    assert kicked == [1]
+
+
+def test_never_built_index_miss_refreshes_sync(monkeypatch):
+    monkeypatch.setattr(gateway.agent_registry, "pinned_agent", lambda p, m: None)
+    monkeypatch.setattr(gateway, "_model_index",
+                        {"ts": 0.0, "map": {}, "serving": {}, "refreshing": False})
+    monkeypatch.setattr(gateway, "_refresh_model_index", lambda: {"m1": "lms"})
+    assert gateway._provider_for_model("m1") == "lms"
+
+
+def test_prewarm_model_index_kicks_async(monkeypatch):
+    kicked = []
+    monkeypatch.setattr(gateway, "_refresh_model_index_async",
+                        lambda: kicked.append(1))
+    gateway.prewarm_model_index()
+    assert kicked == [1]
+
+
+def test_usage_not_recorded_for_non_completion_2xx(monkeypatch):
+    agent = {"agent_id": "a" * 32, "hostname": "h1", "token": "t"}
+    monkeypatch.setattr(gateway, "_candidates",
+                        lambda m, a, p="llama", **kw: [agent])
+    body = {"proxied": True,
+            "usage": {"prompt_tokens": 5, "completion_tokens": 7}}
+    monkeypatch.setattr(gateway, "_forward_json",
+                        lambda a, p, b: (FakeResp(200, body), None))
+    recorded = []
+    monkeypatch.setattr(gateway.gateway_usage, "record",
+                        lambda aid, p, g: recorded.append((aid, p, g)))
+    r = _client().post("/api/gateway/lms/v1/chat/completions", json={"model": "m"})
+    assert r.status_code == 200 and recorded == []
+
+
+def test_usage_recorded_for_completion_body(monkeypatch):
+    agent = {"agent_id": "a" * 32, "hostname": "h1", "token": "t"}
+    monkeypatch.setattr(gateway, "_candidates",
+                        lambda m, a, p="llama", **kw: [agent])
+    body = {"choices": [{"message": {"content": "hi"}}],
+            "usage": {"prompt_tokens": 5, "completion_tokens": 7}}
+    monkeypatch.setattr(gateway, "_forward_json",
+                        lambda a, p, b: (FakeResp(200, body), None))
+    recorded = []
+    monkeypatch.setattr(gateway.gateway_usage, "record",
+                        lambda aid, p, g: recorded.append((aid, p, g)))
+    r = _client().post("/api/gateway/lms/v1/chat/completions", json={"model": "m"})
+    assert r.status_code == 200 and recorded == [(agent["agent_id"], 5, 7)]
