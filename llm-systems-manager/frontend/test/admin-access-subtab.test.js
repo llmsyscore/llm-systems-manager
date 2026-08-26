@@ -1,16 +1,14 @@
 // #477: Authentication + Users consolidated into one access-control sub-tab.
-import { describe, it, expect, beforeAll } from 'vitest';
-import { readFileSync } from 'node:fs';
-import { fileURLToPath } from 'node:url';
-import { dirname, join } from 'node:path';
+import { describe, it, expect, beforeEach } from 'vitest';
+import { srcFile, loadSwitchSubTab } from './helpers/harness.js';
 
-const root = join(dirname(fileURLToPath(import.meta.url)), '..');
-const bootSrc = readFileSync(join(root, 'js/boot.js'), 'utf8');
-const indexSrc = readFileSync(join(root, 'index.html'), 'utf8');
+const bootSrc = srcFile('js/boot.js');
+const indexSrc = srcFile('index.html');
 
 describe('access-control sub-tab consolidation (#477)', () => {
-  beforeAll(() => {
+  beforeEach(() => {
     document.documentElement.innerHTML = indexSrc;
+    loadSwitchSubTab(bootSrc);
   });
 
   it('index.html has one admin-access panel, no admin-auth/admin-users panels', () => {
@@ -38,15 +36,22 @@ describe('access-control sub-tab consolidation (#477)', () => {
     expect(panel.textContent).not.toMatch(/Users\s+tab/i);
   });
 
-  it('boot.js admin subs list swaps auth+users for access', () => {
-    const subsLine = bootSrc.match(/admin:\s*\{[^\n]*subs:\s*\[([^\]]*)\]/);
-    expect(subsLine).toBeTruthy();
-    expect(subsLine[1]).toContain("'access'");
-    expect(subsLine[1]).not.toContain("'auth'");
-    expect(subsLine[1]).not.toContain("'users'");
+  it('boot.js\'s real admin subs list swaps auth+users for access', () => {
+    // Executes the real _SUB_TAB_MAP object literal (not a regex match on
+    // boot.js text), so a leftover 'auth'/'users' entry actually fails.
+    expect(window._SUB_TAB_MAP.admin.subs).toContain('access');
+    expect(window._SUB_TAB_MAP.admin.subs).not.toContain('auth');
+    expect(window._SUB_TAB_MAP.admin.subs).not.toContain('users');
   });
 
-  it('boot.js loads users on access sub-tab entry', () => {
-    expect(bootSrc).toMatch(/sub === 'access'[\s\S]{0,120}adminUsersLoad/);
+  it('switchSubTab(admin, access) activates the access panel and loads users', () => {
+    let calls = 0;
+    window.adminUsersLoad = () => { calls++; };
+    window.switchSubTab('admin', 'access');
+    expect(calls).toBe(1);
+    expect(window._subTabState.admin).toBe('access');
+    expect(document.getElementById('admin-access').classList.contains('active')).toBe(true);
+    expect(document.getElementById('admin-agents').classList.contains('active')).toBe(false);
+    expect(document.getElementById('subTabBtnAdminAccess').classList.contains('active')).toBe(true);
   });
 });

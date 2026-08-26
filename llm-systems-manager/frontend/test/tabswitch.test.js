@@ -1,29 +1,74 @@
-// Leaving the Admin tab must close the floating log panel (and its SSE
-// stream) and hide the self-update panel (#268).
-import { describe, test, expect } from 'vitest';
-import { readFileSync } from 'node:fs';
-import { fileURLToPath } from 'node:url';
-import { dirname, join } from 'node:path';
+// #268: leaving the Admin tab must close the floating log panel/SSE stream
+// and hide the self-update panel. Runs the real switchTab with stubbed spies.
+import { describe, test, expect, beforeEach, vi } from 'vitest';
+import { srcFile, fnSrc, evalGlobal } from './helpers/harness.js';
 
-const here = dirname(fileURLToPath(import.meta.url));
-const foundation = readFileSync(join(here, '..', 'js', 'foundation.js'), 'utf8');
+const foundation = srcFile('js/foundation.js');
 
-function switchTabBody() {
-  const m = foundation.match(/function switchTab\(tab\) \{[\s\S]*?\n\}/);
-  expect(m, 'switchTab not found in foundation.js').toBeTruthy();
-  return m[0];
+function switchTabSrc() {
+  const fn = fnSrc(foundation, 'switchTab');
+  expect(fn, 'switchTab not found in foundation.js').toBeTruthy();
+  // Guard against a truncated match — the body runs through tab !== 'llm'.
+  expect(fn, 'switchTab match looks truncated').toMatch(/tab !== 'llm'/);
+  return fn;
 }
 
-describe('switchTab non-admin branch', () => {
+function loadSwitchTab() {
+  evalGlobal(switchTabSrc() + '\nwindow.switchTab = switchTab;');
+}
+
+beforeEach(() => {
+  document.body.innerHTML = `
+    <button class="tab-btn active" onclick="switchTab('admin')">Admin</button>
+    <button class="tab-btn" onclick="switchTab('dashboard')">Dashboard</button>
+    <div id="overallTab"></div>
+    <div id="dashboardTab"></div>
+    <div id="llmTab"></div>
+    <div id="eventsTab"></div>
+    <div id="openclawTab"></div>
+    <div id="llmchatTab"></div>
+    <div id="imggenTab"></div>
+    <div id="adminTab"></div>`;
+  window._me = { admin_access: true };
+  window.adminStopAutoRefresh = vi.fn();
+  window._adminLogsClose = vi.fn();
+  window._adminUpdateClose = vi.fn();
+  window.stopLogStream = vi.fn();
+  window.stopPerfRefresh = vi.fn();
+  window.stopLmsLogRefresh = vi.fn();
+  window.adminLoadAgents = vi.fn();
+  window.adminLoadHealth = vi.fn();
+  window.adminAuthLoad = vi.fn();
+  window.adminStartAutoRefresh = vi.fn();
+  loadSwitchTab();
+});
+
+describe('switchTab leaving the Admin tab', () => {
+  beforeEach(() => { window._activeTab = 'admin'; });
+
   test('stops admin auto-refresh (pre-existing behavior)', () => {
-    expect(switchTabBody()).toMatch(/adminStopAutoRefresh\(\)/);
+    switchTab('dashboard');
+    expect(window.adminStopAutoRefresh).toHaveBeenCalledTimes(1);
   });
 
   test('closes the admin log panel and its EventSource', () => {
-    expect(switchTabBody()).toMatch(/_adminLogsClose\(\)/);
+    switchTab('dashboard');
+    expect(window._adminLogsClose).toHaveBeenCalledTimes(1);
   });
 
   test('hides the admin self-update panel', () => {
-    expect(switchTabBody()).toMatch(/_adminUpdateClose\(\)/);
+    switchTab('dashboard');
+    expect(window._adminUpdateClose).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('switchTab entering the Admin tab', () => {
+  test('does not immediately close the panels it just opened', () => {
+    window._activeTab = 'dashboard';
+    switchTab('admin');
+    expect(window.adminStopAutoRefresh).not.toHaveBeenCalled();
+    expect(window._adminLogsClose).not.toHaveBeenCalled();
+    expect(window._adminUpdateClose).not.toHaveBeenCalled();
+    expect(window.adminStartAutoRefresh).toHaveBeenCalledTimes(1);
   });
 });

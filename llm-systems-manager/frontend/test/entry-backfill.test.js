@@ -1,109 +1,303 @@
 // #506: views whose live poll is view-gated must re-backfill their charts on
-// entry, otherwise the off-tab interval is drawn as a straight fabricated line.
-import { describe, test, expect } from 'vitest';
-import { readFileSync } from 'node:fs';
-import { fileURLToPath } from 'node:url';
-import { dirname, join } from 'node:path';
+// entry. Executes the real switchSubTab/switchTab/backfill sources in jsdom
+// with stubbed collaborators, rather than pattern-matching the source text.
+import { describe, test, expect, vi } from 'vitest';
+import { srcFile, fnSrc, evalGlobal, loadSwitchSubTab as loadSharedSwitchSubTab, flush as tick } from './helpers/harness.js';
 
-const here = dirname(fileURLToPath(import.meta.url));
-const src = (f) => readFileSync(join(here, '..', f), 'utf8');
-const boot = src('js/boot.js');
-const foundation = src('js/foundation.js');
-const overall = src('js/overall.js');
-const charts = src('js/charts.js');
+const boot = srcFile('js/boot.js');
+const foundation = srcFile('js/foundation.js');
+const overall = srcFile('js/overall.js');
+const charts = srcFile('js/charts.js');
 
-// Slice a switchSubTab entry branch: from its `if (sub === '<name>')` to the
-// end of that block, so assertions can't match a neighbouring provider.
-function subTabBranch(name) {
-  const start = boot.indexOf(`if (sub === '${name}')`);
-  expect(start, `${name} entry branch not found`).toBeGreaterThan(-1);
-  return boot.slice(start, start + 500);
+function loadSwitchSubTab() {
+  loadSharedSwitchSubTab(boot);
+}
+
+function loadSwitchTab() {
+  const code = [fnSrc(foundation, 'switchTab'), 'window.switchTab = switchTab;'].join('\n');
+  evalGlobal(code);
+}
+
+function loadMakeHistoryBackfill() {
+  const code = [fnSrc(charts, '_makeHistoryBackfill'), 'window._makeHistoryBackfill = _makeHistoryBackfill;'].join('\n');
+  evalGlobal(code);
+}
+
+function switchTabDom() {
+  document.body.innerHTML = `
+    <button class="tab-btn" onclick="switchTab('overall')"></button>
+    <div id="overallTab"></div>`;
 }
 
 describe('LM Studio sub-tab entry (#506)', () => {
-  test('dashboard entry backfills history before resuming the live poll', () => {
-    const branch = subTabBranch('lmstudio');
-    expect(branch).toContain('loadLmsHistory().finally');
-    expect(branch).toContain('fetchLMStudioMetrics');
+  test('dashboard entry backfills history before resuming the live poll, and the live poll still resumes if the backfill fails', async () => {
+    loadSwitchSubTab();
+    window._lmsLogOpen = false;
+    window._initLMSSections = vi.fn();
+    const order = [];
+    window.loadLmsHistory = vi.fn(() => { order.push('backfill'); return Promise.reject(new Error('ae down')); });
+    window.fetchLMStudioMetrics = vi.fn(() => order.push('live'));
+
+    switchSubTab('dashboard', 'lmstudio');
+    await tick(); await tick();
+
+    expect(order).toEqual(['backfill', 'live']);
   });
-  test('backfill is gated to the dashboard parent (llm-tab panel has no charts)', () => {
-    expect(subTabBranch('lmstudio')).toContain("parent === 'dashboard'");
+
+  test('backfill is gated to the dashboard parent — the llm-tab panel fetches directly', () => {
+    loadSwitchSubTab();
+    window._lmsLogOpen = false;
+    window._initLMSSections = vi.fn();
+    window.stopLogStream = vi.fn();
+    window.stopPerfRefresh = vi.fn();
+    window.loadLmsHistory = vi.fn();
+    window.fetchLMStudioMetrics = vi.fn();
+
+    switchSubTab('llm', 'lmstudio');
+
+    expect(window.loadLmsHistory).not.toHaveBeenCalled();
+    expect(window.fetchLMStudioMetrics).toHaveBeenCalledTimes(1);
   });
 });
 
 describe('Manager sub-tab entry (#506)', () => {
-  const branch = boot.slice(boot.indexOf("sub === 'manager'"), boot.indexOf("sub === 'manager'") + 600);
-  test('re-backfills the perf sparklines on every entry', () => {
-    expect(branch).toContain('loadManagerPerfHistory');
-  });
-  test('the one-shot _mgrPerfBackfilled latch is gone', () => {
-    expect(boot).not.toContain('_mgrPerfBackfilled');
+  test('re-backfills the perf sparklines on every entry — no one-shot latch gates it out', () => {
+    loadSwitchSubTab();
+    window.fetchServicesAndInflux = vi.fn();
+    window.fetchManagerAgentsCard = vi.fn();
+    window.fetchManagerStreamsCard = vi.fn();
+    window.stopLmsLogRefresh = vi.fn();
+    window.loadManagerPerfHistory = vi.fn(() => Promise.resolve());
+
+    switchSubTab('dashboard', 'manager');
+    switchSubTab('dashboard', 'manager');
+
+    expect(window.loadManagerPerfHistory).toHaveBeenCalledTimes(2);
   });
 });
 
 describe('Overall tab entry (#506)', () => {
-  test('switchTab overall backfills before the live fleet fetch', () => {
-    const m = foundation.match(/function switchTab\(tab\) \{[\s\S]*?\n\}/);
-    expect(m).toBeTruthy();
-    expect(m[0]).toContain('loadOverallHistory().finally');
-    expect(m[0]).toContain('fetchOverallMetrics');
+  test('switchTab overall backfills before the live fetch, and resumes it even if the backfill fails', async () => {
+    switchTabDom();
+    loadSwitchTab();
+    window._activeTab = 'dashboard';
+    window._me = { admin_access: true };
+    window.adminStopAutoRefresh = vi.fn();
+    window.stopLogStream = vi.fn();
+    window.stopPerfRefresh = vi.fn();
+    window.stopLmsLogRefresh = vi.fn();
+    window._ovBackfillPinnedProviders = vi.fn();
+    const order = [];
+    window.loadOverallHistory = vi.fn(() => { order.push('backfill'); return Promise.reject(new Error('ae down')); });
+    window.fetchOverallMetrics = vi.fn(() => order.push('live'));
+
+    switchTab('overall');
+    await tick(); await tick();
+
+    expect(order).toEqual(['backfill', 'live']);
   });
-  test('the one-shot _ovHistoryBackfilled latch is gone', () => {
-    expect(overall).not.toContain('_ovHistoryBackfilled');
+
+  test('re-backfills on every entry — no one-shot latch gates it out', async () => {
+    switchTabDom();
+    loadSwitchTab();
+    window._activeTab = 'dashboard';
+    window._me = { admin_access: true };
+    window.adminStopAutoRefresh = vi.fn();
+    window.stopLogStream = vi.fn();
+    window.stopPerfRefresh = vi.fn();
+    window.stopLmsLogRefresh = vi.fn();
+    window._ovBackfillPinnedProviders = vi.fn();
+    window.loadOverallHistory = vi.fn(() => Promise.resolve());
+    window.fetchOverallMetrics = vi.fn();
+
+    switchTab('overall');
+    await tick();
+    switchTab('overall');
+    await tick();
+
+    expect(window.loadOverallHistory).toHaveBeenCalledTimes(2);
   });
-  test('fetchOverallMetrics no longer backfills on the live path', () => {
-    const fn = overall.slice(overall.indexOf('async function fetchOverallMetrics'));
-    expect(fn.slice(0, fn.indexOf('\n}'))).not.toContain('loadOverallHistory');
+
+  test('fetchOverallMetrics no longer backfills on the live path', async () => {
+    const code = [fnSrc(overall, 'fetchOverallMetrics'), 'window.fetchOverallMetrics = fetchOverallMetrics;'].join('\n');
+    evalGlobal(code);
+    window._ovRefreshEnergy = vi.fn();
+    window._ovPaintBand = vi.fn();
+    window.fetch = vi.fn(async () => ({ ok: false }));
+    window.loadOverallHistory = vi.fn();
+
+    await window.fetchOverallMetrics();
+
+    expect(window.loadOverallHistory).not.toHaveBeenCalled();
+    expect(window._ovPaintBand).toHaveBeenCalledTimes(1);
   });
 });
 
 describe('_makeHistoryBackfill pre-fetch clear (#507)', () => {
-  const factory = charts.slice(charts.indexOf('function _makeHistoryBackfill'));
-  const body = factory.slice(0, factory.indexOf('\n}'));
-  test('clears before the fetch only when the selected agent changed', () => {
-    expect(body).toMatch(/if \(agent !== lastAgent\) resetCharts\(\);/);
+  test('clears before the fetch only when the selected agent changed', async () => {
+    loadMakeHistoryBackfill();
+    window.MAX_POINTS = 3600;
+    window._selectedAgent = () => 'agent-A';
+    const resetCharts = vi.fn();
+    let deferred;
+    window._historyRows = () => new Promise(res => { deferred = res; });
+    const backfill = window._makeHistoryBackfill('llama', '__DEF_AGENT', resetCharts, vi.fn());
+
+    const run = backfill();                       // first call: agent undefined -> 'agent-A'
+    expect(resetCharts).toHaveBeenCalledTimes(1);  // pre-fetch clear fires on agent change
+    deferred([]);
+    await run;
   });
+
   // An unconditional pre-fetch reset blanks the window when the fetch fails.
-  test('has no unconditional pre-fetch resetCharts call', () => {
-    const idx = body.indexOf('_historyRows');
-    expect(idx).toBeGreaterThan(-1);
-    expect(body.slice(0, idx)).not.toMatch(/^\s*resetCharts\(\);/m);
+  test('has no unconditional pre-fetch resetCharts call', async () => {
+    loadMakeHistoryBackfill();
+    window.MAX_POINTS = 3600;
+    window._selectedAgent = () => 'agent-A';
+    const resetCharts = vi.fn();
+    window._historyRows = () => Promise.resolve([]);
+    const backfill = window._makeHistoryBackfill('llama', '__DEF_AGENT', resetCharts, vi.fn());
+    await backfill();                              // prime lastAgent = 'agent-A'
+    resetCharts.mockClear();
+
+    let deferred;
+    window._historyRows = () => new Promise(res => { deferred = res; });
+    const run = backfill();                        // same agent as last time
+    expect(resetCharts).not.toHaveBeenCalled();     // no clear before the fetch settles (#507 fix)
+    deferred([]);
+    await run;
   });
-  test('still repaints from a clean slate once rows arrive', () => {
-    expect(body.slice(body.indexOf('_historyRows'))).toContain('resetCharts()');
+
+  test('still repaints from a clean slate once rows arrive', async () => {
+    loadMakeHistoryBackfill();
+    window.MAX_POINTS = 3600;
+    window._selectedAgent = () => 'agent-A';
+    const resetCharts = vi.fn();
+    const paintRow = vi.fn();
+    window._historyRows = () => Promise.resolve([]);
+    const backfill = window._makeHistoryBackfill('llama', '__DEF_AGENT', resetCharts, paintRow);
+    await backfill();                               // prime lastAgent, no rows yet
+    resetCharts.mockClear();
+
+    const rows = [{ ts: 1 }, { ts: 2 }];
+    window._historyRows = () => Promise.resolve(rows);
+    await backfill();
+
+    expect(resetCharts).toHaveBeenCalledTimes(1);
+    expect(paintRow).toHaveBeenNthCalledWith(1, rows[0]);
+    expect(paintRow).toHaveBeenNthCalledWith(2, rows[1]);
   });
 });
 
 // An auth-gated 401 answers with a JSON object, so r.json() resolves and a
 // bare rows.length check skips the repaint with no error anywhere (#507).
 describe('history fetches detect non-array responses (#507)', () => {
-  const helper = charts.slice(charts.indexOf('async function _historyRows'));
-  const body = helper.slice(0, helper.indexOf('\n}'));
-  test('_historyRows rejects a non-ok response and logs it', () => {
-    expect(body).toContain('if (!r.ok)');
-    expect(body).toMatch(/console\.error/);
+  function loadHistoryRows() {
+    const code = [fnSrc(charts, '_historyRows'), 'window._historyRows = _historyRows;'].join('\n');
+    evalGlobal(code);
+  }
+
+  test('_historyRows rejects a non-ok response and logs it', async () => {
+    loadHistoryRows();
+    window.fetch = vi.fn(async () => ({ ok: false, status: 401 }));
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    const rows = await window._historyRows('/api/history', 'llama');
+
+    expect(rows).toBeNull();
+    expect(errSpy).toHaveBeenCalledWith('llama history: HTTP 401');
+    errSpy.mockRestore();
   });
-  test('_historyRows rejects a non-array payload and logs it', () => {
-    expect(body).toContain('Array.isArray(rows)');
+
+  test('_historyRows rejects a non-array payload and logs it', async () => {
+    loadHistoryRows();
+    const payload = { auth_required: true };
+    window.fetch = vi.fn(async () => ({ ok: true, json: async () => payload }));
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    const rows = await window._historyRows('/api/history', 'llama');
+
+    expect(rows).toBeNull();
+    expect(errSpy).toHaveBeenCalledWith('llama history: expected an array, got', payload);
+    errSpy.mockRestore();
   });
-  test.each([
-    ['loadHistory', 'async function loadHistory'],
-    ['_makeHistoryBackfill', 'function _makeHistoryBackfill'],
-    ['loadOverallHistory', 'async function loadOverallHistory'],
-  ])('%s routes its fetch through _historyRows', (_name, anchor) => {
-    const fn = charts.slice(charts.indexOf(anchor));
-    const fnBody = fn.slice(0, fn.indexOf('\n}'));
-    expect(fnBody).toContain('_historyRows');
-    expect(fnBody).not.toMatch(/await fetch\(/);
+});
+
+describe('history-backfill callers route through _historyRows, not raw fetch (#507)', () => {
+  test('loadHistory', async () => {
+    const code = [fnSrc(charts, 'loadHistory'), 'window.loadHistory = loadHistory;'].join('\n');
+    evalGlobal(code);
+    window._histGen = 0;
+    window._histLastAgent = undefined;
+    window._selectedAgent = () => null;
+    window._resetMetricCharts = vi.fn();
+    window._llamaPeaks = { tps: { reset: vi.fn() }, pps: { reset: vi.fn() } };
+    window._historyRows = vi.fn(async () => []);   // empty rows: returns before touching any chart
+    window.fetch = vi.fn();
+
+    await window.loadHistory();
+
+    expect(window._historyRows).toHaveBeenCalledWith('/api/history', 'llama');
+    expect(window.fetch).not.toHaveBeenCalled();
   });
+
+  test('_makeHistoryBackfill', async () => {
+    loadMakeHistoryBackfill();
+    window.MAX_POINTS = 3600;
+    window._selectedAgent = () => 'agent-A';
+    window._historyRows = vi.fn(async () => []);
+    window.fetch = vi.fn();
+    const backfill = window._makeHistoryBackfill('llama', '__DEF_AGENT', vi.fn(), vi.fn());
+
+    await backfill();
+
+    expect(window._historyRows).toHaveBeenCalledWith('/api/history?agent=agent-A', 'llama');
+    expect(window.fetch).not.toHaveBeenCalled();
+  });
+
+  test('loadOverallHistory', async () => {
+    const code = [fnSrc(charts, 'loadOverallHistory'), 'window.loadOverallHistory = loadOverallHistory;'].join('\n');
+    evalGlobal(code);
+    window._ovHistoryGen = 0;
+    window.ovHeroChart = {};   // truthy: past the early-return guard
+    window._historyRows = vi.fn(async () => []);
+    window.fetch = vi.fn();
+
+    await window.loadOverallHistory();
+
+    expect(window._historyRows).toHaveBeenCalledWith(
+      '/api/history?since_minutes=1440&max_rows=1440&fleet=all', 'Overall fleet');
+    expect(window.fetch).not.toHaveBeenCalled();
+  });
+
+  test.each(['loadHistory', '_makeHistoryBackfill', 'loadOverallHistory'])(
+    '%s body has no direct fetch call', (name) => {
+      // wiring (unexecutable): absence must hold in branches no test drives.
+      const body = fnSrc(charts, name);
+      expect(body).toBeTruthy();
+      expect(body).not.toMatch(/\bfetch\(/);
+    });
 });
 
 // llama.cpp is excluded because fetchMetrics has no view gate (#129); adding
 // one there would require an entry backfill too.
 describe('llama.cpp needs no entry backfill (#506)', () => {
-  test('fetchMetrics has no view gate before its fetch', () => {
-    const fn = charts.slice(charts.indexOf('async function fetchMetrics'));
-    const preamble = fn.slice(0, fn.indexOf("_fetchT('/api/metrics'"));
-    expect(preamble).not.toMatch(/_activeTab|_subTabState|ViewActive/);
+  test('fetchMetrics still polls even when the llama.cpp view is not the active one', async () => {
+    const code = [fnSrc(charts, 'fetchMetrics'), 'window.fetchMetrics = fetchMetrics;'].join('\n');
+    evalGlobal(code);
+    window._agentClaimKey = () => 'fetchMetrics:';
+    window._claim = () => true;
+    window._release = vi.fn();
+    window._fetchT = vi.fn(() => Promise.reject(new Error('network down')));
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    // Operator parked on a completely different tab/sub-tab — unlike
+    // lmstudio/vllm/manager, fetchMetrics must still fire (#129).
+    window._activeTab = 'admin';
+    window._subTabState = { dashboard: 'manager' };
+
+    await window.fetchMetrics();
+
+    expect(window._fetchT).toHaveBeenCalledWith('/api/metrics', {}, 10000);
+    errSpy.mockRestore();
   });
 });
