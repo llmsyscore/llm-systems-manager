@@ -156,7 +156,7 @@ def _local_hostname() -> str:
 # banner reads it. Bump suffix (-1, -2, …) for same-day iterations; roll
 # the date for a new day's first change.
 # ---------------------------------------------------------------------------
-__version__ = "v2026.08.26-11"
+__version__ = "v2026.08.26-12"
 
 # Wall-clock at first import (Cheroot main process); the shutdown banner
 # reads it for the uptime line.
@@ -5864,6 +5864,10 @@ if __name__ == "__main__":
     # Gateway token metrics → alarm engine per LMS host (#502): history,
     # thresholds, and alert rules all run against source="gateway".
     gateway_usage.start_pusher(_push_gateway_usage_metrics, _lms_agent_hosts)
+
+    # Pre-warm the gateway model index so the first completion after boot
+    # doesn't run the full provider fan-out in its request thread (#627).
+    gateway.prewarm_model_index()
 
     # Discord bot (#471): gateway thread, only when [manager.discord] enables it.
     discord_bot.start_thread(ctx)

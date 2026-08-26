@@ -161,6 +161,22 @@ def usage_from_json_bytes(content) -> "tuple[int, int] | None":
         data = json.loads(content)
     except (TypeError, ValueError):
         return None
+    return _usage_from_dict(data)
+
+
+def completion_usage_from_json_bytes(content) -> "tuple[int, int] | None":
+    """Usage tuple only when the body is a completion response — requires a
+    'choices' list alongside 'usage', so wrapper payloads don't count (#629)."""
+    try:
+        data = json.loads(content)
+    except (TypeError, ValueError):
+        return None
+    if not isinstance(data, dict) or not isinstance(data.get("choices"), list):
+        return None
+    return _usage_from_dict(data)
+
+
+def _usage_from_dict(data) -> "tuple[int, int] | None":
     usage = data.get("usage") if isinstance(data, dict) else None
     if not isinstance(usage, dict):
         return None
