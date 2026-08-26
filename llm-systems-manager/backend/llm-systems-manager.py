@@ -71,6 +71,7 @@ import functools
 import hashlib
 import hmac
 import json
+import math
 import os
 import shutil
 import sys
@@ -156,7 +157,7 @@ def _local_hostname() -> str:
 # banner reads it. Bump suffix (-1, -2, …) for same-day iterations; roll
 # the date for a new day's first change.
 # ---------------------------------------------------------------------------
-__version__ = "v2026.08.26-15"
+__version__ = "v2026.08.26-16"
 
 # Wall-clock at first import (Cheroot main process); the shutdown banner
 # reads it for the uptime line.
@@ -1767,6 +1768,15 @@ def _bench_provider(value: "str | None") -> "tuple[str | None, str | None]":
     return provider, None
 
 
+def _finite_or_none(value) -> "float | None":
+    """Coerce to a finite float, else None (NaN/Inf would break JSON output)."""
+    try:
+        f = float(value)
+    except (TypeError, ValueError):
+        return None
+    return f if math.isfinite(f) else None
+
+
 @app.route("/api/benchmark/results", methods=["GET"])
 def benchmark_results():
     try:
@@ -1796,9 +1806,9 @@ def benchmark_results():
             except Exception: extra = None
             out.append({
                 "model_id":    r[0],
-                "avg_gen_tps": r[1],
-                "avg_ppt_tps": r[2],
-                "avg_pg_tps":  r[7],
+                "avg_gen_tps": _finite_or_none(r[1]),
+                "avg_ppt_tps": _finite_or_none(r[2]),
+                "avg_pg_tps":  _finite_or_none(r[7]),
                 "bench_tool":  r[3],
                 "switches":    switches,
                 "ts":          r[5],
@@ -1815,9 +1825,9 @@ def benchmark_store():
     try:
         data = flask_request.get_json(force=True) or {}
         model_id    = (data.get("model_id") or "").strip()
-        avg_gen_tps = data.get("avg_gen_tps")
-        avg_ppt_tps = data.get("avg_ppt_tps")
-        avg_pg_tps  = data.get("avg_pg_tps")
+        avg_gen_tps = _finite_or_none(data.get("avg_gen_tps"))
+        avg_ppt_tps = _finite_or_none(data.get("avg_ppt_tps"))
+        avg_pg_tps  = _finite_or_none(data.get("avg_pg_tps"))
         bench_tool  = data.get("bench_tool") or ""
         switches    = data.get("switches") or []
         extra       = data.get("extra_json")
