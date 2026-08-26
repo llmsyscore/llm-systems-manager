@@ -103,7 +103,6 @@ describe('foundation.js', () => {
 // ---------------------------------------------------------------------------
 describe('boot.js', () => {
   const boot = src('js/boot.js');
-  const foundation = src('js/foundation.js');
 
   test('dashboard + llm sub-tab maps include vllm (switchSubTab activates the vllm panel)', async () => {
     document.body.innerHTML = `
