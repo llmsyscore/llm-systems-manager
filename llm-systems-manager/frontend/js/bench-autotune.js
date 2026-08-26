@@ -483,8 +483,8 @@ async function loadBenchmarkData() {
     _benchData = {};
     (d.results || []).forEach(r => { _benchData[r.model_id] = r; });
   } catch (e) {
+    // Keep the previously loaded data — blanking it would wipe every badge.
     console.warn('loadBenchmarkData failed:', e);
-    _benchData = {};
   }
 }
 

@@ -145,6 +145,40 @@ def test_delete_with_provider(monkeypatch):
     assert conn.execute("SELECT COUNT(*) FROM model_benchmarks").fetchone()[0] == 0
 
 
+def test_store_sanitizes_nonfinite_values(monkeypatch):
+    conn = _mem_db()
+    monkeypatch.setattr(manager_mod, "get_db", lambda: conn)
+    manager_mod.init_db()
+    c = _client()
+    r = c.post("/api/benchmark/store", data=json.dumps({
+        "model_id": "m", "avg_gen_tps": float("inf"),
+        "avg_ppt_tps": float("nan"), "avg_pg_tps": "bogus",
+    }), content_type="application/json")
+    assert r.get_json()["ok"] is True
+    row = conn.execute(
+        "SELECT avg_gen_tps, avg_ppt_tps, avg_pg_tps FROM model_benchmarks "
+        "WHERE model_id='m'").fetchone()
+    assert row == (None, None, None)
+
+
+def test_results_json_stays_parseable_with_nonfinite_row(monkeypatch):
+    conn = _mem_db()
+    monkeypatch.setattr(manager_mod, "get_db", lambda: conn)
+    manager_mod.init_db()
+    conn.execute(
+        "INSERT INTO model_benchmarks (model_id, agent_id, provider, avg_gen_tps) "
+        "VALUES ('poisoned', '', 'llama', ?)", (float("inf"),))
+    c = _client()
+    res = c.get("/api/benchmark/results")
+
+    def _reject_constant(name):
+        raise ValueError(f"non-finite constant in JSON: {name}")
+
+    # Strict parse (rejects bare Infinity) must succeed, like browser JSON.parse.
+    items = json.loads(res.get_data(as_text=True), parse_constant=_reject_constant)
+    assert items["results"][0]["avg_gen_tps"] is None
+
+
 def test_vllm_bench_routes_registered():
     rules = {str(r) for r in manager_mod.app.url_map.iter_rules()}
     for path in ["/api/vllm/bench/run", "/api/vllm/bench/stream",
