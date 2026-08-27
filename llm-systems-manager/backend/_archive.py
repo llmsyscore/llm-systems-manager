@@ -152,7 +152,7 @@ def prune_preimport_backups(dest: str, keep: int = 5) -> list[str]:
             os.unlink(p)
             removed.append(p)
         except FileNotFoundError:
-            pass
+            continue  # already removed by a concurrent import
     return removed
 
 

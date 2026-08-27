@@ -25,7 +25,8 @@ def _seed_baks(dest, n):
 
 def test_prune_keeps_newest_n(tmp_path):
     dest = str(tmp_path / "x.db")
-    open(dest, "wb").write(b"live")
+    with open(dest, "wb") as f:
+        f.write(b"live")
     _seed_baks(dest, 7)
     (tmp_path / "x.db.20260101-000000.tmp").write_bytes(b"unrelated")
     removed = _archive.prune_preimport_backups(dest, keep=5)
