@@ -181,7 +181,7 @@ def test_atomic_write_text_mode_holds_when_chmod_fails(tmp_path, monkeypatch, um
     try:
         utils.atomic_write_text(tmp_path / "token", "secret", mode=0o600)
     except OSError:
-        pass
+        pass  # chmod failure is the scenario; only the leftover files matter
     assert _no_world_readable(tmp_path)
 
 
