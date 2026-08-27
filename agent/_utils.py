@@ -21,14 +21,19 @@ def atomic_write_text(
     re-reading log-watch state on restart) must never observe a half-written
     file. `replace()` is atomic on POSIX and Windows.
 
-    `mode` is applied to the temp file before the rename so the final file
-    is never briefly world-readable.
+    With `mode` the temp file is created with those bits from the start, so
+    neither the temp nor the final file is ever briefly world-readable.
     """
     p = Path(path)
     tmp = p.with_suffix(p.suffix + ".tmp")
-    tmp.write_text(content, encoding=encoding)
-    if mode is not None:
-        os.chmod(tmp, mode)
+    if mode is None:
+        tmp.write_text(content, encoding=encoding)
+    else:
+        tmp.unlink(missing_ok=True)
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, mode)
+        with os.fdopen(fd, "w", encoding=encoding) as fh:
+            os.fchmod(fd, mode)
+            fh.write(content)
     tmp.replace(p)
 
 

@@ -12,9 +12,11 @@ from __future__ import annotations
 import asyncio
 import base64
 import binascii
+import hmac
 import json
 import logging
 import logging.handlers
+import math
 import os
 import platform
 import pwd
@@ -60,12 +62,17 @@ except ImportError:
     def atomic_write_text(path, content, mode=None, encoding="utf-8"):  # type: ignore[no-redef]
         p = Path(path)
         tmp = p.with_suffix(p.suffix + ".tmp")
-        tmp.write_text(content, encoding=encoding)
-        if mode is not None:
-            os.chmod(tmp, mode)
+        if mode is None:
+            tmp.write_text(content, encoding=encoding)
+        else:
+            tmp.unlink(missing_ok=True)
+            fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, mode)
+            with os.fdopen(fd, "w", encoding=encoding) as fh:
+                os.fchmod(fd, mode)
+                fh.write(content)
         tmp.replace(p)
 
-VERSION = "v2026.08.27-1"
+VERSION = "v2026.08.27-2"
 
 # LMS ps busy-status substrings, mirroring manager energy.LMS_BUSY_MARKERS;
 # transitional states (LOADING/UNLOADING/DOWNLOADING) are not busy (#619).
@@ -187,6 +194,30 @@ def _probe_systemd_unit(name: str) -> "tuple[bool, str]":
         except Exception:
             continue
     return False, "not installed"
+
+
+def _env_override_value(key: str, cur: Any, raw: str, ref: Any = None) -> Any:
+    """Coerce an $LSA_<key> string to the type of `ref` (default: `cur`); keeps `cur` on a bad value."""
+    ref = cur if ref is None else ref
+    if isinstance(ref, bool):
+        return raw.lower() in ("1", "true", "yes", "on")
+    if isinstance(ref, (int, float)):
+        try:
+            num = float(raw)
+        except ValueError:
+            num = math.nan
+        if not math.isfinite(num):
+            print(f"WARNING: LSA_{key}={raw!r} is not a finite number; keeping {cur!r}",
+                  file=sys.stderr)
+            return cur
+        if isinstance(ref, float):
+            return num
+        if int(num) != num:
+            print(f"WARNING: LSA_{key}={raw!r} truncated to {int(num)}", file=sys.stderr)
+        return int(num)
+    if isinstance(ref, list):
+        return [s.strip() for s in raw.split("|") if s.strip()]
+    return raw
 
 
 def _probe_and_autoconfigure(cfg: "AgentConfig") -> None:
@@ -538,17 +569,8 @@ class AgentConfig:
                 # Tri-state keys keep "auto"; normalized to bool/"auto" below.
                 if k in _TRISTATE_COLLECT_KEYS:
                     setattr(cfg, k, raw)
-                elif isinstance(cur, bool):
-                    setattr(cfg, k, raw.lower() in ("1", "true", "yes", "on"))
-                elif isinstance(cur, int):
-                    try:
-                        setattr(cfg, k, int(raw))
-                    except ValueError:
-                        pass
-                elif isinstance(cur, list):
-                    setattr(cfg, k, [s.strip() for s in raw.split("|") if s.strip()])
                 else:
-                    setattr(cfg, k, raw)
+                    setattr(cfg, k, _env_override_value(k, cur, raw, ref=getattr(cls, k)))
 
         if not cfg.PROCESS_WATCHLIST:
             if cfg.AGENT_OS == "macos":
@@ -679,6 +701,7 @@ _state: dict[str, Any] = {
 
 _metric_client: Optional[bmc.BufferedMetricClient] = None
 _post_session = requests.Session()
+_reload_lock = threading.Lock()
 # _lms_session moved to agent/providers/lms.py (Tier 3 A2).
 
 
@@ -1792,8 +1815,7 @@ def _persist_token(token: str) -> None:
     p = Path(CONFIG.TOKEN_FILE)
     try:
         p.parent.mkdir(parents=True, exist_ok=True)
-        p.write_text(token)
-        os.chmod(p, 0o600)
+        atomic_write_text(p, token, mode=0o600)
     except Exception as e:
         logger.warning("failed to persist token to %s: %s", p, e)
 
@@ -2604,7 +2626,7 @@ def _check_bearer(authorization: Optional[str]) -> None:
     if not authorization or not authorization.startswith("Bearer "):
         raise HTTPException(status_code=401, detail="missing bearer token")
     presented = authorization[len("Bearer "):].strip()
-    if presented != expected:
+    if not hmac.compare_digest(presented.encode("utf-8"), expected.encode("utf-8")):
         raise HTTPException(status_code=403, detail="invalid token")
 
 
@@ -2750,8 +2772,14 @@ async def get_config(authorization: Optional[str] = Header(default=None)) -> dic
 
 
 @app.post("/config/reload")
-async def reload_config(authorization: Optional[str] = Header(default=None)) -> dict[str, Any]:
+def reload_config(authorization: Optional[str] = Header(default=None)) -> dict[str, Any]:
+    """Reload config from disk; runs in the threadpool (role=auto re-probes)."""
     _check_bearer(authorization)
+    with _reload_lock:
+        return _reload_config_locked()
+
+
+def _reload_config_locked() -> dict[str, Any]:
     global CONFIG
     CONFIG = AgentConfig.load()
     collectors.configure_all(CONFIG)
@@ -2765,6 +2793,12 @@ async def reload_config(authorization: Optional[str] = Header(default=None)) -> 
         now_iso=_now_iso,
         probe_http=_probe_http,
     ))
+    _configure_manager_tls_verify()
+    _configure_ae_tls_verify()
+    if _metric_client is not None and CONFIG.ALARM_ENGINE_URL:
+        _metric_client.update_alarm_engine_url(CONFIG.ALARM_ENGINE_URL)
+    with _runtime_lock:
+        _state["ae_url_applied"] = ""
     logger.info("config reloaded from %s", getattr(CONFIG, "_loaded_from", "<defaults>"))
     return {"ok": True, "loaded_from": getattr(CONFIG, "_loaded_from", None)}
 
@@ -2922,6 +2956,55 @@ def agent_log_tail(authorization: Optional[str] = Header(default=None)) -> dict[
         raise HTTPException(status_code=500, detail=str(e))
 
 
+def _tail_log_lines(path: str, keepalive_s: float = 15.0) -> Iterator[bytes]:
+    """tail -F as SSE frames; opens + seeks to end now, streams via _tail_stream."""
+    f = open(path, "rb")
+    try:
+        f.seek(0, os.SEEK_END)
+    except Exception:
+        f.close()
+        raise
+    return _tail_stream(f, path, keepalive_s)
+
+
+def _tail_stream(f: Any, path: str, keepalive_s: float) -> Iterator[bytes]:
+    """Yield SSE frames from f; reopens path when its inode changes or it shrinks."""
+    try:
+        inode = os.fstat(f.fileno()).st_ino
+        buf = b""
+        idle = 0
+        last_keepalive = time.time()
+        while True:
+            chunk = f.read(65536)
+            if chunk:
+                buf += chunk
+                while b"\n" in buf:
+                    raw, buf = buf.split(b"\n", 1)
+                    yield _sse_frame({"line": raw.decode("utf-8", errors="replace").rstrip()})
+                last_keepalive = time.time()
+                idle = 0
+                continue
+            idle += 1
+            if idle % 4 == 0:  # rotation check every ~2s of idle
+                try:
+                    st = os.stat(path)
+                    rotated = st.st_ino != inode or st.st_size < f.tell()
+                except FileNotFoundError:
+                    rotated = False
+                if rotated:
+                    f.close()
+                    f = open(path, "rb")
+                    inode = os.fstat(f.fileno()).st_ino
+                    buf = b""
+                    continue
+            time.sleep(0.5)
+            if time.time() - last_keepalive > keepalive_s:
+                yield _sse_frame({"keepalive": True})
+                last_keepalive = time.time()
+    finally:
+        f.close()
+
+
 @app.get("/agent/log/stream")
 def agent_log_stream(authorization: Optional[str] = Header(default=None)) -> StreamingResponse:
     """SSE tail -f of the agent log; bearer-only (proxied through the manager)."""
@@ -2930,24 +3013,7 @@ def agent_log_stream(authorization: Optional[str] = Header(default=None)) -> Str
 
     def generate() -> Iterator[bytes]:
         try:
-            with open(path, "rb") as f:
-                f.seek(0, os.SEEK_END)
-                buf = b""
-                last_keepalive = time.time()
-                while True:
-                    chunk = f.read(65536)
-                    if chunk:
-                        buf += chunk
-                        while b"\n" in buf:
-                            raw, buf = buf.split(b"\n", 1)
-                            line = raw.decode("utf-8", errors="replace").rstrip()
-                            yield f"data: {json.dumps({'line': line})}\n\n".encode()
-                        last_keepalive = time.time()
-                        continue
-                    time.sleep(0.5)
-                    if time.time() - last_keepalive > 15:
-                        yield b'data: {"keepalive": true}\n\n'
-                        last_keepalive = time.time()
+            yield from _tail_log_lines(path)
         except FileNotFoundError:
             yield f"data: {json.dumps({'error': f'log file not found at {path}'})}\n\n".encode()
         except Exception as e:
@@ -3046,16 +3112,25 @@ def _schedule_self_restart(delay_s: float = 1.5) -> None:
     threading.Thread(target=_do_exit, daemon=True).start()
 
 
-def _frozen_self_update_response(asset: str) -> StreamingResponse:
-    """Frozen-binary self-update: download release asset, verify, swap, restart."""
-    fsu = frozen_self_update
-    version_before = VERSION
-
+def _claim_self_update() -> None:
+    """Mark a self-update in flight; 409 if one already is."""
     with _runtime_lock:
         if _state.get("self_update_running"):
             raise HTTPException(status_code=409,
                                 detail="a self-update is already in progress")
         _state["self_update_running"] = True
+
+
+def _release_self_update() -> None:
+    with _runtime_lock:
+        _state.pop("self_update_running", None)
+
+
+def _frozen_self_update_response(asset: str) -> StreamingResponse:
+    """Frozen-binary self-update: download release asset, verify, swap, restart.
+    Caller holds the self-update claim; released when the stream ends."""
+    fsu = frozen_self_update
+    version_before = VERSION
 
     def _fail(msg: str) -> bytes:
         logger.warning("frozen self-update failed: %s", msg)
@@ -3148,11 +3223,10 @@ def _frozen_self_update_response(asset: str) -> StreamingResponse:
                                      "restart pending — the running version is confirmed "
                                      "by the next heartbeat"})
         finally:
-            with _runtime_lock:
-                _state.pop("self_update_running", None)
+            _release_self_update()
 
     return StreamingResponse(
-        _gen(),
+        stream_pool.guarded_async(_gen(), pooled=False),
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
@@ -3176,6 +3250,7 @@ def agent_self_update(authorization: Optional[str] = Header(default=None)) -> St
                        f"{platform.system()}/{platform.machine()} — replace the "
                        "binary manually from the GitHub Release assets",
             )
+        _claim_self_update()
         return _frozen_self_update_response(asset)
 
     if not CONFIG.LLAMA_ENABLED and not CONFIG.LMS_ENABLED and CONFIG.AGENT_ROLE == "system_only":
@@ -3197,8 +3272,15 @@ def agent_self_update(authorization: Optional[str] = Header(default=None)) -> St
     version_before = VERSION
 
     _sse_event = _sse_frame
+    _claim_self_update()
 
     def _gen() -> Iterator[bytes]:
+        try:
+            yield from _run()
+        finally:
+            _release_self_update()
+
+    def _run() -> Iterator[bytes]:
         import tarfile, shutil
 
         # Wipe in case a prior --update aborted and left stale contents.
@@ -3352,7 +3434,7 @@ def agent_self_update(authorization: Optional[str] = Header(default=None)) -> St
         })
 
     return StreamingResponse(
-        _gen(),
+        stream_pool.guarded_async(_gen(), pooled=False),
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
@@ -3370,7 +3452,7 @@ async def agent_collection(
 
 
 @app.get("/metrics")
-async def metrics(authorization: Optional[str] = Header(default=None)) -> dict[str, Any]:
+def metrics(authorization: Optional[str] = Header(default=None)) -> dict[str, Any]:
     _check_bearer(authorization)
     return collect_system_metrics()
 

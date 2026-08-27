@@ -74,9 +74,9 @@ class StreamPool:
 POOL = StreamPool()
 
 
-async def guarded_async(sync_gen):
+async def guarded_async(sync_gen, pooled: bool = True):
     """Async wrapper that drains a sync SSE generator and frees the slot in an
-    async finally. Starlette delivers disconnect-cancel into a native async
+    async finally (`pooled=False`: no slot to free, just close the generator). Starlette delivers disconnect-cancel into a native async
     generator, so this finally runs deterministically — unlike a sync-generator
     finally wrapped by iterate_in_threadpool, which only runs at cyclic GC and
     leaks the slot on disconnect. Closes the inner generator so its own finally
@@ -98,6 +98,7 @@ async def guarded_async(sync_gen):
                 break
             yield chunk
     finally:
-        POOL.release()
+        if pooled:
+            POOL.release()
         with best_effort("stream pool: close sync generator", log=log):
             sync_gen.close()
