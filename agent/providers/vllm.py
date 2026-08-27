@@ -237,7 +237,7 @@ def vllm_log_tail(authorization: Optional[str] = Header(default=None)) -> dict[s
 
 
 def _vllm_log_streamer() -> None:
-    """journalctl -f → _log_state.queue; evicts oldest when the queue is full."""
+    """journalctl -f → subscribers; each queue evicts oldest when full."""
     _log_state.pump(
         ["journalctl", "-u", _require_ctx().config.VLLM_SYSTEMD_UNIT,
          "-n", "100", "-f", "-o", "cat"])
@@ -250,8 +250,7 @@ def vllm_log_stream(
     """SSE stream of vLLM journal lines (bearer header OR ?token= stream auth)."""
     _require_ctx().check_stream_auth(authorization, token, "/vllm/log/stream")
     _vllm_check_enabled()
-    _log_state.ensure_started(_vllm_log_streamer)
-    return _log_state.sse_response()
+    return _log_state.sse_response(_vllm_log_streamer)
 
 
 # ── Models ─────────────────────────────────────────────────────────────

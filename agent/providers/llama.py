@@ -1257,9 +1257,9 @@ def _llama_queue_command(cmd: list, stdin_input: "Optional[bytes]" = None,
 
 
 def _llama_log_streamer() -> None:
-    """tail -F llama-server.log → _log_state.queue, dropping idle/noisy lines."""
+    """tail -F llama-server.log from now → subscribers, dropping idle/noisy lines."""
     _log_state.pump(
-        ["tail", "-n", "100", "-F", _require_ctx().config.LLAMA_LOG_FILE],
+        ["tail", "-n", "0", "-F", _require_ctx().config.LLAMA_LOG_FILE],
         should_keep=_llama_log_should_keep,
     )
 
@@ -1436,8 +1436,7 @@ def llama_log_stream(
     """
     _require_ctx().check_stream_auth(authorization, token, "/llama/log/stream")
     _llama_check_enabled()
-    _log_state.ensure_started(_llama_log_streamer)
-    return _log_state.sse_response()
+    return _log_state.sse_response(_llama_log_streamer)
 
 
 def llama_models_endpoint(authorization: Optional[str] = Header(default=None)) -> dict[str, Any]:

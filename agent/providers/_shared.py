@@ -11,6 +11,7 @@ import re
 import signal
 import subprocess
 import threading
+import time
 from pathlib import Path
 from typing import Any, Iterator, Optional
 
@@ -191,16 +192,61 @@ def svcconfig_apply(wrapper: str, svc_file_path: str, tokens: "list[str]",
 
 
 class LogStream:
-    """Popen tail → bounded queue with oldest-line eviction, plus the
-    shared SSE endpoint scaffolding (drain-on-start + keepalive)."""
+    """Popen tail → per-subscriber bounded queues (oldest-line eviction),
+    plus the shared SSE endpoint scaffolding (keepalive)."""
+
+    SUB_STALE_S = 60.0
+
+    class _Sub:
+        __slots__ = ("queue", "seen")
+
+        def __init__(self, maxsize: int) -> None:
+            self.queue: "_queue_lib.Queue[str]" = _queue_lib.Queue(maxsize=maxsize)
+            self.seen = time.monotonic()
 
     def __init__(self, maxsize: int = 4096):
-        self.queue: "_queue_lib.Queue[str]" = _queue_lib.Queue(maxsize=maxsize)
+        self.maxsize = maxsize
         self.lock = threading.Lock()
         self.streaming = False
+        self._subs: "list[LogStream._Sub]" = []
+
+    def subscribe(self) -> "LogStream._Sub":
+        sub = LogStream._Sub(self.maxsize)
+        with self.lock:
+            self._subs.append(sub)
+        return sub
+
+    def unsubscribe(self, sub: "LogStream._Sub") -> None:
+        with self.lock:
+            if sub in self._subs:
+                self._subs.remove(sub)
+
+    @property
+    def subscriber_count(self) -> int:
+        with self.lock:
+            return len(self._subs)
+
+    def publish(self, line: str) -> None:
+        """Deliver one line to every live subscriber; lines with no subscriber are dropped."""
+        now = time.monotonic()
+        with self.lock:
+            self._subs = [s for s in self._subs if now - s.seen <= self.SUB_STALE_S]
+            subs = list(self._subs)
+        for sub in subs:
+            try:
+                sub.queue.put_nowait(line)
+            except _queue_lib.Full:
+                try:
+                    sub.queue.get_nowait()
+                except _queue_lib.Empty:
+                    pass
+                try:
+                    sub.queue.put_nowait(line)
+                except _queue_lib.Full:
+                    pass
 
     def pump(self, argv: "list[str]", should_keep=None) -> None:
-        """Run argv, push kept stdout lines into the queue until stopped."""
+        """Run argv, publish kept stdout lines until stopped."""
         proc = None
         try:
             proc = subprocess.Popen(
@@ -214,24 +260,9 @@ class LogStream:
                 line = raw.decode("utf-8", errors="replace").rstrip()
                 if not line or (should_keep is not None and not should_keep(line)):
                     continue
-                try:
-                    self.queue.put(line, timeout=1)
-                except _queue_lib.Full:
-                    # queue full: evict oldest, then re-enqueue newest
-                    try:
-                        self.queue.get_nowait()
-                    except _queue_lib.Empty:
-                        pass
-                    try:
-                        self.queue.put_nowait(line)
-                    except _queue_lib.Full:
-                        pass
+                self.publish(line)
         except Exception as e:
-            # best-effort: surface the error line if there is room
-            try:
-                self.queue.put_nowait(f"[log stream error: {e}]")
-            except _queue_lib.Full:
-                pass
+            self.publish(f"[log stream error: {e}]")
         finally:
             if proc is not None:
                 try:
@@ -249,29 +280,33 @@ class LogStream:
                 self.streaming = False
 
     def ensure_started(self, streamer) -> None:
-        """Start the streamer thread once; drains stale lines on (re)start."""
+        """Start the streamer thread once."""
         with self.lock:
             if self.streaming:
                 return
             self.streaming = True
-            while not self.queue.empty():
-                try:
-                    self.queue.get_nowait()
-                except Exception:
-                    break
             threading.Thread(target=streamer, daemon=True).start()
 
-    def sse_response(self) -> StreamingResponse:
-        """Stream-pool-guarded SSE response draining the queue."""
-        def generate() -> "Iterator[bytes]":
+    def _sse_iter(self, sub: "LogStream._Sub", idle_timeout: float = 15.0) -> "Iterator[bytes]":
+        """SSE frames from one subscription; unsubscribes when closed."""
+        try:
             while True:
+                sub.seen = time.monotonic()
                 try:
-                    line = self.queue.get(timeout=15)
+                    line = sub.queue.get(timeout=idle_timeout)
                     yield f"data: {json.dumps({'line': line})}\n\n".encode()
                 except _queue_lib.Empty:
                     yield b'data: {"keepalive": true}\n\n'
+        finally:
+            self.unsubscribe(sub)
 
-        return pool_guarded_sse(generate())
+    def sse_response(self, streamer=None) -> StreamingResponse:
+        """Stream-pool-guarded SSE response fed by a fresh subscription;
+        subscribes before starting `streamer` so its first lines aren't missed."""
+        sub = self.subscribe()
+        if streamer is not None:
+            self.ensure_started(streamer)
+        return pool_guarded_sse(self._sse_iter(sub))
 
 
 class JobRunner:

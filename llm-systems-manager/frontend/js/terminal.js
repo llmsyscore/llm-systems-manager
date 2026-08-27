@@ -413,6 +413,37 @@ function toggleServerLog() {
 let _logRetryTimer = null;
 let _logStreamGen  = 0;   // bumped by stopLogStream — lets in-flight starts cancel themselves
 let _logRetryDelay = 5000; // exponential backoff; reset on a healthy message
+const _LOG_BOX_MAX_LINES = 4000;
+let _logPending = [];      // lines received since the last flush
+let _logFlushReq = 0;      // pending requestAnimationFrame handle
+
+// Keeps only the last `max` lines of a newline-terminated text.
+function _trimLogLines(text, max) {
+  let pos = text.length, seen = 0;
+  while (seen <= max) {
+    pos = text.lastIndexOf('\n', pos - 1);
+    if (pos < 0) return text;
+    seen++;
+  }
+  return text.slice(pos + 1);
+}
+
+// One DOM write + one scroll per frame for all lines queued since the last flush.
+function _logFlush(box) {
+  _logFlushReq = 0;
+  if (!_logPending.length) return;
+  const lines = _logPending;
+  _logPending = [];
+  box.textContent = _trimLogLines(box.textContent + lines.join('\n') + '\n', _LOG_BOX_MAX_LINES);
+  box.scrollTop = box.scrollHeight;
+}
+
+function _logAppend(box, line) {
+  _logPending.push(line);
+  if (_logFlushReq) return;
+  const raf = window.requestAnimationFrame || (cb => setTimeout(cb, 16));
+  _logFlushReq = raf(() => _logFlush(box)) || 1;
+}
 
 async function startLogStream() {
   if (_logEventSrc) return; // already streaming
@@ -448,8 +479,7 @@ async function startLogStream() {
     const msg = JSON.parse(e.data);
     _logRetryDelay = 5000;   // healthy stream — reset backoff
     if (msg.keepalive) return;
-    box.textContent += msg.line + '\n';
-    box.scrollTop = box.scrollHeight;
+    _logAppend(box, msg.line);
   };
   _logEventSrc.onerror = () => {
     if (_logEventSrc) { _logEventSrc.close(); _logEventSrc = null; }
@@ -492,6 +522,7 @@ function stopLogStream() {
   if (_logEventSrc) { _logEventSrc.close(); _logEventSrc = null; }
   if (_logRetryTimer) { clearTimeout(_logRetryTimer); _logRetryTimer = null; }
   _logRetryDelay = 5000;
+  _logPending = [];
   // Invalidate any in-flight startLogStream so it doesn't install a fresh
   // EventSource and resume appending lines after we've cleared the box.
   _logStreamGen++;
