@@ -70,6 +70,7 @@ from __future__ import annotations
 import functools
 import hashlib
 import hmac
+import secrets
 import json
 import math
 import os
@@ -157,7 +158,7 @@ def _local_hostname() -> str:
 # banner reads it. Bump suffix (-1, -2, …) for same-day iterations; roll
 # the date for a new day's first change.
 # ---------------------------------------------------------------------------
-__version__ = "v2026.08.27-2"
+__version__ = "v2026.08.27-3"
 
 # Wall-clock at first import (Cheroot main process); the shutdown banner
 # reads it for the uptime line.
@@ -926,8 +927,18 @@ _history_pool = _HistoryExecutor(max_workers=min(12, len(_HISTORY_LEGACY_FIELD_M
 # concurrent UI clients. A short TTL on the merged response collapses
 # repeat clients onto one upstream call.
 _HISTORY_LONG_TTL_S: float = 30.0
+_HISTORY_LONG_MAX_ENTRIES = 16
 _history_long_cache: dict[tuple[int, int], tuple[float, list[dict]]] = {}
 _history_long_lock = _threading.Lock()
+
+
+def _history_long_put(key: tuple[int, int], rows: list[dict], now_ts: float) -> None:
+    """Store one long-history page; evicts the oldest entries past the cap."""
+    with _history_long_lock:
+        _history_long_cache[key] = (now_ts, rows)
+        while len(_history_long_cache) > _HISTORY_LONG_MAX_ENTRIES:
+            oldest = min(_history_long_cache.items(), key=lambda kv: kv[1][0])[0]
+            _history_long_cache.pop(oldest, None)
 
 # Scoped history cache for ?agent= / ?fleet= requests. Keyed by
 # (scope, since, limit) so concurrent pickers of the same agent/fleet collapse
@@ -1332,8 +1343,7 @@ def get_history():
 
         if cached is None:
             rows = _build_history_rows(alarm_since, alarm_limit)
-            with _history_long_lock:
-                _history_long_cache[cache_key] = (now_ts, rows)
+            _history_long_put(cache_key, rows, now_ts)
 
         if limit and len(rows) > limit:
             rows = rows[-limit:]
@@ -2596,8 +2606,17 @@ def load_layout() -> dict:
     except Exception:
         return {}
 
+_LAYOUT_MAX_BYTES = 262_144
+
+
 def save_layout(data: dict):
-    LAYOUT_FILE.write_text(json.dumps(data))
+    """Persist the dashboard layout; rejects non-object or oversized payloads."""
+    if not isinstance(data, dict):
+        raise ValueError("layout must be a JSON object")
+    encoded = json.dumps(data)
+    if len(encoded) > _LAYOUT_MAX_BYTES:
+        raise ValueError(f"layout exceeds {_LAYOUT_MAX_BYTES} bytes")
+    LAYOUT_FILE.write_text(encoded)
 
 @app.route("/api/layout", methods=["GET"])
 def get_layout():
@@ -2864,11 +2883,11 @@ def admin_audit_log():
         return deny
     try:
         limit = min(500, max(1, int(flask_request.args.get("limit", 100))))
-    except ValueError:
+    except (ValueError, TypeError):
         limit = 100
     try:
         offset = max(0, int(flask_request.args.get("offset", 0)))
-    except ValueError:
+    except (ValueError, TypeError):
         offset = 0
     conn = get_db()
     total = conn.execute("SELECT COUNT(*) FROM audit_log").fetchone()[0]
@@ -5450,29 +5469,57 @@ def _ws_ticket_ttl() -> int:
     return int(getattr(settings.manager.security, "stream_token_ttl_s", 300) or 300)
 
 
+# Nonces of tickets already spent on a handshake, nonce -> expiry.
+_ws_tickets_spent: dict[str, int] = {}
+_ws_tickets_lock = _threading.Lock()
+
+
 def _issue_ws_ticket(ttl: "int | None" = None) -> str:
-    """Short-lived "<expiry>.<sig>" ticket authorizing one bridge handshake."""
+    """Short-lived "<expiry>.<nonce>.<sig>" ticket authorizing one bridge handshake."""
     expiry = int(time.time()) + (ttl if ttl is not None else _ws_ticket_ttl())
-    msg = f"{_WS_TICKET_SUBJECT}|{expiry}".encode()
+    nonce = secrets.token_hex(8)
+    msg = f"{_WS_TICKET_SUBJECT}|{expiry}|{nonce}".encode()
     sig = hmac.new(_manager_secret(), msg, hashlib.sha256).hexdigest()
-    return f"{expiry}.{sig}"
+    return f"{expiry}.{nonce}.{sig}"
+
+
+def _parse_ws_ticket(ticket: str) -> "tuple[int, str] | None":
+    """(expiry, nonce) for a well-formed, unexpired, correctly signed ticket; else None."""
+    if not ticket or ticket.count(".") != 2:
+        return None
+    try:
+        expiry_str, nonce, sig = ticket.split(".")
+        expiry = int(expiry_str)
+    except (ValueError, TypeError):
+        return None
+    if expiry < time.time():
+        return None
+    msg = f"{_WS_TICKET_SUBJECT}|{expiry}|{nonce}".encode()
+    expected = hmac.new(_manager_secret(), msg, hashlib.sha256).hexdigest()
+    return (expiry, nonce) if hmac.compare_digest(expected, sig) else None
 
 
 def _verify_ws_ticket(ticket: str) -> bool:
     """Constant-time verify of a ticket from _issue_ws_ticket; False if
-    malformed, expired, or signed with a different secret."""
-    if not ticket or "." not in ticket:
+    malformed, expired, or signed with a different secret. Does not spend it."""
+    return _parse_ws_ticket(ticket) is not None
+
+
+def _consume_ws_ticket(ticket: str) -> bool:
+    """Verify AND spend a ticket: a nonce seen before within its TTL is refused."""
+    parsed = _parse_ws_ticket(ticket)
+    if parsed is None:
         return False
-    try:
-        expiry_str, sig = ticket.split(".", 1)
-        expiry = int(expiry_str)
-    except (ValueError, TypeError):
-        return False
-    if expiry < time.time():
-        return False
-    msg = f"{_WS_TICKET_SUBJECT}|{expiry}".encode()
-    expected = hmac.new(_manager_secret(), msg, hashlib.sha256).hexdigest()
-    return hmac.compare_digest(expected, sig)
+    expiry, nonce = parsed
+    now = int(time.time())
+    with _ws_tickets_lock:
+        for n, exp in list(_ws_tickets_spent.items()):
+            if exp < now:
+                _ws_tickets_spent.pop(n, None)
+        if nonce in _ws_tickets_spent:
+            return False
+        _ws_tickets_spent[nonce] = expiry
+    return True
 
 
 def ws_handshake_denial(req_target: str) -> "tuple[int, str] | None":
@@ -5482,7 +5529,7 @@ def ws_handshake_denial(req_target: str) -> "tuple[int, str] | None":
     parts = urlsplit(req_target or "/")
     if not parts.path.startswith("/ws/alarm"):
         return (1008, "unknown path")
-    if not _verify_ws_ticket((parse_qs(parts.query).get("ticket") or [""])[0]):
+    if not _consume_ws_ticket((parse_qs(parts.query).get("ticket") or [""])[0]):
         return (1008, "unauthorized")
     return None
 
