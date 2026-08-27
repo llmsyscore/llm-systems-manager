@@ -237,13 +237,13 @@ class LogStream:
                 sub.queue.put_nowait(line)
             except _queue_lib.Full:
                 try:
-                    sub.queue.get_nowait()
+                    sub.queue.get_nowait()  # evict the oldest line
                 except _queue_lib.Empty:
-                    pass
+                    pass  # drained concurrently; the put below has room
                 try:
                     sub.queue.put_nowait(line)
                 except _queue_lib.Full:
-                    pass
+                    pass  # refilled concurrently; drop this line
 
     def pump(self, argv: "list[str]", should_keep=None) -> None:
         """Run argv, publish kept stdout lines until stopped."""
