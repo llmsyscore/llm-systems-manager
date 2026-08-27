@@ -18,9 +18,10 @@ class TestTicketRoundTrip:
     def test_issued_ticket_verifies(self):
         assert M._verify_ws_ticket(M._issue_ws_ticket()) is True
 
-    def test_shape_is_expiry_dot_sig(self):
-        expiry_str, sig = M._issue_ws_ticket().split(".", 1)
+    def test_shape_is_expiry_nonce_sig(self):
+        expiry_str, nonce, sig = M._issue_ws_ticket().split(".")
         assert int(expiry_str) > time.time()
+        assert len(nonce) == 16  # 8 random bytes, hex
         assert len(sig) == 64  # sha256 hexdigest
 
     def test_expiry_honours_requested_ttl(self):

@@ -188,9 +188,10 @@ requires a short-lived ticket on every handshake.** The browser first calls
 you have configured — and receives an HMAC-signed ticket valid for `[manager.security]
 stream_token_ttl_s` (300 seconds by default). It then connects to
 `ws://<host>:5444/ws/alarm?ticket=…`. The bridge verifies the signature and expiry before opening
-anything upstream; a handshake with a missing, expired, or tampered ticket is closed with code
-`1008` and never reaches the Alarm Engine. A fresh ticket is fetched on every connect and
-reconnect, so a captured one stops working within five minutes.
+anything upstream; a handshake with a missing, expired, tampered, or already-used ticket is closed
+with code `1008` and never reaches the Alarm Engine. Each ticket carries a signed random nonce and is
+spent on its first accepted handshake, so a captured ticket cannot be replayed within its TTL. A fresh ticket is fetched on every connect and
+reconnect.
 
 The plaintext part is deliberate: the Manager's certificate is signed by the internal CA, so
 terminating `wss://` there would just move the trust problem into the browser, which is the thing
