@@ -6,9 +6,16 @@ function adminStartAutoRefresh() {
   // (requires 2 consecutive failed alarm-engine probes before flipping to
   // DOWN). Slower polling reduces the chance of a transient slow probe
   // landing on the dashboard while still surfacing real outages quickly.
-  _adminRefreshTimer = setInterval(() => {
-    if (_activeTab === 'admin') { adminLoadAgents(); adminLoadHealth(); }
-  }, 20000);
+  _adminRefreshTimer = setInterval(_adminRefreshTick, 20000);
+}
+
+// One auto-refresh tick; the audit page reloads in place (same offset)
+// only while its sub-tab is visible and no column sort is active.
+function _adminRefreshTick() {
+  if (_activeTab !== 'admin') return;
+  adminLoadAgents(); adminLoadHealth();
+  if (typeof _subTabState !== 'undefined' && _subTabState.admin === 'audit'
+      && !_adminAuditSort.key) adminAuditLoad();
 }
 function adminStopAutoRefresh() {
   if (_adminRefreshTimer) {
@@ -2508,6 +2515,21 @@ function _adminAuditRow(e) {
 // first); sorting applies within the currently loaded page only.
 let _adminAuditSort = { key: null, dir: 1 };
 let _adminAuditEntries = [];
+let _adminAuditSeq = 0;
+
+// Per-key sort values: ts as epoch ms, IPv4 zero-padded per octet, else string.
+const _ADMIN_AUDIT_SORT_VALS = {
+  ts: e => { const t = Date.parse(e.ts); return Number.isNaN(t) ? -Infinity : t; },
+  ip: e => String(e.ip || '').replace(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/,
+    (_, a, b, c, d) => [a, b, c, d].map(o => o.padStart(3, '0')).join('.')),
+};
+function _adminAuditCmp(key, dir) {
+  const val = _ADMIN_AUDIT_SORT_VALS[key] || (e => String(e[key] || ''));
+  return (a, b) => {
+    const x = val(a), y = val(b);
+    return dir * (typeof x === 'number' ? x - y : x.localeCompare(y));
+  };
+}
 
 function _adminRenderAuditTable() {
   const tbody = document.getElementById('adminAuditTbody');
@@ -2519,10 +2541,7 @@ function _adminRenderAuditTable() {
     return;
   }
   let rows = _adminAuditEntries;
-  if (key) {
-    rows = rows.slice().sort((a, b) =>
-      dir * String(a[key] || '').localeCompare(String(b[key] || '')));
-  }
+  if (key) rows = rows.slice().sort(_adminAuditCmp(key, dir));
   tbody.innerHTML = rows.map(_adminAuditRow).join('');
 }
 
@@ -2536,38 +2555,53 @@ function adminSortAudit(th) {
   _adminRenderAuditTable();
 }
 
+// Pager text + Newer/Older state for the current offset; empty text when nothing loaded.
+function _adminAuditPager(shown) {
+  const info = document.getElementById('adminAuditPageInfo');
+  if (info) info.textContent = shown
+    ? `${_adminAuditOffset + 1}–${Math.min(_adminAuditOffset + shown, _adminAuditTotal)} of ${_adminAuditTotal}`
+    : '';
+  const newer = document.getElementById('adminAuditNewer');
+  const older = document.getElementById('adminAuditOlder');
+  if (newer) newer.disabled = _adminAuditOffset <= 0;
+  if (older) older.disabled = _adminAuditOffset + _ADMIN_AUDIT_PAGE >= _adminAuditTotal;
+}
+
+// offset omitted = reload the current page. Responses that resolve after a
+// newer request started are dropped (seq guard).
 async function adminAuditLoad(offset) {
   if (offset != null) _adminAuditOffset = Math.max(0, offset);
+  const seq = ++_adminAuditSeq;
+  const reqOffset = _adminAuditOffset;
   const tbody = document.getElementById('adminAuditTbody');
   const status = document.getElementById('adminAuditStatus');
   try {
-    const r = await fetch(`/api/admin/audit-log?limit=${_ADMIN_AUDIT_PAGE}&offset=${_adminAuditOffset}`);
+    const r = await fetch(`/api/admin/audit-log?limit=${_ADMIN_AUDIT_PAGE}&offset=${reqOffset}`);
     const d = await r.json();
+    if (seq !== _adminAuditSeq) return;
     if (!r.ok || !d.ok) throw new Error(d.error || ('HTTP ' + r.status));
     _adminAuditTotal = d.total || 0;
     const entries = d.entries || [];
     _adminAuditEntries = entries;
     _adminRenderAuditTable();
     if (status) status.textContent = _adminAuditTotal + ' entries · updated ' + new Date().toLocaleTimeString();
-    const info = document.getElementById('adminAuditPageInfo');
-    if (info) info.textContent = _adminAuditTotal
-      ? `${_adminAuditOffset + 1}–${Math.min(_adminAuditOffset + entries.length, _adminAuditTotal)} of ${_adminAuditTotal}`
-      : '';
-    const newer = document.getElementById('adminAuditNewer');
-    const older = document.getElementById('adminAuditOlder');
-    if (newer) newer.disabled = _adminAuditOffset <= 0;
-    if (older) older.disabled = _adminAuditOffset + _ADMIN_AUDIT_PAGE >= _adminAuditTotal;
+    _adminAuditPager(entries.length);
   } catch (e) {
+    if (seq !== _adminAuditSeq) return;
     // A failed load empties the cached page; sort re-renders read this.
     _adminAuditEntries = [];
+    _adminAuditTotal = 0;
     if (status) status.textContent = 'load failed: ' + e.message;
     if (tbody) tbody.innerHTML = '<tr><td colspan="6" style="padding:14px;color:#7e8a9c;text-align:center;">Failed to load audit log.</td></tr>';
+    _adminAuditPager(0);
   }
 }
 
+// Page navigation returns to server order (#655); sort is per loaded page.
 function adminAuditPage(dir) {
   const next = _adminAuditOffset + dir * _ADMIN_AUDIT_PAGE;
   if (next < 0 || next >= Math.max(_adminAuditTotal, 1)) return;
+  _adminAuditSort = { key: null, dir: 1 };
   adminAuditLoad(next);
 }
 
