@@ -14,6 +14,7 @@ from .._time import now_utc
 from pathlib import Path
 from typing import Any, Optional
 
+from ._sqlite_stats import sqlite_stats
 from ._serde import (
     RLock,
     enum_value as _enum_value,
@@ -135,6 +136,13 @@ class AeSettingsDB:
         with self._lock:
             with best_effort("close ae_settings_db connection", log=logger):
                 self._conn.close()
+
+    def stats(self) -> dict:
+        """Size / pragma / row-count snapshot, taken under this DB's lock."""
+        with self._lock:
+            return sqlite_stats(str(self.path), self._conn,
+                {"rules": "rules", "channels": "channels",
+                "configs": "configs", "deliveries": "deliveries"})
 
     # ── Rules ────────────────────────────────────────────────────────────
 

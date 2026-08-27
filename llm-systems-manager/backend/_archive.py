@@ -137,6 +137,25 @@ def clear_sqlite_sidecars(db_path: str) -> None:
             pass
 
 
+def prune_preimport_backups(dest: str, keep: int = 5) -> list[str]:
+    """Delete all but the newest `keep` `<dest>.preimport.<ts>.bak` siblings.
+    Returns the removed paths; the timestamp sorts lexically."""
+    prefix = dest + ".preimport."
+    d = os.path.dirname(dest) or "."
+    base = os.path.basename(prefix)
+    baks = sorted(
+        os.path.join(d, n) for n in os.listdir(d)
+        if n.startswith(base) and n.endswith(".bak"))
+    removed: list[str] = []
+    for p in baks[:-keep] if keep > 0 else baks:
+        try:
+            os.unlink(p)
+            removed.append(p)
+        except FileNotFoundError:
+            pass
+    return removed
+
+
 def sqlite_snapshot(src_path: str) -> bytes:
     """Online-backup a SQLite DB to a bytes blob via the sqlite3
     backup API into an in-memory destination, then serialize. WAL is

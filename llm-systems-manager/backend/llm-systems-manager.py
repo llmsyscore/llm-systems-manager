@@ -157,7 +157,7 @@ def _local_hostname() -> str:
 # banner reads it. Bump suffix (-1, -2, …) for same-day iterations; roll
 # the date for a new day's first change.
 # ---------------------------------------------------------------------------
-__version__ = "v2026.08.27-1"
+__version__ = "v2026.08.27-2"
 
 # Wall-clock at first import (Cheroot main process); the shutdown banner
 # reads it for the uptime line.
@@ -3982,6 +3982,8 @@ _MANAGER_EXPORT_FILES = [
     "data/model_profiles.json",
 ]
 _MANAGER_EXPORT_SQLITE = ["data/metrics.db"]
+# Newest pre-import backups kept per destination file.
+_PREIMPORT_KEEP = 5
 
 # Two-layer import model. The export bundles EVERYTHING (so a single archive
 # covers both use cases) but the import asks the operator which layers to
@@ -4165,6 +4167,7 @@ def _import_apply_manager(files: dict[str, bytes]) -> dict[str, Any]:
             shutil.copy2(dest, bak)
             os.chmod(bak, 0o600)
             backups.append(bak)
+            _archive.prune_preimport_backups(str(dest), keep=_PREIMPORT_KEEP)
         tmp = f"{dest}.{ts}.tmp"
         with open(tmp, "wb") as f:
             f.write(data)
