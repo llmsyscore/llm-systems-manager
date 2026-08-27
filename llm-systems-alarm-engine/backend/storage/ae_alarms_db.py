@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 from ..models.alert import AlertStatus
+from ._sqlite_stats import sqlite_stats
 from ._serde import (
     RLock,
     enum_value as _enum_value,
@@ -179,6 +180,12 @@ class AeAlarmsDB:
         with self._lock:
             with best_effort("close ae_alarms_db connection", log=logger):
                 self._conn.close()
+
+    def stats(self) -> dict:
+        """Size / pragma / row-count snapshot, taken under this DB's lock."""
+        with self._lock:
+            return sqlite_stats(str(self.path), self._conn,
+                {"alerts": "alerts", "alert_history": "alert_history"})
 
     def _archive_non_live(self, alert_id: Optional[str] = None) -> None:
         """Move non-live alert rows into alert_history, one alert or all

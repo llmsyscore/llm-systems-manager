@@ -67,7 +67,7 @@ from .storage.influxdb_client import InfluxDBClient
 # (-1, -2, …) for same-day iterations; roll the date for a new day's first
 # change.
 # ---------------------------------------------------------------------------
-__version__ = "v2026.08.25-1"
+__version__ = "v2026.08.27-1"
 from .storage import influx_monitor as _influx_monitor
 from .models.alarm_rule import (
     AlarmRuleCreate,
@@ -885,61 +885,32 @@ async def health_check() -> dict:
 
 _SQLITE_STATS_CACHE: dict = {"at": 0.0, "payload": {}}
 _SQLITE_STATS_TTL_S = 10.0
+# Set by import-apply: the open connections still serve the pre-import DB
+# until the engine restarts, so counts/pages lag the on-disk file sizes.
+_SQLITE_STATS_STALE_UNTIL_RESTART = False
 
 
-def _scalar(conn, sql: str):
-    try:
-        r = conn.execute(sql).fetchone()
-        return r[0] if r else None
-    except Exception:
-        return None
-
-
-def _sqlite_common_stats(path: str, conn) -> dict:
-    out: dict = {"path": path}
-    try:
-        out["size_bytes"] = int(os.stat(path).st_size)
-    except Exception:
-        out["size_bytes"] = None
-    for suffix, key in (("-wal", "wal_size_bytes"), ("-shm", "shm_size_bytes")):
-        try:
-            out[key] = int(os.stat(path + suffix).st_size)
-        except Exception:
-            out[key] = None
-
-    out["page_size"] = _scalar(conn, "PRAGMA page_size")
-    out["page_count"] = _scalar(conn, "PRAGMA page_count")
-    out["journal_mode"] = _scalar(conn, "PRAGMA journal_mode")
-    out["cache_size"] = _scalar(conn, "PRAGMA cache_size")
-
-    t0 = time.perf_counter()
-    _scalar(conn, "SELECT 1")
-    out["query_ms"] = round((time.perf_counter() - t0) * 1000, 3)
-    return out
+def _sqlite_stats_invalidate(stale_until_restart: bool = False) -> None:
+    global _SQLITE_STATS_STALE_UNTIL_RESTART
+    _SQLITE_STATS_CACHE["at"] = 0.0
+    _SQLITE_STATS_CACHE["payload"] = {}
+    if stale_until_restart:
+        _SQLITE_STATS_STALE_UNTIL_RESTART = True
 
 
 def _collect_sqlite_stats() -> dict:
     payload: dict = {}
     if ae_alarms_db is not None:
-        with ae_alarms_db._lock:
-            stats = _sqlite_common_stats(str(ae_alarms_db.path), ae_alarms_db._conn)
-            stats["alerts"] = _scalar(ae_alarms_db._conn, "SELECT COUNT(*) FROM alerts")
-            stats["alert_history"] = _scalar(ae_alarms_db._conn, "SELECT COUNT(*) FROM alert_history")
-        payload["alarms_db"] = stats
+        payload["alarms_db"] = ae_alarms_db.stats()
     if ae_settings_db is not None:
-        with ae_settings_db._lock:
-            c = ae_settings_db._conn
-            stats = _sqlite_common_stats(str(ae_settings_db.path), c)
-            stats["rules"]      = _scalar(c, "SELECT COUNT(*) FROM rules")
-            stats["channels"]   = _scalar(c, "SELECT COUNT(*) FROM channels")
-            stats["configs"]    = _scalar(c, "SELECT COUNT(*) FROM configs")
-            stats["deliveries"] = _scalar(c, "SELECT COUNT(*) FROM deliveries")
-        payload["settings_db"] = stats
+        payload["settings_db"] = ae_settings_db.stats()
     # Don't expose absolute filesystem paths to the browser (security #124);
     # the dashboard card only uses sizes/counts. Keep the filename for labeling.
     for v in payload.values():
         if isinstance(v, dict) and v.get("path"):
             v["db"] = os.path.basename(v.pop("path"))
+    if _SQLITE_STATS_STALE_UNTIL_RESTART:
+        payload["stale_until_restart"] = True
     return payload
 
 
@@ -1098,6 +1069,8 @@ def _ae_patch_toml_lines(toml_text: str, overrides: dict) -> tuple[str, list[str
 # stops firing. The import flow scans these for the operator and offers a
 # before→after remap applied to the DB bytes before they're written.
 _AE_RULES_DB = "data/ae_notif_rules.db"
+# Newest pre-import backups kept per destination file.
+_AE_PREIMPORT_KEEP = 5
 
 
 def _ae_scan_hosts(db_bytes: bytes) -> list[dict]:
@@ -1473,6 +1446,7 @@ async def ae_admin_import_apply(file: UploadFile = File(...),
             _sh.copy2(dest, bak)
             os.chmod(bak, 0o600)
             backups.append(bak)
+            _ae_archive.prune_preimport_backups(str(dest), keep=_AE_PREIMPORT_KEEP)
         tmp = f"{dest}.{ts}.tmp"
         with open(tmp, "wb") as f:
             f.write(data)
@@ -1485,6 +1459,7 @@ async def ae_admin_import_apply(file: UploadFile = File(...),
             _ae_archive.clear_sqlite_sidecars(str(dest))
         os.replace(tmp, str(dest))
         written.append(str(dest))
+    _sqlite_stats_invalidate(stale_until_restart=True)
     logger.warning("AE import applied: %d files, ts=%s, patched=%s, host_remap=%s",
                    len(written), ts, ",".join(patched_keys) or "none",
                    host_remap_applied)
@@ -1497,6 +1472,8 @@ async def ae_admin_import_apply(file: UploadFile = File(...),
 
 @app.get("/api/alarm/dbstats/sqlite")
 async def sqlite_dbstats() -> dict:
+    """Cached up to 10 s across callers; import-apply invalidates it and
+    flags `stale_until_restart` until the engine reopens its DBs."""
     now = time.time()
     if (now - _SQLITE_STATS_CACHE["at"]) < _SQLITE_STATS_TTL_S and _SQLITE_STATS_CACHE["payload"]:
         return _SQLITE_STATS_CACHE["payload"]
@@ -1616,6 +1593,15 @@ def _resolve_ae_path(p: str) -> Path:
     return resolved
 
 
+def _uvicorn_loop() -> str:
+    """Return "uvloop" when importable (uvicorn[standard] ships it off-Windows), else "asyncio"."""
+    import importlib.util
+    if importlib.util.find_spec("uvloop") is not None:
+        return "uvloop"
+    logger.warning("uvloop not installed; falling back to the asyncio event loop")
+    return "asyncio"
+
+
 def main() -> None:
     """Programmatic uvicorn launcher. Serves HTTPS when [alarm_engine].tls_enabled
     and the cert/key are present; otherwise plain HTTP. When TLS is enabled but
@@ -1651,7 +1637,7 @@ def main() -> None:
     uvicorn.run(
         app, host=host, port=port,
         log_level="warning",
-        access_log=False, loop="uvloop", http="httptools",
+        access_log=False, loop=_uvicorn_loop(), http="httptools",
         timeout_graceful_shutdown=10,
         timeout_keep_alive=75,
         **ssl_kwargs,
