@@ -18,11 +18,6 @@ function run(bootstrap) {
   return runHarness({ sources: [adminSrc], bootstrap: stub + '\n' + bootstrap, bodyHtml: auditTableHtml + pagerHtml });
 }
 
-const page = (offset, n, total) => ({
-  ok: true, total,
-  entries: Array.from({ length: n }, (_, i) => ({ ts: '2026-08-27T00:00:00+00:00', actor: `a${offset + i}`, action: 'x', outcome: 'ok', status: 200 })),
-});
-
 describe('admin audit log (#654–#658)', () => {
   it('#654: a slower older response never overwrites the page loaded after it', async () => {
     const boot = `
