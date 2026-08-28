@@ -166,3 +166,19 @@ def test_prod_clear_host_pins_no_write_when_nothing_stale(monkeypatch):
     monkeypatch.setattr(agent_registry, "save_agents", lambda d: saved.append(d))
     ap._prod_clear_host_pins("llama", "a" * 32, "m1")
     assert saved == []
+
+# ── #715: single-replica unload only clears a pin aimed at that host ──────
+
+def test_scale_down_single_replica_clears_pin_pointing_at_host():
+    log, deps = _deps()
+    deps["get_pin"] = lambda p, mdl: "a" * 32
+    a, entries = _act(kind="scale_down")
+    assert ap.make_executor(deps, entries)(a) is True
+    assert log["pin"] == [("llama", "m1", None)]
+
+def test_scale_down_single_replica_keeps_pin_aimed_elsewhere():
+    log, deps = _deps()
+    deps["get_pin"] = lambda p, mdl: "b" * 32
+    a, entries = _act(kind="scale_down")
+    assert ap.make_executor(deps, entries)(a) is True
+    assert ("llama", "/llama/unload") in log["proxy"] and log["pin"] == []

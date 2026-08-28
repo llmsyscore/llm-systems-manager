@@ -12,6 +12,8 @@ PLACEMENT_FRESH_S = 240
 VRAM_HEADROOM_MB = 1024
 # Providers whose load displaces the resident model (ProviderSpec.single_resident).
 SINGLE_RESIDENT_PROVIDERS = providers.single_resident_names()
+# Providers with an agent-side unload route (ProviderSpec.unloadable).
+UNLOADABLE_PROVIDERS = providers.unloadable_names()
 
 @dataclass(frozen=True)
 class Action:
@@ -165,6 +167,20 @@ def _fit_and_size(e, aid, a, free, free_ram, observed):
               budget.get(aid, 0) >= (size or 0) + VRAM_HEADROOM_MB
     return fit, size
 
+def _scale_down_target(e, placed, observed, placed_at, touched,
+                       last_action_ts, now) -> "str | None":
+    """LRU copy by placed_at, never the pinned host; on a tie the routed copy is
+    kept. None when the pick is touched or cooling down."""
+    cands = [aid for aid in placed if aid != e["placement"]]
+    if not cands:
+        return None
+    pak = placed_at.get(_key(e)) or {}
+    routed = ((observed.get("route_pins") or {}).get(e["provider"]) or {}).get(e["model"])
+    aid = min(cands, key=lambda x: (pak.get(x, 0.0), x == routed))
+    if aid in touched or now - last_action_ts.get(aid, 0) < COOLDOWN_S:
+        return None
+    return aid
+
 def _live_capable(entry, candidates, observed) -> "list[str]":
     out = []
     for aid in candidates:
@@ -299,52 +315,26 @@ def plan(desired: dict, observed: dict, ledger: dict, now: float) -> "list[Actio
             touched.add(aid)
             if is_failover:
                 migrations_this_pass += 1
-    # Surplus pass: a recovered host still holding a failed-over model puts the
-    # entry above max_replicas; unload the LRU live copy, one per entry per pass.
-    reclaimed: "set[str]" = set()
+    # Scale pass: above max_replicas is an unconditional down; otherwise autoscale.
     for e in entries:
         k = _key(e)
-        if e["provider"] == "vllm":
-            continue        # no agent-side unload path for vLLM
-        if now < (ledger.get("backoff_until") or {}).get(k, 0):
-            continue
-        observed_placed = _placements(e, observed)
-        placed = _effective_placements(e, k, observed, ledger, now)
-        if len(placed) <= e["max_replicas"]:
-            continue
-        # Settle first: a load still in flight or a stale replica is not surplus yet.
-        if len(observed_placed) != len(placed):
-            continue
-        if not all(observed["agents"][aid]["live"] for aid in placed):
-            continue
-        # A pinned host is never the surplus copy.
-        surplus = [aid for aid in placed if aid != e["placement"]] or placed
-        pak = placed_at.get(k) or {}
-        lru_aid = min(surplus, key=lambda aid: pak.get(aid, 0.0))
-        if lru_aid in touched or now - last_action_ts.get(lru_aid, 0) < COOLDOWN_S:
-            continue
-        actions.append(Action(
-            kind="scale_down", provider=e["provider"], model=e["model"],
-            agent_id=lru_aid,
-            reason=(f"{k}: surplus replica ({len(placed)}/{e['max_replicas']}) "
-                    f"reclaimed from {lru_aid}"),
-            auto=_may_auto(e, desired, e["provider"]), entry_key=k))
-        touched.add(lru_aid)
-        reclaimed.add(k)
-    # Autoscale pass: only entries already at/above min_replicas with headroom to scale.
-    for e in entries:
-        k = _key(e)
-        if e["max_replicas"] <= e["min_replicas"] or k in reclaimed:
-            continue
         if now < (ledger.get("backoff_until") or {}).get(k, 0):
             continue
         placed = _effective_placements(e, k, observed, ledger, now)
-        if len(placed) < e["min_replicas"]:
+        surplus = len(placed) > e["max_replicas"]
+        if surplus:
+            # Only when every copy is observed and live (nothing in flight, nothing stale).
+            if (len(_placements(e, observed)) != len(placed)
+                    or not all(observed["agents"][aid]["live"] for aid in placed)):
+                continue
+            decision = "down"
+        elif e["max_replicas"] <= e["min_replicas"] or len(placed) < e["min_replicas"]:
             continue
-        hist = (observed.get("sat_history") or {}).get(k, [])
-        decision = evaluate_autoscale(e, placed, hist, now)
-        if decision == "hold":
-            continue
+        else:
+            hist = (observed.get("sat_history") or {}).get(k, [])
+            decision = evaluate_autoscale(e, placed, hist, now)
+            if decision == "hold":
+                continue
         auto = _may_auto(e, desired, e["provider"])
         if decision == "up":
             candidates = ([e["placement"]] if e["placement"] != "auto"
@@ -375,17 +365,17 @@ def plan(desired: dict, observed: dict, ledger: dict, now: float) -> "list[Actio
                 touched.add(aid)
                 break
         else:                                 # decision == "down"
-            if e["provider"] == "vllm":
-                continue        # no agent-side unload path for vLLM
-            # LRU among current placements; a placement missing from the
-            # ledger (manager restart) sorts oldest.
-            pak = placed_at.get(k) or {}
-            lru_aid = min(placed, key=lambda aid: pak.get(aid, 0.0))
-            if lru_aid in touched or now - last_action_ts.get(lru_aid, 0) < COOLDOWN_S:
+            if e["provider"] not in UNLOADABLE_PROVIDERS:
                 continue
+            aid = _scale_down_target(e, placed, observed, placed_at,
+                                     touched, last_action_ts, now)
+            if aid is None:
+                continue
+            reason = (f"{k}: surplus replica ({len(placed)}/{e['max_replicas']}) "
+                      f"reclaimed from {aid}" if surplus
+                      else f"{k}: autoscale down -> {aid}")
             actions.append(Action(
                 kind="scale_down", provider=e["provider"], model=e["model"],
-                agent_id=lru_aid, reason=f"{k}: autoscale down -> {lru_aid}",
-                auto=auto, entry_key=k))
-            touched.add(lru_aid)
+                agent_id=aid, reason=reason, auto=auto, entry_key=k))
+            touched.add(aid)
     return actions

@@ -92,6 +92,7 @@ SPEC = ProviderSpec(
     default_picker="pool",
     pin_dict_key="vllm_model_pins",
     single_resident=True,
+    unloadable=False,
     gateway_enabled=True,
     sub_tab_keys=("vllm",),
     aggregator=_fleet_aggregate,

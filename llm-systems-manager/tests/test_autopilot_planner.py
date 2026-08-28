@@ -517,7 +517,7 @@ def test_vllm_autoscale_down_never_planned():
     assert pl.plan(_desired([e]), obs, led, now=1000.0) == []
 
 
-# ── #715: surplus replica reclaim after a failed-over host recovers ──────────
+# ── #715: surplus replicas above max_replicas ────────────────────────────
 
 def _both_loaded(**over):
     ag = _agents(**{A1: {"loaded": {"llama": ["m1"]}},
@@ -527,17 +527,24 @@ def _both_loaded(**over):
     return ag
 
 def test_surplus_replica_reclaimed_from_lru_copy():
-    # A1 failed, m1 failed over to A2, A1 is back with m1 still loaded.
     led = _ledger(); led["placed_at"]["m1/llama"] = {A1: 100.0, A2: 5000.0}
     acts = pl.plan(_desired([E]), _obs(_both_loaded()), led, now=100000.0)
     assert [(a.kind, a.agent_id) for a in acts] == [("scale_down", A1)]
     assert "surplus replica (2/1)" in acts[0].reason
     assert acts[0].auto is False                      # failover: semi -> proposal
 
-def test_surplus_reclaim_keeps_failover_copy_when_original_unledgered():
-    # Manager restarted since the outage: A1 has no ledger row -> sorts oldest.
+def test_surplus_reclaim_unledgered_copy_sorts_oldest():
     led = _ledger(); led["placed_at"]["m1/llama"] = {A2: 5000.0}
     acts = pl.plan(_desired([E]), _obs(_both_loaded()), led, now=100000.0)
+    assert [(a.kind, a.agent_id) for a in acts] == [("scale_down", A1)]
+
+def test_surplus_reclaim_tie_keeps_the_routed_copy():
+    # Empty ledger (manager restarted): the copy the route pin targets survives.
+    obs = {**_obs(_both_loaded()), "route_pins": {"llama": {"m1": A1}}}
+    acts = pl.plan(_desired([E]), obs, _ledger(), now=100000.0)
+    assert [(a.kind, a.agent_id) for a in acts] == [("scale_down", A2)]
+    obs["route_pins"] = {"llama": {"m1": A2}}
+    acts = pl.plan(_desired([E]), obs, _ledger(), now=100000.0)
     assert [(a.kind, a.agent_id) for a in acts] == [("scale_down", A1)]
 
 def test_surplus_reclaim_auto_when_entry_auto_and_enabled():
@@ -546,14 +553,13 @@ def test_surplus_reclaim_auto_when_entry_auto_and_enabled():
                    led, now=100000.0)
     assert acts[0].kind == "scale_down" and acts[0].auto is True
 
-def test_surplus_reclaim_waits_for_in_flight_failover_load():
-    # A1 back with m1; the failover load onto A2 is still in flight (ledger only).
+def test_surplus_reclaim_waits_for_in_flight_load():
+    # A2's copy exists only as a fresh ledger row (load still in flight).
     led = _ledger(); led["placed_at"]["m1/llama"] = {A1: 100.0, A2: 99990.0}
     obs = _obs(_agents(**{A1: {"loaded": {"llama": ["m1"]}}}))
     assert pl.plan(_desired([E]), obs, led, now=100000.0) == []
 
 def test_surplus_reclaim_waits_for_stale_replica():
-    # Both copies observed but A1 is only stale: not surplus until it is live.
     led = _ledger(); led["placed_at"]["m1/llama"] = {A1: 100.0, A2: 5000.0}
     obs = _obs(_both_loaded(**{A1: {"live": False, "liveness": "stale"}}))
     assert pl.plan(_desired([E]), obs, led, now=100000.0) == []
@@ -564,8 +570,7 @@ def test_surplus_reclaim_respects_cooldown_and_one_per_pass():
     ag[A3] = {**ag[A1], "loaded": {"llama": ["m1"]}}
     led = _ledger(); led["placed_at"]["m1/llama"] = {A1: 100.0, A2: 200.0, A3: 300.0}
     led["last_action_ts"][A1] = 99950.0                    # A1 inside COOLDOWN_S
-    acts = pl.plan(_desired([E]), _obs(ag), led, now=100000.0)
-    assert acts == []                                      # LRU blocked -> wait
+    assert pl.plan(_desired([E]), _obs(ag), led, now=100000.0) == []
     led["last_action_ts"] = {}
     acts = pl.plan(_desired([E]), _obs(ag), led, now=100000.0)
     assert [(a.kind, a.agent_id) for a in acts] == [("scale_down", A1)]
@@ -578,9 +583,11 @@ def test_surplus_reclaim_never_planned_for_vllm():
     obs = {"agents": ag, "model_sizes_mb": {"vllm:m1": 8000}}
     assert pl.plan(_desired([e]), obs, led, now=100000.0) == []
 
-def test_surplus_reclaim_above_max_replicas_precludes_autoscale_action():
-    # max 2 > min 1 with autoscale config, but 3 copies placed: exactly one
-    # reclaim, and the autoscale pass does not add a second down action.
+def test_unloadable_providers_mirror_registry():
+    assert "llama" in pl.UNLOADABLE_PROVIDERS and "lms" in pl.UNLOADABLE_PROVIDERS
+    assert "vllm" not in pl.UNLOADABLE_PROVIDERS
+
+def test_surplus_above_max_on_autoscaled_entry_is_a_single_down():
     A3 = "c" * 32
     e = {**E, "max_replicas": 2,
          "autoscale": {"target_saturation": 0.75, "up_window_s": 120,
@@ -600,8 +607,18 @@ def test_no_reclaim_at_or_below_max_replicas():
     assert pl.plan(_desired([e]), _obs(_both_loaded()), led, now=100000.0) == []
 
 def test_surplus_reclaim_never_unloads_the_pinned_host():
-    # Entry pinned to A1 (the older copy); the stray copy on A2 is the surplus.
     led = _ledger(); led["placed_at"]["m1/llama"] = {A1: 100.0, A2: 5000.0}
     acts = pl.plan(_desired([{**E, "placement": A1}]), _obs(_both_loaded()),
                    led, now=100000.0)
     assert [(a.kind, a.agent_id) for a in acts] == [("scale_down", A2)]
+
+def test_autoscale_down_never_unloads_the_pinned_host():
+    e = {**E, "placement": A1, "max_replicas": 2,
+         "autoscale": {"target_saturation": 0.75, "up_window_s": 120,
+                       "down_window_s": 900}}
+    led = _ledger(); led["placed_at"]["m1/llama"] = {A1: 100.0, A2: 5000.0}
+    hist = [(0.0, 0.05), (500.0, 0.05), (100000.0, 0.05)]
+    obs = {**_obs(_both_loaded()), "sat_history": {"m1/llama": hist}}
+    acts = pl.plan(_desired([e]), obs, led, now=100000.0)
+    assert [(a.kind, a.agent_id) for a in acts] == [("scale_down", A2)]
+    assert "autoscale down" in acts[0].reason

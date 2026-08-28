@@ -512,3 +512,13 @@ def test_build_observed_prod_shaped_ram_path_unblocks_cpu_served_model():
     actions = pl.plan(desired, observed, ledger, now=1000.0)
     assert len(actions) == 1
     assert actions[0].kind == "load" and actions[0].agent_id == A1
+
+
+def test_build_observed_exposes_route_pins_from_global():
+    deps = _base_deps()
+    deps["agents"] = lambda: {"agents": {A1: {"capabilities": {"llama": True},
+                                              "status": "approved"}},
+                              "global": {"llama_model_pins": {"m1": A1}}}
+    observed = ap.build_observed(deps)
+    assert observed["route_pins"]["llama"] == {"m1": A1}
+    assert observed["route_pins"].get("vllm", {}) == {}

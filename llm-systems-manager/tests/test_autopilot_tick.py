@@ -216,3 +216,42 @@ def test_tick_survives_route_sync_failure():
                       executor=lambda a: True, route_sync=_boom)
     out = r.tick(now=1000.0)
     assert out["actions"] == []
+
+# ── #715: surplus scale_down in tick ───────────────────────────────────────
+
+def _mk_surplus(auto=True, exec_ok=True, route_sync=None):
+    calls = []
+    state = {"enabled": True, "hosts": {}, "entries": [
+        {"model": "m1", "provider": "llama", "placement": "auto",
+         "failover": "auto" if auto else "semi", "priority": 1,
+         "min_replicas": 1, "max_replicas": 1}]}
+    agent = {"provider_caps": ["llama"], "live": True, "vram_total_mb": 24000,
+             "vram_free_mb": 20000, "loaded": {"llama": ["m1"]},
+             "server_state": "awake", "idle_since": None, "saturation": {}}
+    observed = {"agents": {A1: dict(agent, loaded={"llama": ["m1"]}),
+                           A2: dict(agent, loaded={"llama": ["m1"]})},
+                "model_sizes_mb": {"llama:m1": 8000}, "sat_history": {}}
+    r = ap.Reconciler(get_state=lambda: state,
+                      build_observed=lambda: observed,
+                      executor=lambda a: (calls.append(a), exec_ok)[1],
+                      route_sync=route_sync)
+    r.ledger["placed_at"]["m1/llama"] = {A1: 100.0, A2: 500.0}
+    return r, calls, observed
+
+def test_auto_surplus_scale_down_hides_unloaded_copy_from_route_sync():
+    seen = []
+    r, calls, observed = _mk_surplus(
+        route_sync=lambda d, o, led, now: seen.append(
+            pl._effective_placements(d["entries"][0], "m1/llama", o, led, now)))
+    r.tick(now=1000.0)
+    assert [a.kind for a in calls] == ["scale_down"] and calls[0].agent_id == A1
+    assert seen == [[A2]]
+    assert observed["agents"][A1]["loaded"]["llama"] == []
+    assert A1 not in r.ledger["placed_at"]["m1/llama"]
+
+def test_failed_surplus_scale_down_cools_agent_not_entry():
+    r, calls, _ = _mk_surplus(exec_ok=False)
+    r.tick(now=1000.0)
+    assert [a.kind for a in calls] == ["scale_down"]
+    assert r.ledger["last_action_ts"][A1] == 1000.0
+    assert "m1/llama" not in r.ledger["backoff_until"]

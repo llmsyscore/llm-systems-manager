@@ -200,8 +200,12 @@ def build_observed(deps: dict) -> dict:
     sizes = dict(deps["model_sizes"]() or {})
     ov = deps.get("size_overrides")
     sizes.update((ov() if ov else None) or {})
+    glob = data.get("global") or {}
+    route_pins = {p: dict(glob.get(sp.pin_dict_key) or {})
+                  for p, sp in providers.PROVIDERS.items() if sp.pin_dict_key}
     return {"agents": out, "model_sizes_mb": sizes,
-            "model_gpu_layers": deps["model_gpu_layers"]() or {}}
+            "model_gpu_layers": deps["model_gpu_layers"]() or {},
+            "route_pins": route_pins}
 
 
 _SIZES_CACHE_TTL_S = 600.0
@@ -468,7 +472,11 @@ class Reconciler:
                                if tuple(p["sig"]) in current}
             for a in actions:
                 if a.auto:
-                    self._run(a, now)
+                    if self._run(a, now) and a.kind == "scale_down":
+                        # Drop the unloaded copy from this tick's snapshot for route_sync.
+                        loaded = observed["agents"].get(a.agent_id, {}).get("loaded") or {}
+                        loaded[a.provider] = [m for m in (loaded.get(a.provider) or [])
+                                              if m != a.model]
                 elif not any(tuple(p["sig"]) == sig(a)
                              for p in self._proposals.values()):
                     pid = uuid.uuid4().hex[:12]
@@ -555,6 +563,8 @@ class Reconciler:
                 self.ledger["placed_at"].setdefault(k, {})[action.agent_id] = now
             if action.kind == "scale_down":
                 self.ledger["placed_at"].get(k, {}).pop(action.agent_id, None)
+        elif action.kind == "scale_down":
+            self.ledger["last_action_ts"][action.agent_id] = now
         else:
             self.ledger["backoff_until"][k] = now + 300.0
         return ok
@@ -615,7 +625,10 @@ def make_executor(deps: dict, entries_by_key):
         elif in_pool:
             deps["set_pin"](action.provider, action.model, action.agent_id)
         else:
-            deps["set_pin"](action.provider, action.model, None)
+            get_pin = deps.get("get_pin")
+            cur = get_pin(action.provider, action.model) if get_pin else action.agent_id
+            if cur == action.agent_id:
+                deps["set_pin"](action.provider, action.model, None)
 
     def _load(action) -> bool:
         provider, model, agent_id = action.provider, action.model, action.agent_id
@@ -648,8 +661,8 @@ def make_executor(deps: dict, entries_by_key):
         if action.provider == "vllm" and action.auto:
             _audit(action, "refused")
             return False
-        if action.provider == "vllm" and action.kind in ("scale_down", "unload"):
-            # No /vllm/unload agent route exists.
+        if (action.kind in ("scale_down", "unload")
+                and not getattr(providers.get(action.provider), "unloadable", True)):
             _audit(action, "unsupported")
             return False
         if action.kind == "sleep":
@@ -732,6 +745,16 @@ def _prod_set_pin(provider: str, model: str, agent_id: "str | None") -> None:
             pins.pop(model, None)
         glob[pin_key] = pins
         agent_registry.save_agents(data)
+
+
+def _prod_get_pin(provider: str, model: str) -> "str | None":
+    """Current glob[<provider>_model_pins][model], None when unpinned."""
+    spec = providers.get(provider)
+    pin_key = getattr(spec, "pin_dict_key", None)
+    if not pin_key:
+        return None
+    glob = agent_registry.load_agents().get("global") or {}
+    return (glob.get(pin_key) or {}).get(model)
 
 
 def _prod_pool_update(provider: str, agent_id: str, in_pool: bool) -> bool:
@@ -818,6 +841,7 @@ def _prod_executor_deps(agent_id: str) -> dict:
     return {
         "proxy": _make_prod_proxy(agent_id),
         "set_pin": _prod_set_pin,
+        "get_pin": _prod_get_pin,
         "pool_update": _prod_pool_update,
         "clear_host_pins": _prod_clear_host_pins,
         "audit": _prod_audit,
