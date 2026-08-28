@@ -3721,7 +3721,7 @@ def _pki_ensure_ca():
 
 
 _MANAGER_SECRET_LOCK = threading.Lock()
-_manager_secret_cache: "bytes | None" = None
+_manager_secret_cache = None  # bytes once minted/read
 
 
 def _manager_secret() -> bytes:
@@ -3759,18 +3759,18 @@ def _mint_manager_secret(replace_empty: bool) -> bytes:
                 os.link(tmp, MANAGER_SECRET_FILE)  # exclusive publish; loser re-reads
             log.info("generated manager HMAC secret at %s", MANAGER_SECRET_FILE)
         except FileExistsError:
-            pass
+            pass  # another minter published first; its bytes are read back below
         except OSError:  # hard links unsupported here: plain rename
             os.replace(tmp, MANAGER_SECRET_FILE)
     finally:
         try:
             os.unlink(tmp)
         except FileNotFoundError:
-            pass
+            pass  # already renamed into place
     try:
         os.chmod(MANAGER_SECRET_FILE, 0o600)
     except OSError:
-        pass
+        pass  # best-effort; the file was created 0600
     return MANAGER_SECRET_FILE.read_bytes()
 
 
