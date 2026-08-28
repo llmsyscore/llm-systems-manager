@@ -248,7 +248,9 @@
         if (_dirty.size) {
           updateSaveBar();
           const m = document.getElementById('adminSettingsSaveMsg');
-          if (m) m.textContent = `saved locally; AE sync failed: ${d.ae_sync_failed}`;
+          if (m) m.textContent = `saved locally; AE sync failed: ${d.ae_sync_failed}${aeQueuedSuffix(d)}`;
+          _data.ae_sync_pending = d.ae_sync_pending || [];
+          renderAePendingNote();
           return;
         }
       }
@@ -278,11 +280,45 @@
     note.className = 'adm-muted';
     note.style.cssText = 'padding:8px 0;';
     note.textContent = d.ae_sync_failed
-      ? `Saved locally, but alarm-engine sync failed: ${d.ae_sync_failed}`
+      ? `Saved locally, but alarm-engine sync failed: ${d.ae_sync_failed}${aeQueuedSuffix(d)}`
       : '✓ Saved';
     const root = document.getElementById('adminSettingsRoot');
     root.insertBefore(note, root.firstChild);
     setTimeout(() => note.remove(), 6000);
+  }
+
+  // ── queued alarm-engine edits (#667) ──────────────────────────────
+
+  let _aePollTimer = null;
+
+  function aeRetryText() {
+    const s = Math.round((_data && _data.ae_sync_retry_s) || 30);
+    return `the manager retries every ${s} s until the alarm engine acks`;
+  }
+
+  function aeQueuedSuffix(d) {
+    return d.ae_sync_pending && d.ae_sync_pending.length ? ` — queued; ${aeRetryText()}` : '';
+  }
+
+  function renderAePendingNote() {
+    const oldNote = document.getElementById('adminSettingsAePending');
+    if (oldNote) oldNote.remove();
+    const q = _data.ae_sync_pending || [];
+    if (!q.length) return;
+    const note = document.createElement('div');
+    note.id = 'adminSettingsAePending';
+    note.className = 'adm-card';
+    note.style.cssText = 'padding:12px 16px;margin-bottom:14px;border-left:4px solid var(--warn);';
+    note.innerHTML = `<div style="color:var(--fg);"><b>${q.length} alarm-engine setting${q.length === 1 ? '' : 's'} queued</b>` +
+      ` — not acknowledged yet; ${aeRetryText()}.</div>` +
+      `<div class="adm-muted" style="margin-top:4px;">${q.map(esc).join(', ')}</div>`;
+    const root = document.getElementById('adminSettingsRoot');
+    root.insertBefore(note, root.firstChild);
+    // One re-poll while queued so the note clears itself once the AE acks (not mid-edit).
+    clearTimeout(_aePollTimer);
+    _aePollTimer = setTimeout(() => {
+      if (document.getElementById('adminSettingsAePending') && !_dirty.size) load();
+    }, (((_data && _data.ae_sync_retry_s) || 30) + 5) * 1000);
   }
 
   // ── restart banner ────────────────────────────────────────────────
@@ -338,6 +374,7 @@
   function renderBanner() {
     const old = document.getElementById('adminSettingsRestartBanner');
     if (old) old.remove();
+    renderAePendingNote();
     const pending = _data.restart_pending || [];
     if (!pending.length) return;
     const topo = _data.topology || {};
