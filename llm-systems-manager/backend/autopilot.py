@@ -500,15 +500,19 @@ class Reconciler:
                 del self.ledger["last_action_ts"][aid]
 
     def _prune_placed_at(self, observed: dict, now: float) -> None:
-        """Drop placed_at[k][aid] once a live agent stops reporting the
-        model loaded, past a PLACEMENT_FRESH_S grace window; dead agents stay."""
+        """Drop placed_at[k][aid] past the PLACEMENT_FRESH_S grace window when
+        a live agent no longer reports the model or the agent is unregistered;
+        dead (registered, non-live) agents stay."""
         for k, amap in list(self.ledger["placed_at"].items()):
             model, _, provider = k.rpartition("/")
             for aid, ts in list(amap.items()):
                 if now - ts < pl.PLACEMENT_FRESH_S:
                     continue
                 agent = observed["agents"].get(aid)
-                if agent is None or not agent["live"]:
+                if agent is None:
+                    del amap[aid]
+                    continue
+                if not agent["live"]:
                     continue
                 if model not in (agent["loaded"].get(provider) or []):
                     del amap[aid]
@@ -523,7 +527,9 @@ class Reconciler:
             vals = [s for aid in placed
                     if (s := (observed["agents"][aid].get("saturation") or {})
                         .get(e["provider"])) is not None]
-            hist = [pt for pt in self._sat_history.get(k, []) if pt[0] >= cutoff]
+            # No live placement: the ring resets so stale points can't drive autoscale.
+            hist = ([pt for pt in self._sat_history.get(k, []) if pt[0] >= cutoff]
+                    if placed else [])
             if vals:
                 hist.append((now, max(vals)))
             self._sat_history[k] = hist

@@ -107,6 +107,24 @@ def test_placed_at_not_pruned_for_dead_agent():
     r.tick(now=1000.0)
     assert r.ledger["placed_at"]["m1/llama"][A1] == 500.0
 
+def test_placed_at_pruned_for_unregistered_agent_after_grace():
+    r, _, obs = _mk(auto=False)
+    gone = "z" * 32
+    r.ledger["placed_at"]["m1/llama"] = {gone: 500.0, A1: 990.0}
+    r.tick(now=1000.0)
+    assert gone not in r.ledger["placed_at"]["m1/llama"]
+    assert r.ledger["placed_at"]["m1/llama"][A1] == 990.0   # within grace
+
+def test_sat_history_resets_when_no_live_placement():
+    r, _, obs = _mk(auto=False)
+    obs["agents"][A1]["loaded"] = {"llama": ["m1"]}
+    obs["agents"][A1]["saturation"] = {"llama": 0.9}
+    r.tick(now=1000.0)
+    assert r._sat_history["m1/llama"] == [(1000.0, 0.9)]
+    obs["agents"][A1]["live"] = False
+    r.tick(now=1030.0)
+    assert r._sat_history["m1/llama"] == []
+
 def test_sat_history_ring_accumulates_and_trims_to_20_minutes():
     state = {"enabled": True, "hosts": {}, "entries": [
         {"model": "m1", "provider": "llama", "placement": "auto",
