@@ -543,7 +543,7 @@ verify_sha256() {
   if have sha256sum; then
     (cd "$dir" && sha256sum -c --quiet "$base")
   else
-    (cd "$dir" && shasum -a 256 -c --quiet "$base")
+    (cd "$dir" && shasum -a 256 -c "$base" >/dev/null)
   fi
 }
 
@@ -1064,8 +1064,11 @@ _tcp_open() {
 # service is up and bound" without depending on any app-layer endpoint
 # response — which is the only thing flaky enough to falsely fail this
 # probe on snapshot-fresh boxes.
+# report_service_health LABEL URL [UNIT] — TCP port open + unit active.
+# A 4th arg is taken as UNIT for callers that still pass a status column.
 report_service_health() {
-  local label="$1" url="$2" _expect="${3:-200}" unit="${4:-}"
+  local label="$1" url="$2" unit="${3:-}"
+  (( $# >= 4 )) && unit="$4"
   local host port active=true bound=false attempts=5 i
   # Extract host:port from http://host:port[/path]. Defaults: 80 / 443.
   host="$(url_host "$url")"
