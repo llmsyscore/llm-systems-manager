@@ -122,6 +122,7 @@ CATALOG: list[dict] = [
     # alarm engine
     _e("alarm_engine.port", "int", "AE port", "Alarm engine listen port.", "alarm_engine", AE, min=1, max=65535),
     _e("alarm_engine.evaluation_interval", "int", "Rule eval interval (s)", "Alert rule evaluation cadence.", "alarm_engine", AE, min=5, max=3600),
+    _e("alarm_engine.metric_max_age_s", "int", "Metric max age (s)", "A rule is skipped as stale when its newest metric point is older than this.", "alarm_engine", AE, min=30, max=86400),
     _e("alarm_engine.manager_url", "str", "Manager URL", "AE's back-channel to the manager.", "alarm_engine", AE),
     _e("alarm_engine.cors_origins", "str", "AE CORS origins", "Allowed browser origins for the AE API.", "alarm_engine", AE),
     # The manager reads these three too (bearer, agent handoff, URL scheme),
