@@ -299,10 +299,42 @@ def plan(desired: dict, observed: dict, ledger: dict, now: float) -> "list[Actio
             touched.add(aid)
             if is_failover:
                 migrations_this_pass += 1
+    # Surplus pass: a recovered host still holding a failed-over model puts the
+    # entry above max_replicas; unload the LRU live copy, one per entry per pass.
+    reclaimed: "set[str]" = set()
+    for e in entries:
+        k = _key(e)
+        if e["provider"] == "vllm":
+            continue        # no agent-side unload path for vLLM
+        if now < (ledger.get("backoff_until") or {}).get(k, 0):
+            continue
+        observed_placed = _placements(e, observed)
+        placed = _effective_placements(e, k, observed, ledger, now)
+        if len(placed) <= e["max_replicas"]:
+            continue
+        # Settle first: a load still in flight or a stale replica is not surplus yet.
+        if len(observed_placed) != len(placed):
+            continue
+        if not all(observed["agents"][aid]["live"] for aid in placed):
+            continue
+        # A pinned host is never the surplus copy.
+        surplus = [aid for aid in placed if aid != e["placement"]] or placed
+        pak = placed_at.get(k) or {}
+        lru_aid = min(surplus, key=lambda aid: pak.get(aid, 0.0))
+        if lru_aid in touched or now - last_action_ts.get(lru_aid, 0) < COOLDOWN_S:
+            continue
+        actions.append(Action(
+            kind="scale_down", provider=e["provider"], model=e["model"],
+            agent_id=lru_aid,
+            reason=(f"{k}: surplus replica ({len(placed)}/{e['max_replicas']}) "
+                    f"reclaimed from {lru_aid}"),
+            auto=_may_auto(e, desired, e["provider"]), entry_key=k))
+        touched.add(lru_aid)
+        reclaimed.add(k)
     # Autoscale pass: only entries already at/above min_replicas with headroom to scale.
     for e in entries:
         k = _key(e)
-        if e["max_replicas"] <= e["min_replicas"]:
+        if e["max_replicas"] <= e["min_replicas"] or k in reclaimed:
             continue
         if now < (ledger.get("backoff_until") or {}).get(k, 0):
             continue
