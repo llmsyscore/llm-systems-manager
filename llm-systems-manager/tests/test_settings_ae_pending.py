@@ -18,7 +18,7 @@ def _ae_unreachable(url, **kw):
 
 
 @pytest.fixture
-def split_client(client, monkeypatch):
+def split_client(client, monkeypatch):  # noqa: F811
     _force_split(monkeypatch)
     return client
 

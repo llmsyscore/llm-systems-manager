@@ -31,19 +31,21 @@ permissions:
 
 jobs:
   test:
-    name: pytest
+    name: pytest (py${{ matrix.python }})
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        # 3.11 = installer floor (tomllib), 3.12 = runner default, 3.14 = deployed venvs.
+        python: ["3.11", "3.12", "3.14"]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v7
         with:
-          # CLAUDE.md operating rule #1 isn't tied to a Python minor; the
-          # installer requires >= 3.10. Use 3.12 here — it's the modern
-          # baseline ubuntu-latest ships with and matches the prod venvs.
-          python-version: "3.12"
+          python-version: ${{ matrix.python }}
           cache: pip
 
       # config/unified_config.py and config/llm-systems.toml are gitignored
@@ -89,19 +91,23 @@ jobs:
         run: venv/bin/python -m pytest -v
 
   agent-test:
-    name: pytest (agent)
+    name: pytest (agent, py${{ matrix.python }})
     runs-on: ubuntu-latest
     timeout-minutes: 5
     # The agent suite loads leaf modules with stubbed deps (agent/tests/
     # conftest.py + per-test importlib loads), so it needs only pytest — no
     # requirements install and no config loader materialisation.
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.12", "3.14"]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v7
         with:
-          python-version: "3.12"
+          python-version: ${{ matrix.python }}
           cache: pip
 
       - name: Install pytest
@@ -117,10 +123,10 @@ jobs:
     timeout-minutes: 5
     # toml_reconcile.py is stdlib-only (tomllib), so pytest is the only dep.
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v7
         with:
           python-version: "3.12"
           cache: pip
@@ -140,10 +146,10 @@ jobs:
     # findings should be addressed in the PR that introduces them rather
     # than letting drift accumulate.
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v7
         with:
           python-version: "3.12"
           cache: pip
@@ -151,8 +157,8 @@ jobs:
       - name: Install ruff
         run: pip install ruff
 
-      # Scope: just the three service codebases. Exclude vendored dirs,
-      # the frontend HTML, and anything in tools/ that's shell-only.
+      # Scope: the three service codebases, their test suites, and the
+      # Python the installer ships. Excludes vendored dirs and shell-only tools/.
       - name: Run ruff
         run: |
           ruff check \
@@ -162,8 +168,12 @@ jobs:
             --exclude=node_modules \
             --output-format=github \
             llm-systems-alarm-engine/backend \
+            llm-systems-alarm-engine/tests \
             llm-systems-manager/backend \
-            agent
+            llm-systems-manager/tests \
+            agent \
+            tools/installer \
+            tools/gen_pwa_icons.py
 
   js-test:
     name: vitest
@@ -171,14 +181,23 @@ jobs:
     timeout-minutes: 10
     # Frontend unit tests (vitest). Buildless, dev-only deps. BLOCKING.
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Set up Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
           node-version: "22"
           cache: npm
           cache-dependency-path: llm-systems-manager/frontend/package-lock.json
+
+      # js/*.js load as classic <script> globals that vitest never imports;
+      # parse every shipped script so a SyntaxError can't reach a deploy.
+      - name: Syntax-check every frontend script
+        run: |
+          mapfile -t scripts < <(git ls-files -- 'llm-systems-manager/frontend/*.js' | grep -vE '/(test|node_modules)/')
+          printf 'parsing %d scripts\n' "${#scripts[@]}"
+          [ "${#scripts[@]}" -gt 0 ] || { echo '::error::no frontend scripts found'; exit 1; }
+          for f in "${scripts[@]}"; do node --check "$f"; done
 
       - name: Install frontend dev dependencies
         working-directory: llm-systems-manager/frontend
@@ -187,6 +206,21 @@ jobs:
       - name: Run frontend unit tests
         working-directory: llm-systems-manager/frontend
         run: npm test
+
+  docs-build:
+    name: website docs build
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    # pages.yml only builds after merge; prove the docs render on the PR.
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Build docs pages
+        run: |
+          node website/build-docs.cjs
+          n="$(find website/docs -name '*.html' | wc -l)"
+          printf 'rendered %s pages\n' "$n"
+          [ "$n" -gt 0 ] || { echo '::error::build-docs.cjs produced no pages'; exit 1; }
 
   shellcheck:
     name: shellcheck
@@ -201,7 +235,7 @@ jobs:
     # The assembled step also drops SC2317 (common.sh helpers look unreachable
     # when concatenated with just one fragment).
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install shellcheck (pinned)
         run: |
@@ -243,7 +277,7 @@ jobs:
     # CI scripts the installer shellcheck job doesn't see. BLOCKING. Both tools
     # pinned so a runner-image bump can't silently change the gate.
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install shellcheck (pinned)
         run: |
@@ -275,7 +309,7 @@ jobs:
     # or setting it in .env silently does nothing — the #396 bug class.
     # Allowlisted: compose-internal defaults never meant to be overridden.
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Consumed LSM_ vars are all forwarded by the x-lsm-env anchor
         run: |

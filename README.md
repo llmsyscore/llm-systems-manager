@@ -630,7 +630,7 @@ The manager, alarm engine, and InfluxDB are tested on **Debian and Ubuntu deriva
 - **Other Linux distros** (Fedora, Arch, openSUSE, Alpine): the agent (mode 5) auto-detects `dnf` / `yum` / `brew` and works out of the box. The manager / alarm engine / InfluxDB modes (1–4, 6) will halt at the pre-requisites step with a hint for your package manager — install the listed packages by hand, then re-run.
 - **macOS** (Apple Silicon, tested on M2 Pro): agent only.
 
-The installer checks for: `python3` (≥ 3.10), `python3-venv`, `git`, `jq`, `curl`, and `rsync`.
+The installer checks for: `python3` (≥ 3.11), `python3-venv`, `git`, `jq`, `curl`, and `rsync`.
 
 ---
 

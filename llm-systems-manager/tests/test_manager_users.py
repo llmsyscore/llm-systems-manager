@@ -543,7 +543,6 @@ class TestDataFlowVllm:
     @pytest.fixture
     def admin_client(self, tmp_path, monkeypatch):
         import manager_mod as M
-        import auth
         monkeypatch.setattr(M, "_admin_ip_allowed", lambda _ip: True, raising=False)
         manager_users_init_for_test(tmp_path)
         M.app.config.update(TESTING=True)

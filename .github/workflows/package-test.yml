@@ -16,10 +16,15 @@ on:
     paths:
       - "tools/packaging/**"
       - "tools/installer/**"
+      - "agent/install/**"
+      - "config/**"
       - "systemd/**"
       - "llm-systems-alarm-engine/systemd/**"
       - "**/requirements*.txt"
       - ".github/workflows/package-test.yml"
+  # Nightly: fpm, the rocky/debian images, and the released v1.0.6 asset drift.
+  schedule:
+    - cron: "23 5 * * *"
   workflow_dispatch:
 
 concurrency:
@@ -38,7 +43,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: native_package_installed detection is identical across copies
         run: |
           files="tools/installer/lib-common.sh tools/installer/uninstall.sh agent/install/install.sh"
@@ -56,7 +61,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install fpm + rpmbuild
         run: |
@@ -72,7 +77,7 @@ jobs:
           tools/packaging/build-packages.sh --version 0.0.2 --formats deb --out dist
           tools/packaging/build-packages.sh --version 1.0.7 --formats deb --out dist
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: packages
           path: dist/
@@ -84,7 +89,7 @@ jobs:
     needs: build
     timeout-minutes: 30
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: packages
           path: dist
@@ -188,9 +193,9 @@ jobs:
     needs: build
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: packages
           path: dist
@@ -301,7 +306,7 @@ jobs:
     needs: build
     timeout-minutes: 30
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: packages
           path: dist
@@ -351,7 +356,7 @@ jobs:
     container: debian:12
     timeout-minutes: 30
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: packages
           path: dist
@@ -383,7 +388,7 @@ jobs:
     container: rockylinux:9
     timeout-minutes: 30
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: packages
           path: dist

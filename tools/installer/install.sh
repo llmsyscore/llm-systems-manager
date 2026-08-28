@@ -442,7 +442,7 @@ if (( ${#NEEDED[@]} > 0 )); then
       _b_err "  Detected apk — try:"
       _b_err "    sudo apk add ${NEEDED[*]/python3-venv/python3}"
     else
-      _b_err "  Required: python3 (>= 3.10), python3-venv, git, jq, curl, rsync."
+      _b_err "  Required: python3 (>= 3.11), python3-venv, git, jq, curl, rsync."
     fi
     _b_err ""
     _b_err "  Then re-run this installer. Modes 1-4/6 still require an apt-based"
@@ -456,12 +456,12 @@ _b_ok "prerequisites present"
 # Python version check
 if ! python3 - <<'PY' >/dev/null 2>&1
 import sys
-sys.exit(0 if sys.version_info >= (3, 10) else 1)
+sys.exit(0 if sys.version_info >= (3, 11) else 1)
 PY
 then
-  _b_die "python3 >= 3.10 is required (have $(python3 --version 2>&1))"
+  _b_die "python3 >= 3.11 is required (have $(python3 --version 2>&1))"
 fi
-_b_ok "python3 >= 3.10 ($(python3 --version 2>&1))"
+_b_ok "python3 >= 3.11 ($(python3 --version 2>&1))"
 
 # ── Self-update trampoline ─────────────────────────────────────────────────
 # Compare _INSTALL_SH_REVISION (local vs upstream). When upstream is STRICTLY

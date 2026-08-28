@@ -76,12 +76,12 @@ llmsys_systemd_ready() {
   command -v systemctl >/dev/null 2>&1 && [ -d /run/systemd/system ]
 }
 
-# Prints the newest interpreter that is Python >= 3.10.
+# Prints the newest interpreter that is Python >= 3.11.
 llmsys_pick_python() {
   local p
-  for p in python3.13 python3.12 python3.11 python3.10 python3; do
+  for p in python3.13 python3.12 python3.11 python3; do
     command -v "$p" >/dev/null 2>&1 || continue
-    if "$p" -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 10) else 1)' 2>/dev/null; then
+    if "$p" -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 11) else 1)' 2>/dev/null; then
       echo "$p"; return 0
     fi
   done
@@ -122,7 +122,7 @@ llmsys_build_one_venv() {
 llmsys_build_venvs() {
   local py
   if ! py="$(llmsys_pick_python)"; then
-    echo "llm-systems-manager: no Python >= 3.10 found." >&2
+    echo "llm-systems-manager: no Python >= 3.11 found." >&2
     echo "Install one (e.g. 'dnf install python3.11 python3.11-pip'), then run 'dnf reinstall llm-systems-manager' (or 'dpkg --configure -a' on Debian)." >&2
     return 1
   fi

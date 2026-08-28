@@ -13,7 +13,23 @@ on:
       - ".github/workflows/docker.yml"
       - "llm-systems-manager/backend/requirements.txt"
       - "llm-systems-alarm-engine/requirements.txt"
+  # Nightly: base-image + released-:latest drift the path filter can't see.
+  schedule:
+    - cron: "37 5 * * *"
   workflow_dispatch:
+  # release.yml runs this as its pre-publish container gate.
+  workflow_call:
+    inputs:
+      ref:
+        description: "Git ref to build (empty = the triggering ref)"
+        type: string
+        required: false
+        default: ""
+      skip_arm64:
+        description: "Skip the arm64 build leg (release builds multi-arch itself)"
+        type: boolean
+        required: false
+        default: false
 
 permissions:
   contents: read
@@ -24,7 +40,9 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.ref || '' }}
 
       - name: Create .env
         run: |
@@ -139,7 +157,9 @@ jobs:
       contents: read
       packages: read
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.ref || '' }}
 
       - name: Check a released baseline image exists on ghcr
         run: |
@@ -154,7 +174,7 @@ jobs:
       # this job alive if their visibility is ever flipped.
       - name: Log in to ghcr
         if: env.SKIP_UPGRADE != '1'
-        uses: docker/login-action@v3
+        uses: docker/login-action@v4
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -270,13 +290,16 @@ jobs:
   arm64-build:
     name: arm64 image build (no push)
     runs-on: ubuntu-latest
+    if: ${{ !inputs.skip_arm64 }}
     timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.ref || '' }}
 
-      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-qemu-action@v4
 
-      - uses: docker/setup-buildx-action@v3
+      - uses: docker/setup-buildx-action@v4
 
       - name: Build both targets for linux/arm64
         run: |

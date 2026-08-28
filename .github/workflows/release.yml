@@ -1,11 +1,11 @@
 name: Release
 
 # On every v* tag push: build the source tarball, run the brew control-plane
-# e2e against that BUILT tarball, and only then publish the GitHub Release +
-# packages + ghcr images. A build that fails the brew/systemd smoke never
-# becomes a published release (#445). workflow_dispatch (input: ref) runs
-# build + brew-verify against an existing tag WITHOUT publishing — a zero-
-# clutter dry-run of the gate.
+# e2e against that BUILT tarball plus the compose smoke/upgrade (docker.yml via
+# workflow_call), and only then publish the GitHub Release + packages + ghcr
+# images. A build that fails either gate never becomes a published release
+# (#445, #701). workflow_dispatch (input: ref) runs build + both gates against
+# an existing tag WITHOUT publishing — a zero-clutter dry-run.
 
 on:
   push:
@@ -32,7 +32,7 @@ jobs:
       ae_version: ${{ steps.versions.outputs.ae }}
       agent_version: ${{ steps.versions.outputs.agent }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ env.TAG }}
 
@@ -76,7 +76,7 @@ jobs:
           sha256sum -c "$ASSET.sha256"
 
       - name: Upload tarball artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: manager-tarball
           path: |
@@ -94,7 +94,7 @@ jobs:
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: manager-tarball
           path: dist
@@ -129,14 +129,27 @@ jobs:
 
       - uses: llmsyscore/homebrew-tap/.github/actions/manager-install-test@main
 
+  # Container gate: build both images from the tag and prove compose up +
+  # released-:latest → candidate upgrade. arm64 is covered by the ghcr push.
+  compose:
+    name: compose gate (pre-publish)
+    needs: build
+    uses: ./.github/workflows/docker.yml
+    with:
+      ref: ${{ inputs.ref || github.ref_name }}
+      skip_arm64: true
+    permissions:
+      contents: read
+      packages: read
+
   publish:
     name: publish release
-    needs: [build, brew-verify]
+    needs: [build, brew-verify, compose]
     if: github.event_name == 'push'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: manager-tarball
           path: .
@@ -182,7 +195,7 @@ jobs:
     if: github.event_name == 'push'
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install fpm + rpmbuild
         run: |
@@ -201,20 +214,21 @@ jobs:
   docker:
     name: publish ghcr images (multi-arch)
     runs-on: ubuntu-latest
-    needs: brew-verify
+    # After publish: :latest must never point at a tag with no release.
+    needs: [brew-verify, publish]
     if: github.event_name == 'push'
     timeout-minutes: 90
     permissions:
       contents: read
       packages: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-qemu-action@v4
 
-      - uses: docker/setup-buildx-action@v3
+      - uses: docker/setup-buildx-action@v4
 
-      - uses: docker/login-action@v3
+      - uses: docker/login-action@v4
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -223,7 +237,7 @@ jobs:
       # One job, two sequential builds: the shared base stage is built once and
       # reused from the local buildx + gha cache instead of per-matrix-leg.
       - name: Build + push manager image
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: .
           build-args: |
@@ -239,7 +253,7 @@ jobs:
           cache-to: type=gha,mode=max,scope=docker-release
 
       - name: Build + push alarm-engine image
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: .
           build-args: |
