@@ -1149,8 +1149,11 @@
     if (!sub) { paintPush(); return; }
     $('pushMsg').textContent = 'unregistering…';
     try {
+      // keys.auth proves this device owns the subscription; the server goes
+      // first so a refusal leaves the local subscription intact for a retry.
+      const keys = sub.toJSON().keys;
+      await jpost('/api/companion/push/unsubscribe', { endpoint: sub.endpoint, keys });
       await sub.unsubscribe().catch(() => {});
-      await jpost('/api/companion/push/unsubscribe', { endpoint: sub.endpoint });
       $('pushMsg').textContent = 'this device will no longer be notified';
     } catch (err) {
       $('pushMsg').textContent = 'unregister failed: ' + errMsg(err);
