@@ -282,6 +282,90 @@ def test_split_get_reports_drift_masking_secrets(client, monkeypatch):
     assert b"LOCAL-SECRET" not in r.data and b"AE-SECRET" not in r.data
 
 
+def _digest(value: str) -> str:
+    return manager_mod._ae_secret_digest(value)
+
+
+def test_split_drift_masked_value_without_secrets_map_compares_status(client, monkeypatch):
+    c, cfg = client
+    cfg.write_text('[manager]\nport = 5000\n'
+                   '[alarm_engine]\ningest_token = "LOCAL-SECRET"\n')
+    _force_split(monkeypatch)
+    monkeypatch.setattr(manager_mod._ae_session, "get",
+                        lambda url, **kw: _FakeResp(payload={
+                            "ok": True,
+                            "sections": {"alarm_engine": {"ingest_token": "********"}}}))
+    assert c.get("/api/admin/settings").get_json()["drift"] == {}
+
+
+def test_split_get_ae_masked_non_catalog_secret_never_lands_in_values(client, monkeypatch):
+    c, _ = client
+    _force_split(monkeypatch)
+    ae_only = next(e["path"] for e in settings_catalog.CATALOG
+                   if e["service"] == "alarm_engine" and e["type"] == "str")
+    sect, key = ae_only.rsplit(".", 1)
+    node: dict = {}
+    cur = node
+    for part in sect.split("."):
+        cur = cur.setdefault(part, {})
+    cur[key] = "********"
+    monkeypatch.setattr(manager_mod._ae_session, "get",
+                        lambda url, **kw: _FakeResp(payload={
+                            "ok": True, "sections": node,
+                            "secrets": {ae_only: {"status": "set", "digest": "x"}}}))
+    d = c.get("/api/admin/settings").get_json()
+    assert ae_only not in d["values"]
+    assert d["secrets"][ae_only] == "set"
+
+
+def test_ae_secret_path_list_matches_catalog():
+    import re
+    from pathlib import Path
+    src = (Path(__file__).resolve().parents[2] / "llm-systems-alarm-engine"
+           / "backend" / "alarm_engine.py").read_text()
+    m = re.search(r"_AE_SECRET_PATHS = frozenset\(\{(.*?)\}\)", src, re.S)
+    ae_paths = set(re.findall(r'"([^"]+)"', m.group(1)))
+    catalog = {e["path"] for e in settings_catalog.CATALOG
+               if e["secret"] and e["service"] in ("alarm_engine", "both")}
+    assert ae_paths == catalog, "update _AE_SECRET_PATHS in alarm_engine.py (#708)"
+
+
+def test_split_drift_secret_compares_masked_digest(client, monkeypatch):
+    c, cfg = client
+    cfg.write_text('[manager]\nport = 5000\n'
+                   '[alarm_engine]\ningest_token = "LOCAL-SECRET"\n')
+    _force_split(monkeypatch)
+    monkeypatch.setattr(manager_mod, "_AE_BEARER", "mgmt-key")
+    payload = {"ok": True,
+               "sections": {"alarm_engine": {"ingest_token": "********"}},
+               "secrets": {"alarm_engine.ingest_token": {
+                   "status": "set", "digest": _digest("LOCAL-SECRET")}}}
+    monkeypatch.setattr(manager_mod._ae_session, "get",
+                        lambda url, **kw: _FakeResp(payload=payload))
+    assert c.get("/api/admin/settings").get_json()["drift"] == {}
+    payload["secrets"]["alarm_engine.ingest_token"]["digest"] = _digest("AE-OTHER")
+    r = c.get("/api/admin/settings")
+    assert r.get_json()["drift"]["alarm_engine.ingest_token"] == {
+        "secret": True, "local": "set", "ae": "set"}
+    assert b"LOCAL-SECRET" not in r.data and b"AE-OTHER" not in r.data
+
+
+def test_split_drift_secret_status_mismatch(client, monkeypatch):
+    c, cfg = client
+    cfg.write_text('[manager]\nport = 5000\n'
+                   '[alarm_engine]\ningest_token = "LOCAL-SECRET"\n')
+    _force_split(monkeypatch)
+    monkeypatch.setattr(manager_mod, "_AE_BEARER", "mgmt-key")
+    monkeypatch.setattr(manager_mod._ae_session, "get",
+                        lambda url, **kw: _FakeResp(payload={
+                            "ok": True, "sections": {"alarm_engine": {"ingest_token": ""}},
+                            "secrets": {"alarm_engine.ingest_token": {
+                                "status": "unset", "digest": ""}}}))
+    d = c.get("/api/admin/settings").get_json()
+    assert d["drift"]["alarm_engine.ingest_token"] == {
+        "secret": True, "local": "set", "ae": "unset"}
+
+
 def test_split_get_no_drift_when_copies_match(client, monkeypatch):
     c, cfg = client
     cfg.write_text('[manager]\nport = 5000\n[influxdb]\nhost = "same"\n')
