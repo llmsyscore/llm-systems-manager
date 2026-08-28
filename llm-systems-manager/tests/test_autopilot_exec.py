@@ -5,10 +5,11 @@ import autopilot as ap
 from autopilot_planner import Action
 
 def _deps():
-    log = {"proxy": [], "pin": [], "pool": [], "audit": [], "svc": []}
+    log = {"proxy": [], "pin": [], "pool": [], "audit": [], "svc": [], "clear_if": []}
     return log, {
         "proxy": lambda p, m, path, j=None: (log["proxy"].append((p, path)), (True, {}))[1],
         "set_pin": lambda p, mdl, aid: log["pin"].append((p, mdl, aid)),
+        "clear_pin_if": lambda p, mdl, aid: log["clear_if"].append((p, mdl, aid)),
         "pool_update": lambda p, aid, inp: log["pool"].append((p, aid, inp)),
         "audit": lambda a, t, o: log["audit"].append((a, o)),
         "vllm_svc": lambda aid, mdl: (log["svc"].append((aid, mdl)), True)[1]}
@@ -166,3 +167,18 @@ def test_prod_clear_host_pins_no_write_when_nothing_stale(monkeypatch):
     monkeypatch.setattr(agent_registry, "save_agents", lambda d: saved.append(d))
     ap._prod_clear_host_pins("llama", "a" * 32, "m1")
     assert saved == []
+
+# ── #715: single-replica unload clears the pin only via clear_pin_if ──────
+
+def test_scale_down_single_replica_uses_conditional_pin_clear():
+    log, deps = _deps()
+    a, entries = _act(kind="scale_down")
+    assert ap.make_executor(deps, entries)(a) is True
+    assert ("llama", "/llama/unload") in log["proxy"]
+    assert log["clear_if"] == [("llama", "m1", "a" * 32)] and log["pin"] == []
+
+def test_unknown_provider_unload_is_unsupported():
+    log, deps = _deps()
+    a, entries = _act(kind="scale_down", provider="nope")
+    assert ap.make_executor(deps, entries)(a) is False
+    assert ("autopilot:scale_down", "unsupported") in log["audit"]

@@ -515,3 +515,165 @@ def test_vllm_autoscale_down_never_planned():
     led = _ledger()
     led["placed_at"] = {"m1/vllm": {A1: 0.0}}
     assert pl.plan(_desired([e]), obs, led, now=1000.0) == []
+
+
+# ── #715: surplus replicas above max_replicas ────────────────────────────
+
+def _both_loaded(**over):
+    return _agents(**{aid: {"loaded": {"llama": ["m1"]}, **over.get(aid, {})}
+                      for aid in (A1, A2)})
+
+def test_surplus_replica_reclaimed_from_lru_copy():
+    led = _ledger(); led["placed_at"]["m1/llama"] = {A1: 100.0, A2: 5000.0}
+    acts = pl.plan(_desired([E]), _obs(_both_loaded()), led, now=100000.0)
+    assert [(a.kind, a.agent_id) for a in acts] == [("scale_down", A1)]
+    assert "surplus replica (2/1)" in acts[0].reason
+    assert acts[0].auto is False                      # failover: semi -> proposal
+
+def test_surplus_reclaim_unledgered_copy_sorts_oldest():
+    led = _ledger(); led["placed_at"]["m1/llama"] = {A2: 5000.0}
+    acts = pl.plan(_desired([E]), _obs(_both_loaded()), led, now=100000.0)
+    assert [(a.kind, a.agent_id) for a in acts] == [("scale_down", A1)]
+
+def test_surplus_reclaim_keeps_the_routed_copy():
+    # Empty ledger (manager restarted): the copy the route pin targets survives.
+    obs = {**_obs(_both_loaded()), "route_pins": {"llama": {"m1": A1}}}
+    acts = pl.plan(_desired([E]), obs, _ledger(), now=100000.0)
+    assert [(a.kind, a.agent_id) for a in acts] == [("scale_down", A2)]
+    # The routed copy survives even when it is the LRU one (manual re-pin).
+    led = _ledger(); led["placed_at"]["m1/llama"] = {A1: 100.0, A2: 5000.0}
+    acts = pl.plan(_desired([E]), obs, led, now=100000.0)
+    assert [(a.kind, a.agent_id) for a in acts] == [("scale_down", A2)]
+    obs["route_pins"] = {"llama": {"m1": A2}}
+    acts = pl.plan(_desired([E]), obs, led, now=100000.0)
+    assert [(a.kind, a.agent_id) for a in acts] == [("scale_down", A1)]
+
+def test_surplus_reclaim_placement_pin_beats_route_pin():
+    obs = {**_obs(_both_loaded()), "route_pins": {"llama": {"m1": A2}}}
+    acts = pl.plan(_desired([{**E, "placement": A1}]), obs, _ledger(), now=100000.0)
+    assert [(a.kind, a.agent_id) for a in acts] == [("scale_down", A2)]
+
+def test_surplus_reclaim_auto_when_entry_auto_and_enabled():
+    led = _ledger(); led["placed_at"]["m1/llama"] = {A1: 100.0, A2: 5000.0}
+    acts = pl.plan(_desired([{**E, "failover": "auto"}]), _obs(_both_loaded()),
+                   led, now=100000.0)
+    assert acts[0].kind == "scale_down" and acts[0].auto is True
+
+def test_surplus_reclaim_waits_for_in_flight_load():
+    # A2's copy exists only as a fresh ledger row (load still in flight).
+    led = _ledger(); led["placed_at"]["m1/llama"] = {A1: 100.0, A2: 99990.0}
+    obs = _obs(_agents(**{A1: {"loaded": {"llama": ["m1"]}}}))
+    assert pl.plan(_desired([E]), obs, led, now=100000.0) == []
+
+def test_surplus_reclaim_waits_for_stale_replica():
+    led = _ledger(); led["placed_at"]["m1/llama"] = {A1: 100.0, A2: 5000.0}
+    obs = _obs(_both_loaded(**{A1: {"live": False, "liveness": "stale"}}))
+    assert pl.plan(_desired([E]), obs, led, now=100000.0) == []
+
+def test_surplus_reclaim_respects_cooldown_and_one_per_pass():
+    A3 = "c" * 32
+    ag = _both_loaded()
+    ag[A3] = {**ag[A1], "loaded": {"llama": ["m1"]}}
+    led = _ledger(); led["placed_at"]["m1/llama"] = {A1: 100.0, A2: 200.0, A3: 300.0}
+    led["last_action_ts"][A1] = 99950.0                    # A1 inside COOLDOWN_S
+    acts = pl.plan(_desired([E]), _obs(ag), led, now=100000.0)
+    assert [(a.kind, a.agent_id) for a in acts] == [("scale_down", A2)]
+    led["last_action_ts"] = {}
+    acts = pl.plan(_desired([E]), _obs(ag), led, now=100000.0)
+    assert [(a.kind, a.agent_id) for a in acts] == [("scale_down", A1)]
+
+def test_surplus_reclaim_never_planned_for_vllm():
+    e = {**E, "provider": "vllm"}
+    ag = {aid: {**a, "provider_caps": ["vllm"], "loaded": {"vllm": ["m1"]},
+                "server_state": None} for aid, a in _agents().items()}
+    led = _ledger(); led["placed_at"]["m1/vllm"] = {A1: 100.0, A2: 5000.0}
+    obs = {"agents": ag, "model_sizes_mb": {"vllm:m1": 8000}}
+    assert pl.plan(_desired([e]), obs, led, now=100000.0) == []
+
+def test_unloadable_providers_mirror_registry():
+    assert "llama" in pl.UNLOADABLE_PROVIDERS and "lms" in pl.UNLOADABLE_PROVIDERS
+    assert "vllm" not in pl.UNLOADABLE_PROVIDERS
+
+def test_surplus_above_max_on_autoscaled_entry_is_a_single_down():
+    A3 = "c" * 32
+    e = {**E, "max_replicas": 2,
+         "autoscale": {"target_saturation": 0.75, "up_window_s": 120,
+                       "down_window_s": 900}}
+    ag = _both_loaded()
+    ag[A3] = {**ag[A1], "loaded": {"llama": ["m1"]}}
+    led = _ledger(); led["placed_at"]["m1/llama"] = {A1: 100.0, A2: 200.0, A3: 300.0}
+    hist = [(0.0, 0.05), (500.0, 0.05), (100000.0, 0.05)]
+    obs = {**_obs(ag), "sat_history": {"m1/llama": hist}}
+    acts = pl.plan(_desired([e]), obs, led, now=100000.0)
+    assert [(a.kind, a.agent_id) for a in acts] == [("scale_down", A1)]
+    assert "surplus" in acts[0].reason
+
+def test_no_reclaim_at_or_below_max_replicas():
+    led = _ledger(); led["placed_at"]["m1/llama"] = {A1: 100.0, A2: 5000.0}
+    e = {**E, "max_replicas": 2}
+    assert pl.plan(_desired([e]), _obs(_both_loaded()), led, now=100000.0) == []
+
+def test_surplus_reclaim_never_unloads_the_pinned_host():
+    led = _ledger(); led["placed_at"]["m1/llama"] = {A1: 100.0, A2: 5000.0}
+    acts = pl.plan(_desired([{**E, "placement": A1}]), _obs(_both_loaded()),
+                   led, now=100000.0)
+    assert [(a.kind, a.agent_id) for a in acts] == [("scale_down", A2)]
+
+def test_autoscale_down_never_unloads_the_pinned_host():
+    e = {**E, "placement": A1, "max_replicas": 2,
+         "autoscale": {"target_saturation": 0.75, "up_window_s": 120,
+                       "down_window_s": 900}}
+    led = _ledger(); led["placed_at"]["m1/llama"] = {A1: 100.0, A2: 5000.0}
+    hist = [(0.0, 0.05), (500.0, 0.05), (100000.0, 0.05)]
+    obs = {**_obs(_both_loaded()), "sat_history": {"m1/llama": hist}}
+    acts = pl.plan(_desired([e]), obs, led, now=100000.0)
+    assert [(a.kind, a.agent_id) for a in acts] == [("scale_down", A2)]
+    assert "autoscale down" in acts[0].reason
+
+def test_autoscale_down_waits_for_in_flight_or_stale_copies():
+    e = {**E, "max_replicas": 3,
+         "autoscale": {"target_saturation": 0.75, "up_window_s": 120,
+                       "down_window_s": 900}}
+    A3 = "c" * 32
+    ag = _both_loaded(**{A1: {"live": False, "liveness": "stale"}})
+    ag[A3] = {**ag[A2], "loaded": {"llama": []}}         # A3: fresh ledger row only
+    led = _ledger(); led["placed_at"]["m1/llama"] = {A1: 10.0, A2: 5000.0, A3: 99990.0}
+    hist = [(0.0, 0.05), (500.0, 0.05), (100000.0, 0.05)]
+    obs = {**_obs(ag), "sat_history": {"m1/llama": hist}}
+    assert pl.plan(_desired([e]), obs, led, now=100000.0) == []
+    ag[A1].update(live=True, liveness="live")
+    led["placed_at"]["m1/llama"].pop(A3)
+    acts = pl.plan(_desired([e]), obs, led, now=100000.0)
+    assert [(a.kind, a.agent_id) for a in acts] == [("scale_down", A1)]
+
+def test_scale_down_skips_pair_in_unload_backoff():
+    A3 = "c" * 32
+    ag = _both_loaded()
+    ag[A3] = {**ag[A1], "loaded": {"llama": ["m1"]}}
+    led = _ledger(); led["placed_at"]["m1/llama"] = {A1: 100.0, A2: 200.0, A3: 300.0}
+    led["unload_backoff"] = {"m1/llama": {A1: 100300.0}}
+    acts = pl.plan(_desired([E]), _obs(ag), led, now=100000.0)
+    assert [(a.kind, a.agent_id) for a in acts] == [("scale_down", A2)]
+
+def test_scale_down_falls_through_to_next_lru_when_first_is_cooling():
+    A3 = "c" * 32
+    ag = _both_loaded()
+    ag[A3] = {**ag[A1], "loaded": {"llama": ["m1"]}}
+    led = _ledger(); led["placed_at"]["m1/llama"] = {A1: 100.0, A2: 200.0, A3: 300.0}
+    led["last_action_ts"][A1] = 99950.0
+    acts = pl.plan(_desired([E]), _obs(ag), led, now=100000.0)
+    assert [(a.kind, a.agent_id) for a in acts] == [("scale_down", A2)]
+
+def test_routed_copy_never_the_fallback_while_another_copy_exists():
+    led = _ledger(); led["placed_at"]["m1/llama"] = {A1: 100.0, A2: 5000.0}
+    led["unload_backoff"] = {"m1/llama": {A1: 100300.0}}
+    obs = {**_obs(_both_loaded()), "route_pins": {"llama": {"m1": A2}}}
+    assert pl.plan(_desired([E]), obs, led, now=100000.0) == []
+
+def test_build_observed_route_pins_ignores_non_dict_values():
+    import autopilot as ap
+    deps = {"agents": lambda: {"agents": {}, "global": {"llama_model_pins": ["bad"]}},
+            "liveness": lambda a: "live", "provider_snapshot": lambda p, a: {},
+            "saturation": lambda p, a: {}, "model_sizes": lambda: {},
+            "model_gpu_layers": lambda: {}}
+    assert ap.build_observed(deps)["route_pins"]["llama"] == {}

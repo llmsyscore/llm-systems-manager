@@ -24,6 +24,8 @@ class ProviderSpec:
     pin_dict_key: Optional[str] = None
     # True when a load displaces the host's resident model.
     single_resident: bool = False
+    # False when the agent exposes no /<provider>/unload route.
+    unloadable: bool = True
     gateway_enabled: bool = False
     sub_tab_keys: tuple = ()
     aggregator: Optional[Callable[[dict[str, dict]], dict]] = None
@@ -86,6 +88,11 @@ def names() -> list[str]:
 def single_resident_names() -> tuple[str, ...]:
     """Providers whose spec declares single_resident (planner co-placement rule)."""
     return tuple(n for n, s in PROVIDERS.items() if s.single_resident)
+
+
+def unloadable_names() -> tuple[str, ...]:
+    """Providers whose spec declares unloadable (planner scale-down rule)."""
+    return tuple(n for n, s in PROVIDERS.items() if s.unloadable)
 
 
 def pool_provider_names() -> list[str]:

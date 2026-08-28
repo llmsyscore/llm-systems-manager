@@ -200,8 +200,12 @@ def build_observed(deps: dict) -> dict:
     sizes = dict(deps["model_sizes"]() or {})
     ov = deps.get("size_overrides")
     sizes.update((ov() if ov else None) or {})
+    glob = data.get("global") or {}
+    route_pins = {p: (glob.get(sp.pin_dict_key) if isinstance(glob.get(sp.pin_dict_key), dict) else {})
+                  for p, sp in providers.PROVIDERS.items() if sp.pin_dict_key}
     return {"agents": out, "model_sizes_mb": sizes,
-            "model_gpu_layers": deps["model_gpu_layers"]() or {}}
+            "model_gpu_layers": deps["model_gpu_layers"]() or {},
+            "route_pins": route_pins}
 
 
 _SIZES_CACHE_TTL_S = 600.0
@@ -396,6 +400,7 @@ def _prod_deps() -> dict:
 # ── Reconciler: observe -> plan -> execute/propose, with a ledger ────
 
 _SAT_HISTORY_WINDOW_S = 1200.0  # 20 minutes
+_UNLOAD_KINDS = ("scale_down", "unload")
 
 
 def route_sync_writes(desired: dict, observed: dict, glob: dict,
@@ -443,7 +448,8 @@ class Reconciler:
         self._proposals: "dict[str, dict]" = {}
         self._sat_history: "dict[str, list]" = {}
         self.ledger = {"last_action_ts": {}, "placed_at": {},
-                       "in_flight_migrations": 0, "backoff_until": {}}
+                       "in_flight_migrations": 0, "backoff_until": {},
+                       "unload_backoff": {}}
         # Coarse reentrant lock: serializes the background tick against
         # route-triggered apply/dismiss/tick calls (#472 Task 7).
         self._lock = threading.RLock()
@@ -452,7 +458,8 @@ class Reconciler:
         # proposals()/ledger_view read these instead of taking self._lock.
         self._snapshot: "list[dict]" = []
         self.ledger_view: dict = {"last_action_ts": {}, "placed_at": {},
-                                  "in_flight_migrations": 0, "backoff_until": {}}
+                                  "in_flight_migrations": 0, "backoff_until": {},
+                                  "unload_backoff": {}}
 
     def tick(self, now: float) -> dict:
         with self._lock:
@@ -468,7 +475,13 @@ class Reconciler:
                                if tuple(p["sig"]) in current}
             for a in actions:
                 if a.auto:
-                    self._run(a, now)
+                    ok = self._run(a, now)
+                    agent_obs = observed["agents"].get(a.agent_id)
+                    if ok and a.kind in _UNLOAD_KINDS and agent_obs is not None:
+                        # Drop the unloaded copy from this tick's snapshot.
+                        loaded = agent_obs.setdefault("loaded", {})
+                        loaded[a.provider] = [m for m in (loaded.get(a.provider) or [])
+                                              if m != a.model]
                 elif not any(tuple(p["sig"]) == sig(a)
                              for p in self._proposals.values()):
                     pid = uuid.uuid4().hex[:12]
@@ -493,10 +506,14 @@ class Reconciler:
         keys = {f"{e['model']}/{e['provider']}"
                 for e in desired.get("entries") or []}
         for d in (self._sat_history, self.ledger["placed_at"],
-                  self.ledger["backoff_until"]):
+                  self.ledger["backoff_until"], self.ledger["unload_backoff"]):
             for k in list(d):
                 if k not in keys:
                     del d[k]
+        for amap in self.ledger["unload_backoff"].values():
+            for aid in list(amap):
+                if aid not in observed["agents"]:
+                    del amap[aid]
         for aid in list(self.ledger["last_action_ts"]):
             if aid not in observed["agents"]:
                 del self.ledger["last_action_ts"][aid]
@@ -553,8 +570,11 @@ class Reconciler:
             self.ledger["last_action_ts"][action.agent_id] = now
             if action.kind in ("load", "migrate", "scale_up"):
                 self.ledger["placed_at"].setdefault(k, {})[action.agent_id] = now
-            if action.kind == "scale_down":
+            if action.kind in _UNLOAD_KINDS:
                 self.ledger["placed_at"].get(k, {}).pop(action.agent_id, None)
+        elif action.kind in _UNLOAD_KINDS:
+            # Unload failures back off that entry+agent pair only.
+            self.ledger["unload_backoff"].setdefault(k, {})[action.agent_id] = now + 300.0
         else:
             self.ledger["backoff_until"][k] = now + 300.0
         return ok
@@ -568,6 +588,8 @@ class Reconciler:
                           for k, v in self.ledger["placed_at"].items()},
             "in_flight_migrations": self.ledger["in_flight_migrations"],
             "backoff_until": dict(self.ledger["backoff_until"]),
+            "unload_backoff": {k: dict(v)
+                               for k, v in self.ledger["unload_backoff"].items()},
         }
 
     def proposals(self) -> "list[dict]":
@@ -615,7 +637,7 @@ def make_executor(deps: dict, entries_by_key):
         elif in_pool:
             deps["set_pin"](action.provider, action.model, action.agent_id)
         else:
-            deps["set_pin"](action.provider, action.model, None)
+            deps["clear_pin_if"](action.provider, action.model, action.agent_id)
 
     def _load(action) -> bool:
         provider, model, agent_id = action.provider, action.model, action.agent_id
@@ -648,8 +670,7 @@ def make_executor(deps: dict, entries_by_key):
         if action.provider == "vllm" and action.auto:
             _audit(action, "refused")
             return False
-        if action.provider == "vllm" and action.kind in ("scale_down", "unload"):
-            # No /vllm/unload agent route exists.
+        if action.kind in _UNLOAD_KINDS and action.provider not in pl.UNLOADABLE_PROVIDERS:
             _audit(action, "unsupported")
             return False
         if action.kind == "sleep":
@@ -660,7 +681,7 @@ def make_executor(deps: dict, entries_by_key):
         try:
             if action.kind in ("load", "scale_up"):
                 ok = _load(action)
-            elif action.kind in ("scale_down", "unload"):
+            elif action.kind in _UNLOAD_KINDS:
                 ok = _unload(action)
             elif action.kind == "wake":
                 ok, _body = deps["proxy"](action.provider, "POST", "/llama/server/wake", {})
@@ -715,23 +736,43 @@ def _make_prod_proxy(agent_id: str):
     return _proxy
 
 
-def _prod_set_pin(provider: str, model: str, agent_id: "str | None") -> None:
-    """Mutate glob[<provider>_model_pins] via the same lock+save helper
-    set_state() uses. Providers without a pin_dict_key are a no-op."""
-    spec = providers.get(provider)
-    pin_key = getattr(spec, "pin_dict_key", None)
+def _pin_key(provider: str) -> "str | None":
+    """The provider's glob pin dict key, None for providers without pins."""
+    return getattr(providers.get(provider), "pin_dict_key", None)
+
+
+def _prod_mutate_pins(provider: str, mutate) -> bool:
+    """Apply mutate(pins) to a copy of glob[<provider>_model_pins] under the
+    registry lock; saves and returns True only when mutate returns True."""
+    pin_key = _pin_key(provider)
     if not pin_key:
-        return
+        return False
     with agent_registry.agents_lock:
         data = agent_registry.load_agents()
         glob = data.setdefault("global", {})
         pins = dict(glob.get(pin_key) or {})
+        if not mutate(pins):
+            return False
+        glob[pin_key] = pins
+        agent_registry.save_agents(data)
+    return True
+
+
+def _prod_set_pin(provider: str, model: str, agent_id: "str | None") -> None:
+    """Set or drop glob[<provider>_model_pins][model]."""
+    def _set(pins):
         if agent_id:
             pins[model] = agent_id
         else:
             pins.pop(model, None)
-        glob[pin_key] = pins
-        agent_registry.save_agents(data)
+        return True
+    _prod_mutate_pins(provider, _set)
+
+
+def _prod_clear_pin_if(provider: str, model: str, agent_id: str) -> None:
+    """Drop glob[<provider>_model_pins][model] only while it points at agent_id."""
+    _prod_mutate_pins(provider, lambda pins: pins.get(model) == agent_id
+                      and pins.pop(model) is not None)
 
 
 def _prod_pool_update(provider: str, agent_id: str, in_pool: bool) -> bool:
@@ -742,24 +783,16 @@ def _prod_pool_update(provider: str, agent_id: str, in_pool: bool) -> bool:
 def _prod_clear_host_pins(provider: str, agent_id: str, keep_model: str) -> None:
     """Remove <provider>_model_pins entries pointing at agent_id for any
     model other than keep_model."""
-    spec = providers.get(provider)
-    pin_key = getattr(spec, "pin_dict_key", None)
-    if not pin_key:
-        return
-    with agent_registry.agents_lock:
-        data = agent_registry.load_agents()
-        glob = data.setdefault("global", {})
-        pins = dict(glob.get(pin_key) or {})
-        stale = [m for m, aid in pins.items()
-                 if aid == agent_id and m != keep_model]
-        if not stale:
-            return
+    stale: "list[str]" = []
+    def _clear(pins):
+        stale[:] = [m for m, aid in pins.items()
+                    if aid == agent_id and m != keep_model]
         for m in stale:
             del pins[m]
-        glob[pin_key] = pins
-        agent_registry.save_agents(data)
-    log.info("autopilot: cleared %d stale %s pin(s) on %s after loading %s",
-             len(stale), provider, agent_id[:8], keep_model)
+        return bool(stale)
+    if _prod_mutate_pins(provider, _clear):
+        log.info("autopilot: cleared %d stale %s pin(s) on %s after loading %s",
+                 len(stale), provider, agent_id[:8], keep_model)
 
 
 def _vllm_rewrite_model(cur: dict, model: str) -> "dict | None":
@@ -818,6 +851,7 @@ def _prod_executor_deps(agent_id: str) -> dict:
     return {
         "proxy": _make_prod_proxy(agent_id),
         "set_pin": _prod_set_pin,
+        "clear_pin_if": _prod_clear_pin_if,
         "pool_update": _prod_pool_update,
         "clear_host_pins": _prod_clear_host_pins,
         "audit": _prod_audit,
