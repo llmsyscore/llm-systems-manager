@@ -10,6 +10,7 @@ canonical workaround.
 from __future__ import annotations
 
 import importlib.util
+import pytest
 import sys
 from pathlib import Path
 
@@ -36,3 +37,15 @@ def _load_manager_module():
 
 # Eager load — module-level so every test file can `from manager_mod import …`.
 manager_mod = _load_manager_module()
+
+
+@pytest.fixture(autouse=True, scope="session")
+def _live_config_untouched():
+    """Fail the session if any test writes the real llm-systems.toml."""
+    import settings_toml_io as _sio
+    path = _sio.resolve_config_path()
+    before = path.stat().st_mtime_ns if path.exists() else None
+    yield
+    after = path.stat().st_mtime_ns if path.exists() else None
+    if before != after:
+        pytest.fail(f"a test wrote the LIVE config file {path} — patch settings_toml_io.resolve_config_path")
