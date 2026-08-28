@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import time
 
-from . import ProviderSpec, int_or_none, register
+from . import ProviderSpec, gpu_rollup_add, int_or_none, new_gpu_rollup, register
 
 
 def clean_display_model(raw) -> "str | None":
@@ -21,9 +21,7 @@ def _fleet_aggregate(samples: dict[str, dict]) -> dict:
     now = time.time()
     total_tps = 0.0
     total_pps = 0.0
-    max_temp = 0.0
-    max_vram_pct = 0.0
-    total_power = 0.0
+    gpu_acc = new_gpu_rollup()
     online = 0
     awake = 0
     models: set[str] = set()
@@ -32,11 +30,9 @@ def _fleet_aggregate(samples: dict[str, dict]) -> dict:
         s = wrap.get("sample") or {}
         last_seen = float(wrap.get("last_seen") or 0)
         is_online = (now - last_seen) < SPEC.online_threshold_s if last_seen else False
+        row_gpu: dict = {}
         llama = s.get("llama") or {}
         m = clean_display_model(llama.get("model"))
-        # GPU metrics live nested under sample["gpu"] (collect_system_metrics
-        # shape) — the flat gpu_* names only exist post-flatten in the AE.
-        gpu = s.get("gpu") or {}
         state = llama.get("state") or "unknown"
         if is_online and state == "awake":
             awake += 1
@@ -50,15 +46,7 @@ def _fleet_aggregate(samples: dict[str, dict]) -> dict:
             total_pps += float(pps)
         if is_online:
             online += 1
-            t = gpu.get("temperature_c")
-            if isinstance(t, (int, float)) and t > max_temp:
-                max_temp = float(t)
-            v = gpu.get("vram_usage_percent")
-            if isinstance(v, (int, float)) and v > max_vram_pct:
-                max_vram_pct = float(v)
-            p = gpu.get("power_watts")
-            if isinstance(p, (int, float)):
-                total_power += float(p)
+            row_gpu = gpu_rollup_add(gpu_acc, s)
         agent_rows.append({
             "agent_id": aid,
             "online": is_online,
@@ -72,13 +60,14 @@ def _fleet_aggregate(samples: dict[str, dict]) -> dict:
             "ctx": int_or_none(llama.get("n_ctx")) if is_online else None,
             "total_tokens_generated": int_or_none(llama.get("total_tokens_generated")) if is_online else None,
             "total_tokens_prompted": int_or_none(llama.get("total_tokens_prompted")) if is_online else None,
+            "power_watts": row_gpu.get("power_watts"),
+            "thermal_crit": bool(row_gpu.get("thermal_crit")),
             "age_s": round(now - last_seen, 1) if last_seen else None,
         })
     return {
         "provider": "llama",
         "throughput": {"total_tps": total_tps, "total_pps": total_pps},
-        "gpu": {"max_temp_c": max_temp, "max_vram_pct": max_vram_pct,
-                "total_power_watts": total_power},
+        "gpu": gpu_acc,
         "agent_count_total": len(samples),
         "agent_count_online": online,
         "awake_agent_count": awake,

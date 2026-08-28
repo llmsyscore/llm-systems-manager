@@ -39,6 +39,39 @@ def int_or_none(v):
     return int(v) if isinstance(v, (int, float)) else None
 
 
+_THERMAL_CRIT = ("Serious", "Critical")
+
+
+def new_gpu_rollup() -> dict:
+    return {"max_temp_c": 0.0, "max_vram_pct": 0.0, "total_power_watts": 0.0,
+            "thermal_crit_count": 0}
+
+
+def gpu_rollup_add(acc: dict, sample: dict) -> dict:
+    """Fold one ONLINE host into the fleet GPU rollup and return its row
+    fields {power_watts, thermal_crit}; watts follow energy.extract_power."""
+    import energy  # type: ignore[import-not-found]  # sibling
+    sysb = energy._sys_block(sample)
+    gpu = sysb.get("gpu") if isinstance(sysb.get("gpu"), dict) else {}
+    mac = sample.get("mac_power") or sysb.get("mac_power")
+    mac = mac if isinstance(mac, dict) else {}
+    temp = gpu.get("temperature_c")
+    if isinstance(temp, (int, float)) and temp > acc["max_temp_c"]:
+        acc["max_temp_c"] = float(temp)
+    vram = gpu.get("vram_usage_percent")
+    if isinstance(vram, (int, float)) and vram > acc["max_vram_pct"]:
+        acc["max_vram_pct"] = float(vram)
+    watts, _src = energy.extract_power(sample)
+    if watts is not None:
+        acc["total_power_watts"] += watts
+    n = mac.get("thermal_pressure_n")
+    crit = (n >= 2) if isinstance(n, (int, float)) else (
+        mac.get("thermal_pressure") in _THERMAL_CRIT)
+    if crit:
+        acc["thermal_crit_count"] += 1
+    return {"power_watts": watts, "thermal_crit": crit}
+
+
 def register(spec: ProviderSpec) -> None:
     PROVIDERS[spec.name] = spec
 

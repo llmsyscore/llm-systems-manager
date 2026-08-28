@@ -134,6 +134,15 @@ describe('OV.tiles', () => {
     expect(OV.tiles(awake, null, null)[0].accent).toBe('ok');
     const hot = { ...LLAMA_AGG, gpu: { ...LLAMA_AGG.gpu, max_temp_c: 86 } };
     expect(OV.tiles(hot, null, null)[0].accent).toBe('crit');
+    const soc = { ...LLAMA_AGG, gpu: { ...LLAMA_AGG.gpu, thermal_crit_count: 1 } };
+    expect(OV.tiles(soc, null, null)[0].accent).toBe('crit');
+  });
+  it('lms/vllm: gpu block hot or SoC thermal pressure → crit', () => {
+    const lmsHot = { ...LMS_AGG, gpu: { max_temp_c: 90, thermal_crit_count: 0 } };
+    expect(OV.tiles(null, lmsHot, null)[1].accent).toBe('crit');
+    const vllmSoc = { ...VLLM_AGG, gpu: { max_temp_c: 40, thermal_crit_count: 2 } };
+    expect(OV.tiles(null, null, vllmSoc)[2].accent).toBe('crit');
+    expect(OV.tiles(null, LMS_AGG, VLLM_AGG)[1].accent).not.toBe('crit');
   });
   it('lms: online without busy processes → warn; busy → ok', () => {
     expect(OV.tiles(null, LMS_AGG, null)[1].accent).toBe('warn');
@@ -215,6 +224,23 @@ describe('OV.toplines', () => {
     expect(t.every(s => typeof s.v === 'string' && typeof s.l === 'string')).toBe(true);
     expect(t[0].v).toBe('6');            // 2 + 3 + 1 agents online
     expect(t[3].v).toBe('1.4 kWh · $0.22');
+  });
+  it('fleet power sums provider gpu blocks when rows carry no watts (legacy vllm field as fallback)', () => {
+    const lms = { ...LMS_AGG, gpu: { total_power_watts: 30 } };
+    const vllm = { ...VLLM_AGG, gpu: { total_power_watts: 120 }, total_gpu_power_watts: 999 };
+    expect(OV.toplines(LLAMA_AGG, lms, vllm, null)[2].v).toBe('170 W');
+    const legacy = { ...VLLM_AGG, total_gpu_power_watts: 5 };
+    delete legacy.gpu;
+    expect(OV.toplines(null, null, legacy, null)[2].v).toBe('5 W');
+  });
+  it('fleet power counts a dual-provider host once via per-row power_watts', () => {
+    const rows = (id, w, online = true) => [{ agent_id: id, online, power_watts: w }];
+    const llama = { ...LLAMA_AGG, gpu: { total_power_watts: 200 }, agents: rows('h1', 200) };
+    const lms = { ...LMS_AGG, gpu: { total_power_watts: 230 },
+      agents: [...rows('h1', 200), ...rows('h2', 30), ...rows('h3', 999, false)] };
+    const vllm = { ...VLLM_AGG, gpu: { total_power_watts: 0 }, agents: [{ agent_id: 'h4', online: true, power_watts: null }] };
+    expect(OV.fleetWatts([llama, lms, vllm])).toBe(230);
+    expect(OV.toplines(llama, lms, vllm, null)[2].v).toBe('230 W');
   });
   it('em-dashes when everything is down', () => {
     const t = OV.toplines(null, null, null, null);

@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import time
 
-from . import ProviderSpec, int_or_none, register
+from . import ProviderSpec, gpu_rollup_add, int_or_none, new_gpu_rollup, register
 
 
 def _fleet_aggregate(samples: dict[str, dict]) -> dict:
@@ -16,17 +16,21 @@ def _fleet_aggregate(samples: dict[str, dict]) -> dict:
     total_tps = 0.0
     total_pps = 0.0
     max_kv = 0.0
-    total_power = 0.0
+    gpu_acc = new_gpu_rollup()
     models: set[str] = set()
     agent_rows: list[dict] = []
     for aid, wrap in samples.items():
         s = wrap.get("sample") or {}
         last_seen = float(wrap.get("last_seen") or 0)
         is_online = (now - last_seen) < SPEC.online_threshold_s if last_seen else False
+        row_gpu: dict = {}
         v = s.get("vllm") or {}
-        gpu = s.get("gpu") or {}
         running = v.get("state") == "running"
         m = v.get("model")
+        raw = v.get("models")
+        served = {str(x) for x in (raw if isinstance(raw, list) else []) if x}
+        if m:
+            served.add(str(m))
         tps = v.get("tokens_per_second") if is_online else None
         pps = v.get("prompt_tokens_per_second") if is_online else None
         rr = v.get("requests_running")
@@ -36,8 +40,7 @@ def _fleet_aggregate(samples: dict[str, dict]) -> dict:
             online += 1
             if running:
                 server_on += 1
-                if m:
-                    models.add(m)
+                models.update(served)
             if isinstance(rr, (int, float)):
                 req_running += int(rr)
             if isinstance(rw, (int, float)):
@@ -48,9 +51,7 @@ def _fleet_aggregate(samples: dict[str, dict]) -> dict:
                 total_pps += float(pps)
             if isinstance(kv, (int, float)) and kv > max_kv:
                 max_kv = float(kv)
-            p = gpu.get("power_watts")
-            if isinstance(p, (int, float)):
-                total_power += float(p)
+            row_gpu = gpu_rollup_add(gpu_acc, s)
         # Offline agents report zeroed/None per-row values.
         agent_rows.append({
             "agent_id": aid,
@@ -62,6 +63,8 @@ def _fleet_aggregate(samples: dict[str, dict]) -> dict:
             "ctx": int_or_none(v.get("max_model_len")) if (is_online and running) else None,
             "total_tokens_generated": int_or_none(v.get("total_tokens_generated")) if is_online else None,
             "total_tokens_prompted": int_or_none(v.get("total_tokens_prompted")) if is_online else None,
+            "power_watts": row_gpu.get("power_watts"),
+            "thermal_crit": bool(row_gpu.get("thermal_crit")),
             "age_s": round(now - last_seen, 1) if last_seen else None,
         })
     return {
@@ -73,7 +76,8 @@ def _fleet_aggregate(samples: dict[str, dict]) -> dict:
         "requests_waiting_total": req_waiting,
         "throughput": {"total_tps": total_tps, "total_pps": total_pps},
         "max_kv_cache_pct": max_kv,
-        "total_gpu_power_watts": total_power,
+        "total_gpu_power_watts": gpu_acc["total_power_watts"],
+        "gpu": gpu_acc,
         "active_models": sorted(models),
         "active_model_count": len(models),
         "agents": agent_rows,

@@ -26,8 +26,9 @@ def _wrap(sample, age=1.0):
 def test_aggregator_rollup():
     spec = providers.get("vllm")
     samples = {
-        "a1": _wrap({"gpu": {"power_watts": 250.0},
-                     "vllm": {"state": "running", "model": "m1",
+        "a1": _wrap({"gpu": {"power_watts": 250.0, "temperature_c": 66.0,
+                             "vram_usage_percent": 81.5},
+                     "vllm": {"state": "running", "model": "m1", "models": ["m1", "m1b"],
                               "requests_running": 2, "requests_waiting": 1,
                               "kv_cache_usage_pct": 40.0, "tokens_per_second": 10.0,
                               "prompt_tokens_per_second": 5.0}}),
@@ -46,11 +47,35 @@ def test_aggregator_rollup():
     assert agg["throughput"]["total_pps"] == 5.0
     assert agg["max_kv_cache_pct"] == 40.0
     assert agg["total_gpu_power_watts"] == 250.0
-    assert agg["active_models"] == ["m1"]
-    assert agg["active_model_count"] == 1
+    assert agg["gpu"] == {"max_temp_c": 66.0, "max_vram_pct": 81.5,
+                          "total_power_watts": 250.0, "thermal_crit_count": 0}
+    assert agg["active_models"] == ["m1", "m1b"]
+    assert agg["active_model_count"] == 2
+    a1 = next(r for r in agg["agents"] if r["agent_id"] == "a1")
+    assert a1["model"] == "m1"  # per-row display keeps the first id
+    assert a1["power_watts"] == 250.0 and a1["thermal_crit"] is False
     offline_row = next(r for r in agg["agents"] if r["agent_id"] == "a3")
     assert offline_row["online"] is False
     assert offline_row["model"] is None and offline_row["server_on"] is False
+
+
+def test_aggregator_apple_host_uses_mac_power():
+    agg = providers.get("vllm").aggregator({
+        "mac": _wrap({"gpu": {}, "vllm": {"state": "running", "model": "m"},
+                      "mac_power": {"soc_total_w": 33.0, "thermal_pressure": "Serious"}}),
+    })
+    assert agg["gpu"]["total_power_watts"] == 33.0
+    assert agg["gpu"]["thermal_crit_count"] == 1
+    assert agg["agents"][0]["power_watts"] == 33.0
+
+
+def test_aggregator_models_falls_back_to_singular_model():
+    agg = providers.get("vllm").aggregator({
+        "a": _wrap({"vllm": {"state": "running", "model": "solo"}}),
+        "b": _wrap({"vllm": {"state": "running", "model": "x", "models": []}}),
+        "c": _wrap({"vllm": {"state": "running", "model": "cur", "models": ["other"]}}),
+    })
+    assert agg["active_models"] == ["cur", "other", "solo", "x"]
 
 
 def test_aggregator_empty():
