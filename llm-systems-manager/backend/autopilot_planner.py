@@ -2,15 +2,16 @@
 from __future__ import annotations
 from dataclasses import dataclass
 
+import providers  # type: ignore[import-not-found]  # sibling
+
 COOLDOWN_S = 120
 DWELL_S = 600
 # In-flight window: ledger placements this recent count as placed. Must
 # exceed the executor's load timeout (autopilot._LOAD_TIMEOUT_S = 180).
 PLACEMENT_FRESH_S = 240
 VRAM_HEADROOM_MB = 1024
-# Providers whose host serves exactly one model at a time (load displaces
-# the resident model). Mirrors ProviderSpec.single_resident.
-SINGLE_RESIDENT_PROVIDERS = ("llama", "vllm")
+# Providers whose load displaces the resident model (ProviderSpec.single_resident).
+SINGLE_RESIDENT_PROVIDERS = providers.single_resident_names()
 
 @dataclass(frozen=True)
 class Action:

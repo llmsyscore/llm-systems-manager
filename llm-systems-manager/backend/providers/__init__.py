@@ -20,10 +20,9 @@ class ProviderSpec:
     label: str
     capability_key: str
     online_threshold_s: float = 15.0
-    push_endpoint_legacy: str = ""
     default_picker: str = "first_approved"
     pin_dict_key: Optional[str] = None
-    # True when one host serves exactly one model at a time (load displaces).
+    # True when a load displaces the host's resident model.
     single_resident: bool = False
     gateway_enabled: bool = False
     sub_tab_keys: tuple = ()
@@ -82,6 +81,11 @@ def get(name: str) -> Optional[ProviderSpec]:
 
 def names() -> list[str]:
     return list(PROVIDERS.keys())
+
+
+def single_resident_names() -> tuple[str, ...]:
+    """Providers whose spec declares single_resident (planner co-placement rule)."""
+    return tuple(n for n, s in PROVIDERS.items() if s.single_resident)
 
 
 def pool_provider_names() -> list[str]:
