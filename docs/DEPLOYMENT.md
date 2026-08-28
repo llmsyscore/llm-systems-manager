@@ -9,7 +9,7 @@ This guide walks you through installing, configuring, and maintaining LLM System
 ### Manager Server
 
 - **Operating system:** Ubuntu 22.04 or later (other modern Linux distributions should work)
-- **Python:** 3.10 or later (the installer refuses to proceed below this)
+- **Python:** 3.11 or later (the installer refuses to proceed below this)
 - **RAM:** 2 GB minimum; 4 GB recommended
 - **Disk:** At least 10 GB free for logs, metrics history, and model benchmark data
 
@@ -137,7 +137,7 @@ The install prompts (via debconf) for the dashboard admin login and SMTP setting
 sudo dnf install ./llm-systems-manager-<version>-1.noarch.rpm
 ```
 
-RPM installs are non-interactive: config is generated with detected defaults at `/opt/llm-systems-manager/config/llm-systems.toml` — edit it and `sudo systemctl restart llm-systems-manager` afterwards. EL9's default `python3` is 3.9; install `python3.11` (`sudo dnf install python3.11 python3.11-pip`) first — the package picks the newest Python ≥ 3.10 automatically.
+RPM installs are non-interactive: config is generated with detected defaults at `/opt/llm-systems-manager/config/llm-systems.toml` — edit it and `sudo systemctl restart llm-systems-manager` afterwards. EL9's default `python3` is 3.9; install `python3.11` (`sudo dnf install python3.11 python3.11-pip`) first — the package picks the newest Python ≥ 3.11 automatically.
 
 Both manager packages create the `llmsys` runtime user, install and start the two systemd units, and build the Python venvs at configure time (**network access to PyPI is required during install**). On upgrades the live config is preserved (new keys are merged in). `apt purge llm-systems-manager` removes everything — config, data, logs, and the runtime user — when the package created the tree; state it didn't create is kept (see [Mixing install methods](#mixing-install-methods)). `dnf remove` always keeps config/data behind with a notice.
 

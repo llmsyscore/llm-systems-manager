@@ -264,12 +264,12 @@ guard_not_native_package() {
 # ── Prereq probing ──────────────────────────────────────────────────────────
 have() { command -v "$1" >/dev/null 2>&1; }
 
-# python3 >= 3.10 check
+# python3 >= 3.11 check (tomllib)
 python_ok() {
   have python3 || return 1
   python3 - <<'PYEOF' >/dev/null 2>&1
 import sys
-sys.exit(0 if sys.version_info >= (3, 10) else 1)
+sys.exit(0 if sys.version_info >= (3, 11) else 1)
 PYEOF
 }
 

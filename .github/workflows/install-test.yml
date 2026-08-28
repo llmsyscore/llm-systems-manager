@@ -16,8 +16,8 @@ name: Install tests
 #   fetch_release_tree, and it catches files git archive drops that a real
 #   install needs (#383).
 #
-# Heavy (~15 min/job), so gated by paths: to installer/agent/requirements
-# changes; use workflow_dispatch for a manual run on anything else. A
+# Heavy (~15 min/job), so gated by paths: installer/agent/config/systemd/
+# requirements changes; use workflow_dispatch for a manual run on anything else. A
 # nightly schedule catches drift against upstream package repos.
 
 on:
@@ -26,6 +26,10 @@ on:
     paths:
       - "tools/installer/**"
       - "agent/**"
+      - "config/**"
+      - "systemd/**"
+      - "llm-systems-alarm-engine/systemd/**"
+      - ".gitattributes"
       - "**/requirements*.txt"
       - ".github/workflows/install-test.yml"
   schedule:
@@ -46,7 +50,7 @@ jobs:
     # Covers the initial install AND a reinstall-over-stale-tree pass (#352).
     timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # Non-TTY runs refuse to auto-apt missing prerequisites; provide them
       # up front (the rest of the runner image already has git/curl/python3).
@@ -107,13 +111,13 @@ jobs:
       # On pull_request, base.sha is the upgrade-from baseline; scheduled and
       # manual runs fall back to main → main (a no-op-update drift check).
       - name: Checkout base (upgrade-from)
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           ref: ${{ github.event.pull_request.base.sha || 'main' }}
           path: base
 
       - name: Checkout head (upgrade-to)
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           path: head
 
@@ -173,7 +177,7 @@ jobs:
     env:
       TAG: v0.0.0-ci
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install prerequisites
         run: |
@@ -238,7 +242,7 @@ jobs:
     # asserts the manager->AE token/proxy/CORS/TLS wiring — the mode-3/4 branches
     # and split-mode coupling the mode-1 jobs structurally cannot reach.
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install prerequisites
         run: |
@@ -315,7 +319,7 @@ jobs:
     # operator: git archive (same as the release tarball) extracted to a
     # neutral dir, then that tree's own install.sh --source local.
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install prerequisites
         run: |
@@ -372,7 +376,7 @@ jobs:
     # bootstrap) — from inside a checkout the local-checkout auto-detect would
     # win and the git path would never run.
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install prerequisites
         run: |

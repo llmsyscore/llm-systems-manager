@@ -135,7 +135,7 @@ if [[ ",$FORMATS," == *,deb,* ]]; then
   DEB_OUT="$OUT_DIR/${PKG_NAME}_${VERSION}_all.deb"
   rm -f "$DEB_OUT"
   fpm -t deb -a all -p "$DEB_OUT" \
-    --depends 'python3 (>= 3.10)' --depends python3-venv --depends python3-pip \
+    --depends 'python3 (>= 3.11)' --depends python3-venv --depends python3-pip \
     --depends ca-certificates --depends curl --depends jq \
     --depends sqlite3 --depends openssl \
     --deb-priority optional --category admin \
