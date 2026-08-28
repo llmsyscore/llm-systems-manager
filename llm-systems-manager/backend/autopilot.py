@@ -425,10 +425,8 @@ def route_sync_writes(desired: dict, observed: dict, glob: dict,
             if cur is not None:
                 writes.append(("pin", prov, model, None))
             continue
-        live = [aid for aid in placed
-                if (observed["agents"].get(aid) or {}).get("live")]
-        pick_from = live or placed
-        target = cur if cur in pick_from else pick_from[0]
+        # placed already contains live agents only.
+        target = cur if cur in placed else placed[0]
         if cur != target:
             writes.append(("pin", prov, model, target))
     return writes
@@ -521,8 +519,7 @@ class Reconciler:
         cutoff = now - _SAT_HISTORY_WINDOW_S
         for e in desired.get("entries") or []:
             k = f"{e['model']}/{e['provider']}"
-            placed = [aid for aid, a in observed["agents"].items()
-                      if e["model"] in (a["loaded"].get(e["provider"]) or [])]
+            placed = pl._placements(e, observed)
             vals = [s for aid in placed
                     if (s := (observed["agents"][aid].get("saturation") or {})
                         .get(e["provider"])) is not None]

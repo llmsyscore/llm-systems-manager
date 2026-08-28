@@ -126,6 +126,28 @@ def test_sat_history_ring_accumulates_and_trims_to_20_minutes():
     r.tick(now=2250.0)                     # 1000.0 is now > 20min stale
     assert [t for t, _ in r._sat_history["m1/llama"]] == [1100.0, 2250.0]
 
+def test_sat_history_ignores_dead_agents_stale_saturation():
+    # Dead A1 carries a frozen 0.95 saturation (#711).
+    state = {"enabled": True, "hosts": {}, "entries": [
+        {"model": "m1", "provider": "llama", "placement": "auto",
+         "failover": "semi", "priority": 1,
+         "min_replicas": 1, "max_replicas": 2}]}
+    A2 = "b" * 32
+    observed = {"agents": {
+        A1: {"provider_caps": ["llama"], "live": False, "vram_total_mb": 24000,
+             "vram_free_mb": 20000, "loaded": {"llama": ["m1"]},
+             "server_state": "awake", "idle_since": None,
+             "saturation": {"llama": 0.95}},
+        A2: {"provider_caps": ["llama"], "live": True, "vram_total_mb": 24000,
+             "vram_free_mb": 20000, "loaded": {"llama": ["m1"]},
+             "server_state": "awake", "idle_since": None,
+             "saturation": {"llama": 0.2}}},
+        "model_sizes_mb": {"llama:m1": 8000}, "sat_history": {}}
+    r = ap.Reconciler(get_state=lambda: state, build_observed=lambda: observed,
+                      executor=lambda a: True)
+    r.tick(now=1000.0)
+    assert r._sat_history["m1/llama"] == [(1000.0, 0.2)]
+
 def test_in_flight_migrations_tracked_during_failover_execution():
     seen = {}
     state = {"enabled": True, "hosts": {}, "entries": [

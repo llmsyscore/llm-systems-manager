@@ -27,8 +27,10 @@ def _key(e) -> str:
     return f"{e['model']}/{e['provider']}"
 
 def _placements(entry, observed) -> "list[str]":
+    """Live agents whose last sample shows the model loaded; a dead agent's
+    frozen sample never counts as a placement."""
     return [aid for aid, a in observed["agents"].items()
-            if entry["model"] in (a["loaded"].get(entry["provider"]) or [])]
+            if a["live"] and entry["model"] in (a["loaded"].get(entry["provider"]) or [])]
 
 def _fresh_placed(k, ledger, now) -> "list[str]":
     # Ledger placements younger than PLACEMENT_FRESH_S: loads issued but
@@ -41,7 +43,7 @@ def _fresh_placed(k, ledger, now) -> "list[str]":
 def _effective_placements(entry, k, observed, ledger, now) -> "list[str]":
     placed = _placements(entry, observed)
     for aid in _fresh_placed(k, ledger, now):
-        if aid not in placed and aid in observed["agents"]:
+        if aid not in placed and aid in observed["agents"] and observed["agents"][aid]["live"]:
             placed.append(aid)
     return placed
 
@@ -335,7 +337,9 @@ def plan(desired: dict, observed: dict, ledger: dict, now: float) -> "list[Actio
         else:                                 # decision == "down"
             if e["provider"] == "vllm":
                 continue        # no agent-side unload path for vLLM
-            pak = placed_at.get(k) or {}
+            # LRU among live placements only.
+            pak = {aid: ts for aid, ts in (placed_at.get(k) or {}).items()
+                   if aid in placed}
             if not pak:
                 continue
             lru_aid, _ = min(pak.items(), key=lambda kv: kv[1])

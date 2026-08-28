@@ -114,6 +114,20 @@ def test_failover_migrates_after_dwell():
     acts = pl.plan(_desired([E]), obs, led, now=100000.0)
     assert [a.kind for a in acts] == ["load"] and acts[0].agent_id == A2
 
+def test_dead_agent_stale_loaded_sample_does_not_count_as_placement():
+    # Dead A1 with "m1 loaded" frozen in its last sample (#711).
+    obs = _obs(_agents(**{A1: {"live": False, "loaded": {"llama": ["m1"]}}}))
+    acts = pl.plan(_desired([E]), obs, _ledger(), now=100000.0)
+    assert [a.kind for a in acts] == ["load"] and acts[0].agent_id == A2
+    assert acts[0].reason.startswith("failover:")
+    st = pl.entry_status(_desired([E]), obs)
+    assert st["m1/llama"]["placed"] == 0
+
+def test_fresh_ledger_placement_on_dead_agent_does_not_count():
+    led = _ledger(); led["placed_at"]["m1/llama"] = {A1: 990.0}
+    obs = _obs(_agents(**{A1: {"live": False}}))
+    assert pl._effective_placements(E, "m1/llama", obs, led, 1000.0) == []
+
 def test_one_migration_in_flight_globally():
     led = _ledger(); led["in_flight_migrations"] = 1
     obs = _obs(_agents(**{A1: {"live": False}}))

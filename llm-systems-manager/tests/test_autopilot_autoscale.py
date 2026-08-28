@@ -47,7 +47,7 @@ def _agents(**over):
              "vram_free_mb": 20000, "loaded": {"llama": []},
              "server_state": "awake", "idle_since": None, "saturation": {}}}
     for k, v in over.items():
-        base[k].update(v)
+        base.setdefault(k, dict(base[A2])).update(v)
     return base
 
 def _desired(entries):
@@ -92,3 +92,30 @@ def test_plan_scale_down_picks_lru_agent_from_placed_at():
     scale_downs = [a for a in acts if a.kind == "scale_down"]
     assert len(scale_downs) == 1
     assert scale_downs[0].agent_id == A1
+
+
+def test_plan_scale_down_never_targets_a_dead_agent():
+    # A1 is the LRU in placed_at but dead (#713).
+    e = {**E, "min_replicas": 1, "max_replicas": 3}
+    A3 = "c" * 32
+    agents = _agents(**{A1: {"live": False, "loaded": {"llama": ["m1"]}},
+                        A2: {"loaded": {"llama": ["m1"]}},
+                        A3: {"loaded": {"llama": ["m1"]}}})
+    obs = _obs(agents, sat_history={"m1/llama": _hist(
+        [(t, 0.1) for t in range(0, 1001, 100)])})
+    led = _ledger()
+    led["placed_at"]["m1/llama"] = {A1: 100.0, A2: 500.0, A3: 700.0}
+    acts = pl.plan(_desired([e]), obs, led, now=1000.0)
+    scale_downs = [a for a in acts if a.kind == "scale_down"]
+    assert [a.agent_id for a in scale_downs] == [A2]
+
+def test_plan_scale_down_skipped_when_only_dead_agents_in_ledger():
+    e = {**E, "min_replicas": 1, "max_replicas": 3}
+    obs = _obs(_agents(**{A1: {"loaded": {"llama": ["m1"]}},
+                          A2: {"loaded": {"llama": ["m1"]}}}),
+               sat_history={"m1/llama": _hist(
+                   [(t, 0.1) for t in range(0, 1001, 100)])})
+    led = _ledger()
+    led["placed_at"]["m1/llama"] = {"d" * 32: 100.0}   # dead, no longer observed
+    acts = pl.plan(_desired([e]), obs, led, now=1000.0)
+    assert [a for a in acts if a.kind == "scale_down"] == []
