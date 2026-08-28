@@ -1476,6 +1476,29 @@ async def llama_openai_completions(request: Request,
     return await _llama_openai_forward("completions", request, authorization)
 
 
+_LLAMA_UNLOAD_SETTLE_S = 30.0
+
+
+def _llama_wait_unloaded(api: str, timeout_s: float = _LLAMA_UNLOAD_SETTLE_S,
+                         poll_s: float = 0.5) -> bool:
+    """Poll /v1/models until no instance is loaded/loading/sleeping; False on timeout."""
+    deadline = time.monotonic() + timeout_s
+    while True:
+        try:
+            mr = requests.get(f"{api}/v1/models", timeout=5)
+            busy = [m.get("id") for m in (mr.json() or {}).get("data", [])
+                    if isinstance(m.get("status"), dict)
+                    and m["status"].get("value") in ("loaded", "loading", "sleeping")]
+        except Exception:
+            busy = []
+        if not busy:
+            return True
+        if time.monotonic() >= deadline:
+            log.warning("llama unload did not settle within %.0fs: %s", timeout_s, busy)
+            return False
+        time.sleep(poll_s)
+
+
 def llama_load_endpoint(body: dict, authorization: Optional[str] = Header(default=None)) -> dict[str, Any]:
     _require_ctx().check_bearer(authorization); _llama_check_enabled()
     model_id = body.get("model")
@@ -1492,7 +1515,9 @@ def llama_load_endpoint(body: dict, authorization: Optional[str] = Header(defaul
                                    json={"model": m["id"]}, timeout=30)
                 log.info("Unload response: %s %s", ur.status_code, ur.text[:200])
 
-        time.sleep(2)
+        if not _llama_wait_unloaded(api):
+            return {"ok": False,
+                    "error": "previous model instance did not unload in time"}
         log.info("Loading model: %s", model_id)
         lr = requests.post(f"{api}/models/load", json={"model": model_id}, timeout=120)
         log.info("Load response: %s %s", lr.status_code, lr.text[:200])

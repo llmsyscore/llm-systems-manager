@@ -650,10 +650,15 @@ def make_executor(deps: dict, entries_by_key):
         else:
             deps["clear_pin_if"](action.provider, action.model, action.agent_id)
 
+    def _call(provider, method, path, body=None) -> bool:
+        """proxy call that also honours an ok:false body on an HTTP 2xx."""
+        ok, resp = deps["proxy"](provider, method, path, body)
+        return bool(ok) and (resp or {}).get("ok", True) is not False
+
     def _load(action) -> bool:
         provider, model, agent_id = action.provider, action.model, action.agent_id
         if provider in ("llama", "lms"):
-            ok, _body = deps["proxy"](provider, "POST", f"/{provider}/load", {"model": model})
+            ok = _call(provider, "POST", f"/{provider}/load", {"model": model})
         elif provider == "vllm":
             ok = deps["vllm_svc"](agent_id, model)
         else:
@@ -668,8 +673,8 @@ def make_executor(deps: dict, entries_by_key):
         return ok
 
     def _unload(action) -> bool:
-        ok, _body = deps["proxy"](action.provider, "POST",
-                                  f"/{action.provider}/unload", {"model": action.model})
+        ok = _call(action.provider, "POST", f"/{action.provider}/unload",
+                   {"model": action.model})
         if ok:
             _route_replica(action, False)
         return ok
@@ -695,7 +700,7 @@ def make_executor(deps: dict, entries_by_key):
             elif action.kind in _UNLOAD_KINDS:
                 ok = _unload(action)
             elif action.kind == "wake":
-                ok, _body = deps["proxy"](action.provider, "POST", "/llama/server/wake", {})
+                ok = _call(action.provider, "POST", "/llama/server/wake", {})
             else:
                 ok = False
         except Exception as e:

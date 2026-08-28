@@ -182,3 +182,19 @@ def test_unknown_provider_unload_is_unsupported():
     a, entries = _act(kind="scale_down", provider="nope")
     assert ap.make_executor(deps, entries)(a) is False
     assert ("autopilot:scale_down", "unsupported") in log["audit"]
+
+# ── #727: an HTTP-200 body with ok:false is a failed call ─────────────────
+
+def test_load_with_ok_false_body_is_a_failure():
+    log, deps = _deps()
+    deps["proxy"] = lambda *a, **k: (True, {"ok": False, "error": "model limit reached"})
+    act, entries = _act()
+    assert ap.make_executor(deps, entries)(act) is False
+    assert ("autopilot:load", "fail") in log["audit"] and log["pin"] == []
+
+def test_unload_with_ok_false_body_is_a_failure():
+    log, deps = _deps()
+    deps["proxy"] = lambda *a, **k: (True, {"ok": False})
+    act, entries = _act(kind="scale_down")
+    assert ap.make_executor(deps, entries)(act) is False
+    assert log["clear_if"] == [] and ("autopilot:scale_down", "fail") in log["audit"]
