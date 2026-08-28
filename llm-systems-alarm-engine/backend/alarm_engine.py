@@ -18,10 +18,12 @@ Combines all components:
 from __future__ import annotations
 
 import asyncio
+import hmac
 import json
 import logging
 import logging.handlers
 import os
+import re
 import sys
 import time
 from contextlib import asynccontextmanager
@@ -67,7 +69,7 @@ from .storage.influxdb_client import InfluxDBClient
 # (-1, -2, …) for same-day iterations; roll the date for a new day's first
 # change.
 # ---------------------------------------------------------------------------
-__version__ = "v2026.08.27-2"
+__version__ = "v2026.08.28-1"
 from .storage import influx_monitor as _influx_monitor
 from .models.alarm_rule import (
     AlarmRuleCreate,
@@ -925,7 +927,8 @@ from . import _archive as _ae_archive
 from datetime import datetime, timedelta, timezone
 from fastapi import UploadFile, File, Form, Body, HTTPException, Depends
 from .api.auth import (management_bearer_ok, require_management_token,
-                       require_strict_management_token)
+                       require_strict_management_token,
+                       _configured_management_token, _UNSET as _AE_UNSET_SECRETS)
 
 _AE_EXPORT_DBS = ["data/ae_notif_rules.db", "data/ae_alarms.db"]
 
@@ -1277,6 +1280,60 @@ def _config_sections_snapshot() -> "dict | None":
 # Whitelisted sections as loaded at boot; restart_pending derives from drift.
 _BOOT_CONFIG_SECTIONS = _config_sections_snapshot()
 
+# Secret leaves under the whitelisted sections (mirrors the manager catalog).
+_AE_SECRET_PATHS = frozenset({
+    "alarm_engine.ingest_token", "alarm_engine.management_token",
+    "influxdb.tokens.metrics", "influxdb.tokens.metrics_rollup",
+    "influxdb.tokens.admin", "notifications.smtp.password",
+    "notifications.twilio.account_sid", "notifications.twilio.auth_token",
+    "notifications.discord.webhook_url",
+})
+_AE_SECRET_KEY_RE = re.compile(
+    r"token|password|passphrase|secret|api_key|webhook|private_key", re.I)
+_AE_SECRET_MASK = "********"
+
+
+def _is_secret_leaf(path: str, value) -> bool:
+    if path in _AE_SECRET_PATHS:
+        return True
+    return isinstance(value, (str, list)) and bool(
+        _AE_SECRET_KEY_RE.search(path.rsplit(".", 1)[-1]))
+
+
+def _secret_is_set(value) -> bool:
+    if isinstance(value, list):
+        return bool(value)
+    return value is not None and value not in _AE_UNSET_SECRETS
+
+
+def _secret_digest(value, key: str) -> str:
+    """HMAC-SHA256 of a secret keyed by the management token (drift compare)."""
+    canon = value if isinstance(value, str) else json.dumps(
+        value, sort_keys=True, separators=(",", ":"))
+    return hmac.new(key.encode(), canon.encode(), "sha256").hexdigest()
+
+
+def _mask_config_sections(sections: dict, key: str) -> tuple[dict, dict]:
+    """(masked sections, {path: {status, digest}}) with secret leaves replaced."""
+    secrets: dict = {}
+
+    def _walk(node, prefix):
+        out = {}
+        for k, v in node.items():
+            path = f"{prefix}{k}"
+            if isinstance(v, dict):
+                out[k] = _walk(v, path + ".")
+            elif not _is_secret_leaf(path, v):
+                out[k] = v
+            elif _secret_is_set(v):
+                out[k] = _AE_SECRET_MASK
+                secrets[path] = {"status": "set", "digest": _secret_digest(v, key)}
+            else:
+                out[k] = v
+                secrets[path] = {"status": "unset", "digest": ""}
+        return out
+    return _walk(sections, ""), secrets
+
 
 @app.get("/api/alarm/admin/config")
 async def ae_config_get(_auth: None = Depends(require_strict_management_token)):
@@ -1287,7 +1344,9 @@ async def ae_config_get(_auth: None = Depends(require_strict_management_token)):
         raise HTTPException(status_code=500, detail="config file unparseable")
     pending = (_BOOT_CONFIG_SECTIONS is not None
                and sections != _BOOT_CONFIG_SECTIONS)
-    return {"ok": True, "sections": sections, "restart_pending": pending}
+    masked, secrets = _mask_config_sections(sections, _configured_management_token())
+    return {"ok": True, "sections": masked, "secrets": secrets,
+            "restart_pending": pending}
 
 
 @app.put("/api/alarm/admin/config")
@@ -1307,6 +1366,14 @@ async def ae_config_put(body: dict = Body(...),
     if bad:
         raise HTTPException(status_code=400,
                             detail=f"paths not editable via this endpoint: {bad}")
+    # A masked secret echoed back means "unchanged".
+    unchanged = sorted(k for k, v in changes.items()
+                       if v == _AE_SECRET_MASK and _is_secret_leaf(str(k), v))
+    if unchanged:
+        changes = {k: v for k, v in changes.items() if k not in unchanged}
+        logger.info("AE config update skipped masked secrets: %s", unchanged)
+        if not changes and not removals:
+            return {"ok": True, "applied": []}
     try:
         _sio.apply_patches(changes, removals=[str(r) for r in removals])
     except _sio.SettingsValidationError as e:

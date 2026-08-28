@@ -159,7 +159,7 @@ def _local_hostname() -> str:
 # banner reads it. Bump suffix (-1, -2, …) for same-day iterations; roll
 # the date for a new day's first change.
 # ---------------------------------------------------------------------------
-__version__ = "v2026.08.27-7"
+__version__ = "v2026.08.28-1"
 
 # Wall-clock at first import (Cheroot main process); the shutdown banner
 # reads it for the uptime line.
@@ -3319,7 +3319,7 @@ def admin_settings_get():
         return deny
     payload = settings_catalog.describe()
     topo = install_topology()
-    ae_flat, ae_pending = _fetch_ae_settings_state()
+    ae_flat, ae_pending, ae_secrets = _fetch_ae_settings_state()
     ae_reachable = not topo["split"]
     if topo["split"]:
         ae_reachable = ae_flat is not None
@@ -3330,7 +3330,8 @@ def admin_settings_get():
                 continue
             p = e["path"]
             if ae_flat is not None and p in ae_flat:
-                if e["secret"]:
+                if e["secret"] or p in (ae_secrets or {}):
+                    payload["values"].pop(p, None)
                     payload["secrets"][p] = settings_catalog.secret_status(ae_flat[p])
                 else:
                     payload["values"][p] = ae_flat[p]
@@ -3339,7 +3340,7 @@ def admin_settings_get():
                 payload["secrets"].pop(p, None)
     file_vals = settings_catalog.file_catalog_values()
     if topo["split"] and ae_flat is not None:
-        payload["drift"] = _settings_drift(ae_flat, file_vals)
+        payload["drift"] = _settings_drift(ae_flat, file_vals, ae_secrets)
     payload["ok"] = True
     payload["topology"] = {"split": topo["split"], "ae_config_reachable": ae_reachable}
     # Manager pending derives from file drift vs boot; AE pending comes from
@@ -3358,7 +3359,27 @@ def admin_settings_get():
     return jsonify(payload)
 
 
-def _settings_drift(ae_flat: dict, file_vals: "dict | None") -> dict:
+_AE_SECRET_MASK = "********"
+
+
+def _ae_secret_digest(value) -> str:
+    """HMAC-SHA256 keyed by the AE bearer; matches the AE's config digests."""
+    canon = value if isinstance(value, str) else json.dumps(
+        value, sort_keys=True, separators=(",", ":"))
+    return hmac.new(_AE_BEARER.encode(), canon.encode(), "sha256").hexdigest()
+
+
+def _ae_secret_matches(local, info: dict) -> bool:
+    """True when a local secret equals the AE's masked copy (status + digest)."""
+    local_set = settings_catalog.secret_status(local) == "set"
+    if local_set != (info.get("status") == "set"):
+        return False
+    return (not local_set) or hmac.compare_digest(
+        _ae_secret_digest(local), str(info.get("digest") or ""))
+
+
+def _settings_drift(ae_flat: dict, file_vals: "dict | None",
+                    ae_secrets: "dict | None" = None) -> dict:
     """{path: {local, ae}} for both-owned settings whose two copies differ.
     Secrets report set/unset chips, never values."""
     if file_vals is None:
@@ -3373,6 +3394,15 @@ def _settings_drift(ae_flat: dict, file_vals: "dict | None") -> dict:
         if local is settings_catalog._MISSING:
             local = None
         ae = ae_flat.get(p)
+        info = (ae_secrets or {}).get(p) if e["secret"] else None
+        if info is None and e["secret"] and ae == _AE_SECRET_MASK:
+            info = {"status": "set", "digest": _ae_secret_digest(local)}
+        if info is not None:
+            if not _ae_secret_matches(local, info):
+                out[p] = {"secret": True,
+                          "local": settings_catalog.secret_status(local),
+                          "ae": "set" if info.get("status") == "set" else "unset"}
+            continue
         if local == ae:
             continue
         if e["secret"]:
@@ -3505,20 +3535,23 @@ def _forward_settings_to_ae(remote: dict, removals: "list | None" = None,
         return "alarm engine unreachable — queued; retrying in the background"
 
 
-def _fetch_ae_settings_state() -> "tuple[dict | None, bool | None]":
-    """(flat {dotted.path: value}, restart_pending) from the AE's config API;
-    (None, None) when unreachable or unauthorized."""
+def _fetch_ae_settings_state() -> "tuple[dict | None, bool | None, dict | None]":
+    """(flat {dotted.path: value}, restart_pending, secrets {path: {status, digest}})
+    from the AE's config API; (None, None, None) when unreachable or unauthorized."""
     base = (_alarm_engine_url or "").rstrip("/")
     if not base:
-        return None, None
+        return None, None, None
     try:
         r = _ae_session.get(base + "/api/alarm/admin/config", timeout=(1, 3))
         if not r.ok:
-            return None, None
+            return None, None, None
         data = r.json() or {}
         sections = data.get("sections") or {}
+        secrets = data.get("secrets")
+        if not isinstance(secrets, dict):
+            secrets = None
     except Exception:
-        return None, None
+        return None, None, None
     flat: dict = {}
 
     def _walk(node, prefix):
@@ -3529,7 +3562,7 @@ def _fetch_ae_settings_state() -> "tuple[dict | None, bool | None]":
                 flat[f"{prefix}{k}"] = v
     _walk(sections, "")
     pending = data.get("restart_pending")
-    return flat, (bool(pending) if pending is not None else None)
+    return flat, (bool(pending) if pending is not None else None), secrets
 
 
 @app.route("/api/admin/system-health", methods=["GET"])
