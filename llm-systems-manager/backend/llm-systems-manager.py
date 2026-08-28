@@ -3721,24 +3721,25 @@ def _pki_ensure_ca():
 
 
 _MANAGER_SECRET_LOCK = threading.Lock()
-_manager_secret_cache = None  # bytes once minted/read
+_MANAGER_SECRET_CACHE: dict = {}  # {"bytes": secret} once minted/read
 
 
 def _manager_secret() -> bytes:
     """Persistent HMAC secret, cached after first read; a losing concurrent minter adopts the on-disk value."""
-    global _manager_secret_cache
-    if _manager_secret_cache:
-        return _manager_secret_cache
+    cached = _MANAGER_SECRET_CACHE.get("bytes")
+    if cached:
+        return cached
     with _MANAGER_SECRET_LOCK:
-        if _manager_secret_cache:
-            return _manager_secret_cache
+        cached = _MANAGER_SECRET_CACHE.get("bytes")
+        if cached:
+            return cached
         try:
             b = MANAGER_SECRET_FILE.read_bytes()
         except FileNotFoundError:
             b = None
         if not b:
             b = _mint_manager_secret(replace_empty=b is not None)
-        _manager_secret_cache = b
+        _MANAGER_SECRET_CACHE["bytes"] = b
         return b
 
 

@@ -74,7 +74,7 @@ def test_agent_request_refuses_dot_segments(monkeypatch):
 def secret_file(tmp_path, monkeypatch):
     p = tmp_path / "data" / "manager_secret"
     monkeypatch.setattr(M, "MANAGER_SECRET_FILE", p)
-    monkeypatch.setattr(M, "_manager_secret_cache", None)
+    monkeypatch.setattr(M, "_MANAGER_SECRET_CACHE", {})
     return p
 
 
