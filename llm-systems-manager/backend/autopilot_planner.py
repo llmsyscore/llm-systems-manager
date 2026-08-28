@@ -47,11 +47,12 @@ def _fresh_placed(k, ledger, now) -> "list[str]":
             if now - ts < PLACEMENT_FRESH_S]
 
 def _with_fresh(placed, k, observed, ledger, now) -> "list[str]":
-    """placed plus fresh in-flight ledger placements on reporting agents."""
+    """New list: placed plus fresh in-flight ledger placements on reporting agents."""
+    out = list(placed)
     for aid in _fresh_placed(k, ledger, now):
-        if aid not in placed and aid in observed["agents"] and _reporting(observed["agents"][aid]):
-            placed.append(aid)
-    return placed
+        if aid not in out and aid in observed["agents"] and _reporting(observed["agents"][aid]):
+            out.append(aid)
+    return out
 
 def _effective_placements(entry, k, observed, ledger, now) -> "list[str]":
     return _with_fresh(_placements(entry, observed), k, observed, ledger, now)
@@ -170,19 +171,20 @@ def _fit_and_size(e, aid, a, free, free_ram, observed):
               budget.get(aid, 0) >= (size or 0) + VRAM_HEADROOM_MB
     return fit, size
 
-def _scale_down_target(e, confirmed, observed, pak, touched,
+def _scale_down_target(e, confirmed, observed, pak, unload_backoff, touched,
                        last_action_ts, now) -> "str | None":
-    """LRU live confirmed copy by placed_at, never the pinned host, the routed
-    copy only as a last resort. None when the pick is touched or cooling down."""
-    cands = [aid for aid in confirmed
-             if aid != e["placement"] and observed["agents"][aid]["live"]]
-    if not cands:
-        return None
+    """First eligible copy in LRU order by placed_at: never the pinned host, and
+    the routed copy only when it is the sole other copy. None when nothing is eligible."""
+    others = [aid for aid in confirmed if aid != e["placement"]]
     routed = ((observed.get("route_pins") or {}).get(e["provider"]) or {}).get(e["model"])
-    aid = min(cands, key=lambda x: (x == routed, pak.get(x, 0.0)))
-    if aid in touched or now - last_action_ts.get(aid, 0) < COOLDOWN_S:
-        return None
-    return aid
+    if routed in others and len(others) > 1:
+        others.remove(routed)
+    for aid in sorted(others, key=lambda x: pak.get(x, 0.0)):
+        if (observed["agents"][aid]["live"] and aid not in touched
+                and now >= unload_backoff.get(aid, 0)
+                and now - last_action_ts.get(aid, 0) >= COOLDOWN_S):
+            return aid
+    return None
 
 def _live_capable(entry, candidates, observed) -> "list[str]":
     out = []
@@ -271,11 +273,13 @@ def plan(desired: dict, observed: dict, ledger: dict, now: float) -> "list[Actio
     entries = sorted(desired.get("entries") or [], key=lambda e: e["priority"])
     residents = _residents(desired, observed, ledger, now)
     managed = {(e["provider"], e["model"]) for e in entries}
+    confirmed_by_k: "dict[str, list[str]]" = {}   # observed placements, per entry
     for e in entries:
         k = _key(e)
         if now < (ledger.get("backoff_until") or {}).get(k, 0):
             continue
-        placed = _effective_placements(e, k, observed, ledger, now)
+        confirmed_by_k[k] = _placements(e, observed)
+        placed = _with_fresh(confirmed_by_k[k], k, observed, ledger, now)
         want = e["min_replicas"]
         if len(placed) >= want:
             continue
@@ -323,14 +327,10 @@ def plan(desired: dict, observed: dict, ledger: dict, now: float) -> "list[Actio
         k = _key(e)
         if now < (ledger.get("backoff_until") or {}).get(k, 0):
             continue
-        confirmed = _placements(e, observed)
-        placed = _with_fresh(list(confirmed), k, observed, ledger, now)
+        confirmed = confirmed_by_k[k]
+        placed = _with_fresh(confirmed, k, observed, ledger, now)
         surplus = len(placed) > e["max_replicas"]
         if surplus:
-            # Only when every copy is observed and live (nothing in flight, nothing stale).
-            if (len(confirmed) != len(placed)
-                    or not all(observed["agents"][aid]["live"] for aid in placed)):
-                continue
             decision = "down"
         elif e["max_replicas"] <= e["min_replicas"] or len(placed) < e["min_replicas"]:
             continue
@@ -339,6 +339,11 @@ def plan(desired: dict, observed: dict, ledger: dict, now: float) -> "list[Actio
             decision = evaluate_autoscale(e, placed, hist, now)
             if decision == "hold":
                 continue
+        # Down only once every copy is observed and live (nothing in flight, nothing stale).
+        if decision == "down" and (
+                len(confirmed) != len(placed)
+                or not all(observed["agents"][aid]["live"] for aid in placed)):
+            continue
         auto = _may_auto(e, desired, e["provider"])
         if decision == "up":
             candidates = ([e["placement"]] if e["placement"] != "auto"
@@ -372,12 +377,15 @@ def plan(desired: dict, observed: dict, ledger: dict, now: float) -> "list[Actio
             if e["provider"] not in UNLOADABLE_PROVIDERS:
                 continue
             aid = _scale_down_target(e, confirmed, observed, placed_at.get(k) or {},
+                                     (ledger.get("unload_backoff") or {}).get(k) or {},
                                      touched, last_action_ts, now)
             if aid is None:
                 continue
-            reason = (f"{k}: surplus replica ({len(placed)}/{e['max_replicas']}) "
-                      f"reclaimed from {aid}" if surplus
-                      else f"{k}: autoscale down -> {aid}")
+            if surplus:
+                reason = (f"{k}: surplus replica ({len(placed)}/{e['max_replicas']}) "
+                          f"reclaimed from {aid}")
+            else:
+                reason = f"{k}: autoscale down -> {aid}"
             actions.append(Action(
                 kind="scale_down", provider=e["provider"], model=e["model"],
                 agent_id=aid, reason=reason, auto=auto, entry_key=k))

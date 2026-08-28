@@ -576,7 +576,8 @@ def test_surplus_reclaim_respects_cooldown_and_one_per_pass():
     ag[A3] = {**ag[A1], "loaded": {"llama": ["m1"]}}
     led = _ledger(); led["placed_at"]["m1/llama"] = {A1: 100.0, A2: 200.0, A3: 300.0}
     led["last_action_ts"][A1] = 99950.0                    # A1 inside COOLDOWN_S
-    assert pl.plan(_desired([E]), _obs(ag), led, now=100000.0) == []
+    acts = pl.plan(_desired([E]), _obs(ag), led, now=100000.0)
+    assert [(a.kind, a.agent_id) for a in acts] == [("scale_down", A2)]
     led["last_action_ts"] = {}
     acts = pl.plan(_desired([E]), _obs(ag), led, now=100000.0)
     assert [(a.kind, a.agent_id) for a in acts] == [("scale_down", A1)]
@@ -629,7 +630,7 @@ def test_autoscale_down_never_unloads_the_pinned_host():
     assert [(a.kind, a.agent_id) for a in acts] == [("scale_down", A2)]
     assert "autoscale down" in acts[0].reason
 
-def test_autoscale_down_never_picks_an_in_flight_or_stale_copy():
+def test_autoscale_down_waits_for_in_flight_or_stale_copies():
     e = {**E, "max_replicas": 3,
          "autoscale": {"target_saturation": 0.75, "up_window_s": 120,
                        "down_window_s": 900}}
@@ -639,5 +640,40 @@ def test_autoscale_down_never_picks_an_in_flight_or_stale_copy():
     led = _ledger(); led["placed_at"]["m1/llama"] = {A1: 10.0, A2: 5000.0, A3: 99990.0}
     hist = [(0.0, 0.05), (500.0, 0.05), (100000.0, 0.05)]
     obs = {**_obs(ag), "sat_history": {"m1/llama": hist}}
+    assert pl.plan(_desired([e]), obs, led, now=100000.0) == []
+    ag[A1].update(live=True, liveness="live")
+    led["placed_at"]["m1/llama"].pop(A3)
     acts = pl.plan(_desired([e]), obs, led, now=100000.0)
+    assert [(a.kind, a.agent_id) for a in acts] == [("scale_down", A1)]
+
+def test_scale_down_skips_pair_in_unload_backoff():
+    A3 = "c" * 32
+    ag = _both_loaded()
+    ag[A3] = {**ag[A1], "loaded": {"llama": ["m1"]}}
+    led = _ledger(); led["placed_at"]["m1/llama"] = {A1: 100.0, A2: 200.0, A3: 300.0}
+    led["unload_backoff"] = {"m1/llama": {A1: 100300.0}}
+    acts = pl.plan(_desired([E]), _obs(ag), led, now=100000.0)
     assert [(a.kind, a.agent_id) for a in acts] == [("scale_down", A2)]
+
+def test_scale_down_falls_through_to_next_lru_when_first_is_cooling():
+    A3 = "c" * 32
+    ag = _both_loaded()
+    ag[A3] = {**ag[A1], "loaded": {"llama": ["m1"]}}
+    led = _ledger(); led["placed_at"]["m1/llama"] = {A1: 100.0, A2: 200.0, A3: 300.0}
+    led["last_action_ts"][A1] = 99950.0
+    acts = pl.plan(_desired([E]), _obs(ag), led, now=100000.0)
+    assert [(a.kind, a.agent_id) for a in acts] == [("scale_down", A2)]
+
+def test_routed_copy_never_the_fallback_while_another_copy_exists():
+    led = _ledger(); led["placed_at"]["m1/llama"] = {A1: 100.0, A2: 5000.0}
+    led["unload_backoff"] = {"m1/llama": {A1: 100300.0}}
+    obs = {**_obs(_both_loaded()), "route_pins": {"llama": {"m1": A2}}}
+    assert pl.plan(_desired([E]), obs, led, now=100000.0) == []
+
+def test_build_observed_route_pins_ignores_non_dict_values():
+    import autopilot as ap
+    deps = {"agents": lambda: {"agents": {}, "global": {"llama_model_pins": ["bad"]}},
+            "liveness": lambda a: "live", "provider_snapshot": lambda p, a: {},
+            "saturation": lambda p, a: {}, "model_sizes": lambda: {},
+            "model_gpu_layers": lambda: {}}
+    assert ap.build_observed(deps)["route_pins"]["llama"] == {}

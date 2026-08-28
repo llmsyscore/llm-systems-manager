@@ -6,7 +6,8 @@ import autopilot_planner as pl
 
 A1, A2 = "a" * 32, "b" * 32
 
-def _mk(auto=False, exec_ok=True, loaded=(False,), route_sync=None, placed_at=None):
+def _mk(auto=False, exec_ok=True, loaded=(False,), route_sync=None, placed_at=None,
+        route_pins=None):
     calls = []
     state = {"enabled": True, "hosts": {}, "entries": [
         {"model": "m1", "provider": "llama", "placement": "auto",
@@ -17,7 +18,8 @@ def _mk(auto=False, exec_ok=True, loaded=(False,), route_sync=None, placed_at=No
               "vram_free_mb": 20000, "loaded": {"llama": ["m1"] if has else []},
               "server_state": "awake", "idle_since": None, "saturation": {}}
         for aid, has in zip((A1, A2), loaded)},
-        "model_sizes_mb": {"llama:m1": 8000}, "sat_history": {}}
+        "model_sizes_mb": {"llama:m1": 8000}, "sat_history": {},
+        "route_pins": route_pins or {}}
     r = ap.Reconciler(get_state=lambda: state,
                       build_observed=lambda: observed,
                       executor=lambda a: (calls.append(a), exec_ok)[1],
@@ -235,10 +237,25 @@ def test_auto_surplus_scale_down_hides_unloaded_copy_from_route_sync():
     assert observed["agents"][A1]["loaded"]["llama"] == []
     assert A1 not in r.ledger["placed_at"]["m1/llama"]
 
-def test_failed_surplus_scale_down_cools_agent_not_entry():
+def test_failed_surplus_scale_down_backs_off_that_pair_only():
     r, calls, _ = _mk(auto=True, exec_ok=False, loaded=(True, True),
-                      placed_at={A1: 100.0, A2: 500.0})
+                      placed_at={A1: 100.0, A2: 500.0},
+                      route_pins={"llama": {"m1": A2}})
     r.tick(now=1000.0)
-    assert [a.kind for a in calls] == ["scale_down"]
-    assert r.ledger["last_action_ts"][A1] == 1000.0
+    assert [a.kind for a in calls] == ["scale_down"] and calls[0].agent_id == A1
+    assert r.ledger["unload_backoff"]["m1/llama"] == {A1: 1300.0}
     assert "m1/llama" not in r.ledger["backoff_until"]
+    assert A1 not in r.ledger["last_action_ts"]
+    # Inside the window A1 is skipped and the routed copy A2 is never the fallback.
+    calls.clear()
+    r.tick(now=1030.0)
+    assert calls == []
+    r.tick(now=1400.0)
+    assert [a.agent_id for a in calls] == [A1]
+
+def test_unload_backoff_pruned_with_entry_and_agent():
+    r, _, observed = _mk(auto=True, loaded=(True, True))
+    r.ledger["unload_backoff"] = {"m1/llama": {A1: 5000.0, "z" * 32: 5000.0},
+                                  "gone/llama": {A1: 5000.0}}
+    r.tick(now=1000.0)
+    assert r.ledger["unload_backoff"] == {"m1/llama": {A1: 5000.0}}
