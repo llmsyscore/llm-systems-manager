@@ -1340,6 +1340,12 @@ def _agents_heartbeat():
             version_changed = bool(v and isinstance(v, str) and v != prev_version)
             if version_changed:
                 live["version"] = v
+            # Capabilities ride along too, so a /config/reload that enables a
+            # provider is honoured by the ingest gate within one heartbeat.
+            caps = body.get("capabilities")
+            if isinstance(caps, dict) and caps != live.get("capabilities"):
+                live["capabilities"] = caps
+                version_changed = True  # material change: flush now
             data["agents"][agent["agent_id"]] = live
             # load_agents returns the cached dict, so the mutations above are
             # already visible to in-process liveness reads without a write.

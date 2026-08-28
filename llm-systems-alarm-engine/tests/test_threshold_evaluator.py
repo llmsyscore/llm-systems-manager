@@ -7,7 +7,7 @@ on the returned AlertCreate (or None).
 """
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 from backend._time import now_utc
 from uuid import uuid4
 
@@ -216,6 +216,7 @@ class TestRuleGating:
 
     def test_quiet_hours_within_window_suppresses(self, evaluator, monkeypatch):
         # Pin "now" to 03:30 UTC so we control the quiet-hours math deterministically.
+        monkeypatch.setattr("backend.engine.threshold_evaluator._quiet_tz", lambda: timezone.utc)
         monkeypatch.setattr(
             "backend.engine.threshold_evaluator.now_utc",
             lambda: datetime(2026, 1, 1, 3, 30, 0),
@@ -229,6 +230,7 @@ class TestRuleGating:
         assert evaluator.evaluate_rule(rule, 100.0) is None
 
     def test_quiet_hours_outside_window_fires(self, evaluator, monkeypatch):
+        monkeypatch.setattr("backend.engine.threshold_evaluator._quiet_tz", lambda: timezone.utc)
         monkeypatch.setattr(
             "backend.engine.threshold_evaluator.now_utc",
             lambda: datetime(2026, 1, 1, 12, 0, 0),
@@ -243,6 +245,7 @@ class TestRuleGating:
 
     def test_quiet_hours_wraparound_midnight(self, evaluator, monkeypatch):
         # 22:00-06:00 wraps midnight; 03:00 is inside the window.
+        monkeypatch.setattr("backend.engine.threshold_evaluator._quiet_tz", lambda: timezone.utc)
         monkeypatch.setattr(
             "backend.engine.threshold_evaluator.now_utc",
             lambda: datetime(2026, 1, 1, 3, 0, 0),

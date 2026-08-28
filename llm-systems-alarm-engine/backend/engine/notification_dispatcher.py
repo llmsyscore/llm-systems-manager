@@ -119,6 +119,7 @@ class NotificationDispatcher:
 
         # Notification channels (channel_id -> NotificationChannel)
         self._channels: dict[str, NotificationChannel] = {}
+        self._sms_unsupported_warned: set = set()
 
         # Per-alert state used by the policy filters. In-memory only;
         # restarts reset everything (acceptable — a freshly-restarted
@@ -156,14 +157,6 @@ class NotificationDispatcher:
         channel = channel_create.to_channel()
         self._channels[str(channel.channel_id)] = channel
         self._update_channel_flags()
-        return channel
-
-    def update_channel(self, channel_id: str, updates: dict[str, Any]) -> Optional[NotificationChannel]:
-        """Update a notification channel."""
-        channel = self._channels.get(channel_id)
-        if not channel:
-            return None
-        # Apply updates to channel config
         return channel
 
     def remove_channel(self, channel_id: str) -> bool:
@@ -649,9 +642,13 @@ Time: {alert.created_at}
             if not config.sms or not config.sms.enabled:
                 continue
             message = f"[{alert.severity.upper()}] {(alert.rule_name or 'Alert')}: {alert.message}"
-            logger.info(f"SMS would be sent to {config.sms.to_number}: {message}")
+            if channel.channel_id not in self._sms_unsupported_warned:
+                self._sms_unsupported_warned.add(channel.channel_id)
+                logger.warning("SMS channel to %s is not implemented — nothing sent",
+                               config.sms.to_number)
             self._record_delivery(alert, channel, "sms", config.sms.to_number,
-                                  (alert.rule_name or "Alert"), message, success=True,
+                                  (alert.rule_name or "Alert"), message, success=False,
+                                  error_message="SMS sending is not implemented (no provider integration)",
                                   event=event)
 
     async def _send_webhook_channels(self, alert: Alert, channels: list[NotificationChannel],

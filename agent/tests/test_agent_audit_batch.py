@@ -309,3 +309,8 @@ def test_tarball_self_update_path_claims_and_releases():
     assert "_release_self_update()" in tarball_part[1], "tarball generator must release"
     assert "_release_self_update()" in frozen
     assert '_state["self_update_running"] = True' not in frozen
+
+
+def test_heartbeat_payload_advertises_capabilities():
+    body = _extract("heartbeat_loop")
+    assert '"samples_posted": _state.get("samples_posted"),\n                "capabilities": _capabilities(),' in body

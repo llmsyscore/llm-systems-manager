@@ -19,9 +19,17 @@ from ..models.metrics import MetricPoint
 from ..storage.repositories import RuleRepository, AlertRepository, MetricRepository
 from .alert_manager import AlertManager
 from .threshold_evaluator import ThresholdEvaluator
-from .anomaly_detector import AnomalyDetector
+from .anomaly_detector import AnomalyDetector, _to_naive_utc
 
 logger = logging.getLogger(__name__)
+
+
+def _point_age_s(point: MetricPoint) -> Optional[float]:
+    """Seconds since the point's timestamp (naive or tz-aware), None if it has none."""
+    ts = getattr(point, "timestamp", None)
+    if ts is None:
+        return None
+    return (now_utc() - _to_naive_utc(ts)).total_seconds()
 
 
 class RuleEngine:
@@ -36,7 +44,7 @@ class RuleEngine:
         metric_repo: Optional[MetricRepository] = None,
         threshold_evaluator: Optional[ThresholdEvaluator] = None,
         anomaly_detector: Optional[AnomalyDetector] = None,
-        evaluation_interval: float = 30.0,  # seconds
+        metric_max_age_s: float = 600.0,
     ):
         self.rule_repository = rule_repository
         self.alert_repository = alert_repository
@@ -47,11 +55,8 @@ class RuleEngine:
         self.threshold_evaluator = threshold_evaluator or ThresholdEvaluator(
             anomaly_detector=self.anomaly_detector
         )
-        self.evaluation_interval = evaluation_interval
-
-        # Background evaluation task
-        self._evaluation_task: Optional[asyncio.Task] = None
-        self._running = False
+        # Newest point older than this is stale: the rule is skipped, not evaluated.
+        self.metric_max_age_s = metric_max_age_s
 
         # Recent evaluations for logging
         self._recent_evaluations: list[dict] = []
@@ -72,41 +77,6 @@ class RuleEngine:
         # at the threshold). N is configured per-rule via auto_resolve_cycles;
         # a value of 0 disables auto-resolve for that rule.
         self._ok_streak: dict[str, int] = {}
-
-    async def start(self) -> None:
-        """Start the rule engine evaluation loop."""
-        if self._running:
-            return
-
-        self._running = True
-        self._evaluation_task = asyncio.create_task(self._evaluation_loop())
-        logger.info("Rule engine started")
-
-    async def stop(self) -> None:
-        """Stop the rule engine evaluation loop."""
-        self._running = False
-        if self._evaluation_task:
-            self._evaluation_task.cancel()
-            try:
-                await self._evaluation_task
-            except asyncio.CancelledError:
-                pass
-        self._evaluation_task = None
-        logger.info("Rule engine stopped")
-
-    async def _evaluation_loop(self) -> None:
-        """Continuous evaluation loop."""
-        while self._running:
-            try:
-                await self.evaluate_all()
-            except Exception:
-                logger.exception("Error during rule evaluation")
-
-            # Sleep in small increments to allow responsive stop
-            for _ in range(int(self.evaluation_interval * 10)):
-                if not self._running:
-                    break
-                await asyncio.sleep(0.1)
 
     async def evaluate_all(self) -> None:
         """Evaluate all enabled rules against current metrics."""
@@ -156,6 +126,19 @@ class RuleEngine:
             len(rules), cycle_ms, avg_rule_ms, triggered,
         )
 
+    def _log_evaluation(self, rule: AlarmRule, value: float, status: str, triggered: bool) -> None:
+        self._recent_evaluations.append({
+            "timestamp": now_utc().isoformat(),
+            "rule_id": str(rule.rule_id),
+            "rule_name": rule.name,
+            "metric": f"{rule.metric_source}/{rule.metric_name}",
+            "value": value,
+            "status": status,
+            "alert_triggered": triggered,
+        })
+        if len(self._recent_evaluations) > self._max_evaluations_log:
+            self._recent_evaluations = self._recent_evaluations[-self._max_evaluations_log:]
+
     async def _evaluate_rule(
         self,
         rule: AlarmRule,
@@ -190,6 +173,15 @@ class RuleEngine:
             return False
 
         current_value = metric_points[-1].value
+        age_s = _point_age_s(metric_points[-1])
+        if age_s is not None and age_s > self.metric_max_age_s:
+            logger.debug(
+                "Stale metric for rule %s (%s%s/%s): newest point is %.0fs old — skipped",
+                rule.name, scope, rule.metric_source, rule.metric_name, age_s,
+            )
+            self._ok_streak.pop(str(rule.rule_id), None)  # recovery must be re-proven on fresh data
+            self._log_evaluation(rule, current_value, "stale", False)
+            return False
 
         # Evaluate the rule
         alert_create = self.threshold_evaluator.evaluate_rule(
@@ -198,20 +190,8 @@ class RuleEngine:
 
         alert_triggered = alert_create is not None
 
-        # Log evaluation
-        self._recent_evaluations.append({
-            "timestamp": now_utc().isoformat(),
-            "rule_id": str(rule.rule_id),
-            "rule_name": rule.name,
-            "metric": f"{rule.metric_source}/{rule.metric_name}",
-            "value": current_value,
-            "status": "violation" if alert_triggered else "ok",
-            "alert_triggered": alert_triggered,
-        })
-
-        # Trim log
-        if len(self._recent_evaluations) > self._max_evaluations_log:
-            self._recent_evaluations = self._recent_evaluations[-self._max_evaluations_log:]
+        self._log_evaluation(rule, current_value,
+                             "violation" if alert_triggered else "ok", alert_triggered)
 
         # Process alert if triggered, or auto-resolve any active alert for
         # this rule once the metric has recovered for N consecutive cycles.
@@ -390,9 +370,5 @@ class RuleEngine:
             "violation_rate": round(violations / total * 100, 2) if total > 0 else 0,
         }
 
-    @property
-    def is_running(self) -> bool:
-        """Check if the rule engine is currently running."""
-        return self._running
 
     # metric_repo is now set in __init__ via dependency injection
