@@ -5,7 +5,8 @@ name: Release
 # workflow_call), and only then publish the GitHub Release + packages + ghcr
 # images. A build that fails either gate never becomes a published release
 # (#445, #701). workflow_dispatch (input: ref) runs build + both gates against
-# an existing tag WITHOUT publishing — a zero-clutter dry-run.
+# an existing tag WITHOUT publishing — a zero-clutter dry-run. Dispatch it FROM
+# that tag ("Use workflow from") so the compose gate checks out the same ref.
 
 on:
   push:
@@ -136,7 +137,6 @@ jobs:
     needs: build
     uses: ./.github/workflows/docker.yml
     with:
-      ref: ${{ inputs.ref || github.ref_name }}
       skip_arm64: true
     permissions:
       contents: read

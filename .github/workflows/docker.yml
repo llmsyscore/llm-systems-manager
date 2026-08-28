@@ -17,14 +17,10 @@ on:
   schedule:
     - cron: "37 5 * * *"
   workflow_dispatch:
-  # release.yml runs this as its pre-publish container gate.
+  # release.yml runs this as its pre-publish container gate; the called run
+  # checks out the caller's ref (the tag), so no ref input is needed.
   workflow_call:
     inputs:
-      ref:
-        description: "Git ref to build (empty = the triggering ref)"
-        type: string
-        required: false
-        default: ""
       skip_arm64:
         description: "Skip the arm64 build leg (release builds multi-arch itself)"
         type: boolean
@@ -41,8 +37,6 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7
-        with:
-          ref: ${{ inputs.ref || '' }}
 
       - name: Create .env
         run: |
@@ -158,8 +152,6 @@ jobs:
       packages: read
     steps:
       - uses: actions/checkout@v7
-        with:
-          ref: ${{ inputs.ref || '' }}
 
       - name: Check a released baseline image exists on ghcr
         run: |
@@ -294,8 +286,6 @@ jobs:
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v7
-        with:
-          ref: ${{ inputs.ref || '' }}
 
       - uses: docker/setup-qemu-action@v4
 
