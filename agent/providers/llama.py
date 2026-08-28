@@ -1477,20 +1477,26 @@ async def llama_openai_completions(request: Request,
 
 
 _LLAMA_UNLOAD_SETTLE_S = 30.0
+# Router statuses that hold the single model slot.
+_LLAMA_BUSY_STATUSES = ("loaded", "loading", "sleeping")
 
 
 def _llama_wait_unloaded(api: str, timeout_s: float = _LLAMA_UNLOAD_SETTLE_S,
                          poll_s: float = 0.5) -> bool:
-    """Poll /v1/models until no instance is loaded/loading/sleeping; False on timeout."""
+    """Poll /v1/models until no instance holds the slot; a failed poll counts
+    as busy. False once timeout_s elapses."""
     deadline = time.monotonic() + timeout_s
     while True:
+        remaining = deadline - time.monotonic()
         try:
-            mr = requests.get(f"{api}/v1/models", timeout=5)
+            mr = requests.get(f"{api}/v1/models", timeout=max(0.5, min(5.0, remaining)))
+            if not mr.ok:
+                raise RuntimeError(f"HTTP {mr.status_code}")
             busy = [m.get("id") for m in (mr.json() or {}).get("data", [])
                     if isinstance(m.get("status"), dict)
-                    and m["status"].get("value") in ("loaded", "loading", "sleeping")]
-        except Exception:
-            busy = []
+                    and m["status"].get("value") in _LLAMA_BUSY_STATUSES]
+        except Exception as e:
+            busy = [f"(poll failed: {e})"]
         if not busy:
             return True
         if time.monotonic() >= deadline:
@@ -1509,7 +1515,7 @@ def llama_load_endpoint(body: dict, authorization: Optional[str] = Header(defaul
         mr = requests.get(f"{api}/v1/models", timeout=5)
         for m in mr.json().get("data", []):
             st = m.get("status", {})
-            if isinstance(st, dict) and st.get("value") in ("loaded", "loading", "sleeping"):
+            if isinstance(st, dict) and st.get("value") in _LLAMA_BUSY_STATUSES:
                 log.info("Unloading %s before loading %s", m["id"], model_id)
                 ur = requests.post(f"{api}/models/unload",
                                    json={"model": m["id"]}, timeout=30)
@@ -1547,12 +1553,16 @@ def llama_unload_endpoint(body: dict, authorization: Optional[str] = Header(defa
     model_id = body.get("model")
     if not model_id:
         raise HTTPException(status_code=400, detail="model required")
+    api = _require_ctx().config.LLAMA_API_URL.rstrip("/")
     try:
-        resp = requests.post(f"{_require_ctx().config.LLAMA_API_URL.rstrip('/')}/models/unload",
-                             json={"model": model_id}, timeout=15)
-        return {"ok": True, "response": resp.json()}
+        resp = requests.post(f"{api}/models/unload", json={"model": model_id}, timeout=15)
+        body_resp = resp.json()
     except Exception as e:
         return {"ok": False, "error": str(e)}
+    if not _llama_wait_unloaded(api):
+        return {"ok": False, "error": "model instance did not unload in time",
+                "response": body_resp}
+    return {"ok": True, "response": body_resp}
 
 
 def llama_config_get(authorization: Optional[str] = Header(default=None)) -> dict[str, Any]:

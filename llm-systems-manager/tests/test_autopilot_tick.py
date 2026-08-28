@@ -260,7 +260,7 @@ def test_unload_backoff_pruned_with_entry_and_agent():
     r.tick(now=1000.0)
     assert r.ledger["unload_backoff"] == {"m1/llama": {A1: 5000.0}}
 
-# ── #727: the in-flight credit ends once the agent confirms the load ───────
+# ── the in-flight credit ends once the agent confirms the load ─────────────
 
 def test_confirmed_placement_loses_fresh_credit_after_observed_unload():
     r, calls, observed = _mk(auto=True)
@@ -287,6 +287,15 @@ def test_unconfirmed_placement_keeps_fresh_credit_until_window_ends():
     assert [a.kind for a in calls] == ["load"]
     assert out["entry_status"]["m1/llama"]["placed"] == 1
     assert A1 not in r.ledger["confirmed"].get("m1/llama", ())
+
+def test_failed_wake_does_not_back_off_the_entry():
+    r, calls, observed = _mk(auto=True)
+    observed["agents"][A1]["server_state"] = "sleeping"
+    r._exec = lambda a: (calls.append(a), a.kind != "wake")[1]
+    r.tick(now=1000.0)
+    assert [a.kind for a in calls] == ["wake", "load"]
+    assert "m1/llama" not in r.ledger["backoff_until"]
+    assert r.ledger["placed_at"]["m1/llama"][A1] == 1000.0
 
 def test_confirmed_pruned_with_placed_at_and_entry():
     r, _, observed = _mk(auto=False)

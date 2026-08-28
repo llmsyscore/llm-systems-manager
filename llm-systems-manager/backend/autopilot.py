@@ -409,8 +409,8 @@ def _empty_ledger() -> dict:
 
 
 def _copy_nested(d: dict) -> dict:
-    """Shallow copy of a {key: dict|set} map, one level down."""
-    return {k: (set(v) if isinstance(v, set) else dict(v)) for k, v in d.items()}
+    """Shallow copy of a {key: dict} map, one level down."""
+    return {k: dict(v) for k, v in d.items()}
 
 
 def route_sync_writes(desired: dict, observed: dict, glob: dict,
@@ -531,10 +531,10 @@ class Reconciler:
         confirmed = self.ledger["confirmed"]
         for k, amap in list(self.ledger["placed_at"].items()):
             model, _, provider = k.rpartition("/")
+            reported = set(pl._placements({"model": model, "provider": provider}, observed))
             for aid, ts in list(amap.items()):
                 agent = observed["agents"].get(aid)
-                if agent is not None and pl._reporting(agent) \
-                        and model in (agent["loaded"].get(provider) or []):
+                if aid in reported:
                     confirmed.setdefault(k, set()).add(aid)
                     continue
                 if now - ts < pl.PLACEMENT_FRESH_S:
@@ -587,7 +587,8 @@ class Reconciler:
         elif action.kind in _UNLOAD_KINDS:
             # Unload failures back off that entry+agent pair only.
             self.ledger["unload_backoff"].setdefault(k, {})[action.agent_id] = now + 300.0
-        else:
+        elif action.kind != "wake":
+            # A failed best-effort wake never backs the entry off.
             self.ledger["backoff_until"][k] = now + 300.0
         return ok
 
@@ -600,7 +601,7 @@ class Reconciler:
             "in_flight_migrations": self.ledger["in_flight_migrations"],
             "backoff_until": dict(self.ledger["backoff_until"]),
             "unload_backoff": _copy_nested(self.ledger["unload_backoff"]),
-            "confirmed": _copy_nested(self.ledger["confirmed"]),
+            "confirmed": {k: set(v) for k, v in self.ledger["confirmed"].items()},
         }
 
     def proposals(self) -> "list[dict]":
@@ -653,7 +654,7 @@ def make_executor(deps: dict, entries_by_key):
     def _call(provider, method, path, body=None) -> bool:
         """proxy call that also honours an ok:false body on an HTTP 2xx."""
         ok, resp = deps["proxy"](provider, method, path, body)
-        return bool(ok) and (resp or {}).get("ok", True) is not False
+        return bool(ok) and (not isinstance(resp, dict) or resp.get("ok", True) is not False)
 
     def _load(action) -> bool:
         provider, model, agent_id = action.provider, action.model, action.agent_id
@@ -719,6 +720,12 @@ def make_executor(deps: dict, entries_by_key):
 _METRICS_DB_PATH = Path(__file__).resolve().parents[2] / "data" / "metrics.db"
 
 
+def _agent_ok(r, body) -> bool:
+    """HTTP 2xx and, when the body is a dict, no ok:false in it."""
+    return (r is not None and r.ok
+            and (not isinstance(body, dict) or body.get("ok", True) is not False))
+
+
 def _prod_agent_call(agent_id: str, method: str, path: str,
                      json_body: "dict | None" = None, timeout: float = 30):
     """One HTTP hop to a specific agent id; headers match proxy_to_primary.
@@ -738,17 +745,20 @@ def _prod_agent_call(agent_id: str, method: str, path: str,
     return r, body
 
 
-# Covers the agent's unload(30s) + settle(2s) + load(120s) worst case.
-_LOAD_TIMEOUT_S = 180.0
+# Covers the agent's scan(5s) + unload(30s) + settle(30s) + load(120s) worst case.
+_LOAD_TIMEOUT_S = 200.0
+# Covers the agent's unload(15s) + settle(30s) worst case.
+_UNLOAD_TIMEOUT_S = 60.0
 
 
 def _make_prod_proxy(agent_id: str):
     """proxy dep bound to one action's target agent_id; load calls get the
     longer model-load timeout."""
     def _proxy(provider, method, path, json=None):
-        to = _LOAD_TIMEOUT_S if path.endswith("/load") else 30
+        to = (_LOAD_TIMEOUT_S if path.endswith("/load")
+              else _UNLOAD_TIMEOUT_S if path.endswith("/unload") else 30)
         r, body = _prod_agent_call(agent_id, method, path, json, timeout=to)
-        return (r is not None and r.ok), body
+        return _agent_ok(r, body), body
     return _proxy
 
 
@@ -831,8 +841,8 @@ def _prod_vllm_svc(agent_id: str, model: str) -> bool:
     if rewritten is None:
         return False
     body = {**rewritten, "restart": True}
-    r2, _body2 = _prod_agent_call(agent_id, "POST", "/vllm/server/svcconfig", body, timeout=60)
-    return r2 is not None and r2.ok
+    r2, body2 = _prod_agent_call(agent_id, "POST", "/vllm/server/svcconfig", body, timeout=60)
+    return _agent_ok(r2, body2)
 
 
 # Bounds audit_log growth from this module's own inserts (separate connection).

@@ -183,7 +183,7 @@ def test_unknown_provider_unload_is_unsupported():
     assert ap.make_executor(deps, entries)(a) is False
     assert ("autopilot:scale_down", "unsupported") in log["audit"]
 
-# ── #727: an HTTP-200 body with ok:false is a failed call ─────────────────
+# ── an HTTP-200 body with ok:false is a failed call ───────────────────────
 
 def test_load_with_ok_false_body_is_a_failure():
     log, deps = _deps()
