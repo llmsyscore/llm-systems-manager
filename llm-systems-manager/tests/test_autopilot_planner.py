@@ -114,6 +114,27 @@ def test_failover_migrates_after_dwell():
     acts = pl.plan(_desired([E]), obs, led, now=100000.0)
     assert [a.kind for a in acts] == ["load"] and acts[0].agent_id == A2
 
+def test_dead_agent_stale_loaded_sample_does_not_count_as_placement():
+    # Dead A1 with "m1 loaded" frozen in its last sample (#711).
+    obs = _obs(_agents(**{A1: {"live": False, "loaded": {"llama": ["m1"]}}}))
+    acts = pl.plan(_desired([E]), obs, _ledger(), now=100000.0)
+    assert [a.kind for a in acts] == ["load"] and acts[0].agent_id == A2
+    assert acts[0].reason.startswith("failover:")
+    st = pl.entry_status(_desired([E]), obs)
+    assert st["m1/llama"]["placed"] == 0
+
+def test_stale_agent_placement_still_counts_no_failover():
+    # Heartbeat lag (stale, not down) keeps the placement; no failover load.
+    obs = _obs(_agents(**{A1: {"live": False, "liveness": "stale",
+                               "loaded": {"llama": ["m1"]}}}))
+    assert pl.plan(_desired([E]), obs, _ledger(), now=100000.0) == []
+    assert pl.entry_status(_desired([E]), obs)["m1/llama"]["placed"] == 1
+
+def test_fresh_ledger_placement_on_dead_agent_does_not_count():
+    led = _ledger(); led["placed_at"]["m1/llama"] = {A1: 990.0}
+    obs = _obs(_agents(**{A1: {"live": False}}))
+    assert pl._effective_placements(E, "m1/llama", obs, led, 1000.0) == []
+
 def test_one_migration_in_flight_globally():
     led = _ledger(); led["in_flight_migrations"] = 1
     obs = _obs(_agents(**{A1: {"live": False}}))
@@ -423,6 +444,15 @@ def test_single_resident_can_displace_unmanaged_model():
     obs = {"agents": one, "model_sizes_mb": {"llama:m1": 4000}}
     acts = pl.plan(_desired([E]), obs, _ledger(), now=1000.0)
     assert [a.kind for a in acts] == ["load"] and acts[0].agent_id == A1
+
+def test_residents_ignore_down_agents_frozen_samples():
+    led = _ledger(); led["placed_at"]["m2/llama"] = {A2: 990.0}
+    obs = _obs(_agents(**{A1: {"live": False, "loaded": {"llama": ["m1"]}},
+                          A2: {"live": False, "liveness": "down"}}))
+    assert pl._residents(_desired([E, {**E, "model": "m2"}]), obs, led, 1000.0) == {}
+    obs["agents"][A2]["liveness"] = "stale"
+    assert pl._residents(_desired([E, {**E, "model": "m2"}]), obs, led, 1000.0) == {
+        ("llama", A2): "m2"}
 
 def test_lms_multi_model_co_placement_still_allowed():
     e1 = {**E, "model": "x", "provider": "lms", "priority": 1}

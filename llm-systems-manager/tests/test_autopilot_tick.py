@@ -107,6 +107,24 @@ def test_placed_at_not_pruned_for_dead_agent():
     r.tick(now=1000.0)
     assert r.ledger["placed_at"]["m1/llama"][A1] == 500.0
 
+def test_placed_at_pruned_for_unregistered_agent_after_grace():
+    r, _, obs = _mk(auto=False)
+    gone = "z" * 32
+    r.ledger["placed_at"]["m1/llama"] = {gone: 500.0, A1: 990.0}
+    r.tick(now=1000.0)
+    assert gone not in r.ledger["placed_at"]["m1/llama"]
+    assert r.ledger["placed_at"]["m1/llama"][A1] == 990.0   # within grace
+
+def test_sat_history_resets_when_no_live_placement():
+    r, _, obs = _mk(auto=False)
+    obs["agents"][A1]["loaded"] = {"llama": ["m1"]}
+    obs["agents"][A1]["saturation"] = {"llama": 0.9}
+    r.tick(now=1000.0)
+    assert r._sat_history["m1/llama"] == [(1000.0, 0.9)]
+    obs["agents"][A1]["live"] = False
+    r.tick(now=1030.0)
+    assert r._sat_history["m1/llama"] == []
+
 def test_sat_history_ring_accumulates_and_trims_to_20_minutes():
     state = {"enabled": True, "hosts": {}, "entries": [
         {"model": "m1", "provider": "llama", "placement": "auto",
@@ -125,6 +143,28 @@ def test_sat_history_ring_accumulates_and_trims_to_20_minutes():
     assert r._sat_history["m1/llama"] == [(1000.0, 0.9), (1100.0, 0.9)]
     r.tick(now=2250.0)                     # 1000.0 is now > 20min stale
     assert [t for t, _ in r._sat_history["m1/llama"]] == [1100.0, 2250.0]
+
+def test_sat_history_ignores_dead_agents_stale_saturation():
+    # Dead A1 carries a frozen 0.95 saturation (#711).
+    state = {"enabled": True, "hosts": {}, "entries": [
+        {"model": "m1", "provider": "llama", "placement": "auto",
+         "failover": "semi", "priority": 1,
+         "min_replicas": 1, "max_replicas": 2}]}
+    A2 = "b" * 32
+    observed = {"agents": {
+        A1: {"provider_caps": ["llama"], "live": False, "vram_total_mb": 24000,
+             "vram_free_mb": 20000, "loaded": {"llama": ["m1"]},
+             "server_state": "awake", "idle_since": None,
+             "saturation": {"llama": 0.95}},
+        A2: {"provider_caps": ["llama"], "live": True, "vram_total_mb": 24000,
+             "vram_free_mb": 20000, "loaded": {"llama": ["m1"]},
+             "server_state": "awake", "idle_since": None,
+             "saturation": {"llama": 0.2}}},
+        "model_sizes_mb": {"llama:m1": 8000}, "sat_history": {}}
+    r = ap.Reconciler(get_state=lambda: state, build_observed=lambda: observed,
+                      executor=lambda a: True)
+    r.tick(now=1000.0)
+    assert r._sat_history["m1/llama"] == [(1000.0, 0.2)]
 
 def test_in_flight_migrations_tracked_during_failover_execution():
     seen = {}

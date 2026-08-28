@@ -184,9 +184,11 @@ def build_observed(deps: dict) -> dict:
         # available_bytes (not total-used) already excludes reclaimable
         # cache/buffers — psutil's own definition of "free for new work".
         ram_free_mb = round((ram.get("available_bytes") or 0) / 1_048_576)
+        liveness = deps["liveness"](agent)
         out[aid] = {
             "provider_caps": provider_caps,
-            "live": deps["liveness"](agent) == "live",
+            "live": liveness == "live",
+            "liveness": liveness,
             "vram_total_mb": total_mb,
             "vram_free_mb": max(total_mb - used_mb, 0),
             "ram_free_mb": ram_free_mb,
@@ -425,10 +427,8 @@ def route_sync_writes(desired: dict, observed: dict, glob: dict,
             if cur is not None:
                 writes.append(("pin", prov, model, None))
             continue
-        live = [aid for aid in placed
-                if (observed["agents"].get(aid) or {}).get("live")]
-        pick_from = live or placed
-        target = cur if cur in pick_from else pick_from[0]
+        # placed already contains live agents only.
+        target = cur if cur in placed else placed[0]
         if cur != target:
             writes.append(("pin", prov, model, target))
     return writes
@@ -502,15 +502,19 @@ class Reconciler:
                 del self.ledger["last_action_ts"][aid]
 
     def _prune_placed_at(self, observed: dict, now: float) -> None:
-        """Drop placed_at[k][aid] once a live agent stops reporting the
-        model loaded, past a PLACEMENT_FRESH_S grace window; dead agents stay."""
+        """Drop placed_at[k][aid] past the PLACEMENT_FRESH_S grace window when
+        a live agent no longer reports the model or the agent is unregistered;
+        dead (registered, non-live) agents stay."""
         for k, amap in list(self.ledger["placed_at"].items()):
             model, _, provider = k.rpartition("/")
             for aid, ts in list(amap.items()):
                 if now - ts < pl.PLACEMENT_FRESH_S:
                     continue
                 agent = observed["agents"].get(aid)
-                if agent is None or not agent["live"]:
+                if agent is None:
+                    del amap[aid]
+                    continue
+                if not agent["live"]:
                     continue
                 if model not in (agent["loaded"].get(provider) or []):
                     del amap[aid]
@@ -521,12 +525,13 @@ class Reconciler:
         cutoff = now - _SAT_HISTORY_WINDOW_S
         for e in desired.get("entries") or []:
             k = f"{e['model']}/{e['provider']}"
-            placed = [aid for aid, a in observed["agents"].items()
-                      if e["model"] in (a["loaded"].get(e["provider"]) or [])]
+            placed = pl._placements(e, observed)
             vals = [s for aid in placed
                     if (s := (observed["agents"][aid].get("saturation") or {})
                         .get(e["provider"])) is not None]
-            hist = [pt for pt in self._sat_history.get(k, []) if pt[0] >= cutoff]
+            # No live placement: the ring resets so stale points can't drive autoscale.
+            hist = ([pt for pt in self._sat_history.get(k, []) if pt[0] >= cutoff]
+                    if placed else [])
             if vals:
                 hist.append((now, max(vals)))
             self._sat_history[k] = hist

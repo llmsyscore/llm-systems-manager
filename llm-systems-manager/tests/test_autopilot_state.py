@@ -178,6 +178,18 @@ def test_route_sync_pool_add_for_multi_replica():
     assert writes == [("pool_add", "llama", AGENT_B)]
 
 
+def test_route_sync_never_pools_or_pins_a_dead_agent():
+    # Dead B's stale sample still lists m1 (#711).
+    obs = _rs_observed(loaded_a=("m1",), loaded_b=("m1",))
+    obs["agents"][AGENT_B]["live"] = False
+    assert ap.route_sync_writes(_rs_desired(max_replicas=2), obs,
+                                {"llama_pool": [AGENT_A]}) == [
+        ("pin", "llama", "m1", AGENT_A)]   # no pool_add for dead B
+    glob = {"llama_model_pins": {"m1": AGENT_B}}
+    assert ap.route_sync_writes(_rs_desired(), obs, glob) == [
+        ("pin", "llama", "m1", AGENT_A)]
+
+
 def test_route_sync_disabled_writes_nothing():
     assert ap.route_sync_writes(_rs_desired(enabled=False),
                                 _rs_observed(), {}) == []
