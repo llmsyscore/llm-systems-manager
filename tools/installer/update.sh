@@ -109,14 +109,14 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     --dry-run)       DRY_RUN=1; shift ;;
     -y|--yes)        ASSUME_YES=1; shift ;;
-    --only)          COMPONENT_FILTER="${2:-}"; shift 2 ;;
+    --only)          [[ $# -ge 2 ]] || die "--only requires a value"; COMPONENT_FILTER="$2"; shift 2 ;;
     --only=*)        COMPONENT_FILTER="${1#*=}"; shift ;;
     --skip-venv)     SKIP_VENV=1; shift ;;
     --skip-restart)  SKIP_RESTART=1; shift ;;
     --skip-tests)    SKIP_TESTS=1; shift ;;
     --paranoid)      PARANOID_VERIFY=1; shift ;;
     --skip-verify)   shift ;;   # accepted for back-compat; now the default
-    --backup-dir)    BACKUP_ROOT="${2:-}"; BACKUP_ROOT_DEFAULT=0; shift 2 ;;
+    --backup-dir)    [[ $# -ge 2 ]] || die "--backup-dir requires a value"; BACKUP_ROOT="$2"; BACKUP_ROOT_DEFAULT=0; shift 2 ;;
     --backup-dir=*)  BACKUP_ROOT="${1#*=}"; BACKUP_ROOT_DEFAULT=0; shift ;;
     -h|--help)       usage; exit 0 ;;
     *) die "unknown flag: $1 (see --help)" ;;

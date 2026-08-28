@@ -40,6 +40,14 @@ set -euo pipefail
 # (and can't silently drop newly-added flags).
 _ORIG_ARGV=("$@")
 
+# Re-exec'd self-update child: unlink the /tmp upstream copy before anything
+# else runs (the open fd keeps the script readable).
+_upstream_re='^/tmp/llm-systems-install\.upstream\.[A-Za-z0-9]{6}$'
+if [[ "${LLMSYS_SELF_UPDATE_DONE:-0}" == "1" && "${LLMSYS_UPSTREAM_TMP:-}" =~ $_upstream_re ]]; then
+  rm -f "$LLMSYS_UPSTREAM_TMP" 2>/dev/null || true
+fi
+unset LLMSYS_UPSTREAM_TMP _upstream_re
+
 # Revision integer. Format: YYYYMMDDNNN (date + same-day counter), matching
 # the agent VERSION convention in CLAUDE.md operating rule #1. Bump on any
 # substantive change to this file. The self-update trampoline only re-execs
@@ -511,7 +519,7 @@ if [[ "${LLMSYS_SELF_UPDATE_DONE:-0}" != "1" \
         chmod +x "$_upstream_tmp"
         export LLMSYS_SELF_UPDATE_DONE=1
         export LLMSYS_ORIGINAL_SELF="$_self"
-        # The child unlinks its own /tmp copy at start (see below).
+        # The child unlinks its own /tmp copy first thing (see top of file).
         export LLMSYS_UPSTREAM_TMP="$_upstream_tmp"
         exec bash "$_upstream_tmp" "${_ORIG_ARGV[@]+"${_ORIG_ARGV[@]}"}"
       fi
@@ -522,12 +530,6 @@ if [[ "${LLMSYS_SELF_UPDATE_DONE:-0}" != "1" \
     unset _upstream_tmp _local_rev _upstream_rev
   fi
   unset _self
-elif [[ "${LLMSYS_SELF_UPDATE_DONE:-0}" == "1" && -n "${LLMSYS_UPSTREAM_TMP:-}" ]]; then
-  # Re-exec'd child: unlink the /tmp upstream copy now; the open fd keeps it readable.
-  case "$LLMSYS_UPSTREAM_TMP" in
-    /tmp/llm-systems-install.upstream.*) rm -f "$LLMSYS_UPSTREAM_TMP" 2>/dev/null || true ;;
-  esac
-  unset LLMSYS_UPSTREAM_TMP
 fi
 
 # ── Mode selection ─────────────────────────────────────────────────────────
@@ -659,6 +661,7 @@ if [[ "$UNINSTALL" == "1" ]]; then
     _self="$(cd "$(dirname "$_self")" 2>/dev/null && pwd || echo "")/$(basename "$_self")"
   fi
   case "$_self" in
+    */../*|*/..) ;;
     /tmp/*|*/llm-systems-manager-install/*)
       rm -f "$_self" 2>/dev/null || true
       ;;
@@ -668,6 +671,7 @@ if [[ "$UNINSTALL" == "1" ]]; then
   # left. Same temp-only guard so a repo copy is preserved.
   if [[ -n "${LLMSYS_ORIGINAL_SELF:-}" && "$LLMSYS_ORIGINAL_SELF" != "$_self" ]]; then
     case "$LLMSYS_ORIGINAL_SELF" in
+      */../*|*/..) ;;
       /tmp/*|*/llm-systems-manager-install/*)
         rm -f "$LLMSYS_ORIGINAL_SELF" 2>/dev/null || true
         ;;
@@ -1225,7 +1229,8 @@ for entry in "${HEALTH_TARGETS[@]}"; do
   # shellcheck disable=SC2086
   read -r label url <<<"$entry"
   unit="$(_unit_for_label "$label")"
-  if report_service_health "$label" "$url" "$unit"; then
+  # Empty 3rd arg: a release-tarball lib-common may still take a status column there.
+  if report_service_health "$label" "$url" "" "$unit"; then
     PASS=$((PASS+1))
   else
     FAIL=$((FAIL+1))

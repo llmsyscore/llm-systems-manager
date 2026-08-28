@@ -1065,8 +1065,10 @@ _tcp_open() {
 # response — which is the only thing flaky enough to falsely fail this
 # probe on snapshot-fresh boxes.
 # report_service_health LABEL URL [UNIT] — TCP port open + unit active.
+# A 4th arg is taken as UNIT for callers that still pass a status column.
 report_service_health() {
   local label="$1" url="$2" unit="${3:-}"
+  (( $# >= 4 )) && unit="$4"
   local host port active=true bound=false attempts=5 i
   # Extract host:port from http://host:port[/path]. Defaults: 80 / 443.
   host="$(url_host "$url")"
