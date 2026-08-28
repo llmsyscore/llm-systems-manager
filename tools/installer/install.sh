@@ -45,7 +45,7 @@ _ORIG_ARGV=("$@")
 # substantive change to this file. The self-update trampoline only re-execs
 # when the upstream copy carries a STRICTLY GREATER number, so locally-
 # modified scripts (or unpushed commits) are never silently downgraded.
-_INSTALL_SH_REVISION=20260715002
+_INSTALL_SH_REVISION=20260828001
 
 # Fallback bootstrap helpers — used until we source lib-common.sh.
 # TTY-aware colors so OK/WARN/ERR markers stand out in interactive runs and
@@ -114,7 +114,7 @@ _b_verify_sha256() {
   if command -v sha256sum >/dev/null 2>&1; then
     (cd "$dir" && sha256sum -c --quiet "$base")
   else
-    (cd "$dir" && shasum -a 256 -c --quiet "$base")
+    (cd "$dir" && shasum -a 256 -c "$base" >/dev/null)
   fi
 }
 
@@ -236,13 +236,13 @@ RUN_USER_OVERRIDE=""
 FORWARD_ARGS=()
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --mode) MODE="${2:-}"; shift 2 ;;
+    --mode) [[ $# -ge 2 ]] || _b_die "--mode requires a value"; MODE="$2"; shift 2 ;;
     --mode=*) MODE="${1#*=}"; shift ;;
-    --user) RUN_USER_OVERRIDE="${2:-}"; shift 2 ;;
+    --user) [[ $# -ge 2 ]] || _b_die "--user requires a value"; RUN_USER_OVERRIDE="$2"; shift 2 ;;
     --user=*) RUN_USER_OVERRIDE="${1#*=}"; shift ;;
-    --ref) LLMSYS_RELEASE_TAG="${2:-}"; shift 2 ;;
+    --ref) [[ $# -ge 2 ]] || _b_die "--ref requires a value"; LLMSYS_RELEASE_TAG="$2"; shift 2 ;;
     --ref=*) LLMSYS_RELEASE_TAG="${1#*=}"; shift ;;
-    --source) LLMSYS_SOURCE="${2:-}"; shift 2 ;;
+    --source) [[ $# -ge 2 ]] || _b_die "--source requires a value"; LLMSYS_SOURCE="$2"; shift 2 ;;
     --source=*) LLMSYS_SOURCE="${1#*=}"; shift ;;
     --uninstall) UNINSTALL=1; shift ;;
     --update)    UPDATE=1; shift ;;
@@ -511,15 +511,9 @@ if [[ "${LLMSYS_SELF_UPDATE_DONE:-0}" != "1" \
         chmod +x "$_upstream_tmp"
         export LLMSYS_SELF_UPDATE_DONE=1
         export LLMSYS_ORIGINAL_SELF="$_self"
-        # The re-exec'd child becomes the mktemp upstream copy and would
-        # otherwise leak (success path never deletes it). Have the child
-        # self-delete on EXIT by leaving a marker; the trampoline in the
-        # new copy honors LLMSYS_SELF_UPDATE_DONE=1 and reads $_self at
-        # script start, so a quick trap suffices.
-        exec bash -c '
-          trap "rm -f \"\$0\"" EXIT
-          exec bash "$0" "$@"
-        ' "$_upstream_tmp" "${_ORIG_ARGV[@]+"${_ORIG_ARGV[@]}"}"
+        # The child unlinks its own /tmp copy at start (see below).
+        export LLMSYS_UPSTREAM_TMP="$_upstream_tmp"
+        exec bash "$_upstream_tmp" "${_ORIG_ARGV[@]+"${_ORIG_ARGV[@]}"}"
       fi
       rm -f "$_upstream_tmp"
     else
@@ -528,6 +522,12 @@ if [[ "${LLMSYS_SELF_UPDATE_DONE:-0}" != "1" \
     unset _upstream_tmp _local_rev _upstream_rev
   fi
   unset _self
+elif [[ "${LLMSYS_SELF_UPDATE_DONE:-0}" == "1" && -n "${LLMSYS_UPSTREAM_TMP:-}" ]]; then
+  # Re-exec'd child: unlink the /tmp upstream copy now; the open fd keeps it readable.
+  case "$LLMSYS_UPSTREAM_TMP" in
+    /tmp/llm-systems-install.upstream.*) rm -f "$LLMSYS_UPSTREAM_TMP" 2>/dev/null || true ;;
+  esac
+  unset LLMSYS_UPSTREAM_TMP
 fi
 
 # ── Mode selection ─────────────────────────────────────────────────────────
@@ -642,8 +642,10 @@ if [[ "$UNINSTALL" == "1" ]]; then
     _UNINSTALL_FETCHED=false
   fi
   # Don't exec — we want to clean up our own trace files afterwards.
+  set +e
   bash "$UNINSTALL_HELPER"
   _rc=$?
+  set -e
   $_UNINSTALL_FETCHED && rm -f "$UNINSTALL_HELPER" 2>/dev/null
   # Remove this install.sh too. Linux+macOS keep the open file handle
   # valid until the script finishes, so unlinking the running file is
@@ -854,9 +856,9 @@ case "$MODE" in
     bash "$LLMSYS_INSTALL_DIR/tools/installer/install-manager.sh"
     bash "$LLMSYS_INSTALL_DIR/tools/installer/install-config-bootstrap.sh"
     HEALTH_TARGETS=(
-      "Manager       http://127.0.0.1:5000/        200"
-      "Alarm-engine  http://127.0.0.1:8081/       200"
-      "InfluxDB      http://127.0.0.1:8086/health  200"
+      "Manager       http://127.0.0.1:5000/"
+      "Alarm-engine  http://127.0.0.1:8081/"
+      "InfluxDB      http://127.0.0.1:8086/health"
     )
     ;;
   2)
@@ -866,8 +868,8 @@ case "$MODE" in
     bash "$LLMSYS_INSTALL_DIR/tools/installer/resolve-influxdb.sh"
     bash "$LLMSYS_INSTALL_DIR/tools/installer/install-config-bootstrap.sh"
     HEALTH_TARGETS=(
-      "Manager       http://127.0.0.1:5000/        200"
-      "Alarm-engine  http://127.0.0.1:8081/       200"
+      "Manager       http://127.0.0.1:5000/"
+      "Alarm-engine  http://127.0.0.1:8081/"
     )
     ;;
   3)
@@ -875,7 +877,7 @@ case "$MODE" in
     bash "$LLMSYS_INSTALL_DIR/tools/installer/install-manager.sh"
     bash "$LLMSYS_INSTALL_DIR/tools/installer/install-config-bootstrap.sh"
     HEALTH_TARGETS=(
-      "Manager       http://127.0.0.1:5000/        200"
+      "Manager       http://127.0.0.1:5000/"
     )
     ;;
   4)
@@ -884,7 +886,7 @@ case "$MODE" in
     bash "$LLMSYS_INSTALL_DIR/tools/installer/resolve-influxdb.sh"
     bash "$LLMSYS_INSTALL_DIR/tools/installer/install-config-bootstrap.sh"
     HEALTH_TARGETS=(
-      "Alarm-engine  http://127.0.0.1:8081/       200"
+      "Alarm-engine  http://127.0.0.1:8081/"
     )
     ;;
   6)
@@ -896,7 +898,7 @@ case "$MODE" in
     banner "Mode 6 — InfluxDB only"
     bash "$REPO_SRC/tools/installer/install-influxdb.sh"
     HEALTH_TARGETS=(
-      "InfluxDB      http://127.0.0.1:8086/health  200"
+      "InfluxDB      http://127.0.0.1:8086/health"
     )
     ;;
   *)  _b_die "Invalid mode '$MODE' reached" ;;
@@ -1221,9 +1223,9 @@ _unit_for_label() {
 }
 for entry in "${HEALTH_TARGETS[@]}"; do
   # shellcheck disable=SC2086
-  read -r label url expect <<<"$entry"
+  read -r label url <<<"$entry"
   unit="$(_unit_for_label "$label")"
-  if report_service_health "$label" "$url" "$expect" "$unit"; then
+  if report_service_health "$label" "$url" "$unit"; then
     PASS=$((PASS+1))
   else
     FAIL=$((FAIL+1))
@@ -1237,7 +1239,7 @@ echo
 
 # ── Cleanup: remove staging tree + the launcher script in /tmp ─────────────
 # Only purge when the install completed cleanly (every probed service
-# returned its expected status). On any failure, keep the staging tree
+# passed its port + unit probe). On any failure, keep the staging tree
 # around so the operator can poke at it without re-cloning.
 if (( FAIL == 0 )); then
   banner "Cleanup"

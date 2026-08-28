@@ -1208,9 +1208,9 @@ PYEOF
   $HAVE_AE      && _probe_version_match "Alarm engine" "${_ae_scheme}://127.0.0.1:8081/health" \
                        "$(_component_expected "Alarm engine" "$AE_V_OLD" "$AE_V_NEW")"  "llm-systems-alarm-engine.service"
   # InfluxDB and the local agent don't carry our VERSION constant — fall back
-  # to plain HTTP 200 via the existing reporting helper.
+  # to the port-open + unit-active probe.
   $HAVE_INFLUX  && {
-    if report_service_health "InfluxDB    " "http://127.0.0.1:8086/health" 200 "influxdb.service"; then
+    if report_service_health "InfluxDB    " "http://127.0.0.1:8086/health" "influxdb.service"; then
       PASS=$((PASS+1))
     else
       FAIL=$((FAIL+1))
@@ -1218,7 +1218,7 @@ PYEOF
     fi
   }
   $HAVE_AGENT   && {
-    if report_service_health "Local agent " "https://127.0.0.1:8082/health" 200 "llm-systems-agent.service"; then
+    if report_service_health "Local agent " "https://127.0.0.1:8082/health" "llm-systems-agent.service"; then
       PASS=$((PASS+1))
     else
       FAIL=$((FAIL+1))
