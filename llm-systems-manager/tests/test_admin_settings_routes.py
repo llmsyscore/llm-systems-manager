@@ -24,6 +24,8 @@ def client(monkeypatch, tmp_path):
     monkeypatch.setattr(manager_mod._ae_session, "get", _ae_unreachable)
     monkeypatch.setattr(manager_mod, "_require_admin", lambda: None)
     manager_mod._SETTINGS_RESTART_PENDING.clear()
+    monkeypatch.setattr(manager_mod, "_SETTINGS_AE_PENDING_FILE", tmp_path / "ae_pending.json")
+    manager_mod._clear_ae_pending_all()
     manager_mod.app.config["TESTING"] = True
     with manager_mod.app.test_client() as c:
         with c.session_transaction() as s:

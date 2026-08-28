@@ -159,7 +159,7 @@ def _local_hostname() -> str:
 # banner reads it. Bump suffix (-1, -2, …) for same-day iterations; roll
 # the date for a new day's first change.
 # ---------------------------------------------------------------------------
-__version__ = "v2026.08.27-5"
+__version__ = "v2026.08.27-6"
 
 # Wall-clock at first import (Cheroot main process); the shutdown banner
 # reads it for the uptime line.
@@ -3068,13 +3068,33 @@ def _restart_service_containerized(svc: str, exit_code: int = 0):
 
 @app.route("/api/admin/service/<svc>/restart", methods=["POST"])
 def admin_service_restart(svc: str):
-    """Restart the manager or alarm-engine from the admin tab. Requires admin
-    role + admin CIDR. On bare metal uses the sudoers NOPASSWD systemctl grant
-    from install-manager.sh; containers and brew kegs restart via process-exit
-    + the alarm engine's self-restart API (no usable systemctl there)."""
+    """Restart the manager or alarm-engine from the admin tab; flushes queued AE edits first."""
     deny = _require_admin()
     if deny is not None:
         return deny
+    queued: list = []
+    if svc == "alarm_engine" and _settings_ae_pending_paths():
+        _flush_ae_pending()
+        queued = _settings_ae_pending_paths()
+    resp = _admin_service_restart_impl(svc)
+    if not queued:
+        return resp
+    # Still-queued edits land after this restart, so it stays pending.
+    body, status = (resp[0], resp[1]) if isinstance(resp, tuple) else (resp, resp.status_code)
+    if not (200 <= int(status) < 300):
+        return resp
+    _SETTINGS_RESTART_PENDING.add("alarm_engine")
+    data = body.get_json(silent=True) or {}
+    data["ae_sync_pending"] = queued
+    data["note"] = (f"{len(queued)} settings edit(s) are still queued for the alarm engine; "
+                    "another restart is needed once it acknowledges them")
+    return jsonify(data), status
+
+
+def _admin_service_restart_impl(svc: str):
+    """On bare metal uses the sudoers NOPASSWD systemctl grant
+    from install-manager.sh; containers and brew kegs restart via process-exit
+    + the alarm engine's self-restart API (no usable systemctl there)."""
     unit = _RESTARTABLE_UNITS.get(svc)
     if not unit:
         return jsonify({"ok": False, "error": f"unknown service '{svc}'"}), 400
@@ -3136,6 +3156,132 @@ def admin_service_restart(svc: str):
 
 # Services with saved-but-unapplied settings; cleared on a successful restart request.
 _SETTINGS_RESTART_PENDING: set = set()
+# AE-bound settings edits the alarm engine has not acked yet (#667).
+_SETTINGS_AE_PENDING: dict = {"sets": {}, "dels": []}
+_SETTINGS_AE_PENDING_LOCK = threading.Lock()
+_SETTINGS_AE_PENDING_FILE = DATA_DIR / "settings_ae_pending.json"
+_SETTINGS_AE_RETRY_INTERVAL_S = 30.0
+
+
+def _save_ae_pending_locked() -> None:
+    """Persist the queue (0600) so a manager restart doesn't drop unacked edits."""
+    try:
+        if not _SETTINGS_AE_PENDING["sets"] and not _SETTINGS_AE_PENDING["dels"]:
+            _SETTINGS_AE_PENDING_FILE.unlink(missing_ok=True)
+            return
+        tmp = _SETTINGS_AE_PENDING_FILE.with_suffix(".tmp")
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            json.dump(_SETTINGS_AE_PENDING, fh)
+        os.replace(tmp, _SETTINGS_AE_PENDING_FILE)
+    except Exception as e:
+        log.warning("settings: could not persist the AE pending queue: %s", e)
+
+
+def _load_ae_pending() -> None:
+    """Restore a persisted queue at startup (no-op when the file is absent)."""
+    try:
+        data = json.loads(_SETTINGS_AE_PENDING_FILE.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return
+    except Exception as e:
+        log.warning("settings: ignoring unreadable AE pending queue: %s", e)
+        return
+    _queue_ae_pending(dict(data.get("sets") or {}), list(data.get("dels") or []))
+
+
+def _queue_ae_pending(sets: dict, dels: "list | None") -> None:
+    """Merge AE-bound edits into the pending queue; a newer edit wins, a set beats a removal."""
+    with _SETTINGS_AE_PENDING_LOCK:
+        for k in dels or []:
+            _SETTINGS_AE_PENDING["sets"].pop(k, None)
+            if k not in _SETTINGS_AE_PENDING["dels"]:
+                _SETTINGS_AE_PENDING["dels"].append(k)
+        for k, v in (sets or {}).items():
+            _SETTINGS_AE_PENDING["sets"][k] = v
+            if k in _SETTINGS_AE_PENDING["dels"]:
+                _SETTINGS_AE_PENDING["dels"].remove(k)
+        _save_ae_pending_locked()
+
+
+def _settings_ae_pending_paths() -> list:
+    with _SETTINGS_AE_PENDING_LOCK:
+        return sorted(set(_SETTINGS_AE_PENDING["sets"]) | set(_SETTINGS_AE_PENDING["dels"]))
+
+
+def _clear_ae_pending_all() -> None:
+    with _SETTINGS_AE_PENDING_LOCK:
+        _SETTINGS_AE_PENDING["sets"].clear()
+        _SETTINGS_AE_PENDING["dels"].clear()
+        _save_ae_pending_locked()
+
+
+def _flush_ae_pending(quiet: bool = False) -> "str | None":
+    """Forward the queued edits; on ack drop exactly what was sent (later edits stay queued)."""
+    with _SETTINGS_AE_PENDING_LOCK:
+        sets = dict(_SETTINGS_AE_PENDING["sets"])
+        dels = list(_SETTINGS_AE_PENDING["dels"])
+    if not sets and not dels:
+        return None
+    err = _forward_settings_to_ae(sets, dels, quiet=quiet)
+    if err and not isinstance(err, _AeRejected):
+        return err
+    acked_sets, acked_dels, rejected = dict(sets), list(dels), []
+    if err and len(sets) + len(dels) > 1:
+        # Isolate the bad key(s): resend one at a time, keep the transient failures queued.
+        acked_sets, acked_dels = {}, []
+        for k, v in sets.items():
+            e1 = _forward_settings_to_ae({k: v}, [], quiet=True)
+            if e1 is None:
+                acked_sets[k] = v
+            elif isinstance(e1, _AeRejected):
+                rejected.append(k)
+        for k in dels:
+            e1 = _forward_settings_to_ae({}, [k], quiet=True)
+            if e1 is None:
+                acked_dels.append(k)
+            elif isinstance(e1, _AeRejected):
+                rejected.append(k)
+    elif err:
+        rejected = sorted(set(sets) | set(dels))
+    if rejected:
+        log.warning("settings: alarm engine rejected queued edit(s) (%s); dropped %s", err, rejected)
+    with _SETTINGS_AE_PENDING_LOCK:
+        for k, v in acked_sets.items():
+            if _SETTINGS_AE_PENDING["sets"].get(k, object()) == v:
+                _SETTINGS_AE_PENDING["sets"].pop(k, None)
+        for k in acked_dels:
+            if k in _SETTINGS_AE_PENDING["dels"]:
+                _SETTINGS_AE_PENDING["dels"].remove(k)
+        for k in rejected:
+            _SETTINGS_AE_PENDING["sets"].pop(k, None)
+            if k in _SETTINGS_AE_PENDING["dels"]:
+                _SETTINGS_AE_PENDING["dels"].remove(k)
+        _save_ae_pending_locked()
+    if acked_sets or acked_dels:
+        _SETTINGS_RESTART_PENDING.add("alarm_engine")
+        log.info("settings: forwarded %d queued edit(s) to the alarm engine",
+                 len(acked_sets) + len(acked_dels))
+    return err
+
+
+def _settings_ae_retry_loop() -> None:
+    """Retry queued AE-bound settings edits until the alarm engine acks them; warns every 10 min while stuck."""
+    last_warn = 0.0
+    while not _shutting_down:
+        try:
+            queued = _settings_ae_pending_paths()
+            err = _flush_ae_pending(quiet=True) if queued else None
+            if err and time.time() - last_warn >= 600:
+                log.warning("settings: %d edit(s) still queued for the alarm engine — %s",
+                            len(queued), err)
+                last_warn = time.time()
+        except Exception as e:
+            log.warning("settings AE retry iteration failed: %s", e)
+        slept = 0.0
+        while slept < _SETTINGS_AE_RETRY_INTERVAL_S and not _shutting_down:
+            time.sleep(0.5)
+            slept += 0.5
 
 
 def _settings_pending_after(svc: str, resp):
@@ -3187,6 +3333,8 @@ def admin_settings_get():
             or "alarm_engine" in _SETTINGS_RESTART_PENDING):
         pending.add("alarm_engine")
     payload["restart_pending"] = sorted(pending)
+    payload["ae_sync_pending"] = _settings_ae_pending_paths()
+    payload["ae_sync_retry_s"] = _SETTINGS_AE_RETRY_INTERVAL_S
     return jsonify(payload)
 
 
@@ -3253,12 +3401,15 @@ def admin_settings_put():
         return jsonify({"ok": False, "error": "local config file unreadable"}), 500
     remote_sets = {**resync_sets, **{k: v for k, v in remote.items() if v is not None}}
     remote_dels = resync_dels + [k for k, v in remote.items() if v is None]
-    ae_failed = _forward_settings_to_ae(remote_sets, remote_dels)
+    _queue_ae_pending(remote_sets, remote_dels)
+    # Only an AE-bound edit pays the forward here; the retry loop owns the rest.
+    ae_failed = _flush_ae_pending() if (remote_sets or remote_dels) else None
     # A failed AE forward means AE-only paths were not applied anywhere.
     applied = sorted(clean) if not ae_failed else sorted(local)
     result = {"ok": True, "applied": applied, "errors": {}}
     if ae_failed:
         result["ae_sync_failed"] = ae_failed
+        result["ae_sync_pending"] = _settings_ae_pending_paths()
     elif resync:
         result["resynced"] = sorted(str(p) for p in resync)
     restart = settings_catalog.services_for(applied)
@@ -3307,8 +3458,13 @@ def _partition_settings_changes(clean: dict) -> tuple[dict, dict]:
     return local, remote
 
 
-def _forward_settings_to_ae(remote: dict, removals: "list | None" = None):
-    """Returns an error string on failure, None on success/no-op."""
+class _AeRejected(str):
+    """Forward error the alarm engine answered with an HTTP rejection (won't fix itself)."""
+
+
+def _forward_settings_to_ae(remote: dict, removals: "list | None" = None,
+                            quiet: bool = False):
+    """Returns an error string on failure (_AeRejected for an HTTP rejection), None on success/no-op."""
     if not remote and not removals:
         return None
     base = (_alarm_engine_url or "").rstrip("/")
@@ -3320,10 +3476,13 @@ def _forward_settings_to_ae(remote: dict, removals: "list | None" = None):
                                   "removals": removals or []}, timeout=(3, 10))
         if r.ok:
             return None
-        return f"alarm engine rejected the update (HTTP {r.status_code})"
-    except Exception:
-        logging.exception("settings AE forward failed")
-        return "alarm engine unreachable — update its host's config there"
+        return _AeRejected(f"alarm engine rejected the update (HTTP {r.status_code})")
+    except Exception as e:
+        if quiet:
+            log.debug("settings AE forward retry failed: %s", e)
+        else:
+            logging.exception("settings AE forward failed")
+        return "alarm engine unreachable — queued; retrying in the background"
 
 
 def _fetch_ae_settings_state() -> "tuple[dict | None, bool | None]":
@@ -5987,6 +6146,14 @@ if __name__ == "__main__":
     _threading.Thread(
         target=_offline_sweep_loop,
         name="provider-offline-sweep",
+        daemon=True,
+    ).start()
+
+    # Settings edits the alarm engine hasn't acked (#667): retry until it does.
+    _load_ae_pending()
+    _threading.Thread(
+        target=_settings_ae_retry_loop,
+        name="settings-ae-retry",
         daemon=True,
     ).start()
 
