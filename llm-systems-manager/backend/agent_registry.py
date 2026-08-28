@@ -487,6 +487,8 @@ def agent_tls_kwargs(url: str) -> dict:
 
 def agent_request(method: str, agent: dict, path: str, **kwargs
                   ) -> "tuple[requests.Response | None, list, str | None]":
+    if any(seg in (".", "..") for seg in path.split("/")):
+        return None, [], "refused: dot segment in proxied path"
     urls = agent_callback_urls(agent)
     if not urls:
         return None, [], "no callback URL recorded"

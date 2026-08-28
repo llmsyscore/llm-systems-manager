@@ -79,6 +79,7 @@ import sys
 import time
 import sqlite3
 import subprocess
+import tempfile
 import threading
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
@@ -158,7 +159,7 @@ def _local_hostname() -> str:
 # banner reads it. Bump suffix (-1, -2, …) for same-day iterations; roll
 # the date for a new day's first change.
 # ---------------------------------------------------------------------------
-__version__ = "v2026.08.27-4"
+__version__ = "v2026.08.27-5"
 
 # Wall-clock at first import (Cheroot main process); the shutdown banner
 # reads it for the uptime line.
@@ -1679,6 +1680,13 @@ def llm_get_config():
 def llm_save_config():
     body = flask_request.get_json(force=True)
     return proxies.proxy_to_primary("llama", "POST", "/llama/config", json=body)
+def _traversal_in_path(value: str) -> bool:
+    """True when a URL path fragment could escape its prefix once `..`/`.` are normalized."""
+    if not value or "\\" in value or value.startswith("/"):
+        return True
+    return any(seg in ("", ".", "..") for seg in value.split("/"))
+
+
 @app.route("/api/llm/config/<path:model_id>", methods=["DELETE"])
 def llm_delete_config(model_id):
     """Remove a model from config.ini.
@@ -1689,6 +1697,8 @@ def llm_delete_config(model_id):
     multiple quants (e.g. Q4_K_M and Q5_K_M) loses only the one being deleted.
     Sharded quants (foo-Q4_K_M-00001-of-00003.gguf etc.) are matched by glob.
     """
+    if _traversal_in_path(model_id):
+        return jsonify({"ok": False, "error": "invalid model id"}), 400
     return proxies.proxy_to_primary(
         "llama", "DELETE",
         f"/llama/config/{model_id}",
@@ -3709,22 +3719,56 @@ def _pki_ensure_ca():
     return (_pki_ca[0], _pki_ca[1], _pki_module)
 
 
+_MANAGER_SECRET_LOCK = threading.Lock()
+_manager_secret_cache: "bytes | None" = None
+
+
 def _manager_secret() -> bytes:
-    try:
-        b = MANAGER_SECRET_FILE.read_bytes()
-        if b:
-            return b
-    except FileNotFoundError:
-        pass
+    """Persistent HMAC secret, cached after first read; a losing concurrent minter adopts the on-disk value."""
+    global _manager_secret_cache
+    if _manager_secret_cache:
+        return _manager_secret_cache
+    with _MANAGER_SECRET_LOCK:
+        if _manager_secret_cache:
+            return _manager_secret_cache
+        try:
+            b = MANAGER_SECRET_FILE.read_bytes()
+        except FileNotFoundError:
+            b = None
+        if not b:
+            b = _mint_manager_secret(replace_empty=b is not None)
+        _manager_secret_cache = b
+        return b
+
+
+def _mint_manager_secret(replace_empty: bool) -> bytes:
+    """Write a fresh secret via O_EXCL temp + hard-link publish; returns whatever ends up on disk."""
     MANAGER_SECRET_FILE.parent.mkdir(parents=True, exist_ok=True)
-    b = os.urandom(32)
-    MANAGER_SECRET_FILE.write_bytes(b)
+    fd, tmp = tempfile.mkstemp(dir=str(MANAGER_SECRET_FILE.parent),
+                               prefix=f".{MANAGER_SECRET_FILE.name}.", suffix=".tmp")
+    secret = os.urandom(32)
+    with os.fdopen(fd, "wb") as fh:
+        fh.write(secret)
+    try:
+        if replace_empty:
+            os.replace(tmp, MANAGER_SECRET_FILE)
+        else:
+            os.link(tmp, MANAGER_SECRET_FILE)  # exclusive publish; loser re-reads
+        log.info("generated manager HMAC secret at %s", MANAGER_SECRET_FILE)
+    except FileExistsError:
+        secret = MANAGER_SECRET_FILE.read_bytes()
+    except OSError:  # hard links unsupported here: plain rename
+        os.replace(tmp, MANAGER_SECRET_FILE)
+    finally:
+        try:
+            os.unlink(tmp)
+        except FileNotFoundError:
+            pass
     try:
         os.chmod(MANAGER_SECRET_FILE, 0o600)
     except OSError:
         pass
-    log.info("generated manager HMAC secret at %s", MANAGER_SECRET_FILE)
-    return b
+    return secret
 
 
 # Sign Flask session cookies with a SECOND, ephemeral secret regenerated on

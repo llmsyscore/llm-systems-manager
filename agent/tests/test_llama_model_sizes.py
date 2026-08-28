@@ -88,8 +88,16 @@ def _make_snapshot(root: Path, repo: str, filename: str, size: int) -> Path:
     snap = root / f"models--{repo.replace('/', '--')}" / "snapshots" / "abc123"
     snap.mkdir(parents=True)
     p = snap / filename
-    p.write_bytes(b"x" * size)
+    with open(p, "wb") as f:
+        f.truncate(size)  # sparse: size probes stat(), never read
     return p
+
+
+def test_make_snapshot_is_sparse(tmp_path):
+    # Fixture files are sparse: the size probes only stat() them.
+    p = _make_snapshot(tmp_path / "hub", "Org/Repo-GGUF", "model-q4_k_m.gguf", 986_000_000)
+    assert p.stat().st_size == 986_000_000
+    assert p.stat().st_blocks * 512 < 1_000_000
 
 
 # ── _model_gguf_size_bytes: stat the resolved quant file(s) ────────────
