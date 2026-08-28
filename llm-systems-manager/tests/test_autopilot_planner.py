@@ -520,11 +520,8 @@ def test_vllm_autoscale_down_never_planned():
 # ── #715: surplus replicas above max_replicas ────────────────────────────
 
 def _both_loaded(**over):
-    ag = _agents(**{A1: {"loaded": {"llama": ["m1"]}},
-                    A2: {"loaded": {"llama": ["m1"]}}})
-    for k, v in over.items():
-        ag[k].update(v)
-    return ag
+    return _agents(**{aid: {"loaded": {"llama": ["m1"]}, **over.get(aid, {})}
+                      for aid in (A1, A2)})
 
 def test_surplus_replica_reclaimed_from_lru_copy():
     led = _ledger(); led["placed_at"]["m1/llama"] = {A1: 100.0, A2: 5000.0}
@@ -538,14 +535,23 @@ def test_surplus_reclaim_unledgered_copy_sorts_oldest():
     acts = pl.plan(_desired([E]), _obs(_both_loaded()), led, now=100000.0)
     assert [(a.kind, a.agent_id) for a in acts] == [("scale_down", A1)]
 
-def test_surplus_reclaim_tie_keeps_the_routed_copy():
+def test_surplus_reclaim_keeps_the_routed_copy():
     # Empty ledger (manager restarted): the copy the route pin targets survives.
     obs = {**_obs(_both_loaded()), "route_pins": {"llama": {"m1": A1}}}
     acts = pl.plan(_desired([E]), obs, _ledger(), now=100000.0)
     assert [(a.kind, a.agent_id) for a in acts] == [("scale_down", A2)]
+    # The routed copy survives even when it is the LRU one (manual re-pin).
+    led = _ledger(); led["placed_at"]["m1/llama"] = {A1: 100.0, A2: 5000.0}
+    acts = pl.plan(_desired([E]), obs, led, now=100000.0)
+    assert [(a.kind, a.agent_id) for a in acts] == [("scale_down", A2)]
     obs["route_pins"] = {"llama": {"m1": A2}}
-    acts = pl.plan(_desired([E]), obs, _ledger(), now=100000.0)
+    acts = pl.plan(_desired([E]), obs, led, now=100000.0)
     assert [(a.kind, a.agent_id) for a in acts] == [("scale_down", A1)]
+
+def test_surplus_reclaim_placement_pin_beats_route_pin():
+    obs = {**_obs(_both_loaded()), "route_pins": {"llama": {"m1": A2}}}
+    acts = pl.plan(_desired([{**E, "placement": A1}]), obs, _ledger(), now=100000.0)
+    assert [(a.kind, a.agent_id) for a in acts] == [("scale_down", A2)]
 
 def test_surplus_reclaim_auto_when_entry_auto_and_enabled():
     led = _ledger(); led["placed_at"]["m1/llama"] = {A1: 100.0, A2: 5000.0}
@@ -622,3 +628,16 @@ def test_autoscale_down_never_unloads_the_pinned_host():
     acts = pl.plan(_desired([e]), obs, led, now=100000.0)
     assert [(a.kind, a.agent_id) for a in acts] == [("scale_down", A2)]
     assert "autoscale down" in acts[0].reason
+
+def test_autoscale_down_never_picks_an_in_flight_or_stale_copy():
+    e = {**E, "max_replicas": 3,
+         "autoscale": {"target_saturation": 0.75, "up_window_s": 120,
+                       "down_window_s": 900}}
+    A3 = "c" * 32
+    ag = _both_loaded(**{A1: {"live": False, "liveness": "stale"}})
+    ag[A3] = {**ag[A2], "loaded": {"llama": []}}         # A3: fresh ledger row only
+    led = _ledger(); led["placed_at"]["m1/llama"] = {A1: 10.0, A2: 5000.0, A3: 99990.0}
+    hist = [(0.0, 0.05), (500.0, 0.05), (100000.0, 0.05)]
+    obs = {**_obs(ag), "sat_history": {"m1/llama": hist}}
+    acts = pl.plan(_desired([e]), obs, led, now=100000.0)
+    assert [(a.kind, a.agent_id) for a in acts] == [("scale_down", A2)]

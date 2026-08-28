@@ -6,20 +6,24 @@ import autopilot_planner as pl
 
 A1, A2 = "a" * 32, "b" * 32
 
-def _mk(auto=False, exec_ok=True):
+def _mk(auto=False, exec_ok=True, loaded=(False,), route_sync=None, placed_at=None):
     calls = []
     state = {"enabled": True, "hosts": {}, "entries": [
         {"model": "m1", "provider": "llama", "placement": "auto",
          "failover": "auto" if auto else "semi", "priority": 1,
          "min_replicas": 1, "max_replicas": 1}]}
     observed = {"agents": {
-        A1: {"provider_caps": ["llama"], "live": True, "vram_total_mb": 24000,
-             "vram_free_mb": 20000, "loaded": {"llama": []},
-             "server_state": "awake", "idle_since": None, "saturation": {}}},
+        aid: {"provider_caps": ["llama"], "live": True, "vram_total_mb": 24000,
+              "vram_free_mb": 20000, "loaded": {"llama": ["m1"] if has else []},
+              "server_state": "awake", "idle_since": None, "saturation": {}}
+        for aid, has in zip((A1, A2), loaded)},
         "model_sizes_mb": {"llama:m1": 8000}, "sat_history": {}}
     r = ap.Reconciler(get_state=lambda: state,
                       build_observed=lambda: observed,
-                      executor=lambda a: (calls.append(a), exec_ok)[1])
+                      executor=lambda a: (calls.append(a), exec_ok)[1],
+                      route_sync=route_sync)
+    if placed_at:
+        r.ledger["placed_at"]["m1/llama"] = dict(placed_at)
     return r, calls, observed
 
 def test_semi_action_becomes_proposal_not_executed():
@@ -219,28 +223,10 @@ def test_tick_survives_route_sync_failure():
 
 # ── #715: surplus scale_down in tick ───────────────────────────────────────
 
-def _mk_surplus(auto=True, exec_ok=True, route_sync=None):
-    calls = []
-    state = {"enabled": True, "hosts": {}, "entries": [
-        {"model": "m1", "provider": "llama", "placement": "auto",
-         "failover": "auto" if auto else "semi", "priority": 1,
-         "min_replicas": 1, "max_replicas": 1}]}
-    agent = {"provider_caps": ["llama"], "live": True, "vram_total_mb": 24000,
-             "vram_free_mb": 20000, "loaded": {"llama": ["m1"]},
-             "server_state": "awake", "idle_since": None, "saturation": {}}
-    observed = {"agents": {A1: dict(agent, loaded={"llama": ["m1"]}),
-                           A2: dict(agent, loaded={"llama": ["m1"]})},
-                "model_sizes_mb": {"llama:m1": 8000}, "sat_history": {}}
-    r = ap.Reconciler(get_state=lambda: state,
-                      build_observed=lambda: observed,
-                      executor=lambda a: (calls.append(a), exec_ok)[1],
-                      route_sync=route_sync)
-    r.ledger["placed_at"]["m1/llama"] = {A1: 100.0, A2: 500.0}
-    return r, calls, observed
-
 def test_auto_surplus_scale_down_hides_unloaded_copy_from_route_sync():
     seen = []
-    r, calls, observed = _mk_surplus(
+    r, calls, observed = _mk(
+        auto=True, loaded=(True, True), placed_at={A1: 100.0, A2: 500.0},
         route_sync=lambda d, o, led, now: seen.append(
             pl._effective_placements(d["entries"][0], "m1/llama", o, led, now)))
     r.tick(now=1000.0)
@@ -250,7 +236,8 @@ def test_auto_surplus_scale_down_hides_unloaded_copy_from_route_sync():
     assert A1 not in r.ledger["placed_at"]["m1/llama"]
 
 def test_failed_surplus_scale_down_cools_agent_not_entry():
-    r, calls, _ = _mk_surplus(exec_ok=False)
+    r, calls, _ = _mk(auto=True, exec_ok=False, loaded=(True, True),
+                      placed_at={A1: 100.0, A2: 500.0})
     r.tick(now=1000.0)
     assert [a.kind for a in calls] == ["scale_down"]
     assert r.ledger["last_action_ts"][A1] == 1000.0
