@@ -14,7 +14,7 @@ import manager_mod as M
 
 @pytest.mark.parametrize("bad", [
     "x/../../agent/self-update", "../agent/restart", "/etc/passwd",
-    "a\\..\\b", "a//b", "./x", "",
+    "a\\..\\b", "a//b", "./x", "", "x/%2e%2e/y", "%2E%2E/x", "x/%2e/y",
 ])
 def test_traversal_in_path_rejects(bad):
     assert M._traversal_in_path(bad) is True
@@ -44,6 +44,13 @@ def test_llm_delete_config_rejects_traversal(capture_proxy):
     assert capture_proxy == []
 
 
+def test_llm_delete_config_rejects_double_encoded_traversal(capture_proxy):
+    with M.app.test_client() as c:
+        r = c.delete("/api/llm/config/x/%252e%252e/%252e%252e/agent/restart")
+    assert r.status_code == 400
+    assert capture_proxy == []
+
+
 def test_llm_delete_config_forwards_normal_id(capture_proxy):
     with M.app.test_client() as c:
         r = c.delete("/api/llm/config/Qwen/Qwen2.5-GGUF:Q4_K_M?delete_cache=true")
@@ -55,9 +62,9 @@ def test_agent_request_refuses_dot_segments(monkeypatch):
     import agent_registry
     called = []
     monkeypatch.setattr(agent_registry.requests, "request", lambda *a, **k: called.append(a))
-    resp, tried, err = agent_registry.agent_request("DELETE", {"callback_urls": ["http://a:1"]},
-                                                    "/llama/config/../agent/restart")
-    assert resp is None and tried == [] and "dot segment" in err
+    for p in ("/llama/config/../agent/restart", "/llama/config/%2e%2e/agent/restart"):
+        resp, tried, err = agent_registry.agent_request("DELETE", {"callback_urls": ["http://a:1"]}, p)
+        assert resp is None and tried == [] and "dot segment" in err
     assert called == []
 
 

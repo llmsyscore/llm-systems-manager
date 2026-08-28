@@ -1684,7 +1684,8 @@ def _traversal_in_path(value: str) -> bool:
     """True when a URL path fragment could escape its prefix once `..`/`.` are normalized."""
     if not value or "\\" in value or value.startswith("/"):
         return True
-    return any(seg in ("", ".", "..") for seg in value.split("/"))
+    return any(seg in ("", ".", "..") or urllib.parse.unquote(seg) in (".", "..")
+               for seg in value.split("/"))
 
 
 @app.route("/api/llm/config/<path:model_id>", methods=["DELETE"])
