@@ -259,3 +259,39 @@ def test_unload_backoff_pruned_with_entry_and_agent():
                                   "gone/llama": {A1: 5000.0}}
     r.tick(now=1000.0)
     assert r.ledger["unload_backoff"] == {"m1/llama": {A1: 5000.0}}
+
+# ── #727: the in-flight credit ends once the agent confirms the load ───────
+
+def test_confirmed_placement_loses_fresh_credit_after_observed_unload():
+    r, calls, observed = _mk(auto=True)
+    r.tick(now=1000.0)                                   # load issued
+    assert [a.kind for a in calls] == ["load"]
+    observed["agents"][A1]["loaded"]["llama"] = ["m1"]   # agent confirms it
+    out = r.tick(now=1030.0)
+    assert r.ledger["confirmed"]["m1/llama"][A1] == 1030.0
+    assert out["entry_status"]["m1/llama"]["placed"] == 1
+    observed["agents"][A1]["loaded"]["llama"] = []       # operator unloads it
+    out = r.tick(now=1060.0)
+    assert out["entry_status"]["m1/llama"]["placed"] == 0  # credit gone at once
+    assert [a.kind for a in calls] == ["load"]           # A1 still in COOLDOWN_S
+    out = r.tick(now=1000.0 + pl.COOLDOWN_S + 10)
+    assert [a.kind for a in calls] == ["load", "load"]   # re-placed after cooldown
+    assert A1 not in r.ledger["confirmed"].get("m1/llama", {})
+    assert r.ledger["placed_at"]["m1/llama"][A1] == 1000.0 + pl.COOLDOWN_S + 10
+    assert out["entry_status"]["m1/llama"]["placed"] == 1  # new load in flight
+
+def test_unconfirmed_placement_keeps_fresh_credit_until_window_ends():
+    r, calls, _ = _mk(auto=True)
+    r.tick(now=1000.0)
+    r.tick(now=1030.0)                                   # still loading, not visible
+    assert [a.kind for a in calls] == ["load"]
+    assert "m1/llama" not in r.ledger["confirmed"] or A1 not in r.ledger["confirmed"]["m1/llama"]
+
+def test_confirmed_pruned_with_placed_at_and_entry():
+    r, _, observed = _mk(auto=False)
+    r.ledger["placed_at"]["m1/llama"] = {A1: 100.0}
+    r.ledger["confirmed"] = {"m1/llama": {A1: 200.0, "z" * 32: 200.0},
+                             "gone/llama": {A1: 200.0}}
+    r.tick(now=1000.0)                                   # A1 live, m1 not loaded
+    assert r.ledger["confirmed"] == {}
+    assert r.ledger_view["confirmed"] == {}

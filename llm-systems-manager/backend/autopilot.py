@@ -449,7 +449,7 @@ class Reconciler:
         self._sat_history: "dict[str, list]" = {}
         self.ledger = {"last_action_ts": {}, "placed_at": {},
                        "in_flight_migrations": 0, "backoff_until": {},
-                       "unload_backoff": {}}
+                       "unload_backoff": {}, "confirmed": {}}
         # Coarse reentrant lock: serializes the background tick against
         # route-triggered apply/dismiss/tick calls (#472 Task 7).
         self._lock = threading.RLock()
@@ -459,7 +459,7 @@ class Reconciler:
         self._snapshot: "list[dict]" = []
         self.ledger_view: dict = {"last_action_ts": {}, "placed_at": {},
                                   "in_flight_migrations": 0, "backoff_until": {},
-                                  "unload_backoff": {}}
+                                  "unload_backoff": {}, "confirmed": {}}
 
     def tick(self, now: float) -> dict:
         with self._lock:
@@ -506,35 +506,43 @@ class Reconciler:
         keys = {f"{e['model']}/{e['provider']}"
                 for e in desired.get("entries") or []}
         for d in (self._sat_history, self.ledger["placed_at"],
-                  self.ledger["backoff_until"], self.ledger["unload_backoff"]):
+                  self.ledger["backoff_until"], self.ledger["unload_backoff"],
+                  self.ledger["confirmed"]):
             for k in list(d):
                 if k not in keys:
                     del d[k]
-        for amap in self.ledger["unload_backoff"].values():
-            for aid in list(amap):
-                if aid not in observed["agents"]:
-                    del amap[aid]
+        for m in (self.ledger["unload_backoff"], self.ledger["confirmed"]):
+            for amap in m.values():
+                for aid in list(amap):
+                    if aid not in observed["agents"]:
+                        del amap[aid]
         for aid in list(self.ledger["last_action_ts"]):
             if aid not in observed["agents"]:
                 del self.ledger["last_action_ts"][aid]
 
     def _prune_placed_at(self, observed: dict, now: float) -> None:
-        """Drop placed_at[k][aid] past the PLACEMENT_FRESH_S grace window when
-        a live agent no longer reports the model or the agent is unregistered;
-        dead (registered, non-live) agents stay."""
+        """Mark placed_at[k][aid] confirmed once a live agent reports the model;
+        drop rows past the PLACEMENT_FRESH_S grace window when a live agent no
+        longer reports the model or the agent is unregistered; dead agents stay."""
+        confirmed = self.ledger["confirmed"]
         for k, amap in list(self.ledger["placed_at"].items()):
             model, _, provider = k.rpartition("/")
             for aid, ts in list(amap.items()):
+                agent = observed["agents"].get(aid)
+                if agent is not None and agent["live"] \
+                        and model in (agent["loaded"].get(provider) or []):
+                    confirmed.setdefault(k, {}).setdefault(aid, now)
+                    continue
                 if now - ts < pl.PLACEMENT_FRESH_S:
                     continue
-                agent = observed["agents"].get(aid)
-                if agent is None:
+                if agent is None or agent["live"]:
                     del amap[aid]
-                    continue
-                if not agent["live"]:
-                    continue
-                if model not in (agent["loaded"].get(provider) or []):
-                    del amap[aid]
+                    confirmed.get(k, {}).pop(aid, None)
+        for k in list(confirmed):
+            confirmed[k] = {aid: ts for aid, ts in confirmed[k].items()
+                            if aid in self.ledger["placed_at"].get(k, {})}
+            if not confirmed[k]:
+                del confirmed[k]
 
     def _refresh_sat_history(self, desired: dict, observed: dict, now: float) -> None:
         """Append (now, max saturation across placed replicas) per entry,
@@ -570,6 +578,7 @@ class Reconciler:
             self.ledger["last_action_ts"][action.agent_id] = now
             if action.kind in ("load", "migrate", "scale_up"):
                 self.ledger["placed_at"].setdefault(k, {})[action.agent_id] = now
+                self.ledger["confirmed"].get(k, {}).pop(action.agent_id, None)
             if action.kind in _UNLOAD_KINDS:
                 self.ledger["placed_at"].get(k, {}).pop(action.agent_id, None)
         elif action.kind in _UNLOAD_KINDS:
@@ -590,6 +599,7 @@ class Reconciler:
             "backoff_until": dict(self.ledger["backoff_until"]),
             "unload_backoff": {k: dict(v)
                                for k, v in self.ledger["unload_backoff"].items()},
+            "confirmed": {k: dict(v) for k, v in self.ledger["confirmed"].items()},
         }
 
     def proposals(self) -> "list[dict]":

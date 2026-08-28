@@ -39,12 +39,13 @@ def _placements(entry, observed) -> "list[str]":
             if _reporting(a) and entry["model"] in (a["loaded"].get(entry["provider"]) or [])]
 
 def _fresh_placed(k, ledger, now) -> "list[str]":
-    # Ledger placements younger than PLACEMENT_FRESH_S: loads issued but
-    # not yet visible in observed samples (model still loading).
+    # Ledger placements younger than PLACEMENT_FRESH_S that no observed
+    # sample has confirmed yet (model still loading).
     if not ledger or now is None:
         return []
+    confirmed = (ledger.get("confirmed") or {}).get(k) or {}
     return [aid for aid, ts in ((ledger.get("placed_at") or {}).get(k) or {}).items()
-            if now - ts < PLACEMENT_FRESH_S]
+            if now - ts < PLACEMENT_FRESH_S and aid not in confirmed]
 
 def _with_fresh(placed, k, observed, ledger, now) -> "list[str]":
     """New list: placed plus fresh in-flight ledger placements on reporting agents."""
