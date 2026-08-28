@@ -72,7 +72,7 @@ except ImportError:
                 fh.write(content)
         tmp.replace(p)
 
-VERSION = "v2026.08.27-3"
+VERSION = "v2026.08.28-1"
 
 # LMS ps busy-status substrings, mirroring manager energy.LMS_BUSY_MARKERS;
 # transitional states (LOADING/UNLOADING/DOWNLOADING) are not busy (#619).
@@ -2294,6 +2294,8 @@ def _push_vllm_payload(sample: dict[str, Any]) -> None:
         "system": sample.get("system"),
         "vllm": sample.get("vllm") or {},
     }
+    if sample.get("mac_power"):
+        body["mac_power"] = sample["mac_power"]
     try:
         tok = _token_provider()
         headers = {"Authorization": f"Bearer {tok}"} if tok else {}

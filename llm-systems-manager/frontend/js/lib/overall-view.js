@@ -104,6 +104,38 @@ function energySeries(hourlyRows, labelsMs) {
 
 function _fmt1(v) { return v != null ? Number(v).toFixed(1) : '—'; }
 
+// True when a provider rollup's gpu block reports a hot GPU or Apple SoC
+// thermal pressure at Serious/Critical.
+function _gpuCrit(agg) {
+  const gpu = (agg && agg.gpu) || {};
+  return (_num(gpu.max_temp_c) != null && gpu.max_temp_c >= 85)
+    || (_num(gpu.thermal_crit_count) != null && gpu.thermal_crit_count > 0);
+}
+
+function _gpuWatts(agg) {
+  if (!agg) return 0;
+  const w = _num(agg.gpu && agg.gpu.total_power_watts);
+  return w != null ? w : (_num(agg.total_gpu_power_watts) || 0);
+}
+
+// Fleet watts summed once per agent_id across provider rollups (a host
+// serving two providers appears in both); provider totals as fallback.
+function fleetWatts(aggs) {
+  const seen = new Set();
+  let total = 0, rowsCarryPower = false;
+  for (const a of aggs) {
+    for (const r of (a && Array.isArray(a.agents)) ? a.agents : []) {
+      if (!r || !r.online) continue;
+      if (r.power_watts !== undefined) rowsCarryPower = true;
+      const w = _num(r.power_watts);
+      if (w == null || seen.has(r.agent_id)) continue;
+      seen.add(r.agent_id);
+      total += w;
+    }
+  }
+  return rowsCarryPower ? total : aggs.reduce((s, a) => s + _gpuWatts(a), 0);
+}
+
 // {v, t} peak sample → "peak 45.6 · 3m ago", or null placeholder.
 function _peakLine(p, nowMs) {
   if (!p || typeof p.v !== 'number' || typeof p.t !== 'number') return null;
@@ -126,10 +158,9 @@ function tiles(llama, lms, vllm, peaks, nowMs) {
   {
     const a = llama || {};
     const online = a.agent_count_online || 0;
-    const gpu = a.gpu || {};
     let accent = 'off';
     if (online > 0) accent = (a.awake_agent_count || 0) > 0 ? 'ok' : 'warn';
-    if (online > 0 && _num(gpu.max_temp_c) != null && gpu.max_temp_c >= 85) accent = 'crit';
+    if (online > 0 && _gpuCrit(a)) accent = 'crit';
     out.push({
       key: 'llama', label: PROVIDER_LABEL.llama,
       online, total: a.agent_count_total || 0, accent,
@@ -143,8 +174,9 @@ function tiles(llama, lms, vllm, peaks, nowMs) {
   {
     const a = lms || {};
     const online = a.agent_count_online || 0;
-    const accent = online > 0
+    let accent = online > 0
       ? ((a.busy_process_count_total || 0) > 0 ? 'ok' : 'warn') : 'off';
+    if (online > 0 && _gpuCrit(a)) accent = 'crit';
     out.push({
       key: 'lms', label: PROVIDER_LABEL.lms,
       online, total: a.agent_count_total || 0, accent,
@@ -158,8 +190,9 @@ function tiles(llama, lms, vllm, peaks, nowMs) {
   {
     const a = vllm || {};
     const online = a.agent_count_online || 0;
-    const accent = online > 0
+    let accent = online > 0
       ? ((a.requests_running_total || 0) > 0 ? 'ok' : 'warn') : 'off';
+    if (online > 0 && _gpuCrit(a)) accent = 'crit';
     out.push({
       key: 'vllm', label: PROVIDER_LABEL.vllm,
       online, total: a.agent_count_total || 0, accent,
@@ -283,18 +316,17 @@ function toplines(llama, lms, vllm, energy) {
     + ((vllm && vllm.agent_count_online) || 0);
   const models = ((llama && llama.active_model_count) || 0)
     + ((vllm && vllm.active_model_count) || 0);
-  const watts = ((llama && llama.gpu && llama.gpu.total_power_watts) || 0)
-    + ((vllm && vllm.total_gpu_power_watts) || 0);
+  const watts = fleetWatts([llama, lms, vllm]);
   const chip = energyChip(energy);
   return [
     { v: String(online), l: 'agents online' },
     { v: String(models), l: 'models in flight' },
-    { v: watts > 0 ? watts.toFixed(0) + ' W' : '—', l: 'fleet GPU power' },
+    { v: watts > 0 ? watts.toFixed(0) + ' W' : '—', l: 'fleet power' },
     { v: chip ? `${chip.kwh} · ${chip.cost}` : '—', l: 'energy consumption' },
   ];
 }
 
 return { heroSeries, energySeries, tiles, agentRows, alertsSummary, energyChip,
-         toplines, heroBucketMs, fmtShort, PROVIDER_LABEL, HERO_BUCKET_CHOICES,
+         toplines, fleetWatts, heroBucketMs, fmtShort, PROVIDER_LABEL, HERO_BUCKET_CHOICES,
          HERO_BUCKET_DEFAULT_MS };
 });

@@ -5,7 +5,7 @@ import time
 
 import gateway_usage  # type: ignore[import-not-found]  # sibling
 
-from . import ProviderSpec, int_or_none, register
+from . import ProviderSpec, gpu_rollup_add, int_or_none, new_gpu_rollup, register
 
 
 def _fleet_aggregate(samples: dict[str, dict]) -> dict:
@@ -17,12 +17,14 @@ def _fleet_aggregate(samples: dict[str, dict]) -> dict:
     busy_processes = 0
     total_processes = 0
     server_on = 0
+    gpu_acc = new_gpu_rollup()
     usage_totals = gateway_usage.counters()
     agent_rows: list[dict] = []
     for aid, wrap in samples.items():
         s = wrap.get("sample") or {}
         last_seen = float(wrap.get("last_seen") or 0)
         is_online = (now - last_seen) < SPEC.online_threshold_s if last_seen else False
+        row_gpu: dict = {}
         models = s.get("models") or []
         ps = s.get("ps") or []
         srv_on = bool((s.get("server") or {}).get("on") or len(models) > 0)
@@ -35,6 +37,7 @@ def _fleet_aggregate(samples: dict[str, dict]) -> dict:
                        if str(p.get("status", "")).upper() not in ("IDLE", ""))
         if is_online:
             online += 1
+            row_gpu = gpu_rollup_add(gpu_acc, s)
             if srv_on:
                 server_on += 1
             total_loaded += loaded_now
@@ -59,12 +62,16 @@ def _fleet_aggregate(samples: dict[str, dict]) -> dict:
             "ctx": int(max(ctxs)) if (is_online and ctxs) else None,
             "total_tokens_generated": gen_total if is_online else None,
             "total_tokens_prompted": prompt_total if is_online else None,
+            "power_watts": row_gpu.get("power_watts"),
+            "thermal_crit": bool(row_gpu.get("thermal_crit")),
             "age_s": round(now - last_seen, 1) if last_seen else None,
         })
     return {
         "provider": "lms",
-        # Gateway-observed tok/s; same shape as llama/vllm throughput.
-        "throughput": gateway_usage.fleet_rates(samples.keys()),
+        # Gateway-observed tok/s for ONLINE agents; same shape as llama/vllm.
+        "throughput": gateway_usage.fleet_rates(
+            [r["agent_id"] for r in agent_rows if r["online"]]),
+        "gpu": gpu_acc,
         "agent_count_total": len(samples),
         "agent_count_online": online,
         "server_on_count": server_on,
