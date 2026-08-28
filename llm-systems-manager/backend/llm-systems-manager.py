@@ -159,7 +159,7 @@ def _local_hostname() -> str:
 # banner reads it. Bump suffix (-1, -2, …) for same-day iterations; roll
 # the date for a new day's first change.
 # ---------------------------------------------------------------------------
-__version__ = "v2026.08.27-6"
+__version__ = "v2026.08.27-7"
 
 # Wall-clock at first import (Cheroot main process); the shutdown banner
 # reads it for the uptime line.
@@ -2112,6 +2112,17 @@ def _request_json_object() -> "dict | None":
     return data if isinstance(data, dict) else None
 
 
+def _refuse_unadvertised_provider(agent: dict, provider: str):
+    """403 response when the agent doesn't advertise the provider's capability, else None."""
+    spec = providers.get(provider)
+    cap_key = spec.capability_key if spec else provider
+    caps = agent.get("capabilities")
+    if isinstance(caps, dict) and caps.get(cap_key):
+        return None
+    return jsonify({"ok": False,
+                    "error": f"agent does not advertise the {cap_key} capability"}), 403
+
+
 @app.route("/api/remote/host-metrics", methods=["POST"])
 def receive_remote_host_metrics():
     tok = agent_registry.bearer_from_request()
@@ -2121,6 +2132,9 @@ def receive_remote_host_metrics():
     data = _request_json_object()
     if data is None:
         return jsonify({"ok": False, "error": "payload must be a JSON object"}), 400
+    refused = _refuse_unadvertised_provider(agent, "llama")
+    if refused is not None:
+        return refused
     # PR2: every approved llama-capable agent pushes; STORE partitions them.
     aid = agent["agent_id"]
     provider_state.STORE.put("llama", aid, data)
@@ -2149,8 +2163,11 @@ def receive_provider_state():
     sample = body.get("sample") or {}
     if not isinstance(sample, dict):
         return jsonify({"ok": False, "error": "sample must be a JSON object"}), 400
-    if provider not in providers.names():
+    if providers.get(provider) is None:
         return jsonify({"ok": False, "error": f"unknown provider: {provider}"}), 404
+    refused = _refuse_unadvertised_provider(agent, provider)
+    if refused is not None:
+        return refused
     aid = agent["agent_id"]
     provider_state.STORE.put(provider, aid, sample)
     if provider_state.STORE.mark_online(provider, aid):
@@ -2381,6 +2398,9 @@ def receive_lmstudio_metrics():
     data = _request_json_object()
     if data is None:
         return jsonify({"ok": False, "error": "payload must be a JSON object"}), 400
+    refused = _refuse_unadvertised_provider(agent, "lms")
+    if refused is not None:
+        return refused
     try:
         aid = agent["agent_id"]
         provider_state.STORE.put("lms", aid, data)

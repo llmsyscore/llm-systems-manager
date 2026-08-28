@@ -419,6 +419,7 @@ class AlarmEngineConfig(BaseModel):
     host: str = "0.0.0.0"
     port: int = 8081
     evaluation_interval: int = 15
+    metric_max_age_s: int = 600
     keepalive_interval: int = 30
     manager_url: str = "http://localhost:5000"
     cors_origins: str = (

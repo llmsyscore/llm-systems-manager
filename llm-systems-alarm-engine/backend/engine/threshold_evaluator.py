@@ -6,7 +6,7 @@ Threshold rules (above/below/range) are handled here. Anomaly rule types
 """
 
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 from .._time import now_utc
 from typing import Optional
 
@@ -24,6 +24,11 @@ from ..models.metrics import MetricPoint
 from .anomaly_detector import AnomalyDetector
 
 logger = logging.getLogger(__name__)
+
+
+def _quiet_tz():
+    """Time zone quiet hours are evaluated in: the host's local zone."""
+    return datetime.now().astimezone().tzinfo
 
 
 class ThresholdEvaluator:
@@ -204,10 +209,11 @@ class ThresholdEvaluator:
         )
 
     def _is_in_quiet_hours(self, rule: AlarmRule) -> bool:
+        """Quiet-hours window is HH:MM in the alarm engine host's local time zone."""
         if not rule.quiet_hours_start or not rule.quiet_hours_end:
             return False
         try:
-            now = now_utc().time()
+            now = now_utc().replace(tzinfo=timezone.utc).astimezone(_quiet_tz()).time()
             start = datetime.strptime(rule.quiet_hours_start, "%H:%M").time()
             end = datetime.strptime(rule.quiet_hours_end, "%H:%M").time()
         except (ValueError, TypeError):

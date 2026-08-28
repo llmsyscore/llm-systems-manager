@@ -106,8 +106,8 @@ class AlarmRuleCreate(BaseModel):
     severity: Severity = Field(default=Severity.WARNING, description="Default severity for this rule")
     enabled: bool = Field(default=True, description="Whether the rule is enabled")
     notification_channel_ids: list[UUID] = Field(default_factory=list, description="Notification channels to use")
-    quiet_hours_start: Optional[str] = Field(default=None, description="Quiet hours start (HH:MM)")
-    quiet_hours_end: Optional[str] = Field(default=None, description="Quiet hours end (HH:MM)")
+    quiet_hours_start: Optional[str] = Field(default=None, description="Quiet hours start (HH:MM, alarm-engine host local time)")
+    quiet_hours_end: Optional[str] = Field(default=None, description="Quiet hours end (HH:MM, alarm-engine host local time)")
     auto_resolve_cycles: int = Field(
         default=DEFAULT_AUTO_RESOLVE_CYCLES,
         ge=0,

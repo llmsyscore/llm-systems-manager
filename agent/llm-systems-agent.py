@@ -72,7 +72,7 @@ except ImportError:
                 fh.write(content)
         tmp.replace(p)
 
-VERSION = "v2026.08.27-2"
+VERSION = "v2026.08.27-3"
 
 # LMS ps busy-status substrings, mirroring manager energy.LMS_BUSY_MARKERS;
 # transitional states (LOADING/UNLOADING/DOWNLOADING) are not busy (#619).
@@ -2014,6 +2014,7 @@ def heartbeat_loop() -> None:
                     else (llama_get_state() if CONFIG.LLAMA_ENABLED else None)
                 ),
                 "samples_posted": _state.get("samples_posted"),
+                "capabilities": _capabilities(),
                 "version": VERSION,
                 "has_tls_cert": _tls_enabled(),
                 "tls_expires_at": _tls_cert_expiry_iso(),

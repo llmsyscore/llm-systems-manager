@@ -272,6 +272,7 @@ metrics_push_interval_s = 300.0                          # budget metric push ca
 host = "0.0.0.0"
 port = 8081
 evaluation_interval = 15                                 # rule eval cadence (s)
+metric_max_age_s = 600                                   # skip a rule whose newest point is older (s)
 keepalive_interval = 30                                  # WebSocket keepalive (s)
 manager_url = "http://localhost:5000"                    # back-channel to the manager
 cors_origins = "http://localhost:5000"

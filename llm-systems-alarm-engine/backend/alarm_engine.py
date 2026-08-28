@@ -67,7 +67,7 @@ from .storage.influxdb_client import InfluxDBClient
 # (-1, -2, …) for same-day iterations; roll the date for a new day's first
 # change.
 # ---------------------------------------------------------------------------
-__version__ = "v2026.08.27-1"
+__version__ = "v2026.08.27-2"
 from .storage import influx_monitor as _influx_monitor
 from .models.alarm_rule import (
     AlarmRuleCreate,
@@ -511,6 +511,7 @@ async def _on_startup() -> None:
         alert_manager=alert_manager,
         notification_dispatcher=notification_dispatcher,
         metric_repo=metric_repo,
+        metric_max_age_s=float(getattr(settings.alarm_engine, "metric_max_age_s", 600)),
     )
 
     # 4. WebSocket manager
