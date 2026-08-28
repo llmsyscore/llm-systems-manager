@@ -184,9 +184,11 @@ def build_observed(deps: dict) -> dict:
         # available_bytes (not total-used) already excludes reclaimable
         # cache/buffers — psutil's own definition of "free for new work".
         ram_free_mb = round((ram.get("available_bytes") or 0) / 1_048_576)
+        liveness = deps["liveness"](agent)
         out[aid] = {
             "provider_caps": provider_caps,
-            "live": deps["liveness"](agent) == "live",
+            "live": liveness == "live",
+            "liveness": liveness,
             "vram_total_mb": total_mb,
             "vram_free_mb": max(total_mb - used_mb, 0),
             "ram_free_mb": ram_free_mb,

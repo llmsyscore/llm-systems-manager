@@ -26,11 +26,15 @@ class Action:
 def _key(e) -> str:
     return f"{e['model']}/{e['provider']}"
 
+def _reporting(a) -> bool:
+    """Live or merely stale (heartbeat lag) agents; down/pending/disabled are not."""
+    return bool(a["live"]) or a.get("liveness") == "stale"
+
 def _placements(entry, observed) -> "list[str]":
-    """Live agents whose last sample shows the model loaded; a dead agent's
-    frozen sample never counts as a placement."""
+    """Reporting agents whose last sample shows the model loaded; a down
+    agent's frozen sample never counts as a placement."""
     return [aid for aid, a in observed["agents"].items()
-            if a["live"] and entry["model"] in (a["loaded"].get(entry["provider"]) or [])]
+            if _reporting(a) and entry["model"] in (a["loaded"].get(entry["provider"]) or [])]
 
 def _fresh_placed(k, ledger, now) -> "list[str]":
     # Ledger placements younger than PLACEMENT_FRESH_S: loads issued but
@@ -43,7 +47,7 @@ def _fresh_placed(k, ledger, now) -> "list[str]":
 def _effective_placements(entry, k, observed, ledger, now) -> "list[str]":
     placed = _placements(entry, observed)
     for aid in _fresh_placed(k, ledger, now):
-        if aid not in placed and aid in observed["agents"] and observed["agents"][aid]["live"]:
+        if aid not in placed and aid in observed["agents"] and _reporting(observed["agents"][aid]):
             placed.append(aid)
     return placed
 
@@ -337,12 +341,10 @@ def plan(desired: dict, observed: dict, ledger: dict, now: float) -> "list[Actio
         else:                                 # decision == "down"
             if e["provider"] == "vllm":
                 continue        # no agent-side unload path for vLLM
-            # LRU among live placements only.
-            pak = {aid: ts for aid, ts in (placed_at.get(k) or {}).items()
-                   if aid in placed}
-            if not pak:
-                continue
-            lru_aid, _ = min(pak.items(), key=lambda kv: kv[1])
+            # LRU among current placements; a placement missing from the
+            # ledger (manager restart) sorts oldest.
+            pak = placed_at.get(k) or {}
+            lru_aid = min(placed, key=lambda aid: pak.get(aid, 0.0))
             if lru_aid in touched or now - last_action_ts.get(lru_aid, 0) < COOLDOWN_S:
                 continue
             actions.append(Action(

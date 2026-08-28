@@ -123,6 +123,13 @@ def test_dead_agent_stale_loaded_sample_does_not_count_as_placement():
     st = pl.entry_status(_desired([E]), obs)
     assert st["m1/llama"]["placed"] == 0
 
+def test_stale_agent_placement_still_counts_no_failover():
+    # Heartbeat lag (stale, not down) keeps the placement; no failover load.
+    obs = _obs(_agents(**{A1: {"live": False, "liveness": "stale",
+                               "loaded": {"llama": ["m1"]}}}))
+    assert pl.plan(_desired([E]), obs, _ledger(), now=100000.0) == []
+    assert pl.entry_status(_desired([E]), obs)["m1/llama"]["placed"] == 1
+
 def test_fresh_ledger_placement_on_dead_agent_does_not_count():
     led = _ledger(); led["placed_at"]["m1/llama"] = {A1: 990.0}
     obs = _obs(_agents(**{A1: {"live": False}}))

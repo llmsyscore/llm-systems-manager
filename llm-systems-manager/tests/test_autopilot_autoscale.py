@@ -109,13 +109,14 @@ def test_plan_scale_down_never_targets_a_dead_agent():
     scale_downs = [a for a in acts if a.kind == "scale_down"]
     assert [a.agent_id for a in scale_downs] == [A2]
 
-def test_plan_scale_down_skipped_when_only_dead_agents_in_ledger():
+def test_plan_scale_down_falls_back_to_a_live_placement_when_ledger_is_stale():
+    # Ledger only knows an unregistered agent; a live placement is still chosen.
     e = {**E, "min_replicas": 1, "max_replicas": 3}
     obs = _obs(_agents(**{A1: {"loaded": {"llama": ["m1"]}},
                           A2: {"loaded": {"llama": ["m1"]}}}),
                sat_history={"m1/llama": _hist(
                    [(t, 0.1) for t in range(0, 1001, 100)])})
     led = _ledger()
-    led["placed_at"]["m1/llama"] = {"d" * 32: 100.0}   # dead, no longer observed
+    led["placed_at"]["m1/llama"] = {"d" * 32: 100.0, A2: 500.0}
     acts = pl.plan(_desired([e]), obs, led, now=1000.0)
-    assert [a for a in acts if a.kind == "scale_down"] == []
+    assert [a.agent_id for a in acts if a.kind == "scale_down"] == [A1]
