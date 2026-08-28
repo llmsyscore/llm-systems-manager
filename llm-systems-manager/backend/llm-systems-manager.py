@@ -3744,21 +3744,23 @@ def _manager_secret() -> bytes:
 def _mint_manager_secret(replace_empty: bool) -> bytes:
     """Write a fresh secret via O_EXCL temp + hard-link publish; returns whatever ends up on disk."""
     MANAGER_SECRET_FILE.parent.mkdir(parents=True, exist_ok=True)
+    for stale in MANAGER_SECRET_FILE.parent.glob(f".{MANAGER_SECRET_FILE.name}.*.tmp"):
+        stale.unlink(missing_ok=True)  # leftovers from a mint killed mid-way
     fd, tmp = tempfile.mkstemp(dir=str(MANAGER_SECRET_FILE.parent),
                                prefix=f".{MANAGER_SECRET_FILE.name}.", suffix=".tmp")
-    secret = os.urandom(32)
-    with os.fdopen(fd, "wb") as fh:
-        fh.write(secret)
     try:
-        if replace_empty:
+        with os.fdopen(fd, "wb") as fh:
+            fh.write(os.urandom(32))
+        try:
+            if replace_empty:
+                os.replace(tmp, MANAGER_SECRET_FILE)
+            else:
+                os.link(tmp, MANAGER_SECRET_FILE)  # exclusive publish; loser re-reads
+            log.info("generated manager HMAC secret at %s", MANAGER_SECRET_FILE)
+        except FileExistsError:
+            pass
+        except OSError:  # hard links unsupported here: plain rename
             os.replace(tmp, MANAGER_SECRET_FILE)
-        else:
-            os.link(tmp, MANAGER_SECRET_FILE)  # exclusive publish; loser re-reads
-        log.info("generated manager HMAC secret at %s", MANAGER_SECRET_FILE)
-    except FileExistsError:
-        secret = MANAGER_SECRET_FILE.read_bytes()
-    except OSError:  # hard links unsupported here: plain rename
-        os.replace(tmp, MANAGER_SECRET_FILE)
     finally:
         try:
             os.unlink(tmp)
@@ -3768,7 +3770,7 @@ def _mint_manager_secret(replace_empty: bool) -> bytes:
         os.chmod(MANAGER_SECRET_FILE, 0o600)
     except OSError:
         pass
-    return secret
+    return MANAGER_SECRET_FILE.read_bytes()
 
 
 # Sign Flask session cookies with a SECOND, ephemeral secret regenerated on

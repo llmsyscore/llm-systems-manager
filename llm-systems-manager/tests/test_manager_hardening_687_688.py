@@ -118,3 +118,11 @@ def test_manager_secret_is_cached_after_first_read(secret_file):
     s = M._manager_secret()
     secret_file.write_bytes(b"z" * 32)
     assert M._manager_secret() == s
+
+
+def test_manager_secret_sweeps_orphaned_temp_files(secret_file):
+    secret_file.parent.mkdir(parents=True)
+    (secret_file.parent / ".manager_secret.abc123.tmp").write_bytes(b"o" * 32)
+    s = M._manager_secret()
+    assert secret_file.read_bytes() == s
+    assert [q.name for q in secret_file.parent.iterdir()] == ["manager_secret"]
