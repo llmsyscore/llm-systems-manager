@@ -56,6 +56,8 @@ def _residents(desired, observed, ledger, now) -> dict:
     from observed loads plus fresh in-flight ledger placements."""
     res: dict = {}
     for aid, a in observed["agents"].items():
+        if not _reporting(a):
+            continue
         for prov in SINGLE_RESIDENT_PROVIDERS:
             models = a["loaded"].get(prov) or []
             if models:
@@ -64,7 +66,9 @@ def _residents(desired, observed, ledger, now) -> dict:
         if e["provider"] not in SINGLE_RESIDENT_PROVIDERS:
             continue
         for aid in _fresh_placed(_key(e), ledger, now):
-            res.setdefault((e["provider"], aid), e["model"])
+            a = observed["agents"].get(aid)
+            if a is not None and _reporting(a):
+                res.setdefault((e["provider"], aid), e["model"])
     return res
 
 def _resident_conflict(e, aid, residents, managed) -> bool:

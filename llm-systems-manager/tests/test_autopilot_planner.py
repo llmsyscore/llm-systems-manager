@@ -445,6 +445,15 @@ def test_single_resident_can_displace_unmanaged_model():
     acts = pl.plan(_desired([E]), obs, _ledger(), now=1000.0)
     assert [a.kind for a in acts] == ["load"] and acts[0].agent_id == A1
 
+def test_residents_ignore_down_agents_frozen_samples():
+    led = _ledger(); led["placed_at"]["m2/llama"] = {A2: 990.0}
+    obs = _obs(_agents(**{A1: {"live": False, "loaded": {"llama": ["m1"]}},
+                          A2: {"live": False, "liveness": "down"}}))
+    assert pl._residents(_desired([E, {**E, "model": "m2"}]), obs, led, 1000.0) == {}
+    obs["agents"][A2]["liveness"] = "stale"
+    assert pl._residents(_desired([E, {**E, "model": "m2"}]), obs, led, 1000.0) == {
+        ("llama", A2): "m2"}
+
 def test_lms_multi_model_co_placement_still_allowed():
     e1 = {**E, "model": "x", "provider": "lms", "priority": 1}
     e2 = {**E, "model": "y", "provider": "lms", "priority": 2}
