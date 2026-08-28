@@ -45,6 +45,7 @@ _UNSET_TOKENS = {"", "REPLACE_ME"}
 # ── Release check (#541) ─────────────────────────────────────────────────────
 _DEFAULT_RELEASE_REPO = "llmsyscore/llm-systems-manager"
 _RELEASE_TTL_S = 24 * 3600
+_RELEASE_FAIL_TTL_S = 10 * 60
 _RELEASE_TIMEOUT_S = 5
 _RELEASE_FILE = "RELEASE"
 # enabled=None means "not overridden at runtime, read the config value".
@@ -204,12 +205,12 @@ def _install_kind(inst: "Optional[dict]" = None) -> str:
 
 
 def _latest_release(repo: str) -> "tuple[Optional[str], Optional[str], Optional[str]]":
-    """(tag, body, error) for the repo's latest release, cached 24 h. Network
-    failures degrade to the cached tag and an error string, never an exception.
-    Toggling the switch off and on clears checked_at, forcing a fresh read."""
+    """(tag, body, error) for the repo's latest release; a successful read is
+    cached 24 h, a failed one 10 min. Never raises; toggling clears checked_at."""
     now = time.time()
     with _release_lock:
-        if _release["tag"] and now - _release["checked_at"] < _RELEASE_TTL_S:
+        ttl = _RELEASE_FAIL_TTL_S if (_release["error"] or not _release["tag"]) else _RELEASE_TTL_S
+        if _release["checked_at"] and now - _release["checked_at"] < ttl:
             return _release["tag"], _release["body"], _release["error"]
         # Single flight: concurrent callers get the cached answer while one
         # thread does the network read.
@@ -433,6 +434,20 @@ class SubscriptionStore:
             self._write(data)
         return True
 
+    def has(self, endpoint: str) -> bool:
+        return endpoint in self._read()
+
+    def owns(self, endpoint: str, auth: Any) -> bool:
+        """True when auth equals the stored subscription's keys.auth."""
+        if not isinstance(auth, str) or not auth:
+            return False
+        entry = self._read().get(endpoint)
+        sub = entry.get("subscription") if isinstance(entry, dict) else None
+        keys = sub.get("keys") if isinstance(sub, dict) else None
+        stored = keys.get("auth") if isinstance(keys, dict) else None
+        return isinstance(stored, str) and hmac.compare_digest(
+            stored.encode("utf-8"), auth.encode("utf-8"))
+
     def remove(self, endpoint: str) -> bool:
         with self._lock:
             data = self._read()
@@ -606,6 +621,10 @@ def register_routes(app, ctx, static_dir: Path) -> None:
 
     import auth  # sibling
 
+    def _quiet_is_admin() -> bool:
+        """Admin role + admin IP, without ctx.require_admin()'s warn-log per denial."""
+        return auth.effective_role() == "admin" and auth.admin_ip_ok()
+
     static_dir = Path(static_dir)
     _data_dir = Path(ctx.data_dir)
     _store = SubscriptionStore(_data_dir / _SUBS_FILE)
@@ -710,8 +729,17 @@ def register_routes(app, ctx, static_dir: Path) -> None:
 
     @app.route("/api/companion/push/unsubscribe", methods=["POST"])
     def companion_push_unsubscribe():
-        body = flask_request.get_json(silent=True)
-        endpoint = (body.get("endpoint") or "") if isinstance(body, dict) else ""
+        # Admins may remove any device; anyone else must prove possession of
+        # the subscription by sending its own `keys.auth`.
+        body = flask_request.get_json(silent=True) if flask_request.is_json else None
+        body = body if isinstance(body, dict) else {}
+        endpoint = body.get("endpoint") if isinstance(body.get("endpoint"), str) else ""
+        keys = body.get("keys") if isinstance(body.get("keys"), dict) else {}
+        if not _store.has(endpoint):
+            return jsonify({"ok": True, "removed": False})   # idempotent
+        if not _quiet_is_admin() and not _store.owns(endpoint, keys.get("auth")):
+            return jsonify({"ok": False, "error": "admin role or the device's own "
+                                                  "subscription keys required"}), 403
         return jsonify({"ok": True, "removed": _store.remove(endpoint)})
 
     @app.route("/api/companion/push/test", methods=["POST"])
@@ -721,9 +749,7 @@ def register_routes(app, ctx, static_dir: Path) -> None:
         # An explicit endpoint tests just that device, so one stale
         # subscription can't report failure for a push that arrived.
         target = (body.get("endpoint") or "") if isinstance(body, dict) else ""
-        # Quiet admin check — ctx.require_admin() warn-logs every denial.
-        is_admin = (auth.effective_role() == "admin"
-                    and ctx.admin_ip_allowed(flask_request.remote_addr or ""))
+        is_admin = _quiet_is_admin()
         # Only an admin may fan a test out to every registered device.
         if not target and not is_admin:
             return jsonify({"ok": False,

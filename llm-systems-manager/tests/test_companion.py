@@ -7,6 +7,7 @@ data/ directory is never touched.
 """
 from __future__ import annotations
 
+import sys
 import base64
 import json
 import re
@@ -438,6 +439,53 @@ class TestPushApi:
         for body in ([1, 2, 3], "x", 7):
             r = client.post("/api/companion/push/unsubscribe", json=body)
             assert r.status_code == 200, body
+
+    # #718: only admins remove by endpoint alone; a device proves ownership
+    # with its own keys.auth.
+    def test_operator_cannot_remove_another_device_by_endpoint(self, operator):
+        assert operator.post("/api/companion/push/subscribe", json=_sub()).status_code == 200
+        r = operator.post("/api/companion/push/unsubscribe",
+                          json={"endpoint": _sub()["endpoint"]})
+        assert r.status_code == 403
+        r = operator.post("/api/companion/push/unsubscribe",
+                          json={"endpoint": _sub()["endpoint"], "keys": {"auth": "wrong"}})
+        assert r.status_code == 403
+        assert operator.get("/api/companion/push/subscriptions").get_json()["count"] == 1
+
+    def test_operator_removes_its_own_device_with_matching_keys(self, operator):
+        assert operator.post("/api/companion/push/subscribe", json=_sub()).status_code == 200
+        sub = _sub()
+        r = operator.post("/api/companion/push/unsubscribe",
+                          json={"endpoint": sub["endpoint"], "keys": sub["keys"]})
+        assert r.get_json() == {"ok": True, "removed": True}
+        assert operator.get("/api/companion/push/subscriptions").get_json()["count"] == 0
+
+    def test_operator_unsubscribe_odd_keys_are_denied_not_500(self, operator, sandbox):
+        assert operator.post("/api/companion/push/subscribe", json=_sub()).status_code == 200
+        for keys in ({"auth": "ключ"}, {"auth": ""}, {"auth": 7}, "x", None):
+            r = operator.post("/api/companion/push/unsubscribe",
+                              json={"endpoint": _sub()["endpoint"], "keys": keys})
+            assert r.status_code == 403, keys
+        # A corrupt store entry under that endpoint is denied, not a 500.
+        path = companion._store._path
+        data = json.loads(path.read_text())
+        data[_sub()["endpoint"]] = "corrupt"
+        path.write_text(json.dumps(data))
+        r = operator.post("/api/companion/push/unsubscribe",
+                          json={"endpoint": _sub()["endpoint"], "keys": _sub()["keys"]})
+        assert r.status_code == 403
+
+    def test_operator_unsubscribe_non_object_body_is_denied(self, operator):
+        assert operator.post("/api/companion/push/subscribe", json=_sub()).status_code == 200
+        for body in ([1, 2, 3], "x", 7):
+            r = operator.post("/api/companion/push/unsubscribe", json=body)
+            assert r.get_json() == {"ok": True, "removed": False}, body  # no such endpoint
+        assert operator.get("/api/companion/push/subscriptions").get_json()["count"] == 1
+
+    def test_operator_unsubscribe_of_unknown_endpoint_is_idempotent(self, operator):
+        r = operator.post("/api/companion/push/unsubscribe",
+                          json={"endpoint": "https://push.example.net/send/gone"})
+        assert r.get_json() == {"ok": True, "removed": False}
 
     def test_push_send_refuses_redirects(self):
         """pywebpush passes no allow_redirects, so a 302 from a push endpoint
@@ -1409,3 +1457,73 @@ class TestInstalledReleaseCache:
         companion._installed["at"] -= companion._INSTALLED_GIT_TTL_S * 100
         (tmp_path / "RELEASE").write_text("v9.9.9\n", encoding="utf-8")
         assert companion._installed_release()["tag"] == "v1.2.0"
+
+
+# ── #717: release check negative cache ─────────────────────────────────
+
+class TestReleaseNegativeCache:
+    @pytest.fixture(autouse=True)
+    def fresh(self, monkeypatch):
+        for k, v in (("checked_at", 0.0), ("tag", None),
+                     ("body", None), ("error", None), ("fetching", False)):
+            monkeypatch.setitem(companion._release, k, v)
+
+    def _requests(self, monkeypatch, responses):
+        calls = []
+        class _Resp:
+            def __init__(self, status, data):
+                self.status_code, self._data = status, data
+            def json(self):
+                return self._data
+        class _Requests:
+            @staticmethod
+            def get(url, timeout=None, headers=None):
+                calls.append(url)
+                nxt = responses.pop(0)
+                if isinstance(nxt, Exception):
+                    raise nxt
+                return _Resp(*nxt)
+        monkeypatch.setitem(sys.modules, "requests", _Requests)
+        return calls
+
+    def test_failure_is_not_retried_within_the_fail_ttl(self, monkeypatch):
+        calls = self._requests(monkeypatch, [ConnectionError("down"), (200, {"tag_name": "v9"})])
+        t0 = 1_000_000.0
+        monkeypatch.setattr(companion.time, "time", lambda: t0)
+        assert companion._latest_release("o/r") == (None, None, "ConnectionError")
+        monkeypatch.setattr(companion.time, "time", lambda: t0 + 60)
+        assert companion._latest_release("o/r") == (None, None, "ConnectionError")
+        assert len(calls) == 1
+        monkeypatch.setattr(companion.time, "time",
+                            lambda: t0 + companion._RELEASE_FAIL_TTL_S + 1)
+        assert companion._latest_release("o/r") == ("v9", "", None)
+        assert len(calls) == 2
+
+    def test_http_error_is_negative_cached_too(self, monkeypatch):
+        calls = self._requests(monkeypatch, [(503, {}), (503, {})])
+        t0 = 1_000_000.0
+        monkeypatch.setattr(companion.time, "time", lambda: t0)
+        assert companion._latest_release("o/r")[2] == "github returned HTTP 503"
+        monkeypatch.setattr(companion.time, "time", lambda: t0 + 300)
+        companion._latest_release("o/r")
+        assert len(calls) == 1
+
+    def test_failure_after_success_keeps_tag_and_retries_after_fail_ttl(self, monkeypatch):
+        calls = self._requests(monkeypatch, [(200, {"tag_name": "v9"}), ConnectionError("x"),
+                                             (200, {"tag_name": "v10"})])
+        t0 = 1_000_000.0
+        monkeypatch.setattr(companion.time, "time", lambda: t0)
+        assert companion._latest_release("o/r")[0] == "v9"
+        monkeypatch.setattr(companion.time, "time", lambda: t0 + companion._RELEASE_TTL_S + 1)
+        assert companion._latest_release("o/r") == ("v9", "", "ConnectionError")
+        monkeypatch.setattr(companion.time, "time", lambda: t0 + companion._RELEASE_TTL_S + 60)
+        assert companion._latest_release("o/r") == ("v9", "", "ConnectionError")
+        assert len(calls) == 2
+        monkeypatch.setattr(companion.time, "time",
+                            lambda: t0 + companion._RELEASE_TTL_S + companion._RELEASE_FAIL_TTL_S + 1)
+        assert companion._latest_release("o/r")[0] == "v10"
+
+    def test_toggle_clears_the_stamp(self, client, monkeypatch):
+        companion._release["checked_at"] = 5.0
+        client.put("/api/companion/release", json={"enabled": False})
+        assert companion._release["checked_at"] == 0.0
