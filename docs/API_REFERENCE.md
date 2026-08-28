@@ -971,7 +971,7 @@ Stores a browser `PushSubscription` JSON (`endpoint` + `keys.p256dh` + `keys.aut
 ---
 
 ### `POST /api/companion/push/unsubscribe`
-**Body:** `{"endpoint": "...", "keys": {"auth": "..."}}`. Removes the matching subscription and returns `{ok, removed}`. Admins may remove any device by `endpoint` alone; every other session must include the subscription's own `keys.auth` (the value the browser's `PushSubscription.toJSON()` reports) and gets 403 otherwise.
+**Body:** `{"endpoint": "...", "keys": {"auth": "..."}}`. Removes the matching subscription and returns `{ok, removed}`. Admins may remove any device by `endpoint` alone; every other session must include the subscription's own `keys.auth` (the value the browser's `PushSubscription.toJSON()` reports) and gets 403 otherwise. An endpoint that is not registered returns `{ok: true, removed: false}` for any session.
 
 ---
 

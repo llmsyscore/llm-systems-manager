@@ -476,9 +476,16 @@ class TestPushApi:
         assert r.status_code == 403
 
     def test_operator_unsubscribe_non_object_body_is_denied(self, operator):
+        assert operator.post("/api/companion/push/subscribe", json=_sub()).status_code == 200
         for body in ([1, 2, 3], "x", 7):
-            assert operator.post("/api/companion/push/unsubscribe",
-                                 json=body).status_code == 403, body
+            r = operator.post("/api/companion/push/unsubscribe", json=body)
+            assert r.get_json() == {"ok": True, "removed": False}, body  # no such endpoint
+        assert operator.get("/api/companion/push/subscriptions").get_json()["count"] == 1
+
+    def test_operator_unsubscribe_of_unknown_endpoint_is_idempotent(self, operator):
+        r = operator.post("/api/companion/push/unsubscribe",
+                          json={"endpoint": "https://push.example.net/send/gone"})
+        assert r.get_json() == {"ok": True, "removed": False}
 
     def test_push_send_refuses_redirects(self):
         """pywebpush passes no allow_redirects, so a 302 from a push endpoint

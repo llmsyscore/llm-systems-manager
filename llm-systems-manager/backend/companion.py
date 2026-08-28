@@ -434,6 +434,9 @@ class SubscriptionStore:
             self._write(data)
         return True
 
+    def has(self, endpoint: str) -> bool:
+        return endpoint in self._read()
+
     def owns(self, endpoint: str, auth: Any) -> bool:
         """True when auth equals the stored subscription's keys.auth."""
         if not isinstance(auth, str) or not auth:
@@ -732,6 +735,8 @@ def register_routes(app, ctx, static_dir: Path) -> None:
         body = body if isinstance(body, dict) else {}
         endpoint = body.get("endpoint") if isinstance(body.get("endpoint"), str) else ""
         keys = body.get("keys") if isinstance(body.get("keys"), dict) else {}
+        if not _store.has(endpoint):
+            return jsonify({"ok": True, "removed": False})   # idempotent
         if not _quiet_is_admin() and not _store.owns(endpoint, keys.get("auth")):
             return jsonify({"ok": False, "error": "admin role or the device's own "
                                                   "subscription keys required"}), 403
