@@ -89,7 +89,6 @@ SPEC = ProviderSpec(
     label="vLLM",
     capability_key="vllm",
     online_threshold_s=15.0,
-    push_endpoint_legacy="",
     default_picker="pool",
     pin_dict_key="vllm_model_pins",
     single_resident=True,

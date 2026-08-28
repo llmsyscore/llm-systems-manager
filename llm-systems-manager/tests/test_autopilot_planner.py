@@ -378,6 +378,13 @@ def test_partial_placement_unknown_size_reports_size_unknown():
 
 # ── #500: single-resident hosts + in-flight placements ──────────────────
 
+def test_single_resident_providers_mirror_registry():
+    import providers
+    assert set(pl.SINGLE_RESIDENT_PROVIDERS) == {"llama", "vllm"}
+    assert set(pl.SINGLE_RESIDENT_PROVIDERS) == {
+        n for n, s in providers.PROVIDERS.items() if s.single_resident}
+
+
 def test_single_resident_no_same_pass_co_placement():
     # Two llama entries, one roomy host: only the higher-priority entry may
     # take it — llama load displaces the resident model.

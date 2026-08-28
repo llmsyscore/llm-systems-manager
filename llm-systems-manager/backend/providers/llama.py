@@ -82,7 +82,6 @@ SPEC = ProviderSpec(
     label="llama.cpp",
     capability_key="llama",
     online_threshold_s=30.0,
-    push_endpoint_legacy="/api/remote/host-metrics",
     default_picker="pool",
     pin_dict_key="llama_model_pins",
     single_resident=True,

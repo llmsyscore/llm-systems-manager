@@ -78,6 +78,12 @@ def test_aggregator_models_falls_back_to_singular_model():
     assert agg["active_models"] == ["cur", "other", "solo", "x"]
 
 
+def test_spec_has_no_push_endpoint_legacy():
+    assert not hasattr(providers.ProviderSpec, "push_endpoint_legacy")
+    assert providers.single_resident_names() == tuple(
+        n for n, s in providers.PROVIDERS.items() if s.single_resident)
+
+
 def test_aggregator_empty():
     agg = providers.get("vllm").aggregator({})
     assert agg["agent_count_total"] == 0
