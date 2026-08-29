@@ -1,5 +1,6 @@
 """#472: tick — auto executes, semi proposes, failure backoff, stale expiry."""
 from __future__ import annotations
+import copy
 import threading
 import autopilot as ap
 import autopilot_planner as pl
@@ -7,7 +8,8 @@ import autopilot_planner as pl
 A1, A2 = "a" * 32, "b" * 32
 
 def _mk(auto=False, exec_ok=True, loaded=(False,), route_sync=None, placed_at=None,
-        route_pins=None):
+        route_pins=None, fresh=False):
+    """fresh=True hands the reconciler a deep copy per observation, like prod."""
     calls = []
     state = {"enabled": True, "hosts": {}, "entries": [
         {"model": "m1", "provider": "llama", "placement": "auto",
@@ -21,7 +23,8 @@ def _mk(auto=False, exec_ok=True, loaded=(False,), route_sync=None, placed_at=No
         "model_sizes_mb": {"llama:m1": 8000}, "sat_history": {},
         "route_pins": route_pins or {}}
     r = ap.Reconciler(get_state=lambda: state,
-                      build_observed=lambda: observed,
+                      build_observed=(lambda: copy.deepcopy(observed)) if fresh
+                      else (lambda: observed),
                       executor=lambda a: (calls.append(a), exec_ok)[1],
                       route_sync=route_sync)
     if placed_at:
@@ -316,3 +319,170 @@ def test_applied_unload_clears_confirmation_without_a_tick():
     assert A1 not in r.ledger["placed_at"]["m1/llama"]
     assert r.ledger["confirmed"]["m1/llama"] == {A2}
     assert r.ledger_view["confirmed"]["m1/llama"] == {A2}
+
+# ── #729: a blank provider sample is debounced before a confirmed placement drops ──
+
+def _confirmed(fresh=True, **kw):
+    """Reconciler with m1 confirmed on A1 at t=1030 and A1 out of cooldown by t=1200."""
+    r, calls, observed = _mk(auto=True, fresh=fresh, **kw)
+    r.tick(now=1000.0)                                   # load issued
+    observed["agents"][A1]["loaded"]["llama"] = ["m1"]
+    r.tick(now=1030.0)                                   # confirmed
+    assert r.ledger["confirmed"]["m1/llama"] == {A1}
+    return r, calls, observed
+
+def _blank_llama(observed, aid=A1):
+    observed["agents"][aid]["loaded"]["llama"] = []
+    observed["agents"][aid]["server_state"] = None
+
+def test_blank_llama_sample_keeps_confirmed_placement_within_grace():
+    r, calls, observed = _confirmed()
+    _blank_llama(observed)
+    out = r.tick(now=1200.0)                             # cooldown over, sample blank
+    assert out["entry_status"]["m1/llama"]["placed"] == 1
+    assert [a.kind for a in calls] == ["load"]           # no re-load
+    assert r.ledger["confirmed"]["m1/llama"] == {A1}
+    assert r.ledger["blank_since"]["m1/llama"][A1] == 1200.0
+    assert r.ledger_view["blank_since"]["m1/llama"][A1] == 1200.0
+    observed["agents"][A1]["loaded"]["llama"] = ["m1"]   # sample recovers
+    observed["agents"][A1]["server_state"] = "awake"
+    r.tick(now=1230.0)
+    assert r.ledger["blank_since"] == {}
+    assert r.ledger["confirmed"]["m1/llama"] == {A1}
+
+def test_blank_samples_past_grace_drop_the_placement_and_reload():
+    r, calls, observed = _confirmed()
+    _blank_llama(observed)
+    r.tick(now=1200.0)
+    out = r.tick(now=1200.0 + ap.BLANK_GRACE_S)
+    assert out["entry_status"]["m1/llama"]["placed"] == 1  # new load in flight
+    assert [a.kind for a in calls] == ["load", "load"]
+    assert r.ledger["placed_at"]["m1/llama"][A1] == 1200.0 + ap.BLANK_GRACE_S
+    assert r.ledger["blank_since"] == {}
+
+def test_grace_does_not_reset_while_the_sample_stays_blank():
+    """An expired grace is not re-armed on later ticks while the placed_at
+    row is still fresh enough to keep the pair confirmed."""
+    r, calls, observed = _confirmed()
+    r._exec = lambda a: (calls.append(a), False)[1]      # re-load attempts fail
+    _blank_llama(observed)
+    r.tick(now=1040.0)                                   # since=1040
+    out = r.tick(now=1040.0 + ap.BLANK_GRACE_S)          # expired, row still < FRESH
+    assert out["entry_status"]["m1/llama"]["placed"] == 0  # no in-flight credit either
+    assert [a.kind for a in calls] == ["load", "load"]   # re-load tried, failed
+    assert r.ledger["confirmed"]["m1/llama"] == {A1}
+    assert r.ledger["blank_since"]["m1/llama"][A1] == 1040.0
+    out = r.tick(now=1040.0 + ap.BLANK_GRACE_S + 30)     # entry in backoff
+    assert r.ledger["blank_since"]["m1/llama"][A1] == 1040.0   # not re-armed
+    assert out["entry_status"]["m1/llama"]["placed"] == 0
+    r.tick(now=1000.0 + pl.PLACEMENT_FRESH_S)            # placed_at row expires
+    assert r.ledger["confirmed"] == {} and r.ledger["blank_since"] == {}
+
+def test_awake_server_with_no_model_is_a_real_unload_not_a_blip():
+    r, calls, observed = _confirmed()
+    observed["agents"][A1]["loaded"]["llama"] = []       # server_state stays awake
+    out = r.tick(now=1200.0)
+    assert out["entry_status"]["m1/llama"]["placed"] == 1  # reloaded at once
+    assert [a.kind for a in calls] == ["load", "load"]
+    assert r.ledger["blank_since"] == {}
+
+def test_another_model_on_the_host_drops_the_placement_at_once():
+    r, calls, observed = _confirmed()
+    observed["agents"][A1]["loaded"]["llama"] = ["other"]
+    observed["agents"][A1]["server_state"] = None
+    r.tick(now=1200.0)
+    assert [a.kind for a in calls] == ["load", "load"]   # re-placed at once
+    assert r.ledger["blank_since"] == {}
+    assert A1 not in r.ledger["confirmed"].get("m1/llama", ())
+
+def test_grace_keeps_the_resident_slot_against_other_entries():
+    """During the grace another managed entry cannot take the single-resident host."""
+    r, calls, observed = _confirmed()
+    r._get_state().setdefault("entries").append(
+        {"model": "m2", "provider": "llama", "placement": "auto",
+         "failover": "auto", "priority": 2, "min_replicas": 1, "max_replicas": 1})
+    observed["model_sizes_mb"]["llama:m2"] = 8000
+    _blank_llama(observed)
+    out = r.tick(now=1200.0)
+    assert [(a.kind, a.model) for a in calls] == [("load", "m1")]
+    assert out["entry_status"]["m2/llama"]["blocked"].startswith(
+        "capable hosts already serve another managed llama model")
+
+def test_observe_applies_grace_without_touching_the_ledger():
+    r, calls, observed = _confirmed()
+    _blank_llama(observed)
+    r.tick(now=1200.0)
+    obs = r.observe(now=1230.0)
+    assert obs["agents"][A1]["loaded"]["llama"] == ["m1"]
+    assert pl.entry_status(r._get_state(), obs, r.ledger_view, 1230.0)["m1/llama"]["placed"] == 1
+    assert r.ledger["blank_since"]["m1/llama"][A1] == 1200.0
+    obs = r.observe(now=1200.0 + ap.BLANK_GRACE_S)
+    assert obs["agents"][A1]["loaded"]["llama"] == []
+    r.ledger["blank_since"].clear(); r.ledger_view["blank_since"].clear()
+    obs = r.observe(now=1230.0)                          # GET never records a new blip
+    assert obs["agents"][A1]["loaded"]["llama"] == []
+    assert r.ledger["blank_since"] == {}
+
+def test_blank_lms_sample_is_debounced_but_a_partial_ps_is_not():
+    r, calls, observed = _mk(auto=True, fresh=True)
+    e = r._get_state()["entries"][0]
+    e["provider"] = "lms"
+    for a in observed["agents"].values():
+        a["provider_caps"] = ["lms"]; a["loaded"] = {"lms": []}; a["server_state"] = None
+    observed["model_sizes_mb"]["lms:m1"] = 8000
+    r.tick(now=1000.0)
+    observed["agents"][A1]["loaded"]["lms"] = ["m1", "x"]
+    r.tick(now=1030.0)
+    assert r.ledger["confirmed"]["m1/lms"] == {A1}
+    observed["agents"][A1]["loaded"]["lms"] = []         # `lms ps` came back empty
+    out = r.tick(now=1200.0)
+    assert out["entry_status"]["m1/lms"]["placed"] == 1
+    assert [a.kind for a in calls] == ["load"]
+    observed["agents"][A1]["loaded"]["lms"] = ["x"]      # m1 really gone
+    out = r.tick(now=1230.0)
+    assert out["entry_status"]["m1/lms"]["placed"] == 1  # re-load issued now
+    assert [a.kind for a in calls] == ["load", "load"]
+    assert r.ledger["blank_since"] == {}
+
+def test_applied_unload_and_pruning_clear_blank_since():
+    r, calls, observed = _mk(auto=False, loaded=(True, True), fresh=True,
+                             placed_at={A1: 100.0, A2: 500.0})
+    r.tick(now=1000.0)                                   # surplus -> proposal on A1
+    _blank_llama(observed)
+    r.tick(now=1030.0)
+    assert r.ledger["blank_since"]["m1/llama"] == {A1: 1030.0}
+    r.apply(r.proposals()[0]["id"], now=1031.0)
+    assert r.ledger["blank_since"] == {}
+    r.ledger["blank_since"] = {"m1/llama": {A2: 1.0, "z" * 32: 1.0}, "gone/llama": {A1: 1.0}}
+    observed["agents"][A2]["loaded"]["llama"] = ["m1"]
+    r.tick(now=1060.0)
+    assert r.ledger["blank_since"] == {}
+
+def test_grace_covers_every_confirmed_entry_on_a_shared_host():
+    r, calls, observed = _mk(auto=True, fresh=True)
+    st = r._get_state()
+    st["entries"][0]["provider"] = "lms"
+    st["entries"].append({"model": "m2", "provider": "lms", "placement": "auto",
+                          "failover": "auto", "priority": 2, "min_replicas": 1,
+                          "max_replicas": 1})
+    for a in observed["agents"].values():
+        a["provider_caps"] = ["lms"]; a["loaded"] = {"lms": []}; a["server_state"] = None
+    observed["model_sizes_mb"].update({"lms:m1": 4000, "lms:m2": 4000})
+    r.ledger["placed_at"] = {"m1/lms": {A1: 900.0}, "m2/lms": {A1: 900.0}}
+    observed["agents"][A1]["loaded"]["lms"] = ["m1", "m2"]
+    r.tick(now=1000.0)
+    assert r.ledger["confirmed"] == {"m1/lms": {A1}, "m2/lms": {A1}}
+    observed["agents"][A1]["loaded"]["lms"] = []         # whole block blank
+    out = r.tick(now=1030.0)
+    assert {k: v["placed"] for k, v in out["entry_status"].items()} == {"m1/lms": 1, "m2/lms": 1}
+    assert r.ledger["blank_since"] == {"m1/lms": {A1: 1030.0}, "m2/lms": {A1: 1030.0}}
+    assert calls == []
+
+def test_removed_entry_gets_no_grace_injection():
+    r, calls, observed = _confirmed()
+    r._get_state()["entries"].clear()                    # operator drops m1
+    _blank_llama(observed)
+    out = r.tick(now=1200.0)
+    assert out["entry_status"] == {} and r.ledger["blank_since"] == {}
+    assert r.ledger["confirmed"] == {}
+    assert pl._residents({"entries": []}, r.observe(now=1200.0), r.ledger_view, 1200.0) == {}

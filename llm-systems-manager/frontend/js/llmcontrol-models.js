@@ -445,6 +445,8 @@ async function reloadModel(modelId) {
       body: JSON.stringify({model: modelId})
     }, 30000);
     if (typeof _notePinOverride === 'function') _notePinOverride(ur, modelId);
+    const ubody = await ur.json();
+    if (!ubody.ok) throw new Error('unload refused: ' + (ubody.error || JSON.stringify(ubody)));
     // Poll until unloaded (up to 15s). Don't treat network errors as "still loaded".
     let verified = false;
     let netErrors = 0;
@@ -470,7 +472,7 @@ async function reloadModel(modelId) {
       if (!lr.ok) alert('Reload error on load: ' + (lr.error || 'unknown'));
     }
   } catch(e) {
-    alert('Reload error: ' + e);
+    alert('Reload error: ' + (e.message || e));
   } finally {
     _actionRelease('reload:' + modelId);
   }
@@ -588,6 +590,8 @@ async function unloadModel(modelId) {
       body: JSON.stringify({model: modelId})
     }, 30000);
     if (typeof _notePinOverride === 'function') _notePinOverride(ur, modelId);
+    const r = await ur.json();
+    if (!r.ok) alert('Unload failed: ' + (r.error || JSON.stringify(r)));
   } catch(e) {
     alert('Unload error: ' + e);
   } finally {
