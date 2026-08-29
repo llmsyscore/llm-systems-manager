@@ -683,3 +683,37 @@ def test_fresh_placed_skips_confirmed_pairs():
     assert pl._effective_placements(E, "m1/llama", _obs(_agents()), led, 1000.0) == [A1]
     led["confirmed"] = {"m1/llama": {A1}}
     assert pl._effective_placements(E, "m1/llama", _obs(_agents()), led, 1000.0) == []
+
+# ── an unmanaged resident on a single-resident host is displaceable ─────────
+
+def _only_a1(loaded, vram_free_mb=1024):
+    ag = _agents(**{A1: {"loaded": {"llama": loaded}, "vram_free_mb": vram_free_mb}})
+    del ag[A2]
+    return ag
+
+def test_unmanaged_resident_vram_is_credited_for_displacement():
+    obs = _obs(_only_a1(["other"]), sizes={"llama:m1": 8000, "llama:other": 20000})
+    acts = pl.plan(_desired([E]), obs, _ledger(), now=100000.0)
+    assert [(a.kind, a.agent_id) for a in acts] == [("load", A1)]
+    assert pl.entry_status(_desired([E]), obs)["m1/llama"] == {
+        "placed": 0, "want": 1, "blocked": None}
+
+def test_unmanaged_resident_of_unknown_size_credits_used_vram():
+    obs = _obs(_only_a1(["other"], vram_free_mb=500))       # 23500 used
+    acts = pl.plan(_desired([E]), obs, _ledger(), now=100000.0)
+    assert [(a.kind, a.agent_id) for a in acts] == [("load", A1)]
+
+def test_managed_resident_vram_is_not_credited():
+    e2 = {**E, "model": "m2"}
+    obs = _obs(_only_a1(["m1"]), sizes={"llama:m1": 8000, "llama:m2": 8000})
+    assert pl.plan(_desired([E, e2]), obs, _ledger(), now=100000.0) == []
+    st = pl.entry_status(_desired([E, e2]), obs)
+    assert st["m1/llama"]["placed"] == 1
+    assert st["m2/llama"]["blocked"] == "capable hosts already serve another managed llama model"
+
+def test_displacement_credit_does_not_apply_to_multi_resident_providers():
+    e = {**E, "provider": "lms", "model": "x"}
+    ag = _only_a1([])
+    ag[A1].update(provider_caps=["lms"], loaded={"lms": ["other"]})
+    obs = {"agents": ag, "model_sizes_mb": {"lms:x": 8000, "lms:other": 20000}}
+    assert pl.plan(_desired([e]), obs, _ledger(), now=100000.0) == []

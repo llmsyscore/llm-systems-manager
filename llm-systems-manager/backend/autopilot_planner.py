@@ -78,6 +78,19 @@ def _residents(desired, observed, ledger, now) -> dict:
                 res.setdefault((e["provider"], aid), e["model"])
     return res
 
+def _credit_displaceable(free, residents, managed, observed) -> None:
+    """Add to free[aid] the VRAM an unmanaged single-resident model gives back
+    when displaced: its known size, else the host's used VRAM."""
+    for (prov, aid), model in residents.items():
+        if (prov, model) in managed:
+            continue
+        a = observed["agents"].get(aid)
+        if not a or not a.get("vram_total_mb"):
+            continue
+        size = observed.get("model_sizes_mb", {}).get(f"{prov}:{model}")
+        used = max(a["vram_total_mb"] - a["vram_free_mb"], 0)
+        free[aid] = free.get(aid, 0) + (size if size is not None else used)
+
 def _resident_conflict(e, aid, residents, managed) -> bool:
     """True when placing e on aid would displace another managed model
     on a single-resident host."""
@@ -101,17 +114,13 @@ def _uses_ram_budget(entry, observed, aid=None) -> bool:
     return gl == 0
 
 def _fits(entry, aid, observed) -> bool:
+    """Capability, heartbeat and known size; the budget check lives in _fit_and_size."""
     a = observed["agents"][aid]
     # live is the agent heartbeat, not the llama server's cached sleep state.
     if entry["provider"] not in a["provider_caps"] or not a["live"]:
         return False
-    size = observed.get("model_sizes_mb", {}).get(
-        f"{entry['provider']}:{entry['model']}")
-    if size is None:
-        return False
-    avail = (a.get("ram_free_mb", 0) if _uses_ram_budget(entry, observed, aid)
-             else a["vram_free_mb"])
-    return avail >= size + VRAM_HEADROOM_MB
+    return observed.get("model_sizes_mb", {}).get(
+        f"{entry['provider']}:{entry['model']}") is not None
 
 def _dwell_blocks(k, placed_at, observed, now) -> bool:
     # Recent placement on a now-dead agent is a liveness blip, not a failure.
@@ -206,6 +215,7 @@ def entry_status(desired: dict, observed: dict,
     entries = sorted(desired.get("entries") or [], key=lambda e: e["priority"])
     residents = _residents(desired, observed, ledger, now)
     managed = {(e["provider"], e["model"]) for e in entries}
+    _credit_displaceable(free, residents, managed, observed)
     for e in entries:
         k = _key(e)
         placed = _effective_placements(e, k, observed, ledger, now)
@@ -274,6 +284,7 @@ def plan(desired: dict, observed: dict, ledger: dict, now: float) -> "list[Actio
     entries = sorted(desired.get("entries") or [], key=lambda e: e["priority"])
     residents = _residents(desired, observed, ledger, now)
     managed = {(e["provider"], e["model"]) for e in entries}
+    _credit_displaceable(free, residents, managed, observed)
     observed_by_k: "dict[str, list[str]]" = {}    # observed placements, per entry
     for e in entries:
         k = _key(e)
