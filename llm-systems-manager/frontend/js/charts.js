@@ -71,21 +71,34 @@ function initSortable() {
   initCardResize();
 }
 
-// Card sizes are discrete: '1x1' (default), 'auto' (one column, content
-// height — never stretched to the grid row), '2x1', '3x1', '1x2', '2x2',
-// '3x2'. They map to grid span CSS classes, so cards always stay on the
-// same grid rails as their neighbours. Each card has a small ⤢ button
-// that cycles through the sensible sequence; users with a column-count
-// constraint won't see oversize options.
-const _CARD_SIZE_CYCLE = ['1x1', 'auto', '2x1', '2x2', '1x2'];
+// Card sizes are discrete: 'auto' (default: one column, content height —
+// never stretched to the grid row), '1x1' (one column, row height), '2x1',
+// '3x1', '1x2', '2x2', '3x2'. They map to grid span CSS classes, so cards
+// always stay on the same grid rails as their neighbours. Each card has a
+// small ⤢ button that cycles through the sensible sequence; users with a
+// column-count constraint won't see oversize options.
+const _CARD_SIZE_CYCLE = ['auto', '1x1', '2x1', '2x2', '1x2'];
 const _CARD_SIZE_CLASSES = ['size-1x1','size-auto','size-2x1','size-3x1','size-1x2','size-2x2','size-3x2'];
-// Per-card default size when the layout has none saved; borrowed shells inherit it.
-const _CARD_DEFAULT_SIZE = { 'lms-active': 'auto' };
-function _defaultCardSize(id) {
-  return _CARD_DEFAULT_SIZE[String(id || '').replace(/^ov-borrow-/, '')] || '1x1';
+// Size a card (or borrowed shell) takes when the layout has none saved for it.
+const _CARD_DEFAULT_SIZE = 'auto';
+function _defaultCardSize(_id) {
+  return _CARD_DEFAULT_SIZE;
 }
 function _sizeCols(size) {
   return size === 'auto' ? 1 : Number(String(size).split('x')[0]);
+}
+function _sizeLabel(size) {
+  return size === 'auto' ? 'auto (content height)' : String(size).replace('x', '×');
+}
+// Sizes that fit the card's grid, in cycle order.
+function _allowedSizes(card) {
+  const grid = card.parentElement;
+  const maxCols = grid ? _gridColCount(grid) : 3;
+  return _CARD_SIZE_CYCLE.filter(s => _sizeCols(s) <= maxCols);
+}
+function _nextCardSize(card, cur) {
+  const allowed = _allowedSizes(card);
+  return allowed[(allowed.indexOf(cur) + 1) % allowed.length];
 }
 let _cardSizeSaveTimer = null;
 
@@ -111,9 +124,9 @@ function _applyCardSize(card, size) {
   const eff = _clampSize(size, maxCols);
   card.dataset.size = eff;
   if (eff !== '1x1') card.classList.add('size-' + eff);
-  const btn = card.querySelector('.card-size-btn');
+  const btn = card.querySelector(':scope > .card-size-btn');
   if (btn) {
-    btn.title = `Card size: ${eff} — click to cycle (1×1 → auto → 2×1 → 2×2 → 1×2)`;
+    btn.title = `Card size: ${_sizeLabel(eff)} · click for ${_sizeLabel(_nextCardSize(card, eff))}`;
   }
   // Charts inside grow/shrink with the card; re-call resize() so they
   // re-paint at the monitor's actual DPR (no blur from CSS stretching).
@@ -137,14 +150,7 @@ function _scheduleCardSizesSave() {
 }
 function _cycleCardSize(card) {
   const id = card.dataset.card; if (!id) return;
-  const grid = card.parentElement;
-  const maxCols = grid ? _gridColCount(grid) : 3;
-  const cur = card.dataset.size || '1x1';
-  // Filter the cycle to options that fit the current grid (e.g. on a
-  // 1-column grid only 1x1 and 1x2 make sense).
-  const allowed = _CARD_SIZE_CYCLE.filter(s => _sizeCols(s) <= maxCols);
-  const idx = allowed.indexOf(cur);
-  const next = allowed[(idx + 1) % allowed.length];
+  const next = _nextCardSize(card, card.dataset.size || _defaultCardSize(id));
   _applyCardSize(card, next);
   const sizes = _sizeMapFor(id);
   if (next === _defaultCardSize(id)) delete sizes[id];
