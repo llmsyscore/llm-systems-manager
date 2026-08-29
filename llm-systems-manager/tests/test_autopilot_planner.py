@@ -767,3 +767,13 @@ def test_no_credit_when_the_resident_sits_on_the_other_budget():
     residents = pl._residents(_desired([E]), obs, _ledger(), 100000.0)
     assert pl._displace_credit(E, A1, residents, {("llama", "m1")}, obs) == 0
     assert pl.plan(_desired([E]), obs, _ledger(), now=100000.0) == []
+
+def test_displacement_leftover_is_not_spent_by_another_provider_this_pass():
+    # m1 (3000) displaces a 23000 MB llama resident; the vllm entry must not
+    # spend the freed remainder until it is observed next tick.
+    ev = {**E, "provider": "vllm", "model": "v", "priority": 200}
+    ag = _one(["other"], provider_caps=["llama", "vllm"], vram_free_mb=1000)
+    ag[A1]["loaded"]["vllm"] = []
+    obs = {"agents": ag, "model_sizes_mb": {"llama:m1": 3000, "vllm:v": 15000}}
+    acts = pl.plan(_desired([E, ev]), obs, _ledger(), now=100000.0)
+    assert [(a.model, a.agent_id) for a in acts] == [("m1", A1)]

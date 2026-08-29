@@ -199,10 +199,11 @@ def _init_pass(desired, observed, ledger, now):
     managed = {(e["provider"], e["model"]) for e in entries}
     return free, free_ram, entries, residents, managed
 
-def _commit_budget(e, aid, size, credit, free, free_ram, residents, observed) -> None:
-    """Charge e's placement on aid to its budget and take over the resident slot."""
+def _commit_budget(e, aid, size, free, free_ram, residents, observed) -> None:
+    """Charge e's placement on aid to its budget (a displacement's leftover is
+    never handed to later entries this pass) and take over the resident slot."""
     budget = free_ram if _uses_ram_budget(e, observed, aid) else free
-    budget[aid] = budget.get(aid, 0) + credit - (size or 0)
+    budget[aid] = budget.get(aid, 0) - (size or 0)
     if e["provider"] in SINGLE_RESIDENT_PROVIDERS:
         residents[(e["provider"], aid)] = e["model"]
 
@@ -268,7 +269,7 @@ def entry_status(desired: dict, observed: dict,
                         avail[aid] = (free_ram if _uses_ram_budget(e, observed, aid)
                                       else free).get(aid, 0) + credit
                         if fit:
-                            _commit_budget(e, aid, sz, credit, free, free_ram,
+                            _commit_budget(e, aid, sz, free, free_ram,
                                            residents, observed)
                             placeable += 1
                     if placeable < need:
@@ -328,7 +329,7 @@ def plan(desired: dict, observed: dict, ledger: dict, now: float) -> "list[Actio
             if not fit:
                 continue
             displaced = _displaced_by(e, aid, residents, managed)
-            _commit_budget(e, aid, size, credit, free, free_ram, residents, observed)
+            _commit_budget(e, aid, size, free, free_ram, residents, observed)
             placed.append(aid)
             auto = _may_auto(e, desired, e["provider"])
             reason = (f"failover: {k} recovering onto {aid}" if is_failover
@@ -384,7 +385,7 @@ def plan(desired: dict, observed: dict, ledger: dict, now: float) -> "list[Actio
                                                   residents, managed)
                 if not fit:
                     continue
-                _commit_budget(e, aid, size, credit, free, free_ram, residents, observed)
+                _commit_budget(e, aid, size, free, free_ram, residents, observed)
                 if e["provider"] == "llama" and a["server_state"] == "sleeping":
                     actions.append(Action(
                         kind="wake", provider=e["provider"], model=e["model"],
