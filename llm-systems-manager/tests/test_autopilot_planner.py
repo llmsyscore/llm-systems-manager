@@ -686,34 +686,84 @@ def test_fresh_placed_skips_confirmed_pairs():
 
 # ── an unmanaged resident on a single-resident host is displaceable ─────────
 
-def _only_a1(loaded, vram_free_mb=1024):
-    ag = _agents(**{A1: {"loaded": {"llama": loaded}, "vram_free_mb": vram_free_mb}})
-    del ag[A2]
-    return ag
+def _one(loaded, **over):
+    return {A1: {**_agents()[A1], "loaded": {"llama": loaded}, "vram_free_mb": 1024, **over}}
 
 def test_unmanaged_resident_vram_is_credited_for_displacement():
-    obs = _obs(_only_a1(["other"]), sizes={"llama:m1": 8000, "llama:other": 20000})
+    obs = _obs(_one(["other"]), sizes={"llama:m1": 8000, "llama:other": 20000})
     acts = pl.plan(_desired([E]), obs, _ledger(), now=100000.0)
     assert [(a.kind, a.agent_id) for a in acts] == [("load", A1)]
+    assert acts[0].reason.endswith("(displacing other)")
     assert pl.entry_status(_desired([E]), obs)["m1/llama"] == {
         "placed": 0, "want": 1, "blocked": None}
 
 def test_unmanaged_resident_of_unknown_size_credits_used_vram():
-    obs = _obs(_only_a1(["other"], vram_free_mb=500))       # 23500 used
+    obs = _obs(_one(["other"], vram_free_mb=500))            # 23500 used
     acts = pl.plan(_desired([E]), obs, _ledger(), now=100000.0)
     assert [(a.kind, a.agent_id) for a in acts] == [("load", A1)]
 
-def test_managed_resident_vram_is_not_credited():
-    e2 = {**E, "model": "m2"}
-    obs = _obs(_only_a1(["m1"]), sizes={"llama:m1": 8000, "llama:m2": 8000})
-    assert pl.plan(_desired([E, e2]), obs, _ledger(), now=100000.0) == []
-    st = pl.entry_status(_desired([E, e2]), obs)
-    assert st["m1/llama"]["placed"] == 1
-    assert st["m2/llama"]["blocked"] == "capable hosts already serve another managed llama model"
+def test_credit_is_clamped_to_used_vram_when_the_resident_is_partly_out():
+    # Resident claims 20000 MB on disk but only 3000 MB sit in VRAM.
+    obs = _obs(_one(["other"], vram_free_mb=21000),
+               sizes={"llama:m1": 23500, "llama:other": 20000})
+    assert pl.plan(_desired([E]), obs, _ledger(), now=100000.0) == []
+    st = pl.entry_status(_desired([E]), obs)["m1/llama"]
+    assert st["blocked"].startswith("insufficient free VRAM/RAM") and "24000 MB free" in st["blocked"]
 
-def test_displacement_credit_does_not_apply_to_multi_resident_providers():
+def test_managed_resident_gives_no_credit():
+    e2 = {**E, "model": "m2"}
+    obs = _obs(_one(["m1"]), sizes={"llama:m1": 8000, "llama:m2": 8000})
+    residents = pl._residents(_desired([E, e2]), obs, _ledger(), 100000.0)
+    managed = {("llama", "m1"), ("llama", "m2")}
+    assert pl._displace_credit(e2, A1, residents, managed, obs) == 0
+    assert pl._displace_credit(E, A1, residents, managed, obs) == 0     # own model
+    unmanaged = {("llama", "m2")}
+    assert pl._displace_credit(e2, A1, residents, unmanaged, obs) == 8000
+
+def test_credit_never_crosses_providers_on_a_shared_gpu():
+    # llama resident on the GPU; an lms entry (multi-resident) must not spend it.
     e = {**E, "provider": "lms", "model": "x"}
-    ag = _only_a1([])
-    ag[A1].update(provider_caps=["lms"], loaded={"lms": ["other"]})
-    obs = {"agents": ag, "model_sizes_mb": {"lms:x": 8000, "lms:other": 20000}}
+    ag = _one(["other"], provider_caps=["llama", "lms"])
+    ag[A1]["loaded"]["lms"] = []
+    obs = {"agents": ag, "model_sizes_mb": {"lms:x": 8000, "llama:other": 20000}}
     assert pl.plan(_desired([e]), obs, _ledger(), now=100000.0) == []
+    # vllm entry: another single-resident provider, still not its resident.
+    ev = {**E, "provider": "vllm", "model": "v"}
+    ag[A1]["provider_caps"] = ["llama", "vllm"]; ag[A1]["loaded"]["vllm"] = []
+    obs = {"agents": ag, "model_sizes_mb": {"vllm:v": 8000, "llama:other": 20000}}
+    assert pl.plan(_desired([ev]), obs, _ledger(), now=100000.0) == []
+
+def test_two_single_resident_providers_credit_only_their_own_resident():
+    ag = _one(["other"], provider_caps=["llama", "vllm"], vram_free_mb=2000)
+    ag[A1]["loaded"]["vllm"] = ["vother"]                     # both unknown size
+    obs = {"agents": ag, "model_sizes_mb": {"llama:m1": 8000}}
+    residents = pl._residents(_desired([E]), obs, _ledger(), 100000.0)
+    assert pl._displace_credit(E, A1, residents, {("llama", "m1")}, obs) == 22000
+    acts = pl.plan(_desired([E]), obs, _ledger(), now=100000.0)
+    assert [(a.kind, a.agent_id) for a in acts] == [("load", A1)]
+
+def test_unified_memory_host_credits_the_ram_budget():
+    ag = _one(["other"], vram_total_mb=0, vram_free_mb=0, ram_free_mb=1024)
+    obs = _obs(ag, sizes={"llama:m1": 8000, "llama:other": 20000})
+    acts = pl.plan(_desired([E]), obs, _ledger(), now=100000.0)
+    assert [(a.kind, a.agent_id) for a in acts] == [("load", A1)]
+    ag[A1]["loaded"]["llama"] = ["unknown-size"]
+    obs = _obs(ag, sizes={"llama:m1": 8000})                  # RAM credit needs a size
+    assert pl.plan(_desired([E]), obs, _ledger(), now=100000.0) == []
+
+def test_displacement_credit_is_spent_once_per_pass():
+    # Two entries want the same host; only the first can displace the resident.
+    e2 = {**E, "model": "m2", "priority": 200}
+    obs = _obs(_one(["other"]), sizes={"llama:m1": 8000, "llama:m2": 8000,
+                                       "llama:other": 20000})
+    acts = pl.plan(_desired([E, e2]), obs, _ledger(), now=100000.0)
+    assert [(a.model, a.agent_id) for a in acts] == [("m1", A1)]
+
+def test_no_credit_when_the_resident_sits_on_the_other_budget():
+    # m1 is CPU-served (RAM budget); the VRAM-resident 'other' frees no RAM.
+    obs = _obs(_one(["other"], ram_free_mb=1024),
+               sizes={"llama:m1": 8000, "llama:other": 20000},
+               gpu_layers={"llama:m1": 0})
+    residents = pl._residents(_desired([E]), obs, _ledger(), 100000.0)
+    assert pl._displace_credit(E, A1, residents, {("llama", "m1")}, obs) == 0
+    assert pl.plan(_desired([E]), obs, _ledger(), now=100000.0) == []

@@ -78,18 +78,33 @@ def _residents(desired, observed, ledger, now) -> dict:
                 res.setdefault((e["provider"], aid), e["model"])
     return res
 
-def _credit_displaceable(free, residents, managed, observed) -> None:
-    """Add to free[aid] the VRAM an unmanaged single-resident model gives back
-    when displaced: its known size, else the host's used VRAM."""
-    for (prov, aid), model in residents.items():
-        if (prov, model) in managed:
-            continue
-        a = observed["agents"].get(aid)
-        if not a or not a.get("vram_total_mb"):
-            continue
-        size = observed.get("model_sizes_mb", {}).get(f"{prov}:{model}")
-        used = max(a["vram_total_mb"] - a["vram_free_mb"], 0)
-        free[aid] = free.get(aid, 0) + (size if size is not None else used)
+def _model_size_mb(observed, provider, model) -> "int | None":
+    return observed.get("model_sizes_mb", {}).get(f"{provider}:{model}")
+
+def _displaced_by(e, aid, residents, managed) -> "str | None":
+    """The unmanaged same-provider resident e would displace on aid, else None."""
+    if e["provider"] not in SINGLE_RESIDENT_PROVIDERS:
+        return None
+    cur = residents.get((e["provider"], aid))
+    if cur is None or cur == e["model"] or (e["provider"], cur) in managed:
+        return None
+    return cur
+
+def _displace_credit(e, aid, residents, managed, observed) -> int:
+    """MB e's budget on aid gains by displacing the unmanaged resident: the
+    resident's known size, clamped to the host's used VRAM on the VRAM budget."""
+    cur = _displaced_by(e, aid, residents, managed)
+    if cur is None:
+        return 0
+    ram = _uses_ram_budget(e, observed, aid)
+    if ram != _uses_ram_budget({"provider": e["provider"], "model": cur}, observed, aid):
+        return 0        # resident lives on the other budget
+    size = _model_size_mb(observed, e["provider"], cur)
+    if ram:
+        return size or 0
+    a = observed["agents"][aid]
+    used = max(a["vram_total_mb"] - a["vram_free_mb"], 0)
+    return min(size, used) if size is not None else used
 
 def _resident_conflict(e, aid, residents, managed) -> bool:
     """True when placing e on aid would displace another managed model
@@ -113,14 +128,12 @@ def _uses_ram_budget(entry, observed, aid=None) -> bool:
         f"{entry['provider']}:{entry['model']}")
     return gl == 0
 
-def _fits(entry, aid, observed) -> bool:
+def _fits(entry, aid, observed, size) -> bool:
     """Capability, heartbeat and known size; the budget check lives in _fit_and_size."""
     a = observed["agents"][aid]
     # live is the agent heartbeat, not the llama server's cached sleep state.
-    if entry["provider"] not in a["provider_caps"] or not a["live"]:
-        return False
-    return observed.get("model_sizes_mb", {}).get(
-        f"{entry['provider']}:{entry['model']}") is not None
+    return (entry["provider"] in a["provider_caps"] and bool(a["live"])
+            and size is not None)
 
 def _dwell_blocks(k, placed_at, observed, now) -> bool:
     # Recent placement on a now-dead agent is a liveness blip, not a failure.
@@ -166,20 +179,32 @@ def evaluate_autoscale(entry, placements, sat_history, now: float) -> str:
         return "down"
     return "hold"
 
-def _fit_and_size(e, aid, a, free, free_ram, observed):
-    # Same capability/budget fit check used by both the min-replica and
-    # autoscale passes; budget picked per (entry, candidate) — see _uses_ram_budget.
-    size = observed.get("model_sizes_mb", {}).get(
-        f"{e['provider']}:{e['model']}")
+def _fit_and_size(e, aid, free, free_ram, observed, residents, managed):
+    """(fit, size, credit): budget fit for e on aid, where credit is the MB an
+    unmanaged same-provider resident gives back when displaced."""
+    size = _model_size_mb(observed, e["provider"], e["model"])
     budget = free_ram if _uses_ram_budget(e, observed, aid) else free
-    if e["placement"] != "auto" and aid == e["placement"]:
-        fit = e["provider"] in a["provider_caps"] and \
-              size is not None and budget.get(aid, 0) >= size + VRAM_HEADROOM_MB \
-              and a["live"]
-    else:
-        fit = _fits(e, aid, observed) and \
-              budget.get(aid, 0) >= (size or 0) + VRAM_HEADROOM_MB
-    return fit, size
+    credit = _displace_credit(e, aid, residents, managed, observed)
+    fit = _fits(e, aid, observed, size) and \
+          budget.get(aid, 0) + credit >= (size or 0) + VRAM_HEADROOM_MB
+    return fit, size, credit
+
+def _init_pass(desired, observed, ledger, now):
+    """Per-pass budgets, priority-ordered entries, residents and managed set
+    shared by plan() and entry_status()."""
+    free = {aid: a["vram_free_mb"] for aid, a in observed["agents"].items()}
+    free_ram = {aid: a.get("ram_free_mb", 0) for aid, a in observed["agents"].items()}
+    entries = sorted(desired.get("entries") or [], key=lambda e: e["priority"])
+    residents = _residents(desired, observed, ledger, now)
+    managed = {(e["provider"], e["model"]) for e in entries}
+    return free, free_ram, entries, residents, managed
+
+def _commit_budget(e, aid, size, credit, free, free_ram, residents, observed) -> None:
+    """Charge e's placement on aid to its budget and take over the resident slot."""
+    budget = free_ram if _uses_ram_budget(e, observed, aid) else free
+    budget[aid] = budget.get(aid, 0) + credit - (size or 0)
+    if e["provider"] in SINGLE_RESIDENT_PROVIDERS:
+        residents[(e["provider"], aid)] = e["model"]
 
 def _scale_down_target(e, observed_placed, observed, pak, unload_backoff, touched,
                        last_action_ts, now) -> "str | None":
@@ -210,12 +235,7 @@ def entry_status(desired: dict, observed: dict,
     """Per-entry {placed, want, blocked}; shares plan()'s priority order +
     intra-pass RAM/VRAM budgets (via _fit_and_size) so the two can't disagree."""
     out: "dict[str, dict]" = {}
-    free = {aid: a["vram_free_mb"] for aid, a in observed["agents"].items()}
-    free_ram = {aid: a.get("ram_free_mb", 0) for aid, a in observed["agents"].items()}
-    entries = sorted(desired.get("entries") or [], key=lambda e: e["priority"])
-    residents = _residents(desired, observed, ledger, now)
-    managed = {(e["provider"], e["model"]) for e in entries}
-    _credit_displaceable(free, residents, managed, observed)
+    free, free_ram, entries, residents, managed = _init_pass(desired, observed, ledger, now)
     for e in entries:
         k = _key(e)
         placed = _effective_placements(e, k, observed, ledger, now)
@@ -230,27 +250,26 @@ def entry_status(desired: dict, observed: dict,
             if not live_capable:
                 blocked = "no live agent supports this provider"
             else:
-                size = observed.get("model_sizes_mb", {}).get(
-                    f"{e['provider']}:{e['model']}")
+                size = _model_size_mb(observed, e["provider"], e["model"])
                 if size is None and not placed:
                     blocked = "model size unknown (set entry size MB)"
                 else:
                     placeable = 0
                     resident_blocked = 0
+                    avail: "dict[str, int]" = {}   # budget + credit per candidate
                     for aid in live_capable:
                         if placeable >= need:
                             break
                         if _resident_conflict(e, aid, residents, managed):
                             resident_blocked += 1
                             continue
-                        fit, sz = _fit_and_size(e, aid, observed["agents"][aid],
-                                                free, free_ram, observed)
+                        fit, sz, credit = _fit_and_size(e, aid, free, free_ram, observed,
+                                                        residents, managed)
+                        avail[aid] = (free_ram if _uses_ram_budget(e, observed, aid)
+                                      else free).get(aid, 0) + credit
                         if fit:
-                            budget = (free_ram if _uses_ram_budget(e, observed, aid)
-                                      else free)
-                            budget[aid] -= sz or 0
-                            if e["provider"] in SINGLE_RESIDENT_PROVIDERS:
-                                residents[(e["provider"], aid)] = e["model"]
+                            _commit_budget(e, aid, sz, credit, free, free_ram,
+                                           residents, observed)
                             placeable += 1
                     if placeable < need:
                         if size is None:
@@ -259,10 +278,7 @@ def entry_status(desired: dict, observed: dict,
                             blocked = (f"capable hosts already serve another "
                                        f"managed {e['provider']} model")
                         else:
-                            best = max(
-                                ((free_ram if _uses_ram_budget(e, observed, aid)
-                                  else free).get(aid, 0) for aid in live_capable),
-                                default=0)
+                            best = max(avail.values(), default=0)
                             blocked = (
                                 f"insufficient free VRAM/RAM (need "
                                 f"{size + VRAM_HEADROOM_MB} MB incl. "
@@ -273,18 +289,12 @@ def entry_status(desired: dict, observed: dict,
 
 def plan(desired: dict, observed: dict, ledger: dict, now: float) -> "list[Action]":
     actions: "list[Action]" = []
-    # Track hypothetical VRAM/RAM commitments within this plan pass, separately.
-    free = {aid: a["vram_free_mb"] for aid, a in observed["agents"].items()}
-    free_ram = {aid: a.get("ram_free_mb", 0) for aid, a in observed["agents"].items()}
     last_action_ts = ledger.get("last_action_ts") or {}
     placed_at = ledger.get("placed_at") or {}
     in_flight = ledger.get("in_flight_migrations") or 0
     migrations_this_pass = 0             # failover loads queued so far in this pass
     touched: "set[str]" = set()          # agents with an action this pass
-    entries = sorted(desired.get("entries") or [], key=lambda e: e["priority"])
-    residents = _residents(desired, observed, ledger, now)
-    managed = {(e["provider"], e["model"]) for e in entries}
-    _credit_displaceable(free, residents, managed, observed)
+    free, free_ram, entries, residents, managed = _init_pass(desired, observed, ledger, now)
     observed_by_k: "dict[str, list[str]]" = {}    # observed placements, per entry
     for e in entries:
         k = _key(e)
@@ -313,16 +323,18 @@ def plan(desired: dict, observed: dict, ledger: dict, now: float) -> "list[Actio
             if _resident_conflict(e, aid, residents, managed):
                 continue
             a = observed["agents"][aid]
-            fit, size = _fit_and_size(e, aid, a, free, free_ram, observed)
+            fit, size, credit = _fit_and_size(e, aid, free, free_ram, observed,
+                                              residents, managed)
             if not fit:
                 continue
-            (free_ram if _uses_ram_budget(e, observed, aid) else free)[aid] -= size or 0
-            if e["provider"] in SINGLE_RESIDENT_PROVIDERS:
-                residents[(e["provider"], aid)] = e["model"]
+            displaced = _displaced_by(e, aid, residents, managed)
+            _commit_budget(e, aid, size, credit, free, free_ram, residents, observed)
             placed.append(aid)
             auto = _may_auto(e, desired, e["provider"])
             reason = (f"failover: {k} recovering onto {aid}" if is_failover
                       else f"{k}: {len(placed)}/{want} replicas placed")
+            if displaced:
+                reason += f" (displacing {displaced})"
             if e["provider"] == "llama" and a["server_state"] == "sleeping":
                 actions.append(Action(
                     kind="wake", provider=e["provider"], model=e["model"],
@@ -368,12 +380,11 @@ def plan(desired: dict, observed: dict, ledger: dict, now: float) -> "list[Actio
                 if _resident_conflict(e, aid, residents, managed):
                     continue
                 a = observed["agents"][aid]
-                fit, size = _fit_and_size(e, aid, a, free, free_ram, observed)
+                fit, size, credit = _fit_and_size(e, aid, free, free_ram, observed,
+                                                  residents, managed)
                 if not fit:
                     continue
-                (free_ram if _uses_ram_budget(e, observed, aid) else free)[aid] -= size or 0
-                if e["provider"] in SINGLE_RESIDENT_PROVIDERS:
-                    residents[(e["provider"], aid)] = e["model"]
+                _commit_budget(e, aid, size, credit, free, free_ram, residents, observed)
                 if e["provider"] == "llama" and a["server_state"] == "sleeping":
                     actions.append(Action(
                         kind="wake", provider=e["provider"], model=e["model"],
