@@ -1505,6 +1505,14 @@ def _llama_wait_unloaded(api: str, timeout_s: float = _LLAMA_UNLOAD_SETTLE_S,
         time.sleep(poll_s)
 
 
+def _json_or_raw(resp) -> Any:
+    """Parsed JSON body, else {"raw": <first 500 chars of text>}."""
+    try:
+        return resp.json()
+    except Exception:
+        return {"raw": resp.text[:500]}
+
+
 def llama_load_endpoint(body: dict, authorization: Optional[str] = Header(default=None)) -> dict[str, Any]:
     _require_ctx().check_bearer(authorization); _llama_check_enabled()
     model_id = body.get("model")
@@ -1532,10 +1540,7 @@ def llama_load_endpoint(body: dict, authorization: Optional[str] = Header(defaul
             raise HTTPException(status_code=404,
                                 detail=f"Model not found in llama-server (404). "
                                        f"Verify '{model_id}' matches a registered model ID.")
-        try:
-            body_resp = lr.json()
-        except Exception:
-            body_resp = {"raw": lr.text[:500]}
+        body_resp = _json_or_raw(lr)
         if not lr.ok:
             return {"ok": False,
                     "error": f"llama-server returned HTTP {lr.status_code}",
@@ -1548,6 +1553,13 @@ def llama_load_endpoint(body: dict, authorization: Optional[str] = Header(defaul
         raise HTTPException(status_code=500, detail=str(e))
 
 
+def _llama_model_idle(model_id: str) -> bool:
+    """True when /v1/models lists model_id with an explicit status outside
+    loaded/loading/sleeping."""
+    st = (_llama_fetch_model_entries().get(model_id) or {}).get("status")
+    return isinstance(st, dict) and st.get("value") not in _LLAMA_BUSY_STATUSES
+
+
 def llama_unload_endpoint(body: dict, authorization: Optional[str] = Header(default=None)) -> dict[str, Any]:
     _require_ctx().check_bearer(authorization); _llama_check_enabled()
     model_id = body.get("model")
@@ -1556,9 +1568,15 @@ def llama_unload_endpoint(body: dict, authorization: Optional[str] = Header(defa
     api = _require_ctx().config.LLAMA_API_URL.rstrip("/")
     try:
         resp = requests.post(f"{api}/models/unload", json={"model": model_id}, timeout=15)
-        body_resp = resp.json()
+        body_resp = _json_or_raw(resp)
     except Exception as e:
         return {"ok": False, "error": str(e)}
+    if not resp.ok:
+        if _llama_model_idle(model_id):
+            return {"ok": True, "already_unloaded": True, "response": body_resp}
+        return {"ok": False,
+                "error": f"llama-server returned HTTP {resp.status_code}",
+                "response": body_resp}
     if not _llama_wait_unloaded(api):
         return {"ok": False, "error": "model instance did not unload in time",
                 "response": body_resp}

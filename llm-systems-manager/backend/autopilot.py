@@ -401,11 +401,22 @@ def _prod_deps() -> dict:
 
 _SAT_HISTORY_WINDOW_S = 1200.0  # 20 minutes
 _UNLOAD_KINDS = ("scale_down", "unload")
+# A confirmed placement survives blank provider samples this long.
+BLANK_GRACE_S = 90.0
 
 
 def _empty_ledger() -> dict:
     return {"last_action_ts": {}, "placed_at": {}, "in_flight_migrations": 0,
-            "backoff_until": {}, "unload_backoff": {}, "confirmed": {}}
+            "backoff_until": {}, "unload_backoff": {}, "confirmed": {},
+            "blank_since": {}}
+
+
+def _sample_blank(agent: dict, provider: str) -> bool:
+    """True when the provider block lists nothing loaded; for llama only while
+    the server state is unknown."""
+    if agent["loaded"].get(provider):
+        return False
+    return provider != "llama" or agent.get("server_state") is None
 
 
 def _copy_nested(d: dict) -> dict:
@@ -471,8 +482,9 @@ class Reconciler:
         with self._lock:
             desired = self._get_state()
             observed = self._observe()
-            self._prune_placed_at(observed, now)
             self._prune_stale_keys(desired, observed)
+            self._debounce_blank(observed, now, record=True)
+            self._prune_placed_at(observed, now)
             self._refresh_sat_history(desired, observed, now)
             actions = pl.plan(desired, observed, self.ledger, now)
             sig = lambda a: (a.kind, a.provider, a.model, a.agent_id)
@@ -513,17 +525,44 @@ class Reconciler:
                 for e in desired.get("entries") or []}
         for d in (self._sat_history, self.ledger["placed_at"],
                   self.ledger["backoff_until"], self.ledger["unload_backoff"],
-                  self.ledger["confirmed"]):
+                  self.ledger["confirmed"], self.ledger["blank_since"]):
             for k in list(d):
                 if k not in keys:
                     del d[k]
-        for amap in self.ledger["unload_backoff"].values():
-            for aid in list(amap):
-                if aid not in observed["agents"]:
-                    del amap[aid]
+        for d in (self.ledger["unload_backoff"], self.ledger["blank_since"]):
+            for amap in d.values():
+                for aid in list(amap):
+                    if aid not in observed["agents"]:
+                        del amap[aid]
         for aid in list(self.ledger["last_action_ts"]):
             if aid not in observed["agents"]:
                 del self.ledger["last_action_ts"][aid]
+
+    def _debounce_blank(self, observed: dict, now: float, record: bool) -> None:
+        """Keep a confirmed placement in `observed` through BLANK_GRACE_S of blank
+        samples; a sample showing another model (or a real unload) drops it at once."""
+        ledger = self.ledger if record else self.ledger_view
+        blank_since = ledger["blank_since"]
+        inject: "list[tuple[dict, str, str]]" = []
+        for k, aids in ledger["confirmed"].items():
+            model, _, provider = k.rpartition("/")
+            since_map = blank_since.setdefault(k, {}) if record else blank_since.get(k, {})
+            for aid in aids:
+                agent = observed["agents"].get(aid)
+                if agent is None or not pl._reporting(agent):
+                    continue
+                if not _sample_blank(agent, provider):
+                    if record:
+                        since_map.pop(aid, None)
+                    continue
+                since = since_map.get(aid)
+                if since is None and record:
+                    since = since_map[aid] = now
+                if since is not None and now - since < BLANK_GRACE_S:
+                    inject.append((agent, provider, model))
+        # Injected after the scan; every blank check above reads the raw sample.
+        for agent, provider, model in inject:
+            agent["loaded"].setdefault(provider, []).append(model)
 
     def _prune_placed_at(self, observed: dict, now: float) -> None:
         """Confirm placed_at rows a reporting agent shows loaded; past the grace
@@ -541,11 +580,19 @@ class Reconciler:
                     continue
                 if agent is None or agent["live"]:
                     del amap[aid]
-        # confirmed never outlives its placed_at row.
+        # confirmed never outlives its placed_at row; blank_since never outlives confirmed.
         for k in list(confirmed):
             confirmed[k] &= set(self.ledger["placed_at"].get(k, {}))
             if not confirmed[k]:
                 del confirmed[k]
+        blank_since = self.ledger["blank_since"]
+        for k in list(blank_since):
+            keep = confirmed.get(k) or set()
+            for aid in list(blank_since[k]):
+                if aid not in keep:
+                    del blank_since[k][aid]
+            if not blank_since[k]:
+                del blank_since[k]
 
     def _refresh_sat_history(self, desired: dict, observed: dict, now: float) -> None:
         """Append (now, max saturation across placed replicas) per entry,
@@ -584,6 +631,11 @@ class Reconciler:
             if action.kind in _UNLOAD_KINDS:
                 self.ledger["placed_at"].get(k, {}).pop(action.agent_id, None)
             self.ledger["confirmed"].get(k, set()).discard(action.agent_id)
+            since = self.ledger["blank_since"].get(k)
+            if since is not None:
+                since.pop(action.agent_id, None)
+                if not since:
+                    del self.ledger["blank_since"][k]
         elif action.kind in _UNLOAD_KINDS:
             # Unload failures back off that entry+agent pair only.
             self.ledger["unload_backoff"].setdefault(k, {})[action.agent_id] = now + 300.0
@@ -602,14 +654,19 @@ class Reconciler:
             "backoff_until": dict(self.ledger["backoff_until"]),
             "unload_backoff": _copy_nested(self.ledger["unload_backoff"]),
             "confirmed": {k: set(v) for k, v in self.ledger["confirmed"].items()},
+            "blank_since": _copy_nested(self.ledger["blank_since"]),
         }
 
     def proposals(self) -> "list[dict]":
         return self._snapshot
 
-    def observe(self) -> dict:
-        """A fresh, read-only observation — used by GET to compute entry_status."""
-        return self._observe()
+    def observe(self, now: "float | None" = None) -> dict:
+        """A fresh observation with the blank-sample grace applied (ledger
+        untouched) — used by GET to compute entry_status."""
+        observed = self._observe()
+        self._debounce_blank(observed, now if now is not None else time.time(),
+                             record=False)
+        return observed
 
     def apply(self, pid: str, now: float = None) -> dict:
         import time as _t
