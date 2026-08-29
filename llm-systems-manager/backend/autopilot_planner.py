@@ -39,12 +39,13 @@ def _placements(entry, observed) -> "list[str]":
             if _reporting(a) and entry["model"] in (a["loaded"].get(entry["provider"]) or [])]
 
 def _fresh_placed(k, ledger, now) -> "list[str]":
-    # Ledger placements younger than PLACEMENT_FRESH_S: loads issued but
-    # not yet visible in observed samples (model still loading).
+    # Ledger placements younger than PLACEMENT_FRESH_S that no observed
+    # sample has confirmed yet (model still loading).
     if not ledger or now is None:
         return []
+    confirmed = (ledger.get("confirmed") or {}).get(k) or ()
     return [aid for aid, ts in ((ledger.get("placed_at") or {}).get(k) or {}).items()
-            if now - ts < PLACEMENT_FRESH_S]
+            if now - ts < PLACEMENT_FRESH_S and aid not in confirmed]
 
 def _with_fresh(placed, k, observed, ledger, now) -> "list[str]":
     """New list: placed plus fresh in-flight ledger placements on reporting agents."""
@@ -171,11 +172,11 @@ def _fit_and_size(e, aid, a, free, free_ram, observed):
               budget.get(aid, 0) >= (size or 0) + VRAM_HEADROOM_MB
     return fit, size
 
-def _scale_down_target(e, confirmed, observed, pak, unload_backoff, touched,
+def _scale_down_target(e, observed_placed, observed, pak, unload_backoff, touched,
                        last_action_ts, now) -> "str | None":
     """First eligible copy in LRU order by placed_at: never the pinned host, and
     the routed copy only when it is the sole other copy. None when nothing is eligible."""
-    others = [aid for aid in confirmed if aid != e["placement"]]
+    others = [aid for aid in observed_placed if aid != e["placement"]]
     routed = ((observed.get("route_pins") or {}).get(e["provider"]) or {}).get(e["model"])
     if routed in others and len(others) > 1:
         others.remove(routed)
@@ -273,13 +274,13 @@ def plan(desired: dict, observed: dict, ledger: dict, now: float) -> "list[Actio
     entries = sorted(desired.get("entries") or [], key=lambda e: e["priority"])
     residents = _residents(desired, observed, ledger, now)
     managed = {(e["provider"], e["model"]) for e in entries}
-    confirmed_by_k: "dict[str, list[str]]" = {}   # observed placements, per entry
+    observed_by_k: "dict[str, list[str]]" = {}    # observed placements, per entry
     for e in entries:
         k = _key(e)
         if now < (ledger.get("backoff_until") or {}).get(k, 0):
             continue
-        confirmed_by_k[k] = _placements(e, observed)
-        placed = _with_fresh(confirmed_by_k[k], k, observed, ledger, now)
+        observed_by_k[k] = _placements(e, observed)
+        placed = _with_fresh(observed_by_k[k], k, observed, ledger, now)
         want = e["min_replicas"]
         if len(placed) >= want:
             continue
@@ -327,8 +328,8 @@ def plan(desired: dict, observed: dict, ledger: dict, now: float) -> "list[Actio
         k = _key(e)
         if now < (ledger.get("backoff_until") or {}).get(k, 0):
             continue
-        confirmed = confirmed_by_k[k]
-        placed = _with_fresh(confirmed, k, observed, ledger, now)
+        observed_placed = observed_by_k[k]
+        placed = _with_fresh(observed_placed, k, observed, ledger, now)
         surplus = len(placed) > e["max_replicas"]
         if surplus:
             decision = "down"
@@ -341,7 +342,7 @@ def plan(desired: dict, observed: dict, ledger: dict, now: float) -> "list[Actio
                 continue
         # Down only once every copy is observed and live (nothing in flight, nothing stale).
         if decision == "down" and (
-                len(confirmed) != len(placed)
+                len(observed_placed) != len(placed)
                 or not all(observed["agents"][aid]["live"] for aid in placed)):
             continue
         auto = _may_auto(e, desired, e["provider"])
@@ -376,7 +377,7 @@ def plan(desired: dict, observed: dict, ledger: dict, now: float) -> "list[Actio
         else:                                 # decision == "down"
             if e["provider"] not in UNLOADABLE_PROVIDERS:
                 continue
-            aid = _scale_down_target(e, confirmed, observed, placed_at.get(k) or {},
+            aid = _scale_down_target(e, observed_placed, observed, placed_at.get(k) or {},
                                      (ledger.get("unload_backoff") or {}).get(k) or {},
                                      touched, last_action_ts, now)
             if aid is None:

@@ -21,7 +21,7 @@ def _desired(entries):
 
 def _ledger():
     return {"last_action_ts": {}, "placed_at": {}, "in_flight_migrations": 0,
-            "backoff_until": {}}
+            "backoff_until": {}, "unload_backoff": {}, "confirmed": {}}
 
 E = {"model": "m1", "provider": "llama", "placement": "auto",
      "failover": "semi", "priority": 100, "min_replicas": 1,
@@ -677,3 +677,9 @@ def test_build_observed_route_pins_ignores_non_dict_values():
             "saturation": lambda p, a: {}, "model_sizes": lambda: {},
             "model_gpu_layers": lambda: {}}
     assert ap.build_observed(deps)["route_pins"]["llama"] == {}
+
+def test_fresh_placed_skips_confirmed_pairs():
+    led = _ledger(); led["placed_at"]["m1/llama"] = {A1: 990.0}
+    assert pl._effective_placements(E, "m1/llama", _obs(_agents()), led, 1000.0) == [A1]
+    led["confirmed"] = {"m1/llama": {A1}}
+    assert pl._effective_placements(E, "m1/llama", _obs(_agents()), led, 1000.0) == []

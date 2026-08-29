@@ -403,6 +403,16 @@ _SAT_HISTORY_WINDOW_S = 1200.0  # 20 minutes
 _UNLOAD_KINDS = ("scale_down", "unload")
 
 
+def _empty_ledger() -> dict:
+    return {"last_action_ts": {}, "placed_at": {}, "in_flight_migrations": 0,
+            "backoff_until": {}, "unload_backoff": {}, "confirmed": {}}
+
+
+def _copy_nested(d: dict) -> dict:
+    """Shallow copy of a {key: dict} map, one level down."""
+    return {k: dict(v) for k, v in d.items()}
+
+
 def route_sync_writes(desired: dict, observed: dict, glob: dict,
                       ledger: "dict | None" = None,
                       now: "float | None" = None) -> "list[tuple]":
@@ -447,9 +457,7 @@ class Reconciler:
         self._route_sync = route_sync
         self._proposals: "dict[str, dict]" = {}
         self._sat_history: "dict[str, list]" = {}
-        self.ledger = {"last_action_ts": {}, "placed_at": {},
-                       "in_flight_migrations": 0, "backoff_until": {},
-                       "unload_backoff": {}}
+        self.ledger = _empty_ledger()
         # Coarse reentrant lock: serializes the background tick against
         # route-triggered apply/dismiss/tick calls (#472 Task 7).
         self._lock = threading.RLock()
@@ -457,9 +465,7 @@ class Reconciler:
         # Lock-free read snapshots, reassigned whole after each mutation;
         # proposals()/ledger_view read these instead of taking self._lock.
         self._snapshot: "list[dict]" = []
-        self.ledger_view: dict = {"last_action_ts": {}, "placed_at": {},
-                                  "in_flight_migrations": 0, "backoff_until": {},
-                                  "unload_backoff": {}}
+        self.ledger_view: dict = _empty_ledger()
 
     def tick(self, now: float) -> dict:
         with self._lock:
@@ -506,7 +512,8 @@ class Reconciler:
         keys = {f"{e['model']}/{e['provider']}"
                 for e in desired.get("entries") or []}
         for d in (self._sat_history, self.ledger["placed_at"],
-                  self.ledger["backoff_until"], self.ledger["unload_backoff"]):
+                  self.ledger["backoff_until"], self.ledger["unload_backoff"],
+                  self.ledger["confirmed"]):
             for k in list(d):
                 if k not in keys:
                     del d[k]
@@ -519,22 +526,26 @@ class Reconciler:
                 del self.ledger["last_action_ts"][aid]
 
     def _prune_placed_at(self, observed: dict, now: float) -> None:
-        """Drop placed_at[k][aid] past the PLACEMENT_FRESH_S grace window when
-        a live agent no longer reports the model or the agent is unregistered;
-        dead (registered, non-live) agents stay."""
+        """Confirm placed_at rows a reporting agent shows loaded; past the grace
+        window drop rows a live agent no longer reports or whose agent is gone."""
+        confirmed = self.ledger["confirmed"]
         for k, amap in list(self.ledger["placed_at"].items()):
             model, _, provider = k.rpartition("/")
+            reported = set(pl._placements({"model": model, "provider": provider}, observed))
             for aid, ts in list(amap.items()):
+                agent = observed["agents"].get(aid)
+                if aid in reported:
+                    confirmed.setdefault(k, set()).add(aid)
+                    continue
                 if now - ts < pl.PLACEMENT_FRESH_S:
                     continue
-                agent = observed["agents"].get(aid)
-                if agent is None:
+                if agent is None or agent["live"]:
                     del amap[aid]
-                    continue
-                if not agent["live"]:
-                    continue
-                if model not in (agent["loaded"].get(provider) or []):
-                    del amap[aid]
+        # confirmed never outlives its placed_at row.
+        for k in list(confirmed):
+            confirmed[k] &= set(self.ledger["placed_at"].get(k, {}))
+            if not confirmed[k]:
+                del confirmed[k]
 
     def _refresh_sat_history(self, desired: dict, observed: dict, now: float) -> None:
         """Append (now, max saturation across placed replicas) per entry,
@@ -572,10 +583,12 @@ class Reconciler:
                 self.ledger["placed_at"].setdefault(k, {})[action.agent_id] = now
             if action.kind in _UNLOAD_KINDS:
                 self.ledger["placed_at"].get(k, {}).pop(action.agent_id, None)
+            self.ledger["confirmed"].get(k, set()).discard(action.agent_id)
         elif action.kind in _UNLOAD_KINDS:
             # Unload failures back off that entry+agent pair only.
             self.ledger["unload_backoff"].setdefault(k, {})[action.agent_id] = now + 300.0
-        else:
+        elif action.kind != "wake":
+            # A failed best-effort wake never backs the entry off.
             self.ledger["backoff_until"][k] = now + 300.0
         return ok
 
@@ -584,12 +597,11 @@ class Reconciler:
         self._snapshot = sorted(self._proposals.values(), key=lambda p: p["created"])
         self.ledger_view = {
             "last_action_ts": dict(self.ledger["last_action_ts"]),
-            "placed_at": {k: dict(v)
-                          for k, v in self.ledger["placed_at"].items()},
+            "placed_at": _copy_nested(self.ledger["placed_at"]),
             "in_flight_migrations": self.ledger["in_flight_migrations"],
             "backoff_until": dict(self.ledger["backoff_until"]),
-            "unload_backoff": {k: dict(v)
-                               for k, v in self.ledger["unload_backoff"].items()},
+            "unload_backoff": _copy_nested(self.ledger["unload_backoff"]),
+            "confirmed": {k: set(v) for k, v in self.ledger["confirmed"].items()},
         }
 
     def proposals(self) -> "list[dict]":
@@ -639,10 +651,15 @@ def make_executor(deps: dict, entries_by_key):
         else:
             deps["clear_pin_if"](action.provider, action.model, action.agent_id)
 
+    def _call(provider, method, path, body=None) -> bool:
+        """proxy call that also honours an ok:false body on an HTTP 2xx."""
+        ok, resp = deps["proxy"](provider, method, path, body)
+        return bool(ok) and (not isinstance(resp, dict) or resp.get("ok", True) is not False)
+
     def _load(action) -> bool:
         provider, model, agent_id = action.provider, action.model, action.agent_id
         if provider in ("llama", "lms"):
-            ok, _body = deps["proxy"](provider, "POST", f"/{provider}/load", {"model": model})
+            ok = _call(provider, "POST", f"/{provider}/load", {"model": model})
         elif provider == "vllm":
             ok = deps["vllm_svc"](agent_id, model)
         else:
@@ -657,8 +674,8 @@ def make_executor(deps: dict, entries_by_key):
         return ok
 
     def _unload(action) -> bool:
-        ok, _body = deps["proxy"](action.provider, "POST",
-                                  f"/{action.provider}/unload", {"model": action.model})
+        ok = _call(action.provider, "POST", f"/{action.provider}/unload",
+                   {"model": action.model})
         if ok:
             _route_replica(action, False)
         return ok
@@ -684,7 +701,7 @@ def make_executor(deps: dict, entries_by_key):
             elif action.kind in _UNLOAD_KINDS:
                 ok = _unload(action)
             elif action.kind == "wake":
-                ok, _body = deps["proxy"](action.provider, "POST", "/llama/server/wake", {})
+                ok = _call(action.provider, "POST", "/llama/server/wake", {})
             else:
                 ok = False
         except Exception as e:
@@ -701,6 +718,12 @@ def make_executor(deps: dict, entries_by_key):
 # ── Production deps: wire make_executor's callables to real agent I/O ──────
 
 _METRICS_DB_PATH = Path(__file__).resolve().parents[2] / "data" / "metrics.db"
+
+
+def _agent_ok(r, body) -> bool:
+    """HTTP 2xx and, when the body is a dict, no ok:false in it."""
+    return (r is not None and r.ok
+            and (not isinstance(body, dict) or body.get("ok", True) is not False))
 
 
 def _prod_agent_call(agent_id: str, method: str, path: str,
@@ -722,17 +745,20 @@ def _prod_agent_call(agent_id: str, method: str, path: str,
     return r, body
 
 
-# Covers the agent's unload(30s) + settle(2s) + load(120s) worst case.
-_LOAD_TIMEOUT_S = 180.0
+# Covers the agent's scan(5s) + unload(30s) + settle(30s) + load(120s) worst case.
+_LOAD_TIMEOUT_S = 200.0
+# Covers the agent's unload(15s) + settle(30s) worst case.
+_UNLOAD_TIMEOUT_S = 60.0
 
 
 def _make_prod_proxy(agent_id: str):
     """proxy dep bound to one action's target agent_id; load calls get the
     longer model-load timeout."""
     def _proxy(provider, method, path, json=None):
-        to = _LOAD_TIMEOUT_S if path.endswith("/load") else 30
+        to = (_LOAD_TIMEOUT_S if path.endswith("/load")
+              else _UNLOAD_TIMEOUT_S if path.endswith("/unload") else 30)
         r, body = _prod_agent_call(agent_id, method, path, json, timeout=to)
-        return (r is not None and r.ok), body
+        return _agent_ok(r, body), body
     return _proxy
 
 
@@ -815,8 +841,8 @@ def _prod_vllm_svc(agent_id: str, model: str) -> bool:
     if rewritten is None:
         return False
     body = {**rewritten, "restart": True}
-    r2, _body2 = _prod_agent_call(agent_id, "POST", "/vllm/server/svcconfig", body, timeout=60)
-    return r2 is not None and r2.ok
+    r2, body2 = _prod_agent_call(agent_id, "POST", "/vllm/server/svcconfig", body, timeout=60)
+    return _agent_ok(r2, body2)
 
 
 # Bounds audit_log growth from this module's own inserts (separate connection).
