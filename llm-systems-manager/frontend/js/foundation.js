@@ -871,7 +871,7 @@ function addBorrowedCard(cardId) {
   grid.appendChild(shell);
   _ensureSizeBtn(shell);
   const saved = (layout.cardSizes || {})['ov-borrow-' + cardId];
-  if (saved) _applyCardSize(shell, saved);
+  _applyCardSize(shell, saved || _defaultCardSize(cardId));
   if (_activeTab === 'overall') adoptPinnedCards();
   saveLayout();
 }

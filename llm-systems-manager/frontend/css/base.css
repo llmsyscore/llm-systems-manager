@@ -127,6 +127,10 @@
     .card.size-1x2 { grid-row:    span 2; }
     .card.size-2x2 { grid-column: span 2; grid-row: span 2; }
     .card.size-3x2 { grid-column: span 3; grid-row: span 2; }
+    /* auto: content height — the card (or pinned shell) is not stretched to its row. */
+    .card.size-auto { align-self: start; }
+    .ov-shell > .card.size-auto { align-self: stretch; }
+    .ov-shell.size-auto > .card { height: auto; }
     /* Size-cycle button — small, unobtrusive, lives to the left of the
        drag handle in the card's top-right. */
     .card-size-btn {
@@ -152,6 +156,10 @@
        false`, so they re-paint to fill this box at the monitor's DPR
        whenever the size changes. */
     .chart-wrap { position: relative; flex: 1 1 140px; min-height: 140px; }
+    /* Fixed-height variant: keeps its inline height instead of filling the card. */
+    .chart-wrap.fixed-h { flex: 0 0 auto; min-height: 0; }
+    .card.size-1x2 .chart-wrap.fixed-h, .card.size-2x2 .chart-wrap.fixed-h,
+    .card.size-3x2 .chart-wrap.fixed-h { flex: 1 1 auto; }
     /* Reset-zoom icon — shown only while a chart is zoomed. Sits in the card
        header left of the drag grip, clear of the plot area. */
     .chart-reset-zoom {

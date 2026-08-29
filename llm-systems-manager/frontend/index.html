@@ -54,7 +54,7 @@ Backend API endpoints consumed:
   <link rel="stylesheet" href="/static/vendor/xterm.min.css?v=5.3.0"/>
   <script src="/static/vendor/xterm.min.js?v=5.3.0"></script>
   <script src="/static/vendor/xterm-addon-fit.min.js?v=0.8.0"></script>
-  <link rel="stylesheet" href="/static/css/base.css?v=2026.08.26-7">
+  <link rel="stylesheet" href="/static/css/base.css?v=2026.08.29-4">
   <link rel="stylesheet" href="/static/css/reportcard.css?v=2026.08.04-1">
   <link rel="stylesheet" href="/static/css/energy.css?v=2026.08.19-2">
   <link rel="stylesheet" href="/static/css/overall.css?v=2026.08.21-5">
@@ -980,8 +980,7 @@ Backend API endpoints consumed:
           <span><span class="legend-dot" style="background:var(--accent)"></span>Gen t/s</span>
           <span><span class="legend-dot" style="background:var(--warn)"></span>Prompt t/s</span>
         </div>
-        <div class="chart-wrap" style="height:140px;"><canvas id="lmsTpsChart" role="img" aria-label="LM Studio token throughput over time"></canvas></div>
-        <div class="sub" style="margin-top:4px;font-size:0.72em;color:var(--fg-dim);">Token counts measured at the manager gateway (/v1 traffic routed through it).</div>
+        <div class="chart-wrap fixed-h" style="height:120px;"><canvas id="lmsTpsChart" role="img" aria-label="LM Studio token throughput over time"></canvas></div>
       </div>
 
       <!-- LMS CPU -->
@@ -1886,7 +1885,7 @@ Backend API endpoints consumed:
 </div><!-- end llmTab -->
 
 <script src="/static/js/lib/layout.js?v=2026.07.10-1"></script>
-<script src="/static/js/foundation.js?v=2026.08.17-4"></script>
+<script src="/static/js/foundation.js?v=2026.08.29-1"></script>
 <script src="/static/js/lib/series.js?v=2026.08.04-2"></script>
 <script src="/static/js/lib/peaks.js?v=2026.08.21-2"></script>
 <script src="/static/js/lib/benchaxis.js?v=2026.08.26-1"></script>
@@ -1894,7 +1893,7 @@ Backend API endpoints consumed:
 <script src="/static/js/lib/reportcard.js?v=2026.07.27-1"></script>
 <script src="/static/js/lib/energy.js?v=2026.08.26-1"></script>
 <script src="/static/js/lib/overall-view.js?v=2026.08.28-1"></script>
-<script src="/static/js/charts.js?v=2026.08.21-10"></script>
+<script src="/static/js/charts.js?v=2026.08.29-1"></script>
 <script src="/static/js/terminal.js?v=2026.08.27-1"></script>
 <script src="/static/js/llmcontrol.js?v=2026.08.19-1"></script>
 <script src="/static/js/openclaw.js?v=2026.08.03-1"></script>
