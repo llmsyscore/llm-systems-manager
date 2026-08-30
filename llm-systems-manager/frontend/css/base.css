@@ -127,6 +127,10 @@
     .card.size-1x2 { grid-row:    span 2; }
     .card.size-2x2 { grid-column: span 2; grid-row: span 2; }
     .card.size-3x2 { grid-column: span 3; grid-row: span 2; }
+    /* auto: content height — the card (or pinned shell) is not stretched to its row. */
+    .card.size-auto { align-self: start; }
+    .ov-shell > .card.size-auto { align-self: stretch; }
+    .ov-shell.size-auto > .card { height: auto; }
     /* Size-cycle button — small, unobtrusive, lives to the left of the
        drag handle in the card's top-right. */
     .card-size-btn {
@@ -138,7 +142,17 @@
       opacity: 0.25; transition: opacity 0.15s, color 0.15s;
     }
     .card:hover .card-size-btn { opacity: 0.7; }
-    .card-size-btn:hover { opacity: 1; color: var(--fg); }
+    .card .card-size-btn:hover, .card .card-size-btn:focus-visible { opacity: 1; color: var(--fg); }
+    /* Instant tip below the button naming the current and next size. */
+    .card-size-btn::after {
+      content: attr(data-tip); display: none;
+      position: absolute; top: calc(100% + 6px); right: 0;
+      padding: 4px 8px; white-space: nowrap;
+      background: var(--bg-card-alt); color: var(--fg); border: 1px solid var(--border);
+      border-radius: 4px; font-size: 0.8rem; font-weight: normal; letter-spacing: 0;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.25); z-index: 7; pointer-events: none;
+    }
+    .card-size-btn:hover::after, .card-size-btn:focus-visible::after { display: block; }
     .card.drag-over { border-color: var(--accent); }
     .card.sortable-ghost { opacity: 0.3; }
     .card.sortable-drag { opacity: 0.9; box-shadow: 0 4px 20px rgba(0,0,0,0.5); }
@@ -152,6 +166,10 @@
        false`, so they re-paint to fill this box at the monitor's DPR
        whenever the size changes. */
     .chart-wrap { position: relative; flex: 1 1 140px; min-height: 140px; }
+    /* Fixed-height variant: keeps its inline height instead of filling the card. */
+    .chart-wrap.fixed-h { flex: 0 0 auto; min-height: 0; }
+    .card.size-1x2 .chart-wrap.fixed-h, .card.size-2x2 .chart-wrap.fixed-h,
+    .card.size-3x2 .chart-wrap.fixed-h { flex: 1 1 auto; }
     /* Reset-zoom icon — shown only while a chart is zoomed. Sits in the card
        header left of the drag grip, clear of the plot area. */
     .chart-reset-zoom {

@@ -235,7 +235,7 @@ def test_cleanup_skips_dir_containing_llama_bin(tmp_path):
 
 def test_release_binary_builds_download_steps(tmp_path, monkeypatch):
     monkeypatch.setattr(li, "_resolve_release_asset",
-                        lambda version, backend="cpu": "https://example.com/llama-bin-ubuntu-x64.zip")
+                        lambda version, backend="cpu": ("https://example.com/llama-bin-ubuntu-x64.zip", "b1"))
     cfg = _cfg(LLAMA_BUILD_DIR=str(tmp_path))
     plan = li.plan("release_binary", {"version": "latest"}, cfg)
     dest = str(tmp_path / "release")
@@ -251,7 +251,7 @@ def test_release_binary_builds_download_steps(tmp_path, monkeypatch):
 
 def test_release_binary_targz_uses_tar(tmp_path, monkeypatch):
     monkeypatch.setattr(li, "_resolve_release_asset",
-                        lambda version, backend="cpu": "https://example.com/llama-bin-ubuntu-x64.tar.gz")
+                        lambda version, backend="cpu": ("https://example.com/llama-bin-ubuntu-x64.tar.gz", "b1"))
     cfg = _cfg(LLAMA_BUILD_DIR=str(tmp_path))
     plan = li.plan("release_binary", {}, cfg)
     assert plan.steps[-1][0] == "tar"
@@ -260,7 +260,7 @@ def test_release_binary_targz_uses_tar(tmp_path, monkeypatch):
 
 
 def test_release_binary_resolve_finds_binary(tmp_path, monkeypatch):
-    monkeypatch.setattr(li, "_resolve_release_asset", lambda version, backend="cpu": "https://x/y.zip")
+    monkeypatch.setattr(li, "_resolve_release_asset", lambda version, backend="cpu": ("https://x/y.zip", "b1"))
     dest = tmp_path / "release" / "build" / "bin"
     dest.mkdir(parents=True)
     (dest / "llama-server").touch()
@@ -341,30 +341,103 @@ def test_resolve_release_asset_rejects_dotdot_version():
             li._resolve_release_asset(bad)
 
 
-def test_resolve_release_asset_allows_dotted_version(monkeypatch):
-    captured = {}
+def _assets(*names):
+    return [{"name": n, "browser_download_url": f"https://example.com/{n}"} for n in names]
+
+
+def _fake_github(monkeypatch, releases: dict, pointer: bytes = b"b10621\n",
+                 pointer_url: str = "https://example.com/nightly-tag.txt"):
+    """urlopen stub: release JSON by URL tail, the pointer text by its URL."""
+    calls = []
 
     class _Resp:
+        def __init__(self, body): self._body = body
         def __enter__(self): return self
         def __exit__(self, *a): return False
-        def read(self):
-            return json.dumps({"assets": [
-                {"name": "llama-b1-bin-ubuntu-x64.tar.gz",
-                 "browser_download_url": "https://example.com/llama-b1-bin-ubuntu-x64.tar.gz"}]}).encode()
+        def read(self, n=None): return self._body if n is None else self._body[:n]
 
     def fake_urlopen(req, timeout=0):
-        captured["url"] = req.full_url
-        return _Resp()
+        url = req.full_url
+        calls.append(url)
+        if url == pointer_url:
+            return _Resp(pointer)
+        tail = url.rsplit("/", 1)[1]
+        assert tail in releases, f"unstubbed release {tail!r}"
+        return _Resp(json.dumps(releases[tail]).encode())
 
     monkeypatch.setattr(li.urllib.request, "urlopen", fake_urlopen)
     monkeypatch.setattr(li, "_asset_match_tokens", lambda: ["ubuntu", "x64"])
-    dl = li._resolve_release_asset("v1.2.3")
-    assert dl == "https://example.com/llama-b1-bin-ubuntu-x64.tar.gz"
-    assert captured["url"].endswith("/tags/v1.2.3")
+    return calls
 
 
-def _assets(*names):
-    return [{"name": n, "browser_download_url": f"https://example.com/{n}"} for n in names]
+def _pointer_release(url="https://example.com/nightly-tag.txt"):
+    return {"tag_name": "v0.3.0",
+            "assets": [{"name": "nightly-tag.txt", "browser_download_url": url}]}
+
+
+def test_resolve_release_asset_allows_dotted_version(monkeypatch):
+    calls = _fake_github(monkeypatch, {"v1.2.3": {"assets": _assets("llama-b1-bin-ubuntu-x64.tar.gz")}})
+    assert li._resolve_release_asset("v1.2.3") == ("https://example.com/llama-b1-bin-ubuntu-x64.tar.gz", "v1.2.3")
+    assert calls[0].endswith("/tags/v1.2.3")
+
+
+def test_resolve_pointer_read_is_capped(monkeypatch):
+    big = "x" * 256
+    calls = _fake_github(monkeypatch, {"latest": _pointer_release(),
+                                       big: {"assets": _assets("llama-b1-bin-ubuntu-x64.tar.gz")}},
+                         pointer=b"x" * 400)
+    li._resolve_release_asset("latest")
+    assert calls[-1].endswith("/tags/" + big)
+
+
+def test_resolve_pointer_takes_first_line_and_drops_bom(monkeypatch):
+    _fake_github(monkeypatch, {"latest": _pointer_release(),
+                               "b1": {"assets": _assets("llama-b1-bin-ubuntu-x64.tar.gz")}},
+                 pointer=b"\xef\xbb\xbfb1\r\n# built nightly\n")
+    assert li._resolve_release_asset("latest")[0].endswith("llama-b1-bin-ubuntu-x64.tar.gz")
+
+
+def test_resolve_pointer_without_url_is_ignored(monkeypatch):
+    _fake_github(monkeypatch, {"latest": {"assets": [{"name": "nightly-tag.txt"}]}})
+    with pytest.raises(li.InstallError, match="version 'latest'"):
+        li._resolve_release_asset("latest")
+
+
+def test_resolve_latest_follows_nightly_tag_pointer(monkeypatch):
+    calls = _fake_github(monkeypatch, {
+        "latest": _pointer_release(),
+        "b10621": {"tag_name": "b10621",
+                   "assets": _assets("llama-b10621-bin-ubuntu-vulkan-x64.tar.gz",
+                                     "llama-b10621-bin-ubuntu-x64.tar.gz")}})
+    assert li._resolve_release_asset("latest") == ("https://example.com/llama-b10621-bin-ubuntu-x64.tar.gz", "b10621")
+    assert [c.rsplit("/", 1)[1] for c in calls] == ["latest", "nightly-tag.txt", "b10621"]
+
+
+def test_resolve_latest_with_binaries_ignores_pointer(monkeypatch):
+    rel = _pointer_release()
+    rel["assets"] += _assets("llama-b1-bin-ubuntu-x64.tar.gz")
+    calls = _fake_github(monkeypatch, {"latest": rel})
+    assert li._resolve_release_asset("latest") == ("https://example.com/llama-b1-bin-ubuntu-x64.tar.gz", "v0.3.0")
+    assert len(calls) == 1
+
+
+def test_resolve_pointer_target_without_match_names_the_build(monkeypatch):
+    _fake_github(monkeypatch, {"latest": _pointer_release(),
+                               "b10621": {"assets": _assets("llama-b10621-bin-macos-arm64.zip")}})
+    with pytest.raises(li.InstallError, match=r"version 'latest' \(build b10621\)"):
+        li._resolve_release_asset("latest")
+
+
+def test_resolve_rejects_bad_pointer_contents(monkeypatch):
+    _fake_github(monkeypatch, {"latest": _pointer_release()}, pointer=b"../etc\n")
+    with pytest.raises(li.InstallError, match="invalid build tag"):
+        li._resolve_release_asset("latest")
+
+
+def test_resolve_rejects_non_https_pointer(monkeypatch):
+    _fake_github(monkeypatch, {"latest": _pointer_release("http://example.com/nightly-tag.txt")})
+    with pytest.raises(li.InstallError, match="not https"):
+        li._resolve_release_asset("latest")
 
 
 def test_select_asset_cpu_skips_accelerator_variants():
@@ -399,7 +472,7 @@ def test_release_binary_passes_backend_to_resolver(tmp_path, monkeypatch):
 
     def fake_resolve(version, backend="cpu"):
         seen["backend"] = backend
-        return "https://example.com/llama-b1-bin-ubuntu-vulkan-x64.tar.gz"
+        return "https://example.com/llama-b1-bin-ubuntu-vulkan-x64.tar.gz", "b1"
 
     monkeypatch.setattr(li, "_resolve_release_asset", fake_resolve)
     cfg = _cfg(LLAMA_BUILD_DIR=str(tmp_path))
@@ -605,3 +678,18 @@ def test_strip_ansi_removes_cursor_visibility_codes():
     # tqdm wraps progress in cursor hide/show escapes; must strip so JSON parses (#102)
     raw = '\x1b[?25l[{"file": "a.gguf", "size": "-"}]\x1b[?25h'
     assert li.strip_ansi(raw) == '[{"file": "a.gguf", "size": "-"}]'
+
+
+def test_resolve_pinned_pointer_release_is_not_followed(monkeypatch):
+    calls = _fake_github(monkeypatch, {"v0.3.0": _pointer_release(),
+                                       "b10621": {"assets": _assets("llama-b10621-bin-ubuntu-x64.tar.gz")}})
+    with pytest.raises(li.InstallError, match="version 'v0.3.0'"):
+        li._resolve_release_asset("v0.3.0")
+    assert len(calls) == 1
+
+
+def test_release_binary_label_names_the_resolved_build(tmp_path, monkeypatch):
+    monkeypatch.setattr(li, "_resolve_release_asset",
+                        lambda version, backend="cpu": ("https://x/llama-b7-bin-ubuntu-x64.tar.gz", "b7"))
+    plan = li.plan("release_binary", {"version": "latest"}, _cfg(LLAMA_BUILD_DIR=str(tmp_path)))
+    assert plan.label == "release binary (b7)"

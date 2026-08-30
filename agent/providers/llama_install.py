@@ -255,32 +255,81 @@ def _select_asset(assets: list, tokens: list, variant_tokens: tuple) -> "str | N
                 continue
         elif any(a in name for a in _ACCEL_TOKENS):
             continue
-        if not dl.startswith("https://"):
-            raise InstallError(f"release asset URL is not https: {dl!r}")
-        return dl
+        return _require_https(dl)
     return None
 
 
-def _resolve_release_asset(version: str, backend: str = "cpu") -> str:
-    if version not in ("", "latest") and (
-            not re.fullmatch(r"[A-Za-z0-9._-]+", version) or ".." in version):
-        raise InstallError(f"invalid release version {version!r}")
-    url = f"{_RELEASES_API}/latest" if version in ("", "latest") else f"{_RELEASES_API}/tags/{version}"
+_NIGHTLY_POINTER = "nightly-tag.txt"
+
+
+def _valid_release_tag(tag: str) -> bool:
+    return bool(re.fullmatch(r"[A-Za-z0-9._-]+", tag)) and ".." not in tag
+
+
+def _require_https(url: str) -> str:
+    if not url.startswith("https://"):
+        raise InstallError(f"release asset URL is not https: {url!r}")
+    return url
+
+
+def _http_get(url: str, what: str, accept: "str | None" = None,
+              limit: "int | None" = None, timeout: float = 30) -> bytes:
+    headers = {"User-Agent": "llm-systems-agent"}
+    if accept:
+        headers["Accept"] = accept
     try:
-        req = urllib.request.Request(url, headers={"Accept": "application/vnd.github+json",
-                                                   "User-Agent": "llm-systems-agent"})
-        with urllib.request.urlopen(req, timeout=30) as r:
-            data = json.loads(r.read().decode())
+        req = urllib.request.Request(url, headers=headers)
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            return r.read() if limit is None else r.read(limit)
     except Exception as e:
-        raise InstallError(f"could not query llama.cpp releases ({version}): {e}")
+        raise InstallError(f"could not fetch {what}: {e}")
+
+
+def _fetch_release(version: str) -> dict:
+    url = f"{_RELEASES_API}/latest" if version in ("", "latest") else f"{_RELEASES_API}/tags/{version}"
+    body = _http_get(url, f"llama.cpp releases ({version})", accept="application/vnd.github+json")
+    try:
+        return json.loads(body.decode())
+    except Exception as e:
+        raise InstallError(f"could not parse llama.cpp releases ({version}): {e}")
+
+
+def _nightly_tag(assets: list) -> "str | None":
+    """Build tag named by the release's nightly-tag.txt asset, else None."""
+    asset = next((a for a in assets if (a.get("name") or "") == _NIGHTLY_POINTER), None)
+    if asset is None:
+        return None
+    dl = asset.get("browser_download_url") or ""
+    if not dl:
+        return None
+    text = _http_get(_require_https(dl), _NIGHTLY_POINTER, limit=256, timeout=10)
+    tag = text.decode("utf-8-sig", errors="replace").split("\n", 1)[0].strip()
+    if not _valid_release_tag(tag):
+        raise InstallError(f"invalid build tag in {_NIGHTLY_POINTER}: {tag!r}")
+    return tag
+
+
+def _resolve_release_asset(version: str, backend: str = "cpu") -> "tuple[str, str]":
+    """(download URL, release tag). `latest` follows a pointer-only release's
+    nightly-tag.txt to the build that carries the binaries; a pinned tag never does."""
+    latest = version in ("", "latest")
+    if not latest and not _valid_release_tag(version):
+        raise InstallError(f"invalid release version {version!r}")
     tokens = _asset_match_tokens()
     variant_tokens = _RELEASE_VARIANT.get(backend, ())
-    dl = _select_asset(data.get("assets", []), tokens, variant_tokens)
+    data = _fetch_release(version)
+    assets = data.get("assets", [])
+    dl = _select_asset(assets, tokens, variant_tokens)
+    resolved = data.get("tag_name") or version
+    if dl is None and latest:
+        tag = _nightly_tag(assets)
+        if tag:
+            resolved = tag
+            dl = _select_asset(_fetch_release(tag).get("assets", []), tokens, variant_tokens)
     if dl is None:
-        raise InstallError(
-            f"no release asset matched {tokens} (backend {backend!r}) for version {version!r}"
-        )
-    return dl
+        where = f"version {version!r}" + (f" (build {resolved})" if resolved != version else "")
+        raise InstallError(f"no release asset matched {tokens} (backend {backend!r}) for {where}")
+    return dl, resolved
 
 
 def _find_under(root: Path, name: str) -> "str | None":
@@ -303,7 +352,7 @@ def _h_release_binary(opts: dict, cfg) -> InstallPlan:
     backend = (opts.get("backend") or "cpu").strip().lower()
     if backend not in _BACKEND_CMAKE:
         raise InstallError(f"unknown backend {backend!r}; valid: {', '.join(sorted(_BACKEND_CMAKE))}")
-    url = _resolve_release_asset(version, backend)
+    url, tag = _resolve_release_asset(version, backend)
     if url.lower().endswith(".zip"):
         unpack, unpack_tool = ["unzip", "-o", str(tmp), "-d", str(dest)], "unzip"
     else:
@@ -314,7 +363,7 @@ def _h_release_binary(opts: dict, cfg) -> InstallPlan:
         unpack,
     ]
     return InstallPlan(
-        method="release_binary", label="release binary", steps=steps, cwd=None, env={},
+        method="release_binary", label=f"release binary ({tag})", steps=steps, cwd=None, env={},
         tools=("curl", unpack_tool),
         resolve_binary=lambda: _find_under(dest, "llama-server"),
     )
