@@ -319,10 +319,12 @@ function _llamaDescriptor(modelId, statusLookup) {
     prof.active ? MC.esc(prof.active) : null,
   ].filter(Boolean).join(' · ');
 
+  const benchAge = b ? MC.age(b.ts) : null;
   return {
     id: modelId, actAttr: 'data-act', renameAct: 'rename',
     name: aliasOrShort(modelId), repo: modelId,
     pill, specs, stats, fresh: _llamaFresh(modelId, cfg),
+    benchTitle: 'Benchmark results — not live throughput' + (benchAge ? ' (last run ' + benchAge + ')' : ''),
     profileHtml: _llamaProfileHtml(modelId),
     profileText: prof.active || '',
     primary, buttons, menu, perfHtml,

@@ -254,7 +254,8 @@ function renderVllmModelCards(models, activeId) {
       name: shortName(id), repo: id,
       pill: serving ? { state: 'active', label: 'Serving' } : { state: 'unloaded', label: 'Adapter' },
       specs: [], stats,
-      fresh: b && b.ts ? { age: MC.age(b.ts) } : null,
+      fresh: null,
+      benchTitle: 'Benchmark results — not live throughput' + (b && b.ts && MC.age(b.ts) ? ' (last run ' + MC.age(b.ts) + ')' : ''),
       primary: null, buttons: [],
       menu: serving ? [
         { act: 'bench',    label: '◷ Benchmark' },

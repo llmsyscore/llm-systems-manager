@@ -46,13 +46,13 @@
     ).join('') + '</dl>';
   }
 
-  function statsHtml(stats, fresh) {
+  function statsHtml(stats, fresh, benchTitle) {
     const cells = (stats || []).map(s =>
       `<div class="mc-stat"><div class="l">${esc(s.l)}</div><div class="v${s.live ? ' live' : ''}"><b>${esc(s.v)}</b>${s.unit ? ' ' + esc(s.unit) : ''}</div></div>`
     ).join('');
     if (!cells && !(fresh && fresh.stale)) return '';
     const tag = cells
-      ? `<span class="mc-benchtag" title="Benchmark results — not live throughput">bench</span>`
+      ? `<span class="mc-benchtag" title="${esc(benchTitle || 'Benchmark results — not live throughput')}">bench</span>`
       : '';
     const f = (fresh && fresh.stale)
       ? `<span class="mc-stale" title="${esc(fresh.staleTitle || 'Config changed since this benchmark — run a fresh one from the ⋯ menu')}">re-bench</span>`
@@ -105,7 +105,7 @@
 
   function teleHtml(d) {
     const prof = d.profileHtml || '';
-    const stats = statsHtml(d.stats, d.fresh);
+    const stats = statsHtml(d.stats, d.fresh, d.benchTitle);
     if (!prof && !stats) return '';
     return `<div class="mc-tele">${prof}${stats}</div>`;
   }

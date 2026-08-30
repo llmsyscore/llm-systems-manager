@@ -69,7 +69,7 @@
 .mc-spec dd em { font-style: normal; color: var(--accent-2); }
 .mc-tele { display: flex; align-items: center; gap: 8px; border-top: 1px solid var(--border-soft); padding: 9px 15px; flex-wrap: wrap; min-height: 24px; }
 .mc-profchip { display: inline-flex; align-items: center; gap: 5px; font-family: var(--font-mono); font-size: 11px; font-weight: 500; color: var(--accent); background: color-mix(in srgb, var(--accent) 10%, transparent); border: 1px solid color-mix(in srgb, var(--accent) 26%, transparent); border-radius: 6px; padding: 2px 8px; }
-.mc-profchip select { background: transparent; border: 0; outline: 0; color: var(--accent); font-family: var(--font-mono); font-size: 11px; font-weight: 500; cursor: pointer; max-width: 130px; }
+.mc-profchip select { background: transparent; border: 0; outline: 0; color: var(--accent); font-family: var(--font-mono); font-size: 11px; font-weight: 500; cursor: pointer; max-width: 130px; field-sizing: content; }
 .mc-profchip select option { background: var(--bg-elev); color: var(--fg); }
 .mc-profchip .mc-profbtn { background: none; border: 0; color: var(--fg-dim); cursor: pointer; font-size: 11px; padding: 0 1px; line-height: 1; }
 .mc-profchip .mc-profbtn:hover { color: var(--fg); }
@@ -80,7 +80,7 @@
 .mc-stat .v b { color: var(--fg); font-weight: 600; }
 .mc-stat .v.live { color: var(--accent-2); }
 .mc-stale { font-family: var(--font-sans); font-size: 10px; font-weight: 600; color: var(--warn); background: color-mix(in srgb, var(--warn) 12%, transparent); border: 1px solid color-mix(in srgb, var(--warn) 26%, transparent); border-radius: 999px; padding: 1px 7px; white-space: nowrap; cursor: help; }
-.mc-benchtag { font-family: var(--font-sans); font-size: 9px; font-weight: 600; letter-spacing: .11em; text-transform: uppercase; color: var(--fg-faint); border: 1px solid var(--border-strong); border-radius: 4px; padding: 1px 6px; white-space: nowrap; cursor: help; }
+.mc-benchtag { font-family: var(--font-sans); font-size: 9px; font-weight: 600; letter-spacing: .11em; text-transform: uppercase; color: var(--fg-faint); border: 1px solid var(--border-strong); border-radius: 4px; padding: 1px 6px; white-space: nowrap; }
 .mc-prof-edit { cursor: pointer; }
 .mc-prof-edit:hover { background: color-mix(in srgb, var(--accent) 18%, transparent); }
 .mc-actions { display: flex; align-items: center; gap: 8px; border-top: 1px solid var(--border-soft); padding: 10px 15px; margin-top: auto; }
@@ -89,7 +89,7 @@
 /* ---------- list view ---------- */
 .mc-listwrap { border: 1px solid var(--border); border-radius: 10px; overflow-x: auto; background: var(--bg-card); }
 .mc-list { min-width: 830px; }
-.mc-row { display: grid; grid-template-columns: 10px minmax(200px, 1.4fr) minmax(170px, 1fr) 216px 130px minmax(150px, auto); gap: 14px; align-items: center; padding: 10px 16px; border-top: 1px solid var(--border-soft); transition: background .12s, opacity .15s; }
+.mc-row { display: grid; grid-template-columns: 10px minmax(220px, 1fr) minmax(240px, 1.4fr) 210px 104px minmax(140px, auto); gap: 14px; align-items: center; padding: 10px 16px; border-top: 1px solid var(--border-soft); transition: background .12s, opacity .15s; }
 .mc-row:first-child { border-top: 0; }
 .mc-row.mc-transition { opacity: .6; }
 .mc-row-hdr { background: var(--bg-card-alt); padding: 7px 16px; font-family: var(--font-sans); font-size: 9.5px; font-weight: 600; letter-spacing: .12em; text-transform: uppercase; color: var(--fg-dim); border-top: 0 !important; }
@@ -210,6 +210,7 @@
 .ef-foot .mc-gap { flex: 1; }
 .ef-chgchip { font-family: var(--font-sans); font-size: 11.5px; font-weight: 500; color: var(--warn); background: color-mix(in srgb, var(--warn) 10%, transparent); border: 1px solid color-mix(in srgb, var(--warn) 26%, transparent); border-radius: 999px; padding: 3px 10px; display: none; }
 .ef-chgchip.show { display: inline-block; }
+.ef-vsep { width: 1px; height: 22px; background: var(--border-strong); margin: 0 4px; align-self: center; }
 
 @media (prefers-reduced-motion: reduce) {
   .mc-pill.p-busy::before, .mc-dot.d-busy { animation: none; }

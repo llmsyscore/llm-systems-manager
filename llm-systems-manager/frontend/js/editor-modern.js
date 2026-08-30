@@ -1,7 +1,7 @@
 // Model editor layouts (#765): rail/essentials modes, toggle switches,
 // dirty tracking with was-value breadcrumbs, accordion summaries.
 const EFL = (function () {
-  const ESS_KEYS = ['temperature', 'ctx-size', 'reasoning', 'reasoning-budget'];
+  const ESS_KEYS = ['temperature', 'ctx-size', 'top-p', 'min-p', 'n-gpu-layers', 'reasoning-budget', 'load-mode', 'cache-type-k', 'cache-type-v', 'reasoning'];
   const SEC_MAP = {
     'ef-sec-sampling': ['temperature', 'dynatemp-range', 'dynatemp-exp', 'top-p', 'top-k', 'min-p', 'presence-penalty', 'repeat-penalty'],
     'ef-sec-context':  ['ctx-size', 'batch-size', 'ubatch-size', 'n-gpu-layers', 'predict', 'load-mode', 'fit', 'fit-ctx'],
@@ -16,8 +16,8 @@ const EFL = (function () {
   const fieldEl = k => $('ef-' + k);
 
   function currentMode() {
-    const v = (typeof layout === 'object' && layout && layout.editLayout) || 'rail';
-    return v === 'essentials' ? 'essentials' : 'rail';
+    const v = (typeof layout === 'object' && layout && layout.editLayout) || 'essentials';
+    return v === 'rail' ? 'rail' : 'essentials';
   }
 
   function setMode(v, persist) {
@@ -43,7 +43,7 @@ const EFL = (function () {
     refreshSummaries();
   }
 
-  // Essentials mode relocates four field wrappers into the essentials box;
+  // Essentials mode relocates the most-used field wrappers into the quick box;
   // hidden placeholder spans mark their home slots for the way back.
   function moveEssFields(toEss) {
     const grid = $('efEssGrid'); if (!grid) return;
