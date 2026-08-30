@@ -392,7 +392,9 @@ Binary agents built from this release onward can also be upgraded from
 its platform, verifies the `.sha256`, extracts and smoke-tests the staged
 binary, swaps it atomically (previous binary kept beside it as
 `.self-update.bak.<ts>`), and restarts. Older binaries still need one manual
-replacement first.
+replacement first. **Update all** upgrades the whole fleet in one click: agents
+run one at a time, each has to report the new version before the next starts,
+and the sequence stops at the first failure with the remainder left untouched.
 
 Approve a second agent that runs the same provider (e.g. a second `llama.cpp` box) and a host picker automatically appears on the matching dashboard sub-tabs — every approved agent is independently viewable and controllable. One agent is the *default* (what the dashboard shows when you haven't picked); set it from **Admin**.
 
