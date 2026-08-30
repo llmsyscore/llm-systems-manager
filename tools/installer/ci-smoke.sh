@@ -142,6 +142,11 @@ else
   _pass "no removed-paths.manifest deployed — nothing to verify"
 fi
 
+echo "── release marker + update check ──────────────────────────────"
+# shellcheck source=ci-release-marker.sh
+. "$(dirname "${BASH_SOURCE[0]}")/ci-release-marker.sh"
+release_marker_checks "$INSTALL_DIR"
+
 echo "── deployed versions ──────────────────────────────────────────"
 _version_match "Manager" "$(curl -sS -m 10 http://127.0.0.1:5000/health 2>/dev/null)" \
   "$INSTALL_DIR/llm-systems-manager/backend/llm-systems-manager.py"

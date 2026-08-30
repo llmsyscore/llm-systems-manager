@@ -823,6 +823,20 @@ elif component_wanted "installer"; then
   done
 fi
 
+# ── Release marker ─────────────────────────────────────────────────────────
+# Re-stamps $LLMSYS_INSTALL_DIR/RELEASE from the staged source on every run.
+if $HAVE_MANAGER || $HAVE_AE; then
+  if (( DRY_RUN )); then
+    echo "  [dry-run] would re-stamp $LLMSYS_INSTALL_DIR/RELEASE"
+  else
+    stamp_release_marker "$REPO_SRC" "$LLMSYS_INSTALL_DIR"
+    if [[ -f "$LLMSYS_INSTALL_DIR/RELEASE" ]]; then
+      $SUDO chown "$LLMSYS_RUN_USER:$LLMSYS_RUN_GROUP" "$LLMSYS_INSTALL_DIR/RELEASE" \
+        || warn "could not chown $LLMSYS_INSTALL_DIR/RELEASE to $LLMSYS_RUN_USER:$LLMSYS_RUN_GROUP"
+    fi
+  fi
+fi
+
 # ── Prune upstream-removed files ────────────────────────────────────────────
 # Loads removed-paths.manifest and deletes stale install-dir files; the
 # toml-key entries are consumed by the Config reconcile step below.
@@ -1247,6 +1261,9 @@ if (( VERIFY_FAILURES > 0 )); then
 fi
 if (( ${#FAILED_UNITS[@]} > 0 )); then
   err "component update failure(s) — these services were NOT restarted: ${FAILED_UNITS[*]}"
+fi
+if (( ${LLMSYS_WARN_COUNT:-0} > 0 )); then
+  warn "${LLMSYS_WARN_COUNT} [WARN] line(s) above — review before trusting this update"
 fi
 if (( FAIL > 0 || ${#FAILED_UNITS[@]} > 0 || VERIFY_FAILURES > 0 )); then
   err "Update finished with failures."

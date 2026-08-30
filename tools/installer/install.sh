@@ -53,7 +53,7 @@ unset LLMSYS_UPSTREAM_TMP _upstream_re
 # substantive change to this file. The self-update trampoline only re-execs
 # when the upstream copy carries a STRICTLY GREATER number, so locally-
 # modified scripts (or unpushed commits) are never silently downgraded.
-_INSTALL_SH_REVISION=20260829002
+_INSTALL_SH_REVISION=20260830001
 
 # Fallback bootstrap helpers — used until we source lib-common.sh.
 # TTY-aware colors so OK/WARN/ERR markers stand out in interactive runs and
@@ -66,7 +66,7 @@ else
 fi
 _b_ok()   { printf '%s[ OK ]%s  %s\n' "$_B_GRN" "$_B_RST" "$*"; }
 _b_log()  { printf '%s[INFO]%s  %s\n' "$_B_BLU" "$_B_RST" "$*"; }
-_b_warn() { printf '%s[WARN]%s  %s\n' "$_B_YLW" "$_B_RST" "$*" >&2; }
+_b_warn() { LLMSYS_WARN_COUNT=$((${LLMSYS_WARN_COUNT:-0}+1)); printf '%s[WARN]%s  %s\n' "$_B_YLW" "$_B_RST" "$*" >&2; }
 _b_err()  { printf '%s[ERR ]%s  %s\n' "$_B_RED" "$_B_RST" "$*" >&2; }
 _b_die()  { _b_err "$*"; exit 1; }
 
@@ -1438,7 +1438,11 @@ echo "    Repository:       github.com/llmsyscore/llm-systems-manager"
 echo
 
 if (( FAIL == 0 )); then
-  ok "Installation succeeded."
+  if (( ${LLMSYS_WARN_COUNT:-0} > 0 )); then
+    ok "Installation succeeded; ${LLMSYS_WARN_COUNT} [WARN] line(s) above worth a look."
+  else
+    ok "Installation succeeded."
+  fi
 else
   err "Installation completed with ${FAIL} failed health check(s)."
   exit 1

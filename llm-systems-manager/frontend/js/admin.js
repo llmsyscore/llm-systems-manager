@@ -129,12 +129,16 @@ function _adminFetchRelease() {
     _adminRelInflight = (async () => {
       const ctl = new AbortController();
       const t = setTimeout(() => ctl.abort(), 10000);
+      // A failed fetch keeps the last good payload, else marks the endpoint unreachable.
+      const markUnreachable = () => {
+        _adminRelCache = { at: Date.now(), data: _adminRelCache.data || { unreachable: true } };
+      };
       try {
         const r = await fetch('/api/companion/release', { signal: ctl.signal });
         if (r.ok) _adminRelCache = { at: Date.now(), data: await r.json() };
-        else _adminRelCache.at = Date.now();
+        else markUnreachable();
       } catch (_) {
-        _adminRelCache.at = Date.now();
+        markUnreachable();
       } finally {
         clearTimeout(t);
         _adminRelInflight = null;
@@ -318,10 +322,23 @@ function _renderSystemHealth(d, rel) {
         + (rel.installed ? ` (installed ${adminEsc(rel.installed)})` : '')
         + ` · <a href="${adminEsc(url)}" target="_blank" rel="noopener">release notes</a></div>`);
     }
-    warnEl.innerHTML = rows.length
+    warnEl.innerHTML = (rows.length
       ? rows.join('')
-      : '<div style="color:var(--ok); padding:8px 0;">✓ All systems nominal</div>';
+      : '<div style="color:var(--ok); padding:8px 0;">✓ All systems nominal</div>')
+      + _adminReleaseInfoHtml(rel);
   }
+}
+
+// Muted info row when the release check is unreachable, errored, or returned
+// no verdict; empty when disabled, up to date, or an update is available.
+function _adminReleaseInfoHtml(rel) {
+  if (!rel) return '';
+  const row = (msg) => `<div class="info-row">Release check: ${adminEsc(msg)}</div>`;
+  if (rel.unreachable) return row('endpoint unreachable');
+  if (!rel.enabled || rel.update_available === true) return '';
+  if (rel.error) return row(`check failed: ${rel.error}`);
+  if (rel.update_available === null) return row(rel.note || 'no verdict');
+  return '';
 }
 
 function _healthRowHtml(r) {
