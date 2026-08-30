@@ -54,8 +54,9 @@ function _ovTilePeaksPush(llama, lms, vllm) {
     const tp = (aggs[k] && aggs[k].throughput) || {};
     _ovTilePeaks[k].gen.push(now, tp.total_tps);
     _ovTilePeaks[k].prompt.push(now, tp.total_pps);
-    out[k] = { gen: LMPeaks.rateStat(_ovTilePeaks[k].gen, tp.total_tps, now),
-               prompt: LMPeaks.rateStat(_ovTilePeaks[k].prompt, tp.total_pps, now) };
+    const win = tp.window || null;
+    out[k] = { gen: LMPeaks.rateStat(_ovTilePeaks[k].gen, tp.total_tps, now, win && win.gen),
+               prompt: LMPeaks.rateStat(_ovTilePeaks[k].prompt, tp.total_pps, now, win && win.prompt) };
   }
   return out;
 }

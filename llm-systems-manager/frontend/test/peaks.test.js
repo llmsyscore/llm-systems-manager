@@ -77,8 +77,9 @@ describe('llama card wiring (#590)', () => {
 
   it('live poll pushes browser-clock samples and renders live+peak', () => {
     expect(charts).toMatch(/_llamaPeaks\.tps\.push\(Date\.now\(\), ll\.tokens_per_second\)/);
-    expect(charts).toMatch(/fmtRateTile\(ll\.tokens_per_second, _llamaPeaks\.tps, 'Gen tokens\/s'\)/);
-    expect(charts).toMatch(/fmtRateTile\(ll\.prompt_tokens_per_second, _llamaPeaks\.pps, 'Prompt tokens\/s'\)/);
+    expect(charts).toMatch(/fmtRateTile\(ll\.tokens_per_second, _llamaPeaks\.tps, 'Gen tokens\/s', undefined, llWin && llWin\.gen\)/);
+    expect(charts).toMatch(/fmtRateTile\(ll\.prompt_tokens_per_second, _llamaPeaks\.pps, 'Prompt tokens\/s', undefined, llWin && llWin\.prompt\)/);
+    expect(charts).toMatch(/const llWin = m\.throughput_window \|\| null;/);
     expect(charts).toMatch(/_setRateTile\('llamaTps', fmtRateTile\(/);
     expect(html).toMatch(/id="llamaTps-lbl"/);
   });
@@ -172,5 +173,43 @@ describe('LMPeaks.rateStat (#736/#739)', () => {
   it('the shared window is one hour and the label carries a non-breaking hyphen', () => {
     expect(LMPeaks.RATE_WINDOW_MS).toBe(60 * MIN);
     expect(LMPeaks.AVG_LABEL).toBe('60\u2011min avg');
+  });
+});
+
+// #745: a server-computed window replaces the browser tracker's stats.
+describe('LMPeaks.rateStat with a server window', () => {
+  const win = { avg: 12.5, peak: { v: 40, ts: new Date(T0 - 5 * MIN).toISOString() } };
+
+  it('serverWindow normalises {avg, peak:{v, ts}} to tracker shape', () => {
+    expect(LMPeaks.serverWindow(win, T0)).toEqual({ avg: 12.5, peak: { v: 40, t: T0 - 5 * MIN } });
+    expect(LMPeaks.serverWindow(null, T0)).toBeNull();
+    expect(LMPeaks.serverWindow({ avg: null, peak: null }, T0)).toEqual({ avg: null, peak: null });
+    expect(LMPeaks.serverWindow({ avg: 0, peak: { v: 0, ts: 'x' } }, T0)).toEqual({ avg: null, peak: null });
+  });
+
+  it('clamps a future peak ts and tolerates an unparsable one', () => {
+    const fut = { avg: 1, peak: { v: 2, ts: new Date(T0 + MIN).toISOString() } };
+    expect(LMPeaks.serverWindow(fut, T0).peak.t).toBe(T0);
+    expect(LMPeaks.serverWindow({ avg: 1, peak: { v: 2, ts: 'nope' } }, T0).peak.t).toBe(T0);
+  });
+
+  it('idle: shows the server average and peak, ignoring the tracker', () => {
+    const tr = LMPeaks.makeTracker(60 * MIN);
+    tr.push(T0 - MIN, 99);
+    expect(LMPeaks.rateStat(tr, 0, T0, win))
+      .toEqual({ v: 12.5, mode: LMPeaks.AVG_LABEL, peak: { v: 40, t: T0 - 5 * MIN } });
+  });
+
+  it('live: live value wins and lifts the peak when it exceeds the server peak', () => {
+    const tr = LMPeaks.makeTracker(60 * MIN);
+    expect(LMPeaks.rateStat(tr, 30, T0, win)).toEqual({ v: 30, mode: 'live', peak: { v: 40, t: T0 - 5 * MIN } });
+    expect(LMPeaks.rateStat(tr, 55, T0, win)).toEqual({ v: 55, mode: 'live', peak: { v: 55, t: T0 } });
+  });
+
+  it('falls back to the tracker when no window is supplied', () => {
+    const tr = LMPeaks.makeTracker(60 * MIN);
+    tr.push(T0 - MIN, 8);
+    expect(LMPeaks.rateStat(tr, 0, T0)).toEqual({ v: 8, mode: LMPeaks.AVG_LABEL, peak: { v: 8, t: T0 - MIN } });
+    expect(LMPeaks.rateStat(tr, 0, T0, undefined).v).toBe(8);
   });
 });

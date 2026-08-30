@@ -79,10 +79,10 @@ function _setEl(id, val) {
 // Server card Gen/Prompt tokens/s tiles: the live rate while traffic flows,
 // else the 60-min mean of active samples; the 60-min peak alongside (#736).
 const _LMS_TILE_WINDOW_MS = LMPeaks.RATE_WINDOW_MS;
-// [tracker key, tile id, label, gateway_rates field, history row field]
+// [tracker key, tile id, label, gateway_rates field, history row field, window key]
 const _LMS_RATE_TILES = [
-  ['tps', 'lms-tps', 'Gen tokens/s', 'gen_tps', 'lms_tps'],
-  ['pps', 'lms-pps', 'Prompt tokens/s', 'prompt_tps', 'lms_pps'],
+  ['tps', 'lms-tps', 'Gen tokens/s', 'gen_tps', 'lms_tps', 'gen'],
+  ['pps', 'lms-pps', 'Prompt tokens/s', 'prompt_tps', 'lms_pps', 'prompt'],
 ];
 const _lmsTiles = {
   tps: LMPeaks.makeTracker(_LMS_TILE_WINDOW_MS),
@@ -104,15 +104,15 @@ function _lmsSeedTileRow(r, clock) {
 }
 
 // Each gateway sample (keyed by its ts) enters the trackers once, browser-stamped;
-// an offline agent's last rates never count as live.
-function _renderLmsRateTiles(gr, now, online = true) {
+// an offline agent's last rates never count as live. win = server window (#745).
+function _renderLmsRateTiles(gr, now, online = true, win = null) {
   const at = now == null ? Date.now() : now;
   const fresh = online && gr && gr.ts && gr.ts !== _lmsTilesLastTs;
   if (fresh) _lmsTilesLastTs = gr.ts;
-  for (const [key, id, name, field] of _LMS_RATE_TILES) {
+  for (const [key, id, name, field, , winKey] of _LMS_RATE_TILES) {
     const live = online && gr ? gr[field] : null;
     if (fresh && live != null) _lmsTiles[key].push(at, live);
-    _setRateTile(id, fmtRateTile(live, _lmsTiles[key], name, at));
+    _setRateTile(id, fmtRateTile(live, _lmsTiles[key], name, at, win && win[winKey]));
   }
 }
 
@@ -194,7 +194,7 @@ async function fetchLMStudioMetrics() {
     // the manager's AE pusher so tiles + chart match the alarm engine series.
     const gt = d.gateway_tokens || null;
     const gr = d.gateway_rates || null;
-    _renderLmsRateTiles(gr, undefined, online);
+    _renderLmsRateTiles(gr, undefined, online, d.throughput_window || null);
     _setEl('lms-gen-tokens',    gt && gt.gen    != null ? Number(gt.gen).toLocaleString()    : '—');
     _setEl('lms-prompt-tokens', gt && gt.prompt != null ? Number(gt.prompt).toLocaleString() : '—');
     if (lmsTpsChart && gr && gr.gen_tps != null)

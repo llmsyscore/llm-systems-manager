@@ -93,15 +93,31 @@ function rowClock(rows, nowMs) {
 const RATE_WINDOW_MS = 3600000;
 const AVG_LABEL = '60\u2011min avg';
 
-// {v, mode, peak}: the live value while > 0 (mode 'live'), else the window's
-// active-sample mean (mode AVG_LABEL); peak is null unless > 0.
-function rateStat(tracker, live, nowMs) {
-  const isLive = typeof live === 'number' && live > 0;
-  const s = tracker.stats(nowMs);
-  return { v: isLive ? live : s.avg,
-           mode: isLive ? 'live' : AVG_LABEL,
-           peak: s.peak && s.peak.v > 0 ? s.peak : null };
+// Server window ({avg, peak: {v, ts}}, #745) → tracker-stats shape
+// ({avg, peak: {v, t}}); null when absent or malformed.
+function serverWindow(win, nowMs) {
+  if (!win || typeof win !== 'object') return null;
+  const avg = typeof win.avg === 'number' && win.avg > 0 ? win.avg : null;
+  let peak = null;
+  if (win.peak && typeof win.peak.v === 'number' && win.peak.v > 0) {
+    const t = new Date(win.peak.ts).getTime();
+    peak = { v: win.peak.v, t: Number.isFinite(t) ? Math.min(t, nowMs) : nowMs };
+  }
+  return { avg, peak };
 }
 
-return { makeTracker, agoText, rowClock, rateStat, MAX_ROW_SKEW_MS, RATE_WINDOW_MS, AVG_LABEL };
+// {v, mode, peak}: the live value while > 0 (mode 'live'), else the window's
+// active-sample mean (mode AVG_LABEL); a server window (lifted to live) wins over the tracker.
+function rateStat(tracker, live, nowMs, win) {
+  const isLive = typeof live === 'number' && live > 0;
+  const sw = serverWindow(win, nowMs);
+  const s = sw || tracker.stats(nowMs);
+  let peak = s.peak && s.peak.v > 0 ? s.peak : null;
+  if (sw && isLive && (!peak || live > peak.v)) peak = { v: live, t: nowMs };
+  return { v: isLive ? live : s.avg,
+           mode: isLive ? 'live' : AVG_LABEL,
+           peak };
+}
+
+return { makeTracker, agoText, rowClock, rateStat, serverWindow, MAX_ROW_SKEW_MS, RATE_WINDOW_MS, AVG_LABEL };
 });

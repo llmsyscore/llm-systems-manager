@@ -669,9 +669,9 @@ const _llamaPeaks = {
 };
 
 // {html, label} for a rate tile from LMPeaks.rateStat: value + muted peak
-// span, and "<name> · live" / "<name> · 60‑min avg".
-function fmtRateTile(live, tracker, name, now) {
-  const s = LMPeaks.rateStat(tracker, live, now == null ? Date.now() : now);
+// span, and "<name> · live" / "<name> · 60‑min avg"; win = server window (#745).
+function fmtRateTile(live, tracker, name, now, win) {
+  const s = LMPeaks.rateStat(tracker, live, now == null ? Date.now() : now, win);
   const peak = s.peak ? ' ' + _peakSpan(s.peak.v.toFixed(1), s.peak.t) : '';
   return { html: (s.v != null ? s.v.toFixed(1) : '—') + peak, label: `${name} · ${s.mode}` };
 }
@@ -1515,8 +1515,9 @@ async function fetchMetrics() {
     modelEl.title = sleeping ? 'Model is sleeping — metrics polling paused' : '';
     _llamaPeaks.tps.push(Date.now(), ll.tokens_per_second);
     _llamaPeaks.pps.push(Date.now(), ll.prompt_tokens_per_second);
-    _setRateTile('llamaTps', fmtRateTile(ll.tokens_per_second, _llamaPeaks.tps, 'Gen tokens/s'));
-    _setRateTile('llamaPps', fmtRateTile(ll.prompt_tokens_per_second, _llamaPeaks.pps, 'Prompt tokens/s'));
+    const llWin = m.throughput_window || null;
+    _setRateTile('llamaTps', fmtRateTile(ll.tokens_per_second, _llamaPeaks.tps, 'Gen tokens/s', undefined, llWin && llWin.gen));
+    _setRateTile('llamaPps', fmtRateTile(ll.prompt_tokens_per_second, _llamaPeaks.pps, 'Prompt tokens/s', undefined, llWin && llWin.prompt));
     document.getElementById('llamaGenTokens').textContent    = ll.total_tokens_generated   != null ? ll.total_tokens_generated.toLocaleString() : '—';
     document.getElementById('llamaPromptTokens').textContent = ll.total_tokens_prompted    != null ? ll.total_tokens_prompted.toLocaleString() : '—';
     document.getElementById('llamaDecodes').textContent      = ll.n_decode_total           != null ? ll.n_decode_total.toLocaleString() : '—';
