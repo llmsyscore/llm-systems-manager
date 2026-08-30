@@ -31,9 +31,13 @@
 
   // ── rendering ─────────────────────────────────────────────────────
 
+  function aeUnavailable() {
+    const t = _data.topology || {};
+    return !!t.split && !t.ae_config_reachable;
+  }
+
   function aeLocked(e) {
-    return e.service === 'alarm_engine' &&
-      _data.topology.split && !_data.topology.ae_config_reachable;
+    return e.service === 'alarm_engine' && aeUnavailable();
   }
 
   function currentValue(e) {
@@ -52,15 +56,19 @@
   function secretInput(e) {
     const p = esc(e.path);
     const isSet = (_data.secrets[e.path] || 'unset') === 'set';
-    const field = e.type === 'list'
-      ? `<textarea class="ap-input st-input" data-path="${p}" rows="2" style="width:100%;"
-           placeholder="${isSet ? 'one per line — replaces all' : 'one per line'}"></textarea>`
-      : `<input type="password" class="ap-input st-input" data-path="${p}" autocomplete="new-password"
-           style="width:min(340px,100%);" placeholder="${isSet ? 'enter new value to replace' : 'enter value'}">`;
     const clearBtn = isSet
-      ? `<button class="adm-btn warn" data-clear="${p}" style="margin-left:6px;">Clear</button>` : '';
-    return `<div style="display:flex;align-items:flex-start;gap:8px;flex-wrap:wrap;">` +
-      `${secretChip(e)}${field}${clearBtn}</div>`;
+      ? `<button class="adm-btn warn sm" data-clear="${p}">Clear</button>` : '';
+    // Multi-line secrets get their own control row; a full-width textarea in
+    // the same flex row wraps the chip and Clear onto separate lines.
+    if (e.type === 'list') {
+      return `<div class="st-secret">
+        <div class="st-secret-head">${secretChip(e)}${clearBtn}</div>
+        <textarea class="ap-input st-input" data-path="${p}" rows="2"
+          placeholder="${isSet ? 'one per line — replaces all' : 'one per line'}"></textarea></div>`;
+    }
+    return `<div class="st-secret st-secret--inline">${secretChip(e)}` +
+      `<input type="password" class="ap-input st-input" data-path="${p}" autocomplete="new-password"
+        placeholder="${isSet ? 'enter new value to replace' : 'enter value'}">${clearBtn}</div>`;
   }
 
   function inputFor(e) {
@@ -69,7 +77,7 @@
       const shown = e.secret ? secretChip(e)
         : esc(v === undefined ? 'unknown' : (Array.isArray(v) ? v.join(', ') : String(v)));
       return `<span class="adm-muted">🔒 ${shown}` +
-        ` — alarm engine unreachable; edit the TOML on its host</span>`;
+        ` — read-only; see the alarm-engine notice above</span>`;
     }
     if (e.secret) return secretInput(e);
     const p = esc(e.path);
@@ -97,7 +105,7 @@
   }
 
   function bothNote(e) {
-    if (e.service === 'both' && _data.topology.split && !_data.topology.ae_config_reachable) {
+    if (e.service === 'both' && aeUnavailable()) {
       return `<div class="adm-muted" style="font-size:12px;margin-top:3px;">` +
         `saved locally — also update the alarm-engine host's copy</div>`;
     }
@@ -145,6 +153,7 @@
     root.innerHTML = html;
     renderBanner();
     renderDriftBanner();
+    renderAeConfigBanner();
     updateSaveBar();
   }
 
@@ -393,6 +402,32 @@
         </div>`;
       }).join('') +
       `<div class="adm-muted" id="adminSettingsRestartMsg" style="margin-top:6px;font-size:12px;"></div>`;
+    const root = document.getElementById('adminSettingsRoot');
+    root.insertBefore(bar, root.firstChild);
+  }
+
+  // ── alarm-engine config API unavailable (#761, split installs) ────
+
+  const _AE_ERR_TITLE = {
+    unauthorized: 'Alarm engine rejected this host\u2019s token',
+    unsupported: 'Alarm engine has no settings API',
+    unreachable: 'Alarm engine unreachable',
+  };
+
+  function renderAeConfigBanner() {
+    const old = document.getElementById('adminSettingsAeConfigBanner');
+    if (old) old.remove();
+    if (!aeUnavailable()) return;
+    const err = (_data.topology || {}).ae_config_error || {};
+    const title = _AE_ERR_TITLE[err.kind] || 'Alarm-engine settings unavailable';
+    const bar = document.createElement('div');
+    bar.id = 'adminSettingsAeConfigBanner';
+    bar.className = 'adm-card';
+    bar.style.cssText = 'padding:12px 16px;margin-bottom:14px;border-left:4px solid var(--crit);';
+    bar.innerHTML = `<div style="color:var(--fg);"><b>${esc(title)}</b> — ` +
+      `its settings are shown read-only and cannot be edited from here.</div>` +
+      (err.remedy ? `<div style="margin-top:6px;">${esc(err.remedy)}</div>` : '') +
+      (err.detail ? `<div class="adm-muted" style="font-size:12px;margin-top:4px;">${esc(err.detail)}</div>` : '');
     const root = document.getElementById('adminSettingsRoot');
     root.insertBefore(bar, root.firstChild);
   }

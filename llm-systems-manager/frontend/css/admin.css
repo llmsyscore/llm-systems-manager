@@ -197,6 +197,16 @@
   #adminTab .adm-btn:hover { background:var(--bg-card-alt); border-color:var(--border-strong); }
   #adminTab .adm-btn.primary { color:var(--accent); }
   #adminTab .adm-btn.warn    { color:var(--warn); }
+  /* Compact variant sized to sit level with a .status chip. */
+  #adminTab .adm-btn.sm { padding:2px 10px; font-size:12px; line-height:1.55; }
+
+  /* Settings secret row (#760): chip + Clear share one control row; a
+     multi-line secret's textarea takes the full width beneath them. */
+  #adminTab .st-secret { display:flex; flex-direction:column; align-items:stretch; gap:6px; }
+  #adminTab .st-secret-head { display:flex; align-items:center; gap:8px; }
+  #adminTab .st-secret > textarea.st-input { width:100%; }
+  #adminTab .st-secret--inline { flex-direction:row; align-items:center; flex-wrap:wrap; gap:8px; }
+  #adminTab .st-secret--inline > .st-input { width:min(340px,100%); }
   #adminTab .adm-btn-icon {
     background:transparent; border:1px solid transparent; color:var(--fg-muted);
     width:32px; height:32px; padding:0; border-radius:5px; cursor:pointer;

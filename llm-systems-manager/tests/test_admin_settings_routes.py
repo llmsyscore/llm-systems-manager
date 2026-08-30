@@ -178,6 +178,37 @@ def test_split_get_unreachable_ae(client, monkeypatch):
     monkeypatch.setattr(manager_mod._ae_session, "get", _boom)
     d = c.get("/api/admin/settings").get_json()
     assert d["topology"]["ae_config_reachable"] is False
+    err = d["topology"]["ae_config_error"]
+    assert err["kind"] == "unreachable" and err["status"] is None
+    assert "no route" in err["detail"] and err["remedy"]
+
+
+@pytest.mark.parametrize("status,kind", [(401, "unauthorized"), (403, "unauthorized"),
+                                         (404, "unsupported"), (500, "http")])
+def test_split_get_reports_why_the_ae_config_api_failed(client, monkeypatch,
+                                                        status, kind):
+    """#761: a rejected call must name its cause, not claim 'unreachable'."""
+    c, _ = client
+    _force_split(monkeypatch)
+    monkeypatch.setattr(manager_mod._ae_session, "get",
+                        lambda url, **kw: _FakeResp(ok=False, status_code=status))
+    d = c.get("/api/admin/settings").get_json()
+    assert d["topology"]["ae_config_reachable"] is False
+    err = d["topology"]["ae_config_error"]
+    assert err["kind"] == kind and err["status"] == status
+    assert f"HTTP {status}" in err["detail"]
+    if kind == "unauthorized":
+        assert "management_token" in err["remedy"]
+
+
+def test_split_get_reachable_ae_carries_no_error(client, monkeypatch):
+    c, _ = client
+    _force_split(monkeypatch)
+    monkeypatch.setattr(manager_mod._ae_session, "get",
+                        lambda url, **kw: _FakeResp(payload={"ok": True, "sections": {}}))
+    d = c.get("/api/admin/settings").get_json()
+    assert d["topology"]["ae_config_reachable"] is True
+    assert "ae_config_error" not in d["topology"]
 
 
 def test_split_restart_uses_ae_self_restart(client, monkeypatch):

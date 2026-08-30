@@ -159,7 +159,7 @@ def _local_hostname() -> str:
 # banner reads it. Bump suffix (-1, -2, …) for same-day iterations; roll
 # the date for a new day's first change.
 # ---------------------------------------------------------------------------
-__version__ = "v2026.08.30-1"
+__version__ = "v2026.08.30-2"
 
 # Wall-clock at first import (Cheroot main process); the shutdown banner
 # reads it for the uptime line.
@@ -3430,10 +3430,11 @@ def admin_settings_get():
         return deny
     payload = settings_catalog.describe()
     topo = install_topology()
-    ae_flat, ae_pending, ae_secrets = _fetch_ae_settings_state()
+    ae_flat, ae_pending, ae_secrets, ae_reason = _fetch_ae_settings_state()
     ae_reachable = not topo["split"]
     if topo["split"]:
         ae_reachable = ae_flat is not None
+        _log_ae_config_failure(ae_reason if not ae_reachable else None)
         # AE-owned values come from the AE itself; unreachable → unknown, not
         # this host's local copy.
         for e in settings_catalog.CATALOG:
@@ -3454,6 +3455,8 @@ def admin_settings_get():
         payload["drift"] = _settings_drift(ae_flat, file_vals, ae_secrets)
     payload["ok"] = True
     payload["topology"] = {"split": topo["split"], "ae_config_reachable": ae_reachable}
+    if topo["split"] and not ae_reachable and ae_reason:
+        payload["topology"]["ae_config_error"] = ae_reason
     # Manager pending derives from file drift vs boot; AE pending comes from
     # the AE's own comparison, falling back to local drift + in-memory flag.
     derived = settings_catalog.pending_restart_services(file_vals)
@@ -3646,23 +3649,69 @@ def _forward_settings_to_ae(remote: dict, removals: "list | None" = None,
         return "alarm engine unreachable — queued; retrying in the background"
 
 
-def _fetch_ae_settings_state() -> "tuple[dict | None, bool | None, dict | None]":
-    """(flat {dotted.path: value}, restart_pending, secrets {path: {status, digest}})
-    from the AE's config API; (None, None, None) when unreachable or unauthorized."""
+def _ae_config_failure(status: "int | None", detail: str) -> dict:
+    """Reason + operator remedy for a failed AE config-API call, keyed by status."""
+    if status in (401, 403):
+        kind = "unauthorized"
+        remedy = ("Its config API accepts only [alarm_engine].management_token "
+                  "— the ingest token is not a fallback there. Set the same "
+                  "non-empty management_token in both hosts' config.toml, then "
+                  "restart both services.")
+    elif status == 404:
+        kind = "unsupported"
+        remedy = ("Upgrade the alarm-engine host to a build that serves "
+                  "/api/alarm/admin/config.")
+    elif status is not None:
+        kind = "http"
+        remedy = ("The alarm engine answered but refused the request — check "
+                  "its log on that host.")
+    else:
+        kind = "unreachable"
+        remedy = ("Check [manager].alarm_engine_url, TLS settings, the network "
+                  "path, and that the alarm-engine service is running on that "
+                  "host.")
+    return {"kind": kind, "status": status, "detail": detail, "remedy": remedy}
+
+
+_AE_CONFIG_ERR_STATE: dict = {"kind": None, "ts": 0.0}
+
+
+def _log_ae_config_failure(reason: "dict | None") -> None:
+    """Warns on the first failure and on every change of kind; else every 10 min."""
+    if reason is None:
+        if _AE_CONFIG_ERR_STATE["kind"] is not None:
+            log.info("settings: alarm engine config API reachable again")
+            _AE_CONFIG_ERR_STATE.update(kind=None, ts=0.0)
+        return
+    now = time.time()
+    if (reason["kind"] != _AE_CONFIG_ERR_STATE["kind"]
+            or now - _AE_CONFIG_ERR_STATE["ts"] >= 600):
+        log.warning("settings: alarm engine config API unavailable (%s) — %s",
+                    reason["detail"], reason["remedy"])
+        _AE_CONFIG_ERR_STATE.update(kind=reason["kind"], ts=now)
+
+
+def _fetch_ae_settings_state() -> "tuple[dict | None, bool | None, dict | None, dict | None]":
+    """(flat {dotted.path: value}, restart_pending, secrets {path: {status, digest}},
+    reason) from the AE's config API; values are None and reason is set when the
+    call fails."""
     base = (_alarm_engine_url or "").rstrip("/")
     if not base:
-        return None, None, None
+        return None, None, None, _ae_config_failure(
+            None, "no alarm engine URL configured")
     try:
         r = _ae_session.get(base + "/api/alarm/admin/config", timeout=(1, 3))
         if not r.ok:
-            return None, None, None
+            detail = f"HTTP {r.status_code} from {base}/api/alarm/admin/config"
+            return None, None, None, _ae_config_failure(r.status_code, detail)
         data = r.json() or {}
         sections = data.get("sections") or {}
         secrets = data.get("secrets")
         if not isinstance(secrets, dict):
             secrets = None
-    except Exception:
-        return None, None, None
+    except Exception as e:
+        return None, None, None, _ae_config_failure(
+            None, f"{type(e).__name__}: {e}")
     flat: dict = {}
 
     def _walk(node, prefix):
@@ -3673,7 +3722,7 @@ def _fetch_ae_settings_state() -> "tuple[dict | None, bool | None, dict | None]"
                 flat[f"{prefix}{k}"] = v
     _walk(sections, "")
     pending = data.get("restart_pending")
-    return flat, (bool(pending) if pending is not None else None), secrets
+    return flat, (bool(pending) if pending is not None else None), secrets, None
 
 
 @app.route("/api/admin/system-health", methods=["GET"])
