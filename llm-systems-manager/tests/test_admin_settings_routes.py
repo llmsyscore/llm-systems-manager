@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import pytest
+import requests
 
 import manager_mod
 import settings_catalog
@@ -180,10 +181,30 @@ def test_split_get_unreachable_ae(client, monkeypatch):
     assert d["topology"]["ae_config_reachable"] is False
     err = d["topology"]["ae_config_error"]
     assert err["kind"] == "unreachable" and err["status"] is None
-    # The exception class is diagnostic; its message stays server-side.
-    assert err["detail"].startswith("OSError") and err["remedy"]
-    assert "no route" not in err["detail"]
+    # A fixed phrase, never exception-derived text (CodeQL py/stack-trace-exposure).
+    assert err["detail"].startswith("the connection failed") and err["remedy"]
+    assert "no route" not in err["detail"] and "OSError" not in err["detail"]
     assert "log_detail" not in err
+
+
+@pytest.mark.parametrize("exc,phrase", [
+    (requests.exceptions.SSLError("SENTINEL1"), "TLS handshake failed"),
+    (requests.exceptions.ConnectTimeout("SENTINEL2"), "the request timed out"),
+    (requests.exceptions.ConnectionError("SENTINEL3"),
+     "the connection was refused"),
+    (ValueError("SENTINEL4"), "the reply was not valid JSON"),
+])
+def test_split_get_transport_failures_use_fixed_phrases(client, monkeypatch, exc, phrase):
+    c, _ = client
+    _force_split(monkeypatch)
+
+    def _boom(url, **kw):
+        raise exc
+    monkeypatch.setattr(manager_mod._ae_session, "get", _boom)
+    err = c.get("/api/admin/settings").get_json()["topology"]["ae_config_error"]
+    assert err["kind"] == "unreachable"
+    assert err["detail"].startswith(phrase)
+    assert str(exc) not in err["detail"]
 
 
 @pytest.mark.parametrize("status,kind", [(401, "unauthorized"), (403, "unauthorized"),

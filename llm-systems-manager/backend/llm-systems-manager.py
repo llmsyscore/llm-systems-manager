@@ -3677,6 +3677,25 @@ def _ae_config_failure(status: "int | None", detail: str,
             "log_detail": log_detail or detail}
 
 
+def _ae_exc_phrase(e: BaseException) -> str:
+    """Fixed phrase per transport failure class, so no exception-derived text
+    reaches the API response."""
+    rex = requests.exceptions
+    if isinstance(e, rex.SSLError):
+        return "TLS handshake failed"
+    if isinstance(e, (rex.ConnectTimeout, rex.ReadTimeout, rex.Timeout)):
+        return "the request timed out"
+    if isinstance(e, (rex.MissingSchema, rex.InvalidURL)):
+        return "the configured URL is not valid"
+    if isinstance(e, rex.ConnectionError):
+        return "the connection was refused or the host is unreachable"
+    if isinstance(e, ValueError):
+        return "the reply was not valid JSON"
+    if isinstance(e, OSError):
+        return "the connection failed"
+    return "the request failed"
+
+
 _AE_CONFIG_ERR_STATE: dict = {"kind": None, "ts": 0.0}
 
 
@@ -3714,9 +3733,9 @@ def _fetch_ae_settings_state() -> "tuple[dict | None, bool | None, dict | None, 
         if not isinstance(secrets, dict):
             secrets = None
     except Exception as e:
-        # Only the exception class reaches the API; the message stays in the log.
+        # The API gets a fixed phrase; the exception text stays in the log.
         return None, None, None, _ae_config_failure(
-            None, f"{type(e).__name__} contacting {base}/api/alarm/admin/config",
+            None, f"{_ae_exc_phrase(e)} — {base}/api/alarm/admin/config",
             log_detail=f"{type(e).__name__}: {e}")
     flat: dict = {}
 
