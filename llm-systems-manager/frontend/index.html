@@ -54,10 +54,12 @@ Backend API endpoints consumed:
   <link rel="stylesheet" href="/static/vendor/xterm.min.css?v=5.3.0"/>
   <script src="/static/vendor/xterm.min.js?v=5.3.0"></script>
   <script src="/static/vendor/xterm-addon-fit.min.js?v=0.8.0"></script>
-  <link rel="stylesheet" href="/static/css/base.css?v=2026.08.29-6">
-  <link rel="stylesheet" href="/static/css/reportcard.css?v=2026.08.04-1">
+  <link rel="stylesheet" href="/static/css/fonts.css?v=2026.08.30-1">
+  <link rel="stylesheet" href="/static/css/base.css?v=2026.08.30-1">
+  <link rel="stylesheet" href="/static/css/modelcards.css?v=2026.08.30-2">
+  <link rel="stylesheet" href="/static/css/reportcard.css?v=2026.08.30-1">
   <link rel="stylesheet" href="/static/css/energy.css?v=2026.08.19-2">
-  <link rel="stylesheet" href="/static/css/overall.css?v=2026.08.29-1">
+  <link rel="stylesheet" href="/static/css/overall.css?v=2026.08.30-1">
 </head>
 <body>
 
@@ -192,147 +194,213 @@ Backend API endpoints consumed:
   <div class="llm-section" id="secModels">
     <div class="llm-section-title" onclick="toggleSection('secModels')">Models <span style="color:var(--fg-faint);font-weight:normal;margin-left:8px;text-transform:none;letter-spacing:0;">— one model may be loaded at a time</span><span class="llm-collapse-icon">▾</span></div>
     <div class="llm-section-body">
-    <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px;font-size:0.82em;color:var(--fg-muted);">
-      <label for="modelSortSel">Sort:</label>
-      <select id="modelSortSel" class="select" onchange="onModelSortChange(this.value)" onclick="event.stopPropagation();">
+    <div class="mc-toolbar" onclick="event.stopPropagation();">
+      <div class="mc-filter" id="llmMcFilter">
+        <span class="mc-filter-ico">⌕</span>
+        <input type="text" placeholder="Filter models…" aria-label="Filter models">
+        <button class="mc-filter-clear" title="Clear filter" aria-label="Clear filter">✕</button>
+      </div>
+      <label for="modelSortSel" style="font-size:0.82em;color:var(--fg-muted);">Sort:</label>
+      <select id="modelSortSel" class="select" onchange="onModelSortChange(this.value)">
         <option value="group_by_author">By author</option>
         <option value="alphabetical">Alphabetical</option>
         <option value="loaded_first">Loaded first</option>
       </select>
+      <span class="mc-gap"></span>
+      <div class="mc-seg" id="llmMcSeg" role="group" aria-label="Card view">
+        <button data-view="compact">Compact</button>
+        <button data-view="list">List</button>
+        <button data-view="card">Cards</button>
+      </div>
     </div>
     <div class="model-cards" id="llmModelCards">
       <div style="color:var(--fg-dim);font-size:0.85em;">Loading...</div>
     </div>
     <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:14px;">
-      <button class="btn btn-gray-muted-gradient" onclick="openAddModel()">+ Add New Model</button>
-      <button class="btn btn-gray-muted-gradient" onclick="openBench(null)" title="Run a llama-bench performance benchmark on a configured model">⏱ Benchmark</button>
-      <button class="btn btn-gray-muted-gradient" onclick="openAutotune()" title="Iteratively converge ctx-size on a target free-VRAM headroom for one or more models">🎯 Auto Tune</button>
+      <button class="btn btn-gray-muted-gradient" onclick="openAddModel()">+ Add Profile</button>
     </div>
     </div>
   </div>
 
   <!-- Model Editor (hidden until edit/add clicked) -->
-  <div class="llm-editor" id="llmEditor" style="display:none;">
+  <div class="llm-editor ef-railmode" id="llmEditor" style="display:none;">
     <div class="llm-editor-header">
       <h3 id="llmEditorTitle">Edit Model</h3>
-      <button class="btn btn-gray-muted-gradient" onclick="closeEditor()">✕ Close</button>
+      <span class="mc-gap"></span>
+      <div class="mc-seg" id="efLayoutSeg" role="group" aria-label="Editor layout">
+        <button data-eflayout="rail">Rail</button>
+        <button data-eflayout="essentials">Essentials</button>
+      </div>
+      <button class="mcbtn mcbtn-ghost" onclick="closeEditor()">✕ Close</button>
     </div>
     <div class="llm-editor-body">
-      <div class="form-section">
-        <div class="form-section-title">Model ID</div>
+      <nav class="ef-rail" id="efRail">
+        <button class="ef-rail-item on" data-target="ef-sec-sampling">Sampling <span class="mod"></span></button>
+        <button class="ef-rail-item" data-target="ef-sec-context">Context &amp; performance <span class="mod"></span></button>
+        <button class="ef-rail-item" data-target="ef-sec-kv">KV cache <span class="mod"></span></button>
+        <button class="ef-rail-item" data-target="ef-sec-behavior">Model behavior <span class="mod"></span></button>
+        <button class="ef-rail-item" data-target="ef-sec-custom">Custom parameters <span class="mod"></span></button>
+      </nav>
+      <div class="ef-pane" id="efPane">
+      <div class="ef-sec" id="ef-sec-identity">
+        <h4 class="ef-sec-h">Model ID <span class="rule"></span></h4>
+        <div class="ef-secbody">
         <div style="display:flex;flex-wrap:wrap;gap:16px;">
-          <div class="form-field" style="margin:0;flex:0 0 auto;">
-            <label>Model ID / HF Repo (used as section name in config)</label>
-            <input id="ef-id" type="text" placeholder="username/repo-name:QUANT" style="width:auto;min-width:340px;max-width:100%;" />
+          <div class="ef-field" style="flex:0 0 auto;min-width:340px;">
+            <label>Model ID / HF Repo <span class="hint">(section name in config)</span></label>
+            <div class="ef-in"><input id="ef-id" type="text" placeholder="username/repo-name:QUANT" /></div>
           </div>
-          <div class="form-field" style="margin:0;flex:0 0 auto;">
-            <label>Alias <span style="color:var(--fg-muted);font-weight:normal;font-size:0.82em;">(optional — shown on the model card)</span></label>
-            <input id="ef-alias" type="text" placeholder="e.g. Qwen 32B (fast)" style="width:auto;min-width:260px;max-width:100%;" />
+          <div class="ef-field" style="flex:0 0 auto;min-width:260px;">
+            <label>Alias <span class="hint">(optional — shown on the model card)</span></label>
+            <div class="ef-in"><input id="ef-alias" type="text" placeholder="e.g. Qwen 32B (fast)" /></div>
           </div>
+        </div>
         </div>
       </div>
 
-      <div class="form-section" id="copyFromProfileRow" style="display:none;">
-        <div class="form-section-title">Copy Settings From</div>
+      <div class="ef-sec" id="copyFromProfileRow" style="display:none;">
+        <h4 class="ef-sec-h">Copy Settings From <span class="rule"></span></h4>
+        <div class="ef-secbody">
         <div style="display:inline-flex;align-items:flex-end;gap:8px;flex-wrap:wrap;">
-          <div class="form-field" style="margin:0;">
-            <label>Existing profile (Model ID is preserved)</label>
-            <select id="ef-copy-source" style="width:auto;min-width:240px;max-width:100%;">
+          <div class="ef-field">
+            <label>Copy Existing Profile <span class="hint">(Model ID is preserved)</span></label>
+            <div class="ef-in" style="min-width:240px;"><select id="ef-copy-source">
               <option value="">— select a profile —</option>
-            </select>
+            </select></div>
           </div>
-          <button class="btn btn-gray-muted-gradient" onclick="copyFromProfile();return false;">Apply</button>
+          <button class="mcbtn mcbtn-ghost" onclick="copyFromProfile();return false;">Apply</button>
+        </div>
         </div>
       </div>
 
-      <div class="form-section">
-        <div class="form-section-title">Sampling</div>
-        <div class="form-grid">
-          <div class="form-field"><label>Temperature</label><input id="ef-temperature" type="number" step="0.05" min="0" max="2" /></div>
-          <div class="form-field"><label>Dynatemp Range (0.0 = disabled)</label><input id="ef-dynatemp-range" type="number" step="0.1" min="0" max="2" /></div>
-          <div class="form-field"><label>Dynatemp Exp</label><input id="ef-dynatemp-exp" type="number" step="0.1" min="0" max="2" /></div>
-          <div class="form-field"><label>Top-P (1.0 = disabled)</label><input id="ef-top-p" type="number" step="0.05" min="0" max="1" /></div>
-          <div class="form-field"><label>Top-K (0 = disabled)</label><input id="ef-top-k" type="number" min="0" max="500" /></div>
-          <div class="form-field"><label>Min-P (0.0 = disabled)</label><input id="ef-min-p" type="number" step="0.01" min="0" max="1" /></div>
-          <div class="form-field"><label>Presence Penalty (0.0 = disabled)</label><input id="ef-presence-penalty" type="number" step="0.1" min="0" max="2" /></div>
-          <div class="form-field"><label>Repeat Penalty (1.0 = disabled)</label><input id="ef-repeat-penalty" type="number" step="0.05" min="0.5" max="2" /></div>
+      <div class="ef-ess" id="efEssBox" style="display:none;">
+        <h4>Essentials</h4>
+        <div class="ef-grid" id="efEssGrid"></div>
+      </div>
+
+      <div class="ef-sec ef-collapsible" id="ef-sec-sampling" data-ef-title="Sampling">
+        <h4 class="ef-sec-h">Sampling <span class="rule"></span></h4>
+        <div class="ef-acc-head" data-efacc tabindex="0" role="button"><span class="mc-chev">▶</span><span class="t">Sampling</span><span class="sum"></span><span class="ndef"></span></div>
+        <div class="ef-secbody">
+        <div class="ef-grid">
+          <div class="ef-field" data-ef="temperature" data-sum="temp"><label>Temperature</label><div class="ef-in"><input id="ef-temperature" type="number" step="0.05" min="0" max="2" /></div><div class="ef-was"></div></div>
+          <div class="ef-field" data-ef="dynatemp-range" data-sum="dynatemp"><label>Dynatemp Range <span class="hint">(0.0 = off)</span></label><div class="ef-in"><input id="ef-dynatemp-range" type="number" step="0.1" min="0" max="2" /></div><div class="ef-was"></div></div>
+          <div class="ef-field" data-ef="dynatemp-exp" data-sum="dt-exp"><label>Dynatemp Exp</label><div class="ef-in"><input id="ef-dynatemp-exp" type="number" step="0.1" min="0" max="2" /></div><div class="ef-was"></div></div>
+          <div class="ef-field" data-ef="top-p" data-sum="top-p"><label>Top-P <span class="hint">(1.0 = off)</span></label><div class="ef-in"><input id="ef-top-p" type="number" step="0.05" min="0" max="1" /></div><div class="ef-was"></div></div>
+          <div class="ef-field" data-ef="top-k" data-sum="top-k"><label>Top-K <span class="hint">(0 = off)</span></label><div class="ef-in"><input id="ef-top-k" type="number" min="0" max="500" /></div><div class="ef-was"></div></div>
+          <div class="ef-field" data-ef="min-p" data-sum="min-p"><label>Min-P <span class="hint">(0.0 = off)</span></label><div class="ef-in"><input id="ef-min-p" type="number" step="0.01" min="0" max="1" /></div><div class="ef-was"></div></div>
+          <div class="ef-field" data-ef="presence-penalty" data-sum="pres"><label>Presence Penalty <span class="hint">(0.0 = off)</span></label><div class="ef-in"><input id="ef-presence-penalty" type="number" step="0.1" min="0" max="2" /></div><div class="ef-was"></div></div>
+          <div class="ef-field" data-ef="repeat-penalty" data-sum="rep"><label>Repeat Penalty <span class="hint">(1.0 = off)</span></label><div class="ef-in"><input id="ef-repeat-penalty" type="number" step="0.05" min="0.5" max="2" /></div><div class="ef-was"></div></div>
+        </div>
         </div>
       </div>
 
-      <div class="form-section">
-        <div class="form-section-title">Context & Performance</div>
-        <div class="form-grid">
-          <div class="form-field"><label>Context Size</label><input id="ef-ctx-size" type="number" min="512" /></div>
-          <div class="form-field"><label>Batch Size</label><input id="ef-batch-size" type="number" min="1" /></div>
-          <div class="form-field"><label>Ubatch Size</label><input id="ef-ubatch-size" type="number" min="1" /></div>
-          <div class="form-field"><label>GPU Layers (99=all)</label><input id="ef-n-gpu-layers" type="number" min="0" max="999" /></div>
-          <div class="form-field"><label>Max Predict (-1=∞)</label><input id="ef-predict" type="number" min="-1" /></div>
-          <div class="form-field"><label>Load Mode</label>
-            <select id="ef-load-mode">
+      <div class="ef-sec ef-collapsible" id="ef-sec-context" data-ef-title="Context &amp; performance">
+        <h4 class="ef-sec-h">Context &amp; Performance <span class="rule"></span></h4>
+        <div class="ef-acc-head" data-efacc tabindex="0" role="button"><span class="mc-chev">▶</span><span class="t">Context &amp; performance</span><span class="sum"></span><span class="ndef"></span></div>
+        <div class="ef-secbody">
+        <div class="ef-grid">
+          <div class="ef-field" data-ef="ctx-size" data-sum="ctx"><label>Context Size</label><div class="ef-in"><input id="ef-ctx-size" type="number" min="512" /><span class="unit">tok</span></div><div class="ef-was"></div></div>
+          <div class="ef-field" data-ef="batch-size" data-sum="batch"><label>Batch Size</label><div class="ef-in"><input id="ef-batch-size" type="number" min="1" /></div><div class="ef-was"></div></div>
+          <div class="ef-field" data-ef="ubatch-size" data-sum="ubatch"><label>Ubatch Size</label><div class="ef-in"><input id="ef-ubatch-size" type="number" min="1" /></div><div class="ef-was"></div></div>
+          <div class="ef-field" data-ef="n-gpu-layers" data-sum="gpu"><label>GPU Layers <span class="hint">(99 = all)</span></label><div class="ef-in"><input id="ef-n-gpu-layers" type="number" min="0" max="999" /></div><div class="ef-was"></div></div>
+          <div class="ef-field" data-ef="predict" data-sum="predict"><label>Max Predict <span class="hint">(-1 = ∞)</span></label><div class="ef-in"><input id="ef-predict" type="number" min="-1" /></div><div class="ef-was"></div></div>
+          <div class="ef-field" data-ef="load-mode" data-sum="load"><label>Load Mode</label>
+            <div class="ef-in"><select id="ef-load-mode">
               <option value="auto">auto</option>
               <option value="none">none</option>
               <option value="mmap">mmap</option>
               <option value="mlock">mlock</option>
               <option value="mmap+mlock">mmap+mlock</option>
               <option value="dio">dio (DirectIO)</option>
-            </select>
+            </select></div><div class="ef-was"></div>
           </div>
-          <div class="form-field"><label>Fit</label>
-            <select id="ef-fit"><option value="on">on</option><option value="off">off</option></select>
+          <div class="ef-field" data-ef="fit" data-sum="fit"><label>Fit</label>
+            <select id="ef-fit" style="display:none;"><option value="on">on</option><option value="off">off</option></select>
+            <div class="mc-toggle" data-eftoggle="ef-fit" role="switch" tabindex="0" aria-checked="false"><span class="track"></span><span class="tlbl">off</span></div>
+            <div class="ef-was"></div>
           </div>
-          <div class="form-field"><label>Fit Min CTX Size</label><input id="ef-fit-ctx" type="number" min="0" placeholder="16384" /></div>
+          <div class="ef-field" data-ef="fit-ctx" data-sum="fit-min"><label>Fit Min CTX Size</label><div class="ef-in"><input id="ef-fit-ctx" type="number" min="0" placeholder="16384" /><span class="unit">tok</span></div><div class="ef-was"></div></div>
+        </div>
         </div>
       </div>
 
-      <div class="form-section">
-        <div class="form-section-title">KV Cache</div>
-        <div class="form-grid">
-          <div class="form-field"><label>Cache Type K</label>
-            <select id="ef-cache-type-k">
+      <div class="ef-sec ef-collapsible" id="ef-sec-kv" data-ef-title="KV cache">
+        <h4 class="ef-sec-h">KV Cache <span class="rule"></span></h4>
+        <div class="ef-acc-head" data-efacc tabindex="0" role="button"><span class="mc-chev">▶</span><span class="t">KV cache</span><span class="sum"></span><span class="ndef"></span></div>
+        <div class="ef-secbody">
+        <div class="ef-grid">
+          <div class="ef-field" data-ef="cache-type-k" data-sum="K"><label>Cache Type K</label>
+            <div class="ef-in"><select id="ef-cache-type-k">
               <option>f16</option><option>q8_0</option><option>q5_1</option>
               <option>q4_1</option><option>q4_0</option><option>q5_0</option><option>iq4_nl</option>
-            </select>
+            </select></div><div class="ef-was"></div>
           </div>
-          <div class="form-field"><label>Cache Type V</label>
-            <select id="ef-cache-type-v">
+          <div class="ef-field" data-ef="cache-type-v" data-sum="V"><label>Cache Type V</label>
+            <div class="ef-in"><select id="ef-cache-type-v">
               <option>f16</option><option>q8_0</option><option>q5_1</option>
               <option>q4_1</option><option>q4_0</option><option>q5_0</option><option>iq4_nl</option>
-            </select>
+            </select></div><div class="ef-was"></div>
           </div>
-          <div class="form-field"><label>Cache RAM (MB, 0=VRAM only)</label><input id="ef-cache-ram" type="number" min="0" /></div>
+          <div class="ef-field" data-ef="cache-ram" data-sum="RAM"><label>Cache RAM <span class="hint">(0 = VRAM only)</span></label><div class="ef-in"><input id="ef-cache-ram" type="number" min="0" /><span class="unit">MB</span></div><div class="ef-was"></div></div>
+        </div>
         </div>
       </div>
 
-      <div class="form-section">
-        <div class="form-section-title">Model Settings</div>
-        <div class="form-grid">
-          <div class="form-field"><label>Flash Attention</label>
-            <select id="ef-flash-attn"><option>on</option><option>off</option><option>auto</option></select>
+      <div class="ef-sec ef-collapsible" id="ef-sec-behavior" data-ef-title="Model behavior">
+        <h4 class="ef-sec-h">Model Settings <span class="rule"></span></h4>
+        <div class="ef-acc-head" data-efacc tabindex="0" role="button"><span class="mc-chev">▶</span><span class="t">Model behavior</span><span class="sum"></span><span class="ndef"></span></div>
+        <div class="ef-secbody">
+        <div class="ef-grid">
+          <div class="ef-field" data-ef="flash-attn" data-sum="fa"><label>Flash Attention</label>
+            <select id="ef-flash-attn" style="display:none;"><option>on</option><option>off</option><option>auto</option></select>
+            <div class="mc-tristate">
+              <div class="mc-toggle" data-eftoggle="ef-flash-attn" role="switch" tabindex="0" aria-checked="false"><span class="track"></span><span class="tlbl">off</span></div>
+              <button type="button" class="mc-auto-chip" data-efauto="ef-flash-attn" title="Let the server decide">auto</button>
+            </div>
+            <div class="ef-was"></div>
           </div>
-          <div class="form-field"><label>Reasoning</label>
-            <select id="ef-reasoning"><option>on</option><option>off</option><option>auto</option></select>
+          <div class="ef-field" data-ef="reasoning" data-sum="reasoning"><label>Reasoning</label>
+            <select id="ef-reasoning" style="display:none;"><option>on</option><option>off</option><option>auto</option></select>
+            <div class="mc-tristate">
+              <div class="mc-toggle" data-eftoggle="ef-reasoning" role="switch" tabindex="0" aria-checked="false"><span class="track"></span><span class="tlbl">off</span></div>
+              <button type="button" class="mc-auto-chip" data-efauto="ef-reasoning" title="Let the server decide">auto</button>
+            </div>
+            <div class="ef-was"></div>
           </div>
-          <div class="form-field"><label>Reasoning Budget (-1=∞)</label><input id="ef-reasoning-budget" type="number" min="-1" /></div>
-          <div class="form-field"><label>SWA Full</label>
-            <select id="ef-swa-full"><option value="">off</option><option value="true">on</option></select>
+          <div class="ef-field" data-ef="reasoning-budget" data-sum="budget"><label>Reasoning Budget <span class="hint">(-1 = ∞)</span></label><div class="ef-in"><input id="ef-reasoning-budget" type="number" min="-1" /><span class="unit">tok</span></div><div class="ef-was"></div></div>
+          <div class="ef-field" data-ef="swa-full" data-sum="swa"><label>SWA Full</label>
+            <select id="ef-swa-full" style="display:none;"><option value="">off</option><option value="true">on</option></select>
+            <div class="mc-toggle" data-eftoggle="ef-swa-full" role="switch" tabindex="0" aria-checked="false"><span class="track"></span><span class="tlbl">off</span></div>
+            <div class="ef-was"></div>
           </div>
-          <div class="form-field"><label>SWA Checkpoints</label><input id="ef-swa-checkpoints" type="number" min="0" placeholder="(leave empty)" /></div>
-          <div class="form-field"><label>Check Tensors</label>
-            <select id="ef-check-tensors"><option value="off">off</option><option value="on">on</option></select>
+          <div class="ef-field" data-ef="swa-checkpoints" data-sum="swa-ckpt"><label>SWA Checkpoints</label><div class="ef-in"><input id="ef-swa-checkpoints" type="number" min="0" placeholder="(leave empty)" /></div><div class="ef-was"></div></div>
+          <div class="ef-field" data-ef="check-tensors" data-sum="check"><label>Check Tensors</label>
+            <select id="ef-check-tensors" style="display:none;"><option value="off">off</option><option value="on">on</option></select>
+            <div class="mc-toggle" data-eftoggle="ef-check-tensors" role="switch" tabindex="0" aria-checked="false"><span class="track"></span><span class="tlbl">off</span></div>
+            <div class="ef-was"></div>
           </div>
+        </div>
         </div>
       </div>
 
-      <div class="form-section">
-        <div class="form-section-title">Custom Parameters</div>
-        <div id="ef-custom-params"></div>
-        <button class="btn btn-gray-muted-gradient" style="margin-top:8px;font-size:0.8em;" onclick="addCustomParam();return false;">+ Add Parameter</button>
+      <div class="ef-sec ef-collapsible" id="ef-sec-custom" data-ef-title="Custom parameters">
+        <h4 class="ef-sec-h">Custom Parameters <span class="rule"></span></h4>
+        <div class="ef-acc-head" data-efacc tabindex="0" role="button"><span class="mc-chev">▶</span><span class="t">Custom parameters</span><span class="sum"></span><span class="ndef"></span></div>
+        <div class="ef-secbody">
+        <div id="ef-custom-params" class="ef-kv"></div>
+        <button class="mcbtn mcbtn-ghost" style="margin-top:8px;" onclick="addCustomParam();return false;">+ Add parameter</button>
+        </div>
       </div>
 
-      <div class="editor-actions">
-        <button class="btn btn-zinc-muted-gradient" onclick="closeEditor()">Cancel</button>
-        <button class="btn btn-slate-muted-gradient" onclick="saveModel()">Save</button>
-        <button class="btn btn-stone-muted-gradient" id="saveAndLoadBtn" onclick="saveAndLoad()">Save &amp; Load Model</button>
+      <div class="editor-actions ef-foot">
+        <span class="ef-chgchip" id="efChgChip"></span>
+        <span class="mc-gap"></span>
+        <button class="mcbtn mcbtn-ghost" id="efResetBtn" onclick="EFL.reset();return false;">Reset</button>
+        <button class="mcbtn mcbtn-ghost" onclick="closeEditor()">Cancel</button>
+        <button class="mcbtn mcbtn-pri" onclick="saveModel()">Save</button>
+        <button class="mcbtn mcbtn-ghost" id="saveAndLoadBtn" onclick="saveAndLoad()">Save &amp; Load Model</button>
+      </div>
       </div>
     </div>
   </div>
@@ -438,7 +506,7 @@ Backend API endpoints consumed:
 </div>
 
 <!-- Admin tab -->
-<link rel="stylesheet" href="/static/css/admin.css?v=2026.08.30-2">
+<link rel="stylesheet" href="/static/css/admin.css?v=2026.08.30-3">
 <div id="adminTab" style="display:none;position:fixed;top:88px;left:0;right:0;bottom:0;z-index:10;overflow:auto;background:var(--bg);color:var(--fg);padding:28px 24px;">
   <div class="adm-wrap">
 
@@ -1678,13 +1746,24 @@ Backend API endpoints consumed:
     <div class="llm-section" id="lmsSecModels">
       <div class="llm-section-title" onclick="toggleSection('lmsSecModels')">Models <span style="color:var(--fg-faint);font-weight:normal;margin-left:8px;text-transform:none;letter-spacing:0;">— LM Studio</span><span class="llm-collapse-icon">▾</span></div>
       <div class="llm-section-body">
-        <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px;font-size:0.82em;color:var(--fg-muted);">
-          <label for="lmsModelSortSel">Sort:</label>
-          <select id="lmsModelSortSel" class="select" onchange="onLmsModelSortChange(this.value)" onclick="event.stopPropagation();">
+        <div class="mc-toolbar" onclick="event.stopPropagation();">
+          <div class="mc-filter" id="lmsMcFilter">
+            <span class="mc-filter-ico">⌕</span>
+            <input type="text" placeholder="Filter models…" aria-label="Filter models">
+            <button class="mc-filter-clear" title="Clear filter" aria-label="Clear filter">✕</button>
+          </div>
+          <label for="lmsModelSortSel" style="font-size:0.82em;color:var(--fg-muted);">Sort:</label>
+          <select id="lmsModelSortSel" class="select" onchange="onLmsModelSortChange(this.value)">
             <option value="group_by_author">By author</option>
             <option value="alphabetical">Alphabetical</option>
             <option value="loaded_first">Loaded first</option>
           </select>
+          <span class="mc-gap"></span>
+          <div class="mc-seg" id="lmsMcSeg" role="group" aria-label="Card view">
+            <button data-view="compact">Compact</button>
+            <button data-view="list">List</button>
+            <button data-view="card">Cards</button>
+          </div>
         </div>
         <div class="model-cards" id="lmsModelCards">
           <div style="color:var(--fg-dim);font-size:0.85em;">Waiting for agent...</div>
@@ -1764,6 +1843,14 @@ Backend API endpoints consumed:
     <div class="llm-section" id="vllmSecModels">
       <div class="llm-section-title" onclick="toggleSection('vllmSecModels')">Served Models<span class="llm-collapse-icon">▾</span></div>
       <div class="llm-section-body">
+        <div class="mc-toolbar" onclick="event.stopPropagation();">
+          <span class="mc-gap"></span>
+          <div class="mc-seg" id="vllmMcSeg" role="group" aria-label="Card view">
+            <button data-view="compact">Compact</button>
+            <button data-view="list">List</button>
+            <button data-view="card">Cards</button>
+          </div>
+        </div>
         <div id="vllmModelCards" class="model-cards"><div class="sub">No vLLM data yet.</div></div>
       </div>
     </div>
@@ -1885,6 +1972,7 @@ Backend API endpoints consumed:
 </div><!-- end llmTab -->
 
 <script src="/static/js/lib/layout.js?v=2026.07.10-1"></script>
+<script src="/static/js/lib/modelcards.js?v=2026.08.30-2"></script>
 <script src="/static/js/foundation.js?v=2026.08.29-1"></script>
 <script src="/static/js/lib/series.js?v=2026.08.04-2"></script>
 <script src="/static/js/lib/peaks.js?v=2026.08.29-2"></script>
@@ -1900,10 +1988,11 @@ Backend API endpoints consumed:
 <script src="/static/js/admin.js?v=2026.08.30-1"></script>
 <script src="/static/js/admin-settings.js?v=2026.08.30-2"></script>
 <script src="/static/js/autopilot.js?v=2026.07.31-2"></script>
-<script src="/static/js/llmcontrol-models.js?v=2026.08.29-1"></script>
-<script src="/static/js/bench-autotune.js?v=2026.08.26-6"></script>
-<script src="/static/js/lmstudio.js?v=2026.08.29-4"></script>
-<script src="/static/js/vllm.js?v=2026.08.17-1"></script>
+<script src="/static/js/llmcontrol-models.js?v=2026.08.30-2"></script>
+<script src="/static/js/editor-modern.js?v=2026.08.30-1"></script>
+<script src="/static/js/bench-autotune.js?v=2026.08.30-1"></script>
+<script src="/static/js/lmstudio.js?v=2026.08.30-2"></script>
+<script src="/static/js/vllm.js?v=2026.08.30-2"></script>
 <script src="/static/js/vllm-bench-autotune.js?v=2026.07.12-2"></script>
 <script src="/static/js/report-card.js?v=2026.08.17-1"></script>
 <script src="/static/js/energy.js?v=2026.08.19-1"></script>
@@ -2048,7 +2137,7 @@ Backend API endpoints consumed:
 </div>
 
 <!-- Auto-Tune CTX overlay — reuses bench-overlay/panel CSS for consistency -->
-<link rel="stylesheet" href="/static/css/autotune.css?v=2026.07.12-2">
+<link rel="stylesheet" href="/static/css/autotune.css?v=2026.08.30-1">
 <div class="bench-overlay at-wizard" id="autotuneOverlay">
   <div class="bench-panel">
     <div class="bench-header">

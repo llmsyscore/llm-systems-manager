@@ -21,7 +21,7 @@
 .rc-controls .rc-spacer { flex: 1 1 auto; }
 
 .rc-progress {
-  font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 0.78em;
+  font-family: var(--font-mono); font-size: 0.78em;
   color: var(--fg-muted); background: var(--bg-tabnav);
   border: 1px solid var(--border-soft); border-radius: 6px;
   padding: 10px 12px; max-height: 150px; overflow: auto; white-space: pre-wrap;
@@ -31,7 +31,7 @@
 /* Live step + elapsed time, so a long run visibly progresses. */
 .rc-status {
   display: flex; align-items: center; gap: 8px;
-  font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 0.8em;
+  font-family: var(--font-mono); font-size: 0.8em;
   color: var(--fg); background: var(--bg-card); border: 1px solid var(--border);
   border-left: 3px solid var(--accent); border-radius: 6px; padding: 9px 12px;
 }
@@ -59,7 +59,7 @@
   gap: 12px; padding-bottom: 12px; border-bottom: 1px solid var(--border);
 }
 .rc-gpu {
-  font-family: ui-monospace, Menlo, Consolas, monospace;
+  font-family: var(--font-mono);
   font-size: 1.05em; color: var(--fg); letter-spacing: 0.01em;
   word-break: break-word;
 }
@@ -71,12 +71,12 @@
 /* The single accent in the whole card. */
 .rc-hero { display: flex; align-items: baseline; gap: 8px; padding: 18px 0 16px; }
 .rc-hero-num {
-  font-family: ui-monospace, Menlo, Consolas, monospace;
+  font-family: var(--font-mono);
   font-size: 2.6em; font-weight: 600; line-height: 1; color: var(--accent);
   letter-spacing: -0.02em;
 }
 .rc-hero-unit {
-  font-family: ui-monospace, Menlo, Consolas, monospace;
+  font-family: var(--font-mono);
   font-size: 0.9em; color: var(--fg-muted);
 }
 .rc-hero-label {
@@ -92,11 +92,11 @@
 .rc-cell { background: var(--bg-card); padding: 11px 12px; min-width: 0; }
 .rc-fig { display: flex; align-items: baseline; gap: 4px; flex-wrap: wrap; }
 .rc-num {
-  font-family: ui-monospace, Menlo, Consolas, monospace;
+  font-family: var(--font-mono);
   font-size: 1.05em; color: var(--fg);
 }
 .rc-unit {
-  font-family: ui-monospace, Menlo, Consolas, monospace;
+  font-family: var(--font-mono);
   font-size: 0.72em; color: var(--fg-dim);
 }
 .rc-label {
@@ -107,7 +107,7 @@
 .rc-energy {
   display: flex; flex-wrap: wrap; gap: 6px; align-items: baseline;
   margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--border);
-  font-family: ui-monospace, Menlo, Consolas, monospace;
+  font-family: var(--font-mono);
   font-size: 0.78em; color: var(--fg-muted);
 }
 .rc-energy.rc-muted { color: var(--fg-faint); font-style: italic; }
@@ -116,7 +116,7 @@
 .rc-foot {
   display: flex; flex-wrap: wrap; gap: 6px; align-items: baseline;
   margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--border-soft);
-  font-family: ui-monospace, Menlo, Consolas, monospace;
+  font-family: var(--font-mono);
   font-size: 0.68em; color: var(--fg-faint);
 }
 .rc-model { word-break: break-all; }

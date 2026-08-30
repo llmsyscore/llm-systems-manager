@@ -21,6 +21,8 @@ beforeEach(() => {
   window._actionRelease = () => {};
   window._notePinOverride = () => {};
   window.CSS = { escape: (s) => s };
+  window.MC = { setBusy: () => {}, clearBusy: () => {} };
+  window.renderModelCards = () => {};
   (0, eval)([fnSrc('unloadModel'), fnSrc('loadModel'), fnSrc('reloadModel'),
              'window.unloadModel = unloadModel; window.loadModel = loadModel;',
              'window.reloadModel = reloadModel;'].join('\n'));

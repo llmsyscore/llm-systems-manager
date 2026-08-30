@@ -408,8 +408,8 @@ function onLmsModelSortChange(v) {
   if (_lmsLastPs || _lmsLastModels) renderLMSModelCards(_lmsLastPs || [], _lmsLastModels || []);
 }
 function _currentLmsModelSort() {
-  const v = (layout && layout.lmsModelSort) || 'group_by_author';
-  return VALID_MODEL_SORTS.includes(v) ? v : 'group_by_author';
+  const v = (layout && layout.lmsModelSort) || 'loaded_first';
+  return VALID_MODEL_SORTS.includes(v) ? v : 'loaded_first';
 }
 let _lmsLastPs = null, _lmsLastModels = null, _lmsAliasesHydrated = false;
 
@@ -420,7 +420,7 @@ function renderLMSModelCards(ps, models) {
   // poll would otherwise wipe the input mid-keystroke. We still update
   // the cached ps/models below so the next render after commit reflects
   // the latest state.
-  if (container.querySelector('.model-card-name input')) {
+  if (container.querySelector('.mc-name input')) {
     _lmsLastPs = ps; _lmsLastModels = models;
     return;
   }
@@ -473,73 +473,89 @@ function renderLMSModelCards(ps, models) {
   }
   const groups = _buildSortedGroups([...entryById.keys()], _currentLmsModelSort(), statusLookup, _authorOfLms);
 
-  const renderCard = (modelId) => {
+  const descriptor = (modelId) => {
     const { psRow } = entryById.get(modelId) || {};
     const rawStatus    = ((psRow?.status) || '').toUpperCase();
     const isLoaded     = psRow != null;
     const isProcessing = isLoaded && !['IDLE', 'STOPPED', ''].includes(rawStatus);
+    const busy         = MC.busyOf('lms', modelId);
 
-    let pillMod, pillLabel, cardClass;
-    if (isProcessing) {
-      pillMod = 'warn';   pillLabel = rawStatus === 'PROCESSINGPROMPT' ? 'Processing' : rawStatus.charAt(0) + rawStatus.slice(1).toLowerCase();
-      cardClass = 'loaded';       // green — actively inferring
-    } else if (isLoaded) {
-      pillMod = 'ok';     pillLabel = 'Loaded';
-      cardClass = 'idle-loaded';  // yellow — loaded but idle
-    } else {
-      pillMod = 'muted';  pillLabel = 'Unloaded';
-      cardClass = '';
-    }
+    let pill;
+    if      (busy)         pill = { state: 'busy',   label: busy };
+    else if (isProcessing) pill = { state: 'active', label: rawStatus === 'PROCESSINGPROMPT' ? 'Processing' : rawStatus.charAt(0) + rawStatus.slice(1).toLowerCase() };
+    else if (isLoaded)     pill = { state: 'idle',   label: 'Loaded' };
+    else                   pill = { state: 'unloaded', label: 'Unloaded' };
 
-    const chips = psRow ? [
-      psRow.size                  && { k: 'size',     v: psRow.size },
-      psRow.quant                 && { k: 'quant',    v: psRow.quant },
-      psRow.params                && { k: 'params',   v: psRow.params },
-      psRow.context               && { k: 'ctx',      v: Number(psRow.context).toLocaleString() },
-      psRow.parallel != null      && { k: 'parallel', v: psRow.parallel },
-      psRow.device                && { k: 'dev',      v: psRow.device },
-    ].filter(Boolean).map(c =>
-      `<span class="param-chip"><span class="pk">${_esc(String(c.k))}</span><span class="pv">${_esc(String(c.v))}</span></span>`
-    ).join('') : '';
+    const specs = psRow ? [
+      psRow.size             && { k: 'Size',     v: psRow.size },
+      psRow.quant            && { k: 'Quant',    v: psRow.quant },
+      psRow.params           && { k: 'Params',   v: psRow.params },
+      psRow.context          && { k: 'Context',  v: Number(psRow.context).toLocaleString() },
+      psRow.parallel != null && { k: 'Parallel', v: psRow.parallel },
+      psRow.device           && { k: 'Device',   v: psRow.device },
+    ].filter(Boolean) : [];
 
-    const mid = _esc(modelId);
-    return `
-    <div class="model-card ${cardClass}" data-id="${mid}">
-      <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:8px;">
-        <div class="model-card-name" title="Click to edit alias (blank = use Model ID)" data-lmsact="rename" data-id="${mid}">${_esc(aliasOrShort(modelId))}</div>
-        <span class="status status--${pillMod}">${_esc(pillLabel)}</span>
-      </div>
-      <div class="model-card-params">${chips}</div>
-      <div class="model-card-actions">
-        ${!isLoaded ? `<button class="btn btn-stone-muted-gradient" data-lmsact="load"   data-id="${mid}">▶ Load</button>` : ''}
-        ${isLoaded  ? `<button class="btn btn-slate-muted-gradient" data-lmsact="unload" data-id="${mid}">⏹ Unload</button>` : ''}
-        ${isLoaded  ? `<button class="btn btn-amber-muted-gradient"  data-lmsact="reload" data-id="${mid}">↺ Reload</button>` : ''}
-      </div>
-    </div>`;
+    const csub = [
+      psRow?.quant ? MC.esc(psRow.quant) : null,
+      psRow?.context ? 'ctx ' + MC.esc(Math.round(Number(psRow.context) / 1024) + 'k') : null,
+      psRow?.device ? MC.esc(psRow.device) : null,
+    ].filter(Boolean).join(' · ');
+
+    return {
+      id: modelId, actAttr: 'data-lmsact', renameAct: 'rename',
+      name: aliasOrShort(modelId), repo: modelId,
+      pill, specs, stats: [], fresh: null,
+      primary: isLoaded ? { act: 'unload', label: '⏹ Unload' } : { act: 'load', label: '▶ Load' },
+      buttons: [],
+      menu: isLoaded ? [{ act: 'reload', label: '↺ Reload' }] : [],
+      transition: !!busy, csub,
+      open: MC.isOpen('lms', modelId),
+    };
   };
 
-  container.innerHTML = groups.map(g => {
-    const cards = g.ids.map(renderCard).join('');
-    if (!g.header) return cards;
-    return `<div class="model-group-header" style="grid-column:1/-1;">
-      <span>${_esc(g.header)}</span>
-      <span class="rule"></span>
-      <span class="count">${g.ids.length}</span>
-    </div>${cards}`;
-  }).join('');
+  const view = MC.viewOf(typeof layout === 'object' ? layout : null, 'lms');
+  MC.syncSeg('lms');
+  const filtered = groups
+    .map(g => ({ ...g, ids: g.ids.filter(id => MC.filterMatch('lms', id, aliasOrShort(id))) }))
+    .filter(g => g.ids.length);
 
+  if (!filtered.length) {
+    container.className = 'model-cards';
+    container.innerHTML = '<div style="color:var(--fg-dim);font-size:0.85em;">No models match the filter.</div>';
+    return;
+  }
+
+  if (view === 'list') {
+    container.className = '';
+    const rows = filtered.map(g => {
+      const head = g.header ? MC.groupRow(g.header, g.ids.length, MC.isCollapsed('lms', g.header)) : '';
+      if (g.header && MC.isCollapsed('lms', g.header)) return head;
+      return head + g.ids.map(id => MC.row(descriptor(id))).join('');
+    }).join('');
+    container.innerHTML = `<div class="mc-listwrap"><div class="mc-list">${MC.rowHeader([], '')}${rows}</div></div>`;
+  } else {
+    const compactView = view === 'compact';
+    container.className = 'mc-grid' + (compactView ? ' mc-compactgrid' : '');
+    container.innerHTML = filtered.map(g => {
+      const head = g.header ? MC.groupHeader(g.header, g.ids.length, MC.isCollapsed('lms', g.header)) : '';
+      if (g.header && MC.isCollapsed('lms', g.header)) return head;
+      return head + g.ids.map(id => compactView ? MC.compact(descriptor(id)) : MC.card(descriptor(id))).join('');
+    }).join('');
+  }
+
+  MC.bindContainer(container, 'lms', () => renderLMSModelCards(_lmsLastPs || [], _lmsLastModels || []));
   if (!container._actBound) {
     container._actBound = true;
     container.addEventListener('click', ev => {
       const nameDiv = ev.target.closest('[data-lmsact="rename"]');
-      if (nameDiv) { ev.stopPropagation(); startLmsCardRename(ev, nameDiv.dataset.id); return; }
+      if (nameDiv) { ev.stopPropagation(); startLmsCardRename(nameDiv, nameDiv.dataset.id); return; }
       const btn = ev.target.closest('button[data-lmsact]');
       if (!btn) return;
       const id  = btn.dataset.id;
       const act = btn.dataset.lmsact;
       if (act === 'load')   lmsLoad(id);
       else if (act === 'unload') lmsUnload(id);
-      else if (act === 'reload') lmsReload(id);
+      else if (act === 'reload') { MC.closeMenus(); lmsReload(id); }
     });
   }
 }
@@ -548,8 +564,7 @@ function renderLMSModelCards(ps, models) {
 // /api/llm/aliases store + _llmAliases cache. Operations on LMS models
 // (load/unload/reload) always key off the underlying model ID, never
 // the alias.
-function startLmsCardRename(evt, modelId) {
-  const nameDiv = evt.target.closest('[data-lmsact="rename"]');
+function startLmsCardRename(nameDiv, modelId) {
   if (!nameDiv || nameDiv.querySelector('input')) return;
   const input = document.createElement('input');
   input.type  = 'text';
@@ -752,6 +767,8 @@ async function lmsLoad(modelId) {
     if (!ok) return;
   }
   if (!_actionClaim('lmsLoad:' + modelId)) return;
+  MC.setBusy('lms', modelId, 'Loading…');
+  renderLMSModelCards(_lmsLastPs || [], _lmsLastModels || []);
   try {
     const r = await _fetchT('/api/lmstudio/load', {
       method: 'POST', headers: {'Content-Type':'application/json'},
@@ -763,6 +780,8 @@ async function lmsLoad(modelId) {
     alert('Error: ' + e);
   } finally {
     _actionRelease('lmsLoad:' + modelId);
+    MC.clearBusy('lms', modelId);
+    renderLMSModelCards(_lmsLastPs || [], _lmsLastModels || []);
   }
 }
 
@@ -777,6 +796,8 @@ async function lmsUnload(modelId) {
     if (!ok) return;
   }
   if (!_actionClaim('lmsUnload:' + modelId)) return;
+  MC.setBusy('lms', modelId, 'Unloading…');
+  renderLMSModelCards(_lmsLastPs || [], _lmsLastModels || []);
   try {
     const r = await _fetchT('/api/lmstudio/unload', {
       method: 'POST', headers: {'Content-Type':'application/json'},
@@ -788,6 +809,8 @@ async function lmsUnload(modelId) {
     alert('Error: ' + e);
   } finally {
     _actionRelease('lmsUnload:' + modelId);
+    MC.clearBusy('lms', modelId);
+    renderLMSModelCards(_lmsLastPs || [], _lmsLastModels || []);
   }
 }
 
@@ -802,6 +825,8 @@ async function lmsReload(modelId) {
     if (!ok) return;
   }
   if (!_actionClaim('lmsReload:' + modelId)) return;
+  MC.setBusy('lms', modelId, 'Reloading…');
+  renderLMSModelCards(_lmsLastPs || [], _lmsLastModels || []);
   try {
     // Unload
     const ur = await _fetchT('/api/lmstudio/unload', {
@@ -840,6 +865,8 @@ async function lmsReload(modelId) {
     alert('Reload error: ' + e);
   } finally {
     _actionRelease('lmsReload:' + modelId);
+    MC.clearBusy('lms', modelId);
+    renderLMSModelCards(_lmsLastPs || [], _lmsLastModels || []);
   }
 }
 
@@ -857,4 +884,12 @@ async function lmsDownloadModel() {
   } catch(e) {
     if (logEl) logEl.textContent = 'Error: ' + e;
   }
+}
+
+// Wire the LMS models toolbar (filter, view segment) once at load.
+if (typeof MC !== 'undefined' && document.getElementById('lmsMcSeg')) {
+  MC.initToolbar('lms', {
+    segId: 'lmsMcSeg', filterId: 'lmsMcFilter',
+    render: () => renderLMSModelCards(_lmsLastPs || [], _lmsLastModels || []),
+  });
 }

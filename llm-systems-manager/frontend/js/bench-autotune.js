@@ -1137,7 +1137,7 @@ function _atWireOptionalAutoCheck() {
   window._atOptAutoCheckWired = true;
 }
 
-async function openAutotune() {
+async function openAutotune(preselectId) {
   document.getElementById('autotuneOverlay').classList.add('open');
   _atWireOptionalAutoCheck();
   _atLogClear();
@@ -1168,6 +1168,7 @@ async function openAutotune() {
       const cb = document.createElement('input');
       cb.type = 'checkbox';
       cb.value = m;
+      if (m === preselectId) cb.checked = true;
       cb.id = 'atcb_' + m.replace(/[^a-zA-Z0-9]/g, '_');
       const lbl = document.createElement('label');
       lbl.htmlFor = cb.id;
@@ -1845,7 +1846,8 @@ function saveBenchmark(model_id, avg_gen_tps, avg_ppt_tps, avg_pg_tps, tool, sav
     body: JSON.stringify({model_id, avg_gen_tps, avg_ppt_tps, avg_pg_tps, bench_tool: tool, switches: _benchSwitches})
   }).then(r => r.json()).then(d => {
     if (!d.ok) { alert(d.error || 'Save failed'); return; }
-    _benchData[model_id] = {model_id, avg_gen_tps, avg_ppt_tps, avg_pg_tps, bench_tool: tool};
+    _benchData[model_id] = {model_id, avg_gen_tps, avg_ppt_tps, avg_pg_tps, bench_tool: tool,
+                            switches: _benchSwitches, ts: new Date().toISOString()};
     if (saveBtn) saveBtn.textContent = '✓ Saved';
     if (typeof renderModelCards === 'function') renderModelCards();
   }).catch(e => alert('Save failed: ' + e));

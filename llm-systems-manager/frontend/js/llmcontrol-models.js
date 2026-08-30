@@ -146,8 +146,8 @@ function _sanitizeModelId(s) {
 
 const VALID_MODEL_SORTS = ['group_by_author', 'alphabetical', 'loaded_first'];
 function _currentModelSort() {
-  const v = (layout && layout.modelSort) || 'group_by_author';
-  return VALID_MODEL_SORTS.includes(v) ? v : 'group_by_author';
+  const v = (layout && layout.modelSort) || 'loaded_first';
+  return VALID_MODEL_SORTS.includes(v) ? v : 'loaded_first';
 }
 function onModelSortChange(v) {
   if (!VALID_MODEL_SORTS.includes(v)) return;
@@ -212,21 +212,143 @@ function _authorOfLms(id) {
   return i > 0 ? disp.slice(0, i).trim() : '(no author)';
 }
 
+// Value of a stored bench switch (e.g. '-c') — tolerates value/val key names.
+function _llamaSwitchVal(switches, name) {
+  const sw = (switches || []).find(s => s && [name, '-' + name, '--' + name].includes(s.flag));
+  if (!sw) return null;
+  return sw.value != null ? String(sw.value) : (sw.val != null ? String(sw.val) : null);
+}
+
+// Benchmark freshness: age from the stored ts, stale when the configured
+// context size no longer matches the one the benchmark ran with.
+function _llamaFresh(modelId, cfg) {
+  const b = _benchData[modelId];
+  if (!b) return null;
+  const benchCtx = _llamaSwitchVal(b.switches, 'c') || _llamaSwitchVal(b.switches, 'ctx-size');
+  if (benchCtx != null && cfg['ctx-size'] != null && String(cfg['ctx-size']) !== benchCtx) {
+    return { stale: true, staleTitle: 'Context size changed since this benchmark (ran at ' + benchCtx + ') — run a fresh one from the ⋯ menu' };
+  }
+  return null;
+}
+
+function _llamaProfileHtml(modelId) {
+  const prof = _llmProfiles[modelId] || { active: '', profiles: {} };
+  const profNames = Object.keys(prof.profiles || {});
+  if (!profNames.length) return '';
+  if (profNames.length === 1) {
+    return `<span class="mc-profchip mc-prof-edit" role="button" tabindex="0" data-act="profile-rename" `
+      + `data-id="${_esc(modelId)}" data-name="${_esc(prof.active)}" title="Click to rename this profile">${_esc(prof.active)}</span>`;
+  }
+  return `<span class="mc-profchip"><select data-act="profile-manage" data-id="${_esc(modelId)}" `
+    + `data-active="${_esc(prof.active)}" title="Active config profile">`
+    + profNames.map(n => `<option value="p:${_esc(n)}" ${n === prof.active ? 'selected' : ''}>${_esc(n)}</option>`).join('')
+    + `<option disabled>──────</option>`
+    + `<option value="__rename__">✎ Rename…</option>`
+    + `<option value="__delete__">✕ Delete…</option>`
+    + `</select></span>`;
+}
+
+function _llamaDescriptor(modelId, statusLookup) {
+  const status     = statusLookup[modelId]?.value || 'unloaded';
+  const cfg        = _llmConfig[modelId] || {};
+  const isLoaded   = status === 'loaded';
+  const isLoading  = status === 'loading';
+  const isSleeping = status === 'sleeping';
+  const busy       = MC.busyOf('llama', modelId);
+  const safeModelId = modelId.replace(/[^a-z0-9]/gi, '_');
+
+  let pill;
+  if      (busy)                              pill = { state: 'busy',     label: busy };
+  else if (isLoaded && _llamaActiveSlots > 0) pill = { state: 'active',   label: 'Active' };
+  else if (isLoaded)                          pill = { state: 'idle',     label: 'Loaded' };
+  else if (isLoading)                         pill = { state: 'busy',     label: 'Loading…' };
+  else if (isSleeping)                        pill = { state: 'sleeping', label: 'Sleeping' };
+  else                                        pill = { state: 'unloaded', label: 'Unloaded' };
+
+  const specs = [
+    cfg['ctx-size'] && { k: 'Context', v: Number(cfg['ctx-size']).toLocaleString() },
+    (cfg['temperature'] || cfg['temp']) ? { k: 'Temp', v: (cfg['temperature'] || cfg['temp']) } : null,
+    cfg['cache-type-k'] && { k: 'KV cache', v: cfg['cache-type-k'] },
+    cfg['reasoning'] && { k: 'Reasoning', v: cfg['reasoning'], em: cfg['reasoning'] === 'on' },
+  ].filter(Boolean);
+
+  const b = _benchData[modelId];
+  const stats = b ? [
+    { l: 'Prompt', v: Number(b.avg_ppt_tps ?? 0).toFixed(0), unit: 't/s' },
+    { l: 'Gen',    v: Number(b.avg_gen_tps ?? 0).toFixed(1), unit: 't/s' },
+    ...(b.avg_pg_tps != null ? [{ l: 'Pg', v: Number(b.avg_pg_tps).toFixed(0), unit: 't/s' }] : []),
+  ] : [];
+
+  let primary = null;
+  const buttons = [];
+  if      (isSleeping) { primary = { act: 'wake',   label: '☀ Wake' };   buttons.push({ act: 'unload', label: '⏹ Unload' }); }
+  else if (isLoaded)   { primary = { act: 'unload', label: '⏹ Unload' }; }
+  else if (!isLoading) { primary = { act: 'load',   label: '▶ Load' }; }
+  buttons.push({ act: 'edit', label: '✎ Edit' });
+
+  const menu = [
+    ...(isLoaded || isSleeping ? [{ act: 'reload', label: '↺ Reload' }] : []),
+    { act: 'bench',    label: '◷ Benchmark' },
+    { act: 'autotune', label: '⌖ Autotune' },
+    '-',
+    { act: 'delete', label: '✕ Delete model', danger: true },
+  ];
+
+  // Live perf block (loaded only) — same element ids _updateModelPerf writes to.
+  const perfSeed = (isLoaded && typeof _llamaPerfSeed === 'function')
+    ? _llamaPerfSeed(safeModelId) : { gen: '—', ppt: '—', ts: '' };
+  const perfHtml = isLoaded ? `<div class="model-card-perf" style="margin:0 15px 10px;" id="perf-${safeModelId}">
+      <div style="display:flex;flex-direction:column;gap:4px;padding:1px 1px;flex:1;">
+        <div style="display:flex;align-items:center;gap:4px;">
+          <span class="perf-val" id="perf-gen-${safeModelId}">${perfSeed.gen}</span>
+          <span class="perf-lbl">avg gen t/s</span>
+        </div>
+        <div style="display:flex;align-items:center;gap:4px;">
+          <span class="perf-val" id="perf-ppt-${safeModelId}" style="color:var(--accent);">${perfSeed.ppt}</span>
+          <span class="perf-lbl">avg prompt t/s</span>
+        </div>
+      </div>
+      <span style="color:var(--fg-faint);font-size:0.82em;align-self:flex-end;" id="perf-ts-${safeModelId}">${perfSeed.ts}</span>
+    </div>` : '';
+
+  const prof = _llmProfiles[modelId] || { active: '', profiles: {} };
+  const ctxShort = cfg['ctx-size'] ? (Math.round(Number(cfg['ctx-size']) / 1024) + 'k') : null;
+  const csub = [
+    b ? `gen <b>${MC.esc(Number(b.avg_gen_tps ?? 0).toFixed(1))} t/s</b>` : null,
+    ctxShort ? 'ctx ' + MC.esc(ctxShort) : null,
+    prof.active ? MC.esc(prof.active) : null,
+  ].filter(Boolean).join(' · ');
+
+  return {
+    id: modelId, actAttr: 'data-act', renameAct: 'rename',
+    name: aliasOrShort(modelId), repo: modelId,
+    pill, specs, stats, fresh: _llamaFresh(modelId, cfg),
+    profileHtml: _llamaProfileHtml(modelId),
+    profileText: prof.active || '',
+    primary, buttons, menu, perfHtml,
+    transition: !!busy, csub,
+    open: MC.isOpen('llama', modelId),
+  };
+}
+
 function renderModelCards() {
   const container = document.getElementById('llmModelCards');
+  if (!container) return;
   // Skip re-render while an inline alias edit is in progress — otherwise
   // a background poll (status flip, periodic refresh) would replace
   // innerHTML and steal focus from the input the user is typing into.
   // The render will catch up on the next tick after the edit commits.
-  if (container && container.querySelector('.model-card-name input')) return;
+  if (container.querySelector('.mc-name input')) return;
 
   const sortSel = document.getElementById('modelSortSel');
   if (sortSel && sortSel.value !== _currentModelSort()) sortSel.value = _currentModelSort();
+  MC.syncSeg('llama');
 
   // Use config.ini sections as primary source — excluding global [*]
   const configIds = Object.keys(_llmConfig).filter(k => k !== '*' && k !== '__DEFAULTS__');
 
   if (!configIds.length) {
+    container.className = 'model-cards';
     container.innerHTML = '<div style="color:var(--fg-dim);font-size:0.85em;">No models found in config.</div>';
     return;
   }
@@ -235,99 +357,39 @@ function renderModelCards() {
   const statusLookup = {};
   (_llmModels || []).forEach(m => { statusLookup[m.id] = m.status; });
 
-  const groups = _buildSortedGroups(configIds, _currentModelSort(), statusLookup);
-  const renderCard = (modelId) => {
-    const status     = statusLookup[modelId]?.value || 'unloaded';
-    const cfg        = _llmConfig[modelId] || {};
-    const isLoaded   = status === 'loaded';
-    const isLoading  = status === 'loading';
-    const isSleeping = status === 'sleeping';
-    const safeModelId = modelId.replace(/[^a-z0-9]/gi, '_');
-    // Seed perf cells from the last-known metric so a re-render doesn't blank them.
-    const perfSeed = (isLoaded && typeof _llamaPerfSeed === 'function')
-      ? _llamaPerfSeed(safeModelId) : { gen: '—', ppt: '—', ts: '' };
+  const view = MC.viewOf(typeof layout === 'object' ? layout : null, 'llama');
+  const groups = _buildSortedGroups(configIds, _currentModelSort(), statusLookup)
+    .map(g => ({ ...g, ids: g.ids.filter(id => MC.filterMatch('llama', id, aliasOrShort(id))) }))
+    .filter(g => g.ids.length);
 
-    let cardClass = '';
-    if      (isLoaded && _llamaActiveSlots > 0) cardClass = 'loaded';      // green  — actively inferring
-    else if (isLoaded)                          cardClass = 'idle-loaded';  // yellow — loaded but idle
-    else if (isLoading)                         cardClass = 'loading';      // amber  — loading
-    else if (isSleeping)                        cardClass = 'sleeping';     // yellow — sleeping
+  if (!groups.length) {
+    container.className = 'model-cards';
+    container.innerHTML = '<div style="color:var(--fg-dim);font-size:0.85em;">No models match the filter.</div>';
+    return;
+  }
 
-    const chips = [
-      cfg['ctx-size']                             && { k: 'ctx',  v: Number(cfg['ctx-size']).toLocaleString() },
-      (cfg['temperature'] || cfg['temp'])          ? { k: 'temp', v: (cfg['temperature'] || cfg['temp']) } : null,
-      cfg['cache-type-k']                         && { k: 'ctk',  v: cfg['cache-type-k'] },
-      cfg['reasoning']                            && { k: 'reasoning', v: cfg['reasoning'] },
-    ].filter(Boolean).map(c =>
-      `<span class="param-chip"><span class="pk">${_esc(String(c.k))}</span><span class="pv">${_esc(String(c.v))}</span></span>`
-    ).join('');
+  if (view === 'list') {
+    container.className = '';
+    const rows = groups.map(g => {
+      const head = g.header ? MC.groupRow(g.header, g.ids.length, MC.isCollapsed('llama', g.header)) : '';
+      if (g.header && MC.isCollapsed('llama', g.header)) return head;
+      return head + g.ids.map(id => MC.row(_llamaDescriptor(id, statusLookup))).join('');
+    }).join('');
+    container.innerHTML = `<div class="mc-listwrap"><div class="mc-list">${MC.rowHeader(['bench ppt', 'gen', 'pg'], 'Profile', 'llama-bench results (t/s) — not live throughput')}${rows}</div></div>`;
+  } else {
+    const compactView = view === 'compact';
+    container.className = 'mc-grid' + (compactView ? ' mc-compactgrid' : '');
+    container.innerHTML = groups.map(g => {
+      const head = g.header ? MC.groupHeader(g.header, g.ids.length, MC.isCollapsed('llama', g.header)) : '';
+      if (g.header && MC.isCollapsed('llama', g.header)) return head;
+      return head + g.ids.map(id => {
+        const d = _llamaDescriptor(id, statusLookup);
+        return compactView ? MC.compact(d) : MC.card(d);
+      }).join('');
+    }).join('');
+  }
 
-    const mid = _esc(modelId);
-    // Active config profile: dropdown when >1, static label when exactly 1.
-    const prof = _llmProfiles[modelId] || { active: '', profiles: {} };
-    const profNames = Object.keys(prof.profiles || {});
-    const profSelect = profNames.length > 1
-      ? `<select class="profile-select" data-act="profile-activate" data-id="${_esc(modelId)}" title="Active config profile">`
-        + profNames.map(n => `<option value="${_esc(n)}" ${n === prof.active ? 'selected' : ''}>${_esc(n)}</option>`).join('')
-        + `</select>`
-      : (profNames.length === 1 ? `<span class="profile-active" title="Active profile">${_esc(prof.active)}</span>` : '');
-    // Rename/delete the active profile; shown only when at least one exists.
-    const profActions = (profNames.length >= 1 && prof.active)
-      ? `<button class="profile-action-btn" data-act="profile-rename" data-id="${_esc(modelId)}" data-name="${_esc(prof.active)}" title="Rename profile">✎</button>`
-        + `<button class="profile-action-btn" data-act="profile-delete" data-id="${_esc(modelId)}" data-name="${_esc(prof.active)}" title="Delete profile">🗑</button>`
-      : '';
-    return `
-    <div class="model-card ${cardClass}" data-id="${mid}">
-      <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:4px;">
-        <div class="model-card-name" title="Click to edit alias (blank = use Model ID)" data-act="rename" data-id="${mid}">${_esc(aliasOrShort(modelId))}</div>
-        <div style="display:flex;align-items:center;gap:6px;">${statusPill({value: status})}</div>
-      </div>
-      <div class="model-card-params">${chips}</div>
-      <div class="model-card-actions">
-        ${isSleeping                             ? `<button class="btn btn-green-muted-gradient" data-act="wake"   data-id="${mid}">☀ Wake</button>` : ''}
-        ${!isLoaded && !isLoading && !isSleeping ? `<button class="btn btn-stone-muted-gradient" data-act="load"   data-id="${mid}">▶ Load</button>` : ''}
-        ${isLoaded || isLoading || isSleeping    ? `<button class="btn btn-amber-muted-gradient" data-act="unload" data-id="${mid}">⏹ Unload</button>` : ''}
-        ${isLoaded || isSleeping                 ? `<button class="btn btn-stone-muted-gradient"  data-act="reload" data-id="${mid}">↺ Reload</button>` : ''}
-        <button class="btn btn-slate-muted-gradient" data-act="edit"   data-id="${mid}">✎ Edit</button>
-        <button class="btn btn-red-muted-gradient"  data-act="delete" data-id="${mid}">✕ Delete</button>
-      </div>
-      ${(profSelect || profActions) ? `<div class="model-card-profile">${profSelect}${profActions}</div>` : ''}
-      ${_benchData[modelId] ? `
-      <div class="bench-badge">
-        <div style="display:flex;gap:6px;padding:3px 3px;">
-          <span class="bench-badge-chip">ppt ${Number(_benchData[modelId].avg_ppt_tps ?? 0).toFixed(0)} t/s</span>
-          <span class="bench-badge-chip">gen ${Number(_benchData[modelId].avg_gen_tps ?? 0).toFixed(1)} t/s</span>
-          ${_benchData[modelId].avg_pg_tps != null ? `<span class="bench-badge-chip">pg ${Number(_benchData[modelId].avg_pg_tps).toFixed(0)} t/s</span>` : ''}
-        </div>
-      </div>` : ''}
-      ${isLoaded ? `<div class="model-card-perf" id="perf-${safeModelId}">
-        <div style="display:flex;flex-direction:column;gap:4px;padding:1px 1px;flex:1;">
-          <div style="display:flex;align-items:center;gap:4px;">
-            <span class="perf-val" id="perf-gen-${safeModelId}">${perfSeed.gen}</span>
-            <span class="perf-lbl">avg gen t/s</span>
-          </div>
-          <div style="display:flex;align-items:center;gap:4px;">
-            <span class="perf-val" id="perf-ppt-${safeModelId}" style="color:var(--accent);">${perfSeed.ppt}</span>
-            <span class="perf-lbl">avg prompt t/s</span>
-          </div>
-        </div>
-        <span style="color:var(--fg-faint);font-size:0.82em;align-self:flex-end;" id="perf-ts-${safeModelId}">${perfSeed.ts}</span>
-      </div>` : ''}
-    </div>`;
-  };
-
-  // Render grouped output. For non-grouping modes header is null and we emit
-  // a flat list. For "Group by author" each group gets a small header strip.
-  container.innerHTML = groups.map(g => {
-    const cards = g.ids.map(renderCard).join('');
-    if (!g.header) return cards;
-    return `<div class="model-group-header" style="grid-column:1/-1;">
-      <span>${_esc(g.header)}</span>
-      <span class="rule"></span>
-      <span class="count">${g.ids.length}</span>
-    </div>${cards}`;
-  }).join('');
-
+  MC.bindContainer(container, 'llama', renderModelCards);
   // Delegated click handler — avoids string interpolation of modelId into onclick attrs
   if (!container._actBound) {
     container._actBound = true;
@@ -342,13 +404,19 @@ function renderModelCards() {
       else if (act === 'reload') confirmReload(id);
       else if (act === 'edit')   openEditModel(id);
       else if (act === 'delete') confirmDelete(id);
-      else if (act === 'rename') startCardRename(ev, id);
+      else if (act === 'bench')    { MC.closeMenus(); openBench(id); }
+      else if (act === 'autotune') { MC.closeMenus(); openAutotune(id); }
+      else if (act === 'rename') startCardRename(el, id);
       else if (act === 'profile-rename') renameProfile(id, el.dataset.name);
       else if (act === 'profile-delete') deleteProfile(id, el.dataset.name);
     });
     container.addEventListener('change', ev => {
-      const sel = ev.target.closest('select[data-act="profile-activate"]');
-      if (sel) activateProfile(sel.dataset.id, sel.value);
+      const sel = ev.target.closest('select[data-act="profile-manage"]');
+      if (!sel) return;
+      const id = sel.dataset.id, active = sel.dataset.active, v = sel.value;
+      if (v === '__rename__')      { sel.value = 'p:' + active; renameProfile(id, active); }
+      else if (v === '__delete__') { sel.value = 'p:' + active; deleteProfile(id, active); }
+      else if (v.startsWith('p:')) activateProfile(id, v.slice(2));
     });
   }
 }
@@ -373,8 +441,8 @@ async function confirmLoad(modelId) {
 
 async function loadModel(modelId) {
   if (!_actionClaim('load:' + modelId)) return;
-  const card = document.querySelector(`[data-id="${CSS.escape(modelId)}"]`);
-  if (card) card.style.opacity = '0.5';
+  MC.setBusy('llama', modelId, 'Loading…');
+  renderModelCards();
   try {
     const resp = await _fetchT('/api/llm/load', {
       method: 'POST', headers: {'Content-Type':'application/json'},
@@ -387,6 +455,7 @@ async function loadModel(modelId) {
     alert('Load error: ' + e);
   } finally {
     _actionRelease('load:' + modelId);
+    MC.clearBusy('llama', modelId);
   }
   await refreshLLMTab();
 }
@@ -394,8 +463,8 @@ async function loadModel(modelId) {
 // Wake a sleeping model in place; sends the clicked model id to the agent.
 async function wakeModel(modelId) {
   if (!_actionClaim('wake:' + modelId)) return;
-  const card = document.querySelector(`[data-id="${CSS.escape(modelId)}"]`);
-  if (card) card.style.opacity = '0.5';
+  MC.setBusy('llama', modelId, 'Waking…');
+  renderModelCards();
   try {
     const resp = await _fetchT('/api/llm/server/wake', {
       method: 'POST', headers: {'Content-Type':'application/json'},
@@ -408,6 +477,7 @@ async function wakeModel(modelId) {
     alert('Wake error: ' + e);
   } finally {
     _actionRelease('wake:' + modelId);
+    MC.clearBusy('llama', modelId);
   }
   await refreshLLMTab();
 }
@@ -437,8 +507,8 @@ async function confirmReload(modelId) {
 // Reloading is a multi-step process: unload the model, poll until it's fully unloaded (with a timeout), then load it again. This is useful for applying config changes that require a reload, without having to manually click unload then load.
 async function reloadModel(modelId) {
   if (!_actionClaim('reload:' + modelId)) return;
-  const card = document.querySelector(`[data-id="${CSS.escape(modelId)}"]`);
-  if (card) card.style.opacity = '0.5';
+  MC.setBusy('llama', modelId, 'Reloading…');
+  renderModelCards();
   try {
     const ur = await _fetchT('/api/llm/unload', {
       method: 'POST', headers: {'Content-Type':'application/json'},
@@ -475,8 +545,8 @@ async function reloadModel(modelId) {
     alert('Reload error: ' + (e.message || e));
   } finally {
     _actionRelease('reload:' + modelId);
+    MC.clearBusy('llama', modelId);
   }
-  if (card) card.style.opacity = '';
   await refreshLLMTab();
 }
 
@@ -544,6 +614,7 @@ async function saveAsNewProfile(modelId) {
   // Close the editor so its now-stale values can't be re-saved over the
   // default profile by a follow-up Save click (#162). Matches saveModel /
   // saveAndLoad, which both close on success.
+  if (typeof EFL !== 'undefined') EFL.markClean();
   closeEditor();
   _themedToast('Profile "' + name + '" created and activated', { kind: 'ok' });
 }
@@ -584,6 +655,8 @@ async function deleteProfile(modelId, name) {
 
 async function unloadModel(modelId) {
   if (!_actionClaim('unload:' + modelId)) return;
+  MC.setBusy('llama', modelId, 'Unloading…');
+  renderModelCards();
   try {
     const ur = await _fetchT('/api/llm/unload', {
       method: 'POST', headers: {'Content-Type':'application/json'},
@@ -596,6 +669,7 @@ async function unloadModel(modelId) {
     alert('Unload error: ' + e);
   } finally {
     _actionRelease('unload:' + modelId);
+    MC.clearBusy('llama', modelId);
   }
   await refreshLLMTab();
 }
@@ -709,14 +783,13 @@ async function deleteModel(modelId, deleteCache = false) {
       danger: true,
     });
   }
+  if (typeof EFL !== 'undefined') EFL.markClean();
   closeEditor();
   await refreshLLMTab();
 }
 // ----- Rename -----
-function startCardRename(evt, modelId) {
-  evt.stopPropagation();
-  const nameDiv = evt.currentTarget;
-  if (nameDiv.querySelector('input')) return; // already editing
+function startCardRename(nameDiv, modelId) {
+  if (!nameDiv || nameDiv.querySelector('input')) return; // already editing
   const input = document.createElement('input');
   input.type = 'text';
   // Pre-fill with the current alias (empty if none) — the placeholder shows
@@ -880,18 +953,15 @@ function addCustomParam(k = '', v = '') {
   const container = document.getElementById('ef-custom-params');
   if (!container) return;
   const row = document.createElement('div');
-  row.className = 'custom-param-row';
+  row.className = 'custom-param-row ef-kvrow';
   const kInput = document.createElement('input');
-  kInput.type = 'text'; kInput.className = 'cp-key'; kInput.placeholder = 'key'; kInput.value = k;
-  const eq = document.createElement('span');
-  eq.className = 'cp-eq'; eq.textContent = '=';
+  kInput.type = 'text'; kInput.className = 'cp-key k'; kInput.placeholder = 'key'; kInput.value = k;
   const vInput = document.createElement('input');
   vInput.type = 'text'; vInput.className = 'cp-val'; vInput.placeholder = 'value'; vInput.value = v;
   const rm = document.createElement('button');
-  rm.className = 'btn btn-gray-muted-gradient'; rm.textContent = '✕';
-  rm.style.cssText = 'padding:4px 8px;font-size:0.8em;';
-  rm.onclick = () => { row.remove(); return false; };
-  row.append(kInput, eq, vInput, rm);
+  rm.className = 'rm'; rm.textContent = '✕'; rm.title = 'Remove parameter';
+  rm.onclick = () => { row.remove(); if (typeof EFL !== 'undefined') EFL.refreshDirty(); return false; };
+  row.append(kInput, vInput, rm);
   container.appendChild(row);
 }
 
@@ -904,7 +974,7 @@ function _ensureSaveAsProfileBtn(modelId) {
   if (!btn) {
     btn = document.createElement('button');
     btn.id = 'saveAsProfileBtn';
-    btn.className = 'btn btn-slate-muted-gradient';
+    btn.className = 'mcbtn mcbtn-ghost';
     btn.textContent = 'Save as new profile';
     btn.onclick = () => saveAsNewProfile(document.getElementById('ef-id').value);
     const saveBtn = [...actions.querySelectorAll('button')].find(b => /^Save$/.test(b.textContent.trim()));
@@ -943,13 +1013,14 @@ function openEditModel(modelId) {
   Object.entries(cfg).forEach(([k, v]) => { if (!knownKeys.has(k)) addCustomParam(k, v); });
 
   document.getElementById('llmEditor').style.display = '';
+  if (typeof EFL !== 'undefined') EFL.onOpen();
   document.getElementById('llmEditor').scrollIntoView({behavior:'smooth'});
 }
 
 function openAddModel() {
   _editingId = null;
   _editorIsDownload = false;
-  document.getElementById('llmEditorTitle').textContent = 'Add New Model';
+  document.getElementById('llmEditorTitle').textContent = 'Add Profile';
   document.getElementById('ef-id').value    = '';
   document.getElementById('ef-id').disabled = false;
   const _aliasEl2 = document.getElementById('ef-alias');
@@ -968,6 +1039,7 @@ function openAddModel() {
   _populateCopyFromProfile(null);
 
   document.getElementById('llmEditor').style.display = '';
+  if (typeof EFL !== 'undefined') EFL.onOpen();
   document.getElementById('llmEditor').scrollIntoView({behavior:'smooth'});
 }
 
@@ -1007,11 +1079,23 @@ function copyFromProfile() {
     'no-direct-io', 'mlock', 'hf-repo'
   ]);
   Object.entries(cfg).forEach(([k, v]) => { if (!knownKeys.has(k)) addCustomParam(k, v); });
+  if (typeof EFL !== 'undefined') { EFL.syncToggles(); EFL.refreshDirty(); }
+}
+
+function _closeEditorNow() {
+  document.getElementById('llmEditor').style.display = 'none';
+  _editingId = null;
 }
 
 function closeEditor() {
-  document.getElementById('llmEditor').style.display = 'none';
-  _editingId = null;
+  if (typeof EFL !== 'undefined' && EFL.isDirty()) {
+    EFL.confirmDiscard().then(ok => {
+      if (ok) { EFL.markClean(); _closeEditorNow(); }
+    });
+    return;
+  }
+  if (typeof EFL !== 'undefined') EFL.markClean();
+  _closeEditorNow();
 }
 
 function collectEditorValues() {
@@ -1069,6 +1153,7 @@ async function saveModel() {
     // Keep the active profile in sync with the edited config (#118).
     await _syncActiveProfile(modelId, values);
     await refreshLLMTab();
+    if (typeof EFL !== 'undefined') EFL.markClean();
     closeEditor();
   } else {
     alert('Save failed: ' + (r.error || 'unknown error'));
@@ -1103,6 +1188,7 @@ async function saveAndLoad() {
     if (!sr.ok) { alert('Save failed: ' + (sr.error || 'unknown')); return; }
 
     await _syncActiveProfile(modelId, values);
+    if (typeof EFL !== 'undefined') EFL.markClean();
     closeEditor();
 
     const rr = await fetch('/api/llm/server/restart', {method: 'POST'}).then(r => r.json());
@@ -1135,6 +1221,7 @@ async function saveAndLoad() {
     if (!sr.ok) { alert('Save failed: ' + (sr.error || 'unknown')); return; }
 
     await _syncActiveProfile(modelId, values);
+    if (typeof EFL !== 'undefined') EFL.markClean();
     closeEditor();
     await loadModel(modelId);
   }
@@ -1323,6 +1410,7 @@ function closeLlamaBuildPanel() {
 
 // Reset the editor, HF download, cache, and llama build panels to empty state.
 function resetLLMControlPanels() {
+  if (typeof EFL !== 'undefined') EFL.markClean();
   if (typeof closeEditor === 'function') closeEditor();
   if (typeof closeLlamaBuildPanel === 'function') closeLlamaBuildPanel();
   if (_dlEventSrc) { try { _dlEventSrc.close(); } catch(_){} _dlEventSrc = null; }
@@ -1483,6 +1571,7 @@ function addDownloadedModel(explicitQuant) {
   document.getElementById('llmEditorTitle').textContent = 'Add — ' + shortName(modelId);
   const btn = document.getElementById('saveAndLoadBtn');
   if (btn) btn.textContent = 'Save & Restart llama.cpp';
+  if (typeof EFL !== 'undefined') EFL.onOpen();
   document.getElementById('llmEditor').scrollIntoView({behavior:'smooth'});
 }
 
@@ -1640,6 +1729,11 @@ async function loadHFTrending() {
   } catch(e) {
     _showTrendingError(e);
   }
+}
+
+// Wire the llama models toolbar (filter, view segment) once at load.
+if (typeof MC !== 'undefined' && document.getElementById('llmMcSeg')) {
+  MC.initToolbar('llama', { segId: 'llmMcSeg', filterId: 'llmMcFilter', render: renderModelCards });
 }
 
 function prefillDownload(repo) {
