@@ -230,6 +230,70 @@ jobs:
             sudo journalctl -u "$u" -n 200 --no-pager || true
           done
 
+  main-vs-release:
+    name: main install.sh + latest release tarball (mode 3)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    # The curl-pipe pairing (#748): a self-updated MAIN install.sh stages the
+    # LATEST PUBLISHED release tarball and sources ITS lib-common.sh, so a
+    # helper added to lib-common after the last tag is missing at runtime
+    # unless install.sh ships a shim. Two layers: a fast static guard
+    # (ci-libcommon-skew.sh against the tag's lib-common), then the real
+    # mode-3 install from the published tarball with this PR's install.sh.
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install prerequisites
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            jq rsync wget gnupg ca-certificates openssl sqlite3 \
+            python3-venv python3-pip python3-dev build-essential
+
+      - name: Resolve the latest published release tag
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag="$(gh release view --repo "$GITHUB_REPOSITORY" --json tagName -q .tagName)"
+          test -n "$tag"
+          echo "TAG=$tag" >> "$GITHUB_ENV"
+          echo "latest release: $tag"
+
+      - name: Static guard — every lib-common call in install.sh exists in the tag's lib-common (or is shimmed)
+        run: |
+          curl -fsSL "https://raw.githubusercontent.com/$GITHUB_REPOSITORY/$TAG/tools/installer/lib-common.sh" \
+            -o "$RUNNER_TEMP/lib-common-$TAG.sh"
+          bash tools/installer/ci-libcommon-skew.sh "$RUNNER_TEMP/lib-common-$TAG.sh"
+
+      # install.sh runs as a lone copied file (like a curl'd bootstrap) so the
+      # local-checkout auto-detect can't win; the pinned tag keeps the
+      # download off the rate-limited /releases/latest API.
+      - name: Install from the published tarball with THIS install.sh (mode 3)
+        run: |
+          cp tools/installer/install.sh "$RUNNER_TEMP/install.sh"
+          sudo LLMSYS_RELEASE_TAG="$TAG" \
+               bash "$RUNNER_TEMP/install.sh" --mode 3 --no-self-update < /dev/null 2>&1 \
+            | tee /tmp/main-vs-release.log
+
+      - name: Assert the tarball's lib-common was paired and the run completed
+        run: |
+          grep -F "staged release $TAG" /tmp/main-vs-release.log
+          if grep -F 'command not found' /tmp/main-vs-release.log; then
+            echo 'ERROR: install.sh called a helper the tarball lib-common lacks'; exit 1
+          fi
+          grep -F 'Installation complete' /tmp/main-vs-release.log
+          curl -fsS -m 10 http://127.0.0.1:5000/health | jq -e .version
+
+      - name: Collect service logs on failure
+        if: failure()
+        run: |
+          for u in llm-systems-manager llm-systems-agent; do
+            echo "════ journalctl -u $u ════"
+            sudo journalctl -u "$u" -n 200 --no-pager || true
+          done
+
   split-install:
     name: split install (modes 3 + 4)
     runs-on: ubuntu-latest
