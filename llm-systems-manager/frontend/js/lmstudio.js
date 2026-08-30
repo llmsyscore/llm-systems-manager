@@ -156,8 +156,11 @@ async function fetchLMStudioMetrics() {
   if (!_lmsMetricsViewActive()) return;
   const _lk = _agentClaimKey('fetchLMStudioMetrics', 'lms');
   if (!_claim(_lk)) return;
+  const agentAtStart = typeof _selectedAgent === 'function' ? _selectedAgent('lms') : null;
   try {
     const d = await _fetchT('/api/lmstudio/metrics', {}, 10000).then(r => r.json());
+    // A reply for a previously selected agent must not paint (or seed) the new one.
+    if (typeof _selectedAgent === 'function' && _selectedAgent('lms') !== agentAtStart) return;
     _lmsMetrics = d;
 
     const sys    = d.system || {};
