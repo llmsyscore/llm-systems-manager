@@ -532,7 +532,7 @@ function renderLMSModelCards(ps, models) {
       if (g.header && MC.isCollapsed('lms', g.header)) return head;
       return head + g.ids.map(id => MC.row(descriptor(id))).join('');
     }).join('');
-    container.innerHTML = `<div class="mc-listwrap"><div class="mc-list">${MC.rowHeader([], '')}${rows}</div></div>`;
+    container.innerHTML = `<div class="mc-listwrap"><div class="mc-list">${MC.rowHeader('', '')}${rows}</div></div>`;
   } else {
     const compactView = view === 'compact';
     container.className = 'mc-grid' + (compactView ? ' mc-compactgrid' : '');

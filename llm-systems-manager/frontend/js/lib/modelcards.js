@@ -128,7 +128,8 @@
 
   function row(d) {
     const cfg = (d.specs || []).map(s => `${esc(String(s.k).toLowerCase())} ${esc(s.v)}`).join('<i>·</i>');
-    const met = (d.stats || []).slice(0, 3).map(s => `<span><b>${esc(s.v)}</b></span>`).join('');
+    const met = (d.stats || []).slice(0, 3).map(s =>
+      `<div class="mc-stat"><div class="l">${esc(s.l)}</div><div class="v"><b>${esc(s.v)}</b></div></div>`).join('');
     const menuItems = [
       ...(d.buttons || []).map(b => ({ act: b.act, label: b.label })),
       ...((d.buttons || []).length && (d.menu || []).filter(i => i !== '-').length ? ['-'] : []),
@@ -145,9 +146,8 @@
     </div>`;
   }
 
-  function rowHeader(metCols, profLabel, metTitle) {
-    const met = (metCols || []).map(c => `<span>${esc(c)}</span>`).join('');
-    return `<div class="mc-row mc-row-hdr"><span></span><span>Model</span><span>Configuration</span><div class="mc-rowmet mc-methdr"${metTitle ? ` title="${esc(metTitle)}"` : ''}>${met}</div><span>${esc(profLabel || '')}</span><span></span></div>`;
+  function rowHeader(metLabel, profLabel, metTitle) {
+    return `<div class="mc-row mc-row-hdr"><span></span><span>Model</span><span>Configuration</span><div class="mc-rowmet mc-methdr"${metTitle ? ` title="${esc(metTitle)}"` : ''}><span>${esc(metLabel || '')}</span></div><span class="mc-profhdr">${esc(profLabel || '')}</span><span></span></div>`;
   }
 
   function groupRow(name, count, collapsed) {

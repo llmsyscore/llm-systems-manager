@@ -377,7 +377,7 @@ function renderModelCards() {
       if (g.header && MC.isCollapsed('llama', g.header)) return head;
       return head + g.ids.map(id => MC.row(_llamaDescriptor(id, statusLookup))).join('');
     }).join('');
-    container.innerHTML = `<div class="mc-listwrap"><div class="mc-list">${MC.rowHeader(['bench ppt', 'gen', 'pg'], 'Profile', 'llama-bench results (t/s) — not live throughput')}${rows}</div></div>`;
+    container.innerHTML = `<div class="mc-listwrap"><div class="mc-list">${MC.rowHeader('Bench (t/s)', 'Profile', 'llama-bench results — not live throughput')}${rows}</div></div>`;
   } else {
     const compactView = view === 'compact';
     container.className = 'mc-grid' + (compactView ? ' mc-compactgrid' : '');

@@ -89,7 +89,7 @@
 /* ---------- list view ---------- */
 .mc-listwrap { border: 1px solid var(--border); border-radius: 10px; overflow-x: auto; background: var(--bg-card); }
 .mc-list { min-width: 830px; }
-.mc-row { display: grid; grid-template-columns: 10px minmax(220px, 1fr) minmax(240px, 1.4fr) 210px 104px minmax(140px, auto); gap: 14px; align-items: center; padding: 10px 16px; border-top: 1px solid var(--border-soft); transition: background .12s, opacity .15s; }
+.mc-row { display: grid; grid-template-columns: 10px minmax(220px, 1fr) minmax(240px, 1.4fr) 224px 118px minmax(140px, auto); gap: 14px; align-items: center; padding: 10px 16px; border-top: 1px solid var(--border-soft); transition: background .12s, opacity .15s; }
 .mc-row:first-child { border-top: 0; }
 .mc-row.mc-transition { opacity: .6; }
 .mc-row-hdr { background: var(--bg-card-alt); padding: 7px 16px; font-family: var(--font-sans); font-size: 9.5px; font-weight: 600; letter-spacing: .12em; text-transform: uppercase; color: var(--fg-dim); border-top: 0 !important; }
@@ -106,10 +106,12 @@
 .mc-rowname .r { font-family: var(--font-mono); font-size: 10px; color: var(--fg-dim); margin-top: 1px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .mc-rowcfg { font-family: var(--font-mono); font-size: 11px; color: var(--fg-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .mc-rowcfg i { font-style: normal; color: var(--fg-faint); padding: 0 4px; }
-.mc-rowmet { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; font-family: var(--font-mono); font-size: 12px; font-weight: 500; color: var(--fg-muted); text-align: right; font-variant-numeric: tabular-nums; }
-.mc-rowmet b { color: var(--fg); font-weight: 600; }
-.mc-row-hdr .mc-methdr { font-family: var(--font-sans); font-size: 9.5px; font-weight: 600; letter-spacing: .12em; text-transform: uppercase; color: var(--fg-dim); cursor: help; }
-.mc-rowprof { font-family: var(--font-mono); font-size: 11px; color: var(--accent); min-width: 0; display: flex; align-items: center; gap: 6px; white-space: nowrap; }
+.mc-rowmet { display: flex; justify-content: flex-end; gap: 16px; padding-right: 14px; font-variant-numeric: tabular-nums; }
+.mc-rowmet .mc-stat .v { font-size: 12.5px; }
+.mc-row-hdr .mc-methdr { cursor: help; }
+.mc-profhdr, .mc-rowprof { border-left: 1px solid var(--border-soft); padding-left: 14px; }
+.mc-row-hdr .mc-profhdr { border-left-color: transparent; }
+.mc-rowprof { font-family: var(--font-mono); font-size: 11px; color: var(--accent); min-width: 0; display: flex; align-items: center; gap: 6px; white-space: nowrap; align-self: stretch; }
 .mc-rowact { display: flex; gap: 6px; justify-content: flex-end; align-items: center; }
 .mc-rowact .mcbtn { padding: 4px 11px; font-size: 12px; }
 

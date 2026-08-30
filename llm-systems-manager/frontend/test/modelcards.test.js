@@ -90,11 +90,13 @@ describe('compact + row rendering', () => {
     expect(menuPart).toContain('data-act="edit"');
     expect(menuPart).toContain('data-act="delete"');
   });
-  it('row header aligns metric columns in the met grid', () => {
-    const html = MC.rowHeader(['bench ppt', 'gen', 'pg'], 'Profile', 'not live');
+  it('row header carries the bench label and rows self-label their stats', () => {
+    const html = MC.rowHeader('Bench (t/s)', 'Profile', 'not live');
     expect(html).toContain('mc-methdr');
     expect(html).toContain('title="not live"');
-    expect((html.match(/<span>bench ppt<\/span>|<span>gen<\/span>|<span>pg<\/span>/g) || []).length).toBe(3);
+    expect(html).toContain('Bench (t/s)');
+    const rowHtml = MC.row(BASE);
+    expect(rowHtml).toContain('<div class="l">Gen</div>');
   });
   it('group rows encode collapse state', () => {
     expect(MC.groupRow('unsloth', 2, false)).toContain('▾');
