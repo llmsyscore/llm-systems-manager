@@ -221,20 +221,16 @@ function fmtShort(v) {
   return String(Math.round(v));
 }
 
-// Context sizes are binary: 32768 → "32k", 131072 → "128k".
-function _fmtCtx(v) {
-  return v >= 1024 ? Math.round(v / 1024) + 'k' : String(v);
-}
-
-// Loaded-model extras (#593): " · 32k ctx · 1.2M gen · 89.0k prompt",
-// each part present only when its field is reported.
+// Loaded-model extras (#593): " · 124.2k ctx · 89.0k prompt · 1.2M gen",
+// decimal token counts, each part present only when its field is reported.
 function _modelExtras(row) {
   const parts = [];
-  if (typeof row.ctx === 'number') parts.push(`${_fmtCtx(row.ctx)} ctx`);
-  const gen = fmtShort(row.total_tokens_generated);
-  if (gen != null) parts.push(`${gen} gen`);
+  const ctx = fmtShort(row.ctx);
+  if (ctx != null) parts.push(`${ctx} ctx`);
   const prompt = fmtShort(row.total_tokens_prompted);
   if (prompt != null) parts.push(`${prompt} prompt`);
+  const gen = fmtShort(row.total_tokens_generated);
+  if (gen != null) parts.push(`${gen} gen`);
   return parts.length ? ` · ${parts.join(' · ')}` : '';
 }
 

@@ -448,7 +448,7 @@ describe('OV agent-row model extras (#593)', () => {
       total_tokens_generated: 1234567, total_tokens_prompted: 89012 }] }, null, null];
     const [row] = OV.agentRows(aggs, {});
     expect(row.provs[0].detail)
-      .toBe('awake · qwen3-30b · 32k ctx · 1.2M gen · 89.0k prompt');
+      .toBe('awake · qwen3-30b · 32.8k ctx · 89.0k prompt · 1.2M gen');
   });
 
   it('extras are omitted piecewise when fields are absent (old agents)', () => {
@@ -470,7 +470,7 @@ describe('OV agent-row model extras (#593)', () => {
       server_on: true, model: 'nemotron', requests_running: 2,
       ctx: 131072, total_tokens_generated: 555 }] }];
     const [row] = OV.agentRows(aggs, {});
-    expect(row.provs[0].detail).toBe('2 req · nemotron · 128k ctx · 555 gen');
+    expect(row.provs[0].detail).toBe('2 req · nemotron · 131.1k ctx · 555 gen');
   });
 
   it('lms rows append extras after the model list', () => {
@@ -478,6 +478,6 @@ describe('OV agent-row model extras (#593)', () => {
       busy_process_count: 0, loaded_model_count: 1, loaded_models: ['big'],
       ctx: 32768, total_tokens_generated: 900, total_tokens_prompted: 300 }] }, null];
     const [row] = OV.agentRows(aggs, {});
-    expect(row.provs[0].detail).toBe('idle · big · 32k ctx · 900 gen · 300 prompt');
+    expect(row.provs[0].detail).toBe('idle · big · 32.8k ctx · 300 prompt · 900 gen');
   });
 });
