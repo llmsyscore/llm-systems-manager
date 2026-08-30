@@ -8,9 +8,9 @@
 // backfill runs on tab entry via loadOverallHistory (#142, #506).
 // ---------------------------------------------------------------------------
 
-// Rolling 15-min gen/prompt peaks per provider tile (#591); browser-clock
+// Rolling gen/prompt rate windows per provider tile (#591); browser-clock
 // timestamps throughout, like the llama card's trackers.
-const _OV_TILE_PEAK_WINDOW_MS = 900000;
+const _OV_TILE_PEAK_WINDOW_MS = LMPeaks.RATE_WINDOW_MS;
 const _ovTilePeaks = {};
 ['llama', 'lms', 'vllm'].forEach(k => {
   _ovTilePeaks[k] = {
@@ -40,8 +40,8 @@ function ovSeedTilePeaks(rows) {
   }
 }
 
-// Live aggregates → tracker pushes; returns the OV.tiles `peaks` shape.
-// Seeds once per fresh hero backfill (charts.js caches rows in _ovHeroRows).
+// Live aggregates → tracker pushes; returns OV.tiles' rates shape
+// ({llama:{gen,prompt: rateStat},…), seeding once per fresh hero backfill.
 function _ovTilePeaksPush(llama, lms, vllm) {
   if (typeof _ovHeroRows !== 'undefined' && _ovHeroRows && _ovHeroRows !== _ovTileSeedRows) {
     _ovTileSeedRows = _ovHeroRows;
@@ -54,8 +54,8 @@ function _ovTilePeaksPush(llama, lms, vllm) {
     const tp = (aggs[k] && aggs[k].throughput) || {};
     _ovTilePeaks[k].gen.push(now, tp.total_tps);
     _ovTilePeaks[k].prompt.push(now, tp.total_pps);
-    out[k] = { gen: _ovTilePeaks[k].gen.peak(now),
-               prompt: _ovTilePeaks[k].prompt.peak(now) };
+    out[k] = { gen: LMPeaks.rateStat(_ovTilePeaks[k].gen, tp.total_tps, now),
+               prompt: LMPeaks.rateStat(_ovTilePeaks[k].prompt, tp.total_pps, now) };
   }
   return out;
 }
@@ -129,8 +129,8 @@ function ovToggleOverlay() {
 function _ovPaintBand(llama, lms, vllm) {
   if (typeof OV === 'undefined') return;
   _ovPaintToplines(OV.toplines(llama, lms, vllm, _ovEnergy));
-  const peaks = _ovTilePeaksPush(llama, lms, vllm);
-  _ovPaintTiles(OV.tiles(llama, lms, vllm, peaks, Date.now()));
+  const rates = _ovTilePeaksPush(llama, lms, vllm);
+  _ovPaintTiles(OV.tiles(llama, lms, vllm, rates, Date.now()));
   _ovPaintAgents(OV.agentRows([llama, lms, vllm], window._agentsByProvider || {}));
   _ovPaintAlerts();
 }

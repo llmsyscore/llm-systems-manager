@@ -78,7 +78,7 @@ function _setEl(id, val) {
 
 // Server card Gen/Prompt tokens/s tiles: the live rate while traffic flows,
 // else the 60-min mean of active samples; the 60-min peak alongside (#736).
-const _LMS_TILE_WINDOW_MS = 3600000;
+const _LMS_TILE_WINDOW_MS = LMPeaks.RATE_WINDOW_MS;
 // [tracker key, tile id, label, gateway_rates field, history row field]
 const _LMS_RATE_TILES = [
   ['tps', 'lms-tps', 'Gen tokens/s', 'gen_tps', 'lms_tps'],
@@ -103,16 +103,6 @@ function _lmsSeedTileRow(r, clock) {
     if (r[rowField] != null) _lmsTiles[key].push(t, r[rowField]);
 }
 
-// {html, label} for one tile: the live value while > 0, else the window average.
-function fmtLmsRateTile(live, tracker, name, now) {
-  const at = now == null ? Date.now() : now;
-  const p = tracker.peak(at);
-  const peak = p && p.v > 0 ? ' ' + _peakSpan(p.v.toFixed(1), p.t) : '';
-  if (live != null && live > 0) return { html: live.toFixed(1) + peak, label: `${name} · live` };
-  const a = tracker.avg(at);
-  return { html: (a ? a.v.toFixed(1) : '—') + peak, label: `${name} · 60\u2011min avg` };
-}
-
 // Each gateway sample (keyed by its ts) enters the trackers once, browser-stamped;
 // an offline agent's last rates never count as live.
 function _renderLmsRateTiles(gr, now, online = true) {
@@ -122,8 +112,7 @@ function _renderLmsRateTiles(gr, now, online = true) {
   for (const [key, id, name, field] of _LMS_RATE_TILES) {
     const live = online && gr ? gr[field] : null;
     if (fresh && live != null) _lmsTiles[key].push(at, live);
-    const t = fmtLmsRateTile(live, _lmsTiles[key], name, at);
-    _setLivePeak(id, t.html); _setLivePeak(id + '-lbl', t.label);
+    _setRateTile(id, fmtRateTile(live, _lmsTiles[key], name, at));
   }
 }
 

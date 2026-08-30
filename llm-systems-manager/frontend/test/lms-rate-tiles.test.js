@@ -5,6 +5,7 @@ import { fnSrc, srcFile, blockSrc } from './helpers/harness.js';
 import LMPeaks from '../js/lib/peaks.js';
 
 const src = srcFile('js/lmstudio.js');
+const chartsSrc = srcFile('js/charts.js');
 const fn = (name) => {
   const m = fnSrc(src, name);
   expect(m, `${name} not found`).toBeTruthy();
@@ -22,7 +23,7 @@ beforeEach(() => {
   window._setLivePeak = (id, html) => { $(id).innerHTML = html; };
   const consts = blockSrc(src, 'const _LMS_TILE_WINDOW_MS', 'let _lmsTilesLastTs = null;')
     .replace(/^(const|let) /gm, 'window.');
-  (0, eval)([consts, fn('_setEl'), fn('_lmsTilesReset'), fn('_lmsSeedTileRow'), fn('fmtLmsRateTile'),
+  (0, eval)([consts, fn('_setEl'), fn('_lmsTilesReset'), fn('_lmsSeedTileRow'), fnSrc(chartsSrc, 'fmtRateTile'), fnSrc(chartsSrc, '_setRateTile'),
              fn('_renderLmsRateTiles'), 'window._render = _renderLmsRateTiles; window._seed = _lmsSeedTileRow;',
              'window._reset = _lmsTilesReset;'].join('\n'));
   window._reset();

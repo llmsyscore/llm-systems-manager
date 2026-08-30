@@ -42,25 +42,28 @@ describe('tile peak glue (#591)', () => {
     expect(window._T.trackers.vllm.prompt.peak(now).v).toBe(3);
   });
 
-  it('rows outside the 15-min window are not seeded', () => {
+  it('rows outside the 60-min window are not seeded', () => {
     const now = Date.now();
-    const rows = [{ ts: new Date(now - 20 * 60000).toISOString(), llama_tps: 99 },
+    const rows = [{ ts: new Date(now - 70 * 60000).toISOString(), llama_tps: 99 },
                   { ts: new Date(now).toISOString(), llama_tps: 1 }];
     window._T.seed(rows);
     expect(window._T.trackers.llama.gen.peak(now).v).toBe(1);
   });
 
-  it('push seeds lazily once per backfill and returns the peaks shape', () => {
+  it('push seeds lazily once per backfill and returns the rates shape', () => {
     const now = Date.now();
     window._ovHeroRows = [{ ts: new Date(now - 30000).toISOString(), lms_tps: 88 }];
     const agg = { throughput: { total_tps: 2.5, total_pps: 1.0 } };
     const peaks = window._T.push(null, agg, null);
-    expect(peaks.lms.gen.v).toBe(88);
+    expect(peaks.lms.gen).toEqual({ v: 2.5, mode: 'live', peak: { v: 88, t: expect.any(Number) } });
     expect(peaks.lms.prompt.v).toBe(1.0);
-    expect(peaks.llama.gen).toBeNull();
-    expect(peaks.vllm.gen).toBeNull();
-    // Same rows object again: no re-seed, live values keep advancing.
+    expect(peaks.llama.gen).toEqual({ v: null, mode: LMPeaks.AVG_LABEL, peak: null });
+    const idle = window._T.push(null, { throughput: { total_tps: 0, total_pps: 0 } }, null);
+    expect(idle.lms.gen.mode).toBe(LMPeaks.AVG_LABEL);
+    expect(idle.lms.gen.v).toBeCloseTo((88 + 2.5) / 2);
+    expect(peaks.vllm.gen.v).toBeNull();
+    // Same rows object again: no re-seed, the seeded peak stays the peak.
     const again = window._T.push(null, agg, null);
-    expect(again.lms.gen.v).toBe(88);
+    expect(again.lms.gen).toEqual({ v: 2.5, mode: 'live', peak: { v: 88, t: expect.any(Number) } });
   });
 });

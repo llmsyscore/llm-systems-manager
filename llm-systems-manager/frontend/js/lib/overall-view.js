@@ -142,18 +142,24 @@ function _peakLine(p, nowMs) {
   return `peak ${_fmt1(p.v)} · ${_peaks.agoText(nowMs - p.t)}`;
 }
 
-// Aggregates + peaks ({llama:{gen:{v,t},prompt:{v,t}},lms,vllm}) → tile
-// view-models: gen/prompt t/s live+peak first, then two per-provider stats.
-function tiles(llama, lms, vllm, peaks, nowMs) {
-  const pk = peaks || {};
+// LMPeaks.rateStat ({v, mode, peak}) → {v, l, p} stat cell; without a
+// rateStat the live aggregate stands in (no window, no peak).
+function _rateCell(s, live, name, nowMs) {
+  const isLive = typeof live === 'number' && live > 0;
+  const r = s || { v: isLive ? live : null, mode: isLive ? 'live' : _peaks.AVG_LABEL, peak: null };
+  return { v: _fmt1(r.v), l: `${name} · ${r.mode}`, p: _peakLine(r.peak, nowMs) };
+}
+
+// Aggregates + rates ({llama:{gen,prompt: rateStat},lms,vllm}) → tile
+// view-models: prompt then gen t/s first, then two per-provider stats.
+function tiles(llama, lms, vllm, rates, nowMs) {
+  const rt = rates || {};
   const out = [];
   const tpStats = (a, key) => {
     const tp = (a && a.throughput) || {};
-    const p = pk[key] || {};
-    return [
-      { v: _fmt1(tp.total_tps), l: 'gen t/s', p: _peakLine(p.gen, nowMs) },
-      { v: _fmt1(tp.total_pps), l: 'prompt t/s', p: _peakLine(p.prompt, nowMs) },
-    ];
+    const r = rt[key] || {};
+    return [_rateCell(r.prompt, tp.total_pps, 'prompt t/s', nowMs),
+            _rateCell(r.gen, tp.total_tps, 'gen t/s', nowMs)];
   };
   {
     const a = llama || {};

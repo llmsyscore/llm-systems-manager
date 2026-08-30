@@ -647,7 +647,7 @@ function timeSince(ts) {
   return LMPeaks.agoText(Date.now() - ms);
 }
 
-// Muted "(peak N Xm ago)" suffix shared by fmtWithPeak and fmtLivePeak.
+// Muted "(peak N Xm ago)" suffix shared by fmtWithPeak and fmtRateTile.
 function _peakSpan(valText, ts) {
   return `<span style="font-size:0.7em;color:var(--fg-dim)">(peak ${valText} ${timeSince(ts)})</span>`;
 }
@@ -658,9 +658,9 @@ const lastNonZero = {
   requests_deferred: { val: null, ts: null },
 };
 
-// Rolling 15-min peaks for the Llama server card's Gen/Prompt tokens/s;
+// Rolling window for the Llama server card's Gen/Prompt tokens/s tiles;
 // all samples carry browser-clock timestamps.
-const _LLAMA_PEAK_WINDOW_MS = 900000;
+const _LLAMA_PEAK_WINDOW_MS = LMPeaks.RATE_WINDOW_MS;
 // Server-card spark bucket: peak-per-minute so short bursts stay visible.
 const _LLAMA_SRV_BUCKET_MS = 60000;
 const _llamaPeaks = {
@@ -668,12 +668,19 @@ const _llamaPeaks = {
   pps: LMPeaks.makeTracker(_LLAMA_PEAK_WINDOW_MS),
 };
 
-// "12.3 (peak 45.6 3m ago)" — the window peak stays visible at all times.
-function fmtLivePeak(cur, tracker) {
-  const live = cur != null ? cur.toFixed(1) : '—';
-  const p = tracker.peak(Date.now());
-  if (!p) return live;
-  return `${live} ${_peakSpan(p.v.toFixed(1), p.t)}`;
+// {html, label} for a rate tile from LMPeaks.rateStat: value + muted peak
+// span, and "<name> · live" / "<name> · 60‑min avg".
+function fmtRateTile(live, tracker, name, now) {
+  const s = LMPeaks.rateStat(tracker, live, now == null ? Date.now() : now);
+  const peak = s.peak ? ' ' + _peakSpan(s.peak.v.toFixed(1), s.peak.t) : '';
+  return { html: (s.v != null ? s.v.toFixed(1) : '—') + peak, label: `${name} · ${s.mode}` };
+}
+
+// Writes a rate tile's value (#id, html) and label (#id-lbl, text) when changed.
+function _setRateTile(id, tile) {
+  _setLivePeak(id, tile.html);
+  const lbl = document.getElementById(id + '-lbl');
+  if (lbl && lbl.textContent !== tile.label) lbl.textContent = tile.label;
 }
 
 // Writes innerHTML only when the rendered string changed.
@@ -1508,8 +1515,8 @@ async function fetchMetrics() {
     modelEl.title = sleeping ? 'Model is sleeping — metrics polling paused' : '';
     _llamaPeaks.tps.push(Date.now(), ll.tokens_per_second);
     _llamaPeaks.pps.push(Date.now(), ll.prompt_tokens_per_second);
-    _setLivePeak('llamaTps', fmtLivePeak(ll.tokens_per_second, _llamaPeaks.tps));
-    _setLivePeak('llamaPps', fmtLivePeak(ll.prompt_tokens_per_second, _llamaPeaks.pps));
+    _setRateTile('llamaTps', fmtRateTile(ll.tokens_per_second, _llamaPeaks.tps, 'Gen tokens/s'));
+    _setRateTile('llamaPps', fmtRateTile(ll.prompt_tokens_per_second, _llamaPeaks.pps, 'Prompt tokens/s'));
     document.getElementById('llamaGenTokens').textContent    = ll.total_tokens_generated   != null ? ll.total_tokens_generated.toLocaleString() : '—';
     document.getElementById('llamaPromptTokens').textContent = ll.total_tokens_prompted    != null ? ll.total_tokens_prompted.toLocaleString() : '—';
     document.getElementById('llamaDecodes').textContent      = ll.n_decode_total           != null ? ll.n_decode_total.toLocaleString() : '—';
