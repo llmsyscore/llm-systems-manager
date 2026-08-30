@@ -1,6 +1,8 @@
 """GET/PUT /api/admin/settings (#606): masking, validation, write path, audit."""
 from __future__ import annotations
 
+import json
+
 import pytest
 import requests
 
@@ -204,7 +206,9 @@ def test_split_get_transport_failures_use_fixed_phrases(client, monkeypatch, exc
     err = c.get("/api/admin/settings").get_json()["topology"]["ae_config_error"]
     assert err["kind"] == "unreachable"
     assert err["detail"].startswith(phrase)
-    assert str(exc) not in err["detail"]
+    # Nothing exception-derived anywhere in the reason (py/stack-trace-exposure).
+    assert "SENTINEL" not in json.dumps(err)
+    assert type(exc).__name__ not in json.dumps(err)
 
 
 @pytest.mark.parametrize("status,kind", [(401, "unauthorized"), (403, "unauthorized"),
