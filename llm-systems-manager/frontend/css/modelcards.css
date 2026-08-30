@@ -136,7 +136,7 @@
 /* tri-state: a third "auto" chip next to the toggle */
 .mc-tristate { display: inline-flex; align-items: center; gap: 8px; }
 .mc-auto-chip { font-family: var(--font-sans); font-size: 10px; font-weight: 600; color: var(--fg-dim); background: var(--bg-card-alt); border: 1px solid var(--border-strong); border-radius: 999px; padding: 2px 8px; cursor: pointer; }
-.mc-auto-chip.on { color: var(--accent-2); background: color-mix(in srgb, var(--accent-2) 12%, transparent); border-color: color-mix(in srgb, var(--accent-2) 30%, transparent); }
+.mc-auto-chip:hover, .mc-auto-chip.on { color: var(--accent-2); background: color-mix(in srgb, var(--accent-2) 12%, transparent); border-color: color-mix(in srgb, var(--accent-2) 30%, transparent); }
 
 /* ---------- editor: shared ---------- */
 .ef-sec { margin-bottom: 24px; }

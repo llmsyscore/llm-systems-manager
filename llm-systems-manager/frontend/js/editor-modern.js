@@ -1,7 +1,7 @@
 // Model editor layouts (#765): rail/essentials modes, toggle switches,
 // dirty tracking with was-value breadcrumbs, accordion summaries.
 const EFL = (function () {
-  const ESS_KEYS = ['temperature', 'ctx-size', 'top-p', 'min-p', 'n-gpu-layers', 'reasoning-budget', 'load-mode', 'cache-type-k', 'cache-type-v', 'reasoning'];
+  const ESS_KEYS = ['ctx-size', 'temperature', 'n-gpu-layers', 'cache-type-k', 'cache-type-v', 'load-mode', 'top-p', 'top-k', 'reasoning'];
   const SEC_MAP = {
     'ef-sec-sampling': ['temperature', 'dynatemp-range', 'dynatemp-exp', 'top-p', 'top-k', 'min-p', 'presence-penalty', 'repeat-penalty'],
     'ef-sec-context':  ['ctx-size', 'batch-size', 'ubatch-size', 'n-gpu-layers', 'predict', 'load-mode', 'fit', 'fit-ctx'],
