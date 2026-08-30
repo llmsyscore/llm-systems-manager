@@ -6,8 +6,8 @@
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
 })(typeof window !== 'undefined' ? window : globalThis, function () {
 
-// One metric's rolling window: push(ts, v) samples, peak(nowMs) → the
-// window's max as {v, t} (latest occurrence) or null when empty.
+// One metric's rolling window: push(ts, v) samples; peak(nowMs) → the
+// window's max as {v, t} (latest occurrence); avg(nowMs) → mean of non-zero.
 function makeTracker(windowMs) {
   let samples = [];
   let newest = 0;
@@ -35,19 +35,32 @@ function makeTracker(windowMs) {
     _prune(newest);
   }
 
-  function peak(nowMs) {
+  // Advances the clock to nowMs (never backwards) and prunes the window.
+  function _advance(nowMs) {
     const now = _ms(nowMs);
     if (now != null && now > newest) newest = now;
     _prune(newest);
+  }
+
+  function peak(nowMs) {
+    _advance(nowMs);
     if (!samples.length) return null;
     let best = samples[0];
     for (const s of samples) if (s.v >= best.v) best = s;
     return { v: best.v, t: best.t };
   }
 
+  // Mean of the window's non-zero samples as {v}, or null when none.
+  function avg(nowMs) {
+    _advance(nowMs);
+    const active = samples.filter((s) => s.v > 0);
+    if (!active.length) return null;
+    return { v: active.reduce((a, s) => a + s.v, 0) / active.length };
+  }
+
   function reset() { samples = []; newest = 0; }
 
-  return { push, peak, reset };
+  return { push, peak, avg, reset };
 }
 
 // Clamped "Ns/Nm/Nh ago" ladder shared by every peak display.

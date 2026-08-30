@@ -3,6 +3,7 @@
 // with stubbed collaborators, rather than pattern-matching the source text.
 import { describe, test, expect, vi } from 'vitest';
 import { srcFile, fnSrc, evalGlobal, loadSwitchSubTab as loadSharedSwitchSubTab, flush as tick } from './helpers/harness.js';
+import LMPeaks from '../js/lib/peaks.js';
 
 const boot = srcFile('js/boot.js');
 const foundation = srcFile('js/foundation.js');
@@ -170,6 +171,7 @@ describe('_makeHistoryBackfill pre-fetch clear (#507)', () => {
 
   test('still repaints from a clean slate once rows arrive', async () => {
     loadMakeHistoryBackfill();
+    window.LMPeaks = LMPeaks;
     window.MAX_POINTS = 3600;
     window._selectedAgent = () => 'agent-A';
     const resetCharts = vi.fn();
@@ -184,8 +186,8 @@ describe('_makeHistoryBackfill pre-fetch clear (#507)', () => {
     await backfill();
 
     expect(resetCharts).toHaveBeenCalledTimes(1);
-    expect(paintRow).toHaveBeenNthCalledWith(1, rows[0]);
-    expect(paintRow).toHaveBeenNthCalledWith(2, rows[1]);
+    expect(paintRow).toHaveBeenNthCalledWith(1, rows[0], expect.any(Function));
+    expect(paintRow).toHaveBeenNthCalledWith(2, rows[1], expect.any(Function));
   });
 });
 

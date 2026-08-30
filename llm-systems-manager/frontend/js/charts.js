@@ -680,8 +680,10 @@ function fmtLivePeak(cur, tracker) {
 const _livePeakLast = {};
 function _setLivePeak(id, html) {
   if (_livePeakLast[id] === html) return;
+  const el = document.getElementById(id);
+  if (!el) return;
   _livePeakLast[id] = html;
-  document.getElementById(id).innerHTML = html;
+  el.innerHTML = html;
 }
 
 function updateNonZero(key, val) {
@@ -1077,6 +1079,7 @@ function _resetMetricCharts() {
 // LM Studio dashboard time-series. Cleared at the top of loadLmsHistory so an
 // LMS agent switch doesn't blend onto the previous agent's lines (#121).
 function _resetLmsCharts() {
+  if (typeof _lmsTilesReset === 'function') _lmsTilesReset();
   [typeof lmsCpuChart !== 'undefined' ? lmsCpuChart : null,
    typeof lmsRamChart !== 'undefined' ? lmsRamChart : null,
    typeof lmsNetChart !== 'undefined' ? lmsNetChart : null,
@@ -1249,7 +1252,8 @@ function _makeHistoryBackfill(provider, defaultAgentKey, resetCharts, paintRow) 
     if (g !== gen) return;
     if (rows && rows.length) {
       resetCharts();
-      for (const r of rows.slice(-MAX_POINTS)) paintRow(r);
+      const clock = LMPeaks.rowClock(rows, Date.now());
+      for (const r of rows.slice(-MAX_POINTS)) paintRow(r, clock);
     }
   };
 }
@@ -1258,8 +1262,9 @@ function _makeHistoryBackfill(provider, defaultAgentKey, resetCharts, paintRow) 
 // LMS agent's history. Makes no llama calls — Overall backfills separately.
 const loadLmsHistory = _makeHistoryBackfill('lms', '__LMS_AGENT',
   () => _resetLmsCharts(),
-  (r) => {
+  (r, clock) => {
     const B_PER_MIB = 1048576;
+    if (typeof _lmsSeedTileRow === 'function') _lmsSeedTileRow(r, clock);
     if (typeof lmsCpuChart !== 'undefined' && lmsCpuChart && r.cpu_total != null)
       pushPoint(lmsCpuChart, r.ts, r.cpu_total);
     if (typeof lmsRamChart !== 'undefined' && lmsRamChart && r.ram_percent != null)
