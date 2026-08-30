@@ -180,7 +180,10 @@ def test_split_get_unreachable_ae(client, monkeypatch):
     assert d["topology"]["ae_config_reachable"] is False
     err = d["topology"]["ae_config_error"]
     assert err["kind"] == "unreachable" and err["status"] is None
-    assert "no route" in err["detail"] and err["remedy"]
+    # The exception class is diagnostic; its message stays server-side.
+    assert err["detail"].startswith("OSError") and err["remedy"]
+    assert "no route" not in err["detail"]
+    assert "log_detail" not in err
 
 
 @pytest.mark.parametrize("status,kind", [(401, "unauthorized"), (403, "unauthorized"),

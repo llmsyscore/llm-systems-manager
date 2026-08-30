@@ -3456,7 +3456,8 @@ def admin_settings_get():
     payload["ok"] = True
     payload["topology"] = {"split": topo["split"], "ae_config_reachable": ae_reachable}
     if topo["split"] and not ae_reachable and ae_reason:
-        payload["topology"]["ae_config_error"] = ae_reason
+        payload["topology"]["ae_config_error"] = {
+            k: v for k, v in ae_reason.items() if k != "log_detail"}
     # Manager pending derives from file drift vs boot; AE pending comes from
     # the AE's own comparison, falling back to local drift + in-memory flag.
     derived = settings_catalog.pending_restart_services(file_vals)
@@ -3649,8 +3650,10 @@ def _forward_settings_to_ae(remote: dict, removals: "list | None" = None,
         return "alarm engine unreachable — queued; retrying in the background"
 
 
-def _ae_config_failure(status: "int | None", detail: str) -> dict:
-    """Reason + operator remedy for a failed AE config-API call, keyed by status."""
+def _ae_config_failure(status: "int | None", detail: str,
+                       log_detail: "str | None" = None) -> dict:
+    """Reason + operator remedy for a failed AE config-API call, keyed by status.
+    `detail` is API-safe; `log_detail` stays server-side and is stripped there."""
     if status in (401, 403):
         kind = "unauthorized"
         remedy = ("Its config API accepts only [alarm_engine].management_token "
@@ -3670,7 +3673,8 @@ def _ae_config_failure(status: "int | None", detail: str) -> dict:
         remedy = ("Check [manager].alarm_engine_url, TLS settings, the network "
                   "path, and that the alarm-engine service is running on that "
                   "host.")
-    return {"kind": kind, "status": status, "detail": detail, "remedy": remedy}
+    return {"kind": kind, "status": status, "detail": detail, "remedy": remedy,
+            "log_detail": log_detail or detail}
 
 
 _AE_CONFIG_ERR_STATE: dict = {"kind": None, "ts": 0.0}
@@ -3687,7 +3691,7 @@ def _log_ae_config_failure(reason: "dict | None") -> None:
     if (reason["kind"] != _AE_CONFIG_ERR_STATE["kind"]
             or now - _AE_CONFIG_ERR_STATE["ts"] >= 600):
         log.warning("settings: alarm engine config API unavailable (%s) — %s",
-                    reason["detail"], reason["remedy"])
+                    reason["log_detail"], reason["remedy"])
         _AE_CONFIG_ERR_STATE.update(kind=reason["kind"], ts=now)
 
 
@@ -3710,8 +3714,10 @@ def _fetch_ae_settings_state() -> "tuple[dict | None, bool | None, dict | None, 
         if not isinstance(secrets, dict):
             secrets = None
     except Exception as e:
+        # Only the exception class reaches the API; the message stays in the log.
         return None, None, None, _ae_config_failure(
-            None, f"{type(e).__name__}: {e}")
+            None, f"{type(e).__name__} contacting {base}/api/alarm/admin/config",
+            log_detail=f"{type(e).__name__}: {e}")
     flat: dict = {}
 
     def _walk(node, prefix):
