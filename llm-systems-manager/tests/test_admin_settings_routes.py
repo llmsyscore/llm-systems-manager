@@ -1,7 +1,10 @@
 """GET/PUT /api/admin/settings (#606): masking, validation, write path, audit."""
 from __future__ import annotations
 
+import json
+
 import pytest
+import requests
 
 import manager_mod
 import settings_catalog
@@ -103,12 +106,15 @@ def test_admin_gate_enforced(monkeypatch, tmp_path):
 # --- split-install behaviour (#606, Task 5) ---
 
 class _FakeResp:
-    def __init__(self, ok=True, status_code=200, payload=None):
+    def __init__(self, ok=True, status_code=200, payload=None, json_raises=None):
         self.ok, self.status_code = ok, status_code
         self._payload = payload or {"ok": True}
+        self._json_raises = json_raises
         self.text = ""
 
     def json(self):
+        if self._json_raises is not None:
+            raise self._json_raises
         return self._payload
 
 
@@ -178,6 +184,107 @@ def test_split_get_unreachable_ae(client, monkeypatch):
     monkeypatch.setattr(manager_mod._ae_session, "get", _boom)
     d = c.get("/api/admin/settings").get_json()
     assert d["topology"]["ae_config_reachable"] is False
+    err = d["topology"]["ae_config_error"]
+    assert err["kind"] == "unreachable" and err["status"] is None
+    # A fixed phrase, never exception-derived text (CodeQL py/stack-trace-exposure).
+    assert err["detail"].startswith("the connection failed") and err["remedy"]
+    assert "no route" not in err["detail"] and "OSError" not in err["detail"]
+    assert "log_detail" not in err
+
+
+@pytest.mark.parametrize("exc,phrase", [
+    (requests.exceptions.SSLError("SENTINEL1"), "TLS handshake failed"),
+    (requests.exceptions.ConnectTimeout("SENTINEL2"), "the request timed out"),
+    (requests.exceptions.ConnectionError("SENTINEL3"),
+     "the connection was refused"),
+    (ValueError("SENTINEL4"), "the reply was not valid JSON"),
+])
+def test_split_get_transport_failures_use_fixed_phrases(client, monkeypatch, exc, phrase):
+    c, _ = client
+    _force_split(monkeypatch)
+
+    def _boom(url, **kw):
+        raise exc
+    monkeypatch.setattr(manager_mod._ae_session, "get", _boom)
+    err = c.get("/api/admin/settings").get_json()["topology"]["ae_config_error"]
+    assert err["kind"] == "unreachable"
+    assert err["detail"].startswith(phrase)
+    # Nothing exception-derived anywhere in the reason (py/stack-trace-exposure).
+    assert "SENTINEL" not in json.dumps(err)
+    assert type(exc).__name__ not in json.dumps(err)
+
+
+@pytest.mark.parametrize("status,kind", [(401, "unauthorized"), (403, "unauthorized"),
+                                         (404, "unsupported"), (500, "http")])
+def test_split_get_reports_why_the_ae_config_api_failed(client, monkeypatch,
+                                                        status, kind):
+    """#761: a rejected call must name its cause, not claim 'unreachable'."""
+    c, _ = client
+    _force_split(monkeypatch)
+    monkeypatch.setattr(manager_mod._ae_session, "get",
+                        lambda url, **kw: _FakeResp(ok=False, status_code=status))
+    d = c.get("/api/admin/settings").get_json()
+    assert d["topology"]["ae_config_reachable"] is False
+    err = d["topology"]["ae_config_error"]
+    assert err["kind"] == kind and err["status"] == status
+    assert f"HTTP {status}" in err["detail"]
+    if kind == "unauthorized":
+        assert "management_token" in err["remedy"]
+
+
+def test_split_get_200_with_bad_json_is_not_called_unreachable(client, monkeypatch):
+    """A 2xx whose body isn't JSON keeps its real status: kind http, not a
+    network remedy telling the operator to check connectivity."""
+    c, _ = client
+    _force_split(monkeypatch)
+    monkeypatch.setattr(manager_mod._ae_session, "get",
+                        lambda url, **kw: _FakeResp(json_raises=ValueError("bad body")))
+    err = c.get("/api/admin/settings").get_json()["topology"]["ae_config_error"]
+    assert err["kind"] == "http" and err["status"] == 200
+    assert err["detail"].startswith("the reply was not valid JSON")
+    assert "bad body" not in json.dumps(err)
+
+
+@pytest.fixture
+def _err_log_state(monkeypatch):
+    monkeypatch.setattr(manager_mod, "_AE_CONFIG_ERR_STATE", {"kind": None, "ts": 0.0})
+    return manager_mod._AE_CONFIG_ERR_STATE
+
+
+def _reason(kind="unreachable"):
+    return {"kind": kind, "status": None, "detail": f"D-{kind}", "remedy": "R"}
+
+
+def test_ae_config_failure_log_throttle(client, caplog, _err_log_state):
+    import logging as _logging
+    with caplog.at_level(_logging.INFO, logger="llm-systems-manager"):
+        manager_mod._log_ae_config_failure(_reason())          # first failure logs
+        manager_mod._log_ae_config_failure(_reason())          # same kind: throttled
+        assert sum("unavailable" in r.message for r in caplog.records) == 1
+        _err_log_state["ts"] -= 601                            # window elapsed
+        manager_mod._log_ae_config_failure(_reason())
+        assert sum("unavailable" in r.message for r in caplog.records) == 2
+        manager_mod._log_ae_config_failure(_reason("unauthorized"))  # flap < 60s: held
+        assert sum("unavailable" in r.message for r in caplog.records) == 2
+        _err_log_state["ts"] -= 61                             # past the flap floor
+        manager_mod._log_ae_config_failure(_reason("unauthorized"))
+        assert sum("unavailable" in r.message for r in caplog.records) == 3
+        manager_mod._log_ae_config_failure(None)               # recovery: one INFO
+        manager_mod._log_ae_config_failure(None)               # already clear: silent
+        assert sum("reachable again" in r.message for r in caplog.records) == 1
+        assert _err_log_state["kind"] is None
+        manager_mod._log_ae_config_failure(_reason())          # ts reset: logs at once
+        assert sum("unavailable" in r.message for r in caplog.records) == 4
+
+
+def test_split_get_reachable_ae_carries_no_error(client, monkeypatch):
+    c, _ = client
+    _force_split(monkeypatch)
+    monkeypatch.setattr(manager_mod._ae_session, "get",
+                        lambda url, **kw: _FakeResp(payload={"ok": True, "sections": {}}))
+    d = c.get("/api/admin/settings").get_json()
+    assert d["topology"]["ae_config_reachable"] is True
+    assert "ae_config_error" not in d["topology"]
 
 
 def test_split_restart_uses_ae_self_restart(client, monkeypatch):
