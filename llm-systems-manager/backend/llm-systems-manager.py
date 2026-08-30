@@ -159,7 +159,7 @@ def _local_hostname() -> str:
 # banner reads it. Bump suffix (-1, -2, …) for same-day iterations; roll
 # the date for a new day's first change.
 # ---------------------------------------------------------------------------
-__version__ = "v2026.08.29-5"
+__version__ = "v2026.08.29-6"
 
 # Wall-clock at first import (Cheroot main process); the shutdown banner
 # reads it for the uptime line.
@@ -828,7 +828,12 @@ def index():
 
 @app.route("/api/metrics")
 def get_latest():
-    return jsonify(_llama_sample_for_request())
+    data = dict(_llama_sample_for_request())
+    if data:
+        win = _rate_window_for("llama", [_agent_hostname(_llama_agent_id_for_request())])
+        if win:
+            data["throughput_window"] = win
+    return jsonify(data)
 
 # Maps the legacy /api/history row-field name (what the frontend pushes into
 # Chart.js datasets) to the (source, metric_name) pair the alarm engine
@@ -950,13 +955,13 @@ _history_scoped_lock = _threading.Lock()
 
 
 def _history_scoped(scope: tuple, since_minutes: int, limit: int,
-                    builder) -> list[dict]:
+                    builder, ttl: float = _HISTORY_SCOPED_TTL_S):
     """TTL-cached wrapper for a scoped (agent/fleet) history build."""
     key = (scope, since_minutes, limit)
     now_ts = time.time()
     with _history_scoped_lock:
         cached = _history_scoped_cache.get(key)
-        if cached and (now_ts - cached[0]) < _HISTORY_SCOPED_TTL_S:
+        if cached and (now_ts - cached[0]) < ttl:
             return cached[1]
     rows = builder()
     with _history_scoped_lock:
@@ -1094,6 +1099,25 @@ def _agg_values(kind: str, vals: list) -> "float | None":
     return sum(nums) / len(nums)  # mean
 
 
+def _provider_hosts(provider: str) -> list[str]:
+    """Sorted hostnames of approved agents carrying the provider's capability."""
+    spec = providers.get(provider)
+    cap_key = spec.capability_key if spec else provider
+    data = agent_registry.load_agents()
+    return sorted({
+        (a.get("hostname") or "").strip()
+        for a in (data.get("agents") or {}).values()
+        if a.get("status") == "approved"
+        and (a.get("capabilities") or {}).get(cap_key)
+        and (a.get("hostname") or "").strip()
+    })
+
+
+def _agent_hostname(agent_id: "str | None") -> "str | None":
+    agent = agent_registry.resolve_agent_by_id(agent_id) if agent_id else None
+    return ((agent or {}).get("hostname") or "").strip() or None
+
+
 def _build_fleet_history_rows(provider: str, since_minutes: int,
                               limit: int) -> list[dict]:
     """Aggregate per-host history across every approved+capable agent of a
@@ -1101,16 +1125,7 @@ def _build_fleet_history_rows(provider: str, since_minutes: int,
     hosts with each field's _FLEET_FIELD_AGG function."""
     if not _alarm_engine_url:
         return []
-    spec = providers.get(provider)
-    cap_key = spec.capability_key if spec else provider
-    data = agent_registry.load_agents()
-    hosts = sorted({
-        (a.get("hostname") or "").strip()
-        for a in (data.get("agents") or {}).values()
-        if a.get("status") == "approved"
-        and (a.get("capabilities") or {}).get(cap_key)
-        and (a.get("hostname") or "").strip()
-    })
+    hosts = _provider_hosts(provider)
     if not hosts:
         return []
     base = _alarm_engine_url.rstrip("/")
@@ -1142,6 +1157,90 @@ def _build_fleet_history_rows(provider: str, since_minutes: int,
             if v is not None:
                 rows_by_ts.setdefault(bts, {"ts": bts})[field] = v
     return sorted(rows_by_ts.values(), key=lambda r: r["ts"])
+
+
+# ── 60-min rate window stats (#745) ─────────────────────────────────────────
+# Served with the fleet aggregate and the per-agent metrics payloads so every
+# rate tile reads the same avg/peak instead of computing its own in-browser.
+_RATE_WINDOW_MIN = 60
+_RATE_WINDOW_GRAIN_S = 15.0
+_RATE_WINDOW_TTL_S = 15.0
+_RATE_WINDOW_LIMIT = 10000
+_RATE_WINDOW_KEYS = (("gen", "tps"), ("prompt", "pps"))
+
+
+def _rate_window_metrics(provider: str) -> "dict[str, tuple[str, str, str]] | None":
+    """{gen|prompt: (ae_source, ae_metric, legacy_field)} via the legacy field map."""
+    out = {}
+    for key, suffix in _RATE_WINDOW_KEYS:
+        legacy = f"{provider}_{suffix}"
+        hit = next(((s, n) for s, n, f in _HISTORY_LEGACY_FIELD_MAP if f == legacy), None)
+        if hit is None:
+            return None
+        out[key] = (hit[0], hit[1], legacy)
+    return out
+
+
+def _rate_window_buckets(points: list) -> dict[str, float]:
+    """One host's series → {bucketed ISO ts: max value in that bucket}."""
+    hb: dict[str, float] = {}
+    for p in points or []:
+        ts = p.get("timestamp")
+        v = p.get("value")
+        if not ts or not isinstance(v, (int, float)):
+            continue
+        b = _bucket_iso(ts, _RATE_WINDOW_GRAIN_S)
+        if b not in hb or v > hb[b]:
+            hb[b] = float(v)
+    return hb
+
+
+def _rate_window_stats(buckets_by_host: dict[str, dict[str, float]]) -> dict:
+    """Fleet sum per bucket → {avg: mean of active buckets, peak: {v, ts}}."""
+    totals: dict[str, float] = {}
+    for hb in buckets_by_host.values():
+        for bts, v in hb.items():
+            totals[bts] = totals.get(bts, 0.0) + v
+    active = [(bts, v) for bts, v in totals.items() if v > 0]
+    if not active:
+        return {"avg": None, "peak": None}
+    peak_ts, peak_v = max(active, key=lambda kv: (kv[1], kv[0]))
+    return {"avg": round(sum(v for _, v in active) / len(active), 3),
+            "peak": {"v": round(peak_v, 3), "ts": peak_ts}}
+
+
+def _build_rate_window(provider: str, hosts: list[str]) -> "dict | None":
+    metrics = _rate_window_metrics(provider)
+    if not metrics or not hosts or not _alarm_engine_url:
+        return None
+    base = _alarm_engine_url.rstrip("/")
+    futures = {
+        (key, host): _history_pool.submit(
+            _fetch_history_series, base, src, name, legacy,
+            _RATE_WINDOW_MIN, _RATE_WINDOW_LIMIT, host)
+        for key, (src, name, legacy) in metrics.items()
+        for host in hosts
+    }
+    out: dict = {"window_s": _RATE_WINDOW_MIN * 60,
+                 "grain_s": int(_RATE_WINDOW_GRAIN_S), "hosts": len(hosts)}
+    for key in metrics:
+        per_host = {h: _rate_window_buckets(futures[(key, h)].result()[1]) for h in hosts}
+        out[key] = _rate_window_stats(per_host)
+    return out
+
+
+def _rate_window_for(provider: str, hosts) -> "dict | None":
+    """TTL-cached 60-min window stats for a provider over the given hostnames."""
+    hosts = sorted({(h or "").strip() for h in (hosts or []) if (h or "").strip()})
+    if not hosts or not _alarm_engine_url:
+        return None
+    try:
+        return _history_scoped(("ratewin", provider, tuple(hosts)), _RATE_WINDOW_MIN, 0,
+                               lambda: _build_rate_window(provider, hosts),
+                               ttl=_RATE_WINDOW_TTL_S)
+    except Exception as e:
+        log.debug(f"rate window {provider} failed: {e}")
+        return None
 
 _OFFLINE_SWEEP_INTERVAL_S = 5.0
 
@@ -2012,11 +2111,15 @@ def _llama_sample_for_request() -> dict:
     """The llama host sample for the ?agent= selection, else the default
     agent. Drives /api/metrics + /api/alert so the Dashboard llama.cpp cards
     follow the picker."""
-    aid = flask_request.args.get("agent") or _primary_llama_agent_id()
+    aid = _llama_agent_id_for_request()
     if not aid:
         return {}
     w = provider_state.STORE.get("llama", aid)
     return (w or {}).get("sample") or {}
+
+
+def _llama_agent_id_for_request() -> "str | None":
+    return flask_request.args.get("agent") or _primary_llama_agent_id()
 
 
 def _primary_llama_last_seen() -> float:
@@ -2269,6 +2372,11 @@ def fleet_aggregate(provider: str):
     except Exception as e:
         log.exception("fleet aggregate %s failed: %s", provider, e)
         return jsonify({"ok": False, "error": "aggregator raised"}), 500
+    tp = rollup.get("throughput") if isinstance(rollup, dict) else None
+    if isinstance(tp, dict):
+        win = _rate_window_for(provider, _provider_hosts(provider))
+        if win:
+            tp["window"] = win
     return jsonify(rollup)
 
 
@@ -2436,6 +2544,9 @@ def _provider_metrics_payload(provider: str) -> dict:
     data["agent_online"] = online
     data["agent_age_s"]  = round(age, 1) if last_seen else None
     data["agent_id"]     = aid
+    win = _rate_window_for(provider, [_agent_hostname(aid)]) if aid else None
+    if win:
+        data["throughput_window"] = win
     return data
 
 
