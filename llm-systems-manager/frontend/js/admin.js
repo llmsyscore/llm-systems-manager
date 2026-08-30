@@ -129,12 +129,16 @@ function _adminFetchRelease() {
     _adminRelInflight = (async () => {
       const ctl = new AbortController();
       const t = setTimeout(() => ctl.abort(), 10000);
+      // A failed fetch keeps the last good payload, else marks the endpoint unreachable.
+      const markUnreachable = () => {
+        _adminRelCache = { at: Date.now(), data: _adminRelCache.data || { unreachable: true } };
+      };
       try {
         const r = await fetch('/api/companion/release', { signal: ctl.signal });
         if (r.ok) _adminRelCache = { at: Date.now(), data: await r.json() };
-        else _adminRelCache = { at: Date.now(), data: _adminRelCache.data || { unreachable: true } };
+        else markUnreachable();
       } catch (_) {
-        _adminRelCache = { at: Date.now(), data: _adminRelCache.data || { unreachable: true } };
+        markUnreachable();
       } finally {
         clearTimeout(t);
         _adminRelInflight = null;
@@ -329,13 +333,12 @@ function _renderSystemHealth(d, rel) {
 // no verdict; empty when disabled, up to date, or an update is available.
 function _adminReleaseInfoHtml(rel) {
   if (!rel) return '';
-  if (rel.unreachable) return '<div class="info-row">Release check: endpoint unreachable</div>';
+  const row = (msg) => `<div class="info-row">Release check: ${adminEsc(msg)}</div>`;
+  if (rel.unreachable) return row('endpoint unreachable');
   if (!rel.enabled || rel.update_available === true) return '';
-  let msg = '';
-  if (rel.error) msg = `check failed: ${rel.error}`;
-  else if (rel.update_available === null) msg = rel.note || 'no verdict';
-  if (!msg) return '';
-  return `<div class="info-row">Release check: ${adminEsc(msg)}</div>`;
+  if (rel.error) return row(`check failed: ${rel.error}`);
+  if (rel.update_available === null) return row(rel.note || 'no verdict');
+  return '';
 }
 
 function _healthRowHtml(r) {

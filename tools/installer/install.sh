@@ -66,7 +66,7 @@ else
 fi
 _b_ok()   { printf '%s[ OK ]%s  %s\n' "$_B_GRN" "$_B_RST" "$*"; }
 _b_log()  { printf '%s[INFO]%s  %s\n' "$_B_BLU" "$_B_RST" "$*"; }
-_b_warn() { printf '%s[WARN]%s  %s\n' "$_B_YLW" "$_B_RST" "$*" >&2; }
+_b_warn() { LLMSYS_WARN_COUNT=$((${LLMSYS_WARN_COUNT:-0}+1)); printf '%s[WARN]%s  %s\n' "$_B_YLW" "$_B_RST" "$*" >&2; }
 _b_err()  { printf '%s[ERR ]%s  %s\n' "$_B_RED" "$_B_RST" "$*" >&2; }
 _b_die()  { _b_err "$*"; exit 1; }
 
@@ -1439,7 +1439,7 @@ echo
 
 if (( FAIL == 0 )); then
   if (( ${LLMSYS_WARN_COUNT:-0} > 0 )); then
-    ok "Installation succeeded with ${LLMSYS_WARN_COUNT} warning(s) — see [WARN] lines above."
+    ok "Installation succeeded; ${LLMSYS_WARN_COUNT} [WARN] line(s) above worth a look."
   else
     ok "Installation succeeded."
   fi

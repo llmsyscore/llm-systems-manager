@@ -1263,7 +1263,7 @@ if (( ${#FAILED_UNITS[@]} > 0 )); then
   err "component update failure(s) — these services were NOT restarted: ${FAILED_UNITS[*]}"
 fi
 if (( ${LLMSYS_WARN_COUNT:-0} > 0 )); then
-  warn "${LLMSYS_WARN_COUNT} warning(s) above — review before trusting this update"
+  warn "${LLMSYS_WARN_COUNT} [WARN] line(s) above — review before trusting this update"
 fi
 if (( FAIL > 0 || ${#FAILED_UNITS[@]} > 0 || VERIFY_FAILURES > 0 )); then
   err "Update finished with failures."

@@ -291,6 +291,10 @@ jobs:
           grep -F 'Installation complete' /tmp/main-vs-release.log
           curl -fsS -m 10 http://127.0.0.1:5000/health | jq -e .version
 
+      # The tarball's own git-archive-substituted RELEASE must survive the deploy.
+      - name: Release marker from the published tarball resolves in the update check
+        run: sudo bash tools/installer/ci-release-marker.sh
+
       - name: Collect service logs on failure
         if: failure()
         run: |
@@ -370,6 +374,11 @@ jobs:
                MGR_DIR=/opt/llm-systems-manager-mgr \
                DETECTED_IP="$DETECTED_IP" \
                bash tools/installer/ci-split-smoke.sh
+
+      - name: Release marker on both split install dirs
+        run: |
+          sudo bash tools/installer/ci-release-marker.sh /opt/llm-systems-manager-mgr
+          sudo bash tools/installer/ci-release-marker.sh --no-manager /opt/llm-systems-manager-ae
 
       - name: Collect service logs on failure
         if: failure()
