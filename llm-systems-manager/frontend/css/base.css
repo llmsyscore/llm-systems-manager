@@ -142,7 +142,7 @@
       opacity: 0.25; transition: opacity 0.15s, color 0.15s;
     }
     .card:hover .card-size-btn { opacity: 0.7; }
-    .card-size-btn:hover, .card-size-btn:focus-visible { opacity: 1; color: var(--fg); }
+    .card .card-size-btn:hover, .card .card-size-btn:focus-visible { opacity: 1; color: var(--fg); }
     /* Instant tip below the button naming the current and next size. */
     .card-size-btn::after {
       content: attr(data-tip); display: none;
