@@ -303,6 +303,7 @@ Backend API endpoints consumed:
           <div class="ef-field" data-ef="ctx-size" data-sum="ctx"><label>Context Size</label><div class="ef-in"><input id="ef-ctx-size" type="number" min="512" /><span class="unit">tok</span></div><div class="ef-was"></div></div>
           <div class="ef-field" data-ef="batch-size" data-sum="batch"><label>Batch Size</label><div class="ef-in"><input id="ef-batch-size" type="number" min="1" /></div><div class="ef-was"></div></div>
           <div class="ef-field" data-ef="ubatch-size" data-sum="ubatch"><label>Ubatch Size</label><div class="ef-in"><input id="ef-ubatch-size" type="number" min="1" /></div><div class="ef-was"></div></div>
+          <div class="ef-field" data-ef="parallel" data-sum="par"><label>Parallel <span class="hint">(slots)</span></label><div class="ef-in"><input id="ef-parallel" type="number" min="1" placeholder="1" /></div><div class="ef-was"></div></div>
           <div class="ef-field" data-ef="n-gpu-layers" data-sum="gpu"><label>GPU Layers <span class="hint">(99 = all)</span></label><div class="ef-in"><input id="ef-n-gpu-layers" type="number" min="0" max="999" /></div><div class="ef-was"></div></div>
           <div class="ef-field" data-ef="predict" data-sum="predict"><label>Max Predict <span class="hint">(-1 = ∞)</span></label><div class="ef-in"><input id="ef-predict" type="number" min="-1" /></div><div class="ef-was"></div></div>
           <div class="ef-field" data-ef="load-mode" data-sum="load"><label>Load Mode</label>
@@ -354,6 +355,16 @@ Backend API endpoints consumed:
         <div class="ef-grid">
           <div class="ef-field" data-ef="reasoning-budget" data-sum="budget"><label>Reasoning Budget <span class="hint">(-1 = ∞)</span></label><div class="ef-in"><input id="ef-reasoning-budget" type="number" min="-1" /><span class="unit">tok</span></div><div class="ef-was"></div></div>
           <div class="ef-field" data-ef="swa-checkpoints" data-sum="swa-ckpt"><label>SWA Checkpoints</label><div class="ef-in"><input id="ef-swa-checkpoints" type="number" min="0" placeholder="(leave empty)" /></div><div class="ef-was"></div></div>
+          <div class="ef-field" data-ef="spec-type" data-sum="spec"><label>Speculative Type</label>
+            <div class="ef-in"><select id="ef-spec-type">
+              <option value="">none</option>
+              <option>draft-simple</option><option>draft-eagle3</option><option>draft-dflash</option>
+              <option>draft-dspark</option><option>draft-mtp</option>
+              <option>ngram-cache</option><option>ngram-simple</option><option>ngram-map-k</option>
+              <option>ngram-map-k4v</option><option>ngram-mod</option>
+            </select></div><div class="ef-was"></div>
+          </div>
+          <div class="ef-field" data-ef="spec-draft-n-max" data-sum="spec-n"><label>Spec Draft N Max</label><div class="ef-in"><input id="ef-spec-draft-n-max" type="number" min="0" placeholder="3" /><span class="unit">tok</span></div><div class="ef-was"></div></div>
           <div class="ef-field" data-ef="flash-attn" data-sum="fa"><label>Flash Attention</label>
             <select id="ef-flash-attn" style="display:none;"><option>on</option><option>off</option><option>auto</option></select>
             <div class="mc-tristate">
@@ -378,6 +389,11 @@ Backend API endpoints consumed:
           <div class="ef-field" data-ef="check-tensors" data-sum="check"><label>Check Tensors</label>
             <select id="ef-check-tensors" style="display:none;"><option value="off">off</option><option value="on">on</option></select>
             <div class="mc-toggle" data-eftoggle="ef-check-tensors" role="switch" tabindex="0" aria-checked="false"><span class="track"></span><span class="tlbl">off</span></div>
+            <div class="ef-was"></div>
+          </div>
+          <div class="ef-field" data-ef="reasoning-preserve" data-sum="rsn-keep"><label>Reasoning Preserve</label>
+            <select id="ef-reasoning-preserve" style="display:none;"><option value="">off</option><option value="on">on</option></select>
+            <div class="mc-toggle" data-eftoggle="ef-reasoning-preserve" role="switch" tabindex="0" aria-checked="false"><span class="track"></span><span class="tlbl">off</span></div>
             <div class="ef-was"></div>
           </div>
         </div>
@@ -1989,8 +2005,8 @@ Backend API endpoints consumed:
 <script src="/static/js/admin.js?v=2026.08.30-1"></script>
 <script src="/static/js/admin-settings.js?v=2026.08.30-2"></script>
 <script src="/static/js/autopilot.js?v=2026.07.31-2"></script>
-<script src="/static/js/llmcontrol-models.js?v=2026.08.30-4"></script>
-<script src="/static/js/editor-modern.js?v=2026.08.30-3"></script>
+<script src="/static/js/llmcontrol-models.js?v=2026.08.30-5"></script>
+<script src="/static/js/editor-modern.js?v=2026.08.30-4"></script>
 <script src="/static/js/bench-autotune.js?v=2026.08.30-1"></script>
 <script src="/static/js/lmstudio.js?v=2026.08.30-3"></script>
 <script src="/static/js/vllm.js?v=2026.08.30-4"></script>

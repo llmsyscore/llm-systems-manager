@@ -908,6 +908,8 @@ const EF_VALIDATION = {
   'cache-ram':        { min: 0 },
   'reasoning-budget': { min: -1 },
   'swa-checkpoints':  { min: 0 },
+  'parallel':         { min: 1 },
+  'spec-draft-n-max': { min: 0 },
   'fit-ctx':          { min: 0 },
 };
 // List of all editor fields, used to populate the editor form and to gather values when saving. Fields that have special default handling (like "mmap" and "direct-io") are still included here, but their defaults are handled in EF_SPECIAL_DEFAULTS instead of EF_DEFAULTS.
@@ -917,7 +919,8 @@ const EF_FIELDS = [
   'n-gpu-layers','predict',
   'cache-type-k','cache-type-v','cache-ram',
   'flash-attn','reasoning','reasoning-budget','swa-full','swa-checkpoints',
-  'fit','fit-ctx','check-tensors'
+  'fit','fit-ctx','check-tensors',
+  'parallel','reasoning-preserve','spec-type','spec-draft-n-max'
 ];
 
 function efId(key) { return 'ef-' + key; }
