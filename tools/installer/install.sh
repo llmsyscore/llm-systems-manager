@@ -1438,7 +1438,11 @@ echo "    Repository:       github.com/llmsyscore/llm-systems-manager"
 echo
 
 if (( FAIL == 0 )); then
-  ok "Installation succeeded."
+  if (( ${LLMSYS_WARN_COUNT:-0} > 0 )); then
+    ok "Installation succeeded with ${LLMSYS_WARN_COUNT} warning(s) — see [WARN] lines above."
+  else
+    ok "Installation succeeded."
+  fi
 else
   err "Installation completed with ${FAIL} failed health check(s)."
   exit 1

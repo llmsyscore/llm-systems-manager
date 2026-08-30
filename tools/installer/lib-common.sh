@@ -38,7 +38,9 @@ fi
 
 log()  { printf '%s[INFO]%s  %s\n'  "$LLMSYS_C_BLU" "$LLMSYS_C_RST" "$*"; }
 ok()   { printf '%s[ OK ]%s  %s\n'  "$LLMSYS_C_GRN" "$LLMSYS_C_RST" "$*"; }
-warn() { printf '%s[WARN]%s  %s\n'  "$LLMSYS_C_YLW" "$LLMSYS_C_RST" "$*" >&2; }
+# LLMSYS_WARN_COUNT tallies warn() calls for the callers' end-of-run summary.
+: "${LLMSYS_WARN_COUNT:=0}"
+warn() { LLMSYS_WARN_COUNT=$((LLMSYS_WARN_COUNT+1)); printf '%s[WARN]%s  %s\n'  "$LLMSYS_C_YLW" "$LLMSYS_C_RST" "$*" >&2; }
 err()  { printf '%s[ERR ]%s  %s\n'  "$LLMSYS_C_RED" "$LLMSYS_C_RST" "$*" >&2; }
 die()  { err "$*"; exit 1; }
 
@@ -688,23 +690,19 @@ deploy_into_install_dir() {
   ok "deployed $src → $dest (owner $LLMSYS_RUN_USER:$LLMSYS_RUN_GROUP)"
 }
 
-# stamp_release_marker SRC DEST — write DEST/RELEASE from the staged tree's
-# tag so the deployed copy can name its own release. Callers chown afterwards.
+# stamp_release_marker SRC DEST — write DEST/RELEASE with the staged tree's
+# tag: .llmsys-release, else a substituted SRC/RELEASE, else git describe.
 stamp_release_marker() {
   local src="$1" dest="${2:-$LLMSYS_INSTALL_DIR}" tag=""
-  # .llmsys-release is the tag fetch_release_tree unpacked; it is excluded
-  # from the deploy, so its value has to be copied into RELEASE here.
+  # Callers chown DEST afterwards.
   if [[ -f "$src/.llmsys-release" ]]; then
     tag="$(cat "$src/.llmsys-release" 2>/dev/null)" || tag=""
+    [[ "$tag" == \$Format:* ]] && tag=""
   fi
-  # An unpacked release tarball (--source local) carries no .llmsys-release,
-  # but git archive already substituted its own RELEASE.
   if [[ -z "$tag" && -f "$src/RELEASE" ]]; then
     tag="$(cat "$src/RELEASE" 2>/dev/null)" || tag=""
     [[ "$tag" == \$Format:* ]] && tag=""
   fi
-  # A git staging clone keeps RELEASE as git archive's unsubstituted
-  # export-subst placeholder, so describe is the only tag source.
   if [[ -z "$tag" && -e "$src/.git" ]] && have git; then
     tag="$(git -C "$src" describe --tags 2>/dev/null)" || tag=""
   fi

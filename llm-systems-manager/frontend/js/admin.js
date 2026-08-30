@@ -132,9 +132,9 @@ function _adminFetchRelease() {
       try {
         const r = await fetch('/api/companion/release', { signal: ctl.signal });
         if (r.ok) _adminRelCache = { at: Date.now(), data: await r.json() };
-        else _adminRelCache.at = Date.now();
+        else _adminRelCache = { at: Date.now(), data: _adminRelCache.data || { unreachable: true } };
       } catch (_) {
-        _adminRelCache.at = Date.now();
+        _adminRelCache = { at: Date.now(), data: _adminRelCache.data || { unreachable: true } };
       } finally {
         clearTimeout(t);
         _adminRelInflight = null;
@@ -325,10 +325,12 @@ function _renderSystemHealth(d, rel) {
   }
 }
 
-// Muted line for a release check that ran but reached no verdict, so a failing
-// check is distinguishable from one reporting "up to date".
+// Muted info row when the release check is unreachable, errored, or returned
+// no verdict; empty when disabled, up to date, or an update is available.
 function _adminReleaseInfoHtml(rel) {
-  if (!rel || !rel.enabled || rel.update_available === true) return '';
+  if (!rel) return '';
+  if (rel.unreachable) return '<div class="info-row">Release check: endpoint unreachable</div>';
+  if (!rel.enabled || rel.update_available === true) return '';
   let msg = '';
   if (rel.error) msg = `check failed: ${rel.error}`;
   else if (rel.update_available === null) msg = rel.note || 'no verdict';

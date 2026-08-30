@@ -143,25 +143,32 @@ else
 fi
 
 echo "── release marker + update check ──────────────────────────────"
-# #757: a deployed tree that can't name its release makes the dashboard's
-# update check return no verdict, silently and forever.
-# A deployed tree has no .git (the rsync excludes it), so the marker is its
-# only tag source; a dev checkout legitimately answers from describe instead.
+# Asserts the deployed tree carries a stamped RELEASE marker (or is a git
+# checkout), is owned by the service user, and resolves in the update check.
 _REL_FILE="$INSTALL_DIR/RELEASE"
 _REL_VAL="$(head -1 "$_REL_FILE" 2>/dev/null || true)"
 if [[ -n "$_REL_VAL" && "$_REL_VAL" != \$Format:* ]]; then
   _pass "RELEASE marker deployed: $_REL_VAL"
+  _REL_OWNER="$(stat -c '%U:%G' "$_REL_FILE" 2>/dev/null || true)"
+  _TREE_OWNER="$(stat -c '%U:%G' "$INSTALL_DIR/llm-systems-manager/backend/llm-systems-manager.py" 2>/dev/null || true)"
+  if [[ -z "$_TREE_OWNER" ]]; then
+    _pass "RELEASE marker owner $_REL_OWNER (no manager tree to compare)"
+  elif [[ "$_REL_OWNER" == "$_TREE_OWNER" ]]; then
+    _pass "RELEASE marker owned by the service user ($_REL_OWNER)"
+  else
+    _fail "RELEASE marker owned by $_REL_OWNER but the deployed tree is $_TREE_OWNER"
+  fi
 elif [[ -e "$INSTALL_DIR/.git" ]]; then
   _pass "no RELEASE marker, but $INSTALL_DIR is a git checkout — describe answers"
 else
   _fail "RELEASE marker missing or unstamped and no .git to fall back on: ${_REL_VAL:-<absent>}"
 fi
 
-# Resolve the tag the way the running manager does and drive the comparison
-# with a synthetic newer tag: no github.com call, no dashboard session.
+# Drives the manager's own tag resolution and ranks a synthetic newer tag
+# against it; no github.com call, no dashboard session.
 _REL_PY="$INSTALL_DIR/llm-systems-manager/venv/bin/python3"
 if [[ ! -x "$_REL_PY" ]]; then
-  _pass "no manager venv here — update-check resolution not applicable"
+  _fail "manager venv python missing at $_REL_PY"
 else
   _REL_SNIP="$(mktemp)"
   cat > "$_REL_SNIP" <<'PY'
@@ -183,7 +190,7 @@ else:
     print("OK %s (source=%s kind=%s)"
           % (tag, inst.get("source"), companion._install_kind(inst)))
 PY
-  _REL_OUT="$("$_REL_PY" "$_REL_SNIP" "$INSTALL_DIR" 2>&1 | tail -1)"
+  _REL_OUT="$(timeout 30 "$_REL_PY" "$_REL_SNIP" "$INSTALL_DIR" 2>&1 | tail -1)"
   rm -f "$_REL_SNIP"
   case "$_REL_OUT" in
     OK*)   _pass "update check resolves the install: ${_REL_OUT#OK }" ;;

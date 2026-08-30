@@ -37,7 +37,7 @@ describe('_adminReleaseInfoHtml', () => {
   });
 
   test('surfaces the note when the check reached no verdict', () => {
-    // The #757 case: source=null, so there is no tag to compare.
+    // source=null: no tag to compare.
     const out = info({
       enabled: true, update_available: null,
       note: 'install has no release tag to compare',
@@ -65,6 +65,14 @@ describe('_adminReleaseInfoHtml', () => {
       enabled: true, update_available: false, error: 'ConnectionError',
     });
     expect(out).toContain('ConnectionError');
+  });
+
+  test('reports the endpoint itself being unreachable', () => {
+    expect(info({ unreachable: true })).toContain('endpoint unreachable');
+  });
+
+  test('silent before any fetch has completed', () => {
+    expect(info(null)).toBe('');
   });
 
   test('escapes server-supplied text', () => {
@@ -110,6 +118,12 @@ describe('_renderSystemHealth warnings panel', () => {
     expect(out).toContain('2 approved agent(s) down');
     expect(out).toContain('no release tag to compare');
     expect(out).not.toContain('All systems nominal');
+  });
+
+  test('an unreachable endpoint shows beside "all nominal"', () => {
+    const out = render({ warnings: [] }, { unreachable: true });
+    expect(out).toContain('All systems nominal');
+    expect(out).toContain('endpoint unreachable');
   });
 
   test('an available update still renders the warn row, with no info row', () => {

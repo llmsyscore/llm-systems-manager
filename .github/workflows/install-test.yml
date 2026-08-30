@@ -52,9 +52,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
         with:
-          # RELEASE is stamped from `git describe`, so the tag must be
-          # fetchable or the deployed tree cannot name its own release.
-          fetch-depth: 0
+          fetch-depth: 0   # tags, for the RELEASE stamp
 
       # Non-TTY runs refuse to auto-apt missing prerequisites; provide them
       # up front (the rest of the runner image already has git/curl/python3).
@@ -124,7 +122,7 @@ jobs:
         uses: actions/checkout@v7
         with:
           path: head
-          fetch-depth: 0
+          fetch-depth: 0   # tags, for the RELEASE stamp
 
       - name: Install prerequisites
         run: |
@@ -184,9 +182,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
         with:
-          # RELEASE is stamped from `git describe`, so the tag must be
-          # fetchable or the deployed tree cannot name its own release.
-          fetch-depth: 0
+          fetch-depth: 0   # tags, for the RELEASE stamp
 
       - name: Install prerequisites
         run: |
@@ -394,9 +390,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
         with:
-          # RELEASE is stamped from `git describe`, so the tag must be
-          # fetchable or the deployed tree cannot name its own release.
-          fetch-depth: 0
+          fetch-depth: 0   # tags, for the RELEASE stamp
 
       - name: Install prerequisites
         run: |
@@ -468,8 +462,6 @@ jobs:
           git -C "${RUNNER_TEMP}/serve-src" init -q -b main
           git -C "${RUNNER_TEMP}/serve-src" -c user.email=ci@local -c user.name=ci add -A
           git -C "${RUNNER_TEMP}/serve-src" -c user.email=ci@local -c user.name=ci commit -qm "ci source"
-          # A real clone carries tags; without one `git describe` finds nothing
-          # and the deployed tree cannot stamp a RELEASE marker.
           git -C "${RUNNER_TEMP}/serve-src" tag v0.0.0-ci
           # System-level so root's git (under sudo) sees it too.
           sudo git config --system \
