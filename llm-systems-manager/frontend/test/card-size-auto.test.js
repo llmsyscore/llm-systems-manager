@@ -56,9 +56,9 @@ describe('auto card size (#735)', () => {
     const c = card('cpu');
     c.appendChild(Object.assign(document.createElement('button'), { className: 'card-size-btn' }));
     window._applyCardSize(c, 'auto');
-    expect(c.querySelector('.card-size-btn').title).toBe('Card size: auto (content height) · click for 1×1');
+    expect(c.querySelector('.card-size-btn').dataset.tip).toBe('Card size: auto (content height) · click for 1×1');
     window._applyCardSize(c, '2x2');
-    expect(c.querySelector('.card-size-btn').title).toBe('Card size: 2×2 · click for 1×2');
+    expect(c.querySelector('.card-size-btn').dataset.tip).toBe('Card size: 2×2 · click for 1×2');
   });
   it('auto survives a 1-column grid and clamps garbage to 1x1', () => {
     window.getComputedStyle = () => ({ gridTemplateColumns: '1fr' });

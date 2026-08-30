@@ -126,7 +126,7 @@ function _applyCardSize(card, size) {
   if (eff !== '1x1') card.classList.add('size-' + eff);
   const btn = card.querySelector(':scope > .card-size-btn');
   if (btn) {
-    btn.title = `Card size: ${_sizeLabel(eff)} · click for ${_sizeLabel(_nextCardSize(card, eff))}`;
+    btn.dataset.tip = `Card size: ${_sizeLabel(eff)} · click for ${_sizeLabel(_nextCardSize(card, eff))}`;
   }
   // Charts inside grow/shrink with the card; re-call resize() so they
   // re-paint at the monitor's actual DPR (no blur from CSS stretching).
