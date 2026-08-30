@@ -59,8 +59,7 @@ ok "copied template → $REAL (mode 0600)"
 
 # Auto-detect the primary LAN IP and its /24 — this is this host's address
 # from the rest of the lab's perspective.
-DETECTED_IP="$(hostname -I 2>/dev/null | awk '{print $1}')"
-[[ -z "$DETECTED_IP" ]] && DETECTED_IP="127.0.0.1"
+DETECTED_IP="$(detect_primary_ip)"
 DETECTED_SUBNET="$(printf '%s' "$DETECTED_IP" | awk -F. '{ printf "%s.%s.%s.0/24", $1, $2, $3 }')"
 log "detected primary IP: $DETECTED_IP  (suggested subnet: $DETECTED_SUBNET)"
 

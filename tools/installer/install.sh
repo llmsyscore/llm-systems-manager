@@ -53,7 +53,7 @@ unset LLMSYS_UPSTREAM_TMP _upstream_re
 # substantive change to this file. The self-update trampoline only re-execs
 # when the upstream copy carries a STRICTLY GREATER number, so locally-
 # modified scripts (or unpushed commits) are never silently downgraded.
-_INSTALL_SH_REVISION=20260828001
+_INSTALL_SH_REVISION=20260829001
 
 # Fallback bootstrap helpers — used until we source lib-common.sh.
 # TTY-aware colors so OK/WARN/ERR markers stand out in interactive runs and
@@ -237,21 +237,28 @@ _b_find_helper() {
 }
 
 MODE=""
+_MODE_FROM_MENU=0
 UNINSTALL=0
 UPDATE=0
 NO_SELF_UPDATE=0
 RUN_USER_OVERRIDE=""
 FORWARD_ARGS=()
+_REF_FROM_FLAG=0
+_SOURCE_FROM_FLAG=0
+# Per-run apt-update stamp: never inherited from the environment.
+LLMSYS_APT_STAMP=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --mode) [[ $# -ge 2 ]] || _b_die "--mode requires a value"; MODE="$2"; shift 2 ;;
     --mode=*) MODE="${1#*=}"; shift ;;
     --user) [[ $# -ge 2 ]] || _b_die "--user requires a value"; RUN_USER_OVERRIDE="$2"; shift 2 ;;
     --user=*) RUN_USER_OVERRIDE="${1#*=}"; shift ;;
-    --ref) [[ $# -ge 2 ]] || _b_die "--ref requires a value"; LLMSYS_RELEASE_TAG="$2"; shift 2 ;;
-    --ref=*) LLMSYS_RELEASE_TAG="${1#*=}"; shift ;;
-    --source) [[ $# -ge 2 ]] || _b_die "--source requires a value"; LLMSYS_SOURCE="$2"; shift 2 ;;
-    --source=*) LLMSYS_SOURCE="${1#*=}"; shift ;;
+    --ref) [[ $# -ge 2 ]] || _b_die "--ref requires a value"; LLMSYS_RELEASE_TAG="$2"; _REF_FROM_FLAG=1; shift 2 ;;
+    --ref=*) LLMSYS_RELEASE_TAG="${1#*=}"; _REF_FROM_FLAG=1; shift ;;
+    --source) [[ $# -ge 2 ]] || _b_die "--source requires a value"; LLMSYS_SOURCE="$2"; _SOURCE_FROM_FLAG=1; shift 2 ;;
+    --source=*) LLMSYS_SOURCE="${1#*=}"; _SOURCE_FROM_FLAG=1; shift ;;
+    --primary-ip) [[ $# -ge 2 ]] || _b_die "--primary-ip requires a value"; LLMSYS_PRIMARY_IP="$2"; shift 2 ;;
+    --primary-ip=*) LLMSYS_PRIMARY_IP="${1#*=}"; shift ;;
     --uninstall) UNINSTALL=1; shift ;;
     --update)    UPDATE=1; shift ;;
     --no-self-update) NO_SELF_UPDATE=1; shift ;;
@@ -285,6 +292,12 @@ Options:
   --uninstall     Remove services, unit files, install tree, sudoers fragment,
                   cached clone, runtime user, and (optionally) InfluxDB itself.
                   Asks before each destructive step.
+  --primary-ip ADDR
+                  This host's LAN IPv4 for the local agent's advertised address,
+                  the dashboard URL, and the config-bootstrap subnet default.
+                  Default: the default-route source address, else the first
+                  global IPv4 on a non-virtual NIC (docker0/br-*/virbr*/veth*
+                  are skipped). Env: LLMSYS_PRIMARY_IP.
   --no-self-update
                   Skip the upstream-install.sh check that normally fetches a
                   newer installer revision and re-execs it. Useful for offline
@@ -328,15 +341,36 @@ HELP
   esac
 done
 
+# Export the primary-IP override so install-config-bootstrap.sh sees it too.
+if [[ -n "${LLMSYS_PRIMARY_IP:-}" ]]; then
+  [[ "$LLMSYS_PRIMARY_IP" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]] \
+    || _b_die "--primary-ip / LLMSYS_PRIMARY_IP must be an IPv4 address (got: '$LLMSYS_PRIMARY_IP')"
+  export LLMSYS_PRIMARY_IP
+fi
+
 # Validate the source selection and export it (plus any --ref pin) so the
 # exec'd update.sh and every sub-installer inherit the same source choice.
+# Values that arrived via the environment (not a flag) are called out so a
+# stale export from an earlier run is visible in the log and in any error.
+_SOURCE_ORIGIN="--source"
+_REF_ORIGIN="--ref"
+if [[ -n "${LLMSYS_SOURCE:-}" && "$_SOURCE_FROM_FLAG" != "1" ]]; then
+  _SOURCE_ORIGIN="LLMSYS_SOURCE (environment)"
+  [[ "$LLMSYS_SOURCE" != "release" ]] \
+    && _b_warn "using LLMSYS_SOURCE=${LLMSYS_SOURCE} from the environment (no --source flag given)"
+fi
+if [[ -n "${LLMSYS_RELEASE_TAG:-}" && "$_REF_FROM_FLAG" != "1" ]]; then
+  _REF_ORIGIN="LLMSYS_RELEASE_TAG (environment)"
+  _b_warn "using LLMSYS_RELEASE_TAG=${LLMSYS_RELEASE_TAG} from the environment (no --ref flag given)"
+fi
 case "${LLMSYS_SOURCE:-release}" in
   release|git|local) ;;
-  *) _b_die "--source must be 'release', 'git', or 'local' (got: '${LLMSYS_SOURCE:-}')" ;;
+  *) _b_die "${_SOURCE_ORIGIN} must be 'release', 'git', or 'local' (got: '${LLMSYS_SOURCE:-}')" ;;
 esac
 if [[ -n "${LLMSYS_RELEASE_TAG:-}" && "${LLMSYS_SOURCE:-release}" != "release" ]]; then
-  _b_die "--ref pins a release tag to download and conflicts with --source ${LLMSYS_SOURCE}"
+  _b_die "${_REF_ORIGIN}=${LLMSYS_RELEASE_TAG} pins a release tag to download and conflicts with ${_SOURCE_ORIGIN}=${LLMSYS_SOURCE}"
 fi
+unset _SOURCE_ORIGIN _REF_ORIGIN
 export LLMSYS_SOURCE="${LLMSYS_SOURCE:-release}"
 if [[ -n "${LLMSYS_RELEASE_TAG:-}" ]]; then
   export LLMSYS_RELEASE_TAG
@@ -420,7 +454,11 @@ if (( ${#NEEDED[@]} > 0 )); then
         ""|y|yes)
           SUDO=""; [[ $EUID -ne 0 ]] && SUDO="sudo"
           $SUDO apt-get update -qq
-          export _APT_UPDATED=1
+          # Record the update in the per-run stamp so sub-installers skip theirs.
+          LLMSYS_APT_STAMP="$(mktemp -t llmsys-apt-updated.XXXXXX)"
+          trap 'rm -f "${LLMSYS_APT_STAMP:-}"' EXIT
+          printf 'updated\n' > "$LLMSYS_APT_STAMP"
+          export LLMSYS_APT_STAMP
           $SUDO apt-get install -y --no-install-recommends "${NEEDED[@]}"
           ;;
         *) _b_die "Refused — install manually and re-run." ;;
@@ -471,67 +509,6 @@ then
 fi
 _b_ok "python3 >= 3.11 ($(python3 --version 2>&1))"
 
-# ── Self-update trampoline ─────────────────────────────────────────────────
-# Compare _INSTALL_SH_REVISION (local vs upstream). When upstream is STRICTLY
-# GREATER, fetch a fresh copy into /tmp and re-exec with the EXACT original
-# argv. Skips when:
-#   - --no-self-update was passed
-#   - LLMSYS_SELF_UPDATE_DONE is set (we already re-exec'd)
-#   - the operator invoked --update or --uninstall: both already fetch
-#     fresh code from GitHub later in the script, so self-updating here
-#     would be a redundant fetch on the hot path
-#   - a --ref pin was given (pinned runs keep the entry script they started with)
-#   - --source local (offline path — the operator's tree is authoritative)
-#   - the upstream copy can't be fetched (warn + continue with local)
-#
-# A revision integer is used instead of byte equality so a locally-modified
-# install.sh (or a copy carrying unpushed fixes) is never silently
-# downgraded to whatever's on origin/main.
-# Meta modes (7=update, 8=uninstall, 9=quit) skip the self-update trampoline:
-# the operation fetches fresh code (or makes no changes) on its own. MODE is
-# empty on interactive runs at this point, so only an explicit --mode 7/8/9
-# matches here.
-_MODE_IS_META=0
-case "$MODE" in 7|8|9) _MODE_IS_META=1 ;; esac
-if [[ "${LLMSYS_SELF_UPDATE_DONE:-0}" != "1" \
-   && "$NO_SELF_UPDATE" != "1" \
-   && "$UPDATE" != "1" \
-   && "$UNINSTALL" != "1" \
-   && "$LLMSYS_SOURCE" != "local" \
-   && -z "${LLMSYS_RELEASE_TAG:-}" \
-   && "$_MODE_IS_META" != "1" ]]; then
-  _self="${BASH_SOURCE[0]:-$0}"
-  if [[ "$_self" != /* ]]; then
-    _self="$(cd "$(dirname "$_self")" 2>/dev/null && pwd || echo "")/$(basename "$_self")"
-  fi
-  if [[ -f "$_self" ]]; then
-    _upstream_tmp="$(mktemp /tmp/llm-systems-install.upstream.XXXXXX)"
-    if _b_fetch_from_github "tools/installer/install.sh" "$_upstream_tmp"; then
-      # Missing revision marker parses as 0 — old copies still get updated.
-      # `|| true` so a missing marker doesn't fail the pipeline (pipefail +
-      # set -e would otherwise abort the whole assignment).
-      _local_rev="$(grep -E '^_INSTALL_SH_REVISION=[0-9]+' "$_self"          2>/dev/null | head -1 | sed 's/.*=//' || true)"
-      _upstream_rev="$(grep -E '^_INSTALL_SH_REVISION=[0-9]+' "$_upstream_tmp" 2>/dev/null | head -1 | sed 's/.*=//' || true)"
-      _local_rev="${_local_rev:-0}"
-      _upstream_rev="${_upstream_rev:-0}"
-      if (( _upstream_rev > _local_rev )); then
-        _b_log "newer install.sh upstream (rev $_local_rev → $_upstream_rev) — re-executing (pass --no-self-update to skip)"
-        chmod +x "$_upstream_tmp"
-        export LLMSYS_SELF_UPDATE_DONE=1
-        export LLMSYS_ORIGINAL_SELF="$_self"
-        # The child unlinks its own /tmp copy first thing (see top of file).
-        export LLMSYS_UPSTREAM_TMP="$_upstream_tmp"
-        exec bash "$_upstream_tmp" "${_ORIG_ARGV[@]+"${_ORIG_ARGV[@]}"}"
-      fi
-      rm -f "$_upstream_tmp"
-    else
-      _b_warn "self-update check skipped — couldn't reach GitHub (curl failed; running local rev $(grep -E '^_INSTALL_SH_REVISION=[0-9]+' "$_self" 2>/dev/null | head -1 | sed 's/.*=//' || echo "?"))"
-    fi
-    unset _upstream_tmp _local_rev _upstream_rev
-  fi
-  unset _self
-fi
-
 # ── Mode selection ─────────────────────────────────────────────────────────
 # Resolve MODE (flag or interactive menu) BEFORE the update/uninstall
 # short-circuits so menu modes 7/8/9 can map onto the same code paths:
@@ -568,6 +545,7 @@ if [[ "$UPDATE" != "1" && "$UNINSTALL" != "1" ]]; then
 
 MENU
       read -rp "  Mode [1-9]: " MODE
+      _MODE_FROM_MENU=1
       echo
       ;;
   esac
@@ -579,6 +557,63 @@ MENU
     9) _b_log "Quit selected — exiting with no changes."; exit 0 ;;
     *) _b_die "Invalid mode '$MODE' — must be 1-9." ;;
   esac
+fi
+
+# ── Self-update trampoline ─────────────────────────────────────────────────
+# Compare _INSTALL_SH_REVISION (local vs upstream). When upstream is STRICTLY
+# GREATER, fetch a fresh copy into /tmp and re-exec with the EXACT original
+# argv (plus --mode N when the mode came from the menu). Skips when:
+#   - --no-self-update was passed
+#   - LLMSYS_SELF_UPDATE_DONE is set (we already re-exec'd)
+#   - the operator invoked --update or --uninstall (flag or menu 7/8): both
+#     already fetch fresh code from GitHub later in the script
+#   - a --ref pin was given (pinned runs keep the entry script they started with)
+#   - --source local (offline path — the operator's tree is authoritative)
+#   - the upstream copy can't be fetched (warn + continue with local)
+#
+# A revision integer is used instead of byte equality so a locally-modified
+# install.sh (or a copy carrying unpushed fixes) is never silently
+# downgraded to whatever's on origin/main.
+if [[ "${LLMSYS_SELF_UPDATE_DONE:-0}" != "1" \
+   && "$NO_SELF_UPDATE" != "1" \
+   && "$UPDATE" != "1" \
+   && "$UNINSTALL" != "1" \
+   && "$LLMSYS_SOURCE" != "local" \
+   && -z "${LLMSYS_RELEASE_TAG:-}" ]]; then
+  _self="${BASH_SOURCE[0]:-$0}"
+  if [[ "$_self" != /* ]]; then
+    _self="$(cd "$(dirname "$_self")" 2>/dev/null && pwd || echo "")/$(basename "$_self")"
+  fi
+  if [[ -f "$_self" ]]; then
+    _upstream_tmp="$(mktemp /tmp/llm-systems-install.upstream.XXXXXX)"
+    if _b_fetch_from_github "tools/installer/install.sh" "$_upstream_tmp"; then
+      # Missing revision marker parses as 0 — old copies still get updated.
+      # `|| true` so a missing marker doesn't fail the pipeline (pipefail +
+      # set -e would otherwise abort the whole assignment).
+      _local_rev="$(grep -E '^_INSTALL_SH_REVISION=[0-9]+' "$_self"          2>/dev/null | head -1 | sed 's/.*=//' || true)"
+      _upstream_rev="$(grep -E '^_INSTALL_SH_REVISION=[0-9]+' "$_upstream_tmp" 2>/dev/null | head -1 | sed 's/.*=//' || true)"
+      _local_rev="${_local_rev:-0}"
+      _upstream_rev="${_upstream_rev:-0}"
+      if (( _upstream_rev > _local_rev )); then
+        _b_log "newer install.sh upstream (rev $_local_rev → $_upstream_rev) — re-executing (pass --no-self-update to skip)"
+        chmod +x "$_upstream_tmp"
+        export LLMSYS_SELF_UPDATE_DONE=1
+        export LLMSYS_ORIGINAL_SELF="$_self"
+        # The child unlinks its own /tmp copy first thing (see top of file).
+        export LLMSYS_UPSTREAM_TMP="$_upstream_tmp"
+        # A menu-chosen mode isn't in argv; pass it so the child skips the menu.
+        _reexec_args=("${_ORIG_ARGV[@]+"${_ORIG_ARGV[@]}"}")
+        [[ "$_MODE_FROM_MENU" == "1" ]] && _reexec_args=(--mode "$MODE" "${_reexec_args[@]+"${_reexec_args[@]}"}")
+        [[ -n "$LLMSYS_APT_STAMP" ]] && rm -f "$LLMSYS_APT_STAMP"
+        exec bash "$_upstream_tmp" "${_reexec_args[@]+"${_reexec_args[@]}"}"
+      fi
+      rm -f "$_upstream_tmp"
+    else
+      _b_warn "self-update check skipped — couldn't reach GitHub (curl failed; running local rev $(grep -E '^_INSTALL_SH_REVISION=[0-9]+' "$_self" 2>/dev/null | head -1 | sed 's/.*=//' || echo "?"))"
+    fi
+    unset _upstream_tmp _local_rev _upstream_rev
+  fi
+  unset _self
 fi
 
 # ── Update short-circuit ───────────────────────────────────────────────────
@@ -796,6 +831,9 @@ esac
 
 banner "Provisioning $LLMSYS_RUN_USER user"
 ensure_runas_user "$LLMSYS_RUN_USER"
+# useradd's primary-group choice varies by distro (USERGROUPS_ENAB); read the real one.
+resolve_run_group "$LLMSYS_RUN_USER"
+ok "run-as user: $LLMSYS_RUN_USER (group: $LLMSYS_RUN_GROUP)"
 
 case "$MODE" in
   6)
@@ -842,12 +880,14 @@ export LLMSYS_INSTALL_MODE="$MODE"
 # on exit so secrets never persist) and per-run apt-update sentinel. Arm the
 # cleanup trap before either mktemp so a mid-sequence failure still cleans up.
 LLMSYS_INFLUXDB_TOKEN_FILE=""
-LLMSYS_APT_STAMP=""
 export LLMSYS_INFLUXDB_TOKEN_FILE LLMSYS_APT_STAMP
 trap 'rm -f "${LLMSYS_INFLUXDB_TOKEN_FILE:-}" "${LLMSYS_APT_STAMP:-}"' EXIT
 LLMSYS_INFLUXDB_TOKEN_FILE="$(mktemp -t llmsys-influxdb-tokens.XXXXXX.env)"
 chmod 0600 "$LLMSYS_INFLUXDB_TOKEN_FILE"
-LLMSYS_APT_STAMP="$(mktemp -t llmsys-apt-updated.XXXXXX)"
+# Keep the preflight stamp when it exists; otherwise start an empty one.
+if [[ -z "$LLMSYS_APT_STAMP" || ! -f "$LLMSYS_APT_STAMP" ]]; then
+  LLMSYS_APT_STAMP="$(mktemp -t llmsys-apt-updated.XXXXXX)"
+fi
 
 case "$MODE" in
   1)
@@ -988,8 +1028,13 @@ fi
 # the agent (SSE log tail, PTY, direct-to-agent calls) when the browser isn't
 # on this host. Detect this host's primary LAN IP and prefer that; fall back
 # to 127.0.0.1 only when no LAN address is configured.
-_AGENT_DETECTED_IP="$(hostname -I 2>/dev/null | awk '{print $1}')"
-[[ -z "$_AGENT_DETECTED_IP" ]] && _AGENT_DETECTED_IP="127.0.0.1"
+PRIMARY_IP="$(detect_primary_ip)"
+if [[ -n "${LLMSYS_PRIMARY_IP:-}" ]]; then
+  ok "primary IP: $PRIMARY_IP (operator override)"
+else
+  log "primary IP: $PRIMARY_IP (override with --primary-ip ADDR if this is the wrong NIC)"
+fi
+_AGENT_DETECTED_IP="$PRIMARY_IP"
 _LOCAL_MGR_URL="http://${_AGENT_DETECTED_IP}:5000"
 
 # ── Mode 1: install the local agent now that the manager is up ─────────────
@@ -1280,8 +1325,6 @@ else
 fi
 
 # ── Closing banner ──────────────────────────────────────────────────────────
-PRIMARY_IP="$(hostname -I 2>/dev/null | awk '{print $1}')"
-[[ -z "$PRIMARY_IP" ]] && PRIMARY_IP="127.0.0.1"
 DASHBOARD_URL="http://${PRIMARY_IP}:5000/"
 
 if (( FAIL == 0 )); then
