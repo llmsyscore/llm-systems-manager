@@ -229,27 +229,74 @@ function _setVllmBtns(serverUp) {
   if (start) start.disabled = serverUp;
 }
 
+let _vllmLastModels = null, _vllmLastActive = null;
+
 function renderVllmModelCards(models, activeId) {
   const host = document.getElementById('vllmModelCards');
   if (!host) return;
+  _vllmLastModels = models;
+  _vllmLastActive = activeId;
   if (!models.length) {
+    host.className = 'model-cards';
     host.innerHTML = '<div class="sub">No models served — start the vLLM unit or check Server Config.</div>';
     return;
   }
-  const benchChips = (id) => {
+
+  const descriptor = (id) => {
+    const serving = id === activeId;
     const b = (window._vbenchData || {})[id];
-    if (!b || (b.avg_gen_tps == null && b.avg_pg_tps == null)) return '';
-    return `<div style="display:flex;gap:4px;flex-wrap:wrap;margin-top:4px;">
-      ${b.avg_gen_tps != null ? `<span class="bench-badge-chip">gen ${Number(b.avg_gen_tps).toFixed(1)} t/s</span>` : ''}
-      ${b.avg_pg_tps != null ? `<span class="bench-badge-chip">total ${Number(b.avg_pg_tps).toFixed(0)} t/s</span>` : ''}
-    </div>`;
+    const stats = b ? [
+      ...(b.avg_gen_tps != null ? [{ l: 'Gen',   v: Number(b.avg_gen_tps).toFixed(1), unit: 't/s' }] : []),
+      ...(b.avg_pg_tps  != null ? [{ l: 'Total', v: Number(b.avg_pg_tps).toFixed(0),  unit: 't/s' }] : []),
+    ] : [];
+    return {
+      id, actAttr: 'data-vllmact',
+      name: shortName(id), repo: id,
+      pill: serving ? { state: 'active', label: 'Serving' } : { state: 'unloaded', label: 'Adapter' },
+      specs: [], stats,
+      fresh: null,
+      benchTitle: 'Benchmark results — not live throughput' + (b && b.ts && MC.age(b.ts) ? ' (last run ' + MC.age(b.ts) + ')' : ''),
+      benchClick: serving ? 'bench' : null,
+      primary: null, buttons: [],
+      menu: serving ? [
+        { act: 'bench',    label: '◷ Benchmark' },
+        { act: 'autotune', label: '⌖ Autotune' },
+      ] : [],
+      csub: [
+        b && b.avg_gen_tps != null ? `gen <b>${MC.esc(Number(b.avg_gen_tps).toFixed(1))} t/s</b>` : null,
+        serving ? 'serving' : 'adapter',
+      ].filter(Boolean).join(' · '),
+      open: MC.isOpen('vllm', id),
+    };
   };
-  host.innerHTML = models.map(id => `
-    <div class="model-card" data-id="${_esc(id)}">
-      <div class="model-card-title" style="word-break:break-all;">${_esc(id)}</div>
-      <span class="status ${id === activeId ? 'status--ok' : ''}"><span class="status__dot"></span>${id === activeId ? 'serving' : 'adapter'}</span>
-      ${benchChips(id)}
-    </div>`).join('');
+
+  const view = MC.viewOf(typeof layout === 'object' ? layout : null, 'vllm');
+  MC.syncSeg('vllm');
+  if (view === 'list') {
+    host.className = '';
+    host.innerHTML = `<div class="mc-listwrap"><div class="mc-list">${MC.rowHeader('Bench (t/s)', '', 'Benchmark results — not live throughput')}${models.map(id => MC.row(descriptor(id))).join('')}</div></div>`;
+  } else {
+    const compactView = view === 'compact';
+    host.className = 'mc-grid' + (compactView ? ' mc-compactgrid' : '');
+    host.innerHTML = models.map(id => compactView ? MC.compact(descriptor(id)) : MC.card(descriptor(id))).join('');
+  }
+
+  MC.bindContainer(host, 'vllm', () => renderVllmModelCards(_vllmLastModels || [], _vllmLastActive));
+  if (!host._actBound) {
+    host._actBound = true;
+    host.addEventListener('click', ev => {
+      const btn = ev.target.closest('button[data-vllmact]');
+      if (!btn) return;
+      const act = btn.dataset.vllmact;
+      if (act === 'bench')         { MC.closeMenus(); openVllmBench(); }
+      else if (act === 'autotune') { MC.closeMenus(); openVllmAutotune(); }
+    });
+  }
+}
+
+// Wire the vLLM view segment once at load.
+if (typeof MC !== 'undefined' && document.getElementById('vllmMcSeg')) {
+  MC.initToolbar('vllm', { segId: 'vllmMcSeg', render: () => renderVllmModelCards(_vllmLastModels || [], _vllmLastActive) });
 }
 
 async function vllmServerAction(action) {

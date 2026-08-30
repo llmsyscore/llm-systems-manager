@@ -60,6 +60,12 @@
       --accent: #5b8def; --accent-2: #4a9fc8; --ok: #5fb878; --warn: #d99a3a; --crit: #d9534f; --note: #d9b84f;
     }
 
+    /* Font stacks — shared by all themes (fonts.css self-hosts IBM Plex) */
+    :root {
+      --font-sans: 'IBM Plex Sans', 'Segoe UI', system-ui, -apple-system, sans-serif;
+      --font-mono: 'IBM Plex Mono', ui-monospace, Menlo, Consolas, monospace;
+    }
+
     /* Themeable text utility classes — prefer these over inline style="color:#..." */
     .c-fg     { color: var(--fg); }
     .c-muted  { color: var(--fg-muted); }
@@ -72,7 +78,7 @@
     .c-note   { color: var(--note); }
 
     * { box-sizing: border-box; margin: 0; padding: 0; }
-    body { font-family: Arial, sans-serif; background: var(--bg); color: var(--fg); }
+    body { font-family: var(--font-sans); background: var(--bg); color: var(--fg); }
     h1 { padding: 10px 20px; font-size: 1em; border-bottom: none; display: flex; align-items: center; gap: 10px; }
     .site-logo-link { display: flex; align-items: center; gap: 9px; text-decoration: none; color: inherit; flex-shrink: 0; }
     .site-logo-link:hover .site-title { color: var(--fg); }
@@ -291,7 +297,7 @@
     .model-card.loading  { border-color: color-mix(in srgb, var(--warn) 40%, var(--border)); background: color-mix(in srgb, var(--warn) 10%, var(--bg-card)); }   /* processing */
     .model-card.sleeping { border-color: color-mix(in srgb, var(--note) 38%, var(--border)); background: color-mix(in srgb, var(--note)  9%, var(--bg-card)); }   /* sleeping */
     .model-card.idle-loaded { border-color: color-mix(in srgb, var(--note) 26%, var(--border)); background: color-mix(in srgb, var(--note) 6%, var(--bg-card)); } /* idle/loaded */
-    .model-card-name { font-size: 0.84em; color: var(--fg); word-break: break-all; margin-bottom: 14px; font-family: ui-monospace, Menlo, Consolas, monospace; line-height: 1.45; cursor: text; }
+    .model-card-name { font-size: 0.84em; color: var(--fg); word-break: break-all; margin-bottom: 14px; font-family: var(--font-mono); line-height: 1.45; cursor: text; }
     .model-card-params { display: flex; flex-wrap: wrap; gap: 5px; margin-bottom: 14px; }
     .param-chip { display: inline-flex; align-items: baseline; gap: 4px; background: var(--bg-card-alt); border-radius: 6px; padding: 2px 8px; font-size: 0.72em; line-height: 1.5; }
     .param-chip .pk { color: var(--fg-dim); text-transform: uppercase; font-size: 0.92em; }
@@ -447,10 +453,10 @@
        trigger horizontal scrollbars, and live inside .log-wrap so the
        bottom resize handle stays glued to the log's actual width. */
     .log-wrap { display: block; width: 100%; }
-    .dl-log { background: var(--bg-tabnav); border: 1px solid var(--bg-card-alt); border-radius: 6px 6px 0 0; color: var(--ok); font-family: monospace; font-size: 0.85em; height: 180px; min-height: 120px; width: 100%; overflow: auto; padding: 10px; white-space: pre-wrap; word-break: break-all; box-sizing: border-box; }
+    .dl-log { background: var(--bg-tabnav); border: 1px solid var(--bg-card-alt); border-radius: 6px 6px 0 0; color: var(--ok); font-family: var(--font-mono); font-size: 0.85em; height: 180px; min-height: 120px; width: 100%; overflow: auto; padding: 10px; white-space: pre-wrap; word-break: break-all; box-sizing: border-box; }
     /* Shared console/log box — bg + monospace green that resolves per theme.
        Replaces the inline #8a8 build/server/LMS log boxes + terminal mounts. */
-    .log-box { background: var(--bg-tabnav); border: 1px solid var(--bg-card-alt); border-radius: 6px; color: var(--ok); font-family: ui-monospace, 'SFMono-Regular', Menlo, Consolas, monospace; font-size: 0.82em; line-height: 1.5; padding: 10px 12px; overflow: auto; white-space: pre-wrap; word-break: break-word; box-sizing: border-box; }
+    .log-box { background: var(--bg-tabnav); border: 1px solid var(--bg-card-alt); border-radius: 6px; color: var(--ok); font-family: var(--font-mono); font-size: 0.82em; line-height: 1.5; padding: 10px 12px; overflow: auto; white-space: pre-wrap; word-break: break-word; box-sizing: border-box; }
     .log-box--attached { border-radius: 6px 6px 0 0; }
     .log-box--flush { padding: 0; }
     .dl-log-resize { background: var(--bg-elev); border: 1px solid var(--border-strong); border-top: none; border-radius: 0 0 6px 6px; cursor: ns-resize; height: 10px; display: flex; align-items: center; justify-content: center; width: 100%; box-sizing: border-box; }
@@ -610,15 +616,15 @@
       margin-bottom: 40px;
     }
     .svcconfig-panel h2 { font-size: 0.95em; font-weight: 500; color: var(--fg); margin-bottom: 4px; }
-    .svcconfig-subtitle { font-size: 0.72em; color: var(--fg-faint); margin-bottom: 18px; font-family: monospace; word-break: break-all; }
+    .svcconfig-subtitle { font-size: 0.72em; color: var(--fg-faint); margin-bottom: 18px; font-family: var(--font-mono); word-break: break-all; }
     .svcarg-row {
       display: grid; grid-template-columns: 160px 1fr 28px; gap: 6px;
       align-items: center; padding: 6px 0; border-bottom: 1px solid var(--border-soft);
     }
     .svcarg-row:last-child { border-bottom: none; }
-    .svcarg-flag { font-family: monospace; font-size: 0.82em; color: var(--accent); }
+    .svcarg-flag { font-family: var(--font-mono); font-size: 0.82em; color: var(--accent); }
     .svcarg-desc { font-size: 0.7em; color: var(--fg-dim); margin-top: 1px; }
-    .svcarg-val { background: var(--bg); border: 1px solid var(--border); border-radius: 6px; color: var(--fg); font-size: 0.82em; padding: 4px 7px; font-family: monospace; width: 100%; box-sizing: border-box; }
+    .svcarg-val { background: var(--bg); border: 1px solid var(--border); border-radius: 6px; color: var(--fg); font-size: 0.82em; padding: 4px 7px; font-family: var(--font-mono); width: 100%; box-sizing: border-box; }
     .svcarg-val:focus { outline: none; border-color: var(--accent); }
     .svcarg-bool { display: flex; align-items: center; gap: 5px; font-size: 0.8em; color: var(--fg-muted); }
     .svcarg-bool input { accent-color: var(--accent); cursor: pointer; }
@@ -627,8 +633,8 @@
     .svcconfig-actions { display: flex; gap: 8px; margin-top: 18px; flex-wrap: wrap; }
     .svcconfig-status { font-size: 0.8em; color: var(--fg-dim); margin-top: 10px; min-height: 1.2em; }
     .svcarg-add-row { display: flex; gap: 6px; align-items: center; margin-top: 12px; flex-wrap: wrap; }
-    .svcarg-add-flag { background:var(--bg); border:1px solid var(--border); border-radius:6px; color:var(--fg); font-size:0.82em; padding:4px 8px; font-family:monospace; width:130px; }
-    .svcarg-add-val  { background:var(--bg); border:1px solid var(--border); border-radius:6px; color:var(--fg); font-size:0.82em; padding:4px 8px; font-family:monospace; flex:1; min-width:80px; }
+    .svcarg-add-flag { background:var(--bg); border:1px solid var(--border); border-radius:6px; color:var(--fg); font-size:0.82em; padding:4px 8px; font-family: var(--font-mono); width:130px; }
+    .svcarg-add-val  { background:var(--bg); border:1px solid var(--border); border-radius:6px; color:var(--fg); font-size:0.82em; padding:4px 8px; font-family: var(--font-mono); flex:1; min-width:80px; }
     .svcarg-add-flag:focus, .svcarg-add-val:focus { outline:none; border-color:var(--accent); }
     .svcarg-add-bool { display:flex; align-items:center; gap:4px; font-size:0.78em; color:var(--fg-muted); white-space:nowrap; }
     .svcarg-section-title { font-size:0.65em; text-transform:uppercase; letter-spacing:0.1em; color:var(--fg-faint); margin:14px 0 6px; }
@@ -745,14 +751,14 @@
     /* Model checkboxes inside dropdown */
     .bench-model-item { display:flex; align-items:center; gap:7px; font-size:0.82em; padding:3px 4px; border-radius:3px; cursor:pointer; }
     .bench-model-item:hover { background:var(--bg-card-alt); }
-    .bench-model-item label { cursor:pointer; font-family:monospace; color:var(--fg); user-select:none; }
+    .bench-model-item label { cursor:pointer; font-family: var(--font-mono); color:var(--fg); user-select:none; }
     .bench-model-item input[type=checkbox] { accent-color:var(--accent); cursor:pointer; flex-shrink:0; }
     /* Switch rows inside dropdown */
     .bench-switch-row {
       display: grid; grid-template-columns: 90px 1fr 28px; gap: 6px;
       align-items: center; padding: 3px 0;
     }
-    .bench-input { background:var(--bg); border:1px solid var(--border); border-radius:4px; color:var(--fg); font-size:0.82em; padding:4px 7px; font-family:monospace; width:100%; box-sizing:border-box; }
+    .bench-input { background:var(--bg); border:1px solid var(--border); border-radius:4px; color:var(--fg); font-size:0.82em; padding:4px 7px; font-family: var(--font-mono); width:100%; box-sizing:border-box; }
     .bench-input:focus { outline:none; border-color:var(--accent); }
     .bench-del-btn { background:none; border:none; color:var(--fg-faint); cursor:pointer; font-size:1em; padding:2px 4px; border-radius:4px; }
     .bench-del-btn:hover { color:var(--crit); background:color-mix(in srgb, var(--crit) 15%, transparent); }
@@ -773,7 +779,7 @@
     /* Idle: collapse the 460px void into a slim dashed placeholder. */
     .bench-chart-wrap.idle { height:120px; border-style:dashed; display:flex; align-items:center; justify-content:center; }
     .bench-chart-empty { font-size:0.78em; color:var(--fg-faint); text-align:center; max-width:280px; line-height:1.5; }
-    #benchLog { background:var(--bg); border:1px solid var(--border-soft); border-radius:6px; padding:8px; font-size:12px; line-height:1.55; font-family:monospace; overflow-y:auto; overflow-x:auto; height:260px; color:var(--fg); margin:0; }
+    #benchLog { background:var(--bg); border:1px solid var(--border-soft); border-radius:6px; padding:8px; font-size:12px; line-height:1.55; font-family: var(--font-mono); overflow-y:auto; overflow-x:auto; height:260px; color:var(--fg); margin:0; }
     #benchLog:empty { display:none; }
     .bench-log-cmd  { color:var(--ok); white-space:pre-wrap; word-break:break-all; }
     .bench-log-sep  { color:var(--fg-faint); border-top:1px solid var(--border-soft); margin:4px 0 2px; padding-top:3px; }
@@ -823,7 +829,7 @@
     }
     .bench-result-placeholder { border-left-color:var(--border); border-style:dashed; background:transparent; }
     .bench-result-head { display:flex; align-items:center; justify-content:space-between; gap:10px; margin-bottom:4px; }
-    .bench-result-model { font-size:0.82em; font-family:ui-monospace, Menlo, Consolas, monospace; color:var(--fg); flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+    .bench-result-model { font-size:0.82em; font-family: var(--font-mono); color:var(--fg); flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
     .bench-result-grid { display:grid; grid-template-columns:repeat(3,1fr); gap:0; }
     .bench-result-actions { display:flex; gap:8px; justify-content:flex-end; }
     .bench-result-actions .btn { background:var(--bg-card-alt); color:var(--fg-muted); border:1px solid var(--border); border-radius:6px; font-size:0.78em; padding:6px 13px; background-image:none; }
@@ -842,7 +848,7 @@
     .bench-rank-fill.lead { background:var(--ok); }
     .bench-rank-pct { font-size:0.62em; color:var(--fg-muted); font-variant-numeric:tabular-nums; white-space:nowrap; min-width:34px; text-align:right; }
     .bench-badge { display:flex; gap:6px; margin-top:4px; flex-wrap:wrap; }
-    .bench-badge-chip { font-size:11px; background:color-mix(in srgb, var(--accent) 12%, transparent); color:var(--accent); border:1px solid color-mix(in srgb, var(--accent) 30%, var(--border)); border-radius:4px; padding:2px 7px; font-family:monospace; }
+    .bench-badge-chip { font-size:11px; background:color-mix(in srgb, var(--accent) 12%, transparent); color:var(--accent); border:1px solid color-mix(in srgb, var(--accent) 30%, var(--border)); border-radius:4px; padding:2px 7px; font-family: var(--font-mono); }
 
     /* Multi-agent picker (PR3) — chip row in the 4 provider sub-panels. */
     .agent-picker { display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin:0 0 14px; }
@@ -877,7 +883,7 @@
    whose standalone window has no browser chrome to go back with. */
 #backToCompanion {
   position: fixed; left: 12px; bottom: 12px; z-index: 1000;
-  font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 13px;
+  font-family: var(--font-mono); font-size: 13px;
   color: var(--fg); background: var(--bg-card); text-decoration: none;
   border: 1px solid var(--border-strong); border-radius: 99px;
   padding: 9px 15px; box-shadow: 0 4px 14px rgba(0, 0, 0, .35);
