@@ -823,6 +823,19 @@ elif component_wanted "installer"; then
   done
 fi
 
+# ── Release marker ─────────────────────────────────────────────────────────
+# Re-stamped from the staged source every run: the component syncs only cover
+# subdirectories, so nothing else refreshes this root-level file.
+if $HAVE_MANAGER || $HAVE_AE; then
+  if (( DRY_RUN )); then
+    echo "  [dry-run] would re-stamp $LLMSYS_INSTALL_DIR/RELEASE"
+  else
+    stamp_release_marker "$REPO_SRC" "$LLMSYS_INSTALL_DIR"
+    $SUDO chown "$LLMSYS_RUN_USER:$LLMSYS_RUN_GROUP" \
+      "$LLMSYS_INSTALL_DIR/RELEASE" 2>/dev/null || true
+  fi
+fi
+
 # ── Prune upstream-removed files ────────────────────────────────────────────
 # Loads removed-paths.manifest and deletes stale install-dir files; the
 # toml-key entries are consumed by the Config reconcile step below.

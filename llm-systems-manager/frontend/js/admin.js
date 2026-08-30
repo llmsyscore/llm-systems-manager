@@ -318,10 +318,22 @@ function _renderSystemHealth(d, rel) {
         + (rel.installed ? ` (installed ${adminEsc(rel.installed)})` : '')
         + ` · <a href="${adminEsc(url)}" target="_blank" rel="noopener">release notes</a></div>`);
     }
-    warnEl.innerHTML = rows.length
+    warnEl.innerHTML = (rows.length
       ? rows.join('')
-      : '<div style="color:var(--ok); padding:8px 0;">✓ All systems nominal</div>';
+      : '<div style="color:var(--ok); padding:8px 0;">✓ All systems nominal</div>')
+      + _adminReleaseInfoHtml(rel);
   }
+}
+
+// Muted line for a release check that ran but reached no verdict, so a failing
+// check is distinguishable from one reporting "up to date".
+function _adminReleaseInfoHtml(rel) {
+  if (!rel || !rel.enabled || rel.update_available === true) return '';
+  let msg = '';
+  if (rel.error) msg = `check failed: ${rel.error}`;
+  else if (rel.update_available === null) msg = rel.note || 'no verdict';
+  if (!msg) return '';
+  return `<div class="info-row">Release check: ${adminEsc(msg)}</div>`;
 }
 
 function _healthRowHtml(r) {
