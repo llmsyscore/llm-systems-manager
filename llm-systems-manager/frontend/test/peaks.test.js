@@ -77,8 +77,10 @@ describe('llama card wiring (#590)', () => {
 
   it('live poll pushes browser-clock samples and renders live+peak', () => {
     expect(charts).toMatch(/_llamaPeaks\.tps\.push\(Date\.now\(\), ll\.tokens_per_second\)/);
-    expect(charts).toMatch(/fmtLivePeak\(ll\.tokens_per_second, _llamaPeaks\.tps\)/);
-    expect(charts).toMatch(/fmtLivePeak\(ll\.prompt_tokens_per_second, _llamaPeaks\.pps\)/);
+    expect(charts).toMatch(/fmtRateTile\(ll\.tokens_per_second, _llamaPeaks\.tps, 'Gen tokens\/s'\)/);
+    expect(charts).toMatch(/fmtRateTile\(ll\.prompt_tokens_per_second, _llamaPeaks\.pps, 'Prompt tokens\/s'\)/);
+    expect(charts).toMatch(/_setRateTile\('llamaTps', fmtRateTile\(/);
+    expect(html).toMatch(/id="llamaTps-lbl"/);
   });
 
   it('backfill seeds clock-normalized rows; agent switch resets the trackers', () => {
@@ -128,5 +130,47 @@ describe('LMPeaks.agoText / rowClock (#591)', () => {
   it('rowClock tolerates empty input', () => {
     const clk = LMPeaks.rowClock([], T0);
     expect(clk(new Date(T0).toISOString())).toBe(T0);
+  });
+});
+
+describe('LMPeaks.makeTracker.avg (#736)', () => {
+  it('is null with no active samples', () => {
+    const tr = LMPeaks.makeTracker(60 * MIN);
+    expect(tr.avg(T0)).toBeNull();
+    tr.push(T0, 0);
+    tr.push(T0 + MIN, 0);
+    expect(tr.avg(T0 + MIN)).toBeNull();
+  });
+  it('averages only the non-zero samples in the window', () => {
+    const tr = LMPeaks.makeTracker(60 * MIN);
+    tr.push(T0, 0);
+    tr.push(T0 + MIN, 10);
+    tr.push(T0 + 2 * MIN, 0);
+    tr.push(T0 + 3 * MIN, 30);
+    expect(tr.avg(T0 + 3 * MIN)).toEqual({ v: 20 });
+  });
+  it('drops samples that age out of the window', () => {
+    const tr = LMPeaks.makeTracker(60 * MIN);
+    tr.push(T0, 100);
+    tr.push(T0 + 30 * MIN, 10);
+    expect(tr.avg(T0 + 59 * MIN)).toEqual({ v: 55 });
+    expect(tr.avg(T0 + 61 * MIN)).toEqual({ v: 10 });
+    expect(tr.avg(T0 + 91 * MIN)).toBeNull();
+  });
+});
+
+describe('LMPeaks.rateStat (#736/#739)', () => {
+  it('live while > 0, window average otherwise, peak only when > 0', () => {
+    const tr = LMPeaks.makeTracker(LMPeaks.RATE_WINDOW_MS);
+    tr.push(T0, 10); tr.push(T0 + MIN, 30); tr.push(T0 + 2 * MIN, 0);
+    expect(LMPeaks.rateStat(tr, 42, T0 + 2 * MIN)).toEqual({ v: 42, mode: 'live', peak: { v: 30, t: T0 + MIN } });
+    expect(LMPeaks.rateStat(tr, 0, T0 + 2 * MIN)).toEqual({ v: 20, mode: LMPeaks.AVG_LABEL, peak: { v: 30, t: T0 + MIN } });
+    const empty = LMPeaks.makeTracker(LMPeaks.RATE_WINDOW_MS);
+    empty.push(T0, 0);
+    expect(LMPeaks.rateStat(empty, null, T0)).toEqual({ v: null, mode: LMPeaks.AVG_LABEL, peak: null });
+  });
+  it('the shared window is one hour and the label carries a non-breaking hyphen', () => {
+    expect(LMPeaks.RATE_WINDOW_MS).toBe(60 * MIN);
+    expect(LMPeaks.AVG_LABEL).toBe('60\u2011min avg');
   });
 });

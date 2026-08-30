@@ -49,6 +49,7 @@
 .ov-tile-head .ov-eyebrow { color: var(--fg-muted); }
 .ov-tile-online { font-size: 0.72em; color: var(--fg-dim); margin-left: auto; white-space: nowrap; }
 .ov-tile-stats { display: grid; grid-template-columns: 1fr 1fr; gap: 6px 12px; }
+.ov-tile-stats > div { min-width: 0; }
 .ov-tile-stats .stat { font-size: 1.15em; margin-bottom: 0; }
 .ov-tile-peak { font-size: 0.68em; color: var(--fg-dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 

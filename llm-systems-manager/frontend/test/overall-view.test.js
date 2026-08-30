@@ -375,27 +375,39 @@ describe('OV.energySeries (#577)', () => {
 
 describe('OV.tiles unified layout + peaks (#591)', () => {
   const NOW = Date.UTC(2026, 7, 21, 18, 0, 0);
+  const rs = (v, mode, peak) => ({ v, mode, peak });
   const PEAKS = {
-    llama: { gen: { v: 51.3, t: NOW - 3 * 60000 }, prompt: { v: 452.5, t: NOW - 3 * 60000 } },
-    lms: { gen: null, prompt: null },
-    vllm: { gen: { v: 12, t: NOW - 90000 }, prompt: null },
+    llama: { gen: rs(51.3, 'live', { v: 51.3, t: NOW - 3 * 60000 }),
+             prompt: rs(452.5, 'live', { v: 452.5, t: NOW - 3 * 60000 }) },
+    lms: { gen: rs(null, '60\u2011min avg', null), prompt: rs(null, '60\u2011min avg', null) },
+    vllm: { gen: rs(12, 'live', { v: 12, t: NOW - 90000 }), prompt: rs(null, '60\u2011min avg', null) },
   };
 
-  it('every tile leads with gen and prompt t/s', () => {
+  it('every tile leads with prompt then gen t/s', () => {
     for (const t of OV.tiles(LLAMA_AGG, LMS_AGG, VLLM_AGG, PEAKS, NOW)) {
-      expect(t.stats[0].l).toBe('gen t/s');
-      expect(t.stats[1].l).toBe('prompt t/s');
+      expect(t.stats[0].l).toMatch(/^prompt t\/s · (live|60\u2011min avg)$/);
+      expect(t.stats[1].l).toMatch(/^gen t\/s · (live|60\u2011min avg)$/);
       expect(t.stats).toHaveLength(4);
     }
   });
 
+  it('renders rateStat cells: live value, window average, or — (#739)', () => {
+    const win = { llama: { gen: rs(42, 'live', { v: 51.3, t: NOW - 3 * 60000 }),
+                           prompt: rs(300, '60\u2011min avg', { v: 452.5, t: NOW - 60000 }) } };
+    const [llama] = OV.tiles(null, null, null, win, NOW);
+    expect(llama.stats[1]).toEqual({ v: '42.0', l: 'gen t/s · live', p: 'peak 51.3 · 3m ago' });
+    expect(llama.stats[0]).toEqual({ v: '300.0', l: 'prompt t/s · 60\u2011min avg', p: 'peak 452.5 · 1m ago' });
+    const [idle] = OV.tiles(null, null, null, {}, NOW);
+    expect(idle.stats[0]).toEqual({ v: '—', l: 'prompt t/s · 60\u2011min avg', p: null });
+  });
+
   it('renders peak sub-lines with value and age', () => {
     const [llama, lms, vllm] = OV.tiles(LLAMA_AGG, LMS_AGG, VLLM_AGG, PEAKS, NOW);
-    expect(llama.stats[0].p).toBe('peak 51.3 · 3m ago');
-    expect(llama.stats[1].p).toBe('peak 452.5 · 3m ago');
-    expect(vllm.stats[0].p).toBe('peak 12.0 · 1m ago');
+    expect(llama.stats[1].p).toBe('peak 51.3 · 3m ago');
+    expect(llama.stats[0].p).toBe('peak 452.5 · 3m ago');
+    expect(vllm.stats[1].p).toBe('peak 12.0 · 1m ago');
     expect(lms.stats[0].p).toBeNull();
-    expect(vllm.stats[1].p).toBeNull();
+    expect(vllm.stats[0].p).toBeNull();
   });
 
   it('provider-specific stats carry no peak field', () => {
@@ -415,8 +427,8 @@ describe('OV.tiles unified layout + peaks (#591)', () => {
   it('lms tile reads its gateway throughput block', () => {
     const withTp = { ...LMS_AGG, throughput: { total_tps: 7.5, total_pps: 30.2 } };
     const [, lms] = OV.tiles(null, withTp, null, {}, NOW);
-    expect(lms.stats[0].v).toBe('7.5');
-    expect(lms.stats[1].v).toBe('30.2');
+    expect(lms.stats[0]).toEqual({ v: '30.2', l: 'prompt t/s · live', p: null });
+    expect(lms.stats[1].v).toBe('7.5');
   });
 });
 
@@ -436,7 +448,7 @@ describe('OV agent-row model extras (#593)', () => {
       total_tokens_generated: 1234567, total_tokens_prompted: 89012 }] }, null, null];
     const [row] = OV.agentRows(aggs, {});
     expect(row.provs[0].detail)
-      .toBe('awake · qwen3-30b · 32k ctx · 1.2M gen · 89.0k prompt');
+      .toBe('awake · qwen3-30b · 32.8k ctx · 89.0k prompt · 1.2M gen');
   });
 
   it('extras are omitted piecewise when fields are absent (old agents)', () => {
@@ -458,7 +470,7 @@ describe('OV agent-row model extras (#593)', () => {
       server_on: true, model: 'nemotron', requests_running: 2,
       ctx: 131072, total_tokens_generated: 555 }] }];
     const [row] = OV.agentRows(aggs, {});
-    expect(row.provs[0].detail).toBe('2 req · nemotron · 128k ctx · 555 gen');
+    expect(row.provs[0].detail).toBe('2 req · nemotron · 131.1k ctx · 555 gen');
   });
 
   it('lms rows append extras after the model list', () => {
@@ -466,6 +478,6 @@ describe('OV agent-row model extras (#593)', () => {
       busy_process_count: 0, loaded_model_count: 1, loaded_models: ['big'],
       ctx: 32768, total_tokens_generated: 900, total_tokens_prompted: 300 }] }, null];
     const [row] = OV.agentRows(aggs, {});
-    expect(row.provs[0].detail).toBe('idle · big · 32k ctx · 900 gen · 300 prompt');
+    expect(row.provs[0].detail).toBe('idle · big · 32.8k ctx · 300 prompt · 900 gen');
   });
 });

@@ -57,7 +57,7 @@ Backend API endpoints consumed:
   <link rel="stylesheet" href="/static/css/base.css?v=2026.08.29-6">
   <link rel="stylesheet" href="/static/css/reportcard.css?v=2026.08.04-1">
   <link rel="stylesheet" href="/static/css/energy.css?v=2026.08.19-2">
-  <link rel="stylesheet" href="/static/css/overall.css?v=2026.08.21-5">
+  <link rel="stylesheet" href="/static/css/overall.css?v=2026.08.29-1">
 </head>
 <body>
 
@@ -752,8 +752,8 @@ Backend API endpoints consumed:
     <h3>Llama server</h3>
     <div class="sub" id="llamaModel" style="margin-bottom:10px;color:var(--fg);word-break:break-all;">—</div>
     <div class="llama-grid">
-      <div class="llama-item"><div class="val" id="llamaPps">—</div><div class="lbl">Prompt tokens/s</div></div>
-      <div class="llama-item"><div class="val" id="llamaTps">—</div><div class="lbl">Gen tokens/s</div></div>
+      <div class="llama-item"><div class="val" id="llamaPps">—</div><div class="lbl" id="llamaPps-lbl">Prompt tokens/s</div></div>
+      <div class="llama-item"><div class="val" id="llamaTps">—</div><div class="lbl" id="llamaTps-lbl">Gen tokens/s</div></div>
       <div class="llama-item"><div class="val" id="llamaPromptTokens">—</div><div class="lbl">Tokens prompted</div></div>
       <div class="llama-item"><div class="val" id="llamaGenTokens">—</div><div class="lbl">Tokens generated</div></div>
       <div class="llama-item"><div class="val" id="llamaDecodes">—</div><div class="lbl">Decode calls</div></div>
@@ -965,8 +965,8 @@ Backend API endpoints consumed:
         <h3>LM Studio Server</h3>
         <div class="sub" id="lms-active-model" style="margin-bottom:10px;color:var(--fg);word-break:break-all;">—</div>
         <div class="llama-grid">
-          <div class="llama-item"><div class="val" id="lms-pps">—</div><div class="lbl">Prompt tokens/s</div></div>
-          <div class="llama-item"><div class="val" id="lms-tps">—</div><div class="lbl">Gen tokens/s</div></div>
+          <div class="llama-item"><div class="val" id="lms-pps">—</div><div class="lbl" id="lms-pps-lbl">Prompt tokens/s</div></div>
+          <div class="llama-item"><div class="val" id="lms-tps">—</div><div class="lbl" id="lms-tps-lbl">Gen tokens/s</div></div>
           <div class="llama-item"><div class="val" id="lms-prompt-tokens">—</div><div class="lbl">Tokens prompted</div></div>
           <div class="llama-item"><div class="val" id="lms-gen-tokens">—</div><div class="lbl">Tokens generated</div></div>
           <div class="llama-item"><div class="val" id="lms-active-status">—</div><div class="lbl">Status</div></div>
@@ -1887,13 +1887,13 @@ Backend API endpoints consumed:
 <script src="/static/js/lib/layout.js?v=2026.07.10-1"></script>
 <script src="/static/js/foundation.js?v=2026.08.29-1"></script>
 <script src="/static/js/lib/series.js?v=2026.08.04-2"></script>
-<script src="/static/js/lib/peaks.js?v=2026.08.21-2"></script>
+<script src="/static/js/lib/peaks.js?v=2026.08.29-1"></script>
 <script src="/static/js/lib/benchaxis.js?v=2026.08.26-1"></script>
 <script src="/static/js/lib/thresholds.js?v=2026.08.05-1"></script>
 <script src="/static/js/lib/reportcard.js?v=2026.07.27-1"></script>
 <script src="/static/js/lib/energy.js?v=2026.08.26-1"></script>
-<script src="/static/js/lib/overall-view.js?v=2026.08.28-1"></script>
-<script src="/static/js/charts.js?v=2026.08.29-3"></script>
+<script src="/static/js/lib/overall-view.js?v=2026.08.29-2"></script>
+<script src="/static/js/charts.js?v=2026.08.29-5"></script>
 <script src="/static/js/terminal.js?v=2026.08.27-1"></script>
 <script src="/static/js/llmcontrol.js?v=2026.08.19-1"></script>
 <script src="/static/js/openclaw.js?v=2026.08.03-1"></script>
@@ -1902,12 +1902,12 @@ Backend API endpoints consumed:
 <script src="/static/js/autopilot.js?v=2026.07.31-2"></script>
 <script src="/static/js/llmcontrol-models.js?v=2026.08.29-1"></script>
 <script src="/static/js/bench-autotune.js?v=2026.08.26-6"></script>
-<script src="/static/js/lmstudio.js?v=2026.08.17-1"></script>
+<script src="/static/js/lmstudio.js?v=2026.08.29-3"></script>
 <script src="/static/js/vllm.js?v=2026.08.17-1"></script>
 <script src="/static/js/vllm-bench-autotune.js?v=2026.07.12-2"></script>
 <script src="/static/js/report-card.js?v=2026.08.17-1"></script>
 <script src="/static/js/energy.js?v=2026.08.19-1"></script>
-<script src="/static/js/overall.js?v=2026.08.21-5"></script>
+<script src="/static/js/overall.js?v=2026.08.29-1"></script>
 <script src="/static/js/dashboard-manager.js?v=2026.08.17-1"></script>
 
 <!-- Settings panel — kept at body root so it's never inside a hidden tab container -->

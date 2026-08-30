@@ -142,18 +142,24 @@ function _peakLine(p, nowMs) {
   return `peak ${_fmt1(p.v)} · ${_peaks.agoText(nowMs - p.t)}`;
 }
 
-// Aggregates + peaks ({llama:{gen:{v,t},prompt:{v,t}},lms,vllm}) → tile
-// view-models: gen/prompt t/s live+peak first, then two per-provider stats.
-function tiles(llama, lms, vllm, peaks, nowMs) {
-  const pk = peaks || {};
+// LMPeaks.rateStat ({v, mode, peak}) → {v, l, p} stat cell; without a
+// rateStat the live aggregate stands in (no window, no peak).
+function _rateCell(s, live, name, nowMs) {
+  const isLive = typeof live === 'number' && live > 0;
+  const r = s || { v: isLive ? live : null, mode: isLive ? 'live' : _peaks.AVG_LABEL, peak: null };
+  return { v: _fmt1(r.v), l: `${name} · ${r.mode}`, p: _peakLine(r.peak, nowMs) };
+}
+
+// Aggregates + rates ({llama:{gen,prompt: rateStat},lms,vllm}) → tile
+// view-models: prompt then gen t/s first, then two per-provider stats.
+function tiles(llama, lms, vllm, rates, nowMs) {
+  const rt = rates || {};
   const out = [];
   const tpStats = (a, key) => {
     const tp = (a && a.throughput) || {};
-    const p = pk[key] || {};
-    return [
-      { v: _fmt1(tp.total_tps), l: 'gen t/s', p: _peakLine(p.gen, nowMs) },
-      { v: _fmt1(tp.total_pps), l: 'prompt t/s', p: _peakLine(p.prompt, nowMs) },
-    ];
+    const r = rt[key] || {};
+    return [_rateCell(r.prompt, tp.total_pps, 'prompt t/s', nowMs),
+            _rateCell(r.gen, tp.total_tps, 'gen t/s', nowMs)];
   };
   {
     const a = llama || {};
@@ -215,20 +221,16 @@ function fmtShort(v) {
   return String(Math.round(v));
 }
 
-// Context sizes are binary: 32768 → "32k", 131072 → "128k".
-function _fmtCtx(v) {
-  return v >= 1024 ? Math.round(v / 1024) + 'k' : String(v);
-}
-
-// Loaded-model extras (#593): " · 32k ctx · 1.2M gen · 89.0k prompt",
-// each part present only when its field is reported.
+// Loaded-model extras (#593): " · 124.2k ctx · 89.0k prompt · 1.2M gen",
+// decimal token counts, each part present only when its field is reported.
 function _modelExtras(row) {
   const parts = [];
-  if (typeof row.ctx === 'number') parts.push(`${_fmtCtx(row.ctx)} ctx`);
-  const gen = fmtShort(row.total_tokens_generated);
-  if (gen != null) parts.push(`${gen} gen`);
+  const ctx = fmtShort(row.ctx);
+  if (ctx != null) parts.push(`${ctx} ctx`);
   const prompt = fmtShort(row.total_tokens_prompted);
   if (prompt != null) parts.push(`${prompt} prompt`);
+  const gen = fmtShort(row.total_tokens_generated);
+  if (gen != null) parts.push(`${gen} gen`);
   return parts.length ? ` · ${parts.join(' · ')}` : '';
 }
 
