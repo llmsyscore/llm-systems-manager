@@ -139,7 +139,7 @@
     return `<div class="mc-row${d.transition ? ' mc-transition' : ''}" data-id="${esc(d.id)}">
       ${dot(d.pill && d.pill.state)}
       <div class="mc-rowname"><div class="n">${esc(d.name)}</div>${d.repo ? `<div class="r">${esc(d.repo)}</div>` : ''}</div>
-      <div class="mc-rowcfg">${cfg}</div>
+      <div class="mc-rowcfg"${d.cfgClick ? ` ${d.actAttr}="${esc(d.cfgClick)}" data-id="${esc(d.id)}" role="button" tabindex="0" title="Edit configuration"` : ''}>${cfg}</div>
       <div class="mc-rowmet">${met}</div>
       <div class="mc-rowprof">${d.profileHtml || ''}${d.fresh && d.fresh.stale ? ` <span class="mc-stale" title="${esc(d.fresh.staleTitle || 'Config changed since this benchmark')}">re-bench</span>` : ''}</div>
       <div class="mc-rowact">${d.primary ? btnHtml(d, d.primary, 'mcbtn-pri') : ''}${menuHtml(d, menuItems)}</div>
@@ -271,7 +271,9 @@
     container.addEventListener('keydown', ev => {
       if (ev.key !== 'Enter' && ev.key !== ' ') return;
       const tog = ev.target.closest('[data-mctoggle]');
-      if (tog) { ev.preventDefault(); toggleOpen(surface, tog.dataset.mctoggle); render(); }
+      if (tog) { ev.preventDefault(); toggleOpen(surface, tog.dataset.mctoggle); render(); return; }
+      const rb = ev.target.closest('.mc-rowcfg[role="button"], .mc-prof-edit[role="button"]');
+      if (rb) { ev.preventDefault(); rb.click(); }
     });
   }
 

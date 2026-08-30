@@ -325,6 +325,7 @@ function _llamaDescriptor(modelId, statusLookup) {
     name: aliasOrShort(modelId), repo: modelId,
     pill, specs, stats, fresh: _llamaFresh(modelId, cfg),
     benchTitle: 'Benchmark results — not live throughput' + (benchAge ? ' (last run ' + benchAge + ')' : ''),
+    cfgClick: 'edit',
     profileHtml: _llamaProfileHtml(modelId),
     profileText: prof.active || '',
     primary, buttons, menu, perfHtml,
