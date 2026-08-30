@@ -106,12 +106,15 @@ def test_admin_gate_enforced(monkeypatch, tmp_path):
 # --- split-install behaviour (#606, Task 5) ---
 
 class _FakeResp:
-    def __init__(self, ok=True, status_code=200, payload=None):
+    def __init__(self, ok=True, status_code=200, payload=None, json_raises=None):
         self.ok, self.status_code = ok, status_code
         self._payload = payload or {"ok": True}
+        self._json_raises = json_raises
         self.text = ""
 
     def json(self):
+        if self._json_raises is not None:
+            raise self._json_raises
         return self._payload
 
 
@@ -227,6 +230,51 @@ def test_split_get_reports_why_the_ae_config_api_failed(client, monkeypatch,
     assert f"HTTP {status}" in err["detail"]
     if kind == "unauthorized":
         assert "management_token" in err["remedy"]
+
+
+def test_split_get_200_with_bad_json_is_not_called_unreachable(client, monkeypatch):
+    """A 2xx whose body isn't JSON keeps its real status: kind http, not a
+    network remedy telling the operator to check connectivity."""
+    c, _ = client
+    _force_split(monkeypatch)
+    monkeypatch.setattr(manager_mod._ae_session, "get",
+                        lambda url, **kw: _FakeResp(json_raises=ValueError("bad body")))
+    err = c.get("/api/admin/settings").get_json()["topology"]["ae_config_error"]
+    assert err["kind"] == "http" and err["status"] == 200
+    assert err["detail"].startswith("the reply was not valid JSON")
+    assert "bad body" not in json.dumps(err)
+
+
+@pytest.fixture
+def _err_log_state(monkeypatch):
+    monkeypatch.setattr(manager_mod, "_AE_CONFIG_ERR_STATE", {"kind": None, "ts": 0.0})
+    return manager_mod._AE_CONFIG_ERR_STATE
+
+
+def _reason(kind="unreachable"):
+    return {"kind": kind, "status": None, "detail": f"D-{kind}", "remedy": "R"}
+
+
+def test_ae_config_failure_log_throttle(client, caplog, _err_log_state):
+    import logging as _logging
+    with caplog.at_level(_logging.INFO, logger="llm-systems-manager"):
+        manager_mod._log_ae_config_failure(_reason())          # first failure logs
+        manager_mod._log_ae_config_failure(_reason())          # same kind: throttled
+        assert sum("unavailable" in r.message for r in caplog.records) == 1
+        _err_log_state["ts"] -= 601                            # window elapsed
+        manager_mod._log_ae_config_failure(_reason())
+        assert sum("unavailable" in r.message for r in caplog.records) == 2
+        manager_mod._log_ae_config_failure(_reason("unauthorized"))  # flap < 60s: held
+        assert sum("unavailable" in r.message for r in caplog.records) == 2
+        _err_log_state["ts"] -= 61                             # past the flap floor
+        manager_mod._log_ae_config_failure(_reason("unauthorized"))
+        assert sum("unavailable" in r.message for r in caplog.records) == 3
+        manager_mod._log_ae_config_failure(None)               # recovery: one INFO
+        manager_mod._log_ae_config_failure(None)               # already clear: silent
+        assert sum("reachable again" in r.message for r in caplog.records) == 1
+        assert _err_log_state["kind"] is None
+        manager_mod._log_ae_config_failure(_reason())          # ts reset: logs at once
+        assert sum("unavailable" in r.message for r in caplog.records) == 4
 
 
 def test_split_get_reachable_ae_carries_no_error(client, monkeypatch):

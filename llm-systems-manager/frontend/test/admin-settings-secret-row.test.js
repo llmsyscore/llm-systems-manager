@@ -14,6 +14,11 @@ const GATEWAY_KEYS = {
   help: 'Bearer keys for external clients.', group: 'gateway',
   service: 'manager', type: 'list', secret: true,
 };
+const SMTP_PASS = {
+  path: 'notifications.smtp.password', label: 'SMTP password',
+  help: 'Password for the SMTP relay.', group: 'gateway',
+  service: 'manager', type: 'str', secret: true,
+};
 const AE_INTERVAL = {
   path: 'alarm_engine.evaluation_interval', label: 'Evaluation interval',
   help: 'seconds', group: 'ae', service: 'alarm_engine', type: 'int',
@@ -23,8 +28,9 @@ function payload(over = {}) {
   return {
     ok: true,
     groups: [{ key: 'gateway', title: 'Inference Gateway' }, { key: 'ae', title: 'Alarm Engine' }],
-    entries: [GATEWAY_KEYS, AE_INTERVAL],
-    values: {}, secrets: { 'manager.gateway.api_keys': 'set' },
+    entries: [GATEWAY_KEYS, SMTP_PASS, AE_INTERVAL],
+    values: {},
+    secrets: { 'manager.gateway.api_keys': 'set', 'notifications.smtp.password': 'set' },
     drift: {}, restart_pending: [], ae_sync_pending: [], ae_sync_retry_s: 30,
     topology: { split: false, ae_config_reachable: true },
     ...over,
@@ -41,6 +47,8 @@ async function boot(data) {
     s.textContent = code;
     dom.window.document.body.appendChild(s);
   };
+  // jsdom has no window.CSS; shim escape() so syncClearButton's selector works
+  inject(`if (!window.CSS) window.CSS = { escape: s => String(s).replace(/([^a-zA-Z0-9_-])/g, '\\\\$1') };`);
   inject(src('foundation.js'));
   inject(src('admin-settings.js'));
   await dom.window.adminSettingsLoad();
@@ -68,9 +76,38 @@ describe('secret row layout (#760)', () => {
     expect(btn.getAttribute('style')).toBeNull();
   });
 
+  test('a single-line secret keeps chip, input and Clear in one inline row', async () => {
+    const doc = await boot(payload());
+    const row = doc.querySelector('.settings-row[data-path="notifications.smtp.password"]');
+    const inline = row.querySelector('.st-secret--inline');
+    expect(inline).toBeTruthy();
+    // all three are direct siblings of the inline row — no wrapping sub-rows
+    expect(inline.querySelector(':scope > .status')).toBeTruthy();
+    expect(inline.querySelector(':scope > input[type="password"].st-input')).toBeTruthy();
+    const btn = inline.querySelector(':scope > [data-clear]');
+    expect(btn).toBeTruthy();
+    expect(btn.className.split(/\s+/)).toContain('sm');
+    expect(btn.getAttribute('style')).toBeNull();
+  });
+
+  test('clicking Clear queues it and typing a new value un-queues it', async () => {
+    const doc = await boot(payload());
+    const win = doc.defaultView;
+    const btn = doc.querySelector('[data-clear="manager.gateway.api_keys"]');
+    btn.click();
+    expect(btn.textContent).toBe('Clear queued');
+    expect(btn.disabled).toBe(true);
+    expect(doc.getElementById('adminSettingsSaveBar')).toBeTruthy();
+    const ta = doc.querySelector('textarea.st-input[data-path="manager.gateway.api_keys"]');
+    ta.value = 'newkey';
+    ta.dispatchEvent(new win.Event('input', { bubbles: true }));
+    expect(btn.textContent).toBe('Clear');
+    expect(btn.disabled).toBe(false);
+  });
+
   test('an unset secret renders no Clear button', async () => {
-    const doc = await boot(payload({ secrets: { 'manager.gateway.api_keys': 'unset' } }));
-    expect(doc.querySelector('[data-clear="manager.gateway.api_keys"]')).toBeNull();
+    const doc = await boot(payload({ secrets: {} }));
+    expect(doc.querySelector('[data-clear]')).toBeNull();
     expect(doc.querySelector('.st-secret-head .status')).toBeTruthy();
   });
 });

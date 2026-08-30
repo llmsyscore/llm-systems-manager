@@ -159,7 +159,7 @@ def _local_hostname() -> str:
 # banner reads it. Bump suffix (-1, -2, …) for same-day iterations; roll
 # the date for a new day's first change.
 # ---------------------------------------------------------------------------
-__version__ = "v2026.08.30-2"
+__version__ = "v2026.08.30-3"
 
 # Wall-clock at first import (Cheroot main process); the shutdown banner
 # reads it for the uptime line.
@@ -3664,7 +3664,7 @@ def _ae_config_failure(status: "int | None", detail: str) -> dict:
                   "/api/alarm/admin/config.")
     elif status is not None:
         kind = "http"
-        remedy = ("The alarm engine answered but refused the request — check "
+        remedy = ("The alarm engine answered but the request failed — check "
                   "its log on that host.")
     else:
         kind = "unreachable"
@@ -3694,21 +3694,25 @@ def _ae_exc_phrase(e: BaseException) -> str:
 
 
 _AE_CONFIG_ERR_STATE: dict = {"kind": None, "ts": 0.0}
+_AE_CONFIG_ERR_LOCK = threading.Lock()
 
 
 def _log_ae_config_failure(reason: "dict | None") -> None:
-    """Warns on the first failure and on every change of kind; else every 10 min."""
-    if reason is None:
-        if _AE_CONFIG_ERR_STATE["kind"] is not None:
-            log.info("settings: alarm engine config API reachable again")
-            _AE_CONFIG_ERR_STATE.update(kind=None, ts=0.0)
-        return
-    now = time.time()
-    if (reason["kind"] != _AE_CONFIG_ERR_STATE["kind"]
-            or now - _AE_CONFIG_ERR_STATE["ts"] >= 600):
-        log.warning("settings: alarm engine config API unavailable (%s) — %s",
-                    reason["detail"], reason["remedy"])
-        _AE_CONFIG_ERR_STATE.update(kind=reason["kind"], ts=now)
+    """Warns on the first failure and on a change of kind (60s floor when
+    flapping); else every 10 min. Recovery logs once at INFO."""
+    with _AE_CONFIG_ERR_LOCK:
+        st = _AE_CONFIG_ERR_STATE
+        if reason is None:
+            if st["kind"] is not None:
+                log.info("settings: alarm engine config API reachable again")
+                st.update(kind=None, ts=0.0)
+            return
+        now = time.time()
+        changed = reason["kind"] != st["kind"]
+        if (changed and now - st["ts"] >= 60) or now - st["ts"] >= 600:
+            log.warning("settings: alarm engine config API unavailable (%s) — %s",
+                        reason["detail"], reason["remedy"])
+            st.update(kind=reason["kind"], ts=now)
 
 
 def _fetch_ae_settings_state() -> "tuple[dict | None, bool | None, dict | None, dict | None]":
@@ -3719,6 +3723,7 @@ def _fetch_ae_settings_state() -> "tuple[dict | None, bool | None, dict | None, 
     if not base:
         return None, None, None, _ae_config_failure(
             None, "no alarm engine URL configured")
+    r = None
     try:
         r = _ae_session.get(base + "/api/alarm/admin/config", timeout=(1, 3))
         if not r.ok:
@@ -3731,10 +3736,12 @@ def _fetch_ae_settings_state() -> "tuple[dict | None, bool | None, dict | None, 
             secrets = None
     except Exception as e:
         # The reason carries a fixed phrase; the exception itself only ever
-        # reaches the debug log, never the response.
+        # reaches the debug log, never the response. A bound response keeps
+        # its real status so a 2xx-with-bad-body isn't called "unreachable".
         log.debug("settings: alarm engine config API call failed", exc_info=True)
         return None, None, None, _ae_config_failure(
-            None, f"{_ae_exc_phrase(e)} — {base}/api/alarm/admin/config")
+            getattr(r, "status_code", None) if r is not None else None,
+            f"{_ae_exc_phrase(e)} — {base}/api/alarm/admin/config")
     flat: dict = {}
 
     def _walk(node, prefix):
