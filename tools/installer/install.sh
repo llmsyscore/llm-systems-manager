@@ -53,7 +53,7 @@ unset LLMSYS_UPSTREAM_TMP _upstream_re
 # substantive change to this file. The self-update trampoline only re-execs
 # when the upstream copy carries a STRICTLY GREATER number, so locally-
 # modified scripts (or unpushed commits) are never silently downgraded.
-_INSTALL_SH_REVISION=20260829001
+_INSTALL_SH_REVISION=20260829002
 
 # Fallback bootstrap helpers — used until we source lib-common.sh.
 # TTY-aware colors so OK/WARN/ERR markers stand out in interactive runs and
@@ -76,8 +76,9 @@ _b_die()  { _b_err "$*"; exit 1; }
 _b_fetch_from_github() {
   local repo_path="$1" dest="$2"
   local slug="${LLMSYS_REPO_SLUG:-llmsyscore/llm-systems-manager}"
+  local base="${LLMSYS_RAW_BASE_URL:-https://raw.githubusercontent.com/$slug/main}"
   if command -v curl >/dev/null 2>&1; then
-    if curl -fsSL "https://raw.githubusercontent.com/$slug/main/$repo_path" \
+    if curl -fsSL "$base/$repo_path" \
          -o "$dest" 2>/dev/null \
        && [[ -s "$dest" ]]; then
       return 0
@@ -759,6 +760,20 @@ fi
 # Source the real helpers now
 # shellcheck source=tools/installer/lib-common.sh
 . "$REPO_SRC/tools/installer/lib-common.sh"
+
+# Compat shims: a main install.sh may pair with an older release tarball's
+# lib-common.sh (default --source release), so newer helpers get fallbacks.
+if ! declare -F detect_primary_ip >/dev/null; then
+  detect_primary_ip() {
+    local ip
+    if [[ -n "${LLMSYS_PRIMARY_IP:-}" ]]; then
+      printf '%s\n' "$LLMSYS_PRIMARY_IP"
+      return 0
+    fi
+    ip="$(hostname -I 2>/dev/null | awk '{print $1}')"
+    printf '%s\n' "${ip:-127.0.0.1}"
+  }
+fi
 
 # Reject an install dir (env-overridable) whose chars would word-split or
 # corrupt the rendered systemd unit ExecStart / EnvironmentFile lines.
