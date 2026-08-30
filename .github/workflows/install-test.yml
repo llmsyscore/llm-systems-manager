@@ -468,6 +468,9 @@ jobs:
           git -C "${RUNNER_TEMP}/serve-src" init -q -b main
           git -C "${RUNNER_TEMP}/serve-src" -c user.email=ci@local -c user.name=ci add -A
           git -C "${RUNNER_TEMP}/serve-src" -c user.email=ci@local -c user.name=ci commit -qm "ci source"
+          # A real clone carries tags; without one `git describe` finds nothing
+          # and the deployed tree cannot stamp a RELEASE marker.
+          git -C "${RUNNER_TEMP}/serve-src" tag v0.0.0-ci
           # System-level so root's git (under sudo) sees it too.
           sudo git config --system \
             url."file://${RUNNER_TEMP}/serve-src".insteadOf \

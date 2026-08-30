@@ -145,23 +145,11 @@ fi
 echo "── release marker + update check ──────────────────────────────"
 # #757: a deployed tree that can't name its release makes the dashboard's
 # update check return no verdict, silently and forever.
-# Installs staged from a source that predates the stamping (e.g. --source git
-# cloning main before this lands) cannot produce a marker — skip, don't fail.
-_REL_LIB="$INSTALL_DIR/tools/installer/lib-common.sh"
-if [[ -f "$_REL_LIB" ]] && ! grep -q 'stamp_release_marker' "$_REL_LIB"; then
-  _pass "deployed installer predates release-marker stamping — not applicable"
-  _REL_SKIP=1
-else
-  _REL_SKIP=0
-fi
-
 # A deployed tree has no .git (the rsync excludes it), so the marker is its
 # only tag source; a dev checkout legitimately answers from describe instead.
 _REL_FILE="$INSTALL_DIR/RELEASE"
 _REL_VAL="$(head -1 "$_REL_FILE" 2>/dev/null || true)"
-if (( _REL_SKIP )); then
-  :
-elif [[ -n "$_REL_VAL" && "$_REL_VAL" != \$Format:* ]]; then
+if [[ -n "$_REL_VAL" && "$_REL_VAL" != \$Format:* ]]; then
   _pass "RELEASE marker deployed: $_REL_VAL"
 elif [[ -e "$INSTALL_DIR/.git" ]]; then
   _pass "no RELEASE marker, but $INSTALL_DIR is a git checkout — describe answers"
@@ -172,9 +160,7 @@ fi
 # Resolve the tag the way the running manager does and drive the comparison
 # with a synthetic newer tag: no github.com call, no dashboard session.
 _REL_PY="$INSTALL_DIR/llm-systems-manager/venv/bin/python3"
-if (( _REL_SKIP )); then
-  :
-elif [[ ! -x "$_REL_PY" ]]; then
+if [[ ! -x "$_REL_PY" ]]; then
   _pass "no manager venv here — update-check resolution not applicable"
 else
   _REL_SNIP="$(mktemp)"
