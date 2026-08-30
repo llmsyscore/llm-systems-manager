@@ -1033,6 +1033,45 @@ check_resolves() {
   return 0
 }
 
+# ── Primary LAN IP ─────────────────────────────────────────────────────────
+# _is_virtual_iface <name> — true for docker/podman/libvirt/veth/cni bridges.
+_is_virtual_iface() {
+  case "$1" in
+    docker*|br-*|virbr*|veth*|lxc*|lxd*|cni*|podman*|flannel*|cali*|tun*|tap*|wg*|zt*|tailscale*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+# detect_primary_ip — print this host's LAN IPv4: LLMSYS_PRIMARY_IP override,
+# else the default-route source, else the first global IPv4 on a non-virtual NIC.
+detect_primary_ip() {
+  local ip line ifname addr first=""
+  if [[ -n "${LLMSYS_PRIMARY_IP:-}" ]]; then
+    printf '%s\n' "$LLMSYS_PRIMARY_IP"
+    return 0
+  fi
+  ip="$(ip -4 route get 1.1.1.1 2>/dev/null | sed -nE 's/.* src ([0-9.]+).*/\1/p' | head -1)"
+  if [[ -n "$ip" && "$ip" != 127.* ]]; then
+    printf '%s\n' "$ip"
+    return 0
+  fi
+  while IFS= read -r line; do
+    ifname="$(printf '%s' "$line" | awk '{print $2}')"
+    addr="$(printf '%s' "$line" | awk '{print $4}')"
+    addr="${addr%%/*}"
+    [[ "$addr" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]] || continue
+    [[ "$addr" == 127.* || "$addr" == 169.254.* ]] && continue
+    [[ -z "$first" ]] && first="$addr"
+    _is_virtual_iface "$ifname" && continue
+    printf '%s\n' "$addr"
+    return 0
+  done < <(ip -4 -o addr show scope global 2>/dev/null || true)
+  if [[ -z "$first" ]]; then
+    first="$(hostname -I 2>/dev/null | tr ' ' '\n' | grep -m1 -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' || true)"
+  fi
+  printf '%s\n' "${first:-127.0.0.1}"
+}
+
 # ── HTTP probe ──────────────────────────────────────────────────────────────
 # -4 forces IPv4: uvicorn `--host 0.0.0.0` only binds IPv4, and on some
 # distros `localhost` resolves to ::1 first. curl's documented fallback
