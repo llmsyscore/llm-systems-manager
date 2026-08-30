@@ -46,18 +46,23 @@
     ).join('') + '</dl>';
   }
 
-  function statsHtml(stats, fresh, benchTitle) {
+  function statsHtml(stats, fresh, d) {
     const cells = (stats || []).map(s =>
       `<div class="mc-stat"><div class="l">${esc(s.l)}</div><div class="v${s.live ? ' live' : ''}"><b>${esc(s.v)}</b>${s.unit ? ' ' + esc(s.unit) : ''}</div></div>`
     ).join('');
     if (!cells && !(fresh && fresh.stale)) return '';
     const tag = cells
-      ? `<span class="mc-benchtag" title="${esc(benchTitle || 'Benchmark results — not live throughput')}">bench</span>`
+      ? `<span class="mc-benchtag" title="${esc((d && d.benchTitle) || 'Benchmark results — not live throughput')}">bench</span>`
       : '';
     const f = (fresh && fresh.stale)
       ? `<span class="mc-stale" title="${esc(fresh.staleTitle || 'Config changed since this benchmark — run a fresh one from the ⋯ menu')}">re-bench</span>`
       : '';
-    return `<div class="mc-stats">${tag}${f}${cells}</div>`;
+    return `<div class="mc-stats"${_benchClickAttrs(d, cells)}>${tag}${f}${cells}</div>`;
+  }
+
+  function _benchClickAttrs(d, hasCells) {
+    if (!d || !d.benchClick || !hasCells) return '';
+    return ` ${d.actAttr}="${esc(d.benchClick)}" data-id="${esc(d.id)}" role="button" tabindex="0" title="Open the benchmark for this model"`;
   }
 
   function _menuItems(items, d) {
@@ -105,7 +110,7 @@
 
   function teleHtml(d) {
     const prof = d.profileHtml || '';
-    const stats = statsHtml(d.stats, d.fresh, d.benchTitle);
+    const stats = statsHtml(d.stats, d.fresh, d);
     if (!prof && !stats) return '';
     return `<div class="mc-tele">${prof}${stats}</div>`;
   }
@@ -140,7 +145,7 @@
       ${dot(d.pill && d.pill.state)}
       <div class="mc-rowname"><div class="n">${esc(d.name)}</div>${d.repo ? `<div class="r">${esc(d.repo)}</div>` : ''}</div>
       <div class="mc-rowcfg"${d.cfgClick ? ` ${d.actAttr}="${esc(d.cfgClick)}" data-id="${esc(d.id)}" role="button" tabindex="0" title="Edit configuration"` : ''}>${cfg}</div>
-      <div class="mc-rowmet">${met}</div>
+      <div class="mc-rowmet"${_benchClickAttrs(d, met)}>${met}</div>
       <div class="mc-rowprof">${d.profileHtml || ''}${d.fresh && d.fresh.stale ? ` <span class="mc-stale" title="${esc(d.fresh.staleTitle || 'Config changed since this benchmark')}">re-bench</span>` : ''}</div>
       <div class="mc-rowact">${d.primary ? btnHtml(d, d.primary, 'mcbtn-pri') : ''}${menuHtml(d, menuItems)}</div>
     </div>`;
@@ -272,7 +277,7 @@
       if (ev.key !== 'Enter' && ev.key !== ' ') return;
       const tog = ev.target.closest('[data-mctoggle]');
       if (tog) { ev.preventDefault(); toggleOpen(surface, tog.dataset.mctoggle); render(); return; }
-      const rb = ev.target.closest('.mc-rowcfg[role="button"], .mc-prof-edit[role="button"]');
+      const rb = ev.target.closest('.mc-rowcfg[role="button"], .mc-prof-edit[role="button"], .mc-stats[role="button"], .mc-rowmet[role="button"]');
       if (rb) { ev.preventDefault(); rb.click(); }
     });
   }

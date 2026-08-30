@@ -108,7 +108,12 @@
 .mc-rowcfg i { font-style: normal; color: var(--fg-faint); padding: 0 4px; }
 .mc-rowcfg[role="button"] { cursor: pointer; }
 .mc-rowcfg[role="button"]:hover { color: var(--fg); }
-.mc-rowcfg[role="button"]:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; border-radius: 4px; }
+.mc-rowcfg[role="button"]:focus-visible,
+.mc-stats[role="button"]:focus-visible,
+.mc-rowmet[role="button"]:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; border-radius: 4px; }
+.mc-stats[role="button"], .mc-rowmet[role="button"] { cursor: pointer; }
+.mc-stats[role="button"]:hover .mc-stat .v b,
+.mc-rowmet[role="button"]:hover .mc-stat .v b { color: var(--accent); }
 .mc-rowmet { display: flex; justify-content: flex-end; gap: 16px; padding-right: 14px; font-variant-numeric: tabular-nums; }
 .mc-rowmet .mc-stat .v { font-size: 12.5px; }
 .mc-row-hdr .mc-methdr { cursor: help; }

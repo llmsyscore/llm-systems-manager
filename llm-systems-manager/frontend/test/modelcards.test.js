@@ -70,6 +70,13 @@ describe('card rendering', () => {
     expect(withStale).toContain('ctx changed');
     expect(MC.card({ ...BASE, fresh: { age: '3d ago' } })).not.toContain('3d ago');
   });
+  it('bench stats become a button only when benchClick is set', () => {
+    const plain = MC.card(BASE);
+    expect(plain).not.toContain('mc-stats" data-act');
+    const clickable = MC.card({ ...BASE, benchClick: 'bench' });
+    expect(clickable).toMatch(/mc-stats" data-act="bench" data-id="[^"]+" role="button"/);
+    expect(MC.row({ ...BASE, benchClick: 'bench' })).toMatch(/mc-rowmet" data-act="bench"/);
+  });
   it('omits the action bar when there is nothing actionable', () => {
     const html = MC.card({ ...BASE, primary: null, buttons: [], menu: [] });
     expect(html).not.toContain('mc-actions');

@@ -256,6 +256,7 @@ function renderVllmModelCards(models, activeId) {
       specs: [], stats,
       fresh: null,
       benchTitle: 'Benchmark results — not live throughput' + (b && b.ts && MC.age(b.ts) ? ' (last run ' + MC.age(b.ts) + ')' : ''),
+      benchClick: serving ? 'bench' : null,
       primary: null, buttons: [],
       menu: serving ? [
         { act: 'bench',    label: '◷ Benchmark' },
