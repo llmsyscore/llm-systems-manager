@@ -309,8 +309,12 @@
       if (!ev.target.closest('.mc-menuwrap') && !ev.target.closest('.mc-menu')) closeMenus();
     });
     document.addEventListener('keydown', ev => { if (ev.key === 'Escape') closeMenus(); });
+    // Close on scrolls that move an open menu's anchor: the page itself, or a
+    // container holding the menu. Inner auto-scrollers (log boxes streaming
+    // output) must not slam menus shut.
     document.addEventListener('scroll', ev => {
-      if (!(ev.target.closest && ev.target.closest('.mc-menu'))) closeMenus();
+      const t = ev.target;
+      if (t === document || (t.querySelector && t.querySelector('.mc-menu.open'))) closeMenus();
     }, true);
     window.addEventListener('resize', closeMenus);
   }
