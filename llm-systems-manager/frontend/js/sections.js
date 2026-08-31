@@ -7,10 +7,24 @@ const LLMSections = (function () {
     vllm:     { container: 'llm-vllm' },
   };
 
+  const DIV = '__divider__';
+
   function _container(key) { return document.getElementById(PANELS[key].container); }
   function _sections(key) {
     const c = _container(key);
     return c ? [...c.querySelectorAll(':scope > .llm-section')] : [];
+  }
+  function _divider(key) {
+    const c = _container(key);
+    return c ? c.querySelector(':scope > .llm-sec-divider') : null;
+  }
+  // Sections plus the divider, in DOM order — the divider is a positioned
+  // participant of the saved order, not decoration.
+  function _orderedIds(key) {
+    const c = _container(key);
+    if (!c) return [];
+    return [...c.querySelectorAll(':scope > .llm-section, :scope > .llm-sec-divider')]
+      .map(el => el.classList.contains('llm-sec-divider') ? DIV : el.id);
   }
   function _panelOf(sectionId) {
     for (const key of Object.keys(PANELS)) {
@@ -28,28 +42,26 @@ const LLMSections = (function () {
     if (typeof layout !== 'object' || !layout) return;
     layout.llmSections = layout.llmSections || {};
     layout.llmSections[key] = {
-      order: _sections(key).map(el => el.id),
+      order: _orderedIds(key),
       open: _sections(key).filter(el => !el.classList.contains('collapsed')).map(el => el.id),
     };
     try { saveLayout(); } catch (_) {}
   }
 
-  // A customized layout re-stacks sections in saved order at the end of the
-  // panel and hides the decorative divider — slot-swapping can't represent
-  // an order that crosses it.
-  function _hideDivider(key) {
-    const c = _container(key);
-    const d = c && c.querySelector(':scope > .llm-sec-divider');
-    if (d) d.style.display = 'none';
-  }
+  // Re-stack sections and the divider at the end of the panel in saved order.
+  // Legacy saved orders without a divider entry keep it right after Models.
   function _applyOrder(key, order) {
     const c = _container(key);
     const secs = _sections(key);
+    const div = _divider(key);
     const byId = new Map(secs.map(el => [el.id, el]));
-    const target = order.filter(id => byId.has(id));
+    let target = order.filter((t, i) => t === DIV ? (div && order.indexOf(t) === i) : byId.has(t));
     secs.forEach(el => { if (!target.includes(el.id)) target.push(el.id); });
-    target.forEach(id => c.appendChild(byId.get(id)));
-    _hideDivider(key);
+    if (div && !target.includes(DIV)) {
+      const after = target.findIndex(t => /Models$/.test(t));
+      target.splice(after >= 0 ? after + 1 : 1, 0, DIV);
+    }
+    target.forEach(t => c.appendChild(t === DIV ? div : byId.get(t)));
   }
 
   function _initPanel(key) {
@@ -67,7 +79,7 @@ const LLMSections = (function () {
         draggable: '.llm-section',
         animation: 150,
         ghostClass: 'mc-sec-ghost',
-        onEnd: () => { _hideDivider(key); _persist(key); },
+        onEnd: () => _persist(key),
       });
     }
   }
