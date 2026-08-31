@@ -112,7 +112,7 @@ _LLAMA_VALUE_FLAGS = {
     "--gpu-layers", "--tensor-parallel", "-t", "-c", "-ngl",
     "--mmap", "--no-mmap", "--load-mode", "-lm", "--log-disable", "--cont-batch",
     "--embedding", "--no-display", "--simple-io",
-    "--chat-template",
+    "--chat-template", "--cors-origins", "--tools",
 }
 
 _build_queue: "_queue_lib.Queue[dict[str, Any]]" = _queue_lib.Queue(maxsize=4000)
@@ -1368,9 +1368,11 @@ def llama_svcconfig_get(authorization: Optional[str] = Header(default=None)) -> 
             while i < len(parts):
                 p = parts[i]
                 if p.startswith("-"):
-                    expects_value = p in _LLAMA_VALUE_FLAGS
-                    if expects_value and i + 1 < len(parts):
-                        args.append({"flag": p, "value": parts[i + 1], "bool": False})
+                    nxt = parts[i + 1] if i + 1 < len(parts) else None
+                    expects_value = (p in _LLAMA_VALUE_FLAGS
+                                     or (nxt is not None and not nxt.startswith("-")))
+                    if expects_value and nxt is not None:
+                        args.append({"flag": p, "value": nxt, "bool": False})
                         i += 2
                     else:
                         args.append({"flag": p, "value": None, "bool": True})
