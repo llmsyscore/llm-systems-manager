@@ -135,7 +135,7 @@
   function row(d) {
     const cfg = (d.specs || []).map(s => `${esc(String(s.k).toLowerCase())} ${esc(s.v)}`).join('<i>·</i>');
     const met = (d.stats || []).slice(0, 3).map(s =>
-      `<div class="mc-stat"><div class="l">${esc(s.l)}</div><div class="v"><b>${esc(s.v)}</b></div></div>`).join('');
+      `<span class="mc-rstat"><span class="rl">${esc(s.l)}</span><b>${esc(s.v)}</b></span>`).join('');
     const menuItems = [
       ...(d.buttons || []).map(b => ({ act: b.act, label: b.label, icon: b.icon })),
       ...((d.buttons || []).length && (d.menu || []).filter(i => i !== '-').length ? ['-'] : []),

@@ -103,7 +103,7 @@ describe('compact + row rendering', () => {
     expect(html).toContain('title="not live"');
     expect(html).toContain('Bench (t/s)');
     const rowHtml = MC.row(BASE);
-    expect(rowHtml).toContain('<div class="l">Gen</div>');
+    expect(rowHtml).toContain('<span class="rl">Gen</span>');
   });
   it('group rows encode collapse state', () => {
     expect(MC.groupRow('unsloth', 2, false)).toContain('▾');
