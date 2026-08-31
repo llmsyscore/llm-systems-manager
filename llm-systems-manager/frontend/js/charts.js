@@ -825,10 +825,10 @@ function _applyLlamaStatePayload(data) {
     if (srvStatusEl) {
       if (isLlamaUp) {
         const port = data.port || 8080;
-        srvStatusEl.style.color = '#999';
+        srvStatusEl.className = 'mc-pill p-active llm-sec-pill';
         srvStatusEl.textContent = `Server ON · port ${port}`;
       } else {
-        srvStatusEl.style.color = 'var(--crit)';
+        srvStatusEl.className = 'mc-pill p-unloaded llm-sec-pill';
         srvStatusEl.textContent = 'Server OFF';
       }
     }

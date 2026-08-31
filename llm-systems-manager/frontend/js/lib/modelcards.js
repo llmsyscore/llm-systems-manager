@@ -67,7 +67,7 @@
 
   function _menuItems(items, d) {
     return (items || []).map(it => it === '-' ? '<hr>' :
-      `<button ${d.actAttr}="${esc(it.act)}" data-id="${esc(d.id)}" class="${it.danger ? 'danger' : ''}">${esc(it.label)}</button>`
+      `<button ${d.actAttr}="${esc(it.act)}" data-id="${esc(d.id)}" class="${it.danger ? 'danger' : ''}">${it.icon ? `<span class="mi">${esc(it.icon)}</span>` : ''}${esc(it.label)}</button>`
     ).join('');
   }
 
@@ -78,7 +78,8 @@
   }
 
   function btnHtml(d, b, cls) {
-    return `<button class="mcbtn ${cls}" ${d.actAttr}="${esc(b.act)}" data-id="${esc(d.id)}"${d.transition ? ' disabled' : ''}>${esc(b.label)}</button>`;
+    const label = (b.icon ? esc(b.icon) + ' ' : '') + esc(b.label);
+    return `<button class="mcbtn ${cls}" ${d.actAttr}="${esc(b.act)}" data-id="${esc(d.id)}"${d.transition ? ' disabled' : ''}>${label}</button>`;
   }
 
   function actionsHtml(d) {

@@ -281,17 +281,17 @@ function _llamaDescriptor(modelId, statusLookup) {
 
   let primary = null;
   const buttons = [];
-  if      (isSleeping) { primary = { act: 'wake',   label: '☀ Wake' };   buttons.push({ act: 'unload', label: '⏹ Unload' }); }
-  else if (isLoaded)   { primary = { act: 'unload', label: '⏹ Unload' }; }
-  else if (!isLoading) { primary = { act: 'load',   label: '▶ Load' }; }
-  buttons.push({ act: 'edit', label: '✎ Edit' });
+  if      (isSleeping) { primary = { act: 'wake',   icon: '☀', label: 'Wake' };   buttons.push({ act: 'unload', icon: '⏹', label: 'Unload' }); }
+  else if (isLoaded)   { primary = { act: 'unload', icon: '⏹', label: 'Unload' }; }
+  else if (!isLoading) { primary = { act: 'load',   icon: '▶', label: 'Load' }; }
+  buttons.push({ act: 'edit', icon: '✎', label: 'Edit' });
 
   const menu = [
-    ...(isLoaded || isSleeping ? [{ act: 'reload', label: '↺ Reload' }] : []),
-    { act: 'bench',    label: '◷ Benchmark' },
-    { act: 'autotune', label: '⌖ Autotune' },
+    ...(isLoaded || isSleeping ? [{ act: 'reload', icon: '↺', label: 'Reload' }] : []),
+    { act: 'bench',    icon: '◷', label: 'Benchmark' },
+    { act: 'autotune', icon: '⌖', label: 'Autotune' },
     '-',
-    { act: 'delete', label: '✕ Delete model', danger: true },
+    { act: 'delete', icon: '✕', label: 'Delete model', danger: true },
   ];
 
   // Live perf block (loaded only) — same element ids _updateModelPerf writes to.
@@ -1435,8 +1435,7 @@ function resetLLMControlPanels() {
   if (_add) { _add.style.display = 'none'; _add.innerHTML = ''; }
   _set('dlBtn', 'disabled', false);
   if (typeof _setDlRunning === 'function') _setDlRunning(false);
-  _set('cacheRmRepo', 'value', '');
-  _set('cacheLog', 'textContent', 'Cache info will appear here...');
+  _set('cacheLog', 'textContent', '');
   // LM Studio download panel.
   _set('lmsDlModel', 'value', '');
   _set('lmsDlLog', 'textContent', 'Download status will appear here...');
@@ -1584,34 +1583,57 @@ function addDownloadedModel(explicitQuant) {
 
 // ----- Cache Management -----
 
+// Best-effort byte parse of hf-cli size strings ("19.2G", "412M") for the total.
+function _cacheBytes(sz) {
+  const m = /^([\d.]+)\s*([KMGT])/i.exec(String(sz || ''));
+  if (!m) return 0;
+  return parseFloat(m[1]) * ({ K: 1e3, M: 1e6, G: 1e9, T: 1e12 })[m[2].toUpperCase()];
+}
+
 async function loadCacheList() {
-  const log = document.getElementById('cacheLog');
-  log.textContent = 'Loading...';
+  const host = document.getElementById('cacheTable');
+  const hint = document.getElementById('hfCacheHint');
+  if (!host) return;
+  host.innerHTML = '<div style="color:var(--fg-dim);font-size:0.85em;">Loading…</div>';
   try {
     const r = await fetch('/api/llm/cache').then(r => r.json());
-    if (!r.ok) { log.textContent = 'Error: ' + r.error; return; }
+    if (!r.ok) { host.innerHTML = `<div style="color:var(--crit);font-size:0.85em;">Error: ${_esc(r.error || 'unknown')}</div>`; return; }
     const entries = r.data || [];
     if (!entries.length) {
-      log.textContent = r.raw || '(cache is empty)';
+      host.innerHTML = '<div style="color:var(--fg-dim);font-size:0.85em;">Cache is empty.</div>';
+      if (hint) hint.textContent = '';
       return;
     }
-    let out = '';
-    entries.forEach(e => {
-      out += `${e.repo_id}\n`;
-      out += `  type:          ${e.repo_type || '?'}\n`;
-      out += `  size:          ${e.size || '?'}\n`;
-      out += `  last accessed: ${e.last_accessed || '?'}\n`;
-      out += `  last modified: ${e.last_modified || '?'}\n`;
-      out += `  refs:          ${(e.refs || []).join(', ') || 'none'}\n`;
-      out += '\n';
-    });
-    log.textContent = out;
+    const rows = entries.map(e => `<tr>
+      <td style="color:var(--fg);">${_esc(e.repo_id || '?')}</td>
+      <td class="trending-dl">${_esc(e.size || '?')}</td>
+      <td style="color:var(--fg-dim);">${_esc(e.last_accessed || '?')}</td>
+      <td style="color:var(--fg-dim);">${_esc((e.refs || []).join(', ') || 'none')}</td>
+      <td style="text-align:right;"><button class="mcbtn mcbtn-ghost mcbtn-sm" data-cacherepo="${_esc(e.repo_id || '')}" title="Remove this repo from the cache">✕</button></td>
+    </tr>`).join('');
+    host.innerHTML = `<table class="trending-table">
+      <thead><tr><th>Repo</th><th>Size</th><th>Last accessed</th><th>Refs</th><th></th></tr></thead>
+      <tbody>${rows}</tbody></table>`;
+    if (!host._rmWired) {
+      host._rmWired = true;
+      host.addEventListener('click', ev => {
+        const b = ev.target.closest('button[data-cacherepo]');
+        if (b && b.dataset.cacherepo) confirmCacheRm(b.dataset.cacherepo);
+      });
+    }
+    if (hint) {
+      const total = entries.reduce((a, e) => a + _cacheBytes(e.size), 0);
+      hint.textContent = (total > 0 ? (total / 1e9).toFixed(1) + ' GB across ' : '')
+        + entries.length + ' repo' + (entries.length === 1 ? '' : 's');
+    }
   } catch(e) {
-    log.textContent = 'Error: ' + e;
+    host.innerHTML = `<div style="color:var(--crit);font-size:0.85em;">Error: ${_esc(String(e))}</div>`;
   }
 }
 
 function _streamCacheOp(url, body) {
+  const wrap = document.getElementById('cacheOpWrap');
+  if (wrap) wrap.style.display = '';
   const log = document.getElementById('cacheLog');
   log.textContent = '';
   if (_dlEventSrc) { try { _dlEventSrc.close(); } catch(_){} _dlEventSrc = null; }
@@ -1665,9 +1687,8 @@ async function confirmPrune() {
   _streamCacheOp('/api/llm/cache/prune');
 }
 
-async function confirmCacheRm() {
-  const repo = document.getElementById('cacheRmRepo').value.trim();
-  if (!repo) { alert('Enter a repo ID to remove.'); return; }
+async function confirmCacheRm(repo) {
+  if (!repo) return;
   const ok = await _themedConfirm({
     title:        `Remove "${adminEsc(repo)}" from the HF cache?`,
     bodyHtml:     'This deletes the cached model files. Cannot be undone.',
@@ -1691,11 +1712,47 @@ function _showTrendingError(msg) {
   container.replaceChildren(div);
 }
 
+const _TREND_LIMITS = [5, 10, 20];
+const _TREND_SORTS = ['trending', 'downloads', 'newest'];
+
+function _trendCfg() {
+  const t = (typeof layout === 'object' && layout && layout.hfTrending) || {};
+  return {
+    limit: _TREND_LIMITS.includes(Number(t.limit)) ? Number(t.limit) : 5,
+    min: /^\d{1,3}B$/.test(t.min || '') ? t.min : '9B',
+    max: /^\d{1,3}B$/.test(t.max || '') ? t.max : '27B',
+    sort: _TREND_SORTS.includes(t.sort) ? t.sort : 'trending',
+  };
+}
+
+function _trendSyncUI() {
+  const cfg = _trendCfg();
+  const set = (id, v) => { const el = document.getElementById(id); if (el && el.value !== String(v)) el.value = String(v); };
+  set('trendLimit', cfg.limit); set('trendMin', cfg.min); set('trendMax', cfg.max); set('trendSort', cfg.sort);
+  const chip = document.getElementById('trendChip');
+  if (chip) chip.textContent = `top ${cfg.limit} · ${cfg.min}–${cfg.max} · ${cfg.sort}`;
+}
+
+function onTrendingCfgChange() {
+  if (typeof layout !== 'object' || !layout) return;
+  layout.hfTrending = {
+    limit: Number(document.getElementById('trendLimit')?.value) || 5,
+    min: document.getElementById('trendMin')?.value || '9B',
+    max: document.getElementById('trendMax')?.value || '27B',
+    sort: document.getElementById('trendSort')?.value || 'trending',
+  };
+  try { saveLayout(); } catch (_) {}
+  loadHFTrending();
+}
+
 async function loadHFTrending() {
   const container = document.getElementById('hfTrendingTable');
   container.innerHTML = '<div style="color:var(--fg-dim);font-size:0.85em;padding:8px;">Fetching from HuggingFace...</div>';
+  const cfg = _trendCfg();
+  _trendSyncUI();
   try {
-    const r = await fetch('/api/llm/hf-trending').then(r => r.json());
+    const q = `limit=${cfg.limit}&min_b=${encodeURIComponent(cfg.min)}&max_b=${encodeURIComponent(cfg.max)}&sort=${cfg.sort}`;
+    const r = await fetch('/api/llm/hf-trending?' + q).then(r => r.json());
     if (!r.ok) {
       _showTrendingError(r.error);
       return;
@@ -1722,7 +1779,7 @@ async function loadHFTrending() {
         <td class="trending-dl">${_escHtml(downloads)}</td>
         <td style="color:var(--fg-dim);">${_escHtml(modified)}</td>
         <td class="trending-dl">${_escHtml(score)}</td>
-        <td><button class="btn btn-slate-muted-gradient" style="padding:3px 8px;font-size:0.75em;" onclick="prefillDownload(${_escHtml(repoJs)})">↓ Download</button></td>
+        <td style="text-align:right;"><button class="mcbtn mcbtn-ghost mcbtn-sm" onclick="prefillDownload(${_escHtml(repoJs)})">↓ Download</button></td>
       </tr>`;
     }).join('');
 

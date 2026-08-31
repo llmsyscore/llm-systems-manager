@@ -315,12 +315,31 @@ async function serverPerfMode(mode) {
       else if (key === 'vllm' && typeof _vllmTermFit !== 'undefined' && _vllmTermFit) _vllmTermFit.fit();
     } catch (_) {}
   }
+  function _restoreHeights() {
+    const saved = (typeof layout === 'object' && layout && layout.logHeights) || {};
+    Object.entries(saved).forEach(([id, h]) => {
+      const el = document.getElementById(id);
+      if (el && Number(h) >= 80) el.style.height = Number(h) + 'px';
+    });
+  }
+  function _persistHeight(box) {
+    if (!box || !box.id || typeof layout !== 'object' || !layout) return;
+    layout.logHeights = layout.logHeights || {};
+    layout.logHeights[box.id] = box.offsetHeight;
+    try { saveLayout(); } catch (_) {}
+  }
   document.addEventListener('DOMContentLoaded', () => {
     _attachHandle(document.getElementById('logResizeHandle'),
                   document.getElementById('serverLogBox'));
     document.querySelectorAll('.dl-log-resize').forEach(h => {
       _attachHandle(h, document.getElementById(h.dataset.resizeTarget));
     });
+    let tries = 0;
+    const t = setInterval(() => {
+      if ((typeof layout === 'object' && layout) || ++tries > 100) {
+        clearInterval(t); _restoreHeights();
+      }
+    }, 100);
   });
   document.addEventListener('mousemove', e => {
     if (!dragging || !activeBox) return;
@@ -330,6 +349,7 @@ async function serverPerfMode(mode) {
   });
   document.addEventListener('mouseup', () => {
     if (dragging && activeXtermKey) _fitXterm(activeXtermKey);
+    if (dragging && activeBox) _persistHeight(activeBox);
     dragging = false; activeBox = null; activeXtermKey = null;
     document.body.style.userSelect = '';
   });
@@ -413,15 +433,7 @@ function _initLLMSections() {
   if (_llmSectionsInited) return;
   _llmSectionsInited = true;
 
-  // Models — expanded
-  document.getElementById('secModels').classList.remove('collapsed');
-  // Download — collapsed
-  document.getElementById('secDownload').classList.add('collapsed');
-  // Cache — collapsed
-  document.getElementById('secCache').classList.add('collapsed');
-  // Trending — expanded
-  document.getElementById('secTrending').classList.remove('collapsed');
-
+  // Section open/collapse defaults are owned by LLMSections (#767).
   // Open server log panel
   const panel = document.getElementById('serverLogPanel');
   if (panel) {
@@ -431,7 +443,14 @@ function _initLLMSections() {
   }
 }
 
+let _cacheListedOnce = false;
 function toggleSection(id) {
-  document.getElementById(id).classList.toggle('collapsed');
+  const sec = document.getElementById(id);
+  sec.classList.toggle('collapsed');
+  if (typeof LLMSections !== 'undefined') LLMSections.noteToggle(id);
+  if (id === 'secDownload' && !sec.classList.contains('collapsed') && !_cacheListedOnce) {
+    _cacheListedOnce = true;
+    if (typeof loadCacheList === 'function') loadCacheList();
+  }
 }
 

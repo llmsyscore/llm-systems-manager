@@ -56,7 +56,7 @@ Backend API endpoints consumed:
   <script src="/static/vendor/xterm-addon-fit.min.js?v=0.8.0"></script>
   <link rel="stylesheet" href="/static/css/fonts.css?v=2026.08.30-1">
   <link rel="stylesheet" href="/static/css/base.css?v=2026.08.30-1">
-  <link rel="stylesheet" href="/static/css/modelcards.css?v=2026.08.30-7">
+  <link rel="stylesheet" href="/static/css/modelcards.css?v=2026.08.30-9">
   <link rel="stylesheet" href="/static/css/reportcard.css?v=2026.08.30-1">
   <link rel="stylesheet" href="/static/css/energy.css?v=2026.08.19-2">
   <link rel="stylesheet" href="/static/css/overall.css?v=2026.08.30-1">
@@ -135,64 +135,9 @@ Backend API endpoints consumed:
     <div class="agent-picker" id="agentPickerDashLlama" style="display:none"></div>
     <div id="llm-ctrl-wrap">
 
-  <!-- Server Control -->
-  <div class="llm-section" id="secLlamaCtrl">
-    <div class="llm-section-title" onclick="toggleSection('secLlamaCtrl')">Llama Server Control<span class="llm-collapse-icon">▾</span></div>
-    <div class="llm-section-body">
-    <div class="llm-toolbar">
-      <button class="btn btn-stone-muted-gradient" id="llamaBtnStart"   onclick="serverAction('start')">▶ Start</button>
-      <button class="btn btn-slate-muted-gradient" id="llamaBtnStop"    onclick="serverAction('stop')">⏹ Stop</button>
-      <button class="btn btn-amber-muted-gradient" id="llamaBtnRestart" onclick="serverAction('restart')">↺ Restart</button>
-      <button class="btn btn-zinc-muted-gradient"  id="llamaBtnStatus"  onclick="serverStatus()">ℹ Status</button>
-      <button class="btn btn-amber-muted-gradient" id="llamaBtnWake"    onclick="serverWake()" title="POST a tiny chat-completions request to the llama-server to bring it out of idle-sleep">☀ Wakeup</button>
-      <span id="llamaServerStatus" style="font-size:0.82em;color:var(--fg-dim);margin-left:2px;">—</span>
-      <span id="serverCtrlStatus"  style="font-size:0.82em;color:var(--fg-dim);margin-left:4px;"></span>
-      <span class="status status--crit" id="llamaCtrlBadge" style="margin-left:4px;"><span class="status__dot"></span>Agent offline</span>
-      <button class="btn btn-stone-muted-gradient ml-auto" id="llamaBtnPerfPerformance" onclick="serverPerfMode('performance')" title="Force the llama agent host's CPU governor / fan profile to PERFORMANCE (sudo systemctl restart performance)">⚡ Performance</button>
-      <button class="btn btn-slate-muted-gradient" id="llamaBtnPerfPowersave"   onclick="serverPerfMode('powersave')"   title="Force the llama agent host's CPU governor / fan profile to POWERSAVE (sudo systemctl restart powersave)">🌙 Powersave</button>
-      <button class="btn btn-slate-muted-gradient" onclick="openServerConfig()">⚙ Server Config</button>
-      <button class="btn btn-slate-muted-gradient" id="llamaBtnBuild" onclick="startLlamaBuild()" title="Rebuild llama.cpp from source">⬆ Update llama.cpp</button>
-      <button class="btn btn-slate-muted-gradient" onclick="toggleTerminal()">⬛ Terminal</button>
-      <button class="btn btn-slate-muted-gradient" onclick="toggleServerLog()">☰ Server Log</button>
-    </div>
-    <div id="llamaBuildPanel" style="display:none;margin-bottom:10px;">
-      <div class="llm-toolbar" style="justify-content:space-between;margin-bottom:4px;">
-        <span style="font-size:0.82em;color:var(--fg-dim);">⬆ Update llama.cpp output <span id="llamaBuildStatus" style="margin-left:6px;"></span></span>
-        <button class="btn btn-gray-muted-gradient btn-sm" onclick="closeLlamaBuildPanel()">✕ Close</button>
-      </div>
-      <pre id="llamaBuildLog" class="log-box" style="height:360px;"></pre>
-    </div>
-    <!-- Terminal panel — sits above the server log so the layout is
-         buttons → terminal → log when both are open. -->
-    <div id="terminalPanel" style="display:none;margin-bottom:10px;">
-      <div class="llm-toolbar" style="justify-content:flex-end;margin-bottom:4px;">
-        <span style="font-size:0.75em;color:var(--fg-dim);margin-right:auto;">Terminal</span>
-        <button class="btn btn-gray-muted-gradient btn-sm" onclick="popOutTerminal()" title="Open in new window">⧉ Pop out</button>
-        <button class="btn btn-gray-muted-gradient btn-sm" onclick="reconnectTerminal()" title="Reconnect">↺ Reconnect</button>
-      </div>
-      <div class="log-wrap">
-        <div id="terminalMount" class="log-box log-box--attached log-box--flush" style="height:560px;overflow:hidden;"></div>
-        <div class="dl-log-resize" data-resize-target="terminalMount" data-fit-xterm="llama"></div>
-      </div>
-    </div>
-    <div id="serverLogPanel" style="display:none;">
-      <div class="llm-toolbar" style="justify-content:flex-end;margin-bottom:4px;">
-        <button class="btn btn-zinc-muted-gradient btn-sm" onclick="popOutLog()" title="Open in new window">⧉ Pop out</button>
-        <button class="btn btn-zinc-muted-gradient btn-sm" onclick="fullscreenLog()" title="Fullscreen">⛶ Fullscreen</button>
-        <button class="btn btn-zinc-muted-gradient btn-sm" onclick="restartLogStream()" title="Reconnect stream">↺ Refresh</button>
-      </div>
-      <div class="log-wrap">
-        <div id="serverLogBox" class="log-box log-box--attached" style="height:560px;"></div>
-        <div id="logResizeHandle" class="dl-log-resize"></div>
-      </div>
-    </div>
-    </div>
-  </div>
-
-
   <!-- Model Roster -->
   <div class="llm-section" id="secModels">
-    <div class="llm-section-title" onclick="toggleSection('secModels')">Models <span style="color:var(--fg-faint);font-weight:normal;margin-left:8px;text-transform:none;letter-spacing:0;">— one model may be loaded at a time</span><span class="llm-collapse-icon">▾</span></div>
+    <div class="llm-section-title llm-sec-prominent" onclick="toggleSection('secModels')">Models <span style="color:var(--fg-faint);font-weight:normal;margin-left:8px;text-transform:none;letter-spacing:0;">— one model may be loaded at a time</span><span class="llm-collapse-icon">▾</span><span class="llm-drag" title="Drag to reorder" onclick="event.stopPropagation();">⠿</span></div>
     <div class="llm-section-body">
     <div class="mc-toolbar" onclick="event.stopPropagation();">
       <div class="mc-filter" id="llmMcFilter">
@@ -422,9 +367,74 @@ Backend API endpoints consumed:
     </div>
   </div>
 
+  <div class="llm-sec-divider"><span class="t">Server &amp; tools</span><span class="rule"></span></div>
+
+  <!-- Server Control -->
+  <div class="llm-section collapsed" id="secLlamaCtrl">
+    <div class="llm-section-title" onclick="toggleSection('secLlamaCtrl')">Llama Server Control
+      <span class="mc-pill p-unloaded llm-sec-pill" id="llamaServerStatus" onclick="event.stopPropagation();">—</span>
+      <span class="llm-collapse-icon">▾</span>
+      <span class="llm-drag" title="Drag to reorder" onclick="event.stopPropagation();">⠿</span>
+    </div>
+    <div class="llm-section-body">
+    <div class="llm-toolbar">
+      <button class="mcbtn mcbtn-ghost mcbtn-sm" id="llamaBtnStart"   onclick="serverAction('start')"><span class="ic">▶</span> Start</button>
+      <button class="mcbtn mcbtn-ghost mcbtn-sm" id="llamaBtnStop"    onclick="serverAction('stop')"><span class="ic">■</span> Stop</button>
+      <button class="mcbtn mcbtn-ghost mcbtn-sm" id="llamaBtnRestart" onclick="serverAction('restart')"><span class="ic">↺</span> Restart</button>
+      <button class="mcbtn mcbtn-ghost mcbtn-sm" id="llamaBtnStatus"  onclick="serverStatus()"><span class="ic">ℹ</span> Status</button>
+      <button class="mcbtn mcbtn-ghost mcbtn-sm" id="llamaBtnWake"    onclick="serverWake()" title="POST a tiny chat-completions request to the llama-server to bring it out of idle-sleep"><span class="ic">☀</span> Wakeup</button>
+      <span id="serverCtrlStatus"  style="font-size:0.82em;color:var(--fg-dim);margin-left:4px;"></span>
+      <span class="status status--crit" id="llamaCtrlBadge" style="margin-left:4px;"><span class="status__dot"></span>Agent offline</span>
+      <button class="mcbtn mcbtn-ghost mcbtn-sm ml-auto" onclick="toggleTerminal()"><span class="ic">▣</span> Terminal</button>
+      <button class="mcbtn mcbtn-ghost mcbtn-sm" onclick="toggleServerLog()"><span class="ic">≡</span> Server Log</button>
+      <div class="mc-menuwrap">
+        <button class="mcbtn mcbtn-ghost mcbtn-sm mc-menubtn" aria-label="More actions">⋯</button>
+        <div class="mc-menu">
+          <button id="llamaBtnPerfPerformance" onclick="serverPerfMode('performance')" title="Force the llama agent host's CPU governor / fan profile to PERFORMANCE (sudo systemctl restart performance)"><span class="mi">⌁</span>Performance mode</button>
+          <button id="llamaBtnPerfPowersave" onclick="serverPerfMode('powersave')" title="Force the llama agent host's CPU governor / fan profile to POWERSAVE (sudo systemctl restart powersave)"><span class="mi">☾</span>Powersave mode</button>
+          <hr>
+          <button onclick="openServerConfig()"><span class="mi">⚙</span>Server config</button>
+          <button id="llamaBtnBuild" onclick="startLlamaBuild()" title="Rebuild llama.cpp from source"><span class="mi">↑</span>Update llama.cpp</button>
+        </div>
+      </div>
+    </div>
+    <div id="llamaBuildPanel" style="display:none;margin-bottom:10px;">
+      <div class="llm-toolbar" style="justify-content:space-between;margin-bottom:4px;">
+        <span style="font-size:0.82em;color:var(--fg-dim);">⬆ Update llama.cpp output <span id="llamaBuildStatus" style="margin-left:6px;"></span></span>
+        <button class="btn btn-gray-muted-gradient btn-sm" onclick="closeLlamaBuildPanel()">✕ Close</button>
+      </div>
+      <pre id="llamaBuildLog" class="log-box" style="height:360px;"></pre>
+    </div>
+    <!-- Terminal panel — sits above the server log so the layout is
+         buttons → terminal → log when both are open. -->
+    <div id="terminalPanel" style="display:none;margin-bottom:10px;">
+      <div class="llm-toolbar" style="justify-content:flex-end;margin-bottom:4px;">
+        <span style="font-size:0.75em;color:var(--fg-dim);margin-right:auto;">Terminal</span>
+        <button class="btn btn-gray-muted-gradient btn-sm" onclick="popOutTerminal()" title="Open in new window">⧉ Pop out</button>
+        <button class="btn btn-gray-muted-gradient btn-sm" onclick="reconnectTerminal()" title="Reconnect">↺ Reconnect</button>
+      </div>
+      <div class="log-wrap">
+        <div id="terminalMount" class="log-box log-box--attached log-box--flush" style="height:560px;overflow:hidden;"></div>
+        <div class="dl-log-resize" data-resize-target="terminalMount" data-fit-xterm="llama"></div>
+      </div>
+    </div>
+    <div id="serverLogPanel" style="display:none;">
+      <div class="llm-toolbar" style="justify-content:flex-end;margin-bottom:4px;">
+        <button class="btn btn-zinc-muted-gradient btn-sm" onclick="popOutLog()" title="Open in new window">⧉ Pop out</button>
+        <button class="btn btn-zinc-muted-gradient btn-sm" onclick="fullscreenLog()" title="Fullscreen">⛶ Fullscreen</button>
+        <button class="btn btn-zinc-muted-gradient btn-sm" onclick="restartLogStream()" title="Reconnect stream">↺ Refresh</button>
+      </div>
+      <div class="log-wrap">
+        <div id="serverLogBox" class="log-box log-box--attached" style="height:336px;"></div>
+        <div id="logResizeHandle" class="dl-log-resize"></div>
+      </div>
+    </div>
+    </div>
+  </div>
+
   <!-- HF Downloader -->
-  <div class="llm-section" id="secDownload">
-    <div class="llm-section-title" onclick="toggleSection('secDownload')">Download from HuggingFace<span class="llm-collapse-icon">▾</span></div>
+  <div class="llm-section collapsed" id="secDownload">
+    <div class="llm-section-title" onclick="toggleSection('secDownload')">HuggingFace — Downloads &amp; Cache<span class="llm-sec-hint" id="hfCacheHint"></span><span class="llm-collapse-icon">▾</span><span class="llm-drag" title="Drag to reorder" onclick="event.stopPropagation();">⠿</span></div>
     <div class="llm-section-body">
     <div class="dl-row">
       <div class="form-field" style="flex:0 0 auto;width:360px;min-width:0;">
@@ -438,19 +448,11 @@ Backend API endpoints consumed:
       <button class="btn btn-stone-muted-gradient" id="dlBtn" onclick="startDownload()">Download</button>
       <button class="btn btn-red-muted-gradient" id="dlCancelBtn" onclick="cancelDownload()" style="display:none;">✕ Cancel</button>
     </div>
-    <div style="display:flex;gap:16px;margin-bottom:10px;font-size:0.82em;color:var(--fg-muted);flex-wrap:wrap;">
-      <label style="display:flex;align-items:center;gap:6px;cursor:pointer;">
-        <input type="checkbox" id="dlChkConfig" checked> Download config.json
-      </label>
-      <label style="display:flex;align-items:center;gap:6px;cursor:pointer;">
-        <input type="checkbox" id="dlChkTemplate" checked> Download chat template
-      </label>
-      <label style="display:flex;align-items:center;gap:6px;cursor:pointer;">
-        <input type="checkbox" id="dlChkMmproj" checked> Download mmproj files
-      </label>
-      <label style="display:flex;align-items:center;gap:6px;cursor:pointer;">
-        <input type="checkbox" id="dlChkDryRun" checked> Dry run (preview only)
-      </label>
+    <div style="display:flex;gap:18px;margin-bottom:10px;flex-wrap:wrap;">
+      <label class="mc-toggle mc-ckt"><input type="checkbox" id="dlChkConfig" checked><span class="track"></span><span class="tlbl">config.json</span></label>
+      <label class="mc-toggle mc-ckt"><input type="checkbox" id="dlChkTemplate" checked><span class="track"></span><span class="tlbl">chat template</span></label>
+      <label class="mc-toggle mc-ckt"><input type="checkbox" id="dlChkMmproj" checked><span class="track"></span><span class="tlbl">mmproj files</span></label>
+      <label class="mc-toggle mc-ckt"><input type="checkbox" id="dlChkDryRun" checked><span class="track"></span><span class="tlbl">dry run (preview only)</span></label>
     </div>
     <div class="log-toolbar"><button class="btn-log" onclick="popoutLog('dlLog','Download output')">⛶ Pop out</button></div>
     <div class="log-wrap">
@@ -458,37 +460,41 @@ Backend API endpoints consumed:
       <div class="dl-log-resize" data-resize-target="dlLog"></div>
     </div>
     <div id="dlAddBtn" style="display:none;margin-top:10px;flex-wrap:wrap;gap:8px;"></div>
+    <div class="model-group-header" style="margin-top:16px;"><span>Local cache</span><span class="rule"></span></div>
+    <div class="llm-toolbar" style="margin-bottom:10px;">
+      <button class="mcbtn mcbtn-ghost mcbtn-sm" onclick="loadCacheList()"><span class="ic">↺</span> Refresh</button>
+      <button class="mcbtn mcbtn-ghost mcbtn-sm" onclick="confirmPrune()"><span class="ic">⌫</span> Prune detached revisions</button>
+    </div>
+    <div id="cacheTable" style="overflow-x:auto;">
+      <div style="color:var(--fg-dim);font-size:0.85em;">Open this section or hit Refresh to list the cache.</div>
+    </div>
+    <div id="cacheOpWrap" style="display:none;margin-top:10px;">
+      <div class="log-toolbar"><button class="btn-log" onclick="popoutLog('cacheLog','Cache output')">⛶ Pop out</button></div>
+      <div class="log-wrap">
+        <div class="dl-log" id="cacheLog" style="height:220px;"></div>
+        <div class="dl-log-resize" data-resize-target="cacheLog"></div>
+      </div>
+    </div>
     </div>
   </div>
 
-  <!-- Cache Management -->
-  <div class="llm-section" id="secCache">
-    <div class="llm-section-title" onclick="toggleSection('secCache')">Cache Management<span class="llm-collapse-icon">▾</span></div>
-    <div class="llm-section-body">
-    <div class="llm-toolbar" style="align-items:flex-end;margin-bottom:12px;">
-      <button class="btn btn-stone-muted-gradient" onclick="loadCacheList()">↺ List Cache</button>
-      <button class="btn btn-slate-muted-gradient" onclick="confirmPrune()">✂ Prune Detached Revisions</button>
-      <div class="form-field" style="min-width:260px;">
-        <label>Remove cached repo</label>
-        <input id="cacheRmRepo" type="text" placeholder="username/repo-name" />
-      </div>
-      <button class="btn btn-red-muted-gradient" onclick="confirmCacheRm()">✕ Remove</button>
-    </div>
-    <div class="log-toolbar"><button class="btn-log" onclick="popoutLog('cacheLog','Cache output')">⛶ Pop out</button></div>
-    <div class="log-wrap">
-      <div class="dl-log" id="cacheLog" style="height:424px;">Cache info will appear here...</div>
-      <div class="dl-log-resize" data-resize-target="cacheLog"></div>
-    </div>
-    </div>
-  </div>
 
   <!-- HF Trending Models -->
-  <div class="llm-section" id="secTrending">
-    <div class="llm-section-title" onclick="toggleSection('secTrending')">Top Trending HF Models — 27B to 35B Parameters <span style="color:var(--fg-faint);font-weight:normal;margin-left:8px;text-transform:none;letter-spacing:0;">sorted by trending score</span>
-      <button class="btn btn-stone-muted-gradient" onclick="event.stopPropagation();loadHFTrending()" style="margin-left:12px;font-size:0.75em;padding:3px 10px;">↺ Refresh</button>
-      <span class="llm-collapse-icon">▾</span>
-    </div>
+  <div class="llm-section collapsed" id="secTrending">
+    <div class="llm-section-title" onclick="toggleSection('secTrending')">Top Trending on Hugging Face<span class="mc-profchip llm-sec-hint" id="trendChip" style="text-transform:none;letter-spacing:0;"></span><span class="llm-collapse-icon">▾</span><span class="llm-drag" title="Drag to reorder" onclick="event.stopPropagation();">⠿</span></div>
     <div class="llm-section-body">
+    <div class="mc-toolbar" onclick="event.stopPropagation();" style="align-items:flex-end;">
+      <div><label class="mc-flabel">Show</label><div class="mc-fin"><select id="trendLimit" onchange="onTrendingCfgChange()">
+        <option value="5">top 5</option><option value="10">top 10</option><option value="20">top 20</option></select></div></div>
+      <div><label class="mc-flabel">Size range</label><div class="mc-fin"><select id="trendMin" onchange="onTrendingCfgChange()">
+          <option>1B</option><option>2B</option><option>4B</option><option>7B</option><option selected>9B</option><option>14B</option><option>20B</option><option>27B</option><option>70B</option><option>120B</option></select>
+        <span class="dash">–</span><select id="trendMax" onchange="onTrendingCfgChange()">
+          <option>4B</option><option>9B</option><option>14B</option><option selected>27B</option><option>35B</option><option>70B</option><option>120B</option><option>500B</option></select></div></div>
+      <div><label class="mc-flabel">Sort by</label><div class="mc-fin"><select id="trendSort" onchange="onTrendingCfgChange()">
+        <option value="trending" selected>trending</option><option value="downloads">downloads</option><option value="newest">newest</option></select></div></div>
+      <span class="mc-gap"></span>
+      <button class="mcbtn mcbtn-ghost mcbtn-sm" onclick="loadHFTrending()"><span class="ic">↺</span> Refresh</button>
+    </div>
     <div id="hfTrendingTable" style="overflow-x:auto;">
       <div style="color:var(--fg-dim);font-size:0.85em;padding:8px;">Loading...</div>
     </div>
@@ -1721,47 +1727,9 @@ Backend API endpoints consumed:
   <div id="llm-lmstudio" class="sub-tab-panel" style="padding:8px 20px 20px;">
     <div class="agent-picker" id="agentPickerCtrlLms" style="display:none"></div>
 
-    <!-- LMS Server Control -->
-    <div class="llm-section" id="lmsSecCtrl">
-      <div class="llm-section-title" onclick="toggleSection('lmsSecCtrl')">LM Studio Server Control<span class="llm-collapse-icon">▾</span></div>
-      <div class="llm-section-body">
-      <div class="llm-toolbar">
-        <button class="btn btn-stone-muted-gradient" id="lmsBtnStart"   onclick="lmsServerAction('start')">▶ Start</button>
-        <button class="btn btn-slate-muted-gradient"   id="lmsBtnStop"    onclick="lmsServerAction('stop')">⏹ Stop</button>
-        <button class="btn btn-zinc-muted-gradient" id="lmsBtnRestart" onclick="lmsServerAction('restart')">↺ Restart</button>
-        <button class="btn btn-gray-muted-gradient"  id="lmsBtnStatus"  onclick="lmsServerAction('status')">ℹ Status</button>
-        <span id="lmsCtrlStatus" style="font-size:0.82em;color:var(--fg-dim);margin-left:4px;"></span>
-        <span class="status status--crit" id="lmsCtrlBadge"><span class="status__dot"></span>Agent offline</span>
-        <button class="btn btn-gray-muted-gradient ml-auto" onclick="toggleLmsLog()">☰ Server Log</button>
-        <button class="btn btn-gray-muted-gradient" onclick="toggleLmsTerminal()">⬛ Terminal</button>
-      </div>
-      <!-- LMS Terminal panel — PTY hosted on the primary LMS agent, proxied via SSE -->
-      <div id="lmsTerminalPanel" style="display:none;margin-bottom:8px;">
-        <div class="llm-toolbar" style="justify-content:flex-end;margin-bottom:4px;">
-          <span style="font-size:0.78em;color:var(--fg-dim);margin-right:auto;">LM Studio host shell</span>
-          <button class="btn btn-gray-muted-gradient btn-sm" onclick="popOutLmsTerminal()" title="Open in new window">⧉ Pop out</button>
-          <button class="btn btn-gray-muted-gradient btn-sm" onclick="reconnectLmsTerminal()" title="Reconnect">↺ Reconnect</button>
-        </div>
-        <div class="log-wrap">
-          <div id="lmsTerminalMount" class="log-box log-box--attached log-box--flush" style="height:560px;overflow:hidden;"></div>
-          <div class="dl-log-resize" data-resize-target="lmsTerminalMount" data-fit-xterm="lms"></div>
-        </div>
-      </div>
-      <div id="lmsLogPanel" style="display:none;">
-        <div class="llm-toolbar" style="justify-content:flex-end;margin-bottom:4px;">
-          <button class="btn btn-gray-muted-gradient btn-sm" onclick="popOutLmsLog()" title="Open in new window">⧉ Pop out</button>
-          <button class="btn btn-gray-muted-gradient btn-sm" onclick="fullscreenLmsLog()" title="Fullscreen">⛶ Fullscreen</button>
-          <button class="btn btn-gray-muted-gradient btn-sm" onclick="fetchLmsLog()">↺ Refresh</button>
-        </div>
-        <div id="lmsLogBox" class="log-box log-box--attached" style="height:240px;"></div>
-        <div id="lmsLogResizeHandle" class="dl-log-resize"></div>
-      </div>
-      </div>
-    </div>
-
     <!-- LMS Model Roster -->
     <div class="llm-section" id="lmsSecModels">
-      <div class="llm-section-title" onclick="toggleSection('lmsSecModels')">Models <span style="color:var(--fg-faint);font-weight:normal;margin-left:8px;text-transform:none;letter-spacing:0;">— LM Studio</span><span class="llm-collapse-icon">▾</span></div>
+      <div class="llm-section-title llm-sec-prominent" onclick="toggleSection('lmsSecModels')">Models <span style="color:var(--fg-faint);font-weight:normal;margin-left:8px;text-transform:none;letter-spacing:0;">— LM Studio</span><span class="llm-collapse-icon">▾</span><span class="llm-drag" title="Drag to reorder" onclick="event.stopPropagation();">⠿</span></div>
       <div class="llm-section-body">
         <div class="mc-toolbar" onclick="event.stopPropagation();">
           <div class="mc-filter" id="lmsMcFilter">
@@ -1788,9 +1756,50 @@ Backend API endpoints consumed:
       </div>
     </div>
 
+    <!-- LMS Server Control -->
+    <div class="llm-section collapsed" id="lmsSecCtrl">
+      <div class="llm-section-title" onclick="toggleSection('lmsSecCtrl')">LM Studio Server Control
+        <span class="mc-pill p-unloaded llm-sec-pill" id="lmsCtrlStatus" onclick="event.stopPropagation();">—</span>
+        <span class="llm-collapse-icon">▾</span>
+        <span class="llm-drag" title="Drag to reorder" onclick="event.stopPropagation();">⠿</span>
+      </div>
+      <div class="llm-section-body">
+      <div class="llm-toolbar">
+        <button class="mcbtn mcbtn-ghost mcbtn-sm" id="lmsBtnStart"   onclick="lmsServerAction('start')"><span class="ic">▶</span> Start</button>
+        <button class="mcbtn mcbtn-ghost mcbtn-sm" id="lmsBtnStop"    onclick="lmsServerAction('stop')"><span class="ic">■</span> Stop</button>
+        <button class="mcbtn mcbtn-ghost mcbtn-sm" id="lmsBtnRestart" onclick="lmsServerAction('restart')"><span class="ic">↺</span> Restart</button>
+        <button class="mcbtn mcbtn-ghost mcbtn-sm" id="lmsBtnStatus"  onclick="lmsServerAction('status')"><span class="ic">ℹ</span> Status</button>
+        <span class="status status--crit" id="lmsCtrlBadge"><span class="status__dot"></span>Agent offline</span>
+        <button class="mcbtn mcbtn-ghost mcbtn-sm ml-auto" onclick="toggleLmsTerminal()"><span class="ic">▣</span> Terminal</button>
+        <button class="mcbtn mcbtn-ghost mcbtn-sm" onclick="toggleLmsLog()"><span class="ic">≡</span> Server Log</button>
+      </div>
+      <!-- LMS Terminal panel — PTY hosted on the primary LMS agent, proxied via SSE -->
+      <div id="lmsTerminalPanel" style="display:none;margin-bottom:8px;">
+        <div class="llm-toolbar" style="justify-content:flex-end;margin-bottom:4px;">
+          <span style="font-size:0.78em;color:var(--fg-dim);margin-right:auto;">LM Studio host shell</span>
+          <button class="btn btn-gray-muted-gradient btn-sm" onclick="popOutLmsTerminal()" title="Open in new window">⧉ Pop out</button>
+          <button class="btn btn-gray-muted-gradient btn-sm" onclick="reconnectLmsTerminal()" title="Reconnect">↺ Reconnect</button>
+        </div>
+        <div class="log-wrap">
+          <div id="lmsTerminalMount" class="log-box log-box--attached log-box--flush" style="height:560px;overflow:hidden;"></div>
+          <div class="dl-log-resize" data-resize-target="lmsTerminalMount" data-fit-xterm="lms"></div>
+        </div>
+      </div>
+      <div id="lmsLogPanel" style="display:none;">
+        <div class="llm-toolbar" style="justify-content:flex-end;margin-bottom:4px;">
+          <button class="btn btn-gray-muted-gradient btn-sm" onclick="popOutLmsLog()" title="Open in new window">⧉ Pop out</button>
+          <button class="btn btn-gray-muted-gradient btn-sm" onclick="fullscreenLmsLog()" title="Fullscreen">⛶ Fullscreen</button>
+          <button class="btn btn-gray-muted-gradient btn-sm" onclick="fetchLmsLog()">↺ Refresh</button>
+        </div>
+        <div id="lmsLogBox" class="log-box log-box--attached" style="height:240px;"></div>
+        <div id="lmsLogResizeHandle" class="dl-log-resize"></div>
+      </div>
+      </div>
+    </div>
+
     <!-- LMS Download -->
-    <div class="llm-section" id="lmsSecDownload">
-      <div class="llm-section-title" onclick="toggleSection('lmsSecDownload')">Download Model<span class="llm-collapse-icon">▾</span></div>
+    <div class="llm-section collapsed" id="lmsSecDownload">
+      <div class="llm-section-title" onclick="toggleSection('lmsSecDownload')">Download Model<span class="llm-collapse-icon">▾</span><span class="llm-drag" title="Drag to reorder" onclick="event.stopPropagation();">⠿</span></div>
       <div class="llm-section-body">
         <div class="dl-row">
           <div class="form-field" style="flex:0 0 auto;width:360px;min-width:0;">
@@ -1813,21 +1822,45 @@ Backend API endpoints consumed:
   <div id="llm-vllm" class="sub-tab-panel" style="padding:8px 20px 20px;">
     <div class="agent-picker" id="agentPickerCtrlVllm" style="display:none"></div>
 
-    <div class="llm-section" id="vllmSecCtrl">
-      <div class="llm-section-title" onclick="toggleSection('vllmSecCtrl')">Server Control<span class="llm-collapse-icon">▾</span></div>
+    <div class="llm-section" id="vllmSecModels">
+      <div class="llm-section-title llm-sec-prominent" onclick="toggleSection('vllmSecModels')">Served Models<span class="llm-collapse-icon">▾</span><span class="llm-drag" title="Drag to reorder" onclick="event.stopPropagation();">⠿</span></div>
+      <div class="llm-section-body">
+        <div class="mc-toolbar" onclick="event.stopPropagation();">
+          <span class="mc-gap"></span>
+          <div class="mc-seg" id="vllmMcSeg" role="group" aria-label="Card view">
+            <button data-view="compact">Compact</button>
+            <button data-view="list">List</button>
+            <button data-view="card">Cards</button>
+          </div>
+        </div>
+        <div id="vllmModelCards" class="model-cards"><div class="sub">No vLLM data yet.</div></div>
+      </div>
+    </div>
+
+    <div class="llm-section collapsed" id="vllmSecCtrl">
+      <div class="llm-section-title" onclick="toggleSection('vllmSecCtrl')">Server Control
+        <span class="mc-pill p-unloaded llm-sec-pill" id="vllmSrvPill" onclick="event.stopPropagation();">—</span>
+        <span class="llm-collapse-icon">▾</span>
+        <span class="llm-drag" title="Drag to reorder" onclick="event.stopPropagation();">⠿</span>
+      </div>
       <div class="llm-section-body">
         <div class="llm-toolbar">
-          <button class="btn btn-stone-muted-gradient" id="vllmBtnStart"   onclick="vllmServerAction('start')">▶ Start</button>
-          <button class="btn btn-slate-muted-gradient" id="vllmBtnStop"    onclick="vllmServerAction('stop')">⏹ Stop</button>
-          <button class="btn btn-zinc-muted-gradient"  id="vllmBtnRestart" onclick="vllmServerAction('restart')">↺ Restart</button>
-          <button class="btn btn-gray-muted-gradient"  id="vllmBtnStatus"  onclick="vllmServerAction('status')">ℹ Status</button>
+          <button class="mcbtn mcbtn-ghost mcbtn-sm" id="vllmBtnStart"   onclick="vllmServerAction('start')"><span class="ic">▶</span> Start</button>
+          <button class="mcbtn mcbtn-ghost mcbtn-sm" id="vllmBtnStop"    onclick="vllmServerAction('stop')"><span class="ic">■</span> Stop</button>
+          <button class="mcbtn mcbtn-ghost mcbtn-sm" id="vllmBtnRestart" onclick="vllmServerAction('restart')"><span class="ic">↺</span> Restart</button>
+          <button class="mcbtn mcbtn-ghost mcbtn-sm" id="vllmBtnStatus"  onclick="vllmServerAction('status')"><span class="ic">ℹ</span> Status</button>
           <span id="vllmCtrlStatus" class="sub" style="margin-left:2px;"></span>
           <span class="status status--crit" id="vllmCtrlBadge" style="margin-left:4px;"><span class="status__dot"></span>Agent offline</span>
-          <button class="btn btn-gray-muted-gradient ml-auto" onclick="toggleVllmLog()">☰ Server Log</button>
-          <button class="btn btn-gray-muted-gradient" onclick="toggleVllmTerminal()">⬛ Terminal</button>
-          <button class="btn btn-gray-muted-gradient" onclick="openServerConfig('vllm')">⚙ Server Config</button>
-          <button class="btn btn-gray-muted-gradient" onclick="openVllmBench()">⏱ Benchmark</button>
-          <button class="btn btn-gray-muted-gradient" onclick="openVllmAutotune()">🎯 Auto Tune</button>
+          <button class="mcbtn mcbtn-ghost mcbtn-sm ml-auto" onclick="toggleVllmTerminal()"><span class="ic">▣</span> Terminal</button>
+          <button class="mcbtn mcbtn-ghost mcbtn-sm" onclick="toggleVllmLog()"><span class="ic">≡</span> Server Log</button>
+          <div class="mc-menuwrap">
+            <button class="mcbtn mcbtn-ghost mcbtn-sm mc-menubtn" aria-label="More actions">⋯</button>
+            <div class="mc-menu">
+              <button onclick="openServerConfig('vllm')"><span class="mi">⚙</span>Server config</button>
+              <button onclick="openVllmBench()"><span class="mi">◷</span>Benchmark</button>
+              <button onclick="openVllmAutotune()"><span class="mi">⌖</span>Autotune</button>
+            </div>
+          </div>
         </div>
         <div class="sub" style="margin-top:6px;color:var(--fg-dim);">
           vLLM serves one base model per process — change the model via Server Config (ExecStart) and Restart.
@@ -1857,23 +1890,8 @@ Backend API endpoints consumed:
       </div>
     </div>
 
-    <div class="llm-section" id="vllmSecModels">
-      <div class="llm-section-title" onclick="toggleSection('vllmSecModels')">Served Models<span class="llm-collapse-icon">▾</span></div>
-      <div class="llm-section-body">
-        <div class="mc-toolbar" onclick="event.stopPropagation();">
-          <span class="mc-gap"></span>
-          <div class="mc-seg" id="vllmMcSeg" role="group" aria-label="Card view">
-            <button data-view="compact">Compact</button>
-            <button data-view="list">List</button>
-            <button data-view="card">Cards</button>
-          </div>
-        </div>
-        <div id="vllmModelCards" class="model-cards"><div class="sub">No vLLM data yet.</div></div>
-      </div>
-    </div>
-
-    <div class="llm-section" id="vllmSecLora">
-      <div class="llm-section-title" onclick="toggleSection('vllmSecLora')">LoRA Adapters<span class="llm-collapse-icon">▾</span></div>
+    <div class="llm-section collapsed" id="vllmSecLora">
+      <div class="llm-section-title" onclick="toggleSection('vllmSecLora')">LoRA Adapters<span class="llm-collapse-icon">▾</span><span class="llm-drag" title="Drag to reorder" onclick="event.stopPropagation();">⠿</span></div>
       <div class="llm-section-body">
         <div class="llm-toolbar">
           <input type="text" id="vllmLoraName" placeholder="adapter name" style="padding:6px 8px;background:var(--bg-elev);color:var(--fg);border:1px solid var(--border);border-radius:4px;">
@@ -1989,7 +2007,7 @@ Backend API endpoints consumed:
 </div><!-- end llmTab -->
 
 <script src="/static/js/lib/layout.js?v=2026.07.10-1"></script>
-<script src="/static/js/lib/modelcards.js?v=2026.08.30-6"></script>
+<script src="/static/js/lib/modelcards.js?v=2026.08.30-7"></script>
 <script src="/static/js/foundation.js?v=2026.08.29-1"></script>
 <script src="/static/js/lib/series.js?v=2026.08.04-2"></script>
 <script src="/static/js/lib/peaks.js?v=2026.08.29-2"></script>
@@ -1998,18 +2016,19 @@ Backend API endpoints consumed:
 <script src="/static/js/lib/reportcard.js?v=2026.07.27-1"></script>
 <script src="/static/js/lib/energy.js?v=2026.08.26-1"></script>
 <script src="/static/js/lib/overall-view.js?v=2026.08.29-2"></script>
-<script src="/static/js/charts.js?v=2026.08.29-6"></script>
+<script src="/static/js/charts.js?v=2026.08.30-1"></script>
 <script src="/static/js/terminal.js?v=2026.08.27-1"></script>
-<script src="/static/js/llmcontrol.js?v=2026.08.19-1"></script>
+<script src="/static/js/llmcontrol.js?v=2026.08.30-1"></script>
+<script src="/static/js/sections.js?v=2026.08.30-1"></script>
 <script src="/static/js/openclaw.js?v=2026.08.03-1"></script>
 <script src="/static/js/admin.js?v=2026.08.30-1"></script>
 <script src="/static/js/admin-settings.js?v=2026.08.30-2"></script>
 <script src="/static/js/autopilot.js?v=2026.07.31-2"></script>
-<script src="/static/js/llmcontrol-models.js?v=2026.08.30-7"></script>
+<script src="/static/js/llmcontrol-models.js?v=2026.08.30-8"></script>
 <script src="/static/js/editor-modern.js?v=2026.08.30-4"></script>
 <script src="/static/js/bench-autotune.js?v=2026.08.30-1"></script>
-<script src="/static/js/lmstudio.js?v=2026.08.30-3"></script>
-<script src="/static/js/vllm.js?v=2026.08.30-5"></script>
+<script src="/static/js/lmstudio.js?v=2026.08.30-4"></script>
+<script src="/static/js/vllm.js?v=2026.08.30-6"></script>
 <script src="/static/js/vllm-bench-autotune.js?v=2026.07.12-2"></script>
 <script src="/static/js/report-card.js?v=2026.08.17-1"></script>
 <script src="/static/js/energy.js?v=2026.08.19-1"></script>

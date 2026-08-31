@@ -159,7 +159,7 @@ def _local_hostname() -> str:
 # banner reads it. Bump suffix (-1, -2, …) for same-day iterations; roll
 # the date for a new day's first change.
 # ---------------------------------------------------------------------------
-__version__ = "v2026.08.30-11"
+__version__ = "v2026.08.30-12"
 
 # Wall-clock at first import (Cheroot main process); the shutdown banner
 # reads it for the uptime line.
@@ -2077,8 +2077,19 @@ def llm_cache_rm():
     return proxies.proxy_to_primary("llama", "POST", "/llama/cache/rm", json=data)
 @app.route("/api/llm/hf-trending")
 def llm_hf_trending():
-    """Fetch top 10 trending HF models in 27B-35B param range sorted by downloads."""
-    return proxies.proxy_to_primary("llama", "GET", "/llama/hf-trending")
+    """Fetch trending HF models; validated limit/size/sort forwarded to the agent."""
+    params = {}
+    limit = flask_request.args.get("limit", type=int)
+    if limit and 1 <= limit <= 50:
+        params["limit"] = limit
+    for key in ("min_b", "max_b"):
+        v = (flask_request.args.get(key) or "").upper()
+        if re.fullmatch(r"\d{1,4}B", v):
+            params[key] = v
+    sort = flask_request.args.get("sort")
+    if sort in ("trending", "downloads", "newest"):
+        params["sort"] = sort
+    return proxies.proxy_to_primary("llama", "GET", "/llama/hf-trending", params=params)
 
 
 # ---------------------------------------------------------------------------

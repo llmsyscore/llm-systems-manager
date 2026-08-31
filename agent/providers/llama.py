@@ -1863,18 +1863,31 @@ def llama_cache_rm(body: dict, authorization: Optional[str] = Header(default=Non
     return {"ok": True}
 
 
-def llama_hf_trending(authorization: Optional[str] = Header(default=None)) -> dict[str, Any]:
+def llama_hf_trending(
+    authorization: Optional[str] = Header(default=None),
+    limit: int = 10,
+    min_b: str = "27B",
+    max_b: str = "35B",
+    sort: str = "trending",
+) -> dict[str, Any]:
     _require_ctx().check_bearer(authorization); _llama_check_enabled()
+    limit = max(1, min(50, int(limit)))
+    if not re.fullmatch(r"\d{1,4}B", str(min_b) or ""):
+        min_b = "27B"
+    if not re.fullmatch(r"\d{1,4}B", str(max_b) or ""):
+        max_b = "35B"
+    sort_key = {"trending": "trending_score", "downloads": "downloads",
+                "newest": "created_at"}.get(sort, "trending_score")
     env = dict(os.environ)
     env["FORCE_COLOR"] = "0"
     try:
         out = subprocess.check_output(
             [_hf_cli_path(), "models", "ls",
-             "--sort", "trending_score",
-             "--limit", "10",
+             "--sort", sort_key,
+             "--limit", str(limit),
              "--format", "json",
              "--expand", "author,downloadsAllTime,trendingScore,createdAt,lastModified",
-             "--num-parameters", "min:27B,max:35B"],
+             "--num-parameters", f"min:{min_b},max:{max_b}"],
             text=True, timeout=30, close_fds=True,
             stderr=subprocess.DEVNULL, env=env,
         )
