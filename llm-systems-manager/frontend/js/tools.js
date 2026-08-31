@@ -1,11 +1,13 @@
-// Tools tab controller (#769): launcher (card/list/compact), run ledger,
-// module shell. Rendering lives in js/lib/toolcards.js (window.TC).
+// Tools tab controller (#769/#770): launcher (card/list/compact), run ledger,
+// module shells. Rendering lives in js/lib/toolcards.js (window.TC).
 (function () {
   let _toolsInited = false;
   let _toolsAgents = {};   // agent_id -> hostname
-  let _toolsDefaultLlama = null;
   let _toolsRc = [];       // recent report cards, newest first
-  let _toolsBench = [];    // latest benchmark result per model, newest first
+  let _toolsRuns = [];     // cross-tool run ledger rows, newest first
+  let _toolsRunTotals = {}; // tool -> stored-row count (beyond the fetched page)
+  let _toolsRunLatest = {}; // tool -> newest stored run (beyond the fetched page)
+  let _toolsDefaultLlama = null;
   let _toolsFetchedAt = 0;
   let _ledgerSort = { key: 'ts', dir: 'desc' };
   let _ledgerTool = 'all';
@@ -22,7 +24,8 @@
   function _toolsRunning() {
     const rc = typeof _rcEventSrc !== 'undefined' && _rcEventSrc;
     const bench = typeof _benchEventSrc !== 'undefined' && _benchEventSrc;
-    return { rc: !!rc, bench: !!bench, any: !!(rc || bench) };
+    const at = typeof _atEventSrc !== 'undefined' && _atEventSrc;
+    return { rc: !!rc, bench: !!bench, at: !!at, any: !!(rc || bench || at) };
   }
 
   function _tHost(agentId) { return _toolsAgents[agentId] || agentId || ''; }
@@ -41,7 +44,7 @@
 
   // Shared shape for a runnable tool tile: status/last/sub/action derived once.
   function _runToolDesc(cfg, row, running) {
-    const tps = row ? _tNum(cfg.tps(row)) : null;
+    const subVal = row ? (cfg.sub ? cfg.sub(row) : (_tNum(cfg.tps(row)) || '—') + ' t/s') : null;
     const core = row
       ? '<b>' + TC.esc(TC.age(row.ts) || '') + '</b> · '
         + TC.esc(_tProv(row.provider)) + ' · ' + TC.esc(_tHost(row.agent_id))
@@ -53,14 +56,23 @@
       empty: cfg.empty,
       last: core ? 'last run ' + core : 'no runs yet',
       lastShort: row ? '<b>' + TC.esc(TC.when(row.ts) || '—') + '</b>' : '—',
-      sub: row ? (tps || '—') + ' t/s · ' + (TC.age(row.ts) || '') : null,
+      sub: row ? subVal + ' · ' + (TC.age(row.ts) || '') : null,
       action: running ? 'View run' : (row ? 'Open' : 'Set up'),
       primary: !running,
     };
   }
 
+  function _toolsRunsFor(tool) { return _toolsRuns.filter(r => r.tool === tool); }
+
   function _toolDescriptors() {
     const run = _toolsRunning();
+    const bench = _toolsRunLatest.benchmark || _toolsRunsFor('benchmark')[0] || null;
+    const at = _toolsRunLatest.autotune || _toolsRunsFor('autotune')[0] || null;
+    const hist = list =>
+      String(list.length) + (list.length >= _LEDGER_CAP ? '+' : '');
+    const histTool = tool =>
+      _toolsRunTotals[tool] != null ? String(_toolsRunTotals[tool])
+        : hist(_toolsRunsFor(tool));
     const tools = [
       _runToolDesc({
         id: 'reportcard', icon: '▤', tone: 1, name: 'Report Card',
@@ -70,27 +82,37 @@
         stats: c => [
           { v: _tNum((c.result || {}).gen_tps) || '—', u: 't/s', l: 'Last score' },
           { v: _tGpuShort((c.result || {}).gpu_config) || '—', l: 'GPU' },
-          { v: String(_toolsRc.length) + (_toolsRc.length >= _LEDGER_CAP ? '+' : ''), u: 'runs', l: 'History' },
+          { v: hist(_toolsRc), u: 'runs', l: 'History' },
         ],
       }, _toolsRc[0] || null, run.rc),
       _runToolDesc({
         id: 'benchmark', icon: '◷', tone: 2, name: 'Benchmark',
         desc: 'See how fast a model runs at different prompt sizes.',
         empty: '<b>Never run.</b> Pick one or more models and measure their speed.',
-        tps: b => b.avg_gen_tps,
+        tps: b => (b.summary || {}).gen_tps,
         stats: b => [
-          { v: _tNum(b.avg_gen_tps) || '—', u: 't/s', l: 'Last gen' },
+          { v: _tNum((b.summary || {}).gen_tps) || '—', u: 't/s', l: 'Last gen' },
           { v: String(b.model_id || '').slice(0, 14), l: 'Model' },
-          { v: b.bench_tool || '—', l: 'Tool' },
+          { v: (b.summary || {}).bench_tool || '—', l: 'Tool' },
         ],
-      }, _toolsBench[0] || null, run.bench),
-      {
+      }, bench, run.bench),
+      _runToolDesc({
         id: 'autotune', icon: '⌖', tone: 3, name: 'Autotune',
         desc: 'Automatically size each model’s context to the memory you have free.',
-        status: 'ready', stats: null,
         empty: '<b>Set a memory target.</b> Pick the models to tune and Autotune finds each one’s best context size.',
-        last: '', sub: 'context tuner', action: 'Open', primary: true,
-      },
+        sub: a => {
+          const s = a.summary || {};
+          return a.ok && s.ctx_size != null ? 'ctx ' + Number(s.ctx_size).toLocaleString() : 'context tuner';
+        },
+        stats: a => {
+          const s = a.summary || {};
+          return [
+            { v: a.ok && s.ctx_size != null ? Number(s.ctx_size).toLocaleString() : '—', l: 'Last ctx' },
+            { v: a.ok ? (_tNum(s.free_mb, 0) || '—') : '—', u: 'MB', l: 'Free VRAM' },
+            { v: histTool('autotune'), u: 'runs', l: 'History' },
+          ];
+        },
+      }, at, run.at),
     ];
     return tools;
   }
@@ -132,19 +154,34 @@
         title: 'Open Report Card', model: r.model || '', host: _tHost(c.agent_id),
         result: bits.join(' · ') || '—', tps: r.gen_tps, ts: c.ts });
     });
-    _toolsBench.forEach(b => {
-      const bits = [];
-      if (b.avg_gen_tps != null) bits.push('<b>' + TC.esc(_tNum(b.avg_gen_tps)) + ' t/s</b> gen');
-      if (b.avg_ppt_tps != null) bits.push(TC.esc(_tNum(b.avg_ppt_tps, 0)) + ' pp/s');
-      if (b.bench_tool) bits.push(TC.esc(b.bench_tool));
-      // The benchmark overlay only drives the primary llama agent; rows for
-      // other providers or hosts stay inert.
-      const clickable = b.provider === 'llama' && b.agent_id === _toolsDefaultLlama;
-      rows.push({ icon: '◷', tool: 'Benchmark',
-        toolId: clickable ? 'benchmark' : null,
-        title: clickable ? 'Open Benchmark' : null,
-        model: b.model_id || '', host: _tHost(b.agent_id),
-        result: bits.join(' · ') || '—', tps: b.avg_gen_tps, ts: b.ts });
+    _toolsRuns.forEach(r => {
+      const s = r.summary || {};
+      // These modules only drive the primary llama agent; rows recorded
+      // from other providers or hosts stay inert (#769 semantics).
+      const clickable = r.provider === 'llama' && r.agent_id === _toolsDefaultLlama;
+      if (r.tool === 'benchmark') {
+        const bits = [];
+        if (s.gen_tps != null) bits.push('<b>' + TC.esc(_tNum(s.gen_tps)) + ' t/s</b> gen');
+        if (s.ppt_tps != null) bits.push(TC.esc(_tNum(s.ppt_tps, 0)) + ' pp/s');
+        if (s.bench_tool) bits.push(TC.esc(s.bench_tool));
+        if (!r.ok) bits.push('<span style="color:var(--crit)">failed</span>');
+        rows.push({ icon: '◷', tool: 'Benchmark',
+          toolId: clickable ? 'benchmark' : null,
+          title: clickable ? 'Open Benchmark' : null, model: r.model_id || '',
+          host: _tHost(r.agent_id),
+          result: bits.join(' · ') || '—', tps: s.gen_tps, ts: r.ts });
+      } else if (r.tool === 'autotune') {
+        const bits = [];
+        if (r.ok && s.ctx_size != null) bits.push('<b>ctx ' + TC.esc(Number(s.ctx_size).toLocaleString()) + '</b>');
+        if (r.ok && s.free_mb != null) bits.push(TC.esc(_tNum(s.free_mb, 0)) + ' MB free');
+        if (!r.ok) bits.push('<span style="color:var(--crit)">failed</span>');
+        else if (!s.converged) bits.push('not converged');
+        rows.push({ icon: '⌖', tool: 'Autotune',
+          toolId: clickable ? 'autotune' : null,
+          title: clickable ? 'Open Autotune' : null, model: r.model_id || '',
+          host: _tHost(r.agent_id),
+          result: bits.join(' · ') || '—', tps: null, ts: r.ts });
+      }
     });
     // Newest 100 overall, then the active tool filter and column sort.
     rows.sort((a, b) => (TC.toMs(b.ts) || 0) - (TC.toMs(a.ts) || 0));
@@ -197,26 +234,80 @@
     if (_toolsInited && home && home.style.display !== 'none') _toolsRenderLauncher();
   }
 
-  function toolsOpenTool(id, modelId) {
-    const run = _toolsRunning();
-    if (id === 'reportcard') {
-      const home = _tEl('toolsHome'), mod = _tEl('toolsMod');
-      if (home) home.style.display = 'none';
-      if (mod) mod.style.display = 'block';
-      // A live run keeps its pickers and progress; re-init only when idle.
-      if (!run.rc && typeof initReportCard === 'function') initReportCard();
+  const _TOOL_MODS = { reportcard: 'toolsMod', benchmark: 'toolsModBench', autotune: 'toolsModAt' };
+  const _TOOL_CHIPS = { benchmark: 'toolsChipBenchmark', autotune: 'toolsChipAutotune' };
+
+  // Context chip in a module head: the model a deep link pre-filled (#770).
+  function _toolsSetChip(id, modelId) {
+    const chip = _tEl(_TOOL_CHIPS[id] || '');
+    if (!chip) return;
+    if (!modelId) {
+      chip.style.display = 'none';
+      chip.innerHTML = '';
+      delete chip.dataset.model;
       return;
     }
-    if (id === 'benchmark' && !run.bench && typeof openBench === 'function') openBench(modelId);
-    if (id === 'autotune' && typeof openAutotune === 'function') openAutotune();
+    const short = String(modelId).split('/').pop() || modelId;
+    chip.innerHTML = TC.esc(short)
+      + ' <button class="ctx-chip-x" type="button" title="Clear pre-selected model">✕</button>';
+    chip.title = modelId;
+    chip.dataset.model = modelId;
+    chip.style.display = '';
+  }
+
+  function _toolsHideModules() {
+    Object.values(_TOOL_MODS).forEach(m => {
+      const el = _tEl(m);
+      if (el) el.style.display = 'none';
+    });
+  }
+
+  function toolsOpenTool(id, modelId) {
+    const modId = _TOOL_MODS[id];
+    if (!modId) return;
+    const run = _toolsRunning();
+    const home = _tEl('toolsHome');
+    if (home) home.style.display = 'none';
+    _toolsHideModules();
+    const mod = _tEl(modId);
+    if (mod) mod.style.display = 'block';
+    // Chip only when the model actually pre-fills — a live run keeps its state.
+    const willInit =
+      (id === 'benchmark' && !run.bench && typeof openBench === 'function')
+      || (id === 'autotune' && !run.at && typeof openAutotune === 'function');
+    _toolsSetChip(id, willInit && modelId ? modelId : null);
+    // A live run keeps its pickers and progress; re-init only when idle.
+    if (id === 'reportcard') {
+      if (!run.rc && typeof initReportCard === 'function') initReportCard();
+    } else if (id === 'benchmark') {
+      if (!run.bench && typeof openBench === 'function') openBench(modelId || undefined);
+      else if (typeof _benchChart !== 'undefined' && _benchChart) {
+        try { _benchChart.resize(); } catch (_) {}
+      }
+    } else if (id === 'autotune') {
+      if (!run.at && typeof openAutotune === 'function') openAutotune(modelId || undefined);
+    }
+  }
+
+  // Entry point for model-card ⋯ actions: land on the Tools tab with the
+  // tool's module open and the model pre-filled (#770).
+  let _toolsPendingOpen = false;
+  function toolsDeepLink(id, modelId) {
+    if (typeof switchTab === 'function' && typeof _activeTab !== 'undefined'
+        && _activeTab !== 'llm') switchTab('llm');
+    _toolsPendingOpen = true;
+    try {
+      if (typeof switchSubTab === 'function') switchSubTab('llm', 'tools');
+    } finally { _toolsPendingOpen = false; }
+    toolsOpenTool(id, modelId || null);
   }
 
   function toolsClearHistory() {
-    if (!confirm('Clear all report card and benchmark history? This cannot be undone.')) return;
+    if (!confirm('Clear the run history for all tools? Saved per-model benchmark badges are kept. This cannot be undone.')) return;
     const f = typeof _fetchT === 'function' ? _fetchT : (u, o) => fetch(u, o);
     Promise.allSettled([
       f('/api/reportcard/history', { method: 'DELETE' }),
-      f('/api/benchmark/results', { method: 'DELETE' }),
+      f('/api/tools/runs', { method: 'DELETE' }),
     ]).then(() => {
       _toolsFetchedAt = 0;
       _toolsRefresh();
@@ -224,8 +315,8 @@
   }
 
   function toolsCloseModule() {
-    const home = _tEl('toolsHome'), mod = _tEl('toolsMod');
-    if (mod) mod.style.display = 'none';
+    _toolsHideModules();
+    const home = _tEl('toolsHome');
     if (home) home.style.display = 'block';
     _toolsFetchedAt = 0;
     _toolsRefresh();
@@ -285,6 +376,30 @@
       _ledgerPage += b.dataset.pg === 'next' ? 1 : -1;
       _toolsRenderLedger();
     });
+    // Chip dismiss: hide the chip and un-tick the pre-selected model (#770).
+    Object.entries(_TOOL_CHIPS).forEach(([id, cid]) => {
+      const chip = _tEl(cid);
+      if (!chip) return;
+      chip.addEventListener('click', ev => {
+        if (!ev.target.closest('.ctx-chip-x')) return;
+        const model = chip.dataset.model || '';
+        _toolsSetChip(id, null);
+        // The model panel populates after an async fetch — retry the untick
+        // briefly so a fast ✕ click still clears the pre-selection.
+        const untick = tries => {
+          const panel = _tEl(id === 'benchmark' ? 'benchModelPanel' : 'atModelPanel');
+          const cb = panel && [...panel.querySelectorAll('input[type=checkbox]')]
+            .find(c => c.value === model);
+          if (cb) {
+            cb.checked = false;
+            cb.dispatchEvent(new Event('change'));
+          } else if (tries > 0) {
+            setTimeout(() => untick(tries - 1), 250);
+          }
+        };
+        untick(20);
+      });
+    });
   }
 
   function _toolsRefresh() {
@@ -298,8 +413,8 @@
     return Promise.allSettled([
       f('/api/agents/list-by-provider').then(j),
       f('/api/reportcard/recent?limit=100').then(j),
-      f('/api/benchmark/recent?limit=100').then(j),
-    ]).then(([agents, rc, bench]) => {
+      f('/api/tools/runs?limit=100').then(j),
+    ]).then(([agents, rc, runs]) => {
       if (agents.status === 'fulfilled') {
         _toolsAgents = {};
         Object.entries(agents.value || {}).forEach(([prov, list]) =>
@@ -309,8 +424,12 @@
           }));
       }
       if (rc.status === 'fulfilled') _toolsRc = rc.value.cards || [];
-      if (bench.status === 'fulfilled') _toolsBench = bench.value.results || [];
-      if (rc.status === 'fulfilled' || bench.status === 'fulfilled') {
+      if (runs.status === 'fulfilled') {
+        _toolsRuns = runs.value.runs || [];
+        _toolsRunTotals = runs.value.totals || {};
+        _toolsRunLatest = runs.value.latest || {};
+      }
+      if (rc.status === 'fulfilled' || runs.status === 'fulfilled') {
         _toolsFetchedAt = Date.now();
       }
       _toolsRenderLauncher();
@@ -323,9 +442,12 @@
       _toolsInited = true;
       _toolsWire();
     }
+    // A deep link opens its module right away — skip the launcher paint
+    // and its fetches; toolsCloseModule refreshes on the way back.
+    if (_toolsPendingOpen) return;
     // Entry always lands on the launcher; a hidden module keeps no state.
-    const home = _tEl('toolsHome'), mod = _tEl('toolsMod');
-    if (mod) mod.style.display = 'none';
+    _toolsHideModules();
+    const home = _tEl('toolsHome');
     if (home) home.style.display = 'block';
     _toolsSyncSeg();
     _toolsRefresh();
@@ -335,6 +457,7 @@
   window.initToolsTab = initToolsTab;
   window.toolsCloseModule = toolsCloseModule;
   window.toolsOpenTool = toolsOpenTool;
+  window.toolsDeepLink = toolsDeepLink;
   window.toolsClearHistory = toolsClearHistory;
   window.toolsSyncRunDot = toolsSyncRunDot;
 })();

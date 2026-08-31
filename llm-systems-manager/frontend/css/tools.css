@@ -115,6 +115,17 @@ table.tools-ledger { width: 100%; border-collapse: collapse; font-variant-numeri
 .mini-switch button:hover { color: var(--fg); }
 .mini-switch button.on { background: color-mix(in srgb, var(--accent) 16%, transparent); color: var(--accent); }
 .mini-switch button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.ctx-chip .ctx-chip-x { border: 0; background: none; color: inherit; font-size: 10px; line-height: 1; padding: 0 0 0 2px; cursor: pointer; opacity: 0.75; }
+.ctx-chip .ctx-chip-x:hover { opacity: 1; }
+
+/* Benchmark + Auto-Tune modules (#770): in-tab shells around the bench panes. */
+#toolsModBench { max-width: 1380px; margin: 0 auto; }
+#toolsModBench .bench-body { grid-template-columns: minmax(240px,26%) 1fr; }
+#toolsModAt { max-width: 1180px; margin: 0 auto; }
+#toolsModBench .bench-rail, #toolsModAt .bench-rail { background: var(--bg-card); }
+@media (max-width: 900px) {
+  #toolsModBench .bench-body, #toolsModAt .bench-body { grid-template-columns: 1fr; }
+}
 
 /* Report Card module layout: config rail left, results right. */
 #toolsMod { max-width: 980px; }

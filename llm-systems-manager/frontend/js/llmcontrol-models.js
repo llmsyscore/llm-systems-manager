@@ -412,8 +412,8 @@ function renderModelCards() {
       else if (act === 'reload') confirmReload(id);
       else if (act === 'edit')   openEditModel(id);
       else if (act === 'delete') confirmDelete(id);
-      else if (act === 'bench')    { MC.closeMenus(); openBench(id); }
-      else if (act === 'autotune') { MC.closeMenus(); openAutotune(id); }
+      else if (act === 'bench')    { MC.closeMenus(); toolsDeepLink('benchmark', id); }
+      else if (act === 'autotune') { MC.closeMenus(); toolsDeepLink('autotune', id); }
       else if (act === 'rename') startCardRename(el, id);
       else if (act === 'profile-rename') renameProfile(id, el.dataset.name);
       else if (act === 'profile-delete') deleteProfile(id, el.dataset.name);

@@ -437,6 +437,13 @@ function _vbenchHandleEvent(msg) {
     case 'result':
       _vbenchResult = msg;
       _vbenchRenderResult(msg);
+      // Record into the cross-tool run ledger (#770); rows render inert there.
+      if (typeof _recordToolRun === 'function') {
+        const m = msg.extra || {};
+        _recordToolRun('benchmark', {model_id: msg.model_id, provider: 'vllm',
+          gen_tps: m.output_throughput, pg_tps: m.total_token_throughput,
+          bench_tool: 'vllm-bench-serve', ok: true});
+      }
       return;
     case 'model_done':
       if (!msg.ok && !msg.cancelled) {

@@ -159,7 +159,7 @@ def _local_hostname() -> str:
 # banner reads it. Bump suffix (-1, -2, …) for same-day iterations; roll
 # the date for a new day's first change.
 # ---------------------------------------------------------------------------
-__version__ = "v2026.08.31-4"
+__version__ = "v2026.08.31-5"
 
 # Wall-clock at first import (Cheroot main process); the shutdown banner
 # reads it for the uptime line.
@@ -330,6 +330,33 @@ def init_db():
             )
         """)
     conn.execute("CREATE INDEX IF NOT EXISTS idx_bench_model ON model_benchmarks(model_id, agent_id)")
+    # Cross-tool run ledger (#770): one row per completed benchmark/autotune run.
+    had_tool_runs = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='tool_runs'"
+    ).fetchone() is not None
+    conn.execute("""
+            CREATE TABLE IF NOT EXISTS tool_runs (
+                id       INTEGER PRIMARY KEY,
+                tool     TEXT NOT NULL,
+                model_id TEXT NOT NULL,
+                agent_id TEXT NOT NULL DEFAULT '',
+                provider TEXT NOT NULL DEFAULT 'llama',
+                ok       INTEGER NOT NULL DEFAULT 1,
+                summary  TEXT,
+                ts       TEXT NOT NULL
+            )
+        """)
+    if not had_tool_runs:
+        # One-time seed from the saved per-model benchmarks so the ledger
+        # isn't empty on first upgrade.
+        conn.execute("""
+            INSERT INTO tool_runs (tool, model_id, agent_id, provider, ok, summary, ts)
+                SELECT 'benchmark', model_id, agent_id, provider, 1,
+                       json_object('gen_tps', avg_gen_tps, 'ppt_tps', avg_ppt_tps,
+                                   'pg_tps', avg_pg_tps, 'bench_tool', bench_tool),
+                       ts
+                FROM model_benchmarks WHERE ts IS NOT NULL ORDER BY ts ASC
+        """)
     # GPU report card runs (#468); backs the card view and local trending.
     report_card.init_table(conn)
     # Hourly per-agent energy/token accounting (#470).
@@ -1983,35 +2010,6 @@ def benchmark_store():
         return _err_json("internal error", 500, exc=e)
 
 
-@app.route("/api/benchmark/recent", methods=["GET"])
-def benchmark_recent():
-    try:
-        limit = max(1, min(100, flask_request.args.get("limit", 12,
-                                                      type=int) or 12))
-        rows = get_db().execute(
-            "SELECT model_id, provider, agent_id, avg_gen_tps, avg_ppt_tps, "
-            "bench_tool, ts FROM model_benchmarks ORDER BY ts DESC LIMIT ?",
-            (limit,)).fetchall()
-        out = [{"model_id": r[0], "provider": r[1], "agent_id": r[2],
-                "avg_gen_tps": _finite_or_none(r[3]),
-                "avg_ppt_tps": _finite_or_none(r[4]),
-                "bench_tool": r[5], "ts": r[6]} for r in rows]
-        return jsonify({"results": out})
-    except Exception as e:
-        return _err_json("internal error", 500, exc=e)
-
-
-@app.route("/api/benchmark/results", methods=["DELETE"])
-def benchmark_results_clear():
-    try:
-        conn = get_db()
-        conn.execute("DELETE FROM model_benchmarks")
-        conn.commit()
-        return jsonify({"ok": True})
-    except Exception as e:
-        return _err_json("internal error", 500, exc=e)
-
-
 @app.route("/api/benchmark/results/<path:model_id>", methods=["DELETE"])
 def benchmark_delete(model_id):
     try:
@@ -2026,6 +2024,99 @@ def benchmark_delete(model_id):
             "DELETE FROM model_benchmarks WHERE model_id=? AND provider=? AND (agent_id=? OR agent_id='')",
             (model_id, provider, agent_id),
         )
+        conn.commit()
+        return jsonify({"ok": True})
+    except Exception as e:
+        return _err_json("internal error", 500, exc=e)
+
+
+# --- Cross-tool run ledger (#770) — Tools tab records every completed run ---
+
+_TOOL_RUNS_CAP = 200
+_TOOL_RUN_TOOLS = ("benchmark", "autotune")
+
+
+@app.route("/api/tools/runs", methods=["POST"])
+def tool_runs_record():
+    try:
+        data = flask_request.get_json(force=True) or {}
+        tool = (data.get("tool") or "").strip()
+        if tool not in _TOOL_RUN_TOOLS:
+            return jsonify({"ok": False, "error": "unknown tool"}), 400
+        model_id = (data.get("model_id") or "").strip()
+        if not model_id:
+            return jsonify({"ok": False, "error": "model_id required"}), 400
+        provider, perr = _bench_provider(data.get("provider"))
+        if perr:
+            return jsonify({"ok": False, "error": perr}), 400
+        # Summary keeps only JSON-safe scalars, capped in count and string
+        # length; numbers are finite or dropped.
+        summary = {}
+        for k, v in data.items():
+            if k in ("tool", "model_id", "ok", "provider") or len(summary) >= 24:
+                continue
+            if isinstance(v, bool):
+                summary[k] = v
+            elif isinstance(v, str):
+                summary[k] = v[:200]
+            elif isinstance(v, (int, float)):
+                f = _finite_or_none(v)
+                if f is not None:
+                    summary[k] = f
+        agent = _request_agent(provider)
+        agent_id = (agent or {}).get("agent_id") or ""
+        ts = datetime.now(timezone.utc).isoformat()
+        conn = get_db()
+        conn.execute(
+            "INSERT INTO tool_runs (tool, model_id, agent_id, provider, ok, summary, ts) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (tool, model_id, agent_id, provider,
+             1 if data.get("ok", True) else 0, json.dumps(summary), ts))
+        conn.execute(
+            "DELETE FROM tool_runs WHERE tool = ? AND id NOT IN "
+            "(SELECT id FROM tool_runs WHERE tool = ? ORDER BY id DESC LIMIT ?)",
+            (tool, tool, _TOOL_RUNS_CAP))
+        conn.commit()
+        return jsonify({"ok": True})
+    except Exception as e:
+        return _err_json("internal error", 500, exc=e)
+
+
+def _tool_run_row(r) -> dict:
+    try:
+        summary = json.loads(r[5]) if r[5] else {}
+    except Exception:
+        summary = {}
+    return {"tool": r[0], "model_id": r[1], "agent_id": r[2],
+            "provider": r[3], "ok": bool(r[4]), "summary": summary, "ts": r[6]}
+
+
+@app.route("/api/tools/runs", methods=["GET"])
+def tool_runs_recent():
+    try:
+        raw = flask_request.args.get("limit", type=int)
+        limit = max(1, min(100, 100 if raw is None else raw))
+        conn = get_db()
+        rows = conn.execute(
+            "SELECT tool, model_id, agent_id, provider, ok, summary, ts "
+            "FROM tool_runs ORDER BY id DESC LIMIT ?", (limit,)).fetchall()
+        out = [_tool_run_row(r) for r in rows]
+        totals = {r[0]: r[1] for r in conn.execute(
+            "SELECT tool, COUNT(*) FROM tool_runs GROUP BY tool")}
+        # Newest row per tool, so tiles survive one tool flooding the page.
+        latest = {r[0]: _tool_run_row(r) for r in conn.execute(
+            "SELECT tool, model_id, agent_id, provider, ok, summary, ts "
+            "FROM tool_runs WHERE id IN (SELECT MAX(id) FROM tool_runs GROUP BY tool)")}
+        return jsonify({"runs": out, "totals": totals, "latest": latest})
+    except Exception as e:
+        return _err_json("internal error", 500, exc=e)
+
+
+@app.route("/api/tools/runs", methods=["DELETE"])
+def tool_runs_clear():
+    try:
+        conn = get_db()
+        conn.execute("DELETE FROM tool_runs")
         conn.commit()
         return jsonify({"ok": True})
     except Exception as e:

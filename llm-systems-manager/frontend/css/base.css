@@ -646,14 +646,6 @@
       padding-top: 48px; overflow-y: auto;
     }
     .bench-overlay.open { display: flex; }
-    /* Auto-Tune: top-anchored like the bench wizard. align-items:center on
-       a scrollable flex container traps the panel's top above the scroll
-       origin once it exceeds viewport height, hiding the close button.
-       Anchoring to flex-start lets the overlay's overflow-y handle long
-       runs (many model result cards + iter log) without losing the
-       chrome at the top. */
-    #autotuneOverlay { align-items: flex-start; padding-top: 24px; padding-bottom: 24px; }
-    #autotuneOverlay .bench-panel { margin-bottom: 0; }
     .bench-panel {
       background: var(--bg-card); border: 1px solid var(--border); border-radius: 12px;
       padding: 20px 28px; width: 1180px; max-width: 96vw;
@@ -661,10 +653,6 @@
       display: flex; flex-direction: column; gap: 12px;
     }
     .bench-panel h2 { font-size: 0.95em; font-weight: 500; color: var(--fg); margin: 0; display:flex; align-items:center; gap:8px; }
-    /* Benchmark modal only: wider panel + slimmer config rail so result-log
-       rows fit on one line; horizontal scroll stays the fallback. */
-    #benchOverlay .bench-panel { width: 1380px; }
-    #benchOverlay .bench-body { grid-template-columns: minmax(240px,26%) 1fr; }
     /* Two-pane report layout: header spans the top, a config sidebar sits left
        of the results/chart pane. Header carries a one-line subtitle. */
     .bench-header { display:flex; align-items:flex-start; justify-content:space-between; }
