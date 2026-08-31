@@ -105,7 +105,8 @@ def test_limit_clamped_and_clear(monkeypatch):
     assert len(c.get("/api/tools/runs?limit=1").get_json()["runs"]) == 1
     assert len(c.get("/api/tools/runs?limit=abc").get_json()["runs"]) == 3
     assert len(c.get("/api/tools/runs?limit=0").get_json()["runs"]) == 1
-    assert c.delete("/api/tools/runs").get_json()["ok"] is True
+    cleared = c.delete("/api/tools/runs").get_json()
+    assert cleared["ok"] is True
     assert c.get("/api/tools/runs").get_json()["runs"] == []
 
 
