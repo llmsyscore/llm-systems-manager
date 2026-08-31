@@ -882,9 +882,9 @@ function _applyLlamaStatePayload(data) {
     _llamaBuildMethod = (data && data.build_method) || '';
     const _bbtn = document.getElementById('llamaBtnBuild');
     if (_bbtn) {
-      _bbtn.textContent = _llamaBuildMethod
-        ? `⬆ Update llama.cpp (${_llamaBuildMethod})`
-        : '⬆ Update llama.cpp';
+      _bbtn.innerHTML = '<span class="mi">↑</span>';
+      _bbtn.appendChild(document.createTextNode(
+        'Update llama.cpp' + (_llamaBuildMethod ? ` (${_llamaBuildMethod})` : '')));
     }
 }
 
