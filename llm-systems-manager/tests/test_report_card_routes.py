@@ -544,3 +544,42 @@ def test_models_endpoint_empty_when_agent_unreachable(client, monkeypatch):
     r = client.get("/api/reportcard/models?agent=" + "a" * 32
                    + "&provider=lms")
     assert r.status_code == 200 and r.get_json()["models"] == []
+
+
+# ── /api/reportcard/recent + DELETE /api/reportcard/history (#769) ──
+
+def _seed_cards(n=3):
+    for i in range(n):
+        rc.insert_card(rc._conn_factory(), {
+            "ts": 1756550000 + i, "agent_id": f"agent{i}", "provider": "llama",
+            "mode": "standard", "preset_version": "1", "eligible": True,
+            "result": {"model": f"m{i}", "gen_tps": 40.0 + i,
+                       "avg_watts": 200.0, "usd_per_mtok": 0.1,
+                       "gpu_config": "GPU", "reps": ["secret"]}})
+
+
+def test_recent_orders_newest_first_and_slims_result(client):
+    _seed_cards()
+    r = client.get("/api/reportcard/recent")
+    assert r.status_code == 200
+    cards = r.get_json()["cards"]
+    assert [c["result"]["model"] for c in cards] == ["m2", "m1", "m0"]
+    assert cards[0]["agent_id"] == "agent2"
+    # result carries only the tile/ledger allowlist — no reps or extra keys.
+    assert set(cards[0]["result"]) == {"model", "gen_tps", "avg_watts",
+                                       "usd_per_mtok", "gpu_config"}
+
+
+def test_recent_limit_clamped_and_default_on_garbage(client):
+    _seed_cards(3)
+    assert len(client.get("/api/reportcard/recent?limit=2").get_json()["cards"]) == 2
+    assert len(client.get("/api/reportcard/recent?limit=abc").get_json()["cards"]) == 3
+    # Negative values clamp to the floor of 1 rather than erroring.
+    assert len(client.get("/api/reportcard/recent?limit=-5").get_json()["cards"]) == 1
+
+
+def test_history_clear_deletes_all_cards(client):
+    _seed_cards()
+    r = client.delete("/api/reportcard/history")
+    assert r.status_code == 200 and r.get_json()["ok"] is True
+    assert client.get("/api/reportcard/recent").get_json()["cards"] == []

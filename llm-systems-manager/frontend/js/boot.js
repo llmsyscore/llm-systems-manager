@@ -45,7 +45,7 @@ const _subTabState = { dashboard: 'llamacpp', llm: 'llamacpp', admin: 'agents' }
 
 const _SUB_TAB_MAP = {
   dashboard: { tabId: 'dashboardTab', prefix: 'dash',  subs: ['llamacpp','lmstudio','vllm','energy','openclaw','manager'] },
-  llm:       { tabId: 'llmTab',       prefix: 'llm',   subs: ['llamacpp','lmstudio','vllm','reportcard'] },
+  llm:       { tabId: 'llmTab',       prefix: 'llm',   subs: ['llamacpp','lmstudio','vllm','tools'] },
   admin:     { tabId: 'adminTab',     prefix: 'admin', subs: ['access','agents','audit','backup','routing','settings'] },
 };
 
@@ -114,13 +114,14 @@ function switchSubTab(parent, sub) {
   if (parent === 'dashboard' && sub === 'openclaw') {
     fetchOpenclawAnalytics();
   }
-  // Report card populates its pickers on first open (#468).
-  if (parent === 'llm' && sub === 'reportcard'
-      && typeof initReportCard === 'function') {
-    initReportCard();
+  // Tools launcher refreshes tool stats + ledger on entry (#769).
+  if (parent === 'llm' && sub === 'tools'
+      && typeof initToolsTab === 'function') {
+    initToolsTab();
   }
-  // Leaving the sub-tab closes any live progress stream.
-  if (!(parent === 'llm' && sub === 'reportcard')
+  // Leaving Tools for a sibling LLM sub-tab closes any live report-card
+  // progress stream.
+  if (parent === 'llm' && sub !== 'tools'
       && typeof rcStopStream === 'function') {
     rcStopStream();
   }

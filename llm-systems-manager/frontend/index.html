@@ -55,9 +55,10 @@ Backend API endpoints consumed:
   <script src="/static/vendor/xterm.min.js?v=5.3.0"></script>
   <script src="/static/vendor/xterm-addon-fit.min.js?v=0.8.0"></script>
   <link rel="stylesheet" href="/static/css/fonts.css?v=2026.08.30-1">
-  <link rel="stylesheet" href="/static/css/base.css?v=2026.08.30-1">
+  <link rel="stylesheet" href="/static/css/base.css?v=2026.08.31-1">
   <link rel="stylesheet" href="/static/css/modelcards.css?v=2026.08.30-12">
-  <link rel="stylesheet" href="/static/css/reportcard.css?v=2026.08.30-1">
+  <link rel="stylesheet" href="/static/css/reportcard.css?v=2026.08.31-1">
+  <link rel="stylesheet" href="/static/css/tools.css?v=2026.08.31-7">
   <link rel="stylesheet" href="/static/css/energy.css?v=2026.08.19-2">
   <link rel="stylesheet" href="/static/css/overall.css?v=2026.08.30-1">
 </head>
@@ -1713,7 +1714,7 @@ Backend API endpoints consumed:
       <button class="sub-tab-btn active" id="subTabBtnLlmLlamacpp" onclick="switchSubTab('llm','llamacpp')">llama.cpp</button>
       <button class="sub-tab-btn" id="subTabBtnLlmLmstudio" onclick="switchSubTab('llm','lmstudio')">LM Studio</button>
       <button class="sub-tab-btn" id="subTabBtnLlmVllm" style="display:none;" onclick="switchSubTab('llm','vllm')">vLLM</button>
-      <button class="sub-tab-btn" id="subTabBtnLlmReportcard" onclick="switchSubTab('llm','reportcard')">Report Card</button>
+      <button class="sub-tab-btn" id="subTabBtnLlmTools" onclick="switchSubTab('llm','tools')"><span class="subtab-dot" id="toolsRunDot"></span>Tools</button>
     </div>
   </div>
 
@@ -1906,11 +1907,46 @@ Backend API endpoints consumed:
     </div>
   </div>
 
-  <!-- Report Card sub-tab (#468) — standardized cross-provider bench -->
-  <div id="llm-reportcard" class="sub-tab-panel" style="padding:8px 20px 20px;">
-    <div class="llm-section" id="rcSection">
-      <div class="llm-section-title" onclick="toggleSection('rcSection')">Report Card<span class="llm-collapse-icon">▾</span></div>
-      <div class="llm-section-body">
+  <!-- Tools sub-tab (#769) — launcher + run ledger + tool modules -->
+  <div id="llm-tools" class="sub-tab-panel" style="padding:8px 20px 20px;">
+    <div id="toolsHome">
+      <div class="tools-viewbar">
+        <div class="mc-seg" id="toolsViewSeg" role="tablist" aria-label="Launcher view">
+          <button data-view="card" type="button">Cards</button>
+          <button data-view="list" type="button">List</button>
+          <button data-view="compact" type="button">Compact</button>
+        </div>
+      </div>
+      <div id="toolsLauncher"></div>
+      <div class="tools-ledger-sec" id="toolsLedgerSec">
+        <div class="tools-ledger-h" id="toolsLedgerHead" role="button" tabindex="0">
+          <span class="t">Recent results · all tools</span>
+          <span class="lgap"></span>
+          <select id="toolsLedgerFilter" class="tools-lfilter" onclick="event.stopPropagation()">
+            <option value="all">All tools</option>
+            <option value="Report Card">Report Card</option>
+            <option value="Benchmark">Benchmark</option>
+          </select>
+          <button class="mcbtn mcbtn-ghost mcbtn-sm" id="toolsClearBtn" type="button" onclick="event.stopPropagation(); toolsClearHistory()">Clear history</button>
+          <span class="chev">▾</span>
+        </div>
+        <div class="tools-ledger-body" id="toolsLedgerBody"></div>
+        <div class="tools-pager" id="toolsLedgerPager"></div>
+      </div>
+    </div>
+
+    <!-- Report Card module (#468) — standardized cross-provider bench -->
+    <div id="toolsMod" style="display:none;">
+      <div class="tools-mod-head">
+        <div class="mini-switch" role="tablist" aria-label="Switch tool">
+          <button class="tools-crumb" type="button" title="All tools" onclick="toolsCloseModule()">‹</button>
+          <button class="on" type="button" title="Report Card">▤</button>
+          <button type="button" title="Benchmark" onclick="toolsOpenTool('benchmark')">◷</button>
+          <button type="button" title="Autotune" onclick="toolsOpenTool('autotune')">⌖</button>
+        </div>
+        <h2>Report Card</h2>
+        <span class="mgap"></span>
+      </div>
     <div class="rc-panel">
       <div class="rc-controls">
         <div class="rc-field">
@@ -1938,7 +1974,7 @@ Backend API endpoints consumed:
         </div>
         <div class="rc-field" id="rcCustomModelField" style="display:none;">
           <label for="rcCustomModel">Model id</label>
-          <input id="rcCustomModel" type="text" style="width:220px;" list="rcModelOptions" placeholder="model id as the provider reports it">
+          <input id="rcCustomModel" type="text" list="rcModelOptions" placeholder="model id as the provider reports it">
           <datalist id="rcModelOptions"></datalist>
         </div>
         <div class="rc-field">
@@ -1946,10 +1982,18 @@ Backend API endpoints consumed:
           <input id="rcPrice" type="number" min="0" step="0.01">
         </div>
         <div class="rc-spacer"></div>
-        <button class="btn btn-stone-muted-gradient" id="rcRunBtn" onclick="rcRun()">▶ Run report card</button>
-        <button class="btn btn-slate-muted-gradient" id="rcCancelBtn" style="display:none;" onclick="rcCancelRun()">✕ Cancel</button>
+        <div class="rc-railactions">
+          <button class="btn btn-stone-muted-gradient" id="rcRunBtn" onclick="rcRun()">▶ Run report card</button>
+          <button class="btn btn-slate-muted-gradient" id="rcCancelBtn" style="display:none;" onclick="rcCancelRun()">✕ Cancel</button>
+          <button class="btn btn-gray-muted-gradient" onclick="rcToggleTrends()">Trends</button>
+        </div>
       </div>
 
+      <div class="rc-main">
+      <div class="rc-chips" id="rcChips" style="display:none;">
+        <span class="ctx-chip" id="rcModelChip" style="display:none;"></span>
+        <span class="mc-pill p-unloaded" id="rcEligChip" style="display:none;"></span>
+      </div>
       <div class="rc-note" id="rcNote"></div>
 
       <div class="rc-status" id="rcStatus" style="display:none;"></div>
@@ -1991,17 +2035,15 @@ Backend API endpoints consumed:
       <div id="rcCardHost"></div>
 
       <div class="rc-actions" id="rcActions" style="display:none;">
-        <button class="btn btn-gray-muted-gradient" onclick="rcExportPng()">Save as PNG</button>
         <span id="rcSubmitWrap" class="rc-soon" style="display:none;" data-tip="Leaderboard submission is coming soon in the next release."><button class="btn btn-gray-muted-gradient" id="rcSubmitBtn" disabled aria-disabled="true" title="Leaderboard submission is coming soon in the next release.">Submit to leaderboard</button></span>
-        <button class="btn btn-gray-muted-gradient" onclick="rcToggleTrends()">Trends</button>
       </div>
 
       <div class="rc-trends" id="rcTrends" style="display:none;">
         <canvas id="rcTrendChart"></canvas>
       </div>
-    </div>
-      </div>
-    </div>
+      </div><!-- /rc-main -->
+    </div><!-- /rc-panel -->
+    </div><!-- /toolsMod -->
   </div>
 
 </div><!-- end llmTab -->
@@ -2013,7 +2055,8 @@ Backend API endpoints consumed:
 <script src="/static/js/lib/peaks.js?v=2026.08.29-2"></script>
 <script src="/static/js/lib/benchaxis.js?v=2026.08.26-1"></script>
 <script src="/static/js/lib/thresholds.js?v=2026.08.05-1"></script>
-<script src="/static/js/lib/reportcard.js?v=2026.07.27-1"></script>
+<script src="/static/js/lib/reportcard.js?v=2026.08.31-2"></script>
+<script src="/static/js/lib/toolcards.js?v=2026.08.31-5"></script>
 <script src="/static/js/lib/energy.js?v=2026.08.26-1"></script>
 <script src="/static/js/lib/overall-view.js?v=2026.08.29-2"></script>
 <script src="/static/js/charts.js?v=2026.08.30-2"></script>
@@ -2026,11 +2069,12 @@ Backend API endpoints consumed:
 <script src="/static/js/autopilot.js?v=2026.07.31-2"></script>
 <script src="/static/js/llmcontrol-models.js?v=2026.08.30-9"></script>
 <script src="/static/js/editor-modern.js?v=2026.08.30-4"></script>
-<script src="/static/js/bench-autotune.js?v=2026.08.30-1"></script>
+<script src="/static/js/bench-autotune.js?v=2026.08.31-1"></script>
 <script src="/static/js/lmstudio.js?v=2026.08.30-4"></script>
 <script src="/static/js/vllm.js?v=2026.08.30-6"></script>
 <script src="/static/js/vllm-bench-autotune.js?v=2026.07.12-2"></script>
-<script src="/static/js/report-card.js?v=2026.08.17-1"></script>
+<script src="/static/js/report-card.js?v=2026.08.31-3"></script>
+<script src="/static/js/tools.js?v=2026.08.31-5"></script>
 <script src="/static/js/energy.js?v=2026.08.19-1"></script>
 <script src="/static/js/overall.js?v=2026.08.29-2"></script>
 <script src="/static/js/dashboard-manager.js?v=2026.08.17-1"></script>
@@ -2473,6 +2517,6 @@ Backend API endpoints consumed:
 <div id="alarmToastContainer"></div>
 
 <script src="/static/js/events-toasts.js?v=2026.07.04-2"></script>
-<script src="/static/js/boot.js?v=2026.08.21-1"></script>
+<script src="/static/js/boot.js?v=2026.08.31-1"></script>
 </body>
 </html>
