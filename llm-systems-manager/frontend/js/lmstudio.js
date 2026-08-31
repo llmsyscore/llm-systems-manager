@@ -297,6 +297,8 @@ async function fetchLMStudioMetrics() {
     // lms server status output format varies and can report false negatives.
     const srvOn = d.server?.on === true || (models && models.length > 0);
     _setLmsBtns(online && srvOn);
+    const _lmsPillEl = document.getElementById('lmsCtrlStatus');
+    if (_lmsPillEl) _lmsPillEl.className = 'mc-pill ' + (srvOn ? 'p-active' : 'p-unloaded') + ' llm-sec-pill';
     _setEl('lmsCtrlStatus', srvOn ? `Server ON · port ${d.server?.port || 1235}` : 'Server OFF');
     document.querySelectorAll('#lmsCtrlBadge').forEach(el => {
       el.className = `status ${online ? 'status--ok' : 'status--crit'}`;
@@ -505,9 +507,9 @@ function renderLMSModelCards(ps, models) {
       id: modelId, actAttr: 'data-lmsact', renameAct: 'rename',
       name: aliasOrShort(modelId), repo: modelId,
       pill, specs, stats: [], fresh: null,
-      primary: isLoaded ? { act: 'unload', label: '⏹ Unload' } : { act: 'load', label: '▶ Load' },
+      primary: isLoaded ? { act: 'unload', icon: '⏹', label: 'Unload' } : { act: 'load', icon: '▶', label: 'Load' },
       buttons: [],
-      menu: isLoaded ? [{ act: 'reload', label: '↺ Reload' }] : [],
+      menu: isLoaded ? [{ act: 'reload', icon: '↺', label: 'Reload' }] : [],
       transition: !!busy, csub,
       open: MC.isOpen('lms', modelId),
     };
@@ -637,9 +639,7 @@ let _lmsSectionsInited = false;
 function _initLMSSections() {
   if (_lmsSectionsInited) return;
   _lmsSectionsInited = true;
-  // Expand models, collapse download
-  document.getElementById('lmsSecModels')?.classList.remove('collapsed');
-  document.getElementById('lmsSecDownload')?.classList.add('collapsed');
+  // Section open/collapse defaults are owned by LLMSections (#767).
   // Open log panel
   const panel = document.getElementById('lmsLogPanel');
   if (panel) {

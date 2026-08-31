@@ -67,7 +67,7 @@
 
   function _menuItems(items, d) {
     return (items || []).map(it => it === '-' ? '<hr>' :
-      `<button ${d.actAttr}="${esc(it.act)}" data-id="${esc(d.id)}" class="${it.danger ? 'danger' : ''}">${esc(it.label)}</button>`
+      `<button ${d.actAttr}="${esc(it.act)}" data-id="${esc(d.id)}" class="${it.danger ? 'danger' : ''}">${it.icon ? `<span class="mi">${esc(it.icon)}</span>` : ''}${esc(it.label)}</button>`
     ).join('');
   }
 
@@ -78,7 +78,8 @@
   }
 
   function btnHtml(d, b, cls) {
-    return `<button class="mcbtn ${cls}" ${d.actAttr}="${esc(b.act)}" data-id="${esc(d.id)}"${d.transition ? ' disabled' : ''}>${esc(b.label)}</button>`;
+    const label = (b.icon ? esc(b.icon) + ' ' : '') + esc(b.label);
+    return `<button class="mcbtn ${cls}" ${d.actAttr}="${esc(b.act)}" data-id="${esc(d.id)}"${d.transition ? ' disabled' : ''}>${label}</button>`;
   }
 
   function actionsHtml(d) {
@@ -134,9 +135,9 @@
   function row(d) {
     const cfg = (d.specs || []).map(s => `${esc(String(s.k).toLowerCase())} ${esc(s.v)}`).join('<i>·</i>');
     const met = (d.stats || []).slice(0, 3).map(s =>
-      `<div class="mc-stat"><div class="l">${esc(s.l)}</div><div class="v"><b>${esc(s.v)}</b></div></div>`).join('');
+      `<span class="mc-rstat"><span class="rl">${esc(s.l)}</span><b>${esc(s.v)}</b></span>`).join('');
     const menuItems = [
-      ...(d.buttons || []).map(b => ({ act: b.act, label: b.label })),
+      ...(d.buttons || []).map(b => ({ act: b.act, label: b.label, icon: b.icon })),
       ...((d.buttons || []).length && (d.menu || []).filter(i => i !== '-').length ? ['-'] : []),
       ...(d.menu || []),
     ];
@@ -308,8 +309,12 @@
       if (!ev.target.closest('.mc-menuwrap') && !ev.target.closest('.mc-menu')) closeMenus();
     });
     document.addEventListener('keydown', ev => { if (ev.key === 'Escape') closeMenus(); });
+    // Close on scrolls that move an open menu's anchor: the page itself, or a
+    // container holding the menu. Inner auto-scrollers (log boxes streaming
+    // output) must not slam menus shut.
     document.addEventListener('scroll', ev => {
-      if (!(ev.target.closest && ev.target.closest('.mc-menu'))) closeMenus();
+      const t = ev.target;
+      if (t === document || (t.querySelector && t.querySelector('.mc-menu.open'))) closeMenus();
     }, true);
     window.addEventListener('resize', closeMenus);
   }

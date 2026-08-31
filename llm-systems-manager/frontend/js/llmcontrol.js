@@ -49,7 +49,7 @@ function _renderSvcArgs() {
     info.innerHTML = `<div class="svcarg-flag">${_esc(a.flag)}</div><div class="svcarg-desc">${_esc(desc)}</div>`;
     const valWrap = document.createElement('div');
     if (a.bool) {
-      valWrap.innerHTML = `<span class="svcarg-bool"><input type="checkbox" checked disabled> flag only</span>`;
+      valWrap.innerHTML = `<span class="mc-toggle on" style="pointer-events:none;"><span class="track"></span><span class="tlbl">flag only</span></span>`;
     } else {
       const inp = document.createElement('input');
       inp.type = 'text';
@@ -118,6 +118,8 @@ function _svcConfigRoute() {
 
 async function openServerConfig(provider) {
   _svcProvider = provider === 'vllm' ? 'vllm' : 'llama';
+  const _svcTitle = document.getElementById('svcConfigTitle');
+  if (_svcTitle) _svcTitle.textContent = (_svcProvider === 'vllm' ? 'vLLM' : 'llama-server') + ' Startup Config';
   document.getElementById('svcConfigStatus').textContent = 'Loading…';
   document.getElementById('svcArgList').innerHTML = '';
   document.getElementById('svcConfigBinary').textContent = '…';
@@ -315,12 +317,31 @@ async function serverPerfMode(mode) {
       else if (key === 'vllm' && typeof _vllmTermFit !== 'undefined' && _vllmTermFit) _vllmTermFit.fit();
     } catch (_) {}
   }
+  function _restoreHeights() {
+    const saved = (typeof layout === 'object' && layout && layout.logHeights) || {};
+    Object.entries(saved).forEach(([id, h]) => {
+      const el = document.getElementById(id);
+      if (el && Number(h) >= 80) el.style.height = Number(h) + 'px';
+    });
+  }
+  function _persistHeight(box) {
+    if (!box || !box.id || typeof layout !== 'object' || !layout) return;
+    layout.logHeights = layout.logHeights || {};
+    layout.logHeights[box.id] = box.offsetHeight;
+    try { saveLayout(); } catch (_) {}
+  }
   document.addEventListener('DOMContentLoaded', () => {
     _attachHandle(document.getElementById('logResizeHandle'),
                   document.getElementById('serverLogBox'));
     document.querySelectorAll('.dl-log-resize').forEach(h => {
       _attachHandle(h, document.getElementById(h.dataset.resizeTarget));
     });
+    let tries = 0;
+    const t = setInterval(() => {
+      if ((typeof layout === 'object' && layout) || ++tries > 100) {
+        clearInterval(t); _restoreHeights();
+      }
+    }, 100);
   });
   document.addEventListener('mousemove', e => {
     if (!dragging || !activeBox) return;
@@ -330,6 +351,7 @@ async function serverPerfMode(mode) {
   });
   document.addEventListener('mouseup', () => {
     if (dragging && activeXtermKey) _fitXterm(activeXtermKey);
+    if (dragging && activeBox) _persistHeight(activeBox);
     dragging = false; activeBox = null; activeXtermKey = null;
     document.body.style.userSelect = '';
   });
@@ -413,15 +435,7 @@ function _initLLMSections() {
   if (_llmSectionsInited) return;
   _llmSectionsInited = true;
 
-  // Models — expanded
-  document.getElementById('secModels').classList.remove('collapsed');
-  // Download — collapsed
-  document.getElementById('secDownload').classList.add('collapsed');
-  // Cache — collapsed
-  document.getElementById('secCache').classList.add('collapsed');
-  // Trending — expanded
-  document.getElementById('secTrending').classList.remove('collapsed');
-
+  // Section open/collapse defaults are owned by LLMSections (#767).
   // Open server log panel
   const panel = document.getElementById('serverLogPanel');
   if (panel) {
@@ -431,7 +445,14 @@ function _initLLMSections() {
   }
 }
 
+let _cacheListedOnce = false;
 function toggleSection(id) {
-  document.getElementById(id).classList.toggle('collapsed');
+  const sec = document.getElementById(id);
+  sec.classList.toggle('collapsed');
+  if (typeof LLMSections !== 'undefined') LLMSections.noteToggle(id);
+  if (id === 'secDownload' && !sec.classList.contains('collapsed') && !_cacheListedOnce) {
+    _cacheListedOnce = true;
+    if (typeof loadCacheList === 'function') loadCacheList();
+  }
 }
 

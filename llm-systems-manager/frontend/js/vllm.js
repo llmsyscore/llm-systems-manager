@@ -100,6 +100,12 @@ async function fetchVllmMetrics() {
       badge.innerHTML = '<span class="status__dot"></span>' + (online ? 'online' : 'offline');
     }
 
+    const srvPill = document.getElementById('vllmSrvPill');
+    if (srvPill) {
+      srvPill.className = 'mc-pill ' + (up ? 'p-active' : 'p-unloaded') + ' llm-sec-pill';
+      srvPill.textContent = up ? ('Server ON' + (v.port ? ' · port ' + v.port : '')) : 'Server OFF';
+    }
+
     _setEl('vllm-active-model', up ? (v.model || '(no model)') : '—');
     _setEl('vllm-active-state', 'state ' + (online ? (v.state || 'unknown') : 'agent offline'));
     _setEl('vllm-req-running', up && v.requests_running != null ? String(v.requests_running) : '—');
@@ -259,8 +265,8 @@ function renderVllmModelCards(models, activeId) {
       benchClick: serving ? 'bench' : null,
       primary: null, buttons: [],
       menu: serving ? [
-        { act: 'bench',    label: '◷ Benchmark' },
-        { act: 'autotune', label: '⌖ Autotune' },
+        { act: 'bench',    icon: '◷', label: 'Benchmark' },
+        { act: 'autotune', icon: '⌖', label: 'Autotune' },
       ] : [],
       csub: [
         b && b.avg_gen_tps != null ? `gen <b>${MC.esc(Number(b.avg_gen_tps).toFixed(1))} t/s</b>` : null,

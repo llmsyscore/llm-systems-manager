@@ -112,7 +112,7 @@ _LLAMA_VALUE_FLAGS = {
     "--gpu-layers", "--tensor-parallel", "-t", "-c", "-ngl",
     "--mmap", "--no-mmap", "--load-mode", "-lm", "--log-disable", "--cont-batch",
     "--embedding", "--no-display", "--simple-io",
-    "--chat-template",
+    "--chat-template", "--cors-origins", "--tools",
 }
 
 _build_queue: "_queue_lib.Queue[dict[str, Any]]" = _queue_lib.Queue(maxsize=4000)
@@ -1368,9 +1368,11 @@ def llama_svcconfig_get(authorization: Optional[str] = Header(default=None)) -> 
             while i < len(parts):
                 p = parts[i]
                 if p.startswith("-"):
-                    expects_value = p in _LLAMA_VALUE_FLAGS
-                    if expects_value and i + 1 < len(parts):
-                        args.append({"flag": p, "value": parts[i + 1], "bool": False})
+                    nxt = parts[i + 1] if i + 1 < len(parts) else None
+                    expects_value = (p in _LLAMA_VALUE_FLAGS
+                                     or (nxt is not None and not nxt.startswith("-")))
+                    if expects_value and nxt is not None:
+                        args.append({"flag": p, "value": nxt, "bool": False})
                         i += 2
                     else:
                         args.append({"flag": p, "value": None, "bool": True})
@@ -1863,18 +1865,37 @@ def llama_cache_rm(body: dict, authorization: Optional[str] = Header(default=Non
     return {"ok": True}
 
 
-def llama_hf_trending(authorization: Optional[str] = Header(default=None)) -> dict[str, Any]:
+def llama_hf_trending(
+    authorization: Optional[str] = Header(default=None),
+    limit: int = 10,
+    min_b: str = "27B",
+    max_b: str = "35B",
+    sort: str = "trending",
+) -> dict[str, Any]:
     _require_ctx().check_bearer(authorization); _llama_check_enabled()
+    limit = max(1, min(50, int(limit)))
+    if not re.fullmatch(r"\d{1,4}B", str(min_b) or ""):
+        min_b = "27B"
+    if not re.fullmatch(r"\d{1,4}B", str(max_b) or ""):
+        max_b = "35B"
+    if sort not in ("trending", "downloads", "newest"):
+        sort = "trending"
+    # The Hub API sorts "downloads" by the 30-day count and "createdAt" by raw
+    # creation time (all just-pushed empty repos), so: downloads re-ranks the
+    # fetched rows by all-time count, and newest sorts a trending pool by
+    # creation date and slices to the requested limit.
+    pool = 100 if sort == "newest" else limit
+    sort_key = "downloads" if sort == "downloads" else "trending_score"
     env = dict(os.environ)
     env["FORCE_COLOR"] = "0"
     try:
         out = subprocess.check_output(
             [_hf_cli_path(), "models", "ls",
-             "--sort", "trending_score",
-             "--limit", "10",
+             "--sort", sort_key,
+             "--limit", str(pool),
              "--format", "json",
              "--expand", "author,downloadsAllTime,trendingScore,createdAt,lastModified",
-             "--num-parameters", "min:27B,max:35B"],
+             "--num-parameters", f"min:{min_b},max:{max_b}"],
             text=True, timeout=30, close_fds=True,
             stderr=subprocess.DEVNULL, env=env,
         )
@@ -1882,7 +1903,13 @@ def llama_hf_trending(authorization: Optional[str] = Header(default=None)) -> di
             data = json.loads(out)
         except Exception:
             return {"ok": False, "error": "Failed to parse JSON", "raw": out}
-        return {"ok": True, "data": data if isinstance(data, list) else [data]}
+        data = data if isinstance(data, list) else [data]
+        if sort == "downloads":
+            data.sort(key=lambda m: (m or {}).get("downloads_all_time") or 0, reverse=True)
+        elif sort == "newest":
+            data.sort(key=lambda m: str((m or {}).get("created_at") or ""), reverse=True)
+            data = data[:limit]
+        return {"ok": True, "data": data}
     except subprocess.CalledProcessError as e:
         return {"ok": False, "error": getattr(e, "output", str(e))}
     except Exception as e:

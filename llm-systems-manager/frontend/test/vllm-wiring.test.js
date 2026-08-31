@@ -468,8 +468,8 @@ describe('index.html', () => {
     test('has Terminal, Server Log, and Server Config buttons', () => {
       expect(panel.querySelector('[onclick="toggleVllmTerminal()"]')).toBeTruthy();
       expect(panel.querySelector("[onclick=\"openServerConfig('vllm')\"]")).toBeTruthy();
-      const buttons = [...panel.querySelectorAll('button')].map((b) => b.textContent.trim());
-      expect(buttons).toContain('☰ Server Log');
+      const buttons = [...panel.querySelectorAll('button')].map((b) => b.textContent.replace(/\s+/g, ' ').trim());
+      expect(buttons).toContain('≡ Server Log');
     });
     test('terminal panel + mount with the vllm fit key', () => {
       expect(panel.querySelector('#vllmTerminalPanel')).toBeTruthy();
