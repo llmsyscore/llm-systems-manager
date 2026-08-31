@@ -45,6 +45,10 @@ async function refreshLLMTab() {
     }));
     renderModelCards();
     setTimeout(_updateModelPerf, 100);
+    if (typeof _cacheListedOnce !== 'undefined' && !_cacheListedOnce) {
+      _cacheListedOnce = true;
+      loadCacheList();
+    }
   } catch(e) { console.error('LLM tab refresh error:', e); }
 }
 

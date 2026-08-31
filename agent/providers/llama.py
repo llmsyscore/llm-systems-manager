@@ -1876,15 +1876,21 @@ def llama_hf_trending(
         min_b = "27B"
     if not re.fullmatch(r"\d{1,4}B", str(max_b) or ""):
         max_b = "35B"
-    sort_key = {"trending": "trending_score", "downloads": "downloads",
-                "newest": "created_at"}.get(sort, "trending_score")
+    if sort not in ("trending", "downloads", "newest"):
+        sort = "trending"
+    # The Hub API sorts "downloads" by the 30-day count and "createdAt" by raw
+    # creation time (all just-pushed empty repos), so: downloads re-ranks the
+    # fetched rows by all-time count, and newest sorts a trending pool by
+    # creation date and slices to the requested limit.
+    pool = 100 if sort == "newest" else limit
+    sort_key = "downloads" if sort == "downloads" else "trending_score"
     env = dict(os.environ)
     env["FORCE_COLOR"] = "0"
     try:
         out = subprocess.check_output(
             [_hf_cli_path(), "models", "ls",
              "--sort", sort_key,
-             "--limit", str(limit),
+             "--limit", str(pool),
              "--format", "json",
              "--expand", "author,downloadsAllTime,trendingScore,createdAt,lastModified",
              "--num-parameters", f"min:{min_b},max:{max_b}"],
@@ -1895,7 +1901,13 @@ def llama_hf_trending(
             data = json.loads(out)
         except Exception:
             return {"ok": False, "error": "Failed to parse JSON", "raw": out}
-        return {"ok": True, "data": data if isinstance(data, list) else [data]}
+        data = data if isinstance(data, list) else [data]
+        if sort == "downloads":
+            data.sort(key=lambda m: (m or {}).get("downloads_all_time") or 0, reverse=True)
+        elif sort == "newest":
+            data.sort(key=lambda m: str((m or {}).get("created_at") or ""), reverse=True)
+            data = data[:limit]
+        return {"ok": True, "data": data}
     except subprocess.CalledProcessError as e:
         return {"ok": False, "error": getattr(e, "output", str(e))}
     except Exception as e:

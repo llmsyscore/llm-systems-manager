@@ -34,20 +34,22 @@ const LLMSections = (function () {
     try { saveLayout(); } catch (_) {}
   }
 
-  // Swap sections into the existing section slots so non-section siblings
-  // (dividers, the model editor) keep their DOM positions.
+  // A customized layout re-stacks sections in saved order at the end of the
+  // panel and hides the decorative divider — slot-swapping can't represent
+  // an order that crosses it.
+  function _hideDivider(key) {
+    const c = _container(key);
+    const d = c && c.querySelector(':scope > .llm-sec-divider');
+    if (d) d.style.display = 'none';
+  }
   function _applyOrder(key, order) {
+    const c = _container(key);
     const secs = _sections(key);
     const byId = new Map(secs.map(el => [el.id, el]));
     const target = order.filter(id => byId.has(id));
     secs.forEach(el => { if (!target.includes(el.id)) target.push(el.id); });
-    const marks = secs.map(el => {
-      const m = document.createComment('sec-slot');
-      el.parentNode.insertBefore(m, el);
-      return m;
-    });
-    target.forEach((id, i) => { if (marks[i]) marks[i].parentNode.insertBefore(byId.get(id), marks[i]); });
-    marks.forEach(m => m.remove());
+    target.forEach(id => c.appendChild(byId.get(id)));
+    _hideDivider(key);
   }
 
   function _initPanel(key) {
@@ -65,7 +67,7 @@ const LLMSections = (function () {
         draggable: '.llm-section',
         animation: 150,
         ghostClass: 'mc-sec-ghost',
-        onEnd: () => _persist(key),
+        onEnd: () => { _hideDivider(key); _persist(key); },
       });
     }
   }

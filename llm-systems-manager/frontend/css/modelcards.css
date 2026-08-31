@@ -244,8 +244,9 @@
 .llm-sec-pill { margin-left: auto; text-transform: none; letter-spacing: .02em; cursor: default; }
 .llm-sec-pill + .llm-collapse-icon { margin-left: 10px; }
 .llm-sec-hint { margin-left: auto; color: var(--fg-faint); font-weight: 400; text-transform: none; letter-spacing: 0; font-size: 0.95em; cursor: default; }
-.llm-sec-hint + .llm-collapse-icon { margin-left: 10px; }
+.llm-sec-hint:not(:empty) + .llm-collapse-icon { margin-left: 10px; }
 .llm-sec-hint:empty { display: none; }
+.llm-section-title .mc-profchip { color: var(--accent); font-size: 11px; font-weight: 600; }
 .llm-sec-prominent { font-size: 0.95em; color: var(--fg-muted); }
 .llm-sec-prominent:hover { color: var(--fg); }
 .llm-sec-divider { display: flex; align-items: center; gap: 12px; margin: 4px 2px 18px; }
