@@ -9,7 +9,7 @@ const css = srcFile('css/base.css');
 const rcCss = srcFile('css/reportcard.css');
 const rcJs = srcFile('js/report-card.js');
 
-const start = html.indexOf('id="llm-reportcard"');
+const start = html.indexOf('id="llm-tools"');
 const tagStart = html.lastIndexOf('<div', start);
 const after = html.indexOf('id="llm-', start + 1);
 const panelHtml = html.slice(tagStart, after === -1 ? html.indexOf('end llmTab') : after);
@@ -45,40 +45,55 @@ function findAlt(rules, tokens) {
 describe('report card panel', () => {
   it('exists as a sub-tab panel with the sibling padding', () => {
     const doc = mountPanel().document;
-    const panel = doc.getElementById('llm-reportcard');
+    const panel = doc.getElementById('llm-tools');
     expect(panel).toBeTruthy();
     expect(panel.classList.contains('sub-tab-panel')).toBe(true);
     expect(panel.style.padding).toBe('8px 20px 20px');
   });
 
-  it('uses the canonical collapsible section chrome', () => {
+  // #769: the launcher home and the report-card module shell coexist in the
+  // panel — home visible, module hidden until a tool is opened.
+  it('hosts the launcher home and a hidden report-card module shell', () => {
     const win = mountPanel();
-    const title = win.document.querySelector('.llm-section-title');
-    expect(title).toBeTruthy();
-    expect(title.querySelector('.llm-collapse-icon')).toBeTruthy();
-    const calls = [];
-    win.toggleSection = (id) => calls.push(id);
-    title.click();
-    expect(calls).toEqual(['rcSection']);
+    const doc = win.document;
+    expect(doc.getElementById('toolsHome')).toBeTruthy();
+    expect(doc.getElementById('toolsLauncher')).toBeTruthy();
+    expect(doc.getElementById('toolsLedgerSec')).toBeTruthy();
+    const mod = doc.getElementById('toolsMod');
+    expect(mod).toBeTruthy();
+    expect(mod.style.display).toBe('none');
+    const crumb = mod.querySelector('.tools-crumb');
+    expect(crumb).toBeTruthy();
+    let calls = 0;
+    win.toolsCloseModule = () => { calls++; };
+    crumb.click();
+    expect(calls).toBe(1);
+  });
+
+  it('offers the three launcher views in the segmented switcher', () => {
+    const seg = mountPanel().document.getElementById('toolsViewSeg');
+    expect(seg).toBeTruthy();
+    const views = [...seg.querySelectorAll('button[data-view]')].map(b => b.dataset.view);
+    expect(views).toEqual(['card', 'list', 'compact']);
   });
 
   it('uses the muted button palette, not bright green/red/amber', () => {
     const doc = mountPanel().document;
-    const buttons = [...doc.querySelectorAll('#llm-reportcard button')];
+    const buttons = [...doc.querySelectorAll('#llm-tools .rc-panel button')];
     expect(buttons.length).toBeGreaterThan(4);
     const forbidden = ['btn-green-muted-gradient', 'btn-red-muted-gradient', 'btn-amber-muted-gradient'];
     buttons.forEach(b => forbidden.forEach(cls => expect(b.classList.contains(cls)).toBe(false)));
   });
 
-  it('every button carries the shared .btn class', () => {
+  it('every report-card button carries the shared .btn class', () => {
     const doc = mountPanel().document;
-    const buttons = [...doc.querySelectorAll('#llm-reportcard button')];
+    const buttons = [...doc.querySelectorAll('#llm-tools .rc-panel button')];
     expect(buttons.length).toBeGreaterThan(4);
     buttons.forEach(b => expect(b.classList.contains('btn')).toBe(true));
   });
 
   it('is covered by the per-sub-tab .btn restyle (real cascade, not just llamacpp)', () => {
-    const tabs = ['llm-llamacpp', 'llm-lmstudio', 'llm-reportcard', 'dash-energy', 'llm-vllm'];
+    const tabs = ['llm-llamacpp', 'llm-lmstudio', 'llm-tools', 'dash-energy', 'llm-vllm'];
     const markup = tabs.map(id => `<div id="${id}"><button class="btn" id="btn-${id}"></button></div>`).join('')
       + '<div id="llm-bogus"><button class="btn" id="btn-bogus"></button></div>';
     const dom = new JSDOM(`<!doctype html><head><style>${css}</style></head><body>${markup}</body></html>`);
@@ -98,7 +113,7 @@ describe('report card panel', () => {
     baseRules.forEach(rule => {
       if (!rule.selectorText) return;
       const alts = rule.selectorText.split(',').map(s => s.trim());
-      const rc = alts.find(s => s.includes('#llm-reportcard .btn'));
+      const rc = alts.find(s => s.includes('#llm-tools .btn'));
       if (!rc) return;
       const llamaAlts = alts.filter(s => s.includes('#llm-llamacpp .btn'));
       if (!llamaAlts.length) return;
@@ -184,7 +199,7 @@ describe('report card panel', () => {
   // explicit exclusion a disabled button brightens to opacity 1 on hover.
   describe('disabled buttons keep their greyed state on hover (#509)', () => {
     it.each([
-      '#llm-llamacpp', '#llm-lmstudio', '#llm-reportcard', '#dash-energy', '#llm-vllm',
+      '#llm-llamacpp', '#llm-lmstudio', '#llm-tools', '#dash-energy', '#llm-vllm',
     ])('%s hover restyle excludes :disabled', (tab) => {
       const found = findAlt(baseRules, [tab, '.btn', ':not(:disabled)', ':hover']);
       expect(found, `${tab} hover-exclusion rule not found`).toBeTruthy();

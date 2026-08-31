@@ -30,6 +30,12 @@ describe('classic-script global scope', () => {
     expect(scripts).toContain('js/report-card.js');
   });
 
+  it('index.html lists the tools launcher scripts (#769)', () => {
+    const scripts = coLoadedScripts();
+    expect(scripts).toContain('js/lib/toolcards.js');
+    expect(scripts).toContain('js/tools.js');
+  });
+
   it('index.html lists the overall fleet-band scripts (#565)', () => {
     const scripts = coLoadedScripts();
     expect(scripts).toContain('js/lib/overall-view.js');

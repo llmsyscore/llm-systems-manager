@@ -44,26 +44,45 @@ describe('buildCard', () => {
     expect(frag.textContent).toContain('7900 XTX');
   });
 
-  it('greys the energy block when power telemetry is absent', () => {
+  it('shows the no-telemetry note only when power data is absent', () => {
     const noP = RC.buildCard({ ...RESULT, tokens_per_joule: null,
       usd_per_mtok: null, avg_watts: null });
     expect(noP.querySelector('.rc-energy').classList.contains('rc-muted'))
       .toBe(true);
     expect(noP.textContent).toContain('no power telemetry');
+    expect(RC.buildCard(RESULT).querySelector('.rc-energy')).toBeNull();
+  });
+
+  it('renders the six measurement cells including energy figures', () => {
+    const text = RC.buildCard(RESULT).textContent;
+    expect(text).toContain('prompt proc');
+    expect(text).toContain('first token');
+    expect(text).toContain('420');             // 0.42 s → 420 ms
+    expect(text).toContain('power avg (wall)');
+    expect(text).toContain('per 1k tok');
+    expect(text).toContain('1.32');            // 1000 / 0.21 / 3600 Wh
+    expect(text).toContain('$0.19');
   });
 
   it('labels each power source, including Apple SoC watts', () => {
-    expect(RC.buildCard(RESULT).textContent).toContain('208 W wall');
+    expect(RC.buildCard(RESULT).textContent).toContain('power avg (wall)');
     expect(RC.buildCard({ ...RESULT, power_source: 'gpu' }).textContent)
-      .toContain('208 W GPU');
+      .toContain('power avg (GPU)');
     expect(RC.buildCard({ ...RESULT, power_source: 'mac' }).textContent)
-      .toContain('208 W SoC');
+      .toContain('power avg (SoC)');
   });
 
   it('omits the source label when the source is unknown', () => {
-    const frag = RC.buildCard({ ...RESULT, power_source: null });
-    expect(frag.querySelector('.rc-energy').textContent).toContain('208 W');
-    expect(frag.textContent).not.toContain('208 W ');
+    const text = RC.buildCard({ ...RESULT, power_source: null }).textContent;
+    expect(text).toContain('power avg');
+    expect(text).not.toContain('power avg (');
+  });
+
+  it('carries an export-excluded save button on the card', () => {
+    const btn = RC.buildCard(RESULT).querySelector('.rc-savebtn');
+    expect(btn).toBeTruthy();
+    expect(btn.classList.contains('rc-nox')).toBe(true);
+    expect(btn.getAttribute('type')).toBe('button');
   });
 
   it('escapes provider-supplied strings rather than injecting markup', () => {

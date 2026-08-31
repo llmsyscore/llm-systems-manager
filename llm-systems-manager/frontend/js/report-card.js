@@ -172,6 +172,10 @@ function rcRun(confirm) {
   const box = _rcEl('rcProgress');
   if (box) { box.textContent = ''; box.style.display = 'none'; }
   _rcNote('');
+  ['rcChips', 'rcModelChip', 'rcEligChip'].forEach(id => {
+    const c = _rcEl(id);
+    if (c) c.style.display = 'none';
+  });
   rcCleanupKeep();
   fetch('/api/reportcard/run', {
     method: 'POST', headers: {'Content-Type': 'application/json'},
@@ -249,11 +253,13 @@ function rcCancelRun() {
 
 function _rcCloseStream() {
   if (_rcEventSrc) { _rcEventSrc.close(); _rcEventSrc = null; }
+  if (typeof toolsSyncRunDot === 'function') toolsSyncRunDot();
 }
 
 function rcStream(jobId) {
   _rcCloseStream();
   _rcEventSrc = new EventSource('/api/reportcard/stream/' + encodeURIComponent(jobId));
+  if (typeof toolsSyncRunDot === 'function') toolsSyncRunDot();
   _rcEventSrc.onmessage = ev => {
     let d;
     try { d = JSON.parse(ev.data); } catch (e) { return; }
@@ -371,10 +377,19 @@ function rcRenderCard(card) {
   if (submitWrap) submitWrap.style.display = url ? '' : 'none';
   const actions = _rcEl('rcActions');
   if (actions) actions.style.display = '';
-  if (!url) {
-    _rcNote(card.mode === 'custom'
-      ? 'Custom run — kept locally, not eligible for the leaderboard.'
-      : 'This run did not use the reference model, so it is not eligible for the leaderboard.');
+  const model = _rcEl('rcModelChip');
+  if (model) {
+    model.textContent = 'model: ' + ((card.result || {}).model || 'unknown');
+    model.style.display = '';
+  }
+  const chips = _rcEl('rcChips');
+  if (chips) chips.style.display = 'flex';
+  const elig = _rcEl('rcEligChip');
+  if (elig) {
+    elig.textContent = url ? 'Leaderboard eligible'
+      : card.mode === 'custom' ? 'Custom run \u00b7 local only'
+      : 'Non-reference \u00b7 local only';
+    elig.style.display = '';
   }
 }
 

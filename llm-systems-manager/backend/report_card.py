@@ -759,6 +759,14 @@ def history(conn, agent_id: str, provider: str, model: str) -> "list[dict]":
             if c["result"].get("model") == model]
 
 
+def recent_cards(conn, limit: int = 12) -> "list[dict]":
+    # Newest-first via the rowid index; id is monotonic with insert order.
+    rows = conn.execute(
+        f"SELECT {_COLS} FROM report_cards ORDER BY id DESC LIMIT ?",
+        (int(limit),)).fetchall()
+    return [_row_to_card(r) for r in rows]
+
+
 # ── Routes ───────────────────────────────────────────────────────────
 # Auth is the manager's global before_request gate; no per-route decorator.
 
@@ -1137,3 +1145,33 @@ def register_routes(app, ctx=None, db_path: "str | None" = None) -> None:
                             "error": "agent, provider and model required"}), 400
         cards = history(_conn_factory(), agent_id, provider, model)
         return jsonify({"ok": True, "cards": [_public_card(c) for c in cards]})
+
+    @app.route("/api/reportcard/history", methods=["DELETE"])
+    def reportcard_history_clear():
+        try:
+            conn = _conn_factory()
+            conn.execute("DELETE FROM report_cards")
+            conn.commit()
+            return jsonify({"ok": True})
+        except Exception as e:
+            log.warning("reportcard history clear failed: %s", e)
+            return jsonify({"ok": False, "error": "internal error"}), 500
+
+    @app.route("/api/reportcard/recent")
+    def reportcard_recent():
+        try:
+            limit = max(1, min(100, flask_request.args.get("limit", 12,
+                                                          type=int) or 12))
+            slim = []
+            for c in recent_cards(_conn_factory(), limit):
+                r = c.get("result") or {}
+                slim.append({"ts": c["ts"], "agent_id": c["agent_id"],
+                             "provider": c["provider"],
+                             "eligible": c["eligible"],
+                             "result": {k: r.get(k) for k in
+                                        ("model", "gen_tps", "avg_watts",
+                                         "usd_per_mtok", "gpu_config")}})
+            return jsonify({"ok": True, "cards": slim})
+        except Exception as e:
+            log.warning("reportcard recent failed: %s", e)
+            return jsonify({"ok": False, "error": "internal error"}), 500

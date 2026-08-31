@@ -65,27 +65,35 @@ function buildCard(res) {
   root.appendChild(hero);
 
   const grid = el('div', 'rc-grid');
-  cell(grid, fmt(r.prefill_tps), 'tok/s', 'prefill');
-  cell(grid, fmt(r.ttft_s, 2), 's', 'TTFT');
+  cell(grid, fmt(r.prefill_tps), 'tok/s', 'prompt proc');
+  cell(grid, r.ttft_s == null ? '—' : fmt(r.ttft_s * 1000, 0), 'ms',
+       'first token');
   cell(grid, r.vram_used_mb == null ? '—'
        : fmtMb(r.vram_used_mb).replace(' GB', ''),
        '/ ' + fmtMb(r.vram_total_mb), 'VRAM used');
+  const src = SOURCE_LABEL[r.power_source];
+  cell(grid, fmt(r.avg_watts, 0), 'W',
+       'power avg' + (src ? ` (${src})` : ''));
+  const wh1k = r.tokens_per_joule ? (1000 / r.tokens_per_joule) / 3600 : null;
+  cell(grid, fmt(wh1k, 2), 'Wh', 'per 1k tok');
+  cell(grid, r.usd_per_mtok == null ? '—' : '$' + fmt(r.usd_per_mtok, 2),
+       '/M tok', 'energy cost');
   root.appendChild(grid);
 
-  const energy = el('div', 'rc-energy');
   if (r.tokens_per_joule == null && r.avg_watts == null) {
-    energy.classList.add('rc-muted');
+    const energy = el('div', 'rc-energy rc-muted');
     energy.appendChild(el('span', null, 'no power telemetry'));
-  } else {
-    const src = SOURCE_LABEL[r.power_source];
-    energy.appendChild(el('span', null,
-                          `${fmt(r.avg_watts, 0)} W` + (src ? ` ${src}` : '')));
-    energy.appendChild(el('span', 'rc-sep', '·'));
-    energy.appendChild(el('span', null, `${fmt(r.tokens_per_joule, 2)} tok/J`));
-    energy.appendChild(el('span', 'rc-sep', '·'));
-    energy.appendChild(el('span', null, `$${fmt(r.usd_per_mtok, 2)}/Mtok`));
+    root.appendChild(energy);
   }
-  root.appendChild(energy);
+
+  const save = el('button', 'rc-savebtn rc-nox', '⤓ Save');
+  save.type = 'button';
+  save.title = 'Save this card as a PNG';
+  save.onclick = () => {
+    if (typeof window !== 'undefined'
+        && typeof window.rcExportPng === 'function') window.rcExportPng();
+  };
+  root.appendChild(save);
 
   const foot = el('div', 'rc-foot');
   foot.appendChild(el('span', 'rc-model', r.model || 'unknown model'));
@@ -150,6 +158,7 @@ async function exportPng(cardEl, scale) {
   const w = Math.ceil(rect.width), h = Math.ceil(rect.height);
   const clone = cardEl.cloneNode(true);
   _inlineStyles(cardEl, clone);
+  clone.querySelectorAll('.rc-nox').forEach(n => n.remove());
   const xml = new XMLSerializer().serializeToString(clone);
   const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="${h}">`
     + `<foreignObject width="100%" height="100%">`

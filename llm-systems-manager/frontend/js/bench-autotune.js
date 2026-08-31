@@ -578,6 +578,7 @@ function closeBench() {
   if (_benchEventSrc) {
     try { _benchEventSrc.close(); } catch(_) {}
     _benchEventSrc = null;
+    if (typeof toolsSyncRunDot === 'function') toolsSyncRunDot();
     fetch('/api/benchmark/cancel', {method: 'POST'}).catch(() => {});
   }
   document.getElementById('benchOverlay').classList.remove('open');
@@ -873,6 +874,7 @@ async function runBenchmark() {
     }
     if (_benchEventSrc) { try { _benchEventSrc.close(); } catch(_){} }
     _benchEventSrc = new EventSource('/api/benchmark/stream');
+    if (typeof toolsSyncRunDot === "function") toolsSyncRunDot();
     document.getElementById('benchStatus').textContent = 'running…';
     _benchEventSrc.onmessage = e => {
       let msg;
@@ -896,7 +898,7 @@ async function runBenchmark() {
         _benchAddModelResultRow(msg.model_id, msg.last_gen_tps, msg.last_ppt_tps, tool);
         document.getElementById('benchResults').classList.add('shown');
       } else if (msg.type === 'done') {
-        if (_benchEventSrc) { try { _benchEventSrc.close(); } catch(_){} _benchEventSrc = null; }
+        if (_benchEventSrc) { try { _benchEventSrc.close(); } catch(_){} _benchEventSrc = null; } if (typeof toolsSyncRunDot === 'function') toolsSyncRunDot();
         document.getElementById('benchRunBtn').disabled = false;
         document.getElementById('benchCancelBtn').style.display = 'none';
         document.getElementById('benchStatus').textContent = msg.ok ? 'done' : (msg.error ? 'error' : 'done');
@@ -911,7 +913,7 @@ async function runBenchmark() {
         document.getElementById('benchStatus').textContent = 'reconnecting…';
         return;
       }
-      if (_benchEventSrc) { try { _benchEventSrc.close(); } catch(_){} _benchEventSrc = null; }
+      if (_benchEventSrc) { try { _benchEventSrc.close(); } catch(_){} _benchEventSrc = null; } if (typeof toolsSyncRunDot === 'function') toolsSyncRunDot();
       document.getElementById('benchRunBtn').disabled = false;
       document.getElementById('benchCancelBtn').style.display = 'none';
       document.getElementById('benchStatus').textContent = 'disconnected';
@@ -928,7 +930,7 @@ async function runBenchmark() {
 
 // Function to cancel a running benchmark: closes the event stream, sends a cancel request to the backend, and updates the UI state
 function cancelBenchmark() {
-  if (_benchEventSrc) { try { _benchEventSrc.close(); } catch(_){} _benchEventSrc = null; }
+  if (_benchEventSrc) { try { _benchEventSrc.close(); } catch(_){} _benchEventSrc = null; } if (typeof toolsSyncRunDot === 'function') toolsSyncRunDot();
   fetch('/api/benchmark/cancel', {method: 'POST'}).catch(() => {});
   document.getElementById('benchRunBtn').disabled = false;
   document.getElementById('benchCancelBtn').style.display = 'none';

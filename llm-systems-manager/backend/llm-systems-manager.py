@@ -159,7 +159,7 @@ def _local_hostname() -> str:
 # banner reads it. Bump suffix (-1, -2, …) for same-day iterations; roll
 # the date for a new day's first change.
 # ---------------------------------------------------------------------------
-__version__ = "v2026.08.30-18"
+__version__ = "v2026.08.31-4"
 
 # Wall-clock at first import (Cheroot main process); the shutdown banner
 # reads it for the uptime line.
@@ -1977,6 +1977,35 @@ def benchmark_store():
              json.dumps(switches), ts,
              json.dumps(extra) if isinstance(extra, dict) else None)
         )
+        conn.commit()
+        return jsonify({"ok": True})
+    except Exception as e:
+        return _err_json("internal error", 500, exc=e)
+
+
+@app.route("/api/benchmark/recent", methods=["GET"])
+def benchmark_recent():
+    try:
+        limit = max(1, min(100, flask_request.args.get("limit", 12,
+                                                      type=int) or 12))
+        rows = get_db().execute(
+            "SELECT model_id, provider, agent_id, avg_gen_tps, avg_ppt_tps, "
+            "bench_tool, ts FROM model_benchmarks ORDER BY ts DESC LIMIT ?",
+            (limit,)).fetchall()
+        out = [{"model_id": r[0], "provider": r[1], "agent_id": r[2],
+                "avg_gen_tps": _finite_or_none(r[3]),
+                "avg_ppt_tps": _finite_or_none(r[4]),
+                "bench_tool": r[5], "ts": r[6]} for r in rows]
+        return jsonify({"results": out})
+    except Exception as e:
+        return _err_json("internal error", 500, exc=e)
+
+
+@app.route("/api/benchmark/results", methods=["DELETE"])
+def benchmark_results_clear():
+    try:
+        conn = get_db()
+        conn.execute("DELETE FROM model_benchmarks")
         conn.commit()
         return jsonify({"ok": True})
     except Exception as e:
