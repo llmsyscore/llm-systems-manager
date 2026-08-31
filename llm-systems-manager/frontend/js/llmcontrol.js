@@ -49,7 +49,7 @@ function _renderSvcArgs() {
     info.innerHTML = `<div class="svcarg-flag">${_esc(a.flag)}</div><div class="svcarg-desc">${_esc(desc)}</div>`;
     const valWrap = document.createElement('div');
     if (a.bool) {
-      valWrap.innerHTML = `<span class="svcarg-bool"><input type="checkbox" checked disabled> flag only</span>`;
+      valWrap.innerHTML = `<span class="mc-toggle on" style="pointer-events:none;"><span class="track"></span><span class="tlbl">flag only</span></span>`;
     } else {
       const inp = document.createElement('input');
       inp.type = 'text';
@@ -118,6 +118,8 @@ function _svcConfigRoute() {
 
 async function openServerConfig(provider) {
   _svcProvider = provider === 'vllm' ? 'vllm' : 'llama';
+  const _svcTitle = document.getElementById('svcConfigTitle');
+  if (_svcTitle) _svcTitle.textContent = (_svcProvider === 'vllm' ? 'vLLM' : 'llama-server') + ' Startup Config';
   document.getElementById('svcConfigStatus').textContent = 'Loading…';
   document.getElementById('svcArgList').innerHTML = '';
   document.getElementById('svcConfigBinary').textContent = '…';
