@@ -5,15 +5,15 @@
     background:var(--bg-card-alt); border:1px solid var(--border-strong);
     border-radius:6px; color:var(--fg); font-size:0.85em; padding:0 9px; height:32px;
   }
-  #autotuneOverlay .at-opt-row { display:flex; align-items:center; gap:8px; padding:4px 0; }
-  #autotuneOverlay .at-opt-row label.at-opt-label { min-width:120px; font-size:0.85em; }
-  #autotuneOverlay .at-opt-row input[type=number], #autotuneOverlay .at-opt-row select {
+  #toolsModAt .at-opt-row { display:flex; align-items:center; gap:8px; padding:4px 0; }
+  #toolsModAt .at-opt-row label.at-opt-label { min-width:120px; font-size:0.85em; }
+  #toolsModAt .at-opt-row input[type=number], #toolsModAt .at-opt-row select {
     flex:0 0 140px;
   }
-  #autotuneOverlay #atModelPanel { max-height:280px; overflow-y:auto; font-size:15px; }
-  #autotuneOverlay #atModelPanel .bench-model-item { padding:7px 6px; gap:10px; }
-  #autotuneOverlay #atModelPanel .bench-model-item label { font-size:13px; line-height:1.3; cursor:pointer; }
-  #autotuneOverlay #atModelPanel .bench-model-item input[type=checkbox] { width:12px; height:12px; }
+  #toolsModAt #atModelPanel { max-height:280px; overflow-y:auto; font-size:15px; }
+  #toolsModAt #atModelPanel .bench-model-item { padding:7px 6px; gap:10px; }
+  #toolsModAt #atModelPanel .bench-model-item label { font-size:13px; line-height:1.3; cursor:pointer; }
+  #toolsModAt #atModelPanel .bench-model-item input[type=checkbox] { width:12px; height:12px; }
   .at-wizard .at-result-card {
     background: linear-gradient(160deg, var(--bg-card) 0%, color-mix(in srgb, var(--bg) 55%, var(--bg-card)) 100%);
     border:1px solid var(--border); border-left:3px solid color-mix(in srgb, var(--ok) 55%, var(--border));
@@ -36,26 +36,26 @@
   .at-wizard .at-result-actions .btn { background:var(--bg-card-alt); color:var(--fg-muted); border:1px solid var(--border); border-radius:6px; font-size:0.78em; padding:6px 13px; background-image:none; }
   .at-wizard .at-result-actions .btn:hover { background:var(--border); color:var(--fg); opacity:1; }
   /* Signature: tolerance-band gauge — where free VRAM landed vs target ± tol. */
-  #autotuneOverlay .at-gauge { margin-top:14px; }
-  #autotuneOverlay .at-gauge-lbls { display:flex; justify-content:space-between; font-size:0.56em; text-transform:uppercase; letter-spacing:0.1em; color:var(--fg-faint); margin-bottom:5px; }
-  #autotuneOverlay .at-gauge-track { position:relative; height:7px; border-radius:4px; background:var(--bg); border:1px solid var(--border-soft); }
-  #autotuneOverlay .at-gauge-band { position:absolute; top:0; bottom:0; background:color-mix(in srgb, var(--ok) 22%, transparent); border-left:1px solid color-mix(in srgb,var(--ok) 45%,transparent); border-right:1px solid color-mix(in srgb,var(--ok) 45%,transparent); }
-  #autotuneOverlay .at-gauge-mark { position:absolute; top:-3px; width:3px; height:13px; border-radius:2px; background:var(--ok); box-shadow:0 0 6px color-mix(in srgb,var(--ok) 55%,transparent); }
-  #autotuneOverlay .at-gauge-mark.miss { background:var(--warn); box-shadow:0 0 6px color-mix(in srgb,var(--warn) 55%,transparent); }
-  #autotuneOverlay #atLog {
+  #toolsModAt .at-gauge { margin-top:14px; }
+  #toolsModAt .at-gauge-lbls { display:flex; justify-content:space-between; font-size:0.56em; text-transform:uppercase; letter-spacing:0.1em; color:var(--fg-faint); margin-bottom:5px; }
+  #toolsModAt .at-gauge-track { position:relative; height:7px; border-radius:4px; background:var(--bg); border:1px solid var(--border-soft); }
+  #toolsModAt .at-gauge-band { position:absolute; top:0; bottom:0; background:color-mix(in srgb, var(--ok) 22%, transparent); border-left:1px solid color-mix(in srgb,var(--ok) 45%,transparent); border-right:1px solid color-mix(in srgb,var(--ok) 45%,transparent); }
+  #toolsModAt .at-gauge-mark { position:absolute; top:-3px; width:3px; height:13px; border-radius:2px; background:var(--ok); box-shadow:0 0 6px color-mix(in srgb,var(--ok) 55%,transparent); }
+  #toolsModAt .at-gauge-mark.miss { background:var(--warn); box-shadow:0 0 6px color-mix(in srgb,var(--warn) 55%,transparent); }
+  #toolsModAt #atLog {
     max-height:320px; overflow-y:auto;
     background:var(--bg-card-alt); border:1px solid var(--border-strong);
     border-radius:4px; padding:8px 10px; font-family: var(--font-mono);
     font-size:11px; line-height:1.5;
     white-space:pre-wrap; word-break:break-all; margin-top:6px;
   }
-  #autotuneOverlay .at-log-cmd { color:var(--accent); }
-  #autotuneOverlay .at-log-sep { color:var(--accent); margin-top:6px; }
-  #autotuneOverlay .at-log-ok   { color:var(--ok); }
-  #autotuneOverlay .at-log-warn { color:var(--warn); }
-  #autotuneOverlay .at-log-crit { color:var(--crit); }
-  #autotuneOverlay .at-log-dim  { color:var(--fg-dim); }
-  #autotuneOverlay #atRawLog {
+  #toolsModAt .at-log-cmd { color:var(--accent); }
+  #toolsModAt .at-log-sep { color:var(--accent); margin-top:6px; }
+  #toolsModAt .at-log-ok   { color:var(--ok); }
+  #toolsModAt .at-log-warn { color:var(--warn); }
+  #toolsModAt .at-log-crit { color:var(--crit); }
+  #toolsModAt .at-log-dim  { color:var(--fg-dim); }
+  #toolsModAt #atRawLog {
     max-height:340px; overflow-y:auto;
     background:var(--bg-card-alt); border:1px solid var(--border-strong);
     border-radius:4px; padding:6px 8px; margin-top:6px;
@@ -64,7 +64,7 @@
     white-space:pre-wrap; word-break:break-all;
     color:var(--fg-dim);
   }
-  #autotuneOverlay #atRawDetails[open] > summary { color:var(--fg); }
+  #toolsModAt #atRawDetails[open] > summary { color:var(--fg); }
   /* Bench overlay: tighter stat grid + smaller stat values. */
   #vllmBenchOverlay .at-result-grid { grid-template-columns:repeat(auto-fit,minmax(118px,1fr)); row-gap:12px; }
   #vllmBenchOverlay .at-stat-v { font-size:clamp(1.0rem,1.4vw,1.35rem); }

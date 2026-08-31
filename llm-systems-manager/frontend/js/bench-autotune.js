@@ -488,9 +488,13 @@ async function loadBenchmarkData() {
   }
 }
 
+// Idle-entry init for the Benchmark module; shown by toolsOpenTool first.
+// Re-entry after a finished run keeps its results/chart/log — only the model
+// list is rebuilt (picks preserved); runBenchmark does its own reset.
+let _benchOpenedOnce = false;
 async function openBench(modelId) {
-  // Show overlay FIRST so the canvas has real pixel dimensions for Chart.js
-  document.getElementById('benchOverlay').classList.add('open');
+  const fresh = !_benchOpenedOnce;
+  _benchOpenedOnce = true;
 
   // Lazy-init chart now that canvas is visible
   if (!_benchChart) {
@@ -508,6 +512,8 @@ async function openBench(modelId) {
   } catch (e) { console.warn('benchmark/models failed', e); }
 
   const panel = document.getElementById('benchModelPanel');
+  const prevChecked = new Set(
+    [...panel.querySelectorAll('input[type=checkbox]:checked')].map(c => c.value));
   panel.innerHTML = '';
   models.forEach(m => {
     const item = document.createElement('div');
@@ -516,7 +522,7 @@ async function openBench(modelId) {
     cb.type = 'checkbox';
     cb.value = m;
     cb.id = 'benchcb_' + m.replace(/[^a-zA-Z0-9]/g, '_');
-    if (m === modelId) cb.checked = true;
+    if (m === modelId || prevChecked.has(m)) cb.checked = true;
     cb.addEventListener('change', _updateBenchModelLabel);
     const lbl = document.createElement('label');
     lbl.htmlFor = cb.id;
@@ -527,8 +533,10 @@ async function openBench(modelId) {
   });
   _updateBenchModelLabel();
 
-  // Reset UI state — clear data BEFORE switchBenchTab so its axis update sees a
-  // clean slate and honors the default axes (n_depth / avg_ts).
+  if (!fresh) return;
+
+  // First open: reset UI state — clear data BEFORE switchBenchTab so its axis
+  // update sees a clean slate and honors the default axes (n_depth / avg_ts).
   _benchModelDatasets = {};
   _benchRawRows = [];
   _benchAxisTouched = false;
@@ -572,18 +580,24 @@ function _updateBenchSwitchLabel() {
   if (lbl) lbl.textContent = _benchSwitches.length + ' switch' + (_benchSwitches.length !== 1 ? 'es' : '');
 }
 
-// Close benchmark overlay and stop any running benchmark on the backend
-function closeBench() {
-  // If a benchmark is running, kill it on the backend before closing
-  if (_benchEventSrc) {
-    try { _benchEventSrc.close(); } catch(_) {}
-    _benchEventSrc = null;
-    if (typeof toolsSyncRunDot === 'function') toolsSyncRunDot();
-    fetch('/api/benchmark/cancel', {method: 'POST'}).catch(() => {});
-  }
-  document.getElementById('benchOverlay').classList.remove('open');
-  // Restore powersave mode after benchmarking
-  _benchSetPerfMode('powersave');
+// Records a finished run into the cross-tool ledger (#770); fire-and-forget.
+function _recordToolRun(tool, data) {
+  fetch('/api/tools/runs', {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({tool, ...data}),
+  }).catch(() => {});
+}
+
+// Best t/s per test type for a model from the raw rows of the current run.
+function _benchMaxes(modelId) {
+  const modelRows = _benchRawRows.filter(r => r.model_id === modelId);
+  const maxOf = fn => {
+    const vals = modelRows.filter(fn).map(r => r.avg_ts ?? 0);
+    return vals.length ? Math.max(...vals) : null;
+  };
+  return { ppt: maxOf(r => _benchRowOffset(r) === 0),
+           gen: maxOf(r => _benchRowOffset(r) === 1),
+           pg:  maxOf(r => _benchRowOffset(r) === 2) };
 }
 
 // Switch between different benchmark tools (llama-bench, llama-batched-bench, etc.) and load their default switches into the UI
@@ -870,6 +884,7 @@ async function runBenchmark() {
       document.getElementById('benchCancelBtn').style.display = 'none';
       document.getElementById('benchStatus').textContent = 'idle';
       _benchSetState('idle');
+      _benchSetPerfMode('powersave');
       return;
     }
     if (_benchEventSrc) { try { _benchEventSrc.close(); } catch(_){} }
@@ -894,9 +909,12 @@ async function runBenchmark() {
           _benchPushPoint(msg);
         }
       } else if (msg.type === 'model_done') {
-        // last_gen_tps / last_ppt_tps are raw per-run averages, not re-averaged
-        _benchAddModelResultRow(msg.model_id, msg.last_gen_tps, msg.last_ppt_tps, tool);
+        const mx = _benchMaxes(msg.model_id);
+        _benchAddModelResultRow(msg.model_id, tool, mx);
         document.getElementById('benchResults').classList.add('shown');
+        _recordToolRun('benchmark', {model_id: msg.model_id, gen_tps: mx.gen,
+                                     ppt_tps: mx.ppt, pg_tps: mx.pg, bench_tool: tool,
+                                     ok: mx.gen != null || mx.ppt != null || mx.pg != null});
       } else if (msg.type === 'done') {
         if (_benchEventSrc) { try { _benchEventSrc.close(); } catch(_){} _benchEventSrc = null; } if (typeof toolsSyncRunDot === 'function') toolsSyncRunDot();
         document.getElementById('benchRunBtn').disabled = false;
@@ -904,6 +922,7 @@ async function runBenchmark() {
         document.getElementById('benchStatus').textContent = msg.ok ? 'done' : (msg.error ? 'error' : 'done');
         _benchSetState(msg.ok ? 'ok' : 'err');
         if (msg.error) _benchLogAppend(`<span class="bench-log-text" style="color:var(--crit)">✗ Error: ${_hEsc(String(msg.error))}</span>`);
+        _benchSetPerfMode('powersave');
       }
     };
     _benchEventSrc.onerror = () => {
@@ -918,6 +937,7 @@ async function runBenchmark() {
       document.getElementById('benchCancelBtn').style.display = 'none';
       document.getElementById('benchStatus').textContent = 'disconnected';
       _benchSetState('err');
+      _benchSetPerfMode('powersave');
     };
   }).catch(e => {
     alert('Benchmark request failed: ' + e);
@@ -925,6 +945,7 @@ async function runBenchmark() {
     document.getElementById('benchCancelBtn').style.display = 'none';
     document.getElementById('benchStatus').textContent = 'idle';
     _benchSetState('idle');
+    _benchSetPerfMode('powersave');
   });
 }
 
@@ -936,6 +957,7 @@ function cancelBenchmark() {
   document.getElementById('benchCancelBtn').style.display = 'none';
   document.getElementById('benchStatus').textContent = 'cancelled';
   _benchSetState('idle');
+  _benchSetPerfMode('powersave');
 }
 
 // ===========================================================================
@@ -1139,19 +1161,26 @@ function _atWireOptionalAutoCheck() {
   window._atOptAutoCheckWired = true;
 }
 
+// Idle-entry init for the Auto-Tune module; shown by toolsOpenTool first.
+// Re-entry after a finished tune keeps its result cards/log — only the model
+// list is rebuilt (picks preserved); runAutotune does its own reset.
+let _atOpenedOnce = false;
 async function openAutotune(preselectId) {
-  document.getElementById('autotuneOverlay').classList.add('open');
+  const fresh = !_atOpenedOnce;
+  _atOpenedOnce = true;
   _atWireOptionalAutoCheck();
-  _atLogClear();
-  _atRenderPlaceholder();
-  _atPending = {};
-  _atSetStatus('idle', false);
-  document.getElementById('atRunBtn').disabled = false;
-  document.getElementById('atCancelBtn').style.display = 'none';
-  // Models open for selection; optional-params stays collapsed.
-  document.getElementById('atModelsDetails')?.setAttribute('open', '');
-  document.getElementById('atOptionalParamsDetails')?.removeAttribute('open');
-  _atUpdateOptCount();
+  if (fresh) {
+    _atLogClear();
+    _atRenderPlaceholder();
+    _atPending = {};
+    _atSetStatus('idle', false);
+    document.getElementById('atRunBtn').disabled = false;
+    document.getElementById('atCancelBtn').style.display = 'none';
+    // Models open for selection; optional-params stays collapsed.
+    document.getElementById('atModelsDetails')?.setAttribute('open', '');
+    document.getElementById('atOptionalParamsDetails')?.removeAttribute('open');
+    _atUpdateOptCount();
+  }
 
   // Populate model list (same source as benchmark)
   let models = [];
@@ -1160,6 +1189,8 @@ async function openAutotune(preselectId) {
     models = r.models || [];
   } catch (e) { console.warn('benchmark/models failed', e); }
   const panel = document.getElementById('atModelPanel');
+  const prevChecked = new Set(
+    [...panel.querySelectorAll('input[type=checkbox]:checked')].map(c => c.value));
   panel.innerHTML = '';
   if (!models.length) {
     panel.innerHTML = '<div style="font-size:0.85em;color:var(--fg-dim);">No models configured.</div>';
@@ -1170,7 +1201,7 @@ async function openAutotune(preselectId) {
       const cb = document.createElement('input');
       cb.type = 'checkbox';
       cb.value = m;
-      if (m === preselectId) cb.checked = true;
+      if (m === preselectId || prevChecked.has(m)) cb.checked = true;
       cb.id = 'atcb_' + m.replace(/[^a-zA-Z0-9]/g, '_');
       const lbl = document.createElement('label');
       lbl.htmlFor = cb.id;
@@ -1181,16 +1212,6 @@ async function openAutotune(preselectId) {
     });
   }
   await _atCheckPreflight();
-}
-
-function closeAutotune() {
-  if (_atEventSrc) {
-    try { _atEventSrc.close(); } catch(_) {}
-    _atEventSrc = null;
-    fetch('/api/llm/autotune/cancel', {method:'POST'}).catch(() => {});
-    /* agent restores perf mode in its finally: block */
-  }
-  document.getElementById('autotuneOverlay').classList.remove('open');
 }
 
 async function runAutotune() {
@@ -1274,6 +1295,7 @@ async function runAutotune() {
   // Use the manager-proxied SSE path (same as Benchmark) — avoids the
   // direct-to-agent token + CORS hop, which fails on some setups.
   _atEventSrc = new EventSource('/api/llm/autotune/stream');
+  if (typeof toolsSyncRunDot === 'function') toolsSyncRunDot();
   _atSetStatus('running…', true);
 
   _atEventSrc.onmessage = e => {
@@ -1360,6 +1382,9 @@ async function runAutotune() {
       if (msg.text) _atRawAppend(msg.text);
     } else if (msg.type === 'model_done') {
       _atPending[msg.model_id] = msg;
+      _recordToolRun('autotune', {model_id: msg.model_id, ok: !!msg.ok,
+                                  ctx_size: msg.ctx_size, free_mb: msg.free_mb,
+                                  iters: msg.iters, converged: !!msg.converged});
       if (msg.ok) {
         // Pick the tag from the structured stop_reason if present, so the
         // operator can tell sentinel_unreachable / non_monotonic_peak /
@@ -1391,6 +1416,7 @@ async function runAutotune() {
       _atRenderResultCard(msg);
     } else if (msg.type === 'done') {
       if (_atEventSrc) { try { _atEventSrc.close(); } catch(_){} _atEventSrc = null; }
+      if (typeof toolsSyncRunDot === 'function') toolsSyncRunDot();
       document.getElementById('atRunBtn').disabled = false;
       document.getElementById('atCancelBtn').style.display = 'none';
       _atSetStatus(msg.cancelled ? 'cancelled' : (msg.ok ? 'done' : 'error'), false);
@@ -1408,6 +1434,7 @@ async function runAutotune() {
     console.error('[autotune] SSE error; readyState=' + rs, ev);
     _atLogAppend(`<span class="at-log-crit">SSE disconnected (readyState=${rs}). Check the manager + agent logs.</span>`);
     if (_atEventSrc) { try { _atEventSrc.close(); } catch(_){} _atEventSrc = null; }
+    if (typeof toolsSyncRunDot === 'function') toolsSyncRunDot();
     document.getElementById('atRunBtn').disabled = false;
     document.getElementById('atCancelBtn').style.display = 'none';
     _atSetStatus('disconnected', false);
@@ -1417,6 +1444,7 @@ async function runAutotune() {
 
 function cancelAutotune() {
   if (_atEventSrc) { try { _atEventSrc.close(); } catch(_){} _atEventSrc = null; }
+  if (typeof toolsSyncRunDot === 'function') toolsSyncRunDot();
   fetch('/api/llm/autotune/cancel', {method:'POST'}).catch(() => {});
   document.getElementById('atRunBtn').disabled = false;
   document.getElementById('atCancelBtn').style.display = 'none';
@@ -1705,16 +1733,8 @@ function _benchRenderPlaceholder() {
 }
 
 // After a model finishes benchmarking, add a result row to the UI showing the best t/s for prompt, gen, and combined tests, and buttons to save or clear the benchmark data
-function _benchAddModelResultRow(modelId, _unused1, _unused2, tool) {
-  // Compute max t/s per test type from raw rows collected during the run
-  const modelRows = _benchRawRows.filter(r => r.model_id === modelId);
-  const maxOf = fn => {
-    const vals = modelRows.filter(fn).map(r => r.avg_ts ?? 0);
-    return vals.length ? Math.max(...vals) : null;
-  };
-  const maxPpt = maxOf(r => _benchRowOffset(r) === 0);
-  const maxGen = maxOf(r => _benchRowOffset(r) === 1);
-  const maxPg  = maxOf(r => _benchRowOffset(r) === 2);
+function _benchAddModelResultRow(modelId, tool, maxes) {
+  const { ppt: maxPpt, gen: maxGen, pg: maxPg } = maxes || _benchMaxes(modelId);
 
   const rows = document.getElementById('benchResultRows');
 
