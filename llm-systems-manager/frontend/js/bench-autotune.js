@@ -1008,11 +1008,19 @@ let _atEventSrc = null;
 let _atPending = {};   // model_id -> {converged, final_fitt, ctx_size, free_mb, total_vram_mb, iters, applied_params}
 let _atLastTarget = null, _atLastTol = null;   // captured at run start for the tolerance gauge
 
+// Last status text written while the stream was healthy, restored after a
+// transient drop; _atDrops counts reconnects with no message in between.
+let _atLiveStatus = '';
+let _atReconnecting = false;
+let _atDrops = 0;
+const _AT_MAX_DROPS = 20;
+
 function _atSetStatus(text, running) {
   const el = document.getElementById('atStatus');
   if (!el) return;
   el.textContent = text;
   el.classList.toggle('running', !!running);
+  _atLiveStatus = text;
 }
 
 function _atLogClear() {
@@ -1047,6 +1055,10 @@ function _atRawAppend(text) {
 function _atLogAppend(html) {
   const el = document.getElementById('atLog');
   if (!el) return;
+  // Cap to ~10k entries to keep the DOM responsive across long runs
+  if (el.childElementCount >= 10000) {
+    el.removeChild(el.firstChild);
+  }
   const div = document.createElement('div');
   div.innerHTML = html;
   el.appendChild(div);
@@ -1332,12 +1344,20 @@ async function runAutotune() {
   // direct-to-agent token + CORS hop, which fails on some setups.
   _atEventSrc = new EventSource('/api/llm/autotune/stream');
   if (typeof toolsSyncRunDot === 'function') toolsSyncRunDot();
+  _atDrops = 0;
   _atSetStatus('running…', true);
 
   _atEventSrc.onmessage = e => {
     let msg;
     try { msg = JSON.parse(e.data); } catch(_) { return; }
     if (msg.type === 'keepalive') return;
+    // First real message after a drop proves the run resumed: restore the
+    // label the reconnect notice replaced.
+    _atDrops = 0;
+    if (_atReconnecting) {
+      _atReconnecting = false;
+      _atSetStatus(_atLiveStatus || 'running…', true);
+    }
 
     if (msg.type === 'model_start') {
       _atLogAppend(`<div class="at-log-sep">── ${_hEsc(msg.model_id)} · target ${Number(msg.target_mb)||0} MB ──</div>`);
@@ -1467,6 +1487,19 @@ async function runAutotune() {
     }
   };
   _atEventSrc.onerror = (ev) => {
+    // Transient drop: EventSource auto-reconnects and resumes from the last
+    // event id (agent replays the gap). Only a CLOSED state is terminal.
+    if (_atEventSrc && _atEventSrc.readyState === EventSource.CONNECTING
+        && ++_atDrops <= _AT_MAX_DROPS) {
+      if (!_atReconnecting) {
+        _atReconnecting = true;
+        _atLogAppend('<div class="at-log-dim">stream dropped — reconnecting…</div>');
+      }
+      const el = document.getElementById('atStatus');
+      if (el) el.textContent = 'reconnecting…';
+      return;
+    }
+    _atReconnecting = false;
     const rs = _atEventSrc ? _atEventSrc.readyState : -1;
     console.error('[autotune] SSE error; readyState=' + rs, ev);
     _atLogAppend(`<span class="at-log-crit">SSE disconnected (readyState=${rs}). Check the manager + agent logs.</span>`);
@@ -1480,6 +1513,7 @@ async function runAutotune() {
 }
 
 function cancelAutotune() {
+  _atReconnecting = false;
   if (_atEventSrc) { try { _atEventSrc.close(); } catch(_){} _atEventSrc = null; }
   if (typeof toolsSyncRunDot === 'function') toolsSyncRunDot();
   fetch('/api/llm/autotune/cancel', {method:'POST'}).catch(() => {});
