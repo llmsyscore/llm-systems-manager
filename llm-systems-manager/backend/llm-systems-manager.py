@@ -159,7 +159,7 @@ def _local_hostname() -> str:
 # banner reads it. Bump suffix (-1, -2, …) for same-day iterations; roll
 # the date for a new day's first change.
 # ---------------------------------------------------------------------------
-__version__ = "v2026.08.31-5"
+__version__ = "v2026.08.31-6"
 
 # Wall-clock at first import (Cheroot main process); the shutdown banner
 # reads it for the uptime line.
@@ -182,6 +182,7 @@ _cheroot_servers: list = []
 import model_profiles  # type: ignore[import-not-found]  # noqa: E402  # leaf, no cycle
 import report_card  # type: ignore[import-not-found]  # noqa: E402  # leaf, no cycle; #468
 import energy  # type: ignore[import-not-found]  # noqa: E402  # leaf, no cycle; #470
+import tool_activity  # type: ignore[import-not-found]  # noqa: E402  # leaf, no cycle; #775
 import gateway_usage  # type: ignore[import-not-found]  # noqa: E402  # leaf, no cycle; #502
 import discord_bot  # type: ignore[import-not-found]  # noqa: E402  # leaf, no cycle; #471
 import companion  # type: ignore[import-not-found]  # noqa: E402  # leaf, no cycle; #522
@@ -343,9 +344,17 @@ def init_db():
                 provider TEXT NOT NULL DEFAULT 'llama',
                 ok       INTEGER NOT NULL DEFAULT 1,
                 summary  TEXT,
-                ts       TEXT NOT NULL
+                ts       TEXT NOT NULL,
+                run_id   TEXT
             )
         """)
+    if "run_id" not in [r[1] for r in
+                        conn.execute("PRAGMA table_info(tool_runs)").fetchall()]:
+        conn.execute("ALTER TABLE tool_runs ADD COLUMN run_id TEXT")
+    # Partial index: identified runs collapse across writers and replays,
+    # rows with no run id keep appending as before (#772).
+    conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_tool_runs_run "
+                 "ON tool_runs(run_id, model_id) WHERE run_id IS NOT NULL")
     if not had_tool_runs:
         # One-time seed from the saved per-model benchmarks so the ledger
         # isn't empty on first upgrade.
@@ -1894,12 +1903,28 @@ def llm_build_stream():
     return proxies.proxy_stream_to_primary("llama", "/llama/build/stream", long_running=True)
 
 
+def _note_tool_start(provider: str, tool: str):
+    """proxy_to_primary on_target hook: record the run against the agent the
+    proxy actually picked, only when the agent accepted it."""
+    def _hook(agent, resp):
+        if resp.status_code != 200:
+            return
+        with best_effort("tool start ok-flag"):
+            # A non-JSON body still counts as accepted; only an explicit
+            # {"ok": false} means the agent refused the run.
+            if (resp.json() or {}).get("ok") is False:
+                return
+        tool_activity.note_start(agent.get("agent_id") or "", provider, tool)
+    return _hook
+
+
 @app.route("/api/benchmark/run", methods=["POST"])
 def benchmark_run():
     # Proxy to the primary llama agent — llama-bench lives next to llama-server
     # on the inference host, never on the manager host.
     body = flask_request.get_json(force=True) or {}
-    return proxies.proxy_to_primary("llama", "POST", "/llama/bench/run", json=body, timeout=15)
+    return proxies.proxy_to_primary("llama", "POST", "/llama/bench/run", json=body, timeout=15,
+                                    on_target=_note_tool_start("llama", "benchmark"))
 
 
 @app.route("/api/benchmark/stream")
@@ -2053,7 +2078,8 @@ def tool_runs_record():
         # length; numbers are finite or dropped.
         summary = {}
         for k, v in data.items():
-            if k in ("tool", "model_id", "ok", "provider") or len(summary) >= 24:
+            if k in ("tool", "model_id", "ok", "provider", "run_id", "agent_id") \
+                    or len(summary) >= 24:
                 continue
             if isinstance(v, bool):
                 summary[k] = v
@@ -2063,15 +2089,24 @@ def tool_runs_record():
                 f = _finite_or_none(v)
                 if f is not None:
                     summary[k] = f
-        agent = _request_agent(provider)
+        # Only a machine token may name its own agent; a browser request is
+        # always attributed to the agent it routes to.
+        caller = agent_registry.agent_by_token(
+            (flask_request.headers.get("Authorization") or "")
+            .removeprefix("Bearer ").strip())
+        agent = caller or _request_agent(provider)
         agent_id = (agent or {}).get("agent_id") or ""
+        run_id = (data.get("run_id") or "").strip()[:120] or None
         ts = datetime.now(timezone.utc).isoformat()
         conn = get_db()
+        # OR IGNORE + the partial unique index collapses the agent's row and
+        # every watching dashboard's row for the same run into one.
         conn.execute(
-            "INSERT INTO tool_runs (tool, model_id, agent_id, provider, ok, summary, ts) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            "INSERT OR IGNORE INTO tool_runs "
+            "(tool, model_id, agent_id, provider, ok, summary, ts, run_id) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
             (tool, model_id, agent_id, provider,
-             1 if data.get("ok", True) else 0, json.dumps(summary), ts))
+             1 if data.get("ok", True) else 0, json.dumps(summary), ts, run_id))
         conn.execute(
             "DELETE FROM tool_runs WHERE tool = ? AND id NOT IN "
             "(SELECT id FROM tool_runs WHERE tool = ? ORDER BY id DESC LIMIT ?)",
@@ -2088,7 +2123,8 @@ def _tool_run_row(r) -> dict:
     except Exception:
         summary = {}
     return {"tool": r[0], "model_id": r[1], "agent_id": r[2],
-            "provider": r[3], "ok": bool(r[4]), "summary": summary, "ts": r[6]}
+            "provider": r[3], "ok": bool(r[4]), "summary": summary, "ts": r[6],
+            "run_id": r[7] if len(r) > 7 else None}
 
 
 @app.route("/api/tools/runs", methods=["GET"])
@@ -2098,16 +2134,26 @@ def tool_runs_recent():
         limit = max(1, min(100, 100 if raw is None else raw))
         conn = get_db()
         rows = conn.execute(
-            "SELECT tool, model_id, agent_id, provider, ok, summary, ts "
+            "SELECT tool, model_id, agent_id, provider, ok, summary, ts, run_id "
             "FROM tool_runs ORDER BY id DESC LIMIT ?", (limit,)).fetchall()
         out = [_tool_run_row(r) for r in rows]
         totals = {r[0]: r[1] for r in conn.execute(
             "SELECT tool, COUNT(*) FROM tool_runs GROUP BY tool")}
         # Newest row per tool, so tiles survive one tool flooding the page.
         latest = {r[0]: _tool_run_row(r) for r in conn.execute(
-            "SELECT tool, model_id, agent_id, provider, ok, summary, ts "
+            "SELECT tool, model_id, agent_id, provider, ok, summary, ts, run_id "
             "FROM tool_runs WHERE id IN (SELECT MAX(id) FROM tool_runs GROUP BY tool)")}
         return jsonify({"runs": out, "totals": totals, "latest": latest})
+    except Exception as e:
+        return _err_json("internal error", 500, exc=e)
+
+
+@app.route("/api/tools/activity", methods=["GET"])
+def tool_activity_get():
+    """Which tools are running fleet-wide, so every dashboard shows the same
+    run indicators rather than only the browser that started the run."""
+    try:
+        return jsonify(tool_activity.snapshot())
     except Exception as e:
         return _err_json("internal error", 500, exc=e)
 
@@ -2156,7 +2202,8 @@ def benchmark_cancel():
 @app.route("/api/llm/autotune/run", methods=["POST"])
 def llm_autotune_run():
     body = flask_request.get_json(force=True) or {}
-    return proxies.proxy_to_primary("llama", "POST", "/llama/autotune/run", json=body, timeout=15)
+    return proxies.proxy_to_primary("llama", "POST", "/llama/autotune/run", json=body, timeout=15,
+                                    on_target=_note_tool_start("llama", "autotune"))
 
 
 @app.route("/api/llm/autotune/stream")
@@ -2839,7 +2886,8 @@ def vllm_lora_unload():
 @app.route("/api/vllm/autotune/run", methods=["POST"])
 def vllm_autotune_run():
     body = flask_request.get_json(force=True) or {}
-    return proxies.proxy_to_primary("vllm", "POST", "/vllm/autotune/run", json=body, timeout=15)
+    return proxies.proxy_to_primary("vllm", "POST", "/vllm/autotune/run", json=body, timeout=15,
+                                    on_target=_note_tool_start("vllm", "autotune"))
 
 
 @app.route("/api/vllm/autotune/stream")
@@ -2857,7 +2905,8 @@ def vllm_autotune_cancel():
 @app.route("/api/vllm/bench/run", methods=["POST"])
 def vllm_bench_run():
     body = flask_request.get_json(force=True) or {}
-    return proxies.proxy_to_primary("vllm", "POST", "/vllm/bench/run", json=body, timeout=15)
+    return proxies.proxy_to_primary("vllm", "POST", "/vllm/bench/run", json=body, timeout=15,
+                                    on_target=_note_tool_start("vllm", "benchmark"))
 
 
 @app.route("/api/vllm/bench/stream")
@@ -4410,6 +4459,12 @@ model_profiles.register_routes(app, ctx, profiles_path=DATA_DIR / "model_profile
 import gateway  # type: ignore[import-not-found]  # sibling; #214
 gateway.register_routes(app, ctx)
 report_card.register_routes(app, ctx, db_path=str(DB_PATH))
+tool_activity.configure(
+    agent_for=agent_registry.resolve_agent_by_id,
+    agent_call=lambda m, a, p, **kw: agent_registry.agent_request(
+        m, a, p, headers={"Authorization": f"Bearer {a.get('token') or ''}"}, **kw)[0],
+    reportcard_active=report_card.active_agents,
+)
 energy.register_routes(app, ctx, db_path=str(DB_PATH))
 companion.register_routes(app, ctx, static_dir=STATIC_DIR)
 import manager_users  # type: ignore[import-not-found]  # sibling

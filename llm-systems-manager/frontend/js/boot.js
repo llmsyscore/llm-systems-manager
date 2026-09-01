@@ -236,6 +236,12 @@ function _rebackfillActiveView() {
   if (typeof AP !== 'undefined' && AP.poll) {
     setInterval(AP.poll, 10000);
   }
+  // Fleet-wide tool run state drives the Tools dot + pills from any tab, so
+  // it polls regardless of which tab is active (#775).
+  if (typeof toolsPollActivity === 'function') {
+    toolsPollActivity();
+    setInterval(toolsPollActivity, 10000);
+  }
   // Tab status dots (Events / Admin) update regardless of the active tab.
   refreshTabIndicators();
   setInterval(refreshTabIndicators, 30000);

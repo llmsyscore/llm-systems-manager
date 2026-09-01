@@ -131,6 +131,7 @@ _BENCH_ANSI_RE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
 _autotune_queue: "_queue_lib.Queue[dict]" = _queue_lib.Queue(maxsize=5000)
 _autotune_lock = threading.Lock()
 _autotune_active = False
+_autotune_run_id = ""
 _autotune_proc: "Optional[subprocess.Popen]" = None
 _autotune_pgid: "Optional[int]" = None
 _autotune_cancel_event = threading.Event()
@@ -2082,11 +2083,19 @@ def _bench_run_one(model_id: str, tool: str, switches: list, env: dict) -> None:
     proc.wait()
     _bench_proc = None
     cancelled = _bench_cancel_event.is_set()
+    mx = _shared.bench_maxes(result_rows)
+    measured = any(v is not None for v in mx.values())
     _bench_put({"type": "model_done", "model_id": model_id,
                 "ok": (not cancelled) and proc.returncode == 0,
                 "rc": proc.returncode, "cancelled": cancelled,
                 "last_gen_tps": latest_gen, "last_ppt_tps": latest_ppt,
-                "last_pg_tps": latest_pg, "results": result_rows})
+                "last_pg_tps": latest_pg, "results": result_rows,
+                "max_gen_tps": mx["gen"], "max_ppt_tps": mx["ppt"],
+                "max_pg_tps": mx["pg"], "run_id": _bench_replay.run_id})
+    _shared.post_tool_run(
+        _require_ctx(), "benchmark", "llama", _bench_replay.run_id, model_id,
+        measured, {"gen_tps": mx["gen"], "ppt_tps": mx["ppt"],
+                   "pg_tps": mx["pg"], "bench_tool": tool})
 
 
 def _bench_run_all(model_ids: list, tool: str, switches: list):
@@ -2783,7 +2792,14 @@ def _autotune_run_one_model(model_id: str, target_mb: int, optional_params: dict
         "applied_params": optional_params or {},
         "stop_reason": stop_reason,
         "ok": best is not None,
+        "run_id": _autotune_run_id,
     })
+    _shared.post_tool_run(
+        _require_ctx(), "autotune", "llama", _autotune_run_id, model_id,
+        best is not None,
+        {"ctx_size": (best or {}).get("ctx_seq"),
+         "free_mb": (best or {}).get("actual_free_mb"),
+         "converged": converged})
 
 
 def _autotune_set_perf_mode(mode: str) -> None:
@@ -2842,7 +2858,7 @@ def _autotune_run_all(model_ids: list, target_mb: int, optional_params: dict,
 
 def llama_autotune_run(body: dict, authorization: Optional[str] = Header(default=None)) -> dict[str, Any]:
     _require_ctx().check_bearer(authorization); _llama_check_enabled()
-    global _autotune_active
+    global _autotune_active, _autotune_run_id
     model_ids = body.get("model_ids") or []
     if isinstance(model_ids, str):
         model_ids = [model_ids]
@@ -2878,6 +2894,7 @@ def llama_autotune_run(body: dict, authorization: Optional[str] = Header(default
         if _autotune_active:
             return {"ok": False, "error": "Another auto-tune is in progress"}
         _autotune_active = True
+        _autotune_run_id = uuid.uuid4().hex[:12]
         while not _autotune_queue.empty():
             try: _autotune_queue.get_nowait()
             except Exception: break
@@ -2946,6 +2963,13 @@ def llama_autotune_cancel(authorization: Optional[str] = Header(default=None)) -
 
 # ── Route registration ────────────────────────────────────────────────
 
+def llama_tools_state(authorization: Optional[str] = Header(default=None)) -> dict[str, Any]:
+    """Whether a bench/autotune job is running, for the manager Tools view."""
+    _require_ctx().check_bearer(authorization)
+    return {"ok": True, "bench_active": bool(_bench_active),
+            "autotune_active": bool(_autotune_active)}
+
+
 _ROUTES: tuple = (
     ("GET",    "/llama/state",                    llama_state_endpoint),
     ("GET",    "/llama/server/status",            llama_server_status_endpoint),
@@ -2982,6 +3006,7 @@ _ROUTES: tuple = (
     ("POST",   "/llama/autotune/run",             llama_autotune_run),
     ("GET",    "/llama/autotune/stream",          llama_autotune_stream),
     ("POST",   "/llama/autotune/cancel",          llama_autotune_cancel),
+    ("GET",    "/llama/tools/state",              llama_tools_state),
 )
 
 

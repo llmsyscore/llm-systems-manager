@@ -331,12 +331,16 @@ def _operator_denied(path: str) -> bool:
     return False
 
 
-def _agent_bearer_allowed(path: str) -> bool:
+def _agent_bearer_allowed(path: str, method: "str | None" = None) -> bool:
     """The complete set of endpoints an approved agent's machine token may reach,
     beyond /api/remote/*, /status, and /cert-bundle already allowed in the gate."""
     if path in ("/api/agents/heartbeat", "/api/agents/whoami",
                 "/api/agent-tarball", "/api/metrics", "/api/history"):
         return True
+    # Write-only: an agent records its own finished runs (#772) but must not
+    # read or clear the ledger.
+    if path == "/api/tools/runs":
+        return method == "POST"
     return path.startswith("/api/agents/") and path.endswith("/llama-state")
 
 
@@ -360,7 +364,7 @@ def _auth_gate():
     if _agent_by_token(_bearer_from_request() or ""):
         # Machine token: allow only its known infra + read endpoints; deny the
         # rest (operator/admin control — terminal, svcconfig, downloads, admin).
-        if _agent_bearer_allowed(path):
+        if _agent_bearer_allowed(path, flask_request.method):
             return None
         return jsonify({"ok": False, "error": "forbidden for agent token",
                         "role_denied": True}), 403

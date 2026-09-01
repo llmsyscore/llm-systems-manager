@@ -12,6 +12,8 @@
   let _ledgerSort = { key: 'ts', dir: 'desc' };
   let _ledgerTool = 'all';
   let _ledgerPage = 0;
+  let _toolsActivity = { reportcard: false, benchmark: false, autotune: false };
+  let _toolsLocalWas = { rc: false, bench: false, at: false };
   const _LEDGER_CAP = 100, _LEDGER_PAGE = 15;
 
   function _tEl(id) { return document.getElementById(id); }
@@ -21,11 +23,38 @@
     return (((typeof RC !== 'undefined' && RC.PROVIDER_LABEL) || {})[p]) || p || '';
   }
 
-  function _toolsRunning() {
+  // Streams this browser owns; instant, but private to this session.
+  function _toolsRunningLocal() {
     const rc = typeof _rcEventSrc !== 'undefined' && _rcEventSrc;
-    const bench = typeof _benchEventSrc !== 'undefined' && _benchEventSrc;
-    const at = typeof _atEventSrc !== 'undefined' && _atEventSrc;
-    return { rc: !!rc, bench: !!bench, at: !!at, any: !!(rc || bench || at) };
+    const bench = (typeof _benchEventSrc !== 'undefined' && _benchEventSrc)
+      || (typeof _vbenchEventSrc !== 'undefined' && _vbenchEventSrc);
+    const at = (typeof _atEventSrc !== 'undefined' && _atEventSrc)
+      || (typeof _vatEventSrc !== 'undefined' && _vatEventSrc);
+    return { rc: !!rc, bench: !!bench, at: !!at };
+  }
+
+  // Local streams OR the fleet-wide snapshot, so every dashboard shows the
+  // same run indicators (#775).
+  function _toolsRunning() {
+    const l = _toolsRunningLocal();
+    const rc = l.rc || !!_toolsActivity.reportcard;
+    const bench = l.bench || !!_toolsActivity.benchmark;
+    const at = l.at || !!_toolsActivity.autotune;
+    return { rc, bench, at, any: !!(rc || bench || at), local: l };
+  }
+
+  // Fleet-wide run state from GET /api/tools/activity; polled from boot.js.
+  function toolsPollActivity() {
+    const f = typeof _fetchT === 'function' ? _fetchT : (u => fetch(u));
+    return f('/api/tools/activity')
+      .then(r => (r.ok ? r.json() : Promise.reject(new Error('http ' + r.status))))
+      .then(d => {
+        _toolsActivity = {
+          reportcard: !!d.reportcard, benchmark: !!d.benchmark, autotune: !!d.autotune,
+        };
+        toolsSyncRunDot();
+      })
+      .catch(() => {});
   }
 
   function _tHost(agentId) { return _toolsAgents[agentId] || agentId || ''; }
@@ -43,7 +72,7 @@
   }
 
   // Shared shape for a runnable tool tile: status/last/sub/action derived once.
-  function _runToolDesc(cfg, row, running) {
+  function _runToolDesc(cfg, row, running, local) {
     const subVal = row ? (cfg.sub ? cfg.sub(row) : (_tNum(cfg.tps(row)) || '—') + ' t/s') : null;
     const core = row
       ? '<b>' + TC.esc(TC.age(row.ts) || '') + '</b> · '
@@ -57,8 +86,8 @@
       last: core ? 'last run ' + core : 'no runs yet',
       lastShort: row ? '<b>' + TC.esc(TC.when(row.ts) || '—') + '</b>' : '—',
       sub: row ? subVal + ' · ' + (TC.age(row.ts) || '') : null,
-      action: running ? 'View run' : (row ? 'Open' : 'Set up'),
-      primary: !running,
+      action: local ? 'View run' : (row ? 'Open' : 'Set up'),
+      primary: !local,
     };
   }
 
@@ -84,7 +113,7 @@
           { v: _tGpuShort((c.result || {}).gpu_config) || '—', l: 'GPU' },
           { v: hist(_toolsRc), u: 'runs', l: 'History' },
         ],
-      }, _toolsRc[0] || null, run.rc),
+      }, _toolsRc[0] || null, run.rc, run.local.rc),
       _runToolDesc({
         id: 'benchmark', icon: '◷', tone: 2, name: 'Benchmark',
         desc: 'See how fast a model runs at different prompt sizes.',
@@ -95,7 +124,7 @@
           { v: String(b.model_id || '').slice(0, 14), l: 'Model' },
           { v: (b.summary || {}).bench_tool || '—', l: 'Tool' },
         ],
-      }, bench, run.bench),
+      }, bench, run.bench, run.local.bench),
       _runToolDesc({
         id: 'autotune', icon: '⌖', tone: 3, name: 'Autotune',
         desc: 'Automatically size each model’s context to the memory you have free.',
@@ -112,7 +141,7 @@
             { v: histTool('autotune'), u: 'runs', l: 'History' },
           ];
         },
-      }, at, run.at),
+      }, at, run.at, run.local.at),
     ];
     return tools;
   }
@@ -228,6 +257,13 @@
   // Called by report-card.js/bench-autotune.js whenever a run stream opens or
   // closes; keeps the sub-tab dot and launcher pills in sync without polling.
   function toolsSyncRunDot() {
+    const local = _toolsRunningLocal();
+    // A local stream that just ended re-polls, so the pill can't stay busy
+    // on a stale snapshot for a whole poll interval.
+    ['rc', 'bench', 'at'].forEach(k => {
+      if (_toolsLocalWas[k] && !local[k]) toolsPollActivity();
+      _toolsLocalWas[k] = local[k];
+    });
     const dot = _tEl('toolsRunDot');
     if (dot) dot.classList.toggle('on', _toolsRunning().any);
     const home = _tEl('toolsHome');
@@ -265,7 +301,7 @@
   function toolsOpenTool(id, modelId) {
     const modId = _TOOL_MODS[id];
     if (!modId) return;
-    const run = _toolsRunning();
+    const run = _toolsRunningLocal();
     const home = _tEl('toolsHome');
     if (home) home.style.display = 'none';
     _toolsHideModules();
@@ -460,4 +496,5 @@
   window.toolsDeepLink = toolsDeepLink;
   window.toolsClearHistory = toolsClearHistory;
   window.toolsSyncRunDot = toolsSyncRunDot;
+  window.toolsPollActivity = toolsPollActivity;
 })();

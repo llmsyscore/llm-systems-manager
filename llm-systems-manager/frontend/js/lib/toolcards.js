@@ -39,6 +39,17 @@
     return d.toLocaleDateString('en-US', opts);
   }
 
+  // Absolute run stamp: time today, +date this year, +year otherwise.
+  function stamp(ts, nowMs) {
+    const ms = toMs(ts);
+    if (ms == null) return null;
+    const d = new Date(ms), n = new Date(nowMs != null ? nowMs : Date.now());
+    const opts = { hour: 'numeric', minute: '2-digit' };
+    if (d.toDateString() !== n.toDateString()) { opts.month = 'short'; opts.day = 'numeric'; }
+    if (d.getFullYear() !== n.getFullYear()) opts.year = 'numeric';
+    return d.toLocaleString('en-US', opts);
+  }
+
   const _PILL = { ready: 'p-idle', running: 'p-busy', soon: 'p-unloaded' };
 
   function pill(t) {
@@ -127,7 +138,7 @@
 
   // r: {icon, tool, toolId?, title?, model, host, result, live?, when?, ts};
   // a row without toolId renders inert (no rowlink, no data attributes).
-  function ledgerRow(r) {
+  function ledgerRow(r, nowMs) {
     const attrs = r.toolId
       ? ` class="rowlink" data-tool="${esc(r.toolId)}"` +
         (r.model ? ` data-model="${esc(r.model)}"` : '') +
@@ -137,7 +148,7 @@
       `<td class="tool"><i>${esc(r.icon)}</i>${esc(r.tool)}</td>` +
       `<td>${esc(r.model || '—')}</td><td>${esc(r.host || '—')}</td>` +
       `<td class="${r.live ? 'live' : 'res'}">${r.result || '—'}</td>` +
-      `<td>${r.live ? esc(r.when || 'running') : esc(when(r.ts) || '—')}</td></tr>`;
+      `<td>${r.live ? esc(r.when || 'running') : esc(stamp(r.ts, nowMs) || '—')}</td></tr>`;
   }
 
   const LEDGER_COLS = [
@@ -155,15 +166,15 @@
     }).join('') + '</tr>';
   }
 
-  function ledger(rows, sort) {
+  function ledger(rows, sort, nowMs) {
     if (!rows || !rows.length) {
       return '<div class="ledger-empty">No results yet. Results from every tool land here.</div>';
     }
     return '<table class="tools-ledger">' + ledgerHeader(sort) +
-      rows.map(ledgerRow).join('') + '</table>';
+      rows.map(r => ledgerRow(r, nowMs)).join('') + '</table>';
   }
 
-  const _TC_API = { VIEWS, esc, validView, viewOf, age, when, toMs, pill, statsHtml, card, row, listHeader, chip, launcher, ledgerRow, ledgerHeader, ledger };
+  const _TC_API = { VIEWS, esc, validView, viewOf, age, when, stamp, toMs, pill, statsHtml, card, row, listHeader, chip, launcher, ledgerRow, ledgerHeader, ledger };
   if (typeof window !== 'undefined') window.TC = _TC_API;
   if (typeof module !== 'undefined' && module.exports) module.exports = _TC_API;
 })();

@@ -801,15 +801,23 @@ def _public_card(card: dict) -> dict:
     return {k: card[k] for k in _PUBLIC_CARD_FIELDS if k in card}
 
 
-def _new_job() -> str:
+def _new_job(req: "dict | None" = None) -> str:
     job_id = _uuid.uuid4().hex
     with _JOBS_LOCK:
         _JOBS[job_id] = {"queue": _queue.Queue(), "done": False,
-                         "cancel": _threading.Event()}
+                         "cancel": _threading.Event(),
+                         "agent": (req or {}).get("agent") or ""}
         if len(_JOBS) > _JOB_RETENTION:
             for stale in [k for k, v in list(_JOBS.items()) if v["done"]][:-8]:
                 _JOBS.pop(stale, None)
     return job_id
+
+
+def active_agents() -> "list[str]":
+    """Agent ids with a report-card job still running."""
+    with _JOBS_LOCK:
+        return sorted({j["agent"] for j in _JOBS.values()
+                       if j.get("agent") and not j.get("done")})
 
 
 class _Cancelled(Exception):
@@ -1026,11 +1034,11 @@ def register_routes(app, ctx=None, db_path: "str | None" = None) -> None:
             if ready["status"] == "unavailable":
                 return jsonify({"ok": False,
                                 "error": ready.get("error") or "provider unavailable"}), 409
-        job_id = _new_job()
         req = {"agent": agent_id, "provider": provider, "mode": mode,
                "model": model, "model_key": model_key, "price_kwh": price,
                "confirm_vllm": bool(body.get("confirm_vllm")),
                "confirm_download": bool(body.get("confirm_download"))}
+        job_id = _new_job(req)
         _threading.Thread(target=_run_job, args=(job_id, req),
                           name=f"reportcard-{job_id[:8]}", daemon=True).start()
         return jsonify({"ok": True, "job_id": job_id})

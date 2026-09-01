@@ -343,6 +343,7 @@ def proxy_to_primary(kind: str, method: str, path: str,
                      timeout: float = 30,
                      model_id: "str | None" = None,
                      agent_id: "str | None" = None,
+                     on_target=None,
                      **kwargs):
     """General-purpose dispatcher: forwards a Flask request to the target
     agent for `kind`. agent_id defaults to the ?agent= picker selection;
@@ -378,6 +379,11 @@ def proxy_to_primary(kind: str, method: str, path: str,
     log.info("proxy %s %s → agent:%s host=%s rc=%s (%.0fms)",
              method, path, agent["agent_id"][:8], agent.get("hostname"),
              r.status_code, r.elapsed.total_seconds() * 1000)
+    if on_target:
+        # Hands the caller the agent this call actually resolved to, which
+        # pool round-robin makes impossible to recompute afterwards.
+        with best_effort("proxy on_target", log):
+            on_target(agent, r)
     ctype = r.headers.get("Content-Type", "application/json")
     resp = current_app.response_class(r.content, status=r.status_code, mimetype=ctype)
     resp.headers["X-Proxied-To"] = f"{agent['agent_id'][:8]}@{agent.get('hostname','?')}"
