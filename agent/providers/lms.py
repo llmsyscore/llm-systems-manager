@@ -35,6 +35,8 @@ _lms_session_lock = threading.Lock()
 
 _LMS_CLI_TIMEOUT_S = int(os.environ.get("LSA_LMS_CLI_TIMEOUT_S", "15"))
 _LMS_TIMEOUT_LOG_BURST = 12
+_LMS_LOAD_TIMEOUT_DEFAULT_S = 180
+_LMS_UNLOAD_TIMEOUT_DEFAULT_S = 60
 _lms_counter_lock = threading.Lock()
 _lms_ps_timeout_count = 0
 _lms_status_timeout_count = 0
@@ -99,11 +101,17 @@ def _quant_name(q: Any) -> str:
     return str(q or "")
 
 
-def lms_get_ps() -> list[dict[str, Any]]:
+def lms_get_ps() -> "list[dict[str, Any]] | None":
+    """Loaded-instance rows from `lms ps --json`; None when the read failed."""
+    return _lms_read_ps()[0]
+
+
+def _lms_read_ps() -> "tuple[list[dict[str, Any]] | None, str | None]":
+    """(rows, None) on a good read; (None, reason) when `lms ps --json` failed."""
     global _lms_ps_timeout_count
     ctx = _require_ctx()
     if not os.path.exists(ctx.config.LMS_CMD):
-        return []
+        return None, "LMS_CMD not found"
     try:
         out = subprocess.check_output(
             [ctx.config.LMS_CMD, "ps", "--json"],
@@ -116,7 +124,7 @@ def lms_get_ps() -> list[dict[str, Any]]:
             return [
                 {
                     "identifier": item.get("identifier", ""),
-                    "model": item.get("model") or item.get("identifier") or "",
+                    "model": item.get("model") or item.get("modelKey") or item.get("identifier") or "",
                     "status": str(item.get("status", "IDLE")).upper(),
                     "size": item.get("size") or _fmt_size_bytes(item.get("sizeBytes")),
                     "context": item.get("context", item.get("contextLength")),
@@ -126,7 +134,8 @@ def lms_get_ps() -> list[dict[str, Any]]:
                     "params": item.get("paramsString") or "",
                 }
                 for item in data
-            ]
+            ], None
+        return None, "lms ps returned a non-list payload"
     except subprocess.TimeoutExpired:
         with _lms_counter_lock:
             _lms_ps_timeout_count += 1
@@ -136,18 +145,21 @@ def lms_get_ps() -> list[dict[str, Any]]:
                 "lms ps --json timed out after %ss (%d cycles)",
                 _LMS_CLI_TIMEOUT_S, cur,
             )
-    except (json.JSONDecodeError, KeyError, TypeError) as e:
-        log.debug("lms ps --json parse fallback: %s", e)
+        return None, f"lms ps timed out after {_LMS_CLI_TIMEOUT_S}s"
+    except (json.JSONDecodeError, KeyError, TypeError, AttributeError) as e:
+        log.debug("lms ps --json parse failure: %s", e)
+        return None, f"lms ps parse failure: {e}"
     except Exception as e:
         log.warning("lms ps --json failed: %s", e, exc_info=True)
-    return []
+        return None, f"lms ps failed: {e}"
 
 
 def lms_get_status() -> dict[str, Any]:
+    """{on: bool|None, port, raw, error?}; on=None means the read failed."""
     global _lms_status_timeout_count
     ctx = _require_ctx()
     if not os.path.exists(ctx.config.LMS_CMD):
-        return {"on": False, "port": None, "raw": "", "error": "LMS_CMD not found"}
+        return {"on": None, "port": None, "raw": "", "error": "LMS_CMD not found"}
     try:
         out = subprocess.check_output(
             [ctx.config.LMS_CMD, "server", "status", "--json"],
@@ -168,16 +180,59 @@ def lms_get_status() -> dict[str, Any]:
                 "lms server status --json timed out after %ss (%d cycles)",
                 _LMS_CLI_TIMEOUT_S, cur,
             )
-        return {"on": False, "port": None, "raw": "",
+        return {"on": None, "port": None, "raw": "",
                 "error": f"lms server status timed out after {_LMS_CLI_TIMEOUT_S}s"}
-    except (json.JSONDecodeError, KeyError, TypeError, ValueError) as e:
-        log.debug("lms server status --json parse fallback: %s", e)
+    except (json.JSONDecodeError, KeyError, TypeError, ValueError, AttributeError) as e:
+        log.debug("lms server status --json parse failure: %s", e)
+        err = f"lms server status parse failure: {e}"
     except Exception as e:
         log.warning("lms server status --json failed: %s", e, exc_info=True)
-    return {"on": False, "port": None, "raw": ""}
+        err = f"lms server status failed: {e}"
+    return {"on": None, "port": None, "raw": "", "error": err}
+
+
+def lms_sample_block() -> dict[str, Any]:
+    """The `lms` block of a metric sample; ps_ok/ps_error say whether `ps` was read."""
+    server = lms_get_status()
+    models = lms_get_models()
+    ps, err = _lms_read_ps()
+    return {"server": server, "models": models, "ps": ps or [],
+            "ps_ok": ps is not None, "ps_error": err}
 
 
 # ── Private helpers ────────────────────────────────────────────────────
+
+def _cfg_timeout(name: str, default: int) -> int:
+    """Integer seconds from ctx.config.<name>; `default` when unset or not a positive number."""
+    try:
+        val = int(getattr(_require_ctx().config, name, default))
+    except (TypeError, ValueError):
+        return default
+    return val if val > 0 else default
+
+
+def _lms_resident_instances(model_id: str) -> "list[str] | None":
+    """Instance ids of `model_id` loaded per /api/v1/models; None when unreadable."""
+    ctx = _require_ctx()
+    try:
+        r = _get_session().get(f"{ctx.config.LMS_API_URL.rstrip('/')}/api/v1/models",
+                               timeout=5)
+        if not r.ok:
+            return None
+        models = (r.json() or {}).get("models") or []
+    except Exception as e:
+        log.debug("lms /api/v1/models unreadable: %s", e)
+        return None
+    out: list[str] = []
+    for m in models:
+        if not isinstance(m, dict):
+            continue
+        for inst in m.get("loaded_instances") or []:
+            iid = (inst or {}).get("id") if isinstance(inst, dict) else None
+            if m.get("key") == model_id or iid == model_id:
+                out.append(str(iid or m.get("key")))
+    return out
+
 
 def _valid_model_id(s: Any) -> bool:
     return isinstance(s, str) and bool(_MODEL_ID_RE.match(s))
@@ -258,7 +313,7 @@ def lms_models_endpoint(authorization: Optional[str] = Header(default=None)) -> 
 def lms_ps_endpoint(authorization: Optional[str] = Header(default=None)) -> list[dict[str, Any]]:
     _require_ctx().check_bearer(authorization)
     _lms_check_enabled()
-    return lms_get_ps()
+    return lms_get_ps() or []
 
 
 async def _lms_openai_forward(sub: str, request: Request,
@@ -350,19 +405,39 @@ def lms_load_endpoint(body: dict, authorization: Optional[str] = Header(default=
         raise HTTPException(status_code=400, detail="model required")
     if not _valid_model_id(model_id):
         raise HTTPException(status_code=400, detail="invalid model id")
+    resident = _lms_resident_instances(model_id)
+    if resident:
+        log.info("lms load %s: already resident as %s", model_id, resident)
+        return {"ok": True, "already_loaded": True, "instances": resident}
+    timeout = _cfg_timeout("LMS_LOAD_TIMEOUT_S", _LMS_LOAD_TIMEOUT_DEFAULT_S)
     try:
         resp = _get_session().post(
             f"{ctx.config.LMS_API_URL.rstrip('/')}/api/v1/models/load",
-            json={"model": model_id}, timeout=30,
+            json={"model": model_id}, timeout=timeout,
         )
-        log.info("lms load %s: %s", model_id, resp.status_code)
-        try:
-            body_resp = resp.json()
-        except Exception:
-            body_resp = {"raw": resp.text[:500]}
-        return {"ok": resp.ok, "response": body_resp}
+    except requests.exceptions.Timeout:
+        log.warning("lms load %s: timed out after %ss", model_id, timeout)
+        return {"ok": False, "timeout": True,
+                "error": f"lms load timed out after {timeout}s"}
     except Exception as e:
         return {"ok": False, "error": str(e)}
+    log.info("lms load %s: %s", model_id, resp.status_code)
+    try:
+        body_resp = resp.json()
+    except Exception:
+        body_resp = {"raw": resp.text[:500]}
+    if not resp.ok:
+        return {"ok": False, "response": body_resp}
+    resident = _lms_resident_instances(model_id)
+    if resident is None:
+        return {"ok": True, "already_loaded": False, "verified": False,
+                "response": body_resp}
+    if not resident:
+        return {"ok": False, "already_loaded": False, "verified": True,
+                "error": "lms load returned ok but the model is not resident",
+                "response": body_resp}
+    return {"ok": True, "already_loaded": False, "verified": True,
+            "instances": resident, "response": body_resp}
 
 
 def lms_download_endpoint(body: dict, authorization: Optional[str] = Header(default=None)) -> dict[str, Any]:
@@ -426,7 +501,10 @@ def lms_delete_endpoint(body: dict, authorization: Optional[str] = Header(defaul
     if not _valid_model_id(model_id):
         raise HTTPException(status_code=400, detail="invalid model id")
     base_key = model_id.partition("@")[0]
-    for p in lms_get_ps():
+    ps = lms_get_ps()
+    if ps is None:
+        return {"ok": False, "error": f"cannot verify {model_id} is unloaded: lms ps unreadable"}
+    for p in ps:
         for pk in (p.get("identifier"), p.get("model")):
             if pk and (model_id == pk or base_key == str(pk).partition("@")[0]):
                 return {"ok": False,
@@ -492,7 +570,8 @@ def lms_unload_endpoint(body: dict, authorization: Optional[str] = Header(defaul
         # LMS unload requires instance_id, not model.
         resp = _get_session().post(
             f"{ctx.config.LMS_API_URL.rstrip('/')}/api/v1/models/unload",
-            json={"instance_id": model_id}, timeout=15,
+            json={"instance_id": model_id},
+            timeout=_cfg_timeout("LMS_UNLOAD_TIMEOUT_S", _LMS_UNLOAD_TIMEOUT_DEFAULT_S),
         )
         log.info("lms unload %s: %s", model_id, resp.status_code)
         if resp.ok:

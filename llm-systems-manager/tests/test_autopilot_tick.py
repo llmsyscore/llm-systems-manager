@@ -1,6 +1,7 @@
 """#472: tick — auto executes, semi proposes, failure backoff, stale expiry."""
 from __future__ import annotations
 import copy
+import logging
 import threading
 import autopilot as ap
 import autopilot_planner as pl
@@ -519,3 +520,116 @@ def test_applying_a_stored_proposal_respects_the_block():
     r._busy_agents = lambda: {props[0]["action"]["agent_id"]}
     assert r.apply(props[0]["id"])["ok"] is False
     assert calls == []
+
+
+# ── #784: lms/vllm carry a "provider answered" signal; a real unload drops at once ──
+
+def _mk_prov(provider, answered=True):
+    """Reconciler with one auto entry on `provider`, m1 confirmed on A1 by t=1030."""
+    calls = []
+    state = {"enabled": True, "hosts": {}, "entries": [
+        {"model": "m1", "provider": provider, "placement": "auto",
+         "failover": "auto", "priority": 1, "min_replicas": 1, "max_replicas": 1}]}
+    observed = {"agents": {
+        A1: {"provider_caps": [provider], "live": True, "vram_total_mb": 24000,
+             "vram_free_mb": 20000, "ram_free_mb": 64000, "loaded": {provider: []},
+             "server_state": None, "answered": {provider: answered},
+             "idle_since": None, "saturation": {}}},
+        "model_sizes_mb": {f"{provider}:m1": 8000}, "sat_history": {},
+        "route_pins": {}}
+    r = ap.Reconciler(get_state=lambda: state,
+                      build_observed=lambda: copy.deepcopy(observed),
+                      executor=lambda a: (calls.append(a), True)[1])
+    r.tick(now=1000.0)                                   # load issued
+    observed["agents"][A1]["loaded"][provider] = ["m1"]
+    r.tick(now=1030.0)                                   # confirmed
+    assert r.ledger["confirmed"][f"m1/{provider}"] == {A1}
+    observed["agents"][A1]["loaded"][provider] = []      # sample now empty
+    return r, calls, observed
+
+def test_lms_answered_empty_ps_is_a_real_unload_and_reloads_at_once():
+    r, calls, observed = _mk_prov("lms", answered=True)
+    out = r.tick(now=1200.0)
+    assert [a.kind for a in calls] == ["load", "load"]
+    assert r.ledger["blank_since"] == {}
+    assert out["entry_status"]["m1/lms"]["placed"] == 1   # new load in flight
+
+def test_lms_unanswered_empty_ps_keeps_the_placement_through_grace():
+    r, calls, observed = _mk_prov("lms", answered=False)
+    out = r.tick(now=1200.0)
+    assert [a.kind for a in calls] == ["load"]
+    assert r.ledger["blank_since"]["m1/lms"][A1] == 1200.0
+    assert out["entry_status"]["m1/lms"]["placed"] == 1
+
+def test_sample_blank_legacy_shape_keeps_llama_server_state_rule():
+    """Observed dicts without `answered` (older fixtures) still use server_state for llama
+    and treat every empty lms/vllm list as blank."""
+    assert ap._sample_blank({"loaded": {"llama": []}, "server_state": "awake"}, "llama") is False
+    assert ap._sample_blank({"loaded": {"llama": []}, "server_state": None}, "llama") is True
+    assert ap._sample_blank({"loaded": {"lms": []}}, "lms") is True
+    assert ap._sample_blank({"loaded": {"lms": ["x"]}}, "lms") is False
+
+def test_sample_blank_answered_signal_wins_for_every_provider():
+    assert ap._sample_blank({"loaded": {"lms": []}, "answered": {"lms": True}}, "lms") is False
+    assert ap._sample_blank({"loaded": {"lms": []}, "answered": {"lms": False}}, "lms") is True
+    assert ap._sample_blank({"loaded": {"vllm": []}, "answered": {"vllm": True}}, "vllm") is False
+    assert ap._sample_blank({"loaded": {"llama": []}, "server_state": None,
+                             "answered": {"llama": True}}, "llama") is False
+
+
+# ── #789: the reconciler narrates blank grace, unloads, confirmations and actions ──
+
+def _messages(caplog):
+    return [r.getMessage() for r in caplog.records if r.name == ap.log.name]
+
+def test_action_execution_is_logged_with_outcome_and_duration(caplog):
+    caplog.set_level(logging.INFO, logger=ap.log.name)
+    r, calls, observed = _mk(auto=True)
+    r.tick(now=1000.0)
+    msgs = _messages(caplog)
+    assert any(m.startswith("autopilot: load llama/m1 -> agent:aaaaaaaa (") for m in msgs)
+    assert any(m.startswith("autopilot: load llama/m1 on agent:aaaaaaaa ok in ") for m in msgs)
+
+def test_failed_action_logs_the_backoff(caplog):
+    caplog.set_level(logging.INFO, logger=ap.log.name)
+    r, calls, observed = _mk(auto=True, exec_ok=False)
+    r.tick(now=1000.0)
+    assert any("FAILED" in m and "backs off 300s" in m for m in _messages(caplog))
+
+def test_confirmation_is_logged_once(caplog):
+    caplog.set_level(logging.INFO, logger=ap.log.name)
+    r, calls, observed = _confirmed()
+    r.tick(now=1060.0)
+    conf = [m for m in _messages(caplog) if "confirmed on agent:aaaaaaaa" in m]
+    assert conf == ["autopilot: m1/llama confirmed on agent:aaaaaaaa 30s after the load"]
+
+def test_blank_grace_start_and_expiry_are_logged_once_each(caplog):
+    caplog.set_level(logging.INFO, logger=ap.log.name)
+    r, calls, observed = _confirmed()
+    r._exec = lambda a: (calls.append(a), False)[1]
+    _blank_llama(observed)
+    r.tick(now=1200.0)
+    r.tick(now=1230.0)
+    r.tick(now=1200.0 + ap.BLANK_GRACE_S)
+    r.tick(now=1230.0 + ap.BLANK_GRACE_S)
+    msgs = _messages(caplog)
+    starts = [m for m in msgs if "blank sample (no detail); holding the placement for 90s" in m]
+    ends = [m for m in msgs if "blank grace expired after 90s; placement dropped" in m]
+    assert len(starts) == 1 and len(ends) == 1
+
+def test_real_unload_is_logged_with_the_provider_detail(caplog):
+    caplog.set_level(logging.INFO, logger=ap.log.name)
+    r, calls, observed = _mk_prov("lms", answered=True)
+    observed["agents"][A1]["sample_detail"] = {"lms": "ps ok"}
+    r.tick(now=1200.0)
+    assert any(m == "autopilot: m1/lms dropped on agent:aaaaaaaa — lms answered with loaded=[] (ps ok)"
+               for m in _messages(caplog))
+
+def test_debug_tick_summary_names_agents_entries_and_actions(caplog):
+    caplog.set_level(logging.DEBUG, logger=ap.log.name)
+    r, calls, observed = _mk(auto=True)
+    r.tick(now=1000.0)
+    msgs = _messages(caplog)
+    assert any(m.startswith("autopilot tick: agent:aaaaaaaa liveness=") for m in msgs)
+    assert any(m.startswith("autopilot tick: m1/llama placed=") for m in msgs)
+    assert any(m.startswith("autopilot tick: 1 action(s): [('load', 'llama', 'm1', 'aaaaaaaa'") for m in msgs)

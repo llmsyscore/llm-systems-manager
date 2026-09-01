@@ -522,3 +522,56 @@ def test_build_observed_exposes_route_pins_from_global():
     observed = ap.build_observed(deps)
     assert observed["route_pins"]["llama"] == {"m1": A1}
     assert observed["route_pins"].get("vllm", {}) == {}
+
+
+# ── #784: build_observed carries a per-provider "the provider answered" signal ──
+
+def _deps_for(caps, sample):
+    def fake_agents():
+        return {"agents": {A1: {"capabilities": caps, "status": "approved"}}}
+    return {"agents": fake_agents, "liveness": lambda a: "live",
+            "provider_snapshot": lambda prov, aid: {"sample": sample},
+            "saturation": lambda prov, aid: {"value": None},
+            "model_sizes": lambda: {}, "model_gpu_layers": lambda: {}}
+
+
+def test_observed_lms_answered_only_when_ps_read_ok():
+    obs = ap.build_observed(_deps_for({"lms": True}, {"ps": [], "ps_ok": True,
+                                                       "server": {"on": True}}))
+    assert obs["agents"][A1]["answered"] == {"lms": True}
+    assert obs["agents"][A1]["loaded"] == {"lms": []}
+    obs = ap.build_observed(_deps_for({"lms": True}, {"ps": [], "ps_ok": False,
+                                                       "ps_error": "timed out"}))
+    assert obs["agents"][A1]["answered"] == {"lms": False}
+
+
+def test_observed_lms_legacy_sample_without_ps_ok_is_not_answered():
+    obs = ap.build_observed(_deps_for({"lms": True}, {"ps": [], "server": {"on": True}}))
+    assert obs["agents"][A1]["answered"] == {"lms": False}
+
+
+def test_observed_vllm_answered_only_while_running():
+    obs = ap.build_observed(_deps_for({"vllm": True},
+                                      {"vllm": {"state": "running", "model": None, "models": []}}))
+    assert obs["agents"][A1]["answered"] == {"vllm": True}
+    assert obs["agents"][A1]["loaded"] == {"vllm": []}
+    obs = ap.build_observed(_deps_for({"vllm": True}, {"vllm": {"state": "down"}}))
+    assert obs["agents"][A1]["answered"] == {"vllm": False}
+
+
+def test_observed_llama_answered_mirrors_server_state():
+    obs = ap.build_observed(_deps_for({"llama": True}, {"llama": {"state": "awake"}}))
+    assert obs["agents"][A1]["answered"] == {"llama": True}
+    assert obs["agents"][A1]["server_state"] == "awake"
+    obs = ap.build_observed(_deps_for({"llama": True}, {"llama": {"state": "unknown"}}))
+    assert obs["agents"][A1]["answered"] == {"llama": False}
+
+
+def test_observed_sample_detail_explains_each_provider():
+    obs = ap.build_observed(_deps_for({"lms": True}, {"ps": [], "ps_ok": False,
+                                                       "ps_error": "lms ps timed out after 15s"}))
+    assert obs["agents"][A1]["sample_detail"] == {"lms": "ps unreadable: lms ps timed out after 15s"}
+    obs = ap.build_observed(_deps_for({"lms": True}, {"ps": [], "ps_ok": True}))
+    assert obs["agents"][A1]["sample_detail"] == {"lms": "ps ok"}
+    obs = ap.build_observed(_deps_for({"llama": True}, {"llama": {"state": "unknown"}}))
+    assert obs["agents"][A1]["sample_detail"] == {"llama": "state=unknown"}

@@ -32,6 +32,10 @@ def _mem_db():
     ("POST",   "/api/admin/export/manager",        "backup.export",   None),
     ("POST",   "/api/llm/server/svcconfig",        "config.svcconfig", None),
     ("POST",   "/api/config/interval",             "config.interval", None),
+    ("POST",   "/api/llm/load",                    "llama.load",      None),
+    ("POST",   "/api/llm/unload",                  "llama.unload",    None),
+    ("POST",   "/api/lmstudio/load",               "lms.load",        None),
+    ("POST",   "/api/lmstudio/unload",             "lms.unload",      None),
 ])
 def test_audit_match_known_routes(method, path, expected_action, expected_target):
     got = manager_mod._audit_match(method, path)
@@ -47,7 +51,8 @@ def test_audit_match_generic_admin_fallback():
     ("POST", "/api/remote/provider-state"),   # agent push traffic
     ("POST", "/api/agents/heartbeat"),        # agent heartbeat
     ("GET",  "/api/admin/users"),             # read-only
-    ("POST", "/api/llm/load"),                # non-admin operator surface
+    ("POST", "/api/lmstudio/download"),       # non-admin operator surface
+    ("POST", "/api/llm/models"),              # not a load/unload
 ])
 def test_audit_match_skips_unaudited(method, path):
     if method == "GET":
@@ -93,3 +98,23 @@ def test_audit_record_prunes_past_cap(monkeypatch):
     assert count <= 50 + manager_mod._AUDIT_PRUNE_EVERY
     # Newest rows survive.
     assert conn.execute("SELECT MAX(id) FROM audit_log").fetchone()[0] == 120
+
+
+def test_audit_hook_records_manual_unload_with_the_model_as_target(monkeypatch):
+    conn = _mem_db()
+    monkeypatch.setattr(manager_mod, "get_db", lambda: conn)
+    client = manager_mod.app.test_client()
+    resp = client.post("/api/lmstudio/unload", json={"model": "qwen3-30b"})
+    assert resp.status_code in (401, 403)
+    row = conn.execute("SELECT * FROM audit_log").fetchone()
+    assert row["action"] == "lms.unload" and row["target"] == "qwen3-30b"
+    assert row["outcome"] == "denied"
+
+
+def test_audit_body_target_prefers_model_id_and_ignores_junk():
+    with manager_mod.app.test_request_context(json={"model_id": "m1", "model": "m2"}):
+        assert manager_mod._audit_body_target() == "m1"
+    with manager_mod.app.test_request_context(json={"model": 42}):
+        assert manager_mod._audit_body_target() is None
+    with manager_mod.app.test_request_context(data="not json"):
+        assert manager_mod._audit_body_target() is None

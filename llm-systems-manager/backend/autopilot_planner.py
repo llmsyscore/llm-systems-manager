@@ -7,7 +7,7 @@ import providers  # type: ignore[import-not-found]  # sibling
 COOLDOWN_S = 120
 DWELL_S = 600
 # In-flight window: ledger placements this recent count as placed. Must
-# exceed the executor's load timeout (autopilot._LOAD_TIMEOUT_S = 180).
+# exceed the executor's load timeout (autopilot._LOAD_TIMEOUT_S = 200).
 PLACEMENT_FRESH_S = 240
 VRAM_HEADROOM_MB = 1024
 # Providers whose load displaces the resident model (ProviderSpec.single_resident).
