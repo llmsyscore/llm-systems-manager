@@ -918,6 +918,13 @@ def vllm_bench_cancel(authorization: Optional[str] = Header(default=None)) -> di
 
 # ── Route registration ─────────────────────────────────────────────────
 
+def vllm_tools_state(authorization: Optional[str] = Header(default=None)) -> dict[str, Any]:
+    """Whether a bench/autotune job is running, for the manager Tools view."""
+    _require_ctx().check_bearer(authorization)
+    return {"ok": True, "bench_active": bool(_bench_job.active),
+            "autotune_active": bool(_at_job.active)}
+
+
 _ROUTES: tuple = (
     # (method, path, handler)
     ("GET",  "/vllm/server/status",  vllm_server_status_endpoint),
@@ -939,6 +946,7 @@ _ROUTES: tuple = (
     ("POST", "/vllm/bench/run",       vllm_bench_run),
     ("GET",  "/vllm/bench/stream",    vllm_bench_stream),
     ("POST", "/vllm/bench/cancel",    vllm_bench_cancel),
+    ("GET",  "/vllm/tools/state",     vllm_tools_state),
 )
 
 

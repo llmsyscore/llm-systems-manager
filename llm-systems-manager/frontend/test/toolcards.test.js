@@ -28,6 +28,16 @@ describe('view helpers', () => {
     expect(TC.when('garbage', now)).toBe(null);
   });
 
+  it('stamps an absolute local time, adding the date and year as needed', () => {
+    const now = Date.UTC(2026, 7, 31, 16, 0, 0);
+    // Locale separator before AM/PM varies by ICU build, so match loosely.
+    expect(TC.stamp(now - 3600e3, now)).toMatch(/^\d{1,2}:\d{2}\s\S?(AM|PM)$/);
+    expect(TC.stamp(now / 1000 - 4 * 86400, now)).toMatch(/^[A-Z][a-z]{2} \d{1,2}, \d{1,2}:\d{2}\s\S?(AM|PM)$/);
+    expect(TC.stamp('2025-12-01T12:00:00Z', now)).toMatch(/2025/);
+    expect(TC.stamp('garbage', now)).toBe(null);
+    expect(TC.stamp(null, now)).toBe(null);
+  });
+
   it('ages epoch seconds, epoch millis, and ISO strings', () => {
     const now = Date.UTC(2026, 7, 31, 12, 0, 0);
     expect(TC.age(now / 1000 - 120, now)).toBe('2m ago');
@@ -128,6 +138,14 @@ describe('ledger', () => {
     expect(html).toContain('&lt;x&gt;&amp;m');
     expect(html).toContain('&quot;h&quot;');
     expect(html).toContain('<b>42.7 t/s</b>');
+  });
+
+  it('renders the run timestamp, not a relative age', () => {
+    const now = Date.UTC(2026, 7, 31, 12, 0, 0);
+    const html = TC.ledgerRow(RUN, now);
+    expect(html).not.toContain('ago');
+    expect(html).toContain(TC.stamp(RUN.ts, now));
+    expect(TC.ledger([RUN], { key: 'ts', dir: 'desc' }, now)).toContain(TC.stamp(RUN.ts, now));
   });
 
   it('shows live label instead of age for a running row', () => {

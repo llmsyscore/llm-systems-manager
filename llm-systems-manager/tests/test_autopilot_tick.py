@@ -8,7 +8,7 @@ import autopilot_planner as pl
 A1, A2 = "a" * 32, "b" * 32
 
 def _mk(auto=False, exec_ok=True, loaded=(False,), route_sync=None, placed_at=None,
-        route_pins=None, fresh=False):
+        route_pins=None, fresh=False, busy=None):
     """fresh=True hands the reconciler a deep copy per observation, like prod."""
     calls = []
     state = {"enabled": True, "hosts": {}, "entries": [
@@ -26,7 +26,8 @@ def _mk(auto=False, exec_ok=True, loaded=(False,), route_sync=None, placed_at=No
                       build_observed=(lambda: copy.deepcopy(observed)) if fresh
                       else (lambda: observed),
                       executor=lambda a: (calls.append(a), exec_ok)[1],
-                      route_sync=route_sync)
+                      route_sync=route_sync,
+                      busy_agents=(lambda: set(busy)) if busy is not None else None)
     if placed_at:
         r.ledger["placed_at"]["m1/llama"] = dict(placed_at)
     return r, calls, observed
@@ -486,3 +487,35 @@ def test_removed_entry_gets_no_grace_injection():
     assert out["entry_status"] == {} and r.ledger["blank_since"] == {}
     assert r.ledger["confirmed"] == {}
     assert pl._residents({"entries": []}, r.observe(now=1200.0), r.ledger_view, 1200.0) == {}
+
+
+def test_tool_run_on_an_agent_blocks_autopilot_from_touching_it():
+    """#776: a report card / benchmark owns that host's model slot."""
+    r, calls, _ = _mk(auto=True, busy={A1, A2})
+    r.tick(now=1000.0)
+    assert calls == []
+
+
+def test_a_blocked_action_is_not_backed_off():
+    """Skipping is not a failure — the next tick must retry immediately."""
+    r, calls, _ = _mk(auto=True, busy={A1, A2})
+    r.tick(now=1000.0)
+    assert r.ledger["backoff_until"] == {}
+    assert r.ledger["unload_backoff"] == {}
+
+
+def test_an_idle_agent_still_gets_its_action():
+    r, calls, _ = _mk(auto=True, busy=set())
+    r.tick(now=1000.0)
+    assert calls and calls[0].agent_id in (A1, A2)
+
+
+def test_applying_a_stored_proposal_respects_the_block():
+    """apply() bypasses plan(), so the gate has to live in _run."""
+    r, calls, _ = _mk(auto=False, busy=set())
+    r.tick(now=1000.0)
+    props = r.proposals()
+    assert props, "semi mode should have proposed an action"
+    r._busy_agents = lambda: {props[0]["action"]["agent_id"]}
+    assert r.apply(props[0]["id"])["ok"] is False
+    assert calls == []

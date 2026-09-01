@@ -461,11 +461,13 @@ def route_sync_writes(desired: dict, observed: dict, glob: dict,
 
 
 class Reconciler:
-    def __init__(self, get_state, build_observed, executor, route_sync=None):
+    def __init__(self, get_state, build_observed, executor, route_sync=None,
+                 busy_agents=None):
         self._get_state = get_state
         self._observe = build_observed
         self._exec = executor
         self._route_sync = route_sync
+        self._busy_agents = busy_agents
         self._proposals: "dict[str, dict]" = {}
         self._sat_history: "dict[str, list]" = {}
         self.ledger = _empty_ledger()
@@ -613,6 +615,12 @@ class Reconciler:
         observed["sat_history"] = self._sat_history
 
     def _run(self, action, now: float):
+        # A Tools run (report card/benchmark/autotune) owns that host's model
+        # slot; skip without backoff so the next tick retries (#776).
+        if self._busy_agents and action.agent_id in self._busy_agents():
+            log.info("autopilot: skip %s on agent:%s — tool run in flight",
+                     action.kind, (action.agent_id or "")[:8])
+            return False
         # Brackets only failover-class (reason startswith "failover:") actions.
         is_migration = action.reason.startswith("failover:")
         if is_migration:
@@ -971,10 +979,19 @@ def _prod_route_sync(desired: dict, observed: dict,
             log.info("autopilot route-sync: added %s to %s pool", aid[:8], prov)
 
 
+def _prod_busy_agents() -> "set[str]":
+    try:
+        import tool_activity
+        return tool_activity.busy_agents()
+    except Exception:
+        return set()
+
+
 RECONCILER = Reconciler(get_state=get_state,
                         build_observed=lambda: build_observed(_prod_deps()),
                         executor=_prod_executor,
-                        route_sync=_prod_route_sync)
+                        route_sync=_prod_route_sync,
+                        busy_agents=_prod_busy_agents)
 
 
 # ── Routes: mount /api/autopilot* on the manager app ──────────────────

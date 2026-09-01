@@ -29,6 +29,57 @@ OPENAI_READ_TIMEOUT_S = 600.0
 ANSI_RE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
 
 
+BENCH_SERIES = ("ppt", "gen", "pg")
+
+
+def bench_row_series(row: dict) -> "Optional[str]":
+    """Which chart series a llama-bench result row belongs to."""
+    s = row.get("series")
+    if s in BENCH_SERIES:
+        return s
+    n_p = row.get("n_prompt") or 0
+    n_g = row.get("n_gen") or 0
+    if n_p > 0 and n_g > 0:
+        return "pg"
+    if n_p > 0:
+        return "ppt"
+    if n_g > 0:
+        return "gen"
+    return None
+
+
+def bench_maxes(rows: list) -> dict:
+    """Best avg_ts per series across a model's result rows."""
+    out: "dict[str, Optional[float]]" = {k: None for k in BENCH_SERIES}
+    for row in rows or []:
+        series = bench_row_series(row)
+        if not series:
+            continue
+        val = float(row.get("avg_ts") or 0)
+        out[series] = val if out[series] is None else max(out[series], val)
+    return out
+
+
+def post_tool_run(ctx, tool: str, provider: str, run_id: str, model_id: str,
+                  ok: bool, summary: dict) -> None:
+    """Record a finished run in the manager's tool ledger; best effort so a
+    closed dashboard no longer loses the row (#772)."""
+    base = (getattr(ctx.config, "MANAGER_URL", "") or "").rstrip("/")
+    state = getattr(ctx, "state", None) or {}
+    token = state.get("token") or ""
+    if not base or not token or not model_id:
+        return
+    body = {"tool": tool, "provider": provider, "model_id": model_id,
+            "ok": bool(ok), "run_id": run_id or "",
+            "agent_id": state.get("agent_id") or ""}
+    body.update({k: v for k, v in (summary or {}).items() if v is not None})
+    try:
+        ctx.post_session.post(f"{base}/api/tools/runs", json=body, timeout=10,
+                              headers={"Authorization": f"Bearer {token}"})
+    except Exception as e:
+        log.debug("tool-run ledger post failed: %s", e)
+
+
 def pool_guarded_sse(gen) -> StreamingResponse:
     """Stream-pool-guarded SSE response around a byte generator."""
     if not stream_pool.POOL.try_acquire():

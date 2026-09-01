@@ -119,6 +119,20 @@ function _benchGetY(row) {
   return row[axis] ?? 0;
 }
 
+// Last status text written while the stream was healthy, restored after a
+// transient drop; _benchDrops counts reconnects with no message in between.
+let _benchLiveStatus = '';
+let _benchReconnecting = false;
+let _benchDrops = 0;
+const _BENCH_MAX_DROPS = 20;
+
+// Write the benchmark status pill and remember it as the live label.
+function _benchStatus(text) {
+  const el = document.getElementById('benchStatus');
+  if (el) el.textContent = text;
+  _benchLiveStatus = text;
+}
+
 // Drive the benchmark status pill's chip color (idle=muted, running=warn,
 // ok=green, err=red). Mutually exclusive — clears the others.
 function _benchSetState(state) {
@@ -580,6 +594,11 @@ function _updateBenchSwitchLabel() {
   if (lbl) lbl.textContent = _benchSwitches.length + ' switch' + (_benchSwitches.length !== 1 ? 'es' : '');
 }
 
+// Run id from an SSE event's `<run>:<seq>` id, for ledger de-duplication.
+function _runIdOf(ev) {
+  return String((ev && ev.lastEventId) || '').split(':')[0] || '';
+}
+
 // Records a finished run into the cross-tool ledger (#770); fire-and-forget.
 function _recordToolRun(tool, data) {
   fetch('/api/tools/runs', {
@@ -890,17 +909,25 @@ async function runBenchmark() {
     if (_benchEventSrc) { try { _benchEventSrc.close(); } catch(_){} }
     _benchEventSrc = new EventSource('/api/benchmark/stream');
     if (typeof toolsSyncRunDot === "function") toolsSyncRunDot();
-    document.getElementById('benchStatus').textContent = 'running…';
+    _benchDrops = 0;
+    _benchStatus('running…');
     _benchEventSrc.onmessage = e => {
       let msg;
       try { msg = JSON.parse(e.data); } catch (_) { return; }
       if (msg.type === 'keepalive') return;
+      // First real message after a drop proves the run resumed: restore the
+      // label the reconnect notice replaced.
+      _benchDrops = 0;
+      if (_benchReconnecting) {
+        _benchReconnecting = false;
+        _benchStatus(_benchLiveStatus);
+      }
 
       if (msg.type === 'model_start') {
         _benchAddModelDatasets(msg.model_id);
         _benchLogAppend(`<div class="bench-log-sep">── ${_hEsc(msg.model_id)} ──</div>`);
         if (msg.cmd) _benchLogAppend(`<span class="bench-log-cmd">$ ${_hEsc(msg.cmd)}</span>`);
-        document.getElementById('benchStatus').textContent = `running: ${msg.model_id.split('/').pop()}`;
+        _benchStatus(`running: ${msg.model_id.split('/').pop()}`);
       } else if (msg.type === 'line') {
         const html = _benchFormatLine(msg.text || '');
         if (html) _benchLogAppend(html);
@@ -909,17 +936,22 @@ async function runBenchmark() {
           _benchPushPoint(msg);
         }
       } else if (msg.type === 'model_done') {
-        const mx = _benchMaxes(msg.model_id);
+        // The agent sends its own maxes from v2026.08.31-1 on; matching them
+        // keeps this row identical to the one the agent records (#772).
+        const mx = msg.max_gen_tps === undefined
+          ? _benchMaxes(msg.model_id)
+          : { gen: msg.max_gen_tps, ppt: msg.max_ppt_tps, pg: msg.max_pg_tps };
         _benchAddModelResultRow(msg.model_id, tool, mx);
         document.getElementById('benchResults').classList.add('shown');
         _recordToolRun('benchmark', {model_id: msg.model_id, gen_tps: mx.gen,
                                      ppt_tps: mx.ppt, pg_tps: mx.pg, bench_tool: tool,
+                                     run_id: msg.run_id || _runIdOf(e),
                                      ok: mx.gen != null || mx.ppt != null || mx.pg != null});
       } else if (msg.type === 'done') {
         if (_benchEventSrc) { try { _benchEventSrc.close(); } catch(_){} _benchEventSrc = null; } if (typeof toolsSyncRunDot === 'function') toolsSyncRunDot();
         document.getElementById('benchRunBtn').disabled = false;
         document.getElementById('benchCancelBtn').style.display = 'none';
-        document.getElementById('benchStatus').textContent = msg.ok ? 'done' : (msg.error ? 'error' : 'done');
+        _benchStatus(msg.ok ? 'done' : (msg.error ? 'error' : 'done'));
         _benchSetState(msg.ok ? 'ok' : 'err');
         if (msg.error) _benchLogAppend(`<span class="bench-log-text" style="color:var(--crit)">✗ Error: ${_hEsc(String(msg.error))}</span>`);
         _benchSetPerfMode('powersave');
@@ -928,10 +960,13 @@ async function runBenchmark() {
     _benchEventSrc.onerror = () => {
       // Transient drop: EventSource auto-reconnects and resumes from the last
       // event id (server replays the gap). Only a CLOSED state is terminal.
-      if (_benchEventSrc && _benchEventSrc.readyState === EventSource.CONNECTING) {
+      if (_benchEventSrc && _benchEventSrc.readyState === EventSource.CONNECTING
+          && ++_benchDrops <= _BENCH_MAX_DROPS) {
+        _benchReconnecting = true;
         document.getElementById('benchStatus').textContent = 'reconnecting…';
         return;
       }
+      _benchReconnecting = false;
       if (_benchEventSrc) { try { _benchEventSrc.close(); } catch(_){} _benchEventSrc = null; } if (typeof toolsSyncRunDot === 'function') toolsSyncRunDot();
       document.getElementById('benchRunBtn').disabled = false;
       document.getElementById('benchCancelBtn').style.display = 'none';
@@ -951,6 +986,7 @@ async function runBenchmark() {
 
 // Function to cancel a running benchmark: closes the event stream, sends a cancel request to the backend, and updates the UI state
 function cancelBenchmark() {
+  _benchReconnecting = false;
   if (_benchEventSrc) { try { _benchEventSrc.close(); } catch(_){} _benchEventSrc = null; } if (typeof toolsSyncRunDot === 'function') toolsSyncRunDot();
   fetch('/api/benchmark/cancel', {method: 'POST'}).catch(() => {});
   document.getElementById('benchRunBtn').disabled = false;
@@ -1383,6 +1419,7 @@ async function runAutotune() {
     } else if (msg.type === 'model_done') {
       _atPending[msg.model_id] = msg;
       _recordToolRun('autotune', {model_id: msg.model_id, ok: !!msg.ok,
+                                  run_id: msg.run_id || '',
                                   ctx_size: msg.ctx_size, free_mb: msg.free_mb,
                                   iters: msg.iters, converged: !!msg.converged});
       if (msg.ok) {

@@ -149,3 +149,84 @@ def test_first_upgrade_seeds_ledger_from_model_benchmarks(monkeypatch):
     _client().delete("/api/tools/runs")
     manager_mod.init_db()
     assert _client().get("/api/tools/runs").get_json()["runs"] == []
+
+
+def test_same_run_id_and_model_records_once(monkeypatch):
+    """#772: the agent's row and every watching dashboard's row collapse."""
+    _setup(monkeypatch)
+    c = _client()
+    for gen in (40.0, 41.0):
+        assert c.post("/api/tools/runs", json={
+            "tool": "benchmark", "model_id": "org/m", "run_id": "run1",
+            "gen_tps": gen}).get_json()["ok"] is True
+    runs = c.get("/api/tools/runs").get_json()["runs"]
+    assert len(runs) == 1
+    assert runs[0]["run_id"] == "run1"
+    # First writer wins; the duplicate is ignored, not merged.
+    assert runs[0]["summary"]["gen_tps"] == 40.0
+
+
+def test_run_id_scopes_dedupe_to_one_model_and_one_run(monkeypatch):
+    _setup(monkeypatch)
+    c = _client()
+    for body in ({"model_id": "m1", "run_id": "run1"},
+                 {"model_id": "m2", "run_id": "run1"},
+                 {"model_id": "m1", "run_id": "run2"}):
+        c.post("/api/tools/runs", json={"tool": "benchmark", **body})
+    assert len(c.get("/api/tools/runs").get_json()["runs"]) == 3
+
+
+def test_rows_without_a_run_id_still_append(monkeypatch):
+    """Older agents send no run id — behaviour must match pre-#772."""
+    _setup(monkeypatch)
+    c = _client()
+    for _ in range(3):
+        c.post("/api/tools/runs", json={"tool": "autotune", "model_id": "m"})
+    runs = c.get("/api/tools/runs").get_json()["runs"]
+    assert len(runs) == 3
+    assert all(r["run_id"] is None for r in runs)
+
+
+def test_run_id_is_not_folded_into_the_summary(monkeypatch):
+    _setup(monkeypatch)
+    c = _client()
+    c.post("/api/tools/runs", json={"tool": "benchmark", "model_id": "m",
+                                    "run_id": "run1", "gen_tps": 12.0})
+    row = c.get("/api/tools/runs").get_json()["runs"][0]
+    assert "run_id" not in row["summary"] and "agent_id" not in row["summary"]
+    assert row["summary"]["gen_tps"] == 12.0
+
+
+def test_agent_machine_token_may_only_write_the_ledger():
+    """#772: the agent records its own finished runs — it must not be able to
+    read the whole ledger or wipe it."""
+    import auth
+    assert auth._agent_bearer_allowed("/api/tools/runs", "POST") is True
+    assert auth._agent_bearer_allowed("/api/tools/runs", "GET") is False
+    assert auth._agent_bearer_allowed("/api/tools/runs", "DELETE") is False
+    for denied in ("/api/tools/activity", "/api/autopilot", "/api/terminal/open",
+                   "/api/admin/restart", "/api/benchmark/run"):
+        assert auth._agent_bearer_allowed(denied, "POST") is False
+
+
+def test_a_machine_token_owns_the_row_it_records(monkeypatch):
+    _setup(monkeypatch)
+    aid = "c" * 32
+    monkeypatch.setattr(manager_mod.agent_registry, "agent_by_token",
+                        lambda t: {"agent_id": aid} if t == "agenttok" else None)
+    c = _client()
+    c.post("/api/tools/runs", json={"tool": "benchmark", "model_id": "m",
+                                    "run_id": "r1"},
+           headers={"Authorization": "Bearer agenttok"})
+    assert c.get("/api/tools/runs").get_json()["runs"][0]["agent_id"] == aid
+
+
+def test_a_browser_cannot_attribute_a_run_to_another_agent(monkeypatch):
+    """agent_id in the body is only honoured for an authenticated agent."""
+    _setup(monkeypatch)
+    monkeypatch.setattr(manager_mod.agent_registry, "agent_by_token", lambda t: None)
+    monkeypatch.setattr(manager_mod, "_request_agent", lambda k: {"agent_id": "d" * 32})
+    c = _client()
+    c.post("/api/tools/runs", json={"tool": "benchmark", "model_id": "m",
+                                    "agent_id": "e" * 32})
+    assert c.get("/api/tools/runs").get_json()["runs"][0]["agent_id"] == "d" * 32
