@@ -129,3 +129,35 @@ def test_a_failing_probe_does_not_raise():
                  agent_call=_boom, reportcard_active=lambda: [])
     ta.note_start(A1, "llama", "benchmark", now=1000.0)
     assert ta.snapshot(sync=True, now=1010.0)["benchmark"] is True
+
+
+def test_the_on_target_hook_records_only_an_accepted_run():
+    """#775: the hook fires with the agent proxy_to_primary actually picked."""
+    import manager_mod
+    ta.configure(agent_for=lambda aid: None, agent_call=None,
+                 reportcard_active=lambda: [])
+    hook = manager_mod._note_tool_start("llama", "benchmark")
+    agent = {"agent_id": A1}
+
+    class _R:
+        def __init__(self, status, payload=None, boom=False):
+            self.status_code, self._p, self._boom = status, payload, boom
+
+        def json(self):
+            if self._boom:
+                raise ValueError("not json")
+            return self._p
+
+    hook(agent, _R(503))
+    assert ta.snapshot(sync=True)["benchmark"] is False
+
+    hook(agent, _R(200, {"ok": False, "error": "Another benchmark is in progress"}))
+    assert ta.snapshot(sync=True)["benchmark"] is False
+
+    hook(agent, _R(200, {"ok": True}))
+    assert ta.snapshot(sync=True)["agents"] == {A1: ["benchmark"]}
+
+    ta.reset()
+    # A body that isn't JSON still counts as accepted.
+    hook(agent, _R(200, boom=True))
+    assert ta.snapshot(sync=True)["benchmark"] is True

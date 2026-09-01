@@ -1909,11 +1909,11 @@ def _note_tool_start(provider: str, tool: str):
     def _hook(agent, resp):
         if resp.status_code != 200:
             return
-        try:
+        with best_effort("tool start ok-flag"):
+            # A non-JSON body still counts as accepted; only an explicit
+            # {"ok": false} means the agent refused the run.
             if (resp.json() or {}).get("ok") is False:
                 return
-        except Exception:
-            pass
         tool_activity.note_start(agent.get("agent_id") or "", provider, tool)
     return _hook
 
