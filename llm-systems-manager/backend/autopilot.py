@@ -158,6 +158,28 @@ def _lms_answered(sample: dict) -> bool:
 _ANSWERED_BY_PROVIDER = {"llama": _llama_answered, "vllm": _vllm_answered, "lms": _lms_answered}
 
 
+def _llama_detail(sample: dict) -> str:
+    return f"state={(sample.get('llama') or {}).get('state')}"
+
+
+def _vllm_detail(sample: dict) -> str:
+    return f"state={(sample.get('vllm') or {}).get('state')}"
+
+
+def _lms_detail(sample: dict) -> str:
+    if sample.get("ps_ok") is True:
+        return "ps ok"
+    return f"ps unreadable: {sample.get('ps_error') or 'no ps_ok in sample'}"
+
+
+# One-line "why answered/unanswered" per provider for the log.
+_SAMPLE_DETAIL_BY_PROVIDER = {"llama": _llama_detail, "vllm": _vllm_detail, "lms": _lms_detail}
+
+
+def _sample_detail(agent: dict, provider: str) -> str:
+    return (agent.get("sample_detail") or {}).get(provider) or "no detail"
+
+
 def _sample_gpu(sample: dict) -> dict:
     # llama pushes gpu flat at top level; vllm/lms nest it under "system".
     return sample.get("gpu") or (sample.get("system") or {}).get("gpu") or {}
@@ -179,6 +201,7 @@ def build_observed(deps: dict) -> dict:
         provider_caps = [p for p in _PROVIDERS if caps.get(p)]
         loaded: "dict[str, list]" = {}
         answered: "dict[str, bool]" = {}
+        detail: "dict[str, str]" = {}
         saturation: "dict[str, float | None]" = {}
         server_state = None
         gpu: dict = {}
@@ -188,6 +211,7 @@ def build_observed(deps: dict) -> dict:
             sample = snap.get("sample") or {}
             loaded[prov] = _LOADED_BY_PROVIDER[prov](sample)
             answered[prov] = _ANSWERED_BY_PROVIDER[prov](sample)
+            detail[prov] = _SAMPLE_DETAIL_BY_PROVIDER[prov](sample)
             if prov == "llama":
                 st = (sample.get("llama") or {}).get("state")
                 if st in ("awake", "sleeping"):
@@ -213,6 +237,7 @@ def build_observed(deps: dict) -> dict:
             "ram_free_mb": ram_free_mb,
             "loaded": loaded,
             "answered": answered,
+            "sample_detail": detail,
             "server_state": server_state,
             "saturation": saturation,
         }
@@ -493,6 +518,7 @@ class Reconciler:
         self._busy_agents = busy_agents
         self._proposals: "dict[str, dict]" = {}
         self._sat_history: "dict[str, list]" = {}
+        self._grace_expired: "set[tuple[str, str]]" = set()
         self.ledger = _empty_ledger()
         # Coarse reentrant lock: serializes the background tick against
         # route-triggered apply/dismiss/tick calls (#472 Task 7).
@@ -512,6 +538,8 @@ class Reconciler:
             self._prune_placed_at(observed, now)
             self._refresh_sat_history(desired, observed, now)
             actions = pl.plan(desired, observed, self.ledger, now)
+            if log.isEnabledFor(logging.DEBUG):
+                self._log_tick(desired, observed, actions, now)
             sig = lambda a: (a.kind, a.provider, a.model, a.agent_id)
             current = {sig(a) for a in actions}
             self._proposals = {pid: p for pid, p in self._proposals.items()
@@ -542,6 +570,23 @@ class Reconciler:
                     "proposals": self._snapshot,
                     "entry_status": pl.entry_status(desired, observed,
                                                     self.ledger, now)}
+
+    def _log_tick(self, desired: dict, observed: dict, actions: list, now: float) -> None:
+        for aid, a in observed["agents"].items():
+            log.debug("autopilot tick: agent:%s liveness=%s loaded=%s answered=%s detail=%s "
+                      "last_action=%s", aid[:8], a.get("liveness"), a.get("loaded"),
+                      a.get("answered"), a.get("sample_detail"),
+                      f"{now - self.ledger['last_action_ts'][aid]:.0f}s ago"
+                      if aid in self.ledger["last_action_ts"] else "never")
+        for k, st in pl.entry_status(desired, observed, self.ledger, now).items():
+            log.debug("autopilot tick: %s placed=%s want=%s blocked=%s confirmed=%s "
+                      "blank_since=%s backoff=%s", k, st.get("placed"), st.get("want"),
+                      st.get("blocked"), sorted(a[:8] for a in self.ledger["confirmed"].get(k, ())),
+                      {a[:8]: f"{now - t:.0f}s" for a, t in self.ledger["blank_since"].get(k, {}).items()},
+                      f"{self.ledger['backoff_until'][k] - now:.0f}s"
+                      if self.ledger["backoff_until"].get(k, 0) > now else None)
+        log.debug("autopilot tick: %d action(s): %s", len(actions),
+                  [(a.kind, a.provider, a.model, (a.agent_id or "")[:8], a.reason) for a in actions])
 
     def _prune_stale_keys(self, desired: dict, observed: dict) -> None:
         """Drop sat-history/ledger keys for entries and agents that no
@@ -578,13 +623,32 @@ class Reconciler:
                     continue
                 if not _sample_blank(agent, provider):
                     if record:
-                        since_map.pop(aid, None)
+                        since = since_map.pop(aid, None)
+                        if model not in (agent["loaded"].get(provider) or []):
+                            log.info("autopilot: %s dropped on agent:%s — %s answered with "
+                                     "loaded=%s (%s)%s", k, aid[:8], provider,
+                                     agent["loaded"].get(provider) or [],
+                                     _sample_detail(agent, provider),
+                                     f" after {now - since:.0f}s blank" if since else "")
+                        elif since is not None:
+                            log.info("autopilot: %s on agent:%s reported again after %.0fs blank",
+                                     k, aid[:8], now - since)
                     continue
                 since = since_map.get(aid)
                 if since is None and record:
                     since = since_map[aid] = now
+                    log.info("autopilot: %s on agent:%s — blank sample (%s); holding the "
+                             "placement for %.0fs", k, aid[:8],
+                             _sample_detail(agent, provider), BLANK_GRACE_S)
                 if since is not None and now - since < BLANK_GRACE_S:
                     inject.append((agent, provider, model))
+                elif record and since is not None and (k, aid) not in self._grace_expired:
+                    self._grace_expired.add((k, aid))
+                    log.info("autopilot: %s on agent:%s — blank grace expired after %.0fs; "
+                             "placement dropped", k, aid[:8], now - since)
+        if record:
+            live = {(k, aid) for k, m in blank_since.items() for aid in m}
+            self._grace_expired &= live
         # Injected after the scan; every blank check above reads the raw sample.
         for agent, provider, model in inject:
             agent["loaded"].setdefault(provider, []).append(model)
@@ -599,11 +663,16 @@ class Reconciler:
             for aid, ts in list(amap.items()):
                 agent = observed["agents"].get(aid)
                 if aid in reported:
-                    confirmed.setdefault(k, set()).add(aid)
+                    if aid not in confirmed.setdefault(k, set()):
+                        log.info("autopilot: %s confirmed on agent:%s %.0fs after the load",
+                                 k, aid[:8], now - ts)
+                    confirmed[k].add(aid)
                     continue
                 if now - ts < pl.PLACEMENT_FRESH_S:
                     continue
                 if agent is None or agent["live"]:
+                    log.info("autopilot: %s on agent:%s not reported loaded %.0fs after the "
+                             "load; placement row dropped", k, aid[:8], now - ts)
                     del amap[aid]
         # confirmed never outlives its placed_at row; blank_since never outlives confirmed.
         for k in list(confirmed):
@@ -648,6 +717,9 @@ class Reconciler:
         is_migration = action.reason.startswith("failover:")
         if is_migration:
             self.ledger["in_flight_migrations"] += 1
+        log.info("autopilot: %s %s/%s -> agent:%s (%s)", action.kind, action.provider,
+                 action.model, (action.agent_id or "")[:8], action.reason)
+        t0 = time.monotonic()
         try:
             ok = self._exec(action)
         finally:
@@ -655,6 +727,10 @@ class Reconciler:
                 self.ledger["in_flight_migrations"] = max(
                     0, self.ledger["in_flight_migrations"] - 1)
         k = action.entry_key
+        log.info("autopilot: %s %s/%s on agent:%s %s in %.1fs%s", action.kind, action.provider,
+                 action.model, (action.agent_id or "")[:8], "ok" if ok else "FAILED",
+                 time.monotonic() - t0,
+                 "" if ok or action.kind == "wake" else " — entry backs off 300s")
         if ok:
             self.ledger["last_action_ts"][action.agent_id] = now
             if action.kind in ("load", "migrate", "scale_up"):
@@ -718,6 +794,10 @@ class Reconciler:
 
 # ── Executors: dispatch a planned Action to provider-specific side effects ──
 
+# Agent response fields worth one log line per action.
+_RESP_LOG_KEYS = ("already_loaded", "verified", "timeout", "instances", "error", "detail")
+
+
 def make_executor(deps: dict, entries_by_key):
     """Build an executor(Action) -> bool per the #472 behavior matrix.
     entries_by_key: dict[entry_key, entry] snapshot, or a zero-arg callable."""
@@ -742,7 +822,12 @@ def make_executor(deps: dict, entries_by_key):
     def _call(provider, method, path, body=None) -> bool:
         """proxy call that also honours an ok:false body on an HTTP 2xx."""
         ok, resp = deps["proxy"](provider, method, path, body)
-        return bool(ok) and (not isinstance(resp, dict) or resp.get("ok", True) is not False)
+        ok = bool(ok) and (not isinstance(resp, dict) or resp.get("ok", True) is not False)
+        summary = ({key: resp[key] for key in _RESP_LOG_KEYS if key in resp}
+                   if isinstance(resp, dict) else resp)
+        log.info("autopilot: agent %s %s %s -> %s %s", method, path, body or "",
+                 "ok" if ok else "FAILED", summary or "")
+        return ok
 
     def _load(action) -> bool:
         provider, model, agent_id = action.provider, action.model, action.agent_id

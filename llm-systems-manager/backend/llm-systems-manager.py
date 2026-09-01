@@ -159,7 +159,7 @@ def _local_hostname() -> str:
 # banner reads it. Bump suffix (-1, -2, …) for same-day iterations; roll
 # the date for a new day's first change.
 # ---------------------------------------------------------------------------
-__version__ = "v2026.09.01-2"
+__version__ = "v2026.09.01-3"
 
 # Wall-clock at first import (Cheroot main process); the shutdown banner
 # reads it for the uptime line.
@@ -3125,7 +3125,14 @@ _AUDIT_ROUTES: list[tuple[str | None, "re.Pattern[str]", str]] = [
     ("PUT",    re.compile(r"^/api/admin/settings$"),                   "config.settings"),
     ("POST",   re.compile(r"^/api/llm/server/svcconfig$"),             "config.svcconfig"),
     ("POST",   re.compile(r"^/api/config/interval$"),                  "config.interval"),
+    ("POST",   re.compile(r"^/api/llm/load$"),                         "llama.load"),
+    ("POST",   re.compile(r"^/api/llm/unload$"),                       "llama.unload"),
+    ("POST",   re.compile(r"^/api/lmstudio/load$"),                    "lms.load"),
+    ("POST",   re.compile(r"^/api/lmstudio/unload$"),                  "lms.unload"),
 ]
+
+# Actions whose target is the model id in the JSON body, not in the path.
+_AUDIT_BODY_TARGET_ACTIONS = {"llama.load", "llama.unload", "lms.load", "lms.unload"}
 
 # Per-provider pool/pins audit entries (llama labels unchanged).
 _AUDIT_ROUTES += [
@@ -3140,7 +3147,17 @@ _AUDIT_ROUTES += [
 ]
 
 
-_AUDIT_PATH_PREFIXES = ("/api/admin/", "/api/agents/", "/api/llm/server/", "/api/config/")
+_AUDIT_PATH_PREFIXES = ("/api/admin/", "/api/agents/", "/api/llm/", "/api/lmstudio/",
+                        "/api/config/")
+
+
+def _audit_body_target() -> "str | None":
+    """model_id/model from the request JSON body, truncated; None when absent."""
+    data = flask_request.get_json(silent=True)
+    if not isinstance(data, dict):
+        return None
+    val = data.get("model_id") or data.get("model")
+    return str(val)[:200] if isinstance(val, str) and val else None
 
 
 def _audit_match(method: str, path: str) -> tuple[str, str | None] | None:
@@ -3183,6 +3200,8 @@ def _audit_after_request(resp):
         if matched is None:
             return resp
         action, target = matched
+        if target is None and action in _AUDIT_BODY_TARGET_ACTIONS:
+            target = _audit_body_target()
         status = resp.status_code
         outcome = "ok" if status < 400 else ("denied" if status in (401, 403) else "error")
         _audit_record((

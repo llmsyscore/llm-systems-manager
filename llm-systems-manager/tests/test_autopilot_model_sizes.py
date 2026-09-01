@@ -565,3 +565,13 @@ def test_observed_llama_answered_mirrors_server_state():
     assert obs["agents"][A1]["server_state"] == "awake"
     obs = ap.build_observed(_deps_for({"llama": True}, {"llama": {"state": "unknown"}}))
     assert obs["agents"][A1]["answered"] == {"llama": False}
+
+
+def test_observed_sample_detail_explains_each_provider():
+    obs = ap.build_observed(_deps_for({"lms": True}, {"ps": [], "ps_ok": False,
+                                                       "ps_error": "lms ps timed out after 15s"}))
+    assert obs["agents"][A1]["sample_detail"] == {"lms": "ps unreadable: lms ps timed out after 15s"}
+    obs = ap.build_observed(_deps_for({"lms": True}, {"ps": [], "ps_ok": True}))
+    assert obs["agents"][A1]["sample_detail"] == {"lms": "ps ok"}
+    obs = ap.build_observed(_deps_for({"llama": True}, {"llama": {"state": "unknown"}}))
+    assert obs["agents"][A1]["sample_detail"] == {"llama": "state=unknown"}
