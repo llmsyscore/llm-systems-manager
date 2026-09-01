@@ -128,7 +128,8 @@ _bench_pgid: "Optional[int]" = None
 _bench_cancel_event = threading.Event()
 _BENCH_ANSI_RE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
 
-_autotune_queue: "_queue_lib.Queue[dict]" = _queue_lib.Queue(maxsize=5000)
+_autotune_replay = BenchReplayBuffer(maxlen=5000)
+_autotune_cond = threading.Condition()
 _autotune_lock = threading.Lock()
 _autotune_active = False
 _autotune_run_id = ""
@@ -2142,8 +2143,10 @@ def llama_bench_run(body: dict, authorization: Optional[str] = Header(default=No
         if _bench_active:
             return {"ok": False, "error": "Another benchmark is in progress"}
         _bench_active = True
-    with _bench_cond:
-        _bench_replay.start_run(uuid.uuid4().hex[:12])
+        # Reset the buffer before the lock drops: a stream landing between
+        # active=True and start_run would replay the prior run's stale done.
+        with _bench_cond:
+            _bench_replay.start_run(uuid.uuid4().hex[:12])
     threading.Thread(target=_bench_run_all,
                      args=(model_ids, tool, switches), daemon=True).start()
     return {"ok": True}
@@ -2235,14 +2238,10 @@ def llama_bench_perf_mode(body: dict, authorization: Optional[str] = Header(defa
 
 
 def _autotune_put(msg: dict) -> None:
-    """Bounded enqueue; drops oldest on overflow."""
-    try:
-        _autotune_queue.put_nowait(msg)
-    except _queue_lib.Full:
-        try: _autotune_queue.get_nowait()
-        except _queue_lib.Empty: pass
-        try: _autotune_queue.put_nowait(msg)
-        except _queue_lib.Full: pass
+    """Append to the per-run replay buffer and wake any waiting streams."""
+    with _autotune_cond:
+        _autotune_replay.append(msg)
+        _autotune_cond.notify_all()
 
 
 def _autotune_build_optional_args(params: dict) -> list:
@@ -2895,9 +2894,10 @@ def llama_autotune_run(body: dict, authorization: Optional[str] = Header(default
             return {"ok": False, "error": "Another auto-tune is in progress"}
         _autotune_active = True
         _autotune_run_id = uuid.uuid4().hex[:12]
-        while not _autotune_queue.empty():
-            try: _autotune_queue.get_nowait()
-            except Exception: break
+        # Reset the buffer before the lock drops: a stream landing between
+        # active=True and start_run would replay the prior run's stale done.
+        with _autotune_cond:
+            _autotune_replay.start_run(_autotune_run_id)
     threading.Thread(target=_autotune_run_all,
                      args=(model_ids, target_mb, optional_params, tolerance_mb),
                      daemon=True).start()
@@ -2907,24 +2907,12 @@ def llama_autotune_run(body: dict, authorization: Optional[str] = Header(default
 def llama_autotune_stream(
     authorization: Optional[str] = Header(default=None),
     token: Optional[str] = Query(default=None),
+    last_event_id: Optional[str] = Header(default=None, alias="Last-Event-ID"),
 ) -> StreamingResponse:
     _require_ctx().check_stream_auth(authorization, token, "/llama/autotune/stream")
     _llama_check_enabled()
-    def generate() -> Iterator[bytes]:
-        while True:
-            try:
-                msg = _autotune_queue.get(timeout=30)
-                yield f"data: {json.dumps(msg)}\n\n".encode()
-                if msg.get("type") == "done":
-                    break
-            except _queue_lib.Empty:
-                yield b'data: {"type":"keepalive"}\n\n'
-    if not stream_pool.POOL.try_acquire():
-        raise HTTPException(status_code=503, detail="agent at stream capacity; retry shortly")
-    return StreamingResponse(
-        stream_pool.guarded_async(generate()), media_type="text/event-stream",
-        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
-    )
+    return _shared.bench_replay_sse(
+        _autotune_replay, _autotune_cond, lambda: _autotune_active, last_event_id)
 
 
 def llama_autotune_cancel(authorization: Optional[str] = Header(default=None)) -> dict[str, Any]:

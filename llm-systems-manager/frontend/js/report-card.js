@@ -10,6 +10,9 @@ let _rcJobId     = null;
 let _rcTick      = null;
 let _rcCleanup   = null;
 let _rcRunTarget = null;
+// Reconnects with no message in between; a transient drop is not terminal.
+let _rcDrops     = 0;
+const _RC_MAX_DROPS = 20;
 
 function _rcEl(id) { return document.getElementById(id); }
 
@@ -260,9 +263,11 @@ function rcStream(jobId) {
   _rcCloseStream();
   _rcEventSrc = new EventSource('/api/reportcard/stream/' + encodeURIComponent(jobId));
   if (typeof toolsSyncRunDot === 'function') toolsSyncRunDot();
+  _rcDrops = 0;
   _rcEventSrc.onmessage = ev => {
     let d;
     try { d = JSON.parse(ev.data); } catch (e) { return; }
+    _rcDrops = 0;
     if (d.event === 'progress') {
       let text;
       if (d.phase === 'rep') {
@@ -302,6 +307,13 @@ function rcStream(jobId) {
     }
   };
   _rcEventSrc.onerror = () => {
+    // Transient drop: EventSource auto-reconnects and the server re-emits a
+    // missed terminal event (#778). Only a CLOSED state is terminal.
+    if (_rcEventSrc && _rcEventSrc.readyState === EventSource.CONNECTING
+        && ++_rcDrops <= _RC_MAX_DROPS) {
+      if (_rcDrops === 1) _rcLog('stream dropped — reconnecting…');
+      return;
+    }
     _rcLog('connection lost');
     _rcStatus('');
     _rcNote('Lost connection to the run — it may still be running. '

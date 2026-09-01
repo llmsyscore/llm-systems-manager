@@ -833,6 +833,11 @@ def _run_job(job_id: str, req: dict) -> None:
         q.put({"event": "progress", "elapsed_s": round(_time.monotonic() - started, 1),
                **ev})
 
+    def finish(ev):
+        # Records the terminal event on the job for re-emit to reconnects (#778).
+        job["terminal"] = ev
+        q.put(ev)
+
     def check():
         if cancel.is_set():
             raise _Cancelled()
@@ -918,17 +923,17 @@ def _run_job(job_id: str, req: dict) -> None:
                 "eligible": mode == "standard" and is_reference,
                 "result": result}
         insert_card(_conn_factory(), card)
-        q.put({"event": "done", "card": _public_card(card),
-               "cleanup": {"downloaded": provisioned,
-                           "deletable": provisioned
-                           and provider in ("llama", "lms"),
-                           "model_key": req.get("model_key")}})
+        finish({"event": "done", "card": _public_card(card),
+                "cleanup": {"downloaded": provisioned,
+                            "deletable": provisioned
+                            and provider in ("llama", "lms"),
+                            "model_key": req.get("model_key")}})
     except _Cancelled:
         log.info("report card run cancelled")
-        q.put({"event": "cancelled"})
+        finish({"event": "cancelled"})
     except Exception as e:
         log.warning("report card run failed: %s", e)
-        q.put({"event": "error", "error": str(e)[:600]})
+        finish({"event": "error", "error": str(e)[:600]})
     finally:
         job["done"] = True
 
@@ -1112,13 +1117,15 @@ def register_routes(app, ctx=None, db_path: "str | None" = None) -> None:
             started = _time.monotonic()
             while True:
                 if _time.monotonic() - started > _STREAM_MAX_S:
-                    yield "data: " + json.dumps(
-                        {"event": "error", "error": "run timed out"}) + "\n\n"
+                    # Per-connection lifetime cap: plain EOF, no run verdict (#778).
                     return
                 try:
                     ev = job["queue"].get(timeout=_STREAM_TICK_S)
                 except _queue.Empty:
                     if job["done"] and job["queue"].empty():
+                        term = job.get("terminal")
+                        if term:
+                            yield "data: " + json.dumps(term) + "\n\n"
                         return
                     yield ": keepalive\n\n"
                     continue

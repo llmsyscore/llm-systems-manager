@@ -164,6 +164,42 @@ def test_stream_unknown_job_is_404(client):
     assert client.get("/api/reportcard/stream/nope").status_code == 404
 
 
+def test_first_drain_sees_exactly_one_done(client):
+    r = client.post("/api/reportcard/run", json={
+        "agent": "a" * 32, "provider": "llama", "mode": "standard",
+        "model_key": "small"})
+    events = _drain(client, r.get_json()["job_id"])
+    assert len([e for e in events if e.get("event") == "done"]) == 1
+
+
+def test_stream_reemits_terminal_after_drain(client):
+    # #778: a reconnect after the terminal event was drained re-emits it
+    # instead of ending as an empty 200 (EventSource reconnect loop).
+    r = client.post("/api/reportcard/run", json={
+        "agent": "a" * 32, "provider": "llama", "mode": "standard",
+        "model_key": "small"})
+    job_id = r.get_json()["job_id"]
+    first = _drain(client, job_id)
+    assert [e for e in first if e.get("event") == "done"], first
+    second = _drain(client, job_id)
+    done = [e for e in second if e.get("event") == "done"]
+    assert len(done) == 1
+    assert done[0]["card"]["result"]["gen_tps"] == 40.0
+
+
+def test_stream_reemits_error_terminal_after_drain(client, monkeypatch):
+    monkeypatch.setattr(rc, "run_bench",
+                        lambda *a, **k: (_ for _ in ()).throw(RuntimeError("boom")))
+    r = client.post("/api/reportcard/run", json={
+        "agent": "a" * 32, "provider": "llama", "mode": "standard",
+        "model_key": "small"})
+    job_id = r.get_json()["job_id"]
+    assert any(e.get("event") == "error" for e in _drain(client, job_id))
+    second = _drain(client, job_id)
+    errs = [e for e in second if e.get("event") == "error"]
+    assert len(errs) == 1 and "boom" in errs[0]["error"]
+
+
 def test_latest_and_history_endpoints(client):
     conn = rc._conn_factory()
     rc.insert_card(conn, {"ts": 1, "agent_id": "a" * 32, "provider": "llama",
