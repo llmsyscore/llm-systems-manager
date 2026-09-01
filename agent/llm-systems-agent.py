@@ -51,7 +51,7 @@ import collectors  # type: ignore
 import providers  # type: ignore
 from collectors.system import collect_system_metrics  # type: ignore
 from collectors._shared import AbsenceLatch, collect_enabled  # type: ignore
-from providers.lms import lms_get_models, lms_get_ps, lms_get_status  # type: ignore
+from providers.lms import lms_sample_block  # type: ignore
 from providers.llama import collect_llama_for_metrics, llama_api_port, llama_get_state  # type: ignore
 from providers.vllm import collect_vllm_for_metrics  # type: ignore
 from agent_context import AgentContext  # type: ignore
@@ -72,7 +72,7 @@ except ImportError:
                 fh.write(content)
         tmp.replace(p)
 
-VERSION = "v2026.09.01-1"
+VERSION = "v2026.09.01-2"
 
 # LMS ps busy-status substrings, mirroring manager energy.LMS_BUSY_MARKERS;
 # transitional states (LOADING/UNLOADING/DOWNLOADING) are not busy (#619).
@@ -383,6 +383,9 @@ class AgentConfig:
     LMS_ENABLED: bool = False
     LMS_CMD: str = ""
     LMS_API_URL: str = "http://localhost:1235"
+    # /lms/load and /lms/unload REST timeouts (seconds).
+    LMS_LOAD_TIMEOUT_S: int = 180
+    LMS_UNLOAD_TIMEOUT_S: int = 60
 
     LLAMA_ENABLED: bool = False
     LLAMA_BIN: str = ""
@@ -2148,11 +2151,7 @@ def _build_metric_sample() -> dict[str, Any]:
     except Exception as e:
         logger.debug("collect_powermetrics failed: %s", e)
     if CONFIG.LMS_ENABLED:
-        sample["lms"] = {
-            "server": lms_get_status(),
-            "models": lms_get_models(),
-            "ps": lms_get_ps(),
-        }
+        sample["lms"] = lms_sample_block()
     if CONFIG.LLAMA_ENABLED:
         rich = collect_llama_for_metrics()
         if not rich:
@@ -2180,7 +2179,9 @@ def _push_dashboard_payload(sample: dict[str, Any]) -> None:
         "ts": sample["ts"],
         "server": lms.get("server", {}),
         "models": lms.get("models", []),
-        "ps": lms.get("ps", []),
+        "ps": lms.get("ps") or [],
+        "ps_ok": lms.get("ps_ok"),
+        "ps_error": lms.get("ps_error"),
         "active": next(
             (r for r in (lms.get("ps") or [])
              if any(m in (r.get("status") or "") for m in _LMS_BUSY_MARKERS)),
@@ -2539,7 +2540,8 @@ def collector_loop() -> None:
                     tail.append(f"llama={ls}")
                 if CONFIG.LMS_ENABLED:
                     lms = (bm.get("lms") or {}).get("server") or {}
-                    tail.append(f"lms_server={'on' if lms.get('on') else 'off'}")
+                    on = lms.get('on')
+                    tail.append(f"lms_server={'unknown' if on is None else ('on' if on else 'off')}")
                 if CONFIG.OPENCLAW_ENABLED:
                     tail.append("openclaw=on")
                 if _metric_client is not None:

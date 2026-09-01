@@ -141,6 +141,23 @@ def _lms_loaded(sample: dict) -> "list[str]":
 _LOADED_BY_PROVIDER = {"llama": _llama_loaded, "vllm": _vllm_loaded, "lms": _lms_loaded}
 
 
+def _llama_answered(sample: dict) -> bool:
+    return (sample.get("llama") or {}).get("state") in ("awake", "sleeping")
+
+
+def _vllm_answered(sample: dict) -> bool:
+    return (sample.get("vllm") or {}).get("state") == "running"
+
+
+def _lms_answered(sample: dict) -> bool:
+    # Samples without ps_ok (older agents) never count as answered.
+    return sample.get("ps_ok") is True
+
+
+# True when the provider itself reported for that sample.
+_ANSWERED_BY_PROVIDER = {"llama": _llama_answered, "vllm": _vllm_answered, "lms": _lms_answered}
+
+
 def _sample_gpu(sample: dict) -> dict:
     # llama pushes gpu flat at top level; vllm/lms nest it under "system".
     return sample.get("gpu") or (sample.get("system") or {}).get("gpu") or {}
@@ -161,6 +178,7 @@ def build_observed(deps: dict) -> dict:
         caps = agent.get("capabilities") or {}
         provider_caps = [p for p in _PROVIDERS if caps.get(p)]
         loaded: "dict[str, list]" = {}
+        answered: "dict[str, bool]" = {}
         saturation: "dict[str, float | None]" = {}
         server_state = None
         gpu: dict = {}
@@ -169,6 +187,7 @@ def build_observed(deps: dict) -> dict:
             snap = deps["provider_snapshot"](prov, aid) or {}
             sample = snap.get("sample") or {}
             loaded[prov] = _LOADED_BY_PROVIDER[prov](sample)
+            answered[prov] = _ANSWERED_BY_PROVIDER[prov](sample)
             if prov == "llama":
                 st = (sample.get("llama") or {}).get("state")
                 if st in ("awake", "sleeping"):
@@ -193,6 +212,7 @@ def build_observed(deps: dict) -> dict:
             "vram_free_mb": max(total_mb - used_mb, 0),
             "ram_free_mb": ram_free_mb,
             "loaded": loaded,
+            "answered": answered,
             "server_state": server_state,
             "saturation": saturation,
         }
@@ -412,10 +432,13 @@ def _empty_ledger() -> dict:
 
 
 def _sample_blank(agent: dict, provider: str) -> bool:
-    """True when the provider block lists nothing loaded; for llama only while
-    the server state is unknown."""
+    """True when the provider block lists nothing loaded AND the provider did
+    not answer (agent["answered"]; legacy shape: llama server_state only)."""
     if agent["loaded"].get(provider):
         return False
+    answered = agent.get("answered")
+    if isinstance(answered, dict) and provider in answered:
+        return not answered[provider]
     return provider != "llama" or agent.get("server_state") is None
 
 
@@ -810,10 +833,10 @@ def _prod_agent_call(agent_id: str, method: str, path: str,
     return r, body
 
 
-# Covers the agent's scan(5s) + unload(30s) + settle(30s) + load(120s) worst case.
+# Covers the agent's load worst case: llama scan+unload+settle+load, lms 180 s + verify.
 _LOAD_TIMEOUT_S = 200.0
-# Covers the agent's unload(15s) + settle(30s) worst case.
-_UNLOAD_TIMEOUT_S = 60.0
+# Covers the agent's unload worst case: llama unload+settle, lms 60 s HTTP + 30 s CLI fallback.
+_UNLOAD_TIMEOUT_S = 120.0
 
 
 def _make_prod_proxy(agent_id: str):

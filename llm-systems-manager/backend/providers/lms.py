@@ -57,6 +57,7 @@ def _fleet_aggregate(samples: dict[str, dict]) -> dict:
             "online": is_online,
             "server_on": srv_on if is_online else False,
             "loaded_model_count": loaded_now if is_online else 0,
+            "ps_error": (s.get("ps_error") or None) if is_online else None,
             "loaded_models": loaded_models if is_online else [],
             "busy_process_count": busy_now if is_online else 0,
             "ctx": int(max(ctxs)) if (is_online and ctxs) else None,

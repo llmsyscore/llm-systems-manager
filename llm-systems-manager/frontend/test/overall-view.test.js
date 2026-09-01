@@ -297,6 +297,12 @@ describe('OV.agentRows model names (#571)', () => {
       loaded_models: ['qwen3-30b', 'llama-8b'] }] }, null], {});
     expect(rows[0].provs[0].detail).toBe('idle · qwen3-30b · llama-8b');
   });
+  it('lms rows say the ps read failed instead of showing 0 models', () => {
+    const rows = OV.agentRows([null, { agents: [{ agent_id: 'x', online: true,
+      server_on: true, loaded_model_count: 0, loaded_models: [],
+      ps_error: 'lms ps timed out after 15s' }] }, null], {});
+    expect(rows[0].provs[0].detail).toBe('lms ps unreadable');
+  });
   it('lms falls back to the count when names are absent', () => {
     const rows = OV.agentRows([null, { agents: [{ agent_id: 'x', online: true,
       server_on: true, loaded_model_count: 1 }] }, null], {});

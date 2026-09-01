@@ -240,6 +240,7 @@ function _agentDetail(prov, row) {
     return row.model ? `${state} · ${row.model}${_modelExtras(row)}` : state;
   }
   if (prov === 'lms') {
+    if (row.ps_error) return 'lms ps unreadable';
     if (!row.server_on) return 'server off';
     const state = (row.busy_process_count || 0) > 0 ? 'busy' : 'idle';
     const count = row.loaded_model_count || 0;

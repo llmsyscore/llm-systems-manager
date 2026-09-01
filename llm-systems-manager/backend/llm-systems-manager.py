@@ -159,7 +159,7 @@ def _local_hostname() -> str:
 # banner reads it. Bump suffix (-1, -2, …) for same-day iterations; roll
 # the date for a new day's first change.
 # ---------------------------------------------------------------------------
-__version__ = "v2026.09.01-1"
+__version__ = "v2026.09.01-2"
 
 # Wall-clock at first import (Cheroot main process); the shutdown banner
 # reads it for the uptime line.
@@ -2809,7 +2809,7 @@ def lmstudio_server_log():
 def lmstudio_load():
     data     = flask_request.get_json(force=True)
     # model_id lets lms_model_pins steer the target agent (llama parity).
-    return proxies.proxy_to_primary("lms", "POST", "/lms/load", json=data, timeout=60,
+    return proxies.proxy_to_primary("lms", "POST", "/lms/load", json=data, timeout=200,
                                     model_id=(data or {}).get("model"))
 def _valid_model_id(s) -> bool:
     return isinstance(s, str) and bool(_MODEL_ID_RE.match(s))
@@ -2825,7 +2825,7 @@ def _valid_hf_repo(s) -> bool:
 @app.route("/api/lmstudio/unload", methods=["POST"])
 def lmstudio_unload():
     data     = flask_request.get_json(force=True)
-    return proxies.proxy_to_primary("lms", "POST", "/lms/unload", json=data, timeout=30,
+    return proxies.proxy_to_primary("lms", "POST", "/lms/unload", json=data, timeout=120,
                                     model_id=(data or {}).get("model"))
 
 

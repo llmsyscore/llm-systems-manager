@@ -45,6 +45,8 @@ ALARM_ENGINE_URL: ""                 # Use the format http://<IP Address>:8081 f
 LMS_ENABLED: false
 # LMS_CMD:     ""                              # blank => detected at runtime (which lms / ~/.lmstudio/bin/lms)
 # LMS_API_URL: "http://localhost:1235"
+# LMS_LOAD_TIMEOUT_S: 180                     # /lms/load REST timeout; cold loads run ~15 s/GB. Keep < 200 (manager ceiling)
+# LMS_UNLOAD_TIMEOUT_S: 60                    # /lms/unload REST timeout. Keep < 90 (manager ceiling, minus the 30 s CLI fallback)
 
 # -- llama.cpp (set LLAMA_ENABLED: true on hosts running llama-server) -----
 # All paths are commented out by default so the agent's built-in defaults

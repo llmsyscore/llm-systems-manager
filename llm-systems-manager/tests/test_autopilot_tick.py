@@ -519,3 +519,58 @@ def test_applying_a_stored_proposal_respects_the_block():
     r._busy_agents = lambda: {props[0]["action"]["agent_id"]}
     assert r.apply(props[0]["id"])["ok"] is False
     assert calls == []
+
+
+# ── #784: lms/vllm carry a "provider answered" signal; a real unload drops at once ──
+
+def _mk_prov(provider, answered=True):
+    """Reconciler with one auto entry on `provider`, m1 confirmed on A1 by t=1030."""
+    calls = []
+    state = {"enabled": True, "hosts": {}, "entries": [
+        {"model": "m1", "provider": provider, "placement": "auto",
+         "failover": "auto", "priority": 1, "min_replicas": 1, "max_replicas": 1}]}
+    observed = {"agents": {
+        A1: {"provider_caps": [provider], "live": True, "vram_total_mb": 24000,
+             "vram_free_mb": 20000, "ram_free_mb": 64000, "loaded": {provider: []},
+             "server_state": None, "answered": {provider: answered},
+             "idle_since": None, "saturation": {}}},
+        "model_sizes_mb": {f"{provider}:m1": 8000}, "sat_history": {},
+        "route_pins": {}}
+    r = ap.Reconciler(get_state=lambda: state,
+                      build_observed=lambda: copy.deepcopy(observed),
+                      executor=lambda a: (calls.append(a), True)[1])
+    r.tick(now=1000.0)                                   # load issued
+    observed["agents"][A1]["loaded"][provider] = ["m1"]
+    r.tick(now=1030.0)                                   # confirmed
+    assert r.ledger["confirmed"][f"m1/{provider}"] == {A1}
+    observed["agents"][A1]["loaded"][provider] = []      # sample now empty
+    return r, calls, observed
+
+def test_lms_answered_empty_ps_is_a_real_unload_and_reloads_at_once():
+    r, calls, observed = _mk_prov("lms", answered=True)
+    out = r.tick(now=1200.0)
+    assert [a.kind for a in calls] == ["load", "load"]
+    assert r.ledger["blank_since"] == {}
+    assert out["entry_status"]["m1/lms"]["placed"] == 1   # new load in flight
+
+def test_lms_unanswered_empty_ps_keeps_the_placement_through_grace():
+    r, calls, observed = _mk_prov("lms", answered=False)
+    out = r.tick(now=1200.0)
+    assert [a.kind for a in calls] == ["load"]
+    assert r.ledger["blank_since"]["m1/lms"][A1] == 1200.0
+    assert out["entry_status"]["m1/lms"]["placed"] == 1
+
+def test_sample_blank_legacy_shape_keeps_llama_server_state_rule():
+    """Observed dicts without `answered` (older fixtures) still use server_state for llama
+    and treat every empty lms/vllm list as blank."""
+    assert ap._sample_blank({"loaded": {"llama": []}, "server_state": "awake"}, "llama") is False
+    assert ap._sample_blank({"loaded": {"llama": []}, "server_state": None}, "llama") is True
+    assert ap._sample_blank({"loaded": {"lms": []}}, "lms") is True
+    assert ap._sample_blank({"loaded": {"lms": ["x"]}}, "lms") is False
+
+def test_sample_blank_answered_signal_wins_for_every_provider():
+    assert ap._sample_blank({"loaded": {"lms": []}, "answered": {"lms": True}}, "lms") is False
+    assert ap._sample_blank({"loaded": {"lms": []}, "answered": {"lms": False}}, "lms") is True
+    assert ap._sample_blank({"loaded": {"vllm": []}, "answered": {"vllm": True}}, "vllm") is False
+    assert ap._sample_blank({"loaded": {"llama": []}, "server_state": None,
+                             "answered": {"llama": True}}, "llama") is False
