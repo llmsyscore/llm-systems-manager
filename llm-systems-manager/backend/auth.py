@@ -215,9 +215,51 @@ def auth_mode() -> str:
     return policy
 
 
-def _gateway_api_keys() -> list:
+# A gateway api_keys entry may be written "label=secret". Trailing "="
+# padding on a bare base64 key is not a separator.
+_GW_LABEL_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9 ._-]{0,63}$")
+
+# Label handed to dashboard-session callers (no bearer presented).
+GATEWAY_SESSION_LABEL = "session"
+
+
+def _raw_gateway_api_keys() -> list:
     gw = getattr(_settings.manager, "gateway", None)
     return [str(k) for k in (getattr(gw, "api_keys", None) or []) if k]
+
+
+def _split_gateway_key(raw: str) -> "tuple[Optional[str], str]":
+    """(label, secret) for a 'label=secret' entry, else (None, raw)."""
+    label, sep, secret = raw.partition("=")
+    if sep and _GW_LABEL_RE.match(label) and secret.strip("="):
+        return label, secret
+    return None, raw
+
+
+def gateway_key_entries() -> list:
+    """[(label, secret)] for every configured key; unlabeled keys get key-N."""
+    out = []
+    for i, raw in enumerate(_raw_gateway_api_keys(), 1):
+        label, secret = _split_gateway_key(raw)
+        out.append((label or f"key-{i}", secret))
+    return out
+
+
+def _gateway_api_keys() -> list:
+    """Bearer secrets only, with any 'label=' prefix stripped."""
+    return [secret for _label, secret in gateway_key_entries()]
+
+
+def gateway_key_label(token: "Optional[str]" = None) -> "Optional[str]":
+    """Label of the configured key matching the presented bearer, else None."""
+    tok = (token if token is not None else _bearer_from_request()) or ""
+    if not tok:
+        return None
+    hit = None
+    for label, secret in gateway_key_entries():
+        if _hmac.compare_digest(secret, tok):
+            hit = label
+    return hit
 
 
 def _gateway_key_ok() -> bool:
@@ -624,7 +666,9 @@ def _admin_auth_get():
         DEFAULT_AUTH_USER, lambda h: scrypt_verify(DEFAULT_AUTH_PASSWORD, h)))
     return jsonify({"ok": True, "mode": auth_mode(), "policy": policy,
                     "instant": policy == "auto", "is_default": is_default,
-                    "modes": list(AUTH_MODES), "current_user": session.get("user")})
+                    "modes": list(AUTH_MODES), "current_user": session.get("user"),
+                    "admin_cidrs": [str(c) for c in (_settings.manager.security.admin_cidrs or [])],
+                    "bypass_role": _bypass_role()})
 
 
 def _admin_auth_set():

@@ -219,6 +219,19 @@ class LockoutTracker:
             until = self._locked_until.get(key, 0.0)
             return int(until - now) if until > now else 0
 
+    def fail_count(self, key: str) -> int:
+        """Failed attempts in the current window; resets to 0 once locked."""
+        if not key:
+            return 0
+        now = self._clock()
+        with self._lock:
+            return len([t for t in self._fails.get(key, []) if now - t < self.window_s])
+
+    def minutes_left(self, key: str) -> "int | None":
+        """Whole minutes until lockout expiry, rounded up; None when not locked."""
+        secs = self.retry_after(key)
+        return -(-secs // 60) if secs > 0 else None
+
     def clear(self, key: str) -> None:
         with self._lock:
             self._fails.pop(key, None)
@@ -289,7 +302,10 @@ def register_routes(app, ctx) -> None:
             return deny
         rows = STORE.list()
         for r in rows:
-            r["locked"] = bool(LOCKOUT and LOCKOUT.is_locked(f"user:{r['username']}"))
+            key = f"user:{r['username']}"
+            r["locked"] = bool(LOCKOUT and LOCKOUT.is_locked(key))
+            r["failed_count"] = LOCKOUT.fail_count(key) if LOCKOUT else 0
+            r["lock_minutes_left"] = LOCKOUT.minutes_left(key) if LOCKOUT else None
         return jsonify({"ok": True, "users": rows})
 
     @app.route("/api/admin/users", methods=["POST"])

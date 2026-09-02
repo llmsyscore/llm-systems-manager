@@ -418,7 +418,7 @@
   function renderStamp() {
     const rf = $('adminRefreshRf'), t = $('adminRefreshTime'), stamp = $('adminRefreshStamp');
     const state = stampState(st);
-    if (rf) rf.className = 'adm-rf ' + state + (st.busy ? ' busy' : '');
+    if (rf) rf.className = 'hc-rf ' + state + (st.busy ? ' busy' : '');
     if (t) t.textContent = st.lastOkAt ? 'updated ' + clock(new Date(st.lastOkAt)) : '—';
     if (stamp) stamp.setAttribute('aria-label', 'Refresh now');
   }

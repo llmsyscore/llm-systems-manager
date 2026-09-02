@@ -1126,6 +1126,7 @@ def register_routes(app, ctx, auth) -> None:
         state = get_state()
         return jsonify({"state": state, "proposals": RECONCILER.proposals(),
                         "last_plan_ts": RECONCILER.last_plan_ts,
+                        "tick_period_s": _TICK_PERIOD_S,
                         "entry_status": pl.entry_status(
                             state, RECONCILER.observe(),
                             RECONCILER.ledger_view, time.time())})

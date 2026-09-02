@@ -48,6 +48,7 @@ from fastapi.staticfiles import StaticFiles  # noqa: E402
 from config.unified_config import settings, CONFIG_PATH  # noqa: E402
 from ._best_effort import best_effort
 from ._time import now_utc
+from .rate_counter import INFLUX_WRITES, INGEST_POINTS
 from .api.body_limit import BodySizeLimitMiddleware
 from .api.websocket import WebSocketConnectionManager, init_manager
 from .api.routes import alerts, ingest, metrics, notifications, rules
@@ -69,7 +70,7 @@ from .storage.influxdb_client import InfluxDBClient
 # (-1, -2, …) for same-day iterations; roll the date for a new day's first
 # change.
 # ---------------------------------------------------------------------------
-__version__ = "v2026.08.28-1"
+__version__ = "v2026.09.02-1"
 from .storage import influx_monitor as _influx_monitor
 from .models.alarm_rule import (
     AlarmRuleCreate,
@@ -846,6 +847,15 @@ def _ping_influxdb() -> tuple[str, "float | None", "str | None"]:
         return f"unreachable: {type(e).__name__}", None, None
 
 
+def _active_alert_count() -> int:
+    """Currently-active alerts, or 0 when the alert manager isn't wired."""
+    try:
+        return int((alert_manager.get_alert_stats() or {}).get("active") or 0)
+    except Exception as e:
+        logger.debug("active alert count unavailable: %s", e)
+        return 0
+
+
 @app.get("/health")
 async def health_check() -> dict:
     """Health check endpoint.
@@ -865,6 +875,11 @@ async def health_check() -> dict:
         "status": "ok",
         "version": __version__,
         "uptime_s": round(time.time() - _startup_ts, 1) if _startup_ts else None,
+        # 60 s sliding windows + live alert count, read by the manager's
+        # System Health card.
+        "ingest_points_per_s": round(INGEST_POINTS.per_s(), 3),
+        "influx_writes_per_s": round(INFLUX_WRITES.per_s(), 3),
+        "active_alerts": await asyncio.to_thread(_active_alert_count),
         "components": {
             "cache": "active" if cache else "inactive",
             "influxdb": influx_status,

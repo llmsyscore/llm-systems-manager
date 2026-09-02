@@ -531,39 +531,60 @@ Backend API endpoints consumed:
 </div>
 
 <!-- Admin tab -->
-<link rel="stylesheet" href="/static/css/admin.css?v=2026.09.02-4">
+<link rel="stylesheet" href="/static/css/admin.css?v=2026.09.02-7">
 <link rel="stylesheet" href="/static/css/audit.css?v=2026.09.02-4">
 <link rel="stylesheet" href="/static/css/agents.css?v=2026.09.02-4">
+<link rel="stylesheet" href="/static/css/admin-tabs.css?v=2026.09.02-7">
+<link rel="stylesheet" href="/static/css/health.css?v=2026.09.02-7">
 <div id="adminTab" style="display:none;position:fixed;top:88px;left:0;right:0;bottom:0;z-index:10;overflow:auto;background:var(--bg);color:var(--fg);padding:28px 24px;">
   <div class="adm-wrap">
 
     <!-- ── System Health (Phase 2.5) ─────────────────────────────────── -->
-    <div class="adm-card" id="adminHealthCard">
-      <div class="adm-card-hdr">
-        <div class="adm-title">System Health</div>
-        <span id="adminHealthOverall" class="status status--muted status--square">—</span>
-        <div class="adm-spacer"></div>
-        <button type="button" class="adm-stamp" id="adminRefreshStamp" aria-label="Refresh now"><span class="adm-rf warn" id="adminRefreshRf">↻</span> <span id="adminRefreshTime">—</span></button>
+    <!-- ── System Health (#797) ──────────────────────────────────────── -->
+    <div id="adminHealthCard">
+      <div class="hc-h">
+        <h3>System Health</h3>
+        <span class="pill dim" id="adminHealthOverall">—</span>
+        <span class="gap"></span>
+        <button type="button" class="hc-stamp" id="adminRefreshStamp" aria-label="Refresh now"><span class="hc-rf warn" id="adminRefreshRf">↻</span> <span id="adminRefreshTime">—</span></button>
       </div>
-      <div class="adm-health-body">
-        <div class="adm-health-col">
-          <div class="adm-health-section">Services</div>
-          <div id="adminHealthServices" class="adm-health-list">
-            <div class="adm-muted" style="padding:8px 0;">Loading…</div>
-          </div>
-        </div>
-        <div class="adm-health-col">
-          <div class="adm-health-section">Data Flow</div>
-          <div id="adminHealthDataFlow" class="adm-health-list">
-            <div class="adm-muted" style="padding:8px 0;">Loading…</div>
-          </div>
-        </div>
-        <div class="adm-health-col">
-          <div class="adm-health-section">Warnings</div>
-          <div id="adminHealthWarnings" class="adm-health-warnings">
-            <div class="adm-muted" style="padding:8px 0;">—</div>
-          </div>
-        </div>
+      <div class="hc-b">
+        <section class="hc-col">
+          <span class="microlbl">Services</span>
+          <div class="hc-svc" id="adminHealthServices"></div>
+        </section>
+        <section class="hc-col hc-flowcol">
+          <span class="microlbl">Data flow <em>click a box for its numbers</em></span>
+          <svg viewBox="0 0 480 214" class="hc-svg" id="adminHealthDataFlow" role="img" aria-label="Live data flow between agents, manager, browsers, alarm engine and InfluxDB">
+            <defs>
+              <marker id="hcAhOk" viewBox="0 0 8 8" refX="7" refY="4" markerUnits="userSpaceOnUse" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M0,0.5 L8,4 L0,7.5 z" class="hc-ah ok"/></marker>
+              <marker id="hcAhWarn" viewBox="0 0 8 8" refX="7" refY="4" markerUnits="userSpaceOnUse" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M0,0.5 L8,4 L0,7.5 z" class="hc-ah warn"/></marker>
+              <marker id="hcAhCrit" viewBox="0 0 8 8" refX="7" refY="4" markerUnits="userSpaceOnUse" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M0,0.5 L8,4 L0,7.5 z" class="hc-ah crit"/></marker>
+              <marker id="hcAhOff" viewBox="0 0 8 8" refX="7" refY="4" markerUnits="userSpaceOnUse" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M0,0.5 L8,4 L0,7.5 z" class="hc-ah off"/></marker>
+            </defs>
+            <path id="hceAgMg" class="hc-e ok" d="M126,98 C152,98 144,41 170,41"/>
+            <path id="hceAgAe" class="hc-e ok" d="M126,116 C152,116 144,173 170,173"/>
+            <path id="hceMgAe" class="hc-e ok" d="M232,70 L232,142"/>
+            <path id="hceMgBr" class="hc-e ok" d="M296,41 L352,41"/>
+            <path id="hceAeIn" class="hc-e ok" d="M296,173 L352,173"/>
+            <g class="hc-el" id="hclAgMg"><rect x="112" y="60" width="60" height="14" rx="3"/><text x="142" y="70" text-anchor="middle">—</text></g>
+            <g class="hc-el" id="hclAgAe"><rect x="100" y="140" width="80" height="14" rx="3"/><text x="140" y="150" text-anchor="middle">—</text></g>
+            <g class="hc-el" id="hclMgAe"><rect x="238" y="100" width="82" height="14" rx="3"/><text x="242" y="110">—</text></g>
+            <g class="hc-el" id="hclMgBr"><rect x="294" y="22" width="60" height="14" rx="3"/><text x="324" y="32" text-anchor="middle">—</text></g>
+            <g class="hc-el" id="hclAeIn"><rect x="291" y="154" width="66" height="14" rx="3"/><text x="324" y="164" text-anchor="middle">—</text></g>
+            <g class="hc-node" id="hcnAg" tabindex="0" role="button" aria-label="Agents details" data-node="agents" transform="translate(6,84)"><rect width="114" height="46" rx="7"/><circle cx="13" cy="16" r="3"/><text class="nm" x="22" y="19.5">Agents</text><text class="sb" x="22" y="35">—</text></g>
+            <g class="hc-node" id="hcnMg" tabindex="0" role="button" aria-label="Manager details" data-node="manager" transform="translate(176,18)"><rect width="114" height="46" rx="7"/><circle cx="13" cy="16" r="3"/><text class="nm" x="22" y="19.5">Manager</text><text class="sb" x="22" y="35">this host</text></g>
+            <g class="hc-node" id="hcnBr" tabindex="0" role="button" aria-label="Browsers details" data-node="browsers" transform="translate(358,18)"><rect width="118" height="46" rx="7"/><circle cx="13" cy="16" r="3"/><text class="nm" x="22" y="19.5">Browsers</text><text class="sb" x="22" y="35">—</text></g>
+            <g class="hc-node" id="hcnAe" tabindex="0" role="button" aria-label="Alarm Engine details" data-node="ae" transform="translate(176,150)"><rect width="114" height="46" rx="7"/><circle cx="13" cy="16" r="3"/><text class="nm" x="22" y="19.5">Alarm Engine</text><text class="sb" x="22" y="35">—</text></g>
+            <g class="hc-node" id="hcnIn" tabindex="0" role="button" aria-label="InfluxDB details" data-node="influx" transform="translate(358,150)"><rect width="118" height="46" rx="7"/><circle cx="13" cy="16" r="3"/><text class="nm" x="22" y="19.5">InfluxDB</text><text class="sb" x="22" y="35">—</text></g>
+          </svg>
+          <div class="hc-legend"><span><i class="hc-lg fast"></i>increased traffic</span><span><i class="hc-lg warn"></i>stale or reaching limit</span><span><i class="hc-lg crit"></i>no communication</span></div>
+          <div class="hc-det" id="adminHealthDetail"></div>
+        </section>
+        <section class="hc-col">
+          <span class="microlbl">Warnings</span>
+          <div class="hc-wl" id="adminHealthWarnings"></div>
+        </section>
       </div>
     </div>
 
@@ -610,180 +631,225 @@ Backend API endpoints consumed:
         <div id="adminAgentsResult"></div>
       </div>
 
-      <!-- Routing sub-tab (pools + pins + autopilot, #476) -->
+      <!-- Routing sub-tab (gateway + autopilot + pool/pins, #476/#797) -->
       <div id="admin-routing" class="sub-tab-panel">
-        <div class="adm-card" id="adminPoolCard">
-          <div class="adm-card-hdr">
-            <div class="adm-title">Provider pool order</div>
-            <span class="adm-muted" id="adminPoolDragHint" title="Drag rows to reorder. First entry = primary; round-robin walks the list in order. Add/remove via the 'in pool' toggles in the Agents tab.">drag to reorder</span>
-            <span class="status status--info status--square" id="adminPoolApBadge" style="display:none;" title="Model Autopilot manages pool membership for this provider's replicated entries — reordering is disabled and manual membership edits may be overridden on the next reconcile.">autopilot-managed</span>
-            <div class="adm-spacer"></div>
-            <button class="adm-refresh" onclick="adminLoadAgents()" title="Reload from server">↻</button>
-          </div>
-          <div id="adminPoolProviderChips" class="adm-chip-row" style="margin:4px 0 8px;"></div>
-          <ul id="adminPoolOrderList" class="adm-pool-list">
-            <li class="adm-muted" style="padding:10px;">(pool is empty — toggle "in pool" on one or more agents in the Agents tab)</li>
-          </ul>
-          <div id="adminPoolResult" class="adm-muted" style="margin-top:6px;font-size:12px;"></div>
+        <div class="hdr">
+          <h2>Routing</h2>
+          <div class="sum" id="rtSummary"></div>
+          <span class="gap"></span>
+          <div class="mc-seg" id="rtProviderSeg" role="group" aria-label="Provider"></div>
         </div>
 
-        <div class="adm-card" id="adminPinsCard">
-          <div class="adm-card-hdr">
-            <div class="adm-title">Model pins</div>
-            <span class="adm-muted" title="Pin a specific model to a specific agent. Unpinned models load-balance round-robin across the pool above.">routes by model</span>
-            <div class="adm-spacer"></div>
-            <button class="adm-refresh" onclick="adminLoadPins()" title="Reload from server">↻</button>
+        <div class="card" id="rtGatewayCard" hidden>
+          <div class="card-h tog" id="rtGwHead"><span class="chev">▾</span>
+            <h3>Inference Gateway</h3>
+            <button type="button" class="mc-toggle" id="rtGwToggle" aria-pressed="false" data-tip="OpenAI-compatible endpoint for external clients. Off: /api/gateway/v1 returns 503 and nothing below is served." style="margin-left:4px"><span class="track"></span><span class="tlbl">Gateway</span></button>
+            <span class="meta" id="rtGwMeta"></span>
+            <span class="gap"></span>
+            <span class="meta">live · 5 s</span>
           </div>
-          <div id="adminPinsProviderChips" class="adm-chip-row" style="margin:4px 0 8px;"></div>
-          <div style="overflow-x:auto;">
-            <table id="adminPinsTable" class="adm-table">
-              <thead>
-                <tr>
-                  <th style="width:50%;">Model ID</th>
-                  <th style="width:38%;">Pinned to agent</th>
-                  <th style="width:12%; text-align:right;">Action</th>
-                </tr>
-              </thead>
-              <tbody id="adminPinsTbody">
-                <tr><td colspan="3" style="padding:14px;color:#7e8a9c;text-align:center;">Loading…</td></tr>
-              </tbody>
-            </table>
-          </div>
-          <div class="adm-pin-add-row">
-            <input type="text" id="adminPinModelInput" list="adminProviderModels"
-                   placeholder="model id (auto-discovered from pool, or type custom)"
-                   class="adm-pin-input">
-            <datalist id="adminProviderModels"></datalist>
-            <select id="adminPinAgentSelect" class="adm-pin-select">
-              <option value="">(choose agent)</option>
-            </select>
-            <button class="adm-btn primary" onclick="adminAddPin()">Add pin</button>
-          </div>
-          <div id="adminPinsResult" class="adm-muted" style="margin-top:6px;font-size:12px;"></div>
-        </div>
-
-        <!-- Autopilot cards (#472; merged into Routing, #476) -->
-        <div class="adm-card" id="apEntriesCard">
-          <div class="adm-card-hdr">
-            <div class="adm-title">Model Autopilot</div>
-            <div class="adm-spacer"></div>
-            <label class="adm-toggle" title="When enabled, autopilot may place, fail over, and auto-scale entries per each entry's failover setting. vLLM entries always require a manual Apply. When disabled, planning continues and proposals still appear — only auto-execution is gated off.">
-              <input type="checkbox" id="apEnabledToggle">
-              <span>Enabled</span>
-            </label>
-            <button class="adm-btn" id="apAddEntryBtn">+ Add entry</button>
-            <button class="adm-btn primary" id="apSaveBtn">Save</button>
-            <button class="adm-refresh" id="apPlanNowBtn" title="Run the planner immediately instead of waiting for the next tick">↻ Plan now</button>
-          </div>
-          <div id="apEntriesBody" class="ap-entries-body"></div>
-          <div class="adm-backup-actions" style="padding:0 20px 14px;">
-            <span class="adm-muted" id="apSaveStatus"></span>
-          </div>
-        </div>
-        <div class="adm-card" id="apProposalsCard">
-          <div class="adm-card-hdr">
-            <div class="adm-title">Pending proposals</div>
-            <div class="adm-spacer"></div>
-            <button class="adm-refresh" id="apProposalsRefreshBtn" title="Auto-refreshes every 10s">↻ Refresh</button>
-          </div>
-          <div id="apProposalsBody" class="ap-proposals-body"></div>
-        </div>
-      </div>
-
-      <!-- Backup & Restore sub-tab -->
-      <div id="admin-backup" class="sub-tab-panel">
-        <div class="adm-card" id="adminBackupCard">
-          <div class="adm-card-hdr">
-            <div class="adm-title">Backup &amp; Restore</div>
-            <span class="adm-muted" title="One encrypted archive per component. Manager archive bundles two layers: Config (TOML, layout, model aliases/profiles, benchmarks DB — always safe to import) and Identity (internal CA, manager HMAC, agent registry, dashboard users + auth mode — REPLACES this host's identity and logins, opt-in at import time). Alarm engine archive contains rules + channels + alert history. InfluxDB time-series are not included — start a fresh DB on the target and paste new tokens into the imported manager config.">encrypted .lsmenc archive</span>
-          </div>
-          <div class="adm-backup-grid">
-            <div class="adm-backup-cell">
-              <div class="adm-backup-label">Manager</div>
-              <div class="adm-backup-meta">config + agents + CA + layout + users + profiles + benchmarks</div>
-              <div class="adm-backup-actions">
-                <button class="adm-btn primary" onclick="adminExportArchive('manager')">Export…</button>
-                <button class="adm-btn" onclick="adminImportArchive('manager')">Import…</button>
+          <div class="card-b">
+            <div class="rt-gw">
+              <div class="rt-gwd">
+                <div id="rtGwDiagram"></div>
+                <div class="rt-offnote" id="rtGwOffNote">Gateway is off — <b>/api/gateway/v1</b> answers 503 until it is turned back on. The last live picture stays here so you can see what will resume.</div>
               </div>
-            </div>
-            <div class="adm-backup-cell">
-              <div class="adm-backup-label">Alarm Engine</div>
-              <div class="adm-backup-meta">rules + channels + alert history</div>
-              <div class="adm-backup-actions">
-                <button class="adm-btn primary" onclick="adminExportArchive('alarm_engine')">Export…</button>
-                <button class="adm-btn" onclick="adminImportArchive('alarm_engine')">Import…</button>
-              </div>
+              <div class="rt-gwm" id="rtGwTiles"></div>
             </div>
           </div>
-          <div id="adminBackupResult" class="adm-muted" style="margin-top:10px;font-size:12px;"></div>
         </div>
 
-        <div class="adm-card" id="adminSchedBackupCard">
-          <div class="adm-card-hdr">
-            <div class="adm-title">Scheduled backups</div>
-            <span id="adminSchedBackupPill" class="status status--muted status--square">—</span>
-            <div class="adm-spacer"></div>
-            <button class="adm-refresh" onclick="adminLoadBackupStatus()" title="Reload status">↻</button>
-            <span class="adm-muted" id="adminSchedBackupRefresh">—</span>
+        <div class="card" id="apEntriesCard">
+          <div class="card-h">
+            <h3>Model Autopilot</h3>
+            <button type="button" class="mc-toggle" id="apEnabledToggle" aria-pressed="false" data-tip="Places, fails over and scales entries by their failover setting. Off: planning still runs, proposals wait for you." style="margin-left:4px"><span class="track"></span><span class="tlbl">Autopilot</span></button>
+            <span class="meta" id="apPlanMeta"></span>
+            <span class="meta" id="apSaveStatus"></span>
+            <span class="gap"></span>
+            <button type="button" class="mcbtn mcbtn-ghost mcbtn-sm" id="apPlanNowBtn">Plan now</button>
+            <button type="button" class="mcbtn mcbtn-ghost mcbtn-sm" id="apAddEntryBtn">+ Add entry</button>
+            <button type="button" class="mcbtn mcbtn-pri mcbtn-sm" id="apSaveBtn">Save</button>
           </div>
-          <div id="adminSchedBackupBody" class="adm-muted" style="font-size:12px;">Loading…</div>
-        </div>
-      </div>
-
-      <!-- Access Control sub-tab (auth + users, #477) -->
-      <div id="admin-access" class="sub-tab-panel">
-        <div class="adm-card" id="adminAuthCard">
-          <div class="adm-card-hdr">
-            <div class="adm-title">Authentication</div>
-            <span class="adm-muted" id="adminAuthStatus">…</span>
-          </div>
-          <div class="adm-auth-body">
-            <label class="adm-muted adm-auth-label">Login mode
-              <select id="adminAuthMode" class="adm-auth-input">
-                <option value="required">Required — every browser must log in</option>
-                <option value="trusted_cidr">Trusted network — skip login from admin CIDRs</option>
-                <option value="disabled">Disabled — no login (trusted LAN only)</option>
-              </select>
-            </label>
-            <div class="adm-muted" id="adminAuthModeHint" style="font-size:11px;"></div>
-            <div class="adm-auth-divider"></div>
-            <div class="adm-muted" style="font-size:12px;">Manage user accounts and passwords in the <b>Users</b> section below; change your own password from the <b>Account</b> menu (top-right).</div>
-            <div style="display:flex;gap:8px;align-items:center;">
-              <button class="adm-btn primary" onclick="adminAuthSave()">Save</button>
-              <a class="adm-btn" href="/logout" style="text-decoration:none;">Log out</a>
-            </div>
-          </div>
-          <div id="adminAuthResult" class="adm-muted" style="margin-top:10px;font-size:12px;"></div>
-        </div>
-
-        <!-- Users card (multi-user management #125; merged into Access Control, #477) -->
-        <div class="adm-card" id="adminUsersCard">
-          <div class="adm-card-hdr">
-            <div class="adm-title">Users</div>
-            <span class="adm-muted" id="adminUsersStatus">…</span>
-            <div class="adm-spacer"></div>
-            <button class="adm-refresh" onclick="adminUsersLoad()" title="Reload">↻ Refresh</button>
-          </div>
-          <div style="overflow-x:auto;">
-            <table id="adminUsersTable" class="adm-table">
+          <div class="card-b flush">
+            <table class="tbl ap">
               <thead><tr>
-                <th style="width:30%;">Username</th><th style="width:16%;">Role</th>
-                <th style="width:18%;">Status</th><th style="width:18%;">Last login</th>
-                <th style="width:18%;text-align:right;">Actions</th>
+                <th style="width:24%">Model</th><th style="width:10%">Provider</th><th style="width:13%">Placement</th>
+                <th style="width:10%">Failover</th><th style="width:8%">Priority</th><th style="width:11%">Replicas</th>
+                <th style="width:9%">Size</th><th>Status</th><th class="r" style="width:40px"></th>
               </tr></thead>
-              <tbody id="adminUsersTbody">
-                <tr><td colspan="5" style="padding:14px;color:#7e8a9c;text-align:center;">Loading…</td></tr>
-              </tbody>
+              <tbody id="apEntriesBody"></tbody>
             </table>
+            <div class="ledger-f">
+              <span class="note dirty" id="apDirtyNote"></span>
+              <span class="gap"></span>
+              <span class="note">Models come from the pool's discovered list for the chosen provider. vLLM entries never auto-execute.</span>
+            </div>
           </div>
-          <div class="adm-pin-add-row" style="margin-top:10px;">
-            <input type="text" id="adminUserNew" placeholder="new username" class="adm-pin-input" maxlength="32">
-            <input type="password" id="adminUserNewPw" placeholder="password (min 8)" class="adm-pin-input" autocomplete="new-password">
-            <select id="adminUserNewRole" class="adm-pin-select">
-              <option value="operator">Operator</option>
-              <option value="admin">Admin</option>
-            </select>
-            <button class="adm-btn primary" onclick="adminUserCreate()">Add user</button>
+        </div>
+
+        <div class="card" id="apProposalsCard">
+          <div class="card-h"><h3>Proposals</h3><span class="pill dim" id="apProposalsPill">0 waiting</span><span class="gap"></span><span class="meta">refreshes every 10 s</span></div>
+          <div class="card-b flush"><div class="rt-prop" id="apProposalsBody"></div></div>
+        </div>
+
+        <div class="card" id="adminPoolCard">
+          <div class="card-h">
+            <h3>Pool order</h3>
+            <span class="meta">first entry is the <b>primary</b> · round-robin follows the list</span>
+            <span class="pill info" id="adminPoolApBadge" style="display:none;" title="Model Autopilot manages pool membership for this provider's replicated entries — reordering is disabled and manual membership edits may be overridden on the next reconcile.">autopilot-managed</span>
+            <span class="gap"></span>
+            <span class="meta" id="adminPoolDragHint">drag to reorder</span>
+          </div>
+          <div class="card-b flush">
+            <ul class="rt-pool" id="adminPoolOrderList"></ul>
+            <div class="ledger-f">
+              <span class="note">Add or remove hosts with the <b>in pool</b> switch in Agents › row drawer.</span>
+              <span class="gap"></span>
+              <span class="note" id="adminPoolResult"></span>
+            </div>
+          </div>
+        </div>
+
+        <div class="card" id="adminPinsCard">
+          <div class="card-h"><h3>Model pins</h3><span class="meta">a pinned model always routes to its host · unpinned models round-robin the pool</span></div>
+          <div class="card-b flush">
+            <table class="tbl">
+              <thead><tr><th style="width:52%">Model</th><th>Pinned to</th><th class="r" style="width:64px"></th></tr></thead>
+              <tbody id="adminPinsTbody"></tbody>
+            </table>
+            <div class="ledger-f">
+              <select class="sel" id="adminPinModelSelect" style="flex:1;min-width:260px" aria-label="Model"><option value="">choose a model from the pool</option></select>
+              <select class="sel" id="adminPinAgentSelect" aria-label="Host"><option value="">choose host</option></select>
+              <button type="button" class="mcbtn mcbtn-pri mcbtn-sm" onclick="adminAddPin()">Add pin</button>
+              <span class="note" id="adminPinsResult"></span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Backup & Restore sub-tab (#218/#797) -->
+      <div id="admin-backup" class="sub-tab-panel">
+        <div class="hdr">
+          <h2>Backup &amp; restore</h2>
+          <div class="sum" id="bkSummary"></div>
+        </div>
+
+        <div class="card" id="adminBackupCard">
+          <div class="card-h"><h3>Archives</h3><span class="meta">encrypted <b>.lsmenc</b> · one per component · InfluxDB series are not included</span></div>
+          <div class="card-b flush">
+            <div class="bk-arch">
+              <div class="bk-ar">
+                <div class="who"><div class="n">Manager</div><div class="m">config · agents · internal CA · layout · users · profiles · benchmarks</div></div>
+                <div class="last" id="bkLastExport_manager">last export <b>never</b></div>
+                <div class="acts">
+                  <button type="button" class="mcbtn mcbtn-pri mcbtn-sm" onclick="adminExportArchive('manager')">Export…</button>
+                  <button type="button" class="mcbtn mcbtn-ghost mcbtn-sm" onclick="adminImportArchive('manager')">Import…</button>
+                </div>
+              </div>
+              <div class="bk-ar">
+                <div class="who"><div class="n">Alarm Engine</div><div class="m">rules · channels · alert history</div></div>
+                <div class="last" id="bkLastExport_alarm_engine">last export <b>never</b></div>
+                <div class="acts">
+                  <button type="button" class="mcbtn mcbtn-pri mcbtn-sm" onclick="adminExportArchive('alarm_engine')">Export…</button>
+                  <button type="button" class="mcbtn mcbtn-ghost mcbtn-sm" onclick="adminImportArchive('alarm_engine')">Import…</button>
+                </div>
+              </div>
+            </div>
+            <div class="ledger-f">
+              <span class="note">Importing a Manager archive can optionally replace this host's identity (CA, agent registry, users, login mode).</span>
+              <span class="gap"></span>
+              <span class="note" id="adminBackupResult"></span>
+            </div>
+          </div>
+        </div>
+
+        <div class="card" id="adminSchedBackupCard">
+          <div class="card-h">
+            <h3>Scheduled backups</h3>
+            <span class="pill dim" id="adminSchedBackupPill">—</span>
+            <span class="meta" id="adminSchedBackupMeta"></span>
+            <span class="gap"></span>
+            <button type="button" class="mcbtn mcbtn-ghost mcbtn-sm" id="adminBackupNowBtn">Back up now</button>
+          </div>
+          <div class="card-b flush">
+            <div id="adminSchedBackupBody"></div>
+            <table class="tbl">
+              <thead><tr><th>Archive</th><th style="width:110px" class="r">Size</th><th style="width:160px">Taken</th><th style="width:110px">Mirror</th></tr></thead>
+              <tbody id="adminSchedBackupTbody"></tbody>
+            </table>
+            <div class="ledger-f">
+              <span class="note" id="adminSchedBackupMore"></span>
+              <span class="gap"></span>
+              <button type="button" class="mcbtn mcbtn-ghost mcbtn-sm" id="adminSchedBackupShowAll" hidden>Show all</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="card settings collapsed" id="adminBackupSettingsCard">
+          <div class="card-h tog" onclick="this.closest('.card').classList.toggle('collapsed')"><span class="chev">▾</span><h3>Backup settings</h3><span class="gap"></span></div>
+          <div class="card-b" id="adminBackupSettingsBody"></div>
+          <div class="card-f">
+            <button type="button" class="mcbtn mcbtn-pri mcbtn-sm" onclick="adminSaveBackupSettings()">Save</button>
+            <button type="button" class="mcbtn mcbtn-ghost mcbtn-sm" onclick="adminResetBackupSettings()">Reset to defaults</button>
+            <span class="microlbl">needs a manager restart</span>
+            <span class="msg" id="adminBackupSettingsMsg"></span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Access Control sub-tab (auth + users, #477/#797) -->
+      <div id="admin-access" class="sub-tab-panel">
+        <div class="hdr">
+          <h2>Access control</h2>
+          <div class="sum" id="acSummary"></div>
+        </div>
+
+        <div class="notice" id="adminAuthDefaultNotice" hidden><b>Default password in use</b><span class="d">The <b>llmadmin</b> account still has the install password. Change it from the Account menu (top right).</span></div>
+
+        <div class="card" id="adminAuthCard">
+          <div class="card-h"><h3>Login</h3><span class="meta" id="adminAuthMeta"></span></div>
+          <div class="card-b">
+            <div class="ac-login">
+              <div class="mc-seg" id="adminAuthSeg" role="group" aria-label="Login mode"></div>
+              <select id="adminAuthMode" class="st-hidden" aria-label="Login mode" hidden>
+                <option value="required">Required</option>
+                <option value="trusted_cidr">Trusted network</option>
+                <option value="disabled">Off</option>
+              </select>
+              <div class="ac-modes" id="adminAuthModes"></div>
+            </div>
+          </div>
+          <div class="card-f">
+            <button type="button" class="mcbtn mcbtn-pri mcbtn-sm" onclick="adminAuthSave()">Save</button>
+            <a class="mcbtn mcbtn-ghost mcbtn-sm" href="/logout">Log out</a>
+            <span class="msg">Networks and lockout rules live under Settings › Auth &amp; Security.</span>
+            <span class="msg" id="adminAuthResult"></span>
+          </div>
+        </div>
+
+        <div class="card" id="adminUsersCard">
+          <div class="card-h">
+            <h3>Users</h3><span class="meta" id="adminUsersMeta"></span>
+            <span class="gap"></span>
+            <button type="button" class="mcbtn mcbtn-ghost mcbtn-sm" id="adminUserAddBtn">+ Add user</button>
+          </div>
+          <div class="card-b flush">
+            <table class="tbl">
+              <thead><tr><th style="width:26%">Username</th><th style="width:13%">Role</th><th style="width:21%">Status</th><th style="width:20%">Last sign-in</th><th class="r">Actions</th></tr></thead>
+              <tbody id="adminUsersTbody"></tbody>
+            </table>
+            <div class="ledger-f ac-addrow" id="adminUserAddRow" hidden>
+              <input type="text" id="adminUserNew" class="st-in" placeholder="username" style="width:180px" maxlength="32">
+              <input type="password" id="adminUserNewPw" class="st-in" placeholder="password · 8+ characters" style="width:220px" autocomplete="new-password">
+              <select id="adminUserNewRole" class="sel">
+                <option value="operator">Operator</option>
+                <option value="admin">Admin</option>
+              </select>
+              <button type="button" class="mcbtn mcbtn-pri mcbtn-sm" onclick="adminUserCreate()">Add user</button>
+              <button type="button" class="mcbtn mcbtn-ghost mcbtn-sm" id="adminUserCancelBtn">Cancel</button>
+              <span class="gap"></span>
+              <span class="note">Operators use the dashboard; admins also manage agents, users and settings.</span>
+            </div>
           </div>
         </div>
       </div>
@@ -841,11 +907,17 @@ Backend API endpoints consumed:
         </div>
       </div>
 
-      <!-- Settings sub-tab (TOML editor, #606) -->
+      <!-- Settings sub-tab (catalog editor, #606/#797) -->
       <div id="admin-settings" class="sub-tab-panel">
-        <div id="adminSettingsRoot" style="max-width:980px;">
-          <div class="adm-muted" style="padding:24px;">Loading settings…</div>
+        <div class="hdr">
+          <h2>Settings</h2>
+          <div class="sum" id="stSummary"></div>
+          <span class="gap"></span>
+          <label class="mc-filter"><span class="mc-filter-ico">⌕</span><input id="stFilter" type="search" placeholder="Find a setting…" autocomplete="off"><kbd>/</kbd></label>
+          <button type="button" class="mcbtn mcbtn-ghost mcbtn-sm" id="stExpandAll">Expand all</button>
         </div>
+        <div class="st-note">Clear a field to go back to its default.</div>
+        <div id="adminSettingsRoot"></div>
       </div>
 
     </div>
@@ -2333,11 +2405,13 @@ Backend API endpoints consumed:
 <script src="/static/js/llmcontrol.js?v=2026.08.30-2"></script>
 <script src="/static/js/sections.js?v=2026.08.30-3"></script>
 <script src="/static/js/openclaw.js?v=2026.08.03-1"></script>
-<script src="/static/js/admin.js?v=2026.09.02-4"></script>
-<script src="/static/js/admin-agents.js?v=2026.09.02-5"></script>
+<script src="/static/js/admin.js?v=2026.09.02-7"></script>
+<script src="/static/js/admin-agents.js?v=2026.09.02-7"></script>
+<script src="/static/js/admin-health.js?v=2026.09.02-7"></script>
+<script src="/static/js/admin-gateway.js?v=2026.09.02-7"></script>
 <script src="/static/js/admin-audit.js?v=2026.09.02-4"></script>
-<script src="/static/js/admin-settings.js?v=2026.08.30-2"></script>
-<script src="/static/js/autopilot.js?v=2026.07.31-2"></script>
+<script src="/static/js/admin-settings.js?v=2026.09.02-7"></script>
+<script src="/static/js/autopilot.js?v=2026.09.02-7"></script>
 <script src="/static/js/llmcontrol-models.js?v=2026.08.31-1"></script>
 <script src="/static/js/editor-modern.js?v=2026.08.30-4"></script>
 <script src="/static/js/bench-autotune.js?v=2026.09.01-1"></script>
@@ -2536,6 +2610,6 @@ Backend API endpoints consumed:
 <div id="alarmToastContainer"></div>
 
 <script src="/static/js/events-toasts.js?v=2026.07.04-2"></script>
-<script src="/static/js/boot.js?v=2026.08.31-2"></script>
+<script src="/static/js/boot.js?v=2026.09.02-7"></script>
 </body>
 </html>

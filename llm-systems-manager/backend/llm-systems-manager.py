@@ -159,7 +159,7 @@ def _local_hostname() -> str:
 # banner reads it. Bump suffix (-1, -2, …) for same-day iterations; roll
 # the date for a new day's first change.
 # ---------------------------------------------------------------------------
-__version__ = "v2026.09.02-4"
+__version__ = "v2026.09.02-7"
 
 # Wall-clock at first import (Cheroot main process); the shutdown banner
 # reads it for the uptime line.
@@ -174,6 +174,7 @@ from _safe_js import safe_js  # type: ignore[import-not-found]  # noqa: E402  # 
 import providers       # type: ignore[import-not-found]  # noqa: E402,F401  # side-effect: registers specs
 import stream_pool     # type: ignore[import-not-found]  # noqa: E402  # leaf, no cycle
 import stream_health   # type: ignore[import-not-found]  # noqa: E402  # leaf, no cycle
+import rate_counter    # type: ignore[import-not-found]  # noqa: E402  # leaf, no cycle; #797
 import sse_daemon     # type: ignore[import-not-found]  # noqa: E402  # leaf, lazy-aiohttp
 
 # Cheroot servers (HTTP + TLS), appended as each binds — read by stream_health
@@ -186,6 +187,7 @@ import tool_activity  # type: ignore[import-not-found]  # noqa: E402  # leaf, no
 import gateway_usage  # type: ignore[import-not-found]  # noqa: E402  # leaf, no cycle; #502
 import discord_bot  # type: ignore[import-not-found]  # noqa: E402  # leaf, no cycle; #471
 import companion  # type: ignore[import-not-found]  # noqa: E402  # leaf, no cycle; #522
+import export_log  # type: ignore[import-not-found]  # noqa: E402  # leaf, no cycle; #797
 import settings_catalog  # type: ignore[import-not-found]  # noqa: E402  # leaf, no cycle; #606
 import settings_toml_io  # type: ignore[import-not-found]  # noqa: E402  # leaf, no cycle; #606
 
@@ -413,6 +415,11 @@ init_db()
 # admin tab's "uptime" column.
 _manager_startup_ts = time.time()
 
+# 60 s sliding windows behind /api/admin/system-health's flow block: agent
+# metric pushes received here, and AE reads the history refresher issued.
+_AGENT_PUSH_RATE = rate_counter.RateCounter(60.0)
+_HISTORY_REQ_RATE = rate_counter.RateCounter(60.0)
+
 # Silence the cheroot/cpython 3.14 finalizer noise that appears as
 # "Exception ignored while calling deallocator … OSError: [Errno 9]
 # Bad file descriptor" in journalctl. It fires when a client (browser /
@@ -436,7 +443,10 @@ def _filter_socket_cleanup_noise(args):
 sys.unraisablehook = _filter_socket_cleanup_noise
 
 # Anti-flap state for /api/admin/system-health's alarm-engine probe.
-_ae_health_state: dict[str, int] = {"consecutive_failures": 0}
+_ae_health_state: dict[str, Any] = {"consecutive_failures": 0, "last_ok_at": None}
+
+# WS relay (alarm ws proxy) startup state, surfaced as manager.ws_relay.
+_ws_relay_state: dict[str, str] = {"status": "off"}
 
 # Dynamic interval state — driven by primary-llama-agent's reported
 # llama_state (awake/sleeping) AND LMS activity. Values come from the
@@ -1075,6 +1085,7 @@ def _build_history_rows(since_minutes: int, limit: int,
                              since_minutes, limit, hostname)
         for src, name, field in fields
     ]
+    _HISTORY_REQ_RATE.add(len(futures))
     # accum[field][ts] = one value per reporting host, for the aggregate path.
     accum: dict[str, dict[str, dict]] = {}
     for fut in futures:
@@ -2428,6 +2439,7 @@ def receive_remote_host_metrics():
     refused = _refuse_unadvertised_provider(agent, "llama")
     if refused is not None:
         return refused
+    _AGENT_PUSH_RATE.add(1)
     # PR2: every approved llama-capable agent pushes; STORE partitions them.
     aid = agent["agent_id"]
     provider_state.STORE.put("llama", aid, data)
@@ -2461,6 +2473,7 @@ def receive_provider_state():
     refused = _refuse_unadvertised_provider(agent, provider)
     if refused is not None:
         return refused
+    _AGENT_PUSH_RATE.add(1)
     aid = agent["agent_id"]
     provider_state.STORE.put(provider, aid, sample)
     if provider_state.STORE.mark_online(provider, aid):
@@ -2699,6 +2712,7 @@ def receive_lmstudio_metrics():
     refused = _refuse_unadvertised_provider(agent, "lms")
     if refused is not None:
         return refused
+    _AGENT_PUSH_RATE.add(1)
     try:
         aid = agent["agent_id"]
         provider_state.STORE.put("lms", aid, data)
@@ -3180,6 +3194,7 @@ _AUDIT_LABELS: dict[str, str] = {
     "user.create": "Created a dashboard user", "user.modify": "Changed a user account",
     "user.delete": "Deleted a user", "user.unlock": "Unlocked a user",
     "backup.export": "Exported an encrypted archive", "backup.import-apply": "Imported an archive",
+    "backup.run": "Ran a backup now", "config.gateway": "Turned the inference gateway on/off",
     "config.settings": "Saved manager settings", "config.svcconfig": "Changed the llama-server config",
     "config.interval": "Changed the poll interval", "config.layout": "Saved the dashboard layout",
     "llama.load": "Loaded a llama.cpp model", "llama.unload": "Unloaded a llama.cpp model",
@@ -3240,6 +3255,8 @@ _AUDIT_ROUTES: list[tuple] = [
     ("POST",   re.compile(r"^/api/admin/export/manager$"),             "backup.export",      "backup"),
     ("POST",   re.compile(r"^/api/admin/import/manager/apply$"),       "backup.import-apply", "backup"),
     ("PUT",    re.compile(r"^/api/admin/settings$"),                   "config.settings",    "config.settings"),
+    ("PUT",    re.compile(r"^/api/admin/gateway$"),                    "config.gateway",     "config.settings"),
+    ("POST",   re.compile(r"^/api/admin/backup-now$"),                 "backup.run",         "backup"),
     ("POST",   re.compile(r"^/api/llm/server/svcconfig$"),             "config.svcconfig",   "config.server"),
     ("POST",   re.compile(r"^/api/config/interval$"),                  "config.interval",    "config.server"),
     ("POST",   re.compile(r"^/api/layout$"),                           "config.layout",      "config.layout"),
@@ -4224,7 +4241,19 @@ def _settings_drift(ae_flat: dict, file_vals: "dict | None",
 
 
 # Hot settings (catalog hot=True): prefix → runtime reloader run after a save.
-_HOT_RELOADERS = {"manager.audit.": _audit_reload_config}
+def _gateway_reload_config() -> None:
+    """Re-apply [manager.gateway].enabled onto the live settings (hot)."""
+    try:
+        gw = settings_catalog._snapshot().manager.gateway
+        live = getattr(settings.manager, "gateway", None)
+        if live is not None:
+            live.enabled = bool(gw.enabled)
+    except Exception as e:
+        log.warning("gateway config reload failed (runtime keeps previous value): %s", e)
+
+
+_HOT_RELOADERS = {"manager.audit.": _audit_reload_config,
+                  "manager.gateway.": _gateway_reload_config}
 
 
 @app.route("/api/admin/settings", methods=["PUT"])
@@ -4458,6 +4487,31 @@ def _fetch_ae_settings_state() -> "tuple[dict | None, bool | None, dict | None, 
     return flat, (bool(pending) if pending is not None else None), secrets, None
 
 
+def _manager_connections() -> dict:
+    """Browser / agent connection + Cheroot worker counts for the flow card."""
+    snap = stream_health.snapshot() or {}
+    return {
+        "browsers": snap.get("browser_connections") or 0,
+        "agents": snap.get("agent_connections") or 0,
+        "worker_threads": snap.get("worker_threads") or 0,
+        "worker_threads_busy": snap.get("worker_threads_busy") or 0,
+    }
+
+
+def _agent_update_state(agents: list) -> dict:
+    """{latest, outdated, hostnames} for approved agents behind the manager's
+    bundled agent version."""
+    latest = _latest_agent_version()
+    hostnames = []
+    for a in agents:
+        if a.get("status") != "approved":
+            continue
+        if agent_registry.agent_update_available(a.get("version"), latest):
+            hostnames.append(a.get("hostname") or (a.get("id") or ""))
+    return {"latest": latest, "outdated": len(hostnames),
+            "hostnames": hostnames}
+
+
 @app.route("/api/admin/system-health", methods=["GET"])
 def admin_system_health():
     """One-shot health snapshot for the admin tab's System Health card.
@@ -4468,15 +4522,20 @@ def admin_system_health():
         return deny
 
     now = time.time()
+    topo = install_topology()
     health: dict[str, Any] = {
         "ts": datetime.now(timezone.utc).isoformat(),
         "manager": {
             "ok": True,
+            "version": __version__,
             "uptime_s": round(now - _manager_startup_ts, 1),
             # SSE stream pool: active/limit + peak high-water + refusals since
             # boot. peak==limit or refusals>0 means streams hit the cap and got
             # 503'd (the browser "Stream error"), even after it self-heals.
             "streams": stream_pool.POOL.stats(),
+            "connections": _manager_connections(),
+            "push_subscriptions": companion.subscription_count(),
+            "ws_relay": _ws_relay_state["status"],
         },
         "services": [],
         "agents": [],
@@ -4484,10 +4543,16 @@ def admin_system_health():
         "warnings": [],
         # Whether the AE runs on this host (unit file or brew keg) — gates the
         # AE restart button in the admin tab.
-        "ae_local": install_topology()["ae_local_unit"],
+        "ae_local": topo["ae_local_unit"],
         # Containerized control plane: the AE restart button is enabled too (the
         # manager restarts the sibling AE container via its self-restart API).
         "containerized": _CONTAINERIZED,
+        # The AE restart button is always offered (#764); split installs go
+        # through the AE's own self-restart API instead of systemctl.
+        "ae_restart": {
+            "available": True,
+            "via": "systemctl" if topo["ae_local_unit"] else "self-restart",
+        },
     }
 
     # ── Alarm engine reachability (cheap GET) ──
@@ -4497,6 +4562,7 @@ def admin_system_health():
     # two consecutive failures — covers transient slowness without hiding a
     # real outage for long (next 20s frontend poll catches it).
     ae_url = _alarm_engine_url or ""
+    ae_flow: dict = {"ae_ingest_points_per_s": None, "influx_writes_per_s": None}
     if ae_url:
         try:
             t0 = time.perf_counter()
@@ -4508,10 +4574,13 @@ def admin_system_health():
             except Exception:
                 info = {}
             _ae_health_state["consecutive_failures"] = 0
+            if ae_ok and info.get("status") == "ok":
+                _ae_health_state["last_ok_at"] = datetime.now(timezone.utc).isoformat()
             # AE TLS state surfaces in the admin tab. components.tls is set by
             # the AE launcher: enabled=true + active=true → serving HTTPS;
             # enabled=true + active=false → cert missing (error in payload).
-            _tls_info = (info.get("components") or {}).get("tls") if isinstance(info, dict) else None
+            _comps = (info.get("components") or {}) if isinstance(info, dict) else {}
+            _tls_info = _comps.get("tls")
             health["services"].append({
                 "name": "alarm_engine",
                 "ok": ae_ok and info.get("status") == "ok",
@@ -4521,6 +4590,16 @@ def admin_system_health():
                 "tls": _tls_info,
                 "version": info.get("version") if isinstance(info, dict) else None,
                 "uptime_s": info.get("uptime_s") if isinstance(info, dict) else None,
+                # Passed through from the AE /health payload.
+                "rule_eval_ms": _comps.get("rule_eval_last_cycle_ms"),
+                "ingest_points_per_s": info.get("ingest_points_per_s"),
+                "active_alerts": info.get("active_alerts"),
+                "last_ok_at": _ae_health_state["last_ok_at"],
+                "consecutive_failures": _ae_health_state["consecutive_failures"],
+            })
+            ae_flow.update({
+                "ae_ingest_points_per_s": info.get("ingest_points_per_s"),
+                "influx_writes_per_s": info.get("influx_writes_per_s"),
             })
             # Surface tls_enabled-but-missing-cert as a top-level warning so the
             # admin tab can flag it prominently (matches the user spec: "error
@@ -4530,7 +4609,7 @@ def admin_system_health():
                 health["warnings"].append(f"alarm engine TLS: {err}")
             # Influx state piggybacks on the alarm engine /health payload —
             # components.influxdb is "connected" when reachable.
-            comps = (info.get("components") or {}) if isinstance(info, dict) else {}
+            comps = _comps
             influx_ok = comps.get("influxdb") == "connected"
             health["services"].append({
                 "name": "influxdb",
@@ -4539,6 +4618,7 @@ def admin_system_health():
                 "state": comps.get("influxdb", "unknown"),
                 "version": comps.get("influxdb_version"),
                 "ping_ms": comps.get("influxdb_ping_ms"),
+                "writes_per_s": info.get("influx_writes_per_s"),
             })
             if not ae_ok:
                 health["warnings"].append(f"alarm engine returned HTTP {r.status_code}")
@@ -4551,6 +4631,8 @@ def admin_system_health():
                 "ok": not sustained,
                 "url": ae_url,
                 "error": type(e).__name__ if sustained else "slow probe (transient)",
+                "last_ok_at": _ae_health_state["last_ok_at"],
+                "consecutive_failures": _ae_health_state["consecutive_failures"],
             })
             health["services"].append({
                 "name": "influxdb",
@@ -4560,7 +4642,9 @@ def admin_system_health():
             if sustained:
                 health["warnings"].append(f"alarm engine unreachable: {type(e).__name__}")
     else:
-        health["services"].append({"name": "alarm_engine", "ok": False, "error": "ALARM_ENGINE_URL not configured"})
+        health["services"].append({"name": "alarm_engine", "ok": False, "error": "ALARM_ENGINE_URL not configured",
+                                    "last_ok_at": _ae_health_state["last_ok_at"],
+                                    "consecutive_failures": _ae_health_state["consecutive_failures"]})
         health["warnings"].append("ALARM_ENGINE_URL not configured")
 
     # ── Agent fleet ──
@@ -4733,6 +4817,14 @@ def admin_system_health():
             f"SSE stream pool saturated: active={_sp['active']}/{_sp['limit']} "
             f"peak={_sp['peak']} refusals={_sp['refusals']} — new streams get 503 "
             f"('Stream error'); restart clears it")
+
+    health["flow"] = {
+        "agent_pushes_per_s": round(_AGENT_PUSH_RATE.per_s(now), 2),
+        "ae_ingest_points_per_s": ae_flow["ae_ingest_points_per_s"],
+        "influx_writes_per_s": ae_flow["influx_writes_per_s"],
+        "history_req_per_s": round(_HISTORY_REQ_RATE.per_s(now), 2),
+    }
+    health["agent_update"] = _agent_update_state(health["agents"])
 
     health["overall"] = "ok" if not health["warnings"] else ("warn" if all("stale" not in w and "unreachable" not in w and "down" not in w for w in health["warnings"]) else "down")
     return jsonify(health)
@@ -4981,6 +5073,38 @@ openclaw.register_routes(app, ctx)
 model_profiles.register_routes(app, ctx, profiles_path=DATA_DIR / "model_profiles.json")
 import gateway  # type: ignore[import-not-found]  # sibling; #214
 gateway.register_routes(app, ctx)
+
+
+@app.route("/api/admin/gateway/flow", methods=["GET"])
+def admin_gateway_flow():
+    """Live clients → gateway → hosts picture for the Routing tab's card."""
+    deny = _require_admin()
+    if deny is not None:
+        return deny
+    return jsonify(gateway.flow_payload())
+
+
+@app.route("/api/admin/gateway", methods=["PUT"])
+def admin_gateway_put():
+    """Turn the inference gateway on/off. Written through the settings path
+    and hot-reloaded, so /api/gateway/v1 flips without a restart."""
+    deny = _require_admin()
+    if deny is not None:
+        return deny
+    body = flask_request.get_json(silent=True) or {}
+    enabled = body.get("enabled")
+    if not isinstance(enabled, bool):
+        return jsonify({"ok": False, "error": "enabled must be true or false"}), 400
+    try:
+        settings_toml_io.apply_patches({"manager.gateway.enabled": enabled})
+    except settings_toml_io.SettingsValidationError as e:
+        return jsonify({"ok": False, "errors": e.errors}), 400
+    except settings_toml_io.SettingsIOError as e:
+        return _err_json("config file unreadable", 500, exc=e)
+    _gateway_reload_config()
+    return jsonify({"ok": True, "enabled": gateway._gw_enabled()})
+
+
 report_card.register_routes(app, ctx, db_path=str(DB_PATH))
 tool_activity.configure(
     agent_for=agent_registry.resolve_agent_by_id,
@@ -5405,6 +5529,7 @@ def admin_export_manager():
     except ValueError as e:
         return _err_json("invalid request", 400, exc=e)
     fname = f"lsm-manager-{socket.gethostname()}-{datetime.now().strftime('%Y%m%d-%H%M%S')}.lsmenc"
+    export_log.record("manager", len(blob))
     log.warning("manager export by %s (%d files, %d bytes, encrypted=%s)",
                 flask_request.remote_addr, n_files, len(blob), bool(password))
     return app.response_class(
@@ -5424,6 +5549,7 @@ def admin_export_manager():
 _BACKUP_DIR = DATA_DIR / "backups"
 _BACKUP_PREFIX = "lsm-auto-manager-"
 _BACKUP_STATUS_FILE = _BACKUP_DIR / "last_backup.json"
+export_log.configure(DATA_DIR / "last_export.json")
 _backup_status_lock = _threading.Lock()
 _backup_status: dict = {}
 
@@ -5487,7 +5613,16 @@ def _prune_auto_backups(keep_last: int) -> int:
     return removed
 
 
+_backup_run_lock = threading.Lock()
+
+
 def _run_scheduled_backup(passphrase: str, keep_last: int, mirror_dir: str) -> dict:
+    # One archive at a time: the scheduler thread and backup-now share this lock.
+    with _backup_run_lock:
+        return _run_scheduled_backup_locked(passphrase, keep_last, mirror_dir)
+
+
+def _run_scheduled_backup_locked(passphrase: str, keep_last: int, mirror_dir: str) -> dict:
     t0 = time.time()
     ts_label = datetime.now().strftime("%Y%m%d-%H%M%S")
     st: dict = {"ts": time.time(), "ok": False, "file": None, "bytes": 0,
@@ -5590,11 +5725,14 @@ def admin_backup_status():
     if deny is not None:
         return deny
     enabled, interval_h, keep_last, mirror_dir = _backup_cfg()
+    mdir = Path(mirror_dir) if mirror_dir else None
     backups = []
     for p in reversed(_list_auto_backups()):
         try:
             stat = p.stat()
-            backups.append({"file": p.name, "bytes": stat.st_size, "mtime": stat.st_mtime})
+            mirrored = (mdir / p.name).is_file() if mdir is not None else None
+            backups.append({"file": p.name, "bytes": stat.st_size, "mtime": stat.st_mtime,
+                            "mirrored": mirrored})
         except OSError:
             continue
     return jsonify({
@@ -5607,9 +5745,29 @@ def admin_backup_status():
         "encrypted": bool(_backup_passphrase()),
         "mirror_dir": mirror_dir,
         "last": _get_backup_status(),
+        "last_export": export_log.last_export(),
         "next_due_ts": _backup_sched_state.get("next_attempt"),
         "backups": backups,
+        "folder_bytes": sum(b["bytes"] for b in backups),
     })
+
+
+@app.route("/api/admin/backup-now", methods=["POST"])
+def admin_backup_now():
+    """Run one scheduler cycle synchronously; 409 when scheduling is off."""
+    deny = _require_admin()
+    if deny is not None:
+        return deny
+    enabled, interval_h, keep_last, mirror_dir = _backup_cfg()
+    if not (enabled and interval_h > 0):
+        return jsonify({"ok": False,
+                        "error": "scheduled backups are disabled ([manager.backup])"}), 409
+    passphrase = _backup_passphrase()
+    if passphrase and len(passphrase) < _archive.MIN_PASSWORD_LEN:
+        return jsonify({"ok": False,
+                        "error": "passphrase shorter than the 12-char encryption minimum"}), 409
+    st = _run_scheduled_backup(passphrase, keep_last, mirror_dir)
+    return jsonify({"ok": bool(st.get("ok")), "last": st}), (200 if st.get("ok") else 500)
 
 
 def _read_import_blob() -> tuple[bytes | None, str, str | None]:
@@ -6721,10 +6879,13 @@ def _maybe_start_alarm_ws_proxy() -> None:
     ws_port = int(getattr(settings.manager, "ws_proxy_port", 0) or 0)
     if ws_port <= 0:
         log.info("  WS proxy:    disabled (set [manager].ws_proxy_port to enable)")
+        _ws_relay_state["status"] = "off"
         return
     if not _alarm_engine_url:
         log.warning("  WS proxy:    skipped (no alarm engine URL configured)")
+        _ws_relay_state["status"] = "unknown"
         return
+    _ws_relay_state["status"] = "unknown"  # configured; flips to "connected" once serving
     import threading as _threading
 
     def _run() -> None:
@@ -6792,6 +6953,7 @@ def _maybe_start_alarm_ws_proxy() -> None:
 
         async def _serve() -> None:
             async with websockets.serve(_handler, "0.0.0.0", ws_port):
+                _ws_relay_state["status"] = "connected"
                 if wss_port > 0:
                     async with websockets.serve(_handler, "0.0.0.0", wss_port, ssl=wss_ssl):
                         await asyncio.Future()  # run forever
@@ -6802,6 +6964,7 @@ def _maybe_start_alarm_ws_proxy() -> None:
         try:
             loop.run_until_complete(_serve())
         except Exception:
+            _ws_relay_state["status"] = "unknown"
             log.exception("WS proxy: server crashed")
 
     _threading.Thread(target=_run, name="alarm-ws-proxy", daemon=True).start()

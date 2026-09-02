@@ -111,6 +111,9 @@ enabled = true
 
 # Bearer keys for external OpenAI-SDK clients (accepted only on
 # /api/gateway/*). Empty = dashboard-session access only.
+# Write an entry as "label=secret" to name the client in the Routing tab's
+# gateway card; unlabeled keys show as key-1, key-2, ... by position.
+#   api_keys = ["laptop=sk-abc123", "sk-plainkey"]
 api_keys = []
 
 # Upstream read timeout per completion request (generation can take minutes).

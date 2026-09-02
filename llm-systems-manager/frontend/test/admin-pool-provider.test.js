@@ -12,9 +12,8 @@ const indexSrc = srcFile('index.html');
 const BODY = `
   <ul id="adminPoolOrderList"></ul>
   <div id="adminPoolResult"></div>
-  <datalist id="adminProviderModels"></datalist>
   <div id="adminPinsResult"></div>
-  <input id="adminPinModelInput">
+  <select id="adminPinModelSelect"><option value="some-model">some-model</option></select>
   <select id="adminPinAgentSelect"><option value="agent-A">agent-A</option></select>
 `;
 
@@ -69,7 +68,7 @@ describe('provider-parameterized pool/pins admin UI', () => {
   it('pool reorder commit (adminPoolReorderCommit) uses the selected provider', async () => {
     const boot = `
       ${FETCH_STUB}
-      _adminPoolSel = 'vllm';
+      _adminProvSel = 'vllm';
       _adminGlobal = { vllm_pool: ['agent-A', 'agent-B'] };
       document.getElementById('adminPoolOrderList').innerHTML =
         '<li data-agent-id="agent-B"></li><li data-agent-id="agent-A"></li>';
@@ -85,8 +84,8 @@ describe('provider-parameterized pool/pins admin UI', () => {
   it('pin add/clear endpoints (adminAddPin, adminClearPin) use the selected provider', async () => {
     const boot = `
       ${FETCH_STUB}
-      _adminPinsSel = 'vllm';
-      document.getElementById('adminPinModelInput').value = 'some-model';
+      _adminProvSel = 'vllm';
+      document.getElementById('adminPinModelSelect').value = 'some-model';
       document.getElementById('adminPinAgentSelect').value = 'agent-A';
       window.__done = Promise.all([adminAddPin(), adminClearPin('some-model')]);
     `;
@@ -99,7 +98,7 @@ describe('provider-parameterized pool/pins admin UI', () => {
   it('provider models endpoint (adminLoadProviderModels) uses the selected provider', async () => {
     const boot = `
       ${FETCH_STUB}
-      _adminPinsSel = 'vllm';
+      _adminProvSel = 'vllm';
       window.__done = adminLoadProviderModels();
     `;
     const win = runHarness(boot);
@@ -108,34 +107,33 @@ describe('provider-parameterized pool/pins admin UI', () => {
     expect(win.__calls.some(u => /llama-models/.test(u))).toBe(false);
   });
 
-  it('index.html provider chip containers render real per-provider chips via adminRenderProviderChips', () => {
+  it('one mc-seg renders every provider and switching it re-renders pool + pins (#797)', () => {
     // Pull the actual container markup out of index.html rather than
     // hand-typing it, so a renamed/removed id fails the extraction itself.
-    const poolChips = indexSrc.match(/<div id="adminPoolProviderChips"[^>]*><\/div>/);
-    const pinsChips = indexSrc.match(/<div id="adminPinsProviderChips"[^>]*><\/div>/);
-    expect(poolChips, 'adminPoolProviderChips container not found in index.html').toBeTruthy();
-    expect(pinsChips, 'adminPinsProviderChips container not found in index.html').toBeTruthy();
+    const seg = indexSrc.match(/<div class="mc-seg" id="rtProviderSeg"[^>]*><\/div>/);
+    expect(seg, 'rtProviderSeg container not found in index.html').toBeTruthy();
 
     const boot = `
+      ${FETCH_STUB}
       _adminPoolProviders = [
         { name: 'llama', label: 'llama.cpp', pin_key: 'llama_model_pins' },
         { name: 'vllm', label: 'vLLM', pin_key: 'vllm_model_pins' },
       ];
-      _adminPoolSel = 'llama';
-      _adminPinsSel = 'vllm';
-      adminRenderProviderChips('pool');
-      adminRenderProviderChips('pins');
-      window.__poolHtml = document.getElementById('adminPoolProviderChips').innerHTML;
-      window.__pinsHtml = document.getElementById('adminPinsProviderChips').innerHTML;
+      _adminGlobal = { llama_pool: [], vllm_pool: [] };
+      adminRenderProviderSeg();
+      window.__html = document.getElementById('rtProviderSeg').innerHTML;
+      window.__onFirst = document.querySelector('#rtProviderSeg button.on').dataset.prov;
+      document.querySelector('#rtProviderSeg button[data-prov="vllm"]').click();
+      window.__sel = _adminProvSel;
+      window.__onAfter = document.querySelector('#rtProviderSeg button.on').dataset.prov;
     `;
-    const win = runHarness(boot, poolChips[0] + pinsChips[0]);
-    // Both providers rendered as chips in the pool row, current selection marked primary.
-    expect(win.__poolHtml).toContain("adminSelectProvider('pool','llama')");
-    expect(win.__poolHtml).toContain("adminSelectProvider('pool','vllm')");
-    expect(win.__poolHtml).toMatch(/class="adm-chip primary"[^>]*>\s*llama\.cpp/);
-    // Pins row selection follows _adminPinsSel independently of the pool row.
-    expect(win.__pinsHtml).toContain("adminSelectProvider('pins','vllm')");
-    expect(win.__pinsHtml).toMatch(/class="adm-chip primary"[^>]*>\s*vLLM/);
+    const win = runHarness(boot, seg[0] + BODY);
+    expect(win.__html).toContain('data-prov="llama"');
+    expect(win.__html).toContain('data-prov="vllm"');
+    expect(win.__html).toContain('llama.cpp');
+    expect(win.__onFirst).toBe('llama');
+    expect(win.__sel).toBe('vllm');
+    expect(win.__onAfter).toBe('vllm');
   });
 
   // wiring (unexecutable): source-text check of the cache-bust query string.

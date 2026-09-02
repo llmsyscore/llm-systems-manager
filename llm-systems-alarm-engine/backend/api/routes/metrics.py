@@ -19,6 +19,7 @@ from typing import Any, Optional
 from fastapi import APIRouter, Body, Depends, HTTPException, Query
 
 from ...integration.metric_flatten import metric_to_points
+from ...rate_counter import INGEST_POINTS
 from ...models.alarm_rule import TAG_VALUE_RE
 from ...models.metrics import MetricBatchCreate, MetricPoint
 from ...storage.repositories import MetricRepository
@@ -219,6 +220,7 @@ async def ingest_metric(
 ) -> dict:
     """Ingest a new metric point."""
     created = metric_repo.create(point)
+    INGEST_POINTS.add(1)
     return created.to_dict()
 
 
@@ -230,6 +232,7 @@ async def ingest_metric_batch(
 ) -> dict:
     """Ingest a batch of pre-flattened metric points."""
     count = metric_repo.create_batch(batch.metrics)
+    INGEST_POINTS.add(count or 0)
     return {"ingested": count}
 
 
@@ -270,6 +273,7 @@ async def ingest_raw_batch(
 
     if points:
         metric_repo.create_batch(points)
+        INGEST_POINTS.add(len(points))
     logger.info(
         "ingest /metrics/ingest: host=%s samples=%d points=%d",
         host or "—", len(samples), len(points),

@@ -21,17 +21,16 @@ function el(tag, className, text) {
   return e;
 }
 
-function _labeled(label, control) {
-  const wrap = document.createElement('label');
-  wrap.className = 'ap-field-wrap';
-  wrap.appendChild(el('span', 'ap-lbl', label));
-  wrap.appendChild(control);
-  return wrap;
+function _cell(control, className) {
+  const td = document.createElement('td');
+  if (className) td.className = className;
+  if (control) td.appendChild(control);
+  return td;
 }
 
 function _select(field, options, value, className) {
   const s = document.createElement('select');
-  s.className = className || 'ap-select';
+  s.className = className || 'sel';
   s.dataset.field = field;
   options.forEach(o => {
     const opt = document.createElement('option');
@@ -43,25 +42,31 @@ function _select(field, options, value, className) {
   return s;
 }
 
-function _text(field, value, className, placeholder) {
-  const i = document.createElement('input');
-  i.type = 'text';
-  i.className = className || 'ap-input';
-  i.dataset.field = field;
-  i.value = value == null ? '' : value;
-  if (placeholder) i.placeholder = placeholder;
-  return i;
-}
-
-function _num(field, value, min, placeholder) {
+function _num(field, value, min, placeholder, width) {
   const i = document.createElement('input');
   i.type = 'number';
   i.min = String(min);
-  i.className = 'ap-input ap-num';
+  i.className = 'st-in';
+  i.style.width = width || '64px';
   i.dataset.field = field;
   i.value = value == null ? '' : String(value);
   if (placeholder) i.placeholder = placeholder;
   return i;
+}
+
+// mc-toggle buttons carry state in a class; a legacy checkbox still works.
+function _toggleOn(e) {
+  if (!e) return false;
+  return e.tagName === 'BUTTON' ? e.classList.contains('on') : !!e.checked;
+}
+function _setToggle(e, on) {
+  if (!e) return;
+  if (e.tagName === 'BUTTON') {
+    e.classList.toggle('on', !!on);
+    e.setAttribute('aria-pressed', String(!!on));
+  } else {
+    e.checked = !!on;
+  }
 }
 
 // Injectable model/placement datalist source (#472) — wiring populates this
@@ -75,16 +80,24 @@ function setCatalog(catalog) {
 
 let _rowSeq = 0;
 
-// Model id -> hosts serving it; same option shape as admin.js's pin-editor
-// datalist (value = id, label = "on: host1, host2").
-function _fillModelOptions(dl, provider) {
-  dl.replaceChildren();
-  (_catalog.models[provider] || []).forEach(m => {
+// Discovered model ids for a provider; an unknown current value stays
+// selectable so an edit can never drop it.
+function _modelOptions(provider, current) {
+  const opts = (_catalog.models[provider] || []).map(m => ({ v: m.id, label: m.id }));
+  if (!current) opts.unshift({ v: '', label: 'choose a model' });
+  else if (!opts.some(o => o.v === current)) opts.unshift({ v: current, label: current + ' · not discovered' });
+  return opts;
+}
+
+function _fillModelSelect(sel, provider, current) {
+  sel.replaceChildren();
+  _modelOptions(provider, current).forEach(o => {
     const opt = document.createElement('option');
-    opt.value = m.id;
-    if (m.agents && m.agents.length) opt.textContent = 'on: ' + m.agents.join(', ');
-    dl.appendChild(opt);
+    opt.value = o.v;
+    opt.textContent = o.label;
+    sel.appendChild(opt);
   });
+  sel.value = current || '';
 }
 
 // "auto" plus every approved agent advertising provider's capability;
@@ -118,75 +131,72 @@ function _fillPlacementSelect(sel, provider, current) {
   sel.value = current || 'auto';
 }
 
-// Builds one entry's editor row: inputs/selects tagged data-field, plus the
-// vLLM "manual-apply only" badge (kept live via the provider select's change).
+// One entry's table row: every control tagged data-field, plus the status
+// cell (filled by _renderEntries) and the remove button.
 function entryRow(entry) {
-  const row = document.createElement('div');
+  const row = document.createElement('tr');
   row.className = 'ap-entry-row';
   // Preserves autoscale (not editable here) so an unrelated Save doesn't
   // silently reset a customized target_saturation/up_window_s/down_window_s.
   if (entry && entry.autoscale) {
     try { row.dataset.autoscale = JSON.stringify(entry.autoscale); } catch (_) { /* ignore */ }
   }
+  const prov = entry.provider || 'llama';
 
-  const seq = ++_rowSeq;
-  const modelsDl = document.createElement('datalist');
-  modelsDl.id = `apModelsDl${seq}`;
+  const modelSel = document.createElement('select');
+  modelSel.className = 'sel full';
+  modelSel.dataset.field = 'model';
+  _fillModelSelect(modelSel, prov, entry.model);
+  row.appendChild(_cell(modelSel));
 
-  const modelInput = _text('model', entry.model, 'ap-input ap-model', 'model id');
-  modelInput.setAttribute('list', modelsDl.id);
-  row.appendChild(_labeled('model', modelInput));
-  row.appendChild(modelsDl);
-
-  const provider = _select('provider', PROVIDERS, entry.provider || 'llama');
-  row.appendChild(_labeled('provider', provider));
+  const provider = _select('provider', PROVIDERS, prov);
+  row.appendChild(_cell(provider));
 
   const placement = document.createElement('select');
-  placement.className = 'ap-select ap-placement';
+  placement.className = 'sel ap-placement';
   placement.dataset.field = 'placement';
-  _fillPlacementSelect(placement, entry.provider || 'llama', entry.placement || 'auto');
-  row.appendChild(_labeled('placement', placement));
+  _fillPlacementSelect(placement, prov, entry.placement || 'auto');
+  row.appendChild(_cell(placement));
 
-  row.appendChild(_labeled('failover', _select('failover', FAILOVER, entry.failover || 'semi')));
+  row.appendChild(_cell(_select('failover', FAILOVER, entry.failover || 'semi')));
+  row.appendChild(_cell(_num('priority', entry.priority ?? 100, 0)));
 
-  row.appendChild(_labeled('priority', _num('priority', entry.priority ?? 100, 0)));
-  row.appendChild(_labeled('min replicas', _num('min_replicas', entry.min_replicas ?? 1, 1)));
-  row.appendChild(_labeled('max replicas', _num('max_replicas', entry.max_replicas ?? 1, 1)));
+  const rep = document.createElement('td');
+  rep.className = 'rep';
+  rep.appendChild(_num('min_replicas', entry.min_replicas ?? 1, 1, '', '44px'));
+  rep.appendChild(el('span', 'unit', '–'));
+  rep.appendChild(_num('max_replicas', entry.max_replicas ?? 1, 1, '', '44px'));
+  row.appendChild(rep);
 
   // Optional VRAM-fit size override (#474); blank = discovered size.
   // vLLM has no discovery source, so its placeholder says "required".
   const sizeInput = _num('size_mb', entry.size_mb, 1,
-    (entry.provider === 'vllm') ? 'required' : 'auto');
+    (prov === 'vllm') ? 'required' : 'auto', '74px');
   sizeInput.title = 'Model size in MB for the VRAM/RAM-fit check. Leave blank to use ' +
     'the discovered size; required for vLLM (no discovery source).';
-  row.appendChild(_labeled('size (MB)', sizeInput));
+  row.appendChild(_cell(sizeInput));
 
-  _fillModelOptions(modelsDl, provider.value);
+  const statusCell = document.createElement('td');
+  statusCell.className = 'ap-entry-status';
+  row.appendChild(statusCell);
 
-  const badge = el('span', 'status status--warn ap-vllm-badge', 'manual-apply only');
-  badge.title = 'vLLM entries can never auto-execute — proposals always need a manual Apply.';
-  badge.style.display = (entry.provider === 'vllm') ? '' : 'none';
   provider.addEventListener('change', () => {
-    badge.style.display = (provider.value === 'vllm') ? '' : 'none';
     sizeInput.placeholder = (provider.value === 'vllm') ? 'required' : 'auto';
-    _fillModelOptions(modelsDl, provider.value);
+    _fillModelSelect(modelSel, provider.value, modelSel.value);
     _fillPlacementSelect(placement, provider.value, placement.value);
   });
-  row.appendChild(badge);
 
   const removeBtn = document.createElement('button');
   removeBtn.type = 'button';
-  removeBtn.className = 'adm-btn-icon ap-remove-btn';
+  removeBtn.className = 'ib crith ap-remove-btn';
   removeBtn.dataset.act = 'remove';
-  removeBtn.title = 'Remove entry';
+  removeBtn.setAttribute('data-tip', 'Remove entry');
   removeBtn.textContent = '✕';
-  // _renderEntries() wraps each row in .ap-entry-wrap with its statusChip;
-  // remove the wrap when present so the chip doesn't orphan, else the row.
-  removeBtn.addEventListener('click', () => {
-    _dirty = true;
-    (row.closest('.ap-entry-wrap') || row).remove();
-  });
-  row.appendChild(removeBtn);
+  removeBtn.addEventListener('click', () => { _dirty = true; row.remove(); });
+  const act = document.createElement('div');
+  act.className = 'act';
+  act.appendChild(removeBtn);
+  row.appendChild(_cell(act, 'r'));
 
   return row;
 }
@@ -211,32 +221,32 @@ function readEntries(container) {
   return out;
 }
 
-// One pending-proposal row: reason + kind + truncated agent id, with
-// data-act=apply|dismiss buttons wired to the given callbacks.
+// One pending-proposal row: reason, meta line and Apply / Dismiss, wired
+// to the given callbacks.
 function proposalRow(p, callbacks) {
   const cb = callbacks || {};
   const action = p.action || {};
   const row = document.createElement('div');
-  row.className = 'ap-proposal-row';
+  row.className = 'rt-pp ap-proposal-row';
 
   // Server always sets top-level p.reason; action.reason is a defensive
   // fallback only, for callers that don't (e.g. hand-built fixtures).
-  row.appendChild(el('div', 'ap-proposal-reason', p.reason || action.reason || ''));
+  row.appendChild(el('div', 'why ap-proposal-reason', p.reason || action.reason || ''));
 
   const meta = document.createElement('div');
-  meta.className = 'ap-proposal-meta';
-  meta.appendChild(el('span', 'status status--info', action.kind || '—'));
+  meta.className = 'pm ap-proposal-meta';
+  meta.appendChild(el('span', 'pill info', action.kind || '—'));
   if (action.provider) meta.appendChild(el('span', 'ap-proposal-model', action.provider));
   if (action.model) meta.appendChild(el('span', 'ap-proposal-model', action.model));
   if (action.agent_id) meta.appendChild(el('span', 'ap-proposal-agent', String(action.agent_id).slice(0, 8)));
   row.appendChild(meta);
 
   const actions = document.createElement('div');
-  actions.className = 'ap-proposal-actions';
+  actions.className = 'pa ap-proposal-actions';
 
   const applyBtn = document.createElement('button');
   applyBtn.type = 'button';
-  applyBtn.className = 'adm-btn primary';
+  applyBtn.className = 'mcbtn mcbtn-pri mcbtn-sm';
   applyBtn.dataset.act = 'apply';
   applyBtn.textContent = 'Apply';
   applyBtn.addEventListener('click', () => { if (typeof cb.onApply === 'function') cb.onApply(p.id); });
@@ -244,7 +254,7 @@ function proposalRow(p, callbacks) {
 
   const dismissBtn = document.createElement('button');
   dismissBtn.type = 'button';
-  dismissBtn.className = 'adm-btn';
+  dismissBtn.className = 'mcbtn mcbtn-ghost mcbtn-sm';
   dismissBtn.dataset.act = 'dismiss';
   dismissBtn.textContent = 'Dismiss';
   dismissBtn.addEventListener('click', () => { if (typeof cb.onDismiss === 'function') cb.onDismiss(p.id); });
@@ -256,6 +266,12 @@ function proposalRow(p, callbacks) {
 
 // Status badge: "N pending" wins over placed/want + blocked reason;
 // "stable" only when no entry_status was passed (#472 back-compat).
+// First clause of a planner reason, without the parenthetical detail.
+function shortReason(text) {
+  const t = String(text || '').split(' (')[0].split(' — ')[0].trim();
+  return t.length > 28 ? t.slice(0, 27) + '…' : t;
+}
+
 function statusChip(entry, placements, status) {
   const key = `${entry.model}/${entry.provider}`;
   const list = Array.isArray(placements) ? placements : [];
@@ -263,22 +279,49 @@ function statusChip(entry, placements, status) {
     const ek = p && (p.entry_key || (p.action && p.action.entry_key));
     return ek === key;
   }).length;
-  if (pending > 0) return el('span', 'status status--warn ap-entry-chip', `${pending} pending`);
+  if (pending > 0) return el('span', 'pill warn ap-entry-chip', `${pending} pending`);
   if (status) {
     const placed = status.placed || 0;
     const want = status.want || 0;
     if (status.blocked) {
-      return el('span', 'status status--warn ap-entry-chip', `${placed}/${want} — ${status.blocked}`);
+      const chip = el('span', 'pill warn ap-entry-chip', `${placed}/${want} · ${shortReason(status.blocked)}`);
+      chip.title = status.blocked;
+      return chip;
     }
-    const cls = placed >= want ? 'status status--ok ap-entry-chip' : 'status status--muted ap-entry-chip';
+    const cls = placed >= want ? 'pill ok ap-entry-chip' : 'pill dim ap-entry-chip';
     return el('span', cls, `${placed}/${want} placed`);
   }
-  return el('span', 'status status--muted ap-entry-chip', 'stable');
+  return el('span', 'pill dim ap-entry-chip', 'stable');
 }
 
 // ── DOM wiring (untested glue) ─────────────────────────────────────────
 
 let _lastState = null;
+let _lastPlanTs = null;
+let _tickPeriodS = 30;
+
+// "last plan 9:13 PM · next in 47 s" for the card header.
+function _planMetaText(lastTs, periodS, now) {
+  if (!lastTs) return 'no plan yet';
+  const d = new Date(lastTs * 1000);
+  let h = d.getHours(); const ap = h >= 12 ? 'PM' : 'AM'; h = h % 12 || 12;
+  const t = `${h}:${String(d.getMinutes()).padStart(2, '0')} ${ap}`;
+  const left = Math.max(0, Math.round(lastTs + periodS - now));
+  return `last plan ${t} · next in ${left} s`;
+}
+
+function _renderPlanMeta() {
+  const el = document.getElementById('apPlanMeta');
+  if (!el) return;
+  el.replaceChildren();
+  const txt = _planMetaText(_lastPlanTs, _tickPeriodS, Date.now() / 1000);
+  const parts = txt.split(/(\d+:\d\d [AP]M|\d+ s)/);
+  parts.forEach(p => {
+    if (!p) return;
+    if (/^\d+:\d\d [AP]M$|^\d+ s$/.test(p)) { const b = document.createElement('b'); b.textContent = p; el.appendChild(b); }
+    else el.appendChild(document.createTextNode(p));
+  });
+}
 let _lastProposals = [];
 let _lastEntryStatus = {};
 let _wired = false;
@@ -286,7 +329,7 @@ let _wired = false;
 // clobbering them (#472). Cleared on init() and on a successful save().
 let _dirty = false;
 
-function _markDirty() { _dirty = true; }
+function _markDirty() { _dirty = true; _renderDirtyNote(); }
 
 function _visible() {
   return typeof _activeTab !== 'undefined' && _activeTab === 'admin' &&
@@ -304,22 +347,41 @@ function _renderEntries() {
   const body = document.getElementById('apEntriesBody');
   if (!body || !_lastState) return;
   body.replaceChildren();
-  (_lastState.entries || []).forEach(entry => {
-    const wrap = document.createElement('div');
-    wrap.className = 'ap-entry-wrap';
-    wrap.appendChild(entryRow(entry));
+  const entries = _lastState.entries || [];
+  if (!entries.length) {
+    const tr = document.createElement('tr');
+    const td = document.createElement('td');
+    td.colSpan = 9;
+    td.appendChild(el('div', 'empty', 'No autopilot entries — add one to declare a desired model placement.'));
+    tr.appendChild(td);
+    body.appendChild(tr);
+  }
+  entries.forEach(entry => {
+    const row = entryRow(entry);
     const status = _lastEntryStatus[`${entry.model}/${entry.provider}`];
-    wrap.appendChild(statusChip(entry, _lastProposals, status));
-    body.appendChild(wrap);
+    const cell = row.querySelector('.ap-entry-status');
+    if (cell) cell.appendChild(statusChip(entry, _lastProposals, status));
+    body.appendChild(row);
   });
+  _renderDirtyNote();
+}
+
+function _renderDirtyNote() {
+  const n = document.getElementById('apDirtyNote');
+  if (n) n.textContent = _dirty ? 'unsaved changes' : '';
 }
 
 function _renderProposals() {
   const body = document.getElementById('apProposalsBody');
   if (!body) return;
   body.replaceChildren();
+  const pill = document.getElementById('apProposalsPill');
+  if (pill) {
+    pill.className = 'pill ' + (_lastProposals.length ? 'warn' : 'dim');
+    pill.textContent = `${_lastProposals.length} waiting`;
+  }
   if (!_lastProposals.length) {
-    body.appendChild(el('div', 'adm-muted', 'No pending proposals.'));
+    body.appendChild(el('div', 'rt-pp empty', 'No proposals waiting.'));
     return;
   }
   _lastProposals.forEach(p => {
@@ -332,9 +394,11 @@ function _render() {
   // The editor (toggle + entries) only takes server state while clean —
   // a dirty editor holds unsaved user edits until save() or a fresh init().
   _renderProposals();
-  if (_dirty) return;
+  _renderPlanMeta();
+  if (typeof adminRenderRoutingSummary === 'function') adminRenderRoutingSummary();
+  if (_dirty) { _renderDirtyNote(); return; }
   const toggle = document.getElementById('apEnabledToggle');
-  if (toggle && _lastState) toggle.checked = !!_lastState.enabled;
+  if (toggle && _lastState) _setToggle(toggle, !!_lastState.enabled);
   _renderEntries();
 }
 
@@ -386,6 +450,8 @@ async function fetchState(forceCatalog) {
     const d = await r.json();
     if (!r.ok) throw new Error(d.error || ('HTTP ' + r.status));
     _lastState = d.state || { enabled: false, entries: [], hosts: {} };
+    _lastPlanTs = d.last_plan_ts || null;
+    if (d.tick_period_s) _tickPeriodS = Number(d.tick_period_s);
     _lastProposals = d.proposals || [];
     _lastEntryStatus = d.entry_status || {};
     await catalogP;
@@ -400,7 +466,7 @@ async function save() {
   const toggle = document.getElementById('apEnabledToggle');
   if (!body) return;
   const state = {
-    enabled: toggle ? toggle.checked : false,
+    enabled: _toggleOn(toggle),
     entries: readEntries(body),
     hosts: (_lastState && _lastState.hosts) || {},
   };
@@ -413,6 +479,7 @@ async function save() {
     if (!r.ok) { _setStatus('✗ ' + (d.error || ('HTTP ' + r.status)), true); return; }
     _lastState = d.state || state;
     _dirty = false;
+    _renderDirtyNote();
     _setStatus('✓ saved');
     _render();
   } catch (e) {
@@ -464,11 +531,11 @@ function addEntry() {
   const body = document.getElementById('apEntriesBody');
   if (!body) return;
   _dirty = true;
-  const wrap = document.createElement('div');
-  wrap.className = 'ap-entry-wrap';
-  wrap.appendChild(entryRow({ model: '', provider: 'llama', placement: 'auto',
+  const empty = body.querySelector('td .empty');
+  if (empty) body.replaceChildren();
+  body.appendChild(entryRow({ model: '', provider: 'llama', placement: 'auto',
     failover: 'semi', priority: 100, min_replicas: 1, max_replicas: 1 }));
-  body.appendChild(wrap);
+  _renderDirtyNote();
 }
 
 function _wire() {
@@ -490,7 +557,16 @@ function _wire() {
     entries_.addEventListener('change', _markDirty);
   }
   const toggle_ = document.getElementById('apEnabledToggle');
-  if (toggle_) toggle_.addEventListener('change', _markDirty);
+  if (toggle_) {
+    toggle_.addEventListener('change', _markDirty);
+    if (toggle_.tagName === 'BUTTON') {
+      toggle_.addEventListener('click', () => {
+        _setToggle(toggle_, !_toggleOn(toggle_));
+        _markDirty();
+        _renderDirtyNote();
+      });
+    }
+  }
 }
 
 // Called on sub-tab entry (mirrors adminAuditLoad/initReportCard). Forces
@@ -510,7 +586,8 @@ function poll() {
 }
 
 const AP = { entryRow, readEntries, proposalRow, statusChip, setCatalog, init, poll, save,
-             addEntry, applyProposal, dismissProposal, planNow, fetchState };
+             addEntry, applyProposal, dismissProposal, planNow, fetchState,
+             state: () => _lastState, proposals: () => _lastProposals };
 
 if (typeof root !== 'undefined') root.AP = AP;
 if (typeof module !== 'undefined' && module.exports) module.exports.AP = AP;

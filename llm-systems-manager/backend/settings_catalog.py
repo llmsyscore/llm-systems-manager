@@ -36,7 +36,7 @@ MANAGER, AE, BOTH = "manager", "alarm_engine", "both"
 def _e(path: str, typ: str, label: str, help_: str, group: str, service: str,
        secret: bool = False, choices: Optional[list] = None,
        min: Optional[float] = None, max: Optional[float] = None,
-       nullable: bool = False, hot: bool = False) -> dict:
+       nullable: bool = False, hot: bool = False, common: bool = False) -> dict:
     d = {"path": path, "type": typ, "label": label, "help": help_,
          "group": group, "service": service, "secret": secret}
     if choices is not None:
@@ -49,27 +49,29 @@ def _e(path: str, typ: str, label: str, help_: str, group: str, service: str,
         d["nullable"] = True
     if hot:
         d["hot"] = True  # applied at runtime; never flags a restart
+    if common:
+        d["common"] = True  # shown in the Admin → Settings "Most used" card
     return d
 
 
 CATALOG: list[dict] = [
     # network
-    _e("manager.port", "int", "HTTP port", "Dashboard HTTP listen port.", "network", MANAGER, min=1, max=65535),
+    _e("manager.port", "int", "HTTP port", "Dashboard HTTP listen port.", "network", MANAGER, min=1, max=65535, common=True),
     _e("manager.tls_port", "int", "HTTPS port", "Dashboard HTTPS port; 0 disables.", "network", MANAGER, min=0, max=65535),
     _e("manager.tls_cert_file", "str", "Operator TLS cert (PEM)", "Full-chain cert served via SNI to matching hostnames; blank = internal CA only.", "network", MANAGER),
     _e("manager.tls_key_file", "str", "Operator TLS key (PEM)", "Key for the operator cert.", "network", MANAGER),
     _e("manager.ws_proxy_port", "int", "WS proxy port", "Browser /ws/alarm → AE /ws relay; 0 disables (breaks live toasts if the AE enforces a token).", "network", MANAGER, min=0, max=65535),
     _e("manager.ws_proxy_tls_port", "int", "WSS proxy port", "wss twin, active only when the operator cert is set; 0 disables.", "network", MANAGER, min=0, max=65535),
     _e("manager.stream_proxy_port", "int", "SSE daemon port", "Standalone llama-state SSE daemon; 0 = fall back to the main pool.", "network", MANAGER, min=0, max=65535),
-    _e("manager.alarm_engine_url", "str", "Alarm engine URL", "Where the manager finds the AE. Split install: use the AE host's IP.", "network", MANAGER),
+    _e("manager.alarm_engine_url", "str", "Alarm engine URL", "Where the manager finds the AE. Split install: use the AE host's IP.", "network", MANAGER, common=True),
     _e("manager.cors_origins", "str", "CORS origins", "Allowed browser origins for the manager API.", "network", MANAGER),
     # polling
-    _e("manager.poll_interval", "int", "Idle poll interval (s)", "Dashboard cadence while llama sleeps and LM Studio is idle.", "polling", MANAGER, min=5, max=3600),
+    _e("manager.poll_interval", "int", "Idle poll interval (s)", "Dashboard cadence while llama sleeps and LM Studio is idle.", "polling", MANAGER, min=5, max=3600, common=True),
     _e("manager.fast_poll_interval", "int", "Active poll interval (s)", "Cadence while a provider is active.", "polling", MANAGER, min=2, max=600),
     _e("manager.wait_timeout", "int", "Llama idle threshold (s)", "Seconds without work before llama-server counts as sleeping.", "polling", MANAGER, min=5, max=3600),
     # auth
-    _e("manager.auth.mode", "choice", "Auth mode", "auto = UI-managed via the Access Control card; any other value overrides that card on restart.", "auth", MANAGER, choices=["auto", "required", "trusted_cidr", "disabled"]),
-    _e("manager.auth.session_lifetime_days", "int", "Session lifetime (days)", "Browser session validity.", "auth", MANAGER, min=1, max=365),
+    _e("manager.auth.mode", "choice", "Auth mode", "auto = UI-managed via the Access Control card; any other value overrides that card on restart.", "auth", MANAGER, choices=["auto", "required", "trusted_cidr", "disabled"], common=True),
+    _e("manager.auth.session_lifetime_days", "int", "Session lifetime (days)", "Browser session validity.", "auth", MANAGER, min=1, max=365, common=True),
     _e("manager.auth.bypass_role", "choice", "Bypass role", "Role granted to sessions that skip login (trusted CIDR / disabled mode).", "auth", MANAGER, choices=["admin", "operator"]),
     _e("manager.auth.lockout_threshold", "int", "Lockout threshold", "Failed logins before lockout.", "auth", MANAGER, min=1, max=100),
     _e("manager.auth.lockout_window_s", "int", "Lockout window (s)", "Window the failures are counted in.", "auth", MANAGER, min=60, max=86400),
@@ -84,19 +86,19 @@ CATALOG: list[dict] = [
     _e("manager.history.max_response_rows", "int", "Max response rows", "/api/history rows thinned above this; 0 = raw.", "history", MANAGER, min=0, max=100000),
     # energy
     _e("manager.reportcard.price_kwh", "float", "Report-card $/kWh", "Electricity price for the report card's $/Mtok estimate.", "energy", MANAGER, min=0, max=10),
-    _e("manager.energy.price_kwh", "float", "Energy $/kWh", "Energy-tab price; blank inherits the report card's.", "energy", MANAGER, min=0, max=10, nullable=True),
+    _e("manager.energy.price_kwh", "float", "Energy $/kWh", "Energy-tab price; blank inherits the report card's.", "energy", MANAGER, min=0, max=10, nullable=True, common=True),
     _e("manager.energy.retention_days", "int", "Hourly retention (days)", "Prune energy_hourly rows older than this; blank keeps them forever.", "energy", MANAGER, min=45, max=3650, nullable=True),
     _e("manager.energy.cloud_price_in_per_mtok", "float", "Cloud $/Mtok in", "Cloud list price (input tokens) for the savings card.", "energy", MANAGER, min=0, max=1000),
     _e("manager.energy.cloud_price_out_per_mtok", "float", "Cloud $/Mtok out", "Cloud list price (output tokens).", "energy", MANAGER, min=0, max=1000),
     _e("manager.energy.cloud_price_label", "str", "Cloud price label", "As-of-dated label shown beside the savings figures.", "energy", MANAGER),
     # backup
-    _e("manager.backup.enabled", "bool", "Scheduled backups", "Automatic export archives to data/backups/.", "backup", MANAGER),
-    _e("manager.backup.interval_hours", "float", "Interval (hours)", "0 disables the scheduler.", "backup", MANAGER, min=0, max=8760),
+    _e("manager.backup.enabled", "bool", "Scheduled backups", "Automatic export archives to data/backups/.", "backup", MANAGER, common=True),
+    _e("manager.backup.interval_hours", "float", "Interval (hours)", "0 disables the scheduler.", "backup", MANAGER, min=0, max=8760, common=True),
     _e("manager.backup.keep_last", "int", "Keep last", "Archives retained after pruning.", "backup", MANAGER, min=1, max=1000),
     _e("manager.backup.passphrase", "str", "Backup passphrase", "12+ chars enables AES-256-GCM; blank = plaintext archives.", "backup", MANAGER, secret=True),
     _e("manager.backup.mirror_dir", "str", "Mirror directory", "Optional second copy destination (e.g. a NAS mount).", "backup", MANAGER),
     # audit (#794) — hot: the manager re-reads these after every save
-    _e("manager.audit.retention_days", "int", "Keep entries for (days)", "0 keeps everything; the 100,000-row cap still applies.", "audit", MANAGER, min=0, max=3650, hot=True),
+    _e("manager.audit.retention_days", "int", "Keep entries for (days)", "0 keeps everything; the 100,000-row cap still applies.", "audit", MANAGER, min=0, max=3650, hot=True, common=True),
     _e("manager.audit.page_size", "int", "Rows per page", "Default page size on the Audit Log tab.", "audit", MANAGER, min=10, max=500, hot=True),
     _e("manager.audit.save_automated", "bool", "Unit tests", "Requests tagged X-LLMSys-Source: test (unit tests) are excluded when disabled.", "audit", MANAGER, hot=True),
     _e("manager.audit.disabled_events", "list", "Disabled events", "Event keys that are not recorded.", "audit", MANAGER, hot=True),
@@ -108,12 +110,12 @@ CATALOG: list[dict] = [
     _e("manager.discord.allow_model_control", "bool", "Allow model control", "Enables /load and /unload for allowed users.", "discord", MANAGER),
     # companion
     _e("manager.companion.push_contact", "str", "Push contact", "VAPID sub claim the browser push services see (mailto:…).", "companion", MANAGER),
-    _e("manager.companion.release_check", "bool", "Release check", "Opt-in GitHub release check (the manager's only outbound github.com call).", "companion", MANAGER),
+    _e("manager.companion.release_check", "bool", "Release check", "Opt-in GitHub release check (the manager's only outbound github.com call).", "companion", MANAGER, common=True),
     _e("manager.companion.release_repo", "str", "Release repo", "GitHub repo the check queries.", "companion", MANAGER),
     _e("manager.companion.push_notify_token", "str", "Push notify token", "Bearer the AE presents on push delivery; blank falls back to AE tokens.", "companion", MANAGER, secret=True),
     # gateway
-    _e("manager.gateway.enabled", "bool", "Gateway enabled", "OpenAI-compatible /api/gateway endpoint.", "gateway", MANAGER),
-    _e("manager.gateway.api_keys", "list", "Gateway API keys", "Bearer keys for external clients; empty = dashboard sessions only. One per line.", "gateway", MANAGER, secret=True),
+    _e("manager.gateway.enabled", "bool", "Gateway enabled", "OpenAI-compatible /api/gateway endpoint.", "gateway", MANAGER, hot=True, common=True),
+    _e("manager.gateway.api_keys", "list", "Gateway API keys", "Bearer keys for external clients; empty = dashboard sessions only. One per line, optionally \"label=secret\" to name the client in the Routing card.", "gateway", MANAGER, secret=True),
     _e("manager.gateway.read_timeout_s", "float", "Read timeout (s)", "Upstream cap per completion request.", "gateway", MANAGER, min=10, max=7200),
     _e("manager.gateway.expose_proxied_to", "bool", "Expose X-Proxied-To", "Response header naming the serving agent; off hides backend hostnames.", "gateway", MANAGER),
     _e("manager.gateway.usage_probe", "bool", "Usage probe on streams", "Inject stream_options.include_usage on usage-counted streams; off if a backend rejects stream_options.", "gateway", MANAGER),
@@ -129,7 +131,7 @@ CATALOG: list[dict] = [
     _e("manager.branding.palette", "choice", "Accent palette", "Login page + logo accent.", "branding", MANAGER, choices=["teal", "indigo", "forest", "steel"]),
     # alarm engine
     _e("alarm_engine.port", "int", "AE port", "Alarm engine listen port.", "alarm_engine", AE, min=1, max=65535),
-    _e("alarm_engine.evaluation_interval", "int", "Rule eval interval (s)", "Alert rule evaluation cadence.", "alarm_engine", AE, min=5, max=3600),
+    _e("alarm_engine.evaluation_interval", "int", "Rule eval interval (s)", "Alert rule evaluation cadence.", "alarm_engine", AE, min=5, max=3600, common=True),
     _e("alarm_engine.metric_max_age_s", "int", "Metric max age (s)", "A rule is skipped as stale when its newest metric point is older than this.", "alarm_engine", AE, min=30, max=86400),
     _e("alarm_engine.manager_url", "str", "Manager URL", "AE's back-channel to the manager.", "alarm_engine", AE),
     _e("alarm_engine.cors_origins", "str", "AE CORS origins", "Allowed browser origins for the AE API.", "alarm_engine", AE),
@@ -168,7 +170,7 @@ CATALOG: list[dict] = [
     _e("notifications.twilio.from_number", "str", "Twilio from number", "Sender number for SMS alerts.", "notifications", BOTH),
     _e("notifications.discord.webhook_url", "str", "Discord webhook", "Blank disables Discord channel notifications.", "notifications", BOTH, secret=True),
     # logging
-    _e("logging.level", "choice", "Default log level", "Both services; per-service overrides below.", "logging", BOTH, choices=["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"]),
+    _e("logging.level", "choice", "Default log level", "Both services; per-service overrides below.", "logging", BOTH, choices=["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"], common=True),
     _e("manager.log_level", "choice", "Manager log level", "Falls back to the default level.", "logging", MANAGER, choices=["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"]),
     _e("alarm_engine.log_level", "choice", "AE log level", "Falls back to the default level.", "logging", AE, choices=["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"]),
 ]
@@ -225,6 +227,31 @@ def _current(path: str, root=None):
     return node
 
 
+_DEFAULTS_CACHE: "Optional[dict]" = None
+
+
+def defaults() -> dict:
+    """{path: pydantic model default} for every non-secret entry; a secret
+    never has a shipped default worth showing."""
+    global _DEFAULTS_CACHE
+    if _DEFAULTS_CACHE is not None:
+        return dict(_DEFAULTS_CACHE)
+    out: dict[str, Any] = {}
+    try:
+        root = _FileOnlySettings()
+    except Exception:
+        _DEFAULTS_CACHE = {}
+        return {}
+    for e in CATALOG:
+        if e["secret"]:
+            continue
+        val = _current(e["path"], root)
+        if val is not None:
+            out[e["path"]] = val
+    _DEFAULTS_CACHE = out
+    return dict(out)
+
+
 def describe() -> dict:
     values: dict[str, Any] = {}
     secrets: dict[str, str] = {}
@@ -240,6 +267,7 @@ def describe() -> dict:
         "entries": [dict(e) for e in CATALOG],
         "values": values,
         "secrets": secrets,
+        "defaults": defaults(),
     }
 
 
@@ -295,10 +323,8 @@ def validate_and_coerce(changes: dict) -> tuple[dict, dict]:
                 clean[path] = [] if entry["type"] == "list" else ""
                 continue
         elif value is None:
-            if entry.get("nullable"):
-                clean[path] = None  # None = remove the key (inherit/default)
-                continue
-            errors[path] = "value required"
+            # None = remove the key, so the model default applies again.
+            clean[path] = None
             continue
         try:
             clean[path] = _coerce(entry, value)

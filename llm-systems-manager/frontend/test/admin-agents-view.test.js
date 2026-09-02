@@ -12,7 +12,7 @@ const agentsSrc = readFileSync(join(here, '..', 'js', 'admin-agents.js'), 'utf8'
 const indexSrc = readFileSync(join(here, '..', 'index.html'), 'utf8');
 
 // The real panel markup, lifted from index.html so ids stay in lockstep.
-const STAMP = indexSrc.slice(indexSrc.indexOf('<button type="button" class="adm-stamp"'), indexSrc.indexOf('</button>', indexSrc.indexOf('id="adminRefreshStamp"')) + 9);
+const STAMP = indexSrc.slice(indexSrc.indexOf('<button type="button" class="hc-stamp"'), indexSrc.indexOf('</button>', indexSrc.indexOf('id="adminRefreshStamp"')) + 9);
 const PANEL = STAMP + indexSrc.slice(indexSrc.indexOf('<div id="admin-agents"'), indexSrc.indexOf('<!-- Routing sub-tab'));
 
 function harness(bootstrap, body = PANEL) {
@@ -219,7 +219,7 @@ describe('#793 row + drawer markup', () => {
     expect(d.getElementById('agSummary').textContent).toBe('3 registered2 live1 pending1 needs update');
     expect(d.getElementById('agMgrVer').textContent).toBe('manager v9');
     expect(d.getElementById('agAgentVer').textContent).toBe('agent v2');
-    expect(d.getElementById('adminRefreshRf').className).toBe('adm-rf ok');
+    expect(d.getElementById('adminRefreshRf').className).toBe('hc-rf ok');
     expect(d.getElementById('adminRefreshTime').textContent).toMatch(/^updated \d/);
     expect(d.getElementById('agUpdateCnt').hidden).toBe(false);
     expect(d.getElementById('agUpdateCnt').textContent).toBe('1 pending');
@@ -236,9 +236,9 @@ describe('#793 row + drawer markup', () => {
   test('failed refresh turns the stamp amber, unreachable red', () => {
     const win = harness(boot([approved('a1')]));
     win.AgentsView.stamp({ ok: false });
-    expect(win.document.getElementById('adminRefreshRf').className).toBe('adm-rf warn');
+    expect(win.document.getElementById('adminRefreshRf').className).toBe('hc-rf warn');
     win.AgentsView.stamp({ ok: false, unreachable: true });
-    expect(win.document.getElementById('adminRefreshRf').className).toBe('adm-rf crit');
+    expect(win.document.getElementById('adminRefreshRf').className).toBe('hc-rf crit');
   });
   test('clicking the name opens the drawer with roles, connection and shortcuts', () => {
     const win = harness(boot([approved('a1', { fingerprint: 'ab'.repeat(32), agent_user: 'llmsys', last_cert_issued_at: '2026-08-30T00:00:00Z' })],

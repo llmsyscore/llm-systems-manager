@@ -189,6 +189,39 @@ class TestLockoutTracker:
         assert tr.retry_after("alice") > 0
         assert tr.retry_after("bob") == 0
 
+    def test_fail_count_tracks_unlocked_attempts(self):
+        tr, _ = self._tr()
+        assert tr.fail_count("alice") == 0
+        tr.record_failure("alice")
+        tr.record_failure("alice")
+        assert tr.fail_count("alice") == 2
+
+    def test_fail_count_resets_to_zero_once_locked(self):
+        tr, _ = self._tr()
+        for _ in range(3):
+            tr.record_failure("alice")
+        assert tr.is_locked("alice") is True
+        assert tr.fail_count("alice") == 0
+
+    def test_fail_count_expires_failures_outside_window(self):
+        tr, clk = self._tr()
+        tr.record_failure("alice")
+        clk["t"] += 61
+        assert tr.fail_count("alice") == 0
+
+    def test_minutes_left_is_none_when_not_locked(self):
+        tr, _ = self._tr()
+        assert tr.minutes_left("alice") is None
+
+    def test_minutes_left_rounds_up_and_counts_down(self):
+        tr, clk = self._tr(duration_s=125)  # 125s → 3 whole minutes
+        tr.record_failure("alice")
+        tr.record_failure("alice")
+        tr.record_failure("alice")
+        assert tr.minutes_left("alice") == 3
+        clk["t"] += 61  # 64s left → still rounds up to 2
+        assert tr.minutes_left("alice") == 2
+
 
 class TestConfigDefaults:
     def test_manager_auth_has_role_and_lockout_defaults(self):
@@ -518,6 +551,47 @@ class TestUserRoutes:
                               json={"current_password": "llmadmin", "new_password": "a-real-password"})
         assert r.status_code == 200
         assert admin_client.get("/api/admin/auth").get_json()["is_default"] is False
+
+    def test_admin_auth_reports_admin_cidrs_and_bypass_role(self, admin_client, monkeypatch):
+        import manager_mod as M
+        monkeypatch.setattr(M.settings.manager.security, "admin_cidrs",
+                            ["127.0.0.1", "10.0.0.0/8"], raising=False)
+        monkeypatch.setattr(M.settings.manager.auth, "bypass_role", "operator", raising=False)
+        d = admin_client.get("/api/admin/auth").get_json()
+        assert d["admin_cidrs"] == ["127.0.0.1", "10.0.0.0/8"]
+        assert d["bypass_role"] == "operator"
+
+    def test_admin_auth_bypass_role_falls_back_to_admin_when_invalid(self, admin_client, monkeypatch):
+        import manager_mod as M
+        monkeypatch.setattr(M.settings.manager.auth, "bypass_role", "superuser", raising=False)
+        assert admin_client.get("/api/admin/auth").get_json()["bypass_role"] == "admin"
+
+    def test_users_list_reports_zero_failed_count_and_null_lock_when_clean(self, admin_client):
+        rows = admin_client.get("/api/admin/users").get_json()["users"]
+        op1 = next(r for r in rows if r["username"] == "op1")
+        assert op1["failed_count"] == 0
+        assert op1["lock_minutes_left"] is None
+        assert op1["locked"] is False
+
+    def test_users_list_reports_failed_count_before_lockout(self, admin_client):
+        manager_users.LOCKOUT.record_failure("user:op1")
+        manager_users.LOCKOUT.record_failure("user:op1")
+        rows = admin_client.get("/api/admin/users").get_json()["users"]
+        op1 = next(r for r in rows if r["username"] == "op1")
+        assert op1["failed_count"] == 2
+        assert op1["lock_minutes_left"] is None
+        assert op1["locked"] is False
+
+    def test_users_list_reports_lock_minutes_left_once_locked(self, admin_client):
+        for _ in range(5):  # default threshold=5 (manager_users_init_for_test)
+            manager_users.LOCKOUT.record_failure("user:op1")
+        rows = admin_client.get("/api/admin/users").get_json()["users"]
+        op1 = next(r for r in rows if r["username"] == "op1")
+        assert op1["locked"] is True
+        # 900s lockout window rounds up to 15 whole minutes.
+        assert op1["lock_minutes_left"] == 15
+        # Fails reset to 0 the moment the account locks.
+        assert op1["failed_count"] == 0
 
 
 class TestAdminIpOk:

@@ -9,6 +9,8 @@ import threading
 import time
 from datetime import datetime, timezone
 
+import rate_counter
+
 log = logging.getLogger("llm-systems-manager.gateway-usage")
 
 _lock = threading.Lock()
@@ -75,6 +77,125 @@ def inflight(agent_id: "str | None" = None):
         if agent_id is not None:
             return _inflight.get(agent_id, 0)
         return dict(_inflight)
+
+
+# ── Per-client attribution (#797) ────────────────────────────────────
+# One entry per (label, ip) seen on a gateway request, over a 15 min window.
+CLIENT_WINDOW_S = 900.0
+IDLE_AFTER_S = 600.0
+
+_clients: dict = {}
+_latency = rate_counter.SampleWindow(CLIENT_WINDOW_S)
+_errors = rate_counter.RateCounter(CLIENT_WINDOW_S)
+
+
+def _prune_clients(t: float) -> None:
+    stale = [k for k, c in _clients.items()
+             if c["inflight"] <= 0 and t - c["last_seen"] > CLIENT_WINDOW_S]
+    for k in stale:
+        _clients.pop(k, None)
+
+
+def _client_entry(key: tuple) -> dict:
+    c = _clients.get(key)
+    if c is None:
+        _prune_clients(time.time())
+        c = {"label": key[0], "ip": key[1],
+             "reqs": rate_counter.TimestampRing(CLIENT_WINDOW_S),
+             "prompt": 0, "gen": 0, "last_seen": 0.0, "inflight": 0}
+        _clients[key] = c
+    return c
+
+
+def client_begin(label: str, ip: "str | None",
+                 now: "float | None" = None) -> tuple:
+    """Record one inbound gateway request; returns the client key."""
+    key = (str(label or "unknown"), str(ip or ""))
+    with _lock:
+        c = _client_entry(key)
+        c["last_seen"] = c["reqs"].add(now)
+        c["inflight"] += 1
+    return key
+
+
+def client_end(key: "tuple | None", now: "float | None" = None) -> None:
+    """Idempotent below zero: a double-close must not go negative."""
+    if not key:
+        return
+    with _lock:
+        c = _clients.get(key)
+        if c is None:
+            return
+        c["inflight"] = max(0, c["inflight"] - 1)
+        c["last_seen"] = time.time() if now is None else float(now)
+
+
+def client_record(key: "tuple | None", prompt_tokens, completion_tokens) -> None:
+    """Add one response's usage to the client's token totals."""
+    if not key:
+        return
+    try:
+        pt, gt = int(prompt_tokens or 0), int(completion_tokens or 0)
+    except (TypeError, ValueError):
+        return
+    with _lock:
+        c = _clients.get(key)
+        if c is None:
+            return
+        c["prompt"] += max(0, pt)
+        c["gen"] += max(0, gt)
+
+
+def record_latency(ms: float, now: "float | None" = None) -> None:
+    """One request's wall time in ms (first byte for streams)."""
+    _latency.add(ms, now=now)
+
+
+def record_error(now: "float | None" = None) -> None:
+    _errors.add(1, now=now)
+
+
+def clients_snapshot(now: "float | None" = None) -> list:
+    """Per-client rows, most recently seen first; idle after IDLE_AFTER_S."""
+    t = time.time() if now is None else float(now)
+    out = []
+    with _lock:
+        _prune_clients(t)
+        rows = list(_clients.values())
+        for c in rows:
+            last = round(max(0.0, t - c["last_seen"]), 1)
+            out.append({
+                "label": c["label"],
+                "ip": c["ip"],
+                "req_per_min": c["reqs"].count_since(60.0, now=t),
+                "inflight": c["inflight"],
+                "prompt_tokens": c["prompt"],
+                "gen_tokens": c["gen"],
+                "last_seen_s": last,
+                "state": "idle" if (c["inflight"] <= 0
+                                    and last > IDLE_AFTER_S) else "ok",
+            })
+    out.sort(key=lambda r: r["last_seen_s"])
+    return out
+
+
+def client_totals(now: "float | None" = None) -> dict:
+    """Fleet-wide gateway request/latency/error rollup over the window."""
+    t = time.time() if now is None else float(now)
+    rows = clients_snapshot(t)
+    p50 = _latency.percentile(0.5, now=t)
+    return {
+        "req_per_min": sum(r["req_per_min"] for r in rows),
+        "p50_ms": None if p50 is None else round(p50, 1),
+        "errors_15m": _errors.total(now=t),
+    }
+
+
+def reset_clients() -> None:
+    with _lock:
+        _clients.clear()
+    _latency.reset()
+    _errors.reset()
 
 
 def metric_points(agent_hosts: dict, now: "float | None" = None) -> list:

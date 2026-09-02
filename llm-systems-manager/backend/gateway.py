@@ -14,7 +14,10 @@ import requests
 from flask import Response, jsonify, request as flask_request
 
 import agent_registry
+import auth
+import energy
 import gateway_usage
+import provider_state
 import providers
 import proxies
 import stream_pool
@@ -79,6 +82,12 @@ def _oai_error(message: str, status: int, err_type: str = "unavailable") -> Resp
 
 def _label(agent: dict) -> str:
     return f"{(agent.get('agent_id') or '')[:8]}@{agent.get('hostname') or '?'}"
+
+
+def _client_identity() -> "tuple[str, str]":
+    """(label, ip) for the caller: its api-key label, else the session label."""
+    label = auth.gateway_key_label() or auth.GATEWAY_SESSION_LABEL
+    return label, (flask_request.remote_addr or "")
 
 
 def _proxied_to_header(agent: dict) -> dict:
@@ -211,46 +220,60 @@ def _handle_completion(sub: str, provider=None) -> Response:
     if (wants_stream and provider in _USAGE_COUNTED_PROVIDERS
             and bool(getattr(_gw_cfg(), "usage_probe", True))):
         stream_body, injected = _with_usage_probe(body)
-    for agent in _candidates(model_id, agent_id, provider):
-        if wants_stream:
-            resp = _stream_from(agent, path, stream_body, errors, provider,
-                                strip_usage=injected)
-            if resp is not None:
-                return resp
-            continue
-        aid = agent.get("agent_id")
-        gateway_usage.begin(aid)
-        try:
-            r, err = _forward_json(agent, path, body)
-        finally:
-            gateway_usage.end(aid)
-        if r is None:
-            errors.append(f"{_label(agent)}: {err}")
-            continue
-        if r.status_code in _FAILOVER_STATUSES:
-            errors.append(f"{_label(agent)}: {r.status_code}")
-            continue
-        if (provider in _USAGE_COUNTED_PROVIDERS
-                and 200 <= r.status_code < 300):
-            u = gateway_usage.completion_usage_from_json_bytes(r.content)
-            if u:
-                gateway_usage.record(aid, *u)
-        return Response(r.content, status=r.status_code,
-                        mimetype=r.headers.get("content-type") or "application/json",
-                        headers=_proxied_to_header(agent))
-    log.warning("gateway %s: no usable %s agent (%s)",
-                sub, provider, "; ".join(errors) or "no candidates")
-    if not errors:
-        # Zero candidates = nothing registered/configured for the provider —
-        # a config state, not transient: non-retryable status + distinct type.
-        return _oai_error(
-            f"no {provider} backend registered — register an agent or set a "
-            f"default/pool", 404, "no_backend")
-    return _oai_error(f"no {provider} backend available", 503)
+    client = gateway_usage.client_begin(*_client_identity())
+    t0 = time.perf_counter()
+    stream_owns_client = False
+    try:
+        for agent in _candidates(model_id, agent_id, provider):
+            if wants_stream:
+                resp = _stream_from(agent, path, stream_body, errors, provider,
+                                    strip_usage=injected, client=client, t0=t0)
+                if resp is not None:
+                    stream_owns_client = getattr(resp, "gw_client_owned", False)
+                    return resp
+                continue
+            aid = agent.get("agent_id")
+            gateway_usage.begin(aid)
+            try:
+                r, err = _forward_json(agent, path, body)
+            finally:
+                gateway_usage.end(aid)
+            if r is None:
+                errors.append(f"{_label(agent)}: {err}")
+                continue
+            if r.status_code in _FAILOVER_STATUSES:
+                errors.append(f"{_label(agent)}: {r.status_code}")
+                continue
+            gateway_usage.record_latency((time.perf_counter() - t0) * 1000.0)
+            if 200 <= r.status_code < 300:
+                u = gateway_usage.completion_usage_from_json_bytes(r.content)
+                if u:
+                    gateway_usage.client_record(client, *u)
+                    if provider in _USAGE_COUNTED_PROVIDERS:
+                        gateway_usage.record(aid, *u)
+            else:
+                gateway_usage.record_error()
+            return Response(r.content, status=r.status_code,
+                            mimetype=r.headers.get("content-type") or "application/json",
+                            headers=_proxied_to_header(agent))
+        log.warning("gateway %s: no usable %s agent (%s)",
+                    sub, provider, "; ".join(errors) or "no candidates")
+        gateway_usage.record_error()
+        if not errors:
+            # Zero candidates = nothing registered/configured for the provider —
+            # a config state, not transient: non-retryable status + distinct type.
+            return _oai_error(
+                f"no {provider} backend registered — register an agent or set a "
+                f"default/pool", 404, "no_backend")
+        return _oai_error(f"no {provider} backend available", 503)
+    finally:
+        if not stream_owns_client:
+            gateway_usage.client_end(client)
 
 
 def _stream_from(agent: dict, path: str, body: dict, errors: list,
-                 provider: str = "llama", strip_usage: bool = False):
+                 provider: str = "llama", strip_usage: bool = False,
+                 client=None, t0=None):
     """One streaming attempt; None means try the next candidate."""
     upstream = _dial_stream(agent, path, body)
     if upstream is None:
@@ -260,6 +283,9 @@ def _stream_from(agent: dict, path: str, body: dict, errors: list,
         upstream.close()
         errors.append(f"{_label(agent)}: {upstream.status_code}")
         return None
+    # Headers are in hand: this is the client's first byte.
+    if t0 is not None:
+        gateway_usage.record_latency((time.perf_counter() - t0) * 1000.0)
     ctype = (upstream.headers.get("content-type") or "").lower()
     if "text/event-stream" not in ctype:
         # Upstream answered non-stream (e.g. 400 validation error): relay as-is.
@@ -270,12 +296,15 @@ def _stream_from(agent: dict, path: str, body: dict, errors: list,
                         "include_usage injection — backend may reject "
                         "stream_options (disable gateway.usage_probe)",
                         _label(agent))
+        if status >= 400:
+            gateway_usage.record_error()
         return Response(content, status=status,
                         mimetype=ctype or "application/json")
     if not stream_pool.POOL.try_acquire():
         upstream.close()
         log.warning("gateway: stream pool at capacity, rejecting %s: %s",
                     _label(agent), stream_pool.POOL.stats())
+        gateway_usage.record_error()
         resp = _oai_error("manager at stream capacity; retry shortly", 503)
         resp.headers["Retry-After"] = str(_POOL_RETRY_AFTER_S)
         return resp
@@ -285,9 +314,13 @@ def _stream_from(agent: dict, path: str, body: dict, errors: list,
             upstream, path, max_lifetime_s=proxies._STREAM_OP_MAX_LIFETIME_S)
         if provider in _USAGE_COUNTED_PROVIDERS:
             aid = agent.get("agent_id")
-            pumped = gateway_usage.tap_sse(
-                pumped, lambda p, g, a=aid: gateway_usage.record(a, p, g),
-                strip_usage=strip_usage)
+
+            def _on_usage(p, g, a=aid, k=client):
+                gateway_usage.record(a, p, g)
+                gateway_usage.client_record(k, p, g)
+
+            pumped = gateway_usage.tap_sse(pumped, _on_usage,
+                                           strip_usage=strip_usage)
         resp = Response(
             pumped,
             status=upstream.status_code, mimetype="text/event-stream",
@@ -298,6 +331,10 @@ def _stream_from(agent: dict, path: str, body: dict, errors: list,
         # until the response closes, not until this function returns.
         gw_aid = agent.get("agent_id")
         resp.call_on_close(lambda a=gw_aid: gateway_usage.end(a))
+        # The client slot follows the same lifecycle; the caller stops
+        # closing it once gw_client_owned is set.
+        resp.call_on_close(lambda k=client: gateway_usage.client_end(k))
+        resp.gw_client_owned = True
         # Increment last: nothing below can raise, so the pair can't leak if
         # the response ends up discarded instead of returned.
         gateway_usage.begin(gw_aid)
@@ -487,6 +524,177 @@ def _gateway_models(provider=None) -> Response:
         _store_model_index({m["id"]: m["provider"] for m in merged}, serving,
                            merged)
     return jsonify({"object": "list", "data": merged})
+
+
+# ── Admin flow snapshot (#797) ───────────────────────────────────────
+
+GATEWAY_ENDPOINT = "/api/gateway/v1"
+_FLOW_CLIENT_LIMIT = 3
+
+
+def _pool_agent_ids(provider: str) -> list:
+    """Pool member ids for a provider, falling back to its default agent."""
+    ids: list = []
+    try:
+        data = agent_registry.load_agents()
+        ids = [a for a in ((data.get("global") or {}).get(f"{provider}_pool")
+                           or []) if a]
+    except Exception as e:
+        _warn_pool_read_failed(e)
+    did = agent_registry.default_agent_id_for(provider)
+    if did and did not in ids:
+        ids.append(did)
+    return ids
+
+
+def _current_model(provider: str, sample: dict) -> "str | None":
+    """First resident model id on a host, per the autopilot placement rules."""
+    try:
+        import autopilot
+        fn = autopilot._LOADED_BY_PROVIDER.get(provider)
+    except Exception:
+        fn = None
+    if fn is None:
+        return None
+    try:
+        loaded = fn(sample or {})
+    except Exception:
+        return None
+    return loaded[0] if loaded else None
+
+
+def _host_rates(provider: str, agent_id: str, sample: dict) -> "tuple[float, float]":
+    """(gen_tps, prompt_tps): provider telemetry, or the gateway's own rates
+    for providers that publish none."""
+    block = (sample or {}).get(provider)
+    if isinstance(block, dict):
+        gen = block.get("tokens_per_second")
+        pro = block.get("prompt_tokens_per_second")
+        if isinstance(gen, (int, float)) or isinstance(pro, (int, float)):
+            return (float(gen or 0.0), float(pro or 0.0))
+    r = gateway_usage.last_rates(agent_id) or {}
+    return (float(r.get("gen_tps") or 0.0), float(r.get("prompt_tps") or 0.0))
+
+
+def _host_busy(provider: str, sample: dict) -> int:
+    """Requests the host itself reports in progress, per provider telemetry."""
+    s = sample or {}
+    if provider == "llama":
+        b = s.get("llama") or {}
+        for k in ("requests_processing", "slots_processing", "active_slots"):
+            if isinstance(b.get(k), (int, float)):
+                return max(0, int(b[k]))
+        return 0
+    if provider == "vllm":
+        rr = (s.get("vllm") or {}).get("requests_running")
+        return max(0, int(rr)) if isinstance(rr, (int, float)) else 0
+    if provider == "lms":
+        return sum(1 for r in (s.get("ps") or [])
+                   if any(m in str(r.get("status") or "").upper() for m in energy.LMS_BUSY_MARKERS))
+    return 0
+
+
+def _flow_hosts() -> "tuple[list, float, float, list]":
+    """(host rows, gen_tps total, prompt_tps total, samples for power)."""
+    rows, gen_total, pro_total, power_samples = [], 0.0, 0.0, []
+    seen_power: set = set()
+    for provider in _GATEWAY_PROVIDERS:
+        primary = agent_registry.default_agent_id_for(provider)
+        for aid in _pool_agent_ids(provider):
+            agent = agent_registry.resolve_agent_by_id(aid) or {}
+            wrap = provider_state.STORE.get(provider, aid) or {}
+            sample = wrap.get("sample") if isinstance(wrap.get("sample"), dict) else {}
+            gen, pro = _host_rates(provider, aid, sample)
+            gen_total += gen
+            pro_total += pro
+            n_inflight = max(gateway_usage.inflight(aid), _host_busy(provider, sample))
+            model = _current_model(provider, sample)
+            rows.append({
+                "agent_id": aid,
+                "hostname": agent.get("hostname") or aid[:8],
+                "provider": provider,
+                "model": model,
+                "gen_tps": round(gen, 2),
+                "inflight": n_inflight,
+                "primary": aid == primary,
+                "state": "ok" if (n_inflight > 0 or gen > 0 or model) else "idle",
+            })
+            if sample and aid not in seen_power:
+                seen_power.add(aid)
+                power_samples.append(sample)
+    return rows, gen_total, pro_total, power_samples
+
+
+def _today_bounds(now: float) -> "tuple[int, int]":
+    """UTC day containing `now`, snapped to the energy table's hour grid."""
+    start = int(now // 86400) * 86400
+    return start, int(now // 3600 + 1) * 3600
+
+
+class _EnergyCtx:
+    """Minimal ctx shim so energy._cfg_energy reads the live settings."""
+    settings = settings
+
+
+def _flow_energy(power_samples: list, now: float) -> dict:
+    """serving_w from the live samples; today's kWh/cost/$ per Mtok from the
+    energy rollup table."""
+    serving_w = 0.0
+    for sample in power_samples:
+        watts, _src = energy.extract_power(sample)
+        if watts is not None:
+            serving_w += watts
+    cfg = energy._cfg_energy(_EnergyCtx())
+    out = {"serving_w": round(serving_w, 1), "kwh_today": None,
+           "cost_today": None, "usd_per_mtok": None,
+           "cloud_usd_per_mtok": cfg["cloud_price_out_per_mtok"]}
+    factory = energy._conn_factory
+    if factory is None:
+        return out
+    try:
+        start, end = _today_bounds(now)
+        rows = energy.query_rows(factory(), start, end)
+        summary = energy.summarize(rows, max(0.0, now - start),
+                                   cfg["price_kwh"],
+                                   cfg["cloud_price_in_per_mtok"],
+                                   cfg["cloud_price_out_per_mtok"])
+    except Exception as e:
+        log.debug("gateway flow: energy summary unavailable: %s", e)
+        return out
+    totals = summary.get("totals") or {}
+    out["kwh_today"] = totals.get("kwh")
+    out["cost_today"] = totals.get("cost_usd")
+    out["usd_per_mtok"] = totals.get("usd_per_mtok")
+    return out
+
+
+def flow_payload(now: "float | None" = None) -> dict:
+    """Live picture behind the Routing tab's Inference Gateway card."""
+    t = time.time() if now is None else float(now)
+    clients = gateway_usage.clients_snapshot(t)
+    seen = {c["label"] for c in clients}
+    for label, _secret in auth.gateway_key_entries():
+        if label not in seen and len(clients) < _FLOW_CLIENT_LIMIT:
+            clients.append({"label": label, "ip": None, "req_per_min": 0, "inflight": 0,
+                            "prompt_tokens": 0, "gen_tokens": 0, "last_seen_s": None,
+                            "state": "idle"})
+    clients = clients[:_FLOW_CLIENT_LIMIT]
+    hosts, gen_tps, prompt_tps, power_samples = _flow_hosts()
+    totals = gateway_usage.client_totals(t)
+    totals["prompt_tps"] = round(prompt_tps, 2)
+    totals["gen_tps"] = round(gen_tps, 2)
+    totals["inflight"] = sum(h["inflight"] for h in hosts)
+    return {
+        "ok": True,
+        "enabled": _gw_enabled(),
+        "endpoint": GATEWAY_ENDPOINT,
+        "keys": len(auth.gateway_key_entries()),
+        "usage_probe": bool(getattr(_gw_cfg(), "usage_probe", True)),
+        "clients": clients,
+        "hosts": hosts,
+        "totals": totals,
+        "energy": _flow_energy(power_samples, t),
+    }
 
 
 def register_routes(app, ctx) -> None:

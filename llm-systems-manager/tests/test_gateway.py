@@ -582,7 +582,8 @@ def test_usage_probe_config_off_skips_injection(monkeypatch):
                         lambda: _types.SimpleNamespace(usage_probe=False))
     seen = {}
 
-    def fake_stream(a, path, body, errors, provider="llama", strip_usage=False):
+    def fake_stream(a, path, body, errors, provider="llama", strip_usage=False,
+                    **kw):
         seen["body"], seen["strip_usage"] = body, strip_usage
         return gateway.Response("ok")
 
