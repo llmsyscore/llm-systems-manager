@@ -246,6 +246,15 @@ class ManagerBackup(BaseModel):
     mirror_dir: str = ""
 
 
+class ManagerAudit(BaseModel):
+    """Admin action audit log (#794): retention, page size, event filter."""
+    model_config = _MODEL_CFG
+    retention_days: int = 60          # 0 = keep everything (hard row cap still applies)
+    page_size: int = 25
+    save_automated: bool = False      # keep rows tagged X-LLMSys-Source: test
+    disabled_events: list[str] = Field(default_factory=list)
+
+
 class ManagerConfig(BaseModel):
     model_config = _MODEL_CFG
     host: str = "0.0.0.0"
@@ -316,6 +325,7 @@ class ManagerConfig(BaseModel):
     auth: ManagerAuth = Field(default_factory=ManagerAuth)
     branding: ManagerBranding = Field(default_factory=ManagerBranding)
     backup: ManagerBackup = Field(default_factory=ManagerBackup)
+    audit: ManagerAudit = Field(default_factory=ManagerAudit)
 
 
 # ---------------------------------------------------------------------------

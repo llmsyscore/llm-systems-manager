@@ -9,13 +9,13 @@ function adminStartAutoRefresh() {
   _adminRefreshTimer = setInterval(_adminRefreshTick, 20000);
 }
 
-// One auto-refresh tick; the audit page reloads in place (same offset)
-// only while its sub-tab is visible and no column sort is active.
+// One auto-refresh tick; the audit ledger refreshes in place while its
+// sub-tab is visible (the module skips while a detail panel is open).
 function _adminRefreshTick() {
   if (_activeTab !== 'admin') return;
   adminLoadAgents(); adminLoadHealth();
   if (typeof _subTabState !== 'undefined' && _subTabState.admin === 'audit'
-      && !_adminAuditSort.key) adminAuditLoad();
+      && typeof adminAuditLoad === 'function') adminAuditLoad();
 }
 function adminStopAutoRefresh() {
   if (_adminRefreshTimer) {
@@ -2507,120 +2507,7 @@ async function adminUserDelete(name) {
   _adminUsersApi('/api/admin/users/' + encodeURIComponent(name), { method: 'DELETE' }, name + ' deleted');
 }
 
-// ─────────────────────────────────────────────────────────────────────────
-// Admin action audit log (#217)
-// ─────────────────────────────────────────────────────────────────────────
-const _ADMIN_AUDIT_PAGE = 100;
-let _adminAuditOffset = 0;
-let _adminAuditTotal = 0;
-
-function _adminAuditRow(e) {
-  const when = e.ts ? new Date(e.ts).toLocaleString() : '—';
-  const outcomeCls = e.outcome === 'ok' ? 'status--ok'
-    : e.outcome === 'denied' ? 'status--crit' : 'status--warn';
-  return `<tr>
-    <td style="white-space:nowrap;">${adminEsc(when)}</td>
-    <td>${adminEsc(e.actor || '—')}${e.role && e.role !== 'admin' ? ' <span class="adm-muted">(' + adminEsc(e.role) + ')</span>' : ''}</td>
-    <td title="${adminEsc((e.method || '') + ' ' + (e.path || ''))}">${adminEsc(e.action || '—')}</td>
-    <td style="word-break:break-all;">${adminEsc(e.target || '—')}</td>
-    <td>${adminEsc(e.ip || '—')}</td>
-    <td style="text-align:right;"><span class="status ${outcomeCls} status--square">${adminEsc(e.outcome || '?')} ${e.status || ''}</span></td>
-  </tr>`;
-}
-
-// Column sort for the audit table (#476): key null = server order (newest
-// first); sorting applies within the currently loaded page only.
-let _adminAuditSort = { key: null, dir: 1 };
-let _adminAuditEntries = [];
-let _adminAuditSeq = 0;
-
-// Per-key sort values: ts as epoch ms, IPv4 zero-padded per octet, else string.
-const _ADMIN_AUDIT_SORT_VALS = {
-  ts: e => { const t = Date.parse(e.ts); return Number.isNaN(t) ? -Infinity : t; },
-  ip: e => String(e.ip || '').replace(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/,
-    (_, a, b, c, d) => [a, b, c, d].map(o => o.padStart(3, '0')).join('.')),
-};
-function _adminAuditCmp(key, dir) {
-  const val = _ADMIN_AUDIT_SORT_VALS[key] || (e => String(e[key] || ''));
-  return (a, b) => {
-    const x = val(a), y = val(b);
-    return dir * (typeof x === 'number' ? x - y : x.localeCompare(y));
-  };
-}
-
-function _adminRenderAuditTable() {
-  const tbody = document.getElementById('adminAuditTbody');
-  if (!tbody) return;
-  const { key, dir } = _adminAuditSort;
-  _adminSortArrows('adminAuditTable', key, dir);
-  if (!_adminAuditEntries.length) {
-    tbody.innerHTML = '<tr><td colspan="6" style="padding:14px;color:#7e8a9c;text-align:center;">No audit entries yet.</td></tr>';
-    return;
-  }
-  let rows = _adminAuditEntries;
-  if (key) rows = rows.slice().sort(_adminAuditCmp(key, dir));
-  tbody.innerHTML = rows.map(_adminAuditRow).join('');
-}
-
-function adminSortAudit(th) {
-  const key = th.dataset.key;
-  if (!key) return;
-  _adminAuditSort = {
-    key,
-    dir: _adminAuditSort.key === key ? -_adminAuditSort.dir : 1,
-  };
-  _adminRenderAuditTable();
-}
-
-// Pager text + Newer/Older state for the current offset; empty text when nothing loaded.
-function _adminAuditPager(shown) {
-  const info = document.getElementById('adminAuditPageInfo');
-  if (info) info.textContent = shown
-    ? `${_adminAuditOffset + 1}–${Math.min(_adminAuditOffset + shown, _adminAuditTotal)} of ${_adminAuditTotal}`
-    : '';
-  const newer = document.getElementById('adminAuditNewer');
-  const older = document.getElementById('adminAuditOlder');
-  if (newer) newer.disabled = _adminAuditOffset <= 0;
-  if (older) older.disabled = _adminAuditOffset + _ADMIN_AUDIT_PAGE >= _adminAuditTotal;
-}
-
-// offset omitted = reload the current page. Responses that resolve after a
-// newer request started are dropped (seq guard).
-async function adminAuditLoad(offset) {
-  if (offset != null) _adminAuditOffset = Math.max(0, offset);
-  const seq = ++_adminAuditSeq;
-  const reqOffset = _adminAuditOffset;
-  const tbody = document.getElementById('adminAuditTbody');
-  const status = document.getElementById('adminAuditStatus');
-  try {
-    const r = await fetch(`/api/admin/audit-log?limit=${_ADMIN_AUDIT_PAGE}&offset=${reqOffset}`);
-    const d = await r.json();
-    if (seq !== _adminAuditSeq) return;
-    if (!r.ok || !d.ok) throw new Error(d.error || ('HTTP ' + r.status));
-    _adminAuditTotal = d.total || 0;
-    const entries = d.entries || [];
-    _adminAuditEntries = entries;
-    _adminRenderAuditTable();
-    if (status) status.textContent = _adminAuditTotal + ' entries · updated ' + new Date().toLocaleTimeString();
-    _adminAuditPager(entries.length);
-  } catch (e) {
-    if (seq !== _adminAuditSeq) return;
-    // A failed load empties the cached page; sort re-renders read this.
-    _adminAuditEntries = [];
-    _adminAuditTotal = 0;
-    if (status) status.textContent = 'load failed: ' + e.message;
-    if (tbody) tbody.innerHTML = '<tr><td colspan="6" style="padding:14px;color:#7e8a9c;text-align:center;">Failed to load audit log.</td></tr>';
-    _adminAuditPager(0);
-  }
-}
-
-// Page navigation returns to server order (#655); sort is per loaded page.
-function adminAuditPage(dir) {
-  const next = _adminAuditOffset + dir * _ADMIN_AUDIT_PAGE;
-  if (next < 0 || next >= Math.max(_adminAuditTotal, 1)) return;
-  _adminAuditSort = { key: null, dir: 1 };
-  adminAuditLoad(next);
-}
+// Audit log lives in admin-audit.js (#794); adminAuditLoad is its global entry.
 
 // ─────────────────────────────────────────────────────────────────────────
 // Scheduled backups status (#218)

@@ -11,6 +11,7 @@ import time
 import uuid
 from dataclasses import asdict
 from datetime import datetime, timezone
+import os
 from pathlib import Path
 
 import agent_registry  # type: ignore[import-not-found]  # sibling
@@ -808,7 +809,10 @@ def make_executor(deps: dict, entries_by_key):
 
     def _audit(action, outcome: str) -> None:
         deps["audit"](f"autopilot:{action.kind}",
-                      f"{action.model}@{action.agent_id[:8]}", outcome)
+                      f"{action.model}@{action.agent_id[:8]}", outcome,
+                      {"model": action.model, "provider": action.provider,
+                       "agent": action.agent_id, "reason": action.reason,
+                       "auto": action.auto})
 
     def _route_replica(action, in_pool: bool) -> None:
         entry = _entries().get(action.entry_key) or {}
@@ -890,7 +894,8 @@ def make_executor(deps: dict, entries_by_key):
 
 # ── Production deps: wire make_executor's callables to real agent I/O ──────
 
-_METRICS_DB_PATH = Path(__file__).resolve().parents[2] / "data" / "metrics.db"
+_METRICS_DB_PATH = Path(os.environ.get("LLMSYS_METRICS_DB")
+                        or Path(__file__).resolve().parents[2] / "data" / "metrics.db")
 
 
 def _agent_ok(r, body) -> bool:
@@ -1019,22 +1024,28 @@ def _prod_vllm_svc(agent_id: str, model: str) -> bool:
 
 
 # Bounds audit_log growth from this module's own inserts (separate connection).
-_AUDIT_MAX_ROWS = 10000
+_AUDIT_MAX_ROWS = 100000
 _AUDIT_PRUNE_EVERY = 200
 
+# Event gate for executor audit rows; replaced by the manager at wiring time.
+audit_enabled = lambda: True  # noqa: E731
 
-def _prod_audit(action_str: str, target: str, outcome: str) -> None:
+
+def _prod_audit(action_str: str, target: str, outcome: str, detail=None) -> None:
     """INSERT into the #217 audit_log table; write failures are logged,
     never raised."""
+    if not audit_enabled():
+        return
     try:
         conn = sqlite3.connect(str(_METRICS_DB_PATH), timeout=5.0)
         try:
             conn.execute("PRAGMA busy_timeout=5000")
             cur = conn.execute(
-                "INSERT INTO audit_log (ts, actor, role, ip, method, path, action, target, status, outcome)"
-                " VALUES (?,?,?,?,?,?,?,?,?,?)",
+                "INSERT INTO audit_log (ts, actor, role, ip, auth, method, path, action, target, status, outcome, detail, event)"
+                " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (datetime.now(timezone.utc).isoformat(timespec="seconds"),
-                 "autopilot", "system", "-", "", "", action_str, target, None, outcome))
+                 "autopilot", "system", "-", "internal", "", "", action_str, target, None, outcome,
+                 json.dumps(detail, default=str) if detail else None, "autopilot.executor"))
             if cur.lastrowid and cur.lastrowid % _AUDIT_PRUNE_EVERY == 0:
                 conn.execute(
                     "DELETE FROM audit_log WHERE id <= (SELECT MAX(id) FROM audit_log) - ?",

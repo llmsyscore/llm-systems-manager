@@ -11,7 +11,7 @@ def _deps():
         "set_pin": lambda p, mdl, aid: log["pin"].append((p, mdl, aid)),
         "clear_pin_if": lambda p, mdl, aid: log["clear_if"].append((p, mdl, aid)),
         "pool_update": lambda p, aid, inp: log["pool"].append((p, aid, inp)),
-        "audit": lambda a, t, o: log["audit"].append((a, o)),
+        "audit": lambda a, t, o, d=None: log["audit"].append((a, o)),
         "vllm_svc": lambda aid, mdl: (log["svc"].append((aid, mdl)), True)[1]}
 
 def _act(kind="load", provider="llama", auto=False, replicas=1):
@@ -99,7 +99,7 @@ def test_prod_audit_prunes_past_cap(monkeypatch, tmp_path):
         CREATE TABLE audit_log (
             id INTEGER PRIMARY KEY, ts TEXT NOT NULL, actor TEXT, role TEXT,
             ip TEXT, method TEXT, path TEXT, action TEXT, target TEXT,
-            status INTEGER, outcome TEXT)
+            status INTEGER, outcome TEXT, auth TEXT, detail TEXT, event TEXT)
     """)
     conn.commit()
     conn.close()

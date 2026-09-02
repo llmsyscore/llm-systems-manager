@@ -16,6 +16,7 @@ GROUPS: list[tuple[str, str]] = [
     ("history", "History"),
     ("energy", "Energy & Pricing"),
     ("backup", "Backups"),
+    ("audit", "Audit Log"),
     ("discord", "Discord Bot"),
     ("companion", "Companion (PWA)"),
     ("gateway", "Inference Gateway"),
@@ -35,7 +36,7 @@ MANAGER, AE, BOTH = "manager", "alarm_engine", "both"
 def _e(path: str, typ: str, label: str, help_: str, group: str, service: str,
        secret: bool = False, choices: Optional[list] = None,
        min: Optional[float] = None, max: Optional[float] = None,
-       nullable: bool = False) -> dict:
+       nullable: bool = False, hot: bool = False) -> dict:
     d = {"path": path, "type": typ, "label": label, "help": help_,
          "group": group, "service": service, "secret": secret}
     if choices is not None:
@@ -46,6 +47,8 @@ def _e(path: str, typ: str, label: str, help_: str, group: str, service: str,
         d["max"] = max
     if nullable:
         d["nullable"] = True
+    if hot:
+        d["hot"] = True  # applied at runtime; never flags a restart
     return d
 
 
@@ -92,6 +95,11 @@ CATALOG: list[dict] = [
     _e("manager.backup.keep_last", "int", "Keep last", "Archives retained after pruning.", "backup", MANAGER, min=1, max=1000),
     _e("manager.backup.passphrase", "str", "Backup passphrase", "12+ chars enables AES-256-GCM; blank = plaintext archives.", "backup", MANAGER, secret=True),
     _e("manager.backup.mirror_dir", "str", "Mirror directory", "Optional second copy destination (e.g. a NAS mount).", "backup", MANAGER),
+    # audit (#794) — hot: the manager re-reads these after every save
+    _e("manager.audit.retention_days", "int", "Keep entries for (days)", "0 keeps everything; the 100,000-row cap still applies.", "audit", MANAGER, min=0, max=3650, hot=True),
+    _e("manager.audit.page_size", "int", "Rows per page", "Default page size on the Audit Log tab.", "audit", MANAGER, min=10, max=500, hot=True),
+    _e("manager.audit.save_automated", "bool", "Unit tests", "Requests tagged X-LLMSys-Source: test (unit tests) are excluded when disabled.", "audit", MANAGER, hot=True),
+    _e("manager.audit.disabled_events", "list", "Disabled events", "Event keys that are not recorded.", "audit", MANAGER, hot=True),
     # discord bot
     _e("manager.discord.enabled", "bool", "Discord bot", "Interactive /fleet /host /models /alarms bot.", "discord", MANAGER),
     _e("manager.discord.bot_token", "str", "Bot token", "Discord bot token.", "discord", MANAGER, secret=True),
@@ -170,6 +178,11 @@ _BY_PATH = {e["path"]: e for e in CATALOG}
 
 def entry_for(path: str) -> Optional[dict]:
     return _BY_PATH.get(path)
+
+
+def is_hot(path: str) -> bool:
+    e = _BY_PATH.get(path)
+    return bool(e and e.get("hot"))
 
 
 def secret_status(value) -> str:
@@ -340,7 +353,7 @@ def services_for(paths) -> set[str]:
     out: set[str] = set()
     for p in paths:
         e = _BY_PATH.get(p)
-        if e is None:
+        if e is None or is_hot(p):
             continue
         out |= {MANAGER, AE} if e["service"] == BOTH else {e["service"]}
     return out

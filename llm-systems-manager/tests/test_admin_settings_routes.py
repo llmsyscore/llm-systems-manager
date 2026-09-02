@@ -92,7 +92,7 @@ def test_put_secret_value_never_echoed(client):
 
 
 def test_audit_route_registered():
-    assert manager_mod._audit_match("PUT", "/api/admin/settings") == ("config.settings", None)
+    assert manager_mod._audit_match("PUT", "/api/admin/settings")[:2] == ("config.settings", None)
 
 
 def test_admin_gate_enforced(monkeypatch, tmp_path):
