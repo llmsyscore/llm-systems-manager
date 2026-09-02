@@ -342,7 +342,6 @@ def test_new_client_entry_prunes_stale_clients_without_a_snapshot_read():
 
 
 def test_configured_keys_without_traffic_show_as_idle_clients(admin, monkeypatch):
-    import auth
     import gateway_usage as gu
     gu._clients.clear()
     monkeypatch.setattr(auth, "gateway_key_entries", lambda: [("ops-1", "s1"), ("dev", "s2")])

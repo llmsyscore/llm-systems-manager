@@ -64,8 +64,9 @@ async function boot(data) {
   return dom.window;
 }
 
-const field = (doc, path) => doc.querySelector(`.settings-row[data-path="${path.replace(/\./g, '\\.')}"]`);
-const input = (doc, path) => doc.querySelector(`.st-input[data-path="${path.replace(/\./g, '\\.')}"]`);
+const cssq = s => String(s).replace(/[^a-zA-Z0-9_-]/g, ch => '\\' + ch);
+const field = (doc, path) => doc.querySelector(`.settings-row[data-path="${cssq(path)}"]`);
+const input = (doc, path) => doc.querySelector(`.st-input[data-path="${cssq(path)}"]`);
 
 function type(win, path, value) {
   const el = input(win.document, path);

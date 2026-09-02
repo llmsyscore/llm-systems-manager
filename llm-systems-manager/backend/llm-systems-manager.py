@@ -5767,7 +5767,10 @@ def admin_backup_now():
         return jsonify({"ok": False,
                         "error": "passphrase shorter than the 12-char encryption minimum"}), 409
     st = _run_scheduled_backup(passphrase, keep_last, mirror_dir)
-    return jsonify({"ok": bool(st.get("ok")), "last": st}), (200 if st.get("ok") else 500)
+    ok = bool(st.get("ok"))
+    # The exception text stays in the log; the API reports a fixed message.
+    last = {**st, "error": None if ok else "backup failed; details are in the manager log"}
+    return jsonify({"ok": ok, "last": last}), (200 if ok else 500)
 
 
 def _read_import_blob() -> tuple[bytes | None, str, str | None]:
