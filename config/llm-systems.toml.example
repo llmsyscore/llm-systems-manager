@@ -248,6 +248,14 @@ passphrase = ""
 # Optional second directory (e.g. a mounted NAS path) each archive is copied to.
 mirror_dir = ""
 
+[manager.audit]
+# Admin action audit log. Entries older than retention_days are purged every
+# 24 h and at start; 0 keeps everything (a 100,000-row cap still applies).
+retention_days = 60
+page_size = 25                       # default rows per page on the Audit Log tab
+save_automated = false               # keep rows tagged X-LLMSys-Source: test (unit tests)
+disabled_events = []                 # event keys not recorded; Admin → Audit Log → settings
+
 
 # ────────────────────────────── OPENCLAW ──────────────────────────────────
 # Cost analytics for OpenClaw agents (Dashboard → OpenClaw sub-tab).

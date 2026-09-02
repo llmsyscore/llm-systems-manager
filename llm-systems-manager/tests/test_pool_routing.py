@@ -207,12 +207,12 @@ def test_admin_provider_routes_registered():
 
 def test_audit_matches_provider_pool_and_pins():
     m = manager_mod._audit_match
-    assert m("POST", "/api/agents/abc123/llama-pool") == ("agent.llama-pool", "abc123")
-    assert m("POST", "/api/agents/abc123/vllm-pool") == ("agent.vllm-pool", "abc123")
-    assert m("POST", "/api/agents/abc123/lms-pool") == ("agent.lms-pool", "abc123")
-    assert m("POST", "/api/admin/llama-pins") == ("config.llama-pins", None)
-    assert m("POST", "/api/admin/vllm-pins") == ("config.vllm-pins", None)
-    assert m("POST", "/api/admin/lms-pins") == ("config.lms-pins", None)
+    assert m("POST", "/api/agents/abc123/llama-pool")[:2] == ("agent.llama-pool", "abc123")
+    assert m("POST", "/api/agents/abc123/vllm-pool")[:2] == ("agent.vllm-pool", "abc123")
+    assert m("POST", "/api/agents/abc123/lms-pool")[:2] == ("agent.lms-pool", "abc123")
+    assert m("POST", "/api/admin/llama-pins")[:2] == ("config.llama-pins", None)
+    assert m("POST", "/api/admin/vllm-pins")[:2] == ("config.vllm-pins", None)
+    assert m("POST", "/api/admin/lms-pins")[:2] == ("config.lms-pins", None)
 
 
 def test_vllm_pins_roundtrip(monkeypatch):

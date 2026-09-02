@@ -64,7 +64,7 @@ def test_audit_log_int_parse_tolerates_garbage(monkeypatch):
     conn = sqlite3.connect(":memory:")
     conn.row_factory = sqlite3.Row
     conn.execute("CREATE TABLE audit_log (id INTEGER PRIMARY KEY, ts TEXT, actor TEXT, role TEXT,"
-                 " ip TEXT, method TEXT, path TEXT, action TEXT, target TEXT, status INTEGER, outcome TEXT)")
+                 " ip TEXT, method TEXT, path TEXT, action TEXT, target TEXT, status INTEGER, outcome TEXT, auth TEXT, detail TEXT, event TEXT)")
     monkeypatch.setattr(M, "get_db", lambda: conn)
     monkeypatch.setattr(M, "_require_admin", lambda: None)
     monkeypatch.setattr(auth, "auth_mode", lambda: "disabled")

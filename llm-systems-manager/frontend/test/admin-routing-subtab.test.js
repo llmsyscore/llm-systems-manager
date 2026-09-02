@@ -14,7 +14,6 @@ function extractTag(src, id) {
   return m[0];
 }
 const agentsTableHtml = extractTag(indexSrc, 'adminAgentsTable');
-const auditTableHtml = extractTag(indexSrc, 'adminAuditTable');
 
 function runAdminHarness(bootstrap, bodyHtml = '') {
   const defaultSortable =
@@ -193,16 +192,6 @@ describe('sortable table columns (#476 scope)', () => {
     expect(ths[ths.length - 1].classList.contains('adm-th-sort')).toBe(false);
   });
 
-  it('audit table headers are all sort-wired', () => {
-    const ths = [...document.querySelectorAll('#adminAuditTable thead th')];
-    expect(ths.length).toBe(6);
-    ths.forEach(th => {
-      expect(th.classList.contains('adm-th-sort')).toBe(true);
-      expect(th.dataset.key).toBeTruthy();
-      expect(th.getAttribute('onclick')).toContain('adminSortAudit(this)');
-    });
-  });
-
   it('adminSortAgents re-sorts and re-renders the real agents table (click toggles direction)', () => {
     const boot = `
       _adminAgentsSort = { key: 'seen', dir: 1 };
@@ -226,41 +215,17 @@ describe('sortable table columns (#476 scope)', () => {
     expect(win.__dir2).toBe('-1');
   });
 
-  it('adminSortAudit re-sorts and re-renders the real audit table', () => {
-    const boot = `
-      _adminAuditEntries = [
-        { actor: 'zeta', action: 'x', ts: 1 },
-        { actor: 'alpha', action: 'y', ts: 2 },
-      ];
-      _adminRenderAuditTable();
-      const th = document.querySelector('#adminAuditTable th[data-key="actor"]');
-      adminSortAudit(th);
-      window.__order = [...document.querySelectorAll('#adminAuditTbody tr')].map(tr => tr.children[1].textContent);
-      window.__dir = th.dataset.dir;
-    `;
-    const win = runAdminHarness(boot, auditTableHtml);
-    expect(win.__order).toEqual(['alpha', 'zeta']);
-    expect(win.__dir).toBe('1');
-  });
-
-  it('sort arrows render on the header even when the agents/audit tables are empty', () => {
+  it('sort arrows render on the header even when the agents table is empty', () => {
     const boot = `
       _adminAgentsSort = { key: 'state', dir: -1 };
       _adminAgentsCache = [];
       _adminRenderAgentsTable();
-      _adminAuditSort = { key: 'actor', dir: -1 };
-      _adminAuditEntries = [];
-      _adminRenderAuditTable();
       window.__agentsDir = document.querySelector('#adminAgentsTable th[data-key="state"]').dataset.dir;
       window.__agentsEmptyRow = document.getElementById('adminAgentsTbody').textContent;
-      window.__auditDir = document.querySelector('#adminAuditTable th[data-key="actor"]').dataset.dir;
-      window.__auditEmptyRow = document.getElementById('adminAuditTbody').textContent;
     `;
-    const win = runAdminHarness(boot, agentsTableHtml + auditTableHtml);
+    const win = runAdminHarness(boot, agentsTableHtml);
     expect(win.__agentsDir).toBe('-1');
     expect(win.__agentsEmptyRow).toContain('No agents registered yet.');
-    expect(win.__auditDir).toBe('-1');
-    expect(win.__auditEmptyRow).toContain('No audit entries yet.');
   });
 
   it('adminLoadAgents renders pins + pool even with zero registered agents (no early return)', async () => {
@@ -294,26 +259,6 @@ describe('sortable table columns (#476 scope)', () => {
     expect(win.document.getElementById('adminPinsTbody').innerHTML).toContain('no pins set');
     expect(win.document.getElementById('adminPoolOrderList').innerHTML).not.toContain('SENTINEL-POOL');
     expect(win.document.getElementById('adminPoolOrderList').innerHTML).toContain('pool is empty');
-  });
-
-  it('a failed audit load clears the cached entries so a re-render shows empty, not stale rows', async () => {
-    const boot = `
-      window.fetch = async () => { throw new Error('network down'); };
-      _adminAuditEntries = [{ actor: 'stale', action: 'x', ts: 1 }];
-      window.__done = adminAuditLoad(0).then(() => {
-        window.__errorRow = document.getElementById('adminAuditTbody').textContent;
-        _adminRenderAuditTable();
-        window.__afterRerender = document.getElementById('adminAuditTbody').textContent;
-      });
-    `;
-    const body = auditTableHtml +
-      '<span id="adminAuditStatus"></span><button id="adminAuditNewer"></button>' +
-      '<button id="adminAuditOlder"></button><span id="adminAuditPageInfo"></span>';
-    const win = runAdminHarness(boot, body);
-    await win.__done;
-    expect(win.__errorRow).toContain('Failed to load audit log.');
-    expect(win.__afterRerender).toContain('No audit entries yet.');
-    expect(win.__afterRerender).not.toContain('stale');
   });
 
   it('admin.css styles the sortable headers and direction arrows', () => {

@@ -532,6 +532,7 @@ Backend API endpoints consumed:
 
 <!-- Admin tab -->
 <link rel="stylesheet" href="/static/css/admin.css?v=2026.08.30-3">
+<link rel="stylesheet" href="/static/css/audit.css?v=2026.09.02-2">
 <div id="adminTab" style="display:none;position:fixed;top:88px;left:0;right:0;bottom:0;z-index:10;overflow:auto;background:var(--bg);color:var(--fg);padding:28px 24px;">
   <div class="adm-wrap">
 
@@ -798,32 +799,58 @@ Backend API endpoints consumed:
         </div>
       </div>
 
-      <!-- Audit Log sub-tab -->
+      <!-- Audit Log sub-tab (#794): ledger + detail panel + collapsed settings card -->
       <div id="admin-audit" class="sub-tab-panel">
-        <div class="adm-card" id="adminAuditCard">
-          <div class="adm-card-hdr">
-            <div class="adm-title">Admin action audit log</div>
-            <span class="adm-muted" id="adminAuditStatus">…</span>
-            <div class="adm-spacer"></div>
-            <button class="adm-refresh" onclick="adminAuditLoad(0)" title="Reload">↻ Refresh</button>
+        <div class="au-hdr">
+          <h2 class="au-title">Audit log</h2>
+          <div class="au-sum"><span><b id="auTotal">—</b> entries</span><span>oldest <b id="auOldest">—</b></span></div>
+          <div class="au-gap"></div>
+          <span class="au-stamp" id="auStamp">—</span>
+        </div>
+        <div class="au-toolbar">
+          <label class="mc-filter au-search"><span class="mc-filter-ico">⌕</span><input id="auQ" type="search" placeholder="Search user, action, target, IP…" autocomplete="off"><kbd>/</kbd></label>
+          <select class="au-sel" id="auGroup" aria-label="Action group">
+            <option value="">All actions</option><option value="agent">Agents</option><option value="user">Users &amp; access</option><option value="config">Configuration</option><option value="model">Models &amp; routing</option><option value="service">Services</option><option value="auto">Autopilot</option><option value="tool">Tools &amp; terminal</option>
+          </select>
+          <select class="au-sel" id="auActor" aria-label="User"><option value="">All users</option><option value="autopilot">autopilot</option><option value="system">system</option><option value="local">local</option></select>
+          <select class="au-sel" id="auOutcome" aria-label="Result">
+            <option value="">Result</option><option value="ok">ok</option><option value="denied">denied</option><option value="error">error</option><option value="fail">fail</option><option value="refused">refused</option>
+          </select>
+          <div class="mc-seg au-range" id="auRange" role="group" aria-label="Time range">
+            <button type="button" data-h="24">24h</button><button type="button" data-h="168" class="on">7d</button><button type="button" data-h="720">30d</button><button type="button" data-h="0">All</button>
           </div>
-          <div style="overflow-x:auto;">
-            <table id="adminAuditTable" class="adm-table">
-              <thead><tr>
-                <th style="width:17%;" class="adm-th-sort" data-key="ts" onclick="adminSortAudit(this)">Time</th><th style="width:13%;" class="adm-th-sort" data-key="actor" onclick="adminSortAudit(this)">User</th>
-                <th style="width:18%;" class="adm-th-sort" data-key="action" onclick="adminSortAudit(this)">Action</th><th style="width:26%;" class="adm-th-sort" data-key="target" onclick="adminSortAudit(this)">Target</th>
-                <th style="width:14%;" class="adm-th-sort" data-key="ip" onclick="adminSortAudit(this)">IP</th><th style="width:12%;text-align:right;" class="adm-th-sort" data-key="outcome" onclick="adminSortAudit(this)">Outcome</th>
-              </tr></thead>
-              <tbody id="adminAuditTbody">
-                <tr><td colspan="6" style="padding:14px;color:#7e8a9c;text-align:center;">Loading…</td></tr>
-              </tbody>
-            </table>
+          <button type="button" class="mcbtn mcbtn-ghost mcbtn-sm idle" id="auReset" title="Clear search, filters and time range">✕ Reset</button>
+          <div class="au-gap"></div>
+          <button type="button" class="mc-toggle on" id="auHideAuto" aria-pressed="true" title="Hides unit-test and smoke-test traffic, and untagged loopback callers"><span class="track"></span><span class="tlbl">Hide automated</span></button>
+          <a class="mcbtn mcbtn-ghost mcbtn-sm" id="auExport" href="/api/admin/audit-log.csv" download="audit-log.csv" title="Download the current filter as CSV">⤓ Export</a>
+        </div>
+        <div class="au-split" id="auSplit">
+          <div class="au-ledger">
+            <div class="au-lwrap">
+              <table class="au-table" id="adminAuditTable">
+                <thead><tr>
+                  <th class="c-time on" data-key="ts" data-dir="desc">Time</th><th class="c-user" data-key="actor">User</th><th class="c-act" data-key="action">Action</th>
+                  <th class="c-tg" data-key="target">Target</th><th class="c-from" data-key="ip">From</th><th class="c-res" data-key="outcome">Result</th>
+                </tr></thead>
+                <tbody id="adminAuditTbody"><tr><td colspan="6"><div class="au-empty">Loading…</div></td></tr></tbody>
+              </table>
+            </div>
+            <div class="au-pager">
+              <div class="au-rpp">Rows per page
+                <select class="au-sel au-sel-sm" id="auPer" aria-label="Rows per page"><option>10</option><option selected>25</option><option>50</option><option>100</option></select>
+              </div>
+              <div class="au-gap"></div>
+              <span class="au-pg" id="auPageInfo"></span>
+              <div class="au-pnums" id="auPnums"></div>
+              <input class="au-jump" id="auJump" placeholder="go to" aria-label="Go to page">
+            </div>
           </div>
-          <div class="adm-backup-actions" style="margin-top:8px;">
-            <button class="adm-btn" id="adminAuditNewer" onclick="adminAuditPage(-1)">‹ Newer</button>
-            <button class="adm-btn" id="adminAuditOlder" onclick="adminAuditPage(1)">Older ›</button>
-            <span class="adm-muted" id="adminAuditPageInfo"></span>
-          </div>
+          <aside class="au-det" id="auDet"></aside>
+        </div>
+        <div class="au-card collapsed" id="auCfg">
+          <div class="au-card-h" id="auCfgHead"><span class="au-chev">▾</span><h3>Audit settings</h3><span class="au-gap"></span></div>
+          <div class="au-cfg-body" id="auCfgBody"><div class="au-empty">Loading…</div></div>
+          <div class="au-cfg-foot" id="auCfgFoot"></div>
         </div>
       </div>
 
@@ -2319,7 +2346,8 @@ Backend API endpoints consumed:
 <script src="/static/js/llmcontrol.js?v=2026.08.30-2"></script>
 <script src="/static/js/sections.js?v=2026.08.30-3"></script>
 <script src="/static/js/openclaw.js?v=2026.08.03-1"></script>
-<script src="/static/js/admin.js?v=2026.08.30-1"></script>
+<script src="/static/js/admin.js?v=2026.09.02-1"></script>
+<script src="/static/js/admin-audit.js?v=2026.09.02-3"></script>
 <script src="/static/js/admin-settings.js?v=2026.08.30-2"></script>
 <script src="/static/js/autopilot.js?v=2026.07.31-2"></script>
 <script src="/static/js/llmcontrol-models.js?v=2026.08.31-1"></script>

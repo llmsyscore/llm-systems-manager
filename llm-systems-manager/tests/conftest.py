@@ -9,9 +9,14 @@ canonical workaround.
 """
 from __future__ import annotations
 
+import atexit
 import importlib.util
+import os
 import pytest
+import shutil
+import sqlite3
 import sys
+import tempfile
 from pathlib import Path
 
 _PACKAGE_ROOT = Path(__file__).resolve().parent.parent          # …/llm-systems-manager/
@@ -27,6 +32,27 @@ for p in (_REPO_ROOT, _BACKEND_DIR):
         sys.path.insert(0, s)
 
 
+# Per-session metrics.db for the suite (LLMSYS_METRICS_DB is read at import).
+_LIVE_DB = _REPO_ROOT / "data" / "metrics.db"
+_TMP_DATA = Path(tempfile.mkdtemp(prefix="llmsys-test-db-"))
+os.environ["LLMSYS_METRICS_DB"] = str(_TMP_DATA / "metrics.db")
+atexit.register(shutil.rmtree, _TMP_DATA, True)
+
+
+def _live_audit_count():
+    if not _LIVE_DB.is_file():
+        return None
+    try:
+        conn = sqlite3.connect(f"file:{_LIVE_DB}?mode=ro", uri=True)
+        try:
+            # Loopback rows only: the live manager keeps writing LAN/autopilot rows meanwhile.
+            return conn.execute("SELECT COUNT(*) FROM audit_log WHERE ip='127.0.0.1'").fetchone()[0]
+        finally:
+            conn.close()
+    except sqlite3.Error:
+        return None
+
+
 def _load_manager_module():
     spec = importlib.util.spec_from_file_location("manager_mod", _MANAGER_PY)
     mod = importlib.util.module_from_spec(spec)
@@ -37,6 +63,16 @@ def _load_manager_module():
 
 # Eager load — module-level so every test file can `from manager_mod import …`.
 manager_mod = _load_manager_module()
+
+
+@pytest.fixture(autouse=True, scope="session")
+def _live_audit_untouched():
+    """Fail the session if any test writes the LIVE audit_log table."""
+    before = _live_audit_count()
+    yield
+    after = _live_audit_count()
+    if before is not None and after is not None and after != before:
+        pytest.fail(f"tests wrote {after - before} loopback row(s) into the LIVE audit_log — DB isolation broke")
 
 
 @pytest.fixture(autouse=True, scope="session")

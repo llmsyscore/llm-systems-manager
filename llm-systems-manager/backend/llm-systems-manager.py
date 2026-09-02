@@ -159,7 +159,7 @@ def _local_hostname() -> str:
 # banner reads it. Bump suffix (-1, -2, …) for same-day iterations; roll
 # the date for a new day's first change.
 # ---------------------------------------------------------------------------
-__version__ = "v2026.09.01-4"
+__version__ = "v2026.09.02-3"
 
 # Wall-clock at first import (Cheroot main process); the shutdown banner
 # reads it for the uptime line.
@@ -225,8 +225,10 @@ _patch_cheroot_flush_noise()
 _PKG_DIR   = Path(__file__).resolve().parent.parent
 STATIC_DIR = _PKG_DIR / "frontend"
 DATA_DIR   = _REPO_ROOT_PATH / "data"
-DB_PATH    = DATA_DIR / "metrics.db"
+# LLMSYS_METRICS_DB redirects the SQLite file (the test suite uses a temp copy).
+DB_PATH    = Path(os.environ.get("LLMSYS_METRICS_DB") or (DATA_DIR / "metrics.db"))
 DATA_DIR.mkdir(parents=True, exist_ok=True)
+DB_PATH.parent.mkdir(parents=True, exist_ok=True)
 
 # ---------------------------------------------------------------------------
 # SQLite setup
@@ -386,6 +388,16 @@ def init_db():
                 outcome TEXT
             )
         """)
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(audit_log)")}
+    if "auth" not in cols:
+        conn.execute("ALTER TABLE audit_log ADD COLUMN auth TEXT")
+    if "detail" not in cols:
+        conn.execute("ALTER TABLE audit_log ADD COLUMN detail TEXT")
+    if "event" not in cols:
+        conn.execute("ALTER TABLE audit_log ADD COLUMN event TEXT")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_audit_ts ON audit_log(ts)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_audit_action ON audit_log(action)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_audit_actor ON audit_log(actor)")
     conn.commit()
 
 init_db()
@@ -737,7 +749,7 @@ app.config["MAX_CONTENT_LENGTH"] = settings.manager.uploads.max_content_length
 #   - Status >=400: logged at WARNING with traceback if exception
 #   - Unhandled exceptions: caught by errorhandler → ERROR with stack
 # ---------------------------------------------------------------------------
-from flask import request as _flask_request, g as _flask_g
+from flask import request as _flask_request, g as _flask_g, session as _flask_session
 
 @app.before_request
 def _log_request_start():
@@ -3096,59 +3108,246 @@ import agent_registry  # type: ignore[import-not-found]  # sibling module; scrip
 
 
 # ---------------------------------------------------------------------------
-# Admin action audit log (#217): an after_request hook records mutating
-# requests to the routes below into the bounded audit_log table.
+# Admin action audit log (#217, #794): after_request hook over the routes below;
+# rows carry event, auth kind and a detail JSON; purged by age, row cap as backstop.
 # ---------------------------------------------------------------------------
 
-_AUDIT_MAX_ROWS = 10000
+_AUDIT_MAX_ROWS = 100000
 _AUDIT_PRUNE_EVERY = 200
+_AUDIT_PURGE_INTERVAL_S = 86400
+_AUDIT_DETAIL_MAX = 2048
 
-# (method-or-None, path regex, action label). Named group "t" is the target.
-_AUDIT_ROUTES: list[tuple[str | None, "re.Pattern[str]", str]] = [
-    ("POST",   re.compile(r"^/api/agents/(?P<t>[^/]+)/approve$"),      "agent.approve"),
-    ("POST",   re.compile(r"^/api/agents/(?P<t>[^/]+)/disable$"),      "agent.disable"),
-    ("DELETE", re.compile(r"^/api/agents/(?P<t>[^/]+)$"),              "agent.delete"),
-    ("POST",   re.compile(r"^/api/agents/(?P<t>[^/]+)/role-primary$"), "agent.role-primary"),
-    ("POST",   re.compile(r"^/api/agents/global$"),                    "agent.global-config"),
-    ("POST",   re.compile(r"^/api/agents/(?P<t>[^/]+)/restart$"),      "agent.restart"),
-    ("POST",   re.compile(r"^/api/agents/(?P<t>[^/]+)/self-update$"),  "agent.self-update"),
-    ("PUT",    re.compile(r"^/api/agents/(?P<t>[^/]+)/config-file$"),  "agent.config-file"),
-    ("POST",   re.compile(r"^/api/admin/push-ca-to-agents$"),          "agent.push-ca"),
-    ("POST",   re.compile(r"^/api/admin/service/(?P<t>[^/]+)/restart$"), "service.restart"),
-    ("POST",   re.compile(r"^/api/admin/auth$"),                       "auth.mode-change"),
-    ("POST",   re.compile(r"^/api/admin/users$"),                      "user.create"),
-    ("PATCH",  re.compile(r"^/api/admin/users/(?P<t>[^/]+)$"),         "user.modify"),
-    ("DELETE", re.compile(r"^/api/admin/users/(?P<t>[^/]+)$"),         "user.delete"),
-    ("POST",   re.compile(r"^/api/admin/users/(?P<t>[^/]+)/unlock$"),  "user.unlock"),
-    ("POST",   re.compile(r"^/api/admin/export/manager$"),             "backup.export"),
-    ("POST",   re.compile(r"^/api/admin/import/manager/apply$"),       "backup.import-apply"),
-    ("PUT",    re.compile(r"^/api/admin/settings$"),                   "config.settings"),
-    ("POST",   re.compile(r"^/api/llm/server/svcconfig$"),             "config.svcconfig"),
-    ("POST",   re.compile(r"^/api/config/interval$"),                  "config.interval"),
-    ("POST",   re.compile(r"^/api/llm/load$"),                         "llama.load"),
-    ("POST",   re.compile(r"^/api/llm/unload$"),                       "llama.unload"),
-    ("POST",   re.compile(r"^/api/lmstudio/load$"),                    "lms.load"),
-    ("POST",   re.compile(r"^/api/lmstudio/unload$"),                  "lms.unload"),
+# Runtime copy of [manager.audit]; refreshed by _audit_reload_config() (hot).
+_AUDIT_CFG: dict = {"retention_days": 60, "page_size": 25, "save_automated": False,
+                    "disabled": set()}
+_AUDIT_PURGE_STATE: dict = {"ts": None, "removed": 0}
+
+# Event catalog (Admin → Audit Log → settings). Keys land in disabled_events.
+AUDIT_EVENT_GROUPS: list[dict] = [
+    {"key": "agent", "title": "Agents", "events": [
+        {"key": "agent.lifecycle", "label": "Approve / disable / delete", "default_on": True},
+        {"key": "agent.control", "label": "Restart / self-update / redeploy", "default_on": True},
+        {"key": "agent.config", "label": "Config file edits", "default_on": True},
+        {"key": "agent.roles", "label": "Primary / pool / host role", "default_on": True},
+        {"key": "agent.collection", "label": "Pause / resume collection", "default_on": True},
+        {"key": "agent.tls", "label": "Push CA · cert bundle", "default_on": True}]},
+    {"key": "user", "title": "Users & access", "events": [
+        {"key": "user.manage", "label": "Create / modify / delete / unlock", "default_on": True},
+        {"key": "auth.mode", "label": "Login mode change", "default_on": True},
+        {"key": "account.password", "label": "Own password change", "default_on": True},
+        {"key": "auth.login", "label": "Login success / failure", "default_on": True},
+        {"key": "auth.logout", "label": "Logout", "default_on": False}]},
+    {"key": "config", "title": "Configuration", "events": [
+        {"key": "config.settings", "label": "Manager settings", "default_on": True},
+        {"key": "config.server", "label": "Server config · poll interval", "default_on": True},
+        {"key": "config.pins", "label": "Model pins", "default_on": True},
+        {"key": "backup", "label": "Backup export / import", "default_on": True},
+        {"key": "config.layout", "label": "Dashboard layout", "default_on": False},
+        {"key": "admin.other", "label": "Other admin actions", "default_on": True, "hidden": True}]},
+    {"key": "model", "title": "Models & routing", "events": [
+        {"key": "llama.model", "label": "llama load / unload", "default_on": True},
+        {"key": "lms.model", "label": "LM Studio load / unload", "default_on": True},
+        {"key": "vllm.server", "label": "vLLM start / stop / LoRA", "default_on": True},
+        {"key": "llama.server", "label": "llama server stop / start / wake", "default_on": True},
+        {"key": "model.config", "label": "Model config · profiles · aliases", "default_on": True},
+        {"key": "model.downloads", "label": "Downloads · cache prune", "default_on": False}]},
+    {"key": "service", "title": "Services", "events": [
+        {"key": "service.restart", "label": "Service restart", "default_on": True},
+        {"key": "alarm.actions", "label": "Alarm acknowledge · rules", "default_on": True}]},
+    {"key": "auto", "title": "Autopilot", "events": [
+        {"key": "autopilot.toggle", "label": "Enable / disable", "default_on": True},
+        {"key": "autopilot.proposal", "label": "Proposal apply / dismiss", "default_on": True},
+        {"key": "autopilot.executor", "label": "Executor actions (load, wake…)", "default_on": True}]},
+    {"key": "tool", "title": "Tools & terminal", "events": [
+        {"key": "terminal.open", "label": "Terminal session opened", "default_on": True},
+        {"key": "reportcard", "label": "Report card run / delete", "default_on": True},
+        {"key": "tools.run", "label": "Benchmark / autotune run", "default_on": False}]},
+]
+_AUDIT_EVENT_GROUP = {ev["key"]: g["key"] for g in AUDIT_EVENT_GROUPS for ev in g["events"]}
+
+# Plain-English label per action (templated actions resolve by prefix).
+_AUDIT_LABELS: dict[str, str] = {
+    "agent.approve": "Approved an agent", "agent.disable": "Disabled an agent",
+    "agent.delete": "Deleted an agent", "agent.restart": "Restarted an agent",
+    "agent.self-update": "Pushed the agent update", "agent.config-file": "Edited an agent config file",
+    "agent.role-primary": "Changed the primary provider host",
+    "agent.host-role": "Changed the manager host role",
+    "agent.global-config": "Changed agent auth settings", "agent.push-ca": "Pushed the CA bundle to agents",
+    "agent.collection": "Paused or resumed collection",
+    "service.restart": "Restarted a service", "auth.mode-change": "Changed the login mode",
+    "auth.login": "Signed in", "auth.logout": "Signed out",
+    "account.password": "Changed own password",
+    "user.create": "Created a dashboard user", "user.modify": "Changed a user account",
+    "user.delete": "Deleted a user", "user.unlock": "Unlocked a user",
+    "backup.export": "Exported an encrypted archive", "backup.import-apply": "Imported an archive",
+    "config.settings": "Saved manager settings", "config.svcconfig": "Changed the llama-server config",
+    "config.interval": "Changed the poll interval", "config.layout": "Saved the dashboard layout",
+    "llama.load": "Loaded a llama.cpp model", "llama.unload": "Unloaded a llama.cpp model",
+    "lms.load": "Loaded an LM Studio model", "lms.unload": "Unloaded an LM Studio model",
+    "lms.download": "Started an LM Studio download",
+    "llama.server.stop": "Stopped the llama server", "llama.server.start": "Started the llama server",
+    "llama.server.restart": "Restarted the llama server", "llama.server.wake": "Woke the llama server",
+    "vllm.server.start": "Started the vLLM server", "vllm.server.stop": "Stopped the vLLM server",
+    "vllm.server.restart": "Restarted the vLLM server", "vllm.svcconfig": "Changed the vLLM server config",
+    "vllm.lora.load": "Loaded a vLLM LoRA adapter", "vllm.lora.unload": "Unloaded a vLLM LoRA adapter",
+    "model.config.save": "Saved a model config", "model.config.delete": "Removed a model config",
+    "model.profile.save": "Saved a model profile", "model.profile.activate": "Activated a model profile",
+    "model.profile.rename": "Renamed a model profile", "model.profile.delete": "Deleted a model profile",
+    "model.alias.save": "Saved a model alias", "model.alias.delete": "Deleted a model alias",
+    "model.download": "Started a model download", "model.download-cancel": "Cancelled a download",
+    "model.build": "Started a llama.cpp build", "model.cache-prune": "Pruned the model cache",
+    "model.cache-rm": "Removed a cached model",
+    "tools.autotune": "Started an autotune run", "tools.vllm-bench": "Started a vLLM benchmark",
+    "autopilot.toggle": "Turned autopilot on or off",
+    "autopilot.proposal-apply": "Applied an autopilot proposal",
+    "autopilot.proposal-dismiss": "Dismissed an autopilot proposal",
+    "autopilot:load": "Autopilot loaded a model", "autopilot:unload": "Autopilot unloaded a model",
+    "autopilot:wake": "Autopilot woke a host", "autopilot:sleep": "Autopilot put a host to sleep",
+    "autopilot:scale_up": "Autopilot added a replica", "autopilot:scale_down": "Autopilot removed a replica",
+    "autopilot:download": "Autopilot started a download",
+    "terminal.open": "Opened a terminal session",
+    "reportcard.run": "Started a report card run", "reportcard.delete-model": "Deleted report card results",
+    "reportcard.cancel": "Cancelled a report card run", "reportcard.clear-history": "Cleared report card history",
+    "alarm.close": "Closed an alert", "alarm.ignore": "Ignored an alert", "alarm.ack": "Acknowledged an alert",
+    "alarm.acknowledge": "Acknowledged an alert", "alarm.close-all": "Closed all alerts",
+    "alarm.ignore-all": "Ignored all alerts", "alarm.bulk": "Bulk alert action",
+    "alarm.delete": "Deleted an alert", "alarm.rule": "Changed an alarm rule",
+}
+
+# (method-or-None, path regex, action, event). Groups: t = target, v = verb
+# substituted into the action template.
+_AUDIT_ROUTES: list[tuple] = [
+    ("POST",   re.compile(r"^/api/agents/(?P<t>[^/]+)/approve$"),      "agent.approve",      "agent.lifecycle"),
+    ("POST",   re.compile(r"^/api/agents/(?P<t>[^/]+)/disable$"),      "agent.disable",      "agent.lifecycle"),
+    ("DELETE", re.compile(r"^/api/agents/(?P<t>[^/]+)$"),              "agent.delete",       "agent.lifecycle"),
+    ("POST",   re.compile(r"^/api/agents/(?P<t>[^/]+)/role-primary$"), "agent.role-primary", "agent.roles"),
+    ("POST",   re.compile(r"^/api/agents/(?P<t>[^/]+)/host-role$"),    "agent.host-role",    "agent.roles"),
+    ("POST",   re.compile(r"^/api/agents/global$"),                    "agent.global-config", "agent.roles"),
+    ("POST",   re.compile(r"^/api/agents/(?P<t>[^/]+)/restart$"),      "agent.restart",      "agent.control"),
+    ("POST",   re.compile(r"^/api/agents/(?P<t>[^/]+)/self-update$"),  "agent.self-update",  "agent.control"),
+    ("PUT",    re.compile(r"^/api/agents/(?P<t>[^/]+)/config-file$"),  "agent.config-file",  "agent.config"),
+    ("POST",   re.compile(r"^/api/agents/(?P<t>[^/]+)/collection$"),   "agent.collection",   "agent.collection"),
+    ("POST",   re.compile(r"^/api/admin/push-ca-to-agents$"),          "agent.push-ca",      "agent.tls"),
+    ("POST",   re.compile(r"^/api/admin/service/(?P<t>[^/]+)/restart$"), "service.restart",  "service.restart"),
+    ("POST",   re.compile(r"^/api/admin/auth$"),                       "auth.mode-change",   "auth.mode"),
+    ("POST",   re.compile(r"^/login$"),                                "auth.login",         "auth.login"),
+    (None,     re.compile(r"^/logout$"),                               "auth.logout",        "auth.logout"),
+    ("POST",   re.compile(r"^/api/account/password$"),                 "account.password",   "account.password"),
+    ("POST",   re.compile(r"^/api/admin/users$"),                      "user.create",        "user.manage"),
+    ("PATCH",  re.compile(r"^/api/admin/users/(?P<t>[^/]+)$"),         "user.modify",        "user.manage"),
+    ("DELETE", re.compile(r"^/api/admin/users/(?P<t>[^/]+)$"),         "user.delete",        "user.manage"),
+    ("POST",   re.compile(r"^/api/admin/users/(?P<t>[^/]+)/unlock$"),  "user.unlock",        "user.manage"),
+    ("POST",   re.compile(r"^/api/admin/export/manager$"),             "backup.export",      "backup"),
+    ("POST",   re.compile(r"^/api/admin/import/manager/apply$"),       "backup.import-apply", "backup"),
+    ("PUT",    re.compile(r"^/api/admin/settings$"),                   "config.settings",    "config.settings"),
+    ("POST",   re.compile(r"^/api/llm/server/svcconfig$"),             "config.svcconfig",   "config.server"),
+    ("POST",   re.compile(r"^/api/config/interval$"),                  "config.interval",    "config.server"),
+    ("POST",   re.compile(r"^/api/layout$"),                           "config.layout",      "config.layout"),
+    ("POST",   re.compile(r"^/api/llm/load$"),                         "llama.load",         "llama.model"),
+    ("POST",   re.compile(r"^/api/llm/unload$"),                       "llama.unload",       "llama.model"),
+    ("POST",   re.compile(r"^/api/lmstudio/load$"),                    "lms.load",           "lms.model"),
+    ("POST",   re.compile(r"^/api/lmstudio/unload$"),                  "lms.unload",         "lms.model"),
+    ("POST",   re.compile(r"^/api/lmstudio/download$"),                "lms.download",       "model.downloads"),
+    ("POST",   re.compile(r"^/api/llm/server/(?P<v>stop|start|restart|wake)$"), "llama.server.{v}", "llama.server"),
+    ("POST",   re.compile(r"^/api/llm/config$"),                       "model.config.save",  "model.config"),
+    ("DELETE", re.compile(r"^/api/llm/config/(?P<t>.+)$"),             "model.config.delete", "model.config"),
+    ("POST",   re.compile(r"^/api/llm/profiles/(?P<t>.+)/(?P<v>save|activate|rename|delete)$"), "model.profile.{v}", "model.config"),
+    ("POST",   re.compile(r"^/api/llm/aliases$"),                      "model.alias.save",   "model.config"),
+    ("DELETE", re.compile(r"^/api/llm/aliases/(?P<t>.+)$"),            "model.alias.delete", "model.config"),
+    ("POST",   re.compile(r"^/api/llm/download/cancel$"),              "model.download-cancel", "model.downloads"),
+    ("POST",   re.compile(r"^/api/llm/(?P<v>download|build)$"),        "model.{v}",          "model.downloads"),
+    ("POST",   re.compile(r"^/api/llm/cache/(?P<v>prune|rm)$"),        "model.cache-{v}",    "model.downloads"),
+    ("POST",   re.compile(r"^/api/llm/autotune/run$"),                 "tools.autotune",     "tools.run"),
+    ("POST",   re.compile(r"^/api/vllm/(?:bench|autotune)/run$"),      "tools.vllm-bench",   "tools.run"),
+    ("POST",   re.compile(r"^/api/vllm/server/(?P<v>start|stop|restart)$"), "vllm.server.{v}", "vllm.server"),
+    ("POST",   re.compile(r"^/api/vllm/server/svcconfig$"),            "vllm.svcconfig",     "vllm.server"),
+    ("POST",   re.compile(r"^/api/vllm/lora/(?P<v>load|unload)$"),     "vllm.lora.{v}",      "vllm.server"),
+    ("PUT",    re.compile(r"^/api/autopilot$"),                        "autopilot.toggle",   "autopilot.toggle"),
+    ("POST",   re.compile(r"^/api/autopilot/proposals/(?P<t>[^/]+)/(?P<v>apply|dismiss)$"), "autopilot.proposal-{v}", "autopilot.proposal"),
+    ("POST",   re.compile(r"^/api/(?:lms/|vllm/)?terminal/create$"),   "terminal.open",      "terminal.open"),
+    ("POST",   re.compile(r"^/api/reportcard/(?P<v>run|delete-model)$"), "reportcard.{v}",   "reportcard"),
+    ("POST",   re.compile(r"^/api/reportcard/cancel/(?P<t>[^/]+)$"),   "reportcard.cancel",  "reportcard"),
+    ("DELETE", re.compile(r"^/api/reportcard/history$"),               "reportcard.clear-history", "reportcard"),
+    ("POST",   re.compile(r"^/api/alarm/alerts/(?P<t>[^/]+)/(?P<v>close|ignore|ack|acknowledge)$"), "alarm.{v}", "alarm.actions"),
+    ("POST",   re.compile(r"^/api/alarm/alerts/(?P<v>close-all|ignore-all|bulk)$"), "alarm.{v}", "alarm.actions"),
+    ("DELETE", re.compile(r"^/api/alarm/alerts/(?P<t>[^/]+)$"),        "alarm.delete",       "alarm.actions"),
+    (None,     re.compile(r"^/api/alarm/(?:admin/)?rules(?:/(?P<t>[^/]+))?$"), "alarm.rule",  "alarm.actions"),
 ]
 
 # Actions whose target is the model id in the JSON body, not in the path.
-_AUDIT_BODY_TARGET_ACTIONS = {"llama.load", "llama.unload", "lms.load", "lms.unload"}
+_AUDIT_BODY_TARGET_ACTIONS = {"llama.load", "llama.unload", "lms.load", "lms.unload",
+                              "lms.download", "model.download", "vllm.lora.load",
+                              "vllm.lora.unload", "model.config.save", "model.alias.save",
+                              "user.create"}
 
 # Per-provider pool/pins audit entries (llama labels unchanged).
 _AUDIT_ROUTES += [
     ("POST", re.compile(rf"^/api/agents/(?P<t>[^/]+)/{re.escape(_p)}-pool$"),
-     f"agent.{_p}-pool")
+     f"agent.{_p}-pool", "agent.roles")
     for _p in providers.pool_provider_names()
 ]
 _AUDIT_ROUTES += [
-    ("POST", re.compile(rf"^/api/admin/{re.escape(_p)}-pins$"), f"config.{_p}-pins")
+    ("POST", re.compile(rf"^/api/admin/{re.escape(_p)}-pins$"), f"config.{_p}-pins", "config.pins")
     for _p in providers.names()
     if getattr(providers.get(_p), "pin_dict_key", None)
 ]
 
-
 _AUDIT_PATH_PREFIXES = ("/api/admin/", "/api/agents/", "/api/llm/", "/api/lmstudio/",
-                        "/api/config/")
+                        "/api/config/", "/api/vllm/", "/api/autopilot", "/api/terminal/",
+                        "/api/lms/terminal/", "/api/reportcard/", "/api/alarm/",
+                        "/api/account/", "/api/layout", "/login", "/logout")
+
+_AUDIT_DETAIL_BODY_KEYS = ("model", "model_id", "agent", "agent_id", "kind", "set", "enabled",
+                           "context_length", "n_gpu_layers", "role", "mode", "provider",
+                           "action", "entry", "name", "profile", "alias", "unit")
+
+
+_AUDIT_DEFAULT_OFF = {ev["key"] for g in AUDIT_EVENT_GROUPS for ev in g["events"] if not ev["default_on"]}
+
+
+def _audit_reload_config() -> None:
+    """Refresh _AUDIT_CFG from the on-disk config (hot; no restart)."""
+    try:
+        a = settings_catalog._snapshot().manager.audit
+        raw = (settings_catalog.file_catalog_values() or {}).get(
+            "manager.audit.disabled_events", settings_catalog._MISSING)
+        disabled = set(_AUDIT_DEFAULT_OFF) if raw is settings_catalog._MISSING \
+            else set(getattr(a, "disabled_events", []) or [])
+        _AUDIT_CFG.update({
+            "retention_days": max(0, int(a.retention_days)),
+            "page_size": max(10, int(a.page_size)),
+            "save_automated": bool(a.save_automated),
+            "disabled": disabled,
+        })
+    except Exception as e:
+        log.warning("audit config reload failed (runtime keeps previous values): %s", e)
+
+
+_AUDIT_EVENT_BY_ACTION: dict[str, str] = {}
+
+
+def _audit_event_for(action: str) -> str:
+    if action.startswith("autopilot:"):
+        return "autopilot.executor"
+    hit = _AUDIT_EVENT_BY_ACTION.get(action)
+    if hit:
+        return hit
+    for entry in _AUDIT_ROUTES:
+        tmpl = entry[2]
+        pat = re.escape(tmpl).replace(r"\{v\}", "[^.]+").replace(r"\{t\}", ".+")
+        if tmpl == action or ("{" in tmpl and re.fullmatch(pat, action)):
+            _AUDIT_EVENT_BY_ACTION[action] = entry[3]
+            return entry[3]
+    _AUDIT_EVENT_BY_ACTION[action] = "admin.other"
+    return "admin.other"
+
+
+def _audit_group_for(action: str) -> str:
+    return _AUDIT_EVENT_GROUP.get(_audit_event_for(action), "config")
+
+
+def _audit_label(action: str) -> str:
+    return _AUDIT_LABELS.get(action) or action.replace(":", " ").replace(".", " ").replace("-", " ")
 
 
 def _audit_body_target() -> "str | None":
@@ -3156,33 +3355,136 @@ def _audit_body_target() -> "str | None":
     data = flask_request.get_json(silent=True)
     if not isinstance(data, dict):
         return None
-    val = data.get("model_id") or data.get("model")
+    val = (data.get("model_id") or data.get("model") or data.get("alias")
+           or data.get("name") or data.get("username"))
     return str(val)[:200] if isinstance(val, str) and val else None
 
 
-def _audit_match(method: str, path: str) -> tuple[str, str | None] | None:
-    """Return (action, target) when the request is auditable, else None."""
+def _audit_match(method: str, path: str) -> "tuple[str, str | None, str] | None":
+    """Return (action, target, event) when the request is auditable, else None."""
     # Fast-path exit so high-frequency telemetry POSTs skip the regex table.
     if not path.startswith(_AUDIT_PATH_PREFIXES):
         return None
-    for m, rx, action in _AUDIT_ROUTES:
+    for m, rx, action, event in _AUDIT_ROUTES:
         if m is not None and m != method:
             continue
         match = rx.match(path)
         if match:
-            return action, (match.groupdict().get("t") or None)
+            gd = {k: (v or "") for k, v in match.groupdict().items()}
+            if "{" in action:
+                action = action.format(**gd)
+            return action, (gd.get("t") or None), event
     # Generic fallback: any other mutating /api/admin/* call.
     if path.startswith("/api/admin/"):
         parts = path.split("/")
-        return "admin." + (parts[3] if len(parts) > 3 else "?"), None
+        return "admin." + (parts[3] if len(parts) > 3 else "?"), None, "admin.other"
     return None
 
 
+_AUDIT_LOOPBACK = ("127.0.0.1", "::1", "::ffff:127.0.0.1")
+
+
+def _audit_auth_kind() -> str:
+    """How the caller was admitted: session | token | bypass | test (loopback only)."""
+    src = (flask_request.headers.get("X-LLMSys-Source") or "").lower()
+    if src.startswith(("test", "smoke")) and (flask_request.remote_addr or "") in _AUDIT_LOOPBACK:
+        return "test"
+    if (flask_request.headers.get("Authorization") or "").lower().startswith("bearer "):
+        return "token"
+    if _flask_session.get("auth_ok") is True:
+        return "session"
+    return "bypass"
+
+
+def _audit_agent_name(aid) -> str:
+    """hostname for an agent id when known, else the id."""
+    try:
+        return _agent_hostname(str(aid)) or str(aid)
+    except Exception:
+        return str(aid)
+
+
+def _audit_mask(path: str, value):
+    e = settings_catalog.entry_for(path)
+    if e and e.get("secret"):
+        return "•••"
+    return None if value is settings_catalog._MISSING else value
+
+
+@app.before_request
+def _audit_before_request():
+    """Stash the signing-out user before /logout clears the session."""
+    if (flask_request.path or "") == "/logout":
+        _flask_g._audit_actor = _flask_session.get("user")
+
+
+def _audit_stash_settings_before(changes: dict) -> None:
+    """Snapshot on-disk values for the keys a settings save is about to change."""
+    if "config.settings" in _AUDIT_CFG["disabled"] or not isinstance(changes, dict):
+        return
+    vals = settings_catalog.file_catalog_values() or {}
+    _flask_g._audit_before = {k: vals.get(k, settings_catalog._MISSING) for k in changes}
+
+
+def _audit_detail(action: str, target, resp) -> "dict | None":
+    d: dict = {}
+    body = flask_request.get_json(silent=True)
+    if isinstance(body, dict):
+        if action == "config.settings":
+            before = getattr(_flask_g, "_audit_before", None) or {}
+            ch = body.get("changes") if isinstance(body.get("changes"), dict) else {}
+            d["changes"] = {k: [_audit_mask(k, before.get(k, settings_catalog._MISSING)),
+                                _audit_mask(k, v)] for k, v in ch.items()}
+        elif action.startswith("user."):
+            d.update({k: ("reset" if k == "password" else body[k])
+                      for k in ("role", "enabled", "password") if k in body})
+        elif action in ("account.password", "auth.login"):
+            pass
+        else:
+            d.update({k: body[k] for k in _AUDIT_DETAIL_BODY_KEYS if k in body})
+            aid = d.pop("agent_id", None) or d.pop("agent", None)
+            if aid is not None:
+                d["agent"] = _audit_agent_name(aid) if isinstance(aid, str) else aid
+    if target and action.startswith("agent.") and "agent" not in d:
+        d["agent"] = _audit_agent_name(target)
+    if (getattr(resp, "is_json", False) and not getattr(resp, "is_streamed", False)
+            and not getattr(resp, "direct_passthrough", False)):
+        j = resp.get_json(silent=True)
+        if isinstance(j, dict):
+            if j.get("error"):
+                d["error"] = str(j["error"])[:300]
+            for k in ("restart_required", "applied", "version"):
+                if k in j:
+                    d[k] = j[k]
+    if not d:
+        return None
+    if len(json.dumps(d, default=str)) > _AUDIT_DETAIL_MAX:
+        d = _audit_detail_shrink(d)
+    return d
+
+
+def _audit_detail_shrink(d: dict) -> dict:
+    """Bound a detail dict: clip strings, keep the first 20 changes."""
+    def clip(v):
+        return v if isinstance(v, (int, float, bool)) or v is None else str(v)[:80]
+    out = {k: clip(v) for k, v in d.items() if k != "changes"}
+    ch = d.get("changes")
+    if isinstance(ch, dict):
+        items = list(ch.items())
+        out["changes"] = {k: [clip(x) for x in v] if isinstance(v, list) else clip(v) for k, v in items[:20]}
+        if len(items) > 20:
+            out["changes_truncated"] = len(items) - 20
+    return out
+
+
 def _audit_record(entry: tuple) -> None:
+    """entry = (ts, actor, role, ip, auth, method, path, action, target, status, outcome, detail_json[, event])."""
+    if len(entry) == 12:
+        entry = entry + (_audit_event_for(entry[7]),)
     conn = get_db()
     cur = conn.execute(
-        "INSERT INTO audit_log (ts, actor, role, ip, method, path, action, target, status, outcome)"
-        " VALUES (?,?,?,?,?,?,?,?,?,?)", entry)
+        "INSERT INTO audit_log (ts, actor, role, ip, auth, method, path, action, target, status, outcome, detail, event)"
+        " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)", entry)
     if cur.lastrowid and cur.lastrowid % _AUDIT_PRUNE_EVERY == 0:
         conn.execute(
             "DELETE FROM audit_log WHERE id <= (SELECT MAX(id) FROM audit_log) - ?",
@@ -3190,26 +3492,76 @@ def _audit_record(entry: tuple) -> None:
     conn.commit()
 
 
+def _audit_purge(now=None) -> int:
+    """Delete rows older than retention_days; returns the count removed."""
+    days = int(_AUDIT_CFG.get("retention_days") or 0)
+    if days <= 0:
+        return 0
+    cutoff = ((now or datetime.now(timezone.utc)) - timedelta(days=days)).isoformat(timespec="seconds")
+    conn = get_db()
+    cur = conn.execute("DELETE FROM audit_log WHERE ts < ?", (cutoff,))
+    conn.commit()
+    removed = cur.rowcount if cur.rowcount is not None and cur.rowcount >= 0 else 0
+    _AUDIT_PURGE_STATE.update({"ts": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                               "removed": removed})
+    return removed
+
+
+def _audit_purge_loop() -> None:
+    while not _shutting_down:
+        try:
+            n = _audit_purge()
+            if n:
+                log.info("audit log: purged %d entries older than %d days", n, _AUDIT_CFG["retention_days"])
+        except Exception:
+            log.debug("audit purge failed", exc_info=True)
+        slept = 0.0
+        while slept < _AUDIT_PURGE_INTERVAL_S and not _shutting_down:
+            time.sleep(0.5)
+            slept += 0.5
+
+
+def _start_audit_purge_thread() -> None:
+    threading.Thread(target=_audit_purge_loop, daemon=True, name="audit-purge").start()
+
+
 @app.after_request
 def _audit_after_request(resp):
     try:
         method = flask_request.method
-        if method not in ("POST", "PUT", "PATCH", "DELETE"):
+        path = flask_request.path or ""
+        if method not in ("POST", "PUT", "PATCH", "DELETE") and not (method == "GET" and path == "/logout"):
             return resp
-        matched = _audit_match(method, flask_request.path or "")
+        matched = _audit_match(method, path)
         if matched is None:
             return resp
-        action, target = matched
+        action, target, event = matched
+        if event in _AUDIT_CFG["disabled"]:
+            return resp
+        auth_kind = _audit_auth_kind()
+        if auth_kind == "test" and not _AUDIT_CFG["save_automated"]:
+            return resp
         if target is None and action in _AUDIT_BODY_TARGET_ACTIONS:
             target = _audit_body_target()
         status = resp.status_code
-        outcome = "ok" if status < 400 else ("denied" if status in (401, 403) else "error")
+        outcome = "ok" if status < 400 else ("denied" if status in (401, 403, 429) else "error")
+        actor = getattr(_flask_g, "auth_user", None) or ""
+        role = getattr(_flask_g, "auth_role", None) or ""
+        if action == "auth.login":
+            actor = (_flask_session.get("user") if status < 400
+                     else (flask_request.form.get("username") or "")[:64]) or ""
+            target = target or actor or None
+            role = _flask_session.get("role") or "" if status < 400 else ""
+        elif action == "auth.logout":
+            actor = getattr(_flask_g, "_audit_actor", None) or actor
+        detail = _audit_detail(action, target, resp)
+        if action == "auth.login" and status == 429:
+            detail = {**(detail or {}), "reason": "locked"}
         _audit_record((
             datetime.now(timezone.utc).isoformat(timespec="seconds"),
-            getattr(_flask_g, "auth_user", None) or "",
-            getattr(_flask_g, "auth_role", None) or "",
-            flask_request.remote_addr or "",
-            method, flask_request.path, action, target, status, outcome,
+            actor, role, flask_request.remote_addr or "", auth_kind,
+            method, path, action, target, status, outcome,
+            json.dumps(detail, default=str) if detail else None, event,
         ))
     except Exception:
         # Never let auditing break a response.
@@ -3217,25 +3569,169 @@ def _audit_after_request(resp):
     return resp
 
 
+# Action prefixes per group; mirrors the event catalog's grouping.
+_AUDIT_GROUP_PREFIXES = {
+    "agent": ("agent.",), "user": ("user.", "auth.", "account."),
+    "config": ("config.", "backup.", "admin."), "model": ("llama.", "lms.", "vllm.", "model."),
+    "service": ("service.", "alarm."), "auto": ("autopilot",),
+    "tool": ("terminal.", "reportcard.", "tools."),
+}
+def _csv_safe(v):
+    """Neutralise spreadsheet formula triggers in a CSV cell."""
+    if v is None:
+        return ""
+    s_ = str(v)
+    return "'" + s_ if s_[:1] in ("=", "+", "-", "@", "\t", "\r") else s_
+
+
+_AUDIT_SORT_COLS = {"ts": "ts", "actor": "actor", "action": "action", "target": "target",
+                    "ip": "ip", "outcome": "outcome", "id": "id"}
+_AUDIT_CSV_MAX = 10000
+
+
+def _audit_query_parts(args) -> "tuple[str, list]":
+    """WHERE clause + params for the audit-log list/CSV endpoints."""
+    where: list[str] = []
+    params: list = []
+    q = (args.get("q") or "").strip()
+    if q:
+        like = f"%{q}%"
+        where.append("(actor LIKE ? OR action LIKE ? OR target LIKE ? OR ip LIKE ? OR path LIKE ? OR detail LIKE ?)")
+        params += [like] * 6
+    group = (args.get("group") or "").strip()
+    if group:
+        events = [k for k, g in _AUDIT_EVENT_GROUP.items() if g == group]
+        prefixes = _AUDIT_GROUP_PREFIXES.get(group) or ("\x00",)
+        where.append("((event IN (%s)) OR (event IS NULL AND (%s)))" % (
+            ",".join("?" * len(events)) or "''", " OR ".join("action LIKE ?" for _ in prefixes)))
+        params += events + [p + "%" for p in prefixes]
+    actor = (args.get("actor") or "").strip()
+    if actor == "system":
+        where.append("(COALESCE(actor,'')='' AND (auth='internal' OR ip IN ('-','')))")
+    elif actor == "local":
+        where.append("(COALESCE(actor,'')='' AND COALESCE(auth,'') IN ('bypass','') AND ip NOT IN ('-',''))")
+    elif actor == "test":
+        where.append("auth='test'")
+    elif actor:
+        where.append("actor=?")
+        params.append(actor)
+    outcome = (args.get("outcome") or "").strip()
+    if outcome:
+        where.append("outcome=?")
+        params.append(outcome)
+    try:
+        hours = float(args.get("since_hours") or 0)
+    except (TypeError, ValueError):
+        hours = 0
+    if hours > 0:
+        where.append("ts >= ?")
+        params.append((datetime.now(timezone.utc) - timedelta(hours=hours)).isoformat(timespec="seconds"))
+    # Automated = tagged test traffic, plus loopback rows that are untagged
+    # (pre-#794 smoke/pytest runs) or bypass-admitted with no actor.
+    if str(args.get("hide_automated") or "") in ("1", "true", "yes"):
+        where.append("NOT (COALESCE(auth,'')='test' OR (ip IN ('127.0.0.1','::1','::ffff:127.0.0.1')"
+                     " AND (COALESCE(auth,'')='' OR (auth='bypass' AND COALESCE(actor,'')=''))))")
+    sql = (" WHERE " + " AND ".join(where)) if where else ""
+    return sql, params
+
+
+def _audit_order(args) -> str:
+    col = _AUDIT_SORT_COLS.get((args.get("sort") or "id").strip(), "id")
+    direction = "ASC" if (args.get("dir") or "desc").lower() == "asc" else "DESC"
+    return f" ORDER BY {col} {direction}, id {direction}"
+
+
+def _audit_row_out(r) -> dict:
+    d = dict(r)
+    try:
+        d["detail"] = json.loads(d["detail"]) if d.get("detail") else None
+    except (TypeError, ValueError):
+        d["detail"] = None
+    d["event"] = d.get("event") or _audit_event_for(d.get("action") or "")
+    d["group"] = _AUDIT_EVENT_GROUP.get(d["event"], "config")
+    d["label"] = _audit_label(d.get("action") or "")
+    return d
+
+
 @app.route("/api/admin/audit-log")
 def admin_audit_log():
     deny = _require_admin()
     if deny is not None:
         return deny
+    args = flask_request.args
     try:
-        limit = min(500, max(1, int(flask_request.args.get("limit", 100))))
+        limit = min(500, max(1, int(args.get("limit", _AUDIT_CFG["page_size"]))))
     except (ValueError, TypeError):
-        limit = 100
+        limit = int(_AUDIT_CFG["page_size"])
     try:
-        offset = max(0, int(flask_request.args.get("offset", 0)))
+        offset = max(0, int(args.get("offset", 0)))
     except (ValueError, TypeError):
         offset = 0
+    where, params = _audit_query_parts(args)
+    conn = get_db()
+    total = conn.execute("SELECT COUNT(*) FROM audit_log" + where, params).fetchone()[0]
+    rows = conn.execute(
+        "SELECT id, ts, actor, role, ip, auth, method, path, action, target, status, outcome, detail, event"
+        " FROM audit_log" + where + _audit_order(args) + " LIMIT ? OFFSET ?",
+        params + [limit, offset]).fetchall()
+    return jsonify({"ok": True, "total": total, "page_size": _AUDIT_CFG["page_size"],
+                    "entries": [_audit_row_out(r) for r in rows]})
+
+
+@app.route("/api/admin/audit-log.csv")
+def admin_audit_log_csv():
+    deny = _require_admin()
+    if deny is not None:
+        return deny
+    import csv
+    import io
+    where, params = _audit_query_parts(flask_request.args)
+    rows = get_db().execute(
+        "SELECT ts, actor, role, ip, auth, action, target, status, outcome, detail FROM audit_log"
+        + where + _audit_order(flask_request.args) + " LIMIT ?", params + [_AUDIT_CSV_MAX]).fetchall()
+    buf = io.StringIO()
+    w = csv.writer(buf)
+    w.writerow(["ts", "actor", "role", "ip", "auth", "action", "target", "status", "outcome", "detail"])
+    for r in rows:
+        w.writerow([_csv_safe(r[k]) for k in ("ts", "actor", "role", "ip", "auth", "action", "target",
+                                             "status", "outcome", "detail")])
+    resp = Response(buf.getvalue(), mimetype="text/csv")
+    resp.headers["Content-Disposition"] = "attachment; filename=audit-log.csv"
+    return resp
+
+
+@app.route("/api/admin/audit-log/stats")
+def admin_audit_log_stats():
+    deny = _require_admin()
+    if deny is not None:
+        return deny
     conn = get_db()
     total = conn.execute("SELECT COUNT(*) FROM audit_log").fetchone()[0]
-    rows = conn.execute(
-        "SELECT ts, actor, role, ip, method, path, action, target, status, outcome"
-        " FROM audit_log ORDER BY id DESC LIMIT ? OFFSET ?", (limit, offset)).fetchall()
-    return jsonify({"ok": True, "total": total, "entries": [dict(r) for r in rows]})
+    oldest = conn.execute("SELECT MIN(ts) FROM audit_log").fetchone()[0]
+    actors = [r[0] for r in conn.execute(
+        "SELECT DISTINCT actor FROM audit_log WHERE COALESCE(actor,'')<>'' ORDER BY actor").fetchall()]
+    return jsonify({"ok": True, "total": total, "oldest": oldest, "actors": actors,
+                    "purge": dict(_AUDIT_PURGE_STATE),
+                    "retention_days": _AUDIT_CFG["retention_days"],
+                    "page_size": _AUDIT_CFG["page_size"]})
+
+
+@app.route("/api/admin/audit-log/events")
+def admin_audit_log_events():
+    deny = _require_admin()
+    if deny is not None:
+        return deny
+    disabled = _AUDIT_CFG["disabled"]
+    groups = [{"key": g["key"], "title": g["title"],
+               "events": [{**ev, "enabled": ev["key"] not in disabled} for ev in g["events"]]}
+              for g in AUDIT_EVENT_GROUPS]
+    return jsonify({"ok": True, "groups": groups,
+                    "config": {"retention_days": _AUDIT_CFG["retention_days"],
+                               "page_size": _AUDIT_CFG["page_size"],
+                               "save_automated": _AUDIT_CFG["save_automated"]}})
+
+
+_audit_reload_config()
 
 
 # ---------------------------------------------------------------------------
@@ -3727,6 +4223,10 @@ def _settings_drift(ae_flat: dict, file_vals: "dict | None",
     return out
 
 
+# Hot settings (catalog hot=True): prefix → runtime reloader run after a save.
+_HOT_RELOADERS = {"manager.audit.": _audit_reload_config}
+
+
 @app.route("/api/admin/settings", methods=["PUT"])
 def admin_settings_put():
     deny = _require_admin()
@@ -3736,6 +4236,7 @@ def admin_settings_put():
     changes = body.get("changes") or {}
     if not isinstance(changes, dict):
         return jsonify({"ok": False, "error": "changes must be an object"}), 400
+    _audit_stash_settings_before(changes)
     resync = body.get("resync_ae") or []
     if not isinstance(resync, list):
         return jsonify({"ok": False, "error": "resync_ae must be a list"}), 400
@@ -3759,6 +4260,9 @@ def admin_settings_put():
         return jsonify({"ok": False, "errors": e.errors}), 400
     except settings_toml_io.SettingsIOError as e:
         return _err_json("config file unreadable", 500, exc=e)
+    for prefix, reload in _HOT_RELOADERS.items():
+        if any(k.startswith(prefix) for k in local):
+            reload()
     resync_sets, resync_dels = _settings_resync_values(resync)
     if resync_sets is None:
         return jsonify({"ok": False, "error": "local config file unreadable"}), 500
@@ -4514,6 +5018,7 @@ def _admin_route(f):
 
 
 import autopilot  # type: ignore[import-not-found]  # sibling; #472
+autopilot.audit_enabled = lambda: "autopilot.executor" not in _AUDIT_CFG["disabled"]
 autopilot.register_routes(app, ctx, auth=_admin_route)
 
 
@@ -6630,6 +7135,9 @@ if __name__ == "__main__":
         _maybe_start_backup_scheduler()
     except Exception as _e:
         log.warning("backup scheduler startup failed: %s", _e)
+
+    # Audit log retention purge (#794): at start, then every 24 h.
+    _start_audit_purge_thread()
 
     # optionally serve HTTPS on a second port using the
     # manager's own server cert (signed by the internal CA). Defaults
