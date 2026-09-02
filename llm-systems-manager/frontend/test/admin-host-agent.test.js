@@ -125,30 +125,48 @@ describe('#412 adminToggleHostAgent — behavior', () => {
   });
 });
 
-// ── AE restart button gating in the system-health card ──
-const BOOT_HEALTH = `
-  _fmtUptime = function (s) { return String(s) + 's'; };  // lives in dashboard-manager.js
-  ['adminHealthOverall','adminHealthRefresh','adminHealthServices','adminHealthDataFlow','adminHealthWarnings']
-    .forEach(id => { const d = document.createElement('div'); d.id = id; document.body.appendChild(d); });
-  const base = { overall:'ok', manager:{ uptime_s:10 },
-                 services:[{ name:'alarm_engine', ok:true, latency_ms:5 }],
-                 data_flow:{}, warnings:[] };
-  const svcHtml = () => document.getElementById('adminHealthServices').innerHTML;
-  window.__T = {};
-  _renderSystemHealth({ ...base, ae_local:false, containerized:false }); window.__T.noBtn        = svcHtml();
-  _renderSystemHealth({ ...base, ae_local:false, containerized:true  }); window.__T.containerBtn = svcHtml();
-  _renderSystemHealth({ ...base, ae_local:true,  containerized:false }); window.__T.localBtn     = svcHtml();
-`;
+// ── AE restart is always offered in the system-health card (#764) ──
+const healthSrc = readFileSync(join(here, '..', 'js', 'admin-health.js'), 'utf8');
 
-describe('#412 AE restart button gating', () => {
-  const T = runHarness(BOOT_HEALTH).__T;
-  test('no AE restart button when neither ae_local nor containerized', () => {
-    expect(T.noBtn).not.toContain('data-restart-svc="alarm_engine"');
+function svcHtml(d) {
+  const dom = new JSDOM('<!doctype html><html><head></head><body><div id="adminTab">'
+    + '<div id="adminHealthCard"><span id="adminHealthOverall"></span>'
+    + '<div id="adminHealthServices"></div><div id="adminHealthWarnings"></div></div></div></body></html>',
+    { runScripts: 'dangerously', url: 'http://localhost/' });
+  const inject = (code) => {
+    const s = dom.window.document.createElement('script');
+    s.textContent = code;
+    dom.window.document.head.appendChild(s);
+  };
+  inject(adminSrc);
+  inject(healthSrc);
+  inject(`HealthView.render(${JSON.stringify(d)}, null);`);
+  return dom.window.document.getElementById('adminHealthServices').innerHTML;
+}
+
+const BASE = { overall: 'ok', manager: { uptime_s: 10, version: 'v9' },
+               services: [{ name: 'alarm_engine', ok: true, latency_ms: 5, version: 'v8', uptime_s: 20 },
+                          { name: 'influxdb', ok: true, state: 'connected', version: '2.7' }],
+               data_flow: {}, warnings: [] };
+
+describe('#764 AE restart is always available', () => {
+  test('a systemctl-managed AE gets the plain tip', () => {
+    const html = svcHtml({ ...BASE, ae_restart: { available: true, via: 'systemctl' } });
+    expect(html).toContain('data-restart-svc="alarm_engine"');
+    expect(html).toContain('data-tip="Restart Alarm Engine"');
   });
-  test('AE restart button shows under a containerized control plane', () => {
-    expect(T.containerBtn).toContain('data-restart-svc="alarm_engine"');
+  test('a split install names the self-restart API in the tip', () => {
+    const html = svcHtml({ ...BASE, ae_restart: { available: true, via: 'self-restart' } });
+    expect(html).toContain('data-restart-svc="alarm_engine"');
+    expect(html).toContain('via its self-restart API');
   });
-  test('AE restart button still shows for a local bare-metal AE unit', () => {
-    expect(T.localBtn).toContain('data-restart-svc="alarm_engine"');
+  test('the button is still offered when the backend sends no ae_restart block', () => {
+    expect(svcHtml(BASE)).toContain('data-restart-svc="alarm_engine"');
+  });
+  test('the manager row keeps its restart button and InfluxDB has none', () => {
+    const html = svcHtml(BASE);
+    expect(html).toContain('data-restart-svc="manager"');
+    expect(html).not.toContain('data-restart-svc="influxdb"');
+    expect(html).toContain('ib none');
   });
 });

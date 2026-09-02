@@ -71,7 +71,7 @@ describe('#563 pool list rows for unknown agents', () => {
     const boot = `
       Sortable = { create: () => ({ destroy(){} }) };
       _adminPoolProviders = [{ name:'llama', label:'llama.cpp', pin_key:'llama_model_pins' }];
-      _adminPoolSel = 'llama';
+      _adminProvSel = 'llama';
       _adminGlobal = ${JSON.stringify({ llama_pool: pool })};
       _adminAgentsCache = ${JSON.stringify(cache)};
       adminRenderPoolOrder();
@@ -80,15 +80,17 @@ describe('#563 pool list rows for unknown agents', () => {
     return runHarness(boot, '<ul id="adminPoolOrderList"></ul>').__T.html;
   }
 
-  test('known member renders without a remove button', () => {
+  test('known member renders the dashboard jump, not a remove button', () => {
     const html = renderPool(['agent-K'], [approvedAgent('agent-K', { hostname: 'k1' })]);
     expect(html).toContain('k1');
-    expect(html).not.toContain('✕ remove');
+    expect(html).toContain('Open in Dashboard');
+    expect(html).not.toContain('adminTogglePool');
   });
-  test('unknown member gets a working remove button', () => {
+  test('unknown member gets a working remove button instead', () => {
     const html = renderPool(['ghost-1234'], [approvedAgent('agent-K', { hostname: 'k1' })]);
     expect(html).toContain('(unknown agent ghost-12');
     expect(html).toContain("adminTogglePool('llama','ghost-1234',false)");
-    expect(html).toContain('✕ remove');
+    expect(html).toContain('Remove this deleted agent from the pool');
+    expect(html).not.toContain('Open in Dashboard');
   });
 });

@@ -1,4 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
+import { srcFile } from "./helpers/harness.js";
 import { AP } from "../js/autopilot.js";
 
 const E = {model: "m1", provider: "llama", placement: "auto",
@@ -15,9 +16,12 @@ describe("entry editor round-trip", () => {
     expect(out[0].model).toBe("m1");
     expect(out[1].max_replicas).toBe(3);
   });
-  it("vllm rows carry the manual-only badge", () => {
-    const el = AP.entryRow({...E, provider: "vllm"});
-    expect(el.textContent).toContain("manual-apply only");
+  it("the vLLM manual-apply rule is stated in the card footer, not per row", () => {
+    // The per-row badge became the card footer note in the #797 table layout.
+    const indexSrc = srcFile("index.html");
+    const card = indexSrc.slice(indexSrc.indexOf('id="apEntriesCard"'),
+                                indexSrc.indexOf('id="apProposalsCard"'));
+    expect(card).toContain("vLLM entries never auto-execute");
   });
   it("size_mb round-trips as an int (#474)", () => {
     const box = document.createElement("div");
@@ -71,12 +75,21 @@ describe("model/placement datalists (#472)", () => {
     ],
   };
 
-  it("entryRow renders datalist options from the injected catalog", () => {
+  it("model is a select built from the injected catalog (#797)", () => {
     AP.setCatalog(catalog);
-    const row = AP.entryRow({...E, provider: "llama"});
-    const modelInput = row.querySelector("[data-field=model]");
-    const modelDl = row.querySelector("#" + modelInput.getAttribute("list"));
-    expect([...modelDl.querySelectorAll("option")].map(o => o.value)).toEqual(["llama-model"]);
+    const row = AP.entryRow({...E, provider: "llama", model: "llama-model"});
+    const modelSel = row.querySelector("[data-field=model]");
+    expect(modelSel.tagName).toBe("SELECT");
+    expect([...modelSel.querySelectorAll("option")].map(o => o.value)).toEqual(["llama-model"]);
+    expect(modelSel.value).toBe("llama-model");
+  });
+
+  it("an undiscovered current model stays selectable", () => {
+    AP.setCatalog(catalog);
+    const row = AP.entryRow({...E, provider: "llama", model: "gone-model"});
+    const modelSel = row.querySelector("[data-field=model]");
+    expect(modelSel.value).toBe("gone-model");
+    expect(modelSel.selectedOptions[0].textContent).toContain("not discovered");
   });
 
   it("placement is a select showing auto + capable agents by hostname", () => {
@@ -125,20 +138,18 @@ describe("model/placement datalists (#472)", () => {
     expect(out[0]).toMatchObject({model: "m1", provider: "llama", placement: "auto"});
   });
 
-  it("changing provider swaps the model datalist", () => {
+  it("changing provider swaps the model select's options", () => {
     AP.setCatalog(catalog);
-    const row = AP.entryRow({...E, provider: "llama"});
+    const row = AP.entryRow({...E, provider: "llama", model: "llama-model"});
     const providerSel = row.querySelector("[data-field=provider]");
-    const modelInput = row.querySelector("[data-field=model]");
-    const modelDl = row.querySelector("#" + modelInput.getAttribute("list"));
-    expect([...modelDl.querySelectorAll("option")].map(o => o.value)).toContain("llama-model");
+    const modelSel = row.querySelector("[data-field=model]");
+    expect([...modelSel.querySelectorAll("option")].map(o => o.value)).toContain("llama-model");
 
     providerSel.value = "vllm";
     providerSel.dispatchEvent(new Event("change", {bubbles: true}));
 
-    const values = [...modelDl.querySelectorAll("option")].map(o => o.value);
+    const values = [...modelSel.querySelectorAll("option")].map(o => o.value);
     expect(values).toContain("vllm-model");
-    expect(values).not.toContain("llama-model");
   });
 });
 
@@ -232,14 +243,15 @@ describe("statusChip reports honest placement/blocked status (#472)", () => {
   it("shows N/M placed when satisfied", () => {
     const chip = AP.statusChip(entry, [], { placed: 1, want: 1, blocked: null });
     expect(chip.textContent).toBe("1/1 placed");
-    expect(chip.className).toContain("status--ok");
+    expect(chip.className).toContain("pill ok");
   });
 
   it("shows N/M plus the blocked reason when unplaceable", () => {
     const chip = AP.statusChip(entry, [],
       { placed: 0, want: 1, blocked: "model size unknown (set entry size MB)" });
-    expect(chip.textContent).toBe("0/1 — model size unknown (set entry size MB)");
-    expect(chip.className).toContain("status--warn");
+    expect(chip.textContent).toBe("0/1 · model size unknown");
+    expect(chip.title).toBe("model size unknown (set entry size MB)");
+    expect(chip.className).toContain("pill warn");
   });
 
   it("a pending proposal still wins over status", () => {
@@ -252,14 +264,14 @@ describe("statusChip reports honest placement/blocked status (#472)", () => {
   it("falls back to stable/muted when no status is given (back-compat)", () => {
     const chip = AP.statusChip(entry, []);
     expect(chip.textContent).toBe("stable");
-    expect(chip.className).toContain("status--muted");
+    expect(chip.className).toContain("pill dim");
   });
 
   it("shows muted (not ok) when pending placement — under want but not blocked", () => {
     const chip = AP.statusChip(entry, [], { placed: 0, want: 1, blocked: null });
     expect(chip.textContent).toBe("0/1 placed");
-    expect(chip.className).toContain("status--muted");
-    expect(chip.className).not.toContain("status--ok");
+    expect(chip.className).toContain("pill dim");
+    expect(chip.className).not.toContain("pill ok");
   });
 });
 

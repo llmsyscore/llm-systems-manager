@@ -43,7 +43,7 @@ describe('_adminReleaseInfoHtml', () => {
       note: 'install has no release tag to compare',
     });
     expect(out).toContain('install has no release tag to compare');
-    expect(out).toContain('info-row');
+    expect(out).toContain('w info');
   });
 
   test('falls back to a generic phrase when null carries no note', () => {
@@ -84,12 +84,15 @@ describe('_adminReleaseInfoHtml', () => {
   });
 });
 
-// Render-level: the info row must not displace the health roll-up's own
-// warnings, nor the "all nominal" line when there are none.
+// Render-level: HealthView orders crit → warn → note → info, and the info row
+// must not displace the health roll-up's own warnings.
+const healthSrc = readFileSync(join(here, '..', 'js', 'admin-health.js'), 'utf8');
+const indexSrc = readFileSync(join(here, '..', 'index.html'), 'utf8');
+const CARD = indexSrc.slice(indexSrc.indexOf('<div id="adminHealthCard">'),
+                            indexSrc.indexOf('<!-- Sub-tabs underneath System Health -->'));
+
 function render(d, rel) {
-  const dom = new JSDOM(
-    '<!doctype html><html><head></head><body>'
-    + '<div id="adminHealthWarnings"></div></body></html>',
+  const dom = new JSDOM(`<!doctype html><html><head></head><body><div id="adminTab">${CARD}</div></body></html>`,
     { runScripts: 'dangerously', url: 'http://localhost/' });
   const inject = (code) => {
     const s = dom.window.document.createElement('script');
@@ -97,42 +100,64 @@ function render(d, rel) {
     dom.window.document.head.appendChild(s);
   };
   inject(adminSrc);
-  inject(`_renderSystemHealth(${JSON.stringify(d)}, ${JSON.stringify(rel)});`);
+  inject(healthSrc);
+  inject(`HealthView.render(${JSON.stringify(d)}, ${JSON.stringify(rel)});`);
   return dom.window.document.getElementById('adminHealthWarnings').innerHTML;
 }
 
-describe('_renderSystemHealth warnings panel', () => {
+describe('HealthView warnings panel', () => {
   const NO_VERDICT = {
     enabled: true, update_available: null,
     note: 'install has no release tag to compare',
   };
 
-  test('keeps "all nominal" and still explains the dead release check', () => {
+  test('an empty roll-up still explains the dead release check', () => {
     const out = render({ warnings: [] }, NO_VERDICT);
-    expect(out).toContain('All systems nominal');
     expect(out).toContain('no release tag to compare');
+    expect(out).toContain('w info');
+    expect(out).not.toContain('w-none');
   });
 
   test('keeps real health warnings alongside the info row', () => {
     const out = render({ warnings: ['2 approved agent(s) down'] }, NO_VERDICT);
     expect(out).toContain('2 approved agent(s) down');
     expect(out).toContain('no release tag to compare');
-    expect(out).not.toContain('All systems nominal');
   });
 
-  test('an unreachable endpoint shows beside "all nominal"', () => {
+  test('an unreachable endpoint renders as the info row', () => {
     const out = render({ warnings: [] }, { unreachable: true });
-    expect(out).toContain('All systems nominal');
     expect(out).toContain('endpoint unreachable');
   });
 
-  test('an available update still renders the warn row, with no info row', () => {
+  test('no warnings and a quiet release check render the mono None', () => {
+    const out = render({ warnings: [] }, { enabled: true, update_available: false });
+    expect(out).toContain('w-none');
+    expect(out).toContain('None');
+  });
+
+  test('an available update renders the note row, with no info row', () => {
     const out = render({ warnings: [] }, {
       enabled: true, update_available: true,
       latest: 'v1.4.0', installed: 'v1.3.0', repo: 'llmsyscore/llm-systems-manager',
     });
-    expect(out).toContain('New release v1.4.0 available');
+    expect(out).toContain('Manager <span class="m">v1.4.0</span> is available');
     expect(out).toContain('installed v1.3.0');
-    expect(out).not.toContain('info-row');
+    expect(out).not.toContain('w info');
+  });
+
+  test('agent_update renders an Update all button', () => {
+    const out = render({ warnings: [], agent_update: { latest: 'v2026.09.01-3', outdated: 3 } },
+      { enabled: false });
+    expect(out).toContain('3 agents can update to');
+    expect(out).toContain('data-act="updateall"');
+  });
+
+  test('crit rows sort ahead of warn, note and info', () => {
+    const out = render({
+      warnings: ['agent mac-mini TLS cert expires in 9d', 'alarm engine unreachable: ConnectTimeout'],
+      agent_update: { latest: 'v2', outdated: 1 },
+    }, { enabled: true, update_available: null, note: 'no tag' });
+    const kinds = [...out.matchAll(/class="w (crit|warn|note|info)"/g)].map(m => m[1]);
+    expect(kinds).toEqual(['crit', 'warn', 'note', 'info']);
   });
 });

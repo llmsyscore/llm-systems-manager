@@ -41,6 +41,36 @@ describe('routing sub-tab consolidation (#476)', () => {
     expect(document.querySelector('#admin-routing #apProposalsBody')).toBeTruthy();
   });
 
+  it('cards run gateway → autopilot → proposals → pool → pins (#797)', () => {
+    const ids = [...document.querySelectorAll('#admin-routing > .card')].map(c => c.id);
+    expect(ids).toEqual(['rtGatewayCard', 'apEntriesCard', 'apProposalsCard',
+                         'adminPoolCard', 'adminPinsCard']);
+  });
+
+  it('one provider mc-seg drives both pool and pins; the old chip rows are gone', () => {
+    expect(document.querySelectorAll('#admin-routing .mc-seg#rtProviderSeg')).toHaveLength(1);
+    expect(document.getElementById('adminPoolProviderChips')).toBeNull();
+    expect(document.getElementById('adminPinsProviderChips')).toBeNull();
+  });
+
+  it('the gateway card starts hidden and the 5 s poll is wired to the sub-tab', () => {
+    expect(document.getElementById('rtGatewayCard').hasAttribute('hidden')).toBe(true);
+    let started = 0, stopped = 0;
+    window.GatewayView = { start: () => { started++; }, stop: () => { stopped++; } };
+    window.AP = { init: () => {} };
+    window.switchSubTab('admin', 'routing');
+    expect(started).toBe(1);
+    window.switchSubTab('admin', 'agents');
+    expect(stopped).toBe(1);
+    delete window.GatewayView;
+  });
+
+  it('the pin add-row picks a model from a select, not a free-text datalist', () => {
+    expect(document.querySelector('#adminPinsCard select#adminPinModelSelect')).toBeTruthy();
+    expect(document.getElementById('adminPinModelInput')).toBeNull();
+    expect(document.getElementById('adminProviderModels')).toBeNull();
+  });
+
   it('nav has a single Routing button wired to the routing sub-tab', () => {
     const btn = document.getElementById('subTabBtnAdminRouting');
     expect(btn).toBeTruthy();
@@ -109,16 +139,15 @@ describe('autopilot-managed badges (#476)', () => {
   function renderPins(entries) {
     const boot = `
       _adminPoolProviders = [{ name:'llama', label:'llama.cpp', pin_key:'llama_model_pins' }];
-      _adminPinsSel = 'llama';
+      _adminProvSel = 'llama';
       _adminGlobal = { llama_model_pins: { 'model-a': 'agent-K' }, llama_pool: [],
                         autopilot: { entries: ${JSON.stringify(entries)} } };
       _adminAgentsCache = [{ agent_id: 'agent-K', hostname: 'k1', status: 'approved', capabilities: { llama: true } }];
       adminRenderPins();
       window.__T = { html: document.getElementById('adminPinsTbody').innerHTML };
     `;
-    const body = '<div id="adminPinsProviderChips"></div>' +
-      '<table><tbody id="adminPinsTbody"></tbody></table>' +
-      '<select id="adminPinAgentSelect"></select>';
+    const body = '<table><tbody id="adminPinsTbody"></tbody></table>' +
+      '<select id="adminPinModelSelect"></select><select id="adminPinAgentSelect"></select>';
     return runAdminHarness(boot, body).__T.html;
   }
 
@@ -127,7 +156,7 @@ describe('autopilot-managed badges (#476)', () => {
       window.__sortableCalls = 0;
       Sortable = { create: () => { window.__sortableCalls++; return { destroy(){} }; } };
       _adminPoolProviders = [{ name:'llama', label:'llama.cpp', pin_key:'llama_model_pins' }];
-      _adminPoolSel = 'llama';
+      _adminProvSel = 'llama';
       _adminGlobal = { llama_pool: ['agent-K'], autopilot: { entries: ${JSON.stringify(entries)} } };
       _adminAgentsCache = [{ agent_id: 'agent-K', hostname: 'k1', status: 'approved', capabilities: { llama: true } }];
       adminRenderPoolOrder();
@@ -138,7 +167,7 @@ describe('autopilot-managed badges (#476)', () => {
         sortableCreated: window.__sortableCalls > 0,
       };
     `;
-    const body = '<div id="adminPoolProviderChips"></div>' +
+    const body = '<div class="mc-seg" id="rtProviderSeg"></div>' +
       '<ul id="adminPoolOrderList"></ul>' +
       '<span id="adminPoolApBadge"></span><span id="adminPoolDragHint"></span>';
     return runAdminHarness(boot, body).__T;
@@ -238,17 +267,15 @@ describe('sortable roster columns (#476 scope, #793 roster)', () => {
       window.__done = adminLoadAgents();
     `;
     const body = agentsPanelHtml +
-      '<div id="adminPinsProviderChips"></div>' +
       '<table><tbody id="adminPinsTbody">SENTINEL-PINS</tbody></table>' +
-      '<select id="adminPinAgentSelect"></select>' +
-      '<div id="adminPoolProviderChips"></div>' +
+      '<select id="adminPinModelSelect"></select><select id="adminPinAgentSelect"></select>' +
+      '<div class="mc-seg" id="rtProviderSeg"></div>' +
       '<ul id="adminPoolOrderList">SENTINEL-POOL</ul>' +
-      '<span id="adminPoolApBadge"></span><span id="adminPoolDragHint"></span>' +
-      '<datalist id="adminProviderModels"></datalist>';
+      '<span id="adminPoolApBadge"></span><span id="adminPoolDragHint"></span>';
     const win = runAdminHarness(boot, body);
     await win.__done;
     expect(win.document.getElementById('adminPinsTbody').innerHTML).not.toContain('SENTINEL-PINS');
-    expect(win.document.getElementById('adminPinsTbody').innerHTML).toContain('no pins set');
+    expect(win.document.getElementById('adminPinsTbody').innerHTML).toContain('No pins set');
     expect(win.document.getElementById('adminPoolOrderList').innerHTML).not.toContain('SENTINEL-POOL');
     expect(win.document.getElementById('adminPoolOrderList').innerHTML).toContain('pool is empty');
   });

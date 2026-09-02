@@ -55,23 +55,24 @@ async function boot(data) {
   return dom.window.document;
 }
 
-describe('secret row layout (#760)', () => {
+describe('secret row layout (#760, restyled #797)', () => {
   test('the multi-line secret keeps its chip and Clear on one control row', async () => {
     const doc = await boot(payload());
     const row = doc.querySelector('.settings-row[data-path="manager.gateway.api_keys"]');
     const head = row.querySelector('.st-secret-head');
     expect(head).toBeTruthy();
     // chip and Clear are siblings in the head row, not siblings of the textarea
-    expect(head.querySelector('.status')).toBeTruthy();
+    expect(head.querySelector('.pill')).toBeTruthy();
     expect(head.querySelector('[data-clear]')).toBeTruthy();
     expect(head.querySelector('textarea')).toBeNull();
     expect(row.querySelector('.st-secret > textarea.st-input')).toBeTruthy();
   });
 
-  test('Clear uses the compact button variant so it matches the chip', async () => {
+  test('Clear uses the compact ghost button variant', async () => {
     const doc = await boot(payload());
     const btn = doc.querySelector('[data-clear="manager.gateway.api_keys"]');
-    expect(btn.className.split(/\s+/)).toContain('sm');
+    expect(btn.className.split(/\s+/)).toContain('mcbtn-sm');
+    expect(btn.className.split(/\s+/)).toContain('mcbtn-ghost');
     // no ad-hoc inline offset left over from the old wrapping layout
     expect(btn.getAttribute('style')).toBeNull();
   });
@@ -82,11 +83,11 @@ describe('secret row layout (#760)', () => {
     const inline = row.querySelector('.st-secret--inline');
     expect(inline).toBeTruthy();
     // all three are direct siblings of the inline row — no wrapping sub-rows
-    expect(inline.querySelector(':scope > .status')).toBeTruthy();
+    expect(inline.querySelector(':scope > .pill')).toBeTruthy();
     expect(inline.querySelector(':scope > input[type="password"].st-input')).toBeTruthy();
     const btn = inline.querySelector(':scope > [data-clear]');
     expect(btn).toBeTruthy();
-    expect(btn.className.split(/\s+/)).toContain('sm');
+    expect(btn.className.split(/\s+/)).toContain('mcbtn-sm');
     expect(btn.getAttribute('style')).toBeNull();
   });
 
@@ -108,7 +109,7 @@ describe('secret row layout (#760)', () => {
   test('an unset secret renders no Clear button', async () => {
     const doc = await boot(payload({ secrets: {} }));
     expect(doc.querySelector('[data-clear]')).toBeNull();
-    expect(doc.querySelector('.st-secret-head .status')).toBeTruthy();
+    expect(doc.querySelector('.st-secret-head .pill')).toBeTruthy();
   });
 });
 

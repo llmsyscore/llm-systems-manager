@@ -106,9 +106,17 @@ def test_nullable_none_passes_validation():
     assert clean == {"manager.energy.price_kwh": None}
 
 
-def test_non_nullable_none_rejected():
+def test_non_nullable_none_clears_to_default():
+    # #797: clearing any non-secret field removes the key so its model
+    # default applies again.
     clean, errors = sc.validate_and_coerce({"manager.poll_interval": None})
-    assert "manager.poll_interval" in errors and clean == {}
+    assert errors == {}
+    assert clean == {"manager.poll_interval": None}
+
+
+def test_secret_none_still_blanks_rather_than_removing():
+    clean, errors = sc.validate_and_coerce({"manager.backup.passphrase": None})
+    assert errors == {} and clean == {"manager.backup.passphrase": ""}
 
 
 def test_nullable_flag_exposed_in_describe():
@@ -137,3 +145,50 @@ def test_pending_restart_derives_from_file_drift(tmp_path, monkeypatch):
 def test_pending_restart_empty_when_file_unreadable(monkeypatch):
     monkeypatch.setattr(sc, "file_catalog_values", lambda: None)
     assert sc.pending_restart_services() == set()
+
+
+# --- model defaults (#797) ---
+
+
+def test_defaults_come_from_the_pydantic_models():
+    d = sc.defaults()
+    assert d["manager.port"] == 5000
+    assert d["manager.gateway.enabled"] is True
+    assert d["manager.backup.keep_last"] == 7
+    assert d["manager.security.admin_cidrs"] == ["127.0.0.1", "::1"]
+
+
+def test_defaults_omit_secrets():
+    d = sc.defaults()
+    secret_paths = [e["path"] for e in sc.CATALOG if e["secret"]]
+    assert secret_paths
+    assert not (set(secret_paths) & set(d))
+
+
+def test_describe_exposes_defaults():
+    desc = sc.describe()
+    assert desc["defaults"]["manager.port"] == 5000
+    # Defaults are a separate map from the live values.
+    assert set(desc) >= {"groups", "entries", "values", "secrets", "defaults"}
+
+
+# --- "Most used" flag (#801) ---
+
+
+def test_common_flags_the_expected_paths():
+    expected = {
+        "manager.port", "manager.alarm_engine_url", "manager.auth.mode",
+        "manager.auth.session_lifetime_days", "manager.poll_interval",
+        "manager.backup.enabled", "manager.backup.interval_hours",
+        "manager.gateway.enabled", "manager.companion.release_check",
+        "manager.energy.price_kwh", "manager.audit.retention_days",
+        "alarm_engine.evaluation_interval", "logging.level",
+    }
+    common = {e["path"] for e in sc.CATALOG if e.get("common")}
+    assert expected <= common
+
+
+def test_common_flag_survives_describe():
+    entries = {e["path"]: e for e in sc.describe()["entries"]}
+    assert entries["manager.port"].get("common") is True
+    assert "common" not in entries["manager.tls_port"]

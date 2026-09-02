@@ -559,9 +559,13 @@ def test_put_null_clears_nullable_field(client):
     assert "manager.energy.price_kwh" not in g["values"]
 
 
-def test_put_null_still_rejected_for_non_nullable(client):
-    c, _ = client
+def test_put_null_clears_any_non_secret_key(client):
+    # #797: clearing a field reverts it to the model default for every entry.
+    c, cfg = client
+    c.put("/api/admin/settings", json={"changes": {"manager.poll_interval": 42}})
+    assert "poll_interval = 42" in cfg.read_text()
     r = c.put("/api/admin/settings",
               json={"changes": {"manager.poll_interval": None}})
-    assert r.status_code == 400
-    assert "manager.poll_interval" in r.get_json()["errors"]
+    assert r.status_code == 200
+    assert r.get_json()["applied"] == ["manager.poll_interval"]
+    assert "poll_interval" not in cfg.read_text()

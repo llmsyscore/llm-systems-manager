@@ -591,6 +591,17 @@ _data_dir: Optional[Path] = None
 _store: Optional[SubscriptionStore] = None
 
 
+def subscription_count() -> int:
+    """Stored push subscriptions; 0 before register_routes wires the store."""
+    if _store is None:
+        return 0
+    try:
+        return _store.count()
+    except Exception as e:
+        log.debug("push subscription count failed: %s", e)
+        return 0
+
+
 def _manifest() -> dict:
     return {
         "id": "/companion",

@@ -153,10 +153,14 @@ function switchSubTab(parent, sub) {
   if (parent === 'admin' && sub === 'backup') {
     if (typeof adminLoadBackupStatus === 'function') adminLoadBackupStatus();
   }
-  // Routing (pools/pins + autopilot, #476): the pool/pins cards render
-  // from the 20s agents refresh; the autopilot editor initializes on entry.
+  // Routing (pools/pins + autopilot + gateway, #476/#797): the pool/pins cards
+  // render from the 20s agents refresh; the autopilot editor and the gateway
+  // 5s poll start on entry and the poll stops when the sub-tab is left.
   if (parent === 'admin' && sub === 'routing') {
     if (typeof AP !== 'undefined' && AP.init) AP.init();
+    if (window.GatewayView) GatewayView.start();
+  } else if (parent === 'admin' && window.GatewayView) {
+    GatewayView.stop();
   }
   // Settings (TOML editor, #606): loads on sub-tab entry.
   if (parent === 'admin' && sub === 'settings') {

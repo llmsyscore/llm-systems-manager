@@ -48,6 +48,7 @@ from flask import (Response, current_app, has_request_context, jsonify,
                    request as flask_request, send_from_directory)
 
 import agent_registry  # type: ignore[import-not-found]  # sibling
+import export_log  # type: ignore[import-not-found]  # sibling
 import provider_state  # type: ignore[import-not-found]  # sibling
 import providers  # type: ignore[import-not-found]  # sibling
 import stream_pool  # type: ignore[import-not-found]  # sibling
@@ -763,6 +764,9 @@ def _proxy_alarm_engine(path: str):
                 continue
             headers.append((k, v))
         headers += _csp_header_pairs(upstream.headers.get("content-type", ""))
+        if path.strip("/") == "admin/export" and upstream.status_code == 200:
+            export_log.record("alarm_engine",
+                              upstream.headers.get("content-length") or 0)
         if (flask_request.method == "GET" and
                 "text/event-stream" in upstream.headers.get("content-type", "")):
             return Response(upstream.content, status=upstream.status_code, headers=headers,

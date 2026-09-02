@@ -22,6 +22,7 @@ function adminRefreshNow() {
       && typeof adminAuditLoad === 'function') adminAuditLoad();
 }
 function adminStopAutoRefresh() {
+  if (window.GatewayView) GatewayView.stop();
   if (_adminRefreshTimer) {
     clearInterval(_adminRefreshTimer);
     _adminRefreshTimer = null;
@@ -115,7 +116,7 @@ async function adminLoadHealth() {
       fetch('/api/admin/system-health'), _adminFetchRelease(),
     ]);
     if (!r.ok) return;
-    _renderSystemHealth(await r.json(), rel);
+    if (window.HealthView) HealthView.render(await r.json(), rel);
   } catch (e) {
     /* keep last successful render */
   }
@@ -152,10 +153,6 @@ function _adminFetchRelease() {
 }
 function _adminUpdateAvailable(rel) {
   return !!(rel && rel.enabled && rel.update_available === true);
-}
-
-function _healthDot(ok) {
-  return ok === true ? 'ok' : (ok === false ? 'down' : 'muted');
 }
 
 // ── Tab status dots (Events / Admin) ──────────────────────────────────
@@ -198,163 +195,22 @@ async function refreshTabIndicators() {
   })();
 }
 
-function _renderSystemHealth(d, rel) {
-  // Overall pill
-  const pill = document.getElementById('adminHealthOverall');
-  if (pill) {
-    const ovMod = d.overall === 'ok' ? 'ok' : d.overall === 'warn' ? 'warn' : d.overall === 'down' ? 'crit' : 'muted';
-    pill.className = 'status status--' + ovMod + ' status--square';
-    pill.textContent = (d.overall || 'unknown').toUpperCase();
-  }
-
-  // Services
-  const svcEl = document.getElementById('adminHealthServices');
-  if (svcEl) {
-    const rows = [];
-    // Manager itself (rendering = healthy)
-    rows.push({
-      lbl: 'Manager',
-      val: 'up ' + _fmtUptime((d.manager || {}).uptime_s),
-      ok: true,
-      action: { svc: 'manager', label: 'Manager' },
-    });
-    for (const s of (d.services || [])) {
-      const lbl = s.name === 'alarm_engine' ? 'Alarm Engine' :
-                  s.name === 'influxdb'     ? 'InfluxDB'      : s.name;
-      let val;
-      if (s.ok) val = s.latency_ms != null ? (s.latency_ms + 'ms') : (s.state || 'connected');
-      else val = s.error ? (s.error.slice(0, 36)) : ('HTTP ' + (s.status_code || '?'));
-      // AE restart when it runs on this host (systemctl on bare metal, the AE
-      // self-restart API on brew kegs) or under a containerized control plane
-      // (self-restart API); a split bare-metal AE restarts on its host.
-      const action = (s.name === 'alarm_engine' && (d.ae_local || d.containerized))
-        ? { svc: 'alarm_engine', label: 'Alarm Engine' } : undefined;
-      rows.push({ lbl, val, ok: s.ok, action });
-      // Render an extra row for the alarm engine's TLS state. dot is green when
-      // serving HTTPS, red when enabled-but-cert-missing, muted when off.
-      if (s.name === 'alarm_engine' && s.tls && typeof s.tls === 'object') {
-        const t = s.tls;
-        let tlsVal, tlsOk;
-        if (t.enabled && t.active) {
-          tlsVal = 'HTTPS active'; tlsOk = true;
-        } else if (t.enabled && !t.active) {
-          tlsVal = (t.error || 'enabled but inactive').slice(0, 60); tlsOk = false;
-        } else {
-          tlsVal = 'off (plain HTTP)'; tlsOk = null;
-        }
-        rows.push({ lbl: 'AE TLS', val: tlsVal, ok: tlsOk });
-      }
-    }
-    svcEl.innerHTML = rows.map(_healthRowHtml).join('');
-    // Delegated click — bound once on the container so it survives the
-    // innerHTML rebuild on every refresh (XSS-safe: reads a data-attribute,
-    // no interpolated handler).
-    if (!svcEl._restartBound) {
-      svcEl._restartBound = true;
-      svcEl.addEventListener('click', (e) => {
-        const btn = e.target.closest('[data-restart-svc]');
-        if (btn) _restartService(btn.getAttribute('data-restart-svc'));
-      });
-    }
-  }
-
-  // Data Flow
-  const dfEl = document.getElementById('adminHealthDataFlow');
-  if (dfEl) {
-    const plp   = (d.data_flow || {}).primary_llama_push || {};
-    const pmp   = (d.data_flow || {}).primary_lms_push || {};
-    const pvp   = (d.data_flow || {}).primary_vllm_push || {};
-    const mfwd  = (d.data_flow || {}).manager_to_alarm_forwarding || {};
-    const rows = [];
-
-    // Llama push freshness — only render the row when at least one llama
-    // agent is in the registry. A fresh install with no approved agents
-    // shouldn't flag "no push yet" as a fault.
-    if (!plp.has_agent) {
-      rows.push({ lbl: 'Primary llama push', val: 'no llama agent registered', ok: null });
-    } else {
-      rows.push({
-        lbl: 'Primary llama push',
-        val: plp.age_s != null ? (plp.age_s + 's ago') : 'no push yet',
-        ok: plp.ok,
-      });
-    }
-
-    // LMS push freshness — same gate as above.
-    if (!pmp.has_agent) {
-      rows.push({ lbl: 'Primary LMS push', val: 'no LMS agent registered', ok: null });
-    } else {
-      rows.push({
-        lbl: 'Primary LMS push',
-        val: pmp.age_s != null ? (pmp.age_s + 's ago') : '—',
-        ok: pmp.ok,
-      });
-    }
-
-    // vLLM push freshness — same gate as above.
-    if (!pvp.has_agent) {
-      rows.push({ lbl: 'Primary vLLM push', val: 'no vLLM agent registered', ok: null });
-    } else {
-      rows.push({
-        lbl: 'Primary vLLM push',
-        val: pvp.age_s != null ? (pvp.age_s + 's ago') : '—',
-        ok: pvp.ok,
-      });
-    }
-
-    // Forwarding mode
-    rows.push({
-      lbl: 'Alarm forwarding',
-      val: mfwd.active ? `manager (${mfwd.ok_count}/${mfwd.ok_count + mfwd.fail_count})` : 'via agent',
-      ok: mfwd.active ? (mfwd.fail_count <= mfwd.ok_count) : true,
-    });
-
-    dfEl.innerHTML = rows.map(_healthRowHtml).join('');
-  }
-
-  // Warnings — release availability first, then the health roll-up's own.
-  const warnEl = document.getElementById('adminHealthWarnings');
-  if (warnEl) {
-    const rows = (d.warnings || []).map(w => `<div class="warn-row">${adminEsc(w)}</div>`);
-    if (_adminUpdateAvailable(rel)) {
-      const url = `https://github.com/${rel.repo || ''}/releases/latest`;
-      rows.unshift(`<div class="warn-row">⬆ New release ${adminEsc(rel.latest || '')} available`
-        + (rel.installed ? ` (installed ${adminEsc(rel.installed)})` : '')
-        + ` · <a href="${adminEsc(url)}" target="_blank" rel="noopener">release notes</a></div>`);
-    }
-    warnEl.innerHTML = (rows.length
-      ? rows.join('')
-      : '<div style="color:var(--ok); padding:8px 0;">✓ All systems nominal</div>')
-      + _adminReleaseInfoHtml(rel);
-  }
-}
-
 // Muted info row when the release check is unreachable, errored, or returned
 // no verdict; empty when disabled, up to date, or an update is available.
-function _adminReleaseInfoHtml(rel) {
+function _adminReleaseInfoText(rel) {
   if (!rel) return '';
-  const row = (msg) => `<div class="info-row">Release check: ${adminEsc(msg)}</div>`;
-  if (rel.unreachable) return row('endpoint unreachable');
+  if (rel.unreachable) return 'Release check: endpoint unreachable';
   if (!rel.enabled || rel.update_available === true) return '';
-  if (rel.error) return row(`check failed: ${rel.error}`);
-  if (rel.update_available === null) return row(rel.note || 'no verdict');
+  if (rel.error) return `Release check: check failed: ${rel.error}`;
+  if (rel.update_available === null) return `Release check: ${rel.note || 'no verdict'}`;
   return '';
 }
 
-function _healthRowHtml(r) {
-  const dotClass = r.ok === true ? 'ok' : (r.ok === false ? 'down' : 'muted');
-  const valClass = r.ok === false ? 'val down' : 'val';
-  // svc is a fixed enum ('manager'|'alarm_engine'), not user data — but route
-  // it through adminEsc + a data-attribute (delegated listener) anyway.
-  const action = r.action
-    ? `<button class="adm-restart-btn" data-restart-svc="${adminEsc(r.action.svc)}" title="Restart ${adminEsc(r.action.label || r.lbl)}">↻ Restart</button>`
-    : '';
-  return `<div class="adm-health-row">
-    <span class="dot ${dotClass}"></span>
-    <span class="lbl">${adminEsc(r.lbl)}</span>
-    <span class="${valClass}">${adminEsc(r.val)}</span>
-    ${action}
-  </div>`;
+// Same verdict, rendered as the System Health card's `.w.info` row.
+function _adminReleaseInfoHtml(rel) {
+  const msg = _adminReleaseInfoText(rel);
+  if (!msg) return '';
+  return `<div class="w info"><span class="g">i</span><div>${adminEsc(msg)}</div></div>`;
 }
 
 async function _restartService(svc) {
@@ -396,25 +252,49 @@ async function _restartService(svc) {
 // surface. Called from adminLoadAgents on every refresh.
 let _adminPoolSortable = null;
 
-// Render the provider chip row for a card. which: 'pool' | 'pins'.
-function adminRenderProviderChips(which) {
-  const el = document.getElementById(which === 'pool' ? 'adminPoolProviderChips' : 'adminPinsProviderChips');
+// One mc-seg drives the pool order and the pins card (#797).
+function adminRenderProviderSeg() {
+  const el = document.getElementById('rtProviderSeg');
   if (!el) return;
-  const sel = which === 'pool' ? _adminPoolSel : _adminPinsSel;
   el.innerHTML = _adminPoolProviders.map(p =>
-    `<button class="adm-chip ${p.name === sel ? 'primary' : ''}"
-             onclick="adminSelectProvider('${which}','${adminEsc(p.name)}')">${adminEsc(p.label || p.name)}</button>`
-  ).join(' ');
+    `<button type="button" class="${p.name === _adminProvSel ? 'on' : ''}" data-prov="${adminEsc(p.name)}">${adminEsc(p.label || p.name)}</button>`
+  ).join('');
+  if (!el._provBound) {
+    el._provBound = true;
+    el.addEventListener('click', (e) => {
+      const b = e.target.closest('button[data-prov]');
+      if (b) adminSelectProvider(b.getAttribute('data-prov'));
+    });
+  }
 }
 
-function adminSelectProvider(which, name) {
-  if (which === 'pool') {
-    if (name === _adminPoolSel) return;
-    _adminPoolSel = name; adminRenderPoolOrder();
-  } else {
-    if (name === _adminPinsSel) return;
-    _adminPinsSel = name; adminRenderPins(); adminLoadProviderModels();
-  }
+function adminSelectProvider(name) {
+  if (!name || name === _adminProvSel) return;
+  _adminProvSel = name;
+  adminRenderPoolOrder();
+  adminRenderPins();
+  adminLoadProviderModels();
+  adminRenderRoutingSummary();
+}
+
+// Routing header summary: gateway/autopilot state plus pool, pin and proposal counts.
+function adminRenderRoutingSummary() {
+  const el = document.getElementById('rtSummary');
+  if (!el) return;
+  const gw = (window.GatewayView && GatewayView.last()) || null;
+  const ap = (window.AP && AP.state && AP.state()) || ((_adminGlobal || {}).autopilot) || null;
+  const props = (window.AP && AP.proposals && AP.proposals().length) || 0;
+  const prov = _adminPoolProviders.find(p => p.name === _adminProvSel) || _adminPoolProviders[0] || {};
+  const pool = ((_adminGlobal || {})[_adminProvSel + '_pool'] || []).length;
+  const pins = Object.keys((prov.pin_key && (_adminGlobal || {})[prov.pin_key]) || {}).length;
+  const onOff = v => `<b class="${v ? 'ok' : 'warn'}">${v ? 'on' : 'off'}</b>`;
+  const parts = [];
+  if (gw) parts.push(`<span>gateway ${onOff(gw.enabled)}</span>`);
+  parts.push(`<span>autopilot ${onOff(ap && ap.enabled)}</span>`);
+  parts.push(`<span><b>${props}</b> proposal${props === 1 ? '' : 's'}</span>`);
+  parts.push(`<span><b>${pool}</b> in pool</span>`);
+  parts.push(`<span><b>${pins}</b> pin${pins === 1 ? '' : 's'}</span>`);
+  el.innerHTML = parts.join('');
 }
 
 // Autopilot desired-state entries from the /api/agents global blob (#476).
@@ -422,24 +302,33 @@ function _adminApEntries() {
   return ((_adminGlobal || {}).autopilot || {}).entries || [];
 }
 
+// Model ids discovered per provider, keyed by hostname for the pool rows.
+let _adminProviderModelList = [];
+function _adminModelForHost(host) {
+  for (const m of _adminProviderModelList) {
+    if ((m.agents || []).includes(host)) return m.id;
+  }
+  return '';
+}
+
 function adminRenderPoolOrder() {
-  adminRenderProviderChips('pool');
+  adminRenderProviderSeg();
   const ul = document.getElementById('adminPoolOrderList');
   if (!ul) return;
   // Autopilot manages pool membership for replicated entries (#476);
   // manual reordering is disabled while it does (#500).
   const managed = _adminApEntries().some(e =>
-    e.provider === _adminPoolSel && (e.max_replicas || 1) > 1);
+    e.provider === _adminProvSel && (e.max_replicas || 1) > 1);
   const apBadge = document.getElementById('adminPoolApBadge');
   if (apBadge) apBadge.style.display = managed ? '' : 'none';
   const dragHint = document.getElementById('adminPoolDragHint');
   if (dragHint) dragHint.style.display = managed ? 'none' : '';
-  const pool = ((_adminGlobal && _adminGlobal[_adminPoolSel + '_pool']) || []).slice();
+  const pool = ((_adminGlobal && _adminGlobal[_adminProvSel + '_pool']) || []).slice();
   const idToAgent = {};
   for (const a of (_adminAgentsCache || [])) idToAgent[a.agent_id] = a;
 
   if (pool.length === 0) {
-    ul.innerHTML = `<li class="adm-muted" style="padding:10px;">(pool is empty — toggle "in ${adminEsc(_adminPoolSel)} pool" on one or more agents above)</li>`;
+    ul.innerHTML = `<li class="rt-empty">The ${adminEsc(_adminProvSel)} pool is empty — turn on <b>in pool</b> for an agent in Agents › row drawer.</li>`;
     if (_adminPoolSortable) { try { _adminPoolSortable.destroy(); } catch(e){} _adminPoolSortable = null; }
     return;
   }
@@ -447,21 +336,22 @@ function adminRenderPoolOrder() {
   ul.innerHTML = pool.map((aid, i) => {
     const unknown = !idToAgent[aid];
     const a = idToAgent[aid] || { hostname: '(unknown agent ' + aid.slice(0,8) + '…)', liveness: null, version: '' };
-    const livenessBadge = a.liveness === 'live'
-      ? '<span class="adm-chip tls-on" style="font-size:11px;padding:0 6px;">live</span>'
-      : a.liveness === 'stale'
-        ? '<span class="adm-chip tls-pending" style="font-size:11px;padding:0 6px;">stale</span>'
-        : '<span class="adm-chip tls-off" style="font-size:11px;padding:0 6px;">' + adminEsc(a.liveness || '?') + '</span>';
-    const removeBtn = unknown
-      ? `<button class="adm-chip" style="cursor:pointer;border:none;" title="Remove this deleted agent from the pool" onclick="adminTogglePool('${adminEsc(_adminPoolSel)}','${adminEsc(aid)}',false)">✕ remove</button>`
-      : '';
-    return `<li data-agent-id="${adminEsc(aid)}">
-      ${managed ? '' : '<span class="pool-handle" title="Drag to reorder">⠿</span>'}
-      <span class="pool-pos">#${i + 1}</span>
-      <span class="pool-hostname">${adminEsc(a.hostname || aid.slice(0,8))}</span>
-      ${livenessBadge}
-      <span class="pool-meta">${adminEsc(a.version || '')}</span>
-      ${removeBtn}
+    const dotCls = a.liveness === 'live' ? 'ok' : a.liveness === 'stale' ? 'warn' : unknown ? 'crit' : 'crit';
+    const model = unknown ? '' : _adminModelForHost(a.hostname);
+    const meta = [unknown ? '' : _adminAgentIP(a), a.version || '', model || 'idle']
+      .filter(Boolean).join(' · ');
+    const act = unknown
+      ? `<button type="button" class="ib crith" data-tip="Remove this deleted agent from the pool" onclick="adminTogglePool('${adminEsc(_adminProvSel)}','${adminEsc(aid)}',false)">✕</button>`
+      : `<button type="button" class="ib" data-tip="Open in Dashboard" onclick="_jumpToDashboard('${adminEsc(aid)}','${adminEsc(_adminProvSel)}')">↗</button>`;
+    return `<li class="rt-pr" data-agent-id="${adminEsc(aid)}">
+      ${managed ? '<span class="hdl"></span>' : '<span class="hdl pool-handle" title="Drag to reorder">⠿</span>'}
+      <span class="pos">${i + 1}</span>
+      <div class="who">
+        <div class="n">${adminEsc(a.hostname || aid.slice(0,8))}${i === 0 ? ' <span class="pill info">primary</span>' : ''}</div>
+        <div class="m">${adminEsc(meta)}</div>
+      </div>
+      <span class="dot ${dotCls}"></span>
+      ${act}
     </li>`;
   }).join('');
 
@@ -477,6 +367,7 @@ function adminRenderPoolOrder() {
       onEnd: adminPoolReorderCommit,
     });
   }
+  adminRenderRoutingSummary();
 }
 
 // Called by Sortable when a drag completes. Read the new order out of
@@ -486,103 +377,105 @@ async function adminPoolReorderCommit() {
   const ul = document.getElementById('adminPoolOrderList');
   const resultEl = document.getElementById('adminPoolResult');
   const newOrder = Array.from(ul.querySelectorAll('li[data-agent-id]')).map(li => li.dataset.agentId);
-  const oldOrder = (_adminGlobal && _adminGlobal[_adminPoolSel + '_pool']) || [];
+  const oldOrder = (_adminGlobal && _adminGlobal[_adminProvSel + '_pool']) || [];
   if (JSON.stringify(newOrder) === JSON.stringify(oldOrder)) return;
 
-  resultEl.textContent = 'saving new order…';
-  // We only need to move agents whose position changed. Walk newOrder
-  // and POST each at its target index. The backend's <provider>-pool
-  // endpoint already handles "remove if present, then insert at
-  // position" semantics — so one POST per agent is enough.
+  if (resultEl) resultEl.textContent = 'saving new order…';
+  // Only agents whose position changed need a POST; the backend's
+  // <provider>-pool endpoint is "remove if present, insert at position".
   for (let i = 0; i < newOrder.length; i++) {
     if (newOrder[i] === oldOrder[i]) continue;   // unchanged
     try {
-      await fetch(`/api/agents/${encodeURIComponent(newOrder[i])}/${_adminPoolSel}-pool`, {
+      await fetch(`/api/agents/${encodeURIComponent(newOrder[i])}/${_adminProvSel}-pool`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ in_pool: true, position: i }),
       });
     } catch (e) {
-      resultEl.textContent = 'reorder failed at index ' + i + ': ' + e.message;
+      if (resultEl) resultEl.textContent = 'reorder failed at index ' + i + ': ' + e.message;
       adminLoadAgents();
       return;
     }
   }
-  resultEl.textContent = 'reordered ✓';
+  if (resultEl) resultEl.textContent = 'reordered ✓';
   adminLoadAgents();
 }
 
-// Phase 4 #4 polish — fetch the union of model IDs across the selected
-// provider's pool agents and populate the <datalist> the pin-editor's
-// input is wired to. Quiet on failure: custom ids still typeable.
+// Fetch the union of model IDs across the selected provider's pool agents;
+// feeds the pin add-row select, the pool rows and the autopilot catalog.
 async function adminLoadProviderModels() {
-  const dl = document.getElementById('adminProviderModels');
-  if (!dl) return;
-  const provider = _adminPinsSel;
+  const provider = _adminProvSel;
   try {
     const r = await fetch(`/api/admin/${provider}-models`);
-    // A slow fan-out can resolve after the user switched chips — drop it.
-    if (!r.ok || provider !== _adminPinsSel) return;
+    // A slow fan-out can resolve after the operator switched providers — drop it.
+    if (!r.ok || provider !== _adminProvSel) return;
     const d = await r.json();
-    const models = (d.models || []);
-    dl.innerHTML = models.map(m =>
-      `<option value="${adminEsc(m.id)}">${m.agents ? 'on: ' + adminEsc(m.agents.join(', ')) : ''}</option>`
-    ).join('');
+    _adminProviderModelList = d.models || [];
+    adminRenderPinModelSelect();
   } catch (e) {
-    // Best-effort; pin editor still works with free-form text input
+    // Best-effort; the pin editor still works with whatever was cached.
   }
 }
 
-// Phase 4 #4 — render the llama-model pins editor. Called from
-// adminLoadAgents so every agent-list refresh keeps the pin table in
-// sync (and repopulates the agent <select> in case the pool changed).
+function adminRenderPinModelSelect() {
+  const sel = document.getElementById('adminPinModelSelect');
+  if (!sel) return;
+  const current = sel.value;
+  sel.innerHTML = '<option value="">choose a model from the pool</option>' +
+    _adminProviderModelList.map(m =>
+      `<option value="${adminEsc(m.id)}">${adminEsc(m.id)}</option>`).join('');
+  if (current) sel.value = current;
+}
+
+// Render the model-pins table. Called from adminLoadAgents so every agent-list
+// refresh keeps it in sync (and repopulates the host select).
 function adminRenderPins() {
-  adminRenderProviderChips('pins');
   const tbody = document.getElementById('adminPinsTbody');
   const select = document.getElementById('adminPinAgentSelect');
   if (!tbody || !select) return;
-  const prov = _adminPoolProviders.find(p => p.name === _adminPinsSel) || _adminPoolProviders[0];
+  const prov = _adminPoolProviders.find(p => p.name === _adminProvSel) || _adminPoolProviders[0];
   const pins = (_adminGlobal && prov.pin_key && _adminGlobal[prov.pin_key]) || {};
   const pool = (_adminGlobal && _adminGlobal[prov.name + '_pool']) || [];
-  // Build agent_id → hostname lookup from the agents cache.
-  const idToHost = {};
-  for (const a of (_adminAgentsCache || [])) idToHost[a.agent_id] = a.hostname;
+  const idToAgent = {};
+  for (const a of (_adminAgentsCache || [])) idToAgent[a.agent_id] = a;
 
-  // Pin rows
   const entries = Object.entries(pins).sort(([m1], [m2]) => m1.localeCompare(m2));
   if (entries.length === 0) {
-    tbody.innerHTML = '<tr><td colspan="3" style="padding:14px;color:var(--fg-muted);text-align:center;">(no pins set — all models load-balance across the pool)</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="3"><div class="empty">No pins set — every model round-robins the pool.</div></td></tr>';
   } else {
     tbody.innerHTML = entries.map(([model, aid]) => {
-      const host = idToHost[aid] || `<span class="adm-muted">${adminEsc(aid).slice(0,8)}… (unknown agent)</span>`;
+      const a = idToAgent[aid];
+      const host = a
+        ? `${adminEsc(a.hostname || '')} <span class="t">· ${adminEsc(_adminAgentIP(a))}</span>`
+        : `${adminEsc(aid).slice(0,8)}… <span class="t">· unknown agent</span>`;
       // Autopilot entries route via this pin while single-placed (#476, #500).
       const apManaged = _adminApEntries().some(e =>
         e.provider === prov.name && e.model === model);
       const apBadge = apManaged
-        ? ' <span class="status status--info status--square ap-managed-badge" title="This pin is managed by a Model Autopilot entry — manual edits may be overridden on the next reconcile.">autopilot</span>'
+        ? ' <span class="pill info ap-managed-badge" title="Managed by a Model Autopilot entry — manual edits may be overridden on the next reconcile.">autopilot</span>'
         : '';
       return `<tr>
-        <td style="font-family:ui-monospace,Menlo,Consolas,monospace;">${adminEsc(model)}${apBadge}</td>
-        <td>${typeof host === 'string' && host.indexOf('<') === 0 ? host : adminEsc(host)}</td>
-        <td style="text-align:right;">
-          <button class="adm-btn-icon danger" title="Remove pin" onclick="adminClearPin('${adminEsc(model)}')">✕</button>
-        </td>
+        <td class="n mono">${adminEsc(model)}${apBadge}</td>
+        <td>${host}</td>
+        <td class="r"><div class="act">
+          <button type="button" class="ib crith" data-tip="Unpin" onclick="adminClearPin('${adminEsc(model)}')">✕</button>
+        </div></td>
       </tr>`;
     }).join('');
   }
 
-  // Refresh the agent <select>. Only show agents that are (a) in the
-  // pool, or (b) approved + provider-capable — those are the only ones
-  // worth pinning a model to.
+  // Host select: agents in the pool, or approved + provider-capable.
   const eligible = (_adminAgentsCache || []).filter(a =>
     a.status === 'approved' &&
     ((a.capabilities || {})[prov.name]) &&
     (pool.includes(a.agent_id) || pool.length === 0)
   );
   const current = select.value;
-  select.innerHTML = '<option value="">(choose agent)</option>' +
+  select.innerHTML = '<option value="">choose host</option>' +
     eligible.map(a => `<option value="${adminEsc(a.agent_id)}">${adminEsc(a.hostname)}${pool.includes(a.agent_id) ? ' · pool #' + (pool.indexOf(a.agent_id) + 1) : ''}</option>`).join('');
   if (current) select.value = current;
+  adminRenderPinModelSelect();
+  adminRenderRoutingSummary();
 }
 
 async function adminLoadPins() {
@@ -592,15 +485,15 @@ async function adminLoadPins() {
 }
 
 async function adminAddPin() {
-  const modelEl = document.getElementById('adminPinModelInput');
+  const modelEl = document.getElementById('adminPinModelSelect');
   const agentEl = document.getElementById('adminPinAgentSelect');
   const resultEl = document.getElementById('adminPinsResult');
   const model = (modelEl.value || '').trim();
   const aid = agentEl.value || '';
-  if (!model) { resultEl.textContent = 'Enter a model id'; return; }
-  if (!aid)   { resultEl.textContent = 'Pick an agent'; return; }
+  if (!model) { resultEl.textContent = 'Choose a model'; return; }
+  if (!aid)   { resultEl.textContent = 'Choose a host'; return; }
   try {
-    const r = await fetch(`/api/admin/${_adminPinsSel}-pins`, {
+    const r = await fetch(`/api/admin/${_adminProvSel}-pins`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ model_id: model, agent_id: aid }),
@@ -621,7 +514,7 @@ async function adminAddPin() {
 async function adminClearPin(model) {
   const resultEl = document.getElementById('adminPinsResult');
   try {
-    const r = await fetch(`/api/admin/${_adminPinsSel}-pins`, {
+    const r = await fetch(`/api/admin/${_adminProvSel}-pins`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ model_id: model, agent_id: '' }),
@@ -657,9 +550,7 @@ async function adminLoadAgents() {
     _adminGlobal = d.global || {};
     if (Array.isArray(d.pool_providers) && d.pool_providers.length) {
       _adminPoolProviders = d.pool_providers;
-      const validSel = s => _adminPoolProviders.some(p => p.name === s) ? s : _adminPoolProviders[0].name;
-      _adminPoolSel = validSel(_adminPoolSel);
-      _adminPinsSel = validSel(_adminPinsSel);
+      if (!_adminPoolProviders.some(p => p.name === _adminProvSel)) _adminProvSel = _adminPoolProviders[0].name;
     }
     if (Array.isArray(d.providers) && d.providers.length) {
       _adminProviders = d.providers;
@@ -792,8 +683,7 @@ let _adminManagerVersion = null;
 let _adminCollectInterval = null;
 // Pool-picker providers from /api/agents, plus per-card chip selections.
 let _adminPoolProviders = [{ name: 'llama', label: 'llama.cpp', pin_key: 'llama_model_pins' }];
-let _adminPoolSel = 'llama';
-let _adminPinsSel = 'llama';
+let _adminProvSel = 'llama';
 // All registered providers from /api/agents — drives primary checkboxes,
 // view-dashboard buttons, and provider→sub-tab jump routing.
 let _adminProviders = [
@@ -862,49 +752,110 @@ const _BACKUP_ENDPOINTS = {
 };
 const _BACKUP_MIN_PW = 12;
 
+let _adminAuthState = null;
+
+const _AC_MODES = [
+  { v: 'required', label: 'Required',
+    d: 'Every browser signs in. Recommended whenever the dashboard is reachable beyond your own machine.' },
+  { v: 'trusted_cidr', label: 'Trusted network', d: '' },
+  { v: 'disabled', label: 'Off',
+    d: 'No sign-in at all. Only for a dashboard that is never exposed beyond a trusted LAN.' },
+];
+
 async function adminAuthLoad() {
-  const status = document.getElementById('adminAuthStatus');
   try {
     const r = await fetch('/api/admin/auth');
-    if (!r.ok) { if (status) status.textContent = 'admin-gated (not allowed from this IP)'; return; }
+    if (!r.ok) { adminRenderAuth({ ok: false }); return; }
     const d = await r.json();
     if (!d.ok) return;
-    const sel = document.getElementById('adminAuthMode');
-    // Under the 'auto' policy the live mode comes from app state — show it so
-    // it can be changed instantly; otherwise show the pinned config value.
-    if (sel) sel.value = (d.policy === 'auto') ? d.mode : d.policy;
-    const hint = document.getElementById('adminAuthModeHint');
-    if (hint) hint.textContent = d.instant
-      ? 'UI-managed (config policy: auto) — mode changes apply instantly.'
-      : 'Pinned in config — changing the mode rewrites the config file and needs a manager restart.';
-    if (status) status.textContent =
-      `mode: ${d.mode}` +
-      (d.is_default ? ' · ⚠ default password (llmadmin) — change it in the Account menu' : '');
-  } catch (e) { if (status) status.textContent = ''; }
+    _adminAuthState = d;
+    adminRenderAuth(d);
+  } catch (e) { /* keep the last good render */ }
+}
+
+// Login card: mc-seg mirrors the (hidden) #adminAuthMode select the save path reads.
+function adminRenderAuth(d) {
+  const sel = document.getElementById('adminAuthMode');
+  if (sel && d && d.ok !== false) sel.value = (d.policy === 'auto') ? d.mode : d.policy;
+  const meta = document.getElementById('adminAuthMeta');
+  if (meta) {
+    meta.innerHTML = d && d.instant
+      ? 'managed here · policy <b>auto</b> · changes apply instantly'
+      : 'pinned in config · <b>restart required</b>';
+  }
+  const notice = document.getElementById('adminAuthDefaultNotice');
+  if (notice) notice.hidden = !(d && d.is_default);
+  adminRenderAuthModes();
+  adminRenderAccessSummary();
+}
+
+function adminRenderAuthModes() {
+  const seg = document.getElementById('adminAuthSeg');
+  const box = document.getElementById('adminAuthModes');
+  const sel = document.getElementById('adminAuthMode');
+  const cur = (sel && sel.value) || 'required';
+  if (seg) {
+    seg.innerHTML = _AC_MODES.map(m =>
+      `<button type="button" class="${m.v === cur ? 'on' : ''}" data-mode="${m.v}">${m.label}</button>`).join('');
+    if (!seg._acBound) {
+      seg._acBound = true;
+      seg.addEventListener('click', (e) => {
+        const b = e.target.closest('button[data-mode]');
+        if (!b) return;
+        if (sel) sel.value = b.getAttribute('data-mode');
+        adminRenderAuthModes();
+      });
+    }
+  }
+  if (!box) return;
+  const cidrs = ((_adminAuthState || {}).admin_cidrs) || [];
+  const role = ((_adminAuthState || {}).bypass_role) || 'operator';
+  box.innerHTML = _AC_MODES.map(m => {
+    const body = m.v === 'trusted_cidr'
+      ? 'Browsers on the admin networks skip sign-in and get the '
+        + `<span class="tag">${adminEsc(role)}</span> role; everyone else signs in. Networks: `
+        + (cidrs.length ? cidrs.map(c => `<span class="tag">${adminEsc(c)}</span>`).join(' ')
+                        : '<span class="tag">none configured</span>')
+      : adminEsc(m.d);
+    return `<div class="ac-mode ${m.v === cur ? 'on' : ''}"><b>${m.label}</b><span>${body}</span></div>`;
+  }).join('');
+}
+
+function adminRenderAccessSummary() {
+  const el = document.getElementById('acSummary');
+  if (!el) return;
+  const d = _adminAuthState || {};
+  const mode = d.mode === 'trusted_cidr' ? 'trusted network'
+    : d.mode === 'disabled' ? 'off' : 'login required';
+  const users = _adminUsersCache || [];
+  const locked = users.filter(u => u.locked).length;
+  el.innerHTML = `<span>${adminEsc(mode)}</span>`
+    + `<span><b>${users.length}</b> user${users.length === 1 ? '' : 's'}</span>`
+    + `<span><b class="${locked ? 'warn' : ''}">${locked}</b> locked</span>`;
 }
 
 async function adminAuthSave() {
   const res = document.getElementById('adminAuthResult');
   const mode = document.getElementById('adminAuthMode').value;
-  res.style.color = 'var(--fg-muted)'; res.textContent = 'saving…';
+  res.className = 'msg'; res.textContent = 'saving…';
   try {
     const r = await fetch('/api/admin/auth', {
       method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ mode })});
     const d = await r.json().catch(() => ({}));
-    if (!r.ok || !d.ok) { res.style.color = 'var(--crit)'; res.textContent = '✗ ' + (d.error || ('HTTP ' + r.status)); return; }
+    if (!r.ok || !d.ok) { res.className = 'msg err'; res.textContent = '✗ ' + (d.error || ('HTTP ' + r.status)); return; }
     if (d.restart_required) {
       // The mode was written to the config file but only loads at startup, so
       // it isn't live yet. The manager can't restart itself (no privilege), so
       // surface the command for the operator to run.
-      res.style.color = 'var(--warn)';
-      res.innerHTML = '✓ saved to config — <b>restart required</b> to apply the new mode:<br>' +
-        `<code style="display:inline-block;margin-top:6px;padding:4px 8px;background:var(--bg);border:1px solid var(--border);border-radius:4px;user-select:all;">${adminEsc(d.restart_cmd || 'sudo systemctl restart llm-systems-manager')}</code>`;
+      res.className = 'msg';
+      res.innerHTML = '✓ saved to config — <b>restart required</b>: '
+        + `<code>${adminEsc(d.restart_cmd || 'sudo systemctl restart llm-systems-manager')}</code>`;
     } else {
-      res.style.color = 'var(--ok)';
+      res.className = 'msg ok';
       res.textContent = `✓ saved — mode: ${d.mode}`;
     }
     adminAuthLoad();
-  } catch (e) { res.style.color = 'var(--crit)'; res.textContent = '✗ ' + e.message; }
+  } catch (e) { res.className = 'msg err'; res.textContent = '✗ ' + e.message; }
 }
 
 function _adminBackupLog(msg, cls) {
@@ -2060,18 +2011,45 @@ async function adminPushCaToAgents() {
 }
 
 // ── Users management (multi-user, #125) ─────────────────────────────────────
+let _adminUsersCache = [];
+
+const _SVG_KEY = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><circle cx="5.5" cy="10.5" r="3"/><path d="M8 8l6-6M11 5l2 2M9.5 6.5l2 2"/></svg>';
+const _SVG_UNLOCK = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><rect x="3" y="7.5" width="10" height="7" rx="1.5"/><path d="M5.5 7.5V5a2.5 2.5 0 0 1 5 0"/></svg>';
+
+// "Sep 2 · 1:18 PM" — built by hand so the ledger reads the same everywhere.
+const _ADM_MONTHS = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+function _adminStamp(v) {
+  if (!v) return '—';
+  const dt = new Date(typeof v === 'number' ? v * 1000 : v);
+  if (isNaN(dt.getTime())) return '—';
+  let h = dt.getHours();
+  const ap = h >= 12 ? 'PM' : 'AM';
+  h = h % 12 || 12;
+  const mm = String(dt.getMinutes()).padStart(2, '0');
+  return `${_ADM_MONTHS[dt.getMonth()]} ${dt.getDate()} · <b>${h}:${mm} ${ap}</b>`;
+}
+
 async function adminUsersLoad() {
-  const st = document.getElementById('adminUsersStatus');
   const tb = document.getElementById('adminUsersTbody');
+  if (!tb) return;
   _adminUsersBindOnce();
   try {
     const r = await fetch('/api/admin/users');
-    if (!r.ok) { if (st) st.textContent = 'admin-only'; return; }
+    if (!r.ok) { tb.innerHTML = '<tr><td colspan="5"><div class="empty">Admin-only.</div></td></tr>'; return; }
     const d = await r.json();
-    if (st) st.textContent = (d.users || []).length + ' user(s)';
-    tb.innerHTML = (d.users || []).map(_adminUserRow).join('') ||
-      '<tr><td colspan="5" style="padding:14px;text-align:center;color:var(--fg-muted);">No users</td></tr>';
-  } catch (e) { if (st) st.textContent = 'load failed'; }
+    _adminUsersCache = d.users || [];
+    tb.innerHTML = _adminUsersCache.map(_adminUserRow).join('') ||
+      '<tr><td colspan="5"><div class="empty">No users.</div></td></tr>';
+    const meta = document.getElementById('adminUsersMeta');
+    if (meta) {
+      const admins = _adminUsersCache.filter(u => u.role === 'admin').length;
+      const ops = _adminUsersCache.length - admins;
+      meta.innerHTML = `<b>${admins}</b> admin${admins === 1 ? '' : 's'} · <b>${ops}</b> operator${ops === 1 ? '' : 's'}`;
+    }
+    adminRenderAccessSummary();
+  } catch (e) {
+    tb.innerHTML = '<tr><td colspan="5"><div class="empty">Load failed.</div></td></tr>';
+  }
 }
 
 // Delegated handler: action buttons carry data-* attrs (no inline onclick), so a
@@ -2081,8 +2059,11 @@ function _adminUsersBindOnce() {
   if (!tb || tb._uBound) return;
   tb._uBound = true;
   tb.addEventListener('click', (e) => {
+    const kb = e.target.closest('button[data-menu]');
+    if (kb) { _adminUserMenu(kb); return; }
     const btn = e.target.closest('button[data-uact]');
     if (!btn) return;
+    _adminUserMenuClose();
     const user = btn.getAttribute('data-user') || '';
     const arg = btn.getAttribute('data-arg') || '';
     switch (btn.getAttribute('data-uact')) {
@@ -2093,26 +2074,73 @@ function _adminUsersBindOnce() {
       case 'delete':  adminUserDelete(user); break;
     }
   });
+  const add = document.getElementById('adminUserAddBtn');
+  const row = document.getElementById('adminUserAddRow');
+  const cancel = document.getElementById('adminUserCancelBtn');
+  if (add && row) add.addEventListener('click', () => { row.hidden = false; });
+  if (cancel && row) cancel.addEventListener('click', () => { row.hidden = true; });
+  document.addEventListener('click', (ev) => {
+    if (!ev.target.closest('#adminUsersTbody .act')) _adminUserMenuClose();
+  });
+  document.addEventListener('scroll', _adminUserMenuClose, true);
 }
 
-function _adminUserRow(u) {
+// Row menus are position:fixed — the table's overflow box clips absolute ones.
+function _adminUserMenuClose() {
+  document.querySelectorAll('#adminUsersTbody .mc-menu.open').forEach(m => {
+    m.classList.remove('open'); m.style.cssText = '';
+  });
+}
+function _adminUserMenu(btn) {
+  const m = document.getElementById(btn.getAttribute('data-menu'));
+  if (!m) return;
+  const was = m.classList.contains('open');
+  _adminUserMenuClose();
+  if (was) return;
+  m.classList.add('open', 'fixed');
+  const r = btn.getBoundingClientRect();
+  const vw = window.innerWidth || document.documentElement.clientWidth || 0;
+  m.style.position = 'fixed';
+  m.style.top = `${Math.round(r.bottom + 6)}px`;
+  m.style.left = 'auto';
+  m.style.right = `${Math.max(8, Math.round(vw - r.right))}px`;
+  m.style.zIndex = '1200';
+}
+
+function _adminUserRow(u, i) {
   const name = adminEsc(u.username);
   const role = u.role === 'admin' ? 'Admin' : 'Operator';
-  const status = u.disabled ? '<span class="status status--muted status--square">disabled</span>'
-                            : (u.locked ? '<span class="status status--crit status--square">locked</span>'
-                                        : '<span class="status status--ok status--square">active</span>');
-  const last = u.last_login ? adminEsc(String(u.last_login).replace('T', ' ').slice(0, 19)) : '—';
+  const me = (_adminAuthState && _adminAuthState.current_user)
+    || (window._me && window._me.user) || '';
+  const you = u.username === me ? '<span class="you">you</span>' : '';
+  let status;
+  if (u.locked) {
+    const detail = [u.failed_count ? `${u.failed_count} failed` : '',
+                    u.lock_minutes_left ? `${u.lock_minutes_left} min left` : ''].filter(Boolean).join(' · ');
+    status = '<span class="pill crit">locked</span>'
+      + (detail ? ` <span class="t sm">${adminEsc(detail)}</span>` : '');
+  } else if (u.disabled) {
+    status = '<span class="pill dim">disabled</span>';
+  } else {
+    status = '<span class="pill ok">active</span>';
+  }
   const toggleRole = u.role === 'admin' ? 'operator' : 'admin';
   const dis = u.disabled ? 'false' : 'true';
+  const mid = `adminUserMenu${i}`;
   return `<tr>
-    <td>${name}</td><td>${role}</td><td>${status}</td><td>${last}</td>
-    <td style="text-align:right;white-space:nowrap;">
-      <button class="adm-mini" data-uact="role" data-user="${name}" data-arg="${toggleRole}">→ ${toggleRole === 'admin' ? 'Admin' : 'Operator'}</button>
-      <button class="adm-mini" data-uact="disable" data-user="${name}" data-arg="${dis}">${u.disabled ? 'Enable' : 'Disable'}</button>
-      <button class="adm-mini" data-uact="resetpw" data-user="${name}">Reset pw</button>
-      ${u.locked ? `<button class="adm-mini" data-uact="unlock" data-user="${name}">Unlock</button>` : ''}
-      <button class="adm-mini danger" data-uact="delete" data-user="${name}">Delete</button>
-    </td></tr>`;
+    <td class="n">${name}${you}</td><td>${role}</td><td>${status}</td>
+    <td class="t">${_adminStamp(u.last_login)}</td>
+    <td class="r"><div class="act">
+      ${u.locked ? `<button type="button" class="ib on warnh" data-tip="Unlock now" data-uact="unlock" data-user="${name}">${_SVG_UNLOCK}</button>` : ''}
+      <button type="button" class="ib" data-tip="Reset password" data-uact="resetpw" data-user="${name}">${_SVG_KEY}</button>
+      <button type="button" class="ib" data-tip="${u.disabled ? 'Enable sign-in' : 'Disable sign-in'}" data-uact="disable" data-user="${name}" data-arg="${dis}">${u.disabled ? '▸' : '‖'}</button>
+      <button type="button" class="ib" data-tip="More" data-menu="${mid}">⋯</button>
+      <div class="mc-menu" id="${mid}">
+        <button type="button" data-uact="role" data-user="${name}" data-arg="${toggleRole}"><span class="mi">${toggleRole === 'admin' ? '↥' : '↧'}</span>Make ${toggleRole}</button>
+        <hr>
+        <button type="button" class="danger" data-uact="delete" data-user="${name}"><span class="mi">✕</span>Delete user</button>
+      </div>
+    </div></td></tr>`;
 }
 
 async function _adminUsersApi(url, opts, okMsg) {
@@ -2135,7 +2163,12 @@ async function adminUserCreate() {
     { method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ username: u, password: pw, role }) },
     'User "' + u + '" created');
-  if (ok) { document.getElementById('adminUserNew').value = ''; document.getElementById('adminUserNewPw').value = ''; }
+  if (ok) {
+    document.getElementById('adminUserNew').value = '';
+    document.getElementById('adminUserNewPw').value = '';
+    const row = document.getElementById('adminUserAddRow');
+    if (row) row.hidden = true;
+  }
 }
 
 function adminUserSetRole(name, role) {
@@ -2172,60 +2205,249 @@ async function adminUserDelete(name) {
 // Audit log lives in admin-audit.js (#794); adminAuditLoad is its global entry.
 
 // ─────────────────────────────────────────────────────────────────────────
-// Scheduled backups status (#218)
+// Backup & Restore sub-tab (#218, redesigned #797)
 // ─────────────────────────────────────────────────────────────────────────
+let _adminBackupData = null;
+let _adminBackupShowAll = false;
+const _ADM_BACKUP_ROWS = 5;
+
+function _adminAgoShort(ts) {
+  if (!ts) return 'never';
+  const s = Math.max(0, Math.round(Date.now() / 1000 - ts));
+  if (s < 90) return `${s} s ago`;
+  if (s < 5400) return `${Math.round(s / 60)} min ago`;
+  if (s < 172800) return `${Math.round(s / 3600)} h ago`;
+  return `${Math.round(s / 86400)} d ago`;
+}
+function _adminInShort(ts) {
+  if (!ts) return '—';
+  const s = Math.round(ts - Date.now() / 1000);
+  if (s <= 0) return 'due now';
+  if (s < 5400) return `${Math.round(s / 60)} min`;
+  if (s < 172800) return `${Math.round(s / 3600)} h`;
+  return `${Math.round(s / 86400)} d`;
+}
+
 async function adminLoadBackupStatus() {
-  const pill = document.getElementById('adminSchedBackupPill');
-  const body = document.getElementById('adminSchedBackupBody');
-  const stamp = document.getElementById('adminSchedBackupRefresh');
-  if (!pill || !body) return;
   try {
     const r = await fetch('/api/admin/backup-status');
     const d = await r.json();
     if (!r.ok || !d.ok) throw new Error(d.error || ('HTTP ' + r.status));
-    const last = d.last || {};
-    let cls = 'status--muted', label = 'disabled';
-    if (d.enabled && !d.scheduler_running) { cls = 'status--crit'; label = 'not running'; }
-    else if (d.enabled) {
-      if (last.ok === true) { cls = 'status--ok'; label = 'ok'; }
-      else if (last.error) { cls = 'status--crit'; label = 'failed'; }
-      else { cls = 'status--warn'; label = 'pending'; }
-    }
-    pill.className = 'status ' + cls + ' status--square';
-    pill.textContent = label;
-    const lines = [];
-    if (!d.enabled) {
-      lines.push('Scheduler disabled — enable via [manager.backup] in llm-systems.toml.');
-    } else if (!d.scheduler_running) {
-      lines.push('Scheduler is NOT running: ' + adminEsc(d.disabled_reason || 'unknown reason') +
-                 ' — fix [manager.backup] and restart the manager.');
-    } else {
-      lines.push(`Every ${d.interval_hours}h · keep last ${d.keep_last} · ` +
-                 (d.encrypted ? 'encrypted' : '<b>unencrypted</b> (set [manager.backup].passphrase to encrypt)'));
-      if (last.ts) {
-        lines.push(`Last backup: ${new Date(last.ts * 1000).toLocaleString()} — ` +
-                   (last.ok ? `${adminEsc(last.file || '')} (${_fmtBytesShort(last.bytes)}, ${last.files || '?'} files)`
-                            : `FAILED: ${adminEsc(last.error || 'unknown error')}`));
-      } else {
-        lines.push('No backup recorded yet (first run happens shortly after start).');
-      }
-      if (d.next_due_ts) lines.push('Next due: ' + new Date(d.next_due_ts * 1000).toLocaleString());
-      if (d.mirror_dir) {
-        lines.push('Mirror: ' + adminEsc(d.mirror_dir) +
-                   (last.mirrored === false ? ` — copy FAILED: ${adminEsc(last.mirror_error || '')}` : ''));
-      }
-      const files = d.backups || [];
-      if (files.length) {
-        lines.push(files.slice(0, 5).map(b =>
-          `${adminEsc(b.file)} <span class="adm-muted">(${_fmtBytesShort(b.bytes)})</span>`).join('<br>'));
-        if (files.length > 5) lines.push(`… and ${files.length - 5} more`);
-      }
-    }
-    body.innerHTML = lines.map(l => `<div style="margin-top:4px;">${l}</div>`).join('');
-    if (stamp) stamp.textContent = 'updated ' + new Date().toLocaleTimeString();
+    _adminBackupData = d;
+    adminRenderBackup();
   } catch (e) {
-    pill.className = 'status status--muted status--square';
-    pill.textContent = '—';
-    body.textContent = 'Status unavailable: ' + e.message;
+    const body = document.getElementById('adminSchedBackupBody');
+    if (body) body.innerHTML = `<div class="empty">Status unavailable: ${adminEsc(e.message)}</div>`;
   }
+  adminLoadBackupSettings();
+}
+
+function adminRenderBackup() {
+  const d = _adminBackupData || {};
+  const last = d.last || {};
+  const files = d.backups || [];
+
+  const sum = document.getElementById('bkSummary');
+  if (sum) {
+    const mirrorOk = !d.mirror_dir ? null : last.mirrored !== false;
+    sum.innerHTML = `<span>last backup <b class="${last.ok ? 'ok' : 'warn'}">${adminEsc(_adminAgoShort(last.ts))}</b></span>`
+      + `<span>next in <b>${adminEsc(_adminInShort(d.next_due_ts))}</b></span>`
+      + `<span><b>${files.length}</b> kept</span>`
+      + (mirrorOk === null ? '' : `<span>mirror <b class="${mirrorOk ? 'ok' : 'crit'}">${mirrorOk ? 'ok' : 'failed'}</b></span>`);
+  }
+
+  // Archives card — last manual export per component.
+  const ex = d.last_export || {};
+  for (const comp of ['manager', 'alarm_engine']) {
+    const el = document.getElementById('bkLastExport_' + comp);
+    if (!el) continue;
+    const e = ex[comp];
+    el.innerHTML = e && e.ts
+      ? `last export <b>${_adminStamp(e.ts)}</b> · ${adminEsc(_fmtBytesShort(e.bytes))}`
+      : 'last export <b>never</b>';
+  }
+
+  // Scheduled card — pill, meta, kv block and the retained-archive ledger.
+  const pill = document.getElementById('adminSchedBackupPill');
+  if (pill) {
+    let cls = 'dim', label = 'disabled';
+    if (d.enabled && !d.scheduler_running) { cls = 'crit'; label = 'not running'; }
+    else if (d.enabled) {
+      if (last.ok === true) { cls = 'ok'; label = 'on schedule'; }
+      else if (last.error) { cls = 'crit'; label = 'failed'; }
+      else { cls = 'warn'; label = 'pending'; }
+    }
+    pill.className = 'pill ' + cls;
+    pill.textContent = label;
+  }
+  const meta = document.getElementById('adminSchedBackupMeta');
+  if (meta) {
+    meta.innerHTML = d.enabled
+      ? `every <b>${d.interval_hours} h</b> · keep <b>${d.keep_last}</b> · <b>${d.encrypted ? 'encrypted' : 'unencrypted'}</b>`
+      : 'set an interval under Backup settings to enable';
+  }
+  const body = document.getElementById('adminSchedBackupBody');
+  if (body) {
+    if (!d.enabled) {
+      body.innerHTML = '<div class="empty">Scheduled backups are off — set an interval under Backup settings.</div>';
+    } else if (!d.scheduler_running) {
+      body.innerHTML = `<div class="empty">Scheduler is not running: ${adminEsc(d.disabled_reason || 'unknown reason')} — fix Backup settings and restart the manager.</div>`;
+    } else {
+      const lastLine = last.ts
+        ? (last.ok
+          ? `${_adminStamp(last.ts)} · ${adminEsc(last.file || '')} · ${adminEsc(_fmtBytesShort(last.bytes))} · ${last.files || '?'} files`
+          : `<span class="critc">FAILED: ${adminEsc(last.error || 'unknown error')}</span>`)
+        : 'no backup recorded yet';
+      const mirror = d.mirror_dir
+        ? `${adminEsc(d.mirror_dir)} <span class="${last.mirrored === false ? 'critc' : 'okc'}">· ${last.mirrored === false ? 'copy failed' : 'copied'}</span>`
+        : '<span class="dim">not configured</span>';
+      const folderBytes = d.folder_bytes != null ? d.folder_bytes : files.reduce((a, b) => a + (b.bytes || 0), 0);
+      body.innerHTML = '<div class="bk-sched"><dl class="bk-kv">'
+        + `<dt>Last backup</dt><dd>${lastLine}</dd>`
+        + `<dt>Next due</dt><dd>${_adminStamp(d.next_due_ts)} <span class="dim">(in ${adminEsc(_adminInShort(d.next_due_ts))})</span></dd>`
+        + `<dt>Mirror</dt><dd>${mirror}</dd>`
+        + `<dt>Folder</dt><dd>data/backups/ <span class="dim">· ${adminEsc(_fmtBytesShort(folderBytes))} across ${files.length} archive${files.length === 1 ? '' : 's'}</span></dd>`
+        + '</dl></div>';
+    }
+  }
+
+  const tb = document.getElementById('adminSchedBackupTbody');
+  if (tb) {
+    const shown = _adminBackupShowAll ? files : files.slice(0, _ADM_BACKUP_ROWS);
+    tb.innerHTML = shown.length
+      ? shown.map(b => `<tr>
+          <td class="n mono">${adminEsc(b.file)}</td>
+          <td class="r">${adminEsc(_fmtBytesShort(b.bytes))}</td>
+          <td class="t">${_adminStamp(b.mtime)}</td>
+          <td>${_adminMirrorPill(d, last, b)}</td>
+        </tr>`).join('')
+      : '<tr><td colspan="4"><div class="empty">No archives retained yet.</div></td></tr>';
+  }
+  const more = document.getElementById('adminSchedBackupMore');
+  if (more) {
+    const hidden = Math.max(0, files.length - _ADM_BACKUP_ROWS);
+    more.textContent = hidden && !_adminBackupShowAll ? `… and ${hidden} older archive${hidden === 1 ? '' : 's'}` : '';
+  }
+  const showAll = document.getElementById('adminSchedBackupShowAll');
+  if (showAll) {
+    showAll.hidden = files.length <= _ADM_BACKUP_ROWS;
+    showAll.textContent = _adminBackupShowAll ? 'Show fewer' : 'Show all';
+    if (!showAll._bkBound) {
+      showAll._bkBound = true;
+      showAll.addEventListener('click', () => { _adminBackupShowAll = !_adminBackupShowAll; adminRenderBackup(); });
+    }
+  }
+  const now = document.getElementById('adminBackupNowBtn');
+  if (now && !now._bkBound) { now._bkBound = true; now.addEventListener('click', adminBackupNow); }
+}
+
+// Only the newest archive has a recorded mirror outcome; older rows stay dim.
+function _adminMirrorPill(d, last, b) {
+  if (!d.mirror_dir) return '<span class="t">—</span>';
+  if (last && last.file && b.file === last.file) {
+    return last.mirrored === false ? '<span class="pill warn">copy failed</span>'
+                                   : '<span class="pill ok">copied</span>';
+  }
+  return '<span class="t">—</span>';
+}
+
+async function adminBackupNow() {
+  const btn = document.getElementById('adminBackupNowBtn');
+  if (btn) btn.disabled = true;
+  _adminBackupLog('running a backup now…');
+  try {
+    const r = await fetch('/api/admin/backup-now', { method: 'POST' });
+    const d = await r.json().catch(() => ({}));
+    if (r.ok && d.ok) _adminBackupLog('✓ backup complete', 'ok');
+    else _adminBackupLog('✗ ' + (d.error || ('HTTP ' + r.status)), 'err');
+  } catch (e) {
+    _adminBackupLog('✗ ' + e.message, 'err');
+  }
+  if (btn) btn.disabled = false;
+  adminLoadBackupStatus();
+}
+
+// Backup settings card — the manager.backup.* catalog fields, rendered by the
+// shared settings-field renderer and saved through /api/admin/settings.
+let _adminBackupCfg = null;
+const _adminBackupDirty = new Map();
+
+async function adminLoadBackupSettings() {
+  const host = document.getElementById('adminBackupSettingsBody');
+  if (!host || !window.SettingsFields) return;
+  try {
+    const r = await fetch('/api/admin/settings');
+    if (!r.ok) return;
+    const d = await r.json();
+    if (!d.ok) return;
+    _adminBackupCfg = d;
+    _adminBackupDirty.clear();
+    adminRenderBackupSettings();
+  } catch (e) { /* card stays on its last render */ }
+}
+
+function adminRenderBackupSettings() {
+  const host = document.getElementById('adminBackupSettingsBody');
+  if (!host || !_adminBackupCfg) return;
+  const entries = _adminBackupCfg.entries.filter(e => e.path.indexOf('manager.backup.') === 0);
+  host.innerHTML = SettingsFields.render(entries, _adminBackupCfg.values,
+    _adminBackupCfg.defaults || {}, { secrets: _adminBackupCfg.secrets || {} });
+  if (host._bkBound) return;
+  host._bkBound = true;
+  const byPath = () => new Map(_adminBackupCfg.entries.map(e => [e.path, e]));
+  const note = (el) => {
+    const e = byPath().get(el.dataset.path);
+    if (!e) return;
+    _adminBackupDirty.set(e.path, e.secret && e.type !== 'list'
+      ? el.value : SettingsFields.readInput(el, e));
+    const row = el.closest('.settings-row');
+    if (row) row.classList.add('dirty');
+  };
+  host.addEventListener('input', ev => { const el = ev.target.closest('.st-input'); if (el) note(el); });
+  host.addEventListener('change', ev => { const el = ev.target.closest('.st-input'); if (el) note(el); });
+  host.addEventListener('click', ev => {
+    const tg = ev.target.closest('.mc-toggle[data-type="bool"]');
+    if (tg) {
+      tg.classList.toggle('on');
+      tg.setAttribute('aria-pressed', String(tg.classList.contains('on')));
+      note(tg);
+      return;
+    }
+    const clr = ev.target.closest('[data-clear]');
+    if (clr) { ev.preventDefault(); _adminBackupDirty.set(clr.dataset.clear, null); clr.disabled = true; clr.textContent = 'Clear queued'; return; }
+    const rst = ev.target.closest('[data-reset]');
+    if (rst) { ev.preventDefault(); _adminBackupDirty.set(rst.dataset.reset, null); adminRenderBackupSettings(); }
+  });
+}
+
+async function adminSaveBackupSettings() {
+  const msg = document.getElementById('adminBackupSettingsMsg');
+  if (!_adminBackupDirty.size) { if (msg) { msg.className = 'msg'; msg.textContent = 'no changes'; } return; }
+  if (msg) { msg.className = 'msg'; msg.textContent = 'saving…'; }
+  try {
+    const r = await fetch('/api/admin/settings', {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ changes: Object.fromEntries(_adminBackupDirty) }),
+    });
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok || !d.ok) {
+      if (msg) { msg.className = 'msg err'; msg.textContent = d.error || ('HTTP ' + r.status); }
+      return;
+    }
+    if (msg) { msg.className = 'msg ok'; msg.textContent = '✓ saved'; }
+  } catch (e) {
+    if (msg) { msg.className = 'msg err'; msg.textContent = e.message; }
+    return;
+  }
+  adminLoadBackupSettings();
+  adminLoadBackupStatus();
+}
+
+// Queues every backup key as a clear so the server drops it back to its default.
+function adminResetBackupSettings() {
+  if (!_adminBackupCfg) return;
+  _adminBackupCfg.entries
+    .filter(e => e.path.indexOf('manager.backup.') === 0)
+    .forEach(e => _adminBackupDirty.set(e.path, null));
+  adminSaveBackupSettings();
 }

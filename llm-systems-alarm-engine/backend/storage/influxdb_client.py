@@ -5,6 +5,7 @@ import threading
 from datetime import datetime, timedelta
 from .._best_effort import best_effort
 from .._time import now_utc
+from ..rate_counter import INFLUX_WRITES
 from typing import Any, Optional
 
 from influxdb_client import InfluxDBClient as _InfluxDBClient
@@ -114,16 +115,19 @@ class InfluxDBClient:
     def write_metric(self, point: dict[str, Any]) -> None:
         """Write a single metric data point."""
         self._metrics_write.write(bucket=self.metrics_bucket, record=point)
+        INFLUX_WRITES.add(1)
 
     def write_metric_sync(self, point: dict[str, Any]) -> None:
         """Synchronous single-point write; raises on write failure."""
         self._metrics_write_sync.write(bucket=self.metrics_bucket, record=point)
+        INFLUX_WRITES.add(1)
 
     def write_metrics_batch(self, points: list[dict[str, Any]]) -> None:
         """Write multiple metric data points in a batch."""
         if not points:
             return
         self._metrics_write.write(bucket=self.metrics_bucket, record=points)
+        INFLUX_WRITES.add(len(points))
 
     def query_metrics(
         self,

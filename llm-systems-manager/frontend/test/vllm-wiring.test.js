@@ -390,31 +390,25 @@ describe('admin.js', () => {
     expect(iVllm).toBeGreaterThan(iLms);
   });
 
-  // #370: the Data Flow panel must render a vLLM push row like llama/LMS.
-  test('Data Flow renders a primary vLLM push row from data_flow.primary_vllm_push', () => {
+  // #370: the Agents node detail strip must report the vLLM push age
+  // alongside llama/LMS.
+  test('Agents detail strip reports the primary vLLM push age', () => {
+    const healthSrc = srcFile('js/admin-health.js');
     const boot = `
       window.__T = {};
-      _renderSystemHealth({
-        data_flow: {
-          primary_llama_push: { has_agent: false },
-          primary_lms_push: { has_agent: false },
-          primary_vllm_push: { has_agent: true, age_s: 12, ok: true },
-          manager_to_alarm_forwarding: { active: false },
-        },
-        warnings: [],
-      }, {});
-      window.__T.html = document.getElementById('adminHealthDataFlow').innerHTML;
+      const d = { data_flow: {
+        primary_llama_push: { has_agent: false },
+        primary_lms_push: { has_agent: false },
+        primary_vllm_push: { has_agent: true, age_s: 12, ok: true },
+      }, agents: [], warnings: [] };
+      window.__T.rows = HealthView.detailRows(d, 'agents').map(r => r.join('|')).join('\\n');
+      const d2 = JSON.parse(JSON.stringify(d));
+      d2.data_flow.primary_vllm_push = { has_agent: false };
+      window.__T.rows2 = HealthView.detailRows(d2, 'agents').map(r => r.join('|')).join('\\n');
     `;
-    const w = runAdminHarness(boot, '<div id="adminHealthDataFlow"></div>');
-    expect(w.__T.html).toContain('Primary vLLM push');
-    expect(w.__T.html).toContain('12s ago');
-
-    // No agent registered → the "not yet" copy, not a false fault.
-    const boot2 = boot.replace(
-      "primary_vllm_push: { has_agent: true, age_s: 12, ok: true },",
-      "primary_vllm_push: { has_agent: false },");
-    const w2 = runAdminHarness(boot2, '<div id="adminHealthDataFlow"></div>');
-    expect(w2.__T.html).toContain('no vLLM agent registered');
+    const w = runHarness({ sources: [adminSrc, healthSrc], bootstrap: boot });
+    expect(w.__T.rows).toContain('vLLM 12 s');
+    expect(w.__T.rows2).toContain('vLLM no agent');
   });
 });
 
