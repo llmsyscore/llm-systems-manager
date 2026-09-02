@@ -154,7 +154,6 @@
       entries = []; total = 0; lastSig = '';
       if (tbody) tbody.innerHTML = `<tr><td colspan="6"><div class="au-empty">Failed to load audit log — ${esc(e.message)}</div></td></tr>`;
       renderPager();
-      const st = $('auStamp'); if (st) st.textContent = 'load failed';
     }
   }
 
@@ -180,7 +179,6 @@
     lastSig = sig;
     const tot = $('auTotal'); if (tot) tot.textContent = total.toLocaleString();
     const old = $('auOldest'); if (old && stats) old.textContent = stats.oldest ? fmtShort(stats.oldest).split(' · ')[0] : '—';
-    const st = $('auStamp'); if (st) st.textContent = 'updated ' + clock(new Date(), true) + ' · auto';
     renderActors();
     renderSortArrows();
     renderPager();
