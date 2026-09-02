@@ -8,9 +8,8 @@ const adminSrc = srcFile('js/admin.js');
 const indexSrc = srcFile('index.html');
 
 // Elements adminLoadAgents/adminRenderPoolOrder/adminRenderPins/
-// adminLoadProviderModels touch (adminAuthDisabled is read unguarded).
+// adminLoadProviderModels touch.
 const BODY = `
-  <input type="checkbox" id="adminAuthDisabled">
   <ul id="adminPoolOrderList"></ul>
   <div id="adminPoolResult"></div>
   <datalist id="adminProviderModels"></datalist>

@@ -366,14 +366,15 @@ describe('vllm history backfill (#358)', () => {
 // ---------------------------------------------------------------------------
 describe('admin.js', () => {
   const adminSrc = src('js/admin.js');
+  const agentsSrc = src('js/admin-agents.js');
 
   function runAdminHarness(bootstrap, bodyHtml = '') {
-    return runHarness({ sources: [adminSrc], bootstrap, bodyHtml });
+    return runHarness({ sources: [adminSrc, agentsSrc], bootstrap, bodyHtml });
   }
 
   test('capability chip order renders llama, lms, vllm in that order', () => {
     const boot = `
-      window.__T = { html: _adminCapsAndPrimary({
+      window.__T = { html: AgentsView.capsHtml({
         agent_id: 'a1', status: 'approved', is_host_agent: false,
         capabilities: { vllm: true, llama: true, lms: true, sysperf: true },
       }) };

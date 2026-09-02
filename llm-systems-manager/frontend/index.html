@@ -531,8 +531,9 @@ Backend API endpoints consumed:
 </div>
 
 <!-- Admin tab -->
-<link rel="stylesheet" href="/static/css/admin.css?v=2026.08.30-3">
-<link rel="stylesheet" href="/static/css/audit.css?v=2026.09.02-2">
+<link rel="stylesheet" href="/static/css/admin.css?v=2026.09.02-4">
+<link rel="stylesheet" href="/static/css/audit.css?v=2026.09.02-4">
+<link rel="stylesheet" href="/static/css/agents.css?v=2026.09.02-4">
 <div id="adminTab" style="display:none;position:fixed;top:88px;left:0;right:0;bottom:0;z-index:10;overflow:auto;background:var(--bg);color:var(--fg);padding:28px 24px;">
   <div class="adm-wrap">
 
@@ -542,7 +543,7 @@ Backend API endpoints consumed:
         <div class="adm-title">System Health</div>
         <span id="adminHealthOverall" class="status status--muted status--square">—</span>
         <div class="adm-spacer"></div>
-        <span class="adm-muted" id="adminHealthRefresh">—</span>
+        <button type="button" class="adm-stamp" id="adminRefreshStamp" aria-label="Refresh now"><span class="adm-rf warn" id="adminRefreshRf">↻</span> <span id="adminRefreshTime">—</span></button>
       </div>
       <div class="adm-health-body">
         <div class="adm-health-col">
@@ -578,47 +579,35 @@ Backend API endpoints consumed:
         <button class="sub-tab-btn"        id="subTabBtnAdminSettings" onclick="switchSubTab('admin','settings')">Settings</button>
       </div>
 
-      <!-- Agents sub-tab (landing) -->
+      <!-- Agents sub-tab (landing, #793): roster header + Manage menu + state-dot rows -->
       <div id="admin-agents" class="sub-tab-panel active">
-        <div class="adm-card">
-          <div class="adm-card-hdr">
-            <div class="adm-title">Agents</div>
-            <div class="adm-count" id="adminAgentsCount">—</div>
-            <span id="adminLatestVersion" title="Latest agent version available on the manager"></span>
-            <div class="adm-spacer"></div>
-            <label class="adm-toggle" title="When enabled, agents stop verifying tokens on inbound requests. For trusted-LAN dev environments only.">
-              <input type="checkbox" id="adminAuthDisabled" onchange="adminToggleAuth(this.checked)">
-              <span>Disable agent auth</span>
-            </label>
-            <button class="adm-refresh" onclick="adminUpdateAll()"
-              title="Update every agent needing an upgrade, one at a time; each must come back on the new version before the next starts. Stops on the first failure.">
-              ⇈ Update all
-            </button>
-            <button class="adm-refresh" onclick="adminPushCaToAgents()"
-              title="Force every approved agent to fetch the current cert+key+CA bundle on its next heartbeat (≤60s). Use this after rotating the manager's internal CA so agents update their stored tls-ca.pem without revoke+re-approve.">
-              ⤴ Push CA to agents
-            </button>
-            <button class="adm-refresh" onclick="adminLoadAgents()" title="Auto-refreshes every 10s">↻ Refresh</button>
-            <span class="adm-muted" id="adminLastRefresh">—</span>
-          </div>
-          <div style="overflow-x:auto;">
-            <table id="adminAgentsTable" class="adm-table">
-              <thead>
-                <tr>
-                  <th style="width:32%;" class="adm-th-sort" data-key="agent" onclick="adminSortAgents(this)">Agent</th>
-                  <th style="width:18%;" class="adm-th-sort" data-key="state" onclick="adminSortAgents(this)">State</th>
-                  <th style="width:30%;" class="adm-th-sort" data-key="caps" onclick="adminSortAgents(this)">Capabilities</th>
-                  <th style="width:8%;" class="adm-th-sort" data-key="seen" onclick="adminSortAgents(this)">Last seen</th>
-                  <th style="width:12%; text-align:right;">Actions</th>
-                </tr>
-              </thead>
-              <tbody id="adminAgentsTbody">
-                <tr><td colspan="5" style="padding:18px;color:#7e8a9c;text-align:center;">Loading…</td></tr>
-              </tbody>
-            </table>
-          </div>
-          <div id="adminAgentsResult"></div>
+        <div class="ag-hdr">
+          <h2>Agents</h2>
+          <div class="ag-sum" id="agSummary"><span>—</span></div>
+          <span class="ag-vchip" id="agMgrVer" hidden></span>
+          <span class="ag-vchip" id="agAgentVer" hidden></span>
         </div>
+        <div class="ag-hdr toolbar">
+          <div class="ag-gap"></div>
+          <label class="mc-filter"><span class="mc-filter-ico">⌕</span><input id="agFilter" type="search" placeholder="Filter agents — name, IP, capability" autocomplete="off" title="Also: needs:update · state:pending · cap:lms"></label>
+          <div class="mc-menuwrap">
+            <button type="button" class="mcbtn mcbtn-ghost" id="agManageBtn" data-act="menu" aria-haspopup="menu">Manage <span style="font-size:10px;color:var(--fg-dim)">▾</span></button>
+            <div class="mc-menu" id="agManageMenu">
+              <div class="microlbl mlbl">Agent auth</div>
+              <div class="mrow" id="agAuthRow">
+                <button type="button" class="mc-toggle on" id="agAuthTg" data-act="auth" aria-pressed="true"><span class="track"></span><span><span class="tlbl">Agent security</span><div class="sub" id="agAuthSub">Secure agent authentication is on</div></span></button>
+              </div>
+              <hr>
+              <button type="button" class="mi-row" data-act="updateall" title="Update every agent needing an upgrade, one at a time; stops on the first failure"><span class="mi">⇈</span>Update all agents<span class="cnt" id="agUpdateCnt" hidden></span></button>
+              <button type="button" class="mi-row" data-act="approveall" id="agApproveAll" hidden><span class="mi">✓</span>Approve all pending<span class="cnt"></span></button>
+              <button type="button" class="mi-row" data-act="pushca" title="Every approved agent fetches the current cert + key + CA bundle on its next heartbeat"><span class="mi">⤴</span>Push CA to agents</button>
+            </div>
+          </div>
+        </div>
+        <div class="ag-roster"><div class="ag-roster-in" id="agRoster">
+          <div class="ag-empty">Loading…</div>
+        </div></div>
+        <div id="adminAgentsResult"></div>
       </div>
 
       <!-- Routing sub-tab (pools + pins + autopilot, #476) -->
@@ -804,8 +793,6 @@ Backend API endpoints consumed:
         <div class="au-hdr">
           <h2 class="au-title">Audit log</h2>
           <div class="au-sum"><span><b id="auTotal">—</b> entries</span><span>oldest <b id="auOldest">—</b></span></div>
-          <div class="au-gap"></div>
-          <span class="au-stamp" id="auStamp">—</span>
         </div>
         <div class="au-toolbar">
           <label class="mc-filter au-search"><span class="mc-filter-ico">⌕</span><input id="auQ" type="search" placeholder="Search user, action, target, IP…" autocomplete="off"><kbd>/</kbd></label>
@@ -2346,8 +2333,9 @@ Backend API endpoints consumed:
 <script src="/static/js/llmcontrol.js?v=2026.08.30-2"></script>
 <script src="/static/js/sections.js?v=2026.08.30-3"></script>
 <script src="/static/js/openclaw.js?v=2026.08.03-1"></script>
-<script src="/static/js/admin.js?v=2026.09.02-1"></script>
-<script src="/static/js/admin-audit.js?v=2026.09.02-3"></script>
+<script src="/static/js/admin.js?v=2026.09.02-4"></script>
+<script src="/static/js/admin-agents.js?v=2026.09.02-4"></script>
+<script src="/static/js/admin-audit.js?v=2026.09.02-4"></script>
 <script src="/static/js/admin-settings.js?v=2026.08.30-2"></script>
 <script src="/static/js/autopilot.js?v=2026.07.31-2"></script>
 <script src="/static/js/llmcontrol-models.js?v=2026.08.31-1"></script>

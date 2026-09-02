@@ -1,24 +1,21 @@
 // #476: Pools & Pins + Autopilot consolidated into one routing sub-tab,
-// Admin sub-tabs alphabetized, Agents/Audit tables column-sortable.
+// Admin sub-tabs alphabetized, Agents roster / Audit table column-sortable.
 import { describe, it, expect, beforeAll, beforeEach } from 'vitest';
 import { srcFile, runHarness as sharedRunHarness, loadSwitchSubTab } from './helpers/harness.js';
 
 const bootSrc = srcFile('js/boot.js');
 const adminSrc = srcFile('js/admin.js');
+const agentsSrc = srcFile('js/admin-agents.js');
 const apSrc = srcFile('js/autopilot.js');
 const indexSrc = srcFile('index.html');
 
-function extractTag(src, id) {
-  const m = src.match(new RegExp(`<table id="${id}"[\\s\\S]*?<\\/table>`));
-  if (!m) throw new Error(`${id} table not found in index.html`);
-  return m[0];
-}
-const agentsTableHtml = extractTag(indexSrc, 'adminAgentsTable');
+// The Agents panel markup (#793), lifted from index.html so ids stay in lockstep.
+const agentsPanelHtml = indexSrc.slice(indexSrc.indexOf('<div id="admin-agents"'), indexSrc.indexOf('<!-- Routing sub-tab'));
 
 function runAdminHarness(bootstrap, bodyHtml = '') {
   const defaultSortable =
     'if (typeof Sortable === "undefined") { Sortable = { create: () => ({ destroy(){} }) }; }';
-  return sharedRunHarness({ sources: [adminSrc], bootstrap: defaultSortable + '\n' + bootstrap, bodyHtml });
+  return sharedRunHarness({ sources: [adminSrc, agentsSrc], bootstrap: defaultSortable + '\n' + bootstrap, bodyHtml });
 }
 
 function runApHarness(bootstrap, bodyHtml = '') {
@@ -176,54 +173,52 @@ describe('autopilot-managed badges (#476)', () => {
   });
 });
 
-describe('sortable table columns (#476 scope)', () => {
-  beforeAll(() => {
-    document.documentElement.innerHTML = indexSrc;
-  });
-
-  it('agents table headers are sort-wired except Actions', () => {
-    const ths = [...document.querySelectorAll('#adminAgentsTable thead th')];
-    const sortable = ths.filter(th => th.classList.contains('adm-th-sort'));
-    expect(sortable.length).toBe(4);
-    sortable.forEach(th => {
-      expect(th.dataset.key).toBeTruthy();
-      expect(th.getAttribute('onclick')).toContain('adminSortAgents(this)');
-    });
-    expect(ths[ths.length - 1].classList.contains('adm-th-sort')).toBe(false);
-  });
-
-  it('adminSortAgents re-sorts and re-renders the real agents table (click toggles direction)', () => {
+describe('sortable roster columns (#476 scope, #793 roster)', () => {
+  it('roster header sorts by Agent, Capabilities and Endpoint', () => {
     const boot = `
-      _adminAgentsSort = { key: 'seen', dir: 1 };
       _adminAgentsCache = [
         { agent_id: 'a1', hostname: 'zzz-host', status: 'approved', capabilities: {} },
         { agent_id: 'a2', hostname: 'aaa-host', status: 'approved', capabilities: {} },
       ];
-      _adminRenderAgentsTable();
-      const th = document.querySelector('#adminAgentsTable th[data-key="agent"]');
-      adminSortAgents(th);
-      window.__order1 = [...document.querySelectorAll('#adminAgentsTbody .adm-host')].map(d => d.textContent);
-      window.__dir1 = th.dataset.dir;
-      adminSortAgents(th);
-      window.__order2 = [...document.querySelectorAll('#adminAgentsTbody .adm-host')].map(d => d.textContent);
-      window.__dir2 = th.dataset.dir;
+      AgentsView.render();
+      window.__keys = [...document.querySelectorAll('#agRoster .ag-rw.hd [data-sort]')].map(e => e.dataset.sort);
     `;
-    const win = runAdminHarness(boot, agentsTableHtml);
+    const win = runAdminHarness(boot, agentsPanelHtml);
+    expect(win.__keys).toEqual(['agent', 'caps', 'endpoint']);
+  });
+
+  it('clicking a header re-sorts the roster; a second click flips direction', () => {
+    const boot = `
+      _adminAgentsCache = [
+        { agent_id: 'a1', hostname: 'zzz-host', status: 'approved', capabilities: {} },
+        { agent_id: 'a2', hostname: 'aaa-host', status: 'approved', capabilities: {} },
+      ];
+      AgentsView.setSort('endpoint', 1);
+      AgentsView.render();
+      const hosts = () => [...document.querySelectorAll('#agRoster .ag-rw:not(.hd) .host')].map(d => d.textContent);
+      document.querySelector('#agRoster [data-sort="agent"]').click();
+      window.__order1 = hosts();
+      window.__dir1 = document.querySelector('#agRoster [data-sort="agent"]').dataset.dir;
+      document.querySelector('#agRoster [data-sort="agent"]').click();
+      window.__order2 = hosts();
+      window.__dir2 = document.querySelector('#agRoster [data-sort="agent"]').dataset.dir;
+    `;
+    const win = runAdminHarness(boot, agentsPanelHtml);
     expect(win.__order1).toEqual(['aaa-host', 'zzz-host']);
     expect(win.__dir1).toBe('1');
     expect(win.__order2).toEqual(['zzz-host', 'aaa-host']);
     expect(win.__dir2).toBe('-1');
   });
 
-  it('sort arrows render on the header even when the agents table is empty', () => {
+  it('sort arrows render on the header even when the roster is empty', () => {
     const boot = `
-      _adminAgentsSort = { key: 'state', dir: -1 };
+      AgentsView.setSort('endpoint', -1);
       _adminAgentsCache = [];
-      _adminRenderAgentsTable();
-      window.__agentsDir = document.querySelector('#adminAgentsTable th[data-key="state"]').dataset.dir;
-      window.__agentsEmptyRow = document.getElementById('adminAgentsTbody').textContent;
+      AgentsView.render();
+      window.__agentsDir = document.querySelector('#agRoster [data-sort="endpoint"]').dataset.dir;
+      window.__agentsEmptyRow = document.querySelector('#agRoster .ag-empty').textContent;
     `;
-    const win = runAdminHarness(boot, agentsTableHtml);
+    const win = runAdminHarness(boot, agentsPanelHtml);
     expect(win.__agentsDir).toBe('-1');
     expect(win.__agentsEmptyRow).toContain('No agents registered yet.');
   });
@@ -242,10 +237,7 @@ describe('sortable table columns (#476 scope)', () => {
       };
       window.__done = adminLoadAgents();
     `;
-    const body = '<input type="checkbox" id="adminAuthDisabled">' +
-      '<span id="adminLatestVersion"></span><span id="adminAgentsCount"></span>' +
-      '<span id="adminLastRefresh"></span><div id="adminAgentsResult"></div>' +
-      agentsTableHtml +
+    const body = agentsPanelHtml +
       '<div id="adminPinsProviderChips"></div>' +
       '<table><tbody id="adminPinsTbody">SENTINEL-PINS</tbody></table>' +
       '<select id="adminPinAgentSelect"></select>' +
@@ -261,11 +253,11 @@ describe('sortable table columns (#476 scope)', () => {
     expect(win.document.getElementById('adminPoolOrderList').innerHTML).toContain('pool is empty');
   });
 
-  it('admin.css styles the sortable headers and direction arrows', () => {
+  it('agents.css styles the sortable headers and direction arrows', () => {
     // wiring (unexecutable): jsdom has no paint engine, so this stays a
-    // source check of admin.css.
-    const css = srcFile('css/admin.css');
-    expect(css).toMatch(/\.adm-th-sort/);
-    expect(css).toMatch(/data-dir/);
+    // source check of agents.css.
+    const css = srcFile('css/agents.css');
+    expect(css).toMatch(/\.sortable\.on\[data-dir="1"\]::after/);
+    expect(css).toMatch(/\.sortable\.on\[data-dir="-1"\]::after/);
   });
 });

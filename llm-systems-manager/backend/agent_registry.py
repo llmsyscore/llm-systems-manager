@@ -1514,6 +1514,8 @@ def _agents_list():
         "global": data.get("global", {"auth_disabled": False}),
         "host_auto_detected": host_auto_detected,
         "latest_agent_version": latest,
+        "manager_version": _deps.version,
+        "collect_interval_s": _deps.get_interval(),
         # Pool-picker providers, for the admin pool/pins provider chips.
         "pool_providers": [
             {"name": n, "label": spec.label, "pin_key": spec.pin_dict_key}

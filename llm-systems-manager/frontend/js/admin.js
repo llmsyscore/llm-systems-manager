@@ -13,6 +13,10 @@ function adminStartAutoRefresh() {
 // sub-tab is visible (the module skips while a detail panel is open).
 function _adminRefreshTick() {
   if (_activeTab !== 'admin') return;
+  adminRefreshNow();
+}
+// Refresh every Admin panel now; also the header ↻ stamp's click handler.
+function adminRefreshNow() {
   adminLoadAgents(); adminLoadHealth();
   if (typeof _subTabState !== 'undefined' && _subTabState.admin === 'audit'
       && typeof adminAuditLoad === 'function') adminAuditLoad();
@@ -41,11 +45,6 @@ function adminAgo(iso) {
   if (s < 3600) return Math.round(s/60) + 'm ago';
   if (s < 86400) return Math.round(s/3600) + 'h ago';
   return Math.round(s/86400) + 'd ago';
-}
-function adminCaps(c) {
-  if (!c || typeof c !== 'object') return '—';
-  const enabled = Object.keys(c).filter(k => c[k]);
-  return enabled.length ? enabled.join(', ') : '(none)';
 }
 async function adminTogglePrimary(aid, kind, set) {
   try {
@@ -97,6 +96,9 @@ function _adminLog(msg, level = 'ok') {
   const color = level === 'err' ? 'var(--crit)' : level === 'warn' ? 'var(--warn)' : 'var(--ok)';
   el.style.color = color;
   el.textContent = `${ts}  ${msg}`;
+  if (typeof _themedToast === 'function') {
+    _themedToast(msg, { kind: level === 'err' ? 'err' : level === 'warn' ? 'warn' : 'ok', ms: level === 'err' ? 9000 : 4500 });
+  }
   if (_adminLogClearTimer) {
     clearTimeout(_adminLogClearTimer);
     _adminLogClearTimer = null;
@@ -204,8 +206,6 @@ function _renderSystemHealth(d, rel) {
     pill.className = 'status status--' + ovMod + ' status--square';
     pill.textContent = (d.overall || 'unknown').toUpperCase();
   }
-  const stamp = document.getElementById('adminHealthRefresh');
-  if (stamp) stamp.textContent = 'updated ' + (new Date()).toLocaleTimeString();
 
   // Services
   const svcEl = document.getElementById('adminHealthServices');
@@ -639,14 +639,21 @@ async function adminClearPin(model) {
 }
 
 async function adminLoadAgents() {
+  let d;
   try {
     const r = await fetch('/api/agents');
     if (!r.ok) {
-      _adminLog('GET /api/agents failed: ' + r.status + ' (admin gate denies this IP)');
+      _adminLog('GET /api/agents failed: ' + r.status + ' (admin gate denies this IP)', 'err');
+      if (window.AgentsView) AgentsView.stamp({ ok: false });
       return;
     }
-    const d = await r.json();
-    document.getElementById('adminAuthDisabled').checked = !!(d.global && d.global.auth_disabled);
+    d = await r.json();
+  } catch (e) {
+    _adminLog('error: ' + e.message, 'err');
+    if (window.AgentsView) AgentsView.stamp({ ok: false, unreachable: true });
+    return;
+  }
+  try {
     _adminGlobal = d.global || {};
     if (Array.isArray(d.pool_providers) && d.pool_providers.length) {
       _adminPoolProviders = d.pool_providers;
@@ -659,281 +666,30 @@ async function adminLoadAgents() {
     }
     _adminHostAutoDetected = !!d.host_auto_detected;
     _latestAgentVersion = d.latest_agent_version || null;
-    const lavEl = document.getElementById('adminLatestVersion');
-    if (lavEl) lavEl.textContent = _latestAgentVersion ? `manager: ${_latestAgentVersion}` : '';
-    const agents = (d.agents || []).slice().sort((a,b) => (a.hostname||'').localeCompare(b.hostname||''));
-    _adminAgentsCache = agents;
-    const countEl = document.getElementById('adminAgentsCount');
-    if (countEl) {
-      const approved = agents.filter(a => a.status === 'approved').length;
-      const total = agents.length;
-      const live = agents.filter(a => a.liveness === 'live').length;
-      countEl.textContent = total
-        ? `${total} registered · ${approved} approved · ${live} live`
-        : 'No agents registered';
-    }
-    _adminRenderAgentsTable();
-    const stamp = document.getElementById('adminLastRefresh');
-    if (stamp) stamp.textContent = 'updated ' + (new Date()).toLocaleTimeString();
-    // Phase 4 #4 — keep the pin editor + pool order + model
-    // datalist in sync with every agent refresh. _adminGlobal +
-    // _adminAgentsCache are now populated.
+    _adminManagerVersion = d.manager_version || null;
+    _adminCollectInterval = d.collect_interval_s || null;
+    _adminAgentsCache = (d.agents || []).slice().sort((a,b) => (a.hostname||'').localeCompare(b.hostname||''));
+    if (window.AgentsView) { AgentsView.stamp({ ok: true }); AgentsView.render(); }
+    // Keep the pin editor + pool order + model datalist in sync with every refresh.
     adminRenderPins();
     adminRenderPoolOrder();
     adminLoadProviderModels();   // fire-and-forget; populates datalist
   } catch(e) {
-    _adminLog('error: ' + e.message);
+    _adminLog('error: ' + e.message, 'err');
   }
 }
 
-// Column sort state + per-key sort values for the agents table (#476).
-let _adminAgentsSort = { key: 'agent', dir: 1 };
-const _ADMIN_AGENT_SORT_VALS = {
-  agent: a => a.hostname || '',
-  state: a => (a.status || '') + ':' + (a.liveness || ''),
-  caps:  a => Object.entries(a.capabilities || {})
-    .filter(([, v]) => v).map(([k]) => k).sort().join(','),
-  seen:  a => a.last_heartbeat || '',
-};
-
-// Sets data-dir on the active sortable th (CSS renders the arrow).
-function _adminSortArrows(tableId, key, dir) {
-  const table = document.getElementById(tableId);
-  if (!table) return;
-  table.querySelectorAll('th.adm-th-sort').forEach(th => {
-    if (th.dataset.key === key) th.dataset.dir = String(dir);
-    else delete th.dataset.dir;
-  });
-}
-
-function _adminRenderAgentsTable() {
-  const tbody = document.getElementById('adminAgentsTbody');
-  if (!tbody) return;
-  const { key, dir } = _adminAgentsSort;
-  _adminSortArrows('adminAgentsTable', key, dir);
-  if (!_adminAgentsCache.length) {
-    tbody.innerHTML = '<tr><td colspan="5" style="padding:24px;color:var(--fg-muted);text-align:center;">No agents registered yet.</td></tr>';
-    return;
-  }
-  const val = _ADMIN_AGENT_SORT_VALS[key] || _ADMIN_AGENT_SORT_VALS.agent;
-  const rows = _adminAgentsCache.slice()
-    .sort((a, b) => dir * String(val(a)).localeCompare(String(val(b))));
-  tbody.innerHTML = rows.map(a => _adminRowHtml(a)).join('');
-}
-
-// th onclick handler: same column toggles direction, new column starts asc.
-function adminSortAgents(th) {
-  const key = th.dataset.key;
-  if (!key) return;
-  _adminAgentsSort = {
-    key,
-    dir: _adminAgentsSort.key === key ? -_adminAgentsSort.dir : 1,
-  };
-  _adminRenderAgentsTable();
-}
-
-// Render one row of the agents table. Compact 5-column layout:
-// Agent (hostname/IP/desc/user/version) · State (status + collection
-// badges) · Capabilities (chips + primary radios) · Last seen ·
-// Actions (primary CTAs + overflow menu).
-function _adminRowHtml(a) {
-  const aid = adminEsc(a.agent_id);
-  const ip = adminEsc(_adminAgentIP(a));
-  const status = a.status || 'unknown';
-  const isPending  = status === 'pending';
-  const isApproved = status === 'approved';
-  const isDisabled = status === 'disabled';
-  const collection = adminCollectionState(a);
-  const live = a.liveness || 'unknown';
-
-  // Identity block
-  const ident = `
-    <div class="adm-host">${adminEsc(a.hostname || '(no hostname)')}</div>
-    <div class="adm-host-meta">
-      <code>${ip}</code> · ${adminEsc(a.os || '?')} · ${adminEsc(a.role || '?')}
-      ${a.agent_user ? ` · run-as <code>${adminEsc(a.agent_user)}</code>` : ''}
-    </div>
-    <div class="adm-host-meta">
-      <span class="adm-version" title="Agent code version reported in heartbeat">${adminEsc(a.version || 'no version')}</span>
-      ${a.update_available ? `<span class="adm-version-new" title="Manager has v${adminEsc(_latestAgentVersion || '?')} — click Update to deploy">↑ update available</span>` : ''}
-    </div>
-    ${_adminInfraChips(a)}
-    ${a.description ? `<div class="adm-host-desc">${adminEsc(a.description)}</div>` : ''}
-  `;
-
-  // State badges
-  const statusMod = status === 'approved' ? 'ok' : status === 'pending' ? 'warn'
-                  : status === 'disabled' ? 'muted' : status === 'unknown' ? 'muted' : 'crit';
-  let stateHtml = `<span class="status status--${statusMod} status--square">${adminEsc(status)}</span>`;
-  if (isApproved) {
-    const liveMod = live === 'live' ? 'ok' : live === 'stale' ? 'warn' : live === 'down' ? 'crit' : 'muted';
-    const liveLabel = live === 'live' ? 'live' : live === 'stale' ? 'stale' : live === 'down' ? 'down' : 'unknown';
-    stateHtml += `<span class="status status--${liveMod} status--square">${liveLabel}</span>`;
-    if (collection === 'on')       stateHtml += `<span class="status status--ok status--square">collecting</span>`;
-    else if (collection === 'paused') stateHtml += `<span class="status status--warn status--square">paused</span>`;
-    else if (collection === 'down (no heartbeat ≥10m)') stateHtml += ''; // already covered by 'down' badge
-    else if (collection === 'stale (heartbeats missed)') stateHtml += ''; // covered by 'stale' badge
-    else if (collection !== '—')   stateHtml += `<span class="status status--crit status--square">${adminEsc(collection)}</span>`;
-    // ↔ TLS = both directions encrypted; → TLS = manager→agent only (agent
-    // still dials the manager over http, e.g. before the auto-upgrade landed).
-    const _m2a = (a.bind_url || '').startsWith('https://');
-    const _a2m = !!(a.last_heartbeat_data && a.last_heartbeat_data.control_channel_tls);
-    if (_m2a && _a2m) {
-      stateHtml += `<span class="status status--ok status--square" title="Manager↔agent: both directions over TLS">↔ TLS</span>`;
-    } else if (_m2a) {
-      stateHtml += `<span class="status status--info status--square" title="Manager→agent over TLS only; agent dials the manager over HTTP. Set [manager].tls_port to enable auto-upgrade.">→ TLS</span>`;
-    }
-  }
-  stateHtml = `<div class="adm-badge-row">${stateHtml}</div>`;
-
-  // Capabilities: chips for active caps; primary radios appended
-  const capsHtml = _adminCapsAndPrimary(a);
-
-  // Last seen
-  const seen = `<div class="adm-seen">${adminEsc(adminAgo(a.last_heartbeat))}</div>`;
-
-  // Actions
-  const actions = _adminActions(a, aid, isPending, isApproved, isDisabled);
-
-  return `<tr>
-    <td>${ident}</td>
-    <td>${stateHtml}</td>
-    <td>${capsHtml}</td>
-    <td>${seen}</td>
-    <td style="text-align:right;">${actions}</td>
-  </tr>`;
-}
-
-// Core-infrastructure chips: rendered under the version line when the
-// agent's host also runs the manager, alarm engine, or InfluxDB.
-// `colocated_infra` is computed server-side in /api/agents.
-const _adminInfraLabels = {
-  manager:      'manager',
-  alarm_engine: 'alarm engine',
-  influxdb:     'influxdb',
-};
-function _adminInfraChips(a) {
-  const infra = Array.isArray(a.colocated_infra) ? a.colocated_infra : [];
-  if (!infra.length) return '';
-  const chips = infra.map(svc => {
-    const label = _adminInfraLabels[svc.role] || svc.role;
-    const ver   = svc.version ? ` ${svc.version}` : '';
-    const title = svc.version
-      ? `${label} colocated on this host — version ${svc.version}`
-      : `${label} colocated on this host — version unknown`;
-    return `<span class="adm-chip infra" title="${adminEsc(title)}">⛬ ${adminEsc(label)}${adminEsc(ver)}</span>`;
-  }).join('');
-  return `<div class="adm-host-meta">${chips}</div>`;
-}
-
-// Capability chips + primary checkboxes inline. Replaces the old
-// separate "Capabilities" and "Primary" columns.
-// Single-select role box: offered to every eligible agent while unheld; once
-// held only the holder shows it (checked). autoHidden hides it everywhere.
 // True when holderId exists in the loaded agent list (empty list = unknown → true).
 function _adminAgentKnown(aid) {
   const list = _adminAgentsCache || [];
   return !list.length || list.some(a => a.agent_id === aid);
 }
 
+// Single-select role: offered while unheld, then only on the holder;
+// autoHidden hides it everywhere. A dangling holder counts as unheld.
 function _singleSelectShow(agentId, holderId, autoHidden) {
   if (autoHidden) return false;
-  // A dangling holder (deleted agent) counts as unheld so the control returns.
   return !holderId || holderId === agentId || !_adminAgentKnown(holderId);
-}
-
-function _adminCapsAndPrimary(a) {
-  const caps = a.capabilities || {};
-  const order = ['llama', 'lms', 'vllm', 'openclaw', 'image_gen', 'perf_controller', 'sysperf'];
-  const enabled = order.filter(k => caps[k]);
-  const primaryCaps = new Set(
-    _adminProviders
-      .filter(p => _adminGlobal['primary_' + p.name + '_id'] === a.agent_id)
-      .map(p => p.capability_key)
-  );
-  const chipHtml = enabled.map(k => {
-    const isP = primaryCaps.has(k);
-    return `<span class="adm-chip ${isP ? 'primary' : ''}" title="${isP ? 'primary ' + k + ' host' : k + ' capability'}">${adminEsc(k)}${isP ? ' ★' : ''}</span>`;
-  }).join('');
-
-  const approved = a.status === 'approved';
-  const aid = adminEsc(a.agent_id);
-  // Phase 4 #4 / #359 — one pool membership chip per pool-picker provider.
-  const poolIdxByProv = {};
-  for (const p of _adminPoolProviders) {
-    poolIdxByProv[p.name] = ((_adminGlobal[p.name + '_pool']) || []).indexOf(a.agent_id);
-  }
-  const poolBadge = _adminPoolProviders.map(p => {
-    const idx = poolIdxByProv[p.name];
-    return idx >= 0
-      ? `<span class="adm-chip primary" title="position ${idx + 1} in ${adminEsc(p.name)} pool (round-robin order)">${adminEsc(p.name)} pool #${idx + 1}</span>`
-      : '';
-  }).join(' ');
-  // Phase 4 #3 — TLS state derived from bind_url + last_cert_issued_at.
-  const bind = a.bind_url || '';
-  const certIssued = a.last_cert_issued_at;
-  let tlsBadge = '';
-  if (bind.startsWith('https://')) {
-    tlsBadge = `<span class="adm-chip tls-on" title="manager dials this agent over TLS; cert chain validates">🔒 TLS</span>`;
-  } else if (certIssued) {
-    const issuedDate = certIssued.slice(0, 10);
-    tlsBadge = `<span class="adm-chip tls-pending" title="cert was issued ${issuedDate} but agent hasn't restarted to bind HTTPS yet">⏳ TLS pending</span>`;
-  } else if (approved) {
-    tlsBadge = `<span class="adm-chip tls-off" title="no cert issued yet — auto-distribution will happen on next heartbeat">○ HTTP</span>`;
-  }
-  // Primary-X: shown on each capable agent while unheld, then only on the
-  // holder (checked). Boxes for capabilities the agent lacks aren't rendered.
-  const primaryChecks = _adminProviders.map(p => {
-    if (!caps[p.capability_key]) return '';
-    const holder = _adminGlobal['primary_' + p.name + '_id'];
-    if (!_singleSelectShow(a.agent_id, holder, false)) return '';
-    const isP = holder === a.agent_id;
-    const pn = adminEsc(p.name);
-    const title = isP ? 'currently primary ' + pn + ' host — uncheck to clear'
-                      : 'mark as primary ' + pn + ' host';
-    return `<label title="${title}">
-        <input type="checkbox" ${isP ? 'checked' : ''}
-               onchange="adminTogglePrimary('${aid}','${pn}',this.checked)"> primary ${pn}
-      </label>`;
-  }).join('');
-  // Manager host — hidden everywhere when the manager auto-detects its host
-  // agent by hostname (bare metal); otherwise offered/held like a primary.
-  let hostToggle = '';
-  if (_singleSelectShow(a.agent_id, _adminGlobal.host_agent_id, _adminHostAutoDetected)) {
-    const isHost = !!a.is_host_agent;
-    const title = isHost
-      ? 'this agent runs on the manager host — uncheck to clear'
-      : 'mark the agent running on the manager host (populates host metrics + version pills; required on Docker installs)';
-    hostToggle = `<label title="${title}">
-        <input type="checkbox" ${isHost ? 'checked' : ''}
-               onchange="adminToggleHostAgent('${aid}',this.checked)"> manager host
-      </label>`;
-  }
-  // Pools stay multi-select — shown on every pool-capable agent (checked if a
-  // member) so a round-robin pool can span several agents.
-  const poolChecks = _adminPoolProviders.map(p => {
-    if (!caps[p.name]) return '';
-    const idx = poolIdxByProv[p.name];
-    const pn = adminEsc(p.name);
-    const title = idx >= 0 ? 'remove from ' + pn + ' pool' : 'add to ' + pn + ' pool (round-robin)';
-    return `<label title="${title}">
-        <input type="checkbox" ${idx >= 0 ? 'checked' : ''}
-               onchange="adminTogglePool('${pn}','${aid}',this.checked)"> in ${pn} pool
-      </label>`;
-  }).join('');
-  const rowInner = primaryChecks + hostToggle + poolChecks;
-  const primary = (approved && rowInner.trim())
-    ? `<div class="adm-primary-row">${rowInner}</div>` : '';
-  // "View dashboard" — jump to the dashboard with this agent selected, one
-  // button per provider capability the (approved) agent holds.
-  const viewBtns = approved
-    ? _adminProviders.filter(p => caps[p.capability_key]).map(p => {
-        const pn = adminEsc(p.name);
-        return `<button class="adm-chip" style="cursor:pointer;border:none;" title="View this agent on the ${pn} dashboard" onclick="_jumpToDashboard('${aid}','${pn}')">⧉ view ${pn}</button>`;
-      }).join(' ')
-    : '';
-  const viewRow = viewBtns ? `<div class="adm-view-row" style="margin-top:6px;">${viewBtns}</div>` : '';
-  return `<div>${chipHtml || '<span class="adm-muted">(no capabilities)</span>'} ${poolBadge} ${tlsBadge}</div>${primary}${viewRow}`;
 }
 
 // Jump to the dashboard with this agent selected for the provider. Only pins a
@@ -990,79 +746,6 @@ async function adminToggleHostAgent(aid, isHost) {
   adminLoadAgents();
 }
 
-// Compact action row: contextual primary CTA + icon strip + overflow.
-// Updates / Restart / Ping in the strip; rare actions (Disable /
-// Re-enable / Delete) in the kebab menu so they don't dominate.
-function _adminActions(a, aid, isPending, isApproved, isDisabled) {
-  if (isPending) {
-    return `<button class="adm-btn primary" onclick="adminApprove('${aid}')">Approve</button>
-            <div class="adm-menu-wrap">
-              <button class="adm-btn-icon" onclick="_adminMenuToggle('${aid}', event)" title="More actions">⋮</button>
-              <div class="adm-menu" id="adminMenu-${aid}">
-                <button class="danger" onclick="adminDelete('${aid}');_adminMenuClose();">Delete</button>
-              </div>
-            </div>`;
-  }
-  if (isDisabled) {
-    return `<button class="adm-btn primary" onclick="adminApprove('${aid}')">Re-enable</button>
-            <div class="adm-menu-wrap">
-              <button class="adm-btn-icon" onclick="_adminMenuToggle('${aid}', event)" title="More actions">⋮</button>
-              <div class="adm-menu" id="adminMenu-${aid}">
-                <button class="danger" onclick="adminDelete('${aid}');_adminMenuClose();">Delete</button>
-              </div>
-            </div>`;
-  }
-  if (isApproved) {
-    const collection = adminCollectionState(a);
-    const isPaused = collection === 'paused';
-    const pauseIcon = isPaused
-      ? `<button class="adm-btn-icon" onclick="adminToggleCollection('${aid}', true)" title="Resume collection">▶</button>`
-      : `<button class="adm-btn-icon" onclick="adminToggleCollection('${aid}', false)" title="Pause collection">⏸</button>`;
-    // Update button is foregrounded only when the manager has a newer
-    // version than what this agent reports. Otherwise it lives in the
-    // overflow menu so it doesn't shout for attention on every row.
-    const updateBtn = a.update_available
-      ? `<button class="adm-btn primary" onclick="adminUpdate('${aid}')" title="Deploy v${adminEsc(_latestAgentVersion || '?')} (current: ${adminEsc(a.version || '?')})">Update</button>`
-      : '';
-    const updateMenu = a.update_available
-      ? ''
-      : `<button onclick="adminUpdate('${aid}');_adminMenuClose();">Re-deploy current version</button><hr>`;
-    return `
-      ${updateBtn}
-      ${pauseIcon}
-      <button class="adm-btn-icon" onclick="adminRestart('${aid}')" title="Restart agent">↻</button>
-      <button class="adm-btn-icon" onclick="adminPing('${aid}')" title="Ping agent">⟁</button>
-      <button class="adm-btn-icon" onclick="adminLogs('${aid}')" title="Stream agent log">📜</button>
-      <div class="adm-menu-wrap">
-        <button class="adm-btn-icon" onclick="_adminMenuToggle('${aid}', event)" title="More actions">⋮</button>
-        <div class="adm-menu" id="adminMenu-${aid}">
-          ${updateMenu}
-          <button onclick="adminEditConfig('${aid}');_adminMenuClose();">Edit config…</button>
-          <button onclick="adminDisable('${aid}');_adminMenuClose();">Disable agent</button>
-          <hr>
-          <button class="danger" onclick="adminDelete('${aid}');_adminMenuClose();">Delete agent</button>
-        </div>
-      </div>`;
-  }
-  return '<span class="adm-muted">—</span>';
-}
-
-// Overflow menu open/close. One menu open at a time.
-let _adminOpenMenuId = null;
-function _adminMenuToggle(aid, evt) {
-  if (evt) { evt.stopPropagation(); }
-  _adminMenuClose();
-  const m = document.getElementById('adminMenu-' + aid);
-  if (m) { m.classList.add('open'); _adminOpenMenuId = aid; }
-}
-function _adminMenuClose() {
-  if (!_adminOpenMenuId) return;
-  const m = document.getElementById('adminMenu-' + _adminOpenMenuId);
-  if (m) m.classList.remove('open');
-  _adminOpenMenuId = null;
-}
-document.addEventListener('click', () => _adminMenuClose());
-
 async function adminApprove(aid) {
   const name = _adminAgentName(aid);
   const r = await fetch(`/api/agents/${aid}/approve`, {method:'POST'});
@@ -1105,6 +788,8 @@ let _adminAgentsCache = [];
 let _adminGlobal = {};
 let _adminHostAutoDetected = false;
 let _latestAgentVersion = null;
+let _adminManagerVersion = null;
+let _adminCollectInterval = null;
 // Pool-picker providers from /api/agents, plus per-card chip selections.
 let _adminPoolProviders = [{ name: 'llama', label: 'llama.cpp', pin_key: 'llama_model_pins' }];
 let _adminPoolSel = 'llama';
@@ -1751,28 +1436,19 @@ async function adminEditConfig(aid) {
   }
 
   const overlay = document.createElement('div');
-  overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.6);'
-    + 'z-index:9999;display:flex;align-items:center;justify-content:center;'
-    + 'backdrop-filter:blur(4px);';
+  overlay.className = 'adm-overlay';
   const box = document.createElement('div');
-  box.style.cssText = 'background:var(--bg-card);border:1px solid var(--border);border-radius:8px;'
-    + 'padding:18px 20px;width:min(1200px,95vw);height:min(80vh,720px);display:flex;flex-direction:column;'
-    + 'color:var(--fg);font-family:system-ui,-apple-system,sans-serif;box-shadow:0 8px 32px rgba(0,0,0,0.5);';
+  box.className = 'adm-modal';
   box.innerHTML = `
-    <div style="font-size:1.05em;font-weight:600;margin-bottom:6px;">Edit ${adminEsc(name)} agent_config.yaml</div>
-    <div style="font-size:0.80em;color:var(--fg-muted);margin-bottom:10px;font-family:monospace;">
-      ${adminEsc(initial.path)} · ${initial.size} bytes
+    <div class="adm-modal-h">
+      <h3>Edit agent config <b>${adminEsc(name)}</b></h3>
+      <span class="path">${adminEsc(initial.path)} · ${adminEsc(String(initial.size))} bytes</span>
     </div>
-    <textarea id="aecText" spellcheck="false" wrap="off" style="flex:1;width:100%;resize:none;
-      font-family:'SFMono-Regular',ui-monospace,monospace;font-size:12.5px;line-height:1.45;
-      background:var(--bg);color:var(--fg);border:1px solid var(--border);border-radius:6px;
-      padding:10px;tab-size:2;overflow:auto;white-space:pre;"></textarea>
-    <div id="aecStatus" style="font-size:0.80em;color:var(--fg-muted);margin-top:8px;min-height:1.2em;"></div>
-    <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:10px;">
-      <button id="aecCancel" style="background:var(--bg-card-alt);color:var(--fg);border:1px solid var(--border);
-        border-radius:5px;padding:7px 16px;cursor:pointer;font-size:0.88em;">Close</button>
-      <button id="aecSave" style="background:var(--accent);color:#fff;border:1px solid var(--border);
-        border-radius:5px;padding:7px 16px;cursor:pointer;font-size:0.88em;font-weight:500;">Save (backup + write)</button>
+    <textarea id="aecText" class="adm-code" spellcheck="false" wrap="off"></textarea>
+    <div class="adm-modal-f">
+      <span class="msg" id="aecStatus"></span>
+      <button type="button" id="aecCancel" class="mcbtn mcbtn-ghost">Close</button>
+      <button type="button" id="aecSave" class="mcbtn mcbtn-pri">Save (backup + write)</button>
     </div>`;
   overlay.appendChild(box);
   document.body.appendChild(overlay);
@@ -1786,6 +1462,7 @@ async function adminEditConfig(aid) {
   overlay.addEventListener('click', (e) => { if (e.target === overlay) cleanup(); });
   box.querySelector('#aecCancel').addEventListener('click', cleanup);
   box.querySelector('#aecSave').addEventListener('click', async () => {
+    status.classList.remove('err');
     if (ta.value === initial.text) { status.textContent = 'No changes to save.'; return; }
     status.textContent = 'saving…';
     let resp, payload;
@@ -1802,7 +1479,7 @@ async function adminEditConfig(aid) {
     }
     if (!resp.ok || !payload.ok) {
       const err = payload && (payload.error || payload.detail) || `HTTP ${resp.status}`;
-      status.innerHTML = `<span style="color:var(--crit);">✗ ${adminEsc(err)}</span>`;
+      status.textContent = `✗ ${err}`; status.classList.add('err');
       _adminLog(`✗ save ${name} config failed — ${err}`, 'err');
       return;
     }
@@ -2219,7 +1896,7 @@ function _adminLogsClose() {
 function _adminLogsTogglePause() {
   _adminLogPaused = !_adminLogPaused;
   const btn = document.getElementById('adminLogsPauseBtn');
-  if (btn) btn.textContent = _adminLogPaused ? 'Resume' : 'Pause';
+  if (btn) { btn.textContent = _adminLogPaused ? '▸ Resume' : '‖ Pause'; btn.classList.toggle('on', _adminLogPaused); }
 }
 
 function _adminLogsClear() {
@@ -2232,38 +1909,31 @@ function _adminLogsOpen(label) {
   if (!p) {
     p = document.createElement('div');
     p.id = 'adminLogsPanel';
-    p.style.cssText = `
-      position:fixed; left:24px; bottom:24px; width:760px; max-width:90vw;
-      max-height:60vh; background:var(--bg); border:1px solid var(--border);
-      border-radius:6px; box-shadow:0 8px 30px color-mix(in srgb, var(--bg) 60%, transparent); z-index:999;
-      display:flex; flex-direction:column; font-family:monospace; font-size:12px;
-    `;
+    p.className = 'adm-dock left';
     p.innerHTML = `
-      <div style="background:var(--bg-card); padding:8px 12px; display:flex; align-items:center; gap:10px; border-radius:6px 6px 0 0;">
-        <div id="adminLogsTitle" style="flex:1; color:var(--fg); font-weight:600;">Agent log</div>
-        <button id="adminLogsPauseBtn" onclick="_adminLogsTogglePause()"
-                style="background:var(--bg-card-alt); border:none; color:var(--fg); cursor:pointer; padding:4px 10px; border-radius:3px;">Pause</button>
-        <button onclick="_adminLogsClear()"
-                style="background:var(--bg-card-alt); border:none; color:var(--fg); cursor:pointer; padding:4px 10px; border-radius:3px;">Clear</button>
-        <button onclick="_adminLogsClose()" style="background:none; border:none; color:var(--fg-muted); cursor:pointer; font-size:16px;">×</button>
+      <div class="adm-dock-h">
+        <span class="microlbl">Agent log</span>
+        <span class="name" id="adminLogsTitle"></span>
+        <button type="button" class="mcbtn mcbtn-ghost mcbtn-sm" id="adminLogsPauseBtn" onclick="_adminLogsTogglePause()">‖ Pause</button>
+        <button type="button" class="mcbtn mcbtn-ghost mcbtn-sm" onclick="_adminLogsClear()">Clear</button>
+        <button type="button" class="adm-ib" onclick="_adminLogsClose()" aria-label="Close">×</button>
       </div>
-      <div id="adminLogsBody" style="flex:1; overflow-y:auto; padding:10px 12px; color:var(--fg); white-space:pre-wrap; word-break:break-all; line-height:1.4;"></div>`;
+      <div class="adm-dock-b" id="adminLogsBody"></div>`;
     document.body.appendChild(p);
   }
   p.style.display = 'flex';
-  document.getElementById('adminLogsTitle').textContent = `Agent log — ${label}`;
+  document.getElementById('adminLogsTitle').textContent = label;
   document.getElementById('adminLogsBody').textContent = '';
   _adminLogPaused = false;
   const btn = document.getElementById('adminLogsPauseBtn');
-  if (btn) btn.textContent = 'Pause';
+  if (btn) { btn.textContent = '‖ Pause'; btn.classList.remove('on'); }
 }
 
 function _adminLogsAppend(text, level) {
   const body = document.getElementById('adminLogsBody');
   if (!body) return;
   const line = document.createElement('div');
-  line.style.color = level === 'err' ? 'var(--crit)'
-                    : level === 'meta' ? 'var(--accent-2)' : 'var(--fg)';
+  if (level === 'err' || level === 'meta') line.className = 'l-' + level;
   line.textContent = text;
   body.appendChild(line);
   // Auto-scroll only if user is already near the bottom — preserves their
@@ -2279,23 +1949,18 @@ function _adminUpdateOpen(label) {
   if (!p) {
     p = document.createElement('div');
     p.id = 'adminUpdatePanel';
-    p.style.cssText = `
-      position:fixed; right:24px; bottom:24px; width:760px; max-width:90vw;
-      max-height:60vh; background:var(--bg); border:1px solid var(--border);
-      border-radius:6px; box-shadow:0 8px 30px rgba(0,0,0,0.6); z-index:1000;
-      display:flex; flex-direction:column; font-family:monospace; font-size:12px;
-      color:var(--fg);
-    `;
+    p.className = 'adm-dock right';
     p.innerHTML = `
-      <div style="background:var(--bg-card); padding:8px 12px; display:flex; align-items:center; gap:10px; border-radius:6px 6px 0 0; border-bottom:1px solid var(--border);">
-        <div id="adminUpdateTitle" style="flex:1; color:var(--fg); font-weight:600;">Self-update</div>
-        <button onclick="_adminUpdateClose()" style="background:none; border:none; color:var(--fg-muted); cursor:pointer; font-size:16px;">×</button>
+      <div class="adm-dock-h">
+        <span class="microlbl">Self-update</span>
+        <span class="name" id="adminUpdateTitle"></span>
+        <button type="button" class="adm-ib" onclick="_adminUpdateClose()" aria-label="Close">×</button>
       </div>
-      <div id="adminUpdateLog" style="flex:1; overflow-y:auto; padding:10px 12px; color:var(--fg); white-space:pre-wrap; word-break:break-all;"></div>`;
+      <div class="adm-dock-b" id="adminUpdateLog"></div>`;
     document.body.appendChild(p);
   }
   p.style.display = 'flex';
-  document.getElementById('adminUpdateTitle').textContent = `Self-update — ${label}`;
+  document.getElementById('adminUpdateTitle').textContent = label;
   document.getElementById('adminUpdateLog').textContent = '';
   _adminUpdatePanel = p;
 }
@@ -2320,15 +1985,11 @@ function _adminUpdateLog(msg, level) {
     level = 'stage';
   }
   const ts = new Date().toLocaleTimeString();
-  const color = level === 'err' ? 'var(--crit)'
-              : level === 'stage' ? 'var(--accent)'
-              : level === 'ok' ? 'var(--ok)'
-              : 'var(--fg)';
   const line = document.createElement('div');
-  line.style.color = color;
-  if (level === 'stage' && /^\s*(╔|║|╚|\+\+\+)/.test(msg)) {
-    line.style.fontWeight = '600';
-  }
+  const cls = [];
+  if (level === 'err' || level === 'stage' || level === 'ok') cls.push('l-' + level);
+  if (level === 'stage' && /^\s*(╔|║|╚|\+\+\+)/.test(msg)) cls.push('l-bold');
+  if (cls.length) line.className = cls.join(' ');
   line.textContent = `[${ts}] ${msg}`;
   log.appendChild(line);
   log.scrollTop = log.scrollHeight;
@@ -2358,10 +2019,11 @@ async function adminToggleAuth(disabled) {
     body: JSON.stringify({auth_disabled: !!disabled})
   });
   if (r.ok) {
-    _adminLog(`✓ agent auth ${disabled ? 'disabled (trusted-LAN mode)' : 'enabled'} globally`);
+    _adminLog(`✓ agent security ${disabled ? 'off — agents accept unauthenticated control calls' : 'on'}`);
   } else {
-    _adminLog(`✗ global auth toggle failed (HTTP ${r.status})`, 'err');
+    _adminLog(`✗ agent security toggle failed (HTTP ${r.status})`, 'err');
   }
+  adminLoadAgents();
 }
 
 async function adminPushCaToAgents() {
