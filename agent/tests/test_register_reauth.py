@@ -80,14 +80,18 @@ def test_fingerprint_input_is_reboot_stable():
 
 
 def test_register_posts_carry_bearer_token():
-    src = _extract_func("registry_register_blocking")
-    posts = [m for m in re.finditer(r"_post_session\.post\((.*?)\n\s+\)", src, re.DOTALL)
+    srcs = {name: _extract_func(name)
+            for name in ("_post_registration", "registry_register_blocking")}
+    posts = [m for src in srcs.values()
+             for m in re.finditer(r"_post_session\.post\((.*?)\n\s+\)", src, re.DOTALL)
              if "/api/agents/register" in m.group(1)]
     assert len(posts) == 2, "expected exactly two register POSTs"
     for m in posts:
         assert "headers=" in m.group(1), \
             f"register POST missing Authorization headers: {m.group(1)[:120]}"
-    assert 'reg_headers = {"Authorization": f"Bearer {cached}"} if cached else {}' in src
+    assert 'reg_headers = {"Authorization": f"Bearer {cached}"} if cached else {}' \
+        in srcs["registry_register_blocking"]
+    assert 'headers={"Authorization": f"Bearer {tok}"}' in srcs["_post_registration"]
 
 
 def test_403_handler_does_not_clobber_registration_body():

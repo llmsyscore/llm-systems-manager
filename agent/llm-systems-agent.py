@@ -72,7 +72,7 @@ except ImportError:
                 fh.write(content)
         tmp.replace(p)
 
-VERSION = "v2026.09.01-2"
+VERSION = "v2026.09.01-3"
 
 # LMS ps busy-status substrings, mirroring manager energy.LMS_BUSY_MARKERS;
 # transitional states (LOADING/UNLOADING/DOWNLOADING) are not busy (#619).
@@ -1728,6 +1728,17 @@ def _machine_identity() -> str:
     return ident
 
 
+# Host in the bind_url the manager last accepted; heartbeat re-registers on change.
+_last_advertised_host: Optional[str] = None
+
+
+def _note_advertised(body: dict) -> None:
+    """Record the bind_url host from an accepted registration body."""
+    global _last_advertised_host
+    from urllib.parse import urlparse
+    _last_advertised_host = urlparse(body.get("bind_url") or "").hostname
+
+
 def _registration_body() -> dict[str, Any]:
     # Reboot-stable fingerprint (manager re-auth factor): no boot_time/kernel/IP inputs.
     fp_input = f"{CONFIG.AGENT_HOSTNAME}|{CONFIG.AGENT_OS}|{_machine_identity()}"
@@ -1814,6 +1825,48 @@ def _advertise_host() -> str:
         return CONFIG.AGENT_HOSTNAME
 
 
+def _post_registration(body: dict, tok: str) -> bool:
+    """POST a registration body with the bearer token; True when the manager accepts it."""
+    rr = _post_session.post(
+        f"{CONFIG.MANAGER_URL.rstrip('/')}/api/agents/register",
+        json=body, timeout=5,
+        headers={"Authorization": f"Bearer {tok}"},
+    )
+    if rr.ok:
+        _note_advertised(body)
+        logger.info("registration refresh OK (bind_url=%s)", body.get("bind_url"))
+        return True
+    logger.warning("registration refresh returned %s: %s", rr.status_code, rr.text[:160])
+    return False
+
+
+def _refresh_registration(tok: str) -> bool:
+    """Re-POST the current registration body."""
+    return _post_registration(_registration_body(), tok)
+
+
+_READVERTISE_RETRY_S = 600.0
+_readvertise_retry_at = 0.0
+
+
+def _maybe_readvertise(tok: str) -> None:
+    """Re-register when the routable address differs from the last accepted one."""
+    global _readvertise_retry_at
+    if time.monotonic() < _readvertise_retry_at:
+        return
+    host = _advertise_host()
+    if host == _last_advertised_host:
+        return
+    logger.info("advertised host %s -> %s; re-registering", _last_advertised_host, host)
+    try:
+        ok = _refresh_registration(tok)
+    except Exception as e:
+        logger.warning("re-advertise registration failed: %s", e)
+        ok = False
+    if not ok:
+        _readvertise_retry_at = time.monotonic() + _READVERTISE_RETRY_S
+
+
 def _persist_token(token: str) -> None:
     p = Path(CONFIG.TOKEN_FILE)
     try:
@@ -1858,17 +1911,7 @@ def registry_register_blocking() -> None:
                     logger.info("token cache validated; agent_id=%s", d.get("agent_id"))
                     # Re-POST registration so bind_url (http→https) refreshes; manager matches by (hostname, os) and updates in place.
                     try:
-                        body = _registration_body()
-                        rr = _post_session.post(
-                            f"{CONFIG.MANAGER_URL.rstrip('/')}/api/agents/register",
-                            json=body, timeout=5,
-                            headers={"Authorization": f"Bearer {cached}"},
-                        )
-                        if rr.ok:
-                            logger.info("registration refresh OK (bind_url=%s)", body.get("bind_url"))
-                        else:
-                            logger.warning("registration refresh returned %s: %s",
-                                           rr.status_code, rr.text[:160])
+                        _refresh_registration(cached)
                     except Exception as e:
                         logger.warning("registration refresh failed: %s", e)
                     return
@@ -1885,6 +1928,7 @@ def registry_register_blocking() -> None:
                 json=body, timeout=10, headers=reg_headers,
             )
             if r.ok:
+                _note_advertised(body)
                 d = r.json()
                 agent_id = d.get("agent_id")
                 status = d.get("status")
@@ -2072,6 +2116,7 @@ def heartbeat_loop() -> None:
                     logger.info("heartbeat succeeded after re-enable — collection resumed")
                 _maybe_upgrade_manager_https(ack)
                 _maybe_sync_ae_url(ack)
+                _maybe_readvertise(tok)
             elif r.status_code in (401, 403):
                 with _runtime_lock:
                     was_approved = _state.get("approved")
