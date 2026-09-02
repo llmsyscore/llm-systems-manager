@@ -217,15 +217,23 @@
     const nums = $('auPnums');
     if (!nums) return;
     const first = state.page === 1, last = state.page === pages;
-    let h = `<button type="button" title="First" data-go="1" ${first ? 'disabled' : ''}>«</button>` +
-            `<button type="button" title="Previous" data-go="${state.page - 1}" ${first ? 'disabled' : ''}>‹</button>`;
-    pageList(state.page, pages).forEach(n => {
-      h += n === '…' ? '<span class="dots">…</span>'
-        : `<button type="button" class="${n === state.page ? 'on' : ''}" data-go="${n}">${n}</button>`;
-    });
-    h += `<button type="button" title="Next" data-go="${state.page + 1}" ${last ? 'disabled' : ''}>›</button>` +
-         `<button type="button" title="Last" data-go="${pages}" ${last ? 'disabled' : ''}>»</button>`;
-    nums.innerHTML = h;
+    const btn = (label, go, opts = {}) => {
+      const b = document.createElement('button');
+      b.type = 'button'; b.textContent = label; b.dataset.go = String(go);
+      if (opts.title) b.title = opts.title;
+      if (opts.on) b.className = 'on';
+      if (opts.disabled) b.disabled = true;
+      return b;
+    };
+    nums.replaceChildren(
+      btn('«', 1, { title: 'First', disabled: first }),
+      btn('‹', state.page - 1, { title: 'Previous', disabled: first }),
+      ...pageList(state.page, pages).map(n => {
+        if (n === '…') { const d = document.createElement('span'); d.className = 'dots'; d.textContent = '…'; return d; }
+        return btn(String(n), n, { on: n === state.page });
+      }),
+      btn('›', state.page + 1, { title: 'Next', disabled: last }),
+      btn('»', pages, { title: 'Last', disabled: last }));
   }
   function syncPerSelect() {
     const sel = $('auPer');
@@ -433,7 +441,8 @@
   function renderSettings() {
     const body = $('auCfgBody'), foot = $('auCfgFoot');
     if (!body || !cfg || !cfgForm) return;
-    const ret = cfgForm.retention, per = cfgForm.pageSize;
+    const ret = Math.max(0, Math.floor(Number(cfgForm.retention) || 0));
+    const per = Math.max(10, Math.floor(Number(cfgForm.pageSize) || 25));
     const p = stats && stats.purge ? stats.purge : {};
     const purge = p.ts ? `last purge <b>${esc(fmtShort(p.ts))}</b> removed <b>${Number(p.removed || 0).toLocaleString()}</b> rows` : 'no purge yet this session';
     const execOn = cfgForm.enabled['autopilot.executor'] !== false;
@@ -441,10 +450,10 @@
       <div class="au-cfg-grid">
         <div>
           <div class="st-field"><label for="auCfgRet">Keep entries for</label>
-            <div class="row"><input class="au-in" id="auCfgRet" type="number" min="0" max="3650" value="${esc(ret)}"><span class="unit">days</span></div>
+            <div class="row"><input class="au-in" id="auCfgRet" type="number" min="0" max="3650" value="${ret}"><span class="unit">days</span></div>
             <div class="help">Older entries are purged once every 24 hours and at manager start. Set 0 to keep everything (row cap of 100,000 still applies).</div></div>
           <div class="st-field"><label for="auCfgPer">Rows per page</label>
-            <div class="row"><select class="au-sel" id="auCfgPer">${[10, 25, 50, 100].map(n => `<option ${n === Number(per) ? 'selected' : ''}>${n}</option>`).join('')}</select></div>
+            <div class="row"><select class="au-sel" id="auCfgPer">${[10, 25, 50, 100].map(n => `<option ${n === per ? 'selected' : ''}>${n}</option>`).join('')}</select></div>
             <div class="help">Default page size on the Audit Log tab. The page dropdown overrides it per session.</div></div>
           <div class="st-field"><label>Automated sources</label>
             ${toggle('Autopilot actions', execOn, 'data-ev="autopilot.executor"')}

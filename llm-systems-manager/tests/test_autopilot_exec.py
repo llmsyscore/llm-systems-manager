@@ -107,8 +107,10 @@ def test_prod_audit_prunes_past_cap(monkeypatch, tmp_path):
     monkeypatch.setattr(ap, "_AUDIT_MAX_ROWS", 50)
     monkeypatch.setattr(ap, "_AUDIT_PRUNE_EVERY", 10)
     for _ in range(120):
-        ap._prod_audit("autopilot:load", "m1", "ok")
+        ap._prod_audit("autopilot:load", "m1", "ok", {"model": "m1", "reason": "test"})
     check = sqlite3.connect(str(db_path))
+    row = check.execute("SELECT auth, event, detail FROM audit_log WHERE id=120").fetchone()
+    assert row[0] == "internal" and row[1] == "autopilot.executor" and '"model": "m1"' in row[2]
     count = check.execute("SELECT COUNT(*) FROM audit_log").fetchone()[0]
     assert count <= 50 + ap._AUDIT_PRUNE_EVERY
     assert check.execute("SELECT MAX(id) FROM audit_log").fetchone()[0] == 120

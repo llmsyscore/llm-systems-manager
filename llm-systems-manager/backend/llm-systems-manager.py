@@ -159,7 +159,7 @@ def _local_hostname() -> str:
 # banner reads it. Bump suffix (-1, -2, …) for same-day iterations; roll
 # the date for a new day's first change.
 # ---------------------------------------------------------------------------
-__version__ = "v2026.09.02-2"
+__version__ = "v2026.09.02-3"
 
 # Wall-clock at first import (Cheroot main process); the shutdown banner
 # reads it for the uptime line.
@@ -4224,7 +4224,7 @@ def _settings_drift(ae_flat: dict, file_vals: "dict | None",
 
 
 # Hot settings (catalog hot=True): prefix → runtime reloader run after a save.
-_HOT_RELOADERS = {"manager.audit.": lambda: _audit_reload_config()}
+_HOT_RELOADERS = {"manager.audit.": _audit_reload_config}
 
 
 @app.route("/api/admin/settings", methods=["PUT"])

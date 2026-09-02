@@ -45,7 +45,8 @@ def _live_audit_count():
     try:
         conn = sqlite3.connect(f"file:{_LIVE_DB}?mode=ro", uri=True)
         try:
-            return conn.execute("SELECT COUNT(*) FROM audit_log").fetchone()[0]
+            # Loopback rows only: the live manager keeps writing LAN/autopilot rows meanwhile.
+            return conn.execute("SELECT COUNT(*) FROM audit_log WHERE ip='127.0.0.1'").fetchone()[0]
         finally:
             conn.close()
     except sqlite3.Error:
@@ -71,7 +72,7 @@ def _live_audit_untouched():
     yield
     after = _live_audit_count()
     if before is not None and after is not None and after != before:
-        pytest.fail(f"tests wrote {after - before} row(s) into the LIVE audit_log — DB isolation broke")
+        pytest.fail(f"tests wrote {after - before} loopback row(s) into the LIVE audit_log — DB isolation broke")
 
 
 @pytest.fixture(autouse=True, scope="session")
