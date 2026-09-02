@@ -141,10 +141,9 @@ describe('polling and the enable toggle', () => {
     const win = runHarness({
       sources: [gwSrc],
       bodyHtml: `<div id="adminTab"><div id="admin-routing">${CARD}</div></div>`,
-      bootstrap: `window.fetch = () => Promise.resolve({ ok: true, status: 200, json: async () => JSON.parse(atob('${Buffer.from(JSON.stringify(FLOW)).toString('base64')}')) });
-        window.__done = GatewayView.refresh();`,
     });
-    await win.__done;
+    win.fetch = () => Promise.resolve({ ok: true, status: 200, json: async () => FLOW });
+    await win.GatewayView.refresh();
     expect(win.document.getElementById('rtGatewayCard').hidden).toBe(false);
   });
 

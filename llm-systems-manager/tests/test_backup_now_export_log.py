@@ -158,7 +158,7 @@ def test_backup_now_is_audited():
 
 
 def test_scheduled_backup_runs_serialise_on_one_lock(monkeypatch):
-    import importlib, threading
+    import importlib
     mgr = importlib.import_module("llm-systems-manager")
     seen = []
     def fake(p, k, m):
