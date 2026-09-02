@@ -54,6 +54,9 @@ def _warn_pool_read_failed(e: Exception) -> None:
 # Per-provider gateway sub-path -> agent passthrough route (allowlist), for
 # every gateway_enabled spec. The Flask routes stay per-provider (bottom).
 # Built once at import; a gateway_enabled change takes effect on restart (#651).
+# Label handed to dashboard-session callers (no bearer presented).
+GATEWAY_SESSION_LABEL = "session"
+
 _GATEWAY_SUBS = ("chat/completions", "completions")
 _GATEWAY_PROVIDERS = tuple(
     p for p in providers.names()
@@ -86,7 +89,7 @@ def _label(agent: dict) -> str:
 
 def _client_identity() -> "tuple[str, str]":
     """(label, ip) for the caller: its api-key label, else the session label."""
-    label = auth.gateway_key_label() or auth.GATEWAY_SESSION_LABEL
+    label = auth.gateway_key_label() or GATEWAY_SESSION_LABEL
     return label, (flask_request.remote_addr or "")
 
 

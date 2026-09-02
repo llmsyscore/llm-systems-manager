@@ -227,20 +227,19 @@ def _current(path: str, root=None):
     return node
 
 
-_DEFAULTS_CACHE: "Optional[dict]" = None
+_DEFAULTS_CACHE: dict = {"value": None}
 
 
 def defaults() -> dict:
     """{path: pydantic model default} for every non-secret entry; a secret
     never has a shipped default worth showing."""
-    global _DEFAULTS_CACHE
-    if _DEFAULTS_CACHE is not None:
-        return dict(_DEFAULTS_CACHE)
+    if _DEFAULTS_CACHE["value"] is not None:
+        return dict(_DEFAULTS_CACHE["value"])
     out: dict[str, Any] = {}
     try:
         root = _FileOnlySettings()
     except Exception:
-        _DEFAULTS_CACHE = {}
+        _DEFAULTS_CACHE["value"] = {}
         return {}
     for e in CATALOG:
         if e["secret"]:
@@ -248,7 +247,7 @@ def defaults() -> dict:
         val = _current(e["path"], root)
         if val is not None:
             out[e["path"]] = val
-    _DEFAULTS_CACHE = out
+    _DEFAULTS_CACHE["value"] = out
     return dict(out)
 
 

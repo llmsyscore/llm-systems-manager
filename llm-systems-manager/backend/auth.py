@@ -219,8 +219,6 @@ def auth_mode() -> str:
 # padding on a bare base64 key is not a separator.
 _GW_LABEL_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9 ._-]{0,63}$")
 
-# Label handed to dashboard-session callers (no bearer presented).
-GATEWAY_SESSION_LABEL = "session"
 
 
 def _raw_gateway_api_keys() -> list:
