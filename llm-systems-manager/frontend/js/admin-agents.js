@@ -406,10 +406,13 @@
       + `<span class="sortable${sort.key === 'endpoint' ? ' on' : ''}" data-sort="endpoint"${sort.key === 'endpoint' ? ` data-dir="${sort.dir}"` : ''}>Endpoint</span>`
       + `<span></span></div>`;
     let body;
+    let noMatch = false;
     if (!c.agents.length) body = '<div class="ag-empty">No agents registered yet. Install an agent and it appears here for approval.</div>';
-    else if (!rows.length) body = `<div class="ag-empty">No agents match <b>${esc(filterQ)}</b></div>`;
+    else if (!rows.length) { body = '<div class="ag-empty">No agents match <b class="q"></b></div>'; noMatch = true; }
     else body = rows.map(a => rowHtml(a, nowMs)).join('');
     host.innerHTML = hd + body;
+    // The query is operator input; set it as text so it never parses as markup.
+    if (noMatch) host.querySelector('.ag-empty .q').textContent = filterQ;
   }
   // One stamp for the whole Admin tab, in the System Health header.
   function renderStamp() {
@@ -467,8 +470,6 @@
     const vh = window.innerHeight || document.documentElement.clientHeight || 0;
     if (vh && mh && r.bottom + 6 + mh > vh - 8) m.style.top = `${Math.max(8, Math.round(r.top - 6 - mh))}px`;
   }
-  function agentById(aid) { return ctx().agents.find(a => a.agent_id === aid); }
-
   function refreshNow() {
     st.busy = true;
     renderStamp();
