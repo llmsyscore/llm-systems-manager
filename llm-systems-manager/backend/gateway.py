@@ -174,12 +174,15 @@ def _dial_stream(agent: dict, path: str, body: dict):
     for base in agent_registry.agent_callback_urls(agent):
         url = f"{base}{path}"
         try:
-            return requests.post(
+            r = requests.post(
                 url, json=body, stream=True,
                 headers={"Authorization": f"Bearer {token}"},
                 timeout=(5, _read_timeout_s()),
                 **agent_registry.agent_tls_kwargs(url))
+            agent_registry.note_dial_result(agent, base, True)
+            return r
         except requests.exceptions.RequestException as e:
+            agent_registry.note_dial_error(agent, base, e)
             log.debug("gateway dial %s failed: %s", url, type(e).__name__)
     return None
 

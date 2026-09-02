@@ -159,7 +159,7 @@ def _local_hostname() -> str:
 # banner reads it. Bump suffix (-1, -2, …) for same-day iterations; roll
 # the date for a new day's first change.
 # ---------------------------------------------------------------------------
-__version__ = "v2026.09.01-3"
+__version__ = "v2026.09.01-4"
 
 # Wall-clock at first import (Cheroot main process); the shutdown banner
 # reads it for the uptime line.
@@ -5426,6 +5426,7 @@ def agents_log_stream(agent_id: str):
                     stream=True, timeout=(10, 60),  # agent keepalive 15s; reap a silent stream
                     **agent_registry.agent_tls_kwargs(full),
                 )
+                agent_registry.note_dial_result(agent, base, True)
                 resp = app.response_class(
                     proxies.thread_pumped(upstream, "/agent/log/stream"),
                     mimetype=upstream.headers.get("Content-Type", "text/event-stream"),
@@ -5440,6 +5441,7 @@ def agents_log_stream(agent_id: str):
                 slot_handed = True
                 return resp
             except Exception as e:
+                agent_registry.note_dial_error(agent, base, e)
                 last_err = f"{full}: {type(e).__name__}: {e}"
                 continue
         return _err_json("all callback URLs failed", 502, detail=last_err)
@@ -5534,6 +5536,7 @@ def agents_self_update(agent_id: str):
                     stream=True, timeout=(10, 60),  # agent emits a keepalive ≤10s during quiet pip phases
                     **agent_registry.agent_tls_kwargs(full),
                 )
+                agent_registry.note_dial_result(agent, base, True)
                 # Non-SSE / error upstream (e.g. the frozen 501 JSON fallback):
                 # emit a clean done(ok:false) frame at 200, not the raw body. (#403)
                 ctype = upstream.headers.get("Content-Type", "")
@@ -5598,6 +5601,7 @@ def agents_self_update(agent_id: str):
                 slot_handed = True
                 return resp
             except Exception as e:
+                agent_registry.note_dial_error(agent, base, e)
                 last_err = f"{full}: {type(e).__name__}: {e}"
                 continue
         return _err_json("all callback URLs failed", 502, detail=last_err)

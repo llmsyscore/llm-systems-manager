@@ -172,6 +172,7 @@ def _proxy_sid(method: str, sid: str, agent_path: str,
                         stream=True, timeout=(5, _STREAM_READ_TIMEOUT_S),
                         **agent_registry.agent_tls_kwargs(full),
                     )
+                    agent_registry.note_dial_result(agent, base, True)
 
                     log.info("proxy SSE %s → agent:%s host=%s",
                              agent_path, agent["agent_id"][:8], agent.get("hostname"))
@@ -193,6 +194,7 @@ def _proxy_sid(method: str, sid: str, agent_path: str,
                     slot_handed = True
                     return response
                 except Exception as e:
+                    agent_registry.note_dial_error(agent, base, e)
                     last_err = f"{full}: {type(e).__name__}: {e}"
                     continue
                 finally:

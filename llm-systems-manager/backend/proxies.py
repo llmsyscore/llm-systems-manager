@@ -444,6 +444,7 @@ def proxy_stream_to_primary(kind: str, path: str, *, primary_kind: "str | None" 
                     stream=True, timeout=(5, read_timeout),
                     **agent_registry.agent_tls_kwargs(full),
                 )
+                agent_registry.note_dial_result(agent, base, True)
 
                 log.info("proxy SSE %s → agent:%s host=%s rc=%s",
                          path, agent["agent_id"][:8], agent.get("hostname"),
@@ -463,6 +464,7 @@ def proxy_stream_to_primary(kind: str, path: str, *, primary_kind: "str | None" 
                 slot_handed = True
                 return response
             except Exception as e:
+                agent_registry.note_dial_error(agent, base, e)
                 last_err = f"{full}: {type(e).__name__}: {e}"
                 continue
             finally:

@@ -66,6 +66,8 @@ __all__ = [
     "browser_reachable_bind_url",
     "is_local_bind_url",
     "agent_callback_urls",
+    "note_dial_result",
+    "note_dial_error",
     "agent_tls_kwargs",
     "agent_request",
     "primary_agent",
@@ -111,6 +113,10 @@ _pool_rr_index: "dict[str, int]" = {}
 # callback URLs tried serially). Connect is capped at this; the caller's read
 # timeout is preserved for slow-but-alive operations.
 _AGENT_CONNECT_TIMEOUT_S = 4.0
+
+# agent_id -> last callback base that connected; dialed first next time.
+_dial_pref_lock = threading.Lock()
+_dial_pref: "dict[str, str]" = {}
 
 # Throttle agents.json disk writes on the heartbeat hot path. The in-memory
 # registry cache is mutated in place every beat (liveness reads stay fresh);
@@ -476,7 +482,32 @@ def agent_callback_urls(agent: dict) -> list:
                 fallback = fallback.rstrip("/")
                 if fallback not in out:
                     out.append(fallback)
+
+    # Dial the base that last connected first.
+    pref = _dial_pref.get(agent.get("agent_id") or "")
+    if pref in out:
+        out.remove(pref)
+        out.insert(0, pref)
     return out
+
+
+def note_dial_result(agent: dict, base: str, ok: bool) -> None:
+    """Record whether ``base`` connected for this agent; a base that just
+    failed loses its preferred slot, a base that connected takes it."""
+    aid = agent.get("agent_id")
+    if not aid or not base:
+        return
+    with _dial_pref_lock:
+        if ok:
+            _dial_pref[aid] = base
+        elif _dial_pref.get(aid) == base:
+            _dial_pref.pop(aid, None)
+
+
+def note_dial_error(agent: dict, base: str, exc: BaseException) -> None:
+    """Demote ``base`` only when the connection itself failed."""
+    if isinstance(exc, requests.exceptions.ConnectionError):
+        note_dial_result(agent, base, False)
 
 
 def agent_tls_kwargs(url: str) -> dict:
@@ -512,8 +543,10 @@ def agent_request(method: str, agent: dict, path: str, **kwargs
             call_kwargs.update(agent_tls_kwargs(full))
         try:
             resp = requests.request(method, full, **call_kwargs)
+            note_dial_result(agent, base, True)
             return resp, tried, None
         except Exception as e:
+            note_dial_error(agent, base, e)
             log.warning("agent_request %s %s failed: %s: %s", method, full, type(e).__name__, e)
             last_err = f"{full}: request failed"
             continue
@@ -1573,6 +1606,8 @@ def _agents_delete(agent_id: str):
                 _reconcile_agent_refs(data)
             save_agents(data)
     provider_state.STORE.evict(agent_id)
+    with _dial_pref_lock:
+        _dial_pref.pop(agent_id, None)
     log.warning("agent deleted by %s: id=%s", flask_request.remote_addr, agent_id)
     return jsonify({"ok": True})
 
