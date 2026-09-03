@@ -1167,8 +1167,8 @@ function _sdRenderLayout(scope) {
     ? Object.entries(SettingsLib.ROLE_PRESETS).map(([id, p]) => {
         const widths = _sdRoleWidths(cols, id, scope, vis);
         const noop = id !== 'uniform' && widths.join(',') === uniformW;
-        const title = noop ? `${p.label} — no card on this page changes width` : p.label;
-        return `<button type="button" class="sd-tile${id === current ? ' on' : ''}${noop ? ' noop' : ''}" data-sd="rpreset" data-id="${id}" title="${_esc(title)}"${noop ? ' aria-disabled="true"' : ''}>${_sdRoleTileSvg(cols, widths)}<span class="tn">${_esc(p.label)}</span></button>`;
+        const why = noop ? (p.widths.chart ? 'no charts here' : 'no tables here') : '';
+        return `<button type="button" class="sd-tile${id === current ? ' on' : ''}${noop ? ' noop' : ''}" data-sd="rpreset" data-id="${id}" title="${_esc(p.label)}"${noop ? ' disabled' : ''}>${_sdRoleTileSvg(cols, widths)}<span class="tn">${_esc(p.label)}</span>${noop ? `<span class="tw">${why}</span>` : ''}</button>`;
       }).join('') + customTile
     : SettingsLib.presetsFor(cols).map(([id, p]) =>
         `<button type="button" class="sd-tile${id === current ? ' on' : ''}" data-sd="preset" data-id="${id}" title="${_esc(p.label)}">${_sdTileSvg(cols, p.sizes)}<span class="tn">${_esc(p.label)}</span></button>`).join('') + customTile;
@@ -1181,7 +1181,7 @@ function _sdRenderLayout(scope) {
       <button type="button" data-sd="density" data-v="comfortable" class="${dens === 'comfortable' ? 'on' : ''}">Comfortable</button>
       <button type="button" data-sd="density" data-v="compact" class="${dens === 'compact' ? 'on' : ''}">Compact</button></div>`;
   const presetHelp = flow
-    ? 'Presets size cards by what they hold — charts, stat tiles, tables — across the whole page. The ⤢ button on a card still sets its own width.'
+    ? 'A preset widens only cards of its kind — charts, tables and lists, or the page\'s hero card — so on a page without that kind it changes nothing and is greyed out. The ⤢ button on a card still sets its own width.'
     : 'Presets for the selected column count. They size the first cards in your current order; the rest stay 1×1.';
   el.innerHTML = `
     <div class="sd-sh"><h3>Layout</h3><span class="meta">${cols === 'auto' ? 'auto columns' : cols + ' columns'}${flow ? ' · flow' : ''} · ${_esc(String(pname).toLowerCase())}</span>

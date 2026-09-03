@@ -73,7 +73,8 @@
 .sd-tile.on svg rect { fill: color-mix(in srgb, var(--accent) 70%, var(--border-strong)); }
 .sd-tile.on .tn { color: var(--accent); }
 .sd-tile.custom { border-style: dashed; cursor: default; }
-.sd-tile.noop { opacity: .45; }
+.sd-tile.noop { opacity: .5; cursor: not-allowed; }
+.sd-tile .tw { font: 9.5px var(--font-mono); color: var(--fg-dim); text-align: center; margin-top: -3px; }
 .sd-tile.custom svg rect { fill: var(--border); }
 .sd-tile:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 
