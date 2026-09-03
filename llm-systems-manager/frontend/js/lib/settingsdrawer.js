@@ -1,5 +1,5 @@
-// Settings drawer data: layout presets per column count, theme catalog (with
-// legacy-name migration) and the per-page drawer scope. Dual-mode lib (window.SettingsLib).
+// Settings drawer data: layout presets per column count, flow-engine roles and
+// role presets, theme catalog and the per-page drawer scope. Dual-mode lib (window.SettingsLib).
 (function () {
   // sizes: visible-card index → "<cols>x<rows>"; cards past the last index stay 1x1.
   const PRESETS = {
@@ -61,6 +61,65 @@
     if (v === 'auto') return 'auto';
     const n = Number(v);
     return (n >= 2 && n <= 6) ? n : 3;
+  }
+
+  // Flow engine (#823): cards span content-height rows; presets size cards by role.
+  const ENGINES = ['grid', 'flow'];
+  const DEFAULT_ENGINE = 'grid';
+  const DENSITIES = ['comfortable', 'compact'];
+  const DEFAULT_DENSITY = 'comfortable';
+  const FLOW_UNIT_PX = 8;
+  const FLOW_ROW_GAP_PX = 8;
+  function normalizeEngine(v) { return ENGINES.includes(v) ? v : DEFAULT_ENGINE; }
+  function normalizeDensity(v) { return DENSITIES.includes(v) ? v : DEFAULT_DENSITY; }
+
+  // Card id → role. Unlisted ids (and ov-borrow-* shells) resolve through roleOf().
+  const CARD_ROLES = {
+    'llama-server': 'chart', 'llama-throughput': 'chart', 'gpu': 'chart', 'cpu-overall': 'chart',
+    'ram': 'chart', 'network': 'chart', 'disk-usage': 'chart', 'disk-io': 'chart', 'ups': 'stats',
+    'aio': 'chart', 'psu': 'chart', 'smart-device': 'table',
+    'lms-models': 'list', 'lms-active': 'chart', 'lms-cpu': 'chart', 'lms-ram': 'chart',
+    'lms-network': 'chart', 'lms-disk': 'chart', 'lms-io': 'chart', 'lms-power': 'chart',
+    'vllm-server': 'stats', 'vllm-requests': 'stats', 'vllm-kv': 'chart', 'vllm-throughput': 'chart',
+    'vllm-cpu': 'chart', 'vllm-ram': 'chart', 'vllm-network': 'chart', 'vllm-disk': 'chart', 'vllm-io': 'chart',
+    'services': 'table', 'influxdb': 'stats', 'mgr-agents': 'table', 'mgr-streams': 'table',
+    'mgr-ram': 'stats', 'mgr-disk': 'stats', 'mgr-network': 'stats', 'mgr-processes': 'table',
+    'mgr-perf-summary': 'stats', 'mgr-perf': 'chart', 'ae-perf': 'chart',
+  };
+  const ROLES = ['chart', 'stats', 'table', 'list'];
+  const OV_PREFIX = 'ov-borrow-';
+  function roleOf(cardId) {
+    const id = String(cardId || '');
+    const home = id.startsWith(OV_PREFIX) ? id.slice(OV_PREFIX.length) : id;
+    return CARD_ROLES[home] || 'stats';
+  }
+  // The card a page's Hero preset widens; pages without one use their first visible card.
+  const HERO_CARDS = {
+    'dashboard/llamacpp': 'gpu', 'dashboard/lmstudio': 'lms-active',
+    'dashboard/vllm': 'vllm-throughput', 'dashboard/manager': 'services',
+  };
+  // widths: role → column span; hero: span for the page's hero card. Unlisted = 1.
+  const ROLE_PRESETS = {
+    'uniform': { label: 'Uniform',     widths: {} },
+    'charts':  { label: 'Charts wide', widths: { chart: 2 } },
+    'hero':    { label: 'Hero',        widths: {}, hero: 2 },
+    'tables':  { label: 'Tables wide', widths: { table: 2, list: 2 } },
+  };
+  const DEFAULT_ROLE_PRESET = 'uniform';
+  function normalizeRolePreset(id) { return ROLE_PRESETS[id] ? id : DEFAULT_ROLE_PRESET; }
+  // Column span a role preset gives one card, clamped to the grid's track count.
+  function roleWidth(presetId, role, isHero, maxCols) {
+    const p = ROLE_PRESETS[normalizeRolePreset(presetId)];
+    const w = (isHero && p.hero) || p.widths[role] || 1;
+    const max = Math.max(1, Number(maxCols) || 1);
+    return Math.min(w, max);
+  }
+  // Row-track span for a card of height h in a flow grid (unit rows, row gap).
+  function flowSpan(h, unit, gap) {
+    const u = Number(unit) > 0 ? Number(unit) : FLOW_UNIT_PX;
+    const g = Number(gap) >= 0 ? Number(gap) : FLOW_ROW_GAP_PX;
+    const px = Number(h) || 0;
+    return Math.max(1, Math.ceil((px + g) / (u + g)));
   }
 
   // swatch: [bg, card, accent, accent-2, border] for the picker tile.
@@ -128,6 +187,8 @@
 
   const API = {
     PRESETS, COLUMN_OPTIONS, AUTO_MIN_COL_PX, presetsFor, getPreset, presetLabel, matchPreset, gridTemplate, normalizeCols,
+    ENGINES, DEFAULT_ENGINE, DENSITIES, DEFAULT_DENSITY, FLOW_UNIT_PX, FLOW_ROW_GAP_PX, normalizeEngine, normalizeDensity,
+    CARD_ROLES, ROLES, roleOf, HERO_CARDS, ROLE_PRESETS, DEFAULT_ROLE_PRESET, normalizeRolePreset, roleWidth, flowSpan,
     THEMES, THEME_IDS, DEFAULT_THEME, LEGACY_THEMES, SYSTEM_LIGHT_THEME, normalizeTheme, effectiveTheme,
     CARD_PAGES, settingsScope, INTERVAL_MIN, INTERVAL_MAX, INTERVAL_CHIPS, clampInterval,
   };

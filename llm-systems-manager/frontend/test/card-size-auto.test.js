@@ -23,6 +23,8 @@ beforeEach(() => {
   (0, eval)([
     cycle, classes,
     src.match(/const _CARD_DEFAULT_SIZE = '[^']*';/)[0].replace(/^const/, 'window.'),
+    src.match(/const _FLOW_SIZE_CYCLE = \[[^\]]*\];/)[0].replace(/^const/, 'window.'),
+    fn('_isFlowGrid'), fn('_flowSize'),
     fn('_defaultCardSize'), fn('_sizeCols'), fn('_sizeLabel'), fn('_allowedSizes'),
     fn('_nextCardSize'), fn('_gridColCount'), fn('_clampSize'),
     fn('_applyCardSize'), fn('_cycleCardSize'),

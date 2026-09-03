@@ -148,6 +148,22 @@
     .card.size-auto { align-self: start; }
     .ov-shell > .card.size-auto { align-self: stretch; }
     .ov-shell.size-auto > .card { height: auto; }
+    /* Flow engine (#823): 8px row tracks, each card spans the rows its
+       content needs (inline grid-row from JS); dense packing closes gaps. */
+    .grid.flow { grid-auto-rows: 8px; row-gap: 8px; grid-auto-flow: dense; align-items: start; }
+    .grid.flow .chart-wrap { flex: 0 0 140px; min-height: 140px; }
+    .grid.flow .chart-wrap.fixed-h { flex: 0 0 auto; min-height: 0; }
+    .grid.flow > .ov-shell { min-height: 0; }
+    .grid.flow > .ov-shell > .card { height: auto; }
+    /* Compact density: tighter padding, smaller stat type, shorter plots. */
+    :root[data-density="compact"] .grid > .card { padding: 10px 12px; }
+    :root[data-density="compact"] .grid > .ov-shell { padding: 0; }
+    :root[data-density="compact"] .grid > .ov-shell > .card { padding: 10px 12px; }
+    :root[data-density="compact"] .grid .card h3 { margin-bottom: 8px; }
+    :root[data-density="compact"] .grid .chart-wrap { flex-basis: 110px; min-height: 110px; }
+    :root[data-density="compact"] .grid .chart-wrap.fixed-h { flex-basis: auto; min-height: 0; }
+    :root[data-density="compact"] .grid .fan-table td { padding: 3px 6px; }
+    :root[data-density="compact"] .grid .fan-table th { padding: 3px 6px; }
     /* Size-cycle button — small, unobtrusive, lives to the left of the
        drag handle in the card's top-right. */
     .card-size-btn {
@@ -538,6 +554,16 @@
     .grid {
       grid-template-columns: repeat(auto-fill, minmax(clamp(220px, 28vw, 340px), 1fr));
     }
+    :root[data-density="compact"] #overallGrid .stat,
+    :root[data-density="compact"] #cardGrid .stat,
+    :root[data-density="compact"] #lmsCardGrid .stat,
+    :root[data-density="compact"] #vllmCardGrid .stat,
+    :root[data-density="compact"] #managerCardGrid .stat { font-size: clamp(1.1rem, 1.5vw, 1.6rem); }
+    :root[data-density="compact"] #overallGrid .stat-row + .stat-row,
+    :root[data-density="compact"] #cardGrid .stat-row + .stat-row,
+    :root[data-density="compact"] #lmsCardGrid .stat-row + .stat-row,
+    :root[data-density="compact"] #vllmCardGrid .stat-row + .stat-row,
+    :root[data-density="compact"] #managerCardGrid .stat-row + .stat-row { padding-top: 6px; margin-top: 0; }
     /* Status-driven accent borders applied by JS */
     #overallGrid .dash-ok,   #cardGrid .dash-ok,   #lmsCardGrid .dash-ok,   #managerCardGrid .dash-ok   { border-left-color: color-mix(in srgb, var(--ok)   55%, var(--border)); }
     #overallGrid .dash-warn, #cardGrid .dash-warn, #lmsCardGrid .dash-warn, #managerCardGrid .dash-warn { border-left-color: color-mix(in srgb, var(--warn) 55%, var(--border)); }

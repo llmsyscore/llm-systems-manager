@@ -2,6 +2,10 @@
 // legacy migration, and the per-page drawer scope (#817).
 import { describe, it, expect } from 'vitest';
 import { createRequire } from 'node:module';
+import { readFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { JSDOM } from 'jsdom';
 
 const require = createRequire(import.meta.url);
 const L = require('../js/lib/settingsdrawer.js');
@@ -97,5 +101,76 @@ describe('interval helpers', () => {
     expect(L.clampInterval('x')).toBe(30);
     expect(L.INTERVAL_CHIPS).toEqual([30, 60, 90, 120, 300]);
     expect(L.INTERVAL_CHIPS.every(v => v >= L.INTERVAL_MIN && v <= L.INTERVAL_MAX)).toBe(true);
+  });
+});
+
+describe('flow engine (#823)', () => {
+  const html = readFileSync(join(dirname(fileURLToPath(import.meta.url)), '..', 'index.html'), 'utf8');
+  const gridIds = ['cardGrid', 'lmsCardGrid', 'vllmCardGrid', 'managerCardGrid'];
+
+  it('every card in the four dashboard grids has a declared role', () => {
+    const doc = new JSDOM(html).window.document;
+    for (const gid of gridIds) {
+      const grid = doc.getElementById(gid);
+      expect(grid, gid).not.toBeNull();
+      const ids = [...grid.querySelectorAll(':scope > [data-card]')].map(c => c.dataset.card);
+      expect(ids.length, gid).toBeGreaterThan(0);
+      for (const id of ids) expect(L.CARD_ROLES[id], `${gid} ${id}`).toBeDefined();
+    }
+    for (const r of Object.values(L.CARD_ROLES)) expect(L.ROLES).toContain(r);
+  });
+
+  it('roleOf resolves pinned shells to their home card and unknown ids to stats', () => {
+    expect(L.roleOf('gpu')).toBe('chart');
+    expect(L.roleOf('ov-borrow-smart-device')).toBe('table');
+    expect(L.roleOf('nope')).toBe('stats');
+    expect(L.roleOf(undefined)).toBe('stats');
+  });
+
+  it('hero cards exist and belong to their page', () => {
+    for (const [page, id] of Object.entries(L.HERO_CARDS)) {
+      expect(L.CARD_PAGES[page], page).toBeDefined();
+      expect(L.CARD_ROLES[id], `${page} ${id}`).toBeDefined();
+    }
+  });
+
+  it('roleWidth follows the preset, widens the hero only under Hero, and clamps to the track count', () => {
+    expect(L.roleWidth('uniform', 'chart', true, 3)).toBe(1);
+    expect(L.roleWidth('charts', 'chart', false, 3)).toBe(2);
+    expect(L.roleWidth('charts', 'stats', false, 3)).toBe(1);
+    expect(L.roleWidth('hero', 'stats', true, 3)).toBe(2);
+    expect(L.roleWidth('hero', 'chart', false, 3)).toBe(1);
+    expect(L.roleWidth('tables', 'table', false, 4)).toBe(2);
+    expect(L.roleWidth('tables', 'list', false, 4)).toBe(2);
+    expect(L.roleWidth('charts', 'chart', false, 1)).toBe(1);
+    expect(L.roleWidth('bogus', 'chart', false, 3)).toBe(1);
+    for (const p of Object.values(L.ROLE_PRESETS)) {
+      for (const w of Object.values(p.widths)) expect(w).toBeLessThanOrEqual(2);
+      if (p.hero) expect(p.hero).toBeLessThanOrEqual(2);
+    }
+  });
+
+  it('flowSpan covers the card height with unit rows plus gaps and never returns 0', () => {
+    expect(L.flowSpan(8, 8, 8)).toBe(1);
+    expect(L.flowSpan(9, 8, 8)).toBe(2);
+    expect(L.flowSpan(200, 8, 8)).toBe(13);
+    expect(L.flowSpan(200, 8, 16)).toBe(9);
+    expect(L.flowSpan(0, 8, 8)).toBe(1);
+    expect(L.flowSpan(100, 0, -1)).toBe(L.flowSpan(100, L.FLOW_UNIT_PX, L.FLOW_ROW_GAP_PX));
+    for (const h of [37, 141, 333, 1000]) {
+      const n = L.flowSpan(h, 8, 8);
+      expect(n * 8 + (n - 1) * 8).toBeGreaterThanOrEqual(h);
+      expect((n - 1) * 8 + (n - 2) * 8).toBeLessThan(h);
+    }
+  });
+
+  it('engine, density and role-preset normalizers fall back to defaults', () => {
+    expect(L.normalizeEngine('flow')).toBe('flow');
+    expect(L.normalizeEngine(undefined)).toBe('grid');
+    expect(L.normalizeEngine('dense')).toBe('grid');
+    expect(L.normalizeDensity('compact')).toBe('compact');
+    expect(L.normalizeDensity('tiny')).toBe('comfortable');
+    expect(L.normalizeRolePreset('charts')).toBe('charts');
+    expect(L.normalizeRolePreset('hero-3')).toBe('uniform');
   });
 });

@@ -78,6 +78,8 @@ function initSortable() {
 // small ⤢ button that cycles through the sensible sequence; users with a
 // column-count constraint won't see oversize options.
 const _CARD_SIZE_CYCLE = ['auto', '1x1', '2x1', '2x2', '1x2'];
+// Flow engine: rows follow content, so the cycle only sets width.
+const _FLOW_SIZE_CYCLE = ['auto', '1x1', '2x1', '3x1'];
 const _CARD_SIZE_CLASSES = ['size-1x1','size-auto','size-2x1','size-3x1','size-4x1','size-1x2','size-2x2','size-3x2'];
 // Size a card (or borrowed shell) takes when the layout has none saved for it.
 const _CARD_DEFAULT_SIZE = 'auto';
@@ -87,14 +89,16 @@ function _defaultCardSize(_id) {
 function _sizeCols(size) {
   return size === 'auto' ? 1 : Number(String(size).split('x')[0]);
 }
-function _sizeLabel(size) {
-  return size === 'auto' ? 'auto (content height)' : String(size).replace('x', '×');
+function _sizeLabel(size, flow) {
+  if (size === 'auto') return flow ? 'auto (preset width)' : 'auto (content height)';
+  return flow ? `${_sizeCols(size)} wide` : String(size).replace('x', '×');
 }
 // Sizes that fit the card's grid, in cycle order.
 function _allowedSizes(card) {
   const grid = card.parentElement;
   const maxCols = grid ? _gridColCount(grid) : 3;
-  return _CARD_SIZE_CYCLE.filter(s => _sizeCols(s) <= maxCols);
+  const cycle = _isFlowGrid(grid) ? _FLOW_SIZE_CYCLE : _CARD_SIZE_CYCLE;
+  return cycle.filter(s => _sizeCols(s) <= maxCols);
 }
 function _nextCardSize(card, cur) {
   const allowed = _allowedSizes(card);
@@ -117,16 +121,30 @@ function _clampSize(size, maxCols) {
   rs = Math.max(1, Math.min(2, rs));
   return `${cs}x${rs}`;
 }
+// Flow keeps only the width of a saved size ('2x2' → '2x1'); rows follow content.
+function _flowSize(size) {
+  return size === 'auto' ? 'auto' : `${_sizeCols(size)}x1`;
+}
 function _applyCardSize(card, size) {
   _CARD_SIZE_CLASSES.forEach(c => card.classList.remove(c));
   const grid = card.parentElement;
   const maxCols = grid ? _gridColCount(grid) : 3;
-  const eff = _clampSize(size, maxCols);
+  const flow = _isFlowGrid(grid);
+  const eff = flow ? _flowSize(_clampSize(size, maxCols)) : _clampSize(size, maxCols);
   card.dataset.size = eff;
-  if (eff !== '1x1') card.classList.add('size-' + eff);
+  if (flow) {
+    const w = eff === 'auto' ? _flowPresetWidth(card, maxCols) : Math.min(maxCols, _sizeCols(eff));
+    card.style.gridColumn = w > 1 ? `span ${w}` : '';
+    _flowObserve(card);
+    _flowMeasure(card);
+  } else {
+    card.style.gridColumn = '';
+    card.style.gridRow = '';
+    if (eff !== '1x1') card.classList.add('size-' + eff);
+  }
   const btn = card.querySelector(':scope > .card-size-btn');
   if (btn) {
-    btn.dataset.tip = `Card size: ${_sizeLabel(eff)} · click for ${_sizeLabel(_nextCardSize(card, eff))}`;
+    btn.dataset.tip = `Card size: ${_sizeLabel(eff, flow)} · click for ${_sizeLabel(_nextCardSize(card, eff), flow)}`;
   }
   // Charts inside grow/shrink with the card; re-call resize() so they
   // re-paint at the monitor's actual DPR (no blur from CSS stretching).
@@ -194,6 +212,150 @@ function initCardResize() {
   });
 }
 
+// ----- Flow engine (#823) ------------------------------------------
+// 8px row tracks; each card's row span is computed from its rendered height.
+function _isFlowGrid(grid) {
+  return !!(grid && grid.classList && grid.classList.contains('flow'));
+}
+function _cardGrids() {
+  return Object.values(SettingsLib.CARD_PAGES).map(p => document.getElementById(p.grid)).filter(Boolean);
+}
+function _gridPageKey(grid) {
+  const hit = Object.entries(SettingsLib.CARD_PAGES).find(([, p]) => grid && p.grid === grid.id);
+  return hit ? hit[0] : null;
+}
+function _rolePresetFor(grid) {
+  const key = _gridPageKey(grid);
+  const map = (layout && layout.rolePreset) || {};
+  return SettingsLib.normalizeRolePreset(key ? map[key] : null);
+}
+// The page's hero card while visible, else its first visible card.
+function _flowHeroId(grid) {
+  const key = _gridPageKey(grid);
+  const fixed = key && SettingsLib.HERO_CARDS[key];
+  const visible = [...grid.querySelectorAll(':scope > [data-card]')].filter(c => c.style.display !== 'none');
+  const hero = fixed && visible.find(c => c.dataset.card === fixed);
+  return hero ? fixed : (visible[0] ? visible[0].dataset.card : null);
+}
+function _flowPresetWidth(card, maxCols) {
+  const grid = card.parentElement;
+  const id = card.dataset.card;
+  const preset = _rolePresetFor(grid);
+  return SettingsLib.roleWidth(preset, SettingsLib.roleOf(id), id === _flowHeroId(grid), maxCols);
+}
+function _flowMetrics(grid) {
+  const cs = getComputedStyle(grid);
+  return { unit: parseFloat(cs.gridAutoRows) || SettingsLib.FLOW_UNIT_PX,
+           gap: parseFloat(cs.rowGap) || 0 };
+}
+// Row span from the card's current content height; hidden cards get none.
+function _flowMeasure(card, metrics) {
+  const grid = card.parentElement;
+  if (!_isFlowGrid(grid)) return;
+  if (card.style.display === 'none') { card.style.gridRow = ''; return; }
+  const h = card.offsetHeight;
+  if (!h) return;
+  const { unit, gap } = metrics || _flowMetrics(grid);
+  const span = `span ${SettingsLib.flowSpan(h, unit, gap)}`;
+  if (card.style.gridRow !== span) card.style.gridRow = span;
+}
+let _flowCardRO = null;
+let _flowGridRO = null;
+const _flowGridWidths = new WeakMap();
+function _flowObserve(card) {
+  if (typeof ResizeObserver === 'undefined') return;
+  if (!_flowCardRO) {
+    _flowCardRO = new ResizeObserver(entries => {
+      const metrics = new Map();
+      for (const e of entries) {
+        const grid = e.target.parentElement;
+        if (!_isFlowGrid(grid)) continue;
+        if (!metrics.has(grid)) metrics.set(grid, _flowMetrics(grid));
+        _flowMeasure(e.target, metrics.get(grid));
+      }
+    });
+  }
+  _flowCardRO.observe(card);
+}
+function _flowUnobserve(el) {
+  if (_flowCardRO) _flowCardRO.unobserve(el);
+}
+// A grid whose width changed (window resize, auto-fit, tab shown) re-clamps
+// every card's span against the new track count.
+function _flowObserveGrid(grid) {
+  if (typeof ResizeObserver === 'undefined') return;
+  if (!_flowGridRO) {
+    _flowGridRO = new ResizeObserver(entries => {
+      for (const e of entries) {
+        const g = e.target;
+        const w = Math.round(e.contentRect.width);
+        if (_flowGridWidths.get(g) === w) continue;
+        _flowGridWidths.set(g, w);
+        if (w && _isFlowGrid(g)) _relayoutGridCards(g);
+      }
+    });
+  }
+  _flowGridRO.observe(grid);
+}
+// Re-apply every card's saved (or default) size in one grid.
+function _relayoutGridCards(grid) {
+  if (!grid) return;
+  grid.querySelectorAll(':scope > [data-card]').forEach(card => {
+    const id = card.dataset.card;
+    _applyCardSize(card, _sizeMapFor(id)[id] || _defaultCardSize(id));
+  });
+}
+// Switch every card grid between the stretch grid and the flow engine.
+function applyLayoutEngine(engine, save) {
+  const eng = SettingsLib.normalizeEngine(engine);
+  layout.layoutEngine = eng;
+  _cardGrids().forEach(grid => {
+    const flow = eng === 'flow';
+    const changed = _isFlowGrid(grid) !== flow;
+    grid.classList.toggle('flow', flow);
+    if (flow) _flowObserveGrid(grid);
+    else if (_flowGridRO) {
+      _flowGridRO.unobserve(grid);
+      grid.querySelectorAll('[data-card]').forEach(_flowUnobserve);
+    }
+    if (flow || changed) _relayoutGridCards(grid);
+  });
+  if (save) {
+    saveLayout();
+    if (typeof renderSettingsPanel === 'function') renderSettingsPanel();
+  }
+}
+function applyDensity(density, save) {
+  const d = SettingsLib.normalizeDensity(density);
+  layout.density = d;
+  document.documentElement.dataset.density = d;
+  _cardGrids().forEach(grid => { if (_isFlowGrid(grid)) _relayoutGridCards(grid); });
+  _resizeChartsIn(document.body);
+  if (save) {
+    saveLayout();
+    if (typeof renderSettingsPanel === 'function') renderSettingsPanel();
+  }
+}
+// Role preset for the active page (flow engine): clears per-card overrides
+// so every card follows its role width.
+function applyRolePreset(presetId) {
+  const ks = _activeTabLayoutKeys(); if (!ks || !ks.grid) return;
+  const key = _gridPageKey(ks.grid); if (!key) return;
+  if (!layout.rolePreset || typeof layout.rolePreset !== 'object') layout.rolePreset = {};
+  layout.rolePreset[key] = SettingsLib.normalizeRolePreset(presetId);
+  _clearPageSizeOverrides(ks);
+  saveLayout();
+  _relayoutGridCards(ks.grid);
+  if (typeof renderSettingsPanel === 'function') renderSettingsPanel();
+}
+// Drop every per-card size override on the active page (Overall keys its shells ov-*).
+function _clearPageSizeOverrides(ks) {
+  for (const id of Object.keys(ks.map)) delete _sizeMapFor(id)[id];
+  if (_activeTab === 'overall' && layout.cardSizes) {
+    for (const id of Object.keys(layout.cardSizes)) if (id.startsWith('ov-')) delete layout.cardSizes[id];
+  }
+}
+
 // ----- Active-tab layout key resolver (single source of truth) -----
 // Page → layout keys come from SettingsLib.CARD_PAGES; null off card pages.
 function _activeTabLayoutKeys() {
@@ -213,10 +375,7 @@ function applyLayoutPreset(presetId) {
   if (!preset) return;
   layout[ks.cols] = preset.cols;
   ks.grid.style.gridTemplateColumns = SettingsLib.gridTemplate(preset.cols);
-  for (const id of Object.keys(ks.map)) delete _sizeMapFor(id)[id];
-  if (_activeTab === 'overall' && layout.cardSizes) {
-    for (const id of Object.keys(layout.cardSizes)) if (id.startsWith('ov-')) delete layout.cardSizes[id];
-  }
+  _clearPageSizeOverrides(ks);
   const visible = _sdVisibleCards(ks);
   Object.entries(preset.sizes).forEach(([idx, size]) => {
     const card = visible[Number(idx)];
