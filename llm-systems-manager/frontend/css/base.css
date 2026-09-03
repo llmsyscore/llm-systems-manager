@@ -41,12 +41,6 @@
       --fg: #eaeaff; --fg-muted: #a0a4d0; --fg-dim: #7176a8; --fg-faint: #4a4f78;
       --accent: #9a7cff; --accent-2: #2dd4bf; --ok: #2dd4bf; --warn: #f59e0b; --crit: #ef4444; --note: #facc15;
     }
-    :root[data-theme="classic"] {
-      --bg: #000000; --bg-card: #050a05; --bg-card-alt: #081008; --bg-elev: #0a140a;
-      --bg-tabnav: #000000; --border: #143a14; --border-soft: #0a1f0a; --border-strong: #1f4a1f;
-      --fg: #5aff5a; --fg-muted: #3da83d; --fg-dim: #2a7a2a; --fg-faint: #1a4a1a;
-      --accent: #8cff8c; --accent-2: #aaffaa; --ok: #5aff5a; --warn: #ffcc00; --crit: #ff4040; --note: #ffe040;
-    }
     :root[data-theme="slate"] {
       --bg: #303446; --bg-card: #414559; --bg-card-alt: #51576d; --bg-elev: #414559;
       --bg-tabnav: #292c3c; --border: #51576d; --border-soft: #414559; --border-strong: #626880;
@@ -58,6 +52,25 @@
       --bg-tabnav: #0a0d14; --border: #232a3a; --border-soft: #1a2030; --border-strong: #2e3648;
       --fg: #d8dde8; --fg-muted: #8a93a5; --fg-dim: #5e6878; --fg-faint: #3e4658;
       --accent: #5b8def; --accent-2: #4a9fc8; --ok: #5fb878; --warn: #d99a3a; --crit: #d9534f; --note: #d9b84f;
+    }
+    :root[data-theme="oled"] {
+      --bg: #000000; --bg-card: #0b0b0c; --bg-card-alt: #131315; --bg-elev: #101012;
+      --bg-tabnav: #000000; --border: #1f1f22; --border-soft: #141416; --border-strong: #2a2a2e;
+      --fg: #f2f2f4; --fg-muted: #a3a3ab; --fg-dim: #6e6e78; --fg-faint: #3c3c44;
+      --accent: #5eb0ff; --accent-2: #35d6a8; --ok: #35d6a8; --warn: #ffb347; --crit: #ff5c5c; --note: #ffd54a;
+    }
+    :root[data-theme="graphite"] {
+      --bg: #1a1816; --bg-card: #221f1c; --bg-card-alt: #2a2622; --bg-elev: #272320;
+      --bg-tabnav: #141210; --border: #332e29; --border-soft: #282420; --border-strong: #433c35;
+      --fg: #ece6de; --fg-muted: #a89f93; --fg-dim: #7a7166; --fg-faint: #4e463f;
+      --accent: #e3a24a; --accent-2: #7cc4a0; --ok: #7cc4a0; --warn: #f0b35a; --crit: #e8695f; --note: #ead27a;
+    }
+    :root[data-theme="frost"] {
+      --scheme: light;
+      --bg: #eef2f7; --bg-card: #ffffff; --bg-card-alt: #e6ecf4; --bg-elev: #e1e8f1;
+      --bg-tabnav: #e4eaf2; --border: #cdd7e4; --border-soft: #dde5ef; --border-strong: #b5c2d3;
+      --fg: #16202c; --fg-muted: #4d5c6e; --fg-dim: #74859a; --fg-faint: #a4b2c2;
+      --accent: #2a6fd6; --accent-2: #0f9d8a; --ok: #1f9a5f; --warn: #c46f0c; --crit: #cc3b30; --note: #a17c00;
     }
 
     /* Font stacks — shared by all themes (fonts.css self-hosts IBM Plex) */
@@ -86,9 +99,6 @@
     .state-banner { display: flex; align-items: center; }
     .header-divider { border: none; border-top: 1px solid var(--border-strong); margin: 0; }
     .header-right { margin-left: auto; display: flex; align-items: center; gap: 10px; }
-    .interval-badge { font-size: 0.65em; background: var(--bg-card-alt); color: var(--fg-muted); padding: 3px 10px; border-radius: 4px; border: 1px solid var(--border-strong); }
-    .gear-btn { background: none; border: 1px solid var(--border-strong); border-radius: 6px; color: var(--fg-muted); cursor: pointer; padding: 6px 10px; font-size: 1.1em; transition: color 0.2s; }
-    .gear-btn:hover { color: var(--fg); border-color: var(--fg-dim); }
     /* Header provider-state banner pill — shares the .status visual language
        (token-driven via color-mix), driven by the parent .state-* class so the
        banner JS (charts.js / lmstudio.js) keeps setting state on the wrapper. */
@@ -130,6 +140,7 @@
        stays on the same grid rails as its neighbours. */
     .card.size-2x1 { grid-column: span 2; }
     .card.size-3x1 { grid-column: span 3; }
+    .card.size-4x1 { grid-column: span 4; }
     .card.size-1x2 { grid-row:    span 2; }
     .card.size-2x2 { grid-column: span 2; grid-row: span 2; }
     .card.size-3x2 { grid-column: span 3; grid-row: span 2; }
@@ -470,22 +481,6 @@
     .log-popped-frame .log-popped-title { color: var(--fg); font-size: 0.85em; font-weight: 600; }
     /* .status-pill / .pill-* removed — model load state now uses the unified
        .status / .status--* chip (see the status system above). */
-    .settings-overlay { display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.7); z-index: 100; align-items: center; justify-content: center; }
-    .settings-overlay.open { display: flex; }
-    .settings-panel { background: var(--bg-card); border: 1px solid var(--border-strong); border-radius: 12px; padding: 24px; width: min(720px, 92vw); max-height: 86vh; overflow-y: auto; }
-    .settings-panel h2 { font-size: 1em; font-weight: 500; color: var(--fg); margin-bottom: 16px; }
-    .settings-panel .close-btn { float: right; background: none; border: none; color: var(--fg-dim); cursor: pointer; font-size: 1.2em; }
-    .settings-panel .close-btn:hover { color: var(--fg); }
-    .setting-row { display: flex; justify-content: space-between; align-items: center; padding: 10px 0; border-bottom: 1px solid var(--bg-card-alt); }
-    .setting-row:last-child { border-bottom: none; }
-    .setting-label { font-size: 0.9em; color: var(--fg); }
-    .toggle { position: relative; width: 40px; height: 22px; }
-    .toggle input { opacity: 0; width: 0; height: 0; }
-    .toggle-slider { position: absolute; inset: 0; background: var(--border-strong); border-radius: 22px; cursor: pointer; transition: 0.2s; }
-    .toggle input:checked + .toggle-slider { background: var(--accent); }
-    .toggle-slider:before { content: ""; position: absolute; height: 16px; width: 16px; left: 3px; bottom: 3px; background: #fff; border-radius: 50%; transition: 0.2s; }
-    .toggle input:checked + .toggle-slider:before { transform: translateX(18px); }
-    .settings-note { font-size: 0.8em; color: var(--fg-dim); margin-top: 12px; }
 
     /* ===== Shared enterprise card theme (Overall + Dashboard) ===== */
     #overallGrid .card,
@@ -550,59 +545,6 @@
     #overallGrid .dash-off,  #cardGrid .dash-off,  #lmsCardGrid .dash-off,  #managerCardGrid .dash-off  { border-left-color: var(--border); }
 
     /* ===== Settings panel additions ===== */
-    .settings-section-title {
-      font-size: 0.68em;
-      text-transform: uppercase;
-      letter-spacing: 0.1em;
-      color: var(--fg-dim);
-      margin: 16px 0 6px;
-      padding-top: 14px;
-      border-top: 1px solid var(--bg-card-alt);
-    }
-    .settings-section-title:first-child { border-top: none; padding-top: 0; margin-top: 0; }
-    .interval-row { display: flex; align-items: center; gap: 16px; padding: 10px 0; flex-wrap: wrap; }
-    .interval-radio { display: flex; align-items: center; gap: 6px; cursor: pointer; font-size: 0.88em; color: var(--fg); }
-    .interval-radio input[type=radio] { accent-color: var(--accent); cursor: pointer; width: 14px; height: 14px; }
-    .interval-manual-wrap { display: flex; align-items: center; gap: 6px; }
-    .interval-input { background: var(--bg); border: 1px solid var(--border-strong); border-radius: 4px; color: var(--fg); font-size: 0.88em; padding: 4px 8px; width: 64px; text-align: center; }
-    .interval-input:focus { outline: none; border-color: var(--accent); }
-    .interval-unit { font-size: 0.8em; color: var(--fg-dim); }
-
-    /* ===== Compact card-chip toggles in settings ===== */
-    .card-chips { display: flex; flex-wrap: wrap; gap: 6px; padding: 8px 0 4px; }
-    .card-chip {
-      display: flex; align-items: center; gap: 5px;
-      background: var(--bg); border: 1px solid var(--border); border-radius: 6px;
-      padding: 4px 9px; cursor: pointer; font-size: 0.78em; color: var(--fg-muted);
-      user-select: none; transition: border-color 0.15s, color 0.15s;
-    }
-    .card-chip.chip-on  { border-color: color-mix(in srgb, var(--ok) 45%, var(--border)); color: var(--ok); }
-    .card-chip.chip-off { border-color: var(--border); color: var(--fg-faint);    }
-    .card-chip .chip-dot { width: 6px; height: 6px; border-radius: 50%; background: currentColor; flex-shrink: 0; }
-
-    /* ===== Collapsible cards section ===== */
-    .settings-collapse-hdr {
-      display: flex; justify-content: space-between; align-items: center;
-      cursor: pointer; padding: 6px 0; color: var(--fg-muted); font-size: 0.82em;
-    }
-    .settings-collapse-hdr:hover { color: var(--fg); }
-    .settings-collapse-arrow { transition: transform 0.2s; display: inline-block; }
-    .settings-collapse-hdr.open .settings-collapse-arrow { transform: rotate(180deg); }
-    .settings-collapse-body { overflow: hidden; transition: max-height 0.25s ease; }
-
-    /* ===== Grid layout selector ===== */
-    .grid-selector { display: flex; gap: 8px; padding: 8px 0; flex-wrap: wrap; }
-    .grid-opt {
-      display: flex; flex-direction: column; align-items: center; gap: 4px;
-      cursor: pointer; padding: 6px 8px; border-radius: 6px;
-      border: 1px solid var(--border); background: var(--bg);
-      font-size: 0.7em; color: var(--fg-dim); transition: border-color 0.15s, color 0.15s;
-    }
-    .grid-opt:hover { border-color: var(--fg-faint); color: var(--fg); }
-    .grid-opt.grid-opt-active { border-color: color-mix(in srgb, var(--accent) 45%, var(--border)); color: var(--accent); }
-    .grid-opt svg rect { fill: var(--border-strong); }
-    .grid-opt.grid-opt-active svg rect { fill: color-mix(in srgb, var(--accent) 55%, var(--border-strong)); }
-
     /* ===== Server Config overlay ===== */
     .svcconfig-overlay {
       display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.75);

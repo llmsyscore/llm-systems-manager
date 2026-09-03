@@ -55,7 +55,8 @@ Backend API endpoints consumed:
   <script src="/static/vendor/xterm.min.js?v=5.3.0"></script>
   <script src="/static/vendor/xterm-addon-fit.min.js?v=0.8.0"></script>
   <link rel="stylesheet" href="/static/css/fonts.css?v=2026.08.30-1">
-  <link rel="stylesheet" href="/static/css/base.css?v=2026.08.31-2">
+  <link rel="stylesheet" href="/static/css/base.css?v=2026.09.03-1">
+  <link rel="stylesheet" href="/static/css/settings.css?v=2026.09.03-1">
   <link rel="stylesheet" href="/static/css/modelcards.css?v=2026.08.30-12">
   <link rel="stylesheet" href="/static/css/reportcard.css?v=2026.08.31-1">
   <link rel="stylesheet" href="/static/css/tools.css?v=2026.08.31-8">
@@ -100,8 +101,8 @@ Backend API endpoints consumed:
     <div class="state-pill"><span id="vllmStateIcon">●</span> <span id="vllmStateText">VLLM · —</span></div>
   </div>
   <div class="header-right">
-    <span class="interval-badge" id="intervalBadge">—s interval</span>
-    <button class="gear-btn" onclick="openSettings()" title="Settings">⚙</button>
+    <button type="button" class="hdr-badge" id="intervalBadge" onclick="openSettings('refresh')" title="Refresh cadence · open settings"><span class="dot"></span><b>—</b></button>
+    <button type="button" class="hdr-cog" id="settingsCog" onclick="openSettings()" title="Settings" aria-label="Settings" aria-haspopup="dialog"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 15.5a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7Z"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3h0a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8v0a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1Z"/></svg></button>
   </div>
 </h1>
 <hr class="header-divider">
@@ -2391,8 +2392,9 @@ Backend API endpoints consumed:
 </div><!-- end llmTab -->
 
 <script src="/static/js/lib/layout.js?v=2026.07.10-1"></script>
+<script src="/static/js/lib/settingsdrawer.js?v=2026.09.03-1"></script>
 <script src="/static/js/lib/modelcards.js?v=2026.08.30-10"></script>
-<script src="/static/js/foundation.js?v=2026.09.03-1"></script>
+<script src="/static/js/foundation.js?v=2026.09.03-2"></script>
 <script src="/static/js/lib/series.js?v=2026.08.04-2"></script>
 <script src="/static/js/lib/peaks.js?v=2026.08.29-2"></script>
 <script src="/static/js/lib/benchaxis.js?v=2026.08.26-1"></script>
@@ -2402,7 +2404,7 @@ Backend API endpoints consumed:
 <script src="/static/js/lib/sseguard.js?v=2026.09.02-1"></script>
 <script src="/static/js/lib/energy.js?v=2026.08.26-1"></script>
 <script src="/static/js/lib/overall-view.js?v=2026.09.01-1"></script>
-<script src="/static/js/charts.js?v=2026.08.30-2"></script>
+<script src="/static/js/charts.js?v=2026.09.03-1"></script>
 <script src="/static/js/terminal.js?v=2026.08.27-1"></script>
 <script src="/static/js/llmcontrol.js?v=2026.08.30-2"></script>
 <script src="/static/js/sections.js?v=2026.08.30-3"></script>
@@ -2426,41 +2428,23 @@ Backend API endpoints consumed:
 <script src="/static/js/overall.js?v=2026.08.29-2"></script>
 <script src="/static/js/dashboard-manager.js?v=2026.08.17-1"></script>
 
-<!-- Settings panel — kept at body root so it's never inside a hidden tab container -->
+<!-- Settings drawer — kept at body root so it's never inside a hidden tab container.
+     Sections are rendered by foundation.js (renderSettingsPanel). -->
 <div class="settings-overlay" id="settingsOverlay" onclick="if(event.target===this)closeSettings()">
-  <div class="settings-panel">
-    <button class="close-btn" onclick="closeSettings()">✕</button>
-    <h2 id="settingsTitle">Dashboard settings</h2>
-    <div id="settingsList"></div>
-    <div class="settings-section-title">Theme</div>
-    <div class="interval-row">
-      <select id="themeSelect" class="interval-input" style="width:auto;text-align:left;padding:4px 10px;"
-              onchange="applyTheme(this.value, true)">
-        <option value="dark">Dark</option>
-        <option value="medium">Medium</option>
-        <option value="light">Light</option>
-        <option value="modern">Modern (default)</option>
-        <option value="classic">Classic</option>
-        <option value="slate">Slate</option>
-        <option value="enterprise">Enterprise</option>
-      </select>
+  <aside class="sd" role="dialog" aria-modal="true" aria-labelledby="settingsTitle" tabindex="-1">
+    <div class="sd-h">
+      <div><h2 id="settingsTitle">Settings</h2><div class="sum" id="settingsSum"></div></div>
+      <button type="button" class="ib" onclick="closeSettings()" title="Close (Esc)" aria-label="Close">✕</button>
     </div>
-    <div class="settings-section-title">Polling interval</div>
-    <div class="interval-row">
-      <label class="interval-radio">
-        <input type="radio" name="intervalMode" value="auto" onchange="applyIntervalMode()" checked> Auto
-      </label>
-      <label class="interval-radio">
-        <input type="radio" name="intervalMode" value="manual" onchange="applyIntervalMode()"> Manual
-      </label>
-      <div class="interval-manual-wrap">
-        <input type="number" class="interval-input" id="intervalManualVal" value="5" min="1" max="300"
-               oninput="applyIntervalMode()" style="display:none;">
-        <span class="interval-unit" id="intervalManualUnit" style="display:none;">seconds</span>
-      </div>
+    <div class="sd-b">
+      <section class="sd-sec" id="sdNoCards" hidden><div class="notice">Card and layout options appear on the LLM Overall and Dashboard pages. This page has no cards.</div></section>
+      <section class="sd-sec" id="sdCards"></section>
+      <section class="sd-sec" id="sdLayout"></section>
+      <section class="sd-sec" id="sdAppearance"></section>
+      <section class="sd-sec" id="sdRefresh"></section>
     </div>
-    <p class="settings-note">Cards can also be dragged to reorder. Settings are saved automatically.</p>
-  </div>
+    <div class="sd-f"><span>Changes save automatically</span></div>
+  </aside>
 </div>
 
 <!-- Server Config overlay — kept at body root -->

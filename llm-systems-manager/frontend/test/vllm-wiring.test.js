@@ -253,7 +253,10 @@ describe('charts.js', () => {
       blockSrc(foundation, 'const CARD_LABELS_MANAGER', '\n};'),
       blockSrc(foundation, 'const CARD_LABELS_VLLM', '\n};'),
       blockSrc(foundation, 'const CARD_LABELS = {', '\n};'),
+      srcFile('js/lib/settingsdrawer.js'),
       fnSrc('_getDashSubTab', foundation),
+      fnSrc('_sdScope', foundation),
+      fnSrc('_sdCardMap', foundation),
       fnSrc('_activeTabLayoutKeys', charts),
       'window.CARD_LABELS_VLLM = CARD_LABELS_VLLM;',
     ].join('\n');

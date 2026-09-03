@@ -159,7 +159,7 @@ def _local_hostname() -> str:
 # banner reads it. Bump suffix (-1, -2, …) for same-day iterations; roll
 # the date for a new day's first change.
 # ---------------------------------------------------------------------------
-__version__ = "v2026.09.03-2"
+__version__ = "v2026.09.03-3"
 
 # Wall-clock at first import (Cheroot main process); the shutdown banner
 # reads it for the uptime line.
@@ -454,6 +454,7 @@ _ws_relay_state: dict[str, str] = {"status": "off"}
 #   [manager] poll_interval        — slow (idle) interval, default 30 s
 #   [manager] fast_poll_interval   — fast (busy) interval,  default 2 s
 _current_interval  = settings.manager.poll_interval   # seconds
+_interval_reason = "idle"
 _interval_lock     = threading.Lock()
 _lms_active        = False   # True when LMS has a non-IDLE model in ps
 _lms_active_lock   = threading.Lock()
@@ -478,7 +479,7 @@ def get_interval() -> int:
 
 def set_interval(perf_level: str, lms_active: bool | None = None,
                  llama_awake: bool | None = None):
-    global _current_interval
+    global _current_interval, _interval_reason
     gpu_wants_fast = (perf_level == "auto")
     if lms_active is None:
         with _lms_active_lock:
@@ -493,15 +494,16 @@ def set_interval(perf_level: str, lms_active: bool | None = None,
     new = (settings.manager.fast_poll_interval
            if (gpu_wants_fast or lms_active or llama_awake)
            else settings.manager.poll_interval)
+    reason = []
+    if gpu_wants_fast: reason.append(f"GPU perf={perf_level}")
+    if lms_active:     reason.append("LMS active")
+    if llama_awake:    reason.append("llama awake")
     with _interval_lock:
         if new != _current_interval:
-            reason = []
-            if gpu_wants_fast: reason.append(f"GPU perf={perf_level}")
-            if lms_active:     reason.append("LMS active")
-            if llama_awake:    reason.append("llama awake")
             log.info(f"Poll interval: {_current_interval}s → {new}s"
                      + (f" ({', '.join(reason)})" if reason else " (idle)"))
         _current_interval = new
+        _interval_reason = ", ".join(reason) if reason else "idle"
 
 def set_lms_active(active: bool):
     """Called by receive_lmstudio_metrics when agent data arrives."""
@@ -1562,10 +1564,15 @@ def get_config():
     with _interval_override_lock:
         override = _interval_override
     caps = agent_registry.approved_agent_caps()
+    with _interval_lock:
+        reason = _interval_reason
     return jsonify({
         "poll_interval":    get_interval(),
         "interval_mode":    "manual" if override is not None else "auto",
         "interval_override": override,
+        "interval_reason":  reason,
+        "poll_interval_idle":   int(settings.manager.poll_interval),
+        "poll_interval_active": int(settings.manager.fast_poll_interval),
         "proxies": {
             "llm_chat":  proxies.resolve_proxy_target("llm_chat")  is not None,
             "openclaw":  proxies.resolve_proxy_target("openclaw")  is not None,
@@ -1585,8 +1592,8 @@ def set_interval_endpoint():
     data = flask_request.get_json(force=True)
     mode = data.get("mode", "auto")
     if mode == "manual":
-        val = int(data.get("value", 5))
-        val = max(1, min(300, val))
+        val = int(data.get("value", 30))
+        val = max(5, min(300, val))
         with _interval_override_lock:
             _interval_override = val
         log.info(f"Poll interval set to manual {val}s")
@@ -1594,6 +1601,7 @@ def set_interval_endpoint():
     else:
         with _interval_override_lock:
             _interval_override = None
+        set_interval("")
         log.info("Poll interval set to auto")
         return jsonify({"ok": True, "mode": "auto", "value": None})
 
@@ -2973,9 +2981,15 @@ def save_layout(data: dict):
         raise ValueError(f"layout exceeds {_LAYOUT_MAX_BYTES} bytes")
     LAYOUT_FILE.write_text(encoded)
 
+# Theme names retired from the frontend map forward on read.
+_LEGACY_THEMES = {"classic": "oled"}
+
 @app.route("/api/layout", methods=["GET"])
 def get_layout():
-    return jsonify(load_layout())
+    data = load_layout()
+    if isinstance(data, dict) and data.get("theme") in _LEGACY_THEMES:
+        data["theme"] = _LEGACY_THEMES[data["theme"]]
+    return jsonify(data)
 
 @app.route("/api/layout", methods=["POST"])
 def set_layout():

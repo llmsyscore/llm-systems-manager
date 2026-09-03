@@ -6,6 +6,7 @@ const SHELL = [
   '/companion',
   '/static/css/base.css',
   '/static/css/companion.css',
+  '/static/js/lib/settingsdrawer.js',
   '/static/js/lib/pushutil.js',
   '/static/js/lib/energy.js',
   '/static/js/lib/companion-spark.js',

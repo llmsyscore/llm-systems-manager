@@ -208,6 +208,7 @@ async function loadLayout() {
     _applyOrderForGrid('vllmCardGrid', 'vllmOrder');
     if (layout.managerOrder) applyManagerLayout(layout.managerOrder);
   } catch(e) {}
+  if (layout && layout.theme) layout.theme = SettingsLib.normalizeTheme(layout.theme);
   applyTheme(layout && layout.theme, false);
   applyLayout();
   applyAllGridCols();
@@ -481,20 +482,36 @@ function _notePinOverride(resp, modelId) {
   } catch (_) {}
 }
 
-const VALID_THEMES = ['dark', 'medium', 'light', 'modern', 'classic', 'slate', 'enterprise'];
+function _osPrefersLight() {
+  try { return !!window.matchMedia('(prefers-color-scheme: light)').matches; } catch (_) { return false; }
+}
+// Saved theme name is normalized (legacy names map forward); the rendered
+// theme may differ while "follow system" is on.
 function applyTheme(name, save) {
-  if (!VALID_THEMES.includes(name)) name = 'modern';
-  document.documentElement.setAttribute('data-theme', name);
-  const sel = document.getElementById('themeSelect');
-  if (sel && sel.value !== name) sel.value = name;
+  const saved = SettingsLib.normalizeTheme(name);
+  const follow = !!(layout && layout.themeFollowSystem);
+  const eff = SettingsLib.effectiveTheme(saved, follow, _osPrefersLight());
+  document.documentElement.setAttribute('data-theme', eff);
   _retintCharts();
-  _propagateThemeToAlarmEngine(name);
+  _propagateThemeToAlarmEngine(eff);
   if (save) {
     if (typeof layout !== 'object' || !layout) layout = {};
-    layout.theme = name;
+    layout.theme = saved;
     saveLayout();
   }
+  if (typeof _sdRenderAppearance === 'function') _sdRenderAppearance();
 }
+function setThemeFollowSystem(on) {
+  if (typeof layout !== 'object' || !layout) layout = {};
+  layout.themeFollowSystem = !!on;
+  saveLayout();
+  applyTheme(layout.theme, false);
+}
+try {
+  window.matchMedia('(prefers-color-scheme: light)').addEventListener('change', () => {
+    if (layout && layout.themeFollowSystem) applyTheme(layout.theme, false);
+  });
+} catch (_) {}
 
 // Lazy-load the alarm engine iframe on first Events-tab visit. The iframe
 // HTML carries data-src="/alarm/" with NO src — until this runs, the AE
@@ -965,198 +982,363 @@ function toggleCard(cardId, visible) {
   saveLayout();
 }
 
-// Mini SVG icon for N-column grid
-function _gridIcon(n) {
-  const W = 36, H = 26, gap = 2, pad = 2;
-  const colW = (W - pad*2 - gap*(n-1)) / n;
-  let rects = '';
-  for (let i = 0; i < n; i++) {
-    const x = pad + i*(colW + gap);
-    rects += `<rect x="${x.toFixed(1)}" y="${pad}" width="${colW.toFixed(1)}" height="${H-pad*2}" rx="1"/>`;
-  }
-  return `<svg width="${W}" height="${H}" viewBox="0 0 ${W} ${H}" fill="none" xmlns="http://www.w3.org/2000/svg">${rects}</svg>`;
-}
-
+// ── Settings drawer ─────────────────────────────────────────────────
 function _getDashSubTab() {
-  // Returns 'lmstudio' | 'vllm' | 'manager' | 'llamacpp'. Defaults to llamacpp.
+  // Returns the active Dashboard sub-tab id. Defaults to llamacpp.
   if (document.getElementById('dash-lmstudio')?.classList.contains('active')) return 'lmstudio';
   if (document.getElementById('dash-vllm')?.classList.contains('active'))     return 'vllm';
   if (document.getElementById('dash-manager')?.classList.contains('active'))  return 'manager';
+  if (document.getElementById('dash-energy')?.classList.contains('active'))   return 'energy';
+  if (document.getElementById('dash-openclaw')?.classList.contains('active')) return 'openclaw';
   return 'llamacpp';
 }
 
-function _getGridColsKey() {
-  if (_activeTab === 'overall') return 'overallCols';
-  if (_activeTab === 'dashboard') {
-    const sub = _getDashSubTab();
-    if (sub === 'lmstudio') return 'lmsCols';
-    if (sub === 'vllm')     return 'vllmCols';
-    if (sub === 'manager')  return 'managerCols';
-    return 'cols';
-  }
-  return 'cols';
+function _sdScope() {
+  return SettingsLib.settingsScope(_activeTab, _activeTab === 'dashboard' ? _getDashSubTab() : null);
 }
 
-function _getGridEl() {
-  if (_activeTab === 'overall') return document.getElementById('overallGrid');
-  if (_activeTab === 'dashboard') {
-    const sub = _getDashSubTab();
-    if (sub === 'lmstudio') return document.getElementById('lmsCardGrid');
-    if (sub === 'vllm')     return document.getElementById('vllmCardGrid');
-    if (sub === 'manager')  return document.getElementById('managerCardGrid');
-    return document.getElementById('cardGrid');
-  }
-  return null;
-}
+function _getGridColsKey() { return _sdScope().cols; }
+function _getGridEl() { return document.getElementById(_sdScope().grid); }
 
 function applyGridCols(n, save) {
+  const cols = SettingsLib.normalizeCols(n);
   const el = _getGridEl();
-  if (el) el.style.gridTemplateColumns = `repeat(${n}, 1fr)`;
+  if (el) {
+    el.style.gridTemplateColumns = SettingsLib.gridTemplate(cols);
+    el.querySelectorAll(':scope > [data-card]').forEach(card => {
+      const id = card.dataset.card;
+      _applyCardSize(card, _sizeMapFor(id)[id] || _defaultCardSize(id));
+    });
+    _resizeChartsIn(el);
+  }
   if (save) {
-    const key = _getGridColsKey();
-    layout[key] = n;
+    layout[_getGridColsKey()] = cols;
     saveLayout();
-    // re-render selector to update active state
-    const sel = document.getElementById('settingsGridSel');
-    if (sel) _renderGridSelector(sel, n);
+    _sdRenderLayout();
+    _sdRenderHeader();
   }
 }
 
-function _renderGridSelector(container, current) {
-  container.innerHTML = [2,3,4,5].map(n =>
-    `<div class="grid-opt ${n === current ? 'grid-opt-active' : ''}" onclick="applyGridCols(${n}, true)" title="${n} columns">
-      ${_gridIcon(n)}
-      <span>${n} cols</span>
-    </div>`
-  ).join('');
+// Direct children only: adopted cards inside Overall shells carry data-card too.
+function _sdVisibleCards(scope) {
+  const grid = scope.grid instanceof Element ? scope.grid : document.getElementById(scope.grid);
+  if (!grid) return [];
+  return [...grid.querySelectorAll(':scope > [data-card]')].filter(c => c.style.display !== 'none');
+}
+function _sdCurrentPreset(scope, cols) {
+  const sizes = {};
+  _sdVisibleCards(scope).forEach((c, i) => { sizes[i] = c.dataset.size || 'auto'; });
+  return SettingsLib.matchPreset(cols, sizes);
 }
 
-function _settingsCollapseToggle(hdr, body) {
-  const open = hdr.classList.toggle('open');
-  body.style.maxHeight = open ? body.scrollHeight + 'px' : '0';
-}
-
-function renderSettingsPanel() {
-  const list  = document.getElementById('settingsList');
-  const title = document.getElementById('settingsTitle');
-
-  let label, map, hiddenKey, colsKey;
-  if (_activeTab === 'overall') {
-    label    = 'LLM Overall'; map = {};
-    hiddenKey = 'hiddenOverall'; colsKey = 'overallCols';
-  } else if (_activeTab === 'dashboard') {
-    const sub = _getDashSubTab();
-    if (sub === 'lmstudio') {
-      label = 'Dashboard · LM Studio'; map = CARD_LABELS_LMS;
-      hiddenKey = 'lmsHidden'; colsKey = 'lmsCols';
-    } else if (sub === 'vllm') {
-      label = 'Dashboard · vLLM'; map = CARD_LABELS_VLLM;
-      hiddenKey = 'vllmHidden'; colsKey = 'vllmCols';
-    } else if (sub === 'manager') {
-      label = 'Dashboard · Manager'; map = CARD_LABELS_MANAGER;
-      hiddenKey = 'managerHidden'; colsKey = 'managerCols';
-    } else {
-      label = 'Dashboard · llama.cpp'; map = CARD_LABELS;
-      hiddenKey = 'hidden'; colsKey = 'cols';
+// Row-major first-fit placement of a preset's first cards, for the tile glyph.
+function _sdPlace(cols, sizes, n = 8, rows = 3) {
+  const occ = Array.from({ length: rows }, () => Array(cols).fill(false));
+  const out = [];
+  for (let i = 0; i < n; i++) {
+    const [w, h] = String(sizes[i] || '1x1').split('x').map(Number);
+    let done = false;
+    for (let r = 0; r < rows && !done; r++) {
+      for (let c = 0; c <= cols - w && !done; c++) {
+        if (r + h > rows) continue;
+        let ok = true;
+        for (let dr = 0; dr < h; dr++) for (let dc = 0; dc < w; dc++) if (occ[r + dr][c + dc]) ok = false;
+        if (!ok) continue;
+        for (let dr = 0; dr < h; dr++) for (let dc = 0; dc < w; dc++) occ[r + dr][c + dc] = true;
+        out.push([c, r, w, h]); done = true;
+      }
     }
-  } else {
-    label = 'Dashboard · llama.cpp'; map = CARD_LABELS;
-    hiddenKey = 'hidden'; colsKey = 'cols';
   }
-  if (title) title.textContent = 'Settings — ' + label;
+  return out;
+}
+function _sdTileSvg(cols, sizes) {
+  const n = cols === 'auto' ? 3 : Number(cols);
+  const W = 72, H = 42, g = 3, cw = (W - g * (n - 1)) / n, rh = (H - g * 2) / 3;
+  const rects = _sdPlace(n, sizes).map(([c, r, w, h]) =>
+    `<rect x="${(c * (cw + g)).toFixed(1)}" y="${(r * (rh + g)).toFixed(1)}" width="${(w * cw + (w - 1) * g).toFixed(1)}" height="${(h * rh + (h - 1) * g).toFixed(1)}" rx="1.5"/>`).join('');
+  return `<svg viewBox="0 0 ${W} ${H}" aria-hidden="true">${rects}</svg>`;
+}
 
-  const hidden  = _hiddenList(hiddenKey);
-  const curCols = layout[colsKey]   || 3;
+function _sdRenderHeader(scope) {
+  scope = scope || _sdScope();
+  const sum = document.getElementById('settingsSum');
+  if (!sum) return;
+  if (scope.kind !== 'cards') { sum.innerHTML = `<b>${_esc(scope.label)}</b> · no cards on this page`; return; }
+  const cols = SettingsLib.normalizeCols(layout[scope.cols] || 3);
+  const preset = _sdCurrentPreset(scope, cols);
+  const pname = preset ? SettingsLib.presetLabel(cols, preset) : null;
+  const map = _sdCardMap(scope);
+  const count = _activeTab === 'overall'
+    ? `${(layout.overallBorrowed || []).length} pinned`
+    : `${Object.keys(map).filter(id => !_hiddenList(scope.hidden).includes(id)).length} of ${Object.keys(map).length} cards`;
+  sum.innerHTML = `<b>${_esc(scope.label)}</b> · ${count} · ${cols === 'auto' ? 'auto columns' : cols + ' columns'} · ${pname ? _esc(pname.toLowerCase()) : 'custom'}`;
+}
 
-  // Build chips HTML — labels prefer live hardware names over the static map
-  // so the picker shows e.g. "Radeon RX 7900 XTX" instead of "GPU".
-  const chips = Object.entries(map).map(([id, _lbl]) => {
-    const on = !hidden.includes(id);
-    const lbl = _cardLabel(id, map);
-    return `<span class="card-chip ${on ? 'chip-on' : 'chip-off'}" onclick="toggleCard('${id}', ${!on}); renderSettingsPanel();" title="${on ? 'Click to hide' : 'Click to show'}">
-      <span class="chip-dot"></span>${_esc(lbl)}
-    </span>`;
-  }).join('');
+function _sdCardMap(scope) {
+  return { 'dashboard/llamacpp': CARD_LABELS, 'dashboard/lmstudio': CARD_LABELS_LMS,
+           'dashboard/vllm': CARD_LABELS_VLLM, 'dashboard/manager': CARD_LABELS_MANAGER }[scope.key] || {};
+}
 
-  // When on Overall tab: build chips for borrowable cards from other dashboards
-  let borrowSection = '';
+function _sdChip(id, label, on, kind) {
+  return `<button type="button" class="sd-chip${on ? ' on' : ''}" data-sd="${kind}" data-id="${_esc(id)}" aria-pressed="${on}">${_esc(label)}</button>`;
+}
+
+function _sdRenderCards(scope) {
+  scope = scope || _sdScope();
+  const el = document.getElementById('sdCards');
+  if (!el || scope.kind !== 'cards') return;
   if (_activeTab === 'overall') {
     const borrowed = layout.overallBorrowed || [];
     const groups = [
-      { label: 'llama.cpp cards', map: CARD_LABELS },
-      { label: 'LM Studio cards', map: CARD_LABELS_LMS },
-      { label: 'vLLM cards',      map: CARD_LABELS_VLLM },
-      { label: 'Manager cards',   map: CARD_LABELS_MANAGER },
+      ['llama.cpp', CARD_LABELS], ['LM Studio', CARD_LABELS_LMS], ['vLLM', CARD_LABELS_VLLM], ['Manager', CARD_LABELS_MANAGER],
     ];
-    let inner = '';
-    groups.forEach(g => {
-      const groupChips = Object.entries(g.map).map(([id, _lbl]) => {
-        const on = borrowed.includes(id);
-        const action = on ? `removeBorrowedCard('${id}')` : `addBorrowedCard('${id}')`;
-        const lbl = _cardLabel(id, g.map);
-        return `<span class="card-chip ${on ? 'chip-on' : 'chip-off'}" onclick="${action}; renderSettingsPanel();" title="${on ? 'Click to remove from Overall' : 'Click to add to Overall'}">
-          <span class="chip-dot"></span>${_esc(lbl)}
-        </span>`;
-      }).join('');
-      inner += `<div style="font-size:0.74em;color:var(--fg-muted);text-transform:uppercase;letter-spacing:0.05em;margin:8px 0 4px;">${g.label}</div>
-        <div class="card-chips">${groupChips}</div>`;
-    });
-    borrowSection = `
-      <div class="settings-section-title">Add cards from other pages
-        <span style="color:var(--fg-dim);font-size:0.8em;font-weight:400;margin-left:6px;">(${borrowed.length} pinned)</span>
-      </div>
-      <div class="settings-collapse-hdr${borrowed.length ? ' open' : ''}" id="sBorHdr"
-           onclick="_settingsCollapseToggle(this, document.getElementById('sBorBody'))">
-        <span style="font-size:0.78em;color:inherit;">Pin any Dashboard card to the Overall page</span>
-        <span class="settings-collapse-arrow">▾</span>
-      </div>
-      <div class="settings-collapse-body" id="sBorBody" style="max-height:${borrowed.length ? '500px' : '0'};">
-        ${inner}
-      </div>
-    `;
+    const inner = groups.map(([g, map]) => {
+      const ids = Object.keys(map);
+      const on = ids.filter(id => borrowed.includes(id)).length;
+      return `<div class="microlbl">${_esc(g)} <span class="cnt">${on}/${ids.length}</span></div>
+        <div class="sd-chips">${ids.map(id => _sdChip(id, _cardLabel(id, map), borrowed.includes(id), 'pin')).join('')}</div>`;
+    }).join('');
+    el.innerHTML = `
+      <div class="sd-sh"><h3>Pinned from other pages</h3><span class="meta">${borrowed.length} pinned</span></div>
+      <div class="help" style="margin-top:0;">Pin any Dashboard card here. Pinned cards leave their home page while Overall is open.</div>
+      ${inner}
+      <div class="help">Drag a card to reorder it. The ⤢ button on a card cycles its size.</div>`;
+    return;
   }
+  const map = _sdCardMap(scope);
+  const hidden = _hiddenList(scope.hidden);
+  const ids = Object.keys(map);
+  const shown = ids.filter(id => !hidden.includes(id)).length;
+  el.innerHTML = `
+    <div class="sd-sh"><h3>Cards on this page</h3><span class="meta">${shown} of ${ids.length} shown</span>
+      <span class="act"><button type="button" class="lnk" data-sd="show-all">Show all</button><button type="button" class="lnk" data-sd="hide-all">Hide all</button></span></div>
+    <div class="sd-chips">${ids.map(id => _sdChip(id, _cardLabel(id, map), !hidden.includes(id), 'card')).join('')}</div>
+    <div class="help">Drag a card to reorder it. The ⤢ button on a card cycles its size.</div>`;
+}
 
-  // Build preset dropdown options.
-  const presetOpts = Object.entries(LAYOUT_PRESETS).map(([id, p]) =>
-    `<option value="${id}">${_esc(p.label)}</option>`).join('');
+function _sdRenderLayout(scope) {
+  scope = scope || _sdScope();
+  const el = document.getElementById('sdLayout');
+  if (!el || scope.kind !== 'cards') return;
+  const cols = SettingsLib.normalizeCols(layout[scope.cols] || 3);
+  const current = _sdCurrentPreset(scope, cols);
+  const seg = SettingsLib.COLUMN_OPTIONS.map(c => c === 'auto'
+    ? `<span class="sep"></span><button type="button" data-sd="cols" data-v="auto" class="${cols === 'auto' ? 'on' : ''}" title="Fit as many ${SettingsLib.AUTO_MIN_COL_PX}px columns as the window allows">Auto</button>`
+    : `<button type="button" data-sd="cols" data-v="${c}" class="${cols === c ? 'on' : ''}">${c}</button>`).join('');
+  const tiles = SettingsLib.presetsFor(cols).map(([id, p]) =>
+    `<button type="button" class="sd-tile${id === current ? ' on' : ''}" data-sd="preset" data-id="${id}" title="${_esc(p.label)}">${_sdTileSvg(cols, p.sizes)}<span class="tn">${_esc(p.label)}</span></button>`).join('')
+    + `<div class="sd-tile custom${current ? '' : ' on'}" title="Sizes set per card"><svg viewBox="0 0 72 42" aria-hidden="true"><rect x="0" y="0" width="34" height="42" rx="1.5"/><rect x="37" y="0" width="35" height="19" rx="1.5"/><rect x="37" y="23" width="16" height="19" rx="1.5"/><rect x="56" y="23" width="16" height="19" rx="1.5"/></svg><span class="tn">Custom</span></div>`;
+  const pname = current ? SettingsLib.presetLabel(cols, current) : 'custom';
+  el.innerHTML = `
+    <div class="sd-sh"><h3>Layout</h3><span class="meta">${cols === 'auto' ? 'auto columns' : cols + ' columns'} · ${_esc(String(pname).toLowerCase())}</span>
+      <span class="act"><button type="button" class="sd-btn warn" data-sd="reset" title="Restore this page's default cards, order, columns and sizes">⟲ Reset this page</button></span></div>
+    <div class="sd-row"><span class="k">Columns</span><div class="mc-seg" role="group" aria-label="Columns">${seg}</div></div>
+    <div class="sd-row top"><span class="k">Preset</span><div class="grow"><div class="sd-tiles">${tiles}</div>
+      <div class="help">Presets for the selected column count. They size the first cards in your current order; the rest stay 1×1.</div></div></div>`;
+}
 
-  const visibleSection = Object.keys(map).length ? `
-    <div class="settings-section-title" style="border-top:none;padding-top:0;margin-top:0;">Visible cards</div>
-    <div class="settings-collapse-hdr open" id="sColHdr" onclick="_settingsCollapseToggle(this, document.getElementById('sColBody'))">
-      <span style="font-size:0.78em;color:inherit;">${Object.keys(map).length} cards — click to collapse</span>
-      <span class="settings-collapse-arrow">▾</span>
-    </div>
-    <div class="settings-collapse-body" id="sColBody" style="max-height:400px;">
-      <div class="card-chips">${chips}</div>
-    </div>` : '';
-  list.innerHTML = `
-    ${visibleSection}
-    ${borrowSection}
-    <div class="settings-section-title">Layout preset — ${label}</div>
-    <div style="display:flex;gap:8px;align-items:center;margin-bottom:8px;">
-      <select id="settingsLayoutPreset" style="flex:1;padding:6px 8px;background:var(--bg-elev);color:var(--fg);border:1px solid var(--border);border-radius:4px;">
-        <option value="">— choose a preset —</option>
-        ${presetOpts}
-      </select>
-      <button class="btn btn-gray-muted-gradient"
-              onclick="(function(){var v=document.getElementById('settingsLayoutPreset').value; if(v) applyLayoutPreset(v);})()"
-              title="Apply the selected preset to this tab">Apply</button>
-    </div>
-    <div style="font-size:0.74em;color:var(--fg-dim);margin-bottom:14px;">
-      Each card also has a ⤢ button in its top-right corner to cycle its size individually (1×1 → 2×1 → 2×2 → 1×2).
-    </div>
-    <div class="settings-section-title">Columns — ${label}</div>
-    <div class="grid-selector" id="settingsGridSel"></div>
-    <div style="margin-top:14px;display:flex;justify-content:flex-end;">
-      <button class="btn btn-gray-muted-gradient"
-              onclick="resetCurrentTabLayout()"
-              title="Restore default card order, visibility, columns, and size for this tab only">
-        ⟲ Reset layout for this tab
-      </button>
-    </div>
-  `;
+// Swatch colours read from the theme's own :root[data-theme] rule so the
+// picker can't drift from base.css; the lib's hex list is the fallback.
+function _sdSwatchFor(theme) {
+  const want = ['--bg', '--bg-card', '--accent', '--accent-2', '--border'];
+  try {
+    for (const sheet of document.styleSheets) {
+      let rules; try { rules = sheet.cssRules; } catch (_) { continue; }
+      for (const r of rules) {
+        if (!r.selectorText || !r.selectorText.includes(`[data-theme="${theme.id}"]`)) continue;
+        const vals = want.map(v => r.style.getPropertyValue(v).trim());
+        if (vals.every(Boolean)) return vals;
+      }
+    }
+  } catch (_) {}
+  return theme.swatch;
+}
 
-  _renderGridSelector(document.getElementById('settingsGridSel'), curCols);
+function _sdRenderAppearance() {
+  const el = document.getElementById('sdAppearance');
+  if (!el) return;
+  const saved = SettingsLib.normalizeTheme(layout && layout.theme);
+  const follow = !!(layout && layout.themeFollowSystem);
+  const eff = document.documentElement.getAttribute('data-theme') || saved;
+  const sw = SettingsLib.THEMES.map(t => {
+    const [p0, p1, p2, p3, pb] = _sdSwatchFor(t);
+    return `<button type="button" class="sd-swt${t.id === saved ? ' on' : ''}" data-sd="theme" data-id="${t.id}" style="--p0:${p0};--p1:${p1};--p2:${p2};--p3:${p3};--pb:${pb}" aria-pressed="${t.id === saved}"><span class="pv"></span><span class="tn">${_esc(t.label)}</span></button>`;
+  }).join('');
+  const light = SettingsLib.THEMES.find(t => t.id === SettingsLib.SYSTEM_LIGHT_THEME);
+  el.innerHTML = `
+    <div class="sd-sh"><h3>Appearance</h3><span class="meta">${_esc(eff)}${follow && eff !== saved ? ' · following system' : ''}</span></div>
+    <div class="sd-sw">${sw}</div>
+    <div class="sd-row" style="margin-top:12px;"><button type="button" class="mc-toggle${follow ? ' on' : ''}" data-sd="follow-system" role="switch" aria-checked="${follow}"><span class="track"></span><span class="tlbl">Follow the system light/dark setting</span></button></div>
+    <div class="help">Uses <b>${_esc(light ? light.label : 'Frost')}</b> while your OS is in light mode and your chosen dark theme otherwise.</div>`;
+}
+
+let _intervalManual = null;
+
+function _sdRenderRefresh() {
+  const el = document.getElementById('sdRefresh');
+  if (!el) return;
+  const cfg = window._pollCfg || {};
+  const mode = cfg.interval_mode || 'auto';
+  if (mode === 'manual' && cfg.interval_override) _intervalManual = cfg.interval_override;
+  const manualVal = SettingsLib.clampInterval(_intervalManual || cfg.poll_interval || SettingsLib.INTERVAL_CHIPS[0]);
+  const idle = cfg.poll_interval_idle, active = cfg.poll_interval_active;
+  const cur = cfg.poll_interval ? `${cfg.poll_interval}s` : '—';
+  const reason = cfg.interval_reason && cfg.interval_reason !== 'idle' ? `active · ${cfg.interval_reason}` : 'idle';
+  const seg = `<div class="mc-seg" role="group" aria-label="Refresh mode">
+      <button type="button" data-sd="mode" data-v="auto" class="${mode === 'auto' ? 'on' : ''}">Auto</button>
+      <button type="button" data-sd="mode" data-v="manual" class="${mode === 'manual' ? 'on' : ''}">Manual</button></div>`;
+  const autoBox = `
+    <div class="sd-live auto"><span class="dot"></span>every <b>${_esc(cur)}</b><span class="why">${_esc(reason)}</span></div>
+    <div class="help">Switches between your configured cadences: <b>${active != null ? active + 's' : '—'}</b> while a provider is active, <b>${idle != null ? idle + 's' : '—'}</b> while llama sleeps and LM Studio is idle. Change them under Admin → Settings → Polling. Agents sample every 5s, so that is the fastest useful cadence.</div>`;
+  const chips = SettingsLib.INTERVAL_CHIPS.map(v =>
+    `<button type="button" class="sd-chip${v === manualVal ? ' on' : ''}" data-sd="ival" data-v="${v}">${v}s</button>`).join('');
+  const manBox = `
+    <div class="sd-row"><span class="k">Every</span><div class="sd-chips">${chips}</div></div>
+    <div class="sd-row"><span class="k">Custom</span>
+      <div class="sd-stp"><button type="button" data-sd="ival-step" data-v="-5" aria-label="Slower">−</button><input type="number" id="sdIvalInput" min="${SettingsLib.INTERVAL_MIN}" max="${SettingsLib.INTERVAL_MAX}" step="5" value="${manualVal}" aria-label="Seconds"><button type="button" data-sd="ival-step" data-v="5" aria-label="Faster">+</button></div>
+      <span class="unit">seconds · ${SettingsLib.INTERVAL_MIN}–${SettingsLib.INTERVAL_MAX}</span></div>
+    <div class="sd-live manual" style="margin-top:8px;"><span class="dot"></span>every <b>${_esc(cur)}</b><span class="why">manual · all viewers</span></div>`;
+  el.innerHTML = `
+    <div class="sd-sh"><h3>Refresh</h3><span class="meta">poll interval</span></div>
+    <div class="sd-row"><span class="k">Mode</span>${seg}</div>
+    <div ${mode === 'auto' ? '' : 'hidden'}>${autoBox}</div>
+    <div ${mode === 'manual' ? '' : 'hidden'}>${manBox}</div>`;
+}
+
+function _renderIntervalBadge() {
+  const b = document.getElementById('intervalBadge');
+  if (!b) return;
+  const cfg = window._pollCfg || {};
+  const s = cfg.poll_interval ? `${cfg.poll_interval}s` : '—';
+  const mode = cfg.interval_mode || 'auto';
+  b.className = 'hdr-badge ' + mode;
+  b.innerHTML = `<span class="dot"></span><b>${_esc(s)}</b> ${mode}`;
+  b.title = `Refresh every ${s} (${mode}) · open settings`;
+}
+
+function renderSettingsPanel() {
+  const scope = _sdScope();
+  const has = scope.kind === 'cards';
+  const none = document.getElementById('sdNoCards');
+  const cards = document.getElementById('sdCards');
+  const lay = document.getElementById('sdLayout');
+  if (none) none.hidden = has;
+  if (cards) cards.hidden = !has;
+  if (lay) lay.hidden = !has;
+  _sdRenderHeader(scope);
+  if (has) { _sdRenderCards(scope); _sdRenderLayout(scope); }
+  _sdRenderAppearance();
+  _sdRenderRefresh();
+}
+
+function _sdSetAllCards(visible) {
+  const scope = _sdScope();
+  if (scope.kind !== 'cards' || _activeTab === 'overall') return;
+  Object.keys(_sdCardMap(scope)).forEach(id => toggleCard(id, visible));
+}
+
+function _sdRerenderCards() { _sdRenderCards(); _sdRenderHeader(); _sdRenderLayout(); }
+
+let _sdBound = false;
+function _sdBind() {
+  if (_sdBound) return;
+  _sdBound = true;
+  const root = document.getElementById('settingsOverlay');
+  if (!root) return;
+  root.addEventListener('click', (ev) => {
+    const t = ev.target.closest('[data-sd]');
+    if (!t) return;
+    const kind = t.dataset.sd;
+    if (kind === 'card') {
+      const on = t.getAttribute('aria-pressed') !== 'true';
+      toggleCard(t.dataset.id, on); _sdRerenderCards();
+    } else if (kind === 'pin') {
+      const on = t.getAttribute('aria-pressed') !== 'true';
+      if (on) addBorrowedCard(t.dataset.id); else removeBorrowedCard(t.dataset.id);
+      _sdRerenderCards();
+    } else if (kind === 'show-all' || kind === 'hide-all') {
+      _sdSetAllCards(kind === 'show-all'); _sdRerenderCards();
+    } else if (kind === 'cols') {
+      applyGridCols(t.dataset.v === 'auto' ? 'auto' : Number(t.dataset.v), true);
+    } else if (kind === 'preset') {
+      applyLayoutPreset(t.dataset.id);
+    } else if (kind === 'reset') {
+      resetCurrentTabLayout();
+    } else if (kind === 'theme') {
+      applyTheme(t.dataset.id, true);
+    } else if (kind === 'follow-system') {
+      setThemeFollowSystem(t.getAttribute('aria-checked') !== 'true');
+    } else if (kind === 'mode') {
+      applyIntervalMode(t.dataset.v, _intervalManual);
+    } else if (kind === 'ival') {
+      applyIntervalMode('manual', Number(t.dataset.v));
+    } else if (kind === 'ival-step') {
+      const inp = document.getElementById('sdIvalInput');
+      const v = SettingsLib.clampInterval((inp ? Number(inp.value) : SettingsLib.INTERVAL_CHIPS[0]) + Number(t.dataset.v));
+      applyIntervalMode('manual', v);
+    }
+  });
+  root.addEventListener('change', (ev) => {
+    if (ev.target && ev.target.id === 'sdIvalInput') applyIntervalMode('manual', Number(ev.target.value));
+  });
+  root.addEventListener('keydown', (ev) => {
+    if (ev.key === 'Enter' && ev.target && ev.target.id === 'sdIvalInput') { ev.preventDefault(); ev.target.blur(); }
+  });
+}
+
+function _sdKey(ev) {
+  if (ev.key === 'Escape') closeSettings();
+}
+
+function openSettings(section) {
+  _sdBind();
+  renderSettingsPanel();
+  const ov = document.getElementById('settingsOverlay');
+  if (!ov) return;
+  ov.classList.add('open');
+  document.getElementById('settingsCog')?.classList.add('open');
+  document.addEventListener('keydown', _sdKey);
+  const target = section === 'refresh' ? document.getElementById('sdRefresh') : null;
+  if (target) target.scrollIntoView({ block: 'start' });
+  else { const body = ov.querySelector('.sd-b'); if (body) body.scrollTop = 0; }
+  setTimeout(() => ov.querySelector('.sd')?.focus({ preventScroll: true }), 0);
+}
+function closeSettings() {
+  document.getElementById('settingsOverlay')?.classList.remove('open');
+  document.getElementById('settingsCog')?.classList.remove('open');
+  document.removeEventListener('keydown', _sdKey);
+}
+
+async function applyIntervalMode(mode, value) {
+  mode = mode === 'manual' ? 'manual' : 'auto';
+  if (mode === 'manual') _intervalManual = SettingsLib.clampInterval(value || _intervalManual || SettingsLib.INTERVAL_CHIPS[0]);
+  try {
+    await fetch('/api/config/interval', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(mode === 'manual' ? {mode: 'manual', value: _intervalManual} : {mode: 'auto'}),
+    });
+    await checkConfig();
+  } catch(e) {}
+}
+
+// checkConfig publishes each /api/config read; the badge always follows it,
+// the open drawer's Refresh section only while its interval input is idle.
+document.addEventListener('lsm:pollcfg', () => {
+  _renderIntervalBadge();
+  const ov = document.getElementById('settingsOverlay');
+  if (!ov || !ov.classList.contains('open')) return;
+  if (document.activeElement && document.activeElement.id === 'sdIvalInput') return;
+  _sdRenderRefresh();
+});
+
+// Apply saved column counts from layout on load
+function applyAllGridCols() {
+  Object.values(SettingsLib.CARD_PAGES).forEach(p => {
+    const el = document.getElementById(p.grid);
+    const n = layout[p.cols];
+    if (el && n) el.style.gridTemplateColumns = SettingsLib.gridTemplate(SettingsLib.normalizeCols(n));
+  });
 }
 
 // Reset only the active tab's layout keys back to defaults. Other tabs
@@ -1229,58 +1411,6 @@ async function resetCurrentTabLayout() {
   // layout. Avoids drift between in-memory caches and the new state.
   window.location.reload();
 }
-
-function openSettings() {
-  renderSettingsPanel();
-  _syncIntervalUI();
-  const sel = document.getElementById('themeSelect');
-  if (sel) sel.value = (layout && layout.theme) || 'modern';
-  document.getElementById('settingsOverlay').classList.add('open');
-}
-function closeSettings() {
-  document.getElementById('settingsOverlay').classList.remove('open');
-}
-
-let _intervalMode = 'auto';
-function _syncIntervalUI() {
-  const radios = document.querySelectorAll('input[name=intervalMode]');
-  radios.forEach(r => { r.checked = (r.value === _intervalMode); });
-  const inp  = document.getElementById('intervalManualVal');
-  const unit = document.getElementById('intervalManualUnit');
-  const isManual = _intervalMode === 'manual';
-  if (inp)  inp.style.display  = isManual ? '' : 'none';
-  if (unit) unit.style.display = isManual ? '' : 'none';
-}
-
-async function applyIntervalMode() {
-  const selected = document.querySelector('input[name=intervalMode]:checked')?.value || 'auto';
-  _intervalMode = selected;
-  _syncIntervalUI();
-  const val = parseInt(document.getElementById('intervalManualVal')?.value || '5', 10);
-  try {
-    await fetch('/api/config/interval', {
-      method: 'POST',
-      headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify(selected === 'manual' ? {mode: 'manual', value: val} : {mode: 'auto'}),
-    });
-    checkConfig();
-  } catch(e) {}
-}
-
-// Apply saved column counts from layout on load
-function applyAllGridCols() {
-  const pairs = [
-    [document.getElementById('overallGrid'),  layout.overallCols],
-    [document.getElementById('cardGrid'),     layout.cols],
-    [document.getElementById('lmsCardGrid'),  layout.lmsCols],
-    [document.getElementById('vllmCardGrid'), layout.vllmCols],
-    [document.getElementById('managerCardGrid'), layout.managerCols],
-  ];
-  pairs.forEach(([el, n]) => {
-    if (el && n) el.style.gridTemplateColumns = `repeat(${n}, 1fr)`;
-  });
-}
-
 
 // switchTab — tab dispatcher (moved here so tab batches can rely on it)
 function switchTab(tab) {

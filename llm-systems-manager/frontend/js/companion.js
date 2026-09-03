@@ -73,8 +73,9 @@
     } else {
       try {
         const layout = await jfetch('/api/layout');
-        document.documentElement.setAttribute('data-theme',
-          (layout && layout.theme) || 'modern');
+        const osLight = !!window.matchMedia('(prefers-color-scheme: light)').matches;
+        document.documentElement.setAttribute('data-theme', SettingsLib.effectiveTheme(
+          layout && layout.theme, !!(layout && layout.themeFollowSystem), osLight));
       } catch (_) { /* default theme */ }
     }
     const bg = getComputedStyle(document.documentElement)
