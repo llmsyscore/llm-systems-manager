@@ -663,6 +663,7 @@ Backend API endpoints consumed:
           <div class="card-h">
             <h3>Model Autopilot</h3>
             <button type="button" class="mc-toggle" id="apEnabledToggle" aria-pressed="false" data-tip="Places, fails over and scales entries by their failover setting. Off: planning still runs, proposals wait for you." style="margin-left:4px"><span class="track"></span><span class="tlbl">Autopilot</span></button>
+            <button type="button" class="mc-toggle" id="apProtectToggle" aria-pressed="false" data-tip="Never unloads a model Autopilot does not manage; an entry that needs that host waits instead. Off: automatic placement may displace whatever is resident there." style="margin-left:4px"><span class="track"></span><span class="tlbl">Protect other models</span></button>
             <span class="meta" id="apPlanMeta"></span>
             <span class="meta" id="apSaveStatus"></span>
             <span class="gap"></span>
@@ -2412,7 +2413,7 @@ Backend API endpoints consumed:
 <script src="/static/js/admin-gateway.js?v=2026.09.02-7"></script>
 <script src="/static/js/admin-audit.js?v=2026.09.02-4"></script>
 <script src="/static/js/admin-settings.js?v=2026.09.02-7"></script>
-<script src="/static/js/autopilot.js?v=2026.09.02-7"></script>
+<script src="/static/js/autopilot.js?v=2026.09.02-8"></script>
 <script src="/static/js/llmcontrol-models.js?v=2026.08.31-1"></script>
 <script src="/static/js/editor-modern.js?v=2026.08.30-4"></script>
 <script src="/static/js/bench-autotune.js?v=2026.09.02-1"></script>

@@ -382,3 +382,36 @@ describe("placement select labels (#479 follow-up)", () => {
     expect(sel.selectedOptions[0].textContent).toBe("hostC (not approved)");
   });
 });
+
+
+describe("protect other models toggle (#779)", () => {
+  it("renders from state and round-trips through save()", async () => {
+    document.body.innerHTML = `
+      <input type="checkbox" id="apEnabledToggle">
+      <input type="checkbox" id="apProtectToggle">
+      <div id="apEntriesBody"></div>
+      <div id="apProposalsBody"></div>
+      <span id="apSaveStatus"></span>
+    `;
+    const puts = [];
+    vi.stubGlobal("fetch", vi.fn((url, opts) => {
+      if (opts && opts.method === "PUT") {
+        puts.push(JSON.parse(opts.body));
+        return Promise.resolve({ok: true, json: () => Promise.resolve({ok: true, state: puts[0]})});
+      }
+      return Promise.resolve({ok: true, json: () => Promise.resolve({
+        state: {enabled: true, protect_unmanaged: true, entries: [], hosts: {}},
+        proposals: [], last_plan_ts: null})});
+    }));
+    await AP.init();
+    const protect = document.getElementById("apProtectToggle");
+    expect(protect.checked).toBe(true);
+
+    protect.checked = false;
+    protect.dispatchEvent(new Event("change", {bubbles: true}));
+    await AP.save();
+    expect(puts).toHaveLength(1);
+    expect(puts[0].protect_unmanaged).toBe(false);
+    expect(puts[0].enabled).toBe(true);
+  });
+});
