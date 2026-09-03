@@ -158,6 +158,7 @@ const CARD_LABELS_MANAGER = {
   'services':         'Services',
   'influxdb':         'InfluxDB',
   'mgr-agents':       'Agents',
+  'mgr-streams':      'Stream & Connection Health',
   'mgr-ram':          'CPU, RAM & Swap',
   'mgr-disk':         'Disk Usage & IO',
   'mgr-network':      'Network',
@@ -189,6 +190,7 @@ let layout = { order: [], hidden: [] };
 async function loadLayout() {
   try {
     layout = await fetch('/api/layout').then(r => r.json());
+    SettingsLib.applyFreshDefaults(layout);
     if (!layout.order)           layout.order           = [];
     if (!layout.hidden)          layout.hidden          = [];
     if (!layout.hiddenOverall)   layout.hiddenOverall   = [];
@@ -203,6 +205,7 @@ async function loadLayout() {
     if (!layout.overallBorrowed) layout.overallBorrowed = [];
     if (!layout.overallOrder)    layout.overallOrder    = [];
     if (!layout.cardSizes || typeof layout.cardSizes !== 'object') layout.cardSizes = {};
+    if (!layout.rolePreset || typeof layout.rolePreset !== 'object') layout.rolePreset = {};
     _migrateLegacyCardIds(layout);
     _applyOrderForGrid('lmsCardGrid', 'lmsOrder');
     _applyOrderForGrid('vllmCardGrid', 'vllmOrder');
@@ -212,6 +215,8 @@ async function loadLayout() {
   applyTheme(layout && layout.theme, false);
   applyLayout();
   applyAllGridCols();
+  if (typeof applyDensity === 'function') applyDensity(layout && layout.density, false);
+  if (typeof applyLayoutEngine === 'function') applyLayoutEngine(layout && layout.layoutEngine, false);
 }
 
 // kraken → aio: existing saved layouts written before the rename still carry
@@ -835,6 +840,7 @@ function _returnOneAdopted(id) {
     if (grid && keys[grid.id] && typeof _applyHiddenForGrid === 'function') {
       _applyHiddenForGrid(grid.id, keys[grid.id]);
     }
+    if (typeof _applyCardSize === 'function') _applyCardSize(card, _sizeMapFor(id)[id] || _defaultCardSize(id));
   } else if (mark && mark.parentNode) mark.remove();
   delete _ovHomeMarks[id];
   _ovAdopted.delete(id);
@@ -904,7 +910,7 @@ function removeBorrowedCard(cardId) {
   if (window._ovAdopted && _ovAdopted.has(cardId)) _returnOneAdopted(cardId);
   layout.overallBorrowed = (layout.overallBorrowed || []).filter(id => id !== cardId);
   const shell = document.querySelector(`#overallGrid [data-card="ov-borrow-${cardId}"]`);
-  if (shell) shell.remove();
+  if (shell) { if (typeof _flowUnobserve === 'function') _flowUnobserve(shell); shell.remove(); }
   // Also prune from saved order
   layout.overallOrder = (layout.overallOrder || []).filter(id => id !== 'ov-borrow-' + cardId);
   saveLayout();
@@ -1005,10 +1011,7 @@ function applyGridCols(n, save) {
   const el = _getGridEl();
   if (el) {
     el.style.gridTemplateColumns = SettingsLib.gridTemplate(cols);
-    el.querySelectorAll(':scope > [data-card]').forEach(card => {
-      const id = card.dataset.card;
-      _applyCardSize(card, _sizeMapFor(id)[id] || _defaultCardSize(id));
-    });
+    _relayoutGridCards(el);
     _resizeChartsIn(el);
   }
   if (save) {
@@ -1021,14 +1024,44 @@ function applyGridCols(n, save) {
 
 // Direct children only: adopted cards inside Overall shells carry data-card too.
 function _sdVisibleCards(scope) {
-  const grid = scope.grid instanceof Element ? scope.grid : document.getElementById(scope.grid);
+  const grid = _sdGridEl(scope);
   if (!grid) return [];
   return [...grid.querySelectorAll(':scope > [data-card]')].filter(c => c.style.display !== 'none');
 }
 function _sdCurrentPreset(scope, cols) {
+  const cards = _sdVisibleCards(scope);
+  if (_sdIsFlow()) {
+    const custom = cards.some(c => c.dataset.size && c.dataset.size !== 'auto');
+    return custom ? null : _rolePresetFor(_sdGridEl(scope));
+  }
   const sizes = {};
-  _sdVisibleCards(scope).forEach((c, i) => { sizes[i] = c.dataset.size || 'auto'; });
+  cards.forEach((c, i) => { sizes[i] = c.dataset.size || 'auto'; });
   return SettingsLib.matchPreset(cols, sizes);
+}
+function _sdIsFlow() { return SettingsLib.normalizeEngine(layout && layout.layoutEngine) === 'flow'; }
+function _sdGridEl(scope) { return scope.grid instanceof Element ? scope.grid : document.getElementById(scope.grid); }
+function _sdPresetLabel(cols, id) {
+  if (!id) return null;
+  if (_sdIsFlow()) { const p = SettingsLib.ROLE_PRESETS[id]; return p ? p.label : null; }
+  return SettingsLib.presetLabel(cols, id);
+}
+// Column span per visible card under a role preset (index → width), all cards.
+function _sdRoleWidths(cols, presetId, scope, cards) {
+  const n = cols === 'auto' ? 3 : Number(cols);
+  const grid = _sdGridEl(scope);
+  const hero = grid ? _flowHeroId(grid) : null;
+  return cards.map(c => SettingsLib.roleWidth(presetId, SettingsLib.roleOf(c.dataset.card), c.dataset.card === hero, n));
+}
+// Role-preset tile: the page's cards in page order at their preset widths,
+// with 3–5 rows so a widened last card still lands inside the glyph.
+function _sdRoleTileSvg(cols, widths) {
+  const n = cols === 'auto' ? 3 : Number(cols);
+  const shown = widths.slice(0, 15);
+  const units = shown.reduce((a, w) => a + w, 0);
+  const rows = Math.max(3, Math.min(5, Math.ceil(units / n)));
+  const sizes = {};
+  shown.forEach((w, i) => { sizes[i] = `${w}x1`; });
+  return _sdTileSvg(cols, sizes, shown.length, rows);
 }
 
 // Row-major first-fit placement of a preset's first cards, for the tile glyph.
@@ -1051,10 +1084,10 @@ function _sdPlace(cols, sizes, n = 8, rows = 3) {
   }
   return out;
 }
-function _sdTileSvg(cols, sizes) {
+function _sdTileSvg(cols, sizes, count = 8, rows = 3) {
   const n = cols === 'auto' ? 3 : Number(cols);
-  const W = 72, H = 42, g = 3, cw = (W - g * (n - 1)) / n, rh = (H - g * 2) / 3;
-  const rects = _sdPlace(n, sizes).map(([c, r, w, h]) =>
+  const W = 72, H = 42, g = 3, cw = (W - g * (n - 1)) / n, rh = (H - g * (rows - 1)) / rows;
+  const rects = _sdPlace(n, sizes, count, rows).map(([c, r, w, h]) =>
     `<rect x="${(c * (cw + g)).toFixed(1)}" y="${(r * (rh + g)).toFixed(1)}" width="${(w * cw + (w - 1) * g).toFixed(1)}" height="${(h * rh + (h - 1) * g).toFixed(1)}" rx="1.5"/>`).join('');
   return `<svg viewBox="0 0 ${W} ${H}" aria-hidden="true">${rects}</svg>`;
 }
@@ -1066,12 +1099,13 @@ function _sdRenderHeader(scope) {
   if (scope.kind !== 'cards') { sum.innerHTML = `<b>${_esc(scope.label)}</b> · no cards on this page`; return; }
   const cols = SettingsLib.normalizeCols(layout[scope.cols] || 3);
   const preset = _sdCurrentPreset(scope, cols);
-  const pname = preset ? SettingsLib.presetLabel(cols, preset) : null;
+  const pname = _sdPresetLabel(cols, preset);
   const map = _sdCardMap(scope);
   const count = _activeTab === 'overall'
     ? `${(layout.overallBorrowed || []).length} pinned`
     : `${Object.keys(map).filter(id => !_hiddenList(scope.hidden).includes(id)).length} of ${Object.keys(map).length} cards`;
-  sum.innerHTML = `<b>${_esc(scope.label)}</b> · ${count} · ${cols === 'auto' ? 'auto columns' : cols + ' columns'} · ${pname ? _esc(pname.toLowerCase()) : 'custom'}`;
+  const eng = _sdIsFlow() ? ' · flow' : '';
+  sum.innerHTML = `<b>${_esc(scope.label)}</b> · ${count} · ${cols === 'auto' ? 'auto columns' : cols + ' columns'}${eng} · ${pname ? _esc(pname.toLowerCase()) : 'custom'}`;
 }
 
 function _sdCardMap(scope) {
@@ -1125,16 +1159,40 @@ function _sdRenderLayout(scope) {
   const seg = SettingsLib.COLUMN_OPTIONS.map(c => c === 'auto'
     ? `<span class="sep"></span><button type="button" data-sd="cols" data-v="auto" class="${cols === 'auto' ? 'on' : ''}" title="Fit as many ${SettingsLib.AUTO_MIN_COL_PX}px columns as the window allows">Auto</button>`
     : `<button type="button" data-sd="cols" data-v="${c}" class="${cols === c ? 'on' : ''}">${c}</button>`).join('');
-  const tiles = SettingsLib.presetsFor(cols).map(([id, p]) =>
-    `<button type="button" class="sd-tile${id === current ? ' on' : ''}" data-sd="preset" data-id="${id}" title="${_esc(p.label)}">${_sdTileSvg(cols, p.sizes)}<span class="tn">${_esc(p.label)}</span></button>`).join('')
-    + `<div class="sd-tile custom${current ? '' : ' on'}" title="Sizes set per card"><svg viewBox="0 0 72 42" aria-hidden="true"><rect x="0" y="0" width="34" height="42" rx="1.5"/><rect x="37" y="0" width="35" height="19" rx="1.5"/><rect x="37" y="23" width="16" height="19" rx="1.5"/><rect x="56" y="23" width="16" height="19" rx="1.5"/></svg><span class="tn">Custom</span></div>`;
-  const pname = current ? SettingsLib.presetLabel(cols, current) : 'custom';
+  const flow = _sdIsFlow();
+  const customTile = `<div class="sd-tile custom${current ? '' : ' on'}" title="Sizes set per card"><svg viewBox="0 0 72 42" aria-hidden="true"><rect x="0" y="0" width="34" height="42" rx="1.5"/><rect x="37" y="0" width="35" height="19" rx="1.5"/><rect x="37" y="23" width="16" height="19" rx="1.5"/><rect x="56" y="23" width="16" height="19" rx="1.5"/></svg><span class="tn">Custom</span></div>`;
+  const vis = flow ? _sdVisibleCards(scope) : [];
+  const uniformW = flow ? _sdRoleWidths(cols, 'uniform', scope, vis).join(',') : '';
+  const tiles = flow
+    ? Object.entries(SettingsLib.ROLE_PRESETS).map(([id, p]) => {
+        const widths = _sdRoleWidths(cols, id, scope, vis);
+        const noop = id !== 'uniform' && widths.join(',') === uniformW;
+        const why = noop ? (p.widths.chart ? 'no charts here' : 'no tables here') : '';
+        return `<button type="button" class="sd-tile${id === current ? ' on' : ''}${noop ? ' noop' : ''}" data-sd="rpreset" data-id="${id}" title="${_esc(p.label)}"${noop ? ' disabled' : ''}>${_sdRoleTileSvg(cols, widths)}<span class="tn">${_esc(p.label)}</span>${noop ? `<span class="tw">${why}</span>` : ''}</button>`;
+      }).join('') + customTile
+    : SettingsLib.presetsFor(cols).map(([id, p]) =>
+        `<button type="button" class="sd-tile${id === current ? ' on' : ''}" data-sd="preset" data-id="${id}" title="${_esc(p.label)}">${_sdTileSvg(cols, p.sizes)}<span class="tn">${_esc(p.label)}</span></button>`).join('') + customTile;
+  const pname = _sdPresetLabel(cols, current) || 'custom';
+  const engSeg = `<div class="mc-seg" role="group" aria-label="Layout engine">
+      <button type="button" data-sd="engine" data-v="grid" class="${flow ? '' : 'on'}" title="Cards stretch to their row">Grid</button>
+      <button type="button" data-sd="engine" data-v="flow" class="${flow ? 'on' : ''}" title="Cards are as tall as their content">Flow</button></div>`;
+  const dens = SettingsLib.normalizeDensity(layout && layout.density);
+  const densSeg = `<div class="mc-seg" role="group" aria-label="Card density">
+      <button type="button" data-sd="density" data-v="comfortable" class="${dens === 'comfortable' ? 'on' : ''}">Comfortable</button>
+      <button type="button" data-sd="density" data-v="compact" class="${dens === 'compact' ? 'on' : ''}">Compact</button></div>`;
+  const presetHelp = flow
+    ? 'A preset widens only cards of its kind — charts, tables and lists, or the page\'s hero card — so on a page without that kind it changes nothing and is greyed out. The ⤢ button on a card still sets its own width.'
+    : 'Presets for the selected column count. They size the first cards in your current order; the rest stay 1×1.';
   el.innerHTML = `
-    <div class="sd-sh"><h3>Layout</h3><span class="meta">${cols === 'auto' ? 'auto columns' : cols + ' columns'} · ${_esc(String(pname).toLowerCase())}</span>
+    <div class="sd-sh"><h3>Layout</h3><span class="meta">${cols === 'auto' ? 'auto columns' : cols + ' columns'}${flow ? ' · flow' : ''} · ${_esc(String(pname).toLowerCase())}</span>
       <span class="act"><button type="button" class="sd-btn warn" data-sd="reset" title="Restore this page's default cards, order, columns and sizes">⟲ Reset this page</button></span></div>
+    <div class="sd-row top"><span class="k">Engine</span><div class="grow">${engSeg}
+      <div class="help">${flow ? 'Flow sizes every card to its content and packs cards to close gaps.' : 'Grid stretches each row to its tallest card.'} Applies to every card page.</div></div></div>
+    <div class="sd-row top"><span class="k">Density</span><div class="grow">${densSeg}
+      <div class="help">Compact tightens card padding, stat type and chart height. Applies to every card page.</div></div></div>
     <div class="sd-row"><span class="k">Columns</span><div class="mc-seg" role="group" aria-label="Columns">${seg}</div></div>
     <div class="sd-row top"><span class="k">Preset</span><div class="grow"><div class="sd-tiles">${tiles}</div>
-      <div class="help">Presets for the selected column count. They size the first cards in your current order; the rest stay 1×1.</div></div></div>`;
+      <div class="help">${presetHelp}</div></div></div>`;
 }
 
 // Swatch colours read from the theme's own :root[data-theme] rule so the
@@ -1169,7 +1227,8 @@ function _sdRenderAppearance() {
     <div class="sd-sh"><h3>Appearance</h3><span class="meta">${_esc(eff)}${follow && eff !== saved ? ' · following system' : ''}</span></div>
     <div class="sd-sw">${sw}</div>
     <div class="sd-row" style="margin-top:12px;"><button type="button" class="mc-toggle${follow ? ' on' : ''}" data-sd="follow-system" role="switch" aria-checked="${follow}"><span class="track"></span><span class="tlbl">Follow the system light/dark setting</span></button></div>
-    <div class="help">Uses <b>${_esc(light ? light.label : 'Frost')}</b> while your OS is in light mode and your chosen dark theme otherwise.</div>`;
+    <div class="help">Uses <b>${_esc(light ? light.label : 'Frost')}</b> while your OS is in light mode and your chosen dark theme otherwise.</div>
+`;
 }
 
 let _intervalManual = null;
@@ -1262,6 +1321,12 @@ function _sdBind() {
       applyGridCols(t.dataset.v === 'auto' ? 'auto' : Number(t.dataset.v), true);
     } else if (kind === 'preset') {
       applyLayoutPreset(t.dataset.id);
+    } else if (kind === 'rpreset') {
+      applyRolePreset(t.dataset.id);
+    } else if (kind === 'engine') {
+      applyLayoutEngine(t.dataset.v, true);
+    } else if (kind === 'density') {
+      applyDensity(t.dataset.v, true);
     } else if (kind === 'reset') {
       resetCurrentTabLayout();
     } else if (kind === 'theme') {
@@ -1380,6 +1445,7 @@ async function resetCurrentTabLayout() {
   layout[scope.hidden] = [];
   layout[scope.order]  = [];
   delete layout[scope.cols];
+  if (layout.rolePreset) delete layout.rolePreset[_sdScope().key];
   if (scope.borrowed) layout[scope.borrowed] = [];
   // Drop cardSizes entries for ids in this tab's label map; the Overall
   // tab's sizes live under ov-borrow-* shell keys instead.
