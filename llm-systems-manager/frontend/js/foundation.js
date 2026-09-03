@@ -1052,13 +1052,16 @@ function _sdRoleWidths(cols, presetId, scope, cards) {
   const hero = grid ? _flowHeroId(grid) : null;
   return cards.map(c => SettingsLib.roleWidth(presetId, SettingsLib.roleOf(c.dataset.card), c.dataset.card === hero, n));
 }
-// Role-preset tile: the page's cards at their preset widths, widened ones
-// first so the preset's effect is always inside the four drawn rows.
+// Role-preset tile: the page's cards in page order at their preset widths,
+// with 3–5 rows so a widened last card still lands inside the glyph.
 function _sdRoleTileSvg(cols, widths) {
-  const ordered = widths.map((w, i) => [w, i]).sort((a, b) => b[0] - a[0]).slice(0, 16);
+  const n = cols === 'auto' ? 3 : Number(cols);
+  const shown = widths.slice(0, 15);
+  const units = shown.reduce((a, w) => a + w, 0);
+  const rows = Math.max(3, Math.min(5, Math.ceil(units / n)));
   const sizes = {};
-  ordered.forEach(([w], i) => { sizes[i] = `${w}x1`; });
-  return _sdTileSvg(cols, sizes, ordered.length, 4);
+  shown.forEach((w, i) => { sizes[i] = `${w}x1`; });
+  return _sdTileSvg(cols, sizes, shown.length, rows);
 }
 
 // Row-major first-fit placement of a preset's first cards, for the tile glyph.
