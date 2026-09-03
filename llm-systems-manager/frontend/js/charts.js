@@ -245,8 +245,9 @@ function _flowPresetWidth(card, maxCols) {
 }
 function _flowMetrics(grid) {
   const cs = getComputedStyle(grid);
+  const gap = parseFloat(cs.rowGap);
   return { unit: parseFloat(cs.gridAutoRows) || SettingsLib.FLOW_UNIT_PX,
-           gap: parseFloat(cs.rowGap) || 0 };
+           gap: Number.isFinite(gap) ? gap : SettingsLib.FLOW_ROW_GAP_PX };
 }
 // Row span from the card's current content height; hidden cards get none.
 function _flowMeasure(card, metrics) {

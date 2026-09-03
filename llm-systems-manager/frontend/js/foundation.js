@@ -838,6 +838,7 @@ function _returnOneAdopted(id) {
     if (grid && keys[grid.id] && typeof _applyHiddenForGrid === 'function') {
       _applyHiddenForGrid(grid.id, keys[grid.id]);
     }
+    if (typeof _applyCardSize === 'function') _applyCardSize(card, _sizeMapFor(id)[id] || _defaultCardSize(id));
   } else if (mark && mark.parentNode) mark.remove();
   delete _ovHomeMarks[id];
   _ovAdopted.delete(id);
