@@ -5,6 +5,7 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
+import SG from '../js/lib/sseguard.js';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const code = readFileSync(resolve(ROOT, 'js/report-card.js'), 'utf8');
@@ -45,6 +46,7 @@ function loadModule({ runResponse }) {
     close() { this.closed = true; }
   }
   vi.stubGlobal('EventSource', FakeEventSource);
+  vi.stubGlobal('SG', SG);
   vi.stubGlobal('RC', {
     PROVIDER_LABEL: { llama: 'llama.cpp' },
     buildCard: () => document.createDocumentFragment(),

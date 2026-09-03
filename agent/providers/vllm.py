@@ -452,7 +452,22 @@ def _at_args_with_max_len(args: list, value: int) -> list:
     return out
 
 
-_at_job = _shared.JobRunner("vllm-autotune")
+_at_replay = BenchReplayBuffer(maxlen=5000)
+_at_cond = threading.Condition()
+
+
+def _at_put(event: dict) -> None:
+    with _at_cond:
+        _at_replay.append(event)
+        _at_cond.notify_all()
+
+
+def _at_start_run() -> None:
+    with _at_cond:
+        _at_replay.start_run(uuid.uuid4().hex[:12])
+
+
+_at_job = _shared.JobRunner("vllm-autotune", sink=_at_put)
 
 
 def _at_watch_journal(unit: str, timeout_s: float, step: str,
@@ -595,9 +610,19 @@ def _at_run(params: dict) -> None:
     orig_args: list = []
     orig_max: Optional[int] = None
 
+    model: Optional[str] = None
+
+    def _model_done(ok: bool, **fields) -> None:
+        """Emit model_done and record the run in the manager ledger (#780)."""
+        _at_job.put({"type": "model_done", "ok": ok, "model_id": model,
+                     "run_id": _at_replay.run_id, **fields})
+        _shared.post_tool_run(
+            ctx, "autotune", "vllm", _at_replay.run_id, model or "", ok,
+            {k: fields.get(k) for k in ("max_model_len", "kv_tokens", "applied",
+                                        "report_only", "error")})
+
     def _fail(error: Optional[str]) -> None:
-        _at_job.put({"type": "model_done", "ok": False, "applied": False,
-                     "error": error})
+        _model_done(False, applied=False, error=error)
 
     try:
         content = Path(_vllm_svc_file_path()).read_text()
@@ -638,11 +663,9 @@ def _at_run(params: dict) -> None:
                      "kv_fraction": params["kv_fraction"]})
 
         if params["report_only"]:
-            _at_job.put({"type": "model_done", "ok": True, "applied": False,
-                         "report_only": True, "max_model_len": rec,
-                         "kv_tokens": kv_tokens,
-                         "max_concurrency_x": watch.get("max_conc"),
-                         "original_max_len": orig_max})
+            _model_done(True, applied=False, report_only=True, max_model_len=rec,
+                        kv_tokens=kv_tokens, max_concurrency_x=watch.get("max_conc"),
+                        original_max_len=orig_max)
             ok = True
             return
 
@@ -664,11 +687,10 @@ def _at_run(params: dict) -> None:
                          "text": f"note: server reports max_model_len={reported}"})
         mutated = False
         ok = True
-        _at_job.put({"type": "model_done", "ok": True, "applied": True,
-                     "report_only": False, "max_model_len": rec,
-                     "kv_tokens": watch.get("kv_tokens", kv_tokens),
-                     "max_concurrency_x": watch.get("max_conc"),
-                     "original_max_len": orig_max})
+        _model_done(True, applied=True, report_only=False, max_model_len=rec,
+                    kv_tokens=watch.get("kv_tokens", kv_tokens),
+                    max_concurrency_x=watch.get("max_conc"),
+                    original_max_len=orig_max)
     except Exception as e:
         _fail(str(e))
     finally:
@@ -711,7 +733,7 @@ def vllm_autotune_run(body: dict,
         raise HTTPException(status_code=400, detail="kv_fraction out of range (0.1–1.0)")
     if not 60 <= params["load_timeout_s"] <= 3600:
         raise HTTPException(status_code=400, detail="load_timeout_s out of range (60–3600)")
-    if not _at_job.try_start(lambda: _at_run(params)):
+    if not _at_job.try_start(lambda: _at_run(params), on_start=_at_start_run):
         return {"ok": False, "error": "Another auto-tune is in progress"}
     return {"ok": True}
 
@@ -719,10 +741,12 @@ def vllm_autotune_run(body: dict,
 def vllm_autotune_stream(
     authorization: Optional[str] = Header(default=None),
     token: Optional[str] = Query(default=None),
+    last_event_id: Optional[str] = Header(default=None, alias="Last-Event-ID"),
 ) -> StreamingResponse:
     _require_ctx().check_stream_auth(authorization, token, "/vllm/autotune/stream")
     _vllm_check_enabled()
-    return _at_job.sse_response()
+    return _shared.bench_replay_sse(
+        _at_replay, _at_cond, lambda: _at_job.active, last_event_id)
 
 
 def vllm_autotune_cancel(authorization: Optional[str] = Header(default=None)) -> dict[str, Any]:
@@ -797,7 +821,6 @@ def _bench_extract_extra(data: dict) -> dict:
             if isinstance(v, (int, float, str, bool))}
 
 
-_bench_job = _shared.JobRunner("vllm-bench")
 _bench_replay = BenchReplayBuffer(maxlen=5000)
 _bench_cond = threading.Condition()
 
@@ -808,15 +831,40 @@ def _bench_put(event: dict) -> None:
         _bench_cond.notify_all()
 
 
+def _bench_start_run() -> None:
+    with _bench_cond:
+        _bench_replay.start_run(uuid.uuid4().hex[:12])
+
+
+_bench_job = _shared.JobRunner("vllm-bench", sink=_bench_put)
+
+
+def _bench_summary(extra: dict) -> dict:
+    """Ledger throughput fields from a vllm bench serve result (#780)."""
+    return {"gen_tps": extra.get("output_throughput"),
+            "pg_tps": extra.get("total_token_throughput"),
+            "bench_tool": "vllm-bench-serve"}
+
+
+def _bench_model_done(model: str, ok: bool, rc, cancelled: bool,
+                      error: Optional[str], extra: dict) -> None:
+    """Emit model_done with the run summary and record the ledger row."""
+    summary = _bench_summary(extra or {})
+    _bench_put({"type": "model_done", "ok": ok, "rc": rc, "cancelled": cancelled,
+                "error": error, "model_id": model,
+                "run_id": _bench_replay.run_id, **summary})
+    _shared.post_tool_run(_require_ctx(), "benchmark", "vllm",
+                          _bench_replay.run_id, model, ok, summary)
+
+
 def _bench_run_one(binpath: str, model: str, switches: list) -> None:
     """Job thread: run vllm bench serve, stream lines, parse the result JSON."""
     ok = False
     rc: Optional[int] = None
     error: Optional[str] = None
+    extra: dict = {}
     tmpdir = tempfile.mkdtemp(prefix="vllm-bench-")
     try:
-        with _bench_cond:
-            _bench_replay.start_run(uuid.uuid4().hex[:12])
         cmd = _bench_build_cmd(binpath, _require_ctx().config.VLLM_API_URL.rstrip("/"),
                                model, switches, tmpdir)
         _bench_put({"type": "model_start", "model": model,
@@ -848,20 +896,18 @@ def _bench_run_one(binpath: str, model: str, switches: list) -> None:
         if rc == 0 and not cancelled and error is None:
             try:
                 data = json.loads(Path(tmpdir, "result.json").read_text())
-                _bench_put({"type": "result", "model_id": model,
-                            "extra": _bench_extract_extra(data),
-                            "switches": switches})
+                extra = _bench_extract_extra(data)
+                _bench_put({"type": "result", "model_id": model, "extra": extra,
+                            "switches": switches, "run_id": _bench_replay.run_id})
                 ok = True
             except Exception as e:
                 error = f"benchmark finished but result.json unreadable: {e}"
         elif not cancelled and error is None:
             error = f"vllm bench serve exited rc={rc}"
-        _bench_put({"type": "model_done", "ok": ok, "rc": rc,
-                    "cancelled": cancelled, "error": error})
+        _bench_model_done(model, ok, rc, cancelled, error, extra)
     except Exception as e:
-        _bench_put({"type": "model_done", "ok": False, "rc": rc,
-                    "cancelled": _bench_job.cancel_event.is_set(),
-                    "error": str(e)})
+        _bench_model_done(model, False, rc, _bench_job.cancel_event.is_set(),
+                          str(e), {})
     finally:
         _bench_job.untrack()
         shutil.rmtree(tmpdir, ignore_errors=True)
@@ -892,7 +938,8 @@ def vllm_bench_run(body: dict,
     binpath, err = _bench_resolve_bin()
     if not binpath:
         return {"ok": False, "error": err}
-    if not _bench_job.try_start(lambda: _bench_run_one(binpath, model, switches)):
+    if not _bench_job.try_start(lambda: _bench_run_one(binpath, model, switches),
+                                on_start=_bench_start_run):
         return {"ok": False, "error": "Another benchmark is in progress"}
     return {"ok": True}
 

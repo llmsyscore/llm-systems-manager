@@ -27,6 +27,7 @@ const STUBS = `
   Chart.prototype.destroy = function () {};
 
   window.__streams = [];
+  window.__timers = [];
   window.EventSource = function (url) {
     this.url = url;
     this.readyState = 0;
@@ -51,7 +52,10 @@ const status = (win) => win.document.getElementById('benchStatus').textContent;
 // Starts a run and returns {win, es, send, drop}.
 async function startRun() {
   const win = runHarness({
-    sources: [STUBS, srcFile('js/bench-autotune.js')],
+    sources: [STUBS, srcFile('js/lib/sseguard.js'),
+              'window.SG.timers.setTimeout = (fn, ms) => { window.__timers.push({fn, ms}); return 1; };\n'
+              + 'window.SG.timers.clearTimeout = () => {};',
+              srcFile('js/bench-autotune.js')],
     bodyHtml: BODY,
     bootstrap: 'window.__started = runBenchmark();',
   });
@@ -90,14 +94,15 @@ describe('benchmark stream reconnect', () => {
     expect(status(r.win)).toBe('running: m');
   });
 
-  it('stays on reconnecting when only keepalives come back', async () => {
+  it('a keepalive after the drop restores the live label (#782)', async () => {
     const r = await startRun();
     r.send({ type: 'model_start', model_id: 'org/m' });
     r.drop();
     r.es.readyState = 1;
+    // The replay generator only emits keepalives while the job is active,
+    // so one is positive proof the run is still alive.
     r.send({ type: 'keepalive' });
-    // A keepalive-only stream is not proof the run resumed.
-    expect(status(r.win)).toBe('reconnecting…');
+    expect(status(r.win)).toBe('running: m');
   });
 
   it('restores the label after repeated drops in one run', async () => {
@@ -121,10 +126,31 @@ describe('benchmark stream reconnect', () => {
     expect(r.win.document.getElementById('benchCancelBtn').style.display).toBe('none');
   });
 
-  it('a terminal close still reports disconnected', async () => {
+  it('a closed source (pool 503) is re-opened with backoff, resuming by id (#782)', async () => {
     const r = await startRun();
+    r.send({ type: 'model_start', model_id: 'org/m' });
     r.es.readyState = 2;
     r.es.onerror();
+    expect(status(r.win)).toBe('reconnecting…');
+    expect(r.win.__timers.length).toBe(1);
+    r.win.__timers.shift().fn();
+    const es2 = r.win.__streams[r.win.__streams.length - 1];
+    expect(es2).not.toBe(r.es);
+    expect(es2.url).toBe('/api/benchmark/stream?last_event_id=run1%3A7');
+    es2.readyState = 1;
+    es2.onmessage({ data: JSON.stringify({ type: 'line', text: 'back' }), lastEventId: 'run1:8' });
+    expect(status(r.win)).toBe('running: m');
+  });
+
+  it('gives up on a closed source after too many re-opens', async () => {
+    const r = await startRun();
+    let es = r.es;
+    for (let i = 0; i < 25; i++) {
+      es.readyState = 2;
+      es.onerror();
+      const t = r.win.__timers.shift();
+      if (t) { t.fn(); es = r.win.__streams[r.win.__streams.length - 1]; }
+    }
     expect(status(r.win)).toBe('disconnected');
   });
 
