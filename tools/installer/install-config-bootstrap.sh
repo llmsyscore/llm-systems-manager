@@ -180,15 +180,20 @@ if $PROMPT; then
     else
       log "  → no ingest_token entered; warning will be emitted below"
     fi
-    # Same for the management_token — gates the rules/alerts/notifications
-    # routes; the manager injects it on its AE calls. Enter to skip and add
-    # it later via [alarm_engine].management_token.
+    # Same for the management_token — the manager injects it on its AE calls.
+    # Enter to skip and add it later via [alarm_engine].management_token.
+    echo
+    echo "  The alarm engine also generates a management_token at install (Mode 4)."
+    echo "  Admin → Settings can only edit alarm-engine settings when the SAME"
+    echo "  management_token is set on both hosts; skipping leaves that half read-only."
     read -rp "  AE management_token (or Enter to skip): " MGR_MGMT_TOKEN_PASTE
     MGR_MGMT_TOKEN_PASTE="$(printf '%s' "$MGR_MGMT_TOKEN_PASTE" | tr -d '[:space:]')"
     if [[ -n "$MGR_MGMT_TOKEN_PASTE" ]]; then
       validate_influx_token "AE management_token paste" "$MGR_MGMT_TOKEN_PASTE" 0 \
         || die "pasted management_token failed sanity check"
       log "  → management_token will be written to [alarm_engine].management_token"
+    else
+      log "  → no management_token entered; Admin → Settings stays read-only for alarm-engine settings until it is set on both hosts"
     fi
     # InfluxDB host. The manager doesn't query InfluxDB for data (the AE does),
     # but it uses [influxdb].host for the admin tab's InfluxDB status/co-location
@@ -324,6 +329,7 @@ INGEST_COMMENTED=0
 # co-located, commented-out on split-AE, pasteable on manager-only.
 MGMT_TOKEN=""
 MGMT_COMMENTED=0
+MGMT_SKIPPED=0
 if (( HAS_AE && HAS_MGR )); then
   INGEST_TOKEN="$(openssl rand -hex 32)"
   MGMT_TOKEN="$(openssl rand -hex 32)"
@@ -386,6 +392,8 @@ elif (( HAS_AE )); then
 
   Until step 4 is complete, agents may still push metrics without the
   token — this prevents being locked out partway through a split install.
+  Admin → Settings on the manager cannot edit alarm-engine settings until
+  management_token is live on BOTH hosts.
 EOF
   echo
 elif (( HAS_MGR )); then
@@ -399,8 +407,10 @@ elif (( HAS_MGR )); then
   if [[ -n "$MGR_MGMT_TOKEN_PASTE" ]]; then
     ok "manager will authenticate AE management calls with the management_token you provided"
   else
-    warn "  if the remote engine enforces a management_token, paste it into"
-    warn "  [alarm_engine].management_token in $REAL and restart llm-systems-manager"
+    MGMT_SKIPPED=1
+    warn "no management_token set — the alarm engine's config API refuses (403) without one,"
+    warn "  so Admin → Settings cannot edit alarm-engine settings (rules/alerts still work)."
+    warn "  Set the SAME [alarm_engine].management_token on both hosts; steps are printed at the end."
   fi
 fi
 
@@ -815,5 +825,31 @@ if (( HAS_MGR && ! HAS_AE )); then
   The manager issues them on its first startup into its own data dir:
     scp $INSTALL_DIR/data/ae-tls.{crt,key} \\
         <ae-host>:$INSTALL_DIR/llm-systems-alarm-engine/data/
+EOF
+fi
+
+# Skipped management_token on a manager-only install: the last thing printed,
+# so the operator leaves with the exact steps rather than a Settings-tab 403.
+if (( MGMT_SKIPPED )); then
+  cat <<EOF
+
+  ┌──────────────────────────────────────────────────────────────────────┐
+  │ Still to do: alarm-engine management_token (skipped above)           │
+  └──────────────────────────────────────────────────────────────────────┘
+  Admin → Settings reports alarm-engine settings as unreachable (403) until
+  the SAME management_token is set on BOTH hosts.
+
+    1. Use the value the alarm-engine installer printed (Mode 4), or make
+       a new one:   openssl rand -hex 32
+
+    2. On this host, in $REAL:
+           [alarm_engine].management_token = "<value>"
+       then:  sudo systemctl restart llm-systems-manager
+
+    3. On the alarm-engine host, the same key and value in its
+       llm-systems.toml (uncomment the line the Mode 4 installer wrote,
+       or replace its value), then:
+           sudo systemctl restart llm-systems-alarm-engine
+
 EOF
 fi
