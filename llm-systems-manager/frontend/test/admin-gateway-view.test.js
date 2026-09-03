@@ -11,18 +11,18 @@ const CARD = indexSrc.slice(indexSrc.indexOf('<div class="card" id="rtGatewayCar
 const FLOW = {
   ok: true, enabled: true, endpoint: '/api/gateway/v1', keys: 3, usage_probe: true,
   clients: [
-    { label: 'ops-1', ip: '192.168.1.30', req_per_min: 8, inflight: 2, prompt_tokens: 10,
-      gen_tokens: 5, last_seen_s: 0.4, state: 'ok' },
-    { label: 'dev', ip: '192.168.1.22', req_per_min: 4, inflight: 1, last_seen_s: 3, state: 'ok' },
-    { label: 'auto', ip: '192.168.1.40', req_per_min: 0, inflight: 0, last_seen_s: 7200, state: 'idle' },
+    { label: 'ops-1', ip: '192.168.1.30', model: 'Qwen2.5-32B', req_per_min: 8, inflight: 2, prompt_tokens: 10,
+      gen_tokens: 5, last_seen_s: 0.4, state: 'active' },
+    { label: 'dev', ip: '192.168.1.22', model: 'Llama-3.3-70B', req_per_min: 4, inflight: 1, last_seen_s: 3, state: 'active' },
+    { label: 'auto', ip: '192.168.1.40', model: 'phi-4', req_per_min: 0, inflight: 0, last_seen_s: 7200, state: 'idle' },
   ],
   hosts: [
     { agent_id: 'a1', hostname: 'llm-syscore', provider: 'llama', model: 'Qwen2.5-32B',
-      gen_tps: 61, inflight: 2, state: 'ok' },
+      gen_tps: 61, inflight: 2, last_served_s: 0.2, state: 'active' },
     { agent_id: 'a2', hostname: 'gpu-box', provider: 'llama', model: 'Llama-3.3-70B',
-      gen_tps: 31, inflight: 1, state: 'ok' },
+      gen_tps: 31, inflight: 1, last_served_s: 1, state: 'active' },
     { agent_id: 'a3', hostname: 'mac-mini', provider: 'lms', model: null,
-      gen_tps: 0, inflight: 0, state: 'idle' },
+      gen_tps: 0, inflight: 0, last_served_s: null, state: 'idle' },
   ],
   totals: { req_per_min: 12, prompt_tps: 1800, gen_tps: 92, p50_ms: 640, inflight: 3, errors_15m: 0 },
   energy: { serving_w: 412, kwh_today: 0.9, cost_today: 0.14, usd_per_mtok: 0.06, cloud_usd_per_mtok: 2.5 },
@@ -44,10 +44,11 @@ describe('gateway diagram', () => {
     expect(doc.querySelector('#rtGwDiagram .rt-node.gwn')).toBeTruthy();
   });
 
-  test('client sub-labels carry the key and the IP', () => {
+  test('client sub-labels carry the model and the IP', () => {
     const doc = card(FLOW).document;
     const subs = [...doc.querySelectorAll('#rtGwDiagram .rt-node .sb')].map(n => n.textContent);
-    expect(subs[0]).toBe('key ops-1 · 192.168.1.30');
+    expect(subs[0]).toBe('Qwen2.5-32B · 192.168.1.30');
+    expect(subs.some(s => s.startsWith('key '))).toBe(false);
     expect(subs).toContain('llama · Qwen2.5-32B');
     expect(subs).not.toContain('lms · idle');
   });
@@ -70,8 +71,30 @@ describe('gateway diagram', () => {
   });
 
   test('hostnames are set as SVG text, never parsed as markup', () => {
-    const doc = card({ ...FLOW, hosts: [{ hostname: '<img src=x>', provider: 'llama', gen_tps: 1, inflight: 0, state: 'ok' }] }).document;
+    const doc = card({ ...FLOW, hosts: [{ hostname: '<img src=x>', provider: 'llama', gen_tps: 1, inflight: 0, state: 'active' }] }).document;
     expect(doc.querySelector('#rtGwDiagram').innerHTML).not.toContain('<img');
+  });
+});
+
+describe('client tiers (#804)', () => {
+  test('a recent client gets the tinted slow edge and an idle-for label, never 0 req/min', () => {
+    const clients = [
+      { label: 'vscode', ip: '192.168.1.59', model: 'Qwen2.5-32B', req_per_min: 3, inflight: 1, last_seen_s: 2, state: 'active' },
+      { label: 'hermes', ip: '192.168.1.73', model: 'phi-4', req_per_min: 0, inflight: 0, last_seen_s: 45, state: 'recent' },
+      { label: 'n8n', ip: null, model: null, req_per_min: 0, inflight: 0, last_seen_s: null, state: 'idle' },
+    ];
+    const doc = card({ ...FLOW, clients }).document;
+    const edges = [...doc.querySelectorAll('#rtGwDiagram .rt-e')].slice(0, 3).map(e => e.getAttribute('class'));
+    expect(edges).toEqual(['rt-e ok', 'rt-e recent', 'rt-e off']);
+    const marks = [...doc.querySelectorAll('#rtGwDiagram .rt-e')].slice(0, 3).map(e => e.getAttribute('marker-end'));
+    expect(marks).toEqual(['url(#rtAh)', 'url(#rtAhRecent)', 'url(#rtAhOff)']);
+    const labels = [...doc.querySelectorAll('#rtGwDiagram .rt-el')].slice(0, 3);
+    expect(labels.map(l => l.textContent)).toEqual(['3 req/min', 'idle 45 s', 'idle']);
+    expect(labels.map(l => l.getAttribute('class'))).toEqual(['rt-el', 'rt-el recent', 'rt-el off']);
+    const nodes = [...doc.querySelectorAll('#rtGwDiagram .rt-node')].slice(0, 3);
+    expect(nodes.map(n => n.getAttribute('class'))).toEqual(['rt-node ok', 'rt-node recent', 'rt-node']);
+    expect(nodes[2].querySelector('.sb').textContent).toBe('no requests yet');
+    expect(doc.querySelector('#rtGwDiagram marker#rtAhRecent')).toBeTruthy();
   });
 });
 
@@ -179,7 +202,7 @@ describe('polling and the enable toggle', () => {
 describe('host list follows activity (#797)', () => {
   test('with nothing serving, only each provider primary is drawn, dimmed, with off edges', () => {
     const hosts = [
-      { agent_id: 'a1', hostname: 'llm-syscore', provider: 'llama', model: 'Qwen2.5-32B', gen_tps: 0, inflight: 0, state: 'ok', primary: true },
+      { agent_id: 'a1', hostname: 'llm-syscore', provider: 'llama', model: 'Qwen2.5-32B', gen_tps: 0, inflight: 0, state: 'idle', primary: true },
       { agent_id: 'a2', hostname: 'gpu-box', provider: 'llama', model: null, gen_tps: 0, inflight: 0, state: 'idle', primary: false },
       { agent_id: 'a3', hostname: 'mac-mini', provider: 'lms', model: null, gen_tps: 0, inflight: 0, state: 'idle', primary: true },
     ];
@@ -187,14 +210,32 @@ describe('host list follows activity (#797)', () => {
     const names = [...doc.querySelectorAll('#rtGwDiagram .rt-node .nm')].map(n => n.textContent);
     expect(names.slice(-2)).toEqual(['llm-syscore', 'mac-mini']);
     const classes = [...doc.querySelectorAll('#rtGwDiagram .rt-node')].map(n => n.getAttribute('class'));
-    expect(classes.filter(c => c.includes('dim')).length).toBe(1);   // resident model, no traffic
+    expect(classes.filter(c => c.includes('dim')).length).toBe(2);   // every quiet host is dimmed
+    expect(classes.filter(c => c.includes('nomodel')).length).toBe(1);   // no model: dimmed further
     const hostEdges = [...doc.querySelectorAll('#rtGwDiagram .rt-e')].slice(-2).map(e => e.getAttribute('class'));
     expect(hostEdges.every(c => c.includes('off'))).toBe(true);
   });
 
+  test('recently served hosts stay drawn with a recent edge and an idle-for label', () => {
+    const hosts = [
+      { agent_id: 'a1', hostname: 'llm-syscore', provider: 'llama', model: 'Qwen2.5-32B', gen_tps: 0, inflight: 0, last_served_s: 95, state: 'recent', primary: true },
+      { agent_id: 'a2', hostname: 'gpu-box', provider: 'llama', model: 'm', gen_tps: 20, inflight: 1, last_served_s: 0, state: 'active', primary: false },
+      { agent_id: 'a3', hostname: 'mac-mini', provider: 'lms', model: null, gen_tps: 0, inflight: 0, last_served_s: null, state: 'idle', primary: true },
+    ];
+    const doc = card({ ...FLOW, hosts }).document;
+    const names = [...doc.querySelectorAll('#rtGwDiagram .rt-node .nm')].map(n => n.textContent);
+    expect(names.slice(-2)).toEqual(['gpu-box', 'llm-syscore']);   // active first, then recent; idle primary not drawn
+    const hostEdges = [...doc.querySelectorAll('#rtGwDiagram .rt-e')].slice(-2).map(e => e.getAttribute('class'));
+    expect(hostEdges).toEqual(['rt-e ok', 'rt-e recent']);
+    const labels = [...doc.querySelectorAll('#rtGwDiagram .rt-el')].slice(-2);
+    expect(labels[1].getAttribute('class')).toBe('rt-el recent');
+    expect(labels[1].textContent).toBe('idle 2 m');
+    expect(doc.querySelectorAll('#rtGwDiagram .rt-node.recent').length).toBe(1);
+  });
+
   test('rows grow with the fleet and the gateway box stays centred', () => {
     const hosts = Array.from({ length: 5 }, (_, i) => ({ agent_id: 'h' + i, hostname: 'host-' + i, provider: 'llama',
-      model: 'm', gen_tps: 10 + i, inflight: 1, state: 'ok', primary: i === 0 }));
+      model: 'm', gen_tps: 10 + i, inflight: 1, state: 'active', primary: i === 0 }));
     const doc = card({ ...FLOW, hosts }).document;
     const svg = doc.querySelector('#rtGwDiagram svg');
     expect(svg.getAttribute('viewBox')).toBe('0 0 720 346');

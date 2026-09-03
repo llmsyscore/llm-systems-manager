@@ -70,18 +70,43 @@ def test_client_rows_track_requests_tokens_and_inflight():
     k = gateway_usage.client_begin("prod", "10.0.0.4", now=1000.0)
     gateway_usage.client_record(k, 120, 30)
     rows = gateway_usage.clients_snapshot(now=1001.0)
-    assert rows == [{"label": "prod", "ip": "10.0.0.4", "req_per_min": 1,
+    assert rows == [{"label": "prod", "ip": "10.0.0.4", "model": None, "req_per_min": 1,
                      "inflight": 1, "prompt_tokens": 120, "gen_tokens": 30,
-                     "last_seen_s": 1.0, "state": "ok"}]
+                     "last_seen_s": 1.0, "state": "active"}]
     gateway_usage.client_end(k, now=1002.0)
     assert gateway_usage.clients_snapshot(now=1002.0)[0]["inflight"] == 0
 
 
-def test_client_goes_idle_after_ten_minutes():
-    k = gateway_usage.client_begin("prod", "10.0.0.4", now=1000.0)
+def test_client_tiers_active_then_recent_then_idle():
+    k = gateway_usage.client_begin("prod", "10.0.0.4", now=1000.0, model="qwen3-8b")
     gateway_usage.client_end(k, now=1000.0)
-    assert gateway_usage.clients_snapshot(now=1300.0)[0]["state"] == "ok"
-    assert gateway_usage.clients_snapshot(now=1700.0)[0]["state"] == "idle"
+    snap = lambda t: gateway_usage.clients_snapshot(now=t)[0]
+    assert snap(1030.0)["state"] == "active" and snap(1030.0)["req_per_min"] == 1
+    assert snap(1061.0)["state"] == "recent" and snap(1061.0)["req_per_min"] == 0
+    assert snap(1300.0)["state"] == "recent"
+    assert snap(1700.0)["state"] == "idle"
+    assert snap(1700.0)["model"] == "qwen3-8b"
+
+
+def test_in_flight_request_keeps_the_client_active():
+    gateway_usage.client_begin("prod", "10.0.0.4", now=1000.0)
+    assert gateway_usage.clients_snapshot(now=1500.0)[0]["state"] == "active"
+
+
+def test_a_long_request_that_just_ended_is_recent_not_zero_active():
+    k = gateway_usage.client_begin("prod", "10.0.0.4", now=1000.0)
+    gateway_usage.client_end(k, now=1070.0)
+    row = gateway_usage.clients_snapshot(now=1080.0)[0]
+    assert row["req_per_min"] == 0 and row["state"] == "recent"
+
+
+def test_last_model_requested_wins_and_blank_keeps_the_previous():
+    k = gateway_usage.client_begin("prod", "10.0.0.4", now=1000.0, model="a")
+    gateway_usage.client_end(k, now=1000.0)
+    gateway_usage.client_begin("prod", "10.0.0.4", now=1001.0, model=None)
+    assert gateway_usage.clients_snapshot(now=1001.0)[0]["model"] == "a"
+    gateway_usage.client_begin("prod", "10.0.0.4", now=1002.0, model="b")
+    assert gateway_usage.clients_snapshot(now=1002.0)[0]["model"] == "b"
 
 
 def test_stale_clients_fall_out_of_the_window():
@@ -193,34 +218,39 @@ def _stub_fleet(monkeypatch):
     }
     monkeypatch.setattr(gateway.provider_state.STORE, "get",
                         lambda p, aid: {"sample": samples.get((p, aid))})
-    monkeypatch.setattr(gateway.gateway_usage, "last_rates",
-                        lambda aid: {"gen_tps": 13.0, "prompt_tps": 4.0})
+    monkeypatch.setattr(gateway.gateway_usage, "live_gen_tps",
+                        lambda aid, now=None: 13.0)
 
 
 def test_flow_payload_shape(admin, monkeypatch):
     _stub_fleet(monkeypatch)
     _with_keys(monkeypatch, ["prod=sk-one", "sk-two"])
-    k = gateway_usage.client_begin("prod", "10.0.0.4")
+    k = gateway_usage.client_begin("prod", "10.0.0.4", model="qwen3-8b")
     gateway_usage.client_record(k, 100, 20)
     gateway_usage.record_latency(35.0)
+    gateway_usage.begin("b" * 32)
     d = admin.get("/api/admin/gateway/flow").get_json()
     assert d["ok"] is True and d["enabled"] is True
     assert d["endpoint"] == "/api/gateway/v1"
     assert d["keys"] == 2 and d["usage_probe"] is True
-    assert set(d["clients"][0]) == {"label", "ip", "req_per_min", "inflight",
+    assert set(d["clients"][0]) == {"label", "ip", "model", "req_per_min", "inflight",
                                     "prompt_tokens", "gen_tokens",
                                     "last_seen_s", "state"}
+    assert d["clients"][0]["model"] == "qwen3-8b"
+    assert d["clients"][0]["state"] == "active"
     hosts = {h["provider"]: h for h in d["hosts"]}
+    assert set(hosts["llama"]) == {"agent_id", "hostname", "provider", "model", "gen_tps",
+                                   "inflight", "last_served_s", "primary", "state"}
     assert hosts["llama"]["model"] == "qwen3-8b"
     assert hosts["llama"]["gen_tps"] == 42.0
-    assert hosts["llama"]["state"] == "ok"
-    # LM Studio publishes no tok/s of its own — the gateway's own rate is used.
+    assert hosts["llama"]["state"] == "active"
+    # LM Studio publishes no tok/s of its own — the gateway's live stream rate is used.
     assert hosts["lms"]["model"] == "phi-4"
     assert hosts["lms"]["gen_tps"] == 13.0
     assert set(d["totals"]) == {"req_per_min", "prompt_tps", "gen_tps",
                                 "p50_ms", "inflight", "errors_15m"}
     assert d["totals"]["gen_tps"] == 55.0
-    assert d["totals"]["prompt_tps"] == 104.0
+    assert d["totals"]["prompt_tps"] == 100.0
     assert d["totals"]["p50_ms"] == 35.0
     assert set(d["energy"]) == {"serving_w", "kwh_today", "cost_today",
                                 "usd_per_mtok", "cloud_usd_per_mtok"}
@@ -360,9 +390,66 @@ def test_hosts_report_provider_side_activity_without_gateway_traffic(admin, monk
     }
     monkeypatch.setattr(gateway.provider_state.STORE, "get",
                         lambda p, aid: {"sample": samples.get((p, aid))})
-    monkeypatch.setattr(gateway.gateway_usage, "last_rates", lambda aid: None)
+    monkeypatch.setattr(gateway.gateway_usage, "live_gen_tps", lambda aid, now=None: 0.0)
     d = admin.get("/api/admin/gateway/flow").get_json()
     hosts = {h["provider"]: h for h in d["hosts"]}
-    assert hosts["llama"]["inflight"] == 2 and hosts["llama"]["state"] == "ok"
-    assert hosts["lms"]["inflight"] == 1 and hosts["lms"]["state"] == "ok"
+    assert hosts["llama"]["inflight"] == 2 and hosts["llama"]["state"] == "active"
+    assert hosts["lms"]["inflight"] == 1 and hosts["lms"]["state"] == "active"
     assert hosts["lms"]["model"] == "phi-4"
+
+
+def test_hosts_tier_by_the_gateways_last_served_time(admin, monkeypatch):
+    _stub_fleet(monkeypatch)
+    samples = {("llama", "a" * 32): {"llama": {"state": "awake", "model": "qwen3-8b",
+                                               "tokens_per_second": 0.0}},
+               ("lms", "b" * 32): {"ps": [{"model": "phi-4", "status": "LOADED"}]}}
+    monkeypatch.setattr(gateway.provider_state.STORE, "get",
+                        lambda p, aid: {"sample": samples.get((p, aid))})
+    monkeypatch.setattr(gateway.gateway_usage, "live_gen_tps", lambda aid, now=None: 0.0)
+    gateway_usage.begin("b" * 32, now=1000.0)
+    gateway_usage.end("b" * 32, now=1000.0)
+    by = lambda t: {h["provider"]: h for h in gateway.flow_payload(now=t)["hosts"]}
+    assert by(1030.0)["lms"]["state"] == "recent" and by(1030.0)["lms"]["last_served_s"] == 30.0
+    assert by(1200.0)["lms"]["state"] == "recent"
+    assert by(1700.0)["lms"]["state"] == "idle"
+    # A loaded model alone never lights a host up.
+    assert by(1030.0)["llama"]["state"] == "idle" and by(1030.0)["llama"]["last_served_s"] is None
+
+
+def test_streamed_chunks_drive_a_live_rate_for_lms(monkeypatch):
+    seen = []
+    chunks = [b'data: {"choices":[{"delta":{"role":"assistant","content":""}}]}\n\n',
+              b'data: {"choices":[{"delta":{"role":"assistant","content":null}}]}\n\n',
+              b'data: {"choices":[{"delta":{"content":"a"}}]}\n\n',
+              b'data: {"choices":[{"delta":{"reasoning_content":"b"}}]}\n',
+              b'data: {"choices":[{"delta":{"tool_calls":[{"function":{"arguments":"{"}}]}}]}\n\n',
+              b'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\n',
+              b'data: {"choices":[],"usage":{"prompt_tokens":3,"completion_tokens":3}}\n\n',
+              b'data: [DONE]\n\n']
+    out = list(gateway_usage.tap_sse(iter(chunks), lambda p, g: None,
+                                     on_chunk=lambda: seen.append(1)))
+    assert b"".join(out) == b"".join(chunks) and len(seen) == 3
+    # The live rate only shows while the host has a request in flight.
+    gateway_usage.begin("h1", now=1000.0)
+    gateway_usage.stream_tokens("h1", now=1000.0)
+    gateway_usage.stream_tokens("h1", now=1001.0)
+    assert gateway_usage.live_gen_tps("h1", now=1002.0) == 0.2
+    gateway_usage.end("h1", now=1002.0)
+    assert gateway_usage.live_gen_tps("h1", now=1002.0) == 0.0
+    assert gateway_usage.live_gen_tps("nobody", now=1020.0) == 0.0
+
+
+def test_chunk_callback_errors_never_break_the_relay():
+    chunks = [b'data: {"choices":[{"delta":{"content":"a"}}]}\n\n']
+    def boom():
+        raise RuntimeError("x")
+    out = list(gateway_usage.tap_sse(iter(chunks), lambda p, g: None, on_chunk=boom))
+    assert out == chunks
+
+
+def test_host_live_state_is_pruned_with_the_client_window():
+    gateway_usage.begin("old", now=1000.0)
+    gateway_usage.end("old", now=1000.0)
+    gateway_usage.stream_tokens("old", now=1000.0)
+    gateway_usage.clients_snapshot(now=1000.0 + 901.0)
+    assert gateway_usage.host_last_served_s("old", now=1902.0) is None

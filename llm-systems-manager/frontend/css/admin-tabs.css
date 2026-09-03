@@ -153,16 +153,21 @@
 #admin-routing .rt-svg .rt-node .sb { font-family: var(--font-mono); font-size: 9.5px; fill: var(--fg-dim); }
 #admin-routing .rt-svg .rt-node circle { fill: var(--fg-faint); }
 #admin-routing .rt-svg .rt-node.ok circle { fill: var(--ok); }
+#admin-routing .rt-svg .rt-node.recent circle { fill: var(--accent); }
+#admin-routing .rt-svg .rt-node.recent .sb { fill: var(--fg-muted); }
 #admin-routing .rt-svg .rt-node.gwn rect { stroke: var(--accent); }
 #admin-routing .rt-svg .rt-node.gwn .nm { fill: var(--accent); }
 #admin-routing .rt-svg .rt-e { fill: none; stroke: var(--fg-faint); stroke-width: calc(1px * var(--w, 1.4)); stroke-dasharray: 3 5; opacity: var(--op, .8); }
 #admin-routing .rt-svg .rt-e.ok { stroke: var(--ok); animation: rt-eflow var(--dur, 1.1s) linear infinite; }
+#admin-routing .rt-svg .rt-e.recent { stroke: var(--accent); stroke-dasharray: 2 6; opacity: .45; animation: rt-eflow 3.2s linear infinite; }
 #admin-routing .rt-svg .rt-e.off { stroke: var(--border-strong); stroke-dasharray: 2 4; opacity: 1; animation: none; }
 @keyframes rt-eflow { to { stroke-dashoffset: -16; } }
 #admin-routing .rt-svg .rt-el rect { fill: var(--bg-card); }
 #admin-routing .rt-svg .rt-el text { font-family: var(--font-mono); font-size: 9.5px; fill: var(--fg-muted); }
 #admin-routing .rt-svg .rt-el.off text { fill: var(--fg-faint); }
+#admin-routing .rt-svg .rt-el.recent text { fill: color-mix(in srgb, var(--accent) 70%, var(--fg-faint)); }
 #admin-routing .rt-svg .rt-ah { fill: var(--ok); }
+#admin-routing .rt-svg .rt-ah.recent { fill: color-mix(in srgb, var(--accent) 45%, transparent); }
 #admin-routing .rt-svg .rt-ah.off { fill: var(--border-strong); }
 #admin-routing .rt-offnote { display: none; font-size: 12px; color: var(--fg-muted); padding: 8px 10px; border: 1px solid var(--border-soft); border-radius: 7px; background: var(--bg); }
 #admin-routing .rt-offnote b { font-family: var(--font-mono); font-weight: 500; }
@@ -255,3 +260,6 @@
 #admin-routing .rt-svg .rt-node.dim rect { stroke: var(--border); }
 #admin-routing .rt-svg .rt-node.dim .nm, #admin-routing .rt-svg .rt-node.dim .sb { fill: var(--fg-dim); }
 #admin-routing .rt-svg .rt-node.dim circle { fill: color-mix(in srgb, var(--ok) 45%, var(--fg-faint)); }
+#admin-routing .rt-svg .rt-node.nomodel rect { stroke: var(--border-soft); }
+#admin-routing .rt-svg .rt-node.nomodel .nm, #admin-routing .rt-svg .rt-node.nomodel .sb { fill: var(--fg-faint); }
+#admin-routing .rt-svg .rt-node.nomodel circle { fill: var(--border-strong); }
