@@ -351,7 +351,9 @@ function applyRolePreset(presetId) {
 }
 // Drop every per-card size override on the active page (Overall keys its shells ov-*).
 function _clearPageSizeOverrides(ks) {
-  for (const id of Object.keys(ks.map)) delete _sizeMapFor(id)[id];
+  const ids = new Set(Object.keys(ks.map));
+  ks.grid.querySelectorAll(':scope > [data-card]').forEach(c => ids.add(c.dataset.card));
+  for (const id of ids) delete _sizeMapFor(id)[id];
   if (_activeTab === 'overall' && layout.cardSizes) {
     for (const id of Object.keys(layout.cardSizes)) if (id.startsWith('ov-')) delete layout.cardSizes[id];
   }

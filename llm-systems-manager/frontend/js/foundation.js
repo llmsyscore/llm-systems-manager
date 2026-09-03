@@ -158,6 +158,7 @@ const CARD_LABELS_MANAGER = {
   'services':         'Services',
   'influxdb':         'InfluxDB',
   'mgr-agents':       'Agents',
+  'mgr-streams':      'Stream & Connection Health',
   'mgr-ram':          'CPU, RAM & Swap',
   'mgr-disk':         'Disk Usage & IO',
   'mgr-network':      'Network',
@@ -189,6 +190,7 @@ let layout = { order: [], hidden: [] };
 async function loadLayout() {
   try {
     layout = await fetch('/api/layout').then(r => r.json());
+    SettingsLib.applyFreshDefaults(layout);
     if (!layout.order)           layout.order           = [];
     if (!layout.hidden)          layout.hidden          = [];
     if (!layout.hiddenOverall)   layout.hiddenOverall   = [];
@@ -1043,17 +1045,20 @@ function _sdPresetLabel(cols, id) {
   if (_sdIsFlow()) { const p = SettingsLib.ROLE_PRESETS[id]; return p ? p.label : null; }
   return SettingsLib.presetLabel(cols, id);
 }
-// Role-preset tile: the page's visible cards placed at their preset widths.
-function _sdRoleTileSvg(cols, presetId, scope) {
+// Column span per visible card under a role preset (index → width), all cards.
+function _sdRoleWidths(cols, presetId, scope, cards) {
   const n = cols === 'auto' ? 3 : Number(cols);
   const grid = _sdGridEl(scope);
-  const hero = grid && _sdIsFlow() ? _flowHeroId(grid) : null;
+  const hero = grid ? _flowHeroId(grid) : null;
+  return cards.map(c => SettingsLib.roleWidth(presetId, SettingsLib.roleOf(c.dataset.card), c.dataset.card === hero, n));
+}
+// Role-preset tile: the page's cards at their preset widths, widened ones
+// first so the preset's effect is always inside the four drawn rows.
+function _sdRoleTileSvg(cols, widths) {
+  const ordered = widths.map((w, i) => [w, i]).sort((a, b) => b[0] - a[0]).slice(0, 16);
   const sizes = {};
-  _sdVisibleCards(scope).slice(0, 8).forEach((c, i) => {
-    const id = c.dataset.card;
-    sizes[i] = `${SettingsLib.roleWidth(presetId, SettingsLib.roleOf(id), id === hero, n)}x1`;
-  });
-  return _sdTileSvg(cols, sizes);
+  ordered.forEach(([w], i) => { sizes[i] = `${w}x1`; });
+  return _sdTileSvg(cols, sizes, ordered.length, 4);
 }
 
 // Row-major first-fit placement of a preset's first cards, for the tile glyph.
@@ -1076,10 +1081,10 @@ function _sdPlace(cols, sizes, n = 8, rows = 3) {
   }
   return out;
 }
-function _sdTileSvg(cols, sizes) {
+function _sdTileSvg(cols, sizes, count = 8, rows = 3) {
   const n = cols === 'auto' ? 3 : Number(cols);
-  const W = 72, H = 42, g = 3, cw = (W - g * (n - 1)) / n, rh = (H - g * 2) / 3;
-  const rects = _sdPlace(n, sizes).map(([c, r, w, h]) =>
+  const W = 72, H = 42, g = 3, cw = (W - g * (n - 1)) / n, rh = (H - g * (rows - 1)) / rows;
+  const rects = _sdPlace(n, sizes, count, rows).map(([c, r, w, h]) =>
     `<rect x="${(c * (cw + g)).toFixed(1)}" y="${(r * (rh + g)).toFixed(1)}" width="${(w * cw + (w - 1) * g).toFixed(1)}" height="${(h * rh + (h - 1) * g).toFixed(1)}" rx="1.5"/>`).join('');
   return `<svg viewBox="0 0 ${W} ${H}" aria-hidden="true">${rects}</svg>`;
 }
@@ -1153,15 +1158,25 @@ function _sdRenderLayout(scope) {
     : `<button type="button" data-sd="cols" data-v="${c}" class="${cols === c ? 'on' : ''}">${c}</button>`).join('');
   const flow = _sdIsFlow();
   const customTile = `<div class="sd-tile custom${current ? '' : ' on'}" title="Sizes set per card"><svg viewBox="0 0 72 42" aria-hidden="true"><rect x="0" y="0" width="34" height="42" rx="1.5"/><rect x="37" y="0" width="35" height="19" rx="1.5"/><rect x="37" y="23" width="16" height="19" rx="1.5"/><rect x="56" y="23" width="16" height="19" rx="1.5"/></svg><span class="tn">Custom</span></div>`;
+  const vis = flow ? _sdVisibleCards(scope) : [];
+  const uniformW = flow ? _sdRoleWidths(cols, 'uniform', scope, vis).join(',') : '';
   const tiles = flow
-    ? Object.entries(SettingsLib.ROLE_PRESETS).map(([id, p]) =>
-        `<button type="button" class="sd-tile${id === current ? ' on' : ''}" data-sd="rpreset" data-id="${id}" title="${_esc(p.label)}">${_sdRoleTileSvg(cols, id, scope)}<span class="tn">${_esc(p.label)}</span></button>`).join('') + customTile
+    ? Object.entries(SettingsLib.ROLE_PRESETS).map(([id, p]) => {
+        const widths = _sdRoleWidths(cols, id, scope, vis);
+        const noop = id !== 'uniform' && widths.join(',') === uniformW;
+        const title = noop ? `${p.label} — no card on this page changes width` : p.label;
+        return `<button type="button" class="sd-tile${id === current ? ' on' : ''}${noop ? ' noop' : ''}" data-sd="rpreset" data-id="${id}" title="${_esc(title)}"${noop ? ' aria-disabled="true"' : ''}>${_sdRoleTileSvg(cols, widths)}<span class="tn">${_esc(p.label)}</span></button>`;
+      }).join('') + customTile
     : SettingsLib.presetsFor(cols).map(([id, p]) =>
         `<button type="button" class="sd-tile${id === current ? ' on' : ''}" data-sd="preset" data-id="${id}" title="${_esc(p.label)}">${_sdTileSvg(cols, p.sizes)}<span class="tn">${_esc(p.label)}</span></button>`).join('') + customTile;
   const pname = _sdPresetLabel(cols, current) || 'custom';
   const engSeg = `<div class="mc-seg" role="group" aria-label="Layout engine">
       <button type="button" data-sd="engine" data-v="grid" class="${flow ? '' : 'on'}" title="Cards stretch to their row">Grid</button>
       <button type="button" data-sd="engine" data-v="flow" class="${flow ? 'on' : ''}" title="Cards are as tall as their content">Flow</button></div>`;
+  const dens = SettingsLib.normalizeDensity(layout && layout.density);
+  const densSeg = `<div class="mc-seg" role="group" aria-label="Card density">
+      <button type="button" data-sd="density" data-v="comfortable" class="${dens === 'comfortable' ? 'on' : ''}">Comfortable</button>
+      <button type="button" data-sd="density" data-v="compact" class="${dens === 'compact' ? 'on' : ''}">Compact</button></div>`;
   const presetHelp = flow
     ? 'Presets size cards by what they hold — charts, stat tiles, tables — across the whole page. The ⤢ button on a card still sets its own width.'
     : 'Presets for the selected column count. They size the first cards in your current order; the rest stay 1×1.';
@@ -1170,6 +1185,8 @@ function _sdRenderLayout(scope) {
       <span class="act"><button type="button" class="sd-btn warn" data-sd="reset" title="Restore this page's default cards, order, columns and sizes">⟲ Reset this page</button></span></div>
     <div class="sd-row top"><span class="k">Engine</span><div class="grow">${engSeg}
       <div class="help">${flow ? 'Flow sizes every card to its content and packs cards to close gaps.' : 'Grid stretches each row to its tallest card.'} Applies to every card page.</div></div></div>
+    <div class="sd-row top"><span class="k">Density</span><div class="grow">${densSeg}
+      <div class="help">Compact tightens card padding, stat type and chart height. Applies to every card page.</div></div></div>
     <div class="sd-row"><span class="k">Columns</span><div class="mc-seg" role="group" aria-label="Columns">${seg}</div></div>
     <div class="sd-row top"><span class="k">Preset</span><div class="grow"><div class="sd-tiles">${tiles}</div>
       <div class="help">${presetHelp}</div></div></div>`;
@@ -1203,16 +1220,12 @@ function _sdRenderAppearance() {
     return `<button type="button" class="sd-swt${t.id === saved ? ' on' : ''}" data-sd="theme" data-id="${t.id}" style="--p0:${p0};--p1:${p1};--p2:${p2};--p3:${p3};--pb:${pb}" aria-pressed="${t.id === saved}"><span class="pv"></span><span class="tn">${_esc(t.label)}</span></button>`;
   }).join('');
   const light = SettingsLib.THEMES.find(t => t.id === SettingsLib.SYSTEM_LIGHT_THEME);
-  const dens = SettingsLib.normalizeDensity(layout && layout.density);
   el.innerHTML = `
     <div class="sd-sh"><h3>Appearance</h3><span class="meta">${_esc(eff)}${follow && eff !== saved ? ' · following system' : ''}</span></div>
     <div class="sd-sw">${sw}</div>
     <div class="sd-row" style="margin-top:12px;"><button type="button" class="mc-toggle${follow ? ' on' : ''}" data-sd="follow-system" role="switch" aria-checked="${follow}"><span class="track"></span><span class="tlbl">Follow the system light/dark setting</span></button></div>
     <div class="help">Uses <b>${_esc(light ? light.label : 'Frost')}</b> while your OS is in light mode and your chosen dark theme otherwise.</div>
-    <div class="sd-row" style="margin-top:12px;"><span class="k">Density</span><div class="mc-seg" role="group" aria-label="Card density">
-      <button type="button" data-sd="density" data-v="comfortable" class="${dens === 'comfortable' ? 'on' : ''}">Comfortable</button>
-      <button type="button" data-sd="density" data-v="compact" class="${dens === 'compact' ? 'on' : ''}">Compact</button></div></div>
-    <div class="help">Compact tightens card padding, stat type and chart height on every card page.</div>`;
+`;
 }
 
 let _intervalManual = null;

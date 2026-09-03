@@ -72,6 +72,26 @@
   const FLOW_ROW_GAP_PX = 8;
   function normalizeEngine(v) { return ENGINES.includes(v) ? v : DEFAULT_ENGINE; }
   function normalizeDensity(v) { return DENSITIES.includes(v) ? v : DEFAULT_DENSITY; }
+  // New installs start on Flow + auto columns + compact; a layout that has ever
+  // saved card state keeps its engine/columns/density as they are.
+  const FRESH_DEFAULTS = { layoutEngine: 'flow', density: 'compact', cols: 'auto' };
+  const _CARD_STATE_KEYS = ['cardSizes', 'sizesByAgent', 'hiddenByAgent', 'orderByAgent'];
+  function isFreshLayout(lay) {
+    if (!lay || typeof lay !== 'object') return true;
+    if (lay.layoutEngine !== undefined || lay.density !== undefined) return false;
+    const filled = v => Array.isArray(v) ? v.length > 0 : (v && typeof v === 'object') ? Object.keys(v).length > 0 : v != null;
+    for (const p of Object.values(CARD_PAGES)) {
+      for (const k of [p.hidden, p.cols, p.order, p.borrowed]) if (k && filled(lay[k])) return false;
+    }
+    return !_CARD_STATE_KEYS.some(k => filled(lay[k]));
+  }
+  function applyFreshDefaults(lay) {
+    if (!isFreshLayout(lay)) return false;
+    lay.layoutEngine = FRESH_DEFAULTS.layoutEngine;
+    lay.density = FRESH_DEFAULTS.density;
+    for (const p of Object.values(CARD_PAGES)) lay[p.cols] = FRESH_DEFAULTS.cols;
+    return true;
+  }
 
   // Card id → role. Unlisted ids (and ov-borrow-* shells) resolve through roleOf().
   const CARD_ROLES = {
@@ -188,6 +208,7 @@
   const API = {
     PRESETS, COLUMN_OPTIONS, AUTO_MIN_COL_PX, presetsFor, getPreset, presetLabel, matchPreset, gridTemplate, normalizeCols,
     ENGINES, DEFAULT_ENGINE, DENSITIES, DEFAULT_DENSITY, FLOW_UNIT_PX, FLOW_ROW_GAP_PX, normalizeEngine, normalizeDensity,
+    FRESH_DEFAULTS, isFreshLayout, applyFreshDefaults,
     CARD_ROLES, ROLES, roleOf, HERO_CARDS, ROLE_PRESETS, DEFAULT_ROLE_PRESET, normalizeRolePreset, roleWidth, flowSpan,
     THEMES, THEME_IDS, DEFAULT_THEME, LEGACY_THEMES, SYSTEM_LIGHT_THEME, normalizeTheme, effectiveTheme,
     CARD_PAGES, settingsScope, INTERVAL_MIN, INTERVAL_MAX, INTERVAL_CHIPS, clampInterval,

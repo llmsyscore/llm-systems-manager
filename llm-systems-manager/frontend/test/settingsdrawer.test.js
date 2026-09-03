@@ -104,8 +104,9 @@ describe('interval helpers', () => {
   });
 });
 
+const html = readFileSync(join(dirname(fileURLToPath(import.meta.url)), '..', 'index.html'), 'utf8');
+
 describe('flow engine (#823)', () => {
-  const html = readFileSync(join(dirname(fileURLToPath(import.meta.url)), '..', 'index.html'), 'utf8');
   const gridIds = ['cardGrid', 'lmsCardGrid', 'vllmCardGrid', 'managerCardGrid'];
 
   it('every card in the four dashboard grids has a declared role', () => {
@@ -172,5 +173,48 @@ describe('flow engine (#823)', () => {
     expect(L.normalizeDensity('tiny')).toBe('comfortable');
     expect(L.normalizeRolePreset('charts')).toBe('charts');
     expect(L.normalizeRolePreset('hero-3')).toBe('uniform');
+  });
+});
+
+describe('fresh-install defaults (#823)', () => {
+  it('a layout with no card state gets flow + compact + auto columns on every page', () => {
+    const lay = { theme: 'oled', logHeights: { a: 1 }, llmSections: {} };
+    expect(L.isFreshLayout(lay)).toBe(true);
+    expect(L.applyFreshDefaults(lay)).toBe(true);
+    expect(lay.layoutEngine).toBe('flow');
+    expect(lay.density).toBe('compact');
+    for (const p of Object.values(L.CARD_PAGES)) expect(lay[p.cols], p.cols).toBe('auto');
+    expect(lay.theme).toBe('oled');
+  });
+
+  it('any saved card state, engine or density keeps the layout as it is', () => {
+    for (const lay of [
+      { order: ['gpu'] }, { hidden: ['ups'] }, { cols: 3 }, { overallBorrowed: ['gpu'] },
+      { cardSizes: { gpu: '2x1' } }, { sizesByAgent: { llama: {} } }, { layoutEngine: 'grid' }, { density: 'comfortable' },
+    ]) {
+      const before = JSON.stringify(lay);
+      expect(L.isFreshLayout(lay), before).toBe(false);
+      expect(L.applyFreshDefaults(lay)).toBe(false);
+      expect(JSON.stringify(lay)).toBe(before);
+    }
+    expect(L.isFreshLayout({ order: [], cardSizes: {} })).toBe(true);
+  });
+});
+
+describe('card label maps cover their grids', () => {
+  it('every card in each dashboard grid has a CARD_LABELS_* entry', () => {
+    const src = readFileSync(join(dirname(fileURLToPath(import.meta.url)), '..', 'js', 'foundation.js'), 'utf8');
+    const keysOf = (name) => {
+      const m = src.match(new RegExp(`const ${name} = \\{([\\s\\S]*?)\\n\\};`));
+      expect(m, name).not.toBeNull();
+      return [...m[1].matchAll(/^\s*'([^']+)':/gm)].map(x => x[1]);
+    };
+    const doc = new JSDOM(html).window.document;
+    const pairs = { cardGrid: 'CARD_LABELS', lmsCardGrid: 'CARD_LABELS_LMS', vllmCardGrid: 'CARD_LABELS_VLLM', managerCardGrid: 'CARD_LABELS_MANAGER' };
+    for (const [gid, name] of Object.entries(pairs)) {
+      const labels = keysOf(name);
+      const ids = [...doc.getElementById(gid).querySelectorAll(':scope > [data-card]')].map(c => c.dataset.card);
+      for (const id of ids) expect(labels, `${gid} ${id} missing from ${name}`).toContain(id);
+    }
   });
 });
