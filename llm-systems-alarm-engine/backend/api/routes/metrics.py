@@ -23,7 +23,7 @@ from ...rate_counter import INGEST_POINTS
 from ...models.alarm_rule import TAG_VALUE_RE
 from ...models.metrics import MetricBatchCreate, MetricPoint
 from ...storage.repositories import MetricRepository
-from ..auth import require_ingest_token
+from ..auth import require_ingest_token, require_management_token
 from config.unified_config import settings
 
 logger = logging.getLogger(__name__)
@@ -193,6 +193,7 @@ async def list_metrics(
     source: Optional[str] = None,
     limit: int = Query(1000, ge=1, le=_RECENT_LIST_MAX),
     hostname: Optional[str] = Query(None, description="Filter to a single host"),
+    _auth: None = Depends(require_management_token),
     metric_repo: MetricRepository = Depends(get_metric_repo),
 ) -> list[dict]:
     """List all tracked metrics with their latest values, segregated by host.
@@ -288,6 +289,7 @@ async def export_metrics(
     since_minutes: int = Query(1440, ge=1, le=_EXPORT_SINCE_MAX),
     hostname: Optional[str] = Query(None),
     format: str = Query("csv"),
+    _auth: None = Depends(require_management_token),
     metric_repo: MetricRepository = Depends(get_metric_repo),
 ):
     """Export historical points for a single source/metric (optionally per host).
@@ -345,6 +347,7 @@ async def get_metric_history(
     agg: str = Query("mean", pattern="^(mean|max)$",
                      description="Downsample aggregate: mean (default) or "
                                  "max for burst peaks"),
+    _auth: None = Depends(require_management_token),
     metric_repo: MetricRepository = Depends(get_metric_repo),
 ) -> list[dict]:
     """Get metric history for a specific metric, optionally scoped to a host.
@@ -369,6 +372,7 @@ async def get_metric_summary(
     source: str,
     metric_name: str,
     window_minutes: int = Query(60, ge=1, le=_SUMMARY_WIN_MAX),
+    _auth: None = Depends(require_management_token),
     metric_repo: MetricRepository = Depends(get_metric_repo),
 ) -> dict:
     """Get aggregated metric summary."""
