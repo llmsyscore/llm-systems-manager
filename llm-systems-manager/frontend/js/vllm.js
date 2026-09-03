@@ -80,13 +80,38 @@ function _vllmMetricsViewActive() {
   return _activeTab === 'overall' || _vllmLogViewActive();
 }
 
+// Header vLLM state pill from a /api/vllm/metrics payload.
+function _updateVllmHeaderPill(d) {
+  const vBanner = document.getElementById('vllmStateBanner');
+  const vText   = document.getElementById('vllmStateText');
+  if (!vBanner || !vText) return;
+  const v = d.vllm || {};
+  const online = d.agent_online === true;
+  if (!online) {
+    vBanner.className = 'state-banner state-unknown';
+    vText.textContent = 'VLLM · offline';
+  } else if (v.state === 'running') {
+    const modelShort = (v.model || '').split('/').pop() || 'model';
+    vBanner.className = 'state-banner state-awake';
+    vText.textContent = `VLLM · Active · ${modelShort}`;
+  } else {
+    vBanner.className = 'state-banner state-sleeping';
+    vText.textContent = `VLLM · ${v.state || 'server down'}`;
+  }
+}
+
+let _vllmPillTick = 0;
 async function fetchVllmMetrics() {
   if (document.hidden) return;
-  if (!_vllmMetricsViewActive()) return;
-  const _lk = _agentClaimKey('fetchVllmMetrics', 'vllm');
+  // Off-view only the header pill is kept current, on every 5th tick.
+  const pillOnly = !_vllmMetricsViewActive();
+  _vllmPillTick = (_vllmPillTick + 1) % 5;
+  if (pillOnly && (_vllmPillTick !== 0 || _pillHidden('vllmStateBanner'))) return;
+  const _lk = _agentClaimKey(pillOnly ? 'fetchVllmMetrics:pill' : 'fetchVllmMetrics', 'vllm');
   if (!_claim(_lk)) return;
   try {
-    const d = await _fetchT('/api/vllm/metrics', {}, 10000).then(r => r.json());
+    const d = await _fetchT(pillOnly ? '/api/vllm/metrics?light=1' : '/api/vllm/metrics', {}, 10000).then(r => r.json());
+    if (pillOnly) { _updateVllmHeaderPill(d); return; }
     _vllmMetrics = d;
 
     const v      = d.vllm || {};
@@ -189,22 +214,7 @@ async function fetchVllmMetrics() {
       ctrlBadge.innerHTML = '<span class="status__dot"></span>' + _esc(txt);
     }
 
-    // Update the header vLLM state pill (same lifecycle as the LMS pill).
-    const vBanner = document.getElementById('vllmStateBanner');
-    const vText   = document.getElementById('vllmStateText');
-    if (vBanner && vText) {
-      if (!online) {
-        vBanner.className = 'state-banner state-unknown';
-        vText.textContent = 'VLLM · offline';
-      } else if (up) {
-        const modelShort = (v.model || '').split('/').pop() || 'model';
-        vBanner.className = 'state-banner state-awake';
-        vText.textContent = `VLLM · Active · ${modelShort}`;
-      } else {
-        vBanner.className = 'state-banner state-sleeping';
-        vText.textContent = `VLLM · ${v.state || 'server down'}`;
-      }
-    }
+    _updateVllmHeaderPill(d);
 
     const sev = !online ? 'dash-off' : (up ? 'dash-ok' : 'dash-warn');
     ['vllm-server', 'vllm-requests', 'vllm-kv', 'vllm-throughput'].forEach(c => _dashSetStatus(c, sev));
