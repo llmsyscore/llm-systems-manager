@@ -7,9 +7,29 @@ let _vatResult = null;      // last model_done payload
 
 function _vatEl(id) { return document.getElementById(id); }
 
+// Last live label per status element, restored after a transient drop.
+const _wizLive = {};
+
 function _wizStatus(id, txt, cls) {
   const el = _vatEl(id);
   if (el) { el.textContent = txt; el.className = 'sub ' + (cls || ''); }
+  _wizLive[id] = { txt, cls };
+}
+
+function _wizReconnecting(id) {
+  const el = _vatEl(id);
+  if (el) el.textContent = 'reconnecting…';
+}
+
+function _wizRestore(id) {
+  const live = _wizLive[id];
+  if (live) _wizStatus(id, live.txt, live.cls);
+}
+
+// Run id from an SSE event's `<run>:<seq>` id when the agent sends none.
+function _wizRunId(msg, ev) {
+  if (msg && msg.run_id) return msg.run_id;
+  return String((ev && ev.lastEventId) || '').split(':')[0] || '';
 }
 
 function _wizRawAppend(boxId, cntId, text) {
@@ -140,21 +160,19 @@ async function runVllmAutotune() {
     _vatFinish();
     return;
   }
-  _vatEventSrc = new EventSource(window._withAgentParam('/api/vllm/autotune/stream'));
-  _vatEventSrc.onmessage = (ev) => {
-    let msg;
-    try { msg = JSON.parse(ev.data); } catch { return; }
-    _vatHandleEvent(msg);
-  };
-  _vatEventSrc.onerror = () => {
-    if (_vatEventSrc && _vatEventSrc.readyState === EventSource.CLOSED) {
+  _vatEventSrc = SG.open({
+    url: window._withAgentParam('/api/vllm/autotune/stream'),
+    onReconnecting: () => _wizReconnecting('vllmAtStatus'),
+    onRestored: () => _wizRestore('vllmAtStatus'),
+    onLost: () => {
       _wizStatus('vllmAtStatus', '⚠ progress stream closed', 'err');
       _vatFinish();
-    }
-  };
+    },
+    onEvent: _vatHandleEvent,
+  });
 }
 
-function _vatHandleEvent(msg) {
+function _vatHandleEvent(msg, ev) {
   switch (msg.type) {
     case 'keepalive': return;
     case 'model_start':
@@ -182,6 +200,14 @@ function _vatHandleEvent(msg) {
     case 'model_done':
       _vatResult = msg;
       _vatRenderResult(msg);
+      // Ledger row with the agent's run id so it collapses with the row the
+      // agent records itself (#780).
+      if (typeof _recordToolRun === 'function' && msg.model_id) {
+        _recordToolRun('autotune', {model_id: msg.model_id, provider: 'vllm',
+          ok: !!msg.ok, run_id: _wizRunId(msg, ev),
+          max_model_len: msg.max_model_len, kv_tokens: msg.kv_tokens,
+          applied: !!msg.applied, report_only: !!msg.report_only});
+      }
       return;
     case 'done':
       _wizStatus('vllmAtStatus', msg.cancelled ? 'Cancelled.' : (msg.ok ? 'Done.' : 'Failed.'),
@@ -410,21 +436,19 @@ async function runVllmBench() {
     _vbenchFinish();
     return;
   }
-  _vbenchEventSrc = new EventSource(window._withAgentParam('/api/vllm/bench/stream'));
-  _vbenchEventSrc.onmessage = (ev) => {
-    let msg;
-    try { msg = JSON.parse(ev.data); } catch { return; }
-    _vbenchHandleEvent(msg);
-  };
-  _vbenchEventSrc.onerror = () => {
-    if (_vbenchEventSrc && _vbenchEventSrc.readyState === EventSource.CLOSED) {
+  _vbenchEventSrc = SG.open({
+    url: window._withAgentParam('/api/vllm/bench/stream'),
+    onReconnecting: () => _wizReconnecting('vllmBenchStatus'),
+    onRestored: () => _wizRestore('vllmBenchStatus'),
+    onLost: () => {
       _wizStatus('vllmBenchStatus', '⚠ progress stream closed', 'err');
       _vbenchFinish();
-    }
-  };
+    },
+    onEvent: _vbenchHandleEvent,
+  });
 }
 
-function _vbenchHandleEvent(msg) {
+function _vbenchHandleEvent(msg, ev) {
   switch (msg.type) {
     case 'keepalive': return;
     case 'model_start':
@@ -437,12 +461,13 @@ function _vbenchHandleEvent(msg) {
     case 'result':
       _vbenchResult = msg;
       _vbenchRenderResult(msg);
-      // Record into the cross-tool run ledger (#770); rows render inert there.
+      // Record into the cross-tool run ledger (#770) with the run id so the
+      // row collapses with the one the agent records (#780).
       if (typeof _recordToolRun === 'function') {
         const m = msg.extra || {};
         _recordToolRun('benchmark', {model_id: msg.model_id, provider: 'vllm',
           gen_tps: m.output_throughput, pg_tps: m.total_token_throughput,
-          bench_tool: 'vllm-bench-serve', ok: true});
+          bench_tool: 'vllm-bench-serve', ok: true, run_id: _wizRunId(msg, ev)});
       }
       return;
     case 'model_done':

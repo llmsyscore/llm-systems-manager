@@ -224,10 +224,9 @@ def test_run_busy_guard(ctx, monkeypatch):
 # ── orchestration: rollback + report-only (all side effects faked) ─────
 
 def _drain(job):
-    out = []
-    while not job.queue.empty():
-        out.append(job.queue.get_nowait())
-    return out
+    """Events of the current autotune run, read from the replay buffer."""
+    _ = job
+    return [r["event"] for r in vllm._at_replay.records_after_seq(0)]
 
 
 UNIT_TEXT = """[Service]
@@ -237,6 +236,7 @@ ExecStart=/opt/vllm/bin/vllm serve org/model-8b --host 0.0.0.0 --max-model-len 8
 
 def _wire_orchestration(monkeypatch, watch_results, applied):
     """Fake svc file read, svcconfig writes (recorded), restarts, watcher."""
+    vllm._at_start_run()
     monkeypatch.setattr(vllm.Path, "read_text", lambda self: UNIT_TEXT)
     monkeypatch.setattr(vllm, "_at_apply",
                         lambda head, args: (applied.append(args), {"ok": True})[1])

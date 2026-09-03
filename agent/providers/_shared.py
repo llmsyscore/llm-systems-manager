@@ -364,23 +364,27 @@ class JobRunner:
     """Single-subprocess job scaffolding shared by vLLM wizards: busy lock,
     bounded SSE event queue with oldest-drop, cancel event + pgid kill."""
 
-    def __init__(self, name: str, maxsize: int = 5000):
+    def __init__(self, name: str, maxsize: int = 5000, sink=None):
         self.name = name
         self.lock = threading.Lock()
         self.active = False
+        self.sink = sink
         self.queue: "_queue_lib.Queue[dict]" = _queue_lib.Queue(maxsize=maxsize)
         self.cancel_event = threading.Event()
         self.proc: "Optional[subprocess.Popen]" = None
         self.pgid: "Optional[int]" = None
         self.thread: "Optional[threading.Thread]" = None
 
-    def try_start(self, target) -> bool:
-        """Run target on a daemon thread; False when a job is already active."""
+    def try_start(self, target, on_start=None) -> bool:
+        """Run target on a daemon thread; False when a job is already active.
+        on_start runs under the busy lock before any stream can see active."""
         with self.lock:
             if self.active:
                 return False
             self.cancel_event.clear()
             self.active = True
+            if on_start is not None:
+                on_start()
         while not self.queue.empty():
             try:
                 self.queue.get_nowait()
@@ -407,6 +411,10 @@ class JobRunner:
             t.join(timeout)
 
     def put(self, msg: dict) -> None:
+        """Deliver an event to the sink when set, else the bounded queue."""
+        if self.sink is not None:
+            self.sink(msg)
+            return
         try:
             self.queue.put_nowait(msg)
         except _queue_lib.Full:

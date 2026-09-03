@@ -435,7 +435,10 @@ def proxy_stream_to_primary(kind: str, path: str, *, primary_kind: "str | None" 
             handed_off = False
             try:
                 _hdrs = {"Authorization": f"Bearer {agent['token']}"}
-                _leid = (flask_request.headers.get("Last-Event-ID")
+                # An explicit EventSource re-open cannot set the header, so
+                # the guard passes the resume point as ?last_event_id= (#782).
+                _leid = ((flask_request.headers.get("Last-Event-ID")
+                          or flask_request.args.get("last_event_id"))
                          if has_request_context() else None)
                 if _leid:
                     _hdrs["Last-Event-ID"] = _leid   # SSE resume → agent replay buffer

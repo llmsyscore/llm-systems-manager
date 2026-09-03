@@ -120,10 +120,9 @@ function _benchGetY(row) {
 }
 
 // Last status text written while the stream was healthy, restored after a
-// transient drop; _benchDrops counts reconnects with no message in between.
+// transient drop (the SG guard counts drops and re-opens a closed source).
 let _benchLiveStatus = '';
 let _benchReconnecting = false;
-let _benchDrops = 0;
 const _BENCH_MAX_DROPS = 20;
 
 // Write the benchmark status pill and remember it as the live label.
@@ -907,22 +906,24 @@ async function runBenchmark() {
       return;
     }
     if (_benchEventSrc) { try { _benchEventSrc.close(); } catch(_){} }
-    _benchEventSrc = new EventSource('/api/benchmark/stream');
-    if (typeof toolsSyncRunDot === "function") toolsSyncRunDot();
-    _benchDrops = 0;
     _benchStatus('running…');
-    _benchEventSrc.onmessage = e => {
-      let msg;
-      try { msg = JSON.parse(e.data); } catch (_) { return; }
-      if (msg.type === 'keepalive') return;
-      // First real message after a drop proves the run resumed: restore the
-      // label the reconnect notice replaced.
-      _benchDrops = 0;
-      if (_benchReconnecting) {
+    _benchEventSrc = SG.open({
+      url: '/api/benchmark/stream', maxDrops: _BENCH_MAX_DROPS,
+      onReconnecting: () => {
+        _benchReconnecting = true;
+        document.getElementById('benchStatus').textContent = 'reconnecting…';
+      },
+      onRestored: () => { _benchReconnecting = false; _benchStatus(_benchLiveStatus); },
+      onLost: () => {
         _benchReconnecting = false;
-        _benchStatus(_benchLiveStatus);
-      }
-
+        _benchEventSrc = null; if (typeof toolsSyncRunDot === 'function') toolsSyncRunDot();
+        document.getElementById('benchRunBtn').disabled = false;
+        document.getElementById('benchCancelBtn').style.display = 'none';
+        document.getElementById('benchStatus').textContent = 'disconnected';
+        _benchSetState('err');
+        _benchSetPerfMode('powersave');
+      },
+      onEvent: (msg, e) => {
       if (msg.type === 'model_start') {
         _benchAddModelDatasets(msg.model_id);
         _benchLogAppend(`<div class="bench-log-sep">── ${_hEsc(msg.model_id)} ──</div>`);
@@ -956,24 +957,9 @@ async function runBenchmark() {
         if (msg.error) _benchLogAppend(`<span class="bench-log-text" style="color:var(--crit)">✗ Error: ${_hEsc(String(msg.error))}</span>`);
         _benchSetPerfMode('powersave');
       }
-    };
-    _benchEventSrc.onerror = () => {
-      // Transient drop: EventSource auto-reconnects and resumes from the last
-      // event id (server replays the gap). Only a CLOSED state is terminal.
-      if (_benchEventSrc && _benchEventSrc.readyState === EventSource.CONNECTING
-          && ++_benchDrops <= _BENCH_MAX_DROPS) {
-        _benchReconnecting = true;
-        document.getElementById('benchStatus').textContent = 'reconnecting…';
-        return;
-      }
-      _benchReconnecting = false;
-      if (_benchEventSrc) { try { _benchEventSrc.close(); } catch(_){} _benchEventSrc = null; } if (typeof toolsSyncRunDot === 'function') toolsSyncRunDot();
-      document.getElementById('benchRunBtn').disabled = false;
-      document.getElementById('benchCancelBtn').style.display = 'none';
-      document.getElementById('benchStatus').textContent = 'disconnected';
-      _benchSetState('err');
-      _benchSetPerfMode('powersave');
-    };
+      },
+    });
+    if (typeof toolsSyncRunDot === "function") toolsSyncRunDot();
   }).catch(e => {
     alert('Benchmark request failed: ' + e);
     document.getElementById('benchRunBtn').disabled = false;
@@ -1009,10 +995,9 @@ let _atPending = {};   // model_id -> {converged, final_fitt, ctx_size, free_mb,
 let _atLastTarget = null, _atLastTol = null;   // captured at run start for the tolerance gauge
 
 // Last status text written while the stream was healthy, restored after a
-// transient drop; _atDrops counts reconnects with no message in between.
+// transient drop (the SG guard counts drops and re-opens a closed source).
 let _atLiveStatus = '';
 let _atReconnecting = false;
-let _atDrops = 0;
 const _AT_MAX_DROPS = 20;
 
 function _atSetStatus(text, running) {
@@ -1342,23 +1327,30 @@ async function runAutotune() {
   if (_atEventSrc) { try { _atEventSrc.close(); } catch(_){} }
   // Use the manager-proxied SSE path (same as Benchmark) — avoids the
   // direct-to-agent token + CORS hop, which fails on some setups.
-  _atEventSrc = new EventSource('/api/llm/autotune/stream');
-  if (typeof toolsSyncRunDot === 'function') toolsSyncRunDot();
-  _atDrops = 0;
   _atSetStatus('running…', true);
-
-  _atEventSrc.onmessage = e => {
-    let msg;
-    try { msg = JSON.parse(e.data); } catch(_) { return; }
-    if (msg.type === 'keepalive') return;
-    // First real message after a drop proves the run resumed: restore the
-    // label the reconnect notice replaced.
-    _atDrops = 0;
-    if (_atReconnecting) {
+  _atEventSrc = SG.open({
+    url: '/api/llm/autotune/stream', maxDrops: _AT_MAX_DROPS,
+    onReconnecting: () => {
+      if (!_atReconnecting) {
+        _atReconnecting = true;
+        _atLogAppend('<div class="at-log-dim">stream dropped — reconnecting…</div>');
+      }
+      const el = document.getElementById('atStatus');
+      if (el) el.textContent = 'reconnecting…';
+    },
+    onRestored: () => { _atReconnecting = false; _atSetStatus(_atLiveStatus || 'running…', true); },
+    onLost: (rs) => {
       _atReconnecting = false;
-      _atSetStatus(_atLiveStatus || 'running…', true);
-    }
-
+      console.error('[autotune] SSE error; readyState=' + rs);
+      _atLogAppend(`<span class="at-log-crit">SSE disconnected (readyState=${rs}). Check the manager + agent logs.</span>`);
+      _atEventSrc = null;
+      if (typeof toolsSyncRunDot === 'function') toolsSyncRunDot();
+      document.getElementById('atRunBtn').disabled = false;
+      document.getElementById('atCancelBtn').style.display = 'none';
+      _atSetStatus('disconnected', false);
+      /* agent restores perf mode in its finally: block */
+    },
+    onEvent: (msg, e) => {
     if (msg.type === 'model_start') {
       _atLogAppend(`<div class="at-log-sep">── ${_hEsc(msg.model_id)} · target ${Number(msg.target_mb)||0} MB ──</div>`);
       _atSetCardStatus(msg.model_id, `tuning (target ${msg.target_mb} MB)`);
@@ -1485,31 +1477,9 @@ async function runAutotune() {
         fetch('/api/llm/server/start', {method: 'POST'}).catch(() => {});
       }
     }
-  };
-  _atEventSrc.onerror = (ev) => {
-    // Transient drop: EventSource auto-reconnects and resumes from the last
-    // event id (agent replays the gap). Only a CLOSED state is terminal.
-    if (_atEventSrc && _atEventSrc.readyState === EventSource.CONNECTING
-        && ++_atDrops <= _AT_MAX_DROPS) {
-      if (!_atReconnecting) {
-        _atReconnecting = true;
-        _atLogAppend('<div class="at-log-dim">stream dropped — reconnecting…</div>');
-      }
-      const el = document.getElementById('atStatus');
-      if (el) el.textContent = 'reconnecting…';
-      return;
-    }
-    _atReconnecting = false;
-    const rs = _atEventSrc ? _atEventSrc.readyState : -1;
-    console.error('[autotune] SSE error; readyState=' + rs, ev);
-    _atLogAppend(`<span class="at-log-crit">SSE disconnected (readyState=${rs}). Check the manager + agent logs.</span>`);
-    if (_atEventSrc) { try { _atEventSrc.close(); } catch(_){} _atEventSrc = null; }
-    if (typeof toolsSyncRunDot === 'function') toolsSyncRunDot();
-    document.getElementById('atRunBtn').disabled = false;
-    document.getElementById('atCancelBtn').style.display = 'none';
-    _atSetStatus('disconnected', false);
-    /* agent restores perf mode in its finally: block */
-  };
+    },
+  });
+  if (typeof toolsSyncRunDot === 'function') toolsSyncRunDot();
 }
 
 function cancelAutotune() {
