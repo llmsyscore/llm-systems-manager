@@ -46,7 +46,7 @@ export function evalGlobal(code) {
 // order, then the bootstrap, and returns the resulting dom.window.
 export function runHarness({ sources = [], bootstrap = '', bodyHtml = '' } = {}) {
   const dom = new JSDOM(`<!doctype html><html><head></head><body>${bodyHtml}</body></html>`,
-    { runScripts: 'dangerously', url: 'http://localhost/' });
+    { runScripts: 'dangerously', url: 'http://localhost/', pretendToBeVisual: true });
   const inject = (code) => {
     const s = dom.window.document.createElement('script');
     s.textContent = code;

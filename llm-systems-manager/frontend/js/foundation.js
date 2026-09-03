@@ -114,6 +114,12 @@ function _fetchT(url, opts = {}, timeoutMs = 15000) {
   return fetch(url, { ...opts, signal: ctrl.signal }).finally(() => clearTimeout(t));
 }
 
+// True when a header state pill is hidden (provider has no agent).
+function _pillHidden(id) {
+  const el = document.getElementById(id);
+  return !el || el.style.display === 'none';
+}
+
 // Simple once-at-a-time guard for polling functions.
 // Usage: if (!_claim('metrics')) return; try {...} finally { _release('metrics'); }
 const _inflight = new Set();

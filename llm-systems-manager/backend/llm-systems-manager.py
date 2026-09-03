@@ -159,7 +159,7 @@ def _local_hostname() -> str:
 # banner reads it. Bump suffix (-1, -2, …) for same-day iterations; roll
 # the date for a new day's first change.
 # ---------------------------------------------------------------------------
-__version__ = "v2026.09.02-12"
+__version__ = "v2026.09.03-1"
 
 # Wall-clock at first import (Cheroot main process); the shutdown banner
 # reads it for the uptime line.
@@ -2748,10 +2748,17 @@ def _provider_metrics_payload(provider: str) -> dict:
     data["agent_online"] = online
     data["agent_age_s"]  = round(age, 1) if last_seen else None
     data["agent_id"]     = aid
+    if _metrics_light():
+        return data
     win = _rate_window_for(provider, [_agent_hostname(aid)]) if aid else None
     if win:
         data["throughput_window"] = win
     return data
+
+
+def _metrics_light() -> bool:
+    """?light=1: the header-pill poll wants the sample only, no rate window."""
+    return (flask_request.args.get("light") or "") in ("1", "true")
 
 
 @app.route("/api/lmstudio/metrics")
@@ -2760,7 +2767,7 @@ def get_lmstudio_metrics():
     plus gateway_tokens — the gateway's cumulative token counters for it."""
     data = _provider_metrics_payload("lms")
     aid = data.get("agent_id")
-    if aid:
+    if aid and not _metrics_light():
         data["gateway_tokens"] = (gateway_usage.counters().get(aid)
                                   or {"gen": 0, "prompt": 0})
         data["gateway_rates"] = gateway_usage.last_rates(aid)

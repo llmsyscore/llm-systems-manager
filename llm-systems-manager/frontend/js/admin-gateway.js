@@ -26,6 +26,8 @@
   let _timer = null;
   let _last = null;
   let _wired = false;
+  let _inflight = null;
+  const FETCH_MS = 8000;
 
   function n(el, attrs, text) {
     const e = document.createElementNS(NS, el);
@@ -237,11 +239,23 @@
     renderTiles(d);
   }
 
-  async function refresh() {
+  // One flow request at a time, with a timeout; a slow one never stacks.
+  function refresh() {
+    if (_inflight) return _inflight;
+    _inflight = _refresh().finally(() => { _inflight = null; });
+    return _inflight;
+  }
+  // Waits out a request already in flight, then fetches a fresh picture.
+  async function refreshNow() {
+    if (_inflight) await _inflight;
+    return refresh();
+  }
+  async function _refresh() {
     const card = $('rtGatewayCard');
-    if (!card) return;
+    if (!card || document.hidden) return;
     try {
-      const r = await fetch('/api/admin/gateway/flow');
+      const url = '/api/admin/gateway/flow';
+      const r = await (typeof _fetchT === 'function' ? _fetchT(url, {}, FETCH_MS) : fetch(url));
       if (!r.ok) { card.hidden = true; return; }
       const d = await r.json();
       if (!d || d.ok === false) { card.hidden = true; return; }
@@ -265,7 +279,7 @@
     } catch (e) {
       if (typeof _themedToast === 'function') _themedToast('gateway toggle failed', { kind: 'err' });
     }
-    refresh();
+    refreshNow();
   }
 
   function wire() {
@@ -290,7 +304,7 @@
 
   function start() {
     wire();
-    refresh();
+    refreshNow();
     if (_timer) return;
     _timer = setInterval(refresh, POLL_MS);
   }
@@ -300,6 +314,6 @@
     _timer = null;
   }
 
-  window.GatewayView = { start, stop, refresh, render, tiles, buildSvg, setEnabled,
+  window.GatewayView = { start, stop, refresh, refreshNow, render, tiles, buildSvg, setEnabled,
     last: () => _last, POLL_MS };
 })();

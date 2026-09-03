@@ -131,25 +131,46 @@ function _lmsMetricsViewActive() {
   return _activeTab === 'overall' || _lmsLogViewActive();
 }
 
+// Header LMS state pill from a /api/lmstudio/metrics payload.
+function _updateLmsHeaderPill(d) {
+  const lmsBanner = document.getElementById('lmsStateBanner');
+  const lmsText   = document.getElementById('lmsStateText');
+  if (!lmsBanner || !lmsText) return;
+  if (d.agent_online !== true) {
+    lmsBanner.className = 'state-banner state-unknown';
+    lmsText.textContent  = 'LMS · offline';
+    return;
+  }
+  // Any loaded model (in ps) regardless of active/idle.
+  const ps = d.ps || [];
+  const loadedRow = ps.find(p => p.status && p.status !== 'STOPPED') || d.active || null;
+  if (!loadedRow) {
+    lmsBanner.className = 'state-banner state-sleeping';
+    lmsText.textContent  = 'LMS · no model loaded';
+    return;
+  }
+  const modelShort = (loadedRow.model || loadedRow.identifier || '').split('@')[0].split('_').slice(-2).join('_') || 'model';
+  const lmsStatus = ['IDLE', ''].includes((loadedRow.status || '').toUpperCase()) ? 'Idle' : 'Active';
+  lmsBanner.className = lmsStatus === 'Active' ? 'state-banner state-awake' : 'state-banner state-sleeping';
+  lmsText.textContent  = `LMS · ${lmsStatus} · ${modelShort}`;
+}
+
+let _lmsPillTick = 0;
 async function fetchLMStudioMetrics() {
   if (document.hidden) return;
-  // Skip when the user isn't looking at LM Studio data. The payload feeds:
-  //  • LLM Overall tab (mirrored LMS cards)
-  //  • Dashboard tab → LM Studio sub-tab
-  //  • LLM Control tab → LM Studio sub-tab
-  // On every other tab/sub-tab combination this fetch is pure waste.
-  // Explicit user actions (start/stop/load/unload model, log open, …)
-  // still call this directly via setTimeout — those paths bypass the gate
-  // intentionally because the user just triggered a state change that
-  // they're about to look at.
-  if (!_lmsMetricsViewActive()) return;
-  const _lk = _agentClaimKey('fetchLMStudioMetrics', 'lms');
+  // Full render only on an LMS view (LLM Overall, Dashboard/LMS, LLM Control/LMS);
+  // off-view only the header pill is kept current, on every 5th tick.
+  const pillOnly = !_lmsMetricsViewActive();
+  _lmsPillTick = (_lmsPillTick + 1) % 5;
+  if (pillOnly && (_lmsPillTick !== 0 || _pillHidden('lmsStateBanner'))) return;
+  const _lk = _agentClaimKey(pillOnly ? 'fetchLMStudioMetrics:pill' : 'fetchLMStudioMetrics', 'lms');
   if (!_claim(_lk)) return;
   const agentAtStart = typeof _selectedAgent === 'function' ? _selectedAgent('lms') : null;
   try {
-    const d = await _fetchT('/api/lmstudio/metrics', {}, 10000).then(r => r.json());
+    const d = await _fetchT(pillOnly ? '/api/lmstudio/metrics?light=1' : '/api/lmstudio/metrics', {}, 10000).then(r => r.json());
     // A reply for a previously selected agent must not paint (or seed) the new one.
     if (typeof _selectedAgent === 'function' && _selectedAgent('lms') !== agentAtStart) return;
+    if (pillOnly) { _updateLmsHeaderPill(d); return; }
     _lmsMetrics = d;
 
     const sys    = d.system || {};
@@ -305,31 +326,7 @@ async function fetchLMStudioMetrics() {
       el.innerHTML = '<span class="status__dot"></span>' + (online ? 'Agent online' : 'Agent offline');
     });
 
-    // Update header LMS state pill
-    const lmsBanner = document.getElementById('lmsStateBanner');
-    const lmsText   = document.getElementById('lmsStateText');
-    if (lmsBanner && lmsText) {
-      if (!online) {
-        lmsBanner.className = 'state-banner state-unknown';
-        lmsText.textContent  = 'LMS · offline';
-      } else {
-        // Find any loaded model (in ps) regardless of active/idle
-        const loadedRow = ps.find(p => p.status && p.status !== 'STOPPED') || d.active || null;
-        const modelShort = loadedRow
-          ? (loadedRow.model || loadedRow.identifier || '').split('@')[0].split('_').slice(-2).join('_') || 'model'
-          : null;
-        const lmsStatus = loadedRow
-          ? (['IDLE',''].includes((loadedRow.status||'').toUpperCase()) ? 'Idle' : 'Active')
-          : null;
-        if (loadedRow) {
-          lmsBanner.className = lmsStatus === 'Active' ? 'state-banner state-awake' : 'state-banner state-sleeping';
-          lmsText.textContent  = `LMS · ${lmsStatus} · ${modelShort}`;
-        } else {
-          lmsBanner.className = 'state-banner state-sleeping';
-          lmsText.textContent  = 'LMS · no model loaded';
-        }
-      }
-    }
+    _updateLmsHeaderPill(d);
 
     // Overall tab is fleet-aggregated (PR4) — driven by fetchOverallMetrics
     // (kicked from fetchMetrics while the tab is visible), not this per-agent

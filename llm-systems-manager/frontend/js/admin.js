@@ -1,6 +1,10 @@
 // Admin tab auto-refresh — only ticks when the tab is visible.
 let _adminRefreshTimer = null;
 function adminStartAutoRefresh() {
+  // The gateway poll follows the Routing sub-tab; the stop below mirrors this.
+  if (window.GatewayView && typeof _subTabState !== 'undefined' && _subTabState.admin === 'routing') {
+    GatewayView.start();
+  }
   if (_adminRefreshTimer) return;
   // 20s cadence (was 10s) — paired with the backend's anti-flap
   // (requires 2 consecutive failed alarm-engine probes before flipping to

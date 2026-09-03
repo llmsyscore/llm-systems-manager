@@ -139,6 +139,22 @@ def test_provider_metrics_payload_attaches_window(monkeypatch):
     assert data["throughput_window"] == WIN and data["x"] == 1
 
 
+def test_light_metrics_skip_the_window_and_gateway_extras(monkeypatch):
+    monkeypatch.setattr(manager_mod.agent_registry, "default_agent_id_for", lambda p: "aid1")
+    monkeypatch.setattr(manager_mod, "_agent_hostname", lambda aid: "host1")
+    calls = []
+    monkeypatch.setattr(manager_mod, "_rate_window_for", lambda p, hosts: calls.append(hosts) or WIN)
+    monkeypatch.setattr(manager_mod.provider_state.STORE, "get",
+                        lambda p, aid: {"sample": {"ps": []}, "last_seen": 0.0})
+    with manager_mod.app.test_request_context("/api/lmstudio/metrics?light=1"):
+        body = json.loads(manager_mod.get_lmstudio_metrics().get_data())
+    assert calls == [] and "throughput_window" not in body
+    assert "gateway_tokens" not in body and body["agent_id"] == "aid1"
+    with manager_mod.app.test_request_context("/api/lmstudio/metrics"):
+        body = json.loads(manager_mod.get_lmstudio_metrics().get_data())
+    assert calls == [["host1"]] and body["throughput_window"] == WIN and "gateway_tokens" in body
+
+
 def test_api_metrics_copies_sample_before_attaching(monkeypatch):
     sample = {"llama": {"tokens_per_second": 1.0}}
     monkeypatch.setattr(manager_mod, "_llama_agent_id_for_request", lambda: "aid1")
