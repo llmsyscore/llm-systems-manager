@@ -176,6 +176,7 @@ class NotificationConfigCreate(BaseModel):
     channels: list[UUID] = Field(default_factory=list, description="Channel IDs to use")
     enabled: bool = Field(default=True, description="Whether the config is enabled")
     auto_dismiss: bool = Field(default=True, description="Toast auto-dismisses after timeout; if false, sticky until clicked")
+    toast_dismiss_seconds: int = Field(default=10, ge=1, le=600, description="Seconds a toast stays on screen when auto_dismiss is on")
 
     # Alert filters — all default to permissive (no filter). An alert matches
     # the policy when EVERY filter clause passes (logical AND).
@@ -218,6 +219,7 @@ class NotificationConfigUpdate(BaseModel):
     channels: Optional[list[UUID]] = None
     enabled: Optional[bool] = None
     auto_dismiss: Optional[bool] = None
+    toast_dismiss_seconds: Optional[int] = Field(default=None, ge=1, le=600)
     min_severity: Optional[str] = None
     metric_sources: Optional[list[str]] = None
     metric_names: Optional[list[str]] = None
@@ -235,6 +237,7 @@ class NotificationConfig(BaseModel):
     channels: list[UUID]
     enabled: bool
     auto_dismiss: bool = True
+    toast_dismiss_seconds: int = 10
     created_at: datetime
     last_triggered_at: Optional[datetime]
     trigger_count: int
@@ -284,6 +287,7 @@ class NotificationConfig(BaseModel):
             "channels": [str(id) for id in self.channels],
             "enabled": self.enabled,
             "auto_dismiss": self.auto_dismiss,
+            "toast_dismiss_seconds": int(self.toast_dismiss_seconds or 10),
             "created_at": self.created_at.isoformat(),
             "last_triggered_at": self.last_triggered_at.isoformat() if self.last_triggered_at else None,
             "trigger_count": self.trigger_count,

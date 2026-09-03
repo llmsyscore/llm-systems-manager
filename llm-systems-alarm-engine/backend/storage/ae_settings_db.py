@@ -85,7 +85,8 @@ CREATE TABLE IF NOT EXISTS configs (
   source_hosts_json TEXT NOT NULL DEFAULT '[]',
   repeat_interval_minutes INTEGER NOT NULL DEFAULT 30,
   notify_on_clear INTEGER NOT NULL DEFAULT 0,
-  min_alarm_count INTEGER NOT NULL DEFAULT 1
+  min_alarm_count INTEGER NOT NULL DEFAULT 1,
+  toast_dismiss_seconds INTEGER NOT NULL DEFAULT 10
 );
 
 CREATE TABLE IF NOT EXISTS deliveries (
@@ -100,7 +101,8 @@ CREATE TABLE IF NOT EXISTS deliveries (
   severity TEXT,
   success INTEGER NOT NULL DEFAULT 0,
   error_message TEXT,
-  delivered_at TEXT NOT NULL
+  delivered_at TEXT NOT NULL,
+  metadata_json TEXT
 );
 CREATE INDEX IF NOT EXISTS deliveries_delivered_at_idx ON deliveries(delivered_at DESC);
 CREATE INDEX IF NOT EXISTS deliveries_config_id_idx ON deliveries(config_id);
@@ -113,7 +115,16 @@ def _migrate(conn: sqlite3.Connection) -> None:
     if "correlation_group" not in cols:
         conn.execute("ALTER TABLE rules ADD COLUMN correlation_group TEXT")
         logger.info("ae_settings.db migrated: rules.correlation_group added")
+    dcols = {r[1] for r in conn.execute("PRAGMA table_info(deliveries)")}
+    if "metadata_json" not in dcols:
+        conn.execute("ALTER TABLE deliveries ADD COLUMN metadata_json TEXT")
+        logger.info("ae_settings.db migrated: deliveries.metadata_json added")
+    ccols = {r[1] for r in conn.execute("PRAGMA table_info(configs)")}
+    if "toast_dismiss_seconds" not in ccols:
+        conn.execute("ALTER TABLE configs ADD COLUMN toast_dismiss_seconds INTEGER NOT NULL DEFAULT 10")
+        logger.info("ae_settings.db migrated: configs.toast_dismiss_seconds added")
     conn.execute("INSERT OR IGNORE INTO schema_version VALUES (2)")
+    conn.execute("INSERT OR IGNORE INTO schema_version VALUES (3)")
     conn.commit()
 
 
@@ -338,6 +349,7 @@ class AeSettingsDB:
             int(cfg.get("repeat_interval_minutes") or 30),
             1 if cfg.get("notify_on_clear") else 0,
             int(cfg.get("min_alarm_count") or 1),
+            int(cfg.get("toast_dismiss_seconds") or 10),
         )
         with self._lock:
             self._conn.execute(
@@ -347,8 +359,9 @@ class AeSettingsDB:
                   enabled, auto_dismiss, created_at, last_triggered_at,
                   trigger_count, min_severity, metric_sources_json,
                   metric_names_json, source_hosts_json,
-                  repeat_interval_minutes, notify_on_clear, min_alarm_count
-                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                  repeat_interval_minutes, notify_on_clear, min_alarm_count,
+                  toast_dismiss_seconds
+                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                 ON CONFLICT(config_id) DO UPDATE SET
                   name=excluded.name,
                   description=excluded.description,
@@ -363,7 +376,8 @@ class AeSettingsDB:
                   source_hosts_json=excluded.source_hosts_json,
                   repeat_interval_minutes=excluded.repeat_interval_minutes,
                   notify_on_clear=excluded.notify_on_clear,
-                  min_alarm_count=excluded.min_alarm_count
+                  min_alarm_count=excluded.min_alarm_count,
+                  toast_dismiss_seconds=excluded.toast_dismiss_seconds
                 """,
                 cols,
             )
@@ -415,6 +429,7 @@ class AeSettingsDB:
             "repeat_interval_minutes": r["repeat_interval_minutes"],
             "notify_on_clear": bool(r["notify_on_clear"]),
             "min_alarm_count": r["min_alarm_count"],
+            "toast_dismiss_seconds": (r["toast_dismiss_seconds"] if "toast_dismiss_seconds" in r.keys() else 10) or 10,
         }
 
     # ── Deliveries (notification send records) ───────────────────────────
@@ -433,6 +448,7 @@ class AeSettingsDB:
             1 if d.get("success") else 0,
             d.get("error_message") or None,
             _to_iso(d.get("delivered_at")) or now_utc().isoformat(),
+            _to_json(d.get("metadata") or {}),
         )
         with self._lock:
             self._conn.execute(
@@ -440,8 +456,8 @@ class AeSettingsDB:
                 INSERT INTO deliveries (
                   delivery_id, config_id, channel_id, channel_type, method,
                   recipient, title, body, severity, success, error_message,
-                  delivered_at
-                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
+                  delivered_at, metadata_json
+                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
                 ON CONFLICT(delivery_id) DO NOTHING
                 """,
                 cols,
@@ -495,4 +511,5 @@ class AeSettingsDB:
             "success": bool(r["success"]),
             "error_message": r["error_message"],
             "delivered_at": r["delivered_at"],
+            "metadata": _from_json(r["metadata_json"], {}) if "metadata_json" in r.keys() else {},
         }

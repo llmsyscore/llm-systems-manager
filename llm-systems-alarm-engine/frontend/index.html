@@ -5,631 +5,270 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>LLM Systems — Alarm Engine</title>
     <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🔔</text></svg>">
-    <link rel="stylesheet" href="css/main.css?v=20260707a">
-    <link rel="stylesheet" href="css/dashboard.css?v=20260707a">
-    <link rel="stylesheet" href="css/alerts.css?v=20260609a">
-    <link rel="stylesheet" href="css/rules.css?v=20260523a">
-    <link rel="stylesheet" href="css/notifications.css?v=20260523a">
-    <link rel="stylesheet" href="css/history.css?v=20260523a">
-    <link rel="stylesheet" href="css/modal.css?v=20260523a">
+    <link rel="stylesheet" href="css/main.css?v=20260903a">
+    <link rel="stylesheet" href="css/dashboard.css?v=20260903a">
+    <link rel="stylesheet" href="css/alerts.css?v=20260903a">
+    <link rel="stylesheet" href="css/rules.css?v=20260903a">
+    <link rel="stylesheet" href="css/notifications.css?v=20260903a">
+    <link rel="stylesheet" href="css/history.css?v=20260903a">
+    <link rel="stylesheet" href="css/modal.css?v=20260903a">
     <script src="js/vendor/chart.umd.min.js?v=4.4.7"></script>
     <script src="js/vendor/chartjs-adapter-date-fns.bundle.min.js?v=3.0.0"></script>
     <script src="js/vendor/chartjs-plugin-zoom.min.js?v=2.2.0"></script>
     <script src="js/vendor/chartjs-plugin-annotation.min.js?v=3.1.0"></script>
 </head>
 <body>
-    <!-- Top Navigation Bar -->
-    <header class="top-bar">
-        <div class="top-bar-left">
-            <h1 class="app-title">
-                <span class="title-icon">🔔</span>
-                <span class="title-text">LLM Systems Alarm Engine</span>
-            </h1>
-        </div>
-        <div class="top-bar-right">
-            <div class="header-actions">
-                <button class="btn-icon" id="refreshBtn" title="Refresh Data">
-                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 2v6h-6"/><path d="M3 12a9 9 0 0 1 15-6.7L21 8"/><path d="M3 22v-6h6"/><path d="M21 12a9 9 0 0 1-15 6.7L3 16"/></svg>
-                </button>
-            </div>
-            <div class="connection-status" id="connectionStatus">
-                <span class="status-dot disconnected"></span>
-                <span class="status-text">Disconnected</span>
-            </div>
-            <div class="last-refreshed" id="lastRefreshed" title="Last time alerts were refreshed">
-                <span class="last-refreshed-label">Refreshed:</span>
-                <span class="last-refreshed-time" id="lastRefreshedTime">—</span>
-            </div>
-        </div>
-    </header>
+    <div class="site-head" id="siteHead" hidden><span class="site-title">LLM SYSTEMS ALARM ENGINE</span></div>
 
-    <!-- Summary Cards Row -->
-    <section class="summary-cards">
-        <div class="card card-metrics">
-            <div class="card-header">
-                <span class="card-icon">📊</span>
-                <span class="card-title">Metrics</span>
-            </div>
-            <div class="card-body">
-                <span class="card-value" id="metricsCount">0</span>
-                <span class="card-label">Tracked</span>
-            </div>
+    <nav class="ae-nav" aria-label="Alarm engine views">
+        <button type="button" class="sub-tab-btn active" data-tab="console">Console</button>
+        <button type="button" class="sub-tab-btn" data-tab="alerts">Alerts<span class="cnt" id="navAlertCount" hidden>0</span></button>
+        <button type="button" class="sub-tab-btn" data-tab="metrics">Metrics</button>
+        <button type="button" class="sub-tab-btn" data-tab="rules">Rules</button>
+        <button type="button" class="sub-tab-btn" data-tab="notifications">Notifications</button>
+        <div class="side">
+            <span class="live" id="liveState"><span class="dot"></span><span id="liveText">connecting</span></span>
+            <button type="button" class="stamp" id="stamp" data-tip="Refresh now"><span class="rf" id="stampIcon">↻</span><span id="stampText">—</span></button>
         </div>
-        <div class="card card-active-alerts">
-            <div class="card-header">
-                <span class="card-icon">🚨</span>
-                <span class="card-title">Active Alerts</span>
-            </div>
-            <div class="card-body">
-                <span class="card-value critical" id="activeAlertsCount">0</span>
-                <span class="card-label">Alerts</span>
-            </div>
-        </div>
-        <div class="card card-critical-alerts">
-            <div class="card-header">
-                <span class="card-icon">⛔</span>
-                <span class="card-title">Critical</span>
-            </div>
-            <div class="card-body">
-                <span class="card-value critical" id="criticalAlertsCount">0</span>
-                <span class="card-label">Critical</span>
-            </div>
-        </div>
-        <div class="card card-rules">
-            <div class="card-header">
-                <span class="card-icon">⚙️</span>
-                <span class="card-title">Rules</span>
-            </div>
-            <div class="card-body">
-                <span class="card-value" id="rulesCount">0</span>
-                <span class="card-label">Active</span>
-            </div>
-        </div>
-        <div class="card card-anomalies">
-            <div class="card-header">
-                <span class="card-icon">🔍</span>
-                <span class="card-title">Anomalies</span>
-            </div>
-            <div class="card-body">
-                <span class="card-value warning" id="anomaliesCount">0</span>
-                <span class="card-label">Detected</span>
-            </div>
-        </div>
-    </section>
-
-    <!-- Tab Navigation -->
-    <nav class="tab-nav">
-        <button class="tab active" data-tab="dashboard">
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg>
-            Events
-        </button>
-        <button class="tab" data-tab="alerts">
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg>
-            All Alerts
-            <span class="tab-badge" id="alertsBadge">0</span>
-        </button>
-        <button class="tab" data-tab="rules">
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="4" y1="21" x2="4" y2="14"/><line x1="4" y1="10" x2="4" y2="3"/><line x1="12" y1="21" x2="12" y2="12"/><line x1="12" y1="8" x2="12" y2="3"/><line x1="20" y1="21" x2="20" y2="16"/><line x1="20" y1="12" x2="20" y2="3"/></svg>
-            Rules
-        </button>
-        <button class="tab" data-tab="notifications">
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72c.127.96.361 1.903.7 2.81a2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45c.907.339 1.85.573 2.81.7A2 2 0 0 1 22 16.92z"/></svg>
-            Notifications
-        </button>
     </nav>
 
-    <!-- Main Content Area -->
-    <main class="tab-content">
-        <!-- Events Tab (formerly Dashboard) -->
-        <section class="tab-panel active" id="dashboard-panel">
+    <main class="page">
 
-            <!-- Sub-tab navigation within Events -->
-            <nav class="subtab-nav">
-                <button class="subtab active" data-subtab="overview">Overview</button>
-                <button class="subtab" data-subtab="metrics">Metrics</button>
-            </nav>
-
-            <!-- Sub-panel: Overview (alerts, anomalies, recent) -->
-            <div class="subtab-panel active" id="dashboard-sub-overview">
-                <div class="dashboard-grid">
-                    <!-- Active Alerts Panel -->
-                    <div class="alerts-panel full-width">
-                        <div class="card-header">
-                            <span>Active Alerts</span>
-                            <button class="btn-sm" id="clearAllAlertsBtn">Clear All</button>
-                        </div>
-                        <div class="alerts-list" id="alertsList">
-                            <div class="empty-state">
-                                <p>No active alerts</p>
-                            </div>
-                        </div>
-                    </div>
-
-                    <!-- Anomaly Feed -->
-                    <div class="anomaly-feed">
-                        <div class="card-header">
-                            <span>Recent Anomalies</span>
-                        </div>
-                        <div class="anomaly-list" id="anomalyList">
-                            <div class="empty-state">
-                                <p>No anomalies detected</p>
-                            </div>
-                        </div>
-                    </div>
-
-                    <!-- Recent Alerts (history of the last 25 alerts of any status) -->
-                    <div class="recent-alerts-panel full-width">
-                        <div class="card-header">
-                            <span>Recent Alerts (last 25)</span>
-                        </div>
-                        <div class="recent-alerts-body" id="recentAlertsList">
-                            <div class="empty-state">
-                                <p>Loading alerts…</p>
-                            </div>
-                        </div>
-                    </div>
+        <!-- Console -->
+        <section class="panel active" id="panel-console">
+            <div class="hdr">
+                <h2>Alarm console</h2>
+                <div class="sum" id="consoleSum"></div>
+                <div class="gap"></div>
+                <div class="side"><button type="button" class="mcbtn mcbtn-ghost mcbtn-sm" id="closeAllBtn" disabled>Close all active</button></div>
+            </div>
+            <div class="band">
+                <div class="band-h"><span class="microlbl">Last 24 hours</span><span class="sum">click a mark to open it</span><div class="legend" id="bandLegend"></div></div>
+                <svg id="band" viewBox="0 0 1000 54" preserveAspectRatio="none" role="img" aria-label="Alerts over the last 24 hours"></svg>
+            </div>
+            <div class="card">
+                <div class="card-h"><h3>Active alerts</h3><span class="meta" id="activeMeta"></span>
+                    <div class="side"><span class="mc-seg" id="activeSev"><button class="on" data-v="all">All</button><button data-v="critical">Critical</button><button data-v="warning">Warning</button><button data-v="info">Info</button></span></div></div>
+                <div class="card-b flush" id="activeRows"></div>
+            </div>
+            <div class="two">
+                <div class="card">
+                    <div class="card-h"><h3>Anomalies</h3><span class="meta">statistical rules · last 24 h</span></div>
+                    <div class="card-b flush" id="anomalyRows"></div>
+                </div>
+                <div class="card">
+                    <div class="card-h"><h3>Suppressed</h3><span class="meta">acknowledged, ignored and quiet hours</span></div>
+                    <div class="card-b flush" id="silencedRows"></div>
                 </div>
             </div>
-
-            <!-- Sub-panel: Metrics (real-time chart + historical) -->
-            <div class="subtab-panel" id="dashboard-sub-metrics">
-
-                <!-- Manual refresh — sits above the time picker, outside the chart card -->
-                <div class="metrics-refresh-bar">
-                    <button class="btn-secondary" id="metricsRefreshBtn" title="Reload real-time and historical metrics">
-                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M21 2v6h-6"/><path d="M3 12a9 9 0 0 1 15-6.7L21 8"/><path d="M3 22v-6h6"/><path d="M21 12a9 9 0 0 1-15 6.7L3 16"/></svg>
-                        <span>Refresh</span>
-                    </button>
-                </div>
-
-                <!-- Real-Time Metrics Chart (60-min window) -->
-                <div class="chart-card full-width">
-                    <div class="card-header">
-                        <span>Real-Time Metrics (Up to 1 hour)</span>
-                    </div>
-                    <div class="chart-pickers">
-                        <select id="deviceSelect" class="select-input">
-                            <option value="">All devices</option>
-                        </select>
-                        <select id="metricSelect" class="select-input">
-                            <option value="">Select metric...</option>
-                        </select>
-                        <select id="chartRangeSelect" class="select-input">
-                            <option value="5">Last 5 min</option>
-                            <option value="15" selected>Last 15 min</option>
-                            <option value="60">Last 1 hour</option>
-                        </select>
-                    </div>
-                    <div class="chart-body">
-                        <canvas id="mainChart"></canvas>
-                    </div>
-                </div>
-
-                <!-- Historical Range (1h → 30d, downsampled per the alarm engine tiers) -->
-                <div class="history-page">
-                    <div class="chart-card full-width">
-                        <div class="card-header">
-                            <span>Historical Metrics (Up to 30 days)</span>
-                            <div class="chart-controls">
-                                <button class="btn-secondary" id="exportHistoryBtn">Export CSV</button>
-                            </div>
-                        </div>
-                        <div class="chart-pickers">
-                            <select id="historyDeviceSelect" class="select-input">
-                                <option value="">All devices</option>
-                            </select>
-                            <select id="historyMetricSelect" class="select-input">
-                                <option value="">Select metric...</option>
-                            </select>
-                            <select id="historyRangeSelect" class="select-input">
-                                <option value="60" selected>Last hour</option>
-                                <option value="360">Last 6 hours</option>
-                                <option value="720">Last 12 hours</option>
-                                <option value="1440">Last 24 hours</option>
-                                <option value="10080">Last 7 days</option>
-                                <option value="43200">Last 30 days</option>
-                            </select>
-                        </div>
-                        <div class="chart-legend" id="chartLegend"></div>
-                        <div class="chart-body">
-                            <canvas id="historyChart"></canvas>
-                        </div>
-                    </div>
-
-                    <div class="stats-card">
-                        <div class="card-header">
-                            <span>Statistics</span>
-                        </div>
-                        <div class="stats-grid" id="statsGrid">
-                            <div class="stat-item">
-                                <span class="stat-label">Min</span>
-                                <span class="stat-value" id="statMin">—</span>
-                            </div>
-                            <div class="stat-item">
-                                <span class="stat-label">Max</span>
-                                <span class="stat-value" id="statMax">—</span>
-                            </div>
-                            <div class="stat-item">
-                                <span class="stat-label">Mean</span>
-                                <span class="stat-value" id="statMean">—</span>
-                            </div>
-                            <div class="stat-item">
-                                <span class="stat-label">Std Dev</span>
-                                <span class="stat-value" id="statStd">—</span>
-                            </div>
-                            <div class="stat-item">
-                                <span class="stat-label">P50</span>
-                                <span class="stat-value" id="statP50">—</span>
-                            </div>
-                            <div class="stat-item">
-                                <span class="stat-label">P95</span>
-                                <span class="stat-value" id="statP95">—</span>
-                            </div>
-                            <div class="stat-item">
-                                <span class="stat-label">P99</span>
-                                <span class="stat-value" id="statP99">—</span>
-                            </div>
-                            <div class="stat-item">
-                                <span class="stat-label">Count</span>
-                                <span class="stat-value" id="statCount">—</span>
-                            </div>
-                        </div>
-                    </div>
-
-                    <div class="chart-card full-width">
-                        <div class="card-header">
-                            <span>Trend Analysis</span>
-                        </div>
-                        <div class="chart-body">
-                            <canvas id="trendChart"></canvas>
-                        </div>
-                    </div>
-                </div>
+            <div class="card" style="margin-top:16px">
+                <div class="card-h"><h3>Recent alerts</h3><span class="meta">last <b>25</b> of any status</span><div class="side"><button type="button" class="mcbtn mcbtn-ghost mcbtn-sm" data-tab-link="alerts">Open Alerts</button></div></div>
+                <div class="card-b flush lwrap" id="recentRows"></div>
             </div>
-
         </section>
 
-        <!-- Alerts Tab -->
-        <section class="tab-panel" id="alerts-panel">
-            <div class="alerts-page">
-                <!-- Filters -->
-                <div class="filters-bar">
-                    <select id="alertSeverityFilter" class="select-input">
-                        <option value="">All Severities</option>
-                        <option value="info">Info</option>
-                        <option value="warning">Warning</option>
-                        <option value="critical">Critical</option>
-                    </select>
-                    <select id="alertStatusFilter" class="select-input">
-                        <option value="">All Statuses</option>
-                        <option value="active">Active</option>
-                        <option value="acknowledged">Acknowledged</option>
-                        <option value="closed">Closed</option>
-                        <option value="ignored">Ignored</option>
-                        <option value="exception">Exception</option>
-                    </select>
-                    <input type="text" id="alertSearchInput" class="search-input" placeholder="Search alerts...">
-                    <select id="bulkActionSelect" class="select-input" disabled>
-                        <option value="">— Bulk Action —</option>
-                        <option value="acknowledge">Acknowledge</option>
-                        <option value="close">Close</option>
-                        <option value="ignore">Ignore</option>
-                    </select>
-                    <button class="btn-primary" id="bulkActionsBtn" disabled>Apply</button>
-                    <button class="btn-secondary" id="exportAlertsBtn">Export CSV</button>
-                    <button class="btn-secondary" id="refreshAlertsBtn" title="Refresh active alerts, counts, and timestamps">
-                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="vertical-align:middle;margin-right:4px;"><path d="M21 2v6h-6"/><path d="M3 12a9 9 0 0 1 15-6.7L21 8"/><path d="M3 22v-6h6"/><path d="M21 12a9 9 0 0 1-15 6.7L3 16"/></svg>Refresh
-                    </button>
-                </div>
-
-                <!-- Alert Table -->
-                <div class="table-container">
-                    <table class="data-table" id="alertsTable">
-                        <thead>
-                            <tr>
-                                <th><input type="checkbox" id="selectAllAlerts"></th>
-                                <th>Severity</th>
-                                <th>Rule</th>
-                                <th>Source</th>
+        <!-- Alerts -->
+        <section class="panel" id="panel-alerts">
+            <div class="hdr">
+                <h2>Alerts</h2>
+                <div class="sum" id="alertsSum"></div>
+                <div class="gap"></div>
+                <div class="side"><button type="button" class="mcbtn mcbtn-ghost mcbtn-sm" id="exportAlertsBtn">Export CSV</button></div>
+            </div>
+            <div class="toolbar">
+                <label class="mc-filter"><span class="ico">⌕</span><input id="alertSearch" placeholder="Search rule, message, host" autocomplete="off"><kbd>/</kbd></label>
+                <span class="mc-seg" id="alertSev"><button class="on" data-v="all">All</button><button data-v="critical">Critical</button><button data-v="warning">Warning</button><button data-v="info">Info</button></span>
+                <select class="sel" id="alertStatus">
+                    <option value="open">Open (active + acknowledged)</option>
+                    <option value="active">Active</option>
+                    <option value="acknowledged">Acknowledged</option>
+                    <option value="ignored">Ignored</option>
+                    <option value="closed">Closed</option>
+                    <option value="exception">Exception</option>
+                    <option value="all">All</option>
+                </select>
+                <span class="cnt" id="alertsCount"></span>
+                <div class="gap"></div>
+                <div class="bulk" id="alertsBulk" hidden><span class="n" id="bulkCount"></span><button type="button" class="mcbtn mcbtn-ghost mcbtn-sm" data-bulk="acknowledge">Acknowledge</button><button type="button" class="mcbtn mcbtn-ghost mcbtn-sm" data-bulk="ignore">Ignore for…</button><button type="button" class="mcbtn mcbtn-ghost mcbtn-sm warn" data-bulk="close">Close</button></div>
+            </div>
+            <div class="split" id="alertsSplit">
+                <div class="ledger">
+                    <div class="lwrap">
+                        <table class="tbl" id="alertsTable">
+                            <colgroup><col class="c-sel"><col class="c-sev"><col class="c-rule"><col class="c-msg"><col class="c-status"><col class="c-fired"><col class="c-last"><col class="c-cnt"><col class="c-act"></colgroup>
+                            <thead><tr>
+                                <th class="c-sel"><span class="cb" id="alertsSelectAll" role="checkbox" aria-label="Select all"></span></th>
+                                <th class="sort" data-sort="severity">Severity</th>
+                                <th class="sort" data-sort="rule">Rule</th>
                                 <th>Message</th>
-                                <th>Status</th>
-                                <th>Created</th>
-                                <th>Last seen</th>
-                                <th title="Number of times this rule has re-fired while the alert is still active">Count</th>
-                                <th>Actions</th>
-                            </tr>
-                        </thead>
-                        <tbody id="alertsTableBody">
-                            <tr><td colspan="10" class="empty-row">Loading alerts...</td></tr>
-                        </tbody>
-                    </table>
+                                <th class="sort" data-sort="status">Status</th>
+                                <th class="sort on" data-sort="fired">Fired</th>
+                                <th class="c-last">Last seen</th>
+                                <th class="c-cnt r">Count</th>
+                                <th></th>
+                            </tr></thead>
+                            <tbody id="alertsBody"></tbody>
+                        </table>
+                    </div>
+                    <div class="pager" id="alertsPager"></div>
                 </div>
+                <aside class="det" id="alertDetail" aria-live="polite"></aside>
+            </div>
+        </section>
 
-                <!-- Pagination -->
-                <div class="pagination" id="alertsPagination">
-                    <button class="btn-sm" id="prevPageBtn" disabled>← Prev</button>
-                    <span class="page-info" id="pageInfo">Page 1</span>
-                    <button class="btn-sm" id="nextPageBtn" disabled>Next →</button>
+        <!-- Metrics -->
+        <section class="panel" id="panel-metrics">
+            <div class="hdr">
+                <h2>Metrics</h2>
+                <div class="sum" id="metricsSum"></div>
+                <div class="gap"></div>
+                <div class="side"><button type="button" class="mcbtn mcbtn-ghost mcbtn-sm" id="exportHistoryBtn">Export CSV</button></div>
+            </div>
+            <div class="card">
+                <div class="card-h">
+                    <div class="mpick">
+                        <select class="sel" id="metricHost" aria-label="Host"></select>
+                        <select class="sel" id="metricSelect" aria-label="Metric"></select>
+                        <span class="sep"></span>
+                        <span class="mc-seg" id="metricRange"><button data-v="5">5 m</button><button data-v="15">15 m</button><button class="on" data-v="60">1 h</button><button data-v="360">6 h</button><button data-v="1440">24 h</button><button data-v="10080">7 d</button><button data-v="43200">30 d</button></span>
+                        <span class="tag" id="metricLiveTag">live · refreshes every 60 s</span>
+                        <button type="button" class="mcbtn mcbtn-ghost mcbtn-sm" id="metricLiveBtn" hidden>Back to live</button>
+                    </div>
+                    <div class="side thr" id="metricRules"></div>
+                </div>
+                <div class="card-b flush">
+                    <div class="chart" id="metricChartWrap"><div class="readout" id="metricReadout" hidden></div><button type="button" class="ib nav prev" id="metricPrev" data-tip="Earlier" aria-label="Earlier"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 5l-7 7 7 7"/></svg></button><button type="button" class="ib nav next" id="metricNext" data-tip="Later" aria-label="Later" disabled><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 5l7 7-7 7"/></svg></button><canvas id="metricChart" height="300"></canvas></div>
+                    <div class="stats" id="metricStats"></div>
+                </div>
+            </div>
+            <div class="card">
+                <div class="card-h tog"><span class="chev">▾</span><h3>Trend</h3><span class="meta">rolling mean and linear fit over the selected range</span></div>
+                <div class="card-b flush">
+                    <div class="chart sm" id="trendChartWrap"><canvas id="trendChart" height="170"></canvas></div>
+                    <div class="trend-note" id="trendNote"></div>
                 </div>
             </div>
         </section>
 
-        <!-- Rules Tab -->
-        <section class="tab-panel" id="rules-panel">
-            <div class="rules-page">
-                <div class="rules-header">
-                    <h2>Alarm Rules</h2>
-                    <button class="btn-primary" id="createRuleBtn">+ Create Rule</button>
+        <!-- Rules -->
+        <section class="panel" id="panel-rules">
+            <div class="hdr">
+                <h2>Alarm rules</h2>
+                <div class="sum" id="rulesSum"></div>
+            </div>
+            <div class="toolbar">
+                <label class="mc-filter"><span class="ico">⌕</span><input id="ruleSearch" placeholder="Search name, metric, host" autocomplete="off"><kbd>/</kbd></label>
+                <select class="sel" id="ruleType">
+                    <option value="all">All types</option>
+                    <option value="threshold_above">Threshold above</option>
+                    <option value="threshold_below">Threshold below</option>
+                    <option value="threshold_range">Threshold range</option>
+                    <option value="z_score">Z-score anomaly</option>
+                    <option value="moving_average">Moving average</option>
+                    <option value="percentile">Percentile baseline</option>
+                    <option value="rate_of_change">Rate of change</option>
+                </select>
+                <span class="mc-seg" id="ruleState"><button class="on" data-v="all">All</button><button data-v="firing">Firing</button><button data-v="on">On</button><button data-v="off">Off</button></span>
+                <select class="sel" id="ruleHost"><option value="">Any host</option></select>
+                <span class="cnt" id="rulesCount"></span>
+                <div class="gap"></div>
+                <div class="add-menu">
+                    <button type="button" class="mcbtn mcbtn-pri mcbtn-sm" data-menu>New rule <span class="ic">▾</span></button>
+                    <div class="mc-menu" id="newRuleMenu"></div>
                 </div>
-
-                <div class="rules-filters">
-                    <input type="search" id="rulesSearchInput" class="select-input"
-                           placeholder="Search rules by name, metric, description…"
-                           autocomplete="off">
-                    <select id="rulesTypeFilter" class="select-input">
-                        <option value="all">All types</option>
-                        <option value="threshold_above">Threshold above</option>
-                        <option value="threshold_below">Threshold below</option>
-                        <option value="threshold_range">Threshold range</option>
-                        <option value="z_score">Z-score (anomaly)</option>
-                        <option value="moving_average">Moving average (anomaly)</option>
-                        <option value="percentile">Percentile (anomaly)</option>
-                        <option value="rate_of_change">Rate of change (anomaly)</option>
-                    </select>
-                    <select id="rulesStatusFilter" class="select-input">
-                        <option value="all">Any status</option>
-                        <option value="enabled">Enabled only</option>
-                        <option value="disabled">Disabled only</option>
-                    </select>
-                    <span class="rules-filters-count" id="rulesFilterCount"></span>
-                </div>
-
-                <!-- Rule Templates -->
-                <div class="templates-section" id="ruleTemplates">
-                    <div class="templates-header">
-                        <h3>Quick Create</h3>
-                        <span class="templates-subtitle">Start from a common rule pattern</span>
-                    </div>
-                    <div class="template-grid">
-                        <button type="button" class="template-card" data-template="threshold_above">
-                            <span class="template-icon" aria-hidden="true">↑</span>
-                            <span class="template-body">
-                                <span class="template-title">Threshold Above</span>
-                                <span class="template-desc">Fire when value exceeds an upper limit</span>
-                            </span>
-                        </button>
-                        <button type="button" class="template-card" data-template="threshold_below">
-                            <span class="template-icon" aria-hidden="true">↓</span>
-                            <span class="template-body">
-                                <span class="template-title">Threshold Below</span>
-                                <span class="template-desc">Fire when value drops below a floor</span>
-                            </span>
-                        </button>
-                        <button type="button" class="template-card" data-template="z_score">
-                            <span class="template-icon" aria-hidden="true">σ</span>
-                            <span class="template-body">
-                                <span class="template-title">Z-Score Anomaly</span>
-                                <span class="template-desc">Detect statistical outliers</span>
-                            </span>
-                        </button>
-                        <button type="button" class="template-card" data-template="percentile">
-                            <span class="template-icon" aria-hidden="true">P95</span>
-                            <span class="template-body">
-                                <span class="template-title">Percentile</span>
-                                <span class="template-desc">Alert above a rolling Pn baseline</span>
-                            </span>
-                        </button>
-                        <button type="button" class="template-card" data-template="moving_average">
-                            <span class="template-icon" aria-hidden="true">~</span>
-                            <span class="template-body">
-                                <span class="template-title">Moving Average</span>
-                                <span class="template-desc">Deviation from rolling mean</span>
-                            </span>
-                        </button>
-                        <button type="button" class="template-card" data-template="rate_of_change">
-                            <span class="template-icon" aria-hidden="true">Δ</span>
-                            <span class="template-body">
-                                <span class="template-title">Rate of Change</span>
-                                <span class="template-desc">Alert on rapid value changes</span>
-                            </span>
-                        </button>
-                    </div>
-                </div>
-
-                <!-- Rules List -->
-                <div class="rules-table-section">
-                    <table class="data-table" id="rulesTable">
-                        <thead>
-                            <tr>
-                                <th class="sortable" data-sort-key="name">Name</th>
-                                <th class="sortable" data-sort-key="rule_type">Type</th>
-                                <th class="sortable" data-sort-key="source">Source</th>
-                                <th class="sortable" data-sort-key="metric_name">Metric</th>
-                                <th class="sortable" data-sort-key="threshold">Threshold</th>
-                                <th class="sortable" data-sort-key="severity">Severity</th>
-                                <th class="sortable" data-sort-key="enabled">Status</th>
-                                <th class="sortable" data-sort-key="created_at">Created</th>
-                                <th>Actions</th>
-                            </tr>
-                        </thead>
-                        <tbody id="rulesTableBody">
-                            <tr><td colspan="9" class="empty-row">Loading rules...</td></tr>
-                        </tbody>
+            </div>
+            <div class="ledger">
+                <div class="lwrap">
+                    <table class="tbl" id="rulesTable">
+                        <colgroup><col style="width:52px"><col><col style="width:150px"><col style="width:96px"><col style="width:150px"><col style="width:142px"><col style="width:112px"></colgroup>
+                        <thead><tr>
+                            <th class="c-sel"></th>
+                            <th class="sort on" data-sort="name">Rule</th>
+                            <th>Condition</th>
+                            <th class="sort" data-sort="severity">Severity</th>
+                            <th class="sort" data-sort="state">State</th>
+                            <th class="sort" data-sort="last">Last fired</th>
+                            <th></th>
+                        </tr></thead>
+                        <tbody id="rulesBody"></tbody>
                     </table>
-                    <div class="rules-pagination" id="rulesPagination">
-                        <div class="rules-pagination-info">
-                            <label for="rulesPageSize">Rows per page:</label>
-                            <select id="rulesPageSize">
-                                <option value="10" selected>10</option>
-                                <option value="25">25</option>
-                                <option value="50">50</option>
-                                <option value="100">100</option>
-                                <option value="0">All</option>
-                            </select>
-                            <span class="rules-pagination-range" id="rulesPaginationRange">—</span>
-                        </div>
-                        <div class="rules-pagination-controls">
-                            <button class="btn btn-sm btn-secondary" id="rulesPagePrev" disabled>‹ Prev</button>
-                            <span class="rules-pagination-pages" id="rulesPagePages">Page 1 / 1</span>
-                            <button class="btn btn-sm btn-secondary" id="rulesPageNext" disabled>Next ›</button>
-                        </div>
-                    </div>
                 </div>
+                <div class="pager" id="rulesPager"></div>
             </div>
         </section>
 
-        <!-- Notifications Tab -->
-        <section class="tab-panel" id="notifications-panel">
-            <div class="notifications-page">
-                <div class="notifications-header">
-                    <h2>Notification Channels</h2>
+        <!-- Notifications -->
+        <section class="panel" id="panel-notifications">
+            <div class="hdr">
+                <h2>Notifications</h2>
+                <div class="sum" id="notifSum"></div>
+                <div class="gap"></div>
+                <div class="side">
+                    <div class="add-menu"><button type="button" class="mcbtn mcbtn-pri mcbtn-sm" data-menu>Add channel <span class="ic">▾</span></button><div class="mc-menu" id="addChannelMenu"></div></div>
+                    <button type="button" class="mcbtn mcbtn-ghost mcbtn-sm" id="newPolicyBtn">New policy</button>
                 </div>
-
-                <div class="templates-section">
-                    <div class="templates-header">
-                        <h3>Quick Create</h3>
-                        <span class="templates-subtitle">Start by picking a channel type</span>
-                    </div>
-                    <div class="template-grid">
-                        <button type="button" class="template-card channel-type-card" data-type="toast">
-                            <span class="template-icon" aria-hidden="true">🔔</span>
-                            <span class="template-body">
-                                <span class="template-title">Toast</span>
-                                <span class="template-desc">Browser popup notifications</span>
-                            </span>
-                        </button>
-                        <button type="button" class="template-card channel-type-card" data-type="email">
-                            <span class="template-icon" aria-hidden="true">📧</span>
-                            <span class="template-body">
-                                <span class="template-title">Email</span>
-                                <span class="template-desc">Send email notifications</span>
-                            </span>
-                        </button>
-                        <button type="button" class="template-card channel-type-card" data-type="sms">
-                            <span class="template-icon" aria-hidden="true">📱</span>
-                            <span class="template-body">
-                                <span class="template-title">SMS</span>
-                                <span class="template-desc">Text message alerts</span>
-                            </span>
-                        </button>
-                        <button type="button" class="template-card channel-type-card" data-type="webhook">
-                            <span class="template-icon" aria-hidden="true">🔗</span>
-                            <span class="template-body">
-                                <span class="template-title">Webhook</span>
-                                <span class="template-desc">HTTP POST to custom URL</span>
-                            </span>
-                        </button>
-                        <button type="button" class="template-card channel-type-card" data-type="discord">
-                            <span class="template-icon" aria-hidden="true">💬</span>
-                            <span class="template-body">
-                                <span class="template-title">Discord</span>
-                                <span class="template-desc">Send to Discord channel</span>
-                            </span>
-                        </button>
-                        <button type="button" class="template-card channel-type-card" data-type="webpush">
-                            <span class="template-icon" aria-hidden="true">📲</span>
-                            <span class="template-body">
-                                <span class="template-title">Phone push</span>
-                                <span class="template-desc">Companion app devices</span>
-                            </span>
-                        </button>
-                    </div>
-                </div>
-
-                <div class="notifications-grid">
-                  <div class="notifications-col-left">
-                    <div class="channels-list-section">
-                        <div class="configs-header">
-                            <h3>Configured Channels</h3>
-                            <button class="btn-secondary" id="addChannelBtn">+ Add Channel</button>
-                        </div>
-                        <div class="channels-list" id="channelsList">
-                            <div class="empty-state">
-                                <p>No notification channels configured</p>
-                            </div>
-                        </div>
-                    </div>
-
-                    <div class="configs-list-section">
-                        <div class="configs-header">
-                            <h3>Notification Policies</h3>
-                            <button class="btn-secondary" id="addConfigBtn">+ Add Config</button>
-                        </div>
-                        <div class="configs-list" id="configsList">
-                            <div class="empty-state">
-                                <p>No notification policies configured</p>
-                            </div>
-                        </div>
-                    </div>
-                  </div>
-
-                  <div class="notifications-col-right">
-                    <div class="delivery-history-section">
-                        <h3>Notification History</h3>
-                    <table class="data-table" id="deliveryTable">
-                        <thead>
-                            <tr>
-                                <th>Time</th>
-                                <th>Channel</th>
-                                <th>Recipient</th>
-                                <th>Status</th>
-                                <th>Details</th>
-                            </tr>
-                        </thead>
-                        <tbody id="deliveryTableBody">
-                            <tr><td colspan="5" class="empty-row">Loading delivery history...</td></tr>
-                        </tbody>
+            </div>
+            <div id="notifNotices"></div>
+            <div class="card">
+                <div class="card-h"><h3>Channels</h3><span class="meta">how alerts reach you</span></div>
+                <div class="card-b flush lwrap">
+                    <table class="tbl" id="channelsTable">
+                        <colgroup><col style="width:52px"><col style="width:96px"><col><col style="width:220px"><col style="width:110px"><col style="width:140px"><col style="width:112px"></colgroup>
+                        <thead><tr><th class="c-sel"></th><th>Type</th><th>Channel</th><th>Used by</th><th class="r">Sent · failed</th><th>Last sent</th><th></th></tr></thead>
+                        <tbody id="channelsBody"></tbody>
                     </table>
-                    <div class="rules-pagination" id="deliveriesPagination">
-                        <div class="rules-pagination-info">
-                            <label for="deliveriesPageSize">Rows per page:</label>
-                            <select id="deliveriesPageSize">
-                                <option value="10">10</option>
-                                <option value="20" selected>20</option>
-                                <option value="50">50</option>
-                                <option value="100">100</option>
-                                <option value="0">All</option>
-                            </select>
-                            <span class="rules-pagination-range" id="deliveriesPaginationRange">—</span>
-                        </div>
-                        <div class="rules-pagination-controls">
-                            <button class="btn btn-sm btn-secondary" id="deliveriesPagePrev" disabled>‹ Prev</button>
-                            <span class="rules-pagination-pages" id="deliveriesPagePages">Page 1 / 1</span>
-                            <button class="btn btn-sm btn-secondary" id="deliveriesPageNext" disabled>Next ›</button>
-                        </div>
-                    </div>
-                    </div>
-                  </div>
                 </div>
+            </div>
+            <div class="card">
+                <div class="card-h"><h3>Policies</h3><span class="meta">what gets sent where</span></div>
+                <div class="card-b flush lwrap">
+                    <table class="tbl" id="policiesTable">
+                        <colgroup><col style="width:52px"><col style="width:250px"><col style="width:170px"><col style="width:230px"><col><col style="width:110px"><col style="width:112px"></colgroup>
+                        <thead><tr><th class="c-sel"></th><th>Policy</th><th>Sends to</th><th>When</th><th>Cadence</th><th>Fired</th><th></th></tr></thead>
+                        <tbody id="policiesBody"></tbody>
+                    </table>
+                </div>
+                <div class="card-f"><span class="msg">Email, text, Discord, webhook, push and popup channels only send when a policy that is on selects them and matches the alert.</span></div>
+            </div>
+            <div class="card">
+                <div class="card-h"><h3>Delivery history</h3><span class="meta" id="deliveriesMeta"></span>
+                    <div class="side">
+                        <select class="sel" id="deliveryType"><option value="">All channels</option><option value="toast">toast</option><option value="email">email</option><option value="sms">sms</option><option value="discord">discord</option><option value="webhook">webhook</option><option value="webpush">push</option></select>
+                        <select class="sel" id="deliveryResult"><option value="">Any result</option><option value="ok">Sent</option><option value="failed">Failed</option></select>
+                    </div></div>
+                <div class="card-b flush lwrap">
+                    <table class="tbl" id="deliveriesTable">
+                        <colgroup><col style="width:172px"><col style="width:96px"><col style="width:200px"><col style="width:90px"><col></colgroup>
+                        <thead><tr><th>Time</th><th>Channel</th><th>Recipient</th><th>Result</th><th>Details</th></tr></thead>
+                        <tbody id="deliveriesBody"></tbody>
+                    </table>
+                </div>
+                <div class="pager" id="deliveriesPager"></div>
             </div>
         </section>
 
     </main>
 
-    <!-- Modal Overlay -->
-    <div class="modal-overlay" id="modalOverlay">
-        <div class="modal-container wide" id="mainModal">
-            <div class="modal-header">
-                <h3 class="modal-title" id="modalTitle">Modal</h3>
-                <button class="modal-close-btn" id="modalCloseBtn">&times;</button>
-            </div>
-            <div class="modal-body" id="modalBody">
-                <!-- Dynamic content -->
-            </div>
-            <div class="modal-footer" id="modalFooter">
-                <button class="btn-secondary" id="modalCancelBtn">Cancel</button>
-                <button class="btn-primary" id="modalConfirmBtn">Confirm</button>
-            </div>
+    <!-- Modal shell -->
+    <div class="overlay" id="modalOverlay">
+        <div class="modal" id="modalBox" role="dialog" aria-modal="true" aria-labelledby="modalTitle">
+            <div class="mh"><h3 id="modalTitle"></h3><span class="meta" id="modalMeta"></span><button type="button" class="ib" id="modalClose" data-tip="Close" aria-label="Close"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg></button></div>
+            <div class="mb" id="modalBody"></div>
+            <div class="mf"><span id="modalActions"></span><span class="msg" id="modalNote"></span><button type="button" class="mcbtn mcbtn-ghost mcbtn-sm" id="modalCancel">Cancel</button><button type="button" class="mcbtn mcbtn-pri mcbtn-sm" id="modalSubmit">Save</button></div>
         </div>
     </div>
 
-    <!-- Toast Container -->
     <div class="toast-container" id="toastContainer"></div>
 
-    <!-- Application Scripts -->
-    <script src="js/api.js?v=20260707a"></script>
-    <script src="js/websocket.js?v=20260704a"></script>
-    <script src="js/thresholds.js?v=20260714a"></script>
-    <script src="js/main.js?v=20260714a"></script>
+    <script src="js/api.js?v=20260903a"></script>
+    <script src="js/websocket.js?v=20260903a"></script>
+    <script src="js/thresholds.js?v=20260903a"></script>
+    <script src="js/ui.js?v=20260903a"></script>
+    <script src="js/alerts.js?v=20260903a"></script>
+    <script src="js/console.js?v=20260903a"></script>
+    <script src="js/metrics.js?v=20260903a"></script>
+    <script src="js/rules.js?v=20260903a"></script>
+    <script src="js/notifications.js?v=20260903a"></script>
+    <script src="js/main.js?v=20260903a"></script>
 </body>
 </html>

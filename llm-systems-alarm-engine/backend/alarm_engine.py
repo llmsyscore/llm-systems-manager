@@ -70,7 +70,7 @@ from .storage.influxdb_client import InfluxDBClient
 # (-1, -2, …) for same-day iterations; roll the date for a new day's first
 # change.
 # ---------------------------------------------------------------------------
-__version__ = "v2026.09.02-2"
+__version__ = "v2026.09.03-1"
 from .storage import influx_monitor as _influx_monitor
 from .models.alarm_rule import (
     AlarmRuleCreate,
@@ -880,6 +880,7 @@ async def health_check() -> dict:
         "ingest_points_per_s": round(INGEST_POINTS.per_s(), 3),
         "influx_writes_per_s": round(INFLUX_WRITES.per_s(), 3),
         "active_alerts": await asyncio.to_thread(_active_alert_count),
+        "evaluation_interval_s": float(settings.alarm_engine.evaluation_interval),
         "components": {
             "cache": "active" if cache else "inactive",
             "influxdb": influx_status,

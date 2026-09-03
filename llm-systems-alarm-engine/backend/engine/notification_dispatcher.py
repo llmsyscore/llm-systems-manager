@@ -128,8 +128,8 @@ class NotificationDispatcher:
         self._breach_count: dict[str, int] = {}
         # incident_id -> first-dispatch monotonic ts, for #215 suppression:
         self._incident_dispatched: dict[str, float] = {}
-        # alert_ids with at least one successful non-toast send this cycle:
-        self._nontoast_send_ok: set[str] = set()
+        # alert_ids with at least one successful channel send this cycle:
+        self._send_ok: set[str] = set()
         # last dispatch ts keyed by (config_id_str, alert_id_str):
         self._last_dispatch_ts: dict[tuple[str, str], float] = {}
         # remembers whether a given policy has ever dispatched for an
@@ -207,21 +207,14 @@ class NotificationDispatcher:
         _spawn_dispatch(self._send_notifications_async(alert, event="firing"))
 
     def notify_alert_resolved(self, alert: Alert) -> None:
-        """Public: alert just *resolved*. Always emits a toast informing
-        the user the alert cleared (per the UX rule that clears are loud
-        enough to notice). Per-policy non-toast clears still respect each
-        policy's notify_on_clear flag — only policies that opted in fire
-        their channels here, and only for alerts they actually dispatched
-        on in the first place."""
+        """Public: alert just *resolved*. Policies with notify_on_clear
+        fire their channels (toast included) for alerts they dispatched."""
         logger.info(f"Dispatching CLEAR notification for alert {alert.alert_id}")
         _spawn_dispatch(self._send_notifications_async(alert, event="resolved"))
 
     def notify_alert_acknowledged(self, alert: Alert) -> None:
-        """Public: alert was acknowledged via the UI or API. Emits a single
-        toast confirming the acknowledgement. Non-toast channels are
-        intentionally NOT dispatched — that's the whole point of acking.
-        Subsequent continuing-breach cycles for this alert won't fire any
-        non-toast notification either (see _policies_that_should_dispatch)."""
+        """Public: alert was acknowledged. No channel is dispatched, and
+        later breach cycles stay silent (see _policies_that_should_dispatch)."""
         logger.info(f"Dispatching ACK notification for alert {alert.alert_id}")
         _spawn_dispatch(self._send_notifications_async(alert, event="acknowledged"))
 
@@ -248,17 +241,13 @@ class NotificationDispatcher:
             policies = self._enabled_policies()
         alert_id = str(getattr(alert, "alert_id", ""))
 
-        # Acknowledge path: NEVER dispatch via non-toast channels. The
-        # whole point of acking is to silence everything but the in-UI
-        # toast confirmation. We still clear per-alert state so that if
-        # the alert flaps and re-fires later, min_alarm_count starts over.
+        # Acknowledge path: no channel dispatch; per-alert state clears so
+        # a later re-fire starts min_alarm_count over.
         if event == "acknowledged":
             self._breach_count.pop(alert_id, None)
             return set()
 
-        # Once an alert is in ACKNOWLEDGED state, suppress non-toast
-        # dispatch on every subsequent "firing" cycle. The dispatcher
-        # never sends to email/webhook/etc. for ack'd alerts.
+        # Acknowledged alerts stay silent on every later "firing" cycle.
         if event == "firing":
             status = str(getattr(alert, "status", "")).lower()
             if status == "acknowledged":
@@ -347,8 +336,8 @@ class NotificationDispatcher:
         return bool(iid) and iid != str(alert.alert_id)
 
     def _incident_channel_suppressed(self, alert, event: str) -> bool:
-        """Suppress channel (non-toast) dispatch for firing joiner alerts
-        once the incident has already notified."""
+        """Suppress channel dispatch for firing joiner alerts once the
+        incident has already notified."""
         cfg = getattr(settings.alarm_engine, "correlation", None)
         if event != "firing" or not bool(getattr(cfg, "notify_per_incident", True)):
             return False
@@ -406,40 +395,25 @@ class NotificationDispatcher:
           * notify_on_clear=True triggers a separate dispatch when the
             alert resolves (event="resolved"), addressed to the same
             channel set.
-          * Non-toast channels NEVER fire without an enabled, matching
-            policy. "Channel enabled" is a necessary but not sufficient
-            condition — a policy must select the channel.
+          * No channel fires without an enabled, matching policy.
+            "Channel enabled" is necessary but not sufficient — a policy
+            must select the channel.
 
-        Toast is independent of policies (it's the in-browser default), but
-        sticky behaviour is still derived from any enabled policy with
-        auto_dismiss=False.
+        Toast follows the same rules (#811): it fires only when an enabled
+        policy selects an enabled Toast channel; sticky comes from those
+        policies' auto_dismiss=False.
         """
         channels = await self._get_all_channels_async()
         policies = self._enabled_policies()
-        sticky = any(not getattr(p, "auto_dismiss", True) for p in policies)
 
         # _policies_that_should_dispatch has side effects on the breach
         # counter — call it exactly once per event. With no enabled
-        # policies it returns an empty set, so non-toast channels stay
-        # silent and only the first-breach toast still fires.
-        breaches_before = self._breach_count.get(str(getattr(alert, "alert_id", "")), 0)
+        # policies it returns an empty set, so every channel stays silent.
         matched_channel_ids = self._policies_that_should_dispatch(alert, event, policies)
-        is_first_breach = (event == "firing" and breaches_before == 0)
 
         tasks = []
-        # Toast fires on resolve/ack, first breach, or any policy match.
-        # Uses the pre-suppression matched set — toasts are never suppressed.
-        emit_toast = (
-            self.websocket_send is not None
-            and (event in ("resolved", "acknowledged")
-                 or is_first_breach
-                 or bool(matched_channel_ids))
-        )
-        if emit_toast:
-            tasks.append(self._send_toast(alert, sticky=sticky, event=event))
-
-        # #215: sweep stale claims, then clear non-toast channels once the
-        # incident already dispatched.
+        # #215: sweep stale claims, then clear channels once the incident
+        # already dispatched.
         self._sweep_incident_dispatched()
         incident_suppressed = self._incident_channel_suppressed(alert, event)
         if incident_suppressed:
@@ -459,13 +433,14 @@ class NotificationDispatcher:
         def _passes_policy(ch) -> bool:
             return str(ch.channel_id) in matched_channel_ids
 
+        toast_channels   = [c for c in channels if c.channel_type == ChannelType.TOAST   and c.enabled and _passes_policy(c)]
         email_channels   = [c for c in channels if c.channel_type == ChannelType.EMAIL   and c.enabled and _passes_policy(c)]
         sms_channels     = [c for c in channels if c.channel_type == ChannelType.SMS     and c.enabled and _passes_policy(c)]
         webhook_channels = [c for c in channels if c.channel_type == ChannelType.WEBHOOK and c.enabled and _passes_policy(c)]
         discord_channels = [c for c in channels if c.channel_type == ChannelType.DISCORD and c.enabled and _passes_policy(c)]
         webpush_channels = [c for c in channels if c.channel_type == ChannelType.WEBPUSH and c.enabled and _passes_policy(c)]
 
-        if matched_channel_ids and not (email_channels or sms_channels or webhook_channels or discord_channels or webpush_channels):
+        if matched_channel_ids and not (toast_channels or email_channels or sms_channels or webhook_channels or discord_channels or webpush_channels):
             # Policies matched but every selected channel is either disabled
             # or has no representation in the loaded channel list. Surface
             # both the policy-selected IDs and what's actually loaded so the
@@ -479,13 +454,13 @@ class NotificationDispatcher:
             )
         elif incident_suppressed:
             logger.info(
-                "alert %s: incident %s already dispatched — non-toast channels silent",
+                "alert %s: incident %s already dispatched — channels silent",
                 str(getattr(alert, "alert_id", "?"))[:8],
                 getattr(alert, "incident_id", "?"),
             )
         elif not matched_channel_ids and event == "firing":
             logger.info(
-                "alert %s: no policy matched on firing — non-toast channels silent "
+                "alert %s: no policy matched on firing — channels silent "
                 "(severity=%s metric=%s/%s host=%s)",
                 str(getattr(alert, "alert_id", "?"))[:8],
                 getattr(alert, "severity", "?"),
@@ -494,6 +469,12 @@ class NotificationDispatcher:
                 getattr(alert, "source_host", "?"),
             )
 
+        if toast_channels and self.websocket_send is not None:
+            sticky, dismiss_s = self._toast_behaviour(alert, policies, toast_channels)
+            tasks.append(self._send_toast(alert, sticky=sticky, event=event,
+                                          channel=toast_channels[0],
+                                          extra_channels=toast_channels[1:],
+                                          dismiss_seconds=dismiss_s))
         if email_channels:
             tasks.append(self._send_email_channels(alert, email_channels, event=event))
         if sms_channels:
@@ -508,10 +489,10 @@ class NotificationDispatcher:
         if tasks:
             await self._run_all(tasks)
 
-        # #215: releases the claim when no non-toast send for this alert succeeded.
+        # #215: releases the claim when no channel send for this alert succeeded.
         alert_key = str(getattr(alert, "alert_id", ""))
-        sent_ok = alert_key in self._nontoast_send_ok
-        self._nontoast_send_ok.discard(alert_key)
+        sent_ok = alert_key in self._send_ok
+        self._send_ok.discard(alert_key)
         if claimed_iid and not sent_ok:
             self._incident_dispatched.pop(claimed_iid, None)
 
@@ -522,11 +503,32 @@ class NotificationDispatcher:
             if isinstance(result, Exception):
                 logger.error(f"Notification channel {i} failed: {result}")
 
+    def _toast_behaviour(self, alert: Alert, policies: list,
+                         toast_channels: list) -> "tuple[bool, int]":
+        """(sticky, dismiss_seconds) from the matching policies that select
+        one of these toast channels: sticky if any has auto_dismiss=False,
+        else the longest toast_dismiss_seconds (default 10)."""
+        ids = {str(c.channel_id) for c in toast_channels}
+        sticky, seconds = False, 0
+        for p in policies:
+            if not ids & {str(c) for c in (getattr(p, "channels", None) or [])}:
+                continue
+            try:
+                if not p.matches_alert(alert):
+                    continue
+            except Exception:
+                continue
+            if not getattr(p, "auto_dismiss", True):
+                sticky = True
+            seconds = max(seconds, int(getattr(p, "toast_dismiss_seconds", 10) or 10))
+        return sticky, (seconds or 10)
+
     async def _send_toast(self, alert: Alert, sticky: bool = False,
-                          event: str = "firing") -> None:
-        """Send toast notification via WebSocket. event ∈ {"firing",
-        "resolved", "acknowledged"}. Resolved/acknowledged toasts use
-        severity=info so they read calmer in the UI."""
+                          event: str = "firing", channel=None,
+                          extra_channels: Optional[list] = None,
+                          dismiss_seconds: int = 10) -> None:
+        """Send one toast over the WebSocket and record a delivery per toast
+        channel. event ∈ {"firing", "resolved", "acknowledged"}."""
         if not self.websocket_send:
             return
 
@@ -542,6 +544,7 @@ class NotificationDispatcher:
                 "severity": severity,
                 "alert_id": str(alert.alert_id),
                 "sticky": bool(sticky),
+                "dismiss_seconds": int(dismiss_seconds or 10),
                 "source_host": host or "",
                 "metric_source": alert.metric_source or "",
                 "metric_name": alert.metric_name or "",
@@ -550,26 +553,16 @@ class NotificationDispatcher:
             },
         }
 
+        err = None
         try:
             await self.websocket_send(json.dumps(toast_data))
             logger.info(f"Toast notification sent for {alert.alert_id}")
-            # Record the delivery so it shows up in the Notifications → Delivery
-            # History panel. Without this only test messages would appear.
-            if self.notification_repository is not None:
-                try:
-                    self.notification_repository.record_delivery(
-                        channel_id=None,
-                        channel_type="toast",
-                        title=rule_name,
-                        body=body,
-                        severity=severity,
-                        recipient="webui",
-                        success=True,
-                    )
-                except Exception as rec_e:
-                    logger.warning(f"Could not record toast delivery: {rec_e}")
         except Exception as e:
+            err = str(e)
             logger.error(f"Failed to send toast: {e}")
+        for ch in [channel] + list(extra_channels or []):
+            self._record_delivery(alert, ch, "toast", "webui", rule_name, body,
+                                  success=err is None, error_message=err, event=event)
 
     async def _send_email_channels(self, alert: Alert, channels: list[NotificationChannel],
                                    event: str = "firing") -> None:
@@ -611,11 +604,10 @@ Time: {alert.created_at}
                          title: str, body: str,
                          success: bool, error_message: Optional[str] = None,
                          event: str = "firing") -> None:
-        """Persist a delivery row so the Notifications History panel reflects
-        non-toast sends too. Best-effort: failure to record never blocks the
-        actual notification path."""
+        """Persist a delivery row tagged with the alert id. Best-effort:
+        failure to record never blocks the notification path."""
         if success:
-            self._nontoast_send_ok.add(str(getattr(alert, "alert_id", "")))
+            self._send_ok.add(str(getattr(alert, "alert_id", "")))
             if event == "firing":
                 self._record_incident_dispatch(alert)
         if self.notification_repository is None:
@@ -630,6 +622,7 @@ Time: {alert.created_at}
                 recipient=recipient or "",
                 success=success,
                 error_message=error_message,
+                metadata={"alert_id": str(getattr(alert, "alert_id", ""))},
             )
         except Exception as e:
             logger.warning("record_delivery(%s) failed: %s", channel_type, e)

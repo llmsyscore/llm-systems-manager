@@ -1,8 +1,15 @@
 // Alarm-rule threshold lines as chartjs-plugin-annotation objects. Mirrors the
 // engine's threshold_evaluator value precedence; shared by both dashboards.
 
-// Severity → line color (matches the alarm console's severity tokens).
+// Severity → line color. Read from the page's theme tokens when a DOM is
+// present; the hex fallbacks serve the manager's tests.
 const _SEV_COLOR = { critical: '#ef4444', warning: '#f59e0b', info: '#7aa2ff' };
+function _sevColor(sev) {
+  if (typeof document === 'undefined' || !document.documentElement) return _SEV_COLOR[sev] || _SEV_COLOR.info;
+  const v = getComputedStyle(document.documentElement)
+    .getPropertyValue({ critical: '--crit', warning: '--warn', info: '--accent' }[sev] || '--accent').trim();
+  return v || _SEV_COLOR[sev] || _SEV_COLOR.info;
+}
 
 // Annotation line objects from enabled rules matching source + metricName.
 // hostWildcard: a null host matches any source_host (console "any host").
@@ -20,7 +27,7 @@ function thresholdAnnotations(rules, opts) {
     if (hostScoped && rule.source_host && rule.source_host !== host) return;
     const t = (rule.config && rule.config.threshold) || {};
     const unit = t.unit || '';
-    const color = _SEV_COLOR[rule.severity] || _SEV_COLOR.info;
+    const color = _sevColor(rule.severity);
     const lines = [];
     if (rule.rule_type === 'threshold_above') { const v = t.upper ?? t.value ?? t.critical ?? t.warning; if (v != null) lines.push(v); }
     else if (rule.rule_type === 'threshold_below') { const v = t.lower ?? t.value ?? t.warning ?? t.critical; if (v != null) lines.push(v); }
@@ -29,8 +36,9 @@ function thresholdAnnotations(rules, opts) {
       out[`thr_${rule.rule_id}_${i}`] = {
         type: 'line', yMin: v, yMax: v, borderColor: color, borderWidth: 1.5, borderDash: [5, 5],
         adjustScaleRange: false,
-        label: { display: true, content: `${rule.name}: ${v}${unit}`, position: 'end',
-          backgroundColor: color, color: '#fff', font: { size: 9 }, padding: 2 },
+        label: { display: true, content: `${rule.name} ${v}${unit ? ' ' + unit : ''}`, position: 'start',
+          backgroundColor: 'transparent', color, font: { size: 10, family: 'IBM Plex Mono, ui-monospace, monospace' },
+          padding: { top: 0, bottom: 2, left: 4, right: 4 }, yAdjust: -8 },
       };
     });
   });

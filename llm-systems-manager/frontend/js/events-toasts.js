@@ -57,7 +57,8 @@
         return 'alert';
     }
 
-    function showToast(title, body, severity, sticky, alertId, category, incidentId, incidentSize) {
+    function showToast(title, body, severity, sticky, alertId, category, incidentId, incidentSize, dismissMs) {
+        const ttl = Math.max(1000, Number(dismissMs) || 10000);
         if (!container) return;
         if (typeof _activeTab !== 'undefined' && _activeTab === 'events') return;
         if (alertId && dismissedAlertIds.has(alertId)) return;
@@ -85,7 +86,7 @@
                 if (alertId) existing.dataset.alertId = alertId;
                 if (existing._dismissTimer) clearTimeout(existing._dismissTimer);
                 if (!sticky && existing._dismiss) {
-                    existing._dismissTimer = setTimeout(() => existing._dismiss(true), 10000);
+                    existing._dismissTimer = setTimeout(() => existing._dismiss(true), ttl);
                 }
                 return;
             }
@@ -185,7 +186,7 @@
         container.appendChild(el);
         requestAnimationFrame(() => requestAnimationFrame(() => el.classList.add('show')));
 
-        if (!sticky) el._dismissTimer = setTimeout(() => dismiss(true), 10000);
+        if (!sticky) el._dismissTimer = setTimeout(() => dismiss(true), ttl);
 
         // Cap at 5 simultaneous toasts (drop oldest non-sticky first)
         while (container.children.length > 5) {
@@ -244,6 +245,7 @@
                         cat,
                         payload.incident_id || '',
                         payload.incident_size,
+                        (Number(payload.dismiss_seconds) || 10) * 1000,
                     );
                 }
                 if (type === 'alert_created' && payload) {

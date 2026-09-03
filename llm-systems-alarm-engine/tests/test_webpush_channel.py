@@ -202,13 +202,13 @@ class TestSendWebPush:
 
     async def test_2xx_marks_the_alert_as_sent(self, monkeypatch):
         d, _, alert = await _send(monkeypatch, status=204)
-        assert str(alert.alert_id) in d._nontoast_send_ok
+        assert str(alert.alert_id) in d._send_ok
 
     async def test_non_2xx_is_a_failure(self, monkeypatch):
         d, rec, alert = await _send(monkeypatch, status=503)
         assert rec.calls[0]["success"] is False
         assert "503" in (rec.calls[0]["error_message"] or "")
-        assert str(alert.alert_id) not in d._nontoast_send_ok
+        assert str(alert.alert_id) not in d._send_ok
 
     async def test_a_transport_error_is_recorded_not_raised(self, monkeypatch):
         monkeypatch.setattr(nd.settings.alarm_engine, "management_token", "m",

@@ -165,27 +165,27 @@ async def _send(channel_kind: str, status_code: int, monkeypatch):
 async def test_webhook_2xx_is_success(monkeypatch):
     d, rec, alert = await _send("webhook", 204, monkeypatch)
     assert rec.calls[0]["success"] is True
-    assert str(alert.alert_id) in d._nontoast_send_ok
+    assert str(alert.alert_id) in d._send_ok
 
 
 async def test_webhook_5xx_is_failure(monkeypatch):
     d, rec, alert = await _send("webhook", 500, monkeypatch)
     assert rec.calls[0]["success"] is False
     assert "500" in (rec.calls[0]["error_message"] or "")
-    assert str(alert.alert_id) not in d._nontoast_send_ok
+    assert str(alert.alert_id) not in d._send_ok
 
 
 async def test_discord_2xx_is_success(monkeypatch):
     d, rec, alert = await _send("discord", 200, monkeypatch)
     assert rec.calls[0]["success"] is True
-    assert str(alert.alert_id) in d._nontoast_send_ok
+    assert str(alert.alert_id) in d._send_ok
 
 
 async def test_discord_4xx_is_failure(monkeypatch):
     d, rec, alert = await _send("discord", 404, monkeypatch)
     assert rec.calls[0]["success"] is False
     assert "404" in (rec.calls[0]["error_message"] or "")
-    assert str(alert.alert_id) not in d._nontoast_send_ok
+    assert str(alert.alert_id) not in d._send_ok
 
 
 # ── #254: websocket per-send timeout ────────────────────────────────────────
