@@ -64,7 +64,6 @@ def test_old_tables_gain_the_new_columns(tmp_path):
 
 
 def test_toast_dismiss_seconds_round_trips(tmp_path):
-    import uuid as _uuid
     from backend.models.notification import NotificationConfigCreate
     repo, _ = _repo(tmp_path)
     cfg = repo.create_config(NotificationConfigCreate(name="p", channels=[], toast_dismiss_seconds=45))
