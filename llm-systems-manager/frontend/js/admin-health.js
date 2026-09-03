@@ -18,7 +18,7 @@
     nBr: ['eMgBr'], nAe: ['eAgAe', 'eMgAe', 'eAeIn'], nIn: ['eAeIn'],
   };
 
-  let _selNode = 'ae';
+  let _selNode = null;
   let _last = null;
 
   // ── formatting ───────────────────────────────────────────────────────

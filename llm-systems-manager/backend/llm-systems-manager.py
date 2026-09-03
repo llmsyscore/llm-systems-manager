@@ -159,7 +159,7 @@ def _local_hostname() -> str:
 # banner reads it. Bump suffix (-1, -2, …) for same-day iterations; roll
 # the date for a new day's first change.
 # ---------------------------------------------------------------------------
-__version__ = "v2026.09.03-7"
+__version__ = "v2026.09.03-8"
 
 # Wall-clock at first import (Cheroot main process); the shutdown banner
 # reads it for the uptime line.
@@ -3154,7 +3154,7 @@ _AUDIT_DETAIL_MAX = 2048
 
 # Runtime copy of [manager.audit]; refreshed by _audit_reload_config() (hot).
 _AUDIT_CFG: dict = {"retention_days": 60, "page_size": 25, "save_automated": False,
-                    "disabled": set()}
+                    "automated_actors": ["smoketestuser"], "disabled": set()}
 _AUDIT_PURGE_STATE: dict = {"ts": None, "removed": 0}
 
 # Event catalog (Admin → Audit Log → settings). Keys land in disabled_events.
@@ -3351,10 +3351,13 @@ def _audit_reload_config() -> None:
             "manager.audit.disabled_events", settings_catalog._MISSING)
         disabled = set(_AUDIT_DEFAULT_OFF) if raw is settings_catalog._MISSING \
             else set(getattr(a, "disabled_events", []) or [])
+        actors = (n for x in (getattr(a, "automated_actors", None) or [])
+                  for n in re.split(r"[\s,;]+", str(x)))
         _AUDIT_CFG.update({
             "retention_days": max(0, int(a.retention_days)),
             "page_size": max(10, int(a.page_size)),
             "save_automated": bool(a.save_automated),
+            "automated_actors": [x for x in actors if x],
             "disabled": disabled,
         })
     except Exception as e:
@@ -3592,6 +3595,10 @@ def _audit_after_request(resp):
             role = _flask_session.get("role") or "" if status < 400 else ""
         elif action == "auth.logout":
             actor = getattr(_flask_g, "_audit_actor", None) or actor
+        # Authenticated automated users (smoke test etc.) follow the "Unit tests" gate; failed logins stay.
+        if (auth_kind in ("session", "token") and actor in _AUDIT_CFG["automated_actors"]
+                and not _AUDIT_CFG["save_automated"]):
+            return resp
         detail = _audit_detail(action, target, resp)
         if action == "auth.login" and status == 429:
             detail = {**(detail or {}), "reason": "locked"}
@@ -3627,6 +3634,11 @@ _AUDIT_SORT_COLS = {"ts": "ts", "actor": "actor", "action": "action", "target": 
 _AUDIT_CSV_MAX = 10000
 
 
+def _sql_in(items) -> str:
+    """Placeholder list for `IN (...)`; an empty list yields a never-matching ''."""
+    return ",".join("?" * len(items)) or "''"
+
+
 def _audit_query_parts(args) -> "tuple[str, list]":
     """WHERE clause + params for the audit-log list/CSV endpoints."""
     where: list[str] = []
@@ -3641,7 +3653,7 @@ def _audit_query_parts(args) -> "tuple[str, list]":
         events = [k for k, g in _AUDIT_EVENT_GROUP.items() if g == group]
         prefixes = _AUDIT_GROUP_PREFIXES.get(group) or ("\x00",)
         where.append("((event IN (%s)) OR (event IS NULL AND (%s)))" % (
-            ",".join("?" * len(events)) or "''", " OR ".join("action LIKE ?" for _ in prefixes)))
+            _sql_in(events), " OR ".join("action LIKE ?" for _ in prefixes)))
         params += events + [p + "%" for p in prefixes]
     actor = (args.get("actor") or "").strip()
     if actor == "system":
@@ -3664,11 +3676,16 @@ def _audit_query_parts(args) -> "tuple[str, list]":
     if hours > 0:
         where.append("ts >= ?")
         params.append((datetime.now(timezone.utc) - timedelta(hours=hours)).isoformat(timespec="seconds"))
-    # Automated = tagged test traffic, plus loopback rows that are untagged
-    # (pre-#794 smoke/pytest runs) or bypass-admitted with no actor.
+    # Automated = tagged test traffic, the configured automated users (unless one is
+    # the explicit actor filter), plus untagged/bypass loopback rows with no actor.
     if str(args.get("hide_automated") or "") in ("1", "true", "yes"):
-        where.append("NOT (COALESCE(auth,'')='test' OR (ip IN ('127.0.0.1','::1','::ffff:127.0.0.1')"
-                     " AND (COALESCE(auth,'')='' OR (auth='bypass' AND COALESCE(actor,'')=''))))")
+        clause = ("COALESCE(auth,'')='test' OR (ip IN ('127.0.0.1','::1','::ffff:127.0.0.1')"
+                  " AND (COALESCE(auth,'')='' OR (auth='bypass' AND COALESCE(actor,'')='')))")
+        auto = [x for x in (_AUDIT_CFG.get("automated_actors") or []) if x != actor]
+        if auto:
+            clause += " OR actor IN (%s)" % _sql_in(auto)
+            params.extend(auto)
+        where.append(f"NOT ({clause})")
     sql = (" WHERE " + " AND ".join(where)) if where else ""
     return sql, params
 
@@ -3766,7 +3783,8 @@ def admin_audit_log_events():
     return jsonify({"ok": True, "groups": groups,
                     "config": {"retention_days": _AUDIT_CFG["retention_days"],
                                "page_size": _AUDIT_CFG["page_size"],
-                               "save_automated": _AUDIT_CFG["save_automated"]}})
+                               "save_automated": _AUDIT_CFG["save_automated"],
+                               "automated_actors": list(_AUDIT_CFG["automated_actors"])}})
 
 
 _audit_reload_config()

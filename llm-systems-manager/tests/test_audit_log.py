@@ -147,6 +147,34 @@ def test_audit_hook_drops_test_tagged_requests_unless_saved(monkeypatch):
     assert row["auth"] == "test"
 
 
+def test_audit_hook_gates_automated_actors_like_tagged_traffic(monkeypatch):
+    """#814: a session user listed in automated_actors follows the Unit tests toggle."""
+    conn = _mem_db(); monkeypatch.setattr(manager_mod, "get_db", lambda: conn)
+    _cfg(monkeypatch, save_automated=False, disabled=set(), automated_actors=["smoketestuser"])
+    c = manager_mod.app.test_client()
+    with c.session_transaction() as s:
+        s["auth_ok"] = True; s["user"] = "smoketestuser"; s["role"] = "admin"
+    c.post("/api/agents/deadbeef/approve", environ_base={"REMOTE_ADDR": "192.0.2.12"})
+    assert conn.execute("SELECT COUNT(*) FROM audit_log").fetchone()[0] == 0
+    _cfg(monkeypatch, save_automated=True, disabled=set(), automated_actors=["smoketestuser"])
+    c.post("/api/agents/deadbeef/approve", environ_base={"REMOTE_ADDR": "192.0.2.12"})
+    row = conn.execute("SELECT actor, auth FROM audit_log").fetchone()
+    assert (row["actor"], row["auth"]) == ("smoketestuser", "session")
+
+
+def test_audit_hook_keeps_failed_logins_for_automated_actors(monkeypatch):
+    import auth
+    import manager_users
+    conn = _mem_db(); monkeypatch.setattr(manager_mod, "get_db", lambda: conn)
+    _cfg(monkeypatch, save_automated=False, disabled=set(), automated_actors=["smoketestuser"])
+    monkeypatch.setattr(auth, "auth_mode", lambda: "required")
+    monkeypatch.setattr(manager_users, "authenticate", lambda u, p, ip: {"ok": False})
+    c = manager_mod.app.test_client()
+    assert c.post("/login", data={"username": "smoketestuser", "password": "guess"}).status_code == 401
+    row = conn.execute("SELECT actor, action, outcome FROM audit_log").fetchone()
+    assert (row["actor"], row["action"], row["outcome"]) == ("smoketestuser", "auth.login", "denied")
+
+
 def test_audit_hook_records_bypass_auth_kind_and_agent_detail(monkeypatch):
     conn = _mem_db(); monkeypatch.setattr(manager_mod, "get_db", lambda: conn)
     monkeypatch.setattr(manager_mod, "_require_admin", lambda: None)
@@ -265,6 +293,7 @@ def _seed(conn):
         ("2026-09-01T18:00:00+00:00", "autopilot", "system", "-", "internal", "", "", "autopilot:load", "m@a1", None, "ok", None),
         ("2026-09-01T17:00:00+00:00", "", "admin", "127.0.0.1", "test", "PUT", "/api/admin/settings", "config.settings", None, 200, "ok", None),
         ("2026-09-01T16:00:00+00:00", "", "admin", "127.0.0.1", None, "PUT", "/api/admin/settings", "config.settings", None, 200, "ok", None),
+        ("2026-09-01T15:00:00+00:00", "smoketestuser", "admin", "192.0.2.12", "session", "DELETE", "/api/llm/aliases/smoke-test-model", "model.alias.delete", "smoke-test-model", 200, "ok", None),
     ]
     conn.executemany("INSERT INTO audit_log (ts, actor, role, ip, auth, method, path, action, target, status, outcome, detail)"
                      " VALUES (?,?,?,?,?,?,?,?,?,?,?,?)", rows)
@@ -293,18 +322,20 @@ def test_audit_list_filters(monkeypatch):
         d = c.get("/api/admin/audit-log?" + qs).get_json()
         assert d["ok"]
         return d
-    assert q("")["total"] == 6
+    assert q("")["total"] == 7
     assert q("actor=adriel")["total"] == 2
+    assert q("actor=smoketestuser")["total"] == 1
     assert q("outcome=denied")["total"] == 1
     assert q("q=qwen")["total"] == 1
     assert q("hide_automated=1")["total"] == 4
+    assert q("hide_automated=1&actor=smoketestuser")["total"] == 1
     assert q("actor=system")["total"] == 0
     assert q("actor=local")["total"] == 1
     assert q("actor=autopilot")["total"] == 1
     assert q("group=auto")["total"] == 1
     assert q("group=agent")["total"] == 1
     assert q("group=user")["total"] == 1
-    assert q("group=config")["total"] == 2 and q("group=model")["total"] == 1
+    assert q("group=config")["total"] == 2 and q("group=model")["total"] == 2
     assert q("group=nope")["total"] == 0
     d = q("sort=actor&dir=asc&hide_automated=1")
     assert [e["actor"] for e in d["entries"]] == ["adriel", "adriel", "autopilot", "llmadmin"]
@@ -317,7 +348,7 @@ def test_audit_list_default_limit_is_page_size(monkeypatch):
     c = _client(monkeypatch)
     _cfg(monkeypatch, page_size=10)
     d = c.get("/api/admin/audit-log").get_json()
-    assert d["page_size"] == 10 and len(d["entries"]) == 6
+    assert d["page_size"] == 10 and len(d["entries"]) == 7
 
 
 def test_audit_csv_export(monkeypatch):
@@ -333,17 +364,19 @@ def test_audit_stats_and_events(monkeypatch):
     c = _client(monkeypatch)
     _cfg(monkeypatch, disabled={"auth.logout", "tools.run"}, retention_days=60)
     s = c.get("/api/admin/audit-log/stats").get_json()
-    assert s["total"] == 6 and s["oldest"] == "2026-09-01T16:00:00+00:00"
-    assert s["actors"] == ["adriel", "autopilot", "llmadmin"] and s["retention_days"] == 60
+    assert s["total"] == 7 and s["oldest"] == "2026-09-01T15:00:00+00:00"
+    assert s["actors"] == ["adriel", "autopilot", "llmadmin", "smoketestuser"] and s["retention_days"] == 60
     ev = c.get("/api/admin/audit-log/events").get_json()
     flat = {e["key"]: e for g in ev["groups"] for e in g["events"]}
     assert flat["auth.logout"]["enabled"] is False and flat["user.manage"]["enabled"] is True
     assert ev["config"]["retention_days"] == 60
+    assert ev["config"]["automated_actors"] == list(manager_mod._AUDIT_CFG["automated_actors"])
 
 
 def _fake_snapshot(monkeypatch, disabled_events, file_has_key):
     class _A:  # mimics settings.manager.audit
         retention_days = 7; page_size = 50; save_automated = True
+        automated_actors = ["smoketestuser", " bot ", "", "ci-a, ci-b"]
     _A.disabled_events = disabled_events
     class _M:
         audit = _A()
@@ -362,6 +395,7 @@ def test_audit_reload_config_reads_the_file_snapshot(monkeypatch):
         assert manager_mod._AUDIT_CFG["retention_days"] == 7
         assert manager_mod._AUDIT_CFG["page_size"] == 50
         assert manager_mod._AUDIT_CFG["save_automated"] is True
+        assert manager_mod._AUDIT_CFG["automated_actors"] == ["smoketestuser", "bot", "ci-a", "ci-b"]
         assert manager_mod._AUDIT_CFG["disabled"] == {"auth.logout"}
     finally:
         manager_mod._AUDIT_CFG.clear(); manager_mod._AUDIT_CFG.update(saved)

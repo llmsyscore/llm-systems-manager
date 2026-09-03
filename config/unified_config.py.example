@@ -252,6 +252,9 @@ class ManagerAudit(BaseModel):
     retention_days: int = 60          # 0 = keep everything (hard row cap still applies)
     page_size: int = 25
     save_automated: bool = False      # keep rows tagged X-LLMSys-Source: test
+    # Usernames whose actions count as automated (hidden by "Hide automated",
+    # and only recorded while save_automated is on).
+    automated_actors: list[str] = Field(default_factory=lambda: ["smoketestuser"])
     disabled_events: list[str] = Field(default_factory=list)
 
 
