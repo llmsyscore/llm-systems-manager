@@ -160,7 +160,8 @@ def test_completion_routes_to_owning_provider(monkeypatch):
     """#493: a chat request for an lms-owned model uses the lms passthrough."""
     _reset_model_index()
     monkeypatch.setattr(gateway.agent_registry, "pinned_agent", lambda p, m: None)
-    monkeypatch.setattr(gateway, "_refresh_model_index", lambda: {"s1": "lms"})
+    monkeypatch.setattr(gateway, "_refresh_model_index",
+                        _refresh_landing({"s1": "lms"}))
     seen_providers, seen_paths = [], []
 
     def fake_candidates(m, a, p="llama"):
@@ -464,29 +465,125 @@ def test_candidates_no_rr_still_lists_pool_and_default(monkeypatch):
     assert [a["agent_id"] for a in out] == ["p1", "p2"]
 
 
-def test_stale_built_index_miss_serves_llama_and_kicks_async(monkeypatch):
+def _index(ts, mapping):
+    return {"ts": ts, "map": mapping, "serving": {}, "entries": None,
+            "refreshing": False}
+
+
+def _refresh_landing(mapping, gate=None):
+    """A fake _refresh_model_index that stores mapping, after gate if given."""
+    def _run():
+        if gate is not None:
+            gate.wait()
+        gateway._store_model_index(mapping)
+        return mapping
+    return _run
+
+
+def test_stale_built_index_miss_serves_llama_when_nothing_is_refreshing(monkeypatch):
     monkeypatch.setattr(gateway.agent_registry, "pinned_agent", lambda p, m: None)
-    monkeypatch.setattr(gateway, "_model_index",
-                        {"ts": 1.0, "map": {"other": "lms"},
-                         "serving": {}, "refreshing": False})
+    monkeypatch.setattr(gateway, "_model_index", _index(1.0, {"other": "lms"}))
     kicked = []
     monkeypatch.setattr(gateway, "_refresh_model_index_async",
                         lambda: kicked.append(1))
-
-    def _no_sync():
-        raise AssertionError("sync refresh must not run on a stale-built index")
-
-    monkeypatch.setattr(gateway, "_refresh_model_index", _no_sync)
     assert gateway._provider_for_model("mystery") == "llama"
     assert kicked == [1]
 
 
-def test_never_built_index_miss_refreshes_sync(monkeypatch):
+def test_stale_built_index_miss_waits_for_refresh_then_routes(monkeypatch):
+    # #752: a miss on a stale index waits (bounded) for the in-flight
+    # refresh instead of misrouting a known non-llama model to llama.
     monkeypatch.setattr(gateway.agent_registry, "pinned_agent", lambda p, m: None)
-    monkeypatch.setattr(gateway, "_model_index",
-                        {"ts": 0.0, "map": {}, "serving": {}, "refreshing": False})
-    monkeypatch.setattr(gateway, "_refresh_model_index", lambda: {"m1": "lms"})
+    monkeypatch.setattr(gateway, "_model_index", _index(1.0, {"other": "lms"}))
+    monkeypatch.setattr(gateway, "_refresh_model_index",
+                        _refresh_landing({"other": "lms", "new": "vllm"}))
+    assert gateway._provider_for_model("new") == "vllm"
+    assert gateway._model_index["refreshing"] is False
+
+
+def test_never_built_index_miss_waits_for_refresh_then_routes(monkeypatch):
+    monkeypatch.setattr(gateway.agent_registry, "pinned_agent", lambda p, m: None)
+    monkeypatch.setattr(gateway, "_model_index", _index(0.0, {}))
+    monkeypatch.setattr(gateway, "_refresh_model_index",
+                        _refresh_landing({"m1": "lms"}))
     assert gateway._provider_for_model("m1") == "lms"
+
+
+def test_cold_start_wait_is_bounded_and_falls_back_to_llama(monkeypatch):
+    # #751: a slow prewarm fan-out no longer blocks the first completion
+    # past the wait cap; the request serves the llama fallback instead.
+    import threading
+    monkeypatch.setattr(gateway.agent_registry, "pinned_agent", lambda p, m: None)
+    monkeypatch.setattr(gateway, "_model_index", _index(0.0, {}))
+    monkeypatch.setattr(gateway, "_MODEL_INDEX_WAIT_S", 0.2)
+    gate = threading.Event()
+    monkeypatch.setattr(gateway, "_refresh_model_index",
+                        _refresh_landing({"m1": "lms"}, gate))
+    gateway.prewarm_model_index()
+    assert gateway._model_index["refreshing"] is True
+    t0 = gateway.time.monotonic()
+    try:
+        assert gateway._provider_for_model("m1") == "llama"
+        assert gateway.time.monotonic() - t0 < 2.0
+    finally:
+        gate.set()
+    gateway._await_model_index(5.0)
+    assert gateway._provider_for_model("m1") == "lms"
+
+
+def test_cold_start_refresh_failure_releases_waiters(monkeypatch):
+    monkeypatch.setattr(gateway.agent_registry, "pinned_agent", lambda p, m: None)
+    monkeypatch.setattr(gateway, "_model_index", _index(0.0, {}))
+
+    def _boom():
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(gateway, "_refresh_model_index", _boom)
+    t0 = gateway.time.monotonic()
+    assert gateway._provider_for_model("m1") == "llama"
+    assert gateway.time.monotonic() - t0 < 2.0
+    assert gateway._model_index["refreshing"] is False
+
+
+def test_models_stale_merged_call_uses_single_flight_refresh(monkeypatch):
+    # #753: a stale un-scoped /v1/models goes through _refresh_model_index
+    # (single-flight) and serves its entries, not a second private fan-out.
+    monkeypatch.setattr(gateway, "_model_index", _index(0.0, {}))
+    calls = []
+
+    def _refresh():
+        calls.append(1)
+        gateway._store_model_index({"m1": "llama"}, {},
+                                   [{"id": "m1", "provider": "llama"}])
+        return {"m1": "llama"}
+
+    monkeypatch.setattr(gateway, "_refresh_model_index", _refresh)
+    monkeypatch.setattr(gateway, "_fetch_provider_models",
+                        lambda p, serving=None: (_ for _ in ()).throw(
+                            AssertionError("must not fan out privately")))
+    r = _client().get("/api/gateway/v1/models")
+    assert r.status_code == 200
+    assert r.get_json()["data"] == [{"id": "m1", "provider": "llama"}]
+    assert calls == [1]
+
+
+def test_models_provider_scoped_call_leaves_index_alone(monkeypatch):
+    # #753: the provider-scoped listing fans out that provider only and
+    # never touches the shared index or the single-flight refresh.
+    monkeypatch.setattr(gateway, "_model_index", _index(0.0, {}))
+    monkeypatch.setattr(gateway, "_refresh_model_index",
+                        lambda: (_ for _ in ()).throw(
+                            AssertionError("scoped call must not refresh")))
+    fetched = []
+
+    def _fetch(p, serving=None):
+        fetched.append(p)
+        return [{"id": "v1", "provider": p}]
+
+    monkeypatch.setattr(gateway, "_fetch_provider_models", _fetch)
+    r = _client().get("/api/gateway/vllm/v1/models")
+    assert r.status_code == 200 and fetched == ["vllm"]
+    assert gateway._model_index["ts"] == 0.0 and gateway._model_index["map"] == {}
 
 
 def test_prewarm_model_index_kicks_async(monkeypatch):
