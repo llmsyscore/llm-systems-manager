@@ -5,8 +5,7 @@
 
   const FRESH_MS = 30000;
   const esc = s => (typeof adminEsc === 'function' ? adminEsc(s) : String(s == null ? '' : s));
-  // Provider primary: default_<p>_id first, legacy primary_<p>_id second (backend precedence).
-  const primaryOf = (g, p) => (g || {})['default_' + p + '_id'] || (g || {})['primary_' + p + '_id'] || '';
+  const primaryOf = (g, p) => _adminPrimaryOf(g, p);
   const call = (name, ...args) => {
     const fn = window[name];
     return typeof fn === 'function' ? fn(...args) : undefined;

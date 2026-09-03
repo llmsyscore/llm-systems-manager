@@ -315,6 +315,11 @@ function _adminModelForHost(host) {
   return '';
 }
 
+// Provider primary id: default_<p>_id first, legacy primary_<p>_id second (backend precedence).
+function _adminPrimaryOf(g, p) {
+  return (g || {})['default_' + p + '_id'] || (g || {})['primary_' + p + '_id'] || '';
+}
+
 function adminRenderPoolOrder() {
   adminRenderProviderSeg();
   const ul = document.getElementById('adminPoolOrderList');
@@ -328,9 +333,7 @@ function adminRenderPoolOrder() {
   const dragHint = document.getElementById('adminPoolDragHint');
   if (dragHint) dragHint.style.display = managed ? 'none' : '';
   const pool = ((_adminGlobal && _adminGlobal[_adminProvSel + '_pool']) || []).slice();
-  // The primary pill follows default_<p>_id / primary_<p>_id, the same marker the Agents tab shows.
-  const primaryId = (_adminGlobal || {})['default_' + _adminProvSel + '_id']
-    || (_adminGlobal || {})['primary_' + _adminProvSel + '_id'] || '';
+  const primaryId = _adminPrimaryOf(_adminGlobal, _adminProvSel);
   const idToAgent = {};
   for (const a of (_adminAgentsCache || [])) idToAgent[a.agent_id] = a;
 
