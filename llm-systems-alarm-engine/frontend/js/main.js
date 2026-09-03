@@ -135,17 +135,20 @@ setInterval(() => {
 }, 15000);
 
 // ── theme: ?theme= on the iframe URL, then live postMessage from the manager ──
-const THEMES = new Set(['dark', 'medium', 'light', 'modern', 'classic', 'slate', 'enterprise']);
+const THEMES = new Set(['dark', 'medium', 'light', 'modern', 'slate', 'enterprise', 'oled', 'graphite', 'frost']);
+const LEGACY_THEMES = { classic: 'oled' };
 (function _applyThemeFromQuery() {
     const params = new URLSearchParams(window.location.search);
     const requested = (params.get('theme') || '').toLowerCase();
-    document.documentElement.dataset.theme = THEMES.has(requested) ? requested : 'dark';
+    const name = LEGACY_THEMES[requested] || requested;
+    document.documentElement.dataset.theme = THEMES.has(name) ? name : 'dark';
 })();
 window.addEventListener('message', (ev) => {
     try {
         const d = ev.data;
-        if (d && d.type === 'theme' && typeof d.name === 'string' && THEMES.has(d.name)) {
-            document.documentElement.dataset.theme = d.name;
+        const name = d && d.type === 'theme' && typeof d.name === 'string' ? (LEGACY_THEMES[d.name] || d.name) : '';
+        if (name && THEMES.has(name)) {
+            document.documentElement.dataset.theme = name;
             if (typeof ChartManager !== 'undefined') ChartManager.retint();
         }
     } catch (_) {}

@@ -78,7 +78,7 @@ function initSortable() {
 // small ⤢ button that cycles through the sensible sequence; users with a
 // column-count constraint won't see oversize options.
 const _CARD_SIZE_CYCLE = ['auto', '1x1', '2x1', '2x2', '1x2'];
-const _CARD_SIZE_CLASSES = ['size-1x1','size-auto','size-2x1','size-3x1','size-1x2','size-2x2','size-3x2'];
+const _CARD_SIZE_CLASSES = ['size-1x1','size-auto','size-2x1','size-3x1','size-4x1','size-1x2','size-2x2','size-3x2'];
 // Size a card (or borrowed shell) takes when the layout has none saved for it.
 const _CARD_DEFAULT_SIZE = 'auto';
 function _defaultCardSize(_id) {
@@ -195,70 +195,33 @@ function initCardResize() {
 }
 
 // ----- Active-tab layout key resolver (single source of truth) -----
+// Page → layout keys come from SettingsLib.CARD_PAGES; null off card pages.
 function _activeTabLayoutKeys() {
-  if (_activeTab === 'overall') {
-    return {
-      label: 'LLM Overall', map: {},
-      hidden: 'hiddenOverall', order: 'overallOrder', cols: 'overallCols', borrowed: 'overallBorrowed',
-      grid: document.getElementById('overallGrid'),
-    };
-  }
-  if (_activeTab === 'dashboard') {
-    const sub = _getDashSubTab();
-    if (sub === 'lmstudio') return {
-      label: 'Dashboard · LM Studio', map: CARD_LABELS_LMS,
-      hidden: 'lmsHidden', order: 'lmsOrder', cols: 'lmsCols',
-      grid: document.getElementById('lmsCardGrid'),
-    };
-    if (sub === 'vllm') return {
-      label: 'Dashboard · vLLM', map: CARD_LABELS_VLLM,
-      hidden: 'vllmHidden', order: 'vllmOrder', cols: 'vllmCols',
-      grid: document.getElementById('vllmCardGrid'),
-    };
-    if (sub === 'manager') return {
-      label: 'Dashboard · Manager', map: CARD_LABELS_MANAGER,
-      hidden: 'managerHidden', order: 'managerOrder', cols: 'managerCols',
-      grid: document.getElementById('managerCardGrid'),
-    };
-    return {
-      label: 'Dashboard · llama.cpp', map: CARD_LABELS,
-      hidden: 'hidden', order: 'order', cols: 'cols',
-      grid: document.getElementById('cardGrid'),
-    };
-  }
-  return null;
+  const sc = _sdScope();
+  if (sc.kind !== 'cards') return null;
+  return { label: sc.label, map: _sdCardMap(sc), hidden: sc.hidden, order: sc.order,
+           cols: sc.cols, borrowed: sc.borrowed, grid: document.getElementById(sc.grid) };
 }
 
 // ----- Layout presets ----------------------------------------------
-// Each preset names a column count + an optional per-card-index sizing
-// template. Cards beyond the indexed entries fall back to 1x1. Presets
-// apply only to the active tab. Index 0 = first visible card in the
-// current order.
-const LAYOUT_PRESETS = {
-  'uniform-2':    { label: '2 columns — uniform',          cols: 2, sizes: {} },
-  'uniform-3':    { label: '3 columns — uniform',          cols: 3, sizes: {} },
-  'hero-3':       { label: '3 columns — hero card (2×2)',  cols: 3, sizes: { 0: '2x2' } },
-  'featured-3':   { label: '3 columns — featured row (3×1)', cols: 3, sizes: { 0: '3x1' } },
-  'wide-pair-3':  { label: '3 columns — two wide leads (2×1, plus 1×1)', cols: 3, sizes: { 0: '2x1' } },
-  'tall-pair-3':  { label: '3 columns — two tall leads (1×2)', cols: 3, sizes: { 0: '1x2', 1: '1x2' } },
-  'uniform-4':    { label: '4 columns — uniform',          cols: 4, sizes: {} },
-  'mixed-4':      { label: '4 columns — mixed (2×2 lead + tiles)', cols: 4, sizes: { 0: '2x2' } },
-};
+// Presets live in js/lib/settingsdrawer.js: column count + per-visible-index
+// sizes for the active page. 'auto-uniform' = auto-fit columns, all 1x1.
+const LAYOUT_PRESETS = SettingsLib.PRESETS;
 function applyLayoutPreset(presetId) {
   const ks = _activeTabLayoutKeys(); if (!ks || !ks.grid) return;
-  const preset = LAYOUT_PRESETS[presetId]; if (!preset) return;
-  // Column count for this tab's grid.
+  const preset = SettingsLib.getPreset(presetId === 'auto-uniform' ? 'auto' : (LAYOUT_PRESETS[presetId] || {}).cols, presetId);
+  if (!preset) return;
   layout[ks.cols] = preset.cols;
-  // Clear this tab's card sizes (per-agent map for llama.cpp/LMS), then apply
-  // the preset's index-keyed sizes against the current visible order.
+  ks.grid.style.gridTemplateColumns = SettingsLib.gridTemplate(preset.cols);
   for (const id of Object.keys(ks.map)) delete _sizeMapFor(id)[id];
-  const visible = [...ks.grid.querySelectorAll('[data-card]')]
-    .filter(c => c.style.display !== 'none' && !c.dataset.card.startsWith('ov-borrow-'));
+  if (_activeTab === 'overall' && layout.cardSizes) {
+    for (const id of Object.keys(layout.cardSizes)) if (id.startsWith('ov-')) delete layout.cardSizes[id];
+  }
+  const visible = _sdVisibleCards(ks);
   Object.entries(preset.sizes).forEach(([idx, size]) => {
     const card = visible[Number(idx)];
     if (card) _sizeMapFor(card.dataset.card)[card.dataset.card] = size;
   });
-  // Persist + reapply in place.
   fetch('/api/layout', {
     method: 'POST', headers: {'Content-Type': 'application/json'},
     body: JSON.stringify(layout),
@@ -995,14 +958,8 @@ async function checkConfig() {
     const cfg = await _fetchT('/api/config', {}, 8000).then(r => r.json());
     const newMs = (cfg.poll_interval || 5) * 1000;
     const mode  = cfg.interval_mode || 'auto';
-    _intervalMode = mode;
-    const badge = document.getElementById('intervalBadge');
-    if (badge) {
-      badge.textContent = mode === 'manual'
-        ? `${cfg.poll_interval}s · manual`
-        : `${cfg.poll_interval}s · auto`;
-      badge.style.color = mode === 'manual' ? 'var(--warn)' : 'var(--fg-dim)';
-    }
+    window._pollCfg = cfg;
+    document.dispatchEvent(new CustomEvent('lsm:pollcfg', { detail: cfg }));
     if (newMs !== fetchInterval) { fetchInterval = newMs; startFetching(fetchInterval); }
 
     // `!== false` (not `=== true`) so an older manager without `proxies` in

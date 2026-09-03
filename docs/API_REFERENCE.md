@@ -53,12 +53,14 @@ Returns the current active alert count and the highest severity level in effect.
 ### `GET /api/config`
 Returns the current polling interval and basic server configuration the frontend needs to self-configure (for example, which provider tabs to show).
 
+**Response fields (polling):** `poll_interval` (effective seconds), `interval_mode` (`auto` | `manual`), `interval_override` (manual seconds or `null`), `interval_reason` (why auto picked its cadence, e.g. `llama awake`, `LMS active`, or `idle`), `poll_interval_idle` and `poll_interval_active` (the configured `[manager] poll_interval` / `fast_poll_interval`).
+
 ---
 
 ### `POST /api/config/interval`
-Updates the dashboard polling interval.
+Updates the dashboard polling interval for every viewer.
 
-**Body:** `{"interval": <seconds>}`
+**Body:** `{"mode": "auto"}` or `{"mode": "manual", "value": <seconds 5–300>}` (values are clamped; agents sample every 5 s).
 
 ---
 
