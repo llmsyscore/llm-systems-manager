@@ -390,7 +390,11 @@ def _fetch_provider_models(provider: str, serving: "dict | None" = None) -> list
 # model id -> owning provider (+ serving agent ids), rebuilt from a
 # full-pool fan-out (TTL below).
 _MODEL_INDEX_TTL_S = 30.0
+# Longest a completion waits for an in-flight index refresh before it
+# serves the llama fallback (#751, #752).
+_MODEL_INDEX_WAIT_S = 5.0
 _model_index_lock = threading.Lock()
+_model_index_cond = threading.Condition(_model_index_lock)
 _model_index: dict = {"ts": 0.0, "map": {}, "serving": {}, "entries": None,
                       "refreshing": False}
 _refresh_lock = threading.Lock()
@@ -453,17 +457,30 @@ def _refresh_model_index_async() -> None:
         try:
             _refresh_model_index()
         except Exception as e:
-            log.debug("gateway: async model index refresh failed: %s", e)
+            log.warning("gateway: model index refresh failed: %s", e)
         finally:
-            with _model_index_lock:
+            with _model_index_cond:
                 _model_index["refreshing"] = False
+                _model_index_cond.notify_all()
 
     threading.Thread(target=_run, name="gw-model-index", daemon=True).start()
 
 
+def _await_model_index(timeout: float) -> "tuple[dict, bool]":
+    """Wait up to timeout seconds for an in-flight refresh to finish; returns
+    (model → provider map, refresh still running)."""
+    deadline = time.monotonic() + timeout
+    with _model_index_cond:
+        while _model_index["refreshing"]:
+            left = deadline - time.monotonic()
+            if left <= 0 or not _model_index_cond.wait(left):
+                break
+        return dict(_model_index["map"]), bool(_model_index["refreshing"])
+
+
 def _provider_for_model(model_id) -> str:
-    """Pin > cached/fresh model index > llama fallback (#493). A stale cache
-    hit is served as-is with a background refresh kicked off."""
+    """Pin > cached model index > llama fallback (#493). A stale hit is served
+    as-is; a miss waits a bounded time for the refresh before falling back."""
     if not model_id:
         return "llama"
     for p in _GATEWAY_PROVIDERS:
@@ -474,29 +491,24 @@ def _provider_for_model(model_id) -> str:
         except Exception:
             log.debug("gateway: pin lookup failed for %s/%s", p, model_id)
     with _model_index_lock:
-        ts = _model_index["ts"]
-        fresh = (time.time() - ts) < _MODEL_INDEX_TTL_S
-        mapping = _model_index["map"]
-        hit = mapping.get(model_id)
+        fresh = (time.time() - _model_index["ts"]) < _MODEL_INDEX_TTL_S
+        hit = _model_index["map"].get(model_id)
     if hit:
         if not fresh:
             _refresh_model_index_async()
         return hit
     if not fresh:
-        # Never-built index (ts == 0): build synchronously so the first
-        # request routes correctly. Stale-but-built: refresh in the
-        # background and serve the llama fallback now (#627).
-        if ts == 0.0:
-            try:
-                mapping = _refresh_model_index()
-            except Exception as e:
-                log.warning("gateway: model index refresh failed: %s", e)
-                mapping = {}
-            hit = mapping.get(model_id)
-            if hit:
-                return hit
-        else:
-            _refresh_model_index_async()
+        # Miss on a never-built or stale index: kick the refresh and wait a
+        # bounded time for it to land before serving the llama fallback.
+        _refresh_model_index_async()
+        mapping, pending = _await_model_index(_MODEL_INDEX_WAIT_S)
+        hit = mapping.get(model_id)
+        if hit:
+            return hit
+        if pending:
+            log.warning("gateway: model index refresh still running after "
+                        "%.0fs; routing %s to llama", _MODEL_INDEX_WAIT_S,
+                        model_id)
     return "llama"
 
 
@@ -508,25 +520,16 @@ def prewarm_model_index() -> None:
 
 def _gateway_models(provider=None) -> Response:
     """One provider's models, or (provider=None) all pools merged. The merged
-    path serves the fresh cached index instead of re-fanning out (#648)."""
+    path serves the cached index, refreshing it single-flight when stale."""
     if not _gw_enabled():
         return _oai_error("gateway disabled", 503, "disabled")
     if provider is None:
         cached = _cached_model_entries()
-        if cached is not None:
-            return jsonify({"object": "list", "data": cached})
-    provs = (provider,) if provider else _GATEWAY_PROVIDERS
-    merged, seen = [], set()
-    serving: dict = {}
-    for p in provs:
-        for m in _fetch_provider_models(p, serving=serving):
-            if m["id"] not in seen:
-                seen.add(m["id"])
-                merged.append(m)
-    if provider is None:
-        _store_model_index({m["id"]: m["provider"] for m in merged}, serving,
-                           merged)
-    return jsonify({"object": "list", "data": merged})
+        if cached is None:
+            _refresh_model_index()
+            cached = _cached_model_entries()
+        return jsonify({"object": "list", "data": cached or []})
+    return jsonify({"object": "list", "data": _fetch_provider_models(provider)})
 
 
 # ── Admin flow snapshot (#797) ───────────────────────────────────────
