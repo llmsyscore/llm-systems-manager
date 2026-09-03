@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import atexit
 import importlib.util
+import logging
 import os
 import pytest
 import shutil
@@ -37,6 +38,27 @@ _LIVE_DB = _REPO_ROOT / "data" / "metrics.db"
 _TMP_DATA = Path(tempfile.mkdtemp(prefix="llmsys-test-db-"))
 os.environ["LLMSYS_METRICS_DB"] = str(_TMP_DATA / "metrics.db")
 atexit.register(shutil.rmtree, _TMP_DATA, True)
+
+
+# Per-session log dir: the manager module builds its file handler from
+# settings.paths.log_dir at import, so redirect it before the eager load.
+from config.unified_config import settings as _settings  # noqa: E402
+
+_LIVE_LOG_DIR = Path(_settings.paths.log_dir)
+_settings.paths.log_dir = str(_TMP_DATA / "log")
+
+
+def _live_log_handlers() -> list:
+    """File handlers on any logger whose file sits under the LIVE log dir."""
+    names = list(logging.root.manager.loggerDict)
+    loggers = [logging.getLogger()] + [logging.getLogger(n) for n in names]
+    hits = set()
+    for lg in loggers:
+        for h in getattr(lg, "handlers", ()):
+            base = getattr(h, "baseFilename", None)
+            if base and Path(base).is_relative_to(_LIVE_LOG_DIR):
+                hits.add(base)
+    return sorted(hits)
 
 
 def _live_audit_count():
@@ -73,6 +95,15 @@ def _live_audit_untouched():
     after = _live_audit_count()
     if before is not None and after is not None and after != before:
         pytest.fail(f"tests wrote {after - before} loopback row(s) into the LIVE audit_log — DB isolation broke")
+
+
+@pytest.fixture(autouse=True, scope="session")
+def _live_log_untouched():
+    """Fail the session if any logger has a file handler in the LIVE log dir."""
+    yield
+    hits = _live_log_handlers()
+    if hits:
+        pytest.fail(f"tests attached log file handler(s) to the LIVE log dir: {hits} — log isolation broke")
 
 
 @pytest.fixture(autouse=True, scope="session")
