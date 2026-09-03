@@ -1218,7 +1218,7 @@ def _ae_manifest(files: dict[str, bytes]) -> bytes:
 
 @app.post("/api/alarm/admin/export")
 async def ae_admin_export(body: dict = Body(default_factory=dict),
-                          _auth: None = Depends(require_management_token)):
+                          _auth: None = Depends(require_strict_management_token)):
     """Build the alarm engine backup archive. Body: {"password": "<>"}.
     Empty password = unencrypted; frontend warns explicitly."""
     password = (body or {}).get("password") or ""
@@ -1442,7 +1442,7 @@ def _ae_decode_upload(blob: bytes, password: str) -> _DecodedAE:
 @app.post("/api/alarm/admin/import/preview")
 async def ae_admin_import_preview(file: UploadFile = File(...),
                                   password: str = Form(""),
-                                  _auth: None = Depends(require_management_token)):
+                                  _auth: None = Depends(require_strict_management_token)):
     blob = await file.read()
     decoded = _ae_decode_upload(blob, password)
     entries = sorted([
@@ -1476,7 +1476,7 @@ async def ae_admin_import_apply(file: UploadFile = File(...),
                                 password: str = Form(""),
                                 topology_overrides: str = Form(""),
                                 host_remap: str = Form(""),
-                                _auth: None = Depends(require_management_token)):
+                                _auth: None = Depends(require_strict_management_token)):
     blob = await file.read()
     files = _ae_decode_upload(blob, password).files
     # Topology overrides: a JSON dict {ovr_key: new_value}, patched into the

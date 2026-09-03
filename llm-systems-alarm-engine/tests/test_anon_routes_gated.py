@@ -42,6 +42,21 @@ def test_wrong_bearer_is_denied(client, method, path):
     assert r.status_code == 401, (method, path, r.status_code)
 
 
+STRICT = [("POST", "/api/alarm/admin/export"), ("POST", "/api/alarm/admin/import/preview"),
+          ("POST", "/api/alarm/admin/import/apply")]
+
+
+@pytest.mark.parametrize("method,path", STRICT)
+def test_backup_routes_fail_closed_without_a_management_token(monkeypatch, method, path):
+    # The archive carries every secret: an ingest token must not unlock it, and
+    # an install with no management token gets 403, not open access.
+    monkeypatch.setattr(settings.alarm_engine, "ingest_token", "ingest-secret", raising=False)
+    monkeypatch.setattr(settings.alarm_engine, "management_token", "", raising=False)
+    c = TestClient(ae.app, raise_server_exceptions=False)
+    assert c.request(method, path).status_code == 403
+    assert c.request(method, path, headers={"Authorization": "Bearer ingest-secret"}).status_code == 403
+
+
 def test_management_bearer_passes_the_gate(client):
     # dbstats needs no body; a 200 proves the dependency accepts the token.
     r = client.get("/api/alarm/dbstats/sqlite", headers=HDR)
