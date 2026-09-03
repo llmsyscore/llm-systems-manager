@@ -48,7 +48,7 @@ def set_repositories(
 
 def _try_notify(method_name: str, alert) -> None:
     """Safely call a dispatcher hook if wired and the alert is non-null.
-    Used by the ack and close routes to fire the corresponding toast."""
+    Used by the ack and close routes to run the matching notification hook."""
     d = _notification_dispatcher
     if d is None or alert is None:
         return
@@ -205,13 +205,8 @@ async def acknowledge_alert(
     alert_id: str,
     alert_mgr: AlertManager = Depends(get_alert_mgr),
 ) -> dict:
-    """Acknowledge an alert (same as mark as read in this implementation).
-
-    Side effect: a toast is sent informing the user the alert was
-    acknowledged. From this point on, the rule engine's continuing-breach
-    cycles will NOT route this alert to any non-toast channel — only the
-    eventual clear notification will come through.
-    """
+    """Acknowledge an alert. Later breach cycles stay silent on every
+    channel; only a policy's clear notification can still follow."""
     result = alert_mgr.mark_as_read(alert_id)
     if not result:
         raise HTTPException(status_code=404, detail=f"Alert {alert_id} not found")
@@ -224,8 +219,8 @@ async def close_alert(
     alert_id: str,
     alert_mgr: AlertManager = Depends(get_alert_mgr),
 ) -> dict:
-    """Manually close (resolve) an alert. Always fires a 'cleared' toast
-    so the user sees the state change."""
+    """Manually close (resolve) an alert. Policies with notify_on_clear
+    send their clear notification."""
     result = alert_mgr.close_alert(alert_id, reason="manual")
     if not result:
         raise HTTPException(status_code=404, detail=f"Alert {alert_id} not found")

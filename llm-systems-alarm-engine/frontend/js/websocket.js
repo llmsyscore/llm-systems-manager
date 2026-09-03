@@ -109,6 +109,7 @@ class WebSocketHandler {
             this.reconnectInterval * Math.pow(1.5, this.reconnectAttempts - 1),
             this.maxReconnectDelay);
         console.log(`Reconnecting in ${delay}ms (attempt ${this.reconnectAttempts})`);
+        if (typeof UIStates !== 'undefined' && UIStates.setReconnecting) UIStates.setReconnecting();
 
         setTimeout(() => this.connect(), delay);
     }
@@ -203,7 +204,6 @@ const WebSocketEvents = {
 
         ws.on('rule_created', (payload) => {
             RuleManager.handleRuleUpdate(payload);
-            ToastManager.show('📋 New alarm rule created', 'info');
         });
 
         ws.on('rule_deleted', (payload) => {
@@ -218,6 +218,7 @@ const WebSocketEvents = {
                 const body  = payload.body  || '';
                 ToastManager.show(title, severity, {
                     sticky: payload.sticky === true,
+                    duration: Math.max(1, Number(payload.dismiss_seconds) || 10) * 1000,
                     alertId: payload.alert_id,
                     subtitle: body,
                     incidentId: payload.incident_id,

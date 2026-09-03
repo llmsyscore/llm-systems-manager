@@ -746,6 +746,7 @@ class NotificationRepository:
             repeat_interval_minutes=int(item.get("repeat_interval_minutes") or 30),
             notify_on_clear=bool(item.get("notify_on_clear", False)),
             min_alarm_count=int(item.get("min_alarm_count") or 1),
+            toast_dismiss_seconds=int(item.get("toast_dismiss_seconds") or 10),
         )
 
     def create_config(self, config_create: NotificationConfigCreate) -> NotificationConfig:
@@ -768,6 +769,7 @@ class NotificationRepository:
             repeat_interval_minutes=int(config_create.repeat_interval_minutes or 30),
             notify_on_clear=bool(config_create.notify_on_clear),
             min_alarm_count=int(config_create.min_alarm_count or 1),
+            toast_dismiss_seconds=int(config_create.toast_dismiss_seconds or 10),
         )
         if self.settings_db:
             self.settings_db.write_config(config.to_dict())
@@ -864,8 +866,10 @@ class NotificationRepository:
         success: bool,
         error_message: Optional[str] = None,
         config_id: Optional[str] = None,
+        metadata: Optional[dict[str, Any]] = None,
     ) -> None:
-        """Convenience wrapper: build a NotificationDelivery and persist it."""
+        """Build a NotificationDelivery, persist it and bump the channel's
+        send/fail counters."""
         from uuid import uuid4
         from ..models.notification import ChannelType, NotificationMethod
         try:
@@ -893,8 +897,29 @@ class NotificationRepository:
             success=success,
             error_message=error_message or "",
             delivered_at=now_utc(),
+            metadata=dict(metadata or {}),
         )
         self.create_delivery(delivery)
+        if ch_uuid is not None:
+            self._bump_channel_counters(ch_uuid, success)
+
+    def _bump_channel_counters(self, channel_id: uuid.UUID, success: bool) -> None:
+        """Increment send_count / fail_count (and last_sent_at on success)
+        on the channel row; best effort."""
+        if self.settings_db is None:
+            return
+        try:
+            data = self.settings_db.get_channel(str(channel_id))
+            if not data:
+                return
+            key = "send_count" if success else "fail_count"
+            data[key] = int(data.get(key) or 0) + 1
+            if success:
+                data["last_sent_at"] = now_utc().isoformat()
+            self.settings_db.write_channel(data)
+            self.cache.set(f"channel:{channel_id}", data)
+        except Exception as e:
+            logger.debug("channel counter bump skipped: %s", e)
 
     async def get_delivery_history(self, limit: int = 100, offset: int = 0, channel_type: Optional[str] = None) -> list[NotificationDelivery]:
         """Get notification delivery history from SQLite. Indexed by
