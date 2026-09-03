@@ -223,7 +223,7 @@ def _handle_completion(sub: str, provider=None) -> Response:
     if (wants_stream and provider in _USAGE_COUNTED_PROVIDERS
             and bool(getattr(_gw_cfg(), "usage_probe", True))):
         stream_body, injected = _with_usage_probe(body)
-    client = gateway_usage.client_begin(*_client_identity())
+    client = gateway_usage.client_begin(*_client_identity(), model=model_id)
     t0 = time.perf_counter()
     stream_owns_client = False
     try:
@@ -322,8 +322,9 @@ def _stream_from(agent: dict, path: str, body: dict, errors: list,
                 gateway_usage.record(a, p, g)
                 gateway_usage.client_record(k, p, g)
 
-            pumped = gateway_usage.tap_sse(pumped, _on_usage,
-                                           strip_usage=strip_usage)
+            pumped = gateway_usage.tap_sse(
+                pumped, _on_usage, strip_usage=strip_usage,
+                on_chunk=lambda a=aid: gateway_usage.stream_tokens(a))
         resp = Response(
             pumped,
             status=upstream.status_code, mimetype="text/event-stream",
@@ -569,17 +570,17 @@ def _current_model(provider: str, sample: dict) -> "str | None":
     return loaded[0] if loaded else None
 
 
-def _host_rates(provider: str, agent_id: str, sample: dict) -> "tuple[float, float]":
-    """(gen_tps, prompt_tps): provider telemetry, or the gateway's own rates
-    for providers that publish none."""
+def _host_rates(provider: str, agent_id: str, sample: dict,
+                now: "float | None" = None) -> "tuple[float, float]":
+    """(gen_tps, prompt_tps): provider telemetry, or the gateway's live
+    streamed-token rate for providers that publish none."""
     block = (sample or {}).get(provider)
     if isinstance(block, dict):
         gen = block.get("tokens_per_second")
         pro = block.get("prompt_tokens_per_second")
         if isinstance(gen, (int, float)) or isinstance(pro, (int, float)):
             return (float(gen or 0.0), float(pro or 0.0))
-    r = gateway_usage.last_rates(agent_id) or {}
-    return (float(r.get("gen_tps") or 0.0), float(r.get("prompt_tps") or 0.0))
+    return (gateway_usage.live_gen_tps(agent_id, now=now), 0.0)
 
 
 def _host_busy(provider: str, sample: dict) -> int:
@@ -600,7 +601,7 @@ def _host_busy(provider: str, sample: dict) -> int:
     return 0
 
 
-def _flow_hosts() -> "tuple[list, float, float, list]":
+def _flow_hosts(now: "float | None" = None) -> "tuple[list, float, float, list]":
     """(host rows, gen_tps total, prompt_tps total, samples for power)."""
     rows, gen_total, pro_total, power_samples = [], 0.0, 0.0, []
     seen_power: set = set()
@@ -610,20 +611,21 @@ def _flow_hosts() -> "tuple[list, float, float, list]":
             agent = agent_registry.resolve_agent_by_id(aid) or {}
             wrap = provider_state.STORE.get(provider, aid) or {}
             sample = wrap.get("sample") if isinstance(wrap.get("sample"), dict) else {}
-            gen, pro = _host_rates(provider, aid, sample)
+            gen, pro = _host_rates(provider, aid, sample, now=now)
             gen_total += gen
             pro_total += pro
             n_inflight = max(gateway_usage.inflight(aid), _host_busy(provider, sample))
-            model = _current_model(provider, sample)
+            last_served = gateway_usage.host_last_served_s(aid, now=now)
             rows.append({
                 "agent_id": aid,
                 "hostname": agent.get("hostname") or aid[:8],
                 "provider": provider,
-                "model": model,
+                "model": _current_model(provider, sample),
                 "gen_tps": round(gen, 2),
                 "inflight": n_inflight,
+                "last_served_s": last_served,
                 "primary": aid == primary,
-                "state": "ok" if (n_inflight > 0 or gen > 0 or model) else "idle",
+                "state": gateway_usage.tier(n_inflight, last_served, gen),
             })
             if sample and aid not in seen_power:
                 seen_power.add(aid)
@@ -681,11 +683,11 @@ def flow_payload(now: "float | None" = None) -> dict:
     seen = {c["label"] for c in clients}
     for label, _secret in auth.gateway_key_entries():
         if label not in seen and len(clients) < _FLOW_CLIENT_LIMIT:
-            clients.append({"label": label, "ip": None, "req_per_min": 0, "inflight": 0,
-                            "prompt_tokens": 0, "gen_tokens": 0, "last_seen_s": None,
-                            "state": "idle"})
+            clients.append({"label": label, "ip": None, "model": None, "req_per_min": 0,
+                            "inflight": 0, "prompt_tokens": 0, "gen_tokens": 0,
+                            "last_seen_s": None, "state": "idle"})
     clients = clients[:_FLOW_CLIENT_LIMIT]
-    hosts, gen_tps, prompt_tps, power_samples = _flow_hosts()
+    hosts, gen_tps, prompt_tps, power_samples = _flow_hosts(t)
     totals = gateway_usage.client_totals(t)
     totals["prompt_tps"] = round(prompt_tps, 2)
     totals["gen_tps"] = round(gen_tps, 2)

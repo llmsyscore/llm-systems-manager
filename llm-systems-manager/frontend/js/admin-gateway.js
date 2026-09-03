@@ -8,11 +8,15 @@
   const POLL_MS = 5000;
   // Row pitch and edge geometry for the clients → gateway → hosts canvas.
   const ROW_PITCH = 66, ROW_TOP = 41, MAX_ROWS = 8;
-  const busy = h => (h.inflight || 0) > 0 || (h.gen_tps || 0) > 0;
-  // Hosts drawn: the ones serving right now; with nothing in flight, each provider's primary, dimmed.
+  // Activity tier: 'active' (traffic now), 'recent' (quiet under 10 min), 'idle'.
+  const tierOf = x => (x.state === 'active' || x.state === 'recent') ? x.state : 'idle';
+  // Hosts drawn: active then recently served, by rate; with none, each provider's primary, dimmed.
   function visibleHosts(hosts) {
-    const active = hosts.filter(busy).sort((a, b) => (b.gen_tps || 0) - (a.gen_tps || 0));
-    if (active.length) return active.slice(0, MAX_ROWS);
+    const rank = { active: 0, recent: 1 };
+    const live = hosts.filter(h => tierOf(h) !== 'idle')
+      .sort((a, b) => (rank[tierOf(a)] - rank[tierOf(b)]) || ((b.gen_tps || 0) - (a.gen_tps || 0))
+        || ((a.last_served_s || 0) - (b.last_served_s || 0)));
+    if (live.length) return live.slice(0, MAX_ROWS);
     return hosts.filter(h => h.primary).slice(0, MAX_ROWS);
   }
   function rowsY(count) {
@@ -45,35 +49,47 @@
   }
 
   // ── diagram ──────────────────────────────────────────────────────────
-  function labelGroup(cx, y, text, off) {
-    const g = n('g', { class: 'rt-el' + (off ? ' off' : '') });
+  // Tier → class for edges, arrowheads, edge labels and nodes.
+  const EDGE_CLS = { active: 'ok', recent: 'recent', idle: 'off' };
+  const EDGE_MARK = { active: 'url(#rtAh)', recent: 'url(#rtAhRecent)', idle: 'url(#rtAhOff)' };
+  const LABEL_CLS = { active: '', recent: ' recent', idle: ' off' };
+  const NODE_CLS = { active: 'ok', recent: 'recent', idle: '' };
+  function labelGroup(cx, y, text, tier) {
+    const g = n('g', { class: 'rt-el' + LABEL_CLS[tier] });
     const w = Math.round(String(text).length * 5.9 + 7);
     g.appendChild(n('rect', { x: cx - w / 2, y, width: w, height: 14, rx: 3 }));
     g.appendChild(n('text', { x: cx, y: y + 10, 'text-anchor': 'middle' }, text));
     return g;
   }
 
-  // Shrinks, then ellipsises, an SVG text run so it stays inside its box.
+  // Shrinks, then ellipsises, an SVG text run so it stays inside its box;
+  // a data-keep suffix (the client IP) survives and only the head is cut.
   function fitText(t, maxW) {
     if (!t || typeof t.getComputedTextLength !== 'function') return;
     const fits = () => { try { return t.getComputedTextLength() <= maxW; } catch (_) { return true; } };
     let size = 9.5;
     while (!fits() && size > 8) { size -= 0.5; t.style.fontSize = size + 'px'; }
-    let s = t.textContent;
-    while (!fits() && s.length > 4) { s = s.slice(0, -2); t.textContent = s + '…'; }
+    let keep = t.getAttribute('data-keep') || '';
+    if (!keep || keep.length >= t.textContent.length) keep = '';
+    let s = keep ? t.textContent.slice(0, -keep.length) : t.textContent;
+    while (!fits() && s.length > 4) { s = s.slice(0, -2); t.textContent = s + '…' + keep; }
   }
   function boxNode(x, y, w, name, sub, cls) {
     const g = n('g', { class: 'rt-node' + (cls ? ' ' + cls : ''), transform: `translate(${x},${y})` });
     g.appendChild(n('rect', { width: w, height: sub.length > 1 ? 66 : 46, rx: 7 }));
     g.appendChild(n('circle', { cx: 13, cy: 16, r: 3 }));
     g.appendChild(n('text', { class: 'nm', x: 22, y: 19.5 }, name));
-    sub.forEach((s, i) => g.appendChild(n('text', { class: 'sb', x: 22, y: 35 + i * 16.5 }, s)));
+    sub.forEach((s, i) => {
+      const [text, keep] = Array.isArray(s) ? s : [s, ''];
+      const t = n('text', { class: 'sb', x: 22, y: 35 + i * 16.5 }, text);
+      if (keep) t.setAttribute('data-keep', keep);
+      g.appendChild(t);
+    });
     return g;
   }
-  function edge(d, on, rate) {
-    const p = n('path', { class: 'rt-e ' + (on ? 'ok' : 'off'), d,
-      'marker-end': on ? 'url(#rtAh)' : 'url(#rtAhOff)' });
-    if (on) {
+  function edge(d, tier, rate) {
+    const p = n('path', { class: 'rt-e ' + EDGE_CLS[tier], d, 'marker-end': EDGE_MARK[tier] });
+    if (tier === 'active') {
       const r = Math.max(0, Math.min(1, rate || 0));
       p.style.setProperty('--dur', (1.6 - 0.9 * r).toFixed(2) + 's');
       p.style.setProperty('--w', (1.5 + 0.9 * r).toFixed(2));
@@ -91,7 +107,7 @@
     const svg = n('svg', { viewBox: `0 0 720 ${height}`, class: 'rt-svg', role: 'img',
       'aria-label': 'Live inference flow from clients through the gateway to the serving hosts' });
     const defs = n('defs');
-    for (const [id, cls] of [['rtAh', 'rt-ah'], ['rtAhOff', 'rt-ah off']]) {
+    for (const [id, cls] of [['rtAh', 'rt-ah'], ['rtAhRecent', 'rt-ah recent'], ['rtAhOff', 'rt-ah off']]) {
       const m = n('marker', { id, viewBox: '0 0 8 8', refX: 7, refY: 4, markerUnits: 'userSpaceOnUse',
         markerWidth: 8, markerHeight: 8, orient: 'auto-start-reverse' });
       m.appendChild(n('path', { d: 'M0,0.5 L8,4 L0,7.5 z', class: cls }));
@@ -104,45 +120,45 @@
     const totals = d.totals || {};
     const peakReq = Math.max(1, ...clients.map(c => c.req_per_min || 0));
     const peakTps = Math.max(1, ...hosts.map(h => h.gen_tps || 0));
-    const hostOn = h => h.state === 'ok' && busy(h);
     const labelY = (y, side) => Math.abs(y - gy) < 4 ? y - 15 : Math.round((y + gy) / 2) - 7 + side;
 
     clients.forEach((c, i) => {
-      const on = c.state === 'ok';
       const y = cy[i];
       svg.appendChild(edge(Math.abs(y - gy) < 4 ? `M186,${y} L260,${gy}` : `M186,${y} C224,${y} 222,${gy} 260,${gy}`,
-        on, (c.req_per_min || 0) / peakReq));
+        tierOf(c), (c.req_per_min || 0) / peakReq));
     });
     hosts.forEach((h, i) => {
-      const on = hostOn(h);
       const y = hy[i];
       svg.appendChild(edge(Math.abs(y - gy) < 4 ? `M448,${gy} L542,${y}` : `M448,${gy} C496,${gy} 494,${y} 542,${y}`,
-        on, (h.gen_tps || 0) / peakTps));
+        tierOf(h), (h.gen_tps || 0) / peakTps));
     });
     clients.forEach((c, i) => {
-      const on = c.state === 'ok';
+      const t = tierOf(c);
       svg.appendChild(labelGroup(222, labelY(cy[i], 0),
-        on ? `${kfmt(c.req_per_min)} req/min` : (c.last_seen_s == null ? 'idle' : ago(c.last_seen_s)), !on));
+        t === 'active' ? `${kfmt(c.req_per_min)} req/min` : ago(c.last_seen_s), t));
     });
     hosts.forEach((h, i) => {
-      const on = hostOn(h);
+      const t = tierOf(h);
       svg.appendChild(labelGroup(495, labelY(hy[i], 0),
-        `${kfmt(h.gen_tps)} tok/s · ${h.inflight || 0}`, !on));
+        t === 'active' ? `${kfmt(h.gen_tps)} tok/s · ${h.inflight || 0}` : ago(h.last_served_s), t));
     });
 
     clients.forEach((c, i) => {
+      const t = tierOf(c);
+      const head = c.model || (c.last_seen_s == null ? 'no requests yet' : '');
+      const tail = c.ip ? (head ? ' · ' : '') + c.ip : '';
       svg.appendChild(boxNode(8, cy[i] - 23, 172, c.label || 'client',
-        [[c.label ? 'key ' + c.label : '', c.ip || (c.last_seen_s == null ? 'no requests yet' : '')].filter(Boolean).join(' · ') || '—'],
-        c.state === 'ok' ? 'ok' : ''));
+        [[(head + tail) || '—', tail]], NODE_CLS[t]));
     });
     svg.appendChild(boxNode(266, gy - 33, 176, 'Gateway', [
       `${kfmt(totals.req_per_min)} req/min · ${totals.inflight || 0} in flight`,
       `p50 ${totals.p50_ms == null ? '—' : Math.round(totals.p50_ms) + ' ms'} · ${totals.errors_15m || 0} errors`,
     ], 'ok gwn'));
     hosts.forEach((h, i) => {
+      const t = tierOf(h);
       svg.appendChild(boxNode(548, hy[i] - 23, 164, h.hostname || '—',
         [[h.provider, h.model || 'idle'].filter(Boolean).join(' · ')],
-        busy(h) ? 'ok' : (h.model ? 'dim' : '')));
+        t === 'idle' ? (h.model ? 'dim' : 'dim nomodel') : NODE_CLS[t]));
     });
     return svg;
   }
