@@ -70,7 +70,7 @@ from .storage.influxdb_client import InfluxDBClient
 # (-1, -2, …) for same-day iterations; roll the date for a new day's first
 # change.
 # ---------------------------------------------------------------------------
-__version__ = "v2026.09.03-2"
+__version__ = "v2026.09.03-3"
 from .storage import influx_monitor as _influx_monitor
 from .models.alarm_rule import (
     AlarmRuleCreate,
@@ -1217,7 +1217,8 @@ def _ae_manifest(files: dict[str, bytes]) -> bytes:
 
 
 @app.post("/api/alarm/admin/export")
-async def ae_admin_export(body: dict = Body(default_factory=dict)):
+async def ae_admin_export(body: dict = Body(default_factory=dict),
+                          _auth: None = Depends(require_strict_management_token)):
     """Build the alarm engine backup archive. Body: {"password": "<>"}.
     Empty password = unencrypted; frontend warns explicitly."""
     password = (body or {}).get("password") or ""
@@ -1440,7 +1441,8 @@ def _ae_decode_upload(blob: bytes, password: str) -> _DecodedAE:
 
 @app.post("/api/alarm/admin/import/preview")
 async def ae_admin_import_preview(file: UploadFile = File(...),
-                                  password: str = Form("")):
+                                  password: str = Form(""),
+                                  _auth: None = Depends(require_strict_management_token)):
     blob = await file.read()
     decoded = _ae_decode_upload(blob, password)
     entries = sorted([
@@ -1473,7 +1475,8 @@ async def ae_admin_import_preview(file: UploadFile = File(...),
 async def ae_admin_import_apply(file: UploadFile = File(...),
                                 password: str = Form(""),
                                 topology_overrides: str = Form(""),
-                                host_remap: str = Form("")):
+                                host_remap: str = Form(""),
+                                _auth: None = Depends(require_strict_management_token)):
     blob = await file.read()
     files = _ae_decode_upload(blob, password).files
     # Topology overrides: a JSON dict {ovr_key: new_value}, patched into the
@@ -1555,7 +1558,7 @@ async def ae_admin_import_apply(file: UploadFile = File(...),
 
 
 @app.get("/api/alarm/dbstats/sqlite")
-async def sqlite_dbstats() -> dict:
+async def sqlite_dbstats(_auth: None = Depends(require_management_token)) -> dict:
     """Cached up to 10 s across callers; import-apply invalidates it and
     flags `stale_until_restart` until the engine reopens its DBs."""
     now = time.time()

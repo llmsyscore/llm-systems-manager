@@ -87,12 +87,14 @@ def test_import_apply_prunes_backups_and_invalidates_cache(tmp_path, monkeypatch
     monkeypatch.setattr(ae, "_ae_config_path", lambda: cfg)
     monkeypatch.setattr(ae, "_ae_data_root", lambda: tmp_path)
     monkeypatch.setattr(ae, "_SQLITE_STATS_STALE_UNTIL_RESTART", False)
-    monkeypatch.setattr(settings.alarm_engine, "management_token", "", raising=False)
+    monkeypatch.setattr(settings.alarm_engine, "management_token", "mgmt-secret", raising=False)
+    monkeypatch.setattr(settings.alarm_engine, "ingest_token", "", raising=False)
     ae._SQLITE_STATS_CACHE.update({"at": 9e12, "payload": {"alarms_db": {"size_bytes": 1}}})
     blob = _archive_blob({"config/llm-systems.toml": b"[manager]\nport = 5001\n"})
     client = TestClient(ae.app, raise_server_exceptions=False)
     r = client.post("/api/alarm/admin/import/apply",
-                    files={"file": ("x.lsmenc", blob, "application/octet-stream")})
+                    files={"file": ("x.lsmenc", blob, "application/octet-stream")},
+                    headers={"Authorization": "Bearer mgmt-secret"})
     assert r.status_code == 200, r.text
     assert r.json()["ok"] is True and len(r.json()["backups"]) == 1
     assert cfg.read_text() == "[manager]\nport = 5001\n"

@@ -7,6 +7,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from backend.api.routes import metrics
+from backend.api.auth import require_management_token
 from backend.models.metrics import MetricPoint
 from backend.storage.cache import MetricCache
 from backend.storage.repositories import MetricRepository
@@ -113,6 +114,9 @@ def _client_with_seeded_repo(n_hosts=7, seconds=3000):
     metrics.set_repository(MetricRepository(cache=cache, db=None))
     app = FastAPI()
     app.include_router(metrics.router)
+    # The management gate is exercised by test_anon_routes_gated; this
+    # harness only cares about downsampling.
+    app.dependency_overrides[require_management_token] = lambda: None
     return TestClient(app)
 
 

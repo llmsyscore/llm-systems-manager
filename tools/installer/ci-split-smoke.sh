@@ -98,6 +98,25 @@ c="$(code -H "Authorization: Bearer $MGMT" "$AE_URL/api/alarm/rules")"
 if [ "$c" != "200" ]; then fail "AE rules with management_token = $c (want 200)"; fi
 pass "no token -> 401, management_token -> 200"
 
+echo "── 3b. AE gates metrics reads, dbstats and the backup export (#826) ──"
+for p in /api/alarm/metrics "/api/alarm/metrics/system/cpu_total?since_minutes=5" /api/alarm/dbstats/sqlite; do
+  c="$(code "$AE_URL$p")"
+  if [ "$c" != "401" ]; then fail "AE $p without token = $c (want 401)"; fi
+  c="$(code -H "Authorization: Bearer $MGMT" "$AE_URL$p")"
+  if [ "$c" != "200" ]; then fail "AE $p with management_token = $c (want 200)"; fi
+done
+pass "metrics/dbstats: no token -> 401, management_token -> 200"
+# The backup archive carries every secret: only the management token opens it.
+c="$(code -X POST "$AE_URL/api/alarm/admin/export")"
+if [ "$c" != "401" ]; then fail "AE admin/export without token = $c (want 401)"; fi
+c="$(code -X POST -H "Authorization: Bearer $INGEST" "$AE_URL/api/alarm/admin/export")"
+if [ "$c" != "401" ]; then fail "AE admin/export with ingest_token = $c (want 401)"; fi
+c="$(code -X POST -H "Authorization: Bearer $MGMT" -H 'Content-Type: application/json' -d '{}' "$AE_URL/api/alarm/admin/export")"
+if [ "$c" != "200" ]; then fail "AE admin/export with management_token = $c (want 200)"; fi
+c="$(code -X POST -H "Authorization: Bearer $INGEST" "$AE_URL/api/alarm/admin/import/preview")"
+if [ "$c" != "401" ]; then fail "AE admin/import/preview with ingest_token = $c (want 401)"; fi
+pass "backup export/import: ingest_token -> 401, management_token -> 200"
+
 echo "── 4. Wire the AE tokens into the manager (the paste step) + restart ─"
 sed -i -E "s|^ingest_token[[:space:]]*=.*|ingest_token = \"$INGEST\"|; s|^management_token[[:space:]]*=.*|management_token = \"$MGMT\"|" "$MGR_TOML"
 chown llmsys:llmsys "$MGR_TOML"; chmod 0600 "$MGR_TOML"
