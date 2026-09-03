@@ -197,6 +197,9 @@ def _init_pass(desired, observed, ledger, now):
     entries = sorted(desired.get("entries") or [], key=lambda e: e["priority"])
     residents = _residents(desired, observed, ledger, now)
     managed = {(e["provider"], e["model"]) for e in entries}
+    if desired.get("protect_unmanaged"):
+        # Every resident counts as managed: nothing gets displaced (#779).
+        managed |= {(prov, model) for (prov, _aid), model in residents.items()}
     return free, free_ram, entries, residents, managed
 
 def _commit_budget(e, aid, size, free, free_ram, residents, observed) -> None:
@@ -278,6 +281,10 @@ def entry_status(desired: dict, observed: dict,
                         elif placeable == 0 and resident_blocked:
                             blocked = (f"capable hosts already serve another "
                                        f"managed {e['provider']} model")
+                            if desired.get("protect_unmanaged"):
+                                blocked = (f"capable hosts serve a {e['provider']} "
+                                           f"model Autopilot does not manage "
+                                           f"(protect other models is on)")
                         else:
                             best = max(avail.values(), default=0)
                             blocked = (

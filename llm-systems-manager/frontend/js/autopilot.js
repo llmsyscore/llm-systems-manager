@@ -399,6 +399,8 @@ function _render() {
   if (_dirty) { _renderDirtyNote(); return; }
   const toggle = document.getElementById('apEnabledToggle');
   if (toggle && _lastState) _setToggle(toggle, !!_lastState.enabled);
+  const protect = document.getElementById('apProtectToggle');
+  if (protect && _lastState) _setToggle(protect, !!_lastState.protect_unmanaged);
   _renderEntries();
 }
 
@@ -467,6 +469,7 @@ async function save() {
   if (!body) return;
   const state = {
     enabled: _toggleOn(toggle),
+    protect_unmanaged: _toggleOn(document.getElementById('apProtectToggle')),
     entries: readEntries(body),
     hosts: (_lastState && _lastState.hosts) || {},
   };
@@ -556,8 +559,9 @@ function _wire() {
     entries_.addEventListener('input', _markDirty);
     entries_.addEventListener('change', _markDirty);
   }
-  const toggle_ = document.getElementById('apEnabledToggle');
-  if (toggle_) {
+  ['apEnabledToggle', 'apProtectToggle'].forEach(id => {
+    const toggle_ = document.getElementById(id);
+    if (!toggle_) return;
     toggle_.addEventListener('change', _markDirty);
     if (toggle_.tagName === 'BUTTON') {
       toggle_.addEventListener('click', () => {
@@ -566,7 +570,7 @@ function _wire() {
         _renderDirtyNote();
       });
     }
-  }
+  });
 }
 
 // Called on sub-tab entry (mirrors adminAuditLoad/initReportCard). Forces

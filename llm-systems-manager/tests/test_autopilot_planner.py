@@ -777,3 +777,56 @@ def test_displacement_leftover_is_not_spent_by_another_provider_this_pass():
     obs = {"agents": ag, "model_sizes_mb": {"llama:m1": 3000, "vllm:v": 15000}}
     acts = pl.plan(_desired([E, ev]), obs, _ledger(), now=100000.0)
     assert [(a.model, a.agent_id) for a in acts] == [("m1", A1)]
+
+
+# ── #779: protect_unmanaged — Autopilot never displaces a model it does not manage
+
+def _two_hosts_with_unmanaged():
+    ags = _agents()
+    ags[A1] = {**ags[A1], "loaded": {"llama": ["other-a"]}}
+    ags[A2] = {**ags[A2], "loaded": {"llama": ["other-b"]}}
+    return {"agents": ags, "model_sizes_mb": {"llama:m1": 4000, "llama:other-a": 4000,
+                                              "llama:other-b": 4000}}
+
+
+def test_without_protect_a_second_host_gets_displaced():
+    obs = _two_hosts_with_unmanaged()
+    acts = pl.plan(_desired([E]), obs, _ledger(), now=1000.0)
+    assert [a.kind for a in acts] == ["load"]
+    assert "displacing" in acts[0].reason
+
+
+def test_protect_unmanaged_blocks_every_displacement():
+    obs = _two_hosts_with_unmanaged()
+    desired = {**_desired([E]), "protect_unmanaged": True}
+    assert pl.plan(desired, obs, _ledger(), now=1000.0) == []
+    st = pl.entry_status(desired, obs, _ledger(), now=1000.0)["m1/llama"]
+    assert st["placed"] == 0 and "does not manage" in st["blocked"]
+    assert "protect other models" in st["blocked"]
+
+
+def test_protect_unmanaged_gives_no_displacement_credit():
+    obs = _two_hosts_with_unmanaged()
+    desired = {**_desired([E]), "protect_unmanaged": True}
+    free, free_ram, entries, residents, managed = pl._init_pass(desired, obs, _ledger(), 1000.0)
+    assert ("llama", "other-a") in managed and ("llama", "other-b") in managed
+    assert pl._displace_credit(E, A1, residents, managed, obs) == 0
+    assert pl._resident_conflict(E, A1, residents, managed) is True
+
+
+def test_protect_unmanaged_still_places_on_an_empty_host():
+    obs = _two_hosts_with_unmanaged()
+    obs["agents"][A2] = {**obs["agents"][A2], "loaded": {"llama": []}}
+    desired = {**_desired([E]), "protect_unmanaged": True}
+    acts = pl.plan(desired, obs, _ledger(), now=1000.0)
+    assert [(a.kind, a.agent_id) for a in acts] == [("load", A2)]
+    assert "displacing" not in acts[0].reason
+
+
+def test_protect_unmanaged_does_not_touch_the_entry_own_model():
+    # An entry already resident on a host is not "another" model.
+    obs = _two_hosts_with_unmanaged()
+    obs["agents"][A1] = {**obs["agents"][A1], "loaded": {"llama": ["m1"]}}
+    desired = {**_desired([E]), "protect_unmanaged": True}
+    assert pl.plan(desired, obs, _ledger(), now=1000.0) == []
+    assert pl.entry_status(desired, obs, _ledger(), now=1000.0)["m1/llama"]["placed"] == 1

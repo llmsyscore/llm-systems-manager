@@ -107,7 +107,8 @@ def _patch_registry(monkeypatch):
 
 def test_get_state_default_when_no_autopilot_key(monkeypatch):
     _patch_registry(monkeypatch)
-    assert ap.get_state() == {"enabled": False, "entries": [], "hosts": {}}
+    assert ap.get_state() == {"enabled": False, "protect_unmanaged": False,
+                              "entries": [], "hosts": {}}
 
 
 def test_get_state_default_mutation_does_not_leak(monkeypatch):
@@ -116,7 +117,8 @@ def test_get_state_default_mutation_does_not_leak(monkeypatch):
     first["entries"].append({"model": "phantom", "provider": "llama"})
     first["hosts"]["x"] = {"sleep_after_idle_min": 5}
     second = ap.get_state()
-    assert second == {"enabled": False, "entries": [], "hosts": {}}
+    assert second == {"enabled": False, "protect_unmanaged": False,
+                      "entries": [], "hosts": {}}
 
 
 def test_set_state_get_state_roundtrip(monkeypatch):
@@ -245,3 +247,41 @@ def test_route_sync_multi_replica_two_placed_no_pin_no_write():
     obs = _rs_observed(loaded_a=("m1",), loaded_b=("m1",))
     glob = {"llama_pool": [AGENT_A, AGENT_B]}
     assert ap.route_sync_writes(_rs_desired(max_replicas=2), obs, glob) == []
+
+
+# ── #779: protect_unmanaged flag + busy-aware route sync ──────────────
+
+def test_validate_state_carries_protect_unmanaged():
+    assert ap.validate_state({"entries": []})["protect_unmanaged"] is False
+    assert ap.validate_state({"entries": [], "protect_unmanaged": 1})["protect_unmanaged"] is True
+    assert ap._default_state()["protect_unmanaged"] is False
+
+
+def test_route_sync_skips_pool_add_for_a_busy_host():
+    obs = _rs_observed(loaded_a=("m1",), loaded_b=("m1",))
+    writes = ap.route_sync_writes(_rs_desired(max_replicas=2), obs, {}, busy={AGENT_B})
+    assert writes == [("pool_add", "llama", AGENT_A)]
+
+
+def test_route_sync_pins_past_a_busy_host_to_the_next_placed_copy():
+    obs = _rs_observed(loaded_a=("m1",), loaded_b=("m1",))
+    writes = ap.route_sync_writes(_rs_desired(), obs, {}, busy={AGENT_A})
+    assert writes == [("pin", "llama", "m1", AGENT_B)]
+
+
+def test_route_sync_writes_nothing_when_the_only_copy_is_busy():
+    writes = ap.route_sync_writes(_rs_desired(), _rs_observed(), {}, busy={AGENT_A})
+    assert writes == []
+
+
+def test_route_sync_keeps_a_current_pin_on_a_busy_host():
+    glob = {"llama_model_pins": {"m1": AGENT_A}}
+    assert ap.route_sync_writes(_rs_desired(), _rs_observed(), glob, busy={AGENT_A}) == []
+
+
+def test_route_sync_still_clears_a_pin_for_two_replicas_when_hosts_are_busy():
+    glob = {"llama_model_pins": {"m1": AGENT_A}, "llama_pool": [AGENT_A, AGENT_B]}
+    obs = _rs_observed(loaded_a=("m1",), loaded_b=("m1",))
+    writes = ap.route_sync_writes(_rs_desired(max_replicas=2), obs, glob,
+                                  busy={AGENT_A, AGENT_B})
+    assert writes == [("pin", "llama", "m1", None)]

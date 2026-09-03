@@ -211,13 +211,28 @@ def test_tick_invokes_route_sync_with_state_and_ledger():
     r = ap.Reconciler(get_state=lambda: state,
                       build_observed=lambda: observed,
                       executor=lambda a: True,
-                      route_sync=lambda d, o, led, now: seen.append((d, led, now)))
+                      route_sync=lambda d, o, led, now, busy: seen.append((d, led, now, busy)))
     r.tick(now=1000.0)
     assert seen and seen[0][0] is state
     assert seen[0][1] is r.ledger and seen[0][2] == 1000.0
+    assert seen[0][3] == set()
+
+
+def test_tick_hands_route_sync_the_busy_hosts():
+    """#779: a host running a Tools job must not be pooled or pinned to."""
+    seen = []
+    state = {"enabled": True, "hosts": {}, "entries": []}
+    observed = {"agents": {}, "model_sizes_mb": {}, "sat_history": {}}
+    r = ap.Reconciler(get_state=lambda: state,
+                      build_observed=lambda: observed,
+                      executor=lambda a: True,
+                      route_sync=lambda d, o, led, now, busy: seen.append(busy),
+                      busy_agents=lambda: {A2})
+    r.tick(now=1000.0)
+    assert seen == [{A2}]
 
 def test_tick_survives_route_sync_failure():
-    def _boom(d, o, led, now):
+    def _boom(d, o, led, now, busy):
         raise RuntimeError("sync failed")
     r = ap.Reconciler(get_state=lambda: {"enabled": True, "hosts": {},
                                          "entries": []},
@@ -234,7 +249,7 @@ def test_auto_surplus_scale_down_hides_unloaded_copy_from_route_sync():
     seen = []
     r, calls, observed = _mk(
         auto=True, loaded=(True, True), placed_at={A1: 100.0, A2: 500.0},
-        route_sync=lambda d, o, led, now: seen.append(
+        route_sync=lambda d, o, led, now, busy: seen.append(
             pl._effective_placements(d["entries"][0], "m1/llama", o, led, now)))
     r.tick(now=1000.0)
     assert [a.kind for a in calls] == ["scale_down"] and calls[0].agent_id == A1

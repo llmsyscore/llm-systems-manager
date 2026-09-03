@@ -27,7 +27,8 @@ _AUTOSCALE_DEFAULTS = {"target_saturation": 0.75, "up_window_s": 120,
 
 
 def _default_state() -> dict:
-    return {"enabled": False, "entries": [], "hosts": {}}
+    return {"enabled": False, "protect_unmanaged": False, "entries": [],
+            "hosts": {}}
 
 
 def _coerce_int(val, field: str) -> int:
@@ -47,7 +48,9 @@ def _validate_placement(val) -> str:
 
 
 def validate_state(raw: dict) -> dict:
-    out = {"enabled": bool(raw.get("enabled")), "entries": [], "hosts": {}}
+    out = {"enabled": bool(raw.get("enabled")),
+           "protect_unmanaged": bool(raw.get("protect_unmanaged")),
+           "entries": [], "hosts": {}}
     seen = set()
     entries = raw.get("entries") or []
     if not isinstance(entries, list):
@@ -476,11 +479,14 @@ def _copy_nested(d: dict) -> dict:
 
 def route_sync_writes(desired: dict, observed: dict, glob: dict,
                       ledger: "dict | None" = None,
-                      now: "float | None" = None) -> "list[tuple]":
+                      now: "float | None" = None,
+                      busy: "set[str] | None" = None) -> "list[tuple]":
     """Routing writes converging pins/pools to current placements
     (observed samples + fresh in-flight ledger placements):
-    ("pin", provider, model, agent_id) and ("pool_add", provider, agent_id)."""
+    ("pin", provider, model, agent_id) and ("pool_add", provider, agent_id).
+    Hosts in busy (a Tools run in flight, #779) receive no new traffic."""
     writes: "list[tuple]" = []
+    busy = busy or set()
     if not desired.get("enabled"):
         return writes
     for e in desired.get("entries") or []:
@@ -492,7 +498,7 @@ def route_sync_writes(desired: dict, observed: dict, glob: dict,
         if multi:
             pool = glob.get(f"{prov}_pool") or []
             writes.extend(("pool_add", prov, aid) for aid in placed
-                          if aid not in pool)
+                          if aid not in pool and aid not in busy)
         spec = providers.get(prov)
         pin_key = getattr(spec, "pin_dict_key", None)
         if not pin_key:
@@ -504,8 +510,10 @@ def route_sync_writes(desired: dict, observed: dict, glob: dict,
                 writes.append(("pin", prov, model, None))
             continue
         # placed already contains live agents only.
-        target = cur if cur in placed else placed[0]
-        if cur != target:
+        if cur in placed:
+            continue
+        target = next((aid for aid in placed if aid not in busy), None)
+        if target is not None:
             writes.append(("pin", prov, model, target))
     return writes
 
@@ -563,7 +571,8 @@ class Reconciler:
                                             "reason": a.reason}
             if self._route_sync:
                 try:
-                    self._route_sync(desired, observed, self.ledger, now)
+                    busy = self._busy_agents() if self._busy_agents else set()
+                    self._route_sync(desired, observed, self.ledger, now, busy)
                 except Exception as e:
                     log.warning("autopilot route sync failed: %s", e)
             self.last_plan_ts = now
@@ -1082,11 +1091,12 @@ def _prod_executor(action) -> bool:
 
 def _prod_route_sync(desired: dict, observed: dict,
                      ledger: "dict | None" = None,
-                     now: "float | None" = None) -> None:
+                     now: "float | None" = None,
+                     busy: "set[str] | None" = None) -> None:
     """Apply route_sync_writes via the same pin/pool helpers the executor
     uses; every write is logged."""
     glob = (agent_registry.load_agents().get("global") or {})
-    for w in route_sync_writes(desired, observed, glob, ledger, now):
+    for w in route_sync_writes(desired, observed, glob, ledger, now, busy):
         if w[0] == "pin":
             _, prov, model, aid = w
             _prod_set_pin(prov, model, aid)
