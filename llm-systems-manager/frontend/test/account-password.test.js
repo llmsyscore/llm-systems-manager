@@ -56,6 +56,22 @@ describe('default-password notice (#821)', () => {
   });
 });
 
+describe('user-row action tooltips (#845)', () => {
+  test('open upward and the action cell does not clip them', () => {
+    const css = readFileSync(join(here, '..', 'css', 'admin-tabs.css'), 'utf8');
+    const dom = new JSDOM(`<!doctype html><html><head><style>${css}</style></head><body>
+      <div id="adminTab"><div class="card" id="adminUsersCard"><table class="tbl"><tr>
+      <td class="r" id="cell"><div class="act"><button class="ib" id="b" data-tip="Reset password">k</button></div></td>
+      </tr></table></div></div></body></html>`);
+    const w = dom.window;
+    expect(w.getComputedStyle(w.document.getElementById('cell')).overflow).toBe('visible');
+    expect(w.getComputedStyle(w.document.getElementById('b'), '::after').top).toBe('auto');
+    const rule = [...w.document.styleSheets[0].cssRules]
+      .find(r => r.selectorText === '#adminUsersCard .act [data-tip]::after');
+    expect(rule.style.getPropertyValue('bottom')).toBe('calc(100% + 6px)');
+  });
+});
+
 describe('change-password dialog', () => {
   test('Save stays disabled and the hint counts down until the minimum is met', async () => {
     const w = harness(async () => [200, { ok: true }]);

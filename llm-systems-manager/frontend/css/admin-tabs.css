@@ -93,6 +93,9 @@
 #adminTab .tbl td.t b { color: var(--fg-muted); font-weight: 500; }
 #adminTab .tbl td .t.sm { font-size: 10.5px; }
 #adminTab .tbl td .act { display: flex; justify-content: flex-end; gap: 2px; position: relative; }
+/* user-row action tips open upward and must escape the clipping td */
+#adminUsersCard .tbl td.r { overflow: visible; }
+#adminUsersCard .act [data-tip]::after { top: auto; bottom: calc(100% + 6px); }
 #adminTab .tbl .empty { padding: 26px 16px; text-align: center; color: var(--fg-dim); font-size: 12.5px; font-family: var(--font-sans); white-space: normal; }
 #adminTab .ledger-f { display: flex; align-items: center; gap: 10px; padding: 10px 14px; border-top: 1px solid var(--border-soft); flex-wrap: wrap; }
 #adminTab .ledger-f .note { font-family: var(--font-mono); font-size: 11px; color: var(--fg-dim); }
