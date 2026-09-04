@@ -667,7 +667,7 @@ def _proxy_sdcpp(path: str, base: str):
     """Proxy a /sdcpp/... request to the image generation backend (relative
     SPA calls from the image-gen UI)."""
     url = base + "/sdcpp/" + path.lstrip("/")
-    headers = {k: v for k, v in flask_request.headers if k.lower() != "host"}
+    headers = _forward_headers()
     headers["X-Forwarded-For"] = flask_request.remote_addr or ""
     headers["X-Forwarded-Proto"] = flask_request.scheme
     headers["X-Forwarded-Host"] = flask_request.host
