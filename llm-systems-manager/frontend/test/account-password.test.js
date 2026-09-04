@@ -43,6 +43,19 @@ const open = (w) => {
     hint: q('apHint'), err: q('apCurErr') };
 };
 
+describe('default-password notice (#821)', () => {
+  test('the hidden attribute wins over the Admin notice display rule', () => {
+    const css = readFileSync(join(here, '..', 'css', 'admin-tabs.css'), 'utf8');
+    const dom = new JSDOM(`<!doctype html><html><head><style>${css}</style></head><body>
+      <div id="adminTab"><div class="notice" id="n" hidden>Default password in use</div></div></body></html>`);
+    const w = dom.window;
+    const n = w.document.getElementById('n');
+    expect(w.getComputedStyle(n).display).toBe('none');
+    n.hidden = false;
+    expect(w.getComputedStyle(n).display).toBe('flex');
+  });
+});
+
 describe('change-password dialog', () => {
   test('Save stays disabled and the hint counts down until the minimum is met', async () => {
     const w = harness(async () => [200, { ok: true }]);

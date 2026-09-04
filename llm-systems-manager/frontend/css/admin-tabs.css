@@ -72,6 +72,7 @@
 
 /* slim notices */
 #adminTab .notice { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; padding: 9px 14px; border-radius: 8px; border: 1px solid var(--border); background: var(--bg-card); margin-bottom: 12px; font-size: 12.5px; box-shadow: inset 3px 0 0 var(--warn); }
+#adminTab .notice[hidden] { display: none !important; }
 #adminTab .notice.crit { box-shadow: inset 3px 0 0 var(--crit); }
 #adminTab .notice.info { box-shadow: inset 3px 0 0 var(--accent); }
 #adminTab .notice b { font-weight: 600; }
