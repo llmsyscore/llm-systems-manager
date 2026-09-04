@@ -1,5 +1,5 @@
-"""Last manual backup export per component, persisted as a small JSON under
-the data dir so the Backup & Restore card survives a restart."""
+"""Last manual backup per component, persisted as a small JSON under the
+data dir."""
 from __future__ import annotations
 
 import json

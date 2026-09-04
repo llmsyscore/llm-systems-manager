@@ -231,7 +231,7 @@
     });
   }
 
-  // Standalone renderer reused by the Backup & Restore settings card (#797).
+  // Standalone renderer reused by the Backups settings card (#797).
   function renderFields(entries, values, defs, over) {
     const opt = Object.assign({
       defs: defs || defaults(),

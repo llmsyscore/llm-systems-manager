@@ -284,6 +284,12 @@
     .sub-tab-btn.active { border-bottom-color: var(--accent-2); color: var(--accent-2); }
     .sub-tab-panel { display: none; }
     .sub-tab-panel.active { display: block; }
+    /* Tools tab (#847): flex column — nav at its own height, active panel
+       fills the rest. */
+    #toolsTab { display: flex; flex-direction: column; background: var(--bg); }
+    #toolsTab .sub-tab-nav { flex: 0 0 auto; padding: 10px 4px; margin-bottom: 0; }
+    #toolsTab .sub-tab-panel.active { flex: 1 1 auto; min-height: 0; }
+    #toolsTab iframe { display: block; width: 100%; height: 100%; border: none; }
     /* Unified status system — one chip primitive + semantic modifiers, all
        token-driven via color-mix so they hold across every theme. Replaces
        .status-pill/.pill-*, .agent-badge/.agent-*, .adm-badge/*, and the

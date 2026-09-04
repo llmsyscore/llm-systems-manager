@@ -5,6 +5,7 @@ import { JSDOM } from 'jsdom';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
+import { blockSrc } from './helpers/harness.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const adminSrc = readFileSync(join(here, '..', 'js', 'admin.js'), 'utf8');
@@ -13,7 +14,7 @@ const indexSrc = readFileSync(join(here, '..', 'index.html'), 'utf8');
 
 // The real panel markup, lifted from index.html so ids stay in lockstep.
 const STAMP = indexSrc.slice(indexSrc.indexOf('<button type="button" class="hc-stamp"'), indexSrc.indexOf('</button>', indexSrc.indexOf('id="adminRefreshStamp"')) + 9);
-const PANEL = STAMP + indexSrc.slice(indexSrc.indexOf('<div id="admin-agents"'), indexSrc.indexOf('<!-- Routing sub-tab'));
+const PANEL = STAMP + blockSrc(indexSrc, '<div id="admin-agents"', '<!-- Gateway sub-tab', { includeEnd: false });
 
 function harness(bootstrap, body = PANEL) {
   const dom = new JSDOM(`<!doctype html><html><head></head><body>${body}</body></html>`,

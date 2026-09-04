@@ -1,7 +1,7 @@
 // #476: Pools & Pins + Autopilot consolidated into one routing sub-tab,
 // Admin sub-tabs alphabetized, Agents roster / Audit table column-sortable.
 import { describe, it, expect, beforeAll, beforeEach } from 'vitest';
-import { srcFile, runHarness as sharedRunHarness, loadSwitchSubTab } from './helpers/harness.js';
+import { srcFile, blockSrc, runHarness as sharedRunHarness, loadSwitchSubTab } from './helpers/harness.js';
 
 const bootSrc = srcFile('js/boot.js');
 const adminSrc = srcFile('js/admin.js');
@@ -10,7 +10,7 @@ const apSrc = srcFile('js/autopilot.js');
 const indexSrc = srcFile('index.html');
 
 // The Agents panel markup (#793), lifted from index.html so ids stay in lockstep.
-const agentsPanelHtml = indexSrc.slice(indexSrc.indexOf('<div id="admin-agents"'), indexSrc.indexOf('<!-- Routing sub-tab'));
+const agentsPanelHtml = blockSrc(indexSrc, '<div id="admin-agents"', '<!-- Gateway sub-tab', { includeEnd: false });
 
 function runAdminHarness(bootstrap, bodyHtml = '') {
   const defaultSortable =
@@ -71,10 +71,10 @@ describe('routing sub-tab consolidation (#476)', () => {
     expect(document.getElementById('adminProviderModels')).toBeNull();
   });
 
-  it('nav has a single Routing button wired to the routing sub-tab', () => {
+  it('nav has a single Gateway button wired to the routing sub-tab', () => {
     const btn = document.getElementById('subTabBtnAdminRouting');
     expect(btn).toBeTruthy();
-    expect(btn.textContent).toBe('Routing');
+    expect(btn.textContent).toBe('Gateway');
     expect(btn.getAttribute('onclick')).toContain("switchSubTab('admin','routing')");
     expect(document.getElementById('subTabBtnAdminPool')).toBeNull();
     expect(document.getElementById('subTabBtnAdminAutopilot')).toBeNull();

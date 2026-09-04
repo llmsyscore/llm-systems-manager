@@ -175,15 +175,14 @@
   // Which drawer sections a page gets. Card pages: Overall + the four card
   // dashboards; every other tab (and the Energy/OpenClaw sub-tabs) has none.
   const CARD_PAGES = {
-    'overall':            { label: 'LLM Overall',           hidden: 'hiddenOverall', cols: 'overallCols', order: 'overallOrder', grid: 'overallGrid', borrowed: 'overallBorrowed' },
-    'dashboard/llamacpp': { label: 'Dashboard · llama.cpp', hidden: 'hidden',        cols: 'cols',        order: 'order',        grid: 'cardGrid' },
-    'dashboard/lmstudio': { label: 'Dashboard · LM Studio', hidden: 'lmsHidden',     cols: 'lmsCols',     order: 'lmsOrder',     grid: 'lmsCardGrid' },
-    'dashboard/vllm':     { label: 'Dashboard · vLLM',      hidden: 'vllmHidden',    cols: 'vllmCols',    order: 'vllmOrder',    grid: 'vllmCardGrid' },
-    'dashboard/manager':  { label: 'Dashboard · Manager',   hidden: 'managerHidden', cols: 'managerCols', order: 'managerOrder', grid: 'managerCardGrid' },
+    'overall':            { label: 'Overall',               hidden: 'hiddenOverall', cols: 'overallCols', order: 'overallOrder', grid: 'overallGrid', borrowed: 'overallBorrowed' },
+    'dashboard/llamacpp': { label: 'Dashboards · llama.cpp', hidden: 'hidden',        cols: 'cols',        order: 'order',        grid: 'cardGrid' },
+    'dashboard/lmstudio': { label: 'Dashboards · LM Studio', hidden: 'lmsHidden',     cols: 'lmsCols',     order: 'lmsOrder',     grid: 'lmsCardGrid' },
+    'dashboard/vllm':     { label: 'Dashboards · vLLM',      hidden: 'vllmHidden',    cols: 'vllmCols',    order: 'vllmOrder',    grid: 'vllmCardGrid' },
+    'dashboard/manager':  { label: 'Dashboards · Manager',   hidden: 'managerHidden', cols: 'managerCols', order: 'managerOrder', grid: 'managerCardGrid' },
   };
   const PAGE_LABELS = {
-    dashboard: 'Dashboard', llm: 'LLM Control', events: 'Events', openclaw: 'OpenClaw',
-    llmchat: 'LLM Chat', imggen: 'Image Generation', admin: 'Admin',
+    dashboard: 'Dashboards', llm: 'LLM Control', events: 'Events', tools: 'Tools', admin: 'Admin',
   };
   const SUB_LABELS = { energy: 'Energy', openclaw: 'OpenClaw' };
 
@@ -192,7 +191,7 @@
     const page = CARD_PAGES[key];
     if (page) return { kind: 'cards', key, ...page };
     let label = PAGE_LABELS[activeTab] || activeTab;
-    if (activeTab === 'dashboard' && SUB_LABELS[dashSub]) label = `Dashboard · ${SUB_LABELS[dashSub]}`;
+    if (activeTab === 'dashboard' && SUB_LABELS[dashSub]) label = `Dashboards · ${SUB_LABELS[dashSub]}`;
     return { kind: 'none', key, label };
   }
 
