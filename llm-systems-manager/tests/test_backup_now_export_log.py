@@ -14,6 +14,9 @@ def backup_env(tmp_path, monkeypatch):
     bdir = tmp_path / "backups"
     monkeypatch.setattr(M, "_BACKUP_DIR", bdir)
     monkeypatch.setattr(M, "_BACKUP_STATUS_FILE", bdir / "last_backup.json")
+    monkeypatch.setattr(M, "_alarm_engine_url", "")
+    # Keep the on-disk config out of the run: backup-now reads live settings otherwise.
+    monkeypatch.setattr(M, "_backup_reload_if_changed", lambda: None)
     M._backup_status.clear()
     export_log.configure(tmp_path / "last_export.json")
     monkeypatch.setattr(M, "_require_admin", lambda: None)
@@ -240,3 +243,46 @@ def test_backup_archive_get_passes_the_audit_hook_gate(backup_env, monkeypatch):
     rows.clear()
     c.get("/api/admin/backup-status")
     assert rows == []
+
+
+# ── #855: status carries both components ─────────────────────────────
+
+def _fake_ae_blob(passphrase):
+    import _archive
+    return _archive.encrypt(_archive.pack_tar({"manifest.json": b"{}"}), passphrase or None)
+
+
+def test_backup_status_lists_the_component_per_archive(backup_env, monkeypatch):
+    c, _ = backup_env
+    monkeypatch.setattr(M, "_ae_backup_coverage", lambda: None)
+    monkeypatch.setattr(M, "_fetch_ae_export_blob", _fake_ae_blob)
+    M._run_scheduled_backup("", 3, "")
+    d = c.get("/api/admin/backup-status").get_json()
+    comps = sorted(b["component"] for b in d["backups"])
+    assert comps == ["alarm_engine", "manager"]
+    assert all(b["run"] for b in d["backups"])
+    assert len({b["run"] for b in d["backups"]}) == 1
+    assert d["last"]["components"]["alarm_engine"]["ok"] is True
+    assert d["last"]["partial"] is False
+    assert d["not_covered"] == {}
+
+
+def test_backup_status_says_when_the_ae_is_not_covered(backup_env, monkeypatch):
+    c, _ = backup_env
+    monkeypatch.setattr(M, "_alarm_engine_url", "")
+    d = c.get("/api/admin/backup-status").get_json()
+    assert "alarm_engine_url" in d["not_covered"]["alarm_engine"]
+
+
+def test_backup_now_reports_partial_runs(backup_env, monkeypatch):
+    c, _ = backup_env
+    monkeypatch.setattr(M, "_ae_backup_coverage", lambda: None)
+    def fetch(passphrase):
+        raise M._AeBackupError("unreachable", "no route", "check the network")
+    monkeypatch.setattr(M, "_fetch_ae_export_blob", fetch)
+    r = c.post("/api/admin/backup-now")
+    assert r.status_code == 200
+    d = r.get_json()
+    assert d["ok"] is True and d["last"]["partial"] is True
+    assert d["last"]["components"]["alarm_engine"]["ok"] is False
+    assert d["last"]["components"]["alarm_engine"]["remedy"] == "check the network"

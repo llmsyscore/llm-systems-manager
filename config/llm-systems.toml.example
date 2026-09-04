@@ -237,12 +237,11 @@ lockout_duration_s = 900
 palette = "indigo"
 
 [manager.backup]
-# Scheduled automatic backups: export archive (same format as Admin →
-# Backup & Restore) written to data/backups/, pruned past keep_last.
-# Archives are UNENCRYPTED unless passphrase is set.
+# Scheduled backups: one manager + one alarm-engine archive per run under
+# data/backups/, pruned past keep_last runs. UNENCRYPTED unless passphrase is set.
 enabled = true
 interval_hours = 24.0                                    # 0 disables the scheduler
-keep_last = 7                                            # archives retained after pruning
+keep_last = 7                                            # backup runs retained after pruning
 
 # ★ Secret (when set). AES-256-GCM passphrase (12+ chars) for scheduled
 # archives; also required to import them. Blank = plaintext archives.

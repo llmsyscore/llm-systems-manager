@@ -95,7 +95,7 @@ CATALOG: list[dict] = [
     # backup — hot: the scheduler re-reads these before every run
     _e("manager.backup.enabled", "bool", "Scheduled backups", "Automatic backup archives written to data/backups/.", "backup", MANAGER, hot=True, common=True),
     _e("manager.backup.interval_hours", "float", "Interval (hours)", "0 disables the scheduler.", "backup", MANAGER, min=0, max=8760, hot=True, common=True),
-    _e("manager.backup.keep_last", "int", "Keep last", "Archives retained after pruning.", "backup", MANAGER, min=1, max=1000, hot=True),
+    _e("manager.backup.keep_last", "int", "Keep last", "Backup runs retained after pruning (each run holds one manager and one alarm-engine archive).", "backup", MANAGER, min=1, max=1000, hot=True),
     _e("manager.backup.passphrase", "str", "Backup passphrase", "12+ chars enables AES-256-GCM; blank = plaintext archives.", "backup", MANAGER, secret=True, hot=True),
     _e("manager.backup.mirror_dir", "str", "Mirror directory", "Absolute path of an existing, writable second copy destination (e.g. a NAS mount).", "backup", MANAGER, hot=True),
     # audit (#794) — hot: the manager re-reads these after every save

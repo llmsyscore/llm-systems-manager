@@ -234,8 +234,8 @@ class ManagerBranding(BaseModel):
 
 
 class ManagerBackup(BaseModel):
-    """Scheduled automatic backups (#218): periodic manager export archives
-    written under data/backups/ with retention pruning."""
+    """Scheduled automatic backups (#218, #855): periodic manager + alarm-engine
+    export archives written under data/backups/ with per-run retention pruning."""
     model_config = _MODEL_CFG
     enabled: bool = True
     interval_hours: float = 24.0

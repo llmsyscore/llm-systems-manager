@@ -539,7 +539,8 @@
       { name: 'Backups',
         detail: backup.enabled === false ? 'disabled'
           : (backupLast.ok === false ? 'last failed'
-            : ('last ' + age(backupLast.ts || backupLast.mtime, d.now) + ' · '
+            : ((backupLast.partial ? 'partial · ' : '')
+               + 'last ' + age(backupLast.ts || backupLast.mtime, d.now) + ' · '
                + (backup.keep_last != null ? backup.keep_last + ' kept' : 'ok'))) },
     ];
 
