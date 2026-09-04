@@ -71,8 +71,9 @@ def test_forward_headers_pin_accept_encoding_to_what_urllib3_decodes():
 def test_ws_shim_dials_the_bridge_with_a_ticket_when_the_bridge_is_on():
     js = proxies._build_openclaw_ws_patch("10.0.0.5:18789", "18789", "wss://mgr:5446/ws/openclaw", "1.n.s")
     assert '"wss://mgr:5446/ws/openclaw"' in js
-    assert '"1.n.s"' in js
+    assert 'Q=["1.n.s"]' in js
     assert "/api/openclaw-ws-ticket" in js
+    assert "Q.shift()" in js
     assert "10\\.0\\.0\\.5:18789" in js  # gateway-host dials are caught too
     assert "$1" not in js  # no direct host rewrite
 

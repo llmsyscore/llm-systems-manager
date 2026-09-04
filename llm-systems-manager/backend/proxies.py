@@ -492,7 +492,7 @@ def proxy_stream_to_primary(kind: str, path: str, *, primary_kind: "str | None" 
 
 # Browser request headers forwarded upstream, with Accept-Encoding pinned
 # to the encodings urllib3 decodes.
-_FORWARD_SKIP = _PROXY_HOP_BY_HOP | {"host", "accept-encoding"}
+_FORWARD_SKIP = (_PROXY_HOP_BY_HOP - {"content-encoding", "content-security-policy", "x-frame-options"}) | {"host", "accept-encoding"}
 
 
 def _forward_headers() -> dict:
@@ -539,47 +539,50 @@ def _proxy_llmchat(path: str, base: str):
         return _proxy_error("Proxy error", 502, e)
 
 
-def openclaw_ws_url_for_browser() -> str:
-    """Bridge URL the browser dials for the OpenClaw gateway ("" when the
-    bridge is off): wss on https pages with the operator cert, else ws."""
+def _bridge_url_for_browser(ws_path: str) -> str:
+    """Manager WS-bridge URL for `ws_path` ("" when the bridge is off): wss on
+    https pages when the operator-cert listener runs, else ws."""
     ws_proxy_port = int(getattr(settings.manager, "ws_proxy_port", 0) or 0)
     if ws_proxy_port <= 0:
         return ""
     wss_port = _deps.wss_bridge_port()
     if wss_port > 0 and _deps.request_is_https():
-        return f"wss://{_deps.request_host_no_port()}:{wss_port}/ws/openclaw"
-    return f"ws://{_deps.request_host_no_port()}:{ws_proxy_port}/ws/openclaw"
+        return f"wss://{_deps.request_host_no_port()}:{wss_port}{ws_path}"
+    return f"ws://{_deps.request_host_no_port()}:{ws_proxy_port}{ws_path}"
+
+
+def openclaw_ws_url_for_browser() -> str:
+    return _bridge_url_for_browser("/ws/openclaw")
 
 
 def _build_openclaw_ws_patch(netloc: str, port: str, bridge_url: str = "", ticket: str = "") -> str:
+    """WebSocket shim for the control UI: gateway dials go through the manager's
+    WS bridge with a one-shot ticket (fetching the next one), or straight to
+    the gateway host when the bridge is off."""
     if bridge_url:
-        # Gateway dials go through the manager's WS bridge with a one-shot ticket;
-        # each dial fetches the next ticket.
-        return (
-            "<script>"
-            "(function(){"
-            f"var B={safe_js(bridge_url)},T={safe_js(ticket)},_WS=window.WebSocket;"
+        # A small ticket queue: each dial takes one and fetches a replacement.
+        rewrite = (
+            f"var B={safe_js(bridge_url)},Q=[{safe_js(ticket)}];"
             f"var M=/^wss?:\\/\\/[^/]+\\/proxy\\/openclaw(\\/|\\?|$)/,G=/^wss?:\\/\\/{re.escape(netloc)}(\\/|\\?|$)/;"
             "function refresh(){fetch('/api/openclaw-ws-ticket',{credentials:'same-origin'})"
-            ".then(function(r){return r.json()}).then(function(j){if(j&&j.ticket)T=j.ticket;}).catch(function(){});}"
-            "window.WebSocket=function(url,p){var u=String(url);"
-            "if(M.test(u)||G.test(u)){url=B+'?ticket='+encodeURIComponent(T);refresh();}"
-            "return p?new _WS(url,p):new _WS(url);};"
-            "window.WebSocket.prototype=_WS.prototype;"
-            "Object.assign(window.WebSocket,{CONNECTING:0,OPEN:1,CLOSING:2,CLOSED:3});"
-            "})();"
-            "</script>"
+            ".then(function(r){return r.json()}).then(function(j){if(j&&j.ticket)Q.push(j.ticket);}).catch(function(){});}"
+            "refresh();"
+            "function fix(u){u=String(u);if(M.test(u)||G.test(u)){var t=Q.shift()||'';refresh();return B+'?ticket='+encodeURIComponent(t);}return u;}"
+        )
+    else:
+        rewrite = (
+            "function fix(u){u=String(u);"
+            f"if(/^wss?:\\/\\//.test(u)&&!/^wss?:\\/\\/[^/]+:{port}/.test(u)){{"
+            f"u=u.replace(/^(wss?:\\/\\/)[^/]+(\\/.*)$/,'$1{netloc}$2');}}"
+            "return u;}"
         )
     return (
         "<script>"
         "(function(){"
         "var _WS=window.WebSocket;"
-        "window.WebSocket=function(url,p){"
-        f"if(/^wss?:\\/\\//.test(url)&&!/^wss?:\\/\\/[^/]+:{port}/.test(url)){{"
-        f"url=url.replace(/^(wss?:\\/\\/)[^/]+(\\/.*)$/,'$1{netloc}$2');"
-        "}"
-        "return p?new _WS(url,p):new _WS(url);"
-        "};"
+        + rewrite +
+        "window.WebSocket=function(url,p){url=fix(url);return p?new _WS(url,p):new _WS(url);};"
+        "window.WebSocket.prototype=_WS.prototype;"
         "Object.assign(window.WebSocket,{CONNECTING:0,OPEN:1,CLOSING:2,CLOSED:3});"
         "})();"
         "</script>"
@@ -604,8 +607,6 @@ def _rewrite_openclaw_html(body: str) -> str:
 def _proxy_openclaw(path: str, base: str):
     netloc = urlparse(base).netloc or ""
     port = (netloc.split(":") + ["80"])[1]
-    bridge = openclaw_ws_url_for_browser()
-    ws_patch = _build_openclaw_ws_patch(netloc, port, bridge, _deps.ws_ticket("/ws/openclaw") if bridge else "")
     url = base + "/" + path.lstrip("/")
     try:
         qs = flask_request.query_string.decode("utf-8")
@@ -637,6 +638,8 @@ def _proxy_openclaw(path: str, base: str):
         # For HTML responses, inject the WS-redirect shim before </head>.
         ct = upstream.headers.get("content-type", "")
         if "text/html" in ct:
+            bridge = openclaw_ws_url_for_browser()
+            ws_patch = _build_openclaw_ws_patch(netloc, port, bridge, _deps.ws_ticket("/ws/openclaw") if bridge else "")
             body = _rewrite_openclaw_html(upstream.content.decode("utf-8", errors="replace"))
             if "</head>" in body:
                 body = body.replace("</head>", ws_patch + "</head>", 1)
@@ -864,14 +867,9 @@ def ae_ws_url_for_browser() -> str:
     # browser doesn't have to trust it. getattr() guards an upgraded deploy
     # whose local config/unified_config.py predates these fields (the file is
     # gitignored and update.sh doesn't re-render it).
-    ws_proxy_port = int(getattr(settings.manager, "ws_proxy_port", 0) or 0)
-    if ws_proxy_port > 0:
-        # https pages mixed-content-block plain ws, so when the bridge has a
-        # wss listener (operator cert, #525) secure pages are sent there.
-        wss_port = _deps.wss_bridge_port()
-        if wss_port > 0 and _deps.request_is_https():
-            return f"wss://{_deps.request_host_no_port()}:{wss_port}/ws/alarm"
-        return f"ws://{_deps.request_host_no_port()}:{ws_proxy_port}/ws/alarm"
+    bridge = _bridge_url_for_browser("/ws/alarm")
+    if bridge:
+        return bridge
     # No bridge + AE bearer configured → no browser-usable URL (#519).
     if ae_auth.effective_bearer(settings):
         return ""

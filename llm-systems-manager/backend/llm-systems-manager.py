@@ -6840,11 +6840,17 @@ def _maybe_start_manager_tls_server() -> None:
 # ── WS bridge tickets ─────────────────────────────────────────────────
 # Bridge paths a ticket can be signed for; the subject binds a ticket to one path.
 _WS_BRIDGE_PATHS = ("/ws/alarm", "/ws/openclaw")
-_WS_TICKET_SUBJECT = "ws|/ws/alarm"
 
 
 def _ws_ticket_subject(path: str) -> str:
     return f"ws|{path}"
+
+
+def _ws_bridge_path(req_target: str) -> str:
+    """The bridge path a request target addresses ("" when it is not one)."""
+    from urllib.parse import urlsplit
+    p = urlsplit(req_target or "/").path
+    return next((b for b in _WS_BRIDGE_PATHS if p.startswith(b)), "")
 
 
 def _ws_ticket_ttl() -> int:
@@ -6909,19 +6915,12 @@ def ws_handshake_denial(req_target: str) -> "tuple[int, str] | None":
     handshake, or None to bridge it."""
     from urllib.parse import parse_qs, urlsplit
     parts = urlsplit(req_target or "/")
-    path = next((p for p in _WS_BRIDGE_PATHS if parts.path.startswith(p)), None)
-    if path is None:
+    path = _ws_bridge_path(req_target)
+    if not path:
         return (1008, "unknown path")
     if not _consume_ws_ticket((parse_qs(parts.query).get("ticket") or [""])[0], path):
         return (1008, "unauthorized")
     return None
-
-
-def _ws_bridge_path(req_target: str) -> str:
-    """The bridge path a request target addresses ("" when it is not one)."""
-    from urllib.parse import urlsplit
-    p = urlsplit(req_target or "/").path
-    return next((b for b in _WS_BRIDGE_PATHS if p.startswith(b)), "")
 
 
 # Issue the tickets the WS bridge requires; gated by the before_request hook.
@@ -6937,11 +6936,12 @@ def openclaw_ws_ticket():
 
 def _maybe_start_alarm_ws_proxy() -> None:
     """Standalone websockets server (separate daemon thread, own asyncio loop)
-    that bridges browser → alarm-engine WS. Needed because Cheroot WSGI can't
-    speak WS, so we can't proxy on the main port. Browsers hit /ws/alarm on
-    this port with a ?ticket= from /api/alarm-ws-ticket; the proxy verifies it,
-    then opens upstream ws/wss to the AE (verifying its internal-CA-signed cert
-    when AE TLS is on) and pipes frames bidirectionally.
+    that bridges browser → alarm-engine WS (/ws/alarm) and browser → OpenClaw
+    gateway WS (/ws/openclaw). Needed because Cheroot WSGI can't speak WS, so
+    we can't proxy on the main port. Browsers hit a bridge path on this port
+    with a ?ticket= from the matching /api/*-ws-ticket route; the proxy
+    verifies it, opens the upstream ws/wss (verifying the AE's internal-CA
+    cert when AE TLS is on) and pipes frames bidirectionally.
 
     Enabled in the shipped config ([manager].ws_proxy_port = 5444); set 0 to
     disable, which costs live toasts but leaves the 30 s tab-dot poll intact.
@@ -6954,10 +6954,8 @@ def _maybe_start_alarm_ws_proxy() -> None:
         log.info("  WS proxy:    disabled (set [manager].ws_proxy_port to enable)")
         _ws_relay_state["status"] = "off"
         return
-    if not _alarm_engine_url and not proxies.resolve_proxy_target("openclaw"):
-        log.warning("  WS proxy:    skipped (no alarm engine URL or OpenClaw target configured)")
-        _ws_relay_state["status"] = "unknown"
-        return
+    if not _alarm_engine_url:
+        log.warning("  WS proxy:    no alarm engine URL configured; serving the OpenClaw bridge only")
     _ws_relay_state["status"] = "unknown"  # configured; flips to "connected" once serving
     import threading as _threading
 
@@ -6978,6 +6976,7 @@ def _maybe_start_alarm_ws_proxy() -> None:
             if ae_scheme == "wss":
                 ae_ssl = ssl.create_default_context(cafile=_AE_CA_PATH)
 
+        # Resolved per handshake: an "auto" target follows agent approvals.
         def _openclaw_ws_url() -> str:
             base = proxies.resolve_proxy_target("openclaw") or ""
             if not base:
@@ -7010,7 +7009,8 @@ def _maybe_start_alarm_ws_proxy() -> None:
         async def _handler(client_ws) -> None:
             # websockets v13+ passes the request target (path + query) on
             # client_ws.request.path.
-            req_target = getattr(getattr(client_ws, "request", None), "path", "/")
+            req = getattr(client_ws, "request", None)
+            req_target = getattr(req, "path", "/")
             denial = ws_handshake_denial(req_target)
             if denial is not None:
                 code, reason = denial
@@ -7019,11 +7019,11 @@ def _maybe_start_alarm_ws_proxy() -> None:
                     log.warning("WS proxy: rejected handshake from %s (bad or missing ticket)", peer)
                 await client_ws.close(code=code, reason=reason)
                 return
-            # /ws/openclaw → the OpenClaw gateway, browser Origin forwarded so its
-            # allowed-origins check sees the dashboard; /ws/alarm → the AE with its bearer (#519).
+            # /ws/openclaw → the OpenClaw gateway with the browser's Origin;
+            # /ws/alarm → the AE with the manager's bearer.
             if _ws_bridge_path(req_target) == "/ws/openclaw":
                 up_url, up_ssl, up_headers = _openclaw_ws_url(), None, None
-                origin = (getattr(client_ws, "request", None) and client_ws.request.headers.get("Origin")) or None
+                origin = getattr(req, "headers", {}).get("Origin") or None
             else:
                 up_url, up_ssl, origin = ae_ws_url, ae_ssl, None
                 up_headers = {"Authorization": f"Bearer {_AE_BEARER}"} if _AE_BEARER else None
