@@ -81,10 +81,15 @@
       'manager.audit.retention_days': Math.max(0, Math.floor(Number(form.retention) || 0)),
       'manager.audit.page_size': Math.max(10, Math.floor(Number(form.pageSize) || 25)),
       'manager.audit.save_automated': !!form.saveAutomated,
+      'manager.audit.automated_actors': parseActors(form.automatedActors),
       'manager.audit.disabled_events': disabled,
     };
   }
-  window.AuditView = { fmtShort, fmtFull, age, userCell, pageList, queryParams, atDefaults, settingsChanges, DEFAULTS };
+  // "a, b\nc" → ['a', 'b', 'c'] (deduped, blanks dropped).
+  function parseActors(text) {
+    return [...new Set(String(text == null ? '' : text).split(/[\s,;]+/).map(s => s.trim()).filter(Boolean))];
+  }
+  window.AuditView = { fmtShort, fmtFull, age, userCell, pageList, queryParams, atDefaults, settingsChanges, parseActors, DEFAULTS };
 
   // ── state ────────────────────────────────────────────────────────────────
   const state = { ...DEFAULTS, per: 25, page: 1, sel: null };
@@ -413,7 +418,7 @@
     if (foot) foot.addEventListener('click', ev => {
       if (ev.target.closest('[data-save]')) saveSettings();
       else if (ev.target.closest('[data-defaults]') && cfg) {
-        cfgForm = { retention: 60, pageSize: 25, saveAutomated: false, enabled: {} };
+        cfgForm = { retention: 60, pageSize: 25, saveAutomated: false, automatedActors: '', enabled: {} };
         cfg.groups.forEach(g => g.events.forEach(e => { cfgForm.enabled[e.key] = !!e.default_on; }));
         renderSettings();
       }
@@ -426,7 +431,8 @@
       const d = await r.json();
       if (!r.ok || !d.ok) throw new Error(d.error || ('HTTP ' + r.status));
       cfg = d;
-      cfgForm = { retention: d.config.retention_days, pageSize: d.config.page_size, saveAutomated: !!d.config.save_automated, enabled: {} };
+      cfgForm = { retention: d.config.retention_days, pageSize: d.config.page_size, saveAutomated: !!d.config.save_automated,
+                  automatedActors: (d.config.automated_actors || []).join(', '), enabled: {} };
       d.groups.forEach(g => g.events.forEach(e => { cfgForm.enabled[e.key] = !!e.enabled; }));
       renderSettings();
     } catch (e) {
@@ -456,7 +462,10 @@
           <div class="st-field"><label>Automated sources</label>
             ${toggle('Autopilot actions', execOn, 'data-ev="autopilot.executor"')}
             ${toggle('Unit tests', cfgForm.saveAutomated, 'data-cfg="save_automated"')}
-            <div class="help">Requests tagged <code>X-LLMSys-Source: test</code> (unit tests) are excluded when disabled.</div></div>
+            <div class="help">Requests tagged <code>X-LLMSys-Source: test</code> (unit tests) and the automated users below are excluded when disabled.</div></div>
+          <div class="st-field"><label for="auCfgAuto">Automated users</label>
+            <div class="row"><input class="au-in" id="auCfgAuto" type="text" placeholder="smoketestuser" spellcheck="false" style="width:100%"></div>
+            <div class="help">Usernames whose actions count as automated: hidden by <b>Hide automated</b>, recorded only while Unit tests is on. Comma-separated.</div></div>
           <div class="au-stat"><b>${Number(stats ? stats.total : total).toLocaleString()}</b> rows · ${purge}</div>
         </div>
         <div>
@@ -469,6 +478,8 @@
       </div>`;
     const retEl = $('auCfgRet'); if (retEl) retEl.addEventListener('input', () => { cfgForm.retention = retEl.value; });
     const perEl = $('auCfgPer'); if (perEl) perEl.addEventListener('change', () => { cfgForm.pageSize = perEl.value; });
+    const autoEl = $('auCfgAuto');
+    if (autoEl) { autoEl.value = cfgForm.automatedActors || ''; autoEl.addEventListener('input', () => { cfgForm.automatedActors = autoEl.value; }); }
     if (foot) foot.innerHTML = `<button type="button" class="mcbtn mcbtn-pri mcbtn-sm" data-save="1">Save</button>
       <button type="button" class="mcbtn mcbtn-ghost mcbtn-sm" data-defaults="1">Reset to defaults</button>
       <span class="microlbl">applies without restart</span><span class="msg" id="auCfgMsg"></span>`;

@@ -315,6 +315,11 @@ function _adminModelForHost(host) {
   return '';
 }
 
+// Provider primary id: default_<p>_id first, legacy primary_<p>_id second (backend precedence).
+function _adminPrimaryOf(g, p) {
+  return (g || {})['default_' + p + '_id'] || (g || {})['primary_' + p + '_id'] || '';
+}
+
 function adminRenderPoolOrder() {
   adminRenderProviderSeg();
   const ul = document.getElementById('adminPoolOrderList');
@@ -328,6 +333,7 @@ function adminRenderPoolOrder() {
   const dragHint = document.getElementById('adminPoolDragHint');
   if (dragHint) dragHint.style.display = managed ? 'none' : '';
   const pool = ((_adminGlobal && _adminGlobal[_adminProvSel + '_pool']) || []).slice();
+  const primaryId = _adminPrimaryOf(_adminGlobal, _adminProvSel);
   const idToAgent = {};
   for (const a of (_adminAgentsCache || [])) idToAgent[a.agent_id] = a;
 
@@ -351,7 +357,7 @@ function adminRenderPoolOrder() {
       ${managed ? '<span class="hdl"></span>' : '<span class="hdl pool-handle" title="Drag to reorder">⠿</span>'}
       <span class="pos">${i + 1}</span>
       <div class="who">
-        <div class="n">${adminEsc(a.hostname || aid.slice(0,8))}${i === 0 ? ' <span class="pill info">primary</span>' : ''}</div>
+        <div class="n">${adminEsc(a.hostname || aid.slice(0,8))}${aid === primaryId ? ' <span class="pill info">primary</span>' : ''}</div>
         <div class="m">${adminEsc(meta)}</div>
       </div>
       <span class="dot ${dotCls}"></span>
@@ -2086,11 +2092,19 @@ function _adminUsersBindOnce() {
   document.addEventListener('click', (ev) => {
     if (!ev.target.closest('#adminUsersTbody .act')) _adminUserMenuClose();
   });
-  document.addEventListener('scroll', _adminUserMenuClose, true);
+  // Close on scrolls that move the anchor (page or a container holding the menu), not inner log boxes.
+  document.addEventListener('scroll', (ev) => {
+    const t = ev.target;
+    if (_adminUserMenuEl && (t === document || t.contains(_adminUserMenuEl))) _adminUserMenuClose();
+  }, true);
+  window.addEventListener('resize', _adminUserMenuClose);
 }
 
 // Row menus are position:fixed — the table's overflow box clips absolute ones.
+let _adminUserMenuEl = null;
 function _adminUserMenuClose() {
+  if (!_adminUserMenuEl) return;
+  _adminUserMenuEl = null;
   document.querySelectorAll('#adminUsersTbody .mc-menu.open').forEach(m => {
     m.classList.remove('open'); m.style.cssText = '';
   });
@@ -2102,13 +2116,19 @@ function _adminUserMenu(btn) {
   _adminUserMenuClose();
   if (was) return;
   m.classList.add('open', 'fixed');
+  _adminUserMenuEl = m;
+  _adminPlaceFixedMenu(btn, m);
+}
+// Pins an open .mc-menu below its button (right-aligned), or above it when it would
+// run past the viewport bottom. Shared with the Agents roster menus.
+function _adminPlaceFixedMenu(btn, m) {
   const r = btn.getBoundingClientRect();
+  const mh = m.offsetHeight || 0;
   const vw = window.innerWidth || document.documentElement.clientWidth || 0;
-  m.style.position = 'fixed';
-  m.style.top = `${Math.round(r.bottom + 6)}px`;
-  m.style.left = 'auto';
-  m.style.right = `${Math.max(8, Math.round(vw - r.right))}px`;
-  m.style.zIndex = '1200';
+  const vh = window.innerHeight || document.documentElement.clientHeight || 0;
+  const up = vh && mh && r.bottom + 6 + mh > vh - 8;
+  const top = up ? Math.max(8, Math.round(r.top - 6 - mh)) : Math.round(r.bottom + 6);
+  m.style.cssText = `position:fixed;top:${top}px;left:auto;right:${Math.max(8, Math.round(vw - r.right))}px;z-index:1200`;
 }
 
 function _adminUserRow(u, i) {
@@ -2138,11 +2158,13 @@ function _adminUserRow(u, i) {
       ${u.locked ? `<button type="button" class="ib on warnh" data-tip="Unlock now" data-uact="unlock" data-user="${name}">${_SVG_UNLOCK}</button>` : ''}
       <button type="button" class="ib" data-tip="Reset password" data-uact="resetpw" data-user="${name}">${_SVG_KEY}</button>
       <button type="button" class="ib" data-tip="${u.disabled ? 'Enable sign-in' : 'Disable sign-in'}" data-uact="disable" data-user="${name}" data-arg="${dis}">${u.disabled ? '▸' : '‖'}</button>
-      <button type="button" class="ib" data-tip="More" data-menu="${mid}">⋯</button>
-      <div class="mc-menu" id="${mid}">
-        <button type="button" data-uact="role" data-user="${name}" data-arg="${toggleRole}"><span class="mi">${toggleRole === 'admin' ? '↥' : '↧'}</span>Make ${toggleRole}</button>
-        <hr>
-        <button type="button" class="danger" data-uact="delete" data-user="${name}"><span class="mi">✕</span>Delete user</button>
+      <div class="mc-menuwrap"><!-- wrapper keeps the shared .mc-menu click closer from resetting this menu -->
+        <button type="button" class="ib" data-tip="More" data-menu="${mid}">⋯</button>
+        <div class="mc-menu" id="${mid}">
+          <button type="button" data-uact="role" data-user="${name}" data-arg="${toggleRole}"><span class="mi">${toggleRole === 'admin' ? '↥' : '↧'}</span>Make ${toggleRole}</button>
+          <hr>
+          <button type="button" class="danger" data-uact="delete" data-user="${name}"><span class="mi">✕</span>Delete user</button>
+        </div>
       </div>
     </div></td></tr>`;
 }

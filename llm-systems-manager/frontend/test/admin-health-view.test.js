@@ -9,11 +9,11 @@ const indexSrc = srcFile('index.html');
 const CARD = indexSrc.slice(indexSrc.indexOf('<div id="adminHealthCard">'),
                             indexSrc.indexOf('<!-- Sub-tabs underneath System Health -->'));
 
-function card(d, rel) {
+function card(d, rel, extra) {
   const win = runHarness({
     sources: [adminSrc, healthSrc],
     bodyHtml: `<div id="adminTab">${CARD}</div>`,
-    bootstrap: `HealthView.render(${JSON.stringify(d)}, ${JSON.stringify(rel || null)});`,
+    bootstrap: `HealthView.render(${JSON.stringify(d)}, ${JSON.stringify(rel || null)}); ${extra || ''}`,
   });
   return win.document;
 }
@@ -228,13 +228,16 @@ describe('warnings column', () => {
 });
 
 describe('node detail strip', () => {
-  test('the alarm engine strip opens by default with its metrics', () => {
+  test('no node strip is open on entry (#837); selecting the alarm engine shows its metrics', () => {
     const doc = card(HEALTHY);
-    const det = doc.getElementById('adminHealthDetail');
+    expect(doc.getElementById('adminHealthDetail').textContent).toBe('');
+    expect(doc.getElementById('hcnAe').getAttribute('class')).not.toContain('sel');
+    const sel = card(HEALTHY, null, "HealthView.select('ae');");
+    const det = sel.getElementById('adminHealthDetail');
     expect(det.textContent).toContain('Alarm Engine');
     expect(det.textContent).toContain('42 points/s');
     expect(det.textContent).toContain('42 ms');
-    expect(doc.getElementById('hcnAe').getAttribute('class')).toContain('sel');
+    expect(sel.getElementById('hcnAe').getAttribute('class')).toContain('sel');
   });
 
   test('clicking a node swaps the strip; clicking it again closes it', () => {
@@ -256,10 +259,12 @@ describe('node detail strip', () => {
     const win = runHarness({
       sources: [adminSrc, healthSrc],
       bodyHtml: `<div id="adminTab">${CARD}</div>`,
-      bootstrap: `HealthView.render(${JSON.stringify(HEALTHY)}, null);
+      bootstrap: `HealthView.render(${JSON.stringify(HEALTHY)}, null); HealthView.select('ae');
+        window.__open = document.getElementById('adminHealthDetail').innerHTML.length > 0;
         document.querySelector('#adminHealthDetail [data-close]').dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
         window.__html = document.getElementById('adminHealthDetail').innerHTML;`,
     });
+    expect(win.__open).toBe(true);
     expect(win.__html).toBe('');
   });
 

@@ -100,7 +100,8 @@ CATALOG: list[dict] = [
     # audit (#794) — hot: the manager re-reads these after every save
     _e("manager.audit.retention_days", "int", "Keep entries for (days)", "0 keeps everything; the 100,000-row cap still applies.", "audit", MANAGER, min=0, max=3650, hot=True, common=True),
     _e("manager.audit.page_size", "int", "Rows per page", "Default page size on the Audit Log tab.", "audit", MANAGER, min=10, max=500, hot=True),
-    _e("manager.audit.save_automated", "bool", "Unit tests", "Requests tagged X-LLMSys-Source: test (unit tests) are excluded when disabled.", "audit", MANAGER, hot=True),
+    _e("manager.audit.save_automated", "bool", "Unit tests", "Requests tagged X-LLMSys-Source: test (unit tests) and the automated users are excluded when disabled.", "audit", MANAGER, hot=True),
+    _e("manager.audit.automated_actors", "list", "Automated users", "Usernames whose actions count as automated (smoke-test users, bots). One per line; empty = none.", "audit", MANAGER, hot=True),
     _e("manager.audit.disabled_events", "list", "Disabled events", "Event keys that are not recorded.", "audit", MANAGER, hot=True),
     # discord bot
     _e("manager.discord.enabled", "bool", "Discord bot", "Interactive /fleet /host /models /alarms bot.", "discord", MANAGER),

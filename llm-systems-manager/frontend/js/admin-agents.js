@@ -5,6 +5,7 @@
 
   const FRESH_MS = 30000;
   const esc = s => (typeof adminEsc === 'function' ? adminEsc(s) : String(s == null ? '' : s));
+  const primaryOf = (g, p) => _adminPrimaryOf(g, p);
   const call = (name, ...args) => {
     const fn = window[name];
     return typeof fn === 'function' ? fn(...args) : undefined;
@@ -175,7 +176,7 @@
     for (const p of c.providers) {
       provKeys.add(p.capability_key);
       if (!caps[p.capability_key]) continue;
-      const isP = c.global['primary_' + p.name + '_id'] === a.agent_id;
+      const isP = primaryOf(c.global, p.name) === a.agent_id;
       const idx = ((c.global[p.name + '_pool']) || []).indexOf(a.agent_id);
       const bits = [`<span>${esc(p.name)}</span>`];
       if (isP) bits.push('<span class="star">★</span>');
@@ -207,7 +208,7 @@
     const rows = [];
     for (const p of c.providers) {
       if (!caps[p.capability_key]) continue;
-      const holder = c.global['primary_' + p.name + '_id'];
+      const holder = primaryOf(c.global, p.name);
       if (!singleShow(a.agent_id, holder, false)) continue;
       rows.push(toggleHtml(holder === a.agent_id, `Primary ${esc(p.name)}`,
         `data-act="primary" data-prov="${esc(p.name)}" data-aid="${aid}"`));
@@ -460,15 +461,7 @@
     m.classList.add('open');
     openMenu = m;
     if (!btn || typeof btn.getBoundingClientRect !== 'function') return;
-    const r = btn.getBoundingClientRect();
-    const vw = window.innerWidth || document.documentElement.clientWidth || 0;
-    m.style.position = 'fixed';
-    m.style.top = `${Math.round(r.bottom + 6)}px`;
-    m.style.right = `${Math.max(8, Math.round(vw - r.right))}px`;
-    m.style.zIndex = '1200';
-    const mh = m.offsetHeight || 0;
-    const vh = window.innerHeight || document.documentElement.clientHeight || 0;
-    if (vh && mh && r.bottom + 6 + mh > vh - 8) m.style.top = `${Math.max(8, Math.round(r.top - 6 - mh))}px`;
+    if (typeof _adminPlaceFixedMenu === 'function') _adminPlaceFixedMenu(btn, m);
   }
   function refreshNow() {
     st.busy = true;

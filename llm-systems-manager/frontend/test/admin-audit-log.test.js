@@ -61,14 +61,17 @@ describe('AuditView pure helpers', () => {
     const q = AV.queryParams({ ...AV.DEFAULTS, q: 'qwen', group: 'model', sort: 'actor', dir: 'asc', hours: 0, hideAuto: false }, null, 1);
     expect([...q.keys()].sort()).toEqual(['dir', 'group', 'q', 'sort']);
   });
-  it('settingsChanges emits the four [manager.audit] keys with disabled events sorted', () => {
+  it('settingsChanges emits the five [manager.audit] keys with disabled events sorted', () => {
     const events = [{ key: 'auth.logout' }, { key: 'user.manage' }, { key: 'autopilot.executor' }];
-    const ch = AV.settingsChanges({ retention: '45', pageSize: '50', saveAutomated: true,
+    const ch = AV.settingsChanges({ retention: '45', pageSize: '50', saveAutomated: true, automatedActors: 'smoketestuser, bot smoketestuser',
       enabled: { 'auth.logout': false, 'user.manage': true, 'autopilot.executor': false } }, events);
     expect(ch).toEqual({
       'manager.audit.retention_days': 45, 'manager.audit.page_size': 50,
-      'manager.audit.save_automated': true, 'manager.audit.disabled_events': ['auth.logout', 'autopilot.executor'],
+      'manager.audit.save_automated': true, 'manager.audit.automated_actors': ['smoketestuser', 'bot'],
+      'manager.audit.disabled_events': ['auth.logout', 'autopilot.executor'],
     });
+    expect(AV.parseActors('')).toEqual([]);
+    expect(AV.parseActors(' a;b\n c ')).toEqual(['a', 'b', 'c']);
     expect(AV.settingsChanges({ retention: -3, pageSize: 2, enabled: {} }, [])['manager.audit.retention_days']).toBe(0);
     expect(AV.settingsChanges({ retention: 0, pageSize: 2, enabled: {} }, [])['manager.audit.page_size']).toBe(10);
   });
@@ -210,7 +213,7 @@ describe('audit ledger harness', () => {
       window.fetch = async (url, opts) => {
         const u = String(url);
         if (u.includes('/stats')) return { ok: true, json: async () => ({ ok: true, total: 3, actors: [], purge: { ts: '2026-09-02T04:00:00Z', removed: 7338 } }) };
-        if (u.includes('/events')) return { ok: true, json: async () => ({ ok: true, config: { retention_days: 60, page_size: 25, save_automated: false },
+        if (u.includes('/events')) return { ok: true, json: async () => ({ ok: true, config: { retention_days: 60, page_size: 25, save_automated: false, automated_actors: ['smoketestuser'] },
           groups: [{ key: 'user', title: 'Users & access', events: [{ key: 'user.manage', label: 'Create / modify', default_on: true, enabled: true }, { key: 'auth.logout', label: 'Logout', default_on: false, enabled: false }] },
                    { key: 'auto', title: 'Autopilot', events: [{ key: 'autopilot.executor', label: 'Executor', default_on: true, enabled: true }] },
                    { key: 'config', title: 'Configuration', events: [{ key: 'admin.other', label: 'Other', default_on: true, enabled: true, hidden: true }] }] }) };
@@ -230,6 +233,9 @@ describe('audit ledger harness', () => {
         body.querySelector('.mc-toggle[data-cfg]').click();
         document.getElementById('auCfgRet').value = '30';
         document.getElementById('auCfgRet').dispatchEvent(new Event('input'));
+        window.__autoVal = document.getElementById('auCfgAuto').value;
+        document.getElementById('auCfgAuto').value = 'smoketestuser, ci-bot';
+        document.getElementById('auCfgAuto').dispatchEvent(new Event('input'));
         document.querySelector('#auCfgFoot [data-save]').click();
         await new Promise(r => setTimeout(r, 0));
       });
@@ -241,9 +247,11 @@ describe('audit ledger harness', () => {
     expect(win.__logoutOn).toBe(false);
     expect(win.__stat).toContain('7,338');
     expect(win.__foot).toContain('applies without restart');
+    expect(win.__autoVal).toBe('smoketestuser');
     expect(win.__put).toEqual({ changes: {
       'manager.audit.retention_days': 30, 'manager.audit.page_size': 25,
-      'manager.audit.save_automated': true, 'manager.audit.disabled_events': [] } });
+      'manager.audit.save_automated': true, 'manager.audit.automated_actors': ['smoketestuser', 'ci-bot'],
+      'manager.audit.disabled_events': [] } });
   });
 });
 
