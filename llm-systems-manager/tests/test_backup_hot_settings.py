@@ -129,6 +129,7 @@ def test_backup_now_409_reason_follows_live_settings(client, monkeypatch, tmp_pa
     c, cfg = client
     monkeypatch.setattr(M, "_BACKUP_DIR", tmp_path / "backups")
     monkeypatch.setattr(M, "_BACKUP_STATUS_FILE", tmp_path / "backups" / "last_backup.json")
+    monkeypatch.setattr(M, "_alarm_engine_url", "")
     cfg.write_text("[manager.backup]\nenabled = false\n")
     M._backup_reload_config()
     r = c.post("/api/admin/backup-now")

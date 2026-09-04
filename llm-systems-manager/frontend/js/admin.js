@@ -2249,6 +2249,11 @@ let _adminBackupData = null;
 let _adminBackupShowAll = false;
 const _ADM_BACKUP_ROWS = 5;
 
+// Distinct run stamps across the retained archives (a run = one manager + one AE file).
+function _adminBackupRuns(files) {
+  return new Set(files.map(b => b.run || b.file)).size;
+}
+
 function _adminAgoShort(ts) {
   if (!ts) return 'never';
   const s = Math.max(0, Math.round(Date.now() / 1000 - ts));
@@ -2284,6 +2289,7 @@ function adminRenderBackup() {
   const d = _adminBackupData || {};
   const last = d.last || {};
   const files = d.backups || [];
+  const runs = _adminBackupRuns(files);
 
   const sum = document.getElementById('bkSummary');
   if (sum) {
@@ -2291,7 +2297,7 @@ function adminRenderBackup() {
       : last.mirrored === true ? ['ok', 'ok'] : last.mirrored === false ? ['crit', 'failed'] : ['warn', 'pending'];
     sum.innerHTML = `<span>last backup <b class="${last.ok ? 'ok' : 'warn'}">${adminEsc(_adminAgoShort(last.ts))}</b></span>`
       + `<span>next in <b>${adminEsc(_adminInShort(d.next_due_ts))}</b></span>`
-      + `<span><b>${files.length}</b> kept</span>`
+      + `<span><b>${runs}</b> run${runs === 1 ? '' : 's'} kept</span>`
       + (mirror === null ? '' : `<span>mirror <b class="${mirror[0]}">${mirror[1]}</b></span>`);
   }
 
@@ -2307,12 +2313,16 @@ function adminRenderBackup() {
   }
 
   // Scheduled card — pill, meta, kv block and the retained-archive ledger.
+  const aeCovered = !(d.not_covered && d.not_covered.alarm_engine);
+  const comps = last.components || {};
   const pill = document.getElementById('adminSchedBackupPill');
   if (pill) {
     let cls = 'dim', label = 'disabled';
     if (d.enabled && !d.scheduler_running) { cls = 'crit'; label = 'not running'; }
     else if (d.enabled) {
-      if (last.ok === true) { cls = 'ok'; label = 'on schedule'; }
+      if (last.ok === true && !aeCovered) { cls = 'warn'; label = 'manager only'; }
+      else if (last.ok === true && last.partial) { cls = 'warn'; label = 'partial'; }
+      else if (last.ok === true) { cls = 'ok'; label = 'on schedule'; }
       else if (last.error) { cls = 'crit'; label = 'failed'; }
       else { cls = 'warn'; label = 'pending'; }
     }
@@ -2322,7 +2332,8 @@ function adminRenderBackup() {
   const meta = document.getElementById('adminSchedBackupMeta');
   if (meta) {
     meta.innerHTML = d.enabled
-      ? `every <b>${d.interval_hours} h</b> · keep <b>${d.keep_last}</b> · <b>${d.encrypted ? 'encrypted' : 'unencrypted'}</b>`
+      ? `every <b>${d.interval_hours} h</b> · keep <b>${d.keep_last}</b> runs · <b>${d.encrypted ? 'encrypted' : 'unencrypted'}</b>`
+        + ` · covers <b>${aeCovered ? 'Manager + Alarm Engine' : 'Manager only'}</b>`
       : 'set an interval under Backup settings to enable';
   }
   const body = document.getElementById('adminSchedBackupBody');
@@ -2337,6 +2348,15 @@ function adminRenderBackup() {
           ? `${_adminStamp(last.ts)} · ${adminEsc(last.file || '')} · ${adminEsc(_fmtBytesShort(last.bytes))} · ${last.files || '?'} files`
           : `<span class="critc">FAILED: ${adminEsc(last.error || 'unknown error')}</span>`)
         : 'no backup recorded yet';
+      const ae = comps.alarm_engine;
+      let aeLine;
+      if (!aeCovered) aeLine = `<span class="critc">not covered</span> <span class="dim">· ${adminEsc(d.not_covered.alarm_engine)}</span>`;
+      else if (!last.ts) aeLine = 'no backup recorded yet';
+      else if (!last.ok) aeLine = '<span class="dim">skipped — the manager archive failed first</span>';
+      else if (!ae) aeLine = '<span class="dim">not part of the last run — the next run adds it</span>';
+      else if (ae.ok) aeLine = `${adminEsc(ae.file || '')} · ${adminEsc(_fmtBytesShort(ae.bytes))}`;
+      else aeLine = `<span class="critc">not backed up: ${adminEsc(ae.error || 'unknown error')}</span>`
+        + (ae.remedy ? ` <span class="dim">· ${adminEsc(ae.remedy)}</span>` : '');
       const mstate = last.mirrored === true ? ['okc', 'copied']
         : last.mirrored === false ? ['critc', 'copy failed'] : ['dim', 'not copied yet'];
       const mirror = d.mirror_dir
@@ -2344,10 +2364,11 @@ function adminRenderBackup() {
         : '<span class="dim">not configured</span>';
       const folderBytes = d.folder_bytes != null ? d.folder_bytes : files.reduce((a, b) => a + (b.bytes || 0), 0);
       body.innerHTML = '<div class="bk-sched"><dl class="bk-kv">'
-        + `<dt>Last backup</dt><dd>${lastLine}</dd>`
+        + `<dt>Manager</dt><dd>${lastLine}</dd>`
+        + `<dt>Alarm Engine</dt><dd>${aeLine}</dd>`
         + `<dt>Next due</dt><dd>${_adminStamp(d.next_due_ts)} <span class="dim">(in ${adminEsc(_adminInShort(d.next_due_ts))})</span></dd>`
         + `<dt>Mirror</dt><dd>${mirror}</dd>`
-        + `<dt>Folder</dt><dd>data/backups/ <span class="dim">· ${adminEsc(_fmtBytesShort(folderBytes))} across ${files.length} archive${files.length === 1 ? '' : 's'}</span></dd>`
+        + `<dt>Folder</dt><dd>data/backups/ <span class="dim">· ${adminEsc(_fmtBytesShort(folderBytes))} across ${files.length} archive${files.length === 1 ? '' : 's'} in ${runs} run${runs === 1 ? '' : 's'}</span></dd>`
         + '</dl></div>';
     }
   }
@@ -2358,13 +2379,14 @@ function adminRenderBackup() {
     tb.innerHTML = shown.length
       ? shown.map(b => `<tr>
           <td class="n mono">${adminEsc(b.file)}</td>
+          <td class="comp">${_BACKUP_LABELS[b.component] || adminEsc(b.component || '—')}</td>
           <td class="r">${adminEsc(_fmtBytesShort(b.bytes))}</td>
           <td class="t">${_adminStamp(b.mtime)}</td>
           <td>${_adminMirrorPill(d, last, b)}</td>
           <td class="r"><button type="button" class="mcbtn mcbtn-ghost mcbtn-sm"
             data-bk-dl="${adminEsc(b.file)}" title="Download this archive">⤓ Download</button></td>
         </tr>`).join('')
-      : '<tr><td colspan="5"><div class="empty">No archives retained yet.</div></td></tr>';
+      : '<tr><td colspan="6"><div class="empty">No archives retained yet.</div></td></tr>';
   }
   const more = document.getElementById('adminSchedBackupMore');
   if (more) {
@@ -2423,9 +2445,10 @@ async function adminDownloadArchive(file) {
 // archive's recorded failure wins over the listing.
 function _adminMirrorPill(d, last, b) {
   if (!d.mirror_dir) return '<span class="t">—</span>';
-  if (last && last.file && b.file === last.file && last.mirrored === false) {
-    return '<span class="pill warn">copy failed</span>';
-  }
+  const failed = last && Array.isArray(last.mirror_failed)
+    ? last.mirror_failed.includes(b.file)
+    : !!(last && last.file && b.file === last.file && last.mirrored === false);
+  if (failed) return '<span class="pill warn">copy failed</span>';
   return b.mirrored === true ? '<span class="pill ok">copied</span>'
                              : '<span class="pill dim">not copied</span>';
 }
@@ -2437,7 +2460,11 @@ async function adminBackupNow() {
   try {
     const r = await fetch('/api/admin/backup-now', { method: 'POST' });
     const d = await r.json().catch(() => ({}));
-    if (r.ok && d.ok) _adminBackupLog('✓ backup complete', 'ok');
+    const ae = ((d.last || {}).components || {}).alarm_engine || {};
+    if (r.ok && d.ok && d.last && d.last.partial) {
+      _adminBackupLog('⚠ manager archive written; alarm engine skipped — ' + (ae.error || 'unknown error'), 'err');
+    } else if (r.ok && d.ok && ae.skipped) _adminBackupLog('✓ manager archive written — alarm engine not covered', 'ok');
+    else if (r.ok && d.ok) _adminBackupLog('✓ backup complete', 'ok');
     else _adminBackupLog('✗ ' + (d.error || ('HTTP ' + r.status)), 'err');
   } catch (e) {
     _adminBackupLog('✗ ' + e.message, 'err');

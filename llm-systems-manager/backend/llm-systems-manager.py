@@ -159,7 +159,7 @@ def _local_hostname() -> str:
 # banner reads it. Bump suffix (-1, -2, …) for same-day iterations; roll
 # the date for a new day's first change.
 # ---------------------------------------------------------------------------
-__version__ = "v2026.09.04-12"
+__version__ = "v2026.09.04-13"
 
 # Wall-clock at first import (Cheroot main process); the shutdown banner
 # reads it for the uptime line.
@@ -4470,19 +4470,19 @@ def _forward_settings_to_ae(remote: dict, removals: "list | None" = None,
         return "alarm engine unreachable — queued; retrying in the background"
 
 
-def _ae_config_failure(status: "int | None", detail: str) -> dict:
-    """Reason + operator remedy for a failed AE config-API call, keyed by status.
+def _ae_config_failure(status: "int | None", detail: str,
+                       route: str = "/api/alarm/admin/config") -> dict:
+    """Reason + operator remedy for a failed AE management-API call, keyed by status.
     Every field is API-safe: nothing here derives from an exception object."""
     if status in (401, 403):
         kind = "unauthorized"
-        remedy = ("Its config API accepts only [alarm_engine].management_token "
+        remedy = (f"{route} accepts only [alarm_engine].management_token "
                   "— the ingest token is not a fallback there. Set the same "
                   "non-empty management_token in both hosts' config.toml, then "
                   "restart both services.")
     elif status == 404:
         kind = "unsupported"
-        remedy = ("Upgrade the alarm-engine host to a build that serves "
-                  "/api/alarm/admin/config.")
+        remedy = f"Upgrade the alarm-engine host to a build that serves {route}."
     elif status is not None:
         kind = "http"
         remedy = ("The alarm engine answered but the request failed — check "
@@ -5641,6 +5641,8 @@ def admin_export_manager():
 
 _BACKUP_DIR = DATA_DIR / "backups"
 _BACKUP_PREFIX = "lsm-auto-manager-"
+_BACKUP_PREFIXES = {"manager": _BACKUP_PREFIX, "alarm_engine": "lsm-auto-ae-"}
+_BACKUP_STAMP_RE = re.compile(r"-(\d{8}-\d{6})\.lsmenc$")
 _BACKUP_STATUS_FILE = _BACKUP_DIR / "last_backup.json"
 export_log.configure(DATA_DIR / "last_export.json")
 _backup_status_lock = _threading.Lock()
@@ -5719,12 +5721,26 @@ def _validate_backup_mirror_dir(value: str) -> "str | None":
 _SETTINGS_VALIDATORS["manager.backup.mirror_dir"] = _validate_backup_mirror_dir
 
 
+def _backup_component_of(name: str) -> "str | None":
+    """Component owning a scheduler-named archive, None for anything else."""
+    return next((c for c, pfx in _BACKUP_PREFIXES.items() if name.startswith(pfx)), None)
+
+
+def _backup_run_stamp(name: str) -> str:
+    """The YYYYMMDD-HHMMSS run label shared by one run's archives."""
+    m = _BACKUP_STAMP_RE.search(name)
+    return m.group(1) if m else ""
+
+
 def _list_auto_backups() -> "list[Path]":
+    """Scheduler-named archives of every component, oldest run first."""
     try:
-        return sorted(_BACKUP_DIR.glob(_BACKUP_PREFIX + "*.lsmenc"))
+        found = [p for p in _BACKUP_DIR.glob("lsm-auto-*.lsmenc")
+                 if _backup_component_of(p.name) and _backup_run_stamp(p.name)]
     except OSError as e:
         log.warning("backup dir listing failed (%s): %s", _BACKUP_DIR, e)
         return []
+    return sorted(found, key=lambda p: (_backup_run_stamp(p.name), p.name))
 
 
 def _set_backup_status(st: dict) -> None:
@@ -5753,15 +5769,71 @@ def _get_backup_status() -> dict:
 
 
 def _prune_auto_backups(keep_last: int) -> int:
-    """Delete scheduler-named archives beyond the newest keep_last."""
+    """Delete every archive outside the newest keep_last runs; a run's
+    manager and alarm-engine archives are kept or dropped together."""
+    if keep_last <= 0:
+        return 0
+    files = _list_auto_backups()
+    runs = sorted({_backup_run_stamp(p.name) for p in files})
+    keep = set(runs[-keep_last:])
     removed = 0
-    for p in _list_auto_backups()[:-keep_last] if keep_last > 0 else []:
+    for p in files:
+        if _backup_run_stamp(p.name) in keep:
+            continue
         try:
             p.unlink()
             removed += 1
         except OSError as e:
             log.warning("backup prune failed for %s: %s", p.name, e)
     return removed
+
+
+class _AeBackupSkipped(Exception):
+    """The alarm engine is outside scheduled runs by configuration."""
+
+
+class _AeBackupError(Exception):
+    """Alarm-engine archive fetch failure: kind + API-safe detail + remedy."""
+    def __init__(self, kind: str, detail: str, remedy: str):
+        super().__init__(f"{kind} — {detail}")
+        self.kind, self.detail, self.remedy = kind, detail, remedy
+
+
+def _ae_backup_coverage() -> "str | None":
+    """Why the alarm engine is outside scheduled runs, None when it is covered."""
+    if not (_alarm_engine_url or "").strip():
+        return "no [manager].alarm_engine_url is configured, so scheduled runs cover the manager only"
+    if not str(getattr(settings.alarm_engine, "management_token", "") or "").strip():
+        return ("[alarm_engine].management_token is unset, and the alarm engine's export route "
+                "accepts nothing else — set the same token on both hosts and restart both services")
+    return None
+
+
+def _fetch_ae_export_blob(passphrase: str) -> bytes:
+    """Pull the alarm engine's own export archive over its management-token route."""
+    base = (_alarm_engine_url or "").rstrip("/")
+    if not base:
+        raise _AeBackupError("unconfigured", "no alarm engine URL",
+                             "Set [manager].alarm_engine_url so scheduled runs can reach the alarm engine.")
+    url = base + "/api/alarm/admin/export"
+    try:
+        r = _ae_session.post(url, json={"password": passphrase or ""}, timeout=(5, 120))
+    except Exception as e:
+        fail = _ae_config_failure(None, f"{_ae_exc_phrase(e)} — {url}", route="/api/alarm/admin/export")
+        raise _AeBackupError(fail["kind"], fail["detail"], fail["remedy"]) from e
+    if r.status_code != 200:
+        fail = _ae_config_failure(r.status_code, f"HTTP {r.status_code} from {url}",
+                                  route="/api/alarm/admin/export")
+        raise _AeBackupError(fail["kind"], fail["detail"], fail["remedy"])
+    blob = r.content or b""
+    encrypted = _archive.sniff_encrypted(blob)
+    if encrypted is None:
+        raise _AeBackupError("http", f"unexpected response body from {url}",
+                             "The alarm engine answered with something other than an archive — check its log on that host.")
+    if encrypted != bool(passphrase):
+        raise _AeBackupError("http", f"archive encryption does not match the passphrase ({url})",
+                             "The alarm engine ignored the backup passphrase — upgrade that host's build.")
+    return blob
 
 
 _backup_run_lock = threading.Lock()
@@ -5773,41 +5845,80 @@ def _run_scheduled_backup(passphrase: str, keep_last: int, mirror_dir: str) -> d
         return _run_scheduled_backup_locked(passphrase, keep_last, mirror_dir)
 
 
+def _write_auto_backup(component: str, ts_label: str, blob: bytes) -> Path:
+    dest = _BACKUP_DIR / f"{_BACKUP_PREFIXES[component]}{_local_hostname()}-{ts_label}.lsmenc"
+    tmp = f"{dest}.{os.getpid()}.tmp"
+    with open(tmp, "wb") as f:
+        f.write(blob)
+    os.chmod(tmp, 0o600)
+    os.replace(tmp, str(dest))
+    return dest
+
+
 def _run_scheduled_backup_locked(passphrase: str, keep_last: int, mirror_dir: str) -> dict:
+    """One run: manager archive, then the alarm engine's, both under one run
+    stamp. `ok` tracks the manager; `partial` flags a missing AE archive."""
     t0 = time.time()
     ts_label = datetime.now().strftime("%Y%m%d-%H%M%S")
-    st: dict = {"ts": time.time(), "ok": False, "file": None, "bytes": 0,
-                "error": None, "encrypted": bool(passphrase)}
+    st: dict = {"ts": time.time(), "ok": False, "partial": False, "file": None, "bytes": 0,
+                "error": None, "encrypted": bool(passphrase),
+                "components": {"manager": {"ok": False, "file": None, "bytes": 0, "files": 0, "error": None},
+                               "alarm_engine": {"ok": False, "file": None, "bytes": 0, "error": None,
+                                                "remedy": None, "skipped": None}}}
+    written: "list[Path]" = []
     try:
         _BACKUP_DIR.mkdir(parents=True, exist_ok=True)
         os.chmod(_BACKUP_DIR, 0o700)
         blob, n_files = _build_manager_export_blob(passphrase or None)
-        dest = _BACKUP_DIR / f"{_BACKUP_PREFIX}{socket.gethostname()}-{ts_label}.lsmenc"
-        tmp = f"{dest}.{os.getpid()}.tmp"
-        with open(tmp, "wb") as f:
-            f.write(blob)
-        os.chmod(tmp, 0o600)
-        os.replace(tmp, str(dest))
-        st.update({"ok": True, "file": dest.name, "bytes": len(blob),
-                   "files": n_files})
+        dest = _write_auto_backup("manager", ts_label, blob)
+        written.append(dest)
+        st.update({"ok": True, "file": dest.name, "bytes": len(blob), "files": n_files})
+        st["components"]["manager"].update({"ok": True, "file": dest.name, "bytes": len(blob),
+                                            "files": n_files})
+        ae = st["components"]["alarm_engine"]
+        uncovered = _ae_backup_coverage()
+        try:
+            if uncovered:
+                raise _AeBackupSkipped(uncovered)
+            ae_blob = _fetch_ae_export_blob(passphrase)
+            ae_dest = _write_auto_backup("alarm_engine", ts_label, ae_blob)
+            written.append(ae_dest)
+            ae.update({"ok": True, "file": ae_dest.name, "bytes": len(ae_blob)})
+        except _AeBackupSkipped as e:
+            ae["skipped"] = str(e)
+        except Exception as e:
+            st["partial"] = True
+            if isinstance(e, _AeBackupError):
+                ae.update({"error": f"{e.kind} — {e.detail}", "remedy": e.remedy})
+                log.error("scheduled backup: alarm engine archive skipped (%s — %s)", e.kind, e.detail)
+            else:
+                ae.update({"error": f"{type(e).__name__}: {e}",
+                           "remedy": "Check the manager log for the traceback."})
+                log.exception("scheduled backup: alarm engine archive failed")
         if mirror_dir:
-            try:
-                mdir = Path(mirror_dir)
-                mdir.mkdir(parents=True, exist_ok=True)
-                shutil.copy2(dest, mdir / dest.name)
-                os.chmod(mdir / dest.name, 0o600)
-                st["mirrored"] = True
-            except OSError as e:
-                st["mirrored"] = False
-                st["mirror_error"] = str(e)
-                log.warning("backup mirror to %s failed: %s", mirror_dir, e)
+            failed: "list[str]" = []
+            mdir = Path(mirror_dir)
+            for src in written:
+                try:
+                    mdir.mkdir(parents=True, exist_ok=True)
+                    shutil.copy2(src, mdir / src.name)
+                    os.chmod(mdir / src.name, 0o600)
+                except OSError as e:
+                    failed.append(src.name)
+                    st["mirror_error"] = str(e)
+                    log.warning("backup mirror of %s to %s failed: %s", src.name, mirror_dir, e)
+            st["mirrored"] = not failed
+            st["mirror_failed"] = failed
         pruned = _prune_auto_backups(keep_last)
         st["duration_s"] = round(time.time() - t0, 2)
-        log.info("scheduled backup ok: %s (%d bytes, %d files, %d pruned, %s)",
-                 dest.name, len(blob), n_files, pruned,
+        log.info("scheduled backup %s: %s (%d bytes, %d files%s, %d pruned, %s)",
+                 "partial" if st["partial"] else "ok", dest.name, len(blob), n_files,
+                 f" + {ae['file']}" if ae["ok"] else ", no alarm-engine archive"
+                 + (" (not covered)" if ae["skipped"] else ""), pruned,
                  "encrypted" if passphrase else "plaintext")
     except Exception as e:
         st["error"] = f"{type(e).__name__}: {e}"
+        st["components"]["manager"]["error"] = st["error"]
         st["duration_s"] = round(time.time() - t0, 2)
         log.error("scheduled backup FAILED: %s", st["error"])
     _set_backup_status(st)
@@ -5858,9 +5969,10 @@ def _backup_log_state(ev: dict) -> None:
         emit = log.error if "passphrase" in ev["reason"] else log.info
         emit("  Scheduled backups: %s", ev["reason"])
         return
-    log.info("  Scheduled backups: every %.1fh → %s (keep %d, %s)",
+    log.info("  Scheduled backups: every %.1fh → %s (keep %d runs, %s, %s)",
              ev["interval_h"], _BACKUP_DIR, ev["keep_last"],
-             "encrypted" if ev["passphrase"] else "plaintext")
+             "encrypted" if ev["passphrase"] else "plaintext",
+             "manager only" if _ae_backup_coverage() else "manager + alarm engine")
 
 
 def _backup_scheduler_loop() -> None:
@@ -5908,12 +6020,15 @@ def admin_backup_status():
             stat = p.stat()
             mirrored = (mdir / p.name).is_file() if mdir is not None else None
             backups.append({"file": p.name, "bytes": stat.st_size, "mtime": stat.st_mtime,
-                            "mirrored": mirrored})
+                            "mirrored": mirrored, "component": _backup_component_of(p.name),
+                            "run": _backup_run_stamp(p.name)})
         except OSError:
             continue
+    uncovered = _ae_backup_coverage()
     return jsonify({
         "ok": True,
         "enabled": enabled and interval_h > 0,
+        "not_covered": {"alarm_engine": uncovered} if uncovered else {},
         "scheduler_running": bool(_backup_sched_state.get("running")),
         "disabled_reason": _backup_sched_state.get("reason") or None,
         "interval_hours": interval_h,
