@@ -1,5 +1,4 @@
-// #851: `.mcbtn { display: inline-flex }` outranks the UA `[hidden]` rule, so
-// a hidden .mcbtn still painted. The shared stylesheet must carry the guard.
+// #851: the shared stylesheet carries a `.mcbtn[hidden]` guard.
 import { describe, it, expect } from 'vitest';
 import { srcFile } from './helpers/harness.js';
 

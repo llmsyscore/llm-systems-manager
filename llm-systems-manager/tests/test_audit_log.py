@@ -561,7 +561,8 @@ def test_audit_hook_failure_is_logged_at_warning(monkeypatch, caplog):
     with caplog.at_level(logging.WARNING, logger="llm-systems-manager"):
         resp = client.post("/api/admin/export/manager")
     assert resp.status_code in (401, 403)
-    dropped = [r for r in caplog.records if r.levelno >= logging.WARNING and "audit" in r.getMessage()]
+    dropped = [r for r in caplog.records if r.levelno >= logging.WARNING
+               and r.getMessage().startswith("audit row dropped")]
     assert len(dropped) == 1
     assert "backup.export" in dropped[0].getMessage()
     assert dropped[0].exc_info

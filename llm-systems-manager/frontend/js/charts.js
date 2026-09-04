@@ -1178,11 +1178,9 @@ async function checkConfig() {
     }
 
     // Same for Dashboard sub-tabs: if the active sub-tab was hidden, fall
-    // back to Manager (the one sub-tab that always stays visible).
-    if (_subTabState.dashboard === 'llamacpp' && !llamaOn) switchSubTab('dashboard','manager');
-    if (_subTabState.dashboard === 'lmstudio' && !lmsOn)   switchSubTab('dashboard','manager');
-    if (_subTabState.dashboard === 'vllm' && !vllmOn)      switchSubTab('dashboard','manager');
-    if (_subTabState.dashboard === 'openclaw' && !ocOn)    switchSubTab('dashboard','manager');
+    // back to Manager, which is never hidden.
+    const dashOn = { llamacpp: llamaOn, lmstudio: lmsOn, vllm: vllmOn, openclaw: ocOn };
+    if (dashOn[_subTabState.dashboard] === false) switchSubTab('dashboard','manager');
     // Only fall back to a sub-tab whose provider is actually present.
     if (_subTabState.llm === 'llamacpp' && !llamaOn && (lmsOn || vllmOn))
       switchSubTab('llm', lmsOn ? 'lmstudio' : 'vllm');

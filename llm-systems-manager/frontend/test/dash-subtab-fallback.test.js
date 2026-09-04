@@ -4,8 +4,7 @@ import { describe, it, expect } from 'vitest';
 import { srcFile, blockSrc, evalGlobal } from './helpers/harness.js';
 
 const chartsSrc = srcFile('js/charts.js');
-const block = blockSrc(chartsSrc, '    // Same for Dashboard sub-tabs',
-  '    // Only fall back to a sub-tab whose provider is actually present.', { includeEnd: false });
+const block = blockSrc(chartsSrc, '    // Same for Dashboard sub-tabs', "switchSubTab('dashboard','manager');");
 
 function runFallback({ llamaOn = true, lmsOn = true, vllmOn = true, ocOn = true, remembered }) {
   const calls = [];
@@ -34,11 +33,12 @@ describe('checkConfig dashboard sub-tab fallback (#854)', () => {
   });
 
   it('does not touch a sub-tab whose provider is still present', () => {
-    expect(runFallback({ ocOn: false, llamaOn: false, remembered: 'manager' })).toEqual([]);
     expect(runFallback({ ocOn: false, remembered: 'llamacpp' })).toEqual([]);
   });
 
-  it('no longer claims openclaw always stays visible', () => {
-    expect(block).not.toMatch(/openclaw or manager always stay visible/);
+  it('never re-switches the always-visible sub-tabs', () => {
+    const allOff = { llamaOn: false, lmsOn: false, vllmOn: false, ocOn: false };
+    expect(runFallback({ ...allOff, remembered: 'manager' })).toEqual([]);
+    expect(runFallback({ ...allOff, remembered: 'energy' })).toEqual([]);
   });
 });
