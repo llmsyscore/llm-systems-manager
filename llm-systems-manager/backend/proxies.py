@@ -490,6 +490,17 @@ def proxy_stream_to_primary(kind: str, path: str, *, primary_kind: "str | None" 
 
 # ── Per-target reverse-proxy helpers ─────────────────────────────────
 
+# Browser request headers forwarded upstream, with Accept-Encoding pinned
+# to the encodings urllib3 decodes.
+_FORWARD_SKIP = (_PROXY_HOP_BY_HOP - {"content-encoding", "content-security-policy", "x-frame-options"}) | {"host", "accept-encoding"}
+
+
+def _forward_headers() -> dict:
+    out = {k: v for k, v in flask_request.headers if k.lower() not in _FORWARD_SKIP}
+    out["Accept-Encoding"] = "gzip, deflate"
+    return out
+
+
 def _proxy_llmchat(path: str, base: str):
     url = base + "/" + path.lstrip("/")
     try:
@@ -499,8 +510,7 @@ def _proxy_llmchat(path: str, base: str):
         upstream = requests.request(
             method=flask_request.method,
             url=url,
-            headers={k: v for k, v in flask_request.headers if k.lower() not in
-                     ("host", "content-length", "transfer-encoding")},
+            headers=_forward_headers(),
             data=flask_request.get_data(),
             allow_redirects=False,
             timeout=(5, 300),  # (connect, read): long read for keepalive-less SSE
@@ -529,27 +539,74 @@ def _proxy_llmchat(path: str, base: str):
         return _proxy_error("Proxy error", 502, e)
 
 
-def _build_openclaw_ws_patch(netloc: str, port: str) -> str:
+def _bridge_url_for_browser(ws_path: str) -> str:
+    """Manager WS-bridge URL for `ws_path` ("" when the bridge is off): wss on
+    https pages when the operator-cert listener runs, else ws."""
+    ws_proxy_port = int(getattr(settings.manager, "ws_proxy_port", 0) or 0)
+    if ws_proxy_port <= 0:
+        return ""
+    wss_port = _deps.wss_bridge_port()
+    if wss_port > 0 and _deps.request_is_https():
+        return f"wss://{_deps.request_host_no_port()}:{wss_port}{ws_path}"
+    return f"ws://{_deps.request_host_no_port()}:{ws_proxy_port}{ws_path}"
+
+
+def openclaw_ws_url_for_browser() -> str:
+    return _bridge_url_for_browser("/ws/openclaw")
+
+
+def _build_openclaw_ws_patch(netloc: str, port: str, bridge_url: str = "", ticket: str = "") -> str:
+    """WebSocket shim for the control UI: gateway dials go through the manager's
+    WS bridge with a one-shot ticket (fetching the next one), or straight to
+    the gateway host when the bridge is off."""
+    if bridge_url:
+        # A small ticket queue: each dial takes one and fetches a replacement.
+        rewrite = (
+            f"var B={safe_js(bridge_url)},Q=[{safe_js(ticket)}];"
+            f"var M=/^wss?:\\/\\/[^/]+\\/proxy\\/openclaw(\\/|\\?|$)/,G=/^wss?:\\/\\/{re.escape(netloc)}(\\/|\\?|$)/;"
+            "function refresh(){fetch('/api/openclaw-ws-ticket',{credentials:'same-origin'})"
+            ".then(function(r){return r.json()}).then(function(j){if(j&&j.ticket)Q.push(j.ticket);}).catch(function(){});}"
+            "refresh();"
+            "function fix(u){u=String(u);if(M.test(u)||G.test(u)){var t=Q.shift()||'';refresh();return B+'?ticket='+encodeURIComponent(t);}return u;}"
+        )
+    else:
+        rewrite = (
+            "function fix(u){u=String(u);"
+            f"if(/^wss?:\\/\\//.test(u)&&!/^wss?:\\/\\/[^/]+:{port}/.test(u)){{"
+            f"u=u.replace(/^(wss?:\\/\\/)[^/]+(\\/.*)$/,'$1{netloc}$2');}}"
+            "return u;}"
+        )
     return (
         "<script>"
         "(function(){"
         "var _WS=window.WebSocket;"
-        "window.WebSocket=function(url,p){"
-        f"if(/^wss?:\\/\\//.test(url)&&!/^wss?:\\/\\/[^/]+:{port}/.test(url)){{"
-        f"url=url.replace(/^(wss?:\\/\\/)[^/]+(\\/.*)$/,'$1{netloc}$2');"
-        "}"
-        "return p?new _WS(url,p):new _WS(url);"
-        "};"
+        + rewrite +
+        "window.WebSocket=function(url,p){url=fix(url);return p?new _WS(url,p):new _WS(url);};"
+        "window.WebSocket.prototype=_WS.prototype;"
         "Object.assign(window.WebSocket,{CONNECTING:0,OPEN:1,CLOSING:2,CLOSED:3});"
         "})();"
         "</script>"
     )
 
 
+_OPENCLAW_PREFIX = "/proxy/openclaw"
+# Tag attributes href="/x" / src='/x': root-absolute, not protocol-relative "//host", not already prefixed.
+_OPENCLAW_ABS_ATTR_RE = re.compile(
+    r"""(<[a-zA-Z][^>]*?\s)(href|src)=(["'])/(?!/|%s/)""" % re.escape(_OPENCLAW_PREFIX.lstrip("/")))
+_OPENCLAW_BASE_ATTR_RE = re.compile(r'data-openclaw-control-ui-base-path=(["\'])\1')
+
+
+def _rewrite_openclaw_html(body: str) -> str:
+    """Point the control UI's root-absolute asset URLs at the proxy prefix
+    and stamp the prefix as its mount base path."""
+    body = _OPENCLAW_ABS_ATTR_RE.sub(r"\1\2=\3" + _OPENCLAW_PREFIX + "/", body)
+    return _OPENCLAW_BASE_ATTR_RE.sub(
+        r"data-openclaw-control-ui-base-path=\1" + _OPENCLAW_PREFIX + r"\1", body)
+
+
 def _proxy_openclaw(path: str, base: str):
     netloc = urlparse(base).netloc or ""
     port = (netloc.split(":") + ["80"])[1]
-    ws_patch = _build_openclaw_ws_patch(netloc, port)
     url = base + "/" + path.lstrip("/")
     try:
         qs = flask_request.query_string.decode("utf-8")
@@ -559,8 +616,7 @@ def _proxy_openclaw(path: str, base: str):
         upstream = requests.request(
             method=flask_request.method,
             url=url,
-            headers={k: v for k, v in flask_request.headers if k.lower() not in
-                     ("host", "content-length", "transfer-encoding")},
+            headers=_forward_headers(),
             data=flask_request.get_data(),
             allow_redirects=False,
             timeout=15,
@@ -576,13 +632,15 @@ def _proxy_openclaw(path: str, base: str):
                 v = re.sub(r';\s*SameSite=[^;]+', '', v, flags=re.IGNORECASE)
                 v = re.sub(r';\s*Secure',         '', v, flags=re.IGNORECASE)
             if kl == "location" and v.startswith(base):
-                v = v.replace(base, "/proxy/openclaw")
+                v = v.replace(base, _OPENCLAW_PREFIX)
             headers.append((k, v))
 
         # For HTML responses, inject the WS-redirect shim before </head>.
         ct = upstream.headers.get("content-type", "")
         if "text/html" in ct:
-            body = upstream.content.decode("utf-8", errors="replace")
+            bridge = openclaw_ws_url_for_browser()
+            ws_patch = _build_openclaw_ws_patch(netloc, port, bridge, _deps.ws_ticket("/ws/openclaw") if bridge else "")
+            body = _rewrite_openclaw_html(upstream.content.decode("utf-8", errors="replace"))
             if "</head>" in body:
                 body = body.replace("</head>", ws_patch + "</head>", 1)
             else:
@@ -611,8 +669,7 @@ def _proxy_imggen(path: str, base: str):
         upstream = requests.request(
             method=flask_request.method,
             url=url,
-            headers={k: v for k, v in flask_request.headers if k.lower() not in
-                     ("host", "content-length", "transfer-encoding")},
+            headers=_forward_headers(),
             data=flask_request.get_data(),
             allow_redirects=False,
             timeout=settings.manager.timeouts.generic_http,
@@ -644,7 +701,7 @@ def _proxy_sdcpp(path: str, base: str):
     """Proxy a /sdcpp/... request to the image generation backend (relative
     SPA calls from the image-gen UI)."""
     url = base + "/sdcpp/" + path.lstrip("/")
-    headers = {k: v for k, v in flask_request.headers if k.lower() != "host"}
+    headers = _forward_headers()
     headers["X-Forwarded-For"] = flask_request.remote_addr or ""
     headers["X-Forwarded-Proto"] = flask_request.scheme
     headers["X-Forwarded-Host"] = flask_request.host
@@ -810,14 +867,9 @@ def ae_ws_url_for_browser() -> str:
     # browser doesn't have to trust it. getattr() guards an upgraded deploy
     # whose local config/unified_config.py predates these fields (the file is
     # gitignored and update.sh doesn't re-render it).
-    ws_proxy_port = int(getattr(settings.manager, "ws_proxy_port", 0) or 0)
-    if ws_proxy_port > 0:
-        # https pages mixed-content-block plain ws, so when the bridge has a
-        # wss listener (operator cert, #525) secure pages are sent there.
-        wss_port = _deps.wss_bridge_port()
-        if wss_port > 0 and _deps.request_is_https():
-            return f"wss://{_deps.request_host_no_port()}:{wss_port}/ws/alarm"
-        return f"ws://{_deps.request_host_no_port()}:{ws_proxy_port}/ws/alarm"
+    bridge = _bridge_url_for_browser("/ws/alarm")
+    if bridge:
+        return bridge
     # No bridge + AE bearer configured → no browser-usable URL (#519).
     if ae_auth.effective_bearer(settings):
         return ""
@@ -861,7 +913,8 @@ def register_routes(app, ctx, *,
                     request_host_no_port: Callable[[], str],
                     rewrite_loopback_host: Callable[[str, str], str],
                     request_is_https: "Callable[[], bool] | None" = None,
-                    wss_bridge_port: "Callable[[], int] | None" = None) -> None:
+                    wss_bridge_port: "Callable[[], int] | None" = None,
+                    ws_ticket: "Callable[[str], str] | None" = None) -> None:
     """Wire the 7 catch-all proxy routes into `app`. Shared deps come
     from ctx (ae_session, alarm_engine_url, require_admin); the module-
     specific kwargs are repo_root (for the AE SPA dir), install_topology
@@ -878,6 +931,7 @@ def register_routes(app, ctx, *,
     _deps.rewrite_loopback_host = rewrite_loopback_host
     _deps.request_is_https = request_is_https or (lambda: False)
     _deps.wss_bridge_port = wss_bridge_port or (lambda: 0)
+    _deps.ws_ticket = ws_ticket or (lambda path: "")
 
     _ALARM_FRONTEND_DIR = str(Path(repo_root) / "llm-systems-alarm-engine" / "frontend")
     # Make sure send_from_directory hands modules/CSS back with the right type.

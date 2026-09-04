@@ -127,3 +127,54 @@ class TestHandlerUsesTheGate:
         src = inspect.getsource(M._maybe_start_alarm_ws_proxy)
         assert "ws_handshake_denial(req_target)" in src
         assert "_verify_ws_ticket" not in src  # gate lives in one place only
+
+
+# ── OpenClaw bridge path ─────────────────────────────────────────────────────
+
+class TestOpenclawBridgeTickets:
+    def test_openclaw_ticket_bridges_on_its_own_path(self):
+        t = M._issue_ws_ticket(path="/ws/openclaw")
+        assert M.ws_handshake_denial(f"/ws/openclaw?ticket={t}") is None
+
+    def test_tickets_are_bound_to_their_path(self):
+        alarm = M._issue_ws_ticket()
+        claw = M._issue_ws_ticket(path="/ws/openclaw")
+        assert M.ws_handshake_denial(f"/ws/openclaw?ticket={alarm}") == (1008, "unauthorized")
+        assert M.ws_handshake_denial(f"/ws/alarm?ticket={claw}") == (1008, "unauthorized")
+
+    def test_openclaw_ticket_is_single_use(self):
+        t = M._issue_ws_ticket(path="/ws/openclaw")
+        assert M.ws_handshake_denial(f"/ws/openclaw?ticket={t}") is None
+        assert M.ws_handshake_denial(f"/ws/openclaw?ticket={t}") == (1008, "unauthorized")
+
+    def test_bridge_path_resolution(self):
+        assert M._ws_bridge_path("/ws/openclaw?ticket=x") == "/ws/openclaw"
+        assert M._ws_bridge_path("/ws/alarm?ticket=x") == "/ws/alarm"
+        assert M._ws_bridge_path("/nope") == ""
+
+    def test_route_issues_an_openclaw_ticket(self, monkeypatch):
+        monkeypatch.setattr(auth, "auth_mode", lambda: "disabled")
+        with M.app.test_client() as c:
+            r = c.get("/api/openclaw-ws-ticket")
+        assert r.status_code == 200
+        body = r.get_json()
+        assert M._verify_ws_ticket(body["ticket"], "/ws/openclaw") is True
+        assert M._verify_ws_ticket(body["ticket"]) is False
+
+    def test_openclaw_ticket_route_requires_a_session(self, monkeypatch):
+        monkeypatch.setattr(auth, "auth_mode", lambda: "required")
+        with M.app.test_client() as c:
+            r = c.get("/api/openclaw-ws-ticket")
+        assert r.status_code in (302, 401, 403)
+
+    def test_proxy_handler_dispatches_on_the_bridge_path(self):
+        import inspect
+        src = inspect.getsource(M._maybe_start_alarm_ws_proxy)
+        assert '_ws_bridge_path(req_target) == "/ws/openclaw"' in src
+
+
+    def test_bridge_relays_large_frames_both_ways(self):
+        import inspect
+        src = inspect.getsource(M._maybe_start_alarm_ws_proxy)
+        assert src.count("max_size=_WS_BRIDGE_MAX_SIZE") == 3
+        assert M._WS_BRIDGE_MAX_SIZE > 1024 * 1024
