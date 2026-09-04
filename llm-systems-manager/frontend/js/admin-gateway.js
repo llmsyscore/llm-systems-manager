@@ -306,7 +306,7 @@
     wire();
     refreshNow();
     if (_timer) return;
-    _timer = setInterval(refresh, POLL_MS);
+    _timer = LivePause.every(refresh, POLL_MS);
   }
   function stop() {
     if (!_timer) return;

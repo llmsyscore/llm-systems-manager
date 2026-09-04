@@ -25,6 +25,7 @@ describe('admin auto-refresh owns the gateway poll', () => {
     window.adminLoadAgents = vi.fn();
     window.adminLoadHealth = vi.fn();
     window.GatewayView = { start: vi.fn(), stop: vi.fn() };
+    window.LivePause = { on: false, every: (fn, ms) => setInterval(fn, ms) };
     loadAdminRefresh();
   });
   afterEach(() => { window.adminStopAutoRefresh(); vi.useRealTimers(); });

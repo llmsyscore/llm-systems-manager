@@ -478,7 +478,7 @@ async function startLogStream() {
   _logEventSrc.onmessage = e => {
     const msg = JSON.parse(e.data);
     _logRetryDelay = 5000;   // healthy stream — reset backoff
-    if (msg.keepalive) return;
+    if (msg.keepalive || LivePause.on) return;
     _logAppend(box, msg.line);
   };
   _logEventSrc.onerror = () => {

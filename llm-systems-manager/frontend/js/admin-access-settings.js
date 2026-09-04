@@ -120,6 +120,8 @@
   }
 
   function onClick(ev) {
+    const rs = ev.target.closest('[data-restart]');
+    if (rs) { ev.preventDefault(); if (typeof _restartService === 'function') _restartService(rs.dataset.restart); return; }
     const bool = ev.target.closest('.mc-toggle[data-type="bool"]');
     if (bool) {
       const e = _byPath.get(bool.dataset.path);
@@ -177,8 +179,8 @@
     }
     _dirty.clear(); _invalid.clear();
     await load();
-    const restart = (d.restart_required || []).length;
-    refreshFoot(restart ? '✓ Saved — restart required; see Settings for the restart button' : '✓ Saved', 'ok');
+    refreshFoot('✓ Saved', 'ok');
+    if (typeof _adminShowRestartNotice === 'function') _adminShowRestartNotice($('acCfgBody'), d, _entries);
     if (typeof adminAuthLoad === 'function') adminAuthLoad();
   }
 

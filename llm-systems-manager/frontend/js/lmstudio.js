@@ -621,7 +621,7 @@ let _lmsLogTimer = null;
 function startLmsLogRefresh() {
   fetchLmsLog();
   if (_lmsLogTimer) clearInterval(_lmsLogTimer);
-  _lmsLogTimer = setInterval(fetchLmsLog, 8000);
+  _lmsLogTimer = LivePause.every(fetchLmsLog, 8000);
 }
 
 function stopLmsLogRefresh() {

@@ -159,7 +159,7 @@ def _local_hostname() -> str:
 # banner reads it. Bump suffix (-1, -2, …) for same-day iterations; roll
 # the date for a new day's first change.
 # ---------------------------------------------------------------------------
-__version__ = "v2026.09.04-7"
+__version__ = "v2026.09.04-8"
 
 # Wall-clock at first import (Cheroot main process); the shutdown banner
 # reads it for the uptime line.
@@ -4178,6 +4178,21 @@ def _settings_ae_retry_loop() -> None:
             slept += 0.5
 
 
+def _settings_restart_pending(file_vals: "dict | None",
+                              ae_pending: "bool | None") -> list:
+    """Services needing a restart: manager from file drift vs boot; AE from its
+    own report, else local drift + the in-memory flag."""
+    derived = settings_catalog.pending_restart_services(file_vals)
+    pending = {"manager"} & derived
+    if ae_pending is True:
+        pending.add("alarm_engine")
+    elif ae_pending is None and (
+            "alarm_engine" in derived
+            or "alarm_engine" in _SETTINGS_RESTART_PENDING):
+        pending.add("alarm_engine")
+    return sorted(pending)
+
+
 def _settings_pending_after(svc: str, resp):
     """Clears the pending-restart flag only when the restart response is 2xx."""
     status = resp[1] if isinstance(resp, tuple) else getattr(resp, "status_code", 200)
@@ -4220,17 +4235,8 @@ def admin_settings_get():
     payload["topology"] = {"split": topo["split"], "ae_config_reachable": ae_reachable}
     if topo["split"] and not ae_reachable and ae_reason:
         payload["topology"]["ae_config_error"] = ae_reason
-    # Manager pending derives from file drift vs boot; AE pending comes from
-    # the AE's own comparison, falling back to local drift + in-memory flag.
-    derived = settings_catalog.pending_restart_services(file_vals)
-    pending = {"manager"} & derived
-    if ae_pending is True:
-        pending.add("alarm_engine")
-    elif ae_pending is None and (
-            "alarm_engine" in derived
-            or "alarm_engine" in _SETTINGS_RESTART_PENDING):
-        pending.add("alarm_engine")
-    payload["restart_pending"] = sorted(pending)
+    payload["restart_pending"] = _settings_restart_pending(file_vals, ae_pending)
+    payload["restart_pending_paths"] = settings_catalog.pending_restart_paths(file_vals)
     payload["ae_sync_pending"] = _settings_ae_pending_paths()
     payload["ae_sync_retry_s"] = _SETTINGS_AE_RETRY_INTERVAL_S
     return jsonify(payload)
@@ -4303,8 +4309,25 @@ def _gateway_reload_config() -> None:
         log.warning("gateway config reload failed (runtime keeps previous value): %s", e)
 
 
+# Sections whose live values re-read the file after a save (backup registers below).
 _HOT_RELOADERS = {"manager.audit.": _audit_reload_config,
                   "manager.gateway.": _gateway_reload_config}
+
+# Path-specific checks a save must pass beyond the catalog's type coercion.
+_SETTINGS_VALIDATORS: dict = {}
+
+
+def _settings_extra_errors(clean: dict) -> dict:
+    """{path: message} from _SETTINGS_VALIDATORS for the non-null values in clean."""
+    errors = {}
+    for path, value in clean.items():
+        check = _SETTINGS_VALIDATORS.get(path)
+        if check is None or value is None:
+            continue
+        msg = check(value)
+        if msg:
+            errors[path] = msg
+    return errors
 
 
 @app.route("/api/admin/settings", methods=["PUT"])
@@ -4325,10 +4348,13 @@ def admin_settings_put():
         e = settings_catalog.entry_for(str(p))
         if e is None or e["service"] != "both":
             errors[str(p)] = "not a shared setting"
+    if not errors:
+        errors = _settings_extra_errors(clean)
     if errors:
         return jsonify({"ok": False, "errors": errors}), 400
     if not clean and not resync:
-        return jsonify({"ok": True, "applied": [], "restart_required": [], "errors": {}})
+        return jsonify({"ok": True, "applied": [], "restart_required": [],
+                        "restart_paths": [], "errors": {}})
     local, remote = _partition_settings_changes(clean)
     # None = remove the key so the model default / inherit applies again.
     local_sets = {k: v for k, v in local.items() if v is not None}
@@ -4359,13 +4385,17 @@ def admin_settings_put():
         result["ae_sync_pending"] = _settings_ae_pending_paths()
     elif resync:
         result["resynced"] = sorted(str(p) for p in resync)
+    restart_paths = {p for p in applied if settings_catalog.entry_for(p)
+                     and not settings_catalog.is_hot(p)}
     restart = settings_catalog.services_for(applied)
     if resync and not ae_failed:
+        restart_paths |= {str(p) for p in resync if not settings_catalog.is_hot(str(p))}
         restart.add("alarm_engine")
     # Manager pending is derived from file drift; only the AE fallback flag
     # lives in memory.
     _SETTINGS_RESTART_PENDING.update(restart & {"alarm_engine"})
     result["restart_required"] = sorted(restart)
+    result["restart_paths"] = sorted(restart_paths)
     return jsonify(result)
 
 
@@ -4876,6 +4906,9 @@ def admin_system_health():
         "history_req_per_s": round(_HISTORY_REQ_RATE.per_s(now), 2),
     }
     health["agent_update"] = _agent_update_state(health["agents"])
+    # Services whose saved settings only apply after a restart.
+    health["restart_pending"] = _settings_restart_pending(
+        settings_catalog.file_catalog_values(), None)
 
     health["overall"] = "ok" if not health["warnings"] else ("warn" if all("stale" not in w and "unreachable" not in w and "down" not in w for w in health["warnings"]) else "down")
     return jsonify(health)
@@ -5621,6 +5654,63 @@ def _backup_passphrase() -> str:
     return str(getattr(getattr(settings.manager, "backup", None), "passphrase", "") or "")
 
 
+_BACKUP_KEYS = ("enabled", "interval_hours", "keep_last", "passphrase", "mirror_dir")
+_backup_cfg_mtime: "float | None" = None
+
+
+def _backup_reload_config() -> None:
+    """Re-apply [manager.backup] from the on-disk config onto the live settings (hot)."""
+    global _backup_cfg_mtime
+    try:
+        path = settings_toml_io.resolve_config_path()
+        _backup_cfg_mtime = path.stat().st_mtime if path.is_file() else None
+        snap = settings_catalog._snapshot().manager.backup
+        live = getattr(settings.manager, "backup", None)
+        if live is None:
+            return
+        for k in _BACKUP_KEYS:
+            setattr(live, k, getattr(snap, k))
+    except Exception as e:
+        log.warning("backup config reload failed (runtime keeps previous values): %s", e)
+
+
+def _backup_reload_if_changed() -> None:
+    """Reload [manager.backup] when the config file's mtime moved (hand edits)."""
+    try:
+        path = settings_toml_io.resolve_config_path()
+        mtime = path.stat().st_mtime if path.is_file() else None
+    except OSError:
+        return
+    if mtime != _backup_cfg_mtime:
+        _backup_reload_config()
+
+
+_HOT_RELOADERS["manager.backup."] = _backup_reload_config
+
+
+def _validate_backup_mirror_dir(value: str) -> "str | None":
+    """Error text when the mirror directory can't be used by this process; None when it can."""
+    if not value:
+        return None
+    p = Path(value)
+    if not p.is_absolute():
+        return "must be an absolute path"
+    try:
+        if p.exists():
+            if not p.is_dir():
+                return "exists but is not a directory"
+        else:
+            p.mkdir(parents=True)
+    except OSError as e:
+        return f"cannot create the directory: {e.strerror or e}"
+    if not os.access(p, os.R_OK | os.W_OK | os.X_OK):
+        return "not readable and writable by the manager's service user"
+    return None
+
+
+_SETTINGS_VALIDATORS["manager.backup.mirror_dir"] = _validate_backup_mirror_dir
+
+
 def _list_auto_backups() -> "list[Path]":
     try:
         return sorted(_BACKUP_DIR.glob(_BACKUP_PREFIX + "*.lsmenc"))
@@ -5729,46 +5819,71 @@ def _last_auto_backup_ts() -> float:
 _backup_sched_state: dict = {"running": False, "reason": "not started", "next_attempt": None}
 
 
-def _backup_scheduler_loop(interval_s: float, passphrase: str,
-                           keep_last: int, mirror_dir: str) -> None:
-    # First run soon after start when no archive exists yet; failed runs
-    # retry after 1h (capped at the interval) instead of spinning.
-    last = _last_auto_backup_ts()
-    next_attempt = (last + interval_s) if last else (time.time() + 120.0)
-    _backup_sched_state["next_attempt"] = next_attempt
-    while not _shutting_down:
-        if time.time() >= next_attempt:
-            st = _run_scheduled_backup(passphrase, keep_last, mirror_dir)
-            delay = interval_s if st.get("ok") else min(interval_s, 3600.0)
-            next_attempt = time.time() + delay
-            _backup_sched_state["next_attempt"] = next_attempt
-        time.sleep(0.5)
-
-
-def _maybe_start_backup_scheduler() -> None:
+def _backup_sched_eval() -> dict:
+    """Scheduler inputs from the live [manager.backup]: active flag + reason
+    plus the per-run arguments."""
+    _backup_reload_if_changed()
     enabled, interval_h, keep_last, mirror_dir = _backup_cfg()
     passphrase = _backup_passphrase()
     if not enabled or interval_h <= 0:
-        _backup_sched_state.update({"running": False, "reason": "disabled ([manager.backup])"})
-        log.info("  Scheduled backups: disabled ([manager.backup])")
+        active, reason = False, "scheduled backups are disabled ([manager.backup])"
+    elif passphrase and len(passphrase) < _archive.MIN_PASSWORD_LEN:
+        active, reason = False, "passphrase shorter than the 12-char encryption minimum"
+    else:
+        active, reason = True, ""
+    return {"active": active, "reason": reason, "interval_s": interval_h * 3600.0,
+            "interval_h": interval_h, "keep_last": keep_last,
+            "mirror_dir": mirror_dir, "passphrase": passphrase}
+
+
+def _backup_due_ts(last_ts: float, last_ok: bool, interval_s: float, boot_due: float) -> float:
+    """Next run: boot_due until something ran, else last run + interval
+    (a failed run retries after 1h, capped at the interval)."""
+    if not last_ts:
+        return boot_due
+    return last_ts + (interval_s if last_ok else min(interval_s, 3600.0))
+
+
+def _backup_log_state(ev: dict) -> None:
+    if not ev["active"]:
+        emit = log.error if "passphrase" in ev["reason"] else log.info
+        emit("  Scheduled backups: %s", ev["reason"])
         return
-    if passphrase and len(passphrase) < _archive.MIN_PASSWORD_LEN:
-        _backup_sched_state.update({
-            "running": False,
-            "reason": "passphrase shorter than the 12-char encryption minimum",
-        })
-        log.error("Scheduled backups DISABLED: [manager.backup].passphrase is "
-                  "shorter than the 12-char encryption minimum")
-        return
-    _backup_sched_state.update({"running": True, "reason": ""})
-    _threading.Thread(
-        target=_backup_scheduler_loop,
-        args=(interval_h * 3600.0, passphrase, keep_last, mirror_dir),
-        name="backup-scheduler", daemon=True,
-    ).start()
     log.info("  Scheduled backups: every %.1fh → %s (keep %d, %s)",
-             interval_h, _BACKUP_DIR, keep_last,
-             "encrypted" if passphrase else "plaintext")
+             ev["interval_h"], _BACKUP_DIR, ev["keep_last"],
+             "encrypted" if ev["passphrase"] else "plaintext")
+
+
+def _backup_scheduler_loop() -> None:
+    # Re-reads [manager.backup] every tick and runs when the due time passes.
+    last_ts, last_ok = _last_auto_backup_ts(), True
+    boot_due = time.time() + 120.0
+    prev = None
+    while not _shutting_down:
+        ev = _backup_sched_eval()
+        key = (ev["active"], ev["reason"], ev["interval_h"], ev["keep_last"], bool(ev["passphrase"]))
+        if prev is not None and key != prev:
+            _backup_log_state(ev)
+        prev = key
+        _backup_sched_state.update({"running": ev["active"], "reason": ev["reason"]})
+        if not ev["active"]:
+            _backup_sched_state["next_attempt"] = None
+            time.sleep(5.0)
+            continue
+        due = _backup_due_ts(last_ts, last_ok, ev["interval_s"], boot_due)
+        _backup_sched_state["next_attempt"] = due
+        if time.time() >= due:
+            st = _run_scheduled_backup(ev["passphrase"], ev["keep_last"], ev["mirror_dir"])
+            last_ts, last_ok = time.time(), bool(st.get("ok"))
+        time.sleep(5.0)
+
+
+def _maybe_start_backup_scheduler() -> None:
+    ev = _backup_sched_eval()
+    _backup_sched_state.update({"running": ev["active"], "reason": ev["reason"]})
+    _backup_log_state(ev)
+    _threading.Thread(target=_backup_scheduler_loop,
+                      name="backup-scheduler", daemon=True).start()
 
 
 @app.route("/api/admin/backup-status")
@@ -5810,15 +5925,10 @@ def admin_backup_now():
     deny = _require_admin()
     if deny is not None:
         return deny
-    enabled, interval_h, keep_last, mirror_dir = _backup_cfg()
-    if not (enabled and interval_h > 0):
-        return jsonify({"ok": False,
-                        "error": "scheduled backups are disabled ([manager.backup])"}), 409
-    passphrase = _backup_passphrase()
-    if passphrase and len(passphrase) < _archive.MIN_PASSWORD_LEN:
-        return jsonify({"ok": False,
-                        "error": "passphrase shorter than the 12-char encryption minimum"}), 409
-    st = _run_scheduled_backup(passphrase, keep_last, mirror_dir)
+    ev = _backup_sched_eval()
+    if not ev["active"]:
+        return jsonify({"ok": False, "error": ev["reason"]}), 409
+    st = _run_scheduled_backup(ev["passphrase"], ev["keep_last"], ev["mirror_dir"])
     ok = bool(st.get("ok"))
     # The exception text stays in the log; the API reports a fixed message.
     last = {**st, "error": None if ok else "backup failed; details are in the manager log"}

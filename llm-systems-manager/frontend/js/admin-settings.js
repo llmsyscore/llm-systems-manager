@@ -349,9 +349,12 @@
     const topo = _data.topology || {};
     const pending = (_data.restart_pending || []).filter(s => _UNIT[s]);
     if (pending.length) {
+      const detail = pending.map(svc => {
+        const names = pendingLabels(svc).map(n => `<b>${esc(n)}</b>`);
+        return `${_LABEL[svc]}: ${names.length ? names.join(', ') : 'changed on its host'}`;
+      }).join(' · ');
       out += '<div class="notice" id="adminSettingsRestartBanner"><b>Restart required</b>'
-        + `<span class="d">Saved changes to ${pending.length} `
-        + `${pending.map(s => _LABEL[s].toLowerCase()).join(' and ')} setting group take effect after a restart.</span>`
+        + `<span class="d">Saved changes take effect after a restart — ${detail}.</span>`
         + pending.map(svc => {
           const remote = svc === 'alarm_engine' && topo.split;
           const cmd = (remote ? '(on the alarm-engine host) ' : '') + `sudo systemctl restart ${_UNIT[svc]}`;
@@ -391,6 +394,28 @@
       }, (((_data && _data.ae_sync_retry_s) || 30) + 5) * 1000);
     }
     return out;
+  }
+
+  // Labels of the drifted non-hot paths that belong to svc (both-owned count for each).
+  function pendingLabels(svc) {
+    return (_data.restart_pending_paths || [])
+      .filter(p => { const e = _entryByPath.get(p); return e && (e.service === svc || e.service === 'both'); })
+      .map(labelOf);
+  }
+
+  // Inline notice for a PUT response that flagged a restart; hosts route the
+  // data-restart buttons to _restartService.
+  function restartNoticeHtml(d, labelFn) {
+    const svcs = (d.restart_required || []).filter(s => _UNIT[s]);
+    if (!svcs.length) return '';
+    const paths = d.restart_paths || [];
+    const names = paths.map(p => `<b>${esc(labelFn ? labelFn(p) : p)}</b>`).join(', ');
+    const lead = !names ? 'These changes take' : names + (paths.length === 1 ? ' takes' : ' take');
+    return '<div class="notice"><b>Restart required</b>'
+      + `<span class="d">${lead} effect after a `
+      + `${svcs.map(s => _LABEL[s].toLowerCase()).join(' and ')} restart.</span>`
+      + svcs.map(s => `<button type="button" class="mcbtn mcbtn-ghost mcbtn-sm warn" data-restart="${esc(s)}">Restart ${esc(_LABEL[s])}</button>`).join('')
+      + '</div>';
   }
 
   // ── save bar ──────────────────────────────────────────────────────
@@ -602,6 +627,7 @@
       _invalid.clear();
       await load();
       showResult(d);
+      if ((d.restart_required || []).length && typeof adminLoadHealth === 'function') adminLoadHealth();
     } else {
       if (msg) msg.textContent = 'save failed — fix the errors below';
       showErrors(d.errors || { _: d.error || `HTTP ${r.status}` });
@@ -730,5 +756,6 @@
   window.SettingsFields = {
     render: (entries, values, defs, over) => renderFields(entries, values, defs, over),
     fieldHtml, validate, splitUnit, groupMeta, readInput, firstSentence, applyDirtyValues,
+    restartNotice: restartNoticeHtml,
   };
 })();

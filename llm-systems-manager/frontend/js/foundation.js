@@ -126,6 +126,25 @@ const _inflight = new Set();
 function _claim(key)   { if (_inflight.has(key)) return false; _inflight.add(key); return true; }
 function _release(key) { _inflight.delete(key); }
 
+// Per-browser-tab pause for scheduled pollers and stream frames.
+// Usage: LivePause.every(fn, ms) instead of setInterval; `if (LivePause.on) return;` in stream handlers.
+const LivePause = (() => {
+  const KEY = 'lsm.livePaused';
+  let on = false;
+  try { on = sessionStorage.getItem(KEY) === '1'; } catch (_) { /* storage blocked */ }
+  function set(v) {
+    v = !!v;
+    if (v === on) return;
+    on = v;
+    try { if (v) sessionStorage.setItem(KEY, '1'); else sessionStorage.removeItem(KEY); } catch (_) { /* storage blocked */ }
+    document.dispatchEvent(new CustomEvent('lsm:livepause', { detail: { paused: v } }));
+  }
+  function guard(fn) { return function () { if (on) return undefined; return fn.apply(this, arguments); }; }
+  function every(fn, ms) { return setInterval(guard(fn), ms); }
+  return { get on() { return on; }, set, toggle: () => set(!on), guard, every };
+})();
+window.LivePause = LivePause;
+
 // Per-action debounce for user-initiated ops (load/unload/reload).
 const _actionInflight = new Set();
 function _actionClaim(key)   { if (_actionInflight.has(key)) return false; _actionInflight.add(key); return true; }
@@ -1243,11 +1262,18 @@ function _sdRenderRefresh() {
   const idle = cfg.poll_interval_idle, active = cfg.poll_interval_active;
   const cur = cfg.poll_interval ? `${cfg.poll_interval}s` : '—';
   const reason = cfg.interval_reason && cfg.interval_reason !== 'idle' ? `active · ${cfg.interval_reason}` : 'idle';
+  const paused = LivePause.on;
   const seg = `<div class="mc-seg" role="group" aria-label="Refresh mode">
       <button type="button" data-sd="mode" data-v="auto" class="${mode === 'auto' ? 'on' : ''}">Auto</button>
       <button type="button" data-sd="mode" data-v="manual" class="${mode === 'manual' ? 'on' : ''}">Manual</button></div>`;
+  const live = (cls, why) => paused
+    ? `<div class="sd-live paused"><span class="dot"></span><b>paused</b><span class="why">this tab · every ${_esc(cur)} when resumed</span></div>`
+    : `<div class="sd-live ${cls}"><span class="dot"></span>every <b>${_esc(cur)}</b><span class="why">${_esc(why)}</span></div>`;
+  const pauseRow = `
+    <div class="sd-row" style="margin-top:12px;"><button type="button" class="mc-toggle${paused ? ' on' : ''}" data-sd="pause" role="switch" aria-checked="${paused}"><span class="track"></span><span class="tlbl">Pause live updates in this tab</span></button></div>
+    <div class="help">Holds scheduled refreshes and stream updates in this browser tab only; buttons and tab switches still load, and alarm notifications still arrive. Other tabs and viewers keep updating.</div>`;
   const autoBox = `
-    <div class="sd-live auto"><span class="dot"></span>every <b>${_esc(cur)}</b><span class="why">${_esc(reason)}</span></div>
+    ${live('auto', reason)}
     <div class="help">Switches between your configured cadences: <b>${active != null ? active + 's' : '—'}</b> while a provider is active, <b>${idle != null ? idle + 's' : '—'}</b> while llama sleeps and LM Studio is idle. Change them under Admin → Settings → Polling. Agents sample every 5s, so that is the fastest useful cadence.</div>`;
   const chips = SettingsLib.INTERVAL_CHIPS.map(v =>
     `<button type="button" class="sd-chip${v === manualVal ? ' on' : ''}" data-sd="ival" data-v="${v}">${v}s</button>`).join('');
@@ -1256,12 +1282,13 @@ function _sdRenderRefresh() {
     <div class="sd-row"><span class="k">Custom</span>
       <div class="sd-stp"><button type="button" data-sd="ival-step" data-v="-5" aria-label="Slower">−</button><input type="number" id="sdIvalInput" min="${SettingsLib.INTERVAL_MIN}" max="${SettingsLib.INTERVAL_MAX}" step="5" value="${manualVal}" aria-label="Seconds"><button type="button" data-sd="ival-step" data-v="5" aria-label="Faster">+</button></div>
       <span class="unit">seconds · ${SettingsLib.INTERVAL_MIN}–${SettingsLib.INTERVAL_MAX}</span></div>
-    <div class="sd-live manual" style="margin-top:8px;"><span class="dot"></span>every <b>${_esc(cur)}</b><span class="why">manual · all viewers</span></div>`;
+    <div style="margin-top:8px;">${live('manual', 'manual · all viewers')}</div>`;
   el.innerHTML = `
     <div class="sd-sh"><h3>Refresh</h3><span class="meta">poll interval</span></div>
     <div class="sd-row"><span class="k">Mode</span>${seg}</div>
     <div ${mode === 'auto' ? '' : 'hidden'}>${autoBox}</div>
-    <div ${mode === 'manual' ? '' : 'hidden'}>${manBox}</div>`;
+    <div ${mode === 'manual' ? '' : 'hidden'}>${manBox}</div>
+    ${pauseRow}`;
 }
 
 function _renderIntervalBadge() {
@@ -1270,6 +1297,12 @@ function _renderIntervalBadge() {
   const cfg = window._pollCfg || {};
   const s = cfg.poll_interval ? `${cfg.poll_interval}s` : '—';
   const mode = cfg.interval_mode || 'auto';
+  if (LivePause.on) {
+    b.className = 'hdr-badge paused';
+    b.innerHTML = '<span class="dot"></span><b>paused</b>';
+    b.title = 'Live updates paused in this tab · open settings';
+    return;
+  }
   b.className = 'hdr-badge ' + mode;
   b.innerHTML = `<span class="dot"></span><b>${_esc(s)}</b> ${mode}`;
   b.title = `Refresh every ${s} (${mode}) · open settings`;
@@ -1333,6 +1366,8 @@ function _sdBind() {
       applyTheme(t.dataset.id, true);
     } else if (kind === 'follow-system') {
       setThemeFollowSystem(t.getAttribute('aria-checked') !== 'true');
+    } else if (kind === 'pause') {
+      LivePause.set(t.getAttribute('aria-checked') !== 'true');
     } else if (kind === 'mode') {
       applyIntervalMode(t.dataset.v, _intervalManual);
     } else if (kind === 'ival') {
@@ -1395,6 +1430,11 @@ document.addEventListener('lsm:pollcfg', () => {
   if (!ov || !ov.classList.contains('open')) return;
   if (document.activeElement && document.activeElement.id === 'sdIvalInput') return;
   _sdRenderRefresh();
+});
+document.addEventListener('lsm:livepause', () => {
+  _renderIntervalBadge();
+  const ov = document.getElementById('settingsOverlay');
+  if (ov && ov.classList.contains('open')) _sdRenderRefresh();
 });
 
 // Apply saved column counts from layout on load

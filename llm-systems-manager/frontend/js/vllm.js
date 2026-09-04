@@ -357,7 +357,7 @@ let _vllmLogTimer = null;
 function startVllmLogRefresh() {
   fetchVllmLog();
   if (_vllmLogTimer) clearInterval(_vllmLogTimer);
-  _vllmLogTimer = setInterval(fetchVllmLog, 8000);
+  _vllmLogTimer = LivePause.every(fetchVllmLog, 8000);
 }
 function stopVllmLogRefresh() {
   if (_vllmLogTimer) {

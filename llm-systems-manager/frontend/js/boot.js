@@ -215,7 +215,7 @@ function _rebackfillActiveView() {
   // override). pollServerState already calls checkConfig on every llama
   // state transition, so the periodic poll is only here to catch agent
   // approval. 60s lag on that is fine.
-  setInterval(checkConfig, 60000);
+  LivePause.every(checkConfig, 60000);
   // Default to LLM Overall when its button is visible; otherwise the
   // fresh-install path (no llama/lms agent yet) lands on Dashboard so
   // the operator isn't dropped onto an empty panel.
@@ -226,59 +226,69 @@ function _rebackfillActiveView() {
   }
   // Poll LM Studio metrics every 6 seconds
   fetchLMStudioMetrics();
-  setInterval(fetchLMStudioMetrics, 6000);
+  LivePause.every(fetchLMStudioMetrics, 6000);
   // Poll vLLM metrics every 6 seconds
   fetchVllmMetrics();
-  setInterval(fetchVllmMetrics, 6000);
+  LivePause.every(fetchVllmMetrics, 6000);
   // Services + InfluxDB cards poll the alarm engine catalog every 10s.
   fetchServicesAndInflux();
-  setInterval(fetchServicesAndInflux, 10000);
+  LivePause.every(fetchServicesAndInflux, 10000);
   fetchManagerAgentsCard();
-  setInterval(fetchManagerAgentsCard, 10000);
+  LivePause.every(fetchManagerAgentsCard, 10000);
   fetchManagerStreamsCard();
-  setInterval(fetchManagerStreamsCard, 10000);
+  LivePause.every(fetchManagerStreamsCard, 10000);
   // Autopilot proposals/state poll — AP.poll() itself no-ops off-tab (#472).
   if (typeof AP !== 'undefined' && AP.poll) {
-    setInterval(AP.poll, 10000);
+    LivePause.every(AP.poll, 10000);
   }
   // Fleet-wide tool run state drives the Tools dot + pills from any tab, so
   // it polls regardless of which tab is active (#775).
   if (typeof toolsPollActivity === 'function') {
     toolsPollActivity();
-    setInterval(toolsPollActivity, 10000);
+    LivePause.every(toolsPollActivity, 10000);
   }
   // Tab status dots (Events / Admin) update regardless of the active tab.
   refreshTabIndicators();
-  setInterval(refreshTabIndicators, 30000);
+  LivePause.every(refreshTabIndicators, 30000);
   // Fetch alarm-rule threshold lines now, then every 30s.
   if (typeof refreshAlarmRules === 'function') {
     refreshAlarmRules();
-    setInterval(refreshAlarmRules, 30000);
+    LivePause.every(refreshAlarmRules, 30000);
   }
   // Refresh the agent picker list (online state + newly-approved agents).
   if (typeof _loadAgentsByProvider === 'function') {
-    setInterval(_loadAgentsByProvider, 30000);
+    LivePause.every(_loadAgentsByProvider, 30000);
   }
-  // Release the manager worker threads held by long-lived SSE streams while
-  // this tab is backgrounded; resume polls + reopen the streams on re-focus.
+  // Catch-up pass after a hidden or paused span: pollers refresh now, the
+  // visible tab's charts re-backfill from history, streams reopen.
+  function _resumeLiveUpdates(pollers, streams) {
+    if (pollers) {
+      pollServerState();
+      fetchLMStudioMetrics();
+      fetchVllmMetrics();
+      fetchServicesAndInflux();
+      fetchManagerAgentsCard();
+      refreshTabIndicators();
+      checkConfig();
+      _rebackfillActiveView();
+      if (_activeTab === 'admin' && typeof adminRefreshNow === 'function') adminRefreshNow();
+    }
+    if (streams) {
+      if (typeof _startLlamaStateStream === 'function') _startLlamaStateStream();
+      if (_logPanelOpen && _activeTab === 'llm' && _subTabState && _subTabState.llm === 'llamacpp'
+          && typeof startLogStream === 'function') startLogStream();
+    }
+  }
+  // Streams close while the tab is backgrounded so their worker threads free up.
   document.addEventListener('visibilitychange', () => {
     if (document.hidden) {
       if (typeof stopLogStream === 'function') stopLogStream();
       if (typeof _stopLlamaStateStream === 'function') _stopLlamaStateStream();
       return;
     }
-    pollServerState();
-    fetchLMStudioMetrics();
-    fetchVllmMetrics();
-    fetchServicesAndInflux();
-    fetchManagerAgentsCard();
-    refreshTabIndicators();
-    checkConfig();
-    // Re-backfill the visible tab's charts from history so a hidden period
-    // shows as real data instead of a frozen line (#502).
-    _rebackfillActiveView();
-    if (typeof _startLlamaStateStream === 'function') _startLlamaStateStream();
-    if (_logPanelOpen && _activeTab === 'llm' && _subTabState && _subTabState.llm === 'llamacpp'
-        && typeof startLogStream === 'function') startLogStream();
+    _resumeLiveUpdates(!LivePause.on, true);
+  });
+  document.addEventListener('lsm:livepause', (ev) => {
+    if (!ev.detail.paused && !document.hidden) _resumeLiveUpdates(true, false);
   });
 })();

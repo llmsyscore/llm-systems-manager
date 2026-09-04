@@ -10,7 +10,7 @@ function adminStartAutoRefresh() {
   // (requires 2 consecutive failed alarm-engine probes before flipping to
   // DOWN). Slower polling reduces the chance of a transient slow probe
   // landing on the dashboard while still surfacing real outages quickly.
-  _adminRefreshTimer = setInterval(_adminRefreshTick, 20000);
+  _adminRefreshTimer = LivePause.every(_adminRefreshTick, 20000);
 }
 
 // One auto-refresh tick; the audit ledger refreshes in place while its
@@ -1841,7 +1841,7 @@ async function adminLogs(aid) {
     const es = new EventSource(`/api/agents/${aid}/log/stream`);
     _adminLogEventSrc = es;
     es.onmessage = (ev) => {
-      if (_adminLogPaused) return;
+      if (_adminLogPaused || LivePause.on) return;
       try {
         const msg = JSON.parse(ev.data);
         if (msg.line !== undefined) _adminLogsAppend(msg.line);
@@ -2287,11 +2287,12 @@ function adminRenderBackup() {
 
   const sum = document.getElementById('bkSummary');
   if (sum) {
-    const mirrorOk = !d.mirror_dir ? null : last.mirrored !== false;
+    const mirror = !d.mirror_dir ? null
+      : last.mirrored === true ? ['ok', 'ok'] : last.mirrored === false ? ['crit', 'failed'] : ['warn', 'pending'];
     sum.innerHTML = `<span>last backup <b class="${last.ok ? 'ok' : 'warn'}">${adminEsc(_adminAgoShort(last.ts))}</b></span>`
       + `<span>next in <b>${adminEsc(_adminInShort(d.next_due_ts))}</b></span>`
       + `<span><b>${files.length}</b> kept</span>`
-      + (mirrorOk === null ? '' : `<span>mirror <b class="${mirrorOk ? 'ok' : 'crit'}">${mirrorOk ? 'ok' : 'failed'}</b></span>`);
+      + (mirror === null ? '' : `<span>mirror <b class="${mirror[0]}">${mirror[1]}</b></span>`);
   }
 
   // Archives card — last manual export per component.
@@ -2329,15 +2330,17 @@ function adminRenderBackup() {
     if (!d.enabled) {
       body.innerHTML = '<div class="empty">Scheduled backups are off — set an interval under Backup settings.</div>';
     } else if (!d.scheduler_running) {
-      body.innerHTML = `<div class="empty">Scheduler is not running: ${adminEsc(d.disabled_reason || 'unknown reason')} — fix Backup settings and restart the manager.</div>`;
+      body.innerHTML = `<div class="empty">Scheduler is not running: ${adminEsc(d.disabled_reason || 'unknown reason')} — fix it under Backup settings below.</div>`;
     } else {
       const lastLine = last.ts
         ? (last.ok
           ? `${_adminStamp(last.ts)} · ${adminEsc(last.file || '')} · ${adminEsc(_fmtBytesShort(last.bytes))} · ${last.files || '?'} files`
           : `<span class="critc">FAILED: ${adminEsc(last.error || 'unknown error')}</span>`)
         : 'no backup recorded yet';
+      const mstate = last.mirrored === true ? ['okc', 'copied']
+        : last.mirrored === false ? ['critc', 'copy failed'] : ['dim', 'not copied yet'];
       const mirror = d.mirror_dir
-        ? `${adminEsc(d.mirror_dir)} <span class="${last.mirrored === false ? 'critc' : 'okc'}">· ${last.mirrored === false ? 'copy failed' : 'copied'}</span>`
+        ? `${adminEsc(d.mirror_dir)} <span class="${mstate[0]}">· ${mstate[1]}</span>`
         : '<span class="dim">not configured</span>';
       const folderBytes = d.folder_bytes != null ? d.folder_bytes : files.reduce((a, b) => a + (b.bytes || 0), 0);
       body.innerHTML = '<div class="bk-sched"><dl class="bk-kv">'
@@ -2379,14 +2382,15 @@ function adminRenderBackup() {
   if (now && !now._bkBound) { now._bkBound = true; now.addEventListener('click', adminBackupNow); }
 }
 
-// Only the newest archive has a recorded mirror outcome; older rows stay dim.
+// "copied" only when the copy is present in the mirror directory; the newest
+// archive's recorded failure wins over the listing.
 function _adminMirrorPill(d, last, b) {
   if (!d.mirror_dir) return '<span class="t">—</span>';
-  if (last && last.file && b.file === last.file) {
-    return last.mirrored === false ? '<span class="pill warn">copy failed</span>'
-                                   : '<span class="pill ok">copied</span>';
+  if (last && last.file && b.file === last.file && last.mirrored === false) {
+    return '<span class="pill warn">copy failed</span>';
   }
-  return '<span class="t">—</span>';
+  return b.mirrored === true ? '<span class="pill ok">copied</span>'
+                             : '<span class="pill dim">not copied</span>';
 }
 
 async function adminBackupNow() {
@@ -2454,7 +2458,9 @@ function adminRenderBackupSettings() {
     const clr = ev.target.closest('[data-clear]');
     if (clr) { ev.preventDefault(); _adminBackupDirty.set(clr.dataset.clear, null); clr.disabled = true; clr.textContent = 'Clear queued'; return; }
     const rst = ev.target.closest('[data-reset]');
-    if (rst) { ev.preventDefault(); _adminBackupDirty.set(rst.dataset.reset, null); adminRenderBackupSettings(); }
+    if (rst) { ev.preventDefault(); _adminBackupDirty.set(rst.dataset.reset, null); adminRenderBackupSettings(); return; }
+    const rs = ev.target.closest('[data-restart]');
+    if (rs) { ev.preventDefault(); _restartService(rs.dataset.restart); }
   });
 }
 
@@ -2462,6 +2468,7 @@ async function adminSaveBackupSettings() {
   const msg = document.getElementById('adminBackupSettingsMsg');
   if (!_adminBackupDirty.size) { if (msg) { msg.className = 'msg'; msg.textContent = 'no changes'; } return; }
   if (msg) { msg.className = 'msg'; msg.textContent = 'saving…'; }
+  let saved = null;
   try {
     const r = await fetch('/api/admin/settings', {
       method: 'PUT', headers: { 'Content-Type': 'application/json' },
@@ -2469,16 +2476,30 @@ async function adminSaveBackupSettings() {
     });
     const d = await r.json().catch(() => ({}));
     if (!r.ok || !d.ok) {
-      if (msg) { msg.className = 'msg err'; msg.textContent = d.error || ('HTTP ' + r.status); }
+      const first = Object.values(d.errors || {})[0];
+      if (msg) { msg.className = 'msg err'; msg.textContent = d.error || first || ('HTTP ' + r.status); }
       return;
     }
     if (msg) { msg.className = 'msg ok'; msg.textContent = '✓ saved'; }
+    saved = d;
   } catch (e) {
     if (msg) { msg.className = 'msg err'; msg.textContent = e.message; }
     return;
   }
-  adminLoadBackupSettings();
+  await adminLoadBackupSettings();
   adminLoadBackupStatus();
+  _adminShowRestartNotice(document.getElementById('adminBackupSettingsBody'), saved,
+                          (_adminBackupCfg || {}).entries);
+}
+
+// Prepends the shared "restart required" notice to a settings card body after
+// a save that changed non-hot fields, and refreshes the System Health pill.
+function _adminShowRestartNotice(host, d, entries) {
+  if (!host || !d || !(d.restart_required || []).length || !window.SettingsFields) return;
+  const byPath = new Map((entries || []).map(e => [e.path, e]));
+  host.insertAdjacentHTML('afterbegin',
+    SettingsFields.restartNotice(d, p => (byPath.get(p) || { label: p }).label));
+  if (typeof adminLoadHealth === 'function') adminLoadHealth();
 }
 
 // Queues every backup key as a clear so the server drops it back to its default.

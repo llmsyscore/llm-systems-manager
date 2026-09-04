@@ -42,6 +42,7 @@
           if (opts.onRestored) opts.onRestored();
         }
         if (msg && msg.type === 'keepalive') return;
+        if (_SG_API.paused()) return;
         opts.onEvent(msg, ev);
       };
       es.onerror = () => {
@@ -83,7 +84,9 @@
     };
   }
 
-  const _SG_API = { open, withLastId, backoffMs, timers, BACKOFF_MS, DEFAULT_MAX_DROPS };
+  // Frames are dropped (stream kept open) while the page's LivePause is on.
+  const paused = () => !!(typeof window !== 'undefined' && window.LivePause && window.LivePause.on);
+  const _SG_API = { open, withLastId, backoffMs, timers, paused, BACKOFF_MS, DEFAULT_MAX_DROPS };
   if (typeof window !== 'undefined') window.SG = _SG_API;
   if (typeof module !== 'undefined' && module.exports) module.exports = _SG_API;
 })();

@@ -420,8 +420,8 @@ function startPerfRefresh() {
   if (_perfTimer) clearInterval(_perfTimer);
   if (_cardPollTimer) clearInterval(_cardPollTimer);
   _updateModelPerf();
-  _perfTimer     = setInterval(_updateModelPerf, 30000);
-  _cardPollTimer = setInterval(_pollModelCards, 5000);
+  _perfTimer     = LivePause.every(_updateModelPerf, 30000);
+  _cardPollTimer = LivePause.every(_pollModelCards, 5000);
 }
 
 function stopPerfRefresh() {

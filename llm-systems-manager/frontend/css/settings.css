@@ -5,6 +5,8 @@
 .hdr-badge .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--fg-faint); }
 .hdr-badge.auto .dot { background: var(--ok); box-shadow: 0 0 6px color-mix(in srgb, var(--ok) 55%, transparent); }
 .hdr-badge.manual .dot { background: var(--warn); box-shadow: 0 0 6px color-mix(in srgb, var(--warn) 55%, transparent); }
+.hdr-badge.paused .dot { background: var(--crit); box-shadow: none; }
+.hdr-badge.paused b { color: var(--crit); }
 .hdr-badge b { color: var(--fg); font-weight: 500; }
 .hdr-badge:hover { color: var(--fg); border-color: var(--fg-dim); }
 .hdr-cog { width: 28px; height: 28px; border-radius: 7px; border: 1px solid var(--border-strong); background: var(--bg-card); color: var(--fg-muted); display: inline-flex; align-items: center; justify-content: center; cursor: pointer; padding: 0; transition: color .12s, border-color .12s; }
@@ -95,6 +97,8 @@
 .sd-live .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--fg-faint); flex-shrink: 0; }
 .sd-live.auto .dot { background: var(--ok); box-shadow: 0 0 7px color-mix(in srgb, var(--ok) 55%, transparent); }
 .sd-live.manual .dot { background: var(--warn); box-shadow: 0 0 7px color-mix(in srgb, var(--warn) 55%, transparent); }
+.sd-live.paused .dot { background: var(--crit); }
+.sd-live.paused b { color: var(--crit); }
 .sd-live b { color: var(--fg); font-weight: 500; }
 .sd-live .why { margin-left: auto; color: var(--fg-dim); text-align: right; }
 .sd-stp { display: inline-flex; align-items: center; border: 1px solid var(--border-strong); border-radius: 7px; background: var(--bg); overflow: hidden; }

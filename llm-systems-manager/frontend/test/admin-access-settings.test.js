@@ -98,7 +98,7 @@ describe('Access settings card', () => {
   });
 
   test('Save PUTs only the changed paths and reports a required restart', async () => {
-    const w = harness(async () => [200, { ok: true, applied: ['manager.auth.lockout_threshold'], restart_required: ['manager'], errors: {} }]);
+    const w = harness(async () => [200, { ok: true, applied: ['manager.auth.lockout_threshold'], restart_required: ['manager'], restart_paths: ['manager.auth.lockout_threshold'], errors: {} }]);
     await expand(w);
     type(w, q(w, '#acCfgBody .st-input[data-path="manager.auth.lockout_threshold"]'), '7');
     type(w, q(w, '#acCfgBody .st-input[data-path="manager.security.admin_cidrs"]'), '10.0.0.0/8\n192.0.2.0/24');
@@ -106,9 +106,14 @@ describe('Access settings card', () => {
     await tick(); await tick();
     const put = w.calls.find(c => c.method === 'PUT');
     expect(put.body).toEqual({ changes: { 'manager.auth.lockout_threshold': 7, 'manager.security.admin_cidrs': ['10.0.0.0/8', '192.0.2.0/24'] } });
-    expect(q(w, '#acCfgMsg').textContent).toContain('restart required');
+    expect(q(w, '#acCfgMsg').textContent).toContain('Saved');
+    // #816: the restart prompt names the field and carries the restart button inline.
+    const notice = q(w, '#acCfgBody .notice');
+    expect(notice.textContent).toContain('Restart required');
+    expect(notice.textContent).toContain('Lockout threshold');
+    expect(notice.querySelector('[data-restart="manager"]')).not.toBeNull();
     expect(w.authLoads).toBe(1);
-    expect(w.calls.filter(c => c.method === 'GET').length).toBe(2);
+    expect(w.calls.filter(c => c.method === 'GET' && c.url === '/api/admin/settings').length).toBe(2);
   });
 
   test('a rejected save keeps the edits and marks the offending field', async () => {

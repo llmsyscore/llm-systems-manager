@@ -192,3 +192,13 @@ def test_common_flag_survives_describe():
     entries = {e["path"]: e for e in sc.describe()["entries"]}
     assert entries["manager.port"].get("common") is True
     assert "common" not in entries["manager.tls_port"]
+
+
+def test_pending_restart_paths_skips_hot(monkeypatch):
+    boot = {"manager.port": 5000, "manager.audit.page_size": 25,
+            "manager.history.window_minutes": 60}
+    monkeypatch.setattr(sc, "_BOOT_FILE_VALUES", boot)
+    now = {"manager.port": 5001, "manager.audit.page_size": 50,
+           "manager.history.window_minutes": 60}
+    assert sc.pending_restart_paths(now) == ["manager.port"]
+    assert sc.pending_restart_services(now) == {"manager"}
