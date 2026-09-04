@@ -213,7 +213,11 @@ const MetricsView = {
         const metSel = document.getElementById('metricSelect');
         if (!hostSel || !metSel) return;
         const hosts = MetricsManager.hosts();
-        if (f.host && !hosts.includes(f.host)) f.host = '';
+        if (f.host && !hosts.includes(f.host)) {
+            f.host = '';
+            const p = this.parseKey(f.key);
+            if (p.host) { f.key = `*|${p.source}/${p.name}`; if (f.mark) f.mark.key = f.key; }
+        }
         if (!f.host && !f.key) f.host = hosts.find(h => /manager/.test(h)) || hosts[0] || '';
         hostSel.innerHTML = `<option value=""${f.host ? '' : ' selected'}>All hosts</option>` + hosts.map(h => `<option value="${escapeHtml(h)}"${h === f.host ? ' selected' : ''}>${escapeHtml(h)}</option>`).join('');
         const list = MetricsManager.visible().filter(m => (!f.host || (m.hostname || '') === f.host) && !MetricNames.hidden(m));
@@ -266,10 +270,9 @@ const MetricsView = {
         const ts = parseTs(at);
         f.minutes = 60;
         f.offset = ts ? Math.min(this.maxOffset(), Math.max(0, Math.floor((Date.now() - ts.getTime()) / (f.minutes * 60000)))) : 0;
-        const h = MetricsManager.hosts().includes(host) ? host : '';
-        f.mark = ts ? { ts, label: label || 'Alert', key: `${h || '*'}|${source}/${name}` } : null;
+        f.mark = ts ? { ts, label: label || 'Alert', key: `${host || '*'}|${source}/${name}` } : null;
         UI.segSet(document.getElementById('metricRange'), f.minutes);
-        this._target(h, source, name);
+        this._target(host, source, name);
         this._liveTag();
         TabManager.switchTab('metrics');
     },

@@ -8,6 +8,7 @@ const ConsoleView = {
         document.getElementById('recentRows')?.addEventListener('click', (e) => {
             const th = e.target.closest('th.sort');
             if (!th) return;
+            e.stopImmediatePropagation();
             const f = AppState.filters.console;
             if (f.sort === th.dataset.sort) f.dir = f.dir === 'asc' ? 'desc' : 'asc';
             else { f.sort = th.dataset.sort; f.dir = 'desc'; }
