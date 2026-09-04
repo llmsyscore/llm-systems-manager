@@ -824,7 +824,7 @@ Backend API endpoints consumed:
           <div class="card-f">
             <button type="button" class="mcbtn mcbtn-pri mcbtn-sm" onclick="adminAuthSave()">Save</button>
             <a class="mcbtn mcbtn-ghost mcbtn-sm" href="/logout">Log out</a>
-            <span class="msg">Networks and lockout rules live under Settings › Auth &amp; Security.</span>
+            <span class="msg">Session, lockout and network rules are in Access settings below.</span>
             <span class="msg" id="adminAuthResult"></span>
           </div>
         </div>
@@ -853,6 +853,13 @@ Backend API endpoints consumed:
               <span class="note">Operators use the dashboard; admins also manage agents, users and settings.</span>
             </div>
           </div>
+        </div>
+
+        <!-- Access settings: the Auth & Security catalog group, collapsed by default (#846) -->
+        <div class="card collapsed" id="adminAccessSettingsCard">
+          <div class="card-h tog" id="acCfgHead"><span class="chev">▾</span><h3>Access settings</h3><span class="meta" id="acCfgMeta"></span><span class="gap"></span></div>
+          <div class="card-b" id="acCfgBody"><div class="empty">Loading…</div></div>
+          <div class="card-f" id="acCfgFoot"></div>
         </div>
       </div>
 
@@ -2415,6 +2422,7 @@ Backend API endpoints consumed:
 <script src="/static/js/admin-gateway.js?v=2026.09.03-1"></script>
 <script src="/static/js/admin-audit.js?v=2026.09.03-8"></script>
 <script src="/static/js/admin-settings.js?v=2026.09.02-7"></script>
+<script src="/static/js/admin-access-settings.js?v=2026.09.04-1"></script>
 <script src="/static/js/autopilot.js?v=2026.09.02-8"></script>
 <script src="/static/js/llmcontrol-models.js?v=2026.08.31-1"></script>
 <script src="/static/js/editor-modern.js?v=2026.08.30-4"></script>
@@ -2596,6 +2604,6 @@ Backend API endpoints consumed:
 <div id="alarmToastContainer"></div>
 
 <script src="/static/js/events-toasts.js?v=2026.09.03-2"></script>
-<script src="/static/js/boot.js?v=2026.09.02-7"></script>
+<script src="/static/js/boot.js?v=2026.09.04-1"></script>
 </body>
 </html>
