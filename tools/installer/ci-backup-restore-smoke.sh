@@ -193,7 +193,7 @@ run_a="$(jq -r --arg a "$AE_ARCHIVE" '.backups[] | select(.file == $a) | .run' <
 [ -n "$run_m" ] && [ "$run_m" = "$run_a" ] || fail "manager/AE archives carry different run stamps: $run_m vs $run_a"
 # Download both the way the operator does and compare with the on-disk files.
 for f in "$MGR_ARCHIVE" "$AE_ARCHIVE"; do
-  c="$(code -b "$JAR" -o "$WORK/$f" "$MGR_URL/api/admin/backup-archive/$f")"
+  c="$(curl -sk -b "$JAR" -o "$WORK/$f" -w '%{http_code}' --max-time 60 "$MGR_URL/api/admin/backup-archive/$f" || true)"
   [ "$c" = "200" ] || fail "backup-archive download of $f = $c"
   cmp -s "$WORK/$f" "$BACKUP_DIR/$f" || fail "downloaded $f differs from the on-disk archive"
 done
