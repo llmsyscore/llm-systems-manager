@@ -1609,15 +1609,101 @@ function _accountActionMenu(me) {
 }
 
 async function _accountChangePassword() {
-  const cur = await _themedPrompt({ title: 'Change my password', bodyHtml: 'Current password:', placeholder: 'current password', inputType: 'password' });
-  if (cur === null) return;
-  const np = await _themedPrompt({ title: 'Change my password', bodyHtml: 'New password (min 8):', placeholder: 'new password', inputType: 'password' });
-  if (np === null) return;
-  if (np.length < 8) { _themedToast('password too short', { kind: 'warn' }); return; }
-  try {
-    const r = await fetch('/api/account/password', { method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ current_password: cur, new_password: np }) });
-    const d = await r.json().catch(() => ({}));
-    _themedToast((r.ok && d.ok) ? 'Password changed' : (d.error || 'failed'), { kind: (r.ok && d.ok) ? 'ok' : 'err' });
-  } catch (_) { _themedToast('request failed', { kind: 'err' }); }
+  const changed = await _accountPasswordDialog();
+  if (changed && _activeTab === 'admin' && typeof adminAuthLoad === 'function') adminAuthLoad();
+}
+
+const _ACCOUNT_PW_MIN = 8;
+
+// Two-field change-password dialog; validates inline and stays open on a
+// wrong current password or a server failure. Resolves true once changed.
+function _accountPasswordDialog() {
+  return new Promise(resolve => {
+    const overlay = document.createElement('div');
+    overlay.id = 'accountPwDialog';
+    overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.6);z-index:9999;'
+      + 'display:flex;align-items:center;justify-content:center;backdrop-filter:blur(4px);';
+    const box = document.createElement('div');
+    box.style.cssText = 'background:var(--bg-card);border:1px solid var(--border);border-radius:8px;'
+      + 'padding:20px 22px;min-width:380px;max-width:520px;color:var(--fg);'
+      + 'font-family:system-ui,-apple-system,sans-serif;box-shadow:0 8px 32px rgba(0,0,0,0.5);';
+    const inputCss = 'width:100%;box-sizing:border-box;background:var(--bg-card-alt);color:var(--fg);'
+      + 'border:1px solid var(--border);border-radius:5px;padding:8px 10px;font-size:0.9em;';
+    const labelCss = 'display:block;font-size:0.82em;color:var(--fg-muted,#9aa);margin:0 0 4px;';
+    const hintCss = 'font-size:0.8em;min-height:1.2em;margin:5px 0 10px;';
+    box.innerHTML = `
+      <div style="font-size:1.05em;font-weight:600;margin-bottom:12px;">Change my password</div>
+      <label for="apCur" style="${labelCss}">Current password</label>
+      <input id="apCur" type="password" autocomplete="current-password" maxlength="64" placeholder="current password" style="${inputCss}">
+      <div id="apCurErr" style="${hintCss}color:var(--crit);"></div>
+      <label for="apNew" style="${labelCss}">New password</label>
+      <input id="apNew" type="password" autocomplete="new-password" maxlength="64" placeholder="${_ACCOUNT_PW_MIN}+ characters" style="${inputCss}">
+      <div id="apHint" style="${hintCss}color:var(--warn);"></div>
+      <label style="display:block;font-size:0.82em;color:var(--fg-muted,#9aa);margin-bottom:14px;">
+        <input type="checkbox" id="apShow" style="margin-right:4px;"> show passwords
+      </label>
+      <div style="display:flex;justify-content:flex-end;gap:8px;">
+        <button id="apCancel" style="background:var(--bg-card-alt);color:var(--fg);border:1px solid var(--border);border-radius:5px;padding:7px 16px;cursor:pointer;font-size:0.88em;">Cancel</button>
+        <button id="apSave" disabled style="background:var(--accent);color:#fff;border:1px solid var(--border);border-radius:5px;padding:7px 16px;cursor:pointer;font-size:0.88em;font-weight:500;">Save</button>
+      </div>`;
+    overlay.appendChild(box);
+    document.body.appendChild(overlay);
+    const cur = box.querySelector('#apCur');
+    const np = box.querySelector('#apNew');
+    const curErr = box.querySelector('#apCurErr');
+    const hint = box.querySelector('#apHint');
+    const save = box.querySelector('#apSave');
+    let busy = false;
+    const valid = () => !!cur.value && np.value.length >= _ACCOUNT_PW_MIN;
+    const refresh = () => {
+      const left = _ACCOUNT_PW_MIN - np.value.length;
+      hint.textContent = (np.value && left > 0) ? `${left} more character${left === 1 ? '' : 's'} required.` : '';
+      save.disabled = busy || !valid();
+      save.style.opacity = save.disabled ? '0.55' : '1';
+      save.style.cursor = save.disabled ? 'default' : 'pointer';
+    };
+    const setBusy = (v) => { busy = v; save.textContent = v ? 'Saving…' : 'Save'; refresh(); };
+    const cleanup = (v) => { document.removeEventListener('keydown', keyHandler); overlay.remove(); resolve(v); };
+    const cancel = () => { if (!busy) cleanup(false); };
+    const submit = async () => {
+      if (busy || !valid()) { refresh(); return; }
+      setBusy(true);
+      let r, d;
+      try {
+        r = await fetch('/api/account/password', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ current_password: cur.value, new_password: np.value }) });
+        d = await r.json().catch(() => ({}));
+      } catch (_) {
+        setBusy(false);
+        _themedToast('request failed — password not changed', { kind: 'err', sticky: true });
+        return;
+      }
+      if (r.ok && d.ok) { _themedToast('Password changed', { kind: 'ok' }); cleanup(true); return; }
+      setBusy(false);
+      const err = d.error || ('HTTP ' + r.status);
+      if (r.status === 403 && d.field === 'current_password') {
+        curErr.textContent = err;
+        cur.focus(); cur.select();
+        return;
+      }
+      _themedToast(err + ' — password not changed', { kind: 'err', sticky: true });
+    };
+    const keyHandler = (e) => {
+      if (e.key === 'Escape') cancel();
+      else if (e.key === 'Enter' && (e.target === cur || e.target === np)) submit();
+    };
+    document.addEventListener('keydown', keyHandler);
+    overlay.addEventListener('click', (e) => { if (e.target === overlay) cancel(); });
+    for (const ev of ['input', 'change']) {
+      cur.addEventListener(ev, () => { curErr.textContent = ''; refresh(); });
+      np.addEventListener(ev, refresh);
+    }
+    box.querySelector('#apShow').addEventListener('change', (e) => {
+      cur.type = np.type = e.target.checked ? 'text' : 'password';
+    });
+    box.querySelector('#apCancel').addEventListener('click', cancel);
+    save.addEventListener('click', submit);
+    refresh();
+    setTimeout(() => cur.focus(), 0);
+  });
 }
