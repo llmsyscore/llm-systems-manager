@@ -152,6 +152,7 @@ def test_audit_hook_gates_automated_actors_like_tagged_traffic(monkeypatch):
     import auth
     conn = _mem_db(); monkeypatch.setattr(manager_mod, "get_db", lambda: conn)
     monkeypatch.setattr(auth, "auth_mode", lambda: "required")
+    monkeypatch.setattr(auth, "_live_role_for_session", lambda: ("admin", True))
     _cfg(monkeypatch, save_automated=False, disabled=set(), automated_actors=["smoketestuser"])
     c = manager_mod.app.test_client()
     with c.session_transaction() as s:
