@@ -1,7 +1,7 @@
 // Admin tab auto-refresh — only ticks when the tab is visible.
 let _adminRefreshTimer = null;
 function adminStartAutoRefresh() {
-  // The gateway poll follows the Gateway sub-tab; the stop below mirrors this.
+  // The gateway poll follows the Gateway sub-tab (key 'routing'); the stop mirrors it.
   if (window.GatewayView && typeof _subTabState !== 'undefined' && _subTabState.admin === 'routing') {
     GatewayView.start();
   }
@@ -2361,9 +2361,8 @@ function adminRenderBackup() {
           <td class="r">${adminEsc(_fmtBytesShort(b.bytes))}</td>
           <td class="t">${_adminStamp(b.mtime)}</td>
           <td>${_adminMirrorPill(d, last, b)}</td>
-          <td class="r"><a class="mcbtn mcbtn-ghost mcbtn-sm" download="${adminEsc(b.file)}"
-            href="/api/admin/backup-archive/${encodeURIComponent(b.file)}"
-            title="Download this archive">⤓ Download</a></td>
+          <td class="r"><button type="button" class="mcbtn mcbtn-ghost mcbtn-sm"
+            data-bk-dl="${adminEsc(b.file)}" title="Download this archive">⤓ Download</button></td>
         </tr>`).join('')
       : '<tr><td colspan="5"><div class="empty">No archives retained yet.</div></td></tr>';
   }
@@ -2383,6 +2382,41 @@ function adminRenderBackup() {
   }
   const now = document.getElementById('adminBackupNowBtn');
   if (now && !now._bkBound) { now._bkBound = true; now.addEventListener('click', adminBackupNow); }
+  if (tb && !tb._bkDlBound) {
+    tb._bkDlBound = true;
+    tb.addEventListener('click', ev => {
+      const el = ev.target.closest('[data-bk-dl]');
+      if (el) adminDownloadArchive(el.dataset.bkDl);
+    });
+  }
+}
+
+// Fetches the archive and saves the blob only on 200; a plain download link
+// would write an error response to disk under the archive's own file name.
+async function adminDownloadArchive(file) {
+  _adminBackupLog(`downloading ${file}…`);
+  let resp;
+  try {
+    resp = await fetch(`/api/admin/backup-archive/${encodeURIComponent(file)}`);
+  } catch (e) {
+    _adminBackupLog(`✗ ${file} download failed — ${e.message}`, 'err');
+    return;
+  }
+  if (!resp.ok) {
+    let err = await resp.text();
+    try { err = JSON.parse(err).error || err; } catch (_) {}
+    _adminBackupLog(`✗ ${file} download failed — ${err}`, 'err');
+    if (resp.status === 404) adminLoadBackupStatus();
+    return;
+  }
+  const blob = await resp.blob();
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = file;
+  document.body.appendChild(a);
+  a.click();
+  setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 200);
+  _adminBackupLog(`✓ ${file} downloaded — ${blob.size} bytes`, 'ok');
 }
 
 // "copied" only when the copy is present in the mirror directory; the newest

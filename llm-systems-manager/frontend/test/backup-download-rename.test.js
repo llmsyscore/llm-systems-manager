@@ -1,14 +1,13 @@
 // #848: archive rows get a download link served by the admin endpoint, and the
 // sub-tab's Export/Import wording becomes Backup/Restore.
 import { describe, it, expect } from 'vitest';
-import { srcFile, runHarness } from './helpers/harness.js';
+import { srcFile, blockSrc, runHarness } from './helpers/harness.js';
 
 const indexSrc = srcFile('index.html');
 const adminSrc = srcFile('js/admin.js');
 const dashSrc = srcFile('js/dashboard-manager.js');
 
-const backupPanel = indexSrc.slice(indexSrc.indexOf('<div id="admin-backup"'),
-                                   indexSrc.indexOf('<!-- Access Control sub-tab'));
+const backupPanel = blockSrc(indexSrc, '<div id="admin-backup"', '<!-- Access Control sub-tab', { includeEnd: false });
 
 const STATUS = {
   ok: true, enabled: true, scheduler_running: true, interval_hours: 24, keep_last: 3,
@@ -31,20 +30,18 @@ function render(status = STATUS) {
   return win.document;
 }
 
-describe('archive download links (#848)', () => {
-  it('gives each row a link to the admin backup-archive endpoint', () => {
+describe('archive download control (#848)', () => {
+  it('gives each row a download button naming its archive', () => {
     const rows = [...render().querySelectorAll('#adminSchedBackupTbody tr')];
     expect(rows).toHaveLength(2);
-    const a = rows[0].querySelector('a[download]');
-    expect(a.getAttribute('href'))
-      .toBe('/api/admin/backup-archive/lsm-auto-manager-h-20260904-010000.lsmenc');
-    expect(a.getAttribute('download')).toBe('lsm-auto-manager-h-20260904-010000.lsmenc');
+    expect(rows[0].querySelector('[data-bk-dl]').dataset.bkDl)
+      .toBe('lsm-auto-manager-h-20260904-010000.lsmenc');
   });
 
-  it('percent-encodes the file name it puts in the URL', () => {
-    const doc = render({ ...STATUS, backups: [{ file: 'a b&c.lsmenc', bytes: 1, mtime: 1, mirrored: null }] });
-    expect(doc.querySelector('#adminSchedBackupTbody a[download]').getAttribute('href'))
-      .toBe('/api/admin/backup-archive/a%20b%26c.lsmenc');
+  // A plain <a download> saves the response body whatever the status, so a
+  // 401/404/500 lands on disk under the archive's own name.
+  it('uses no anchor that would save an error response as the archive', () => {
+    expect(render().querySelector('#adminSchedBackupTbody a[download]')).toBeNull();
   });
 
   it('keeps the empty state spanning every column, download included', () => {
@@ -52,6 +49,52 @@ describe('archive download links (#848)', () => {
     const cell = doc.querySelector('#adminSchedBackupTbody td');
     const cols = doc.querySelectorAll('#adminSchedBackupCard thead th').length;
     expect(Number(cell.getAttribute('colspan'))).toBe(cols);
+  });
+});
+
+describe('adminDownloadArchive (#848)', () => {
+  function harness(reply) {
+    const win = runHarness({
+      sources: [dashSrc, adminSrc],
+      bootstrap: `_adminBackupData = ${JSON.stringify(STATUS)};
+                  window.SettingsFields = null;
+                  window.__fetched = [];
+                  window.__reloaded = 0;
+                  adminLoadBackupStatus = () => { window.__reloaded++; };
+                  window.fetch = (url) => { window.__fetched.push(url);
+                    return Promise.resolve(${reply}); };
+                  adminRenderBackup();`,
+      bodyHtml: backupPanel,
+    });
+    return win;
+  }
+  const okReply = `{ ok: true, status: 200, blob: () => Promise.resolve({ size: 42 }) }`;
+  const errReply = (status, body) =>
+    `{ ok: false, status: ${status}, text: () => Promise.resolve(${JSON.stringify(body)}) }`;
+
+  it('percent-encodes the file name in the request URL', async () => {
+    const win = harness(okReply);
+    win.document.createElement('a').click = () => {};
+    win.URL.createObjectURL = () => 'blob:x';
+    win.URL.revokeObjectURL = () => {};
+    await win.adminDownloadArchive('a b&c.lsmenc');
+    expect(win.__fetched).toEqual(['/api/admin/backup-archive/a%20b%26c.lsmenc']);
+  });
+
+  it('reports a failure in the card log and saves nothing', async () => {
+    const win = harness(errReply(500, '{"ok":false,"error":"internal server error"}'));
+    let saved = 0;
+    win.URL.createObjectURL = () => { saved++; return 'blob:x'; };
+    await win.adminDownloadArchive('x.lsmenc');
+    expect(saved).toBe(0);
+    expect(win.document.getElementById('adminBackupResult').textContent)
+      .toContain('internal server error');
+  });
+
+  it('refreshes the stale ledger when the archive is already pruned', async () => {
+    const win = harness(errReply(404, '{"ok":false,"error":"no such archive"}'));
+    await win.adminDownloadArchive('x.lsmenc');
+    expect(win.__reloaded).toBe(1);
   });
 });
 

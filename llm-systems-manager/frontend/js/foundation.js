@@ -1231,8 +1231,8 @@ function _sdSwatchFor(theme) {
   return theme.swatch;
 }
 
-// Account section (#847): sits at the top of the drawer and replaces the old
-// standalone Account tab; hidden for a bypass session with no logged-in user.
+// Account section (#847): first section in the settings drawer, hidden
+// unless the session has a logged-in user.
 function _sdRenderAccount() {
   const el = document.getElementById('sdAccount');
   if (!el) return;
@@ -1540,7 +1540,7 @@ async function resetCurrentTabLayout() {
 // switchTab — tab dispatcher (moved here so tab batches can rely on it)
 function switchTab(tab) {
   if (tab === 'admin' && window._me && window._me.admin_access === false) { tab = 'overall'; }
-  // Legacy top-level ids from bookmarks/saved state are Tools sub-tabs (#847).
+  // The old per-proxy tab names select the Tools sub-tab of the same name (#847).
   let toolsSub = null;
   if (['openclaw', 'llmchat', 'imggen'].includes(tab)) { toolsSub = tab; tab = 'tools'; }
   // Leaving Overall: pinned cards go back to their home grids first (#565).

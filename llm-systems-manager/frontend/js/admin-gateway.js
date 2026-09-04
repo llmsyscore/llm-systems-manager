@@ -1,5 +1,5 @@
 // Admin → Gateway → Inference Gateway card (#797): live clients → gateway →
-// hosts diagram plus the throughput/energy tiles, polled while the Gateway sub-tab shows.
+// hosts diagram plus the throughput/energy tiles, polled while Gateway shows.
 (() => {
   'use strict';
 

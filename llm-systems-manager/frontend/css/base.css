@@ -284,8 +284,8 @@
     .sub-tab-btn.active { border-bottom-color: var(--accent-2); color: var(--accent-2); }
     .sub-tab-panel { display: none; }
     .sub-tab-panel.active { display: block; }
-    /* Tools tab (#847): fixed-height column so the proxy iframes fill the
-       space under their sub-tab nav. */
+    /* Tools tab (#847): flex column — nav at its own height, active panel
+       fills the rest. */
     #toolsTab { display: flex; flex-direction: column; background: var(--bg); }
     #toolsTab .sub-tab-nav { flex: 0 0 auto; padding: 10px 4px; margin-bottom: 0; }
     #toolsTab .sub-tab-panel.active { flex: 1 1 auto; min-height: 0; }

@@ -1,17 +1,15 @@
 // #847: OpenClaw / LLM Chat / Image Generation bundled under one Tools tab,
 // Account moved into the settings drawer, tabs and Admin sub-tabs renamed.
 import { describe, it, expect, beforeEach, vi } from 'vitest';
-import { srcFile, fnSrc, evalGlobal, loadSwitchSubTab } from './helpers/harness.js';
+import { srcFile, blockSrc, fnSrc, evalGlobal, loadSwitchSubTab } from './helpers/harness.js';
 
 const indexSrc = srcFile('index.html');
 const bootSrc = srcFile('js/boot.js');
 const foundationSrc = srcFile('js/foundation.js');
 const chartsSrc = srcFile('js/charts.js');
 
-const navHtml = indexSrc.slice(indexSrc.indexOf('<div class="tab-nav">'),
-                               indexSrc.indexOf('<!-- Dashboard Tab'));
-const toolsHtml = indexSrc.slice(indexSrc.indexOf('<div id="toolsTab"'),
-                                 indexSrc.indexOf('<!-- Admin tab -->'));
+const navHtml = blockSrc(indexSrc, '<div class="tab-nav">', '<!-- Dashboard Tab', { includeEnd: false });
+const toolsHtml = blockSrc(indexSrc, '<div id="toolsTab"', '<!-- Admin tab -->', { includeEnd: false });
 
 describe('top-level tab bar (#847)', () => {
   beforeEach(() => { document.body.innerHTML = navHtml; });
@@ -100,14 +98,94 @@ describe('switchTab legacy proxy ids (#847)', () => {
   });
 });
 
+describe('toolsTab is hoisted out of dashboardTab (#847)', () => {
+  it('index.html nests toolsTab inside dashboardTab and boot.js reparents it', async () => {
+    const { JSDOM } = await import('jsdom');
+    const dom = new JSDOM(indexSrc, { url: 'http://localhost/' });
+    const doc = dom.window.document;
+    // Without the hoist the panel stays inside a display:none parent.
+    expect(doc.getElementById('toolsTab').closest('#dashboardTab')).toBeTruthy();
+    const hoist = blockSrc(bootSrc, "  ['toolsTab'", '  });', { includeEnd: true });
+    const fn = new dom.window.Function('document', hoist);
+    fn(doc);
+    expect(doc.getElementById('toolsTab').parentElement).toBe(doc.body);
+    for (const id of ['eventsTab', 'adminTab']) {
+      expect(doc.getElementById(id).parentElement, id).toBe(doc.body);
+    }
+  });
+});
+
+describe('checkConfig tools fallback (#847)', () => {
+  function runFallback({ ocOn, chatOn, imgOn, activeTab, remembered }) {
+    const calls = [];
+    window._activeTab = activeTab;
+    window._subTabState = { tools: remembered };
+    window.switchSubTab = (...a) => calls.push(a);
+    const body = blockSrc(chartsSrc, '    // Tools sub-tabs: re-point', '    }', { includeEnd: true });
+    evalGlobal(`(function(ocOn, chatOn, imgOn) {\n${body}\n})(${ocOn}, ${chatOn}, ${imgOn});`);
+    return { calls, remembered: window._subTabState.tools };
+  }
+
+  it('switches for real when Tools is the active tab', () => {
+    const r = runFallback({ ocOn: false, chatOn: true, imgOn: true, activeTab: 'tools', remembered: 'openclaw' });
+    expect(r.calls).toEqual([['tools', 'llmchat']]);
+  });
+
+  it('only re-points the pending sub-tab off-view, so no iframe loads', () => {
+    const r = runFallback({ ocOn: false, chatOn: true, imgOn: true, activeTab: 'admin', remembered: 'openclaw' });
+    expect(r.calls).toEqual([]);
+    expect(r.remembered).toBe('llmchat');
+  });
+
+  it('leaves state alone when the remembered proxy is still enabled', () => {
+    const r = runFallback({ ocOn: true, chatOn: true, imgOn: true, activeTab: 'tools', remembered: 'openclaw' });
+    expect(r.calls).toEqual([]);
+    expect(r.remembered).toBe('openclaw');
+  });
+
+  it('does nothing when every proxy is disabled', () => {
+    const r = runFallback({ ocOn: false, chatOn: false, imgOn: false, activeTab: 'tools', remembered: 'openclaw' });
+    expect(r.calls).toEqual([]);
+    expect(r.remembered).toBe('openclaw');
+  });
+});
+
 describe('checkConfig proxy visibility (#847)', () => {
-  it('hides the Tools tab only when every proxy is disabled', () => {
-    const body = chartsSrc.slice(chartsSrc.indexOf('const ocOn = px.openclaw'),
-                                 chartsSrc.indexOf("toggle('subTabBtnOpenclaw'"));
-    expect(body).toContain("toggle('tabBtnTools',            ocOn || chatOn || imgOn)");
-    expect(body).toContain("toggle('subTabBtnToolsOpenclaw', ocOn)");
-    expect(body).toContain("toggle('subTabBtnToolsLlmchat',  chatOn)");
-    expect(body).toContain("toggle('subTabBtnToolsImggen',   imgOn)");
+  // Runs the real toggle block so realigning the source can't break the test
+  // and a wrong id or predicate can't slip through.
+  function runToggles({ openclaw, llm_chat, image_gen }) {
+    document.body.innerHTML = ['tabBtnTools', 'subTabBtnToolsOpenclaw', 'subTabBtnToolsLlmchat',
+                               'subTabBtnToolsImggen', 'subTabBtnOpenclaw']
+      .map(id => `<button id="${id}"></button>`).join('');
+    const body = blockSrc(chartsSrc, '    // Tools is one tab', "toggle('subTabBtnOpenclaw',      ocOn);");
+    evalGlobal(`(function(px, toggle) {\n${body}\n})(${JSON.stringify({ openclaw, llm_chat, image_gen })},
+      (id, on) => { document.getElementById(id).style.display = on ? '' : 'none'; });`);
+    const shown = id => document.getElementById(id).style.display !== 'none';
+    return {
+      tools: shown('tabBtnTools'), oc: shown('subTabBtnToolsOpenclaw'),
+      chat: shown('subTabBtnToolsLlmchat'), img: shown('subTabBtnToolsImggen'),
+      dashOc: shown('subTabBtnOpenclaw'),
+    };
+  }
+
+  it('shows each sub-tab for its own proxy', () => {
+    expect(runToggles({ openclaw: false, llm_chat: 'auto', image_gen: false }))
+      .toMatchObject({ oc: false, chat: true, img: false, dashOc: false });
+  });
+
+  it('keeps Tools visible while any one proxy is enabled', () => {
+    for (const only of ['openclaw', 'llm_chat', 'image_gen']) {
+      const px = { openclaw: false, llm_chat: false, image_gen: false, [only]: 'auto' };
+      expect(runToggles(px).tools, only).toBe(true);
+    }
+  });
+
+  it('hides Tools only when every proxy is disabled', () => {
+    expect(runToggles({ openclaw: false, llm_chat: false, image_gen: false }).tools).toBe(false);
+  });
+
+  it('treats a manager with no proxies key as all-enabled', () => {
+    expect(runToggles({})).toMatchObject({ tools: true, oc: true, chat: true, img: true });
   });
 });
 
@@ -132,6 +210,43 @@ describe('Account moved into the settings drawer (#847)', () => {
   it('stays hidden and empty for a bypass session', () => {
     window._me = { authenticated: false };
     window._sdRenderAccount();
+    const el = document.getElementById('sdAccount');
+    expect(el.hidden).toBe(true);
+    expect(el.innerHTML).toBe('');
+  });
+});
+
+describe('settings-drawer Account wiring (#847)', () => {
+  beforeEach(() => {
+    document.documentElement.innerHTML = indexSrc;
+    window._me = { authenticated: true, username: 'llmadmin', role: 'admin', admin_access: true };
+    window._activeTab = 'overall';
+    window.closeSettings = vi.fn();
+    window._accountChangePassword = vi.fn();
+    window._esc = (v) => String(v);
+    // _sdBind's once-only latch is a module-level `let`, not a window prop.
+    evalGlobal('var _sdBound = false;');
+    for (const name of ['_sdRenderAccount', '_sdBind']) {
+      evalGlobal(fnSrc(foundationSrc, name) + `\nwindow.${name} = ${name};`);
+    }
+  });
+
+  it('keeps the Account section inside the element _sdBind listens on', () => {
+    expect(document.getElementById('sdAccount').closest('#settingsOverlay')).toBeTruthy();
+  });
+
+  it('routes the password button through the delegated handler', () => {
+    window._sdBind();
+    window._sdRenderAccount();
+    document.querySelector('[data-sd="account-password"]').click();
+    expect(window.closeSettings).toHaveBeenCalledTimes(1);
+    expect(window._accountChangePassword).toHaveBeenCalledTimes(1);
+  });
+
+  it('applyRoleGating hides the section for a bypass session', () => {
+    window._me = { authenticated: false, admin_access: true };
+    evalGlobal(fnSrc(foundationSrc, 'applyRoleGating') + '\nwindow.applyRoleGating = applyRoleGating;');
+    window.applyRoleGating();
     const el = document.getElementById('sdAccount');
     expect(el.hidden).toBe(true);
     expect(el.innerHTML).toBe('');

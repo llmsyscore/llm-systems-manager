@@ -159,7 +159,7 @@ def _local_hostname() -> str:
 # banner reads it. Bump suffix (-1, -2, …) for same-day iterations; roll
 # the date for a new day's first change.
 # ---------------------------------------------------------------------------
-__version__ = "v2026.09.04-9"
+__version__ = "v2026.09.04-10"
 
 # Wall-clock at first import (Cheroot main process); the shutdown banner
 # reads it for the uptime line.
@@ -3332,8 +3332,8 @@ _AUDIT_ROUTES += [
     if getattr(providers.get(_p), "pin_dict_key", None)
 ]
 
-# GET paths worth an audit row: reading a retained archive hands out the same
-# secrets a manual backup does.
+# Extra GET paths that get an audit row; /logout is special-cased separately
+# in _audit_after_request.
 _AUDIT_GET_PATHS = ("/api/admin/backup-archive/",)
 
 _AUDIT_PATH_PREFIXES = ("/api/admin/", "/api/agents/", "/api/llm/", "/api/lmstudio/",
@@ -5721,7 +5721,8 @@ _SETTINGS_VALIDATORS["manager.backup.mirror_dir"] = _validate_backup_mirror_dir
 def _list_auto_backups() -> "list[Path]":
     try:
         return sorted(_BACKUP_DIR.glob(_BACKUP_PREFIX + "*.lsmenc"))
-    except OSError:
+    except OSError as e:
+        log.warning("backup dir listing failed (%s): %s", _BACKUP_DIR, e)
         return []
 
 
@@ -5928,17 +5929,21 @@ def admin_backup_status():
 
 @app.route("/api/admin/backup-archive/<path:name>")
 def admin_backup_archive(name):
-    """Serve one retained archive. The name has to match an entry in the
-    backup-folder listing, so no path outside that folder is reachable."""
+    """Serve one retained archive by exact file name from the backup-folder
+    listing. 404 when the name is not listed or the file is already pruned."""
     deny = _require_admin()
     if deny is not None:
         return deny
     hit = next((p for p in _list_auto_backups() if p.name == name), None)
     if hit is None:
         return _err_json("no such archive", 404, detail=name)
-    log.warning("backup archive download by %s (%s)", flask_request.remote_addr, hit.name)
-    return send_file(hit, mimetype="application/octet-stream",
-                     as_attachment=True, download_name=hit.name)
+    log.info("backup archive download by %s@%s (%s)",
+             getattr(_flask_g, "auth_user", "?"), flask_request.remote_addr, hit.name)
+    try:
+        return send_file(hit, mimetype="application/octet-stream",
+                         as_attachment=True, download_name=hit.name)
+    except OSError as e:
+        return _err_json("no such archive", 404, exc=e)
 
 
 @app.route("/api/admin/backup-now", methods=["POST"])

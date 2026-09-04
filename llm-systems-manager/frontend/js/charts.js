@@ -1168,9 +1168,8 @@ async function checkConfig() {
     const activeBtn = document.querySelector('.tab-nav .tab-btn.active');
     if (activeBtn && activeBtn.style.display === 'none') switchTab('dashboard');
 
-    // Same for Tools sub-tabs: fall back to whichever proxy is still enabled.
-    // Off-view it only re-points the pending sub-tab — switching would load
-    // that proxy's iframe before the operator ever opens Tools.
+    // Tools sub-tabs: re-point to an enabled proxy, switching only while
+    // Tools is on screen.
     const toolsOn = { openclaw: ocOn, llmchat: chatOn, imggen: imgOn };
     if (!toolsOn[_subTabState.tools]) {
       const alt = ['openclaw', 'llmchat', 'imggen'].find(t => toolsOn[t]);

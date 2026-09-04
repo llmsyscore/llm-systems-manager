@@ -186,12 +186,57 @@ def test_backup_archive_rejects_a_file_outside_the_listing(backup_env, tmp_path)
     c, _ = backup_env
     M._run_scheduled_backup("", 3, "")
     (M._BACKUP_DIR / "notes.txt").write_text("secret")
-    for name in ("notes.txt", "last_backup.json", "..%2f..%2fetc%2fpasswd",
-                 "../../etc/passwd"):
-        assert c.get(f"/api/admin/backup-archive/{name}").status_code in (307, 308, 404)
+    # The first two are excluded by the listing glob; the last three probe the
+    # containment check itself with names the glob would otherwise admit.
+    for name in ("notes.txt", "last_backup.json",
+                 M._BACKUP_PREFIX + "nope.lsmenc",
+                 "..%2f..%2f" + M._BACKUP_PREFIX + "x.lsmenc",
+                 "../" + M._BACKUP_PREFIX + "x.lsmenc"):
+        assert c.get(f"/api/admin/backup-archive/{name}").status_code == 404
+
+
+def test_backup_archive_404s_when_the_file_is_pruned_mid_request(backup_env, monkeypatch):
+    """The retention pruner can unlink between the listing and send_file."""
+    c, _ = backup_env
+    M._run_scheduled_backup("", 3, "")
+    gone = M._BACKUP_DIR / (M._BACKUP_PREFIX + "vanished.lsmenc")
+    monkeypatch.setattr(M, "_list_auto_backups", lambda: [gone])
+    r = c.get(f"/api/admin/backup-archive/{gone.name}")
+    assert r.status_code == 404
+    assert r.get_json()["error"] == "no such archive"
+
+
+def test_backup_archive_requires_admin(backup_env, monkeypatch):
+    c, _ = backup_env
+    M._run_scheduled_backup("", 3, "")
+    name = c.get("/api/admin/backup-status").get_json()["backups"][0]["file"]
+    monkeypatch.setattr(M, "_require_admin",
+                        lambda: (M.jsonify({"ok": False, "error": "admin role required",
+                                            "role_denied": True}), 403))
+    r = c.get(f"/api/admin/backup-archive/{name}")
+    assert r.status_code == 403
+    assert r.get_json()["role_denied"] is True
+    assert b"lsmenc" not in r.data
 
 
 def test_backup_archive_download_is_audited():
     action, target, event = M._audit_match("GET", "/api/admin/backup-archive/lsm-auto-manager-h-1.lsmenc")
     assert (action, event) == ("backup.download", "backup")
     assert target == "lsm-auto-manager-h-1.lsmenc"
+
+
+def test_backup_archive_get_passes_the_audit_hook_gate(backup_env, monkeypatch):
+    """Guards the _AUDIT_GET_PATHS admission, not just the regex table: GETs
+    are otherwise dropped before _audit_match ever runs."""
+    c, _ = backup_env
+    M._run_scheduled_backup("", 3, "")
+    name = c.get("/api/admin/backup-status").get_json()["backups"][0]["file"]
+    rows = []
+    monkeypatch.setattr(M, "_audit_record", rows.append)
+    assert c.get(f"/api/admin/backup-archive/{name}").status_code == 200
+    # entry = (ts, actor, role, ip, auth, method, path, action, target, ...)
+    assert [(e[7], e[8]) for e in rows] == [("backup.download", name)]
+    # A sibling admin GET stays unaudited — the prefix must not widen.
+    rows.clear()
+    c.get("/api/admin/backup-status")
+    assert rows == []

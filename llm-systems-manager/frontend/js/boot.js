@@ -30,7 +30,7 @@ document.addEventListener('DOMContentLoaded', () => {
     llmCtrl.remove();
   }
 
-  // toolsTab and eventsTab are nested inside dashboardTab in the HTML.
+  // toolsTab, eventsTab and adminTab are nested inside dashboardTab in the HTML.
   // Move them to body level so they aren't hidden when dashboardTab hides.
   ['toolsTab', 'eventsTab', 'adminTab'].forEach(id => {
     const el = document.getElementById(id);
@@ -155,7 +155,7 @@ function switchSubTab(parent, sub) {
   if (parent === 'admin' && sub === 'backup') {
     if (typeof adminLoadBackupStatus === 'function') adminLoadBackupStatus();
   }
-  // Gateway (pools/pins + autopilot + gateway, #476/#797): the pool/pins cards
+  // Gateway sub-tab, key 'routing' (#476/#797): the pool/pins cards
   // render from the 20s agents refresh; the autopilot editor and the gateway
   // 5s poll start on entry and the poll stops when the sub-tab is left.
   if (parent === 'admin' && sub === 'routing') {
