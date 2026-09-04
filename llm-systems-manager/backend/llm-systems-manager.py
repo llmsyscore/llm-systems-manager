@@ -3469,7 +3469,7 @@ def _audit_stash_settings_before(changes: dict) -> None:
 
 def _audit_json_safe(v):
     """Copy of v with NaN/±Infinity replaced by None so the stored detail stays strict JSON."""
-    if isinstance(v, float) and (v != v or v in (float("inf"), float("-inf"))):
+    if isinstance(v, float) and not math.isfinite(v):
         return None
     if isinstance(v, dict):
         return {k: _audit_json_safe(x) for k, x in v.items()}
