@@ -459,7 +459,7 @@ const NotificationsManager = {
     async _openPolicyEditor(p, mode) {
         if (!MetricsManager.visible().length) await MetricsManager.load().catch(() => {});
         const isEdit = mode === 'edit';
-        const meta = isEdit ? `${p.name} · created ${fmtWhen(p.created_at)} · ${p.trigger_count ? `fired ${p.trigger_count} time${p.trigger_count === 1 ? '' : 's'}` : 'never fired'}` : (mode === 'copy' ? 'copy of an existing policy' : '');
+        const meta = isEdit ? `${p.name} · created ${fmtWhen(p.created_at)} · ${p.trigger_count ? `triggered ${p.trigger_count} time${p.trigger_count === 1 ? '' : 's'}` : 'never triggered'}` : (mode === 'copy' ? 'copy of an existing policy' : '');
         const state = {
             channels: new Set((p.channels || []).map(String)),
             hosts: [...(p.source_hosts || [])], sources: [...(p.metric_sources || [])], names: [...(p.metric_names || [])],
@@ -512,7 +512,7 @@ const NotificationsManager = {
             <div class="grp"><span class="microlbl">Cadence</span>
                 <div class="st-grid">
                     <div class="st-field"><label for="pf-min">First notify</label><div class="row"><span>after</span><input class="st-in n" id="pf-min" type="number" min="1" step="1" value="${v(p.min_alarm_count ?? 1)}" style="width:64px"><span class="unit">consecutive breaches</span></div><div class="help">1 notifies on the first breach.</div></div>
-                    <div class="st-field"><label for="pf-repeat">Repeat</label><div class="row"><span>every</span><input class="st-in n" id="pf-repeat" type="number" min="0" step="1" value="${v(p.repeat_interval_minutes ?? 30)}" style="width:64px"><span class="unit">minutes while it keeps firing</span></div><div class="help">0 repeats on every cycle.</div></div>
+                    <div class="st-field"><label for="pf-repeat">Repeat</label><div class="row"><span>every</span><input class="st-in n" id="pf-repeat" type="number" min="0" step="1" value="${v(p.repeat_interval_minutes ?? 30)}" style="width:64px"><span class="unit">minutes while it stays triggered</span></div><div class="help">0 repeats on every cycle.</div></div>
                     <div class="st-field">${toggleHtml(!!p.notify_on_clear, 'Also notify when the alert clears', 'id="pf-clear"')}<div class="help">Only for alerts this policy already notified on.</div></div>
                     <div class="st-field" id="pf-toast-wrap"${hasToast ? '' : ' hidden'}>${toggleHtml(p.auto_dismiss !== false, 'Popups auto-dismiss', 'id="pf-dismiss"')}<div class="row" id="pf-dismiss-row"${p.auto_dismiss !== false ? '' : ' hidden'}><span>after</span><input class="st-in n" id="pf-dismiss-s" type="number" min="1" max="600" step="1" value="${dismissS}" style="width:64px"><span class="unit">seconds</span></div><div class="help">Off keeps popups on screen until dismissed. Applies to the Toast channel.</div></div>
                 </div>

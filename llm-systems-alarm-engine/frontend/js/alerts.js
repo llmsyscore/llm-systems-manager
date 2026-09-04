@@ -155,7 +155,7 @@ const AlertManager = {
         if (!active.length) { ToastManager.show('No active alerts to close', 'info'); return; }
         const ok = await ModalManager.confirm({
             title: 'Close all active alerts',
-            message: `Close ${active.length} active alert${active.length === 1 ? '' : 's'}? Rules that are still over their limit will fire again.`,
+            message: `Close ${active.length} active alert${active.length === 1 ? '' : 's'}? Rules that are still over their limit will trigger again.`,
             confirmLabel: 'Close all', danger: true,
         });
         if (!ok) return;
@@ -252,6 +252,7 @@ const AlertsView = {
         search?.addEventListener('input', () => { f.search = search.value; f.page = 1; this.render(); });
         UI.seg(document.getElementById('alertSev'), v => { f.severity = v; f.page = 1; this.render(); });
         const status = document.getElementById('alertStatus');
+        if (status) status.value = f.status;
         status?.addEventListener('change', () => { f.status = status.value; f.page = 1; this.render(); });
         document.getElementById('exportAlertsBtn')?.addEventListener('click', () => this.exportCsv());
         document.getElementById('alertsSelectAll')?.addEventListener('click', () => {
@@ -270,7 +271,7 @@ const AlertsView = {
         document.querySelectorAll('#alertsTable th.sort').forEach(th => th.addEventListener('click', () => {
             const key = th.dataset.sort;
             if (f.sort === key) f.dir = f.dir === 'asc' ? 'desc' : 'asc';
-            else { f.sort = key; f.dir = key === 'fired' ? 'desc' : 'asc'; }
+            else { f.sort = key; f.dir = ['fired', 'last', 'count'].includes(key) ? 'desc' : 'asc'; }
             this.render();
         }));
         document.getElementById('alertsBody')?.addEventListener('click', (e) => this._onRowClick(e));
@@ -323,6 +324,7 @@ const AlertsView = {
         if (act === 'closepanel') return this.select(null);
         if (act === 'openrule') { const a = AlertManager.byId(this._sel); if (a?.rule_id) RuleManager.edit(a.rule_id); return; }
         if (act === 'member') return this.select(b.dataset.id);
+        if (act === 'metric') { const a = AlertManager.byId(this._sel); if (a) MetricsView.showAround(a.source_host, a.metric_source, a.metric_name, a.created_at, a.rule_name); return; }
         this._doAction(act, this._sel);
     },
 
@@ -354,6 +356,8 @@ const AlertsView = {
             case 'severity': return SEVERITY_RANK[a.severity] ?? 9;
             case 'rule': return (a.rule_name || '').toLowerCase();
             case 'status': return ['active', 'acknowledged', 'ignored', 'exception', 'closed'].indexOf(a.status);
+            case 'last': return parseTs(a.last_evaluated_at || a.created_at)?.getTime() || 0;
+            case 'count': return Number(a.trigger_count ?? 1);
             default: return parseTs(a.created_at)?.getTime() || 0;
         }
     },
@@ -500,19 +504,20 @@ const AlertsView = {
         const firedAgo = fmtAgo(a.created_at);
         const cycles = (a.trigger_count ?? 1) - 1;
         const stillOn = a.status === 'active' || a.status === 'acknowledged';
-        const sentence = `${d.sentence}. Fired ${escapeHtml(firedAgo)}${cycles > 0 ? ` and has re-fired on ${cycles} evaluation cycle${cycles === 1 ? '' : 's'} since` : ''}.`;
+        const sentence = `${d.sentence}. Triggered ${escapeHtml(firedAgo)}${cycles > 0 ? ` and has re-triggered on ${cycles} evaluation cycle${cycles === 1 ? '' : 's'} since` : ''}.`;
 
+        const METRIC_LINK = 'type="button" data-act="metric" data-tip="Open in Metrics"';
         const maxV = Math.max(Number(a.current_value) || 0, Number(a.threshold_value) || 0) * 1.15 || 1;
         const pct = Math.min(100, Math.max(0, (Number(a.current_value) || 0) / maxV * 100));
         const tpct = Math.min(100, Math.max(0, (Number(a.threshold_value) || 0) / maxV * 100));
         const gauge = a.current_value != null && a.threshold_value != null
-            ? `<div class="sec"><span class="microlbl">Reading</span><div class="gauge"><span>0</span><div class="bar"><i class="${d.over ? (a.severity === 'critical' ? 'crit' : '') : 'ok'}" style="width:${pct.toFixed(1)}%"></i><s style="left:${tpct.toFixed(1)}%"></s></div><span><b>${escapeHtml(d.value)}</b> · limit ${escapeHtml(d.limit)}</span></div></div>`
+            ? `<div class="sec"><span class="microlbl">Reading</span><button class="gauge" ${METRIC_LINK}><span>0</span><span class="bar"><i class="${d.over ? (a.severity === 'critical' ? 'crit' : '') : 'ok'}" style="width:${pct.toFixed(1)}%"></i><s style="left:${tpct.toFixed(1)}%"></s></span><span><b>${escapeHtml(d.value)}</b> · limit ${escapeHtml(d.limit)}</span></button></div>`
             : '';
 
         const facts = [
-            ['Metric', `<b>${escapeHtml(a.metric_source)}/${escapeHtml(a.metric_name)}</b>`],
+            ['Metric', `<button class="mlink" ${METRIC_LINK}>${escapeHtml(a.metric_source)}/${escapeHtml(a.metric_name)}</button>`],
             ['Host', escapeHtml(a.source_host || 'any host')],
-            ['Fired', `${escapeHtml(fmtWhen(a.created_at, true))} <span class="t">· ${escapeHtml(firedAgo)}</span>`],
+            ['Triggered', `${escapeHtml(fmtWhen(a.created_at, true))} <span class="t">· ${escapeHtml(firedAgo)}</span>`],
             ['Last seen', escapeHtml(fmtWhen(a.last_evaluated_at || a.created_at, true))],
             ['Count', `${escapeHtml(String(a.trigger_count ?? 1))} cycle${(a.trigger_count ?? 1) === 1 ? '' : 's'}`],
             d.detector ? ['Detector', escapeHtml(d.detector)] : null,
@@ -527,7 +532,7 @@ const AlertsView = {
         }).join('')}</div></div>` : '';
 
         const tl = [];
-        tl.push({ cls: a.severity, html: `<b>Fired</b> at ${escapeHtml(d.value)}`, t: fmtWhen(a.created_at, true), ts: parseTs(a.created_at) });
+        tl.push({ cls: a.severity, html: `<b>Triggered</b> at ${escapeHtml(d.value)}`, t: fmtWhen(a.created_at, true), ts: parseTs(a.created_at) });
         members.filter(m => String(m.alert_id) !== String(a.alert_id)).forEach(m => {
             const before = (parseTs(m.created_at)?.getTime() || 0) < (parseTs(a.created_at)?.getTime() || 0);
             tl.push({ cls: m.severity, html: before ? `Joined <b>${escapeHtml(m.rule_name || 'Alert')}</b>'s incident` : `<b>${escapeHtml(m.rule_name || 'Alert')}</b> joined the incident`, t: fmtWhen(m.created_at, true), ts: parseTs(m.created_at) });
@@ -538,7 +543,7 @@ const AlertsView = {
             const why = a.resolution_reason === 'auto' ? `auto${a.resolved_value != null ? ` @ ${escapeHtml(fmtVal(a.resolved_value, d.unit))}` : ''}` : a.resolution_reason === 'manual' ? `by ${escapeHtml(a.acknowledged_by || 'operator')}` : 'cleared';
             tl.push({ cls: 'ok', html: `<b>Closed</b> · ${why}`, t: fmtWhen(a.closed_at, true), ts: parseTs(a.closed_at) });
         } else if (stillOn) {
-            tl.push({ cls: '', html: `<b>Still firing</b> · ${escapeHtml(d.value)}`, t: fmtWhen(a.last_evaluated_at || a.created_at, true), ts: parseTs(a.last_evaluated_at || a.created_at) });
+            tl.push({ cls: '', html: `<b>Still triggered</b> · ${escapeHtml(d.value)}`, t: fmtWhen(a.last_evaluated_at || a.created_at, true), ts: parseTs(a.last_evaluated_at || a.created_at) });
         }
         const tlHtml = (extra) => `<div class="sec"><span class="microlbl">Timeline</span><ul class="tl">${[...tl, ...extra].sort((x, y) => (x.ts?.getTime() || 0) - (y.ts?.getTime() || 0)).map(i => `<li class="${escapeHtml(i.cls || '')}">${i.html}${i.t ? `<span class="t">${escapeHtml(i.t)}</span>` : ''}</li>`).join('')}</ul></div>`;
 

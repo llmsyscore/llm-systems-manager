@@ -159,6 +159,23 @@ const MetricsView = {
     // Whole windows back from now; 30 days is the history ceiling.
     maxOffset() { return Math.max(0, Math.floor(43200 / AppState.filters.metrics.minutes) - 1); },
 
+    // [start, end] ms of the selected window.
+    windowBounds() {
+        const f = AppState.filters.metrics;
+        const end = Date.now() - (f.offset || 0) * f.minutes * 60000;
+        return [end - f.minutes * 60000, end];
+    },
+
+    // The alert mark, when it belongs to the charted metric and falls inside the window.
+    markInView() {
+        const f = AppState.filters.metrics;
+        const m = f.mark;
+        if (!m?.ts || m.key !== f.key) return null;
+        const [start, end] = this.windowBounds();
+        const t = m.ts.getTime();
+        return t >= start && t <= end ? m : null;
+    },
+
     shift(dir) {
         const f = AppState.filters.metrics;
         f.offset = Math.min(this.maxOffset(), Math.max(0, (f.offset || 0) + dir));
@@ -171,7 +188,8 @@ const MetricsView = {
         const tag = document.getElementById('metricLiveTag');
         const back = document.getElementById('metricLiveBtn');
         const off = f.offset || 0;
-        if (tag) tag.textContent = off ? `${off} window${off === 1 ? '' : 's'} back` : (f.minutes <= 60 ? 'live · refreshes every 60 s' : '1-minute rollups');
+        const marked = this.markInView();
+        if (tag) tag.textContent = marked ? `around ${fmtWhen(marked.ts, true)}` : off ? `${off} window${off === 1 ? '' : 's'} back` : (f.minutes <= 60 ? 'live · refreshes every 60 s' : '1-minute rollups');
         if (back) back.hidden = !off;
         const prev = document.getElementById('metricPrev'), next = document.getElementById('metricNext');
         if (prev) prev.disabled = off >= this.maxOffset();
@@ -213,6 +231,7 @@ const MetricsView = {
         metSel.innerHTML = groups.join('') || '<option value="">No metrics reported yet</option>';
         const keys = [...bySource.values()].flatMap(m => [...m.keys()]);
         if (!keys.includes(f.key)) {
+            if (f.mark && f.mark.key === f.key) { ToastManager.show(`No history for ${this.parseKey(f.key).name}`, 'info'); f.mark = null; }
             const pref = list.find(m => m.source === 'system' && m.metric_name === 'cpu_total') || list[0];
             f.key = pref ? (f.host ? this.keyOf(pref) : `*|${pref.source}/${pref.metric_name}`) : '';
             metSel.value = f.key;
@@ -228,12 +247,30 @@ const MetricsView = {
         el.innerHTML = `<span><b>${vis.length}</b> tracked</span><span class="sep">·</span><span><b>${MetricsManager.hosts().length}</b> hosts</span><span class="sep">·</span><span><b>${MetricsManager.sources().length}</b> sources</span><span class="sep">·</span><span>newest sample <b>${escapeHtml(newest ? fmtAgo(newest) : '—')}</b></span>`;
     },
 
-    // From a rule row: show this metric.
-    showFor(host, source, name) {
+    _target(host, source, name) {
         const f = AppState.filters.metrics;
         f.host = host || '';
         f.key = `${host || '*'}|${source}/${name}`;
         this._persist();
+    },
+
+    // From a rule row: show this metric.
+    showFor(host, source, name) {
+        this._target(host, source, name);
+        TabManager.switchTab('metrics');
+    },
+
+    // From an alert: the 1-hour window holding `at`, with the alert marked on the chart.
+    showAround(host, source, name, at, label) {
+        const f = AppState.filters.metrics;
+        const ts = parseTs(at);
+        f.minutes = 60;
+        f.offset = ts ? Math.min(this.maxOffset(), Math.max(0, Math.floor((Date.now() - ts.getTime()) / (f.minutes * 60000)))) : 0;
+        const h = MetricsManager.hosts().includes(host) ? host : '';
+        f.mark = ts ? { ts, label: label || 'Alert', key: `${h || '*'}|${source}/${name}` } : null;
+        UI.segSet(document.getElementById('metricRange'), f.minutes);
+        this._target(h, source, name);
+        this._liveTag();
         TabManager.switchTab('metrics');
     },
 
@@ -255,6 +292,9 @@ const MetricsView = {
 };
 
 // ── charts ───────────────────────────────────────────────────────────
+
+// Alert-mark label is pushed inward by MARK_LABEL_PX when within MARK_LABEL_EDGE of a window edge.
+const MARK_LABEL_EDGE = 0.2, MARK_LABEL_PX = 70;
 
 const ChartManager = {
     _chart: null,
@@ -341,7 +381,20 @@ const ChartManager = {
     _annotations() {
         if (!this._ident || !window.Thresholds) return {};
         const { host, source, name } = this._ident;
-        return Thresholds.thresholdAnnotations(AppState.rules, { source, metricName: name, host, hostWildcard: true });
+        const out = Thresholds.thresholdAnnotations(AppState.rules, { source, metricName: name, host, hostWildcard: true });
+        const mark = MetricsView.markInView();
+        if (mark) {
+            const color = this._tok('--crit');
+            const [start, end] = MetricsView.windowBounds();
+            const frac = (mark.ts.getTime() - start) / (end - start);
+            const nudge = frac > 1 - MARK_LABEL_EDGE ? -MARK_LABEL_PX : frac < MARK_LABEL_EDGE ? MARK_LABEL_PX : 0;
+            out.alert_mark = {
+                type: 'line', xMin: mark.ts.getTime(), xMax: mark.ts.getTime(), borderColor: color, borderWidth: 1.5, borderDash: [3, 3],
+                label: { display: true, content: `${mark.label} · ${fmtTime(mark.ts)}`, position: 'end', xAdjust: nudge,
+                    backgroundColor: 'transparent', color, font: { size: 10, family: 'IBM Plex Mono, ui-monospace, monospace' }, padding: { top: 0, bottom: 2, left: 4, right: 4 } },
+            };
+        }
+        return out;
     },
 
     refreshAnnotations() {

@@ -10,9 +10,9 @@ const AppState = {
     lastRefreshOk: true,
     filters: {
         alerts: { severity: 'all', status: 'open', search: '', sort: 'fired', dir: 'desc', page: 1, pageSize: 25 },
-        console: { severity: 'all' },
+        console: { severity: 'all', sort: 'fired', dir: 'desc' },
         rules: { search: '', type: 'all', state: 'all', host: '', sort: 'name', dir: 'asc', page: 1, pageSize: 25 },
-        metrics: { host: '', key: '', minutes: 60, offset: 0 },
+        metrics: { host: '', key: '', minutes: 60, offset: 0, mark: null },
         deliveries: { type: '', result: '', page: 1, pageSize: 20 },
     },
 };
@@ -63,6 +63,9 @@ const TabManager = {
         document.querySelectorAll('.panel').forEach(p => {
             p.classList.toggle('active', p.id === `panel-${tabName}`);
         });
+        const status = document.getElementById('pageStatus');
+        const hdr = document.querySelector(`#panel-${tabName} .hdr`);
+        if (status && hdr && status.parentElement !== hdr) hdr.appendChild(status);
         if (pushHash) {
             try { history.replaceState(null, '', `#${tabName}`); } catch (_) {}
         }

@@ -5,6 +5,14 @@ const ConsoleView = {
     init() {
         UI.seg(document.getElementById('activeSev'), v => { AppState.filters.console.severity = v; this.renderActive(); });
         document.getElementById('closeAllBtn')?.addEventListener('click', () => AlertManager.closeAll());
+        document.getElementById('recentRows')?.addEventListener('click', (e) => {
+            const th = e.target.closest('th.sort');
+            if (!th) return;
+            const f = AppState.filters.console;
+            if (f.sort === th.dataset.sort) f.dir = f.dir === 'asc' ? 'desc' : 'asc';
+            else { f.sort = th.dataset.sort; f.dir = 'desc'; }
+            this.renderRecent();
+        });
         const onAct = async (e) => {
             const btn = e.target.closest('[data-act]');
             const row = e.target.closest('[data-id]');
@@ -211,7 +219,7 @@ const ConsoleView = {
             const win = until ? (until.getTime() - (parseTs(a.created_at)?.getTime() || until.getTime())) / 3600000 : null;
             const what = !until ? `ignored · ${escapeHtml(fmtWhen(a.created_at))}`
                 : left > 0 ? `ignored until <b>${escapeHtml(fmtWhen(until))}</b>${win ? ` · ${escapeHtml(fmtNum(Math.round(win)))} h window` : ''}`
-                : `window ended <b>${escapeHtml(fmtWhen(until))}</b> · the rule can fire again`;
+                : `window ended <b>${escapeHtml(fmtWhen(until))}</b> · the rule can trigger again`;
             const right = left != null && left > 0 ? `resumes in <b>${escapeHtml(fmtDur(left))}</b>` : '';
             rows.push(`<div class="krow" data-id="${escapeHtml(String(a.alert_id))}">${sevHtml(a.severity, false)}<div><div class="t"><span class="nm">${escapeHtml(a.rule_name || 'Alert')}</span>${hostHtml(a.source_host)}</div><div class="s">${what}</div></div><div class="r"><span class="ra">${right}${ibtn('x', 'Close this ignored alert', 'crith', 'data-act="close"')}</span></div></div>`);
         });
@@ -232,7 +240,11 @@ const ConsoleView = {
         const el = document.getElementById('recentRows');
         if (!el) return;
         const list = AppState.alerts.slice(0, 25);
-        if (!list.length) { el.innerHTML = '<div class="empty">No alerts yet. Rules that fire will show up here.</div>'; return; }
+        if (!list.length) { el.innerHTML = '<div class="empty">No alerts yet. Rules that trigger will show up here.</div>'; return; }
+        const f = AppState.filters.console;
+        const key = a => f.sort === 'cleared' ? (parseTs(a.status === 'closed' ? (a.closed_at || a.last_evaluated_at) : a.status === 'ignored' ? a.ignored_until : null)?.getTime() || 0) : (parseTs(a.created_at)?.getTime() || 0);
+        const sign = f.dir === 'desc' ? -1 : 1;
+        list.sort((x, y) => (key(x) - key(y)) * sign);
         const rows = list.map(a => {
             const d = AlertManager.describe(a);
             let cleared = '—';
@@ -244,6 +256,6 @@ const ConsoleView = {
             }
             return `<tr class="pick" data-id="${escapeHtml(String(a.alert_id))}"><td>${sevHtml(a.severity)}</td><td class="n"><span class="nm">${escapeHtml(a.rule_name || 'Alert')}</span><span class="sub">${escapeHtml(a.source_host || 'any host')} · ${escapeHtml(a.metric_source)}/${escapeHtml(a.metric_name)}</span></td><td class="msg">${d.sentence}</td><td>${statusPill(a.status)}</td><td>${escapeHtml(fmtWhen(a.created_at))}</td><td class="t">${cleared}</td></tr>`;
         }).join('');
-        el.innerHTML = `<table class="tbl"><colgroup><col style="width:104px"><col><col><col style="width:150px"><col style="width:132px"><col style="width:200px"></colgroup><thead><tr><th>Severity</th><th>Rule</th><th>Message</th><th>Status</th><th>Fired</th><th>Cleared</th></tr></thead><tbody>${rows}</tbody></table>`;
+        el.innerHTML = `<table class="tbl"><colgroup><col style="width:104px"><col><col><col style="width:150px"><col style="width:132px"><col style="width:200px"></colgroup><thead><tr><th>Severity</th><th>Rule</th><th>Message</th><th>Status</th><th class="sort${f.sort === 'fired' ? ' on' : ''}${f.sort === 'fired' && f.dir === 'asc' ? ' asc' : ''}" data-sort="fired">Triggered</th><th class="sort${f.sort === 'cleared' ? ' on' : ''}${f.sort === 'cleared' && f.dir === 'asc' ? ' asc' : ''}" data-sort="cleared">Cleared</th></tr></thead><tbody>${rows}</tbody></table>`;
     },
 };

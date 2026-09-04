@@ -1,4 +1,4 @@
-// Rules view: ledger, filters, firing state and the rule editor.
+// Rules view: ledger, filters, triggered state and the rule editor.
 
 const RuleManager = {
     _unitOptions: ['%', '°C', 'W', 'ms', 'count', 'tps', 'Mbps', 'bytes', 'sessions'],
@@ -145,7 +145,7 @@ const RuleManager = {
         const h = AppState.health;
         const cadence = h && h.evaluation_interval_s ? `<span class="sep">·</span><span>evaluated every <b>${escapeHtml(fmtNum(h.evaluation_interval_s, 0))} s</b>${h.components?.rule_eval_last_cycle_ms ? ` · last cycle <b>${escapeHtml(fmtNum(h.components.rule_eval_last_cycle_ms, 0))} ms</b>` : ''}</span>` : '';
         const sum = document.getElementById('rulesSum');
-        if (sum) sum.innerHTML = `<span><b>${total}</b> rule${total === 1 ? '' : 's'}</span><span class="sep">·</span><span><b>${on}</b> on</span><span class="sep">·</span><span><b class="${firing ? 'crit' : ''}">${firing}</b> firing</span><span class="sep">·</span><span><b>${anomaly}</b> anomaly detector${anomaly === 1 ? '' : 's'}</span>${cadence}`;
+        if (sum) sum.innerHTML = `<span><b>${total}</b> rule${total === 1 ? '' : 's'}</span><span class="sep">·</span><span><b>${on}</b> on</span><span class="sep">·</span><span><b class="${firing ? 'crit' : ''}">${firing}</b> triggered</span><span class="sep">·</span><span><b>${anomaly}</b> anomaly detector${anomaly === 1 ? '' : 's'}</span>${cadence}`;
 
         const hostSel = document.getElementById('ruleHost');
         if (hostSel) {
@@ -182,7 +182,7 @@ const RuleManager = {
         const quiet = r.quiet_hours_start && r.quiet_hours_end ? ` <span class="q">· quiet ${escapeHtml(r.quiet_hours_start)} – ${escapeHtml(r.quiet_hours_end)}</span>` : '';
         const sub = `${escapeHtml(r.source_host || 'any host')} · ${escapeHtml(r.metric_source)}/${escapeHtml(r.metric_name)}${quiet}`;
         const state = st.key === 'firing'
-            ? `<span class="st firing ${escapeHtml(r.severity)}"><span class="dot ${r.severity === 'critical' ? 'crit' : r.severity === 'warning' ? 'warn' : 'info'}"></span>firing · ${st.count} alert${st.count === 1 ? '' : 's'}</span>`
+            ? `<span class="st firing ${escapeHtml(r.severity)}"><span class="dot ${r.severity === 'critical' ? 'crit' : r.severity === 'warning' ? 'warn' : 'info'}"></span>triggered · ${st.count} alert${st.count === 1 ? '' : 's'}</span>`
             : st.key === 'quiet' ? '<span class="st quiet"><span class="dot"></span>quiet</span>' : '<span class="st off"><span class="dot"></span>off</span>';
         const pill = { critical: 'crit', warning: 'warn', info: 'info' }[r.severity] || 'dim';
         const menu = menuHtml([
@@ -244,7 +244,7 @@ const RuleManager = {
         const rule = this.byId(id);
         const ok = await ModalManager.confirm({
             title: 'Delete rule',
-            message: `Delete "${rule?.name || 'this rule'}"? Its open alerts stay in the ledger; nothing new will fire.`,
+            message: `Delete "${rule?.name || 'this rule'}"? Its open alerts stay in the ledger; nothing new will trigger.`,
             confirmLabel: 'Delete', danger: true,
         });
         if (!ok) return;
@@ -275,7 +275,7 @@ const RuleManager = {
     openEditor({ rule, mode, focus }) {
         const isEdit = mode === 'edit';
         const fired = isEdit ? AppState.alerts.filter(a => String(a.rule_id) === String(rule.rule_id)).length : 0;
-        const meta = isEdit ? `${rule.name} · created ${fmtWhen(rule.created_at)}${fired ? ` · fired ${fired} time${fired === 1 ? '' : 's'} recently` : ''}` : (mode === 'copy' ? 'copy of an existing rule' : RULE_TYPE_LABELS[rule.rule_type] || '');
+        const meta = isEdit ? `${rule.name} · created ${fmtWhen(rule.created_at)}${fired ? ` · triggered ${fired} time${fired === 1 ? '' : 's'} recently` : ''}` : (mode === 'copy' ? 'copy of an existing rule' : RULE_TYPE_LABELS[rule.rule_type] || '');
         ModalManager.open({
             title: isEdit ? 'Edit rule' : mode === 'copy' ? 'Duplicate rule' : 'New rule',
             meta, bodyHtml: this._formHtml(rule), submitLabel: isEdit ? 'Save rule' : 'Create rule',
@@ -317,7 +317,7 @@ const RuleManager = {
                 <div class="cascade"><select class="sel" id="rf-host" aria-label="Host"></select><select class="sel" id="rf-source" aria-label="Metric source"></select><select class="sel" id="rf-metric" aria-label="Metric"></select></div>
                 <div class="st-field" style="margin-top:10px"><div class="help">Any host applies the rule to every agent that reports this metric. Pick a host to scope it.</div></div>
             </div>
-            <div class="grp"><span class="microlbl">Fire when<em id="rf-type-label">${escapeHtml(RULE_TYPE_LABELS[rule.rule_type] || '')}</em></span>
+            <div class="grp"><span class="microlbl">Trigger when<em id="rf-type-label">${escapeHtml(RULE_TYPE_LABELS[rule.rule_type] || '')}</em></span>
                 <div class="st-grid">
                     <div class="st-field"><label for="rf-type">Type</label><div class="row"><select class="sel" id="rf-type">${typeOpts}</select></div></div>
                     <div class="st-field"><label>Severity</label><div class="row"><span class="mc-seg" id="rf-sev"><button type="button" data-v="info"${sev === 'info' ? ' class="on"' : ''}>info</button><button type="button" class="warn${sev === 'warning' ? ' on' : ''}" data-v="warning">warning</button><button type="button" class="crit${sev === 'critical' ? ' on' : ''}" data-v="critical">critical</button></span></div><div class="help">The default severity for alerts this rule creates.</div></div>
