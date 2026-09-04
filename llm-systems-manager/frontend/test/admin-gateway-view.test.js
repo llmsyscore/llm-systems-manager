@@ -4,6 +4,8 @@ import { describe, test, expect } from 'vitest';
 import { srcFile, runHarness, flush } from './helpers/harness.js';
 
 const gwSrc = srcFile('js/admin-gateway.js');
+// foundation.js normally supplies LivePause (#822); the poller only needs its every().
+const LP_STUB = 'window.LivePause = { on: false, every: (fn, ms) => setInterval(fn, ms) };';
 const indexSrc = srcFile('index.html');
 const CARD = indexSrc.slice(indexSrc.indexOf('<div class="card" id="rtGatewayCard"'),
                             indexSrc.indexOf('<div class="card" id="apEntriesCard">'));
@@ -30,7 +32,7 @@ const FLOW = {
 
 function card(payload) {
   return runHarness({
-    sources: [gwSrc],
+    sources: [LP_STUB, gwSrc],
     bodyHtml: `<div id="adminTab"><div id="admin-routing">${CARD}</div></div>`,
     bootstrap: `GatewayView.render(${JSON.stringify(payload)});`,
   });
@@ -151,7 +153,7 @@ describe('off state', () => {
 describe('polling and the enable toggle', () => {
   test('an unavailable endpoint hides the card entirely', async () => {
     const win = runHarness({
-      sources: [gwSrc],
+      sources: [LP_STUB, gwSrc],
       bodyHtml: `<div id="adminTab"><div id="admin-routing">${CARD}</div></div>`,
       bootstrap: `window.fetch = () => Promise.resolve({ ok: false, status: 404, json: async () => ({}) });
         window.__done = GatewayView.refresh();`,
@@ -162,7 +164,7 @@ describe('polling and the enable toggle', () => {
 
   test('a payload unhides the card', async () => {
     const win = runHarness({
-      sources: [gwSrc],
+      sources: [LP_STUB, gwSrc],
       bodyHtml: `<div id="adminTab"><div id="admin-routing">${CARD}</div></div>`,
     });
     win.fetch = () => Promise.resolve({ ok: true, status: 200, json: async () => FLOW });
@@ -172,7 +174,7 @@ describe('polling and the enable toggle', () => {
 
   test('the toggle PUTs the new state and does not collapse the card', async () => {
     const win = runHarness({
-      sources: [gwSrc],
+      sources: [LP_STUB, gwSrc],
       bodyHtml: `<div id="adminTab"><div id="admin-routing">${CARD}</div></div>`,
       bootstrap: `window.__calls = [];
         window.fetch = (url, opts) => { window.__calls.push([String(url), opts && opts.body]);

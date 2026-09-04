@@ -64,7 +64,7 @@ function _rcStatus(text, elapsed) {
 // Ticks the elapsed counter locally between SSE progress events (#491).
 function _rcTickSet(text, elapsed) {
   const timer = _rcTick?.timer || setInterval(() => {
-    if (!_rcTick) return;
+    if (!_rcTick || (typeof LivePause !== 'undefined' && LivePause.on)) return;
     _rcStatus(_rcTick.text, _rcTick.base + (Date.now() - _rcTick.at) / 1000);
   }, 1000);
   _rcTick = {text, base: elapsed != null ? elapsed : 0, at: Date.now(), timer};

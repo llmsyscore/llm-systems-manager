@@ -143,6 +143,7 @@ describe('boot.js', () => {
     const stub = `
       window.__calls = [];
       window.setInterval = () => {};
+      window.LivePause = { on: false, every: () => {} };
       window.fetchInterval = 5000;
       window.loadLayout = async () => {};
       window.loadMe = async () => {};

@@ -1077,6 +1077,7 @@ async function _startLlamaStateStream(isReconnect) {
 
     es.onmessage = (ev) => {
       if (viaDaemon) _llamaDaemonFails = 0;  // only a daemon message proves it recovered
+      if (LivePause.on) return;
       try { _applyLlamaStatePayload(JSON.parse(ev.data)); } catch(_) {}
     };
     es.onerror = () => {
@@ -1089,7 +1090,7 @@ async function _startLlamaStateStream(isReconnect) {
     };
   } catch (e) {
     // EventSource unsupported (very old browser); fall back to slow poll.
-    setInterval(pollServerState, 5000);
+    LivePause.every(pollServerState, 5000);
   } finally {
     _llamaStartInflight = false;
   }
@@ -1100,7 +1101,7 @@ let fetchTimer = null;
 
 function startFetching(ms) {
   if (fetchTimer) clearInterval(fetchTimer);
-  fetchTimer = setInterval(fetchMetrics, ms);
+  fetchTimer = LivePause.every(fetchMetrics, ms);
 }
 
 // Apply the live poll interval WITHOUT starting the timer — called at boot

@@ -429,7 +429,7 @@
     const host = $('agRoster');
     if (!openMenu || !(host && host.querySelector('.ag-rw'))) renderRoster(c);
     renderStamp();
-    if (!ticker && typeof setInterval === 'function') ticker = setInterval(tick, 5000);
+    if (!ticker && typeof setInterval === 'function') ticker = (window.LivePause ? LivePause.every : setInterval)(tick, 5000);
   }
   function tick() {
     renderStamp();

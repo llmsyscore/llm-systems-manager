@@ -92,11 +92,12 @@ CATALOG: list[dict] = [
     _e("manager.energy.cloud_price_out_per_mtok", "float", "Cloud $/Mtok out", "Cloud list price (output tokens).", "energy", MANAGER, min=0, max=1000),
     _e("manager.energy.cloud_price_label", "str", "Cloud price label", "As-of-dated label shown beside the savings figures.", "energy", MANAGER),
     # backup
-    _e("manager.backup.enabled", "bool", "Scheduled backups", "Automatic export archives to data/backups/.", "backup", MANAGER, common=True),
-    _e("manager.backup.interval_hours", "float", "Interval (hours)", "0 disables the scheduler.", "backup", MANAGER, min=0, max=8760, common=True),
-    _e("manager.backup.keep_last", "int", "Keep last", "Archives retained after pruning.", "backup", MANAGER, min=1, max=1000),
-    _e("manager.backup.passphrase", "str", "Backup passphrase", "12+ chars enables AES-256-GCM; blank = plaintext archives.", "backup", MANAGER, secret=True),
-    _e("manager.backup.mirror_dir", "str", "Mirror directory", "Optional second copy destination (e.g. a NAS mount).", "backup", MANAGER),
+    # backup — hot: the scheduler re-reads these before every run
+    _e("manager.backup.enabled", "bool", "Scheduled backups", "Automatic export archives to data/backups/.", "backup", MANAGER, hot=True, common=True),
+    _e("manager.backup.interval_hours", "float", "Interval (hours)", "0 disables the scheduler.", "backup", MANAGER, min=0, max=8760, hot=True, common=True),
+    _e("manager.backup.keep_last", "int", "Keep last", "Archives retained after pruning.", "backup", MANAGER, min=1, max=1000, hot=True),
+    _e("manager.backup.passphrase", "str", "Backup passphrase", "12+ chars enables AES-256-GCM; blank = plaintext archives.", "backup", MANAGER, secret=True, hot=True),
+    _e("manager.backup.mirror_dir", "str", "Mirror directory", "Absolute path of an existing, writable second copy destination (e.g. a NAS mount).", "backup", MANAGER, hot=True),
     # audit (#794) — hot: the manager re-reads these after every save
     _e("manager.audit.retention_days", "int", "Keep entries for (days)", "0 keeps everything; the 100,000-row cap still applies.", "audit", MANAGER, min=0, max=3650, hot=True, common=True),
     _e("manager.audit.page_size", "int", "Rows per page", "Default page size on the Audit Log tab.", "audit", MANAGER, min=10, max=500, hot=True),
@@ -361,18 +362,22 @@ def file_catalog_values() -> "Optional[dict]":
 _BOOT_FILE_VALUES = file_catalog_values()
 
 
-def pending_restart_services(now: "Optional[dict]" = None) -> set[str]:
-    """Services whose on-disk catalog values differ from the file this process
-    started with. Stateless across UI saves, hand edits, and shell restarts."""
+def pending_restart_paths(now: "Optional[dict]" = None) -> list[str]:
+    """Non-hot catalog paths whose on-disk value differs from the file this
+    process started with. Stateless across UI saves, hand edits, and restarts."""
     if _BOOT_FILE_VALUES is None:
-        return set()
+        return []
     if now is None:
         now = file_catalog_values()
     if now is None:
-        return set()
-    changed = [p for p, v in now.items()
-               if v != _BOOT_FILE_VALUES.get(p, _MISSING)]
-    return services_for(changed)
+        return []
+    return sorted(p for p, v in now.items()
+                  if v != _BOOT_FILE_VALUES.get(p, _MISSING) and not is_hot(p))
+
+
+def pending_restart_services(now: "Optional[dict]" = None) -> set[str]:
+    """Services with at least one pending_restart_paths() entry."""
+    return services_for(pending_restart_paths(now))
 
 
 def services_for(paths) -> set[str]:

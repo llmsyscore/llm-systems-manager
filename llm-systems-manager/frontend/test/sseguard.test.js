@@ -144,3 +144,23 @@ describe('closed source (non-2xx such as a pool 503)', () => {
     expect(streams.length).toBe(3);
   });
 });
+
+describe('LivePause gate (#822)', () => {
+  it('drops frames while paused but keeps the stream and its resume id', () => {
+    const { g, log } = guard();
+    const orig = SG.paused;
+    let paused = true;
+    SG.paused = () => paused;
+    try {
+      msg(last(), { type: 'x', n: 1 }, 'r:1');
+      expect(log.events).toEqual([]);
+      expect(g.lastId).toBe('r:1');
+      expect(last().closedByClient).toBeUndefined();
+      paused = false;
+      msg(last(), { type: 'x', n: 2 }, 'r:2');
+      expect(log.events).toEqual([{ type: 'x', n: 2 }]);
+    } finally {
+      SG.paused = orig;
+    }
+  });
+});

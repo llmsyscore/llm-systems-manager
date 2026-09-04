@@ -569,3 +569,26 @@ def test_put_null_clears_any_non_secret_key(client):
     assert r.status_code == 200
     assert r.get_json()["applied"] == ["manager.poll_interval"]
     assert "poll_interval" not in cfg.read_text()
+
+
+# --- restart-pending paths (#816) ---
+
+
+def test_put_and_get_name_restart_paths(client):
+    c, _ = client
+    d = c.put("/api/admin/settings",
+              json={"changes": {"manager.history.window_minutes": 90,
+                                "manager.audit.page_size": 50}}).get_json()
+    assert d["ok"] is True
+    assert d["restart_required"] == ["manager"]
+    assert d["restart_paths"] == ["manager.history.window_minutes"]
+    g = c.get("/api/admin/settings").get_json()
+    assert g["restart_pending"] == ["manager"]
+    assert g["restart_pending_paths"] == ["manager.history.window_minutes"]
+
+
+def test_hand_edit_names_drifted_path(client):
+    c, cfg = client
+    cfg.write_text("[manager]\nport = 5001\n")
+    g = c.get("/api/admin/settings").get_json()
+    assert g["restart_pending_paths"] == ["manager.port"]

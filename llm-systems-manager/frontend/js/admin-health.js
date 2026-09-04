@@ -58,10 +58,11 @@
     const mgr = (d && d.manager) || {};
     const ae = svcOf(d, 'alarm_engine');
     const influx = svcOf(d, 'influxdb');
+    const pending = (d && d.restart_pending) || [];
     const rows = [{
       st: 'ok', n: 'Manager', lk: null, ver: mgr.version || '—',
       up: upStr(mgr.uptime_s), upTxt: 'unknown', upCls: upStr(mgr.uptime_s) ? '' : 'crit',
-      act: 'Restart Manager', svc: 'manager',
+      act: 'Restart Manager', svc: 'manager', rp: pending.includes('manager'),
     }];
 
     const aeOk = !!(ae && ae.ok);
@@ -79,7 +80,7 @@
       up: aeOk ? upStr(ae && ae.uptime_s) : null,
       upTxt: aeOk ? 'connected' : 'unreachable', upCls: aeOk ? '' : 'crit',
       act: 'Restart Alarm Engine' + (via === 'self-restart' ? ' · via its self-restart API' : ''),
-      svc: 'alarm_engine',
+      svc: 'alarm_engine', rp: pending.includes('alarm_engine'),
     });
 
     const inOk = !!(influx && influx.ok);
@@ -92,8 +93,9 @@
   }
 
   function svcRowHtml(s) {
-    const lk = s.lk
-      ? `<span class="lk ${s.lk[1] === 'crit' ? 'crit' : (s.lk[1] === 'on' ? '' : 'off')}">${esc(s.lk[0])}</span>` : '';
+    const lk = (s.lk
+      ? `<span class="lk ${s.lk[1] === 'crit' ? 'crit' : (s.lk[1] === 'on' ? '' : 'off')}">${esc(s.lk[0])}</span>` : '')
+      + (s.rp ? '<span class="lk warn" title="Saved settings apply after a restart">restart pending</span>' : '');
     const up = s.up ? `<span class="l">up</span>${esc(s.up)}` : esc(s.upTxt);
     const btn = s.act
       ? `<button type="button" class="ib warnh" data-restart-svc="${esc(s.svc)}" data-tip="${esc(s.act)}">${SVG_RESTART}</button>`

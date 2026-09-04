@@ -223,3 +223,20 @@ def test_split_install_ae_restart_uses_the_self_restart_api(monkeypatch):
     body = resp[0] if isinstance(resp, tuple) else resp
     assert body.get_json()["ok"] is True
     assert posts["url"].endswith("/api/alarm/admin/self-restart")
+
+
+# --- restart pending (#816) ---
+
+
+def test_health_reports_restart_pending(admin, monkeypatch, tmp_path):
+    import settings_catalog
+    import settings_toml_io as sio
+    cfg = tmp_path / "llm-systems.toml"
+    cfg.write_text("[manager]\nport = 5000\n")
+    monkeypatch.setattr(sio, "resolve_config_path", lambda: cfg)
+    monkeypatch.setattr(settings_catalog, "_BOOT_FILE_VALUES",
+                        settings_catalog.file_catalog_values())
+    M._SETTINGS_RESTART_PENDING.clear()
+    assert _health(admin)["restart_pending"] == []
+    cfg.write_text("[manager]\nport = 5001\n")
+    assert _health(admin)["restart_pending"] == ["manager"]

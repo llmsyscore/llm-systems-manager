@@ -31,6 +31,7 @@
 #adminHealthCard .hc-svcr .n .lk { flex-shrink: 0; font-family: var(--font-mono); font-size: 10px; font-weight: 500; color: var(--ok); border: 1px solid color-mix(in srgb, var(--ok) 26%, transparent); border-radius: 4px; padding: 0 5px; line-height: 1.6; }
 #adminHealthCard .hc-svcr .n .lk.off { color: var(--fg-dim); border-color: var(--border-strong); }
 #adminHealthCard .hc-svcr .n .lk.crit { color: var(--crit); border-color: color-mix(in srgb, var(--crit) 30%, transparent); }
+#adminHealthCard .hc-svcr .n .lk.warn { color: var(--warn); border-color: color-mix(in srgb, var(--warn) 30%, transparent); }
 #adminHealthCard .hc-svcr .v { grid-column: 2; grid-row: 2; font-family: var(--font-mono); font-size: 10.5px; color: var(--fg-dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 #adminHealthCard .hc-svcr .up { grid-column: 3; grid-row: 1 / span 2; font-family: var(--font-mono); font-size: 11.5px; color: var(--fg-muted); font-variant-numeric: tabular-nums; white-space: nowrap; text-align: right; }
 #adminHealthCard .hc-svcr .up.crit { color: var(--crit); }
