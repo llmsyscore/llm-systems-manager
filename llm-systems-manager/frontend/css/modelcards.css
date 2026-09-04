@@ -36,6 +36,7 @@
 .mcbtn { display: inline-flex; align-items: center; justify-content: center; gap: 6px; border-radius: 7px; cursor: pointer; font-family: var(--font-sans); font-size: 12.5px; font-weight: 500; padding: 6px 13px; line-height: 1.4; white-space: nowrap; transition: background .12s, border-color .12s, color .12s, opacity .12s; }
 .mcbtn:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 .mcbtn:disabled { opacity: .45; cursor: default; pointer-events: none; }
+.mcbtn[hidden] { display: none !important; }
 .mcbtn-pri { background: color-mix(in srgb, var(--accent) 88%, var(--bg)); border: 1px solid var(--accent); color: var(--bg); font-weight: 600; }
 .mcbtn-pri:hover { background: var(--accent); }
 .mcbtn-ghost { background: transparent; border: 1px solid var(--border-strong); color: var(--fg-muted); }
