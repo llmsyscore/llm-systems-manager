@@ -171,3 +171,10 @@ class TestOpenclawBridgeTickets:
         import inspect
         src = inspect.getsource(M._maybe_start_alarm_ws_proxy)
         assert '_ws_bridge_path(req_target) == "/ws/openclaw"' in src
+
+
+    def test_bridge_relays_large_frames_both_ways(self):
+        import inspect
+        src = inspect.getsource(M._maybe_start_alarm_ws_proxy)
+        assert src.count("max_size=_WS_BRIDGE_MAX_SIZE") == 3
+        assert M._WS_BRIDGE_MAX_SIZE > 1024 * 1024

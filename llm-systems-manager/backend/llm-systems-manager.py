@@ -159,7 +159,7 @@ def _local_hostname() -> str:
 # banner reads it. Bump suffix (-1, -2, …) for same-day iterations; roll
 # the date for a new day's first change.
 # ---------------------------------------------------------------------------
-__version__ = "v2026.09.04-2"
+__version__ = "v2026.09.04-3"
 
 # Wall-clock at first import (Cheroot main process); the shutdown banner
 # reads it for the uptime line.
@@ -6934,6 +6934,10 @@ def openclaw_ws_ticket():
     return jsonify({"ticket": _issue_ws_ticket(path="/ws/openclaw"), "ttl_s": _ws_ticket_ttl()})
 
 
+# Largest WebSocket message the bridge relays in either direction.
+_WS_BRIDGE_MAX_SIZE = 64 * 1024 * 1024
+
+
 def _maybe_start_alarm_ws_proxy() -> None:
     """Standalone websockets server (separate daemon thread, own asyncio loop)
     that bridges browser → alarm-engine WS (/ws/alarm) and browser → OpenClaw
@@ -7032,7 +7036,8 @@ def _maybe_start_alarm_ws_proxy() -> None:
                 return
             try:
                 async with websockets.connect(up_url, ssl=up_ssl, open_timeout=4, origin=origin,
-                                              additional_headers=up_headers) as up:
+                                              additional_headers=up_headers,
+                                              max_size=_WS_BRIDGE_MAX_SIZE) as up:
                     await asyncio.gather(
                         _pipe(client_ws, up),
                         _pipe(up, client_ws),
@@ -7044,10 +7049,11 @@ def _maybe_start_alarm_ws_proxy() -> None:
                     await client_ws.close(code=1011, reason="upstream unavailable")
 
         async def _serve() -> None:
-            async with websockets.serve(_handler, "0.0.0.0", ws_port):
+            async with websockets.serve(_handler, "0.0.0.0", ws_port, max_size=_WS_BRIDGE_MAX_SIZE):
                 _ws_relay_state["status"] = "connected"
                 if wss_port > 0:
-                    async with websockets.serve(_handler, "0.0.0.0", wss_port, ssl=wss_ssl):
+                    async with websockets.serve(_handler, "0.0.0.0", wss_port, ssl=wss_ssl,
+                                                max_size=_WS_BRIDGE_MAX_SIZE):
                         await asyncio.Future()  # run forever
                 await asyncio.Future()  # run forever
 
