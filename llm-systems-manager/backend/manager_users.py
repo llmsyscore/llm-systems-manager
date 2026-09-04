@@ -405,7 +405,8 @@ def register_routes(app, ctx) -> None:
             return _bad("no current user (login required)", 403)
         b = flask_request.get_json(silent=True) or {}
         if not auth.scrypt_verify(b.get("current_password") or "", u.get("password_hash", "")):
-            return _bad("current password is incorrect", 403)
+            return jsonify({"ok": False, "error": "current password is incorrect",
+                            "field": "current_password"}), 403
         new = b.get("new_password") or ""
         if len(new) < MIN_PASSWORD:
             return _bad(f"password must be at least {MIN_PASSWORD} characters")

@@ -664,6 +664,7 @@ def _admin_auth_get():
         DEFAULT_AUTH_USER, lambda h: scrypt_verify(DEFAULT_AUTH_PASSWORD, h)))
     return jsonify({"ok": True, "mode": auth_mode(), "policy": policy,
                     "instant": policy == "auto", "is_default": is_default,
+                    "default_user": DEFAULT_AUTH_USER,
                     "modes": list(AUTH_MODES), "current_user": session.get("user"),
                     "admin_cidrs": [str(c) for c in (_settings.manager.security.admin_cidrs or [])],
                     "bypass_role": _bypass_role()})

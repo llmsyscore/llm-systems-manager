@@ -146,6 +146,7 @@ function switchSubTab(parent, sub) {
   // via foundation.js; the users table loads on sub-tab entry here.
   if (parent === 'admin' && sub === 'access') {
     if (typeof adminUsersLoad === 'function') adminUsersLoad();
+    if (window.AccessSettings) AccessSettings.invalidate();
   }
   if (parent === 'admin' && sub === 'audit') {
     if (typeof adminAuditLoad === 'function') adminAuditLoad(0);

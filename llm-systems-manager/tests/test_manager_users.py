@@ -541,12 +541,15 @@ class TestUserRoutes:
         r = admin_client.post("/api/account/password",
                               json={"current_password": "wrong", "new_password": "anotherlongpw"})
         assert r.status_code == 403
+        assert r.get_json()["field"] == "current_password"
 
     def test_admin_auth_is_default_tracks_login_store(self, admin_client):
         # The Authentication card's "default password" warning must reflect the
         # LOGIN store (manager_users.json), and clear only on a REAL password
         # change — not the legacy manager_auth.json (#125 divergence fix).
-        assert admin_client.get("/api/admin/auth").get_json()["is_default"] is True
+        d0 = admin_client.get("/api/admin/auth").get_json()
+        assert d0["is_default"] is True
+        assert d0["default_user"] == "llmadmin"
         r = admin_client.post("/api/account/password",
                               json={"current_password": "llmadmin", "new_password": "a-real-password"})
         assert r.status_code == 200

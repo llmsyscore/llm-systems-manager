@@ -1585,9 +1585,9 @@ function _themedPrompt({ title, bodyHtml = '', value = '', placeholder = '', con
   });
 }
 
-// Brief, non-blocking, auto-dismissing themed notification (success/info/error).
+// Themed notification; auto-dismisses unless sticky (then click dismisses).
 // message is set via textContent — safe to pass user-supplied text.
-function _themedToast(message, { kind = 'ok', ms = 2600 } = {}) {
+function _themedToast(message, { kind = 'ok', ms = 2600, sticky = false } = {}) {
   const accent = kind === 'err' ? 'var(--crit)' : (kind === 'warn' ? 'var(--warn)' : 'var(--accent)');
   const t = document.createElement('div');
   t.style.cssText = 'position:fixed;bottom:22px;left:50%;transform:translateX(-50%);z-index:10000;'
@@ -1595,9 +1595,20 @@ function _themedToast(message, { kind = 'ok', ms = 2600 } = {}) {
     + accent + ';border-radius:6px;padding:10px 16px;font-family:system-ui,-apple-system,sans-serif;'
     + 'font-size:0.88em;box-shadow:0 6px 24px rgba(0,0,0,0.4);max-width:80vw;opacity:0;transition:opacity 0.15s;';
   t.textContent = message;
+  if (sticky) {
+    document.querySelectorAll('.themed-toast.sticky').forEach(o => o.remove());
+    t.className = 'themed-toast sticky';
+    t.style.cursor = 'pointer';
+    t.title = 'click to dismiss';
+    const x = document.createElement('span');
+    x.textContent = '✕';
+    x.style.cssText = 'margin-left:12px;color:var(--fg-muted,#9aa);font-size:0.9em;';
+    t.appendChild(x);
+    t.addEventListener('click', () => t.remove());
+  }
   document.body.appendChild(t);
   requestAnimationFrame(() => { t.style.opacity = '1'; });
-  setTimeout(() => { t.style.opacity = '0'; setTimeout(() => t.remove(), 200); }, ms);
+  if (!sticky) setTimeout(() => { t.style.opacity = '0'; setTimeout(() => t.remove(), 200); }, ms);
 }
 
 // Self-update — opens a floating panel, streams the install.sh output
@@ -2213,9 +2224,10 @@ async function adminUserResetPw(name) {
   const pw = await _themedPrompt({ title: 'Reset password', bodyHtml: 'New password for ' + adminEsc(name) + ' (min 8):', placeholder: 'new password', inputType: 'password' });
   if (pw === null) return;
   if (pw.length < 8) { _themedToast('password too short', { kind: 'warn' }); return; }
-  _adminUsersApi('/api/admin/users/' + encodeURIComponent(name),
+  const ok = await _adminUsersApi('/api/admin/users/' + encodeURIComponent(name),
     { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ password: pw }) },
     'Password reset for ' + name);
+  if (ok && name === ((_adminAuthState || {}).default_user || 'llmadmin')) adminAuthLoad();
 }
 
 function adminUserUnlock(name) {
