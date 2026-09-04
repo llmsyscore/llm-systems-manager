@@ -199,6 +199,9 @@
        false`, so they re-paint to fill this box at the monitor's DPR
        whenever the size changes. */
     .chart-wrap { position: relative; flex: 1 1 140px; min-height: 140px; }
+    /* Vertical breathing room between stacked blocks inside a card. */
+    .card .card-gap { margin-top: 10px; }
+    .card .chart-caption { margin: 10px 0 6px; }
     /* Fixed-height variant: keeps its inline height instead of filling the card. */
     .chart-wrap.fixed-h { flex: 0 0 auto; min-height: 0; }
     .card.size-1x2 .chart-wrap.fixed-h, .card.size-2x2 .chart-wrap.fixed-h,
@@ -549,10 +552,6 @@
     #lmsCardGrid .stat-row > div > div:not(.stat):not(.sub) {
       font-size: clamp(0.75em, 1vw, 0.88em);
       color: var(--fg-dim);
-    }
-    /* Responsive grids — auto-fill so cards reflow with window width */
-    .grid {
-      grid-template-columns: repeat(auto-fill, minmax(clamp(220px, 28vw, 340px), 1fr));
     }
     :root[data-density="compact"] #overallGrid .stat,
     :root[data-density="compact"] #cardGrid .stat,
