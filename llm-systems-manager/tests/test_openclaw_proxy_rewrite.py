@@ -66,3 +66,30 @@ def test_forward_headers_pin_accept_encoding_to_what_urllib3_decodes():
     assert out.get("Cookie") == "session=abc"
     for k in out:
         assert k.lower() not in ("host", "content-length", "transfer-encoding")
+
+
+def test_ws_shim_dials_the_bridge_with_a_ticket_when_the_bridge_is_on():
+    js = proxies._build_openclaw_ws_patch("10.0.0.5:18789", "18789", "wss://mgr:5446/ws/openclaw", "1.n.s")
+    assert '"wss://mgr:5446/ws/openclaw"' in js
+    assert '"1.n.s"' in js
+    assert "/api/openclaw-ws-ticket" in js
+    assert "10\\.0\\.0\\.5:18789" in js  # gateway-host dials are caught too
+    assert "$1" not in js  # no direct host rewrite
+
+
+def test_ws_shim_rewrites_the_host_directly_without_a_bridge():
+    js = proxies._build_openclaw_ws_patch("10.0.0.5:18789", "18789")
+    assert "10.0.0.5:18789" in js
+    assert "openclaw-ws-ticket" not in js
+
+
+def test_openclaw_ws_url_for_browser_prefers_wss_on_https(monkeypatch):
+    from types import SimpleNamespace
+    monkeypatch.setattr(proxies, "settings", SimpleNamespace(manager=SimpleNamespace(ws_proxy_port=5444)))
+    monkeypatch.setattr(proxies, "_deps", SimpleNamespace(
+        wss_bridge_port=lambda: 5446, request_is_https=lambda: True, request_host_no_port=lambda: "mgr"))
+    assert proxies.openclaw_ws_url_for_browser() == "wss://mgr:5446/ws/openclaw"
+    proxies._deps.request_is_https = lambda: False
+    assert proxies.openclaw_ws_url_for_browser() == "ws://mgr:5444/ws/openclaw"
+    proxies.settings.manager.ws_proxy_port = 0
+    assert proxies.openclaw_ws_url_for_browser() == ""

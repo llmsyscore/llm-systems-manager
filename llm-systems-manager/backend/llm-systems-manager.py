@@ -159,7 +159,7 @@ def _local_hostname() -> str:
 # banner reads it. Bump suffix (-1, -2, …) for same-day iterations; roll
 # the date for a new day's first change.
 # ---------------------------------------------------------------------------
-__version__ = "v2026.09.04-1"
+__version__ = "v2026.09.04-2"
 
 # Wall-clock at first import (Cheroot main process); the shutdown banner
 # reads it for the uptime line.
@@ -5118,6 +5118,7 @@ proxies.register_routes(
     rewrite_loopback_host=_rewrite_loopback_host,
     request_is_https=_request_is_https,
     wss_bridge_port=_wss_bridge_port,
+    ws_ticket=lambda path: _issue_ws_ticket(path=path),
 )
 import openclaw  # type: ignore[import-not-found]  # sibling; PR M5
 openclaw.register_routes(app, ctx)
@@ -6836,9 +6837,14 @@ def _maybe_start_manager_tls_server() -> None:
     t.start()
 
 
-# ── Alarm WS bridge tickets ───────────────────────────────────────────
-# Signed subject for the bridge handshake ticket.
+# ── WS bridge tickets ─────────────────────────────────────────────────
+# Bridge paths a ticket can be signed for; the subject binds a ticket to one path.
+_WS_BRIDGE_PATHS = ("/ws/alarm", "/ws/openclaw")
 _WS_TICKET_SUBJECT = "ws|/ws/alarm"
+
+
+def _ws_ticket_subject(path: str) -> str:
+    return f"ws|{path}"
 
 
 def _ws_ticket_ttl() -> int:
@@ -6850,17 +6856,17 @@ _ws_tickets_spent: dict[str, int] = {}
 _ws_tickets_lock = _threading.Lock()
 
 
-def _issue_ws_ticket(ttl: "int | None" = None) -> str:
-    """Short-lived "<expiry>.<nonce>.<sig>" ticket authorizing one bridge handshake."""
+def _issue_ws_ticket(ttl: "int | None" = None, path: str = "/ws/alarm") -> str:
+    """Short-lived "<expiry>.<nonce>.<sig>" ticket authorizing one bridge handshake on `path`."""
     expiry = int(time.time()) + (ttl if ttl is not None else _ws_ticket_ttl())
     nonce = secrets.token_hex(8)
-    msg = f"{_WS_TICKET_SUBJECT}|{expiry}|{nonce}".encode()
+    msg = f"{_ws_ticket_subject(path)}|{expiry}|{nonce}".encode()
     sig = hmac.new(_manager_secret(), msg, hashlib.sha256).hexdigest()
     return f"{expiry}.{nonce}.{sig}"
 
 
-def _parse_ws_ticket(ticket: str) -> "tuple[int, str] | None":
-    """(expiry, nonce) for a well-formed, unexpired, correctly signed ticket; else None."""
+def _parse_ws_ticket(ticket: str, path: str = "/ws/alarm") -> "tuple[int, str] | None":
+    """(expiry, nonce) for a well-formed, unexpired ticket correctly signed for `path`; else None."""
     if not ticket or ticket.count(".") != 2:
         return None
     try:
@@ -6870,20 +6876,20 @@ def _parse_ws_ticket(ticket: str) -> "tuple[int, str] | None":
         return None
     if expiry < time.time():
         return None
-    msg = f"{_WS_TICKET_SUBJECT}|{expiry}|{nonce}".encode()
+    msg = f"{_ws_ticket_subject(path)}|{expiry}|{nonce}".encode()
     expected = hmac.new(_manager_secret(), msg, hashlib.sha256).hexdigest()
     return (expiry, nonce) if hmac.compare_digest(expected, sig) else None
 
 
-def _verify_ws_ticket(ticket: str) -> bool:
+def _verify_ws_ticket(ticket: str, path: str = "/ws/alarm") -> bool:
     """Constant-time verify of a ticket from _issue_ws_ticket; False if
-    malformed, expired, or signed with a different secret. Does not spend it."""
-    return _parse_ws_ticket(ticket) is not None
+    malformed, expired, or signed with a different secret or path. Does not spend it."""
+    return _parse_ws_ticket(ticket, path) is not None
 
 
-def _consume_ws_ticket(ticket: str) -> bool:
+def _consume_ws_ticket(ticket: str, path: str = "/ws/alarm") -> bool:
     """Verify AND spend a ticket: a nonce seen before within its TTL is refused."""
-    parsed = _parse_ws_ticket(ticket)
+    parsed = _parse_ws_ticket(ticket, path)
     if parsed is None:
         return False
     expiry, nonce = parsed
@@ -6903,17 +6909,30 @@ def ws_handshake_denial(req_target: str) -> "tuple[int, str] | None":
     handshake, or None to bridge it."""
     from urllib.parse import parse_qs, urlsplit
     parts = urlsplit(req_target or "/")
-    if not parts.path.startswith("/ws/alarm"):
+    path = next((p for p in _WS_BRIDGE_PATHS if parts.path.startswith(p)), None)
+    if path is None:
         return (1008, "unknown path")
-    if not _consume_ws_ticket((parse_qs(parts.query).get("ticket") or [""])[0]):
+    if not _consume_ws_ticket((parse_qs(parts.query).get("ticket") or [""])[0], path):
         return (1008, "unauthorized")
     return None
 
 
-# Issues the ticket the WS bridge requires; gated by the before_request hook.
+def _ws_bridge_path(req_target: str) -> str:
+    """The bridge path a request target addresses ("" when it is not one)."""
+    from urllib.parse import urlsplit
+    p = urlsplit(req_target or "/").path
+    return next((b for b in _WS_BRIDGE_PATHS if p.startswith(b)), "")
+
+
+# Issue the tickets the WS bridge requires; gated by the before_request hook.
 @app.route("/api/alarm-ws-ticket", methods=["GET"])
 def alarm_ws_ticket():
     return jsonify({"ticket": _issue_ws_ticket(), "ttl_s": _ws_ticket_ttl()})
+
+
+@app.route("/api/openclaw-ws-ticket", methods=["GET"])
+def openclaw_ws_ticket():
+    return jsonify({"ticket": _issue_ws_ticket(path="/ws/openclaw"), "ttl_s": _ws_ticket_ttl()})
 
 
 def _maybe_start_alarm_ws_proxy() -> None:
@@ -6935,8 +6954,8 @@ def _maybe_start_alarm_ws_proxy() -> None:
         log.info("  WS proxy:    disabled (set [manager].ws_proxy_port to enable)")
         _ws_relay_state["status"] = "off"
         return
-    if not _alarm_engine_url:
-        log.warning("  WS proxy:    skipped (no alarm engine URL configured)")
+    if not _alarm_engine_url and not proxies.resolve_proxy_target("openclaw"):
+        log.warning("  WS proxy:    skipped (no alarm engine URL or OpenClaw target configured)")
         _ws_relay_state["status"] = "unknown"
         return
     _ws_relay_state["status"] = "unknown"  # configured; flips to "connected" once serving
@@ -6949,13 +6968,23 @@ def _maybe_start_alarm_ws_proxy() -> None:
         from urllib.parse import urlsplit
 
         # Upstream AE URL → ws/wss
-        ae_parts = urlsplit(_alarm_engine_url)
-        ae_scheme = "wss" if ae_parts.scheme == "https" else "ws"
-        ae_port = ae_parts.port or (443 if ae_scheme == "wss" else 80)
-        ae_ws_url = f"{ae_scheme}://{ae_parts.hostname}:{ae_port}/ws"
+        ae_ws_url = ""
         ae_ssl: "ssl.SSLContext | None" = None
-        if ae_scheme == "wss":
-            ae_ssl = ssl.create_default_context(cafile=_AE_CA_PATH)
+        if _alarm_engine_url:
+            ae_parts = urlsplit(_alarm_engine_url)
+            ae_scheme = "wss" if ae_parts.scheme == "https" else "ws"
+            ae_port = ae_parts.port or (443 if ae_scheme == "wss" else 80)
+            ae_ws_url = f"{ae_scheme}://{ae_parts.hostname}:{ae_port}/ws"
+            if ae_scheme == "wss":
+                ae_ssl = ssl.create_default_context(cafile=_AE_CA_PATH)
+
+        def _openclaw_ws_url() -> str:
+            base = proxies.resolve_proxy_target("openclaw") or ""
+            if not base:
+                return ""
+            p = urlsplit(base)
+            scheme = "wss" if p.scheme == "https" else "ws"
+            return f"{scheme}://{p.hostname}:{p.port or (443 if scheme == 'wss' else 80)}/"
 
         # Plain ws stays on ws_proxy_port for http-origin dashboards; when the
         # operator cert (#523) exists, a second wss listener serves https pages.
@@ -6969,9 +6998,9 @@ def _maybe_start_alarm_ws_proxy() -> None:
                 wss_ssl.load_cert_chain(str(custom[0]), str(custom[1]))
         if wss_port > 0:
             log.info("  WS proxy:    serving ws://0.0.0.0:%d + wss://0.0.0.0:%d (operator cert) → %s",
-                     ws_port, wss_port, ae_ws_url)
+                     ws_port, wss_port, ae_ws_url or "(no AE)")
         else:
-            log.info("  WS proxy:    serving ws://0.0.0.0:%d → %s", ws_port, ae_ws_url)
+            log.info("  WS proxy:    serving ws://0.0.0.0:%d → %s", ws_port, ae_ws_url or "(no AE)")
 
         async def _pipe(src, dst) -> None:
             with best_effort("ws proxy: pipe frames", log=log):
@@ -6990,10 +7019,19 @@ def _maybe_start_alarm_ws_proxy() -> None:
                     log.warning("WS proxy: rejected handshake from %s (bad or missing ticket)", peer)
                 await client_ws.close(code=code, reason=reason)
                 return
-            # Same bearer the AE's HTTP routes take (#519).
-            up_headers = {"Authorization": f"Bearer {_AE_BEARER}"} if _AE_BEARER else None
+            # /ws/openclaw → the OpenClaw gateway, browser Origin forwarded so its
+            # allowed-origins check sees the dashboard; /ws/alarm → the AE with its bearer (#519).
+            if _ws_bridge_path(req_target) == "/ws/openclaw":
+                up_url, up_ssl, up_headers = _openclaw_ws_url(), None, None
+                origin = (getattr(client_ws, "request", None) and client_ws.request.headers.get("Origin")) or None
+            else:
+                up_url, up_ssl, origin = ae_ws_url, ae_ssl, None
+                up_headers = {"Authorization": f"Bearer {_AE_BEARER}"} if _AE_BEARER else None
+            if not up_url:
+                await client_ws.close(code=1011, reason="upstream unavailable")
+                return
             try:
-                async with websockets.connect(ae_ws_url, ssl=ae_ssl, open_timeout=4,
+                async with websockets.connect(up_url, ssl=up_ssl, open_timeout=4, origin=origin,
                                               additional_headers=up_headers) as up:
                     await asyncio.gather(
                         _pipe(client_ws, up),
