@@ -159,7 +159,7 @@ def _local_hostname() -> str:
 # banner reads it. Bump suffix (-1, -2, …) for same-day iterations; roll
 # the date for a new day's first change.
 # ---------------------------------------------------------------------------
-__version__ = "v2026.09.04-10"
+__version__ = "v2026.09.04-11"
 
 # Wall-clock at first import (Cheroot main process); the shutdown banner
 # reads it for the uptime line.
@@ -3585,6 +3585,7 @@ def _start_audit_purge_thread() -> None:
 
 @app.after_request
 def _audit_after_request(resp):
+    action = None
     try:
         method = flask_request.method
         path = flask_request.path or ""
@@ -3627,8 +3628,8 @@ def _audit_after_request(resp):
             json.dumps(_audit_json_safe(detail), default=str) if detail else None, event,
         ))
     except Exception:
-        # Never let auditing break a response.
-        log.debug("audit hook failed", exc_info=True)
+        # Never let auditing break a response; the dropped row is logged at WARNING (#853).
+        log.warning("audit row dropped for %s", action or "unmatched request", exc_info=True)
     return resp
 
 

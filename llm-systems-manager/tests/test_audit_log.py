@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import sqlite3
 from datetime import datetime, timezone
 
@@ -549,3 +550,18 @@ def test_audit_hook_stores_non_finite_detail_values_as_null(monkeypatch):
     manager_mod.app.test_client().post("/api/agents/deadbeef/approve")
     raw = conn.execute("SELECT detail FROM audit_log").fetchone()["detail"]
     assert _strict_json(raw) == {"score": None, "ceil": None, "ok": 1.5}
+
+
+def test_audit_hook_failure_is_logged_at_warning(monkeypatch, caplog):
+    """#853: a dropped audit row must surface at the running log level."""
+    def boom():
+        raise sqlite3.OperationalError("database is locked")
+    monkeypatch.setattr(manager_mod, "get_db", boom)
+    client = manager_mod.app.test_client()
+    with caplog.at_level(logging.WARNING, logger="llm-systems-manager"):
+        resp = client.post("/api/admin/export/manager")
+    assert resp.status_code in (401, 403)
+    dropped = [r for r in caplog.records if r.levelno >= logging.WARNING and "audit" in r.getMessage()]
+    assert len(dropped) == 1
+    assert "backup.export" in dropped[0].getMessage()
+    assert dropped[0].exc_info
