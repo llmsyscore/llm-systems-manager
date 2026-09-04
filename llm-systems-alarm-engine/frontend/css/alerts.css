@@ -30,9 +30,12 @@
 .det .kv dt { color: var(--fg-faint); white-space: nowrap; }
 .det .kv dd { margin: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .det .kv dd b { color: var(--fg); font-weight: 500; }
+.det .kv dd .mlink { background: none; border: 0; padding: 0; font: inherit; color: var(--fg); font-weight: 500; cursor: pointer; text-decoration: underline dotted var(--fg-faint); text-underline-offset: 3px; }
+.det .kv dd .mlink:hover, .det .kv dd .mlink:focus-visible { color: var(--accent); }
 .det .kv dd .t { color: var(--fg-dim); }
-.det .gauge { display: flex; align-items: center; gap: 10px; font-family: var(--font-mono); font-size: 11px; color: var(--fg-dim); }
-.det .gauge .bar { flex: 1; height: 6px; border-radius: 3px; background: var(--bg); border: 1px solid var(--border-soft); position: relative; overflow: visible; }
+.det .gauge { display: flex; align-items: center; gap: 10px; font-family: var(--font-mono); font-size: 11px; color: var(--fg-dim); width: 100%; background: none; border: 0; padding: 0; text-align: left; cursor: pointer; }
+.det .gauge:hover b, .det .gauge:focus-visible b { color: var(--accent); }
+.det .gauge .bar { flex: 1; display: block; height: 6px; border-radius: 3px; background: var(--bg); border: 1px solid var(--border-soft); position: relative; overflow: visible; }
 .det .gauge .bar i { position: absolute; left: 0; top: 0; bottom: 0; border-radius: 3px; background: var(--warn); }
 .det .gauge .bar i.crit { background: var(--crit); }
 .det .gauge .bar i.ok { background: var(--ok); }

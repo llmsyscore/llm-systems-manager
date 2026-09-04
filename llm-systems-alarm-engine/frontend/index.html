@@ -5,13 +5,13 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>LLM Systems — Alarm Engine</title>
     <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🔔</text></svg>">
-    <link rel="stylesheet" href="css/main.css?v=20260903a">
-    <link rel="stylesheet" href="css/dashboard.css?v=20260903a">
-    <link rel="stylesheet" href="css/alerts.css?v=20260903a">
-    <link rel="stylesheet" href="css/rules.css?v=20260903a">
-    <link rel="stylesheet" href="css/notifications.css?v=20260903a">
-    <link rel="stylesheet" href="css/history.css?v=20260903a">
-    <link rel="stylesheet" href="css/modal.css?v=20260903a">
+    <link rel="stylesheet" href="css/main.css?v=20260903b">
+    <link rel="stylesheet" href="css/dashboard.css?v=20260903b">
+    <link rel="stylesheet" href="css/alerts.css?v=20260903b">
+    <link rel="stylesheet" href="css/rules.css?v=20260903b">
+    <link rel="stylesheet" href="css/notifications.css?v=20260903b">
+    <link rel="stylesheet" href="css/history.css?v=20260903b">
+    <link rel="stylesheet" href="css/modal.css?v=20260903b">
     <script src="js/vendor/chart.umd.min.js?v=4.4.7"></script>
     <script src="js/vendor/chartjs-adapter-date-fns.bundle.min.js?v=3.0.0"></script>
     <script src="js/vendor/chartjs-plugin-zoom.min.js?v=2.2.0"></script>
@@ -26,10 +26,6 @@
         <button type="button" class="sub-tab-btn" data-tab="metrics">Metrics</button>
         <button type="button" class="sub-tab-btn" data-tab="rules">Rules</button>
         <button type="button" class="sub-tab-btn" data-tab="notifications">Notifications</button>
-        <div class="side">
-            <span class="live" id="liveState"><span class="dot"></span><span id="liveText">connecting</span></span>
-            <button type="button" class="stamp" id="stamp" data-tip="Refresh now"><span class="rf" id="stampIcon">↻</span><span id="stampText">—</span></button>
-        </div>
     </nav>
 
     <main class="page">
@@ -39,8 +35,11 @@
             <div class="hdr">
                 <h2>Alarm console</h2>
                 <div class="sum" id="consoleSum"></div>
-                <div class="gap"></div>
                 <div class="side"><button type="button" class="mcbtn mcbtn-ghost mcbtn-sm" id="closeAllBtn" disabled>Close all active</button></div>
+                <div class="hstatus" id="pageStatus">
+                    <span class="live" id="liveState"><span class="dot"></span><span id="liveText">connecting</span></span>
+                    <button type="button" class="stamp" id="stamp" data-tip="Refresh now"><span class="rf" id="stampIcon">↻</span><span id="stampText">—</span></button>
+                </div>
             </div>
             <div class="band">
                 <div class="band-h"><span class="microlbl">Last 24 hours</span><span class="sum">click a mark to open it</span><div class="legend" id="bandLegend"></div></div>
@@ -72,24 +71,23 @@
             <div class="hdr">
                 <h2>Alerts</h2>
                 <div class="sum" id="alertsSum"></div>
-                <div class="gap"></div>
-                <div class="side"><button type="button" class="mcbtn mcbtn-ghost mcbtn-sm" id="exportAlertsBtn">Export CSV</button></div>
             </div>
             <div class="toolbar">
                 <label class="mc-filter"><span class="ico">⌕</span><input id="alertSearch" placeholder="Search rule, message, host" autocomplete="off"><kbd>/</kbd></label>
                 <span class="mc-seg" id="alertSev"><button class="on" data-v="all">All</button><button data-v="critical">Critical</button><button data-v="warning">Warning</button><button data-v="info">Info</button></span>
                 <select class="sel" id="alertStatus">
+                    <option value="all">All</option>
                     <option value="open">Open (active + acknowledged)</option>
                     <option value="active">Active</option>
                     <option value="acknowledged">Acknowledged</option>
                     <option value="ignored">Ignored</option>
                     <option value="closed">Closed</option>
                     <option value="exception">Exception</option>
-                    <option value="all">All</option>
                 </select>
                 <span class="cnt" id="alertsCount"></span>
                 <div class="gap"></div>
                 <div class="bulk" id="alertsBulk" hidden><span class="n" id="bulkCount"></span><button type="button" class="mcbtn mcbtn-ghost mcbtn-sm" data-bulk="acknowledge">Acknowledge</button><button type="button" class="mcbtn mcbtn-ghost mcbtn-sm" data-bulk="ignore">Ignore for…</button><button type="button" class="mcbtn mcbtn-ghost mcbtn-sm warn" data-bulk="close">Close</button></div>
+                <button type="button" class="mcbtn mcbtn-ghost mcbtn-sm" id="exportAlertsBtn">Export CSV</button>
             </div>
             <div class="split" id="alertsSplit">
                 <div class="ledger">
@@ -102,9 +100,9 @@
                                 <th class="sort" data-sort="rule">Rule</th>
                                 <th>Message</th>
                                 <th class="sort" data-sort="status">Status</th>
-                                <th class="sort on" data-sort="fired">Fired</th>
-                                <th class="c-last">Last seen</th>
-                                <th class="c-cnt r">Count</th>
+                                <th class="sort on" data-sort="fired">Triggered</th>
+                                <th class="c-last sort" data-sort="last">Last seen</th>
+                                <th class="c-cnt r sort" data-sort="count">Count</th>
                                 <th></th>
                             </tr></thead>
                             <tbody id="alertsBody"></tbody>
@@ -121,7 +119,6 @@
             <div class="hdr">
                 <h2>Metrics</h2>
                 <div class="sum" id="metricsSum"></div>
-                <div class="gap"></div>
                 <div class="side"><button type="button" class="mcbtn mcbtn-ghost mcbtn-sm" id="exportHistoryBtn">Export CSV</button></div>
             </div>
             <div class="card">
@@ -168,7 +165,7 @@
                     <option value="percentile">Percentile baseline</option>
                     <option value="rate_of_change">Rate of change</option>
                 </select>
-                <span class="mc-seg" id="ruleState"><button class="on" data-v="all">All</button><button data-v="firing">Firing</button><button data-v="on">On</button><button data-v="off">Off</button></span>
+                <span class="mc-seg" id="ruleState"><button class="on" data-v="all">All</button><button data-v="firing">Triggered</button><button data-v="on">On</button><button data-v="off">Off</button></span>
                 <select class="sel" id="ruleHost"><option value="">Any host</option></select>
                 <span class="cnt" id="rulesCount"></span>
                 <div class="gap"></div>
@@ -187,7 +184,7 @@
                             <th>Condition</th>
                             <th class="sort" data-sort="severity">Severity</th>
                             <th class="sort" data-sort="state">State</th>
-                            <th class="sort" data-sort="last">Last fired</th>
+                            <th class="sort" data-sort="last">Last triggered</th>
                             <th></th>
                         </tr></thead>
                         <tbody id="rulesBody"></tbody>
@@ -202,7 +199,6 @@
             <div class="hdr">
                 <h2>Notifications</h2>
                 <div class="sum" id="notifSum"></div>
-                <div class="gap"></div>
                 <div class="side">
                     <div class="add-menu"><button type="button" class="mcbtn mcbtn-pri mcbtn-sm" data-menu>Add channel <span class="ic">▾</span></button><div class="mc-menu" id="addChannelMenu"></div></div>
                     <button type="button" class="mcbtn mcbtn-ghost mcbtn-sm" id="newPolicyBtn">New policy</button>
@@ -224,7 +220,7 @@
                 <div class="card-b flush lwrap">
                     <table class="tbl" id="policiesTable">
                         <colgroup><col style="width:52px"><col style="width:250px"><col style="width:170px"><col style="width:230px"><col><col style="width:110px"><col style="width:112px"></colgroup>
-                        <thead><tr><th class="c-sel"></th><th>Policy</th><th>Sends to</th><th>When</th><th>Cadence</th><th>Fired</th><th></th></tr></thead>
+                        <thead><tr><th class="c-sel"></th><th>Policy</th><th>Sends to</th><th>When</th><th>Cadence</th><th>Triggered</th><th></th></tr></thead>
                         <tbody id="policiesBody"></tbody>
                     </table>
                 </div>
@@ -260,15 +256,15 @@
 
     <div class="toast-container" id="toastContainer"></div>
 
-    <script src="js/api.js?v=20260903a"></script>
-    <script src="js/websocket.js?v=20260903a"></script>
-    <script src="js/thresholds.js?v=20260903a"></script>
-    <script src="js/ui.js?v=20260903a"></script>
-    <script src="js/alerts.js?v=20260903a"></script>
-    <script src="js/console.js?v=20260903a"></script>
-    <script src="js/metrics.js?v=20260903a"></script>
-    <script src="js/rules.js?v=20260903a"></script>
-    <script src="js/notifications.js?v=20260903a"></script>
-    <script src="js/main.js?v=20260903a"></script>
+    <script src="js/api.js?v=20260903b"></script>
+    <script src="js/websocket.js?v=20260903b"></script>
+    <script src="js/thresholds.js?v=20260903b"></script>
+    <script src="js/ui.js?v=20260903b"></script>
+    <script src="js/alerts.js?v=20260903b"></script>
+    <script src="js/console.js?v=20260903b"></script>
+    <script src="js/metrics.js?v=20260903b"></script>
+    <script src="js/rules.js?v=20260903b"></script>
+    <script src="js/notifications.js?v=20260903b"></script>
+    <script src="js/main.js?v=20260903b"></script>
 </body>
 </html>
