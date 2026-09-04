@@ -192,7 +192,7 @@ function entryRow(entry) {
   removeBtn.dataset.act = 'remove';
   removeBtn.setAttribute('data-tip', 'Remove entry');
   removeBtn.textContent = '✕';
-  removeBtn.addEventListener('click', () => { _dirty = true; row.remove(); });
+  removeBtn.addEventListener('click', () => { row.remove(); _markDirty(); });
   const act = document.createElement('div');
   act.className = 'act';
   act.appendChild(removeBtn);
