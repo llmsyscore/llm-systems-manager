@@ -192,7 +192,7 @@ function entryRow(entry) {
   removeBtn.dataset.act = 'remove';
   removeBtn.setAttribute('data-tip', 'Remove entry');
   removeBtn.textContent = '✕';
-  removeBtn.addEventListener('click', () => { _dirty = true; row.remove(); });
+  removeBtn.addEventListener('click', () => { row.remove(); _markDirty(); });
   const act = document.createElement('div');
   act.className = 'act';
   act.appendChild(removeBtn);
@@ -201,21 +201,25 @@ function entryRow(entry) {
   return row;
 }
 
-// Reconstructs typed entries from every .ap-entry-row under container;
-// numeric fields are parseInt'd, blank-model rows are dropped.
+// One typed entry from a row's [data-field] controls; numeric fields parseInt'd.
+function _entryFromRow(row) {
+  const entry = {};
+  row.querySelectorAll('[data-field]').forEach(input => {
+    const f = input.dataset.field;
+    entry[f] = NUMERIC_FIELDS.includes(f) ? parseInt(input.value, 10) : input.value;
+  });
+  if (Number.isNaN(entry.size_mb)) delete entry.size_mb;
+  if (row.dataset.autoscale) {
+    try { entry.autoscale = JSON.parse(row.dataset.autoscale); } catch (_) { /* ignore */ }
+  }
+  return entry;
+}
+
+// Entries from every .ap-entry-row under container; blank-model rows are dropped.
 function readEntries(container) {
-  const rows = container.querySelectorAll('.ap-entry-row');
   const out = [];
-  rows.forEach(row => {
-    const entry = {};
-    row.querySelectorAll('[data-field]').forEach(input => {
-      const f = input.dataset.field;
-      entry[f] = NUMERIC_FIELDS.includes(f) ? parseInt(input.value, 10) : input.value;
-    });
-    if (Number.isNaN(entry.size_mb)) delete entry.size_mb;
-    if (row.dataset.autoscale) {
-      try { entry.autoscale = JSON.parse(row.dataset.autoscale); } catch (_) { /* ignore */ }
-    }
+  container.querySelectorAll('.ap-entry-row').forEach(row => {
+    const entry = _entryFromRow(row);
     if ((entry.model || '').trim() !== '') out.push(entry);
   });
   return out;
@@ -272,8 +276,11 @@ function shortReason(text) {
   return t.length > 28 ? t.slice(0, 27) + '…' : t;
 }
 
+// Same model/provider key the backend's entry_status + proposals use.
+function _entryKey(entry) { return `${entry.model}/${entry.provider}`; }
+
 function statusChip(entry, placements, status) {
-  const key = `${entry.model}/${entry.provider}`;
+  const key = _entryKey(entry);
   const list = Array.isArray(placements) ? placements : [];
   const pending = list.filter(p => {
     const ek = p && (p.entry_key || (p.action && p.action.entry_key));
@@ -331,6 +338,15 @@ let _dirty = false;
 
 function _markDirty() { _dirty = true; _renderDirtyNote(); }
 
+// Delegated input/change handler: flags the edited row, then marks dirty.
+function _onEntryEdit(ev) {
+  const t = ev.target;
+  const row = t && t.closest ? t.closest('#apEntriesBody .ap-entry-row') : null;
+  if (!row) return;
+  row.dataset.edited = '1';
+  _markDirty();
+}
+
 function _visible() {
   return typeof _activeTab !== 'undefined' && _activeTab === 'admin' &&
     typeof _subTabState !== 'undefined' && _subTabState.admin === 'routing';
@@ -358,12 +374,10 @@ function _renderEntries() {
   }
   entries.forEach(entry => {
     const row = entryRow(entry);
-    const status = _lastEntryStatus[`${entry.model}/${entry.provider}`];
     const cell = row.querySelector('.ap-entry-status');
-    if (cell) cell.appendChild(statusChip(entry, _lastProposals, status));
+    if (cell) cell.appendChild(_chipFor(entry));
     body.appendChild(row);
   });
-  _renderDirtyNote();
 }
 
 function _renderDirtyNote() {
@@ -389,19 +403,38 @@ function _renderProposals() {
   });
 }
 
+function _chipFor(entry) {
+  return statusChip(entry, _lastProposals, _lastEntryStatus[_entryKey(entry)]);
+}
+
+// Repaints the status chip of every row the operator has not edited, from
+// the latest poll; edited rows keep their last chip until save() or init().
+function _refreshStatusChips() {
+  const body = document.getElementById('apEntriesBody');
+  if (!body) return;
+  body.querySelectorAll('.ap-entry-row').forEach(row => {
+    if (row.dataset.edited) return;
+    const cell = row.querySelector('.ap-entry-status');
+    if (cell) cell.replaceChildren(_chipFor(_entryFromRow(row)));
+  });
+}
+
 function _render() {
-  // Proposals are read-only, so they always reflect the latest poll.
-  // The editor (toggle + entries) only takes server state while clean —
-  // a dirty editor holds unsaved user edits until save() or a fresh init().
+  // Proposals, plan meta and unedited status chips always follow the poll;
+  // the editor's controls only take server state while clean.
   _renderProposals();
   _renderPlanMeta();
   if (typeof adminRenderRoutingSummary === 'function') adminRenderRoutingSummary();
-  if (_dirty) { _renderDirtyNote(); return; }
-  const toggle = document.getElementById('apEnabledToggle');
-  if (toggle && _lastState) _setToggle(toggle, !!_lastState.enabled);
-  const protect = document.getElementById('apProtectToggle');
-  if (protect && _lastState) _setToggle(protect, !!_lastState.protect_unmanaged);
-  _renderEntries();
+  if (_dirty) {
+    _refreshStatusChips();
+  } else {
+    const toggle = document.getElementById('apEnabledToggle');
+    if (toggle && _lastState) _setToggle(toggle, !!_lastState.enabled);
+    const protect = document.getElementById('apProtectToggle');
+    if (protect && _lastState) _setToggle(protect, !!_lastState.protect_unmanaged);
+    _renderEntries();
+  }
+  _renderDirtyNote();
 }
 
 // Providers with a /api/admin/<name>-models endpoint (same one admin.js's
@@ -536,8 +569,10 @@ function addEntry() {
   _dirty = true;
   const empty = body.querySelector('td .empty');
   if (empty) body.replaceChildren();
-  body.appendChild(entryRow({ model: '', provider: 'llama', placement: 'auto',
-    failover: 'semi', priority: 100, min_replicas: 1, max_replicas: 1 }));
+  const row = entryRow({ model: '', provider: 'llama', placement: 'auto',
+    failover: 'semi', priority: 100, min_replicas: 1, max_replicas: 1 });
+  row.dataset.edited = '1';
+  body.appendChild(row);
   _renderDirtyNote();
 }
 
@@ -552,13 +587,10 @@ function _wire() {
   if (plan_) plan_.addEventListener('click', planNow);
   const refresh_ = document.getElementById('apProposalsRefreshBtn');
   if (refresh_) refresh_.addEventListener('click', fetchState);
-  // Delegated so it covers rows added/removed after wiring — typing
-  // (input) and select/checkbox changes (change) both mark dirty.
-  const entries_ = document.getElementById('apEntriesBody');
-  if (entries_) {
-    entries_.addEventListener('input', _markDirty);
-    entries_.addEventListener('change', _markDirty);
-  }
+  // Delegated at document level so it covers rows added after wiring —
+  // typing (input) and select/checkbox changes (change) both mark dirty.
+  document.addEventListener('input', _onEntryEdit);
+  document.addEventListener('change', _onEntryEdit);
   ['apEnabledToggle', 'apProtectToggle'].forEach(id => {
     const toggle_ = document.getElementById(id);
     if (!toggle_) return;
