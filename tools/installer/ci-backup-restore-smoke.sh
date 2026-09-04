@@ -46,14 +46,15 @@ fail() { echo "  ✗ FAIL: $*"; exit 1; }
 
 # HTTP status only; -k for the AE's internal-CA cert. 000 on connect failure.
 code() { curl -sk -o /dev/null -w '%{http_code}' --max-time 30 "$@" || true; }
-# Body + status: prints the body, leaves the status in $LAST_CODE.
-LAST_CODE=000
+# Body + status: prints the body; the status is read back with last_code
+# (call runs inside $(...), so it cannot set a shell variable).
 call() {
   local out
-  out="$(curl -sk --max-time 120 -w '\n%{http_code}' "$@" || printf '\n000')"
-  LAST_CODE="${out##*$'\n'}"
+  out="$(curl -sk --max-time 120 -w '\n%{http_code}' "$@" || true)"
+  printf '%s' "${out##*$'\n'}" > "$WORK/last_code"
   printf '%s' "${out%$'\n'*}"
 }
+last_code() { cat "$WORK/last_code" 2>/dev/null || echo 000; }
 # Manager call with the admin session cookie.
 mgr() { call -b "$JAR" "$@"; }
 # AE call with the management bearer.
@@ -153,25 +154,25 @@ pass "dashboard user $SEED_USER created and can log in"
 body="$(ae -X POST -H 'Content-Type: application/json' \
   -d "{\"name\":\"$CHAN_NAME\",\"channel_type\":\"webhook\",\"config\":{\"webhook\":{\"url\":\"http://127.0.0.1:9/ci-restore\"}}}" \
   "$AE_URL/api/alarm/notifications/channels")"
-[ "$LAST_CODE" = "201" ] || fail "AE channel create = $LAST_CODE — ${body:0:300}"
+[ "$(last_code)" = "201" ] || fail "AE channel create = $(last_code) — ${body:0:300}"
 CHAN_ID="$(jq_get "$body" '.channel_id')"
 [ -n "$CHAN_ID" ] && [ "$CHAN_ID" != "null" ] || fail "no channel_id in ${body:0:300}"
 body="$(ae -X POST -H 'Content-Type: application/json' \
   -d "{\"name\":\"$RULE_NAME\",\"metric_source\":\"cpu\",\"metric_name\":\"cpu_total\",\"rule_type\":\"threshold_above\",\"config\":{\"threshold\":{\"value\":99.5}},\"severity\":\"warning\",\"notification_channel_ids\":[\"$CHAN_ID\"]}" \
   "$AE_URL/api/alarm/rules")"
-[ "$LAST_CODE" = "200" ] || fail "AE rule create = $LAST_CODE — ${body:0:300}"
+[ "$(last_code)" = "200" ] || fail "AE rule create = $(last_code) — ${body:0:300}"
 RULE_ID="$(jq_get "$body" '.rule_id')"
 [ -n "$RULE_ID" ] && [ "$RULE_ID" != "null" ] || fail "no rule_id in ${body:0:300}"
 # The fields a restore must bring back verbatim.
 rule_fp() { jq -S '{name, metric_source, metric_name, rule_type, severity, enabled, notification_channel_ids, v: .config.threshold.value}' <<<"$1"; }
 RULE_FP_BEFORE="$(rule_fp "$body")"
 body="$(mgr "$MGR_URL/api/alarm/rules/$RULE_ID")"
-[ "$LAST_CODE" = "200" ] || fail "manager → AE proxy for the seeded rule = $LAST_CODE"
+[ "$(last_code)" = "200" ] || fail "manager → AE proxy for the seeded rule = $(last_code)"
 pass "AE channel $CHAN_NAME + rule $RULE_NAME created; rule visible through the manager proxy"
 
 echo "── 2. Scheduled backup run (backup-now = the scheduler's code path) ─"
 body="$(mgr -X POST "$MGR_URL/api/admin/backup-now")"
-[ "$LAST_CODE" = "200" ] || fail "backup-now = $LAST_CODE — ${body:0:600}"
+[ "$(last_code)" = "200" ] || fail "backup-now = $(last_code) — ${body:0:600}"
 jq_ok "$body" '.ok == true and .last.ok == true and .last.partial == false' "backup-now must succeed without a partial run"
 jq_ok "$body" '.last.components.manager.ok == true and .last.components.manager.files >= 5' "manager archive must hold the export files"
 jq_ok "$body" '.last.components.alarm_engine.ok == true and .last.components.alarm_engine.skipped == null and (.last.components.alarm_engine.file | type) == "string"' \
@@ -200,9 +201,9 @@ pass "run $run_m: $MGR_ARCHIVE + $AE_ARCHIVE written, listed, downloaded byte-id
 
 # Manifest guards: each component refuses the other's archive.
 body="$(mgr -X POST -F "file=@$WORK/$AE_ARCHIVE" -F "password=$PASSPHRASE" "$MGR_URL/api/admin/import/manager/preview")"
-[ "$LAST_CODE" = "400" ] || fail "manager preview accepted the AE archive ($LAST_CODE) — ${body:0:300}"
+[ "$(last_code)" = "400" ] || fail "manager preview accepted the AE archive ($(last_code)) — ${body:0:300}"
 body="$(ae -X POST -F "file=@$WORK/$MGR_ARCHIVE" -F "password=$PASSPHRASE" "$AE_URL/api/alarm/admin/import/preview")"
-[ "$LAST_CODE" = "400" ] || fail "AE preview accepted the manager archive ($LAST_CODE) — ${body:0:300}"
+[ "$(last_code)" = "400" ] || fail "AE preview accepted the manager archive ($(last_code)) — ${body:0:300}"
 pass "manifest guards reject the other component's archive"
 
 echo "── 3. Destroy the seeded state ──────────────────────────────────────"
@@ -239,14 +240,14 @@ pass "alarm engine: rules + alarms DBs removed, rule/channel gone"
 
 echo "── 4. Restore both components from the archives ─────────────────────"
 body="$(mgr -X POST -F "file=@$WORK/$MGR_ARCHIVE" -F "password=$PASSPHRASE" "$MGR_URL/api/admin/import/manager/preview")"
-[ "$LAST_CODE" = "200" ] || fail "manager preview = $LAST_CODE — ${body:0:600}"
+[ "$(last_code)" = "200" ] || fail "manager preview = $(last_code) — ${body:0:600}"
 jq_ok "$body" ".ok == true and .encrypted == $ENC and .manifest.component == \"manager\"" "manager preview manifest"
 for want in config/llm-systems.toml data/manager_users.json data/internal-ca.crt data/internal-ca.key data/manager_secret; do
   jq_ok "$body" '[.entries[] | select(.name == $n and .size > 0)] | length == 1' "manager archive lacks $want" --arg n "$want"
 done
 body="$(mgr -X POST -F "file=@$WORK/$MGR_ARCHIVE" -F "password=$PASSPHRASE" \
   -F 'categories=["config","identity"]' "$MGR_URL/api/admin/import/manager/apply")"
-[ "$LAST_CODE" = "200" ] || fail "manager apply = $LAST_CODE — ${body:0:600}"
+[ "$(last_code)" = "200" ] || fail "manager apply = $(last_code) — ${body:0:600}"
 jq_ok "$body" '.ok == true and ([.written[] | select(endswith("config/llm-systems.toml"))] | length) == 1 and ([.written[] | select(endswith("data/manager_users.json"))] | length) == 1' \
   "manager apply must write the TOML and the users file"
 USERS_SHA_AFTER="$(sha256sum "$USERS_FILE" | cut -d' ' -f1)"
@@ -255,11 +256,11 @@ restart_unit "$MGR_UNIT" "$MGR_URL/health"
 pass "manager archive previewed, applied (config + identity), service restarted"
 
 body="$(ae -X POST -F "file=@$WORK/$AE_ARCHIVE" -F "password=$PASSPHRASE" "$AE_URL/api/alarm/admin/import/preview")"
-[ "$LAST_CODE" = "200" ] || fail "AE preview = $LAST_CODE — ${body:0:600}"
+[ "$(last_code)" = "200" ] || fail "AE preview = $(last_code) — ${body:0:600}"
 jq_ok "$body" ".ok == true and .encrypted == $ENC and .manifest.component == \"alarm_engine\"" "AE preview manifest"
 jq_ok "$body" '[.entries[] | select(.name == "data/ae_notif_rules.db" and .size > 0)] | length == 1' "AE archive lacks data/ae_notif_rules.db"
 body="$(ae -X POST -F "file=@$WORK/$AE_ARCHIVE" -F "password=$PASSPHRASE" "$AE_URL/api/alarm/admin/import/apply")"
-[ "$LAST_CODE" = "200" ] || fail "AE apply = $LAST_CODE — ${body:0:600}"
+[ "$(last_code)" = "200" ] || fail "AE apply = $(last_code) — ${body:0:600}"
 jq_ok "$body" '.ok == true and ([.written[] | select(endswith("ae_notif_rules.db"))] | length) == 1' \
   "AE apply must write the rules DB"
 restart_unit "$AE_UNIT" "$AE_URL/health"
@@ -278,15 +279,15 @@ case "$c" in 302|303) : ;; *) fail "seeded user login after restore returned $c 
 pass "manager: settings + dashboard user restored, user can log in"
 
 body="$(ae "$AE_URL/api/alarm/rules/$RULE_ID")"
-[ "$LAST_CODE" = "200" ] || fail "restored rule GET = $LAST_CODE — ${body:0:300}"
+[ "$(last_code)" = "200" ] || fail "restored rule GET = $(last_code) — ${body:0:300}"
 [ "$(rule_fp "$body")" = "$RULE_FP_BEFORE" ] || fail "restored rule differs: $(rule_fp "$body") vs $RULE_FP_BEFORE"
 body="$(ae "$AE_URL/api/alarm/notifications/channels/$CHAN_ID")"
-[ "$LAST_CODE" = "200" ] || fail "restored channel GET = $LAST_CODE — ${body:0:300}"
+[ "$(last_code)" = "200" ] || fail "restored channel GET = $(last_code) — ${body:0:300}"
 jq_ok "$body" ".name == \"$CHAN_NAME\" and .channel_type == \"webhook\"" "restored channel fields"
 pass "alarm engine: rule + channel restored with identical fields"
 
 body="$(mgr "$MGR_URL/api/alarm/rules/$RULE_ID")"
-[ "$LAST_CODE" = "200" ] || fail "manager → AE proxy after restore = $LAST_CODE"
+[ "$(last_code)" = "200" ] || fail "manager → AE proxy after restore = $(last_code)"
 jq_ok "$body" ".name == \"$RULE_NAME\"" "proxied rule name"
 body="$(call "$AE_URL/health")"
 jq_ok "$body" '.status == "ok"' "AE /health status"
@@ -300,7 +301,7 @@ fi
 pass "health, login page, manager↔AE link and units all good"
 
 body="$(mgr -X POST "$MGR_URL/api/admin/backup-now")"
-[ "$LAST_CODE" = "200" ] || fail "post-restore backup-now = $LAST_CODE — ${body:0:600}"
+[ "$(last_code)" = "200" ] || fail "post-restore backup-now = $(last_code) — ${body:0:600}"
 jq_ok "$body" '.ok == true and .last.partial == false and .last.components.alarm_engine.ok == true' "post-restore scheduled run must cover both components"
 RUN2="$(jq_get "$body" '.last.ts')"
 [ "$RUN2" != "$RUN1" ] || fail "post-restore run reused the first run's timestamp"
