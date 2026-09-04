@@ -93,7 +93,7 @@ CATALOG: list[dict] = [
     _e("manager.energy.cloud_price_label", "str", "Cloud price label", "As-of-dated label shown beside the savings figures.", "energy", MANAGER),
     # backup
     # backup — hot: the scheduler re-reads these before every run
-    _e("manager.backup.enabled", "bool", "Scheduled backups", "Automatic export archives to data/backups/.", "backup", MANAGER, hot=True, common=True),
+    _e("manager.backup.enabled", "bool", "Scheduled backups", "Automatic backup archives written to data/backups/.", "backup", MANAGER, hot=True, common=True),
     _e("manager.backup.interval_hours", "float", "Interval (hours)", "0 disables the scheduler.", "backup", MANAGER, min=0, max=8760, hot=True, common=True),
     _e("manager.backup.keep_last", "int", "Keep last", "Archives retained after pruning.", "backup", MANAGER, min=1, max=1000, hot=True),
     _e("manager.backup.passphrase", "str", "Backup passphrase", "12+ chars enables AES-256-GCM; blank = plaintext archives.", "backup", MANAGER, secret=True, hot=True),

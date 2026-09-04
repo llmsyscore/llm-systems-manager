@@ -143,7 +143,7 @@ import signal
 
 import requests
 import socket
-from flask import Flask, jsonify, request as flask_request, Response
+from flask import Flask, jsonify, request as flask_request, Response, send_file
 
 
 _HOSTNAME = socket.gethostname()
@@ -159,7 +159,7 @@ def _local_hostname() -> str:
 # banner reads it. Bump suffix (-1, -2, …) for same-day iterations; roll
 # the date for a new day's first change.
 # ---------------------------------------------------------------------------
-__version__ = "v2026.09.04-8"
+__version__ = "v2026.09.04-9"
 
 # Wall-clock at first import (Cheroot main process); the shutdown banner
 # reads it for the uptime line.
@@ -820,7 +820,7 @@ def _close_db(exc):
 
 _INITIAL_HIDE_IDS = (
     # (id, capability-key — element is hidden when the cap is missing)
-    ("tabBtnOverall",         "either"),  # LLM Overall — needs llama OR lms
+    ("tabBtnOverall",         "either"),  # Overall — needs llama OR lms
     ("tabBtnLlmControl",      "either"),
     ("serverStateBanner",     "llama"),   # LLCPP pill
     ("lmsStateBanner",        "lms"),
@@ -3215,7 +3215,8 @@ _AUDIT_LABELS: dict[str, str] = {
     "user.create": "Created a dashboard user", "user.modify": "Changed a user account",
     "user.delete": "Deleted a user", "user.unlock": "Unlocked a user",
     "backup.export": "Exported an encrypted archive", "backup.import-apply": "Imported an archive",
-    "backup.run": "Ran a backup now", "config.gateway": "Turned the inference gateway on/off",
+    "backup.run": "Ran a backup now", "backup.download": "Downloaded a retained archive",
+    "config.gateway": "Turned the inference gateway on/off",
     "config.settings": "Saved manager settings", "config.svcconfig": "Changed the llama-server config",
     "config.interval": "Changed the poll interval", "config.layout": "Saved the dashboard layout",
     "llama.load": "Loaded a llama.cpp model", "llama.unload": "Unloaded a llama.cpp model",
@@ -3278,6 +3279,7 @@ _AUDIT_ROUTES: list[tuple] = [
     ("PUT",    re.compile(r"^/api/admin/settings$"),                   "config.settings",    "config.settings"),
     ("PUT",    re.compile(r"^/api/admin/gateway$"),                    "config.gateway",     "config.settings"),
     ("POST",   re.compile(r"^/api/admin/backup-now$"),                 "backup.run",         "backup"),
+    ("GET",    re.compile(r"^/api/admin/backup-archive/(?P<t>.+)$"),   "backup.download",    "backup"),
     ("POST",   re.compile(r"^/api/llm/server/svcconfig$"),             "config.svcconfig",   "config.server"),
     ("POST",   re.compile(r"^/api/config/interval$"),                  "config.interval",    "config.server"),
     ("POST",   re.compile(r"^/api/layout$"),                           "config.layout",      "config.layout"),
@@ -3329,6 +3331,10 @@ _AUDIT_ROUTES += [
     for _p in providers.names()
     if getattr(providers.get(_p), "pin_dict_key", None)
 ]
+
+# GET paths worth an audit row: reading a retained archive hands out the same
+# secrets a manual backup does.
+_AUDIT_GET_PATHS = ("/api/admin/backup-archive/",)
 
 _AUDIT_PATH_PREFIXES = ("/api/admin/", "/api/agents/", "/api/llm/", "/api/lmstudio/",
                         "/api/config/", "/api/vllm/", "/api/autopilot", "/api/terminal/",
@@ -3582,7 +3588,8 @@ def _audit_after_request(resp):
     try:
         method = flask_request.method
         path = flask_request.path or ""
-        if method not in ("POST", "PUT", "PATCH", "DELETE") and not (method == "GET" and path == "/logout"):
+        if method not in ("POST", "PUT", "PATCH", "DELETE") and not (
+                method == "GET" and (path == "/logout" or path.startswith(_AUDIT_GET_PATHS))):
             return resp
         matched = _audit_match(method, path)
         if matched is None:
@@ -5917,6 +5924,21 @@ def admin_backup_status():
         "backups": backups,
         "folder_bytes": sum(b["bytes"] for b in backups),
     })
+
+
+@app.route("/api/admin/backup-archive/<path:name>")
+def admin_backup_archive(name):
+    """Serve one retained archive. The name has to match an entry in the
+    backup-folder listing, so no path outside that folder is reachable."""
+    deny = _require_admin()
+    if deny is not None:
+        return deny
+    hit = next((p for p in _list_auto_backups() if p.name == name), None)
+    if hit is None:
+        return _err_json("no such archive", 404, detail=name)
+    log.warning("backup archive download by %s (%s)", flask_request.remote_addr, hit.name)
+    return send_file(hit, mimetype="application/octet-stream",
+                     as_attachment=True, download_name=hit.name)
 
 
 @app.route("/api/admin/backup-now", methods=["POST"])

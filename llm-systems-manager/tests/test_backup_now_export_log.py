@@ -168,3 +168,30 @@ def test_scheduled_backup_runs_serialise_on_one_lock(monkeypatch):
     mgr._run_scheduled_backup("", 1, "")
     assert seen == [True]
     assert not mgr._backup_run_lock.locked()
+
+
+# ── backup-archive download (#848) ───────────────────────────────────
+
+def test_backup_archive_downloads_a_listed_file(backup_env):
+    c, _ = backup_env
+    M._run_scheduled_backup("", 3, "")
+    name = c.get("/api/admin/backup-status").get_json()["backups"][0]["file"]
+    r = c.get(f"/api/admin/backup-archive/{name}")
+    assert r.status_code == 200
+    assert r.data == (M._BACKUP_DIR / name).read_bytes()
+    assert name in r.headers["Content-Disposition"]
+
+
+def test_backup_archive_rejects_a_file_outside_the_listing(backup_env, tmp_path):
+    c, _ = backup_env
+    M._run_scheduled_backup("", 3, "")
+    (M._BACKUP_DIR / "notes.txt").write_text("secret")
+    for name in ("notes.txt", "last_backup.json", "..%2f..%2fetc%2fpasswd",
+                 "../../etc/passwd"):
+        assert c.get(f"/api/admin/backup-archive/{name}").status_code in (307, 308, 404)
+
+
+def test_backup_archive_download_is_audited():
+    action, target, event = M._audit_match("GET", "/api/admin/backup-archive/lsm-auto-manager-h-1.lsmenc")
+    assert (action, event) == ("backup.download", "backup")
+    assert target == "lsm-auto-manager-h-1.lsmenc"

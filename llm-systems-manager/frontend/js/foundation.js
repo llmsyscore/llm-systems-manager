@@ -1231,6 +1231,20 @@ function _sdSwatchFor(theme) {
   return theme.swatch;
 }
 
+// Account section (#847): sits at the top of the drawer and replaces the old
+// standalone Account tab; hidden for a bypass session with no logged-in user.
+function _sdRenderAccount() {
+  const el = document.getElementById('sdAccount');
+  if (!el) return;
+  const me = window._me || {};
+  el.hidden = !me.authenticated;
+  if (el.hidden) { el.innerHTML = ''; return; }
+  el.innerHTML = `
+    <div class="sd-sh"><h3>Account</h3><span class="meta">${_esc(me.username || '')}${me.role ? ' · ' + _esc(me.role) : ''}</span></div>
+    <div class="sd-row"><button type="button" class="sd-btn" data-sd="account-password">Change my password</button>
+      <button type="button" class="sd-btn warn" data-sd="account-logout">Log out</button></div>`;
+}
+
 function _sdRenderAppearance() {
   const el = document.getElementById('sdAppearance');
   if (!el) return;
@@ -1317,6 +1331,7 @@ function renderSettingsPanel() {
   if (none) none.hidden = has;
   if (cards) cards.hidden = !has;
   if (lay) lay.hidden = !has;
+  _sdRenderAccount();
   _sdRenderHeader(scope);
   if (has) { _sdRenderCards(scope); _sdRenderLayout(scope); }
   _sdRenderAppearance();
@@ -1360,6 +1375,10 @@ function _sdBind() {
       applyLayoutEngine(t.dataset.v, true);
     } else if (kind === 'density') {
       applyDensity(t.dataset.v, true);
+    } else if (kind === 'account-password') {
+      closeSettings(); _accountChangePassword();
+    } else if (kind === 'account-logout') {
+      window.location.href = '/logout';
     } else if (kind === 'reset') {
       resetCurrentTabLayout();
     } else if (kind === 'theme') {
@@ -1521,14 +1540,17 @@ async function resetCurrentTabLayout() {
 // switchTab — tab dispatcher (moved here so tab batches can rely on it)
 function switchTab(tab) {
   if (tab === 'admin' && window._me && window._me.admin_access === false) { tab = 'overall'; }
+  // Legacy top-level ids from bookmarks/saved state are Tools sub-tabs (#847).
+  let toolsSub = null;
+  if (['openclaw', 'llmchat', 'imggen'].includes(tab)) { toolsSub = tab; tab = 'tools'; }
   // Leaving Overall: pinned cards go back to their home grids first (#565).
   if (_activeTab === 'overall' && tab !== 'overall'
       && typeof returnPinnedCards === 'function') returnPinnedCards();
   _activeTab = tab;
   document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
-  document.querySelector(`.tab-btn[onclick="switchTab('${tab}')"]`).classList.add('active');
+  document.querySelector(`.tab-btn[onclick="switchTab('${tab}')"]`)?.classList.add('active');
 
-  const tabs = ['overallTab','dashboardTab','llmTab','eventsTab','openclawTab','llmchatTab','imggenTab','adminTab'];
+  const tabs = ['overallTab','dashboardTab','llmTab','eventsTab','toolsTab','adminTab'];
   tabs.forEach(id => {
     const el = document.getElementById(id);
     if (el) el.style.display = 'none';
@@ -1569,9 +1591,10 @@ function switchTab(tab) {
     // Always restart the log stream on every visit (it's stopped on leave)
     if (_logPanelOpen) startLogStream();
   }
-  if (tab === 'openclaw')   { document.getElementById('openclawTab').style.display   = ''; }
-  if (tab === 'llmchat')    { document.getElementById('llmchatTab').style.display    = ''; }
-  if (tab === 'imggen')     { document.getElementById('imggenTab').style.display     = ''; }
+  if (tab === 'tools')      {
+    document.getElementById('toolsTab').style.display = '';
+    switchSubTab('tools', toolsSub || _subTabState.tools);
+  }
   if (tab === 'admin')      { document.getElementById('adminTab').style.display      = ''; adminLoadAgents(); adminLoadHealth(); adminAuthLoad(); adminStartAutoRefresh(); }
   else {
     adminStopAutoRefresh();
@@ -1603,49 +1626,10 @@ function applyRoleGating() {
   const isAdmin = !!(window._me && window._me.admin_access);
   const adminBtn = document.getElementById('tabBtnAdmin');
   if (adminBtn) adminBtn.style.display = isAdmin ? '' : 'none';
-  // Account (change-my-password) shows only for a real logged-in (non-bypass) session.
-  const acct = document.getElementById('tabBtnAccount');
-  if (acct) acct.style.display = (window._me && window._me.authenticated) ? '' : 'none';
+  // Account entries live in the settings drawer and show only for a real
+  // logged-in (non-bypass) session.
+  _sdRenderAccount();
   if (!isAdmin && _activeTab === 'admin') switchTab('overall');
-}
-
-async function accountMenu() {
-  const me = window._me || {};
-  const action = await _accountActionMenu(me);
-  if (action === 'logout') { window.location.href = '/logout'; return; }
-  if (action === 'password') await _accountChangePassword();
-}
-
-// Themed account menu → 'password' | 'logout' | null. Built inline because the
-// shared dialog helpers don't offer a 3-way choice; styling mirrors _themedConfirm.
-function _accountActionMenu(me) {
-  return new Promise(resolve => {
-    const overlay = document.createElement('div');
-    overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.6);z-index:9999;'
-      + 'display:flex;align-items:center;justify-content:center;backdrop-filter:blur(4px);';
-    const box = document.createElement('div');
-    box.style.cssText = 'background:var(--bg-card);border:1px solid var(--border);border-radius:8px;'
-      + 'padding:20px 22px;min-width:340px;max-width:480px;color:var(--fg);'
-      + 'font-family:system-ui,-apple-system,sans-serif;box-shadow:0 8px 32px rgba(0,0,0,0.5);';
-    box.innerHTML = `
-      <div style="font-size:1.05em;font-weight:600;margin-bottom:6px;">Account</div>
-      <div style="font-size:0.85em;color:var(--fg-muted,#9aa);margin-bottom:16px;">Signed in as <b>${_esc(me.username || '')}</b> (${_esc(me.role || '')})</div>
-      <div style="display:flex;flex-direction:column;gap:8px;">
-        <button id="amPw" style="background:var(--bg-card-alt);color:var(--fg);border:1px solid var(--border);border-radius:5px;padding:9px 14px;cursor:pointer;font-size:0.9em;text-align:left;">Change my password</button>
-        <button id="amOut" style="background:#a33;color:#fff;border:1px solid var(--border);border-radius:5px;padding:9px 14px;cursor:pointer;font-size:0.9em;text-align:left;font-weight:500;">Log out</button>
-        <button id="amCancel" style="background:transparent;color:var(--fg-muted,#9aa);border:1px solid var(--border);border-radius:5px;padding:7px 14px;cursor:pointer;font-size:0.85em;">Cancel</button>
-      </div>`;
-    overlay.appendChild(box);
-    document.body.appendChild(overlay);
-    const cleanup = (v) => { document.removeEventListener('keydown', keyHandler); overlay.remove(); resolve(v); };
-    const keyHandler = (e) => { if (e.key === 'Escape') cleanup(null); };
-    document.addEventListener('keydown', keyHandler);
-    overlay.addEventListener('click', (e) => { if (e.target === overlay) cleanup(null); });
-    box.querySelector('#amPw').addEventListener('click', () => cleanup('password'));
-    box.querySelector('#amOut').addEventListener('click', () => cleanup('logout'));
-    box.querySelector('#amCancel').addEventListener('click', () => cleanup(null));
-    setTimeout(() => box.querySelector('#amPw').focus(), 0);
-  });
 }
 
 async function _accountChangePassword() {

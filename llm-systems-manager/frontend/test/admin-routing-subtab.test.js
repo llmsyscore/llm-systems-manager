@@ -71,10 +71,10 @@ describe('routing sub-tab consolidation (#476)', () => {
     expect(document.getElementById('adminProviderModels')).toBeNull();
   });
 
-  it('nav has a single Routing button wired to the routing sub-tab', () => {
+  it('nav has a single Gateway button wired to the routing sub-tab', () => {
     const btn = document.getElementById('subTabBtnAdminRouting');
     expect(btn).toBeTruthy();
-    expect(btn.textContent).toBe('Routing');
+    expect(btn.textContent).toBe('Gateway');
     expect(btn.getAttribute('onclick')).toContain("switchSubTab('admin','routing')");
     expect(document.getElementById('subTabBtnAdminPool')).toBeNull();
     expect(document.getElementById('subTabBtnAdminAutopilot')).toBeNull();

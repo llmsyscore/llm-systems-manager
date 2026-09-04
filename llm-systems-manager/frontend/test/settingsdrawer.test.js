@@ -79,16 +79,16 @@ describe('settingsScope', () => {
     expect(L.settingsScope('overall')).toMatchObject({ kind: 'cards', cols: 'overallCols', grid: 'overallGrid', borrowed: 'overallBorrowed' });
     expect(L.settingsScope('dashboard', 'llamacpp')).toMatchObject({ kind: 'cards', hidden: 'hidden', cols: 'cols', grid: 'cardGrid' });
     expect(L.settingsScope('dashboard', undefined).key).toBe('dashboard/llamacpp');
-    expect(L.settingsScope('dashboard', 'vllm').label).toBe('Dashboard · vLLM');
+    expect(L.settingsScope('dashboard', 'vllm').label).toBe('Dashboards · vLLM');
     expect(L.settingsScope('dashboard', 'manager').cols).toBe('managerCols');
   });
 
   it('proxy tabs, control tabs and non-card dashboard sub-tabs get no card sections', () => {
-    for (const tab of ['llm', 'events', 'openclaw', 'llmchat', 'imggen', 'admin']) {
+    for (const tab of ['llm', 'events', 'tools', 'admin']) {
       expect(L.settingsScope(tab).kind, tab).toBe('none');
     }
-    expect(L.settingsScope('llmchat').label).toBe('LLM Chat');
-    expect(L.settingsScope('dashboard', 'energy')).toMatchObject({ kind: 'none', label: 'Dashboard · Energy' });
+    expect(L.settingsScope('tools').label).toBe('Tools');
+    expect(L.settingsScope('dashboard', 'energy')).toMatchObject({ kind: 'none', label: 'Dashboards · Energy' });
     expect(L.settingsScope('dashboard', 'openclaw').kind).toBe('none');
   });
 });

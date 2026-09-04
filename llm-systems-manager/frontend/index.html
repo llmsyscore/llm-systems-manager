@@ -55,7 +55,7 @@ Backend API endpoints consumed:
   <script src="/static/vendor/xterm.min.js?v=5.3.0"></script>
   <script src="/static/vendor/xterm-addon-fit.min.js?v=0.8.0"></script>
   <link rel="stylesheet" href="/static/css/fonts.css?v=2026.08.30-1">
-  <link rel="stylesheet" href="/static/css/base.css?v=2026.09.03-3">
+  <link rel="stylesheet" href="/static/css/base.css?v=2026.09.04-1">
   <link rel="stylesheet" href="/static/css/settings.css?v=2026.09.04-1">
   <link rel="stylesheet" href="/static/css/modelcards.css?v=2026.08.30-12">
   <link rel="stylesheet" href="/static/css/reportcard.css?v=2026.08.31-1">
@@ -107,16 +107,13 @@ Backend API endpoints consumed:
 </h1>
 <hr class="header-divider">
 <div class="tab-nav">
-  <button class="tab-btn active" id="tabBtnOverall" onclick="switchTab('overall')">LLM Overall</button>
-  <button class="tab-btn" onclick="switchTab('dashboard')">Dashboard</button>
+  <button class="tab-btn active" id="tabBtnOverall" onclick="switchTab('overall')">Overall</button>
+  <button class="tab-btn" id="tabBtnDashboard" onclick="switchTab('dashboard')">Dashboards</button>
   <button class="tab-btn" id="tabBtnLlmControl" onclick="switchTab('llm')">LLM Control</button>
-  <button class="tab-btn" id="tabBtnOpenclaw" style="display:none;" onclick="switchTab('openclaw')">OpenClaw</button>
-  <button class="tab-btn" id="tabBtnLlmchat"  style="display:none;" onclick="switchTab('llmchat')">LLM Chat</button>
-  <button class="tab-btn" id="tabBtnImggen"   style="display:none;" onclick="switchTab('imggen')">Image Generation</button>
+  <button class="tab-btn" id="tabBtnTools" style="display:none;" onclick="switchTab('tools')">Tools</button>
   <span class="tab-nav-right">
     <button class="tab-btn" id="tabBtnEvents" onclick="switchTab('events')"><span class="tab-dot" id="tabDotEvents"></span>Events</button>
     <button class="tab-btn" id="tabBtnAdmin" onclick="switchTab('admin')"><span class="tab-dot" id="tabDotAdmin"></span>Admin</button>
-    <button class="tab-btn" id="tabBtnAccount" style="display:none;" onclick="accountMenu()">Account</button>
   </span>
 </div>
 
@@ -506,16 +503,6 @@ Backend API endpoints consumed:
 
 </div>
 
-<!-- OpenClaw tab -->
-<div id="openclawTab" style="display:none;position:fixed;top:88px;left:0;right:0;bottom:0;z-index:10;">
-  <iframe src="/proxy/openclaw/" style="width:100%;height:100%;border:none;" allowfullscreen></iframe>
-</div>
-
-<!-- LLM Chat tab -->
-<div id="llmchatTab" style="display:none;position:fixed;top:88px;left:0;right:0;bottom:0;z-index:10;">
-  <iframe src="/proxy/llmchat/" style="width:100%;height:100%;border:none;" allowfullscreen></iframe>
-</div>
-
 <!-- Events tab (Alarm Engine). Iframe is **lazy-loaded** — src is left
      blank until the user first opens this tab. Otherwise the AE dashboard
      boots on every page load (firing /api/alarm/alerts, /api/alarm/alerts/,
@@ -526,9 +513,24 @@ Backend API endpoints consumed:
   <iframe id="alarmEngineIframe" data-src="/alarm/" style="width:100%;height:100%;border:none;" allowfullscreen></iframe>
 </div>
 
-<!-- Image Generation tab -->
-<div id="imggenTab" style="display:none;position:fixed;top:88px;left:0;right:0;bottom:0;z-index:10;">
-  <iframe src="/proxy/imggen/" style="width:100%;height:100%;border:none;" allowfullscreen></iframe>
+<!-- Tools tab (#847): OpenClaw / LLM Chat / Image Generation as sub-tabs.
+     Each iframe is lazy — switchSubTab('tools', …) promotes data-src to src on
+     first visit so unopened proxies never boot with the page. -->
+<div id="toolsTab" style="display:none;position:fixed;top:88px;left:0;right:0;bottom:0;z-index:10;">
+  <div class="sub-tab-nav">
+    <button class="sub-tab-btn active" id="subTabBtnToolsOpenclaw" onclick="switchSubTab('tools','openclaw')">OpenClaw</button>
+    <button class="sub-tab-btn" id="subTabBtnToolsLlmchat" onclick="switchSubTab('tools','llmchat')">LLM Chat</button>
+    <button class="sub-tab-btn" id="subTabBtnToolsImggen" onclick="switchSubTab('tools','imggen')">Image Generation</button>
+  </div>
+  <div id="tools-openclaw" class="sub-tab-panel active">
+    <iframe data-src="/proxy/openclaw/" allowfullscreen></iframe>
+  </div>
+  <div id="tools-llmchat" class="sub-tab-panel">
+    <iframe data-src="/proxy/llmchat/" allowfullscreen></iframe>
+  </div>
+  <div id="tools-imggen" class="sub-tab-panel">
+    <iframe data-src="/proxy/imggen/" allowfullscreen></iframe>
+  </div>
 </div>
 
 <!-- Admin tab -->
@@ -596,8 +598,8 @@ Backend API endpoints consumed:
         <button class="sub-tab-btn"        id="subTabBtnAdminAccess"  onclick="switchSubTab('admin','access')">Access Control</button>
         <button class="sub-tab-btn active" id="subTabBtnAdminAgents"  onclick="switchSubTab('admin','agents')">Agents</button>
         <button class="sub-tab-btn"        id="subTabBtnAdminAudit"   onclick="switchSubTab('admin','audit')">Audit Log</button>
-        <button class="sub-tab-btn"        id="subTabBtnAdminBackup"  onclick="switchSubTab('admin','backup')">Backup &amp; Restore</button>
-        <button class="sub-tab-btn"        id="subTabBtnAdminRouting" onclick="switchSubTab('admin','routing')">Routing</button>
+        <button class="sub-tab-btn"        id="subTabBtnAdminBackup"  onclick="switchSubTab('admin','backup')">Backups</button>
+        <button class="sub-tab-btn"        id="subTabBtnAdminRouting" onclick="switchSubTab('admin','routing')">Gateway</button>
         <button class="sub-tab-btn"        id="subTabBtnAdminSettings" onclick="switchSubTab('admin','settings')">Settings</button>
       </div>
 
@@ -632,10 +634,10 @@ Backend API endpoints consumed:
         <div id="adminAgentsResult"></div>
       </div>
 
-      <!-- Routing sub-tab (gateway + autopilot + pool/pins, #476/#797) -->
+      <!-- Gateway sub-tab (gateway + autopilot + pool/pins, #476/#797) -->
       <div id="admin-routing" class="sub-tab-panel">
         <div class="hdr">
-          <h2>Routing</h2>
+          <h2>Gateway</h2>
           <div class="sum" id="rtSummary"></div>
           <span class="gap"></span>
           <div class="mc-seg" id="rtProviderSeg" role="group" aria-label="Provider"></div>
@@ -729,10 +731,10 @@ Backend API endpoints consumed:
         </div>
       </div>
 
-      <!-- Backup & Restore sub-tab (#218/#797) -->
+      <!-- Backups sub-tab (#218/#797) -->
       <div id="admin-backup" class="sub-tab-panel">
         <div class="hdr">
-          <h2>Backup &amp; restore</h2>
+          <h2>Backups</h2>
           <div class="sum" id="bkSummary"></div>
         </div>
 
@@ -742,23 +744,23 @@ Backend API endpoints consumed:
             <div class="bk-arch">
               <div class="bk-ar">
                 <div class="who"><div class="n">Manager</div><div class="m">config · agents · internal CA · layout · users · profiles · benchmarks</div></div>
-                <div class="last" id="bkLastExport_manager">last export <b>never</b></div>
+                <div class="last" id="bkLastExport_manager">last backup <b>never</b></div>
                 <div class="acts">
-                  <button type="button" class="mcbtn mcbtn-pri mcbtn-sm" onclick="adminExportArchive('manager')">Export…</button>
-                  <button type="button" class="mcbtn mcbtn-ghost mcbtn-sm" onclick="adminImportArchive('manager')">Import…</button>
+                  <button type="button" class="mcbtn mcbtn-pri mcbtn-sm" onclick="adminExportArchive('manager')">Backup…</button>
+                  <button type="button" class="mcbtn mcbtn-ghost mcbtn-sm" onclick="adminImportArchive('manager')">Restore…</button>
                 </div>
               </div>
               <div class="bk-ar">
                 <div class="who"><div class="n">Alarm Engine</div><div class="m">rules · channels · alert history</div></div>
-                <div class="last" id="bkLastExport_alarm_engine">last export <b>never</b></div>
+                <div class="last" id="bkLastExport_alarm_engine">last backup <b>never</b></div>
                 <div class="acts">
-                  <button type="button" class="mcbtn mcbtn-pri mcbtn-sm" onclick="adminExportArchive('alarm_engine')">Export…</button>
-                  <button type="button" class="mcbtn mcbtn-ghost mcbtn-sm" onclick="adminImportArchive('alarm_engine')">Import…</button>
+                  <button type="button" class="mcbtn mcbtn-pri mcbtn-sm" onclick="adminExportArchive('alarm_engine')">Backup…</button>
+                  <button type="button" class="mcbtn mcbtn-ghost mcbtn-sm" onclick="adminImportArchive('alarm_engine')">Restore…</button>
                 </div>
               </div>
             </div>
             <div class="ledger-f">
-              <span class="note">Importing a Manager archive can optionally replace this host's identity (CA, agent registry, users, login mode).</span>
+              <span class="note">Restoring a Manager archive can optionally replace this host's identity (CA, agent registry, users, login mode).</span>
               <span class="gap"></span>
               <span class="note" id="adminBackupResult"></span>
             </div>
@@ -776,7 +778,7 @@ Backend API endpoints consumed:
           <div class="card-b flush">
             <div id="adminSchedBackupBody"></div>
             <table class="tbl">
-              <thead><tr><th>Archive</th><th style="width:110px" class="r">Size</th><th style="width:160px">Taken</th><th style="width:110px">Mirror</th></tr></thead>
+              <thead><tr><th>Archive</th><th style="width:110px" class="r">Size</th><th style="width:160px">Taken</th><th style="width:110px">Mirror</th><th style="width:120px" class="r">Download</th></tr></thead>
               <tbody id="adminSchedBackupTbody"></tbody>
             </table>
             <div class="ledger-f">
@@ -806,7 +808,7 @@ Backend API endpoints consumed:
           <div class="sum" id="acSummary"></div>
         </div>
 
-        <div class="notice" id="adminAuthDefaultNotice" hidden><b>Default password in use</b><span class="d">The <b>llmadmin</b> account still has the install password. Change it from the Account menu (top right).</span></div>
+        <div class="notice" id="adminAuthDefaultNotice" hidden><b>Default password in use</b><span class="d">The <b>llmadmin</b> account still has the install password. Change it under Account in the settings drawer (cog, top right).</span></div>
 
         <div class="card" id="adminAuthCard">
           <div class="card-h"><h3>Login</h3><span class="meta" id="adminAuthMeta"></span></div>
@@ -1757,7 +1759,7 @@ Backend API endpoints consumed:
 
 </div><!-- end dashboardTab -->
 
-<!-- LLM Overall Tab -->
+<!-- Overall Tab -->
 <div id="overallTab" style="display:none;">
   <div class="ov-band">
     <section class="ov-hero" data-strip="hero" aria-label="Fleet throughput, last 24 hours">
@@ -2399,9 +2401,9 @@ Backend API endpoints consumed:
 </div><!-- end llmTab -->
 
 <script src="/static/js/lib/layout.js?v=2026.07.10-1"></script>
-<script src="/static/js/lib/settingsdrawer.js?v=2026.09.03-3"></script>
+<script src="/static/js/lib/settingsdrawer.js?v=2026.09.04-1"></script>
 <script src="/static/js/lib/modelcards.js?v=2026.08.30-10"></script>
-<script src="/static/js/foundation.js?v=2026.09.04-2"></script>
+<script src="/static/js/foundation.js?v=2026.09.04-3"></script>
 <script src="/static/js/lib/series.js?v=2026.08.04-2"></script>
 <script src="/static/js/lib/peaks.js?v=2026.08.29-2"></script>
 <script src="/static/js/lib/benchaxis.js?v=2026.08.26-1"></script>
@@ -2411,12 +2413,12 @@ Backend API endpoints consumed:
 <script src="/static/js/lib/sseguard.js?v=2026.09.04-1"></script>
 <script src="/static/js/lib/energy.js?v=2026.08.26-1"></script>
 <script src="/static/js/lib/overall-view.js?v=2026.09.01-1"></script>
-<script src="/static/js/charts.js?v=2026.09.04-1"></script>
+<script src="/static/js/charts.js?v=2026.09.04-2"></script>
 <script src="/static/js/terminal.js?v=2026.09.04-1"></script>
 <script src="/static/js/llmcontrol.js?v=2026.09.04-1"></script>
 <script src="/static/js/sections.js?v=2026.08.30-3"></script>
 <script src="/static/js/openclaw.js?v=2026.08.03-1"></script>
-<script src="/static/js/admin.js?v=2026.09.04-2"></script>
+<script src="/static/js/admin.js?v=2026.09.04-3"></script>
 <script src="/static/js/admin-agents.js?v=2026.09.04-1"></script>
 <script src="/static/js/admin-health.js?v=2026.09.04-1"></script>
 <script src="/static/js/admin-gateway.js?v=2026.09.04-1"></script>
@@ -2445,7 +2447,8 @@ Backend API endpoints consumed:
       <button type="button" class="ib" onclick="closeSettings()" title="Close (Esc)" aria-label="Close">✕</button>
     </div>
     <div class="sd-b">
-      <section class="sd-sec" id="sdNoCards" hidden><div class="notice">Card and layout options appear on the LLM Overall and Dashboard pages. This page has no cards.</div></section>
+      <section class="sd-sec" id="sdAccount" hidden></section>
+      <section class="sd-sec" id="sdNoCards" hidden><div class="notice">Card and layout options appear on the Overall and Dashboards pages. This page has no cards.</div></section>
       <section class="sd-sec" id="sdCards"></section>
       <section class="sd-sec" id="sdLayout"></section>
       <section class="sd-sec" id="sdAppearance"></section>
@@ -2604,6 +2607,6 @@ Backend API endpoints consumed:
 <div id="alarmToastContainer"></div>
 
 <script src="/static/js/events-toasts.js?v=2026.09.03-2"></script>
-<script src="/static/js/boot.js?v=2026.09.04-2"></script>
+<script src="/static/js/boot.js?v=2026.09.04-3"></script>
 </body>
 </html>

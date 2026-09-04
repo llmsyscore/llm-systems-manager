@@ -1134,10 +1134,14 @@ async function checkConfig() {
       const target = on ? '' : 'none';
       if (el.style.display !== target) el.style.display = target;
     };
-    toggle('tabBtnLlmchat',     px.llm_chat  !== false);
-    toggle('tabBtnOpenclaw',    px.openclaw  !== false);
-    toggle('subTabBtnOpenclaw', px.openclaw  !== false);
-    toggle('tabBtnImggen',      px.image_gen !== false);
+    // Tools is one tab with the enabled proxies as sub-tabs; it hides itself
+    // when none of them are enabled (#847).
+    const ocOn = px.openclaw !== false, chatOn = px.llm_chat !== false, imgOn = px.image_gen !== false;
+    toggle('subTabBtnToolsOpenclaw', ocOn);
+    toggle('subTabBtnToolsLlmchat',  chatOn);
+    toggle('subTabBtnToolsImggen',   imgOn);
+    toggle('tabBtnTools',            ocOn || chatOn || imgOn);
+    toggle('subTabBtnOpenclaw',      ocOn);
 
     // Agent-driven visibility: hide LLM tabs/pills when no agent
     // advertises the matching capability yet. Defaults to visible so
@@ -1163,6 +1167,16 @@ async function checkConfig() {
     // — otherwise the operator stares at an empty panel with no nav.
     const activeBtn = document.querySelector('.tab-nav .tab-btn.active');
     if (activeBtn && activeBtn.style.display === 'none') switchTab('dashboard');
+
+    // Same for Tools sub-tabs: fall back to whichever proxy is still enabled.
+    // Off-view it only re-points the pending sub-tab — switching would load
+    // that proxy's iframe before the operator ever opens Tools.
+    const toolsOn = { openclaw: ocOn, llmchat: chatOn, imggen: imgOn };
+    if (!toolsOn[_subTabState.tools]) {
+      const alt = ['openclaw', 'llmchat', 'imggen'].find(t => toolsOn[t]);
+      if (alt && _activeTab === 'tools') switchSubTab('tools', alt);
+      else if (alt) _subTabState.tools = alt;
+    }
 
     // Same for Dashboard sub-tabs: if the active sub-tab was hidden, fall
     // back to a visible sibling (openclaw or manager always stay visible).

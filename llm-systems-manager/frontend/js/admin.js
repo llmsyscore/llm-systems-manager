@@ -1,7 +1,7 @@
 // Admin tab auto-refresh — only ticks when the tab is visible.
 let _adminRefreshTimer = null;
 function adminStartAutoRefresh() {
-  // The gateway poll follows the Routing sub-tab; the stop below mirrors this.
+  // The gateway poll follows the Gateway sub-tab; the stop below mirrors this.
   if (window.GatewayView && typeof _subTabState !== 'undefined' && _subTabState.admin === 'routing') {
     GatewayView.start();
   }
@@ -881,14 +881,14 @@ async function adminExportArchive(component) {
   const ep = _BACKUP_ENDPOINTS[component];
   if (!ep) return;
   const password = await _adminBackupPasswordPrompt({
-    title:   `Export ${label} archive`,
+    title:   `Back up ${label}`,
     intro:   `The archive contains secrets (config tokens, agent bearer tokens, internal CA private key). A password is strongly recommended — it encrypts the file with AES-256-GCM using a scrypt-derived key.`,
     minLen:  _BACKUP_MIN_PW,
-    confirm: 'Export',
+    confirm: 'Back up',
     allowBlank: true,
   });
   if (password === null) return;  // cancelled
-  _adminBackupLog(`exporting ${label}…`);
+  _adminBackupLog(`backing up ${label}…`);
   let resp;
   try {
     resp = await fetch(ep.export, {
@@ -897,14 +897,14 @@ async function adminExportArchive(component) {
       body: JSON.stringify({password}),
     });
   } catch (e) {
-    _adminBackupLog(`✗ ${label} export failed — ${e.message}`, 'err');
+    _adminBackupLog(`✗ ${label} backup failed — ${e.message}`, 'err');
     return;
   }
   if (!resp.ok) {
     const txt = await resp.text();
     let err = txt;
     try { err = (JSON.parse(txt).error || JSON.parse(txt).detail || txt); } catch (_) {}
-    _adminBackupLog(`✗ ${label} export failed — ${err}`, 'err');
+    _adminBackupLog(`✗ ${label} backup failed — ${err}`, 'err');
     return;
   }
   const blob = await resp.blob();
@@ -918,7 +918,7 @@ async function adminExportArchive(component) {
   a.click();
   setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 200);
   const note = password ? 'encrypted' : 'NOT encrypted (no password)';
-  _adminBackupLog(`✓ ${label} export downloaded — ${fname} (${blob.size} bytes, ${note})`, 'ok');
+  _adminBackupLog(`✓ ${label} backup downloaded — ${fname} (${blob.size} bytes, ${note})`, 'ok');
 }
 
 async function adminImportArchive(component) {
@@ -926,8 +926,8 @@ async function adminImportArchive(component) {
   const ep    = _BACKUP_ENDPOINTS[component];
   if (!ep) return;
   const picked = await _adminBackupFilePrompt({
-    title:    `Import ${label} archive`,
-    intro:    `Pick a previously-exported .lsmenc file. If encrypted, enter the password used at export. Nothing is written to disk until you confirm the preview.`,
+    title:    `Restore ${label}`,
+    intro:    `Pick a previously-created .lsmenc archive. If encrypted, enter the password it was made with. Nothing is written to disk until you confirm the preview.`,
   });
   if (!picked) return;
   const {file, password} = picked;
@@ -953,12 +953,12 @@ async function adminImportArchive(component) {
   }
 
   const confirmed = await _adminBackupConfirmImport({label, ep, payload});
-  if (confirmed === null) { _adminBackupLog('import cancelled'); return; }
+  if (confirmed === null) { _adminBackupLog('restore cancelled'); return; }
   const overrides = confirmed.overrides || {};
   const hostRemap = confirmed.hostRemap || {};
   const categories = confirmed.categories;  // null when archive has no category info
 
-  _adminBackupLog(`applying ${label} import…`);
+  _adminBackupLog(`applying ${label} restore…`);
   let resp2, payload2;
   try {
     const fd2 = new FormData();
@@ -998,7 +998,7 @@ async function adminImportArchive(component) {
     : '';
   const written = payload2.written || [];
   const backups = payload2.backups || [];
-  _adminBackupLog(`✓ ${label} import applied — ${written.length} files written${patchedNote}${hrNote}.`, 'ok');
+  _adminBackupLog(`✓ ${label} restore applied — ${written.length} files written${patchedNote}${hrNote}.`, 'ok');
 
   const writtenList = written.map(p =>
     `<li style="font-family:monospace;font-size:0.82em;">${adminEsc(p)}</li>`).join('');
@@ -1016,18 +1016,18 @@ async function adminImportArchive(component) {
       ).join('<br>')}</li>`
     : '';
   await _themedAlert({
-    title: `${label} import succeeded — next steps`,
+    title: `${label} restore succeeded — next steps`,
     dismissable: false,
     bodyHtml:
       `<div style="font-size:0.88em;line-height:1.55;">` +
       `<p style="margin:0 0 10px;">The archive was unpacked and written to disk. ` +
-      `Backups of the pre-import files are kept alongside each target.</p>` +
+      `Copies of the pre-restore files are kept alongside each target.</p>` +
       patchedBlock +
       `<ol style="margin:8px 0;padding-left:22px;">` +
       `<li>Restart the service so the new state loads:<br>` +
       `<code style="display:block;margin-top:4px;background:var(--bg);padding:6px 8px;border-radius:4px;font-size:0.82em;">${adminEsc(ep.restartHint)}</code></li>` +
       extraStepsBlock +
-      `<li>Verify the imported data is visible in the UI; if anything looks ` +
+      `<li>Verify the restored data is visible in the UI; if anything looks ` +
       `wrong, the <code>.preimport.${adminEsc(payload2.ts || '<ts>')}.bak</code> ` +
       `files below can be copied back into place.</li>` +
       `</ol>` +
@@ -1054,10 +1054,10 @@ function _adminBackupConfirmImport({label, ep, payload}) {
 
     const metaLines = [];
     if (manifest.component)       metaLines.push(`<div>Component: <code>${adminEsc(manifest.component)}</code></div>`);
-    if (manifest.manager_version) metaLines.push(`<div>Manager version (at export): <code>${adminEsc(manifest.manager_version)}</code></div>`);
-    if (manifest.ae_version)      metaLines.push(`<div>AE version (at export): <code>${adminEsc(manifest.ae_version)}</code></div>`);
+    if (manifest.manager_version) metaLines.push(`<div>Manager version (at backup): <code>${adminEsc(manifest.manager_version)}</code></div>`);
+    if (manifest.ae_version)      metaLines.push(`<div>AE version (at backup): <code>${adminEsc(manifest.ae_version)}</code></div>`);
     if (manifest.hostname)        metaLines.push(`<div>Source host: <code>${adminEsc(manifest.hostname)}</code></div>`);
-    if (manifest.created_at)      metaLines.push(`<div>Exported at: <code>${adminEsc(manifest.created_at)}</code></div>`);
+    if (manifest.created_at)      metaLines.push(`<div>Backed up at: <code>${adminEsc(manifest.created_at)}</code></div>`);
     metaLines.push(`<div>Encrypted: <code>${payload.encrypted ? 'yes' : 'no'}</code></div>`);
 
     const rows = entries.map(e =>
@@ -1107,7 +1107,7 @@ function _adminBackupConfirmImport({label, ep, payload}) {
       categoriesHtml = `
         <details style="margin-top:14px;border:1px solid var(--border);border-radius:5px;padding:10px 12px;" open>
           <summary style="cursor:pointer;font-weight:600;font-size:0.9em;">
-            What to import
+            What to restore
             <span style="font-weight:400;color:var(--fg-muted);font-size:0.82em;margin-left:6px;">
               by default only Config is applied; Identity is opt-in
             </span>
@@ -1121,7 +1121,7 @@ function _adminBackupConfirmImport({label, ep, payload}) {
       topologyHtml = `<div style="margin-top:12px;padding:10px 12px;border:1px solid var(--warn);` +
         `border-radius:5px;font-size:0.82em;color:var(--warn);">` +
         `Could not parse the captured llm-systems.toml: <code>${adminEsc(payload.topology_error)}</code>. ` +
-        `Topology overrides are unavailable for this archive — edit the file by hand after import.</div>`;
+        `Topology overrides are unavailable for this archive — edit the file by hand after restoring.</div>`;
     } else if (schema.length) {
       const fields = schema.map(s => {
         const captured = topology[s.key];
@@ -1184,11 +1184,11 @@ function _adminBackupConfirmImport({label, ep, payload}) {
           <summary style="cursor:pointer;font-weight:600;font-size:0.9em;">
             Rule host remap
             <span style="font-weight:400;color:var(--fg-muted);font-size:0.82em;margin-left:6px;">
-              rewrite source-host names so imported rules match this system
+              rewrite source-host names so restored rules match this system
             </span>
           </summary>
           <div style="margin-top:10px;font-size:0.80em;color:var(--fg-muted);line-height:1.5;">
-            These host names are referenced by the imported rules and notification configs.
+            These host names are referenced by the restored rules and notification configs.
             Edit any that differ on this system (e.g. the manager / AE / DB agent names) —
             the rules database is rewritten before import. Leave a value unchanged to keep it as-is.
           </div>
@@ -1204,7 +1204,7 @@ function _adminBackupConfirmImport({label, ep, payload}) {
       + 'padding:20px 22px;width:min(680px,94vw);max-height:90vh;overflow:auto;color:var(--fg);'
       + 'font-family:system-ui,sans-serif;box-shadow:0 8px 32px rgba(0,0,0,0.5);';
     box.innerHTML = `
-      <div style="font-size:1.05em;font-weight:600;margin-bottom:10px;">Apply ${adminEsc(label)} import?</div>
+      <div style="font-size:1.05em;font-weight:600;margin-bottom:10px;">Apply ${adminEsc(label)} restore?</div>
       <div style="font-size:0.85em;line-height:1.6;margin-bottom:10px;">${metaLines.join('')}</div>
       <div style="max-height:180px;overflow:auto;border:1px solid var(--border);border-radius:5px;">
         <table style="width:100%;border-collapse:collapse;font-size:0.85em;">
@@ -1226,7 +1226,7 @@ function _adminBackupConfirmImport({label, ep, payload}) {
         <button id="aecCancel" style="background:var(--bg-card-alt);color:var(--fg);border:1px solid var(--border);
           border-radius:5px;padding:7px 16px;cursor:pointer;font-size:0.88em;">Cancel</button>
         <button id="aecApply" style="background:var(--crit);color:#fff;border:1px solid var(--border);
-          border-radius:5px;padding:7px 16px;cursor:pointer;font-size:0.88em;font-weight:500;">Apply import</button>
+          border-radius:5px;padding:7px 16px;cursor:pointer;font-size:0.88em;font-weight:500;">Apply restore</button>
       </div>`;
     overlay.appendChild(box);
     document.body.appendChild(overlay);
@@ -1298,7 +1298,7 @@ function _adminBackupPasswordPrompt({title, intro, minLen, confirm, allowBlank})
     sh.addEventListener('change', () => { pw.type = sh.checked ? 'text' : 'password'; });
     pw.addEventListener('input', () => {
       if (!pw.value) {
-        hint.textContent = allowBlank ? 'Leaving blank exports WITHOUT encryption.' : '';
+        hint.textContent = allowBlank ? 'Leaving blank saves the archive WITHOUT encryption.' : '';
         hint.style.color = allowBlank ? 'var(--warn)' : 'var(--fg-muted)';
       } else if (pw.value.length < minLen) {
         hint.textContent = `${minLen - pw.value.length} more characters required.`;
@@ -2243,7 +2243,7 @@ async function adminUserDelete(name) {
 // Audit log lives in admin-audit.js (#794); adminAuditLoad is its global entry.
 
 // ─────────────────────────────────────────────────────────────────────────
-// Backup & Restore sub-tab (#218, redesigned #797)
+// Backups sub-tab (#218, redesigned #797)
 // ─────────────────────────────────────────────────────────────────────────
 let _adminBackupData = null;
 let _adminBackupShowAll = false;
@@ -2295,15 +2295,15 @@ function adminRenderBackup() {
       + (mirror === null ? '' : `<span>mirror <b class="${mirror[0]}">${mirror[1]}</b></span>`);
   }
 
-  // Archives card — last manual export per component.
+  // Archives card — last manual backup per component.
   const ex = d.last_export || {};
   for (const comp of ['manager', 'alarm_engine']) {
     const el = document.getElementById('bkLastExport_' + comp);
     if (!el) continue;
     const e = ex[comp];
     el.innerHTML = e && e.ts
-      ? `last export <b>${_adminStamp(e.ts)}</b> · ${adminEsc(_fmtBytesShort(e.bytes))}`
-      : 'last export <b>never</b>';
+      ? `last backup <b>${_adminStamp(e.ts)}</b> · ${adminEsc(_fmtBytesShort(e.bytes))}`
+      : 'last backup <b>never</b>';
   }
 
   // Scheduled card — pill, meta, kv block and the retained-archive ledger.
@@ -2361,8 +2361,11 @@ function adminRenderBackup() {
           <td class="r">${adminEsc(_fmtBytesShort(b.bytes))}</td>
           <td class="t">${_adminStamp(b.mtime)}</td>
           <td>${_adminMirrorPill(d, last, b)}</td>
+          <td class="r"><a class="mcbtn mcbtn-ghost mcbtn-sm" download="${adminEsc(b.file)}"
+            href="/api/admin/backup-archive/${encodeURIComponent(b.file)}"
+            title="Download this archive">⤓ Download</a></td>
         </tr>`).join('')
-      : '<tr><td colspan="4"><div class="empty">No archives retained yet.</div></td></tr>';
+      : '<tr><td colspan="5"><div class="empty">No archives retained yet.</div></td></tr>';
   }
   const more = document.getElementById('adminSchedBackupMore');
   if (more) {

@@ -30,9 +30,9 @@ document.addEventListener('DOMContentLoaded', () => {
     llmCtrl.remove();
   }
 
-  // openclawTab and llmchatTab are nested inside dashboardTab in the HTML.
+  // toolsTab and eventsTab are nested inside dashboardTab in the HTML.
   // Move them to body level so they aren't hidden when dashboardTab hides.
-  ['openclawTab', 'llmchatTab', 'imggenTab', 'eventsTab', 'adminTab'].forEach(id => {
+  ['toolsTab', 'eventsTab', 'adminTab'].forEach(id => {
     const el = document.getElementById(id);
     if (el && el.closest('#dashboardTab')) document.body.appendChild(el);
   });
@@ -41,12 +41,13 @@ document.addEventListener('DOMContentLoaded', () => {
 // ---------------------------------------------------------------------------
 // Sub-tab switching
 // ---------------------------------------------------------------------------
-const _subTabState = { dashboard: 'llamacpp', llm: 'llamacpp', admin: 'agents' };
+const _subTabState = { dashboard: 'llamacpp', llm: 'llamacpp', admin: 'agents', tools: 'openclaw' };
 
 const _SUB_TAB_MAP = {
   dashboard: { tabId: 'dashboardTab', prefix: 'dash',  subs: ['llamacpp','lmstudio','vllm','energy','openclaw','manager'] },
   llm:       { tabId: 'llmTab',       prefix: 'llm',   subs: ['llamacpp','lmstudio','vllm','tools'] },
   admin:     { tabId: 'adminTab',     prefix: 'admin', subs: ['access','agents','audit','backup','routing','settings'] },
+  tools:     { tabId: 'toolsTab',     prefix: 'tools', subs: ['openclaw','llmchat','imggen'] },
 };
 
 function switchSubTab(parent, sub) {
@@ -154,7 +155,7 @@ function switchSubTab(parent, sub) {
   if (parent === 'admin' && sub === 'backup') {
     if (typeof adminLoadBackupStatus === 'function') adminLoadBackupStatus();
   }
-  // Routing (pools/pins + autopilot + gateway, #476/#797): the pool/pins cards
+  // Gateway (pools/pins + autopilot + gateway, #476/#797): the pool/pins cards
   // render from the 20s agents refresh; the autopilot editor and the gateway
   // 5s poll start on entry and the poll stops when the sub-tab is left.
   if (parent === 'admin' && sub === 'routing') {
@@ -166,6 +167,11 @@ function switchSubTab(parent, sub) {
   // Settings (TOML editor, #606): loads on sub-tab entry.
   if (parent === 'admin' && sub === 'settings') {
     if (typeof adminSettingsLoad === 'function') adminSettingsLoad();
+  }
+  // Tools (#847): promote the proxy iframe's data-src on its first visit.
+  if (parent === 'tools') {
+    const frame = document.querySelector(`#tools-${sub} iframe[data-src]`);
+    if (frame) { frame.src = frame.dataset.src; frame.removeAttribute('data-src'); }
   }
 }
 
