@@ -519,3 +519,33 @@ def test_hide_automated_hides_untagged_loopback_rows_even_with_an_actor(monkeypa
     shown = c.get("/api/admin/audit-log?hide_automated=1").get_json()
     assert sorted(e["target"] for e in shown["entries"]) == ["op1", "real-old-row"]
     assert c.get("/api/admin/audit-log").get_json()["total"] == 3
+
+
+def _strict_json(data):
+    def _bad(tok):
+        raise ValueError("non-finite token in JSON: " + tok)
+    return json.loads(data, parse_constant=_bad)
+
+
+def test_audit_list_never_emits_nan_or_infinity(monkeypatch):
+    """#815: NaN/Infinity inside a stored detail must not reach the JSON response."""
+    conn = _mem_db(); monkeypatch.setattr(manager_mod, "get_db", lambda: conn)
+    conn.execute("INSERT INTO audit_log (ts, actor, role, ip, auth, method, path, action, target, status, outcome, detail)"
+                 " VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+                 ("2026-09-03T11:10:08+00:00", "llmadmin", "admin", "192.0.2.10", "session", "PUT",
+                  "/api/admin/settings", "config.settings", None, 400, "error",
+                  '{"changes": {"manager.port": [5000, NaN], "x": [Infinity, -Infinity]}, "n": 1}'))
+    c = _admin_client(monkeypatch)
+    resp = c.get("/api/admin/audit-log")
+    d = _strict_json(resp.data)
+    assert d["ok"] and d["entries"][0]["detail"] == {"changes": {"manager.port": [5000, None], "x": [None, None]}, "n": 1}
+
+
+def test_audit_hook_stores_non_finite_detail_values_as_null(monkeypatch):
+    conn = _mem_db(); monkeypatch.setattr(manager_mod, "get_db", lambda: conn)
+    _cfg(monkeypatch, disabled=set())
+    monkeypatch.setattr(manager_mod, "_audit_detail",
+                        lambda action, target, resp: {"score": float("nan"), "ceil": float("inf"), "ok": 1.5})
+    manager_mod.app.test_client().post("/api/agents/deadbeef/approve")
+    raw = conn.execute("SELECT detail FROM audit_log").fetchone()["detail"]
+    assert _strict_json(raw) == {"score": None, "ceil": None, "ok": 1.5}

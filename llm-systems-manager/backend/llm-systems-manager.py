@@ -159,7 +159,7 @@ def _local_hostname() -> str:
 # banner reads it. Bump suffix (-1, -2, …) for same-day iterations; roll
 # the date for a new day's first change.
 # ---------------------------------------------------------------------------
-__version__ = "v2026.09.03-8"
+__version__ = "v2026.09.03-9"
 
 # Wall-clock at first import (Cheroot main process); the shutdown banner
 # reads it for the uptime line.
@@ -3467,6 +3467,17 @@ def _audit_stash_settings_before(changes: dict) -> None:
     _flask_g._audit_before = {k: vals.get(k, settings_catalog._MISSING) for k in changes}
 
 
+def _audit_json_safe(v):
+    """Copy of v with NaN/±Infinity replaced by None so the stored detail stays strict JSON."""
+    if isinstance(v, float) and (v != v or v in (float("inf"), float("-inf"))):
+        return None
+    if isinstance(v, dict):
+        return {k: _audit_json_safe(x) for k, x in v.items()}
+    if isinstance(v, (list, tuple)):
+        return [_audit_json_safe(x) for x in v]
+    return v
+
+
 def _audit_detail(action: str, target, resp) -> "dict | None":
     d: dict = {}
     body = flask_request.get_json(silent=True)
@@ -3606,7 +3617,7 @@ def _audit_after_request(resp):
             datetime.now(timezone.utc).isoformat(timespec="seconds"),
             actor, role, flask_request.remote_addr or "", auth_kind,
             method, path, action, target, status, outcome,
-            json.dumps(detail, default=str) if detail else None, event,
+            json.dumps(_audit_json_safe(detail), default=str) if detail else None, event,
         ))
     except Exception:
         # Never let auditing break a response.
@@ -3699,7 +3710,8 @@ def _audit_order(args) -> str:
 def _audit_row_out(r) -> dict:
     d = dict(r)
     try:
-        d["detail"] = json.loads(d["detail"]) if d.get("detail") else None
+        # parse_constant: NaN/Infinity in old rows become null instead of invalid JSON output.
+        d["detail"] = json.loads(d["detail"], parse_constant=lambda _: None) if d.get("detail") else None
     except (TypeError, ValueError):
         d["detail"] = None
     d["event"] = d.get("event") or _audit_event_for(d.get("action") or "")
