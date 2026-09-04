@@ -149,7 +149,9 @@ def test_audit_hook_drops_test_tagged_requests_unless_saved(monkeypatch):
 
 def test_audit_hook_gates_automated_actors_like_tagged_traffic(monkeypatch):
     """#814: a session user listed in automated_actors follows the Unit tests toggle."""
+    import auth
     conn = _mem_db(); monkeypatch.setattr(manager_mod, "get_db", lambda: conn)
+    monkeypatch.setattr(auth, "auth_mode", lambda: "required")
     _cfg(monkeypatch, save_automated=False, disabled=set(), automated_actors=["smoketestuser"])
     c = manager_mod.app.test_client()
     with c.session_transaction() as s:
@@ -313,6 +315,7 @@ def _admin_client(monkeypatch):
 def _client(monkeypatch):
     conn = _mem_db(); _seed(conn)
     monkeypatch.setattr(manager_mod, "get_db", lambda: conn)
+    _cfg(monkeypatch, automated_actors=["smoketestuser"])
     return _admin_client(monkeypatch)
 
 

@@ -257,7 +257,7 @@ mirror_dir = ""
 retention_days = 60
 page_size = 25                       # default rows per page on the Audit Log tab
 save_automated = false               # keep rows tagged X-LLMSys-Source: test (unit tests)
-automated_actors = ["smoketestuser"]  # usernames whose actions count as automated
+automated_actors = []  # usernames whose actions count as automated
 disabled_events = []                 # event keys not recorded; Admin → Audit Log → settings
 
 

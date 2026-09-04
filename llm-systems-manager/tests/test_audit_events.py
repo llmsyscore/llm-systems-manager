@@ -17,7 +17,7 @@ def test_audit_catalog_entries_are_hot_and_manager_owned():
 def test_audit_defaults_from_model():
     a = sc._FileOnlySettings().manager.audit
     assert (a.retention_days, a.page_size, a.save_automated, a.disabled_events) == (60, 25, False, [])
-    assert a.automated_actors == ["smoketestuser"]
+    assert a.automated_actors == []
 
 
 def test_hot_paths_never_flag_a_restart(monkeypatch):

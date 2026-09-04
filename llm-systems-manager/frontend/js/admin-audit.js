@@ -418,7 +418,7 @@
     if (foot) foot.addEventListener('click', ev => {
       if (ev.target.closest('[data-save]')) saveSettings();
       else if (ev.target.closest('[data-defaults]') && cfg) {
-        cfgForm = { retention: 60, pageSize: 25, saveAutomated: false, automatedActors: 'smoketestuser', enabled: {} };
+        cfgForm = { retention: 60, pageSize: 25, saveAutomated: false, automatedActors: '', enabled: {} };
         cfg.groups.forEach(g => g.events.forEach(e => { cfgForm.enabled[e.key] = !!e.default_on; }));
         renderSettings();
       }
@@ -464,7 +464,7 @@
             ${toggle('Unit tests', cfgForm.saveAutomated, 'data-cfg="save_automated"')}
             <div class="help">Requests tagged <code>X-LLMSys-Source: test</code> (unit tests) and the automated users below are excluded when disabled.</div></div>
           <div class="st-field"><label for="auCfgAuto">Automated users</label>
-            <div class="row"><input class="au-in" id="auCfgAuto" type="text" value="${esc(cfgForm.automatedActors || '')}" placeholder="smoketestuser" spellcheck="false" style="width:100%"></div>
+            <div class="row"><input class="au-in" id="auCfgAuto" type="text" placeholder="smoketestuser" spellcheck="false" style="width:100%"></div>
             <div class="help">Usernames whose actions count as automated: hidden by <b>Hide automated</b>, recorded only while Unit tests is on. Comma-separated.</div></div>
           <div class="au-stat"><b>${Number(stats ? stats.total : total).toLocaleString()}</b> rows · ${purge}</div>
         </div>
@@ -478,7 +478,8 @@
       </div>`;
     const retEl = $('auCfgRet'); if (retEl) retEl.addEventListener('input', () => { cfgForm.retention = retEl.value; });
     const perEl = $('auCfgPer'); if (perEl) perEl.addEventListener('change', () => { cfgForm.pageSize = perEl.value; });
-    const autoEl = $('auCfgAuto'); if (autoEl) autoEl.addEventListener('input', () => { cfgForm.automatedActors = autoEl.value; });
+    const autoEl = $('auCfgAuto');
+    if (autoEl) { autoEl.value = cfgForm.automatedActors || ''; autoEl.addEventListener('input', () => { cfgForm.automatedActors = autoEl.value; }); }
     if (foot) foot.innerHTML = `<button type="button" class="mcbtn mcbtn-pri mcbtn-sm" data-save="1">Save</button>
       <button type="button" class="mcbtn mcbtn-ghost mcbtn-sm" data-defaults="1">Reset to defaults</button>
       <span class="microlbl">applies without restart</span><span class="msg" id="auCfgMsg"></span>`;

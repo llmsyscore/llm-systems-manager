@@ -3154,7 +3154,7 @@ _AUDIT_DETAIL_MAX = 2048
 
 # Runtime copy of [manager.audit]; refreshed by _audit_reload_config() (hot).
 _AUDIT_CFG: dict = {"retention_days": 60, "page_size": 25, "save_automated": False,
-                    "automated_actors": ["smoketestuser"], "disabled": set()}
+                    "automated_actors": [], "disabled": set()}
 _AUDIT_PURGE_STATE: dict = {"ts": None, "removed": 0}
 
 # Event catalog (Admin → Audit Log → settings). Keys land in disabled_events.

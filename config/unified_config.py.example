@@ -254,7 +254,7 @@ class ManagerAudit(BaseModel):
     save_automated: bool = False      # keep rows tagged X-LLMSys-Source: test
     # Usernames whose actions count as automated (hidden by "Hide automated",
     # and only recorded while save_automated is on).
-    automated_actors: list[str] = Field(default_factory=lambda: ["smoketestuser"])
+    automated_actors: list[str] = Field(default_factory=list)
     disabled_events: list[str] = Field(default_factory=list)
 
 
