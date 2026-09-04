@@ -415,3 +415,61 @@ describe("protect other models toggle (#779)", () => {
     expect(puts[0].enabled).toBe(true);
   });
 });
+
+describe("status pills keep refreshing while the editor is dirty (#849)", () => {
+  it("an abandoned edit freezes only its own row's chip; other rows follow the poll", async () => {
+    document.body.innerHTML = `
+      <input type="checkbox" id="apEnabledToggle">
+      <table><tbody id="apEntriesBody"></tbody></table>
+      <div id="apProposalsBody"></div>
+      <span id="apSaveStatus"></span>
+      <span id="apDirtyNote"></span>
+    `;
+    const entries = [{...E}, {...E, model: "m2"}];
+    let status = {"m1/llama": {placed: 0, want: 1}, "m2/llama": {placed: 0, want: 1}};
+    vi.stubGlobal("fetch", vi.fn(() => Promise.resolve({
+      ok: true, json: () => Promise.resolve({
+        state: {enabled: true, entries, hosts: {}}, proposals: [],
+        last_plan_ts: null, entry_status: status,
+      }),
+    })));
+
+    await AP.init();
+    const rows = () => document.querySelectorAll("#apEntriesBody .ap-entry-row");
+    const chip = i => rows()[i].querySelector(".ap-entry-chip");
+    expect(chip(0).textContent).toBe("0/1 placed");
+    expect(chip(1).textContent).toBe("0/1 placed");
+
+    // Edit row 0 and abandon it: the editor is dirty from here on.
+    const prio = rows()[0].querySelector('[data-field="priority"]');
+    prio.value = "7";
+    prio.dispatchEvent(new Event("input", {bubbles: true}));
+    expect(document.getElementById("apDirtyNote").textContent).toBe("unsaved changes");
+    AP.addEntry();                       // blank third row, also unsaved
+    expect(rows()).toHaveLength(3);
+
+    // Placement changes out of band: the next poll repaints the untouched
+    // row, leaves the edited row's chip + value alone, and paints nothing
+    // into the blank new row.
+    status = {"m1/llama": {placed: 1, want: 1}, "m2/llama": {placed: 0, want: 1, blocked: "no capable agent"}};
+    await AP.fetchState();
+    expect(rows()).toHaveLength(3);
+    expect(rows()[0].querySelector('[data-field="priority"]').value).toBe("7");
+    expect(chip(0).textContent).toBe("0/1 placed");
+    expect(chip(1).textContent).toContain("0/1");
+    expect(chip(1).title).toBe("no capable agent");
+    expect(rows()[2].querySelector(".ap-entry-status").childElementCount).toBe(0);
+    expect(document.getElementById("apDirtyNote").textContent).toBe("unsaved changes");
+
+    // Saving clears the flags: every row renders from the server again.
+    vi.stubGlobal("fetch", vi.fn((url, opts) => Promise.resolve({
+      ok: true, json: () => Promise.resolve(opts && opts.method === "PUT"
+        ? {state: {enabled: true, entries, hosts: {}}}
+        : {state: {enabled: true, entries, hosts: {}}, proposals: [], entry_status: status}),
+    })));
+    await AP.save();
+    expect(rows()).toHaveLength(2);
+    expect(chip(0).textContent).toBe("1/1 placed");
+    expect(document.getElementById("apDirtyNote").textContent).toBe("");
+  });
+});
