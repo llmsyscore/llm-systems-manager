@@ -122,7 +122,8 @@ describe('checkConfig tools fallback (#847)', () => {
     window._subTabState = { tools: remembered };
     window.switchSubTab = (...a) => calls.push(a);
     const body = blockSrc(chartsSrc, '    // Tools sub-tabs: re-point', '    }', { includeEnd: true });
-    evalGlobal(`(function(ocOn, chatOn, imgOn) {\n${body}\n})(${ocOn}, ${chatOn}, ${imgOn});`);
+    window.__on = [ocOn, chatOn, imgOn];
+    evalGlobal(`(function(ocOn, chatOn, imgOn) {\n${body}\n})(...window.__on);`);
     return { calls, remembered: window._subTabState.tools };
   }
 
@@ -158,8 +159,10 @@ describe('checkConfig proxy visibility (#847)', () => {
                                'subTabBtnToolsImggen', 'subTabBtnOpenclaw']
       .map(id => `<button id="${id}"></button>`).join('');
     const body = blockSrc(chartsSrc, '    // Tools is one tab', "toggle('subTabBtnOpenclaw',      ocOn);");
-    evalGlobal(`(function(px, toggle) {\n${body}\n})(${JSON.stringify({ openclaw, llm_chat, image_gen })},
-      (id, on) => { document.getElementById(id).style.display = on ? '' : 'none'; });`);
+    // Arguments go through window, never interpolated into the evaluated source.
+    window.__px = { openclaw, llm_chat, image_gen };
+    window.__toggle = (id, on) => { document.getElementById(id).style.display = on ? '' : 'none'; };
+    evalGlobal(`(function(px, toggle) {\n${body}\n})(window.__px, window.__toggle);`);
     const shown = id => document.getElementById(id).style.display !== 'none';
     return {
       tools: shown('tabBtnTools'), oc: shown('subTabBtnToolsOpenclaw'),

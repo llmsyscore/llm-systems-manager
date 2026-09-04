@@ -19,15 +19,27 @@ const STATUS = {
   ],
 };
 
-function render(status = STATUS) {
+// Status is assigned as a live object after boot, so no test data is ever
+// interpolated into the injected script source.
+function renderWin(status = STATUS) {
   const win = runHarness({
     sources: [dashSrc, adminSrc],
-    bootstrap: `_adminBackupData = ${JSON.stringify(status)};
-                window.SettingsFields = null;
-                adminRenderBackup();`,
+    bootstrap: `window.SettingsFields = null;
+                window.__fetched = [];
+                window.__reloaded = 0;
+                window.__saved = 0;
+                window.__reply = null;
+                window.fetch = (url) => { window.__fetched.push(url); return Promise.resolve(window.__reply); };
+                window.__render = (s) => { _adminBackupData = s; adminRenderBackup(); };
+                adminLoadBackupStatus = () => { window.__reloaded++; };`,
     bodyHtml: backupPanel,
   });
-  return win.document;
+  win.__render(status);
+  return win;
+}
+
+function render(status = STATUS) {
+  return renderWin(status).document;
 }
 
 describe('archive download control (#848)', () => {
@@ -53,40 +65,29 @@ describe('archive download control (#848)', () => {
 });
 
 describe('adminDownloadArchive (#848)', () => {
+  // The reply is handed over as a live object, never interpolated into the
+  // bootstrap source.
   function harness(reply) {
-    const win = runHarness({
-      sources: [dashSrc, adminSrc],
-      bootstrap: `_adminBackupData = ${JSON.stringify(STATUS)};
-                  window.SettingsFields = null;
-                  window.__fetched = [];
-                  window.__reloaded = 0;
-                  adminLoadBackupStatus = () => { window.__reloaded++; };
-                  window.fetch = (url) => { window.__fetched.push(url);
-                    return Promise.resolve(${reply}); };
-                  adminRenderBackup();`,
-      bodyHtml: backupPanel,
-    });
+    const win = renderWin();
+    win.__reply = reply;
+    win.URL.createObjectURL = () => { win.__saved++; return 'blob:x'; };
+    win.URL.revokeObjectURL = () => {};
     return win;
   }
-  const okReply = `{ ok: true, status: 200, blob: () => Promise.resolve({ size: 42 }) }`;
-  const errReply = (status, body) =>
-    `{ ok: false, status: ${status}, text: () => Promise.resolve(${JSON.stringify(body)}) }`;
+  const okReply = () => ({ ok: true, status: 200, blob: () => Promise.resolve({ size: 42 }) });
+  const errReply = (status, body) => ({ ok: false, status, text: () => Promise.resolve(body) });
 
   it('percent-encodes the file name in the request URL', async () => {
-    const win = harness(okReply);
-    win.document.createElement('a').click = () => {};
-    win.URL.createObjectURL = () => 'blob:x';
-    win.URL.revokeObjectURL = () => {};
+    const win = harness(okReply());
     await win.adminDownloadArchive('a b&c.lsmenc');
     expect(win.__fetched).toEqual(['/api/admin/backup-archive/a%20b%26c.lsmenc']);
+    expect(win.__saved).toBe(1);
   });
 
   it('reports a failure in the card log and saves nothing', async () => {
     const win = harness(errReply(500, '{"ok":false,"error":"internal server error"}'));
-    let saved = 0;
-    win.URL.createObjectURL = () => { saved++; return 'blob:x'; };
     await win.adminDownloadArchive('x.lsmenc');
-    expect(saved).toBe(0);
+    expect(win.__saved).toBe(0);
     expect(win.document.getElementById('adminBackupResult').textContent)
       .toContain('internal server error');
   });
@@ -95,6 +96,7 @@ describe('adminDownloadArchive (#848)', () => {
     const win = harness(errReply(404, '{"ok":false,"error":"no such archive"}'));
     await win.adminDownloadArchive('x.lsmenc');
     expect(win.__reloaded).toBe(1);
+    expect(win.__saved).toBe(0);
   });
 });
 
