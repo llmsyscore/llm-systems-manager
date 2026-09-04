@@ -490,6 +490,17 @@ def proxy_stream_to_primary(kind: str, path: str, *, primary_kind: "str | None" 
 
 # ── Per-target reverse-proxy helpers ─────────────────────────────────
 
+# Browser request headers forwarded upstream, with Accept-Encoding pinned
+# to the encodings urllib3 decodes.
+_FORWARD_SKIP = _PROXY_HOP_BY_HOP | {"host", "accept-encoding"}
+
+
+def _forward_headers() -> dict:
+    out = {k: v for k, v in flask_request.headers if k.lower() not in _FORWARD_SKIP}
+    out["Accept-Encoding"] = "gzip, deflate"
+    return out
+
+
 def _proxy_llmchat(path: str, base: str):
     url = base + "/" + path.lstrip("/")
     try:
@@ -499,8 +510,7 @@ def _proxy_llmchat(path: str, base: str):
         upstream = requests.request(
             method=flask_request.method,
             url=url,
-            headers={k: v for k, v in flask_request.headers if k.lower() not in
-                     ("host", "content-length", "transfer-encoding")},
+            headers=_forward_headers(),
             data=flask_request.get_data(),
             allow_redirects=False,
             timeout=(5, 300),  # (connect, read): long read for keepalive-less SSE
@@ -546,6 +556,21 @@ def _build_openclaw_ws_patch(netloc: str, port: str) -> str:
     )
 
 
+_OPENCLAW_PREFIX = "/proxy/openclaw"
+# Tag attributes href="/x" / src='/x': root-absolute, not protocol-relative "//host", not already prefixed.
+_OPENCLAW_ABS_ATTR_RE = re.compile(
+    r"""(<[a-zA-Z][^>]*?\s)(href|src)=(["'])/(?!/|%s/)""" % re.escape(_OPENCLAW_PREFIX.lstrip("/")))
+_OPENCLAW_BASE_ATTR_RE = re.compile(r'data-openclaw-control-ui-base-path=(["\'])\1')
+
+
+def _rewrite_openclaw_html(body: str) -> str:
+    """Point the control UI's root-absolute asset URLs at the proxy prefix
+    and stamp the prefix as its mount base path."""
+    body = _OPENCLAW_ABS_ATTR_RE.sub(r"\1\2=\3" + _OPENCLAW_PREFIX + "/", body)
+    return _OPENCLAW_BASE_ATTR_RE.sub(
+        r"data-openclaw-control-ui-base-path=\1" + _OPENCLAW_PREFIX + r"\1", body)
+
+
 def _proxy_openclaw(path: str, base: str):
     netloc = urlparse(base).netloc or ""
     port = (netloc.split(":") + ["80"])[1]
@@ -559,8 +584,7 @@ def _proxy_openclaw(path: str, base: str):
         upstream = requests.request(
             method=flask_request.method,
             url=url,
-            headers={k: v for k, v in flask_request.headers if k.lower() not in
-                     ("host", "content-length", "transfer-encoding")},
+            headers=_forward_headers(),
             data=flask_request.get_data(),
             allow_redirects=False,
             timeout=15,
@@ -576,13 +600,13 @@ def _proxy_openclaw(path: str, base: str):
                 v = re.sub(r';\s*SameSite=[^;]+', '', v, flags=re.IGNORECASE)
                 v = re.sub(r';\s*Secure',         '', v, flags=re.IGNORECASE)
             if kl == "location" and v.startswith(base):
-                v = v.replace(base, "/proxy/openclaw")
+                v = v.replace(base, _OPENCLAW_PREFIX)
             headers.append((k, v))
 
         # For HTML responses, inject the WS-redirect shim before </head>.
         ct = upstream.headers.get("content-type", "")
         if "text/html" in ct:
-            body = upstream.content.decode("utf-8", errors="replace")
+            body = _rewrite_openclaw_html(upstream.content.decode("utf-8", errors="replace"))
             if "</head>" in body:
                 body = body.replace("</head>", ws_patch + "</head>", 1)
             else:
@@ -611,8 +635,7 @@ def _proxy_imggen(path: str, base: str):
         upstream = requests.request(
             method=flask_request.method,
             url=url,
-            headers={k: v for k, v in flask_request.headers if k.lower() not in
-                     ("host", "content-length", "transfer-encoding")},
+            headers=_forward_headers(),
             data=flask_request.get_data(),
             allow_redirects=False,
             timeout=settings.manager.timeouts.generic_http,
