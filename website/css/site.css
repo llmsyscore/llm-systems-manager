@@ -165,7 +165,7 @@ h2 { font-family: var(--display); font-weight: 700; font-size: clamp(26px, 3vw, 
 
 /* Feature grid */
 .grid { display: grid; gap: 16px; }
-.grid-features { grid-template-columns: repeat(4, 1fr); }
+.grid-features { grid-template-columns: repeat(3, 1fr); }
 .card {
   background: var(--panel); border: 1px solid var(--line-soft); border-radius: 12px;
   padding: 22px; display: flex; flex-direction: column; gap: 10px;

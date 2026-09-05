@@ -66,7 +66,7 @@ Full details for every method, including split installs, offline installs, and u
 
 ## Top features
 
-**1. Model Autopilot.** Declare which models should stay available; Autopilot places each one only on a host with the memory to hold it (VRAM, or RAM on CPU-only hosts), rebuilds it elsewhere when a host drops out, and scales copies with demand. Off by default — it proposes, you approve. **Admin → Routing** ([screenshot](#screenshots)).
+**1. Model Autopilot.** Declare which models should stay available; Autopilot places each one only on a host with the memory to hold it (VRAM, or RAM on CPU-only hosts), rebuilds it elsewhere when a host drops out, and scales copies with demand. Off by default — it proposes, you approve — and an optional *Protect other models* gate keeps it from displacing models it doesn't manage. **Admin → Gateway** ([screenshot](#screenshots)).
 
 **2. OpenAI-compatible inference gateway.** One endpoint fronts `llama.cpp`, LM Studio, and vLLM together. `/v1/models` returns the merged catalog; requests route by per-model pin, pool round-robin, or failover to a live host. Apps target one stable URL, streaming or not. See [Inference gateway](#inference-gateway).
 
@@ -78,128 +78,216 @@ Full details for every method, including split installs, offline installs, and u
 
 **6. Model management with profiles and cache control.** Pull models straight from Hugging Face and prune files to reclaim disk. Every model keeps named profiles (chat / code / general) that reload it with those settings in one click.
 
-**7. Remote control of the whole infrastructure.** Run the servers, hot-swap models, edit configs, update `llama.cpp`, tail logs, and open an in-browser terminal — any host, one page. A Discord bot exposes the same commands, one agent covers Linux and macOS/Apple Silicon, and **LLM Overall** rolls every host into a single pane.
+**7. Remote control of the whole infrastructure.** Run the servers, hot-swap models, edit configs, update `llama.cpp`, tail logs, and open an in-browser terminal — any host, one page. A Discord bot exposes the same commands, one agent covers Linux and macOS/Apple Silicon, and the **Overall** tab rolls every host into a single pane.
 
 **8. LLM-aware telemetry and alerting.** Live inference internals — slots, tokens/sec, prompt processing, KV cache, context — beside GPU, PSU, UPS, and cooling stats. A standalone alarm engine stores every sample, evaluates threshold and anomaly rules, notifies by email/toast/webhook/Discord, buffers through outages, and collapses related issues into one incident.
 
-*Also included:* an installable phone companion (PWA) with push alerts, multi-user roles + admin audit log, encrypted scheduled backups, OpenClaw cost/budget analytics, an image generation tab, and TLS/mTLS on every connection — see the [full feature list](#full-included-features) below.
+*Also included:* a **Tools** launcher that hosts Report Card, Benchmark, and Autotune as one in-tab workspace with a fleet-wide run ledger, a **layout/appearance system** (Grid or Flow engines, role presets, compact density, seven themes, per-tab pause), an installable phone companion (PWA) with push alerts, multi-user roles + admin audit log, encrypted scheduled backups covering the manager and the alarm engine, OpenClaw cost/budget analytics, an image generation tab, and TLS/mTLS on every connection — see the [full feature list](#full-included-features) below.
 
 ---
 
 ## Screenshots
 
-**Video tour** — sign-in, the overall view, every dashboard, model control, chat, image generation, events, admin, and the alarm console:
+**Video tour** — sign-in, Overall, every dashboard, LLM Control, the Tools launcher, chat, image generation, the alarm console, every Admin page, and the settings drawer:
 
-<video src="https://github.com/user-attachments/assets/fb6f40d5-989a-4e8c-a3f4-7e0326d0a3f1" controls muted width="900"></video>
+<video src="https://github.com/user-attachments/assets/fcd05405-0dd5-4481-9fec-773692d261d5" controls muted width="900"></video>
 
-<img width="2560" height="1440" alt="Sign-in screen" src="docs/screenshots/login.webp" />
+<img width="1920" height="1080" alt="Sign-in screen" src="docs/screenshots/login.webp" />
 
-**[▶ Open the screenshot viewer](https://www.llmsyscore.com/#screenshots)** — step through all 14 screens full-size with the arrows.
+**[▶ Open the screenshot viewer](https://www.llmsyscore.com/#screenshots)** — step through all 25 screens full-size with the arrows.
 
 Or open any screen right here:
 
 <details>
-<summary><b>Llama dashboard</b> — live metrics from the `llama.cpp` server and its host</summary>
+<summary><b>Overall</b> — fleet throughput, power and energy over the last 24 hours, per-provider rollups, every agent, and pinned cards from any dashboard</summary>
 
-Live metrics from the `llama.cpp` server and its host.
+Fleet throughput, power and energy over the last 24 hours, per-provider rollups, every agent, and pinned cards from any dashboard.
 
-<img width="2560" height="1440" alt="Llama dashboard" src="docs/screenshots/dashboard-llama.webp" />
+<img width="1920" height="1080" alt="Overall" src="docs/screenshots/overall.webp" />
+</details>
+
+<details>
+<summary><b>llama.cpp dashboard</b> — live server internals beside GPU, CPU, RAM, disk and network cards for the selected host</summary>
+
+Live server internals beside GPU, CPU, RAM, disk and network cards for the selected host.
+
+<img width="1920" height="1080" alt="llama.cpp dashboard" src="docs/screenshots/dashboard-llama.webp" />
 </details>
 
 <details>
 <summary><b>LM Studio dashboard</b> — loaded models, host metrics, and Apple-silicon powermetrics</summary>
 
-The server card, loaded models, and host metrics, plus live Apple-silicon powermetrics (SoC / CPU / GPU / ANE watts, thermal pressure, GPU busy). Token counts are measured at the manager gateway.
+Loaded models, host metrics, and Apple-silicon powermetrics.
 
-<img width="2560" height="1440" alt="LM Studio dashboard" src="docs/screenshots/dashboard-lmstudio.webp" />
+<img width="1920" height="1080" alt="LM Studio dashboard" src="docs/screenshots/dashboard-lmstudio.webp" />
 </details>
 
 <details>
-<summary><b>Model control</b> — run the servers, swap models, and manage the library</summary>
+<summary><b>Energy & cost</b> — measured $/Mtok, monthly savings against hosted-API pricing, per-host coverage, and hourly energy</summary>
 
-Start/stop inference servers, change models, control the provider, manage the model library, run benchmarks, auto tune models.
+Measured $/Mtok, monthly savings against hosted-API pricing, per-host coverage, and hourly energy.
 
-<img width="2560" height="1440" alt="Model control" src="docs/screenshots/model-control.webp" />
+<img width="1920" height="1080" alt="Energy &amp; cost" src="docs/screenshots/dashboard-energy.webp" />
 </details>
 
 <details>
-<summary><b>Model control — detail</b> — per-model configuration and provider controls</summary>
+<summary><b>OpenClaw dashboard</b> — session metrics, task runs, delivery queue, and cost analytics for OpenClaw agents</summary>
 
-Per-model configuration and provider controls.
+Session metrics, task runs, delivery queue, and cost analytics for OpenClaw agents.
 
-<img width="2668" height="1265" alt="Model control — detail" src="docs/screenshots/model-control-2.webp" />
+<img width="1920" height="1080" alt="OpenClaw dashboard" src="docs/screenshots/dashboard-openclaw.webp" />
 </details>
 
 <details>
-<summary><b>Model control — cards</b> — the library as cards, with named config profiles</summary>
+<summary><b>Manager dashboard</b> — service, database, stream and connection health of the manager itself</summary>
 
-The model library as cards, with named config profiles (chat / code / general) that swap and reload in one click.
+Service, database, stream and connection health of the manager itself.
 
-<img width="2767" height="1049" alt="Model control — cards" src="docs/screenshots/model-control-cards.webp" />
+<img width="1920" height="1080" alt="Manager dashboard" src="docs/screenshots/dashboard-manager.webp" />
 </details>
 
 <details>
-<summary><b>Routing & Model Autopilot</b> — pool order, model pins, and the Autopilot editor</summary>
+<summary><b>LLM Control — llama.cpp</b> — Model cards with per-model profiles and bench numbers, server controls, and the live server log</summary>
 
-Per-provider pool order and model pins, and the Autopilot editor: one row per model with its placement, failover mode, replica range, and size, each showing whether it is currently placed. Pending proposals are listed below for approval.
+Model cards with per-model profiles and bench numbers, server controls, and the live server log.
 
-<img width="2560" height="1440" alt="Routing & Model Autopilot" src="docs/screenshots/autopilot.webp" />
+<img width="1920" height="1080" alt="LLM Control — llama.cpp" src="docs/screenshots/model-control.webp" />
 </details>
 
 <details>
-<summary><b>Manager dashboard</b> — manager and agent health at a glance</summary>
+<summary><b>LLM Control — list view</b> — the same library as a sortable list; Compact, List and Cards views are one click apart</summary>
 
-Overall manager and agent health.
+The same library as a sortable list; Compact, List and Cards views are one click apart.
 
-<img width="2560" height="1440" alt="Manager dashboard" src="docs/screenshots/dashboard-manager.webp" />
+<img width="1920" height="1080" alt="LLM Control — list view" src="docs/screenshots/model-control-list.webp" />
 </details>
 
 <details>
-<summary><b>Alarm engine</b> — alerts, anomalies, trend graphs, and the rule editor</summary>
+<summary><b>LLM Control — LM Studio</b> — load and unload LM Studio models, control the server, and tail its log</summary>
 
-Live alerts, anomalies, trend graphs, rule and notification editor, alert timeline.
+Load and unload LM Studio models, control the server, and tail its log.
 
-<img width="2560" height="1440" alt="Alarm engine" src="docs/screenshots/alarm-console.webp" />
+<img width="1920" height="1080" alt="LLM Control — LM Studio" src="docs/screenshots/model-control-lmstudio.webp" />
 </details>
 
 <details>
-<summary><b>Admin console</b> — system health, access control, agents, and the audit log</summary>
+<summary><b>Tools launcher</b> — Report Card, Benchmark and Autotune as in-tab modules, with a fleet-wide run ledger underneath</summary>
 
-System health plus sub-tabs for access control, agents, the audit log, backup/restore, and routing. The agents view lists every registered host with its capabilities, pool membership, TLS state, and version.
+Report Card, Benchmark and Autotune as in-tab modules, with a fleet-wide run ledger underneath.
 
-<img width="2560" height="1440" alt="Admin console" src="docs/screenshots/admin-console.webp" />
+<img width="1920" height="1080" alt="Tools launcher" src="docs/screenshots/tools.webp" />
 </details>
 
 <details>
-<summary><b>Energy & cost dashboard</b> — measured $/Mtok, savings, and active-vs-idle energy</summary>
+<summary><b>GPU Report Card</b> — one standard test per GPU — generation tok/s, prompt processing, first token, power draw, and cost per Mtok</summary>
 
-Measured $/Mtok against your electricity price, savings versus hosted-API pricing, and hourly active-vs-idle energy. The per-host table marks which hosts report power and token telemetry, so the totals say what they're based on.
+One standard test per GPU — generation tok/s, prompt processing, first token, power draw, and cost per Mtok.
 
-<img width="2560" height="1440" alt="Energy & cost dashboard" src="docs/screenshots/dashboard-energy.webp" />
+<img width="1920" height="1080" alt="GPU Report Card" src="docs/screenshots/report-card.webp" />
 </details>
 
 <details>
-<summary><b>OpenClaw dashboard</b> — session cost analytics and tool attribution</summary>
+<summary><b>Autotune</b> — search for the largest context each model can run inside the memory you have free</summary>
 
-OpenClaw session metrics, cost analytics, and tool attribution.
+Search for the largest context each model can run inside the memory you have free.
 
-<img width="2560" height="1440" alt="OpenClaw dashboard" src="docs/screenshots/dashboard-openclaw.webp" />
+<img width="1920" height="1080" alt="Autotune" src="docs/screenshots/autotune.webp" />
 </details>
 
 <details>
-<summary><b>Autotune wizard</b> — search for the fastest context/slot settings per model</summary>
+<summary><b>Benchmark</b> — llama-bench and batched runs across the model library, plotted by depth or batch size</summary>
 
-Search for the fastest context/slot settings per model.
+llama-bench and batched runs across the model library, plotted by depth or batch size.
 
-<img width="1170" height="1057" alt="Autotune wizard" src="docs/screenshots/autotune.webp" />
+<img width="1920" height="1080" alt="Benchmark" src="docs/screenshots/benchmark.webp" />
 </details>
 
 <details>
-<summary><b>Benchmark results</b> — throughput benchmarks across your whole model library</summary>
+<summary><b>LLM Chat</b> — chat against any model the gateway serves, with file upload and a working directory</summary>
 
-Throughput benchmarks across your whole model library.
+Chat against any model the gateway serves, with file upload and a working directory.
 
-<img width="1164" height="1161" alt="Benchmark results" src="docs/screenshots/benchmark.webp" />
+<img width="1920" height="1080" alt="LLM Chat" src="docs/screenshots/llm-chat.webp" />
+</details>
+
+<details>
+<summary><b>Image generation</b> — native async image and video generation on a local stable-diffusion.cpp server</summary>
+
+Native async image and video generation on a local stable-diffusion.cpp server.
+
+<img width="1920" height="1080" alt="Image generation" src="docs/screenshots/image-generation.webp" />
+</details>
+
+<details>
+<summary><b>Alarm console</b> — active alerts, anomalies, suppressions, the 24-hour severity band, and the alert timeline, inside the Events tab</summary>
+
+Active alerts, anomalies, suppressions, the 24-hour severity band, and the alert timeline, inside the Events tab.
+
+<img width="1920" height="1080" alt="Alarm console" src="docs/screenshots/alarm-console.webp" />
+</details>
+
+<details>
+<summary><b>Admin — System Health & Agents</b> — the live data-flow diagram above the agent roster with capabilities, pool membership, TLS state and version</summary>
+
+The live data-flow diagram above the agent roster with capabilities, pool membership, TLS state and version.
+
+<img width="1920" height="1080" alt="Admin — System Health &amp; Agents" src="docs/screenshots/admin-console.webp" />
+</details>
+
+<details>
+<summary><b>Access Control</b> — login policy, trusted networks, users and roles</summary>
+
+Login policy, trusted networks, users and roles.
+
+<img width="1920" height="1080" alt="Access Control" src="docs/screenshots/admin-access.webp" />
+</details>
+
+<details>
+<summary><b>Audit Log</b> — a filtered ledger of every admin action with actor, target, source and result</summary>
+
+A filtered ledger of every admin action with actor, target, source and result.
+
+<img width="1920" height="1080" alt="Audit Log" src="docs/screenshots/admin-audit.webp" />
+</details>
+
+<details>
+<summary><b>Backups</b> — Manager and alarm-engine archives, the backup schedule, retained runs, and the mirror state</summary>
+
+Manager and alarm-engine archives, the backup schedule, retained runs, and the mirror state.
+
+<img width="1920" height="1080" alt="Backups" src="docs/screenshots/admin-backups.webp" />
+</details>
+
+<details>
+<summary><b>Gateway</b> — the inference-gateway flow from clients to hosts, with throughput, latency, in-flight and energy tiles</summary>
+
+The inference-gateway flow from clients to hosts, with throughput, latency, in-flight and energy tiles.
+
+<img width="1920" height="1080" alt="Gateway" src="docs/screenshots/gateway.webp" />
+</details>
+
+<details>
+<summary><b>Model Autopilot</b> — placement entries, proposals, pool order and model pins</summary>
+
+Placement entries, proposals, pool order and model pins.
+
+<img width="1920" height="1080" alt="Model Autopilot" src="docs/screenshots/autopilot.webp" />
+</details>
+
+<details>
+<summary><b>Settings</b> — every configuration key grouped and searchable, applied hot or flagged as restart-pending</summary>
+
+Every configuration key grouped and searchable, applied hot or flagged as restart-pending.
+
+<img width="1920" height="1080" alt="Settings" src="docs/screenshots/admin-settings.webp" />
+</details>
+
+<details>
+<summary><b>Settings drawer</b> — pinned cards, layout engine, density, themes and refresh cadence for the page you are on</summary>
+
+Pinned cards, layout engine, density, themes and refresh cadence for the page you are on.
+
+<img width="1920" height="1080" alt="Settings drawer" src="docs/screenshots/settings-drawer.webp" />
 </details>
 
 ---
@@ -208,29 +296,29 @@ Throughput benchmarks across your whole model library.
 
 The eight headline capabilities plus everything else that ships in the box:
 
-- **Model Autopilot.** Declared-state model placement gated on a host actually having the memory, with failover when one goes offline and replicas added or removed as demand changes. Off by default. **Admin → Routing**.
+- **Model Autopilot.** Declared-state model placement gated on a host actually having the memory, with failover when one goes offline and replicas added or removed as demand changes. Off by default. **Admin → Gateway**.
 - **GPU Report Card.** One standardized benchmark across all three providers producing a comparable, shareable card — TTFT, throughput, tokens/joule, measured $/Mtok, and the GPU it ran on. Runs are stored so you can trend them.
 - **Energy & cost intelligence.** Measured **$/Mtok** from real power draw, monthly savings against hosted-API pricing, and idle-power accounting. Only hosts reporting both power and token telemetry count, so a half-instrumented host can't skew the number.
 - **Discord bot.** Slash commands for host queries, model load/unload, and alarm acknowledgement, behind a user allowlist with model control off by default.
-- **OpenAI-compatible inference gateway.** One endpoint (`/api/gateway/v1`) fronts every provider; `/v1/models` merges all pools, deduped and tagged. Per-model pin, then pool round-robin, then pre-first-token failover. Dashboard sessions by default, API keys for external clients. See [Inference gateway](#inference-gateway).
+- **OpenAI-compatible inference gateway.** One endpoint (`/api/gateway/v1`) fronts every provider; `/v1/models` merges all pools, deduped and tagged. Per-model pin, then pool round-robin, then pre-first-token failover. Dashboard sessions by default, API keys for external clients — a key can carry a `label=secret` form so it shows by name (not position) in the Gateway card's flow diagram. See [Inference gateway](#inference-gateway).
 - **Benchmarking & autotuning.** Library-wide throughput benchmarks, plus autotuners for `llama.cpp` context/slot counts and vLLM `max-model-len`.
 - **Model management.** A built-in Hugging Face browser downloads and prunes models file-by-file; named profiles (chat / code / general) swap and reload from the model card in one click.
 - **Energy & thermal control.** A per-host performance manager flips CPU governor and fan profiles with inference load — full power under work, quiet when idle.
 - **Remote control, no SSH.** Run the servers, hot-swap models, edit configs, update `llama.cpp` (source, conda, Homebrew, release binaries, or your own script), tail logs, and open an in-browser PTY terminal.
 - **LLM runtime visibility.** Slots, tokens/sec, prompt-processing rate, KV cache, context, idle/awake, chat template, and modalities, plus LM Studio loaded models and sessions.
-- **Every host in one pane.** A picker switches views and controls per agent, and **LLM Overall** rolls combined throughput, hottest GPU, total power, and active models into one view. A single-host lab sees no change.
+- **Every host in one pane.** A picker switches views and controls per agent, and the **Overall** tab rolls combined throughput, hottest GPU, total power, and active models into one view. A single-host lab sees no change.
 - **Cross-platform agent.** One agent for Linux and macOS/Apple Silicon auto-detects what each host runs and enables only what's relevant — a bare host just reports system metrics, all over TLS.
 - **Live host telemetry.** CPU, RAM, disk, network, GPU utilization, PSU, UPS battery, and AIO cooling stats.
 - **Alerting that survives outages.** A standalone alarm engine persists every metric to InfluxDB, evaluates threshold and anomaly rules, and routes alerts by email, toast, webhook, or Discord. Agents buffer to disk when it's down and replay when it returns.
 - **Incident correlation, not alert spam.** Several rules tripping on one host at once become a single **incident** — one notification, with the Events table collapsing members behind a "+N related" count. Resolved alerts roll into a retention-managed history.
-- **At-a-glance status.** Dots on the **Events** and **Admin** tabs turn red on active critical alerts or degraded system health, and amber when a new release is available. Both update from any tab.
+- **At-a-glance status.** Dots on the **Events** and **Admin** tabs turn red on active critical alerts or degraded system health, and amber when a new release is available. Both update from any tab. A separate run-activity dot on **LLM Control → Tools** tracks tool runs fleet-wide, so it lights up even for a run started from another browser.
 - **Phone companion (PWA).** An installable app at `/companion` — Home, Alerts, Energy, Models, Admin, and Settings screens sized for a phone, with alarm-engine alerts delivered as native push notifications even when the app is closed. Model swaps, pins, autopilot approvals, and service restarts each sit behind a confirm sheet, gated to the admin role. See [Phone companion](#phone-companion-pwa).
 - **Direct LLM chat.** Talk to any loaded model through the embedded `llama.cpp` web interface.
 - **OpenClaw cost analytics.** Session logs become token-usage, cost, and tool-attribution dashboards with monthly spend projection and — given a budget — warning, ceiling, and cost-anomaly alerts.
 - **Image generation.** An optional tab drives `stable-diffusion.cpp` for text-to-image.
 - **Multi-user access control.** **Admin** / **Operator** roles — operators drive LLMs and watch dashboards but stay out of the Admin tab, agent management, secrets, and shells. Self-service password change plus username + source-IP lockout.
-- **Admin audit log.** Every mutating admin action is recorded — who, what, when, from where, success or not — and browsable in **Admin → Audit Log**.
-- **Scheduled backups.** Full export archives (config, agent registry, CA, users, model profiles, benchmarks) on an interval, with retention pruning, optional AES-256-GCM encryption, and an optional mirror directory. The same archive restores through Import.
+- **Admin audit log.** Every mutating admin action is recorded — who, what, when, from where, success or not — and browsable in **Admin → Audit Log**. Rows are purged past a configurable retention window (60 days by default) behind a 100,000-row backstop, categorized against a seven-group event catalog with per-event toggles, searchable and filterable, and exportable to CSV. A "Hide automated" filter can suppress rows from designated automated actors.
+- **Scheduled backups.** Full export archives (config, agent registry, CA, users, model profiles, benchmarks) on an interval, with retention pruning, optional AES-256-GCM encryption, and an optional mirror directory. Each run writes a manager archive and, when `[alarm_engine].management_token` is set, an alarm-engine archive alongside it — without a token the run is reported as manager only. Retention counts runs rather than archives, so `keep_last = 7` can retain up to 14 files. Archives restore through **Restore…** and can be downloaded straight from the Backups card, an action that's audited.
 - **Encrypted everywhere.** All agent ↔ manager and agent ↔ alarm-engine traffic runs over TLS, with per-agent leaf certs signed by the manager's internal CA.
 - **Bring your own TLS certificate.** Point `[manager].tls_cert_file`/`tls_key_file` at a public or corporate-CA cert and the HTTPS port serves it via SNI for the hostnames it covers, while agents pinned to the internal CA keep working untouched. Required for installing the phone companion from another device.
 
@@ -346,7 +434,7 @@ The agent is what pushes all data into the dashboard. Run the installer and use 
 bash <(curl -fsSL https://raw.githubusercontent.com/llmsyscore/llm-systems-manager/main/tools/installer/install.sh)
 ```
 
-The agent registers itself with the manager on first launch. From **Admin → Agents**, click **Approve** — the manager signs a TLS cert for that agent and starts polling it.
+The agent registers itself with the manager on first launch. From **Admin → Agents**, click **Approve** — the manager signs a TLS cert for that agent and starts polling it. Fleet-wide actions (Approve all pending, Update all, Push CA, the agent-auth slider) live under the **Manage ▾** menu on that same tab.
 
 ### Homebrew (macOS / Linux)
 
@@ -388,11 +476,12 @@ Provider flags (`LLAMA_ENABLED`, `LMS_ENABLED`, sudo wrappers for service contro
 On macOS, download the `-macos-arm64.tar.gz` tarball instead; it bundles the same binary + `agent_config.yaml.example` plus the `com.llm-systems-agent-binary.plist.tmpl` launchd unit. Clear the quarantine attribute first (`xattr -d com.apple.quarantine llm-systems-agent`), then use the extracted `com.llm-systems-agent-binary.plist.tmpl` (substitute `${AGENT_USER}`, `${AGENT_USER_HOME}`, `${AGENT_INSTALL_DIR}`) as the launchd unit. Linux binaries need glibc 2.35+ (Ubuntu 22.04 / Debian 12 or newer).
 
 Binary agents built from this release onward can also be upgraded from
-**Admin → Agents → Update**: the agent downloads the latest release tarball for
+**Admin → Agents**, per-agent **Update**: the agent downloads the latest release tarball for
 its platform, verifies the `.sha256`, extracts and smoke-tests the staged
 binary, swaps it atomically (previous binary kept beside it as
 `.self-update.bak.<ts>`), and restarts. Older binaries still need one manual
-replacement first. **Update all** upgrades the whole fleet in one click: agents
+replacement first. **Update all**, upgrading the whole fleet in one click, now
+lives in the **Manage ▾** menu with a pending-count badge: agents
 run one at a time, each has to report the new version before the next starts,
 and the sequence stops at the first failure with the remainder left untouched.
 
@@ -450,6 +539,8 @@ Common keys:
 | `LLAMA_LOG_FILE` | Path to `llama-server.log` (for log-tail + state detection) | auto-detected |
 | `LLAMA_BUILD_METHOD` | How the "Update llama.cpp" button installs/upgrades: `custom_script` / `source` / `release_binary` / `conda` / `homebrew` | auto-detected at install |
 | `LMS_CMD` | Path to the `lms` CLI | auto-detected (`which lms`) |
+| `LMS_LOAD_TIMEOUT_S` | How long to wait for an LM Studio model load before reporting failure (keep under 200) | `180` |
+| `LMS_UNLOAD_TIMEOUT_S` | How long to wait for an LM Studio model unload before reporting failure (keep under 90) | `60` |
 | `PROCESS_WATCHLIST` | Process names the agent should report on (psutil-style) | sensible defaults — see the example |
 
 The installer fills most of these in at deploy time via auto-detect and prompts; the file above lists what to override after installation. Any field can also be set via environment variable `LSA_<NAME>` (e.g. `LSA_LLAMA_API_URL=http://...`).
@@ -472,13 +563,13 @@ One OpenAI-compatible endpoint (http://<manager-host>:5000/api/gateway/v1) on th
 
 Routing follows the same precedence as the dashboard: a per-model **pin** first, then an explicit `?agent=` pick, then **pool round-robin**, finally the system **default**. If the chosen backend can't be reached, the gateway **fails over** to the next live agent that actually serves that model. Both streaming (`"stream": true`) and non-streaming requests work, and each response carries an `X-Proxied-To` header naming the agent that served it.
 
-**Access.** By default the gateway is reachable from a logged-in dashboard session only. To let external OpenAI-SDK clients in, add one or more keys to `[manager.gateway].api_keys` in `config/llm-systems.toml` and restart the manager — each key is a bearer accepted only on `/api/gateway/*`:
+**Access.** By default the gateway is reachable from a logged-in dashboard session only. To let external OpenAI-SDK clients in, add one or more keys to `[manager.gateway].api_keys` in `config/llm-systems.toml` and restart the manager — each key is a bearer accepted only on `/api/gateway/*`. A key can optionally be labelled (`name=secret`); a labelled key names the client in the Gateway card's flow diagram, and an unlabelled one shows there as `key-1`, `key-2`, … by position:
 
 ```toml
 [manager.gateway]
 enabled = true
-api_keys = ["sk-your-secret-key"]   # empty = dashboard-session access only
-read_timeout_s = 600.0              # generation can take minutes on big models
+api_keys = ["laptop=sk-abc123", "sk-plainkey"]   # empty = dashboard-session access only
+read_timeout_s = 600.0                            # generation can take minutes on big models
 ```
 
 **Call it like any OpenAI endpoint:**
@@ -582,11 +673,11 @@ InfluxDB v2 is the database for the **time-series metrics** — raw samples plus
 
 ### Security model
 
-- **Dashboard login & roles.** The web UI supports multiple named users with two roles — **Admin** (full access) and **Operator** (can operate the LLMs and view dashboards, but no Admin tab, agent management, secrets, user management, or shells). Admins manage accounts in **Admin → Users** (create / set role / disable / delete / reset password / unlock); every user can change their own password and log out from the top-nav **Account** menu. Fresh installs ship with a default Admin account. Passwords are stored only as an scrypt hash, never in plaintext. Repeated failed logins lock out the username and source IP for a configurable window. Login mode is configurable: `required` (default), `trusted_cidr` (skip login for requests from your admin CIDRs), `disabled`, or `auto` (controlled via the Admin tab in the GUI).
-- **Agent auth.** Each agent gets a bearer token at registration, stored locally with restrictive permissions, plus a per-agent TLS leaf cert signed by the manager's internal CA on approval.
-- **Manager TLS.** A second HTTPS server runs on the `[manager].tls_port` (default `5443`) using an auto-rotated cert from the internal CA. Approved agents auto-upgrade their control channel from `http://manager:5000` to `https://manager:5443` once they hold the CA. Optionally set `[manager].tls_cert_file`/`tls_key_file` to an operator-provided cert (PEM full-chain + key): it is served via SNI only to the hostnames its DNS SANs cover, so browsers by name get your public cert while agents — which pin the internal CA — are untouched. Unreadable or half-configured pairs warn and fall back to the internal CA, and the system-health cert-expiry warning tracks whichever cert is actually served.
+- **Dashboard login & roles.** The web UI supports multiple named users with two roles — **Admin** (full access) and **Operator** (can operate the LLMs and view dashboards, but no Admin tab, agent management, secrets, user management, or shells). Admins manage accounts in **Admin → Access Control** (create / set role / disable / delete / reset password / unlock); every user can change their own password and log out from the top of the settings-cog drawer. Fresh installs ship with a default Admin account. Passwords are stored only as an scrypt hash, never in plaintext. Repeated failed logins lock out the username and source IP for a configurable window. Login mode is configurable: `required` (default), `trusted_cidr` (skip login for requests from your admin CIDRs), `disabled`, or `auto` (controlled via the Admin tab in the GUI). An account still holding the shipped default password is held on a mandatory change-password form until it's changed; the check is derived server-side, so pre-existing sessions and renamed admins are covered too.
+- **Agent auth.** Each agent gets a bearer token at registration, stored locally with restrictive permissions, plus a per-agent TLS leaf cert signed by the manager's internal CA on approval. Current agents additionally present a hardware fingerprint on the approval-status poll and on re-registration; records last written by an older agent keep the previous behavior until that agent upgrades.
+- **Manager TLS.** A second HTTPS server runs on the `[manager].tls_port` (default `5443`) using an auto-rotated cert from the internal CA. Approved agents auto-upgrade their control channel from `http://manager:5000` to `https://manager:5443` once they hold the CA. Optionally set `[manager].tls_cert_file`/`tls_key_file` to an operator-provided cert (PEM full-chain + key): it is served via SNI only to the hostnames its DNS SANs cover, so browsers by name get your public cert while agents — which pin the internal CA — are untouched. Unreadable or half-configured pairs warn and fall back to the internal CA, and the system-health cert-expiry warning tracks whichever cert is actually served. A session minted over the HTTPS listener is stored in a separate `__Secure-session` cookie with its own signing salt, so plain-HTTP and HTTPS are independent logins and an HTTP cookie can't be replayed on the TLS port — upgrading to a build with this change invalidates existing HTTPS sessions. `[manager].hsts_max_age_s` (default `0`, off) can emit `Strict-Transport-Security` on TLS responses; leave it off while the plain-HTTP port shares the hostname, since HSTS preserves the port.
 - **Alarm-engine ingest token.** Agents push metrics directly to the alarm engine (port 8081), so its ingest endpoints are gated by a shared bearer token (`[alarm_engine].ingest_token`). The installer generates one when manager + alarm engine are co-located; agents receive it from the manager on their heartbeat. Left blank, ingest stays open for backward compatibility. `[alarm_engine].tls_enabled` (default `true`) additionally serves the alarm engine over HTTPS using a cert the manager signs from its internal CA.
-- **WebSocket proxy.** `[manager].ws_proxy_port` (default `5444`, set `0` to disable) runs a standalone thread that terminates the alarm engine's internal-CA `wss` upstream on the browser's behalf, so the dashboard's Events tab works without you installing the internal CA in your browser. Every handshake must carry a short-lived HMAC ticket issued by the session-gated `/api/alarm-ws-ticket`; missing, expired, or tampered tickets are rejected before the bridge dials upstream. When an operator cert is configured, `[manager].ws_proxy_tls_port` (default `5446`) serves a `wss` twin of the bridge so HTTPS dashboards aren't mixed-content-blocked; alternatively front the plain port with a real-CA reverse proxy (nginx/Caddy/etc.) for end-to-end `wss`.
+- **WebSocket proxy.** `[manager].ws_proxy_port` (default `5444`, set `0` to disable) runs a standalone thread that terminates the alarm engine's internal-CA `wss` upstream on the browser's behalf, so the dashboard's Events tab works without you installing the internal CA in your browser. Every handshake must carry a short-lived HMAC ticket issued by the session-gated `/api/alarm-ws-ticket`; missing, expired, or tampered tickets are rejected before the bridge dials upstream. When an operator cert is configured, `[manager].ws_proxy_tls_port` (default `5446`) serves a `wss` twin of the bridge so HTTPS dashboards aren't mixed-content-blocked; alternatively front the plain port with a real-CA reverse proxy (nginx/Caddy/etc.) for end-to-end `wss`. The same bridge also serves **`/ws/openclaw`**, with path-bound, single-use tickets from `GET /api/openclaw-ws-ticket` — this is what lets the OpenClaw control UI work over HTTPS.
 - **Inference-gateway keys.** The OpenAI-compatible gateway (`/api/gateway/*`) is reachable from a dashboard session only until you add bearer keys to `[manager.gateway].api_keys`; each key is compared in constant time and accepted only on gateway paths. It reuses the existing agent bearer + TLS channel to reach backends, so it adds no new trust surface.
 - **Secrets** (InfluxDB tokens, SMTP password) live in a single config file with restrictive permissions. A documented example template ships in the repo.
 
@@ -653,7 +744,7 @@ The installer checks for: `python3` (≥ 3.11), `python3-venv`, `git`, `jq`, `cu
 ## Project layout
 
 ```
-llm-systems-manager/        Flask manager — backend/ (auth, multi-user management, agent registry, terminal, reverse proxies, OpenClaw analytics, shared app context, internal CA, archive) and frontend/ (single-page UI)
+llm-systems-manager/        Flask manager — backend/ (auth, multi-user management, agent registry, terminal, reverse proxies, OpenClaw analytics, tool run tracking, shared app context, internal CA, archive) and frontend/ (single-page UI)
 agent/                      Cross-platform telemetry + control agent (+ install/)
 llm-systems-alarm-engine/   Standalone alarm engine (FastAPI)
 config/                     Unified TOML config + typed loader
