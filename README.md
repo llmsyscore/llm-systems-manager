@@ -90,7 +90,7 @@ Full details for every method, including split installs, offline installs, and u
 
 **Video tour** — sign-in, Overall, every dashboard, LLM Control, the Tools launcher, chat, image generation, the alarm console, every Admin page, and the settings drawer:
 
-<video src="https://github.com/user-attachments/assets/fcd05405-0dd5-4481-9fec-773692d261d5" controls muted width="900"></video>
+<video src="https://github.com/user-attachments/assets/499a19e5-7224-4b9f-a67c-47df49a6a9a2" controls muted width="900"></video>
 
 <img width="1920" height="1080" alt="Sign-in screen" src="docs/screenshots/login.webp" />
 
