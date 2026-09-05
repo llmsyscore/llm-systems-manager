@@ -371,6 +371,9 @@ def register_routes(app, ctx) -> None:
         except ValueError as e:
             log.warning("user delete rejected: %s", e)
             return _bad("cannot delete the last enabled admin", 409)
+        on_deleted = getattr(ctx, "on_user_deleted", None)
+        if callable(on_deleted):
+            on_deleted(target)
         return jsonify({"ok": True})
 
     @app.route("/api/admin/users/<username>/unlock", methods=["POST"])
