@@ -159,7 +159,7 @@ def _local_hostname() -> str:
 # banner reads it. Bump suffix (-1, -2, …) for same-day iterations; roll
 # the date for a new day's first change.
 # ---------------------------------------------------------------------------
-__version__ = "v2026.09.04-15"
+__version__ = "v2026.09.04-16"
 
 # Wall-clock at first import (Cheroot main process); the shutdown banner
 # reads it for the uptime line.
@@ -4670,6 +4670,12 @@ def admin_system_health():
             # enabled=true + active=false → cert missing (error in payload).
             _comps = (info.get("components") or {}) if isinstance(info, dict) else {}
             _tls_info = _comps.get("tls")
+            # Auth posture (#828): what the AE enforces, whether the bearer this
+            # process actually sends was accepted, and whether one is sent at all.
+            _auth_status = info.get("auth") if isinstance(info, dict) else None
+            _auth_raw = _comps.get("auth") if isinstance(_comps.get("auth"), dict) else None
+            _auth_detail = _auth_raw or {}
+            _bearer_sent = bool(_ae_session.headers.get("Authorization"))
             health["services"].append({
                 "name": "alarm_engine",
                 "ok": ae_ok and info.get("status") == "ok",
@@ -4683,9 +4689,28 @@ def admin_system_health():
                 "rule_eval_ms": _comps.get("rule_eval_last_cycle_ms"),
                 "ingest_points_per_s": info.get("ingest_points_per_s"),
                 "active_alerts": info.get("active_alerts"),
+                "auth": _auth_status,
+                "auth_detail": _auth_raw,
+                "bearer_configured": _bearer_sent,
                 "last_ok_at": _ae_health_state["last_ok_at"],
                 "consecutive_failures": _ae_health_state["consecutive_failures"],
             })
+            _remedy = "(Admin → Settings → Alarm engine)"
+            if _auth_status == "open" and _auth_detail.get("open_on_network", True):
+                health["warnings"].append(
+                    "alarm engine auth open: no management_token or ingest_token on the engine — "
+                    "set the same [alarm_engine].management_token on both hosts " + _remedy)
+            elif _auth_status == "enforced" and not _bearer_sent:
+                _key = ("ingest_token" if _auth_detail.get("management") == "ingest_token"
+                        else "management_token")
+                health["warnings"].append(
+                    f"alarm engine auth: the manager sends no token — set [alarm_engine].{_key} "
+                    "to the engine's value and restart the manager " + _remedy)
+            elif _auth_status == "enforced" and _auth_detail.get("bearer_ok") is False:
+                health["warnings"].append(
+                    "alarm engine auth: the engine rejects the manager's token — the two hosts' "
+                    "[alarm_engine].management_token values differ; set the same value on both "
+                    "and restart the manager " + _remedy)
             ae_flow.update({
                 "ae_ingest_points_per_s": info.get("ingest_points_per_s"),
                 "influx_writes_per_s": info.get("influx_writes_per_s"),

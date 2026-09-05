@@ -49,7 +49,11 @@ if [[ -f "$REAL" ]]; then
   stamp="$(date +%Y%m%d-%H%M%S)"
   $SUDO cp -a "$REAL" "$REAL.bak.$stamp"
   ok "backed up existing config → llm-systems.toml.bak.$stamp"
+  # Keep a live management_token across re-runs (Mode 3 offers it as the default).
+  PREV_MGMT_TOKEN="$($SUDO sed -nE 's/^[[:space:]]*management_token[[:space:]]*=[[:space:]]*"([^"]*)".*/\1/p' "$REAL" | head -n1)"
+  [[ "$PREV_MGMT_TOKEN" == "REPLACE_ME" ]] && PREV_MGMT_TOKEN=""
 fi
+: "${PREV_MGMT_TOKEN:=}"
 
 # Copy template
 $SUDO cp -a "$EXAMPLE" "$REAL"
@@ -95,6 +99,15 @@ MANAGER_URL=""
 SMTP_SERVER=""; SMTP_USER=""; SMTP_PASS=""
 MGR_INGEST_TOKEN_PASTE=""
 MGR_MGMT_TOKEN_PASTE=""
+# 1 when this run minted the management_token (Mode 3); printed last.
+MGMT_GENERATED=0
+
+# Mints a management_token for a Mode 3 install and flags it for the summary.
+mint_mgmt_token() {
+  MGR_MGMT_TOKEN_PASTE="$(openssl rand -hex 32)"
+  MGMT_GENERATED=1
+  log "  → generated a management_token; it prints at the end with the alarm-engine-host steps"
+}
 
 if $PROMPT; then
   banner "Interactive config edits (mode $MODE)"
@@ -180,21 +193,38 @@ if $PROMPT; then
     else
       log "  → no ingest_token entered; warning will be emitted below"
     fi
-    # Same for the management_token — the manager injects it on its AE calls.
-    # Enter to skip and add it later via [alarm_engine].management_token.
+    # management_token prompt (Mode 3, #828): paste, 'new' to mint one, or
+    # Enter to keep a value carried over from the previous config. No skip.
     echo
     echo "  The alarm engine also generates a management_token at install (Mode 4)."
-    echo "  Admin → Settings can only edit alarm-engine settings when the SAME"
-    echo "  management_token is set on both hosts; skipping leaves that half read-only."
-    read -rp "  AE management_token (or Enter to skip): " MGR_MGMT_TOKEN_PASTE
-    MGR_MGMT_TOKEN_PASTE="$(printf '%s' "$MGR_MGMT_TOKEN_PASTE" | tr -d '[:space:]')"
-    if [[ -n "$MGR_MGMT_TOKEN_PASTE" ]]; then
+    echo "  It is REQUIRED: it locks the engine's rules/alerts/notifications API"
+    echo "  and lets Admin → Settings edit alarm-engine settings. The SAME value"
+    echo "  must be set on both hosts."
+    echo "  Paste the value the alarm-engine installer printed, or type 'new' to"
+    echo "  generate one here (you will then copy it to the alarm-engine host)."
+    _mgmt_hint="paste, or 'new' to generate"
+    [[ -n "$PREV_MGMT_TOKEN" ]] && _mgmt_hint="Enter keeps the current value, or paste, or 'new'"
+    while :; do
+      read -rp "  AE management_token ($_mgmt_hint): " MGR_MGMT_TOKEN_PASTE
+      MGR_MGMT_TOKEN_PASTE="$(printf '%s' "$MGR_MGMT_TOKEN_PASTE" | tr -d '[:space:]')"
+      if [[ -z "$MGR_MGMT_TOKEN_PASTE" && -n "$PREV_MGMT_TOKEN" ]]; then
+        MGR_MGMT_TOKEN_PASTE="$PREV_MGMT_TOKEN"
+        log "  → keeping the management_token from the previous config"
+        break
+      fi
+      if [[ -z "$MGR_MGMT_TOKEN_PASTE" ]]; then
+        warn "  a management_token is required on a split install — paste one or type 'new'."
+        continue
+      fi
+      if [[ "${MGR_MGMT_TOKEN_PASTE,,}" == "new" ]]; then
+        mint_mgmt_token
+        break
+      fi
       validate_influx_token "AE management_token paste" "$MGR_MGMT_TOKEN_PASTE" 0 \
         || die "pasted management_token failed sanity check"
       log "  → management_token will be written to [alarm_engine].management_token"
-    else
-      log "  → no management_token entered; Admin → Settings stays read-only for alarm-engine settings until it is set on both hosts"
-    fi
+      break
+    done
     # InfluxDB host. The manager doesn't query InfluxDB for data (the AE does),
     # but it uses [influxdb].host for the admin tab's InfluxDB status/co-location
     # chip. Left at the template default (localhost) it points the chip at the
@@ -246,6 +276,19 @@ else
     # Best-effort guess for the admin tab's InfluxDB chip — default to the AE
     # host (== detected IP here). Override in [influxdb].host for a real split.
     INFLUX_HOSTNAME="$DETECTED_IP"; INFLUX_PORT="8086"
+    # Mode 3 management_token, non-interactive: LLMSYS_CFG_AE_MGMT_TOKEN,
+    # else the previous config's value, else mint one.
+    MGR_MGMT_TOKEN_PASTE="$(printf '%s' "${LLMSYS_CFG_AE_MGMT_TOKEN:-}" | tr -d '[:space:]')"
+    if [[ -n "$MGR_MGMT_TOKEN_PASTE" ]]; then
+      validate_influx_token "LLMSYS_CFG_AE_MGMT_TOKEN" "$MGR_MGMT_TOKEN_PASTE" 0 \
+        || die "LLMSYS_CFG_AE_MGMT_TOKEN failed sanity check"
+      log "  → management_token taken from LLMSYS_CFG_AE_MGMT_TOKEN"
+    elif [[ -n "$PREV_MGMT_TOKEN" ]]; then
+      MGR_MGMT_TOKEN_PASTE="$PREV_MGMT_TOKEN"
+      log "  → keeping the management_token from the previous config"
+    else
+      mint_mgmt_token
+    fi
   elif (( HAS_AE && ! HAS_MGR )); then
     MANAGER_URL="http://${DETECTED_IP}:5000"
     MGR_IP="$DETECTED_IP"
@@ -329,7 +372,6 @@ INGEST_COMMENTED=0
 # co-located, commented-out on split-AE, pasteable on manager-only.
 MGMT_TOKEN=""
 MGMT_COMMENTED=0
-MGMT_SKIPPED=0
 if (( HAS_AE && HAS_MGR )); then
   INGEST_TOKEN="$(openssl rand -hex 32)"
   MGMT_TOKEN="$(openssl rand -hex 32)"
@@ -368,7 +410,9 @@ elif (( HAS_AE )); then
     2. When you install the manager on the other host, paste them at the
        prompts that read:
            AE ingest_token (or Enter to skip):
-           AE management_token (or Enter to skip):
+           AE management_token (paste, or 'new' to generate):
+       The management_token prompt cannot be skipped — the engine's
+       rules/alerts API stays open on the network without it.
 
     3. After the manager install finishes, come back to THIS host and
        activate the tokens here:
@@ -404,13 +448,12 @@ elif (( HAS_MGR )); then
     warn "  enforces an ingest_token, paste it into [alarm_engine].ingest_token in"
     warn "  $REAL and restart llm-systems-manager"
   fi
-  if [[ -n "$MGR_MGMT_TOKEN_PASTE" ]]; then
-    ok "manager will authenticate AE management calls with the management_token you provided"
+  if (( MGMT_GENERATED )); then
+    warn "management_token generated on this host — the alarm engine does not have it yet;"
+    warn "  its rules/alerts API stays open and Admin → Settings reports 403 until the"
+    warn "  SAME value is set on the alarm-engine host (steps are printed at the end)."
   else
-    MGMT_SKIPPED=1
-    warn "no management_token set — the alarm engine's config API refuses (403) without one,"
-    warn "  so Admin → Settings cannot edit alarm-engine settings (rules/alerts still work)."
-    warn "  Set the SAME [alarm_engine].management_token on both hosts; steps are printed at the end."
+    ok "manager will authenticate AE management calls with the management_token you provided"
   fi
 fi
 
@@ -828,28 +871,35 @@ if (( HAS_MGR && ! HAS_AE )); then
 EOF
 fi
 
-# Skipped management_token on a manager-only install: the last thing printed,
-# so the operator leaves with the exact steps rather than a Settings-tab 403.
-if (( MGMT_SKIPPED )); then
+# Minted management_token (Mode 3): printed last, with the alarm-engine-host steps.
+if (( MGMT_GENERATED )); then
   cat <<EOF
 
   ┌──────────────────────────────────────────────────────────────────────┐
-  │ Still to do: alarm-engine management_token (skipped above)           │
+  │ Still to do: copy the management_token to the alarm-engine host      │
   └──────────────────────────────────────────────────────────────────────┘
-  Admin → Settings reports alarm-engine settings as unreachable (403) until
-  the SAME management_token is set on BOTH hosts.
+  This host's manager already has it in $REAL.
+  The alarm engine's rules/alerts API stays OPEN on the network, and
+  Admin → Settings reports 403, until the SAME value is live on BOTH hosts.
 
-    1. Use the value the alarm-engine installer printed (Mode 4), or make
-       a new one:   openssl rand -hex 32
+    management_token:   ${MGR_MGMT_TOKEN_PASTE}
 
-    2. On this host, in $REAL:
-           [alarm_engine].management_token = "<value>"
-       then:  sudo systemctl restart llm-systems-manager
+    1. Save the value above to your password manager / notes.
 
-    3. On the alarm-engine host, the same key and value in its
-       llm-systems.toml (uncomment the line the Mode 4 installer wrote,
-       or replace its value), then:
+    2. On the alarm-engine host, in its llm-systems.toml, set:
+           [alarm_engine].management_token = "${MGR_MGMT_TOKEN_PASTE}"
+       (replace the commented value the Mode 4 installer wrote, and
+       remove the leading '# ')
+
+    3. Restart the alarm engine there:
            sudo systemctl restart llm-systems-alarm-engine
+
+    4. If the manager on this host was already running before this
+       bootstrap, restart it too so it sends the new value:
+           sudo systemctl restart llm-systems-manager
+
+  The alarm engine logs "ALARM ENGINE AUTH" at startup and the manager's
+  Admin → System Health card shows "auth open" until step 3 is done.
 
 EOF
 fi

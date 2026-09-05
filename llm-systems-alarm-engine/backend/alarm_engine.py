@@ -40,7 +40,7 @@ _REPO_ROOT = str(Path(__file__).resolve().parent.parent.parent)
 if _REPO_ROOT not in sys.path:
     sys.path.insert(0, _REPO_ROOT)
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect  # noqa: E402
+from fastapi import FastAPI, Header, WebSocket, WebSocketDisconnect  # noqa: E402
 from fastapi.middleware.cors import CORSMiddleware  # noqa: E402
 from fastapi.responses import FileResponse  # noqa: E402
 from fastapi.staticfiles import StaticFiles  # noqa: E402
@@ -49,6 +49,7 @@ from config.unified_config import settings, CONFIG_PATH  # noqa: E402
 from ._best_effort import best_effort
 from ._time import now_utc
 from .rate_counter import INFLUX_WRITES, INGEST_POINTS
+from .api import auth as _ae_auth
 from .api.body_limit import BodySizeLimitMiddleware
 from .api.websocket import WebSocketConnectionManager, init_manager
 from .api.routes import alerts, ingest, metrics, notifications, rules
@@ -70,7 +71,7 @@ from .storage.influxdb_client import InfluxDBClient
 # (-1, -2, …) for same-day iterations; roll the date for a new day's first
 # change.
 # ---------------------------------------------------------------------------
-__version__ = "v2026.09.03-4"
+__version__ = "v2026.09.04-1"
 from .storage import influx_monitor as _influx_monitor
 from .models.alarm_rule import (
     AlarmRuleCreate,
@@ -347,7 +348,11 @@ async def _on_startup() -> None:
     logger.info("                  alerts + history → ae_alarms.db")
     logger.info(f"  Eval interval:  {_ae.evaluation_interval}s")
     logger.info(f"  SMTP:           {smtp_host}:{_smtp.port}  user={smtp_user}")
+    _auth = _ae_auth.auth_state()
+    logger.info(f"  Auth:           management={_auth['management']} ingest={_auth['ingest']}")
     logger.info("=" * 60)
+    if _auth["open_on_network"]:
+        logger.warning("ALARM ENGINE AUTH: " + _ae_auth.AUTH_OPEN_WARNING, _ae.host, _ae.port)
 
     # 1. Initialize cache
     cache = Cache()
@@ -857,7 +862,7 @@ def _active_alert_count() -> int:
 
 
 @app.get("/health")
-async def health_check() -> dict:
+async def health_check(authorization: Optional[str] = Header(default=None)) -> dict:
     """Health check endpoint.
 
     Real readiness probe — actually pings InfluxDB rather than just
@@ -871,10 +876,13 @@ async def health_check() -> dict:
     influx_version: str | None = None
     if settings.influxdb.host:
         influx_status, influx_latency_ms, influx_version = await asyncio.to_thread(_ping_influxdb)
+    auth = _ae_auth.auth_state(authorization)
     return {
         "status": "ok",
         "version": __version__,
         "uptime_s": round(time.time() - _startup_ts, 1) if _startup_ts else None,
+        # Management-gate posture (#828); detail sits in components.auth.
+        "auth": "open" if auth["management"] == "open" else "enforced",
         # 60 s sliding windows + live alert count, read by the manager's
         # System Health card.
         "ingest_points_per_s": round(INGEST_POINTS.per_s(), 3),
@@ -894,6 +902,7 @@ async def health_check() -> dict:
             # whether the ingest surface is encrypted (and flag a misconfig
             # where tls_enabled is on but the cert wasn't found).
             "tls": _tls_status,
+            "auth": auth,
         },
     }
 

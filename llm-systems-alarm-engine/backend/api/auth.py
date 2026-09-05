@@ -13,6 +13,7 @@ guessable token.
 """
 
 import hmac
+import ipaddress
 from typing import Optional
 
 from fastapi import Header, HTTPException
@@ -36,7 +37,7 @@ def _configured_management_token() -> str:
 
 
 def _provided_bearer(authorization: Optional[str]) -> str:
-    if authorization and authorization.startswith("Bearer "):
+    if isinstance(authorization, str) and authorization.startswith("Bearer "):
         return authorization[len("Bearer "):].strip()
     return ""
 
@@ -72,6 +73,42 @@ def management_bearer_ok(authorization: Optional[str]) -> bool:
 def management_auth_active() -> bool:
     """True when a management or ingest token is configured (gate enforcing)."""
     return bool(_configured_management_token() or _configured_token())
+
+
+def bind_is_loopback(host: Optional[str]) -> bool:
+    """True when the bind host only reaches this machine."""
+    h = (host or "").strip().strip("[]").lower()
+    if h == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(h).is_loopback
+    except ValueError:
+        return False
+
+
+def auth_state(authorization: Optional[str] = None) -> dict:
+    """Which token each surface enforces, whether the bind is loopback-only, and
+    whether a presented bearer matches (None when none presented or open)."""
+    mgmt_tok = _configured_management_token()
+    ingest_tok = _configured_token()
+    mgmt = "management_token" if mgmt_tok else "ingest_token" if ingest_tok else "open"
+    loopback = bind_is_loopback(settings.alarm_engine.host)
+    presented = _provided_bearer(authorization)
+    return {
+        "management": mgmt,
+        "ingest": "enforced" if ingest_tok else "open",
+        "loopback_only": loopback,
+        "open_on_network": mgmt == "open" and not loopback,
+        "bearer_ok": (management_bearer_ok(authorization)
+                      if presented and mgmt != "open" else None),
+    }
+
+
+AUTH_OPEN_WARNING = (
+    "no management_token or ingest_token configured while bound to %s:%s — rules, "
+    "alerts, notifications, metrics reads and dbstats are open to anyone on the "
+    "network; set the SAME [alarm_engine].management_token on the engine and "
+    "manager hosts and restart both")
 
 
 def require_strict_management_token(
