@@ -91,6 +91,8 @@
     .c-note   { color: var(--note); }
 
     * { box-sizing: border-box; margin: 0; padding: 0; }
+    /* Global hidden guard: outranks any class display value */
+    [hidden] { display: none !important; }
     body { font-family: var(--font-sans); background: var(--bg); color: var(--fg); }
     h1 { padding: 10px 20px; font-size: 1em; border-bottom: none; display: flex; align-items: center; gap: 10px; }
     .site-logo-link { display: flex; align-items: center; gap: 9px; text-decoration: none; color: inherit; flex-shrink: 0; }
@@ -849,4 +851,3 @@
   border: 1px solid var(--border-strong); border-radius: 99px;
   padding: 9px 15px; box-shadow: 0 4px 14px rgba(0, 0, 0, .35);
 }
-#backToCompanion[hidden] { display: none; }
