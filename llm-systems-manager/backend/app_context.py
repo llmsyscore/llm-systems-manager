@@ -36,7 +36,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Optional
 
 
 @dataclass(frozen=True)
@@ -53,6 +53,8 @@ class Context:
     alarm_engine_url: Callable[[], str]
     manager_secret: Callable[[], bytes]
     ae_session: Any
+    # Called with the username after an account is deleted.
+    on_user_deleted: Optional[Callable[[str], None]] = None
 
 
 __all__ = ["Context"]

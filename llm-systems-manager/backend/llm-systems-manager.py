@@ -159,7 +159,7 @@ def _local_hostname() -> str:
 # banner reads it. Bump suffix (-1, -2, …) for same-day iterations; roll
 # the date for a new day's first change.
 # ---------------------------------------------------------------------------
-__version__ = "v2026.09.04-17"
+__version__ = "v2026.09.05-1"
 
 # Wall-clock at first import (Cheroot main process); the shutdown banner
 # reads it for the uptime line.
@@ -2970,32 +2970,66 @@ def vllm_bench_cancel():
 
 
 LAYOUT_FILE = DATA_DIR / "layout.json"
+# Per-user layout documents; the shared LAYOUT_FILE serves bypass sessions
+# and seeds a user's first sign-in.
+LAYOUTS_DIR = DATA_DIR / "layouts"
+_LAYOUT_USER_RE = re.compile(r"^[a-z0-9_-][a-z0-9._-]{0,31}$")
 
 
-def load_layout() -> dict:
+def _layout_user() -> "str | None":
+    """Username owning the request's layout; None for bypass / anonymous requests."""
+    if _flask_session.get("auth_ok") is not True:
+        return None
+    u = (_flask_session.get("user") or "").strip()
+    return u if _LAYOUT_USER_RE.match(u) else None
+
+
+def _layout_path(user: "str | None") -> Path:
+    return (LAYOUTS_DIR / f"{user}.json") if user else LAYOUT_FILE
+
+
+def load_layout(user: "str | None" = None) -> dict:
+    p = _layout_path(user)
+    if user and not p.is_file():
+        p = LAYOUT_FILE
     try:
-        return json.loads(LAYOUT_FILE.read_text())
+        return json.loads(p.read_text())
     except Exception:
         return {}
 
 _LAYOUT_MAX_BYTES = 262_144
 
 
-def save_layout(data: dict):
+def save_layout(data: dict, user: "str | None" = None):
     """Persist the dashboard layout; rejects non-object or oversized payloads."""
     if not isinstance(data, dict):
         raise ValueError("layout must be a JSON object")
     encoded = json.dumps(data)
     if len(encoded) > _LAYOUT_MAX_BYTES:
         raise ValueError(f"layout exceeds {_LAYOUT_MAX_BYTES} bytes")
-    LAYOUT_FILE.write_text(encoded)
+    p = _layout_path(user)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(encoded)
+
+
+def delete_user_layout(username: str) -> None:
+    """Remove a deleted user's layout document, if any."""
+    u = (username or "").strip()
+    if not _LAYOUT_USER_RE.match(u):
+        return
+    try:
+        (LAYOUTS_DIR / f"{u}.json").unlink()
+    except FileNotFoundError:
+        pass
+    except OSError as e:
+        log.warning("could not remove layout for %s: %s", u, e)
 
 # Theme names retired from the frontend map forward on read.
 _LEGACY_THEMES = {"classic": "oled"}
 
 @app.route("/api/layout", methods=["GET"])
 def get_layout():
-    data = load_layout()
+    data = load_layout(_layout_user())
     if isinstance(data, dict) and data.get("theme") in _LEGACY_THEMES:
         data["theme"] = _LEGACY_THEMES[data["theme"]]
     return jsonify(data)
@@ -3004,7 +3038,7 @@ def get_layout():
 def set_layout():
     try:
         data = flask_request.get_json(force=True)
-        save_layout(data)
+        save_layout(data, _layout_user())
         return jsonify({"ok": True})
     except Exception as e:
         return _err_json("invalid request", 400, exc=e)
@@ -5150,6 +5184,7 @@ ctx = app_context.Context(
     alarm_engine_url=lambda: _alarm_engine_url,
     manager_secret=_manager_secret,
     ae_session=_ae_session,
+    on_user_deleted=delete_user_layout,
 )
 auth.register_auth(
     app,
@@ -5453,9 +5488,20 @@ _MANAGER_EXPORT_CATEGORIES = {
 _DEFAULT_IMPORT_CATEGORIES = ["config"]
 
 
+_LAYOUT_ENTRY_RE = re.compile(r"^data/layouts/([a-z0-9_-][a-z0-9._-]{0,31})\.json$")
+
+
+def _is_layout_entry(arc_name: str) -> bool:
+    """True for a per-user layout archive entry with a safe username."""
+    m = _LAYOUT_ENTRY_RE.match(arc_name)
+    return bool(m) and ".." not in m.group(1)
+
+
 def _file_category(arc_name: str) -> str | None:
     """Return the category an archive entry belongs to, or None if it's not
     recognized (e.g. manifest.json, unexpected entry from a future version)."""
+    if _is_layout_entry(arc_name):
+        return "config"
     for cat, members in _MANAGER_EXPORT_CATEGORIES.items():
         if arc_name in members:
             return cat
@@ -5468,6 +5514,12 @@ def _build_manager_archive() -> dict[str, bytes]:
         p = _REPO_ROOT_PATH / rel
         if p.is_file():
             files[rel] = p.read_bytes()
+    layouts_dir = _REPO_ROOT_PATH / "data" / "layouts"
+    if layouts_dir.is_dir():
+        for p in sorted(layouts_dir.glob("*.json")):
+            rel = f"data/layouts/{p.name}"
+            if p.is_file() and _is_layout_entry(rel):
+                files[rel] = p.read_bytes()
     for rel in _MANAGER_EXPORT_SQLITE:
         p = _REPO_ROOT_PATH / rel
         if p.is_file():
@@ -5587,7 +5639,7 @@ def _import_apply_manager(files: dict[str, bytes]) -> dict[str, Any]:
     for arc_name, data in files.items():
         if arc_name == "manifest.json":
             continue
-        if arc_name not in allow:
+        if arc_name not in allow and not _is_layout_entry(arc_name):
             log.warning("ignoring unexpected entry in import archive: %s", arc_name)
             continue
         dest = _REPO_ROOT_PATH / arc_name
@@ -6246,7 +6298,8 @@ def admin_import_manager_apply():
     skipped: list[str] = []
     filtered: dict[str, bytes] = {}
     for name, data in files.items():
-        if name == "manifest.json" or name in keep:
+        if name == "manifest.json" or name in keep or (
+                "config" in categories and _is_layout_entry(name)):
             filtered[name] = data
         elif _file_category(name) is not None:
             skipped.append(name)

@@ -967,12 +967,12 @@ Returns Claude Code session analytics derived from the session log files on the 
 ## Dashboard Layout
 
 ### `GET /api/layout`
-Returns the saved dashboard layout: card order, hidden cards, LMS card order, Overall tab card order, borrowed cards, and the active theme name.
+Returns the saved dashboard layout: card order, hidden cards, LMS card order, Overall tab card order, borrowed cards, and the active theme name. Layouts are per user: a signed-in account reads its own document, seeded from the installation-wide one on first sign-in; bypass sessions (`disabled` / `trusted_cidr` auth modes) read the installation-wide document.
 
 ---
 
 ### `POST /api/layout`
-Saves the current dashboard layout. The frontend calls this automatically whenever the user drags a card, hides a card, or changes the theme.
+Saves the current dashboard layout. The frontend calls this automatically whenever the user drags a card, hides a card, or changes the theme. Writes the signed-in user's own document (the installation-wide one for bypass sessions), so one user's theme or card order never changes another's.
 
 **Body:** A layout JSON object with `order`, `hidden`, `lmsOrder`, `overallOrder`, `overallBorrowed`, and `theme` fields.
 
