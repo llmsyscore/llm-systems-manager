@@ -240,3 +240,95 @@ def test_health_reports_restart_pending(admin, monkeypatch, tmp_path):
     assert _health(admin)["restart_pending"] == []
     cfg.write_text("[manager]\nport = 5001\n")
     assert _health(admin)["restart_pending"] == ["manager"]
+
+
+# ── #828: alarm-engine auth posture ───────────────────────────────────────
+
+def _ae_with_auth(monkeypatch, auth, detail, bearer="tok"):
+    payload = dict(_AE_HEALTH)
+    if auth is not None:
+        payload["auth"] = auth
+    payload["components"] = dict(_AE_HEALTH["components"])
+    if detail is not None:
+        payload["components"]["auth"] = detail
+    monkeypatch.setattr(M._ae_session, "get", lambda *a, **k: _AeResp(payload))
+    hdrs = dict(M._ae_session.headers)
+    hdrs.pop("Authorization", None)
+    if bearer:
+        hdrs["Authorization"] = f"Bearer {bearer}"
+    monkeypatch.setattr(M._ae_session, "headers", hdrs)
+
+
+def _ae_svc(h):
+    return next(s for s in h["services"] if s["name"] == "alarm_engine")
+
+
+def _auth_warnings(h):
+    return [w for w in h["warnings"] if w.startswith("alarm engine auth")]
+
+
+def test_open_engine_on_network_warns_with_remedy(admin, monkeypatch):
+    _ae_with_auth(monkeypatch, "open",
+                  {"management": "open", "ingest": "open", "loopback_only": False, "open_on_network": True})
+    h = _health(admin)
+    svc = _ae_svc(h)
+    assert svc["auth"] == "open"
+    assert svc["auth_detail"]["open_on_network"] is True
+    assert svc["bearer_configured"] is True
+    (w,) = _auth_warnings(h)
+    assert "auth open" in w and "Admin → Settings → Alarm engine" in w and "both hosts" in w
+
+
+def test_open_engine_on_loopback_does_not_warn(admin, monkeypatch):
+    _ae_with_auth(monkeypatch, "open",
+                  {"management": "open", "ingest": "open", "loopback_only": True, "open_on_network": False})
+    h = _health(admin)
+    assert _ae_svc(h)["auth"] == "open"
+    assert _auth_warnings(h) == []
+
+
+def test_enforced_engine_without_manager_bearer_warns(admin, monkeypatch):
+    _ae_with_auth(monkeypatch, "enforced",
+                  {"management": "management_token", "ingest": "enforced",
+                   "loopback_only": False, "open_on_network": False, "bearer_ok": None}, bearer="")
+    h = _health(admin)
+    assert _ae_svc(h)["bearer_configured"] is False
+    (w,) = _auth_warnings(h)
+    assert "sends no token" in w and "[alarm_engine].management_token" in w
+    assert "Admin → Settings → Alarm engine" in w
+
+
+def test_missing_bearer_remedy_names_ingest_token_when_that_is_the_gate(admin, monkeypatch):
+    _ae_with_auth(monkeypatch, "enforced",
+                  {"management": "ingest_token", "ingest": "enforced",
+                   "loopback_only": False, "open_on_network": False, "bearer_ok": None}, bearer="")
+    (w,) = _auth_warnings(_health(admin))
+    assert "[alarm_engine].ingest_token" in w
+
+
+def test_rejected_bearer_warns_of_a_mismatch(admin, monkeypatch):
+    _ae_with_auth(monkeypatch, "enforced",
+                  {"management": "management_token", "ingest": "enforced",
+                   "loopback_only": False, "open_on_network": False, "bearer_ok": False})
+    h = _health(admin)
+    svc = _ae_svc(h)
+    assert svc["bearer_configured"] is True and svc["auth_detail"]["bearer_ok"] is False
+    (w,) = _auth_warnings(h)
+    assert "rejects the manager's token" in w and "differ" in w and "Admin → Settings → Alarm engine" in w
+
+
+def test_enforced_engine_with_bearer_is_quiet(admin, monkeypatch):
+    _ae_with_auth(monkeypatch, "enforced",
+                  {"management": "management_token", "ingest": "enforced",
+                   "loopback_only": False, "open_on_network": False, "bearer_ok": True})
+    h = _health(admin)
+    assert _ae_svc(h)["bearer_configured"] is True
+    assert _auth_warnings(h) == []
+
+
+def test_older_engine_without_auth_field_is_quiet(admin, monkeypatch):
+    _ae_with_auth(monkeypatch, None, None, bearer="")
+    h = _health(admin)
+    svc = _ae_svc(h)
+    assert svc["auth"] is None and svc["auth_detail"] is None
+    assert _auth_warnings(h) == []

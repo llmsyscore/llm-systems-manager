@@ -282,3 +282,68 @@ describe('node detail strip', () => {
     expect(rows['engine probe']).toBe('12 ms');
   });
 });
+
+describe('alarm-engine auth posture (#828)', () => {
+  const withAuth = (auth, detail, bearer) => {
+    const d = JSON.parse(JSON.stringify(HEALTHY));
+    const ae = d.services.find(s => s.name === 'alarm_engine');
+    if (auth !== undefined) ae.auth = auth;
+    if (detail !== undefined) ae.auth_detail = detail;
+    if (bearer !== undefined) ae.bearer_configured = bearer;
+    return d;
+  };
+  const OPEN = { management: 'open', ingest: 'open', loopback_only: false, open_on_network: true, bearer_ok: null };
+  const ENF = { management: 'management_token', ingest: 'enforced', loopback_only: false, open_on_network: false, bearer_ok: true };
+
+  test('an open engine on the network chips "auth open" with the remedy', () => {
+    const d = withAuth('open', OPEN, true);
+    const rows = view().svcRows(d);
+    expect(rows[1].ak).toEqual({ chip: 'auth open', tip: expect.stringContaining('Admin → Settings → Alarm engine') });
+    const html = card(d).getElementById('adminHealthServices').innerHTML;
+    expect(html).toContain('>auth open<');
+    expect(html).toContain('management_token on both hosts');
+    expect(view().detailRows(d, 'ae')).toContainEqual(['auth', 'open — no token on the engine', 'warn']);
+  });
+
+  test('an open engine bound to loopback is not flagged', () => {
+    const d = withAuth('open', { ...OPEN, loopback_only: true, open_on_network: false }, true);
+    expect(view().svcRows(d)[1].ak).toBeNull();
+    expect(view().detailRows(d, 'ae')).toContainEqual(['auth', 'open (loopback bind only)', '']);
+  });
+
+  test('an enforcing engine with no manager token chips "no token"', () => {
+    const d = withAuth('enforced', { ...ENF, bearer_ok: null }, false);
+    expect(view().svcRows(d)[1].ak).toEqual({ chip: 'no token', tip: expect.stringContaining('Admin → Settings') });
+    expect(view().detailRows(d, 'ae')).toContainEqual(['auth', 'enforced — manager sends no token', 'warn']);
+  });
+
+  test('an enforcing engine that rejects the manager token chips "token mismatch"', () => {
+    const d = withAuth('enforced', { ...ENF, bearer_ok: false }, true);
+    expect(view().svcRows(d)[1].ak).toEqual({ chip: 'token mismatch', tip: expect.stringContaining('both hosts') });
+    expect(view().detailRows(d, 'ae')).toContainEqual(['auth', 'enforced — engine rejects the manager token', 'warn']);
+    const html = card(d).getElementById('adminHealthServices').innerHTML;
+    expect(html).toContain('>token mismatch<');
+  });
+
+  test('an enforcing engine with a manager token has no chip and an ok detail row', () => {
+    const d = withAuth('enforced', ENF, true);
+    expect(view().svcRows(d)[1].ak).toBeNull();
+    expect(view().detailRows(d, 'ae')).toContainEqual(['auth', 'management_token', 'ok']);
+    const fb = withAuth('enforced', { ...ENF, management: 'ingest_token' }, true);
+    expect(view().detailRows(fb, 'ae')).toContainEqual(['auth', 'ingest_token (fallback)', 'ok']);
+  });
+
+  test('an older engine without the field reads unknown and is not flagged', () => {
+    expect(view().svcRows(HEALTHY)[1].ak).toBeNull();
+    expect(view().detailRows(HEALTHY, 'ae')).toContainEqual(['auth', 'unknown', '']);
+    expect(view().authState(null)).toBeNull();
+  });
+
+  test('the backend auth warning ranks as warn, so the pill reads Attention', () => {
+    const d = withAuth('open', OPEN, true);
+    d.warnings = ['alarm engine auth open: no management_token or ingest_token on the engine — set the same [alarm_engine].management_token on both hosts (Admin → Settings → Alarm engine)'];
+    const rows = view().warnRows(d, null);
+    expect(rows[0].k).toBe('warn');
+    expect(view().pillOf(d, rows)).toEqual(['warn', 'Attention']);
+  });
+});

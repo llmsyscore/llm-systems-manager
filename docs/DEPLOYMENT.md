@@ -275,6 +275,7 @@ Refer to that file when you need to understand what a setting does or when addin
 | `[manager].alarm_engine_url` | Network address where the Manager can reach the Alarm Engine | `http://localhost:8081` |
 | `[alarm_engine].tls_enabled` | Whether the alarm engine uses HTTPS | `true` |
 | `[alarm_engine].ingest_token` | Shared token agents use to send metrics; blank means open | *(set by installer)* |
+| `[alarm_engine].management_token` | Token the manager presents on the engine's rules/alerts/notifications/config API; must be the same value on both hosts of a split install. With neither token set the engine logs `ALARM ENGINE AUTH` at startup, reports `auth: "open"` on `/health`, and Admin → System Health flags the alarm-engine row | *(set by installer; required on split installs)* |
 | `[notifications.smtp].server` | SMTP server hostname for email alarm notifications | *(not set)* |
 | `[notifications.smtp].user` | Account / sender address used to send alarm emails | *(not set)* |
 | `[influxdb].host` | InfluxDB server address | `localhost` |

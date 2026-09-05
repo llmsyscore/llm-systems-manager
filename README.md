@@ -425,6 +425,8 @@ When you want the **manager and alarm engine on separate hosts**, use mode 3 (ma
 
 The installer will prompt for the cross-host URLs and then gives you the exact commands required to copy the alarm engine's TLS certs from the manager host to the alarm engine host.
 
+The alarm engine's `management_token` is **required** on a split install. It locks the engine's rules/alerts/notifications API (which is otherwise open to anyone on the network) and lets Admin → Settings edit alarm-engine settings. Mode 4 prints a generated value; the mode 3 prompt accepts that paste or `new` to generate one on the manager host, and cannot be skipped. Non-interactive mode 3 installs can pass it as `LLMSYS_CFG_AE_MGMT_TOKEN`; otherwise one is generated and printed at the end. The same value must then be live on **both** hosts — until it is, the engine logs `ALARM ENGINE AUTH` at startup and Admin → System Health shows an `auth open` chip on the alarm-engine row.
+
 ### Choosing the run-as user
 
 By default the manager and alarm engine run as a dedicated `llmsys` system account (auto-created, password-locked). Passing `--user <name>` to the installer allows you to use a different account, you can also enter the account name during the installation as well:

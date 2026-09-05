@@ -75,8 +75,10 @@
     }
     // #764: the AE restart is always offered; the tip names how it restarts.
     const via = ((d && d.ae_restart) || {}).via;
+    const auth = aeOk ? authState(ae) : null;
     rows.push({
       st: aeOk ? 'ok' : 'crit', n: 'Alarm Engine', lk, ver: (ae && ae.version) || '—',
+      ak: auth && auth.k === 'warn' ? { chip: auth.chip, tip: auth.tip } : null,
       up: aeOk ? upStr(ae && ae.uptime_s) : null,
       upTxt: aeOk ? 'connected' : 'unreachable', upCls: aeOk ? '' : 'crit',
       act: 'Restart Alarm Engine' + (via === 'self-restart' ? ' · via its self-restart API' : ''),
@@ -92,9 +94,30 @@
     return rows;
   }
 
+  // #828: the engine's auth posture — chip, detail text, severity, remedy.
+  const AUTH_REMEDY = 'Set the same [alarm_engine].management_token on both hosts — Admin → Settings → Alarm engine';
+  function authState(ae) {
+    const a = ae && ae.auth;
+    const det = (ae && ae.auth_detail && typeof ae.auth_detail === 'object') ? ae.auth_detail : {};
+    if (a === 'open') {
+      const lan = det.open_on_network !== false;
+      return { k: lan ? 'warn' : '', chip: 'auth open', tip: AUTH_REMEDY,
+        text: lan ? 'open — no token on the engine' : 'open (loopback bind only)' };
+    }
+    if (a !== 'enforced') return null;
+    if (ae.bearer_configured === false) {
+      return { k: 'warn', chip: 'no token', tip: AUTH_REMEDY, text: 'enforced — manager sends no token' };
+    }
+    if (det.bearer_ok === false) {
+      return { k: 'warn', chip: 'token mismatch', tip: AUTH_REMEDY, text: 'enforced — engine rejects the manager token' };
+    }
+    return { k: 'ok', chip: null, tip: '', text: det.management === 'ingest_token' ? 'ingest_token (fallback)' : 'management_token' };
+  }
+
   function svcRowHtml(s) {
     const lk = (s.lk
       ? `<span class="lk ${s.lk[1] === 'crit' ? 'crit' : (s.lk[1] === 'on' ? '' : 'off')}">${esc(s.lk[0])}</span>` : '')
+      + (s.ak ? `<span class="lk warn" title="${esc(s.ak.tip)}">${esc(s.ak.chip)}</span>` : '')
       + (s.rp ? '<span class="lk warn" title="Saved settings apply after a restart">restart pending</span>' : '');
     const up = s.up ? `<span class="l">up</span>${esc(s.up)}` : esc(s.upTxt);
     const btn = s.act
@@ -260,12 +283,14 @@
         ];
       }
       const tls = (ae.tls && typeof ae.tls === 'object') ? ae.tls : null;
+      const auth = authState(ae);
       const serving = !tls ? 'unknown'
         : (tls.enabled && tls.active) ? 'https' : (tls.enabled ? 'cert missing → http' : 'http');
       return [
         ['version', dash(ae.version)],
         ['up', dash(upStr(ae.uptime_s))],
         ['serving', serving, serving === 'https' ? 'ok' : (serving.indexOf('cert') === 0 ? 'crit' : '')],
+        ['auth', auth ? auth.text : 'unknown', auth ? auth.k : ''],
         ['ingest', ae.ingest_points_per_s != null ? `${num(ae.ingest_points_per_s)} points/s` : '—'],
         ['rules eval', ae.rule_eval_ms != null ? ms(ae.rule_eval_ms) : '—'],
         ['active alerts', dash(ae.active_alerts), ae.active_alerts ? 'warn' : ''],
@@ -442,7 +467,7 @@
   }
 
   window.HealthView = {
-    render, svcRows, svcRowHtml, edgeStates, nodeSubs, detailRows, warnRows, pillOf, upStr, num,
+    render, svcRows, svcRowHtml, edgeStates, nodeSubs, detailRows, warnRows, pillOf, upStr, num, authState,
     select: n => { _selNode = n; renderDetail(); },
     selected: () => _selNode,
   };
