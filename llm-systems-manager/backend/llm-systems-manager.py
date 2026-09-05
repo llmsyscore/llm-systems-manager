@@ -3018,9 +3018,7 @@ def delete_user_layout(username: str) -> None:
     if not _LAYOUT_USER_RE.match(u):
         return
     try:
-        (LAYOUTS_DIR / f"{u}.json").unlink()
-    except FileNotFoundError:
-        pass
+        (LAYOUTS_DIR / f"{u}.json").unlink(missing_ok=True)
     except OSError as e:
         log.warning("could not remove layout for %s: %s", u, e)
 
