@@ -277,6 +277,7 @@ class ManagerConfig(BaseModel):
     # download, bench, autotune); raise on slow hosts/large downloads.
     stream_op_max_lifetime_s: float = 3600.0
     tls_port: int = 5443  # 0 disables HTTPS
+    hsts_max_age_s: int = 0  # Strict-Transport-Security max-age on HTTPS responses; 0 = off
     # Standalone websockets server (separate daemon thread, NOT Cheroot/WSGI)
     # that proxies the alarm-engine WebSocket. Browsers connect here at
     # /ws/alarm and the manager bridges to the AE's /ws (verifying the AE's
@@ -303,9 +304,6 @@ class ManagerConfig(BaseModel):
     fast_poll_interval: int = 15
     wait_timeout: int = 60
     alarm_engine_url: str = "http://localhost:8081"
-    cors_origins: str = (
-        "http://localhost:5000,http://localhost:8081"
-    )
     log_level: str = "INFO"
     # Extra hostnames/IPs added to the manager TLS cert SAN, beyond the
     # auto-detected loopback/routable IPs (e.g. a docker host's LAN IP).

@@ -45,6 +45,9 @@ def test_info_disabled_when_port_zero(client, monkeypatch):
 
 
 def test_info_disabled_under_https(client):
+    # TLS requests carry their own __Secure- session cookie (#864).
+    with client.session_transaction(base_url="https://localhost") as sess:
+        sess["auth_ok"] = True
     r = client.get("/api/llama-state/stream-info", base_url="https://localhost")
     assert r.get_json() == {"enabled": False}
 

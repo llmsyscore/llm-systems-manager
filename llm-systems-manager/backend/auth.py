@@ -20,6 +20,7 @@ registration so the hot path doesn't pay an attribute lookup per request.
 from __future__ import annotations
 
 import base64
+import functools
 import hashlib
 import hmac as _hmac
 import html
@@ -35,6 +36,7 @@ from pathlib import Path
 from typing import Any, Callable, Optional
 
 from flask import g, jsonify, redirect, request as flask_request, session
+from flask.sessions import SecureCookieSessionInterface
 
 log = logging.getLogger("llm-systems-manager.auth")
 
@@ -121,6 +123,29 @@ _brand_logo_svg: Callable[[dict, int], str] = lambda _p, _s=66: ""
 _agent_admin_allow: Callable[[], list] = lambda: []
 _alarm_engine_url: Callable[[], str] = lambda: ""
 _ae_session: Any = None
+
+
+def _request_is_secure() -> bool:
+    try:
+        return bool(flask_request.is_secure)
+    except RuntimeError:
+        return False
+
+
+class SchemeAwareSessionInterface(SecureCookieSessionInterface):
+    """TLS requests use a separate `__Secure-`-prefixed session cookie carrying `Secure` and
+    its own signing salt; plain-HTTP requests keep the configured cookie name, flags and salt."""
+
+    @property
+    def salt(self) -> str:  # type: ignore[override]
+        return "cookie-session-tls" if _request_is_secure() else "cookie-session"
+
+    def get_cookie_name(self, app) -> str:
+        name = super().get_cookie_name(app)
+        return f"__Secure-{name}" if _request_is_secure() else name
+
+    def get_cookie_secure(self, app) -> bool:
+        return bool(super().get_cookie_secure(app)) or _request_is_secure()
 
 
 # ── Password hashing ──────────────────────────────────────────────────
@@ -385,6 +410,10 @@ def _agent_bearer_allowed(path: str, method: "str | None" = None) -> bool:
 
 
 # ── before_request gate ──────────────────────────────────────────────
+def _wants_json(path: str) -> bool:
+    return path.startswith(("/api/", "/proxy/", "/sdcpp", "/ws/"))
+
+
 def _auth_gate():
     mode = auth_mode()
     path = flask_request.path or "/"
@@ -410,6 +439,7 @@ def _auth_gate():
                         "role_denied": True}), 403
     # Resolve admission + effective role for browser / bypass requests.
     role = None
+    via_session = False
     if mode == "disabled":
         role = _bypass_role()
     elif mode == "trusted_cidr" and _admin_ip_allowed(flask_request.remote_addr or ""):
@@ -422,6 +452,7 @@ def _auth_gate():
             session.clear()
         else:
             role = live_role or "admin"
+            via_session = True
     if role is None:
         # Unauthenticated: same diagnostics + 401/redirect as before.
         if mode == "trusted_cidr":
@@ -431,19 +462,24 @@ def _auth_gate():
                 _trusted_cidr_deny_last_log = _now_deny
                 log.info("trusted_cidr: login required — remote_addr=%r not in admin_cidrs=%s",
                          flask_request.remote_addr, _agent_admin_allow())
-        if (path.startswith("/api/") or path.startswith("/proxy/")
-                or path.startswith("/sdcpp") or path.startswith("/ws/")):
+        if _wants_json(path):
             return jsonify({"ok": False, "error": "authentication required",
                             "auth_required": True}), 401
         # Allowlisted pages (the companion) keep their destination through
         # the login round-trip instead of landing on the desktop dashboard.
         nxt = safe_next(path)
         return redirect(f"/login?next={nxt}" if nxt else "/login")
+    if via_session and _session_password_is_default():
+        if path not in _PW_CHANGE_ALLOWED_PATHS:
+            if _wants_json(path):
+                return jsonify({"ok": False, "error": "password change required",
+                                "password_change_required": True}), 403
+            nxt = safe_next(path)
+            return redirect(f"/login?next={nxt}" if nxt else "/login")
     g.auth_role = role
     g.auth_user = session.get("user")
     if role != "admin" and _operator_denied(path):
-        if (path.startswith("/api/") or path.startswith("/proxy/")
-                or path.startswith("/sdcpp") or path.startswith("/ws/")):
+        if _wants_json(path):
             return jsonify({"ok": False, "error": "operator role: forbidden",
                             "role_denied": True}), 403
         return redirect("/")  # browser nav to an admin-only page → bounce home
@@ -503,8 +539,8 @@ def _ae_version_cached() -> str:
         _AE_VERSION_LOCK.release()
 
 
-def _render_login(error: str = "") -> str:
-    err_html = (f'<div class="err">{error}</div>' if error else "")
+def _render_login(error: str = "", change_next: "str | None" = None) -> str:
+    """Login form, or the mandatory change-password form when change_next is set."""
     p = _brand_palette()
     logo = _brand_logo_svg(p)
     # AE half elided rather than blank on outage — a transient outage
@@ -519,6 +555,14 @@ def _render_login(error: str = "") -> str:
         rows.append(f'<span class="lbl">Alarm Engine</span><span class="val">{ae_v}</span>')
     versions_html = f'<div class="versions">{"".join(rows)}</div>'
     accent, btn_text, glow, grad = p["accent"], p["btn_text"], p["glow"], p["grad_top"]
+    if change_next is not None:
+        import manager_users  # lazy: avoids an import cycle (manager_users imports auth)
+        form_html = _CHANGE_FORM_HTML.format_map({
+            "next_path": html.escape(change_next), "user": html.escape(session.get("user") or DEFAULT_AUTH_USER),
+            "min_len": manager_users.MIN_PASSWORD})
+    else:
+        form_html = _LOGIN_FORM_HTML.format_map({
+            "err_html": f'<div class="err">{error}</div>' if error else ""})
     return f"""<!doctype html><html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>LLM Systems Manager</title>
@@ -548,6 +592,9 @@ def _render_login(error: str = "") -> str:
   button:hover {{ filter:brightness(1.08); }}
   .err {{ background:#3a1f24; border:1px solid #7a3540; color:#f3b0b8; padding:9px 11px;
           border-radius:8px; font-size:.82rem; margin-bottom:16px; }}
+  .err[hidden] {{ display:none; }}
+  .note {{ color:#8b98a8; font-size:.84rem; line-height:1.45; margin:0 0 16px; }}
+  .note b {{ color:#e7edf3; }}
   .versions {{ margin:20px auto 0; width:max-content;
                display:grid; grid-template-columns:auto auto; column-gap:14px; row-gap:3px;
                font-family: ui-monospace, "SF Mono", "Cascadia Mono", Consolas, monospace;
@@ -566,17 +613,52 @@ def _render_login(error: str = "") -> str:
         <div class="tagline">Observability &amp; Control</div>
       </div>
     </div>
-    <form class="card" method="POST" action="/login">
+    {form_html}
+    {versions_html}
+  </div>
+</body></html>"""
+
+
+_LOGIN_FORM_HTML = """<form class="card" method="POST" action="/login">
       {err_html}
       <label for="lf-user">Username</label>
       <input id="lf-user" name="username" type="text" autocomplete="username" required autofocus>
       <label for="lf-pass">Password</label>
       <input id="lf-pass" name="password" type="password" autocomplete="current-password" required>
       <button type="submit">Log&nbsp;in</button>
+    </form>"""
+
+_CHANGE_FORM_HTML = """<form class="card" id="pwc" data-next="{next_path}">
+      <div class="err" id="pwc-err" hidden></div>
+      <div class="note">The <b>{user}</b> account still uses the shipped default password. Set a new one to continue.</div>
+      <label for="pwc-cur">Current password</label>
+      <input id="pwc-cur" name="current_password" type="password" autocomplete="current-password" required autofocus>
+      <label for="pwc-new">New password ({min_len}+ characters)</label>
+      <input id="pwc-new" name="new_password" type="password" autocomplete="new-password" minlength="{min_len}" required>
+      <label for="pwc-confirm">Confirm new password</label>
+      <input id="pwc-confirm" name="confirm_password" type="password" autocomplete="new-password" minlength="{min_len}" required>
+      <button type="submit">Set password &amp; continue</button>
     </form>
-    {versions_html}
-  </div>
-</body></html>"""
+    <script>
+    (function () {{
+      var f = document.getElementById('pwc'), err = document.getElementById('pwc-err');
+      function fail(m) {{ err.textContent = m; err.hidden = false; }}
+      f.addEventListener('submit', function (ev) {{
+        ev.preventDefault(); err.hidden = true;
+        var cur = f.current_password.value, nw = f.new_password.value;
+        if (nw !== f.confirm_password.value) return fail('New passwords do not match.');
+        if (nw === cur) return fail('Choose a password different from the current one.');
+        fetch('/api/account/password', {{ method: 'POST', credentials: 'same-origin',
+          headers: {{ 'Content-Type': 'application/json' }},
+          body: JSON.stringify({{ current_password: cur, new_password: nw }}) }})
+        .then(function (r) {{ return r.json().catch(function () {{ return {{}}; }}).then(function (d) {{ return [r.ok, d]; }}); }})
+        .then(function (x) {{
+          if (x[0] && x[1].ok) {{ location.assign(f.dataset.next || '/'); return; }}
+          fail(x[1].error || 'Password change failed.');
+        }}).catch(function () {{ fail('Network error - try again.'); }});
+      }});
+    }})();
+    </script>"""
 
 
 def _login_page_needed() -> bool:
@@ -598,6 +680,22 @@ def _login_page_needed() -> bool:
 # redirect target carries no request-derived data — no open redirect.
 _ALLOWED_NEXT = ("/companion",)
 
+# Paths a session still on the shipped default password may reach.
+_PW_CHANGE_ALLOWED_PATHS = frozenset({"/login", "/logout", "/api/account/password"})
+
+
+@functools.lru_cache(maxsize=64)
+def _hash_is_default(password_hash: str) -> bool:
+    return scrypt_verify(DEFAULT_AUTH_PASSWORD, password_hash)
+
+
+def _session_password_is_default() -> bool:
+    """True when the logged-in session's user still has the shipped default password."""
+    import manager_users  # lazy: avoids an import cycle (manager_users imports auth)
+    store = manager_users.STORE
+    u = store.get(session.get("user") or "") if store is not None else None
+    return bool(u) and _hash_is_default(u.get("password_hash") or "")
+
 
 def safe_next(raw: "str | None") -> Optional[str]:
     """Return the allowlisted path equal to `raw`, else None."""
@@ -616,6 +714,8 @@ def _manager_login():
         # be gated anyway (disabled / trusted-from-allowed-IP) — send them in.
         if not _login_page_needed():
             return redirect(nxt or "/")
+        if session.get("auth_ok") is True and _session_password_is_default():
+            return _render_login(change_next=nxt or "/")
         return _render_login()
     form = flask_request.form
     username = (form.get("username") or "").strip()
@@ -759,6 +859,7 @@ def register_auth(app, ctx, *,
     _ae_session = ctx.ae_session
     _alarm_engine_url = ctx.alarm_engine_url
 
+    app.session_interface = SchemeAwareSessionInterface()
     app.before_request(_auth_gate)
     app.add_url_rule("/login", endpoint="manager_login",
                      view_func=_manager_login, methods=["GET", "POST"])

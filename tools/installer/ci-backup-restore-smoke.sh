@@ -17,7 +17,8 @@ MGR_URL="${MGR_URL:-http://127.0.0.1:5000}"
 AE_URL="${AE_URL:-https://127.0.0.1:8081}"
 PASSPHRASE="${PASSPHRASE:-}"
 ADMIN_USER="${ADMIN_USER:-llmadmin}"
-ADMIN_PW="${ADMIN_PW:-llmadmin}"
+ADMIN_PW="${ADMIN_PW:-llmadmin-ci-rotated}"
+SHIPPED_PW="llmadmin"
 MGR_UNIT=llm-systems-manager
 AE_UNIT=llm-systems-alarm-engine
 AGENT_UNIT=llm-systems-agent
@@ -107,10 +108,18 @@ login() {
   rm -f "$3"
   code -c "$3" --data-urlencode "username=$1" --data-urlencode "password=$2" "$MGR_URL/login"
 }
+# admin_login — admin session in $JAR; a first login on a fresh install
+# rotates the shipped default password to ADMIN_PW (mandatory-change wall).
 admin_login() {
   local c
   c="$(login "$ADMIN_USER" "$ADMIN_PW" "$JAR")"
+  case "$c" in 302|303) return 0 ;; esac
+  c="$(login "$ADMIN_USER" "$SHIPPED_PW" "$JAR")"
   case "$c" in 302|303) : ;; *) fail "admin login returned $c (want 302/303)" ;; esac
+  code -b "$JAR" -X POST -H 'Content-Type: application/json' \
+    -d "{\"current_password\":\"$SHIPPED_PW\",\"new_password\":\"$ADMIN_PW\"}" "$MGR_URL/api/account/password" >/dev/null
+  c="$(login "$ADMIN_USER" "$ADMIN_PW" "$JAR")"
+  case "$c" in 302|303) : ;; *) fail "admin login after password rotation returned $c (want 302/303)" ;; esac
 }
 # unit_present UNIT — the unit file is installed on this host.
 unit_present() { systemctl cat "$1" >/dev/null 2>&1; }

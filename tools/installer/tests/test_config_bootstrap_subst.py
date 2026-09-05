@@ -55,10 +55,8 @@ def mode3_config(tmp_path_factory):
     return run_bootstrap_python(tmp_path_factory.mktemp("mode3"), MODE3_VALS)
 
 
-def test_manager_cors_origins_substituted(mode3_config):
-    assert mode3_config["manager"]["cors_origins"] == (
-        "http://192.0.2.10:5000,http://localhost:5000,http://192.0.2.10:8081"
-    )
+def test_manager_cors_origins_not_rendered(mode3_config):
+    assert "cors_origins" not in mode3_config["manager"]
 
 
 def test_manager_alarm_engine_url_substituted(mode3_config):

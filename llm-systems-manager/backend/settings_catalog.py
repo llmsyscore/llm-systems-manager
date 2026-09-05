@@ -64,7 +64,7 @@ CATALOG: list[dict] = [
     _e("manager.ws_proxy_tls_port", "int", "WSS proxy port", "wss twin, active only when the operator cert is set; 0 disables.", "network", MANAGER, min=0, max=65535),
     _e("manager.stream_proxy_port", "int", "SSE daemon port", "Standalone llama-state SSE daemon; 0 = fall back to the main pool.", "network", MANAGER, min=0, max=65535),
     _e("manager.alarm_engine_url", "str", "Alarm engine URL", "Where the manager finds the AE. Split install: use the AE host's IP.", "network", MANAGER, common=True),
-    _e("manager.cors_origins", "str", "CORS origins", "Allowed browser origins for the manager API.", "network", MANAGER),
+    _e("manager.hsts_max_age_s", "int", "HSTS max-age (s)", "Strict-Transport-Security on HTTPS responses; 0 = off. Keep off while the plain-HTTP port is used on the same hostname.", "network", MANAGER, min=0, max=63072000),
     # polling
     _e("manager.poll_interval", "int", "Idle poll interval (s)", "Dashboard cadence while llama sleeps and LM Studio is idle.", "polling", MANAGER, min=5, max=3600, common=True),
     _e("manager.fast_poll_interval", "int", "Active poll interval (s)", "Cadence while a provider is active.", "polling", MANAGER, min=2, max=600),

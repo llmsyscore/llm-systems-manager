@@ -61,7 +61,7 @@ def _ns(bind_host: str = "0.0.0.0", lan_ip=None, post_ok: bool = True) -> dict:
         "time": SimpleNamespace(monotonic=lambda: ns["now"]),
         "now": 1000.0,
     }
-    for fn in ("_advertise_host", "_note_advertised", "_registration_body",
+    for fn in ("_advertise_host", "_note_advertised", "_agent_fingerprint", "_registration_body",
                "_post_registration", "_refresh_registration", "_maybe_readvertise"):
         exec(_extract(fn), ns)
     return ns

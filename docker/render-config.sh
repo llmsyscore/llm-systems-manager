@@ -70,7 +70,6 @@ $MARKER
 
 [manager]
 alarm_engine_url = "$ae_url"
-cors_origins = "$cors"
 log_level = "$log_level"
 public_hosts = [$hosts_toml]
 

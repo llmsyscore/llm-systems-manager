@@ -104,6 +104,10 @@ jobs:
           echo "login -> HTTP $login"
           # Successful login always 302-redirects to /; a failed one renders 401.
           [ "$login" = "302" ] || { echo "llmadmin/llmadmin login failed" >&2; exit 1; }
+          # The shipped default password is walled until changed; rotate it first.
+          curl -fsS -X POST http://localhost:5000/api/account/password -b "$jar" \
+            -H 'Content-Type: application/json' \
+            -d '{"current_password":"llmadmin","new_password":"llmadmin-ci-rotated"}' | jq -e '.ok'
           admin=$(curl -s -o /dev/null -w '%{http_code}' -b "$jar" \
             http://localhost:5000/api/admin/audit-log)
           echo "admin route -> HTTP $admin"
