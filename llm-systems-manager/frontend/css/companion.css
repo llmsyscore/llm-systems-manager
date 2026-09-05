@@ -47,12 +47,10 @@ body.companion {
   -webkit-overflow-scrolling: touch; overscroll-behavior-y: contain;
   display: flex; flex-direction: column; gap: 12px; padding: 4px 14px 16px;
 }
-.screen[hidden] { display: none; }
 /* Column children must keep their natural height — the default flex-shrink
    silently clipped long lists (agents, theme chips) instead of scrolling. */
 .screen > * { flex: 0 0 auto; }
 .stack { display: flex; flex-direction: column; gap: 12px; }
-.stack[hidden] { display: none; }
 
 /* pull-to-refresh indicator */
 .ptr {
@@ -92,7 +90,6 @@ body.companion {
 
 /* two-series legend (Home: generated vs prompt) */
 .legend { position: absolute; right: 14px; top: 36px; display: flex; gap: 12px; }
-.legend[hidden] { display: none; }
 .legend .k { font-family: var(--mono); font-size: 10.5px; color: var(--fg-dim);
   display: flex; align-items: center; gap: 5px; }
 .legend .k::before { content: ""; width: 10px; height: 2px; border-radius: 1px; }
@@ -109,7 +106,6 @@ body.companion {
 /* tapped-point marker: an HTML overlay in CSS pixels, because the stretched
    viewBox would turn an SVG circle into an ellipse. */
 .marker { position: absolute; top: 0; bottom: 0; width: 0; pointer-events: none; }
-.marker[hidden] { display: none; }
 /* Drops from the point downward, so it never crosses the hero text. */
 .marker .mline { position: absolute; bottom: 0; width: 1px;
   background: linear-gradient(var(--border-strong), transparent); }
@@ -118,7 +114,6 @@ body.companion {
   box-shadow: 0 0 0 3px var(--bg-elev), 0 0 0 4px var(--accent); }
 .marker .mdot.alt { background: var(--accent-2);
   box-shadow: 0 0 0 3px var(--bg-elev), 0 0 0 4px var(--accent-2); }
-.marker .mdot[hidden] { display: none; }
 .strip.energy .marker .mdot { background: var(--accent-2);
   box-shadow: 0 0 0 3px var(--bg-elev), 0 0 0 4px var(--accent-2); }
 .strip .hero { position: absolute; left: 16px; top: 14px; }
@@ -198,7 +193,6 @@ body.companion {
 .mini .spark-fill { stroke: none; }
 .mini .mguide { position: absolute; top: 0; bottom: 0; width: 1px;
   background: var(--border-strong); pointer-events: none; }
-.mini .mguide[hidden] { display: none; }
 .mini .ms { font-family: var(--mono); font-size: 10.5px; color: var(--fg-dim); }
 
 /* alerts */
@@ -282,7 +276,6 @@ body.companion {
 .tabbar { flex: none; height: calc(62px + env(safe-area-inset-bottom));
   padding-bottom: env(safe-area-inset-bottom); background: var(--bg-tabnav);
   border-top: 1px solid var(--border-soft); display: flex; align-items: stretch; }
-.tab[hidden] { display: none; }
 .tab { flex: 1; min-width: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 3px;
   font-size: 10.5px; color: var(--fg-dim); position: relative; background: none; border: none; cursor: pointer;
   padding: 0 2px; }
@@ -291,9 +284,6 @@ body.companion {
 .tab.on { color: var(--accent); }
 .tab .badge { position: absolute; top: 7px; right: calc(50% - 18px); min-width: 15px; height: 15px; border-radius: 8px;
   background: var(--crit); color: #fff; font-size: 9.5px; font-weight: 700; display: grid; place-items: center; padding: 0 4px; }
-/* display:grid above outranks the UA [hidden] rule — an empty red dot showed
-   with zero alerts without this. */
-.tab .badge[hidden] { display: none; }
 
 /* actions: switch, approve card, danger buttons */
 .btn.danger { color: var(--crit); border-color: var(--crit); background: var(--bg-card-alt); }
@@ -313,7 +303,6 @@ body.companion {
 
 /* bottom confirm sheet */
 .sheetwrap { position: fixed; inset: 0; z-index: 40; }
-.sheetwrap[hidden] { display: none; }
 .sheetscrim { position: absolute; inset: 0; background: rgba(0, 0, 0, .55); }
 .sheet { position: absolute; left: 0; right: 0; bottom: 0; background: var(--bg-card);
   border: 1px solid var(--border); border-bottom: none; border-radius: 16px 16px 0 0;
@@ -367,4 +356,3 @@ body.companion {
 }
 
 /* liveness pill is a Home-screen statement only */
-.hostchip[hidden] { display: none; }

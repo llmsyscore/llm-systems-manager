@@ -45,8 +45,9 @@ const open = (w) => {
 
 describe('default-password notice (#821)', () => {
   test('the hidden attribute wins over the Admin notice display rule', () => {
-    const css = readFileSync(join(here, '..', 'css', 'admin-tabs.css'), 'utf8');
-    const dom = new JSDOM(`<!doctype html><html><head><style>${css}</style></head><body>
+    const css = ['base.css', 'admin-tabs.css']
+      .map(f => `<style>${readFileSync(join(here, '..', 'css', f), 'utf8')}</style>`).join('');
+    const dom = new JSDOM(`<!doctype html><html><head>${css}</head><body>
       <div id="adminTab"><div class="notice" id="n" hidden>Default password in use</div></div></body></html>`);
     const w = dom.window;
     const n = w.document.getElementById('n');

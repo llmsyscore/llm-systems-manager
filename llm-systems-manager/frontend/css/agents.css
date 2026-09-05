@@ -30,7 +30,6 @@
 #admin-agents .ag-vchip { font-family: var(--font-mono); font-size: 10.5px; color: var(--fg-dim); border: 1px solid var(--border-strong); border-radius: 5px; padding: 2px 7px; white-space: nowrap; }
 #admin-agents .ag-vchip b { color: var(--fg-muted); font-weight: 500; }
 #admin-agents .mc-filter { min-width: 280px; }
-#admin-agents [hidden] { display: none !important; }
 
 /* Manage menu extras */
 #admin-agents .mc-menu { min-width: 200px; max-width: 300px; }
