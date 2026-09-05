@@ -80,6 +80,8 @@ The installer will ask a few questions:
 - **SMTP settings** (optional) — email address and credentials for alarm notifications
 - **InfluxDB details** — the installer can provision InfluxDB automatically in mode 1
 
+On a **manager-only (mode 3)** install, the installer also asks for the alarm engine's `management_token`. This prompt cannot be skipped: paste the value mode 4 printed on the alarm-engine host, type `new` to mint one here and copy it over, or press Enter to keep a value carried over from a previous config. Non-interactive installs can supply it via `LLMSYS_CFG_AE_MGMT_TOKEN`.
+
 If you are unsure about any optional setting, you can accept the default and change it later in the configuration file.
 
 ### Step 4: Start the Services
@@ -115,7 +117,7 @@ Log in with the default credentials:
 - **Username:** `llmadmin`
 - **Password:** `llmadmin`
 
-**Important:** Change this password immediately after your first login. Go to the account menu in the top navigation bar and choose **Change Password**.
+The first sign-in with the shipped password lands on a mandatory change-password form — the dashboard is unreachable until you set a new one (8 characters minimum). Afterwards, change it any time from the settings cog → **Change my password**.
 
 ---
 
@@ -237,7 +239,7 @@ New agents must be approved before the manager will accept their data. The agent
 3. Click **Agents**
 4. Find the new agent in the list and click **Approve**
 
-Once approved, the agent begins sending metrics and the manager can communicate with it.
+Once approved, the agent begins sending metrics and the manager can communicate with it. Fleet-wide actions — **Approve all pending**, **Update all**, **Push CA**, and the agent-auth slider — live under the **Manage ▾** menu on the same tab.
 
 ---
 
@@ -271,7 +273,8 @@ Refer to that file when you need to understand what a setting does or when addin
 | `[manager].tls_port` | Port for HTTPS access (set to `0` to disable) | `5443` |
 | `[manager].tls_cert_file` / `tls_key_file` | Operator-provided TLS cert + key (PEM) served on the HTTPS port via SNI; blank uses the internal CA | *(not set)* |
 | `[manager].ws_proxy_tls_port` | `wss` twin of the alert WebSocket bridge, active only with an operator cert | `5446` |
-| `[manager.auth].mode` | Login requirement: `required`, `trusted_cidr`, or `disabled` | `required` |
+| `[manager].hsts_max_age_s` | `Strict-Transport-Security` max-age emitted on HTTPS responses; `0` = off. Leave it off while the plain-HTTP port shares the hostname — HSTS preserves the port | `0` |
+| `[manager.auth].mode` | Login requirement: `required`, `trusted_cidr`, `disabled`, or `auto` (hands live control to the Access Control card; a manual TOML edit stays authoritative until you switch to `auto`) | `auto` |
 | `[manager].alarm_engine_url` | Network address where the Manager can reach the Alarm Engine | `http://localhost:8081` |
 | `[alarm_engine].tls_enabled` | Whether the alarm engine uses HTTPS | `true` |
 | `[alarm_engine].ingest_token` | Shared token agents use to send metrics; blank means open | *(set by installer)* |
@@ -281,7 +284,10 @@ Refer to that file when you need to understand what a setting does or when addin
 | `[influxdb].host` | InfluxDB server address | `localhost` |
 | `[influxdb].port` | InfluxDB port | `8086` |
 | `[manager.gateway].enabled` | OpenAI-compatible inference gateway | `true` |
-| `[manager.gateway].api_keys` | Bearer keys for external clients; empty means dashboard-session only | `[]` |
+| `[manager.gateway].api_keys` | Bearer keys for external clients; empty means dashboard-session only. Each entry can be `label=secret` (the label names the client in the Gateway flow diagram) or a bare key, which shows by position (`key-1`, `key-2`, …) | `[]` |
+| `[manager.audit].retention_days` | Audit rows older than this are purged every 24 hours; `0` keeps everything (a 100,000-row backstop still applies) | `60` |
+| `[manager.audit].automated_actors` | Usernames whose actions count as automated — hidden by the Audit Log's "Hide automated" filter, and recorded at all only while `save_automated` is on | `[]` |
+| `[manager.backup].mirror_dir` | Second directory each finished backup archive is also copied to; validated on save (must be absolute, and exist or be creatable and writable by the service user) | *(not set)* |
 | `[manager.reportcard].price_kwh` | Electricity price used for the Report Card's $/Mtok estimate | `0.15` |
 | `[manager.energy].cloud_price_in_per_mtok` | Hosted-API input price the savings card compares against | `0.15` |
 | `[manager.energy].cloud_price_out_per_mtok` | Hosted-API output price the savings card compares against | `0.60` |
@@ -340,7 +346,7 @@ Restart the manager afterwards. These keys are accepted only on `/api/gateway/*`
 
 ### Model Autopilot
 
-**Admin → Routing → Model Autopilot.** You describe which models should be resident and where; Autopilot compares that against what is actually loaded and proposes the difference.
+**Admin → Gateway → Model Autopilot.** You describe which models should be resident and where; Autopilot compares that against what is actually loaded and proposes the difference.
 
 Each entry names a model, its provider (`llama`, `vllm`, or `lms`), and a placement — either a specific host id or `auto`. Optional per-entry settings:
 
@@ -352,13 +358,17 @@ Each entry names a model, its provider (`llama`, `vllm`, or `lms`), and a placem
 | `size_mb` | Size override for models the manager can't measure | *(unset)* |
 | `autoscale` | `target_saturation`, `up_window_s`, `down_window_s` | `0.75`, `120`, `900` |
 
+A separate opt-in toggle, **Protect other models** (`protect_unmanaged`, off by default), sits beside Autopilot on the Gateway card: when on, a host whose single resident slot holds a model Autopilot doesn't manage is blocked from displacement, and freed-memory credit from displacing a model is never counted toward it. Route sync also skips busy hosts.
+
 **Autopilot is disabled by default.** While disabled it still evaluates continuously and shows what it *would* do, so you can watch it for a while before handing it control. Enable it with the toggle on the same card once the proposals look right.
 
 Placement is gated on memory: a host is only offered a model if it has the VRAM to hold it, or the RAM if the host has no GPU. That is why a size override matters for models the manager can't measure — without a size, an entry can be skipped rather than placed badly.
 
 ### GPU Report Card
 
-**LLM Control → Report Card.** Pick a provider and host, choose the standard preset, and run. The card reports time-to-first-token, prefill and generation throughput, tokens/joule, and $/Mtok, along with the GPU and VRAM it ran on.
+**LLM Control → Tools → Report Card.** Pick a provider and host, choose the standard preset, and run. The card reports time-to-first-token, prefill and generation throughput, tokens/joule, and $/Mtok, along with the GPU and VRAM it ran on.
+
+Report Card shares the **Tools** launcher with two sibling modules, Benchmark and Autotune, run in-tab from the same app-style workspace. All three record to a cross-tool run ledger, so a run started in one browser is visible in every other session and survives a closed tab.
 
 The same preset runs against every provider, so cards are comparable between machines and between backends. Results are stored, so the Trends view plots them over time. Set the electricity price used for the cost figure with:
 
@@ -367,11 +377,11 @@ The same preset runs against every provider, so cards are comparable between mac
 price_kwh = 0.15
 ```
 
-It can also be overridden per run from the sub-tab. Leaderboard submission is present but disabled in v1.1.0.
+It can also be overridden per run from the sub-tab. Leaderboard submission is present but disabled.
 
 ### Energy & Cost Intelligence
 
-**Dashboard → Energy.** Shows measured power draw converted to a **$/Mtok** figure, a monthly-savings comparison against hosted-API list pricing, and idle-power accounting so hardware that is powered but unused is attributed rather than ignored. The window selector covers trailing spans, **Today** (local midnight to now), **Year to date**, and a **Custom** range of up to 366 days; the hourly chart itself is capped at 45 days and says so in its label when a wider window truncates it.
+**Dashboards → Energy.** Shows measured power draw converted to a **$/Mtok** figure, a monthly-savings comparison against hosted-API list pricing, and idle-power accounting so hardware that is powered but unused is attributed rather than ignored. The window selector covers trailing spans, **Today** (local midnight to now), **Year to date**, and a **Custom** range of up to 366 days; the hourly chart itself is capped at 45 days and says so in its label when a wider window truncates it.
 
 ```toml
 [manager.energy]
@@ -404,6 +414,30 @@ Three things to get right:
 
 Restart the manager after editing this section — the bot reads its allowlist at startup.
 
+### Backups
+
+**Admin → Backups.** A scheduled run writes an encrypted manager archive (config, agent registry, CA, users, model profiles, benchmarks) and, when `[alarm_engine].management_token` is set, the alarm engine's own export in the same run — without a management token the run is recorded as `manager only`. Retention counts **runs**, not archives, so `keep_last = 7` can retain up to 14 files.
+
+```toml
+[manager.backup]
+enabled = true
+interval_hours = 24.0
+keep_last = 7
+mirror_dir = "/mnt/backup-share"   # optional second copy of every archive
+```
+
+`mirror_dir` is validated on save — it must be an absolute path that exists or can be created, and writable by the service user — and applies without a restart. Any retained archive can be downloaded from the Backups card (`backup.download` is recorded in the audit log); a run where the alarm engine is configured but unreachable is marked `partial` rather than silently dropping that half.
+
+### OpenClaw Proxy Origin
+
+If you run the OpenClaw tool through **Tools → OpenClaw**, the OpenClaw host's own gateway checks the browser's `Origin` header and rejects pages it doesn't recognize. Add the manager dashboard's origin to the allowlist on the OpenClaw host:
+
+```
+gateway.controlUi.allowedOrigins = ["https://<manager-host>:5443"]
+```
+
+Without this, the embedded page fails with "Browser origin not allowed" even though the proxy itself is reachable.
+
 ### Operator-Provided TLS Certificate
 
 By default the HTTPS port (`[manager].tls_port`, 5443) serves a certificate from the manager's internal CA, which browsers on other devices do not trust. To serve a certificate they do trust — a Let's Encrypt cert for your domain, or one from a corporate CA:
@@ -420,6 +454,7 @@ How it behaves:
 - **Both keys must be set and readable** by the service user. A half-set pair or unreadable files log a warning and fall back to the internal CA. Relative paths resolve against the install root, and a group/world-readable key file is warned about.
 - **Renewals are your job.** The internal-CA cert auto-rotates; an operator cert does not — the Admin system-health card tracks the expiry of whichever cert is actually served and says so. Point the config at the live paths your ACME client maintains and restart the manager after renewal.
 - **Set `[manager].ws_proxy_tls_port`** (default `5446`) so the Events/alerts WebSocket has a `wss` endpoint — an HTTPS page cannot open a plain `ws://` connection.
+- **HSTS is opt-in.** `[manager].hsts_max_age_s` (default `0`) adds a `Strict-Transport-Security` header to HTTPS responses. Leave it at `0` unless the plain-HTTP port is closed — HSTS preserves the port, so one HTTPS visit makes the browser rewrite `http://host:5000` to `https://host:5000` and fail.
 
 This is also the prerequisite for installing the phone companion below.
 
@@ -464,6 +499,8 @@ The update process:
 - Reloads systemd units and restarts affected services
 - Runs the smoke test to confirm the update succeeded
 
+Every update also re-stamps the install root's `RELEASE` marker, so an install that could not previously name its release — and therefore never reported an available update — self-heals on its next update.
+
 You do not need to stop services first — the updater handles restarts.
 
 ### Updating a Remote Agent
@@ -473,10 +510,10 @@ To update an agent running on a remote machine without logging into that machine
 1. Open the dashboard
 2. Go to the **Admin** tab
 3. Click **Agents**
-4. Select the agent you want to update
-5. Click the **Update** button
+4. Find the agent's row and open its overflow (**⋯**) menu
+5. Click **Update**
 
-The agent downloads and applies the latest version of itself, then restarts.
+The agent downloads and applies the latest version of itself, then restarts. To update every agent at once, use **Update all** under the **Manage ▾** menu, which also carries a pending-update badge.
 
 ---
 
@@ -526,10 +563,12 @@ Add `--since "1 hour ago"` to any journalctl command to limit output to recent e
 
 The **Admin** tab in the dashboard includes a **System Health** card. It shows:
 
-- Status of each connected agent (online, offline, stale)
-- InfluxDB connectivity and write health
-- Alarm engine connectivity
-- TLS certificate status and expiry
+- Slim service rows for each component, with version and uptime
+- A live data-flow diagram whose edges carry current rates, with a click on any node for the underlying numbers
+- An overall Healthy / Attention / Down pill
+- A restart-pending chip per service, and an alarm-engine auth chip (`auth open`, `no token`, or `token mismatch`)
+- Release and agent-update status rows
+- A restart control that always offers the alarm engine alongside the manager
 
 The Admin tab button in the navigation bar turns red when any component reports a problem — you do not need to check manually.
 

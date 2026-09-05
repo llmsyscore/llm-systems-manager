@@ -8,13 +8,17 @@ The Manager listens on port 5000 (HTTP) and optionally port 5443 (HTTPS). The Al
 
 ## Authentication
 
-**Browser / UI sessions** authenticate via a login cookie. After `POST /login` succeeds, your browser holds a signed session cookie that is checked on every subsequent request. Sessions expire based on the configured lifetime (default: several days).
+**Browser / UI sessions** authenticate via a login cookie. After `POST /login` succeeds, your browser holds a signed session cookie that is checked on every subsequent request. Sessions expire based on the configured lifetime (default: several days). A session created over the HTTPS listener is stored in a separate `__Secure-session` cookie with its own signing salt; plain-HTTP sessions keep the `session` cookie. The two are independent — a cookie minted on one scheme is not accepted on the other.
+
+While the signed-in user still holds the shipped default password, **every** API returns `403 {"password_change_required": true}` until `POST /api/account/password` succeeds. Only `/login`, `/logout`, and `/api/account/password` are reachable in the meantime.
 
 **Agent-to-Manager calls** authenticate with a bearer token issued at registration: `Authorization: Bearer <token>`. These are internal; you do not need to manage them as an operator.
 
 **Admin-only endpoints** are marked **[Admin]** throughout this document. Reaching them requires both an admin-role session and (where configured) a request originating from an allowed admin network range. Operator-role sessions receive a 403 on admin endpoints.
 
-**Ingest endpoints** on the Alarm Engine accept a separate shared bearer token configured in `llm-systems.toml`. When the token is blank the ingest surface is open; when set, agents must present it.
+**Ingest endpoints** on the Alarm Engine accept a separate shared bearer token (`ingest_token`) configured in `llm-systems.toml`. When it is blank the ingest surface is open; when set, agents must present it.
+
+**Management endpoints** on the Alarm Engine — rules, alerts, notifications, config, `dbstats`, and the metrics read routes — accept a dedicated `management_token`, falling back to `ingest_token` when no management token is set. `admin/export` and `admin/import/*` accept **only** `management_token`, with no ingest-token fallback, and fail closed (403) when it is unset — those archives carry every configured secret. An engine with neither token configured runs its management and metrics-read surfaces open and logs an `ALARM ENGINE AUTH` warning at startup. Manager-proxied calls forward whichever token the manager is configured with, so this only matters when calling the Alarm Engine directly.
 
 ---
 
@@ -24,6 +28,13 @@ The Manager listens on port 5000 (HTTP) and optionally port 5443 (HTTPS). The Al
 Unauthenticated liveness probe for external monitors and load balancers. Not gated by the login/session flow at all.
 
 **Response:** `{"status": "ok", "version": "<manager version>", "uptime_s": <seconds since startup>}`
+
+---
+
+### `GET /health` (Alarm Engine)
+The Alarm Engine's own liveness probe, served on its own port — not proxied through the Manager. Also pings InfluxDB and always returns 200 so a monitor can distinguish "process up" from "InfluxDB unreachable" via the body.
+
+**Response:** `{"status": "ok", "version", "uptime_s", "auth": "open"|"enforced", "ingest_points_per_s", "influx_writes_per_s", "active_alerts", "evaluation_interval_s", "components": {"cache", "influxdb", "influxdb_ping_ms", "influxdb_version", "rule_eval_last_cycle_ms", "tls", "auth": {"management", "ingest", "loopback_only", "open_on_network", "bearer_ok"}}}`. This is what the Manager's `/api/admin/system-health` polls to derive the alarm-engine row.
 
 ---
 
@@ -464,6 +475,8 @@ An OpenAI-compatible chat/completions gateway that fans requests out to whicheve
 ### `POST /api/gateway/v1/chat/completions`
 OpenAI-compatible chat completion. The target provider is resolved from the request body's `model` field: a model pin wins first, then the live model index built from each provider's `/models` listing, then a `llama` fallback if the model is unrecognized. Within the resolved provider, the host is picked in the order: model pin, then an explicit `?agent=`, then pool round-robin, then the provider default. A pin therefore overrides an explicit `?agent=`; the gateway logs when that happens. (The dashboard's own proxy routes surface the same condition as an `X-Routing-Override: pin` response header; the gateway does not set it.) Supports `"stream": true` for SSE responses.
 
+A miss against a cold or stale model index kicks off a background refresh and waits up to 5 s for it to land before falling back to `llama`; the refresh itself is single-flight, so concurrent completions and `GET /api/gateway/v1/models` calls share one in-flight fan-out rather than each triggering their own.
+
 Successful non-streaming responses carry an `X-Proxied-To: <agent_id prefix>@<hostname>` header identifying which agent actually served the request; streaming responses carry the same header on the initial SSE response.
 
 ---
@@ -536,6 +549,50 @@ Returns the most recent saved report card for an agent/provider pair.
 Returns saved report card history, optionally filtered.
 
 **Parameters:** `?agent=<agent_id>`, `?provider=<llama|lms|vllm>`, `?model=<model_id>` — all three required; omitting any returns 400.
+
+---
+
+### `DELETE /api/reportcard/history`
+Clears all saved report card history. Backs the Tools launcher's *Clear history* action.
+
+---
+
+### `GET /api/reportcard/recent`
+Returns the most recent saved report cards across all agents/providers, trimmed to the fields the Tools launcher's tiles need.
+
+**Parameters:** `?limit=<n>` (default 12, max 100)
+
+**Response:** `{"ok": true, "cards": [{"ts", "agent_id", "provider", "eligible", "result": {"model", "gen_tps", "avg_watts", "usd_per_mtok", "gpu_config"}}, ...]}`
+
+---
+
+## Tools Run Ledger
+
+Cross-tool run history behind the LLM Control → Tools launcher: every completed Report Card, Benchmark, and Autotune run is recorded here, fleet-wide and server-side, so any browser or a closed tab still sees the result.
+
+### `POST /api/tools/runs`
+Records one completed tool run. Reachable with a normal dashboard session, or with an approved agent's machine bearer token for the agent's own push path (a machine token may only `POST`; `GET` and `DELETE` return 403 for it).
+
+**Body:** `{"tool": "benchmark"|"autotune", "model_id": "<id>", "provider": "<provider>", "ok": <bool>, "run_id": "<id>", ...}` — `provider` is checked against the registered-provider whitelist; any other body fields are kept as a summary, capped at 24 keys, 200 characters per string, and finite numbers only. A machine-token caller may name its own `agent_id`; a browser request is always attributed to whichever agent the call proxies to. `run_id` is used to de-duplicate the agent's own push against a browser's report of the same run.
+
+---
+
+### `GET /api/tools/runs`
+Returns the newest rows across all tools, plus per-tool totals and the newest row per tool.
+
+**Parameters:** `?limit=<n>` (default 100, max 100)
+
+**Response:** `{"runs": [...], "totals": {"<tool>": <count>}, "latest": {"<tool>": {...}}}`
+
+---
+
+### `DELETE /api/tools/runs`
+Clears the run ledger.
+
+---
+
+### `GET /api/tools/activity`
+Returns which tools are running right now, fleet-wide — the manager's own proxy record for an in-flight run, confirmed (or expired) against a background probe of the agent's `/<provider>/tools/state`. Backs the run-activity dot on the LLM Control → Tools sub-tab.
 
 ---
 
@@ -638,14 +695,14 @@ Manually triggers one reconciler tick (observe current state, replan, refresh pr
 These endpoints manage the pool of monitoring agents. Most are **[Admin]** only. A small number are called internally by agents themselves (marked "Agent-facing") and are not intended for manual use.
 
 ### `GET /api/agents`
-Returns the list of all registered agents with their status, capabilities, and last-seen timestamp.
+Returns the list of all registered agents with their status, capabilities, and last-seen timestamp, plus `manager_version` and `collect_interval_s` (the configured metrics-collection interval).
 
 **Access:** [Admin]
 
 ---
 
 ### `POST /api/agents/register`
-Registers a new agent with the Manager. Called automatically by the agent on first start; not a UI-facing endpoint.
+Registers a new agent with the Manager. Called automatically by the agent on first start; not a UI-facing endpoint. For a re-registration (same hostname + OS as an existing record), an agent at `v2026.09.04-1` or newer must present its `fingerprint` body field (or a prior bearer token) to re-authenticate; source-IP alone is accepted only for records last written by an older agent.
 
 **Access:** (Agent-facing)
 
@@ -747,7 +804,7 @@ Returns per-agent communication statistics: request counts, error rates, and lat
 ---
 
 ### `GET /api/fleet/<provider>/aggregate`
-Returns aggregated metrics across all agents for the specified provider (`llama`, `lms`, or `vllm`). Used by the LLM Overall tab to show GPU utilisation, throughput, and power aggregated across every agent of that provider type.
+Returns aggregated metrics across all agents for the specified provider (`llama`, `lms`, or `vllm`). Used by the Overall tab to show GPU utilisation, throughput, and power aggregated across every agent of that provider type.
 
 ---
 
@@ -810,9 +867,9 @@ Pushes the current internal CA certificate to all approved agents so they can ve
 ---
 
 ### `GET /api/agents/<agent_id>/status`
-Returns detailed status for a single agent: version, uptime, capabilities, last heartbeat, TLS state, and metric buffer depth.
+No-auth endpoint an agent polls to learn whether it has been approved yet. Returns `{"ok": true, "status": "pending"|"approved"|...}`, and includes the agent's bearer token in the response once approved — but only when the caller re-authenticates as that agent. Agents at `v2026.09.04-1` or newer must present the `X-Agent-Fingerprint` header (or a prior bearer token) to receive the token; older agents keep re-authenticating by source IP.
 
-**Access:** [Admin]
+**Access:** (Agent-facing, unauthenticated by path — never gated by the login flow)
 
 ---
 
@@ -987,7 +1044,7 @@ Sends a test notification via web push (VAPID). **Body (optional):** `{"endpoint
 These endpoints require an admin-role session.
 
 ### `GET /api/admin/system-health`
-Returns a rolled-up health summary of the whole system: agent connectivity, service availability, TLS certificate expiry, InfluxDB status, and recent error counts. Powers the red/green Admin tab indicator dot.
+Returns a rolled-up health summary of the whole system: agent connectivity, service availability, TLS certificate expiry, InfluxDB status, and recent error counts. Powers the red/green Admin tab indicator dot. Also carries connection counts, the WebSocket relay's state, the alarm engine's ingest/write rates and rule-evaluation time, its probe history, the count of agents with an update available, `ae_restart` (whether/how the Alarm Engine can be restarted from here), and — on the alarm-engine service entry — `auth`, `auth_detail`, and `bearer_configured` describing its auth posture as seen by the Manager.
 
 **Access:** [Admin]
 
@@ -998,9 +1055,30 @@ Returns paginated entries from the admin action audit log (who did what, from wh
 
 **Access:** [Admin]
 
-**Parameters:** `?limit=<n>` (default 100, max 500), `?offset=<n>` (default 0)
+**Parameters:** `?limit=<n>` (default 100, max 500), `?offset=<n>` (default 0), `?q=<text>` (search across actor/action/target/ip/path/detail), `?group=<group>` (one of the audit event catalog's groups), `?actor=<username>|autopilot|system|local|test`, `?outcome=<outcome>`, `?since_hours=<n>`, `?sort=<ts|actor|action|target|ip|outcome|id>`, `?dir=<asc|desc>`, `?hide_automated=1` (drops rows tagged as automated traffic).
 
-**Response:** `{"ok": true, "total": <count>, "entries": [{"ts", "actor", "role", "ip", "method", "path", "action", "target", "status", "outcome"}, ...]}`
+**Response:** `{"ok": true, "total": <count>, "page_size": <n>, "entries": [{"ts", "actor", "role", "ip", "auth": "session"|"token"|"bypass"|"test"|"internal", "method", "path", "action", "target", "status", "outcome", "event", "group", "label", "detail": {...} | null}, ...]}`. `detail` is a parsed object (e.g. settings old→new values, with secrets masked and the list clipped at 20 changes).
+
+---
+
+### `GET /api/admin/audit-log/stats`
+Returns audit-log bookkeeping: total row count, the oldest row's timestamp, the distinct list of actors, the purge thread's last-run state, and the configured `retention_days` / `page_size`.
+
+**Access:** [Admin]
+
+---
+
+### `GET /api/admin/audit-log/events`
+Returns the audit event catalog: 7 groups, each with its member events and whether each is currently enabled (per `[manager.audit].disabled_events`), plus the current `retention_days`, `page_size`, `save_automated`, and `automated_actors` config values.
+
+**Access:** [Admin]
+
+---
+
+### `GET /api/admin/audit-log.csv`
+Downloads the audit log as CSV, honouring the same `q`/`group`/`actor`/`outcome`/`since_hours`/`sort`/`dir`/`hide_automated` filters as `GET /api/admin/audit-log`, capped at 10,000 rows. Spreadsheet-formula-triggering cells are neutralised before export.
+
+**Access:** [Admin]
 
 ---
 
@@ -1012,7 +1090,23 @@ Returns live SSE-stream and connection health for the Admin tab: Manager stream 
 ---
 
 ### `GET /api/admin/backup-status`
-Returns the scheduled-backup configuration (enabled, interval, retention) and the list of backups currently on disk (`file`, `bytes`, `mtime` per entry).
+Returns the scheduled-backup configuration (enabled, interval, retention) and the list of backups currently on disk. Each entry now carries `component` (`manager` or `alarm_engine`) and `run` (the run stamp shared by a run's manager and alarm-engine archives), alongside `file`, `bytes`, `mtime`, and `mirrored`. `last` (the most recent run) carries `partial` (true when the alarm-engine archive failed), `components.manager` / `components.alarm_engine` (each with `ok`/`file`/`bytes`/`error`/`remedy`/`skipped`), and `mirror_failed` (file names that failed to copy to the mirror directory). The top-level payload carries `not_covered` — why the alarm engine is outside scheduled runs, when it is. Retention (`keep_last`) now counts backup **runs**, not individual archive files, so `keep_last = 7` can retain up to 14 files.
+
+**Access:** [Admin]
+
+---
+
+### `POST /api/admin/backup-now`
+Runs one scheduled-backup cycle immediately, serialised with the scheduler so only one archive operation runs at a time. Returns 409 when scheduled backups are disabled.
+
+**Access:** [Admin]
+
+**Response:** `{"ok": <bool>, "last": {...}}` — the same per-run shape described under `GET /api/admin/backup-status`.
+
+---
+
+### `GET /api/admin/backup-archive/<name>`
+Downloads one retained archive by exact file name, matched against the backup folder's own listing; a pruned or unknown name returns 404. Recorded in the audit log as `backup.download`.
 
 **Access:** [Admin]
 
@@ -1028,7 +1122,7 @@ Restarts the Manager or the (co-located) Alarm Engine service. On bare-metal ins
 ---
 
 ### `GET /api/admin/auth`
-Returns the current authentication mode (`required`, `trusted_cidr`, `disabled`, or `auto`) and whether the default credential is still active.
+Returns the current authentication mode (`required`, `trusted_cidr`, `disabled`, or `auto`) and whether the default credential is still active. Also returns `default_user` — the username of the built-in default admin account, so the UI can name it in the "default password in use" notice.
 
 **Access:** [Admin]
 
@@ -1125,6 +1219,40 @@ Applies a previously previewed config backup. Overwrites the current configurati
 
 ---
 
+### `GET /api/admin/settings`
+Returns the Settings catalog: every setting's current value, per-field secret status, and `restart_pending_paths` (which changed fields are waiting on a service restart to take effect). On a split install also returns `topology.split`, `topology.ae_config_reachable`, and — when the Alarm Engine's own config can't be read — `topology.ae_config_error` (`{"kind", "status", "detail", "remedy"}`).
+
+**Access:** [Admin]
+
+---
+
+### `PUT /api/admin/settings`
+Applies one or more setting changes.
+
+**Access:** [Admin]
+
+**Body:** `{"changes": {"<dotted.path>": <value>, ...}, "resync_ae": ["<dotted.path>", ...]}`. A value of `null` clears a field back to its default. `resync_ae` re-pushes a shared setting's current value to the Alarm Engine without changing it locally — only valid for settings marked `service: "both"` in the catalog.
+
+**Response:** `{"ok": true, "applied": [...], "restart_paths": [...], "errors": {}}` — `restart_paths` names which of the applied fields need which service restarted to take effect.
+
+---
+
+### `GET /api/admin/gateway/flow`
+Returns the live clients → gateway → hosts picture behind the Gateway sub-tab's Inference Gateway card: per-client last model, IP, request rate and an activity tier (`active`, `recent`, or `idle`), and per-host inflight/throughput figures with edge rates between them.
+
+**Access:** [Admin]
+
+---
+
+### `PUT /api/admin/gateway`
+Turns the inference gateway on or off. Applied through the settings path and hot-reloaded, so `/api/gateway/v1/*` flips without a restart. Recorded in the audit log as `config.gateway`.
+
+**Access:** [Admin]
+
+**Body:** `{"enabled": true}` or `{"enabled": false}`
+
+---
+
 ## Account (Self-Service)
 
 These endpoints are available to any logged-in user regardless of role.
@@ -1135,9 +1263,11 @@ Returns the current user's username and role. Used by the frontend to decide whi
 ---
 
 ### `POST /api/account/password`
-Changes the current user's own password. Requires the existing password to be provided.
+Changes the current user's own password. Requires the existing password to be provided. The new password must be at least 8 characters. This is the one route reachable while the default-password wall is up.
 
 **Body:** `{"current_password": "<current>", "new_password": "<new>"}`
+
+**Errors:** A wrong current password returns `403 {"field": "current_password"}`.
 
 ---
 
@@ -1226,8 +1356,27 @@ Serves the Alarm Engine's single-page application (SPA). Navigating to `/alarm/`
 
 ---
 
+### `GET /api/alarm-ws-ticket`
+Issues a short-lived, single-use ticket authorizing one connection to `GET /ws/alarm`. `EventSource`/`WebSocket` connections can't carry a session cookie's normal headers across the separate WS proxy port, so the ticket is passed as a query parameter instead.
+
+**Response:** `{"ticket": "<ticket>", "ttl_s": <seconds>}`
+
+---
+
 ### `GET /ws/alarm`
-Upgrades to a WebSocket connection and bridges to the Alarm Engine's live alert event stream. The Manager runs a dedicated WebSocket proxy on a separate port so the browser does not need to trust the internal CA certificate. Events include `alert_created`, `alert_updated`, `alert_acknowledged`, and `alert_resolved`.
+Upgrades to a WebSocket connection and bridges to the Alarm Engine's live alert event stream. The Manager runs a dedicated WebSocket proxy on a separate port so the browser does not need to trust the internal CA certificate. Events include `alert_created`, `alert_updated`, `alert_acknowledged`, and `alert_resolved`. Requires a `?ticket=` from `GET /api/alarm-ws-ticket`; tickets are path-bound and cannot be reused on `/ws/openclaw`.
+
+---
+
+### `GET /api/openclaw-ws-ticket`
+Issues a short-lived, single-use ticket authorizing one connection to `GET /ws/openclaw`. Same shape and TTL as `GET /api/alarm-ws-ticket`, but path-bound to `/ws/openclaw`.
+
+**Response:** `{"ticket": "<ticket>", "ttl_s": <seconds>}`
+
+---
+
+### `GET /ws/openclaw`
+Upgrades to a WebSocket connection and bridges to the OpenClaw gateway's control-UI WebSocket, using the same Manager-side bridge as `/ws/alarm`. The upstream target is the resolved OpenClaw host, and the browser's real `Origin` header is forwarded so the OpenClaw gateway's own allowed-origins check still applies. Requires a `?ticket=` from `GET /api/openclaw-ws-ticket`.
 
 ---
 
@@ -1456,7 +1605,7 @@ Returns all notification policies — the rules that determine which channels re
 ### `POST /api/alarm/notifications/configs`
 Creates a new notification policy.
 
-**Body:** A policy object specifying which severity levels and rule tags trigger delivery to which channel.
+**Body:** A policy object specifying which severity levels and rule tags trigger delivery to which channel. Includes `toast_dismiss_seconds` (1–600, default 10) — how long a Toast-channel delivery stays on screen when `auto_dismiss` is on.
 
 ---
 
@@ -1478,7 +1627,7 @@ Deletes a notification policy.
 ---
 
 ### `GET /api/alarm/notifications/delivery-history`
-Returns the delivery log: a record of every notification attempt with its outcome (sent, failed, retrying) and timestamp.
+Returns the delivery log: a record of every notification attempt with its outcome (sent, failed, retrying) and timestamp. Each row's `metadata.alert_id` names the alert it was sent for, which backs the alert drawer's delivery timeline.
 
 ---
 
@@ -1513,6 +1662,8 @@ Sends a test message through a channel to verify it is configured correctly.
 
 ### `GET /api/alarm/metrics`
 Queries the time-series metric store. Returns data points for dashboard history and analysis.
+
+**Access:** Requires the management token (the ingest token is accepted as a fallback); open only when neither is configured.
 
 **Query parameters:**
 - `source` — (optional) filter to a specific metric source (e.g. `gpu`, `cpu`, `ram`, `disk`, `network`, `psu`)
@@ -1551,10 +1702,14 @@ Alternative single-point ingest path provided for compatibility with certain for
 ### `GET /api/alarm/metrics/export`
 Downloads all stored metrics as a file, useful for backup or external analysis.
 
+**Access:** Requires the management token (the ingest token is accepted as a fallback); open only when neither is configured.
+
 ---
 
 ### `GET /api/alarm/metrics/<source>/<metric_name>`
 Returns the time-series history for a specific metric from a specific source host. Used by dashboard chart backfill.
+
+**Access:** Requires the management token (the ingest token is accepted as a fallback); open only when neither is configured.
 
 **Query parameters:**
 - `since_minutes` — how far back to look, in minutes (default: 60)
@@ -1566,6 +1721,8 @@ Returns the time-series history for a specific metric from a specific source hos
 ### `GET /api/alarm/metrics/<source>/<metric_name>/summary`
 Returns summary statistics for a specific metric (min, max, mean, p95) over a query window without returning the full point-by-point history.
 
+**Access:** Requires the management token (the ingest token is accepted as a fallback); open only when neither is configured.
+
 **Query parameters:**
 - `window_minutes` — time window in minutes to summarize over (default: 60)
 
@@ -1575,6 +1732,42 @@ Returns summary statistics for a specific metric (min, max, mean, p95) over a qu
 Receives an alert from an outside system and routes it into the alarm engine. The endpoint auto-detects the payload format — InfluxDB notification rules, Grafana alerting webhooks, or a generic JSON/YAML body — and maps it onto an internal alert. Useful for forwarding alerts from tools you already run into this dashboard's Events view.
 
 **Access:** Requires the ingest bearer token when one is configured.
+
+---
+
+## Alarm Engine — Admin & Diagnostics
+
+### `POST /api/alarm/admin/export`
+Builds and returns the Alarm Engine's own encrypted backup archive (rules, channels, notification configs, alerts/history). This is what scheduled backups on the Manager call to cover the alarm engine.
+
+**Access:** Requires the management token. No ingest-token fallback; fails closed (403) when no management token is configured, since the archive carries every configured secret.
+
+**Body:** `{"password": "<passphrase>"}` — an empty password produces an unencrypted archive.
+
+---
+
+### `POST /api/alarm/admin/import/preview`
+Validates an uploaded Alarm Engine backup archive and returns its manifest, entry list, and topology so the operator can confirm before applying.
+
+**Access:** Requires the management token. No ingest-token fallback.
+
+**Body:** The encrypted archive file as a multipart upload, plus its `password` form field.
+
+---
+
+### `POST /api/alarm/admin/import/apply`
+Applies a previously previewed Alarm Engine backup archive, overwriting the current rules/channels/config with the archive contents. The engine must be restarted afterward for the change to take effect.
+
+**Access:** Requires the management token. No ingest-token fallback.
+
+**Body:** The encrypted archive file as a multipart upload, plus its `password` form field.
+
+---
+
+### `GET /api/alarm/dbstats/sqlite`
+Returns size/pragma/row-count stats for the Alarm Engine's SQLite databases, backing the Database Performance card. Cached for up to 10 seconds across callers.
+
+**Access:** Requires the management token (the ingest token is accepted as a fallback); open only when neither is configured.
 
 ---
 

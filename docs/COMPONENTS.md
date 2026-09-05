@@ -41,13 +41,14 @@ The Manager is the central hub of the system. It serves the web dashboard that o
 | _pki | Implements the internal Certificate Authority: generates the root cert on first boot, signs agent and service certs |
 | _archive | Handles encrypted export and import of the system configuration for backup and restore |
 | stream_pool | Manager-side cap on concurrent long-lived SSE streams so they cannot exhaust the web server's worker threads; distinct from the agent's own `stream_pool.py`, which caps streams on the agent side instead (see Agent section) |
-| gateway | OpenAI-compatible `/v1/models`, `/v1/chat/completions`, and `/v1/completions` gateway. `/v1/models` merges every provider's pool; a completion first resolves which provider owns the requested model (pin, then the model index, then llama as fallback), then picks a host within that provider (pin, then an explicit `?agent=`, then pool round-robin, then the default) |
+| gateway | OpenAI-compatible `/v1/models`, `/v1/chat/completions`, and `/v1/completions` gateway. `/v1/models` merges every provider's pool; a completion first resolves which provider owns the requested model (pin, then the model index, then llama as fallback), then picks a host within that provider (pin, then an explicit `?agent=`, then pool round-robin, then the default). A miss against a cold or stale index waits up to 5 s on an async refresh before falling back, and a stale `/v1/models` refreshes single-flight |
 | gateway_usage | In-memory cumulative token counters for gateway-proxied responses, used by providers (LM Studio) that expose no native token telemetry |
-| autopilot | Model autopilot: holds placement state, observes agents, executes load/unload/failover actions, and reconciles drift; exposes the Admin → Routing autopilot routes |
+| autopilot | Model autopilot: holds placement state, observes agents, executes load/unload/failover actions, and reconciles drift; exposes the Admin → Gateway autopilot routes. A `protect_unmanaged` flag keeps resident unmanaged models from being displaced, and route sync skips busy hosts |
 | autopilot_planner | Pure planner for the autopilot — takes state in, returns actions out, with no I/O or clock access, so it can be unit tested deterministically |
 | energy | Energy and cost accounting: attributes measured PSU/SoC/GPU watts and token deltas to hourly per-agent rows, and produces the $/Mtok and cloud-savings figures shown on the Energy sub-tab |
 | report_card | GPU Report Card: runs a standardized cross-provider benchmark preset, stores results, and serves the history/trend routes |
 | discord_bot | Optional Discord bot: slash commands over the Discord gateway for read-only status queries and gated model control |
+| tool_activity | Records tool runs against the agent the proxy resolved to, confirms or expires them from an off-thread agent probe, and serves the merged fleet-wide activity view backing the Tools launcher |
 | companion | PWA phone companion: serves the app shell/manifest/service worker, manages web-push subscriptions and VAPID keys, fans alarm alerts out to devices, and runs the opt-in release check |
 | sse_daemon | Standalone aiohttp daemon that serves the `/api/llama-state/stream` SSE endpoint off its own event loop instead of pinning a web server worker thread per held stream |
 | stream_health | Aggregates the manager's stream pool, worker-thread/queue backlog, and each agent's stream state into one snapshot for the Manager sub-tab's health card |
@@ -65,7 +66,7 @@ Accounts are protected with industry-standard scrypt password hashing. After sev
 
 ### Dependencies
 
-The Manager talks to agents (over HTTPS) to collect live AI state and to proxy control commands. It talks to the Alarm Engine (over HTTPS) to forward metrics, retrieve alert state, and proxy history chart data to the browser. It also reads and writes its own local SQLite database (`data/metrics.db`), which holds `model_benchmarks` (AI model benchmark results), `report_cards` (one row per completed GPU Report Card run), and `audit_log` (a capped log of mutating admin actions) — metric history itself lives in InfluxDB via the Alarm Engine, not here.
+The Manager talks to agents (over HTTPS) to collect live AI state and to proxy control commands. It talks to the Alarm Engine (over HTTPS) to forward metrics, retrieve alert state, and proxy history chart data to the browser. It also reads and writes its own local SQLite database (`data/metrics.db`), which holds `model_benchmarks` (AI model benchmark results), `report_cards` (one row per completed GPU Report Card run), `tool_runs` (one row per completed Report Card, Benchmark, or Autotune run), and `audit_log` (a log of mutating admin actions, retention-purged at `[manager.audit].retention_days` — 60 default — with a 100,000-row backstop) — metric history itself lives in InfluxDB via the Alarm Engine, not here.
 
 ---
 
@@ -116,7 +117,7 @@ If the Alarm Engine becomes unreachable — for example during a restart or a ne
 
 ### Registration and Heartbeat
 
-When an Agent starts up for the first time on a new machine, it registers itself with the Manager and waits to be approved by an administrator. Approval happens through the Admin tab — the administrator reviews the agent's details and clicks Approve. Once approved, the Manager generates a unique TLS certificate for that agent and delivers it securely.
+When an Agent starts up for the first time on a new machine, it registers itself with the Manager and waits to be approved by an administrator. Approval happens through the Admin tab — the administrator reviews the agent's details and clicks Approve; fleet-wide equivalents (Approve all pending, Update all, Push CA, the agent-auth slider) live under the roster's **Manage ▾** menu. Once approved, the Manager generates a unique TLS certificate for that agent and delivers it securely. Current agents also present a hardware fingerprint alongside the bearer token on later approval-status polls and re-registrations.
 
 After that, the Agent sends a heartbeat to the Manager roughly once per minute. The Manager uses these heartbeats to know which agents are online and to push configuration updates (such as the address of the Alarm Engine and the ingest token) back to the agent. If an agent stops sending heartbeats, the Manager marks it offline and the dashboard reflects that immediately.
 
@@ -130,7 +131,7 @@ Each Agent sends metric batches directly to the Alarm Engine (bypassing the Mana
 
 ### What It Does
 
-The Alarm Engine is the system's data store and alerting brain. It receives a continuous stream of measurements from every Agent, writes them to a time-series database for historical analysis, and constantly checks whether any measurement has crossed a threshold that warrants an alert. When something goes wrong — a GPU overheating, disk filling up, or AI server stalling — the Alarm Engine fires an alert and sends notifications to configured channels.
+The Alarm Engine is the system's data store and alerting brain. It receives a continuous stream of measurements from every Agent, writes them to a time-series database for historical analysis, and constantly checks whether any measurement has crossed a threshold that warrants an alert. When something goes wrong — a GPU overheating, disk filling up, or AI server stalling — the Alarm Engine triggers an alert and sends notifications to configured channels.
 
 The Alarm Engine runs as a completely standalone service with its own process, its own Python environment, and its own systemd unit. This separation means a crash or restart of the Alarm Engine does not affect the Manager or agents, and vice versa. Agents continue buffering measurements to disk if the engine is temporarily unavailable and resume delivery once it comes back online.
 
@@ -138,17 +139,17 @@ The Alarm Engine runs as a completely standalone service with its own process, i
 
 - Receives metric batches from agents and writes them to InfluxDB for storage and charting
 - Evaluates every incoming measurement against all active alarm rules
-- Manages the full alert lifecycle: firing, acknowledging, and resolving alerts
-- Sends notifications via email, HTTP webhook, Discord, SMS, and in-dashboard pop-ups when alerts fire or clear
+- Manages the full alert lifecycle: triggering, acknowledging, and resolving alerts
+- Sends notifications via email, HTTP webhook, Discord, SMS, and in-dashboard pop-ups when alerts trigger or clear
 - Streams live alert events to the browser via WebSocket so the Events tab updates instantly
 - Provides historical metric data to the Manager for dashboard charts
 - Stores alarm rules, notification channel configurations, and delivery history in a local database
 
 ### How Alerts Work
 
-When a metric batch arrives, the Alarm Engine checks each measurement against every active rule. A rule says something like "alert when GPU temperature exceeds 85 °C." If a measurement crosses that threshold, the engine does not fire an alert immediately — many rules include a **dwell time**, which requires the condition to remain true for a minimum duration (for example, 30 seconds) before the alert actually fires. This prevents false alarms from brief transient spikes.
+When a metric batch arrives, the Alarm Engine checks each measurement against every active rule. A rule says something like "alert when GPU temperature exceeds 85 °C." If a measurement crosses that threshold, the engine does not trigger an alert immediately — many rules include a **dwell time**, which requires the condition to remain true for a minimum duration (for example, 30 seconds) before the alert actually triggers. This prevents false alarms from brief transient spikes.
 
-Once the dwell time is satisfied, the alert moves to the **firing** state and the engine sends notifications to all configured channels. An operator can **acknowledge** the alert to indicate they are aware of it; this silences repeated notifications while the condition persists. When the measurement returns to a safe level, the alert is automatically **resolved** and a resolution notification is sent. All of this history — every state transition — is recorded so operators can review what happened and when.
+Once the dwell time is satisfied, the alert moves to the **triggered** state and the engine sends notifications to all configured channels. An operator can **acknowledge** the alert to indicate they are aware of it; this silences repeated notifications while the condition persists. When the measurement returns to a safe level, the alert is automatically **resolved** and a resolution notification is sent. All of this history — every state transition — is recorded so operators can review what happened and when.
 
 ### Engine Modules
 
@@ -157,8 +158,8 @@ Once the dwell time is satisfied, the alert moves to the **firing** state and th
 | rule_engine | Loads all active rules and runs each incoming measurement through them |
 | threshold_evaluator | Applies the actual threshold comparison logic (greater than, less than, equal to) including dwell time tracking |
 | anomaly_detector | Optionally checks for statistically unusual values even when no fixed threshold is crossed |
-| alert_manager | Manages the alert state machine (firing → acknowledged → resolved) and persists alerts to the database |
-| notification_dispatcher | Sends alerts to configured channels: email via SMTP, HTTP webhook, Discord webhook, SMS, and in-dashboard pop-up notifications |
+| alert_manager | Manages the alert state machine (triggered → acknowledged → resolved) and persists alerts to the database |
+| notification_dispatcher | Sends alerts to configured channels: email via SMTP, HTTP webhook, Discord webhook, SMS, and in-dashboard pop-up notifications. A toast is sent only when an enabled policy routes a matching alert to an enabled Toast channel |
 
 ### Storage
 
@@ -171,7 +172,7 @@ Once the dwell time is satisfied, the alert moves to the **firing** state and th
 
 ### Notification Channels
 
-Notification policies can be set to alert immediately on first firing, or only after the condition has persisted for a configurable amount of time — avoiding a flood of messages from a brief transient event. Each policy can also specify a cooldown period to suppress repeated notifications once an alert has already been sent.
+Notification policies can be set to alert as soon as a rule first triggers, or only after the condition has persisted for a configurable amount of time — avoiding a flood of messages from a brief transient event. Each policy can also specify a cooldown period to suppress repeated notifications once an alert has already been sent, and a `toast_dismiss_seconds` value (1–600, default 10) controlling how long a Toast notification stays on screen.
 
 The Alarm Engine can send alert notifications through five channels, each configured independently:
 
@@ -179,7 +180,7 @@ The Alarm Engine can send alert notifications through five channels, each config
 - **HTTP Webhook** — posts a JSON payload to any URL. This makes it easy to integrate with monitoring platforms, ticketing systems, or custom scripts.
 - **Discord Webhook** — posts a formatted message directly to a Discord channel. Useful for teams that use Discord as a communication hub.
 - **SMS** — sends a text message through a configured SMS provider. Useful for urgent paging when staff may not be at a screen.
-- **Toast** — shows a pop-up notification in the dashboard itself, so anyone watching the Events tab sees the alert without leaving the page.
+- **Toast** — a pop-up in the dashboard itself. Like every other channel it must be enabled and routed by a policy before it is sent.
 
 Each channel can be enabled or disabled independently, and each alarm rule can specify which channels to use. The engine records every delivery attempt — including failures — so operators can confirm notifications were sent.
 
@@ -197,22 +198,20 @@ The Web Dashboard is the browser-based interface that operators use to see every
 
 The dashboard is built entirely with standard browser technologies (HTML, CSS, and JavaScript) and requires no build tools, no compiler, and no framework. This keeps the codebase straightforward to maintain and means the UI can be served directly from the Manager without a separate build step.
 
-The JavaScript is split into two tiers that share the same `js/` directory but behave differently. Files under `js/lib/*.js` (e.g. `series.js`, `benchaxis.js`, `thresholds.js`) are dual-mode: pure data/formatting helpers written so they work as classic `<script>` globals in the browser *and* as CommonJS modules importable by the Vitest unit tests. Everything directly under `js/*.js` (e.g. `dashboard-manager.js`, `boot.js`) is a classic script that runs in one shared global scope with every other top-level script — there is no per-file module isolation, so a name like `fmt` or `cssVar` can only be defined once across all of them. A few top-level scripts opt out by wrapping themselves in an IIFE and exposing a single namespace object: `autopilot.js` does this, exporting only `window.AP`, which also lets the tests import it.
+The JavaScript is split into two tiers that share the same `js/` directory but behave differently. Files under `js/lib/*.js` (e.g. `series.js`, `benchaxis.js`, `thresholds.js`) are dual-mode: pure data/formatting helpers written so they work as classic `<script>` globals in the browser *and* as CommonJS modules importable by the Vitest unit tests. Everything directly under `js/*.js` (e.g. `dashboard-manager.js`, `boot.js`) is a classic script that runs in one shared global scope with every other top-level script — there is no per-file module isolation, so a name like `fmt` or `cssVar` can only be defined once across all of them. Wrapping a top-level script in an IIFE and exposing a single namespace object is now the norm rather than the exception: `autopilot.js` (`window.AP`), `admin-agents.js` (`window.AgentsView`), `admin-audit.js` (`window.AuditView`), and others follow the same pattern, which also lets the tests import them. `base.css` declares one global `[hidden] { display: none !important; }` rule rather than per-class overrides.
 
 ### Tabs
 
 | Tab | What It Shows / Does |
 |---|---|
-| LLM Overall | A combined summary view of all AI activity across llama.cpp, LM Studio, and vLLM |
-| Dashboard | Live hardware metrics, GPU stats, model status, and performance charts, split into provider sub-tabs: llama.cpp, LM Studio, vLLM, Energy, OpenClaw, and Manager |
-| LLM Control | Load and unload AI models, adjust server settings, run benchmarks, download new models, split into provider sub-tabs: llama.cpp, LM Studio, vLLM, and Report Card |
-| OpenClaw | Analytics for Claude Code usage: token counts, cost trends, tool attribution |
-| LLM Chat | Embedded chat interface connecting directly to the running AI model |
-| Image Generation | Embedded interface for the image generation server |
-| Events | Live alert feed; shows firing, acknowledged, and resolved alerts in real time |
-| Admin | Split into sub-tabs: Access, Agents, Audit, Backup, and Routing (pools, pins, and Model Autopilot management) |
+| Overall | A combined summary view of all AI activity across llama.cpp, LM Studio, and vLLM |
+| Dashboards | Live hardware metrics, GPU stats, model status, and performance charts, split into provider sub-tabs: llama.cpp, LM Studio, vLLM, Energy, OpenClaw, and Manager |
+| LLM Control | Load and unload AI models, adjust server settings, run benchmarks, download new models, split into provider sub-tabs: llama.cpp, LM Studio, vLLM, and Tools (an app-style launcher hosting Report Card, Benchmark, and Autotune as in-tab modules, with a cross-tool run ledger and a run-activity dot) |
+| Tools | OpenClaw (analytics for Claude Code usage: token counts, cost trends, tool attribution), LLM Chat (embedded chat interface connecting directly to the running AI model), and Image Generation (embedded interface for the image generation server) as sub-tabs of one tab; the tab hides itself entirely when no proxy is enabled, and each sub-tab's iframe loads on first visit |
+| Events | Live alert feed; shows triggered, acknowledged, and resolved alerts in real time |
+| Admin | Split into sub-tabs: Access Control, Agents, Audit Log, Backups, Gateway (pools, pins, and Model Autopilot management), and Settings, with a System Health card above the strip |
 
-The Dashboard → Energy sub-tab (`js/energy.js`, `js/lib/energy.js`) shows measured $/Mtok and cloud-savings figures. The LLM Control → Report Card sub-tab (`js/report-card.js`, `js/lib/reportcard.js`) drives the standardized GPU Report Card benchmark. Both Dashboard and LLM Control gained a vLLM sub-tab (`js/vllm.js`, `js/vllm-bench-autotune.js`). Model Autopilot has no dedicated top-level tab — it is a card inside Admin → Routing (`js/autopilot.js`).
+The Dashboards → Energy sub-tab (`js/energy.js`, `js/lib/energy.js`) shows measured $/Mtok and cloud-savings figures. The LLM Control → Tools sub-tab (`js/tools.js`, `js/report-card.js`, `js/lib/reportcard.js`, `js/bench-autotune.js`) is an app-style launcher hosting Report Card, Benchmark, and Autotune as in-tab modules. Both Dashboards and LLM Control gained a vLLM sub-tab (`js/vllm.js`, `js/vllm-bench-autotune.js`). Model Autopilot has no dedicated top-level tab — it is a card inside Admin → Gateway (`js/autopilot.js`). The rest of the Admin refactor lives in `js/admin-agents.js`, `js/admin-audit.js`, `js/admin-health.js`, `js/admin-settings.js`, and `js/admin-access-settings.js`, with shared helpers in `js/lib/modelcards.js`, `js/editor-modern.js`, and `js/lib/sseguard.js`.
 
 ### Phone Companion (PWA)
 
@@ -226,7 +225,7 @@ The dashboard uses three different mechanisms to keep information current, each 
 
 **Server-Sent Events (SSE)** are used for long-running operations like downloading a model, running a benchmark, or tailing a log file. Instead of the browser repeatedly asking "are you done yet?", the server pushes each new line of progress as it becomes available. This gives smooth, real-time progress feedback without wasting requests.
 
-**WebSocket** is used for alert events. It is served by a standalone `websockets` daemon thread running inside the Manager process (its own asyncio loop, disabled unless `[manager].ws_proxy_port` is set — default `5444`), which relays events between the browser and the Alarm Engine's WebSocket endpoint. When an alert fires, is acknowledged, or resolves anywhere in the system, that event arrives in the browser within milliseconds — no polling delay.
+**WebSocket** is used for alert events. It is served by a standalone `websockets` daemon thread running inside the Manager process (its own asyncio loop, disabled unless `[manager].ws_proxy_port` is set — default `5444`), which relays events between the browser and the Alarm Engine's WebSocket endpoint. When an alert triggers, is acknowledged, or resolves anywhere in the system, that event arrives in the browser within milliseconds — no polling delay.
 
 ### Multi-Agent Support
 
@@ -274,7 +273,9 @@ Both the Manager and the Alarm Engine read their settings from a single configur
 | Notifications | SMTP server address and credentials for email alerts |
 | Database | InfluxDB connection details and access tokens for each data bucket |
 | TLS | Whether the Alarm Engine serves HTTPS, certificate paths, WebSocket proxy port |
-| Ingest security | Whether the alarm engine's metric ingestion endpoint requires a bearer token; when unset, the endpoint accepts data from any source on the network |
+| Ingest security | Whether the alarm engine's metric ingestion endpoint requires a bearer token; when unset, the endpoint accepts data from any source on the network. The separate **management token** additionally gates rules, alerts, notifications, config, `dbstats`, and the metrics read routes (ingest-token fallback), plus admin export/import (no fallback). It is required on split installs, and scheduled backups cannot cover the alarm engine without it |
+| Audit | Retention period and page size for the admin audit log, whether automated actors are recorded, and per-event-catalog toggles |
+| Backups | Backup interval, run retention, encryption passphrase, and an optional mirror directory validated on save |
 
 ### Defaults Behavior
 
@@ -298,7 +299,7 @@ The Installer is a Bash script that automates setting up LLM Systems Manager on 
 |---|---|
 | Full stack | Manager + Alarm Engine + local Agent + InfluxDB on one machine |
 | Manager + Alarm Engine | Both services, assuming InfluxDB is already running elsewhere |
-| Manager only | Just the web dashboard and API server |
+| Manager only | Just the web dashboard and API server. Also asks for the alarm engine's `management_token` — the prompt cannot be skipped; paste the value the alarm-engine install printed, or type `new` to mint one here |
 | Alarm Engine only | Just the metrics storage and alerting service |
 | Agent only | Just the monitoring and control agent (works on both Linux and macOS) |
 | InfluxDB only | Just the time-series database, with all required buckets and tokens provisioned |
@@ -324,4 +325,4 @@ The agent installer is a separate sub-script that works on both Linux and macOS.
 
 ### Updating
 
-The installer includes a self-update mechanism: before making any changes, it checks whether a newer version of itself is available and automatically re-executes the newer version if one is found. This means running the installer from a `curl` command always uses the latest logic. The dedicated Update mode (mode 7) detects which components are installed, compares files against the current source, backs up anything that changed, syncs only the changed files, refreshes Python dependencies, and restarts affected services — all without touching files that have not changed.
+The installer includes a self-update mechanism: before making any changes, it checks whether a newer version of itself is available and automatically re-executes the newer version if one is found. This means running the installer from a `curl` command always uses the latest logic. The dedicated Update mode (mode 7) detects which components are installed, compares files against the current source, backs up anything that changed, syncs only the changed files, refreshes Python dependencies, and restarts affected services — all without touching files that have not changed. It also re-stamps the install root's `RELEASE` marker on every run, so an install that could not previously name its release (and so never reported an available update) self-heals on its next update.

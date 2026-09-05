@@ -26,7 +26,7 @@ GPU Report Card. See "Manager Feature Subsystems" below.
 
 | Component | What It Does |
 |---|---|
-| **Manager** | The central hub. Hosts the web dashboard that operators use in their browser. Keeps track of which Agents are registered and approved. Forwards metric history requests to the Alarm Engine and proxies LLM control commands to Agents. Also hosts its own feature subsystems — an inference gateway, Model Autopilot, energy/cost accounting, a Discord bot, and the GPU Report Card (see below). Runs on ports 5000 (HTTP) and 5443 (HTTPS), plus a small standalone WebSocket proxy on port 5444 for live alert streaming. |
+| **Manager** | The central hub. Hosts the web dashboard that operators use in their browser. Keeps track of which Agents are registered and approved. Forwards metric history requests to the Alarm Engine and proxies LLM control commands to Agents. Also hosts its own feature subsystems — an inference gateway, Model Autopilot, energy/cost accounting, a Discord bot, and the GPU Report Card (see below). Runs on ports 5000 (HTTP) and 5443 (HTTPS), plus a small standalone WebSocket proxy on port 5444 (`ws_proxy_tls_port` 5446 for wss) that bridges two paths — `/ws/alarm` for live alert streaming and `/ws/openclaw` for the OpenClaw control UI. |
 | **Agent** | A lightweight program installed on each monitored computer. Reads hardware sensors (CPU, GPU, RAM, temperatures, fans, power) every 5 seconds and ships those readings to the Alarm Engine and the Manager. Also exposes controls so operators can start, stop, and configure AI models (llama.cpp, LM Studio, or vLLM) on that machine. Runs on port 8082 (HTTPS only). |
 | **Alarm Engine** | Receives all incoming metric batches, stores them in InfluxDB, and checks every reading against configured alarm rules. When a threshold is crossed, it creates an alert, sends notifications (email, webhook, Discord), and streams the event live to the dashboard. Runs on port 8081 (HTTPS). |
 | **Time-Series Database** | InfluxDB stores every metric reading over time so the dashboard can display history charts. It keeps two copies of the data: full-resolution readings (one every 5 seconds) and a compressed summary for longer time windows that records both the average and the peak of each minute, so a long-range chart can show real bursts instead of flattening them. Runs on port 8086. |
@@ -155,6 +155,7 @@ subsystems, each in its own module:
 | **Model Autopilot** | `autopilot.py`, `autopilot_planner.py` | Lets operators declare which models must stay available; a periodic reconciler places them across llama.cpp, LM Studio, and vLLM agents by capability and memory fit, re-places on agent failure, and scales replicas on saturation. |
 | **Energy & cost accounting** | `energy.py` | Attributes measured PSU/GPU power draw and token counts to hourly per-agent rows, producing measured $/Mtok, idle/active split, and cloud-savings estimates across llama.cpp, LM Studio, and vLLM. |
 | **GPU Report Card** | `report_card.py` | Runs a standardized benchmark preset across llama.cpp, vLLM, and LM Studio, producing a shareable card (TTFT, tok/s, VRAM, watts, tokens/joule, $/Mtok) with local trending. |
+| **Tool run tracking** | `tool_activity.py` | Records a tool run against the agent the proxy resolved to, confirms or expires it from a background probe of that agent's tools-state endpoint, and serves the merged fleet-wide view backing the Tools launcher's run ledger. |
 | **Discord bot** | `discord_bot.py` | Opt-in interactive slash commands (status queries and, behind a separate confirmation gate, model load/unload) driven over the inference gateway. |
 | **PWA companion** | `companion.py` | Serves the installable phone app (`/companion`, manifest, service worker), stores web-push subscriptions, fans alarm-engine alerts out to devices via VAPID web push, and runs the opt-in release-availability check. |
 
@@ -172,6 +173,9 @@ Agents must be explicitly approved by an administrator before they can send data
 Approval issues the Agent a signed certificate and a bearer token; both must be present for the
 Manager and Alarm Engine to accept requests from that Agent. Short-lived tokens are used for live
 dashboard streams (SSE) because browser APIs for those connections cannot send custom headers.
+Current agents additionally present a hardware fingerprint on the approval-status poll and on
+re-registration; records last written by an older agent keep the previous behaviour until that
+agent upgrades.
 
 ### Two exceptions worth knowing about
 
@@ -180,7 +184,9 @@ The dashboard itself is served over plain HTTP on port 5000 unless you enable
 internal-CA certificate by default; setting `[manager].tls_cert_file`/`tls_key_file` adds an
 operator-provided certificate selected by SNI for the hostnames it covers, giving browsers a
 publicly trusted origin (required for the PWA companion and web push) without changing what
-CA-pinned agents see.
+CA-pinned agents see. `[manager].hsts_max_age_s` (default `0`) can emit `Strict-Transport-Security`
+on the TLS listener; it is off by default because HSTS preserves the port and the plain-HTTP
+listener shares the same hostname.
 
 The alert WebSocket bridge on `[manager].ws_proxy_port` (5444) is **served as plain `ws://`, and
 requires a short-lived ticket on every handshake.** The browser first calls
@@ -192,6 +198,12 @@ anything upstream; a handshake with a missing, expired, tampered, or already-use
 with code `1008` and never reaches the Alarm Engine. Each ticket carries a signed random nonce and is
 spent on its first accepted handshake, so a captured ticket cannot be replayed within its TTL. A fresh ticket is fetched on every connect and
 reconnect.
+
+The same bridge also serves `/ws/openclaw`, ticketed by a separate `GET /api/openclaw-ws-ticket`
+route. Tickets are path-bound — one issued for `/ws/alarm` cannot be replayed against
+`/ws/openclaw` or vice versa — so the two ticket routes cannot be swapped. On the OpenClaw path the
+bridge forwards the browser's real `Origin` header upstream, so the OpenClaw gateway's own
+allowed-origins check still applies.
 
 The plaintext part is deliberate: the Manager's certificate is signed by the internal CA, so
 terminating `wss://` there would just move the trust problem into the browser, which is the thing
@@ -229,6 +241,13 @@ agents, users, alarm rules, and system configuration; **Operator** users can mon
 control AI models but cannot change security settings or manage other users. The system also enforces
 automatic lockout after repeated failed login attempts to resist brute-force attacks.
 
+A session created over the HTTPS listener is stored in a separate `__Secure-session` cookie with
+its own signing salt; plain-HTTP sessions keep the `session` cookie. The two are independent — a
+cookie minted on one scheme is not accepted on the other, and upgrading from an earlier release that served
+HTTPS invalidates any existing HTTPS sessions. Separately, an account still holding the shipped
+default password is held on a mandatory change-password form — derived server-side on every
+request — until it sets a new one; every other API returns 403 in the meantime.
+
 ---
 
 ## Storage
@@ -236,11 +255,12 @@ automatic lockout after repeated failed login attempts to resist brute-force att
 | What | Where | Purpose |
 |---|---|---|
 | **Performance metric history** | InfluxDB — two buckets: raw (5 s resolution) and rollup, which holds parallel 1-min mean and 1-min max measurements | Feeds all dashboard history charts and alarm rule evaluation; a history request selects mean or max per chart |
-| **Active alerts and alert history** | SQLite — `ae_alarms.db` (owned by Alarm Engine) | Records when alerts fired, were acknowledged, and were resolved |
+| **Active alerts and alert history** | SQLite — `ae_alarms.db` (owned by Alarm Engine) | Records when alerts triggered, were acknowledged, and were resolved |
 | **Alarm rules, notification channels, delivery log** | SQLite — `ae_notif_rules.db` (owned by Alarm Engine) | Defines what triggers an alert and where notifications are sent |
 | **User accounts and roles** | JSON file — `data/manager_users.json` (access-restricted) | Stores scrypt-hashed passwords and Admin/Operator role assignments |
-| **Dashboard layout preferences** | JSON file — `data/layout.json` | Remembers card order, hidden panels, and colour theme per installation |
+| **Dashboard layout preferences** | JSON file — `data/layout.json` | Remembers card order, hidden panels, colour theme, the layout engine (Grid or Flow), density, per-page role preset, tools view, LLM Control section order/open state, log heights, HF trending filter, model view, and edit layout, per installation |
 | **AI model configuration profiles** | JSON file — `data/model_profiles.json` (access-restricted) | Stores named sets of model-server parameters that operators can apply in one click |
 | **Benchmark results** | SQLite — `data/metrics.db` (owned by Manager) | Stores average generation and processing speeds per model for comparison |
 | **GPU Report Card runs** | SQLite — `report_cards` table in `data/metrics.db` (owned by Manager) | One row per completed standardized bench run, backing the card view and local trending |
-| **Admin action audit log** | SQLite — `audit_log` table in `data/metrics.db` (owned by Manager) | Append-only record of admin actions (actor, role, path, outcome) for the Admin tab's audit sub-tab |
+| **Tool run ledger** | SQLite — `tool_runs` table in `data/metrics.db` (owned by Manager) | One row per completed Report Card, Benchmark, or Autotune run, deduped on run id; pruned per tool at 200 rows |
+| **Admin action audit log** | SQLite — `audit_log` table in `data/metrics.db` (owned by Manager) | Append-only record of admin actions (actor, role, path, outcome, an `auth` kind, a catalog `event` key, and a secrets-masked `detail` blob) for the Admin tab's audit sub-tab; purged every 24 h at `retention_days` (60 default) with a 100,000-row backstop |
