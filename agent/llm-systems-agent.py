@@ -13,6 +13,7 @@ import asyncio
 import base64
 import binascii
 import hmac
+import functools
 import json
 import logging
 import logging.handlers
@@ -72,7 +73,7 @@ except ImportError:
                 fh.write(content)
         tmp.replace(p)
 
-VERSION = "v2026.09.02-1"
+VERSION = "v2026.09.04-1"
 
 # LMS ps busy-status substrings, mirroring manager energy.LMS_BUSY_MARKERS;
 # transitional states (LOADING/UNLOADING/DOWNLOADING) are not busy (#619).
@@ -1739,11 +1740,16 @@ def _note_advertised(body: dict) -> None:
     _last_advertised_host = urlparse(body.get("bind_url") or "").hostname
 
 
-def _registration_body() -> dict[str, Any]:
+@functools.lru_cache(maxsize=1)
+def _agent_fingerprint() -> str:
     # Reboot-stable fingerprint (manager re-auth factor): no boot_time/kernel/IP inputs.
     fp_input = f"{CONFIG.AGENT_HOSTNAME}|{CONFIG.AGENT_OS}|{_machine_identity()}"
     import hashlib
-    fingerprint = "sha256:" + hashlib.sha256(fp_input.encode()).hexdigest()
+    return "sha256:" + hashlib.sha256(fp_input.encode()).hexdigest()
+
+
+def _registration_body() -> dict[str, Any]:
+    fingerprint = _agent_fingerprint()
     scheme = "https" if _tls_enabled() else "http"
     return {
         "hostname": CONFIG.AGENT_HOSTNAME,
@@ -1995,6 +2001,7 @@ def registry_register_blocking() -> None:
         try:
             r = _post_session.get(
                 f"{CONFIG.MANAGER_URL.rstrip('/')}/api/agents/{agent_id}/status",
+                headers={"X-Agent-Fingerprint": _agent_fingerprint()},
                 timeout=10,
             )
             if r.ok:
@@ -2832,6 +2839,7 @@ def reload_config(authorization: Optional[str] = Header(default=None)) -> dict[s
 def _reload_config_locked() -> dict[str, Any]:
     global CONFIG
     CONFIG = AgentConfig.load()
+    _agent_fingerprint.cache_clear()
     collectors.configure_all(CONFIG)
     providers.configure_all(AgentContext(
         config=CONFIG,

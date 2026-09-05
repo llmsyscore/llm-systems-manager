@@ -159,7 +159,7 @@ def _local_hostname() -> str:
 # banner reads it. Bump suffix (-1, -2, …) for same-day iterations; roll
 # the date for a new day's first change.
 # ---------------------------------------------------------------------------
-__version__ = "v2026.09.04-16"
+__version__ = "v2026.09.04-17"
 
 # Wall-clock at first import (Cheroot main process); the shutdown banner
 # reads it for the uptime line.
@@ -790,6 +790,15 @@ def _log_request_end(resp):
         # Never let logging break a response
         log.debug("request-log hook failed", exc_info=True)
     return resp
+
+@app.after_request
+def _hsts_header(resp):
+    """Opt-in Strict-Transport-Security on TLS responses ([manager].hsts_max_age_s > 0)."""
+    max_age = getattr(settings.manager, "hsts_max_age_s", 0)
+    if max_age > 0 and _request_is_https():
+        resp.headers["Strict-Transport-Security"] = f"max-age={max_age}"
+    return resp
+
 
 @app.errorhandler(Exception)
 def _log_unhandled(e):

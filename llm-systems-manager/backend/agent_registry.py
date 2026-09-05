@@ -1130,29 +1130,21 @@ def _agents_register():
                 break
         if existing:
             agent_id, agent = existing
-            # Authenticate the re-registration before mutating any record
-            # fields or returning the bearer token. Accept any of:
-            #   (a) valid prior bearer token in Authorization,
-            #   (b) source IP matches the original registered_from (TOFU),
-            #   (c) supplied fingerprint matches the stored fingerprint.
-            # Otherwise treat as an unauthenticated identity claim: do not
-            # overwrite trust-bearing fields and do not return the token.
+            # Re-auth before mutating the record or returning the token:
+            # prior bearer token, or the fingerprint/IP policy in _agent_reauth_ok.
             auth_header = flask_request.headers.get("Authorization", "")
             supplied_tok = ""
             if auth_header.startswith("Bearer "):
                 supplied_tok = auth_header[len("Bearer "):].strip()
             stored_tok = agent.get("token") or ""
-            stored_fp = agent.get("fingerprint") or ""
-            stored_from = agent.get("registered_from") or ""
             remote = flask_request.remote_addr or ""
             tok_ok = bool(stored_tok) and bool(supplied_tok) and _hmac.compare_digest(supplied_tok, stored_tok)
-            ip_ok = bool(stored_from) and remote == stored_from
-            fp_ok = bool(stored_fp) and bool(fingerprint) and _hmac.compare_digest(fingerprint, stored_fp)
-            authenticated = tok_ok or ip_ok or fp_ok
+            reauth_factor = _agent_reauth_factor(agent, fingerprint, remote)
+            authenticated = tok_ok or reauth_factor is not None
 
             if authenticated:
                 agent["bind_url"] = bind_url
-                agent["fingerprint"] = fingerprint
+                agent["fingerprint"] = fingerprint or agent.get("fingerprint") or ""
                 agent["version"] = body.get("version", agent.get("version"))
                 agent["description"] = body.get("description", agent.get("description"))
                 agent["capabilities"] = body.get("capabilities", agent.get("capabilities"))
@@ -1165,13 +1157,13 @@ def _agents_register():
                 # IPs working when its prior token is presented, while
                 # preventing an unauthenticated attacker from rewriting
                 # it via hostname guessing.
-                agent["registered_from"] = remote or stored_from
+                agent["registered_from"] = remote or agent.get("registered_from") or ""
                 agent["last_register"] = datetime.now(timezone.utc).isoformat()
                 data["agents"][agent_id] = agent
                 save_agents(data)
                 log.info("agent re-registered: id=%s hostname=%s status=%s auth=%s",
                          agent_id, hostname, agent.get("status"),
-                         "tok" if tok_ok else ("ip" if ip_ok else "fp"))
+                         "tok" if tok_ok else reauth_factor)
                 return jsonify({
                     "ok": True,
                     "agent_id": agent_id,
@@ -1236,16 +1228,32 @@ def _agents_register():
     return jsonify(out)
 
 
+FP_REAUTH_FROM_VERSION = "v2026.09.04-1"
+
+
+def _agent_reauth_factor(agent: dict, supplied_fp: str, remote: str) -> "str | None":
+    """Winning re-auth factor ("fp" | "ip") or None. The source-IP fallback is only for
+    records with no stored fingerprint or last written by a pre-FP_REAUTH_FROM_VERSION agent."""
+    stored_fp = agent.get("fingerprint") or ""
+    if stored_fp and supplied_fp and _hmac.compare_digest(supplied_fp, stored_fp):
+        return "fp"
+    key = _version_key(agent.get("version"))
+    legacy = not stored_fp or (key is not None and key < _FP_REAUTH_KEY)
+    stored_from = agent.get("registered_from") or ""
+    return "ip" if legacy and stored_from and remote == stored_from else None
+
+
 def _agents_get_status(agent_id: str):
-    """No-auth endpoint: agents poll this until approved. Returns token only
-    if the source IP matches the original registration."""
+    """No-auth endpoint: agents poll this until approved. Returns the token only
+    when the X-Agent-Fingerprint header (or legacy source IP) re-authenticates the caller."""
     data = load_agents()
     agent = data.get("agents", {}).get(agent_id)
     if not agent:
         return jsonify({"ok": False, "error": "unknown agent"}), 404
     out = {"ok": True, "status": agent.get("status")}
     if agent.get("status") == "approved" and agent.get("token"):
-        if (flask_request.remote_addr or "") == (agent.get("registered_from") or ""):
+        supplied_fp = (flask_request.headers.get("X-Agent-Fingerprint") or "").strip()
+        if _agent_reauth_factor(agent, supplied_fp, flask_request.remote_addr or ""):
             out["token"] = agent["token"]
     return jsonify(out)
 
@@ -1471,6 +1479,9 @@ def _version_key(v: "str | None") -> "tuple[int, int, int, int] | None":
     if not m:
         return None
     return tuple(int(x) for x in m.groups())  # type: ignore[return-value]
+
+
+_FP_REAUTH_KEY = _version_key(FP_REAUTH_FROM_VERSION)
 
 
 def agent_update_available(cur: "str | None", latest: "str | None") -> bool:

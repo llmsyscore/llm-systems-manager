@@ -633,12 +633,10 @@ if has_ae:
         else:
             text = sub_in_section(text, "alarm_engine", "management_token", mgmt_token_val)
 
-# CORS allow-lists and the agent dashboard push URL all need the manager's
+# The AE CORS allow-list and the agent dashboard push URL need the manager's
 # browser-facing IP — whether that's local (Modes 1/2) or remote (Mode 4).
 if mgr_ip:
     cors_value = f"http://{mgr_ip}:5000,http://localhost:5000,http://{mgr_ip}:8081"
-    if has_mgr:
-        text = sub_in_section(text, "manager",      "cors_origins",  cors_value)
     if has_ae:
         text = sub_in_section(text, "alarm_engine", "cors_origins",  cors_value)
     text = sub_in_section(text, "agent", "dashboard_url",

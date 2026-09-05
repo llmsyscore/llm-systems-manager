@@ -27,15 +27,31 @@ trap 'rm -f "$COOKIE_JAR"' EXIT
 agents_json() { curl -sS -b "$COOKIE_JAR" -m 10 "$MGR_URL/api/agents"; }
 # HTTP status of an arbitrary curl; extra args pass through, never aborts.
 code() { curl -s -o /dev/null -w '%{http_code}' -m 5 "$@" || true; }
+ADMIN_USER="${ADMIN_USER:-llmadmin}"
+ADMIN_PW="${ADMIN_PW:-llmadmin-ci-rotated}"
+SHIPPED_PW="llmadmin"
+# ci_admin_login JAR — admin session; the first login on a fresh install
+# rotates the shipped default password to ADMIN_PW (mandatory-change wall).
+ci_admin_login() {
+  local jar="$1" c
+  rm -f "$jar"
+  c="$(code -c "$jar" --data-urlencode "username=$ADMIN_USER" --data-urlencode "password=$ADMIN_PW" "$MGR_URL/login")"
+  case "$c" in 302|303) return 0 ;; esac
+  rm -f "$jar"
+  c="$(code -c "$jar" --data-urlencode "username=$ADMIN_USER" --data-urlencode "password=$SHIPPED_PW" "$MGR_URL/login")"
+  case "$c" in 302|303) : ;; *) echo "$c"; return 1 ;; esac
+  code -b "$jar" -X POST -H 'Content-Type: application/json' \
+    -d "{\"current_password\":\"$SHIPPED_PW\",\"new_password\":\"$ADMIN_PW\"}" "$MGR_URL/api/account/password" >/dev/null
+  rm -f "$jar"
+  c="$(code -c "$jar" --data-urlencode "username=$ADMIN_USER" --data-urlencode "password=$ADMIN_PW" "$MGR_URL/login")"
+  case "$c" in 302|303) return 0 ;; *) echo "$c"; return 1 ;; esac
+}
 
-echo "── 1. Admin login (seeded llmadmin/llmadmin) ────────────────────────"
-login_code="$(curl -sS -c "$COOKIE_JAR" -o /dev/null -w '%{http_code}' -m 10 \
-  --data-urlencode 'username=llmadmin' --data-urlencode 'password=llmadmin' "$MGR_URL/login")"
-case "$login_code" in
-  302|303) : ;;
-  *) fail "login returned $login_code (want 302/303) — admin seed/creds changed?" ;;
-esac
-pass "logged in as llmadmin"
+echo "── 1. Admin login (seeded admin, default password rotated on first use) ──"
+if ! login_code="$(ci_admin_login "$COOKIE_JAR")"; then
+  fail "login returned $login_code (want 302/303) — admin seed/creds changed?"
+fi
+pass "logged in as $ADMIN_USER"
 
 echo "── 2. Agent registered (poll for it by hostname) ────────────────────"
 AID=""

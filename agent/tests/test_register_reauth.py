@@ -71,7 +71,7 @@ def test_machine_identity_not_derived_from_host_facts():
 
 
 def test_fingerprint_input_is_reboot_stable():
-    src = _extract_func("_registration_body")
+    src = _extract_func("_agent_fingerprint")
     assert "psutil.boot_time" not in src, \
         "fingerprint hashes boot_time — changes every reboot, breaking re-auth"
     assert "platform.uname" not in src, \
@@ -99,3 +99,17 @@ def test_403_handler_does_not_clobber_registration_body():
     assert not re.search(r"\bbody = r\.json\(\)", src), \
         "403 handler rebinds `body`, corrupting the next registration POST"
     assert "err_body" in src
+
+
+def test_agent_fingerprint_hashes_host_os_and_identity():
+    import hashlib
+    ns = {"CONFIG": SimpleNamespace(AGENT_HOSTNAME="h", AGENT_OS="linux"),
+          "_machine_identity": lambda: "mid"}
+    exec(compile(_extract_func("_agent_fingerprint"), str(AGENT_PY), "exec"), ns)
+    assert ns["_agent_fingerprint"]() == "sha256:" + hashlib.sha256(b"h|linux|mid").hexdigest()
+
+
+def test_status_poll_sends_fingerprint_header():
+    src = _extract_func("registry_register_blocking")
+    m = re.search(r"_post_session\.get\((.*?/status.*?)\n\s+\)", src, re.DOTALL)
+    assert m and 'headers={"X-Agent-Fingerprint": _agent_fingerprint()}' in m.group(1)

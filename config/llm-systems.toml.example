@@ -27,6 +27,7 @@
 host = "0.0.0.0"                                         # listen address
 port = 5000                                              # listen port (HTTP)
 tls_port = 5443                                          # set to 0 to disable HTTPS
+hsts_max_age_s = 0                                       # Strict-Transport-Security on HTTPS; keep 0 while plain HTTP is used on the same hostname
 
 # Operator-provided TLS cert for the HTTPS port (PEM full-chain + key), served
 # via SNI to hostnames it covers; other names/IPs still get the internal-CA cert.
@@ -85,7 +86,6 @@ wait_timeout = 60                                        # llama-server idle thr
 # needs no per-agent DNS and the AE TLS cert SAN auto-covers it.
 alarm_engine_url = "http://localhost:8081"               # where the manager finds the alarm engine
 
-cors_origins = "http://localhost:5000"
 log_level = "INFO"                                       # per-service override; falls back to [logging].level
 
 [manager.proxies]

@@ -30,6 +30,25 @@ fail() { echo "  ✗ FAIL: $*"; exit 1; }
 # accepts the AE's internal-CA cert; a connection failure prints 000 and does
 # not abort, so callers assert on the code.
 code() { curl -sk -o /dev/null -w '%{http_code}' --max-time 10 "$@" || true; }
+ADMIN_USER="${ADMIN_USER:-llmadmin}"
+ADMIN_PW="${ADMIN_PW:-llmadmin-ci-rotated}"
+SHIPPED_PW="llmadmin"
+# ci_admin_login JAR — admin session; the first login on a fresh install
+# rotates the shipped default password to ADMIN_PW (mandatory-change wall).
+ci_admin_login() {
+  local jar="$1" c
+  rm -f "$jar"
+  c="$(code -c "$jar" --data-urlencode "username=$ADMIN_USER" --data-urlencode "password=$ADMIN_PW" "$MGR_URL/login")"
+  case "$c" in 302|303) return 0 ;; esac
+  rm -f "$jar"
+  c="$(code -c "$jar" --data-urlencode "username=$ADMIN_USER" --data-urlencode "password=$SHIPPED_PW" "$MGR_URL/login")"
+  case "$c" in 302|303) : ;; *) echo "$c"; return 1 ;; esac
+  code -b "$jar" -X POST -H 'Content-Type: application/json' \
+    -d "{\"current_password\":\"$SHIPPED_PW\",\"new_password\":\"$ADMIN_PW\"}" "$MGR_URL/api/account/password" >/dev/null
+  rm -f "$jar"
+  c="$(code -c "$jar" --data-urlencode "username=$ADMIN_USER" --data-urlencode "password=$ADMIN_PW" "$MGR_URL/login")"
+  case "$c" in 302|303) return 0 ;; *) echo "$c"; return 1 ;; esac
+}
 
 # Read a dotted-section string key from a TOML file via stdlib tomllib.
 toml_get() {
@@ -142,29 +161,27 @@ case "$anon_body" in
   *auth_required*) : ;;
   *) fail "anonymous probe: code=${anon_code:-000} body=${anon_body:-<empty>} (want the manager auth-gate 401; 000 = connect/TLS broken)" ;;
 esac
-# Log in with the seeded default admin (same as ci-agent-tls-smoke.sh), then
+# Log in with the seeded admin (same helper as ci-agent-tls-smoke.sh), then
 # assert the real chain: session auth → proxy → management bearer → AE HTTPS.
 COOKIE_JAR="$(mktemp)"
 trap 'rm -f "$COOKIE_JAR"' EXIT
-login_code="$(code -c "$COOKIE_JAR" --data-urlencode 'username=llmadmin' \
-  --data-urlencode 'password=llmadmin' "$MGR_URL/login")"
-case "$login_code" in
-  302|303) : ;;
-  *) fail "manager login returned $login_code (want 302/303) — seeded admin missing, creds changed, or login rate-limited?" ;;
-esac
+if ! login_code="$(ci_admin_login "$COOKIE_JAR")"; then
+  fail "manager login returned $login_code (want 302/303) — seeded admin missing, creds changed, or login rate-limited?"
+fi
 c="$(code -b "$COOKIE_JAR" "$MGR_URL/api/alarm/rules")"
 if [ "$c" != "200" ]; then fail "authenticated manager → AE proxy = $c (want 200)"; fi
 pass "auth gate 401s anonymous probes; logged-in proxy reaches the AE (200)"
 
-echo "── 7. CORS allow-lists byte-identical across both hosts ──────────────"
-MGR_CORS="$(toml_get "$MGR_TOML" manager cors_origins)"
+echo "── 7. AE CORS allow-list carries the manager origin ──────────────────"
 AE_CORS="$(toml_get "$AE_TOML" alarm_engine cors_origins)"
-if [ "$MGR_CORS" != "$AE_CORS" ]; then fail "CORS differ: mgr=[$MGR_CORS] ae=[$AE_CORS]"; fi
-case "$MGR_CORS" in
+case "$AE_CORS" in
   *"$DETECTED_IP:5000"*"$DETECTED_IP:8081"*) : ;;
-  *) fail "CORS missing expected origins: [$MGR_CORS]" ;;
+  *) fail "AE CORS missing expected origins: [$AE_CORS]" ;;
 esac
-pass "CORS identical and contains both manager + AE origins"
+if python3 -c 'import sys,tomllib; sys.exit(0 if "cors_origins" in tomllib.load(open(sys.argv[1],"rb")).get("manager",{}) else 1)' "$MGR_TOML"; then
+  fail "manager TOML still carries the removed [manager].cors_origins key"
+fi
+pass "AE CORS contains both manager + AE origins; manager key absent"
 
 echo "── 8. AE TLS cert SAN covers the detected IP ─────────────────────────"
 if ! openssl x509 -in "$AE_CERT" -noout -text | grep -A1 'Subject Alternative Name' | grep -qF "$DETECTED_IP"; then

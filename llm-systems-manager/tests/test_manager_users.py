@@ -426,7 +426,7 @@ class TestSessionRevocation:
 def manager_users_init_for_test(tmp_path):
     import auth
     manager_users.init(tmp_path / "mu.json", threshold=5, window_s=900, duration_s=900)
-    manager_users.STORE.seed_admin("llmadmin", auth.scrypt_hash("llmadmin"))
+    manager_users.STORE.seed_admin("llmadmin", auth.scrypt_hash("ci-admin-pw-1"))
 
 
 class TestUserRoutes:
@@ -547,13 +547,17 @@ class TestUserRoutes:
         # The Authentication card's "default password" warning must reflect the
         # LOGIN store (manager_users.json), and clear only on a REAL password
         # change — not the legacy manager_auth.json (#125 divergence fix).
-        d0 = admin_client.get("/api/admin/auth").get_json()
-        assert d0["is_default"] is True
-        assert d0["default_user"] == "llmadmin"
+        import auth
+        manager_users.STORE.set_password("llmadmin", auth.scrypt_hash("llmadmin"))
+        # On the shipped default the session is walled (#866) until the password changes.
+        r0 = admin_client.get("/api/admin/auth")
+        assert r0.status_code == 403 and r0.get_json()["password_change_required"] is True
         r = admin_client.post("/api/account/password",
                               json={"current_password": "llmadmin", "new_password": "a-real-password"})
         assert r.status_code == 200
-        assert admin_client.get("/api/admin/auth").get_json()["is_default"] is False
+        d1 = admin_client.get("/api/admin/auth").get_json()
+        assert d1["is_default"] is False
+        assert d1["default_user"] == "llmadmin"
 
     def test_admin_auth_reports_admin_cidrs_and_bypass_role(self, admin_client, monkeypatch):
         import manager_mod as M
