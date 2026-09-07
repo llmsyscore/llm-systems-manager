@@ -39,6 +39,7 @@ Local endpoints served:
     POST /api/llm/download              — start HuggingFace model download
     GET  /api/llm/download/stream       — SSE: download progress
     GET  /api/llm/cache                 — list HF cache
+    GET  /api/llm/cache/gguf            — list .gguf files in the HF cache
     POST /api/llm/cache/prune           — prune HF cache detached revisions
     POST /api/llm/cache/rm              — remove HF cached repo
     GET  /api/llm/hf-trending           — top HF models 27-35B by downloads
@@ -159,7 +160,7 @@ def _local_hostname() -> str:
 # banner reads it. Bump suffix (-1, -2, …) for same-day iterations; roll
 # the date for a new day's first change.
 # ---------------------------------------------------------------------------
-__version__ = "v2026.09.07-1"
+__version__ = "v2026.09.07-2"
 
 # Wall-clock at first import (Cheroot main process); the shutdown banner
 # reads it for the uptime line.
@@ -2292,6 +2293,10 @@ def llm_autotune_cancel():
 def llm_cache_list():
     """Run hf cache list --format json and return parsed data."""
     return proxies.proxy_to_primary("llama", "GET", "/llama/cache")
+@app.route("/api/llm/cache/gguf")
+def llm_cache_gguf():
+    """List .gguf files in the primary llama agent's HF cache."""
+    return proxies.proxy_to_primary("llama", "GET", "/llama/cache/gguf")
 @app.route("/api/llm/cache/prune", methods=["POST"])
 def llm_cache_prune():
     return proxies.proxy_to_primary("llama", "POST", "/llama/cache/prune")

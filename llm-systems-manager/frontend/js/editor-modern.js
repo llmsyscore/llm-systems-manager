@@ -4,9 +4,10 @@ const EFL = (function () {
   const ESS_KEYS = ['ctx-size', 'temperature', 'n-gpu-layers', 'cache-type-k', 'cache-type-v', 'load-mode', 'top-p', 'top-k', 'reasoning'];
   const SEC_MAP = {
     'ef-sec-sampling': ['temperature', 'dynatemp-range', 'dynatemp-exp', 'top-p', 'top-k', 'min-p', 'presence-penalty', 'repeat-penalty'],
-    'ef-sec-context':  ['ctx-size', 'batch-size', 'ubatch-size', 'parallel', 'n-gpu-layers', 'predict', 'load-mode', 'fit', 'fit-ctx'],
+    'ef-sec-context':  ['ctx-size', 'batch-size', 'ubatch-size', 'parallel', 'n-gpu-layers', 'predict', 'load-mode', 'fit', 'fit-ctx', 'threads', 'threads-batch', 'n-cpu-moe'],
     'ef-sec-kv':       ['cache-type-k', 'cache-type-v', 'cache-ram'],
-    'ef-sec-behavior': ['flash-attn', 'reasoning', 'reasoning-budget', 'swa-full', 'swa-checkpoints', 'check-tensors', 'spec-type', 'spec-draft-n-max', 'reasoning-preserve'],
+    'ef-sec-behavior': ['flash-attn', 'reasoning', 'reasoning-budget', 'swa-full', 'swa-checkpoints', 'check-tensors', 'reasoning-preserve'],
+    'ef-sec-spec':     ['spec-type', 'model-draft', 'gpu-layers-draft', 'spec-draft-n-min', 'spec-draft-n-max', 'spec-draft-p-min', 'cache-type-k-draft', 'cache-type-v-draft'],
     'ef-sec-custom':   ['__custom'],
   };
   let _snap = null;

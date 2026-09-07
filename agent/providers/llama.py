@@ -872,6 +872,31 @@ def _hf_cache_root() -> Path:
     return Path.home() / ".cache" / "huggingface" / "hub"
 
 
+def _list_cache_ggufs(root: Path) -> list[dict]:
+    """Every .gguf under <root>/models--*/snapshots/*, mmproj projectors excluded."""
+    rows: list[dict] = []
+    if not root.is_dir():
+        return rows
+    for repo_dir in root.glob("models--*"):
+        repo = repo_dir.name[len("models--"):].replace("--", "/", 1)
+        snaps = repo_dir / "snapshots"
+        if not snaps.is_dir():
+            continue
+        for snap in snaps.iterdir():
+            if not snap.is_dir():
+                continue
+            for p in snap.iterdir():
+                if p.suffix != ".gguf" or p.name.lower().startswith("mmproj-"):
+                    continue
+                try:
+                    size = p.stat().st_size
+                except OSError:
+                    size = 0
+                rows.append({"repo": repo, "file": p.name, "path": str(p), "size": size})
+    rows.sort(key=lambda r: (r["repo"], r["file"]))
+    return rows
+
+
 def _llama_read_ini() -> configparser.ConfigParser:
     cp = configparser.ConfigParser(default_section="__DEFAULTS__", interpolation=None)
     cp.optionxform = str
@@ -1841,6 +1866,14 @@ def llama_cache_list(authorization: Optional[str] = Header(default=None)) -> dic
         return {"ok": True, "data": data if isinstance(data, list) else [data]}
     except subprocess.CalledProcessError as e:
         return {"ok": True, "data": [], "raw": getattr(e, "output", str(e))}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+
+def llama_cache_gguf(authorization: Optional[str] = Header(default=None)) -> dict[str, Any]:
+    _require_ctx().check_bearer(authorization); _llama_check_enabled()
+    try:
+        return {"ok": True, "data": _list_cache_ggufs(_hf_cache_root())}
     except Exception as e:
         return {"ok": False, "error": str(e)}
 
@@ -2984,6 +3017,7 @@ _ROUTES: tuple = (
     ("POST",   "/llama/build",                    llama_build),
     ("GET",    "/llama/build/stream",             llama_build_stream),
     ("GET",    "/llama/cache",                    llama_cache_list),
+    ("GET",    "/llama/cache/gguf",               llama_cache_gguf),
     ("POST",   "/llama/cache/prune",              llama_cache_prune),
     ("POST",   "/llama/cache/rm",                 llama_cache_rm),
     ("GET",    "/llama/hf-trending",              llama_hf_trending),
