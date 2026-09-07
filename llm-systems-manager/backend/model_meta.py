@@ -3,6 +3,7 @@ sidecar → model card → base model, cached in SQLite."""
 from __future__ import annotations
 
 import json
+import math
 import re
 import sqlite3
 import threading
@@ -61,7 +62,7 @@ def _num(v: Any) -> Optional[float]:
     if isinstance(v, bool) or not isinstance(v, (int, float)):
         return None
     f = float(v)
-    return f if f == f and abs(f) != float("inf") else None
+    return f if math.isfinite(f) else None
 
 
 def parse_generation_config(text: str) -> dict[str, float]:
