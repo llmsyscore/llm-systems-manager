@@ -896,6 +896,22 @@ function efSetLoadMode(cfg) {
   const sel = document.getElementById('ef-load-mode');
   if (sel) sel.value = efLoadModeFromCfg(cfg || {});
 }
+
+// Fills the draft-model datalist from the agent's HF-cache .gguf listing.
+async function efLoadDraftList() {
+  const dl = document.getElementById('efDraftList');
+  if (!dl) return;
+  try {
+    const r = await fetch('/api/llm/cache/gguf').then(r => r.json());
+    const rows = (r && r.ok && Array.isArray(r.data)) ? r.data : [];
+    dl.innerHTML = '';
+    rows.forEach(e => {
+      const o = document.createElement('option');
+      o.value = e.path; o.label = `${e.repo} · ${e.file}`;
+      dl.appendChild(o);
+    });
+  } catch (_) { /* datalist unchanged on fetch error */ }
+}
 // Validation rules for editor fields: min/max values, whether they should be parsed as float or int, etc. Used to validate and clamp values on blur, and to show warnings if values are out of range when saving.
 const EF_VALIDATION = {
   'temperature':      { min: 0,    max: 2,   float: true },
@@ -915,18 +931,25 @@ const EF_VALIDATION = {
   'reasoning-budget': { min: -1 },
   'swa-checkpoints':  { min: 0 },
   'parallel':         { min: 1 },
-  'spec-draft-n-max': { min: 0 },
+  'spec-draft-n-max': { min: 0,    max: 256 },
+  'spec-draft-n-min': { min: 0,    max: 256 },
+  'spec-draft-p-min': { min: 0,    max: 1,   float: true },
+  'threads':          { min: -1,   max: 1024 },
+  'threads-batch':    { min: -1,   max: 1024 },
+  'n-cpu-moe':        { min: 0,    max: 999 },
   'fit-ctx':          { min: 0 },
 };
 // List of all editor fields, used to populate the editor form and to gather values when saving. Fields that have special default handling (like "mmap" and "direct-io") are still included here, but their defaults are handled in EF_SPECIAL_DEFAULTS instead of EF_DEFAULTS.
 const EF_FIELDS = [
   'temperature','dynatemp-range','dynatemp-exp','top-p','top-k','min-p',
   'presence-penalty','repeat-penalty','ctx-size','batch-size','ubatch-size',
-  'n-gpu-layers','predict',
+  'n-gpu-layers','predict','threads','threads-batch','n-cpu-moe',
   'cache-type-k','cache-type-v','cache-ram',
   'flash-attn','reasoning','reasoning-budget','swa-full','swa-checkpoints',
   'fit','fit-ctx','check-tensors',
-  'parallel','reasoning-preserve','spec-type','spec-draft-n-max'
+  'parallel','reasoning-preserve',
+  'spec-type','model-draft','gpu-layers-draft','spec-draft-n-min','spec-draft-n-max','spec-draft-p-min',
+  'cache-type-k-draft','cache-type-v-draft'
 ];
 
 function efId(key) { return 'ef-' + key; }
@@ -1013,6 +1036,7 @@ function openEditModel(modelId) {
   EF_FIELDS.forEach(k => setField(k, cfg[k] ?? EF_DEFAULTS[k] ?? ''));
 
   efSetLoadMode(cfg);
+  efLoadDraftList();
 
 
   const customContainer = document.getElementById('ef-custom-params');
@@ -1043,6 +1067,7 @@ function openAddModel() {
   EF_FIELDS.forEach(k => setField(k, EF_DEFAULTS[k] ?? ''));
 
   efSetLoadMode({});
+  efLoadDraftList();
 
   const customContainer = document.getElementById('ef-custom-params');
   if (customContainer) customContainer.innerHTML = '';
