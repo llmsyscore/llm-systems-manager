@@ -307,6 +307,40 @@ class TestHsts:
             assert "Strict-Transport-Security" not in c.get("/health").headers
 
 
+# ── #875 baseline security response headers ─────────────────────────────────
+
+_BASELINE = {
+    "X-Content-Type-Options": "nosniff",
+    "X-Frame-Options": "SAMEORIGIN",
+    "Referrer-Policy": "strict-origin-when-cross-origin",
+    "Content-Security-Policy": "frame-ancestors 'self'",
+}
+
+
+class TestBaselineSecurityHeaders:
+    @pytest.mark.parametrize("path", ["/health", "/login", "/api/me", "/manifest.webmanifest", "/sw.js"])
+    def test_present_on_every_response(self, path):
+        with M.app.test_client() as c:
+            r = c.get(path)
+            for name, value in _BASELINE.items():
+                assert r.headers.get(name) == value, (path, name, dict(r.headers))
+
+    def test_present_on_tls_responses_too(self):
+        with M.app.test_client() as c:
+            r = c.get("/health", base_url="https://localhost")
+            assert r.headers["X-Content-Type-Options"] == "nosniff"
+
+    def test_route_set_header_is_not_overwritten(self):
+        from flask import Response
+        resp = Response("x", headers={"Content-Security-Policy": "default-src 'self'",
+                                      "X-Frame-Options": "DENY"})
+        out = M._baseline_security_headers(resp)
+        assert out.headers["Content-Security-Policy"] == "default-src 'self'"
+        assert out.headers["X-Frame-Options"] == "DENY"
+        assert out.headers["X-Content-Type-Options"] == "nosniff"
+        assert out.headers["Referrer-Policy"] == "strict-origin-when-cross-origin"
+
+
 def test_manager_cors_origins_is_gone():
     from config.unified_config import ManagerConfig
     import settings_catalog

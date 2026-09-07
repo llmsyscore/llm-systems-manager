@@ -159,7 +159,7 @@ def _local_hostname() -> str:
 # banner reads it. Bump suffix (-1, -2, …) for same-day iterations; roll
 # the date for a new day's first change.
 # ---------------------------------------------------------------------------
-__version__ = "v2026.09.05-1"
+__version__ = "v2026.09.07-1"
 
 # Wall-clock at first import (Cheroot main process); the shutdown banner
 # reads it for the uptime line.
@@ -797,6 +797,23 @@ def _hsts_header(resp):
     max_age = getattr(settings.manager, "hsts_max_age_s", 0)
     if max_age > 0 and _request_is_https():
         resp.headers["Strict-Transport-Security"] = f"max-age={max_age}"
+    return resp
+
+
+# Baseline hardening headers on every response; a header the route already set wins.
+_BASELINE_SECURITY_HEADERS = (
+    ("X-Content-Type-Options", "nosniff"),
+    ("X-Frame-Options", "SAMEORIGIN"),
+    ("Referrer-Policy", "strict-origin-when-cross-origin"),
+    ("Content-Security-Policy", "frame-ancestors 'self'"),
+)
+
+
+@app.after_request
+def _baseline_security_headers(resp):
+    """Adds the baseline security headers unless the response already carries one."""
+    for name, value in _BASELINE_SECURITY_HEADERS:
+        resp.headers.setdefault(name, value)
     return resp
 
 

@@ -186,7 +186,7 @@ operator-provided certificate selected by SNI for the hostnames it covers, givin
 publicly trusted origin (required for the PWA companion and web push) without changing what
 CA-pinned agents see. `[manager].hsts_max_age_s` (default `0`) can emit `Strict-Transport-Security`
 on the TLS listener; it is off by default because HSTS preserves the port and the plain-HTTP
-listener shares the same hostname.
+listener shares the same hostname. Every response also carries the baseline `X-Content-Type-Options: nosniff`, `X-Frame-Options: SAMEORIGIN`, `Referrer-Policy: strict-origin-when-cross-origin` and `Content-Security-Policy: frame-ancestors 'self'` headers (a route-set header wins, so the proxies' `proxy_html_csp` is untouched).
 
 The alert WebSocket bridge on `[manager].ws_proxy_port` (5444) is **served as plain `ws://`, and
 requires a short-lived ticket on every handshake.** The browser first calls
