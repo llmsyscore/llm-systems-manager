@@ -129,6 +129,14 @@ class ManagerDiscord(BaseModel):
     allow_model_control: bool = False
 
 
+class ManagerModelMeta(BaseModel):
+    """Hugging Face model metadata reader (#878): sampling suggestions from
+    generation_config.json / model cards, cached ttl_days."""
+    model_config = _MODEL_CFG
+    hf_token: str = ""
+    ttl_days: int = 7
+
+
 class ManagerCompanion(BaseModel):
     """PWA companion (#522). push_contact is the VAPID `sub` claim sent to
     the browser push services with every web-push message. release_check is
@@ -317,6 +325,7 @@ class ManagerConfig(BaseModel):
     reportcard: ManagerReportcard = Field(default_factory=ManagerReportcard)
     energy: ManagerEnergy = Field(default_factory=ManagerEnergy)
     discord: ManagerDiscord = Field(default_factory=ManagerDiscord)
+    model_meta: ManagerModelMeta = Field(default_factory=ManagerModelMeta)
     companion: ManagerCompanion = Field(default_factory=ManagerCompanion)
     history: ManagerHistory = Field(default_factory=ManagerHistory)
     uploads: ManagerUploads = Field(default_factory=ManagerUploads)
