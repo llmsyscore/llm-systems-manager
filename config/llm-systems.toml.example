@@ -153,6 +153,12 @@ guild_id = ""
 allowed_user_ids = []
 allow_model_control = false
 
+[manager.model_meta]
+# Hugging Face model metadata reader (#878): author-recommended sampling from
+# generation_config.json / model cards. Token only needed for gated repos.
+hf_token = ""
+ttl_days = 7
+
 [manager.companion]
 # PWA phone companion (#522). push_contact becomes the VAPID `sub` claim the
 # browser push services see; set it to a reachable operator address.

@@ -15,6 +15,7 @@ GROUPS: list[tuple[str, str]] = [
     ("auth", "Auth & Security"),
     ("history", "History"),
     ("energy", "Energy & Pricing"),
+    ("models", "Models & Metadata"),
     ("backup", "Backups"),
     ("audit", "Audit Log"),
     ("discord", "Discord Bot"),
@@ -91,6 +92,9 @@ CATALOG: list[dict] = [
     _e("manager.energy.cloud_price_in_per_mtok", "float", "Cloud $/Mtok in", "Cloud list price (input tokens) for the savings card.", "energy", MANAGER, min=0, max=1000),
     _e("manager.energy.cloud_price_out_per_mtok", "float", "Cloud $/Mtok out", "Cloud list price (output tokens).", "energy", MANAGER, min=0, max=1000),
     _e("manager.energy.cloud_price_label", "str", "Cloud price label", "As-of-dated label shown beside the savings figures.", "energy", MANAGER),
+    # models
+    _e("manager.model_meta.hf_token", "str", "Hugging Face token", "Read token for gated repos; blank for public repos.", "models", MANAGER, secret=True),
+    _e("manager.model_meta.ttl_days", "int", "Model metadata cache (days)", "How long fetched sampling suggestions are reused before re-reading Hugging Face.", "models", MANAGER, min=1, max=365),
     # backup
     # backup — hot: the scheduler re-reads these before every run
     _e("manager.backup.enabled", "bool", "Scheduled backups", "Automatic backup archives written to data/backups/.", "backup", MANAGER, hot=True, common=True),
