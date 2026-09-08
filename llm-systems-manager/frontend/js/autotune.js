@@ -164,7 +164,13 @@
     const host = $('atPlanRows'); if (!host) return;
     host.innerHTML = rows.map((r, i) => `<div class="at-plan-r${r.on ? '' : ' off'}"><span class="i">${i + 1}</span><div class="n"><b>${esc(r.name)}</b><span>${esc(r.desc)}</span></div><span class="c">${esc(r.flag)}</span><span class="t">${r.on ? esc(durText(r.est_s)) : 'off'}</span></div>`).join('');
     const onCount = rows.filter(r => r.on).length;
-    const meta = $('atPlanMeta'); if (meta) meta.innerHTML = `${esc(primaryModel() || 'no model')} · ${esc(objective())} · <b>${onCount} stages</b> · ${esc(estimateText(rows))}`;
+    const meta = $('atPlanMeta');
+    if (meta) {
+      meta.textContent = '';
+      meta.append(document.createTextNode(`${primaryModel() || 'no model'} · ${objective()} · `));
+      const b = document.createElement('b'); b.textContent = `${onCount} stages`; meta.append(b);
+      meta.append(document.createTextNode(` · ${estimateText(rows)}`));
+    }
     const dc = $('atDimsCount'); if (dc) dc.textContent = `${rows.filter(r => r.on && !['context', 'verify'].includes(r.stage)).length + 1} on · ${estimateText(rows)}`;
     const est = $('atEstimate'); if (est) est.textContent = estimateText(rows);
   }

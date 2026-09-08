@@ -2555,11 +2555,12 @@ def _autotune_port() -> int:
 
 def _llama_unit_active() -> bool:
     """True when the llama-server systemd unit reports active."""
+    active = False
     with best_effort("autotune: probe llama unit is-active", log=log):
         st = subprocess.run(["systemctl", "is-active", _require_ctx().config.LLAMA_SYSTEMD_UNIT],
                             capture_output=True, text=True, timeout=5)
-        return (st.stdout or "").strip() == "active"
-    return False
+        active = (st.stdout or "").strip() == "active"
+    return active
 
 
 def _autotune_kl_text() -> Path:
@@ -2749,15 +2750,13 @@ def _autotune_run_iter(model_id: str, fitt_mb: "Optional[int]", extra_args: list
                 # echo the requested default before -fitt has adjusted it.
                 mm = _AT_NCTX_RE.search(line)
                 if mm:
-                    # ignore an unparseable counter; keep the prior value
                     try: ctx_seq = int(mm.group(1))
-                    except ValueError: pass
+                    except ValueError: pass  # unparseable counter, keep the prior value
                 else:
                     mm2 = _AT_NCTX_FALLBACK_RE.search(line)
                     if mm2:
-                        # ignore an unparseable counter; keep the prior value
                         try: ctx_fallback = int(mm2.group(1))
-                        except ValueError: pass
+                        except ValueError: pass  # unparseable counter, keep the prior value
                 # Detect whether llama-server's auto-fit actually trimmed
                 # the ctx. Later occurrences overwrite earlier ones — the
                 # final fit decision is what we want.
@@ -2801,15 +2800,13 @@ def _autotune_run_iter(model_id: str, fitt_mb: "Optional[int]", extra_args: list
                     _autotune_put({"type": "line", "model_id": model_id, "text": line})
                 mm = _AT_NCTX_RE.search(line)
                 if mm:
-                    # ignore an unparseable counter; keep the prior value
                     try: drain_ctx["seq"] = int(mm.group(1))
-                    except ValueError: pass
+                    except ValueError: pass  # unparseable counter, keep the prior value
                 else:
                     mm2 = _AT_NCTX_FALLBACK_RE.search(line)
                     if mm2:
-                        # ignore an unparseable counter; keep the prior value
                         try: drain_ctx["fallback"] = int(mm2.group(1))
-                        except ValueError: pass
+                        except ValueError: pass  # unparseable counter, keep the prior value
 
     # A held server keeps logging: drain stdout for the whole hold.
     reader = None
@@ -3229,8 +3226,7 @@ class _AutotuneBackend:
                     data = requests.get(f"{url}/v1/models", timeout=2).json() or {}
                     rows = data.get("data") or []
                     return (rows[0].get("id") if rows else None) or self.model_id
-            except Exception:
-                pass
+            except Exception: pass  # not ready yet, poll again
             time.sleep(1)
         return None
 
@@ -3467,7 +3463,7 @@ def llama_autotune_cancel(authorization: Optional[str] = Header(default=None)) -
         with best_effort("autotune cancel: terminate aux group", log=log):
             if aux_pgid is not None:
                 try: os.killpg(aux_pgid, signal.SIGTERM)
-                except ProcessLookupError: pass
+                except ProcessLookupError: pass  # group already gone
             else:
                 aux.terminate()
             try:
@@ -3475,7 +3471,7 @@ def llama_autotune_cancel(authorization: Optional[str] = Header(default=None)) -
             except subprocess.TimeoutExpired:
                 if aux_pgid is not None:
                     try: os.killpg(aux_pgid, signal.SIGKILL)
-                    except ProcessLookupError: pass
+                    except ProcessLookupError: pass  # group already gone
                 else:
                     aux.kill()
     proc, pgid = _autotune_proc, _autotune_pgid
