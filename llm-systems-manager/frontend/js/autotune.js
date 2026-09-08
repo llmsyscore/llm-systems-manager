@@ -274,18 +274,41 @@
     if (typeof toolsSyncRunDot === 'function') toolsSyncRunDot();
   }
   function mmss(s) { s = Math.max(0, Math.floor(s || 0)); return `${String(Math.floor(s / 60)).padStart(2, '0')}:${String(s % 60).padStart(2, '0')}`; }
-  function startElapsed() {
-    stopElapsed();
-    _elapsedIv = setInterval(() => {
-      if (!_run) return;
-      const el = $('atStripTime'); if (!el) return;
-      const e = (Date.now() - _run.startTs) / 1000;
+  function tick() {
+    if (!_run) return;
+    const el = $('atStripTime'); if (!el) return;
+    const e = (Date.now() - _run.startTs) / 1000;
+    const bar = $('atProgBar');
+    if (_run.estTotal && e > _run.estTotal) {
+      el.innerHTML = `elapsed <b>${esc(mmss(e))}</b> · past estimate`;
+      if (bar) bar.style.width = '97%';
+    } else {
       const left = Math.max(0, _run.estTotal - e);
       el.innerHTML = `elapsed <b>${esc(mmss(e))}</b>${_run.estTotal ? ` · ~${esc(durText(left).replace('~', ''))} left` : ''}`;
-      const bar = $('atProgBar'); if (bar && _run.estTotal) bar.style.width = Math.min(97, Math.round(100 * e / _run.estTotal)) + '%';
-    }, 1000);
+      if (bar && _run.estTotal) bar.style.width = Math.min(97, Math.round(100 * e / _run.estTotal)) + '%';
+    }
+  }
+  function startElapsed() {
+    stopElapsed();
+    tick();
+    _elapsedIv = setInterval(tick, 1000);
   }
   function stopElapsed() { if (_elapsedIv) { clearInterval(_elapsedIv); _elapsedIv = null; } }
+  // Re-derives the remaining estimate from live progress: elapsed + this stage's
+  // live est_s + the static plan estimate for stages still ahead in the order.
+  function recomputeEstTotal(fromStage, curEstS) {
+    if (!_run || !fromStage) return;
+    const idx = _run.order.indexOf(fromStage);
+    if (idx < 0) return;
+    const elapsedNow = (Date.now() - _run.startTs) / 1000;
+    let rest = 0;
+    for (let i = idx + 1; i < _run.order.length; i++) {
+      const s = _run.order[i];
+      if (_run.stages[s] && _run.stages[s].status === 'skipped') continue;
+      rest += (_run.staticEst && _run.staticEst[s]) || 0;
+    }
+    _run.estTotal = elapsedNow + (curEstS || 0) + rest;
+  }
   function log(text, cls) {
     const el = $('atLog'); if (!el) return;
     if (el.childElementCount >= 5000) el.removeChild(el.firstChild);
@@ -302,7 +325,8 @@
   }
   function newRun(stages) {
     const rows = planRows(objective(), dimsState(), _pre, factsFor(primaryModel() || ''));
-    _run = { order: stages || ORDER, stages: {}, cands: {}, current: null, startTs: Date.now(),
+    const staticEst = {}; rows.forEach(r => { staticEst[r.stage] = r.est_s; });
+    _run = { order: stages || ORDER, stages: {}, cands: {}, current: null, startTs: Date.now(), staticEst,
              estTotal: rows.reduce((a, r) => a + (r.on ? r.est_s : 0), 0), iters: [], loads: 0 };
     _run.order.forEach(s => { _run.stages[s] = { status: 'pending', text: '—' }; });
     const lg = $('atLog'); if (lg) lg.innerHTML = '';
@@ -340,7 +364,7 @@
     const problem = dimsProblem(dims);
     if (problem) { alert(problem); return; }
     fillDimDefaults(dims);
-    const body = { model_ids: ids, objective: objective(), budget_min: Math.round(num('atBudgetMin', 45)), dims };
+    const body = { model_ids: ids, objective: objective(), budget_min: Math.round(num('atBudgetMin', 120)), dims };
     let r;
     try {
       const resp = await fetch('/api/llm/autotune/run', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
@@ -480,15 +504,18 @@
     if (t === 'model_start') {
       if (Array.isArray(msg.stages) && msg.stages.length) _run.order = msg.stages;
       _run.stages = {}; _run.order.forEach(s => { _run.stages[s] = { status: 'pending', text: '—' }; });
-      _run.cands = {}; _run.iters = []; _run.current = null;
+      _run.cands = {}; _run.iters = []; _run.current = null; _run.curEstS = 0;
       renderStepper(); renderStage(); log(`── ${msg.model_id} · ${msg.objective} ──`, 'acc');
     } else if (t === 'facts') {
       _facts[msg.model_id] = msg;
       log(`model: ${msg.arch || '?'} · ${msg.n_layer || '?'} layers · ${msg.n_expert > 1 ? msg.n_expert + ' experts' : 'dense'}${msg.mtp_layers ? ' · MTP head' : ''}`, 'dim');
     } else if (t === 'stage_start') {
       _run.current = msg.stage;
+      _run.curEstS = msg.est_s || 0;
       _run.cands[msg.stage] = (msg.candidates || []).map(v => ({ value: v, status: 'pending' }));
       _run.stages[msg.stage] = { status: 'live', text: 'running' };
+      recomputeEstTotal(msg.stage, _run.curEstS);
+      tick();
       renderStepper(); renderStage();
       log(`stage ${stageIndex(msg.stage) + 1} · ${STAGE_NAME[msg.stage]} · ${(msg.candidates || []).join(', ')} · ${durText(msg.est_s || 0)}`);
     } else if (t === 'candidate_start') {
@@ -510,6 +537,8 @@
       log(`stage ${stageIndex(msg.stage) + 1} done · ${msg.choice != null ? msg.choice + ' · ' : ''}${msg.reason || ''} · ${mmss(msg.seconds)} · ${msg.loads || 0} loads`, 'ok');
     } else if (t === 'stage_skipped') {
       _run.stages[msg.stage] = { status: 'skipped', text: SKIP_TEXT[msg.reason] || msg.reason || 'skipped' };
+      recomputeEstTotal(_run.current, _run.curEstS);
+      tick();
       renderStepper();
       log(`${STAGE_NAME[msg.stage]} skipped · ${SKIP_TEXT[msg.reason] || msg.reason}`, 'dim');
     } else if (t === 'iter_start') {
@@ -683,5 +712,6 @@
 
   window.AT = { onOpen, run, cancel, again, stopServer, running, dimsState, objective, planRows, estimateText, onEvent,
                 state: () => ({ run: _run, done: _done, doneModel: _doneModel, meta: _meta, section: _section, pre: _pre }),
-                renderDone, recRows, rows, toggleRow, apply, saveProfile, copyArgs, exportReport, argsText };
+                renderDone, recRows, rows, toggleRow, apply, saveProfile, copyArgs, exportReport, argsText,
+                _debugSetStart: (ts) => { if (_run) { _run.startTs = ts; tick(); } } };
 })();

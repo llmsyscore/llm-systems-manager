@@ -34,7 +34,7 @@ def test_v1_body_maps_to_fit_with_only_context(at):
 
 def test_v2_defaults_fill_every_dim(at):
     req = at.validate_request({"model_ids": ["m"], "objective": "balanced"})
-    assert req["budget_min"] == 45
+    assert req["budget_min"] == 120
     assert set(req["dims"]) == {"context", "kv", "moe", "threads", "slots", "spec", "sampling"}
     assert req["dims"]["kv"] == {"on": True, "candidates": ["f16", "q8_0", "q4_0"], "guard_kl_max": 0.02}
     assert req["dims"]["spec"]["draft_model"] == "auto" and req["dims"]["spec"]["n_max"] == 16

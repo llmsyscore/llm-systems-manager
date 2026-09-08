@@ -136,7 +136,7 @@ def validate_request(body: dict, *, cache_root: Optional[Path] = None, v1_args=N
     objective = str(body.get("objective") or "")
     if objective not in OBJECTIVES:
         raise ValueError("objective must be one of " + ", ".join(OBJECTIVES))
-    budget = _int(body.get("budget_min", 45), "budget_min", 5, 600)
+    budget = _int(body.get("budget_min", 120), "budget_min", 5, 600)
     given = body.get("dims") or {}
     if not isinstance(given, dict):
         raise ValueError("dims must be an object")

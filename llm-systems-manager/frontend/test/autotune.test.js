@@ -126,7 +126,7 @@ describe('AT run + stream', () => {
     expect(body.objective).toBe('balanced');
     expect(body.model_ids).toEqual(['org/m:Q4']);
     expect(body.dims.kv.candidates).toEqual(['f16', 'q8_0', 'q4_0']);
-    expect(body.budget_min).toBe(45);
+    expect(body.budget_min).toBe(120);
     expect(win.__sse.url).toBe('/api/llm/autotune/stream');
     expect(win.AT.running()).toBe(true);
     expect(win.document.getElementById('atPaneRun').style.display).toBe('');
@@ -164,6 +164,36 @@ describe('AT run + stream', () => {
     ev({ type: 'done', ok: true });
     expect(win.__closed).toBe(true);
     expect(win.AT.running()).toBe(false);
+  });
+
+  it('shows time left once a stage is live, and re-derives the total from live progress', async () => {
+    const win = await opened();
+    await win.AT.run();
+    await flush();
+    const ev = (m) => win.__sse.onEvent({ model_id: 'org/m:Q4', ...m }, {});
+    const order = ['context', 'kv', 'moe', 'threads', 'spec', 'slots', 'sampling', 'verify'];
+    ev({ type: 'model_start', objective: 'balanced', stages: order });
+    ev({ type: 'stage_start', stage: 'context', candidates: ['baseline'], est_s: 300 });
+    expect(win.document.getElementById('atStripTime').textContent).toContain('left');
+
+    const rows = win.AT.planRows('balanced', win.AT.dimsState(), win.__pre, { n_expert: 128 });
+    const est = {}; rows.forEach(r => { est[r.stage] = r.est_s; });
+    ev({ type: 'stage_start', stage: 'threads', candidates: [8, 12, 16], est_s: 600 });
+    const expectedRest = order.slice(order.indexOf('threads') + 1).reduce((a, s) => a + (est[s] || 0), 0);
+    expect(win.AT.state().run.estTotal).toBeCloseTo(600 + expectedRest, 0);
+  });
+
+  it('shows "past estimate" and pins the bar at 97% once elapsed outgrows the total', async () => {
+    const win = await opened();
+    await win.AT.run();
+    await flush();
+    const ev = (m) => win.__sse.onEvent({ model_id: 'org/m:Q4', ...m }, {});
+    ev({ type: 'model_start', objective: 'balanced', stages: ['context', 'kv', 'moe', 'threads', 'spec', 'slots', 'sampling', 'verify'] });
+    ev({ type: 'stage_start', stage: 'context', candidates: ['baseline'], est_s: 300 });
+    const estTotal = win.AT.state().run.estTotal;
+    win.AT._debugSetStart(Date.now() - (estTotal + 120) * 1000);
+    expect(win.document.getElementById('atStripTime').textContent).toContain('past estimate');
+    expect(win.document.getElementById('atProgBar').style.width).toBe('97%');
   });
 
   it('attaches to a run that is already busy on the agent', async () => {
