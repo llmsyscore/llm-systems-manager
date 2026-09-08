@@ -72,7 +72,7 @@ describe('AT rail', () => {
     expect(chips).toEqual(['8', '12', '16', '32']);
     expect(win.AT.dimsState().threads.candidates).toEqual([8, 12, 16]);
     const list = win.document.getElementById('atModelList');
-    expect(list.querySelectorAll('input[type=checkbox]').length).toBe(2);
+    expect(list.querySelectorAll('.mc-toggle[data-model]').length).toBe(2);
     expect(list.textContent).toContain('MoE · 128 experts');
     expect(list.textContent).toContain('no fit');
     expect(win.document.getElementById('atDraftSel').options.length).toBe(3);
@@ -87,8 +87,8 @@ describe('AT rail', () => {
     expect(win.__layout().atObjective).toBe('serve');
     const moe = win.document.querySelector('.at-dim[data-dim="moe"]');
     expect(moe.style.display).toBe('');            // MoE fact from the ledger → shown
-    win.document.querySelector('#atModelList input[value="org/big:Q4"]').click();
-    win.document.querySelector('#atModelList input[value="org/m:Q4"]').click();
+    win.document.querySelector('#atModelList .mc-toggle[data-model="org/big:Q4"]').click();
+    win.document.querySelector('#atModelList .mc-toggle[data-model="org/m:Q4"]').click();
     expect(moe.style.display).toBe('');            // unknown model (no fact yet) → still shown
     expect(win.AT.planRows('balanced', win.AT.dimsState(), win.__pre, { n_expert: 0 }).find(r => r.stage === 'moe').on).toBe(false);
   });
@@ -194,6 +194,27 @@ describe('AT run + stream', () => {
     win.AT._debugSetStart(Date.now() - (estTotal + 120) * 1000);
     expect(win.document.getElementById('atStripTime').textContent).toContain('past estimate');
     expect(win.document.getElementById('atProgBar').style.width).toBe('97%');
+  });
+
+  it('locks the rail while a run is active and unlocks when it finishes', async () => {
+    const win = await opened();
+    const rail = win.document.querySelector('#toolsModAt .at-rail');
+    const kvChip = win.document.querySelector('#atKvChips .bl-chip.on');
+    const wasOn = kvChip.classList.contains('on');
+    await win.AT.run();
+    await flush();
+    expect(rail.classList.contains('locked')).toBe(true);
+    expect(win.document.getElementById('atBudgetMin').disabled).toBe(true);
+    kvChip.click();
+    expect(kvChip.classList.contains('on')).toBe(wasOn);        // click swallowed while locked
+    expect(win.document.getElementById('atCancelBtn').disabled).toBe(false);
+    win.document.getElementById('atCancelBtn').click();          // still clickable while locked
+    expect(win.__fetches.some(f => f[0] === '/api/llm/autotune/cancel')).toBe(true);
+    win.__sse.onEvent({ type: 'done', ok: true, model_id: 'org/m:Q4' }, {});
+    expect(rail.classList.contains('locked')).toBe(false);
+    expect(win.document.getElementById('atBudgetMin').disabled).toBe(false);
+    kvChip.click();
+    expect(kvChip.classList.contains('on')).toBe(!wasOn);
   });
 
   it('attaches to a run that is already busy on the agent', async () => {

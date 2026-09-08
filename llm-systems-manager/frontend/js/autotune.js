@@ -48,7 +48,7 @@
     if (L) { L.atObjective = o; try { saveLayout(); } catch (_) {} }
     refreshPlan();
   }
-  function selected() { return [...document.querySelectorAll('#atModelList input[type=checkbox]:checked')].map(c => c.value); }
+  function selected() { return [...document.querySelectorAll('#atModelList .mc-toggle.on')].map(b => b.dataset.model); }
   function primaryModel() { return selected()[0] || null; }
   function factsFor(mid) {
     if (_facts[mid]) return _facts[mid];
@@ -66,18 +66,16 @@
     const keep = new Set(_sel);
     host.innerHTML = '';
     if (!_models.length) { host.innerHTML = '<div class="at-hint">No models configured.</div>'; return; }
+    _sel = new Set();
     _models.forEach(m => {
+      const on = m === preselect || keep.has(m);
       const lab = document.createElement('label'); lab.className = 'at-check';
-      const cb = document.createElement('input'); cb.type = 'checkbox'; cb.value = m;
-      cb.checked = m === preselect || keep.has(m);
-      cb.addEventListener('change', () => { if (cb.checked) _sel.add(m); else _sel.delete(m); syncModels(); });
-      const b = document.createElement('b'); b.textContent = m;
-      lab.appendChild(cb); lab.appendChild(b);
+      lab.innerHTML = `<button type="button" class="mc-toggle${on ? ' on' : ''}" data-model="${esc(m)}"><span class="track"></span></button><b>${esc(m)}</b>`;
       const moe = isMoe(m);
       if (moe) { const t = document.createElement('span'); t.className = 'at-tag moe'; t.textContent = `MoE · ${factsFor(m).n_expert} experts`; lab.appendChild(t); }
       if (noFit(m)) { const t = document.createElement('span'); t.className = 'at-tag nofit'; t.textContent = 'no fit'; lab.appendChild(t); }
       host.appendChild(lab);
-      if (cb.checked) _sel.add(m);
+      if (on) _sel.add(m);
     });
     syncModels();
   }
@@ -221,12 +219,20 @@
     if (_wired) return; _wired = true;
     const mod = $('toolsModAt'); if (!mod) return;
     mod.addEventListener('click', ev => {
+      const railEl = ev.target.closest('.at-rail');
+      if (railEl && railEl.classList.contains('locked') && !ev.target.closest('.at-runbar')) return;
       const rowTog = ev.target.closest('.at-rt .mc-toggle');
       if (rowTog) { if (window.AT && AT.toggleRow) AT.toggleRow(parseInt(rowTog.dataset.row, 10)); return; }
       const tog = ev.target.closest('.mc-toggle');
       if (tog && mod.contains(tog)) {
         if (tog.disabled) return;
-        tog.classList.toggle('on'); ev.stopPropagation(); refreshPlan();
+        tog.classList.toggle('on'); ev.stopPropagation();
+        if (tog.dataset.model != null) {
+          if (tog.classList.contains('on')) _sel.add(tog.dataset.model); else _sel.delete(tog.dataset.model);
+          syncModels();
+          return;
+        }
+        refreshPlan();
         if (_rows.length && tog.id === 'atRestartAfter') renderRows();
         return;
       }
@@ -266,11 +272,18 @@
     const note = $('atModeNote');
     if (note) note.textContent = name === 'Plan' ? 'Plan · nothing has run yet' : name === 'Run' ? 'Running' : 'Recommendation ready · nothing applied yet';
   }
+  function setRailLocked(locked) {
+    const rail = document.querySelector('#toolsModAt .at-rail'); if (!rail) return;
+    rail.classList.toggle('locked', !!locked);
+    rail.querySelectorAll('.at-grp input, .at-grp select, .at-grp button.mc-toggle, #atPreflight input, #atPreflight select, #atPreflight button.mc-toggle')
+      .forEach(el => { el.disabled = !!locked; });
+  }
   function busy(on) {
     const run = $('atRunBtn'), cancel = $('atCancelBtn'), again = $('atAgainBtn');
     if (run) run.disabled = on;
     if (cancel) cancel.style.display = on && !_attached ? '' : 'none';
     if (again) again.style.display = on ? 'none' : (_doneModel ? '' : 'none');
+    setRailLocked(on);
     if (typeof toolsSyncRunDot === 'function') toolsSyncRunDot();
   }
   function mmss(s) { s = Math.max(0, Math.floor(s || 0)); return `${String(Math.floor(s / 60)).padStart(2, '0')}:${String(s % 60).padStart(2, '0')}`; }

@@ -60,7 +60,7 @@ Backend API endpoints consumed:
   <link rel="stylesheet" href="/static/css/modelcards.css?v=2026.09.04-12">
   <link rel="stylesheet" href="/static/css/reportcard.css?v=2026.08.31-1">
   <link rel="stylesheet" href="/static/css/tools.css?v=2026.08.31-8">
-  <link rel="stylesheet" href="/static/css/autotune.css?v=2026.09.08-2">
+  <link rel="stylesheet" href="/static/css/autotune.css?v=2026.09.08-4">
   <link rel="stylesheet" href="/static/css/energy.css?v=2026.08.19-2">
   <link rel="stylesheet" href="/static/css/overall.css?v=2026.08.30-1">
 </head>
@@ -2371,7 +2371,7 @@ Backend API endpoints consumed:
           <div class="at-dim closed" data-dim="moe">
             <div class="at-dim-h"><button type="button" class="mc-toggle on" data-dim-on><span class="track"></span></button><span class="n">MoE CPU offload</span><span class="s" data-dim-sum></span><span class="chev">▾</span></div>
             <div class="at-dim-b">
-              <div class="at-frow"><label>Range</label><span class="at-range"><input class="at-in xs" id="atMoeMin" type="number" min="0" value="0"><span class="at-hint">→</span><input class="at-in xs" id="atMoeMax" type="number" min="0" value="16"><span class="at-hint">layers</span></span></div>
+              <div class="at-frow g2"><label>Range</label><span class="at-range"><input class="at-in xs" id="atMoeMin" type="number" min="0" value="0"><span class="at-hint">→</span><input class="at-in xs" id="atMoeMax" type="number" min="0" value="16"><span class="at-hint">layers</span></span></div>
               <div class="at-hint">Shown for MoE or unknown models. Finds the fewest expert layers on CPU that still reach the objective's context.</div>
             </div>
           </div>
@@ -2394,9 +2394,9 @@ Backend API endpoints consumed:
             <div class="at-dim-h"><button type="button" class="mc-toggle on" data-dim-on><span class="track"></span></button><span class="n">Speculative decoding</span><span class="s" data-dim-sum></span><span class="chev">▾</span></div>
             <div class="at-dim-b">
               <div class="bl-chips" id="atSpecChips"><span class="bl-chip on" data-v="auto">auto-detect</span><span class="bl-chip" data-v="draft-mtp">NextN / MTP</span><span class="bl-chip" data-v="draft-dflash">DFlash</span><span class="bl-chip" data-v="draft-simple">draft model</span><span class="bl-chip" data-v="ngram-simple">ngram</span></div>
-              <div class="at-frow"><label>Draft model</label><select class="at-in" id="atDraftSel"><option value="auto">auto</option><option value="none">none</option></select></div>
-              <div class="at-frow"><label>Draft window</label><span class="at-range"><input class="at-in xs" id="atSpecNmin" type="number" min="0" value="0"><span class="at-hint">→</span><input class="at-in xs" id="atSpecNmax" type="number" min="1" value="16"><span class="at-hint">tokens</span></span></div>
-              <div class="at-frow"><label>Draft p-min</label><input class="at-in xs" id="atSpecPmin" type="number" min="0" max="1" step="0.05" value="0.75"></div>
+              <div class="at-frow g2"><label>Draft model</label><select class="at-in" id="atDraftSel"><option value="auto">auto</option><option value="none">none</option></select></div>
+              <div class="at-frow g2"><label>Window</label><span class="at-range"><input class="at-in xs" id="atSpecNmin" type="number" min="0" value="0"><span class="at-hint">→</span><input class="at-in xs" id="atSpecNmax" type="number" min="1" value="16"><span class="at-hint">tokens</span></span></div>
+              <div class="at-frow g2"><label>p-min</label><input class="at-in xs" id="atSpecPmin" type="number" min="0" max="1" step="0.05" value="0.75"></div>
               <div class="at-hint">NextN / MTP heads are read from the GGUF; DFlash and draft models are tried when present in the cache. Each type is scored by decode t/s and accept rate.</div>
             </div>
           </div>
@@ -2495,12 +2495,12 @@ Backend API endpoints consumed:
 <script src="/static/js/editor-modern.js?v=2026.09.07-1"></script>
 <script src="/static/js/bench-autotune.js?v=2026.09.08-1"></script>
 <script src="/static/js/bench-live.js?v=2026.09.08-1"></script>
-<script src="/static/js/autotune.js?v=2026.09.08-3"></script>
+<script src="/static/js/autotune.js?v=2026.09.08-4"></script>
 <script src="/static/js/lmstudio.js?v=2026.09.04-1"></script>
 <script src="/static/js/vllm.js?v=2026.09.04-1"></script>
 <script src="/static/js/vllm-bench-autotune.js?v=2026.09.02-1"></script>
 <script src="/static/js/report-card.js?v=2026.09.04-1"></script>
-<script src="/static/js/tools.js?v=2026.09.08-1"></script>
+<script src="/static/js/tools.js?v=2026.09.08-4"></script>
 <script src="/static/js/energy.js?v=2026.08.19-1"></script>
 <script src="/static/js/overall.js?v=2026.08.29-2"></script>
 <script src="/static/js/dashboard-manager.js?v=2026.08.17-1"></script>

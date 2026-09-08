@@ -429,11 +429,22 @@
         // briefly so a fast ✕ click still clears the pre-selection.
         const untick = tries => {
           const panel = _tEl(id === 'benchmark' ? 'benchModelPanel' : 'atModelList');
-          const cb = panel && [...panel.querySelectorAll('input[type=checkbox]')]
-            .find(c => c.value === model);
-          if (cb) {
-            cb.checked = false;
-            cb.dispatchEvent(new Event('change'));
+          if (id === 'benchmark') {
+            const cb = panel && [...panel.querySelectorAll('input[type=checkbox]')]
+              .find(c => c.value === model);
+            if (cb) {
+              cb.checked = false;
+              cb.dispatchEvent(new Event('change'));
+            } else if (tries > 0) {
+              setTimeout(() => untick(tries - 1), 250);
+            }
+            return;
+          }
+          // atModelList: models are mc-toggle buttons now, not checkboxes (#880).
+          const btn = panel && [...panel.querySelectorAll('.mc-toggle[data-model]')]
+            .find(b => b.dataset.model === model);
+          if (btn) {
+            if (btn.classList.contains('on')) btn.click();
           } else if (tries > 0) {
             setTimeout(() => untick(tries - 1), 250);
           }

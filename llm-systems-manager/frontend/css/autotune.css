@@ -1,5 +1,6 @@
   /* Autotune v2 (#880) — rail, dimension rows, panes. Tokens only. */
   .at-rail { display:flex; flex-direction:column; gap:10px; }
+  .at-rail.locked .at-grp, .at-rail.locked .at-dim, .at-rail.locked #atPreflight { opacity:.55; pointer-events:none; }
   .at-preflight { display:flex; align-items:center; gap:9px; padding:8px 11px; border:1px solid var(--border); border-radius:8px; background:var(--bg-card); font-size:12px; color:var(--fg-muted); }
   .at-preflight .d { flex:1; }
   .at-dot { width:8px; height:8px; border-radius:50%; background:var(--fg-faint); flex-shrink:0; }
@@ -34,6 +35,10 @@
   .at-in.range { flex:1; accent-color:var(--accent); min-width:120px; }
   .at-val { font-family:var(--font-mono); font-size:12px; color:var(--fg); min-width:70px; text-align:right; }
   .at-range { display:inline-flex; align-items:center; gap:6px; white-space:nowrap; }
+  .at-frow.g2 { display:grid; grid-template-columns:110px 1fr; align-items:center; }
+  .at-frow.g2 label { min-width:0; }
+  .at-frow.g2 > *:last-child, .at-frow.g2 .at-range { min-width:0; }
+  .at-frow.g2 .at-range input.xs { width:50px; }
   .at-frow.slider { flex-wrap:wrap; }
   .at-frow.slider label { flex:1; min-width:0; }
   .at-frow.slider .at-val { order:0; }
