@@ -654,7 +654,7 @@ function _benchDefaultFor(tool, flag) {
   return (BENCH_DEFAULTS[tool] || []).find(s => s.flag === flag)?.value ?? '';
 }
 
-// Warns when -ctv selects a quantized V cache without -fa 1 (llama.cpp requirement).
+// Warns when -ctv selects a quantized V cache without -fa 1.
 function _benchKvHint() {
   const hint = document.querySelector('#benchSwitchList .bench-sw-hint');
   if (!hint) return;
@@ -1036,7 +1036,7 @@ function _benchRenderPlaceholder() {
   head.appendChild(name);
   const grid = document.createElement('div');
   grid.className = 'bench-result-grid';
-  ['Prompt', 'Generation', 'Combined'].forEach(label => {
+  ['Prompt', 'Generation', 'Combined', 'Energy'].forEach(label => {
     const card = document.createElement('div');
     card.className = 'bench-stat-card';
     const k = document.createElement('div');
