@@ -3,6 +3,7 @@ pinned baseline; proxies to the primary llama agent."""
 from __future__ import annotations
 
 import json
+import math
 import sqlite3
 import threading
 from datetime import datetime, timezone
@@ -34,7 +35,7 @@ def _finite(v: Any) -> Optional[float]:
     if isinstance(v, bool) or not isinstance(v, (int, float)):
         return None
     f = float(v)
-    return f if f == f and f not in (float("inf"), float("-inf")) else None
+    return f if math.isfinite(f) else None
 
 
 def _row(r) -> dict:

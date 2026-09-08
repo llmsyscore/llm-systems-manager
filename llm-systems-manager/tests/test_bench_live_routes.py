@@ -67,9 +67,11 @@ def test_runs_listing_get_baseline_delete_prune(app):
         app.post("/api/benchmark/live/store", json=_doc(f"r{i}"), headers=h)
     lst = app.get("/api/benchmark/live/runs?model_id=org/m:Q4").get_json()
     assert any(r["run_id"] == "r11" for r in lst["runs"])  # baseline survives pruning
-    assert app.delete("/api/benchmark/live/runs/r11").get_json()["ok"]
+    deleted_one = app.delete("/api/benchmark/live/runs/r11").get_json()
+    assert deleted_one["ok"]
     assert app.get("/api/benchmark/live/runs/r11").status_code == 404
-    assert app.delete("/api/benchmark/live/runs?model_id=org/m:Q4").get_json()["deleted"] > 0
+    cleared = app.delete("/api/benchmark/live/runs?model_id=org/m:Q4").get_json()
+    assert cleared["deleted"] > 0
     assert app.get("/api/benchmark/live/runs?model_id=org/m:Q4").get_json()["runs"] == []
 
 

@@ -150,10 +150,10 @@ def test_marker_roundtrip(bl, tmp_path):
 
 
 def test_run_level_subprocess_reports_script_elapsed(bl):
-    cmd = [sys.executable, "-c",
-           "import sys; print('speed_bench: loaded 2 samples'); "
-           "sys.stderr.write('speed_bench:  50%|#####     | 1/2 [00:01<00:01,  1.0s/sample]\\r'); "
-           "print('Summary (elapsed=1.25s)')"]
+    prog = ("import sys; print('speed_bench: loaded 2 samples'); "
+            "sys.stderr.write('speed_bench:  50%|#####     | 1/2 [00:01<00:01,  1.0s/sample]\\r'); "
+            "print('Summary (elapsed=1.25s)')")
+    cmd = [sys.executable, "-c", prog]
     events = []
     out = bl.run_level_subprocess(cmd, dict(os.environ), events.append, "org/m:Q4", 1,
                                   threading.Event(), lambda p: None, lambda: None)

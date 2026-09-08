@@ -2248,21 +2248,17 @@ def llama_bench_perf_mode(body: dict, authorization: Optional[str] = Header(defa
 
 def _live_power_w() -> "tuple[Optional[float], Optional[str]]":
     """(watts, source): PSU wall power from liquidctl, else GPU power."""
-    try:
+    with best_effort("live power: liquidctl psu", log=log):
         from collectors.liquidctl import get_liquidctl_cached  # type: ignore
         psu = (get_liquidctl_cached() or {}).get("psu") or {}
         est = psu.get("Estimated input power")
         if isinstance(est, dict) and isinstance(est.get("value"), (int, float)):
             return float(est["value"]), "psu"
-    except Exception:
-        pass
-    try:
+    with best_effort("live power: gpu", log=log):
         gpu = collect_gpu() or {}
         v = gpu.get("power_watts")
         if isinstance(v, (int, float)):
             return float(v), "gpu"
-    except Exception:
-        pass
     return None, None
 
 
@@ -2292,21 +2288,17 @@ def _bench_live_server() -> dict:
         out["models"].append({"id": m.get("id"), "status": sv or "unknown"})
         if sv in ("loaded", "sleeping") and not out["loaded_id"]:
             out["loaded_id"] = m.get("id")
-    try:
+    with best_effort("live bench: /slots probe", log=log):
         slots = requests.get(f"{base}/slots", timeout=2).json()
         if isinstance(slots, list):
             out["slots_total"] = len(slots)
             out["slots_idle"] = sum(1 for s in slots if not s.get("is_processing"))
-    except Exception:
-        pass
-    try:
+    with best_effort("live bench: /props probe", log=log):
         props = requests.get(f"{base}/props", timeout=2).json() or {}
         gs = props.get("default_generation_settings") or {}
         spec = gs.get("speculative") or {}
         if isinstance(spec, dict) and spec:
             out["spec"] = {"n_min": spec.get("n_min"), "n_max": spec.get("n_max"), "p_min": spec.get("p_min")}
-    except Exception:
-        pass
     return out
 
 
