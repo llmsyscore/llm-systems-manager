@@ -2054,78 +2054,88 @@ def _bench_run_one(model_id: str, tool: str, switches: list, env: dict) -> None:
     try: _bench_pgid = os.getpgid(proc.pid)
     except Exception: _bench_pgid = None
     energy.start()
+    stopped = False
 
-    latest_gen = None
-    latest_ppt = None
-    latest_pg = None
-    result_rows: list = []
+    try:
+        latest_gen = None
+        latest_ppt = None
+        latest_pg = None
+        result_rows: list = []
 
-    def _drain_stderr():
-        with best_effort("bench: drain subprocess stderr", log=log):
-            for line in iter(proc.stderr.readline, ""):
-                if not line: break
-                txt = _BENCH_ANSI_RE.sub("", line.rstrip("\n"))
-                if txt:
-                    _bench_put({"type": "line", "model_id": model_id, "text": txt})
-    threading.Thread(target=_drain_stderr, daemon=True).start()
+        def _drain_stderr():
+            with best_effort("bench: drain subprocess stderr", log=log):
+                for line in iter(proc.stderr.readline, ""):
+                    if not line: break
+                    txt = _BENCH_ANSI_RE.sub("", line.rstrip("\n"))
+                    if txt:
+                        _bench_put({"type": "line", "model_id": model_id, "text": txt})
+        threading.Thread(target=_drain_stderr, daemon=True).start()
 
-    for raw in iter(proc.stdout.readline, ""):
-        if _bench_cancel_event.is_set():
-            break
-        if not raw:
-            break
-        line = _BENCH_ANSI_RE.sub("", raw.rstrip("\n"))
-        if not line:
-            continue
-        _bench_put({"type": "line", "model_id": model_id, "text": line})
-        try:
-            row = json.loads(line)
-        except Exception:
-            continue
-        gen_tps, ppt_tps, pg_tps = _bench_parse_row(row, tool)
-        if gen_tps is None and ppt_tps is None and pg_tps is None:
-            continue
-        if gen_tps is not None: latest_gen = gen_tps
-        if ppt_tps is not None: latest_ppt = ppt_tps
-        if pg_tps is not None: latest_pg = pg_tps
-        result_row = {
-            "n_prompt": int(row.get("n_prompt", 0) or 0),
-            "n_gen":    int(row.get("n_gen", 0) or 0),
-            "n_depth":  int(row.get("n_depth", 0) or 0),
-            "n_batch":  int(row.get("n_batch", 0) or 0),
-            "n_ubatch": int(row.get("n_ubatch", 0) or 0),
-            "avg_ts":   float(row.get("avg_ts", 0) or 0),
-            "type_k":   str(row.get("type_k") or ""),
-            "type_v":   str(row.get("type_v") or ""),
-        }
-        result_rows.append(result_row)
-        reps = len(row.get("samples_ns") or []) or 1
-        tokens_total += (result_row["n_prompt"] + result_row["n_gen"]) * reps
-        _bench_put({"type": "result", "model_id": model_id,
-                    "gen_tps": gen_tps, "ppt_tps": ppt_tps, "pg_tps": pg_tps,
-                    **result_row})
+        for raw in iter(proc.stdout.readline, ""):
+            if _bench_cancel_event.is_set():
+                break
+            if not raw:
+                break
+            line = _BENCH_ANSI_RE.sub("", raw.rstrip("\n"))
+            if not line:
+                continue
+            _bench_put({"type": "line", "model_id": model_id, "text": line})
+            try:
+                row = json.loads(line)
+            except Exception:
+                continue
+            try:
+                gen_tps, ppt_tps, pg_tps = _bench_parse_row(row, tool)
+                if gen_tps is None and ppt_tps is None and pg_tps is None:
+                    continue
+                result_row = {
+                    "n_prompt": int(row.get("n_prompt", 0) or 0),
+                    "n_gen":    int(row.get("n_gen", 0) or 0),
+                    "n_depth":  int(row.get("n_depth", 0) or 0),
+                    "n_batch":  int(row.get("n_batch", 0) or 0),
+                    "n_ubatch": int(row.get("n_ubatch", 0) or 0),
+                    "avg_ts":   float(row.get("avg_ts", 0) or 0),
+                    "type_k":   str(row.get("type_k") or ""),
+                    "type_v":   str(row.get("type_v") or ""),
+                }
+                s = row.get("samples_ns")
+                reps = len(s) if isinstance(s, list) and s else 1
+            except (TypeError, ValueError):
+                continue
+            if gen_tps is not None: latest_gen = gen_tps
+            if ppt_tps is not None: latest_ppt = ppt_tps
+            if pg_tps is not None: latest_pg = pg_tps
+            result_rows.append(result_row)
+            tokens_total += (result_row["n_prompt"] + result_row["n_gen"]) * reps
+            _bench_put({"type": "result", "model_id": model_id,
+                        "gen_tps": gen_tps, "ppt_tps": ppt_tps, "pg_tps": pg_tps,
+                        **result_row})
 
-    proc.wait()
-    _bench_proc = None
-    wh, src = energy.stop()
-    wh_per_ktok = (wh / (tokens_total / 1000.0)) if wh is not None and tokens_total > 0 else None
-    cancelled = _bench_cancel_event.is_set()
-    mx = _shared.bench_maxes(result_rows)
-    measured = any(v is not None for v in mx.values())
-    _bench_put({"type": "model_done", "model_id": model_id,
-                "ok": (not cancelled) and proc.returncode == 0,
-                "rc": proc.returncode, "cancelled": cancelled,
-                "last_gen_tps": latest_gen, "last_ppt_tps": latest_ppt,
-                "last_pg_tps": latest_pg, "results": result_rows,
-                "max_gen_tps": mx["gen"], "max_ppt_tps": mx["ppt"],
-                "max_pg_tps": mx["pg"], "run_id": _bench_replay.run_id,
-                "energy_wh": wh, "energy_source": src,
-                "wh_per_ktok": wh_per_ktok, "tokens": tokens_total})
-    _shared.post_tool_run(
-        _require_ctx(), "benchmark", "llama", _bench_replay.run_id, model_id,
-        measured, {"gen_tps": mx["gen"], "ppt_tps": mx["ppt"],
-                   "pg_tps": mx["pg"], "bench_tool": tool,
-                   "wh_per_ktok": wh_per_ktok})
+        proc.wait()
+        _bench_proc = None
+        wh, src = energy.stop()
+        stopped = True
+        wh_per_ktok = (wh / (tokens_total / 1000.0)) if wh is not None and tokens_total > 0 else None
+        cancelled = _bench_cancel_event.is_set()
+        mx = _shared.bench_maxes(result_rows)
+        measured = any(v is not None for v in mx.values())
+        _bench_put({"type": "model_done", "model_id": model_id,
+                    "ok": (not cancelled) and proc.returncode == 0,
+                    "rc": proc.returncode, "cancelled": cancelled,
+                    "last_gen_tps": latest_gen, "last_ppt_tps": latest_ppt,
+                    "last_pg_tps": latest_pg, "results": result_rows,
+                    "max_gen_tps": mx["gen"], "max_ppt_tps": mx["ppt"],
+                    "max_pg_tps": mx["pg"], "run_id": _bench_replay.run_id,
+                    "energy_wh": wh, "energy_source": src,
+                    "wh_per_ktok": wh_per_ktok, "tokens": tokens_total})
+        _shared.post_tool_run(
+            _require_ctx(), "benchmark", "llama", _bench_replay.run_id, model_id,
+            measured, {"gen_tps": mx["gen"], "ppt_tps": mx["ppt"],
+                       "pg_tps": mx["pg"], "bench_tool": tool,
+                       "wh_per_ktok": wh_per_ktok})
+    finally:
+        if not stopped:
+            energy.stop()
 
 
 def _bench_run_all(model_ids: list, tool: str, switches: list):

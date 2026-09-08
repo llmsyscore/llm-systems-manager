@@ -124,3 +124,33 @@ def test_rows_without_samples_count_one_rep(llama, monkeypatch, tmp_path):
     done = [e for e in events if e["type"] == "model_done"][-1]
     assert done["tokens"] == 128
     assert done["results"][0]["type_k"] == "q8_0"
+
+
+def test_malformed_rows_skipped_energy_stopped_once(llama, monkeypatch, tmp_path):
+    mod, events, ledger = llama
+
+    class _CountingEnergy(_FakeEnergy):
+        stop_calls = 0
+        def stop(self):
+            type(self).stop_calls += 1
+            return super().stop()
+
+    monkeypatch.setattr(mod._bl, "PowerIntegrator", _CountingEnergy)
+    rows = [
+        {"n_prompt": "x", "n_gen": 128, "avg_ts": 40.0,
+         "type_k": "q8_0", "type_v": "q8_0", "samples_ns": [1, 2, 3, 4, 5]},
+        {"n_prompt": 0, "n_gen": 128, "avg_ts": 40.0,
+         "type_k": "q8_0", "type_v": "q8_0", "samples_ns": 5},
+    ]
+    p = tmp_path / "llama-bench-malformed"
+    body = "#!/usr/bin/env python3\nimport json\n" + "".join(
+        f"print(json.dumps({json.dumps(r)}))\n" for r in rows)
+    p.write_text(body)
+    p.chmod(p.stat().st_mode | stat.S_IXUSR)
+    monkeypatch.setattr(mod, "_bench_tool_path", lambda tool: (str(p), True))
+    mod._bench_run_one("m1", "llama-bench", [], dict(os.environ))
+    done = [e for e in events if e["type"] == "model_done"][-1]
+    assert done["ok"] is True
+    # only the second row (samples_ns non-list -> 1 rep) counts; the first (bad n_prompt) is skipped
+    assert done["tokens"] == 128
+    assert _CountingEnergy.stop_calls == 1
