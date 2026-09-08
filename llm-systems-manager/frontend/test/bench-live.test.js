@@ -8,10 +8,15 @@ const BODY = `
   <div id="benchOffline"></div>
   <div id="benchLive" style="display:none">
     <div id="blPreflight"></div>
-    <div id="blPresets"><span class="bl-chip on" data-preset="chat">Chat</span><span class="bl-chip" data-preset="coding">Coding</span><span class="bl-chip" data-preset="rag">RAG</span><span class="bl-chip" data-preset="agentic">Agentic</span><span class="bl-chip" data-preset="custom">Custom</span></div>
-    <select id="blBench"><option>qualitative</option><option>throughput_1k</option><option>throughput_2k</option><option>throughput_8k</option><option>throughput_16k</option><option>throughput_32k</option></select>
+    <div id="blPresets"><span class="bl-chip on" data-preset="chat">Chat</span><span class="bl-chip" data-preset="coding">Coding</span><span class="bl-chip" data-preset="rag">RAG</span><span class="bl-chip" data-preset="agentic">Agentic</span><span class="bl-chip" data-preset="longctx">Long context</span><span class="bl-chip" data-preset="custom">Custom</span></div>
+    <div id="blBenchRow"><select id="blBench"><option>qualitative</option><option>throughput_1k</option><option>throughput_2k</option><option>throughput_8k</option><option>throughput_16k</option><option>throughput_32k</option></select></div>
     <div id="blCatsRow"><span class="bl-hint" id="blCatsHint">all</span><div id="blCats"></div></div>
-    <input id="blOsl" value="1024"><input id="blLimit" value="8">
+    <div id="blOslRow"><input id="blOsl" value="1024"></div><input id="blLimit" value="8">
+    <div class="bl-chips" id="blMatrixTgl"><span class="bl-chip" data-matrix="1">Prompt × output matrix</span></div>
+    <div id="blMatrixRows" style="display:none;">
+      <div class="bl-chips" id="blMatrixBench"><span class="bl-chip on" data-bench="throughput_1k">1k</span><span class="bl-chip" data-bench="throughput_2k">2k</span><span class="bl-chip on" data-bench="throughput_8k">8k</span><span class="bl-chip" data-bench="throughput_16k">16k</span><span class="bl-chip on" data-bench="throughput_32k">32k</span></div>
+      <input id="blMatrixOsl" value="256, 1024">
+    </div>
     <div class="bl-chips" id="blSweepChips"><span class="bl-chip on" data-conc="1">1</span><span class="bl-chip on" data-conc="2">2</span><span class="bl-chip on" data-conc="4">4</span><span class="bl-chip on" data-conc="8">8</span><span class="bl-chip" data-conc="16">16</span><span class="bl-chip" data-conc="32">32</span><span class="bl-chip" data-conc="custom">Custom</span></div>
     <div id="blSweepRow"><input id="blSweep" value="1, 2, 4, 8"></div>
     <input id="blTimeout" value="600"><textarea id="blExtra">{"temperature": 0}</textarea>
@@ -19,7 +24,9 @@ const BODY = `
     <button id="blRunBtn"></button><button id="blCancelBtn" style="display:none"></button><span id="blEstimate"></span>
     <div class="bl-notice" id="blNotice" style="display:none"></div>
     <span id="blStatus"></span><div id="blStrip"></div><span id="blElapsed"></span><div id="blProgress"><i></i></div><div id="blTiles"></div>
-    <canvas id="blChart"></canvas><div class="bl-chart-empty" id="blChartEmpty"></div><div id="blChartCaption"></div><div id="blLevelSeg"></div><div id="blTable"></div><div id="blLog"></div>
+    <canvas id="blChart"></canvas><div class="bl-chart-empty" id="blChartEmpty"></div><div id="blChartCaption"></div>
+    <div class="mc-seg" id="blCellSeg" style="display:none"></div><div id="blLevelSeg"></div><div id="blTable"></div><div id="blLog"></div>
+    <div class="bl-card" id="blHeatCard" style="display:none"><span id="blHeatMeta"></span><div id="blHeat"></div><div id="blHeatCaption"></div></div>
     <button id="blSetupBtn" style="display:none"></button>
   </div>
 `;
@@ -228,6 +235,53 @@ describe('BL presets and mode', () => {
     win.__sse.onEvent({ type: 'done', ok: true });
     await flush();
     expect(win.__fetches.some(([u]) => u === '/api/benchmark/live/run')).toBe(false);
+  });
+});
+
+describe('BL matrix + heatmap (#883)', () => {
+  it('Long context preset turns the matrix on with 1k/8k/32k × 256,1024 at concurrency 1', async () => {
+    const win = boot();
+    await flush();
+    win.BL.applyPreset('longctx');
+    const c = win.BL._config();
+    expect(c.matrix).toEqual({ benches: ['throughput_1k', 'throughput_8k', 'throughput_32k'], osls: [256, 1024] });
+    expect(c.bench).toBe('throughput_1k'); expect(c.osl).toBe(256);
+    expect(c.concurrency).toEqual([1]); expect(c.limit).toBe(4);
+    expect(win.document.getElementById('blBenchRow').style.display).toBe('none');
+  });
+  it('other presets turn the matrix off', async () => {
+    const win = boot();
+    await flush();
+    win.BL.applyPreset('longctx'); win.BL.applyPreset('chat');
+    expect(win.BL._config().matrix).toBeUndefined();
+    expect(win.document.getElementById('blBenchRow').style.display).toBe('');
+  });
+  it('heatCells builds bench × osl grid from tagged levels at the lowest concurrency', () => {
+    const win = boot();
+    const levels = [
+      { concurrency: 1, bench: 'throughput_1k', osl: 256, all: { pred_tps: 50 } },
+      { concurrency: 1, bench: 'throughput_8k', osl: 256, all: { pred_tps: 40 } },
+      { concurrency: 1, bench: 'throughput_1k', osl: 1024, all: { pred_tps: 48 } },
+      { concurrency: 2, bench: 'throughput_1k', osl: 256, all: { pred_tps: 30 } },
+    ];
+    const h = win.BL.heatCells(levels);
+    expect(h.benches).toEqual(['throughput_1k', 'throughput_8k']);
+    expect(h.osls).toEqual([256, 1024]);
+    expect(h.get('throughput_1k', 256)).toBe(50);
+    expect(h.get('throughput_8k', 1024)).toBeNull();
+    expect(h.max).toBe(50);
+  });
+  it('heatmap card renders cells and caption after matrix level results', async () => {
+    const win = boot();
+    await flush();
+    win.BL._debugLevels([
+      { concurrency: 1, bench: 'throughput_1k', osl: 256, all: { pred_tps: 50, agg_pred_tps: 50 }, rows: [] },
+      { concurrency: 1, bench: 'throughput_32k', osl: 256, all: { pred_tps: 30, agg_pred_tps: 30 }, rows: [] },
+    ]);
+    expect(win.document.getElementById('blHeatCard').style.display).toBe('');
+    expect(win.document.querySelectorAll('#blHeat .bl-heat-cell').length).toBe(2);
+    expect(win.document.getElementById('blHeatCaption').textContent).toMatch(/32k.*40 %/);
+    expect(win.document.getElementById('blCellSeg').querySelectorAll('button').length).toBe(2);
   });
 });
 

@@ -8,9 +8,12 @@
     coding:  { bench: 'qualitative',   cats: 'coding', osl: 1024, limit: 12 },
     rag:     { bench: 'throughput_8k', cats: 'all',    osl: 256,  limit: 6 },
     agentic: { bench: 'throughput_1k', cats: 'all',    osl: 512,  limit: 12 },
+    longctx: { matrix: { benches: ['throughput_1k', 'throughput_8k', 'throughput_32k'], osls: [256, 1024] }, cats: 'all', limit: 4, sweep: [1] },
   };
+  const BENCH_LABEL = { qualitative: 'qual', throughput_1k: '1k', throughput_2k: '2k', throughput_8k: '8k', throughput_16k: '16k', throughput_32k: '32k' };
+  const BENCH_ORDER = Object.keys(BENCH_LABEL);
   let _model = null, _pre = null, _runs = [], _es = null, _chart = null;
-  let _levels = [], _baseline = null, _lastDoc = null, _runId = null, _activeLevel = null, _lastTps = null;
+  let _levels = [], _baseline = null, _lastDoc = null, _runId = null, _activeLevel = null, _lastTps = null, _cell = null;
   let _attached = false, _queued = null, _elapsedIv = null, _runStart = 0, _sweepLevels = [], _curLevel = null, _busyOn = false;
 
   function parseSweep(text) {
@@ -37,6 +40,30 @@
   function syncSweepUi() {
     const row = $('blSweepRow') || $('blSweep');
     if (row) row.style.display = sweepCustom() ? '' : 'none';
+  }
+  function parseOsls(text) {
+    const seen = new Set();
+    String(text || '').split(/[,\s]+/).forEach(t => {
+      const n = parseInt(t, 10);
+      if (Number.isInteger(n) && n >= 16 && n <= 8192) seen.add(n);
+    });
+    const out = [...seen].sort((a, b) => a - b).slice(0, 4);
+    return out.length ? out : [256];
+  }
+  function matrixOn() { return !!document.querySelector('#blMatrixTgl .bl-chip.on'); }
+  // Toggles the matrix chip and swaps which rail rows are visible.
+  function setMatrix(on, benches, osls) {
+    document.querySelectorAll('#blMatrixTgl .bl-chip').forEach(c => c.classList.toggle('on', !!on));
+    const rows = $('blMatrixRows'); if (rows) rows.style.display = on ? '' : 'none';
+    const br = $('blBenchRow'); if (br) br.style.display = on ? 'none' : '';
+    const orow = $('blOslRow'); if (orow) orow.style.display = on ? 'none' : '';
+    if (benches) document.querySelectorAll('#blMatrixBench .bl-chip').forEach(c => c.classList.toggle('on', benches.includes(c.dataset.bench)));
+    if (osls) { const el = $('blMatrixOsl'); if (el) el.value = osls.join(', '); }
+  }
+  function toggleMatrix() { setMatrix(!matrixOn()); markCustom(); updateEstimate(); }
+  function matrixConfig() {
+    const benches = BENCH_ORDER.filter(b => document.querySelector(`#blMatrixBench .bl-chip[data-bench="${b}"].on`));
+    return { benches, osls: parseOsls(($('blMatrixOsl') || {}).value) };
   }
   function estimateSeconds(cfg, lastTps) {
     if (!lastTps || lastTps <= 0) return null;
@@ -83,24 +110,48 @@
     const p = PRESETS[name];
     document.querySelectorAll('#blPresets .bl-chip').forEach(c => c.classList.toggle('on', c.dataset.preset === name));
     if (!p) return;
-    $('blBench').value = p.bench; $('blOsl').value = String(p.osl); $('blLimit').value = String(p.limit);
-    const names = ((_pre && _pre.datasets && _pre.datasets[p.bench]) || {}).categories || [];
-    renderCats(names, p.cats === 'all' ? 'all' : names.filter(n => n.includes(p.cats)));
+    if (p.matrix) {
+      setMatrix(true, p.matrix.benches, p.matrix.osls);
+      $('blLimit').value = String(p.limit);
+      const sweepSet = new Set((p.sweep || []).map(String));
+      document.querySelectorAll('#blSweepChips .bl-chip').forEach(c => c.classList.toggle('on', sweepSet.has(c.dataset.conc)));
+      syncSweepUi();
+      const names = ((_pre && _pre.datasets && _pre.datasets[p.matrix.benches[0]]) || {}).categories || [];
+      renderCats(names, 'all');
+    } else {
+      setMatrix(false);
+      $('blBench').value = p.bench; $('blOsl').value = String(p.osl); $('blLimit').value = String(p.limit);
+      const names = ((_pre && _pre.datasets && _pre.datasets[p.bench]) || {}).categories || [];
+      renderCats(names, p.cats === 'all' ? 'all' : names.filter(n => n.includes(p.cats)));
+    }
     updateEstimate();
   }
   function config() {
     let extra = {};
     try { extra = JSON.parse($('blExtra').value || '{}'); } catch (_) { extra = null; }
-    return { model_id: _model, bench: $('blBench').value, categories: catsSelected(),
+    const c = { model_id: _model, bench: $('blBench').value, categories: catsSelected(),
              osl: parseInt($('blOsl').value, 10) || 1024, limit: parseInt($('blLimit').value, 10) || 8,
              concurrency: sweepLevels(), timeout_s: parseInt($('blTimeout').value, 10) || 600,
              extra_inputs: extra, baseline_run_id: $('blBaseline').value || null };
+    if (matrixOn()) { const m = matrixConfig(); return { ...c, bench: m.benches[0], osl: m.osls[0], matrix: m }; }
+    return c;
   }
   function catCount(c) { return c.categories === 'all' ? Math.max(1, document.querySelectorAll('#blCats .bl-chip').length) : c.categories.length; }
   function durText(s) { return s < 90 ? `~${s} s` : `~${Math.round(s / 60)} min`; }
   function updateEstimate() {
     const c = config();
-    const s = estimateSeconds({ levels: c.concurrency, samples: c.limit, categories: catCount(c), osl: c.osl }, _lastTps);
+    let s;
+    if (c.matrix) {
+      let sum = 0;
+      for (const osl of c.matrix.osls) {
+        const v = estimateSeconds({ levels: c.concurrency, samples: c.limit, categories: catCount(c), osl }, _lastTps);
+        if (v == null) { sum = null; break; }
+        sum += v;
+      }
+      s = sum == null ? null : sum * c.matrix.benches.length;
+    } else {
+      s = estimateSeconds({ levels: c.concurrency, samples: c.limit, categories: catCount(c), osl: c.osl }, _lastTps);
+    }
     $('blEstimate').textContent = s == null ? '' : durText(s);
   }
   function setMode(mode) {
@@ -164,6 +215,12 @@
     const b = $('blBench'); if (b && !b._bl) { b._bl = 1; b.addEventListener('change', () => { markCustom(); renderCats((((_pre || {}).datasets || {})[b.value] || {}).categories || [], 'all'); updateEstimate(); }); }
     document.querySelectorAll('#blPresets .bl-chip').forEach(c => { if (!c._bl) { c._bl = 1; c.addEventListener('click', () => applyPreset(c.dataset.preset)); } });
     document.querySelectorAll('#blSweepChips .bl-chip').forEach(c => { if (!c._bl) { c._bl = 1; c.addEventListener('click', () => { c.classList.toggle('on'); syncSweepUi(); updateEstimate(); }); } });
+    document.querySelectorAll('#blMatrixTgl .bl-chip').forEach(c => { if (!c._bl) { c._bl = 1; c.addEventListener('click', () => toggleMatrix()); } });
+    document.querySelectorAll('#blMatrixBench .bl-chip').forEach(c => { if (!c._bl) { c._bl = 1; c.addEventListener('click', () => {
+      if (c.classList.contains('on') && document.querySelectorAll('#blMatrixBench .bl-chip.on').length <= 1) return;
+      c.classList.toggle('on'); markCustom(); updateEstimate();
+    }); } });
+    const mo = $('blMatrixOsl'); if (mo && !mo._bl) { mo._bl = 1; mo.addEventListener('input', () => { markCustom(); updateEstimate(); }); }
     syncSweepUi();
     const rb = $('blRunBtn'); if (rb && rb._blLabel == null) rb._blLabel = rb.textContent;
     if (_pre && _pre.busy && !running()) attach();
@@ -179,22 +236,100 @@
                  scales: { x: { title: { display: true, text: 'concurrent requests' } }, y: { beginAtZero: true, title: { display: true, text: 'aggregate decode t/s' } } } } });
   }
   function baselineLevels() { return (_baseline && _baseline.levels) || []; }
-  function baselineAt(conc) { return baselineLevels().find(l => l.concurrency === conc) || null; }
+  // Cell key ties a level to its matrix cell; untagged levels all share '|'.
+  function cellKey(l) { return `${l.bench || (_lastDoc && _lastDoc.bench) || ''}|${l.osl != null ? l.osl : ''}`; }
+  function cells() {
+    const seen = [];
+    _levels.forEach(l => { const k = cellKey(l); if (!seen.includes(k)) seen.push(k); });
+    return seen;
+  }
+  function activeCellKey() {
+    const all = cells();
+    return (_cell != null && all.includes(_cell)) ? _cell : (all[0] != null ? all[0] : null);
+  }
+  function baselineAt(conc) {
+    const active = activeCellKey();
+    return baselineLevels().find(l => l.concurrency === conc && (l.bench == null || cellKey(l) === active)) || null;
+  }
+  function renderCellSeg(active) {
+    const host = $('blCellSeg'); if (!host) return;
+    const all = cells();
+    if (all.length <= 1) { host.style.display = 'none'; host.innerHTML = ''; return; }
+    host.style.display = '';
+    host.innerHTML = all.map(k => {
+      const l = _levels.find(x => cellKey(x) === k) || {};
+      const label = `${BENCH_LABEL[l.bench] || l.bench || ''} · osl ${l.osl != null ? l.osl : ''}`;
+      return `<button type="button" data-cell="${esc(k)}" class="${k === active ? 'on' : ''}">${esc(label)}</button>`;
+    }).join('');
+    host.querySelectorAll('button').forEach(b => b.addEventListener('click', () => { _cell = b.dataset.cell; redraw(); }));
+  }
+  // Lowest-concurrency pred_tps per (bench, osl), for the heatmap.
+  function heatCells(levels) {
+    const map = new Map();
+    (levels || []).forEach(l => {
+      if (l.bench == null || l.osl == null) return;
+      const key = `${l.bench}|${l.osl}`;
+      const cur = map.get(key);
+      const v = l.all && l.all.pred_tps;
+      if (!cur || l.concurrency < cur.conc) map.set(key, { conc: l.concurrency, v: v == null ? null : v });
+    });
+    const benchSet = new Set(), oslSet = new Set();
+    map.forEach((_v, key) => { const i = key.lastIndexOf('|'); benchSet.add(key.slice(0, i)); oslSet.add(Number(key.slice(i + 1))); });
+    const benches = BENCH_ORDER.filter(b => benchSet.has(b));
+    const osls = [...oslSet].sort((a, b) => a - b);
+    let max = null;
+    map.forEach(e => { if (e.v != null && (max == null || e.v > max)) max = e.v; });
+    return { benches, osls, get: (b, o) => { const e = map.get(`${b}|${o}`); return e && e.v != null ? e.v : null; }, max };
+  }
+  function renderHeat() {
+    const card = $('blHeatCard'); const host = $('blHeat'), cap = $('blHeatCaption');
+    if (!card || !host || !cap) return;
+    const h = heatCells(_levels);
+    const show = h.benches.length * h.osls.length >= 2;
+    card.style.display = show ? '' : 'none';
+    if (!show) { host.innerHTML = ''; cap.textContent = ''; return; }
+    host.style.gridTemplateColumns = `auto repeat(${h.benches.length}, 1fr)`;
+    let html = '<div class="bl-heat-h"></div>' + h.benches.map(b => `<div class="bl-heat-h">${esc(BENCH_LABEL[b] || b)}</div>`).join('');
+    h.osls.forEach(osl => {
+      html += `<div class="bl-heat-l">osl ${osl}</div>`;
+      const first = h.get(h.benches[0], osl);
+      h.benches.forEach((b, i) => {
+        const v = h.get(b, osl);
+        const pct = (h.max && v != null) ? Math.round(10 + 60 * v / h.max) : 0;
+        const delta = (i > 0 && v != null) ? `<small>${esc(deltaText(v, first).text.replace(' vs baseline', ''))}</small>` : '';
+        html += `<div class="bl-heat-cell" style="--p:${pct}">${fmt(v)}${delta}</div>`;
+      });
+    });
+    host.innerHTML = html;
+    let caption = '';
+    for (const osl of h.osls) {
+      const present = h.benches.filter(b => h.get(b, osl) != null);
+      if (present.length >= 2) {
+        const firstB = present[0], lastB = present[present.length - 1];
+        const first = h.get(firstB, osl), last = h.get(lastB, osl);
+        if (firstB !== lastB) caption = `Decode at ${BENCH_LABEL[lastB] || lastB} runs ${Math.round(100 - 100 * last / first)} % slower than at ${BENCH_LABEL[firstB] || firstB} (osl ${osl}).`;
+        break;
+      }
+    }
+    cap.textContent = caption;
+  }
   function redraw() {
-    const pend = (running() && _levels.length && _curLevel != null && !_levels.some(l => l.concurrency === _curLevel)) ? _curLevel : null;
-    const labels = [...new Set([..._levels.map(l => l.concurrency), ...baselineLevels().map(l => l.concurrency), ...(pend == null ? [] : [pend])])].sort((a, b) => a - b);
-    const empty = $('blChartEmpty'); if (empty) empty.style.display = _levels.length ? 'none' : '';
+    const active = activeCellKey();
+    const cur = _levels.filter(l => cellKey(l) === active);
+    const pend = (running() && cur.length && _curLevel != null && !cur.some(l => l.concurrency === _curLevel)) ? _curLevel : null;
+    const labels = [...new Set([...cur.map(l => l.concurrency), ...baselineLevels().map(l => l.concurrency), ...(pend == null ? [] : [pend])])].sort((a, b) => a - b);
+    const empty = $('blChartEmpty'); if (empty) empty.style.display = cur.length ? 'none' : '';
     if (_chart) {
-      const lastAgg = _levels.length ? _levels[_levels.length - 1].all.agg_pred_tps : null;
+      const lastAgg = cur.length ? cur[cur.length - 1].all.agg_pred_tps : null;
       _chart.data.labels = labels.map(String);
-      _chart.data.datasets[0].data = labels.map(c => { const l = _levels.find(x => x.concurrency === c); return l ? l.all.agg_pred_tps : null; });
+      _chart.data.datasets[0].data = labels.map(c => { const l = cur.find(x => x.concurrency === c); return l ? l.all.agg_pred_tps : null; });
       _chart.data.datasets[1].data = labels.map(c => { const l = baselineAt(c); return l ? l.all.agg_pred_tps : null; });
       if (_chart.data.datasets[2]) _chart.data.datasets[2].data = labels.map(c => (pend != null && c === pend) ? lastAgg : null);
       _chart.update('none');
     }
-    const k = knee(_levels);
-    $('blChartCaption').textContent = _levels.length > 1 && k ? `Per-request decode stays within 70 % of single-request speed up to ${k} concurrent.` : '';
-    const first = _levels[0] && _levels[0].all, b0 = baselineAt(1) && baselineAt(1).all;
+    const k = knee(cur);
+    $('blChartCaption').textContent = cur.length > 1 && k ? `Per-request decode stays within 70 % of single-request speed up to ${k} concurrent.` : '';
+    const first = cur[0] && cur[0].all, b0 = baselineAt(1) && baselineAt(1).all;
     const tiles = first ? [
       ['decode · 1 request', fmt(first.pred_tps), 't/s', deltaText(first.pred_tps, b0 && b0.pred_tps), true],
       ['prefill', fmt(first.prompt_tps, 0), 't/s', deltaText(first.prompt_tps, b0 && b0.prompt_tps)],
@@ -204,13 +339,15 @@
     ] : [];
     $('blTiles').innerHTML = tiles.map(([l, v, u, d, hi]) => `<div class="bl-tile${hi ? ' hi' : ''}"><div class="v">${v}<em>${u}</em></div><div class="l">${esc(l)}</div><div class="d ${d.cls}">${esc(d.text)}</div></div>`).join('');
     const seg = $('blLevelSeg');
-    seg.innerHTML = _levels.map(l => `<button type="button" data-level="${l.concurrency}" class="${l.concurrency === (_activeLevel || (_levels[0] && _levels[0].concurrency)) ? 'on' : ''}">${l.concurrency}</button>`).join('');
+    seg.innerHTML = cur.map(l => `<button type="button" data-level="${l.concurrency}" class="${l.concurrency === (_activeLevel || (cur[0] && cur[0].concurrency)) ? 'on' : ''}">${l.concurrency}</button>`).join('');
     seg.querySelectorAll('button').forEach(b => b.addEventListener('click', () => { _activeLevel = parseInt(b.dataset.level, 10); redraw(); }));
-    renderTable();
+    renderTable(cur);
+    renderCellSeg(active);
+    renderHeat();
   }
-  function renderTable() {
-    const conc = _activeLevel || (_levels[0] && _levels[0].concurrency);
-    const lv = _levels.find(l => l.concurrency === conc); const host = $('blTable');
+  function renderTable(cur) {
+    const conc = _activeLevel || (cur[0] && cur[0].concurrency);
+    const lv = (cur || []).find(l => l.concurrency === conc); const host = $('blTable');
     if (!lv) { host.innerHTML = '<div class="bl-hint" style="padding:12px">No results yet.</div>'; return; }
     const bl = baselineAt(conc); const brow = c => ((bl && bl.rows) || []).find(r => r.category === c);
     const row = (r, tot) => { const b = tot ? (bl && bl.all) : brow(r.category); const cur = tot ? r.pred_tps : r.avg_pred_t_s; const base = b && (tot ? b.pred_tps : b.avg_pred_t_s); const d = deltaText(cur, base);
@@ -270,9 +407,12 @@
     const c = cfg || config();
     if (!c.model_id) { setStatus('pick a model', 'err'); return; }
     if (c.extra_inputs === null) { setStatus('request extras must be a JSON object', 'err'); return; }
+    if (c.matrix && (!c.matrix.benches.length || c.matrix.benches.length * c.matrix.osls.length * c.concurrency.length > 24)) {
+      setStatus('matrix too large (max 24 cells × levels)', 'err'); return;
+    }
     if (_attached) { _queued = c; setStatus('queued · starts when the current run finishes', 'running'); $('blRunBtn').disabled = true; syncCancelBtn(); return; }
     if ($('blRunBtn').disabled) return;
-    busy(true); _levels = []; _lastDoc = null; _activeLevel = null; $('blLog').innerHTML = '';
+    busy(true); _levels = []; _lastDoc = null; _activeLevel = null; _cell = null; $('blLog').innerHTML = '';
     _baseline = null; _sweepLevels = (c.concurrency || []).slice(); _curLevel = null; startElapsed();
     if (c.baseline_run_id) { try { const r = await fetch('/api/benchmark/live/runs/' + encodeURIComponent(c.baseline_run_id)).then(r => r.json()); _baseline = r && r.run; } catch (_) {} }
     redraw(); setStatus('starting…', 'running');
@@ -292,8 +432,11 @@
         if (msg.run_id && _runId && msg.run_id !== _runId) return;
         if (msg.type === 'model_start') { if (_attached && msg.run_id) _runId = msg.run_id;
           if ((msg.levels || []).length) _sweepLevels = msg.levels.slice();
-          log(`run ${msg.run_id} · ${msg.bench} · levels ${(msg.levels || []).join(', ')}`); if (msg.cmd) log('$ ' + msg.cmd, 'dim'); }
-        else if (msg.type === 'level_start') { _curLevel = msg.concurrency; if (!_attached) setStatus('running', 'running'); setStrip(0, 0); log(`level ${msg.concurrency} started`); redraw(); }
+          log(`run ${msg.run_id} · ${msg.bench} · levels ${(msg.levels || []).join(', ')}`); if (msg.cmd) log('$ ' + msg.cmd, 'dim');
+          if (msg.matrix) log(`matrix · benches ${(msg.matrix.benches || []).join(', ')} · osls ${(msg.matrix.osls || []).join(', ')}`, 'dim'); }
+        else if (msg.type === 'level_start') { _curLevel = msg.concurrency; if (!_attached) setStatus('running', 'running'); setStrip(0, 0);
+          const tag = msg.bench ? ` · ${msg.bench}${msg.osl != null ? ' · osl ' + msg.osl : ''}` : '';
+          log(`level ${msg.concurrency} started${tag}`); redraw(); }
         else if (msg.type === 'progress') { const pct = msg.total ? Math.round(msg.done / msg.total * 100) : 0; $('blProgress').querySelector('i').style.width = pct + '%'; _curLevel = msg.level; setStrip(msg.done, msg.total); }
         else if (msg.type === 'line') { log(msg.text || '', 'dim'); }
         else if (msg.type === 'level_result') { _levels.push(msg); _lastTps = _levels[0].all.pred_tps || _lastTps; log(`level ${msg.concurrency} done · decode ${fmt(msg.all.pred_tps)} t/s · aggregate ${fmt(msg.all.agg_pred_tps)} t/s`, 'ok'); redraw(); }
@@ -305,7 +448,8 @@
           setStatus(msg.ok ? 'runtime ready' : 'setup failed', msg.ok ? 'ok' : 'err'); busy(false); }
         else if (msg.type === 'model_done') { _lastDoc = msg; const e = msg.wh_per_ktok != null ? ` · ${fmt(msg.wh_per_ktok, 2)} Wh / 1k tokens` : '';
           const sp = (msg.spec && msg.spec.n_max != null) ? ` · draft window ${msg.spec.n_min}–${msg.spec.n_max}` : '';
-          $('blStrip').textContent = `${(msg.levels || []).length} levels · ${fmt(msg.elapsed_s, 0)} s${e}${sp}`; }
+          const prefix = (msg.config && msg.config.matrix) ? `${cells().length} cells · ` : `${(msg.levels || []).length} levels · `;
+          $('blStrip').textContent = `${prefix}${fmt(msg.elapsed_s, 0)} s${e}${sp}`; }
         else if (msg.type === 'done') {
           if (_es) { try { _es.close(); } catch (_) {} _es = null; }
           stopElapsed(); _curLevel = null; redraw(); busy(false); loadRuns();
@@ -352,5 +496,7 @@
     a.click();
     setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 200);
   }
-  window.BL = { onOpen, setMode, run, cancel, setup, startServer, running, applyPreset, parseSweep, estimateSeconds, deltaText, knee, pinBaseline, exportJson };
+  window.BL = { onOpen, setMode, run, cancel, setup, startServer, running, applyPreset, parseSweep, estimateSeconds, deltaText, knee, pinBaseline, exportJson,
+    toggleMatrix, heatCells, cellKey,
+    _config: config, _debugLevels: (rows) => { _levels = rows; _cell = null; redraw(); } };
 })();

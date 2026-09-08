@@ -888,6 +888,11 @@
     .bl-chart-wrap { position:relative; height:220px; width:100%; }
     .bl-chart-wrap canvas { display:block; }
     .bl-chart-empty { position:absolute; inset:0; display:flex; align-items:center; justify-content:center; font-size:12.5px; color:var(--fg-dim); pointer-events:none; }
+    .bl-heat { display:grid; gap:4px; grid-auto-flow:row; }
+    .bl-heat-h, .bl-heat-l { font-size:.75em; color:var(--fg-dim); align-self:center; }
+    .bl-heat-cell { padding:10px 8px; border-radius:6px; text-align:center; font-variant-numeric:tabular-nums;
+      background: color-mix(in srgb, var(--accent) calc(var(--p, 0) * 1%), transparent); }
+    .bl-heat-cell small { display:block; font-size:.72em; opacity:.75; }
 
 
     /* Multi-agent picker (PR3) — chip row in the 4 provider sub-panels. */
