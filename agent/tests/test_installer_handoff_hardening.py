@@ -105,16 +105,16 @@ def test_writer_rejects_newline_values(tmp_path):
 # ── #298: collectors/providers refresh must not delete before copy ──────────
 
 def _pkg_swap_loop() -> str:
-    m = re.search(r'^  for _pkg in collectors providers; do\n.*?^  done$',
+    m = re.search(r'^  for _pkg in collectors providers bench; do\n.*?^  done$',
                   AGENT_INSTALL_SH.read_text(), re.MULTILINE | re.DOTALL)
-    assert m, "could not extract the collectors/providers refresh loop"
+    assert m, "could not extract the collectors/providers/bench refresh loop"
     return m.group(0)
 
 
 def _pkg_swap_setup(tmp_path):
     src = tmp_path / "src"
     inst = tmp_path / "inst"
-    for pkg in ("collectors", "providers"):
+    for pkg in ("collectors", "providers", "bench"):
         (src / pkg).mkdir(parents=True)
         (src / pkg / "new.py").write_text("new")
         (inst / pkg).mkdir(parents=True)
@@ -137,7 +137,7 @@ def test_pkg_swap_survives_failed_copy(tmp_path):
     env = dict(os.environ, PATH=f"{binroot}:{os.environ['PATH']}")
     r = _bash(script, env=env)
     assert r.returncode != 0, "loop must abort when cp fails"
-    for pkg in ("collectors", "providers"):
+    for pkg in ("collectors", "providers", "bench"):
         assert (inst / pkg / "old.py").exists(), \
             f"{pkg}/ was wiped before the replacement copy landed"
 
@@ -146,7 +146,7 @@ def test_pkg_swap_replaces_content_on_success(tmp_path):
     inst, script = _pkg_swap_setup(tmp_path)
     r = _bash(script)
     assert r.returncode == 0, r.stderr
-    for pkg in ("collectors", "providers"):
+    for pkg in ("collectors", "providers", "bench"):
         assert (inst / pkg / "new.py").exists()
         assert not (inst / pkg / "old.py").exists()
         assert not (inst / f"{pkg}.new").exists(), "staging dir left behind"

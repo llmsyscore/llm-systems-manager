@@ -115,6 +115,9 @@ IMGGEN_ENABLED:      false
 # -- HuggingFace CLI  ---------------------------------------------
 # HF_CLI_PATH: ""        # blank => shutil.which("hf")
 
+# -- Live benchmark (speed-bench) ---------------------------------------------
+# SPEED_BENCH_PYTHON: ""  # interpreter with datasets/requests/tqdm; blank => data/bench/venv
+
 # -- HTTP worker pool / SSE stream cap --------------------------------------
 WORKER_THREADS:         64
 STREAM_RESERVE_THREADS: 24

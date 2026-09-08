@@ -1,5 +1,5 @@
 // ===========================================================================
-// Benchmark (llama-bench / llama-batched-bench)
+// Benchmark (llama-bench)
 // ===========================================================================
 let _benchEventSrc      = null;
 let _benchChart         = null;
@@ -35,7 +35,7 @@ function _benchSyncChartLabels() {
   _benchChart.data.labels = xs;
 }
 
-// Row → triple offset: explicit series tag (batched-bench) wins, else n_prompt/n_gen.
+// Row → triple offset: explicit series tag wins, else n_prompt/n_gen.
 function _benchRowOffset(row) {
   const byName = _BENCH_SERIES_NAMES.indexOf(row.series);
   if (byName !== -1) return byName;
@@ -188,7 +188,7 @@ const _BENCH_AXIS_LABELS = {
   load_mode:   'Load mode (--load-mode)',
   avg_ts:      'Avg tokens/sec',
   stddev_ts:   'Std-dev tokens/sec',
-  // llama-batched-bench JSONL fields
+  // Additional JSONL summary fields
   pp:          'Prompt tokens per seq (pp)',
   tg:          'Gen tokens per seq (tg)',
   pl:          'Parallel sequences (pl)',
@@ -477,16 +477,6 @@ const BENCH_DEFAULTS = {
     {flag:'-ctv', value:'f16'},
     {flag:'-t',   value:'4,12'},
   ],
-  'llama-batched-bench': [
-    {flag:'-npp', value:'128,256,512'},
-    {flag:'-ntg', value:'128,256'},
-    {flag:'-npl', value:'1,2,3'},
-    {flag:'-b',   value:'2048'},
-    {flag:'-ub',  value:'2048'},
-    {flag:'-ngl', value:'99'},
-    {flag:'-fa',  value:'1'},
-    {flag:'-t',   value:'4,12'},
-  ],
 };
 
 // Load stored benchmark results for all models on startup, to show badges on model cards and have data ready on bench open
@@ -618,7 +608,7 @@ function _benchMaxes(modelId) {
            pg:  maxOf(r => _benchRowOffset(r) === 2) };
 }
 
-// Switch between different benchmark tools (llama-bench, llama-batched-bench, etc.) and load their default switches into the UI
+// Switch between different benchmark tools (llama-bench, etc.) and load their default switches into the UI
 function switchBenchTab(tool) {
   document.querySelectorAll('.bench-tab').forEach(t => {
     t.classList.toggle('active', t.dataset.tab === tool);
@@ -645,20 +635,10 @@ const BENCH_SWITCH_DEFS = {
     {flag:'-ctv', label:'-ctv (V quant)',    type:'select', options:_BENCH_KV_QUANTS},
     {flag:'-t',   label:'-t (threads)',      type:'text'},
   ],
-  'llama-batched-bench': [
-    {flag:'-npp', label:'-npp (prompt sizes)', type:'text'},
-    {flag:'-ntg', label:'-ntg (gen sizes)',    type:'text'},
-    {flag:'-npl', label:'-npl (parallel)',     type:'text'},
-    {flag:'-b',   label:'-b (batch)',          type:'text'},
-    {flag:'-ub',  label:'-ub (ubatch)',        type:'text'},
-    {flag:'-ngl', label:'-ngl (gpu layers)',   type:'number'},
-    {flag:'-fa',  label:'-fa (flash attn)',    type:'select', options:['0','1']},
-    {flag:'-t',   label:'-t (threads)',        type:'text'},
-  ],
 };
 
 function _benchActiveTool() {
-  return document.querySelector('.bench-tab.active')?.dataset.tab || 'llama-bench';
+  return 'llama-bench';
 }
 
 function _benchDefaultFor(tool, flag) {
@@ -808,7 +788,7 @@ async function _benchSetPerfMode(mode) {
 async function runBenchmark() {
   const modelIds = [...document.querySelectorAll('#benchModelPanel input[type=checkbox]:checked')]
                      .map(cb => cb.value);
-  const tool     = document.querySelector('.bench-tab.active')?.dataset.tab || 'llama-bench';
+  const tool     = 'llama-bench';
   const switches = _benchSwitches.filter(s => (s.flag || '').trim());
   if (!modelIds.length) { alert('Select at least one model.'); return; }
 

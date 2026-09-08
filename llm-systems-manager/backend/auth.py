@@ -406,6 +406,9 @@ def _agent_bearer_allowed(path: str, method: "str | None" = None) -> bool:
     # read or clear the ledger.
     if path == "/api/tools/runs":
         return method == "POST"
+    # Write-only: an agent stores its own finished live-bench run (#879).
+    if path == "/api/benchmark/live/store":
+        return method == "POST"
     return path.startswith("/api/agents/") and path.endswith("/llama-state")
 
 

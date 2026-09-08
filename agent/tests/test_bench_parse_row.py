@@ -1,5 +1,4 @@
-"""_bench_parse_row returns a (gen, ppt, pg) triple per JSONL row for both
-llama-bench and llama-batched-bench."""
+"""_bench_parse_row returns a (gen, ppt, pg) triple per llama-bench JSONL row."""
 from __future__ import annotations
 
 import importlib.util
@@ -67,19 +66,6 @@ def test_llama_bench_non_result_row(llama):
     assert llama._bench_parse_row("not a dict", "llama-bench") == (None, None, None)
 
 
-def test_batched_bench_reads_speed_fields(llama):
-    row = {"pp": 512, "tg": 128, "pl": 4, "t_pp": 0.15, "speed_pp": 3413.3,
-           "t_tg": 3.2, "speed_tg": 160.0, "t": 3.35, "speed": 764.2}
-    got = llama._bench_parse_row(row, "llama-batched-bench")
-    assert got == (160.0, 3413.3, 764.2)
-
-
-def test_batched_bench_zero_speed_is_reported_not_dropped(llama):
-    row = {"pp": 0, "tg": 128, "speed_pp": 0.0, "speed_tg": 160.0, "speed": 160.0}
-    assert llama._bench_parse_row(row, "llama-batched-bench") == (160.0, 0.0, 160.0)
-
-
-def test_batched_bench_ignores_time_fields(llama):
-    # t_pp/t_tg are durations, not throughput — must not be mistaken for speeds
-    row = {"pp": 512, "tg": 128, "t_pp": 0.15, "t_tg": 3.2}
+def test_unknown_tool_returns_none(llama):
+    row = {"n_prompt": 2048, "n_gen": 0, "avg_ts": 769.87}
     assert llama._bench_parse_row(row, "llama-batched-bench") == (None, None, None)

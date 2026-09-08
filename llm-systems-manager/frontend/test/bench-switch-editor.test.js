@@ -6,7 +6,6 @@ function openEditor() {
     sources: [srcFile('js/bench-autotune.js')],
     bodyHtml: `
       <button class="bench-tab active" data-tab="llama-bench"></button>
-      <button class="bench-tab" data-tab="llama-batched-bench"></button>
       <div id="benchSwitchList"></div>
       <span id="benchSwitchLabel"></span>
       <div id="benchSwitchPanel"></div>
@@ -63,13 +62,5 @@ describe('benchmark structured switch editor', () => {
     valInput.dispatchEvent(new win.Event('change'));
     expect(win.__switches().find(s => s.flag === '-mmp').value).toBe('0');
     expect(win.document.querySelector('.bench-opt-custom-h').textContent).toBe('Custom');
-  });
-
-  it('batched tab renders its own switch set', () => {
-    const win = openEditor();
-    win.switchBenchTab('llama-batched-bench');
-    const labels = [...win.document.querySelectorAll('.bench-opt-label')].map(l => l.textContent);
-    expect(labels.some(l => l.startsWith('-npp'))).toBe(true);
-    expect(labels.some(l => l.startsWith('-ctk'))).toBe(false);
   });
 });

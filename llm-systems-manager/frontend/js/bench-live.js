@@ -1,0 +1,345 @@
+// Live benchmark module (#879): speed-bench against the running server.
+// Classic script; exposes window.BL. Shares /api/benchmark/stream + cancel.
+(function () {
+  const $ = id => document.getElementById(id);
+  const esc = s => (window.TC && TC.esc ? TC.esc(String(s ?? '')) : String(s ?? ''));
+  const PRESETS = {
+    chat:    { bench: 'qualitative',   cats: 'all',    osl: 1024, limit: 8 },
+    coding:  { bench: 'qualitative',   cats: 'coding', osl: 1024, limit: 12 },
+    rag:     { bench: 'throughput_8k', cats: 'all',    osl: 256,  limit: 6 },
+    agentic: { bench: 'throughput_1k', cats: 'all',    osl: 512,  limit: 12 },
+  };
+  let _model = null, _pre = null, _runs = [], _es = null, _chart = null;
+  let _levels = [], _baseline = null, _lastDoc = null, _runId = null, _activeLevel = null, _lastTps = null;
+  let _attached = false, _queued = null, _elapsedIv = null, _runStart = 0, _sweepLevels = [], _curLevel = null, _busyOn = false;
+
+  function parseSweep(text) {
+    const seen = new Set();
+    String(text || '').split(/[,\s]+/).forEach(t => {
+      const n = parseInt(t, 10);
+      if (Number.isInteger(n) && n >= 1 && n <= 64) seen.add(n);
+    });
+    const out = [...seen].sort((a, b) => a - b).slice(0, 8);
+    return out.length ? out : [1];
+  }
+  // Sweep levels come from the chips unless the Custom chip is on, which uses #blSweep.
+  function sweepCustom() {
+    const c = document.querySelector('#blSweepChips .bl-chip[data-conc="custom"]');
+    return !!(c && c.classList.contains('on'));
+  }
+  function sweepLevels() {
+    if (!document.querySelector('#blSweepChips .bl-chip') || sweepCustom()) return parseSweep($('blSweep').value);
+    const on = [...document.querySelectorAll('#blSweepChips .bl-chip.on')]
+      .map(c => parseInt(c.dataset.conc, 10)).filter(n => Number.isInteger(n));
+    const out = [...new Set(on)].sort((a, b) => a - b).slice(0, 8);
+    return out.length ? out : [1];
+  }
+  function syncSweepUi() {
+    const row = $('blSweepRow') || $('blSweep');
+    if (row) row.style.display = sweepCustom() ? '' : 'none';
+  }
+  function estimateSeconds(cfg, lastTps) {
+    if (!lastTps || lastTps <= 0) return null;
+    return Math.round(cfg.levels.length * cfg.samples * cfg.categories * cfg.osl / lastTps);
+  }
+  function deltaText(cur, base, lowerIsBetter) {
+    if (cur == null || base == null || !base) return { text: 'no baseline', cls: 'flat' };
+    const pct = Math.round((cur - base) / base * 100);
+    const sign = pct > 0 ? '+' : (pct < 0 ? '−' : '');
+    const text = `${sign}${Math.abs(pct)} % vs baseline`;
+    if (Math.abs(pct) < 3) return { text, cls: 'flat' };
+    const good = lowerIsBetter ? pct < 0 : pct > 0;
+    return { text, cls: good ? 'up' : 'down' };
+  }
+  function knee(levels) {
+    if (!levels || !levels.length) return null;
+    const first = levels[0].all && levels[0].all.pred_tps;
+    if (!first) return levels[0].concurrency;
+    let k = levels[0].concurrency;
+    levels.forEach(l => { if (l.all && l.all.pred_tps >= 0.7 * first) k = Math.max(k, l.concurrency); });
+    return k;
+  }
+  function fmt(n, d = 1) { return n == null ? '—' : Number(n).toLocaleString(undefined, { maximumFractionDigits: d }); }
+  function catsSelected() {
+    const on = [...document.querySelectorAll('#blCats .bl-chip.on')].map(c => c.dataset.cat);
+    const all = document.querySelectorAll('#blCats .bl-chip').length;
+    return (!on.length || on.length === all) ? 'all' : on;
+  }
+  function renderCats(names, selected) {
+    const host = $('blCats'); if (!host) return;
+    host.innerHTML = (names || []).map(c =>
+      `<span class="bl-chip${selected === 'all' || (selected || []).includes(c) ? ' on' : ''}" data-cat="${esc(c)}">${esc(c)}</span>`).join('');
+    host.querySelectorAll('.bl-chip').forEach(ch => ch.addEventListener('click', () => { ch.classList.toggle('on'); markCustom(); updateEstimate(); }));
+    const known = !!(names && names.length);
+    const row = $('blCatsRow'); if (row) row.style.display = known ? '' : 'none';
+    if (host) host.style.display = known ? '' : 'none';
+    const hint = $('blCatsHint');
+    if (hint && known) hint.textContent = catsSelected() === 'all' ? `all · ${names.length} of ${names.length}` : `${catsSelected().length} of ${names.length}`;
+  }
+  function markCustom() {
+    document.querySelectorAll('#blPresets .bl-chip').forEach(c => c.classList.toggle('on', c.dataset.preset === 'custom'));
+  }
+  function applyPreset(name) {
+    const p = PRESETS[name];
+    document.querySelectorAll('#blPresets .bl-chip').forEach(c => c.classList.toggle('on', c.dataset.preset === name));
+    if (!p) return;
+    $('blBench').value = p.bench; $('blOsl').value = String(p.osl); $('blLimit').value = String(p.limit);
+    const names = ((_pre && _pre.datasets && _pre.datasets[p.bench]) || {}).categories || [];
+    renderCats(names, p.cats === 'all' ? 'all' : names.filter(n => n.includes(p.cats)));
+    updateEstimate();
+  }
+  function config() {
+    let extra = {};
+    try { extra = JSON.parse($('blExtra').value || '{}'); } catch (_) { extra = null; }
+    return { model_id: _model, bench: $('blBench').value, categories: catsSelected(),
+             osl: parseInt($('blOsl').value, 10) || 1024, limit: parseInt($('blLimit').value, 10) || 8,
+             concurrency: sweepLevels(), timeout_s: parseInt($('blTimeout').value, 10) || 600,
+             extra_inputs: extra, baseline_run_id: $('blBaseline').value || null };
+  }
+  function catCount(c) { return c.categories === 'all' ? Math.max(1, document.querySelectorAll('#blCats .bl-chip').length) : c.categories.length; }
+  function durText(s) { return s < 90 ? `~${s} s` : `~${Math.round(s / 60)} min`; }
+  function updateEstimate() {
+    const c = config();
+    const s = estimateSeconds({ levels: c.concurrency, samples: c.limit, categories: catCount(c), osl: c.osl }, _lastTps);
+    $('blEstimate').textContent = s == null ? '' : durText(s);
+  }
+  function setMode(mode) {
+    mode = mode === 'offline' ? 'offline' : 'live';
+    if (window.layout) { layout.benchMode = mode; try { saveLayout(); } catch (_) {} }
+    document.querySelectorAll('#benchModeSeg button').forEach(b => b.classList.toggle('on', b.dataset.mode === mode));
+    $('benchLive').style.display = mode === 'live' ? '' : 'none';
+    $('benchOffline').style.display = mode === 'offline' ? '' : 'none';
+    const note = $('benchModeNote');
+    if (note) note.textContent = mode === 'live' ? 'Live · speed-bench against the running server' : 'Offline · llama-bench · server must be stopped';
+    if (mode === 'live' && _chart) { try { _chart.resize(); } catch (_) {} }
+  }
+  function setRunBar(missing) {
+    const run = $('blRunBtn'), setup = $('blSetupBtn');
+    if (run) run.style.display = missing ? 'none' : '';
+    if (!setup) return;
+    setup.style.display = missing ? '' : 'none';
+    setup.className = missing ? 'mcbtn mcbtn-pri' : 'mcbtn mcbtn-ghost';
+    setup.textContent = 'Install bench runtime';
+  }
+  function renderPreflight() {
+    const el = $('blPreflight'); if (!el || !_pre) return;
+    const s = _pre.server || {}, rt = _pre.runtime || {};
+    let dot = el.querySelector('.bl-dot'), d = el.querySelector('.d');
+    if (!dot || !d) { el.innerHTML = '<span class="bl-dot"></span><span class="d"></span>';
+      dot = el.querySelector('.bl-dot'); d = el.querySelector('.d'); }
+    const start = $('blStartBtn');
+    if (start) start.style.display = s.up ? 'none' : '';
+    const missing = !rt.python || !rt.script;
+    setRunBar(missing);
+    if (!s.up) { dot.className = 'bl-dot warn'; d.innerHTML = '<b>llama-server is down.</b> Live runs need the running server.'; el.className = 'bl-preflight warn'; }
+    else if (missing) { const st = rt.script_status && rt.script_status !== 'ok' ? ` (${esc(rt.script_status)})` : '';
+      dot.className = 'bl-dot warn'; d.innerHTML = `<b>Bench runtime missing.</b> Install it with the button below.${st}`; el.className = 'bl-preflight warn'; }
+    else { dot.className = 'bl-dot ok'; d.innerHTML = `<b>llama-server</b> · ${esc(s.loaded_id || 'no model loaded')} · ${esc(s.slots_idle)}/${esc(s.slots_total)} slots idle`; el.className = 'bl-preflight ok'; }
+    if (!_model && s.loaded_id) _model = s.loaded_id;
+    const names = ((_pre.datasets || {})[$('blBench').value] || {}).categories || [];
+    if (!document.querySelectorAll('#blCats .bl-chip').length) renderCats(names, 'all');
+  }
+  async function loadRuns() {
+    if (!_model) return;
+    try {
+      const r = await fetch('/api/benchmark/live/runs?model_id=' + encodeURIComponent(_model)).then(r => r.json());
+      _runs = (r && r.runs) || [];
+    } catch (_) { _runs = []; }
+    const sel = $('blBaseline');
+    const pinned = _runs.find(r => r.baseline);
+    sel.innerHTML = `<option value=""${pinned ? '' : ' selected'}>none</option>`
+      + _runs.map(r => `<option value="${esc(r.run_id)}"${pinned && pinned.run_id === r.run_id ? ' selected' : ''}>${esc(String(r.ts || '').slice(0, 16).replace('T', ' '))} · ${esc((r.config || {}).bench || '')} · ${fmt(r.gen_tps)} t/s${r.baseline ? ' · baseline' : ''}</option>`).join('');
+    if (_runs.length && _runs[0].gen_tps) _lastTps = _runs[0].gen_tps;
+    updateEstimate();
+  }
+  async function onOpen(modelId) {
+    if (modelId) _model = modelId;
+    setMode((window.layout && layout.benchMode) || 'live');
+    try { _pre = await fetch('/api/benchmark/live/preflight').then(r => r.json()); } catch (_) { _pre = { server: { up: false }, runtime: {} }; }
+    renderPreflight();
+    await loadRuns();
+    if (!_chart && window.Chart && $('blChart')) mkChart();
+    ['blOsl', 'blLimit', 'blSweep', 'blTimeout', 'blExtra'].forEach(id => { const el = $(id); if (el && !el._bl) { el._bl = 1; el.addEventListener('input', () => { markCustom(); updateEstimate(); }); } });
+    const b = $('blBench'); if (b && !b._bl) { b._bl = 1; b.addEventListener('change', () => { markCustom(); renderCats((((_pre || {}).datasets || {})[b.value] || {}).categories || [], 'all'); updateEstimate(); }); }
+    document.querySelectorAll('#blPresets .bl-chip').forEach(c => { if (!c._bl) { c._bl = 1; c.addEventListener('click', () => applyPreset(c.dataset.preset)); } });
+    document.querySelectorAll('#blSweepChips .bl-chip').forEach(c => { if (!c._bl) { c._bl = 1; c.addEventListener('click', () => { c.classList.toggle('on'); syncSweepUi(); updateEstimate(); }); } });
+    syncSweepUi();
+    const rb = $('blRunBtn'); if (rb && rb._blLabel == null) rb._blLabel = rb.textContent;
+    if (_pre && _pre.busy && !running()) attach();
+  }
+  function mkChart() {
+    const css = v => (window.cssVar ? cssVar(v) : '#888');
+    _chart = new Chart($('blChart').getContext('2d'), { type: 'line', data: { labels: [], datasets: [
+      { label: 'this run', data: [], borderColor: css('--accent'), fill: true, tension: 0, pointRadius: 4, spanGaps: true,
+        backgroundColor: 'color-mix(in srgb, ' + css('--accent') + ' 14%, transparent)' },
+      { label: 'baseline', data: [], borderColor: css('--fg-dim'), borderDash: [5, 4], fill: false, tension: 0, pointRadius: 3, spanGaps: true },
+      { label: 'pending', data: [], pointStyle: 'circle', pointRadius: 4, pointBorderColor: css('--accent'), pointBackgroundColor: 'transparent', showLine: false } ] },
+      options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false } },
+                 scales: { x: { title: { display: true, text: 'concurrent requests' } }, y: { beginAtZero: true, title: { display: true, text: 'aggregate decode t/s' } } } } });
+  }
+  function baselineLevels() { return (_baseline && _baseline.levels) || []; }
+  function baselineAt(conc) { return baselineLevels().find(l => l.concurrency === conc) || null; }
+  function redraw() {
+    const pend = (running() && _levels.length && _curLevel != null && !_levels.some(l => l.concurrency === _curLevel)) ? _curLevel : null;
+    const labels = [...new Set([..._levels.map(l => l.concurrency), ...baselineLevels().map(l => l.concurrency), ...(pend == null ? [] : [pend])])].sort((a, b) => a - b);
+    const empty = $('blChartEmpty'); if (empty) empty.style.display = _levels.length ? 'none' : '';
+    if (_chart) {
+      const lastAgg = _levels.length ? _levels[_levels.length - 1].all.agg_pred_tps : null;
+      _chart.data.labels = labels.map(String);
+      _chart.data.datasets[0].data = labels.map(c => { const l = _levels.find(x => x.concurrency === c); return l ? l.all.agg_pred_tps : null; });
+      _chart.data.datasets[1].data = labels.map(c => { const l = baselineAt(c); return l ? l.all.agg_pred_tps : null; });
+      if (_chart.data.datasets[2]) _chart.data.datasets[2].data = labels.map(c => (pend != null && c === pend) ? lastAgg : null);
+      _chart.update('none');
+    }
+    const k = knee(_levels);
+    $('blChartCaption').textContent = _levels.length > 1 && k ? `Per-request decode stays within 70 % of single-request speed up to ${k} concurrent.` : '';
+    const first = _levels[0] && _levels[0].all, b0 = baselineAt(1) && baselineAt(1).all;
+    const tiles = first ? [
+      ['decode · 1 request', fmt(first.pred_tps), 't/s', deltaText(first.pred_tps, b0 && b0.pred_tps), true],
+      ['prefill', fmt(first.prompt_tps, 0), 't/s', deltaText(first.prompt_tps, b0 && b0.prompt_tps)],
+      ['latency · mean', fmt(first.latency_s, 1), 's', deltaText(first.latency_s, b0 && b0.latency_s, true)],
+      ['draft accept rate', first.accept_rate == null ? '—' : Math.round(first.accept_rate * 100), first.accept_rate == null ? '' : '%',
+        first.accept_rate == null ? { text: 'no draft', cls: 'flat' } : (b0 && b0.accept_rate != null ? deltaText(first.accept_rate, b0.accept_rate) : { text: 'baseline had no draft', cls: 'flat' })],
+    ] : [];
+    $('blTiles').innerHTML = tiles.map(([l, v, u, d, hi]) => `<div class="bl-tile${hi ? ' hi' : ''}"><div class="v">${v}<em>${u}</em></div><div class="l">${esc(l)}</div><div class="d ${d.cls}">${esc(d.text)}</div></div>`).join('');
+    const seg = $('blLevelSeg');
+    seg.innerHTML = _levels.map(l => `<button type="button" data-level="${l.concurrency}" class="${l.concurrency === (_activeLevel || (_levels[0] && _levels[0].concurrency)) ? 'on' : ''}">${l.concurrency}</button>`).join('');
+    seg.querySelectorAll('button').forEach(b => b.addEventListener('click', () => { _activeLevel = parseInt(b.dataset.level, 10); redraw(); }));
+    renderTable();
+  }
+  function renderTable() {
+    const conc = _activeLevel || (_levels[0] && _levels[0].concurrency);
+    const lv = _levels.find(l => l.concurrency === conc); const host = $('blTable');
+    if (!lv) { host.innerHTML = '<div class="bl-hint" style="padding:12px">No results yet.</div>'; return; }
+    const bl = baselineAt(conc); const brow = c => ((bl && bl.rows) || []).find(r => r.category === c);
+    const row = (r, tot) => { const b = tot ? (bl && bl.all) : brow(r.category); const cur = tot ? r.pred_tps : r.avg_pred_t_s; const base = b && (tot ? b.pred_tps : b.avg_pred_t_s); const d = deltaText(cur, base);
+      return `<tr${tot ? ' class="tot"' : ''}><td>${esc(tot ? 'all' : r.category)}</td><td class="num">${tot ? r.requests : r.requests}</td><td class="num">${fmt(tot ? r.prompt_tps : r.avg_prompt_t_s, 0)}</td><td class="num">${fmt(cur)}<span class="dlt ${d.cls}">${base ? esc(d.text.replace(' vs baseline', '')) : ''}</span></td><td class="num">${fmt(tot ? r.latency_s : r.avg_latency, 1)} s</td><td class="num">${(tot ? r.accept_rate : r.accept_rate) == null ? '—' : Math.round((tot ? r.accept_rate : r.accept_rate) * 100) + ' %'}</td></tr>`; };
+    host.innerHTML = `<table class="bl-rt"><thead><tr><th>Category</th><th class="num">samples</th><th class="num">prompt t/s</th><th class="num">decode t/s</th><th class="num">latency</th><th class="num">accept</th></tr></thead><tbody>${lv.rows.map(r => row(r, false)).join('')}${row(lv.all, true)}</tbody></table>`;
+  }
+  function log(text, cls) { const el = $('blLog'); if (!el) return; const t = new Date().toTimeString().slice(0, 8); el.innerHTML += `<div><span class="dim">${t}</span> ${cls ? `<span class="${cls}">` : ''}${esc(text)}${cls ? '</span>' : ''}</div>`; el.scrollTop = el.scrollHeight; }
+  function setStatus(text, state) { const el = $('blStatus'); el.textContent = text; el.classList.remove('running', 'ok', 'err'); if (state) el.classList.add(state); }
+  function running() { return !!_es || _attached; }
+  // Cancel is for runs this tab started; while attached it only drops a queued config.
+  function syncCancelBtn() {
+    const b = $('blCancelBtn'); if (!b) return;
+    if (b._blLabel == null) b._blLabel = b.textContent;
+    const drop = _attached && !!_queued;
+    b.style.display = (drop || (_busyOn && !_attached)) ? '' : 'none';
+    b.textContent = drop ? 'Drop queued run' : (b._blLabel || '');
+  }
+  function busy(on) { _busyOn = on; $('blRunBtn').disabled = on; syncCancelBtn(); $('blProgress').style.display = on ? '' : 'none'; if (typeof toolsSyncRunDot === 'function') toolsSyncRunDot(); }
+  function setStrip(done, total) {
+    const parts = [], n = _sweepLevels.length, i = _curLevel == null ? 0 : _sweepLevels.indexOf(_curLevel) + 1;
+    if (i > 0 && n) parts.push(`sweep ${i} / ${n}`);
+    if (_curLevel != null) parts.push(`concurrency ${_curLevel}`);
+    if (total) parts.push(`sample ${done} / ${total}`);
+    $('blStrip').textContent = parts.join(' · ');
+  }
+  function remainText() {
+    const left = _sweepLevels.slice(_levels.length);
+    if (!_levels.length || !left.length) return '';
+    const c = config(), first = _levels[0].all && _levels[0].all.pred_tps;
+    const s = estimateSeconds({ levels: left, samples: c.limit, categories: catCount(c), osl: c.osl }, first || _lastTps);
+    return s == null ? '' : ` · ${durText(s)} left`;
+  }
+  function stopElapsed() { if (_elapsedIv) { clearInterval(_elapsedIv); _elapsedIv = null; } }
+  function startElapsed() {
+    stopElapsed(); _runStart = Date.now();
+    const tick = () => { const el = $('blElapsed'); if (!el) return; const s = Math.round((Date.now() - _runStart) / 1000);
+      el.textContent = `elapsed ${Math.floor(s / 60)} m ${s % 60} s${remainText()}`; };
+    tick(); _elapsedIv = setInterval(tick, 1000);
+  }
+  function notice(on) {
+    const n = $('blNotice'); if (!n) return;
+    n.textContent = on ? 'A benchmark is already running on this host. New runs queue behind it.' : '';
+    n.style.display = on ? '' : 'none';
+  }
+  function runLabel(text) { const b = $('blRunBtn'); if (b) b.textContent = text == null ? (b._blLabel || '') : text; }
+  function leaveAttached() { _attached = false; notice(false); runLabel(null); syncCancelBtn(); }
+  // Follows a run started by another tab: replays its stream and queues ours behind it.
+  function attach() {
+    _attached = true; _runId = null; _queued = null;
+    stopElapsed(); const el = $('blElapsed'); if (el) el.textContent = '';
+    openStream(); busy(true);
+    $('blRunBtn').disabled = false; runLabel('Queue run');
+    setStatus('running · started elsewhere', 'running'); notice(true);
+    if (typeof toolsSyncRunDot === 'function') toolsSyncRunDot();
+  }
+  async function run(cfg) {
+    const c = cfg || config();
+    if (!c.model_id) { setStatus('pick a model', 'err'); return; }
+    if (c.extra_inputs === null) { setStatus('request extras must be a JSON object', 'err'); return; }
+    if (_attached) { _queued = c; setStatus('queued · starts when the current run finishes', 'running'); $('blRunBtn').disabled = true; syncCancelBtn(); return; }
+    if ($('blRunBtn').disabled) return;
+    busy(true); _levels = []; _lastDoc = null; _activeLevel = null; $('blLog').innerHTML = '';
+    _baseline = null; _sweepLevels = (c.concurrency || []).slice(); _curLevel = null; startElapsed();
+    if (c.baseline_run_id) { try { const r = await fetch('/api/benchmark/live/runs/' + encodeURIComponent(c.baseline_run_id)).then(r => r.json()); _baseline = r && r.run; } catch (_) {} }
+    redraw(); setStatus('starting…', 'running');
+    let d;
+    try { d = await fetch('/api/benchmark/live/run', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(c) }).then(r => r.json()); }
+    catch (e) { d = { ok: false, error: String(e) }; }
+    if (!d || !d.ok) { setStatus(d && d.error ? d.error : 'failed to start', 'err'); busy(false); stopElapsed(); if (d && d.runtime) { _pre = Object.assign(_pre || {}, { runtime: d.runtime }); renderPreflight(); } return; }
+    _runId = d.run_id; openStream();
+  }
+  function openStream() {
+    if (_es) { try { _es.close(); } catch (_) {} }
+    _es = SG.open({ url: '/api/benchmark/stream', maxDrops: 6,
+      onReconnecting: () => setStatus('reconnecting…', 'running'),
+      onRestored: () => setStatus('running', 'running'),
+      onLost: () => { _es = null; _attached = false; notice(false); runLabel(null); setStatus('disconnected', 'err'); busy(false); stopElapsed(); },
+      onEvent: (msg) => {
+        if (msg.run_id && _runId && msg.run_id !== _runId) return;
+        if (msg.type === 'model_start') { if (_attached && msg.run_id) _runId = msg.run_id;
+          if ((msg.levels || []).length) _sweepLevels = msg.levels.slice();
+          log(`run ${msg.run_id} · ${msg.bench} · levels ${(msg.levels || []).join(', ')}`); if (msg.cmd) log('$ ' + msg.cmd, 'dim'); }
+        else if (msg.type === 'level_start') { _curLevel = msg.concurrency; if (!_attached) setStatus('running', 'running'); setStrip(0, 0); log(`level ${msg.concurrency} started`); redraw(); }
+        else if (msg.type === 'progress') { const pct = msg.total ? Math.round(msg.done / msg.total * 100) : 0; $('blProgress').querySelector('i').style.width = pct + '%'; _curLevel = msg.level; setStrip(msg.done, msg.total); }
+        else if (msg.type === 'line') { log(msg.text || '', 'dim'); }
+        else if (msg.type === 'level_result') { _levels.push(msg); _lastTps = _levels[0].all.pred_tps || _lastTps; log(`level ${msg.concurrency} done · decode ${fmt(msg.all.pred_tps)} t/s · aggregate ${fmt(msg.all.agg_pred_tps)} t/s`, 'ok'); redraw(); }
+        else if (msg.type === 'setup_step') { log(`${msg.step}: ${msg.text || ''}`); }
+        else if (msg.type === 'setup_done') { log(msg.ok ? 'runtime ready' : `setup failed: ${msg.error || ''}`, msg.ok ? 'ok' : 'warn');
+          if (msg.runtime) { _pre = Object.assign(_pre || {}, { runtime: msg.runtime }); renderPreflight(); }
+          if (_es) { try { _es.close(); } catch (_) {} _es = null; }
+          _queued = null; leaveAttached(); stopElapsed();
+          setStatus(msg.ok ? 'runtime ready' : 'setup failed', msg.ok ? 'ok' : 'err'); busy(false); }
+        else if (msg.type === 'model_done') { _lastDoc = msg; const e = msg.wh_per_ktok != null ? ` · ${fmt(msg.wh_per_ktok, 2)} Wh / 1k tokens` : '';
+          const sp = (msg.spec && msg.spec.n_max != null) ? ` · draft window ${msg.spec.n_min}–${msg.spec.n_max}` : '';
+          $('blStrip').textContent = `${(msg.levels || []).length} levels · ${fmt(msg.elapsed_s, 0)} s${e}${sp}`; }
+        else if (msg.type === 'done') {
+          if (_es) { try { _es.close(); } catch (_) {} _es = null; }
+          stopElapsed(); _curLevel = null; redraw(); busy(false); loadRuns();
+          if (_attached) { const q = _queued; _queued = null; leaveAttached();
+            if (q) { setStatus('starting…', 'running'); run(q); return; } }
+          setStatus(msg.ok ? 'complete' : (msg.cancelled ? 'cancelled' : 'failed'), msg.ok ? 'ok' : 'err'); }
+      } });
+    if (typeof toolsSyncRunDot === 'function') toolsSyncRunDot();
+  }
+  function cancel() {
+    if (_attached) {
+      if (!_queued) return;
+      _queued = null; runLabel('Queue run'); $('blRunBtn').disabled = false; syncCancelBtn(); setStatus('queued run dropped');
+      return;
+    }
+    if (_es) { try { _es.close(); } catch (_) {} _es = null; }
+    _queued = null; leaveAttached(); stopElapsed(); _curLevel = null; redraw();
+    fetch('/api/benchmark/cancel', { method: 'POST' }).catch(() => {}); setStatus('cancelled', 'err'); busy(false); }
+  async function setup() {
+    if (_attached) { setStatus('a run is in progress on this host', 'err'); return; }
+    if ($('blRunBtn').disabled) return;
+    busy(true); $('blLog').innerHTML = ''; setStatus('installing runtime…', 'running');
+    let d; try { d = await fetch('/api/benchmark/live/setup', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ prefetch: [$('blBench').value] }) }).then(r => r.json()); } catch (e) { d = { ok: false, error: String(e) }; }
+    if (!d || !d.ok) { setStatus(d && d.error ? d.error : 'setup failed', 'err'); busy(false); return; }
+    _runId = d.run_id || null; openStream();
+  }
+  async function startServer() {
+    const b = $('blStartBtn'); if (b) b.disabled = true;
+    try { await fetch('/api/llm/server/start', { method: 'POST' }); } catch (_) {}
+    await new Promise(r => setTimeout(r, 3000));
+    try { _pre = await fetch('/api/benchmark/live/preflight').then(r => r.json()); } catch (_) {}
+    if (b) b.disabled = false;
+    renderPreflight();
+  }
+  async function pinBaseline() { const id = (_lastDoc && _lastDoc.run_id) || _runId; if (!id) return; await fetch('/api/benchmark/live/runs/' + encodeURIComponent(id) + '/baseline', { method: 'POST' }).catch(() => {}); loadRuns(); }
+  function exportJson() { const doc = _lastDoc; if (!doc) return; const w = window.open('', '_blank'); if (w) { w.document.write('<pre>' + esc(JSON.stringify(doc, null, 2)) + '</pre>'); w.document.close(); } }
+  window.BL = { onOpen, setMode, run, cancel, setup, startServer, running, applyPreset, parseSweep, estimateSeconds, deltaText, knee, pinBaseline, exportJson };
+})();
