@@ -215,7 +215,7 @@ def test_spec_same_window_as_configured_emits_nothing(at):
            "spec-draft-n-min": "0", "spec-draft-n-max": "12"}
     done, events = _run(at, be, BALANCED, section=sec)
     reason = next(ev["reason"] for ev in events if ev["type"] == "stage_done" and ev["stage"] == "spec")
-    assert reason == "already configured · no better window"
+    assert reason == "already configured · no better window · window 0–12"
     assert not [k for k in _changes(done) if k.startswith("spec-") or k == "model-draft"]
 
 
@@ -227,6 +227,64 @@ def test_spec_regression_against_the_configured_type_is_unselected(at):
     row = _changes(done)["spec-type"]
     assert row["current"] == "draft-mtp" and row["recommended"] == "none"
     assert row["selected"] is False
+
+
+class FreeFake(Fake):
+    """Load reports the free VRAM measured under load, which is lower than -fitt convergence saw."""
+    def __init__(self, free_mb, **kw):
+        super().__init__(**kw)
+        self.free = free_mb
+
+    def load(self, args, ctx, measure):
+        r = super().load(args, ctx, measure)
+        if r.get("ok"):
+            r["free_mb"] = self.free
+        return r
+
+
+class CurWinFake(Fake):
+    """The configured window (n-max 3) is the fastest one."""
+    def _decode(self, args, conc):
+        per, agg = super()._decode(args, conc)
+        if _val(args, "--spec-type") == "draft-mtp" and _val(args, "--spec-draft-n-max") == "3":
+            per, agg = per * 1.5, agg * 1.5
+        return per, agg
+
+
+def test_verify_warns_instead_of_failing_on_a_small_vram_shortfall(at):
+    """Compute buffers are live under load; 925 of a 1024 ± 50 MB target must not burn the run."""
+    done, events = _run(at, FreeFake(925, facts={"n_expert": 128, "n_expert_used": 8, "n_layer": 48,
+                                                 "mtp_layers": 1}), BALANCED)
+    assert done["verify"]["ok"] is True and done["verify"]["dropped"] == []
+    assert done["verify"]["warning"] == "free VRAM 925 MB is below the 1024 ± 50 MB target"
+    assert done["after"]["decode_tps"] and done["after"]["free_mb"] == 925
+    assert any(ev["type"] == "line" and "free VRAM 925 MB" in ev["text"] for ev in events)
+    assert {c["key"] for c in done["changes"]} >= {"spec-type", "threads"}    # nothing dropped
+
+
+def test_verify_still_fails_when_vram_is_far_below_target(at):
+    done, _ = _run(at, FreeFake(400, facts={"n_expert": 128, "n_expert_used": 8, "n_layer": 48,
+                                            "mtp_layers": 1}), BALANCED)
+    assert done["verify"]["ok"] is False and done["verify"]["reason"] == "free VRAM below target"
+    assert done["verify"]["dropped"] == ["slots", "spec", "threads"] and done["verify"]["warning"] is None
+
+
+def test_spec_measures_the_configured_window_first(at):
+    be = CurWinFake(facts={"n_expert": 128, "n_expert_used": 8, "n_layer": 48, "mtp_layers": 1})
+    sec = {"hf-repo": "o/r", "ctx-size": "32768", "threads": "32", "spec-type": "draft-mtp",
+           "spec-draft-n-max": "3"}
+    done, events = _run(at, be, BALANCED, section=sec)
+    vals = [ev["value"] for ev in events if ev["type"] == "candidate_result" and ev["stage"] == "spec"]
+    assert "draft-mtp 0–3 (current)" in vals
+    assert vals.index("draft-mtp 0–3 (current)") < vals.index("draft-mtp 0–4")
+    assert not [k for k in _changes(done) if k.startswith("spec-") or k == "model-draft"]
+
+
+def test_spec_stage_done_reason_names_the_window(at):
+    be = Fake(facts={"n_expert": 128, "n_expert_used": 8, "n_layer": 48, "mtp_layers": 1})
+    _, events = _run(at, be, BALANCED)
+    reason = next(ev["reason"] for ev in events if ev["type"] == "stage_done" and ev["stage"] == "spec")
+    assert reason.endswith("· window 0–12") and reason.startswith("+38 % decode")
 
 
 def test_speed_keeps_f16_and_one_slot(at):

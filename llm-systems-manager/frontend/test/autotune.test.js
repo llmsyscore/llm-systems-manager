@@ -558,4 +558,22 @@ describe('AT export, regression warning, recRows numeric guard', () => {
     expect(rows.map(r => r.key)).not.toContain('temperature');
     expect(rows.map(r => r.key)).not.toContain('top-p');
   });
+
+  it('shows an amber verify warning without treating verify as failed', async () => {
+    const win = await opened();
+    const WARN_DONE = { ...DONE, verify: { ...DONE.verify, ok: true, warning: 'free VRAM 925 MB is below the 1024 ± 50 MB target' } };
+    await win.AT.run();
+    for (let i = 0; i < 4; i++) await flush();
+    win.__sse.onEvent({ type: 'model_start', model_id: 'org/m:Q4', objective: 'balanced', stages: ['context', 'kv', 'moe', 'verify'] }, {});
+    win.__sse.onEvent(WARN_DONE, {});
+    win.__sse.onEvent({ type: 'done', ok: true }, {});
+    await flush();
+    const items = win.document.querySelectorAll('#atGuard .g');
+    const verifyItem = items[1];
+    expect(verifyItem.querySelector('.at-dot').classList.contains('warn')).toBe(true);
+    expect(verifyItem.textContent).toContain('below the');
+    const dv = win.document.getElementById('atDoneVerify');
+    expect(dv.textContent).toContain('below the');
+    expect(dv.innerHTML).toContain('class="warn"');
+  });
 });

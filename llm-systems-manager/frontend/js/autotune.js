@@ -623,8 +623,8 @@
     host.innerHTML =
       item(g.kl == null ? '' : (g.pass ? 'ok' : 'crit'), 'Quality guard', g.kl != null ? `KL ${esc(g.kl)} · ${g.pass ? 'pass' : 'fail'}` : 'not needed',
            esc(g.text || 'No lossy KV type was tried.') + ' · Speculative decoding is lossless by construction.')
-      + item(v.ok ? 'ok' : (v.reason ? 'crit' : ''), 'Verify load', v.ok ? `fit · ${fmt(v.free_mb, 0)} MB free` : (v.reason ? 'failed' : 'not run'),
-             v.ok ? `Recommended set loaded once; ${esc(Math.round(v.seconds || 0))} s of traffic at ${esc(Number(a.concurrency || 1))} slot${Number(a.concurrency || 1) === 1 ? '' : 's'}${v.dropped && v.dropped.length ? '; dropped ' + esc(v.dropped.join(', ')) : ''}.` : esc(v.reason || 'Verify needs the bench runtime.'))
+      + item(v.ok ? (v.warning ? 'warn' : 'ok') : (v.reason ? 'crit' : ''), 'Verify load', v.ok ? `fit · ${fmt(v.free_mb, 0)} MB free` : (v.reason ? 'failed' : 'not run'),
+             (v.ok ? `Recommended set loaded once; ${esc(Math.round(v.seconds || 0))} s of traffic at ${esc(Number(a.concurrency || 1))} slot${Number(a.concurrency || 1) === 1 ? '' : 's'}${v.dropped && v.dropped.length ? '; dropped ' + esc(v.dropped.join(', ')) : ''}.` : esc(v.reason || 'Verify needs the bench runtime.')) + (v.ok && v.warning ? ' · ' + esc(v.warning) : ''))
       + item(a.wh_per_ktok != null ? 'ok' : '', 'Energy', a.wh_per_ktok != null ? `${fmt(a.wh_per_ktok, 2)} Wh / 1k tok` : '—',
              a.wh_per_ktok != null ? `Read from the energy module during verify (${esc(a.energy_source || 'psu')}).` : 'No power reading during verify.');
   }
@@ -664,7 +664,9 @@
     const st = $('atDoneStats'); if (st) st.innerHTML = `<b>${esc(doneStages)} stages</b> · ${esc(mmss(done.elapsed_s))} · ${esc(Number(done.loads || 0))} loads`;
     const v = done.verify || {};
     const dv = $('atDoneVerify');
-    if (dv) dv.innerHTML = v.ok ? `verified <b>${esc(Math.round(v.seconds || 0))} s</b> on the recommended set${v.dropped && v.dropped.length ? ' · dropped ' + esc(v.dropped.join(', ')) : ''}` : `<span class="warn">verify ${v.reason ? 'failed: ' + esc(v.reason) : 'not run'}</span>`;
+    if (dv) dv.innerHTML = v.ok
+      ? `verified <b>${esc(Math.round(v.seconds || 0))} s</b> on the recommended set${v.dropped && v.dropped.length ? ' · dropped ' + esc(v.dropped.join(', ')) : ''}${v.warning ? ` · <span class="warn">${esc(v.warning)}</span>` : ''}`
+      : `<span class="warn">verify ${v.reason ? 'failed: ' + esc(v.reason) : 'not run'}</span>`;
     const pill = $('atDonePill'); if (pill) { pill.textContent = done.ok ? 'complete' : 'stopped'; pill.classList.toggle('ok', !!done.ok); pill.classList.toggle('running', false); }
     renderGuard(done); renderCmp(done);
     const dl = $('atDoneLog'), src = $('atLog'); if (dl && src) dl.innerHTML = src.innerHTML;

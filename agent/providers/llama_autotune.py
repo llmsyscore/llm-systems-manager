@@ -713,6 +713,18 @@ class _Run:
                   agg_tps=st.get("agg_tps"), accept=st.get("accept"), kl=extra.get("kl"),
                   guard_pass=extra.get("guard_pass"), error=res.get("error") or st.get("error"))
 
+    def current_window(self) -> Optional[tuple]:
+        """(n_min, n_max) from the section's spec-draft window, when n_max parses."""
+        try:
+            n_max = int(self.cur("spec-draft-n-max"))
+        except ValueError:
+            return None
+        try:
+            n_min = int(self.cur("spec-draft-n-min") or 0)
+        except ValueError:
+            n_min = 0
+        return (n_min, n_max) if 0 <= n_min < n_max else None
+
     def floor_target(self) -> int:
         if self.objective == "fit":
             return int(self.ctx_total or 0)
@@ -982,25 +994,41 @@ class _Run:
             return
         winrow = next(r for r in rows if r["type"] == choice)
         win = next(r for r in results if r["value"] == choice)
-        best = {"n_min": int(d["n_min"]), "n_max": n_max0, "decode_tps": win["decode_tps"],
-                "prefill_tps": win.get("prefill_tps"), "accept": win["accept"]}
+        probe = {"n_min": int(d["n_min"]), "n_max": n_max0, "decode_tps": win["decode_tps"],
+                 "prefill_tps": win.get("prefill_tps"), "accept": win["accept"]}
+        best = probe
+        tried = {(probe["n_min"], probe["n_max"])}
+        cur_win = self.current_window() if choice == cur_t else None
+        if cur_win and cur_win not in tried:
+            self.check_cancel()
+            label = f"{choice} {cur_win[0]}–{cur_win[1]} (current)"
+            self.emit("candidate_start", stage="spec", value=label)
+            res, st = self.measure(spec_ov(winrow, cur_win[0], cur_win[1]), self.ctx_total)
+            self.result("spec", label, res)
+            tried.add(cur_win)
+            if res.get("ok") and st.get("ok"):
+                best = {"n_min": cur_win[0], "n_max": cur_win[1], "decode_tps": st.get("decode_tps"),
+                        "prefill_tps": st.get("prefill_tps"), "accept": st.get("accept")}
+                if (probe["decode_tps"] or 0) > (best["decode_tps"] or 0):
+                    best = probe
         for n_min, n_max in window_plan(int(d["n_min"]), int(d["n_max"])):
             n_max = best["n_max"] if n_max is None else n_max
-            if (n_min, n_max) == (best["n_min"], best["n_max"]) or n_min >= n_max:
+            if (n_min, n_max) in tried or n_min >= n_max:
                 continue
             self.check_cancel()
             label = f"{choice} {n_min}–{n_max}"
             self.emit("candidate_start", stage="spec", value=label)
             res, st = self.measure(spec_ov(winrow, n_min, n_max), self.ctx_total)
             self.result("spec", label, res)
+            tried.add((n_min, n_max))
             if res.get("ok") and st.get("ok") and (st.get("decode_tps") or 0) > (best["decode_tps"] or 0):
                 best = {"n_min": n_min, "n_max": n_max, "decode_tps": st.get("decode_tps"),
                         "prefill_tps": st.get("prefill_tps"), "accept": st.get("accept")}
-        if choice == cur_t and (str(best["n_min"]), str(best["n_max"])) == \
-                (self.cur("spec-draft-n-min"), self.cur("spec-draft-n-max")):
+        window = f"window {best['n_min']}–{best['n_max']}"
+        if cur_win and (best["n_min"], best["n_max"]) == cur_win:
             self.decode_now = best["decode_tps"] or self.decode_now
             self.prefill_now = best.get("prefill_tps") or self.prefill_now
-            self.end("spec", mark, choice, "already configured · no better window")
+            self.end("spec", mark, choice, f"already configured · no better window · {window}")
             return
         ov = spec_ov(winrow, best["n_min"], best["n_max"])
         if self.cur("spec-draft-p-min") == ov["spec-draft-p-min"]:
@@ -1022,7 +1050,7 @@ class _Run:
             self.ev("cache-type-v-draft", f"follows the {kvc} KV choice")
         self.decode_now = best["decode_tps"]
         self.prefill_now = best.get("prefill_tps") or self.prefill_now
-        self.end("spec", mark, choice, reason)
+        self.end("spec", mark, choice, f"{reason} · {window}")
 
     def stage_slots(self) -> None:
         if not self.on("slots"):
@@ -1091,8 +1119,14 @@ class _Run:
             self.result("verify", attempt, res)
             free = res.get("free_mb")
             free_ok = free is None or int(free) >= target - tol
-            ok = bool(res.get("ok")) and (not self.runtime or bool(st.get("ok"))) and free_ok
+            # Compute buffers are live under load, so a small shortfall warns instead of failing.
+            soft = not free_ok and free is not None and int(free) >= 0.5 * target
+            ok = bool(res.get("ok")) and (not self.runtime or bool(st.get("ok"))) and (free_ok or soft)
             if ok:
+                warning = None
+                if soft:
+                    warning = f"free VRAM {int(free)} MB is below the {target} ± {tol} MB target"
+                    self.emit("line", text=f"[autotune] {warning}")
                 tokens = int(st.get("completion_tokens") or 0)
                 self.after = {"decode_tps": st.get("decode_tps"), "prefill_tps": st.get("prefill_tps"),
                               "ctx": self.ctx_total, "agg_tps": st.get("agg_tps"), "free_mb": free,
@@ -1100,7 +1134,7 @@ class _Run:
                               "wh_per_ktok": (wh / (tokens / 1000.0)) if wh is not None and tokens > 0 else None,
                               "energy_wh": wh, "energy_source": src}
                 self.verify = {"ok": True, "seconds": st.get("seconds") or 0, "free_mb": free, "dropped": dropped,
-                               "reason": None}
+                               "reason": None, "warning": warning}
                 self.end("verify", mark, "pass", f"{conc} slot(s) · {limit} requests" if self.runtime else "load only")
                 return
             reason = res.get("error") or st.get("error") or ("free VRAM below target" if not free_ok else "load failed")
@@ -1114,7 +1148,8 @@ class _Run:
                 if self.drop_dim(s):
                     dropped.append(s)
             self.after = {"ctx": self.ctx_total, "free_mb": free, "concurrency": 1}
-            self.verify = {"ok": False, "seconds": 0, "free_mb": free, "dropped": dropped, "reason": reason}
+            self.verify = {"ok": False, "seconds": 0, "free_mb": free, "dropped": dropped, "reason": reason,
+                           "warning": None}
             self.end("verify", mark, "fail", reason)
             return
 

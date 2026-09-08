@@ -53,6 +53,7 @@
   .at-card-h h3 { margin:0; font-size:13px; font-weight:600; color:var(--fg); }
   .at-card-h .meta { font-family:var(--font-mono); font-size:11px; color:var(--fg-dim); }
   .at-card-h .gap, .at-strip .gap, .at-card-f .gap { flex:1; }
+  .at-strip .warn { color:var(--warn); }
   .at-card-h.tog { cursor:pointer; }
   .at-card.collapsed .at-card-b { display:none; }
   .at-card.collapsed .chev { transform:rotate(-90deg); }
