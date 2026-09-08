@@ -3325,6 +3325,39 @@ class _AutotuneBackend:
         return wh, src
 
 
+_llama_help_cache: dict[str, set] = {}
+_HELP_MIN_VALUED = 5
+
+
+def _llama_help_valued() -> Optional[set]:
+    """Long llama-server options that take a value, from `--help`; cached per binary path+mtime."""
+    b = _require_ctx().config.LLAMA_BIN or ""
+    if not b:
+        return None
+    try:
+        key = f"{b}:{os.stat(b).st_mtime_ns}"
+    except OSError:
+        return None
+    if key in _llama_help_cache:
+        return _llama_help_cache[key]
+    try:
+        env = os.environ.copy()
+        parent = str(Path(b).parent)
+        existing = env.get("LD_LIBRARY_PATH", "")
+        env["LD_LIBRARY_PATH"] = f"{parent}:{existing}" if existing else parent
+        r = subprocess.run([b, "--help"], capture_output=True, text=True, errors="replace",
+                           timeout=20, env=env)
+        found = _at.parse_help_valued((r.stdout or "") + (r.stderr or ""))
+    except Exception as e:
+        log.warning("llama-server --help failed: %s", e)
+        return None
+    if len(found) < _HELP_MIN_VALUED:
+        log.warning("llama-server --help parsed %d valued options — treating as unusable", len(found))
+        return None
+    _llama_help_cache[key] = found
+    return found
+
+
 def _autotune_set_perf_mode(mode: str) -> None:
     """Trigger {performance|powersave}.service via reload-or-restart; emits perf_mode SSE event."""
     if mode not in ("performance", "powersave"):
@@ -3367,6 +3400,10 @@ def _autotune_run_all(req: dict) -> None:
         drafts = []
         with best_effort("autotune: cache gguf list", log=log):
             drafts = _list_cache_ggufs(_hf_cache_root())
+        valued = _llama_help_valued()
+        if valued is None:
+            _autotune_put({"type": "line",
+                           "text": "[autotune] could not read llama-server --help; on/off flags are guessed"})
         info = {"run_id": run_id, "runtime": bool(rt["python"] and rt["script"]),
                 "perplexity": _autotune_perplexity_bin() is not None and _autotune_kl_text().is_file(),
                 "drafts": drafts, "cores": _at.physical_cores(_read_cpuinfo(), os.cpu_count() or 1)}
@@ -3377,6 +3414,7 @@ def _autotune_run_all(req: dict) -> None:
             section = dict(cp[mid]) if cp.has_section(mid) else {}
             hf_arg = _bench_get_hf_arg(mid) or ""
             menv = dict(info, target_repo=hf_arg.split(":")[0], target_size=int(sizes.get(mid) or 0))
+            menv["valued"] = valued
             done = _at.run_model(mid, section, req, _AutotuneBackend(mid, env, run_id), _autotune_put,
                                  _autotune_cancel_event.is_set, menv)
             _shared.post_tool_run(_require_ctx(), "autotune", "llama", run_id, mid, done["ok"],
@@ -3411,7 +3449,9 @@ def llama_autotune_preflight(authorization: Optional[str] = Header(default=None)
     with best_effort("autotune preflight: gpu", log=log):
         gpu = collect_gpu() or {}
     vram = gpu.get("vram_total_bytes")
+    hv = _llama_help_valued()
     return {"ok": True, "busy": bool(_bench_active or _autotune_active), "unit_active": _llama_unit_active(),
+            "help_valued": {"ok": hv is not None, "count": len(hv or ())},
             "cores": _at.physical_cores(_read_cpuinfo(), os.cpu_count() or 1),
             "perplexity": _autotune_perplexity_bin() is not None and _autotune_kl_text().is_file(),
             "runtime": {"ok": bool(rt["python"] and rt["script"]), **rt},

@@ -204,6 +204,24 @@ describe('AT preflight gating', () => {
     expect(win.document.getElementById('atRunBtn').disabled).toBe(true);
     expect(win.document.getElementById('atPreflight').style.display).toBe('');
   });
+
+  it('warns without disabling Run when --help could not be parsed', async () => {
+    const win = boot();
+    win.__pre = { ...PRE, help_valued: { ok: false, count: 0 } };
+    win.AT.onOpen('org/m:Q4');
+    for (let i = 0; i < 6; i++) await flush();
+    expect(win.document.getElementById('atPreflight').style.display).toBe('');
+    expect(win.document.getElementById('atPreflightMsg').textContent).toContain('--help');
+    expect(win.document.getElementById('atRunBtn').disabled).toBe(false);
+  });
+
+  it('hides the banner when --help parsed fine and the server is stopped', async () => {
+    const win = boot();
+    win.__pre = { ...PRE, help_valued: { ok: true, count: 12 } };
+    win.AT.onOpen('org/m:Q4');
+    for (let i = 0; i < 6; i++) await flush();
+    expect(win.document.getElementById('atPreflight').style.display).toBe('none');
+  });
 });
 
 describe('AT dimension validation', () => {
@@ -426,7 +444,7 @@ describe('AT recommendation', () => {
     expect(win.__syncCalls.length).toBe(0);
   });
 
-  it('skips the restart when the toggle is off and honours report-only', async () => {
+  it('skips the restart when the toggle is off', async () => {
     const win = await opened();
     win.document.getElementById('atRestartAfter').classList.remove('on');
     await finished(win);
@@ -439,10 +457,5 @@ describe('AT recommendation', () => {
     expect(win.document.getElementById('atApplyBtn').textContent).toBe('Apply 5 changes + restart');
     win.document.getElementById('atRestartAfter').click();
     expect(win.document.getElementById('atApplyBtn').textContent).toBe('Apply 5 changes');
-    win.document.getElementById('atReportOnly').click();
-    expect(win.document.getElementById('atApplyBtn').disabled).toBe(true);
-    const r = await win.AT.apply();
-    expect(r).toEqual({ ok: false, step: 'nothing selected' });
-    expect(win.document.getElementById('atRecMsg').textContent).toContain('Report only');
   });
 });

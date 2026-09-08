@@ -115,6 +115,8 @@
   }
   function dimSummaries() {
     const d = dimsState();
+    const tv = $('atTargetMbVal'); if (tv) tv.textContent = `${d.context.target_mb} MB`;
+    const tol = $('atToleranceMbVal'); if (tol) tol.textContent = `${d.context.tolerance_mb} MB`;
     const s = {
       context: `free ${d.context.target_mb} ± ${d.context.tolerance_mb} MB`,
       kv: `${d.kv.candidates.join(' → ') || '—'} · KL ≤ ${d.kv.guard_kl_max}`,
@@ -185,16 +187,21 @@
     const banner = $('atPreflight'), msg = $('atPreflightMsg'), btn = $('atStopBtn'), run = $('atRunBtn');
     if (!banner) return;
     const up = await serverUp();
-    let active = false;
+    let active = false, helpBad = false;
     try {
       const p = pre || await fetch('/api/llm/autotune/preflight').then(r => r.json());
-      if (p && p.ok) { _pre = p; active = !!p.unit_active; }
+      if (p && p.ok) { _pre = p; active = !!p.unit_active; helpBad = !!(p.help_valued && p.help_valued.ok === false); }
     } catch (_) {}
     if (up || active) {
       banner.style.display = '';
       if (msg) msg.innerHTML = '<b>llama-server is running.</b> Autotune needs the port and the VRAM; stop it first.';
       if (btn) btn.style.display = '';
       if (run) run.disabled = true;
+    } else if (helpBad) {
+      banner.style.display = '';
+      if (msg) msg.textContent = 'Could not read llama-server --help — on/off flags will be guessed; loads may fail.';
+      if (btn) btn.style.display = 'none';
+      if (run && !running()) run.disabled = false;
     } else {
       banner.style.display = 'none';
       if (btn) btn.style.display = 'none';
@@ -220,7 +227,7 @@
       if (tog && mod.contains(tog)) {
         if (tog.disabled) return;
         tog.classList.toggle('on'); ev.stopPropagation(); refreshPlan();
-        if (_rows.length && (tog.id === 'atReportOnly' || tog.id === 'atRestartAfter')) renderRows();
+        if (_rows.length && tog.id === 'atRestartAfter') renderRows();
         return;
       }
       const chip = ev.target.closest('.bl-chip');
@@ -536,7 +543,6 @@
   let _rows = [];
   function pct(a, b) { a = Number(a); b = Number(b); return Number.isFinite(a) && Number.isFinite(b) && b ? (a - b) / b * 100 : null; }
   function today() { return new Date().toISOString().slice(0, 10); }
-  function reportOnly() { const t = $('atReportOnly'); return !!(t && t.classList.contains('on')); }
   function restartOn() { const t = $('atRestartAfter'); return !!(t && t.classList.contains('on')); }
   function metaEvidence(s, meta) {
     if (s.source === 'sidecar') return `generation_config.json · ${meta.repo || ''}`;
@@ -563,7 +569,7 @@
     const n = _rows.filter(r => r.selected).length;
     const sel = $('atRecSel'); if (sel) sel.textContent = `${n} of ${_rows.length} changes selected`;
     const btn = $('atApplyBtn');
-    if (btn) { btn.textContent = `Apply ${n} change${n === 1 ? '' : 's'}${restartOn() ? ' + restart' : ''}`; btn.disabled = !n || reportOnly(); }
+    if (btn) { btn.textContent = `Apply ${n} change${n === 1 ? '' : 's'}${restartOn() ? ' + restart' : ''}`; btn.disabled = !n; }
     const pb = $('atProfileBtn'); if (pb) { pb.textContent = `Save as profile “tuned ${today()}”`; pb.disabled = !n; }
   }
   function toggleRow(i) { const r = _rows[i]; if (!r) return; r.selected = !r.selected; renderRows(); }
@@ -626,7 +632,6 @@
   }
   async function apply() {
     const mid = _doneModel, sel = selectedRows();
-    if (reportOnly()) { setMsg('Report only is on — turn it off to apply.'); return { ok: false, step: 'nothing selected' }; }
     if (!mid || !sel.length) { setMsg('Nothing selected.'); return { ok: false, step: 'nothing selected' }; }
     const restart = restartOn(), enc = encodeURIComponent(mid);
     const btn = $('atApplyBtn'); if (btn) btn.disabled = true;

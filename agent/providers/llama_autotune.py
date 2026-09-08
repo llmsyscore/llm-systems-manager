@@ -49,6 +49,9 @@ _MODEL_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/\-]{0,199}$")
 _FACT_RE = re.compile(r"^\s*print_info:\s*([A-Za-z0-9_.][A-Za-z0-9_. ]*?)\s*=\s*(.+?)\s*$")
 _KL_RE = re.compile(r"Mean\s+KLD\s*:\s*([0-9]*\.?[0-9]+(?:[eE][-+]?\d+)?)")
 _SIZE_TOKEN_RE = re.compile(r"[-_](\d+(?:\.\d+)?)[bB](?=[-_.]|$)")
+_HELP_FLAG_RE = re.compile(r"^--?[A-Za-z0-9]")
+BOOL_ON = ("on", "true")
+BOOL_OFF = ("off", "false")
 
 
 def _int(v: Any, name: str, lo: int, hi: int) -> int:
@@ -194,8 +197,40 @@ def validate_request(body: dict, *, cache_root: Optional[Path] = None, v1_args=N
     return {"model_ids": ids, "objective": objective, "budget_min": budget, "dims": dims}
 
 
-def section_args(section: dict, overrides: dict) -> list[str]:
-    """llama-server argv for a config.ini section with tuner overrides applied."""
+def parse_help_valued(text: str) -> set[str]:
+    """Long option names (no dashes) that take a value, from llama-server --help output.
+    A value hint follows the last flag by exactly one space; descriptions are padded or wrapped."""
+    valued: set[str] = set()
+    for line in (text or "").splitlines():
+        toks = [(m.start(), m.end(), m.group()) for m in re.finditer(r"\S+", line)]
+        if not toks or not _HELP_FLAG_RE.match(toks[0][2].rstrip(",")):
+            continue
+        names: list[str] = []
+        i, end = 0, 0
+        while i < len(toks):
+            tok = toks[i][2]
+            bare = tok.rstrip(",")
+            if not _HELP_FLAG_RE.match(bare):
+                break
+            if bare.startswith("--"):
+                names.append(bare.lstrip("-"))
+            end = toks[i][1]
+            i += 1
+            if not tok.endswith(","):
+                break
+        if names and i < len(toks) and toks[i][0] - end == 1:
+            valued.update(names)
+    return valued
+
+
+def _unquote(s: str) -> str:
+    """Strip one pair of surrounding double quotes."""
+    return s[1:-1] if len(s) >= 2 and s[0] == '"' and s[-1] == '"' else s
+
+
+def section_args(section: dict, overrides: dict, valued: Optional[set] = None) -> list[str]:
+    """llama-server argv for a config.ini section with tuner overrides applied.
+    on/off values become `--key value` for options in `valued`, else a bare flag or nothing."""
     ov = {str(k).lstrip("-"): v for k, v in (overrides or {}).items()}
     drop = set(ALWAYS_DROP)
     for k in ov:
@@ -208,13 +243,19 @@ def section_args(section: dict, overrides: dict) -> list[str]:
     merged += list(ov.items())
     out: list[str] = []
     for k, v in merged:
-        sv = "" if v is None else str(v).strip()
-        if not k or sv.lower() == "false" or sv == "":
+        sv = "" if v is None else _unquote(str(v).strip())
+        if not k or sv == "":
             continue
         flag = ("-" if len(k) == 1 else "--") + k
-        out.append(flag)
-        if sv.lower() != "true":
-            out.append(sv)
+        low = sv.lower()
+        if low in BOOL_ON or low in BOOL_OFF:
+            takes = valued is not None and (k in valued or ALIAS_TO_KEY.get(k, "") in valued)
+            if takes:
+                out += [flag, sv]
+            elif low in BOOL_ON:
+                out.append(flag)
+            continue
+        out += [flag, sv]
     return out
 
 
@@ -581,7 +622,8 @@ class _Run:
     def args(self, extra: Optional[dict] = None) -> list[str]:
         ov = dict(self.rec)
         ov.update(extra or {})
-        return section_args(self.section, ov) + list(self.dims["context"].get("custom_args") or [])
+        return section_args(self.section, ov, valued=self.env.get("valued")) \
+            + list(self.dims["context"].get("custom_args") or [])
 
     def check_cancel(self) -> None:
         if self.cancelled():

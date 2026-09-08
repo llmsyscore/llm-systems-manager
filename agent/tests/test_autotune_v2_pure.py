@@ -126,6 +126,90 @@ def test_custom_args_are_capped_and_screened(at):
     assert at.validate_request(body(["--models"]))["dims"]["context"]["custom_args"] == ["--models"]
 
 
+
+# ── --help option shapes ──────────────────────────────────
+
+HELP = """usage: llama-server [options]
+
+----- common params -----
+
+  -h,    --help                            print usage and exit
+  -c,    --ctx-size N                      size of the prompt context
+  -ngl,  --gpu-layers, --n-gpu-layers N    number of layers to store in VRAM
+  -fa,   --flash-attn [on|off|auto]        set Flash Attention use
+         --reasoning, --think on|off       enable reasoning
+         --reasoning-preserve on|off       preserve reasoning content
+         --reasoning-budget-message STRING
+                                           message appended when the budget runs out
+         --check-tensors                   check model tensor data for invalid values
+         --kv-unified                      use single unified KV buffer
+         --log-disable                     Log disable
+         --no-webui                        Disable the Web UI
+"""
+
+
+def test_parse_help_valued_splits_flags_from_valued_options(at):
+    v = at.parse_help_valued(HELP)
+    assert v == {"ctx-size", "gpu-layers", "n-gpu-layers", "flash-attn", "reasoning", "think",
+                 "reasoning-preserve", "reasoning-budget-message"}
+
+
+def test_parse_help_valued_ignores_prose_and_empty_text(at):
+    assert at.parse_help_valued("") == set()
+    assert at.parse_help_valued("  (env: LLAMA_ARG_CTX_SIZE)\n  default is 4096\n") == set()
+
+
+# ── on/off values against the installed help ─────────────────────
+
+REAL_SECTION = {
+    "batch-size": "2048", "cache-ram": "0", "cache-type-k": "q8_0", "cache-type-v": "q8_0",
+    "check-tensors": "off", "ctx-size": "124160", "dynatemp-exp": "1", "dynatemp-range": "0.0",
+    "fit": "on", "fit-ctx": "32768", "flash-attn": "on", "load-mode": "none", "min-p": "0.00",
+    "n-gpu-layers": "99", "parallel": "1", "predict": "-1", "presence-penalty": "0",
+    "reasoning": "on", "reasoning-budget": "-1",
+    "reasoning-budget-message": '"Reasoning budget exhausted — answering now."',
+    "reasoning-preserve": "on", "repeat-penalty": "1.0", "spec-draft-n-max": "3",
+    "spec-type": "draft-mtp", "swa-checkpoints": "32", "temperature": "0.5", "top-k": "20",
+    "top-p": "0.95", "ubatch-size": "1024",
+}
+REAL_VALUED = {"flash-attn", "fit", "reasoning", "reasoning-preserve", "ctx-size", "batch-size",
+               "cache-type-k", "cache-type-v", "spec-type", "n-gpu-layers",
+               "reasoning-budget-message", "reasoning-budget", "parallel"}
+
+
+def test_section_args_valued_bools_keep_their_value(at):
+    out = at.section_args(REAL_SECTION, {}, valued=REAL_VALUED)
+    assert out[out.index("--flash-attn") + 1] == "on"
+    assert out[out.index("--reasoning") + 1] == "on"
+    assert out[out.index("--reasoning-preserve") + 1] == "on"
+    assert "--check-tensors" not in out                     # off + flag-only -> omitted
+    assert "--fit" not in out and "--fit-ctx" not in out and "--ctx-size" not in out
+    msg = out[out.index("--reasoning-budget-message") + 1]
+    assert msg == "Reasoning budget exhausted — answering now." and '"' not in msg
+    assert out[out.index("--spec-type") + 1] == "draft-mtp"
+    assert "off" not in out and "on" == out[out.index("--flash-attn") + 1]
+
+
+def test_section_args_without_help_falls_back_to_bare_flags(at):
+    out = at.section_args(REAL_SECTION, {}, valued=None)
+    assert "--flash-attn" in out and out[out.index("--flash-attn") + 1].startswith("--")
+    assert "--reasoning" in out and out[out.index("--reasoning") + 1].startswith("--")
+    assert "--check-tensors" not in out and "on" not in out and "off" not in out
+
+
+def test_section_args_bare_flag_keys_stay_bare(at):
+    assert at.section_args({"check-tensors": "on"}, {}, valued=None) == ["--check-tensors"]
+    assert at.section_args({"kv-unified": "on"}, {}, valued=REAL_VALUED) == ["--kv-unified"]
+    assert at.section_args({"check-tensors": "off"}, {}, valued=None) == []
+
+
+def test_section_args_unquotes_before_deciding_bool_shape(at):
+    assert at.section_args({"check-tensors": '"off"'}, {}, valued=None) == []
+    assert at.section_args({"check-tensors": '"on"'}, {}, valued=None) == ["--check-tensors"]
+    assert at.section_args({"flash-attn": '"on"'}, {}, valued={"flash-attn"}) == ["--flash-attn", "on"]
+    assert at.section_args({"alias-x": '""'}, {}, valued=None) == []
+
+
 # ── facts ──────────────────────────────────────────────────────────
 
 FACTS = """

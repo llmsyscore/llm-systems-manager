@@ -169,6 +169,16 @@ def test_balanced_full_run(at):
     assert s["objective"] == "balanced" and s["ctx_size"] == 65536 and s["verify_ok"] is True
 
 
+def test_spawn_args_follow_the_help_valued_set(at):
+    be = Fake()
+    sec = {"hf-repo": "o/r", "ctx-size": "32768", "threads": "32", "flash-attn": "on", "check-tensors": "off"}
+    _run(at, be, BALANCED, section=sec, env={"valued": {"flash-attn"}})
+    for call in be.calls:
+        args = call[1]
+        assert args[args.index("--flash-attn"):args.index("--flash-attn") + 2] == ["--flash-attn", "on"]
+        assert "--check-tensors" not in args
+
+
 def test_speed_keeps_f16_and_one_slot(at):
     done, _ = _run(at, Fake(), dict(BALANCED, objective="speed"))
     st = {s["stage"]: s for s in done["stages"]}

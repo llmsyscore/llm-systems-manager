@@ -400,6 +400,122 @@ def test_run_validates_against_the_hf_cache_root(llama, tmp_path, monkeypatch):
     assert seen["v1_args"] is llama._autotune_build_optional_args
 
 
+_HELP_FIXTURE = """usage: llama-server [options]
+
+----- common params -----
+
+  -h,    --help                            print usage and exit
+  -c,    --ctx-size N                      size of the prompt context
+  -ngl,  --gpu-layers, --n-gpu-layers N    number of layers to store in VRAM
+  -fa,   --flash-attn [on|off|auto]        set Flash Attention use
+         --reasoning, --think on|off       enable reasoning
+         --reasoning-preserve on|off       preserve reasoning content
+         --reasoning-budget-message STRING
+                                           message appended when the budget runs out
+         --check-tensors                   check model tensor data for invalid values
+         --kv-unified                      use single unified KV buffer
+         --log-disable                     Log disable
+         --no-webui                        Disable the Web UI
+"""
+
+
+def _fake_llama_bin(tmp_path, rc=0, text=_HELP_FIXTURE):
+    p = tmp_path / "bin" / "llama-server"
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text("#!/usr/bin/env python3\nimport sys\n"
+                 f"sys.stdout.write({text!r})\nsys.exit({rc})\n")
+    p.chmod(0o755)
+    return p
+
+
+def test_help_valued_parses_and_caches(llama, tmp_path, monkeypatch):
+    binp = _fake_llama_bin(tmp_path)
+    _wire(llama, tmp_path, monkeypatch, llama_bin=str(binp))
+    first = llama._llama_help_valued()
+    assert {"ctx-size", "flash-attn", "reasoning", "think", "reasoning-budget-message"} <= first
+    assert not ({"help", "check-tensors", "kv-unified", "log-disable", "no-webui"} & first)
+
+    def _boom(*a, **k):
+        raise AssertionError("llama-server --help re-run instead of using the cache")
+    monkeypatch.setattr(llama.subprocess, "run", _boom)
+    assert llama._llama_help_valued() == first
+
+
+def test_help_valued_is_none_without_a_binary(llama, tmp_path, monkeypatch):
+    _wire(llama, tmp_path, monkeypatch, llama_bin="")
+    assert llama._llama_help_valued() is None
+
+
+def test_help_valued_rejects_thin_output_and_never_caches_it(llama, tmp_path, monkeypatch):
+    """A parse that finds almost nothing is a broken binary, not a flagless llama-server."""
+    binp = _fake_llama_bin(tmp_path, text="usage: llama-server [options]\n  -c, --ctx-size N  ctx\n")
+    _wire(llama, tmp_path, monkeypatch, llama_bin=str(binp))
+    assert llama._llama_help_valued() is None
+    runs = []
+    real = llama.subprocess.run
+    monkeypatch.setattr(llama.subprocess, "run", lambda *a, **k: (runs.append(1), real(*a, **k))[1])
+    assert llama._llama_help_valued() is None
+    assert runs == [1]                                     # failures are re-tried, not cached
+
+
+def test_preflight_reports_help_valued(llama, tmp_path, monkeypatch):
+    binp = _fake_llama_bin(tmp_path)
+    _wire(llama, tmp_path, monkeypatch, llama_bin=str(binp))
+    hv = llama.llama_autotune_preflight()["help_valued"]
+    assert hv["ok"] is True and hv["count"] >= 5
+    _wire(llama, tmp_path, monkeypatch, llama_bin="")
+    assert llama.llama_autotune_preflight()["help_valued"] == {"ok": False, "count": 0}
+
+
+def test_run_all_passes_help_valued_into_the_engine_env(llama, tmp_path, monkeypatch):
+    binp = _fake_llama_bin(tmp_path)
+    _wire(llama, tmp_path, monkeypatch, llama_bin=str(binp))
+    monkeypatch.setattr(llama, "_autotune_set_perf_mode", lambda mode: None)
+    monkeypatch.setattr(llama, "_bench_live_runtime",
+                        lambda: {"python": "", "script": "", "source": "", "script_status": "ok", "commit": ""})
+    monkeypatch.setattr(llama, "_list_cache_ggufs", lambda root: [])
+    monkeypatch.setattr(llama, "_llama_read_ini", lambda: llama.configparser.ConfigParser())
+    monkeypatch.setattr(llama, "_bench_get_hf_arg", lambda mid: "o/r:Q4")
+    monkeypatch.setattr(llama._shared, "post_tool_run", lambda *a, **k: None)
+    monkeypatch.setattr(llama, "_autotune_put", lambda ev: None)
+    seen = []
+
+    def _fake_run_model(mid, section, req, backend, put, cancelled, env, **kw):
+        seen.append(env.get("valued"))
+        return {"ok": True, "model_id": mid}
+    monkeypatch.setattr(llama._at, "run_model", _fake_run_model)
+    llama._autotune_cancel_event.clear()
+    llama._autotune_run_all({"model_ids": ["org/m:Q4"], "objective": "fit", "budget_min": 45,
+                            "dims": dict(llama._at.DEFAULT_DIMS)})
+    assert len(seen) == 1 and "flash-attn" in seen[0] and "check-tensors" not in seen[0]
+
+
+def test_run_all_warns_when_help_is_unreadable(llama, tmp_path, monkeypatch):
+    _wire(llama, tmp_path, monkeypatch, llama_bin="")
+    monkeypatch.setattr(llama, "_autotune_set_perf_mode", lambda mode: None)
+    monkeypatch.setattr(llama, "_bench_live_runtime",
+                        lambda: {"python": "", "script": "", "source": "", "script_status": "ok", "commit": ""})
+    monkeypatch.setattr(llama, "_list_cache_ggufs", lambda root: [])
+    monkeypatch.setattr(llama, "_llama_read_ini", lambda: llama.configparser.ConfigParser())
+    monkeypatch.setattr(llama, "_bench_get_hf_arg", lambda mid: "o/r:Q4")
+    monkeypatch.setattr(llama._shared, "post_tool_run", lambda *a, **k: None)
+    events = []
+    monkeypatch.setattr(llama, "_autotune_put", events.append)
+    seen = []
+
+    def _fake_run_model(mid, section, req, backend, put, cancelled, env, **kw):
+        seen.append((len(events), env.get("valued")))
+        return {"ok": True, "model_id": mid}
+    monkeypatch.setattr(llama._at, "run_model", _fake_run_model)
+    llama._autotune_cancel_event.clear()
+    llama._autotune_run_all({"model_ids": ["org/m:Q4"], "objective": "fit", "budget_min": 45,
+                            "dims": dict(llama._at.DEFAULT_DIMS)})
+    warn = [e for e in events if e.get("type") == "line" and "--help" in e.get("text", "")]
+    assert warn == [{"type": "line",
+                     "text": "[autotune] could not read llama-server --help; on/off flags are guessed"}]
+    assert seen[0][1] is None and seen[0][0] > 0            # warned before the first model
+
+
 def test_run_all_removes_the_run_scratch_dir(llama, tmp_path, monkeypatch):
     """base.kld and the stick JSONs are GBs per run; the run dir must not survive it."""
     _wire(llama, tmp_path, monkeypatch)
