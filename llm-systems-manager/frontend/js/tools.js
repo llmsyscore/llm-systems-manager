@@ -29,7 +29,7 @@
     const bench = (typeof _benchEventSrc !== 'undefined' && _benchEventSrc)
       || (typeof _vbenchEventSrc !== 'undefined' && _vbenchEventSrc)
       || (window.BL && BL.running());
-    const at = (typeof _atEventSrc !== 'undefined' && _atEventSrc)
+    const at = (window.AT && AT.running())
       || (typeof _vatEventSrc !== 'undefined' && _vatEventSrc);
     return { rc: !!rc, bench: !!bench, at: !!at };
   }
@@ -128,17 +128,18 @@
       }, bench, run.bench, run.local.bench),
       _runToolDesc({
         id: 'autotune', icon: '⌖', tone: 3, name: 'Autotune',
-        desc: 'Automatically size each model’s context to the memory you have free.',
-        empty: '<b>Set a memory target.</b> Pick the models to tune and Autotune finds each one’s best context size.',
+        desc: 'Pick an objective and let Autotune search context, KV cache, offload, threads, speculative decoding, slots, and sampling.',
+        empty: '<b>Never run.</b> Pick a model and an objective; Autotune measures each dimension and recommends a config.',
         sub: a => {
           const s = a.summary || {};
           return a.ok && s.ctx_size != null ? 'ctx ' + Number(s.ctx_size).toLocaleString() : 'context tuner';
         },
         stats: a => {
           const s = a.summary || {};
+          const gain = s.gain_pct != null ? (s.gain_pct >= 0 ? '+' : '') + Math.round(s.gain_pct) : null;
           return [
             { v: a.ok && s.ctx_size != null ? Number(s.ctx_size).toLocaleString() : '—', l: 'Last ctx' },
-            { v: a.ok ? (_tNum(s.free_mb, 0) || '—') : '—', u: 'MB', l: 'Free VRAM' },
+            { v: a.ok && gain != null ? gain : '—', u: '%', l: 'Gain' },
             { v: histTool('autotune'), u: 'runs', l: 'History' },
           ];
         },
@@ -204,13 +205,15 @@
         const bits = [];
         if (r.ok && s.ctx_size != null) bits.push('<b>ctx ' + TC.esc(Number(s.ctx_size).toLocaleString()) + '</b>');
         if (r.ok && s.free_mb != null) bits.push(TC.esc(_tNum(s.free_mb, 0)) + ' MB free');
+        if (r.ok && s.objective) bits.push(TC.esc(String(s.objective)));
+        if (r.ok && s.gain_pct != null) bits.push('<b>' + (s.gain_pct >= 0 ? '+' : '') + TC.esc(String(Math.round(s.gain_pct))) + ' %</b>');
         if (!r.ok) bits.push('<span style="color:var(--crit)">failed</span>');
-        else if (!s.converged) bits.push('not converged');
+        else if (s.verify_ok === false) bits.push('verify failed');
         rows.push({ icon: '⌖', tool: 'Autotune',
           toolId: clickable ? 'autotune' : null,
           title: clickable ? 'Open Autotune' : null, model: r.model_id || '',
           host: _tHost(r.agent_id),
-          result: bits.join(' · ') || '—', tps: null, ts: r.ts });
+          result: bits.join(' · ') || '—', tps: s.decode_tps ?? null, ts: r.ts });
       }
     });
     // Newest 100 overall, then the active tool filter and column sort.
@@ -311,7 +314,7 @@
     // Chip only when the model actually pre-fills — a live run keeps its state.
     const willInit =
       (id === 'benchmark' && !run.bench && typeof openBench === 'function')
-      || (id === 'autotune' && !run.at && typeof openAutotune === 'function');
+      || (id === 'autotune' && !run.at && window.AT);
     _toolsSetChip(id, willInit && modelId ? modelId : null);
     // A live run keeps its pickers and progress; re-init only when idle.
     if (id === 'reportcard') {
@@ -323,7 +326,7 @@
         try { _benchChart.resize(); } catch (_) {}
       }
     } else if (id === 'autotune') {
-      if (!run.at && typeof openAutotune === 'function') openAutotune(modelId || undefined);
+      if (window.AT) AT.onOpen(modelId || undefined);
     }
   }
 
@@ -425,12 +428,23 @@
         // The model panel populates after an async fetch — retry the untick
         // briefly so a fast ✕ click still clears the pre-selection.
         const untick = tries => {
-          const panel = _tEl(id === 'benchmark' ? 'benchModelPanel' : 'atModelPanel');
-          const cb = panel && [...panel.querySelectorAll('input[type=checkbox]')]
-            .find(c => c.value === model);
-          if (cb) {
-            cb.checked = false;
-            cb.dispatchEvent(new Event('change'));
+          const panel = _tEl(id === 'benchmark' ? 'benchModelPanel' : 'atModelList');
+          if (id === 'benchmark') {
+            const cb = panel && [...panel.querySelectorAll('input[type=checkbox]')]
+              .find(c => c.value === model);
+            if (cb) {
+              cb.checked = false;
+              cb.dispatchEvent(new Event('change'));
+            } else if (tries > 0) {
+              setTimeout(() => untick(tries - 1), 250);
+            }
+            return;
+          }
+          // atModelList: models are mc-toggle buttons now, not checkboxes (#880).
+          const btn = panel && [...panel.querySelectorAll('.mc-toggle[data-model]')]
+            .find(b => b.dataset.model === model);
+          if (btn) {
+            if (btn.classList.contains('on')) btn.click();
           } else if (tries > 0) {
             setTimeout(() => untick(tries - 1), 250);
           }

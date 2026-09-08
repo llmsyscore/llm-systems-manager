@@ -66,7 +66,7 @@ class _Ctx:
     def __init__(self, tmp):
         self.config = types.SimpleNamespace(LLAMA_API_URL="http://127.0.0.1:9931", AGENT_INSTALL_DIR=str(tmp),
                                             SPEED_BENCH_PYTHON="", MANAGER_URL="", LLAMA_BIN="", LLAMA_ENABLED=True,
-                                            LLAMA_SYSTEMD_UNIT="llama-server")
+                                            LLAMA_SYSTEMD_UNIT="llama-server", AGENT_USER="")
         self.state = {"token": "", "agent_id": ""}
         self.post_session = None
 

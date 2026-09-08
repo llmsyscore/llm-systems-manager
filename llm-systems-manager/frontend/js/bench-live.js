@@ -105,7 +105,8 @@
   }
   function setMode(mode) {
     mode = mode === 'offline' ? 'offline' : 'live';
-    if (window.layout) { layout.benchMode = mode; try { saveLayout(); } catch (_) {} }
+    const L = typeof layout !== 'undefined' ? layout : null;
+    if (L) { L.benchMode = mode; try { saveLayout(); } catch (_) {} }
     document.querySelectorAll('#benchModeSeg button').forEach(b => b.classList.toggle('on', b.dataset.mode === mode));
     $('benchLive').style.display = mode === 'live' ? '' : 'none';
     $('benchOffline').style.display = mode === 'offline' ? '' : 'none';
@@ -154,7 +155,7 @@
   }
   async function onOpen(modelId) {
     if (modelId) _model = modelId;
-    setMode((window.layout && layout.benchMode) || 'live');
+    setMode((typeof layout !== 'undefined' && layout && layout.benchMode) || 'live');
     try { _pre = await fetch('/api/benchmark/live/preflight').then(r => r.json()); } catch (_) { _pre = { server: { up: false }, runtime: {} }; }
     renderPreflight();
     await loadRuns();
@@ -340,6 +341,16 @@
     renderPreflight();
   }
   async function pinBaseline() { const id = (_lastDoc && _lastDoc.run_id) || _runId; if (!id) return; await fetch('/api/benchmark/live/runs/' + encodeURIComponent(id) + '/baseline', { method: 'POST' }).catch(() => {}); loadRuns(); }
-  function exportJson() { const doc = _lastDoc; if (!doc) return; const w = window.open('', '_blank'); if (w) { w.document.write('<pre>' + esc(JSON.stringify(doc, null, 2)) + '</pre>'); w.document.close(); } }
+  function exportJson() {
+    const doc = _lastDoc; if (!doc) return;
+    const id = String(doc.run_id || _runId || 'run').replace(/[^A-Za-z0-9_.-]/g, '_');
+    const blob = new Blob([JSON.stringify(doc, null, 2)], { type: 'application/json' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = `bench-live-${id}.json`;
+    document.body.appendChild(a);
+    a.click();
+    setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 200);
+  }
   window.BL = { onOpen, setMode, run, cancel, setup, startServer, running, applyPreset, parseSweep, estimateSeconds, deltaText, knee, pinBaseline, exportJson };
 })();

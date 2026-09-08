@@ -1,5 +1,5 @@
 // #879: Live benchmark module — presets, sweep parsing, estimate, deltas, knee, mode switch.
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { srcFile, runHarness, flush } from './helpers/harness.js';
 
 const BODY = `
@@ -24,8 +24,13 @@ const BODY = `
   </div>
 `;
 
+// foundation.js declares `let layout` at top level, so window.layout is undefined;
+// its own source string reproduces that classic-script scope.
+const LAYOUT = `
+  let layout = {}; window.__layout = () => layout; window.saveLayout = function () {};
+`;
+
 const STUBS = `
-  window.layout = {}; window.saveLayout = function () {};
   window.TC = { esc: (s) => String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])) };
   window.SG = { open: (opts) => { window.__sse = opts; return { close() {} }; } };
   window.toolsSyncRunDot = function () {};
@@ -47,7 +52,7 @@ const STUBS = `
 `;
 
 function boot(bootstrap = '') {
-  return runHarness({ sources: [STUBS, srcFile('js/bench-live.js')], bodyHtml: BODY, bootstrap });
+  return runHarness({ sources: [LAYOUT, STUBS, srcFile('js/bench-live.js')], bodyHtml: BODY, bootstrap });
 }
 
 describe('BL pure helpers', () => {
@@ -100,7 +105,8 @@ describe('BL presets and mode', () => {
     const win = boot('BL.onOpen();');
     await flush();
     win.BL.setMode('offline');
-    expect(win.layout.benchMode).toBe('offline');
+    expect(win.layout).toBeUndefined();                // real scope: `let layout`, not a window prop
+    expect(win.__layout().benchMode).toBe('offline');
     expect(win.document.getElementById('benchLive').style.display).toBe('none');
     expect(win.document.getElementById('benchOffline').style.display).toBe('');
     win.BL.setMode('live');
@@ -222,5 +228,24 @@ describe('BL presets and mode', () => {
     win.__sse.onEvent({ type: 'done', ok: true });
     await flush();
     expect(win.__fetches.some(([u]) => u === '/api/benchmark/live/run')).toBe(false);
+  });
+});
+
+describe('BL export', () => {
+  it('downloads the report as a JSON file instead of opening a blocked tab', async () => {
+    const win = boot('BL.onOpen("org/m:Q4");');
+    await flush();
+    win.BL.run();
+    await flush();
+    win.__sse.onEvent({ type: 'model_done', run_id: 'r1', levels: [], elapsed_s: 10 });
+    win.URL.createObjectURL = () => 'blob:mock';
+    win.URL.revokeObjectURL = () => {};
+    const clickSpy = vi.spyOn(win.HTMLAnchorElement.prototype, 'click').mockImplementation(() => {});
+    win.BL.exportJson();
+    expect(clickSpy).toHaveBeenCalledTimes(1);
+    const a = win.document.body.querySelector('a[download]');
+    expect(a).toBeTruthy();
+    expect(a.download).toMatch(/^bench-live-.*\.json$/);
+    clickSpy.mockRestore();
   });
 });

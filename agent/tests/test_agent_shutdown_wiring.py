@@ -50,6 +50,7 @@ def _shutdown_ns(**over):
         "log": logging.getLogger("test"),
         "_bench_proc": None, "_bench_pgid": None,
         "_autotune_proc": None, "_autotune_pgid": None,
+        "_autotune_aux_proc": None, "_autotune_aux_pgid": None,
         "_bench_cancel_event": threading.Event(),
         "_autotune_cancel_event": threading.Event(),
     }
