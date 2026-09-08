@@ -252,9 +252,13 @@ describe('BL matrix + heatmap (#883)', () => {
   it('other presets turn the matrix off', async () => {
     const win = boot();
     await flush();
-    win.BL.applyPreset('longctx'); win.BL.applyPreset('chat');
+    const before = win.BL._config().concurrency;
+    win.BL.applyPreset('longctx');
+    expect(win.BL._config().concurrency).toEqual([1]);
+    win.BL.applyPreset('chat');
     expect(win.BL._config().matrix).toBeUndefined();
     expect(win.document.getElementById('blBenchRow').style.display).toBe('');
+    expect(win.BL._config().concurrency).toEqual(before);
   });
   it('heatCells builds bench × osl grid from tagged levels at the lowest concurrency', () => {
     const win = boot();

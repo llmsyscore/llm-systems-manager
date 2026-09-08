@@ -14,7 +14,7 @@
   const BENCH_ORDER = Object.keys(BENCH_LABEL);
   let _model = null, _pre = null, _runs = [], _es = null, _chart = null;
   let _levels = [], _baseline = null, _lastDoc = null, _runId = null, _activeLevel = null, _lastTps = null, _cell = null;
-  let _attached = false, _queued = null, _elapsedIv = null, _runStart = 0, _sweepLevels = [], _curLevel = null, _busyOn = false;
+  let _attached = false, _queued = null, _elapsedIv = null, _runStart = 0, _sweepLevels = [], _curLevel = null, _curCell = null, _busyOn = false;
 
   function parseSweep(text) {
     const seen = new Set();
@@ -106,11 +106,14 @@
   function markCustom() {
     document.querySelectorAll('#blPresets .bl-chip').forEach(c => c.classList.toggle('on', c.dataset.preset === 'custom'));
   }
+  // Sweep chips as they were before a matrix preset replaced them; restored by the next non-matrix preset.
+  let _sweepBefore = null;
   function applyPreset(name) {
     const p = PRESETS[name];
     document.querySelectorAll('#blPresets .bl-chip').forEach(c => c.classList.toggle('on', c.dataset.preset === name));
     if (!p) return;
     if (p.matrix) {
+      if (!_sweepBefore) _sweepBefore = [...document.querySelectorAll('#blSweepChips .bl-chip')].map(c => c.classList.contains('on'));
       setMatrix(true, p.matrix.benches, p.matrix.osls);
       $('blLimit').value = String(p.limit);
       const sweepSet = new Set((p.sweep || []).map(String));
@@ -120,6 +123,7 @@
       renderCats(names, 'all');
     } else {
       setMatrix(false);
+      if (_sweepBefore) { document.querySelectorAll('#blSweepChips .bl-chip').forEach((c, i) => c.classList.toggle('on', !!_sweepBefore[i])); _sweepBefore = null; syncSweepUi(); }
       $('blBench').value = p.bench; $('blOsl').value = String(p.osl); $('blLimit').value = String(p.limit);
       const names = ((_pre && _pre.datasets && _pre.datasets[p.bench]) || {}).categories || [];
       renderCats(names, p.cats === 'all' ? 'all' : names.filter(n => n.includes(p.cats)));
@@ -316,7 +320,7 @@
   function redraw() {
     const active = activeCellKey();
     const cur = _levels.filter(l => cellKey(l) === active);
-    const pend = (running() && cur.length && _curLevel != null && !cur.some(l => l.concurrency === _curLevel)) ? _curLevel : null;
+    const pend = (running() && cur.length && _curLevel != null && (_curCell == null || _curCell === active) && !cur.some(l => l.concurrency === _curLevel)) ? _curLevel : null;
     const labels = [...new Set([...cur.map(l => l.concurrency), ...baselineLevels().map(l => l.concurrency), ...(pend == null ? [] : [pend])])].sort((a, b) => a - b);
     const empty = $('blChartEmpty'); if (empty) empty.style.display = cur.length ? 'none' : '';
     if (_chart) {
@@ -434,7 +438,7 @@
           if ((msg.levels || []).length) _sweepLevels = msg.levels.slice();
           log(`run ${msg.run_id} · ${msg.bench} · levels ${(msg.levels || []).join(', ')}`); if (msg.cmd) log('$ ' + msg.cmd, 'dim');
           if (msg.matrix) log(`matrix · benches ${(msg.matrix.benches || []).join(', ')} · osls ${(msg.matrix.osls || []).join(', ')}`, 'dim'); }
-        else if (msg.type === 'level_start') { _curLevel = msg.concurrency; if (!_attached) setStatus('running', 'running'); setStrip(0, 0);
+        else if (msg.type === 'level_start') { _curLevel = msg.concurrency; _curCell = msg.bench ? cellKey(msg) : null; if (!_attached) setStatus('running', 'running'); setStrip(0, 0);
           const tag = msg.bench ? ` · ${msg.bench}${msg.osl != null ? ' · osl ' + msg.osl : ''}` : '';
           log(`level ${msg.concurrency} started${tag}`); redraw(); }
         else if (msg.type === 'progress') { const pct = msg.total ? Math.round(msg.done / msg.total * 100) : 0; $('blProgress').querySelector('i').style.width = pct + '%'; _curLevel = msg.level; setStrip(msg.done, msg.total); }
