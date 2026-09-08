@@ -193,4 +193,31 @@ describe('ledger rows carry a run id (#772)', () => {
     expect(posts[0].run_id).toBe('run1');
     expect(posts[0].gen_tps).toBe(40);
   });
+
+  it('records wh_per_ktok and renders the Energy tile from model_done', async () => {
+    const r = await startRun();
+    const posts = [];
+    r.win.fetch = (url, opts) => {
+      if (url === '/api/tools/runs') posts.push(JSON.parse(opts.body));
+      return Promise.resolve({ ok: true, json: () => Promise.resolve({ ok: true }) });
+    };
+    r.send({ type: 'model_start', model_id: 'org/m' });
+    r.send({ type: 'model_done', model_id: 'org/m', run_id: 'r9', max_gen_tps: 40, max_ppt_tps: 900, max_pg_tps: 35,
+             wh_per_ktok: 1.234, energy_wh: 0.5, energy_source: 'gpu' });
+    await flush();
+    expect(posts[0].wh_per_ktok).toBeCloseTo(1.234);
+    const tile = [...r.win.document.querySelectorAll('.bench-stat-card')].find(c => c.textContent.includes('Energy'));
+    expect(tile.textContent).toMatch(/1\.23/);
+    expect(tile.querySelector('.bench-stat-src').textContent).toBe('gpu');
+  });
+
+  it('Energy tile shows a dash and "no power reading" when energy is null', async () => {
+    const r = await startRun();
+    r.send({ type: 'model_start', model_id: 'org/m' });
+    r.send({ type: 'model_done', model_id: 'org/m', run_id: 'r10', max_gen_tps: 40, wh_per_ktok: null });
+    await flush();
+    const tile = [...r.win.document.querySelectorAll('.bench-stat-card')].find(c => c.textContent.includes('Energy'));
+    expect(tile.textContent).toContain('—');
+    expect(tile.title).toBe('no power reading');
+  });
 });

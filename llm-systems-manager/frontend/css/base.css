@@ -786,7 +786,7 @@
     .bench-result-placeholder { border-left-color:var(--border); border-style:dashed; background:transparent; }
     .bench-result-head { display:flex; align-items:center; justify-content:space-between; gap:10px; margin-bottom:4px; }
     .bench-result-model { font-size:0.82em; font-family: var(--font-mono); color:var(--fg); flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-    .bench-result-grid { display:grid; grid-template-columns:repeat(3,1fr); gap:0; }
+    .bench-result-grid { display:grid; grid-template-columns:repeat(4,1fr); gap:0; }
     .bench-result-actions { display:flex; gap:8px; justify-content:flex-end; }
     .bench-result-actions .btn { background:var(--bg-card-alt); color:var(--fg-muted); border:1px solid var(--border); border-radius:6px; font-size:0.78em; padding:6px 13px; background-image:none; }
     .bench-result-actions .btn:hover { background:var(--border); color:var(--fg); opacity:1; }
@@ -796,6 +796,13 @@
     .bench-stat-k { font-size:0.58em; text-transform:uppercase; letter-spacing:0.12em; color:var(--fg-dim); margin-bottom:5px; }
     .bench-stat-v { font-size:clamp(1.5rem,2.1vw,2.05rem); font-weight:300; letter-spacing:-0.02em; font-variant-numeric:tabular-nums; color:var(--fg); line-height:1.0; }
     .bench-stat-u { font-size:0.42em; font-weight:400; color:var(--fg-faint); margin-left:3px; letter-spacing:0; }
+    .bench-stat-src { margin-left:6px; font-size:.7em; opacity:.7; text-transform:uppercase; }
+    /* Structured -ctk/-ctv option chips: pill toggle matching .bl-chip. */
+    .bench-sw-chips { display:inline-flex; flex-wrap:wrap; gap:4px; }
+    .bench-sw-chips.off { opacity:.45; pointer-events:none; }
+    .bench-chip { font:inherit; font-size:.78em; padding:2px 8px; border-radius:999px; border:1px solid var(--border); color:var(--fg-muted); cursor:pointer; user-select:none; }
+    .bench-chip.on { color:var(--accent); border-color:var(--accent); background:color-mix(in srgb, var(--accent) 12%, transparent); }
+    .bench-sw-hint { font-size:.75em; color:var(--warn); padding:2px 0 4px 26px; }
     /* Signature: comparative generation-throughput bar vs. fastest in the run. */
     .bench-rank { display:flex; align-items:center; gap:11px; margin-top:5px; }
     .bench-rank-lbl { font-size:0.56em; text-transform:uppercase; letter-spacing:0.12em; color:var(--fg-faint); white-space:nowrap; }

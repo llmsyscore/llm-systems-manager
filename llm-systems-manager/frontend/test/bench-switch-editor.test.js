@@ -63,4 +63,30 @@ describe('benchmark structured switch editor', () => {
     expect(win.__switches().find(s => s.flag === '-mmp').value).toBe('0');
     expect(win.document.querySelector('.bench-opt-custom-h').textContent).toBe('Custom');
   });
+
+  it('-ctk / -ctv render as chips whose CSV value follows option order', () => {
+    const win = openEditor();
+    const row = [...win.document.querySelectorAll('#benchSwitchList .bench-opt-row')].find(r => r.textContent.includes('-ctk'));
+    const chips = row.querySelectorAll('.bench-chip');
+    expect(chips.length).toBe(7);
+    expect(row.querySelector('.bench-chip.on').dataset.opt).toBe('f16');
+    // turn on q4_0 then q8_0 → CSV keeps option order f16,q8_0,q4_0
+    [...chips].find(c => c.dataset.opt === 'q4_0').click();
+    [...chips].find(c => c.dataset.opt === 'q8_0').click();
+    expect(win.__switches().find(s => s.flag === '-ctk').value).toBe('f16,q8_0,q4_0');
+    // the last remaining chip cannot be turned off
+    [...chips].filter(c => c.classList.contains('on')).forEach(c => c.click());
+    expect(row.querySelectorAll('.bench-chip.on').length).toBe(1);
+  });
+
+  it('warns when a quantized V cache is selected without -fa 1', () => {
+    const win = openEditor();
+    const switches = win.__switches();
+    const idx = switches.findIndex(s => s.flag === '-fa');
+    if (idx !== -1) switches.splice(idx, 1);
+    win._renderBenchSwitches();
+    const row = [...win.document.querySelectorAll('#benchSwitchList .bench-opt-row')].find(r => r.textContent.includes('-ctv'));
+    [...row.querySelectorAll('.bench-chip')].find(c => c.dataset.opt === 'q8_0').click();
+    expect(row.querySelector('.bench-sw-hint').textContent).toMatch(/needs -fa 1/);
+  });
 });
