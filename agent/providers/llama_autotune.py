@@ -12,6 +12,7 @@ OBJECTIVES = ("fit", "speed", "balanced", "serve")
 KV_TYPES = ("f32", "f16", "bf16", "q8_0", "q4_0", "q4_1", "iq4_nl", "q5_0", "q5_1")
 KV_LOSSY = ("q4_0", "q4_1", "iq4_nl", "q5_0", "q5_1")
 SPEC_TYPES = ("auto", "draft-mtp", "draft-dflash", "draft-simple", "ngram-simple")
+SPEC_NEEDS_DRAFT = ("draft-dflash", "draft-simple")
 STAGES = ("context", "kv", "moe", "threads", "spec", "slots", "sampling", "verify")
 MEASURED = ("threads", "spec", "slots", "verify")
 FALLBACK_ORDER = ("slots", "spec", "threads")
@@ -46,7 +47,8 @@ CUSTOM_ARG_MAX_LEN = 256
 CUSTOM_ARGS_DENY = ("-m", "--model", "-md", "--model-draft", "--lora", "--lora-scaled", "--mmproj",
                     "--models-preset", "--hf-repo", "-hf", "--hf-file", "--port", "--host")
 _MODEL_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/\-]{0,199}$")
-_FACT_RE = re.compile(r"^\s*print_info:\s*([A-Za-z0-9_.][A-Za-z0-9_. ]*?)\s*=\s*(.+?)\s*$")
+_FACT_RE = re.compile(r"print_info:\s*([A-Za-z0-9_.][A-Za-z0-9_. ]*?)\s*=\s*(.+?)\s*$")
+_MTP_KV_RE = re.compile(r"nextn_predict_layers\s+\w+\s*=\s*(\d+)")
 _KL_RE = re.compile(r"Mean\s+KLD\s*:\s*([0-9]*\.?[0-9]+(?:[eE][-+]?\d+)?)")
 _SIZE_TOKEN_RE = re.compile(r"[-_](\d+(?:\.\d+)?)[bB](?=[-_.]|$)")
 _HELP_FLAG_RE = re.compile(r"^--?[A-Za-z0-9]")
@@ -265,24 +267,29 @@ def _num(s: str) -> Optional[float]:
 
 
 def parse_facts(lines: Iterable[str]) -> dict:
+    """Model facts from a load log; lines may carry a timestamp/level prefix."""
     raw: dict[str, str] = {}
+    mtp = 0
     for line in lines:
-        m = _FACT_RE.match(line)
+        m = _FACT_RE.search(line)
         if m:
             raw[m.group(1)] = m.group(2)
+        kv = _MTP_KV_RE.search(line)
+        if kv:
+            mtp = max(mtp, int(kv.group(1)))
     def _i(key: str) -> Optional[int]:
         v = _num(raw.get(key, ""))
         return int(v) if v is not None else None
-    mtp = 0
     for k, v in raw.items():
         lk = k.lower()
         if "nextn" in lk or "mtp" in lk:
             n = _num(v)
             if n:
-                mtp = int(n)
+                mtp = max(mtp, int(n))
+    size = raw.get("model size") or raw.get("file size", "")
     return {"arch": raw.get("arch"), "name": raw.get("general.name"),
             "n_layer": _i("n_layer"), "n_expert": _i("n_expert"), "n_expert_used": _i("n_expert_used"),
-            "n_ctx_train": _i("n_ctx_train"), "model_size_gib": _num(raw.get("model size", "")),
+            "n_ctx_train": _i("n_ctx_train"), "model_size_gib": _num(size),
             "model_params_b": _num(raw.get("model params", "")), "mtp_layers": mtp}
 
 
@@ -330,8 +337,9 @@ def find_dflash(drafts: list, target_repo: str) -> Optional[dict]:
     return None
 
 
-def expand_spec_types(types: list, facts: dict, drafts: list, target_repo: str,
-                      target_size: int, draft_model: str) -> list[dict]:
+def expand_spec_types(types: list, facts: dict, drafts: list, target_repo: str, target_size: int,
+                      draft_model: str, current_type: Optional[str] = None,
+                      current_draft: str = "") -> list[dict]:
     """Rows {type, draft} to try, in order; types with no usable draft are dropped."""
     if draft_model == "none":
         simple = None
@@ -355,6 +363,11 @@ def expand_spec_types(types: list, facts: dict, drafts: list, target_repo: str,
         if a is False:
             continue
         rows.append({"type": t, "draft": a})
+    cur = (current_type or "").strip().lower()
+    if cur in SPEC_TYPES and cur not in ("auto", "none") and cur not in {r["type"] for r in rows}:
+        cd = (current_draft or "").strip() or simple
+        if cur not in SPEC_NEEDS_DRAFT or cd:
+            rows.insert(0, {"type": cur, "draft": cd if cur in SPEC_NEEDS_DRAFT else None})
     return rows
 
 
@@ -901,14 +914,16 @@ class _Run:
             return
         d = self.dims["spec"]
         rows = expand_spec_types(d["types"], self.facts, self.env.get("drafts") or [],
-                                 self.env.get("target_repo") or "", int(self.env.get("target_size") or 0), d["draft_model"])
+                                 self.env.get("target_repo") or "", int(self.env.get("target_size") or 0),
+                                 d["draft_model"], current_type=self.cur("spec-type"),
+                                 current_draft=self.cur("model-draft"))
         if not rows:
             self.skip("spec", "no_candidates")
             return
         est = estimate("spec", len(rows) + 1 + len(window_plan(int(d["n_min"]), int(d["n_max"]))), self.load_s, self.stick_s)
         if not self.within_budget("spec", est):
             return
-        mark = self.begin("spec", [r["type"] for r in rows], est)
+        mark = self.begin("spec", ["none"] + [r["type"] for r in rows], est)
         kvc = self.rec.get("cache-type-k") or self.cur("cache-type-k", "f16")
 
         def spec_ov(row: dict, n_min: int, n_max: int) -> dict:

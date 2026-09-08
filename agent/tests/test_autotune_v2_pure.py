@@ -239,6 +239,30 @@ def test_parse_facts_dense_model_has_no_mtp(at):
     assert f["n_expert"] == 0 and f["mtp_layers"] == 0 and f["arch"] is None
 
 
+PREFIXED_FACTS = """0.00.571.994 I llama_model_loader: - kv  28:                qwen35.nextn_predict_layers u32              = 1
+0.00.598.117 I print_info: file size   = 16.34 GiB (5.14 BPW)
+0.00.720.635 I print_info: arch                  = qwen35
+0.00.720.638 I print_info: n_layer               = 64
+0.00.720.641 I print_info: n_expert              = 0
+0.00.720.650 I print_info: n_ctx_train           = 262144
+0.00.720.665 I print_info: model params          = 27.32 B
+0.01.100.000 I spec common_specu: adding speculative implementation 'draft-mtp'
+"""
+
+
+def test_parse_facts_reads_timestamped_lines(at):
+    f = at.parse_facts(PREFIXED_FACTS.splitlines())
+    assert f["arch"] == "qwen35" and f["n_layer"] == 64 and f["n_expert"] == 0
+    assert f["n_ctx_train"] == 262144 and f["model_params_b"] == 27.32
+    assert f["model_size_gib"] == 16.34                    # this build prints "file size"
+    assert f["mtp_layers"] == 1                            # from the loader kv line
+
+
+def test_parse_facts_prefixed_dense_model_has_no_mtp(at):
+    dense = [ln for ln in PREFIXED_FACTS.splitlines() if "nextn" not in ln]
+    assert at.parse_facts(dense)["mtp_layers"] == 0
+
+
 def test_parse_kl(at):
     assert at.parse_kl("===== KL divergence statistics =====\nMean    KLD:   0.006123 ±   0.000045\n") == 0.006123
     assert at.parse_kl("nothing here") is None
@@ -289,6 +313,22 @@ def test_expand_spec_types_auto(at):
     assert rows[2]["draft"] == "/h/a.gguf" and rows[1]["draft"] == "/h/c.gguf" and rows[0]["draft"] is None
     rows = at.expand_spec_types(["auto"], {"mtp_layers": 0}, [], "org/m", 1, "none")
     assert [r["type"] for r in rows] == ["ngram-simple"]
+
+
+def test_expand_spec_types_keeps_the_models_current_type(at):
+    """A configured spec-type runs even when detection misses its heads."""
+    rows = at.expand_spec_types(["auto"], {"mtp_layers": 0}, [], "org/m", 1, "none",
+                                current_type="draft-mtp")
+    assert [r["type"] for r in rows] == ["draft-mtp", "ngram-simple"] and rows[0]["draft"] is None
+    for cur in ("none", "", None, "bogus"):
+        rows = at.expand_spec_types(["auto"], {"mtp_layers": 0}, [], "org/m", 1, "none", current_type=cur)
+        assert [r["type"] for r in rows] == ["ngram-simple"]
+    rows = at.expand_spec_types(["auto"], {"mtp_layers": 0}, [], "org/m", 1, "none",
+                                current_type="draft-simple", current_draft="/h/d.gguf")
+    assert rows[0] == {"type": "draft-simple", "draft": "/h/d.gguf"}
+    rows = at.expand_spec_types(["auto"], {"mtp_layers": 0}, [], "org/m", 1, "none",
+                                current_type="draft-simple")
+    assert [r["type"] for r in rows] == ["ngram-simple"]    # needs a draft file, has none
 
 
 def test_expand_spec_types_explicit_keeps_order_and_needs_a_draft(at):

@@ -179,6 +179,23 @@ def test_spawn_args_follow_the_help_valued_set(at):
         assert "--check-tensors" not in args
 
 
+def _spec_candidates(events):
+    return [ev["candidates"] for ev in events if ev["type"] == "stage_start" and ev["stage"] == "spec"]
+
+
+def test_spec_stage_start_lists_the_none_reference_first(at):
+    be = Fake(facts={"n_expert": 128, "n_expert_used": 8, "n_layer": 48, "mtp_layers": 1})
+    _, events = _run(at, be, BALANCED)
+    assert _spec_candidates(events) == [["none", "draft-mtp", "ngram-simple"]]
+
+
+def test_spec_tries_the_configured_type_when_detection_missed_it(at):
+    be = Fake(facts={"n_expert": 128, "n_expert_used": 8, "n_layer": 48, "mtp_layers": 0})
+    sec = {"hf-repo": "o/r", "ctx-size": "32768", "threads": "32", "spec-type": "draft-mtp"}
+    _, events = _run(at, be, BALANCED, section=sec)
+    assert _spec_candidates(events) == [["none", "draft-mtp", "ngram-simple"]]
+
+
 def test_speed_keeps_f16_and_one_slot(at):
     done, _ = _run(at, Fake(), dict(BALANCED, objective="speed"))
     st = {s["stage"]: s for s in done["stages"]}
