@@ -21,6 +21,7 @@ import uuid
 from collections import deque
 from pathlib import Path
 from typing import Any, Iterator, Optional
+from urllib.parse import urlparse
 
 import requests
 from fastapi import Header, HTTPException, Query, Request
@@ -35,6 +36,7 @@ from . import llama_install
 from . import llama_sse
 from . import llama_upgrade
 from . import llama_bench_live as _bl
+from . import llama_autotune as _at
 
 # PR2: minimal spec the agent's heartbeat body emits so the manager can
 # discover what this agent serves. Manager-side providers/llama.py owns the
@@ -136,6 +138,8 @@ _autotune_active = False
 _autotune_run_id = ""
 _autotune_proc: "Optional[subprocess.Popen]" = None
 _autotune_pgid: "Optional[int]" = None
+_autotune_aux_proc: "Optional[subprocess.Popen]" = None
+_autotune_aux_pgid: "Optional[int]" = None
 _autotune_cancel_event = threading.Event()
 
 def shutdown_children() -> None:
@@ -144,7 +148,8 @@ def shutdown_children() -> None:
     _bench_cancel_event.set()
     _autotune_cancel_event.set()
     for what, proc, pgid in (("bench", _bench_proc, _bench_pgid),
-                             ("autotune", _autotune_proc, _autotune_pgid)):
+                             ("autotune", _autotune_proc, _autotune_pgid),
+                             ("autotune-aux", _autotune_aux_proc, _autotune_aux_pgid)):
         if proc is None or proc.poll() is not None:
             continue
         try:
@@ -182,6 +187,10 @@ _AT_MEM_RE = re.compile(
 )
 _AT_GPU_HINT_RE = re.compile(r"(?i)vulkan|rocm|cuda|hip|metal")
 _AT_MODEL_LOADED_RE = re.compile(r"(?:^|\s)(?:\w+\s*:\s*)?model loaded\b", re.IGNORECASE)
+# The alloc alternative allows only a size/unit run between "alloc…" and "failed".
+_AT_OOM_RE = re.compile(
+    r"out of memory|failed to allocate|cudaMalloc failed|OutOfDeviceMemory|not enough (?:memory|space)"
+    r"|alloc\w*\s+(?:\d[\w.]*\s+(?:\w+\s+){0,4})?failed", re.IGNORECASE)
 _AT_MEM_TOTAL_SANE_MAX = 200_000
 
 
@@ -2536,6 +2545,63 @@ def llama_bench_live_run(body: dict, authorization: Optional[str] = Header(defau
     return {"ok": True, "run_id": _bench_replay.run_id}
 
 
+def _autotune_port() -> int:
+    """Port the tuning spawns bind on: the one in LLAMA_API_URL, else 8080."""
+    try:
+        return int(urlparse(_require_ctx().config.LLAMA_API_URL or "").port or 8080)
+    except ValueError:
+        return 8080
+
+
+def _llama_unit_active() -> bool:
+    """True when the llama-server systemd unit reports active."""
+    with best_effort("autotune: probe llama unit is-active", log=log):
+        st = subprocess.run(["systemctl", "is-active", _require_ctx().config.LLAMA_SYSTEMD_UNIT],
+                            capture_output=True, text=True, timeout=5)
+        return (st.stdout or "").strip() == "active"
+    return False
+
+
+def _autotune_kl_text() -> Path:
+    return _bench_live_root() / "bench" / "kl_text.txt"
+
+
+def _autotune_perplexity_bin() -> "Optional[Path]":
+    """llama-perplexity beside the configured llama-server binary, else None."""
+    b = _require_ctx().config.LLAMA_BIN
+    if not b:
+        return None
+    p = Path(b).parent / "llama-perplexity"
+    return p if p.exists() else None
+
+
+def _autotune_track_aux(p: "subprocess.Popen") -> None:
+    global _autotune_aux_proc, _autotune_aux_pgid
+    _autotune_aux_proc = p
+    try: _autotune_aux_pgid = os.getpgid(p.pid)
+    except Exception: _autotune_aux_pgid = None
+
+
+def _autotune_untrack_aux() -> None:
+    global _autotune_aux_proc, _autotune_aux_pgid
+    _autotune_aux_proc = None
+    _autotune_aux_pgid = None
+
+
+def _read_cpuinfo() -> str:
+    try:
+        return Path("/proc/cpuinfo").read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return ""
+
+
+def _ram_total_mb() -> "Optional[int]":
+    try:
+        return int(os.sysconf("SC_PHYS_PAGES") * os.sysconf("SC_PAGE_SIZE") // (1024 * 1024))
+    except (ValueError, OSError, AttributeError):
+        return None
+
+
 def _autotune_put(msg: dict) -> None:
     """Append to the per-run replay buffer and wake any waiting streams."""
     with _autotune_cond:
@@ -2606,9 +2672,10 @@ def _autotune_parse_shutdown_mem(lines: list) -> dict:
             "reason": None if sane else "values out of bounds"}
 
 
-def _autotune_run_iter(model_id: str, fitt_mb: int, optional_params: dict,
-                       env: dict, iter_idx: int) -> dict:
-    """Run llama-server once with -fitt, wait for model-loaded, SIGTERM, parse output."""
+def _autotune_run_iter(model_id: str, fitt_mb: "Optional[int]", extra_args: list, env: dict, iter_idx: int,
+                       *, ctx: "Optional[int]" = None, hold=None) -> dict:
+    """Run llama-server once (-fitt, an explicit ctx with fit off, or neither), wait for
+    model-loaded, optionally call hold() while it is up, SIGTERM, parse output."""
     global _autotune_proc, _autotune_pgid
     if _autotune_cancel_event.is_set():
         return {"ok": False, "error": "cancelled"}
@@ -2621,14 +2688,11 @@ def _autotune_run_iter(model_id: str, fitt_mb: int, optional_params: dict,
     if not hf_arg:
         return {"ok": False, "error": f"no HF reference found for {model_id}"}
 
-    cmd = [bin_path, "--models-max", "1",
-           "-fitt", str(int(fitt_mb)), "-lv", "4"]
-    cmd += _autotune_build_optional_args(optional_params)
-    cmd += ["-hf", hf_arg]
+    cmd = _at.spawn_cmd(bin_path, hf_arg, _autotune_port(), fitt_mb, ctx, extra_args)
 
     _autotune_put({
         "type": "iter_start", "model_id": model_id, "iter": iter_idx,
-        "fitt": int(fitt_mb), "cmd": " ".join(str(c) for c in cmd),
+        "fitt": fitt_mb, "ctx": ctx, "cmd": " ".join(str(c) for c in cmd),
     })
 
     proc = subprocess.Popen(
@@ -2649,7 +2713,11 @@ def _autotune_run_iter(model_id: str, fitt_mb: int, optional_params: dict,
     # True=fit reduced ctx, False="no changes needed", None=neither line seen.
     # Drives plateau detection in the picker.
     fit_applied: Optional[bool] = None
-    shutdown_buf: list = []
+    facts_lines: list = []
+    oom = False
+    loaded_at: Optional[float] = None
+    shutdown_buf: deque = deque(maxlen=4000)
+    terminating = threading.Event()
     start_ts = time.time()
     LOAD_TIMEOUT = 300
     last_progress = start_ts
@@ -2660,7 +2728,7 @@ def _autotune_run_iter(model_id: str, fitt_mb: int, optional_params: dict,
             elapsed = time.time() - start_ts
             _autotune_put({
                 "type": "loading_progress", "model_id": model_id,
-                "iter": iter_idx, "fitt": int(fitt_mb),
+                "iter": iter_idx, "fitt": fitt_mb,
                 "elapsed_s": int(elapsed), "timeout_s": int(LOAD_TIMEOUT),
             })
     _hb_thread = threading.Thread(target=_hb_loop, daemon=True)
@@ -2698,8 +2766,13 @@ def _autotune_run_iter(model_id: str, fitt_mb: int, optional_params: dict,
                         fit_applied = False
                     elif "context size reduced from" in line:
                         fit_applied = True
+                if "print_info:" in line:
+                    facts_lines.append(line)
+                if _AT_OOM_RE.search(line):
+                    oom = True
             if _AT_MODEL_LOADED_RE.search(line):
                 model_loaded = True
+                loaded_at = time.time()
                 break
             if time.time() - last_progress > LOAD_TIMEOUT:
                 _autotune_put({"type": "line", "model_id": model_id,
@@ -2711,7 +2784,50 @@ def _autotune_run_iter(model_id: str, fitt_mb: int, optional_params: dict,
     finally:
         _hb_stop.set()
 
+    # Reader-thread handoff: only the thread touches these, the main thread reads after the join.
+    drain_ctx: dict = {}
+
+    def _drain_stdout() -> None:
+        with best_effort("autotune: drain shutdown stdout", log=log):
+            for raw in iter(proc.stdout.readline, ""):
+                if not raw:
+                    break
+                line = _BENCH_ANSI_RE.sub("", raw.rstrip("\n"))
+                if not line:
+                    continue
+                shutdown_buf.append(line)
+                # Lines logged while the stick runs would evict stage events from the replay.
+                if terminating.is_set():
+                    _autotune_put({"type": "line", "model_id": model_id, "text": line})
+                mm = _AT_NCTX_RE.search(line)
+                if mm:
+                    # ignore an unparseable counter; keep the prior value
+                    try: drain_ctx["seq"] = int(mm.group(1))
+                    except ValueError: pass
+                else:
+                    mm2 = _AT_NCTX_FALLBACK_RE.search(line)
+                    if mm2:
+                        # ignore an unparseable counter; keep the prior value
+                        try: drain_ctx["fallback"] = int(mm2.group(1))
+                        except ValueError: pass
+
+    # A held server keeps logging: drain stdout for the whole hold.
+    reader = None
+    if model_loaded and hold is not None:
+        reader = threading.Thread(target=_drain_stdout, daemon=True)
+        reader.start()
+
+    # Measurement runs against the live server before it is torn down.
+    hold_res = None
+    if model_loaded and hold is not None and not _autotune_cancel_event.is_set():
+        try:
+            hold_res = hold()
+        except Exception as e:
+            log.warning("autotune hold failed: %s", e)
+            hold_res = {"ok": False, "error": str(e)[:200]}
+
     # SIGTERM triggers llama-server's clean shutdown + post-load memory breakdown.
+    terminating.set()
     pgid = _autotune_pgid
     if pgid is not None:
         # tolerate the group already being gone
@@ -2735,27 +2851,18 @@ def _autotune_run_iter(model_id: str, fitt_mb: int, optional_params: dict,
         _drain_watchdog = threading.Timer(30.0, _drain_kill)
         _drain_watchdog.daemon = True
         _drain_watchdog.start()
-    with best_effort("autotune: drain shutdown stdout", log=log):
-        for raw in iter(proc.stdout.readline, ""):
-            if not raw:
-                break
-            line = _BENCH_ANSI_RE.sub("", raw.rstrip("\n"))
-            if line:
-                shutdown_buf.append(line)
-                _autotune_put({"type": "line", "model_id": model_id, "text": line})
-                mm = _AT_NCTX_RE.search(line)
-                if mm:
-                    # ignore an unparseable counter; keep the prior value
-                    try: ctx_seq = int(mm.group(1))
-                    except ValueError: pass
-                else:
-                    mm2 = _AT_NCTX_FALLBACK_RE.search(line)
-                    if mm2:
-                        # ignore an unparseable counter; keep the prior value
-                        try: ctx_fallback = int(mm2.group(1))
-                        except ValueError: pass
+    if reader is not None:
+        reader.join(timeout=40)
+        if reader.is_alive():
+            log.warning("autotune iter: stdout reader still alive after 40s")
+    else:
+        _drain_stdout()
     if _drain_watchdog is not None:
         _drain_watchdog.cancel()
+    if "seq" in drain_ctx:
+        ctx_seq = drain_ctx["seq"]
+    if "fallback" in drain_ctx:
+        ctx_fallback = drain_ctx["fallback"]
 
     try:
         proc.wait(timeout=10)
@@ -2778,45 +2885,46 @@ def _autotune_run_iter(model_id: str, fitt_mb: int, optional_params: dict,
     if ctx_seq is None and ctx_fallback is not None:
         ctx_seq = ctx_fallback
 
+    meta = {"model_loaded": model_loaded, "oom": oom, "facts_lines": facts_lines, "hold": hold_res,
+            "load_s": (loaded_at - start_ts) if loaded_at else None}
+
     if not model_loaded:
-        return {"ok": False, "error": "model never reached 'main: model loaded'",
+        return {**meta, "ok": False,
+                "error": "OOM at load" if oom else "model never reached 'main: model loaded'",
                 "ctx_seq": ctx_seq, "actual_free_mb": None, "total_vram_mb": None}
 
     mem = _autotune_parse_shutdown_mem(shutdown_buf)
     if mem["ok"]:
         if ctx_seq is None:
-            return {"ok": False, "error": "got memory breakdown but no n_ctx_seq",
+            return {**meta, "ok": False, "error": "got memory breakdown but no n_ctx_seq",
                     "ctx_seq": None,
                     "actual_free_mb": mem["free_mb"], "total_vram_mb": mem["total_mb"],
                     "fit_applied": fit_applied}
-        return {"ok": True, "ctx_seq": ctx_seq,
+        return {**meta, "ok": True, "ctx_seq": ctx_seq,
                 "actual_free_mb": mem["free_mb"], "total_vram_mb": mem["total_mb"],
                 "fit_applied": fit_applied}
     # Sentinel/missing — return raw numbers so the caller can retry with doubled -fitt.
-    return {"ok": False, "sentinel": True,
+    return {**meta, "ok": False, "sentinel": True,
             "raw_free_mb": mem.get("raw_free"),
             "raw_total_mb": mem.get("raw_total"),
             "reason": mem.get("reason"),
             "ctx_seq": ctx_seq, "actual_free_mb": None, "total_vram_mb": None}
 
 
-def _autotune_run_one_model(model_id: str, target_mb: int, optional_params: dict,
-                            env: dict, tolerance_mb: int = 50) -> None:
-    """Iteratively converge actual_free_mb on target_mb (±tolerance_mb).
-
-    Three regimes: plateau (fit doesn't engage; fit_applied=False), monotonic-up
-    (secant/bisection), non-monotonic (compute buffer balloons at high -fitt).
-    """
+def _autotune_converge(model_id: str, target_mb: int, extra_args: list, env: dict,
+                       tolerance_mb: int = 50, start_fitt: "Optional[int]" = None,
+                       max_iters: int = 10) -> dict:
+    """Converge actual_free_mb on target_mb (±tolerance_mb) with -fitt; returns the best sample."""
     TOL = max(1, int(tolerance_mb))
-    MAX_ITERS = 10
+    MAX_ITERS = max(1, int(max_iters))
     MAX_STEP = 1024
     MIN_STEP = 128
     # Must be < TOL so refinement can hit the requested precision.
     DEDUP_MB = max(5, min(25, TOL // 2 if TOL > 1 else 5))
-    _autotune_put({"type": "model_start", "model_id": model_id,
-                   "target_mb": int(target_mb), "tolerance_mb": TOL})
 
-    fitt = max(0, int(target_mb))
+    fitt = max(0, int(start_fitt if start_fitt is not None else target_mb))
+    facts: dict = {}
+    load_s: "Optional[float]" = None
     history: list = []
     tried: dict = {}
     plateau_ceiling = -1
@@ -2985,7 +3093,11 @@ def _autotune_run_one_model(model_id: str, target_mb: int, optional_params: dict
         sentinel_attempts = 0
         res = None
         while True:
-            res = _autotune_run_iter(model_id, fitt, optional_params, env, i)
+            res = _autotune_run_iter(model_id, fitt, extra_args, env, i)
+            if res.get("facts_lines") and not facts.get("n_layer"):
+                facts = _at.parse_facts(res["facts_lines"])
+            if load_s is None and res.get("load_s"):
+                load_s = res["load_s"]
             if res.get("ok") or not res.get("sentinel"):
                 break
             # A cancelled run yields a bogus breakdown; never respawn for it.
@@ -3079,25 +3191,142 @@ def _autotune_run_one_model(model_id: str, target_mb: int, optional_params: dict
         if not converged and stop_reason is None:
             stop_reason = "iter_limit: exhausted {n} iterations without converging".format(n=MAX_ITERS)
 
-    _autotune_put({
-        "type": "model_done", "model_id": model_id,
-        "converged": converged,
-        "final_fitt": (best or {}).get("fitt"),
-        "ctx_size": (best or {}).get("ctx_seq"),
-        "free_mb": (best or {}).get("actual_free_mb"),
-        "total_vram_mb": (best or {}).get("total_vram_mb"),
-        "iters": iters_done,
-        "applied_params": optional_params or {},
-        "stop_reason": stop_reason,
-        "ok": best is not None,
-        "run_id": _autotune_run_id,
-    })
-    _shared.post_tool_run(
-        _require_ctx(), "autotune", "llama", _autotune_run_id, model_id,
-        best is not None,
-        {"ctx_size": (best or {}).get("ctx_seq"),
-         "free_mb": (best or {}).get("actual_free_mb"),
-         "converged": converged})
+    return {"ok": best is not None, "ctx": (best or {}).get("ctx_seq"), "free_mb": (best or {}).get("actual_free_mb"),
+            "total_mb": (best or {}).get("total_vram_mb"), "fitt": (best or {}).get("fitt"),
+            "converged": converged, "iters": iters_done, "stop_reason": stop_reason, "facts": facts, "load_s": load_s}
+
+
+class _AutotuneBackend:
+    """Real backend for the stage engine: llama-server loads, the speed-bench stick, llama-perplexity KL."""
+
+    def __init__(self, model_id: str, env: dict, run_id: str):
+        self.model_id, self.env, self.run_id = model_id, env, run_id
+        self._energy: "Optional[_bl.PowerIntegrator]" = None
+        self._n = 0
+
+    def converge(self, args, target_mb, tolerance_mb, start_fitt, max_iters):
+        return _autotune_converge(self.model_id, target_mb, list(args), self.env, tolerance_mb,
+                                  start_fitt=start_fitt, max_iters=max_iters)
+
+    def load(self, args, ctx, measure):
+        hold = (lambda: self._stick(measure)) if measure else None
+        res = _autotune_run_iter(self.model_id, None, list(args), self.env, 0, ctx=ctx, hold=hold)
+        loaded, oom = bool(res.get("model_loaded")), bool(res.get("oom"))
+        return {"ok": bool(res.get("ok")) or (loaded and not oom),
+                "oom": oom,
+                "error": "OOM after load" if (loaded and oom) else (None if loaded else res.get("error")),
+                "ctx": res.get("ctx_seq"), "free_mb": res.get("actual_free_mb"), "total_mb": res.get("total_vram_mb"),
+                "facts": _at.parse_facts(res.get("facts_lines") or []), "load_s": res.get("load_s"),
+                "stick": res.get("hold") if measure else None}
+
+    def _server_ready(self, url: str) -> "Optional[str]":
+        """Polls /health then /v1/models; returns the model id the server reports."""
+        for _ in range(30):
+            if _autotune_cancel_event.is_set():
+                return None
+            try:
+                if requests.get(f"{url}/health", timeout=2).ok:
+                    data = requests.get(f"{url}/v1/models", timeout=2).json() or {}
+                    rows = data.get("data") or []
+                    return (rows[0].get("id") if rows else None) or self.model_id
+            except Exception:
+                pass
+            time.sleep(1)
+        return None
+
+    def _stick(self, measure: dict) -> dict:
+        """One short speed-bench run against the live server; returns the throughput summary."""
+        cfg = _require_ctx().config
+        rt = _bench_live_runtime()
+        if not rt["python"] or not rt["script"]:
+            return {"ok": False, "error": "speed-bench runtime not installed"}
+        url = f"http://127.0.0.1:{_autotune_port()}"
+        server_model = self._server_ready(url)
+        if not server_model:
+            return {"ok": False, "error": "server did not become ready"}
+        marker = _bl.read_marker(cfg.AGENT_INSTALL_DIR)
+        cats = ((marker.get("qualitative") or {}).get("categories") or [])
+        req = {"model_id": server_model, "bench": "qualitative", "categories": ["chat"] if "chat" in cats else "all",
+               "osl": _at.STICK_OSL, "limit": int(measure.get("limit") or _at.STICK_LIMIT),
+               "concurrency": [int(measure.get("concurrency") or 1)], "timeout_s": 300,
+               "extra_inputs": {"temperature": 0}, "baseline_run_id": None}
+        self._n += 1
+        out_dir = _bl.bench_dir(cfg.AGENT_INSTALL_DIR) / "runs" / f"at-{self.run_id}"
+        out_dir.mkdir(parents=True, exist_ok=True)
+        token = re.sub(r"[^A-Za-z0-9_.-]", "_", self.model_id)[:60]
+        out_path = out_dir / f"stick-{self._n}-{token}.json"
+        # A failed run writes nothing; a stale file here would be read as this run's result.
+        out_path.unlink(missing_ok=True)
+        benv = dict(os.environ, PYTHONUNBUFFERED="1", HF_HUB_DISABLE_PROGRESS_BARS="1")
+        level = req["concurrency"][0]
+        t0 = time.monotonic()
+        rc, cancelled, elapsed = _bl.run_level_subprocess(
+            _bl.build_cmd(rt["python"], rt["script"], url, req, level, str(out_path)),
+            benv, _autotune_put, self.model_id, level, _autotune_cancel_event,
+            _autotune_track_aux, _autotune_untrack_aux)
+        wall = elapsed if elapsed is not None else (time.monotonic() - t0)
+        if cancelled:
+            return {"ok": False, "error": "cancelled"}
+        try:
+            payload = json.loads(out_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return {"ok": False, "error": f"speed-bench produced no output (rc={rc})"}
+        s = _bl.level_summary(payload, wall)["all"]
+        return {"ok": rc in (0, 1) and bool(s.get("pred_tps")), "decode_tps": s.get("pred_tps"),
+                "prefill_tps": s.get("prompt_tps"), "latency_s": s.get("latency_s"), "agg_tps": s.get("agg_pred_tps"),
+                "accept": s.get("accept_rate"), "completion_tokens": s.get("completion_tokens"),
+                "seconds": round(wall, 1), "error": None if rc in (0, 1) else f"speed-bench rc={rc}"}
+
+    def kl(self, args, write_base):
+        """Writes the f16 KL base, or scores the current args against it."""
+        ppl = _autotune_perplexity_bin()
+        text = _autotune_kl_text()
+        if ppl is None or not text.is_file():
+            return {"ok": False, "kl": None, "error": "llama-perplexity or kl_text.txt missing"}
+        hf_arg = _bench_get_hf_arg(self.model_id)
+        if hf_arg is None:
+            return {"ok": False, "kl": None, "error": "no HF reference for model"}
+        base = _bl.bench_dir(_require_ctx().config.AGENT_INSTALL_DIR) / "runs" / f"at-{self.run_id}" / "base.kld"
+        base.parent.mkdir(parents=True, exist_ok=True)
+        cmd = [str(ppl), "-hf", hf_arg, "-f", str(text), "-c", "2048"] + _at.kl_args(list(args)) \
+            + ["--kl-divergence-base", str(base)] + ([] if write_base else ["--kl-divergence"])
+        _autotune_put({"type": "line", "model_id": self.model_id, "text": "[autotune] " + " ".join(cmd)})
+        try:
+            proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
+                                    text=True, encoding="utf-8", errors="replace", close_fds=True, env=self.env,
+                                    start_new_session=True)
+        except OSError as e:
+            return {"ok": False, "kl": None, "error": str(e)[:200]}
+        _autotune_track_aux(proc)
+        timed_out = False
+        try:
+            out, _ = proc.communicate(timeout=1800)
+        except subprocess.TimeoutExpired:
+            timed_out = True
+            with best_effort("autotune kl: kill on timeout", log=log):
+                os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+            with best_effort("autotune kl: reap after timeout", log=log):
+                proc.wait(timeout=5)
+            out = ""
+        finally:
+            _autotune_untrack_aux()
+        for line in (out or "").splitlines()[-40:]:
+            _autotune_put({"type": "line", "model_id": self.model_id, "text": line})
+        kl = None if write_base else _at.parse_kl(out or "")
+        ok = not timed_out and proc.returncode == 0 and (write_base or kl is not None)
+        err = "llama-perplexity timed out" if timed_out else f"llama-perplexity rc={proc.returncode}"
+        return {"ok": ok, "kl": kl, "error": None if ok else err}
+
+    def energy_start(self):
+        self._energy = _bl.PowerIntegrator(_live_power_w)
+        self._energy.start()
+
+    def energy_stop(self):
+        if self._energy is None:
+            return None, None
+        wh, src = self._energy.stop()
+        self._energy = None
+        return wh, src
 
 
 def _autotune_set_perf_mode(mode: str) -> None:
@@ -3121,10 +3350,10 @@ def _autotune_set_perf_mode(mode: str) -> None:
                    "rc": rc, "error": (None if ok else (err or "unknown"))})
 
 
-def _autotune_run_all(model_ids: list, target_mb: int, optional_params: dict,
-                      tolerance_mb: int = 50) -> None:
+def _autotune_run_all(req: dict) -> None:
     global _autotune_active, _autotune_proc
     _autotune_cancel_event.clear()
+    run_id = _autotune_run_id
     try:
         env = os.environ.copy()
         parent = str(Path(_require_ctx().config.LLAMA_BIN).parent) if _require_ctx().config.LLAMA_BIN else ""
@@ -3135,59 +3364,77 @@ def _autotune_run_all(model_ids: list, target_mb: int, optional_params: dict,
         env["PYTHONUNBUFFERED"] = "1"
         # Flip to performance so load timing isn't skewed; restored in finally.
         _autotune_set_perf_mode("performance")
-        for mid in model_ids:
+        rt = _bench_live_runtime()
+        sizes = {}
+        with best_effort("autotune: catalog sweep", log=log):
+            sizes = _llama_catalog_sweep()[0]
+        drafts = []
+        with best_effort("autotune: cache gguf list", log=log):
+            drafts = _list_cache_ggufs(_hf_cache_root())
+        info = {"run_id": run_id, "runtime": bool(rt["python"] and rt["script"]),
+                "perplexity": _autotune_perplexity_bin() is not None and _autotune_kl_text().is_file(),
+                "drafts": drafts, "cores": _at.physical_cores(_read_cpuinfo(), os.cpu_count() or 1)}
+        for mid in req["model_ids"]:
             if _autotune_cancel_event.is_set():
                 break
-            _autotune_run_one_model(mid, target_mb, optional_params, env,
-                                    tolerance_mb=tolerance_mb)
+            cp = _llama_read_ini()
+            section = dict(cp[mid]) if cp.has_section(mid) else {}
+            hf_arg = _bench_get_hf_arg(mid) or ""
+            menv = dict(info, target_repo=hf_arg.split(":")[0], target_size=int(sizes.get(mid) or 0))
+            done = _at.run_model(mid, section, req, _AutotuneBackend(mid, env, run_id), _autotune_put,
+                                 _autotune_cancel_event.is_set, menv)
+            _shared.post_tool_run(_require_ctx(), "autotune", "llama", run_id, mid, done["ok"],
+                                  _at.ledger_summary(done))
         cancelled = _autotune_cancel_event.is_set()
         _autotune_put({"type": "done", "ok": not cancelled, "cancelled": cancelled,
-                       "count": len(model_ids)})
+                       "count": len(req["model_ids"])})
     except Exception as e:
         log.error("autotune run error: %s", e, exc_info=True)
         _autotune_put({"type": "done", "ok": False, "error": str(e)})
     finally:
         with best_effort("autotune: restore powersave perf mode", log=log):
             _autotune_set_perf_mode("powersave")
+        # base.kld and the stick JSONs are scratch; the summaries already went out as events.
+        with best_effort("autotune: drop run scratch dir", log=log):
+            shutil.rmtree(_bl.bench_dir(_require_ctx().config.AGENT_INSTALL_DIR) / "runs" / f"at-{run_id}",
+                          ignore_errors=True)
         _autotune_proc = None
+        _autotune_untrack_aux()
         with _autotune_lock:
             _autotune_active = False
+
+
+def llama_autotune_preflight(authorization: Optional[str] = Header(default=None)) -> dict[str, Any]:
+    """What the tuner can do on this host: cores, RAM/VRAM, KL tooling, speed-bench runtime, drafts."""
+    _require_ctx().check_bearer(authorization); _llama_check_enabled()
+    rt = _bench_live_runtime()
+    sizes: dict = {}
+    with best_effort("autotune preflight: catalog sweep", log=log):
+        sizes = _llama_catalog_sweep()[0]
+    gpu: dict = {}
+    with best_effort("autotune preflight: gpu", log=log):
+        gpu = collect_gpu() or {}
+    vram = gpu.get("vram_total_bytes")
+    return {"ok": True, "busy": bool(_bench_active or _autotune_active), "unit_active": _llama_unit_active(),
+            "cores": _at.physical_cores(_read_cpuinfo(), os.cpu_count() or 1),
+            "perplexity": _autotune_perplexity_bin() is not None and _autotune_kl_text().is_file(),
+            "runtime": {"ok": bool(rt["python"] and rt["script"]), **rt},
+            "drafts": _list_cache_ggufs(_hf_cache_root()), "sizes": sizes,
+            "vram_total_mb": int(vram // (1024 * 1024)) if isinstance(vram, (int, float)) and vram else None,
+            "ram_total_mb": _ram_total_mb()}
 
 
 def llama_autotune_run(body: dict, authorization: Optional[str] = Header(default=None)) -> dict[str, Any]:
     _require_ctx().check_bearer(authorization); _llama_check_enabled()
     global _autotune_active, _autotune_run_id
-    model_ids = body.get("model_ids") or []
-    if isinstance(model_ids, str):
-        model_ids = [model_ids]
-    model_ids = [str(m).strip() for m in model_ids if str(m).strip()]
-    if not model_ids:
-        raise HTTPException(status_code=400, detail="model_ids required")
+    cache_root = _hf_cache_root()
     try:
-        target_mb = int(body.get("target_mb"))
-    except Exception:
-        raise HTTPException(status_code=400, detail="target_mb (int, MB) required")
-    if target_mb < 0:
-        raise HTTPException(status_code=400, detail="target_mb must be >= 0")
-    optional_params = body.get("optional_params") or {}
-    if not isinstance(optional_params, dict):
-        raise HTTPException(status_code=400, detail="optional_params must be an object")
-    try:
-        tolerance_mb = int(body.get("tolerance_mb", 50))
-    except Exception:
-        raise HTTPException(status_code=400, detail="tolerance_mb must be an integer")
-    if tolerance_mb < 1:
-        tolerance_mb = 1
-
+        req = _at.validate_request(body or {}, cache_root=cache_root, v1_args=_autotune_build_optional_args)
+    except (ValueError, TypeError, AttributeError) as e:
+        raise HTTPException(status_code=400, detail=str(e))
     # Refuse to start if llama-server is running — port/VRAM would collide.
-    with best_effort("autotune: probe llama unit is-active", log=log):
-        st = subprocess.run(
-            ["systemctl", "is-active", _require_ctx().config.LLAMA_SYSTEMD_UNIT],
-            capture_output=True, text=True, timeout=5,
-        )
-        if (st.stdout or "").strip() == "active":
-            return {"ok": False, "error": f"{_require_ctx().config.LLAMA_SYSTEMD_UNIT} is running — stop it before auto-tune"}
-
+    if _llama_unit_active():
+        return {"ok": False, "error": f"{_require_ctx().config.LLAMA_SYSTEMD_UNIT} is running — stop it before auto-tune"}
     with _autotune_lock:
         if _autotune_active or _bench_active:
             return {"ok": False, "error": "Another benchmark or auto-tune is in progress"}
@@ -3197,10 +3444,8 @@ def llama_autotune_run(body: dict, authorization: Optional[str] = Header(default
         # active=True and start_run would replay the prior run's stale done.
         with _autotune_cond:
             _autotune_replay.start_run(_autotune_run_id)
-    threading.Thread(target=_autotune_run_all,
-                     args=(model_ids, target_mb, optional_params, tolerance_mb),
-                     daemon=True).start()
-    return {"ok": True}
+    threading.Thread(target=_autotune_run_all, args=(req,), daemon=True).start()
+    return {"ok": True, "run_id": _autotune_run_id}
 
 
 def llama_autotune_stream(
@@ -3217,6 +3462,22 @@ def llama_autotune_stream(
 def llama_autotune_cancel(authorization: Optional[str] = Header(default=None)) -> dict[str, Any]:
     _require_ctx().check_bearer(authorization); _llama_check_enabled()
     _autotune_cancel_event.set()
+    aux, aux_pgid = _autotune_aux_proc, _autotune_aux_pgid
+    if aux is not None and aux.poll() is None:
+        with best_effort("autotune cancel: terminate aux group", log=log):
+            if aux_pgid is not None:
+                try: os.killpg(aux_pgid, signal.SIGTERM)
+                except ProcessLookupError: pass
+            else:
+                aux.terminate()
+            try:
+                aux.wait(timeout=3)
+            except subprocess.TimeoutExpired:
+                if aux_pgid is not None:
+                    try: os.killpg(aux_pgid, signal.SIGKILL)
+                    except ProcessLookupError: pass
+                else:
+                    aux.kill()
     proc, pgid = _autotune_proc, _autotune_pgid
     if proc is None:
         res = _pkill_strays(['llama-server'], "autotune cancel")
@@ -3294,6 +3555,7 @@ _ROUTES: tuple = (
     ("GET",    "/llama/bench/live/preflight",     llama_bench_live_preflight),
     ("POST",   "/llama/bench/live/setup",         llama_bench_live_setup),
     ("POST",   "/llama/bench/live/run",           llama_bench_live_run),
+    ("GET",    "/llama/autotune/preflight",       llama_autotune_preflight),
     ("POST",   "/llama/autotune/run",             llama_autotune_run),
     ("GET",    "/llama/autotune/stream",          llama_autotune_stream),
     ("POST",   "/llama/autotune/cancel",          llama_autotune_cancel),

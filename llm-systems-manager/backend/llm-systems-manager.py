@@ -170,7 +170,7 @@ def _local_hostname() -> str:
 # banner reads it. Bump suffix (-1, -2, …) for same-day iterations; roll
 # the date for a new day's first change.
 # ---------------------------------------------------------------------------
-__version__ = "v2026.09.07-4"
+__version__ = "v2026.09.08-1"
 
 # Wall-clock at first import (Cheroot main process); the shutdown banner
 # reads it for the uptime line.
@@ -2299,6 +2299,11 @@ def llm_autotune_stream_info():
 @app.route("/api/llm/autotune/cancel", methods=["POST"])
 def llm_autotune_cancel():
     return proxies.proxy_to_primary("llama", "POST", "/llama/autotune/cancel", timeout=10)
+
+
+@app.route("/api/llm/autotune/preflight")
+def llm_autotune_preflight():
+    return proxies.proxy_to_primary("llama", "GET", "/llama/autotune/preflight", timeout=20)
 
 
 @app.route("/api/llm/cache")

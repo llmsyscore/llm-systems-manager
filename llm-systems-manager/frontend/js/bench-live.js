@@ -105,7 +105,8 @@
   }
   function setMode(mode) {
     mode = mode === 'offline' ? 'offline' : 'live';
-    if (window.layout) { layout.benchMode = mode; try { saveLayout(); } catch (_) {} }
+    const L = typeof layout !== 'undefined' ? layout : null;
+    if (L) { L.benchMode = mode; try { saveLayout(); } catch (_) {} }
     document.querySelectorAll('#benchModeSeg button').forEach(b => b.classList.toggle('on', b.dataset.mode === mode));
     $('benchLive').style.display = mode === 'live' ? '' : 'none';
     $('benchOffline').style.display = mode === 'offline' ? '' : 'none';
@@ -154,7 +155,7 @@
   }
   async function onOpen(modelId) {
     if (modelId) _model = modelId;
-    setMode((window.layout && layout.benchMode) || 'live');
+    setMode((typeof layout !== 'undefined' && layout && layout.benchMode) || 'live');
     try { _pre = await fetch('/api/benchmark/live/preflight').then(r => r.json()); } catch (_) { _pre = { server: { up: false }, runtime: {} }; }
     renderPreflight();
     await loadRuns();

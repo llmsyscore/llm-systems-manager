@@ -60,7 +60,7 @@ Backend API endpoints consumed:
   <link rel="stylesheet" href="/static/css/modelcards.css?v=2026.09.04-12">
   <link rel="stylesheet" href="/static/css/reportcard.css?v=2026.08.31-1">
   <link rel="stylesheet" href="/static/css/tools.css?v=2026.08.31-8">
-  <link rel="stylesheet" href="/static/css/autotune.css?v=2026.08.31-1">
+  <link rel="stylesheet" href="/static/css/autotune.css?v=2026.09.08-1">
   <link rel="stylesheet" href="/static/css/energy.css?v=2026.08.19-2">
   <link rel="stylesheet" href="/static/css/overall.css?v=2026.08.30-1">
 </head>
@@ -2315,7 +2315,7 @@ Backend API endpoints consumed:
       </div>
     </div><!-- /toolsModBench -->
 
-    <!-- Auto-Tune CTX module (#770) — reuses bench rail/pane + at-wizard CSS -->
+    <!-- Autotune module (#880): objective + seven dimensions, staged search, recommendation table -->
     <div id="toolsModAt" class="at-wizard" style="display:none;">
       <div class="tools-mod-head">
         <div class="mini-switch" role="tablist" aria-label="Switch tool">
@@ -2324,171 +2324,143 @@ Backend API endpoints consumed:
           <button type="button" title="Benchmark" onclick="toolsOpenTool('benchmark')">◷</button>
           <button class="on" type="button" title="Autotune">⌖</button>
         </div>
-        <h2>Auto-Tune CTX</h2>
+        <h2>Autotune</h2>
         <span class="ctx-chip" id="toolsChipAutotune" style="display:none;"></span>
         <span class="mgap"></span>
+        <span class="bl-note" id="atModeNote">Plan · nothing has run yet</span>
       </div>
       <div class="bench-body">
-      <div class="bench-rail">
-
-    <!-- Pre-flight: llama-server must be stopped -->
-    <div id="atPreflight" class="bench-row" style="background:var(--bg-card-alt);border:1px solid var(--border-strong);border-radius:6px;padding:8px 12px;margin-bottom:6px;display:none;">
-      <span id="atPreflightMsg" style="flex:1;font-size:0.85em;">Checking llama-server state…</span>
-      <button id="atStopBtn" class="btn btn-red-muted-gradient" onclick="atStopServer()" style="display:none;">⏹ Stop llama-server</button>
-    </div>
-
-    <!-- Step 1: Models — collapsible, auto-closes on Run -->
-    <details id="atModelsDetails" open>
-      <summary>Models</summary>
-      <div id="atModelPanel" style="background:var(--bg-card-alt);border:1px solid var(--border-strong);border-radius:4px;padding:6px 8px;margin-top:6px;"></div>
-    </details>
-
-    <!-- Step 2: Target free VRAM + tolerance -->
-    <div class="modal-group">
-      <div class="modal-group-h">Targets</div>
-      <div class="bench-row">
-        <div class="at-field">
-          <label>Target free VRAM (MB)</label>
-          <input id="atTargetMb" type="number" min="0" step="64" value="1024" />
+      <div class="bench-rail at-rail">
+        <div id="atPreflight" class="at-preflight" style="display:none;">
+          <span class="at-dot warn"></span>
+          <span class="d" id="atPreflightMsg"></span>
+          <button id="atStopBtn" class="mcbtn mcbtn-ghost mcbtn-sm" onclick="AT.stopServer()" style="display:none;">⏹ Stop server</button>
         </div>
-        <div class="at-field">
-          <label>Tolerance ± (MB)</label>
-          <input id="atToleranceMb" type="number" min="1" step="1" value="50" />
+        <div class="at-grp">
+          <div class="at-grp-h">Models <span class="r" id="atModelsCount">0 selected</span></div>
+          <div class="at-grp-b at-mlist" id="atModelList"></div>
         </div>
-        <div class="at-field" style="max-width:340px;flex:1;">
-          <label style="color:var(--fg-dim)">Tuner converges within ± Tolerance of target, max 10 iterations per model.</label>
+        <div class="at-grp">
+          <div class="at-grp-h">Objective</div>
+          <div class="at-grp-b">
+            <div class="mc-seg at-objseg" id="atObjSeg">
+              <button type="button" data-obj="fit">Fit</button><button type="button" data-obj="speed">Speed</button><button type="button" data-obj="balanced" class="on">Balanced</button><button type="button" data-obj="serve">Serve</button>
+            </div>
+            <div class="at-hint" id="atObjHint"></div>
+          </div>
         </div>
-        <label style="margin-left:auto;font-size:0.85em;display:flex;align-items:center;gap:6px;">
-          <input id="atRestartAfter" type="checkbox" />
-          Restart llama-server after tune
-        </label>
-      </div>
-    </div>
-
-    <!-- Step 3: Optional runtime parameters (collapsed by default; also
-         auto-collapses when Run Auto Tune is pressed). -->
-    <details id="atOptionalParamsDetails">
-      <summary>Optional params<span id="atOptCount"></span></summary>
-      <div style="padding:8px 4px;display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:4px 16px;">
-        <div class="at-opt-row">
-          <input type="checkbox" id="atEn_load_mode">
-          <label class="at-opt-label" for="atEn_load_mode">--load-mode</label>
-          <select id="atV_load_mode">
-            <option value="auto">auto</option>
-            <option value="none">none</option>
-            <option value="mmap">mmap</option>
-            <option value="mlock">mlock</option>
-            <option value="mmap+mlock">mmap+mlock</option>
-            <option value="dio">dio</option>
-          </select>
+        <div class="at-grp">
+          <div class="at-grp-h">Dimensions <span class="r" id="atDimsCount"></span></div>
+          <div class="at-dim closed" data-dim="context">
+            <div class="at-dim-h"><button type="button" class="mc-toggle on" data-dim-on disabled><span class="track"></span></button><span class="n">Context size</span><span class="s" data-dim-sum></span><span class="chev">▾</span></div>
+            <div class="at-dim-b">
+              <div class="at-frow"><label>Target free VRAM</label><input class="at-in" id="atTargetMb" type="number" min="0" step="64" value="1024"><span class="at-hint">MB</span></div>
+              <div class="at-frow"><label>Tolerance ±</label><input class="at-in" id="atToleranceMb" type="number" min="1" step="1" value="50"><span class="at-hint">MB</span></div>
+              <div class="at-frow"><label>Custom args</label><input class="at-in" id="atCustomArgs" placeholder="--flash-attn --rope-freq-base 1e7"></div>
+              <div class="at-hint">Converges <span class="at-tag">-fitt</span> and reads back the context llama.cpp fits. Always runs first.</div>
+            </div>
+          </div>
+          <div class="at-dim closed" data-dim="kv">
+            <div class="at-dim-h"><button type="button" class="mc-toggle on" data-dim-on><span class="track"></span></button><span class="n">KV cache type</span><span class="s" data-dim-sum></span><span class="chev">▾</span></div>
+            <div class="at-dim-b">
+              <div class="bl-chips" id="atKvChips"><span class="bl-chip on" data-v="f16">f16</span><span class="bl-chip on" data-v="q8_0">q8_0</span><span class="bl-chip" data-v="q5_1">q5_1</span><span class="bl-chip on" data-v="q4_0">q4_0</span><span class="bl-chip" data-v="iq4_nl">iq4_nl</span></div>
+              <div class="at-frow"><label>Quality guard KL ≤</label><input class="at-in xs" id="atKvKl" type="number" min="0" step="0.005" value="0.02"><span class="at-hint">vs f16</span></div>
+              <div class="at-hint">Each candidate is re-fitted (smaller KV → larger ctx). Types below q8_0 are scored with a short KL-divergence pass and never recommended when they fail.</div>
+            </div>
+          </div>
+          <div class="at-dim closed" data-dim="moe">
+            <div class="at-dim-h"><button type="button" class="mc-toggle on" data-dim-on><span class="track"></span></button><span class="n">MoE CPU offload</span><span class="s" data-dim-sum></span><span class="chev">▾</span></div>
+            <div class="at-dim-b">
+              <div class="at-frow"><label>Search range</label><input class="at-in xs" id="atMoeMin" type="number" min="0" value="0"><span class="at-hint">→</span><input class="at-in xs" id="atMoeMax" type="number" min="0" value="16"><span class="at-hint">layers</span></div>
+              <div class="at-hint">Shown for MoE or unknown models. Finds the fewest expert layers on CPU that still reach the objective's context.</div>
+            </div>
+          </div>
+          <div class="at-dim closed" data-dim="threads">
+            <div class="at-dim-h"><button type="button" class="mc-toggle on" data-dim-on><span class="track"></span></button><span class="n">CPU threads</span><span class="s" data-dim-sum></span><span class="chev">▾</span></div>
+            <div class="at-dim-b">
+              <div class="bl-chips" id="atThreadChips"></div>
+              <div class="at-hint" id="atThreadHint">Candidates are seeded from the host's physical cores. Batch threads are set separately when MoE offload is on.</div>
+            </div>
+          </div>
+          <div class="at-dim closed" data-dim="slots">
+            <div class="at-dim-h"><button type="button" class="mc-toggle on" data-dim-on><span class="track"></span></button><span class="n">Parallel slots</span><span class="s" data-dim-sum></span><span class="chev">▾</span></div>
+            <div class="at-dim-b">
+              <div class="bl-chips" id="atSlotChips"><span class="bl-chip on" data-v="1">1</span><span class="bl-chip on" data-v="2">2</span><span class="bl-chip on" data-v="4">4</span><span class="bl-chip on" data-v="8">8</span><span class="bl-chip" data-v="16">16</span></div>
+              <div class="at-frow"><label>Min ctx per slot</label><input class="at-in" id="atMinCtxSlot" type="number" min="512" step="1024" value="32768"></div>
+              <div class="at-hint">Measured with a live concurrency sweep (same engine as Benchmark · Live).</div>
+            </div>
+          </div>
+          <div class="at-dim closed" data-dim="spec">
+            <div class="at-dim-h"><button type="button" class="mc-toggle on" data-dim-on><span class="track"></span></button><span class="n">Speculative decoding</span><span class="s" data-dim-sum></span><span class="chev">▾</span></div>
+            <div class="at-dim-b">
+              <div class="bl-chips" id="atSpecChips"><span class="bl-chip on" data-v="auto">auto-detect</span><span class="bl-chip" data-v="draft-mtp">NextN / MTP</span><span class="bl-chip" data-v="draft-dflash">DFlash</span><span class="bl-chip" data-v="draft-simple">draft model</span><span class="bl-chip" data-v="ngram-simple">ngram</span></div>
+              <div class="at-frow"><label>Draft model</label><select class="at-in" id="atDraftSel"><option value="auto">auto</option><option value="none">none</option></select></div>
+              <div class="at-frow"><label>Draft window · min / max</label><input class="at-in xs" id="atSpecNmin" type="number" min="0" value="0"><span class="at-hint">→</span><input class="at-in xs" id="atSpecNmax" type="number" min="1" value="16"><span class="at-hint">tokens</span></div>
+              <div class="at-frow"><label>Draft p-min</label><input class="at-in xs" id="atSpecPmin" type="number" min="0" max="1" step="0.05" value="0.75"></div>
+              <div class="at-hint">NextN / MTP heads are read from the GGUF; DFlash and draft models are tried when present in the cache. Each type is scored by decode t/s and accept rate.</div>
+            </div>
+          </div>
+          <div class="at-dim closed" data-dim="sampling">
+            <div class="at-dim-h"><button type="button" class="mc-toggle on" data-dim-on><span class="track"></span></button><span class="n">Sampling defaults</span><span class="s" data-dim-sum></span><span class="chev">▾</span></div>
+            <div class="at-dim-b">
+              <div class="at-hint">Reads the quantizer's <span class="at-tag">generation_config.json</span> first, then the model card, then the original model's card behind a requant. Suggests temperature, top-k, top-p, min-p; never applied silently.</div>
+              <div class="at-frow"><label>Overwrite my values</label><button type="button" class="mc-toggle" id="atSamplingOverwrite"><span class="track"></span><span class="tlbl">only fill blanks</span></button></div>
+            </div>
+          </div>
         </div>
-        <div class="at-opt-row">
-          <input type="checkbox" id="atEn_kv_unified">
-          <label class="at-opt-label" for="atEn_kv_unified">--kv-unified</label>
+        <div class="at-grp">
+          <div class="at-grp-h">Budget</div>
+          <div class="at-grp-b">
+            <div class="at-frow"><label>Time budget</label><input class="at-in xs" id="atBudgetMin" type="number" min="5" max="600" value="45"><span class="at-hint">min</span></div>
+            <div class="at-frow"><label>Report only</label><button type="button" class="mc-toggle" id="atReportOnly"><span class="track"></span><span class="tlbl">apply needs a click</span></button></div>
+            <div class="at-frow"><label>Restart server after apply</label><button type="button" class="mc-toggle on" id="atRestartAfter"><span class="track"></span></button></div>
+          </div>
         </div>
-        <div class="at-opt-row">
-          <input type="checkbox" id="atEn_parallel">
-          <label class="at-opt-label" for="atEn_parallel">--parallel</label>
-          <input type="number" id="atV_parallel" min="1" step="1" placeholder="4">
-        </div>
-        <div class="at-opt-row">
-          <input type="checkbox" id="atEn_cache_ram">
-          <label class="at-opt-label" for="atEn_cache_ram">--cache-ram (MB)</label>
-          <input type="number" id="atV_cache_ram" min="0" step="128" placeholder="4096">
-        </div>
-        <div class="at-opt-row">
-          <input type="checkbox" id="atEn_b">
-          <label class="at-opt-label" for="atEn_b">-b (batch)</label>
-          <input type="number" id="atV_b" min="1" step="1" placeholder="2048">
-        </div>
-        <div class="at-opt-row">
-          <input type="checkbox" id="atEn_ub">
-          <label class="at-opt-label" for="atEn_ub">-ub (ubatch)</label>
-          <input type="number" id="atV_ub" min="1" step="1" placeholder="2048">
-        </div>
-        <div class="at-opt-row">
-          <input type="checkbox" id="atEn_ngl">
-          <label class="at-opt-label" for="atEn_ngl">-ngl (gpu layers)</label>
-          <input type="number" id="atV_ngl" min="0" step="1" placeholder="99">
-        </div>
-        <div class="at-opt-row">
-          <input type="checkbox" id="atEn_ctk">
-          <label class="at-opt-label" for="atEn_ctk">-ctk (K quant)</label>
-          <select id="atV_ctk">
-            <option value="">—</option>
-            <option value="f16">f16</option>
-            <option value="bf16">bf16</option>
-            <option value="q8_0">q8_0</option>
-            <option value="q5_1">q5_1</option>
-            <option value="q5_0">q5_0</option>
-            <option value="q4_1">q4_1</option>
-            <option value="q4_0">q4_0</option>
-          </select>
-        </div>
-        <div class="at-opt-row">
-          <input type="checkbox" id="atEn_ctv">
-          <label class="at-opt-label" for="atEn_ctv">-ctv (V quant)</label>
-          <select id="atV_ctv">
-            <option value="">—</option>
-            <option value="f16">f16</option>
-            <option value="bf16">bf16</option>
-            <option value="q8_0">q8_0</option>
-            <option value="q5_1">q5_1</option>
-            <option value="q5_0">q5_0</option>
-            <option value="q4_1">q4_1</option>
-            <option value="q4_0">q4_0</option>
-          </select>
+        <div class="at-runbar">
+          <button id="atRunBtn" class="mcbtn mcbtn-pri" onclick="AT.run()">▶ Run autotune</button>
+          <span class="at-est" id="atEstimate"></span>
+          <button id="atCancelBtn" class="mcbtn mcbtn-ghost warn" onclick="AT.cancel()" style="display:none;">✕ Cancel</button>
+          <button id="atAgainBtn" class="mcbtn mcbtn-ghost" onclick="AT.again()" style="display:none;">↻ Run again</button>
         </div>
       </div>
-
-      <!-- Custom args: arbitrary llama-server flags passed through.
-           One flag/value pair per line, plain shell-style:
-             --flash-attn
-             --threads 16
-             --rope-freq-base 10000000
-           Lines that don't start with '-' are skipped. Quoting is
-           NOT shell-parsed; spaces split the flag from its value. -->
-      <div style="margin-top:14px;border-top:1px solid var(--border);padding-top:10px;">
-        <div style="font-size:0.85em;font-weight:500;margin-bottom:4px;">Custom args</div>
-        <div style="font-size:0.75em;color:var(--fg-dim);margin-bottom:6px;">
-          Free-form llama-server flags appended after the params above. One per line.
-          Examples: <code>--flash-attn</code>, <code>--threads 16</code>, <code>--rope-freq-base 10000000</code>.
-          Lines not starting with <code>-</code> are ignored.
+      <div class="bench-results-pane at-panes">
+        <div id="atPanePlan" class="at-pane">
+          <div class="at-card">
+            <div class="at-card-h"><h3>What will run</h3><span class="meta" id="atPlanMeta"></span></div>
+            <div class="at-card-b flush" id="atPlanRows"></div>
+            <div class="at-card-f"><span class="msg">Stages run in dependency order: context before KV, KV before offload, spec last. Each stage starts from the best of the previous one, so this is a handful of short searches, not a grid.</span></div>
+          </div>
+          <div class="at-notice" id="atPrevTune" style="display:none;"></div>
         </div>
-        <textarea id="atCustomArgs" rows="3"
-                  style="width:100%;font-family:monospace;font-size:0.85em;background:var(--bg-elev);color:var(--fg);border:1px solid var(--border);border-radius:4px;padding:6px;"
-                  placeholder="--flag value&#10;--bool-only-flag&#10;--another value"></textarea>
+        <div id="atPaneRun" class="at-pane" style="display:none;">
+          <div class="bl-strip at-strip"><span class="bench-status-pill running" id="atRunPill">running</span><span id="atStripStage"></span><span id="atStripTime"></span></div>
+          <div class="at-prog"><i id="atProgBar" style="width:0%"></i></div>
+          <div class="at-stepper" id="atStepper"></div>
+          <div class="at-card">
+            <div class="at-card-h"><h3 id="atStageTitle">Context size</h3><span class="meta" id="atStageMeta"></span><span class="gap"></span><span class="bench-status-pill" id="atStagePill"></span></div>
+            <div class="at-card-b" id="atStageBody"></div>
+          </div>
+          <div class="at-card">
+            <div class="at-card-h"><h3>Run log</h3><span class="meta">condensed · raw llama-server output inside</span></div>
+            <div class="at-card-b">
+              <div class="at-log" id="atLog"></div>
+              <details id="atRawDetails"><summary>Raw output (<span id="atRawCount">0</span> lines)</summary><div id="atRawLog" class="at-log raw"></div></details>
+            </div>
+          </div>
+        </div>
+        <div id="atPaneDone" class="at-pane" style="display:none;">
+          <div class="bl-strip at-strip"><span class="bench-status-pill ok" id="atDonePill">complete</span><span id="atDoneStats"></span><span id="atDoneVerify"></span><span class="gap"></span><button type="button" class="mcbtn mcbtn-ghost mcbtn-sm" onclick="AT.exportReport()">Export report</button></div>
+          <div class="at-card">
+            <div class="at-card-h"><div class="at-rec-head"><h3>Recommended configuration</h3><span class="big" id="atRecBig"></span></div><span class="gap"></span><span class="at-hint" id="atRecSel"></span></div>
+            <div class="at-card-b flush" style="overflow-x:auto"><table class="at-rt"><thead><tr><th style="width:24%">Parameter</th><th style="width:12%">Current</th><th style="width:12%">Recommended</th><th>Evidence</th><th style="width:44px"></th></tr></thead><tbody id="atRecRows"></tbody></table></div>
+            <div class="at-card-f"><button type="button" id="atApplyBtn" class="mcbtn mcbtn-pri" onclick="AT.apply()">Apply</button><button type="button" id="atProfileBtn" class="mcbtn mcbtn-ghost" onclick="AT.saveProfile()">Save as profile</button><button type="button" class="mcbtn mcbtn-ghost" onclick="AT.copyArgs()">Copy as llama-server args</button><span class="gap"></span><span class="msg" id="atRecMsg"></span></div>
+          </div>
+          <div class="at-guard" id="atGuard"></div>
+          <div class="at-card"><div class="at-card-h"><h3>Before / after</h3><span class="meta">verify stage vs the config that was live</span></div><div class="at-card-b at-cmp" id="atCmp"></div></div>
+          <div class="at-card collapsed"><div class="at-card-h tog" onclick="this.parentElement.classList.toggle('collapsed')"><h3>Run log</h3><span class="meta" id="atDoneLogMeta"></span><span class="gap"></span><span class="chev">▾</span></div><div class="at-card-b"><div class="at-log" id="atDoneLog"></div></div></div>
+        </div>
       </div>
-    </details>
-
-    <!-- Action row (rail bottom) -->
-    <div class="bench-rail-actions">
-      <button id="atCancelBtn" class="btn btn-red-muted-gradient" onclick="cancelAutotune()" style="display:none;">✕ Cancel</button>
-      <button id="atRunBtn" class="btn btn-stone-muted-gradient bench-run-primary" onclick="runAutotune()">▶ Run Auto Tune</button>
-    </div>
       </div>
-      <div class="bench-results-pane">
-    <div class="bench-pane-head">
-      <span id="atStatus" class="bench-status-pill" style="margin-left:auto;">idle</span>
-    </div>
-
-    <!-- Live results (one card per model as it completes) -->
-    <div id="atResults"></div>
-
-    <!-- Live log: condensed, one line per event -->
-    <div id="atLog"></div>
-
-    <!-- Raw llama-server output — collapsed by default. Captures every
-         `line` event from the agent stream verbatim. Useful for diagnosing
-         unparseable output or tracking exactly what each iteration did. -->
-    <details id="atRawDetails" style="margin-top:8px;">
-      <summary style="cursor:pointer;font-size:0.9em;color:var(--fg-dim);user-select:none;">
-        Raw llama-server output (<span id="atRawCount">0</span> lines)
-      </summary>
-      <div id="atRawLog"></div>
-    </details>
-      </div>
-    </div>
     </div><!-- /toolsModAt -->
   </div>
 
@@ -2522,13 +2494,14 @@ Backend API endpoints consumed:
 <script src="/static/js/autopilot.js?v=2026.09.04-1"></script>
 <script src="/static/js/llmcontrol-models.js?v=2026.09.07-1"></script>
 <script src="/static/js/editor-modern.js?v=2026.09.07-1"></script>
-<script src="/static/js/bench-autotune.js?v=2026.09.07-1"></script>
-<script src="/static/js/bench-live.js?v=2026.09.07-3"></script>
+<script src="/static/js/bench-autotune.js?v=2026.09.08-1"></script>
+<script src="/static/js/bench-live.js?v=2026.09.08-1"></script>
+<script src="/static/js/autotune.js?v=2026.09.08-1"></script>
 <script src="/static/js/lmstudio.js?v=2026.09.04-1"></script>
 <script src="/static/js/vllm.js?v=2026.09.04-1"></script>
 <script src="/static/js/vllm-bench-autotune.js?v=2026.09.02-1"></script>
 <script src="/static/js/report-card.js?v=2026.09.04-1"></script>
-<script src="/static/js/tools.js?v=2026.09.07-1"></script>
+<script src="/static/js/tools.js?v=2026.09.08-1"></script>
 <script src="/static/js/energy.js?v=2026.08.19-1"></script>
 <script src="/static/js/overall.js?v=2026.08.29-2"></script>
 <script src="/static/js/dashboard-manager.js?v=2026.08.17-1"></script>
