@@ -2452,7 +2452,7 @@ def _bench_live_run_all(req: dict, server: dict, python: str, script: str) -> No
         run_dir.mkdir(parents=True, exist_ok=True)
         env = dict(os.environ, PYTHONUNBUFFERED="1", HF_HUB_DISABLE_PROGRESS_BARS="1")
         _bench_put({"type": "model_start", "model_id": model_id, "run_id": run_id,
-                    "bench": req["bench"], "levels": req["concurrency"],
+                    "bench": req["bench"], "levels": req["concurrency"], "matrix": req.get("matrix"),
                     "cmd": " ".join(_bl.build_cmd(python, script, server["url"], req, req["concurrency"][0], "<run>/level-N.json"))})
         energy.start()
 
@@ -2467,36 +2467,43 @@ def _bench_live_run_all(req: dict, server: dict, python: str, script: str) -> No
             _bench_proc = None
             _bench_pgid = None
 
-        for level in req["concurrency"]:
-            if _bench_cancel_event.is_set():
-                ok = False
-                break
-            out_path = run_dir / f"level-{level}.json"
-            _bench_put({"type": "level_start", "model_id": model_id, "level": level,
-                        "concurrency": level, "samples": None})
-            t0 = time.monotonic()
-            rc, cancelled, elapsed = _bl.run_level_subprocess(
-                _bl.build_cmd(python, script, server["url"], req, level, str(out_path)),
-                env, _bench_put, model_id, level, _bench_cancel_event, _track, _untrack)
-            # The script's own timer excludes dataset load; agent wall is the fallback.
-            wall = elapsed if elapsed is not None else (time.monotonic() - t0)
-            if cancelled:
-                ok = False
-                break
-            try:
-                payload = json.loads(out_path.read_text(encoding="utf-8"))
-            except (OSError, ValueError):
-                ok = False
-                _bench_put({"type": "line", "model_id": model_id, "text": f"level {level}: no output (rc={rc})"})
-                break
-            summ = _bl.level_summary(payload, wall)
-            row = {"level": level, "concurrency": level, "wall_s": round(wall, 3), "rc": rc, **summ}
-            levels.append(row)
-            if req["categories"] == "all":
-                _bl.write_marker(cfg.AGENT_INSTALL_DIR, req["bench"], [r.get("category") for r in summ["rows"] if r.get("category")])
-            _bench_put({"type": "level_result", "model_id": model_id, **row})
-            if rc not in (0, 1):
-                ok = False
+        stop = False
+        for cell in req["cells"]:
+            creq = {**req, "bench": cell["bench"], "osl": cell["osl"]}
+            for level in req["concurrency"]:
+                if _bench_cancel_event.is_set():
+                    ok = False; stop = True
+                    break
+                out_path = run_dir / f"level-{cell['bench']}-{cell['osl']}-{level}.json"
+                _bench_put({"type": "level_start", "model_id": model_id, "level": level,
+                            "concurrency": level, "samples": None,
+                            "bench": cell["bench"], "osl": cell["osl"]})
+                t0 = time.monotonic()
+                rc, cancelled, elapsed = _bl.run_level_subprocess(
+                    _bl.build_cmd(python, script, server["url"], creq, level, str(out_path)),
+                    env, _bench_put, model_id, level, _bench_cancel_event, _track, _untrack)
+                # The script's own timer excludes dataset load; agent wall is the fallback.
+                wall = elapsed if elapsed is not None else (time.monotonic() - t0)
+                if cancelled:
+                    ok = False; stop = True
+                    break
+                try:
+                    payload = json.loads(out_path.read_text(encoding="utf-8"))
+                except (OSError, ValueError):
+                    ok = False; stop = True
+                    _bench_put({"type": "line", "model_id": model_id, "text": f"level {level}: no output (rc={rc})"})
+                    break
+                summ = _bl.level_summary(payload, wall)
+                row = {"level": level, "concurrency": level, "bench": cell["bench"], "osl": cell["osl"],
+                       "wall_s": round(wall, 3), "rc": rc, **summ}
+                levels.append(row)
+                if req["categories"] == "all":
+                    _bl.write_marker(cfg.AGENT_INSTALL_DIR, cell["bench"], [r.get("category") for r in summ["rows"] if r.get("category")])
+                _bench_put({"type": "level_result", "model_id": model_id, **row})
+                if rc not in (0, 1):
+                    ok = False; stop = True
+                    break
+            if stop:
                 break
     except Exception as e:
         log.error("live bench error: %s", e, exc_info=True)

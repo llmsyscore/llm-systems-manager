@@ -28,7 +28,8 @@ def test_validate_defaults_and_limits(bl):
     req = bl.validate_run_request({"model_id": "org/m:Q4", "bench": "qualitative"})
     assert req == {"model_id": "org/m:Q4", "bench": "qualitative", "categories": "all",
                    "osl": 1024, "limit": 8, "concurrency": [1], "timeout_s": 600,
-                   "extra_inputs": {"temperature": 0}, "baseline_run_id": None}
+                   "extra_inputs": {"temperature": 0}, "baseline_run_id": None,
+                   "matrix": None, "cells": [{"bench": "qualitative", "osl": 1024}]}
     req = bl.validate_run_request({"model_id": "m", "bench": "throughput_8k", "categories": ["a", "b"],
                                    "osl": 256, "limit": 4, "concurrency": [1, 2, 4], "timeout_s": 30,
                                    "extra_inputs": {"top_p": 0.9}, "baseline_run_id": "abc"})
@@ -169,3 +170,38 @@ def test_level_summary_tolerates_non_numeric_counts(bl):
                "results": [{"ok": True, "completion_tokens": 100}, {"ok": False}]}
     all_ = bl.level_summary(payload, 10.0)["all"]
     assert all_["requests"] == 1 and all_["failed"] == 1 and all_["pred_tps"] == 10.0
+
+
+def test_matrix_expands_cells_in_order(bl):
+    req = bl.validate_run_request({"model_id": "m", "matrix": {"benches": ["throughput_1k", "throughput_8k"], "osls": [256, 1024]},
+                                   "concurrency": [1]})
+    assert req["matrix"] == {"benches": ["throughput_1k", "throughput_8k"], "osls": [256, 1024]}
+    assert req["cells"] == [{"bench": "throughput_1k", "osl": 256}, {"bench": "throughput_1k", "osl": 1024},
+                            {"bench": "throughput_8k", "osl": 256}, {"bench": "throughput_8k", "osl": 1024}]
+    assert req["bench"] == "throughput_1k" and req["osl"] == 256
+
+
+def test_no_matrix_gives_single_cell(bl):
+    req = bl.validate_run_request({"model_id": "m", "bench": "throughput_8k", "osl": 512})
+    assert req["matrix"] is None
+    assert req["cells"] == [{"bench": "throughput_8k", "osl": 512}]
+
+
+@pytest.mark.parametrize("matrix,msg", [
+    ("x", "matrix must be an object"),
+    ({"benches": [], "osls": [256]}, "matrix.benches"),
+    ({"benches": ["nope"], "osls": [256]}, "unknown bench"),
+    ({"benches": ["throughput_1k", "throughput_1k"], "osls": [256]}, "repeats"),
+    ({"benches": ["throughput_1k"], "osls": []}, "matrix.osls"),
+    ({"benches": ["throughput_1k"], "osls": [8]}, "osl out of range"),
+    ({"benches": ["throughput_1k"], "osls": [256, 256]}, "repeats"),
+])
+def test_matrix_validation_errors(bl, matrix, msg):
+    with pytest.raises(ValueError, match=msg):
+        bl.validate_run_request({"model_id": "m", "matrix": matrix})
+
+
+def test_matrix_cells_times_levels_capped(bl):
+    with pytest.raises(ValueError, match="matrix too large"):
+        bl.validate_run_request({"model_id": "m", "concurrency": [1, 2, 4, 8, 16, 32, 48, 64],
+                                 "matrix": {"benches": ["throughput_1k", "throughput_8k"], "osls": [256, 1024]}})
