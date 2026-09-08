@@ -1,0 +1,226 @@
+// #879: Live benchmark module — presets, sweep parsing, estimate, deltas, knee, mode switch.
+import { describe, it, expect } from 'vitest';
+import { srcFile, runHarness, flush } from './helpers/harness.js';
+
+const BODY = `
+  <div class="mc-seg" id="benchModeSeg"><button data-mode="live" class="on">Live</button><button data-mode="offline">Offline</button></div>
+  <span id="benchModeNote"></span>
+  <div id="benchOffline"></div>
+  <div id="benchLive" style="display:none">
+    <div id="blPreflight"></div>
+    <div id="blPresets"><span class="bl-chip on" data-preset="chat">Chat</span><span class="bl-chip" data-preset="coding">Coding</span><span class="bl-chip" data-preset="rag">RAG</span><span class="bl-chip" data-preset="agentic">Agentic</span><span class="bl-chip" data-preset="custom">Custom</span></div>
+    <select id="blBench"><option>qualitative</option><option>throughput_1k</option><option>throughput_2k</option><option>throughput_8k</option><option>throughput_16k</option><option>throughput_32k</option></select>
+    <div id="blCatsRow"><span class="bl-hint" id="blCatsHint">all</span><div id="blCats"></div></div>
+    <input id="blOsl" value="1024"><input id="blLimit" value="8">
+    <div class="bl-chips" id="blSweepChips"><span class="bl-chip on" data-conc="1">1</span><span class="bl-chip on" data-conc="2">2</span><span class="bl-chip on" data-conc="4">4</span><span class="bl-chip on" data-conc="8">8</span><span class="bl-chip" data-conc="16">16</span><span class="bl-chip" data-conc="32">32</span><span class="bl-chip" data-conc="custom">Custom</span></div>
+    <div id="blSweepRow"><input id="blSweep" value="1, 2, 4, 8"></div>
+    <input id="blTimeout" value="600"><textarea id="blExtra">{"temperature": 0}</textarea>
+    <select id="blBaseline"><option value="">none</option></select>
+    <button id="blRunBtn"></button><button id="blCancelBtn" style="display:none"></button><span id="blEstimate"></span>
+    <div class="bl-notice" id="blNotice" style="display:none"></div>
+    <span id="blStatus"></span><div id="blStrip"></div><span id="blElapsed"></span><div id="blProgress"><i></i></div><div id="blTiles"></div>
+    <canvas id="blChart"></canvas><div class="bl-chart-empty" id="blChartEmpty"></div><div id="blChartCaption"></div><div id="blLevelSeg"></div><div id="blTable"></div><div id="blLog"></div>
+    <button id="blSetupBtn" style="display:none"></button>
+  </div>
+`;
+
+const STUBS = `
+  window.layout = {}; window.saveLayout = function () {};
+  window.TC = { esc: (s) => String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])) };
+  window.SG = { open: (opts) => { window.__sse = opts; return { close() {} }; } };
+  window.toolsSyncRunDot = function () {};
+  HTMLCanvasElement.prototype.getContext = function () { return {}; };
+  window.Chart = function (ctx, cfg) { this.data = cfg.data; this.options = cfg.options; };
+  Chart.prototype.update = function () {}; Chart.prototype.resize = function () {}; Chart.prototype.destroy = function () {};
+  window.__fetches = [];
+  window.fetch = function (url, opts) {
+    window.__fetches.push([url, opts]);
+    const body = url.indexOf('/api/benchmark/live/preflight') === 0
+      ? { ok: true, server: { up: true, url: 'http://h:9931', models: [{ id: 'org/m:Q4', status: 'loaded' }], loaded_id: 'org/m:Q4', slots_idle: 2, slots_total: 2 },
+          runtime: window.__noRt ? { python: '', source: '', script: '', script_status: 'ok' } : { python: '/p', source: 'venv', script: '/s', script_status: 'ok' },
+          datasets: { qualitative: { categories: ['coding', 'math', 'qa'] } }, benches: ['qualitative','throughput_1k','throughput_2k','throughput_8k','throughput_16k','throughput_32k'], busy: !!window.__busy }
+      : url.indexOf('/api/benchmark/live/runs') === 0
+      ? { ok: true, runs: [{ run_id: 'b1', ts: '2026-09-05T22:14:00Z', baseline: true, gen_tps: 103.2, config: { bench: 'qualitative' } }] }
+      : { ok: true, run_id: 'r1' };
+    return Promise.resolve({ ok: true, json: () => Promise.resolve(body) });
+  };
+`;
+
+function boot(bootstrap = '') {
+  return runHarness({ sources: [STUBS, srcFile('js/bench-live.js')], bodyHtml: BODY, bootstrap });
+}
+
+describe('BL pure helpers', () => {
+  const win = boot();
+  it('parses a concurrency sweep', () => {
+    expect(win.BL.parseSweep('1, 2, 4, 8')).toEqual([1, 2, 4, 8]);
+    expect(win.BL.parseSweep('4,x,2,2,0,70')).toEqual([2, 4]);
+    expect(win.BL.parseSweep('')).toEqual([1]);
+    expect(win.BL.parseSweep('1,2,3,4,5,6,7,8,9,10').length).toBe(8);
+  });
+  it('estimates seconds from the workload and last decode t/s', () => {
+    const s = win.BL.estimateSeconds({ levels: [1, 2], samples: 8, categories: 3, osl: 1024 }, 100);
+    expect(s).toBe(Math.round(2 * 8 * 3 * 1024 / 100));
+    expect(win.BL.estimateSeconds({ levels: [1], samples: 8, categories: 3, osl: 1024 }, null)).toBeNull();
+  });
+  it('formats deltas (higher-is-better and lower-is-better)', () => {
+    expect(win.BL.deltaText(138, 100)).toEqual({ text: '+38 % vs baseline', cls: 'up' });
+    expect(win.BL.deltaText(90, 100)).toEqual({ text: '−10 % vs baseline', cls: 'down' });
+    expect(win.BL.deltaText(3.9, 5.3, true)).toEqual({ text: '−26 % vs baseline', cls: 'up' });
+    expect(win.BL.deltaText(100, 101)).toEqual({ text: '−1 % vs baseline', cls: 'flat' });
+    expect(win.BL.deltaText(100, null)).toEqual({ text: 'no baseline', cls: 'flat' });
+  });
+  it('finds the knee (largest level with per-request decode ≥ 70 % of level 1)', () => {
+    const lv = (c, p) => ({ concurrency: c, all: { pred_tps: p } });
+    expect(win.BL.knee([lv(1, 142), lv(2, 126), lv(4, 101), lv(8, 64)])).toBe(4);
+    expect(win.BL.knee([lv(1, 100)])).toBe(1);
+    expect(win.BL.knee([])).toBeNull();
+  });
+});
+
+describe('BL presets and mode', () => {
+  it('applies presets and flips to custom on edit', async () => {
+    const win = boot('BL.onOpen("org/m:Q4");');
+    await flush();
+    const d = win.document;
+    win.BL.applyPreset('rag');
+    expect(d.getElementById('blBench').value).toBe('throughput_8k');
+    expect(d.getElementById('blOsl').value).toBe('256');
+    expect(d.getElementById('blLimit').value).toBe('6');
+    expect(d.getElementById('blCatsRow').style.display).toBe('none');
+    win.BL.applyPreset('coding');
+    expect(d.getElementById('blBench').value).toBe('qualitative');
+    expect([...d.querySelectorAll('#blCats .bl-chip.on')].map(c => c.dataset.cat)).toEqual(['coding']);
+    expect(d.getElementById('blCatsRow').style.display).toBe('');
+    d.getElementById('blOsl').value = '2048';
+    d.getElementById('blOsl').dispatchEvent(new win.Event('input', { bubbles: true }));
+    expect(d.querySelector('#blPresets .bl-chip.on').dataset.preset).toBe('custom');
+  });
+  it('persists the mode and toggles the bodies', async () => {
+    const win = boot('BL.onOpen();');
+    await flush();
+    win.BL.setMode('offline');
+    expect(win.layout.benchMode).toBe('offline');
+    expect(win.document.getElementById('benchLive').style.display).toBe('none');
+    expect(win.document.getElementById('benchOffline').style.display).toBe('');
+    win.BL.setMode('live');
+    expect(win.document.getElementById('benchLive').style.display).toBe('');
+  });
+  it('setup_done ends the stream and re-enables the run button', async () => {
+    const win = boot('BL.onOpen("org/m:Q4");');
+    await flush();
+    const d = win.document;
+    win.BL.setup();
+    await flush();
+    expect(d.getElementById('blRunBtn').disabled).toBe(true);
+    win.__sse.onEvent({ type: 'setup_done', ok: true, runtime: { python: '/p', script: '/s', script_status: 'ok' } });
+    expect(d.getElementById('blRunBtn').disabled).toBe(false);
+    expect(d.getElementById('blCancelBtn').style.display).toBe('none');
+    expect(d.getElementById('blStatus').textContent).toBe('runtime ready');
+  });
+  it('ignores stream events carrying another run id', async () => {
+    const win = boot('BL.onOpen("org/m:Q4");');
+    await flush();
+    const d = win.document;
+    win.BL.run();
+    await flush();
+    const lvl = runId => ({ type: 'level_result', run_id: runId, concurrency: 1, rows: [], all: { pred_tps: 1, agg_pred_tps: 1 } });
+    win.__sse.onEvent(lvl('other'));
+    expect(d.getElementById('blLevelSeg').innerHTML).toBe('');
+    win.__sse.onEvent(lvl('r1'));
+    expect(d.querySelectorAll('#blLevelSeg button').length).toBe(1);
+  });
+  it('run posts the validated body and lists the baseline', async () => {
+    const win = boot('BL.onOpen("org/m:Q4");');
+    await flush();
+    const d = win.document;
+    expect([...d.getElementById('blBaseline').options].map(o => o.value)).toContain('b1');
+    win.BL.run();
+    await flush();
+    const call = win.__fetches.find(([u]) => u === '/api/benchmark/live/run');
+    const body = JSON.parse(call[1].body);
+    expect(body).toEqual({ model_id: 'org/m:Q4', bench: 'qualitative', categories: 'all', osl: 1024, limit: 8,
+                           concurrency: [1, 2, 4, 8], timeout_s: 600, extra_inputs: { temperature: 0 }, baseline_run_id: 'b1' });
+  });
+  it('sweep chips select levels and Custom uses the input', async () => {
+    const win = boot('BL.onOpen("org/m:Q4");');
+    await flush();
+    const d = win.document;
+    const chip = c => d.querySelector(`#blSweepChips .bl-chip[data-conc="${c}"]`);
+    const lastRun = () => JSON.parse(win.__fetches.filter(([u]) => u === '/api/benchmark/live/run').pop()[1].body);
+    chip('16').dispatchEvent(new win.Event('click', { bubbles: true }));
+    win.BL.run();
+    await flush();
+    expect(lastRun().concurrency).toEqual([1, 2, 4, 8, 16]);
+    win.BL.cancel();
+    chip('custom').dispatchEvent(new win.Event('click', { bubbles: true }));
+    d.getElementById('blSweep').value = '2, 6';
+    win.BL.run();
+    await flush();
+    expect(lastRun().concurrency).toEqual([2, 6]);
+    win.BL.cancel();
+  });
+  it('runtime missing swaps the run button for the setup button', async () => {
+    const win = boot('window.__noRt = true; BL.onOpen("org/m:Q4");');
+    await flush();
+    const d = win.document;
+    expect(d.querySelector('#blPreflight .d').textContent).toBe('Bench runtime missing. Install it with the button below.');
+    expect(d.getElementById('blRunBtn').style.display).toBe('none');
+    const setup = d.getElementById('blSetupBtn');
+    expect(setup.style.display).toBe('');
+    expect(setup.className).toBe('mcbtn mcbtn-pri');
+    expect(setup.textContent).toBe('Install bench runtime');
+  });
+  it('attaches when preflight says busy', async () => {
+    const win = boot('window.__busy = true; BL.onOpen("org/m:Q4");');
+    await flush();
+    const d = win.document;
+    expect(win.BL.running()).toBe(true);
+    expect(d.getElementById('blNotice').style.display).toBe('');
+    expect(d.getElementById('blRunBtn').textContent).toBe('Queue run');
+    win.BL.cancel();
+  });
+  it('queued run starts after the attached run finishes', async () => {
+    const win = boot('window.__busy = true; BL.onOpen("org/m:Q4");');
+    await flush();
+    const d = win.document;
+    win.BL.run();
+    await flush();
+    expect(win.__fetches.some(([u]) => u === '/api/benchmark/live/run')).toBe(false);
+    expect(d.getElementById('blStatus').textContent).toContain('queued');
+    win.__sse.onEvent({ type: 'done', ok: true });
+    await flush();
+    expect(win.__fetches.some(([u]) => u === '/api/benchmark/live/run')).toBe(true);
+    win.BL.cancel();
+  });
+  it('setup is refused while attached and the attached state clears on done', async () => {
+    const win = boot('window.__busy = true; BL.onOpen("org/m:Q4");');
+    await flush();
+    const d = win.document;
+    win.BL.setup();
+    await flush();
+    expect(win.__fetches.some(([u]) => u === '/api/benchmark/live/setup')).toBe(false);
+    expect(d.getElementById('blStatus').textContent).toContain('in progress');
+    win.__sse.onEvent({ type: 'done', ok: true });
+    await flush();
+    expect(win.BL.running()).toBe(false);
+    expect(d.getElementById('blNotice').style.display).toBe('none');
+    expect(d.getElementById('blRunBtn').textContent).not.toBe('Queue run');
+  });
+  it('cancel while attached drops only the queued run', async () => {
+    const win = boot('window.__busy = true; BL.onOpen("org/m:Q4");');
+    await flush();
+    const d = win.document;
+    win.BL.run();
+    await flush();
+    expect(d.getElementById('blCancelBtn').textContent).toBe('Drop queued run');
+    win.BL.cancel();
+    expect(win.__fetches.some(([u]) => u === '/api/benchmark/cancel')).toBe(false);
+    expect(d.getElementById('blStatus').textContent).toContain('dropped');
+    expect(win.BL.running()).toBe(true);
+    expect(d.getElementById('blRunBtn').textContent).toBe('Queue run');
+    win.__sse.onEvent({ type: 'done', ok: true });
+    await flush();
+    expect(win.__fetches.some(([u]) => u === '/api/benchmark/live/run')).toBe(false);
+  });
+});

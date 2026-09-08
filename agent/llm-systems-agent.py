@@ -73,7 +73,7 @@ except ImportError:
                 fh.write(content)
         tmp.replace(p)
 
-VERSION = "v2026.09.07-1"
+VERSION = "v2026.09.07-3"
 
 # LMS ps busy-status substrings, mirroring manager energy.LMS_BUSY_MARKERS;
 # transitional states (LOADING/UNLOADING/DOWNLOADING) are not busy (#619).
@@ -439,6 +439,9 @@ class AgentConfig:
 
     # --- HF CLI ---
     HF_CLI_PATH: str = ""
+
+    # --- Live benchmark (speed-bench) ---
+    SPEED_BENCH_PYTHON: str = ""
 
     # --- HTTP worker pool / SSE stream cap ---
     # anyio pool size; SSE streams capped at WORKER_THREADS - STREAM_RESERVE_THREADS.

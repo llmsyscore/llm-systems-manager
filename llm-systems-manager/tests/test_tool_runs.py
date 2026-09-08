@@ -209,6 +209,15 @@ def test_agent_machine_token_may_only_write_the_ledger():
         assert auth._agent_bearer_allowed(denied, "POST") is False
 
 
+def test_agent_machine_token_may_only_write_the_live_bench_store():
+    """#879: the agent stores its own finished live-bench run — it must not
+    be able to read or clear the live-bench history."""
+    import auth
+    assert auth._agent_bearer_allowed("/api/benchmark/live/store", "POST") is True
+    assert auth._agent_bearer_allowed("/api/benchmark/live/store", "GET") is False
+    assert auth._agent_bearer_allowed("/api/benchmark/live/runs", "GET") is False
+
+
 def test_a_machine_token_owns_the_row_it_records(monkeypatch):
     _setup(monkeypatch)
     aid = "c" * 32

@@ -555,6 +555,8 @@ _compute_required_install_files() {
     "$SRC_DIR/providers/llama_sse.py"
     "$SRC_DIR/providers/terminal.py"
     "$SRC_DIR/providers/vllm.py"
+    "$SRC_DIR/bench/speed_bench.py"
+    "$SRC_DIR/bench/requirements-bench.txt"
   )
   case "$(uname -s)" in
     Linux)
@@ -1282,7 +1284,7 @@ if $DO_UPDATE; then
   for _f in "${_required_install_files[@]}"; do
     [[ -e "$_f" ]] || { echo "ERROR: post-fetch required file missing: $_f" >&2; exit 1; }
   done
-  for _pkg in collectors providers; do
+  for _pkg in collectors providers bench; do
     [[ -d "$SRC_DIR/$_pkg" ]] || { echo "ERROR: $SRC_DIR/$_pkg missing — refusing to wipe $INSTALL_DIR/$_pkg" >&2; exit 1; }
     # Stage into .new, then rename-swap over the live dir.
     $SUDO rm -rf "$INSTALL_DIR/$_pkg.new"
@@ -3793,7 +3795,7 @@ fi
 # Packages first so partial-cp leaves the OLD agent.py in place (fresh-install:
 # nothing in place, but same code shape as the --update path above).
 _section "Deploying agent code"
-for _pkg in collectors providers; do
+for _pkg in collectors providers bench; do
   [[ -d "$SRC_DIR/$_pkg" ]] || { echo "ERROR: $SRC_DIR/$_pkg missing — refusing to wipe $INSTALL_DIR/$_pkg" >&2; exit 1; }
   $SUDO rm -rf "$INSTALL_DIR/$_pkg"
   $SUDO cp -r "$SRC_DIR/$_pkg" "$INSTALL_DIR/$_pkg"

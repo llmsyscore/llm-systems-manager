@@ -27,7 +27,8 @@
   function _toolsRunningLocal() {
     const rc = typeof _rcEventSrc !== 'undefined' && _rcEventSrc;
     const bench = (typeof _benchEventSrc !== 'undefined' && _benchEventSrc)
-      || (typeof _vbenchEventSrc !== 'undefined' && _vbenchEventSrc);
+      || (typeof _vbenchEventSrc !== 'undefined' && _vbenchEventSrc)
+      || (window.BL && BL.running());
     const at = (typeof _atEventSrc !== 'undefined' && _atEventSrc)
       || (typeof _vatEventSrc !== 'undefined' && _vatEventSrc);
     return { rc: !!rc, bench: !!bench, at: !!at };
@@ -316,6 +317,7 @@
     if (id === 'reportcard') {
       if (!run.rc && typeof initReportCard === 'function') initReportCard();
     } else if (id === 'benchmark') {
+      if (window.BL) BL.onOpen(modelId || undefined);
       if (!run.bench && typeof openBench === 'function') openBench(modelId || undefined);
       else if (typeof _benchChart !== 'undefined' && _benchChart) {
         try { _benchChart.resize(); } catch (_) {}

@@ -59,6 +59,15 @@ Local endpoints served:
     POST /api/layout                    — save card layout JSON
     GET  /proxy/llmchat/<path>          — reverse proxy for LLM Chat UI
     GET  /llm/log                       — standalone llama log viewer page
+    GET  /api/benchmark/live/preflight  — live-bench prefetch/setup readiness (proxied)
+    POST /api/benchmark/live/setup      — live-bench prefetch a bench binary (proxied)
+    POST /api/benchmark/live/run        — start a live-bench run (proxied)
+    POST /api/benchmark/live/store      — agent posts a finished live-bench run (bearer-gated)
+    GET  /api/benchmark/live/runs       — list stored live-bench runs for a model/agent
+    GET  /api/benchmark/live/runs/<id>  — full stored live-bench run
+    POST /api/benchmark/live/runs/<id>/baseline — pin a run as the baseline for its model
+    DELETE /api/benchmark/live/runs/<id> — delete one stored live-bench run
+    DELETE /api/benchmark/live/runs     — delete all stored live-bench runs for a model
 ================================================================================
 """
 
@@ -161,7 +170,7 @@ def _local_hostname() -> str:
 # banner reads it. Bump suffix (-1, -2, …) for same-day iterations; roll
 # the date for a new day's first change.
 # ---------------------------------------------------------------------------
-__version__ = "v2026.09.07-3"
+__version__ = "v2026.09.07-4"
 
 # Wall-clock at first import (Cheroot main process); the shutdown banner
 # reads it for the uptime line.
@@ -186,6 +195,7 @@ import model_profiles  # type: ignore[import-not-found]  # noqa: E402  # leaf, n
 import report_card  # type: ignore[import-not-found]  # noqa: E402  # leaf, no cycle; #468
 import energy  # type: ignore[import-not-found]  # noqa: E402  # leaf, no cycle; #470
 import model_meta  # type: ignore[import-not-found]  # noqa: E402  # leaf, no cycle; #878
+import bench_live  # type: ignore[import-not-found]  # noqa: E402  # leaf, no cycle; #879
 import tool_activity  # type: ignore[import-not-found]  # noqa: E402  # leaf, no cycle; #775
 import gateway_usage  # type: ignore[import-not-found]  # noqa: E402  # leaf, no cycle; #502
 import discord_bot  # type: ignore[import-not-found]  # noqa: E402  # leaf, no cycle; #471
@@ -1902,7 +1912,7 @@ def llm_delete_config(model_id):
     )
 
 # ---------------------------------------------------------------------------
-# Benchmark (llama-bench / llama-batched-bench) — proxied to the primary
+# Benchmark (llama-bench) — proxied to the primary
 # llama agent; the bench binaries live on the inference host.
 # ---------------------------------------------------------------------------
 
@@ -5298,6 +5308,9 @@ tool_activity.configure(
 )
 energy.register_routes(app, ctx, db_path=str(DB_PATH))
 model_meta.register_routes(app, ctx, db_path=str(DB_PATH), read_ini=_read_ini)
+bench_live.register_routes(app, ctx, db_path=str(DB_PATH), proxy=proxies.proxy_to_primary,
+                           agent_by_token=agent_registry.agent_by_token, request_agent=_request_agent,
+                           note_tool_start=_note_tool_start)
 companion.register_routes(app, ctx, static_dir=STATIC_DIR)
 import manager_users  # type: ignore[import-not-found]  # sibling
 manager_users.init(

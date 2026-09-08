@@ -34,6 +34,7 @@ from . import _shared
 from . import llama_install
 from . import llama_sse
 from . import llama_upgrade
+from . import llama_bench_live as _bl
 
 # PR2: minimal spec the agent's heartbeat body emits so the manager can
 # discover what this agent serves. Manager-side providers/llama.py owns the
@@ -1976,26 +1977,17 @@ def _bench_get_hf_arg(model_id: str) -> "Optional[str]":
 
 def _bench_parse_row(row: dict, tool: str):
     """(gen_tps, ppt_tps, pg_tps) for one JSONL row; all None when not a result row."""
-    if not isinstance(row, dict):
+    if not isinstance(row, dict) or tool != "llama-bench":
         return (None, None, None)
-    if tool == "llama-bench":
-        ts_val = row.get("avg_ts") or row.get("t_s")
-        if ts_val is None:
-            return (None, None, None)
-        n_p = int(row.get("n_prompt", 0) or 0)
-        n_g = int(row.get("n_gen", 0) or 0)
-        if n_p > 0 and n_g == 0: return (None, float(ts_val), None)
-        if n_g > 0 and n_p == 0: return (float(ts_val), None, None)
-        if n_p > 0 and n_g > 0:  return (None, None, float(ts_val))
+    ts_val = row.get("avg_ts") or row.get("t_s")
+    if ts_val is None:
         return (None, None, None)
-    def _first(*keys):
-        return next((row[k] for k in keys if row.get(k) is not None), None)
-    pp = _first("speed_pp", "pp_tps", "avg_pp_tps")
-    tg = _first("speed_tg", "tg_tps", "avg_tg_tps")
-    pg = _first("speed")
-    return (float(tg) if tg is not None else None,
-            float(pp) if pp is not None else None,
-            float(pg) if pg is not None else None)
+    n_p = int(row.get("n_prompt", 0) or 0)
+    n_g = int(row.get("n_gen", 0) or 0)
+    if n_p > 0 and n_g == 0: return (None, float(ts_val), None)
+    if n_g > 0 and n_p == 0: return (float(ts_val), None, None)
+    if n_p > 0 and n_g > 0:  return (None, None, float(ts_val))
+    return (None, None, None)
 
 
 def _bench_tool_path(tool: str) -> "tuple[str, bool]":
@@ -2028,9 +2020,7 @@ def _bench_run_one(model_id: str, tool: str, switches: list, env: dict) -> None:
         _bench_put({"type": "model_done", "model_id": model_id, "ok": False,
                     "error": f"no HF reference found for {model_id}"})
         return
-    # batched-bench takes --output-format; llama-bench takes -o
-    jsonl_flags = (["--output-format", "jsonl"] if tool == "llama-batched-bench"
-                   else ["-o", "jsonl"])
+    jsonl_flags = ["-o", "jsonl"]
     cmd = [tool_path]
     for sw in switches or []:
         flag = (sw.get("flag") or "").strip()
@@ -2086,33 +2076,18 @@ def _bench_run_one(model_id: str, tool: str, switches: list, env: dict) -> None:
         if gen_tps is not None: latest_gen = gen_tps
         if ppt_tps is not None: latest_ppt = ppt_tps
         if pg_tps is not None: latest_pg = pg_tps
-        if tool == "llama-bench":
-            result_row = {
-                "n_prompt": int(row.get("n_prompt", 0) or 0),
-                "n_gen":    int(row.get("n_gen", 0) or 0),
-                "n_depth":  int(row.get("n_depth", 0) or 0),
-                "n_batch":  int(row.get("n_batch", 0) or 0),
-                "n_ubatch": int(row.get("n_ubatch", 0) or 0),
-                "avg_ts":   float(row.get("avg_ts", 0) or 0),
-            }
-            result_rows.append(result_row)
-            _bench_put({"type": "result", "model_id": model_id,
-                        "gen_tps": gen_tps, "ppt_tps": ppt_tps, "pg_tps": pg_tps,
-                        **result_row})
-        else:
-            # batched-bench: one JSONL row holds pp/tg/combined speeds; emit one
-            # series-tagged result per speed so each plots on its own chart series.
-            sweep = {k: int(row.get(k, 0) or 0)
-                     for k in ("pp", "tg", "pl", "n_kv_max", "n_batch", "n_ubatch")}
-            for series, tps in (("ppt", ppt_tps), ("gen", gen_tps), ("pg", pg_tps)):
-                if tps is None:
-                    continue
-                result_row = {"series": series, "avg_ts": float(tps), **sweep}
-                result_rows.append(result_row)
-                tps_slots = {"gen_tps": None, "ppt_tps": None, "pg_tps": None,
-                             f"{series}_tps": tps}
-                _bench_put({"type": "result", "model_id": model_id,
-                            **tps_slots, **result_row})
+        result_row = {
+            "n_prompt": int(row.get("n_prompt", 0) or 0),
+            "n_gen":    int(row.get("n_gen", 0) or 0),
+            "n_depth":  int(row.get("n_depth", 0) or 0),
+            "n_batch":  int(row.get("n_batch", 0) or 0),
+            "n_ubatch": int(row.get("n_ubatch", 0) or 0),
+            "avg_ts":   float(row.get("avg_ts", 0) or 0),
+        }
+        result_rows.append(result_row)
+        _bench_put({"type": "result", "model_id": model_id,
+                    "gen_tps": gen_tps, "ppt_tps": ppt_tps, "pg_tps": pg_tps,
+                    **result_row})
 
     proc.wait()
     _bench_proc = None
@@ -2167,7 +2142,7 @@ def llama_bench_run(body: dict, authorization: Optional[str] = Header(default=No
     if not model_ids:
         raise HTTPException(status_code=400, detail="model_ids required")
     tool = (body.get("tool") or "").strip()
-    if tool not in ("llama-bench", "llama-batched-bench"):
+    if tool != "llama-bench":
         raise HTTPException(status_code=400, detail="invalid tool")
     switches = body.get("switches") or []
     if not isinstance(switches, list):
@@ -2219,7 +2194,7 @@ def llama_bench_cancel(authorization: Optional[str] = Header(default=None)) -> d
     _bench_cancel_event.set()
     proc, pgid = _bench_proc, _bench_pgid
     if proc is None:
-        res = _pkill_strays(['llama-bench', 'llama-batched-bench'], "bench cancel")
+        res = _pkill_strays(['llama-bench'], "bench cancel")
         if res["ok"]:
             res["msg"] = "no tracked benchmark process"
         return res
@@ -2240,7 +2215,6 @@ def llama_bench_cancel(authorization: Optional[str] = Header(default=None)) -> d
                     log.warning("bench cancel: killpg SIGKILL failed: %s", e)
         with best_effort("bench cancel: pkill HIP/ROCm child procs", log=log):
             subprocess.run(['pkill', '-9', '-f', 'llama-bench'], capture_output=True, timeout=3)
-            subprocess.run(['pkill', '-9', '-f', 'llama-batched-bench'], capture_output=True, timeout=3)
         try:
             proc.wait(timeout=2)
         except subprocess.TimeoutExpired:
@@ -2268,6 +2242,306 @@ def llama_bench_perf_mode(body: dict, authorization: Optional[str] = Header(defa
         return {"ok": True, "mode": mode}
     except Exception as e:
         return {"ok": False, "error": str(e)}
+
+
+# ── Live benchmark (speed-bench, #879) ────────────────────────────────────
+
+def _live_power_w() -> "tuple[Optional[float], Optional[str]]":
+    """(watts, source): PSU wall power from liquidctl, else GPU power."""
+    try:
+        from collectors.liquidctl import get_liquidctl_cached  # type: ignore
+        psu = (get_liquidctl_cached() or {}).get("psu") or {}
+        est = psu.get("Estimated input power")
+        if isinstance(est, dict) and isinstance(est.get("value"), (int, float)):
+            return float(est["value"]), "psu"
+    except Exception:
+        pass
+    try:
+        gpu = collect_gpu() or {}
+        v = gpu.get("power_watts")
+        if isinstance(v, (int, float)):
+            return float(v), "gpu"
+    except Exception:
+        pass
+    return None, None
+
+
+def _bench_live_root() -> Path:
+    """Root holding the vendored bench assets: the configured install dir."""
+    inst = (getattr(_require_ctx().config, "AGENT_INSTALL_DIR", "") or "").strip()
+    return Path(inst) if inst else Path(__file__).resolve().parents[1]
+
+
+def _bench_live_server() -> dict:
+    """Running-server snapshot for the live bench: models, loaded id, slots, spec settings."""
+    base = (_require_ctx().config.LLAMA_API_URL or "").rstrip("/")
+    out: dict = {"up": False, "url": base, "models": [], "loaded_id": None,
+                 "slots_idle": 0, "slots_total": 0, "spec": None}
+    if not base:
+        return out
+    try:
+        resp = requests.get(f"{base}/v1/models", timeout=2)
+    except Exception:
+        return out
+    if not resp.ok:
+        return out
+    out["up"] = True
+    for m in (resp.json() or {}).get("data", []) or []:
+        st = m.get("status", {})
+        sv = st.get("value") if isinstance(st, dict) else None
+        out["models"].append({"id": m.get("id"), "status": sv or "unknown"})
+        if sv in ("loaded", "sleeping") and not out["loaded_id"]:
+            out["loaded_id"] = m.get("id")
+    try:
+        slots = requests.get(f"{base}/slots", timeout=2).json()
+        if isinstance(slots, list):
+            out["slots_total"] = len(slots)
+            out["slots_idle"] = sum(1 for s in slots if not s.get("is_processing"))
+    except Exception:
+        pass
+    try:
+        props = requests.get(f"{base}/props", timeout=2).json() or {}
+        gs = props.get("default_generation_settings") or {}
+        spec = gs.get("speculative") or {}
+        if isinstance(spec, dict) and spec:
+            out["spec"] = {"n_min": spec.get("n_min"), "n_max": spec.get("n_max"), "p_min": spec.get("p_min")}
+    except Exception:
+        pass
+    return out
+
+
+def _bench_live_runtime() -> dict:
+    cfg = _require_ctx().config
+    py, src = _bl.runtime_python(cfg.AGENT_INSTALL_DIR, getattr(cfg, "SPEED_BENCH_PYTHON", "") or "")
+    script, status = _bl.script_path(cfg.AGENT_INSTALL_DIR, _bench_live_root())
+    return {"python": py, "source": src, "script": str(script) if script else None,
+            "script_status": status, "commit": _bl.SCRIPT_COMMIT}
+
+
+def llama_bench_live_preflight(authorization: Optional[str] = Header(default=None)) -> dict[str, Any]:
+    _require_ctx().check_bearer(authorization); _llama_check_enabled()
+    cfg = _require_ctx().config
+    return {"ok": True, "server": _bench_live_server(), "runtime": _bench_live_runtime(),
+            "datasets": _bl.read_marker(cfg.AGENT_INSTALL_DIR), "benches": list(_bl.BENCHES),
+            "busy": bool(_bench_active or _autotune_active)}
+
+
+def _bench_live_setup_job(benches: list) -> None:
+    """venv + pip install + optional dataset prefetch, streamed on the bench replay."""
+    global _bench_active, _bench_proc, _bench_pgid
+    cfg = _require_ctx().config
+    root = _bl.bench_dir(cfg.AGENT_INSTALL_DIR)
+    ok = True
+    try:
+        root.mkdir(parents=True, exist_ok=True)
+        script, status = _bl.script_path(cfg.AGENT_INSTALL_DIR, _bench_live_root())
+        if script is None:
+            _bench_put({"type": "setup_step", "step": "script", "text": f"downloading speed_bench.py @ {_bl.SCRIPT_COMMIT[:12]}"})
+            resp = requests.get(_bl.SCRIPT_URL, timeout=30)
+            resp.raise_for_status()
+            body = resp.content
+            if len(body) > 512 * 1024:
+                raise RuntimeError("downloaded speed_bench.py is unexpectedly large")
+            import hashlib
+            if hashlib.sha256(body).hexdigest() != _bl.SCRIPT_SHA256:
+                raise RuntimeError("downloaded speed_bench.py does not match the pinned hash")
+            (root / "speed_bench.py").write_bytes(body)
+        py, src = _bl.runtime_python(cfg.AGENT_INSTALL_DIR, getattr(cfg, "SPEED_BENCH_PYTHON", "") or "")
+        steps: list = []
+        if py is None:
+            steps.append(("venv", ["python3", "-m", "venv", str(root / "venv")]))
+            py = str(root / "venv" / "bin" / "python")
+        req = _bench_live_root() / "bench" / "requirements-bench.txt"
+        pkgs = ["-r", str(req)] if req.is_file() else list(_bl.REQUIREMENTS)
+        steps.append(("pip", [py, "-m", "pip", "install", "--quiet", "--no-input", *pkgs]))
+        for b in benches:
+            steps.append((f"prefetch:{b}", [py, "-c",
+                          "import sys; from datasets import load_dataset; "
+                          f"d = load_dataset('nvidia/SPEED-Bench', name={b!r}, split='test'); "
+                          "print('categories:' + ','.join(sorted(set(str(c) for c in d['category']))))"]))
+        for name, cmd in steps:
+            if _bench_cancel_event.is_set():
+                ok = False
+                _bench_put({"type": "setup_done", "ok": False, "error": "cancelled"})
+                break
+            _bench_put({"type": "setup_step", "step": name, "text": " ".join(cmd[:4])})
+            env = dict(os.environ, HF_HUB_DISABLE_PROGRESS_BARS="1", PYTHONUNBUFFERED="1")
+            proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                    stdin=subprocess.DEVNULL, text=True, bufsize=1,
+                                    close_fds=True, env=env, start_new_session=True)
+            _bench_proc = proc
+            try: _bench_pgid = os.getpgid(proc.pid)
+            except Exception: _bench_pgid = None
+            for raw in iter(proc.stdout.readline, ""):
+                txt = _BENCH_ANSI_RE.sub("", raw.rstrip("\n"))
+                if txt.startswith("categories:"):
+                    _bl.write_marker(cfg.AGENT_INSTALL_DIR, name.split(":", 1)[1],
+                                     [c for c in txt[len("categories:"):].split(",") if c])
+                elif txt:
+                    _bench_put({"type": "line", "model_id": "", "text": txt})
+            proc.wait()
+            _bench_proc = None
+            if proc.returncode != 0:
+                ok = False
+                _bench_put({"type": "setup_done", "ok": False, "error": f"{name} failed (rc={proc.returncode})"})
+                break
+        if ok:
+            _bench_put({"type": "setup_done", "ok": True, "runtime": _bench_live_runtime()})
+    except Exception as e:
+        log.error("bench live setup error: %s", e, exc_info=True)
+        _bench_put({"type": "setup_done", "ok": False, "error": str(e)})
+    finally:
+        _bench_proc = None
+        with _bench_lock:
+            _bench_active = False
+
+
+def llama_bench_live_setup(body: dict, authorization: Optional[str] = Header(default=None)) -> dict[str, Any]:
+    _require_ctx().check_bearer(authorization); _llama_check_enabled()
+    global _bench_active
+    benches = [b for b in (body.get("prefetch") or []) if b in _bl.BENCHES]
+    with _bench_lock:
+        if _bench_active or _autotune_active:
+            return {"ok": False, "error": "Another benchmark or autotune is in progress"}
+        _bench_active = True
+        with _bench_cond:
+            _bench_replay.start_run(uuid.uuid4().hex[:12])
+    _bench_cancel_event.clear()
+    threading.Thread(target=_bench_live_setup_job, args=(benches,), daemon=True).start()
+    return {"ok": True, "run_id": _bench_replay.run_id}
+
+
+def _bench_live_store(doc: dict) -> None:
+    """POST the full run to the manager's live-bench history; best effort."""
+    ctx = _require_ctx()
+    base = (getattr(ctx.config, "MANAGER_URL", "") or "").rstrip("/")
+    token = (getattr(ctx, "state", None) or {}).get("token") or ""
+    if not base or not token:
+        return
+    try:
+        ctx.post_session.post(f"{base}/api/benchmark/live/store", json=doc, timeout=15,
+                              headers={"Authorization": f"Bearer {token}"})
+    except Exception as e:
+        log.debug("live bench store failed: %s", e)
+
+
+def _bench_live_run_all(req: dict, server: dict, python: str, script: str) -> None:
+    global _bench_active, _bench_proc, _bench_pgid
+    cfg = _require_ctx().config
+    run_id = _bench_replay.run_id
+    run_dir = _bl.bench_dir(cfg.AGENT_INSTALL_DIR) / "runs" / run_id
+    model_id = req["model_id"]
+    levels: list = []
+    energy = _bl.PowerIntegrator(_live_power_w)
+    ok = True
+    started = time.time()
+    try:
+        run_dir.mkdir(parents=True, exist_ok=True)
+        env = dict(os.environ, PYTHONUNBUFFERED="1", HF_HUB_DISABLE_PROGRESS_BARS="1")
+        _bench_put({"type": "model_start", "model_id": model_id, "run_id": run_id,
+                    "bench": req["bench"], "levels": req["concurrency"],
+                    "cmd": " ".join(_bl.build_cmd(python, script, server["url"], req, req["concurrency"][0], "<run>/level-N.json"))})
+        energy.start()
+
+        def _track(p):
+            global _bench_proc, _bench_pgid
+            _bench_proc = p
+            try: _bench_pgid = os.getpgid(p.pid)
+            except Exception: _bench_pgid = None
+
+        def _untrack():
+            global _bench_proc, _bench_pgid
+            _bench_proc = None
+            _bench_pgid = None
+
+        for level in req["concurrency"]:
+            if _bench_cancel_event.is_set():
+                ok = False
+                break
+            out_path = run_dir / f"level-{level}.json"
+            _bench_put({"type": "level_start", "model_id": model_id, "level": level,
+                        "concurrency": level, "samples": None})
+            t0 = time.monotonic()
+            rc, cancelled, elapsed = _bl.run_level_subprocess(
+                _bl.build_cmd(python, script, server["url"], req, level, str(out_path)),
+                env, _bench_put, model_id, level, _bench_cancel_event, _track, _untrack)
+            # The script's own timer excludes dataset load; agent wall is the fallback.
+            wall = elapsed if elapsed is not None else (time.monotonic() - t0)
+            if cancelled:
+                ok = False
+                break
+            try:
+                payload = json.loads(out_path.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                ok = False
+                _bench_put({"type": "line", "model_id": model_id, "text": f"level {level}: no output (rc={rc})"})
+                break
+            summ = _bl.level_summary(payload, wall)
+            row = {"level": level, "concurrency": level, "wall_s": round(wall, 3), "rc": rc, **summ}
+            levels.append(row)
+            if req["categories"] == "all":
+                _bl.write_marker(cfg.AGENT_INSTALL_DIR, req["bench"], [r.get("category") for r in summ["rows"] if r.get("category")])
+            _bench_put({"type": "level_result", "model_id": model_id, **row})
+            if rc not in (0, 1):
+                ok = False
+                break
+    except Exception as e:
+        log.error("live bench error: %s", e, exc_info=True)
+        ok = False
+        _bench_put({"type": "line", "model_id": model_id, "text": f"error: {e}"})
+    finally:
+        wh, src = energy.stop()
+        tokens = sum(int((lv.get("all") or {}).get("completion_tokens") or 0) for lv in levels)
+        wh_per_ktok = (wh / (tokens / 1000.0)) if wh is not None and tokens > 0 else None
+        cancelled = _bench_cancel_event.is_set()
+        first = (levels[0]["all"] if levels else {})
+        doc = {"type": "model_done", "model_id": model_id, "run_id": run_id, "ok": ok and not cancelled,
+               "cancelled": cancelled, "bench": req["bench"], "config": req, "levels": levels,
+               "energy_wh": wh, "energy_source": src, "wh_per_ktok": wh_per_ktok,
+               "spec": server.get("spec"), "server_url": server.get("url"),
+               "elapsed_s": round(time.time() - started, 1), "baseline_run_id": req.get("baseline_run_id")}
+        _bench_put(doc)
+        if levels:
+            _bench_live_store(doc)
+            _shared.post_tool_run(_require_ctx(), "benchmark", "llama", run_id, model_id, ok and not cancelled,
+                                  {"bench_tool": "speed-bench", "gen_tps": first.get("pred_tps"),
+                                   "ppt_tps": first.get("prompt_tps"), "latency_s": first.get("latency_s"),
+                                   "accept_rate": first.get("accept_rate"), "levels": len(levels),
+                                   "wh_per_ktok": wh_per_ktok, "bench": req["bench"]})
+        _bench_put({"type": "done", "ok": ok and not cancelled, "cancelled": cancelled, "count": 1})
+        _bench_proc = None
+        _bench_pgid = None
+        with _bench_lock:
+            _bench_active = False
+
+
+def llama_bench_live_run(body: dict, authorization: Optional[str] = Header(default=None)) -> dict[str, Any]:
+    _require_ctx().check_bearer(authorization); _llama_check_enabled()
+    global _bench_active
+    try:
+        req = _bl.validate_run_request(body or {})
+    except (ValueError, TypeError) as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    # Probe outside the lock: the HTTP calls would hold it for seconds.
+    if _bench_active or _autotune_active:
+        return {"ok": False, "error": "Another benchmark or autotune is in progress"}
+    server = _bench_live_server()
+    if not server["up"]:
+        return {"ok": False, "error": "llama-server is not running"}
+    if req["model_id"] not in [m.get("id") for m in server["models"]]:
+        return {"ok": False, "error": f"server does not list {req['model_id']}"}
+    rt = _bench_live_runtime()
+    if not rt["python"] or not rt["script"]:
+        return {"ok": False, "error": "speed-bench runtime not installed", "runtime": rt}
+    with _bench_lock:
+        if _bench_active or _autotune_active:
+            return {"ok": False, "error": "Another benchmark or autotune is in progress"}
+        _bench_active = True
+        with _bench_cond:
+            _bench_replay.start_run(uuid.uuid4().hex[:12])
+    _bench_cancel_event.clear()
+    threading.Thread(target=_bench_live_run_all, args=(req, server, rt["python"], rt["script"]), daemon=True).start()
+    return {"ok": True, "run_id": _bench_replay.run_id}
 
 
 def _autotune_put(msg: dict) -> None:
@@ -2923,8 +3197,8 @@ def llama_autotune_run(body: dict, authorization: Optional[str] = Header(default
             return {"ok": False, "error": f"{_require_ctx().config.LLAMA_SYSTEMD_UNIT} is running — stop it before auto-tune"}
 
     with _autotune_lock:
-        if _autotune_active:
-            return {"ok": False, "error": "Another auto-tune is in progress"}
+        if _autotune_active or _bench_active:
+            return {"ok": False, "error": "Another benchmark or auto-tune is in progress"}
         _autotune_active = True
         _autotune_run_id = uuid.uuid4().hex[:12]
         # Reset the buffer before the lock drops: a stream landing between
@@ -3025,6 +3299,9 @@ _ROUTES: tuple = (
     ("GET",    "/llama/bench/stream",             llama_bench_stream),
     ("POST",   "/llama/bench/cancel",             llama_bench_cancel),
     ("POST",   "/llama/bench/perf-mode",          llama_bench_perf_mode),
+    ("GET",    "/llama/bench/live/preflight",     llama_bench_live_preflight),
+    ("POST",   "/llama/bench/live/setup",         llama_bench_live_setup),
+    ("POST",   "/llama/bench/live/run",           llama_bench_live_run),
     ("POST",   "/llama/autotune/run",             llama_autotune_run),
     ("GET",    "/llama/autotune/stream",          llama_autotune_stream),
     ("POST",   "/llama/autotune/cancel",          llama_autotune_cancel),
