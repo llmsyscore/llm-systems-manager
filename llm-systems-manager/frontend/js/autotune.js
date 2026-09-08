@@ -4,7 +4,7 @@
   const $ = id => document.getElementById(id);
   const esc = s => (window.TC && TC.esc ? TC.esc(String(s ?? '')) : String(s ?? ''));
   const OBJ_HINT = {
-    fit: '<b>Fit</b> is today’s behaviour: the largest context that leaves the target VRAM free. Other dimensions only run if you turn them on.',
+    fit: '<b>Fit</b> finds the largest context that leaves the target VRAM free; other dimensions run only if enabled.',
     speed: '<b>Speed</b> spends VRAM on single-request throughput: f16 KV where it fits, one slot, the fastest threads and speculative setup.',
     balanced: '<b>Balanced</b> keeps at least the minimum context per slot and takes any change that is speed-neutral or better.',
     serve: '<b>Serve</b> maximises aggregate tokens/s across parallel slots, accepting lower per-request speed.',
