@@ -2030,6 +2030,8 @@ def _bench_run_one(model_id: str, tool: str, switches: list, env: dict) -> None:
                     "error": f"no HF reference found for {model_id}"})
         return
     jsonl_flags = ["-o", "jsonl"]
+    energy = _bl.PowerIntegrator(_live_power_w)
+    tokens_total = 0
     cmd = [tool_path]
     for sw in switches or []:
         flag = (sw.get("flag") or "").strip()
@@ -2051,6 +2053,7 @@ def _bench_run_one(model_id: str, tool: str, switches: list, env: dict) -> None:
     _bench_proc = proc
     try: _bench_pgid = os.getpgid(proc.pid)
     except Exception: _bench_pgid = None
+    energy.start()
 
     latest_gen = None
     latest_ppt = None
@@ -2092,14 +2095,20 @@ def _bench_run_one(model_id: str, tool: str, switches: list, env: dict) -> None:
             "n_batch":  int(row.get("n_batch", 0) or 0),
             "n_ubatch": int(row.get("n_ubatch", 0) or 0),
             "avg_ts":   float(row.get("avg_ts", 0) or 0),
+            "type_k":   str(row.get("type_k") or ""),
+            "type_v":   str(row.get("type_v") or ""),
         }
         result_rows.append(result_row)
+        reps = len(row.get("samples_ns") or []) or 1
+        tokens_total += (result_row["n_prompt"] + result_row["n_gen"]) * reps
         _bench_put({"type": "result", "model_id": model_id,
                     "gen_tps": gen_tps, "ppt_tps": ppt_tps, "pg_tps": pg_tps,
                     **result_row})
 
     proc.wait()
     _bench_proc = None
+    wh, src = energy.stop()
+    wh_per_ktok = (wh / (tokens_total / 1000.0)) if wh is not None and tokens_total > 0 else None
     cancelled = _bench_cancel_event.is_set()
     mx = _shared.bench_maxes(result_rows)
     measured = any(v is not None for v in mx.values())
@@ -2109,11 +2118,14 @@ def _bench_run_one(model_id: str, tool: str, switches: list, env: dict) -> None:
                 "last_gen_tps": latest_gen, "last_ppt_tps": latest_ppt,
                 "last_pg_tps": latest_pg, "results": result_rows,
                 "max_gen_tps": mx["gen"], "max_ppt_tps": mx["ppt"],
-                "max_pg_tps": mx["pg"], "run_id": _bench_replay.run_id})
+                "max_pg_tps": mx["pg"], "run_id": _bench_replay.run_id,
+                "energy_wh": wh, "energy_source": src,
+                "wh_per_ktok": wh_per_ktok, "tokens": tokens_total})
     _shared.post_tool_run(
         _require_ctx(), "benchmark", "llama", _bench_replay.run_id, model_id,
         measured, {"gen_tps": mx["gen"], "ppt_tps": mx["ppt"],
-                   "pg_tps": mx["pg"], "bench_tool": tool})
+                   "pg_tps": mx["pg"], "bench_tool": tool,
+                   "wh_per_ktok": wh_per_ktok})
 
 
 def _bench_run_all(model_ids: list, tool: str, switches: list):
