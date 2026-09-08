@@ -573,24 +573,34 @@ DIM_KEYS = {
              "spec-draft-n-min", "spec-draft-n-max", "spec-draft-p-min"),
     "threads": ("threads", "threads-batch"),
 }
+# The measuring stick: single-turn 1k-token prompts, fixed output length.
+STICK_BENCH = "throughput_1k"
+STICK_ISL = 1024
 STICK_OSL = 256
 STICK_LIMIT = 4
 VERIFY_SECONDS = 60
+DEFAULT_PREFILL_TPS = 2000.0
 
 
 class Cancelled(Exception):
     pass
 
 
-def verify_limit(decode_tps: Any, concurrency: int) -> int:
-    """Requests that keep the server busy ~60 s at the chosen concurrency (4–64)."""
+def verify_limit(decode_tps: Any, prefill_tps: Any, concurrency: int) -> int:
+    """Requests that keep the server busy ~60 s at the chosen concurrency (4–64), prefill included."""
     try:
         tps = float(decode_tps)
     except (TypeError, ValueError):
         return STICK_LIMIT
     if not tps or tps <= 0:
         return STICK_LIMIT
-    per_req = STICK_OSL / tps
+    try:
+        pre = float(prefill_tps)
+    except (TypeError, ValueError):
+        pre = 0.0
+    if pre <= 0:
+        pre = DEFAULT_PREFILL_TPS
+    per_req = STICK_ISL / pre + STICK_OSL / tps
     n = math.ceil(VERIFY_SECONDS / per_req) * max(1, int(concurrency))
     return max(STICK_LIMIT, min(64, n))
 
@@ -615,6 +625,7 @@ class _Run:
         self.free_mb: Optional[int] = None
         self.load_s, self.stick_s = 60.0, 30.0
         self.decode_now: Optional[float] = None
+        self.prefill_now: Optional[float] = None
         self.concurrency = 1
         self.loads = 0
         self.budget_hit = False
@@ -725,6 +736,7 @@ class _Run:
             self.before = {"decode_tps": st.get("decode_tps"), "prefill_tps": st.get("prefill_tps"),
                            "ctx": base.get("ctx"), "agg_tps": st.get("agg_tps"), "free_mb": base.get("free_mb")}
             self.decode_now = st.get("decode_tps")
+            self.prefill_now = st.get("prefill_tps")
             if st.get("decode_tps"):
                 self.stick_s = max(5.0, STICK_LIMIT * STICK_OSL / float(st["decode_tps"]) + 10.0)
         self.check_cancel()
@@ -869,6 +881,7 @@ class _Run:
                 if v == n and res.get("ok"):
                     self.free_mb = res.get("free_mb")
                     self.decode_now = st.get("decode_tps")
+                    self.prefill_now = st.get("prefill_tps") or self.prefill_now
         oom = [str(x) for x, ok in tried if not ok]
         self.ev("n-cpu-moe", f"fewest layers that fit {floor} ctx" + (f" · {', '.join(oom)} OOM" if oom else ""))
         self.ev("ctx-size", f"{floor} ctx reached with {n} expert layers on CPU")
@@ -889,7 +902,8 @@ class _Run:
             self.check_cancel()
             self.emit("candidate_start", stage="threads", value=t)
             res, st = self.measure({"threads": str(t)}, self.ctx_total)
-            results.append({"value": t, "ok": bool(res.get("ok")) and bool(st.get("ok")), "decode_tps": st.get("decode_tps")})
+            results.append({"value": t, "ok": bool(res.get("ok")) and bool(st.get("ok")),
+                            "decode_tps": st.get("decode_tps"), "prefill_tps": st.get("prefill_tps")})
             self.result("threads", t, res)
         choice, reason = choose_threads(results)
         if choice is None:
@@ -902,6 +916,7 @@ class _Run:
             self.rec["threads"] = str(choice)
             self.ev("threads", reason, gain_pct(best["decode_tps"], ref))
         self.decode_now = best["decode_tps"]
+        self.prefill_now = best.get("prefill_tps") or self.prefill_now
         tb = phys if self.rec.get("n-cpu-moe") and phys else choice
         cur_tb = self.cur("threads-batch")
         if (self.rec.get("n-cpu-moe") and str(tb) != cur_tb) or (cur_tb and cur_tb != str(tb)):
@@ -938,7 +953,8 @@ class _Run:
         self.check_cancel()
         self.emit("candidate_start", stage="spec", value="none")
         res, st = self.measure({"spec-type": "none"}, self.ctx_total)
-        results.append({"value": "none", "ok": bool(res.get("ok")) and bool(st.get("ok")), "decode_tps": st.get("decode_tps"), "accept": None})
+        results.append({"value": "none", "ok": bool(res.get("ok")) and bool(st.get("ok")),
+                        "decode_tps": st.get("decode_tps"), "prefill_tps": st.get("prefill_tps"), "accept": None})
         self.result("spec", "none", res)
         n_max0 = min(int(d["n_max"]), 8)
         for row in rows:
@@ -946,22 +962,28 @@ class _Run:
             self.emit("candidate_start", stage="spec", value=row["type"])
             res, st = self.measure(spec_ov(row, int(d["n_min"]), n_max0), self.ctx_total)
             results.append({"value": row["type"], "ok": bool(res.get("ok")) and bool(st.get("ok")),
-                            "decode_tps": st.get("decode_tps"), "accept": st.get("accept")})
+                            "decode_tps": st.get("decode_tps"), "prefill_tps": st.get("prefill_tps"),
+                            "accept": st.get("accept")})
             self.result("spec", row["type"], res)
         choice, reason = choose_spec(results)
         none_tps = results[0]["decode_tps"]
         others = ", ".join(f"{r['value']} {gain_pct(r['decode_tps'], none_tps):+.0f} %" for r in results[1:]
                            if r["ok"] and gain_pct(r["decode_tps"], none_tps) is not None)
+        cur_t = self.cur("spec-type").strip().lower()
+        cur_row = next((r for r in results if r["value"] == cur_t and r["ok"]), None)
         if choice == "none":
-            if self.cur("spec-type") not in ("", "none"):
+            if cur_t not in ("", "none"):
                 self.rec["spec-type"] = "none"
-                self.ev("spec-type", f"{reason} · {others}")
+                self.ev("spec-type", f"{reason} · {others}",
+                        gain_pct(none_tps, (cur_row or {}).get("decode_tps")))
             self.decode_now = none_tps or self.decode_now
+            self.prefill_now = results[0].get("prefill_tps") or self.prefill_now
             self.end("spec", mark, "none", reason)
             return
         winrow = next(r for r in rows if r["type"] == choice)
         win = next(r for r in results if r["value"] == choice)
-        best = {"n_min": int(d["n_min"]), "n_max": n_max0, "decode_tps": win["decode_tps"], "accept": win["accept"]}
+        best = {"n_min": int(d["n_min"]), "n_max": n_max0, "decode_tps": win["decode_tps"],
+                "prefill_tps": win.get("prefill_tps"), "accept": win["accept"]}
         for n_min, n_max in window_plan(int(d["n_min"]), int(d["n_max"])):
             n_max = best["n_max"] if n_max is None else n_max
             if (n_min, n_max) == (best["n_min"], best["n_max"]) or n_min >= n_max:
@@ -972,7 +994,14 @@ class _Run:
             res, st = self.measure(spec_ov(winrow, n_min, n_max), self.ctx_total)
             self.result("spec", label, res)
             if res.get("ok") and st.get("ok") and (st.get("decode_tps") or 0) > (best["decode_tps"] or 0):
-                best = {"n_min": n_min, "n_max": n_max, "decode_tps": st.get("decode_tps"), "accept": st.get("accept")}
+                best = {"n_min": n_min, "n_max": n_max, "decode_tps": st.get("decode_tps"),
+                        "prefill_tps": st.get("prefill_tps"), "accept": st.get("accept")}
+        if choice == cur_t and (str(best["n_min"]), str(best["n_max"])) == \
+                (self.cur("spec-draft-n-min"), self.cur("spec-draft-n-max")):
+            self.decode_now = best["decode_tps"] or self.decode_now
+            self.prefill_now = best.get("prefill_tps") or self.prefill_now
+            self.end("spec", mark, choice, "already configured · no better window")
+            return
         ov = spec_ov(winrow, best["n_min"], best["n_max"])
         if self.cur("spec-draft-p-min") == ov["spec-draft-p-min"]:
             del ov["spec-draft-p-min"]
@@ -992,6 +1021,7 @@ class _Run:
             self.ev("cache-type-k-draft", f"follows the {kvc} KV choice")
             self.ev("cache-type-v-draft", f"follows the {kvc} KV choice")
         self.decode_now = best["decode_tps"]
+        self.prefill_now = best.get("prefill_tps") or self.prefill_now
         self.end("spec", mark, choice, reason)
 
     def stage_slots(self) -> None:
@@ -1052,7 +1082,7 @@ class _Run:
         for attempt in (1, 2):
             self.check_cancel()
             conc = self.concurrency
-            limit = verify_limit(self.decode_now, conc)
+            limit = verify_limit(self.decode_now, self.prefill_now, conc)
             self.emit("candidate_start", stage="verify", value=attempt)
             if self.runtime:
                 self.backend.energy_start()

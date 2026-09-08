@@ -596,7 +596,8 @@
     ((meta && meta.suggestions) || []).forEach(s => {
       const cur = section && section[s.key] != null ? String(section[s.key]) : '';
       const val = String(s.value);
-      if (cur === val) return;
+      const curN = Number(cur), valN = Number(val);
+      if (cur !== '' && Number.isFinite(curN) && Number.isFinite(valN) ? curN === valN : cur === val) return;
       const byHand = !overwrite && cur !== '';
       rows.push({ key: s.key, current: cur, recommended: val, source: s.source, evidence: metaEvidence(s, meta || {}),
                   selected: !byHand, note: byHand ? 'you set this by hand, left off' : '' });
@@ -621,7 +622,7 @@
     const host = $('atGuard'); if (!host) return;
     host.innerHTML =
       item(g.kl == null ? '' : (g.pass ? 'ok' : 'crit'), 'Quality guard', g.kl != null ? `KL ${esc(g.kl)} · ${g.pass ? 'pass' : 'fail'}` : 'not needed',
-           esc(g.text || 'No lossy KV type was tried.') + ' Speculative decoding is lossless by construction.')
+           esc(g.text || 'No lossy KV type was tried.') + ' · Speculative decoding is lossless by construction.')
       + item(v.ok ? 'ok' : (v.reason ? 'crit' : ''), 'Verify load', v.ok ? `fit · ${fmt(v.free_mb, 0)} MB free` : (v.reason ? 'failed' : 'not run'),
              v.ok ? `Recommended set loaded once; ${esc(Math.round(v.seconds || 0))} s of traffic at ${esc(Number(a.concurrency || 1))} slot${Number(a.concurrency || 1) === 1 ? '' : 's'}${v.dropped && v.dropped.length ? '; dropped ' + esc(v.dropped.join(', ')) : ''}.` : esc(v.reason || 'Verify needs the bench runtime.'))
       + item(a.wh_per_ktok != null ? 'ok' : '', 'Energy', a.wh_per_ktok != null ? `${fmt(a.wh_per_ktok, 2)} Wh / 1k tok` : '—',
@@ -646,8 +647,18 @@
     const b = done.before || {}, a = done.after || {};
     const g = pct(a.decode_tps, b.decode_tps), x = b.ctx && a.ctx ? a.ctx / b.ctx : null;
     const big = $('atRecBig');
-    if (big) big.innerHTML = [g != null ? `decode <b>${g >= 0 ? '+' : ''}${Math.round(g)} %</b>` : '', x ? `context <b>${x >= 2 ? Math.round(x) : Math.round(x * 100) / 100}×</b>` : '',
+    if (big) big.innerHTML = [g != null ? `decode <b${g < 0 ? ' class="neg"' : ''}>${g >= 0 ? '+' : ''}${Math.round(g)} %</b>` : '', x ? `context <b>${x >= 2 ? Math.round(x) : Math.round(x * 100) / 100}×</b>` : '',
                               a.free_mb != null ? `VRAM free ${fmt(a.free_mb, 0)} MB` : ''].filter(Boolean).join(' · ');
+    const warn = $('atRecWarn');
+    if (warn) {
+      if (g != null && g < -3) {
+        warn.style.display = '';
+        warn.innerHTML = `<b>Slower than your current config</b> — the recommended set measured −${Math.abs(Math.round(g))} % decode. Review the selected rows before applying.`;
+      } else {
+        warn.style.display = 'none';
+        warn.innerHTML = '';
+      }
+    }
     renderRows();
     const doneStages = (done.stages || []).filter(s => s.status === 'done').length;
     const st = $('atDoneStats'); if (st) st.innerHTML = `<b>${esc(doneStages)} stages</b> · ${esc(mmss(done.elapsed_s))} · ${esc(Number(done.loads || 0))} loads`;
@@ -718,9 +729,14 @@
   }
   function exportReport() {
     const doc = _done[_doneModel]; if (!doc) return;
-    const w = window.open('', '_blank');
-    if (!w) { setMsg('Allow pop-ups to export the report.', 'crit'); return; }
-    w.document.write('<pre>' + esc(JSON.stringify({ ...doc, rows: _rows }, null, 2)) + '</pre>'); w.document.close();
+    const name = String(_doneModel || 'model').replace(/[^A-Za-z0-9_.-]/g, '_');
+    const blob = new Blob([JSON.stringify({ ...doc, rows: _rows }, null, 2)], { type: 'application/json' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = `autotune-${name}-${today()}.json`;
+    document.body.appendChild(a);
+    a.click();
+    setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 200);
   }
 
   window.AT = { onOpen, run, cancel, again, stopServer, running, dimsState, objective, planRows, estimateText, onEvent,

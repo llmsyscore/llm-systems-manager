@@ -305,6 +305,30 @@ def test_stick_discards_a_stale_output_file(llama, tmp_path, monkeypatch):
     assert calls, "run_level_subprocess was never invoked"
 
 
+def test_stick_runs_single_turn_1k_prompts(llama, tmp_path, monkeypatch):
+    """The stick must not fall back to the multi-turn qualitative set — it costs minutes per measure."""
+    _wire(llama, tmp_path, monkeypatch)
+    monkeypatch.setattr(llama, "_bench_live_runtime",
+                        lambda: {"python": "py", "script": "sc", "source": "x",
+                                 "script_status": "ok", "commit": "c"})
+    monkeypatch.setattr(llama, "_autotune_port", lambda: 8080)
+    seen = {}
+    real_build = llama._bl.build_cmd
+
+    def _spy(python, script, url, req, level, out):
+        seen.update(req)
+        return real_build(python, script, url, req, level, out)
+    monkeypatch.setattr(llama._bl, "build_cmd", _spy)
+    monkeypatch.setattr(llama._bl, "run_level_subprocess", lambda *a, **k: (1, False, 1.0))
+    be = llama._AutotuneBackend("org/m:Q4", {}, "r1")
+    monkeypatch.setattr(be, "_server_ready", lambda url: "org/m:Q4")
+    be._stick({"concurrency": 2, "limit": 9})
+    assert seen["bench"] == "throughput_1k" == llama._at.STICK_BENCH
+    assert seen["categories"] == "all" and seen["osl"] == llama._at.STICK_OSL
+    assert seen["limit"] == 9 and seen["concurrency"] == [2]
+    assert seen["extra_inputs"] == {"temperature": 0}
+
+
 def test_stick_paths_do_not_collide_across_models(llama, tmp_path, monkeypatch):
     _wire(llama, tmp_path, monkeypatch)
     monkeypatch.setattr(llama, "_bench_live_runtime",

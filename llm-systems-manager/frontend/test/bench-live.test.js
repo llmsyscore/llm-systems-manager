@@ -1,5 +1,5 @@
 // #879: Live benchmark module — presets, sweep parsing, estimate, deltas, knee, mode switch.
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { srcFile, runHarness, flush } from './helpers/harness.js';
 
 const BODY = `
@@ -228,5 +228,24 @@ describe('BL presets and mode', () => {
     win.__sse.onEvent({ type: 'done', ok: true });
     await flush();
     expect(win.__fetches.some(([u]) => u === '/api/benchmark/live/run')).toBe(false);
+  });
+});
+
+describe('BL export', () => {
+  it('downloads the report as a JSON file instead of opening a blocked tab', async () => {
+    const win = boot('BL.onOpen("org/m:Q4");');
+    await flush();
+    win.BL.run();
+    await flush();
+    win.__sse.onEvent({ type: 'model_done', run_id: 'r1', levels: [], elapsed_s: 10 });
+    win.URL.createObjectURL = () => 'blob:mock';
+    win.URL.revokeObjectURL = () => {};
+    const clickSpy = vi.spyOn(win.HTMLAnchorElement.prototype, 'click').mockImplementation(() => {});
+    win.BL.exportJson();
+    expect(clickSpy).toHaveBeenCalledTimes(1);
+    const a = win.document.body.querySelector('a[download]');
+    expect(a).toBeTruthy();
+    expect(a.download).toMatch(/^bench-live-.*\.json$/);
+    clickSpy.mockRestore();
   });
 });

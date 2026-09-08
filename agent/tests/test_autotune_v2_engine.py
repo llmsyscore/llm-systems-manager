@@ -196,6 +196,39 @@ def test_spec_tries_the_configured_type_when_detection_missed_it(at):
     assert _spec_candidates(events) == [["none", "draft-mtp", "ngram-simple"]]
 
 
+def _changes(done):
+    return {c["key"]: c for c in done["changes"]}
+
+
+def test_spec_keeps_a_configured_type_without_emitting_a_change(at):
+    """draft-mtp already configured and still the winner: no spec-type row."""
+    be = Fake(facts={"n_expert": 128, "n_expert_used": 8, "n_layer": 48, "mtp_layers": 1})
+    sec = {"hf-repo": "o/r", "ctx-size": "32768", "threads": "32", "spec-type": "draft-mtp"}
+    done, _ = _run(at, be, BALANCED, section=sec)
+    assert _stage(done, "spec")["choice"] == "draft-mtp"
+    assert "spec-type" not in _changes(done)
+
+
+def test_spec_same_window_as_configured_emits_nothing(at):
+    be = Fake(facts={"n_expert": 128, "n_expert_used": 8, "n_layer": 48, "mtp_layers": 1})
+    sec = {"hf-repo": "o/r", "ctx-size": "32768", "threads": "32", "spec-type": "draft-mtp",
+           "spec-draft-n-min": "0", "spec-draft-n-max": "12"}
+    done, events = _run(at, be, BALANCED, section=sec)
+    reason = next(ev["reason"] for ev in events if ev["type"] == "stage_done" and ev["stage"] == "spec")
+    assert reason == "already configured · no better window"
+    assert not [k for k in _changes(done) if k.startswith("spec-") or k == "model-draft"]
+
+
+def test_spec_regression_against_the_configured_type_is_unselected(at):
+    """none only beats the configured draft-mtp by 2 %: recommend it, but do not select it."""
+    be = Fake(facts={"n_expert": 128, "n_expert_used": 8, "n_layer": 48, "mtp_layers": 1}, spec_gain=1 / 1.02)
+    sec = {"hf-repo": "o/r", "ctx-size": "32768", "threads": "32", "spec-type": "draft-mtp"}
+    done, _ = _run(at, be, BALANCED, section=sec)
+    row = _changes(done)["spec-type"]
+    assert row["current"] == "draft-mtp" and row["recommended"] == "none"
+    assert row["selected"] is False
+
+
 def test_speed_keeps_f16_and_one_slot(at):
     done, _ = _run(at, Fake(), dict(BALANCED, objective="speed"))
     st = {s["stage"]: s for s in done["stages"]}
@@ -348,6 +381,9 @@ def test_context_failure_ends_the_model(at):
 
 
 def test_verify_limit(at):
-    assert at.verify_limit(100.0, 1) == 24
-    assert at.verify_limit(100.0, 4) == 64
-    assert at.verify_limit(None, 1) == 4
+    assert at.verify_limit(100.0, 2000.0, 1) == 20         # 1024/2000 + 256/100 = 3.07 s per request
+    assert at.verify_limit(100.0, 2000.0, 4) == 64
+    assert at.verify_limit(100.0, None, 1) == 20           # missing prefill assumed 2000 t/s
+    assert at.verify_limit(100.0, 0, 1) == 20
+    assert at.verify_limit(None, 2000.0, 1) == 4
+    assert at.verify_limit(10000.0, 100000.0, 1) == 64

@@ -3231,7 +3231,7 @@ class _AutotuneBackend:
         return None
 
     def _stick(self, measure: dict) -> dict:
-        """One short speed-bench run against the live server; returns the throughput summary."""
+        """One short speed-bench run against the live server: single-turn 1k prompts, fixed osl."""
         cfg = _require_ctx().config
         rt = _bench_live_runtime()
         if not rt["python"] or not rt["script"]:
@@ -3240,9 +3240,7 @@ class _AutotuneBackend:
         server_model = self._server_ready(url)
         if not server_model:
             return {"ok": False, "error": "server did not become ready"}
-        marker = _bl.read_marker(cfg.AGENT_INSTALL_DIR)
-        cats = ((marker.get("qualitative") or {}).get("categories") or [])
-        req = {"model_id": server_model, "bench": "qualitative", "categories": ["chat"] if "chat" in cats else "all",
+        req = {"model_id": server_model, "bench": _at.STICK_BENCH, "categories": "all",
                "osl": _at.STICK_OSL, "limit": int(measure.get("limit") or _at.STICK_LIMIT),
                "concurrency": [int(measure.get("concurrency") or 1)], "timeout_s": 300,
                "extra_inputs": {"temperature": 0}, "baseline_run_id": None}

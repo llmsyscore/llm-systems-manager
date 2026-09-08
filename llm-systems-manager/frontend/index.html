@@ -60,7 +60,7 @@ Backend API endpoints consumed:
   <link rel="stylesheet" href="/static/css/modelcards.css?v=2026.09.04-12">
   <link rel="stylesheet" href="/static/css/reportcard.css?v=2026.08.31-1">
   <link rel="stylesheet" href="/static/css/tools.css?v=2026.08.31-8">
-  <link rel="stylesheet" href="/static/css/autotune.css?v=2026.09.08-4">
+  <link rel="stylesheet" href="/static/css/autotune.css?v=2026.09.08-5">
   <link rel="stylesheet" href="/static/css/energy.css?v=2026.08.19-2">
   <link rel="stylesheet" href="/static/css/overall.css?v=2026.08.30-1">
 </head>
@@ -2449,6 +2449,7 @@ Backend API endpoints consumed:
         </div>
         <div id="atPaneDone" class="at-pane" style="display:none;">
           <div class="bl-strip at-strip"><span class="bench-status-pill ok" id="atDonePill">complete</span><span id="atDoneStats"></span><span id="atDoneVerify"></span><span class="gap"></span><button type="button" class="mcbtn mcbtn-ghost mcbtn-sm" onclick="AT.exportReport()">Export report</button></div>
+          <div class="at-notice warn" id="atRecWarn" style="display:none;"></div>
           <div class="at-card">
             <div class="at-card-h"><div class="at-rec-head"><h3>Recommended configuration</h3><span class="big" id="atRecBig"></span></div><span class="gap"></span><span class="at-hint" id="atRecSel"></span></div>
             <div class="at-card-b flush" style="overflow-x:auto"><table class="at-rt"><thead><tr><th style="width:24%">Parameter</th><th style="width:12%">Current</th><th style="width:12%">Recommended</th><th>Evidence</th><th style="width:44px"></th></tr></thead><tbody id="atRecRows"></tbody></table></div>
@@ -2494,8 +2495,8 @@ Backend API endpoints consumed:
 <script src="/static/js/llmcontrol-models.js?v=2026.09.07-1"></script>
 <script src="/static/js/editor-modern.js?v=2026.09.07-1"></script>
 <script src="/static/js/bench-autotune.js?v=2026.09.08-1"></script>
-<script src="/static/js/bench-live.js?v=2026.09.08-1"></script>
-<script src="/static/js/autotune.js?v=2026.09.08-4"></script>
+<script src="/static/js/bench-live.js?v=2026.09.08-5"></script>
+<script src="/static/js/autotune.js?v=2026.09.08-5"></script>
 <script src="/static/js/lmstudio.js?v=2026.09.04-1"></script>
 <script src="/static/js/vllm.js?v=2026.09.04-1"></script>
 <script src="/static/js/vllm-bench-autotune.js?v=2026.09.02-1"></script>

@@ -1,5 +1,5 @@
 // #880: Autotune module — dims state, plan card, estimate, stream plumbing, stepper.
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { srcFile, runHarness, flush } from './helpers/harness.js';
 
 const INDEX = srcFile('index.html');
@@ -508,5 +508,54 @@ describe('AT recommendation', () => {
     expect(win.document.getElementById('atApplyBtn').textContent).toBe('Apply 5 changes + restart');
     win.document.getElementById('atRestartAfter').click();
     expect(win.document.getElementById('atApplyBtn').textContent).toBe('Apply 5 changes');
+  });
+});
+
+describe('AT export, regression warning, recRows numeric guard', () => {
+  it('downloads the report as a JSON file instead of opening a blocked tab', async () => {
+    const win = await opened();
+    await finished(win);
+    win.URL.createObjectURL = () => 'blob:mock';
+    win.URL.revokeObjectURL = () => {};
+    const clickSpy = vi.spyOn(win.HTMLAnchorElement.prototype, 'click').mockImplementation(() => {});
+    win.AT.exportReport();
+    expect(clickSpy).toHaveBeenCalledTimes(1);
+    const a = win.document.body.querySelector('a[download]');
+    expect(a).toBeTruthy();
+    expect(a.download).toMatch(/^autotune-.*\.json$/);
+    clickSpy.mockRestore();
+  });
+
+  it('flags a regression when the recommended set is slower than the current config', async () => {
+    const win = await opened();
+    const SLOW_DONE = { ...DONE, before: { ...DONE.before, decode_tps: 100 }, after: { ...DONE.after, decode_tps: 55 } };
+    await win.AT.run();
+    for (let i = 0; i < 4; i++) await flush();
+    win.__sse.onEvent({ type: 'model_start', model_id: 'org/m:Q4', objective: 'balanced', stages: ['context', 'kv', 'moe', 'verify'] }, {});
+    win.__sse.onEvent(SLOW_DONE, {});
+    win.__sse.onEvent({ type: 'done', ok: true }, {});
+    await flush();
+    const big = win.document.getElementById('atRecBig');
+    expect(big.innerHTML).toContain('class="neg"');
+    expect(big.textContent).toContain('-45 %');
+    const warn = win.document.getElementById('atRecWarn');
+    expect(warn.style.display).toBe('');
+    expect(warn.textContent).toContain('Slower than your current config');
+    expect(warn.textContent).toContain('45 % decode');
+  });
+
+  it('hides the regression warning for a normal (faster) run', async () => {
+    const win = await opened();
+    await finished(win);
+    const warn = win.document.getElementById('atRecWarn');
+    expect(warn.style.display).toBe('none');
+  });
+
+  it('recRows skips a sampling suggestion that already matches numerically', () => {
+    const win = boot();
+    const meta = { repo: 'org/m', base_model: 'org/base', suggestions: [{ key: 'temperature', value: 0, source: 'sidecar' }, { key: 'top-p', value: 1, source: 'model_card' }] };
+    const rows = win.AT.recRows(DONE, { temperature: '0.00', 'top-p': '1.0' }, meta, false);
+    expect(rows.map(r => r.key)).not.toContain('temperature');
+    expect(rows.map(r => r.key)).not.toContain('top-p');
   });
 });

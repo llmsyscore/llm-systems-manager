@@ -341,6 +341,16 @@
     renderPreflight();
   }
   async function pinBaseline() { const id = (_lastDoc && _lastDoc.run_id) || _runId; if (!id) return; await fetch('/api/benchmark/live/runs/' + encodeURIComponent(id) + '/baseline', { method: 'POST' }).catch(() => {}); loadRuns(); }
-  function exportJson() { const doc = _lastDoc; if (!doc) return; const w = window.open('', '_blank'); if (w) { w.document.write('<pre>' + esc(JSON.stringify(doc, null, 2)) + '</pre>'); w.document.close(); } }
+  function exportJson() {
+    const doc = _lastDoc; if (!doc) return;
+    const id = String(doc.run_id || _runId || 'run').replace(/[^A-Za-z0-9_.-]/g, '_');
+    const blob = new Blob([JSON.stringify(doc, null, 2)], { type: 'application/json' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = `bench-live-${id}.json`;
+    document.body.appendChild(a);
+    a.click();
+    setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 200);
+  }
   window.BL = { onOpen, setMode, run, cancel, setup, startServer, running, applyPreset, parseSweep, estimateSeconds, deltaText, knee, pinBaseline, exportJson };
 })();
