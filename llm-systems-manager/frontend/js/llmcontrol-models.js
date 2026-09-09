@@ -235,7 +235,7 @@ function _llamaFresh(modelId, cfg) {
   return null;
 }
 
-// #887: newest tune per model on the primary host, keyed by model id.
+// #887: newest tune per model, keyed by model id; route returns every agent's rows.
 var _llamaTuneStatus = {};
 var _llamaTuneStatusTs = 0;
 async function _loadTuneStatus(force) {
@@ -245,7 +245,13 @@ async function _loadTuneStatus(force) {
   try {
     const d = await fetch('/api/llm/autotune/status').then(r => r.json());
     const map = {};
-    (d && d.items || []).forEach(i => { map[i.model_id] = i; });
+    (d && d.items || []).forEach(i => {
+      const existing = map[i.model_id];
+      if (!existing) { map[i.model_id] = i; return; }
+      const newT = Date.parse(i.ts || '');
+      const oldT = Date.parse(existing.ts || '');
+      if (!isNaN(newT) && (isNaN(oldT) || newT > oldT)) map[i.model_id] = i;
+    });
     _llamaTuneStatus = map;
   } catch (e) {
     console.warn('autotune status failed:', e);
@@ -256,12 +262,17 @@ function _llamaTuneFor(modelId) {
   const t = _llamaTuneStatus[modelId];
   if (!t) return null;
   const day = String(t.ts || '').slice(0, 10);
-  if (t.stale) {
+  if (t.stale === true) {
     return { stale: true, label: 'tuned · stale', act: 'reverify',
              title: 'Autotuned on llama.cpp ' + t.llama_build + ' · host now runs ' + t.current_build + ' — click to re-verify' };
   }
+  if (t.stale === false) {
+    return { stale: false, label: 'tuned', act: 'autotune',
+             title: 'Autotuned' + (t.llama_build ? ' on llama.cpp ' + t.llama_build : '') + (day ? ' (' + day + ')' : '') };
+  }
+  // stale == null: no build recorded for this tune — unknown, not fresh.
   return { stale: false, label: 'tuned', act: 'autotune',
-           title: 'Autotuned' + (t.llama_build ? ' on llama.cpp ' + t.llama_build : '') + (day ? ' (' + day + ')' : '') };
+           title: 'Autotuned' + (day ? ' (' + day + ')' : '') + ' · llama.cpp build unknown — re-verify to confirm' };
 }
 
 function _llamaProfileHtml(modelId) {

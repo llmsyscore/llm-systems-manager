@@ -41,4 +41,19 @@ describe('tune chip descriptor', () => {
     await win._loadTuneStatus(true); await flush();
     expect(win.__fetches.length).toBe(2);
   });
+  it('keeps the newest ts across two agents tuning the same model, regardless of array order', async () => {
+    const win = boot({ ok: true, items: [
+      { agent_id: 'newer', model_id: 'org/m:Q4', llama_build: 'b120', current_build: 'b130', stale: true, ts: '2026-09-05T00:00:00Z', summary: {} },
+      { agent_id: 'older', model_id: 'org/m:Q4', llama_build: 'b90', current_build: 'b90', stale: false, ts: '2026-08-01T00:00:00Z', summary: {} },
+    ] });
+    await win._loadTuneStatus(true); await flush();
+    expect(win._llamaDescriptor('org/m:Q4', {}).tune).toEqual({ stale: true, label: 'tuned · stale', act: 'reverify',
+      title: 'Autotuned on llama.cpp b120 · host now runs b130 — click to re-verify' });
+  });
+  it('maps a null (unknown build) status row to a muted chip flagging re-verify', async () => {
+    const win = boot({ ok: true, items: [{ agent_id: 'a1', model_id: 'org/m:Q4', llama_build: null, current_build: null, stale: null, ts: '2026-09-02T00:00:00Z', summary: {} }] });
+    await win._loadTuneStatus(true); await flush();
+    expect(win._llamaDescriptor('org/m:Q4', {}).tune).toEqual({ stale: false, label: 'tuned', act: 'autotune',
+      title: 'Autotuned (2026-09-02) · llama.cpp build unknown — re-verify to confirm' });
+  });
 });
