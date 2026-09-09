@@ -799,9 +799,13 @@ def live_section(meta: dict, doc: dict) -> dict:
     cfg = doc.get("config") or {}
     matrix = None
     if isinstance(cfg.get("matrix"), dict) and levels:
-        low = min(int(l.get("concurrency") or 0) for l in levels)
-        cells = [{"bench": l.get("bench"), "osl": l.get("osl"), "pred_tps": (l.get("all") or {}).get("pred_tps")}
-                 for l in levels if int(l.get("concurrency") or 0) == low]
+        by_cell: dict = {}
+        for l in levels:
+            k, c = _cell_key(l), int(l.get("concurrency") or 0)
+            if k not in by_cell or c < by_cell[k][0]:
+                by_cell[k] = (c, l)
+        cells = [{"bench": l.get("bench"), "osl": l.get("osl"),
+                  "pred_tps": (l.get("all") or {}).get("pred_tps")} for _, l in by_cell.values()]
         matrix = {"benches": list(cfg["matrix"].get("benches") or []),
                   "osls": list(cfg["matrix"].get("osls") or []), "cells": cells}
     return {"run_id": meta.get("run_id"), "ts": meta.get("ts"), "bench": doc.get("bench") or cfg.get("bench"),

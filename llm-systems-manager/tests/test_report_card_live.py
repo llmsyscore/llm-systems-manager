@@ -112,3 +112,14 @@ def test_latest_model_filter_skips_other_models(env):
                               "preset_version": rc.PRESET_VERSION, "eligible": True, "result": {"model": "other"}})
     r = env.get(f"/api/reportcard/latest?agent={AGENT['agent_id']}&provider=llama&model={MODEL}").get_json()
     assert r["ok"] and r["card"] is None
+
+
+def test_live_section_matrix_uses_each_cells_own_lowest_concurrency():
+    meta = {"run_id": "r1", "ts": "t", "agent_id": AGENT["agent_id"]}
+    doc = _doc(matrix=True)
+    lv = doc["levels"]
+    lv[1] = {**lv[1], "concurrency": 4}
+    lv.append({**lv[1], "concurrency": 8, "all": {**lv[1]["all"], "pred_tps": 1.0}})
+    cells = rc.live_section(meta, doc)["matrix"]["cells"]
+    assert cells == [{"bench": "throughput_1k", "osl": 256, "pred_tps": 64.0},
+                     {"bench": "throughput_32k", "osl": 256, "pred_tps": 50.0}]
