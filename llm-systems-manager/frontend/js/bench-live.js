@@ -479,39 +479,54 @@
         _levels = d.run.levels || []; _lastDoc = { ...d.run, run_id: host.run_id, ok: true }; _cell = null;
         redraw();
         const meta = $('blChartMeta'); if (meta) meta.textContent = 'aggregate decode t/s · ' + host.hostname;
+        log(`showing ${host.hostname} · run ${host.run_id}`, 'dim');
       }
     }
     renderFleet();
     syncAttachBtn(); syncPinBtn();
   }
+  function setProgress(done, total) { const bar = $('blProgress') && $('blProgress').querySelector('i'); if (bar) bar.style.width = (total ? Math.round(done / total * 100) : 0) + '%'; }
+  // Logs every host whose status changed between two polls of the autopilot job.
+  function logFleetChanges(prev, next) {
+    const before = {}; ((prev && prev.hosts) || []).forEach(h => { before[h.agent_id] = h.status; });
+    ((next && next.hosts) || []).forEach(h => {
+      if (before[h.agent_id] === h.status) return;
+      if (h.status === 'running') log(`${h.hostname}: started`);
+      else if (h.status === 'done') log(`${h.hostname}: done · decode ${fmt(h.gen_tps)} t/s · latency ${fmt(h.latency_s, 1)} s${h.wh_per_ktok != null ? ` · ${fmt(h.wh_per_ktok, 2)} Wh / 1k tokens` : ''}`, 'ok');
+      else if (h.status === 'failed') log(`${h.hostname}: failed${h.error ? ' · ' + h.error : ''}`, 'warn');
+      else if (h.status === 'cancelled') log(`${h.hostname}: cancelled`, 'dim');
+    });
+  }
   function stopFleetPoll() { if (_fleetPoll) { clearInterval(_fleetPoll); _fleetPoll = null; } }
   function startFleetPoll() {
     stopFleetPoll();
-    const tick = async () => {
+    fleetTick();
+    _fleetPoll = setInterval(fleetTick, FLEET_POLL_MS);
+  }
+  async function fleetTick() {
       if (!_fleetJob) return;
       let d;
       try { d = await fetch('/api/benchmark/live/fleet/' + encodeURIComponent(_fleetJob.job_id)).then(res => res.json()); }
       catch (_) { return; }
       if (!d || !d.ok) {
         stopFleetPoll(); sessionStorage.removeItem('bl.fleetJob'); _fleetJob = null; _fleetSel = null;
-        busy(false); stopElapsed(); setStatus('fleet job lost', 'err'); renderFleet(); syncPinBtn(); return;
+        busy(false); stopElapsed(); setStatus('autopilot job lost', 'err'); renderFleet(); syncPinBtn(); return;
       }
-      _fleetJob = d.job; renderFleet();
+      logFleetChanges(_fleetJob, d.job); _fleetJob = d.job; renderFleet();
       const hosts = _fleetJob.hosts || [], total = hosts.length;
       const finished = hosts.filter(h => h.status === 'done' || h.status === 'failed' || h.status === 'cancelled').length;
-      if (!_fleetJob.done) { setStatus('running · fleet ' + finished + '/' + total, 'running'); return; }
+      if (!_fleetJob.done) { setStatus('running · autopilot ' + finished + '/' + total, 'running'); setProgress(finished, total); return; }
       stopFleetPoll(); busy(false); stopElapsed(); sessionStorage.removeItem('bl.fleetJob');
       const ranking = _fleetJob.ranking || [];
       if (_fleetJob.cancelled) setStatus('cancelled', 'err');
-      else if (ranking.length) setStatus('complete · fleet', 'ok');
+      else if (ranking.length) setStatus('complete · autopilot', 'ok');
       else setStatus('failed', 'err');
       const best = ranking.length ? hosts.find(h => h.agent_id === ranking[0]) : null;
       $('blStrip').textContent = best ? `${total} hosts · best ${best.hostname} ${fmt(best.gen_tps)} t/s` : `${total} hosts`;
+      log(best ? `autopilot ranking complete · best ${best.hostname} ${fmt(best.gen_tps)} t/s` : (_fleetJob.cancelled ? 'autopilot job cancelled' : 'autopilot job failed on every host'), best ? 'ok' : 'warn');
+      setProgress(total, total);
       if (best) selectFleetHost(best.agent_id);
       loadRuns();
-    };
-    tick();
-    _fleetPoll = setInterval(tick, FLEET_POLL_MS);
   }
   function log(text, cls) { const el = $('blLog'); if (!el) return; const t = new Date().toTimeString().slice(0, 8); el.innerHTML += `<div><span class="dim">${t}</span> ${cls ? `<span class="${cls}">` : ''}${esc(text)}${cls ? '</span>' : ''}</div>`; el.scrollTop = el.scrollHeight; }
   function setStatus(text, state) { const el = $('blStatus'); el.textContent = text; el.classList.remove('running', 'ok', 'err'); if (state) el.classList.add(state); }
@@ -612,13 +627,14 @@
       _fleetJob = { job_id: d.job_id, hosts: [] };
       sessionStorage.setItem('bl.fleetJob', d.job_id);
       busy(true); startElapsed(); _levels = []; _lastDoc = null; _activeLevel = null; _cell = null; _fleetSel = null; _baseline = null;
-      $('blLog').innerHTML = ''; syncAttachBtn(); syncPinBtn();
+      $('blLog').innerHTML = ''; setProgress(0, 0); syncAttachBtn(); syncPinBtn();
+      log(`autopilot job ${d.job_id} · ${agents.length} host${agents.length === 1 ? '' : 's'} · ${config.bench || ''}`);
       redraw(); renderFleet(); startFleetPoll();
       return;
     }
     if ($('blRunBtn').disabled) return;
     _lastCfg = c;
-    busy(true); _levels = []; _lastDoc = null; _activeLevel = null; _cell = null; _fleetJob = null; _fleetSel = null; renderFleet(); $('blLog').innerHTML = '';
+    busy(true); _levels = []; _lastDoc = null; _activeLevel = null; _cell = null; _fleetJob = null; _fleetSel = null; renderFleet(); $('blLog').innerHTML = ''; setProgress(0, 0);
     syncAttachBtn(); syncPinBtn();
     _baseline = null; _sweepLevels = (c.concurrency || []).slice(); _curLevel = null; startElapsed();
     if (c.baseline_run_id) { try { const r = await fetch('/api/benchmark/live/runs/' + encodeURIComponent(c.baseline_run_id)).then(r => r.json()); _baseline = r && r.run; } catch (_) {} }
@@ -725,5 +741,5 @@
   window.BL = { onOpen, setMode, run, cancel, setup, startServer, running, applyPreset, parseSweep, parseOsls, estimateSeconds, deltaText, knee, pinBaseline, exportJson,
     toggleMatrix, heatCells, cellKey, addToReportCard, toggleFleet, rankHosts, selectFleetHost,
     _config: config, _debugLevels: (rows) => { _levels = rows; _cell = null; redraw(); },
-    _debugFleet: (job) => { _fleetJob = job; renderFleet(); } };
+    _debugFleet: (job) => { _fleetJob = job; renderFleet(); }, _debugPollOnce: fleetTick };
 })();

@@ -497,6 +497,27 @@ describe('fleet ranking (#884)', () => {
     expect(win.fetch.mock.calls.some(c => String(c[0]).includes('/api/benchmark/live/runs/ra'))).toBe(true);
     expect(rows[1].classList.contains('on')).toBe(true);
   });
+  it('an autopilot run resets the progress bar and logs the job and host transitions', async () => {
+    const win = boot('BL.onOpen("org/m:Q4");'); await flush();
+    const bar = win.document.querySelector('#blProgress i'); bar.style.width = '60%';
+    let polls = 0;
+    win.fetch = vi.fn(async (url, opts) => ({ json: async () => url.includes('/hosts') ? { ok: true, hosts: [{ agent_id: 'a', hostname: 'alpha', online: true, loaded: true }] }
+      : (String(url) === '/api/benchmark/live/fleet' && opts) ? { ok: true, job_id: 'j3', hosts: [] }
+      : url.includes('/fleet/j3') ? { ok: true, job: { ...job, done: ++polls > 1, hosts: [polls > 1 ? job.hosts[0] : { ...job.hosts[0], status: 'running', gen_tps: null }, job.hosts[2]] } }
+      : url.includes('/runs/ra') ? { ok: true, meta: {}, run: { levels: [], rows: [] } } : { ok: true, runs: [] } }));
+    win.BL.toggleFleet(); await flush();
+    await win.BL.run(); await flush();
+    // the first poll already ran: charlie failed, alpha running → 1 of 2 finished
+    expect(bar.style.width).toBe('50%');
+    const logText = () => win.document.getElementById('blLog').textContent;
+    expect(logText()).toContain('autopilot job j3 · 1 host');
+    expect(logText()).toContain('alpha: started');
+    expect(logText()).toContain('charlie: failed · Another benchmark');
+    await win.BL._debugPollOnce(); await flush();
+    expect(logText()).toContain('alpha: done · decode 60');
+    expect(logText()).toContain('autopilot ranking complete');
+    expect(bar.style.width).toBe('100%');
+  });
   it('fleet toggle loads hosts and the run posts a fleet job', async () => {
     const win = boot('BL.onOpen("org/m:Q4");'); await flush();
     win.fetch = vi.fn(async (url, opts) => ({ json: async () => url.includes('/hosts') ? { ok: true, hosts: [

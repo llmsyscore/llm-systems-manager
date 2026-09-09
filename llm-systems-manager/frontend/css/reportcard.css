@@ -133,6 +133,7 @@
 .rc-live-head { display: flex; justify-content: space-between; font-size: 0.8em; }
 .rc-live-title { font-weight: 600; }
 .rc-live-meta, .rc-live-load, .rc-live-matrix { color: var(--fg-dim); font-size: 0.78em; }
+.rc-live-grid { grid-template-columns: repeat(4, 1fr); }
 .rc-live-grid .rc-num { font-size: 0.9em; }
 
 .rc-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 14px; }
