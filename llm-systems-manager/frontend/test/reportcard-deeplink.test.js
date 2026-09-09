@@ -88,5 +88,7 @@ describe('Report Card deep-link model filter (#885)', () => {
     const call = fetchMock.mock.calls.find(c => String(c[0]).startsWith('/api/reportcard/latest'));
     expect(call).toBeTruthy();
     expect(String(call[0])).not.toContain('&model=');
+    expect(document.getElementById('rcMode').value).toBe('standard');
+    expect(document.getElementById('rcCustomModel').value).toBe('');
   });
 });

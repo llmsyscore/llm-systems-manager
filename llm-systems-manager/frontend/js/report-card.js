@@ -500,12 +500,15 @@ function initReportCard(modelId) {
   _rcPrefModel = modelId || null;
   rcLoadPreset();
   rcLoadAgents();
-  rcOnModeChange();
+  const mode = _rcEl('rcMode');
+  const cm = _rcEl('rcCustomModel');
   if (_rcPrefModel) {
-    const mode = _rcEl('rcMode');
     if (mode) mode.value = 'custom';
-    rcOnModeChange();
-    const cm = _rcEl('rcCustomModel');
     if (cm) cm.value = _rcPrefModel;
+  } else if (mode && mode.value === 'custom' && cm && cm.dataset.pref) {
+    mode.value = 'standard';
+    cm.value = '';
   }
+  if (cm) cm.dataset.pref = _rcPrefModel ? '1' : '';
+  rcOnModeChange();
 }
