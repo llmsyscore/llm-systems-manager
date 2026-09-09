@@ -59,8 +59,8 @@ Backend API endpoints consumed:
   <link rel="stylesheet" href="/static/css/settings.css?v=2026.09.04-2">
   <link rel="stylesheet" href="/static/css/modelcards.css?v=2026.09.09-1">
   <link rel="stylesheet" href="/static/css/reportcard.css?v=2026.09.09-1">
-  <link rel="stylesheet" href="/static/css/tools.css?v=2026.08.31-8">
-  <link rel="stylesheet" href="/static/css/autotune.css?v=2026.09.08-6">
+  <link rel="stylesheet" href="/static/css/tools.css?v=2026.09.09-1">
+  <link rel="stylesheet" href="/static/css/autotune.css?v=2026.09.09-1">
   <link rel="stylesheet" href="/static/css/energy.css?v=2026.08.19-2">
   <link rel="stylesheet" href="/static/css/overall.css?v=2026.08.30-1">
 </head>
@@ -2071,6 +2071,7 @@ Backend API endpoints consumed:
           <button class="on" type="button" title="Report Card">▤</button>
           <button type="button" title="Benchmark" onclick="toolsOpenTool('benchmark')">◷</button>
           <button type="button" title="Autotune" onclick="toolsOpenTool('autotune')">⌖</button>
+          <button type="button" title="Quality guard" onclick="toolsOpenTool('quality')">⚖</button>
         </div>
         <h2>Report Card</h2>
         <span class="ctx-chip" id="toolsChipReportcard" style="display:none;"></span>
@@ -2182,6 +2183,7 @@ Backend API endpoints consumed:
           <button type="button" title="Report Card" onclick="toolsOpenTool('reportcard')">▤</button>
           <button class="on" type="button" title="Benchmark">◷</button>
           <button type="button" title="Autotune" onclick="toolsOpenTool('autotune')">⌖</button>
+          <button type="button" title="Quality guard" onclick="toolsOpenTool('quality')">⚖</button>
         </div>
         <h2>Benchmark</h2>
         <div class="mc-seg" id="benchModeSeg" role="tablist" aria-label="Benchmark mode">
@@ -2350,6 +2352,7 @@ Backend API endpoints consumed:
           <button type="button" title="Report Card" onclick="toolsOpenTool('reportcard')">▤</button>
           <button type="button" title="Benchmark" onclick="toolsOpenTool('benchmark')">◷</button>
           <button class="on" type="button" title="Autotune">⌖</button>
+          <button type="button" title="Quality guard" onclick="toolsOpenTool('quality')">⚖</button>
         </div>
         <h2>Autotune</h2>
         <span class="ctx-chip" id="toolsChipAutotune" style="display:none;"></span>
@@ -2490,6 +2493,55 @@ Backend API endpoints consumed:
       </div>
       </div>
     </div><!-- /toolsModAt -->
+
+    <!-- Quality guard module (#888): KL-divergence check of a config change against f16 -->
+    <div id="toolsModQg" class="at-wizard" style="display:none;">
+      <div class="tools-mod-head">
+        <div class="mini-switch" role="tablist" aria-label="Switch tool">
+          <button class="tools-crumb" type="button" title="All tools" onclick="toolsCloseModule()">‹</button>
+          <button type="button" title="Report Card" onclick="toolsOpenTool('reportcard')">▤</button>
+          <button type="button" title="Benchmark" onclick="toolsOpenTool('benchmark')">◷</button>
+          <button type="button" title="Autotune" onclick="toolsOpenTool('autotune')">⌖</button>
+          <button class="on" type="button" title="Quality guard">⚖</button>
+        </div>
+        <h2>Quality guard</h2>
+        <span class="ctx-chip" id="toolsChipQuality" style="display:none;"></span>
+        <span class="mgap"></span>
+        <span class="bl-note" id="qgModeNote">Compare a config change against f16 with KL divergence</span>
+      </div>
+      <div class="bench-body">
+      <div class="bench-rail at-rail" id="qgRail">
+        <div id="qgPreflight" class="at-preflight" style="display:none;"><span class="at-dot warn"></span><span class="d" id="qgPreflightMsg"></span></div>
+        <div class="at-grp">
+          <div class="at-grp-h">Model</div>
+          <div class="at-grp-b"><select class="at-in" id="qgModel"></select></div>
+        </div>
+        <div class="at-grp">
+          <div class="at-grp-h">Changes to test <span class="r" id="qgCount">0</span></div>
+          <div class="at-grp-b" id="qgRows"></div>
+          <div class="at-grp-b at-frow g2"><label>Add key</label><select class="at-in" id="qgAddKey"></select></div>
+        </div>
+        <div class="at-grp">
+          <div class="at-grp-h">Guard</div>
+          <div class="at-grp-b"><div class="at-frow"><label>Pass when KL ≤</label><input class="at-in xs" id="qgKlMax" type="number" min="0" step="0.005" value="0.02"></div>
+          <div class="at-hint">Mean KL divergence of the changed config against an f16 KV cache on the same model. 0.02 is a conservative "no visible quality loss" line.</div></div>
+        </div>
+        <div class="at-runbar">
+          <button id="qgRunBtn" class="mcbtn mcbtn-pri" onclick="QG.run()">▶ Run check</button>
+          <span class="at-est" id="qgEstimate">~2 perplexity passes</span>
+          <button id="qgCancelBtn" class="mcbtn mcbtn-ghost warn" onclick="QG.cancel()" style="display:none;">✕ Cancel</button>
+        </div>
+      </div>
+      <div class="bench-results at-results">
+        <div class="bl-strip at-strip"><span class="bench-status-pill" id="qgPill">idle</span><span id="qgStrip"></span></div>
+        <div class="at-card"><div class="at-card-h"><h3>Result</h3><span class="meta" id="qgResultMeta"></span></div>
+          <div class="at-card-b" id="qgResult"><div class="at-empty">Pick a model, change one or more keys, then run the check.</div></div>
+          <div class="at-card-f"><button type="button" id="qgApplyBtn" class="mcbtn mcbtn-pri" onclick="QG.apply()" style="display:none;">Apply changes</button></div>
+        </div>
+        <div class="at-card collapsed"><div class="at-card-h tog" onclick="this.parentElement.classList.toggle('collapsed')"><h3>Run log</h3></div><div class="at-card-b"><div class="at-log" id="qgLog"></div></div></div>
+      </div>
+      </div>
+    </div><!-- /toolsModQg -->
   </div>
 
 </div><!-- end llmTab -->
@@ -2525,11 +2577,12 @@ Backend API endpoints consumed:
 <script src="/static/js/bench-autotune.js?v=2026.09.08-4"></script>
 <script src="/static/js/bench-live.js?v=2026.09.09-6"></script>
 <script src="/static/js/autotune.js?v=2026.09.09-1"></script>
+<script src="/static/js/quality.js?v=2026.09.09-1"></script>
 <script src="/static/js/lmstudio.js?v=2026.09.04-1"></script>
 <script src="/static/js/vllm.js?v=2026.09.04-1"></script>
 <script src="/static/js/vllm-bench-autotune.js?v=2026.09.02-1"></script>
 <script src="/static/js/report-card.js?v=2026.09.08-3"></script>
-<script src="/static/js/tools.js?v=2026.09.09-1"></script>
+<script src="/static/js/tools.js?v=2026.09.09-2"></script>
 <script src="/static/js/energy.js?v=2026.08.19-1"></script>
 <script src="/static/js/overall.js?v=2026.08.29-2"></script>
 <script src="/static/js/dashboard-manager.js?v=2026.08.17-1"></script>

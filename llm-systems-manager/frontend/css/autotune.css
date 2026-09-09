@@ -167,3 +167,9 @@
     border:1px solid var(--border); border-radius:4px;
     font-family: var(--font-mono); font-size:0.85em;
   }
+  /* Quality guard (#888) — override rows + the big KL readout. */
+  .qg-row .cur { font-family:var(--font-mono); font-size:12px; color:var(--fg-muted); padding:0 6px; }
+  .qg-big { display:flex; align-items:baseline; gap:12px; padding:10px 0 14px; }
+  .qg-big .v { font-size:28px; font-weight:700; color:var(--ok); }
+  .qg-big.bad .v { color:var(--warn); }
+  .qg-big .l { color:var(--fg-muted); font-size:12px; }

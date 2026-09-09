@@ -144,6 +144,20 @@
           ];
         },
       }, at, run.at, run.local.at),
+      _runToolDesc({
+        id: 'quality', icon: '⚖', tone: 4, name: 'Quality guard',
+        desc: 'Check any config change against f16 with a KL-divergence pass before you apply it.',
+        empty: '<b>Never run.</b> Pick a model, change a key, and measure the quality cost.',
+        sub: q => { const s = q.summary || {}; return s.kl != null ? 'KL ' + Number(s.kl).toFixed(3) : 'quality check'; },
+        stats: q => {
+          const s = q.summary || {};
+          return [
+            { v: s.kl != null ? Number(s.kl).toFixed(3) : '—', l: 'Last KL' },
+            { v: s.kl_pass == null ? '—' : s.kl_pass ? 'pass' : 'fail', l: 'Guard' },
+            { v: histTool('quality'), u: 'runs', l: 'History' },
+          ];
+        },
+      }, _toolsRunLatest.quality || _toolsRunsFor('quality')[0] || null, run.at, run.local.at),
     ];
     return tools;
   }
@@ -214,6 +228,13 @@
           title: clickable ? 'Open Autotune' : null, model: r.model_id || '',
           host: _tHost(r.agent_id),
           result: bits.join(' · ') || '—', tps: s.decode_tps ?? null, ts: r.ts });
+      } else if (r.tool === 'quality') {
+        const bits = [];
+        if (s.kl != null) bits.push('<b>KL ' + TC.esc(Number(s.kl).toFixed(4)) + '</b>');
+        if (s.changed) bits.push(TC.esc(String(s.changed)));
+        bits.push(!r.ok ? '<span style="color:var(--crit)">failed</span>' : s.kl_pass ? 'pass' : '<span style="color:var(--warn)">fail</span>');
+        rows.push({ icon: '⚖', tool: 'Quality', toolId: clickable ? 'quality' : null, title: clickable ? 'Open Quality guard' : null,
+          model: r.model_id || '', host: _tHost(r.agent_id), result: bits.join(' · '), tps: null, ts: r.ts });
       }
     });
     // Newest 100 overall, then the active tool filter and column sort.
@@ -274,8 +295,8 @@
     if (_toolsInited && home && home.style.display !== 'none') _toolsRenderLauncher();
   }
 
-  const _TOOL_MODS = { reportcard: 'toolsMod', benchmark: 'toolsModBench', autotune: 'toolsModAt' };
-  const _TOOL_CHIPS = { reportcard: 'toolsChipReportcard', benchmark: 'toolsChipBenchmark', autotune: 'toolsChipAutotune' };
+  const _TOOL_MODS = { reportcard: 'toolsMod', benchmark: 'toolsModBench', autotune: 'toolsModAt', quality: 'toolsModQg' };
+  const _TOOL_CHIPS = { reportcard: 'toolsChipReportcard', benchmark: 'toolsChipBenchmark', autotune: 'toolsChipAutotune', quality: 'toolsChipQuality' };
 
   // Context chip in a module head: the model a deep link pre-filled (#770).
   function _toolsSetChip(id, modelId) {
@@ -315,7 +336,8 @@
     const willInit =
       (id === 'reportcard' && !run.rc && typeof initReportCard === 'function')
       || (id === 'benchmark' && !run.bench && typeof openBench === 'function')
-      || (id === 'autotune' && !run.at && window.AT);
+      || (id === 'autotune' && !run.at && window.AT)
+      || (id === 'quality' && !run.at && window.QG);
     _toolsSetChip(id, willInit && modelId ? modelId : null);
     // A live run keeps its pickers and progress; re-init only when idle.
     if (id === 'reportcard') {
@@ -328,6 +350,8 @@
       }
     } else if (id === 'autotune') {
       if (window.AT) AT.onOpen(modelId || undefined, opts);
+    } else if (id === 'quality') {
+      if (window.QG) QG.onOpen(modelId || undefined, opts);
     }
   }
 
