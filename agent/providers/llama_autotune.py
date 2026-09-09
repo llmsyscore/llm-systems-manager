@@ -1242,7 +1242,7 @@ class _Run:
             cancelled = True
             self.stop_reason = "cancelled"
         after = (self.after or {}).get("decode_tps")
-        if ok and base and after is not None:
+        if ok and base is not None and after is not None:
             self.regressed = float(after) < 0.85 * float(base)
         return self.done(ok, cancelled)
 
@@ -1310,7 +1310,8 @@ def run_quality(model_id: str, section: dict, req: dict, backend, put, cancelled
     except Cancelled:
         stop = "cancelled"
     reason = stop or guard["error"] or (f"KL {guard['kl']} ≤ {kl_max}" if guard["pass"] else f"KL {guard['kl']} > {kl_max}")
-    emit("stage_done", stage="quality", choice="pass" if guard["pass"] else "fail", reason=reason,
+    choice = "pass" if guard["pass"] else "fail"
+    emit("stage_done", stage="quality", choice=choice, reason=reason,
          seconds=int(clock() - t0), loads=0)
     changes = [{"key": k, "current": section.get(k), "recommended": v} for k, v in ov.items()]
     doc = {"type": "model_done", "model_id": model_id, "run_id": env.get("run_id"), "ok": ok and stop is None,
@@ -1318,7 +1319,7 @@ def run_quality(model_id: str, section: dict, req: dict, backend, put, cancelled
            "llama_build": env.get("llama_build") or None, "facts": {}, "changes": changes,
            "before": None, "after": None, "guard": guard, "verify": None,
            "stages": [{"stage": "quality", "status": "done" if ok else "failed", "reason": reason,
-                       "seconds": int(clock() - t0), "loads": 0, "choice": guard["pass"]}],
+                       "seconds": int(clock() - t0), "loads": 0, "choice": choice}],
            "base_args": base_args, "cand_args": cand_args,
            "stop_reason": stop, "elapsed_s": int(clock() - t0), "loads": 0}
     put(doc)

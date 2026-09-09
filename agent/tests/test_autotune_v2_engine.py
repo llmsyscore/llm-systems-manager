@@ -467,6 +467,12 @@ def test_verify_mode_without_baseline_is_never_regressed(at):
     assert doc["ok"] is True and doc["regressed"] is None
 
 
+def test_verify_mode_zero_baseline_is_computed_not_skipped(at):
+    doc, _ = _run(at, Fake(), {"model_ids": ["org/m:Q4"], "objective": "fit", "mode": "verify",
+                               "baseline_tps": 0.0})
+    assert doc["ok"] is True and doc["regressed"] is False
+
+
 class KLFake(Fake):
     def __init__(self, kl=0.01, base_ok=True):
         super().__init__(); self.kl_v, self.base_ok, self.kl_calls = kl, base_ok, []
