@@ -3,6 +3,7 @@ and an alarm-engine alert when decode t/s regresses."""
 from __future__ import annotations
 
 import logging
+import re
 import sqlite3
 import threading
 import time
@@ -93,6 +94,13 @@ def severity(delta: Optional[float], pct: float) -> Optional[str]:
     return "warning" if drop >= pct else None
 
 
+def _metric_tag(model_id: str) -> str:
+    """Model id's last path segment, sanitised to [A-Za-z0-9_.:-], capped at 64 chars."""
+    tail = str(model_id or "").rsplit("/", 1)[-1]
+    tag = "".join(c if re.match(r"[A-Za-z0-9_.:-]", c) else "_" for c in tail)
+    return tag[:64]
+
+
 def _iso(ts: float) -> str:
     return datetime.fromtimestamp(ts, timezone.utc).isoformat()
 
@@ -143,12 +151,14 @@ class Watcher:
             f"SELECT {bench_live._COLS} FROM bench_live_runs WHERE baseline = 1 ORDER BY model_id, agent_id").fetchall()
         return [bench_live._row(r) for r in rows]
 
-    def _last_check(self, baseline_run_id: str, auto_only: bool = False) -> Optional[dict]:
+    def _last_check(self, baseline_run_id: str, auto_only: bool = False, settled_only: bool = False) -> Optional[dict]:
         q = f"SELECT {_CHECK_COLS} FROM bench_baseline_checks WHERE baseline_run_id = ?"
         args: list = [baseline_run_id]
         if auto_only:
             q += " AND trigger IN (?, ?)"
             args += list(AUTO_TRIGGERS)
+        if settled_only:
+            q += " AND status IN ('ok', 'regressed')"
         r = self._conn().execute(q + " ORDER BY id DESC LIMIT 1", args).fetchone()
         return _check_row(r) if r else None
 
@@ -209,6 +219,7 @@ class Watcher:
                 h = model_hosts.get(b["agent_id"]) or {}
                 build = builds.get(b["agent_id"], "")
                 last = self._last_check(b["run_id"])
+                settled = self._last_check(b["run_id"], settled_only=True)
                 pend = self._pending.get(b["run_id"]) or {}
                 act = self._active.get(b["run_id"])
                 b_cfg = b.get("config") or {}
@@ -217,7 +228,8 @@ class Watcher:
                             "config": {k: b_cfg.get(k) for k in ("bench", "osl", "concurrency", "matrix") if k in b_cfg},
                             "online": bool(h.get("online")), "loaded": bool(h.get("loaded")),
                             "llama_build": build,
-                            "build_changed": bool(build and last and last.get("llama_build") and last["llama_build"] != build),
+                            "build_changed": bool(build and settled and settled.get("llama_build")
+                                                   and settled["llama_build"] != build),
                             "running": act is not None,
                             "pending": (act or pend).get("trigger") if (act or pend) else None,
                             "last_check": last})
@@ -300,6 +312,10 @@ class Watcher:
             self._record(b, pend["trigger"], "skipped", error="host offline" if not h.get("online") else "model not loaded on the host", build=build)
             self._pending.pop(b["run_id"], None)
             return None
+        if not (b.get("config") or {}).get("bench"):
+            self._record(b, pend["trigger"], "skipped", error="baseline has no stored config", build=build)
+            self._pending.pop(b["run_id"], None)
+            return None
         body = {k: v for k, v in (b.get("config") or {}).items() if k != "model_id"}
         body.update({"model_id": b["model_id"], "baseline_run_id": b["run_id"]})
         return b, pend, body, build
@@ -319,6 +335,9 @@ class Watcher:
                 self._pending.pop(b["run_id"], None)
                 return
             pend["starting"] = False
+            if "in progress" in str(val):
+                pend["retry_at"] = started + RETRY_S
+                return
             pend["attempts"] += 1
             if pend["attempts"] >= MAX_ATTEMPTS:
                 self._record(b, pend["trigger"], "failed", error=str(val)[:300], build=build)
@@ -352,13 +371,15 @@ class Watcher:
         hostname = ({x["agent_id"]: x for x in self._hosts()}.get(b["agent_id"]) or {}).get("hostname") or b["agent_id"][:8]
         row = self._record(b, act["trigger"], status, run_id=act["run_id"], gen_tps=cur, delta=d, sev=sev,
                            error=None if cur is not None else "run failed on the agent", build=act["build"])
+        tag = _metric_tag(b["model_id"])
+        metric = f"decode_tps:{tag}"
         if cur is not None:
-            ts = self._now()
-            pts = [{"source": "benchmark", "metric_name": "decode_tps", "value": float(cur), "unit": "t/s",
+            ts = _iso(self._now())
+            pts = [{"source": "benchmark", "metric_name": metric, "value": float(cur), "unit": "t/s",
                     "timestamp": ts, "hostname": hostname}]
             if d is not None:
-                pts.append({"source": "benchmark", "metric_name": "baseline_delta_pct", "value": float(d), "unit": "%",
-                            "timestamp": ts, "hostname": hostname})
+                pts.append({"source": "benchmark", "metric_name": f"baseline_delta_pct:{tag}", "value": float(d),
+                            "unit": "%", "timestamp": ts, "hostname": hostname})
             try:
                 self._push(pts)
             except Exception as e:  # noqa: BLE001
@@ -368,7 +389,7 @@ class Watcher:
             msg = f"{b['model_id']} on {hostname}: decode {cur:.1f} t/s, {d:+.0f} % vs baseline {base:.1f} t/s"
             if act.get("build_from") and act.get("build"):
                 msg += f" (llama.cpp {act['build_from']} → {act['build']})"
-            payload = {"name": "Benchmark regression", "source": "benchmark", "metric": "decode_tps",
+            payload = {"name": "Benchmark regression", "source": "benchmark", "metric": metric,
                        "host": hostname, "severity": sev, "value": round(float(cur), 2),
                        "threshold": round(base * (1 - pct / 100.0), 2), "message": msg}
             try:

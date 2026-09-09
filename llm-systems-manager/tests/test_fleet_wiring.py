@@ -108,7 +108,7 @@ def test_llama_build_of_reads_store(monkeypatch):
 def test_bench_baseline_cfg_defaults(monkeypatch):
     monkeypatch.setattr(manager_mod.settings.manager, "bench_baselines", None, raising=False)
     cfg = manager_mod._bench_baseline_cfg()
-    assert cfg == {"enabled": False, "nightly_at": "03:00", "on_build_change": True, "regression_pct": 15.0}
+    assert cfg == {"enabled": False, "nightly_at": "", "on_build_change": True, "regression_pct": 15.0}
 
 
 def test_nightly_at_validator():

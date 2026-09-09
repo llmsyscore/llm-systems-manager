@@ -98,7 +98,7 @@ CATALOG: list[dict] = [
     _e("manager.model_meta.ttl_days", "int", "Model metadata cache (days)", "How long fetched sampling suggestions are reused before re-reading Hugging Face.", "models", MANAGER, min=1, max=365),
     # benchmark baselines (#882) — hot: the watcher re-reads these every tick
     _e("manager.bench_baselines.enabled", "bool", "Scheduled re-check", "Re-run pinned Live benchmark baselines automatically and alert on a decode-t/s regression.", "benchmark", MANAGER, hot=True, common=True),
-    _e("manager.bench_baselines.nightly_at", "str", "Nightly at (HH:MM)", "Local time of the nightly re-check; blank disables the nightly leg.", "benchmark", MANAGER, hot=True),
+    _e("manager.bench_baselines.nightly_at", "str", "Nightly at (HH:MM)", "Local time of the nightly re-check; clear the field for build-change re-checks only.", "benchmark", MANAGER, hot=True),
     _e("manager.bench_baselines.on_build_change", "bool", "After llama.cpp upgrades", "Re-check a host's baselines when its llama.cpp build changes.", "benchmark", MANAGER, hot=True),
     _e("manager.bench_baselines.regression_pct", "float", "Regression threshold (%)", "Decode t/s drop vs the pinned baseline that raises a warning; twice it raises critical.", "benchmark", MANAGER, min=1, max=90, hot=True),
     # backup

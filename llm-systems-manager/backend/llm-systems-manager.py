@@ -175,7 +175,7 @@ def _local_hostname() -> str:
 # banner reads it. Bump suffix (-1, -2, …) for same-day iterations; roll
 # the date for a new day's first change.
 # ---------------------------------------------------------------------------
-__version__ = "v2026.09.09-5"
+__version__ = "v2026.09.09-6"
 
 # Wall-clock at first import (Cheroot main process); the shutdown banner
 # reads it for the uptime line.
@@ -5435,7 +5435,7 @@ bench_live.register_routes(app, ctx, db_path=str(DB_PATH), proxy=proxies.proxy_t
 def _bench_baseline_cfg() -> dict:
     b = getattr(settings.manager, "bench_baselines", None)
     return {"enabled": bool(getattr(b, "enabled", False)),
-            "nightly_at": str(getattr(b, "nightly_at", "03:00") if b is not None else "03:00"),
+            "nightly_at": str(getattr(b, "nightly_at", "") if b is not None else ""),
             "on_build_change": bool(getattr(b, "on_build_change", True)),
             "regression_pct": float(getattr(b, "regression_pct", 15.0) or 15.0)}
 

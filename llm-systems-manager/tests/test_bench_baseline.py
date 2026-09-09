@@ -92,6 +92,13 @@ def test_nightly_due():
     assert not bb.nightly_due(now, "nope", None, tz=UTC)
 
 
+def test_metric_tag():
+    assert bb._metric_tag("org/m:Q4") == "m:Q4"
+    assert bb._metric_tag("weird name/ünïts!") == "_n_ts_"
+    assert bb._metric_tag("a" * 100) == ("a" * 64)
+    assert bb._metric_tag("") == ""
+
+
 def test_delta_and_severity():
     assert bb.delta_pct(40.0, 50.0) == -20.0
     assert bb.delta_pct(None, 50.0) is None and bb.delta_pct(40.0, 0) is None
@@ -118,12 +125,13 @@ def test_nightly_check_regression_alerts(tmp_path):
     assert row["last_check"]["trigger"] == "nightly" and row["last_check"]["llama_build"] == "b100-aaa"
     assert len(e.alerts) == 1
     a = e.alerts[0]
-    assert a["severity"] == "warning" and a["source"] == "benchmark" and a["metric"] == "decode_tps"
+    assert a["severity"] == "warning" and a["source"] == "benchmark" and a["metric"] == "decode_tps:m:Q4"
     assert a["host"] == "alpha" and a["value"] == 40.0 and a["threshold"] == 42.5
     assert MODEL in a["message"] and "-20 %" in a["message"]
     names = sorted(p["metric_name"] for p in e.points)
-    assert names == ["baseline_delta_pct", "decode_tps"]
+    assert names == ["baseline_delta_pct:m:Q4", "decode_tps:m:Q4"]
     assert all(p["source"] == "benchmark" and p["hostname"] == "alpha" for p in e.points)
+    assert all(isinstance(p["timestamp"], str) for p in e.points)
     e.w.tick()
     assert len(e.started) == 1  # today's slot already checked
 
@@ -156,6 +164,18 @@ def test_build_change_triggers_when_nightly_done(tmp_path):
     assert last["trigger"] == "build" and last["status"] == "regressed" and last["severity"] == "critical"
     assert "b100-aaa" in e.alerts[0]["message"] and "b101-bbb" in e.alerts[0]["message"]
     assert e.w.snapshot()["baselines"][0]["build_changed"] is False
+
+
+def test_build_changed_survives_a_skipped_check(tmp_path):
+    e = Env(tmp_path)
+    e.w.tick(); e.store("run-1", 20.0); e.w.tick()  # regressed check recorded on build b100-aaa
+    assert e.w.snapshot()["baselines"][0]["last_check"]["status"] == "regressed"
+    e.build = "b101-bbb"
+    e.hosts[0]["model"] = "other"  # forces the next check to be skipped, not ok/regressed
+    e.w.recheck(PIN); e.w.tick()
+    row = e.w.snapshot()["baselines"][0]
+    assert row["last_check"]["status"] == "skipped"
+    assert row["build_changed"] is True
 
 
 def test_build_change_ignored_when_disabled(tmp_path):
@@ -194,7 +214,7 @@ def test_not_loaded_records_skipped(tmp_path):
     assert e.w.snapshot()["baselines"][0]["last_check"]["error"] == "host offline"
 
 
-def test_busy_retries_then_fails(tmp_path):
+def test_busy_refusal_never_consumes_an_attempt(tmp_path):
     e = Env(tmp_path)
     e.refuse = True
     e.w.tick()
@@ -205,9 +225,39 @@ def test_busy_retries_then_fails(tmp_path):
     assert len(e.started) == 2
     e.t += bb.RETRY_S + 1; e.w.tick()
     assert len(e.started) == 3
-    last = e.w.snapshot()["baselines"][0]["last_check"]
-    assert last["status"] == "failed" and "in progress" in last["error"]
+    e.t += bb.RETRY_S + 1; e.w.tick()
+    assert len(e.started) == 4  # three busy refusals so far, none recorded failed
+    assert e.w.snapshot()["baselines"][0]["last_check"] is None
     assert e.alerts == []
+
+
+def test_other_failures_still_count_toward_max_attempts(tmp_path):
+    e = Env(tmp_path)
+
+    def boom(aid, body):
+        e.started.append((aid, body))
+        return False, "agent unreachable"
+
+    e.w._run = boom
+    e.w.tick()
+    assert len(e.started) == 1
+    e.t += bb.RETRY_S + 1; e.w.tick()
+    assert len(e.started) == 2
+    e.t += bb.RETRY_S + 1; e.w.tick()
+    assert len(e.started) == 3
+    last = e.w.snapshot()["baselines"][0]["last_check"]
+    assert last["status"] == "failed" and last["error"] == "agent unreachable"
+    assert e.alerts == []
+
+
+def test_no_stored_config_records_skipped(tmp_path):
+    e = Env(tmp_path)
+    conn = sqlite3.connect(e.db)
+    conn.execute("UPDATE bench_live_runs SET config_json = '{}'"); conn.commit(); conn.close()
+    e.w.tick()
+    assert e.started == []
+    last = e.w.snapshot()["baselines"][0]["last_check"]
+    assert last["status"] == "skipped" and last["error"] == "baseline has no stored config"
 
 
 def test_timeout_marks_failed(tmp_path):
