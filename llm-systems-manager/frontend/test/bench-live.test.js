@@ -402,6 +402,19 @@ describe('fleet ranking (#884)', () => {
     expect(r.map(h => h.hostname)).toEqual(['bravo', 'alpha', 'charlie']);
     expect(r[0].rank).toBe(1); expect(r[1].pctOfBest).toBeCloseTo(60 / 70); expect(r[2].rank).toBeNull();
   });
+  it('a finished fleet job is cleared when another model opens or a normal run starts', async () => {
+    const win = boot(); await flush();
+    win.fetch = vi.fn(async () => ({ json: async () => ({ ok: true, server: { up: true }, runtime: {}, runs: [], hosts: [] }) }));
+    win.BL._debugFleet(job);
+    const card = win.document.getElementById('blFleetCard');
+    expect(card.style.display).toBe('');
+    await win.BL.onOpen('org/other:Q8'); await flush();
+    expect(card.style.display).toBe('none');
+    win.BL._debugFleet(job);
+    expect(card.style.display).toBe('');
+    await win.BL.run({ model_id: 'org/other:Q8', concurrency: [1], extra_inputs: {} }); await flush();
+    expect(card.style.display).toBe('none');
+  });
   it('renders the ranking table with rank badges, bars, status and Δ vs best; clicking a done row loads its run', async () => {
     const win = boot(); await flush();
     win.fetch = vi.fn(async (url) => ({ json: async () => url.includes('/runs/ra') ? { ok: true, meta: {}, run: { levels: [{ concurrency: 1, all: { pred_tps: 60, agg_pred_tps: 60 }, rows: [] }] } } : { ok: true } }));

@@ -211,6 +211,7 @@
     updateEstimate();
   }
   async function onOpen(modelId) {
+    if (modelId && modelId !== _model && !running()) { _fleetJob = null; _fleetSel = null; renderFleet(); }
     if (modelId) _model = modelId;
     setMode((typeof layout !== 'undefined' && layout && layout.benchMode) || 'live');
     try { _pre = await fetch('/api/benchmark/live/preflight').then(r => r.json()); } catch (_) { _pre = { server: { up: false }, runtime: {} }; }
@@ -605,7 +606,7 @@
     if (_attached) { _queued = c; setStatus('queued · starts when the current run finishes', 'running'); $('blRunBtn').disabled = true; syncCancelBtn(); return; }
     if ($('blRunBtn').disabled) return;
     _lastCfg = c;
-    busy(true); _levels = []; _lastDoc = null; _activeLevel = null; _cell = null; $('blLog').innerHTML = '';
+    busy(true); _levels = []; _lastDoc = null; _activeLevel = null; _cell = null; _fleetJob = null; _fleetSel = null; renderFleet(); $('blLog').innerHTML = '';
     syncAttachBtn();
     _baseline = null; _sweepLevels = (c.concurrency || []).slice(); _curLevel = null; startElapsed();
     if (c.baseline_run_id) { try { const r = await fetch('/api/benchmark/live/runs/' + encodeURIComponent(c.baseline_run_id)).then(r => r.json()); _baseline = r && r.run; } catch (_) {} }
