@@ -45,6 +45,14 @@ class Env:
                             run_on_agent=self._run, llama_build_of=lambda aid: self.build,
                             alert=lambda p: self.alerts.append(p) or True, push_metrics=self.points.extend,
                             now=lambda: self.t, tz=UTC)
+        self.arm(self.t - 86400)
+
+    def arm(self, since):
+        """Pretend the schedule was enabled at `since` (tests default to yesterday)."""
+        conn = sqlite3.connect(self.db)
+        conn.execute("INSERT OR REPLACE INTO bench_baseline_state (key, value) VALUES ('schedule_sig', ?), ('schedule_since', ?)",
+                     (self.cfg["nightly_at"], repr(since)))
+        conn.commit(); conn.close()
 
     def _run(self, aid, body):
         self.started.append((aid, body))
@@ -90,6 +98,36 @@ def test_nightly_due():
     assert not bb.nightly_due(slot - 10, "03:00", None, tz=UTC)
     assert not bb.nightly_due(now, "", None, tz=UTC)
     assert not bb.nightly_due(now, "nope", None, tz=UTC)
+    assert not bb.nightly_due(now, "03:00", None, tz=UTC, since=slot + 1)
+    assert bb.nightly_due(now, "03:00", None, tz=UTC, since=slot)
+
+
+def test_enabling_waits_for_the_next_slot(tmp_path):
+    e = Env(tmp_path)
+    e.cfg["enabled"] = False
+    e.w.tick()
+    e.cfg["enabled"] = True
+    e.w.tick()
+    assert e.started == []  # armed at 08:00; today's 03:00 slot is already past
+    e.t += 86400; e.w.tick()
+    assert len(e.started) == 1
+    e.store("run-1", 50.0); e.w.tick()
+    e.cfg["nightly_at"] = "07:00"  # now is 08:00: the moved slot already passed today, so it waits for tomorrow
+    e.w.tick()
+    assert len(e.started) == 1
+    e.t += 86400; e.w.tick()
+    assert len(e.started) == 2
+
+
+def test_restart_catches_up_a_missed_slot(tmp_path):
+    e = Env(tmp_path)
+    e.w.tick(); e.store("run-1", 50.0); e.w.tick()
+    e.t += 86400  # manager was down over the 03:00 slot; a fresh Watcher on the same DB catches up
+    w2 = bb.Watcher(db_path=e.db, cfg=lambda: dict(e.cfg), fleet_hosts=lambda: list(e.hosts), run_on_agent=e._run,
+                    llama_build_of=lambda aid: e.build, alert=lambda p: True, push_metrics=lambda pts: None,
+                    now=lambda: e.t, tz=UTC)
+    w2.tick()
+    assert len(e.started) == 2
 
 
 def test_metric_tag():

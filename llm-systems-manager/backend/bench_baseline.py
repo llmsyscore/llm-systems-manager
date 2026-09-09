@@ -43,6 +43,7 @@ def init_tables(conn) -> None:
             llama_build TEXT NOT NULL DEFAULT '',
             seen_ts     REAL NOT NULL DEFAULT 0
         )""")
+    conn.execute("CREATE TABLE IF NOT EXISTS bench_baseline_state (key TEXT PRIMARY KEY, value TEXT NOT NULL DEFAULT '')")
     conn.commit()
 
 
@@ -73,9 +74,10 @@ def next_slot_ts(now: float, hhmm: str, tz=None) -> Optional[float]:
     return d.timestamp()
 
 
-def nightly_due(now: float, hhmm: str, last_auto_ts: Optional[float], tz=None) -> bool:
+def nightly_due(now: float, hhmm: str, last_auto_ts: Optional[float], tz=None, since: Optional[float] = None) -> bool:
+    """True once today's slot has passed, was not yet checked, and is not older than the schedule."""
     s = slot_ts(now, hhmm, tz)
-    if s is None or now < s:
+    if s is None or now < s or (since is not None and s < since):
         return False
     return last_auto_ts is None or last_auto_ts < s
 
@@ -256,6 +258,7 @@ class Watcher:
             self._poll_active(cfg, now)
             pins = self._pinned()
             self._detect_build_changes(cfg, pins, now)
+            since = self._schedule_since(cfg, now)
             hosts = self._hosts()
             for b in pins:
                 if b["run_id"] in self._active:
@@ -263,7 +266,7 @@ class Watcher:
                 pend = self._pending.get(b["run_id"])
                 if pend is None:
                     if not (cfg.get("enabled") and nightly_due(now, str(cfg.get("nightly_at") or ""),
-                                                               self._last_auto_ts(b["run_id"]), self._tz)):
+                                                               self._last_auto_ts(b["run_id"]), self._tz, since)):
                         continue
                     pend = {"trigger": "nightly", "attempts": 0, "retry_at": 0.0, "build_from": ""}
                     self._pending[b["run_id"]] = pend
@@ -281,6 +284,24 @@ class Watcher:
             self._launch(b, pend, body, build, now)
 
     # ── internals ──────────────────────────────────────────────────────
+    def _schedule_since(self, cfg: dict, now: float) -> Optional[float]:
+        """Epoch when the current (enabled, nightly_at) schedule was armed; None while disabled."""
+        conn = self._conn()
+        if not cfg.get("enabled"):
+            conn.execute("DELETE FROM bench_baseline_state WHERE key IN ('schedule_sig', 'schedule_since')")
+            conn.commit()
+            return None
+        sig = f"{cfg.get('nightly_at') or ''}"
+        rows = dict(conn.execute("SELECT key, value FROM bench_baseline_state WHERE key IN ('schedule_sig', 'schedule_since')").fetchall())
+        if rows.get("schedule_sig") == sig and rows.get("schedule_since"):
+            try:
+                return float(rows["schedule_since"])
+            except ValueError:
+                pass
+        conn.execute("INSERT OR REPLACE INTO bench_baseline_state (key, value) VALUES ('schedule_sig', ?), ('schedule_since', ?)", (sig, repr(now)))
+        conn.commit()
+        return now
+
     def _last_auto_ts(self, run_id: str) -> Optional[float]:
         last = self._last_check(run_id, auto_only=True)
         return _parse_iso(last["ts"]) if last else None
