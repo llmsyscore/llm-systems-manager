@@ -23,6 +23,7 @@ const BODY = `
     <select id="blBaseline"><option value="">none</option></select>
     <button id="blRunBtn"></button><button id="blCancelBtn" style="display:none"></button><span id="blEstimate"></span>
     <button id="blAttachBtn" style="display:none" onclick="BL.addToReportCard()">Add to Report Card</button>
+    <button id="blPinBtn" onclick="BL.pinBaseline()">Set as baseline</button>
     <div class="bl-notice" id="blNotice" style="display:none"></div>
     <span id="blStatus"></span><div id="blStrip"></div><span id="blElapsed"></span><div id="blProgress"><i></i></div><div id="blTiles"></div>
     <canvas id="blChart"></canvas><div class="bl-chart-empty" id="blChartEmpty"></div><div id="blChartCaption"></div>
@@ -389,6 +390,64 @@ describe('add to Report Card (#885)', () => {
   });
 });
 
+describe('fleet selection no longer leaks into attach/baseline/busy state (final-review fix)', () => {
+  it('selecting another fleet host resets the "Added" state', async () => {
+    const win = boot('window.__runId = "r9"; BL.onOpen("org/m:Q4");');
+    await flush();
+    const btn = win.document.getElementById('blAttachBtn');
+    win.BL.run();
+    await flush();
+    win.__sse.onEvent({ type: 'model_done', run_id: 'r9', ok: true, levels: [], elapsed_s: 5 });
+    win.__sse.onEvent({ type: 'done', ok: true });
+    await flush();
+    win.fetch = vi.fn(async () => ({ json: async () => ({ ok: true, attached: 'merged', card: {} }) }));
+    await win.BL.addToReportCard();
+    await flush();
+    expect(btn.textContent).toMatch(/Added.*open/);
+    const job = { job_id: 'j1', model_id: 'org/m:Q4', done: true, cancelled: false, config: {},
+      hosts: [{ agent_id: 'b', hostname: 'bravo', status: 'done', run_id: 'rb', gen_tps: 70 }], ranking: ['b'] };
+    win.fetch = vi.fn(async (url) => ({ json: async () => (String(url).includes('/runs/rb') ? { ok: true, run: { levels: [] } } : { ok: true }) }));
+    win.BL._debugFleet(job);
+    await win.BL.selectFleetHost('b');
+    await flush();
+    expect(btn.textContent).toBe('Add to Report Card');
+  });
+
+  it('the baseline button hides for a fleet host selection and pinBaseline() no-ops', async () => {
+    const win = boot('BL.onOpen("org/m:Q4");');
+    await flush();
+    const pinBtn = win.document.getElementById('blPinBtn');
+    expect(pinBtn.style.display).toBe('');
+    const job = { job_id: 'j1', model_id: 'org/m:Q4', done: true, cancelled: false, config: {},
+      hosts: [{ agent_id: 'b', hostname: 'bravo', status: 'done', run_id: 'rb', gen_tps: 70 }], ranking: ['b'] };
+    win.fetch = vi.fn(async (url) => ({ json: async () => (String(url).includes('/runs/rb') ? { ok: true, run: { levels: [] } } : { ok: true }) }));
+    win.BL._debugFleet(job);
+    await win.BL.selectFleetHost('b');
+    await flush();
+    expect(pinBtn.style.display).toBe('none');
+    expect(pinBtn.disabled).toBe(true);
+    win.fetch = vi.fn();
+    await win.BL.pinBaseline();
+    expect(win.fetch).not.toHaveBeenCalled();
+  });
+
+  it('a fleet run is refused while attached to another tab\'s run', async () => {
+    const win = boot('window.__busy = true; BL.onOpen("org/m:Q4");');
+    await flush();
+    const d = win.document;
+    expect(win.BL.running()).toBe(true);
+    win.fetch = vi.fn(async () => ({ json: async () => ({ ok: true, hosts: [] }) }));
+    win.BL.toggleFleet();
+    await flush();
+    win.fetch = vi.fn();
+    await win.BL.run();
+    await flush();
+    expect(win.fetch).not.toHaveBeenCalled();
+    expect(d.getElementById('blStatus').textContent).toBe('finish or cancel the attached run first');
+    win.BL.cancel();
+  });
+});
+
 describe('fleet ranking (#884)', () => {
   const job = { job_id: 'j1', model_id: 'org/m:Q4', done: true, cancelled: false, config: { bench: 'throughput_1k' },
     hosts: [
@@ -414,6 +473,14 @@ describe('fleet ranking (#884)', () => {
     expect(card.style.display).toBe('');
     await win.BL.run({ model_id: 'org/other:Q8', concurrency: [1], extra_inputs: {} }); await flush();
     expect(card.style.display).toBe('none');
+  });
+  it('flags a matrix-ignored host with a warning icon and title (#884 follow-up)', () => {
+    const win = boot();
+    const flagged = { ...job, hosts: [{ ...job.hosts[0], matrix_ignored: true }] };
+    win.BL._debugFleet(flagged);
+    const row = win.document.querySelector('#blFleetTable tbody tr');
+    expect(row.textContent).toContain('⚠');
+    expect(row.querySelectorAll('td')[2].querySelector('span').title).toContain('matrix ignored (old agent)');
   });
   it('renders the ranking table with rank badges, bars, status and Δ vs best; clicking a done row loads its run', async () => {
     const win = boot(); await flush();

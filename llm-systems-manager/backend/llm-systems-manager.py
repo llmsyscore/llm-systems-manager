@@ -175,7 +175,7 @@ def _local_hostname() -> str:
 # banner reads it. Bump suffix (-1, -2, …) for same-day iterations; roll
 # the date for a new day's first change.
 # ---------------------------------------------------------------------------
-__version__ = "v2026.09.08-16"
+__version__ = "v2026.09.08-17"
 
 # Wall-clock at first import (Cheroot main process); the shutdown banner
 # reads it for the uptime line.
@@ -5372,13 +5372,17 @@ def _fleet_run_on_agent(agent_id: str, body: dict):
         data = {}
     if resp.status_code != 200 or not data.get("ok"):
         return False, str(data.get("error") or data.get("detail") or f"HTTP {resp.status_code}")[:300]
+    run_id = data.get("run_id")
+    if not run_id:
+        return False, "agent returned no run id"
     tool_activity.note_start(agent_id, "llama", "benchmark")
-    return True, str(data.get("run_id") or "")
+    return True, str(run_id)
 
 
 def _fleet_cancel_on_agent(agent_id: str) -> bool:
     """Cancel a fleet job's run on one agent."""
-    agent = agent_registry.resolve_agent_by_id(agent_id)
+    spec = providers.get("llama")
+    agent = agent_registry.resolve_agent_by_id(agent_id, capability=spec.capability_key if spec else "llama")
     if not agent:
         return False
     resp, _tried, _err = agent_registry.agent_request(

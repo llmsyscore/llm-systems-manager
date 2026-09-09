@@ -35,6 +35,14 @@ describe('submitUrl', () => {
     expect(RC.submitUrl({ ...CARD, eligible: false })).toBe('');
     expect(RC.submitUrl({ ...CARD, mode: 'custom' })).toBe('');
   });
+
+  it('never includes the live section', () => {
+    const withLive = { ...CARD, result: { ...RESULT, live: { bench: 'throughput_1k', decode_tps: 50 } } };
+    const url = RC.submitUrl(withLive);
+    const json = JSON.parse(new URL(url).searchParams.get('card-json'));
+    expect(json.result.live).toBeUndefined();
+    expect(json.result.gen_tps).toBe(43.7);
+  });
 });
 
 describe('buildCard', () => {

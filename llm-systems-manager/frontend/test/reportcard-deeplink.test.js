@@ -91,4 +91,18 @@ describe('Report Card deep-link model filter (#885)', () => {
     expect(document.getElementById('rcMode').value).toBe('standard');
     expect(document.getElementById('rcCustomModel').value).toBe('');
   });
+
+  it('leaving custom mode clears the deep-link model filter', async () => {
+    const { api, fetchMock } = loadModule();
+    api.initReportCard('org/m:Q4');
+    await tick(); await tick();
+    document.getElementById('rcMode').value = 'standard';
+    api.rcOnModeChange();
+    fetchMock.mockClear();
+    api.rcLoadLatest();
+    await tick(); await tick();
+    const call = fetchMock.mock.calls.find(c => String(c[0]).startsWith('/api/reportcard/latest'));
+    expect(call).toBeTruthy();
+    expect(String(call[0])).not.toContain('&model=');
+  });
 });

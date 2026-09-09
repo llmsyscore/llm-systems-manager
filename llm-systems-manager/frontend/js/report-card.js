@@ -123,6 +123,7 @@ function rcLoadPreset() {
 
 function rcOnModeChange() {
   const custom = _rcEl('rcMode')?.value === 'custom';
+  if (!custom) _rcPrefModel = null;
   const kf = _rcEl('rcModelKeyField');
   const cf = _rcEl('rcCustomModelField');
   if (kf) kf.style.display = custom ? 'none' : '';
@@ -510,5 +511,9 @@ function initReportCard(modelId) {
     cm.value = '';
   }
   if (cm) cm.dataset.pref = _rcPrefModel ? '1' : '';
+  if (cm && !cm.dataset.rcBound) {
+    cm.dataset.rcBound = '1';
+    cm.addEventListener('input', () => { _rcPrefModel = null; });
+  }
   rcOnModeChange();
 }

@@ -114,6 +114,19 @@ def test_fleet_unknown_job_404(env):
     assert env.post("/api/benchmark/live/fleet/nope/cancel").status_code == 404
 
 
+def test_fleet_flags_matrix_ignored_by_stale_agent(env):
+    cfg = {"bench": "throughput_1k", "concurrency": [1, 2], "matrix": {"benches": ["throughput_1k"], "osls": [256]}}
+    r = env.post("/api/benchmark/live/fleet", json={"model_id": MODEL, "config": cfg}).get_json()
+    job = r["job_id"]
+    _wait(env, job, lambda j: all(h["status"] == "running" for h in j["hosts"]))
+    _store(env, A1, _doc("run-a", 60.0))  # doc's stored config has no "matrix" key
+    _store(env, A2, _doc("run-b", 70.0))
+    j = _wait(env, job, lambda j: j["done"])
+    by = {h["agent_id"]: h for h in j["hosts"]}
+    assert by[A1["agent_id"]]["matrix_ignored"] is True
+    assert by[A2["agent_id"]]["matrix_ignored"] is True
+
+
 def test_speed_uses_newest_ok_run_per_agent(env):
     _store(env, A1, _doc("s1", 10.0))
     _store(env, A1, _doc("s2", 30.0))

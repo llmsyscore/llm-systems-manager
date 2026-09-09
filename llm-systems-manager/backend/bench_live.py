@@ -81,16 +81,19 @@ def latest_per_agent(conn, model_id: str) -> list[dict]:
 def _host_row(agent_id: str, hostname: str) -> dict:
     return {"agent_id": agent_id, "hostname": hostname, "status": "queued", "error": None, "run_id": None,
             "started": None, "finished": None, "gen_tps": None, "agg_max_tps": None, "latency_s": None,
-            "accept_rate": None, "wh_per_ktok": None, "bench": None}
+            "accept_rate": None, "wh_per_ktok": None, "bench": None, "matrix_ignored": False}
 
 
-def _fill_from_run(host: dict, meta: dict, doc: dict) -> None:
+def _fill_from_run(host: dict, meta: dict, doc: dict, job: Optional[dict] = None) -> None:
     """Copy the stored run's headline metrics onto a fleet job host row."""
     aggs = [((l.get("all") or {}).get("agg_pred_tps")) for l in (doc.get("levels") or []) if isinstance(l, dict)]
     aggs = [a for a in aggs if isinstance(a, (int, float))]
     host.update({"gen_tps": meta.get("gen_tps"), "latency_s": meta.get("latency_s"), "accept_rate": meta.get("accept_rate"),
                  "wh_per_ktok": meta.get("wh_per_ktok"), "agg_max_tps": max(aggs) if aggs else None,
                  "bench": (meta.get("config") or {}).get("bench")})
+    # Flags a host whose stale agent dropped the requested prompt x output matrix.
+    if job and (job.get("config") or {}).get("matrix") and not (meta.get("config") or {}).get("matrix"):
+        host["matrix_ignored"] = True
 
 
 def register_routes(app, ctx, *, db_path: str, proxy: Callable, agent_by_token: Callable,
@@ -170,7 +173,7 @@ def register_routes(app, ctx, *, db_path: str, proxy: Callable, agent_by_token: 
                     meta, doc = hit
                     with jobs_lock:
                         if h["status"] == "running":
-                            _fill_from_run(h, meta, doc)
+                            _fill_from_run(h, meta, doc, job)
                             h["status"] = "done" if meta.get("ok") else "failed"
                             h["finished"] = time.time()
                             if not meta.get("ok"):

@@ -15,7 +15,7 @@
   let _model = null, _pre = null, _runs = [], _es = null, _chart = null;
   let _levels = [], _baseline = null, _lastDoc = null, _runId = null, _activeLevel = null, _lastTps = null, _cell = null;
   let _attached = false, _queued = null, _elapsedIv = null, _runStart = 0, _sweepLevels = [], _curLevel = null, _curCell = null, _busyOn = false, _lastCfg = null, _attachedRun = null;
-  let _fleetOn = false, _fleetHosts = [], _fleetJob = null, _fleetPoll = null, _fleetSel = null;
+  let _fleetHosts = [], _fleetJob = null, _fleetPoll = null, _fleetSel = null;
   const FLEET_POLL_MS = 3000;
 
   function parseSweep(text) {
@@ -211,7 +211,7 @@
     updateEstimate();
   }
   async function onOpen(modelId) {
-    if (modelId && modelId !== _model && !running()) { _fleetJob = null; _fleetSel = null; renderFleet(); }
+    if (modelId && modelId !== _model && !running()) { _fleetJob = null; _fleetSel = null; renderFleet(); syncPinBtn(); }
     if (modelId) _model = modelId;
     setMode((typeof layout !== 'undefined' && layout && layout.benchMode) || 'live');
     try { _pre = await fetch('/api/benchmark/live/preflight').then(r => r.json()); } catch (_) { _pre = { server: { up: false }, runtime: {} }; }
@@ -355,7 +355,7 @@
     renderTable(cur);
     renderCellSeg(active);
     renderHeat();
-    syncAttachBtn();
+    syncAttachBtn(); syncPinBtn();
   }
   function renderTable(cur) {
     const conc = _activeLevel || (cur[0] && cur[0].concurrency);
@@ -403,10 +403,10 @@
   }
   function toggleFleet() {
     const chip = document.querySelector('#blFleetTgl .bl-chip[data-fleet="1"]'); if (!chip) return;
-    _fleetOn = !chip.classList.contains('on');
-    chip.classList.toggle('on', _fleetOn);
+    const on = !chip.classList.contains('on');
+    chip.classList.toggle('on', on);
     const hostsEl = $('blFleetHosts'), note = $('blFleetNote');
-    if (_fleetOn) {
+    if (on) {
       if (hostsEl) hostsEl.style.display = ''; if (note) note.style.display = '';
       loadFleetHosts();
     } else {
@@ -444,10 +444,12 @@
       const delta = (h.rank === 1 || h.pctOfBest == null || bestGen == null) ? '' : esc(deltaText(h.gen_tps, bestGen).text.replace(' vs baseline', ''));
       const sel = done && _fleetSel === h.agent_id ? ' on' : '';
       const attr = done ? ` data-agent="${esc(h.agent_id)}"` : '';
+      const titleParts = [h.error, h.matrix_ignored ? 'matrix ignored (old agent)' : null].filter(Boolean);
+      const title = titleParts.length ? ` title="${esc(titleParts.join(' · '))}"` : '';
       return `<tr class="bl-frow${sel}"${attr}>` +
         `<td>${h.rank != null ? `<span class="bl-rank">${h.rank}</span>` : ''}</td>` +
         `<td>${esc(h.hostname)}</td>` +
-        `<td><span${h.error ? ` title="${esc(h.error)}"` : ''}>${esc(h.status)}</span></td>` +
+        `<td><span${title}>${esc(h.status)}</span>${h.matrix_ignored ? ' ⚠' : ''}</td>` +
         `<td class="num">${fmt(h.gen_tps)}${bar}</td>` +
         `<td class="num">${fmt(h.agg_max_tps)}</td>` +
         `<td class="num">${fmt(h.latency_s, 1)}</td>` +
@@ -480,7 +482,7 @@
       }
     }
     renderFleet();
-    syncAttachBtn();
+    syncAttachBtn(); syncPinBtn();
   }
   function stopFleetPoll() { if (_fleetPoll) { clearInterval(_fleetPoll); _fleetPoll = null; } }
   function startFleetPoll() {
@@ -491,8 +493,8 @@
       try { d = await fetch('/api/benchmark/live/fleet/' + encodeURIComponent(_fleetJob.job_id)).then(res => res.json()); }
       catch (_) { return; }
       if (!d || !d.ok) {
-        stopFleetPoll(); sessionStorage.removeItem('bl.fleetJob'); _fleetJob = null;
-        busy(false); stopElapsed(); setStatus('fleet job lost', 'err'); renderFleet(); return;
+        stopFleetPoll(); sessionStorage.removeItem('bl.fleetJob'); _fleetJob = null; _fleetSel = null;
+        busy(false); stopElapsed(); setStatus('fleet job lost', 'err'); renderFleet(); syncPinBtn(); return;
       }
       _fleetJob = d.job; renderFleet();
       const hosts = _fleetJob.hosts || [], total = hosts.length;
@@ -528,7 +530,14 @@
     const b = $('blAttachBtn'); if (!b) return;
     const ok = !!(_lastDoc && _lastDoc.ok && _lastDoc.run_id) && !running();
     b.style.display = ok ? '' : 'none';
+    if (!ok || _lastDoc.run_id !== _attachedRun) b._blAdded = false;
     if (!ok || !b._blAdded) { b.textContent = 'Add to Report Card'; b.disabled = false; b._blAdded = false; }
+  }
+  // A fleet host's run belongs to another agent, so it can't be pinned as this host's baseline.
+  function syncPinBtn() {
+    const b = $('blPinBtn'); if (!b) return;
+    b.style.display = _fleetSel ? 'none' : '';
+    b.disabled = !!_fleetSel;
   }
   async function addToReportCard() {
     const b = $('blAttachBtn'); if (!b || !_lastDoc) return;
@@ -587,6 +596,10 @@
       // Mirrors MATRIX_MAX_CELLS in the agent.
       setStatus('matrix too large (max 24 cells × levels)', 'err'); return;
     }
+    if (_attached) {
+      if (fleetOn()) { setStatus('finish or cancel the attached run first', 'err'); return; }
+      _queued = c; setStatus('queued · starts when the current run finishes', 'running'); $('blRunBtn').disabled = true; syncCancelBtn(); return;
+    }
     if (fleetOn()) {
       const agents = fleetAgents();
       if (!agents.length) { setStatus('no host has this model loaded', 'err'); return; }
@@ -599,15 +612,14 @@
       _fleetJob = { job_id: d.job_id, hosts: [] };
       sessionStorage.setItem('bl.fleetJob', d.job_id);
       busy(true); startElapsed(); _levels = []; _lastDoc = null; _activeLevel = null; _cell = null; _fleetSel = null; _baseline = null;
-      $('blLog').innerHTML = ''; syncAttachBtn();
+      $('blLog').innerHTML = ''; syncAttachBtn(); syncPinBtn();
       redraw(); renderFleet(); startFleetPoll();
       return;
     }
-    if (_attached) { _queued = c; setStatus('queued · starts when the current run finishes', 'running'); $('blRunBtn').disabled = true; syncCancelBtn(); return; }
     if ($('blRunBtn').disabled) return;
     _lastCfg = c;
     busy(true); _levels = []; _lastDoc = null; _activeLevel = null; _cell = null; _fleetJob = null; _fleetSel = null; renderFleet(); $('blLog').innerHTML = '';
-    syncAttachBtn();
+    syncAttachBtn(); syncPinBtn();
     _baseline = null; _sweepLevels = (c.concurrency || []).slice(); _curLevel = null; startElapsed();
     if (c.baseline_run_id) { try { const r = await fetch('/api/benchmark/live/runs/' + encodeURIComponent(c.baseline_run_id)).then(r => r.json()); _baseline = r && r.run; } catch (_) {} }
     redraw(); setStatus('starting…', 'running');
@@ -648,7 +660,9 @@
           if (_lastCfg && _lastCfg.matrix && msg.config && !msg.config.matrix) log('agent ignored the matrix — upgrade the agent to v2026.09.08-8 or newer', 'warn'); }
         else if (msg.type === 'done') {
           if (_es) { try { _es.close(); } catch (_) {} _es = null; }
-          stopElapsed(); _curLevel = null; redraw(); busy(false); loadRuns(); syncAttachBtn();
+          stopElapsed(); _curLevel = null; redraw(); loadRuns(); syncAttachBtn(); syncPinBtn();
+          if (_fleetPoll) return;
+          busy(false);
           if (_attached) { const q = _queued; _queued = null; leaveAttached();
             if (q) { setStatus('starting…', 'running'); run(q); return; } }
           setStatus(msg.ok ? 'complete' : (msg.cancelled ? 'cancelled' : 'failed'), msg.ok ? 'ok' : 'err'); }
@@ -685,9 +699,9 @@
     if (b) b.disabled = false;
     renderPreflight();
   }
-  async function pinBaseline() { const id = (_lastDoc && _lastDoc.run_id) || _runId; if (!id) return; await fetch('/api/benchmark/live/runs/' + encodeURIComponent(id) + '/baseline', { method: 'POST' }).catch(() => {}); loadRuns(); }
+  async function pinBaseline() { if (_fleetSel) return; const id = (_lastDoc && _lastDoc.run_id) || _runId; if (!id) return; await fetch('/api/benchmark/live/runs/' + encodeURIComponent(id) + '/baseline', { method: 'POST' }).catch(() => {}); loadRuns(); }
   function exportJson() {
-    if (_fleetJob && _fleetJob.done) {
+    if (_fleetJob && _fleetJob.done && !_fleetSel) {
       const id = String(_fleetJob.job_id || 'job').replace(/[^A-Za-z0-9_.-]/g, '_');
       const blob = new Blob([JSON.stringify(_fleetJob, null, 2)], { type: 'application/json' });
       const a = document.createElement('a');

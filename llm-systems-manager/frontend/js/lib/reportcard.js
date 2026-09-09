@@ -152,7 +152,9 @@ function submitUrl(card) {
   if (!card || !card.eligible || card.mode !== 'standard') return '';
   const pub = { ...card };
   delete pub.agent_id;
-  const res = pub.result || {};
+  const res = { ...(pub.result || {}) };
+  delete res.live;
+  pub.result = res;
   const p = new URLSearchParams({
     template: 'submit.yml',
     title: `[card] ${res.gpu_config || 'GPU'} · ${pub.provider || ''}`,
