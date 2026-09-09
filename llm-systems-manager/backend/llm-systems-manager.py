@@ -175,7 +175,7 @@ def _local_hostname() -> str:
 # banner reads it. Bump suffix (-1, -2, …) for same-day iterations; roll
 # the date for a new day's first change.
 # ---------------------------------------------------------------------------
-__version__ = "v2026.09.09-8"
+__version__ = "v2026.09.09-9"
 
 # Wall-clock at first import (Cheroot main process); the shutdown banner
 # reads it for the uptime line.
@@ -2150,7 +2150,7 @@ def benchmark_delete(model_id):
 # --- Cross-tool run ledger (#770) — Tools tab records every completed run ---
 
 _TOOL_RUNS_CAP = 200
-_TOOL_RUN_TOOLS = ("benchmark", "autotune")
+_TOOL_RUN_TOOLS = ("benchmark", "autotune", "quality")
 
 
 @app.route("/api/tools/runs", methods=["POST"])
@@ -2326,6 +2326,39 @@ def llm_autotune_cancel():
 @app.route("/api/llm/autotune/preflight")
 def llm_autotune_preflight():
     return proxies.proxy_to_primary("llama", "GET", "/llama/autotune/preflight", timeout=20)
+
+
+@app.route("/api/llm/autotune/status")
+def llm_autotune_status():
+    """Newest successful tune per (agent, model) with the llama.cpp build it ran on vs the host's current build."""
+    try:
+        want_model = (flask_request.args.get("model_id") or "").strip()
+        want_agent = (flask_request.args.get("agent_id") or "").strip()
+        conn = get_db()
+        rows = conn.execute(
+            "SELECT tool, model_id, agent_id, provider, ok, summary, ts, run_id FROM tool_runs "
+            "WHERE tool = 'autotune' AND ok = 1 AND id IN "
+            "(SELECT MAX(id) FROM tool_runs WHERE tool = 'autotune' AND ok = 1 GROUP BY agent_id, model_id)"
+        ).fetchall()
+        items = []
+        builds: dict = {}
+        for r in rows:
+            row = _tool_run_row(r)
+            if want_model and row["model_id"] != want_model:
+                continue
+            if want_agent and row["agent_id"] != want_agent:
+                continue
+            aid = row["agent_id"]
+            if aid not in builds:
+                builds[aid] = _llama_build_of(aid)
+            tuned, cur = (row["summary"].get("llama_build") or ""), builds[aid]
+            items.append({"agent_id": aid, "model_id": row["model_id"], "ts": row["ts"], "ok": row["ok"],
+                          "mode": row["summary"].get("mode") or "tune", "llama_build": tuned or None,
+                          "current_build": cur or None,
+                          "stale": (tuned != cur) if (tuned and cur) else None, "summary": row["summary"]})
+        return jsonify({"ok": True, "items": items})
+    except Exception as e:
+        return _err_json("internal error", 500, exc=e)
 
 
 @app.route("/api/llm/cache")
