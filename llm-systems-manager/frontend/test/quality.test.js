@@ -23,8 +23,9 @@ const STUBS = `
     const u = String(url);
     const body = u.startsWith('/api/benchmark/models') ? { models: ['org/m:Q4', 'org/big:Q4'] }
       : (u === '/api/llm/config' && (!opts || !opts.method)) ? window.__cfg
-      : u.startsWith('/api/llm/autotune/preflight') ? { ok: true, busy: false, perplexity: true }
+      : u.startsWith('/api/llm/autotune/preflight') ? (window.__pre || { ok: true, busy: false, perplexity: true })
       : (u === '/api/llm/autotune/run' && opts && opts.method === 'POST') ? (window.__runReply || { ok: true, run_id: 'q1' })
+      : (u === '/api/llm/config' && opts && opts.method === 'POST') ? (window.__configWriteReply || { ok: true })
       : { ok: true };
     return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve(body), text: () => Promise.resolve(JSON.stringify(body)) });
   };
@@ -98,5 +99,30 @@ describe('Quality guard module (#888)', () => {
     await win.QG.run(); await flush();
     win.QG.onEvent({ type: 'model_done', model_id: 'org/m:Q4', ok: true, mode: 'autotune', changes: [] });
     expect(win.document.getElementById('qgResult').textContent).not.toMatch(/mean KL/);
+  });
+
+  it('surfaces a failed config write via alert and applies neither the sync nor the "Applied" label', async () => {
+    const win = await opened('org/m:Q4', { overrides: { 'cache-type-k': 'q4_0' } });
+    await win.QG.run(); await flush();
+    win.QG.onEvent({ type: 'model_done', model_id: 'org/m:Q4', ok: true, mode: 'quality', run_id: 'q1',
+      guard: { kl: 0.011, kl_max: 0.02, pass: true, error: null }, changes: [{ key: 'cache-type-k', current: 'q8_0', recommended: 'q4_0' }] });
+    win.QG.onEvent({ type: 'done', ok: true }); await flush();
+    win.__configWriteReply = { ok: false, error: 'config locked' };
+    await win.QG.apply(); await flush();
+    expect(win.__alerts.pop()).toMatch(/config locked/);
+    expect(win.document.getElementById('qgApplyBtn').textContent).not.toContain('Applied');
+    expect(win.__syncCalls.length).toBe(0);
+  });
+
+  it('opens neutral when the agent is busy with another tool, then flips to running on a quality-mode event', async () => {
+    const win = boot();
+    win.__pre = { ok: true, busy: true, perplexity: true };
+    await win.QG.onOpen('org/m:Q4'); await flush();
+    expect(win.document.getElementById('qgPill').textContent).toBe('another tool is running');
+    expect(win.document.getElementById('qgRunBtn').style.display).toBe('none');
+    win.QG.onEvent({ type: 'stage_start', model_id: 'org/m:Q4', stage: 'context' });
+    expect(win.document.getElementById('qgPill').textContent).toBe('another tool is running');
+    win.QG.onEvent({ type: 'model_start', model_id: 'org/m:Q4', mode: 'quality', stages: ['quality'] });
+    expect(win.document.getElementById('qgPill').textContent).toBe('running');
   });
 });

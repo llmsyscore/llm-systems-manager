@@ -5,7 +5,7 @@
   const esc = s => (window.TC ? TC.esc(String(s ?? '')) : String(s ?? ''));
   const today = () => new Date().toISOString().slice(0, 10);
   const KEYS = ['cache-type-k', 'cache-type-v', 'threads', 'threads-batch', 'n-gpu-layers', 'n-cpu-moe', 'batch-size', 'ubatch-size', 'flash-attn', 'no-mmap', 'mlock'];
-  let _models = [], _cfg = {}, _rows = [], _es = null, _done = null, _pre = null, _wired = false;
+  let _models = [], _cfg = {}, _rows = [], _es = null, _done = null, _pre = null, _wired = false, _neutral = false;
 
   function model() { const s = $('qgModel'); return s ? s.value : ''; }
   function section() { return _cfg[model()] || {}; }
@@ -52,7 +52,7 @@
     const ov = opts && opts.overrides || {};
     Object.keys(ov).forEach(k => { if (KEYS.includes(k)) _rows.push({ key: k, value: String(ov[k]) }); });
     _done = null; renderResult(null); renderRows();
-    if (_pre && _pre.busy) attach();
+    if (_pre && _pre.busy) attach(true);
   }
   function log(text) { const el = $('qgLog'); if (!el) return; const d = document.createElement('div'); d.textContent = text; el.appendChild(d); el.scrollTop = el.scrollHeight; }
   function pill(state, text) { const p = $('qgPill'); if (p) { p.className = 'bench-status-pill ' + state; p.textContent = text; } }
@@ -77,14 +77,24 @@
     _done = null; renderResult(null); const lg = $('qgLog'); if (lg) lg.innerHTML = '';
     pill('running', 'running'); busy(true); openStream();
   }
-  function attach() { pill('running', 'attached'); busy(true); log('attached to a run already in progress'); openStream(); }
+  // neutral=true: the shared stream is busy, but we don't yet know it's a quality run.
+  function attach(neutral) {
+    _neutral = !!neutral;
+    if (_neutral) { pill('warn', 'another tool is running'); }
+    else { pill('running', 'attached'); log('attached to a run already in progress'); }
+    busy(true);
+    openStream();
+  }
   function cancel() { fetch('/api/llm/autotune/cancel', { method: 'POST' }).catch(() => {}); }
   function finish(msg) {
     if (_es) { try { _es.close(); } catch (_) {} _es = null; }
     busy(false);
     if (!_done) pill('warn', msg && msg.error ? 'failed' : 'stopped');
+    _neutral = false;
   }
   function onEvent(msg) {
+    // Flip a neutral "another tool" attach to "running" once a quality-mode event proves it's ours.
+    if (_neutral && (msg.mode === 'quality' || msg.stage === 'quality')) { _neutral = false; pill('running', 'running'); }
     const t = msg.type;
     if (t === 'line') log(msg.text || '');
     else if (t === 'candidate_start') { const s = $('qgStrip'); if (s) s.textContent = 'measuring ' + msg.value; log('▶ ' + msg.value); }
@@ -111,26 +121,36 @@
       + `<table class="at-rt"><thead><tr><th>Key</th><th>Current</th><th>Tested</th></tr></thead><tbody>${rows}</tbody></table>`;
     if (ab) ab.style.display = ok && rows ? '' : 'none';
   }
+  // Throws on a non-2xx status or an {ok:false} body, same contract as AT.js's postJson.
+  async function postJson(url, body) {
+    const r = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+    let j = null; try { j = await r.json(); } catch (_) {}
+    if (!r.ok || !j || j.ok === false) throw new Error((j && j.error) || `HTTP ${r.status}`);
+    return j;
+  }
   // Mirrors AT.apply's write path: read config, save a before-profile, merge, write, then sync.
   async function apply() {
     if (!_done || !(_done.guard || {}).pass) return;
     const mid = _done.model_id, changes = _done.changes || [];
     if (!mid || !changes.length) return;
     const ab = $('qgApplyBtn'); if (ab) ab.disabled = true;
+    let step = 'read config';
     try {
       const cfg = await fetch('/api/llm/config').then(r => r.json());
       if (!cfg || typeof cfg !== 'object' || !cfg[mid] || typeof cfg[mid] !== 'object') throw new Error(`config unavailable for ${mid}`);
       const sec = { ...cfg[mid] };
-      await fetch(`/api/llm/profiles/${encodeURIComponent(mid)}/save`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: `before quality check ${today()}`, values: sec }) });
+      step = 'save before-profile';
+      await postJson(`/api/llm/profiles/${encodeURIComponent(mid)}/save`, { name: `before quality check ${today()}`, values: sec });
       changes.forEach(c => { if (c.recommended == null) delete sec[c.key]; else sec[c.key] = c.recommended; });
       delete cfg.__DEFAULTS__; cfg[mid] = sec;
-      await fetch('/api/llm/config', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(cfg) });
+      step = 'write config';
+      await postJson('/api/llm/config', cfg);
       _cfg[mid] = sec;
-      if (typeof _syncActiveProfile === 'function') await _syncActiveProfile(mid, sec);
+      if (typeof _syncActiveProfile === 'function') { step = 'sync active profile'; await _syncActiveProfile(mid, sec); }
       if (ab) ab.textContent = '✓ Applied';
       if (typeof loadLlmConfig === 'function') loadLlmConfig();
     } catch (e) {
-      alert('Apply failed: ' + (e && e.message ? e.message : e));
+      alert(`Apply failed at "${step}": ` + (e && e.message ? e.message : e));
       if (ab) ab.disabled = false;
     }
   }
