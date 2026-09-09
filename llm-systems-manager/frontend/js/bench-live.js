@@ -171,6 +171,7 @@
     const note = $('benchModeNote');
     if (note) note.textContent = mode === 'live' ? 'Live · speed-bench against the running server' : 'Offline · llama-bench · server must be stopped';
     if (mode === 'live' && _chart) { try { _chart.resize(); } catch (_) {} }
+    if (mode !== 'live') { clearTimeout(_baseTimer); _baseTimer = null; }
   }
   function setRunBar(missing) {
     const run = $('blRunBtn'), setup = $('blSetupBtn');
@@ -744,7 +745,7 @@
     const row = b => {
       const st = baseStatus(b), lc = b.last_check;
       const delta = lc && lc.delta_pct != null ? `${lc.delta_pct < 0 ? '−' : '+'}${Math.abs(Math.round(lc.delta_pct))} %` : '—';
-      const dcls = lc && lc.status === 'regressed' ? 'down' : (lc && lc.delta_pct != null ? 'flat' : '');
+      const dcls = lc && lc.status === 'regressed' ? 'down' : (lc && lc.delta_pct >= 3 ? 'up' : (lc && lc.delta_pct != null ? 'flat' : ''));
       const build = b.llama_build ? esc(b.llama_build.split('-')[0]) + (b.build_changed ? ' <span class="bl-bnote">changed</span>' : '') : '—';
       const last = lc ? `${esc(String(lc.ts || '').slice(0, 16).replace('T', ' '))} · ${esc(lc.trigger)}${lc.error ? ` · ${esc(lc.error)}` : ''}` : 'never';
       const title = b.loaded ? '' : (b.online ? ' title="model not loaded on the host"' : ' title="host offline"');
@@ -792,5 +793,5 @@
     toggleMatrix, heatCells, cellKey, addToReportCard, toggleFleet, rankHosts, selectFleetHost, recheckBaseline, baselineMeta, loadBaselines,
     _config: config, _debugLevels: (rows) => { _levels = rows; _cell = null; redraw(); },
     _debugFleet: (job) => { _fleetJob = job; renderFleet(); }, _debugPollOnce: fleetTick,
-    _debugBaselines: (d) => { _base = d; renderBaselines(); } };
+    _debugBaselines: (d) => { _base = d; renderBaselines(); }, _debug: () => ({ baseTimer: _baseTimer }) };
 })();

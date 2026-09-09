@@ -2327,13 +2327,13 @@ Backend API endpoints consumed:
               <div class="bl-card-b"><div class="bl-chart-wrap"><canvas id="blChart"></canvas><div class="bl-chart-empty" id="blChartEmpty">Throughput plots here once the first level finishes.</div></div><div class="bl-hint" id="blChartCaption"></div></div></div>
             <div class="bl-card" id="blHeatCard" style="display:none;"><div class="bl-card-h"><h3>Prompt × output</h3><span class="meta" id="blHeatMeta">decode t/s · 1 request</span></div>
               <div class="bl-card-b"><div class="bl-heat" id="blHeat"></div><div class="bl-hint" id="blHeatCaption"></div></div></div>
-            <div class="bl-card" id="blBaseCard" style="display:none;"><div class="bl-card-h"><h3>Baselines</h3><span class="meta" id="blBaseMeta"></span><span class="gap"></span>
-              <button class="mcbtn mcbtn-ghost mcbtn-sm" type="button" id="blBaseAllBtn" onclick="BL.recheckBaseline(null)">Re-check all</button></div>
-              <div class="bl-card-b flush" style="overflow-x:auto"><div id="blBaseTable"></div></div></div>
             <div class="bl-card"><div class="bl-card-h"><h3>By category</h3><span class="meta">Δ vs baseline</span><span class="gap"></span><div class="mc-seg" id="blLevelSeg"></div></div>
               <div class="bl-card-b flush" style="overflow-x:auto"><div id="blTable"></div></div></div>
             <div class="bl-card bl-collapsed"><div class="bl-card-h tog" onclick="this.parentElement.classList.toggle('bl-collapsed')"><h3>Run log</h3><span class="bl-chev">▾</span></div>
               <div class="bl-card-b"><div class="bl-log" id="blLog"></div></div></div>
+            <div class="bl-card" id="blBaseCard" style="display:none;"><div class="bl-card-h"><h3>Baselines</h3><span class="meta" id="blBaseMeta"></span><span class="gap"></span>
+              <button class="mcbtn mcbtn-ghost mcbtn-sm" type="button" id="blBaseAllBtn" onclick="BL.recheckBaseline(null)">Re-check all</button></div>
+              <div class="bl-card-b flush" style="overflow-x:auto"><div id="blBaseTable"></div></div></div>
           </div>
         </div>
       </div>
@@ -2519,7 +2519,7 @@ Backend API endpoints consumed:
 <script src="/static/js/llmcontrol-models.js?v=2026.09.08-1"></script>
 <script src="/static/js/editor-modern.js?v=2026.09.07-1"></script>
 <script src="/static/js/bench-autotune.js?v=2026.09.08-4"></script>
-<script src="/static/js/bench-live.js?v=2026.09.09-3"></script>
+<script src="/static/js/bench-live.js?v=2026.09.09-4"></script>
 <script src="/static/js/autotune.js?v=2026.09.08-7"></script>
 <script src="/static/js/lmstudio.js?v=2026.09.04-1"></script>
 <script src="/static/js/vllm.js?v=2026.09.04-1"></script>

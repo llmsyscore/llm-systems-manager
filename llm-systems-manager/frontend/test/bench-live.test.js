@@ -566,6 +566,9 @@ describe('BL baselines (#882)', () => {
       { run_id: 'p3', model_id: 'org/other:Q4', agent_id: 'c', hostname: 'charlie', ts: '2026-09-05T10:00:00+00:00', gen_tps: 30,
         config: { bench: 'throughput_8k' }, online: false, loaded: false, llama_build: 'b1-x', build_changed: false, running: false, pending: null,
         last_check: { ts: '2026-09-08T03:00:10+00:00', trigger: 'build', status: 'skipped', gen_tps: null, base_tps: 30, delta_pct: null, severity: null, error: 'host offline', llama_build: 'b1-x' } },
+      { run_id: 'p4', model_id: 'org/faster:Q4', agent_id: 'd', hostname: 'delta', ts: '2026-09-05T10:00:00+00:00', gen_tps: 30,
+        config: { bench: 'throughput_1k' }, online: true, loaded: true, llama_build: 'b1-x', build_changed: false, running: false, pending: null,
+        last_check: { ts: '2026-09-08T03:00:10+00:00', trigger: 'nightly', status: 'ok', gen_tps: 31.5, base_tps: 30, delta_pct: 5.0, severity: null, error: null, llama_build: 'b1-x' } },
     ],
   };
   it('renders one row per pinned baseline with status chips and build note', () => {
@@ -574,16 +577,19 @@ describe('BL baselines (#882)', () => {
     const doc = win.document;
     expect(doc.getElementById('blBaseCard').style.display).toBe('');
     const rows = [...doc.querySelectorAll('#blBaseTable tbody tr')];
-    expect(rows.length).toBe(3);
+    expect(rows.length).toBe(4);
     expect(rows[0].textContent).toContain('big-model:Q4');
     expect(rows[0].querySelector('.bl-bstat').className).toContain('regressed');
     expect(rows[0].textContent).toContain('−22 %');
     expect(rows[0].textContent).toContain('changed');
     expect(rows[0].textContent).toContain('nightly');
+    expect(rows[0].querySelector('.dlt').className).toContain('down');
     expect(rows[1].querySelector('.bl-bstat').className).toContain('running');
     expect(rows[1].querySelector('button').disabled).toBe(true);
+    expect(rows[1].querySelector('.dlt').className).not.toMatch(/up|down|flat/);
     expect(rows[2].querySelector('.bl-bstat').className).toContain('skipped');
     expect(rows[2].textContent).toContain('host offline');
+    expect(rows[3].querySelector('.dlt').className).toContain('up');
     expect(doc.getElementById('blBaseMeta').textContent).toBe('nightly at 03:00 · after llama.cpp upgrades · alert past −15 %');
   });
   it('hides the card with no pins and words the meta for each schedule state', () => {
@@ -604,5 +610,14 @@ describe('BL baselines (#882)', () => {
     expect(calls[0][0]).toBe('/api/benchmark/live/baselines/recheck');
     expect(JSON.parse(calls[0][1].body)).toEqual({ run_id: 'p1' });
     expect(calls.some(c => c[0] === '/api/benchmark/live/baselines')).toBe(true);
+  });
+  it('setMode(offline) tears down the baselines poll timer', () => {
+    const win = boot();
+    win.BL._debugBaselines({ schedule: data.schedule,
+      baselines: [{ ...data.baselines[1] }] }); // running=true keeps the poll alive
+    expect(win.BL._debug().baseTimer).not.toBeNull();
+    win.BL.setMode('offline');
+    expect(win.BL._debug().baseTimer).toBeNull();
+    win.BL.setMode('live');
   });
 });
