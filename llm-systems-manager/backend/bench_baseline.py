@@ -189,7 +189,7 @@ class Watcher:
             for rid in want:
                 if rid not in pins:
                     skipped.append({"run_id": rid, "reason": "not a pinned baseline"})
-                elif rid in self._active:
+                elif rid in self._active or self._pending.get(rid, {}).get("starting"):
                     skipped.append({"run_id": rid, "reason": "check already running"})
                 else:
                     self._pending[rid] = {"trigger": "manual", "attempts": 0, "retry_at": 0.0, "build_from": ""}

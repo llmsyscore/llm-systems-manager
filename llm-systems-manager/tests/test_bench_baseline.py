@@ -292,3 +292,12 @@ def test_tick_survives_fleet_hosts_error(tmp_path):
                    now=lambda: e.t, tz=UTC)
     w.tick()  # must not raise
     assert e.started == []
+
+
+def test_recheck_skips_when_pending_is_starting(tmp_path):
+    e = Env(tmp_path)
+    entry = {"trigger": "nightly", "attempts": 0, "retry_at": 0.0, "build_from": "", "starting": True}
+    e.w._pending[PIN] = entry
+    result = e.w.recheck(PIN)
+    assert result == {"ok": True, "queued": [], "skipped": [{"run_id": PIN, "reason": "check already running"}]}
+    assert e.w._pending[PIN] is entry  # not overwritten by the manual recheck
