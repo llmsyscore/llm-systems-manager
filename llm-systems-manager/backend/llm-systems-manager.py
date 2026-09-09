@@ -175,7 +175,7 @@ def _local_hostname() -> str:
 # banner reads it. Bump suffix (-1, -2, …) for same-day iterations; roll
 # the date for a new day's first change.
 # ---------------------------------------------------------------------------
-__version__ = "v2026.09.09-6"
+__version__ = "v2026.09.09-7"
 
 # Wall-clock at first import (Cheroot main process); the shutdown banner
 # reads it for the uptime line.
@@ -5449,7 +5449,7 @@ _bench_watcher = bench_baseline.Watcher(
     db_path=str(DB_PATH), cfg=_bench_baseline_cfg, fleet_hosts=_fleet_hosts,
     run_on_agent=_fleet_run_on_agent, llama_build_of=_llama_build_of,
     alert=_ae_ingest_alert, push_metrics=_push_bench_metrics, log=log)
-bench_baseline.register_routes(app, _bench_watcher)
+bench_baseline.register_routes(app, _bench_watcher, primary_agent=_request_agent)
 companion.register_routes(app, ctx, static_dir=STATIC_DIR)
 import manager_users  # type: ignore[import-not-found]  # sibling
 manager_users.init(

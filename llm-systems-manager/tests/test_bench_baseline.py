@@ -279,6 +279,7 @@ def test_snapshot_shape_and_schedule(tmp_path):
     b = s["baselines"][0]
     assert b["hostname"] == "alpha" and b["loaded"] is True and b["llama_build"] == "b100-aaa"
     assert b["last_check"] is None and b["pending"] is None and b["config"]["bench"] == "throughput_1k"
+    assert b["config"]["concurrency"] == [1, 2] and b["active_run_id"] is None
     assert s["schedule"]["next_nightly_ts"] == bb.slot_ts(e.t, "03:00", tz=UTC) + 86400
     assert s["schedule"]["nightly_valid"] is True
     e.cfg["nightly_at"] = "bad"
@@ -286,6 +287,17 @@ def test_snapshot_shape_and_schedule(tmp_path):
     e.cfg["nightly_at"] = ""
     e.w.tick()
     assert e.started == []
+
+
+def test_active_run_id_set_while_running(tmp_path):
+    e = Env(tmp_path)
+    e.w.tick()
+    row = e.w.snapshot()["baselines"][0]
+    assert row["running"] is True and row["active_run_id"] == "run-1"
+    e.store("run-1", 49.0)
+    e.w.tick()
+    row = e.w.snapshot()["baselines"][0]
+    assert row["running"] is False and row["active_run_id"] is None
 
 
 def test_unpinned_baseline_drops_out(tmp_path):

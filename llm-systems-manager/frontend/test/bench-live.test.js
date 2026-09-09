@@ -36,7 +36,7 @@ const BODY = `
       <div class="bl-hint" id="blFleetNote" style="display:none"></div>
     </div>
     <div class="bl-card" id="blFleetCard" style="display:none"><span id="blFleetMeta"></span><span id="blFleetProgress"></span><div id="blFleetTable"></div></div>
-    <div class="bl-card" id="blBaseCard" style="display:none"><span id="blBaseMeta"></span><button id="blBaseAllBtn" onclick="BL.recheckBaseline(null)">Re-check all</button><div id="blBaseTable"></div></div>
+    <div class="bl-card" id="blBaseCard" style="display:none"><label><input type="checkbox" id="blBaseEnabled"></label><span id="blBaseMeta"></span><a href="#" id="blBaseSettings">Schedule settings</a><button id="blBaseAllBtn" onclick="BL.recheckBaseline(null)">Re-check all</button><div id="blBaseTable"></div></div>
   </div>
 `;
 
@@ -596,7 +596,7 @@ describe('BL baselines (#882)', () => {
     const win = boot();
     win.BL._debugBaselines({ schedule: data.schedule, baselines: [] });
     expect(win.document.getElementById('blBaseCard').style.display).toBe('none');
-    expect(win.BL.baselineMeta({ enabled: false, regression_pct: 15 })).toBe('scheduled re-check off · alert past −15 % · enable it under Settings → Benchmark baselines');
+    expect(win.BL.baselineMeta({ enabled: false, regression_pct: 15 })).toBe('alert past −15 %');
     expect(win.BL.baselineMeta({ enabled: true, nightly_at: '', on_build_change: true, regression_pct: 20, nightly_valid: false })).toBe('after llama.cpp upgrades · alert past −20 %');
     expect(win.BL.baselineMeta({ enabled: true, nightly_at: 'zz', on_build_change: false, regression_pct: 20, nightly_valid: false })).toBe('nightly time invalid · alert past −20 %');
   });
@@ -619,5 +619,114 @@ describe('BL baselines (#882)', () => {
     win.BL.setMode('offline');
     expect(win.BL._debug().baseTimer).toBeNull();
     win.BL.setMode('live');
+  });
+});
+
+describe('BL baselines operator feedback (#882 followups)', () => {
+  const data = {
+    schedule: { enabled: true, nightly_at: '03:00', on_build_change: true, regression_pct: 15, nightly_valid: true, next_nightly_ts: 0 },
+    baselines: [
+      { run_id: 'p1', model_id: 'org/big-model:Q4', agent_id: 'a', hostname: 'alpha', ts: '2026-09-02T10:00:00+00:00', gen_tps: 52.8,
+        config: { bench: 'throughput_1k', osl: 1024, concurrency: [1, 2, 4], timeout_s: 600, baseline_run_id: null },
+        online: true, loaded: true, llama_build: 'b1-e71b805', build_changed: false, running: false, pending: null, active_run_id: null,
+        last_check: { ts: '2026-09-09T03:00:10+00:00', trigger: 'nightly', status: 'ok', gen_tps: 51.0, base_tps: 52.8, delta_pct: -3.4, severity: null, error: null, llama_build: 'b1-e71b805' } },
+    ],
+  };
+
+  it('fmtTs renders an ISO server timestamp in local time', () => {
+    const win = boot();
+    const iso = '2026-09-09T03:00:10+00:00';
+    const d = new Date(iso);
+    const p = n => String(n).padStart(2, '0');
+    const expected = `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
+    expect(win.BL.fmtTs(iso)).toBe(expected);
+    expect(win.BL.fmtTs('')).toBe('');
+    expect(win.BL.fmtTs(null)).toBe('');
+    expect(win.BL.fmtTs('not-a-date')).toBe('');
+  });
+
+  it('shows the full llama.cpp build string, not just its first segment', () => {
+    const win = boot();
+    win.BL._debugBaselines(data);
+    const row = win.document.querySelector('#blBaseTable tr[data-run="p1"]');
+    expect(row.textContent).toContain('b1-e71b805');
+  });
+
+  it('shows a workload summary after the model and toggles a config-detail row on click', () => {
+    const win = boot();
+    win.BL._debugBaselines(data);
+    const doc = win.document;
+    const tr = doc.querySelector('#blBaseTable tr[data-run="p1"]');
+    expect(tr.textContent).toContain('osl 1024');
+    expect(doc.querySelector('tr.bl-bdet')).toBeNull();
+    tr.click();
+    const det = doc.querySelector('tr.bl-bdet');
+    expect(det).not.toBeNull();
+    expect(det.textContent).toContain('osl');
+    expect(det.textContent).not.toContain('baseline_run_id');
+    tr.click();
+    expect(doc.querySelector('tr.bl-bdet')).toBeNull();
+  });
+
+  it('clicking the Re-check button does not toggle the details row', () => {
+    const win = boot();
+    win.BL._debugBaselines(data);
+    const doc = win.document;
+    win.fetch = vi.fn(async () => ({ json: async () => ({ ok: true, ...data }) }));
+    doc.querySelector('#blBaseTable tr[data-run="p1"] button').click();
+    expect(doc.querySelector('tr.bl-bdet')).toBeNull();
+  });
+
+  it('an active run on the primary agent attaches like a live run', () => {
+    const win = boot();
+    win.BL._debugBaselines({ schedule: data.schedule, primary_agent_id: 'a',
+      baselines: [{ ...data.baselines[0], running: true, active_run_id: 'run-99', last_check: null }] });
+    expect(win.document.getElementById('blStatus').textContent).toBe('running · re-check');
+    expect(win.document.getElementById('blProgress').style.display).not.toBe('none');
+    expect(win.BL._debug().attached).toBe(true);
+  });
+
+  it('does not attach when the active run belongs to a different agent', () => {
+    const win = boot();
+    win.BL._debugBaselines({ schedule: data.schedule, primary_agent_id: 'other-agent',
+      baselines: [{ ...data.baselines[0], running: true, active_run_id: 'run-99', last_check: null }] });
+    expect(win.BL._debug().attached).toBe(false);
+  });
+
+  it('baselineMeta drops the settings hint; the schedule switch PUTs settings and reverts on failure', async () => {
+    const win = boot();
+    expect(win.BL.baselineMeta({ enabled: false, regression_pct: 15 })).toBe('alert past −15 %');
+    win.BL._debugBaselines(data);
+    const cb = win.document.getElementById('blBaseEnabled');
+    expect(cb.checked).toBe(true);
+    cb.checked = false;
+    const calls = [];
+    win.fetch = vi.fn(async (url, opts) => { calls.push([url, opts]); return { ok: false, json: async () => ({ ok: false, error: 'nope' }) }; });
+    await win.BL.toggleBaseSchedule();
+    expect(calls[0][0]).toBe('/api/admin/settings');
+    expect(JSON.parse(calls[0][1].body)).toEqual({ changes: { 'manager.bench_baselines.enabled': false } });
+    expect(cb.checked).toBe(true);
+    expect(win.document.getElementById('blBaseMeta').textContent).toBe('nope');
+  });
+
+  it('the schedule switch reloads baselines on success', async () => {
+    const win = boot();
+    win.BL._debugBaselines(data);
+    const cb = win.document.getElementById('blBaseEnabled');
+    cb.checked = false;
+    win.fetch = vi.fn(async (url) => (url === '/api/admin/settings'
+      ? { ok: true, json: async () => ({ ok: true }) }
+      : { ok: true, json: async () => ({ ok: true, ...data }) }));
+    await win.BL.toggleBaseSchedule();
+    expect(cb.checked).toBe(true);
+  });
+
+  it('openBaseSettings switches to Admin Settings and opens the benchmark group', () => {
+    const win = boot();
+    win.switchSubTab = vi.fn();
+    win.adminSettingsOpenGroup = vi.fn();
+    win.BL.openBaseSettings();
+    expect(win.switchSubTab).toHaveBeenCalledWith('admin', 'settings');
+    expect(win.adminSettingsOpenGroup).toHaveBeenCalledWith('benchmark');
   });
 });

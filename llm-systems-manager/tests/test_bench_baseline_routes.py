@@ -43,3 +43,27 @@ def test_list_recheck_history():
 
 def test_start_thread_is_noop_under_pytest():
     assert bb.start_thread(FakeWatcher(), lambda: False) is None
+
+
+def test_primary_agent_id_merged_into_snapshot():
+    from flask import Flask
+    app = Flask(__name__)
+    w = FakeWatcher()
+    bb.register_routes(app, w, primary_agent=lambda kind: {"agent_id": "agent-" + kind})
+    r = app.test_client().get("/api/benchmark/live/baselines").get_json()
+    assert r["primary_agent_id"] == "agent-llama"
+
+
+def test_primary_agent_id_blank_when_no_agent():
+    from flask import Flask
+    app = Flask(__name__)
+    w = FakeWatcher()
+    bb.register_routes(app, w, primary_agent=lambda kind: None)
+    r = app.test_client().get("/api/benchmark/live/baselines").get_json()
+    assert r["primary_agent_id"] == ""
+
+
+def test_primary_agent_id_absent_when_no_callable():
+    c, _ = _client()
+    r = c.get("/api/benchmark/live/baselines").get_json()
+    assert "primary_agent_id" not in r

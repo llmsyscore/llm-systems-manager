@@ -223,15 +223,15 @@ class Watcher:
                 settled = self._last_check(b["run_id"], settled_only=True)
                 pend = self._pending.get(b["run_id"]) or {}
                 act = self._active.get(b["run_id"])
-                b_cfg = b.get("config") or {}
                 out.append({"run_id": b["run_id"], "model_id": b["model_id"], "agent_id": b["agent_id"],
                             "hostname": h.get("hostname") or b["agent_id"][:8], "ts": b["ts"], "gen_tps": b["gen_tps"],
-                            "config": {k: b_cfg.get(k) for k in ("bench", "osl", "concurrency", "matrix") if k in b_cfg},
+                            "config": dict(b.get("config") or {}),
                             "online": bool(h.get("online")), "loaded": bool(h.get("loaded")),
                             "llama_build": build,
                             "build_changed": bool(build and settled and settled.get("llama_build")
                                                    and settled["llama_build"] != build),
                             "running": act is not None,
+                            "active_run_id": act["run_id"] if act else None,
                             "pending": (act or pend).get("trigger") if (act or pend) else None,
                             "last_check": last})
             hhmm = str(cfg.get("nightly_at") or "")
@@ -406,12 +406,15 @@ class Watcher:
                        row.get("delta_pct"))
 
 
-def register_routes(app, watcher) -> None:
+def register_routes(app, watcher, primary_agent: Optional[Callable[[str], Optional[dict]]] = None) -> None:
     from flask import jsonify, request as flask_request
 
     @app.route("/api/benchmark/live/baselines")
     def bench_baselines_list():
-        return jsonify({"ok": True, **watcher.snapshot()})
+        extra = {}
+        if primary_agent is not None:
+            extra["primary_agent_id"] = (primary_agent("llama") or {}).get("agent_id") or ""
+        return jsonify({"ok": True, **watcher.snapshot(), **extra})
 
     @app.route("/api/benchmark/live/baselines/recheck", methods=["POST"])
     def bench_baselines_recheck():
