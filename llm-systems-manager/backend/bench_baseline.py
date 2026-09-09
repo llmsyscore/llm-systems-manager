@@ -377,3 +377,49 @@ class Watcher:
                 self._log.warning("bench baseline alert failed: %s", e)
         self._log.info("bench baseline %s: %s on %s %s (%s)", act["trigger"], b["model_id"], hostname, status,
                        row.get("delta_pct"))
+
+
+def register_routes(app, watcher) -> None:
+    from flask import jsonify, request as flask_request
+
+    @app.route("/api/benchmark/live/baselines")
+    def bench_baselines_list():
+        return jsonify({"ok": True, **watcher.snapshot()})
+
+    @app.route("/api/benchmark/live/baselines/recheck", methods=["POST"])
+    def bench_baselines_recheck():
+        body = flask_request.get_json(silent=True) or {}
+        rid = body.get("run_id")
+        if rid is not None and not isinstance(rid, str):
+            return jsonify({"ok": False, "error": "run_id must be a string"}), 400
+        return jsonify(watcher.recheck((rid or "").strip()[:64] or None))
+
+    @app.route("/api/benchmark/live/baselines/checks")
+    def bench_baselines_checks():
+        rid = (flask_request.args.get("run_id") or "").strip()[:64]
+        if not rid:
+            return jsonify({"ok": False, "error": "run_id required"}), 400
+        try:
+            limit = int(flask_request.args.get("limit") or 20)
+        except ValueError:
+            limit = 20
+        return jsonify({"ok": True, "checks": watcher.history(rid, limit)})
+
+
+def start_thread(watcher, shutting_down: Callable[[], bool]):
+    """Daemon loop ticking the watcher every CHECK_POLL_S; None under pytest."""
+    import sys
+    if "pytest" in sys.modules:
+        return None
+
+    def _loop():
+        while not shutting_down():
+            try:
+                watcher.tick()
+            except Exception as e:  # noqa: BLE001
+                _log.warning("bench baseline tick failed: %s", e)
+            time.sleep(CHECK_POLL_S)
+
+    t = threading.Thread(target=_loop, name="bench-baselines", daemon=True)
+    t.start()
+    return t

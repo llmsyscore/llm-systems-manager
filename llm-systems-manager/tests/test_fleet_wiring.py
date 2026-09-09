@@ -70,3 +70,50 @@ def test_cancel_resolves_the_agent_with_the_same_capability_as_run(monkeypatch):
 def test_cancel_returns_false_for_an_unknown_agent(monkeypatch):
     monkeypatch.setattr(manager_mod.agent_registry, "resolve_agent_by_id", lambda aid, capability=None: None)
     assert manager_mod._fleet_cancel_on_agent(AID) is False
+
+
+def test_ae_ingest_alert_posts_generic_payload(monkeypatch):
+    sent = {}
+
+    class _R:
+        ok = True
+        status_code = 200
+
+    def post(url, json=None, headers=None, timeout=None):
+        sent.update({"url": url, "json": json, "headers": headers})
+        return _R()
+
+    monkeypatch.setattr(manager_mod, "_alarm_engine_url", "https://ae.example:8443")
+    monkeypatch.setattr(manager_mod._ae_session, "post", post)
+    monkeypatch.setattr(manager_mod.settings.alarm_engine, "ingest_token", "tok", raising=False)
+    assert manager_mod._ae_ingest_alert({"name": "Benchmark regression", "severity": "warning"}) is True
+    assert sent["url"] == "https://ae.example:8443/api/alarm/ingest"
+    assert sent["json"]["name"] == "Benchmark regression"
+    assert sent["headers"]["Authorization"] == "Bearer tok"
+
+
+def test_ae_ingest_alert_without_url(monkeypatch):
+    monkeypatch.setattr(manager_mod, "_alarm_engine_url", "")
+    assert manager_mod._ae_ingest_alert({"name": "x"}) is False
+
+
+def test_llama_build_of_reads_store(monkeypatch):
+    aid = "z" * 32
+    monkeypatch.setattr(manager_mod.provider_state.STORE, "get",
+                        lambda p, a: {"sample": {"llama": {"build": "b1-abc"}}} if (p, a) == ("llama", aid) else None)
+    assert manager_mod._llama_build_of(aid) == "b1-abc"
+    assert manager_mod._llama_build_of("nope") == ""
+
+
+def test_bench_baseline_cfg_defaults(monkeypatch):
+    monkeypatch.setattr(manager_mod.settings.manager, "bench_baselines", None, raising=False)
+    cfg = manager_mod._bench_baseline_cfg()
+    assert cfg == {"enabled": False, "nightly_at": "03:00", "on_build_change": True, "regression_pct": 15.0}
+
+
+def test_nightly_at_validator():
+    assert manager_mod._validate_nightly_at("") is None
+    assert manager_mod._validate_nightly_at("03:00") is None
+    assert manager_mod._validate_nightly_at("25:00") == "use HH:MM (24-hour) or leave blank"
+    assert "manager.bench_baselines." in manager_mod._HOT_RELOADERS
+    assert manager_mod._SETTINGS_VALIDATORS["manager.bench_baselines.nightly_at"] is manager_mod._validate_nightly_at
