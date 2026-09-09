@@ -16,7 +16,18 @@
   let _levels = [], _baseline = null, _lastDoc = null, _runId = null, _activeLevel = null, _lastTps = null, _cell = null;
   let _attached = false, _queued = null, _elapsedIv = null, _runStart = 0, _sweepLevels = [], _curLevel = null, _curCell = null, _busyOn = false, _lastCfg = null, _attachedRun = null;
   let _fleetHosts = [], _fleetJob = null, _fleetPoll = null, _fleetSel = null;
+  let _base = null, _baseTimer = null, _baseAutoAttached = null;
+  const _baseOpenDet = new Set();  // run ids with an expanded config-detail row
   const FLEET_POLL_MS = 3000;
+
+  // ISO server timestamp -> local "YYYY-MM-DD HH:MM"; '' for falsy/invalid.
+  function fmtTs(iso) {
+    if (!iso) return '';
+    const d = new Date(iso);
+    if (isNaN(d.getTime())) return '';
+    const p = n => String(n).padStart(2, '0');
+    return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
+  }
 
   function parseSweep(text) {
     const seen = new Set();
@@ -170,6 +181,7 @@
     const note = $('benchModeNote');
     if (note) note.textContent = mode === 'live' ? 'Live · speed-bench against the running server' : 'Offline · llama-bench · server must be stopped';
     if (mode === 'live' && _chart) { try { _chart.resize(); } catch (_) {} }
+    if (mode !== 'live') { clearTimeout(_baseTimer); _baseTimer = null; }
   }
   function setRunBar(missing) {
     const run = $('blRunBtn'), setup = $('blSetupBtn');
@@ -206,7 +218,7 @@
     const sel = $('blBaseline');
     const pinned = _runs.find(r => r.baseline);
     sel.innerHTML = `<option value=""${pinned ? '' : ' selected'}>none</option>`
-      + _runs.map(r => `<option value="${esc(r.run_id)}"${pinned && pinned.run_id === r.run_id ? ' selected' : ''}>${esc(String(r.ts || '').slice(0, 16).replace('T', ' '))} · ${esc((r.config || {}).bench || '')} · ${fmt(r.gen_tps)} t/s${r.baseline ? ' · baseline' : ''}</option>`).join('');
+      + _runs.map(r => `<option value="${esc(r.run_id)}"${pinned && pinned.run_id === r.run_id ? ' selected' : ''}>${esc(fmtTs(r.ts))} · ${esc((r.config || {}).bench || '')} · ${fmt(r.gen_tps)} t/s${r.baseline ? ' · baseline' : ''}</option>`).join('');
     if (_runs.length && _runs[0].gen_tps) _lastTps = _runs[0].gen_tps;
     updateEstimate();
   }
@@ -217,6 +229,7 @@
     try { _pre = await fetch('/api/benchmark/live/preflight').then(r => r.json()); } catch (_) { _pre = { server: { up: false }, runtime: {} }; }
     renderPreflight();
     await loadRuns();
+    await loadBaselines();
     if (!_chart && window.Chart && $('blChart')) mkChart();
     ['blOsl', 'blLimit', 'blSweep', 'blTimeout', 'blExtra'].forEach(id => { const el = $(id); if (el && !el._bl) { el._bl = 1; el.addEventListener('input', () => { markCustom(); updateEstimate(); }); } });
     const b = $('blBench'); if (b && !b._bl) { b._bl = 1; b.addEventListener('change', () => { markCustom(); renderCats((((_pre || {}).datasets || {})[b.value] || {}).categories || [], 'all'); updateEstimate(); }); }
@@ -228,6 +241,8 @@
       c.classList.toggle('on'); markCustom(); updateEstimate();
     }); } });
     const mo = $('blMatrixOsl'); if (mo && !mo._bl) { mo._bl = 1; mo.addEventListener('input', () => { markCustom(); updateEstimate(); }); }
+    const be = $('blBaseEnabled'); if (be && !be._bl) { be._bl = 1; be.addEventListener('change', toggleBaseSchedule); }
+    const bs = $('blBaseSettings'); if (bs && !bs._bl) { bs._bl = 1; bs.addEventListener('click', (e) => { e.preventDefault(); openBaseSettings(); }); }
     document.querySelectorAll('#blFleetTgl .bl-chip').forEach(c => { if (!c._bl) { c._bl = 1; c.addEventListener('click', () => toggleFleet()); } });
     syncSweepUi();
     const rb = $('blRunBtn'); if (rb && rb._blLabel == null) rb._blLabel = rb.textContent;
@@ -594,13 +609,15 @@
   }
   function runLabel(text) { const b = $('blRunBtn'); if (b) b.textContent = text == null ? (b._blLabel || '') : text; }
   function leaveAttached() { _attached = false; notice(false); runLabel(null); syncCancelBtn(); }
-  // Follows a run started by another tab: replays its stream and queues ours behind it.
-  function attach() {
+  // Follows a run started by another tab (or the scheduler) — replays its stream and queues ours behind it.
+  function attach(recheck) {
     _attached = true; _runId = null; _queued = null;
     stopElapsed(); const el = $('blElapsed'); if (el) el.textContent = '';
     openStream(); busy(true);
     $('blRunBtn').disabled = false; runLabel('Queue run');
-    setStatus('running · started elsewhere', 'running'); notice(true);
+    if (recheck) { startElapsed(); setStatus('running · re-check', 'running'); }
+    else setStatus('running · started elsewhere', 'running');
+    notice(true);
     if (typeof toolsSyncRunDot === 'function') toolsSyncRunDot();
   }
   async function run(cfg) {
@@ -676,7 +693,7 @@
           if (_lastCfg && _lastCfg.matrix && msg.config && !msg.config.matrix) log('agent ignored the matrix — upgrade the agent to v2026.09.08-8 or newer', 'warn'); }
         else if (msg.type === 'done') {
           if (_es) { try { _es.close(); } catch (_) {} _es = null; }
-          stopElapsed(); _curLevel = null; redraw(); loadRuns(); syncAttachBtn(); syncPinBtn();
+          stopElapsed(); _curLevel = null; redraw(); loadRuns(); loadBaselines(); syncAttachBtn(); syncPinBtn();
           if (_fleetPoll) return;
           busy(false);
           if (_attached) { const q = _queued; _queued = null; leaveAttached();
@@ -715,7 +732,134 @@
     if (b) b.disabled = false;
     renderPreflight();
   }
-  async function pinBaseline() { if (_fleetSel) return; const id = (_lastDoc && _lastDoc.run_id) || _runId; if (!id) return; await fetch('/api/benchmark/live/runs/' + encodeURIComponent(id) + '/baseline', { method: 'POST' }).catch(() => {}); loadRuns(); }
+  async function pinBaseline() { if (_fleetSel) return; const id = (_lastDoc && _lastDoc.run_id) || _runId; if (!id) return; await fetch('/api/benchmark/live/runs/' + encodeURIComponent(id) + '/baseline', { method: 'POST' }).catch(() => {}); loadRuns(); loadBaselines(); }
+  function baselineMeta(s) {
+    s = s || {};
+    const alert = `alert past −${Math.round(s.regression_pct || 0)} %`;
+    if (!s.enabled) return alert;
+    const parts = [];
+    if (s.nightly_at) parts.push(s.nightly_valid ? `nightly at ${s.nightly_at}` : 'nightly time invalid');
+    if (s.on_build_change) parts.push('after llama.cpp upgrades');
+    parts.push(alert);
+    return parts.join(' · ');
+  }
+  function baseStatus(b) {
+    if (b.running) return 'running';
+    if (b.pending) return 'queued';
+    return (b.last_check && b.last_check.status) || 'never';
+  }
+  // Short workload label from a baseline's stored run config.
+  function baseConfigSummary(cfg) {
+    cfg = cfg || {};
+    if (cfg.matrix) {
+      const benches = (cfg.matrix.benches || []).map(x => BENCH_LABEL[x] || x).join('/');
+      return `matrix ${benches} × osl ${(cfg.matrix.osls || []).join(',')}`;
+    }
+    const parts = [];
+    if (cfg.bench) parts.push(cfg.bench);
+    if (cfg.osl != null) parts.push(`osl ${cfg.osl}`);
+    if ((cfg.concurrency || []).length) parts.push(`conc ${cfg.concurrency.join(',')}`);
+    return parts.join(' · ');
+  }
+  // Full-config detail row (#882 followups): every key as a chip, baseline_run_id omitted (shown separately).
+  function baseDetailsRow(b) {
+    const cfg = b.config || {};
+    const chips = Object.keys(cfg).filter(k => k !== 'baseline_run_id').map(k => {
+      let v = cfg[k];
+      if (v && typeof v === 'object') v = JSON.stringify(v);
+      return `<span class="bl-bchip">${esc(k)}: ${esc(String(v))}</span>`;
+    });
+    chips.push(`<span class="bl-bchip">baseline run: ${esc(b.run_id)}</span>`);
+    return `<tr class="bl-bdet" data-det="${esc(b.run_id)}"><td colspan="8">${chips.join('')}</td></tr>`;
+  }
+  function toggleBaseDetails(tr) {
+    const rid = tr.dataset.run;
+    if (_baseOpenDet.has(rid)) _baseOpenDet.delete(rid); else _baseOpenDet.add(rid);
+    const next = tr.nextElementSibling;
+    if (next && next.classList.contains('bl-bdet')) next.remove();
+    if (_baseOpenDet.has(rid)) {
+      const b = ((_base && _base.baselines) || []).find(x => x.run_id === rid);
+      if (b) tr.insertAdjacentHTML('afterend', baseDetailsRow(b));
+    }
+  }
+  // A scheduled re-check on this tab's own host looks like a live run — attach to its stream.
+  function maybeAttachRecheck(rows) {
+    const primaryId = _base && _base.primary_agent_id;
+    const active = primaryId ? rows.find(b => b.running && b.active_run_id && b.agent_id === primaryId) : null;
+    if (!active) { _baseAutoAttached = null; return; }
+    if (_baseAutoAttached === active.active_run_id || running() || _attached) return;
+    _baseAutoAttached = active.active_run_id;
+    attach(true);
+    log(`re-check of baseline ${String(active.model_id || '').split('/').pop()} in progress`);
+  }
+  function renderBaselines() {
+    const card = $('blBaseCard'); if (!card) return;
+    const rows = (_base && _base.baselines) || [];
+    card.style.display = rows.length ? '' : 'none';
+    const sched = (_base && _base.schedule) || {};
+    const meta = $('blBaseMeta'); if (meta) meta.textContent = baselineMeta(sched);
+    const en = $('blBaseEnabled'); if (en) en.checked = !!sched.enabled;
+    const allBtn = $('blBaseAllBtn'); if (allBtn) allBtn.disabled = rows.every(b => b.running || b.pending);
+    maybeAttachRecheck(rows);
+    const table = $('blBaseTable'); if (!table) return;
+    const row = b => {
+      const st = baseStatus(b), lc = b.last_check;
+      const delta = lc && lc.delta_pct != null ? `${lc.delta_pct < 0 ? '−' : '+'}${Math.abs(Math.round(lc.delta_pct))} %` : '—';
+      const dcls = lc && lc.status === 'regressed' ? 'down' : (lc && lc.delta_pct >= 3 ? 'up' : (lc && lc.delta_pct != null ? 'flat' : ''));
+      const build = b.llama_build ? esc(b.llama_build) + (b.build_changed ? ' <span class="bl-bnote">changed</span>' : '') : '—';
+      const last = lc ? `${esc(fmtTs(lc.ts))} · ${esc(lc.trigger)}${lc.error ? ` · ${esc(lc.error)}` : ''}` : 'never';
+      const title = b.loaded ? '' : (b.online ? ' title="model not loaded on the host"' : ' title="host offline"');
+      const summary = baseConfigSummary(b.config);
+      return `<tr data-run="${esc(b.run_id)}"><td>${esc(String(b.model_id || '').split('/').pop())}${summary ? ` <small>${esc(summary)}</small>` : ''}</td><td${title}>${esc(b.hostname)}${b.loaded ? '' : ' ○'}</td>` +
+        `<td class="num">${fmt(b.gen_tps)} t/s <small>${esc(fmtTs(b.ts))}</small></td><td>${build}</td><td>${last}</td>` +
+        `<td class="num"><span class="dlt ${dcls}">${delta}</span></td><td><span class="bl-bstat ${esc(st)}">${esc(st)}</span></td>` +
+        `<td><button class="mcbtn mcbtn-ghost mcbtn-sm" type="button"${b.running || b.pending ? ' disabled' : ''}>Re-check</button></td></tr>`;
+    };
+    table.innerHTML = `<table class="bl-rt"><thead><tr><th>Model</th><th>Host</th><th class="num">Baseline</th><th>llama.cpp</th><th>Last check</th><th class="num">Δ decode</th><th>Status</th><th></th></tr></thead><tbody>${rows.map(row).join('')}</tbody></table>`;
+    table.querySelectorAll('tr[data-run]').forEach(tr => tr.addEventListener('click', (e) => {
+      if (e.target.closest('button')) return;
+      toggleBaseDetails(tr);
+    }));
+    table.querySelectorAll('tr[data-run] button').forEach(btn => btn.addEventListener('click', () => recheckBaseline(btn.closest('tr').dataset.run)));
+    [..._baseOpenDet].forEach(rid => {
+      const b = rows.find(x => x.run_id === rid);
+      if (!b) { _baseOpenDet.delete(rid); return; }
+      const tr = table.querySelector(`tr[data-run="${esc(rid)}"]`);
+      if (tr) tr.insertAdjacentHTML('afterend', baseDetailsRow(b));
+    });
+    const busy = rows.some(b => b.running || b.pending);
+    clearTimeout(_baseTimer); _baseTimer = busy ? setTimeout(loadBaselines, 5000) : null;
+  }
+  async function loadBaselines() {
+    try { const r = await fetch('/api/benchmark/live/baselines').then(r => r.json()); if (r && r.ok) _base = r; } catch (_) {}
+    renderBaselines();
+  }
+  async function recheckBaseline(runId) {
+    try { await fetch('/api/benchmark/live/baselines/recheck', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(runId ? { run_id: runId } : {}) }); } catch (_) {}
+    await loadBaselines();
+  }
+  async function toggleBaseSchedule() {
+    const cb = $('blBaseEnabled'); if (!cb) return;
+    const val = cb.checked;
+    let r, d;
+    try {
+      r = await fetch('/api/admin/settings', { method: 'PUT', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ changes: { 'manager.bench_baselines.enabled': val } }) });
+      d = await r.json().catch(() => null);
+    } catch (e) { r = null; d = null; }
+    if (!r || !r.ok || !d || !d.ok) {
+      cb.checked = !val;
+      const m = $('blBaseMeta');
+      if (m) m.textContent = (d && (d.error || Object.values(d.errors || {})[0])) || 'failed to update schedule';
+      return;
+    }
+    await loadBaselines();
+  }
+  function openBaseSettings() {
+    if (typeof switchTab === 'function') switchTab('admin');
+    if (typeof switchSubTab === 'function') switchSubTab('admin', 'settings');
+    if (typeof adminSettingsOpenGroup === 'function') adminSettingsOpenGroup('benchmark');
+  }
   function exportJson() {
     if (_fleetJob && _fleetJob.done && !_fleetSel) {
       const id = String(_fleetJob.job_id || 'job').replace(/[^A-Za-z0-9_.-]/g, '_');
@@ -739,7 +883,10 @@
     setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 200);
   }
   window.BL = { onOpen, setMode, run, cancel, setup, startServer, running, applyPreset, parseSweep, parseOsls, estimateSeconds, deltaText, knee, pinBaseline, exportJson,
-    toggleMatrix, heatCells, cellKey, addToReportCard, toggleFleet, rankHosts, selectFleetHost,
+    toggleMatrix, heatCells, cellKey, addToReportCard, toggleFleet, rankHosts, selectFleetHost, recheckBaseline, baselineMeta, loadBaselines,
+    toggleBaseSchedule, openBaseSettings, fmtTs,
     _config: config, _debugLevels: (rows) => { _levels = rows; _cell = null; redraw(); },
-    _debugFleet: (job) => { _fleetJob = job; renderFleet(); }, _debugPollOnce: fleetTick };
+    _debugFleet: (job) => { _fleetJob = job; renderFleet(); }, _debugPollOnce: fleetTick,
+    _debugBaselines: (d) => { _base = d; renderBaselines(); },
+    _debug: () => ({ baseTimer: _baseTimer, attached: _attached, baseAutoAttached: _baseAutoAttached }) };
 })();

@@ -10,6 +10,7 @@
   const _open = new Set();      // expanded group keys
   let _filter = '';
   let _booted = false;
+  let _pendingOpenGroup = null;
   const MOST_USED = '__most_used__';
 
   const esc = s => _esc(String(s ?? ''));
@@ -37,6 +38,26 @@
       _open.add(MOST_USED); // leading card starts open; group cards start collapsed
     }
     render();
+    if (_pendingOpenGroup) {
+      scrollGroupIntoView(_pendingOpenGroup);
+      _pendingOpenGroup = null;
+    }
+  }
+
+  // Expands a group card by key (e.g. from another module's "Settings" deep link).
+  // Always remembers the key so a concurrent load() (e.g. from switchSubTab) re-scrolls to it too.
+  function openGroup(key) {
+    _open.add(key);
+    _pendingOpenGroup = key;
+    if (_data) {
+      render();
+      scrollGroupIntoView(key);
+    }
+  }
+
+  function scrollGroupIntoView(key) {
+    const card = document.querySelector(`[data-group="${key}"]`);
+    if (card && card.scrollIntoView) card.scrollIntoView({ block: 'start' });
   }
 
   // ── topology helpers ──────────────────────────────────────────────
@@ -753,6 +774,7 @@
   }
 
   window.adminSettingsLoad = load;
+  window.adminSettingsOpenGroup = openGroup;
   window.SettingsFields = {
     render: (entries, values, defs, over) => renderFields(entries, values, defs, over),
     fieldHtml, validate, splitUnit, groupMeta, readInput, firstSentence, applyDirtyValues,

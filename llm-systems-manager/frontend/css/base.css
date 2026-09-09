@@ -872,6 +872,16 @@
     table.bl-rt .dlt { font-family:var(--font-mono); font-size:10.5px; margin-left:6px; }
     .bl-rank { display:inline-block; min-width:1.6em; text-align:center; border-radius:999px; font-size:.75em; font-weight:600; background:color-mix(in srgb, var(--accent) 18%, transparent); color:var(--accent); }
     .bl-rank-bar { height:4px; border-radius:2px; background:var(--accent); opacity:.6; margin-top:3px; }
+    .bl-bstat { display:inline-block; padding:1px 8px; border-radius:999px; font-size:11px; font-weight:600; background:var(--bg-elev); color:var(--fg-dim); }
+    .bl-bstat.ok { background:color-mix(in srgb, var(--ok) 18%, transparent); color:var(--ok); }
+    .bl-bstat.regressed, .bl-bstat.failed { background:color-mix(in srgb, var(--crit) 18%, transparent); color:var(--crit); }
+    .bl-bstat.running, .bl-bstat.queued { background:color-mix(in srgb, var(--accent) 18%, transparent); color:var(--accent); }
+    .bl-bstat.skipped { background:color-mix(in srgb, var(--warn) 18%, transparent); color:var(--warn); }
+    .bl-bnote { font-size:10px; margin-left:4px; padding:0 5px; border-radius:999px; background:color-mix(in srgb, var(--warn) 18%, transparent); color:var(--warn); }
+    #blBaseTable td small { color:var(--fg-dim); margin-left:4px; }
+    #blBaseTable tr[data-run] { cursor:pointer; }
+    tr.bl-bdet td { background:var(--bg-elev); }
+    .bl-bchip { display:inline-block; margin:2px 6px 2px 0; padding:1px 8px; border-radius:999px; font-size:10.5px; font-family:var(--font-mono); background:var(--bg-card); color:var(--fg-dim); border:1px solid var(--border-soft); }
     tr.bl-frow[data-agent] { cursor:pointer; }
     tr.bl-frow.on td { background:color-mix(in srgb, var(--accent) 8%, transparent); }
     .bl-chip.off { opacity:.45; cursor:default; }
@@ -882,6 +892,8 @@
     .bl-card-h { display:flex; align-items:center; gap:12px; padding:12px 16px; border-bottom:1px solid var(--border-soft); flex-wrap:wrap; }
     .bl-card-h h3 { margin:0; font-size:14px; font-weight:600; }
     .bl-card-h .meta { font-family:var(--font-mono); font-size:11px; color:var(--fg-dim); }
+    #blBaseSettings { color:var(--accent); text-decoration:none; font-size:11.5px; }
+    #blBaseSettings:hover { text-decoration:underline; }
     .bl-card-h .gap { flex:1; }
     .bl-card-h.tog { cursor:pointer; user-select:none; }
     .bl-chev { color:var(--fg-faint); font-size:11px; transition:transform .18s; }

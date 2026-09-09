@@ -78,6 +78,7 @@ _llama_info_last_tokens_total: "int | None" = None
 _llama_info_last_loaded_model: "str | None" = None
 _llama_info_conn_fail_count: int = 0
 _llama_info_idle_logged: bool = False
+_llama_build_last: str = ""
 
 # /models/sse listener (router mode); authoritative for llama_state when connected.
 _llama_sse_listener: "Optional[llama_sse.LlamaSseListener]" = None
@@ -275,7 +276,7 @@ def collect_llama_for_metrics() -> dict[str, Any]:
     global _llama_info_cache, _llama_info_last_poll
     global _llama_info_last_active_ts, _llama_info_last_tokens_total
     global _llama_info_last_loaded_model, _llama_info_conn_fail_count
-    global _llama_info_idle_logged
+    global _llama_info_idle_logged, _llama_build_last
 
     now = time.time()
     interval = max(2.0, _require_ctx().config.POLL_INTERVAL_S)
@@ -401,8 +402,14 @@ def collect_llama_for_metrics() -> dict[str, Any]:
                     # Direct API sleep signal corroborates the state-file value.
                     if props["is_sleeping"]:
                         llama["sleeping"] = True
+                bi = props.get("build_info")
+                if isinstance(bi, str) and bi.strip():
+                    _llama_build_last = bi.strip()[:64]
         except Exception as e:
             log.debug("llama /props: %s", e)
+
+    if _llama_build_last:
+        llama["build"] = _llama_build_last
 
     # /metrics + /slots reset llama-server's sleep timer; skip while sleeping.
     if state == "sleeping":

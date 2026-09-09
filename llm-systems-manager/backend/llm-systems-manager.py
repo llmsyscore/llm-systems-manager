@@ -175,7 +175,7 @@ def _local_hostname() -> str:
 # banner reads it. Bump suffix (-1, -2, …) for same-day iterations; roll
 # the date for a new day's first change.
 # ---------------------------------------------------------------------------
-__version__ = "v2026.09.09-4"
+__version__ = "v2026.09.09-8"
 
 # Wall-clock at first import (Cheroot main process); the shutdown banner
 # reads it for the uptime line.
@@ -201,6 +201,7 @@ import report_card  # type: ignore[import-not-found]  # noqa: E402  # leaf, no c
 import energy  # type: ignore[import-not-found]  # noqa: E402  # leaf, no cycle; #470
 import model_meta  # type: ignore[import-not-found]  # noqa: E402  # leaf, no cycle; #878
 import bench_live  # type: ignore[import-not-found]  # noqa: E402  # leaf, no cycle; #879
+import bench_baseline  # type: ignore[import-not-found]  # noqa: E402  # leaf, no cycle; #882
 import tool_activity  # type: ignore[import-not-found]  # noqa: E402  # leaf, no cycle; #775
 import gateway_usage  # type: ignore[import-not-found]  # noqa: E402  # leaf, no cycle; #502
 import discord_bot  # type: ignore[import-not-found]  # noqa: E402  # leaf, no cycle; #471
@@ -2870,8 +2871,8 @@ def _lms_agent_hosts() -> dict:
 _gw_push_state = {"failed": False}
 
 
-def _push_gateway_usage_metrics(points: list) -> None:
-    """POST a gateway-usage metric batch to the alarm engine (#502)."""
+def _ae_metrics_batch(points: list, state: dict, label: str) -> None:
+    """POST a metric batch to the alarm engine with the ingest token; logs each failure/recovery once."""
     if not _alarm_engine_url or not points:
         return
     # AE ingest routes accept only the ingest token — the session-level
@@ -2884,13 +2885,44 @@ def _push_gateway_usage_metrics(points: list) -> None:
         f"{_alarm_engine_url.rstrip('/')}/api/alarm/metrics/batch",
         json={"metrics": points}, headers=headers, timeout=5,
     )
-    if not r.ok and not _gw_push_state["failed"]:
-        _gw_push_state["failed"] = True
-        log.warning(f"gateway usage push failed: HTTP {r.status_code} — "
-                    "lms gateway metrics will be missing from the alarm engine")
-    elif r.ok and _gw_push_state["failed"]:
-        _gw_push_state["failed"] = False
-        log.info("gateway usage push recovered")
+    if not r.ok and not state["failed"]:
+        state["failed"] = True
+        log.warning(f"{label} push failed: HTTP {r.status_code} — "
+                    f"{label} metrics will be missing from the alarm engine")
+    elif r.ok and state["failed"]:
+        state["failed"] = False
+        log.info(f"{label} push recovered")
+
+
+def _push_gateway_usage_metrics(points: list) -> None:
+    """POST a gateway-usage metric batch to the alarm engine (#502)."""
+    _ae_metrics_batch(points, _gw_push_state, "gateway usage")
+
+
+_bench_push_state = {"failed": False}
+
+
+def _push_bench_metrics(points: list) -> None:
+    """POST a benchmark-baseline metric batch to the alarm engine (#882)."""
+    _ae_metrics_batch(points, _bench_push_state, "benchmark baseline")
+
+
+def _ae_ingest_alert(payload: dict) -> bool:
+    """POST one pre-formed alert to the alarm engine's generic ingest route."""
+    if not _alarm_engine_url:
+        return False
+    headers = {}
+    ingest_tok = (settings.alarm_engine.ingest_token or "").strip()
+    if ingest_tok and ingest_tok != "REPLACE_ME":
+        headers["Authorization"] = f"Bearer {ingest_tok}"
+    try:
+        r = _ae_session.post(f"{_alarm_engine_url.rstrip('/')}/api/alarm/ingest", json=payload, headers=headers, timeout=5)
+    except requests.RequestException as e:
+        log.warning(f"alarm ingest failed: {e}")
+        return False
+    if not r.ok:
+        log.warning(f"alarm ingest failed: HTTP {r.status_code}")
+    return bool(r.ok)
 
 
 @app.route("/api/lmstudio/models")
@@ -3347,6 +3379,7 @@ _AUDIT_LABELS: dict[str, str] = {
     "reportcard.run": "Started a report card run", "reportcard.delete-model": "Deleted report card results",
     "reportcard.cancel": "Cancelled a report card run", "reportcard.clear-history": "Cleared report card history",
     "reportcard.attach-live": "Attached a live benchmark run to a report card",
+    "benchmark.recheck": "Re-checked a pinned benchmark baseline",
     "alarm.close": "Closed an alert", "alarm.ignore": "Ignored an alert", "alarm.ack": "Acknowledged an alert",
     "alarm.acknowledge": "Acknowledged an alert", "alarm.close-all": "Closed all alerts",
     "alarm.ignore-all": "Ignored all alerts", "alarm.bulk": "Bulk alert action",
@@ -3401,6 +3434,7 @@ _AUDIT_ROUTES: list[tuple] = [
     ("POST",   re.compile(r"^/api/llm/cache/(?P<v>prune|rm)$"),        "model.cache-{v}",    "model.downloads"),
     ("POST",   re.compile(r"^/api/llm/autotune/run$"),                 "tools.autotune",     "tools.run"),
     ("POST",   re.compile(r"^/api/vllm/(?:bench|autotune)/run$"),      "tools.vllm-bench",   "tools.run"),
+    ("POST",   re.compile(r"^/api/benchmark/live/baselines/recheck$"), "benchmark.recheck",  "tools.run"),
     ("POST",   re.compile(r"^/api/vllm/server/(?P<v>start|stop|restart)$"), "vllm.server.{v}", "vllm.server"),
     ("POST",   re.compile(r"^/api/vllm/server/svcconfig$"),            "vllm.svcconfig",     "vllm.server"),
     ("POST",   re.compile(r"^/api/vllm/lora/(?P<v>load|unload)$"),     "vllm.lora.{v}",      "vllm.server"),
@@ -3441,7 +3475,8 @@ _AUDIT_GET_PATHS = ("/api/admin/backup-archive/",)
 _AUDIT_PATH_PREFIXES = ("/api/admin/", "/api/agents/", "/api/llm/", "/api/lmstudio/",
                         "/api/config/", "/api/vllm/", "/api/autopilot", "/api/terminal/",
                         "/api/lms/terminal/", "/api/reportcard/", "/api/alarm/",
-                        "/api/account/", "/api/layout", "/login", "/logout")
+                        "/api/account/", "/api/layout", "/login", "/logout",
+                        "/api/benchmark/live/baselines")
 
 _AUDIT_DETAIL_BODY_KEYS = ("model", "model_id", "agent", "agent_id", "kind", "set", "enabled",
                            "context_length", "n_gpu_layers", "role", "mode", "provider",
@@ -5395,6 +5430,26 @@ bench_live.register_routes(app, ctx, db_path=str(DB_PATH), proxy=proxies.proxy_t
                            agent_by_token=agent_registry.agent_by_token, request_agent=_request_agent,
                            note_tool_start=_note_tool_start, fleet_hosts=_fleet_hosts,
                            run_on_agent=_fleet_run_on_agent, cancel_on_agent=_fleet_cancel_on_agent)
+
+
+def _bench_baseline_cfg() -> dict:
+    b = getattr(settings.manager, "bench_baselines", None)
+    return {"enabled": bool(getattr(b, "enabled", False)),
+            "nightly_at": str(getattr(b, "nightly_at", "") if b is not None else ""),
+            "on_build_change": bool(getattr(b, "on_build_change", True)),
+            "regression_pct": float(getattr(b, "regression_pct", 15.0) or 15.0)}
+
+
+def _llama_build_of(agent_id: str) -> str:
+    wrap = provider_state.STORE.get("llama", agent_id) or {}
+    return str((((wrap.get("sample") or {}).get("llama") or {}).get("build") or ""))[:64]
+
+
+_bench_watcher = bench_baseline.Watcher(
+    db_path=str(DB_PATH), cfg=_bench_baseline_cfg, fleet_hosts=_fleet_hosts,
+    run_on_agent=_fleet_run_on_agent, llama_build_of=_llama_build_of,
+    alert=_ae_ingest_alert, push_metrics=_push_bench_metrics, log=log)
+bench_baseline.register_routes(app, _bench_watcher, primary_agent=_request_agent)
 companion.register_routes(app, ctx, static_dir=STATIC_DIR)
 import manager_users  # type: ignore[import-not-found]  # sibling
 manager_users.init(
@@ -5925,6 +5980,35 @@ def _validate_backup_mirror_dir(value: str) -> "str | None":
 
 
 _SETTINGS_VALIDATORS["manager.backup.mirror_dir"] = _validate_backup_mirror_dir
+
+
+_BENCH_BASELINE_KEYS = ("enabled", "nightly_at", "on_build_change", "regression_pct")
+
+
+def _bench_baseline_reload_config() -> None:
+    """Re-apply [manager.bench_baselines] from the on-disk config onto the live settings (hot)."""
+    try:
+        snap = settings_catalog._snapshot().manager.bench_baselines
+        live = getattr(settings.manager, "bench_baselines", None)
+        if live is None:
+            return
+        for k in _BENCH_BASELINE_KEYS:
+            setattr(live, k, getattr(snap, k))
+    except Exception as e:
+        log.warning("bench baseline config reload failed (runtime keeps previous values): %s", e)
+
+
+_HOT_RELOADERS["manager.bench_baselines."] = _bench_baseline_reload_config
+
+
+def _validate_nightly_at(value: str) -> "str | None":
+    """Error text unless value is blank or HH:MM."""
+    if not str(value or "").strip() or bench_baseline.parse_hhmm(value) is not None:
+        return None
+    return "use HH:MM (24-hour) or leave blank"
+
+
+_SETTINGS_VALIDATORS["manager.bench_baselines.nightly_at"] = _validate_nightly_at
 
 
 def _backup_component_of(name: str) -> "str | None":
@@ -7856,6 +7940,12 @@ if __name__ == "__main__":
         _maybe_start_backup_scheduler()
     except Exception as _e:
         log.warning("backup scheduler startup failed: %s", _e)
+
+    # Pinned-baseline re-check watcher (#882); idle until [manager.bench_baselines] enables it.
+    try:
+        bench_baseline.start_thread(_bench_watcher, lambda: _shutting_down)
+    except Exception as _e:
+        log.warning("bench baseline watcher startup failed: %s", _e)
 
     # Audit log retention purge (#794): at start, then every 24 h.
     _start_audit_purge_thread()

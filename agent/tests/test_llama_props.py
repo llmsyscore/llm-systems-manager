@@ -191,3 +191,37 @@ def test_props_ignores_malformed_values(ctx, monkeypatch):
     assert out["modalities"] is None
     assert out["total_slots"] is None
     assert out["is_sleeping"] is None
+
+
+def test_props_build_info_surfaces(ctx, monkeypatch):
+    monkeypatch.setattr(llama, "_llama_build_last", "")
+    monkeypatch.setattr(llama, "requests", SimpleNamespace(get=_fake_get_factory({
+        "total_slots": 2, "build_info": "b10809-5266f24da",
+    })))
+    out = llama.collect_llama_for_metrics()
+    assert out["build"] == "b10809-5266f24da"
+    assert llama._llama_build_last == "b10809-5266f24da"
+
+
+def test_props_build_cached_when_probe_skipped(ctx, monkeypatch):
+    monkeypatch.setattr(llama, "_llama_build_last", "b10809-5266f24da")
+    monkeypatch.setattr(llama, "requests", SimpleNamespace(get=_fake_get_factory({
+        "total_slots": 2,
+    })))
+    out = llama.collect_llama_for_metrics()
+    assert out["build"] == "b10809-5266f24da"
+
+
+def test_props_build_info_truncated_and_non_string_ignored(ctx, monkeypatch):
+    monkeypatch.setattr(llama, "_llama_build_last", "")
+    monkeypatch.setattr(llama, "requests", SimpleNamespace(get=_fake_get_factory({
+        "total_slots": 2, "build_info": "x" * 200,
+    })))
+    assert len(llama.collect_llama_for_metrics()["build"]) == 64
+    monkeypatch.setattr(llama, "_llama_build_last", "")
+    monkeypatch.setattr(llama, "_llama_info_last_poll", 0.0)
+    monkeypatch.setattr(llama, "_llama_info_cache", {})
+    monkeypatch.setattr(llama, "requests", SimpleNamespace(get=_fake_get_factory({
+        "total_slots": 2, "build_info": 12345,
+    })))
+    assert "build" not in llama.collect_llama_for_metrics()

@@ -266,6 +266,15 @@ class ManagerAudit(BaseModel):
     disabled_events: list[str] = Field(default_factory=list)
 
 
+class ManagerBenchBaselines(BaseModel):
+    """Scheduled re-check of pinned Live benchmark baselines (#882)."""
+    model_config = _MODEL_CFG
+    enabled: bool = False
+    nightly_at: str = ""
+    on_build_change: bool = True
+    regression_pct: float = 15.0
+
+
 class ManagerConfig(BaseModel):
     model_config = _MODEL_CFG
     host: str = "0.0.0.0"
@@ -335,6 +344,7 @@ class ManagerConfig(BaseModel):
     auth: ManagerAuth = Field(default_factory=ManagerAuth)
     branding: ManagerBranding = Field(default_factory=ManagerBranding)
     backup: ManagerBackup = Field(default_factory=ManagerBackup)
+    bench_baselines: ManagerBenchBaselines = Field(default_factory=ManagerBenchBaselines)
     audit: ManagerAudit = Field(default_factory=ManagerAudit)
 
 

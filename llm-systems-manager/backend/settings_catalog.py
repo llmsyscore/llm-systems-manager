@@ -16,6 +16,7 @@ GROUPS: list[tuple[str, str]] = [
     ("history", "History"),
     ("energy", "Energy & Pricing"),
     ("models", "Models & Metadata"),
+    ("benchmark", "Benchmark baselines"),
     ("backup", "Backups"),
     ("audit", "Audit Log"),
     ("discord", "Discord Bot"),
@@ -95,6 +96,11 @@ CATALOG: list[dict] = [
     # models
     _e("manager.model_meta.hf_token", "str", "Hugging Face token", "Read token for gated repos; blank for public repos.", "models", MANAGER, secret=True),
     _e("manager.model_meta.ttl_days", "int", "Model metadata cache (days)", "How long fetched sampling suggestions are reused before re-reading Hugging Face.", "models", MANAGER, min=1, max=365),
+    # benchmark baselines (#882) — hot: the watcher re-reads these every tick
+    _e("manager.bench_baselines.enabled", "bool", "Scheduled re-check", "Re-run pinned Live benchmark baselines automatically and alert on a decode-t/s regression.", "benchmark", MANAGER, hot=True, common=True),
+    _e("manager.bench_baselines.nightly_at", "str", "Nightly at (HH:MM)", "Local time of the nightly re-check; clear the field for build-change re-checks only.", "benchmark", MANAGER, hot=True),
+    _e("manager.bench_baselines.on_build_change", "bool", "After llama.cpp upgrades", "Re-check a host's baselines when its llama.cpp build changes.", "benchmark", MANAGER, hot=True),
+    _e("manager.bench_baselines.regression_pct", "float", "Regression threshold (%)", "Decode t/s drop vs the pinned baseline that raises a warning; twice it raises critical.", "benchmark", MANAGER, min=1, max=90, hot=True),
     # backup
     # backup — hot: the scheduler re-reads these before every run
     _e("manager.backup.enabled", "bool", "Scheduled backups", "Automatic backup archives written to data/backups/.", "backup", MANAGER, hot=True, common=True),
