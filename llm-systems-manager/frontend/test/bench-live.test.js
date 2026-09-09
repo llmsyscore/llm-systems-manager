@@ -693,6 +693,18 @@ describe('BL baselines operator feedback (#882 followups)', () => {
     expect(win.BL._debug().attached).toBe(false);
   });
 
+  it('does not re-attach on a second snapshot carrying the same active_run_id', () => {
+    const win = boot();
+    const snap = { schedule: data.schedule, primary_agent_id: 'a',
+      baselines: [{ ...data.baselines[0], running: true, active_run_id: 'run-99', last_check: null }] };
+    win.BL._debugBaselines(snap);
+    expect(win.BL._debug().baseAutoAttached).toBe('run-99');
+    const logCount = win.document.getElementById('blLog').children.length;
+    win.BL._debugBaselines(snap);
+    expect(win.document.getElementById('blLog').children.length).toBe(logCount);
+    expect(win.BL._debug().baseAutoAttached).toBe('run-99');
+  });
+
   it('baselineMeta drops the settings hint; the schedule switch PUTs settings and reverts on failure', async () => {
     const win = boot();
     expect(win.BL.baselineMeta({ enabled: false, regression_pct: 15 })).toBe('alert past −15 %');
@@ -709,6 +721,16 @@ describe('BL baselines operator feedback (#882 followups)', () => {
     expect(win.document.getElementById('blBaseMeta').textContent).toBe('nope');
   });
 
+  it('the schedule switch falls back to the errors map when no top-level error is present', async () => {
+    const win = boot();
+    win.BL._debugBaselines(data);
+    const cb = win.document.getElementById('blBaseEnabled');
+    cb.checked = false;
+    win.fetch = vi.fn(async () => ({ ok: false, json: async () => ({ ok: false, errors: { 'manager.bench_baselines.enabled': 'bad value' } }) }));
+    await win.BL.toggleBaseSchedule();
+    expect(win.document.getElementById('blBaseMeta').textContent).toBe('bad value');
+  });
+
   it('the schedule switch reloads baselines on success', async () => {
     const win = boot();
     win.BL._debugBaselines(data);
@@ -721,11 +743,13 @@ describe('BL baselines operator feedback (#882 followups)', () => {
     expect(cb.checked).toBe(true);
   });
 
-  it('openBaseSettings switches to Admin Settings and opens the benchmark group', () => {
+  it('openBaseSettings switches to the Admin tab, its Settings sub-tab, then opens the benchmark group', () => {
     const win = boot();
+    win.switchTab = vi.fn();
     win.switchSubTab = vi.fn();
     win.adminSettingsOpenGroup = vi.fn();
     win.BL.openBaseSettings();
+    expect(win.switchTab).toHaveBeenCalledWith('admin');
     expect(win.switchSubTab).toHaveBeenCalledWith('admin', 'settings');
     expect(win.adminSettingsOpenGroup).toHaveBeenCalledWith('benchmark');
   });

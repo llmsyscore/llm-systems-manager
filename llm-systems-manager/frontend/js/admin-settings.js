@@ -45,13 +45,13 @@
   }
 
   // Expands a group card by key (e.g. from another module's "Settings" deep link).
+  // Always remembers the key so a concurrent load() (e.g. from switchSubTab) re-scrolls to it too.
   function openGroup(key) {
     _open.add(key);
+    _pendingOpenGroup = key;
     if (_data) {
       render();
       scrollGroupIntoView(key);
-    } else {
-      _pendingOpenGroup = key;
     }
   }
 

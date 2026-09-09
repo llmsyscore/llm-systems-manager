@@ -17,6 +17,7 @@
   let _attached = false, _queued = null, _elapsedIv = null, _runStart = 0, _sweepLevels = [], _curLevel = null, _curCell = null, _busyOn = false, _lastCfg = null, _attachedRun = null;
   let _fleetHosts = [], _fleetJob = null, _fleetPoll = null, _fleetSel = null;
   let _base = null, _baseTimer = null, _baseAutoAttached = null;
+  const _baseOpenDet = new Set();  // run ids with an expanded config-detail row
   const FLEET_POLL_MS = 3000;
 
   // ISO server timestamp -> local "YYYY-MM-DD HH:MM"; '' for falsy/invalid.
@@ -692,7 +693,7 @@
           if (_lastCfg && _lastCfg.matrix && msg.config && !msg.config.matrix) log('agent ignored the matrix — upgrade the agent to v2026.09.08-8 or newer', 'warn'); }
         else if (msg.type === 'done') {
           if (_es) { try { _es.close(); } catch (_) {} _es = null; }
-          stopElapsed(); _curLevel = null; redraw(); loadRuns(); syncAttachBtn(); syncPinBtn();
+          stopElapsed(); _curLevel = null; redraw(); loadRuns(); loadBaselines(); syncAttachBtn(); syncPinBtn();
           if (_fleetPoll) return;
           busy(false);
           if (_attached) { const q = _queued; _queued = null; leaveAttached();
@@ -772,11 +773,14 @@
     return `<tr class="bl-bdet" data-det="${esc(b.run_id)}"><td colspan="8">${chips.join('')}</td></tr>`;
   }
   function toggleBaseDetails(tr) {
+    const rid = tr.dataset.run;
+    if (_baseOpenDet.has(rid)) _baseOpenDet.delete(rid); else _baseOpenDet.add(rid);
     const next = tr.nextElementSibling;
-    if (next && next.classList.contains('bl-bdet')) { next.remove(); return; }
-    const b = ((_base && _base.baselines) || []).find(x => x.run_id === tr.dataset.run);
-    if (!b) return;
-    tr.insertAdjacentHTML('afterend', baseDetailsRow(b));
+    if (next && next.classList.contains('bl-bdet')) next.remove();
+    if (_baseOpenDet.has(rid)) {
+      const b = ((_base && _base.baselines) || []).find(x => x.run_id === rid);
+      if (b) tr.insertAdjacentHTML('afterend', baseDetailsRow(b));
+    }
   }
   // A scheduled re-check on this tab's own host looks like a live run — attach to its stream.
   function maybeAttachRecheck(rows) {
@@ -786,7 +790,7 @@
     if (_baseAutoAttached === active.active_run_id || running() || _attached) return;
     _baseAutoAttached = active.active_run_id;
     attach(true);
-    log(`re-check of baseline ${String(active.model_id || '').split('/').pop()} started by the scheduler`);
+    log(`re-check of baseline ${String(active.model_id || '').split('/').pop()} in progress`);
   }
   function renderBaselines() {
     const card = $('blBaseCard'); if (!card) return;
@@ -817,6 +821,12 @@
       toggleBaseDetails(tr);
     }));
     table.querySelectorAll('tr[data-run] button').forEach(btn => btn.addEventListener('click', () => recheckBaseline(btn.closest('tr').dataset.run)));
+    [..._baseOpenDet].forEach(rid => {
+      const b = rows.find(x => x.run_id === rid);
+      if (!b) { _baseOpenDet.delete(rid); return; }
+      const tr = table.querySelector(`tr[data-run="${esc(rid)}"]`);
+      if (tr) tr.insertAdjacentHTML('afterend', baseDetailsRow(b));
+    });
     const busy = rows.some(b => b.running || b.pending);
     clearTimeout(_baseTimer); _baseTimer = busy ? setTimeout(loadBaselines, 5000) : null;
   }
@@ -839,12 +849,14 @@
     } catch (e) { r = null; d = null; }
     if (!r || !r.ok || !d || !d.ok) {
       cb.checked = !val;
-      const m = $('blBaseMeta'); if (m) m.textContent = (d && d.error) || 'failed to update schedule';
+      const m = $('blBaseMeta');
+      if (m) m.textContent = (d && (d.error || Object.values(d.errors || {})[0])) || 'failed to update schedule';
       return;
     }
     await loadBaselines();
   }
   function openBaseSettings() {
+    if (typeof switchTab === 'function') switchTab('admin');
     if (typeof switchSubTab === 'function') switchSubTab('admin', 'settings');
     if (typeof adminSettingsOpenGroup === 'function') adminSettingsOpenGroup('benchmark');
   }
