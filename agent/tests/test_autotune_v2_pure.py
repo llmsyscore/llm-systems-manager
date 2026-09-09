@@ -439,9 +439,9 @@ def test_ledger_summary(at):
             "before": {"decode_tps": 101}, "stages": [{"stage": "context", "status": "done"}, {"stage": "kv", "status": "skipped"}],
             "verify": {"ok": True}, "facts": {"n_expert": 128}}
     s = at.ledger_summary(done)
-    assert s == {"objective": "balanced", "ctx_size": 65536, "free_mb": 1012, "decode_tps": 142.6,
-                 "gain_pct": pytest.approx(41.2, abs=0.1), "stages_done": 1, "verify_ok": True,
-                 "wh_per_ktok": 0.24, "n_expert": 128}
+    assert s == {"objective": "balanced", "mode": "tune", "llama_build": None, "ctx_size": 65536, "free_mb": 1012,
+                 "decode_tps": 142.6, "gain_pct": pytest.approx(41.2, abs=0.1), "stages_done": 1, "verify_ok": True,
+                 "wh_per_ktok": 0.24, "n_expert": 128, "kl": None, "kl_pass": None, "regressed": None}
 
 
 def test_kl_args_keeps_only_perplexity_safe_flags(at):
@@ -462,3 +462,42 @@ def test_spawn_cmd_fit_vs_explicit_ctx(at):
     assert plain == ["/o/llama-server", "--models-max", "1", "-lv", "4", "--host", "127.0.0.1", "--port", "8080",
                      "--threads", "8", "-hf", "o/r:Q4"]
     assert at.spawn_cmd("/o/llama-server", "o/r:Q4", 8080, 0, None, [])[9:11] == ["-fitt", "0"]
+
+
+def test_mode_defaults_to_tune_and_rejects_unknown(at):
+    req = at.validate_request({"model_ids": ["org/m:Q4"], "objective": "fit"})
+    assert req["mode"] == "tune"
+    with pytest.raises(ValueError):
+        at.validate_request({"model_ids": ["org/m:Q4"], "objective": "fit", "mode": "poke"})
+
+
+def test_verify_mode_turns_every_dimension_off_and_keeps_baseline(at):
+    req = at.validate_request({"model_ids": ["org/m:Q4"], "objective": "balanced", "mode": "verify",
+                               "baseline_tps": 41.5, "dims": {"kv": {"on": True}}})
+    assert req["mode"] == "verify"
+    assert all(not d["on"] for name, d in req["dims"].items() if name != "context")
+    assert req["baseline_tps"] == 41.5
+
+
+def test_quality_mode_validates_overrides(at):
+    req = at.validate_request({"model_ids": ["org/m:Q4"], "objective": "fit", "mode": "quality",
+                               "overrides": {"cache-type-k": "q4_0", "--ctv": "q4_0", "threads": None},
+                               "kl_max": 0.05})
+    assert req["overrides"] == {"cache-type-k": "q4_0", "ctv": "q4_0", "threads": None}
+    assert req["kl_max"] == 0.05
+    with pytest.raises(ValueError):
+        at.validate_request({"model_ids": ["org/m:Q4"], "objective": "fit", "mode": "quality",
+                             "overrides": {"model": "/etc/passwd"}})
+    with pytest.raises(ValueError):
+        at.validate_request({"model_ids": ["org/m:Q4"], "objective": "fit", "mode": "quality",
+                             "overrides": {"threads": "8; rm -rf"}})
+    with pytest.raises(ValueError):
+        at.validate_request({"model_ids": ["org/m:Q4"], "objective": "fit", "mode": "quality", "overrides": {}})
+
+
+def test_ledger_summary_carries_mode_build_and_kl(at):
+    done = {"objective": "fit", "mode": "quality", "llama_build": "b10809-5266f24",
+            "guard": {"kl": 0.011, "pass": True}, "after": {}, "before": {}, "stages": []}
+    s = at.ledger_summary(done)
+    assert s["mode"] == "quality" and s["llama_build"] == "b10809-5266f24"
+    assert s["kl"] == 0.011 and s["kl_pass"] is True

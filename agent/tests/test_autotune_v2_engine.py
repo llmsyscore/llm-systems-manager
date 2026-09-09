@@ -107,7 +107,7 @@ def _run(at, backend, body, section=None, *, env=None, cancelled=lambda: False, 
     req = at.validate_request(body)
     events = []
     e = {"run_id": "r1", "runtime": True, "perplexity": True, "drafts": [], "cores": {"physical": 16, "logical": 32},
-         "target_repo": "unsloth/Qwen3-30B-A3B-GGUF", "target_size": 18_000_000_000}
+         "target_repo": "unsloth/Qwen3-30B-A3B-GGUF", "target_size": 18_000_000_000, "llama_build": "b10850-abc"}
     e.update(env or {})
     done = at.run_model("org/m:Q4", section or {"hf-repo": "o/r", "ctx-size": "32768", "threads": "32"}, req,
                         backend, events.append, cancelled, e, clock=clock or Clock())
@@ -445,3 +445,72 @@ def test_verify_limit(at):
     assert at.verify_limit(100.0, 0, 1) == 20
     assert at.verify_limit(None, 2000.0, 1) == 4
     assert at.verify_limit(10000.0, 100000.0, 1) == 64
+
+
+def test_verify_mode_runs_only_verify_against_current_section(at):
+    fake = Fake()
+    doc, events = _run(at, fake, {"model_ids": ["org/m:Q4"], "objective": "balanced", "mode": "verify",
+                                  "baseline_tps": 120.0}, section={"ctx-size": "16384", "threads": "12", "parallel": "2"})
+    assert [e["type"] for e in events][0] == "model_start"
+    assert events[0]["stages"] == ["verify"]
+    assert not any(c[0] == "converge" for c in fake.calls)
+    assert doc["mode"] == "verify" and doc["ok"] is True
+    assert doc["after"]["ctx"] == 16384 and doc["after"]["concurrency"] == 2
+    assert doc["before"] == {"decode_tps": 120.0}
+    assert doc["regressed"] is True            # Fake decodes ~92 t/s at 2 slots, 120 × 0.85 = 102
+    assert doc["llama_build"] == "b10850-abc"
+    assert doc["changes"] == []
+
+
+def test_verify_mode_without_baseline_is_never_regressed(at):
+    doc, _ = _run(at, Fake(), {"model_ids": ["org/m:Q4"], "objective": "fit", "mode": "verify"})
+    assert doc["ok"] is True and doc["regressed"] is None
+
+
+class KLFake(Fake):
+    def __init__(self, kl=0.01, base_ok=True):
+        super().__init__(); self.kl_v, self.base_ok, self.kl_calls = kl, base_ok, []
+    def kl(self, args, write_base):
+        self.kl_calls.append((list(args), write_base))
+        if write_base:
+            return {"ok": self.base_ok, "kl": None, "error": None if self.base_ok else "boom"}
+        return {"ok": True, "kl": self.kl_v, "error": None}
+
+
+def test_quality_run_scores_overrides_against_f16_base(at):
+    fake = KLFake(kl=0.015)
+    events = []
+    req = at.validate_request({"model_ids": ["org/m:Q4"], "objective": "fit", "mode": "quality",
+                               "overrides": {"cache-type-k": "q4_0", "cache-type-v": "q4_0"}, "kl_max": 0.02})
+    doc = at.run_quality("org/m:Q4", {"ctx-size": "8192", "cache-type-k": "q8_0"}, req, fake, events.append,
+                         lambda: False, {"run_id": "q1", "valued": set(), "llama_build": "b1"})
+    base_args, cand_args = fake.kl_calls[0][0], fake.kl_calls[1][0]
+    assert fake.kl_calls[0][1] is True and fake.kl_calls[1][1] is False
+    assert base_args[base_args.index("--cache-type-k") + 1] == "f16"
+    assert cand_args[cand_args.index("--cache-type-k") + 1] == "q4_0"
+    assert "--ctx-size" not in base_args                      # tuner-owned keys never reach perplexity
+    assert doc["type"] == "model_done" and doc["mode"] == "quality" and doc["ok"] is True
+    assert doc["guard"] == {"kl": 0.015, "kl_max": 0.02, "pass": True, "error": None}
+    assert doc["changes"] == [{"key": "cache-type-k", "current": "q8_0", "recommended": "q4_0"},
+                              {"key": "cache-type-v", "current": None, "recommended": "q4_0"}]
+    types = [e["type"] for e in events]
+    assert types == ["model_start", "stage_start", "candidate_start", "candidate_result",
+                     "candidate_start", "candidate_result", "stage_done", "model_done"]
+    assert events[1]["stage"] == "quality" and events[1]["candidates"] == ["f16 base", "candidate"]
+    assert doc["llama_build"] == "b1"
+
+
+def test_quality_run_fails_when_base_fails_and_flags_kl_over_max(at):
+    req = at.validate_request({"model_ids": ["org/m:Q4"], "objective": "fit", "mode": "quality",
+                               "overrides": {"threads": "8"}, "kl_max": 0.01})
+    doc = at.run_quality("org/m:Q4", {}, req, KLFake(base_ok=False), lambda m: None, lambda: False, {"run_id": "q2"})
+    assert doc["ok"] is False and doc["guard"]["error"] == "KL base failed: boom"
+    doc = at.run_quality("org/m:Q4", {}, req, KLFake(kl=0.03), lambda m: None, lambda: False, {"run_id": "q3"})
+    assert doc["ok"] is True and doc["guard"]["pass"] is False and doc["guard"]["kl"] == 0.03
+
+
+def test_quality_run_honours_cancel(at):
+    req = at.validate_request({"model_ids": ["org/m:Q4"], "objective": "fit", "mode": "quality",
+                               "overrides": {"threads": "8"}})
+    doc = at.run_quality("org/m:Q4", {}, req, KLFake(), lambda m: None, lambda: True, {"run_id": "q4"})
+    assert doc["ok"] is False and doc["cancelled"] is True and doc["stop_reason"] == "cancelled"

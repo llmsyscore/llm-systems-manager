@@ -9,6 +9,12 @@ from pathlib import Path
 from typing import Any, Callable, Iterable, Optional
 
 OBJECTIVES = ("fit", "speed", "balanced", "serve")
+MODES = ("tune", "verify", "quality")
+# config.ini keys the quality guard may override (what llama-perplexity accepts).
+QUALITY_KEYS = frozenset({"cache-type-k", "ctk", "cache-type-v", "ctv", "threads", "t", "threads-batch", "tb",
+                          "n-gpu-layers", "ngl", "n-cpu-moe", "ncmoe", "batch-size", "b", "ubatch-size", "ub",
+                          "flash-attn", "fa", "no-mmap", "mlock"})
+_OVERRIDE_VAL_RE = re.compile(r"^[A-Za-z0-9_.\-]{1,64}$")
 KV_TYPES = ("f32", "f16", "bf16", "q8_0", "q4_0", "q4_1", "iq4_nl", "q5_0", "q5_1")
 KV_LOSSY = ("q4_0", "q4_1", "iq4_nl", "q5_0", "q5_1")
 SPEC_TYPES = ("auto", "draft-mtp", "draft-dflash", "draft-simple", "ngram-simple")
@@ -132,7 +138,7 @@ def validate_request(body: dict, *, cache_root: Optional[Path] = None, v1_args=N
             dims[d]["on"] = d == "context"
         dims["context"].update({"target_mb": target, "tolerance_mb": tol,
                                 "custom_args": list(v1_args(params)) if v1_args else []})
-        return {"model_ids": ids, "objective": "fit", "budget_min": 600, "dims": dims}
+        return {"model_ids": ids, "objective": "fit", "budget_min": 600, "dims": dims, "mode": "tune"}
     objective = str(body.get("objective") or "")
     if objective not in OBJECTIVES:
         raise ValueError("objective must be one of " + ", ".join(OBJECTIVES))
@@ -196,7 +202,36 @@ def validate_request(body: dict, *, cache_root: Optional[Path] = None, v1_args=N
                 d["p_min"] = _float(g["p_min"], "spec.p_min", 0.0, 1.0)
         elif name == "sampling":
             d["overwrite"] = bool(g.get("overwrite", False))
-    return {"model_ids": ids, "objective": objective, "budget_min": budget, "dims": dims}
+    out = {"model_ids": ids, "objective": objective, "budget_min": budget, "dims": dims}
+    mode = str(body.get("mode") or "tune")
+    if mode not in MODES:
+        raise ValueError("mode must be one of " + ", ".join(MODES))
+    out["mode"] = mode
+    if mode == "verify":
+        for name, d in dims.items():
+            if name != "context":
+                d["on"] = False
+        bt = body.get("baseline_tps")
+        out["baseline_tps"] = None if bt is None else _float(bt, "baseline_tps", 0.0, 1e6)
+    elif mode == "quality":
+        ov = body.get("overrides")
+        if not isinstance(ov, dict) or not ov:
+            raise ValueError("overrides required for quality mode")
+        clean: dict = {}
+        for k, v in ov.items():
+            key = str(k).lstrip("-")
+            if key not in QUALITY_KEYS:
+                raise ValueError(f"override {key!r} is not a quality-guard key")
+            if v is None:
+                clean[key] = None
+                continue
+            sv = str(v).strip()
+            if not _OVERRIDE_VAL_RE.match(sv):
+                raise ValueError(f"override {key!r} has an invalid value")
+            clean[key] = sv
+        out["overrides"] = clean
+        out["kl_max"] = _float(body.get("kl_max", dims["kv"]["guard_kl_max"]), "kl_max", 0.0, 10.0)
+    return out
 
 
 def parse_help_valued(text: str) -> set[str]:
@@ -523,12 +558,16 @@ def ledger_summary(done: dict) -> dict:
     after = done.get("after") or {}
     before = done.get("before") or {}
     stages = done.get("stages") or []
-    return {"objective": done.get("objective"), "ctx_size": after.get("ctx"), "free_mb": after.get("free_mb"),
+    guard = done.get("guard") or {}
+    return {"objective": done.get("objective"), "mode": done.get("mode") or "tune",
+            "llama_build": done.get("llama_build") or None,
+            "ctx_size": after.get("ctx"), "free_mb": after.get("free_mb"),
             "decode_tps": after.get("decode_tps"),
             "gain_pct": gain_pct(after.get("decode_tps"), before.get("decode_tps")),
             "stages_done": sum(1 for s in stages if s.get("status") == "done"),
             "verify_ok": (done.get("verify") or {}).get("ok"), "wh_per_ktok": after.get("wh_per_ktok"),
-            "n_expert": (done.get("facts") or {}).get("n_expert")}
+            "n_expert": (done.get("facts") or {}).get("n_expert"),
+            "kl": guard.get("kl"), "kl_pass": guard.get("pass"), "regressed": done.get("regressed")}
 
 
 _KL_SAFE_VALUE = {"--cache-type-k", "--cache-type-v", "-ctk", "-ctv", "--threads", "-t", "--threads-batch", "-tb",
@@ -610,6 +649,8 @@ class _Run:
         self.model_id, self.section, self.req = model_id, dict(section or {}), req
         self.backend, self.put, self.cancelled, self.env, self.clock = backend, put, cancelled, env, clock
         self.dims, self.objective = req["dims"], req["objective"]
+        self.mode = req.get("mode") or "tune"
+        self.regressed: Optional[bool] = None
         self.budget_s = int(req["budget_min"]) * 60
         self.runtime, self.perplexity = bool(env.get("runtime")), bool(env.get("perplexity"))
         self.rec: dict = {}
@@ -1106,6 +1147,8 @@ class _Run:
     def stage_verify(self) -> None:
         mark = self.begin("verify", ["recommended set"], estimate("verify", 1, self.load_s, self.stick_s))
         target, tol = int(self.dims["context"]["target_mb"]), int(self.dims["context"]["tolerance_mb"])
+        if self.mode == "verify":
+            target = 0
         dropped: list = []
         for attempt in (1, 2):
             self.check_cancel()
@@ -1155,9 +1198,12 @@ class _Run:
 
     # ── driver ──
     def run(self) -> dict:
+        if self.mode == "verify":
+            return self.run_verify_only()
         planned = [s for s in STAGES if s in ("context", "verify") or self.dims.get(s, {}).get("on")]
-        self.emit("model_start", objective=self.objective, stages=planned, budget_min=self.req["budget_min"],
-                  target_mb=self.dims["context"]["target_mb"], tolerance_mb=self.dims["context"]["tolerance_mb"])
+        self.emit("model_start", objective=self.objective, mode=self.mode, stages=planned,
+                  budget_min=self.req["budget_min"], target_mb=self.dims["context"]["target_mb"],
+                  tolerance_mb=self.dims["context"]["tolerance_mb"])
         ok = False
         cancelled = False
         try:
@@ -1173,12 +1219,40 @@ class _Run:
             self.stop_reason = "cancelled"
         return self.done(ok, cancelled)
 
+    def run_verify_only(self) -> dict:
+        """Verify stage against the current section; before = the ledger's stored decode t/s."""
+        self.emit("model_start", objective=self.objective, mode="verify", stages=["verify"],
+                  budget_min=self.req["budget_min"], target_mb=self.dims["context"]["target_mb"],
+                  tolerance_mb=self.dims["context"]["tolerance_mb"])
+        try:
+            self.ctx_total = int(self.cur("ctx-size") or 0) or None
+        except ValueError:
+            self.ctx_total = None
+        try:
+            self.concurrency = max(1, int(self.cur("parallel") or self.cur("np") or 1))
+        except ValueError:
+            self.concurrency = 1
+        base = self.req.get("baseline_tps")
+        self.before = {"decode_tps": base} if base is not None else None
+        ok = cancelled = False
+        try:
+            self.stage_verify()
+            ok = bool((self.verify or {}).get("ok"))
+        except Cancelled:
+            cancelled = True
+            self.stop_reason = "cancelled"
+        after = (self.after or {}).get("decode_tps")
+        if ok and base and after is not None:
+            self.regressed = float(after) < 0.85 * float(base)
+        return self.done(ok, cancelled)
+
     def done(self, ok: bool, cancelled: bool) -> dict:
         changes = build_changes(self.section, self.rec, self.evidence)
         if self.after is None and self.ctx_total:
             self.after = {"ctx": self.ctx_total, "free_mb": self.free_mb, "concurrency": 1}
         doc = {"type": "model_done", "model_id": self.model_id, "run_id": self.env.get("run_id"),
                "ok": bool(ok) and not cancelled, "cancelled": cancelled, "objective": self.objective,
+               "mode": self.mode, "llama_build": self.env.get("llama_build") or None, "regressed": self.regressed,
                "facts": self.facts, "changes": changes, "before": self.before, "after": self.after,
                "guard": self.guard, "verify": self.verify, "stages": self.stages,
                "stop_reason": self.stop_reason, "elapsed_s": int(self.elapsed()), "loads": self.loads}
@@ -1190,3 +1264,62 @@ def run_model(model_id: str, section: dict, req: dict, backend, put, cancelled, 
               clock=time.monotonic) -> dict:
     """Runs every stage for one model and returns the emitted model_done document."""
     return _Run(model_id, section, req, backend, put, cancelled, env, clock).run()
+
+
+def run_quality(model_id: str, section: dict, req: dict, backend, put, cancelled, env: dict,
+                clock=time.monotonic) -> dict:
+    """Two llama-perplexity passes: f16 base on the section, then the section with overrides applied."""
+    t0 = clock()
+    ov, kl_max, valued = dict(req.get("overrides") or {}), float(req.get("kl_max", 0.02)), env.get("valued")
+    base_args = section_args(section, {"cache-type-k": "f16", "cache-type-v": "f16"}, valued=valued)
+    cand_args = section_args(section, ov, valued=valued)
+
+    def emit(typ, **kw):
+        put({"type": typ, "model_id": model_id, **kw})
+
+    emit("model_start", objective="quality", mode="quality", stages=["quality"], budget_min=0,
+         target_mb=0, tolerance_mb=0)
+    emit("stage_start", stage="quality", candidates=["f16 base", "candidate"],
+         est_s=estimate("kv", 1, 0.0, 0.0))
+    guard = {"kl": None, "kl_max": kl_max, "pass": None, "error": None}
+    ok = False
+    stop = None
+    try:
+        if cancelled():
+            raise Cancelled()
+        emit("candidate_start", stage="quality", value="f16 base")
+        b = backend.kl(base_args, True) or {}
+        emit("candidate_result", stage="quality", value="f16 base", ok=bool(b.get("ok")), kl=None,
+             guard_pass=None, error=None if b.get("ok") else b.get("error"))
+        if not b.get("ok"):
+            guard["error"] = f"KL base failed: {b.get('error') or 'unknown'}"
+        else:
+            if cancelled():
+                raise Cancelled()
+            emit("candidate_start", stage="quality", value="candidate")
+            k = backend.kl(cand_args, False) or {}
+            kl = k.get("kl")
+            if not k.get("ok") or kl is None:
+                guard["error"] = f"KL failed: {k.get('error') or 'unknown'}"
+            else:
+                guard["kl"] = kl
+                guard["pass"] = float(kl) <= kl_max
+                ok = True
+            emit("candidate_result", stage="quality", value="candidate", ok=ok, kl=kl,
+                 guard_pass=guard["pass"], error=guard["error"])
+    except Cancelled:
+        stop = "cancelled"
+    reason = stop or guard["error"] or (f"KL {guard['kl']} ≤ {kl_max}" if guard["pass"] else f"KL {guard['kl']} > {kl_max}")
+    emit("stage_done", stage="quality", choice="pass" if guard["pass"] else "fail", reason=reason,
+         seconds=int(clock() - t0), loads=0)
+    changes = [{"key": k, "current": section.get(k), "recommended": v} for k, v in ov.items()]
+    doc = {"type": "model_done", "model_id": model_id, "run_id": env.get("run_id"), "ok": ok and stop is None,
+           "cancelled": stop == "cancelled", "objective": "quality", "mode": "quality",
+           "llama_build": env.get("llama_build") or None, "facts": {}, "changes": changes,
+           "before": None, "after": None, "guard": guard, "verify": None,
+           "stages": [{"stage": "quality", "status": "done" if ok else "failed", "reason": reason,
+                       "seconds": int(clock() - t0), "loads": 0, "choice": guard["pass"]}],
+           "base_args": base_args, "cand_args": cand_args,
+           "stop_reason": stop, "elapsed_s": int(clock() - t0), "loads": 0}
+    put(doc)
+    return doc
