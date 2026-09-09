@@ -153,10 +153,14 @@ class Watcher:
         return _check_row(r) if r else None
 
     def history(self, run_id: str, limit: int = 20) -> list[dict]:
+        try:
+            limit = int(limit)
+        except (TypeError, ValueError):
+            limit = 20
         with self._lock:
             rows = self._conn().execute(
                 f"SELECT {_CHECK_COLS} FROM bench_baseline_checks WHERE baseline_run_id = ? ORDER BY id DESC LIMIT ?",
-                (run_id, max(1, min(int(limit), 200)))).fetchall()
+                (run_id, max(1, min(limit, 200)))).fetchall()
         return [_check_row(r) for r in rows]
 
     def _record(self, b: dict, trigger: str, status: str, *, run_id=None, gen_tps=None, delta=None, sev=None,
@@ -169,6 +173,10 @@ class Watcher:
             " gen_tps, base_tps, delta_pct, severity, error, llama_build) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (row["baseline_run_id"], row["run_id"], row["model_id"], row["agent_id"], row["ts"], row["trigger"],
              row["status"], row["gen_tps"], row["base_tps"], row["delta_pct"], row["severity"], row["error"], row["llama_build"]))
+        self._conn().execute(
+            "DELETE FROM bench_baseline_checks WHERE baseline_run_id = ? AND id NOT IN"
+            " (SELECT id FROM bench_baseline_checks WHERE baseline_run_id = ? ORDER BY id DESC LIMIT 200)",
+            (row["baseline_run_id"], row["baseline_run_id"]))
         self._conn().commit()
         return row
 
@@ -193,17 +201,20 @@ class Watcher:
         with self._lock:
             now = self._now()
             hosts = {h["agent_id"]: h for h in self._hosts()}
+            pins = self._pinned()
+            builds = {aid: (self._build_of(aid) or "") for aid in {b["agent_id"] for b in pins}}
             out = []
-            for b in self._pinned():
+            for b in pins:
                 model_hosts = {h["agent_id"]: h for h in bench_live.hosts_for(list(hosts.values()), b["model_id"])}
                 h = model_hosts.get(b["agent_id"]) or {}
-                build = self._build_of(b["agent_id"]) or ""
+                build = builds.get(b["agent_id"], "")
                 last = self._last_check(b["run_id"])
                 pend = self._pending.get(b["run_id"]) or {}
                 act = self._active.get(b["run_id"])
+                b_cfg = b.get("config") or {}
                 out.append({"run_id": b["run_id"], "model_id": b["model_id"], "agent_id": b["agent_id"],
                             "hostname": h.get("hostname") or b["agent_id"][:8], "ts": b["ts"], "gen_tps": b["gen_tps"],
-                            "config": {k: b["config"].get(k) for k in ("bench", "osl", "concurrency", "matrix") if k in b["config"]},
+                            "config": {k: b_cfg.get(k) for k in ("bench", "osl", "concurrency", "matrix") if k in b_cfg},
                             "online": bool(h.get("online")), "loaded": bool(h.get("loaded")),
                             "llama_build": build,
                             "build_changed": bool(build and last and last.get("llama_build") and last["llama_build"] != build),
@@ -219,7 +230,14 @@ class Watcher:
             return {"baselines": out, "schedule": sched}
 
     def tick(self) -> None:
+        try:
+            self._tick_locked()
+        except Exception as e:  # noqa: BLE001 - a tick failure must not kill the scheduler loop
+            self._log.warning("bench baseline tick failed: %s", e)
+
+    def _tick_locked(self) -> None:
         cfg = self._cfg()
+        to_start: list = []
         with self._lock:
             now = self._now()
             self._poll_active(cfg, now)
@@ -236,12 +254,18 @@ class Watcher:
                         continue
                     pend = {"trigger": "nightly", "attempts": 0, "retry_at": 0.0, "build_from": ""}
                     self._pending[b["run_id"]] = pend
-                if pend["retry_at"] > now:
+                if pend.get("starting") or pend["retry_at"] > now:
                     continue
-                self._start(b, pend, hosts, now)
+                item = self._prep_start(b, pend, hosts)
+                if item is not None:
+                    pend["starting"] = True
+                    to_start.append(item)
             live = {b["run_id"] for b in pins}
             for rid in [r for r in list(self._pending) if r not in live]:
                 self._pending.pop(rid, None)
+        # HTTP calls to agents happen here, outside the lock.
+        for b, pend, body, build in to_start:
+            self._launch(b, pend, body, build, now)
 
     # ── internals ──────────────────────────────────────────────────────
     def _last_auto_ts(self, run_id: str) -> Optional[float]:
@@ -256,39 +280,51 @@ class Watcher:
                 continue
             r = conn.execute("SELECT llama_build FROM bench_baseline_agents WHERE agent_id = ?", (aid,)).fetchone()
             prev = r[0] if r else None
+            if prev == build:
+                continue
             conn.execute("INSERT INTO bench_baseline_agents (agent_id, llama_build, seen_ts) VALUES (?,?,?)"
                          " ON CONFLICT(agent_id) DO UPDATE SET llama_build = excluded.llama_build, seen_ts = excluded.seen_ts",
                          (aid, build, now))
-            if prev and prev != build and cfg.get("enabled") and cfg.get("on_build_change"):
+            # setdefault keeps an existing pending trigger; queues even for an active baseline.
+            if prev and cfg.get("enabled") and cfg.get("on_build_change"):
                 for b in pins:
-                    if b["agent_id"] == aid and b["run_id"] not in self._active:
-                        self._pending[b["run_id"]] = {"trigger": "build", "attempts": 0, "retry_at": 0.0, "build_from": prev}
+                    if b["agent_id"] == aid:
+                        self._pending.setdefault(b["run_id"], {"trigger": "build", "attempts": 0, "retry_at": 0.0, "build_from": prev})
         conn.commit()
 
-    def _start(self, b: dict, pend: dict, hosts: list, now: float) -> None:
+    def _prep_start(self, b: dict, pend: dict, hosts: list) -> "Optional[tuple[dict, dict, dict, str]]":
+        """Under the lock: resolve the host + build body, or record a skip. No HTTP call here."""
         h = {x["agent_id"]: x for x in bench_live.hosts_for(hosts, b["model_id"])}.get(b["agent_id"]) or {}
         build = self._build_of(b["agent_id"]) or ""
         if not h.get("online") or not h.get("loaded"):
             self._record(b, pend["trigger"], "skipped", error="host offline" if not h.get("online") else "model not loaded on the host", build=build)
             self._pending.pop(b["run_id"], None)
-            return
+            return None
         body = {k: v for k, v in (b.get("config") or {}).items() if k != "model_id"}
         body.update({"model_id": b["model_id"], "baseline_run_id": b["run_id"]})
+        return b, pend, body, build
+
+    def _launch(self, b: dict, pend: dict, body: dict, build: str, started: float) -> None:
+        """Outside the lock: the actual (slow) agent call, then apply the outcome under the lock."""
         try:
             ok, val = self._run(b["agent_id"], body)
         except Exception as e:  # noqa: BLE001 - a host error must not stop the watcher
             ok, val = False, str(e)
-        if ok:
-            self._active[b["run_id"]] = {"run_id": str(val), "started": now, "trigger": pend["trigger"],
-                                         "build": build, "build_from": pend.get("build_from") or ""}
-            self._pending.pop(b["run_id"], None)
-            return
-        pend["attempts"] += 1
-        if pend["attempts"] >= MAX_ATTEMPTS:
-            self._record(b, pend["trigger"], "failed", error=str(val)[:300], build=build)
-            self._pending.pop(b["run_id"], None)
-        else:
-            pend["retry_at"] = now + RETRY_S
+        with self._lock:
+            if self._pending.get(b["run_id"]) is not pend:
+                return  # baseline unpinned, or its pending entry was replaced meanwhile
+            if ok:
+                self._active[b["run_id"]] = {"run_id": str(val), "started": started, "trigger": pend["trigger"],
+                                             "build": build, "build_from": pend.get("build_from") or ""}
+                self._pending.pop(b["run_id"], None)
+                return
+            pend["starting"] = False
+            pend["attempts"] += 1
+            if pend["attempts"] >= MAX_ATTEMPTS:
+                self._record(b, pend["trigger"], "failed", error=str(val)[:300], build=build)
+                self._pending.pop(b["run_id"], None)
+            else:
+                pend["retry_at"] = started + RETRY_S
 
     def _poll_active(self, cfg: dict, now: float) -> None:
         pins = {b["run_id"]: b for b in self._pinned()}

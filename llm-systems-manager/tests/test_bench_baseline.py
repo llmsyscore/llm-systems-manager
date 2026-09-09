@@ -74,6 +74,13 @@ def test_hhmm_and_slots():
     assert bb.slot_ts(now, "", tz=UTC) is None
 
 
+def test_slot_ts_default_tz_is_local():
+    from datetime import datetime
+    now = 1_800_000_000.0
+    want = datetime.fromtimestamp(now).replace(hour=3, minute=0, second=0, microsecond=0).timestamp()
+    assert bb.slot_ts(now, "03:00") == want
+
+
 def test_nightly_due():
     now = 1_800_000_000.0
     slot = bb.slot_ts(now, "03:00", tz=UTC)
@@ -237,3 +244,51 @@ def test_hosts_for_helper():
             {"agent_id": "y" * 32, "hostname": "amy", "online": True, "model": MODEL, "state": "sleeping"}]
     out = bl.hosts_for(rows, MODEL)
     assert [r["hostname"] for r in out] == ["zed", "amy"] and out[0]["loaded"] and not out[1]["loaded"]
+
+
+def test_build_change_setdefault_preserves_manual_pending(tmp_path):
+    e = Env(tmp_path)
+    e.cfg["enabled"] = False
+    e.w.tick()  # records b100-aaa as the agent's seen build; nothing queued (disabled)
+    e.w.recheck(PIN)  # queue a manual check
+    e.build = "b101-bbb"
+    e.cfg["enabled"] = True  # would fire the build-change branch if not guarded
+    e.w.tick()
+    assert len(e.started) == 1
+    aid, body = e.started[0]
+    assert aid == AID and body["baseline_run_id"] == PIN
+    e.store("run-1", 50.0)
+    e.w.tick()
+    last = e.w.snapshot()["baselines"][0]["last_check"]
+    assert last["trigger"] == "manual"  # setdefault must not have overwritten it with "build"
+
+
+def test_build_change_during_active_check_runs_after(tmp_path):
+    e = Env(tmp_path)
+    e.w.tick()  # starts the nightly check -> active
+    assert len(e.started) == 1
+    e.build = "b101-bbb"
+    e.w.tick()  # build change detected while active: must not be dropped
+    assert len(e.started) == 1  # still active, not double-started
+    snap = e.w.snapshot()["baselines"][0]
+    assert snap["running"] is True
+    e.store("run-1", 50.0)
+    e.w.tick()  # nightly check finishes, then the queued build check starts
+    assert len(e.started) == 2
+    aid, body = e.started[1]
+    assert aid == AID and body["baseline_run_id"] == PIN
+    assert e.w.snapshot()["baselines"][0]["pending"] == "build"
+
+
+def test_tick_survives_fleet_hosts_error(tmp_path):
+    e = Env(tmp_path)
+
+    def boom():
+        raise RuntimeError("fleet unavailable")
+
+    w = bb.Watcher(db_path=e.db, cfg=lambda: dict(e.cfg), fleet_hosts=boom,
+                   run_on_agent=e._run, llama_build_of=lambda aid: e.build,
+                   alert=lambda p: e.alerts.append(p) or True, push_metrics=e.points.extend,
+                   now=lambda: e.t, tz=UTC)
+    w.tick()  # must not raise
+    assert e.started == []
