@@ -21,6 +21,26 @@
                       manager: 'from metadata', kv_unified: 'kv-unified', no_candidates: 'nothing to try' };
   let _models = [], _pre = null, _sel = new Set(), _runs = [], _facts = {}, _es = null, _attached = false;
   let _run = null, _done = {}, _doneModel = null, _meta = {}, _section = {}, _elapsedIv = null;
+  let _status = {};        // model_id → /api/llm/autotune/status item
+  let _verifyIntent = false;
+  async function loadStatus() {
+    _status = {};
+    try {
+      const d = await fetch('/api/llm/autotune/status').then(r => r.json());
+      (d && d.items || []).forEach(i => { _status[i.model_id] = i; });
+    } catch (_) {}
+  }
+  function syncVerify() {
+    const mid = primaryModel(), st = mid ? _status[mid] : null;
+    const btn = $('atVerifyBtn'); if (btn) btn.style.display = st && st.stale && !running() ? '' : 'none';
+    const prev = $('atPrevTune');
+    if (prev && st) {
+      prev.style.display = '';
+      prev.innerHTML = st.stale
+        ? `<b>Tune is stale.</b> Autotuned on llama.cpp ${esc(st.llama_build)} · host now runs ${esc(st.current_build)}. Re-verify checks the current config in ~3 min; re-tune if it regressed.`
+        : `Last tune ${esc(String(st.ts || '').slice(0, 10))} on llama.cpp ${esc(st.llama_build || '?')}.`;
+    }
+  }
 
   // ── rail state ──
   function dimOn(d) { const t = document.querySelector(`#toolsModAt .at-dim[data-dim="${d}"] [data-dim-on]`); return !!(t && t.classList.contains('on')); }
@@ -94,6 +114,7 @@
         prev.innerHTML = `<b>Previous tune</b><span class="d">${esc((r.ts || '').slice(0, 10))} · ${esc(s.objective || 'fit')}${s.ctx_size != null ? ' · ctx ' + esc(Number(s.ctx_size).toLocaleString()) : ''}${s.gain_pct != null ? ' · ' + (s.gain_pct >= 0 ? '+' : '') + esc(Math.round(s.gain_pct)) + ' %' : ''}. The new run compares against it.</span>`;
       } else prev.style.display = 'none';
     }
+    syncVerify();
     refreshPlan();
   }
   function seedThreads(cores) {
@@ -246,8 +267,9 @@
     mod.addEventListener('input', ev => { if (ev.target.closest('.at-dim-b, .at-grp-b')) refreshPlan(); });
     mod.addEventListener('change', ev => { if (ev.target.closest('.at-dim-b, .at-grp-b')) refreshPlan(); });
   }
-  async function onOpen(preselect) {
+  async function onOpen(preselect, opts) {
     wire();
+    _verifyIntent = !!(opts && opts.verify);
     const L = typeof layout !== 'undefined' ? layout : null;
     if (L && L.atObjective) setObjective(L.atObjective); else setObjective(objective());
     if (running()) return;
@@ -255,12 +277,14 @@
       fetch('/api/benchmark/models').then(r => r.json()).catch(() => ({})),
       fetch('/api/llm/autotune/preflight').then(r => r.json()).catch(() => null),
       fetch('/api/tools/runs?limit=100').then(r => r.json()).catch(() => ({})),
+      loadStatus(),
     ]);
     _models = (models && models.models) || [];
     _pre = pre && pre.ok ? pre : _pre;
     _runs = (runs && runs.runs) || [];
     if (_pre) { seedThreads(_pre.cores); seedDrafts(_pre.drafts); }
     renderModels(preselect);
+    syncVerify();
     await checkServer(pre && pre.ok ? pre : null);
     if (_pre && _pre.busy && !running()) attach();
   }
@@ -378,6 +402,9 @@
     if (problem) { alert(problem); return; }
     fillDimDefaults(dims);
     const body = { model_ids: ids, objective: objective(), budget_min: Math.round(num('atBudgetMin', 120)), dims };
+    return startRun(body, ids);
+  }
+  async function startRun(body, ids) {
     let r;
     try {
       const resp = await fetch('/api/llm/autotune/run', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
@@ -394,6 +421,24 @@
     busy(true);
     openStream();
   }
+  async function verify() {
+    const mid = primaryModel();
+    if (!mid) { alert('Select a model.'); return; }
+    const dims = dimsState();
+    fillDimDefaults(dims);
+    const st = _status[mid] || {};
+    const body = { model_ids: [mid], objective: objective(), budget_min: 15, mode: 'verify',
+                   baseline_tps: (st.summary || {}).decode_tps ?? null, dims };
+    await startRun(body, [mid]);
+  }
+  function retune() { again(); run(); }
+  function checkQuality() {
+    const done = _doneModel ? _done[_doneModel] : null; if (!done) return;
+    const overrides = {};
+    (done.changes || []).forEach(c => { if (QUALITY_KEYS.has(c.key)) overrides[c.key] = String(c.recommended); });
+    if (typeof toolsOpenTool === 'function') toolsOpenTool('quality', done.model_id, { overrides });
+  }
+  const QUALITY_KEYS = new Set(['cache-type-k', 'ctk', 'cache-type-v', 'ctv', 'threads', 't', 'threads-batch', 'tb', 'n-gpu-layers', 'ngl', 'n-cpu-moe', 'ncmoe', 'batch-size', 'b', 'ubatch-size', 'ub', 'flash-attn', 'fa', 'no-mmap', 'mlock']);
   function attach() {
     _attached = true;
     newRun(null);
@@ -423,7 +468,13 @@
     fetch('/api/llm/autotune/cancel', { method: 'POST' }).catch(() => {});
     log('cancel requested', 'warn');
   }
-  function again() { _done = {}; _doneModel = null; _rows = []; setMsg(''); setPane('Plan'); busy(false); refreshPlan(); }
+  function again() {
+    _done = {}; _doneModel = null; _rows = []; setMsg(''); setPane('Plan'); busy(false); refreshPlan();
+    const ab = $('atApplyBtn'), rb = $('atRetuneBtn'), qb = $('atQualityBtn');
+    if (ab) ab.style.display = '';
+    if (rb) rb.style.display = 'none';
+    if (qb) qb.style.display = 'none';
+  }
   function finish(msg) {
     if (_es) { try { _es.close(); } catch (_) {} _es = null; }
     _attached = false;
@@ -573,7 +624,7 @@
       if (t !== 'loading_progress') log(`${t.replace(/_/g, ' ')}${msg.reason ? ' · ' + msg.reason : ''}`, 'dim');
     } else if (t === 'model_done') {
       _done[msg.model_id] = msg; _doneModel = _doneModel || msg.model_id;
-      if (typeof _recordToolRun === 'function') { try { _recordToolRun('autotune', { model_id: msg.model_id, ok: !!msg.ok, run_id: msg.run_id || '', objective: msg.objective, ctx_size: (msg.after || {}).ctx, decode_tps: (msg.after || {}).decode_tps }); } catch (_) {} }
+      if (typeof _recordToolRun === 'function') { try { _recordToolRun('autotune', { model_id: msg.model_id, ok: !!msg.ok, run_id: msg.run_id || '', objective: msg.objective, mode: msg.mode || 'tune', llama_build: msg.llama_build || undefined, regressed: msg.regressed ?? undefined, ctx_size: (msg.after || {}).ctx, decode_tps: (msg.after || {}).decode_tps }); } catch (_) {} }
       log(msg.ok ? `complete · ${(msg.changes || []).length} changes · verify ${(msg.verify || {}).ok ? 'pass' : 'not passed'}` : `stopped · ${msg.stop_reason || 'no result'}`, msg.ok ? 'ok' : 'warn');
     } else if (t === 'done') {
       finish(msg);
@@ -660,6 +711,20 @@
       }
     }
     renderRows();
+    if (done.mode === 'verify') {
+      const rb = $('atRetuneBtn'), ab = $('atApplyBtn');
+      if (ab) ab.style.display = 'none';
+      if (rb) rb.style.display = '';
+      if (warn) {
+        if (done.regressed) { warn.style.display = ''; warn.innerHTML = `<b>Slower on this llama.cpp build</b> — ${esc(fmt(a.decode_tps))} t/s vs ${esc(fmt(b.decode_tps))} t/s when tuned. Re-tune to find a better set.`; }
+        else { warn.style.display = 'none'; }
+      }
+      setMsg(done.regressed ? 'Current config still applies; nothing was changed.' : 'Verified on the current build — the stale chip clears on the next card refresh.');
+      loadStatus().then(syncVerify);
+      return;
+    }
+    const qb = $('atQualityBtn');
+    if (qb) qb.style.display = (done.changes || []).some(c => QUALITY_KEYS.has(c.key)) ? '' : 'none';
     const doneStages = (done.stages || []).filter(s => s.status === 'done').length;
     const st = $('atDoneStats'); if (st) st.innerHTML = `<b>${esc(doneStages)} stages</b> · ${esc(mmss(done.elapsed_s))} · ${esc(Number(done.loads || 0))} loads`;
     const v = done.verify || {};
@@ -741,7 +806,7 @@
     setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 200);
   }
 
-  window.AT = { onOpen, run, cancel, again, stopServer, running, dimsState, objective, planRows, estimateText, onEvent,
+  window.AT = { onOpen, run, verify, retune, checkQuality, cancel, again, stopServer, running, dimsState, objective, planRows, estimateText, onEvent,
                 state: () => ({ run: _run, done: _done, doneModel: _doneModel, meta: _meta, section: _section, pre: _pre }),
                 renderDone, recRows, rows, toggleRow, apply, saveProfile, copyArgs, exportReport, argsText,
                 _debugSetStart: (ts) => { if (_run) { _run.startTs = ts; tick(); } } };

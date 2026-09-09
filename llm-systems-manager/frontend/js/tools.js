@@ -302,7 +302,7 @@
     });
   }
 
-  function toolsOpenTool(id, modelId) {
+  function toolsOpenTool(id, modelId, opts) {
     const modId = _TOOL_MODS[id];
     if (!modId) return;
     const run = _toolsRunningLocal();
@@ -327,21 +327,21 @@
         try { _benchChart.resize(); } catch (_) {}
       }
     } else if (id === 'autotune') {
-      if (window.AT) AT.onOpen(modelId || undefined);
+      if (window.AT) AT.onOpen(modelId || undefined, opts);
     }
   }
 
   // Entry point for model-card ⋯ actions: land on the Tools tab with the
   // tool's module open and the model pre-filled (#770).
   let _toolsPendingOpen = false;
-  function toolsDeepLink(id, modelId) {
+  function toolsDeepLink(id, modelId, opts) {
     if (typeof switchTab === 'function' && typeof _activeTab !== 'undefined'
         && _activeTab !== 'llm') switchTab('llm');
     _toolsPendingOpen = true;
     try {
       if (typeof switchSubTab === 'function') switchSubTab('llm', 'tools');
     } finally { _toolsPendingOpen = false; }
-    toolsOpenTool(id, modelId || null);
+    toolsOpenTool(id, modelId || null, opts);
   }
 
   function toolsClearHistory() {

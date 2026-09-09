@@ -2444,6 +2444,7 @@ Backend API endpoints consumed:
         </div>
         <div class="at-runbar">
           <button id="atRunBtn" class="mcbtn mcbtn-pri" onclick="AT.run()">▶ Run autotune</button>
+          <button id="atVerifyBtn" class="mcbtn mcbtn-ghost" onclick="AT.verify()" style="display:none;" title="Re-run only the Verify stage against the current config">✓ Re-verify</button>
           <span class="at-est" id="atEstimate"></span>
           <button id="atCancelBtn" class="mcbtn mcbtn-ghost warn" onclick="AT.cancel()" style="display:none;">✕ Cancel</button>
           <button id="atAgainBtn" class="mcbtn mcbtn-ghost" onclick="AT.again()" style="display:none;">↻ Run again</button>
@@ -2480,7 +2481,7 @@ Backend API endpoints consumed:
           <div class="at-card">
             <div class="at-card-h"><div class="at-rec-head"><h3>Recommended configuration</h3><span class="big" id="atRecBig"></span></div><span class="gap"></span><span class="at-hint" id="atRecSel"></span></div>
             <div class="at-card-b flush" style="overflow-x:auto"><table class="at-rt"><thead><tr><th style="width:24%">Parameter</th><th style="width:12%">Current</th><th style="width:12%">Recommended</th><th>Evidence</th><th style="width:44px"></th></tr></thead><tbody id="atRecRows"></tbody></table></div>
-            <div class="at-card-f"><button type="button" id="atApplyBtn" class="mcbtn mcbtn-pri" onclick="AT.apply()">Apply</button><button type="button" id="atProfileBtn" class="mcbtn mcbtn-ghost" onclick="AT.saveProfile()">Save as profile</button><button type="button" class="mcbtn mcbtn-ghost" onclick="AT.copyArgs()">Copy as llama-server args</button><span class="gap"></span><span class="msg" id="atRecMsg"></span></div>
+            <div class="at-card-f"><button type="button" id="atApplyBtn" class="mcbtn mcbtn-pri" onclick="AT.apply()">Apply</button><button type="button" id="atRetuneBtn" class="mcbtn mcbtn-pri" onclick="AT.retune()" style="display:none;">⌖ Re-tune</button><button type="button" id="atQualityBtn" class="mcbtn mcbtn-ghost" onclick="AT.checkQuality()" style="display:none;">Check quality</button><button type="button" id="atProfileBtn" class="mcbtn mcbtn-ghost" onclick="AT.saveProfile()">Save as profile</button><button type="button" class="mcbtn mcbtn-ghost" onclick="AT.copyArgs()">Copy as llama-server args</button><span class="gap"></span><span class="msg" id="atRecMsg"></span></div>
           </div>
           <div class="at-guard" id="atGuard"></div>
           <div class="at-card"><div class="at-card-h"><h3>Before / after</h3><span class="meta">verify stage vs the config that was live</span></div><div class="at-card-b at-cmp" id="atCmp"></div></div>
@@ -2523,12 +2524,12 @@ Backend API endpoints consumed:
 <script src="/static/js/editor-modern.js?v=2026.09.07-1"></script>
 <script src="/static/js/bench-autotune.js?v=2026.09.08-4"></script>
 <script src="/static/js/bench-live.js?v=2026.09.09-6"></script>
-<script src="/static/js/autotune.js?v=2026.09.08-7"></script>
+<script src="/static/js/autotune.js?v=2026.09.09-1"></script>
 <script src="/static/js/lmstudio.js?v=2026.09.04-1"></script>
 <script src="/static/js/vllm.js?v=2026.09.04-1"></script>
 <script src="/static/js/vllm-bench-autotune.js?v=2026.09.02-1"></script>
 <script src="/static/js/report-card.js?v=2026.09.08-3"></script>
-<script src="/static/js/tools.js?v=2026.09.08-5"></script>
+<script src="/static/js/tools.js?v=2026.09.09-1"></script>
 <script src="/static/js/energy.js?v=2026.08.19-1"></script>
 <script src="/static/js/overall.js?v=2026.08.29-2"></script>
 <script src="/static/js/dashboard-manager.js?v=2026.08.17-1"></script>

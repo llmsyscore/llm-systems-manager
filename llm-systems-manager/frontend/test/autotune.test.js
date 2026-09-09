@@ -28,10 +28,15 @@ const STUBS = `
   window.__syncCalls = [];
   window._syncActiveProfile = function (mid, values) { window.__syncCalls.push([mid, values, window.__fetches.length]); return Promise.resolve(); };
   window.__pre = ${JSON.stringify(PRE)};
+  window.toolsOpenTool = function (id, m, o) { window.__opened = [id, m, o]; };
+  window._recordToolRun = function (tool, data) {
+    fetch('/api/tools/runs', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ tool, ...data }) }).catch(() => {});
+  };
   window.fetch = function (url, opts) {
     window.__fetches.push([String(url), opts]);
     const u = String(url);
     const body = u.startsWith('/api/llm/autotune/preflight') ? window.__pre
+      : u.startsWith('/api/llm/autotune/status') ? (window.__status || { ok: true, items: [] })
       : u.startsWith('/api/benchmark/models') ? { models: ['org/m:Q4', 'org/big:Q4'] }
       : u.startsWith('/api/tools/runs') ? { runs: [{ tool: 'autotune', model_id: 'org/m:Q4', ok: true, ts: '2026-08-28T10:00:00Z', summary: { objective: 'fit', ctx_size: 32768, n_expert: 128 } }], latest: {} }
       : u.startsWith('/api/llama-state') ? { state: window.__llamaState || 'stopped' }
@@ -575,5 +580,47 @@ describe('AT export, regression warning, recRows numeric guard', () => {
     const dv = win.document.getElementById('atDoneVerify');
     expect(dv.textContent).toContain('below the');
     expect(dv.innerHTML).toContain('class="warn"');
+  });
+});
+
+describe('re-verify (#887)', () => {
+  it('opening with {verify:true} on a stale model reveals the Re-verify button and posts a verify-mode body', async () => {
+    const win = await opened();     // the file's helper that boots + awaits AT.onOpen('org/m:Q4')
+    win.__status = { ok: true, items: [{ agent_id: 'a1', model_id: 'org/m:Q4', llama_build: 'b100', current_build: 'b120', stale: true, summary: { decode_tps: 41.5 } }] };
+    await win.AT.onOpen('org/m:Q4', { verify: true }); await flush();
+    const btn = win.document.getElementById('atVerifyBtn');
+    expect(btn.style.display).not.toBe('none');
+    expect(win.document.getElementById('atPrevTune').textContent).toContain('stale');
+    await win.AT.verify(); await flush();
+    const post = win.__fetches.find(([u, o]) => u === '/api/llm/autotune/run' && o && o.method === 'POST');
+    const body = JSON.parse(post[1].body);
+    expect(body.mode).toBe('verify');
+    expect(body.model_ids).toEqual(['org/m:Q4']);
+    expect(body.baseline_tps).toBe(41.5);
+    expect(body.budget_min).toBe(15);
+  });
+  it('model_done in verify mode records mode + build in the ledger and shows the regression headline', async () => {
+    const win = await opened();
+    win.__status = { ok: true, items: [{ agent_id: 'a1', model_id: 'org/m:Q4', llama_build: 'b100', current_build: 'b120', stale: true, summary: { decode_tps: 41.5 } }] };
+    await win.AT.onOpen('org/m:Q4', { verify: true }); await flush();
+    await win.AT.verify(); await flush();
+    win.AT.onEvent({ type: 'model_start', model_id: 'org/m:Q4', objective: 'balanced', mode: 'verify', stages: ['verify'] });
+    win.AT.onEvent({ type: 'model_done', model_id: 'org/m:Q4', ok: true, mode: 'verify', llama_build: 'b120', regressed: true,
+      before: { decode_tps: 41.5 }, after: { decode_tps: 30.1, ctx: 8192 }, verify: { ok: true, seconds: 60 }, changes: [], stages: [{ stage: 'verify', status: 'done' }] });
+    win.AT.onEvent({ type: 'done', ok: true });
+    await flush();
+    const rec = win.__fetches.filter(([u, o]) => u === '/api/tools/runs' && o && o.method === 'POST').map(([, o]) => JSON.parse(o.body)).pop();
+    expect(rec.mode).toBe('verify'); expect(rec.llama_build).toBe('b120');
+    expect(win.document.getElementById('atRecWarn').textContent).toMatch(/slower.*re-tune/i);
+    expect(win.document.getElementById('atRetuneBtn').style.display).not.toBe('none');
+  });
+  it('Check quality opens the Quality guard tool with the recommended overrides', async () => {
+    const win = await opened();
+    win.AT.onEvent({ type: 'model_start', model_id: 'org/m:Q4', objective: 'fit', stages: ['context', 'verify'] });
+    win.AT.onEvent({ type: 'model_done', model_id: 'org/m:Q4', ok: true, mode: 'tune', before: { decode_tps: 40 }, after: { decode_tps: 44, ctx: 16384 }, verify: { ok: true },
+      changes: [{ key: 'cache-type-k', current: 'f16', recommended: 'q8_0', source: 'measured' }, { key: 'ctx-size', current: '8192', recommended: '16384', source: 'measured' }], stages: [] });
+    win.AT.onEvent({ type: 'done', ok: true }); await flush();
+    win.AT.checkQuality();
+    expect(win.__opened).toEqual(['quality', 'org/m:Q4', { overrides: { 'cache-type-k': 'q8_0' } }]);
   });
 });
