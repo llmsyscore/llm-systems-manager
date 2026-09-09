@@ -508,7 +508,7 @@
       let d;
       try { d = await fetch('/api/benchmark/live/fleet/' + encodeURIComponent(_fleetJob.job_id)).then(res => res.json()); }
       catch (_) { return; }
-      if (!d || !d.ok) {
+      if (!d || !d.ok || !d.job) {
         stopFleetPoll(); sessionStorage.removeItem('bl.fleetJob'); _fleetJob = null; _fleetSel = null;
         busy(false); stopElapsed(); setStatus('autopilot job lost', 'err'); renderFleet(); syncPinBtn(); return;
       }
@@ -525,8 +525,8 @@
       $('blStrip').textContent = best ? `${total} hosts · best ${best.hostname} ${fmt(best.gen_tps)} t/s` : `${total} hosts`;
       log(best ? `autopilot ranking complete · best ${best.hostname} ${fmt(best.gen_tps)} t/s` : (_fleetJob.cancelled ? 'autopilot job cancelled' : 'autopilot job failed on every host'), best ? 'ok' : 'warn');
       setProgress(total, total);
-      if (best) selectFleetHost(best.agent_id);
-      loadRuns();
+      if (best) await selectFleetHost(best.agent_id);
+      await loadRuns();
   }
   function log(text, cls) { const el = $('blLog'); if (!el) return; const t = new Date().toTimeString().slice(0, 8); el.innerHTML += `<div><span class="dim">${t}</span> ${cls ? `<span class="${cls}">` : ''}${esc(text)}${cls ? '</span>' : ''}</div>`; el.scrollTop = el.scrollHeight; }
   function setStatus(text, state) { const el = $('blStatus'); el.textContent = text; el.classList.remove('running', 'ok', 'err'); if (state) el.classList.add(state); }

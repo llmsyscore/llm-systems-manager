@@ -245,7 +245,7 @@ def register_routes(app, ctx, *, db_path: str, proxy: Callable, agent_by_token: 
                 if cancel_on_agent and cancel_on_agent(h["agent_id"]):
                     out.append(h["agent_id"])
             except Exception:
-                pass
+                pass  # an unreachable host ends via the poll timeout
         return jsonify({"ok": True, "cancelled": out})
 
     @app.route("/api/benchmark/live/speed")

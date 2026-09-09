@@ -503,7 +503,7 @@ describe('fleet ranking (#884)', () => {
     let polls = 0;
     win.fetch = vi.fn(async (url, opts) => ({ json: async () => url.includes('/hosts') ? { ok: true, hosts: [{ agent_id: 'a', hostname: 'alpha', online: true, loaded: true }] }
       : (String(url) === '/api/benchmark/live/fleet' && opts) ? { ok: true, job_id: 'j3', hosts: [] }
-      : url.includes('/fleet/j3') ? { ok: true, job: { ...job, done: ++polls > 1, hosts: [polls > 1 ? job.hosts[0] : { ...job.hosts[0], status: 'running', gen_tps: null }, job.hosts[2]] } }
+      : url.includes('/fleet/j') ? { ok: true, job: { ...job, job_id: 'j3', ranking: ['a'], done: ++polls > 1, hosts: [polls > 1 ? job.hosts[0] : { ...job.hosts[0], status: 'running', gen_tps: null }, job.hosts[2]] } }
       : url.includes('/runs/ra') ? { ok: true, meta: {}, run: { levels: [], rows: [] } } : { ok: true, runs: [] } }));
     win.BL.toggleFleet(); await flush();
     await win.BL.run(); await flush();

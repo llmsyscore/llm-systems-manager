@@ -1,7 +1,6 @@
 """#885: a stored live benchmark run attaches to the model's report card."""
 from __future__ import annotations
 
-import json
 import sqlite3
 
 import pytest
