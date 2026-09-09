@@ -14,7 +14,7 @@
   const BENCH_ORDER = Object.keys(BENCH_LABEL);
   let _model = null, _pre = null, _runs = [], _es = null, _chart = null;
   let _levels = [], _baseline = null, _lastDoc = null, _runId = null, _activeLevel = null, _lastTps = null, _cell = null;
-  let _attached = false, _queued = null, _elapsedIv = null, _runStart = 0, _sweepLevels = [], _curLevel = null, _curCell = null, _busyOn = false;
+  let _attached = false, _queued = null, _elapsedIv = null, _runStart = 0, _sweepLevels = [], _curLevel = null, _curCell = null, _busyOn = false, _lastCfg = null;
 
   function parseSweep(text) {
     const seen = new Set();
@@ -299,8 +299,8 @@
       const first = h.get(h.benches[0], osl);
       h.benches.forEach((b, i) => {
         const v = h.get(b, osl);
-        const pct = (h.max && v != null) ? Math.round(10 + 60 * v / h.max) : 0;
-        const delta = (i > 0 && v != null) ? `<small>${esc(deltaText(v, first).text.replace(' vs baseline', ''))}</small>` : '';
+        const pct = (h.max > 0 && v != null) ? Math.round(10 + 60 * v / h.max) : 0;
+        const delta = (i > 0 && v != null && first > 0) ? `<small>${esc(deltaText(v, first).text.replace(' vs baseline', ''))}</small>` : '';
         html += `<div class="bl-heat-cell" style="--p:${pct}">${fmt(v)}${delta}</div>`;
       });
     });
@@ -308,10 +308,11 @@
     let caption = '';
     for (const osl of h.osls) {
       const present = h.benches.filter(b => h.get(b, osl) != null);
-      if (present.length >= 2) {
-        const firstB = present[0], lastB = present[present.length - 1];
-        const first = h.get(firstB, osl), last = h.get(lastB, osl);
-        if (firstB !== lastB) caption = `Decode at ${BENCH_LABEL[lastB] || lastB} runs ${Math.round(100 - 100 * last / first)} % slower than at ${BENCH_LABEL[firstB] || firstB} (osl ${osl}).`;
+      if (present.length < 2) continue;
+      const firstB = present[0], lastB = present[present.length - 1];
+      const first = h.get(firstB, osl), last = h.get(lastB, osl);
+      if (firstB !== lastB && first > 0) {
+        caption = `Decode at ${BENCH_LABEL[lastB] || lastB} runs ${Math.round(100 - 100 * last / first)} % slower than at ${BENCH_LABEL[firstB] || firstB} (osl ${osl}).`;
         break;
       }
     }
@@ -412,10 +413,12 @@
     if (!c.model_id) { setStatus('pick a model', 'err'); return; }
     if (c.extra_inputs === null) { setStatus('request extras must be a JSON object', 'err'); return; }
     if (c.matrix && (!c.matrix.benches.length || c.matrix.benches.length * c.matrix.osls.length * c.concurrency.length > 24)) {
+      // Mirrors MATRIX_MAX_CELLS in the agent.
       setStatus('matrix too large (max 24 cells × levels)', 'err'); return;
     }
     if (_attached) { _queued = c; setStatus('queued · starts when the current run finishes', 'running'); $('blRunBtn').disabled = true; syncCancelBtn(); return; }
     if ($('blRunBtn').disabled) return;
+    _lastCfg = c;
     busy(true); _levels = []; _lastDoc = null; _activeLevel = null; _cell = null; $('blLog').innerHTML = '';
     _baseline = null; _sweepLevels = (c.concurrency || []).slice(); _curLevel = null; startElapsed();
     if (c.baseline_run_id) { try { const r = await fetch('/api/benchmark/live/runs/' + encodeURIComponent(c.baseline_run_id)).then(r => r.json()); _baseline = r && r.run; } catch (_) {} }
@@ -453,7 +456,8 @@
         else if (msg.type === 'model_done') { _lastDoc = msg; const e = msg.wh_per_ktok != null ? ` · ${fmt(msg.wh_per_ktok, 2)} Wh / 1k tokens` : '';
           const sp = (msg.spec && msg.spec.n_max != null) ? ` · draft window ${msg.spec.n_min}–${msg.spec.n_max}` : '';
           const prefix = (msg.config && msg.config.matrix) ? `${cells().length} cells · ` : `${(msg.levels || []).length} levels · `;
-          $('blStrip').textContent = `${prefix}${fmt(msg.elapsed_s, 0)} s${e}${sp}`; }
+          $('blStrip').textContent = `${prefix}${fmt(msg.elapsed_s, 0)} s${e}${sp}`;
+          if (_lastCfg && _lastCfg.matrix && msg.config && !msg.config.matrix) log('agent ignored the matrix — upgrade the agent to v2026.09.08-8 or newer', 'warn'); }
         else if (msg.type === 'done') {
           if (_es) { try { _es.close(); } catch (_) {} _es = null; }
           stopElapsed(); _curLevel = null; redraw(); busy(false); loadRuns();
@@ -500,7 +504,7 @@
     a.click();
     setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 200);
   }
-  window.BL = { onOpen, setMode, run, cancel, setup, startServer, running, applyPreset, parseSweep, estimateSeconds, deltaText, knee, pinBaseline, exportJson,
+  window.BL = { onOpen, setMode, run, cancel, setup, startServer, running, applyPreset, parseSweep, parseOsls, estimateSeconds, deltaText, knee, pinBaseline, exportJson,
     toggleMatrix, heatCells, cellKey,
     _config: config, _debugLevels: (rows) => { _levels = rows; _cell = null; redraw(); } };
 })();

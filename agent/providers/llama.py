@@ -2053,10 +2053,10 @@ def _bench_run_one(model_id: str, tool: str, switches: list, env: dict) -> None:
     _bench_proc = proc
     try: _bench_pgid = os.getpgid(proc.pid)
     except Exception: _bench_pgid = None
-    energy.start()
     stopped = False
 
     try:
+        energy.start()
         latest_gen = None
         latest_ppt = None
         latest_pg = None

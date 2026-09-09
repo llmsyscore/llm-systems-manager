@@ -70,6 +70,13 @@ describe('card rendering', () => {
     expect(withStale).toContain('ctx changed');
     expect(MC.card({ ...BASE, fresh: { age: '3d ago' } })).not.toContain('3d ago');
   });
+  it('appends the Wh/1k figure to the bench tooltip when extra_json carries it, not otherwise', () => {
+    const withWh = MC.card({ ...BASE, extraJson: { wh_per_ktok: 1.234 } });
+    expect(withWh).toMatch(/title="[^"]*1\.23 Wh\/1k[^"]*"/);
+    expect(MC.card(BASE)).not.toContain('Wh/1k');
+    expect(MC.card({ ...BASE, extraJson: { wh_per_ktok: null } })).not.toContain('Wh/1k');
+    expect(MC.card({ ...BASE, extraJson: '{"wh_per_ktok": 0.5}' })).toMatch(/0\.50 Wh\/1k/);
+  });
   it('bench stats become a button only when benchClick is set', () => {
     const plain = MC.card(BASE);
     expect(plain).not.toContain('mc-stats" data-act');

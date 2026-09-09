@@ -179,6 +179,28 @@ def test_results_json_stays_parseable_with_nonfinite_row(monkeypatch):
     assert items["results"][0]["avg_gen_tps"] is None
 
 
+def test_store_whitelists_extra_json_for_llama(monkeypatch):
+    conn = _mem_db()
+    monkeypatch.setattr(manager_mod, "get_db", lambda: conn)
+    manager_mod.init_db()
+    c = _client()
+    r = c.post("/api/benchmark/store", json={
+        "model_id": "m", "extra_json": {"wh_per_ktok": 1.5, "energy_source": "psu", "junk": "x" * 500},
+    })
+    assert r.get_json()["ok"] is True
+    row = conn.execute("SELECT extra_json FROM model_benchmarks WHERE model_id='m'").fetchone()
+    stored = json.loads(row[0])
+    assert set(stored.keys()) == {"wh_per_ktok", "energy_wh", "energy_source"}
+    assert stored["wh_per_ktok"] == 1.5
+    assert stored["energy_source"] == "psu"
+    assert stored["energy_wh"] is None
+
+    r2 = c.post("/api/benchmark/store", json={"model_id": "m2", "extra_json": "not a dict"})
+    assert r2.get_json()["ok"] is True
+    row2 = conn.execute("SELECT extra_json FROM model_benchmarks WHERE model_id='m2'").fetchone()
+    assert row2[0] is None
+
+
 def test_vllm_bench_routes_registered():
     rules = {str(r) for r in manager_mod.app.url_map.iter_rules()}
     for path in ["/api/vllm/bench/run", "/api/vllm/bench/stream",

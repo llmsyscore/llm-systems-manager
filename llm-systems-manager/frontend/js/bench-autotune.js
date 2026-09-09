@@ -982,9 +982,11 @@ async function runBenchmark() {
                                      run_id: msg.run_id || _runIdOf(e),
                                      wh_per_ktok: energy.wh_per_ktok,
                                      ok: mx.gen != null || mx.ppt != null || mx.pg != null});
-        _benchLogAppend(energy.wh_per_ktok != null
-          ? `<span class="bench-log-text">energy ${(energy.energy_wh ?? 0).toFixed(2)} Wh · ${energy.wh_per_ktok.toFixed(2)} Wh / 1k tokens (${energy.energy_source || '—'})</span>`
-          : `<span class="bench-log-text">energy: no power reading</span>`);
+        if (energy.wh_per_ktok != null) {
+          _benchLogAppend(`<span class="bench-log-text">energy ${(energy.energy_wh ?? 0).toFixed(2)} Wh · ${energy.wh_per_ktok.toFixed(2)} Wh / 1k tokens (${_hEsc(energy.energy_source || '—')})</span>`);
+        } else if ('wh_per_ktok' in msg) {
+          _benchLogAppend(`<span class="bench-log-text">energy: no power reading</span>`);
+        }
       } else if (msg.type === 'done') {
         if (_benchEventSrc) { try { _benchEventSrc.close(); } catch(_){} _benchEventSrc = null; } if (typeof toolsSyncRunDot === 'function') toolsSyncRunDot();
         document.getElementById('benchRunBtn').disabled = false;
@@ -1200,7 +1202,7 @@ function saveBenchmark(model_id, avg_gen_tps, avg_ppt_tps, avg_pg_tps, tool, sav
   }).then(r => r.json()).then(d => {
     if (!d.ok) { alert(d.error || 'Save failed'); return; }
     _benchData[model_id] = {model_id, avg_gen_tps, avg_ppt_tps, avg_pg_tps, bench_tool: tool,
-                            switches: _benchSwitches, ts: new Date().toISOString()};
+                            switches: _benchSwitches, ts: new Date().toISOString(), extra_json: extra || null};
     if (saveBtn) saveBtn.textContent = '✓ Saved';
     if (typeof renderModelCards === 'function') renderModelCards();
   }).catch(e => alert('Save failed: ' + e));

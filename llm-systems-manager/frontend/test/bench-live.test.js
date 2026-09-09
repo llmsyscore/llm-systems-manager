@@ -42,7 +42,7 @@ const STUBS = `
   window.SG = { open: (opts) => { window.__sse = opts; return { close() {} }; } };
   window.toolsSyncRunDot = function () {};
   HTMLCanvasElement.prototype.getContext = function () { return {}; };
-  window.Chart = function (ctx, cfg) { this.data = cfg.data; this.options = cfg.options; };
+  window.Chart = function (ctx, cfg) { this.data = cfg.data; this.options = cfg.options; window.__chart = this; };
   Chart.prototype.update = function () {}; Chart.prototype.resize = function () {}; Chart.prototype.destroy = function () {};
   window.__fetches = [];
   window.fetch = function (url, opts) {
@@ -286,6 +286,65 @@ describe('BL matrix + heatmap (#883)', () => {
     expect(win.document.querySelectorAll('#blHeat .bl-heat-cell').length).toBe(2);
     expect(win.document.getElementById('blHeatCaption').textContent).toMatch(/32k.*40 %/);
     expect(win.document.getElementById('blCellSeg').querySelectorAll('button').length).toBe(2);
+  });
+  it('heatmap guards zero/null cells against NaN (final review)', async () => {
+    const win = boot();
+    await flush();
+    win.BL._debugLevels([
+      { concurrency: 1, bench: 'throughput_1k', osl: 256, all: { pred_tps: 0, agg_pred_tps: 0 }, rows: [] },
+      { concurrency: 1, bench: 'throughput_32k', osl: 256, all: { pred_tps: null, agg_pred_tps: null }, rows: [] },
+    ]);
+    expect(win.document.getElementById('blHeat').innerHTML).not.toContain('NaN');
+    expect(win.document.getElementById('blHeatCaption').textContent).not.toContain('NaN');
+    expect(win.document.getElementById('blHeatCaption').textContent).toBe('');
+  });
+});
+
+describe('BL final-review fixes', () => {
+  it('warns when the agent ignored a submitted matrix', async () => {
+    const win = boot('BL.onOpen("org/m:Q4");');
+    await flush();
+    win.BL.applyPreset('longctx');
+    win.BL.run();
+    await flush();
+    win.__sse.onEvent({ type: 'model_done', run_id: 'r1', config: { bench: 'throughput_1k' }, levels: [], elapsed_s: 5 });
+    expect(win.document.getElementById('blLog').textContent).toContain('agent ignored the matrix');
+  });
+  it('does not warn when the agent honored the matrix or none was requested', async () => {
+    const win = boot('BL.onOpen("org/m:Q4");');
+    await flush();
+    win.BL.applyPreset('longctx');
+    win.BL.run();
+    await flush();
+    win.__sse.onEvent({ type: 'model_done', run_id: 'r1', config: { matrix: { benches: ['throughput_1k'], osls: [256] } }, levels: [], elapsed_s: 5 });
+    win.__sse.onEvent({ type: 'done', ok: true });
+    expect(win.document.getElementById('blLog').textContent).not.toContain('agent ignored the matrix');
+    win.BL.applyPreset('chat');
+    win.BL.run();
+    await flush();
+    win.__sse.onEvent({ type: 'model_done', run_id: 'r1', config: { bench: 'qualitative' }, levels: [], elapsed_s: 5 });
+    expect(win.document.getElementById('blLog').textContent).not.toContain('agent ignored the matrix');
+  });
+  it('parseOsls dedups, sorts, bounds to 16-8192, caps at 4, and falls back to [256]', () => {
+    const win = boot();
+    expect(win.BL.parseOsls('1024, 256, 256, 8192, 16')).toEqual([16, 256, 1024, 8192]);
+    expect(win.BL.parseOsls('8, 100000, abc')).toEqual([256]);
+    expect(win.BL.parseOsls('16,32,64,128,256')).toEqual([16, 32, 64, 128]);
+    expect(win.BL.parseOsls('')).toEqual([256]);
+  });
+  it('the pending marker only lights up the active cell (#883 follow-up)', async () => {
+    const win = boot('BL.onOpen("org/m:Q4");');
+    await flush();
+    win.BL.run();
+    await flush();
+    win.BL._debugLevels([
+      { concurrency: 1, bench: 'throughput_1k', osl: 256, all: { pred_tps: 50, agg_pred_tps: 50 }, rows: [] },
+      { concurrency: 1, bench: 'throughput_32k', osl: 256, all: { pred_tps: 30, agg_pred_tps: 30 }, rows: [] },
+    ]);
+    win.__sse.onEvent({ type: 'level_start', concurrency: 2, bench: 'throughput_32k', osl: 256 });
+    expect(win.__chart.data.datasets[2].data.every(v => v === null)).toBe(true);
+    win.__sse.onEvent({ type: 'level_start', concurrency: 2, bench: 'throughput_1k', osl: 256 });
+    expect(win.__chart.data.datasets[2].data.some(v => v !== null)).toBe(true);
   });
 });
 

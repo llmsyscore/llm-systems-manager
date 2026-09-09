@@ -46,13 +46,22 @@
     ).join('') + '</dl>';
   }
 
+  // Wh/1k suffix for the bench tooltip when the stored extra_json carries it.
+  function _whSuffix(extraJson) {
+    let e = extraJson;
+    if (typeof e === 'string') { try { e = JSON.parse(e); } catch (_) { e = null; } }
+    if (!e || e.wh_per_ktok == null) return '';
+    const v = Number(e.wh_per_ktok);
+    return Number.isFinite(v) ? ` · ${v.toFixed(2)} Wh/1k` : '';
+  }
+
   function statsHtml(stats, fresh, d) {
     const cells = (stats || []).map(s =>
       `<div class="mc-stat"><div class="l">${esc(s.l)}</div><div class="v${s.live ? ' live' : ''}"><b>${esc(s.v)}</b>${s.unit ? ' ' + esc(s.unit) : ''}</div></div>`
     ).join('');
     if (!cells && !(fresh && fresh.stale)) return '';
     const tag = cells
-      ? `<span class="mc-benchtag" title="${esc((d && d.benchTitle) || 'Benchmark results — not live throughput')}">bench</span>`
+      ? `<span class="mc-benchtag" title="${esc(((d && d.benchTitle) || 'Benchmark results — not live throughput') + _whSuffix(d && d.extraJson))}">bench</span>`
       : '';
     const f = (fresh && fresh.stale)
       ? `<span class="mc-stale" title="${esc(fresh.staleTitle || 'Config changed since this benchmark — run a fresh one from the ⋯ menu')}">re-bench</span>`
