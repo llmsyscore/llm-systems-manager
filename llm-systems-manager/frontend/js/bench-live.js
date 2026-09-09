@@ -16,6 +16,7 @@
   let _levels = [], _baseline = null, _lastDoc = null, _runId = null, _activeLevel = null, _lastTps = null, _cell = null;
   let _attached = false, _queued = null, _elapsedIv = null, _runStart = 0, _sweepLevels = [], _curLevel = null, _curCell = null, _busyOn = false, _lastCfg = null, _attachedRun = null;
   let _fleetHosts = [], _fleetJob = null, _fleetPoll = null, _fleetSel = null;
+  let _base = null, _baseTimer = null;
   const FLEET_POLL_MS = 3000;
 
   function parseSweep(text) {
@@ -217,6 +218,7 @@
     try { _pre = await fetch('/api/benchmark/live/preflight').then(r => r.json()); } catch (_) { _pre = { server: { up: false }, runtime: {} }; }
     renderPreflight();
     await loadRuns();
+    await loadBaselines();
     if (!_chart && window.Chart && $('blChart')) mkChart();
     ['blOsl', 'blLimit', 'blSweep', 'blTimeout', 'blExtra'].forEach(id => { const el = $(id); if (el && !el._bl) { el._bl = 1; el.addEventListener('input', () => { markCustom(); updateEstimate(); }); } });
     const b = $('blBench'); if (b && !b._bl) { b._bl = 1; b.addEventListener('change', () => { markCustom(); renderCats((((_pre || {}).datasets || {})[b.value] || {}).categories || [], 'all'); updateEstimate(); }); }
@@ -715,7 +717,55 @@
     if (b) b.disabled = false;
     renderPreflight();
   }
-  async function pinBaseline() { if (_fleetSel) return; const id = (_lastDoc && _lastDoc.run_id) || _runId; if (!id) return; await fetch('/api/benchmark/live/runs/' + encodeURIComponent(id) + '/baseline', { method: 'POST' }).catch(() => {}); loadRuns(); }
+  async function pinBaseline() { if (_fleetSel) return; const id = (_lastDoc && _lastDoc.run_id) || _runId; if (!id) return; await fetch('/api/benchmark/live/runs/' + encodeURIComponent(id) + '/baseline', { method: 'POST' }).catch(() => {}); loadRuns(); loadBaselines(); }
+  function baselineMeta(s) {
+    s = s || {};
+    const alert = `alert past −${Math.round(s.regression_pct || 0)} %`;
+    if (!s.enabled) return `scheduled re-check off · ${alert} · enable it under Settings → Benchmark baselines`;
+    const parts = [];
+    if (s.nightly_at) parts.push(s.nightly_valid ? `nightly at ${s.nightly_at}` : 'nightly time invalid');
+    if (s.on_build_change) parts.push('after llama.cpp upgrades');
+    parts.push(alert);
+    return parts.join(' · ');
+  }
+  function baseStatus(b) {
+    if (b.running) return 'running';
+    if (b.pending) return 'queued';
+    return (b.last_check && b.last_check.status) || 'never';
+  }
+  function renderBaselines() {
+    const card = $('blBaseCard'); if (!card) return;
+    const rows = (_base && _base.baselines) || [];
+    card.style.display = rows.length ? '' : 'none';
+    const meta = $('blBaseMeta'); if (meta) meta.textContent = baselineMeta(_base && _base.schedule);
+    const allBtn = $('blBaseAllBtn'); if (allBtn) allBtn.disabled = rows.every(b => b.running || b.pending);
+    const table = $('blBaseTable'); if (!table) return;
+    const day = s => String(s || '').slice(0, 10);
+    const row = b => {
+      const st = baseStatus(b), lc = b.last_check;
+      const delta = lc && lc.delta_pct != null ? `${lc.delta_pct < 0 ? '−' : '+'}${Math.abs(Math.round(lc.delta_pct))} %` : '—';
+      const dcls = lc && lc.status === 'regressed' ? 'down' : (lc && lc.delta_pct != null ? 'flat' : '');
+      const build = b.llama_build ? esc(b.llama_build.split('-')[0]) + (b.build_changed ? ' <span class="bl-bnote">changed</span>' : '') : '—';
+      const last = lc ? `${esc(String(lc.ts || '').slice(0, 16).replace('T', ' '))} · ${esc(lc.trigger)}${lc.error ? ` · ${esc(lc.error)}` : ''}` : 'never';
+      const title = b.loaded ? '' : (b.online ? ' title="model not loaded on the host"' : ' title="host offline"');
+      return `<tr data-run="${esc(b.run_id)}"><td>${esc(String(b.model_id || '').split('/').pop())}</td><td${title}>${esc(b.hostname)}${b.loaded ? '' : ' ○'}</td>` +
+        `<td class="num">${fmt(b.gen_tps)} t/s <small>${esc(day(b.ts))}</small></td><td>${build}</td><td>${last}</td>` +
+        `<td class="num"><span class="dlt ${dcls}">${delta}</span></td><td><span class="bl-bstat ${esc(st)}">${esc(st)}</span></td>` +
+        `<td><button class="mcbtn mcbtn-ghost mcbtn-sm" type="button"${b.running || b.pending ? ' disabled' : ''}>Re-check</button></td></tr>`;
+    };
+    table.innerHTML = `<table class="bl-rt"><thead><tr><th>Model</th><th>Host</th><th class="num">Baseline</th><th>llama.cpp</th><th>Last check</th><th class="num">Δ decode</th><th>Status</th><th></th></tr></thead><tbody>${rows.map(row).join('')}</tbody></table>`;
+    table.querySelectorAll('tr[data-run] button').forEach(btn => btn.addEventListener('click', () => recheckBaseline(btn.closest('tr').dataset.run)));
+    const busy = rows.some(b => b.running || b.pending);
+    clearTimeout(_baseTimer); _baseTimer = busy ? setTimeout(loadBaselines, 5000) : null;
+  }
+  async function loadBaselines() {
+    try { const r = await fetch('/api/benchmark/live/baselines').then(r => r.json()); if (r && r.ok) _base = r; } catch (_) {}
+    renderBaselines();
+  }
+  async function recheckBaseline(runId) {
+    try { await fetch('/api/benchmark/live/baselines/recheck', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(runId ? { run_id: runId } : {}) }); } catch (_) {}
+    await loadBaselines();
+  }
   function exportJson() {
     if (_fleetJob && _fleetJob.done && !_fleetSel) {
       const id = String(_fleetJob.job_id || 'job').replace(/[^A-Za-z0-9_.-]/g, '_');
@@ -739,7 +789,8 @@
     setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 200);
   }
   window.BL = { onOpen, setMode, run, cancel, setup, startServer, running, applyPreset, parseSweep, parseOsls, estimateSeconds, deltaText, knee, pinBaseline, exportJson,
-    toggleMatrix, heatCells, cellKey, addToReportCard, toggleFleet, rankHosts, selectFleetHost,
+    toggleMatrix, heatCells, cellKey, addToReportCard, toggleFleet, rankHosts, selectFleetHost, recheckBaseline, baselineMeta, loadBaselines,
     _config: config, _debugLevels: (rows) => { _levels = rows; _cell = null; redraw(); },
-    _debugFleet: (job) => { _fleetJob = job; renderFleet(); }, _debugPollOnce: fleetTick };
+    _debugFleet: (job) => { _fleetJob = job; renderFleet(); }, _debugPollOnce: fleetTick,
+    _debugBaselines: (d) => { _base = d; renderBaselines(); } };
 })();

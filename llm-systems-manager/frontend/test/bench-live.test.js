@@ -36,6 +36,7 @@ const BODY = `
       <div class="bl-hint" id="blFleetNote" style="display:none"></div>
     </div>
     <div class="bl-card" id="blFleetCard" style="display:none"><span id="blFleetMeta"></span><span id="blFleetProgress"></span><div id="blFleetTable"></div></div>
+    <div class="bl-card" id="blBaseCard" style="display:none"><span id="blBaseMeta"></span><button id="blBaseAllBtn" onclick="BL.recheckBaseline(null)">Re-check all</button><div id="blBaseTable"></div></div>
   </div>
 `;
 
@@ -550,5 +551,58 @@ describe('BL export', () => {
     expect(a).toBeTruthy();
     expect(a.download).toMatch(/^bench-live-.*\.json$/);
     clickSpy.mockRestore();
+  });
+});
+
+describe('BL baselines (#882)', () => {
+  const data = {
+    schedule: { enabled: true, nightly_at: '03:00', on_build_change: true, regression_pct: 15, nightly_valid: true, next_nightly_ts: 0 },
+    baselines: [
+      { run_id: 'p1', model_id: 'org/big-model:Q4', agent_id: 'a', hostname: 'alpha', ts: '2026-09-02T10:00:00+00:00', gen_tps: 52.8,
+        config: { bench: 'throughput_1k' }, online: true, loaded: true, llama_build: 'b10950-abc', build_changed: true, running: false, pending: null,
+        last_check: { ts: '2026-09-09T03:00:10+00:00', trigger: 'nightly', status: 'regressed', gen_tps: 41.2, base_tps: 52.8, delta_pct: -22.0, severity: 'warning', error: null, llama_build: 'b10809-def' } },
+      { run_id: 'p2', model_id: 'org/small:Q8', agent_id: 'b', hostname: 'bravo', ts: '2026-09-05T10:00:00+00:00', gen_tps: 120,
+        config: { bench: 'qualitative' }, online: true, loaded: true, llama_build: '', build_changed: false, running: true, pending: 'manual', last_check: null },
+      { run_id: 'p3', model_id: 'org/other:Q4', agent_id: 'c', hostname: 'charlie', ts: '2026-09-05T10:00:00+00:00', gen_tps: 30,
+        config: { bench: 'throughput_8k' }, online: false, loaded: false, llama_build: 'b1-x', build_changed: false, running: false, pending: null,
+        last_check: { ts: '2026-09-08T03:00:10+00:00', trigger: 'build', status: 'skipped', gen_tps: null, base_tps: 30, delta_pct: null, severity: null, error: 'host offline', llama_build: 'b1-x' } },
+    ],
+  };
+  it('renders one row per pinned baseline with status chips and build note', () => {
+    const win = boot();
+    win.BL._debugBaselines(data);
+    const doc = win.document;
+    expect(doc.getElementById('blBaseCard').style.display).toBe('');
+    const rows = [...doc.querySelectorAll('#blBaseTable tbody tr')];
+    expect(rows.length).toBe(3);
+    expect(rows[0].textContent).toContain('big-model:Q4');
+    expect(rows[0].querySelector('.bl-bstat').className).toContain('regressed');
+    expect(rows[0].textContent).toContain('−22 %');
+    expect(rows[0].textContent).toContain('changed');
+    expect(rows[0].textContent).toContain('nightly');
+    expect(rows[1].querySelector('.bl-bstat').className).toContain('running');
+    expect(rows[1].querySelector('button').disabled).toBe(true);
+    expect(rows[2].querySelector('.bl-bstat').className).toContain('skipped');
+    expect(rows[2].textContent).toContain('host offline');
+    expect(doc.getElementById('blBaseMeta').textContent).toBe('nightly at 03:00 · after llama.cpp upgrades · alert past −15 %');
+  });
+  it('hides the card with no pins and words the meta for each schedule state', () => {
+    const win = boot();
+    win.BL._debugBaselines({ schedule: data.schedule, baselines: [] });
+    expect(win.document.getElementById('blBaseCard').style.display).toBe('none');
+    expect(win.BL.baselineMeta({ enabled: false, regression_pct: 15 })).toBe('scheduled re-check off · alert past −15 % · enable it under Settings → Benchmark baselines');
+    expect(win.BL.baselineMeta({ enabled: true, nightly_at: '', on_build_change: true, regression_pct: 20, nightly_valid: false })).toBe('after llama.cpp upgrades · alert past −20 %');
+    expect(win.BL.baselineMeta({ enabled: true, nightly_at: 'zz', on_build_change: false, regression_pct: 20, nightly_valid: false })).toBe('nightly time invalid · alert past −20 %');
+  });
+  it('re-check posts the run id and reloads', async () => {
+    const win = boot();
+    win.BL._debugBaselines(data);
+    const calls = [];
+    win.fetch = vi.fn(async (url, opts) => { calls.push([url, opts]); return { json: async () => (url.endsWith('/baselines') ? { ok: true, ...data } : { ok: true, queued: ['p1'], skipped: [] }) }; });
+    win.document.querySelector('#blBaseTable tr[data-run="p1"] button').click();
+    await flush();
+    expect(calls[0][0]).toBe('/api/benchmark/live/baselines/recheck');
+    expect(JSON.parse(calls[0][1].body)).toEqual({ run_id: 'p1' });
+    expect(calls.some(c => c[0] === '/api/benchmark/live/baselines')).toBe(true);
   });
 });
