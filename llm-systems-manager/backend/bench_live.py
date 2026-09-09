@@ -152,7 +152,9 @@ def register_routes(app, ctx, *, db_path: str, proxy: Callable, agent_by_token: 
         for t in threads:
             t.join()
 
-    def _fleet_poll(job: dict) -> None:
+    def _fleet_run(job: dict) -> None:
+        """Background thread: start every host, then poll until each finishes."""
+        _fleet_start_all(job)
         deadline = time.time() + FLEET_MAX_WAIT_S
         while time.time() < deadline:
             with jobs_lock:
@@ -212,8 +214,7 @@ def register_routes(app, ctx, *, db_path: str, proxy: Callable, agent_by_token: 
             for old in list(jobs)[:-FLEET_JOB_RETENTION]:
                 if jobs[old]["done"]:
                     jobs.pop(old, None)
-        _fleet_start_all(job)
-        threading.Thread(target=_fleet_poll, args=(job,), daemon=True).start()
+        threading.Thread(target=_fleet_run, args=(job,), daemon=True).start()
         return jsonify({"ok": True, "job_id": job["job_id"], "hosts": [dict(h) for h in job["hosts"]]})
 
     @app.route("/api/benchmark/live/fleet/<job_id>")

@@ -76,9 +76,9 @@ def test_fleet_job_runs_ranks_and_reports(env):
     r = env.post("/api/benchmark/live/fleet", json={"model_id": MODEL, "config": {"bench": "throughput_1k", "concurrency": [1, 2]}}).get_json()
     assert r["ok"] and len(r["hosts"]) == 2
     job = r["job_id"]
+    j = _wait(env, job, lambda j: all(h["status"] == "running" for h in j["hosts"]))
     assert sorted(a for a, _ in env.started) == sorted([A1["agent_id"], A2["agent_id"]])
     assert all(b["model_id"] == MODEL and b["concurrency"] == [1, 2] for _, b in env.started)
-    j = _wait(env, job, lambda j: all(h["status"] == "running" for h in j["hosts"]))
     _store(env, A2, _doc("run-b", 70.0))
     _store(env, A1, _doc("run-a", 60.0))
     j = _wait(env, job, lambda j: j["done"])
@@ -102,6 +102,7 @@ def test_fleet_failed_start_and_cancel(env):
     j = _wait(env, r["job_id"], lambda j: any(h["status"] == "failed" for h in j["hosts"]))
     failed = next(h for h in j["hosts"] if h["status"] == "failed")
     assert failed["agent_id"] == A2["agent_id"] and "in progress" in failed["error"]
+    j = _wait(env, r["job_id"], lambda j: next(h for h in j["hosts"] if h["agent_id"] == A1["agent_id"])["status"] == "running")
     c = env.post(f"/api/benchmark/live/fleet/{r['job_id']}/cancel").get_json()
     assert c["ok"] and c["cancelled"] == [A1["agent_id"]] and env.cancelled == [A1["agent_id"]]
     j = _wait(env, r["job_id"], lambda j: j["done"] and j["cancelled"])
