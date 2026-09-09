@@ -256,6 +256,14 @@ passphrase = ""
 # Optional second directory (e.g. a mounted NAS path) each archive is copied to.
 mirror_dir = ""
 
+[manager.bench_baselines]
+# Scheduled re-check of pinned Live benchmark baselines (#882): re-runs each
+# pinned run on its host and raises an alarm-engine alert on a decode-t/s drop.
+enabled = false
+nightly_at = "03:00"                                     # local time; blank = no nightly leg
+on_build_change = true                                   # also re-check when the host's llama.cpp build changes
+regression_pct = 15.0                                    # alert when decode t/s drops this much vs the pin
+
 [manager.audit]
 # Admin action audit log. Entries older than retention_days are purged every
 # 24 h and at start; 0 keeps everything (a 100,000-row cap still applies).

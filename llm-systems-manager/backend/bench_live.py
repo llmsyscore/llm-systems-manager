@@ -78,6 +78,17 @@ def latest_per_agent(conn, model_id: str) -> list[dict]:
     return out
 
 
+def hosts_for(rows: list, model_id: str) -> list[dict]:
+    """Fleet host rows for one model: loaded = online, model matches, not sleeping."""
+    out = []
+    for h in rows:
+        loaded = bool(h.get("online")) and (h.get("model") == model_id) and (h.get("state") != "sleeping")
+        out.append({"agent_id": h["agent_id"], "hostname": h.get("hostname") or h["agent_id"][:8],
+                    "online": bool(h.get("online")), "loaded": loaded, "state": h.get("state")})
+    out.sort(key=lambda r: (not r["loaded"], str(r["hostname"]).lower()))
+    return out
+
+
 def _host_row(agent_id: str, hostname: str) -> dict:
     return {"agent_id": agent_id, "hostname": hostname, "status": "queued", "error": None, "run_id": None,
             "started": None, "finished": None, "gen_tps": None, "agg_max_tps": None, "latency_s": None,
@@ -119,13 +130,7 @@ def register_routes(app, ctx, *, db_path: str, proxy: Callable, agent_by_token: 
     jobs_lock = threading.Lock()
 
     def _hosts_for(model_id: str) -> list[dict]:
-        rows = []
-        for h in (fleet_hosts() if fleet_hosts else []):
-            loaded = bool(h.get("online")) and (h.get("model") == model_id) and (h.get("state") != "sleeping")
-            rows.append({"agent_id": h["agent_id"], "hostname": h.get("hostname") or h["agent_id"][:8],
-                         "online": bool(h.get("online")), "loaded": loaded, "state": h.get("state")})
-        rows.sort(key=lambda r: (not r["loaded"], str(r["hostname"]).lower()))
-        return rows
+        return hosts_for(fleet_hosts() if fleet_hosts else [], model_id)
 
     def _public_job(job: dict) -> dict:
         hosts = [dict(h) for h in job["hosts"]]
