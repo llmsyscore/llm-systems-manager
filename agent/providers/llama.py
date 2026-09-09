@@ -2030,6 +2030,8 @@ def _bench_run_one(model_id: str, tool: str, switches: list, env: dict) -> None:
                     "error": f"no HF reference found for {model_id}"})
         return
     jsonl_flags = ["-o", "jsonl"]
+    energy = _bl.PowerIntegrator(_live_power_w)
+    tokens_total = 0
     cmd = [tool_path]
     for sw in switches or []:
         flag = (sw.get("flag") or "").strip()
@@ -2051,69 +2053,89 @@ def _bench_run_one(model_id: str, tool: str, switches: list, env: dict) -> None:
     _bench_proc = proc
     try: _bench_pgid = os.getpgid(proc.pid)
     except Exception: _bench_pgid = None
+    stopped = False
 
-    latest_gen = None
-    latest_ppt = None
-    latest_pg = None
-    result_rows: list = []
+    try:
+        energy.start()
+        latest_gen = None
+        latest_ppt = None
+        latest_pg = None
+        result_rows: list = []
 
-    def _drain_stderr():
-        with best_effort("bench: drain subprocess stderr", log=log):
-            for line in iter(proc.stderr.readline, ""):
-                if not line: break
-                txt = _BENCH_ANSI_RE.sub("", line.rstrip("\n"))
-                if txt:
-                    _bench_put({"type": "line", "model_id": model_id, "text": txt})
-    threading.Thread(target=_drain_stderr, daemon=True).start()
+        def _drain_stderr():
+            with best_effort("bench: drain subprocess stderr", log=log):
+                for line in iter(proc.stderr.readline, ""):
+                    if not line: break
+                    txt = _BENCH_ANSI_RE.sub("", line.rstrip("\n"))
+                    if txt:
+                        _bench_put({"type": "line", "model_id": model_id, "text": txt})
+        threading.Thread(target=_drain_stderr, daemon=True).start()
 
-    for raw in iter(proc.stdout.readline, ""):
-        if _bench_cancel_event.is_set():
-            break
-        if not raw:
-            break
-        line = _BENCH_ANSI_RE.sub("", raw.rstrip("\n"))
-        if not line:
-            continue
-        _bench_put({"type": "line", "model_id": model_id, "text": line})
-        try:
-            row = json.loads(line)
-        except Exception:
-            continue
-        gen_tps, ppt_tps, pg_tps = _bench_parse_row(row, tool)
-        if gen_tps is None and ppt_tps is None and pg_tps is None:
-            continue
-        if gen_tps is not None: latest_gen = gen_tps
-        if ppt_tps is not None: latest_ppt = ppt_tps
-        if pg_tps is not None: latest_pg = pg_tps
-        result_row = {
-            "n_prompt": int(row.get("n_prompt", 0) or 0),
-            "n_gen":    int(row.get("n_gen", 0) or 0),
-            "n_depth":  int(row.get("n_depth", 0) or 0),
-            "n_batch":  int(row.get("n_batch", 0) or 0),
-            "n_ubatch": int(row.get("n_ubatch", 0) or 0),
-            "avg_ts":   float(row.get("avg_ts", 0) or 0),
-        }
-        result_rows.append(result_row)
-        _bench_put({"type": "result", "model_id": model_id,
-                    "gen_tps": gen_tps, "ppt_tps": ppt_tps, "pg_tps": pg_tps,
-                    **result_row})
+        for raw in iter(proc.stdout.readline, ""):
+            if _bench_cancel_event.is_set():
+                break
+            if not raw:
+                break
+            line = _BENCH_ANSI_RE.sub("", raw.rstrip("\n"))
+            if not line:
+                continue
+            _bench_put({"type": "line", "model_id": model_id, "text": line})
+            try:
+                row = json.loads(line)
+            except Exception:
+                continue
+            try:
+                gen_tps, ppt_tps, pg_tps = _bench_parse_row(row, tool)
+                if gen_tps is None and ppt_tps is None and pg_tps is None:
+                    continue
+                result_row = {
+                    "n_prompt": int(row.get("n_prompt", 0) or 0),
+                    "n_gen":    int(row.get("n_gen", 0) or 0),
+                    "n_depth":  int(row.get("n_depth", 0) or 0),
+                    "n_batch":  int(row.get("n_batch", 0) or 0),
+                    "n_ubatch": int(row.get("n_ubatch", 0) or 0),
+                    "avg_ts":   float(row.get("avg_ts", 0) or 0),
+                    "type_k":   str(row.get("type_k") or ""),
+                    "type_v":   str(row.get("type_v") or ""),
+                }
+                s = row.get("samples_ns")
+                reps = len(s) if isinstance(s, list) and s else 1
+            except (TypeError, ValueError):
+                continue
+            if gen_tps is not None: latest_gen = gen_tps
+            if ppt_tps is not None: latest_ppt = ppt_tps
+            if pg_tps is not None: latest_pg = pg_tps
+            result_rows.append(result_row)
+            tokens_total += (result_row["n_prompt"] + result_row["n_gen"]) * reps
+            _bench_put({"type": "result", "model_id": model_id,
+                        "gen_tps": gen_tps, "ppt_tps": ppt_tps, "pg_tps": pg_tps,
+                        **result_row})
 
-    proc.wait()
-    _bench_proc = None
-    cancelled = _bench_cancel_event.is_set()
-    mx = _shared.bench_maxes(result_rows)
-    measured = any(v is not None for v in mx.values())
-    _bench_put({"type": "model_done", "model_id": model_id,
-                "ok": (not cancelled) and proc.returncode == 0,
-                "rc": proc.returncode, "cancelled": cancelled,
-                "last_gen_tps": latest_gen, "last_ppt_tps": latest_ppt,
-                "last_pg_tps": latest_pg, "results": result_rows,
-                "max_gen_tps": mx["gen"], "max_ppt_tps": mx["ppt"],
-                "max_pg_tps": mx["pg"], "run_id": _bench_replay.run_id})
-    _shared.post_tool_run(
-        _require_ctx(), "benchmark", "llama", _bench_replay.run_id, model_id,
-        measured, {"gen_tps": mx["gen"], "ppt_tps": mx["ppt"],
-                   "pg_tps": mx["pg"], "bench_tool": tool})
+        proc.wait()
+        _bench_proc = None
+        wh, src = energy.stop()
+        stopped = True
+        wh_per_ktok = (wh / (tokens_total / 1000.0)) if wh is not None and tokens_total > 0 else None
+        cancelled = _bench_cancel_event.is_set()
+        mx = _shared.bench_maxes(result_rows)
+        measured = any(v is not None for v in mx.values())
+        _bench_put({"type": "model_done", "model_id": model_id,
+                    "ok": (not cancelled) and proc.returncode == 0,
+                    "rc": proc.returncode, "cancelled": cancelled,
+                    "last_gen_tps": latest_gen, "last_ppt_tps": latest_ppt,
+                    "last_pg_tps": latest_pg, "results": result_rows,
+                    "max_gen_tps": mx["gen"], "max_ppt_tps": mx["ppt"],
+                    "max_pg_tps": mx["pg"], "run_id": _bench_replay.run_id,
+                    "energy_wh": wh, "energy_source": src,
+                    "wh_per_ktok": wh_per_ktok, "tokens": tokens_total})
+        _shared.post_tool_run(
+            _require_ctx(), "benchmark", "llama", _bench_replay.run_id, model_id,
+            measured, {"gen_tps": mx["gen"], "ppt_tps": mx["ppt"],
+                       "pg_tps": mx["pg"], "bench_tool": tool,
+                       "wh_per_ktok": wh_per_ktok})
+    finally:
+        if not stopped:
+            energy.stop()
 
 
 def _bench_run_all(model_ids: list, tool: str, switches: list):
@@ -2440,7 +2462,7 @@ def _bench_live_run_all(req: dict, server: dict, python: str, script: str) -> No
         run_dir.mkdir(parents=True, exist_ok=True)
         env = dict(os.environ, PYTHONUNBUFFERED="1", HF_HUB_DISABLE_PROGRESS_BARS="1")
         _bench_put({"type": "model_start", "model_id": model_id, "run_id": run_id,
-                    "bench": req["bench"], "levels": req["concurrency"],
+                    "bench": req["bench"], "levels": req["concurrency"], "matrix": req.get("matrix"),
                     "cmd": " ".join(_bl.build_cmd(python, script, server["url"], req, req["concurrency"][0], "<run>/level-N.json"))})
         energy.start()
 
@@ -2455,36 +2477,43 @@ def _bench_live_run_all(req: dict, server: dict, python: str, script: str) -> No
             _bench_proc = None
             _bench_pgid = None
 
-        for level in req["concurrency"]:
-            if _bench_cancel_event.is_set():
-                ok = False
-                break
-            out_path = run_dir / f"level-{level}.json"
-            _bench_put({"type": "level_start", "model_id": model_id, "level": level,
-                        "concurrency": level, "samples": None})
-            t0 = time.monotonic()
-            rc, cancelled, elapsed = _bl.run_level_subprocess(
-                _bl.build_cmd(python, script, server["url"], req, level, str(out_path)),
-                env, _bench_put, model_id, level, _bench_cancel_event, _track, _untrack)
-            # The script's own timer excludes dataset load; agent wall is the fallback.
-            wall = elapsed if elapsed is not None else (time.monotonic() - t0)
-            if cancelled:
-                ok = False
-                break
-            try:
-                payload = json.loads(out_path.read_text(encoding="utf-8"))
-            except (OSError, ValueError):
-                ok = False
-                _bench_put({"type": "line", "model_id": model_id, "text": f"level {level}: no output (rc={rc})"})
-                break
-            summ = _bl.level_summary(payload, wall)
-            row = {"level": level, "concurrency": level, "wall_s": round(wall, 3), "rc": rc, **summ}
-            levels.append(row)
-            if req["categories"] == "all":
-                _bl.write_marker(cfg.AGENT_INSTALL_DIR, req["bench"], [r.get("category") for r in summ["rows"] if r.get("category")])
-            _bench_put({"type": "level_result", "model_id": model_id, **row})
-            if rc not in (0, 1):
-                ok = False
+        stop = False
+        for cell in req["cells"]:
+            creq = {**req, "bench": cell["bench"], "osl": cell["osl"]}
+            for level in req["concurrency"]:
+                if _bench_cancel_event.is_set():
+                    ok = False; stop = True
+                    break
+                out_path = run_dir / f"level-{cell['bench']}-{cell['osl']}-{level}.json"
+                _bench_put({"type": "level_start", "model_id": model_id, "level": level,
+                            "concurrency": level, "samples": None,
+                            "bench": cell["bench"], "osl": cell["osl"]})
+                t0 = time.monotonic()
+                rc, cancelled, elapsed = _bl.run_level_subprocess(
+                    _bl.build_cmd(python, script, server["url"], creq, level, str(out_path)),
+                    env, _bench_put, model_id, level, _bench_cancel_event, _track, _untrack)
+                # The script's own timer excludes dataset load; agent wall is the fallback.
+                wall = elapsed if elapsed is not None else (time.monotonic() - t0)
+                if cancelled:
+                    ok = False; stop = True
+                    break
+                try:
+                    payload = json.loads(out_path.read_text(encoding="utf-8"))
+                except (OSError, ValueError):
+                    ok = False; stop = True
+                    _bench_put({"type": "line", "model_id": model_id, "text": f"level {level}: no output (rc={rc})"})
+                    break
+                summ = _bl.level_summary(payload, wall)
+                row = {"level": level, "concurrency": level, "bench": cell["bench"], "osl": cell["osl"],
+                       "wall_s": round(wall, 3), "rc": rc, **summ}
+                levels.append(row)
+                if req["categories"] == "all":
+                    _bl.write_marker(cfg.AGENT_INSTALL_DIR, cell["bench"], [r.get("category") for r in summ["rows"] if r.get("category")])
+                _bench_put({"type": "level_result", "model_id": model_id, **row})
+                if rc not in (0, 1):
+                    ok = False; stop = True
+                    break
+            if stop:
                 break
     except Exception as e:
         log.error("live bench error: %s", e, exc_info=True)

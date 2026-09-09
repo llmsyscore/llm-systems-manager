@@ -14,6 +14,7 @@ from typing import Any, Callable, Optional
 
 BENCHES = ("qualitative", "throughput_1k", "throughput_2k", "throughput_8k",
            "throughput_16k", "throughput_32k")
+MATRIX_MAX_CELLS = 24
 SCRIPT_COMMIT = "67672dc5b76f8bc17785a19d3dc6d1463fc2902c"
 SCRIPT_URL = ("https://raw.githubusercontent.com/ggml-org/llama.cpp/"
               f"{SCRIPT_COMMIT}/tools/server/bench/speed-bench/speed_bench.py")
@@ -84,6 +85,29 @@ def validate_run_request(body: dict) -> dict:
     osl = _int(body.get("osl", 1024), "osl")
     if not 16 <= osl <= 8192:
         raise ValueError("osl out of range")
+    matrix = body.get("matrix")
+    cells = None
+    if matrix is not None:
+        if not isinstance(matrix, dict):
+            raise ValueError("matrix must be an object")
+        benches = matrix.get("benches")
+        osls = matrix.get("osls")
+        if not isinstance(benches, list) or not benches or len(benches) > 6:
+            raise ValueError("matrix.benches must be 1-6 bench sets")
+        benches = [str(b).strip() for b in benches]
+        if any(b not in BENCHES for b in benches):
+            raise ValueError("unknown bench")
+        if len(set(benches)) != len(benches):
+            raise ValueError("matrix.benches repeats a bench")
+        if not isinstance(osls, list) or not osls or len(osls) > 4:
+            raise ValueError("matrix.osls must be 1-4 output lengths")
+        osls = [_int(o, "osl") for o in osls]
+        if any(not 16 <= o <= 8192 for o in osls):
+            raise ValueError("osl out of range")
+        if len(set(osls)) != len(osls):
+            raise ValueError("matrix.osls repeats a length")
+        cells = [{"bench": b, "osl": o} for b in benches for o in osls]
+        bench, osl = benches[0], osls[0]
     limit = _int(body.get("limit", 8), "limit")
     if not 1 <= limit <= 64:
         raise ValueError("limit out of range")
@@ -93,6 +117,8 @@ def validate_run_request(body: dict) -> dict:
     conc = [_int(c, "concurrency") for c in conc]
     if any(not 1 <= c <= 64 for c in conc):
         raise ValueError("concurrency level out of range")
+    if cells and len(cells) * len(conc) > MATRIX_MAX_CELLS:
+        raise ValueError("matrix too large (max 24 cells x levels)")
     timeout_s = _int(body.get("timeout_s", 600), "timeout_s")
     if not 30 <= timeout_s <= 3600:
         raise ValueError("timeout_s out of range")
@@ -105,7 +131,9 @@ def validate_run_request(body: dict) -> dict:
     base = str(base).strip()[:64] if base else None
     return {"model_id": model_id, "bench": bench, "categories": cats, "osl": osl,
             "limit": limit, "concurrency": conc, "timeout_s": timeout_s,
-            "extra_inputs": extra, "baseline_run_id": base}
+            "extra_inputs": extra, "baseline_run_id": base,
+            "matrix": ({"benches": benches, "osls": osls} if cells else None),
+            "cells": cells or [{"bench": bench, "osl": osl}]}
 
 
 def build_cmd(python: str, script: str, server_url: str, req: dict, level: int, out_path: str) -> list[str]:

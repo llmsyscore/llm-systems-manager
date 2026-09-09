@@ -159,6 +159,70 @@ def test_run_levels_emits_level_results_and_done(llama, tmp_path, monkeypatch):
     assert marker["qualitative"]["categories"] == ["coding"]
 
 
+def test_run_matrix_expands_cells_and_tags_events(llama, tmp_path, monkeypatch):
+    ctx = _Ctx(tmp_path)
+    monkeypatch.setattr(llama, "_require_ctx", lambda: ctx)
+    monkeypatch.setattr(llama, "_llama_check_enabled", lambda: None)
+    monkeypatch.setattr(llama, "_bench_active", False)
+    monkeypatch.setattr(llama, "_bench_live_server",
+                        lambda: {"up": True, "url": "http://127.0.0.1:9931", "models": [{"id": "org/m:Q4", "status": "loaded"}],
+                                 "loaded_id": "org/m:Q4", "slots_idle": 2, "slots_total": 2, "spec": None})
+    monkeypatch.setattr(llama._bl, "runtime_python", lambda inst, ov: ("/fake/python", "venv"))
+    monkeypatch.setattr(llama._bl, "script_path", lambda inst, root: (Path("/fake/speed_bench.py"), "ok"))
+    payload = {"summary": [{"category": "coding", "requests": 2, "turns": 2, "failed": 0, "avg_prompt_t_s": 2000.0,
+                            "avg_pred_t_s": 100.0, "avg_latency": 4.0, "draft_n": 0, "accepted": 0, "accept_rate": None},
+                           {"category": "overall", "requests": 2, "turns": 2, "failed": 0, "avg_prompt_t_s": 2000.0,
+                            "avg_pred_t_s": 100.0, "avg_latency": 4.0, "draft_n": 0, "accepted": 0, "accept_rate": None}],
+               "results": [{"ok": True, "completion_tokens": 200, "latency_s": 4.0}] * 2}
+    argvs = []
+
+    def fake_level(cmd, env, put, model_id, level, cancel, track, untrack):
+        argvs.append(cmd)
+        out = cmd[cmd.index("--output") + 1]
+        Path(out).parent.mkdir(parents=True, exist_ok=True)
+        Path(out).write_text(json.dumps(payload))
+        put({"type": "line", "model_id": model_id, "text": f"fake level {level}"})
+        return 0, False, 7.0
+    monkeypatch.setattr(llama._bl, "run_level_subprocess", fake_level)
+    monkeypatch.setattr(llama, "_live_power_w", lambda: (200.0, "psu"))
+    monkeypatch.setattr(llama._shared, "post_tool_run", lambda *a, **k: None)
+    monkeypatch.setattr(llama, "_bench_live_store", lambda doc: None)
+    done = threading.Event()
+    orig = llama._bench_live_run_all
+
+    def wrapped(*a, **k):
+        try:
+            orig(*a, **k)
+        finally:
+            done.set()
+    monkeypatch.setattr(llama, "_bench_live_run_all", wrapped)
+    matrix = {"benches": ["throughput_1k", "throughput_8k"], "osls": [256, 1024]}
+    out = llama.llama_bench_live_run({"model_id": "org/m:Q4", "matrix": matrix, "concurrency": [1]})
+    assert out["ok"] is True and out["run_id"]
+    assert done.wait(10)
+    events = _events(llama)
+    cells = [{"bench": "throughput_1k", "osl": 256}, {"bench": "throughput_1k", "osl": 1024},
+             {"bench": "throughput_8k", "osl": 256}, {"bench": "throughput_8k", "osl": 1024}]
+    level_results = [e for e in events if e["type"] == "level_result"]
+    assert len(level_results) == 4
+    for e, cell in zip(level_results, cells):
+        assert e["bench"] == cell["bench"] and e["osl"] == cell["osl"] and e["concurrency"] == 1
+    level_starts = [e for e in events if e["type"] == "level_start"]
+    assert len(level_starts) == 4
+    for e, cell in zip(level_starts, cells):
+        assert e["bench"] == cell["bench"] and e["osl"] == cell["osl"]
+    md = next(e for e in events if e["type"] == "model_done")
+    assert len(md["levels"]) == 4
+    for row, cell in zip(md["levels"], cells):
+        assert row["bench"] == cell["bench"] and row["osl"] == cell["osl"]
+    assert md["config"]["matrix"] == matrix
+    last_argv = argvs[-1]
+    i = last_argv.index("--bench")
+    assert last_argv[i + 1] == "throughput_8k"
+    j = last_argv.index("--osl")
+    assert last_argv[j + 1] == "1024"
+
+
 def test_autotune_refuses_while_bench_active(llama, tmp_path, monkeypatch):
     ctx = _Ctx(tmp_path)
     monkeypatch.setattr(llama, "_require_ctx", lambda: ctx)

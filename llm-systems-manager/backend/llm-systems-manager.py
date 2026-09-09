@@ -170,7 +170,7 @@ def _local_hostname() -> str:
 # banner reads it. Bump suffix (-1, -2, …) for same-day iterations; roll
 # the date for a new day's first change.
 # ---------------------------------------------------------------------------
-__version__ = "v2026.09.08-7"
+__version__ = "v2026.09.08-11"
 
 # Wall-clock at first import (Cheroot main process); the shutdown banner
 # reads it for the uptime line.
@@ -2019,6 +2019,19 @@ def _finite_or_none(value) -> "float | None":
     return f if math.isfinite(f) else None
 
 
+def _extra_json_whitelist(extra) -> "dict | None":
+    """Keep only the known energy fields from a client-supplied extra_json dict."""
+    if not isinstance(extra, dict):
+        return None
+    src = extra.get("energy_source")
+    out = {
+        "wh_per_ktok": _finite_or_none(extra.get("wh_per_ktok")),
+        "energy_wh": _finite_or_none(extra.get("energy_wh")),
+        "energy_source": (str(src)[:32] or None) if src is not None else None,
+    }
+    return out if any(v is not None for v in out.values()) else None
+
+
 @app.route("/api/benchmark/results", methods=["GET"])
 def benchmark_results():
     try:
@@ -2072,12 +2085,15 @@ def benchmark_store():
         avg_pg_tps  = _finite_or_none(data.get("avg_pg_tps"))
         bench_tool  = data.get("bench_tool") or ""
         switches    = data.get("switches") or []
-        extra       = data.get("extra_json")
         if not model_id:
             return jsonify({"ok": False, "error": "model_id required"}), 400
         provider, perr = _bench_provider(data.get("provider"))
         if perr:
             return jsonify({"ok": False, "error": perr}), 400
+        # Only llama's extra_json carries our energy fields; other providers
+        # (e.g. vllm-bench-serve stats) keep their own shape untouched.
+        extra = _extra_json_whitelist(data.get("extra_json")) if provider == "llama" \
+            else (data.get("extra_json") if isinstance(data.get("extra_json"), dict) else None)
         agent = _request_agent(provider)
         agent_id = (agent or {}).get("agent_id") or ""
         from datetime import datetime, timezone

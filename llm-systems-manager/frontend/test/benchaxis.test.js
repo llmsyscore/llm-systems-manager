@@ -102,4 +102,22 @@ describe('computeBenchAxisOptions', () => {
       k => (k === 'n_depth' ? 'Depth (n_depth)' : k));
     expect(r.xOptions.find(o => o.v === 'n_depth').t).toBe('Depth (n_depth)');
   });
+
+  it('treats type_k/type_v/kv strings as sweep dimensions and prefers kv as default X', () => {
+    const rows = [
+      { seq: 0, avg_ts: 50, type_k: 'f16', type_v: 'f16', kv: 'f16/f16', n_depth: 0 },
+      { seq: 1, avg_ts: 48, type_k: 'q8_0', type_v: 'q8_0', kv: 'q8_0/q8_0', n_depth: 0 },
+    ];
+    const o = computeBenchAxisOptions(rows, []);
+    expect(o.xOptions.map(x => x.v)).toEqual(['kv', 'type_k', 'type_v', 'seq']);
+    expect(o.defaultX).toBe('kv');
+  });
+  it('ignores other string fields like series and model_id', () => {
+    const rows = [{ seq: 0, avg_ts: 1, series: 'ppt', model_id: 'a' }, { seq: 1, avg_ts: 2, series: 'gen', model_id: 'b' }];
+    expect(computeBenchAxisOptions(rows, []).xOptions.map(x => x.v)).toEqual(['seq']);
+  });
+  it('kv wins over n_depth for default X when both vary', () => {
+    const rows = [{ seq: 0, avg_ts: 1, kv: 'a/a', n_depth: 0 }, { seq: 1, avg_ts: 1, kv: 'b/b', n_depth: 8192 }];
+    expect(computeBenchAxisOptions(rows, []).defaultX).toBe('kv');
+  });
 });

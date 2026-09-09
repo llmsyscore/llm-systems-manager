@@ -143,6 +143,11 @@ function _benchSetState(state) {
 
 function _rechartBench() {
   _benchAxisTouched = true;   // user picked an axis — stop overriding with the default
+  _benchReplotAll();
+}
+
+// Relabels the axes and re-plots every stored row against the current axis selections.
+function _benchReplotAll() {
   if (!_benchChart) return;
   const xAxis = document.getElementById('benchXAxis')?.value || 'seq';
   // The bar chart's x scale is always a category — changing axes only re-plots
@@ -153,7 +158,6 @@ function _rechartBench() {
   const yAxis = document.getElementById('benchYAxis')?.value || 'avg_ts';
   const ys = _benchChart.options?.scales?.y;
   if (ys && ys.title) { ys.title.text = yAxis === 'ms_tok' ? 'ms/tok' : yAxis === 'avg_ts' ? 't/s' : yAxis; }
-  // Clear and re-plot every stored row against the newly-selected axes.
   _benchChart.data.datasets.forEach(d => { d.data = []; });
   _benchRawRows.forEach(r => {
     const dsIdx = _benchModelDatasets[r.model_id];
@@ -175,6 +179,9 @@ const _BENCH_AXIS_LABELS = {
   // Synthetic axes
   time:        'Time (run order)',
   seq:         'Sequence # (run order)',
+  kv:          'KV cache type (K/V)',
+  type_k:      'K cache type',
+  type_v:      'V cache type',
   // llama-bench JSONL fields
   n_prompt:    'Prompt tokens (n_prompt)',
   n_gen:       'Generated tokens (n_gen)',
@@ -232,6 +239,7 @@ const _BENCH_AXIS_SHORT = {
   load_mode:    'lm',
   type_k:       'ctk',
   type_v:       'ctv',
+  kv:           'kv',
 };
 
 // Dynamically populate axis selects from numeric keys found in raw rows
@@ -244,10 +252,12 @@ function _benchAxisOptsFallback(rows, switches, labelFn) {
   const SKIP = new Set(['ts', 'seq', 'gen_tps', 'ppt_tps', 'pg_tps', 'model_id', 'avg_ts', 'ms_tok']);
   const label = typeof labelFn === 'function' ? labelFn : (k) => k;
   rows = Array.isArray(rows) ? rows : [];
+  const STR_KEYS = new Set(['type_k', 'type_v', 'kv']);
   const distinct = {};
   rows.forEach((r) => {
     Object.entries(r || {}).forEach(([k, v]) => {
-      if (SKIP.has(k) || typeof v !== 'number') return;
+      if (SKIP.has(k)) return;
+      if (typeof v !== 'number' && !(typeof v === 'string' && STR_KEYS.has(k))) return;
       (distinct[k] = distinct[k] || new Set()).add(v);
     });
   });
@@ -270,7 +280,7 @@ function _benchAxisOptsFallback(rows, switches, labelFn) {
     { v: 'ms_tok', t: 'Milliseconds per token' },
     ...fieldKeys.filter((k) => k !== 'avg_ts').map((k) => ({ v: k, t: label(k) })),
   ];
-  const defaultX = fieldKeys.includes('n_depth') ? 'n_depth' : (fieldKeys[0] || 'seq');
+  const defaultX = fieldKeys.includes('kv') ? 'kv' : (fieldKeys.includes('n_depth') ? 'n_depth' : (fieldKeys[0] || 'seq'));
   return { xOptions, yOptions, defaultX, defaultY: 'avg_ts' };
 }
 
@@ -446,11 +456,17 @@ function _benchPushPoint(msg) {
   Object.entries(msg).forEach(([k, v]) => {
     if (typeof v === 'number' && k !== 'gen_tps' && k !== 'ppt_tps' && k !== 'pg_tps') raw[k] = v;
   });
+  if (typeof msg.type_k === 'string' && msg.type_k) raw.type_k = msg.type_k;
+  if (typeof msg.type_v === 'string' && msg.type_v) raw.type_v = msg.type_v;
+  if (raw.type_k && raw.type_v) raw.kv = raw.type_k + '/' + raw.type_v;
   _benchRawRows.push(raw);
   // Axis-option update is a side-effect — never let it abort chart plotting below.
+  const xBefore = document.getElementById('benchXAxis')?.value;
   try { _updateBenchAxisOpts(); } catch (e) { console.warn('bench axis-opts update failed', e); }
 
   if (!_benchChart) return;
+  // A flipped default X axis re-plots every stored row so earlier points keep the same category scale.
+  if (xBefore !== undefined && document.getElementById('benchXAxis')?.value !== xBefore) { _benchReplotAll(); return; }
   const dsIdx = _benchModelDatasets[msg.model_id];
   if (dsIdx === undefined) return;
   let x = _benchGetX(raw);
@@ -631,8 +647,8 @@ const BENCH_SWITCH_DEFS = {
     {flag:'-d',   label:'-d (depths)',       type:'text'},
     {flag:'-b',   label:'-b (batch)',        type:'text'},
     {flag:'-ub',  label:'-ub (ubatch)',      type:'text'},
-    {flag:'-ctk', label:'-ctk (K quant)',    type:'select', options:_BENCH_KV_QUANTS},
-    {flag:'-ctv', label:'-ctv (V quant)',    type:'select', options:_BENCH_KV_QUANTS},
+    {flag:'-ctk', label:'-ctk (K cache types)', type:'multi', options:_BENCH_KV_QUANTS},
+    {flag:'-ctv', label:'-ctv (V cache types)', type:'multi', options:_BENCH_KV_QUANTS},
     {flag:'-t',   label:'-t (threads)',      type:'text'},
   ],
 };
@@ -645,6 +661,18 @@ function _benchDefaultFor(tool, flag) {
   return (BENCH_DEFAULTS[tool] || []).find(s => s.flag === flag)?.value ?? '';
 }
 
+// Warns when -ctv selects a quantized V cache without -fa 1.
+function _benchKvHint() {
+  const hint = document.querySelector('#benchSwitchList .bench-sw-hint');
+  if (!hint) return;
+  const ctv = _benchSwitches.find(s => s.flag === '-ctv');
+  const fa = _benchSwitches.find(s => s.flag === '-fa');
+  const vals = String(ctv?.value ?? '').split(',').map(s => s.trim()).filter(Boolean);
+  const quantized = vals.some(v => v !== 'f16' && v !== 'bf16');
+  const faOk = !!fa && String(fa.value).trim() === '1';
+  hint.textContent = (quantized && !faOk) ? 'quantized V cache needs -fa 1' : '';
+}
+
 // Render the switches editor: one typed row per known switch (checkbox +
 // label + input/select), then a free-form custom section at the bottom.
 function _renderBenchSwitches() {
@@ -655,7 +683,7 @@ function _renderBenchSwitches() {
   const defs = BENCH_SWITCH_DEFS[tool] || [];
   const knownFlags = new Set(defs.map(d => d.flag));
 
-  const refresh = () => { _updateBenchSwitchLabel(); _updateBenchAxisOpts(); };
+  const refresh = () => { _updateBenchSwitchLabel(); _updateBenchAxisOpts(); _benchKvHint(); };
 
   defs.forEach(def => {
     const entry = _benchSwitches.find(s => s.flag === def.flag);
@@ -672,7 +700,29 @@ function _renderBenchSwitches() {
     lbl.addEventListener('click', () => cb.click());
 
     let input;
-    if (def.type === 'select') {
+    if (def.type === 'multi') {
+      input = document.createElement('span');
+      input.className = 'bench-sw-chips';
+      const cur = String(entry?.value ?? _benchDefaultFor(tool, def.flag) ?? '');
+      const on = new Set(cur.split(',').map(s => s.trim()).filter(Boolean));
+      if (!on.size) on.add(def.options[0]);
+      const csv = () => def.options.filter(o => on.has(o)).join(',');
+      input.value = csv();
+      def.options.forEach(opt => {
+        const chip = document.createElement('span');
+        chip.className = 'bench-chip' + (on.has(opt) ? ' on' : '');
+        chip.dataset.opt = opt; chip.textContent = opt;
+        chip.addEventListener('click', (e) => {
+          e.stopPropagation();
+          if (input.disabled) return;
+          if (on.has(opt)) { if (on.size === 1) return; on.delete(opt); } else on.add(opt);
+          chip.classList.toggle('on', on.has(opt));
+          input.value = csv();
+          input.dispatchEvent(new Event('change'));
+        });
+        input.appendChild(chip);
+      });
+    } else if (def.type === 'select') {
       input = document.createElement('select');
       const opts = [...def.options];
       const cur = entry?.value ?? _benchDefaultFor(tool, def.flag);
@@ -688,8 +738,9 @@ function _renderBenchSwitches() {
       input.type = def.type === 'number' ? 'number' : 'text';
       input.value = entry?.value ?? _benchDefaultFor(tool, def.flag);
     }
-    input.className = 'bench-input';
+    if (def.type !== 'multi') input.className = 'bench-input';
     input.disabled = !entry;
+    input.classList.toggle('off', !!input.disabled);
     input.addEventListener('change', () => {
       const sw = _benchSwitches.find(s => s.flag === def.flag);
       if (sw) { sw.value = input.value; refresh(); }
@@ -702,14 +753,21 @@ function _renderBenchSwitches() {
         _benchSwitches = _benchSwitches.filter(s => s.flag !== def.flag);
       }
       input.disabled = !cb.checked;
+      input.classList.toggle('off', !!input.disabled);
       refresh();
     });
 
     row.appendChild(cb);
     row.appendChild(lbl);
     row.appendChild(input);
+    if (def.flag === '-ctv') {
+      const hint = document.createElement('div');
+      hint.className = 'bench-sw-hint';
+      row.appendChild(hint);
+    }
     list.appendChild(row);
   });
+  _benchKvHint();
 
   // Custom section: free-form rows for anything outside the known set.
   const head = document.createElement('div');
@@ -922,12 +980,20 @@ async function runBenchmark() {
         const mx = msg.max_gen_tps === undefined
           ? _benchMaxes(msg.model_id)
           : { gen: msg.max_gen_tps, ppt: msg.max_ppt_tps, pg: msg.max_pg_tps };
-        _benchAddModelResultRow(msg.model_id, tool, mx);
+        const energy = { wh_per_ktok: msg.wh_per_ktok ?? null, energy_wh: msg.energy_wh ?? null,
+                          energy_source: msg.energy_source || null };
+        _benchAddModelResultRow(msg.model_id, tool, mx, energy);
         document.getElementById('benchResults').classList.add('shown');
         _recordToolRun('benchmark', {model_id: msg.model_id, gen_tps: mx.gen,
                                      ppt_tps: mx.ppt, pg_tps: mx.pg, bench_tool: tool,
                                      run_id: msg.run_id || _runIdOf(e),
+                                     wh_per_ktok: energy.wh_per_ktok,
                                      ok: mx.gen != null || mx.ppt != null || mx.pg != null});
+        if (energy.wh_per_ktok != null) {
+          _benchLogAppend(`<span class="bench-log-text">energy ${(energy.energy_wh ?? 0).toFixed(2)} Wh · ${energy.wh_per_ktok.toFixed(2)} Wh / 1k tokens (${_hEsc(energy.energy_source || '—')})</span>`);
+        } else if ('wh_per_ktok' in msg) {
+          _benchLogAppend(`<span class="bench-log-text">energy: no power reading</span>`);
+        }
       } else if (msg.type === 'done') {
         if (_benchEventSrc) { try { _benchEventSrc.close(); } catch(_){} _benchEventSrc = null; } if (typeof toolsSyncRunDot === 'function') toolsSyncRunDot();
         document.getElementById('benchRunBtn').disabled = false;
@@ -979,7 +1045,7 @@ function _benchRenderPlaceholder() {
   head.appendChild(name);
   const grid = document.createElement('div');
   grid.className = 'bench-result-grid';
-  ['Prompt', 'Generation', 'Combined'].forEach(label => {
+  ['Prompt', 'Generation', 'Combined', 'Energy'].forEach(label => {
     const card = document.createElement('div');
     card.className = 'bench-stat-card';
     const k = document.createElement('div');
@@ -1000,8 +1066,9 @@ function _benchRenderPlaceholder() {
 }
 
 // After a model finishes benchmarking, add a result row to the UI showing the best t/s for prompt, gen, and combined tests, and buttons to save or clear the benchmark data
-function _benchAddModelResultRow(modelId, tool, maxes) {
+function _benchAddModelResultRow(modelId, tool, maxes, energy) {
   const { ppt: maxPpt, gen: maxGen, pg: maxPg } = maxes || _benchMaxes(modelId);
+  const en = energy || {};
 
   const rows = document.getElementById('benchResultRows');
 
@@ -1027,7 +1094,7 @@ function _benchAddModelResultRow(modelId, tool, maxes) {
   saveBtn.textContent = '💾 Save';
   saveBtn.style.fontSize = '0.78em';
   saveBtn.addEventListener('click', () => {
-    saveBenchmark(modelId, maxGen, maxPpt, maxPg, tool, saveBtn);
+    saveBenchmark(modelId, maxGen, maxPpt, maxPg, tool, saveBtn, en.wh_per_ktok != null ? en : null);
   });
 
   const clearBtn = document.createElement('button');
@@ -1078,6 +1145,10 @@ function _benchAddModelResultRow(modelId, tool, maxes) {
   grid.appendChild(mkStat('Prompt', maxPpt, 't/s', 0));
   grid.appendChild(mkStat('Generation', maxGen, 't/s', 1));
   grid.appendChild(mkStat('Combined', maxPg, 't/s', 0));
+  const eTile = mkStat('Energy', en.wh_per_ktok, 'Wh/1k tok', 2);
+  if (en.wh_per_ktok == null) eTile.title = 'no power reading';
+  else if (en.energy_source) { const s = document.createElement('span'); s.className = 'bench-stat-src'; s.textContent = en.energy_source; eTile.querySelector('.bench-stat-k').appendChild(s); }
+  grid.appendChild(eTile);
 
   row.appendChild(head);
   row.appendChild(grid);
@@ -1127,16 +1198,18 @@ function _benchSetChartIdle(idle) {
 }
 
 // Save benchmark results for a model to the backend, then update local state and UI. Called when user clicks "Save" on a model's benchmark result row.
-function saveBenchmark(model_id, avg_gen_tps, avg_ppt_tps, avg_pg_tps, tool, saveBtn) {
+function saveBenchmark(model_id, avg_gen_tps, avg_ppt_tps, avg_pg_tps, tool, saveBtn, extra) {
   if (!model_id) return;
+  const body = {model_id, avg_gen_tps, avg_ppt_tps, avg_pg_tps, bench_tool: tool, switches: _benchSwitches};
+  if (extra && typeof extra === 'object') body.extra_json = extra;
   fetch('/api/benchmark/store', {
     method: 'POST',
     headers: {'Content-Type':'application/json'},
-    body: JSON.stringify({model_id, avg_gen_tps, avg_ppt_tps, avg_pg_tps, bench_tool: tool, switches: _benchSwitches})
+    body: JSON.stringify(body)
   }).then(r => r.json()).then(d => {
     if (!d.ok) { alert(d.error || 'Save failed'); return; }
     _benchData[model_id] = {model_id, avg_gen_tps, avg_ppt_tps, avg_pg_tps, bench_tool: tool,
-                            switches: _benchSwitches, ts: new Date().toISOString()};
+                            switches: _benchSwitches, ts: new Date().toISOString(), extra_json: extra || null};
     if (saveBtn) saveBtn.textContent = '✓ Saved';
     if (typeof renderModelCards === 'function') renderModelCards();
   }).catch(e => alert('Save failed: ' + e));

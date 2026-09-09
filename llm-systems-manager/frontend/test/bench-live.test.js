@@ -8,10 +8,15 @@ const BODY = `
   <div id="benchOffline"></div>
   <div id="benchLive" style="display:none">
     <div id="blPreflight"></div>
-    <div id="blPresets"><span class="bl-chip on" data-preset="chat">Chat</span><span class="bl-chip" data-preset="coding">Coding</span><span class="bl-chip" data-preset="rag">RAG</span><span class="bl-chip" data-preset="agentic">Agentic</span><span class="bl-chip" data-preset="custom">Custom</span></div>
-    <select id="blBench"><option>qualitative</option><option>throughput_1k</option><option>throughput_2k</option><option>throughput_8k</option><option>throughput_16k</option><option>throughput_32k</option></select>
+    <div id="blPresets"><span class="bl-chip on" data-preset="chat">Chat</span><span class="bl-chip" data-preset="coding">Coding</span><span class="bl-chip" data-preset="rag">RAG</span><span class="bl-chip" data-preset="agentic">Agentic</span><span class="bl-chip" data-preset="longctx">Long context</span><span class="bl-chip" data-preset="custom">Custom</span></div>
+    <div id="blBenchRow"><select id="blBench"><option>qualitative</option><option>throughput_1k</option><option>throughput_2k</option><option>throughput_8k</option><option>throughput_16k</option><option>throughput_32k</option></select></div>
     <div id="blCatsRow"><span class="bl-hint" id="blCatsHint">all</span><div id="blCats"></div></div>
-    <input id="blOsl" value="1024"><input id="blLimit" value="8">
+    <div id="blOslRow"><input id="blOsl" value="1024"></div><input id="blLimit" value="8">
+    <div class="bl-chips" id="blMatrixTgl"><span class="bl-chip" data-matrix="1">Prompt × output matrix</span></div>
+    <div id="blMatrixRows" style="display:none;">
+      <div class="bl-chips" id="blMatrixBench"><span class="bl-chip on" data-bench="throughput_1k">1k</span><span class="bl-chip" data-bench="throughput_2k">2k</span><span class="bl-chip on" data-bench="throughput_8k">8k</span><span class="bl-chip" data-bench="throughput_16k">16k</span><span class="bl-chip on" data-bench="throughput_32k">32k</span></div>
+      <input id="blMatrixOsl" value="256, 1024">
+    </div>
     <div class="bl-chips" id="blSweepChips"><span class="bl-chip on" data-conc="1">1</span><span class="bl-chip on" data-conc="2">2</span><span class="bl-chip on" data-conc="4">4</span><span class="bl-chip on" data-conc="8">8</span><span class="bl-chip" data-conc="16">16</span><span class="bl-chip" data-conc="32">32</span><span class="bl-chip" data-conc="custom">Custom</span></div>
     <div id="blSweepRow"><input id="blSweep" value="1, 2, 4, 8"></div>
     <input id="blTimeout" value="600"><textarea id="blExtra">{"temperature": 0}</textarea>
@@ -19,7 +24,9 @@ const BODY = `
     <button id="blRunBtn"></button><button id="blCancelBtn" style="display:none"></button><span id="blEstimate"></span>
     <div class="bl-notice" id="blNotice" style="display:none"></div>
     <span id="blStatus"></span><div id="blStrip"></div><span id="blElapsed"></span><div id="blProgress"><i></i></div><div id="blTiles"></div>
-    <canvas id="blChart"></canvas><div class="bl-chart-empty" id="blChartEmpty"></div><div id="blChartCaption"></div><div id="blLevelSeg"></div><div id="blTable"></div><div id="blLog"></div>
+    <canvas id="blChart"></canvas><div class="bl-chart-empty" id="blChartEmpty"></div><div id="blChartCaption"></div>
+    <div class="mc-seg" id="blCellSeg" style="display:none"></div><div id="blLevelSeg"></div><div id="blTable"></div><div id="blLog"></div>
+    <div class="bl-card" id="blHeatCard" style="display:none"><span id="blHeatMeta"></span><div id="blHeat"></div><div id="blHeatCaption"></div></div>
     <button id="blSetupBtn" style="display:none"></button>
   </div>
 `;
@@ -35,7 +42,7 @@ const STUBS = `
   window.SG = { open: (opts) => { window.__sse = opts; return { close() {} }; } };
   window.toolsSyncRunDot = function () {};
   HTMLCanvasElement.prototype.getContext = function () { return {}; };
-  window.Chart = function (ctx, cfg) { this.data = cfg.data; this.options = cfg.options; };
+  window.Chart = function (ctx, cfg) { this.data = cfg.data; this.options = cfg.options; window.__chart = this; };
   Chart.prototype.update = function () {}; Chart.prototype.resize = function () {}; Chart.prototype.destroy = function () {};
   window.__fetches = [];
   window.fetch = function (url, opts) {
@@ -228,6 +235,116 @@ describe('BL presets and mode', () => {
     win.__sse.onEvent({ type: 'done', ok: true });
     await flush();
     expect(win.__fetches.some(([u]) => u === '/api/benchmark/live/run')).toBe(false);
+  });
+});
+
+describe('BL matrix + heatmap (#883)', () => {
+  it('Long context preset turns the matrix on with 1k/8k/32k × 256,1024 at concurrency 1', async () => {
+    const win = boot();
+    await flush();
+    win.BL.applyPreset('longctx');
+    const c = win.BL._config();
+    expect(c.matrix).toEqual({ benches: ['throughput_1k', 'throughput_8k', 'throughput_32k'], osls: [256, 1024] });
+    expect(c.bench).toBe('throughput_1k'); expect(c.osl).toBe(256);
+    expect(c.concurrency).toEqual([1]); expect(c.limit).toBe(4);
+    expect(win.document.getElementById('blBenchRow').style.display).toBe('none');
+  });
+  it('other presets turn the matrix off', async () => {
+    const win = boot();
+    await flush();
+    const before = win.BL._config().concurrency;
+    win.BL.applyPreset('longctx');
+    expect(win.BL._config().concurrency).toEqual([1]);
+    win.BL.applyPreset('chat');
+    expect(win.BL._config().matrix).toBeUndefined();
+    expect(win.document.getElementById('blBenchRow').style.display).toBe('');
+    expect(win.BL._config().concurrency).toEqual(before);
+  });
+  it('heatCells builds bench × osl grid from tagged levels at the lowest concurrency', () => {
+    const win = boot();
+    const levels = [
+      { concurrency: 1, bench: 'throughput_1k', osl: 256, all: { pred_tps: 50 } },
+      { concurrency: 1, bench: 'throughput_8k', osl: 256, all: { pred_tps: 40 } },
+      { concurrency: 1, bench: 'throughput_1k', osl: 1024, all: { pred_tps: 48 } },
+      { concurrency: 2, bench: 'throughput_1k', osl: 256, all: { pred_tps: 30 } },
+    ];
+    const h = win.BL.heatCells(levels);
+    expect(h.benches).toEqual(['throughput_1k', 'throughput_8k']);
+    expect(h.osls).toEqual([256, 1024]);
+    expect(h.get('throughput_1k', 256)).toBe(50);
+    expect(h.get('throughput_8k', 1024)).toBeNull();
+    expect(h.max).toBe(50);
+  });
+  it('heatmap card renders cells and caption after matrix level results', async () => {
+    const win = boot();
+    await flush();
+    win.BL._debugLevels([
+      { concurrency: 1, bench: 'throughput_1k', osl: 256, all: { pred_tps: 50, agg_pred_tps: 50 }, rows: [] },
+      { concurrency: 1, bench: 'throughput_32k', osl: 256, all: { pred_tps: 30, agg_pred_tps: 30 }, rows: [] },
+    ]);
+    expect(win.document.getElementById('blHeatCard').style.display).toBe('');
+    expect(win.document.querySelectorAll('#blHeat .bl-heat-cell').length).toBe(2);
+    expect(win.document.getElementById('blHeatCaption').textContent).toMatch(/32k.*40 %/);
+    expect(win.document.getElementById('blCellSeg').querySelectorAll('button').length).toBe(2);
+  });
+  it('heatmap guards zero/null cells against NaN (final review)', async () => {
+    const win = boot();
+    await flush();
+    win.BL._debugLevels([
+      { concurrency: 1, bench: 'throughput_1k', osl: 256, all: { pred_tps: 0, agg_pred_tps: 0 }, rows: [] },
+      { concurrency: 1, bench: 'throughput_32k', osl: 256, all: { pred_tps: null, agg_pred_tps: null }, rows: [] },
+    ]);
+    expect(win.document.getElementById('blHeat').innerHTML).not.toContain('NaN');
+    expect(win.document.getElementById('blHeatCaption').textContent).not.toContain('NaN');
+    expect(win.document.getElementById('blHeatCaption').textContent).toBe('');
+  });
+});
+
+describe('BL final-review fixes', () => {
+  it('warns when the agent ignored a submitted matrix', async () => {
+    const win = boot('BL.onOpen("org/m:Q4");');
+    await flush();
+    win.BL.applyPreset('longctx');
+    win.BL.run();
+    await flush();
+    win.__sse.onEvent({ type: 'model_done', run_id: 'r1', config: { bench: 'throughput_1k' }, levels: [], elapsed_s: 5 });
+    expect(win.document.getElementById('blLog').textContent).toContain('agent ignored the matrix');
+  });
+  it('does not warn when the agent honored the matrix or none was requested', async () => {
+    const win = boot('BL.onOpen("org/m:Q4");');
+    await flush();
+    win.BL.applyPreset('longctx');
+    win.BL.run();
+    await flush();
+    win.__sse.onEvent({ type: 'model_done', run_id: 'r1', config: { matrix: { benches: ['throughput_1k'], osls: [256] } }, levels: [], elapsed_s: 5 });
+    win.__sse.onEvent({ type: 'done', ok: true });
+    expect(win.document.getElementById('blLog').textContent).not.toContain('agent ignored the matrix');
+    win.BL.applyPreset('chat');
+    win.BL.run();
+    await flush();
+    win.__sse.onEvent({ type: 'model_done', run_id: 'r1', config: { bench: 'qualitative' }, levels: [], elapsed_s: 5 });
+    expect(win.document.getElementById('blLog').textContent).not.toContain('agent ignored the matrix');
+  });
+  it('parseOsls dedups, sorts, bounds to 16-8192, caps at 4, and falls back to [256]', () => {
+    const win = boot();
+    expect(win.BL.parseOsls('1024, 256, 256, 8192, 16')).toEqual([16, 256, 1024, 8192]);
+    expect(win.BL.parseOsls('8, 100000, abc')).toEqual([256]);
+    expect(win.BL.parseOsls('16,32,64,128,256')).toEqual([16, 32, 64, 128]);
+    expect(win.BL.parseOsls('')).toEqual([256]);
+  });
+  it('the pending marker only lights up the active cell (#883 follow-up)', async () => {
+    const win = boot('BL.onOpen("org/m:Q4");');
+    await flush();
+    win.BL.run();
+    await flush();
+    win.BL._debugLevels([
+      { concurrency: 1, bench: 'throughput_1k', osl: 256, all: { pred_tps: 50, agg_pred_tps: 50 }, rows: [] },
+      { concurrency: 1, bench: 'throughput_32k', osl: 256, all: { pred_tps: 30, agg_pred_tps: 30 }, rows: [] },
+    ]);
+    win.__sse.onEvent({ type: 'level_start', concurrency: 2, bench: 'throughput_32k', osl: 256 });
+    expect(win.__chart.data.datasets[2].data.every(v => v === null)).toBe(true);
+    win.__sse.onEvent({ type: 'level_start', concurrency: 2, bench: 'throughput_1k', osl: 256 });
+    expect(win.__chart.data.datasets[2].data.some(v => v !== null)).toBe(true);
   });
 });
 

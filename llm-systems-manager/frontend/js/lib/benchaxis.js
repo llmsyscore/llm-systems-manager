@@ -6,10 +6,13 @@ function computeBenchAxisOptions(rows, switches, labelFn) {
   const label = typeof labelFn === 'function' ? labelFn : (k) => k;
   rows = Array.isArray(rows) ? rows : [];
 
+  // String-valued sweep dimensions (KV cache types); every other string is metadata.
+  const STR_KEYS = new Set(['type_k', 'type_v', 'kv']);
   const distinct = {};
   rows.forEach((r) => {
     Object.entries(r || {}).forEach(([k, v]) => {
-      if (SKIP.has(k) || typeof v !== 'number') return;
+      if (SKIP.has(k)) return;
+      if (typeof v !== 'number' && !(typeof v === 'string' && STR_KEYS.has(k))) return;
       (distinct[k] = distinct[k] || new Set()).add(v);
     });
   });
@@ -36,7 +39,7 @@ function computeBenchAxisOptions(rows, switches, labelFn) {
     { v: 'ms_tok', t: 'Milliseconds per token' },
     ...fieldKeys.filter((k) => k !== 'avg_ts').map((k) => ({ v: k, t: label(k) })),
   ];
-  const defaultX = fieldKeys.includes('n_depth') ? 'n_depth' : (fieldKeys[0] || 'seq');
+  const defaultX = fieldKeys.includes('kv') ? 'kv' : (fieldKeys.includes('n_depth') ? 'n_depth' : (fieldKeys[0] || 'seq'));
   return { xOptions, yOptions, defaultX, defaultY: 'avg_ts' };
 }
 

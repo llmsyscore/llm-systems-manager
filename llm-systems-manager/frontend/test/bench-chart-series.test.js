@@ -93,3 +93,25 @@ describe('benchmark chart series routing', () => {
     expect(new Set(colors).size).toBe(colors.length);
   });
 });
+
+describe('KV sweep re-plots earlier points when the default X axis flips (#886)', () => {
+  it('first KV group lands under its kv label, not the stale default', () => {
+    const win = runHarness({
+      sources: [STUBS, srcFile('js/bench-autotune.js')],
+      bodyHtml: '<canvas id="benchChart"></canvas><select id="benchXAxis"></select><select id="benchYAxis"></select>',
+      bootstrap: `
+        _benchAddModelDatasets('m1');
+        _benchPushPoint({ type: 'result', model_id: 'm1', gen_tps: null, ppt_tps: 900, n_prompt: 512, n_gen: 0, n_depth: 0, n_batch: 2048, n_ubatch: 512, avg_ts: 900, type_k: 'f16', type_v: 'f16' });
+        window.__xBefore = document.getElementById('benchXAxis').value;
+        _benchPushPoint({ type: 'result', model_id: 'm1', gen_tps: null, ppt_tps: 880, n_prompt: 512, n_gen: 0, n_depth: 0, n_batch: 2048, n_ubatch: 512, avg_ts: 880, type_k: 'q8_0', type_v: 'q8_0' });
+        window.__xAfter = document.getElementById('benchXAxis').value;
+        window.__ppt = _benchChart.data.datasets.find(d => d.label.endsWith(' ppt')).data.map(p => p.x);
+        window.__labels = _benchChart.data.labels;
+      `,
+    });
+    expect(win.__xBefore).toBe('seq');
+    expect(win.__xAfter).toBe('kv');
+    expect(win.__ppt).toEqual(['f16/f16', 'q8_0/q8_0']);
+    expect(win.__labels).toEqual(['f16/f16', 'q8_0/q8_0']);
+  });
+});
