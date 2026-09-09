@@ -55,7 +55,7 @@ Backend API endpoints consumed:
   <script src="/static/vendor/xterm.min.js?v=5.3.0"></script>
   <script src="/static/vendor/xterm-addon-fit.min.js?v=0.8.0"></script>
   <link rel="stylesheet" href="/static/css/fonts.css?v=2026.08.30-1">
-  <link rel="stylesheet" href="/static/css/base.css?v=2026.09.08-2">
+  <link rel="stylesheet" href="/static/css/base.css?v=2026.09.08-3">
   <link rel="stylesheet" href="/static/css/settings.css?v=2026.09.04-2">
   <link rel="stylesheet" href="/static/css/modelcards.css?v=2026.09.04-12">
   <link rel="stylesheet" href="/static/css/reportcard.css?v=2026.09.08-1">
@@ -2300,6 +2300,11 @@ Backend API endpoints consumed:
               <div class="bl-row"><label for="blBaseline">Baseline</label><select id="blBaseline" class="bl-sel"><option value="">none</option></select></div>
               <div class="bl-hint">Any past live run for this model can be a baseline.</div>
             </div></div>
+            <div class="bl-grp"><div class="bl-grp-h">Fleet <span class="bl-hint" id="blFleetHint"></span></div>
+              <div class="bl-chips" id="blFleetTgl"><span class="bl-chip" data-fleet="1">Run on every host with this model loaded</span></div>
+              <div id="blFleetHosts" class="bl-chips" style="display:none;"></div>
+              <div class="bl-hint" id="blFleetNote" style="display:none;">Same preset on each host, in parallel. Hosts are ranked when all finish.</div>
+            </div>
             <div class="bl-run">
               <button id="blRunBtn" class="mcbtn mcbtn-pri" type="button" onclick="BL.run()">▶ Run live benchmark</button>
               <button id="blSetupBtn" class="mcbtn mcbtn-ghost" type="button" style="display:none;" onclick="BL.setup()">Install bench runtime</button>
@@ -2314,6 +2319,8 @@ Backend API endpoints consumed:
               <span class="bl-acts"><button class="mcbtn mcbtn-ghost mcbtn-sm" type="button" id="blAttachBtn" style="display:none;" onclick="BL.addToReportCard()">Add to Report Card</button><button class="mcbtn mcbtn-ghost mcbtn-sm" type="button" onclick="BL.pinBaseline()">Set as baseline</button><button class="mcbtn mcbtn-ghost mcbtn-sm" type="button" onclick="BL.exportJson()">Export JSON</button></span></div>
             <div class="bl-prog" id="blProgress" style="display:none;"><i style="width:0%"></i></div>
             <div class="bl-tiles" id="blTiles"></div>
+            <div class="bl-card" id="blFleetCard" style="display:none;"><div class="bl-card-h"><h3>Fleet ranking</h3><span class="meta" id="blFleetMeta"></span><span class="gap"></span><span class="bl-hint" id="blFleetProgress"></span></div>
+              <div class="bl-card-b flush" style="overflow-x:auto"><div id="blFleetTable"></div></div></div>
             <div class="bl-card"><div class="bl-card-h"><h3>Throughput under load</h3><span class="meta" id="blChartMeta">aggregate decode t/s</span><span class="gap"></span>
               <div class="mc-seg" id="blCellSeg" style="display:none;"></div>
               <div class="bl-legend"><span><i></i>this run</span><span><i class="b"></i>baseline</span></div></div>
@@ -2509,7 +2516,7 @@ Backend API endpoints consumed:
 <script src="/static/js/llmcontrol-models.js?v=2026.09.08-1"></script>
 <script src="/static/js/editor-modern.js?v=2026.09.07-1"></script>
 <script src="/static/js/bench-autotune.js?v=2026.09.08-4"></script>
-<script src="/static/js/bench-live.js?v=2026.09.08-9"></script>
+<script src="/static/js/bench-live.js?v=2026.09.08-10"></script>
 <script src="/static/js/autotune.js?v=2026.09.08-7"></script>
 <script src="/static/js/lmstudio.js?v=2026.09.04-1"></script>
 <script src="/static/js/vllm.js?v=2026.09.04-1"></script>

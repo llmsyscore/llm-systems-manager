@@ -15,6 +15,8 @@
   let _model = null, _pre = null, _runs = [], _es = null, _chart = null;
   let _levels = [], _baseline = null, _lastDoc = null, _runId = null, _activeLevel = null, _lastTps = null, _cell = null;
   let _attached = false, _queued = null, _elapsedIv = null, _runStart = 0, _sweepLevels = [], _curLevel = null, _curCell = null, _busyOn = false, _lastCfg = null, _attachedRun = null;
+  let _fleetOn = false, _fleetHosts = [], _fleetJob = null, _fleetPoll = null, _fleetSel = null;
+  const FLEET_POLL_MS = 3000;
 
   function parseSweep(text) {
     const seen = new Set();
@@ -225,9 +227,12 @@
       c.classList.toggle('on'); markCustom(); updateEstimate();
     }); } });
     const mo = $('blMatrixOsl'); if (mo && !mo._bl) { mo._bl = 1; mo.addEventListener('input', () => { markCustom(); updateEstimate(); }); }
+    document.querySelectorAll('#blFleetTgl .bl-chip').forEach(c => { if (!c._bl) { c._bl = 1; c.addEventListener('click', () => toggleFleet()); } });
     syncSweepUi();
     const rb = $('blRunBtn'); if (rb && rb._blLabel == null) rb._blLabel = rb.textContent;
     if (_pre && _pre.busy && !running()) attach();
+    const savedJob = sessionStorage.getItem('bl.fleetJob');
+    if (savedJob && !running()) { _fleetJob = { job_id: savedJob, hosts: [] }; busy(true); startFleetPoll(); }
   }
   function mkChart() {
     const css = v => (window.cssVar ? cssVar(v) : '#888');
@@ -360,9 +365,154 @@
       return `<tr${tot ? ' class="tot"' : ''}><td>${esc(tot ? 'all' : r.category)}</td><td class="num">${tot ? r.requests : r.requests}</td><td class="num">${fmt(tot ? r.prompt_tps : r.avg_prompt_t_s, 0)}</td><td class="num">${fmt(cur)}<span class="dlt ${d.cls}">${base ? esc(d.text.replace(' vs baseline', '')) : ''}</span></td><td class="num">${fmt(tot ? r.latency_s : r.avg_latency, 1)} s</td><td class="num">${(tot ? r.accept_rate : r.accept_rate) == null ? '—' : Math.round((tot ? r.accept_rate : r.accept_rate) * 100) + ' %'}</td></tr>`; };
     host.innerHTML = `<table class="bl-rt"><thead><tr><th>Category</th><th class="num">samples</th><th class="num">prompt t/s</th><th class="num">decode t/s</th><th class="num">latency</th><th class="num">accept</th></tr></thead><tbody>${lv.rows.map(r => row(r, false)).join('')}${row(lv.all, true)}</tbody></table>`;
   }
+  // Ranks done hosts by decode t/s desc; the rest keep their original order untagged.
+  function rankHosts(hosts) {
+    const list = hosts || [];
+    const done = list.filter(h => h.status === 'done' && typeof h.gen_tps === 'number');
+    const sorted = done.slice().sort((a, b) => b.gen_tps - a.gen_tps);
+    const best = sorted.length ? sorted[0].gen_tps : null;
+    const ranked = sorted.map((h, i) => ({ ...h, rank: i + 1, pctOfBest: best ? h.gen_tps / best : null }));
+    const rest = list.filter(h => !(h.status === 'done' && typeof h.gen_tps === 'number')).map(h => ({ ...h, rank: null, pctOfBest: null }));
+    return [...ranked, ...rest];
+  }
+  function fleetOn() {
+    const chip = document.querySelector('#blFleetTgl .bl-chip[data-fleet="1"]');
+    return !!(chip && chip.classList.contains('on'));
+  }
+  function fleetAgents() {
+    const host = $('blFleetHosts'); if (!host) return [];
+    return [...host.querySelectorAll('.bl-chip.on')].map(c => c.dataset.agent).filter(Boolean);
+  }
+  async function loadFleetHosts() {
+    if (!_model) { _fleetHosts = []; return; }
+    let r;
+    try { r = await fetch('/api/benchmark/live/hosts?model_id=' + encodeURIComponent(_model)).then(res => res.json()); }
+    catch (_) { r = null; }
+    _fleetHosts = (r && r.hosts) || [];
+    const host = $('blFleetHosts');
+    if (host) {
+      host.innerHTML = _fleetHosts.map(h => {
+        const title = h.loaded ? '' : (h.online ? 'not loaded' : 'offline');
+        return `<span class="bl-chip ${h.loaded ? 'on' : 'off'}" data-agent="${esc(h.agent_id)}"${title ? ` title="${esc(title)}"` : ''}>${esc(h.hostname)}</span>`;
+      }).join('');
+      host.querySelectorAll('.bl-chip[data-agent]').forEach(c => { if (!c.classList.contains('off')) c.addEventListener('click', () => c.classList.toggle('on')); });
+    }
+    const hint = $('blFleetHint');
+    if (hint) { const total = _fleetHosts.length, loaded = _fleetHosts.filter(h => h.loaded).length; hint.textContent = `${loaded} of ${total} hosts`; }
+  }
+  function toggleFleet() {
+    const chip = document.querySelector('#blFleetTgl .bl-chip[data-fleet="1"]'); if (!chip) return;
+    _fleetOn = !chip.classList.contains('on');
+    chip.classList.toggle('on', _fleetOn);
+    const hostsEl = $('blFleetHosts'), note = $('blFleetNote');
+    if (_fleetOn) {
+      if (hostsEl) hostsEl.style.display = ''; if (note) note.style.display = '';
+      loadFleetHosts();
+    } else {
+      if (hostsEl) { hostsEl.style.display = 'none'; hostsEl.innerHTML = ''; }
+      if (note) note.style.display = 'none';
+      _fleetHosts = [];
+      const hint = $('blFleetHint'); if (hint) hint.textContent = '';
+    }
+    updateEstimate();
+  }
+  function renderFleet() {
+    const card = $('blFleetCard'); if (!card) return;
+    card.style.display = _fleetJob ? '' : 'none';
+    const table = $('blFleetTable');
+    if (!_fleetJob) { if (table) table.innerHTML = ''; return; }
+    const hosts = _fleetJob.hosts || [];
+    const meta = $('blFleetMeta');
+    if (meta) {
+      const modelShort = String(_fleetJob.model_id || _model || '').split('/').pop() || '';
+      const bench = (_fleetJob.config && _fleetJob.config.bench) || '';
+      meta.textContent = [modelShort, bench].filter(Boolean).join(' · ');
+    }
+    const prog = $('blFleetProgress');
+    if (prog) {
+      const total = hosts.length;
+      const finished = hosts.filter(h => h.status === 'done' || h.status === 'failed' || h.status === 'cancelled').length;
+      prog.textContent = (!_fleetJob.done && total) ? `${finished}/${total} finished` : '';
+    }
+    if (!table) return;
+    const ranked = rankHosts(hosts);
+    const bestGen = ranked.length && ranked[0].rank === 1 ? ranked[0].gen_tps : null;
+    const row = h => {
+      const done = h.status === 'done';
+      const bar = h.pctOfBest != null ? `<div class="bl-rank-bar" style="width:${Math.round(h.pctOfBest * 100)}%"></div>` : '';
+      const delta = (h.rank === 1 || h.pctOfBest == null || bestGen == null) ? '' : esc(deltaText(h.gen_tps, bestGen).text.replace(' vs baseline', ''));
+      const sel = done && _fleetSel === h.agent_id ? ' on' : '';
+      const attr = done ? ` data-agent="${esc(h.agent_id)}"` : '';
+      return `<tr class="bl-frow${sel}"${attr}>` +
+        `<td>${h.rank != null ? `<span class="bl-rank">${h.rank}</span>` : ''}</td>` +
+        `<td>${esc(h.hostname)}</td>` +
+        `<td><span${h.error ? ` title="${esc(h.error)}"` : ''}>${esc(h.status)}</span></td>` +
+        `<td class="num">${fmt(h.gen_tps)}${bar}</td>` +
+        `<td class="num">${fmt(h.agg_max_tps)}</td>` +
+        `<td class="num">${fmt(h.latency_s, 1)}</td>` +
+        `<td class="num">${h.accept_rate == null ? '—' : Math.round(h.accept_rate * 100) + ' %'}</td>` +
+        `<td class="num">${fmt(h.wh_per_ktok, 2)}</td>` +
+        `<td class="num">${delta}</td></tr>`;
+    };
+    table.innerHTML = `<table class="bl-rt"><thead><tr><th>#</th><th>Host</th><th>Status</th><th class="num">decode t/s</th>` +
+      `<th class="num">aggregate max</th><th class="num">latency</th><th class="num">accept</th><th class="num">Wh/1k</th><th class="num">Δ vs best</th></tr></thead>` +
+      `<tbody>${ranked.map(row).join('')}</tbody></table>`;
+    table.querySelectorAll('tr.bl-frow[data-agent]').forEach(tr => {
+      tr.addEventListener('click', () => {
+        table.querySelectorAll('tr.bl-frow').forEach(r => r.classList.remove('on'));
+        tr.classList.add('on');
+        selectFleetHost(tr.dataset.agent);
+      });
+    });
+  }
+  async function selectFleetHost(agentId) {
+    _fleetSel = agentId;
+    const host = _fleetJob && (_fleetJob.hosts || []).find(h => h.agent_id === agentId);
+    if (host && host.run_id) {
+      let d;
+      try { d = await fetch('/api/benchmark/live/runs/' + encodeURIComponent(host.run_id)).then(res => res.json()); }
+      catch (_) { d = null; }
+      if (d && d.ok && d.run) {
+        _levels = d.run.levels || []; _lastDoc = { ...d.run, run_id: host.run_id, ok: true }; _cell = null;
+        redraw();
+        const meta = $('blChartMeta'); if (meta) meta.textContent = 'aggregate decode t/s · ' + host.hostname;
+      }
+    }
+    renderFleet();
+    syncAttachBtn();
+  }
+  function stopFleetPoll() { if (_fleetPoll) { clearInterval(_fleetPoll); _fleetPoll = null; } }
+  function startFleetPoll() {
+    stopFleetPoll();
+    const tick = async () => {
+      if (!_fleetJob) return;
+      let d;
+      try { d = await fetch('/api/benchmark/live/fleet/' + encodeURIComponent(_fleetJob.job_id)).then(res => res.json()); }
+      catch (_) { return; }
+      if (!d || !d.ok) {
+        stopFleetPoll(); sessionStorage.removeItem('bl.fleetJob'); _fleetJob = null;
+        busy(false); stopElapsed(); setStatus('fleet job lost', 'err'); renderFleet(); return;
+      }
+      _fleetJob = d.job; renderFleet();
+      const hosts = _fleetJob.hosts || [], total = hosts.length;
+      const finished = hosts.filter(h => h.status === 'done' || h.status === 'failed' || h.status === 'cancelled').length;
+      if (!_fleetJob.done) { setStatus('running · fleet ' + finished + '/' + total, 'running'); return; }
+      stopFleetPoll(); busy(false); stopElapsed(); sessionStorage.removeItem('bl.fleetJob');
+      const ranking = _fleetJob.ranking || [];
+      if (_fleetJob.cancelled) setStatus('cancelled', 'err');
+      else if (ranking.length) setStatus('complete · fleet', 'ok');
+      else setStatus('failed', 'err');
+      const best = ranking.length ? hosts.find(h => h.agent_id === ranking[0]) : null;
+      $('blStrip').textContent = best ? `${total} hosts · best ${best.hostname} ${fmt(best.gen_tps)} t/s` : `${total} hosts`;
+      if (best) selectFleetHost(best.agent_id);
+      loadRuns();
+    };
+    tick();
+    _fleetPoll = setInterval(tick, FLEET_POLL_MS);
+  }
   function log(text, cls) { const el = $('blLog'); if (!el) return; const t = new Date().toTimeString().slice(0, 8); el.innerHTML += `<div><span class="dim">${t}</span> ${cls ? `<span class="${cls}">` : ''}${esc(text)}${cls ? '</span>' : ''}</div>`; el.scrollTop = el.scrollHeight; }
   function setStatus(text, state) { const el = $('blStatus'); el.textContent = text; el.classList.remove('running', 'ok', 'err'); if (state) el.classList.add(state); }
-  function running() { return !!_es || _attached; }
+  function running() { return !!_es || _attached || !!_fleetPoll; }
   // Cancel is for runs this tab started; while attached it only drops a queued config.
   function syncCancelBtn() {
     const b = $('blCancelBtn'); if (!b) return;
@@ -436,6 +586,22 @@
       // Mirrors MATRIX_MAX_CELLS in the agent.
       setStatus('matrix too large (max 24 cells × levels)', 'err'); return;
     }
+    if (fleetOn()) {
+      const agents = fleetAgents();
+      if (!agents.length) { setStatus('no host has this model loaded', 'err'); return; }
+      if ($('blRunBtn').disabled) return;
+      const { model_id, ...config } = c;
+      let d;
+      try { d = await fetch('/api/benchmark/live/fleet', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ model_id, agents, config }) }).then(r => r.json()); }
+      catch (e) { d = { ok: false, error: String(e) }; }
+      if (!d || !d.ok) { setStatus(d && d.error ? d.error : 'failed to start', 'err'); return; }
+      _fleetJob = { job_id: d.job_id, hosts: [] };
+      sessionStorage.setItem('bl.fleetJob', d.job_id);
+      busy(true); startElapsed(); _levels = []; _lastDoc = null; _activeLevel = null; _cell = null; _fleetSel = null; _baseline = null;
+      $('blLog').innerHTML = ''; syncAttachBtn();
+      redraw(); renderFleet(); startFleetPoll();
+      return;
+    }
     if (_attached) { _queued = c; setStatus('queued · starts when the current run finishes', 'running'); $('blRunBtn').disabled = true; syncCancelBtn(); return; }
     if ($('blRunBtn').disabled) return;
     _lastCfg = c;
@@ -489,6 +655,11 @@
     if (typeof toolsSyncRunDot === 'function') toolsSyncRunDot();
   }
   function cancel() {
+    if (_fleetJob && !_fleetJob.done) {
+      fetch('/api/benchmark/live/fleet/' + encodeURIComponent(_fleetJob.job_id) + '/cancel', { method: 'POST' }).catch(() => {});
+      setStatus('cancelling…', 'running');
+      return;
+    }
     if (_attached) {
       if (!_queued) return;
       _queued = null; runLabel('Queue run'); $('blRunBtn').disabled = false; syncCancelBtn(); setStatus('queued run dropped');
@@ -515,6 +686,17 @@
   }
   async function pinBaseline() { const id = (_lastDoc && _lastDoc.run_id) || _runId; if (!id) return; await fetch('/api/benchmark/live/runs/' + encodeURIComponent(id) + '/baseline', { method: 'POST' }).catch(() => {}); loadRuns(); }
   function exportJson() {
+    if (_fleetJob && _fleetJob.done) {
+      const id = String(_fleetJob.job_id || 'job').replace(/[^A-Za-z0-9_.-]/g, '_');
+      const blob = new Blob([JSON.stringify(_fleetJob, null, 2)], { type: 'application/json' });
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = `bench-fleet-${id}.json`;
+      document.body.appendChild(a);
+      a.click();
+      setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 200);
+      return;
+    }
     const doc = _lastDoc; if (!doc) return;
     const id = String(doc.run_id || _runId || 'run').replace(/[^A-Za-z0-9_.-]/g, '_');
     const blob = new Blob([JSON.stringify(doc, null, 2)], { type: 'application/json' });
@@ -526,6 +708,7 @@
     setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 200);
   }
   window.BL = { onOpen, setMode, run, cancel, setup, startServer, running, applyPreset, parseSweep, parseOsls, estimateSeconds, deltaText, knee, pinBaseline, exportJson,
-    toggleMatrix, heatCells, cellKey, addToReportCard,
-    _config: config, _debugLevels: (rows) => { _levels = rows; _cell = null; redraw(); } };
+    toggleMatrix, heatCells, cellKey, addToReportCard, toggleFleet, rankHosts, selectFleetHost,
+    _config: config, _debugLevels: (rows) => { _levels = rows; _cell = null; redraw(); },
+    _debugFleet: (job) => { _fleetJob = job; renderFleet(); } };
 })();

@@ -29,6 +29,12 @@ const BODY = `
     <div class="mc-seg" id="blCellSeg" style="display:none"></div><div id="blLevelSeg"></div><div id="blTable"></div><div id="blLog"></div>
     <div class="bl-card" id="blHeatCard" style="display:none"><span id="blHeatMeta"></span><div id="blHeat"></div><div id="blHeatCaption"></div></div>
     <button id="blSetupBtn" style="display:none"></button>
+    <div class="bl-grp"><div class="bl-grp-h">Fleet <span class="bl-hint" id="blFleetHint"></span></div>
+      <div class="bl-chips" id="blFleetTgl"><span class="bl-chip" data-fleet="1">Run on every host with this model loaded</span></div>
+      <div id="blFleetHosts" class="bl-chips" style="display:none"></div>
+      <div class="bl-hint" id="blFleetNote" style="display:none"></div>
+    </div>
+    <div class="bl-card" id="blFleetCard" style="display:none"><span id="blFleetMeta"></span><span id="blFleetProgress"></span><div id="blFleetTable"></div></div>
   </div>
 `;
 
@@ -380,6 +386,50 @@ describe('add to Report Card (#885)', () => {
     win.__sse.onEvent({ type: 'done', ok: false });
     await flush();
     expect(win.document.getElementById('blAttachBtn').style.display).toBe('none');
+  });
+});
+
+describe('fleet ranking (#884)', () => {
+  const job = { job_id: 'j1', model_id: 'org/m:Q4', done: true, cancelled: false, config: { bench: 'throughput_1k' },
+    hosts: [
+      { agent_id: 'a', hostname: 'alpha', status: 'done', run_id: 'ra', gen_tps: 60, agg_max_tps: 100, latency_s: 12, accept_rate: null, wh_per_ktok: 0.5 },
+      { agent_id: 'b', hostname: 'bravo', status: 'done', run_id: 'rb', gen_tps: 70, agg_max_tps: 120, latency_s: 10, accept_rate: 0.5, wh_per_ktok: null },
+      { agent_id: 'c', hostname: 'charlie', status: 'failed', run_id: null, error: 'Another benchmark or autotune is in progress' },
+    ], ranking: ['b', 'a'] };
+  it('rankHosts orders done hosts by decode t/s and computes pct of best', () => {
+    const win = boot();
+    const r = win.BL.rankHosts(job.hosts);
+    expect(r.map(h => h.hostname)).toEqual(['bravo', 'alpha', 'charlie']);
+    expect(r[0].rank).toBe(1); expect(r[1].pctOfBest).toBeCloseTo(60 / 70); expect(r[2].rank).toBeNull();
+  });
+  it('renders the ranking table with rank badges, bars, status and Δ vs best; clicking a done row loads its run', async () => {
+    const win = boot(); await flush();
+    win.fetch = vi.fn(async (url) => ({ json: async () => url.includes('/runs/ra') ? { ok: true, meta: {}, run: { levels: [{ concurrency: 1, all: { pred_tps: 60, agg_pred_tps: 60 }, rows: [] }] } } : { ok: true } }));
+    win.BL._debugFleet(job);
+    const card = win.document.getElementById('blFleetCard');
+    expect(card.style.display).toBe('');
+    const rows = card.querySelectorAll('tbody tr');
+    expect(rows.length).toBe(3);
+    expect(rows[0].textContent).toContain('bravo'); expect(rows[0].querySelector('.bl-rank').textContent).toBe('1');
+    expect(rows[1].textContent).toMatch(/−14 %/);
+    expect(rows[2].textContent).toContain('failed'); expect(rows[2].title || rows[2].querySelector('[title]').title).toContain('in progress');
+    rows[1].click(); await flush();
+    expect(win.fetch.mock.calls.some(c => String(c[0]).includes('/api/benchmark/live/runs/ra'))).toBe(true);
+    expect(rows[1].classList.contains('on')).toBe(true);
+  });
+  it('fleet toggle loads hosts and the run posts a fleet job', async () => {
+    const win = boot('BL.onOpen("org/m:Q4");'); await flush();
+    win.fetch = vi.fn(async (url, opts) => ({ json: async () => url.includes('/hosts') ? { ok: true, hosts: [
+      { agent_id: 'a', hostname: 'alpha', online: true, loaded: true }, { agent_id: 'c', hostname: 'charlie', online: true, loaded: false }] }
+      : url.includes('/fleet') && opts ? { ok: true, job_id: 'j2', hosts: [] } : { ok: true, job: { ...job, done: false, hosts: [] } } }));
+    win.BL.toggleFleet(); await flush();
+    const chips = win.document.querySelectorAll('#blFleetHosts .bl-chip');
+    expect(chips.length).toBe(2);
+    expect(chips[0].classList.contains('on')).toBe(true); expect(chips[1].classList.contains('off')).toBe(true);
+    await win.BL.run(); await flush();
+    const post = win.fetch.mock.calls.find(c => String(c[0]) === '/api/benchmark/live/fleet' && c[1]);
+    expect(JSON.parse(post[1].body)).toMatchObject({ model_id: expect.any(String), agents: ['a'] });
+    expect(JSON.parse(post[1].body).config.model_id).toBeUndefined();
   });
 });
 
