@@ -48,6 +48,18 @@ def _row(r) -> dict:
 _COLS = "id, run_id, model_id, agent_id, ts, ok, baseline, gen_tps, ppt_tps, latency_s, accept_rate, wh_per_ktok, config_json"
 
 
+def read_run(conn, run_id: str) -> "Optional[tuple[dict, dict]]":
+    """Fetch one stored live run as (meta, parsed result doc), or None."""
+    r = conn.execute(f"SELECT {_COLS}, result_json FROM bench_live_runs WHERE run_id = ?", (run_id,)).fetchone()
+    if not r:
+        return None
+    try:
+        doc = json.loads(r[13])
+    except ValueError:
+        doc = {}
+    return _row(r), doc
+
+
 def register_routes(app, ctx, *, db_path: str, proxy: Callable, agent_by_token: Callable,
                     request_agent: Callable, note_tool_start: Callable) -> None:
     from flask import jsonify, request as flask_request
@@ -151,16 +163,10 @@ def register_routes(app, ctx, *, db_path: str, proxy: Callable, agent_by_token: 
     @app.route("/api/benchmark/live/runs/<run_id>")
     def bench_live_run_get(run_id):
         with lock:
-            r = conn_factory().execute(
-                f"SELECT {_COLS}, result_json FROM bench_live_runs WHERE run_id = ?", (run_id,)).fetchone()
-        if not r:
+            hit = read_run(conn_factory(), run_id)
+        if not hit:
             return jsonify({"ok": False, "error": "not found"}), 404
-        meta = _row(r)
-        try:
-            run = json.loads(r[13])
-        except ValueError:
-            run = {}
-        return jsonify({"ok": True, "meta": meta, "run": run})
+        return jsonify({"ok": True, "meta": hit[0], "run": hit[1]})
 
     @app.route("/api/benchmark/live/runs/<run_id>/baseline", methods=["POST"])
     def bench_live_run_baseline(run_id):

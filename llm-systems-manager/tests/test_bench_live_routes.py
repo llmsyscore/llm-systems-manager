@@ -88,3 +88,13 @@ def test_proxies(app):
     r = app.post("/api/benchmark/live/run", json={"model_id": "m", "bench": "qualitative"}).get_json()
     assert r["proxied"] == "/llama/bench/live/run"
     assert app.calls[-1][3] == {"model_id": "m", "bench": "qualitative"}
+
+
+def test_read_run_returns_meta_and_doc(app, tmp_path):
+    import sqlite3
+    h = {"Authorization": "Bearer tok"}
+    app.post("/api/benchmark/live/store", json=_doc("rr1"), headers=h)
+    conn = sqlite3.connect(str(tmp_path / "t.db"))
+    meta, doc = bl.read_run(conn, "rr1")
+    assert meta["run_id"] == "rr1" and meta["agent_id"] == AGENT["agent_id"] and doc["levels"]
+    assert bl.read_run(conn, "missing") is None

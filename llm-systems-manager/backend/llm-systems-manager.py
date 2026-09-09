@@ -170,7 +170,7 @@ def _local_hostname() -> str:
 # banner reads it. Bump suffix (-1, -2, …) for same-day iterations; roll
 # the date for a new day's first change.
 # ---------------------------------------------------------------------------
-__version__ = "v2026.09.08-11"
+__version__ = "v2026.09.08-12"
 
 # Wall-clock at first import (Cheroot main process); the shutdown banner
 # reads it for the uptime line.
@@ -3341,6 +3341,7 @@ _AUDIT_LABELS: dict[str, str] = {
     "terminal.open": "Opened a terminal session",
     "reportcard.run": "Started a report card run", "reportcard.delete-model": "Deleted report card results",
     "reportcard.cancel": "Cancelled a report card run", "reportcard.clear-history": "Cleared report card history",
+    "reportcard.attach-live": "Attached a live benchmark run to a report card",
     "alarm.close": "Closed an alert", "alarm.ignore": "Ignored an alert", "alarm.ack": "Acknowledged an alert",
     "alarm.acknowledge": "Acknowledged an alert", "alarm.close-all": "Closed all alerts",
     "alarm.ignore-all": "Ignored all alerts", "alarm.bulk": "Bulk alert action",
@@ -3401,7 +3402,7 @@ _AUDIT_ROUTES: list[tuple] = [
     ("PUT",    re.compile(r"^/api/autopilot$"),                        "autopilot.toggle",   "autopilot.toggle"),
     ("POST",   re.compile(r"^/api/autopilot/proposals/(?P<t>[^/]+)/(?P<v>apply|dismiss)$"), "autopilot.proposal-{v}", "autopilot.proposal"),
     ("POST",   re.compile(r"^/api/(?:lms/|vllm/)?terminal/create$"),   "terminal.open",      "terminal.open"),
-    ("POST",   re.compile(r"^/api/reportcard/(?P<v>run|delete-model)$"), "reportcard.{v}",   "reportcard"),
+    ("POST",   re.compile(r"^/api/reportcard/(?P<v>run|delete-model|attach-live)$"), "reportcard.{v}",   "reportcard"),
     ("POST",   re.compile(r"^/api/reportcard/cancel/(?P<t>[^/]+)$"),   "reportcard.cancel",  "reportcard"),
     ("DELETE", re.compile(r"^/api/reportcard/history$"),               "reportcard.clear-history", "reportcard"),
     ("POST",   re.compile(r"^/api/alarm/alerts/(?P<t>[^/]+)/(?P<v>close|ignore|ack|acknowledge)$"), "alarm.{v}", "alarm.actions"),
