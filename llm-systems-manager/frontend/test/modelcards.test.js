@@ -145,3 +145,24 @@ describe('per-surface state', () => {
     expect(MC.busyOf('s1', 'm')).toBe(null);
   });
 });
+
+describe('tune chip (#887)', () => {
+  it('renders a muted chip for a fresh tune and a warning chip that carries the re-verify action when stale', () => {
+    const d = { id: 'org/m:Q4', actAttr: 'data-act', stats: [], fresh: null };
+    expect(MC.tuneTag(null, d)).toBe('');
+    const fresh = MC.tuneTag({ stale: false, label: 'tuned', title: 'Autotuned on b100', act: 'autotune' }, d);
+    expect(fresh).toContain('class="mc-tune"');
+    expect(fresh).toContain('data-act="autotune"');
+    const stale = MC.tuneTag({ stale: true, label: 'tuned · stale', title: 'tuned on b100 · host now b120', act: 'reverify' }, d);
+    expect(stale).toContain('class="mc-tune stale"');
+    expect(stale).toContain('data-act="reverify"');
+    expect(stale).toContain('data-id="org/m:Q4"');
+    expect(stale).toContain('title="tuned on b100 · host now b120"');
+  });
+  it('statsHtml and row include the tune chip when the descriptor has one', () => {
+    const d = { id: 'x', actAttr: 'data-act', stats: [], fresh: null,
+                tune: { stale: true, label: 'tuned · stale', title: 't', act: 'reverify' }, pill: { state: 'idle', label: 'Loaded' } };
+    expect(MC.statsHtml(d.stats, d.fresh, d)).toContain('mc-tune stale');
+    expect(MC.row({ ...d, name: 'x', repo: 'x', specs: [], buttons: [], menu: [] })).toContain('mc-tune stale');
+  });
+});

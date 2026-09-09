@@ -235,6 +235,35 @@ function _llamaFresh(modelId, cfg) {
   return null;
 }
 
+// #887: newest tune per model on the primary host, keyed by model id.
+var _llamaTuneStatus = {};
+var _llamaTuneStatusTs = 0;
+async function _loadTuneStatus(force) {
+  const now = Date.now();
+  if (!force && now - _llamaTuneStatusTs < 60000) return;
+  _llamaTuneStatusTs = now;
+  try {
+    const d = await fetch('/api/llm/autotune/status').then(r => r.json());
+    const map = {};
+    (d && d.items || []).forEach(i => { map[i.model_id] = i; });
+    _llamaTuneStatus = map;
+  } catch (e) {
+    console.warn('autotune status failed:', e);
+  }
+}
+
+function _llamaTuneFor(modelId) {
+  const t = _llamaTuneStatus[modelId];
+  if (!t) return null;
+  const day = String(t.ts || '').slice(0, 10);
+  if (t.stale) {
+    return { stale: true, label: 'tuned · stale', act: 'reverify',
+             title: 'Autotuned on llama.cpp ' + t.llama_build + ' · host now runs ' + t.current_build + ' — click to re-verify' };
+  }
+  return { stale: false, label: 'tuned', act: 'autotune',
+           title: 'Autotuned' + (t.llama_build ? ' on llama.cpp ' + t.llama_build : '') + (day ? ' (' + day + ')' : '') };
+}
+
 function _llamaProfileHtml(modelId) {
   const prof = _llmProfiles[modelId] || { active: '', profiles: {} };
   const profNames = Object.keys(prof.profiles || {});
@@ -290,8 +319,10 @@ function _llamaDescriptor(modelId, statusLookup) {
   else if (!isLoading) { primary = { act: 'load',   icon: '▶', label: 'Load' }; }
   buttons.push({ act: 'edit', icon: '✎', label: 'Edit' });
 
+  const tune = _llamaTuneFor(modelId);
   const menu = [
     ...(isLoaded || isSleeping ? [{ act: 'reload', icon: '↺', label: 'Reload' }] : []),
+    ...(tune && tune.stale ? [{ act: 'reverify', icon: '✓', label: 'Re-verify tune' }] : []),
     { act: 'bench',    icon: '◷', label: 'Benchmark' },
     { act: 'autotune', icon: '⌖', label: 'Autotune' },
     '-',
@@ -327,7 +358,7 @@ function _llamaDescriptor(modelId, statusLookup) {
   return {
     id: modelId, actAttr: 'data-act', renameAct: 'rename',
     name: aliasOrShort(modelId), repo: modelId,
-    pill, specs, stats, fresh: _llamaFresh(modelId, cfg),
+    pill, specs, stats, fresh: _llamaFresh(modelId, cfg), tune,
     benchTitle: 'Benchmark results — not live throughput' + (benchAge ? ' (last run ' + benchAge + ')' : ''),
     extraJson: b && b.extra_json,
     cfgClick: 'edit',
@@ -343,6 +374,8 @@ function _llamaDescriptor(modelId, statusLookup) {
 function renderModelCards() {
   const container = document.getElementById('llmModelCards');
   if (!container) return;
+  // #887: fetch tune status at most once/min; re-render once the first fetch lands.
+  if (!_llamaTuneStatusTs) { _loadTuneStatus().then(() => renderModelCards()); } else { _loadTuneStatus(); }
   // Skip re-render while an inline alias edit is in progress — otherwise
   // a background poll (status flip, periodic refresh) would replace
   // innerHTML and steal focus from the input the user is typing into.
@@ -415,6 +448,7 @@ function renderModelCards() {
       else if (act === 'delete') confirmDelete(id);
       else if (act === 'bench')    { MC.closeMenus(); toolsDeepLink('benchmark', id); }
       else if (act === 'autotune') { MC.closeMenus(); toolsDeepLink('autotune', id); }
+      else if (act === 'reverify') { MC.closeMenus(); toolsDeepLink('autotune', id, { verify: true }); }
       else if (act === 'rename') startCardRename(el, id);
       else if (act === 'profile-rename') renameProfile(id, el.dataset.name);
       else if (act === 'profile-delete') deleteProfile(id, el.dataset.name);
