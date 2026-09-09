@@ -143,6 +143,11 @@ function _benchSetState(state) {
 
 function _rechartBench() {
   _benchAxisTouched = true;   // user picked an axis — stop overriding with the default
+  _benchReplotAll();
+}
+
+// Relabels the axes and re-plots every stored row against the current axis selections.
+function _benchReplotAll() {
   if (!_benchChart) return;
   const xAxis = document.getElementById('benchXAxis')?.value || 'seq';
   // The bar chart's x scale is always a category — changing axes only re-plots
@@ -153,7 +158,6 @@ function _rechartBench() {
   const yAxis = document.getElementById('benchYAxis')?.value || 'avg_ts';
   const ys = _benchChart.options?.scales?.y;
   if (ys && ys.title) { ys.title.text = yAxis === 'ms_tok' ? 'ms/tok' : yAxis === 'avg_ts' ? 't/s' : yAxis; }
-  // Clear and re-plot every stored row against the newly-selected axes.
   _benchChart.data.datasets.forEach(d => { d.data = []; });
   _benchRawRows.forEach(r => {
     const dsIdx = _benchModelDatasets[r.model_id];
@@ -457,9 +461,12 @@ function _benchPushPoint(msg) {
   if (raw.type_k && raw.type_v) raw.kv = raw.type_k + '/' + raw.type_v;
   _benchRawRows.push(raw);
   // Axis-option update is a side-effect — never let it abort chart plotting below.
+  const xBefore = document.getElementById('benchXAxis')?.value;
   try { _updateBenchAxisOpts(); } catch (e) { console.warn('bench axis-opts update failed', e); }
 
   if (!_benchChart) return;
+  // A flipped default X axis re-plots every stored row so earlier points keep the same category scale.
+  if (xBefore !== undefined && document.getElementById('benchXAxis')?.value !== xBefore) { _benchReplotAll(); return; }
   const dsIdx = _benchModelDatasets[msg.model_id];
   if (dsIdx === undefined) return;
   let x = _benchGetX(raw);
