@@ -99,6 +99,31 @@ describe('buildCard', () => {
   });
 });
 
+describe('live block (#885)', () => {
+  const live = { run_id: 'r1', ts: '2026-09-08T20:36:50+00:00', bench: 'throughput_1k', decode_tps: 64.2, prefill_tps: 399,
+    latency_s: 12, accept_rate: 0.5, wh_per_ktok: 3.1, energy_source: 'psu',
+    levels: [{ concurrency: 1, pred_tps: 64.2, agg_pred_tps: 64.2 }, { concurrency: 2, pred_tps: 58, agg_pred_tps: 110 }],
+    matrix: { benches: ['throughput_1k', 'throughput_32k'], osls: [256], cells: [{ bench: 'throughput_1k', osl: 256, pred_tps: 64.2 }, { bench: 'throughput_32k', osl: 256, pred_tps: 56.3 }] } };
+  it('renders a Live block with four cells, the under-load strip and the matrix strip', () => {
+    const frag = RC.buildCard({ gen_tps: 70, model: 'm', live });
+    const blk = frag.querySelector('.rc-live');
+    expect(blk).toBeTruthy();
+    expect(blk.querySelectorAll('.rc-cell').length).toBe(4);
+    expect(blk.textContent).toContain('64.2'); expect(blk.textContent).toContain('12'); expect(blk.textContent).toContain('50');
+    expect(blk.querySelector('.rc-live-load').textContent).toBe('under load · 1: 64.2 · 2: 58.0 t/s');
+    expect(blk.querySelector('.rc-live-matrix').textContent).toBe('prompt × output · 1k 64.2 · 32k 56.3 t/s (osl 256)');
+  });
+  it('omits the block without live data and omits strips without levels/matrix', () => {
+    expect(RC.buildCard({ gen_tps: 70 }).querySelector('.rc-live')).toBeNull();
+    const frag = RC.buildCard({ gen_tps: 70, live: { ...live, levels: [], matrix: null } });
+    expect(frag.querySelector('.rc-live-load')).toBeNull(); expect(frag.querySelector('.rc-live-matrix')).toBeNull();
+  });
+  it('liveSummary is pure', () => {
+    expect(RC.liveSummary({ levels: [{ concurrency: 1, pred_tps: 10 }], matrix: null }).loadText).toBe('under load · 1: 10.0 t/s');
+    expect(RC.liveSummary({}).loadText).toBe('');
+  });
+});
+
 describe('trendSeries', () => {
   it('maps cards to chart arrays in time order', () => {
     const s = RC.trendSeries([

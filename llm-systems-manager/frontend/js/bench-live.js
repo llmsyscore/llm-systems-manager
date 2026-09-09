@@ -14,7 +14,7 @@
   const BENCH_ORDER = Object.keys(BENCH_LABEL);
   let _model = null, _pre = null, _runs = [], _es = null, _chart = null;
   let _levels = [], _baseline = null, _lastDoc = null, _runId = null, _activeLevel = null, _lastTps = null, _cell = null;
-  let _attached = false, _queued = null, _elapsedIv = null, _runStart = 0, _sweepLevels = [], _curLevel = null, _curCell = null, _busyOn = false, _lastCfg = null;
+  let _attached = false, _queued = null, _elapsedIv = null, _runStart = 0, _sweepLevels = [], _curLevel = null, _curCell = null, _busyOn = false, _lastCfg = null, _attachedRun = null;
 
   function parseSweep(text) {
     const seen = new Set();
@@ -349,6 +349,7 @@
     renderTable(cur);
     renderCellSeg(active);
     renderHeat();
+    syncAttachBtn();
   }
   function renderTable(cur) {
     const conc = _activeLevel || (cur[0] && cur[0].concurrency);
@@ -371,6 +372,25 @@
     b.textContent = drop ? 'Drop queued run' : (b._blLabel || '');
   }
   function busy(on) { _busyOn = on; $('blRunBtn').disabled = on; syncCancelBtn(); $('blProgress').style.display = on ? '' : 'none'; if (typeof toolsSyncRunDot === 'function') toolsSyncRunDot(); }
+  // Shows "Add to Report Card" only after a successful, idle run.
+  function syncAttachBtn() {
+    const b = $('blAttachBtn'); if (!b) return;
+    const ok = !!(_lastDoc && _lastDoc.ok && _lastDoc.run_id) && !running();
+    b.style.display = ok ? '' : 'none';
+    if (!ok || !b._blAdded) { b.textContent = 'Add to Report Card'; b.disabled = false; b._blAdded = false; }
+  }
+  async function addToReportCard() {
+    const b = $('blAttachBtn'); if (!b || !_lastDoc) return;
+    if (_attachedRun === _lastDoc.run_id) { if (typeof toolsDeepLink === 'function') toolsDeepLink('reportcard', _model); return; }
+    b.disabled = true;
+    let d;
+    try { d = await fetch('/api/reportcard/attach-live', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ run_id: _lastDoc.run_id }) }).then(r => r.json()); }
+    catch (e) { d = { ok: false, error: String(e) }; }
+    if (!d || !d.ok) { b.disabled = false; setStatus('add to Report Card failed', 'err'); return; }
+    b.textContent = d.attached === 'merged' ? '✓ Added to card · open' : '✓ Card created · open';
+    b._blAdded = true; b.disabled = false; _attachedRun = _lastDoc.run_id;
+    log('report card: ' + d.attached, 'ok');
+  }
   function setStrip(done, total) {
     const parts = [], n = _sweepLevels.length, i = _curLevel == null ? 0 : _sweepLevels.indexOf(_curLevel) + 1;
     if (i > 0 && n) parts.push(`sweep ${i} / ${n}`);
@@ -420,6 +440,7 @@
     if ($('blRunBtn').disabled) return;
     _lastCfg = c;
     busy(true); _levels = []; _lastDoc = null; _activeLevel = null; _cell = null; $('blLog').innerHTML = '';
+    syncAttachBtn();
     _baseline = null; _sweepLevels = (c.concurrency || []).slice(); _curLevel = null; startElapsed();
     if (c.baseline_run_id) { try { const r = await fetch('/api/benchmark/live/runs/' + encodeURIComponent(c.baseline_run_id)).then(r => r.json()); _baseline = r && r.run; } catch (_) {} }
     redraw(); setStatus('starting…', 'running');
@@ -460,7 +481,7 @@
           if (_lastCfg && _lastCfg.matrix && msg.config && !msg.config.matrix) log('agent ignored the matrix — upgrade the agent to v2026.09.08-8 or newer', 'warn'); }
         else if (msg.type === 'done') {
           if (_es) { try { _es.close(); } catch (_) {} _es = null; }
-          stopElapsed(); _curLevel = null; redraw(); busy(false); loadRuns();
+          stopElapsed(); _curLevel = null; redraw(); busy(false); loadRuns(); syncAttachBtn();
           if (_attached) { const q = _queued; _queued = null; leaveAttached();
             if (q) { setStatus('starting…', 'running'); run(q); return; } }
           setStatus(msg.ok ? 'complete' : (msg.cancelled ? 'cancelled' : 'failed'), msg.ok ? 'ok' : 'err'); }
@@ -505,6 +526,6 @@
     setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 200);
   }
   window.BL = { onOpen, setMode, run, cancel, setup, startServer, running, applyPreset, parseSweep, parseOsls, estimateSeconds, deltaText, knee, pinBaseline, exportJson,
-    toggleMatrix, heatCells, cellKey,
+    toggleMatrix, heatCells, cellKey, addToReportCard,
     _config: config, _debugLevels: (rows) => { _levels = rows; _cell = null; redraw(); } };
 })();

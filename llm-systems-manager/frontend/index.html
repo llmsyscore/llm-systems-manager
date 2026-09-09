@@ -58,7 +58,7 @@ Backend API endpoints consumed:
   <link rel="stylesheet" href="/static/css/base.css?v=2026.09.08-2">
   <link rel="stylesheet" href="/static/css/settings.css?v=2026.09.04-2">
   <link rel="stylesheet" href="/static/css/modelcards.css?v=2026.09.04-12">
-  <link rel="stylesheet" href="/static/css/reportcard.css?v=2026.08.31-1">
+  <link rel="stylesheet" href="/static/css/reportcard.css?v=2026.09.08-1">
   <link rel="stylesheet" href="/static/css/tools.css?v=2026.08.31-8">
   <link rel="stylesheet" href="/static/css/autotune.css?v=2026.09.08-6">
   <link rel="stylesheet" href="/static/css/energy.css?v=2026.08.19-2">
@@ -2073,6 +2073,7 @@ Backend API endpoints consumed:
           <button type="button" title="Autotune" onclick="toolsOpenTool('autotune')">⌖</button>
         </div>
         <h2>Report Card</h2>
+        <span class="ctx-chip" id="toolsChipReportcard" style="display:none;"></span>
         <span class="mgap"></span>
       </div>
     <div class="rc-panel">
@@ -2310,7 +2311,7 @@ Backend API endpoints consumed:
           <div class="bl-pane">
             <div class="bl-notice" id="blNotice" style="display:none;"></div>
             <div class="bl-strip"><span id="blStatus" class="bench-status-pill">idle</span><span id="blStrip"></span><span id="blElapsed"></span>
-              <span class="bl-acts"><button class="mcbtn mcbtn-ghost mcbtn-sm" type="button" onclick="BL.pinBaseline()">Set as baseline</button><button class="mcbtn mcbtn-ghost mcbtn-sm" type="button" onclick="BL.exportJson()">Export JSON</button></span></div>
+              <span class="bl-acts"><button class="mcbtn mcbtn-ghost mcbtn-sm" type="button" id="blAttachBtn" style="display:none;" onclick="BL.addToReportCard()">Add to Report Card</button><button class="mcbtn mcbtn-ghost mcbtn-sm" type="button" onclick="BL.pinBaseline()">Set as baseline</button><button class="mcbtn mcbtn-ghost mcbtn-sm" type="button" onclick="BL.exportJson()">Export JSON</button></span></div>
             <div class="bl-prog" id="blProgress" style="display:none;"><i style="width:0%"></i></div>
             <div class="bl-tiles" id="blTiles"></div>
             <div class="bl-card"><div class="bl-card-h"><h3>Throughput under load</h3><span class="meta" id="blChartMeta">aggregate decode t/s</span><span class="gap"></span>
@@ -2487,7 +2488,7 @@ Backend API endpoints consumed:
 <script src="/static/js/lib/peaks.js?v=2026.08.29-2"></script>
 <script src="/static/js/lib/benchaxis.js?v=2026.09.08-1"></script>
 <script src="/static/js/lib/thresholds.js?v=2026.08.05-1"></script>
-<script src="/static/js/lib/reportcard.js?v=2026.08.31-2"></script>
+<script src="/static/js/lib/reportcard.js?v=2026.09.08-1"></script>
 <script src="/static/js/lib/toolcards.js?v=2026.08.31-6"></script>
 <script src="/static/js/lib/sseguard.js?v=2026.09.04-1"></script>
 <script src="/static/js/lib/energy.js?v=2026.08.26-1"></script>
@@ -2508,13 +2509,13 @@ Backend API endpoints consumed:
 <script src="/static/js/llmcontrol-models.js?v=2026.09.08-1"></script>
 <script src="/static/js/editor-modern.js?v=2026.09.07-1"></script>
 <script src="/static/js/bench-autotune.js?v=2026.09.08-4"></script>
-<script src="/static/js/bench-live.js?v=2026.09.08-8"></script>
+<script src="/static/js/bench-live.js?v=2026.09.08-9"></script>
 <script src="/static/js/autotune.js?v=2026.09.08-7"></script>
 <script src="/static/js/lmstudio.js?v=2026.09.04-1"></script>
 <script src="/static/js/vllm.js?v=2026.09.04-1"></script>
 <script src="/static/js/vllm-bench-autotune.js?v=2026.09.02-1"></script>
-<script src="/static/js/report-card.js?v=2026.09.04-1"></script>
-<script src="/static/js/tools.js?v=2026.09.08-4"></script>
+<script src="/static/js/report-card.js?v=2026.09.08-1"></script>
+<script src="/static/js/tools.js?v=2026.09.08-5"></script>
 <script src="/static/js/energy.js?v=2026.08.19-1"></script>
 <script src="/static/js/overall.js?v=2026.08.29-2"></script>
 <script src="/static/js/dashboard-manager.js?v=2026.08.17-1"></script>

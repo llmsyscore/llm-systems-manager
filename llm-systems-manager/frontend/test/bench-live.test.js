@@ -22,6 +22,7 @@ const BODY = `
     <input id="blTimeout" value="600"><textarea id="blExtra">{"temperature": 0}</textarea>
     <select id="blBaseline"><option value="">none</option></select>
     <button id="blRunBtn"></button><button id="blCancelBtn" style="display:none"></button><span id="blEstimate"></span>
+    <button id="blAttachBtn" style="display:none" onclick="BL.addToReportCard()">Add to Report Card</button>
     <div class="bl-notice" id="blNotice" style="display:none"></div>
     <span id="blStatus"></span><div id="blStrip"></div><span id="blElapsed"></span><div id="blProgress"><i></i></div><div id="blTiles"></div>
     <canvas id="blChart"></canvas><div class="bl-chart-empty" id="blChartEmpty"></div><div id="blChartCaption"></div>
@@ -53,7 +54,7 @@ const STUBS = `
           datasets: { qualitative: { categories: ['coding', 'math', 'qa'] } }, benches: ['qualitative','throughput_1k','throughput_2k','throughput_8k','throughput_16k','throughput_32k'], busy: !!window.__busy }
       : url.indexOf('/api/benchmark/live/runs') === 0
       ? { ok: true, runs: [{ run_id: 'b1', ts: '2026-09-05T22:14:00Z', baseline: true, gen_tps: 103.2, config: { bench: 'qualitative' } }] }
-      : { ok: true, run_id: 'r1' };
+      : { ok: true, run_id: window.__runId || 'r1' };
     return Promise.resolve({ ok: true, json: () => Promise.resolve(body) });
   };
 `;
@@ -345,6 +346,40 @@ describe('BL final-review fixes', () => {
     expect(win.__chart.data.datasets[2].data.every(v => v === null)).toBe(true);
     win.__sse.onEvent({ type: 'level_start', concurrency: 2, bench: 'throughput_1k', osl: 256 });
     expect(win.__chart.data.datasets[2].data.some(v => v !== null)).toBe(true);
+  });
+});
+
+describe('add to Report Card (#885)', () => {
+  it('button hidden until a successful model_done, posts the run id, then offers to open the card', async () => {
+    const win = boot('window.__runId = "r9"; BL.onOpen("org/m:Q4");');
+    await flush();
+    const btn = win.document.getElementById('blAttachBtn');
+    expect(btn.style.display).toBe('none');
+    win.BL.run();
+    await flush();
+    win.__sse.onEvent({ type: 'model_done', run_id: 'r9', ok: true, levels: [], elapsed_s: 5 });
+    win.__sse.onEvent({ type: 'done', ok: true });
+    await flush();
+    expect(btn.style.display).toBe('');
+    win.fetch = vi.fn(async () => ({ json: async () => ({ ok: true, attached: 'merged', card: {} }) }));
+    win.toolsDeepLink = vi.fn();
+    await win.BL.addToReportCard();
+    await flush();
+    expect(win.fetch.mock.calls[0][0]).toBe('/api/reportcard/attach-live');
+    expect(JSON.parse(win.fetch.mock.calls[0][1].body)).toEqual({ run_id: 'r9' });
+    expect(btn.textContent).toMatch(/Added.*open/);
+    btn.click();
+    expect(win.toolsDeepLink).toHaveBeenCalledWith('reportcard', expect.any(String));
+  });
+
+  it('stays hidden on a failed run and does not post', async () => {
+    const win = boot('BL.onOpen("org/m:Q4");');
+    await flush();
+    win.BL.run();
+    await flush();
+    win.__sse.onEvent({ type: 'done', ok: false });
+    await flush();
+    expect(win.document.getElementById('blAttachBtn').style.display).toBe('none');
   });
 });
 

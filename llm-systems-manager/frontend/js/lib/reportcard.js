@@ -47,6 +47,23 @@ function cell(parent, value, unit, label) {
   return c;
 }
 
+const BENCH_SHORT = { qualitative: 'qual', throughput_1k: '1k', throughput_2k: '2k', throughput_8k: '8k', throughput_16k: '16k', throughput_32k: '32k' };
+
+// Pure summary strings for the Live block's under-load and matrix strips.
+function liveSummary(live) {
+  const l = live || {};
+  const lv = (l.levels || []).filter(x => x && x.pred_tps != null);
+  const loadText = lv.length ? 'under load · ' + lv.map(x => `${x.concurrency}: ${fmt(x.pred_tps, 1)}`).join(' · ') + ' t/s' : '';
+  const m = l.matrix;
+  let matrixText = '';
+  if (m && (m.cells || []).length) {
+    const osl = Math.min(...m.cells.map(c => c.osl).filter(o => o != null));
+    const row = m.cells.filter(c => c.osl === osl && c.pred_tps != null);
+    if (row.length) matrixText = 'prompt × output · ' + row.map(c => `${BENCH_SHORT[c.bench] || c.bench} ${fmt(c.pred_tps, 1)}`).join(' · ') + ` t/s (osl ${osl})`;
+  }
+  return { loadText, matrixText };
+}
+
 function buildCard(res) {
   const r = res || {};
   const frag = document.createDocumentFragment();
@@ -84,6 +101,25 @@ function buildCard(res) {
     const energy = el('div', 'rc-energy rc-muted');
     energy.appendChild(el('span', null, 'no power telemetry'));
     root.appendChild(energy);
+  }
+
+  if (r.live && typeof r.live === 'object') {
+    const lv = r.live;
+    const blk = el('div', 'rc-live');
+    const head = el('div', 'rc-live-head');
+    head.appendChild(el('span', 'rc-live-title', 'Live benchmark'));
+    head.appendChild(el('span', 'rc-live-meta', [BENCH_SHORT[lv.bench] || lv.bench || '', lv.ts ? String(lv.ts).slice(0, 10) : ''].filter(Boolean).join(' · ')));
+    blk.appendChild(head);
+    const g = el('div', 'rc-grid rc-live-grid');
+    cell(g, fmt(lv.decode_tps, 1), 'tok/s', 'decode · 1 request');
+    cell(g, fmt(lv.latency_s, 1), 's', 'latency');
+    cell(g, lv.accept_rate == null ? '—' : String(Math.round(lv.accept_rate * 100)), lv.accept_rate == null ? '' : '%', 'draft accept');
+    cell(g, fmt(lv.wh_per_ktok, 2), 'Wh', 'per 1k tok (live)');
+    blk.appendChild(g);
+    const s = liveSummary(lv);
+    if (s.loadText) blk.appendChild(el('div', 'rc-live-load rc-muted', s.loadText));
+    if (s.matrixText) blk.appendChild(el('div', 'rc-live-matrix rc-muted', s.matrixText));
+    root.appendChild(blk);
   }
 
   const save = el('button', 'rc-savebtn rc-nox', '⤓ Save');
@@ -178,5 +214,5 @@ async function exportPng(cardEl, scale) {
 }
 
 return { buildCard, submitUrl, trendSeries, exportPng, fmt, fmtMb,
-         fmtDate, LEADERBOARD_REPO, PROVIDER_LABEL, SOURCE_LABEL };
+         fmtDate, liveSummary, LEADERBOARD_REPO, PROVIDER_LABEL, SOURCE_LABEL };
 });
