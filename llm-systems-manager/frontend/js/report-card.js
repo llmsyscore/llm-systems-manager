@@ -10,6 +10,7 @@ let _rcJobId     = null;
 let _rcTick      = null;
 let _rcCleanup   = null;
 let _rcRunTarget = null;
+let _rcPrefModel = null;
 // Reconnects with no message in between (SG guard); a drop is not terminal.
 const _RC_MAX_DROPS = 20;
 
@@ -122,6 +123,7 @@ function rcLoadPreset() {
 
 function rcOnModeChange() {
   const custom = _rcEl('rcMode')?.value === 'custom';
+  if (!custom) _rcPrefModel = null;
   const kf = _rcEl('rcModelKeyField');
   const cf = _rcEl('rcCustomModelField');
   if (kf) kf.style.display = custom ? 'none' : '';
@@ -400,8 +402,10 @@ function rcLoadLatest() {
   const agent = _rcEl('rcAgent')?.value || '';
   const provider = _rcEl('rcProvider')?.value || 'llama';
   if (!agent) return;
-  fetch(`/api/reportcard/latest?agent=${encodeURIComponent(agent)}`
-        + `&provider=${encodeURIComponent(provider)}`)
+  let url = `/api/reportcard/latest?agent=${encodeURIComponent(agent)}`
+          + `&provider=${encodeURIComponent(provider)}`;
+  if (_rcPrefModel) url += `&model=${encodeURIComponent(_rcPrefModel)}`;
+  fetch(url)
     .then(r => r.json()).then(d => {
       if (d.card) { rcRenderCard(d.card); return; }
       // No history for this picker selection — clear any stale card.
@@ -491,9 +495,25 @@ function rcRefreshModelOptions() {
   if (_rcEl('rcMode')?.value === 'custom') rcLoadModelOptions();
 }
 
-function initReportCard() {
+// modelId pre-fills the Custom Model filter from a Benchmark deep link (#885).
+function initReportCard(modelId) {
   if (!_rcEl('rcRunBtn')) return;
+  _rcPrefModel = modelId || null;
   rcLoadPreset();
   rcLoadAgents();
+  const mode = _rcEl('rcMode');
+  const cm = _rcEl('rcCustomModel');
+  if (_rcPrefModel) {
+    if (mode) mode.value = 'custom';
+    if (cm) cm.value = _rcPrefModel;
+  } else if (mode && mode.value === 'custom' && cm && cm.dataset.pref) {
+    mode.value = 'standard';
+    cm.value = '';
+  }
+  if (cm) cm.dataset.pref = _rcPrefModel ? '1' : '';
+  if (cm && !cm.dataset.rcBound) {
+    cm.dataset.rcBound = '1';
+    cm.addEventListener('input', () => { _rcPrefModel = null; });
+  }
   rcOnModeChange();
 }

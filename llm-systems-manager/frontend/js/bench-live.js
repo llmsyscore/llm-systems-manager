@@ -14,7 +14,9 @@
   const BENCH_ORDER = Object.keys(BENCH_LABEL);
   let _model = null, _pre = null, _runs = [], _es = null, _chart = null;
   let _levels = [], _baseline = null, _lastDoc = null, _runId = null, _activeLevel = null, _lastTps = null, _cell = null;
-  let _attached = false, _queued = null, _elapsedIv = null, _runStart = 0, _sweepLevels = [], _curLevel = null, _curCell = null, _busyOn = false, _lastCfg = null;
+  let _attached = false, _queued = null, _elapsedIv = null, _runStart = 0, _sweepLevels = [], _curLevel = null, _curCell = null, _busyOn = false, _lastCfg = null, _attachedRun = null;
+  let _fleetHosts = [], _fleetJob = null, _fleetPoll = null, _fleetSel = null;
+  const FLEET_POLL_MS = 3000;
 
   function parseSweep(text) {
     const seen = new Set();
@@ -209,6 +211,7 @@
     updateEstimate();
   }
   async function onOpen(modelId) {
+    if (modelId && modelId !== _model && !running()) { _fleetJob = null; _fleetSel = null; renderFleet(); syncPinBtn(); }
     if (modelId) _model = modelId;
     setMode((typeof layout !== 'undefined' && layout && layout.benchMode) || 'live');
     try { _pre = await fetch('/api/benchmark/live/preflight').then(r => r.json()); } catch (_) { _pre = { server: { up: false }, runtime: {} }; }
@@ -225,9 +228,12 @@
       c.classList.toggle('on'); markCustom(); updateEstimate();
     }); } });
     const mo = $('blMatrixOsl'); if (mo && !mo._bl) { mo._bl = 1; mo.addEventListener('input', () => { markCustom(); updateEstimate(); }); }
+    document.querySelectorAll('#blFleetTgl .bl-chip').forEach(c => { if (!c._bl) { c._bl = 1; c.addEventListener('click', () => toggleFleet()); } });
     syncSweepUi();
     const rb = $('blRunBtn'); if (rb && rb._blLabel == null) rb._blLabel = rb.textContent;
     if (_pre && _pre.busy && !running()) attach();
+    const savedJob = sessionStorage.getItem('bl.fleetJob');
+    if (savedJob && !running()) { _fleetJob = { job_id: savedJob, hosts: [] }; busy(true); startFleetPoll(); }
   }
   function mkChart() {
     const css = v => (window.cssVar ? cssVar(v) : '#888');
@@ -349,6 +355,7 @@
     renderTable(cur);
     renderCellSeg(active);
     renderHeat();
+    syncAttachBtn(); syncPinBtn();
   }
   function renderTable(cur) {
     const conc = _activeLevel || (cur[0] && cur[0].concurrency);
@@ -359,9 +366,171 @@
       return `<tr${tot ? ' class="tot"' : ''}><td>${esc(tot ? 'all' : r.category)}</td><td class="num">${tot ? r.requests : r.requests}</td><td class="num">${fmt(tot ? r.prompt_tps : r.avg_prompt_t_s, 0)}</td><td class="num">${fmt(cur)}<span class="dlt ${d.cls}">${base ? esc(d.text.replace(' vs baseline', '')) : ''}</span></td><td class="num">${fmt(tot ? r.latency_s : r.avg_latency, 1)} s</td><td class="num">${(tot ? r.accept_rate : r.accept_rate) == null ? '—' : Math.round((tot ? r.accept_rate : r.accept_rate) * 100) + ' %'}</td></tr>`; };
     host.innerHTML = `<table class="bl-rt"><thead><tr><th>Category</th><th class="num">samples</th><th class="num">prompt t/s</th><th class="num">decode t/s</th><th class="num">latency</th><th class="num">accept</th></tr></thead><tbody>${lv.rows.map(r => row(r, false)).join('')}${row(lv.all, true)}</tbody></table>`;
   }
+  // Ranks done hosts by decode t/s desc; the rest keep their original order untagged.
+  function rankHosts(hosts) {
+    const list = hosts || [];
+    const done = list.filter(h => h.status === 'done' && typeof h.gen_tps === 'number');
+    const sorted = done.slice().sort((a, b) => b.gen_tps - a.gen_tps);
+    const best = sorted.length ? sorted[0].gen_tps : null;
+    const ranked = sorted.map((h, i) => ({ ...h, rank: i + 1, pctOfBest: best ? h.gen_tps / best : null }));
+    const rest = list.filter(h => !(h.status === 'done' && typeof h.gen_tps === 'number')).map(h => ({ ...h, rank: null, pctOfBest: null }));
+    return [...ranked, ...rest];
+  }
+  function fleetOn() {
+    const chip = document.querySelector('#blFleetTgl .bl-chip[data-fleet="1"]');
+    return !!(chip && chip.classList.contains('on'));
+  }
+  function fleetAgents() {
+    const host = $('blFleetHosts'); if (!host) return [];
+    return [...host.querySelectorAll('.bl-chip.on')].map(c => c.dataset.agent).filter(Boolean);
+  }
+  async function loadFleetHosts() {
+    if (!_model) { _fleetHosts = []; return; }
+    let r;
+    try { r = await fetch('/api/benchmark/live/hosts?model_id=' + encodeURIComponent(_model)).then(res => res.json()); }
+    catch (_) { r = null; }
+    _fleetHosts = (r && r.hosts) || [];
+    const host = $('blFleetHosts');
+    if (host) {
+      host.innerHTML = _fleetHosts.map(h => {
+        const title = h.loaded ? '' : (h.online ? 'not loaded' : 'offline');
+        return `<span class="bl-chip ${h.loaded ? 'on' : 'off'}" data-agent="${esc(h.agent_id)}"${title ? ` title="${esc(title)}"` : ''}>${esc(h.hostname)}</span>`;
+      }).join('');
+      host.querySelectorAll('.bl-chip[data-agent]').forEach(c => { if (!c.classList.contains('off')) c.addEventListener('click', () => c.classList.toggle('on')); });
+    }
+    const hint = $('blFleetHint');
+    if (hint) { const total = _fleetHosts.length, loaded = _fleetHosts.filter(h => h.loaded).length; hint.textContent = `${loaded} of ${total} hosts`; }
+  }
+  function toggleFleet() {
+    const chip = document.querySelector('#blFleetTgl .bl-chip[data-fleet="1"]'); if (!chip) return;
+    const on = !chip.classList.contains('on');
+    chip.classList.toggle('on', on);
+    const hostsEl = $('blFleetHosts'), note = $('blFleetNote');
+    if (on) {
+      if (hostsEl) hostsEl.style.display = ''; if (note) note.style.display = '';
+      loadFleetHosts();
+    } else {
+      if (hostsEl) { hostsEl.style.display = 'none'; hostsEl.innerHTML = ''; }
+      if (note) note.style.display = 'none';
+      _fleetHosts = [];
+      const hint = $('blFleetHint'); if (hint) hint.textContent = '';
+    }
+    updateEstimate();
+  }
+  function renderFleet() {
+    const card = $('blFleetCard'); if (!card) return;
+    card.style.display = _fleetJob ? '' : 'none';
+    const table = $('blFleetTable');
+    if (!_fleetJob) { if (table) table.innerHTML = ''; return; }
+    const hosts = _fleetJob.hosts || [];
+    const meta = $('blFleetMeta');
+    if (meta) {
+      const modelShort = String(_fleetJob.model_id || _model || '').split('/').pop() || '';
+      const bench = (_fleetJob.config && _fleetJob.config.bench) || '';
+      meta.textContent = [modelShort, bench].filter(Boolean).join(' · ');
+    }
+    const prog = $('blFleetProgress');
+    if (prog) {
+      const total = hosts.length;
+      const finished = hosts.filter(h => h.status === 'done' || h.status === 'failed' || h.status === 'cancelled').length;
+      prog.textContent = (!_fleetJob.done && total) ? `${finished}/${total} finished` : '';
+    }
+    if (!table) return;
+    const ranked = rankHosts(hosts);
+    const bestGen = ranked.length && ranked[0].rank === 1 ? ranked[0].gen_tps : null;
+    const row = h => {
+      const done = h.status === 'done';
+      const bar = h.pctOfBest != null ? `<div class="bl-rank-bar" style="width:${Math.round(h.pctOfBest * 100)}%"></div>` : '';
+      const delta = (h.rank === 1 || h.pctOfBest == null || bestGen == null) ? '' : esc(deltaText(h.gen_tps, bestGen).text.replace(' vs baseline', ''));
+      const sel = done && _fleetSel === h.agent_id ? ' on' : '';
+      const attr = done ? ` data-agent="${esc(h.agent_id)}"` : '';
+      const titleParts = [h.error, h.matrix_ignored ? 'matrix ignored (old agent)' : null].filter(Boolean);
+      const title = titleParts.length ? ` title="${esc(titleParts.join(' · '))}"` : '';
+      return `<tr class="bl-frow${sel}"${attr}>` +
+        `<td>${h.rank != null ? `<span class="bl-rank">${h.rank}</span>` : ''}</td>` +
+        `<td>${esc(h.hostname)}</td>` +
+        `<td><span${title}>${esc(h.status)}</span>${h.matrix_ignored ? ' ⚠' : ''}</td>` +
+        `<td class="num">${fmt(h.gen_tps)}${bar}</td>` +
+        `<td class="num">${fmt(h.agg_max_tps)}</td>` +
+        `<td class="num">${fmt(h.latency_s, 1)}</td>` +
+        `<td class="num">${h.accept_rate == null ? '—' : Math.round(h.accept_rate * 100) + ' %'}</td>` +
+        `<td class="num">${fmt(h.wh_per_ktok, 2)}</td>` +
+        `<td class="num">${delta}</td></tr>`;
+    };
+    table.innerHTML = `<table class="bl-rt"><thead><tr><th>#</th><th>Host</th><th>Status</th><th class="num">decode t/s</th>` +
+      `<th class="num">aggregate max</th><th class="num">latency</th><th class="num">accept</th><th class="num">Wh/1k</th><th class="num">Δ vs best</th></tr></thead>` +
+      `<tbody>${ranked.map(row).join('')}</tbody></table>`;
+    table.querySelectorAll('tr.bl-frow[data-agent]').forEach(tr => {
+      tr.addEventListener('click', () => {
+        table.querySelectorAll('tr.bl-frow').forEach(r => r.classList.remove('on'));
+        tr.classList.add('on');
+        selectFleetHost(tr.dataset.agent);
+      });
+    });
+  }
+  async function selectFleetHost(agentId) {
+    _fleetSel = agentId;
+    const host = _fleetJob && (_fleetJob.hosts || []).find(h => h.agent_id === agentId);
+    if (host && host.run_id) {
+      let d;
+      try { d = await fetch('/api/benchmark/live/runs/' + encodeURIComponent(host.run_id)).then(res => res.json()); }
+      catch (_) { d = null; }
+      if (d && d.ok && d.run) {
+        _levels = d.run.levels || []; _lastDoc = { ...d.run, run_id: host.run_id, ok: true }; _cell = null;
+        redraw();
+        const meta = $('blChartMeta'); if (meta) meta.textContent = 'aggregate decode t/s · ' + host.hostname;
+        log(`showing ${host.hostname} · run ${host.run_id}`, 'dim');
+      }
+    }
+    renderFleet();
+    syncAttachBtn(); syncPinBtn();
+  }
+  function setProgress(done, total) { const bar = $('blProgress') && $('blProgress').querySelector('i'); if (bar) bar.style.width = (total ? Math.round(done / total * 100) : 0) + '%'; }
+  // Logs every host whose status changed between two polls of the autopilot job.
+  function logFleetChanges(prev, next) {
+    const before = {}; ((prev && prev.hosts) || []).forEach(h => { before[h.agent_id] = h.status; });
+    ((next && next.hosts) || []).forEach(h => {
+      if (before[h.agent_id] === h.status) return;
+      if (h.status === 'running') log(`${h.hostname}: started`);
+      else if (h.status === 'done') log(`${h.hostname}: done · decode ${fmt(h.gen_tps)} t/s · latency ${fmt(h.latency_s, 1)} s${h.wh_per_ktok != null ? ` · ${fmt(h.wh_per_ktok, 2)} Wh / 1k tokens` : ''}`, 'ok');
+      else if (h.status === 'failed') log(`${h.hostname}: failed${h.error ? ' · ' + h.error : ''}`, 'warn');
+      else if (h.status === 'cancelled') log(`${h.hostname}: cancelled`, 'dim');
+    });
+  }
+  function stopFleetPoll() { if (_fleetPoll) { clearInterval(_fleetPoll); _fleetPoll = null; } }
+  function startFleetPoll() {
+    stopFleetPoll();
+    fleetTick();
+    _fleetPoll = setInterval(fleetTick, FLEET_POLL_MS);
+  }
+  async function fleetTick() {
+      if (!_fleetJob) return;
+      let d;
+      try { d = await fetch('/api/benchmark/live/fleet/' + encodeURIComponent(_fleetJob.job_id)).then(res => res.json()); }
+      catch (_) { return; }
+      if (!d || !d.ok || !d.job) {
+        stopFleetPoll(); sessionStorage.removeItem('bl.fleetJob'); _fleetJob = null; _fleetSel = null;
+        busy(false); stopElapsed(); setStatus('autopilot job lost', 'err'); renderFleet(); syncPinBtn(); return;
+      }
+      logFleetChanges(_fleetJob, d.job); _fleetJob = d.job; renderFleet();
+      const hosts = _fleetJob.hosts || [], total = hosts.length;
+      const finished = hosts.filter(h => h.status === 'done' || h.status === 'failed' || h.status === 'cancelled').length;
+      if (!_fleetJob.done) { setStatus('running · autopilot ' + finished + '/' + total, 'running'); setProgress(finished, total); return; }
+      stopFleetPoll(); busy(false); stopElapsed(); sessionStorage.removeItem('bl.fleetJob');
+      const ranking = _fleetJob.ranking || [];
+      if (_fleetJob.cancelled) setStatus('cancelled', 'err');
+      else if (ranking.length) setStatus('complete · autopilot', 'ok');
+      else setStatus('failed', 'err');
+      const best = ranking.length ? hosts.find(h => h.agent_id === ranking[0]) : null;
+      $('blStrip').textContent = best ? `${total} hosts · best ${best.hostname} ${fmt(best.gen_tps)} t/s` : `${total} hosts`;
+      log(best ? `autopilot ranking complete · best ${best.hostname} ${fmt(best.gen_tps)} t/s` : (_fleetJob.cancelled ? 'autopilot job cancelled' : 'autopilot job failed on every host'), best ? 'ok' : 'warn');
+      setProgress(total, total);
+      if (best) await selectFleetHost(best.agent_id);
+      await loadRuns();
+  }
   function log(text, cls) { const el = $('blLog'); if (!el) return; const t = new Date().toTimeString().slice(0, 8); el.innerHTML += `<div><span class="dim">${t}</span> ${cls ? `<span class="${cls}">` : ''}${esc(text)}${cls ? '</span>' : ''}</div>`; el.scrollTop = el.scrollHeight; }
   function setStatus(text, state) { const el = $('blStatus'); el.textContent = text; el.classList.remove('running', 'ok', 'err'); if (state) el.classList.add(state); }
-  function running() { return !!_es || _attached; }
+  function running() { return !!_es || _attached || !!_fleetPoll; }
   // Cancel is for runs this tab started; while attached it only drops a queued config.
   function syncCancelBtn() {
     const b = $('blCancelBtn'); if (!b) return;
@@ -371,6 +540,32 @@
     b.textContent = drop ? 'Drop queued run' : (b._blLabel || '');
   }
   function busy(on) { _busyOn = on; $('blRunBtn').disabled = on; syncCancelBtn(); $('blProgress').style.display = on ? '' : 'none'; if (typeof toolsSyncRunDot === 'function') toolsSyncRunDot(); }
+  // Shows "Add to Report Card" only after a successful, idle run.
+  function syncAttachBtn() {
+    const b = $('blAttachBtn'); if (!b) return;
+    const ok = !!(_lastDoc && _lastDoc.ok && _lastDoc.run_id) && !running();
+    b.style.display = ok ? '' : 'none';
+    if (!ok || _lastDoc.run_id !== _attachedRun) b._blAdded = false;
+    if (!ok || !b._blAdded) { b.textContent = 'Add to Report Card'; b.disabled = false; b._blAdded = false; }
+  }
+  // A fleet host's run belongs to another agent, so it can't be pinned as this host's baseline.
+  function syncPinBtn() {
+    const b = $('blPinBtn'); if (!b) return;
+    b.style.display = _fleetSel ? 'none' : '';
+    b.disabled = !!_fleetSel;
+  }
+  async function addToReportCard() {
+    const b = $('blAttachBtn'); if (!b || !_lastDoc) return;
+    if (_attachedRun === _lastDoc.run_id) { if (typeof toolsDeepLink === 'function') toolsDeepLink('reportcard', _model); return; }
+    b.disabled = true;
+    let d;
+    try { d = await fetch('/api/reportcard/attach-live', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ run_id: _lastDoc.run_id }) }).then(r => r.json()); }
+    catch (e) { d = { ok: false, error: String(e) }; }
+    if (!d || !d.ok) { b.disabled = false; setStatus('add to Report Card failed', 'err'); return; }
+    b.textContent = d.attached === 'merged' ? '✓ Added to card · open' : '✓ Card created · open';
+    b._blAdded = true; b.disabled = false; _attachedRun = _lastDoc.run_id;
+    log('report card: ' + d.attached, 'ok');
+  }
   function setStrip(done, total) {
     const parts = [], n = _sweepLevels.length, i = _curLevel == null ? 0 : _sweepLevels.indexOf(_curLevel) + 1;
     if (i > 0 && n) parts.push(`sweep ${i} / ${n}`);
@@ -416,10 +611,31 @@
       // Mirrors MATRIX_MAX_CELLS in the agent.
       setStatus('matrix too large (max 24 cells × levels)', 'err'); return;
     }
-    if (_attached) { _queued = c; setStatus('queued · starts when the current run finishes', 'running'); $('blRunBtn').disabled = true; syncCancelBtn(); return; }
+    if (_attached) {
+      if (fleetOn()) { setStatus('finish or cancel the attached run first', 'err'); return; }
+      _queued = c; setStatus('queued · starts when the current run finishes', 'running'); $('blRunBtn').disabled = true; syncCancelBtn(); return;
+    }
+    if (fleetOn()) {
+      const agents = fleetAgents();
+      if (!agents.length) { setStatus('no host has this model loaded', 'err'); return; }
+      if ($('blRunBtn').disabled) return;
+      const { model_id, ...config } = c;
+      let d;
+      try { d = await fetch('/api/benchmark/live/fleet', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ model_id, agents, config }) }).then(r => r.json()); }
+      catch (e) { d = { ok: false, error: String(e) }; }
+      if (!d || !d.ok) { setStatus(d && d.error ? d.error : 'failed to start', 'err'); return; }
+      _fleetJob = { job_id: d.job_id, hosts: [] };
+      sessionStorage.setItem('bl.fleetJob', d.job_id);
+      busy(true); startElapsed(); _levels = []; _lastDoc = null; _activeLevel = null; _cell = null; _fleetSel = null; _baseline = null;
+      $('blLog').innerHTML = ''; setProgress(0, 0); syncAttachBtn(); syncPinBtn();
+      log(`autopilot job ${d.job_id} · ${agents.length} host${agents.length === 1 ? '' : 's'} · ${config.bench || ''}`);
+      redraw(); renderFleet(); startFleetPoll();
+      return;
+    }
     if ($('blRunBtn').disabled) return;
     _lastCfg = c;
-    busy(true); _levels = []; _lastDoc = null; _activeLevel = null; _cell = null; $('blLog').innerHTML = '';
+    busy(true); _levels = []; _lastDoc = null; _activeLevel = null; _cell = null; _fleetJob = null; _fleetSel = null; renderFleet(); $('blLog').innerHTML = ''; setProgress(0, 0);
+    syncAttachBtn(); syncPinBtn();
     _baseline = null; _sweepLevels = (c.concurrency || []).slice(); _curLevel = null; startElapsed();
     if (c.baseline_run_id) { try { const r = await fetch('/api/benchmark/live/runs/' + encodeURIComponent(c.baseline_run_id)).then(r => r.json()); _baseline = r && r.run; } catch (_) {} }
     redraw(); setStatus('starting…', 'running');
@@ -460,7 +676,9 @@
           if (_lastCfg && _lastCfg.matrix && msg.config && !msg.config.matrix) log('agent ignored the matrix — upgrade the agent to v2026.09.08-8 or newer', 'warn'); }
         else if (msg.type === 'done') {
           if (_es) { try { _es.close(); } catch (_) {} _es = null; }
-          stopElapsed(); _curLevel = null; redraw(); busy(false); loadRuns();
+          stopElapsed(); _curLevel = null; redraw(); loadRuns(); syncAttachBtn(); syncPinBtn();
+          if (_fleetPoll) return;
+          busy(false);
           if (_attached) { const q = _queued; _queued = null; leaveAttached();
             if (q) { setStatus('starting…', 'running'); run(q); return; } }
           setStatus(msg.ok ? 'complete' : (msg.cancelled ? 'cancelled' : 'failed'), msg.ok ? 'ok' : 'err'); }
@@ -468,6 +686,11 @@
     if (typeof toolsSyncRunDot === 'function') toolsSyncRunDot();
   }
   function cancel() {
+    if (_fleetJob && !_fleetJob.done) {
+      fetch('/api/benchmark/live/fleet/' + encodeURIComponent(_fleetJob.job_id) + '/cancel', { method: 'POST' }).catch(() => {});
+      setStatus('cancelling…', 'running');
+      return;
+    }
     if (_attached) {
       if (!_queued) return;
       _queued = null; runLabel('Queue run'); $('blRunBtn').disabled = false; syncCancelBtn(); setStatus('queued run dropped');
@@ -492,8 +715,19 @@
     if (b) b.disabled = false;
     renderPreflight();
   }
-  async function pinBaseline() { const id = (_lastDoc && _lastDoc.run_id) || _runId; if (!id) return; await fetch('/api/benchmark/live/runs/' + encodeURIComponent(id) + '/baseline', { method: 'POST' }).catch(() => {}); loadRuns(); }
+  async function pinBaseline() { if (_fleetSel) return; const id = (_lastDoc && _lastDoc.run_id) || _runId; if (!id) return; await fetch('/api/benchmark/live/runs/' + encodeURIComponent(id) + '/baseline', { method: 'POST' }).catch(() => {}); loadRuns(); }
   function exportJson() {
+    if (_fleetJob && _fleetJob.done && !_fleetSel) {
+      const id = String(_fleetJob.job_id || 'job').replace(/[^A-Za-z0-9_.-]/g, '_');
+      const blob = new Blob([JSON.stringify(_fleetJob, null, 2)], { type: 'application/json' });
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = `bench-fleet-${id}.json`;
+      document.body.appendChild(a);
+      a.click();
+      setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 200);
+      return;
+    }
     const doc = _lastDoc; if (!doc) return;
     const id = String(doc.run_id || _runId || 'run').replace(/[^A-Za-z0-9_.-]/g, '_');
     const blob = new Blob([JSON.stringify(doc, null, 2)], { type: 'application/json' });
@@ -505,6 +739,7 @@
     setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 200);
   }
   window.BL = { onOpen, setMode, run, cancel, setup, startServer, running, applyPreset, parseSweep, parseOsls, estimateSeconds, deltaText, knee, pinBaseline, exportJson,
-    toggleMatrix, heatCells, cellKey,
-    _config: config, _debugLevels: (rows) => { _levels = rows; _cell = null; redraw(); } };
+    toggleMatrix, heatCells, cellKey, addToReportCard, toggleFleet, rankHosts, selectFleetHost,
+    _config: config, _debugLevels: (rows) => { _levels = rows; _cell = null; redraw(); },
+    _debugFleet: (job) => { _fleetJob = job; renderFleet(); }, _debugPollOnce: fleetTick };
 })();

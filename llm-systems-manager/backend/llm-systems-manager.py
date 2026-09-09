@@ -68,6 +68,11 @@ Local endpoints served:
     POST /api/benchmark/live/runs/<id>/baseline — pin a run as the baseline for its model
     DELETE /api/benchmark/live/runs/<id> — delete one stored live-bench run
     DELETE /api/benchmark/live/runs     — delete all stored live-bench runs for a model
+    GET  /api/benchmark/live/hosts      — approved llama hosts, marked loaded for a model
+    POST /api/benchmark/live/fleet      — run a live-bench preset on every host with a model loaded
+    GET  /api/benchmark/live/fleet/<id> — fleet job status, per-host results, ranking
+    POST /api/benchmark/live/fleet/<id>/cancel — cancel a running fleet job
+    GET  /api/benchmark/live/speed      — newest measured speed per agent for a model
 ================================================================================
 """
 
@@ -170,7 +175,7 @@ def _local_hostname() -> str:
 # banner reads it. Bump suffix (-1, -2, …) for same-day iterations; roll
 # the date for a new day's first change.
 # ---------------------------------------------------------------------------
-__version__ = "v2026.09.08-11"
+__version__ = "v2026.09.09-4"
 
 # Wall-clock at first import (Cheroot main process); the shutdown banner
 # reads it for the uptime line.
@@ -3341,6 +3346,7 @@ _AUDIT_LABELS: dict[str, str] = {
     "terminal.open": "Opened a terminal session",
     "reportcard.run": "Started a report card run", "reportcard.delete-model": "Deleted report card results",
     "reportcard.cancel": "Cancelled a report card run", "reportcard.clear-history": "Cleared report card history",
+    "reportcard.attach-live": "Attached a live benchmark run to a report card",
     "alarm.close": "Closed an alert", "alarm.ignore": "Ignored an alert", "alarm.ack": "Acknowledged an alert",
     "alarm.acknowledge": "Acknowledged an alert", "alarm.close-all": "Closed all alerts",
     "alarm.ignore-all": "Ignored all alerts", "alarm.bulk": "Bulk alert action",
@@ -3401,7 +3407,7 @@ _AUDIT_ROUTES: list[tuple] = [
     ("PUT",    re.compile(r"^/api/autopilot$"),                        "autopilot.toggle",   "autopilot.toggle"),
     ("POST",   re.compile(r"^/api/autopilot/proposals/(?P<t>[^/]+)/(?P<v>apply|dismiss)$"), "autopilot.proposal-{v}", "autopilot.proposal"),
     ("POST",   re.compile(r"^/api/(?:lms/|vllm/)?terminal/create$"),   "terminal.open",      "terminal.open"),
-    ("POST",   re.compile(r"^/api/reportcard/(?P<v>run|delete-model)$"), "reportcard.{v}",   "reportcard"),
+    ("POST",   re.compile(r"^/api/reportcard/(?P<v>run|delete-model|attach-live)$"), "reportcard.{v}",   "reportcard"),
     ("POST",   re.compile(r"^/api/reportcard/cancel/(?P<t>[^/]+)$"),   "reportcard.cancel",  "reportcard"),
     ("DELETE", re.compile(r"^/api/reportcard/history$"),               "reportcard.clear-history", "reportcard"),
     ("POST",   re.compile(r"^/api/alarm/alerts/(?P<t>[^/]+)/(?P<v>close|ignore|ack|acknowledge)$"), "alarm.{v}", "alarm.actions"),
@@ -5329,9 +5335,66 @@ tool_activity.configure(
 )
 energy.register_routes(app, ctx, db_path=str(DB_PATH))
 model_meta.register_routes(app, ctx, db_path=str(DB_PATH), read_ini=_read_ini)
+
+
+def _fleet_hosts() -> list:
+    """Every approved llama-capable agent, for the fleet-benchmark host picker."""
+    out = []
+    spec = providers.get("llama")
+    cap_key = spec.capability_key if spec else "llama"
+    now = time.time()
+    for aid, a in (agent_registry.load_agents().get("agents") or {}).items():
+        if a.get("status") != "approved" or not (a.get("capabilities") or {}).get(cap_key):
+            continue
+        wrap = provider_state.STORE.get("llama", aid) or {}
+        last_seen = float(wrap.get("last_seen") or 0)
+        llama = ((wrap.get("sample") or {}).get("llama") or {})
+        out.append({"agent_id": aid, "hostname": a.get("hostname"),
+                    "online": bool(last_seen) and (now - last_seen) < (spec.online_threshold_s if spec else 30.0),
+                    "model": providers.llama.clean_display_model(llama.get("model")), "state": llama.get("state")})
+    return out
+
+
+def _fleet_run_on_agent(agent_id: str, body: dict):
+    """Start a live-bench run on one agent, for a fleet job."""
+    spec = providers.get("llama")
+    agent = agent_registry.resolve_agent_by_id(agent_id, capability=spec.capability_key if spec else "llama")
+    if not agent:
+        return False, "unknown agent"
+    resp, _tried, err = agent_registry.agent_request(
+        "POST", agent, "/llama/bench/live/run", json=body,
+        headers={"Authorization": f"Bearer {agent.get('token') or ''}"}, timeout=20)
+    if resp is None:
+        return False, err or "agent unreachable"
+    try:
+        data = resp.json() or {}
+    except ValueError:
+        data = {}
+    if resp.status_code != 200 or not data.get("ok"):
+        return False, str(data.get("error") or data.get("detail") or f"HTTP {resp.status_code}")[:300]
+    run_id = data.get("run_id")
+    if not run_id:
+        return False, "agent returned no run id"
+    tool_activity.note_start(agent_id, "llama", "benchmark")
+    return True, str(run_id)
+
+
+def _fleet_cancel_on_agent(agent_id: str) -> bool:
+    """Cancel a fleet job's run on one agent."""
+    spec = providers.get("llama")
+    agent = agent_registry.resolve_agent_by_id(agent_id, capability=spec.capability_key if spec else "llama")
+    if not agent:
+        return False
+    resp, _tried, _err = agent_registry.agent_request(
+        "POST", agent, "/llama/bench/live/cancel",
+        headers={"Authorization": f"Bearer {agent.get('token') or ''}"}, timeout=10)
+    return bool(resp is not None and resp.status_code == 200)
+
+
 bench_live.register_routes(app, ctx, db_path=str(DB_PATH), proxy=proxies.proxy_to_primary,
                            agent_by_token=agent_registry.agent_by_token, request_agent=_request_agent,
-                           note_tool_start=_note_tool_start)
+                           note_tool_start=_note_tool_start, fleet_hosts=_fleet_hosts,
+                           run_on_agent=_fleet_run_on_agent, cancel_on_agent=_fleet_cancel_on_agent)
 companion.register_routes(app, ctx, static_dir=STATIC_DIR)
 import manager_users  # type: ignore[import-not-found]  # sibling
 manager_users.init(

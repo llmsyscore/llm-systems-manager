@@ -767,6 +767,92 @@ def recent_cards(conn, limit: int = 12) -> "list[dict]":
     return [_row_to_card(r) for r in rows]
 
 
+def latest_card_for_model(conn, agent_id: str, provider: str, model: str) -> "dict | None":
+    """Newest card for (agent, provider) whose result.model matches, with its row id."""
+    rows = conn.execute(
+        f"SELECT {_COLS}, id FROM report_cards WHERE agent_id=? AND provider=?"
+        " ORDER BY ts DESC, id DESC", (agent_id, provider)).fetchall()
+    for row in rows:
+        card = _row_to_card(row[:-1])
+        if card["result"].get("model") == model:
+            card["id"] = row[-1]
+            return card
+    return None
+
+
+def update_card_result(conn, card_id: int, result: dict) -> None:
+    conn.execute("UPDATE report_cards SET result=? WHERE id=?", (json.dumps(result), int(card_id)))
+    conn.commit()
+
+
+def _cell_key(level: dict) -> tuple:
+    return (level.get("bench"), level.get("osl"))
+
+
+def live_section(meta: dict, doc: dict) -> dict:
+    """Summarize a stored live run for embedding as result['live'] on a card."""
+    levels = [l for l in (doc.get("levels") or []) if isinstance(l, dict)]
+    first = levels[0] if levels else {}
+    fa = first.get("all") or {}
+    same = [l for l in levels if _cell_key(l) == _cell_key(first)]
+    same.sort(key=lambda l: int(l.get("concurrency") or 0))
+    cfg = doc.get("config") or {}
+    matrix = None
+    if isinstance(cfg.get("matrix"), dict) and levels:
+        by_cell: dict = {}
+        for l in levels:
+            k, c = _cell_key(l), int(l.get("concurrency") or 0)
+            if k not in by_cell or c < by_cell[k][0]:
+                by_cell[k] = (c, l)
+        cells = [{"bench": l.get("bench"), "osl": l.get("osl"),
+                  "pred_tps": (l.get("all") or {}).get("pred_tps")} for _, l in by_cell.values()]
+        matrix = {"benches": list(cfg["matrix"].get("benches") or []),
+                  "osls": list(cfg["matrix"].get("osls") or []), "cells": cells}
+    return {"run_id": meta.get("run_id"), "ts": meta.get("ts"), "bench": doc.get("bench") or cfg.get("bench"),
+            "decode_tps": fa.get("pred_tps"), "prefill_tps": fa.get("prompt_tps"),
+            "latency_s": fa.get("latency_s"), "accept_rate": fa.get("accept_rate"),
+            "wh_per_ktok": doc.get("wh_per_ktok"), "energy_source": doc.get("energy_source"),
+            "elapsed_s": doc.get("elapsed_s"),
+            "levels": [{"concurrency": int(l.get("concurrency") or 0),
+                        "pred_tps": (l.get("all") or {}).get("pred_tps"),
+                        "agg_pred_tps": (l.get("all") or {}).get("agg_pred_tps")} for l in same],
+            "matrix": matrix}
+
+
+def card_from_live(meta: dict, doc: dict, price_kwh: float, snapshot: dict) -> dict:
+    """Build a standalone report card ('mode': 'live') from a stored live run."""
+    live = live_section(meta, doc)
+    wh = live.get("wh_per_ktok")
+    elapsed = doc.get("elapsed_s")
+    energy_wh = doc.get("energy_wh")
+    avg_watts = (energy_wh / elapsed * 3600.0) if energy_wh and elapsed else None
+    tpj = (1000.0 / (wh * 3600.0)) if wh and wh > 0 else None
+    usd = (wh * price_kwh) if wh and wh > 0 else None
+    result = {"model": meta.get("model_id") or doc.get("model_id"), "gen_tps": live["decode_tps"],
+              "prefill_tps": live["prefill_tps"], "ttft_s": None,
+              "tokens_per_joule": tpj, "usd_per_mtok": usd, "avg_watts": avg_watts,
+              **aggregate_gpus((snapshot or {}).get("gpus") or []),
+              "power_source": live.get("energy_source") or (snapshot or {}).get("source"),
+              "live": live}
+    return {"ts": int(_time.time()), "agent_id": meta.get("agent_id") or "", "provider": "llama",
+            "mode": "live", "preset_version": PRESET_VERSION, "eligible": False, "result": result}
+
+
+def attach_live(conn, meta: dict, doc: dict, price_kwh: float, snapshot: dict) -> "tuple[str, dict]":
+    """Merge a live run into the model's newest card, or create one if none exists."""
+    model = meta.get("model_id") or doc.get("model_id") or ""
+    existing = latest_card_for_model(conn, meta.get("agent_id") or "", "llama", model)
+    if existing:
+        result = dict(existing["result"])
+        result["live"] = live_section(meta, doc)
+        update_card_result(conn, existing["id"], result)
+        existing["result"] = result
+        return "merged", existing
+    card = card_from_live(meta, doc, price_kwh, snapshot)
+    insert_card(conn, card)
+    return "created", card
+
+
 # ── Routes ───────────────────────────────────────────────────────────
 # Auth is the manager's global before_request gate; no per-route decorator.
 
@@ -1146,7 +1232,11 @@ def register_routes(app, ctx=None, db_path: "str | None" = None) -> None:
         if not agent_id or provider not in PROVIDERS:
             return jsonify({"ok": False,
                             "error": "agent and provider required"}), 400
-        card = latest_card(_conn_factory(), agent_id, provider)
+        model = flask_request.args.get("model") or ""
+        if model:
+            card = latest_card_for_model(_conn_factory(), agent_id, provider, model)
+        else:
+            card = latest_card(_conn_factory(), agent_id, provider)
         return jsonify({"ok": True,
                         "card": _public_card(card) if card else None})
 
@@ -1160,6 +1250,22 @@ def register_routes(app, ctx=None, db_path: "str | None" = None) -> None:
                             "error": "agent, provider and model required"}), 400
         cards = history(_conn_factory(), agent_id, provider, model)
         return jsonify({"ok": True, "cards": [_public_card(c) for c in cards]})
+
+    @app.route("/api/reportcard/attach-live", methods=["POST"])
+    def reportcard_attach_live():
+        body = flask_request.get_json(silent=True) or {}
+        run_id = str(body.get("run_id") or "").strip()[:64]
+        if not run_id:
+            return jsonify({"ok": False, "error": "run_id required"}), 400
+        import bench_live
+        conn = _conn_factory()
+        hit = bench_live.read_run(conn, run_id)
+        if not hit:
+            return jsonify({"ok": False, "error": "run not found"}), 404
+        meta, doc = hit
+        snapshot = _snapshot_power(meta.get("agent_id") or "", "llama")
+        how, card = attach_live(conn, meta, doc, _price_kwh(), snapshot)
+        return jsonify({"ok": True, "attached": how, "card": _public_card(card)})
 
     @app.route("/api/reportcard/history", methods=["DELETE"])
     def reportcard_history_clear():

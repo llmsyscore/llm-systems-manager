@@ -870,6 +870,11 @@
     table.bl-rt td.num, table.bl-rt th.num { text-align:right; font-family:var(--font-mono); }
     table.bl-rt tr.tot td { font-weight:600; background:color-mix(in srgb, var(--fg-dim) 6%, transparent); }
     table.bl-rt .dlt { font-family:var(--font-mono); font-size:10.5px; margin-left:6px; }
+    .bl-rank { display:inline-block; min-width:1.6em; text-align:center; border-radius:999px; font-size:.75em; font-weight:600; background:color-mix(in srgb, var(--accent) 18%, transparent); color:var(--accent); }
+    .bl-rank-bar { height:4px; border-radius:2px; background:var(--accent); opacity:.6; margin-top:3px; }
+    tr.bl-frow[data-agent] { cursor:pointer; }
+    tr.bl-frow.on td { background:color-mix(in srgb, var(--accent) 8%, transparent); }
+    .bl-chip.off { opacity:.45; cursor:default; }
     .dlt.up { color:var(--ok); } .dlt.down { color:var(--crit); } .dlt.flat { color:var(--fg-faint); }
     .bl-log { font-family:var(--font-mono); font-size:11.5px; line-height:1.55; color:var(--fg-muted); background:var(--bg-tabnav); border:1px solid var(--border-soft); border-radius:8px; padding:10px 12px; max-height:220px; overflow:auto; white-space:pre-wrap; }
     .bl-log .ok { color:var(--ok); } .bl-log .warn { color:var(--warn); } .bl-log .dim { color:var(--fg-faint); }

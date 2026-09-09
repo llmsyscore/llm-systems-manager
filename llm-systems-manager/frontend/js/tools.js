@@ -275,7 +275,7 @@
   }
 
   const _TOOL_MODS = { reportcard: 'toolsMod', benchmark: 'toolsModBench', autotune: 'toolsModAt' };
-  const _TOOL_CHIPS = { benchmark: 'toolsChipBenchmark', autotune: 'toolsChipAutotune' };
+  const _TOOL_CHIPS = { reportcard: 'toolsChipReportcard', benchmark: 'toolsChipBenchmark', autotune: 'toolsChipAutotune' };
 
   // Context chip in a module head: the model a deep link pre-filled (#770).
   function _toolsSetChip(id, modelId) {
@@ -313,12 +313,13 @@
     if (mod) mod.style.display = 'block';
     // Chip only when the model actually pre-fills — a live run keeps its state.
     const willInit =
-      (id === 'benchmark' && !run.bench && typeof openBench === 'function')
+      (id === 'reportcard' && !run.rc && typeof initReportCard === 'function')
+      || (id === 'benchmark' && !run.bench && typeof openBench === 'function')
       || (id === 'autotune' && !run.at && window.AT);
     _toolsSetChip(id, willInit && modelId ? modelId : null);
     // A live run keeps its pickers and progress; re-init only when idle.
     if (id === 'reportcard') {
-      if (!run.rc && typeof initReportCard === 'function') initReportCard();
+      if (!run.rc && typeof initReportCard === 'function') initReportCard(modelId || undefined);
     } else if (id === 'benchmark') {
       if (window.BL) BL.onOpen(modelId || undefined);
       if (!run.bench && typeof openBench === 'function') openBench(modelId || undefined);
@@ -425,6 +426,10 @@
         if (!ev.target.closest('.ctx-chip-x')) return;
         const model = chip.dataset.model || '';
         _toolsSetChip(id, null);
+        if (id === 'reportcard') {
+          if (typeof initReportCard === 'function') initReportCard();
+          return;
+        }
         // The model panel populates after an async fetch — retry the untick
         // briefly so a fast ✕ click still clears the pre-selection.
         const untick = tries => {

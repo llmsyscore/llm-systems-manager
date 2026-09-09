@@ -22,12 +22,20 @@ const BODY = `
     <input id="blTimeout" value="600"><textarea id="blExtra">{"temperature": 0}</textarea>
     <select id="blBaseline"><option value="">none</option></select>
     <button id="blRunBtn"></button><button id="blCancelBtn" style="display:none"></button><span id="blEstimate"></span>
+    <button id="blAttachBtn" style="display:none" onclick="BL.addToReportCard()">Add to Report Card</button>
+    <button id="blPinBtn" onclick="BL.pinBaseline()">Set as baseline</button>
     <div class="bl-notice" id="blNotice" style="display:none"></div>
     <span id="blStatus"></span><div id="blStrip"></div><span id="blElapsed"></span><div id="blProgress"><i></i></div><div id="blTiles"></div>
     <canvas id="blChart"></canvas><div class="bl-chart-empty" id="blChartEmpty"></div><div id="blChartCaption"></div>
     <div class="mc-seg" id="blCellSeg" style="display:none"></div><div id="blLevelSeg"></div><div id="blTable"></div><div id="blLog"></div>
     <div class="bl-card" id="blHeatCard" style="display:none"><span id="blHeatMeta"></span><div id="blHeat"></div><div id="blHeatCaption"></div></div>
     <button id="blSetupBtn" style="display:none"></button>
+    <div class="bl-grp"><div class="bl-grp-h">Fleet <span class="bl-hint" id="blFleetHint"></span></div>
+      <div class="bl-chips" id="blFleetTgl"><span class="bl-chip" data-fleet="1">Run on every host with this model loaded</span></div>
+      <div id="blFleetHosts" class="bl-chips" style="display:none"></div>
+      <div class="bl-hint" id="blFleetNote" style="display:none"></div>
+    </div>
+    <div class="bl-card" id="blFleetCard" style="display:none"><span id="blFleetMeta"></span><span id="blFleetProgress"></span><div id="blFleetTable"></div></div>
   </div>
 `;
 
@@ -53,7 +61,7 @@ const STUBS = `
           datasets: { qualitative: { categories: ['coding', 'math', 'qa'] } }, benches: ['qualitative','throughput_1k','throughput_2k','throughput_8k','throughput_16k','throughput_32k'], busy: !!window.__busy }
       : url.indexOf('/api/benchmark/live/runs') === 0
       ? { ok: true, runs: [{ run_id: 'b1', ts: '2026-09-05T22:14:00Z', baseline: true, gen_tps: 103.2, config: { bench: 'qualitative' } }] }
-      : { ok: true, run_id: 'r1' };
+      : { ok: true, run_id: window.__runId || 'r1' };
     return Promise.resolve({ ok: true, json: () => Promise.resolve(body) });
   };
 `;
@@ -345,6 +353,184 @@ describe('BL final-review fixes', () => {
     expect(win.__chart.data.datasets[2].data.every(v => v === null)).toBe(true);
     win.__sse.onEvent({ type: 'level_start', concurrency: 2, bench: 'throughput_1k', osl: 256 });
     expect(win.__chart.data.datasets[2].data.some(v => v !== null)).toBe(true);
+  });
+});
+
+describe('add to Report Card (#885)', () => {
+  it('button hidden until a successful model_done, posts the run id, then offers to open the card', async () => {
+    const win = boot('window.__runId = "r9"; BL.onOpen("org/m:Q4");');
+    await flush();
+    const btn = win.document.getElementById('blAttachBtn');
+    expect(btn.style.display).toBe('none');
+    win.BL.run();
+    await flush();
+    win.__sse.onEvent({ type: 'model_done', run_id: 'r9', ok: true, levels: [], elapsed_s: 5 });
+    win.__sse.onEvent({ type: 'done', ok: true });
+    await flush();
+    expect(btn.style.display).toBe('');
+    win.fetch = vi.fn(async () => ({ json: async () => ({ ok: true, attached: 'merged', card: {} }) }));
+    win.toolsDeepLink = vi.fn();
+    await win.BL.addToReportCard();
+    await flush();
+    expect(win.fetch.mock.calls[0][0]).toBe('/api/reportcard/attach-live');
+    expect(JSON.parse(win.fetch.mock.calls[0][1].body)).toEqual({ run_id: 'r9' });
+    expect(btn.textContent).toMatch(/Added.*open/);
+    btn.click();
+    expect(win.toolsDeepLink).toHaveBeenCalledWith('reportcard', expect.any(String));
+  });
+
+  it('stays hidden on a failed run and does not post', async () => {
+    const win = boot('BL.onOpen("org/m:Q4");');
+    await flush();
+    win.BL.run();
+    await flush();
+    win.__sse.onEvent({ type: 'done', ok: false });
+    await flush();
+    expect(win.document.getElementById('blAttachBtn').style.display).toBe('none');
+  });
+});
+
+describe('fleet selection no longer leaks into attach/baseline/busy state (final-review fix)', () => {
+  it('selecting another fleet host resets the "Added" state', async () => {
+    const win = boot('window.__runId = "r9"; BL.onOpen("org/m:Q4");');
+    await flush();
+    const btn = win.document.getElementById('blAttachBtn');
+    win.BL.run();
+    await flush();
+    win.__sse.onEvent({ type: 'model_done', run_id: 'r9', ok: true, levels: [], elapsed_s: 5 });
+    win.__sse.onEvent({ type: 'done', ok: true });
+    await flush();
+    win.fetch = vi.fn(async () => ({ json: async () => ({ ok: true, attached: 'merged', card: {} }) }));
+    await win.BL.addToReportCard();
+    await flush();
+    expect(btn.textContent).toMatch(/Added.*open/);
+    const job = { job_id: 'j1', model_id: 'org/m:Q4', done: true, cancelled: false, config: {},
+      hosts: [{ agent_id: 'b', hostname: 'bravo', status: 'done', run_id: 'rb', gen_tps: 70 }], ranking: ['b'] };
+    win.fetch = vi.fn(async (url) => ({ json: async () => (String(url).includes('/runs/rb') ? { ok: true, run: { levels: [] } } : { ok: true }) }));
+    win.BL._debugFleet(job);
+    await win.BL.selectFleetHost('b');
+    await flush();
+    expect(btn.textContent).toBe('Add to Report Card');
+  });
+
+  it('the baseline button hides for a fleet host selection and pinBaseline() no-ops', async () => {
+    const win = boot('BL.onOpen("org/m:Q4");');
+    await flush();
+    const pinBtn = win.document.getElementById('blPinBtn');
+    expect(pinBtn.style.display).toBe('');
+    const job = { job_id: 'j1', model_id: 'org/m:Q4', done: true, cancelled: false, config: {},
+      hosts: [{ agent_id: 'b', hostname: 'bravo', status: 'done', run_id: 'rb', gen_tps: 70 }], ranking: ['b'] };
+    win.fetch = vi.fn(async (url) => ({ json: async () => (String(url).includes('/runs/rb') ? { ok: true, run: { levels: [] } } : { ok: true }) }));
+    win.BL._debugFleet(job);
+    await win.BL.selectFleetHost('b');
+    await flush();
+    expect(pinBtn.style.display).toBe('none');
+    expect(pinBtn.disabled).toBe(true);
+    win.fetch = vi.fn();
+    await win.BL.pinBaseline();
+    expect(win.fetch).not.toHaveBeenCalled();
+  });
+
+  it('a fleet run is refused while attached to another tab\'s run', async () => {
+    const win = boot('window.__busy = true; BL.onOpen("org/m:Q4");');
+    await flush();
+    const d = win.document;
+    expect(win.BL.running()).toBe(true);
+    win.fetch = vi.fn(async () => ({ json: async () => ({ ok: true, hosts: [] }) }));
+    win.BL.toggleFleet();
+    await flush();
+    win.fetch = vi.fn();
+    await win.BL.run();
+    await flush();
+    expect(win.fetch).not.toHaveBeenCalled();
+    expect(d.getElementById('blStatus').textContent).toBe('finish or cancel the attached run first');
+    win.BL.cancel();
+  });
+});
+
+describe('fleet ranking (#884)', () => {
+  const job = { job_id: 'j1', model_id: 'org/m:Q4', done: true, cancelled: false, config: { bench: 'throughput_1k' },
+    hosts: [
+      { agent_id: 'a', hostname: 'alpha', status: 'done', run_id: 'ra', gen_tps: 60, agg_max_tps: 100, latency_s: 12, accept_rate: null, wh_per_ktok: 0.5 },
+      { agent_id: 'b', hostname: 'bravo', status: 'done', run_id: 'rb', gen_tps: 70, agg_max_tps: 120, latency_s: 10, accept_rate: 0.5, wh_per_ktok: null },
+      { agent_id: 'c', hostname: 'charlie', status: 'failed', run_id: null, error: 'Another benchmark or autotune is in progress' },
+    ], ranking: ['b', 'a'] };
+  it('rankHosts orders done hosts by decode t/s and computes pct of best', () => {
+    const win = boot();
+    const r = win.BL.rankHosts(job.hosts);
+    expect(r.map(h => h.hostname)).toEqual(['bravo', 'alpha', 'charlie']);
+    expect(r[0].rank).toBe(1); expect(r[1].pctOfBest).toBeCloseTo(60 / 70); expect(r[2].rank).toBeNull();
+  });
+  it('a finished fleet job is cleared when another model opens or a normal run starts', async () => {
+    const win = boot(); await flush();
+    win.fetch = vi.fn(async () => ({ json: async () => ({ ok: true, server: { up: true }, runtime: {}, runs: [], hosts: [] }) }));
+    win.BL._debugFleet(job);
+    const card = win.document.getElementById('blFleetCard');
+    expect(card.style.display).toBe('');
+    await win.BL.onOpen('org/other:Q8'); await flush();
+    expect(card.style.display).toBe('none');
+    win.BL._debugFleet(job);
+    expect(card.style.display).toBe('');
+    await win.BL.run({ model_id: 'org/other:Q8', concurrency: [1], extra_inputs: {} }); await flush();
+    expect(card.style.display).toBe('none');
+  });
+  it('flags a matrix-ignored host with a warning icon and title (#884 follow-up)', () => {
+    const win = boot();
+    const flagged = { ...job, hosts: [{ ...job.hosts[0], matrix_ignored: true }] };
+    win.BL._debugFleet(flagged);
+    const row = win.document.querySelector('#blFleetTable tbody tr');
+    expect(row.textContent).toContain('⚠');
+    expect(row.querySelectorAll('td')[2].querySelector('span').title).toContain('matrix ignored (old agent)');
+  });
+  it('renders the ranking table with rank badges, bars, status and Δ vs best; clicking a done row loads its run', async () => {
+    const win = boot(); await flush();
+    win.fetch = vi.fn(async (url) => ({ json: async () => url.includes('/runs/ra') ? { ok: true, meta: {}, run: { levels: [{ concurrency: 1, all: { pred_tps: 60, agg_pred_tps: 60 }, rows: [] }] } } : { ok: true } }));
+    win.BL._debugFleet(job);
+    const card = win.document.getElementById('blFleetCard');
+    expect(card.style.display).toBe('');
+    const rows = card.querySelectorAll('tbody tr');
+    expect(rows.length).toBe(3);
+    expect(rows[0].textContent).toContain('bravo'); expect(rows[0].querySelector('.bl-rank').textContent).toBe('1');
+    expect(rows[1].textContent).toMatch(/−14 %/);
+    expect(rows[2].textContent).toContain('failed'); expect(rows[2].title || rows[2].querySelector('[title]').title).toContain('in progress');
+    rows[1].click(); await flush();
+    expect(win.fetch.mock.calls.some(c => String(c[0]).includes('/api/benchmark/live/runs/ra'))).toBe(true);
+    expect(rows[1].classList.contains('on')).toBe(true);
+  });
+  it('an autopilot run resets the progress bar and logs the job and host transitions', async () => {
+    const win = boot('BL.onOpen("org/m:Q4");'); await flush();
+    const bar = win.document.querySelector('#blProgress i'); bar.style.width = '60%';
+    let polls = 0;
+    win.fetch = vi.fn(async (url, opts) => ({ json: async () => url.includes('/hosts') ? { ok: true, hosts: [{ agent_id: 'a', hostname: 'alpha', online: true, loaded: true }] }
+      : (String(url) === '/api/benchmark/live/fleet' && opts) ? { ok: true, job_id: 'j3', hosts: [] }
+      : url.includes('/fleet/j') ? { ok: true, job: { ...job, job_id: 'j3', ranking: ['a'], done: ++polls > 1, hosts: [polls > 1 ? job.hosts[0] : { ...job.hosts[0], status: 'running', gen_tps: null }, job.hosts[2]] } }
+      : url.includes('/runs/ra') ? { ok: true, meta: {}, run: { levels: [], rows: [] } } : { ok: true, runs: [] } }));
+    win.BL.toggleFleet(); await flush();
+    await win.BL.run(); await flush();
+    // the first poll already ran: charlie failed, alpha running → 1 of 2 finished
+    expect(bar.style.width).toBe('50%');
+    const logText = () => win.document.getElementById('blLog').textContent;
+    expect(logText()).toContain('autopilot job j3 · 1 host');
+    expect(logText()).toContain('alpha: started');
+    expect(logText()).toContain('charlie: failed · Another benchmark');
+    await win.BL._debugPollOnce(); await flush();
+    expect(logText()).toContain('alpha: done · decode 60');
+    expect(logText()).toContain('autopilot ranking complete');
+    expect(bar.style.width).toBe('100%');
+  });
+  it('fleet toggle loads hosts and the run posts a fleet job', async () => {
+    const win = boot('BL.onOpen("org/m:Q4");'); await flush();
+    win.fetch = vi.fn(async (url, opts) => ({ json: async () => url.includes('/hosts') ? { ok: true, hosts: [
+      { agent_id: 'a', hostname: 'alpha', online: true, loaded: true }, { agent_id: 'c', hostname: 'charlie', online: true, loaded: false }] }
+      : url.includes('/fleet') && opts ? { ok: true, job_id: 'j2', hosts: [] } : { ok: true, job: { ...job, done: false, hosts: [] } } }));
+    win.BL.toggleFleet(); await flush();
+    const chips = win.document.querySelectorAll('#blFleetHosts .bl-chip');
+    expect(chips.length).toBe(2);
+    expect(chips[0].classList.contains('on')).toBe(true); expect(chips[1].classList.contains('off')).toBe(true);
+    await win.BL.run(); await flush();
+    const post = win.fetch.mock.calls.find(c => String(c[0]) === '/api/benchmark/live/fleet' && c[1]);
+    expect(JSON.parse(post[1].body)).toMatchObject({ model_id: expect.any(String), agents: ['a'] });
+    expect(JSON.parse(post[1].body).config.model_id).toBeUndefined();
   });
 });
 
