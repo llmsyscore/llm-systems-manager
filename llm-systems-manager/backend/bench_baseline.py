@@ -16,6 +16,7 @@ CHECK_POLL_S = 30.0
 CHECK_MAX_WAIT_S = 7200.0
 RETRY_S = 1800.0
 MAX_ATTEMPTS = 3
+MAX_BUSY = 12
 AUTO_TRIGGERS = ("nightly", "build")
 
 _log = logging.getLogger("bench_baseline")
@@ -336,7 +337,12 @@ class Watcher:
                 return
             pend["starting"] = False
             if "in progress" in str(val):
-                pend["retry_at"] = started + RETRY_S
+                pend["busy"] = pend.get("busy", 0) + 1
+                if pend["busy"] >= MAX_BUSY:
+                    self._record(b, pend["trigger"], "skipped", error="host busy all day", build=build)
+                    self._pending.pop(b["run_id"], None)
+                else:
+                    pend["retry_at"] = started + RETRY_S
                 return
             pend["attempts"] += 1
             if pend["attempts"] >= MAX_ATTEMPTS:

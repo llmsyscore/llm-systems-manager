@@ -229,6 +229,11 @@ def test_busy_refusal_never_consumes_an_attempt(tmp_path):
     assert len(e.started) == 4  # three busy refusals so far, none recorded failed
     assert e.w.snapshot()["baselines"][0]["last_check"] is None
     assert e.alerts == []
+    for _ in range(bb.MAX_BUSY):
+        e.t += bb.RETRY_S + 1; e.w.tick()
+    last = e.w.snapshot()["baselines"][0]["last_check"]
+    assert last["status"] == "skipped" and last["error"] == "host busy all day"
+    assert len(e.started) == bb.MAX_BUSY and e.w.snapshot()["baselines"][0]["pending"] is None
 
 
 def test_other_failures_still_count_toward_max_attempts(tmp_path):
