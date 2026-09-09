@@ -540,6 +540,46 @@ def test_run_all_warns_when_help_is_unreadable(llama, tmp_path, monkeypatch):
     assert seen[0][1] is None and seen[0][0] > 0            # warned before the first model
 
 
+def test_quality_mode_dispatches_run_quality_and_posts_quality_ledger(llama, tmp_path, monkeypatch):
+    _wire(llama, tmp_path, monkeypatch)
+    monkeypatch.setattr(llama, "_autotune_set_perf_mode", lambda mode: None)
+    monkeypatch.setattr(llama, "_bench_live_runtime",
+                        lambda: {"python": "", "script": "", "source": "", "script_status": "ok", "commit": ""})
+    monkeypatch.setattr(llama, "_list_cache_ggufs", lambda root: [])
+    monkeypatch.setattr(llama, "_llama_read_ini", lambda: llama.configparser.ConfigParser())
+    monkeypatch.setattr(llama, "_bench_get_hf_arg", lambda mid: "org/m:Q4")
+    monkeypatch.setattr(llama, "_llama_help_valued", lambda: set())
+    llama._llama_build_last = "b10850-abc"
+    seen = {}
+
+    def fake_quality(mid, section, req, backend, put, cancelled, env):
+        seen.update(mid=mid, section=section, req=req, env=env)
+        doc = {"type": "model_done", "model_id": mid, "ok": True, "mode": "quality",
+               "guard": {"kl": 0.01, "pass": True}, "llama_build": env.get("llama_build"),
+               "after": {}, "before": {}, "stages": []}
+        put(doc)
+        return doc
+    monkeypatch.setattr(llama._at, "run_quality", fake_quality)
+    monkeypatch.setattr(llama._at, "run_model", lambda *a, **k: pytest.fail("run_model must not run in quality mode"))
+    posted = []
+    monkeypatch.setattr(llama._shared, "post_tool_run",
+                        lambda ctx, tool, prov, rid, mid, ok, summary: posted.append((tool, summary)))
+    llama._autotune_cancel_event.clear()
+    llama._autotune_run_all({"model_ids": ["org/m:Q4"], "objective": "fit", "mode": "quality",
+                             "overrides": {"cache-type-k": "q4_0"}})
+    assert seen["req"]["mode"] == "quality" and seen["env"]["llama_build"] == "b10850-abc"
+    assert posted == [("quality", {"objective": None, "mode": "quality", "llama_build": "b10850-abc",
+                                   "ctx_size": None, "free_mb": None, "decode_tps": None, "gain_pct": None,
+                                   "stages_done": 0, "verify_ok": None, "wh_per_ktok": None, "n_expert": None,
+                                   "kl": 0.01, "kl_pass": True, "regressed": None})]
+
+
+def test_preflight_reports_llama_build(llama, tmp_path, monkeypatch):
+    _wire(llama, tmp_path, monkeypatch)
+    llama._llama_build_last = "b10850-abc"
+    assert llama.llama_autotune_preflight()["llama_build"] == "b10850-abc"
+
+
 def test_run_all_removes_the_run_scratch_dir(llama, tmp_path, monkeypatch):
     """base.kld and the stick JSONs are GBs per run; the run dir must not survive it."""
     _wire(llama, tmp_path, monkeypatch)

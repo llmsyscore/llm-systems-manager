@@ -3440,7 +3440,8 @@ def _autotune_run_all(req: dict) -> None:
                            "text": "[autotune] could not read llama-server --help; on/off flags are guessed"})
         info = {"run_id": run_id, "runtime": bool(rt["python"] and rt["script"]),
                 "perplexity": _autotune_perplexity_bin() is not None and _autotune_kl_text().is_file(),
-                "drafts": drafts, "cores": _at.physical_cores(_read_cpuinfo(), os.cpu_count() or 1)}
+                "drafts": drafts, "cores": _at.physical_cores(_read_cpuinfo(), os.cpu_count() or 1),
+                "llama_build": _llama_build_last or ""}
         for mid in req["model_ids"]:
             if _autotune_cancel_event.is_set():
                 break
@@ -3449,6 +3450,12 @@ def _autotune_run_all(req: dict) -> None:
             hf_arg = _bench_get_hf_arg(mid) or ""
             menv = dict(info, target_repo=hf_arg.split(":")[0], target_size=int(sizes.get(mid) or 0))
             menv["valued"] = valued
+            if req.get("mode") == "quality":
+                done = _at.run_quality(mid, section, req, _AutotuneBackend(mid, env, run_id), _autotune_put,
+                                       _autotune_cancel_event.is_set, menv)
+                _shared.post_tool_run(_require_ctx(), "quality", "llama", run_id, mid, done["ok"],
+                                      _at.ledger_summary(done))
+                continue
             done = _at.run_model(mid, section, req, _AutotuneBackend(mid, env, run_id), _autotune_put,
                                  _autotune_cancel_event.is_set, menv)
             _shared.post_tool_run(_require_ctx(), "autotune", "llama", run_id, mid, done["ok"],
@@ -3486,6 +3493,7 @@ def llama_autotune_preflight(authorization: Optional[str] = Header(default=None)
     hv = _llama_help_valued()
     return {"ok": True, "busy": bool(_bench_active or _autotune_active), "unit_active": _llama_unit_active(),
             "help_valued": {"ok": hv is not None, "count": len(hv or ())},
+            "llama_build": _llama_build_last or "",
             "cores": _at.physical_cores(_read_cpuinfo(), os.cpu_count() or 1),
             "perplexity": _autotune_perplexity_bin() is not None and _autotune_kl_text().is_file(),
             "runtime": {"ok": bool(rt["python"] and rt["script"]), **rt},
