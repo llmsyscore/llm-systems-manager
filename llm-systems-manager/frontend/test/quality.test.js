@@ -1,6 +1,6 @@
 // #888: Quality guard module — standalone KL check of any config change against f16.
 import { describe, it, expect } from 'vitest';
-import { srcFile, runHarness, flush } from './helpers/harness.js';
+import { srcFile, runHarness, flush, QUEUE_SLOT_STUB } from './helpers/harness.js';
 
 const INDEX = srcFile('index.html');
 const BODY = INDEX.slice(INDEX.indexOf('<div id="toolsModQg"'), INDEX.indexOf('<!-- /toolsModQg -->'));
@@ -41,6 +41,15 @@ function boot(bootstrap = '') {
 async function opened(model, opts) {
   const win = boot();
   await win.QG.onOpen(model, opts);
+  await flush();
+  return win;
+}
+
+// Same module with the shared run gate wired in (#888).
+async function openedGated(bootstrap = '') {
+  const win = runHarness({ sources: [STUBS, QUEUE_SLOT_STUB, srcFile('js/quality.js')],
+                           bodyHtml: BODY, bootstrap });
+  await win.QG.onOpen('org/m:Q4', { overrides: { 'cache-type-k': 'q4_0' } });
   await flush();
   return win;
 }
@@ -369,5 +378,67 @@ describe('Quality guard module (#888)', () => {
     expect(win.document.getElementById('qgBenchBtn').style.display).toBe('');
     expect(win.document.getElementById('qgApplyNote').textContent).toMatch(/measures quality only, never speed/);
     expect(win.document.getElementById('qgStrip').textContent).toBe('both passes complete · quality over the limit');
+  });
+});
+
+
+// #888: the shared run gate — Run becomes Queue while another tool holds the host.
+describe('QG queueing behind another tool (#888)', () => {
+  const BUSY = "window.__gateBusy = { tool: 'benchmark', label: 'Benchmark', host: 'gpu-01', agent_id: 'a1' };";
+  const runPosts = (win) => win.__fetches.filter(
+    f => f[0] === '/api/llm/autotune/run' && f[1] && f[1].method === 'POST');
+
+  it('queues instead of starting while a Benchmark holds the host', async () => {
+    const win = await openedGated(BUSY);
+    win.__fetches.length = 0;
+    await win.QG.run();
+    await flush();
+    expect(runPosts(win)).toHaveLength(0);
+    expect(win.__slots[0].queued()).toBe(true);
+    expect(win.document.getElementById('qgRunBtn').textContent).toContain('Queued');
+    expect(win.document.getElementById('qgQueueNote').textContent)
+      .toContain('Queued behind Benchmark on gpu-01');
+    expect(win.document.getElementById('qgPill').textContent).toBe('queued');
+    expect(win.__queued).toEqual(['quality', 'Benchmark on gpu-01']);
+  });
+
+  it('starts the queued check by itself once the gate clears', async () => {
+    const win = await openedGated(BUSY);
+    await win.QG.run();
+    await flush();
+    win.__fetches.length = 0;
+    win.__gateBusy = null;
+    await win.__slots[0].fire();
+    for (let i = 0; i < 4; i++) await flush();
+    expect(runPosts(win)).toHaveLength(1);
+    expect(JSON.parse(runPosts(win)[0][1].body).mode).toBe('quality');
+  });
+
+  it('drops a queued check on Cancel without cancelling anything on the agent', async () => {
+    const win = await openedGated(BUSY);
+    await win.QG.run();
+    await flush();
+    win.__fetches.length = 0;
+    win.QG.cancel();
+    expect(win.__slots[0].queued()).toBe(false);
+    expect(win.__fetches.map(f => f[0])).not.toContain('/api/llm/autotune/cancel');
+  });
+
+  it('labels the button Queue while the host is busy and nothing is pending', async () => {
+    const win = await openedGated(BUSY);
+    expect(win.document.getElementById('qgRunBtn').textContent).toContain('Queue check');
+    expect(win.document.getElementById('qgQueueNote').textContent)
+      .toContain('Benchmark is running on gpu-01');
+  });
+
+  it('queues rather than losing the check when the agent refuses it', async () => {
+    const win = await openedGated();
+    win.__runReply = { ok: false, error: 'an autotune run is already in progress' };
+    await win.QG.run();
+    for (let i = 0; i < 4; i++) await flush();
+    expect(win.__slots[0].queued()).toBe(true);
+    expect(win.__slots[0].waitFor()).toBe('the run in progress');
+    // Still attached to the run it lost the race to.
+    expect(win.__sse.url).toBe('/api/llm/autotune/stream');
   });
 });

@@ -10,7 +10,7 @@
   const BOOL_KEYS = ['flash-attn'];
   const KEYS = ['cache-type-k', 'cache-type-v', 'threads', 'threads-batch', 'n-gpu-layers', 'n-cpu-moe', 'batch-size', 'ubatch-size', 'flash-attn', 'load-mode'];
   let _models = [], _model = '', _cfg = {}, _rows = [], _es = null, _done = null, _pre = null, _wired = false, _neutral = false;
-  let _elapsedIv = null, _startTs = 0;
+  let _elapsedIv = null, _startTs = 0, _slot = null, _busyOn = false;
   const PASS_NAME = { 'f16 base': 'pass 1 of 2 · f16 reference', candidate: 'pass 2 of 2 · candidate config' };
   // Parsed llama-perplexity statistics rendered beside the KL number.
   const STAT_DEFS = [
@@ -127,6 +127,7 @@
     _done = null; renderResult(null);
     await checkServer(pre && pre.ok ? pre : null);
     if (_pre && _pre.busy && !running()) attach(true);
+    const s = slot(); if (s) s.sync();
   }
   async function serverUp() {
     try { const s = await fetch('/api/llama-state').then(r => r.json()); return s.state === 'awake' || s.state === 'sleeping'; } catch (_) { return false; }
@@ -199,24 +200,64 @@
     el.textContent = typeof perfModeNote === 'function' ? perfModeNote(ev) : '';
   }
   function busy(on) {
+    _busyOn = !!on;
     const rail = $('qgRail'); if (rail) rail.classList.toggle('locked', on);
     const r = $('qgRunBtn'), c = $('qgCancelBtn'); if (r) r.style.display = on ? 'none' : ''; if (c) c.style.display = on ? '' : 'none';
+    if (_slot) _slot.sync();
     if (typeof toolsSyncRunDot === 'function') toolsSyncRunDot();
   }
   function openStream() {
     if (_es) { try { _es.close(); } catch (_) {} }
     _es = SG.open({ url: '/api/llm/autotune/stream', onEvent: onEvent, onDrop: () => log('stream dropped — reconnecting'), onGiveUp: () => finish({ ok: false, error: 'stream lost' }) });
   }
+  // Shared gate (#888): another tool on this host turns Run into Queue.
+  function slot() {
+    if (!_slot && typeof toolsQueueSlot === 'function') {
+      _slot = toolsQueueSlot('quality', {
+        provider: () => 'llama',
+        start: (body) => start(body),
+        render: (st) => syncQueue(st),
+      });
+    }
+    return _slot;
+  }
+  function syncQueue(st) {
+    if (running() || _busyOn) return;
+    const r = $('qgRunBtn'), c = $('qgCancelBtn'), n = $('qgQueueNote');
+    if (r) r.textContent = st.queued ? '⏸ Queued · waiting' : st.busy ? '▶ Queue check' : '▶ Run check';
+    if (c) {
+      c.style.display = st.queued ? '' : 'none';
+      c.textContent = st.queued ? '✕ Drop queued run' : '✕ Cancel';
+    }
+    if (n) {
+      n.textContent = st.queued
+        ? `Queued behind ${st.waitFor} — this check starts on its own when that finishes.`
+        : st.busy ? `${st.busy.label} is running on ${st.busy.host}. A check started now queues behind it.` : '';
+      n.style.display = n.textContent ? '' : 'none';
+    }
+    if (st.queued) { pill('warn', 'queued'); stage('waiting for ' + st.waitFor); }
+  }
   async function run() {
     const mid = model(); if (!mid) { notify('Quality guard', 'Select a model before running the check.'); return; }
     const ov = overrides();
     if (!Object.keys(ov).length) { notify('Quality guard', 'Switch on at least one key and give it a value that differs from the current one.'); return; }
     const klMax = parseFloat(($('qgKlMax') || {}).value); const body = { model_ids: [mid], objective: 'fit', mode: 'quality', overrides: ov, kl_max: Number.isFinite(klMax) ? klMax : 0.02 };
+    const s = slot(), gateBusy = s && !running() && !_busyOn && s.busy();
+    if (gateBusy) { s.queue(body); return; }
+    return start(body);
+  }
+  async function start(body) {
+    const s = slot();
     let r;
     try { r = await fetch('/api/llm/autotune/run', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }).then(x => x.json()); }
     catch (e) { notify('Quality check failed to start', (e && e.message ? e.message : String(e)), 'critical'); return; }
     if (!r || !r.ok) {
-      if (r && /in progress/i.test(r.error || r.detail || '')) { attach(true); return; }
+      // Lost the race with another browser — attach, and hold this check behind it.
+      if (r && /in progress/i.test(r.error || r.detail || '')) {
+        attach(true);
+        if (s) s.queue(body, 'the run in progress');
+        return;
+      }
       notify('Quality check failed to start', (r && (r.error || r.detail)) || 'the agent refused the run', 'critical'); return;
     }
     _done = null; renderResult(null); const lg = $('qgLog'); if (lg) lg.innerHTML = '';
@@ -231,7 +272,10 @@
     busy(true);
     openStream();
   }
-  function cancel() { fetch('/api/llm/autotune/cancel', { method: 'POST' }).catch(() => {}); }
+  function cancel() {
+    if (!running() && !_busyOn && _slot && _slot.drop()) { log('queued check dropped'); pill('', 'idle'); stage(''); return; }
+    fetch('/api/llm/autotune/cancel', { method: 'POST' }).catch(() => {});
+  }
   // Tool switch: drop this module's stream, leaving the run itself alone.
   function detach() {
     if (!_es) return;

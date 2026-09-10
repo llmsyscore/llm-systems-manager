@@ -23,6 +23,7 @@
   let _run = null, _done = {}, _doneModel = null, _meta = {}, _section = {}, _elapsedIv = null;
   let _status = {};        // model_id → /api/llm/autotune/status item
   let _verifyIntent = false;
+  let _slot = null, _busyOn = false;
   async function loadStatus() {
     _status = {};
     try {
@@ -293,6 +294,7 @@
     syncVerify();
     await checkServer(pre && pre.ok ? pre : null);
     if (_pre && _pre.busy && !running()) attach();
+    const s = slot(); if (s) s.sync();
   }
 
   // ── run / stream ──
@@ -309,11 +311,13 @@
       .forEach(el => { el.disabled = !!locked; });
   }
   function busy(on) {
+    _busyOn = !!on;
     const run = $('atRunBtn'), cancel = $('atCancelBtn'), again = $('atAgainBtn');
     if (run) run.disabled = on;
     if (cancel) cancel.style.display = on && !_attached ? '' : 'none';
     if (again) again.style.display = on ? 'none' : (_doneModel ? '' : 'none');
     setRailLocked(on);
+    if (_slot) _slot.sync();
     if (typeof toolsSyncRunDot === 'function') toolsSyncRunDot();
   }
   function mmss(s) { s = Math.max(0, Math.floor(s || 0)); return `${String(Math.floor(s / 60)).padStart(2, '0')}:${String(s % 60).padStart(2, '0')}`; }
@@ -410,14 +414,21 @@
     const body = { model_ids: ids, objective: objective(), budget_min: Math.round(num('atBudgetMin', 120)), dims };
     return startRun(body, ids);
   }
-  async function startRun(body, ids) {
+  async function startRun(body, ids, now) {
+    const s = slot(), gateBusy = s && !now && !running() && !_busyOn && s.busy();
+    if (gateBusy) { s.queue({ body, ids }); return; }
     let r;
     try {
       const resp = await fetch('/api/llm/autotune/run', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
       r = await resp.json();
     } catch (e) { alert('Autotune request failed: ' + (e && e.message ? e.message : e)); return; }
     if (!r || !r.ok) {
-      if (r && /in progress/i.test(r.error || r.detail || '')) { attach(); return; }
+      // Lost the race with another browser — attach, and hold this run behind it.
+      if (r && /in progress/i.test(r.error || r.detail || '')) {
+        attach();
+        if (s) s.queue({ body, ids }, 'the run in progress');
+        return;
+      }
       alert((r && (r.error || r.detail)) || 'Failed to start autotune'); return;
     }
     _done = {}; _doneModel = null; _meta = {}; _section = {};
@@ -447,6 +458,33 @@
     if (typeof toolsOpenTool === 'function') toolsOpenTool('quality', done.model_id, { overrides });
   }
   const QUALITY_KEYS = new Set(['cache-type-k', 'ctk', 'cache-type-v', 'ctv', 'threads', 't', 'threads-batch', 'tb', 'n-gpu-layers', 'ngl', 'n-cpu-moe', 'ncmoe', 'batch-size', 'b', 'ubatch-size', 'ub', 'flash-attn', 'fa', 'load-mode', 'lm']);
+  // Shared gate (#888): another tool on this host turns Run into Queue.
+  function slot() {
+    if (!_slot && typeof toolsQueueSlot === 'function') {
+      _slot = toolsQueueSlot('autotune', {
+        provider: () => 'llama',
+        start: (p) => startRun(p.body, p.ids, true),
+        render: (st) => syncQueue(st),
+      });
+    }
+    return _slot;
+  }
+  function syncQueue(st) {
+    if (running() || _busyOn) return;
+    const btn = $('atRunBtn'), c = $('atCancelBtn'), n = $('atQueueNote');
+    if (btn) btn.textContent = st.queued ? '⏸ Queued · waiting'
+      : st.busy ? '▶ Queue autotune' : '▶ Run autotune';
+    if (c) {
+      c.style.display = st.queued ? '' : 'none';
+      c.textContent = st.queued ? '✕ Drop queued run' : '✕ Cancel';
+    }
+    if (n) {
+      n.textContent = st.queued
+        ? `Queued behind ${st.waitFor} — this run starts on its own when that finishes.`
+        : st.busy ? `${st.busy.label} is running on ${st.busy.host}. A run started now queues behind it.` : '';
+      n.style.display = n.textContent ? '' : 'none';
+    }
+  }
   function attach() {
     _attached = true;
     newRun(null);
@@ -473,6 +511,7 @@
     if (typeof toolsSyncRunDot === 'function') toolsSyncRunDot();
   }
   function cancel() {
+    if (!running() && !_busyOn && _slot && _slot.drop()) { log('queued run dropped', 'warn'); return; }
     fetch('/api/llm/autotune/cancel', { method: 'POST' }).catch(() => {});
     log('cancel requested', 'warn');
   }

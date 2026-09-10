@@ -2462,6 +2462,7 @@ Backend API endpoints consumed:
             <div class="at-card-f"><span class="msg">Stages run in dependency order: context before KV, KV before offload, spec last. Each stage starts from the best of the previous one.</span></div>
           </div>
           <div class="at-notice" id="atPrevTune" style="display:none;"></div>
+          <div class="at-notice" id="atQueueNote" style="display:none;"></div>
         </div>
         <div id="atPaneRun" class="at-pane" style="display:none;">
           <div class="bl-strip at-strip"><span class="bench-status-pill running" id="atRunPill">running</span><span id="atStripStage"></span><span id="atStripTime"></span><span id="atStripPerf"></span></div>
@@ -2535,6 +2536,7 @@ Backend API endpoints consumed:
       </div>
       <div class="bench-results-pane at-panes">
         <div class="at-pane">
+          <div class="at-notice" id="qgQueueNote" style="display:none;"></div>
           <div class="bl-strip at-strip"><span class="bench-status-pill" id="qgPill">idle</span><span id="qgStrip"></span><span id="qgStripTime"></span><span id="qgStripPerf"></span></div>
           <div class="at-card"><div class="at-card-h"><h3>Result</h3><span class="meta" id="qgResultMeta"></span></div>
             <div class="at-card-b" id="qgResult"><div class="at-hint">Pick a model, change one or more keys, then run the check.</div></div>
@@ -2559,7 +2561,7 @@ Backend API endpoints consumed:
 <script src="/static/js/lib/perfmode.js?v=2026.09.09-1"></script>
 <script src="/static/js/lib/thresholds.js?v=2026.08.05-1"></script>
 <script src="/static/js/lib/reportcard.js?v=2026.09.08-2"></script>
-<script src="/static/js/lib/toolcards.js?v=2026.08.31-6"></script>
+<script src="/static/js/lib/toolcards.js?v=2026.08.31-7"></script>
 <script src="/static/js/lib/sseguard.js?v=2026.09.04-1"></script>
 <script src="/static/js/lib/energy.js?v=2026.08.26-1"></script>
 <script src="/static/js/lib/overall-view.js?v=2026.09.01-1"></script>
@@ -2578,15 +2580,15 @@ Backend API endpoints consumed:
 <script src="/static/js/autopilot.js?v=2026.09.04-1"></script>
 <script src="/static/js/llmcontrol-models.js?v=2026.09.09-2"></script>
 <script src="/static/js/editor-modern.js?v=2026.09.07-1"></script>
-<script src="/static/js/bench-autotune.js?v=2026.09.08-5"></script>
-<script src="/static/js/bench-live.js?v=2026.09.09-6"></script>
-<script src="/static/js/autotune.js?v=2026.09.09-5"></script>
-<script src="/static/js/quality.js?v=2026.09.09-7"></script>
+<script src="/static/js/bench-autotune.js?v=2026.09.08-6"></script>
+<script src="/static/js/bench-live.js?v=2026.09.09-7"></script>
+<script src="/static/js/autotune.js?v=2026.09.09-6"></script>
+<script src="/static/js/quality.js?v=2026.09.09-8"></script>
 <script src="/static/js/lmstudio.js?v=2026.09.04-1"></script>
 <script src="/static/js/vllm.js?v=2026.09.04-1"></script>
 <script src="/static/js/vllm-bench-autotune.js?v=2026.09.02-1"></script>
-<script src="/static/js/report-card.js?v=2026.09.08-3"></script>
-<script src="/static/js/tools.js?v=2026.09.09-3"></script>
+<script src="/static/js/report-card.js?v=2026.09.08-4"></script>
+<script src="/static/js/tools.js?v=2026.09.09-4"></script>
 <script src="/static/js/energy.js?v=2026.08.19-1"></script>
 <script src="/static/js/overall.js?v=2026.08.29-2"></script>
 <script src="/static/js/dashboard-manager.js?v=2026.08.17-1"></script>

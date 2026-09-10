@@ -1,6 +1,6 @@
 // #880: Autotune module — dims state, plan card, estimate, stream plumbing, stepper.
 import { describe, it, expect, vi } from 'vitest';
-import { srcFile, runHarness, flush } from './helpers/harness.js';
+import { srcFile, runHarness, flush, QUEUE_SLOT_STUB } from './helpers/harness.js';
 
 const INDEX = srcFile('index.html');
 // The real module markup, so ids and classes cannot drift from index.html.
@@ -55,6 +55,15 @@ function boot(bootstrap = '') {
 
 async function opened() {
   const win = boot();
+  win.AT.onOpen('org/m:Q4');
+  for (let i = 0; i < 6; i++) await flush();
+  return win;
+}
+
+// Same module with the shared run gate wired in (#888).
+async function openedGated(bootstrap = '') {
+  const win = runHarness({ sources: [LAYOUT, STUBS, QUEUE_SLOT_STUB, srcFile('js/autotune.js')],
+                           bodyHtml: BODY, bootstrap });
   win.AT.onOpen('org/m:Q4');
   for (let i = 0; i < 6; i++) await flush();
   return win;
@@ -722,5 +731,66 @@ describe('re-verify (#887)', () => {
     expect(win.__closed).toBe(true);
     expect(win.AT.running()).toBe(false);
     expect(win.__fetches.some(([u]) => u === '/api/llm/autotune/cancel')).toBe(false);
+  });
+});
+
+
+// #888: the shared run gate — Run becomes Queue while another tool holds the host.
+describe('AT queueing behind another tool (#888)', () => {
+  const BUSY = "window.__gateBusy = { tool: 'reportcard', label: 'Report Card', host: 'gpu-01', agent_id: 'a1' };";
+  const runPosts = (win) => win.__fetches.filter(
+    f => f[0] === '/api/llm/autotune/run' && f[1] && f[1].method === 'POST');
+
+  it('queues instead of starting while a Report Card holds the host', async () => {
+    const win = await openedGated(BUSY);
+    win.__fetches.length = 0;
+    await win.AT.run();
+    await flush();
+    expect(runPosts(win)).toHaveLength(0);
+    expect(win.__slots[0].queued()).toBe(true);
+    expect(win.document.getElementById('atRunBtn').textContent).toContain('Queued');
+    expect(win.document.getElementById('atQueueNote').textContent)
+      .toContain('Queued behind Report Card on gpu-01');
+    expect(win.__queued).toEqual(['autotune', 'Report Card on gpu-01']);
+  });
+
+  it('starts the queued run by itself once the gate clears', async () => {
+    const win = await openedGated(BUSY);
+    await win.AT.run();
+    await flush();
+    win.__fetches.length = 0;
+    win.__gateBusy = null;
+    await win.__slots[0].fire();
+    for (let i = 0; i < 4; i++) await flush();
+    expect(runPosts(win)).toHaveLength(1);
+    expect(JSON.parse(runPosts(win)[0][1].body).model_ids).toEqual(['org/m:Q4']);
+  });
+
+  it('drops a queued run on Cancel without cancelling anything on the agent', async () => {
+    const win = await openedGated(BUSY);
+    await win.AT.run();
+    await flush();
+    win.__fetches.length = 0;
+    win.AT.cancel();
+    expect(win.__slots[0].queued()).toBe(false);
+    expect(win.__fetches.map(f => f[0])).not.toContain('/api/llm/autotune/cancel');
+    expect(win.__queued).toBe(null);
+  });
+
+  it('labels the button Queue while the host is busy and nothing is pending', async () => {
+    const win = await openedGated(BUSY);
+    expect(win.document.getElementById('atRunBtn').textContent).toContain('Queue autotune');
+    expect(win.document.getElementById('atQueueNote').textContent)
+      .toContain('Report Card is running on gpu-01');
+  });
+
+  it('queues rather than losing the run when the agent refuses it', async () => {
+    const win = await openedGated();
+    win.__runReply = { ok: false, error: 'an autotune run is already in progress' };
+    await win.AT.run();
+    for (let i = 0; i < 4; i++) await flush();
+    expect(win.__slots[0].queued()).toBe(true);
+    expect(win.__slots[0].waitFor()).toBe('the run in progress');
+    expect(win.__alerts).toEqual([]);
   });
 });
