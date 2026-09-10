@@ -25,6 +25,7 @@
   let _status = {};        // model_id → /api/llm/autotune/status item
   let _peak = null;        // /api/energy/host-peak payload, or null
   let _slot = null, _busyOn = false, _statusErr = false;
+  let _draft = null, _draftFor = '', _draftBusy = false, _dl = null;
   // Newest row per model wins; the route returns one row per (agent, model).
   async function loadStatus() {
     _status = {}; _statusErr = false;
@@ -165,6 +166,7 @@
     }
     syncVerify();
     refreshPlan();
+    syncDraft();
   }
   function seedThreads(cores) {
     const host = $('atThreadChips'); if (!host || host.childElementCount) return;
@@ -180,6 +182,58 @@
     sel.innerHTML = '<option value="auto">auto</option><option value="none">none</option>' +
       (drafts || []).map(d => `<option value="${esc(d.path)}">${esc(d.file)} · ${esc(d.repo)}</option>`).join('');
     sel.value = [...sel.options].some(o => o.value === cur) ? cur : 'auto';
+  }
+  function gb(n) { return `${(Number(n || 0) / 1e9).toFixed(1)} GB`; }
+  function hasDraft(mid) {
+    const f = _facts[mid];
+    if (f && Number(f.mtp_layers) > 0) return true;
+    const map = (_pre && _pre.drafts_for) || {};
+    return !(mid in map) ? null : !!map[mid];
+  }
+  // The Spec row offers a Hugging Face draft only when the primary model has none on disk and no NextN head.
+  async function syncDraft() {
+    const row = $('atDraftRow'), note = $('atDraftNote'), btn = $('atDraftDlBtn');
+    if (!row) return;
+    const mid = primaryModel();
+    if (!mid || hasDraft(mid) !== false || _dl) { if (!_dl) row.style.display = 'none'; return; }
+    if (_draftFor !== mid) {
+      _draftFor = mid; _draft = null; _draftBusy = true;
+      row.style.display = ''; note.textContent = 'no draft on disk · looking for one on Hugging Face …'; btn.style.display = 'none';
+      try { _draft = await fetch('/api/llm/draft-candidates?model_id=' + encodeURIComponent(mid)).then(r => r.json()); } catch (_) { _draft = null; }
+      _draftBusy = false;
+      if (primaryModel() !== mid || _dl) return;
+      if (hasDraft(mid) !== false) { row.style.display = 'none'; return; }
+    } else if (_draftBusy) return;
+    row.style.display = '';
+    const c = _draft && _draft.ok ? _draft.candidate : null;
+    if (c) { note.textContent = `no draft on disk · ${c.repo} · ${c.file} · ${gb(c.size_bytes)}`; btn.style.display = ''; btn.disabled = false; }
+    else { note.textContent = `no draft on disk · ${(_draft && (_draft.reason || _draft.error)) || 'lookup failed'}`; btn.style.display = 'none'; }
+    refreshPlan();
+  }
+  async function downloadDraft() {
+    const c = _draft && _draft.candidate, note = $('atDraftNote'), btn = $('atDraftDlBtn');
+    if (!c || _dl || typeof openAgentSse !== 'function') return;
+    btn.disabled = true;
+    let r;
+    try { r = await fetch('/api/llm/download', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ repo: c.repo, patterns: [c.file] }) }).then(x => x.json()); }
+    catch (e) { r = { ok: false, error: String(e) }; }
+    if (!r || !r.ok) { note.textContent = `download failed to start · ${(r && r.error) || 'unknown'}`; btn.disabled = false; return; }
+    const src = await openAgentSse('/api/llm/download/stream-info', '/api/llm/download/stream');
+    _dl = src;
+    note.textContent = `downloading ${c.file} …`;
+    src.onmessage = async e => {
+      const msg = JSON.parse(e.data);
+      if (msg.type === 'line' && msg.progress) note.textContent = `downloading · ${msg.text}`;
+      else if (msg.type === 'done') {
+        try { src.close(); } catch (_) {}
+        _dl = null; _draftFor = '';
+        if (!msg.ok) { note.textContent = `download failed (exit ${msg.rc ?? msg.error ?? '?'})`; btn.disabled = false; return; }
+        const pre = await fetch('/api/llm/autotune/preflight').then(x => x.json()).catch(() => null);
+        if (pre && pre.ok) { _pre = pre; seedDrafts(pre.drafts); }
+        syncDraft();
+      }
+    };
+    src.onerror = () => { try { src.close(); } catch (_) {} _dl = null; note.textContent = 'download stream disconnected — check the llama.cpp tab'; btn.disabled = false; };
   }
   function dimSummaries() {
     const d = dimsState();
@@ -215,7 +269,7 @@
       else if (stage === 'kv') { n = Math.max(1, (d.candidates || []).length); desc = `${(d.candidates || []).join(' · ')} — re-fit each, KL guard ≤ ${d.guard_kl_max}`; }
       else if (stage === 'moe') { if (moe === false) on = false; desc = moe === null ? `bisect ${d.min} … ${d.max} if the model is MoE` : `bisect ${d.min} … ${d.max} expert layers on CPU, keep the fewest that fit`; }
       else if (stage === 'threads') { n = Math.max(1, (d.candidates || []).length); desc = `${(d.candidates || []).join(' · ')} — decode + batch threads`; }
-      else if (stage === 'spec') { n = 3; desc = `${(d.types || []).join(' · ')} · draft ${d.draft_model === 'auto' ? 'auto-discovered' : d.draft_model === 'none' ? 'none' : 'from disk'} · window ${d.n_min}–${d.n_max}`; }
+      else if (stage === 'spec') { const nd = hasDraft(primaryModel() || '') === false; n = nd ? 2 : 3; desc = `${(d.types || []).join(' · ')} · draft ${d.draft_model === 'auto' ? 'auto-discovered' : d.draft_model === 'none' ? 'none' : 'from disk'} · window ${d.n_min}–${d.n_max}`; if (nd) desc += ' · no draft yet — download one from the Spec row'; }
       else if (stage === 'slots') { n = Math.max(1, (d.candidates || []).length); desc = `${(d.candidates || []).join(' · ')} with ≥ ${Number(d.min_ctx_per_slot).toLocaleString()} ctx each — live concurrency sweep`; }
       else if (stage === 'sampling') desc = 'generation_config.json → model card → base model · no load needed';
       else desc = `load the recommended set once, confirm fit + ${rt ? '60 s of chat traffic' : 'free VRAM'}`;
@@ -336,6 +390,7 @@
     _runs = (runs && runs.runs) || [];
     if (_pre) { seedThreads(_pre.cores); seedDrafts(_pre.drafts); }
     renderModels(preselect);
+    syncDraft();
     syncCap();
     syncVerify();
     await checkServer(pre && pre.ok ? pre : null);
@@ -696,6 +751,7 @@
       renderStepper(); renderStage(); log(`── ${msg.model_id} · ${msg.objective} ──`, 'acc');
     } else if (t === 'facts') {
       _facts[msg.model_id] = msg;
+      syncDraft();
       log(`model: ${msg.arch || '?'} · ${msg.n_layer || '?'} layers · ${msg.n_expert > 1 ? msg.n_expert + ' experts' : 'dense'}${msg.mtp_layers ? ' · MTP head' : ''}`, 'dim');
     } else if (t === 'stage_start') {
       _run.current = msg.stage;
@@ -956,7 +1012,7 @@
     setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 200);
   }
 
-  window.AT = { onOpen, run, verify, retune, checkQuality, cancel, detach, again, stopServer, running, dimsState, objective, setObjective, applyQuietDefaults, planRows, estimateText, onEvent,
+  window.AT = { onOpen, run, verify, retune, checkQuality, cancel, detach, again, stopServer, running, downloadDraft, dimsState, objective, setObjective, applyQuietDefaults, planRows, estimateText, onEvent,
                 state: () => ({ run: _run, done: _done, doneModel: _doneModel, meta: _meta, section: _section, pre: _pre }),
                 renderDone, recRows, rows, toggleRow, apply, saveProfile, copyArgs, exportReport, argsText,
                 _debugSetStart: (ts) => { if (_run) { _run.startTs = ts; tick(); } } };

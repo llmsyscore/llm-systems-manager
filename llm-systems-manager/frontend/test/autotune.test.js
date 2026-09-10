@@ -10,6 +10,7 @@ const PRE = {
   ok: true, busy: false, unit_active: false, cores: { physical: 16, logical: 32 }, perplexity: true,
   runtime: { ok: true }, drafts: [{ repo: 'unsloth/Qwen3-0.6B-GGUF', file: 'Qwen3-0.6B-Q8_0.gguf', path: '/h/a.gguf', size: 7e8 }],
   sizes: { 'org/big:Q4': 90e9, 'org/m:Q4': 18e9 }, vram_total_mb: 32768, ram_total_mb: 32768,
+  drafts_for: { 'org/m:Q4': null, 'org/big:Q4': { repo: 'unsloth/Qwen3-0.6B-GGUF', file: 'Qwen3-0.6B-Q8_0.gguf', size: 7e8 } },
 };
 
 // foundation.js declares `let layout` at top level, so window.layout is undefined;
@@ -22,6 +23,7 @@ const STUBS = `
   window.TC = { esc: (s) => String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])) };
   window.SG = { open: (opts) => { window.__sse = opts; return { close() { window.__closed = true; } }; } };
   window.toolsSyncRunDot = function () {};
+  window.openAgentSse = async () => { const s = { close() { s.closed = true; } }; window.__dl = s; return s; };
   window.__alerts = [];
   window.alert = function (m) { window.__alerts.push(String(m)); };
   window.__fetches = [];
@@ -45,6 +47,7 @@ const STUBS = `
       : u.startsWith('/api/llm/autotune/run') ? (window.__runReply || { ok: true, run_id: 'r1' })
       : (u === '/api/llm/config' && opts && opts.method === 'POST') ? (window.__failConfig ? { ok: false, error: 'boom' } : { ok: true })
       : u.startsWith('/api/energy/host-peak') ? (window.__peak || { ok: true, peak_w: 312.4, hours: 21 })
+      : u.startsWith('/api/llm/draft-candidates') ? (window.__draft || { ok: true, candidate: { repo: 'unsloth/Qwen3-0.6B-GGUF', file: 'Qwen3-0.6B-Q4_K_M.gguf', size_bytes: 420e6, params_b: 0.6 }, reason: 'smallest instruct GGUF at ≤ 25 % of the target' })
       : { ok: true };
     return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve(body), text: () => Promise.resolve(JSON.stringify(body)) });
   };
@@ -916,5 +919,60 @@ describe('Quiet objective (#890)', () => {
     win.__runReply = { ok: false, detail: 'objective must be one of fit, speed, balanced, serve' };
     await win.AT.run(); for (let i = 0; i < 4; i++) await flush();
     expect(win.__alerts.pop()).toMatch(/objective must be one of/);
+  });
+});
+
+describe('draft discovery (#889)', () => {
+  it('offers the Hugging Face candidate when the model has no draft on disk', async () => {
+    const win = await opened();
+    const row = win.document.getElementById('atDraftRow');
+    expect(row.style.display).not.toBe('none');
+    expect(win.document.getElementById('atDraftNote').textContent).toMatch(/no draft on disk.*Qwen3-0\.6B-Q4_K_M\.gguf.*0\.4 GB/);
+    expect(win.document.getElementById('atDraftDlBtn').style.display).not.toBe('none');
+    const spec = [...win.document.querySelectorAll('#atPlanRows .at-plan-r')].find(r => r.textContent.includes('Speculative'));
+    expect(spec.textContent).toMatch(/no draft yet/);
+  });
+  it('stays quiet when a draft is already cached or the model has a NextN head', async () => {
+    const win = await opened();
+    win.document.querySelector('#atModelList .mc-toggle[data-model="org/big:Q4"]').click(); win.document.querySelector('#atModelList .mc-toggle[data-model="org/m:Q4"]').click();
+    await flush();
+    expect(win.document.getElementById('atDraftRow').style.display).toBe('none');
+    win.document.querySelector('#atModelList .mc-toggle[data-model="org/m:Q4"]').click(); win.document.querySelector('#atModelList .mc-toggle[data-model="org/big:Q4"]').click();
+    win.AT.onEvent({ type: 'facts', model_id: 'org/m:Q4', n_expert: 0, n_layer: 32, mtp_layers: 1 }); await flush();
+    expect(win.document.getElementById('atDraftRow').style.display).toBe('none');
+  });
+  it('explains when Hugging Face has nothing suitable', async () => {
+    const win = boot(); win.__draft = { ok: true, candidate: null, reason: 'no smaller GGUF of the qwen3 family on Hugging Face' };
+    win.AT.onOpen('org/m:Q4'); for (let i = 0; i < 6; i++) await flush();
+    expect(win.document.getElementById('atDraftNote').textContent).toMatch(/no smaller GGUF/);
+    expect(win.document.getElementById('atDraftDlBtn').style.display).toBe('none');
+  });
+  it('says it is looking while the lookup is in flight, never that it failed', async () => {
+    const win = boot(); const real = win.fetch; let release;
+    win.fetch = (u, o) => String(u).startsWith('/api/llm/draft-candidates')
+      ? new Promise(r => { release = () => r({ ok: true, json: () => Promise.resolve({ ok: true, candidate: { repo: 'unsloth/Qwen3-0.6B-GGUF', file: 'Qwen3-0.6B-Q4_K_M.gguf', size_bytes: 420e6 } }) }); })
+      : real(u, o);
+    win.AT.onOpen('org/m:Q4'); for (let i = 0; i < 6; i++) await flush();
+    expect(win.document.getElementById('atDraftNote').textContent).toMatch(/looking for one on Hugging Face/);
+    expect(win.document.getElementById('atDraftDlBtn').style.display).toBe('none');
+    release(); for (let i = 0; i < 4; i++) await flush();
+    expect(win.document.getElementById('atDraftNote').textContent).toMatch(/Qwen3-0\.6B-Q4_K_M\.gguf/);
+    expect(win.document.getElementById('atDraftDlBtn').style.display).not.toBe('none');
+  });
+  it('downloads with one click, streams progress into the row, and refreshes the draft list on completion', async () => {
+    const win = await opened();
+    await win.AT.downloadDraft(); await flush();
+    const post = win.__fetches.find(([u, o]) => u === '/api/llm/download' && o && o.method === 'POST');
+    expect(JSON.parse(post[1].body)).toEqual({ repo: 'unsloth/Qwen3-0.6B-GGUF', patterns: ['Qwen3-0.6B-Q4_K_M.gguf'] });
+    expect(win.document.getElementById('atDraftDlBtn').disabled).toBe(true);
+    win.__dl.onmessage({ data: JSON.stringify({ type: 'line', text: 'Qwen3-0.6B-Q4_K_M.gguf: 41%', progress: true }) });
+    expect(win.document.getElementById('atDraftNote').textContent).toContain('41%');
+    win.__pre = { ...PRE, drafts: [...PRE.drafts, { repo: 'unsloth/Qwen3-0.6B-GGUF', file: 'Qwen3-0.6B-Q4_K_M.gguf', path: '/h/c.gguf', size: 420e6 }],
+                  drafts_for: { ...PRE.drafts_for, 'org/m:Q4': { repo: 'unsloth/Qwen3-0.6B-GGUF', file: 'Qwen3-0.6B-Q4_K_M.gguf', size: 420e6 } } };
+    win.__dl.onmessage({ data: JSON.stringify({ type: 'done', ok: true }) });
+    for (let i = 0; i < 4; i++) await flush();
+    expect(win.__dl.closed).toBe(true);
+    expect(win.document.getElementById('atDraftRow').style.display).toBe('none');
+    expect([...win.document.getElementById('atDraftSel').options].some(o => o.textContent.includes('Qwen3-0.6B-Q4_K_M.gguf'))).toBe(true);
   });
 });

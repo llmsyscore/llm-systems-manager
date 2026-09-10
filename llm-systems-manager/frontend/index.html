@@ -2427,6 +2427,7 @@ Backend API endpoints consumed:
             <div class="at-dim-b">
               <div class="bl-chips" id="atSpecChips"><span class="bl-chip on" data-v="auto">auto-detect</span><span class="bl-chip" data-v="draft-mtp">NextN / MTP</span><span class="bl-chip" data-v="draft-dflash">DFlash</span><span class="bl-chip" data-v="draft-simple">draft model</span><span class="bl-chip" data-v="ngram-simple">ngram</span></div>
               <div class="at-frow g2"><label>Draft model</label><select class="at-in" id="atDraftSel"><option value="auto">auto</option><option value="none">none</option></select></div>
+              <div class="at-frow" id="atDraftRow" style="display:none;"><span class="at-hint" id="atDraftNote"></span><button type="button" class="mcbtn mcbtn-ghost mcbtn-sm" id="atDraftDlBtn" onclick="AT.downloadDraft()">Download</button></div>
               <div class="at-frow g2"><label>Window</label><span class="at-range"><input class="at-in xs" id="atSpecNmin" type="number" min="0" value="0"><span class="at-hint">→</span><input class="at-in xs" id="atSpecNmax" type="number" min="1" value="16"><span class="at-hint">tokens</span></span></div>
               <div class="at-frow g2"><label>p-min</label><input class="at-in xs" id="atSpecPmin" type="number" min="0" max="1" step="0.05" value="0.75"></div>
               <div class="at-hint">NextN / MTP heads are read from the GGUF; DFlash and draft models are tried when present in the cache. Each type is scored by decode t/s and accept rate.</div>
