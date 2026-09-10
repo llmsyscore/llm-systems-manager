@@ -615,6 +615,7 @@ def test_quiet_run_picks_the_fastest_under_the_cap_and_reports_draw(at):
     th = next(c for c in doc["changes"] if c["key"] == "threads")
     assert th["recommended"] == "16"
     assert "under the 250 W cap" in th["evidence"]
+    assert th["selected"] is True
     assert doc["after"]["avg_w"] == pytest.approx(240.0) and doc["over_cap"] is False
 
 
@@ -623,6 +624,7 @@ def test_quiet_run_over_cap_keeps_the_lowest_draw_and_flags_it(at):
     th = next(c for c in doc["changes"] if c["key"] == "threads")
     assert th["recommended"] == "8"
     assert "no candidate under the 150 W cap" in th["evidence"]
+    assert th["selected"] is True
     assert doc["over_cap"] is True
 
 

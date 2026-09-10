@@ -1068,7 +1068,7 @@ class _Run:
         best = next(r for r in results if r["value"] == choice)
         if str(choice) != self.cur("n-cpu-moe", "0"):
             self.rec["n-cpu-moe"] = str(choice)
-            self.ev("n-cpu-moe", reason, gain_pct(best["decode_tps"], self.decode_now))
+            self.ev("n-cpu-moe", reason, None)
         self.decode_now = best["decode_tps"] or self.decode_now
         self.end("moe", mark, choice, reason, warn)
 
@@ -1108,7 +1108,8 @@ class _Run:
         ref = next((r["decode_tps"] for r in results if str(r["value"]) == cur_t and r["ok"]), self.decode_now)
         if str(choice) != cur_t:
             self.rec["threads"] = str(choice)
-            self.ev("threads", reason, gain_pct(best["decode_tps"], ref))
+            # Quiet changes carry no speed gain; the row stays selected.
+            self.ev("threads", reason, None if self.objective == "quiet" else gain_pct(best["decode_tps"], ref))
         self.decode_now = best["decode_tps"]
         self.prefill_now = best.get("prefill_tps") or self.prefill_now
         tb = phys if self.rec.get("n-cpu-moe") and phys else choice
@@ -1272,7 +1273,7 @@ class _Run:
         if str(choice) != self.cur("parallel", "1"):
             self.rec["parallel"] = str(choice)
             self.ev("parallel", reason + f" · {int(self.ctx_total or 0) // choice} ctx per slot",
-                    gain_pct(best.get("agg_tps"), (one or {}).get("agg_tps")))
+                    None if self.objective == "quiet" else gain_pct(best.get("agg_tps"), (one or {}).get("agg_tps")))
         self.concurrency = int(choice)
         self.end("slots", mark, choice, reason, warn)
 
