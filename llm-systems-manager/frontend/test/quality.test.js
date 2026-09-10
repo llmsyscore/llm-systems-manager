@@ -266,4 +266,108 @@ describe('Quality guard module (#888)', () => {
     win.QG.onEvent({ type: 'model_start', model_id: 'org/m:Q4', mode: 'quality', stages: ['quality'] });
     expect(win.document.getElementById('qgPill').textContent).toBe('running');
   });
+  const STATS = { kl: 0.0054, same_top_p: 98.118, rms_dp: 3.236, p999_dp: 17.595, max_dp: 23.904 };
+
+  // Drives a finished run into the module and returns the window.
+  async function finished(win, guard, changes) {
+    await win.QG.run(); await flush();
+    win.QG.onEvent({ type: 'model_done', model_id: 'org/m:Q4', ok: true, mode: 'quality', run_id: 'q1',
+      elapsed_s: 132, guard, changes: changes || [{ key: 'ubatch-size', current: '1024', recommended: '512' }] });
+    win.QG.onEvent({ type: 'done', ok: true }); await flush();
+    return win;
+  }
+  const verdictText = (win) => win.document.getElementById('qgVerdict').textContent;
+
+  it('reads a comfortable pass, a marginal pass and a fail differently', async () => {
+    let win = await opened('org/m:Q4', { overrides: { 'ubatch-size': '512' } });
+    await finished(win, { kl: 0.0054, kl_max: 0.02, pass: true, error: null, stats: STATS });
+    const comfortable = verdictText(win);
+    expect(comfortable).toBe('Quality is safe: the measured 0.0054 is 3.7× below the 0.02 limit, and it picks the same most-likely next token as the f16 reference 98.1% of the time. Differences at this level are not visible in normal use.');
+
+    win = await opened('org/m:Q4', { overrides: { 'ubatch-size': '512' } });
+    await finished(win, { kl: 0.019, kl_max: 0.02, pass: true, error: null, stats: { ...STATS, same_top_p: 91.02 } });
+    const marginal = verdictText(win);
+    expect(marginal).toBe('Quality is inside the limit, but only just: the measured 0.0190 is 95% of the 0.02 line, and it picks the same most-likely next token as the f16 reference 91.0% of the time. Occasional wording differences are likely. Tighten the limit or test a milder value if this model does exact-format work.');
+
+    win = await opened('org/m:Q4', { overrides: { 'ubatch-size': '512' } });
+    await finished(win, { kl: 0.031, kl_max: 0.02, pass: false, error: null, stats: { ...STATS, same_top_p: 88.0 } });
+    const fail = verdictText(win);
+    expect(fail).toBe('Quality is not safe: the measured 0.0310 is 1.6× over the 0.02 limit, and it picks a different most-likely next token from the f16 reference on 12.0% of tokens. Applying this would cost measurable output quality — keep the current setting, or test a milder value.');
+    expect(new Set([comfortable, marginal, fail]).size).toBe(3);
+    expect(win.document.querySelector('#qgResult .qg-verdict').classList.contains('bad')).toBe(true);
+    expect(win.document.getElementById('qgApplyBtn').style.display).toBe('none');
+  });
+
+  it('renders the stat strip the payload carries and drops the fields it does not', async () => {
+    let win = await opened('org/m:Q4', { overrides: { 'ubatch-size': '512' } });
+    await finished(win, { kl: 0.0054, kl_max: 0.02, pass: true, error: null, stats: STATS });
+    let cells = [...win.document.querySelectorAll('#qgResult .qg-stat')];
+    expect(cells.map(c => c.querySelector('.v').textContent)).toEqual(['98.1%', '3.24%', '17.6%', '23.9%']);
+    expect(cells[0].querySelector('.k').textContent).toBe('Same top token');
+
+    win = await opened('org/m:Q4', { overrides: { 'ubatch-size': '512' } });
+    await finished(win, { kl: 0.0054, kl_max: 0.02, pass: true, error: null, stats: { kl: 0.0054, rms_dp: 3.236 } });
+    cells = [...win.document.querySelectorAll('#qgResult .qg-stat')];
+    expect(cells.map(c => c.querySelector('.k').textContent)).toEqual(['Typical Δ probability']);
+    // No Same-top-p means the verdict drops that clause but still reads the KL number.
+    expect(verdictText(win)).toBe('Quality is safe: the measured 0.0054 is 3.7× below the 0.02 limit. Differences at this level are not visible in normal use.');
+
+    win = await opened('org/m:Q4', { overrides: { 'ubatch-size': '512' } });
+    await finished(win, { kl: 0.0054, kl_max: 0.02, pass: true, error: null, stats: null });
+    expect(win.document.querySelectorAll('#qgResult .qg-stat').length).toBe(0);
+    expect(win.document.querySelectorAll('#qgResult .qg-big .v')[0].textContent).toBe('0.0054');
+  });
+
+  it('ticks the elapsed strip while a check runs and settles it on completion', async () => {
+    const win = await opened('org/m:Q4', { overrides: { 'ubatch-size': '512' } });
+    let now = 1_000_000, ticker = null, cleared = 0;
+    win.Date.now = () => now;
+    win.setInterval = (fn) => { ticker = fn; return 7; };
+    win.clearInterval = () => { cleared += 1; };
+    await win.QG.run(); await flush();
+    const time = win.document.getElementById('qgStripTime'), strip = win.document.getElementById('qgStrip');
+    expect(time.textContent).toBe('elapsed 00:00');
+    expect(win.document.getElementById('qgPill').textContent).toBe('running');
+    win.QG.onEvent({ type: 'candidate_start', stage: 'quality', value: 'f16 base' });
+    expect(strip.textContent).toBe('pass 1 of 2 · f16 reference');
+    now += 65_000; ticker();
+    expect(time.textContent).toBe('elapsed 01:05');
+    win.QG.onEvent({ type: 'candidate_start', stage: 'quality', value: 'candidate' });
+    expect(strip.textContent).toBe('pass 2 of 2 · candidate config');
+    win.QG.onEvent({ type: 'model_done', model_id: 'org/m:Q4', ok: true, mode: 'quality', run_id: 'q1',
+      elapsed_s: 132, guard: { kl: 0.0054, kl_max: 0.02, pass: true, error: null, stats: STATS },
+      changes: [{ key: 'ubatch-size', current: '1024', recommended: '512' }] });
+    win.QG.onEvent({ type: 'done', ok: true }); await flush();
+    expect(cleared).toBeGreaterThan(0);
+    expect(time.textContent).toBe('took 02:12');
+    expect(strip.textContent).toBe('both passes complete · quality within the limit');
+    expect(win.document.getElementById('qgPill').textContent).toBe('pass');
+    // The counter stops: a stale interval callback can no longer overwrite the total.
+    ticker(); now += 60_000; ticker();
+    expect(time.textContent).toBe('took 02:12');
+  });
+
+  it('offers a speed measurement beside Apply and deep-links Benchmark at the same model', async () => {
+    const win = await opened('org/m:Q4', { overrides: { 'ubatch-size': '512' } });
+    win.__opened = [];
+    win.toolsOpenTool = function (id, mid) { win.__opened.push([id, mid]); };
+    await finished(win, { kl: 0.0054, kl_max: 0.02, pass: true, error: null, stats: STATS });
+    const note = win.document.getElementById('qgApplyNote');
+    expect(win.document.getElementById('qgApplyBtn').style.display).toBe('');
+    expect(note.textContent).toMatch(/does not mean it is faster/);
+    expect(note.textContent).toMatch(/never measures speed/);
+    const bb = win.document.getElementById('qgBenchBtn');
+    expect(bb.style.display).toBe('');
+    clickOn(bb); win.QG.openBenchmark();
+    expect(win.__opened.pop()).toEqual(['benchmark', 'org/m:Q4']);
+  });
+
+  it('keeps the speed caveat and the benchmark link on a failed guard', async () => {
+    const win = await opened('org/m:Q4', { overrides: { 'ubatch-size': '512' } });
+    await finished(win, { kl: 0.031, kl_max: 0.02, pass: false, error: null, stats: STATS });
+    expect(win.document.getElementById('qgApplyBtn').style.display).toBe('none');
+    expect(win.document.getElementById('qgBenchBtn').style.display).toBe('');
+    expect(win.document.getElementById('qgApplyNote').textContent).toMatch(/measures quality only, never speed/);
+    expect(win.document.getElementById('qgStrip').textContent).toBe('both passes complete · quality over the limit');
+  });
 });

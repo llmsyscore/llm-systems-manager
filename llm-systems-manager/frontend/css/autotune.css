@@ -175,3 +175,11 @@
   .qg-big .v { font-size:28px; font-weight:700; color:var(--ok); }
   .qg-big.bad .v { color:var(--warn); }
   .qg-big .l { color:var(--fg-muted); font-size:12px; }
+  .qg-verdict { font-size:12.5px; line-height:1.55; color:var(--fg); max-width:74ch; padding:0 0 12px; }
+  .qg-verdict.bad { color:var(--warn); }
+  .qg-stats { display:flex; flex-wrap:wrap; gap:9px; padding:0 0 14px; }
+  .qg-stat { flex:1 1 158px; min-width:158px; border:1px solid var(--border-soft); border-radius:8px; padding:8px 10px; background:color-mix(in srgb, var(--fg) 4%, transparent); }
+  .qg-stat .v { display:block; font-family:var(--font-mono); font-size:16px; font-weight:700; color:var(--fg); }
+  .qg-stat .k { display:block; font-size:11px; color:var(--fg-muted); margin-top:2px; }
+  .qg-stat .h { display:block; font-size:10.5px; line-height:1.4; color:var(--fg-dim); margin-top:3px; }
+  .qg-speed { color:var(--fg-muted); max-width:56ch; }
