@@ -675,6 +675,7 @@
   }
   // Tool switch: drop this module's stream, leaving the run itself alone.
   function detach() {
+    stopBatchPoll();
     if (!_es && !_attached) return;
     if (_es) { try { _es.close(); } catch (_) {} _es = null; }
     _attached = false;
@@ -1172,7 +1173,7 @@
     stopBatchPoll();
     try { sessionStorage.removeItem('at.batch'); } catch (_) {}
     batchBusy(false);
-    if (_batch) { loadStatus().then(() => syncVerify()); loadBatchHosts(); }
+    loadStatus().then(() => syncVerify()); loadBatchHosts();
   }
   function batchGain(g) { if (g == null || !Number.isFinite(Number(g))) return '—'; const r = Math.round(Number(g)); return (r >= 0 ? '+' : '−') + Math.abs(r) + ' %'; }
   function batchCtx(c) { const n = Number(c); return Number.isFinite(n) && n > 0 ? (n >= 1024 ? Math.round(n / 1024) + 'k' : String(n)) : '—'; }
