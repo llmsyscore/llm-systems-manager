@@ -39,9 +39,12 @@
       // Appended to the run-history line syncModels wrote, so the objective/ctx/gain text survives.
       let note = prev.querySelector('[data-at-build]');
       if (!note) { note = document.createElement('span'); note.className = 'd'; note.setAttribute('data-at-build', '1'); prev.appendChild(note); }
+      // The line above already carries the date, so this sentence only adds the build.
       note.innerHTML = st.stale
         ? `<b>Tune is stale.</b> Autotuned on llama.cpp ${esc(st.llama_build)} · host now runs ${esc(st.current_build)}. Re-verify checks the current config in ~3 min; re-tune if it regressed.`
-        : `Last tune ${esc(String(st.ts || '').slice(0, 10))} on llama.cpp ${esc(st.llama_build || '?')}.`;
+        : st.llama_build
+          ? `Tuned on llama.cpp ${esc(st.llama_build)}${st.current_build ? ' — the build this host still runs.' : '.'}`
+          : 'That tune predates build recording, so there is no build to compare against — re-verify to learn whether it still holds.';
     }
   }
 

@@ -122,10 +122,10 @@ table.tools-ledger { width: 100%; border-collapse: collapse; font-variant-numeri
 /* Benchmark + Auto-Tune modules (#770): in-tab shells around the bench panes. */
 #toolsModBench { max-width: 1380px; margin: 0 auto; }
 #toolsModBench .bench-body { grid-template-columns: minmax(240px,26%) 1fr; }
-#toolsModAt { max-width: 1180px; margin: 0 auto; }
-#toolsModBench .bench-rail, #toolsModAt .bench-rail { background: var(--bg-card); }
+#toolsModAt, #toolsModQg { max-width: 1180px; margin: 0 auto; }
+#toolsModBench .bench-rail, #toolsModAt .bench-rail, #toolsModQg .bench-rail { background: var(--bg-card); }
 @media (max-width: 900px) {
-  #toolsModBench .bench-body, #toolsModAt .bench-body { grid-template-columns: 1fr; }
+  #toolsModBench .bench-body, #toolsModAt .bench-body, #toolsModQg .bench-body { grid-template-columns: 1fr; }
 }
 
 /* Report Card module layout: config rail left, results right. */

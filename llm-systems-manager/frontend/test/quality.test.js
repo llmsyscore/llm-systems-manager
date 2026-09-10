@@ -11,6 +11,8 @@ const STUBS = `
   window.toolsSyncRunDot = function () {};
   window.__alerts = [];
   window.alert = function (m) { window.__alerts.push(String(m)); };
+  window.__toasts = [];
+  window.showToast = function (title, body) { window.__toasts.push(String(title) + ' — ' + String(body)); };
   window.__fetches = [];
   window.__syncCalls = [];
   window._syncActiveProfile = function (mid, values) { window.__syncCalls.push([mid, values]); return Promise.resolve(); };
@@ -24,6 +26,7 @@ const STUBS = `
     const body = u.startsWith('/api/benchmark/models') ? { models: ['org/m:Q4', 'org/big:Q4'] }
       : (u === '/api/llm/config' && (!opts || !opts.method)) ? window.__cfg
       : u.startsWith('/api/llm/autotune/preflight') ? (window.__pre || { ok: true, busy: false, perplexity: true })
+      : u.startsWith('/api/llama-state') ? { state: window.__llamaState || 'stopped' }
       : (u === '/api/llm/autotune/run' && opts && opts.method === 'POST') ? (window.__runReply || { ok: true, run_id: 'q1' })
       : (u === '/api/llm/config' && opts && opts.method === 'POST') ? (window.__configWriteReply || { ok: true })
       : { ok: true };
@@ -42,14 +45,19 @@ async function opened(model, opts) {
   return win;
 }
 
+const qrow = (win, key) => win.document.querySelector(`#qgRows [data-qg-key="${key}"]`);
+const clickOn = (el) => el.dispatchEvent(new el.ownerDocument.defaultView.MouseEvent('click', { bubbles: true }));
+
 describe('Quality guard module (#888)', () => {
   it('pre-fills override rows from opts and posts a quality-mode run body', async () => {
     const win = await opened('org/m:Q4', { overrides: { 'cache-type-k': 'q4_0' } });
-    expect(win.document.getElementById('qgModel').value).toBe('org/m:Q4');
-    const rows = [...win.document.querySelectorAll('#qgRows .qg-row')];
-    expect(rows.length).toBe(1);
-    expect(rows[0].querySelector('.cur').textContent).toBe('q8_0');
-    expect(rows[0].querySelector('input').value).toBe('q4_0');
+    expect(win.document.querySelector('#qgModelList .mc-toggle.on').dataset.model).toBe('org/m:Q4');
+    // Every quality-guard key has a row; only the pre-filled one is switched on.
+    expect(win.document.querySelectorAll('#qgRows .qg-row').length).toBe(11);
+    const on = [...win.document.querySelectorAll('#qgRows .qg-row')].filter(r => r.classList.contains('on'));
+    expect(on.map(r => r.dataset.qgKey)).toEqual(['cache-type-k']);
+    expect(on[0].querySelector('.cur').textContent).toBe('q8_0');
+    expect(on[0].querySelector('.bl-chip.on').dataset.qgV).toBe('q4_0');
     expect(win.QG.overrides()).toEqual({ 'cache-type-k': 'q4_0' });
     await win.QG.run(); await flush();
     const post = win.__fetches.find(([u, o]) => u === '/api/llm/autotune/run' && o && o.method === 'POST');
@@ -58,12 +66,43 @@ describe('Quality guard module (#888)', () => {
     expect(win.QG.running()).toBe(true);
   });
 
-  it('refuses to run with no changes and only offers quality-guard keys', async () => {
+  it('refuses to run with no changes, through a themed toast rather than alert()', async () => {
     const win = await opened('org/m:Q4');
     await win.QG.run(); await flush();
-    expect(win.__alerts.pop()).toMatch(/change at least one/i);
-    const keys = [...win.document.querySelectorAll('#qgAddKey option')].map(o => o.value).filter(Boolean);
+    expect(win.__alerts.length).toBe(0);
+    expect(win.__toasts.pop()).toMatch(/at least one key/i);
+    expect(win.document.getElementById('qgLog').textContent).toMatch(/at least one key/i);
+    const keys = [...win.document.querySelectorAll('#qgRows .qg-row')].map(r => r.dataset.qgKey);
     expect(keys).toContain('cache-type-v'); expect(keys).not.toContain('model');
+  });
+
+  it('drives overrides from chips, an on/off toggle and a number box', async () => {
+    const win = await opened('org/m:Q4');
+    clickOn(qrow(win, 'cache-type-v').querySelector('[data-qg-on]'));
+    clickOn(qrow(win, 'cache-type-v').querySelector('.bl-chip[data-qg-v="q5_1"]'));
+    clickOn(qrow(win, 'flash-attn').querySelector('[data-qg-on]'));
+    clickOn(qrow(win, 'flash-attn').querySelector('[data-qg-bool]'));
+    clickOn(qrow(win, 'batch-size').querySelector('[data-qg-on]'));
+    const num = qrow(win, 'batch-size').querySelector('[data-qg-num]');
+    num.value = '512';
+    num.dispatchEvent(new win.Event('input', { bubbles: true }));
+    expect(win.QG.overrides()).toEqual({ 'cache-type-v': 'q5_1', 'flash-attn': 'true', 'batch-size': '512' });
+    expect(win.document.getElementById('qgCount').textContent).toBe('3');
+  });
+
+  it('does not send a key whose chosen value equals the model\'s current one', async () => {
+    const win = await opened('org/m:Q4');
+    // threads is 16 in the config; switching the row on seeds it with 16.
+    clickOn(qrow(win, 'threads').querySelector('[data-qg-on]'));
+    expect(qrow(win, 'threads').querySelector('[data-qg-num]').value).toBe('16');
+    expect(win.QG.overrides()).toEqual({});
+    expect(qrow(win, 'threads').querySelector('[data-qg-sum]').textContent).toMatch(/unchanged/);
+    // Same for a chip set: re-picking the current KV type clears it from the body.
+    clickOn(qrow(win, 'cache-type-k').querySelector('[data-qg-on]'));
+    clickOn(qrow(win, 'cache-type-k').querySelector('.bl-chip[data-qg-v="q8_0"]'));
+    expect(win.QG.overrides()).toEqual({});
+    clickOn(qrow(win, 'cache-type-k').querySelector('.bl-chip[data-qg-v="q4_1"]'));
+    expect(win.QG.overrides()).toEqual({ 'cache-type-k': 'q4_1' });
   });
 
   it('renders pass/fail from model_done, records the ledger row, and applies through the config write path', async () => {
@@ -101,7 +140,7 @@ describe('Quality guard module (#888)', () => {
     expect(win.document.getElementById('qgResult').textContent).not.toMatch(/mean KL/);
   });
 
-  it('surfaces a failed config write via alert and applies neither the sync nor the "Applied" label', async () => {
+  it('surfaces a failed config write via a toast and applies neither the sync nor the "Applied" label', async () => {
     const win = await opened('org/m:Q4', { overrides: { 'cache-type-k': 'q4_0' } });
     await win.QG.run(); await flush();
     win.QG.onEvent({ type: 'model_done', model_id: 'org/m:Q4', ok: true, mode: 'quality', run_id: 'q1',
@@ -109,7 +148,8 @@ describe('Quality guard module (#888)', () => {
     win.QG.onEvent({ type: 'done', ok: true }); await flush();
     win.__configWriteReply = { ok: false, error: 'config locked' };
     await win.QG.apply(); await flush();
-    expect(win.__alerts.pop()).toMatch(/config locked/);
+    expect(win.__alerts.length).toBe(0);
+    expect(win.__toasts.pop()).toMatch(/config locked/);
     expect(win.document.getElementById('qgApplyBtn').textContent).not.toContain('Applied');
     expect(win.__syncCalls.length).toBe(0);
   });
@@ -136,6 +176,7 @@ describe('Quality guard module (#888)', () => {
     await win.QG.run(); await flush();
     expect(win.document.getElementById('qgPill').textContent).toBe('another tool is running');
     expect(win.__alerts.length).toBe(0);
+    expect(win.__toasts.length).toBe(0);
   });
 
   it('the post-Apply refresh calls the function the dashboard actually defines', async () => {
@@ -160,12 +201,49 @@ describe('Quality guard module (#888)', () => {
     expect(win.__fetches.some(([u]) => u === '/api/llm/autotune/cancel')).toBe(false);
   });
 
-  // A failed KL guard sets .warn on the pill and the override row has four cells.
-  it('styles the warn pill and fits every override cell on one row', () => {
+  // A failed KL guard sets .warn on the pill; the module is width-capped and its panes spaced like Autotune's.
+  it('styles the warn pill and shares Autotune\'s width cap and pane spacing', () => {
     expect(srcFile('css/base.css')).toMatch(/\.bench-status-pill\.warn\b[^}]*var\(--warn\)/);
-    const qg = srcFile('css/autotune.css').match(/\.qg-row\.at-frow\.g2 \{([^}]*)\}/);
-    expect(qg).toBeTruthy();
-    expect(qg[1].match(/grid-template-columns:([^;]+)/)[1].trim().split(/\s+(?![^(]*\))/).length).toBe(4);
+    const tools = srcFile('css/tools.css');
+    expect(tools).toMatch(/#toolsModAt, #toolsModQg \{ max-width: 1180px; margin: 0 auto; \}/);
+    expect(tools).toMatch(/#toolsModQg \.bench-body \{ grid-template-columns: 1fr; \}/);
+    expect(BODY).toContain('class="bench-results-pane at-panes"');
+    expect(BODY).toContain('class="at-pane"');
+  });
+
+  it('shows the agent\'s perplexity hint and blocks Run', async () => {
+    const win = boot();
+    win.__pre = { ok: true, busy: false, perplexity: false,
+      perplexity_detail: { present: true, kl_text: true, runnable: false, rc: -11, hint: 'llama-perplexity crashes on startup and looks stale next to the installed llama.cpp libraries.' } };
+    await win.QG.onOpen('org/m:Q4'); await flush();
+    expect(win.document.getElementById('qgPreflight').style.display).toBe('');
+    expect(win.document.getElementById('qgPreflightMsg').textContent).toMatch(/crashes on startup/);
+    expect(win.document.getElementById('qgRunBtn').disabled).toBe(true);
+    expect(win.document.getElementById('qgStopBtn').style.display).toBe('none');
+  });
+
+  it('keeps the old missing-tooling banner and an enabled Run for an agent with no perplexity_detail', async () => {
+    const win = boot();
+    win.__pre = { ok: true, busy: false, perplexity: false };
+    await win.QG.onOpen('org/m:Q4'); await flush();
+    expect(win.document.getElementById('qgPreflightMsg').textContent).toMatch(/bench runtime/);
+    expect(win.document.getElementById('qgRunBtn').disabled).toBe(false);
+  });
+
+  it('stops llama-server from the banner and clears it', async () => {
+    const win = boot();
+    win.__pre = { ok: true, busy: false, perplexity: true, unit_active: true };
+    win.__llamaState = 'awake';
+    await win.QG.onOpen('org/m:Q4'); await flush();
+    const stop = win.document.getElementById('qgStopBtn');
+    expect(stop.style.display).toBe('');
+    win.__llamaState = 'stopped';
+    win.__pre = { ok: true, busy: false, perplexity: true, unit_active: false };
+    await win.QG.stopServer(); await flush();
+    expect(win.__fetches.some(([u, o]) => u === '/api/llm/server/stop' && o && o.method === 'POST')).toBe(true);
+    expect(win.document.getElementById('qgPreflight').style.display).toBe('none');
+    expect(win.document.getElementById('qgRunBtn').disabled).toBe(false);
+    expect(stop.style.display).toBe('none');
   });
 
   it('opens neutral when the agent is busy with another tool, then flips to running on a quality-mode event', async () => {

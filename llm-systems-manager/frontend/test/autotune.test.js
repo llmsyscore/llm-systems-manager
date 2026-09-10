@@ -696,6 +696,24 @@ describe('re-verify (#887)', () => {
     await win.AT.onOpen('org/m:Q4'); await flush();
     expect(win.document.getElementById('atVerifyBtn').style.display).not.toBe('none');
   });
+  it('an unknown build says why re-verifying helps instead of printing "?" or repeating the date', async () => {
+    const win = await opened();
+    win.__status = { ok: true, items: [{ agent_id: 'a1', model_id: 'org/m:Q4', llama_build: null, current_build: null, stale: null, ts: '2026-09-02T00:00:00Z', summary: {} }] };
+    await win.AT.onOpen('org/m:Q4'); await flush();
+    const note = win.document.querySelector('#atPrevTune [data-at-build]');
+    expect(note.textContent).toMatch(/predates build recording/);
+    expect(note.textContent).not.toMatch(/\?/);
+    expect(note.textContent).not.toContain('2026-09-02');
+    expect(note.textContent).not.toMatch(/Last tune/);
+  });
+  it('a current-build tune names the build once, without the date', async () => {
+    const win = await opened();
+    win.__status = { ok: true, items: [{ agent_id: 'a1', model_id: 'org/m:Q4', llama_build: 'b120', current_build: 'b120', stale: false, ts: '2026-09-02T00:00:00Z', summary: {} }] };
+    await win.AT.onOpen('org/m:Q4'); await flush();
+    const note = win.document.querySelector('#atPrevTune [data-at-build]');
+    expect(note.textContent).toContain('b120');
+    expect(note.textContent).not.toContain('2026-09-02');
+  });
   it('detach closes the stream without cancelling the run', async () => {
     const win = await opened();
     await win.AT.run(); for (let i = 0; i < 4; i++) await flush();

@@ -267,6 +267,9 @@
         ws.onerror = () => ws.close();
     }
 
+    // Exposed so dashboard modules raise themed toasts instead of alert().
+    window.showToast = showToast;
+
     // Defer connection slightly so page renders first; skip when no stream.
     if (WS_URL) setTimeout(connect, 1500);
 })();

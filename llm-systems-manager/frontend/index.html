@@ -59,8 +59,8 @@ Backend API endpoints consumed:
   <link rel="stylesheet" href="/static/css/settings.css?v=2026.09.04-2">
   <link rel="stylesheet" href="/static/css/modelcards.css?v=2026.09.09-2">
   <link rel="stylesheet" href="/static/css/reportcard.css?v=2026.09.09-1">
-  <link rel="stylesheet" href="/static/css/tools.css?v=2026.09.09-1">
-  <link rel="stylesheet" href="/static/css/autotune.css?v=2026.09.09-2">
+  <link rel="stylesheet" href="/static/css/tools.css?v=2026.09.09-2">
+  <link rel="stylesheet" href="/static/css/autotune.css?v=2026.09.09-3">
   <link rel="stylesheet" href="/static/css/energy.css?v=2026.08.19-2">
   <link rel="stylesheet" href="/static/css/overall.css?v=2026.08.30-1">
 </head>
@@ -2511,15 +2511,15 @@ Backend API endpoints consumed:
       </div>
       <div class="bench-body">
       <div class="bench-rail at-rail" id="qgRail">
-        <div id="qgPreflight" class="at-preflight" style="display:none;"><span class="at-dot warn"></span><span class="d" id="qgPreflightMsg"></span></div>
+        <div id="qgPreflight" class="at-preflight" style="display:none;"><span class="at-dot warn"></span><span class="d" id="qgPreflightMsg"></span><button id="qgStopBtn" class="mcbtn mcbtn-ghost mcbtn-sm" onclick="QG.stopServer()" style="display:none;">⏹ Stop server</button></div>
         <div class="at-grp">
-          <div class="at-grp-h">Model</div>
-          <div class="at-grp-b"><select class="at-in" id="qgModel"></select></div>
+          <div class="at-grp-h">Model <span class="r" id="qgModelCount">none selected</span></div>
+          <div class="at-grp-b at-mlist" id="qgModelList"></div>
         </div>
         <div class="at-grp">
           <div class="at-grp-h">Changes to test <span class="r" id="qgCount">0</span></div>
-          <div class="at-grp-b" id="qgRows"></div>
-          <div class="at-grp-b at-frow g2"><label>Add key</label><select class="at-in" id="qgAddKey"></select></div>
+          <div id="qgRows"></div>
+          <div class="at-grp-b"><div class="at-hint">Switch on the keys to test, then pick a value. A value that matches the model's current one is not sent.</div></div>
         </div>
         <div class="at-grp">
           <div class="at-grp-h">Guard</div>
@@ -2532,13 +2532,15 @@ Backend API endpoints consumed:
           <button id="qgCancelBtn" class="mcbtn mcbtn-ghost warn" onclick="QG.cancel()" style="display:none;">✕ Cancel</button>
         </div>
       </div>
-      <div class="bench-results at-results">
-        <div class="bl-strip at-strip"><span class="bench-status-pill" id="qgPill">idle</span><span id="qgStrip"></span></div>
-        <div class="at-card"><div class="at-card-h"><h3>Result</h3><span class="meta" id="qgResultMeta"></span></div>
-          <div class="at-card-b" id="qgResult"><div class="at-empty">Pick a model, change one or more keys, then run the check.</div></div>
-          <div class="at-card-f"><button type="button" id="qgApplyBtn" class="mcbtn mcbtn-pri" onclick="QG.apply()" style="display:none;">Apply changes</button></div>
+      <div class="bench-results-pane at-panes">
+        <div class="at-pane">
+          <div class="bl-strip at-strip"><span class="bench-status-pill" id="qgPill">idle</span><span id="qgStrip"></span></div>
+          <div class="at-card"><div class="at-card-h"><h3>Result</h3><span class="meta" id="qgResultMeta"></span></div>
+            <div class="at-card-b" id="qgResult"><div class="at-hint">Pick a model, change one or more keys, then run the check.</div></div>
+            <div class="at-card-f"><button type="button" id="qgApplyBtn" class="mcbtn mcbtn-pri" onclick="QG.apply()" style="display:none;">Apply changes</button></div>
+          </div>
+          <div class="at-card collapsed"><div class="at-card-h tog" onclick="this.parentElement.classList.toggle('collapsed')"><h3>Run log</h3></div><div class="at-card-b"><div class="at-log" id="qgLog"></div></div></div>
         </div>
-        <div class="at-card collapsed"><div class="at-card-h tog" onclick="this.parentElement.classList.toggle('collapsed')"><h3>Run log</h3></div><div class="at-card-b"><div class="at-log" id="qgLog"></div></div></div>
       </div>
       </div>
     </div><!-- /toolsModQg -->
@@ -2576,8 +2578,8 @@ Backend API endpoints consumed:
 <script src="/static/js/editor-modern.js?v=2026.09.07-1"></script>
 <script src="/static/js/bench-autotune.js?v=2026.09.08-4"></script>
 <script src="/static/js/bench-live.js?v=2026.09.09-6"></script>
-<script src="/static/js/autotune.js?v=2026.09.09-2"></script>
-<script src="/static/js/quality.js?v=2026.09.09-3"></script>
+<script src="/static/js/autotune.js?v=2026.09.09-3"></script>
+<script src="/static/js/quality.js?v=2026.09.09-4"></script>
 <script src="/static/js/lmstudio.js?v=2026.09.04-1"></script>
 <script src="/static/js/vllm.js?v=2026.09.04-1"></script>
 <script src="/static/js/vllm-bench-autotune.js?v=2026.09.02-1"></script>
@@ -2755,7 +2757,7 @@ Backend API endpoints consumed:
 <link rel="stylesheet" href="/static/css/toasts.css?v=2026.06.10-6">
 <div id="alarmToastContainer"></div>
 
-<script src="/static/js/events-toasts.js?v=2026.09.03-2"></script>
+<script src="/static/js/events-toasts.js?v=2026.09.09-1"></script>
 <script src="/static/js/boot.js?v=2026.09.04-4"></script>
 </body>
 </html>
