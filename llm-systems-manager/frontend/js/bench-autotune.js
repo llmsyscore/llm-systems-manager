@@ -833,8 +833,6 @@ function _benchPerfNote(ev) {
   el.textContent = typeof perfModeNote === 'function' ? perfModeNote(ev) : '';
 }
 
-// Starts the benchmark: gathers selected models, tool and switches, starts the run on the
-// agent, and streams results into the UI. The agent owns the host perf mode for the run.
 // Shared gate (#888): another tool on this host turns Run into Queue.
 let _benchSlot = null;
 function _benchRunEnable() {
@@ -870,6 +868,7 @@ function _benchSyncQueue(st) {
   else if (status && status.textContent.indexOf('queued') === 0) status.textContent = 'idle';
 }
 
+// Gathers the selected models, tool and switches, starts the run on the agent and streams it.
 async function runBenchmark() {
   const modelIds = [...document.querySelectorAll('#benchModelPanel input[type=checkbox]:checked')]
                      .map(cb => cb.value);

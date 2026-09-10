@@ -593,6 +593,52 @@ describe('AT export, regression warning, recRows numeric guard', () => {
 });
 
 describe('re-verify (#887)', () => {
+  it('sends every recorded measurement as the baseline, mapped to the before-column keys', async () => {
+    const win = await opened();
+    win.__status = { ok: true, items: [{ agent_id: 'a1', model_id: 'org/m:Q4', llama_build: 'b100', current_build: 'b120', stale: true,
+      summary: { decode_tps: 41.5, prefill_tps: 400, agg_tps: 48, ctx_size: 125440, free_mb: 925, gain_pct: null } }] };
+    await win.AT.onOpen('org/m:Q4', { verify: true }); await flush();
+    const post = win.__fetches.find(([u, o]) => u === '/api/llm/autotune/run' && o && o.method === 'POST');
+    expect(JSON.parse(post[1].body).baseline).toEqual({ decode_tps: 41.5, prefill_tps: 400, agg_tps: 48, ctx: 125440, free_mb: 925 });
+  });
+  it('hides the empty parameter table and explains a missing baseline on a verify', async () => {
+    const win = await opened();
+    win.__status = { ok: true, items: [{ agent_id: 'a1', model_id: 'org/m:Q4', llama_build: 'b100', current_build: 'b120', stale: true, summary: { ctx_size: 125440 } }] };
+    await win.AT.onOpen('org/m:Q4', { verify: true }); await flush();
+    win.AT.onEvent({ type: 'model_start', model_id: 'org/m:Q4', objective: 'fit', mode: 'verify', stages: ['verify'] });
+    win.AT.onEvent({ type: 'model_done', model_id: 'org/m:Q4', ok: true, mode: 'verify', llama_build: 'b120', regressed: null,
+      before: {}, after: { decode_tps: 63.8, ctx: 125440 }, verify: { ok: true, seconds: 64 }, changes: [], stages: [{ stage: 'verify', status: 'done' }] });
+    win.AT.onEvent({ type: 'done', ok: true }); await flush();
+    const table = win.document.getElementById('atRecRows').closest('.at-card-b');
+    expect(table.style.display).toBe('none');
+    expect(win.document.getElementById('atRecSel').textContent).toMatch(/nothing to apply/);
+    expect(win.document.getElementById('atCmp').textContent).toMatch(/becomes the baseline/);
+  });
+  it('only focuses the Re-verify button when llama-server still holds the host', async () => {
+    const win = await opened();
+    win.__status = { ok: true, items: [{ agent_id: 'a1', model_id: 'org/m:Q4', llama_build: 'b100', current_build: 'b120', stale: true, summary: {} }] };
+    win.__llamaState = 'awake';
+    await win.AT.onOpen('org/m:Q4', { verify: true }); await flush();
+    expect(win.__fetches.filter(([u, o]) => u === '/api/llm/autotune/run' && o && o.method === 'POST')).toHaveLength(0);
+    expect(win.document.getElementById('atRunBtn').disabled).toBe(true);
+  });
+  it('keeps the newest row when two agents tuned the same model', async () => {
+    const win = await opened();
+    win.__status = { ok: true, items: [
+      { agent_id: 'newer', model_id: 'org/m:Q4', llama_build: 'b120', current_build: 'b120', stale: false, ts: '2026-09-05T00:00:00Z', summary: {} },
+      { agent_id: 'older', model_id: 'org/m:Q4', llama_build: 'b90', current_build: 'b130', stale: true, ts: '2026-08-01T00:00:00Z', summary: {} },
+    ] };
+    await win.AT.onOpen('org/m:Q4'); await flush();
+    expect(win.document.getElementById('atVerifyBtn').style.display).toBe('none');
+    expect(win.document.getElementById('atPrevTune').textContent).toContain('b120');
+  });
+  it('says so when the tune status could not be loaded', async () => {
+    const win = await opened();
+    const realFetch = win.fetch;
+    win.fetch = (u, o) => (String(u).startsWith('/api/llm/autotune/status') ? Promise.reject(new Error('down')) : realFetch(u, o));
+    await win.AT.onOpen('org/m:Q4'); await flush();
+    expect(win.document.getElementById('atPrevTune').textContent).toMatch(/could not be loaded/);
+  });
   it('opening with {verify:true} on a stale model reveals the Re-verify button and posts a verify-mode body', async () => {
     const win = await opened();     // the file's helper that boots + awaits AT.onOpen('org/m:Q4')
     win.__status = { ok: true, items: [{ agent_id: 'a1', model_id: 'org/m:Q4', llama_build: 'b100', current_build: 'b120', stale: true, summary: { decode_tps: 41.5 } }] };
@@ -600,19 +646,21 @@ describe('re-verify (#887)', () => {
     const btn = win.document.getElementById('atVerifyBtn');
     expect(btn.style.display).not.toBe('none');
     expect(win.document.getElementById('atPrevTune').textContent).toContain('stale');
-    await win.AT.verify(); await flush();
-    const post = win.__fetches.find(([u, o]) => u === '/api/llm/autotune/run' && o && o.method === 'POST');
+    // The deep link ran the check itself; no click needed.
+    const posts = win.__fetches.filter(([u, o]) => u === '/api/llm/autotune/run' && o && o.method === 'POST');
+    expect(posts).toHaveLength(1);
+    const post = posts[0];
     const body = JSON.parse(post[1].body);
     expect(body.mode).toBe('verify');
     expect(body.model_ids).toEqual(['org/m:Q4']);
     expect(body.baseline_tps).toBe(41.5);
+    expect(body.baseline).toEqual({ decode_tps: 41.5 });
     expect(body.budget_min).toBe(15);
   });
   it('model_done in verify mode records mode + build in the ledger and shows the regression headline', async () => {
     const win = await opened();
     win.__status = { ok: true, items: [{ agent_id: 'a1', model_id: 'org/m:Q4', llama_build: 'b100', current_build: 'b120', stale: true, summary: { decode_tps: 41.5 } }] };
     await win.AT.onOpen('org/m:Q4', { verify: true }); await flush();
-    await win.AT.verify(); await flush();
     win.AT.onEvent({ type: 'model_start', model_id: 'org/m:Q4', objective: 'balanced', mode: 'verify', stages: ['verify'] });
     win.AT.onEvent({ type: 'model_done', model_id: 'org/m:Q4', ok: true, mode: 'verify', llama_build: 'b120', regressed: true,
       before: { decode_tps: 41.5 }, after: { decode_tps: 30.1, ctx: 8192 }, verify: { ok: true, seconds: 60 }, changes: [], stages: [{ stage: 'verify', status: 'done' }] });

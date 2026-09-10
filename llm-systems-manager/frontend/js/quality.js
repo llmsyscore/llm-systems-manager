@@ -10,7 +10,7 @@
   const BOOL_KEYS = ['flash-attn'];
   const KEYS = ['cache-type-k', 'cache-type-v', 'threads', 'threads-batch', 'n-gpu-layers', 'n-cpu-moe', 'batch-size', 'ubatch-size', 'flash-attn', 'load-mode'];
   let _models = [], _model = '', _cfg = {}, _rows = [], _es = null, _done = null, _pre = null, _wired = false, _neutral = false;
-  let _elapsedIv = null, _startTs = 0, _slot = null, _busyOn = false;
+  let _elapsedIv = null, _startTs = 0, _slot = null, _busyOn = false, _starting = false;
   const PASS_NAME = { 'f16 base': 'pass 1 of 2 · f16 reference', candidate: 'pass 2 of 2 · candidate config' };
   // Parsed llama-perplexity statistics rendered beside the KL number.
   const STAT_DEFS = [
@@ -126,18 +126,21 @@
     renderModels(); renderRows();
     _done = null; renderResult(null);
     await checkServer(pre && pre.ok ? pre : null);
-    if (_pre && _pre.busy && !running()) attach(true);
+    // Only an autotune-stream run is worth attaching to; a benchmark holds the host but replays nothing of ours.
+    const held = _pre && (_pre.autotune_active != null ? _pre.autotune_active : _pre.busy);
+    if (held && !running()) attach(true);
     const s = slot(); if (s) s.sync();
   }
+  // null when the state could not be read, so the preflight answer decides.
   async function serverUp() {
-    try { const s = await fetch('/api/llama-state').then(r => r.json()); return s.state === 'awake' || s.state === 'sleeping'; } catch (_) { return false; }
+    try { const s = await fetch('/api/llama-state').then(r => r.json()); return s.state === 'awake' || s.state === 'sleeping'; } catch (_) { return null; }
   }
   // Re-reads preflight unless handed a fresh doc, so a stopped server clears the banner.
   async function checkServer(pre) {
     const banner = $('qgPreflight'), msg = $('qgPreflightMsg'), stop = $('qgStopBtn'), run = $('qgRunBtn');
     if (!banner) return;
     const up = await serverUp();
-    let active = false, pxMissing = false, hint = '';
+    let active = false, pxMissing = false, hint = '', preErr = '', oldAgent = false;
     try {
       const p = pre || await fetch('/api/llm/autotune/preflight').then(r => r.json());
       if (p && p.ok) {
@@ -145,9 +148,10 @@
         active = !!p.unit_active;
         pxMissing = !p.perplexity;
         const d = p.perplexity_detail;
+        oldAgent = !d;
         if (d && d.hint) hint = String(d.hint);
-      }
-    } catch (_) {}
+      } else preErr = (p && (p.error || p.detail)) || 'no answer';
+    } catch (e) { preErr = e && e.message ? e.message : String(e); }
     const show = (html, text, withStop, block) => {
       banner.style.display = '';
       if (msg) { if (html) msg.innerHTML = html; else msg.textContent = text; }
@@ -155,6 +159,8 @@
       if (run) { run.disabled = block; run.title = block ? (text || 'llama-server is running') : ''; }
     };
     if (up || active) show('<b>llama-server is running.</b> The quality check needs the port and the VRAM; stop it first.', 'llama-server is running', true, true);
+    else if (preErr) show('', `Could not read the agent preflight (${preErr}) — reopen the tool to retry.`, false, true);
+    else if (oldAgent) show('', 'This agent predates the quality guard and would run a full tune instead — update it to v2026.09.09-1 or newer.', false, true);
     else if (hint) show('', hint, false, true);
     else if (pxMissing) show('', 'llama-perplexity or the KL text is missing on the agent — install the bench runtime.', false, false);
     else {
@@ -206,8 +212,9 @@
     if (_slot) _slot.sync();
     if (typeof toolsSyncRunDot === 'function') toolsSyncRunDot();
   }
+  function closeStream() { if (_es) { try { _es.close(); } catch (_) {} _es = null; } }
   function openStream() {
-    if (_es) { try { _es.close(); } catch (_) {} }
+    closeStream();
     _es = SG.open({ url: '/api/llm/autotune/stream', onEvent: onEvent, onDrop: () => log('stream dropped — reconnecting'), onGiveUp: () => finish({ ok: false, error: 'stream lost' }) });
   }
   // Shared gate (#888): another tool on this host turns Run into Queue.
@@ -242,15 +249,19 @@
     const ov = overrides();
     if (!Object.keys(ov).length) { notify('Quality guard', 'Switch on at least one key and give it a value that differs from the current one.'); return; }
     const klMax = parseFloat(($('qgKlMax') || {}).value); const body = { model_ids: [mid], objective: 'fit', mode: 'quality', overrides: ov, kl_max: Number.isFinite(klMax) ? klMax : 0.02 };
-    const s = slot(), gateBusy = s && !running() && !_busyOn && s.busy();
+    if (_starting || running()) return;
+    const s = slot(), gateBusy = s && !_busyOn && s.busy();
     if (gateBusy) { s.queue(body); return; }
     return start(body);
   }
   async function start(body) {
+    if (_starting) return;
     const s = slot();
     let r;
+    _starting = true;
     try { r = await fetch('/api/llm/autotune/run', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }).then(x => x.json()); }
-    catch (e) { notify('Quality check failed to start', (e && e.message ? e.message : String(e)), 'critical'); return; }
+    catch (e) { _starting = false; notify('Quality check failed to start', (e && e.message ? e.message : String(e)), 'critical'); return; }
+    _starting = false;
     if (!r || !r.ok) {
       // Lost the race with another browser — attach, and hold this check behind it.
       if (r && /in progress/i.test(r.error || r.detail || '')) {
@@ -279,13 +290,13 @@
   // Tool switch: drop this module's stream, leaving the run itself alone.
   function detach() {
     if (!_es) return;
-    try { _es.close(); } catch (_) {}
-    _es = null; _neutral = false;
+    closeStream();
+    _neutral = false;
     stopElapsed(); _startTs = 0;
     busy(false);
   }
   function finish(msg) {
-    if (_es) { try { _es.close(); } catch (_) {} _es = null; }
+    closeStream();
     busy(false);
     perfNote(null);
     if (!_done) { pill('warn', msg && msg.error ? 'failed' : 'stopped'); stage(msg && msg.error ? 'the run did not finish' : 'stopped'); settleElapsed(null); }

@@ -22,24 +22,35 @@
   let _models = [], _pre = null, _sel = new Set(), _runs = [], _facts = {}, _es = null, _attached = false;
   let _run = null, _done = {}, _doneModel = null, _meta = {}, _section = {}, _elapsedIv = null;
   let _status = {};        // model_id → /api/llm/autotune/status item
-  let _verifyIntent = false;
-  let _slot = null, _busyOn = false;
+  let _slot = null, _busyOn = false, _statusErr = false;
+  // Newest row per model wins; the route returns one row per (agent, model).
   async function loadStatus() {
-    _status = {};
+    _status = {}; _statusErr = false;
     try {
       const d = await fetch('/api/llm/autotune/status').then(r => r.json());
-      (d && d.items || []).forEach(i => { _status[i.model_id] = i; });
-    } catch (_) {}
+      (d && d.items || []).forEach(i => {
+        const cur = _status[i.model_id];
+        if (!cur || (Date.parse(i.ts || '') || 0) > (Date.parse(cur.ts || '') || 0)) _status[i.model_id] = i;
+      });
+    } catch (_) { _statusErr = true; }
+  }
+  // Appended to the run-history line syncModels wrote, so the objective/ctx/gain text survives.
+  function buildNote(prev) {
+    let note = prev.querySelector('[data-at-build]');
+    if (!note) { note = document.createElement('span'); note.className = 'd'; note.setAttribute('data-at-build', '1'); prev.appendChild(note); }
+    return note;
   }
   function syncVerify() {
     const mid = primaryModel(), st = mid ? _status[mid] : null;
     const btn = $('atVerifyBtn'); if (btn) btn.style.display = st && st.stale !== false && !running() ? '' : 'none';
     const prev = $('atPrevTune');
+    if (prev && !st && _statusErr) {
+      prev.style.display = '';
+      buildNote(prev).textContent = 'Tune status could not be loaded, so whether an earlier tune is stale is unknown.';
+    }
     if (prev && st) {
       prev.style.display = '';
-      // Appended to the run-history line syncModels wrote, so the objective/ctx/gain text survives.
-      let note = prev.querySelector('[data-at-build]');
-      if (!note) { note = document.createElement('span'); note.className = 'd'; note.setAttribute('data-at-build', '1'); prev.appendChild(note); }
+      const note = buildNote(prev);
       // The line above already carries the date, so this sentence only adds the build.
       note.innerHTML = st.stale
         ? `<b>Tune is stale.</b> Autotuned on llama.cpp ${esc(st.llama_build)} · host now runs ${esc(st.current_build)}. Re-verify checks the current config in ~3 min; re-tune if it regressed.`
@@ -276,7 +287,6 @@
   }
   async function onOpen(preselect, opts) {
     wire();
-    _verifyIntent = !!(opts && opts.verify);
     const L = typeof layout !== 'undefined' ? layout : null;
     if (L && L.atObjective) setObjective(L.atObjective); else setObjective(objective());
     if (running()) return;
@@ -295,6 +305,12 @@
     await checkServer(pre && pre.ok ? pre : null);
     if (_pre && _pre.busy && !running()) attach();
     const s = slot(); if (s) s.sync();
+    // A Re-verify deep link runs the check itself when the button is live.
+    if (opts && opts.verify && !running()) {
+      const vb = $('atVerifyBtn'), rb = $('atRunBtn');
+      if (vb && vb.style.display !== 'none' && !(rb && rb.disabled)) verify();
+      else if (vb) vb.focus();
+    }
   }
 
   // ── run / stream ──
@@ -443,9 +459,13 @@
     if (!mid) { alert('Select a model.'); return; }
     const dims = dimsState();
     fillDimDefaults(dims);
-    const st = _status[mid] || {};
+    const sm = (_status[mid] || {}).summary || {};
+    // Everything the last tune recorded, so the before column is not just decode.
+    const baseline = {};
+    [['decode_tps', 'decode_tps'], ['prefill_tps', 'prefill_tps'], ['agg_tps', 'agg_tps'], ['ctx', 'ctx_size'], ['free_mb', 'free_mb']]
+      .forEach(([k, sk]) => { if (sm[sk] != null) baseline[k] = sm[sk]; });
     const body = { model_ids: [mid], objective: objective(), budget_min: 15, mode: 'verify',
-                   baseline_tps: (st.summary || {}).decode_tps ?? null, dims };
+                   baseline_tps: sm.decode_tps ?? null, baseline, dims };
     await startRun(body, [mid]);
   }
   function retune() { again(); run(); }
@@ -750,7 +770,9 @@
       return `<div class="at-cmp-r"><span class="k">${k}</span><div class="bars"><i style="width:${Math.round(100 * (Number(bv) || 0) / max)}%"></i><i class="new" style="width:${Math.round(100 * (Number(av) || 0) / max)}%"></i></div><span class="r">${f(bv)} → ${f(av)}${unit} ${tail}</span></div>`;
     };
     const host = $('atCmp'); if (!host) return;
-    host.innerHTML = row('Decode t/s', b.decode_tps, a.decode_tps, '', v => fmt(v, 1)) + row('Context', b.ctx, a.ctx, '', v => fmt(v, 0))
+    const noBase = done.mode === 'verify' && !Object.keys(b).length
+      ? '<div class="at-hint" style="margin-bottom:8px">The last tune recorded no measurements to compare against, so this verify becomes the baseline for the next one.</div>' : '';
+    host.innerHTML = noBase + row('Decode t/s', b.decode_tps, a.decode_tps, '', v => fmt(v, 1)) + row('Context', b.ctx, a.ctx, '', v => fmt(v, 0))
       + row(`Aggregate · ${esc(Number(a.concurrency || 1))} req`, b.agg_tps, a.agg_tps, '', v => fmt(v, 0)) + row('Prefill t/s', b.prefill_tps, a.prefill_tps, '', v => fmt(v, 0))
       + row('VRAM free', b.free_mb, a.free_mb, ' MB', v => fmt(v, 0), true);
   }
@@ -795,6 +817,10 @@
     const dm = $('atDoneLogMeta'); if (dm) dm.textContent = `${doneStages} stages · ${Number(done.loads || 0)} loads`;
     const qb = $('atQualityBtn');
     const guardCard = $('atGuard');
+    // A verify proposes nothing, so the empty parameter table stays hidden.
+    const recTable = $('atRecRows') && $('atRecRows').closest('.at-card-b'), recSel = $('atRecSel');
+    if (recTable) recTable.style.display = verifyMode ? 'none' : '';
+    if (recSel && verifyMode) recSel.textContent = 'verify only — nothing to apply';
     if (verifyMode) {
       const rb = $('atRetuneBtn'), ab = $('atApplyBtn');
       if (ab) ab.style.display = 'none';

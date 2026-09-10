@@ -52,6 +52,14 @@ describe('tune chip descriptor', () => {
     expect(win._llamaDescriptor('org/m:Q4', {}).tune).toEqual({ stale: true, label: 'tuned · stale', act: 'reverify',
       title: 'Autotuned on llama.cpp b120 · host now runs b130 — click to re-verify' });
   });
+  it('names a regressed re-verify rather than a build change', async () => {
+    const win = boot({ ok: true, items: [{ agent_id: 'a1', model_id: 'org/m:Q4', llama_build: 'b120', current_build: 'b120', stale: true, ts: '2026-09-02T00:00:00Z', summary: { regressed: true } }] });
+    await win._loadTuneStatus(true); await flush();
+    const d = win._llamaDescriptor('org/m:Q4', {});
+    expect(d.tune.label).toBe('tuned · stale');
+    expect(d.tune.title).toMatch(/ran slower than the tune/);
+    expect(d.tune.title).not.toMatch(/host now runs/);
+  });
   it('maps a null (unknown build) status row to a muted chip that can still re-verify', async () => {
     const win = boot({ ok: true, items: [{ agent_id: 'a1', model_id: 'org/m:Q4', llama_build: null, current_build: null, stale: null, ts: '2026-09-02T00:00:00Z', summary: {} }] });
     await win._loadTuneStatus(true); await flush();

@@ -263,8 +263,10 @@ function _llamaTuneFor(modelId) {
   if (!t) return null;
   const day = String(t.ts || '').slice(0, 10);
   if (t.stale === true) {
-    return { stale: true, label: 'tuned · stale', act: 'reverify',
-             title: 'Autotuned on llama.cpp ' + t.llama_build + ' · host now runs ' + t.current_build + ' — click to re-verify' };
+    const title = t.summary && t.summary.regressed
+      ? 'Re-verify on llama.cpp ' + t.llama_build + ' ran slower than the tune — click to re-verify or re-tune'
+      : 'Autotuned on llama.cpp ' + t.llama_build + ' · host now runs ' + t.current_build + ' — click to re-verify';
+    return { stale: true, label: 'tuned · stale', act: 'reverify', title };
   }
   if (t.stale === false) {
     return { stale: false, label: 'tuned', act: 'autotune',

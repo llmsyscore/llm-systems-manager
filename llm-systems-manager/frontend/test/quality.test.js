@@ -25,7 +25,7 @@ const STUBS = `
     const u = String(url);
     const body = u.startsWith('/api/benchmark/models') ? { models: ['org/m:Q4', 'org/big:Q4'] }
       : (u === '/api/llm/config' && (!opts || !opts.method)) ? window.__cfg
-      : u.startsWith('/api/llm/autotune/preflight') ? (window.__pre || { ok: true, busy: false, perplexity: true })
+      : u.startsWith('/api/llm/autotune/preflight') ? (window.__pre || { ok: true, busy: false, perplexity: true, perplexity_detail: { present: true, kl_text: true, runnable: true, rc: 0, hint: null } })
       : u.startsWith('/api/llama-state') ? { state: window.__llamaState || 'stopped' }
       : (u === '/api/llm/autotune/run' && opts && opts.method === 'POST') ? (window.__runReply || { ok: true, run_id: 'q1' })
       : (u === '/api/llm/config' && opts && opts.method === 'POST') ? (window.__configWriteReply || { ok: true })
@@ -169,12 +169,13 @@ describe('Quality guard module (#888)', () => {
     expect(win.__alerts.length).toBe(0);
     expect(win.__toasts.pop()).toMatch(/config locked/);
     expect(win.document.getElementById('qgApplyBtn').textContent).not.toContain('Applied');
+    expect(win.document.getElementById('qgApplyBtn').disabled).toBe(false);
     expect(win.__syncCalls.length).toBe(0);
   });
 
   it('warns and blocks Run while llama-server holds the GPU', async () => {
     const win = boot();
-    win.__pre = { ok: true, busy: false, perplexity: true, unit_active: true };
+    win.__pre = { ok: true, busy: false, perplexity: true, unit_active: true, perplexity_detail: { present: true, kl_text: true, runnable: true, rc: 0, hint: null } };
     await win.QG.onOpen('org/m:Q4'); await flush();
     const pf = win.document.getElementById('qgPreflight');
     expect(pf.style.display).toBe('');
@@ -240,23 +241,48 @@ describe('Quality guard module (#888)', () => {
     expect(win.document.getElementById('qgStopBtn').style.display).toBe('none');
   });
 
-  it('keeps the old missing-tooling banner and an enabled Run for an agent with no perplexity_detail', async () => {
+  it('blocks Run for an agent with no perplexity_detail, which would run a full tune instead', async () => {
     const win = boot();
-    win.__pre = { ok: true, busy: false, perplexity: false };
+    win.__pre = { ok: true, busy: false, perplexity: true };
     await win.QG.onOpen('org/m:Q4'); await flush();
-    expect(win.document.getElementById('qgPreflightMsg').textContent).toMatch(/bench runtime/);
-    expect(win.document.getElementById('qgRunBtn').disabled).toBe(false);
+    expect(win.document.getElementById('qgPreflightMsg').textContent).toMatch(/predates the quality guard/);
+    expect(win.document.getElementById('qgRunBtn').disabled).toBe(true);
+  });
+
+  it('blocks Run when the preflight itself cannot be read', async () => {
+    const win = boot();
+    win.__pre = { ok: false, error: 'agent unreachable' };
+    await win.QG.onOpen('org/m:Q4'); await flush();
+    expect(win.document.getElementById('qgPreflightMsg').textContent).toMatch(/Could not read the agent preflight.*agent unreachable/);
+    expect(win.document.getElementById('qgRunBtn').disabled).toBe(true);
+  });
+
+  it('does not attach while a Benchmark, not an autotune-stream run, holds the host', async () => {
+    const win = boot();
+    win.__pre = { ok: true, busy: true, autotune_active: false, perplexity: true, perplexity_detail: { present: true, kl_text: true, runnable: true, rc: 0, hint: null } };
+    await win.QG.onOpen('org/m:Q4'); await flush();
+    expect(win.QG.running()).toBe(false);
+    expect(win.document.getElementById('qgPill').textContent).not.toBe('another tool is running');
+    expect(win.document.getElementById('qgRunBtn').style.display).not.toBe('none');
+  });
+
+  it('posts one run for two clicks before the first answer arrives', async () => {
+    const win = await opened('org/m:Q4', { overrides: { 'cache-type-k': 'q4_0' } });
+    win.__fetches.length = 0;
+    const p1 = win.QG.run(), p2 = win.QG.run();
+    await p1; await p2; await flush();
+    expect(win.__fetches.filter(f => f[0] === '/api/llm/autotune/run')).toHaveLength(1);
   });
 
   it('stops llama-server from the banner and clears it', async () => {
     const win = boot();
-    win.__pre = { ok: true, busy: false, perplexity: true, unit_active: true };
+    win.__pre = { ok: true, busy: false, perplexity: true, unit_active: true, perplexity_detail: { present: true, kl_text: true, runnable: true, rc: 0, hint: null } };
     win.__llamaState = 'awake';
     await win.QG.onOpen('org/m:Q4'); await flush();
     const stop = win.document.getElementById('qgStopBtn');
     expect(stop.style.display).toBe('');
     win.__llamaState = 'stopped';
-    win.__pre = { ok: true, busy: false, perplexity: true, unit_active: false };
+    win.__pre = { ok: true, busy: false, perplexity: true, unit_active: false, perplexity_detail: { present: true, kl_text: true, runnable: true, rc: 0, hint: null } };
     await win.QG.stopServer(); await flush();
     expect(win.__fetches.some(([u, o]) => u === '/api/llm/server/stop' && o && o.method === 'POST')).toBe(true);
     expect(win.document.getElementById('qgPreflight').style.display).toBe('none');
@@ -266,7 +292,7 @@ describe('Quality guard module (#888)', () => {
 
   it('opens neutral when the agent is busy with another tool, then flips to running on a quality-mode event', async () => {
     const win = boot();
-    win.__pre = { ok: true, busy: true, perplexity: true };
+    win.__pre = { ok: true, busy: true, perplexity: true, perplexity_detail: { present: true, kl_text: true, runnable: true, rc: 0, hint: null } };
     await win.QG.onOpen('org/m:Q4'); await flush();
     expect(win.document.getElementById('qgPill').textContent).toBe('another tool is running');
     expect(win.document.getElementById('qgRunBtn').style.display).toBe('none');
