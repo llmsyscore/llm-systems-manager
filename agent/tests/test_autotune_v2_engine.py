@@ -457,6 +457,27 @@ def test_verify_mode_runs_only_verify_against_current_section(at):
     assert doc["mode"] == "verify" and doc["ok"] is True
     assert doc["after"]["ctx"] == 16384 and doc["after"]["concurrency"] == 2
     assert doc["before"] == {"decode_tps": 120.0}
+
+
+class BuildFake(Fake):
+    def load(self, args, ctx, measure):
+        res = super().load(args, ctx, measure)
+        res["build"] = "b6300-434ddbb"
+        return res
+
+
+def test_build_printed_by_the_spawned_server_wins_over_the_cached_one(at):
+    doc, _ = _run(at, BuildFake(), {"model_ids": ["org/m:Q4"], "objective": "fit", "mode": "verify"},
+                  env={"llama_build": ""})
+    assert doc["llama_build"] == "b6300-434ddbb"
+
+
+def test_verify_before_carries_the_full_baseline(at):
+    doc, _ = _run(at, Fake(), {"model_ids": ["org/m:Q4"], "objective": "fit", "mode": "verify",
+                               "baseline": {"decode_tps": 120.0, "ctx": 16384, "free_mb": 900}},
+                  section={"ctx-size": "16384"})
+    assert doc["before"] == {"decode_tps": 120.0, "ctx": 16384.0, "free_mb": 900.0}
+    assert doc["regressed"] is True
     assert doc["regressed"] is True            # Fake decodes ~92 t/s at 2 slots, 120 × 0.85 = 102
     assert doc["llama_build"] == "b10850-abc"
     assert doc["changes"] == []

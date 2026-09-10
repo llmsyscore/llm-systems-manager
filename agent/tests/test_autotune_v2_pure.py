@@ -294,6 +294,13 @@ def test_parse_kl_stats_omits_fields_a_truncated_block_never_printed(at):
     assert "same_top_p" not in s and "rms_dp" not in s and "p999_dp" not in s
 
 
+def test_parse_kl_stats_reads_exponent_and_signed_forms(at):
+    s = at.parse_kl_stats("Mean    KLD: 1.234e-03\nSame top p: +98.5 %\nRMS Delta p: .5 %\n")
+    assert s["kl"] == 1.234e-03
+    assert s["same_top_p"] == 98.5
+    assert s["rms_dp"] == 0.5
+
+
 def test_parse_kl_stats_returns_empty_when_no_statistics_were_printed(at):
     assert at.parse_kl_stats("llama_perplexity: loading model\nnothing here\n") == {}
     assert at.parse_kl_stats("") == {}
@@ -467,12 +474,13 @@ def test_build_changes_selection_rule(at):
 
 
 def test_ledger_summary(at):
-    done = {"objective": "balanced", "after": {"ctx": 65536, "free_mb": 1012, "decode_tps": 142.6, "wh_per_ktok": 0.24},
+    done = {"objective": "balanced", "after": {"ctx": 65536, "free_mb": 1012, "decode_tps": 142.6, "prefill_tps": 900.0, "agg_tps": 150.0, "wh_per_ktok": 0.24},
             "before": {"decode_tps": 101}, "stages": [{"stage": "context", "status": "done"}, {"stage": "kv", "status": "skipped"}],
             "verify": {"ok": True}, "facts": {"n_expert": 128}}
     s = at.ledger_summary(done)
     assert s == {"objective": "balanced", "mode": "tune", "llama_build": None, "ctx_size": 65536, "free_mb": 1012,
-                 "decode_tps": 142.6, "gain_pct": pytest.approx(41.2, abs=0.1), "stages_done": 1, "verify_ok": True,
+                 "decode_tps": 142.6, "prefill_tps": 900.0, "agg_tps": 150.0,
+                 "gain_pct": pytest.approx(41.2, abs=0.1), "stages_done": 1, "verify_ok": True,
                  "wh_per_ktok": 0.24, "n_expert": 128, "kl": None, "kl_pass": None, "regressed": None}
 
 
@@ -500,6 +508,10 @@ def test_kl_args_bare_safe_flag_at_end_of_argv(at):
 def test_kl_args_no_mmap_and_mlock_value_and_bare_forms(at):
     assert at.kl_args(["--no-mmap", "on", "--mlock"]) == ["--no-mmap", "on", "--mlock"]
     assert at.kl_args(["--no-mmap", "--parallel", "4", "--mlock"]) == ["--no-mmap", "--mlock"]
+
+
+def test_kl_args_drops_a_value_flag_left_without_its_value(at):
+    assert at.kl_args(["--flash-attn", "--threads"]) == ["--flash-attn"]
 
 
 def test_kl_args_keeps_load_mode_value(at):
@@ -533,6 +545,15 @@ def test_verify_mode_turns_every_dimension_off_and_keeps_baseline(at):
     assert req["mode"] == "verify"
     assert all(not d["on"] for name, d in req["dims"].items() if name != "context")
     assert req["baseline_tps"] == 41.5
+
+
+def test_verify_mode_keeps_the_whole_baseline_and_derives_the_rate_from_it(at):
+    req = at.validate_request({"model_ids": ["org/m:Q4"], "objective": "fit", "mode": "verify",
+                               "baseline": {"decode_tps": 41.5, "ctx": 8192, "free_mb": 900, "bogus": 1, "agg_tps": None}})
+    assert req["baseline"] == {"decode_tps": 41.5, "ctx": 8192.0, "free_mb": 900.0}
+    assert req["baseline_tps"] == 41.5
+    with pytest.raises(ValueError):
+        at.validate_request({"model_ids": ["org/m:Q4"], "objective": "fit", "mode": "verify", "baseline": {"ctx": "x"}})
 
 
 def test_verify_mode_drops_operator_custom_args(at):

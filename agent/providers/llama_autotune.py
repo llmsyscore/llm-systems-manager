@@ -10,6 +10,7 @@ from typing import Any, Callable, Iterable, Optional
 
 OBJECTIVES = ("fit", "speed", "balanced", "serve")
 MODES = ("tune", "verify", "quality")
+BASELINE_KEYS = ("decode_tps", "prefill_tps", "agg_tps", "ctx", "free_mb")
 # config.ini keys the quality guard may override (what llama-perplexity accepts).
 QUALITY_KEYS = frozenset({"cache-type-k", "ctk", "cache-type-v", "ctv", "threads", "t", "threads-batch", "tb",
                           "n-gpu-layers", "ngl", "n-cpu-moe", "ncmoe", "batch-size", "b", "ubatch-size", "ub",
@@ -222,10 +223,21 @@ def validate_request(body: dict, *, cache_root: Optional[Path] = None, v1_args=N
         for name, d in dims.items():
             if name != "context":
                 d["on"] = False
-        # A verify run spawns the unchanged config, so operator extras never join its argv.
+        # A verify run spawns the unchanged config; operator extras are dropped.
         dims["context"]["custom_args"] = []
+        raw = body.get("baseline")
+        base: dict = {}
+        if isinstance(raw, dict):
+            for k in BASELINE_KEYS:
+                if raw.get(k) is not None:
+                    base[k] = _float(raw[k], "baseline." + k, 0.0, 1e9)
         bt = body.get("baseline_tps")
+        if bt is None:
+            bt = base.get("decode_tps")
         out["baseline_tps"] = None if bt is None else _float(bt, "baseline_tps", 0.0, 1e6)
+        if out["baseline_tps"] is not None:
+            base["decode_tps"] = out["baseline_tps"]
+        out["baseline"] = base
     elif mode == "quality":
         ov = body.get("overrides")
         if not isinstance(ov, dict) or not ov:
@@ -354,9 +366,10 @@ def parse_kl_stats(text: str) -> dict:
         m = rx.search(text or "")
         if not m:
             continue
-        v = _num(m.group(1))
-        if v is not None:
-            out[key] = v
+        try:
+            out[key] = float(m.group(1))
+        except ValueError:
+            continue
     return out
 
 
@@ -589,7 +602,8 @@ def ledger_summary(done: dict) -> dict:
     return {"objective": done.get("objective"), "mode": done.get("mode") or "tune",
             "llama_build": done.get("llama_build") or None,
             "ctx_size": after.get("ctx"), "free_mb": after.get("free_mb"),
-            "decode_tps": after.get("decode_tps"),
+            "decode_tps": after.get("decode_tps"), "prefill_tps": after.get("prefill_tps"),
+            "agg_tps": after.get("agg_tps"),
             "gain_pct": gain_pct(after.get("decode_tps"), before.get("decode_tps")),
             "stages_done": sum(1 for s in stages if s.get("status") == "done"),
             "verify_ok": (done.get("verify") or {}).get("ok"), "wh_per_ktok": after.get("wh_per_ktok"),
@@ -771,6 +785,8 @@ class _Run:
         res = self.backend.load(self.args(extra), ctx, measure) or {}
         if res.get("load_s"):
             self.load_s = float(res["load_s"])
+        if res.get("build"):
+            self.env["llama_build"] = str(res["build"])
         self.note_facts(res.get("facts"))
         return res
 
@@ -1265,7 +1281,7 @@ class _Run:
         except ValueError:
             self.concurrency = 1
         base = self.req.get("baseline_tps")
-        self.before = {"decode_tps": base} if base is not None else None
+        self.before = dict(self.req.get("baseline") or {}) or None
         # Size the verify sample from the recorded rate so it spans the full window, not the floor.
         self.decode_now = base
         ok = cancelled = False
@@ -1347,8 +1363,8 @@ def run_quality(model_id: str, section: dict, req: dict, backend, put, cancelled
         stop = "cancelled"
     reason = stop or guard["error"] or (f"KL {guard['kl']} ≤ {kl_max}" if guard["pass"] else f"KL {guard['kl']} > {kl_max}")
     choice = "pass" if guard["pass"] else "fail"
-    emit("stage_done", stage="quality", choice=choice, reason=reason,
-         seconds=int(clock() - t0), loads=0)
+    secs = int(clock() - t0)
+    emit("stage_done", stage="quality", choice=choice, reason=reason, seconds=secs, loads=0)
     def _cur(k):
         for name in (k, *KEY_ALIASES.get(k, ())):
             if name in section:
@@ -1360,8 +1376,8 @@ def run_quality(model_id: str, section: dict, req: dict, backend, put, cancelled
            "llama_build": env.get("llama_build") or None, "facts": {}, "changes": changes,
            "before": None, "after": None, "guard": guard, "verify": None,
            "stages": [{"stage": "quality", "status": "done" if ok else "failed", "reason": reason,
-                       "seconds": int(clock() - t0), "loads": 0, "choice": choice}],
+                       "seconds": secs, "loads": 0, "choice": choice}],
            "base_args": base_args, "cand_args": cand_args,
-           "stop_reason": stop, "elapsed_s": int(clock() - t0), "loads": 0}
+           "stop_reason": stop, "elapsed_s": secs, "loads": 0}
     put(doc)
     return doc

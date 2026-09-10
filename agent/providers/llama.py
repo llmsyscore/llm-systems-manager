@@ -189,6 +189,7 @@ _AT_MEM_RE = re.compile(
 )
 _AT_GPU_HINT_RE = re.compile(r"(?i)vulkan|rocm|cuda|hip|metal")
 _AT_MODEL_LOADED_RE = re.compile(r"(?:^|\s)(?:\w+\s*:\s*)?model loaded\b", re.IGNORECASE)
+_AT_BUILD_RE = re.compile(r"\bbuild:\s*(\d+)\s*\(([0-9a-fA-F]{6,})\)")
 # The alloc alternative allows only a size/unit run between "alloc…" and "failed".
 _AT_OOM_RE = re.compile(
     r"out of memory|failed to allocate|cudaMalloc failed|OutOfDeviceMemory|not enough (?:memory|space)"
@@ -605,12 +606,13 @@ async def perf_controller_loop() -> None:
     log_file = _require_ctx().config.LLAMA_LOG_FILE
     log.info("perf controller starting; tailing %s", log_file)
 
-    # A run killed mid-flight leaves the host in the awake profile; with
-    # llama-server down at startup, the sleep profile is the correct one.
+    # With llama-server down at startup the sleep profile applies; the state
+    # file follows so the next wake marker is not skipped as a no-op.
     sleep_unit = _require_ctx().config.PERF_TARGET_SLEEP
     if sleep_unit and not _llama_unit_active():
         log.info("perf controller: llama-server is down; resetting to %s", sleep_unit)
         await _perf_switch(sleep_unit)
+        llama_write_state_file("sleeping")
 
     # Pre-flight: if the state file exists but isn't owned by us, every
     # subsequent transition will fail with EPERM at os.replace() time
@@ -2653,7 +2655,7 @@ def _autotune_probe_perplexity(ppl: Path) -> dict:
     existing = env.get("LD_LIBRARY_PATH", "")
     env["LD_LIBRARY_PATH"] = f"{parent}:{existing}" if existing else parent
     res = _autotune_probe_arg(str(ppl), "--version", env)
-    # A hang will hang again on --help too; only retry a clean-but-unrecognised exit.
+    # Retries with --help only after a clean but unrecognised exit.
     if not res["timeout"] and res["rc"] is not None and res["rc"] > 1:
         res = _autotune_probe_arg(str(ppl), "--help", env)
     if res["timeout"]:
@@ -2833,6 +2835,7 @@ def _autotune_run_iter(model_id: str, fitt_mb: "Optional[int]", extra_args: list
     # Drives plateau detection in the picker.
     fit_applied: Optional[bool] = None
     facts_lines: list = []
+    build = ""
     oom = False
     loaded_at: Optional[float] = None
     shutdown_buf: deque = deque(maxlen=4000)
@@ -2885,6 +2888,9 @@ def _autotune_run_iter(model_id: str, fitt_mb: "Optional[int]", extra_args: list
                         fit_applied = True
                 if "print_info:" in line:
                     facts_lines.append(line)
+                bm = _AT_BUILD_RE.search(line) if not build else None
+                if bm:
+                    build = f"b{bm.group(1)}-{bm.group(2)}"
                 if _AT_OOM_RE.search(line):
                     oom = True
             if _AT_MODEL_LOADED_RE.search(line):
@@ -3000,7 +3006,7 @@ def _autotune_run_iter(model_id: str, fitt_mb: "Optional[int]", extra_args: list
     if ctx_seq is None and ctx_fallback is not None:
         ctx_seq = ctx_fallback
 
-    meta = {"model_loaded": model_loaded, "oom": oom, "facts_lines": facts_lines, "hold": hold_res,
+    meta = {"model_loaded": model_loaded, "oom": oom, "facts_lines": facts_lines, "hold": hold_res, "build": build,
             "load_s": (loaded_at - start_ts) if loaded_at else None}
 
     if not model_loaded:
@@ -3311,6 +3317,12 @@ def _autotune_converge(model_id: str, target_mb: int, extra_args: list, env: dic
             "converged": converged, "iters": iters_done, "stop_reason": stop_reason, "facts": facts, "load_s": load_s}
 
 
+# The spawned server's own build line is fresher than anything /props last reported.
+def _autotune_note_build(build: str) -> None:
+    global _llama_build_last
+    _llama_build_last = build[:64]
+
+
 class _AutotuneBackend:
     """Real backend for the stage engine: llama-server loads, the speed-bench stick, llama-perplexity KL."""
 
@@ -3327,7 +3339,9 @@ class _AutotuneBackend:
         hold = (lambda: self._stick(measure)) if measure else None
         res = _autotune_run_iter(self.model_id, None, list(args), self.env, 0, ctx=ctx, hold=hold)
         loaded, oom = bool(res.get("model_loaded")), bool(res.get("oom"))
-        return {"ok": bool(res.get("ok")) or (loaded and not oom),
+        if res.get("build"):
+            _autotune_note_build(res["build"])
+        return {"ok": bool(res.get("ok")) or (loaded and not oom), "build": res.get("build") or None,
                 "oom": oom,
                 "error": "OOM after load" if (loaded and oom) else (None if loaded else res.get("error")),
                 "ctx": res.get("ctx_seq"), "free_mb": res.get("actual_free_mb"), "total_mb": res.get("total_vram_mb"),
@@ -3606,6 +3620,7 @@ def llama_autotune_preflight(authorization: Optional[str] = Header(default=None)
     hv = _llama_help_valued()
     pdet = _autotune_perplexity_status()
     return {"ok": True, "busy": bool(_bench_active or _autotune_active), "unit_active": _llama_unit_active(),
+            "autotune_active": bool(_autotune_active), "quality_active": bool(_autotune_active and _autotune_quality),
             "help_valued": {"ok": hv is not None, "count": len(hv or ())},
             "llama_build": _llama_build_last or "",
             "cores": _at.physical_cores(_read_cpuinfo(), os.cpu_count() or 1),

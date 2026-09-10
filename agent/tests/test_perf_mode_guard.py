@@ -153,7 +153,7 @@ def test_manual_switch_still_validates_the_mode(llama, monkeypatch):
 
 # ── startup reset after a killed run (#887) ──────────────────────────
 
-def _controller_start(llama, monkeypatch, ctx, unit_active, switched):
+def _controller_start(llama, monkeypatch, ctx, unit_active, switched, written=None):
     """Runs the controller with restart_pending set, so it exits after startup."""
     import asyncio
     ctx.state["restart_pending"] = True
@@ -162,7 +162,8 @@ def _controller_start(llama, monkeypatch, ctx, unit_active, switched):
     ctx.config.LLAMA_STATE_FILE = "/nonexistent/llama.state"
     monkeypatch.setattr(llama, "_require_ctx", lambda: ctx)
     monkeypatch.setattr(llama, "_llama_unit_active", lambda: unit_active)
-    monkeypatch.setattr(llama, "llama_write_state_file", lambda state: None)
+    monkeypatch.setattr(llama, "llama_write_state_file",
+                        lambda state: written.append(state) if written is not None else None)
 
     async def _switch(unit):
         switched.append(unit)
@@ -174,6 +175,12 @@ def test_startup_resets_to_the_sleep_unit_when_llama_server_is_down(llama, monke
     switched = []
     _controller_start(llama, monkeypatch, _Ctx(), False, switched)
     assert switched == ["eco"]
+
+
+def test_startup_reset_also_records_sleeping_in_the_state_file(llama, monkeypatch):
+    switched, written = [], []
+    _controller_start(llama, monkeypatch, _Ctx(), False, switched, written)
+    assert written[0] == "sleeping"
 
 
 def test_startup_leaves_a_running_server_in_its_current_mode(llama, monkeypatch):

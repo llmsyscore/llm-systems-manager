@@ -102,6 +102,14 @@ def _write_fake_ppl(path: Path, rc: int = 0, crash: bool = False) -> None:
     path.chmod(0o755)
 
 
+def test_build_line_regex_and_note(llama):
+    m = llama._AT_BUILD_RE.search("build: 6300 (434ddbb) with cc (Ubuntu 13.3.0) for x86_64")
+    assert m and f"b{m.group(1)}-{m.group(2)}" == "b6300-434ddbb"
+    assert llama._AT_BUILD_RE.search("print_info: build = 3") is None
+    llama._autotune_note_build("b1-abcdef0")
+    assert llama._llama_build_last == "b1-abcdef0"
+
+
 def test_preflight_shape(llama, tmp_path, monkeypatch):
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
@@ -109,6 +117,7 @@ def test_preflight_shape(llama, tmp_path, monkeypatch):
     _wire(llama, tmp_path, monkeypatch, llama_bin=str(bin_dir / "llama-server"))
     out = llama.llama_autotune_preflight()
     assert out["ok"] and out["busy"] is False and out["unit_active"] is False
+    assert out["autotune_active"] is False and out["quality_active"] is False
     assert set(out["cores"]) == {"physical", "logical"} and out["cores"]["logical"] >= 1
     assert out["perplexity"] is False                      # no llama-perplexity beside the server binary
     assert out["perplexity_detail"] == {"present": False, "kl_text": False, "runnable": None, "rc": None,
@@ -738,7 +747,7 @@ def test_quality_mode_dispatches_run_quality_and_posts_quality_ledger(llama, tmp
                              "overrides": {"cache-type-k": "q4_0"}})
     assert seen["req"]["mode"] == "quality" and seen["env"]["llama_build"] == "b10850-abc"
     assert posted == [("quality", {"objective": None, "mode": "quality", "llama_build": "b10850-abc",
-                                   "ctx_size": None, "free_mb": None, "decode_tps": None, "gain_pct": None,
+                                   "ctx_size": None, "free_mb": None, "decode_tps": None, "prefill_tps": None, "agg_tps": None, "gain_pct": None,
                                    "stages_done": 0, "verify_ok": None, "wh_per_ktok": None, "n_expert": None,
                                    "kl": 0.01, "kl_pass": True, "regressed": None})]
 
