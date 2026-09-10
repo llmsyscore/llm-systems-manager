@@ -13,8 +13,8 @@ MODES = ("tune", "verify", "quality")
 # config.ini keys the quality guard may override (what llama-perplexity accepts).
 QUALITY_KEYS = frozenset({"cache-type-k", "ctk", "cache-type-v", "ctv", "threads", "t", "threads-batch", "tb",
                           "n-gpu-layers", "ngl", "n-cpu-moe", "ncmoe", "batch-size", "b", "ubatch-size", "ub",
-                          "flash-attn", "fa", "no-mmap", "mlock"})
-_OVERRIDE_VAL_RE = re.compile(r"^[A-Za-z0-9_.\-]{1,64}$")
+                          "flash-attn", "fa", "load-mode", "lm"})
+_OVERRIDE_VAL_RE = re.compile(r"^[A-Za-z0-9_.+\-]{1,64}$")
 KV_TYPES = ("f32", "f16", "bf16", "q8_0", "q4_0", "q4_1", "iq4_nl", "q5_0", "q5_1")
 KV_LOSSY = ("q4_0", "q4_1", "iq4_nl", "q5_0", "q5_1")
 SPEC_TYPES = ("auto", "draft-mtp", "draft-dflash", "draft-simple", "ngram-simple")
@@ -45,7 +45,8 @@ ALWAYS_DROP = ("ctx-size", "c", "fit", "fitt", "fit-target", "fit-ctx", "hf-repo
 KEY_ALIASES = {"cache-type-k": ("ctk",), "cache-type-v": ("ctv",), "threads": ("t",),
                "threads-batch": ("tb",), "parallel": ("np",), "n-cpu-moe": ("ncmoe",),
                "model-draft": ("md",), "gpu-layers-draft": ("ngld",),
-               "cache-type-k-draft": ("ctkd",), "cache-type-v-draft": ("ctvd",)}
+               "cache-type-k-draft": ("ctkd",), "cache-type-v-draft": ("ctvd",),
+               "load-mode": ("lm",)}
 ALIAS_TO_KEY = {a: k for k, aliases in KEY_ALIASES.items() for a in aliases}
 # context.custom_args limits; these flags carry paths/identity the tuner owns.
 CUSTOM_ARGS_MAX = 32
@@ -574,7 +575,8 @@ def ledger_summary(done: dict) -> dict:
 
 
 _KL_SAFE_VALUE = {"--cache-type-k", "--cache-type-v", "-ctk", "-ctv", "--threads", "-t", "--threads-batch", "-tb",
-                  "--n-gpu-layers", "-ngl", "--n-cpu-moe", "-ncmoe", "--batch-size", "-b", "--ubatch-size", "-ub"}
+                  "--n-gpu-layers", "-ngl", "--n-cpu-moe", "-ncmoe", "--batch-size", "-b", "--ubatch-size", "-ub",
+                  "--load-mode", "-lm"}
 _KL_SAFE_FLAG = {"--flash-attn", "-fa", "--no-mmap", "--mlock"}
 
 

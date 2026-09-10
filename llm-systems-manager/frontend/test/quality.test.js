@@ -53,7 +53,7 @@ describe('Quality guard module (#888)', () => {
     const win = await opened('org/m:Q4', { overrides: { 'cache-type-k': 'q4_0' } });
     expect(win.document.querySelector('#qgModelList .mc-toggle.on').dataset.model).toBe('org/m:Q4');
     // Every quality-guard key has a row; only the pre-filled one is switched on.
-    expect(win.document.querySelectorAll('#qgRows .qg-row').length).toBe(11);
+    expect(win.document.querySelectorAll('#qgRows .qg-row').length).toBe(10);
     const on = [...win.document.querySelectorAll('#qgRows .qg-row')].filter(r => r.classList.contains('on'));
     expect(on.map(r => r.dataset.qgKey)).toEqual(['cache-type-k']);
     expect(on[0].querySelector('.cur').textContent).toBe('q8_0');
@@ -88,6 +88,15 @@ describe('Quality guard module (#888)', () => {
     num.dispatchEvent(new win.Event('input', { bubbles: true }));
     expect(win.QG.overrides()).toEqual({ 'cache-type-v': 'q5_1', 'flash-attn': 'true', 'batch-size': '512' });
     expect(win.document.getElementById('qgCount').textContent).toBe('3');
+  });
+
+  it('offers the six editor load-mode values as chips, not a boolean toggle', async () => {
+    const win = await opened('org/m:Q4');
+    clickOn(qrow(win, 'load-mode').querySelector('[data-qg-on]'));
+    const chips = [...qrow(win, 'load-mode').querySelectorAll('.bl-chip')].map(c => c.dataset.qgV);
+    expect(chips).toEqual(['auto', 'none', 'mmap', 'mlock', 'mmap+mlock', 'dio']);
+    clickOn(qrow(win, 'load-mode').querySelector('.bl-chip[data-qg-v="mmap+mlock"]'));
+    expect(win.QG.overrides()).toEqual({ 'load-mode': 'mmap+mlock' });
   });
 
   it('does not send a key whose chosen value equals the model\'s current one', async () => {

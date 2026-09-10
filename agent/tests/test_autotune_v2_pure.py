@@ -470,6 +470,11 @@ def test_kl_args_no_mmap_and_mlock_value_and_bare_forms(at):
     assert at.kl_args(["--no-mmap", "--parallel", "4", "--mlock"]) == ["--no-mmap", "--mlock"]
 
 
+def test_kl_args_keeps_load_mode_value(at):
+    args = ["--load-mode", "mmap+mlock", "--parallel", "4"]
+    assert at.kl_args(args) == ["--load-mode", "mmap+mlock"]
+
+
 def test_spawn_cmd_fit_vs_explicit_ctx(at):
     fit = at.spawn_cmd("/o/llama-server", "o/r:Q4", 8080, 1024, None, ["--threads", "8"])
     assert fit == ["/o/llama-server", "--models-max", "1", "-lv", "4", "--host", "127.0.0.1", "--port", "8080",
@@ -528,6 +533,18 @@ def test_quality_mode_validates_overrides(at):
                              "overrides": {"threads": "8; rm -rf"}})
     with pytest.raises(ValueError):
         at.validate_request({"model_ids": ["org/m:Q4"], "objective": "fit", "mode": "quality", "overrides": {}})
+
+
+def test_quality_overrides_accept_load_mode_and_reject_deprecated_keys(at):
+    req = at.validate_request({"model_ids": ["org/m:Q4"], "objective": "fit", "mode": "quality",
+                               "overrides": {"lm": "mmap+mlock"}})
+    assert req["overrides"] == {"load-mode": "mmap+mlock"}
+    with pytest.raises(ValueError):
+        at.validate_request({"model_ids": ["org/m:Q4"], "objective": "fit", "mode": "quality",
+                             "overrides": {"no-mmap": "true"}})
+    with pytest.raises(ValueError):
+        at.validate_request({"model_ids": ["org/m:Q4"], "objective": "fit", "mode": "quality",
+                             "overrides": {"mlock": "true"}})
 
 
 def test_ledger_summary_carries_mode_build_and_kl(at):

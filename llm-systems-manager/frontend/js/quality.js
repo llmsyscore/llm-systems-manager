@@ -5,9 +5,10 @@
   const esc = s => (window.TC ? TC.esc(String(s ?? '')) : String(s ?? ''));
   const today = () => new Date().toISOString().slice(0, 10);
   const KV_TYPES = ['f16', 'bf16', 'q8_0', 'q5_1', 'q5_0', 'q4_1', 'q4_0'];
-  const CHIP_SETS = { 'cache-type-k': KV_TYPES, 'cache-type-v': KV_TYPES };
-  const BOOL_KEYS = ['flash-attn', 'no-mmap', 'mlock'];
-  const KEYS = ['cache-type-k', 'cache-type-v', 'threads', 'threads-batch', 'n-gpu-layers', 'n-cpu-moe', 'batch-size', 'ubatch-size', 'flash-attn', 'no-mmap', 'mlock'];
+  const LOAD_MODES = ['auto', 'none', 'mmap', 'mlock', 'mmap+mlock', 'dio'];
+  const CHIP_SETS = { 'cache-type-k': KV_TYPES, 'cache-type-v': KV_TYPES, 'load-mode': LOAD_MODES };
+  const BOOL_KEYS = ['flash-attn'];
+  const KEYS = ['cache-type-k', 'cache-type-v', 'threads', 'threads-batch', 'n-gpu-layers', 'n-cpu-moe', 'batch-size', 'ubatch-size', 'flash-attn', 'load-mode'];
   let _models = [], _model = '', _cfg = {}, _rows = [], _es = null, _done = null, _pre = null, _wired = false, _neutral = false;
 
   function model() { return _model; }
