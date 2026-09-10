@@ -3415,6 +3415,7 @@ class _AutotuneBackend:
         for line in (out or "").splitlines()[-40:]:
             _autotune_put({"type": "line", "model_id": self.model_id, "text": line})
         kl = None if write_base else _at.parse_kl(out or "")
+        stats = None if write_base else (_at.parse_kl_stats(out or "") or None)
         ok = not timed_out and proc.returncode == 0 and (write_base or kl is not None)
         if timed_out:
             err = "llama-perplexity timed out"
@@ -3423,7 +3424,7 @@ class _AutotuneBackend:
                    "with the installed llama.cpp libraries; reinstall the llama.cpp tools")
         else:
             err = f"llama-perplexity rc={proc.returncode}"
-        return {"ok": ok, "kl": kl, "error": None if ok else err}
+        return {"ok": ok, "kl": kl, "stats": stats, "error": None if ok else err}
 
     def energy_start(self):
         self._energy = _bl.PowerIntegrator(_live_power_w)

@@ -268,6 +268,38 @@ def test_parse_kl(at):
     assert at.parse_kl("nothing here") is None
 
 
+# The operator's live block (#888): mean KL plus the token-probability statistics.
+KL_STAT_BLOCK = """====== KL divergence statistics ======
+Mean    KLD:   0.005400 ±   0.000123
+====== Token probability statistics ======
+Mean      Δp: -0.000 ± 0.051 %
+Maximum   Δp: 23.904%
+99.9%     Δp: 17.595%
+99.0%     Δp:  8.201%
+RMS Δp    :  3.236 ± 0.100 %
+Same top p: 98.118 ± 0.212 %
+"""
+
+
+def test_parse_kl_stats_reads_the_whole_block(at):
+    s = at.parse_kl_stats(KL_STAT_BLOCK)
+    assert s == {"kl": 0.0054, "same_top_p": 98.118, "rms_dp": 3.236, "p999_dp": 17.595, "max_dp": 23.904}
+    assert at.parse_kl(KL_STAT_BLOCK) == 0.0054
+
+
+def test_parse_kl_stats_omits_fields_a_truncated_block_never_printed(at):
+    cut = KL_STAT_BLOCK.split("99.9%")[0]
+    s = at.parse_kl_stats(cut)
+    assert s == {"kl": 0.0054, "max_dp": 23.904}
+    assert "same_top_p" not in s and "rms_dp" not in s and "p999_dp" not in s
+
+
+def test_parse_kl_stats_returns_empty_when_no_statistics_were_printed(at):
+    assert at.parse_kl_stats("llama_perplexity: loading model\nnothing here\n") == {}
+    assert at.parse_kl_stats("") == {}
+    assert at.parse_kl_stats(None) == {}
+
+
 def test_physical_cores(at):
     cpuinfo = "\n".join(["processor : 0", "physical id : 0", "core id : 0",
                          "processor : 1", "physical id : 0", "core id : 0",

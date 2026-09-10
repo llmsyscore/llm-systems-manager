@@ -57,6 +57,16 @@ _MODEL_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/\-]{0,199}$")
 _FACT_RE = re.compile(r"print_info:\s*([A-Za-z0-9_.][A-Za-z0-9_. ]*?)\s*=\s*(.+?)\s*$")
 _MTP_KV_RE = re.compile(r"nextn_predict_layers\s+\w+\s*=\s*(\d+)")
 _KL_RE = re.compile(r"Mean\s+KLD\s*:\s*([0-9]*\.?[0-9]+(?:[eE][-+]?\d+)?)")
+_STAT_NUM = r"([-+]?[0-9]*\.?[0-9]+(?:[eE][-+]?\d+)?)"
+_DP = r"(?:Δ|Delta\s*)p"
+# Optional statistics llama-perplexity prints alongside the KL block; shapes vary between builds.
+_KL_STAT_RES = (
+    ("kl", _KL_RE),
+    ("same_top_p", re.compile(r"Same\s+top\s+p\s*:\s*" + _STAT_NUM)),
+    ("rms_dp", re.compile(r"RMS\s+" + _DP + r"\s*:\s*" + _STAT_NUM)),
+    ("p999_dp", re.compile(r"99\.9\s*%\s*" + _DP + r"\s*:\s*" + _STAT_NUM)),
+    ("max_dp", re.compile(r"Maximum\s+" + _DP + r"\s*:\s*" + _STAT_NUM)),
+)
 _SIZE_TOKEN_RE = re.compile(r"[-_](\d+(?:\.\d+)?)[bB](?=[-_.]|$)")
 _HELP_FLAG_RE = re.compile(r"^--?[A-Za-z0-9]")
 BOOL_ON = ("on", "true")
@@ -335,6 +345,20 @@ def parse_facts(lines: Iterable[str]) -> dict:
 def parse_kl(text: str) -> Optional[float]:
     m = _KL_RE.search(text or "")
     return float(m.group(1)) if m else None
+
+
+def parse_kl_stats(text: str) -> dict:
+    """Mean KL plus the token-probability statistics; every field is optional and absent ones are omitted."""
+    out: dict = {}
+    for key, rx in _KL_STAT_RES:
+        m = rx.search(text or "")
+        if not m:
+            continue
+        try:
+            out[key] = float(m.group(1))
+        except ValueError:
+            pass
+    return out
 
 
 def physical_cores(cpuinfo: str, logical: int) -> dict:
@@ -1292,7 +1316,7 @@ def run_quality(model_id: str, section: dict, req: dict, backend, put, cancelled
          target_mb=0, tolerance_mb=0)
     emit("stage_start", stage="quality", candidates=["f16 base", "candidate"],
          est_s=estimate("kv", 1, 0.0, 0.0))
-    guard = {"kl": None, "kl_max": kl_max, "pass": None, "error": None}
+    guard = {"kl": None, "kl_max": kl_max, "pass": None, "error": None, "stats": None}
     ok = False
     stop = None
     try:
@@ -1310,6 +1334,8 @@ def run_quality(model_id: str, section: dict, req: dict, backend, put, cancelled
             emit("candidate_start", stage="quality", value="candidate")
             k = backend.kl(cand_args, False) or {}
             kl = k.get("kl")
+            if isinstance(k.get("stats"), dict) and k["stats"]:
+                guard["stats"] = dict(k["stats"])
             if not k.get("ok") or kl is None:
                 guard["error"] = f"KL failed: {k.get('error') or 'unknown'}"
             else:

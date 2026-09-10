@@ -549,7 +549,7 @@ def test_kl_tracks_then_untracks_the_perplexity_process(llama, tmp_path, monkeyp
     order = []
     monkeypatch.setattr(llama, "_autotune_track_aux", lambda p: order.append("track"))
     monkeypatch.setattr(llama, "_autotune_untrack_aux", lambda: order.append("untrack"))
-    assert be.kl(["--cache-type-k", "q8_0"], False) == {"ok": True, "kl": 0.01, "error": None}
+    assert be.kl(["--cache-type-k", "q8_0"], False) == {"ok": True, "kl": 0.01, "stats": {"kl": 0.01}, "error": None}
     assert order == ["track", "untrack"]
 
 

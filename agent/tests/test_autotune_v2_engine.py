@@ -488,13 +488,14 @@ def test_verify_mode_zero_baseline_is_computed_not_skipped(at):
 
 
 class KLFake(Fake):
-    def __init__(self, kl=0.01, base_ok=True):
+    def __init__(self, kl=0.01, base_ok=True, stats=None):
         super().__init__(); self.kl_v, self.base_ok, self.kl_calls = kl, base_ok, []
+        self.stats = stats
     def kl(self, args, write_base):
         self.kl_calls.append((list(args), write_base))
         if write_base:
-            return {"ok": self.base_ok, "kl": None, "error": None if self.base_ok else "boom"}
-        return {"ok": True, "kl": self.kl_v, "error": None}
+            return {"ok": self.base_ok, "kl": None, "stats": None, "error": None if self.base_ok else "boom"}
+        return {"ok": True, "kl": self.kl_v, "stats": self.stats, "error": None}
 
 
 def test_quality_run_scores_overrides_against_f16_base(at):
@@ -510,7 +511,7 @@ def test_quality_run_scores_overrides_against_f16_base(at):
     assert cand_args[cand_args.index("--cache-type-k") + 1] == "q4_0"
     assert "--ctx-size" not in base_args                      # tuner-owned keys never reach perplexity
     assert doc["type"] == "model_done" and doc["mode"] == "quality" and doc["ok"] is True
-    assert doc["guard"] == {"kl": 0.015, "kl_max": 0.02, "pass": True, "error": None}
+    assert doc["guard"] == {"kl": 0.015, "kl_max": 0.02, "pass": True, "error": None, "stats": None}
     assert doc["changes"] == [{"key": "cache-type-k", "current": "q8_0", "recommended": "q4_0"},
                               {"key": "cache-type-v", "current": None, "recommended": "q4_0"}]
     types = [e["type"] for e in events]
@@ -539,6 +540,19 @@ def test_quality_run_fails_when_base_fails_and_flags_kl_over_max(at):
     assert doc["ok"] is False and doc["guard"]["error"] == "KL base failed: boom"
     doc = at.run_quality("org/m:Q4", {}, req, KLFake(kl=0.03), lambda m: None, lambda: False, {"run_id": "q3"})
     assert doc["ok"] is True and doc["guard"]["pass"] is False and doc["guard"]["kl"] == 0.03
+
+
+def test_quality_guard_carries_the_backend_statistics(at):
+    stats = {"kl": 0.0054, "same_top_p": 98.118, "rms_dp": 3.236, "p999_dp": 17.595, "max_dp": 23.904}
+    req = at.validate_request({"model_ids": ["org/m:Q4"], "objective": "fit", "mode": "quality",
+                               "overrides": {"cache-type-k": "q4_0"}, "kl_max": 0.02})
+    doc = at.run_quality("org/m:Q4", {}, req, KLFake(kl=0.0054, stats=stats), lambda m: None,
+                         lambda: False, {"run_id": "q5"})
+    assert doc["guard"]["stats"] == stats and doc["guard"]["pass"] is True
+    # An older agent that reports no statistics still produces a usable guard.
+    doc = at.run_quality("org/m:Q4", {}, req, KLFake(kl=0.0054), lambda m: None,
+                         lambda: False, {"run_id": "q6"})
+    assert doc["guard"]["stats"] is None and doc["guard"]["kl"] == 0.0054
 
 
 def test_quality_run_honours_cancel(at):
