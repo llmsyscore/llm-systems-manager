@@ -108,3 +108,14 @@ def test_register_recovers_rows_left_by_a_restart(tmp_path):
     ab.register_routes(app, None, db_path=str(tmp_path / "t.db"), deps=deps, models_for=lambda a: [], now=lambda: NOW + 5)
     b = app.test_client().get(f"/api/llm/autotune/batch/{running['id']}").get_json()["batch"]
     assert b["status"] == "failed" and b["error"] == "manager restarted mid-batch"
+
+
+def test_start_refuses_while_boot_recovery_is_still_running(env):
+    class Alive:
+        def is_alive(self):
+            return True
+    env.runner._recover_thread = Alive()
+    r = env.post("/api/llm/autotune/batch", json=_body())
+    assert r.status_code == 409 and "recovery" in r.get_json()["error"]
+    env.runner._recover_thread = None
+    assert env.post("/api/llm/autotune/batch", json=_body()).status_code == 200

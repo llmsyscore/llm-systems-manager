@@ -313,6 +313,7 @@ class Runner:
         self._lock = threading.Lock()
         self._cancel: set = set()
         self._current: dict = {}     # batch_id -> agent_id of the running item
+        self._recover_thread: Optional[threading.Thread] = None
 
     def start(self, batch: dict) -> Optional[threading.Thread]:
         import sys
@@ -356,9 +357,15 @@ class Runner:
             if "pytest" in sys.modules:
                 self._recover_hosts(failed)
             else:
-                threading.Thread(target=self._recover_hosts, args=(failed,),
-                                 name="autotune-batch-recover", daemon=True).start()
+                self._recover_thread = threading.Thread(target=self._recover_hosts, args=(failed,),
+                                                        name="autotune-batch-recover", daemon=True)
+                self._recover_thread.start()
         return rearm
+
+    def recovering(self) -> bool:
+        """True while boot recovery is still cancelling or restarting hosts."""
+        t = self._recover_thread
+        return bool(t and t.is_alive())
 
     def _recover_hosts(self, failed: list) -> None:
         """Stop each still-running agent tune, then restart the hosts the batch had stopped."""
@@ -577,6 +584,9 @@ class Runner:
                     d.cancel_on_agent(aid)
                     return None, f"stream failed: {str(e)[:200]}"
                 d.sleep(STREAM_RETRY_S)
+                if self._cancelled(b["id"]):
+                    d.cancel_on_agent(aid)
+                    return None, CANCELLED
 
     def _apply(self, b: dict, it: dict, doc: dict) -> Optional[str]:
         d = self.deps
@@ -694,6 +704,8 @@ def register_routes(app, ctx, *, db_path: str, deps: Deps, models_for: Callable[
         except ValueError as e:
             return jsonify({"ok": False, "error": str(e)}), 400
         with start_lock:
+            if runner.recovering():
+                return jsonify({"ok": False, "error": "batch recovery from the last restart is still running"}), 409
             cur = store.active()
             if cur:
                 return jsonify({"ok": False, "error": "a batch is already queued or running", "batch_id": cur["id"]}), 409
