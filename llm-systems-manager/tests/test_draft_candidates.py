@@ -126,6 +126,38 @@ def test_build_candidate_gives_up_after_three_repos_without_a_usable_file():
     assert sum("blobs=true" in u for u in f.urls) == 3
 
 
+def test_pick_repo_rejects_a_malformed_repo_id():
+    hostile = [{"id": "--Qwen3.8-0.6B-GGUF", "downloads": 9999, "tags": ["gguf", "instruct"]},
+               {"id": "unsloth/Qwen3.8-0.6B-GGUF", "downloads": 900, "tags": ["gguf"]}]
+    assert dc.pick_repo(TARGET, hostile)["id"] == "unsloth/Qwen3.8-0.6B-GGUF"
+    assert dc.pick_repo(TARGET, hostile[:1]) is None
+
+
+def test_pick_file_rejects_a_malformed_file_name():
+    hostile = [{"rfilename": "-m-0.6B-Q4_K_M.gguf", "size": 100},
+               {"rfilename": "sub/dir/m-0.6B-Q4_K_M.gguf", "size": 100},
+               {"rfilename": "m-0.6B-Q5_K_S.gguf", "size": 500}]
+    assert dc.pick_file(hostile) == {"file": "m-0.6B-Q5_K_S.gguf", "size_bytes": 500}
+    assert dc.pick_file(hostile[:2]) is None
+
+
+def test_pick_file_honours_a_byte_ceiling():
+    assert dc.pick_file(SIBS, max_bytes=450)["file"] == "m-0.6B-Q4_K_M.gguf"
+    assert dc.pick_file(SIBS, max_bytes=300) is None
+    assert dc.pick_file([{"rfilename": "m-Q4_K_M.gguf", "size": 0}], max_bytes=10)["size_bytes"] == 0
+
+
+def test_build_candidate_reason_names_the_ceiling_when_every_file_is_too_big():
+    f = _PerRepoFetch(ROWS, {"bartowski/Qwen3.8-1.7B-Instruct-GGUF": SIBS,
+                             "unsloth/Qwen3.8-0.6B-GGUF": SIBS})
+    doc = dc.build_candidate(TARGET, f, max_bytes=100)
+    assert doc["candidate"] is None
+    assert doc["reason"] == "no draft small enough for auto-detect (≤ 0.0 GB)"
+    doc = dc.build_candidate(TARGET, _PerRepoFetch(ROWS, {"bartowski/Qwen3.8-1.7B-Instruct-GGUF": SIBS}),
+                             max_bytes=450)
+    assert doc["candidate"]["file"] == "m-0.6B-Q4_K_M.gguf"
+
+
 def _ini(sections):
     cp = configparser.ConfigParser(default_section="__DEFAULTS__", interpolation=None)
     cp.optionxform = str
@@ -172,3 +204,12 @@ def test_route_resolves_a_slashless_id_through_config_and_caches(client):
     assert again["cached"] is True
     fresh = client.get(f"/api/llm/draft-candidates?model_id={TARGET}:Q4_K_XL&refresh=1").get_json()
     assert fresh["cached"] is False and len(_FakeFetcher.made) == 2
+
+
+def test_route_applies_a_max_bytes_ceiling_and_caches_per_ceiling(client):
+    tight = client.get(f"/api/llm/draft-candidates?model_id={TARGET}:Q4&max_bytes=100").get_json()
+    assert tight["candidate"] is None and "small enough" in tight["reason"]
+    loose = client.get(f"/api/llm/draft-candidates?model_id={TARGET}:Q4&max_bytes=abc").get_json()
+    assert loose["cached"] is False and loose["candidate"]["file"] == "m-0.6B-Q4_K_M.gguf"
+    again = client.get(f"/api/llm/draft-candidates?model_id={TARGET}:Q4&max_bytes=100").get_json()
+    assert again["cached"] is True and again["candidate"] is None
