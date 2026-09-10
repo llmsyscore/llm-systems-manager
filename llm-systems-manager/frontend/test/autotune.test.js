@@ -911,6 +911,13 @@ describe('Quiet objective (#890)', () => {
     win.__sse.onEvent({ type: 'done', ok: true }, {});
     await flush();
     expect(win.document.getElementById('atRecBig').textContent).toMatch(/213 W under the 250 W cap/);
+    expect(win.document.getElementById('atGuard').textContent).toMatch(/MB free under load · 213 W/);
+    win.__sse.onEvent({ ...DONE, objective: 'quiet', power_cap_w: 250, over_cap: false, after: { ...DONE.after, avg_w: 252 } }, {});
+    win.__sse.onEvent({ type: 'done', ok: true }, {}); await flush();
+    expect(win.document.getElementById('atRecBig').textContent).toMatch(/252 W at the 250 W cap \(252 W is within the cap's tolerance\)/);
+    win.__sse.onEvent({ ...DONE, objective: 'quiet', power_cap_w: 250, over_cap: true, after: { ...DONE.after, avg_w: 290 } }, {});
+    win.__sse.onEvent({ type: 'done', ok: true }, {}); await flush();
+    expect(win.document.getElementById('atRecBig').innerHTML).toMatch(/class="neg">290 W<\/b> over the 250 W cap/);
   });
 
   it('plans the MoE stage as four measured offload counts under Quiet', async () => {

@@ -628,6 +628,14 @@ def test_quiet_run_over_cap_keeps_the_lowest_draw_and_flags_it(at):
     assert doc["over_cap"] is True
 
 
+def test_verify_draw_within_tolerance_of_the_cap_is_not_over(at):
+    # QuietFake verifies at 16 threads → 240 W; a 236 W cap is within 3 % / 5 W, a 220 W cap is not.
+    doc, _ = _run(at, QuietFake(), _quiet_body(236, dims={"threads": {"candidates": [16]}, "slots": {"candidates": [1]}, "moe": {"on": False}}))
+    assert doc["after"]["avg_w"] == pytest.approx(240.0) and doc["over_cap"] is False
+    doc, _ = _run(at, QuietFake(), _quiet_body(220, dims={"threads": {"candidates": [16]}, "slots": {"candidates": [1]}, "moe": {"on": False}}))
+    assert doc["over_cap"] is True
+
+
 def test_over_cap_stage_carries_an_over_cap_warning(at):
     doc, events = _run(at, QuietFake(), _quiet_body(150), section={"threads": "32"})
     done = next(e for e in events if e["type"] == "stage_done" and e["stage"] == "threads")

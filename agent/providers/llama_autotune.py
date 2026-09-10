@@ -33,6 +33,9 @@ THREADS_TIE_PCT = 3.0
 KV_MIN_CTX_GAIN_PCT = 10.0
 SLOTS_BALANCED_FLOOR = 0.70
 MAX_CANDIDATES = 8
+# A verify draw this close to the cap is measurement noise, not a breach.
+CAP_TOL_PCT = 3.0
+CAP_TOL_W = 5.0
 
 DEFAULT_DIMS: dict = {
     "context":  {"on": True, "target_mb": 1024, "tolerance_mb": 50, "custom_args": []},
@@ -909,7 +912,7 @@ class _Run:
         self.fitt_best = conv.get("fitt")
         self.free_mb = conv.get("free_mb")
         self.rec["ctx-size"] = str(self.ctx_total)
-        self.ev("ctx-size", f"free {conv.get('free_mb')} MB after fit · {conv.get('iters')} loads")
+        self.ev("ctx-size", f"free {conv.get('free_mb')} MB after fit at idle · {conv.get('iters')} loads")
         self.end("context", mark, self.ctx_total, conv.get("stop_reason") or "converged")
         return True
 
@@ -1325,7 +1328,8 @@ class _Run:
                               "energy_wh": wh, "energy_source": src,
                               "avg_w": st.get("avg_w"), "w_source": st.get("w_source")}
                 if self.power_cap_w is not None and st.get("avg_w") is not None:
-                    self.over_cap = float(st["avg_w"]) > float(self.power_cap_w)
+                    cap = float(self.power_cap_w)
+                    self.over_cap = float(st["avg_w"]) > max(cap * (1 + CAP_TOL_PCT / 100), cap + CAP_TOL_W)
                 self.verify = {"ok": True, "seconds": st.get("seconds") or 0, "free_mb": free, "dropped": dropped,
                                "reason": None, "warning": warning}
                 self.end("verify", mark, "pass", f"{conc} slot(s) · {limit} requests" if self.runtime else "load only")

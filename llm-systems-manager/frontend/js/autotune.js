@@ -893,7 +893,7 @@
     host.innerHTML =
       item(g.kl == null ? '' : (g.pass ? 'ok' : 'crit'), 'Quality guard', g.kl != null ? `KL ${esc(g.kl)} · ${g.pass ? 'pass' : 'fail'}` : 'not needed',
            esc(g.text || 'No lossy KV type was tried.') + ' · Speculative decoding is lossless by construction.')
-      + item(v.ok ? (v.warning ? 'warn' : 'ok') : (v.reason ? 'crit' : ''), 'Verify load', v.ok ? `fit · ${fmt(v.free_mb, 0)} MB free` : (v.reason ? 'failed' : 'not run'),
+      + item(v.ok ? (v.warning ? 'warn' : 'ok') : (v.reason ? 'crit' : ''), 'Verify load', v.ok ? `fit · ${fmt(v.free_mb, 0)} MB free under load${a.avg_w != null ? ` · ${fmt(a.avg_w, 0)} W` : ''}` : (v.reason ? 'failed' : 'not run'),
              (v.ok ? `Recommended set loaded once; ${esc(Math.round(v.seconds || 0))} s of traffic at ${esc(Number(a.concurrency || 1))} slot${Number(a.concurrency || 1) === 1 ? '' : 's'}${v.dropped && v.dropped.length ? '; dropped ' + esc(v.dropped.join(', ')) : ''}.` : esc(v.reason || 'Verify needs the bench runtime.')) + (v.ok && v.warning ? ' · ' + esc(v.warning) : ''))
       + item(a.wh_per_ktok != null ? 'ok' : '', 'Energy', a.wh_per_ktok != null ? `${fmt(a.wh_per_ktok, 2)} Wh / 1k tok` : '—',
              a.wh_per_ktok != null ? `Read from the energy module during verify (${esc(a.energy_source || 'psu')}).` : 'No power reading during verify.');
@@ -912,6 +912,13 @@
       + row(`Aggregate · ${esc(Number(a.concurrency || 1))} req`, b.agg_tps, a.agg_tps, '', v => fmt(v, 0)) + row('Prefill t/s', b.prefill_tps, a.prefill_tps, '', v => fmt(v, 0))
       + row('VRAM free', b.free_mb, a.free_mb, ' MB', v => fmt(v, 0), true);
   }
+  // Verify draw vs the cap: over, at (within the agent's tolerance), or under.
+  function capReadout(w, cap, over) {
+    const state = over ? 'over' : (w > cap ? 'at' : 'under');
+    const cls = over ? ' class="neg"' : '';
+    const tail = state === 'at' ? ` (${Math.round(w)} W is within the cap's tolerance)` : '';
+    return `<b${cls}>${Math.round(w)} W</b> ${state} the ${Math.round(cap)} W cap${tail}`;
+  }
   function renderDone(done) {
     const section = _section[done.model_id] || {}, meta = _meta[done.model_id] || null;
     const d = dimsState().sampling;
@@ -922,7 +929,7 @@
     if (big) big.innerHTML = [g != null ? `decode <b${g < 0 ? ' class="neg"' : ''}>${g >= 0 ? '+' : ''}${Math.round(g)} %</b>` : '', x ? `context <b>${x >= 2 ? Math.round(x) : Math.round(x * 100) / 100}×</b>` : '',
                               a.free_mb != null ? `VRAM free ${fmt(a.free_mb, 0)} MB` : '',
                               done.power_cap_w != null && a.avg_w != null
-                                ? `<b${done.over_cap ? ' class="neg"' : ''}>${Math.round(a.avg_w)} W</b> ${done.over_cap ? 'over' : 'under'} the ${Math.round(done.power_cap_w)} W cap` : ''].filter(Boolean).join(' · ');
+                                ? capReadout(a.avg_w, done.power_cap_w, done.over_cap) : ''].filter(Boolean).join(' · ');
     const warn = $('atRecWarn');
     if (warn) {
       if (g != null && g < -3) {
