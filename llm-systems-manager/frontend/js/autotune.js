@@ -128,7 +128,7 @@
   function factsFor(mid) {
     if (_facts[mid]) return _facts[mid];
     const r = _runs.find(x => x.tool === 'autotune' && x.model_id === mid && x.summary && x.summary.n_expert != null);
-    return r ? { n_expert: r.summary.n_expert } : {};
+    return r ? { n_expert: r.summary.n_expert, mtp_layers: r.summary.mtp_layers } : {};
   }
   function isMoe(mid) { const f = factsFor(mid); return f.n_expert == null ? null : f.n_expert > 1; }
   function noFit(mid) {
@@ -200,9 +200,10 @@
   }
   function manualDraft() { const v = ($('atDraftSel') || {}).value; return !!v && v !== 'auto' && v !== 'none'; }
   function gb(n) { return `${(Number(n || 0) / 1e9).toFixed(1)} GB`; }
+  // A NextN / MTP head is a built-in draft, known from live facts or the last tune's ledger row.
+  function hasMtp(mid) { return Number(factsFor(mid).mtp_layers) > 0; }
   function hasDraft(mid) {
-    const f = _facts[mid];
-    if (f && Number(f.mtp_layers) > 0) return true;
+    if (hasMtp(mid)) return true;
     const map = (_pre && _pre.drafts_for) || {};
     return !(mid in map) ? null : !!map[mid];
   }
@@ -211,7 +212,7 @@
     const row = $('atDraftRow'), note = $('atDraftNote'), btn = $('atDraftDlBtn');
     if (!row) return;
     const mid = primaryModel();
-    if (!mid || hasDraft(mid) !== false || manualDraft() || _dl) { if (!_dl) row.style.display = 'none'; return; }
+    if (!mid || hasDraft(mid) !== false || manualDraft() || _dl) { if (!_dl) { row.style.display = 'none'; dimSummaries(); } return; }
     if (_draftFor !== mid) {
       const gen = ++_draftGen;
       _draftFor = mid; _draft = null; _draftBusy = true;
@@ -269,7 +270,7 @@
       moe: `--n-cpu-moe ${d.moe.min} … ${d.moe.max}`,
       threads: `-t ${d.threads.candidates.join(' · ') || '—'}`,
       slots: `-np ${d.slots.candidates.join(' · ') || '—'} · ≥ ${d.slots.min_ctx_per_slot.toLocaleString()} ctx`,
-      spec: `${d.spec.types.join(' · ') || '—'} · window ${d.spec.n_min}–${d.spec.n_max}`,
+      spec: `${d.spec.types.join(' · ') || '—'} · window ${d.spec.n_min}–${d.spec.n_max}${hasMtp(primaryModel() || '') ? ' · NextN head, no draft needed' : ''}`,
       sampling: d.sampling.overwrite ? 'overwrite' : 'fill blanks',
     };
     document.querySelectorAll('#toolsModAt .at-dim').forEach(row => {

@@ -942,6 +942,17 @@ describe('Quiet objective (#890)', () => {
 });
 
 describe('draft discovery (#889)', () => {
+  it('needs no draft for a model whose last tune recorded a NextN head', async () => {
+    const win = boot();
+    const realFetch = win.fetch;
+    win.fetch = (u, o) => (String(u).startsWith('/api/tools/runs')
+      ? Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({ runs: [{ tool: 'autotune', model_id: 'org/m:Q4', ok: true, ts: '2026-09-10T10:00:00Z', summary: { objective: 'fit', n_expert: 0, mtp_layers: 1 } }], latest: {} }) })
+      : realFetch(u, o));
+    win.AT.onOpen('org/m:Q4'); for (let i = 0; i < 6; i++) await flush();
+    expect(win.document.getElementById('atDraftRow').style.display).toBe('none');
+    expect(win.__fetches.some(([u]) => String(u).startsWith('/api/llm/draft-candidates'))).toBe(false);
+    expect(win.document.querySelector('.at-dim[data-dim="spec"] [data-dim-sum]').textContent).toContain('NextN head, no draft needed');
+  });
   it('lists only same-family drafts small enough to auto-detect, and hides the row on a manual pick', async () => {
     const win = boot();
     win.__pre = { ...PRE, drafts: [...PRE.drafts,

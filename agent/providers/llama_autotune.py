@@ -639,6 +639,7 @@ def ledger_summary(done: dict) -> dict:
             "stages_done": sum(1 for s in stages if s.get("status") == "done"),
             "verify_ok": (done.get("verify") or {}).get("ok"), "wh_per_ktok": after.get("wh_per_ktok"),
             "n_expert": (done.get("facts") or {}).get("n_expert"),
+            "mtp_layers": (done.get("facts") or {}).get("mtp_layers"),
             "kl": guard.get("kl"), "kl_pass": guard.get("pass"), "regressed": done.get("regressed"),
             "avg_w": after.get("avg_w"), "power_cap_w": done.get("power_cap_w")}
 

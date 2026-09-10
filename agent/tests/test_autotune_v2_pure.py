@@ -476,12 +476,12 @@ def test_build_changes_selection_rule(at):
 def test_ledger_summary(at):
     done = {"objective": "balanced", "after": {"ctx": 65536, "free_mb": 1012, "decode_tps": 142.6, "prefill_tps": 900.0, "agg_tps": 150.0, "wh_per_ktok": 0.24},
             "before": {"decode_tps": 101}, "stages": [{"stage": "context", "status": "done"}, {"stage": "kv", "status": "skipped"}],
-            "verify": {"ok": True}, "facts": {"n_expert": 128}}
+            "verify": {"ok": True}, "facts": {"n_expert": 128, "mtp_layers": 1}}
     s = at.ledger_summary(done)
     assert s == {"objective": "balanced", "mode": "tune", "llama_build": None, "ctx_size": 65536, "free_mb": 1012,
                  "decode_tps": 142.6, "prefill_tps": 900.0, "agg_tps": 150.0,
                  "gain_pct": pytest.approx(41.2, abs=0.1), "stages_done": 1, "verify_ok": True,
-                 "wh_per_ktok": 0.24, "n_expert": 128, "kl": None, "kl_pass": None, "regressed": None,
+                 "wh_per_ktok": 0.24, "n_expert": 128, "mtp_layers": 1, "kl": None, "kl_pass": None, "regressed": None,
                  "avg_w": None, "power_cap_w": None}
 
 
