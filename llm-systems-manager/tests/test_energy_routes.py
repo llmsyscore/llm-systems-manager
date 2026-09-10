@@ -326,6 +326,7 @@ def test_host_peak_route_defaults_to_the_primary_agent(monkeypatch, tmp_path):
     body = c.get("/api/energy/host-peak").get_json()
     assert body["ok"] is True and body["agent_id"] == A1
     assert body["peak_w"] == 320.0 and body["hours"] == 2 and body["days"] == 30
+    assert body["peak_active_w"] == 180.0 and body["active_hours"] == 2
     other = c.get("/api/energy/host-peak?agent_id=" + "b" * 32).get_json()
     assert other["ok"] is True and other["peak_w"] is None and other["hours"] == 0
 

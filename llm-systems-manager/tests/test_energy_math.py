@@ -292,5 +292,16 @@ def test_host_peak_is_the_max_hourly_average_over_metered_hours():
         {"agent_id": "a", "hour_ts": 300, "energy_wh": 0.0, "power_s": 0.0},        # unmetered, ignored
         {"agent_id": "b", "hour_ts": 100, "energy_wh": 900.0, "power_s": 3600.0},   # other host
     ]
-    assert en.host_peak(rows, "a") == {"peak_w": 200.0, "hours": 2, "since": 100}
-    assert en.host_peak(rows, "zzz") == {"peak_w": None, "hours": 0, "since": None}
+    assert en.host_peak(rows, "a") == {"peak_w": 200.0, "hours": 2, "since": 100, "peak_active_w": None, "active_hours": 0}
+    assert en.host_peak(rows, "zzz") == {"peak_w": None, "hours": 0, "since": None, "peak_active_w": None, "active_hours": 0}
+
+
+def test_host_peak_reports_the_draw_under_load_separately():
+    rows = [
+        {"agent_id": "a", "hour_ts": 100, "energy_wh": 150.0, "power_s": 3600.0, "active_s": 600.0, "active_energy_wh": 50.0},   # 300 W busy
+        {"agent_id": "a", "hour_ts": 200, "energy_wh": 120.0, "power_s": 3600.0, "active_s": 1800.0, "active_energy_wh": 110.0},  # 220 W busy
+        {"agent_id": "a", "hour_ts": 300, "energy_wh": 100.0, "power_s": 3600.0, "active_s": 10.0, "active_energy_wh": 5.0},      # too short to count
+    ]
+    got = en.host_peak(rows, "a")
+    assert got["peak_w"] == 150.0 and got["hours"] == 3
+    assert got["peak_active_w"] == 300.0 and got["active_hours"] == 2
