@@ -171,6 +171,48 @@ describe('tune chip (#887)', () => {
     expect(MC.row({ ...d, name: 'x', repo: 'x', specs: [], buttons: [], menu: [] })).toContain('mc-tune stale');
   });
 
+  it('gives the profile chip a bounded, truncating zone regardless of name length (#887)', () => {
+    const withShort = { ...BASE, profileHtml: '<span class="mc-profchip mc-prof-edit">mtp</span>', profileText: 'mtp' };
+    const withLong = { ...BASE, profileHtml: '<span class="mc-profchip mc-prof-edit">vscode-remote-workspace-profile</span>', profileText: 'vscode-remote-workspace-profile' };
+    ['card', 'compact'].forEach(fn => {
+      const shortHtml = MC[fn](withShort);
+      const longHtml = MC[fn](withLong);
+      expect(shortHtml).toContain('<div class="mc-tele-prof" title="mtp">');
+      expect(longHtml).toContain('<div class="mc-tele-prof" title="vscode-remote-workspace-profile">');
+      // same zone structure either way: one mc-tele-prof zone, one mc-stats zone
+      expect((shortHtml.match(/mc-tele-prof/g) || []).length).toBe((longHtml.match(/mc-tele-prof/g) || []).length);
+      expect(shortHtml).toContain('mc-stats');
+      expect(longHtml).toContain('mc-stats');
+    });
+  });
+
+  it('keeps badges and stat cells in separate containers when all three badges are present', () => {
+    const d = { ...BASE, stats: [{ l: 'Prompt', v: '100', unit: 't/s' }, { l: 'Gen', v: '38.3', unit: 't/s' }],
+                fresh: { stale: true, staleTitle: 'ctx changed' },
+                tune: { stale: true, label: 'tuned · stale', title: 't', act: 'reverify' } };
+    const html = MC.card(d);
+    const badges = html.slice(html.indexOf('mc-badges'), html.indexOf('mc-cells'));
+    const cells = html.slice(html.indexOf('mc-cells'));
+    expect(badges).toContain('mc-benchtag');
+    expect(badges).toContain('mc-stale');
+    expect(badges).toContain('mc-tune stale');
+    expect(badges).not.toContain('mc-stat"');
+    expect(cells).toContain('mc-stat"');
+    expect(cells).not.toContain('mc-benchtag');
+  });
+
+  it('still renders the profile and badge zones when a card has no bench data', () => {
+    const d = { ...BASE, stats: [], fresh: null,
+                profileHtml: '<span class="mc-profchip mc-prof-edit">mtp</span>', profileText: 'mtp',
+                tune: { stale: false, label: 'tuned', title: 't', act: 'autotune' } };
+    const html = MC.card(d);
+    expect(html).toContain('mc-tele-prof');
+    expect(html).toContain('mc-badges');
+    expect(html).toContain('mc-tune');
+    expect(html).not.toContain('mc-cells');
+    expect(html).not.toContain('mc-benchtag');
+  });
+
   // A row can carry re-bench AND tuned · stale; a fixed profile track clipped the second chip.
   it('gives the row profile cell a growable track and lets its badges wrap', () => {
     const row = MC.row({ id: 'x', actAttr: 'data-act', name: 'x', repo: 'x', specs: [], stats: [],
