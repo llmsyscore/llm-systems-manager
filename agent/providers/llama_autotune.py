@@ -589,6 +589,10 @@ def kl_args(args: list) -> list[str]:
             i += 2
             continue
         if a in _KL_SAFE_FLAG:
+            if i + 1 < len(args) and not str(args[i + 1]).startswith("-"):
+                out += [a, str(args[i + 1])]
+                i += 2
+                continue
             out.append(a)
         i += 1
     return out

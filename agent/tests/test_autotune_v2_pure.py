@@ -451,6 +451,25 @@ def test_kl_args_keeps_only_perplexity_safe_flags(at):
                                 "--n-gpu-layers", "99", "--n-cpu-moe", "6", "--flash-attn", "--no-mmap", "-ngl", "40"]
 
 
+def test_kl_args_keeps_safe_flag_value_pair(at):
+    args = ["--flash-attn", "on", "--cache-type-k", "f16"]
+    assert at.kl_args(args) == ["--flash-attn", "on", "--cache-type-k", "f16"]
+
+
+def test_kl_args_bare_safe_flag_before_another_flag(at):
+    args = ["--flash-attn", "--cache-type-k", "f16"]
+    assert at.kl_args(args) == ["--flash-attn", "--cache-type-k", "f16"]
+
+
+def test_kl_args_bare_safe_flag_at_end_of_argv(at):
+    assert at.kl_args(["--threads", "8", "--mlock"]) == ["--threads", "8", "--mlock"]
+
+
+def test_kl_args_no_mmap_and_mlock_value_and_bare_forms(at):
+    assert at.kl_args(["--no-mmap", "on", "--mlock"]) == ["--no-mmap", "on", "--mlock"]
+    assert at.kl_args(["--no-mmap", "--parallel", "4", "--mlock"]) == ["--no-mmap", "--mlock"]
+
+
 def test_spawn_cmd_fit_vs_explicit_ctx(at):
     fit = at.spawn_cmd("/o/llama-server", "o/r:Q4", 8080, 1024, None, ["--threads", "8"])
     assert fit == ["/o/llama-server", "--models-max", "1", "-lv", "4", "--host", "127.0.0.1", "--port", "8080",
