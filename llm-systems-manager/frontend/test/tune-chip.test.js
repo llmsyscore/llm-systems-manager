@@ -31,7 +31,9 @@ describe('tune chip descriptor', () => {
   it('maps a fresh status row to a muted chip and no row to null', async () => {
     const win = boot({ ok: true, items: [{ agent_id: 'a1', model_id: 'org/m:Q4', llama_build: 'b120', current_build: 'b120', stale: false, ts: '2026-09-02T00:00:00Z', summary: {} }] });
     await win._loadTuneStatus(true); await flush();
-    expect(win._llamaDescriptor('org/m:Q4', {}).tune).toEqual({ stale: false, label: 'tuned', act: 'autotune', title: 'Autotuned on llama.cpp b120 (2026-09-02)' });
+    const d = win._llamaDescriptor('org/m:Q4', {});
+    expect(d.tune).toEqual({ stale: false, label: 'tuned', act: 'autotune', title: 'Autotuned on llama.cpp b120 (2026-09-02)' });
+    expect((d.menu || []).some(i => i && i.act === 'reverify')).toBe(false);
     expect(win._llamaDescriptor('org/other:Q4', {}).tune).toBeNull();
   });
   it('throttles the status fetch to once per minute unless forced', async () => {
@@ -50,10 +52,18 @@ describe('tune chip descriptor', () => {
     expect(win._llamaDescriptor('org/m:Q4', {}).tune).toEqual({ stale: true, label: 'tuned · stale', act: 'reverify',
       title: 'Autotuned on llama.cpp b120 · host now runs b130 — click to re-verify' });
   });
-  it('maps a null (unknown build) status row to a muted chip flagging re-verify', async () => {
+  it('maps a null (unknown build) status row to a muted chip that can still re-verify', async () => {
     const win = boot({ ok: true, items: [{ agent_id: 'a1', model_id: 'org/m:Q4', llama_build: null, current_build: null, stale: null, ts: '2026-09-02T00:00:00Z', summary: {} }] });
     await win._loadTuneStatus(true); await flush();
-    expect(win._llamaDescriptor('org/m:Q4', {}).tune).toEqual({ stale: false, label: 'tuned', act: 'autotune',
+    const d = win._llamaDescriptor('org/m:Q4', {});
+    expect(d.tune).toEqual({ stale: false, label: 'tuned', act: 'reverify',
       title: 'Autotuned (2026-09-02) · llama.cpp build unknown — re-verify to confirm' });
+    expect((d.menu || []).some(i => i && i.act === 'reverify')).toBe(true);
+  });
+  it('offers Re-verify tune in the menu for a stale row', async () => {
+    const win = boot({ ok: true, items: [{ agent_id: 'a1', model_id: 'org/m:Q4', llama_build: 'b100', current_build: 'b120', stale: true, ts: '2026-09-02T00:00:00Z', summary: {} }] });
+    await win._loadTuneStatus(true); await flush();
+    const d = win._llamaDescriptor('org/m:Q4', {});
+    expect((d.menu || []).some(i => i && i.act === 'reverify' && i.label === 'Re-verify tune')).toBe(true);
   });
 });

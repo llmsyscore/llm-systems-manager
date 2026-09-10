@@ -114,6 +114,60 @@ describe('Quality guard module (#888)', () => {
     expect(win.__syncCalls.length).toBe(0);
   });
 
+  it('warns and blocks Run while llama-server holds the GPU', async () => {
+    const win = boot();
+    win.__pre = { ok: true, busy: false, perplexity: true, unit_active: true };
+    await win.QG.onOpen('org/m:Q4'); await flush();
+    const pf = win.document.getElementById('qgPreflight');
+    expect(pf.style.display).toBe('');
+    expect(win.document.getElementById('qgPreflightMsg').textContent).toMatch(/llama-server is running.*quality check/i);
+    expect(win.document.getElementById('qgRunBtn').disabled).toBe(true);
+  });
+
+  it('keeps Run enabled and the banner hidden on a clean preflight', async () => {
+    const win = await opened('org/m:Q4');
+    expect(win.document.getElementById('qgPreflight').style.display).toBe('none');
+    expect(win.document.getElementById('qgRunBtn').disabled).toBe(false);
+  });
+
+  it('attaches neutrally when the shared stream is already busy', async () => {
+    const win = await opened('org/m:Q4', { overrides: { 'cache-type-k': 'q4_0' } });
+    win.__runReply = { ok: false, error: 'a run is already in progress' };
+    await win.QG.run(); await flush();
+    expect(win.document.getElementById('qgPill').textContent).toBe('another tool is running');
+    expect(win.__alerts.length).toBe(0);
+  });
+
+  it('the post-Apply refresh calls the function the dashboard actually defines', async () => {
+    const win = await opened('org/m:Q4', { overrides: { 'cache-type-k': 'q4_0' } });
+    win.__refreshed = 0;
+    win.refreshLLMTab = function () { win.__refreshed += 1; };
+    await win.QG.run(); await flush();
+    win.QG.onEvent({ type: 'model_done', model_id: 'org/m:Q4', ok: true, mode: 'quality', run_id: 'q1',
+      guard: { kl: 0.011, kl_max: 0.02, pass: true, error: null }, changes: [{ key: 'cache-type-k', current: 'q8_0', recommended: 'q4_0' }] });
+    win.QG.onEvent({ type: 'done', ok: true }); await flush();
+    await win.QG.apply(); await flush();
+    expect(win.__refreshed).toBe(1);
+  });
+
+  it('detach closes the stream without cancelling the run', async () => {
+    const win = await opened('org/m:Q4', { overrides: { 'cache-type-k': 'q4_0' } });
+    await win.QG.run(); await flush();
+    expect(win.QG.running()).toBe(true);
+    win.QG.detach();
+    expect(win.__closed).toBe(true);
+    expect(win.QG.running()).toBe(false);
+    expect(win.__fetches.some(([u]) => u === '/api/llm/autotune/cancel')).toBe(false);
+  });
+
+  // A failed KL guard sets .warn on the pill and the override row has four cells.
+  it('styles the warn pill and fits every override cell on one row', () => {
+    expect(srcFile('css/base.css')).toMatch(/\.bench-status-pill\.warn\b[^}]*var\(--warn\)/);
+    const qg = srcFile('css/autotune.css').match(/\.qg-row\.at-frow\.g2 \{([^}]*)\}/);
+    expect(qg).toBeTruthy();
+    expect(qg[1].match(/grid-template-columns:([^;]+)/)[1].trim().split(/\s+(?![^(]*\))/).length).toBe(4);
+  });
+
   it('opens neutral when the agent is busy with another tool, then flips to running on a quality-mode event', async () => {
     const win = boot();
     win.__pre = { ok: true, busy: true, perplexity: true };

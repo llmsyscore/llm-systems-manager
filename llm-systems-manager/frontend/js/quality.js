@@ -46,13 +46,24 @@
     _models = (models && models.models) || []; _cfg = cfg || {}; _pre = pre && pre.ok ? pre : null;
     const sel = $('qgModel');
     if (sel) { sel.innerHTML = _models.map(m => `<option value="${esc(m)}">${esc(m)}</option>`).join(''); if (modelId && _models.includes(modelId)) sel.value = modelId; }
-    const pf = $('qgPreflight'), pm = $('qgPreflightMsg');
-    if (pf && pm) { const missing = _pre && !_pre.perplexity; pf.style.display = missing ? '' : 'none'; pm.textContent = missing ? 'llama-perplexity or the KL text is missing on the agent — install the bench runtime.' : ''; }
+    syncPreflight();
     _rows = [];
     const ov = opts && opts.overrides || {};
     Object.keys(ov).forEach(k => { if (KEYS.includes(k)) _rows.push({ key: k, value: String(ov[k]) }); });
     _done = null; renderResult(null); renderRows();
     if (_pre && _pre.busy) attach(true);
+  }
+  // llama-server holds the GPU, so the agent refuses the run: say so before the click.
+  function syncPreflight() {
+    const pf = $('qgPreflight'), pm = $('qgPreflightMsg'), rb = $('qgRunBtn');
+    const busyUnit = !!(_pre && _pre.unit_active);
+    const missing = !!(_pre && !_pre.perplexity);
+    const msg = busyUnit
+      ? 'llama-server is running — stop it from the LLM tab before starting a quality check.'
+      : missing ? 'llama-perplexity or the KL text is missing on the agent — install the bench runtime.' : '';
+    if (pf) pf.style.display = msg ? '' : 'none';
+    if (pm) pm.textContent = msg;
+    if (rb) { rb.disabled = busyUnit; rb.title = busyUnit ? 'llama-server is running' : ''; }
   }
   function log(text) { const el = $('qgLog'); if (!el) return; const d = document.createElement('div'); d.textContent = text; el.appendChild(d); el.scrollTop = el.scrollHeight; }
   function pill(state, text) { const p = $('qgPill'); if (p) { p.className = 'bench-status-pill ' + state; p.textContent = text; } }
@@ -73,7 +84,7 @@
     let r;
     try { r = await fetch('/api/llm/autotune/run', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }).then(x => x.json()); }
     catch (e) { alert('Quality check request failed: ' + (e && e.message ? e.message : e)); return; }
-    if (!r || !r.ok) { if (r && /in progress/i.test(r.error || r.detail || '')) { attach(); return; } alert((r && (r.error || r.detail)) || 'Failed to start the check'); return; }
+    if (!r || !r.ok) { if (r && /in progress/i.test(r.error || r.detail || '')) { attach(true); return; } alert((r && (r.error || r.detail)) || 'Failed to start the check'); return; }
     _done = null; renderResult(null); const lg = $('qgLog'); if (lg) lg.innerHTML = '';
     pill('running', 'running'); busy(true); openStream();
   }
@@ -86,6 +97,13 @@
     openStream();
   }
   function cancel() { fetch('/api/llm/autotune/cancel', { method: 'POST' }).catch(() => {}); }
+  // Tool switch: drop this module's stream, leaving the run itself alone.
+  function detach() {
+    if (!_es) return;
+    try { _es.close(); } catch (_) {}
+    _es = null; _neutral = false;
+    busy(false);
+  }
   function finish(msg) {
     if (_es) { try { _es.close(); } catch (_) {} _es = null; }
     busy(false);
@@ -148,11 +166,11 @@
       _cfg[mid] = sec;
       if (typeof _syncActiveProfile === 'function') { step = 'sync active profile'; await _syncActiveProfile(mid, sec); }
       if (ab) ab.textContent = '✓ Applied';
-      if (typeof loadLlmConfig === 'function') loadLlmConfig();
+      if (typeof refreshLLMTab === 'function') refreshLLMTab();
     } catch (e) {
       alert(`Apply failed at "${step}": ` + (e && e.message ? e.message : e));
       if (ab) ab.disabled = false;
     }
   }
-  window.QG = { onOpen, run, cancel, apply, onEvent, running, overrides, addRow };
+  window.QG = { onOpen, run, cancel, detach, apply, onEvent, running, overrides, addRow };
 })();

@@ -30,6 +30,7 @@
       || (typeof _vbenchEventSrc !== 'undefined' && _vbenchEventSrc)
       || (window.BL && BL.running());
     const at = (window.AT && AT.running())
+      || (window.QG && QG.running())
       || (typeof _vatEventSrc !== 'undefined' && _vatEventSrc);
     return { rc: !!rc, bench: !!bench, at: !!at };
   }
@@ -316,7 +317,19 @@
     chip.style.display = '';
   }
 
-  function _toolsHideModules() {
+  // Modules sharing /api/llm/autotune/stream; the outgoing one closes its EventSource.
+  const _TOOL_STREAMS = { autotune: () => window.AT, quality: () => window.QG };
+  let _toolsOpenId = null;
+
+  function _toolsDetach(id) {
+    const mod = id && _TOOL_STREAMS[id] && _TOOL_STREAMS[id]();
+    if (mod && typeof mod.detach === 'function') { try { mod.detach(); } catch (_) {} }
+  }
+
+  // keepId stays attached; every other open module's stream is closed, never cancelled.
+  function _toolsHideModules(keepId) {
+    if (_toolsOpenId && _toolsOpenId !== keepId) _toolsDetach(_toolsOpenId);
+    _toolsOpenId = keepId || null;
     Object.values(_TOOL_MODS).forEach(m => {
       const el = _tEl(m);
       if (el) el.style.display = 'none';
@@ -326,10 +339,10 @@
   function toolsOpenTool(id, modelId, opts) {
     const modId = _TOOL_MODS[id];
     if (!modId) return;
-    const run = _toolsRunningLocal();
     const home = _tEl('toolsHome');
     if (home) home.style.display = 'none';
-    _toolsHideModules();
+    _toolsHideModules(id);
+    const run = _toolsRunningLocal();
     const mod = _tEl(modId);
     if (mod) mod.style.display = 'block';
     // Chip only when the model actually pre-fills — a live run keeps its state.

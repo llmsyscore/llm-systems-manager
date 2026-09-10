@@ -479,11 +479,27 @@ def test_verify_mode_turns_every_dimension_off_and_keeps_baseline(at):
     assert req["baseline_tps"] == 41.5
 
 
+def test_verify_mode_drops_operator_custom_args(at):
+    req = at.validate_request({"model_ids": ["org/m:Q4"], "objective": "balanced", "mode": "verify",
+                               "dims": {"context": {"custom_args": ["-ub", "512"]}}})
+    assert req["dims"]["context"]["custom_args"] == []
+    tune = at.validate_request({"model_ids": ["org/m:Q4"], "objective": "balanced",
+                                "dims": {"context": {"custom_args": ["-ub", "512"]}}})
+    assert tune["dims"]["context"]["custom_args"] == ["-ub", "512"]
+
+
+def test_quality_overrides_canonicalise_short_aliases(at):
+    req = at.validate_request({"model_ids": ["org/m:Q4"], "objective": "fit", "mode": "quality",
+                               "overrides": {"ctv": "q4_0", "-ctk": "q8_0", "t": "8", "ncmoe": None}})
+    assert req["overrides"] == {"cache-type-v": "q4_0", "cache-type-k": "q8_0",
+                                "threads": "8", "n-cpu-moe": None}
+
+
 def test_quality_mode_validates_overrides(at):
     req = at.validate_request({"model_ids": ["org/m:Q4"], "objective": "fit", "mode": "quality",
                                "overrides": {"cache-type-k": "q4_0", "--ctv": "q4_0", "threads": None},
                                "kl_max": 0.05})
-    assert req["overrides"] == {"cache-type-k": "q4_0", "ctv": "q4_0", "threads": None}
+    assert req["overrides"] == {"cache-type-k": "q4_0", "cache-type-v": "q4_0", "threads": None}
     assert req["kl_max"] == 0.05
     with pytest.raises(ValueError):
         at.validate_request({"model_ids": ["org/m:Q4"], "objective": "fit", "mode": "quality",

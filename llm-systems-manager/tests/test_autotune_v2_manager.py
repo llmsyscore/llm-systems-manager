@@ -68,3 +68,17 @@ def test_status_flags_stale_when_heartbeat_build_differs(client, monkeypatch):
     assert by[("a2", "org/m:Q4")]["stale"] is False
     d2 = client.get("/api/llm/autotune/status?model_id=org/m:Q4&agent_id=a2").get_json()
     assert [i["agent_id"] for i in d2["items"]] == ["a2"]
+
+
+def test_status_keeps_a_regressed_verify_stale(client, monkeypatch):
+    conn = manager_mod.get_db()
+    _row(conn, "a1", "org/m:Q4", True, {"llama_build": "b120-ccc", "mode": "verify", "regressed": True},
+         "2026-09-04T00:00:00Z")
+    _row(conn, "a2", "org/m:Q4", True, {"llama_build": "b120-ccc", "mode": "verify", "regressed": False},
+         "2026-09-04T00:00:01Z")
+    conn.commit()
+    monkeypatch.setattr(manager_mod, "_llama_build_of", lambda aid: "b120-ccc")
+    by = {i["agent_id"]: i for i in client.get("/api/llm/autotune/status").get_json()["items"]}
+    assert by["a1"]["stale"] is True
+    assert by["a1"]["llama_build"] == "b120-ccc" and by["a1"]["current_build"] == "b120-ccc"
+    assert by["a2"]["stale"] is False

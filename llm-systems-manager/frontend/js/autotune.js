@@ -32,11 +32,14 @@
   }
   function syncVerify() {
     const mid = primaryModel(), st = mid ? _status[mid] : null;
-    const btn = $('atVerifyBtn'); if (btn) btn.style.display = st && st.stale && !running() ? '' : 'none';
+    const btn = $('atVerifyBtn'); if (btn) btn.style.display = st && st.stale !== false && !running() ? '' : 'none';
     const prev = $('atPrevTune');
     if (prev && st) {
       prev.style.display = '';
-      prev.innerHTML = st.stale
+      // Appended to the run-history line syncModels wrote, so the objective/ctx/gain text survives.
+      let note = prev.querySelector('[data-at-build]');
+      if (!note) { note = document.createElement('span'); note.className = 'd'; note.setAttribute('data-at-build', '1'); prev.appendChild(note); }
+      note.innerHTML = st.stale
         ? `<b>Tune is stale.</b> Autotuned on llama.cpp ${esc(st.llama_build)} · host now runs ${esc(st.current_build)}. Re-verify checks the current config in ~3 min; re-tune if it regressed.`
         : `Last tune ${esc(String(st.ts || '').slice(0, 10))} on llama.cpp ${esc(st.llama_build || '?')}.`;
     }
@@ -435,7 +438,9 @@
   function checkQuality() {
     const done = _doneModel ? _done[_doneModel] : null; if (!done) return;
     const overrides = {};
-    (done.changes || []).forEach(c => { if (QUALITY_KEYS.has(c.key)) overrides[c.key] = String(c.recommended); });
+    selectedRows().forEach(c => {
+      if (QUALITY_KEYS.has(c.key) && c.recommended != null) overrides[c.key] = String(c.recommended);
+    });
     if (typeof toolsOpenTool === 'function') toolsOpenTool('quality', done.model_id, { overrides });
   }
   const QUALITY_KEYS = new Set(['cache-type-k', 'ctk', 'cache-type-v', 'ctv', 'threads', 't', 'threads-batch', 'tb', 'n-gpu-layers', 'ngl', 'n-cpu-moe', 'ncmoe', 'batch-size', 'b', 'ubatch-size', 'ub', 'flash-attn', 'fa', 'no-mmap', 'mlock']);
@@ -467,6 +472,14 @@
   function cancel() {
     fetch('/api/llm/autotune/cancel', { method: 'POST' }).catch(() => {});
     log('cancel requested', 'warn');
+  }
+  // Tool switch: drop this module's stream, leaving the run itself alone.
+  function detach() {
+    if (!_es && !_attached) return;
+    if (_es) { try { _es.close(); } catch (_) {} _es = null; }
+    _attached = false;
+    stopElapsed();
+    busy(false);
   }
   function again() {
     _done = {}; _doneModel = null; _rows = []; setMsg(''); setPane('Plan'); busy(false); refreshPlan();
@@ -623,6 +636,7 @@
                || t === 'non_monotonic_detected' || t === 'cycle_detected') {
       if (t !== 'loading_progress') log(`${t.replace(/_/g, ' ')}${msg.reason ? ' · ' + msg.reason : ''}`, 'dim');
     } else if (t === 'model_done') {
+      if (msg.mode === 'quality') return;   // a Quality-guard run on the shared stream is not ours
       _done[msg.model_id] = msg; _doneModel = _doneModel || msg.model_id;
       if (typeof _recordToolRun === 'function') { try { _recordToolRun('autotune', { model_id: msg.model_id, ok: !!msg.ok, run_id: msg.run_id || '', objective: msg.objective, mode: msg.mode || 'tune', llama_build: msg.llama_build || undefined, regressed: msg.regressed ?? undefined, ctx_size: (msg.after || {}).ctx, decode_tps: (msg.after || {}).decode_tps }); } catch (_) {} }
       log(msg.ok ? `complete · ${(msg.changes || []).length} changes · verify ${(msg.verify || {}).ok ? 'pass' : 'not passed'}` : `stopped · ${msg.stop_reason || 'no result'}`, msg.ok ? 'ok' : 'warn');
@@ -711,31 +725,47 @@
       }
     }
     renderRows();
-    if (done.mode === 'verify') {
-      const rb = $('atRetuneBtn'), ab = $('atApplyBtn');
-      if (ab) ab.style.display = 'none';
-      if (rb) rb.style.display = '';
-      if (warn) {
-        if (done.regressed) { warn.style.display = ''; warn.innerHTML = `<b>Slower on this llama.cpp build</b> — ${esc(fmt(a.decode_tps))} t/s vs ${esc(fmt(b.decode_tps))} t/s when tuned. Re-tune to find a better set.`; }
-        else { warn.style.display = 'none'; }
-      }
-      setMsg(done.regressed ? 'Current config still applies; nothing was changed.' : 'Verified on the current build — the stale chip clears on the next card refresh.');
-      loadStatus().then(syncVerify);
-      return;
-    }
-    const qb = $('atQualityBtn');
-    if (qb) qb.style.display = (done.changes || []).some(c => QUALITY_KEYS.has(c.key)) ? '' : 'none';
+    // Done-panel chrome is refreshed for every mode, so a verify never inherits a prior tune's numbers.
+    const verifyMode = done.mode === 'verify';
+    const good = !!done.ok && !done.regressed;
     const doneStages = (done.stages || []).filter(s => s.status === 'done').length;
     const st = $('atDoneStats'); if (st) st.innerHTML = `<b>${esc(doneStages)} stages</b> · ${esc(mmss(done.elapsed_s))} · ${esc(Number(done.loads || 0))} loads`;
     const v = done.verify || {};
+    const setName = verifyMode ? 'current config' : 'recommended set';
     const dv = $('atDoneVerify');
     if (dv) dv.innerHTML = v.ok
-      ? `verified <b>${esc(Math.round(v.seconds || 0))} s</b> on the recommended set${v.dropped && v.dropped.length ? ' · dropped ' + esc(v.dropped.join(', ')) : ''}${v.warning ? ` · <span class="warn">${esc(v.warning)}</span>` : ''}`
+      ? `verified <b>${esc(Math.round(v.seconds || 0))} s</b> on the ${esc(setName)}${v.dropped && v.dropped.length ? ' · dropped ' + esc(v.dropped.join(', ')) : ''}${v.warning ? ` · <span class="warn">${esc(v.warning)}</span>` : ''}`
       : `<span class="warn">verify ${v.reason ? 'failed: ' + esc(v.reason) : 'not run'}</span>`;
-    const pill = $('atDonePill'); if (pill) { pill.textContent = done.ok ? 'complete' : 'stopped'; pill.classList.toggle('ok', !!done.ok); pill.classList.toggle('running', false); }
-    renderGuard(done); renderCmp(done);
+    const pill = $('atDonePill');
+    if (pill) {
+      pill.textContent = done.regressed ? 'regressed' : (done.ok ? 'complete' : 'stopped');
+      pill.classList.toggle('ok', good); pill.classList.toggle('warn', !good); pill.classList.toggle('running', false);
+    }
+    renderCmp(done);
     const dl = $('atDoneLog'), src = $('atLog'); if (dl && src) dl.innerHTML = src.innerHTML;
     const dm = $('atDoneLogMeta'); if (dm) dm.textContent = `${doneStages} stages · ${Number(done.loads || 0)} loads`;
+    const qb = $('atQualityBtn');
+    const guardCard = $('atGuard');
+    if (verifyMode) {
+      const rb = $('atRetuneBtn'), ab = $('atApplyBtn');
+      if (ab) ab.style.display = 'none';
+      if (rb) rb.style.display = '';
+      if (qb) qb.style.display = 'none';
+      if (guardCard) { guardCard.innerHTML = ''; guardCard.style.display = 'none'; }
+      if (warn) {
+        if (done.regressed) { warn.style.display = ''; warn.innerHTML = `<b>Slower on this llama.cpp build</b> — ${esc(fmt(a.decode_tps))} t/s vs ${esc(fmt(b.decode_tps))} t/s when tuned. Re-tune to find a better set.`; }
+        else if (!done.ok) { warn.style.display = ''; warn.innerHTML = `<b>Verify did not complete</b> — ${esc(v.reason || done.stop_reason || 'the load failed')}. The config was not changed.`; }
+        else { warn.style.display = 'none'; warn.innerHTML = ''; }
+      }
+      setMsg(done.ok && !done.regressed
+        ? 'Verified on the current build — the stale chip clears on the next card refresh.'
+        : 'Current config still applies; nothing was changed.');
+      loadStatus().then(syncVerify);
+      return;
+    }
+    if (qb) qb.style.display = (done.changes || []).some(c => QUALITY_KEYS.has(c.key)) ? '' : 'none';
+    if (guardCard) guardCard.style.display = '';
+    renderGuard(done);
     setMsg(`Previous config will be kept as profile “before tune ${today()}” for one-click revert.`);
   }
   function selectedRows() { return _rows.filter(r => r.selected); }
@@ -806,7 +836,7 @@
     setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 200);
   }
 
-  window.AT = { onOpen, run, verify, retune, checkQuality, cancel, again, stopServer, running, dimsState, objective, planRows, estimateText, onEvent,
+  window.AT = { onOpen, run, verify, retune, checkQuality, cancel, detach, again, stopServer, running, dimsState, objective, planRows, estimateText, onEvent,
                 state: () => ({ run: _run, done: _done, doneModel: _doneModel, meta: _meta, section: _section, pre: _pre }),
                 renderDone, recRows, rows, toggleRow, apply, saveProfile, copyArgs, exportReport, argsText,
                 _debugSetStart: (ts) => { if (_run) { _run.startTs = ts; tick(); } } };

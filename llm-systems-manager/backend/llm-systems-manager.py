@@ -175,7 +175,7 @@ def _local_hostname() -> str:
 # banner reads it. Bump suffix (-1, -2, …) for same-day iterations; roll
 # the date for a new day's first change.
 # ---------------------------------------------------------------------------
-__version__ = "v2026.09.09-9"
+__version__ = "v2026.09.09-10"
 
 # Wall-clock at first import (Cheroot main process); the shutdown banner
 # reads it for the uptime line.
@@ -2352,10 +2352,14 @@ def llm_autotune_status():
             if aid not in builds:
                 builds[aid] = _llama_build_of(aid)
             tuned, cur = (row["summary"].get("llama_build") or ""), builds[aid]
+            stale = (tuned != cur) if (tuned and cur) else None
+            # A verify that came back regressed leaves the tune unconfirmed, whatever the build says.
+            if row["summary"].get("regressed"):
+                stale = True
             items.append({"agent_id": aid, "model_id": row["model_id"], "ts": row["ts"], "ok": row["ok"],
                           "mode": row["summary"].get("mode") or "tune", "llama_build": tuned or None,
                           "current_build": cur or None,
-                          "stale": (tuned != cur) if (tuned and cur) else None, "summary": row["summary"]})
+                          "stale": stale, "summary": row["summary"]})
         return jsonify({"ok": True, "items": items})
     except Exception as e:
         return _err_json("internal error", 500, exc=e)

@@ -462,6 +462,20 @@ def test_verify_mode_runs_only_verify_against_current_section(at):
     assert doc["changes"] == []
 
 
+def test_verify_measurement_is_sized_from_the_baseline_not_the_floor(at):
+    fake = Fake()
+    _run(at, fake, {"model_ids": ["org/m:Q4"], "objective": "balanced", "mode": "verify",
+                    "baseline_tps": 120.0}, section={"ctx-size": "16384", "parallel": "2"})
+    measure = next(c[3] for c in fake.calls if c[0] == "load" and c[3])
+    assert measure["limit"] == at.verify_limit(120.0, None, 2) == 46      # floor would be 4
+
+
+def test_verify_mode_reads_quoted_and_aliased_context_keys(at):
+    doc, _ = _run(at, Fake(), {"model_ids": ["org/m:Q4"], "objective": "fit", "mode": "verify"},
+                  section={"c": '"16384"', "np": '"2"'})
+    assert doc["after"]["ctx"] == 16384 and doc["after"]["concurrency"] == 2
+
+
 def test_verify_mode_without_baseline_is_never_regressed(at):
     doc, _ = _run(at, Fake(), {"model_ids": ["org/m:Q4"], "objective": "fit", "mode": "verify"})
     assert doc["ok"] is True and doc["regressed"] is None
@@ -504,6 +518,18 @@ def test_quality_run_scores_overrides_against_f16_base(at):
                      "candidate_start", "candidate_result", "stage_done", "model_done"]
     assert events[1]["stage"] == "quality" and events[1]["candidates"] == ["f16 base", "candidate"]
     assert doc["llama_build"] == "b1"
+
+
+def test_quality_run_reads_current_from_either_key_spelling(at):
+    fake = KLFake(kl=0.01)
+    req = at.validate_request({"model_ids": ["org/m:Q4"], "objective": "fit", "mode": "quality",
+                               "overrides": {"ctv": "q4_0"}, "kl_max": 0.02})
+    assert req["overrides"] == {"cache-type-v": "q4_0"}
+    doc = at.run_quality("org/m:Q4", {"ctv": "f16"}, req, fake, lambda *_: None,
+                         lambda: False, {"run_id": "q1", "valued": set(), "llama_build": "b1"})
+    assert doc["changes"] == [{"key": "cache-type-v", "current": "f16", "recommended": "q4_0"}]
+    cand = fake.kl_calls[1][0]
+    assert cand.count("--cache-type-v") == 1 and "-ctv" not in cand
 
 
 def test_quality_run_fails_when_base_fails_and_flags_kl_over_max(at):

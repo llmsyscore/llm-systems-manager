@@ -271,7 +271,7 @@ function _llamaTuneFor(modelId) {
              title: 'Autotuned' + (t.llama_build ? ' on llama.cpp ' + t.llama_build : '') + (day ? ' (' + day + ')' : '') };
   }
   // stale == null: no build recorded for this tune — unknown, not fresh.
-  return { stale: false, label: 'tuned', act: 'autotune',
+  return { stale: false, label: 'tuned', act: 'reverify',
            title: 'Autotuned' + (day ? ' (' + day + ')' : '') + ' · llama.cpp build unknown — re-verify to confirm' };
 }
 
@@ -333,7 +333,7 @@ function _llamaDescriptor(modelId, statusLookup) {
   const tune = _llamaTuneFor(modelId);
   const menu = [
     ...(isLoaded || isSleeping ? [{ act: 'reload', icon: '↺', label: 'Reload' }] : []),
-    ...(tune && tune.stale ? [{ act: 'reverify', icon: '✓', label: 'Re-verify tune' }] : []),
+    ...(tune && tune.act === 'reverify' ? [{ act: 'reverify', icon: '✓', label: 'Re-verify tune' }] : []),
     { act: 'bench',    icon: '◷', label: 'Benchmark' },
     { act: 'autotune', icon: '⌖', label: 'Autotune' },
     '-',

@@ -211,6 +211,8 @@ def validate_request(body: dict, *, cache_root: Optional[Path] = None, v1_args=N
         for name, d in dims.items():
             if name != "context":
                 d["on"] = False
+        # A verify run spawns the unchanged config, so operator extras never join its argv.
+        dims["context"]["custom_args"] = []
         bt = body.get("baseline_tps")
         out["baseline_tps"] = None if bt is None else _float(bt, "baseline_tps", 0.0, 1e6)
     elif mode == "quality":
@@ -222,6 +224,7 @@ def validate_request(body: dict, *, cache_root: Optional[Path] = None, v1_args=N
             key = str(k).lstrip("-")
             if key not in QUALITY_KEYS:
                 raise ValueError(f"override {key!r} is not a quality-guard key")
+            key = ALIAS_TO_KEY.get(key, key)
             if v is None:
                 clean[key] = None
                 continue
@@ -1225,15 +1228,17 @@ class _Run:
                   budget_min=self.req["budget_min"], target_mb=self.dims["context"]["target_mb"],
                   tolerance_mb=self.dims["context"]["tolerance_mb"])
         try:
-            self.ctx_total = int(self.cur("ctx-size") or 0) or None
+            self.ctx_total = int(_unquote(self.cur("ctx-size") or self.cur("c") or "0")) or None
         except ValueError:
             self.ctx_total = None
         try:
-            self.concurrency = max(1, int(self.cur("parallel") or self.cur("np") or 1))
+            self.concurrency = max(1, int(_unquote(self.cur("parallel") or self.cur("np") or "1")))
         except ValueError:
             self.concurrency = 1
         base = self.req.get("baseline_tps")
         self.before = {"decode_tps": base} if base is not None else None
+        # Size the verify sample from the recorded rate so it spans the full window, not the floor.
+        self.decode_now = base
         ok = cancelled = False
         try:
             self.stage_verify()
@@ -1313,7 +1318,12 @@ def run_quality(model_id: str, section: dict, req: dict, backend, put, cancelled
     choice = "pass" if guard["pass"] else "fail"
     emit("stage_done", stage="quality", choice=choice, reason=reason,
          seconds=int(clock() - t0), loads=0)
-    changes = [{"key": k, "current": section.get(k), "recommended": v} for k, v in ov.items()]
+    def _cur(k):
+        for name in (k, *KEY_ALIASES.get(k, ())):
+            if name in section:
+                return section[name]
+        return None
+    changes = [{"key": k, "current": _cur(k), "recommended": v} for k, v in ov.items()]
     doc = {"type": "model_done", "model_id": model_id, "run_id": env.get("run_id"), "ok": ok and stop is None,
            "cancelled": stop == "cancelled", "objective": "quality", "mode": "quality",
            "llama_build": env.get("llama_build") or None, "facts": {}, "changes": changes,

@@ -1,6 +1,11 @@
 // Unit tests for js/lib/modelcards.js — pure render + state helpers (#765).
 import { describe, it, expect } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { resolve, dirname } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import MC from '../js/lib/modelcards.js';
+
+const CSS = readFileSync(resolve(dirname(fileURLToPath(import.meta.url)), '../css/modelcards.css'), 'utf8');
 
 const BASE = {
   id: 'unsloth/Qwen-GGUF:Q4_K_XL', actAttr: 'data-act',
@@ -164,5 +169,21 @@ describe('tune chip (#887)', () => {
                 tune: { stale: true, label: 'tuned · stale', title: 't', act: 'reverify' }, pill: { state: 'idle', label: 'Loaded' } };
     expect(MC.statsHtml(d.stats, d.fresh, d)).toContain('mc-tune stale');
     expect(MC.row({ ...d, name: 'x', repo: 'x', specs: [], buttons: [], menu: [] })).toContain('mc-tune stale');
+  });
+
+  // A row can carry re-bench AND tuned · stale; a fixed profile track clipped the second chip.
+  it('gives the row profile cell a growable track and lets its badges wrap', () => {
+    const row = MC.row({ id: 'x', actAttr: 'data-act', name: 'x', repo: 'x', specs: [], stats: [],
+                         buttons: [], menu: [], pill: { state: 'idle', label: 'Loaded' },
+                         fresh: { stale: true, staleTitle: 'Config changed' },
+                         tune: { stale: true, label: 'tuned · stale', title: 't', act: 'reverify' } });
+    const prof = row.slice(row.indexOf('mc-rowprof'), row.indexOf('mc-rowact'));
+    expect(prof).toContain('re-bench');
+    expect(prof).toContain('tuned · stale');
+    const grid = CSS.match(/^\.mc-row \{[^}]*grid-template-columns:([^;]+);/m);
+    expect(grid).toBeTruthy();
+    expect(grid[1]).not.toMatch(/\s118px\s/);
+    expect(grid[1]).toContain('minmax(118px, auto)');
+    expect(CSS).toMatch(/\.mc-rowprof \{[^}]*flex-wrap: ?wrap/);
   });
 });
