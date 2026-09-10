@@ -618,6 +618,18 @@ describe('re-verify (#887)', () => {
     expect(win.document.getElementById('atRecSel').textContent).toMatch(/nothing to apply/);
     expect(win.document.getElementById('atCmp').textContent).toMatch(/becomes the baseline/);
   });
+  it('disables Re-verify while its own run streams and re-enables it when the run ends', async () => {
+    const win = await opened();
+    win.__status = { ok: true, items: [{ agent_id: 'a1', model_id: 'org/m:Q4', llama_build: 'b100', current_build: 'b120', stale: true, summary: { decode_tps: 41.5 } }] };
+    await win.AT.onOpen('org/m:Q4', { verify: true }); for (let i = 0; i < 4; i++) await flush();
+    const vb = win.document.getElementById('atVerifyBtn');
+    expect(win.AT.running()).toBe(true);
+    expect(vb.disabled).toBe(true);
+    win.AT.onEvent({ type: 'model_done', model_id: 'org/m:Q4', ok: true, mode: 'verify', llama_build: 'b120', regressed: false,
+      before: { decode_tps: 41.5 }, after: { decode_tps: 42, ctx: 8192 }, verify: { ok: true, seconds: 60 }, changes: [], stages: [{ stage: 'verify', status: 'done' }] });
+    win.AT.onEvent({ type: 'done', ok: true }); await flush();
+    expect(vb.disabled).toBe(false);
+  });
   it('only focuses the Re-verify button when llama-server still holds the host', async () => {
     const win = await opened();
     win.__status = { ok: true, items: [{ agent_id: 'a1', model_id: 'org/m:Q4', llama_build: 'b100', current_build: 'b120', stale: true, summary: {} }] };

@@ -456,6 +456,7 @@
     _busyOn = !!on;
     const run = $('atRunBtn'), cancel = $('atCancelBtn'), again = $('atAgainBtn');
     if (run) run.disabled = on;
+    const vb = $('atVerifyBtn'); if (vb) vb.disabled = on;
     if (cancel) cancel.style.display = on && !_attached ? '' : 'none';
     if (again) again.style.display = on ? 'none' : (_doneModel ? '' : 'none');
     setRailLocked(on);
