@@ -905,6 +905,17 @@ describe('Quiet objective (#890)', () => {
     expect(win.document.getElementById('atRecBig').textContent).toMatch(/213 W under the 250 W cap/);
   });
 
+  it('plans the MoE stage as four measured offload counts under Quiet', async () => {
+    const win = await opened();
+    const dims = win.AT.dimsState(), facts = { n_expert: 128, n_layer: 48 };
+    const moe = o => win.AT.planRows(o, dims, win.AT.state().pre, facts).find(r => r.stage === 'moe');
+    expect(moe('quiet').desc).toBe('measure 4 offload counts for draw, fastest under the cap');
+    expect(moe('quiet').est_s).toBe(4 * moe('balanced').est_s);
+    const noRt = win.AT.planRows('quiet', dims, { runtime: { ok: false } }, facts).find(r => r.stage === 'moe');
+    expect(noRt.desc).toMatch(/install the bench runtime/);
+    expect(noRt.est_s).toBe(0);
+  });
+
   it('sends the cap on a verify run too, since the agent requires it', async () => {
     const win = await opened();
     win.AT.setObjective('quiet'); await flush();
@@ -941,6 +952,11 @@ describe('draft discovery (#889)', () => {
     win.AT.onEvent({ type: 'facts', model_id: 'org/m:Q4', n_expert: 0, n_layer: 32, mtp_layers: 1 }); await flush();
     expect(win.document.getElementById('atDraftRow').style.display).toBe('none');
   });
+  it('asks only for drafts the agent would accept — an eighth of the target size', async () => {
+    const win = await opened();
+    const url = win.__fetches.map(([u]) => String(u)).find(u => u.startsWith('/api/llm/draft-candidates'));
+    expect(url).toContain('max_bytes=' + Math.floor(PRE.sizes['org/m:Q4'] / 8));
+  });
   it('explains when Hugging Face has nothing suitable', async () => {
     const win = boot(); win.__draft = { ok: true, candidate: null, reason: 'no smaller GGUF of the qwen3 family on Hugging Face' };
     win.AT.onOpen('org/m:Q4'); for (let i = 0; i < 6; i++) await flush();
@@ -965,7 +981,7 @@ describe('draft discovery (#889)', () => {
     win.fetch = (u, o) => {
       const s = String(u);
       if (!s.startsWith('/api/llm/draft-candidates')) return real(u, o);
-      const mid = decodeURIComponent(s.split('model_id=')[1]);
+      const mid = decodeURIComponent(s.split('model_id=')[1].split('&')[0]);
       return new Promise(r => { pending[mid] = () => r({ ok: true, json: () => Promise.resolve({ ok: true, candidate: { repo: `repo-for-${mid}`, file: `${mid}.gguf`, size_bytes: 1e9 } }) }); });
     };
     win.AT.onOpen('org/m:Q4'); for (let i = 0; i < 6; i++) await flush();

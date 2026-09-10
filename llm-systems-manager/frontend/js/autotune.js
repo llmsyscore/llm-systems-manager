@@ -201,7 +201,9 @@
       _draftFor = mid; _draft = null; _draftBusy = true;
       row.style.display = ''; note.textContent = 'no draft on disk · looking for one on Hugging Face …'; btn.style.display = 'none';
       let d = null;
-      try { d = await fetch('/api/llm/draft-candidates?model_id=' + encodeURIComponent(mid)).then(r => r.json()); } catch (_) { d = null; }
+      const size = _pre && _pre.sizes ? _pre.sizes[mid] : null;
+      const ceil = Number.isFinite(Number(size)) && Number(size) > 0 ? '&max_bytes=' + Math.floor(Number(size) / 8) : '';
+      try { d = await fetch('/api/llm/draft-candidates?model_id=' + encodeURIComponent(mid) + ceil).then(r => r.json()); } catch (_) { d = null; }
       if (gen !== _draftGen) return;                                       // a newer lookup owns the shared state
       _draftBusy = false;
       if (primaryModel() !== mid) { _draftFor = ''; return; }
@@ -227,7 +229,8 @@
     _dl = src;
     note.textContent = `downloading ${c.file} …`;
     src.onmessage = async e => {
-      const msg = JSON.parse(e.data);
+      let msg;
+      try { msg = JSON.parse(e.data); } catch (_) { return; }
       if (msg.type === 'line' && msg.progress) note.textContent = `downloading · ${msg.text}`;
       else if (msg.type === 'done') {
         try { src.close(); } catch (_) {}
@@ -272,14 +275,19 @@
       let desc = '', n = 1;
       if (stage === 'context') desc = `converge -fitt to ${dims.context.target_mb} ± ${dims.context.tolerance_mb} MB free · up to 10 loads`;
       else if (stage === 'kv') { n = Math.max(1, (d.candidates || []).length); desc = `${(d.candidates || []).join(' · ')} — re-fit each, KL guard ≤ ${d.guard_kl_max}`; }
-      else if (stage === 'moe') { if (moe === false) on = false; desc = moe === null ? `bisect ${d.min} … ${d.max} if the model is MoE` : `bisect ${d.min} … ${d.max} expert layers on CPU, keep the fewest that fit`; }
+      else if (stage === 'moe') {
+        if (moe === false) on = false;
+        if (obj === 'quiet') { n = 4; desc = 'measure 4 offload counts for draw, fastest under the cap'; }
+        else desc = moe === null ? `bisect ${d.min} … ${d.max} if the model is MoE` : `bisect ${d.min} … ${d.max} expert layers on CPU, keep the fewest that fit`;
+      }
       else if (stage === 'threads') { n = Math.max(1, (d.candidates || []).length); desc = `${(d.candidates || []).join(' · ')} — decode + batch threads`; }
       else if (stage === 'spec') { const nd = hasDraft(primaryModel() || '') === false; n = nd ? 2 : 3; desc = `${(d.types || []).join(' · ')} · draft ${d.draft_model === 'auto' ? 'auto-discovered' : d.draft_model === 'none' ? 'none' : 'from disk'} · window ${d.n_min}–${d.n_max}`; if (nd) desc += ' · no draft yet — download one from the Spec row'; }
       else if (stage === 'slots') { n = Math.max(1, (d.candidates || []).length); desc = `${(d.candidates || []).join(' · ')} with ≥ ${Number(d.min_ctx_per_slot).toLocaleString()} ctx each — live concurrency sweep`; }
       else if (stage === 'sampling') desc = 'generation_config.json → model card → base model · no load needed';
       else desc = `load the recommended set once, confirm fit + ${rt ? '60 s of chat traffic' : 'free VRAM'}`;
-      if (MEASURED.includes(stage) && on && !rt) desc = 'skipped: install the bench runtime (Benchmark · Live) to measure this';
-      const est_s = on ? (MEASURED.includes(stage) && !rt ? 0 : EST[stage] * n) : 0;
+      const measured = MEASURED.includes(stage) || (obj === 'quiet' && stage === 'moe');
+      if (measured && on && !rt) desc = 'skipped: install the bench runtime (Benchmark · Live) to measure this';
+      const est_s = on ? (measured && !rt ? 0 : EST[stage] * n) : 0;
       rows.push({ stage, name: STAGE_NAME[stage], flag: STAGE_FLAG[stage], desc, on, est_s });
     });
     if (obj === 'fit') rows.forEach(r => { if (r.stage === 'sampling') r.desc += ' · reported, applied only if selected'; });
@@ -548,6 +556,7 @@
     _done = {}; _doneModel = null; _meta = {}; _section = {};
     fetchMeta(ids);
     newRun(null);
+    _run.powerCap = body.power_cap_w != null ? Number(body.power_cap_w) : null;
     setPane('Run');
     busy(true);
     openStream();
@@ -705,7 +714,7 @@
       const h = c.status === 'pending' ? 40 : (typeof v === 'number' && v > 0 ? Math.max(4, Math.round(100 * v / max)) : 6);
       const top = c.status === 'pending' ? '…' : (c.ok === false ? (c.error && /oom/i.test(c.error) ? 'OOM' : 'failed') : fmt(v, 1));
       const w = typeof c.avg_w === 'number' ? ` · ${Math.round(c.avg_w)} W` : '';
-      const cap = objective() === 'quiet' ? capValue() : null;
+      const cap = _run && _run.powerCap != null ? _run.powerCap : null;
       const over = cap != null && typeof c.avg_w === 'number' && c.avg_w > cap;
       return `<div class="at-bar ${cls}${over ? ' over' : ''}"><span class="t">${esc(top + w)}</span><i style="height:${h}%"></i><span class="l">${esc(c.value)}${v === best && cls === 'best' ? ' ★' : ''}</span></div>`;
     }).join('')}</div>`;
@@ -735,7 +744,7 @@
       if (body) body.innerHTML = `<div class="bl-tiles"><div class="bl-tile"><div class="v">${esc(fmt(c.decode_tps))}<em>t/s</em></div><div class="l">decode</div></div><div class="bl-tile"><div class="v">${esc(fmt(c.agg_tps))}<em>t/s</em></div><div class="l">aggregate</div></div><div class="bl-tile"><div class="v">${esc(fmt(c.free_mb, 0))}<em>MB</em></div><div class="l">free VRAM</div></div><div class="bl-tile"><div class="v">${c.status === 'pending' ? '…' : (c.ok ? 'pass' : 'fail')}</div><div class="l">attempt ${esc(c.value)}</div></div></div>`;
     } else {
       const metric = s === 'slots' && objective() === 'serve' ? 'agg_tps' : 'decode_tps';
-      if (meta) meta.innerHTML = `${metric === 'agg_tps' ? 'aggregate' : 'decode'} t/s per <b>${esc(STAGE_FLAG[s])}</b> · chat preset` + (objective() === 'quiet' && capValue() != null ? ` · cap ${esc(capValue())} W` : '');
+      if (meta) meta.innerHTML = `${metric === 'agg_tps' ? 'aggregate' : 'decode'} t/s per <b>${esc(STAGE_FLAG[s])}</b> · chat preset` + (_run.powerCap != null ? ` · cap ${esc(_run.powerCap)} W` : '');
       if (body) body.innerHTML = barsHtml(cands, metric) + `<div class="at-hint" style="margin-top:6px">${esc(cands.filter(c => c.ok === false).map(c => `${c.value}: ${c.error || 'failed'}`).join(' · '))}</div>`;
     }
     setStrip();
@@ -751,6 +760,7 @@
     const t = msg.type;
     if (t === 'model_start') {
       if (Array.isArray(msg.stages) && msg.stages.length) _run.order = msg.stages;
+      if (msg.power_cap_w != null) _run.powerCap = Number(msg.power_cap_w);
       _run.stages = {}; _run.order.forEach(s => { _run.stages[s] = { status: 'pending', text: '—' }; });
       _run.cands = {}; _run.iters = []; _run.current = null; _run.curEstS = 0;
       renderStepper(); renderStage(); log(`── ${msg.model_id} · ${msg.objective} ──`, 'acc');
