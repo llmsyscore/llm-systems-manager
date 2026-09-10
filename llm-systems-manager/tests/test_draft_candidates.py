@@ -83,6 +83,49 @@ def test_build_candidate_explains_an_empty_result():
     assert doc["candidate"] is None and doc["error"] == "search unavailable"
 
 
+Q8_ONLY = [{"rfilename": "m-Q8_0.gguf", "size": 800}]
+MANY = ROWS + [
+    {"id": "unsloth/Qwen3.8-1.5B-GGUF", "downloads": 50, "tags": ["gguf"]},
+    {"id": "unsloth/Qwen3.8-2B-GGUF", "downloads": 40, "tags": ["gguf"]},
+]
+
+
+class _PerRepoFetch:
+    """Search returns rows; each repo listing returns sibs_by_repo[repo], defaulting to a Q8-only repo."""
+
+    def __init__(self, rows, sibs_by_repo):
+        self.rows, self.sibs_by_repo, self.urls = rows, sibs_by_repo, []
+
+    def __call__(self, url):
+        self.urls.append(url)
+        if "/api/models?" in url:
+            return 200, json.dumps(self.rows)
+        if url.endswith("blobs=true"):
+            repo = url.split("/api/models/")[1].split("?")[0]
+            return 200, json.dumps({"siblings": self.sibs_by_repo.get(repo, Q8_ONLY)})
+        return 404, ""
+
+
+def test_build_candidate_skips_a_repo_with_no_usable_quant_and_tries_the_next():
+    f = _PerRepoFetch(ROWS, {"bartowski/Qwen3.8-1.7B-Instruct-GGUF": Q8_ONLY,
+                             "unsloth/Qwen3.8-0.6B-GGUF": SIBS})
+    doc = dc.build_candidate(TARGET, f)
+    assert doc["candidate"] == {"repo": "unsloth/Qwen3.8-0.6B-GGUF", "file": "m-0.6B-Q4_K_M.gguf",
+                                "size_bytes": 400, "params_b": 0.6}
+    assert doc["reason"].startswith("smallest same-family")
+    assert sum("blobs=true" in u for u in f.urls) == 2
+
+
+def test_build_candidate_gives_up_after_three_repos_without_a_usable_file():
+    eligible = [r for r in MANY if dc.pick_repo(TARGET, [r])]
+    assert len(eligible) == 5          # more of the family than the three attempts
+    f = _PerRepoFetch(MANY, {})
+    doc = dc.build_candidate(TARGET, f)
+    assert doc["candidate"] is None
+    assert doc["reason"] == "no smaller GGUF of the qwen3.8 family on Hugging Face"
+    assert sum("blobs=true" in u for u in f.urls) == 3
+
+
 def _ini(sections):
     cp = configparser.ConfigParser(default_section="__DEFAULTS__", interpolation=None)
     cp.optionxform = str
