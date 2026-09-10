@@ -15,6 +15,15 @@
   let _toolsActivity = { reportcard: false, benchmark: false, autotune: false };
   let _toolsLocalWas = { rc: false, bench: false, at: false };
   const _LEDGER_CAP = 100, _LEDGER_PAGE = 15;
+  // Shared run gate (#888): who is busy where, and one pending run per tool.
+  const _TOOL_LABEL = { reportcard: 'Report Card', benchmark: 'Benchmark',
+                        autotune: 'Autotune', quality: 'Quality guard' };
+  let _toolsActivityAgents = {};   // agent_id -> tools running on it
+  let _toolsDefaultAgent = {};     // provider -> primary agent id
+  let _toolsPending = {};          // tool id -> what its queued run waits for
+  let _toolsAgentsLoad = null;
+  let _toolsGateKey = '';
+  const _toolsGateSubs = new Set();
 
   function _tEl(id) { return document.getElementById(id); }
   function _tLayout() { return (typeof layout === 'object' && layout) ? layout : null; }
@@ -54,12 +63,136 @@
         _toolsActivity = {
           reportcard: !!d.reportcard, benchmark: !!d.benchmark, autotune: !!d.autotune,
         };
+        _toolsActivityAgents = (d.agents && typeof d.agents === 'object') ? d.agents : {};
         toolsSyncRunDot();
       })
       .catch(() => {});
   }
 
   function _tHost(agentId) { return _toolsAgents[agentId] || agentId || ''; }
+
+  // ── shared run gate (#888) ──────────────────────────────────────────────
+  function _toolsApplyAgents(byProvider) {
+    _toolsAgents = {};
+    _toolsDefaultAgent = {};
+    Object.entries(byProvider || {}).forEach(([prov, list]) =>
+      (list || []).forEach(a => {
+        _toolsAgents[a.agent_id] = a.hostname;
+        if (a.is_default) _toolsDefaultAgent[prov] = a.agent_id;
+      }));
+    if (_toolsDefaultAgent.llama) _toolsDefaultLlama = _toolsDefaultAgent.llama;
+  }
+
+  // A deep link opens a module before the launcher's own fetch runs.
+  function _toolsEnsureAgents() {
+    if (_toolsAgentsLoad || Object.keys(_toolsDefaultAgent).length) return;
+    const f = typeof _fetchT === 'function' ? _fetchT : (u => fetch(u));
+    _toolsAgentsLoad = f('/api/agents/list-by-provider')
+      .then(r => (r.ok ? r.json() : null))
+      .then(d => { if (d) { _toolsApplyAgents(d); toolsSyncRunDot(); } })
+      .catch(() => {});
+  }
+
+  // Local streams mapped to the agent they drive, so the gate answers instantly.
+  function _toolsLocalAgents() {
+    const out = {};
+    const add = (id, tool) => { if (id) (out[id] = out[id] || []).push(tool); };
+    const l = _toolsRunningLocal();
+    const vb = typeof _vbenchEventSrc !== 'undefined' && _vbenchEventSrc;
+    const va = typeof _vatEventSrc !== 'undefined' && _vatEventSrc;
+    const rcTarget = typeof _rcRunTarget !== 'undefined' && _rcRunTarget;
+    if (l.rc) add((rcTarget && rcTarget.agent) || _toolsDefaultAgent.llama, 'reportcard');
+    if (l.bench) add(vb ? _toolsDefaultAgent.vllm : _toolsDefaultAgent.llama, 'benchmark');
+    if (l.at) add(va ? _toolsDefaultAgent.vllm : _toolsDefaultAgent.llama,
+                  (window.QG && QG.running()) ? 'quality' : 'autotune');
+    return out;
+  }
+
+  // Which tool holds one provider/agent right now; null when it is free.
+  function toolsGateBusy(provider, agentId) {
+    _toolsEnsureAgents();
+    const id = agentId || _toolsDefaultAgent[provider || 'llama'] || null;
+    if (!id) return null;
+    const tools = [...new Set([...(_toolsLocalAgents()[id] || []),
+                               ...(_toolsActivityAgents[id] || [])])];
+    if (!tools.length) return null;
+    return { tool: tools[0], label: _TOOL_LABEL[tools[0]] || tools[0],
+             agent_id: id, host: _tHost(id) };
+  }
+
+  function toolsGateOn(fn) { if (typeof fn === 'function') _toolsGateSubs.add(fn); }
+
+  // An agent refusal that means "something else holds the tool lock".
+  function toolsGateRefusal(text) {
+    return /in progress|already running/i.test(String(text || ''));
+  }
+
+  // Tile id behind a slot key: 'benchmark:offline' marks the Benchmark tile.
+  function _toolsPendingFor(toolId) {
+    const hit = Object.keys(_toolsPending).find(
+      k => k === toolId || k.indexOf(toolId + ':') === 0);
+    return hit ? _toolsPending[hit] : null;
+  }
+
+  // A module's pending run, so the launcher can't show the tool as idle.
+  function toolsSetQueued(toolId, waitFor) {
+    if (!toolId) return;
+    if (waitFor) _toolsPending[toolId] = waitFor; else delete _toolsPending[toolId];
+    const home = _tEl('toolsHome');
+    if (_toolsInited && home && home.style.display !== 'none') _toolsRenderLauncher();
+  }
+
+  function _toolsGateNotify() {
+    const key = JSON.stringify([_toolsActivityAgents, _toolsLocalAgents()]);
+    if (key === _toolsGateKey) return;
+    _toolsGateKey = key;
+    [..._toolsGateSubs].forEach(fn => { try { fn(); } catch (_) {} });
+  }
+
+  // One queue slot per tool: at most one pending run, started by the gate once
+  // the provider/agent it waits on goes idle.
+  function toolsQueueSlot(toolId, opts) {
+    let pending = null;
+    const target = () => toolsGateBusy(opts.provider ? opts.provider() : 'llama',
+                                       opts.agent ? opts.agent() : null);
+    const paint = () => {
+      toolsSetQueued(toolId, pending ? pending.waitFor : null);
+      if (opts.render) {
+        try {
+          opts.render({ queued: !!pending, waitFor: pending ? pending.waitFor : null,
+                        busy: target() });
+        } catch (_) {}
+      }
+    };
+    const slot = {
+      busy: target,
+      queued: () => !!pending,
+      waitFor: () => (pending ? pending.waitFor : null),
+      queue(payload, waitFor) {
+        const b = target();
+        pending = { payload, waitFor: waitFor || _toolsGateText(b) };
+        paint();
+        return pending.waitFor;
+      },
+      drop() { if (!pending) return false; pending = null; paint(); return true; },
+      fire() {
+        if (!pending) return;
+        const payload = pending.payload;
+        pending = null;
+        paint();
+        try { opts.start(payload); } catch (_) {}
+      },
+      sync: paint,
+    };
+    toolsGateOn(() => { if (pending && !target()) slot.fire(); else paint(); });
+    return slot;
+  }
+
+  // "Benchmark on gpu-01" — the phrase every module shows while it waits.
+  function _toolsGateText(busy) {
+    if (!busy) return 'the run in progress';
+    return busy.label + (busy.host ? ' on ' + busy.host : '');
+  }
 
   function _tNum(v, dp) {
     return (v == null || !isFinite(v)) ? null : Number(v).toFixed(dp == null ? 1 : dp);
@@ -75,6 +208,7 @@
 
   // Shared shape for a runnable tool tile: status/last/sub/action derived once.
   function _runToolDesc(cfg, row, running, local) {
+    const pending = !running && _toolsPendingFor(cfg.id);
     const subVal = row ? (cfg.sub ? cfg.sub(row) : (_tNum(cfg.tps(row)) || '—') + ' t/s') : null;
     const core = row
       ? '<b>' + TC.esc(TC.age(row.ts) || '') + '</b> · '
@@ -82,10 +216,11 @@
       : null;
     return {
       id: cfg.id, icon: cfg.icon, tone: cfg.tone, name: cfg.name, desc: cfg.desc,
-      status: running ? 'running' : 'ready',
+      status: running ? 'running' : pending ? 'queued' : 'ready',
       stats: row ? cfg.stats(row) : null,
       empty: cfg.empty,
-      last: core ? 'last run ' + core : 'no runs yet',
+      last: pending ? 'queued behind ' + TC.esc(pending)
+        : core ? 'last run ' + core : 'no runs yet',
       lastShort: row ? '<b>' + TC.esc(TC.when(row.ts) || '—') + '</b>' : '—',
       sub: row ? subVal + ' · ' + (TC.age(row.ts) || '') : null,
       action: local ? 'View run' : (row ? 'Open' : 'Set up'),
@@ -294,6 +429,7 @@
     if (dot) dot.classList.toggle('on', _toolsRunning().any);
     const home = _tEl('toolsHome');
     if (_toolsInited && home && home.style.display !== 'none') _toolsRenderLauncher();
+    _toolsGateNotify();
   }
 
   const _TOOL_MODS = { reportcard: 'toolsMod', benchmark: 'toolsModBench', autotune: 'toolsModAt', quality: 'toolsModQg' };
@@ -509,14 +645,7 @@
       f('/api/reportcard/recent?limit=100').then(j),
       f('/api/tools/runs?limit=100').then(j),
     ]).then(([agents, rc, runs]) => {
-      if (agents.status === 'fulfilled') {
-        _toolsAgents = {};
-        Object.entries(agents.value || {}).forEach(([prov, list]) =>
-          (list || []).forEach(a => {
-            _toolsAgents[a.agent_id] = a.hostname;
-            if (prov === 'llama' && a.is_default) _toolsDefaultLlama = a.agent_id;
-          }));
-      }
+      if (agents.status === 'fulfilled') _toolsApplyAgents(agents.value);
       if (rc.status === 'fulfilled') _toolsRc = rc.value.cards || [];
       if (runs.status === 'fulfilled') {
         _toolsRuns = runs.value.runs || [];
@@ -555,4 +684,9 @@
   window.toolsClearHistory = toolsClearHistory;
   window.toolsSyncRunDot = toolsSyncRunDot;
   window.toolsPollActivity = toolsPollActivity;
+  window.toolsGateBusy = toolsGateBusy;
+  window.toolsGateOn = toolsGateOn;
+  window.toolsGateRefusal = toolsGateRefusal;
+  window.toolsSetQueued = toolsSetQueued;
+  window.toolsQueueSlot = toolsQueueSlot;
 })();

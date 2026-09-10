@@ -50,11 +50,12 @@
     return d.toLocaleString('en-US', opts);
   }
 
-  const _PILL = { ready: 'p-idle', running: 'p-busy', soon: 'p-unloaded' };
+  const _PILL = { ready: 'p-idle', running: 'p-busy', queued: 'p-unloaded', soon: 'p-unloaded' };
 
   function pill(t) {
     const cls = _PILL[t.status] || 'p-unloaded';
     const label = t.statusLabel || (t.status === 'running' ? 'Running'
+      : t.status === 'queued' ? 'Queued'
       : t.status === 'soon' ? 'Planned' : 'Ready');
     return `<span class="mc-pill ${cls}">${esc(label)}</span>`;
   }
@@ -114,7 +115,7 @@
 
   function chip(t) {
     const soon = t.status === 'soon';
-    const st = t.status === 'running' ? '<span class="st run"></span>'
+    const st = (t.status === 'running' || t.status === 'queued') ? '<span class="st run"></span>'
       : (t.stats && t.stats.length) ? '<span class="st done"></span>' : '';
     const tag = soon ? 'div' : 'button';
     const attrs = soon ? '' : ` data-tool="${esc(t.id)}" type="button"`;

@@ -80,3 +80,39 @@ export function loadSwitchSubTab(bootSrc) {
 export function flush() {
   return new Promise((r) => setTimeout(r, 0));
 }
+
+// Faithful stand-in for tools.js's toolsQueueSlot, for module tests that boot
+// without the Tools tab. The real gate is covered by tools-gate.test.js.
+export const QUEUE_SLOT_STUB = `
+  window.__slots = [];
+  window.__gateBusy = null;
+  window.toolsGateRefusal = (t) => /in progress|already running/i.test(String(t || ''));
+  window.toolsSetQueued = function (id, w) { window.__queued = w ? [id, w] : null; };
+  window.toolsQueueSlot = function (id, opts) {
+    const s = {
+      id: id, pending: null,
+      busy: () => window.__gateBusy || null,
+      queued: () => !!s.pending,
+      waitFor: () => (s.pending ? s.pending.waitFor : null),
+      queue(payload, waitFor) {
+        const b = window.__gateBusy;
+        s.pending = { payload: payload,
+          waitFor: waitFor || (b ? b.label + (b.host ? ' on ' + b.host : '') : 'the run in progress') };
+        s.sync();
+        return s.pending.waitFor;
+      },
+      drop() { if (!s.pending) return false; s.pending = null; s.sync(); return true; },
+      fire() {
+        const p = s.pending.payload; s.pending = null; s.sync();
+        return opts.start(p);
+      },
+      sync() {
+        window.toolsSetQueued(id, s.pending ? s.pending.waitFor : null);
+        if (opts.render) opts.render({ queued: !!s.pending,
+          waitFor: s.pending ? s.pending.waitFor : null, busy: s.busy() });
+      },
+    };
+    window.__slots.push(s);
+    return s;
+  };
+`;
