@@ -281,3 +281,16 @@ def test_savings_unchanged_when_fully_matched():
     rows = [_row(agent="a"), _row(agent="b", host="box2")]
     s = en.summarize(rows, 3600.0, 0.20, 0.15, 0.60)
     assert s["savings_usd"] == pytest.approx(2 * 0.675 - 2 * 0.04, abs=0.01)
+
+
+# ── host_peak ────────────────────────────────────────────────────────
+
+def test_host_peak_is_the_max_hourly_average_over_metered_hours():
+    rows = [
+        {"agent_id": "a", "hour_ts": 100, "energy_wh": 150.0, "power_s": 3600.0},   # 150 W
+        {"agent_id": "a", "hour_ts": 200, "energy_wh": 100.0, "power_s": 1800.0},   # 200 W over half an hour
+        {"agent_id": "a", "hour_ts": 300, "energy_wh": 0.0, "power_s": 0.0},        # unmetered, ignored
+        {"agent_id": "b", "hour_ts": 100, "energy_wh": 900.0, "power_s": 3600.0},   # other host
+    ]
+    assert en.host_peak(rows, "a") == {"peak_w": 200.0, "hours": 2, "since": 100}
+    assert en.host_peak(rows, "zzz") == {"peak_w": None, "hours": 0, "since": None}

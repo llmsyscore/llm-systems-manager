@@ -5409,7 +5409,7 @@ tool_activity.configure(
         m, a, p, headers={"Authorization": f"Bearer {a.get('token') or ''}"}, **kw)[0],
     reportcard_active=report_card.active_agents,
 )
-energy.register_routes(app, ctx, db_path=str(DB_PATH))
+energy.register_routes(app, ctx, db_path=str(DB_PATH), primary_agent=lambda: _request_agent("llama"))
 model_meta.register_routes(app, ctx, db_path=str(DB_PATH), read_ini=_read_ini)
 draft_candidates.register_routes(app, ctx, db_path=str(DB_PATH), read_ini=_read_ini)
 

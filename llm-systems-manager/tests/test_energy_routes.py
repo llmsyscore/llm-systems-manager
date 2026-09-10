@@ -310,3 +310,26 @@ def test_summary_error_mentions_window_parameters(client):
     c, conn = client
     body = c.get("/api/energy/summary?start=x&end=y").get_json()
     assert body["error"] == "invalid window parameters"
+
+
+def test_host_peak_route_defaults_to_the_primary_agent(monkeypatch, tmp_path):
+    from flask import Flask
+    app = Flask(__name__)
+    conn = sqlite3.connect(tmp_path / "p.db", check_same_thread=False)
+    en.init_table(conn)
+    monkeypatch.setattr(en, "_conn_factory", lambda: conn, raising=False)
+    en.register_routes(app, ctx=None, db_path=str(tmp_path / "p.db"), primary_agent=lambda: {"agent_id": A1})
+    c = app.test_client()
+    hour = int(time.time() // 3600) * 3600
+    _seed(conn, hour - 3600, wh=320.0)
+    _seed(conn, hour, wh=250.0)
+    body = c.get("/api/energy/host-peak").get_json()
+    assert body["ok"] is True and body["agent_id"] == A1
+    assert body["peak_w"] == 320.0 and body["hours"] == 2 and body["days"] == 30
+    other = c.get("/api/energy/host-peak?agent_id=" + "b" * 32).get_json()
+    assert other["ok"] is True and other["peak_w"] is None and other["hours"] == 0
+
+
+def test_host_peak_route_without_an_agent_is_a_400(client):
+    c, _ = client
+    assert c.get("/api/energy/host-peak").status_code == 400
