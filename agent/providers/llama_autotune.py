@@ -354,10 +354,9 @@ def parse_kl_stats(text: str) -> dict:
         m = rx.search(text or "")
         if not m:
             continue
-        try:
-            out[key] = float(m.group(1))
-        except ValueError:
-            continue    # a stat that is not a number is left out of the result
+        v = _num(m.group(1))
+        if v is not None:
+            out[key] = v
     return out
 
 
