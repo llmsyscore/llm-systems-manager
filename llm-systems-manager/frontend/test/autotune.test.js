@@ -10,6 +10,7 @@ const PRE = {
   ok: true, busy: false, unit_active: false, cores: { physical: 16, logical: 32 }, perplexity: true,
   runtime: { ok: true }, drafts: [{ repo: 'unsloth/Qwen3-0.6B-GGUF', file: 'Qwen3-0.6B-Q8_0.gguf', path: '/h/a.gguf', size: 7e8 }],
   sizes: { 'org/big:Q4': 90e9, 'org/m:Q4': 18e9 }, vram_total_mb: 32768, ram_total_mb: 32768,
+  drafts_for: { 'org/m:Q4': null, 'org/big:Q4': { repo: 'unsloth/Qwen3-0.6B-GGUF', file: 'Qwen3-0.6B-Q8_0.gguf', size: 7e8 } },
 };
 
 // foundation.js declares `let layout` at top level, so window.layout is undefined;
@@ -22,6 +23,7 @@ const STUBS = `
   window.TC = { esc: (s) => String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])) };
   window.SG = { open: (opts) => { window.__sse = opts; return { close() { window.__closed = true; } }; } };
   window.toolsSyncRunDot = function () {};
+  window.openAgentSse = async () => { const s = { close() { s.closed = true; } }; window.__dl = s; return s; };
   window.__alerts = [];
   window.alert = function (m) { window.__alerts.push(String(m)); };
   window.__fetches = [];
@@ -44,6 +46,8 @@ const STUBS = `
       : u.startsWith('/api/llm/model-meta') ? { repo: 'org/m', base_model: 'org/base', suggestions: [{ key: 'temperature', value: 0.7, source: 'sidecar' }, { key: 'top-p', value: 0.8, source: 'model_card' }, { key: 'min-p', value: 0, source: 'base_model' }] }
       : u.startsWith('/api/llm/autotune/run') ? (window.__runReply || { ok: true, run_id: 'r1' })
       : (u === '/api/llm/config' && opts && opts.method === 'POST') ? (window.__failConfig ? { ok: false, error: 'boom' } : { ok: true })
+      : u.startsWith('/api/energy/host-peak') ? (window.__peak || { ok: true, peak_w: 312.4, hours: 21, peak_active_w: 300.2, active_hours: 12 })
+      : u.startsWith('/api/llm/draft-candidates') ? (window.__draft || { ok: true, candidate: { repo: 'unsloth/Qwen3-0.6B-GGUF', file: 'Qwen3-0.6B-Q4_K_M.gguf', size_bytes: 420e6, params_b: 0.6 }, reason: 'smallest instruct GGUF at ≤ 25 % of the target' })
       : { ok: true };
     return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve(body), text: () => Promise.resolve(JSON.stringify(body)) });
   };
@@ -89,7 +93,7 @@ describe('AT rail', () => {
     expect(list.querySelectorAll('.mc-toggle[data-model]').length).toBe(2);
     expect(list.textContent).toContain('MoE · 128 experts');
     expect(list.textContent).toContain('no fit');
-    expect(win.document.getElementById('atDraftSel').options.length).toBe(3);
+    expect(win.document.getElementById('atDraftSel').options.length).toBe(2);   // the cached Qwen draft is another family
     expect(win.document.getElementById('atPrevTune').textContent).toContain('2026-08-28');
   });
 
@@ -614,6 +618,18 @@ describe('re-verify (#887)', () => {
     expect(win.document.getElementById('atRecSel').textContent).toMatch(/nothing to apply/);
     expect(win.document.getElementById('atCmp').textContent).toMatch(/becomes the baseline/);
   });
+  it('disables Re-verify while its own run streams and re-enables it when the run ends', async () => {
+    const win = await opened();
+    win.__status = { ok: true, items: [{ agent_id: 'a1', model_id: 'org/m:Q4', llama_build: 'b100', current_build: 'b120', stale: true, summary: { decode_tps: 41.5 } }] };
+    await win.AT.onOpen('org/m:Q4', { verify: true }); for (let i = 0; i < 4; i++) await flush();
+    const vb = win.document.getElementById('atVerifyBtn');
+    expect(win.AT.running()).toBe(true);
+    expect(vb.disabled).toBe(true);
+    win.AT.onEvent({ type: 'model_done', model_id: 'org/m:Q4', ok: true, mode: 'verify', llama_build: 'b120', regressed: false,
+      before: { decode_tps: 41.5 }, after: { decode_tps: 42, ctx: 8192 }, verify: { ok: true, seconds: 60 }, changes: [], stages: [{ stage: 'verify', status: 'done' }] });
+    win.AT.onEvent({ type: 'done', ok: true }); await flush();
+    expect(vb.disabled).toBe(false);
+  });
   it('only focuses the Re-verify button when llama-server still holds the host', async () => {
     const win = await opened();
     win.__status = { ok: true, items: [{ agent_id: 'a1', model_id: 'org/m:Q4', llama_build: 'b100', current_build: 'b120', stale: true, summary: {} }] };
@@ -840,5 +856,228 @@ describe('AT queueing behind another tool (#888)', () => {
     expect(win.__slots[0].queued()).toBe(true);
     expect(win.__slots[0].waitFor()).toBe('the run in progress');
     expect(win.__alerts).toEqual([]);
+  });
+});
+
+describe('Quiet objective (#890)', () => {
+  it('reveals a cap prefilled at 90 % of the busiest hour under load and remembers it', async () => {
+    const win = await opened();
+    win.AT.setObjective('quiet'); await flush();
+    const row = win.document.getElementById('atCapRow'), cap = win.document.getElementById('atPowerCap');
+    expect(row.style.display).not.toBe('none');
+    expect(cap.value).toBe('270');
+    expect(win.document.getElementById('atCapHint').textContent).toMatch(/drew 300 W under load.*12 h.*270 W/);
+    cap.value = '200'; cap.dispatchEvent(new win.Event('input', { bubbles: true }));
+    expect(win.__layout().atPowerCap).toBe(200);
+    win.AT.setObjective('balanced');
+    expect(row.style.display).toBe('none');
+  });
+
+  it('falls back to the hourly peak itself when no load was ever metered', async () => {
+    const win = boot(); win.__peak = { ok: true, peak_w: 312.4, hours: 21, peak_active_w: null, active_hours: 0 };
+    win.AT.onOpen('org/m:Q4'); for (let i = 0; i < 6; i++) await flush();
+    win.AT.setObjective('quiet'); await flush();
+    expect(win.document.getElementById('atPowerCap').value).toBe('312');
+    expect(win.document.getElementById('atCapHint').textContent).toMatch(/no load-draw history.*312 W/);
+  });
+
+  it('asks for a cap when the host has no power history', async () => {
+    const win = boot(); win.__peak = { ok: true, peak_w: null, hours: 0, peak_active_w: null, active_hours: 0 };
+    win.AT.onOpen('org/m:Q4'); for (let i = 0; i < 6; i++) await flush();
+    win.AT.setObjective('quiet'); await flush();
+    expect(win.document.getElementById('atPowerCap').value).toBe('');
+    expect(win.document.getElementById('atCapHint').textContent).toMatch(/no power history/i);
+    await win.AT.run();
+    expect(win.__alerts.pop()).toMatch(/power cap/i);
+    expect(win.__fetches.some(([u, o]) => u === '/api/llm/autotune/run' && o && o.method === 'POST')).toBe(false);
+  });
+
+  it('switches the dims to the quiet set and posts the cap', async () => {
+    const win = await opened();
+    win.AT.setObjective('quiet'); await flush();
+    const on = d => win.document.querySelector(`.at-dim[data-dim="${d}"] [data-dim-on]`).classList.contains('on');
+    expect(on('kv')).toBe(false); expect(on('spec')).toBe(false); expect(on('sampling')).toBe(false);
+    expect(on('threads')).toBe(true); expect(on('slots')).toBe(true);
+    expect([...win.document.querySelectorAll('#atSlotChips .bl-chip.on')].map(c => c.dataset.v)).toEqual(['1', '2', '4']);
+    await win.AT.run(); for (let i = 0; i < 4; i++) await flush();
+    const post = win.__fetches.find(([u, o]) => u === '/api/llm/autotune/run' && o && o.method === 'POST');
+    const body = JSON.parse(post[1].body);
+    expect(body.objective).toBe('quiet'); expect(body.power_cap_w).toBe(270);
+    expect(body.dims.kv.on).toBe(false); expect(body.dims.slots.candidates).toEqual([1, 2, 4]);
+    expect(win.document.getElementById('atObjHint').textContent).toMatch(/watt/i);
+  });
+
+  it('shows watts on the stage bars, marks over-cap candidates, and reads the draw on the done pane', async () => {
+    const win = await opened();
+    win.AT.setObjective('quiet'); await flush();
+    await win.AT.run(); for (let i = 0; i < 4; i++) await flush();
+    win.__sse.onEvent({ type: 'model_start', model_id: 'org/m:Q4', objective: 'quiet', stages: ['context', 'threads', 'verify'] }, {});
+    win.__sse.onEvent({ type: 'stage_start', model_id: 'org/m:Q4', stage: 'threads', candidates: [8, 16], est_s: 60 }, {});
+    win.__sse.onEvent({ type: 'candidate_result', model_id: 'org/m:Q4', stage: 'threads', value: 8, ok: true, decode_tps: 90, avg_w: 180 }, {});
+    win.__sse.onEvent({ type: 'candidate_result', model_id: 'org/m:Q4', stage: 'threads', value: 16, ok: true, decode_tps: 101, avg_w: 310 }, {});
+    const bars = win.document.querySelectorAll('#atStageBody .at-bar');
+    expect(bars[0].textContent).toContain('180 W'); expect(bars[0].classList.contains('over')).toBe(false);
+    expect(bars[1].classList.contains('over')).toBe(true);
+    expect(win.document.getElementById('atStageMeta').textContent).toContain('cap 270 W');
+    win.__sse.onEvent({ ...DONE, objective: 'quiet', power_cap_w: 250, over_cap: false, after: { ...DONE.after, avg_w: 212.5 } }, {});
+    win.__sse.onEvent({ type: 'done', ok: true }, {});
+    await flush();
+    expect(win.document.getElementById('atRecBig').textContent).toMatch(/213 W under the 250 W cap/);
+    expect(win.document.getElementById('atGuard').textContent).toMatch(/MB free under load · 213 W/);
+    win.__sse.onEvent({ ...DONE, objective: 'quiet', power_cap_w: 250, over_cap: false, after: { ...DONE.after, avg_w: 252 } }, {});
+    win.__sse.onEvent({ type: 'done', ok: true }, {}); await flush();
+    expect(win.document.getElementById('atRecBig').textContent).toMatch(/252 W at the 250 W cap \(252 W is within the cap's tolerance\)/);
+    win.__sse.onEvent({ ...DONE, objective: 'quiet', power_cap_w: 250, over_cap: true, after: { ...DONE.after, avg_w: 290 } }, {});
+    win.__sse.onEvent({ type: 'done', ok: true }, {}); await flush();
+    expect(win.document.getElementById('atRecBig').innerHTML).toMatch(/class="neg">290 W<\/b> over the 250 W cap/);
+  });
+
+  it('plans the MoE stage as four measured offload counts under Quiet', async () => {
+    const win = await opened();
+    const dims = win.AT.dimsState(), facts = { n_expert: 128, n_layer: 48 };
+    const moe = o => win.AT.planRows(o, dims, win.AT.state().pre, facts).find(r => r.stage === 'moe');
+    expect(moe('quiet').desc).toBe('measure 4 offload counts for draw, fastest under the cap');
+    expect(moe('quiet').est_s).toBe(4 * moe('balanced').est_s);
+    const noRt = win.AT.planRows('quiet', dims, { runtime: { ok: false } }, facts).find(r => r.stage === 'moe');
+    expect(noRt.desc).toMatch(/install the bench runtime/);
+    expect(noRt.est_s).toBe(0);
+  });
+
+  it('sends the cap on a verify run too, since the agent requires it', async () => {
+    const win = await opened();
+    win.AT.setObjective('quiet'); await flush();
+    await win.AT.verify(); for (let i = 0; i < 4; i++) await flush();
+    const post = win.__fetches.find(([u, o]) => u === '/api/llm/autotune/run' && o && o.method === 'POST');
+    expect(JSON.parse(post[1].body).power_cap_w).toBe(270);
+  });
+
+  it('surfaces the agent refusal text for an agent that predates Quiet', async () => {
+    const win = await opened();
+    win.AT.setObjective('quiet'); await flush();
+    win.__runReply = { ok: false, detail: 'objective must be one of fit, speed, balanced, serve' };
+    await win.AT.run(); for (let i = 0; i < 4; i++) await flush();
+    expect(win.__alerts.pop()).toMatch(/objective must be one of/);
+  });
+});
+
+describe('draft discovery (#889)', () => {
+  it('drops the run-first advice once a tune has recorded that there is no head', async () => {
+    const win = boot();
+    const realFetch = win.fetch;
+    win.fetch = (u, o) => (String(u).startsWith('/api/tools/runs')
+      ? Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({ runs: [{ tool: 'autotune', model_id: 'org/m:Q4', ok: true, ts: '2026-09-10T10:00:00Z', summary: { objective: 'fit', n_expert: 0, mtp_layers: 0 } }], latest: {} }) })
+      : realFetch(u, o));
+    win.AT.onOpen('org/m:Q4'); for (let i = 0; i < 6; i++) await flush();
+    const note = win.document.getElementById('atDraftNote').textContent;
+    expect(note).toMatch(/no draft on disk/);
+    expect(note).not.toMatch(/Run Autotune once first/);
+  });
+  it('needs no draft for a model whose last tune recorded a NextN head', async () => {
+    const win = boot();
+    const realFetch = win.fetch;
+    win.fetch = (u, o) => (String(u).startsWith('/api/tools/runs')
+      ? Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({ runs: [{ tool: 'autotune', model_id: 'org/m:Q4', ok: true, ts: '2026-09-10T10:00:00Z', summary: { objective: 'fit', n_expert: 0, mtp_layers: 1 } }], latest: {} }) })
+      : realFetch(u, o));
+    win.AT.onOpen('org/m:Q4'); for (let i = 0; i < 6; i++) await flush();
+    expect(win.document.getElementById('atDraftRow').style.display).toBe('none');
+    expect(win.__fetches.some(([u]) => String(u).startsWith('/api/llm/draft-candidates'))).toBe(false);
+    expect(win.document.querySelector('.at-dim[data-dim="spec"] [data-dim-sum]').textContent).toContain('NextN head, no draft needed');
+  });
+  it('lists only same-family drafts small enough to auto-detect, and hides the row on a manual pick', async () => {
+    const win = boot();
+    win.__pre = { ...PRE, drafts: [...PRE.drafts,
+      { repo: 'org/m-0.6B-GGUF', file: 'm-0.6B-Q8_0.gguf', path: '/h/s.gguf', size: 7e8 },
+      { repo: 'org/m-9B-GGUF', file: 'm-9B-Q4_K_M.gguf', path: '/h/big.gguf', size: 6e9 },
+      { repo: 'org/m-0.6B-GGUF', file: 'm-0.6B-dflash.gguf', path: '/h/df.gguf', size: 3e8 }] };
+    win.AT.onOpen('org/m:Q4'); for (let i = 0; i < 6; i++) await flush();
+    const sel = win.document.getElementById('atDraftSel');
+    expect([...sel.options].map(o => o.value)).toEqual(['auto', 'none', '/h/s.gguf']);
+    expect(win.document.getElementById('atDraftRow').style.display).not.toBe('none');
+    sel.value = '/h/s.gguf'; sel.dispatchEvent(new win.Event('change', { bubbles: true })); await flush();
+    expect(win.document.getElementById('atDraftRow').style.display).toBe('none');
+    sel.value = 'auto'; sel.dispatchEvent(new win.Event('change', { bubbles: true })); await flush();
+    expect(win.document.getElementById('atDraftRow').style.display).not.toBe('none');
+  });
+  it('offers the Hugging Face candidate when the model has no draft on disk', async () => {
+    const win = await opened();
+    const row = win.document.getElementById('atDraftRow');
+    expect(row.style.display).not.toBe('none');
+    expect(win.document.getElementById('atDraftNote').textContent).toMatch(/no draft on disk.*Qwen3-0\.6B-Q4_K_M\.gguf.*0\.4 GB/);
+    // The fixture's ledger row never recorded a head, so the offer carries the run-first advice.
+    expect(win.document.getElementById('atDraftNote').textContent).toMatch(/Run Autotune once first/);
+    expect(win.document.getElementById('atDraftDlBtn').style.display).not.toBe('none');
+    const spec = [...win.document.querySelectorAll('#atPlanRows .at-plan-r')].find(r => r.textContent.includes('Speculative'));
+    expect(spec.textContent).toMatch(/no draft yet/);
+  });
+  it('stays quiet when a draft is already cached or the model has a NextN head', async () => {
+    const win = await opened();
+    win.document.querySelector('#atModelList .mc-toggle[data-model="org/big:Q4"]').click(); win.document.querySelector('#atModelList .mc-toggle[data-model="org/m:Q4"]').click();
+    await flush();
+    expect(win.document.getElementById('atDraftRow').style.display).toBe('none');
+    win.document.querySelector('#atModelList .mc-toggle[data-model="org/m:Q4"]').click(); win.document.querySelector('#atModelList .mc-toggle[data-model="org/big:Q4"]').click();
+    win.AT.onEvent({ type: 'facts', model_id: 'org/m:Q4', n_expert: 0, n_layer: 32, mtp_layers: 1 }); await flush();
+    expect(win.document.getElementById('atDraftRow').style.display).toBe('none');
+  });
+  it('asks only for drafts the agent would accept — an eighth of the target size', async () => {
+    const win = await opened();
+    const url = win.__fetches.map(([u]) => String(u)).find(u => u.startsWith('/api/llm/draft-candidates'));
+    expect(url).toContain('max_bytes=' + Math.floor(PRE.sizes['org/m:Q4'] / 8));
+  });
+  it('explains when Hugging Face has nothing suitable', async () => {
+    const win = boot(); win.__draft = { ok: true, candidate: null, reason: 'no smaller GGUF of the qwen3 family on Hugging Face' };
+    win.AT.onOpen('org/m:Q4'); for (let i = 0; i < 6; i++) await flush();
+    expect(win.document.getElementById('atDraftNote').textContent).toMatch(/no smaller GGUF/);
+    expect(win.document.getElementById('atDraftDlBtn').style.display).toBe('none');
+  });
+  it('says it is looking while the lookup is in flight, never that it failed', async () => {
+    const win = boot(); const real = win.fetch; let release;
+    win.fetch = (u, o) => String(u).startsWith('/api/llm/draft-candidates')
+      ? new Promise(r => { release = () => r({ ok: true, json: () => Promise.resolve({ ok: true, candidate: { repo: 'unsloth/Qwen3-0.6B-GGUF', file: 'Qwen3-0.6B-Q4_K_M.gguf', size_bytes: 420e6 } }) }); })
+      : real(u, o);
+    win.AT.onOpen('org/m:Q4'); for (let i = 0; i < 6; i++) await flush();
+    expect(win.document.getElementById('atDraftNote').textContent).toMatch(/looking for one on Hugging Face/);
+    expect(win.document.getElementById('atDraftDlBtn').style.display).toBe('none');
+    release(); for (let i = 0; i < 4; i++) await flush();
+    expect(win.document.getElementById('atDraftNote').textContent).toMatch(/Qwen3-0\.6B-Q4_K_M\.gguf/);
+    expect(win.document.getElementById('atDraftDlBtn').style.display).not.toBe('none');
+  });
+  it('never renders or downloads one model\'s candidate under another', async () => {
+    const win = boot(); const real = win.fetch; const pending = {};
+    win.__pre = { ...PRE, drafts_for: { 'org/m:Q4': null, 'org/big:Q4': null } };
+    win.fetch = (u, o) => {
+      const s = String(u);
+      if (!s.startsWith('/api/llm/draft-candidates')) return real(u, o);
+      const mid = decodeURIComponent(s.split('model_id=')[1].split('&')[0]);
+      return new Promise(r => { pending[mid] = () => r({ ok: true, json: () => Promise.resolve({ ok: true, candidate: { repo: `repo-for-${mid}`, file: `${mid}.gguf`, size_bytes: 1e9 } }) }); });
+    };
+    win.AT.onOpen('org/m:Q4'); for (let i = 0; i < 6; i++) await flush();
+    win.document.querySelector('#atModelList .mc-toggle[data-model="org/big:Q4"]').click();
+    win.document.querySelector('#atModelList .mc-toggle[data-model="org/m:Q4"]').click();
+    await flush();
+    pending['org/m:Q4'](); for (let i = 0; i < 4; i++) await flush();
+    win.AT.onEvent({ type: 'facts', model_id: 'org/other', n_expert: 0 }); await flush();
+    const note = win.document.getElementById('atDraftNote');
+    expect(note.textContent).not.toContain('org/m:Q4.gguf');
+    expect(note.textContent).toMatch(/looking for one on Hugging Face/);
+    await win.AT.downloadDraft(); await flush();
+    expect(win.__fetches.find(([u]) => u === '/api/llm/download')).toBeUndefined();
+    pending['org/big:Q4'](); for (let i = 0; i < 4; i++) await flush();
+    expect(note.textContent).toContain('org/big:Q4.gguf');
+  });
+  it('downloads with one click, streams progress into the row, and refreshes the draft list on completion', async () => {
+    const win = await opened();
+    await win.AT.downloadDraft(); await flush();
+    const post = win.__fetches.find(([u, o]) => u === '/api/llm/download' && o && o.method === 'POST');
+    expect(JSON.parse(post[1].body)).toEqual({ repo: 'unsloth/Qwen3-0.6B-GGUF', patterns: ['Qwen3-0.6B-Q4_K_M.gguf'] });
+    expect(win.document.getElementById('atDraftDlBtn').disabled).toBe(true);
+    win.__dl.onmessage({ data: JSON.stringify({ type: 'line', text: 'Qwen3-0.6B-Q4_K_M.gguf: 41%', progress: true }) });
+    expect(win.document.getElementById('atDraftNote').textContent).toContain('41%');
+    win.__pre = { ...PRE, drafts: [...PRE.drafts, { repo: 'org/m-0.6B-GGUF', file: 'm-0.6B-Q4_K_M.gguf', path: '/h/c.gguf', size: 420e6 }],
+                  drafts_for: { ...PRE.drafts_for, 'org/m:Q4': { repo: 'unsloth/Qwen3-0.6B-GGUF', file: 'Qwen3-0.6B-Q4_K_M.gguf', size: 420e6 } } };
+    win.__dl.onmessage({ data: JSON.stringify({ type: 'done', ok: true }) });
+    for (let i = 0; i < 4; i++) await flush();
+    expect(win.__dl.closed).toBe(true);
+    expect(win.document.getElementById('atDraftRow').style.display).toBe('none');
+    expect([...win.document.getElementById('atDraftSel').options].some(o => o.textContent.includes('m-0.6B-Q4_K_M.gguf'))).toBe(true);
   });
 });

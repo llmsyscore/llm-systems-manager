@@ -189,7 +189,9 @@ _AT_MEM_RE = re.compile(
 )
 _AT_GPU_HINT_RE = re.compile(r"(?i)vulkan|rocm|cuda|hip|metal")
 _AT_MODEL_LOADED_RE = re.compile(r"(?:^|\s)(?:\w+\s*:\s*)?model loaded\b", re.IGNORECASE)
-_AT_BUILD_RE = re.compile(r"\bbuild:\s*(\d+)\s*\(([0-9a-fA-F]{6,})\)")
+_AT_BUILD_RE = re.compile(r"\bbuild:?\s*(\d+)\s*\(([0-9a-fA-F]{6,})\)")
+# Model facts come from print_info lines plus the loader's NextN key-value line.
+_AT_FACT_LINE = ("print_info:", "nextn_predict_layers")
 # The alloc alternative allows only a size/unit run between "alloc…" and "failed".
 _AT_OOM_RE = re.compile(
     r"out of memory|failed to allocate|cudaMalloc failed|OutOfDeviceMemory|not enough (?:memory|space)"
@@ -2886,7 +2888,7 @@ def _autotune_run_iter(model_id: str, fitt_mb: "Optional[int]", extra_args: list
                         fit_applied = False
                     elif "context size reduced from" in line:
                         fit_applied = True
-                if "print_info:" in line:
+                if any(tag in line for tag in _AT_FACT_LINE):
                     facts_lines.append(line)
                 bm = _AT_BUILD_RE.search(line) if not build else None
                 if bm:
@@ -3328,7 +3330,6 @@ class _AutotuneBackend:
 
     def __init__(self, model_id: str, env: dict, run_id: str):
         self.model_id, self.env, self.run_id = model_id, env, run_id
-        self._energy: "Optional[_bl.PowerIntegrator]" = None
         self._n = 0
 
     def converge(self, args, target_mb, tolerance_mb, start_fitt, max_iters):
@@ -3385,11 +3386,15 @@ class _AutotuneBackend:
         out_path.unlink(missing_ok=True)
         benv = dict(os.environ, PYTHONUNBUFFERED="1", HF_HUB_DISABLE_PROGRESS_BARS="1")
         level = req["concurrency"][0]
+        integ = _bl.PowerIntegrator(_live_power_w) if measure.get("energy") else None
         t0 = time.monotonic()
+        if integ:
+            integ.start()
         rc, cancelled, elapsed = _bl.run_level_subprocess(
             _bl.build_cmd(rt["python"], rt["script"], url, req, level, str(out_path)),
             benv, _autotune_put, self.model_id, level, _autotune_cancel_event,
             _autotune_track_aux, _autotune_untrack_aux)
+        wh, esrc = integ.stop() if integ else (None, None)
         wall = elapsed if elapsed is not None else (time.monotonic() - t0)
         if cancelled:
             return {"ok": False, "error": "cancelled"}
@@ -3401,7 +3406,8 @@ class _AutotuneBackend:
         return {"ok": rc in (0, 1) and bool(s.get("pred_tps")), "decode_tps": s.get("pred_tps"),
                 "prefill_tps": s.get("prompt_tps"), "latency_s": s.get("latency_s"), "agg_tps": s.get("agg_pred_tps"),
                 "accept": s.get("accept_rate"), "completion_tokens": s.get("completion_tokens"),
-                "seconds": round(wall, 1), "error": None if rc in (0, 1) else f"speed-bench rc={rc}"}
+                "seconds": round(wall, 1), "energy_wh": wh, "energy_source": esrc,
+                "error": None if rc in (0, 1) else f"speed-bench rc={rc}"}
 
     def kl(self, args, write_base):
         """Writes the f16 KL base, or scores the current args against it."""
@@ -3449,17 +3455,6 @@ class _AutotuneBackend:
         else:
             err = f"llama-perplexity rc={proc.returncode}"
         return {"ok": ok, "kl": kl, "stats": stats, "error": None if ok else err}
-
-    def energy_start(self):
-        self._energy = _bl.PowerIntegrator(_live_power_w)
-        self._energy.start()
-
-    def energy_stop(self):
-        if self._energy is None:
-            return None, None
-        wh, src = self._energy.stop()
-        self._energy = None
-        return wh, src
 
 
 _llama_help_cache: dict[str, set] = {}
@@ -3619,6 +3614,12 @@ def llama_autotune_preflight(authorization: Optional[str] = Header(default=None)
     vram = gpu.get("vram_total_bytes")
     hv = _llama_help_valued()
     pdet = _autotune_perplexity_status()
+    drafts = _list_cache_ggufs(_hf_cache_root())
+    # Per-model: the draft already in the HF cache, or None.
+    drafts_for: dict = {}
+    for mid, size in sizes.items():
+        hit = _at.find_draft(drafts, mid.rsplit(":", 1)[0], int(size or 0))
+        drafts_for[mid] = {"repo": hit["repo"], "file": hit["file"], "size": hit["size"]} if hit else None
     return {"ok": True, "busy": bool(_bench_active or _autotune_active), "unit_active": _llama_unit_active(),
             "autotune_active": bool(_autotune_active), "quality_active": bool(_autotune_active and _autotune_quality),
             "help_valued": {"ok": hv is not None, "count": len(hv or ())},
@@ -3629,7 +3630,7 @@ def llama_autotune_preflight(authorization: Optional[str] = Header(default=None)
             "perplexity_detail": {"present": pdet["present"], "kl_text": pdet["kl_text"],
                                   "runnable": pdet["runnable"], "rc": pdet["rc"], "hint": pdet["hint"]},
             "runtime": {"ok": bool(rt["python"] and rt["script"]), **rt},
-            "drafts": _list_cache_ggufs(_hf_cache_root()), "sizes": sizes,
+            "drafts": drafts, "drafts_for": drafts_for, "sizes": sizes,
             "vram_total_mb": int(vram // (1024 * 1024)) if isinstance(vram, (int, float)) and vram else None,
             "ram_total_mb": _ram_total_mb()}
 

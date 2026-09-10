@@ -8,6 +8,7 @@
     speed: '<b>Speed</b> spends VRAM on single-request throughput: f16 KV where it fits, one slot, the fastest threads and speculative setup.',
     balanced: '<b>Balanced</b> keeps at least the minimum context per slot and takes any change that is speed-neutral or better.',
     serve: '<b>Serve</b> maximises aggregate tokens/s across parallel slots, accepting lower per-request speed.',
+    quiet: '<b>Quiet</b> keeps the host under a watt cap: every candidate is metered and the fastest one under the cap wins. Threads, slots and MoE offload are tuned; KV, speculative and sampling stay off.',
   };
   const STAGE_NAME = { context: 'Context size', kv: 'KV cache type', moe: 'MoE CPU offload', threads: 'CPU threads',
                        spec: 'Speculative decoding', slots: 'Parallel slots', sampling: 'Sampling defaults', verify: 'Verify' };
@@ -22,7 +23,9 @@
   let _models = [], _pre = null, _sel = new Set(), _runs = [], _facts = {}, _es = null, _attached = false;
   let _run = null, _done = {}, _doneModel = null, _meta = {}, _section = {}, _elapsedIv = null;
   let _status = {};        // model_id → /api/llm/autotune/status item
+  let _peak = null;        // /api/energy/host-peak payload, or null
   let _slot = null, _busyOn = false, _statusErr = false;
+  let _draft = null, _draftFor = '', _draftGen = 0, _draftBusy = false, _dl = null;
   // Newest row per model wins; the route returns one row per (agent, model).
   async function loadStatus() {
     _status = {}; _statusErr = false;
@@ -84,14 +87,48 @@
     const h = $('atObjHint'); if (h) h.innerHTML = OBJ_HINT[o] || '';
     const L = typeof layout !== 'undefined' ? layout : null;
     if (L) { L.atObjective = o; try { saveLayout(); } catch (_) {} }
+    if (o === 'quiet') applyQuietDefaults();
+    syncCap();
     refreshPlan();
+  }
+  const QUIET_DIMS = { kv: false, moe: true, threads: true, slots: true, spec: false, sampling: false };
+  function setDim(d, on) { const t = document.querySelector(`#toolsModAt .at-dim[data-dim="${d}"] [data-dim-on]`); if (t) t.classList.toggle('on', !!on); }
+  // Quiet tunes the power-relevant dims only; the user can switch any back on afterwards.
+  function applyQuietDefaults() {
+    Object.entries(QUIET_DIMS).forEach(([d, on]) => setDim(d, on));
+    document.querySelectorAll('#atSlotChips .bl-chip').forEach(c => c.classList.toggle('on', ['1', '2', '4'].includes(c.dataset.v)));
+  }
+  function capValue() { const v = parseFloat(($('atPowerCap') || {}).value); return Number.isFinite(v) ? v : null; }
+  // Shows the cap field for Quiet only, seeded from the saved value or 80 % of the host peak.
+  function syncCap() {
+    const row = $('atCapRow'), inp = $('atPowerCap'), hint = $('atCapHint');
+    if (!row) return;
+    const quiet = objective() === 'quiet';
+    row.style.display = quiet ? '' : 'none';
+    if (!quiet || !inp) return;
+    const L = typeof layout !== 'undefined' ? layout : null;
+    const saved = L && Number.isFinite(L.atPowerCap) ? L.atPowerCap : null;
+    // Seeded from the busiest hour's draw under load; the hourly mean only stands in when no load was ever metered.
+    const load = _peak && Number.isFinite(_peak.peak_active_w) ? _peak.peak_active_w : null;
+    const peak = _peak && Number.isFinite(_peak.peak_w) ? _peak.peak_w : null;
+    const seed = load != null ? Math.round(0.9 * load) : (peak != null ? Math.round(peak) : null);
+    if (!inp.value) inp.value = saved != null ? saved : (seed != null ? seed : '');
+    if (hint) hint.textContent = load != null
+      ? `busiest hour drew ${Math.round(load)} W under load (${_peak.active_hours} h metered) · 90 % is ${seed} W`
+      : peak != null
+        ? `no load-draw history yet · hourly peak ${Math.round(peak)} W — set the cap below what the bench draws`
+        : 'no power history on this host yet — enter the cap by hand';
+  }
+  async function loadPeak() {
+    try { _peak = await fetch('/api/energy/host-peak').then(r => r.json()); } catch (_) { _peak = null; }
+    if (_peak && !_peak.ok) _peak = null;
   }
   function selected() { return [...document.querySelectorAll('#atModelList .mc-toggle.on')].map(b => b.dataset.model); }
   function primaryModel() { return selected()[0] || null; }
   function factsFor(mid) {
     if (_facts[mid]) return _facts[mid];
     const r = _runs.find(x => x.tool === 'autotune' && x.model_id === mid && x.summary && x.summary.n_expert != null);
-    return r ? { n_expert: r.summary.n_expert } : {};
+    return r ? { n_expert: r.summary.n_expert, mtp_layers: r.summary.mtp_layers } : {};
   }
   function isMoe(mid) { const f = factsFor(mid); return f.n_expert == null ? null : f.n_expert > 1; }
   function noFit(mid) {
@@ -133,7 +170,9 @@
       } else prev.style.display = 'none';
     }
     syncVerify();
+    if (_pre) seedDrafts(_pre.drafts, primaryModel());
     refreshPlan();
+    syncDraft();
   }
   function seedThreads(cores) {
     const host = $('atThreadChips'); if (!host || host.childElementCount) return;
@@ -143,12 +182,88 @@
     host.innerHTML = all.map(n => `<span class="bl-chip${on.includes(n) ? ' on' : ''}" data-v="${n}">${n}</span>`).join('');
     const hint = $('atThreadHint'); if (hint) hint.textContent = `Physical cores on this host: ${p} (${l} logical). Batch threads are set separately when MoE offload is on.`;
   }
-  function seedDrafts(drafts) {
+  function familyPrefix(name) { const b = String(name || '').split('/').pop(); const m = b.match(/[-_](\d+(?:\.\d+)?)[bB](?=[-_.]|$)/); return (m ? b.slice(0, m.index) : b).toLowerCase(); }
+  // Only same-family files small enough for auto-detect are offered; the rest can never be a draft for this model.
+  function draftsFor(drafts, mid) {
+    if (!mid) return drafts || [];
+    const fam = familyPrefix(mid.split(':')[0]);
+    const size = _pre && _pre.sizes ? Number(_pre.sizes[mid]) : NaN;
+    return (drafts || []).filter(d => familyPrefix(d.repo) === fam && !/dflash/i.test(d.file || '')
+      && (!(size > 0) || Number(d.size || 0) <= size / 8));
+  }
+  function seedDrafts(drafts, mid) {
     const sel = $('atDraftSel'); if (!sel) return;
     const cur = sel.value;
     sel.innerHTML = '<option value="auto">auto</option><option value="none">none</option>' +
-      (drafts || []).map(d => `<option value="${esc(d.path)}">${esc(d.file)} · ${esc(d.repo)}</option>`).join('');
+      draftsFor(drafts, mid).map(d => `<option value="${esc(d.path)}">${esc(d.file)} · ${esc(d.repo)}</option>`).join('');
     sel.value = [...sel.options].some(o => o.value === cur) ? cur : 'auto';
+  }
+  function manualDraft() { const v = ($('atDraftSel') || {}).value; return !!v && v !== 'auto' && v !== 'none'; }
+  function gb(n) { return `${(Number(n || 0) / 1e9).toFixed(1)} GB`; }
+  // A NextN / MTP head is a built-in draft, known from live facts or the last tune's ledger row.
+  function hasMtp(mid) { return Number(factsFor(mid).mtp_layers) > 0; }
+  function mtpKnown(mid) { return factsFor(mid).mtp_layers != null; }
+  const MTP_UNKNOWN = 'Not sure whether this model has a NextN / MTP head? Run Autotune once first: the head is read from the GGUF on load, and a model that has one needs no draft. Download only if that run reports none.';
+  function hasDraft(mid) {
+    if (hasMtp(mid)) return true;
+    const map = (_pre && _pre.drafts_for) || {};
+    return !(mid in map) ? null : !!map[mid];
+  }
+  // The Spec row offers a Hugging Face draft only when the primary model has none on disk and no NextN head.
+  async function syncDraft() {
+    const row = $('atDraftRow'), note = $('atDraftNote'), btn = $('atDraftDlBtn');
+    if (!row) return;
+    const mid = primaryModel();
+    if (!mid || hasDraft(mid) !== false || manualDraft() || _dl) { if (!_dl) { row.style.display = 'none'; dimSummaries(); } return; }
+    if (_draftFor !== mid) {
+      const gen = ++_draftGen;
+      _draftFor = mid; _draft = null; _draftBusy = true;
+      row.style.display = ''; note.textContent = 'no draft on disk · looking for one on Hugging Face …'; btn.style.display = 'none';
+      let d = null;
+      const size = _pre && _pre.sizes ? _pre.sizes[mid] : null;
+      const ceil = Number.isFinite(Number(size)) && Number(size) > 0 ? '&max_bytes=' + Math.floor(Number(size) / 8) : '';
+      try { d = await fetch('/api/llm/draft-candidates?model_id=' + encodeURIComponent(mid) + ceil).then(r => r.json()); } catch (_) { d = null; }
+      if (gen !== _draftGen) return;                                       // a newer lookup owns the shared state
+      _draftBusy = false;
+      if (primaryModel() !== mid) { _draftFor = ''; return; }
+      _draft = d;
+      if (_dl) return;
+      if (hasDraft(mid) !== false) { row.style.display = 'none'; return; }
+    } else if (_draftBusy) return;
+    row.style.display = '';
+    const c = _draft && _draft.ok ? _draft.candidate : null;
+    if (c) {
+      note.textContent = `no draft on disk · ${c.repo} · ${c.file} · ${gb(c.size_bytes)}` + (mtpKnown(mid) ? '' : ` · ${MTP_UNKNOWN}`);
+      btn.style.display = ''; btn.disabled = false;
+    }
+    else { note.textContent = `no draft on disk · ${(_draft && (_draft.reason || _draft.error)) || 'lookup failed'}`; btn.style.display = 'none'; }
+    refreshPlan();
+  }
+  async function downloadDraft() {
+    const c = _draft && _draft.candidate, note = $('atDraftNote'), btn = $('atDraftDlBtn');
+    if (!c || _dl || _draftFor !== primaryModel() || typeof openAgentSse !== 'function') return;
+    btn.disabled = true;
+    let r;
+    try { r = await fetch('/api/llm/download', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ repo: c.repo, patterns: [c.file] }) }).then(x => x.json()); }
+    catch (e) { r = { ok: false, error: String(e) }; }
+    if (!r || !r.ok) { note.textContent = `download failed to start · ${(r && r.error) || 'unknown'}`; btn.disabled = false; return; }
+    const src = await openAgentSse('/api/llm/download/stream-info', '/api/llm/download/stream');
+    _dl = src;
+    note.textContent = `downloading ${c.file} …`;
+    src.onmessage = async e => {
+      let msg;
+      try { msg = JSON.parse(e.data); } catch (_) { return; }
+      if (msg.type === 'line' && msg.progress) note.textContent = `downloading · ${msg.text}`;
+      else if (msg.type === 'done') {
+        try { src.close(); } catch (_) {}
+        _dl = null; _draftFor = '';
+        if (!msg.ok) { note.textContent = `download failed (exit ${msg.rc ?? msg.error ?? '?'})`; btn.disabled = false; return; }
+        const pre = await fetch('/api/llm/autotune/preflight').then(x => x.json()).catch(() => null);
+        if (pre && pre.ok) { _pre = pre; seedDrafts(pre.drafts, primaryModel()); }
+        syncDraft();
+      }
+    };
+    src.onerror = () => { try { src.close(); } catch (_) {} _dl = null; note.textContent = 'download stream disconnected — check the llama.cpp tab'; btn.disabled = false; };
   }
   function dimSummaries() {
     const d = dimsState();
@@ -160,7 +275,7 @@
       moe: `--n-cpu-moe ${d.moe.min} … ${d.moe.max}`,
       threads: `-t ${d.threads.candidates.join(' · ') || '—'}`,
       slots: `-np ${d.slots.candidates.join(' · ') || '—'} · ≥ ${d.slots.min_ctx_per_slot.toLocaleString()} ctx`,
-      spec: `${d.spec.types.join(' · ') || '—'} · window ${d.spec.n_min}–${d.spec.n_max}`,
+      spec: `${d.spec.types.join(' · ') || '—'} · window ${d.spec.n_min}–${d.spec.n_max}${hasMtp(primaryModel() || '') ? ' · NextN head, no draft needed' : ''}`,
       sampling: d.sampling.overwrite ? 'overwrite' : 'fill blanks',
     };
     document.querySelectorAll('#toolsModAt .at-dim').forEach(row => {
@@ -182,14 +297,19 @@
       let desc = '', n = 1;
       if (stage === 'context') desc = `converge -fitt to ${dims.context.target_mb} ± ${dims.context.tolerance_mb} MB free · up to 10 loads`;
       else if (stage === 'kv') { n = Math.max(1, (d.candidates || []).length); desc = `${(d.candidates || []).join(' · ')} — re-fit each, KL guard ≤ ${d.guard_kl_max}`; }
-      else if (stage === 'moe') { if (moe === false) on = false; desc = moe === null ? `bisect ${d.min} … ${d.max} if the model is MoE` : `bisect ${d.min} … ${d.max} expert layers on CPU, keep the fewest that fit`; }
+      else if (stage === 'moe') {
+        if (moe === false) on = false;
+        if (obj === 'quiet') { n = 4; desc = 'measure 4 offload counts for draw, fastest under the cap'; }
+        else desc = moe === null ? `bisect ${d.min} … ${d.max} if the model is MoE` : `bisect ${d.min} … ${d.max} expert layers on CPU, keep the fewest that fit`;
+      }
       else if (stage === 'threads') { n = Math.max(1, (d.candidates || []).length); desc = `${(d.candidates || []).join(' · ')} — decode + batch threads`; }
-      else if (stage === 'spec') { n = 3; desc = `${(d.types || []).join(' · ')} · draft ${d.draft_model === 'auto' ? 'auto-discovered' : d.draft_model === 'none' ? 'none' : 'from disk'} · window ${d.n_min}–${d.n_max}`; }
+      else if (stage === 'spec') { const nd = hasDraft(primaryModel() || '') === false; n = nd ? 2 : 3; desc = `${(d.types || []).join(' · ')} · draft ${d.draft_model === 'auto' ? 'auto-discovered' : d.draft_model === 'none' ? 'none' : 'from disk'} · window ${d.n_min}–${d.n_max}`; if (nd) desc += ' · no draft yet — download one from the Spec row'; }
       else if (stage === 'slots') { n = Math.max(1, (d.candidates || []).length); desc = `${(d.candidates || []).join(' · ')} with ≥ ${Number(d.min_ctx_per_slot).toLocaleString()} ctx each — live concurrency sweep`; }
       else if (stage === 'sampling') desc = 'generation_config.json → model card → base model · no load needed';
       else desc = `load the recommended set once, confirm fit + ${rt ? '60 s of chat traffic' : 'free VRAM'}`;
-      if (MEASURED.includes(stage) && on && !rt) desc = 'skipped: install the bench runtime (Benchmark · Live) to measure this';
-      const est_s = on ? (MEASURED.includes(stage) && !rt ? 0 : EST[stage] * n) : 0;
+      const measured = MEASURED.includes(stage) || (obj === 'quiet' && stage === 'moe');
+      if (measured && on && !rt) desc = 'skipped: install the bench runtime (Benchmark · Live) to measure this';
+      const est_s = on ? (measured && !rt ? 0 : EST[stage] * n) : 0;
       rows.push({ stage, name: STAGE_NAME[stage], flag: STAGE_FLAG[stage], desc, on, est_s });
     });
     if (obj === 'fit') rows.forEach(r => { if (r.stage === 'sampling') r.desc += ' · reported, applied only if selected'; });
@@ -282,8 +402,11 @@
       const obj = ev.target.closest('#atObjSeg button');
       if (obj) setObjective(obj.dataset.obj);
     });
-    mod.addEventListener('input', ev => { if (ev.target.closest('.at-dim-b, .at-grp-b')) refreshPlan(); });
-    mod.addEventListener('change', ev => { if (ev.target.closest('.at-dim-b, .at-grp-b')) refreshPlan(); });
+    mod.addEventListener('input', ev => {
+      if (ev.target.id === 'atPowerCap') { const L = typeof layout !== 'undefined' ? layout : null; if (L) { L.atPowerCap = capValue(); try { saveLayout(); } catch (_) {} } return; }
+      if (ev.target.closest('.at-dim-b, .at-grp-b')) refreshPlan();
+    });
+    mod.addEventListener('change', ev => { if (ev.target.id === 'atDraftSel') syncDraft(); if (ev.target.closest('.at-dim-b, .at-grp-b')) refreshPlan(); });
   }
   async function onOpen(preselect, opts) {
     wire();
@@ -295,12 +418,15 @@
       fetch('/api/llm/autotune/preflight').then(r => r.json()).catch(() => null),
       fetch('/api/tools/runs?limit=100').then(r => r.json()).catch(() => ({})),
       loadStatus(),
+      loadPeak(),
     ]);
     _models = (models && models.models) || [];
     _pre = pre && pre.ok ? pre : _pre;
     _runs = (runs && runs.runs) || [];
-    if (_pre) { seedThreads(_pre.cores); seedDrafts(_pre.drafts); }
+    if (_pre) seedThreads(_pre.cores);
     renderModels(preselect);
+    syncDraft();
+    syncCap();
     syncVerify();
     await checkServer(pre && pre.ok ? pre : null);
     if (_pre && _pre.busy && !running()) attach();
@@ -330,6 +456,7 @@
     _busyOn = !!on;
     const run = $('atRunBtn'), cancel = $('atCancelBtn'), again = $('atAgainBtn');
     if (run) run.disabled = on;
+    const vb = $('atVerifyBtn'); if (vb) vb.disabled = on;
     if (cancel) cancel.style.display = on && !_attached ? '' : 'none';
     if (again) again.style.display = on ? 'none' : (_doneModel ? '' : 'none');
     setRailLocked(on);
@@ -427,7 +554,9 @@
     const problem = dimsProblem(dims);
     if (problem) { alert(problem); return; }
     fillDimDefaults(dims);
-    const body = { model_ids: ids, objective: objective(), budget_min: Math.round(num('atBudgetMin', 120)), dims };
+    const quiet = objective() === 'quiet', cap = capValue();
+    if (quiet && (cap == null || cap < 20 || cap > 5000)) { alert('Quiet needs a power cap between 20 and 5000 W.'); return; }
+    const body = { model_ids: ids, objective: objective(), budget_min: Math.round(num('atBudgetMin', 120)), dims, ...(quiet ? { power_cap_w: cap } : {}) };
     return startRun(body, ids);
   }
   async function startRun(body, ids, now) {
@@ -450,6 +579,7 @@
     _done = {}; _doneModel = null; _meta = {}; _section = {};
     fetchMeta(ids);
     newRun(null);
+    _run.powerCap = body.power_cap_w != null ? Number(body.power_cap_w) : null;
     setPane('Run');
     busy(true);
     openStream();
@@ -464,8 +594,10 @@
     const baseline = {};
     [['decode_tps', 'decode_tps'], ['prefill_tps', 'prefill_tps'], ['agg_tps', 'agg_tps'], ['ctx', 'ctx_size'], ['free_mb', 'free_mb']]
       .forEach(([k, sk]) => { if (sm[sk] != null) baseline[k] = sm[sk]; });
+    const quiet = objective() === 'quiet', cap = capValue();
+    if (quiet && (cap == null || cap < 20 || cap > 5000)) { alert('Quiet needs a power cap between 20 and 5000 W.'); return; }
     const body = { model_ids: [mid], objective: objective(), budget_min: 15, mode: 'verify',
-                   baseline_tps: sm.decode_tps ?? null, baseline, dims };
+                   baseline_tps: sm.decode_tps ?? null, baseline, dims, ...(quiet ? { power_cap_w: cap } : {}) };
     await startRun(body, [mid]);
   }
   function retune() { again(); run(); }
@@ -604,7 +736,10 @@
       const cls = c.status === 'pending' ? 'pend' : (c.ok === false ? 'fail' : (v === best ? 'best' : ''));
       const h = c.status === 'pending' ? 40 : (typeof v === 'number' && v > 0 ? Math.max(4, Math.round(100 * v / max)) : 6);
       const top = c.status === 'pending' ? '…' : (c.ok === false ? (c.error && /oom/i.test(c.error) ? 'OOM' : 'failed') : fmt(v, 1));
-      return `<div class="at-bar ${cls}"><span class="t">${esc(top)}</span><i style="height:${h}%"></i><span class="l">${esc(c.value)}${v === best && cls === 'best' ? ' ★' : ''}</span></div>`;
+      const w = typeof c.avg_w === 'number' ? ` · ${Math.round(c.avg_w)} W` : '';
+      const cap = _run && _run.powerCap != null ? _run.powerCap : null;
+      const over = cap != null && typeof c.avg_w === 'number' && c.avg_w > cap;
+      return `<div class="at-bar ${cls}${over ? ' over' : ''}"><span class="t">${esc(top + w)}</span><i style="height:${h}%"></i><span class="l">${esc(c.value)}${v === best && cls === 'best' ? ' ★' : ''}</span></div>`;
     }).join('')}</div>`;
   }
   function renderStage() {
@@ -632,7 +767,7 @@
       if (body) body.innerHTML = `<div class="bl-tiles"><div class="bl-tile"><div class="v">${esc(fmt(c.decode_tps))}<em>t/s</em></div><div class="l">decode</div></div><div class="bl-tile"><div class="v">${esc(fmt(c.agg_tps))}<em>t/s</em></div><div class="l">aggregate</div></div><div class="bl-tile"><div class="v">${esc(fmt(c.free_mb, 0))}<em>MB</em></div><div class="l">free VRAM</div></div><div class="bl-tile"><div class="v">${c.status === 'pending' ? '…' : (c.ok ? 'pass' : 'fail')}</div><div class="l">attempt ${esc(c.value)}</div></div></div>`;
     } else {
       const metric = s === 'slots' && objective() === 'serve' ? 'agg_tps' : 'decode_tps';
-      if (meta) meta.innerHTML = `${metric === 'agg_tps' ? 'aggregate' : 'decode'} t/s per <b>${esc(STAGE_FLAG[s])}</b> · chat preset`;
+      if (meta) meta.innerHTML = `${metric === 'agg_tps' ? 'aggregate' : 'decode'} t/s per <b>${esc(STAGE_FLAG[s])}</b> · chat preset` + (_run.powerCap != null ? ` · cap ${esc(_run.powerCap)} W` : '');
       if (body) body.innerHTML = barsHtml(cands, metric) + `<div class="at-hint" style="margin-top:6px">${esc(cands.filter(c => c.ok === false).map(c => `${c.value}: ${c.error || 'failed'}`).join(' · '))}</div>`;
     }
     setStrip();
@@ -648,11 +783,13 @@
     const t = msg.type;
     if (t === 'model_start') {
       if (Array.isArray(msg.stages) && msg.stages.length) _run.order = msg.stages;
+      if (msg.power_cap_w != null) _run.powerCap = Number(msg.power_cap_w);
       _run.stages = {}; _run.order.forEach(s => { _run.stages[s] = { status: 'pending', text: '—' }; });
       _run.cands = {}; _run.iters = []; _run.current = null; _run.curEstS = 0;
       renderStepper(); renderStage(); log(`── ${msg.model_id} · ${msg.objective} ──`, 'acc');
     } else if (t === 'facts') {
       _facts[msg.model_id] = msg;
+      syncDraft();
       log(`model: ${msg.arch || '?'} · ${msg.n_layer || '?'} layers · ${msg.n_expert > 1 ? msg.n_expert + ' experts' : 'dense'}${msg.mtp_layers ? ' · MTP head' : ''}`, 'dim');
     } else if (t === 'stage_start') {
       _run.current = msg.stage;
@@ -757,7 +894,7 @@
     host.innerHTML =
       item(g.kl == null ? '' : (g.pass ? 'ok' : 'crit'), 'Quality guard', g.kl != null ? `KL ${esc(g.kl)} · ${g.pass ? 'pass' : 'fail'}` : 'not needed',
            esc(g.text || 'No lossy KV type was tried.') + ' · Speculative decoding is lossless by construction.')
-      + item(v.ok ? (v.warning ? 'warn' : 'ok') : (v.reason ? 'crit' : ''), 'Verify load', v.ok ? `fit · ${fmt(v.free_mb, 0)} MB free` : (v.reason ? 'failed' : 'not run'),
+      + item(v.ok ? (v.warning ? 'warn' : 'ok') : (v.reason ? 'crit' : ''), 'Verify load', v.ok ? `fit · ${fmt(v.free_mb, 0)} MB free under load${a.avg_w != null ? ` · ${fmt(a.avg_w, 0)} W` : ''}` : (v.reason ? 'failed' : 'not run'),
              (v.ok ? `Recommended set loaded once; ${esc(Math.round(v.seconds || 0))} s of traffic at ${esc(Number(a.concurrency || 1))} slot${Number(a.concurrency || 1) === 1 ? '' : 's'}${v.dropped && v.dropped.length ? '; dropped ' + esc(v.dropped.join(', ')) : ''}.` : esc(v.reason || 'Verify needs the bench runtime.')) + (v.ok && v.warning ? ' · ' + esc(v.warning) : ''))
       + item(a.wh_per_ktok != null ? 'ok' : '', 'Energy', a.wh_per_ktok != null ? `${fmt(a.wh_per_ktok, 2)} Wh / 1k tok` : '—',
              a.wh_per_ktok != null ? `Read from the energy module during verify (${esc(a.energy_source || 'psu')}).` : 'No power reading during verify.');
@@ -776,6 +913,13 @@
       + row(`Aggregate · ${esc(Number(a.concurrency || 1))} req`, b.agg_tps, a.agg_tps, '', v => fmt(v, 0)) + row('Prefill t/s', b.prefill_tps, a.prefill_tps, '', v => fmt(v, 0))
       + row('VRAM free', b.free_mb, a.free_mb, ' MB', v => fmt(v, 0), true);
   }
+  // Verify draw vs the cap: over, at (within the agent's tolerance), or under.
+  function capReadout(w, cap, over) {
+    const state = over ? 'over' : (w > cap ? 'at' : 'under');
+    const cls = over ? ' class="neg"' : '';
+    const tail = state === 'at' ? ` (${Math.round(w)} W is within the cap's tolerance)` : '';
+    return `<b${cls}>${Math.round(w)} W</b> ${state} the ${Math.round(cap)} W cap${tail}`;
+  }
   function renderDone(done) {
     const section = _section[done.model_id] || {}, meta = _meta[done.model_id] || null;
     const d = dimsState().sampling;
@@ -784,7 +928,9 @@
     const g = pct(a.decode_tps, b.decode_tps), x = b.ctx && a.ctx ? a.ctx / b.ctx : null;
     const big = $('atRecBig');
     if (big) big.innerHTML = [g != null ? `decode <b${g < 0 ? ' class="neg"' : ''}>${g >= 0 ? '+' : ''}${Math.round(g)} %</b>` : '', x ? `context <b>${x >= 2 ? Math.round(x) : Math.round(x * 100) / 100}×</b>` : '',
-                              a.free_mb != null ? `VRAM free ${fmt(a.free_mb, 0)} MB` : ''].filter(Boolean).join(' · ');
+                              a.free_mb != null ? `VRAM free ${fmt(a.free_mb, 0)} MB` : '',
+                              done.power_cap_w != null && a.avg_w != null
+                                ? capReadout(a.avg_w, done.power_cap_w, done.over_cap) : ''].filter(Boolean).join(' · ');
     const warn = $('atRecWarn');
     if (warn) {
       if (g != null && g < -3) {
@@ -911,7 +1057,7 @@
     setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 200);
   }
 
-  window.AT = { onOpen, run, verify, retune, checkQuality, cancel, detach, again, stopServer, running, dimsState, objective, planRows, estimateText, onEvent,
+  window.AT = { onOpen, run, verify, retune, checkQuality, cancel, detach, again, stopServer, running, downloadDraft, dimsState, objective, setObjective, applyQuietDefaults, planRows, estimateText, onEvent,
                 state: () => ({ run: _run, done: _done, doneModel: _doneModel, meta: _meta, section: _section, pre: _pre }),
                 renderDone, recRows, rows, toggleRow, apply, saveProfile, copyArgs, exportReport, argsText,
                 _debugSetStart: (ts) => { if (_run) { _run.startTs = ts; tick(); } } };

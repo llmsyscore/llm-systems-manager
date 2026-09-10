@@ -105,6 +105,8 @@ def _write_fake_ppl(path: Path, rc: int = 0, crash: bool = False) -> None:
 def test_build_line_regex_and_note(llama):
     m = llama._AT_BUILD_RE.search("build: 6300 (434ddbb) with cc (Ubuntu 13.3.0) for x86_64")
     assert m and f"b{m.group(1)}-{m.group(2)}" == "b6300-434ddbb"
+    m = llama._AT_BUILD_RE.search("common_params_print_info: build 1 (434ddbb) with GNU 14.2.0 for Linux x86_64")
+    assert m and f"b{m.group(1)}-{m.group(2)}" == "b1-434ddbb"
     assert llama._AT_BUILD_RE.search("print_info: build = 3") is None
     llama._autotune_note_build("b1-abcdef0")
     assert llama._llama_build_last == "b1-abcdef0"
@@ -131,6 +133,19 @@ def test_preflight_shape(llama, tmp_path, monkeypatch):
     out2 = llama.llama_autotune_preflight()
     assert out2["perplexity"] is True
     assert out2["perplexity_detail"] == {"present": True, "kl_text": True, "runnable": True, "rc": 0, "hint": None}
+    assert out["drafts_for"] == {"org/m:Q4": None}
+
+
+def test_preflight_names_the_cached_draft_for_each_model(llama, tmp_path, monkeypatch):
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    (bin_dir / "llama-server").write_text("")
+    _wire(llama, tmp_path, monkeypatch, llama_bin=str(bin_dir / "llama-server"))
+    drafts = [{"repo": "org/m-0.6B-GGUF", "file": "m-0.6B-Q8_0.gguf", "path": "/h/a.gguf", "size": 700_000_000},
+              {"repo": "other/x-1B-GGUF", "file": "x-1B-Q4_K_M.gguf", "path": "/h/b.gguf", "size": 600_000_000}]
+    monkeypatch.setattr(llama, "_list_cache_ggufs", lambda root: drafts)
+    out = llama.llama_autotune_preflight()
+    assert out["drafts_for"] == {"org/m:Q4": {"repo": "org/m-0.6B-GGUF", "file": "m-0.6B-Q8_0.gguf", "size": 700_000_000}}
 
 
 def test_run_accepts_v1_and_v2_bodies(llama, tmp_path, monkeypatch):
@@ -376,6 +391,9 @@ _FAKE_SERVER = """#!/usr/bin/env python3
 import signal, sys, time
 _stop = []
 signal.signal(signal.SIGTERM, lambda *a: _stop.append(1))
+print("0.01.004.218 I cmn  common_param: common_params_print_info: build 1 (434ddbb) with GNU 14.2.0 for Linux x86_64", flush=True)
+print("0.01.174.215 I llama_model_loader: - kv  28:                qwen35.nextn_predict_layers u32              = 1", flush=True)
+print("print_info: n_layer = 48", flush=True)
 print("llama_context: n_ctx_seq (4096)", flush=True)
 print("main: model loaded", flush=True)
 pad = "y" * 900
@@ -423,6 +441,9 @@ def test_run_iter_drains_stdout_while_hold_runs(llama, tmp_path, monkeypatch):
     assert res["model_loaded"] is True and res["hold"] == {"ok": True, "decode_tps": 1.0}
     assert res["actual_free_mb"] == 1024 and res["total_vram_mb"] == 32768
     assert res["ok"] is True and res["ctx_seq"] == 4096
+    # The build and the NextN head are read from the lines this llama.cpp actually prints.
+    assert res["build"] == "b1-434ddbb"
+    assert llama._at.parse_facts(res["facts_lines"])["mtp_layers"] == 1
 
 
 def test_run_iter_without_hold_still_drains(llama, tmp_path, monkeypatch):
@@ -748,8 +769,9 @@ def test_quality_mode_dispatches_run_quality_and_posts_quality_ledger(llama, tmp
     assert seen["req"]["mode"] == "quality" and seen["env"]["llama_build"] == "b10850-abc"
     assert posted == [("quality", {"objective": None, "mode": "quality", "llama_build": "b10850-abc",
                                    "ctx_size": None, "free_mb": None, "decode_tps": None, "prefill_tps": None, "agg_tps": None, "gain_pct": None,
-                                   "stages_done": 0, "verify_ok": None, "wh_per_ktok": None, "n_expert": None,
-                                   "kl": 0.01, "kl_pass": True, "regressed": None})]
+                                   "stages_done": 0, "verify_ok": None, "wh_per_ktok": None, "n_expert": None, "mtp_layers": None,
+                                   "kl": 0.01, "kl_pass": True, "regressed": None,
+                                   "avg_w": None, "power_cap_w": None})]
 
 
 def test_preflight_reports_llama_build(llama, tmp_path, monkeypatch):
@@ -817,3 +839,48 @@ def test_tools_state_leaves_a_tune_run_unlabelled(llama, tmp_path, monkeypatch):
     assert llama.llama_autotune_run({"model_ids": ["org/m:Q4"], "objective": "fit"})["ok"] is True
     state = llama.llama_tools_state()
     assert state["autotune_active"] is True and state["quality_active"] is False
+
+
+# ── the stick meters only the bench subprocess (#890) ──
+
+def test_stick_meters_only_the_bench_subprocess(llama, tmp_path, monkeypatch):
+    _wire(llama, tmp_path, monkeypatch)
+    order: list = []
+
+    class _Integ:
+        def __init__(self, fn, interval_s=2.0):
+            order.append("integrator")
+        def start(self):
+            order.append("start")
+        def stop(self):
+            order.append("stop")
+            return 0.25, "psu"
+
+    def _run_level(cmd, env, put, mid, level, cancel, track, untrack):
+        order.append("subprocess")
+        out = Path(cmd[-1])
+        out.write_text("{}", encoding="utf-8")
+        return 0, False, 12.0
+
+    def _summary(payload, wall):
+        order.append("parse")
+        return {"all": {"pred_tps": 40.0, "prompt_tps": 900.0, "latency_s": 1.0,
+                        "agg_pred_tps": 40.0, "accept_rate": None, "completion_tokens": 512}}
+
+    monkeypatch.setattr(llama._bl, "PowerIntegrator", _Integ)
+    monkeypatch.setattr(llama._bl, "run_level_subprocess", _run_level)
+    monkeypatch.setattr(llama._bl, "level_summary", _summary)
+    monkeypatch.setattr(llama._bl, "build_cmd",
+                        lambda py, script, url, req, level, out: ["bench", out])
+    monkeypatch.setattr(llama, "_bench_live_runtime", lambda: {"python": "py", "script": "s.py"})
+    be = llama._AutotuneBackend("org/m:Q4", {}, "r1")
+    monkeypatch.setattr(be, "_server_ready", lambda url: "org/m:Q4")
+
+    st = be._stick({"concurrency": 1, "limit": 8, "energy": True})
+    assert st["ok"] and st["energy_wh"] == 0.25 and st["energy_source"] == "psu"
+    assert order == ["integrator", "start", "subprocess", "stop", "parse"]
+
+    order.clear()
+    st = be._stick({"concurrency": 1, "limit": 8, "energy": False})
+    assert st["energy_wh"] is None and st["energy_source"] is None
+    assert order == ["subprocess", "parse"]

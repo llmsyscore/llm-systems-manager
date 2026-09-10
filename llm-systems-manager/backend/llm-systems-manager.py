@@ -41,6 +41,7 @@ Local endpoints served:
     GET  /api/llm/cache                 — list HF cache
     GET  /api/llm/cache/gguf            — list .gguf files in the HF cache
     GET  /api/llm/model-meta            — author-recommended sampling for a model (HF sidecar/card)
+    GET  /api/llm/draft-candidates      — smallest same-family instruct GGUF on HF for speculative decoding
     POST /api/llm/cache/prune           — prune HF cache detached revisions
     POST /api/llm/cache/rm              — remove HF cached repo
     GET  /api/llm/hf-trending           — top HF models 27-35B by downloads
@@ -175,7 +176,7 @@ def _local_hostname() -> str:
 # banner reads it. Bump suffix (-1, -2, …) for same-day iterations; roll
 # the date for a new day's first change.
 # ---------------------------------------------------------------------------
-__version__ = "v2026.09.10-2"
+__version__ = "v2026.09.10-4"
 
 # Wall-clock at first import (Cheroot main process); the shutdown banner
 # reads it for the uptime line.
@@ -200,6 +201,7 @@ import model_profiles  # type: ignore[import-not-found]  # noqa: E402  # leaf, n
 import report_card  # type: ignore[import-not-found]  # noqa: E402  # leaf, no cycle; #468
 import energy  # type: ignore[import-not-found]  # noqa: E402  # leaf, no cycle; #470
 import model_meta  # type: ignore[import-not-found]  # noqa: E402  # leaf, no cycle; #878
+import draft_candidates  # type: ignore[import-not-found]  # noqa: E402  # leaf, no cycle; #889
 import bench_live  # type: ignore[import-not-found]  # noqa: E402  # leaf, no cycle; #879
 import bench_baseline  # type: ignore[import-not-found]  # noqa: E402  # leaf, no cycle; #882
 import tool_activity  # type: ignore[import-not-found]  # noqa: E402  # leaf, no cycle; #775
@@ -5407,8 +5409,9 @@ tool_activity.configure(
         m, a, p, headers={"Authorization": f"Bearer {a.get('token') or ''}"}, **kw)[0],
     reportcard_active=report_card.active_agents,
 )
-energy.register_routes(app, ctx, db_path=str(DB_PATH))
+energy.register_routes(app, ctx, db_path=str(DB_PATH), primary_agent=lambda: _request_agent("llama"))
 model_meta.register_routes(app, ctx, db_path=str(DB_PATH), read_ini=_read_ini)
+draft_candidates.register_routes(app, ctx, db_path=str(DB_PATH), read_ini=_read_ini)
 
 
 def _fleet_hosts() -> list:

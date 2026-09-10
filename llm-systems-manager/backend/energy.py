@@ -201,6 +201,33 @@ def first_ts(conn) -> "int | None":
     return int(row[0]) if row and row[0] is not None else None
 
 
+HOST_PEAK_DAYS = 30
+
+
+ACTIVE_MIN_S = 60.0
+
+
+def host_peak(rows: "list[dict]", agent_id: str) -> dict:
+    """Highest hourly average watts and highest under-load watts for one agent."""
+    peak, hours, since = None, 0, None
+    active_peak, active_hours = None, 0
+    for r in rows:
+        if r.get("agent_id") != agent_id or float(r.get("power_s") or 0) <= 0:
+            continue
+        w = float(r.get("energy_wh") or 0) / (float(r["power_s"]) / 3600.0)
+        hours += 1
+        peak = w if peak is None or w > peak else peak
+        since = int(r["hour_ts"]) if since is None or int(r["hour_ts"]) < since else since
+        active_s = float(r.get("active_s") or 0)
+        if active_s >= ACTIVE_MIN_S:
+            aw = float(r.get("active_energy_wh") or 0) / (active_s / 3600.0)
+            active_hours += 1
+            active_peak = aw if active_peak is None or aw > active_peak else active_peak
+    return {"peak_w": round(peak, 1) if peak is not None else None, "hours": hours, "since": since,
+            "peak_active_w": round(active_peak, 1) if active_peak is not None else None,
+            "active_hours": active_hours}
+
+
 # ── Accumulator ──────────────────────────────────────────────────────
 
 
@@ -581,7 +608,7 @@ def store_view_from_provider_state() -> dict:
     return out
 
 
-def register_routes(app, ctx=None, db_path: "str | None" = None) -> None:
+def register_routes(app, ctx=None, db_path: "str | None" = None, primary_agent=None) -> None:
     """Mount /api/energy/* on the manager app."""
     global _conn_factory
     import sqlite3
@@ -684,6 +711,19 @@ def register_routes(app, ctx=None, db_path: "str | None" = None) -> None:
                         "cap_days": _HOURLY_MAX_H // 24,
                         "hours": int((end - start) // 3600),
                         "start_ts": start, "end_ts": end, "rows": out})
+
+    @app.route("/api/energy/host-peak")
+    def energy_host_peak():
+        agent = (flask_request.args.get("agent_id") or "").strip()
+        if not agent and primary_agent is not None:
+            agent = str((primary_agent() or {}).get("agent_id") or "")
+        if not agent:
+            return jsonify({"ok": False, "error": "agent_id required"}), 400
+        now = _time.time()
+        end = int(now // 3600 + 1) * 3600
+        start = end - HOST_PEAK_DAYS * 86400
+        rows = query_rows(_conn_factory(), start, end)
+        return jsonify({"ok": True, "agent_id": agent, "days": HOST_PEAK_DAYS, **host_peak(rows, agent)})
 
 
 def start_thread(ctx=None) -> None:
