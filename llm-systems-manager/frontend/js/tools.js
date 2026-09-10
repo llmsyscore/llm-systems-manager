@@ -15,6 +15,16 @@
   let _toolsActivity = { reportcard: false, benchmark: false, autotune: false };
   let _toolsLocalWas = { rc: false, bench: false, at: false };
   const _LEDGER_CAP = 100, _LEDGER_PAGE = 15;
+  // Shared run gate (#888): who is busy where, and one pending run per tool.
+  const _TOOL_LABEL = { reportcard: 'Report Card', benchmark: 'Benchmark',
+                        autotune: 'Autotune', quality: 'Quality guard' };
+  let _toolsActivityAgents = {};   // agent_id -> tools running on it
+  let _toolsDefaultAgent = {};     // provider -> primary agent id
+  let _toolsPending = {};          // tool id -> what its queued run waits for
+  let _toolsAgentsLoad = null;
+  let _toolsAgentsReady = false;
+  let _toolsGateKey = '';
+  const _toolsGateSubs = new Set();
 
   function _tEl(id) { return document.getElementById(id); }
   function _tLayout() { return (typeof layout === 'object' && layout) ? layout : null; }
@@ -30,6 +40,7 @@
       || (typeof _vbenchEventSrc !== 'undefined' && _vbenchEventSrc)
       || (window.BL && BL.running());
     const at = (window.AT && AT.running())
+      || (window.QG && QG.running())
       || (typeof _vatEventSrc !== 'undefined' && _vatEventSrc);
     return { rc: !!rc, bench: !!bench, at: !!at };
   }
@@ -50,15 +61,163 @@
     return f('/api/tools/activity')
       .then(r => (r.ok ? r.json() : Promise.reject(new Error('http ' + r.status))))
       .then(d => {
+        // The quality guard shares the Autotune tile's run indicator (#887).
         _toolsActivity = {
-          reportcard: !!d.reportcard, benchmark: !!d.benchmark, autotune: !!d.autotune,
+          reportcard: !!d.reportcard, benchmark: !!d.benchmark,
+          autotune: !!d.autotune || !!d.quality,
         };
+        _toolsActivityAgents = (d.agents && typeof d.agents === 'object') ? d.agents : {};
         toolsSyncRunDot();
       })
       .catch(() => {});
   }
 
   function _tHost(agentId) { return _toolsAgents[agentId] || agentId || ''; }
+
+  // ── shared run gate (#888) ──────────────────────────────────────────────
+  function _toolsApplyAgents(byProvider) {
+    _toolsAgents = {};
+    _toolsDefaultAgent = {};
+    _toolsAgentsReady = true;
+    Object.entries(byProvider || {}).forEach(([prov, list]) =>
+      (list || []).forEach(a => {
+        _toolsAgents[a.agent_id] = a.hostname;
+        if (a.is_default) _toolsDefaultAgent[prov] = a.agent_id;
+      }));
+    if (_toolsDefaultAgent.llama) _toolsDefaultLlama = _toolsDefaultAgent.llama;
+  }
+
+  // A deep link opens a module before the launcher's own fetch runs.
+  // A failed fetch keeps the gate closed and retries; it never reads as idle.
+  function _toolsEnsureAgents() {
+    if (_toolsAgentsLoad || Object.keys(_toolsDefaultAgent).length) return;
+    const f = typeof _fetchT === 'function' ? _fetchT : (u => fetch(u));
+    _toolsAgentsLoad = f('/api/agents/list-by-provider')
+      .then(r => (r.ok ? r.json() : null))
+      .catch(() => null)
+      .then(d => {
+        if (d) { _toolsApplyAgents(d); toolsSyncRunDot(); return; }
+        console.warn('tools gate: agent list failed to load; retrying in 5 s');
+        _toolsAgentsLoad = null;
+        setTimeout(_toolsEnsureAgents, 5000);
+      });
+  }
+
+  // Local streams mapped to the agent they drive, so the gate answers instantly.
+  function _toolsLocalAgents() {
+    const out = {};
+    const add = (id, tool) => { if (id) (out[id] = out[id] || []).push(tool); };
+    const l = _toolsRunningLocal();
+    const vb = typeof _vbenchEventSrc !== 'undefined' && _vbenchEventSrc;
+    const va = typeof _vatEventSrc !== 'undefined' && _vatEventSrc;
+    const rcTarget = typeof _rcRunTarget !== 'undefined' && _rcRunTarget;
+    if (l.rc) add((rcTarget && rcTarget.agent) || _toolsDefaultAgent.llama, 'reportcard');
+    if (l.bench) add(vb ? _toolsDefaultAgent.vllm : _toolsDefaultAgent.llama, 'benchmark');
+    if (l.at) add(va ? _toolsDefaultAgent.vllm : _toolsDefaultAgent.llama,
+                  (window.QG && QG.running()) ? 'quality' : 'autotune');
+    return out;
+  }
+
+  // Which tool holds one provider/agent right now; null when it is free.
+  // Fails closed until the agent list resolves — an unknown host is not idle.
+  function toolsGateBusy(provider, agentId) {
+    _toolsEnsureAgents();
+    const id = agentId || _toolsDefaultAgent[provider || 'llama'] || null;
+    if (!id) {
+      return _toolsAgentsReady ? null
+        : { tool: 'unknown', label: 'the agent list to load', agent_id: null,
+            host: '', unresolved: true };
+    }
+    const tools = [...new Set([...(_toolsLocalAgents()[id] || []),
+                               ...(_toolsActivityAgents[id] || [])])];
+    if (!tools.length) return null;
+    return { tool: tools[0], label: _TOOL_LABEL[tools[0]] || tools[0],
+             agent_id: id, host: _tHost(id) };
+  }
+
+  function toolsGateOn(fn) { if (typeof fn === 'function') _toolsGateSubs.add(fn); }
+
+  // An agent refusal that means "something else holds the tool lock".
+  function toolsGateRefusal(text) {
+    return /in progress|already running/i.test(String(text || ''));
+  }
+
+  // Tile id behind a slot key: 'benchmark:offline' marks the Benchmark tile.
+  function _toolsPendingFor(toolId) {
+    const hit = Object.keys(_toolsPending).find(
+      k => k === toolId || k.indexOf(toolId + ':') === 0);
+    return hit ? _toolsPending[hit] : null;
+  }
+
+  // A module's pending run, so the launcher can't show the tool as idle.
+  function toolsSetQueued(toolId, waitFor) {
+    if (!toolId) return;
+    if (waitFor) _toolsPending[toolId] = waitFor; else delete _toolsPending[toolId];
+    const home = _tEl('toolsHome');
+    if (_toolsInited && home && home.style.display !== 'none') _toolsRenderLauncher();
+  }
+
+  function _toolsGateNotify() {
+    const key = JSON.stringify([_toolsActivityAgents, _toolsLocalAgents(),
+                                _toolsDefaultAgent, _toolsAgentsReady]);
+    if (key === _toolsGateKey) return;
+    _toolsGateKey = key;
+    [..._toolsGateSubs].forEach(fn => { try { fn(); } catch (_) {} });
+  }
+
+  // One queue slot per tool: at most one pending run, started by the gate once
+  // the provider/agent it waits on goes idle.
+  function toolsQueueSlot(toolId, opts) {
+    let pending = null;
+    // A pending run keeps the host it was queued against, so changing a picker
+    // can't repoint the gate at a host the frozen payload will not hit.
+    const pick = () => ({ provider: opts.provider ? opts.provider() : 'llama',
+                          agent: opts.agent ? opts.agent() : null });
+    const target = () => {
+      const t = pending ? pending.target : pick();
+      return toolsGateBusy(t.provider, t.agent);
+    };
+    const paint = () => {
+      toolsSetQueued(toolId, pending ? pending.waitFor : null);
+      if (opts.render) {
+        // An unresolved host gates the run but has no name to show for it.
+        const b = target();
+        try {
+          opts.render({ queued: !!pending, waitFor: pending ? pending.waitFor : null,
+                        busy: (b && b.unresolved) ? null : b });
+        } catch (_) {}
+      }
+    };
+    const slot = {
+      busy: target,
+      queued: () => !!pending,
+      waitFor: () => (pending ? pending.waitFor : null),
+      queue(payload, waitFor) {
+        const t = pick();
+        const b = toolsGateBusy(t.provider, t.agent);
+        pending = { payload, target: t, waitFor: waitFor || _toolsGateText(b) };
+        paint();
+        return pending.waitFor;
+      },
+      drop() { if (!pending) return false; pending = null; paint(); return true; },
+      fire() {
+        if (!pending) return;
+        const payload = pending.payload;
+        pending = null;
+        paint();
+        try { opts.start(payload); } catch (_) {}
+      },
+      sync: paint,
+    };
+    toolsGateOn(() => { if (pending && !target()) slot.fire(); else paint(); });
+    return slot;
+  }
+
+  // "Benchmark on gpu-01" — the phrase every module shows while it waits.
+  function _toolsGateText(busy) {
+    if (!busy) return 'the run in progress';
+    return busy.label + (busy.host ? ' on ' + busy.host : '');
+  }
 
   function _tNum(v, dp) {
     return (v == null || !isFinite(v)) ? null : Number(v).toFixed(dp == null ? 1 : dp);
@@ -74,6 +233,7 @@
 
   // Shared shape for a runnable tool tile: status/last/sub/action derived once.
   function _runToolDesc(cfg, row, running, local) {
+    const pending = !running && _toolsPendingFor(cfg.id);
     const subVal = row ? (cfg.sub ? cfg.sub(row) : (_tNum(cfg.tps(row)) || '—') + ' t/s') : null;
     const core = row
       ? '<b>' + TC.esc(TC.age(row.ts) || '') + '</b> · '
@@ -81,10 +241,11 @@
       : null;
     return {
       id: cfg.id, icon: cfg.icon, tone: cfg.tone, name: cfg.name, desc: cfg.desc,
-      status: running ? 'running' : 'ready',
+      status: running ? 'running' : pending ? 'queued' : 'ready',
       stats: row ? cfg.stats(row) : null,
       empty: cfg.empty,
-      last: core ? 'last run ' + core : 'no runs yet',
+      last: pending ? 'queued behind ' + TC.esc(pending)
+        : core ? 'last run ' + core : 'no runs yet',
       lastShort: row ? '<b>' + TC.esc(TC.when(row.ts) || '—') + '</b>' : '—',
       sub: row ? subVal + ' · ' + (TC.age(row.ts) || '') : null,
       action: local ? 'View run' : (row ? 'Open' : 'Set up'),
@@ -144,6 +305,20 @@
           ];
         },
       }, at, run.at, run.local.at),
+      _runToolDesc({
+        id: 'quality', icon: '⚖', tone: 4, name: 'Quality guard',
+        desc: 'Check any config change against f16 with a KL-divergence pass before you apply it.',
+        empty: '<b>Never run.</b> Pick a model, change a key, and measure the quality cost.',
+        sub: q => { const s = q.summary || {}; return s.kl != null ? 'KL ' + Number(s.kl).toFixed(3) : 'quality check'; },
+        stats: q => {
+          const s = q.summary || {};
+          return [
+            { v: s.kl != null ? Number(s.kl).toFixed(3) : '—', l: 'Last KL' },
+            { v: s.kl_pass == null ? '—' : s.kl_pass ? 'pass' : 'fail', l: 'Guard' },
+            { v: histTool('quality'), u: 'runs', l: 'History' },
+          ];
+        },
+      }, _toolsRunLatest.quality || _toolsRunsFor('quality')[0] || null, run.at, run.local.at),
     ];
     return tools;
   }
@@ -214,6 +389,13 @@
           title: clickable ? 'Open Autotune' : null, model: r.model_id || '',
           host: _tHost(r.agent_id),
           result: bits.join(' · ') || '—', tps: s.decode_tps ?? null, ts: r.ts });
+      } else if (r.tool === 'quality') {
+        const bits = [];
+        if (s.kl != null) bits.push('<b>KL ' + TC.esc(Number(s.kl).toFixed(4)) + '</b>');
+        if (s.changed) bits.push(TC.esc(String(s.changed)));
+        bits.push(!r.ok ? '<span style="color:var(--crit)">failed</span>' : s.kl_pass ? 'pass' : '<span style="color:var(--warn)">fail</span>');
+        rows.push({ icon: '⚖', tool: 'Quality', toolId: clickable ? 'quality' : null, title: clickable ? 'Open Quality guard' : null,
+          model: r.model_id || '', host: _tHost(r.agent_id), result: bits.join(' · '), tps: null, ts: r.ts });
       }
     });
     // Newest 100 overall, then the active tool filter and column sort.
@@ -272,10 +454,11 @@
     if (dot) dot.classList.toggle('on', _toolsRunning().any);
     const home = _tEl('toolsHome');
     if (_toolsInited && home && home.style.display !== 'none') _toolsRenderLauncher();
+    _toolsGateNotify();
   }
 
-  const _TOOL_MODS = { reportcard: 'toolsMod', benchmark: 'toolsModBench', autotune: 'toolsModAt' };
-  const _TOOL_CHIPS = { reportcard: 'toolsChipReportcard', benchmark: 'toolsChipBenchmark', autotune: 'toolsChipAutotune' };
+  const _TOOL_MODS = { reportcard: 'toolsMod', benchmark: 'toolsModBench', autotune: 'toolsModAt', quality: 'toolsModQg' };
+  const _TOOL_CHIPS = { reportcard: 'toolsChipReportcard', benchmark: 'toolsChipBenchmark', autotune: 'toolsChipAutotune', quality: 'toolsChipQuality' };
 
   // Context chip in a module head: the model a deep link pre-filled (#770).
   function _toolsSetChip(id, modelId) {
@@ -295,27 +478,40 @@
     chip.style.display = '';
   }
 
-  function _toolsHideModules() {
+  // Modules sharing /api/llm/autotune/stream; the outgoing one closes its EventSource.
+  const _TOOL_STREAMS = { autotune: () => window.AT, quality: () => window.QG };
+  let _toolsOpenId = null;
+
+  function _toolsDetach(id) {
+    const mod = id && _TOOL_STREAMS[id] && _TOOL_STREAMS[id]();
+    if (mod && typeof mod.detach === 'function') { try { mod.detach(); } catch (_) {} }
+  }
+
+  // keepId stays attached; every other open module's stream is closed, never cancelled.
+  function _toolsHideModules(keepId) {
+    if (_toolsOpenId && _toolsOpenId !== keepId) _toolsDetach(_toolsOpenId);
+    _toolsOpenId = keepId || null;
     Object.values(_TOOL_MODS).forEach(m => {
       const el = _tEl(m);
       if (el) el.style.display = 'none';
     });
   }
 
-  function toolsOpenTool(id, modelId) {
+  function toolsOpenTool(id, modelId, opts) {
     const modId = _TOOL_MODS[id];
     if (!modId) return;
-    const run = _toolsRunningLocal();
     const home = _tEl('toolsHome');
     if (home) home.style.display = 'none';
-    _toolsHideModules();
+    _toolsHideModules(id);
+    const run = _toolsRunningLocal();
     const mod = _tEl(modId);
     if (mod) mod.style.display = 'block';
     // Chip only when the model actually pre-fills — a live run keeps its state.
     const willInit =
       (id === 'reportcard' && !run.rc && typeof initReportCard === 'function')
       || (id === 'benchmark' && !run.bench && typeof openBench === 'function')
-      || (id === 'autotune' && !run.at && window.AT);
+      || (id === 'autotune' && !run.at && window.AT)
+      || (id === 'quality' && !run.at && window.QG);
     _toolsSetChip(id, willInit && modelId ? modelId : null);
     // A live run keeps its pickers and progress; re-init only when idle.
     if (id === 'reportcard') {
@@ -327,21 +523,23 @@
         try { _benchChart.resize(); } catch (_) {}
       }
     } else if (id === 'autotune') {
-      if (window.AT) AT.onOpen(modelId || undefined);
+      if (window.AT) AT.onOpen(modelId || undefined, opts);
+    } else if (id === 'quality') {
+      if (window.QG) QG.onOpen(modelId || undefined, opts);
     }
   }
 
   // Entry point for model-card ⋯ actions: land on the Tools tab with the
   // tool's module open and the model pre-filled (#770).
   let _toolsPendingOpen = false;
-  function toolsDeepLink(id, modelId) {
+  function toolsDeepLink(id, modelId, opts) {
     if (typeof switchTab === 'function' && typeof _activeTab !== 'undefined'
         && _activeTab !== 'llm') switchTab('llm');
     _toolsPendingOpen = true;
     try {
       if (typeof switchSubTab === 'function') switchSubTab('llm', 'tools');
     } finally { _toolsPendingOpen = false; }
-    toolsOpenTool(id, modelId || null);
+    toolsOpenTool(id, modelId || null, opts);
   }
 
   function toolsClearHistory() {
@@ -472,14 +670,7 @@
       f('/api/reportcard/recent?limit=100').then(j),
       f('/api/tools/runs?limit=100').then(j),
     ]).then(([agents, rc, runs]) => {
-      if (agents.status === 'fulfilled') {
-        _toolsAgents = {};
-        Object.entries(agents.value || {}).forEach(([prov, list]) =>
-          (list || []).forEach(a => {
-            _toolsAgents[a.agent_id] = a.hostname;
-            if (prov === 'llama' && a.is_default) _toolsDefaultLlama = a.agent_id;
-          }));
-      }
+      if (agents.status === 'fulfilled') _toolsApplyAgents(agents.value);
       if (rc.status === 'fulfilled') _toolsRc = rc.value.cards || [];
       if (runs.status === 'fulfilled') {
         _toolsRuns = runs.value.runs || [];
@@ -518,4 +709,9 @@
   window.toolsClearHistory = toolsClearHistory;
   window.toolsSyncRunDot = toolsSyncRunDot;
   window.toolsPollActivity = toolsPollActivity;
+  window.toolsGateBusy = toolsGateBusy;
+  window.toolsGateOn = toolsGateOn;
+  window.toolsGateRefusal = toolsGateRefusal;
+  window.toolsSetQueued = toolsSetQueued;
+  window.toolsQueueSlot = toolsQueueSlot;
 })();

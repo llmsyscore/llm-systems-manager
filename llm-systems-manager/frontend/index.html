@@ -55,12 +55,12 @@ Backend API endpoints consumed:
   <script src="/static/vendor/xterm.min.js?v=5.3.0"></script>
   <script src="/static/vendor/xterm-addon-fit.min.js?v=0.8.0"></script>
   <link rel="stylesheet" href="/static/css/fonts.css?v=2026.08.30-1">
-  <link rel="stylesheet" href="/static/css/base.css?v=2026.09.09-3">
+  <link rel="stylesheet" href="/static/css/base.css?v=2026.09.09-5">
   <link rel="stylesheet" href="/static/css/settings.css?v=2026.09.04-2">
-  <link rel="stylesheet" href="/static/css/modelcards.css?v=2026.09.04-12">
+  <link rel="stylesheet" href="/static/css/modelcards.css?v=2026.09.09-4">
   <link rel="stylesheet" href="/static/css/reportcard.css?v=2026.09.09-1">
-  <link rel="stylesheet" href="/static/css/tools.css?v=2026.08.31-8">
-  <link rel="stylesheet" href="/static/css/autotune.css?v=2026.09.08-6">
+  <link rel="stylesheet" href="/static/css/tools.css?v=2026.09.09-3">
+  <link rel="stylesheet" href="/static/css/autotune.css?v=2026.09.09-4">
   <link rel="stylesheet" href="/static/css/energy.css?v=2026.08.19-2">
   <link rel="stylesheet" href="/static/css/overall.css?v=2026.08.30-1">
 </head>
@@ -2071,6 +2071,7 @@ Backend API endpoints consumed:
           <button class="on" type="button" title="Report Card">▤</button>
           <button type="button" title="Benchmark" onclick="toolsOpenTool('benchmark')">◷</button>
           <button type="button" title="Autotune" onclick="toolsOpenTool('autotune')">⌖</button>
+          <button type="button" title="Quality guard" onclick="toolsOpenTool('quality')">⚖</button>
         </div>
         <h2>Report Card</h2>
         <span class="ctx-chip" id="toolsChipReportcard" style="display:none;"></span>
@@ -2182,6 +2183,7 @@ Backend API endpoints consumed:
           <button type="button" title="Report Card" onclick="toolsOpenTool('reportcard')">▤</button>
           <button class="on" type="button" title="Benchmark">◷</button>
           <button type="button" title="Autotune" onclick="toolsOpenTool('autotune')">⌖</button>
+          <button type="button" title="Quality guard" onclick="toolsOpenTool('quality')">⚖</button>
         </div>
         <h2>Benchmark</h2>
         <div class="mc-seg" id="benchModeSeg" role="tablist" aria-label="Benchmark mode">
@@ -2239,6 +2241,7 @@ Backend API endpoints consumed:
       <div class="bench-results-pane">
         <div class="bench-pane-head">
           <span class="bench-pane-title">Results</span>
+          <span id="benchPerf" class="bench-perf-note"></span>
           <span id="benchStatus" class="bench-status-pill">idle</span>
         </div>
         <div id="benchResults">
@@ -2350,6 +2353,7 @@ Backend API endpoints consumed:
           <button type="button" title="Report Card" onclick="toolsOpenTool('reportcard')">▤</button>
           <button type="button" title="Benchmark" onclick="toolsOpenTool('benchmark')">◷</button>
           <button class="on" type="button" title="Autotune">⌖</button>
+          <button type="button" title="Quality guard" onclick="toolsOpenTool('quality')">⚖</button>
         </div>
         <h2>Autotune</h2>
         <span class="ctx-chip" id="toolsChipAutotune" style="display:none;"></span>
@@ -2444,6 +2448,7 @@ Backend API endpoints consumed:
         </div>
         <div class="at-runbar">
           <button id="atRunBtn" class="mcbtn mcbtn-pri" onclick="AT.run()">▶ Run autotune</button>
+          <button id="atVerifyBtn" class="mcbtn mcbtn-ghost" onclick="AT.verify()" style="display:none;" title="Re-run only the Verify stage against the current config">✓ Re-verify</button>
           <span class="at-est" id="atEstimate"></span>
           <button id="atCancelBtn" class="mcbtn mcbtn-ghost warn" onclick="AT.cancel()" style="display:none;">✕ Cancel</button>
           <button id="atAgainBtn" class="mcbtn mcbtn-ghost" onclick="AT.again()" style="display:none;">↻ Run again</button>
@@ -2457,9 +2462,10 @@ Backend API endpoints consumed:
             <div class="at-card-f"><span class="msg">Stages run in dependency order: context before KV, KV before offload, spec last. Each stage starts from the best of the previous one.</span></div>
           </div>
           <div class="at-notice" id="atPrevTune" style="display:none;"></div>
+          <div class="at-notice" id="atQueueNote" style="display:none;"></div>
         </div>
         <div id="atPaneRun" class="at-pane" style="display:none;">
-          <div class="bl-strip at-strip"><span class="bench-status-pill running" id="atRunPill">running</span><span id="atStripStage"></span><span id="atStripTime"></span></div>
+          <div class="bl-strip at-strip"><span class="bench-status-pill running" id="atRunPill">running</span><span id="atStripStage"></span><span id="atStripTime"></span><span id="atStripPerf"></span></div>
           <div class="at-prog"><i id="atProgBar" style="width:0%"></i></div>
           <div class="at-stepper" id="atStepper"></div>
           <div class="at-card">
@@ -2480,7 +2486,7 @@ Backend API endpoints consumed:
           <div class="at-card">
             <div class="at-card-h"><div class="at-rec-head"><h3>Recommended configuration</h3><span class="big" id="atRecBig"></span></div><span class="gap"></span><span class="at-hint" id="atRecSel"></span></div>
             <div class="at-card-b flush" style="overflow-x:auto"><table class="at-rt"><thead><tr><th style="width:24%">Parameter</th><th style="width:12%">Current</th><th style="width:12%">Recommended</th><th>Evidence</th><th style="width:44px"></th></tr></thead><tbody id="atRecRows"></tbody></table></div>
-            <div class="at-card-f"><button type="button" id="atApplyBtn" class="mcbtn mcbtn-pri" onclick="AT.apply()">Apply</button><button type="button" id="atProfileBtn" class="mcbtn mcbtn-ghost" onclick="AT.saveProfile()">Save as profile</button><button type="button" class="mcbtn mcbtn-ghost" onclick="AT.copyArgs()">Copy as llama-server args</button><span class="gap"></span><span class="msg" id="atRecMsg"></span></div>
+            <div class="at-card-f"><button type="button" id="atApplyBtn" class="mcbtn mcbtn-pri" onclick="AT.apply()">Apply</button><button type="button" id="atRetuneBtn" class="mcbtn mcbtn-pri" onclick="AT.retune()" style="display:none;">⌖ Re-tune</button><button type="button" id="atQualityBtn" class="mcbtn mcbtn-ghost" onclick="AT.checkQuality()" style="display:none;">Check quality</button><button type="button" id="atProfileBtn" class="mcbtn mcbtn-ghost" onclick="AT.saveProfile()">Save as profile</button><button type="button" class="mcbtn mcbtn-ghost" onclick="AT.copyArgs()">Copy as llama-server args</button><span class="gap"></span><span class="msg" id="atRecMsg"></span></div>
           </div>
           <div class="at-guard" id="atGuard"></div>
           <div class="at-card"><div class="at-card-h"><h3>Before / after</h3><span class="meta">verify stage vs the config that was live</span></div><div class="at-card-b at-cmp" id="atCmp"></div></div>
@@ -2489,20 +2495,73 @@ Backend API endpoints consumed:
       </div>
       </div>
     </div><!-- /toolsModAt -->
+
+    <!-- Quality guard module (#888): KL-divergence check of a config change against f16 -->
+    <div id="toolsModQg" class="at-wizard" style="display:none;">
+      <div class="tools-mod-head">
+        <div class="mini-switch" role="tablist" aria-label="Switch tool">
+          <button class="tools-crumb" type="button" title="All tools" onclick="toolsCloseModule()">‹</button>
+          <button type="button" title="Report Card" onclick="toolsOpenTool('reportcard')">▤</button>
+          <button type="button" title="Benchmark" onclick="toolsOpenTool('benchmark')">◷</button>
+          <button type="button" title="Autotune" onclick="toolsOpenTool('autotune')">⌖</button>
+          <button class="on" type="button" title="Quality guard">⚖</button>
+        </div>
+        <h2>Quality guard</h2>
+        <span class="ctx-chip" id="toolsChipQuality" style="display:none;"></span>
+        <span class="mgap"></span>
+        <span class="bl-note" id="qgModeNote">Compare a config change against f16 with KL divergence</span>
+      </div>
+      <div class="bench-body">
+      <div class="bench-rail at-rail" id="qgRail">
+        <div id="qgPreflight" class="at-preflight" style="display:none;"><span class="at-dot warn"></span><span class="d" id="qgPreflightMsg"></span><button id="qgStopBtn" class="mcbtn mcbtn-ghost mcbtn-sm" onclick="QG.stopServer()" style="display:none;">⏹ Stop server</button></div>
+        <div class="at-grp">
+          <div class="at-grp-h">Model <span class="r" id="qgModelCount">none selected</span></div>
+          <div class="at-grp-b at-mlist" id="qgModelList"></div>
+        </div>
+        <div class="at-grp">
+          <div class="at-grp-h">Changes to test <span class="r" id="qgCount">0</span></div>
+          <div id="qgRows"></div>
+          <div class="at-grp-b"><div class="at-hint">Switch on the keys to test, then pick a value. A value that matches the model's current one is not sent.</div></div>
+        </div>
+        <div class="at-grp">
+          <div class="at-grp-h">Guard</div>
+          <div class="at-grp-b"><div class="at-frow"><label>Pass when KL ≤</label><input class="at-in xs" id="qgKlMax" type="number" min="0" step="0.005" value="0.02"></div>
+          <div class="at-hint">Mean KL divergence of the changed config against an f16 KV cache on the same model. 0.02 is a conservative "no visible quality loss" line.</div></div>
+        </div>
+        <div class="at-runbar">
+          <button id="qgRunBtn" class="mcbtn mcbtn-pri" onclick="QG.run()">▶ Run check</button>
+          <span class="at-est" id="qgEstimate">~2 perplexity passes</span>
+          <button id="qgCancelBtn" class="mcbtn mcbtn-ghost warn" onclick="QG.cancel()" style="display:none;">✕ Cancel</button>
+        </div>
+      </div>
+      <div class="bench-results-pane at-panes">
+        <div class="at-pane">
+          <div class="at-notice" id="qgQueueNote" style="display:none;"></div>
+          <div class="bl-strip at-strip"><span class="bench-status-pill" id="qgPill">idle</span><span id="qgStrip"></span><span id="qgStripTime"></span><span id="qgStripPerf"></span></div>
+          <div class="at-card"><div class="at-card-h"><h3>Result</h3><span class="meta" id="qgResultMeta"></span></div>
+            <div class="at-card-b" id="qgResult"><div class="at-hint">Pick a model, change one or more keys, then run the check.</div></div>
+            <div class="at-card-f"><button type="button" id="qgApplyBtn" class="mcbtn mcbtn-pri" onclick="QG.apply()" style="display:none;">Apply changes</button><button type="button" id="qgBenchBtn" class="mcbtn mcbtn-ghost" onclick="QG.openBenchmark()" style="display:none;">◷ Measure speed in Benchmark</button><span class="gap"></span><span class="msg qg-speed" id="qgApplyNote"></span></div>
+          </div>
+          <div class="at-card collapsed"><div class="at-card-h tog" onclick="this.parentElement.classList.toggle('collapsed')"><h3>Run log</h3></div><div class="at-card-b"><div class="at-log" id="qgLog"></div></div></div>
+        </div>
+      </div>
+      </div>
+    </div><!-- /toolsModQg -->
   </div>
 
 </div><!-- end llmTab -->
 
 <script src="/static/js/lib/layout.js?v=2026.07.10-1"></script>
 <script src="/static/js/lib/settingsdrawer.js?v=2026.09.04-2"></script>
-<script src="/static/js/lib/modelcards.js?v=2026.09.08-1"></script>
+<script src="/static/js/lib/modelcards.js?v=2026.09.09-3"></script>
 <script src="/static/js/foundation.js?v=2026.09.04-4"></script>
 <script src="/static/js/lib/series.js?v=2026.08.04-2"></script>
 <script src="/static/js/lib/peaks.js?v=2026.08.29-2"></script>
 <script src="/static/js/lib/benchaxis.js?v=2026.09.08-1"></script>
+<script src="/static/js/lib/perfmode.js?v=2026.09.09-1"></script>
 <script src="/static/js/lib/thresholds.js?v=2026.08.05-1"></script>
 <script src="/static/js/lib/reportcard.js?v=2026.09.08-2"></script>
-<script src="/static/js/lib/toolcards.js?v=2026.08.31-6"></script>
+<script src="/static/js/lib/toolcards.js?v=2026.08.31-7"></script>
 <script src="/static/js/lib/sseguard.js?v=2026.09.04-1"></script>
 <script src="/static/js/lib/energy.js?v=2026.08.26-1"></script>
 <script src="/static/js/lib/overall-view.js?v=2026.09.01-1"></script>
@@ -2519,16 +2578,17 @@ Backend API endpoints consumed:
 <script src="/static/js/admin-settings.js?v=2026.09.09-2"></script>
 <script src="/static/js/admin-access-settings.js?v=2026.09.04-2"></script>
 <script src="/static/js/autopilot.js?v=2026.09.04-1"></script>
-<script src="/static/js/llmcontrol-models.js?v=2026.09.08-1"></script>
+<script src="/static/js/llmcontrol-models.js?v=2026.09.10-1"></script>
 <script src="/static/js/editor-modern.js?v=2026.09.07-1"></script>
-<script src="/static/js/bench-autotune.js?v=2026.09.08-4"></script>
-<script src="/static/js/bench-live.js?v=2026.09.09-6"></script>
-<script src="/static/js/autotune.js?v=2026.09.08-7"></script>
+<script src="/static/js/bench-autotune.js?v=2026.09.10-1"></script>
+<script src="/static/js/bench-live.js?v=2026.09.10-1"></script>
+<script src="/static/js/autotune.js?v=2026.09.10-2"></script>
+<script src="/static/js/quality.js?v=2026.09.10-2"></script>
 <script src="/static/js/lmstudio.js?v=2026.09.04-1"></script>
 <script src="/static/js/vllm.js?v=2026.09.04-1"></script>
 <script src="/static/js/vllm-bench-autotune.js?v=2026.09.02-1"></script>
-<script src="/static/js/report-card.js?v=2026.09.08-3"></script>
-<script src="/static/js/tools.js?v=2026.09.08-5"></script>
+<script src="/static/js/report-card.js?v=2026.09.10-1"></script>
+<script src="/static/js/tools.js?v=2026.09.10-1"></script>
 <script src="/static/js/energy.js?v=2026.08.19-1"></script>
 <script src="/static/js/overall.js?v=2026.08.29-2"></script>
 <script src="/static/js/dashboard-manager.js?v=2026.08.17-1"></script>
@@ -2701,7 +2761,7 @@ Backend API endpoints consumed:
 <link rel="stylesheet" href="/static/css/toasts.css?v=2026.06.10-6">
 <div id="alarmToastContainer"></div>
 
-<script src="/static/js/events-toasts.js?v=2026.09.03-2"></script>
-<script src="/static/js/boot.js?v=2026.09.04-4"></script>
+<script src="/static/js/events-toasts.js?v=2026.09.09-1"></script>
+<script src="/static/js/boot.js?v=2026.09.09-1"></script>
 </body>
 </html>

@@ -16,7 +16,7 @@
   let _levels = [], _baseline = null, _lastDoc = null, _runId = null, _activeLevel = null, _lastTps = null, _cell = null;
   let _attached = false, _queued = null, _elapsedIv = null, _runStart = 0, _sweepLevels = [], _curLevel = null, _curCell = null, _busyOn = false, _lastCfg = null, _attachedRun = null;
   let _fleetHosts = [], _fleetJob = null, _fleetPoll = null, _fleetSel = null;
-  let _base = null, _baseTimer = null, _baseAutoAttached = null;
+  let _base = null, _baseTimer = null, _baseAutoAttached = null, _slot = null;
   const _baseOpenDet = new Set();  // run ids with an expanded config-detail row
   const FLEET_POLL_MS = 3000;
 
@@ -247,6 +247,7 @@
     syncSweepUi();
     const rb = $('blRunBtn'); if (rb && rb._blLabel == null) rb._blLabel = rb.textContent;
     if (_pre && _pre.busy && !running()) attach();
+    const sl = slot(); if (sl) sl.sync();
     const savedJob = sessionStorage.getItem('bl.fleetJob');
     if (savedJob && !running()) { _fleetJob = { job_id: savedJob, hosts: [] }; busy(true); startFleetPoll(); }
   }
@@ -550,11 +551,11 @@
   function syncCancelBtn() {
     const b = $('blCancelBtn'); if (!b) return;
     if (b._blLabel == null) b._blLabel = b.textContent;
-    const drop = _attached && !!_queued;
+    const drop = (_attached && !!_queued) || !!(_slot && _slot.queued());
     b.style.display = (drop || (_busyOn && !_attached)) ? '' : 'none';
     b.textContent = drop ? 'Drop queued run' : (b._blLabel || '');
   }
-  function busy(on) { _busyOn = on; $('blRunBtn').disabled = on; syncCancelBtn(); $('blProgress').style.display = on ? '' : 'none'; if (typeof toolsSyncRunDot === 'function') toolsSyncRunDot(); }
+  function busy(on) { _busyOn = on; $('blRunBtn').disabled = on; syncCancelBtn(); $('blProgress').style.display = on ? '' : 'none'; if (_slot) _slot.sync(); if (typeof toolsSyncRunDot === 'function') toolsSyncRunDot(); }
   // Shows "Add to Report Card" only after a successful, idle run.
   function syncAttachBtn() {
     const b = $('blAttachBtn'); if (!b) return;
@@ -602,10 +603,32 @@
       el.textContent = `elapsed ${Math.floor(s / 60)} m ${s % 60} s${remainText()}`; };
     tick(); _elapsedIv = setInterval(tick, 1000);
   }
-  function notice(on) {
+  function notice(on, text) {
     const n = $('blNotice'); if (!n) return;
-    n.textContent = on ? 'A benchmark is already running on this host. New runs queue behind it.' : '';
+    n.textContent = on ? (text || 'A benchmark is already running on this host. New runs queue behind it.') : '';
     n.style.display = on ? '' : 'none';
+  }
+  // Shared gate (#888): another tool on this host turns Run into Queue.
+  function slot() {
+    if (!_slot && typeof toolsQueueSlot === 'function') {
+      _slot = toolsQueueSlot('benchmark', {
+        provider: () => 'llama',
+        start: (cfg) => run(cfg, { now: true }),
+        render: (st) => syncQueue(st),
+      });
+    }
+    return _slot;
+  }
+  function syncQueue(st) {
+    if (_attached || running() || _busyOn) { syncCancelBtn(); return; }
+    const b = st.busy;
+    runLabel(st.queued || b ? 'Queue run' : null);
+    notice(!!(st.queued || b), st.queued
+      ? `Queued behind ${st.waitFor} — this run starts on its own when that finishes.`
+      : b ? `${b.label} is running on ${b.host}. New runs queue behind it.` : '');
+    const rb = $('blRunBtn'); if (rb) rb.disabled = !!st.queued;
+    if (st.queued) setStatus(`queued · starts when ${st.waitFor} finishes`, 'running');
+    syncCancelBtn();
   }
   function runLabel(text) { const b = $('blRunBtn'); if (b) b.textContent = text == null ? (b._blLabel || '') : text; }
   function leaveAttached() { _attached = false; notice(false); runLabel(null); syncCancelBtn(); }
@@ -620,7 +643,7 @@
     notice(true);
     if (typeof toolsSyncRunDot === 'function') toolsSyncRunDot();
   }
-  async function run(cfg) {
+  async function run(cfg, opts) {
     const c = cfg || config();
     if (!c.model_id) { setStatus('pick a model', 'err'); return; }
     if (c.extra_inputs === null) { setStatus('request extras must be a JSON object', 'err'); return; }
@@ -632,6 +655,8 @@
       if (fleetOn()) { setStatus('finish or cancel the attached run first', 'err'); return; }
       _queued = c; setStatus('queued · starts when the current run finishes', 'running'); $('blRunBtn').disabled = true; syncCancelBtn(); return;
     }
+    const s = slot(), gateBusy = s && !fleetOn() && !(opts && opts.now) && s.busy();
+    if (gateBusy) { s.queue(c); return; }
     if (fleetOn()) {
       const agents = fleetAgents();
       if (!agents.length) { setStatus('no host has this model loaded', 'err'); return; }
@@ -659,7 +684,13 @@
     let d;
     try { d = await fetch('/api/benchmark/live/run', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(c) }).then(r => r.json()); }
     catch (e) { d = { ok: false, error: String(e) }; }
-    if (!d || !d.ok) { setStatus(d && d.error ? d.error : 'failed to start', 'err'); busy(false); stopElapsed(); if (d && d.runtime) { _pre = Object.assign(_pre || {}, { runtime: d.runtime }); renderPreflight(); } return; }
+    if (!d || !d.ok) {
+      busy(false); stopElapsed();
+      if (d && d.runtime) { _pre = Object.assign(_pre || {}, { runtime: d.runtime }); renderPreflight(); }
+      // Lost the race with another browser — the gate holds the run until the host frees up.
+      if (s && typeof toolsGateRefusal === 'function' && toolsGateRefusal(d && (d.error || d.detail))) { s.queue(c, 'the run in progress'); return; }
+      setStatus(d && d.error ? d.error : 'failed to start', 'err'); return;
+    }
     _runId = d.run_id; openStream();
   }
   function openStream() {
@@ -697,12 +728,14 @@
           if (_fleetPoll) return;
           busy(false);
           if (_attached) { const q = _queued; _queued = null; leaveAttached();
-            if (q) { setStatus('starting…', 'running'); run(q); return; } }
+            if (q) { setStatus('starting…', 'running'); run(q, { now: true }); return; } }
           setStatus(msg.ok ? 'complete' : (msg.cancelled ? 'cancelled' : 'failed'), msg.ok ? 'ok' : 'err'); }
       } });
     if (typeof toolsSyncRunDot === 'function') toolsSyncRunDot();
   }
   function cancel() {
+    // A live run — including a fleet job — outranks a pending queued one.
+    if (!running() && !_busyOn && _slot && _slot.drop()) { setStatus('queued run dropped'); busy(false); return; }
     if (_fleetJob && !_fleetJob.done) {
       fetch('/api/benchmark/live/fleet/' + encodeURIComponent(_fleetJob.job_id) + '/cancel', { method: 'POST' }).catch(() => {});
       setStatus('cancelling…', 'running');

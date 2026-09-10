@@ -136,6 +136,7 @@ _autotune_replay = BenchReplayBuffer(maxlen=5000)
 _autotune_cond = threading.Condition()
 _autotune_lock = threading.Lock()
 _autotune_active = False
+_autotune_quality = False
 _autotune_run_id = ""
 _autotune_proc: "Optional[subprocess.Popen]" = None
 _autotune_pgid: "Optional[int]" = None
@@ -188,6 +189,7 @@ _AT_MEM_RE = re.compile(
 )
 _AT_GPU_HINT_RE = re.compile(r"(?i)vulkan|rocm|cuda|hip|metal")
 _AT_MODEL_LOADED_RE = re.compile(r"(?:^|\s)(?:\w+\s*:\s*)?model loaded\b", re.IGNORECASE)
+_AT_BUILD_RE = re.compile(r"\bbuild:\s*(\d+)\s*\(([0-9a-fA-F]{6,})\)")
 # The alloc alternative allows only a size/unit run between "alloc…" and "failed".
 _AT_OOM_RE = re.compile(
     r"out of memory|failed to allocate|cudaMalloc failed|OutOfDeviceMemory|not enough (?:memory|space)"
@@ -604,6 +606,14 @@ async def perf_controller_loop() -> None:
     log_file = _require_ctx().config.LLAMA_LOG_FILE
     log.info("perf controller starting; tailing %s", log_file)
 
+    # With llama-server down at startup the sleep profile applies; the state
+    # file follows so the next wake marker is not skipped as a no-op.
+    sleep_unit = _require_ctx().config.PERF_TARGET_SLEEP
+    if sleep_unit and not _llama_unit_active():
+        log.info("perf controller: llama-server is down; resetting to %s", sleep_unit)
+        await _perf_switch(sleep_unit)
+        llama_write_state_file("sleeping")
+
     # Pre-flight: if the state file exists but isn't owned by us, every
     # subsequent transition will fail with EPERM at os.replace() time
     # (sticky bit on /tmp blocks renames over a file you don't own).
@@ -858,6 +868,7 @@ def llama_state_endpoint(authorization: Optional[str] = Header(default=None)) ->
         "state": llama_get_state(),
         "port": llama_api_port(_require_ctx().config.LLAMA_API_URL),
         "perf_controller_enabled": _require_ctx().config.PERF_CONTROLLER_ENABLED,
+        "perf": _perf_mode_state(),
         "last_transition": _require_ctx().state.get("perf_last_transition"),
         "sse_connected": _llama_sse_authoritative(),
         "sse": _require_ctx().state.get("llama_sse"),
@@ -2149,6 +2160,8 @@ def _bench_run_all(model_ids: list, tool: str, switches: list):
     global _bench_active, _bench_proc
     _bench_cancel_event.clear()
     try:
+        # llama-bench owns the GPU for this run; restored in finally.
+        _perf_mode_set("awake", _bench_put)
         env = os.environ.copy()
         parent = str(Path(_require_ctx().config.LLAMA_BIN).parent) if _require_ctx().config.LLAMA_BIN else ""
         existing = env.get("LD_LIBRARY_PATH", "")
@@ -2165,6 +2178,8 @@ def _bench_run_all(model_ids: list, tool: str, switches: list):
         log.error("bench run error: %s", e, exc_info=True)
         _bench_put({"type": "done", "ok": False, "error": str(e)})
     finally:
+        with best_effort("bench: restore sleep perf mode", log=log):
+            _perf_mode_set("sleep", _bench_put)
         _bench_proc = None
         with _bench_lock:
             _bench_active = False
@@ -2268,18 +2283,15 @@ def llama_bench_perf_mode(body: dict, authorization: Optional[str] = Header(defa
     mode = (body.get("mode") or "").strip()
     if mode not in ("performance", "powersave"):
         return {"ok": False, "error": "mode must be 'performance' or 'powersave'"}
-    try:
-        # sudoers permits `reload-or-restart` only (LSA_PERF alias in the tmpl).
-        proc = subprocess.run(
-            ["sudo", "-n", "systemctl", "reload-or-restart", mode],
-            capture_output=True, text=True, timeout=30,
-        )
-        if proc.returncode != 0:
-            return {"ok": False,
-                    "error": (proc.stderr or proc.stdout or "").strip()[:300] or f"rc={proc.returncode}"}
-        return {"ok": True, "mode": mode}
-    except Exception as e:
-        return {"ok": False, "error": str(e)}
+    cfg = _require_ctx().config
+    if not cfg.PERF_CONTROLLER_ENABLED:
+        return {"ok": False,
+                "error": "perf controller disabled on this agent (PERF_CONTROLLER_ENABLED)"}
+    unit = cfg.PERF_TARGET_AWAKE if mode == "performance" else cfg.PERF_TARGET_SLEEP
+    ok, rc, err = _perf_run_unit(unit)
+    if not ok:
+        return {"ok": False, "error": err or f"rc={rc}"}
+    return {"ok": True, "mode": mode, "unit": unit}
 
 
 # ── Live benchmark (speed-bench, #879) ────────────────────────────────────
@@ -2612,6 +2624,78 @@ def _autotune_perplexity_bin() -> "Optional[Path]":
     return p if p.exists() else None
 
 
+_autotune_ppl_probe_cache: dict[str, dict] = {}
+_AUTOTUNE_PROBE_TIMEOUT_S = 5
+
+
+def _autotune_probe_arg(ppl: str, arg: str, env: dict) -> dict:
+    """Runs one flag against the binary; {"rc": None, "timeout": True} on a hang, else the rc."""
+    try:
+        r = subprocess.run([ppl, arg], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                           stdin=subprocess.DEVNULL, timeout=_AUTOTUNE_PROBE_TIMEOUT_S, env=env)
+        return {"rc": r.returncode, "timeout": False}
+    except subprocess.TimeoutExpired:
+        return {"rc": None, "timeout": True}
+    except OSError:
+        return {"rc": None, "timeout": False}
+
+
+def _autotune_probe_perplexity(ppl: Path) -> dict:
+    """Runs llama-perplexity --version (falling back to --help) with the tuning LD_LIBRARY_PATH."""
+    try:
+        st = ppl.stat()
+        key = f"{ppl}:{st.st_mtime_ns}:{st.st_size}"
+    except OSError:
+        return {"runnable": None, "rc": None, "reason": None}
+    cached = _autotune_ppl_probe_cache.get(key)
+    if cached is not None:
+        return cached
+    env = os.environ.copy()
+    parent = str(ppl.parent)
+    existing = env.get("LD_LIBRARY_PATH", "")
+    env["LD_LIBRARY_PATH"] = f"{parent}:{existing}" if existing else parent
+    res = _autotune_probe_arg(str(ppl), "--version", env)
+    # Retries with --help only after a clean but unrecognised exit.
+    if not res["timeout"] and res["rc"] is not None and res["rc"] > 1:
+        res = _autotune_probe_arg(str(ppl), "--help", env)
+    if res["timeout"]:
+        out = {"runnable": False, "rc": None, "reason": "timeout"}
+    elif res["rc"] is None:
+        out = {"runnable": False, "rc": None, "reason": "exec_failed"}
+    elif res["rc"] < 0:
+        out = {"runnable": False, "rc": res["rc"], "reason": "signal"}
+    else:
+        out = {"runnable": True, "rc": res["rc"], "reason": None}
+    _autotune_ppl_probe_cache[key] = out
+    return out
+
+
+def _autotune_perplexity_status() -> dict:
+    """present/kl_text/runnable for the quality guard; runnable is only probed once both exist."""
+    ppl = _autotune_perplexity_bin()
+    text = _autotune_kl_text()
+    present, kl_text = ppl is not None, text.is_file()
+    runnable, rc, hint = None, None, None
+    if not present:
+        hint = "llama-perplexity is not installed beside llama-server."
+    elif not kl_text:
+        hint = "the KL reference text is missing from the agent's bench directory."
+    else:
+        probe = _autotune_probe_perplexity(ppl)
+        runnable, rc = probe["runnable"], probe["rc"]
+        if runnable is False:
+            reason = probe.get("reason")
+            if reason == "signal":
+                hint = (f"llama-perplexity crashed on startup (signal {-rc}) — it looks stale relative to "
+                        "the installed llama.cpp libraries; reinstall the llama.cpp tools from the same build.")
+            elif reason == "timeout":
+                hint = "llama-perplexity did not respond to a version check — it may be hung or unusable."
+            else:
+                hint = "llama-perplexity could not be executed — check that it is installed and executable."
+    ok = present and kl_text and runnable is not False
+    return {"ok": ok, "present": present, "kl_text": kl_text, "runnable": runnable, "rc": rc, "hint": hint}
+
+
 def _autotune_track_aux(p: "subprocess.Popen") -> None:
     global _autotune_aux_proc, _autotune_aux_pgid
     _autotune_aux_proc = p
@@ -2751,6 +2835,7 @@ def _autotune_run_iter(model_id: str, fitt_mb: "Optional[int]", extra_args: list
     # Drives plateau detection in the picker.
     fit_applied: Optional[bool] = None
     facts_lines: list = []
+    build = ""
     oom = False
     loaded_at: Optional[float] = None
     shutdown_buf: deque = deque(maxlen=4000)
@@ -2803,6 +2888,9 @@ def _autotune_run_iter(model_id: str, fitt_mb: "Optional[int]", extra_args: list
                         fit_applied = True
                 if "print_info:" in line:
                     facts_lines.append(line)
+                bm = _AT_BUILD_RE.search(line) if not build else None
+                if bm:
+                    build = f"b{bm.group(1)}-{bm.group(2)}"
                 if _AT_OOM_RE.search(line):
                     oom = True
             if _AT_MODEL_LOADED_RE.search(line):
@@ -2918,7 +3006,7 @@ def _autotune_run_iter(model_id: str, fitt_mb: "Optional[int]", extra_args: list
     if ctx_seq is None and ctx_fallback is not None:
         ctx_seq = ctx_fallback
 
-    meta = {"model_loaded": model_loaded, "oom": oom, "facts_lines": facts_lines, "hold": hold_res,
+    meta = {"model_loaded": model_loaded, "oom": oom, "facts_lines": facts_lines, "hold": hold_res, "build": build,
             "load_s": (loaded_at - start_ts) if loaded_at else None}
 
     if not model_loaded:
@@ -3229,6 +3317,12 @@ def _autotune_converge(model_id: str, target_mb: int, extra_args: list, env: dic
             "converged": converged, "iters": iters_done, "stop_reason": stop_reason, "facts": facts, "load_s": load_s}
 
 
+# The spawned server's own build line is fresher than anything /props last reported.
+def _autotune_note_build(build: str) -> None:
+    global _llama_build_last
+    _llama_build_last = build[:64]
+
+
 class _AutotuneBackend:
     """Real backend for the stage engine: llama-server loads, the speed-bench stick, llama-perplexity KL."""
 
@@ -3245,7 +3339,9 @@ class _AutotuneBackend:
         hold = (lambda: self._stick(measure)) if measure else None
         res = _autotune_run_iter(self.model_id, None, list(args), self.env, 0, ctx=ctx, hold=hold)
         loaded, oom = bool(res.get("model_loaded")), bool(res.get("oom"))
-        return {"ok": bool(res.get("ok")) or (loaded and not oom),
+        if res.get("build"):
+            _autotune_note_build(res["build"])
+        return {"ok": bool(res.get("ok")) or (loaded and not oom), "build": res.get("build") or None,
                 "oom": oom,
                 "error": "OOM after load" if (loaded and oom) else (None if loaded else res.get("error")),
                 "ctx": res.get("ctx_seq"), "free_mb": res.get("actual_free_mb"), "total_mb": res.get("total_vram_mb"),
@@ -3343,9 +3439,16 @@ class _AutotuneBackend:
         for line in (out or "").splitlines()[-40:]:
             _autotune_put({"type": "line", "model_id": self.model_id, "text": line})
         kl = None if write_base else _at.parse_kl(out or "")
+        stats = None if write_base else (_at.parse_kl_stats(out or "") or None)
         ok = not timed_out and proc.returncode == 0 and (write_base or kl is not None)
-        err = "llama-perplexity timed out" if timed_out else f"llama-perplexity rc={proc.returncode}"
-        return {"ok": ok, "kl": kl, "error": None if ok else err}
+        if timed_out:
+            err = "llama-perplexity timed out"
+        elif proc.returncode < 0:
+            err = (f"llama-perplexity crashed (signal {-proc.returncode}) — the binary looks incompatible "
+                   "with the installed llama.cpp libraries; reinstall the llama.cpp tools")
+        else:
+            err = f"llama-perplexity rc={proc.returncode}"
+        return {"ok": ok, "kl": kl, "stats": stats, "error": None if ok else err}
 
     def energy_start(self):
         self._energy = _bl.PowerIntegrator(_live_power_w)
@@ -3392,29 +3495,52 @@ def _llama_help_valued() -> Optional[set]:
     return found
 
 
-def _autotune_set_perf_mode(mode: str) -> None:
-    """Trigger {performance|powersave}.service via reload-or-restart; emits perf_mode SSE event."""
-    if mode not in ("performance", "powersave"):
-        return
-    rc = None
-    err = ""
-    ok = False
+def _perf_mode_state(fresh: bool = False) -> dict:
+    """Perf-controller config plus the CPU governor actually in effect on this host."""
+    cfg = _require_ctx().config
+    gov = None
+    try:
+        from collectors.system import read_cpu_governor  # type: ignore
+        gov = read_cpu_governor(fresh=fresh)
+    except Exception as e:
+        log.debug("perf mode: cpu governor unreadable: %s", e)
+    return {"enabled": bool(cfg.PERF_CONTROLLER_ENABLED), "governor": gov,
+            "awake": cfg.PERF_TARGET_AWAKE, "sleep": cfg.PERF_TARGET_SLEEP}
+
+
+def _perf_run_unit(unit: str) -> "tuple[bool, Optional[int], str]":
+    """sudo systemctl reload-or-restart <unit>; (ok, rc, error)."""
     try:
         r = subprocess.run(
-            ["sudo", "-n", "systemctl", "reload-or-restart", mode],
+            ["sudo", "-n", "systemctl", "reload-or-restart", unit],
             capture_output=True, text=True, timeout=30,
         )
-        rc = r.returncode
-        err = (r.stderr or r.stdout or "").strip()[:240]
-        ok = (rc == 0)
+        return r.returncode == 0, r.returncode, (r.stderr or r.stdout or "").strip()[:240]
     except Exception as e:
-        err = str(e)[:240]
-    _autotune_put({"type": "perf_mode", "mode": mode, "ok": ok,
-                   "rc": rc, "error": (None if ok else (err or "unknown"))})
+        return False, None, str(e)[:240]
+
+
+def _perf_mode_set(phase: str, put) -> None:
+    """Switch the host to the configured awake/sleep perf unit; emits a perf_mode event."""
+    cfg = _require_ctx().config
+    unit = cfg.PERF_TARGET_AWAKE if phase == "awake" else cfg.PERF_TARGET_SLEEP
+    ev: dict[str, Any] = {"type": "perf_mode", "phase": phase, "mode": unit, "unit": unit,
+                          "enabled": bool(cfg.PERF_CONTROLLER_ENABLED)}
+    if not cfg.PERF_CONTROLLER_ENABLED:
+        ev.update({"ok": False, "rc": None, "skipped": True,
+                   "error": "perf controller disabled on this agent (PERF_CONTROLLER_ENABLED)",
+                   "governor": _perf_mode_state()["governor"]})
+        put(ev)
+        return
+    ok, rc, err = _perf_run_unit(unit)
+    ev.update({"ok": ok, "rc": rc, "skipped": False,
+               "error": (None if ok else (err or "unknown")),
+               "governor": _perf_mode_state(fresh=True)["governor"]})
+    put(ev)
 
 
 def _autotune_run_all(req: dict) -> None:
-    global _autotune_active, _autotune_proc
+    global _autotune_active, _autotune_proc, _autotune_quality
     _autotune_cancel_event.clear()
     run_id = _autotune_run_id
     try:
@@ -3426,7 +3552,7 @@ def _autotune_run_all(req: dict) -> None:
         env["FORCE_COLOR"] = "0"
         env["PYTHONUNBUFFERED"] = "1"
         # Flip to performance so load timing isn't skewed; restored in finally.
-        _autotune_set_perf_mode("performance")
+        _perf_mode_set("awake", _autotune_put)
         rt = _bench_live_runtime()
         sizes = {}
         with best_effort("autotune: catalog sweep", log=log):
@@ -3440,7 +3566,8 @@ def _autotune_run_all(req: dict) -> None:
                            "text": "[autotune] could not read llama-server --help; on/off flags are guessed"})
         info = {"run_id": run_id, "runtime": bool(rt["python"] and rt["script"]),
                 "perplexity": _autotune_perplexity_bin() is not None and _autotune_kl_text().is_file(),
-                "drafts": drafts, "cores": _at.physical_cores(_read_cpuinfo(), os.cpu_count() or 1)}
+                "drafts": drafts, "cores": _at.physical_cores(_read_cpuinfo(), os.cpu_count() or 1),
+                "llama_build": _llama_build_last or ""}
         for mid in req["model_ids"]:
             if _autotune_cancel_event.is_set():
                 break
@@ -3449,6 +3576,12 @@ def _autotune_run_all(req: dict) -> None:
             hf_arg = _bench_get_hf_arg(mid) or ""
             menv = dict(info, target_repo=hf_arg.split(":")[0], target_size=int(sizes.get(mid) or 0))
             menv["valued"] = valued
+            if req.get("mode") == "quality":
+                done = _at.run_quality(mid, section, req, _AutotuneBackend(mid, env, run_id), _autotune_put,
+                                       _autotune_cancel_event.is_set, menv)
+                _shared.post_tool_run(_require_ctx(), "quality", "llama", run_id, mid, done["ok"],
+                                      _at.ledger_summary(done))
+                continue
             done = _at.run_model(mid, section, req, _AutotuneBackend(mid, env, run_id), _autotune_put,
                                  _autotune_cancel_event.is_set, menv)
             _shared.post_tool_run(_require_ctx(), "autotune", "llama", run_id, mid, done["ok"],
@@ -3460,8 +3593,8 @@ def _autotune_run_all(req: dict) -> None:
         log.error("autotune run error: %s", e, exc_info=True)
         _autotune_put({"type": "done", "ok": False, "error": str(e)})
     finally:
-        with best_effort("autotune: restore powersave perf mode", log=log):
-            _autotune_set_perf_mode("powersave")
+        with best_effort("autotune: restore sleep perf mode", log=log):
+            _perf_mode_set("sleep", _autotune_put)
         # base.kld and the stick JSONs are scratch; the summaries already went out as events.
         with best_effort("autotune: drop run scratch dir", log=log):
             shutil.rmtree(_bl.bench_dir(_require_ctx().config.AGENT_INSTALL_DIR) / "runs" / f"at-{run_id}",
@@ -3470,6 +3603,7 @@ def _autotune_run_all(req: dict) -> None:
         _autotune_untrack_aux()
         with _autotune_lock:
             _autotune_active = False
+            _autotune_quality = False
 
 
 def llama_autotune_preflight(authorization: Optional[str] = Header(default=None)) -> dict[str, Any]:
@@ -3484,10 +3618,16 @@ def llama_autotune_preflight(authorization: Optional[str] = Header(default=None)
         gpu = collect_gpu() or {}
     vram = gpu.get("vram_total_bytes")
     hv = _llama_help_valued()
+    pdet = _autotune_perplexity_status()
     return {"ok": True, "busy": bool(_bench_active or _autotune_active), "unit_active": _llama_unit_active(),
+            "autotune_active": bool(_autotune_active), "quality_active": bool(_autotune_active and _autotune_quality),
             "help_valued": {"ok": hv is not None, "count": len(hv or ())},
+            "llama_build": _llama_build_last or "",
             "cores": _at.physical_cores(_read_cpuinfo(), os.cpu_count() or 1),
-            "perplexity": _autotune_perplexity_bin() is not None and _autotune_kl_text().is_file(),
+            "perplexity": pdet["ok"],
+            "perf": _perf_mode_state(fresh=True),
+            "perplexity_detail": {"present": pdet["present"], "kl_text": pdet["kl_text"],
+                                  "runnable": pdet["runnable"], "rc": pdet["rc"], "hint": pdet["hint"]},
             "runtime": {"ok": bool(rt["python"] and rt["script"]), **rt},
             "drafts": _list_cache_ggufs(_hf_cache_root()), "sizes": sizes,
             "vram_total_mb": int(vram // (1024 * 1024)) if isinstance(vram, (int, float)) and vram else None,
@@ -3496,12 +3636,16 @@ def llama_autotune_preflight(authorization: Optional[str] = Header(default=None)
 
 def llama_autotune_run(body: dict, authorization: Optional[str] = Header(default=None)) -> dict[str, Any]:
     _require_ctx().check_bearer(authorization); _llama_check_enabled()
-    global _autotune_active, _autotune_run_id
+    global _autotune_active, _autotune_run_id, _autotune_quality
     cache_root = _hf_cache_root()
     try:
         req = _at.validate_request(body or {}, cache_root=cache_root, v1_args=_autotune_build_optional_args)
     except (ValueError, TypeError, AttributeError) as e:
         raise HTTPException(status_code=400, detail=str(e))
+    if req.get("mode") == "quality":
+        pdet = _autotune_perplexity_status()
+        if not pdet["ok"]:
+            return {"ok": False, "error": pdet["hint"]}
     # Refuse to start if llama-server is running — port/VRAM would collide.
     if _llama_unit_active():
         return {"ok": False, "error": f"{_require_ctx().config.LLAMA_SYSTEMD_UNIT} is running — stop it before auto-tune"}
@@ -3509,6 +3653,7 @@ def llama_autotune_run(body: dict, authorization: Optional[str] = Header(default
         if _autotune_active or _bench_active:
             return {"ok": False, "error": "Another benchmark or auto-tune is in progress"}
         _autotune_active = True
+        _autotune_quality = req.get("mode") == "quality"
         _autotune_run_id = uuid.uuid4().hex[:12]
         # Reset the buffer before the lock drops: a stream landing between
         # active=True and start_run would replay the prior run's stale done.
@@ -3585,7 +3730,8 @@ def llama_tools_state(authorization: Optional[str] = Header(default=None)) -> di
     """Whether a bench/autotune job is running, for the manager Tools view."""
     _require_ctx().check_bearer(authorization)
     return {"ok": True, "bench_active": bool(_bench_active),
-            "autotune_active": bool(_autotune_active)}
+            "autotune_active": bool(_autotune_active),
+            "quality_active": bool(_autotune_active and _autotune_quality)}
 
 
 _ROUTES: tuple = (

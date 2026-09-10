@@ -268,6 +268,45 @@ def test_parse_kl(at):
     assert at.parse_kl("nothing here") is None
 
 
+# The operator's live block (#888): mean KL plus the token-probability statistics.
+KL_STAT_BLOCK = """====== KL divergence statistics ======
+Mean    KLD:   0.005400 ±   0.000123
+====== Token probability statistics ======
+Mean      Δp: -0.000 ± 0.051 %
+Maximum   Δp: 23.904%
+99.9%     Δp: 17.595%
+99.0%     Δp:  8.201%
+RMS Δp    :  3.236 ± 0.100 %
+Same top p: 98.118 ± 0.212 %
+"""
+
+
+def test_parse_kl_stats_reads_the_whole_block(at):
+    s = at.parse_kl_stats(KL_STAT_BLOCK)
+    assert s == {"kl": 0.0054, "same_top_p": 98.118, "rms_dp": 3.236, "p999_dp": 17.595, "max_dp": 23.904}
+    assert at.parse_kl(KL_STAT_BLOCK) == 0.0054
+
+
+def test_parse_kl_stats_omits_fields_a_truncated_block_never_printed(at):
+    cut = KL_STAT_BLOCK.split("99.9%")[0]
+    s = at.parse_kl_stats(cut)
+    assert s == {"kl": 0.0054, "max_dp": 23.904}
+    assert "same_top_p" not in s and "rms_dp" not in s and "p999_dp" not in s
+
+
+def test_parse_kl_stats_reads_exponent_and_signed_forms(at):
+    s = at.parse_kl_stats("Mean    KLD: 1.234e-03\nSame top p: +98.5 %\nRMS Delta p: .5 %\n")
+    assert s["kl"] == 1.234e-03
+    assert s["same_top_p"] == 98.5
+    assert s["rms_dp"] == 0.5
+
+
+def test_parse_kl_stats_returns_empty_when_no_statistics_were_printed(at):
+    assert at.parse_kl_stats("llama_perplexity: loading model\nnothing here\n") == {}
+    assert at.parse_kl_stats("") == {}
+    assert at.parse_kl_stats(None) == {}
+
+
 def test_physical_cores(at):
     cpuinfo = "\n".join(["processor : 0", "physical id : 0", "core id : 0",
                          "processor : 1", "physical id : 0", "core id : 0",
@@ -435,13 +474,14 @@ def test_build_changes_selection_rule(at):
 
 
 def test_ledger_summary(at):
-    done = {"objective": "balanced", "after": {"ctx": 65536, "free_mb": 1012, "decode_tps": 142.6, "wh_per_ktok": 0.24},
+    done = {"objective": "balanced", "after": {"ctx": 65536, "free_mb": 1012, "decode_tps": 142.6, "prefill_tps": 900.0, "agg_tps": 150.0, "wh_per_ktok": 0.24},
             "before": {"decode_tps": 101}, "stages": [{"stage": "context", "status": "done"}, {"stage": "kv", "status": "skipped"}],
             "verify": {"ok": True}, "facts": {"n_expert": 128}}
     s = at.ledger_summary(done)
-    assert s == {"objective": "balanced", "ctx_size": 65536, "free_mb": 1012, "decode_tps": 142.6,
+    assert s == {"objective": "balanced", "mode": "tune", "llama_build": None, "ctx_size": 65536, "free_mb": 1012,
+                 "decode_tps": 142.6, "prefill_tps": 900.0, "agg_tps": 150.0,
                  "gain_pct": pytest.approx(41.2, abs=0.1), "stages_done": 1, "verify_ok": True,
-                 "wh_per_ktok": 0.24, "n_expert": 128}
+                 "wh_per_ktok": 0.24, "n_expert": 128, "kl": None, "kl_pass": None, "regressed": None}
 
 
 def test_kl_args_keeps_only_perplexity_safe_flags(at):
@@ -449,6 +489,34 @@ def test_kl_args_keeps_only_perplexity_safe_flags(at):
             "--n-gpu-layers", "99", "--n-cpu-moe", "6", "--flash-attn", "--parallel", "4", "--no-mmap", "-ngl", "40"]
     assert at.kl_args(args) == ["--cache-type-k", "q8_0", "--cache-type-v", "q8_0", "--threads", "12",
                                 "--n-gpu-layers", "99", "--n-cpu-moe", "6", "--flash-attn", "--no-mmap", "-ngl", "40"]
+
+
+def test_kl_args_keeps_safe_flag_value_pair(at):
+    args = ["--flash-attn", "on", "--cache-type-k", "f16"]
+    assert at.kl_args(args) == ["--flash-attn", "on", "--cache-type-k", "f16"]
+
+
+def test_kl_args_bare_safe_flag_before_another_flag(at):
+    args = ["--flash-attn", "--cache-type-k", "f16"]
+    assert at.kl_args(args) == ["--flash-attn", "--cache-type-k", "f16"]
+
+
+def test_kl_args_bare_safe_flag_at_end_of_argv(at):
+    assert at.kl_args(["--threads", "8", "--mlock"]) == ["--threads", "8", "--mlock"]
+
+
+def test_kl_args_no_mmap_and_mlock_value_and_bare_forms(at):
+    assert at.kl_args(["--no-mmap", "on", "--mlock"]) == ["--no-mmap", "on", "--mlock"]
+    assert at.kl_args(["--no-mmap", "--parallel", "4", "--mlock"]) == ["--no-mmap", "--mlock"]
+
+
+def test_kl_args_drops_a_value_flag_left_without_its_value(at):
+    assert at.kl_args(["--flash-attn", "--threads"]) == ["--flash-attn"]
+
+
+def test_kl_args_keeps_load_mode_value(at):
+    args = ["--load-mode", "mmap+mlock", "--parallel", "4"]
+    assert at.kl_args(args) == ["--load-mode", "mmap+mlock"]
 
 
 def test_spawn_cmd_fit_vs_explicit_ctx(at):
@@ -462,3 +530,79 @@ def test_spawn_cmd_fit_vs_explicit_ctx(at):
     assert plain == ["/o/llama-server", "--models-max", "1", "-lv", "4", "--host", "127.0.0.1", "--port", "8080",
                      "--threads", "8", "-hf", "o/r:Q4"]
     assert at.spawn_cmd("/o/llama-server", "o/r:Q4", 8080, 0, None, [])[9:11] == ["-fitt", "0"]
+
+
+def test_mode_defaults_to_tune_and_rejects_unknown(at):
+    req = at.validate_request({"model_ids": ["org/m:Q4"], "objective": "fit"})
+    assert req["mode"] == "tune"
+    with pytest.raises(ValueError):
+        at.validate_request({"model_ids": ["org/m:Q4"], "objective": "fit", "mode": "poke"})
+
+
+def test_verify_mode_turns_every_dimension_off_and_keeps_baseline(at):
+    req = at.validate_request({"model_ids": ["org/m:Q4"], "objective": "balanced", "mode": "verify",
+                               "baseline_tps": 41.5, "dims": {"kv": {"on": True}}})
+    assert req["mode"] == "verify"
+    assert all(not d["on"] for name, d in req["dims"].items() if name != "context")
+    assert req["baseline_tps"] == 41.5
+
+
+def test_verify_mode_keeps_the_whole_baseline_and_derives_the_rate_from_it(at):
+    req = at.validate_request({"model_ids": ["org/m:Q4"], "objective": "fit", "mode": "verify",
+                               "baseline": {"decode_tps": 41.5, "ctx": 8192, "free_mb": 900, "bogus": 1, "agg_tps": None}})
+    assert req["baseline"] == {"decode_tps": 41.5, "ctx": 8192.0, "free_mb": 900.0}
+    assert req["baseline_tps"] == 41.5
+    with pytest.raises(ValueError):
+        at.validate_request({"model_ids": ["org/m:Q4"], "objective": "fit", "mode": "verify", "baseline": {"ctx": "x"}})
+
+
+def test_verify_mode_drops_operator_custom_args(at):
+    req = at.validate_request({"model_ids": ["org/m:Q4"], "objective": "balanced", "mode": "verify",
+                               "dims": {"context": {"custom_args": ["-ub", "512"]}}})
+    assert req["dims"]["context"]["custom_args"] == []
+    tune = at.validate_request({"model_ids": ["org/m:Q4"], "objective": "balanced",
+                                "dims": {"context": {"custom_args": ["-ub", "512"]}}})
+    assert tune["dims"]["context"]["custom_args"] == ["-ub", "512"]
+
+
+def test_quality_overrides_canonicalise_short_aliases(at):
+    req = at.validate_request({"model_ids": ["org/m:Q4"], "objective": "fit", "mode": "quality",
+                               "overrides": {"ctv": "q4_0", "-ctk": "q8_0", "t": "8", "ncmoe": None}})
+    assert req["overrides"] == {"cache-type-v": "q4_0", "cache-type-k": "q8_0",
+                                "threads": "8", "n-cpu-moe": None}
+
+
+def test_quality_mode_validates_overrides(at):
+    req = at.validate_request({"model_ids": ["org/m:Q4"], "objective": "fit", "mode": "quality",
+                               "overrides": {"cache-type-k": "q4_0", "--ctv": "q4_0", "threads": None},
+                               "kl_max": 0.05})
+    assert req["overrides"] == {"cache-type-k": "q4_0", "cache-type-v": "q4_0", "threads": None}
+    assert req["kl_max"] == 0.05
+    with pytest.raises(ValueError):
+        at.validate_request({"model_ids": ["org/m:Q4"], "objective": "fit", "mode": "quality",
+                             "overrides": {"model": "/etc/passwd"}})
+    with pytest.raises(ValueError):
+        at.validate_request({"model_ids": ["org/m:Q4"], "objective": "fit", "mode": "quality",
+                             "overrides": {"threads": "8; rm -rf"}})
+    with pytest.raises(ValueError):
+        at.validate_request({"model_ids": ["org/m:Q4"], "objective": "fit", "mode": "quality", "overrides": {}})
+
+
+def test_quality_overrides_accept_load_mode_and_reject_deprecated_keys(at):
+    req = at.validate_request({"model_ids": ["org/m:Q4"], "objective": "fit", "mode": "quality",
+                               "overrides": {"lm": "mmap+mlock"}})
+    assert req["overrides"] == {"load-mode": "mmap+mlock"}
+    with pytest.raises(ValueError):
+        at.validate_request({"model_ids": ["org/m:Q4"], "objective": "fit", "mode": "quality",
+                             "overrides": {"no-mmap": "true"}})
+    with pytest.raises(ValueError):
+        at.validate_request({"model_ids": ["org/m:Q4"], "objective": "fit", "mode": "quality",
+                             "overrides": {"mlock": "true"}})
+
+
+def test_ledger_summary_carries_mode_build_and_kl(at):
+    done = {"objective": "fit", "mode": "quality", "llama_build": "b10809-5266f24",
+            "guard": {"kl": 0.011, "pass": True}, "after": {}, "before": {}, "stages": []}
+    s = at.ledger_summary(done)
+    assert s["mode"] == "quality" and s["llama_build"] == "b10809-5266f24"
+    assert s["kl"] == 0.011 and s["kl_pass"] is True

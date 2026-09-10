@@ -55,18 +55,30 @@
     return Number.isFinite(v) ? ` · ${v.toFixed(2)} Wh/1k` : '';
   }
 
+  // #887: tuned / tuned · stale chip; the stale form is a button that re-verifies.
+  function tuneTag(tune, d) {
+    if (!tune) return '';
+    const act = tune.act && d && d.actAttr ? ` ${d.actAttr}="${esc(tune.act)}" data-id="${esc(d.id)}" role="button" tabindex="0"` : '';
+    return `<span class="mc-tune${tune.stale ? ' stale' : ''}" title="${esc(tune.title || '')}"${act}>${esc(tune.label)}</span>`;
+  }
+
+  // #887: badges (bench/re-bench/tuned) and stat cells live in separate zones
+  // so one group never interleaves with, or reflows because of, the other.
   function statsHtml(stats, fresh, d) {
     const cells = (stats || []).map(s =>
       `<div class="mc-stat"><div class="l">${esc(s.l)}</div><div class="v${s.live ? ' live' : ''}"><b>${esc(s.v)}</b>${s.unit ? ' ' + esc(s.unit) : ''}</div></div>`
     ).join('');
-    if (!cells && !(fresh && fresh.stale)) return '';
+    if (!cells && !(fresh && fresh.stale) && !(d && d.tune)) return '';
     const tag = cells
       ? `<span class="mc-benchtag" title="${esc(((d && d.benchTitle) || 'Benchmark results — not live throughput') + _whSuffix(d && d.extraJson))}">bench</span>`
       : '';
     const f = (fresh && fresh.stale)
       ? `<span class="mc-stale" title="${esc(fresh.staleTitle || 'Config changed since this benchmark — run a fresh one from the ⋯ menu')}">re-bench</span>`
       : '';
-    return `<div class="mc-stats"${_benchClickAttrs(d, cells)}>${tag}${f}${cells}</div>`;
+    const tune = tuneTag(d && d.tune, d);
+    const badges = (tag || f || tune) ? `<div class="mc-badges">${tag}${f}${tune}</div>` : '';
+    const cellsHtml = cells ? `<div class="mc-cells">${cells}</div>` : '';
+    return `<div class="mc-stats"${_benchClickAttrs(d, cells)}>${badges}${cellsHtml}</div>`;
   }
 
   function _benchClickAttrs(d, hasCells) {
@@ -118,11 +130,16 @@
     </div>`;
   }
 
+  // #887: profile gets its own bounded zone so a long name can't push the
+  // badge/stat zones onto another line; missing zones just leave the space.
   function teleHtml(d) {
     const prof = d.profileHtml || '';
     const stats = statsHtml(d.stats, d.fresh, d);
     if (!prof && !stats) return '';
-    return `<div class="mc-tele">${prof}${stats}</div>`;
+    const profZone = prof
+      ? `<div class="mc-tele-prof"${d.profileText ? ` title="${esc(d.profileText)}"` : ''}>${prof}</div>`
+      : '';
+    return `<div class="mc-tele">${profZone}${stats}</div>`;
   }
 
   function compact(d) {
@@ -156,7 +173,7 @@
       <div class="mc-rowname"><div class="n">${esc(d.name)}</div>${d.repo ? `<div class="r">${esc(d.repo)}</div>` : ''}</div>
       <div class="mc-rowcfg"${d.cfgClick ? ` ${d.actAttr}="${esc(d.cfgClick)}" data-id="${esc(d.id)}" role="button" tabindex="0" title="Edit configuration"` : ''}>${cfg}</div>
       <div class="mc-rowmet"${_benchClickAttrs(d, met)}>${met}</div>
-      <div class="mc-rowprof">${d.profileHtml || ''}${d.fresh && d.fresh.stale ? ` <span class="mc-stale" title="${esc(d.fresh.staleTitle || 'Config changed since this benchmark')}">re-bench</span>` : ''}</div>
+      <div class="mc-rowprof">${d.profileHtml || ''}${d.fresh && d.fresh.stale ? ` <span class="mc-stale" title="${esc(d.fresh.staleTitle || 'Config changed since this benchmark')}">re-bench</span>` : ''}${tuneTag(d.tune, d)}</div>
       <div class="mc-rowact">${d.primary ? btnHtml(d, d.primary, 'mcbtn-pri') : ''}${menuHtml(d, menuItems)}</div>
     </div>`;
   }
@@ -329,7 +346,7 @@
   }
 
   const _MC_API = {
-    VIEWS, esc, validView, viewOf, age, pill, dot, specsHtml, statsHtml,
+    VIEWS, esc, validView, viewOf, age, pill, dot, specsHtml, statsHtml, tuneTag,
     card, compact, row, rowHeader, groupRow, groupHeader, actionsHtml, menuHtml,
     filterOf, filterMatch, isCollapsed, toggleGroup, isOpen, toggleOpen,
     setBusy, clearBusy, busyOf, setView, syncSeg, initToolbar, bindContainer, closeMenus,

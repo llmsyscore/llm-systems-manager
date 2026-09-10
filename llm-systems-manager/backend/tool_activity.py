@@ -13,7 +13,7 @@ import time as _time
 
 from _best_effort import best_effort
 
-TOOLS = ("benchmark", "autotune")
+TOOLS = ("benchmark", "autotune", "quality")
 
 # Probe cache lifetime, the window a just-started run is trusted unprobed, and
 # how long a record survives while the agent cannot confirm it.
@@ -81,8 +81,12 @@ def _fetch_state(agent_id: str, provider: str):
                                timeout=PROBE_TIMEOUT_S)
             if resp is not None and resp.status_code == 200:
                 body = resp.json() or {}
+                at = bool(body.get("autotune_active"))
+                # Agents older than the quality identity report it as autotune.
+                qual = bool(body.get("quality_active", at))
                 return {"benchmark": bool(body.get("bench_active")),
-                        "autotune": bool(body.get("autotune_active"))}
+                        "autotune": at and not bool(body.get("quality_active")),
+                        "quality": qual}
     return False
 
 

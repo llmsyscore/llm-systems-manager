@@ -21,6 +21,44 @@
                       manager: 'from metadata', kv_unified: 'kv-unified', no_candidates: 'nothing to try' };
   let _models = [], _pre = null, _sel = new Set(), _runs = [], _facts = {}, _es = null, _attached = false;
   let _run = null, _done = {}, _doneModel = null, _meta = {}, _section = {}, _elapsedIv = null;
+  let _status = {};        // model_id → /api/llm/autotune/status item
+  let _slot = null, _busyOn = false, _statusErr = false;
+  // Newest row per model wins; the route returns one row per (agent, model).
+  async function loadStatus() {
+    _status = {}; _statusErr = false;
+    try {
+      const d = await fetch('/api/llm/autotune/status').then(r => r.json());
+      (d && d.items || []).forEach(i => {
+        const cur = _status[i.model_id];
+        if (!cur || (Date.parse(i.ts || '') || 0) > (Date.parse(cur.ts || '') || 0)) _status[i.model_id] = i;
+      });
+    } catch (_) { _statusErr = true; }
+  }
+  // Appended to the run-history line syncModels wrote, so the objective/ctx/gain text survives.
+  function buildNote(prev) {
+    let note = prev.querySelector('[data-at-build]');
+    if (!note) { note = document.createElement('span'); note.className = 'd'; note.setAttribute('data-at-build', '1'); prev.appendChild(note); }
+    return note;
+  }
+  function syncVerify() {
+    const mid = primaryModel(), st = mid ? _status[mid] : null;
+    const btn = $('atVerifyBtn'); if (btn) btn.style.display = st && st.stale !== false && !running() ? '' : 'none';
+    const prev = $('atPrevTune');
+    if (prev && !st && _statusErr) {
+      prev.style.display = '';
+      buildNote(prev).textContent = 'Tune status could not be loaded, so whether an earlier tune is stale is unknown.';
+    }
+    if (prev && st) {
+      prev.style.display = '';
+      const note = buildNote(prev);
+      // The line above already carries the date, so this sentence only adds the build.
+      note.innerHTML = st.stale
+        ? `<b>Tune is stale.</b> Autotuned on llama.cpp ${esc(st.llama_build)} · host now runs ${esc(st.current_build)}. Re-verify checks the current config in ~3 min; re-tune if it regressed.`
+        : st.llama_build
+          ? `Tuned on llama.cpp ${esc(st.llama_build)}${st.current_build ? ' — the build this host still runs.' : '.'}`
+          : 'That tune predates build recording, so there is no build to compare against — re-verify to learn whether it still holds.';
+    }
+  }
 
   // ── rail state ──
   function dimOn(d) { const t = document.querySelector(`#toolsModAt .at-dim[data-dim="${d}"] [data-dim-on]`); return !!(t && t.classList.contains('on')); }
@@ -94,6 +132,7 @@
         prev.innerHTML = `<b>Previous tune</b><span class="d">${esc((r.ts || '').slice(0, 10))} · ${esc(s.objective || 'fit')}${s.ctx_size != null ? ' · ctx ' + esc(Number(s.ctx_size).toLocaleString()) : ''}${s.gain_pct != null ? ' · ' + (s.gain_pct >= 0 ? '+' : '') + esc(Math.round(s.gain_pct)) + ' %' : ''}. The new run compares against it.</span>`;
       } else prev.style.display = 'none';
     }
+    syncVerify();
     refreshPlan();
   }
   function seedThreads(cores) {
@@ -246,7 +285,7 @@
     mod.addEventListener('input', ev => { if (ev.target.closest('.at-dim-b, .at-grp-b')) refreshPlan(); });
     mod.addEventListener('change', ev => { if (ev.target.closest('.at-dim-b, .at-grp-b')) refreshPlan(); });
   }
-  async function onOpen(preselect) {
+  async function onOpen(preselect, opts) {
     wire();
     const L = typeof layout !== 'undefined' ? layout : null;
     if (L && L.atObjective) setObjective(L.atObjective); else setObjective(objective());
@@ -255,14 +294,23 @@
       fetch('/api/benchmark/models').then(r => r.json()).catch(() => ({})),
       fetch('/api/llm/autotune/preflight').then(r => r.json()).catch(() => null),
       fetch('/api/tools/runs?limit=100').then(r => r.json()).catch(() => ({})),
+      loadStatus(),
     ]);
     _models = (models && models.models) || [];
     _pre = pre && pre.ok ? pre : _pre;
     _runs = (runs && runs.runs) || [];
     if (_pre) { seedThreads(_pre.cores); seedDrafts(_pre.drafts); }
     renderModels(preselect);
+    syncVerify();
     await checkServer(pre && pre.ok ? pre : null);
     if (_pre && _pre.busy && !running()) attach();
+    const s = slot(); if (s) s.sync();
+    // A Re-verify deep link runs the check itself when the button is live.
+    if (opts && opts.verify && !running()) {
+      const vb = $('atVerifyBtn'), rb = $('atRunBtn');
+      if (vb && vb.style.display !== 'none' && !(rb && rb.disabled)) verify();
+      else if (vb) vb.focus();
+    }
   }
 
   // ── run / stream ──
@@ -279,11 +327,13 @@
       .forEach(el => { el.disabled = !!locked; });
   }
   function busy(on) {
+    _busyOn = !!on;
     const run = $('atRunBtn'), cancel = $('atCancelBtn'), again = $('atAgainBtn');
     if (run) run.disabled = on;
     if (cancel) cancel.style.display = on && !_attached ? '' : 'none';
     if (again) again.style.display = on ? 'none' : (_doneModel ? '' : 'none');
     setRailLocked(on);
+    if (_slot) _slot.sync();
     if (typeof toolsSyncRunDot === 'function') toolsSyncRunDot();
   }
   function mmss(s) { s = Math.max(0, Math.floor(s || 0)); return `${String(Math.floor(s / 60)).padStart(2, '0')}:${String(s % 60).padStart(2, '0')}`; }
@@ -378,13 +428,23 @@
     if (problem) { alert(problem); return; }
     fillDimDefaults(dims);
     const body = { model_ids: ids, objective: objective(), budget_min: Math.round(num('atBudgetMin', 120)), dims };
+    return startRun(body, ids);
+  }
+  async function startRun(body, ids, now) {
+    const s = slot(), gateBusy = s && !now && !running() && !_busyOn && s.busy();
+    if (gateBusy) { s.queue({ body, ids }); return; }
     let r;
     try {
       const resp = await fetch('/api/llm/autotune/run', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
       r = await resp.json();
     } catch (e) { alert('Autotune request failed: ' + (e && e.message ? e.message : e)); return; }
     if (!r || !r.ok) {
-      if (r && /in progress/i.test(r.error || r.detail || '')) { attach(); return; }
+      // Lost the race with another browser — attach, and hold this run behind it.
+      if (r && /in progress/i.test(r.error || r.detail || '')) {
+        attach();
+        if (s) s.queue({ body, ids }, 'the run in progress');
+        return;
+      }
       alert((r && (r.error || r.detail)) || 'Failed to start autotune'); return;
     }
     _done = {}; _doneModel = null; _meta = {}; _section = {};
@@ -393,6 +453,57 @@
     setPane('Run');
     busy(true);
     openStream();
+  }
+  async function verify() {
+    const mid = primaryModel();
+    if (!mid) { alert('Select a model.'); return; }
+    const dims = dimsState();
+    fillDimDefaults(dims);
+    const sm = (_status[mid] || {}).summary || {};
+    // Everything the last tune recorded, so the before column is not just decode.
+    const baseline = {};
+    [['decode_tps', 'decode_tps'], ['prefill_tps', 'prefill_tps'], ['agg_tps', 'agg_tps'], ['ctx', 'ctx_size'], ['free_mb', 'free_mb']]
+      .forEach(([k, sk]) => { if (sm[sk] != null) baseline[k] = sm[sk]; });
+    const body = { model_ids: [mid], objective: objective(), budget_min: 15, mode: 'verify',
+                   baseline_tps: sm.decode_tps ?? null, baseline, dims };
+    await startRun(body, [mid]);
+  }
+  function retune() { again(); run(); }
+  function checkQuality() {
+    const done = _doneModel ? _done[_doneModel] : null; if (!done) return;
+    const overrides = {};
+    selectedRows().forEach(c => {
+      if (QUALITY_KEYS.has(c.key) && c.recommended != null) overrides[c.key] = String(c.recommended);
+    });
+    if (typeof toolsOpenTool === 'function') toolsOpenTool('quality', done.model_id, { overrides });
+  }
+  const QUALITY_KEYS = new Set(['cache-type-k', 'ctk', 'cache-type-v', 'ctv', 'threads', 't', 'threads-batch', 'tb', 'n-gpu-layers', 'ngl', 'n-cpu-moe', 'ncmoe', 'batch-size', 'b', 'ubatch-size', 'ub', 'flash-attn', 'fa', 'load-mode', 'lm']);
+  // Shared gate (#888): another tool on this host turns Run into Queue.
+  function slot() {
+    if (!_slot && typeof toolsQueueSlot === 'function') {
+      _slot = toolsQueueSlot('autotune', {
+        provider: () => 'llama',
+        start: (p) => startRun(p.body, p.ids, true),
+        render: (st) => syncQueue(st),
+      });
+    }
+    return _slot;
+  }
+  function syncQueue(st) {
+    if (running() || _busyOn) return;
+    const btn = $('atRunBtn'), c = $('atCancelBtn'), n = $('atQueueNote');
+    if (btn) btn.textContent = st.queued ? '⏸ Queued · waiting'
+      : st.busy ? '▶ Queue autotune' : '▶ Run autotune';
+    if (c) {
+      c.style.display = st.queued ? '' : 'none';
+      c.textContent = st.queued ? '✕ Drop queued run' : '✕ Cancel';
+    }
+    if (n) {
+      n.textContent = st.queued
+        ? `Queued behind ${st.waitFor} — this run starts on its own when that finishes.`
+        : st.busy ? `${st.busy.label} is running on ${st.busy.host}. A run started now queues behind it.` : '';
+      n.style.display = n.textContent ? '' : 'none';
+    }
   }
   function attach() {
     _attached = true;
@@ -420,14 +531,35 @@
     if (typeof toolsSyncRunDot === 'function') toolsSyncRunDot();
   }
   function cancel() {
+    if (!running() && !_busyOn && _slot && _slot.drop()) { log('queued run dropped', 'warn'); return; }
     fetch('/api/llm/autotune/cancel', { method: 'POST' }).catch(() => {});
     log('cancel requested', 'warn');
   }
-  function again() { _done = {}; _doneModel = null; _rows = []; setMsg(''); setPane('Plan'); busy(false); refreshPlan(); }
+  // Tool switch: drop this module's stream, leaving the run itself alone.
+  function detach() {
+    if (!_es && !_attached) return;
+    if (_es) { try { _es.close(); } catch (_) {} _es = null; }
+    _attached = false;
+    stopElapsed();
+    busy(false);
+  }
+  function again() {
+    _done = {}; _doneModel = null; _rows = []; setMsg(''); setPane('Plan'); busy(false); refreshPlan();
+    const ab = $('atApplyBtn'), rb = $('atRetuneBtn'), qb = $('atQualityBtn');
+    if (ab) ab.style.display = '';
+    if (rb) rb.style.display = 'none';
+    if (qb) qb.style.display = 'none';
+  }
+  // Host CPU mode note in the run strip; blank when the agent's perf controller is off.
+  function perfNote(ev) {
+    const el = $('atStripPerf'); if (!el) return;
+    el.textContent = typeof perfModeNote === 'function' ? perfModeNote(ev) : '';
+  }
   function finish(msg) {
     if (_es) { try { _es.close(); } catch (_) {} _es = null; }
     _attached = false;
     stopElapsed();
+    perfNote(null);
     const p = $('atRunPill'); if (p) { p.textContent = msg.cancelled ? 'cancelled' : (msg.ok ? 'done' : 'error'); p.classList.remove('running'); }
     if (msg.error) log(msg.error, 'crit');
     busy(false);
@@ -565,6 +697,7 @@
     } else if (t === 'sentinel_retry') {
       log(`iter ${msg.iter} · bogus memory reading · doubling -fitt ${msg.old_fitt} → ${msg.new_fitt} (${msg.attempt}/${msg.max_attempts})`, 'warn');
     } else if (t === 'perf_mode') {
+      perfNote(msg);
       log(`perf mode → ${msg.mode}${msg.ok ? '' : ' (not applied: ' + (msg.error || 'rc=' + msg.rc) + ')'}`, msg.ok ? 'dim' : 'warn');
     } else if (t === 'line') {
       if (msg.text) raw(msg.text);
@@ -572,8 +705,9 @@
                || t === 'non_monotonic_detected' || t === 'cycle_detected') {
       if (t !== 'loading_progress') log(`${t.replace(/_/g, ' ')}${msg.reason ? ' · ' + msg.reason : ''}`, 'dim');
     } else if (t === 'model_done') {
+      if (msg.mode === 'quality') return;   // a Quality-guard run on the shared stream is not ours
       _done[msg.model_id] = msg; _doneModel = _doneModel || msg.model_id;
-      if (typeof _recordToolRun === 'function') { try { _recordToolRun('autotune', { model_id: msg.model_id, ok: !!msg.ok, run_id: msg.run_id || '', objective: msg.objective, ctx_size: (msg.after || {}).ctx, decode_tps: (msg.after || {}).decode_tps }); } catch (_) {} }
+      if (typeof _recordToolRun === 'function') { try { _recordToolRun('autotune', { model_id: msg.model_id, ok: !!msg.ok, run_id: msg.run_id || '', objective: msg.objective, mode: msg.mode || 'tune', llama_build: msg.llama_build || undefined, regressed: msg.regressed ?? undefined, ctx_size: (msg.after || {}).ctx, decode_tps: (msg.after || {}).decode_tps }); } catch (_) {} }
       log(msg.ok ? `complete · ${(msg.changes || []).length} changes · verify ${(msg.verify || {}).ok ? 'pass' : 'not passed'}` : `stopped · ${msg.stop_reason || 'no result'}`, msg.ok ? 'ok' : 'warn');
     } else if (t === 'done') {
       finish(msg);
@@ -636,7 +770,9 @@
       return `<div class="at-cmp-r"><span class="k">${k}</span><div class="bars"><i style="width:${Math.round(100 * (Number(bv) || 0) / max)}%"></i><i class="new" style="width:${Math.round(100 * (Number(av) || 0) / max)}%"></i></div><span class="r">${f(bv)} → ${f(av)}${unit} ${tail}</span></div>`;
     };
     const host = $('atCmp'); if (!host) return;
-    host.innerHTML = row('Decode t/s', b.decode_tps, a.decode_tps, '', v => fmt(v, 1)) + row('Context', b.ctx, a.ctx, '', v => fmt(v, 0))
+    const noBase = done.mode === 'verify' && !Object.keys(b).length
+      ? '<div class="at-hint" style="margin-bottom:8px">The last tune recorded no measurements to compare against, so this verify becomes the baseline for the next one.</div>' : '';
+    host.innerHTML = noBase + row('Decode t/s', b.decode_tps, a.decode_tps, '', v => fmt(v, 1)) + row('Context', b.ctx, a.ctx, '', v => fmt(v, 0))
       + row(`Aggregate · ${esc(Number(a.concurrency || 1))} req`, b.agg_tps, a.agg_tps, '', v => fmt(v, 0)) + row('Prefill t/s', b.prefill_tps, a.prefill_tps, '', v => fmt(v, 0))
       + row('VRAM free', b.free_mb, a.free_mb, ' MB', v => fmt(v, 0), true);
   }
@@ -660,17 +796,51 @@
       }
     }
     renderRows();
+    // Done-panel chrome is refreshed for every mode, so a verify never inherits a prior tune's numbers.
+    const verifyMode = done.mode === 'verify';
+    const good = !!done.ok && !done.regressed;
     const doneStages = (done.stages || []).filter(s => s.status === 'done').length;
     const st = $('atDoneStats'); if (st) st.innerHTML = `<b>${esc(doneStages)} stages</b> · ${esc(mmss(done.elapsed_s))} · ${esc(Number(done.loads || 0))} loads`;
     const v = done.verify || {};
+    const setName = verifyMode ? 'current config' : 'recommended set';
     const dv = $('atDoneVerify');
     if (dv) dv.innerHTML = v.ok
-      ? `verified <b>${esc(Math.round(v.seconds || 0))} s</b> on the recommended set${v.dropped && v.dropped.length ? ' · dropped ' + esc(v.dropped.join(', ')) : ''}${v.warning ? ` · <span class="warn">${esc(v.warning)}</span>` : ''}`
+      ? `verified <b>${esc(Math.round(v.seconds || 0))} s</b> on the ${esc(setName)}${v.dropped && v.dropped.length ? ' · dropped ' + esc(v.dropped.join(', ')) : ''}${v.warning ? ` · <span class="warn">${esc(v.warning)}</span>` : ''}`
       : `<span class="warn">verify ${v.reason ? 'failed: ' + esc(v.reason) : 'not run'}</span>`;
-    const pill = $('atDonePill'); if (pill) { pill.textContent = done.ok ? 'complete' : 'stopped'; pill.classList.toggle('ok', !!done.ok); pill.classList.toggle('running', false); }
-    renderGuard(done); renderCmp(done);
+    const pill = $('atDonePill');
+    if (pill) {
+      pill.textContent = done.regressed ? 'regressed' : (done.ok ? 'complete' : 'stopped');
+      pill.classList.toggle('ok', good); pill.classList.toggle('warn', !good); pill.classList.toggle('running', false);
+    }
+    renderCmp(done);
     const dl = $('atDoneLog'), src = $('atLog'); if (dl && src) dl.innerHTML = src.innerHTML;
     const dm = $('atDoneLogMeta'); if (dm) dm.textContent = `${doneStages} stages · ${Number(done.loads || 0)} loads`;
+    const qb = $('atQualityBtn');
+    const guardCard = $('atGuard');
+    // A verify proposes nothing, so the empty parameter table stays hidden.
+    const recTable = $('atRecRows') && $('atRecRows').closest('.at-card-b'), recSel = $('atRecSel');
+    if (recTable) recTable.style.display = verifyMode ? 'none' : '';
+    if (recSel && verifyMode) recSel.textContent = 'verify only — nothing to apply';
+    if (verifyMode) {
+      const rb = $('atRetuneBtn'), ab = $('atApplyBtn');
+      if (ab) ab.style.display = 'none';
+      if (rb) rb.style.display = '';
+      if (qb) qb.style.display = 'none';
+      if (guardCard) { guardCard.innerHTML = ''; guardCard.style.display = 'none'; }
+      if (warn) {
+        if (done.regressed) { warn.style.display = ''; warn.innerHTML = `<b>Slower on this llama.cpp build</b> — ${esc(fmt(a.decode_tps))} t/s vs ${esc(fmt(b.decode_tps))} t/s when tuned. Re-tune to find a better set.`; }
+        else if (!done.ok) { warn.style.display = ''; warn.innerHTML = `<b>Verify did not complete</b> — ${esc(v.reason || done.stop_reason || 'the load failed')}. The config was not changed.`; }
+        else { warn.style.display = 'none'; warn.innerHTML = ''; }
+      }
+      setMsg(done.ok && !done.regressed
+        ? 'Verified on the current build — the stale chip clears on the next card refresh.'
+        : 'Current config still applies; nothing was changed.');
+      loadStatus().then(syncVerify);
+      return;
+    }
+    if (qb) qb.style.display = (done.changes || []).some(c => QUALITY_KEYS.has(c.key)) ? '' : 'none';
+    if (guardCard) guardCard.style.display = '';
+    renderGuard(done);
     setMsg(`Previous config will be kept as profile “before tune ${today()}” for one-click revert.`);
   }
   function selectedRows() { return _rows.filter(r => r.selected); }
@@ -741,7 +911,7 @@
     setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 200);
   }
 
-  window.AT = { onOpen, run, cancel, again, stopServer, running, dimsState, objective, planRows, estimateText, onEvent,
+  window.AT = { onOpen, run, verify, retune, checkQuality, cancel, detach, again, stopServer, running, dimsState, objective, planRows, estimateText, onEvent,
                 state: () => ({ run: _run, done: _done, doneModel: _doneModel, meta: _meta, section: _section, pre: _pre }),
                 renderDone, recRows, rows, toggleRow, apply, saveProfile, copyArgs, exportReport, argsText,
                 _debugSetStart: (ts) => { if (_run) { _run.startTs = ts; tick(); } } };

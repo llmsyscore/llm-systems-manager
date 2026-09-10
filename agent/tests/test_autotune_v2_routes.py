@@ -46,6 +46,7 @@ def _load_llama():
     _stub("_bench_replay", BenchReplayBuffer=BenchReplayBuffer)
     _stub("collectors")
     _stub("collectors.gpu", collect_gpu=lambda *a, **k: {"vram_total_bytes": 32 * 2**30})
+    _stub("collectors.system", read_cpu_governor=lambda fresh=False: "powersave")
     pkg = types.ModuleType("providers")
     pkg.__path__ = [str(_AGENT_ROOT / "providers")]
     sys.modules["providers"] = pkg
@@ -69,7 +70,10 @@ class _Ctx:
         self.config = types.SimpleNamespace(LLAMA_API_URL="http://127.0.0.1:9931", AGENT_INSTALL_DIR=str(tmp),
                                             SPEED_BENCH_PYTHON="", MANAGER_URL="", LLAMA_BIN=llama_bin,
                                             LLAMA_ENABLED=True, LLAMA_SYSTEMD_UNIT="llama-server",
-                                            LLAMA_CONFIG_INI=str(tmp / "config.ini"), AGENT_USER="")
+                                            LLAMA_CONFIG_INI=str(tmp / "config.ini"), AGENT_USER="",
+                                            PERF_CONTROLLER_ENABLED=False,
+                                            PERF_TARGET_AWAKE="performance",
+                                            PERF_TARGET_SLEEP="powersave")
         self.state = {"token": "", "agent_id": ""}
         self.post_session = None
 
@@ -89,6 +93,23 @@ def _wire(llama, tmp_path, monkeypatch, **ctx_kw):
     return ctx
 
 
+def _write_fake_ppl(path: Path, rc: int = 0, crash: bool = False) -> None:
+    """A stand-in llama-perplexity: exits `rc` normally, or raises SIGSEGV when crash=True."""
+    if crash:
+        path.write_text("#!/usr/bin/env python3\nimport os, signal\nos.kill(os.getpid(), signal.SIGSEGV)\n")
+    else:
+        path.write_text(f"#!/usr/bin/env python3\nimport sys\nprint('ok')\nsys.exit({rc})\n")
+    path.chmod(0o755)
+
+
+def test_build_line_regex_and_note(llama):
+    m = llama._AT_BUILD_RE.search("build: 6300 (434ddbb) with cc (Ubuntu 13.3.0) for x86_64")
+    assert m and f"b{m.group(1)}-{m.group(2)}" == "b6300-434ddbb"
+    assert llama._AT_BUILD_RE.search("print_info: build = 3") is None
+    llama._autotune_note_build("b1-abcdef0")
+    assert llama._llama_build_last == "b1-abcdef0"
+
+
 def test_preflight_shape(llama, tmp_path, monkeypatch):
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
@@ -96,15 +117,20 @@ def test_preflight_shape(llama, tmp_path, monkeypatch):
     _wire(llama, tmp_path, monkeypatch, llama_bin=str(bin_dir / "llama-server"))
     out = llama.llama_autotune_preflight()
     assert out["ok"] and out["busy"] is False and out["unit_active"] is False
+    assert out["autotune_active"] is False and out["quality_active"] is False
     assert set(out["cores"]) == {"physical", "logical"} and out["cores"]["logical"] >= 1
     assert out["perplexity"] is False                      # no llama-perplexity beside the server binary
+    assert out["perplexity_detail"] == {"present": False, "kl_text": False, "runnable": None, "rc": None,
+                                        "hint": "llama-perplexity is not installed beside llama-server."}
     assert out["runtime"]["ok"] is False and out["drafts"] == []
     assert out["sizes"] == {"org/m:Q4": 18_000_000_000} and out["vram_total_mb"] == 32768
     assert isinstance(out["ram_total_mb"], int)
-    (bin_dir / "llama-perplexity").write_text("")
+    _write_fake_ppl(bin_dir / "llama-perplexity", rc=0)
     monkeypatch.setattr(llama, "_autotune_kl_text", lambda: tmp_path / "kl.txt")
     (tmp_path / "kl.txt").write_text("x")
-    assert llama.llama_autotune_preflight()["perplexity"] is True
+    out2 = llama.llama_autotune_preflight()
+    assert out2["perplexity"] is True
+    assert out2["perplexity_detail"] == {"present": True, "kl_text": True, "runnable": True, "rc": 0, "hint": None}
 
 
 def test_run_accepts_v1_and_v2_bodies(llama, tmp_path, monkeypatch):
@@ -135,6 +161,138 @@ def test_run_rejects_bad_body_busy_and_active_unit(llama, tmp_path, monkeypatch)
     monkeypatch.setattr(llama, "_llama_unit_active", lambda: True)
     out = llama.llama_autotune_run({"model_ids": ["m"], "objective": "fit"})
     assert out["ok"] is False and "running" in out["error"]
+
+
+def test_probe_perplexity_runnable_for_a_clean_exit(llama, tmp_path, monkeypatch):
+    ppl = tmp_path / "llama-perplexity"
+    _write_fake_ppl(ppl, rc=0)
+    out = llama._autotune_probe_perplexity(ppl)
+    assert out == {"runnable": True, "rc": 0, "reason": None}
+    # Cached by path+mtime+size: a second call must not re-exec the binary.
+    monkeypatch.setattr(llama, "_autotune_probe_arg", lambda *a, **k: pytest.fail("probe not cached"))
+    assert llama._autotune_probe_perplexity(ppl) == {"runnable": True, "rc": 0, "reason": None}
+
+
+def test_probe_perplexity_cache_busts_on_a_same_mtime_replacement(llama, tmp_path, monkeypatch):
+    """A reinstall that preserves mtime but changes size must not keep the stale verdict."""
+    ppl = tmp_path / "llama-perplexity"
+    _write_fake_ppl(ppl, rc=0)
+    st = ppl.stat()
+    assert llama._autotune_probe_perplexity(ppl) == {"runnable": True, "rc": 0, "reason": None}
+    _write_fake_ppl(ppl, crash=True)
+    os.utime(ppl, ns=(st.st_mtime_ns, st.st_mtime_ns))  # same mtime, different (larger) content/size
+    assert ppl.stat().st_size != st.st_size
+    out = llama._autotune_probe_perplexity(ppl)
+    assert out["runnable"] is False and out["reason"] == "signal"
+
+
+def test_probe_perplexity_not_runnable_on_a_signal_crash(llama, tmp_path):
+    ppl = tmp_path / "llama-perplexity"
+    _write_fake_ppl(ppl, crash=True)
+    out = llama._autotune_probe_perplexity(ppl)
+    assert out == {"runnable": False, "rc": -11, "reason": "signal"}
+
+
+def test_probe_perplexity_not_runnable_on_exec_failure(llama, tmp_path, monkeypatch):
+    """A binary that can't even be exec'd (bad interpreter, stripped +x) must not read as fine."""
+    ppl = tmp_path / "llama-perplexity"
+    _write_fake_ppl(ppl, rc=0)
+    monkeypatch.setattr(llama.subprocess, "run",
+                        lambda *a, **k: (_ for _ in ()).throw(OSError("Exec format error")))
+    out = llama._autotune_probe_perplexity(ppl)
+    assert out == {"runnable": False, "rc": None, "reason": "exec_failed"}
+
+
+def test_probe_perplexity_not_runnable_on_timeout_and_skips_help_fallback(llama, tmp_path, monkeypatch):
+    """A hung --version must not be retried with --help — a hang will hang again."""
+    ppl = tmp_path / "llama-perplexity"
+    _write_fake_ppl(ppl, rc=0)
+    calls = []
+
+    def _boom(cmd, **k):
+        calls.append(cmd)
+        raise llama.subprocess.TimeoutExpired(cmd=cmd, timeout=k.get("timeout"))
+    monkeypatch.setattr(llama.subprocess, "run", _boom)
+    out = llama._autotune_probe_perplexity(ppl)
+    assert out == {"runnable": False, "rc": None, "reason": "timeout"}
+    assert len(calls) == 1 and calls[0][1] == "--version"
+
+
+def test_preflight_detail_carries_the_crash_hint(llama, tmp_path, monkeypatch):
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    (bin_dir / "llama-server").write_text("")
+    _write_fake_ppl(bin_dir / "llama-perplexity", crash=True)
+    _wire(llama, tmp_path, monkeypatch, llama_bin=str(bin_dir / "llama-server"))
+    monkeypatch.setattr(llama, "_autotune_kl_text", lambda: tmp_path / "kl.txt")
+    (tmp_path / "kl.txt").write_text("x")
+    out = llama.llama_autotune_preflight()
+    assert out["perplexity"] is False
+    detail = out["perplexity_detail"]
+    assert detail["present"] is True and detail["kl_text"] is True
+    assert detail["runnable"] is False and detail["rc"] == -11
+    assert detail["hint"] == ("llama-perplexity crashed on startup (signal 11) — it looks stale relative to "
+                              "the installed llama.cpp libraries; reinstall the llama.cpp tools from the same build.")
+
+
+def test_run_refuses_quality_mode_when_perplexity_is_not_runnable(llama, tmp_path, monkeypatch):
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    (bin_dir / "llama-server").write_text("")
+    _write_fake_ppl(bin_dir / "llama-perplexity", crash=True)
+    _wire(llama, tmp_path, monkeypatch, llama_bin=str(bin_dir / "llama-server"))
+    monkeypatch.setattr(llama, "_autotune_kl_text", lambda: tmp_path / "kl.txt")
+    (tmp_path / "kl.txt").write_text("x")
+    started = []
+    monkeypatch.setattr(llama.threading, "Thread",
+                        lambda target, args=(), daemon=None: types.SimpleNamespace(start=lambda: started.append(args)))
+    out = llama.llama_autotune_run({"model_ids": ["org/m:Q4"], "objective": "fit", "mode": "quality",
+                                    "overrides": {"cache-type-k": "q4_0"}})
+    assert out["ok"] is False
+    assert out["error"] == ("llama-perplexity crashed on startup (signal 11) — it looks stale relative to "
+                            "the installed llama.cpp libraries; reinstall the llama.cpp tools from the same build.")
+    assert not started, "a quality run must not be started when the guard binary can't run"
+
+
+def test_run_allows_tune_mode_when_perplexity_is_not_runnable(llama, tmp_path, monkeypatch):
+    """Tune mode only touches perplexity via the KV guard — it must not be gated at run start."""
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    (bin_dir / "llama-server").write_text("")
+    _write_fake_ppl(bin_dir / "llama-perplexity", crash=True)
+    _wire(llama, tmp_path, monkeypatch, llama_bin=str(bin_dir / "llama-server"))
+    monkeypatch.setattr(llama.threading, "Thread",
+                        lambda target, args=(), daemon=None: types.SimpleNamespace(start=lambda: None))
+    out = llama.llama_autotune_run({"model_ids": ["org/m:Q4"], "objective": "fit"})
+    assert out["ok"] is True
+
+
+@pytest.mark.parametrize("reason, expected_hint", [
+    ("timeout", "llama-perplexity did not respond to a version check — it may be hung or unusable."),
+    ("exec_failed", "llama-perplexity could not be executed — check that it is installed and executable."),
+])
+def test_status_and_quality_run_refused_when_binary_cannot_be_probed(llama, tmp_path, monkeypatch,
+                                                                     reason, expected_hint):
+    """An unexecutable or hung binary must read as not-runnable, not fold into 'fine' via runnable=None."""
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    (bin_dir / "llama-server").write_text("")
+    (bin_dir / "llama-perplexity").write_text("")
+    _wire(llama, tmp_path, monkeypatch, llama_bin=str(bin_dir / "llama-server"))
+    monkeypatch.setattr(llama, "_autotune_kl_text", lambda: tmp_path / "kl.txt")
+    (tmp_path / "kl.txt").write_text("x")
+    monkeypatch.setattr(llama, "_autotune_probe_perplexity",
+                        lambda ppl: {"runnable": False, "rc": None, "reason": reason})
+    status = llama._autotune_perplexity_status()
+    assert status == {"ok": False, "present": True, "kl_text": True, "runnable": False, "rc": None,
+                      "hint": expected_hint}
+    started = []
+    monkeypatch.setattr(llama.threading, "Thread",
+                        lambda target, args=(), daemon=None: types.SimpleNamespace(start=lambda: started.append(args)))
+    out = llama.llama_autotune_run({"model_ids": ["org/m:Q4"], "objective": "fit", "mode": "quality",
+                                    "overrides": {"cache-type-k": "q4_0"}})
+    assert out == {"ok": False, "error": expected_hint}
+    assert not started
 
 
 class _Proc:
@@ -404,8 +562,28 @@ def test_kl_tracks_then_untracks_the_perplexity_process(llama, tmp_path, monkeyp
     order = []
     monkeypatch.setattr(llama, "_autotune_track_aux", lambda p: order.append("track"))
     monkeypatch.setattr(llama, "_autotune_untrack_aux", lambda: order.append("untrack"))
-    assert be.kl(["--cache-type-k", "q8_0"], False) == {"ok": True, "kl": 0.01, "error": None}
+    assert be.kl(["--cache-type-k", "q8_0"], False) == {"ok": True, "kl": 0.01, "stats": {"kl": 0.01}, "error": None}
     assert order == ["track", "untrack"]
+
+
+def test_kl_reports_a_signal_crash_clearly(llama, tmp_path, monkeypatch):
+    be = _kl_backend(llama, tmp_path, monkeypatch)
+    monkeypatch.setattr(llama, "_bench_get_hf_arg", lambda mid: "o/r:Q4")
+
+    class _KlProc:
+        returncode = -11
+        pid = 4242
+
+        def communicate(self, timeout=None):
+            return ("Segmentation fault\n", "")
+
+    monkeypatch.setattr(llama.subprocess, "Popen", lambda *a, **k: _KlProc())
+    monkeypatch.setattr(llama, "_autotune_track_aux", lambda p: None)
+    monkeypatch.setattr(llama, "_autotune_untrack_aux", lambda: None)
+    out = be.kl(["--cache-type-k", "q8_0"], False)
+    assert out["ok"] is False and out["kl"] is None
+    assert out["error"] == ("llama-perplexity crashed (signal 11) — the binary looks incompatible "
+                            "with the installed llama.cpp libraries; reinstall the llama.cpp tools")
 
 
 def test_run_validates_against_the_hf_cache_root(llama, tmp_path, monkeypatch):
@@ -494,7 +672,7 @@ def test_preflight_reports_help_valued(llama, tmp_path, monkeypatch):
 def test_run_all_passes_help_valued_into_the_engine_env(llama, tmp_path, monkeypatch):
     binp = _fake_llama_bin(tmp_path)
     _wire(llama, tmp_path, monkeypatch, llama_bin=str(binp))
-    monkeypatch.setattr(llama, "_autotune_set_perf_mode", lambda mode: None)
+    monkeypatch.setattr(llama, "_perf_mode_set", lambda phase, put: None)
     monkeypatch.setattr(llama, "_bench_live_runtime",
                         lambda: {"python": "", "script": "", "source": "", "script_status": "ok", "commit": ""})
     monkeypatch.setattr(llama, "_list_cache_ggufs", lambda root: [])
@@ -516,7 +694,7 @@ def test_run_all_passes_help_valued_into_the_engine_env(llama, tmp_path, monkeyp
 
 def test_run_all_warns_when_help_is_unreadable(llama, tmp_path, monkeypatch):
     _wire(llama, tmp_path, monkeypatch, llama_bin="")
-    monkeypatch.setattr(llama, "_autotune_set_perf_mode", lambda mode: None)
+    monkeypatch.setattr(llama, "_perf_mode_set", lambda phase, put: None)
     monkeypatch.setattr(llama, "_bench_live_runtime",
                         lambda: {"python": "", "script": "", "source": "", "script_status": "ok", "commit": ""})
     monkeypatch.setattr(llama, "_list_cache_ggufs", lambda root: [])
@@ -540,11 +718,51 @@ def test_run_all_warns_when_help_is_unreadable(llama, tmp_path, monkeypatch):
     assert seen[0][1] is None and seen[0][0] > 0            # warned before the first model
 
 
+def test_quality_mode_dispatches_run_quality_and_posts_quality_ledger(llama, tmp_path, monkeypatch):
+    _wire(llama, tmp_path, monkeypatch)
+    monkeypatch.setattr(llama, "_perf_mode_set", lambda phase, put: None)
+    monkeypatch.setattr(llama, "_bench_live_runtime",
+                        lambda: {"python": "", "script": "", "source": "", "script_status": "ok", "commit": ""})
+    monkeypatch.setattr(llama, "_list_cache_ggufs", lambda root: [])
+    monkeypatch.setattr(llama, "_llama_read_ini", lambda: llama.configparser.ConfigParser())
+    monkeypatch.setattr(llama, "_bench_get_hf_arg", lambda mid: "org/m:Q4")
+    monkeypatch.setattr(llama, "_llama_help_valued", set)
+    llama._llama_build_last = "b10850-abc"
+    seen = {}
+
+    def fake_quality(mid, section, req, backend, put, cancelled, env):
+        seen.update(mid=mid, section=section, req=req, env=env)
+        doc = {"type": "model_done", "model_id": mid, "ok": True, "mode": "quality",
+               "guard": {"kl": 0.01, "pass": True}, "llama_build": env.get("llama_build"),
+               "after": {}, "before": {}, "stages": []}
+        put(doc)
+        return doc
+    monkeypatch.setattr(llama._at, "run_quality", fake_quality)
+    monkeypatch.setattr(llama._at, "run_model", lambda *a, **k: pytest.fail("run_model must not run in quality mode"))
+    posted = []
+    monkeypatch.setattr(llama._shared, "post_tool_run",
+                        lambda ctx, tool, prov, rid, mid, ok, summary: posted.append((tool, summary)))
+    llama._autotune_cancel_event.clear()
+    llama._autotune_run_all({"model_ids": ["org/m:Q4"], "objective": "fit", "mode": "quality",
+                             "overrides": {"cache-type-k": "q4_0"}})
+    assert seen["req"]["mode"] == "quality" and seen["env"]["llama_build"] == "b10850-abc"
+    assert posted == [("quality", {"objective": None, "mode": "quality", "llama_build": "b10850-abc",
+                                   "ctx_size": None, "free_mb": None, "decode_tps": None, "prefill_tps": None, "agg_tps": None, "gain_pct": None,
+                                   "stages_done": 0, "verify_ok": None, "wh_per_ktok": None, "n_expert": None,
+                                   "kl": 0.01, "kl_pass": True, "regressed": None})]
+
+
+def test_preflight_reports_llama_build(llama, tmp_path, monkeypatch):
+    _wire(llama, tmp_path, monkeypatch)
+    llama._llama_build_last = "b10850-abc"
+    assert llama.llama_autotune_preflight()["llama_build"] == "b10850-abc"
+
+
 def test_run_all_removes_the_run_scratch_dir(llama, tmp_path, monkeypatch):
     """base.kld and the stick JSONs are GBs per run; the run dir must not survive it."""
     _wire(llama, tmp_path, monkeypatch)
     monkeypatch.setattr(llama, "_autotune_run_id", "rX")
-    monkeypatch.setattr(llama, "_autotune_set_perf_mode", lambda mode: None)
+    monkeypatch.setattr(llama, "_perf_mode_set", lambda phase, put: None)
     monkeypatch.setattr(llama, "_bench_live_runtime",
                         lambda: {"python": "", "script": "", "source": "", "script_status": "ok", "commit": ""})
     monkeypatch.setattr(llama, "_list_cache_ggufs", lambda root: [])
@@ -569,3 +787,33 @@ def test_run_all_removes_the_run_scratch_dir(llama, tmp_path, monkeypatch):
     assert seen == [True]                                  # scratch is live during the run
     assert events[-1] == {"type": "done", "ok": True, "cancelled": False, "count": 1}
     assert not run_dir.exists()
+
+
+# ── the quality guard is its own tool to the manager's run gate (#887) ──
+
+def test_tools_state_names_a_quality_run(llama, tmp_path, monkeypatch):
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    (bin_dir / "llama-server").write_text("")
+    _write_fake_ppl(bin_dir / "llama-perplexity", rc=0)
+    _wire(llama, tmp_path, monkeypatch, llama_bin=str(bin_dir / "llama-server"))
+    monkeypatch.setattr(llama, "_autotune_kl_text", lambda: tmp_path / "kl.txt")
+    (tmp_path / "kl.txt").write_text("x")
+    monkeypatch.setattr(llama.threading, "Thread",
+                        lambda target, args=(), daemon=None: types.SimpleNamespace(start=lambda: None))
+    monkeypatch.setattr(llama, "_autotune_quality", False)
+    assert llama.llama_autotune_run({"model_ids": ["org/m:Q4"], "objective": "fit",
+                                     "mode": "quality",
+                                     "overrides": {"cache-type-k": "q4_0"}})["ok"] is True
+    state = llama.llama_tools_state()
+    assert state["quality_active"] is True and state["autotune_active"] is True
+
+
+def test_tools_state_leaves_a_tune_run_unlabelled(llama, tmp_path, monkeypatch):
+    _wire(llama, tmp_path, monkeypatch)
+    monkeypatch.setattr(llama.threading, "Thread",
+                        lambda target, args=(), daemon=None: types.SimpleNamespace(start=lambda: None))
+    monkeypatch.setattr(llama, "_autotune_quality", True)
+    assert llama.llama_autotune_run({"model_ids": ["org/m:Q4"], "objective": "fit"})["ok"] is True
+    state = llama.llama_tools_state()
+    assert state["autotune_active"] is True and state["quality_active"] is False

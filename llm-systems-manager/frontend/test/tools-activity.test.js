@@ -99,6 +99,14 @@ describe('launcher tiles under a remote run', () => {
       { local: 'window._vbenchEventSrc = { readyState: 1 };' });
     expect(dotOn(win)).toBe(true);
   });
+
+  // #888: Autotune and the Quality guard share /api/llm/autotune/stream.
+  it('counts a live Quality-guard stream as the Autotune tool running', async () => {
+    const win = await run({ reportcard: false, benchmark: false, autotune: false },
+      { local: 'window.QG = { running: () => true };' });
+    expect(dotOn(win)).toBe(true);
+    expect(launcher(win)).toContain('View run');
+  });
 });
 
 describe('stale-state guards', () => {

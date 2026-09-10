@@ -11,6 +11,9 @@ let _rcTick      = null;
 let _rcCleanup   = null;
 let _rcRunTarget = null;
 let _rcPrefModel = null;
+let _rcSlot      = null;
+let _rcGateNote  = false;
+let _rcStarting  = false;
 // Reconnects with no message in between (SG guard); a drop is not terminal.
 const _RC_MAX_DROPS = 20;
 
@@ -35,8 +38,46 @@ function _rcBusy(busy) {
   const btn = _rcEl('rcRunBtn');
   if (btn) { btn.disabled = busy; btn.textContent = busy ? 'Running…' : '▶ Run report card'; }
   const cancel = _rcEl('rcCancelBtn');
-  if (cancel) cancel.style.display = busy ? '' : 'none';
-  if (!busy) _rcJobId = null;
+  if (cancel) { cancel.style.display = busy ? '' : 'none'; cancel.textContent = '\u2715 Cancel'; }
+  if (!busy) { _rcJobId = null; if (_rcSlot) _rcSlot.sync(); }
+}
+
+// Queue slot for the picked host: Report Card drives a running server, so it
+// contends for the same GPU as the agent-side tools (#888).
+function _rcQueue() {
+  if (!_rcSlot && typeof toolsQueueSlot === 'function') {
+    _rcSlot = toolsQueueSlot('reportcard', {
+      provider: () => _rcEl('rcProvider')?.value || 'llama',
+      agent: () => _rcEl('rcAgent')?.value || '',
+      start: (body) => _rcStart(body),
+      render: (st) => _rcRenderQueue(st),
+    });
+  }
+  return _rcSlot;
+}
+
+function _rcRenderQueue(st) {
+  if (_rcJobId || _rcStarting) return;
+  const btn = _rcEl('rcRunBtn'), cancel = _rcEl('rcCancelBtn');
+  if (btn) {
+    btn.textContent = st.queued ? '\u23f8 Queued \u00b7 waiting'
+      : st.busy ? '\u25b6 Queue report card' : '\u25b6 Run report card';
+    btn.disabled = false;
+  }
+  if (cancel) {
+    cancel.style.display = st.queued ? '' : 'none';
+    cancel.textContent = st.queued ? '\u2715 Drop queued run' : '\u2715 Cancel';
+  }
+  if (st.queued) {
+    _rcGateNote = true;
+    _rcNote('Queued behind ' + st.waitFor + ' \u2014 this card starts on its own when that finishes.');
+  } else if (st.busy) {
+    _rcGateNote = true;
+    _rcNote(st.busy.label + ' is running on ' + st.busy.host + '. A run started now queues behind it.');
+  } else if (_rcGateNote) {
+    _rcGateNote = false;
+    _rcNote('');
+  }
 }
 
 // Human-readable step names for the progress panel.
@@ -159,6 +200,7 @@ function rcLoadModelOptions() {
 }
 
 function rcRun(confirm) {
+  if (_rcStarting) return;
   const agent    = _rcEl('rcAgent')?.value || '';
   const provider = _rcEl('rcProvider')?.value || 'llama';
   const mode     = _rcEl('rcMode')?.value || 'standard';
@@ -172,6 +214,15 @@ function rcRun(confirm) {
   if (confirm === 'vllm') body.confirm_vllm = true;
   if (confirm === 'download') body.confirm_download = true;
 
+  const slot = _rcQueue();
+  const busy = !_rcJobId && slot && slot.busy();
+  if (busy) { slot.queue(body); return; }
+  _rcStart(body);
+}
+
+function _rcStart(body) {
+  const slot = _rcQueue();
+  _rcGateNote = false;
   _rcBusy(true);
   const box = _rcEl('rcProgress');
   if (box) { box.textContent = ''; box.style.display = 'none'; }
@@ -181,11 +232,20 @@ function rcRun(confirm) {
     if (c) c.style.display = 'none';
   });
   rcCleanupKeep();
+  _rcStarting = true;
   fetch('/api/reportcard/run', {
     method: 'POST', headers: {'Content-Type': 'application/json'},
     body: JSON.stringify(body),
   }).then(r => r.json().then(d => ({ok: r.ok, d}))).then(({ok, d}) => {
-    if (!ok) { _rcBusy(false); _rcNote(d.error || 'Run failed.', true); return; }
+    _rcStarting = false;
+    if (!ok) {
+      _rcBusy(false);
+      // The gate is a courtesy — another browser can win the race.
+      if (slot && typeof toolsGateRefusal === 'function' && toolsGateRefusal(d.error)) {
+        slot.queue(body); return;
+      }
+      _rcNote(d.error || 'Run failed.', true); return;
+    }
     if (d.status === 'needs_confirm') {
       _rcBusy(false); rcShowVllmConfirm(d); return;
     }
@@ -193,11 +253,11 @@ function rcRun(confirm) {
       _rcBusy(false); rcShowDownloadConfirm(d); return;
     }
     _rcJobId = d.job_id;
-    _rcRunTarget = {agent, provider};
+    _rcRunTarget = {agent: body.agent, provider: body.provider};
     _rcTickSet('Starting…', 0);
     _rcLog('run started');
     rcStream(d.job_id);
-  }).catch(e => { _rcBusy(false); _rcNote('Run failed: ' + e, true); });
+  }).catch(e => { _rcStarting = false; _rcBusy(false); _rcNote('Run failed: ' + e, true); });
 }
 
 function rcShowVllmConfirm(d) {
@@ -247,6 +307,7 @@ function rcDownloadProceed() {
 }
 
 function rcCancelRun() {
+  if (!_rcJobId && _rcSlot && _rcSlot.drop()) { _rcNote('Queued run dropped.'); return; }
   if (!_rcJobId) return;
   if (_rcTick) _rcTick.text = 'Cancelling…';
   _rcStatus('Cancelling…',
@@ -516,4 +577,6 @@ function initReportCard(modelId) {
     cm.addEventListener('input', () => { _rcPrefModel = null; });
   }
   rcOnModeChange();
+  const slot = _rcQueue();
+  if (slot) slot.sync();
 }

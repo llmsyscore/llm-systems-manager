@@ -161,3 +161,32 @@ def test_the_on_target_hook_records_only_an_accepted_run():
     # A body that isn't JSON still counts as accepted.
     hook(agent, _R(200, boom=True))
     assert ta.snapshot(sync=True)["benchmark"] is True
+
+
+# ── the quality guard is a tool of its own (#887) ────────────────────
+
+def test_quality_run_is_named_quality_not_autotune():
+    _wire({A1: {"bench_active": False, "autotune_active": True,
+                "quality_active": True}})
+    ta.note_start(A1, "llama", "quality", now=1000.0)
+    snap = ta.snapshot(sync=True, now=1010.0)
+    assert snap["quality"] is True
+    assert snap["autotune"] is False
+    assert snap["agents"] == {A1: ["quality"]}
+
+
+def test_an_autotune_run_is_not_reported_as_quality():
+    _wire({A1: {"bench_active": False, "autotune_active": True,
+                "quality_active": False}})
+    ta.note_start(A1, "llama", "autotune", now=1000.0)
+    ta.note_start(A1, "llama", "quality", now=1000.0)
+    snap = ta.snapshot(sync=True, now=1010.0)
+    assert snap["autotune"] is True
+    assert snap["agents"] == {A1: ["autotune"]}
+
+
+def test_an_agent_without_the_quality_flag_still_confirms_the_run():
+    """Older agents report a quality run as autotune; it must not expire."""
+    _wire({A1: {"bench_active": False, "autotune_active": True}})
+    ta.note_start(A1, "llama", "quality", now=1000.0)
+    assert ta.snapshot(sync=True, now=1010.0)["quality"] is True

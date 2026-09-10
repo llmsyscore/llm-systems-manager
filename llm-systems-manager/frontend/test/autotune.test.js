@@ -1,6 +1,6 @@
 // #880: Autotune module — dims state, plan card, estimate, stream plumbing, stepper.
 import { describe, it, expect, vi } from 'vitest';
-import { srcFile, runHarness, flush } from './helpers/harness.js';
+import { srcFile, runHarness, flush, QUEUE_SLOT_STUB } from './helpers/harness.js';
 
 const INDEX = srcFile('index.html');
 // The real module markup, so ids and classes cannot drift from index.html.
@@ -28,10 +28,15 @@ const STUBS = `
   window.__syncCalls = [];
   window._syncActiveProfile = function (mid, values) { window.__syncCalls.push([mid, values, window.__fetches.length]); return Promise.resolve(); };
   window.__pre = ${JSON.stringify(PRE)};
+  window.toolsOpenTool = function (id, m, o) { window.__opened = [id, m, o]; };
+  window._recordToolRun = function (tool, data) {
+    fetch('/api/tools/runs', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ tool, ...data }) }).catch(() => {});
+  };
   window.fetch = function (url, opts) {
     window.__fetches.push([String(url), opts]);
     const u = String(url);
     const body = u.startsWith('/api/llm/autotune/preflight') ? window.__pre
+      : u.startsWith('/api/llm/autotune/status') ? (window.__status || { ok: true, items: [] })
       : u.startsWith('/api/benchmark/models') ? { models: ['org/m:Q4', 'org/big:Q4'] }
       : u.startsWith('/api/tools/runs') ? { runs: [{ tool: 'autotune', model_id: 'org/m:Q4', ok: true, ts: '2026-08-28T10:00:00Z', summary: { objective: 'fit', ctx_size: 32768, n_expert: 128 } }], latest: {} }
       : u.startsWith('/api/llama-state') ? { state: window.__llamaState || 'stopped' }
@@ -50,6 +55,15 @@ function boot(bootstrap = '') {
 
 async function opened() {
   const win = boot();
+  win.AT.onOpen('org/m:Q4');
+  for (let i = 0; i < 6; i++) await flush();
+  return win;
+}
+
+// Same module with the shared run gate wired in (#888).
+async function openedGated(bootstrap = '') {
+  const win = runHarness({ sources: [LAYOUT, STUBS, QUEUE_SLOT_STUB, srcFile('js/autotune.js')],
+                           bodyHtml: BODY, bootstrap });
   win.AT.onOpen('org/m:Q4');
   for (let i = 0; i < 6; i++) await flush();
   return win;
@@ -575,5 +589,256 @@ describe('AT export, regression warning, recRows numeric guard', () => {
     const dv = win.document.getElementById('atDoneVerify');
     expect(dv.textContent).toContain('below the');
     expect(dv.innerHTML).toContain('class="warn"');
+  });
+});
+
+describe('re-verify (#887)', () => {
+  it('sends every recorded measurement as the baseline, mapped to the before-column keys', async () => {
+    const win = await opened();
+    win.__status = { ok: true, items: [{ agent_id: 'a1', model_id: 'org/m:Q4', llama_build: 'b100', current_build: 'b120', stale: true,
+      summary: { decode_tps: 41.5, prefill_tps: 400, agg_tps: 48, ctx_size: 125440, free_mb: 925, gain_pct: null } }] };
+    await win.AT.onOpen('org/m:Q4', { verify: true }); await flush();
+    const post = win.__fetches.find(([u, o]) => u === '/api/llm/autotune/run' && o && o.method === 'POST');
+    expect(JSON.parse(post[1].body).baseline).toEqual({ decode_tps: 41.5, prefill_tps: 400, agg_tps: 48, ctx: 125440, free_mb: 925 });
+  });
+  it('hides the empty parameter table and explains a missing baseline on a verify', async () => {
+    const win = await opened();
+    win.__status = { ok: true, items: [{ agent_id: 'a1', model_id: 'org/m:Q4', llama_build: 'b100', current_build: 'b120', stale: true, summary: { ctx_size: 125440 } }] };
+    await win.AT.onOpen('org/m:Q4', { verify: true }); await flush();
+    win.AT.onEvent({ type: 'model_start', model_id: 'org/m:Q4', objective: 'fit', mode: 'verify', stages: ['verify'] });
+    win.AT.onEvent({ type: 'model_done', model_id: 'org/m:Q4', ok: true, mode: 'verify', llama_build: 'b120', regressed: null,
+      before: {}, after: { decode_tps: 63.8, ctx: 125440 }, verify: { ok: true, seconds: 64 }, changes: [], stages: [{ stage: 'verify', status: 'done' }] });
+    win.AT.onEvent({ type: 'done', ok: true }); await flush();
+    const table = win.document.getElementById('atRecRows').closest('.at-card-b');
+    expect(table.style.display).toBe('none');
+    expect(win.document.getElementById('atRecSel').textContent).toMatch(/nothing to apply/);
+    expect(win.document.getElementById('atCmp').textContent).toMatch(/becomes the baseline/);
+  });
+  it('only focuses the Re-verify button when llama-server still holds the host', async () => {
+    const win = await opened();
+    win.__status = { ok: true, items: [{ agent_id: 'a1', model_id: 'org/m:Q4', llama_build: 'b100', current_build: 'b120', stale: true, summary: {} }] };
+    win.__llamaState = 'awake';
+    await win.AT.onOpen('org/m:Q4', { verify: true }); await flush();
+    expect(win.__fetches.filter(([u, o]) => u === '/api/llm/autotune/run' && o && o.method === 'POST')).toHaveLength(0);
+    expect(win.document.getElementById('atRunBtn').disabled).toBe(true);
+  });
+  it('keeps the newest row when two agents tuned the same model', async () => {
+    const win = await opened();
+    win.__status = { ok: true, items: [
+      { agent_id: 'newer', model_id: 'org/m:Q4', llama_build: 'b120', current_build: 'b120', stale: false, ts: '2026-09-05T00:00:00Z', summary: {} },
+      { agent_id: 'older', model_id: 'org/m:Q4', llama_build: 'b90', current_build: 'b130', stale: true, ts: '2026-08-01T00:00:00Z', summary: {} },
+    ] };
+    await win.AT.onOpen('org/m:Q4'); await flush();
+    expect(win.document.getElementById('atVerifyBtn').style.display).toBe('none');
+    expect(win.document.getElementById('atPrevTune').textContent).toContain('b120');
+  });
+  it('says so when the tune status could not be loaded', async () => {
+    const win = await opened();
+    const realFetch = win.fetch;
+    win.fetch = (u, o) => (String(u).startsWith('/api/llm/autotune/status') ? Promise.reject(new Error('down')) : realFetch(u, o));
+    await win.AT.onOpen('org/m:Q4'); await flush();
+    expect(win.document.getElementById('atPrevTune').textContent).toMatch(/could not be loaded/);
+  });
+  it('opening with {verify:true} on a stale model reveals the Re-verify button and posts a verify-mode body', async () => {
+    const win = await opened();     // the file's helper that boots + awaits AT.onOpen('org/m:Q4')
+    win.__status = { ok: true, items: [{ agent_id: 'a1', model_id: 'org/m:Q4', llama_build: 'b100', current_build: 'b120', stale: true, summary: { decode_tps: 41.5 } }] };
+    await win.AT.onOpen('org/m:Q4', { verify: true }); await flush();
+    const btn = win.document.getElementById('atVerifyBtn');
+    expect(btn.style.display).not.toBe('none');
+    expect(win.document.getElementById('atPrevTune').textContent).toContain('stale');
+    // The deep link ran the check itself; no click needed.
+    const posts = win.__fetches.filter(([u, o]) => u === '/api/llm/autotune/run' && o && o.method === 'POST');
+    expect(posts).toHaveLength(1);
+    const post = posts[0];
+    const body = JSON.parse(post[1].body);
+    expect(body.mode).toBe('verify');
+    expect(body.model_ids).toEqual(['org/m:Q4']);
+    expect(body.baseline_tps).toBe(41.5);
+    expect(body.baseline).toEqual({ decode_tps: 41.5 });
+    expect(body.budget_min).toBe(15);
+  });
+  it('model_done in verify mode records mode + build in the ledger and shows the regression headline', async () => {
+    const win = await opened();
+    win.__status = { ok: true, items: [{ agent_id: 'a1', model_id: 'org/m:Q4', llama_build: 'b100', current_build: 'b120', stale: true, summary: { decode_tps: 41.5 } }] };
+    await win.AT.onOpen('org/m:Q4', { verify: true }); await flush();
+    win.AT.onEvent({ type: 'model_start', model_id: 'org/m:Q4', objective: 'balanced', mode: 'verify', stages: ['verify'] });
+    win.AT.onEvent({ type: 'model_done', model_id: 'org/m:Q4', ok: true, mode: 'verify', llama_build: 'b120', regressed: true,
+      before: { decode_tps: 41.5 }, after: { decode_tps: 30.1, ctx: 8192 }, verify: { ok: true, seconds: 60 }, changes: [], stages: [{ stage: 'verify', status: 'done' }] });
+    win.AT.onEvent({ type: 'done', ok: true });
+    await flush();
+    const rec = win.__fetches.filter(([u, o]) => u === '/api/tools/runs' && o && o.method === 'POST').map(([, o]) => JSON.parse(o.body)).pop();
+    expect(rec.mode).toBe('verify'); expect(rec.llama_build).toBe('b120');
+    expect(win.document.getElementById('atRecWarn').textContent).toMatch(/slower.*re-tune/i);
+    expect(win.document.getElementById('atRetuneBtn').style.display).not.toBe('none');
+  });
+  it('Check quality opens the Quality guard tool with the recommended overrides', async () => {
+    const win = await opened();
+    win.AT.onEvent({ type: 'model_start', model_id: 'org/m:Q4', objective: 'fit', stages: ['context', 'verify'] });
+    win.AT.onEvent({ type: 'model_done', model_id: 'org/m:Q4', ok: true, mode: 'tune', before: { decode_tps: 40 }, after: { decode_tps: 44, ctx: 16384 }, verify: { ok: true },
+      changes: [{ key: 'cache-type-k', current: 'f16', recommended: 'q8_0', source: 'measured', selected: true },
+                { key: 'ctx-size', current: '8192', recommended: '16384', source: 'measured', selected: true }], stages: [] });
+    win.AT.onEvent({ type: 'done', ok: true }); await flush();
+    win.AT.checkQuality();
+    expect(win.__opened).toEqual(['quality', 'org/m:Q4', { overrides: { 'cache-type-k': 'q8_0' } }]);
+  });
+  it('Check quality sends only the selected rows and skips a null recommendation', async () => {
+    const win = await opened();
+    win.AT.onEvent({ type: 'model_start', model_id: 'org/m:Q4', objective: 'fit', stages: ['context', 'verify'] });
+    win.AT.onEvent({ type: 'model_done', model_id: 'org/m:Q4', ok: true, mode: 'tune', before: {}, after: { ctx: 16384 }, verify: { ok: true },
+      changes: [{ key: 'cache-type-k', current: 'f16', recommended: 'q8_0', source: 'measured', selected: true },
+                { key: 'cache-type-v', current: 'f16', recommended: 'q4_0', source: 'measured', selected: false },
+                { key: 'threads', current: '32', recommended: null, source: 'measured', selected: true }], stages: [] });
+    win.AT.onEvent({ type: 'done', ok: true }); await flush();
+    win.AT.checkQuality();
+    expect(win.__opened[2]).toEqual({ overrides: { 'cache-type-k': 'q8_0' } });
+  });
+  it('a quality-mode model_done on the shared stream is ignored by Autotune', async () => {
+    const win = await opened();
+    await win.AT.run(); for (let i = 0; i < 4; i++) await flush();
+    win.__sse.onEvent({ type: 'model_start', model_id: 'org/m:Q4', mode: 'quality', objective: 'quality', stages: ['quality'] }, {});
+    win.__sse.onEvent({ type: 'model_done', model_id: 'org/m:Q4', ok: true, mode: 'quality', run_id: 'q1',
+      guard: { kl: 0.006, pass: true }, changes: [{ key: 'cache-type-k', current: 'f16', recommended: 'q8_0' }], stages: [] }, {});
+    await flush();
+    const tools = win.__fetches.filter(([u, o]) => u === '/api/tools/runs' && o && o.method === 'POST').map(([, o]) => JSON.parse(o.body));
+    expect(tools.some(t => t.tool === 'autotune')).toBe(false);
+    win.AT.checkQuality();
+    expect(win.__opened).toBeUndefined();
+  });
+  it('a failed verify repaints the Done panel instead of keeping the previous tune', async () => {
+    const win = await opened();
+    await finished(win);                                  // a full tune leaves green complete + guard cards
+    expect(win.document.getElementById('atDonePill').textContent).toBe('complete');
+    expect(win.document.getElementById('atQualityBtn').style.display).toBe('');
+    win.__status = { ok: true, items: [{ agent_id: 'a1', model_id: 'org/m:Q4', llama_build: 'b100', current_build: 'b120', stale: true, summary: { decode_tps: 41.5 } }] };
+    win.AT.onEvent({ type: 'model_start', model_id: 'org/m:Q4', mode: 'verify', objective: 'balanced', stages: ['verify'] });
+    win.AT.onEvent({ type: 'model_done', model_id: 'org/m:Q4', ok: false, mode: 'verify', llama_build: 'b120', regressed: null,
+      before: { decode_tps: 41.5 }, after: { ctx: 8192, concurrency: 1 }, guard: null,
+      verify: { ok: false, seconds: 0, reason: 'OOM under load', dropped: [] }, changes: [], stages: [] });
+    win.AT.onEvent({ type: 'done', ok: false }); await flush();
+    const pill = win.document.getElementById('atDonePill');
+    expect(pill.textContent).toBe('stopped');
+    expect(pill.classList.contains('ok')).toBe(false);
+    expect(win.document.getElementById('atDoneVerify').textContent).toContain('OOM under load');
+    expect(win.document.getElementById('atQualityBtn').style.display).toBe('none');
+    expect(win.document.getElementById('atGuard').style.display).toBe('none');
+    expect(win.document.getElementById('atGuard').innerHTML).toBe('');
+    expect(win.document.getElementById('atCmp').textContent).not.toContain('142.6');
+    expect(win.document.getElementById('atRecWarn').textContent).toContain('Verify did not complete');
+  });
+  it('a regressed verify reads as regressed, not complete', async () => {
+    const win = await opened();
+    win.__status = { ok: true, items: [{ agent_id: 'a1', model_id: 'org/m:Q4', llama_build: 'b100', current_build: 'b120', stale: true, summary: { decode_tps: 41.5 } }] };
+    win.AT.onEvent({ type: 'model_start', model_id: 'org/m:Q4', mode: 'verify', objective: 'balanced', stages: ['verify'] });
+    win.AT.onEvent({ type: 'model_done', model_id: 'org/m:Q4', ok: true, mode: 'verify', llama_build: 'b120', regressed: true,
+      before: { decode_tps: 41.5 }, after: { decode_tps: 30.1, ctx: 8192 }, verify: { ok: true, seconds: 60 }, changes: [], stages: [] });
+    win.AT.onEvent({ type: 'done', ok: true }); await flush();
+    const pill = win.document.getElementById('atDonePill');
+    expect(pill.textContent).toBe('regressed');
+    expect(pill.classList.contains('ok')).toBe(false);
+    expect(win.document.getElementById('atDoneVerify').textContent).toContain('current config');
+  });
+  it('the previous-tune line keeps its objective text and gains the build sentence', async () => {
+    const win = await opened();
+    win.__status = { ok: true, items: [{ agent_id: 'a1', model_id: 'org/m:Q4', llama_build: 'b100', current_build: 'b120', stale: true, ts: '2026-09-02T00:00:00Z', summary: { decode_tps: 41.5 } }] };
+    await win.AT.onOpen('org/m:Q4'); await flush();
+    const prev = win.document.getElementById('atPrevTune');
+    expect(prev.textContent).toContain('2026-08-28');           // run-history line from syncModels
+    expect(prev.textContent).toContain('ctx 32,768');
+    expect(prev.textContent).toContain('Tune is stale.');
+    expect(prev.querySelectorAll('[data-at-build]').length).toBe(1);
+  });
+  it('an unknown-build status row still offers Re-verify', async () => {
+    const win = await opened();
+    win.__status = { ok: true, items: [{ agent_id: 'a1', model_id: 'org/m:Q4', llama_build: null, current_build: null, stale: null, ts: '2026-09-02T00:00:00Z', summary: {} }] };
+    await win.AT.onOpen('org/m:Q4'); await flush();
+    expect(win.document.getElementById('atVerifyBtn').style.display).not.toBe('none');
+  });
+  it('an unknown build says why re-verifying helps instead of printing "?" or repeating the date', async () => {
+    const win = await opened();
+    win.__status = { ok: true, items: [{ agent_id: 'a1', model_id: 'org/m:Q4', llama_build: null, current_build: null, stale: null, ts: '2026-09-02T00:00:00Z', summary: {} }] };
+    await win.AT.onOpen('org/m:Q4'); await flush();
+    const note = win.document.querySelector('#atPrevTune [data-at-build]');
+    expect(note.textContent).toMatch(/predates build recording/);
+    expect(note.textContent).not.toMatch(/\?/);
+    expect(note.textContent).not.toContain('2026-09-02');
+    expect(note.textContent).not.toMatch(/Last tune/);
+  });
+  it('a current-build tune names the build once, without the date', async () => {
+    const win = await opened();
+    win.__status = { ok: true, items: [{ agent_id: 'a1', model_id: 'org/m:Q4', llama_build: 'b120', current_build: 'b120', stale: false, ts: '2026-09-02T00:00:00Z', summary: {} }] };
+    await win.AT.onOpen('org/m:Q4'); await flush();
+    const note = win.document.querySelector('#atPrevTune [data-at-build]');
+    expect(note.textContent).toContain('b120');
+    expect(note.textContent).not.toContain('2026-09-02');
+  });
+  it('detach closes the stream without cancelling the run', async () => {
+    const win = await opened();
+    await win.AT.run(); for (let i = 0; i < 4; i++) await flush();
+    expect(win.AT.running()).toBe(true);
+    win.AT.detach();
+    expect(win.__closed).toBe(true);
+    expect(win.AT.running()).toBe(false);
+    expect(win.__fetches.some(([u]) => u === '/api/llm/autotune/cancel')).toBe(false);
+  });
+});
+
+
+// #888: the shared run gate — Run becomes Queue while another tool holds the host.
+describe('AT queueing behind another tool (#888)', () => {
+  const BUSY = "window.__gateBusy = { tool: 'reportcard', label: 'Report Card', host: 'gpu-01', agent_id: 'a1' };";
+  const runPosts = (win) => win.__fetches.filter(
+    f => f[0] === '/api/llm/autotune/run' && f[1] && f[1].method === 'POST');
+
+  it('queues instead of starting while a Report Card holds the host', async () => {
+    const win = await openedGated(BUSY);
+    win.__fetches.length = 0;
+    await win.AT.run();
+    await flush();
+    expect(runPosts(win)).toHaveLength(0);
+    expect(win.__slots[0].queued()).toBe(true);
+    expect(win.document.getElementById('atRunBtn').textContent).toContain('Queued');
+    expect(win.document.getElementById('atQueueNote').textContent)
+      .toContain('Queued behind Report Card on gpu-01');
+    expect(win.__queued).toEqual(['autotune', 'Report Card on gpu-01']);
+  });
+
+  it('starts the queued run by itself once the gate clears', async () => {
+    const win = await openedGated(BUSY);
+    await win.AT.run();
+    await flush();
+    win.__fetches.length = 0;
+    win.__gateBusy = null;
+    await win.__slots[0].fire();
+    for (let i = 0; i < 4; i++) await flush();
+    expect(runPosts(win)).toHaveLength(1);
+    expect(JSON.parse(runPosts(win)[0][1].body).model_ids).toEqual(['org/m:Q4']);
+  });
+
+  it('drops a queued run on Cancel without cancelling anything on the agent', async () => {
+    const win = await openedGated(BUSY);
+    await win.AT.run();
+    await flush();
+    win.__fetches.length = 0;
+    win.AT.cancel();
+    expect(win.__slots[0].queued()).toBe(false);
+    expect(win.__fetches.map(f => f[0])).not.toContain('/api/llm/autotune/cancel');
+    expect(win.__queued).toBe(null);
+  });
+
+  it('labels the button Queue while the host is busy and nothing is pending', async () => {
+    const win = await openedGated(BUSY);
+    expect(win.document.getElementById('atRunBtn').textContent).toContain('Queue autotune');
+    expect(win.document.getElementById('atQueueNote').textContent)
+      .toContain('Report Card is running on gpu-01');
+  });
+
+  it('queues rather than losing the run when the agent refuses it', async () => {
+    const win = await openedGated();
+    win.__runReply = { ok: false, error: 'an autotune run is already in progress' };
+    await win.AT.run();
+    for (let i = 0; i < 4; i++) await flush();
+    expect(win.__slots[0].queued()).toBe(true);
+    expect(win.__slots[0].waitFor()).toBe('the run in progress');
+    expect(win.__alerts).toEqual([]);
   });
 });

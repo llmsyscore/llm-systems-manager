@@ -12,6 +12,14 @@ AGENT = {"agent_id": "a" * 32, "registered_from": "203.0.113.7",
          "hostname": "h", "bind_url": "http://h:9899", "token": "tok"}
 
 
+@pytest.fixture(autouse=True)
+def _clear_jobs():
+    """Job registry is module state; a leaked active job would refuse the next run."""
+    rc._JOBS.clear()
+    yield
+    rc._JOBS.clear()
+
+
 @pytest.fixture
 def client(monkeypatch, tmp_path):
     from flask import Flask
@@ -619,3 +627,70 @@ def test_history_clear_deletes_all_cards(client):
     r = client.delete("/api/reportcard/history")
     assert r.status_code == 200 and r.get_json()["ok"] is True
     assert client.get("/api/reportcard/recent").get_json()["cards"] == []
+
+
+# ── one report card per host (#887) ──────────────────────────────────
+
+@pytest.fixture
+def stalled(monkeypatch):
+    """Jobs that never finish, so the agent stays busy for the next request."""
+    monkeypatch.setattr(rc, "_run_job", lambda job_id, req: None)
+
+
+def test_second_run_on_a_busy_agent_is_refused(client, stalled):
+    first = client.post("/api/reportcard/run", json={
+        "agent": "a" * 32, "provider": "llama", "mode": "standard",
+        "model_key": "small"})
+    assert first.status_code == 200
+    second = client.post("/api/reportcard/run", json={
+        "agent": "a" * 32, "provider": "llama", "mode": "standard",
+        "model_key": "small"})
+    assert second.status_code == 409
+    body = second.get_json()
+    assert body["ok"] is False
+    # The client's gate-refusal matcher keys on this phrasing, so it re-queues.
+    assert "in progress" in body["error"].lower()
+    assert rc.active_agents() == ["a" * 32]
+
+
+def test_a_second_host_still_runs_while_the_first_is_busy(client, stalled):
+    client.post("/api/reportcard/run", json={
+        "agent": "a" * 32, "provider": "llama", "mode": "standard",
+        "model_key": "small"})
+    other = client.post("/api/reportcard/run", json={
+        "agent": "b" * 32, "provider": "llama", "mode": "standard",
+        "model_key": "small"})
+    assert other.status_code == 200 and other.get_json()["job_id"]
+
+
+def test_the_agent_is_free_again_once_its_run_finishes(client):
+    r = client.post("/api/reportcard/run", json={
+        "agent": "a" * 32, "provider": "llama", "mode": "standard",
+        "model_key": "small"})
+    _drain(client, r.get_json()["job_id"])
+    assert rc.agent_busy("a" * 32) is False
+    again = client.post("/api/reportcard/run", json={
+        "agent": "a" * 32, "provider": "llama", "mode": "standard",
+        "model_key": "small"})
+    assert again.status_code == 200
+
+
+def test_two_simultaneous_starts_leave_one_job(client, stalled):
+    import threading
+    codes = []
+    lock = threading.Lock()
+
+    def go():
+        r = client.post("/api/reportcard/run", json={
+            "agent": "a" * 32, "provider": "llama", "mode": "standard",
+            "model_key": "small"})
+        with lock:
+            codes.append(r.status_code)
+
+    threads = [threading.Thread(target=go) for _ in range(4)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert sorted(codes) == [200, 409, 409, 409]
+    assert len([j for j in rc._JOBS.values() if not j["done"]]) == 1

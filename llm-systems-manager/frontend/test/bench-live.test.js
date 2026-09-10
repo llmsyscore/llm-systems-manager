@@ -1,6 +1,6 @@
 // #879: Live benchmark module — presets, sweep parsing, estimate, deltas, knee, mode switch.
 import { describe, it, expect, vi } from 'vitest';
-import { srcFile, runHarness, flush } from './helpers/harness.js';
+import { srcFile, runHarness, flush, QUEUE_SLOT_STUB } from './helpers/harness.js';
 
 const BODY = `
   <div class="mc-seg" id="benchModeSeg"><button data-mode="live" class="on">Live</button><button data-mode="offline">Offline</button></div>
@@ -62,6 +62,7 @@ const STUBS = `
           datasets: { qualitative: { categories: ['coding', 'math', 'qa'] } }, benches: ['qualitative','throughput_1k','throughput_2k','throughput_8k','throughput_16k','throughput_32k'], busy: !!window.__busy }
       : url.indexOf('/api/benchmark/live/runs') === 0
       ? { ok: true, runs: [{ run_id: 'b1', ts: '2026-09-05T22:14:00Z', baseline: true, gen_tps: 103.2, config: { bench: 'qualitative' } }] }
+      : (url === '/api/benchmark/live/run' && window.__runReply) ? window.__runReply
       : { ok: true, run_id: window.__runId || 'r1' };
     return Promise.resolve({ ok: true, json: () => Promise.resolve(body) });
   };
@@ -69,6 +70,12 @@ const STUBS = `
 
 function boot(bootstrap = '') {
   return runHarness({ sources: [LAYOUT, STUBS, srcFile('js/bench-live.js')], bodyHtml: BODY, bootstrap });
+}
+
+// Same module, with the shared run gate wired in (#888).
+function bootGated(bootstrap = '') {
+  return runHarness({ sources: [LAYOUT, STUBS, QUEUE_SLOT_STUB, srcFile('js/bench-live.js')],
+                      bodyHtml: BODY, bootstrap });
 }
 
 describe('BL pure helpers', () => {
@@ -244,6 +251,20 @@ describe('BL presets and mode', () => {
     win.__sse.onEvent({ type: 'done', ok: true });
     await flush();
     expect(win.__fetches.some(([u]) => u === '/api/benchmark/live/run')).toBe(false);
+  });
+});
+
+describe('BL refused start (#888)', () => {
+  it('queues through the gate instead of attaching to a stale stream', async () => {
+    const win = bootGated('BL.onOpen("org/m:Q4");');
+    await flush();
+    win.__runReply = { ok: false, error: 'Another benchmark or autotune is in progress' };
+    win.BL.run();
+    for (let i = 0; i < 4; i++) await flush();
+    expect(win.__fetches.filter(([u]) => u === '/api/benchmark/live/run')).toHaveLength(1);
+    expect(win.__slots[0].queued()).toBe(true);
+    expect(win.BL.running()).toBe(false);
+    expect(win.document.getElementById('blStatus').textContent).toContain('queued');
   });
 });
 
@@ -752,5 +773,79 @@ describe('BL baselines operator feedback (#882 followups)', () => {
     expect(win.switchTab).toHaveBeenCalledWith('admin');
     expect(win.switchSubTab).toHaveBeenCalledWith('admin', 'settings');
     expect(win.adminSettingsOpenGroup).toHaveBeenCalledWith('benchmark');
+  });
+});
+
+
+// #888: the shared run gate — Run becomes Queue while another tool holds the host.
+describe('queueing behind another tool (#888)', () => {
+  const BUSY = "window.__gateBusy = { tool: 'autotune', label: 'Autotune', host: 'gpu-01', agent_id: 'a1' };";
+
+  it('queues instead of starting while Autotune holds the host', async () => {
+    const win = bootGated(BUSY);
+    await win.BL.onOpen('org/m:Q4');
+    await flush();
+    win.__fetches.length = 0;
+    await win.BL.run();
+    await flush();
+    expect(win.__fetches.filter(f => String(f[0]).indexOf('/api/benchmark/live/run') === 0)).toHaveLength(0);
+    expect(win.__slots[0].queued()).toBe(true);
+    expect(win.__slots[0].waitFor()).toBe('Autotune on gpu-01');
+    expect(win.document.getElementById('blRunBtn').textContent).toBe('Queue run');
+    expect(win.document.getElementById('blNotice').textContent).toContain('Queued behind Autotune on gpu-01');
+    expect(win.document.getElementById('blStatus').textContent).toContain('queued');
+  });
+
+  it('starts the queued run by itself once the gate clears', async () => {
+    const win = bootGated(BUSY);
+    await win.BL.onOpen('org/m:Q4');
+    await flush();
+    await win.BL.run();
+    await flush();
+    win.__fetches.length = 0;
+    win.__gateBusy = null;
+    win.__slots[0].fire();
+    await flush(); await flush();
+    expect(win.__fetches.map(f => String(f[0])))
+      .toContain('/api/benchmark/live/run');
+    expect(win.__slots[0].queued()).toBe(false);
+  });
+
+  it('drops a queued run on Cancel', async () => {
+    const win = bootGated(BUSY);
+    await win.BL.onOpen('org/m:Q4');
+    await flush();
+    await win.BL.run();
+    await flush();
+    win.BL.cancel();
+    expect(win.__slots[0].queued()).toBe(false);
+    expect(win.document.getElementById('blStatus').textContent).toBe('queued run dropped');
+  });
+
+  it('shows the host is busy before anything is queued', async () => {
+    const win = bootGated(BUSY);
+    await win.BL.onOpen('org/m:Q4');
+    await flush();
+    expect(win.document.getElementById('blNotice').textContent)
+      .toContain('Autotune is running on gpu-01');
+    expect(win.document.getElementById('blRunBtn').textContent).toBe('Queue run');
+  });
+
+  it('queues rather than losing the run when the agent refuses it', async () => {
+    const win = bootGated();
+    await win.BL.onOpen('org/m:Q4');
+    await flush();
+    win.fetch = (url, opts) => {
+      win.__fetches.push([String(url), opts]);
+      const body = String(url).indexOf('/api/benchmark/live/run') === 0
+        ? { ok: false, error: 'a benchmark run is already in progress' }
+        : { ok: true, runs: [] };
+      return Promise.resolve({ ok: true, json: () => Promise.resolve(body) });
+    };
+    await win.BL.run();
+    await flush(); await flush();
+    // Attached to the run it lost the race to, with this config still queued.
+    expect(win.document.getElementById('blNotice').style.display).not.toBe('none');
+    expect(win.document.getElementById('blCancelBtn').textContent).toBe('Drop queued run');
   });
 });

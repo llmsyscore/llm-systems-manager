@@ -569,7 +569,7 @@ async function openBench(modelId) {
   _benchRenderPlaceholder();
   document.getElementById('benchStatus').textContent = 'idle';
   _benchSetState('idle');
-  document.getElementById('benchRunBtn').disabled = false;
+  _benchRunEnable();
   _benchSetChartIdle(true);
 }
 
@@ -827,22 +827,48 @@ function addBenchSwitch() {
   if (rows.length) rows[rows.length - 2].focus();
 }
 
-// Set the performance mode on the backend (performance, powersave, etc.) to optimize for benchmarking or normal use
-async function _benchSetPerfMode(mode) {
-  try {
-    const r = await fetch('/api/benchmark/perf-mode', {
-      method: 'POST', headers: {'Content-Type':'application/json'},
-      body: JSON.stringify({mode})
-    }).then(r => r.json());
-    if (!r.ok) console.warn(`perf-mode ${mode} failed:`, r.error);
-    return r.ok;
-  } catch (e) {
-    console.warn(`perf-mode ${mode} error:`, e);
-    return false;
-  }
+// Host CPU mode note in the run header; blank when the agent's perf controller is off.
+function _benchPerfNote(ev) {
+  const el = document.getElementById('benchPerf'); if (!el) return;
+  el.textContent = typeof perfModeNote === 'function' ? perfModeNote(ev) : '';
 }
 
-// Main function to start the benchmark: gathers selected models, tool, and switches; sets perf mode; starts the benchmark on the backend; and listens for streaming results to update the UI
+// Shared gate (#888): another tool on this host turns Run into Queue.
+let _benchSlot = null;
+function _benchRunEnable() {
+  const b = document.getElementById('benchRunBtn');
+  if (b) { b.disabled = false; b.dataset.benchRunning = ''; }
+  if (_benchSlot) _benchSlot.sync();
+}
+
+function _benchQueue() {
+  if (!_benchSlot && typeof toolsQueueSlot === 'function') {
+    _benchSlot = toolsQueueSlot('benchmark:offline', {
+      provider: () => 'llama',
+      start: (sel) => _benchRunNow(sel, true),
+      render: (st) => _benchSyncQueue(st),
+    });
+  }
+  return _benchSlot;
+}
+
+function _benchSyncQueue(st) {
+  const run = document.getElementById('benchRunBtn');
+  const cancel = document.getElementById('benchCancelBtn');
+  const status = document.getElementById('benchStatus');
+  if (!run || _benchEventSrc || run.dataset.benchRunning === '1') return;
+  run.textContent = st.queued ? '⏸ Queued · waiting'
+    : st.busy ? '▶ Queue Benchmark' : '▶ Run Benchmark';
+  run.disabled = !!st.queued;
+  if (cancel) {
+    cancel.style.display = st.queued ? '' : 'none';
+    cancel.textContent = st.queued ? '✕ Drop queued run' : '✕ Cancel';
+  }
+  if (status && st.queued) status.textContent = 'queued · waiting for ' + st.waitFor;
+  else if (status && status.textContent.indexOf('queued') === 0) status.textContent = 'idle';
+}
+
+// Gathers the selected models, tool and switches, starts the run on the agent and streams it.
 async function runBenchmark() {
   const modelIds = [...document.querySelectorAll('#benchModelPanel input[type=checkbox]:checked')]
                      .map(cb => cb.value);
@@ -850,10 +876,21 @@ async function runBenchmark() {
   const switches = _benchSwitches.filter(s => (s.flag || '').trim());
   if (!modelIds.length) { alert('Select at least one model.'); return; }
 
+  const slot = _benchQueue();
+  const gateBusy = slot && !_benchEventSrc && slot.busy();
+  if (gateBusy) { slot.queue({ modelIds, tool, switches }); return; }
+  return _benchRunNow({ modelIds, tool, switches });
+}
+
+async function _benchRunNow(sel, fromQueue) {
+  const { modelIds, tool, switches } = sel;
+  const slot = _benchQueue();
+
   // Guard re-entry and disable the run button.
   const runBtn = document.getElementById('benchRunBtn');
   if (runBtn.disabled) return;
   runBtn.disabled = true;
+  runBtn.dataset.benchRunning = '1';
 
   // llama-bench spawns its own llama.cpp instance and will fail if the
   // configured port is already bound. If a model is loaded or the server
@@ -883,7 +920,19 @@ async function runBenchmark() {
         confirmLabel: 'Continue',
         cancelLabel:  'Cancel',
       });
-      if (!ok) { runBtn.disabled = false; return; }
+      if (!ok) {
+        _benchRunEnable();
+        const st = document.getElementById('benchStatus');
+        if (st) st.textContent = fromQueue ? 'queued run dropped' : 'idle';
+        return;
+      }
+      // The dialog can sit for minutes; another tool may hold the host by now,
+      // and what follows stops llama-server underneath it.
+      if (slot && slot.busy()) {
+        _benchRunEnable();
+        slot.queue(sel);
+        return;
+      }
       if (loadedModel) {
         document.getElementById('benchStatus').textContent = 'unloading model…';
         _benchSetState('running');
@@ -910,9 +959,7 @@ async function runBenchmark() {
     }
   } catch(_) {}
 
-  document.getElementById('benchStatus').textContent = 'perf mode…';
-  _benchSetState('running');
-  await _benchSetPerfMode('performance');
+  _benchPerfNote(null);
   document.getElementById('benchStatus').textContent = 'starting…';
   _benchSetState('running');
   document.getElementById('benchResults').classList.remove('shown');
@@ -935,12 +982,16 @@ async function runBenchmark() {
     body: JSON.stringify({model_ids: modelIds, tool, switches})
   }).then(r => r.json()).then(d => {
     if (!d.ok) {
-      alert(d.error || 'Failed to start benchmark');
-      document.getElementById('benchRunBtn').disabled = false;
+      _benchRunEnable();
       document.getElementById('benchCancelBtn').style.display = 'none';
       document.getElementById('benchStatus').textContent = 'idle';
       _benchSetState('idle');
-      _benchSetPerfMode('powersave');
+      // Lost the race with another browser — hold the run instead of dropping it.
+      if (slot && typeof toolsGateRefusal === 'function' && toolsGateRefusal(d.error || d.detail)) {
+        slot.queue(sel, 'the run in progress');
+        return;
+      }
+      alert(d.error || 'Failed to start benchmark');
       return;
     }
     if (_benchEventSrc) { try { _benchEventSrc.close(); } catch(_){} }
@@ -955,11 +1006,11 @@ async function runBenchmark() {
       onLost: () => {
         _benchReconnecting = false;
         _benchEventSrc = null; if (typeof toolsSyncRunDot === 'function') toolsSyncRunDot();
-        document.getElementById('benchRunBtn').disabled = false;
+        _benchRunEnable();
         document.getElementById('benchCancelBtn').style.display = 'none';
         document.getElementById('benchStatus').textContent = 'disconnected';
         _benchSetState('err');
-        _benchSetPerfMode('powersave');
+        _benchPerfNote(null);
       },
       onEvent: (msg, e) => {
       if (msg.type === 'model_start') {
@@ -994,38 +1045,43 @@ async function runBenchmark() {
         } else if ('wh_per_ktok' in msg) {
           _benchLogAppend(`<span class="bench-log-text">energy: no power reading</span>`);
         }
+      } else if (msg.type === 'perf_mode') {
+        _benchPerfNote(msg);
       } else if (msg.type === 'done') {
         if (_benchEventSrc) { try { _benchEventSrc.close(); } catch(_){} _benchEventSrc = null; } if (typeof toolsSyncRunDot === 'function') toolsSyncRunDot();
-        document.getElementById('benchRunBtn').disabled = false;
+        _benchRunEnable();
         document.getElementById('benchCancelBtn').style.display = 'none';
         _benchStatus(msg.ok ? 'done' : (msg.error ? 'error' : 'done'));
         _benchSetState(msg.ok ? 'ok' : 'err');
         if (msg.error) _benchLogAppend(`<span class="bench-log-text" style="color:var(--crit)">✗ Error: ${_hEsc(String(msg.error))}</span>`);
-        _benchSetPerfMode('powersave');
+        _benchPerfNote(null);
       }
       },
     });
     if (typeof toolsSyncRunDot === "function") toolsSyncRunDot();
   }).catch(e => {
     alert('Benchmark request failed: ' + e);
-    document.getElementById('benchRunBtn').disabled = false;
+    _benchRunEnable();
     document.getElementById('benchCancelBtn').style.display = 'none';
     document.getElementById('benchStatus').textContent = 'idle';
     _benchSetState('idle');
-    _benchSetPerfMode('powersave');
   });
 }
 
 // Function to cancel a running benchmark: closes the event stream, sends a cancel request to the backend, and updates the UI state
 function cancelBenchmark() {
+  if (!_benchEventSrc && _benchSlot && _benchSlot.drop()) {
+    document.getElementById('benchStatus').textContent = 'queued run dropped';
+    return;
+  }
   _benchReconnecting = false;
   if (_benchEventSrc) { try { _benchEventSrc.close(); } catch(_){} _benchEventSrc = null; } if (typeof toolsSyncRunDot === 'function') toolsSyncRunDot();
   fetch('/api/benchmark/cancel', {method: 'POST'}).catch(() => {});
-  document.getElementById('benchRunBtn').disabled = false;
+  _benchRunEnable();
   document.getElementById('benchCancelBtn').style.display = 'none';
   document.getElementById('benchStatus').textContent = 'cancelled';
   _benchSetState('idle');
-  _benchSetPerfMode('powersave');
+  _benchPerfNote(null);
 }
 
 // Show a dashed placeholder stat-card row before any run so the report layout
