@@ -2613,24 +2613,28 @@ def _autotune_perplexity_bin() -> "Optional[Path]":
 
 
 _autotune_ppl_probe_cache: dict[str, dict] = {}
+_AUTOTUNE_PROBE_TIMEOUT_S = 5
 
 
-def _autotune_probe_arg(ppl: str, arg: str, env: dict) -> "Optional[int]":
-    """Runs one flag against the binary; None on timeout/exec failure, else the return code."""
+def _autotune_probe_arg(ppl: str, arg: str, env: dict) -> dict:
+    """Runs one flag against the binary; {"rc": None, "timeout": True} on a hang, else the rc."""
     try:
         r = subprocess.run([ppl, arg], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                           stdin=subprocess.DEVNULL, timeout=10, env=env)
-        return r.returncode
-    except (OSError, subprocess.TimeoutExpired):
-        return None
+                           stdin=subprocess.DEVNULL, timeout=_AUTOTUNE_PROBE_TIMEOUT_S, env=env)
+        return {"rc": r.returncode, "timeout": False}
+    except subprocess.TimeoutExpired:
+        return {"rc": None, "timeout": True}
+    except OSError:
+        return {"rc": None, "timeout": False}
 
 
 def _autotune_probe_perplexity(ppl: Path) -> dict:
     """Runs llama-perplexity --version (falling back to --help) with the tuning LD_LIBRARY_PATH."""
     try:
-        key = f"{ppl}:{ppl.stat().st_mtime_ns}"
+        st = ppl.stat()
+        key = f"{ppl}:{st.st_mtime_ns}:{st.st_size}"
     except OSError:
-        return {"runnable": None, "rc": None}
+        return {"runnable": None, "rc": None, "reason": None}
     cached = _autotune_ppl_probe_cache.get(key)
     if cached is not None:
         return cached
@@ -2638,13 +2642,18 @@ def _autotune_probe_perplexity(ppl: Path) -> dict:
     parent = str(ppl.parent)
     existing = env.get("LD_LIBRARY_PATH", "")
     env["LD_LIBRARY_PATH"] = f"{parent}:{existing}" if existing else parent
-    rc = _autotune_probe_arg(str(ppl), "--version", env)
-    if rc is not None and rc > 1:
-        rc2 = _autotune_probe_arg(str(ppl), "--help", env)
-        if rc2 is not None:
-            rc = rc2
-    runnable = None if rc is None else (0 <= rc <= 1)
-    out = {"runnable": runnable, "rc": rc}
+    res = _autotune_probe_arg(str(ppl), "--version", env)
+    # A hang will hang again on --help too; only retry a clean-but-unrecognised exit.
+    if not res["timeout"] and res["rc"] is not None and res["rc"] > 1:
+        res = _autotune_probe_arg(str(ppl), "--help", env)
+    if res["timeout"]:
+        out = {"runnable": False, "rc": None, "reason": "timeout"}
+    elif res["rc"] is None:
+        out = {"runnable": False, "rc": None, "reason": "exec_failed"}
+    elif res["rc"] < 0:
+        out = {"runnable": False, "rc": res["rc"], "reason": "signal"}
+    else:
+        out = {"runnable": True, "rc": res["rc"], "reason": None}
     _autotune_ppl_probe_cache[key] = out
     return out
 
@@ -2663,11 +2672,14 @@ def _autotune_perplexity_status() -> dict:
         probe = _autotune_probe_perplexity(ppl)
         runnable, rc = probe["runnable"], probe["rc"]
         if runnable is False:
-            if rc is not None and rc < 0:
+            reason = probe.get("reason")
+            if reason == "signal":
                 hint = (f"llama-perplexity crashed on startup (signal {-rc}) — it looks stale relative to "
                         "the installed llama.cpp libraries; reinstall the llama.cpp tools from the same build.")
+            elif reason == "timeout":
+                hint = "llama-perplexity did not respond to a version check — it may be hung or unusable."
             else:
-                hint = "llama-perplexity failed to start; reinstall the llama.cpp tools."
+                hint = "llama-perplexity could not be executed — check that it is installed and executable."
     ok = present and kl_text and runnable is not False
     return {"ok": ok, "present": present, "kl_text": kl_text, "runnable": runnable, "rc": rc, "hint": hint}
 

@@ -154,17 +154,55 @@ def test_probe_perplexity_runnable_for_a_clean_exit(llama, tmp_path, monkeypatch
     ppl = tmp_path / "llama-perplexity"
     _write_fake_ppl(ppl, rc=0)
     out = llama._autotune_probe_perplexity(ppl)
-    assert out == {"runnable": True, "rc": 0}
-    # Cached by path+mtime: a second call must not re-exec the binary.
+    assert out == {"runnable": True, "rc": 0, "reason": None}
+    # Cached by path+mtime+size: a second call must not re-exec the binary.
     monkeypatch.setattr(llama, "_autotune_probe_arg", lambda *a, **k: pytest.fail("probe not cached"))
-    assert llama._autotune_probe_perplexity(ppl) == {"runnable": True, "rc": 0}
+    assert llama._autotune_probe_perplexity(ppl) == {"runnable": True, "rc": 0, "reason": None}
+
+
+def test_probe_perplexity_cache_busts_on_a_same_mtime_replacement(llama, tmp_path, monkeypatch):
+    """A reinstall that preserves mtime but changes size must not keep the stale verdict."""
+    ppl = tmp_path / "llama-perplexity"
+    _write_fake_ppl(ppl, rc=0)
+    st = ppl.stat()
+    assert llama._autotune_probe_perplexity(ppl) == {"runnable": True, "rc": 0, "reason": None}
+    _write_fake_ppl(ppl, crash=True)
+    os.utime(ppl, ns=(st.st_mtime_ns, st.st_mtime_ns))  # same mtime, different (larger) content/size
+    assert ppl.stat().st_size != st.st_size
+    out = llama._autotune_probe_perplexity(ppl)
+    assert out["runnable"] is False and out["reason"] == "signal"
 
 
 def test_probe_perplexity_not_runnable_on_a_signal_crash(llama, tmp_path):
     ppl = tmp_path / "llama-perplexity"
     _write_fake_ppl(ppl, crash=True)
     out = llama._autotune_probe_perplexity(ppl)
-    assert out == {"runnable": False, "rc": -11}
+    assert out == {"runnable": False, "rc": -11, "reason": "signal"}
+
+
+def test_probe_perplexity_not_runnable_on_exec_failure(llama, tmp_path, monkeypatch):
+    """A binary that can't even be exec'd (bad interpreter, stripped +x) must not read as fine."""
+    ppl = tmp_path / "llama-perplexity"
+    _write_fake_ppl(ppl, rc=0)
+    monkeypatch.setattr(llama.subprocess, "run",
+                        lambda *a, **k: (_ for _ in ()).throw(OSError("Exec format error")))
+    out = llama._autotune_probe_perplexity(ppl)
+    assert out == {"runnable": False, "rc": None, "reason": "exec_failed"}
+
+
+def test_probe_perplexity_not_runnable_on_timeout_and_skips_help_fallback(llama, tmp_path, monkeypatch):
+    """A hung --version must not be retried with --help — a hang will hang again."""
+    ppl = tmp_path / "llama-perplexity"
+    _write_fake_ppl(ppl, rc=0)
+    calls = []
+
+    def _boom(cmd, **k):
+        calls.append(cmd)
+        raise llama.subprocess.TimeoutExpired(cmd=cmd, timeout=k.get("timeout"))
+    monkeypatch.setattr(llama.subprocess, "run", _boom)
+    out = llama._autotune_probe_perplexity(ppl)
+    assert out == {"runnable": False, "rc": None, "reason": "timeout"}
+    assert len(calls) == 1 and calls[0][1] == "--version"
 
 
 def test_preflight_detail_carries_the_crash_hint(llama, tmp_path, monkeypatch):
@@ -214,6 +252,34 @@ def test_run_allows_tune_mode_when_perplexity_is_not_runnable(llama, tmp_path, m
                         lambda target, args=(), daemon=None: types.SimpleNamespace(start=lambda: None))
     out = llama.llama_autotune_run({"model_ids": ["org/m:Q4"], "objective": "fit"})
     assert out["ok"] is True
+
+
+@pytest.mark.parametrize("reason, expected_hint", [
+    ("timeout", "llama-perplexity did not respond to a version check — it may be hung or unusable."),
+    ("exec_failed", "llama-perplexity could not be executed — check that it is installed and executable."),
+])
+def test_status_and_quality_run_refused_when_binary_cannot_be_probed(llama, tmp_path, monkeypatch,
+                                                                     reason, expected_hint):
+    """An unexecutable or hung binary must read as not-runnable, not fold into 'fine' via runnable=None."""
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    (bin_dir / "llama-server").write_text("")
+    (bin_dir / "llama-perplexity").write_text("")
+    _wire(llama, tmp_path, monkeypatch, llama_bin=str(bin_dir / "llama-server"))
+    monkeypatch.setattr(llama, "_autotune_kl_text", lambda: tmp_path / "kl.txt")
+    (tmp_path / "kl.txt").write_text("x")
+    monkeypatch.setattr(llama, "_autotune_probe_perplexity",
+                        lambda ppl: {"runnable": False, "rc": None, "reason": reason})
+    status = llama._autotune_perplexity_status()
+    assert status == {"ok": False, "present": True, "kl_text": True, "runnable": False, "rc": None,
+                      "hint": expected_hint}
+    started = []
+    monkeypatch.setattr(llama.threading, "Thread",
+                        lambda target, args=(), daemon=None: types.SimpleNamespace(start=lambda: started.append(args)))
+    out = llama.llama_autotune_run({"model_ids": ["org/m:Q4"], "objective": "fit", "mode": "quality",
+                                    "overrides": {"cache-type-k": "q4_0"}})
+    assert out == {"ok": False, "error": expected_hint}
+    assert not started
 
 
 class _Proc:
