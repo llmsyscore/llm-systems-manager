@@ -717,7 +717,7 @@ def test_quality_mode_dispatches_run_quality_and_posts_quality_ledger(llama, tmp
     monkeypatch.setattr(llama, "_list_cache_ggufs", lambda root: [])
     monkeypatch.setattr(llama, "_llama_read_ini", lambda: llama.configparser.ConfigParser())
     monkeypatch.setattr(llama, "_bench_get_hf_arg", lambda mid: "org/m:Q4")
-    monkeypatch.setattr(llama, "_llama_help_valued", lambda: set())
+    monkeypatch.setattr(llama, "_llama_help_valued", set)
     llama._llama_build_last = "b10850-abc"
     seen = {}
 

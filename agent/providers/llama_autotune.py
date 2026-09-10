@@ -357,7 +357,7 @@ def parse_kl_stats(text: str) -> dict:
         try:
             out[key] = float(m.group(1))
         except ValueError:
-            pass
+            continue    # a stat that is not a number is left out of the result
     return out
 
 
