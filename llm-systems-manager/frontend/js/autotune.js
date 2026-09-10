@@ -491,10 +491,16 @@
     if (rb) rb.style.display = 'none';
     if (qb) qb.style.display = 'none';
   }
+  // Host CPU mode note in the run strip; blank when the agent's perf controller is off.
+  function perfNote(ev) {
+    const el = $('atStripPerf'); if (!el) return;
+    el.textContent = typeof perfModeNote === 'function' ? perfModeNote(ev) : '';
+  }
   function finish(msg) {
     if (_es) { try { _es.close(); } catch (_) {} _es = null; }
     _attached = false;
     stopElapsed();
+    perfNote(null);
     const p = $('atRunPill'); if (p) { p.textContent = msg.cancelled ? 'cancelled' : (msg.ok ? 'done' : 'error'); p.classList.remove('running'); }
     if (msg.error) log(msg.error, 'crit');
     busy(false);
@@ -632,6 +638,7 @@
     } else if (t === 'sentinel_retry') {
       log(`iter ${msg.iter} · bogus memory reading · doubling -fitt ${msg.old_fitt} → ${msg.new_fitt} (${msg.attempt}/${msg.max_attempts})`, 'warn');
     } else if (t === 'perf_mode') {
+      perfNote(msg);
       log(`perf mode → ${msg.mode}${msg.ok ? '' : ' (not applied: ' + (msg.error || 'rc=' + msg.rc) + ')'}`, msg.ok ? 'dim' : 'warn');
     } else if (t === 'line') {
       if (msg.text) raw(msg.text);

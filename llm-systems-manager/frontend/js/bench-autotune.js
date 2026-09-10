@@ -827,22 +827,14 @@ function addBenchSwitch() {
   if (rows.length) rows[rows.length - 2].focus();
 }
 
-// Set the performance mode on the backend (performance, powersave, etc.) to optimize for benchmarking or normal use
-async function _benchSetPerfMode(mode) {
-  try {
-    const r = await fetch('/api/benchmark/perf-mode', {
-      method: 'POST', headers: {'Content-Type':'application/json'},
-      body: JSON.stringify({mode})
-    }).then(r => r.json());
-    if (!r.ok) console.warn(`perf-mode ${mode} failed:`, r.error);
-    return r.ok;
-  } catch (e) {
-    console.warn(`perf-mode ${mode} error:`, e);
-    return false;
-  }
+// Host CPU mode note in the run header; blank when the agent's perf controller is off.
+function _benchPerfNote(ev) {
+  const el = document.getElementById('benchPerf'); if (!el) return;
+  el.textContent = typeof perfModeNote === 'function' ? perfModeNote(ev) : '';
 }
 
-// Main function to start the benchmark: gathers selected models, tool, and switches; sets perf mode; starts the benchmark on the backend; and listens for streaming results to update the UI
+// Starts the benchmark: gathers selected models, tool and switches, starts the run on the
+// agent, and streams results into the UI. The agent owns the host perf mode for the run.
 async function runBenchmark() {
   const modelIds = [...document.querySelectorAll('#benchModelPanel input[type=checkbox]:checked')]
                      .map(cb => cb.value);
@@ -910,9 +902,7 @@ async function runBenchmark() {
     }
   } catch(_) {}
 
-  document.getElementById('benchStatus').textContent = 'perf mode…';
-  _benchSetState('running');
-  await _benchSetPerfMode('performance');
+  _benchPerfNote(null);
   document.getElementById('benchStatus').textContent = 'starting…';
   _benchSetState('running');
   document.getElementById('benchResults').classList.remove('shown');
@@ -940,7 +930,6 @@ async function runBenchmark() {
       document.getElementById('benchCancelBtn').style.display = 'none';
       document.getElementById('benchStatus').textContent = 'idle';
       _benchSetState('idle');
-      _benchSetPerfMode('powersave');
       return;
     }
     if (_benchEventSrc) { try { _benchEventSrc.close(); } catch(_){} }
@@ -959,7 +948,7 @@ async function runBenchmark() {
         document.getElementById('benchCancelBtn').style.display = 'none';
         document.getElementById('benchStatus').textContent = 'disconnected';
         _benchSetState('err');
-        _benchSetPerfMode('powersave');
+        _benchPerfNote(null);
       },
       onEvent: (msg, e) => {
       if (msg.type === 'model_start') {
@@ -994,6 +983,8 @@ async function runBenchmark() {
         } else if ('wh_per_ktok' in msg) {
           _benchLogAppend(`<span class="bench-log-text">energy: no power reading</span>`);
         }
+      } else if (msg.type === 'perf_mode') {
+        _benchPerfNote(msg);
       } else if (msg.type === 'done') {
         if (_benchEventSrc) { try { _benchEventSrc.close(); } catch(_){} _benchEventSrc = null; } if (typeof toolsSyncRunDot === 'function') toolsSyncRunDot();
         document.getElementById('benchRunBtn').disabled = false;
@@ -1001,7 +992,7 @@ async function runBenchmark() {
         _benchStatus(msg.ok ? 'done' : (msg.error ? 'error' : 'done'));
         _benchSetState(msg.ok ? 'ok' : 'err');
         if (msg.error) _benchLogAppend(`<span class="bench-log-text" style="color:var(--crit)">✗ Error: ${_hEsc(String(msg.error))}</span>`);
-        _benchSetPerfMode('powersave');
+        _benchPerfNote(null);
       }
       },
     });
@@ -1012,7 +1003,6 @@ async function runBenchmark() {
     document.getElementById('benchCancelBtn').style.display = 'none';
     document.getElementById('benchStatus').textContent = 'idle';
     _benchSetState('idle');
-    _benchSetPerfMode('powersave');
   });
 }
 
@@ -1025,7 +1015,7 @@ function cancelBenchmark() {
   document.getElementById('benchCancelBtn').style.display = 'none';
   document.getElementById('benchStatus').textContent = 'cancelled';
   _benchSetState('idle');
-  _benchSetPerfMode('powersave');
+  _benchPerfNote(null);
 }
 
 // Show a dashed placeholder stat-card row before any run so the report layout

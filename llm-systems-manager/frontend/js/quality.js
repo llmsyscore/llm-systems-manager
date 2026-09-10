@@ -193,6 +193,11 @@
     el.innerHTML = s == null ? '' : `took <b>${esc(mmss(s))}</b>`;
     _startTs = 0;
   }
+  // Host CPU mode note in the run strip; blank when the agent's perf controller is off.
+  function perfNote(ev) {
+    const el = $('qgStripPerf'); if (!el) return;
+    el.textContent = typeof perfModeNote === 'function' ? perfModeNote(ev) : '';
+  }
   function busy(on) {
     const rail = $('qgRail'); if (rail) rail.classList.toggle('locked', on);
     const r = $('qgRunBtn'), c = $('qgCancelBtn'); if (r) r.style.display = on ? 'none' : ''; if (c) c.style.display = on ? '' : 'none';
@@ -238,6 +243,7 @@
   function finish(msg) {
     if (_es) { try { _es.close(); } catch (_) {} _es = null; }
     busy(false);
+    perfNote(null);
     if (!_done) { pill('warn', msg && msg.error ? 'failed' : 'stopped'); stage(msg && msg.error ? 'the run did not finish' : 'stopped'); settleElapsed(null); }
     _neutral = false;
   }
@@ -245,7 +251,8 @@
     // Flip a neutral "another tool" attach to "running" once a quality-mode event proves it's ours.
     if (_neutral && (msg.mode === 'quality' || msg.stage === 'quality')) { _neutral = false; pill('running', 'running'); }
     const t = msg.type;
-    if (t === 'line') log(msg.text || '');
+    if (t === 'perf_mode') perfNote(msg);
+    else if (t === 'line') log(msg.text || '');
     else if (t === 'candidate_start') { stage(PASS_NAME[msg.value] || ('measuring ' + msg.value)); log('▶ ' + msg.value); }
     else if (t === 'candidate_result') log((msg.ok ? '✓ ' : '✗ ') + msg.value + (msg.kl != null ? ' · KL ' + msg.kl : '') + (msg.error ? ' · ' + msg.error : ''));
     else if (t === 'model_done') {

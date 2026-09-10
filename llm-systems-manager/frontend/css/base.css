@@ -772,6 +772,7 @@
     .bench-status-pill.warn    { color:var(--warn); background:color-mix(in srgb, var(--warn) 14%, transparent); border-color:color-mix(in srgb, var(--warn) 30%, transparent); }
     /* Results-pane header: section eyebrow on the left, run-status pill on the right. */
     .bench-pane-head { display:flex; align-items:center; justify-content:space-between; gap:8px; min-height:24px; padding-bottom:7px; border-bottom:1px solid var(--border-soft); }
+    .bench-perf-note { margin-right:auto; font-family:var(--font-mono); font-size:11.5px; color:var(--fg-dim); }
     .bench-pane-title { font-size:0.6em; text-transform:uppercase; letter-spacing:0.12em; color:var(--fg-dim); }
     /* Stat-card report block sits at the top of the results pane (above chart). */
     #benchResults { display:none; flex-direction:column; gap:10px; }

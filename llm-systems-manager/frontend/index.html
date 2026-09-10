@@ -55,7 +55,7 @@ Backend API endpoints consumed:
   <script src="/static/vendor/xterm.min.js?v=5.3.0"></script>
   <script src="/static/vendor/xterm-addon-fit.min.js?v=0.8.0"></script>
   <link rel="stylesheet" href="/static/css/fonts.css?v=2026.08.30-1">
-  <link rel="stylesheet" href="/static/css/base.css?v=2026.09.09-4">
+  <link rel="stylesheet" href="/static/css/base.css?v=2026.09.09-5">
   <link rel="stylesheet" href="/static/css/settings.css?v=2026.09.04-2">
   <link rel="stylesheet" href="/static/css/modelcards.css?v=2026.09.09-3">
   <link rel="stylesheet" href="/static/css/reportcard.css?v=2026.09.09-1">
@@ -2241,6 +2241,7 @@ Backend API endpoints consumed:
       <div class="bench-results-pane">
         <div class="bench-pane-head">
           <span class="bench-pane-title">Results</span>
+          <span id="benchPerf" class="bench-perf-note"></span>
           <span id="benchStatus" class="bench-status-pill">idle</span>
         </div>
         <div id="benchResults">
@@ -2463,7 +2464,7 @@ Backend API endpoints consumed:
           <div class="at-notice" id="atPrevTune" style="display:none;"></div>
         </div>
         <div id="atPaneRun" class="at-pane" style="display:none;">
-          <div class="bl-strip at-strip"><span class="bench-status-pill running" id="atRunPill">running</span><span id="atStripStage"></span><span id="atStripTime"></span></div>
+          <div class="bl-strip at-strip"><span class="bench-status-pill running" id="atRunPill">running</span><span id="atStripStage"></span><span id="atStripTime"></span><span id="atStripPerf"></span></div>
           <div class="at-prog"><i id="atProgBar" style="width:0%"></i></div>
           <div class="at-stepper" id="atStepper"></div>
           <div class="at-card">
@@ -2534,7 +2535,7 @@ Backend API endpoints consumed:
       </div>
       <div class="bench-results-pane at-panes">
         <div class="at-pane">
-          <div class="bl-strip at-strip"><span class="bench-status-pill" id="qgPill">idle</span><span id="qgStrip"></span><span id="qgStripTime"></span></div>
+          <div class="bl-strip at-strip"><span class="bench-status-pill" id="qgPill">idle</span><span id="qgStrip"></span><span id="qgStripTime"></span><span id="qgStripPerf"></span></div>
           <div class="at-card"><div class="at-card-h"><h3>Result</h3><span class="meta" id="qgResultMeta"></span></div>
             <div class="at-card-b" id="qgResult"><div class="at-hint">Pick a model, change one or more keys, then run the check.</div></div>
             <div class="at-card-f"><button type="button" id="qgApplyBtn" class="mcbtn mcbtn-pri" onclick="QG.apply()" style="display:none;">Apply changes</button><button type="button" id="qgBenchBtn" class="mcbtn mcbtn-ghost" onclick="QG.openBenchmark()" style="display:none;">◷ Measure speed in Benchmark</button><span class="gap"></span><span class="msg qg-speed" id="qgApplyNote"></span></div>
@@ -2555,6 +2556,7 @@ Backend API endpoints consumed:
 <script src="/static/js/lib/series.js?v=2026.08.04-2"></script>
 <script src="/static/js/lib/peaks.js?v=2026.08.29-2"></script>
 <script src="/static/js/lib/benchaxis.js?v=2026.09.08-1"></script>
+<script src="/static/js/lib/perfmode.js?v=2026.09.09-1"></script>
 <script src="/static/js/lib/thresholds.js?v=2026.08.05-1"></script>
 <script src="/static/js/lib/reportcard.js?v=2026.09.08-2"></script>
 <script src="/static/js/lib/toolcards.js?v=2026.08.31-6"></script>
@@ -2576,10 +2578,10 @@ Backend API endpoints consumed:
 <script src="/static/js/autopilot.js?v=2026.09.04-1"></script>
 <script src="/static/js/llmcontrol-models.js?v=2026.09.09-2"></script>
 <script src="/static/js/editor-modern.js?v=2026.09.07-1"></script>
-<script src="/static/js/bench-autotune.js?v=2026.09.08-4"></script>
+<script src="/static/js/bench-autotune.js?v=2026.09.08-5"></script>
 <script src="/static/js/bench-live.js?v=2026.09.09-6"></script>
-<script src="/static/js/autotune.js?v=2026.09.09-4"></script>
-<script src="/static/js/quality.js?v=2026.09.09-6"></script>
+<script src="/static/js/autotune.js?v=2026.09.09-5"></script>
+<script src="/static/js/quality.js?v=2026.09.09-7"></script>
 <script src="/static/js/lmstudio.js?v=2026.09.04-1"></script>
 <script src="/static/js/vllm.js?v=2026.09.04-1"></script>
 <script src="/static/js/vllm-bench-autotune.js?v=2026.09.02-1"></script>
