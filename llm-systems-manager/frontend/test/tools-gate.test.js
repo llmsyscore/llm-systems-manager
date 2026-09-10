@@ -284,6 +284,27 @@ describe('the gate before the agent list resolves (#887)', () => {
   });
 });
 
+// A failed agent-list fetch must not open the gate.
+describe('the gate when the agent list fails to load', () => {
+  it('stays closed instead of reading every host as idle', async () => {
+    const win = runHarness({
+      sources: [STUBS, srcFile('js/lib/modelcards.js'),
+                srcFile('js/lib/toolcards.js'), srcFile('js/tools.js')],
+      bodyHtml: BODY,
+      bootstrap: `
+        window._fetchT = (url) => (url.indexOf('/api/agents/list-by-provider') === 0
+          ? Promise.reject(new Error('down'))
+          : Promise.resolve({ ok: true, json: () => Promise.resolve({}) }));
+      `,
+    });
+    win.toolsGateBusy('llama');
+    for (let i = 0; i < 4; i++) await flush();
+    const b = win.toolsGateBusy('llama');
+    expect(b).toBeTruthy();
+    expect(b.unresolved).toBe(true);
+  });
+});
+
 // #887: the quality guard has its own name in another dashboard's wait text.
 describe('remote quality runs are named (#887)', () => {
   it('names the Quality guard rather than Autotune', async () => {

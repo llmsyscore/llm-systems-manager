@@ -88,14 +88,19 @@
   }
 
   // A deep link opens a module before the launcher's own fetch runs.
+  // A failed fetch keeps the gate closed and retries; it never reads as idle.
   function _toolsEnsureAgents() {
     if (_toolsAgentsLoad || Object.keys(_toolsDefaultAgent).length) return;
     const f = typeof _fetchT === 'function' ? _fetchT : (u => fetch(u));
     _toolsAgentsLoad = f('/api/agents/list-by-provider')
       .then(r => (r.ok ? r.json() : null))
-      .then(d => { if (d) _toolsApplyAgents(d); })
-      .catch(() => {})
-      .then(() => { _toolsAgentsReady = true; toolsSyncRunDot(); });
+      .catch(() => null)
+      .then(d => {
+        if (d) { _toolsApplyAgents(d); toolsSyncRunDot(); return; }
+        console.warn('tools gate: agent list failed to load; retrying in 5 s');
+        _toolsAgentsLoad = null;
+        setTimeout(_toolsEnsureAgents, 5000);
+      });
   }
 
   // Local streams mapped to the agent they drive, so the gate answers instantly.
@@ -120,7 +125,7 @@
     const id = agentId || _toolsDefaultAgent[provider || 'llama'] || null;
     if (!id) {
       return _toolsAgentsReady ? null
-        : { tool: 'unknown', label: 'the run in progress', agent_id: null,
+        : { tool: 'unknown', label: 'the agent list to load', agent_id: null,
             host: '', unresolved: true };
     }
     const tools = [...new Set([...(_toolsLocalAgents()[id] || []),

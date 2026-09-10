@@ -13,6 +13,7 @@ let _rcRunTarget = null;
 let _rcPrefModel = null;
 let _rcSlot      = null;
 let _rcGateNote  = false;
+let _rcStarting  = false;
 // Reconnects with no message in between (SG guard); a drop is not terminal.
 const _RC_MAX_DROPS = 20;
 
@@ -56,7 +57,7 @@ function _rcQueue() {
 }
 
 function _rcRenderQueue(st) {
-  if (_rcJobId) return;
+  if (_rcJobId || _rcStarting) return;
   const btn = _rcEl('rcRunBtn'), cancel = _rcEl('rcCancelBtn');
   if (btn) {
     btn.textContent = st.queued ? '\u23f8 Queued \u00b7 waiting'
@@ -199,6 +200,7 @@ function rcLoadModelOptions() {
 }
 
 function rcRun(confirm) {
+  if (_rcStarting) return;
   const agent    = _rcEl('rcAgent')?.value || '';
   const provider = _rcEl('rcProvider')?.value || 'llama';
   const mode     = _rcEl('rcMode')?.value || 'standard';
@@ -230,10 +232,12 @@ function _rcStart(body) {
     if (c) c.style.display = 'none';
   });
   rcCleanupKeep();
+  _rcStarting = true;
   fetch('/api/reportcard/run', {
     method: 'POST', headers: {'Content-Type': 'application/json'},
     body: JSON.stringify(body),
   }).then(r => r.json().then(d => ({ok: r.ok, d}))).then(({ok, d}) => {
+    _rcStarting = false;
     if (!ok) {
       _rcBusy(false);
       // The gate is a courtesy — another browser can win the race.
@@ -253,7 +257,7 @@ function _rcStart(body) {
     _rcTickSet('Starting…', 0);
     _rcLog('run started');
     rcStream(d.job_id);
-  }).catch(e => { _rcBusy(false); _rcNote('Run failed: ' + e, true); });
+  }).catch(e => { _rcStarting = false; _rcBusy(false); _rcNote('Run failed: ' + e, true); });
 }
 
 function rcShowVllmConfirm(d) {

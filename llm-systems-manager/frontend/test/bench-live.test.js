@@ -62,6 +62,7 @@ const STUBS = `
           datasets: { qualitative: { categories: ['coding', 'math', 'qa'] } }, benches: ['qualitative','throughput_1k','throughput_2k','throughput_8k','throughput_16k','throughput_32k'], busy: !!window.__busy }
       : url.indexOf('/api/benchmark/live/runs') === 0
       ? { ok: true, runs: [{ run_id: 'b1', ts: '2026-09-05T22:14:00Z', baseline: true, gen_tps: 103.2, config: { bench: 'qualitative' } }] }
+      : (url === '/api/benchmark/live/run' && window.__runReply) ? window.__runReply
       : { ok: true, run_id: window.__runId || 'r1' };
     return Promise.resolve({ ok: true, json: () => Promise.resolve(body) });
   };
@@ -250,6 +251,20 @@ describe('BL presets and mode', () => {
     win.__sse.onEvent({ type: 'done', ok: true });
     await flush();
     expect(win.__fetches.some(([u]) => u === '/api/benchmark/live/run')).toBe(false);
+  });
+});
+
+describe('BL refused start (#888)', () => {
+  it('queues through the gate instead of attaching to a stale stream', async () => {
+    const win = bootGated('BL.onOpen("org/m:Q4");');
+    await flush();
+    win.__runReply = { ok: false, error: 'Another benchmark or autotune is in progress' };
+    win.BL.run();
+    for (let i = 0; i < 4; i++) await flush();
+    expect(win.__fetches.filter(([u]) => u === '/api/benchmark/live/run')).toHaveLength(1);
+    expect(win.__slots[0].queued()).toBe(true);
+    expect(win.BL.running()).toBe(false);
+    expect(win.document.getElementById('blStatus').textContent).toContain('queued');
   });
 });
 

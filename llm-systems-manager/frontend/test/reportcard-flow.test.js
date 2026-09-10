@@ -59,7 +59,7 @@ function loadModule({ runResponse, httpOk = true }) {
   // Execute the classic script with a return of the handles the test drives.
   const fn = new Function(code + `
     ;return { rcRun, rcStream, rcStopStream, rcCancelRun, rcCleanupDelete,
-              rcOnModeChange, rcOnAgentChange };`);
+              rcOnModeChange, rcOnAgentChange, _rcRenderQueue };`);
   return { api: fn(), sources };
 }
 
@@ -69,6 +69,16 @@ beforeEach(() => {
 });
 
 describe('run flow busy state', () => {
+  it('keeps Run disabled while the start request is still in flight, whatever the gate says', async () => {
+    const { api } = loadModule({ runResponse: { ok: true, job_id: 'j1' } });
+    vi.stubGlobal('fetch', vi.fn(() => new Promise(() => {})));
+    api.rcRun();
+    await tick();
+    api._rcRenderQueue({ queued: false, waitFor: null, busy: null });
+    expect(document.getElementById('rcRunBtn').disabled).toBe(true);
+    api.rcRun();
+    expect(fetch.mock.calls).toHaveLength(1);
+  });
   it('keeps Run disabled and Cancel visible while the stream is open', async () => {
     const { api, sources } = loadModule({
       runResponse: { ok: true, job_id: 'j1' } });

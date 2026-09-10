@@ -687,8 +687,8 @@
     if (!d || !d.ok) {
       busy(false); stopElapsed();
       if (d && d.runtime) { _pre = Object.assign(_pre || {}, { runtime: d.runtime }); renderPreflight(); }
-      // Lost the race with another browser — hold the run instead of dropping it.
-      if (s && typeof toolsGateRefusal === 'function' && toolsGateRefusal(d && (d.error || d.detail))) { attach(); _queued = c; syncCancelBtn(); return; }
+      // Lost the race with another browser — the gate holds the run until the host frees up.
+      if (s && typeof toolsGateRefusal === 'function' && toolsGateRefusal(d && (d.error || d.detail))) { s.queue(c, 'the run in progress'); return; }
       setStatus(d && d.error ? d.error : 'failed to start', 'err'); return;
     }
     _runId = d.run_id; openStream();
