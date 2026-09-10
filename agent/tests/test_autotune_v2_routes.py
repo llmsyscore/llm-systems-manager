@@ -831,3 +831,48 @@ def test_tools_state_leaves_a_tune_run_unlabelled(llama, tmp_path, monkeypatch):
     assert llama.llama_autotune_run({"model_ids": ["org/m:Q4"], "objective": "fit"})["ok"] is True
     state = llama.llama_tools_state()
     assert state["autotune_active"] is True and state["quality_active"] is False
+
+
+# ── the stick meters only the bench subprocess (#890) ──
+
+def test_stick_meters_only_the_bench_subprocess(llama, tmp_path, monkeypatch):
+    _wire(llama, tmp_path, monkeypatch)
+    order: list = []
+
+    class _Integ:
+        def __init__(self, fn, interval_s=2.0):
+            order.append("integrator")
+        def start(self):
+            order.append("start")
+        def stop(self):
+            order.append("stop")
+            return 0.25, "psu"
+
+    def _run_level(cmd, env, put, mid, level, cancel, track, untrack):
+        order.append("subprocess")
+        out = Path(cmd[-1])
+        out.write_text("{}", encoding="utf-8")
+        return 0, False, 12.0
+
+    def _summary(payload, wall):
+        order.append("parse")
+        return {"all": {"pred_tps": 40.0, "prompt_tps": 900.0, "latency_s": 1.0,
+                        "agg_pred_tps": 40.0, "accept_rate": None, "completion_tokens": 512}}
+
+    monkeypatch.setattr(llama._bl, "PowerIntegrator", _Integ)
+    monkeypatch.setattr(llama._bl, "run_level_subprocess", _run_level)
+    monkeypatch.setattr(llama._bl, "level_summary", _summary)
+    monkeypatch.setattr(llama._bl, "build_cmd",
+                        lambda py, script, url, req, level, out: ["bench", out])
+    monkeypatch.setattr(llama, "_bench_live_runtime", lambda: {"python": "py", "script": "s.py"})
+    be = llama._AutotuneBackend("org/m:Q4", {}, "r1")
+    monkeypatch.setattr(be, "_server_ready", lambda url: "org/m:Q4")
+
+    st = be._stick({"concurrency": 1, "limit": 8, "energy": True})
+    assert st["ok"] and st["energy_wh"] == 0.25 and st["energy_source"] == "psu"
+    assert order == ["integrator", "start", "subprocess", "stop", "parse"]
+
+    order.clear()
+    st = be._stick({"concurrency": 1, "limit": 8, "energy": False})
+    assert st["energy_wh"] is None and st["energy_source"] is None
+    assert order == ["subprocess", "parse"]

@@ -62,8 +62,13 @@ class Fake:
         per = base * {1: 1.0, 2: 0.9, 4: 0.72, 8: 0.5}.get(conc, 0.4)
         return per, per * conc
 
+    def _wh(self, args):
+        return 0.5
+
     def load(self, args, ctx, measure):
         self.calls.append(("load", list(args), ctx, measure))
+        if (measure or {}).get("energy") and not measure.get("limit"):
+            raise AssertionError("energy metering requested without a stick")
         moe = _val(args, "--n-cpu-moe")
         if self.oom_below_moe is not None and ctx and ctx > self.ctx_fit and (moe is None or int(moe) < self.oom_below_moe):
             return {"ok": False, "oom": True, "error": "OOM at load", "ctx": None, "free_mb": None,
@@ -79,6 +84,10 @@ class Fake:
             stick = {"ok": True, "decode_tps": per, "prefill_tps": 2300.0, "latency_s": 1.2, "agg_tps": agg,
                      "accept": 0.74 if _val(args, "--spec-type") not in (None, "none") else None,
                      "completion_tokens": 1024 * measure["concurrency"], "seconds": 20.0, "error": None}
+            if measure.get("energy"):
+                stick["energy_wh"], stick["energy_source"] = self._wh(args), "psu"
+                self.energy.append("stick")
+                self.calls.append(("energy", list(args)))
         return {"ok": True, "oom": False, "error": None, "ctx": ctx or 32768, "free_mb": 1040,
                 "total_mb": 32768, "facts": dict(self.facts), "load_s": self.load_s, "stick": stick}
 
@@ -86,13 +95,6 @@ class Fake:
         self.calls.append(("kl", list(args), write_base))
         c = _val(args, "--cache-type-k", "f16")
         return {"ok": True, "kl": {"f16": 0.0, "q8_0": 0.006, "q4_0": 0.031}.get(c, 0.01), "error": None}
-
-    def energy_start(self):
-        self.energy.append("start")
-
-    def energy_stop(self):
-        self.energy.append("stop")
-        return 0.5, "psu"
 
 
 class Clock:
@@ -587,13 +589,8 @@ class QuietFake(Fake):
     """Draw scales with threads: 8 → 180 W, 16 → 240 W, 32 → 310 W over a 20 s stick."""
     W = {"8": 180.0, "16": 240.0, "32": 310.0}
 
-    def load(self, args, ctx, measure):
-        self._last_threads = _val(args, "--threads", "16")
-        return super().load(args, ctx, measure)
-
-    def energy_stop(self):
-        self.energy.append("stop")
-        return self.W.get(self._last_threads, 240.0) * 20.0 / 3600.0, "psu"
+    def _wh(self, args):
+        return self.W.get(_val(args, "--threads", "16"), 240.0) * 20.0 / 3600.0
 
 
 def _quiet_body(cap, **extra):
@@ -609,7 +606,7 @@ def test_quiet_run_meters_every_measured_candidate(at):
     threads = [e for e in events if e["type"] == "candidate_result" and e["stage"] == "threads"]
     assert [round(e["avg_w"]) for e in threads] == [180, 240, 310]
     assert all(e["w_source"] == "psu" for e in threads)
-    assert fake.energy.count("start") == 1 + len(threads) + 1 + 1     # context baseline + threads + slots(1) + verify
+    assert fake.energy.count("stick") == 1 + len(threads) + 1 + 1     # context baseline + threads + slots(1) + verify
 
 
 def test_quiet_run_picks_the_fastest_under_the_cap_and_reports_draw(at):
@@ -629,6 +626,14 @@ def test_quiet_run_over_cap_keeps_the_lowest_draw_and_flags_it(at):
     assert doc["over_cap"] is True
 
 
+def test_over_cap_stage_carries_an_over_cap_warning(at):
+    doc, events = _run(at, QuietFake(), _quiet_body(150), section={"threads": "32"})
+    done = next(e for e in events if e["type"] == "stage_done" and e["stage"] == "threads")
+    assert done["warning"] == "over cap"
+    assert _stage(doc, "threads")["warning"] == "over cap"
+    assert "warning" not in _stage(doc, "verify")
+
+
 def test_quiet_run_measures_moe_offload_even_when_the_model_fits(at):
     fake = QuietFake(facts={"n_expert": 128, "n_layer": 48, "mtp_layers": 0})
     body = _quiet_body(250, dims={"threads": {"candidates": [16]}, "slots": {"candidates": [1]},
@@ -644,4 +649,6 @@ def test_non_quiet_runs_meter_only_the_verify_stage(at):
     fake = Fake()
     _run(at, fake, {"model_ids": ["org/m:Q4"], "objective": "speed",
                     "dims": {"threads": {"candidates": [8, 16]}, "slots": {"on": False}, "spec": {"on": False}, "kv": {"on": False}}})
-    assert fake.energy == ["start", "stop"]
+    assert fake.energy == ["stick"]
+    metered = [c for c in fake.calls if c[0] == "load" and (c[3] or {}).get("energy")]
+    assert len(metered) == 1 and metered[0][3]["limit"] > 16          # only the verify stick is metered

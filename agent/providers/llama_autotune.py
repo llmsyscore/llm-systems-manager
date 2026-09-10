@@ -778,17 +778,25 @@ class _Run:
         self.emit("stage_start", stage=stage, candidates=candidates, est_s=int(est))
         return {"t": self.elapsed(), "loads": self.loads}
 
-    def end(self, stage: str, mark: dict, choice: Any, reason: str) -> None:
+    def end(self, stage: str, mark: dict, choice: Any, reason: str, warning: Optional[str] = None) -> None:
         sec = int(round(self.elapsed() - mark["t"]))
         loads = self.loads - mark["loads"]
+        extra = {"warning": warning} if warning else {}
         self.stages.append({"stage": stage, "status": "done", "seconds": sec, "loads": loads,
-                            "choice": None if choice is None else str(choice)})
+                            "choice": None if choice is None else str(choice), **extra})
         self.emit("stage_done", stage=stage, choice=None if choice is None else str(choice),
-                  reason=reason, seconds=sec, loads=loads)
+                  reason=reason, seconds=sec, loads=loads, **extra)
 
     def skip(self, stage: str, reason: str) -> None:
         self.stages.append({"stage": stage, "status": "skipped", "reason": reason})
         self.emit("stage_skipped", stage=stage, reason=reason)
+
+    def flag_over(self, over: bool) -> Optional[str]:
+        """Latches the run's over-cap flag; returns the stage warning when the pick is over the cap."""
+        if not over:
+            return None
+        self.over_cap = True
+        return "over cap"
 
     def on(self, stage: str) -> bool:
         if self.dims.get(stage, {}).get("on"):
@@ -826,18 +834,14 @@ class _Run:
 
     def measure(self, extra: dict, ctx: Optional[int], concurrency: int = 1, limit: int = STICK_LIMIT,
                 energy: bool = False) -> tuple[dict, dict]:
-        m = {"concurrency": int(concurrency), "limit": int(limit)} if self.runtime else None
-        meter = self.runtime and (energy or self.objective == "quiet")
-        if meter:
-            self.backend.energy_start()
+        meter = bool(self.runtime) and (energy or self.objective == "quiet")
+        m = {"concurrency": int(concurrency), "limit": int(limit), "energy": meter} if self.runtime else None
         res = self.load(extra, ctx, m)
         st = res.get("stick") or {}
         if meter:
-            wh, src = self.backend.energy_stop()
-            secs = st.get("seconds") or 0
-            st["energy_wh"], st["energy_source"] = wh, src
+            wh, secs = st.get("energy_wh"), st.get("seconds") or 0
             st["avg_w"] = (wh / (secs / 3600.0)) if wh is not None and secs > 0 else None
-            st["w_source"] = src if st["avg_w"] is not None else None
+            st["w_source"] = st.get("energy_source") if st["avg_w"] is not None else None
         return res, st
 
     def result(self, stage: str, value: Any, res: dict, **extra) -> None:
@@ -1056,16 +1060,17 @@ class _Run:
             results.append({"value": n, "ok": bool(res.get("ok")) and bool(st.get("ok")),
                             "decode_tps": st.get("decode_tps"), "avg_w": st.get("avg_w")})
             self.result("moe", n, res)
-        choice, reason, _ = choose_quiet(results, float(self.power_cap_w))
+        choice, reason, over = choose_quiet(results, float(self.power_cap_w))
+        warn = self.flag_over(over)
         if choice is None:
-            self.end("moe", mark, None, reason)
+            self.end("moe", mark, None, reason, warn)
             return
         best = next(r for r in results if r["value"] == choice)
         if str(choice) != self.cur("n-cpu-moe", "0"):
             self.rec["n-cpu-moe"] = str(choice)
             self.ev("n-cpu-moe", reason, gain_pct(best["decode_tps"], self.decode_now))
         self.decode_now = best["decode_tps"] or self.decode_now
-        self.end("moe", mark, choice, reason)
+        self.end("moe", mark, choice, reason, warn)
 
     def stage_threads(self) -> None:
         if not self.on("threads") or not self.need_runtime("threads"):
@@ -1090,11 +1095,13 @@ class _Run:
                             "avg_w": st.get("avg_w")})
             self.result("threads", t, res)
         if self.objective == "quiet":
-            choice, reason, _ = choose_quiet(results, float(self.power_cap_w))
+            choice, reason, over = choose_quiet(results, float(self.power_cap_w))
         else:
             choice, reason = choose_threads(results)
+            over = False
+        warn = self.flag_over(over)
         if choice is None:
-            self.end("threads", mark, None, reason)
+            self.end("threads", mark, None, reason, warn)
             return
         best = next(r for r in results if r["value"] == choice)
         cur_t = self.cur("threads")
@@ -1109,7 +1116,7 @@ class _Run:
         if (self.rec.get("n-cpu-moe") and str(tb) != cur_tb) or (cur_tb and cur_tb != str(tb)):
             self.rec["threads-batch"] = str(tb)
             self.ev("threads-batch", "physical cores with MoE offload on" if self.rec.get("n-cpu-moe") else "matches threads")
-        self.end("threads", mark, choice, reason)
+        self.end("threads", mark, choice, reason, warn)
 
     def stage_spec(self) -> None:
         if not self.on("spec") or not self.need_runtime("spec"):
@@ -1252,11 +1259,13 @@ class _Run:
                             "avg_w": st.get("avg_w")})
             self.result("slots", c, res)
         if self.objective == "quiet":
-            choice, reason, _ = choose_quiet(results, float(self.power_cap_w))
+            choice, reason, over = choose_quiet(results, float(self.power_cap_w))
         else:
             choice, reason = choose_slots(self.objective, results)
+            over = False
+        warn = self.flag_over(over)
         if choice is None:
-            self.end("slots", mark, None, reason)
+            self.end("slots", mark, None, reason, warn)
             return
         one = next((r for r in results if int(r["value"]) == 1 and r["ok"]), None)
         best = next(r for r in results if int(r["value"]) == choice)
@@ -1265,7 +1274,7 @@ class _Run:
             self.ev("parallel", reason + f" · {int(self.ctx_total or 0) // choice} ctx per slot",
                     gain_pct(best.get("agg_tps"), (one or {}).get("agg_tps")))
         self.concurrency = int(choice)
-        self.end("slots", mark, choice, reason)
+        self.end("slots", mark, choice, reason, warn)
 
     def stage_sampling(self) -> None:
         if self.on("sampling"):
