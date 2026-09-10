@@ -89,6 +89,8 @@
   .at-bar .t { font-family:var(--font-mono); font-size:10.5px; color:var(--fg-dim); margin-bottom:3px; }
   .at-bar .l { font-family:var(--font-mono); font-size:10.5px; color:var(--fg-muted); margin-top:5px; }
   .at-bar.best .l { color:var(--accent); }
+  .at-bar.over i { opacity:.45; }
+  .at-bar.over .t { color:var(--warn); }
   .at-kvt { width:100%; border-collapse:collapse; font-size:12px; }
   .at-kvt th, .at-kvt td { text-align:left; padding:6px 8px; border-bottom:1px solid var(--border-soft); font-family:var(--font-mono); }
   .at-kvt th { font-size:10px; text-transform:uppercase; letter-spacing:.1em; color:var(--fg-faint); }

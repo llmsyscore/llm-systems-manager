@@ -8,6 +8,7 @@
     speed: '<b>Speed</b> spends VRAM on single-request throughput: f16 KV where it fits, one slot, the fastest threads and speculative setup.',
     balanced: '<b>Balanced</b> keeps at least the minimum context per slot and takes any change that is speed-neutral or better.',
     serve: '<b>Serve</b> maximises aggregate tokens/s across parallel slots, accepting lower per-request speed.',
+    quiet: '<b>Quiet</b> keeps the host under a watt cap: every candidate is metered and the fastest one under the cap wins. Threads, slots and MoE offload are tuned; KV, speculative and sampling stay off.',
   };
   const STAGE_NAME = { context: 'Context size', kv: 'KV cache type', moe: 'MoE CPU offload', threads: 'CPU threads',
                        spec: 'Speculative decoding', slots: 'Parallel slots', sampling: 'Sampling defaults', verify: 'Verify' };
@@ -22,6 +23,7 @@
   let _models = [], _pre = null, _sel = new Set(), _runs = [], _facts = {}, _es = null, _attached = false;
   let _run = null, _done = {}, _doneModel = null, _meta = {}, _section = {}, _elapsedIv = null;
   let _status = {};        // model_id → /api/llm/autotune/status item
+  let _peak = null;        // /api/energy/host-peak payload, or null
   let _slot = null, _busyOn = false, _statusErr = false;
   // Newest row per model wins; the route returns one row per (agent, model).
   async function loadStatus() {
@@ -84,7 +86,36 @@
     const h = $('atObjHint'); if (h) h.innerHTML = OBJ_HINT[o] || '';
     const L = typeof layout !== 'undefined' ? layout : null;
     if (L) { L.atObjective = o; try { saveLayout(); } catch (_) {} }
+    if (o === 'quiet') applyQuietDefaults();
+    syncCap();
     refreshPlan();
+  }
+  const QUIET_DIMS = { kv: false, moe: true, threads: true, slots: true, spec: false, sampling: false };
+  function setDim(d, on) { const t = document.querySelector(`#toolsModAt .at-dim[data-dim="${d}"] [data-dim-on]`); if (t) t.classList.toggle('on', !!on); }
+  // Quiet tunes the power-relevant dims only; the user can switch any back on afterwards.
+  function applyQuietDefaults() {
+    Object.entries(QUIET_DIMS).forEach(([d, on]) => setDim(d, on));
+    document.querySelectorAll('#atSlotChips .bl-chip').forEach(c => c.classList.toggle('on', ['1', '2', '4'].includes(c.dataset.v)));
+  }
+  function capValue() { const v = parseFloat(($('atPowerCap') || {}).value); return Number.isFinite(v) ? v : null; }
+  // Shows the cap field for Quiet only, seeded from the saved value or 80 % of the host peak.
+  function syncCap() {
+    const row = $('atCapRow'), inp = $('atPowerCap'), hint = $('atCapHint');
+    if (!row) return;
+    const quiet = objective() === 'quiet';
+    row.style.display = quiet ? '' : 'none';
+    if (!quiet || !inp) return;
+    const L = typeof layout !== 'undefined' ? layout : null;
+    const saved = L && Number.isFinite(L.atPowerCap) ? L.atPowerCap : null;
+    const peak = _peak && Number.isFinite(_peak.peak_w) ? _peak.peak_w : null;
+    if (!inp.value) inp.value = saved != null ? saved : (peak != null ? Math.round(0.8 * peak) : '');
+    if (hint) hint.textContent = peak != null
+      ? `peak ${Math.round(peak)} W over ${_peak.hours} h of history · 80 % is ${Math.round(0.8 * peak)} W`
+      : 'no power history on this host yet — enter the cap by hand';
+  }
+  async function loadPeak() {
+    try { _peak = await fetch('/api/energy/host-peak').then(r => r.json()); } catch (_) { _peak = null; }
+    if (_peak && !_peak.ok) _peak = null;
   }
   function selected() { return [...document.querySelectorAll('#atModelList .mc-toggle.on')].map(b => b.dataset.model); }
   function primaryModel() { return selected()[0] || null; }
@@ -282,7 +313,10 @@
       const obj = ev.target.closest('#atObjSeg button');
       if (obj) setObjective(obj.dataset.obj);
     });
-    mod.addEventListener('input', ev => { if (ev.target.closest('.at-dim-b, .at-grp-b')) refreshPlan(); });
+    mod.addEventListener('input', ev => {
+      if (ev.target.id === 'atPowerCap') { const L = typeof layout !== 'undefined' ? layout : null; if (L) { L.atPowerCap = capValue(); try { saveLayout(); } catch (_) {} } return; }
+      if (ev.target.closest('.at-dim-b, .at-grp-b')) refreshPlan();
+    });
     mod.addEventListener('change', ev => { if (ev.target.closest('.at-dim-b, .at-grp-b')) refreshPlan(); });
   }
   async function onOpen(preselect, opts) {
@@ -295,12 +329,14 @@
       fetch('/api/llm/autotune/preflight').then(r => r.json()).catch(() => null),
       fetch('/api/tools/runs?limit=100').then(r => r.json()).catch(() => ({})),
       loadStatus(),
+      loadPeak(),
     ]);
     _models = (models && models.models) || [];
     _pre = pre && pre.ok ? pre : _pre;
     _runs = (runs && runs.runs) || [];
     if (_pre) { seedThreads(_pre.cores); seedDrafts(_pre.drafts); }
     renderModels(preselect);
+    syncCap();
     syncVerify();
     await checkServer(pre && pre.ok ? pre : null);
     if (_pre && _pre.busy && !running()) attach();
@@ -427,7 +463,9 @@
     const problem = dimsProblem(dims);
     if (problem) { alert(problem); return; }
     fillDimDefaults(dims);
-    const body = { model_ids: ids, objective: objective(), budget_min: Math.round(num('atBudgetMin', 120)), dims };
+    const quiet = objective() === 'quiet', cap = capValue();
+    if (quiet && (cap == null || cap < 20 || cap > 5000)) { alert('Quiet needs a power cap between 20 and 5000 W.'); return; }
+    const body = { model_ids: ids, objective: objective(), budget_min: Math.round(num('atBudgetMin', 120)), dims, ...(quiet ? { power_cap_w: cap } : {}) };
     return startRun(body, ids);
   }
   async function startRun(body, ids, now) {
@@ -464,8 +502,10 @@
     const baseline = {};
     [['decode_tps', 'decode_tps'], ['prefill_tps', 'prefill_tps'], ['agg_tps', 'agg_tps'], ['ctx', 'ctx_size'], ['free_mb', 'free_mb']]
       .forEach(([k, sk]) => { if (sm[sk] != null) baseline[k] = sm[sk]; });
+    const quiet = objective() === 'quiet', cap = capValue();
+    if (quiet && (cap == null || cap < 20 || cap > 5000)) { alert('Quiet needs a power cap between 20 and 5000 W.'); return; }
     const body = { model_ids: [mid], objective: objective(), budget_min: 15, mode: 'verify',
-                   baseline_tps: sm.decode_tps ?? null, baseline, dims };
+                   baseline_tps: sm.decode_tps ?? null, baseline, dims, ...(quiet ? { power_cap_w: cap } : {}) };
     await startRun(body, [mid]);
   }
   function retune() { again(); run(); }
@@ -604,7 +644,10 @@
       const cls = c.status === 'pending' ? 'pend' : (c.ok === false ? 'fail' : (v === best ? 'best' : ''));
       const h = c.status === 'pending' ? 40 : (typeof v === 'number' && v > 0 ? Math.max(4, Math.round(100 * v / max)) : 6);
       const top = c.status === 'pending' ? '…' : (c.ok === false ? (c.error && /oom/i.test(c.error) ? 'OOM' : 'failed') : fmt(v, 1));
-      return `<div class="at-bar ${cls}"><span class="t">${esc(top)}</span><i style="height:${h}%"></i><span class="l">${esc(c.value)}${v === best && cls === 'best' ? ' ★' : ''}</span></div>`;
+      const w = typeof c.avg_w === 'number' ? ` · ${Math.round(c.avg_w)} W` : '';
+      const cap = objective() === 'quiet' ? capValue() : null;
+      const over = cap != null && typeof c.avg_w === 'number' && c.avg_w > cap;
+      return `<div class="at-bar ${cls}${over ? ' over' : ''}"><span class="t">${esc(top + w)}</span><i style="height:${h}%"></i><span class="l">${esc(c.value)}${v === best && cls === 'best' ? ' ★' : ''}</span></div>`;
     }).join('')}</div>`;
   }
   function renderStage() {
@@ -632,7 +675,7 @@
       if (body) body.innerHTML = `<div class="bl-tiles"><div class="bl-tile"><div class="v">${esc(fmt(c.decode_tps))}<em>t/s</em></div><div class="l">decode</div></div><div class="bl-tile"><div class="v">${esc(fmt(c.agg_tps))}<em>t/s</em></div><div class="l">aggregate</div></div><div class="bl-tile"><div class="v">${esc(fmt(c.free_mb, 0))}<em>MB</em></div><div class="l">free VRAM</div></div><div class="bl-tile"><div class="v">${c.status === 'pending' ? '…' : (c.ok ? 'pass' : 'fail')}</div><div class="l">attempt ${esc(c.value)}</div></div></div>`;
     } else {
       const metric = s === 'slots' && objective() === 'serve' ? 'agg_tps' : 'decode_tps';
-      if (meta) meta.innerHTML = `${metric === 'agg_tps' ? 'aggregate' : 'decode'} t/s per <b>${esc(STAGE_FLAG[s])}</b> · chat preset`;
+      if (meta) meta.innerHTML = `${metric === 'agg_tps' ? 'aggregate' : 'decode'} t/s per <b>${esc(STAGE_FLAG[s])}</b> · chat preset` + (objective() === 'quiet' && capValue() != null ? ` · cap ${esc(capValue())} W` : '');
       if (body) body.innerHTML = barsHtml(cands, metric) + `<div class="at-hint" style="margin-top:6px">${esc(cands.filter(c => c.ok === false).map(c => `${c.value}: ${c.error || 'failed'}`).join(' · '))}</div>`;
     }
     setStrip();
@@ -784,7 +827,9 @@
     const g = pct(a.decode_tps, b.decode_tps), x = b.ctx && a.ctx ? a.ctx / b.ctx : null;
     const big = $('atRecBig');
     if (big) big.innerHTML = [g != null ? `decode <b${g < 0 ? ' class="neg"' : ''}>${g >= 0 ? '+' : ''}${Math.round(g)} %</b>` : '', x ? `context <b>${x >= 2 ? Math.round(x) : Math.round(x * 100) / 100}×</b>` : '',
-                              a.free_mb != null ? `VRAM free ${fmt(a.free_mb, 0)} MB` : ''].filter(Boolean).join(' · ');
+                              a.free_mb != null ? `VRAM free ${fmt(a.free_mb, 0)} MB` : '',
+                              done.power_cap_w != null && a.avg_w != null
+                                ? `<b${done.over_cap ? ' class="neg"' : ''}>${Math.round(a.avg_w)} W</b> ${done.over_cap ? 'over' : 'under'} the ${Math.round(done.power_cap_w)} W cap` : ''].filter(Boolean).join(' · ');
     const warn = $('atRecWarn');
     if (warn) {
       if (g != null && g < -3) {
@@ -911,7 +956,7 @@
     setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 200);
   }
 
-  window.AT = { onOpen, run, verify, retune, checkQuality, cancel, detach, again, stopServer, running, dimsState, objective, planRows, estimateText, onEvent,
+  window.AT = { onOpen, run, verify, retune, checkQuality, cancel, detach, again, stopServer, running, dimsState, objective, setObjective, applyQuietDefaults, planRows, estimateText, onEvent,
                 state: () => ({ run: _run, done: _done, doneModel: _doneModel, meta: _meta, section: _section, pre: _pre }),
                 renderDone, recRows, rows, toggleRow, apply, saveProfile, copyArgs, exportReport, argsText,
                 _debugSetStart: (ts) => { if (_run) { _run.startTs = ts; tick(); } } };

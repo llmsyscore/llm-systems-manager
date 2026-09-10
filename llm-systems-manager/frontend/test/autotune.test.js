@@ -44,6 +44,7 @@ const STUBS = `
       : u.startsWith('/api/llm/model-meta') ? { repo: 'org/m', base_model: 'org/base', suggestions: [{ key: 'temperature', value: 0.7, source: 'sidecar' }, { key: 'top-p', value: 0.8, source: 'model_card' }, { key: 'min-p', value: 0, source: 'base_model' }] }
       : u.startsWith('/api/llm/autotune/run') ? (window.__runReply || { ok: true, run_id: 'r1' })
       : (u === '/api/llm/config' && opts && opts.method === 'POST') ? (window.__failConfig ? { ok: false, error: 'boom' } : { ok: true })
+      : u.startsWith('/api/energy/host-peak') ? (window.__peak || { ok: true, peak_w: 312.4, hours: 21 })
       : { ok: true };
     return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve(body), text: () => Promise.resolve(JSON.stringify(body)) });
   };
@@ -840,5 +841,80 @@ describe('AT queueing behind another tool (#888)', () => {
     expect(win.__slots[0].queued()).toBe(true);
     expect(win.__slots[0].waitFor()).toBe('the run in progress');
     expect(win.__alerts).toEqual([]);
+  });
+});
+
+describe('Quiet objective (#890)', () => {
+  it('reveals a cap prefilled at 80 % of the host peak and remembers it', async () => {
+    const win = await opened();
+    win.AT.setObjective('quiet'); await flush();
+    const row = win.document.getElementById('atCapRow'), cap = win.document.getElementById('atPowerCap');
+    expect(row.style.display).not.toBe('none');
+    expect(cap.value).toBe('250');
+    expect(win.document.getElementById('atCapHint').textContent).toMatch(/peak 312 W.*21 h/);
+    cap.value = '200'; cap.dispatchEvent(new win.Event('input', { bubbles: true }));
+    expect(win.__layout().atPowerCap).toBe(200);
+    win.AT.setObjective('balanced');
+    expect(row.style.display).toBe('none');
+  });
+
+  it('asks for a cap when the host has no power history', async () => {
+    const win = boot(); win.__peak = { ok: true, peak_w: null, hours: 0 };
+    win.AT.onOpen('org/m:Q4'); for (let i = 0; i < 6; i++) await flush();
+    win.AT.setObjective('quiet'); await flush();
+    expect(win.document.getElementById('atPowerCap').value).toBe('');
+    expect(win.document.getElementById('atCapHint').textContent).toMatch(/no power history/i);
+    await win.AT.run();
+    expect(win.__alerts.pop()).toMatch(/power cap/i);
+    expect(win.__fetches.some(([u, o]) => u === '/api/llm/autotune/run' && o && o.method === 'POST')).toBe(false);
+  });
+
+  it('switches the dims to the quiet set and posts the cap', async () => {
+    const win = await opened();
+    win.AT.setObjective('quiet'); await flush();
+    const on = d => win.document.querySelector(`.at-dim[data-dim="${d}"] [data-dim-on]`).classList.contains('on');
+    expect(on('kv')).toBe(false); expect(on('spec')).toBe(false); expect(on('sampling')).toBe(false);
+    expect(on('threads')).toBe(true); expect(on('slots')).toBe(true);
+    expect([...win.document.querySelectorAll('#atSlotChips .bl-chip.on')].map(c => c.dataset.v)).toEqual(['1', '2', '4']);
+    await win.AT.run(); for (let i = 0; i < 4; i++) await flush();
+    const post = win.__fetches.find(([u, o]) => u === '/api/llm/autotune/run' && o && o.method === 'POST');
+    const body = JSON.parse(post[1].body);
+    expect(body.objective).toBe('quiet'); expect(body.power_cap_w).toBe(250);
+    expect(body.dims.kv.on).toBe(false); expect(body.dims.slots.candidates).toEqual([1, 2, 4]);
+    expect(win.document.getElementById('atObjHint').textContent).toMatch(/watt/i);
+  });
+
+  it('shows watts on the stage bars, marks over-cap candidates, and reads the draw on the done pane', async () => {
+    const win = await opened();
+    win.AT.setObjective('quiet'); await flush();
+    await win.AT.run(); for (let i = 0; i < 4; i++) await flush();
+    win.__sse.onEvent({ type: 'model_start', model_id: 'org/m:Q4', objective: 'quiet', stages: ['context', 'threads', 'verify'] }, {});
+    win.__sse.onEvent({ type: 'stage_start', model_id: 'org/m:Q4', stage: 'threads', candidates: [8, 16], est_s: 60 }, {});
+    win.__sse.onEvent({ type: 'candidate_result', model_id: 'org/m:Q4', stage: 'threads', value: 8, ok: true, decode_tps: 90, avg_w: 180 }, {});
+    win.__sse.onEvent({ type: 'candidate_result', model_id: 'org/m:Q4', stage: 'threads', value: 16, ok: true, decode_tps: 101, avg_w: 310 }, {});
+    const bars = win.document.querySelectorAll('#atStageBody .at-bar');
+    expect(bars[0].textContent).toContain('180 W'); expect(bars[0].classList.contains('over')).toBe(false);
+    expect(bars[1].classList.contains('over')).toBe(true);
+    expect(win.document.getElementById('atStageMeta').textContent).toContain('cap 250 W');
+    win.__sse.onEvent({ ...DONE, objective: 'quiet', power_cap_w: 250, over_cap: false, after: { ...DONE.after, avg_w: 212.5 } }, {});
+    win.__sse.onEvent({ type: 'done', ok: true }, {});
+    await flush();
+    expect(win.document.getElementById('atRecBig').textContent).toMatch(/213 W under the 250 W cap/);
+  });
+
+  it('sends the cap on a verify run too, since the agent requires it', async () => {
+    const win = await opened();
+    win.AT.setObjective('quiet'); await flush();
+    await win.AT.verify(); for (let i = 0; i < 4; i++) await flush();
+    const post = win.__fetches.find(([u, o]) => u === '/api/llm/autotune/run' && o && o.method === 'POST');
+    expect(JSON.parse(post[1].body).power_cap_w).toBe(250);
+  });
+
+  it('surfaces the agent refusal text for an agent that predates Quiet', async () => {
+    const win = await opened();
+    win.AT.setObjective('quiet'); await flush();
+    win.__runReply = { ok: false, detail: 'objective must be one of fit, speed, balanced, serve' };
+    await win.AT.run(); for (let i = 0; i < 4; i++) await flush();
+    expect(win.__alerts.pop()).toMatch(/objective must be one of/);
   });
 });
