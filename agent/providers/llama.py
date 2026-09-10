@@ -3619,6 +3619,12 @@ def llama_autotune_preflight(authorization: Optional[str] = Header(default=None)
     vram = gpu.get("vram_total_bytes")
     hv = _llama_help_valued()
     pdet = _autotune_perplexity_status()
+    drafts = _list_cache_ggufs(_hf_cache_root())
+    # Per-model draft already in the HF cache, so the rail can offer a download for the rest.
+    drafts_for: dict = {}
+    for mid, size in sizes.items():
+        hit = _at.find_draft(drafts, mid.rsplit(":", 1)[0], int(size or 0))
+        drafts_for[mid] = {"repo": hit["repo"], "file": hit["file"], "size": hit["size"]} if hit else None
     return {"ok": True, "busy": bool(_bench_active or _autotune_active), "unit_active": _llama_unit_active(),
             "autotune_active": bool(_autotune_active), "quality_active": bool(_autotune_active and _autotune_quality),
             "help_valued": {"ok": hv is not None, "count": len(hv or ())},
@@ -3629,7 +3635,7 @@ def llama_autotune_preflight(authorization: Optional[str] = Header(default=None)
             "perplexity_detail": {"present": pdet["present"], "kl_text": pdet["kl_text"],
                                   "runnable": pdet["runnable"], "rc": pdet["rc"], "hint": pdet["hint"]},
             "runtime": {"ok": bool(rt["python"] and rt["script"]), **rt},
-            "drafts": _list_cache_ggufs(_hf_cache_root()), "sizes": sizes,
+            "drafts": drafts, "drafts_for": drafts_for, "sizes": sizes,
             "vram_total_mb": int(vram // (1024 * 1024)) if isinstance(vram, (int, float)) and vram else None,
             "ram_total_mb": _ram_total_mb()}
 

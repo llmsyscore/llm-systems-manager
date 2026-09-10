@@ -131,6 +131,19 @@ def test_preflight_shape(llama, tmp_path, monkeypatch):
     out2 = llama.llama_autotune_preflight()
     assert out2["perplexity"] is True
     assert out2["perplexity_detail"] == {"present": True, "kl_text": True, "runnable": True, "rc": 0, "hint": None}
+    assert out["drafts_for"] == {"org/m:Q4": None}
+
+
+def test_preflight_names_the_cached_draft_for_each_model(llama, tmp_path, monkeypatch):
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    (bin_dir / "llama-server").write_text("")
+    _wire(llama, tmp_path, monkeypatch, llama_bin=str(bin_dir / "llama-server"))
+    drafts = [{"repo": "org/m-0.6B-GGUF", "file": "m-0.6B-Q8_0.gguf", "path": "/h/a.gguf", "size": 700_000_000},
+              {"repo": "other/x-1B-GGUF", "file": "x-1B-Q4_K_M.gguf", "path": "/h/b.gguf", "size": 600_000_000}]
+    monkeypatch.setattr(llama, "_list_cache_ggufs", lambda root: drafts)
+    out = llama.llama_autotune_preflight()
+    assert out["drafts_for"] == {"org/m:Q4": {"repo": "org/m-0.6B-GGUF", "file": "m-0.6B-Q8_0.gguf", "size": 700_000_000}}
 
 
 def test_run_accepts_v1_and_v2_bodies(llama, tmp_path, monkeypatch):
