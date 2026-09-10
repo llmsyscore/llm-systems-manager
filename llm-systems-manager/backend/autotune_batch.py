@@ -100,7 +100,7 @@ def new_batch(req: dict, hostnames: dict, now: float) -> dict:
             "started": None, "finished": None, "status": "queued", "objective": req["objective"],
             "dims": req["dims"], "budget_min": int(req["budget_min"]), "restart": bool(req["restart"]),
             "power_cap_w": req["power_cap_w"], "items": items, "current": None, "summary": None,
-            "error": None, "restarted": [], "restart_errors": {}}
+            "error": None, "stopped": [], "restarted": [], "restart_errors": {}}
 
 
 # ── pure helpers ──
@@ -205,7 +205,7 @@ def init_table(conn) -> None:
     conn.commit()
 
 
-_EXTRA_KEYS = ("started", "finished", "restart", "power_cap_w", "current", "restarted", "restart_errors")
+_EXTRA_KEYS = ("started", "finished", "restart", "power_cap_w", "current", "stopped", "restarted", "restart_errors")
 
 
 class Store:
@@ -236,8 +236,8 @@ class Store:
                 "items": json.loads(r[7]) if r[7] else [], "summary": json.loads(r[8]) if r[8] else None,
                 "error": r[9], "started": extra.get("started"), "finished": extra.get("finished"),
                 "restart": bool(extra.get("restart", True)), "power_cap_w": extra.get("power_cap_w"),
-                "current": extra.get("current"), "restarted": extra.get("restarted") or [],
-                "restart_errors": extra.get("restart_errors") or {}}
+                "current": extra.get("current"), "stopped": extra.get("stopped") or [],
+                "restarted": extra.get("restarted") or [], "restart_errors": extra.get("restart_errors") or {}}
 
     _SEL = ("SELECT id, created, start_at, status, objective, dims_json, budget_min, items_json, "
             "summary_json, error, extra_json FROM autotune_batches ")
@@ -258,9 +258,9 @@ class Store:
                                      "ORDER BY created DESC LIMIT 1").fetchone()
         return self._row(r) if r else None
 
-    def recover(self, now: float) -> list:
-        """Fail batches left running by a restart; return queued ones to re-arm."""
-        rearm = []
+    def recover(self, now: float) -> tuple:
+        """Fail batches left running by a restart; return (queued to re-arm, just failed)."""
+        rearm, failed = [], []
         for b in self.recent(BATCH_RETENTION):
             if b["status"] == "running":
                 for it in b["items"]:
@@ -269,9 +269,10 @@ class Store:
                 b.update({"status": "failed", "error": "manager restarted mid-batch", "finished": now,
                           "summary": summary_of(b)})
                 self.save(b)
+                failed.append(b)
             elif b["status"] == "queued":
                 rearm.append(b)
-        return rearm
+        return rearm, failed
 
 
 # ── runner ──
@@ -337,22 +338,33 @@ class Runner:
         with self._lock:
             return batch_id in self._cancel
 
+    def recover(self, now: float) -> list:
+        """Restart hosts a batch left stopped when the manager died; return queued batches to re-arm."""
+        rearm, failed = self.store.recover(now)
+        for b in failed:
+            if not b.get("stopped"):
+                continue
+            self._finish_hosts(b, b["stopped"], applied_hosts=False)
+            b["summary"] = summary_of(b)
+            self.store.save(b)
+        return rearm
+
     def run(self, batch_id: str) -> None:
         d = self.deps
         b = self.store.get(batch_id)
         if not b or b["status"] != "queued":
             return
+        stopped: list = b["stopped"]
         try:
             if not self._wait(b):
                 return
             b.update({"status": "running", "started": d.now()})
             self.store.save(b)
-            stopped: list = []
             for i, it in enumerate(b["items"]):
                 if self._cancelled(batch_id):
                     it.update({"status": "cancelled", "finished": d.now()})
                     continue
-                if not self._item(b, i, stopped):
+                if not self._item(b, i):
                     break
             self._finish_hosts(b, stopped)
             b.update({"status": "cancelled" if self._cancelled(batch_id) else "done", "finished": d.now(),
@@ -368,6 +380,10 @@ class Runner:
                 log.warning("autotune batch: summary alert failed: %s", e)
         except Exception as e:  # noqa: BLE001
             log.warning("autotune batch %s failed: %s", batch_id, e)
+            try:
+                self._finish_hosts(b, stopped)
+            except Exception as e2:  # noqa: BLE001
+                log.warning("autotune batch: restart after failure failed: %s", e2)
             b.update({"status": "failed", "error": str(e)[:300], "finished": d.now(), "current": None})
             b["summary"] = summary_of(b)
             self.store.save(b)
@@ -407,7 +423,7 @@ class Runner:
             return None
         return max(ITEM_MIN_BUDGET, int(remaining // max(1, queued)))
 
-    def _precheck(self, it: dict, stopped: list) -> Optional[str]:
+    def _precheck(self, b: dict, it: dict) -> Optional[str]:
         d = self.deps
         aid = it["agent_id"]
         host = next((h for h in d.hosts() if h.get("agent_id") == aid), None)
@@ -422,14 +438,15 @@ class Runner:
             return "host busy"
         if it["model_id"] not in (pre.get("sizes") or {}):
             return "model not configured"
-        if pre.get("unit_active") and aid not in stopped:
+        if pre.get("unit_active") and aid not in b["stopped"]:
             ok, err = d.stop_server(aid)
             if not ok:
                 return f"could not stop llama-server: {err}"
-            stopped.append(aid)
+            b["stopped"].append(aid)
+            self.store.save(b)
         return None
 
-    def _item(self, b: dict, i: int, stopped: list) -> bool:
+    def _item(self, b: dict, i: int) -> bool:
         """Run one item; False when the batch should stop walking."""
         d = self.deps
         it = b["items"][i]
@@ -441,7 +458,7 @@ class Runner:
             it.update({"status": "skipped", "note": "out of budget", "finished": d.now()})
             self.store.save(b)
             return True
-        reason = self._precheck(it, stopped)
+        reason = self._precheck(b, it)
         if reason:
             it.update({"status": "skipped" if not reason.startswith("could not") else "failed",
                        "note": reason, "finished": d.now()})
@@ -477,10 +494,10 @@ class Runner:
             return True
         apply_ok, why = should_apply(doc)
         if apply_ok:
+            n = sum(1 for c in doc.get("changes") or [] if isinstance(c, dict) and c.get("selected"))
             aerr = self._apply(b, it, doc)
             it["applied"] = aerr is None
-            it["note"] = aerr or f"applied {sum(1 for c in doc['changes'] if c.get('selected'))} change" + \
-                ("" if sum(1 for c in doc["changes"] if c.get("selected")) == 1 else "s")
+            it["note"] = aerr or f"applied {n} change" + ("" if n == 1 else "s")
         else:
             it["applied"] = False
             it["note"] = why
@@ -541,11 +558,11 @@ class Runner:
             log.warning("autotune batch: active profile sync failed: %s", e)
         return None
 
-    def _finish_hosts(self, b: dict, stopped: list) -> None:
+    def _finish_hosts(self, b: dict, stopped: list, applied_hosts: bool = True) -> None:
         """Restart every host the batch stopped, plus applied hosts when the toggle is on."""
         d = self.deps
         want = list(stopped)
-        if b.get("restart"):
+        if applied_hosts and b.get("restart"):
             for it in b["items"]:
                 if it.get("applied") and it["agent_id"] not in want:
                     want.append(it["agent_id"])

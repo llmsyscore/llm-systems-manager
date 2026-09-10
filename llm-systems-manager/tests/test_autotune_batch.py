@@ -122,8 +122,9 @@ def test_store_recover_fails_running_and_returns_queued(store):
     running["status"] = "running"; running["items"][0]["status"] = "running"
     queued = ab.new_batch(ab.validate_body(_body(start_at=NOW + 600), {A1}, NOW), NAMES, NOW + 1)
     store.save(running); store.save(queued)
-    rearm = store.recover(NOW + 2)
+    rearm, failed = store.recover(NOW + 2)
     assert [x["id"] for x in rearm] == [queued["id"]]
+    assert [x["id"] for x in failed] == [running["id"]]
     r = store.get(running["id"])
     assert r["status"] == "failed" and r["error"] == "manager restarted mid-batch"
     assert r["items"][0]["status"] == "failed" and r["items"][0]["note"] == "manager restarted"
@@ -145,6 +146,7 @@ class Fake:
         self.cfg = {"__DEFAULTS__": {}, "org/m:Q4": {"threads": "8"}, "org/n:Q8": {"threads": "8"}}
         self.writes, self.profiles, self.alerts = [], [], []
         self.stream_events = None
+        self.read_error = None
 
     def deps(self):
         return ab.Deps(
@@ -155,7 +157,7 @@ class Fake:
             cancel_on_agent=lambda aid: self.calls.append(("cancel", aid)) or True,
             stop_server=lambda aid: self.calls.append(("stop", aid)) or (True, None),
             restart_server=lambda aid: self.calls.append(("restart", aid)) or (True, None),
-            read_config=lambda aid: {k: dict(v) for k, v in self.cfg.items()},
+            read_config=self._read_config,
             write_config=lambda aid, cfg: self.writes.append((aid, cfg)) or (True, None),
             active_profile=lambda aid, mid: "default",
             save_profile=lambda aid, mid, name, values, make_active: self.profiles.append((mid, name, dict(values), make_active)),
@@ -164,6 +166,11 @@ class Fake:
 
     def _sleep(self, s):
         self.t += s
+
+    def _read_config(self, aid):
+        if self.read_error:
+            raise RuntimeError(self.read_error)
+        return {k: dict(v) for k, v in self.cfg.items()}
 
     def _run(self, aid, body):
         self.calls.append(("run", aid, body))
@@ -322,6 +329,31 @@ def test_runner_waits_for_start_at_and_cancel_while_queued():
     assert runner2.cancel(b2["id"]) == "cancelled"
     runner2.run(b2["id"])
     assert store.get(b2["id"])["status"] == "cancelled" and not [c for c in f2.calls if c[0] == "run"]
+
+
+def test_runner_restarts_stopped_hosts_when_an_item_raises():
+    f = Fake(); f.read_error = "agent went away"
+    b, _ = _run_batch(f, _body())
+    assert b["status"] == "failed" and "agent went away" in b["error"]
+    assert ("stop", A1) in f.calls and ("restart", A1) in f.calls
+    assert b["restarted"] == ["alpha"]
+
+
+def test_recover_restarts_hosts_a_crashed_batch_had_stopped(store):
+    running = ab.new_batch(ab.validate_body(_body(items=[
+        {"agent_id": A1, "model_id": "org/m:Q4"}, {"agent_id": A2, "model_id": "org/m:Q4"}]), {A1, A2}, NOW), NAMES, NOW)
+    running.update({"status": "running", "stopped": [A1]})
+    running["items"][0]["status"] = "running"
+    running["items"][1].update({"status": "done", "applied": True})
+    queued = ab.new_batch(ab.validate_body(_body(start_at=NOW + 600), {A1}, NOW), NAMES, NOW + 1)
+    store.save(running); store.save(queued)
+    f = Fake()
+    rearm = ab.Runner(store, f.deps()).recover(NOW + 5)
+    assert [x["id"] for x in rearm] == [queued["id"]]
+    row = store.get(running["id"])
+    assert row["status"] == "failed" and row["restarted"] == ["alpha"]
+    # Only the host the batch stopped comes back; the applied host was never stopped.
+    assert [c for c in f.calls if c[0] == "restart"] == [("restart", A1)]
 
 
 def test_runner_start_returns_none_under_pytest():
