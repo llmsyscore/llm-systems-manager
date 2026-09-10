@@ -41,6 +41,7 @@ Local endpoints served:
     GET  /api/llm/cache                 — list HF cache
     GET  /api/llm/cache/gguf            — list .gguf files in the HF cache
     GET  /api/llm/model-meta            — author-recommended sampling for a model (HF sidecar/card)
+    GET  /api/llm/draft-candidates      — smallest same-family instruct GGUF on HF for speculative decoding
     POST /api/llm/cache/prune           — prune HF cache detached revisions
     POST /api/llm/cache/rm              — remove HF cached repo
     GET  /api/llm/hf-trending           — top HF models 27-35B by downloads
@@ -200,6 +201,7 @@ import model_profiles  # type: ignore[import-not-found]  # noqa: E402  # leaf, n
 import report_card  # type: ignore[import-not-found]  # noqa: E402  # leaf, no cycle; #468
 import energy  # type: ignore[import-not-found]  # noqa: E402  # leaf, no cycle; #470
 import model_meta  # type: ignore[import-not-found]  # noqa: E402  # leaf, no cycle; #878
+import draft_candidates  # type: ignore[import-not-found]  # noqa: E402  # leaf, no cycle; #889
 import bench_live  # type: ignore[import-not-found]  # noqa: E402  # leaf, no cycle; #879
 import bench_baseline  # type: ignore[import-not-found]  # noqa: E402  # leaf, no cycle; #882
 import tool_activity  # type: ignore[import-not-found]  # noqa: E402  # leaf, no cycle; #775
@@ -5409,6 +5411,7 @@ tool_activity.configure(
 )
 energy.register_routes(app, ctx, db_path=str(DB_PATH))
 model_meta.register_routes(app, ctx, db_path=str(DB_PATH), read_ini=_read_ini)
+draft_candidates.register_routes(app, ctx, db_path=str(DB_PATH), read_ini=_read_ini)
 
 
 def _fleet_hosts() -> list:
