@@ -621,8 +621,6 @@ def register_routes(app, ctx, *, db_path: str, deps: Deps, models_for: Callable[
     store = Store(conn_factory)
     runner = Runner(store, deps)
     start_lock = threading.Lock()
-    # Task 1 fix round: Runner.recover fails interrupted rows, restarts the hosts
-    # they had stopped, and returns the queued rows to re-arm.
     for b in runner.recover(now()):
         runner.start(b)
 
