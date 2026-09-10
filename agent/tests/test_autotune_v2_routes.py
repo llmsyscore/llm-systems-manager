@@ -89,6 +89,15 @@ def _wire(llama, tmp_path, monkeypatch, **ctx_kw):
     return ctx
 
 
+def _write_fake_ppl(path: Path, rc: int = 0, crash: bool = False) -> None:
+    """A stand-in llama-perplexity: exits `rc` normally, or raises SIGSEGV when crash=True."""
+    if crash:
+        path.write_text("#!/usr/bin/env python3\nimport os, signal\nos.kill(os.getpid(), signal.SIGSEGV)\n")
+    else:
+        path.write_text(f"#!/usr/bin/env python3\nimport sys\nprint('ok')\nsys.exit({rc})\n")
+    path.chmod(0o755)
+
+
 def test_preflight_shape(llama, tmp_path, monkeypatch):
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
@@ -98,13 +107,17 @@ def test_preflight_shape(llama, tmp_path, monkeypatch):
     assert out["ok"] and out["busy"] is False and out["unit_active"] is False
     assert set(out["cores"]) == {"physical", "logical"} and out["cores"]["logical"] >= 1
     assert out["perplexity"] is False                      # no llama-perplexity beside the server binary
+    assert out["perplexity_detail"] == {"present": False, "kl_text": False, "runnable": None, "rc": None,
+                                        "hint": "llama-perplexity is not installed beside llama-server."}
     assert out["runtime"]["ok"] is False and out["drafts"] == []
     assert out["sizes"] == {"org/m:Q4": 18_000_000_000} and out["vram_total_mb"] == 32768
     assert isinstance(out["ram_total_mb"], int)
-    (bin_dir / "llama-perplexity").write_text("")
+    _write_fake_ppl(bin_dir / "llama-perplexity", rc=0)
     monkeypatch.setattr(llama, "_autotune_kl_text", lambda: tmp_path / "kl.txt")
     (tmp_path / "kl.txt").write_text("x")
-    assert llama.llama_autotune_preflight()["perplexity"] is True
+    out2 = llama.llama_autotune_preflight()
+    assert out2["perplexity"] is True
+    assert out2["perplexity_detail"] == {"present": True, "kl_text": True, "runnable": True, "rc": 0, "hint": None}
 
 
 def test_run_accepts_v1_and_v2_bodies(llama, tmp_path, monkeypatch):
@@ -135,6 +148,72 @@ def test_run_rejects_bad_body_busy_and_active_unit(llama, tmp_path, monkeypatch)
     monkeypatch.setattr(llama, "_llama_unit_active", lambda: True)
     out = llama.llama_autotune_run({"model_ids": ["m"], "objective": "fit"})
     assert out["ok"] is False and "running" in out["error"]
+
+
+def test_probe_perplexity_runnable_for_a_clean_exit(llama, tmp_path, monkeypatch):
+    ppl = tmp_path / "llama-perplexity"
+    _write_fake_ppl(ppl, rc=0)
+    out = llama._autotune_probe_perplexity(ppl)
+    assert out == {"runnable": True, "rc": 0}
+    # Cached by path+mtime: a second call must not re-exec the binary.
+    monkeypatch.setattr(llama, "_autotune_probe_arg", lambda *a, **k: pytest.fail("probe not cached"))
+    assert llama._autotune_probe_perplexity(ppl) == {"runnable": True, "rc": 0}
+
+
+def test_probe_perplexity_not_runnable_on_a_signal_crash(llama, tmp_path):
+    ppl = tmp_path / "llama-perplexity"
+    _write_fake_ppl(ppl, crash=True)
+    out = llama._autotune_probe_perplexity(ppl)
+    assert out == {"runnable": False, "rc": -11}
+
+
+def test_preflight_detail_carries_the_crash_hint(llama, tmp_path, monkeypatch):
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    (bin_dir / "llama-server").write_text("")
+    _write_fake_ppl(bin_dir / "llama-perplexity", crash=True)
+    _wire(llama, tmp_path, monkeypatch, llama_bin=str(bin_dir / "llama-server"))
+    monkeypatch.setattr(llama, "_autotune_kl_text", lambda: tmp_path / "kl.txt")
+    (tmp_path / "kl.txt").write_text("x")
+    out = llama.llama_autotune_preflight()
+    assert out["perplexity"] is False
+    detail = out["perplexity_detail"]
+    assert detail["present"] is True and detail["kl_text"] is True
+    assert detail["runnable"] is False and detail["rc"] == -11
+    assert detail["hint"] == ("llama-perplexity crashed on startup (signal 11) — it looks stale relative to "
+                              "the installed llama.cpp libraries; reinstall the llama.cpp tools from the same build.")
+
+
+def test_run_refuses_quality_mode_when_perplexity_is_not_runnable(llama, tmp_path, monkeypatch):
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    (bin_dir / "llama-server").write_text("")
+    _write_fake_ppl(bin_dir / "llama-perplexity", crash=True)
+    _wire(llama, tmp_path, monkeypatch, llama_bin=str(bin_dir / "llama-server"))
+    monkeypatch.setattr(llama, "_autotune_kl_text", lambda: tmp_path / "kl.txt")
+    (tmp_path / "kl.txt").write_text("x")
+    started = []
+    monkeypatch.setattr(llama.threading, "Thread",
+                        lambda target, args=(), daemon=None: types.SimpleNamespace(start=lambda: started.append(args)))
+    out = llama.llama_autotune_run({"model_ids": ["org/m:Q4"], "objective": "fit", "mode": "quality",
+                                    "overrides": {"cache-type-k": "q4_0"}})
+    assert out["ok"] is False
+    assert out["error"] == ("llama-perplexity crashed on startup (signal 11) — it looks stale relative to "
+                            "the installed llama.cpp libraries; reinstall the llama.cpp tools from the same build.")
+    assert not started, "a quality run must not be started when the guard binary can't run"
+
+
+def test_run_allows_tune_mode_when_perplexity_is_not_runnable(llama, tmp_path, monkeypatch):
+    """Tune mode only touches perplexity via the KV guard — it must not be gated at run start."""
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    (bin_dir / "llama-server").write_text("")
+    _write_fake_ppl(bin_dir / "llama-perplexity", crash=True)
+    _wire(llama, tmp_path, monkeypatch, llama_bin=str(bin_dir / "llama-server"))
+    monkeypatch.setattr(llama.threading, "Thread",
+                        lambda target, args=(), daemon=None: types.SimpleNamespace(start=lambda: None))
+    out = llama.llama_autotune_run({"model_ids": ["org/m:Q4"], "objective": "fit"})
+    assert out["ok"] is True
 
 
 class _Proc:
@@ -406,6 +485,26 @@ def test_kl_tracks_then_untracks_the_perplexity_process(llama, tmp_path, monkeyp
     monkeypatch.setattr(llama, "_autotune_untrack_aux", lambda: order.append("untrack"))
     assert be.kl(["--cache-type-k", "q8_0"], False) == {"ok": True, "kl": 0.01, "error": None}
     assert order == ["track", "untrack"]
+
+
+def test_kl_reports_a_signal_crash_clearly(llama, tmp_path, monkeypatch):
+    be = _kl_backend(llama, tmp_path, monkeypatch)
+    monkeypatch.setattr(llama, "_bench_get_hf_arg", lambda mid: "o/r:Q4")
+
+    class _KlProc:
+        returncode = -11
+        pid = 4242
+
+        def communicate(self, timeout=None):
+            return ("Segmentation fault\n", "")
+
+    monkeypatch.setattr(llama.subprocess, "Popen", lambda *a, **k: _KlProc())
+    monkeypatch.setattr(llama, "_autotune_track_aux", lambda p: None)
+    monkeypatch.setattr(llama, "_autotune_untrack_aux", lambda: None)
+    out = be.kl(["--cache-type-k", "q8_0"], False)
+    assert out["ok"] is False and out["kl"] is None
+    assert out["error"] == ("llama-perplexity crashed (signal 11) — the binary looks incompatible "
+                            "with the installed llama.cpp libraries; reinstall the llama.cpp tools")
 
 
 def test_run_validates_against_the_hf_cache_root(llama, tmp_path, monkeypatch):

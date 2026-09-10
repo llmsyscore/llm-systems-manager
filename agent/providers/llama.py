@@ -2612,6 +2612,66 @@ def _autotune_perplexity_bin() -> "Optional[Path]":
     return p if p.exists() else None
 
 
+_autotune_ppl_probe_cache: dict[str, dict] = {}
+
+
+def _autotune_probe_arg(ppl: str, arg: str, env: dict) -> "Optional[int]":
+    """Runs one flag against the binary; None on timeout/exec failure, else the return code."""
+    try:
+        r = subprocess.run([ppl, arg], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                           stdin=subprocess.DEVNULL, timeout=10, env=env)
+        return r.returncode
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+
+
+def _autotune_probe_perplexity(ppl: Path) -> dict:
+    """Runs llama-perplexity --version (falling back to --help) with the tuning LD_LIBRARY_PATH."""
+    try:
+        key = f"{ppl}:{ppl.stat().st_mtime_ns}"
+    except OSError:
+        return {"runnable": None, "rc": None}
+    cached = _autotune_ppl_probe_cache.get(key)
+    if cached is not None:
+        return cached
+    env = os.environ.copy()
+    parent = str(ppl.parent)
+    existing = env.get("LD_LIBRARY_PATH", "")
+    env["LD_LIBRARY_PATH"] = f"{parent}:{existing}" if existing else parent
+    rc = _autotune_probe_arg(str(ppl), "--version", env)
+    if rc is not None and rc > 1:
+        rc2 = _autotune_probe_arg(str(ppl), "--help", env)
+        if rc2 is not None:
+            rc = rc2
+    runnable = None if rc is None else (0 <= rc <= 1)
+    out = {"runnable": runnable, "rc": rc}
+    _autotune_ppl_probe_cache[key] = out
+    return out
+
+
+def _autotune_perplexity_status() -> dict:
+    """present/kl_text/runnable for the quality guard; runnable is only probed once both exist."""
+    ppl = _autotune_perplexity_bin()
+    text = _autotune_kl_text()
+    present, kl_text = ppl is not None, text.is_file()
+    runnable, rc, hint = None, None, None
+    if not present:
+        hint = "llama-perplexity is not installed beside llama-server."
+    elif not kl_text:
+        hint = "the KL reference text is missing from the agent's bench directory."
+    else:
+        probe = _autotune_probe_perplexity(ppl)
+        runnable, rc = probe["runnable"], probe["rc"]
+        if runnable is False:
+            if rc is not None and rc < 0:
+                hint = (f"llama-perplexity crashed on startup (signal {-rc}) — it looks stale relative to "
+                        "the installed llama.cpp libraries; reinstall the llama.cpp tools from the same build.")
+            else:
+                hint = "llama-perplexity failed to start; reinstall the llama.cpp tools."
+    ok = present and kl_text and runnable is not False
+    return {"ok": ok, "present": present, "kl_text": kl_text, "runnable": runnable, "rc": rc, "hint": hint}
+
+
 def _autotune_track_aux(p: "subprocess.Popen") -> None:
     global _autotune_aux_proc, _autotune_aux_pgid
     _autotune_aux_proc = p
@@ -3344,7 +3404,13 @@ class _AutotuneBackend:
             _autotune_put({"type": "line", "model_id": self.model_id, "text": line})
         kl = None if write_base else _at.parse_kl(out or "")
         ok = not timed_out and proc.returncode == 0 and (write_base or kl is not None)
-        err = "llama-perplexity timed out" if timed_out else f"llama-perplexity rc={proc.returncode}"
+        if timed_out:
+            err = "llama-perplexity timed out"
+        elif proc.returncode < 0:
+            err = (f"llama-perplexity crashed (signal {-proc.returncode}) — the binary looks incompatible "
+                   "with the installed llama.cpp libraries; reinstall the llama.cpp tools")
+        else:
+            err = f"llama-perplexity rc={proc.returncode}"
         return {"ok": ok, "kl": kl, "error": None if ok else err}
 
     def energy_start(self):
@@ -3491,11 +3557,14 @@ def llama_autotune_preflight(authorization: Optional[str] = Header(default=None)
         gpu = collect_gpu() or {}
     vram = gpu.get("vram_total_bytes")
     hv = _llama_help_valued()
+    pdet = _autotune_perplexity_status()
     return {"ok": True, "busy": bool(_bench_active or _autotune_active), "unit_active": _llama_unit_active(),
             "help_valued": {"ok": hv is not None, "count": len(hv or ())},
             "llama_build": _llama_build_last or "",
             "cores": _at.physical_cores(_read_cpuinfo(), os.cpu_count() or 1),
-            "perplexity": _autotune_perplexity_bin() is not None and _autotune_kl_text().is_file(),
+            "perplexity": pdet["ok"],
+            "perplexity_detail": {"present": pdet["present"], "kl_text": pdet["kl_text"],
+                                  "runnable": pdet["runnable"], "rc": pdet["rc"], "hint": pdet["hint"]},
             "runtime": {"ok": bool(rt["python"] and rt["script"]), **rt},
             "drafts": _list_cache_ggufs(_hf_cache_root()), "sizes": sizes,
             "vram_total_mb": int(vram // (1024 * 1024)) if isinstance(vram, (int, float)) and vram else None,
@@ -3510,6 +3579,10 @@ def llama_autotune_run(body: dict, authorization: Optional[str] = Header(default
         req = _at.validate_request(body or {}, cache_root=cache_root, v1_args=_autotune_build_optional_args)
     except (ValueError, TypeError, AttributeError) as e:
         raise HTTPException(status_code=400, detail=str(e))
+    if req.get("mode") == "quality":
+        pdet = _autotune_perplexity_status()
+        if not pdet["ok"]:
+            return {"ok": False, "error": pdet["hint"]}
     # Refuse to start if llama-server is running — port/VRAM would collide.
     if _llama_unit_active():
         return {"ok": False, "error": f"{_require_ctx().config.LLAMA_SYSTEMD_UNIT} is running — stop it before auto-tune"}
