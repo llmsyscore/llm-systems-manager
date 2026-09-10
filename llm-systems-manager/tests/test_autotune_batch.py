@@ -95,7 +95,17 @@ def test_summary_title_and_body_lines():
     assert lines[2] == "bravo · org/m:Q4 · skipped · host offline"
     assert lines[3] == "restarted: alpha"
     p = ab.alert_payload(b)
-    assert p["severity"] == "info" and p["metric"] == "autotune/batch" and p["name"] == s["title"] and p["message"] == s["body"]
+    assert p["severity"] == "info" and p["metric"] == f"autotune/batch/{b['id']}"
+    assert p["name"] == s["title"] and p["message"] == s["body"]
+
+
+def test_summary_trims_notes_and_caps_the_alert_body():
+    items = [{"hostname": f"h{i}", "model_id": f"org/m{i}:Q4", "status": "failed", "note": "x" * 400,
+              "applied": False, "gain_pct": None, "ctx": None} for i in range(40)]
+    b = {"id": "cafebabe1234", "items": items, "restarted": [], "restart_errors": {}}
+    s = ab.summary_of(b)
+    assert all(len(line) <= 60 + ab.SUMMARY_NOTE_MAX for line in s["body"].split("\n"))
+    assert len(ab.alert_payload(b)["message"]) == ab.SUMMARY_MAX_CHARS
 
 
 # ── store ──
@@ -147,13 +157,16 @@ class Fake:
         self.writes, self.profiles, self.alerts = [], [], []
         self.stream_events = None
         self.read_error = None
+        self.ended = []
+        self.pre_busy = []      # scripted busy flags consumed one per preflight call
 
     def deps(self):
         return ab.Deps(
             hosts=lambda: [{"agent_id": a, "hostname": NAMES[a], "online": self.online[a]} for a in (A1, A2)],
             busy_agents=lambda: set(self.busy),
-            preflight=lambda aid: self.pre.get(aid),
+            preflight=self._preflight,
             run_on_agent=self._run, stream_on_agent=self._stream,
+            run_ended=lambda aid: self.ended.append(aid),
             cancel_on_agent=lambda aid: self.calls.append(("cancel", aid)) or True,
             stop_server=lambda aid: self.calls.append(("stop", aid)) or (True, None),
             restart_server=lambda aid: self.calls.append(("restart", aid)) or (True, None),
@@ -167,6 +180,12 @@ class Fake:
     def _sleep(self, s):
         self.t += s
 
+    def _preflight(self, aid):
+        p = self.pre.get(aid)
+        if p is not None and self.pre_busy:
+            p = dict(p, busy=self.pre_busy.pop(0))
+        return p
+
     def _read_config(self, aid):
         if self.read_error:
             raise RuntimeError(self.read_error)
@@ -176,7 +195,7 @@ class Fake:
         self.calls.append(("run", aid, body))
         return (True, "run-" + body["model_ids"][0]) if self.run_ok else (False, "Another benchmark or auto-tune is in progress")
 
-    def _stream(self, aid):
+    def _stream(self, aid, last_id=None):
         if self.stream_events is not None:
             yield from self.stream_events
             return
@@ -205,8 +224,8 @@ def test_runner_tunes_applies_restarts_and_alerts():
     m, n = b["items"]
     assert m["status"] == "done" and m["applied"] is True and m["note"] == "applied 1 change"
     assert n["status"] == "done" and n["applied"] is False and "slower" in n["note"]
-    # The unit was active, so the batch stopped it once and restarted it once, at the end.
-    assert [c for c in f.calls if c[0] in ("stop", "restart")] == [("stop", A1), ("restart", A1)]
+    # The unit reads active before each item, so each one stops it; one restart, at the end.
+    assert [c for c in f.calls if c[0] in ("stop", "restart")] == [("stop", A1), ("stop", A1), ("restart", A1)]
     assert f.writes[0][1]["org/m:Q4"] == {"threads": "12"} and "__DEFAULTS__" not in f.writes[0][1]
     assert f.profiles[0][1].startswith("before batch ") and f.profiles[1] == ("org/m:Q4", "default", {"threads": "12"}, True)
     assert b["summary"]["title"] == "Overnight autotune: 2 tuned, 1 applied, 0 skipped"
@@ -275,7 +294,7 @@ def test_runner_failed_run_and_stream_error():
 def test_runner_item_timeout_cancels_on_the_agent():
     f = Fake()
 
-    def slow(aid):
+    def slow(aid, last_id=None):
         yield {"type": "line", "text": "a"}
         f.t += ab.ITEM_CAP_S + 1
         yield {"type": "line", "text": "b"}
@@ -296,8 +315,8 @@ def test_runner_cancel_stops_after_the_current_item():
     orig = f._stream
     holder = {}
 
-    def stream(aid):
-        for ev in orig(aid):
+    def stream(aid, last_id=None):
+        for ev in orig(aid, last_id):
             if ev.get("type") == "line":
                 assert holder["runner"].cancel(b["id"]) == "running"
             yield ev
@@ -354,6 +373,8 @@ def test_recover_restarts_hosts_a_crashed_batch_had_stopped(store):
     assert row["status"] == "failed" and row["restarted"] == ["alpha"]
     # Only the host the batch stopped comes back; the applied host was never stopped.
     assert [c for c in f.calls if c[0] == "restart"] == [("restart", A1)]
+    # The still-running tune is cancelled first, so the restart is not fighting it.
+    assert f.calls.index(("cancel", A1)) < f.calls.index(("restart", A1))
 
 
 def test_runner_start_returns_none_under_pytest():
@@ -364,3 +385,60 @@ def test_runner_start_returns_none_under_pytest():
     b = ab.new_batch(ab.validate_body(_body(), {A1}, NOW), NAMES, NOW)
     store.save(b)
     assert ab.Runner(store, f.deps()).start(b) is None
+
+
+def test_runner_waits_out_a_settling_host_between_items():
+    f = Fake()
+    # The first item's preflight is clear; the host then reads busy twice before it settles.
+    f.pre_busy = [False, True, True, False]
+    b, _ = _run_batch(f, _body(items=[{"agent_id": A1, "model_id": "org/m:Q4"}, {"agent_id": A1, "model_id": "org/n:Q8"}]))
+    assert [i["status"] for i in b["items"]] == ["done", "done"]
+    assert [c[1] for c in f.calls if c[0] == "run"] == [A1, A1]
+    assert f.ended == [A1, A1]
+    assert not f.pre_busy
+
+
+def test_runner_gives_up_on_a_host_that_never_settles():
+    f = Fake()
+    f.pre_busy = [False] + [True] * 200
+    b, _ = _run_batch(f, _body(items=[{"agent_id": A1, "model_id": "org/m:Q4"}, {"agent_id": A1, "model_id": "org/n:Q8"}]))
+    assert [i["status"] for i in b["items"]] == ["done", "skipped"]
+    assert b["items"][1]["note"] == "host busy"
+
+
+def test_runner_caps_the_item_budget_below_the_follower_limit():
+    f = Fake()
+    _run_batch(f, _body(budget_min=900))
+    assert [c for c in f.calls if c[0] == "run"][0][2]["budget_min"] == ab.ITEM_BUDGET_MAX == 115
+
+
+def test_runner_reconnects_a_dropped_stream_with_the_last_event_id():
+    f = Fake()
+    seen = []
+
+    def flaky(aid, last_id=None):
+        seen.append(last_id)
+        yield {"type": "line", "text": "a", "_id": "7"}
+        if len(seen) == 1:
+            raise RuntimeError("connection reset")
+        yield dict(f.docs["org/m:Q4"], model_id="org/m:Q4")
+        yield {"type": "done", "ok": True}
+    f._stream = flaky
+    b, _ = _run_batch(f, _body())
+    assert b["items"][0]["status"] == "done" and b["items"][0]["applied"] is True
+    assert seen == [None, "7"]
+    assert ("cancel", A1) not in f.calls
+
+
+def test_runner_cancels_the_agent_when_the_stream_never_comes_back():
+    f = Fake()
+
+    def broken(aid, last_id=None):
+        raise RuntimeError("no reachable agent stream")
+        yield  # pragma: no cover
+    f._stream = broken
+    b, _ = _run_batch(f, _body())
+    assert b["items"][0]["status"] == "failed"
+    assert b["items"][0]["note"].startswith("stream failed")
+    assert ("cancel", A1) in f.calls
+    assert f.ended == [A1]

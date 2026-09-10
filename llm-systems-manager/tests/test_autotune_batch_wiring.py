@@ -18,15 +18,17 @@ def test_batch_routes_are_registered_with_every_dep():
                 "restart_server=_batch_restart_server", "read_config=_batch_read_config",
                 "write_config=_batch_write_config", "active_profile=_batch_active_profile",
                 "save_profile=_batch_save_profile", "alert=_ae_ingest_alert",
+                'run_ended=lambda aid: tool_activity.note_end(aid, "autotune")',
                 "shutting_down=lambda: _shutting_down", "models_for=_batch_models_for"):
         assert dep in SRC, f"{dep} not wired"
 
 
 def test_batch_stream_follower_parses_data_lines():
-    m = re.search(r"def _batch_stream_on_agent\(agent_id: str\):(.*?)\n\n\n", SRC, re.S)
+    m = re.search(r"def _batch_stream_on_agent\(agent_id: str, last_id.*?\):(.*?)\n\n\n", SRC, re.S)
     assert m, "_batch_stream_on_agent missing"
     body = m.group(1)
     assert 'raw.startswith("data: ")' in body and "json.loads(raw[6:])" in body
+    assert 'raw.startswith("id: ")' in body and '"Last-Event-ID"' in body
     assert "agent_callback_urls" in body and "agent_tls_kwargs" in body
     assert "stream=True" in body
 
@@ -44,4 +46,4 @@ def test_batch_is_audited():
 
 
 def test_version_bumped():
-    assert '__version__ = "v2026.09.10-5"' in SRC
+    assert '__version__ = "v2026.09.10-6"' in SRC

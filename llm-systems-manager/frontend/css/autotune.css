@@ -1,6 +1,7 @@
   /* Autotune v2 (#880) — rail, dimension rows, panes. Tokens only. */
   .at-rail { display:flex; flex-direction:column; gap:10px; }
   .at-rail.locked .at-grp, .at-rail.locked .at-dim, .at-rail.locked #atPreflight, .at-rail.locked #qgPreflight { opacity:.55; pointer-events:none; }
+  .at-rail.locked #atBatchGrp { pointer-events:auto; opacity:1; }
   .at-preflight { display:flex; align-items:center; gap:9px; padding:8px 11px; border:1px solid var(--border); border-radius:8px; background:var(--bg-card); font-size:12px; color:var(--fg-muted); }
   .at-preflight .d { flex:1; }
   .at-dot { width:8px; height:8px; border-radius:50%; background:var(--fg-faint); flex-shrink:0; }

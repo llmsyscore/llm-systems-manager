@@ -22,7 +22,7 @@ def env(tmp_path):
                        {"agent_id": A2, "hostname": "bravo", "online": False}],
         busy_agents=lambda: {A2},
         preflight=lambda aid: None, run_on_agent=lambda aid, body: (True, "r"),
-        stream_on_agent=lambda aid: iter(()), cancel_on_agent=lambda aid: world["cancelled"].append(aid) or True,
+        stream_on_agent=lambda aid, last_id=None: iter(()), cancel_on_agent=lambda aid: world["cancelled"].append(aid) or True,
         stop_server=lambda aid: (True, None), restart_server=lambda aid: (True, None),
         read_config=lambda aid: {}, write_config=lambda aid, cfg: (True, None),
         active_profile=lambda aid, mid: None, save_profile=lambda *a: None, alert=lambda p: True,
@@ -101,7 +101,7 @@ def test_register_recovers_rows_left_by_a_restart(tmp_path):
     store.save(running)
     conn.close()
     deps = ab.Deps(hosts=lambda: [], busy_agents=set, preflight=lambda a: None, run_on_agent=lambda a, b: (False, "x"),
-                   stream_on_agent=lambda a: iter(()), cancel_on_agent=lambda a: True, stop_server=lambda a: (True, None),
+                   stream_on_agent=lambda a, last_id=None: iter(()), cancel_on_agent=lambda a: True, stop_server=lambda a: (True, None),
                    restart_server=lambda a: (True, None), read_config=lambda a: {}, write_config=lambda a, c: (True, None),
                    active_profile=lambda a, m: None, save_profile=lambda *a: None, alert=lambda p: True, now=lambda: NOW)
     app = Flask(__name__)

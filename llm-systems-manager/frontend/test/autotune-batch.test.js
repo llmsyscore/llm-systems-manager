@@ -175,6 +175,35 @@ describe('Batch pane', () => {
     expect(w.sessionStorage.getItem('at.batch')).toBe(null);
   });
 
+  it('a finished batch does not hijack the next single run', async () => {
+    const done = batchDoc('done', { finished: 2, summary: { title: 'Overnight autotune: 2 tuned, 0 applied, 0 skipped', body: 'x' } });
+    done.items = done.items.map(i => ({ ...i, status: 'done' }));
+    const w = await opened('window.sessionStorage.setItem("at.batch", "b1"); window.__batch = ' + JSON.stringify(done) + ';');
+    expect(w.AT.batchActive()).toBe(false);
+    w.document.querySelector('#atModelList .mc-toggle').classList.add('on');
+    await w.AT.run(); await flush(w);
+    w.__sse.onEvent({ type: 'model_done', model_id: 'org/m:Q4', ok: true, changes: [], verify: { ok: true }, after: {}, before: {} });
+    w.__sse.onEvent({ type: 'done', ok: true }); await flush(w);
+    expect(w.document.getElementById('atPaneDone').style.display).toBe('');
+    expect(w.document.getElementById('atPaneBatch').style.display).toBe('none');
+  });
+
+  it('detach stops the batch poll but keeps the batch adopted and the rail locked', async () => {
+    // A 5 ms poll interval, so real ticks land inside the test instead of after 5 s.
+    const w = await opened('const _si = window.setInterval; window.setInterval = (fn) => _si(fn, 5);'
+      + ' window.sessionStorage.setItem("at.batch", "b1"); window.__batch = ' + JSON.stringify(batchDoc('running')) + ';');
+    const polls = () => w.__fetches.filter(([u]) => u === '/api/llm/autotune/batch/b1').length;
+    await new Promise(r => setTimeout(r, 40));
+    expect(polls()).toBeGreaterThan(1);
+    w.AT.detach();
+    const after = polls();
+    await new Promise(r => setTimeout(r, 40));
+    expect(polls()).toBe(after);
+    expect(w.AT.batchActive()).toBe(true);
+    expect(w.document.querySelector('#toolsModAt .at-rail').classList.contains('locked')).toBe(true);
+    expect(w.sessionStorage.getItem('at.batch')).toBe('b1');
+  });
+
   it('cancel posts to the batch cancel route', async () => {
     const w = await opened('window.sessionStorage.setItem("at.batch", "b1"); window.__batch = ' + JSON.stringify(batchDoc('running')) + ';');
     await w.AT.cancelBatch(); await flush(w);

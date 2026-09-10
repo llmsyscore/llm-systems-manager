@@ -176,7 +176,7 @@ def _local_hostname() -> str:
 # banner reads it. Bump suffix (-1, -2, …) for same-day iterations; roll
 # the date for a new day's first change.
 # ---------------------------------------------------------------------------
-__version__ = "v2026.09.10-5"
+__version__ = "v2026.09.10-6"
 
 # Wall-clock at first import (Cheroot main process); the shutdown banner
 # reads it for the uptime line.
@@ -5535,18 +5535,19 @@ def _batch_run_on_agent(agent_id: str, body: dict):
     return True, str(run_id)
 
 
-def _batch_stream_on_agent(agent_id: str):
-    """Yield decoded events from the agent's autotune SSE until it closes."""
+def _batch_stream_on_agent(agent_id: str, last_id: "str | None" = None):
+    """Yield decoded autotune SSE events, resuming from last_id and tagging each with its id."""
     agent = _batch_agent(agent_id)
     if not agent:
         raise RuntimeError("unknown agent")
-    token = agent.get("token") or ""
+    headers = {"Authorization": f"Bearer {agent.get('token') or ''}"}
+    if last_id:
+        headers["Last-Event-ID"] = str(last_id)
     for base in agent_registry.agent_callback_urls(agent):
         url = f"{base}/llama/autotune/stream"
         r = None
         try:
-            r = requests.get(url, stream=True, timeout=(5, 120),
-                             headers={"Authorization": f"Bearer {token}"},
+            r = requests.get(url, stream=True, timeout=(5, 120), headers=headers,
                              **agent_registry.agent_tls_kwargs(url))
             r.raise_for_status()
         except requests.exceptions.RequestException:
@@ -5554,12 +5555,21 @@ def _batch_stream_on_agent(agent_id: str):
                 r.close()
             continue
         try:
+            ev_id = None
             for raw in r.iter_lines(decode_unicode=True):
-                if raw and raw.startswith("data: "):
+                if not raw:
+                    continue
+                if raw.startswith("id: "):
+                    ev_id = raw[4:].strip()
+                elif raw.startswith("data: "):
                     try:
-                        yield json.loads(raw[6:])
+                        ev = json.loads(raw[6:])
                     except ValueError:
                         continue
+                    if isinstance(ev, dict) and ev_id:
+                        ev["_id"] = ev_id
+                    ev_id = None
+                    yield ev
         finally:
             r.close()
         return
@@ -5615,6 +5625,7 @@ _autotune_batch_runner = autotune_batch.register_routes(
         restart_server=_batch_restart_server, read_config=_batch_read_config,
         write_config=_batch_write_config, active_profile=_batch_active_profile,
         save_profile=_batch_save_profile, alert=_ae_ingest_alert,
+        run_ended=lambda aid: tool_activity.note_end(aid, "autotune"),
         shutting_down=lambda: _shutting_down),
 )
 

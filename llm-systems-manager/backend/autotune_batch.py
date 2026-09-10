@@ -23,6 +23,13 @@ START_AHEAD_MAX_S = 86400.0
 START_BEHIND_MAX_S = 60.0
 ITEM_MIN_BUDGET = 5
 ITEM_CAP_S = 7200.0
+ITEM_BUDGET_MAX = int(ITEM_CAP_S // 60) - 5   # the agent's own cap is 600
+SETTLE_POLL_S = 2.0
+SETTLE_MAX_S = 90.0
+STREAM_RETRY_S = 5.0
+STREAM_RETRIES = 3
+SUMMARY_MAX_CHARS = 3800
+SUMMARY_NOTE_MAX = 120
 POLL_S = 1.0
 BATCH_RETENTION = 50
 DIMS_MAX_BYTES = 8192
@@ -149,6 +156,10 @@ def _ctx_text(ctx) -> str:
     return f"ctx {c // 1024}k" if c >= 1024 else f"ctx {c}"
 
 
+def _note_text(note) -> str:
+    return str(note)[:SUMMARY_NOTE_MAX] if note else ""
+
+
 def summary_of(batch: dict) -> dict:
     items = batch.get("items") or []
     counts = {"tuned": 0, "applied": 0, "skipped": 0, "failed": 0, "cancelled": 0}
@@ -159,11 +170,11 @@ def summary_of(batch: dict) -> dict:
         if st == "done":
             counts["tuned"] += 1
             counts["applied"] += 1 if it.get("applied") else 0
-            tail = "applied" if it.get("applied") else f"not applied · {it.get('note') or 'no reason recorded'}"
+            tail = "applied" if it.get("applied") else f"not applied · {_note_text(it.get('note')) or 'no reason recorded'}"
             lines.append(f"{head} · {_gain_text(it.get('gain_pct'))} · {_ctx_text(it.get('ctx'))} · {tail}")
         elif st in ("skipped", "failed", "cancelled"):
             counts[st] += 1
-            note = it.get("note")
+            note = _note_text(it.get("note"))
             lines.append(f"{head} · {st}" + (f" · {note}" if note else ""))
         else:
             lines.append(f"{head} · {st}")
@@ -177,8 +188,9 @@ def summary_of(batch: dict) -> dict:
 
 def alert_payload(batch: dict) -> dict:
     s = batch.get("summary") or summary_of(batch)
-    return {"name": s["title"], "source": "autotune", "metric": "autotune/batch", "severity": "info",
-            "value": s["applied"], "threshold": 0, "message": s["body"]}
+    return {"name": s["title"], "source": "autotune", "metric": f"autotune/batch/{batch.get('id')}",
+            "severity": "info", "value": s["applied"], "threshold": 0,
+            "message": (s["body"] or "")[:SUMMARY_MAX_CHARS]}
 
 
 # ── store ──
@@ -259,6 +271,7 @@ class Store:
         rearm, failed = [], []
         for b in self.recent(BATCH_RETENTION):
             if b["status"] == "running":
+                b["_running_hosts"] = [it["agent_id"] for it in b["items"] if it["status"] == "running"]
                 for it in b["items"]:
                     if it["status"] in ("queued", "running"):
                         it.update({"status": "failed", "note": "manager restarted", "finished": now})
@@ -279,7 +292,7 @@ class Deps:
     busy_agents: Callable[[], set]                              # manager-side tool activity
     preflight: Callable[[str], Optional[dict]]                  # GET /llama/autotune/preflight, None when unreachable
     run_on_agent: Callable[[str, dict], tuple]                  # (ok, run_id | error)
-    stream_on_agent: Callable[[str], Iterator[dict]]            # decoded /llama/autotune/stream events
+    stream_on_agent: Callable[[str, Optional[str]], Iterator[dict]]   # decoded SSE, resumed from Last-Event-ID
     cancel_on_agent: Callable[[str], bool]
     stop_server: Callable[[str], tuple]                         # (ok, error)
     restart_server: Callable[[str], tuple]                      # (ok, error)
@@ -288,6 +301,7 @@ class Deps:
     active_profile: Callable[[str, str], Optional[str]]
     save_profile: Callable[[str, str, str, dict, bool], Any]
     alert: Callable[[dict], bool]
+    run_ended: Callable[[str], None] = lambda aid: None
     now: Callable[[], float] = time.time
     sleep: Callable[[float], None] = time.sleep
     shutting_down: Callable[[], bool] = lambda: False
@@ -335,15 +349,30 @@ class Runner:
             return batch_id in self._cancel
 
     def recover(self, now: float) -> list:
-        """Restart hosts a batch left stopped when the manager died; return queued batches to re-arm."""
+        """Fail crashed batches now; cancel and restart their hosts off-thread. Returns queued batches."""
+        import sys
         rearm, failed = self.store.recover(now)
+        if failed:
+            if "pytest" in sys.modules:
+                self._recover_hosts(failed)
+            else:
+                threading.Thread(target=self._recover_hosts, args=(failed,),
+                                 name="autotune-batch-recover", daemon=True).start()
+        return rearm
+
+    def _recover_hosts(self, failed: list) -> None:
+        """Stop each still-running agent tune, then restart the hosts the batch had stopped."""
         for b in failed:
+            for aid in b.pop("_running_hosts", []):
+                try:
+                    self.deps.cancel_on_agent(aid)
+                except Exception as e:  # noqa: BLE001
+                    log.warning("autotune batch: recovery cancel failed: %s", e)
             if not b.get("stopped"):
                 continue
             self._finish_hosts(b, b["stopped"], applied_hosts=False)
             b["summary"] = summary_of(b)
             self.store.save(b)
-        return rearm
 
     def run(self, batch_id: str) -> None:
         d = self.deps
@@ -425,20 +454,29 @@ class Runner:
         host = next((h for h in d.hosts() if h.get("agent_id") == aid), None)
         if not host or not host.get("online"):
             return "host offline"
-        if aid in (d.busy_agents() or set()):
-            return "host busy"
-        pre = d.preflight(aid)
-        if not isinstance(pre, dict) or not pre.get("ok", True):
-            return "host unreachable"
-        if pre.get("busy"):
-            return "host busy"
+        # A host this batch already tuned on is still settling, so give it time to go idle.
+        settling = any(x is not it and x["agent_id"] == aid and x.get("run_id") for x in b["items"])
+        deadline = d.now() + SETTLE_MAX_S
+        pre = None
+        while True:
+            busy = aid in (d.busy_agents() or set())
+            if not busy:
+                pre = d.preflight(aid)
+                if not isinstance(pre, dict) or not pre.get("ok", True):
+                    return "host unreachable"
+                if not pre.get("busy"):
+                    break
+            if not settling or d.now() >= deadline:
+                return "host busy"
+            d.sleep(SETTLE_POLL_S)
         if it["model_id"] not in (pre.get("sizes") or {}):
             return "model not configured"
-        if pre.get("unit_active") and aid not in b["stopped"]:
+        if pre.get("unit_active"):
             ok, err = d.stop_server(aid)
             if not ok:
                 return f"could not stop llama-server: {err}"
-            b["stopped"].append(aid)
+            if aid not in b["stopped"]:
+                b["stopped"].append(aid)
             self.store.save(b)
         return None
 
@@ -454,6 +492,7 @@ class Runner:
             it.update({"status": "skipped", "note": "out of budget", "finished": d.now()})
             self.store.save(b)
             return True
+        budget = min(budget, ITEM_BUDGET_MAX)
         reason = self._precheck(b, it)
         if reason:
             it.update({"status": "skipped" if not reason.startswith("could not") else "failed",
@@ -473,6 +512,10 @@ class Runner:
             self._current[b["id"]] = it["agent_id"]
         self.store.save(b)
         doc, err = self._follow(b, it)
+        try:
+            d.run_ended(it["agent_id"])
+        except Exception as e:  # noqa: BLE001
+            log.warning("autotune batch: run_ended failed: %s", e)
         with self._lock:
             self._current.pop(b["id"], None)
         if err == CANCELLED:
@@ -502,29 +545,38 @@ class Runner:
         return True
 
     def _follow(self, b: dict, it: dict) -> tuple:
+        """Read the agent's SSE to the run's done, reconnecting from the last event id."""
         d = self.deps
+        aid = it["agent_id"]
         deadline = d.now() + ITEM_CAP_S
-        doc, err = None, None
-        try:
-            for ev in d.stream_on_agent(it["agent_id"]):
-                if self._cancelled(b["id"]):
-                    d.cancel_on_agent(it["agent_id"])
-                    return None, CANCELLED
-                if d.now() > deadline:
-                    d.cancel_on_agent(it["agent_id"])
-                    return None, "timed out after 2 h"
-                if not isinstance(ev, dict):
-                    continue
-                t = ev.get("type")
-                if t == "model_done" and ev.get("model_id") == it["model_id"]:
-                    doc = ev
-                elif t == "done":
-                    if doc is None and ev.get("error"):
-                        err = str(ev["error"])[:300]
-                    break
-        except Exception as e:  # noqa: BLE001
-            return None, f"stream failed: {str(e)[:200]}"
-        return doc, err
+        doc, err, last_id, tries = None, None, None, 0
+        while True:
+            try:
+                for ev in d.stream_on_agent(aid, last_id):
+                    if self._cancelled(b["id"]):
+                        d.cancel_on_agent(aid)
+                        return None, CANCELLED
+                    if d.now() > deadline:
+                        d.cancel_on_agent(aid)
+                        return None, "timed out after 2 h"
+                    if not isinstance(ev, dict):
+                        continue
+                    if ev.get("_id"):
+                        last_id = str(ev["_id"])
+                    t = ev.get("type")
+                    if t == "model_done" and ev.get("model_id") == it["model_id"]:
+                        doc = ev
+                    elif t == "done":
+                        if doc is None and ev.get("error"):
+                            err = str(ev["error"])[:300]
+                        return doc, err
+                return doc, err
+            except Exception as e:  # noqa: BLE001
+                tries += 1
+                if tries > STREAM_RETRIES or d.now() > deadline:
+                    d.cancel_on_agent(aid)
+                    return None, f"stream failed: {str(e)[:200]}"
+                d.sleep(STREAM_RETRY_S)
 
     def _apply(self, b: dict, it: dict, doc: dict) -> Optional[str]:
         d = self.deps

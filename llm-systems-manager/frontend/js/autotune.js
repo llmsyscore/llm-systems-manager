@@ -566,6 +566,7 @@
     return startRun(body, ids);
   }
   async function startRun(body, ids, now) {
+    if (!batchActive()) _batch = null;
     const s = slot(), gateBusy = s && !now && !running() && !_busyOn && s.busy();
     if (gateBusy) { s.queue({ body, ids }); return; }
     let r;
@@ -683,6 +684,7 @@
     busy(false);
   }
   function again() {
+    if (!batchActive()) _batch = null;
     _done = {}; _doneModel = null; _rows = []; setMsg(''); setPane('Plan'); busy(false); refreshPlan();
     const ab = $('atApplyBtn'), rb = $('atRetuneBtn'), qb = $('atQualityBtn');
     if (ab) ab.style.display = '';
@@ -702,7 +704,7 @@
     const p = $('atRunPill'); if (p) { p.textContent = msg.cancelled ? 'cancelled' : (msg.ok ? 'done' : 'error'); p.classList.remove('running'); }
     if (msg.error) log(msg.error, 'crit');
     busy(false);
-    if (_batch) { setPane('Batch'); renderBatch(); return; }
+    if (batchActive()) { setPane('Batch'); renderBatch(); return; }
     if (_doneModel && _done[_doneModel]) { renderDone(_done[_doneModel]); setPane('Done'); }
     else if (_run) { const ab = $('atAgainBtn'); if (ab) ab.style.display = ''; }
   }
