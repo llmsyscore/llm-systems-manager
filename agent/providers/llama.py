@@ -858,6 +858,7 @@ def llama_state_endpoint(authorization: Optional[str] = Header(default=None)) ->
         "state": llama_get_state(),
         "port": llama_api_port(_require_ctx().config.LLAMA_API_URL),
         "perf_controller_enabled": _require_ctx().config.PERF_CONTROLLER_ENABLED,
+        "perf": _perf_mode_state(),
         "last_transition": _require_ctx().state.get("perf_last_transition"),
         "sse_connected": _llama_sse_authoritative(),
         "sse": _require_ctx().state.get("llama_sse"),
@@ -2149,6 +2150,8 @@ def _bench_run_all(model_ids: list, tool: str, switches: list):
     global _bench_active, _bench_proc
     _bench_cancel_event.clear()
     try:
+        # llama-bench owns the GPU for this run; restored in finally.
+        _perf_mode_set("awake", _bench_put)
         env = os.environ.copy()
         parent = str(Path(_require_ctx().config.LLAMA_BIN).parent) if _require_ctx().config.LLAMA_BIN else ""
         existing = env.get("LD_LIBRARY_PATH", "")
@@ -2165,6 +2168,8 @@ def _bench_run_all(model_ids: list, tool: str, switches: list):
         log.error("bench run error: %s", e, exc_info=True)
         _bench_put({"type": "done", "ok": False, "error": str(e)})
     finally:
+        with best_effort("bench: restore sleep perf mode", log=log):
+            _perf_mode_set("sleep", _bench_put)
         _bench_proc = None
         with _bench_lock:
             _bench_active = False
@@ -3471,16 +3476,35 @@ def _llama_help_valued() -> Optional[set]:
     return found
 
 
-def _autotune_set_perf_mode(mode: str) -> None:
-    """Trigger {performance|powersave}.service via reload-or-restart; emits perf_mode SSE event."""
-    if mode not in ("performance", "powersave"):
+def _perf_mode_state(fresh: bool = False) -> dict:
+    """Perf-controller config plus the CPU governor actually in effect on this host."""
+    cfg = _require_ctx().config
+    gov = None
+    try:
+        from collectors.system import read_cpu_governor  # type: ignore
+        gov = read_cpu_governor(fresh=fresh)
+    except Exception as e:
+        log.debug("perf mode: cpu governor unreadable: %s", e)
+    return {"enabled": bool(cfg.PERF_CONTROLLER_ENABLED), "governor": gov,
+            "awake": cfg.PERF_TARGET_AWAKE, "sleep": cfg.PERF_TARGET_SLEEP}
+
+
+def _perf_mode_set(phase: str, put) -> None:
+    """Switch the host to the configured awake/sleep perf unit; emits a perf_mode event."""
+    cfg = _require_ctx().config
+    unit = cfg.PERF_TARGET_AWAKE if phase == "awake" else cfg.PERF_TARGET_SLEEP
+    ev: dict[str, Any] = {"type": "perf_mode", "phase": phase, "mode": unit, "unit": unit,
+                          "enabled": bool(cfg.PERF_CONTROLLER_ENABLED)}
+    if not cfg.PERF_CONTROLLER_ENABLED:
+        ev.update({"ok": False, "rc": None, "skipped": True,
+                   "error": "perf controller disabled on this agent (PERF_CONTROLLER_ENABLED)",
+                   "governor": _perf_mode_state()["governor"]})
+        put(ev)
         return
-    rc = None
-    err = ""
-    ok = False
+    rc, err, ok = None, "", False
     try:
         r = subprocess.run(
-            ["sudo", "-n", "systemctl", "reload-or-restart", mode],
+            ["sudo", "-n", "systemctl", "reload-or-restart", unit],
             capture_output=True, text=True, timeout=30,
         )
         rc = r.returncode
@@ -3488,8 +3512,10 @@ def _autotune_set_perf_mode(mode: str) -> None:
         ok = (rc == 0)
     except Exception as e:
         err = str(e)[:240]
-    _autotune_put({"type": "perf_mode", "mode": mode, "ok": ok,
-                   "rc": rc, "error": (None if ok else (err or "unknown"))})
+    ev.update({"ok": ok, "rc": rc, "skipped": False,
+               "error": (None if ok else (err or "unknown")),
+               "governor": _perf_mode_state(fresh=True)["governor"]})
+    put(ev)
 
 
 def _autotune_run_all(req: dict) -> None:
@@ -3505,7 +3531,7 @@ def _autotune_run_all(req: dict) -> None:
         env["FORCE_COLOR"] = "0"
         env["PYTHONUNBUFFERED"] = "1"
         # Flip to performance so load timing isn't skewed; restored in finally.
-        _autotune_set_perf_mode("performance")
+        _perf_mode_set("awake", _autotune_put)
         rt = _bench_live_runtime()
         sizes = {}
         with best_effort("autotune: catalog sweep", log=log):
@@ -3546,8 +3572,8 @@ def _autotune_run_all(req: dict) -> None:
         log.error("autotune run error: %s", e, exc_info=True)
         _autotune_put({"type": "done", "ok": False, "error": str(e)})
     finally:
-        with best_effort("autotune: restore powersave perf mode", log=log):
-            _autotune_set_perf_mode("powersave")
+        with best_effort("autotune: restore sleep perf mode", log=log):
+            _perf_mode_set("sleep", _autotune_put)
         # base.kld and the stick JSONs are scratch; the summaries already went out as events.
         with best_effort("autotune: drop run scratch dir", log=log):
             shutil.rmtree(_bl.bench_dir(_require_ctx().config.AGENT_INSTALL_DIR) / "runs" / f"at-{run_id}",
@@ -3576,6 +3602,7 @@ def llama_autotune_preflight(authorization: Optional[str] = Header(default=None)
             "llama_build": _llama_build_last or "",
             "cores": _at.physical_cores(_read_cpuinfo(), os.cpu_count() or 1),
             "perplexity": pdet["ok"],
+            "perf": _perf_mode_state(fresh=True),
             "perplexity_detail": {"present": pdet["present"], "kl_text": pdet["kl_text"],
                                   "runnable": pdet["runnable"], "rc": pdet["rc"], "hint": pdet["hint"]},
             "runtime": {"ok": bool(rt["python"] and rt["script"]), **rt},

@@ -64,11 +64,11 @@ _GOVERNOR_TTL_S = 60.0
 _governor_cache: dict[str, Any] = {"ts": 0.0, "value": None}
 
 
-def read_cpu_governor() -> "str | None":
+def read_cpu_governor(fresh: bool = False) -> "str | None":
     # Aggregates across policy* dirs (hybrid CPUs); single value if uniform,
-    # comma-joined list ("performance,powersave") otherwise.
+    # comma-joined list ("performance,powersave") otherwise. fresh skips the cache.
     now = time.monotonic()
-    if now - _governor_cache["ts"] < _GOVERNOR_TTL_S:
+    if not fresh and now - _governor_cache["ts"] < _GOVERNOR_TTL_S:
         return _governor_cache["value"]
     values: list[str] = []
     try:

@@ -46,6 +46,7 @@ def _load_llama():
     _stub("_bench_replay", BenchReplayBuffer=BenchReplayBuffer)
     _stub("collectors")
     _stub("collectors.gpu", collect_gpu=lambda *a, **k: {"vram_total_bytes": 32 * 2**30})
+    _stub("collectors.system", read_cpu_governor=lambda fresh=False: "powersave")
     pkg = types.ModuleType("providers")
     pkg.__path__ = [str(_AGENT_ROOT / "providers")]
     sys.modules["providers"] = pkg
@@ -69,7 +70,10 @@ class _Ctx:
         self.config = types.SimpleNamespace(LLAMA_API_URL="http://127.0.0.1:9931", AGENT_INSTALL_DIR=str(tmp),
                                             SPEED_BENCH_PYTHON="", MANAGER_URL="", LLAMA_BIN=llama_bin,
                                             LLAMA_ENABLED=True, LLAMA_SYSTEMD_UNIT="llama-server",
-                                            LLAMA_CONFIG_INI=str(tmp / "config.ini"), AGENT_USER="")
+                                            LLAMA_CONFIG_INI=str(tmp / "config.ini"), AGENT_USER="",
+                                            PERF_CONTROLLER_ENABLED=False,
+                                            PERF_TARGET_AWAKE="performance",
+                                            PERF_TARGET_SLEEP="powersave")
         self.state = {"token": "", "agent_id": ""}
         self.post_session = None
 
@@ -659,7 +663,7 @@ def test_preflight_reports_help_valued(llama, tmp_path, monkeypatch):
 def test_run_all_passes_help_valued_into_the_engine_env(llama, tmp_path, monkeypatch):
     binp = _fake_llama_bin(tmp_path)
     _wire(llama, tmp_path, monkeypatch, llama_bin=str(binp))
-    monkeypatch.setattr(llama, "_autotune_set_perf_mode", lambda mode: None)
+    monkeypatch.setattr(llama, "_perf_mode_set", lambda phase, put: None)
     monkeypatch.setattr(llama, "_bench_live_runtime",
                         lambda: {"python": "", "script": "", "source": "", "script_status": "ok", "commit": ""})
     monkeypatch.setattr(llama, "_list_cache_ggufs", lambda root: [])
@@ -681,7 +685,7 @@ def test_run_all_passes_help_valued_into_the_engine_env(llama, tmp_path, monkeyp
 
 def test_run_all_warns_when_help_is_unreadable(llama, tmp_path, monkeypatch):
     _wire(llama, tmp_path, monkeypatch, llama_bin="")
-    monkeypatch.setattr(llama, "_autotune_set_perf_mode", lambda mode: None)
+    monkeypatch.setattr(llama, "_perf_mode_set", lambda phase, put: None)
     monkeypatch.setattr(llama, "_bench_live_runtime",
                         lambda: {"python": "", "script": "", "source": "", "script_status": "ok", "commit": ""})
     monkeypatch.setattr(llama, "_list_cache_ggufs", lambda root: [])
@@ -707,7 +711,7 @@ def test_run_all_warns_when_help_is_unreadable(llama, tmp_path, monkeypatch):
 
 def test_quality_mode_dispatches_run_quality_and_posts_quality_ledger(llama, tmp_path, monkeypatch):
     _wire(llama, tmp_path, monkeypatch)
-    monkeypatch.setattr(llama, "_autotune_set_perf_mode", lambda mode: None)
+    monkeypatch.setattr(llama, "_perf_mode_set", lambda phase, put: None)
     monkeypatch.setattr(llama, "_bench_live_runtime",
                         lambda: {"python": "", "script": "", "source": "", "script_status": "ok", "commit": ""})
     monkeypatch.setattr(llama, "_list_cache_ggufs", lambda root: [])
@@ -749,7 +753,7 @@ def test_run_all_removes_the_run_scratch_dir(llama, tmp_path, monkeypatch):
     """base.kld and the stick JSONs are GBs per run; the run dir must not survive it."""
     _wire(llama, tmp_path, monkeypatch)
     monkeypatch.setattr(llama, "_autotune_run_id", "rX")
-    monkeypatch.setattr(llama, "_autotune_set_perf_mode", lambda mode: None)
+    monkeypatch.setattr(llama, "_perf_mode_set", lambda phase, put: None)
     monkeypatch.setattr(llama, "_bench_live_runtime",
                         lambda: {"python": "", "script": "", "source": "", "script_status": "ok", "commit": ""})
     monkeypatch.setattr(llama, "_list_cache_ggufs", lambda root: [])
