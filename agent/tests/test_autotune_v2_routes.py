@@ -778,3 +778,33 @@ def test_run_all_removes_the_run_scratch_dir(llama, tmp_path, monkeypatch):
     assert seen == [True]                                  # scratch is live during the run
     assert events[-1] == {"type": "done", "ok": True, "cancelled": False, "count": 1}
     assert not run_dir.exists()
+
+
+# ── the quality guard is its own tool to the manager's run gate (#887) ──
+
+def test_tools_state_names_a_quality_run(llama, tmp_path, monkeypatch):
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    (bin_dir / "llama-server").write_text("")
+    _write_fake_ppl(bin_dir / "llama-perplexity", rc=0)
+    _wire(llama, tmp_path, monkeypatch, llama_bin=str(bin_dir / "llama-server"))
+    monkeypatch.setattr(llama, "_autotune_kl_text", lambda: tmp_path / "kl.txt")
+    (tmp_path / "kl.txt").write_text("x")
+    monkeypatch.setattr(llama.threading, "Thread",
+                        lambda target, args=(), daemon=None: types.SimpleNamespace(start=lambda: None))
+    monkeypatch.setattr(llama, "_autotune_quality", False)
+    assert llama.llama_autotune_run({"model_ids": ["org/m:Q4"], "objective": "fit",
+                                     "mode": "quality",
+                                     "overrides": {"cache-type-k": "q4_0"}})["ok"] is True
+    state = llama.llama_tools_state()
+    assert state["quality_active"] is True and state["autotune_active"] is True
+
+
+def test_tools_state_leaves_a_tune_run_unlabelled(llama, tmp_path, monkeypatch):
+    _wire(llama, tmp_path, monkeypatch)
+    monkeypatch.setattr(llama.threading, "Thread",
+                        lambda target, args=(), daemon=None: types.SimpleNamespace(start=lambda: None))
+    monkeypatch.setattr(llama, "_autotune_quality", True)
+    assert llama.llama_autotune_run({"model_ids": ["org/m:Q4"], "objective": "fit"})["ok"] is True
+    state = llama.llama_tools_state()
+    assert state["autotune_active"] is True and state["quality_active"] is False

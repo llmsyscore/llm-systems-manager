@@ -175,7 +175,7 @@ def _local_hostname() -> str:
 # banner reads it. Bump suffix (-1, -2, …) for same-day iterations; roll
 # the date for a new day's first change.
 # ---------------------------------------------------------------------------
-__version__ = "v2026.09.09-10"
+__version__ = "v2026.09.09-11"
 
 # Wall-clock at first import (Cheroot main process); the shutdown banner
 # reads it for the uptime line.
@@ -2294,8 +2294,10 @@ def benchmark_cancel():
 @app.route("/api/llm/autotune/run", methods=["POST"])
 def llm_autotune_run():
     body = flask_request.get_json(force=True) or {}
+    # The quality guard shares this route; it is a tool of its own to the gate.
+    tool = "quality" if (body.get("mode") or "") == "quality" else "autotune"
     return proxies.proxy_to_primary("llama", "POST", "/llama/autotune/run", json=body, timeout=15,
-                                    on_target=_note_tool_start("llama", "autotune"))
+                                    on_target=_note_tool_start("llama", tool))
 
 
 @app.route("/api/llm/autotune/stream")

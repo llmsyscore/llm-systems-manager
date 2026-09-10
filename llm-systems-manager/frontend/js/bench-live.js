@@ -734,7 +734,8 @@
     if (typeof toolsSyncRunDot === 'function') toolsSyncRunDot();
   }
   function cancel() {
-    if (!_attached && _slot && _slot.drop()) { setStatus('queued run dropped'); busy(false); return; }
+    // A live run — including a fleet job — outranks a pending queued one.
+    if (!running() && !_busyOn && _slot && _slot.drop()) { setStatus('queued run dropped'); busy(false); return; }
     if (_fleetJob && !_fleetJob.done) {
       fetch('/api/benchmark/live/fleet/' + encodeURIComponent(_fleetJob.job_id) + '/cancel', { method: 'POST' }).catch(() => {});
       setStatus('cancelling…', 'running');

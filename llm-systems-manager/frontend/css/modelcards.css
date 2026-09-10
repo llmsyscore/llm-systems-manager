@@ -71,9 +71,11 @@
 /* #887: bounded, truncating zone — a long profile name can't grow past this */
 .mc-tele-prof { flex: 0 1 auto; max-width: 150px; min-width: 0; }
 .mc-tele-prof .mc-profchip { display: inline-flex; max-width: 100%; min-width: 0; }
+/* inline-block, not the chip's inline-flex: text-overflow needs a block container */
 .mc-tele-prof .mc-prof-edit { display: inline-block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; vertical-align: middle; }
 .mc-profchip { display: inline-flex; align-items: center; gap: 5px; font-family: var(--font-mono); font-size: 11px; font-weight: 500; color: var(--accent); background: color-mix(in srgb, var(--accent) 10%, transparent); border: 1px solid color-mix(in srgb, var(--accent) 26%, transparent); border-radius: 6px; padding: 2px 8px; }
-.mc-profchip select { background: transparent; border: 0; outline: 0; color: var(--accent); font-family: var(--font-mono); font-size: 11px; font-weight: 500; cursor: pointer; max-width: 130px; overflow: hidden; text-overflow: ellipsis; field-sizing: content; }
+/* option labels are shortened in JS: a <select> ignores text-overflow outside Chromium */
+.mc-profchip select { background: transparent; border: 0; outline: 0; color: var(--accent); font-family: var(--font-mono); font-size: 11px; font-weight: 500; cursor: pointer; max-width: 130px; overflow: hidden; field-sizing: content; }
 .mc-profchip select option { background: var(--bg-elev); color: var(--fg); }
 .mc-profchip .mc-profbtn { background: none; border: 0; color: var(--fg-dim); cursor: pointer; font-size: 11px; padding: 0 1px; line-height: 1; }
 .mc-profchip .mc-profbtn:hover { color: var(--fg); }

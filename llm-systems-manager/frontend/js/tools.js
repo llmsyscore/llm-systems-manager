@@ -22,6 +22,7 @@
   let _toolsDefaultAgent = {};     // provider -> primary agent id
   let _toolsPending = {};          // tool id -> what its queued run waits for
   let _toolsAgentsLoad = null;
+  let _toolsAgentsReady = false;
   let _toolsGateKey = '';
   const _toolsGateSubs = new Set();
 
@@ -60,8 +61,10 @@
     return f('/api/tools/activity')
       .then(r => (r.ok ? r.json() : Promise.reject(new Error('http ' + r.status))))
       .then(d => {
+        // The quality guard shares the Autotune tile's run indicator (#887).
         _toolsActivity = {
-          reportcard: !!d.reportcard, benchmark: !!d.benchmark, autotune: !!d.autotune,
+          reportcard: !!d.reportcard, benchmark: !!d.benchmark,
+          autotune: !!d.autotune || !!d.quality,
         };
         _toolsActivityAgents = (d.agents && typeof d.agents === 'object') ? d.agents : {};
         toolsSyncRunDot();
@@ -75,6 +78,7 @@
   function _toolsApplyAgents(byProvider) {
     _toolsAgents = {};
     _toolsDefaultAgent = {};
+    _toolsAgentsReady = true;
     Object.entries(byProvider || {}).forEach(([prov, list]) =>
       (list || []).forEach(a => {
         _toolsAgents[a.agent_id] = a.hostname;
@@ -89,8 +93,9 @@
     const f = typeof _fetchT === 'function' ? _fetchT : (u => fetch(u));
     _toolsAgentsLoad = f('/api/agents/list-by-provider')
       .then(r => (r.ok ? r.json() : null))
-      .then(d => { if (d) { _toolsApplyAgents(d); toolsSyncRunDot(); } })
-      .catch(() => {});
+      .then(d => { if (d) _toolsApplyAgents(d); })
+      .catch(() => {})
+      .then(() => { _toolsAgentsReady = true; toolsSyncRunDot(); });
   }
 
   // Local streams mapped to the agent they drive, so the gate answers instantly.
@@ -109,10 +114,15 @@
   }
 
   // Which tool holds one provider/agent right now; null when it is free.
+  // Fails closed until the agent list resolves — an unknown host is not idle.
   function toolsGateBusy(provider, agentId) {
     _toolsEnsureAgents();
     const id = agentId || _toolsDefaultAgent[provider || 'llama'] || null;
-    if (!id) return null;
+    if (!id) {
+      return _toolsAgentsReady ? null
+        : { tool: 'unknown', label: 'the run in progress', agent_id: null,
+            host: '', unresolved: true };
+    }
     const tools = [...new Set([...(_toolsLocalAgents()[id] || []),
                                ...(_toolsActivityAgents[id] || [])])];
     if (!tools.length) return null;
@@ -143,7 +153,8 @@
   }
 
   function _toolsGateNotify() {
-    const key = JSON.stringify([_toolsActivityAgents, _toolsLocalAgents()]);
+    const key = JSON.stringify([_toolsActivityAgents, _toolsLocalAgents(),
+                                _toolsDefaultAgent, _toolsAgentsReady]);
     if (key === _toolsGateKey) return;
     _toolsGateKey = key;
     [..._toolsGateSubs].forEach(fn => { try { fn(); } catch (_) {} });
@@ -153,14 +164,22 @@
   // the provider/agent it waits on goes idle.
   function toolsQueueSlot(toolId, opts) {
     let pending = null;
-    const target = () => toolsGateBusy(opts.provider ? opts.provider() : 'llama',
-                                       opts.agent ? opts.agent() : null);
+    // A pending run keeps the host it was queued against, so changing a picker
+    // can't repoint the gate at a host the frozen payload will not hit.
+    const pick = () => ({ provider: opts.provider ? opts.provider() : 'llama',
+                          agent: opts.agent ? opts.agent() : null });
+    const target = () => {
+      const t = pending ? pending.target : pick();
+      return toolsGateBusy(t.provider, t.agent);
+    };
     const paint = () => {
       toolsSetQueued(toolId, pending ? pending.waitFor : null);
       if (opts.render) {
+        // An unresolved host gates the run but has no name to show for it.
+        const b = target();
         try {
           opts.render({ queued: !!pending, waitFor: pending ? pending.waitFor : null,
-                        busy: target() });
+                        busy: (b && b.unresolved) ? null : b });
         } catch (_) {}
       }
     };
@@ -169,8 +188,9 @@
       queued: () => !!pending,
       waitFor: () => (pending ? pending.waitFor : null),
       queue(payload, waitFor) {
-        const b = target();
-        pending = { payload, waitFor: waitFor || _toolsGateText(b) };
+        const t = pick();
+        const b = toolsGateBusy(t.provider, t.agent);
+        pending = { payload, target: t, waitFor: waitFor || _toolsGateText(b) };
         paint();
         return pending.waitFor;
       },

@@ -275,6 +275,12 @@ function _llamaTuneFor(modelId) {
            title: 'Autotuned' + (day ? ' (' + day + ')' : '') + ' · llama.cpp build unknown — re-verify to confirm' };
 }
 
+// <select> option text can't be truncated with CSS in every browser, so cap it here.
+function _profShortName(n) {
+  const s = String(n == null ? '' : n);
+  return s.length > 18 ? s.slice(0, 17) + '\u2026' : s;
+}
+
 function _llamaProfileHtml(modelId) {
   const prof = _llmProfiles[modelId] || { active: '', profiles: {} };
   const profNames = Object.keys(prof.profiles || {});
@@ -285,7 +291,7 @@ function _llamaProfileHtml(modelId) {
   }
   return `<span class="mc-profchip"><select data-act="profile-manage" data-id="${_esc(modelId)}" `
     + `data-active="${_esc(prof.active)}" title="Active config profile">`
-    + profNames.map(n => `<option value="p:${_esc(n)}" ${n === prof.active ? 'selected' : ''}>${_esc(n)}</option>`).join('')
+    + profNames.map(n => `<option value="p:${_esc(n)}" title="${_esc(n)}" ${n === prof.active ? 'selected' : ''}>${_esc(_profShortName(n))}</option>`).join('')
     + `<option disabled>──────</option>`
     + `<option value="__rename__">✎ Rename…</option>`
     + `<option value="__delete__">✕ Delete…</option>`

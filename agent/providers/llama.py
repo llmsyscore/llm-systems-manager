@@ -136,6 +136,7 @@ _autotune_replay = BenchReplayBuffer(maxlen=5000)
 _autotune_cond = threading.Condition()
 _autotune_lock = threading.Lock()
 _autotune_active = False
+_autotune_quality = False
 _autotune_run_id = ""
 _autotune_proc: "Optional[subprocess.Popen]" = None
 _autotune_pgid: "Optional[int]" = None
@@ -603,6 +604,13 @@ async def perf_controller_loop() -> None:
 
     log_file = _require_ctx().config.LLAMA_LOG_FILE
     log.info("perf controller starting; tailing %s", log_file)
+
+    # A run killed mid-flight leaves the host in the awake profile; with
+    # llama-server down at startup, the sleep profile is the correct one.
+    sleep_unit = _require_ctx().config.PERF_TARGET_SLEEP
+    if sleep_unit and not _llama_unit_active():
+        log.info("perf controller: llama-server is down; resetting to %s", sleep_unit)
+        await _perf_switch(sleep_unit)
 
     # Pre-flight: if the state file exists but isn't owned by us, every
     # subsequent transition will fail with EPERM at os.replace() time
@@ -2273,18 +2281,15 @@ def llama_bench_perf_mode(body: dict, authorization: Optional[str] = Header(defa
     mode = (body.get("mode") or "").strip()
     if mode not in ("performance", "powersave"):
         return {"ok": False, "error": "mode must be 'performance' or 'powersave'"}
-    try:
-        # sudoers permits `reload-or-restart` only (LSA_PERF alias in the tmpl).
-        proc = subprocess.run(
-            ["sudo", "-n", "systemctl", "reload-or-restart", mode],
-            capture_output=True, text=True, timeout=30,
-        )
-        if proc.returncode != 0:
-            return {"ok": False,
-                    "error": (proc.stderr or proc.stdout or "").strip()[:300] or f"rc={proc.returncode}"}
-        return {"ok": True, "mode": mode}
-    except Exception as e:
-        return {"ok": False, "error": str(e)}
+    cfg = _require_ctx().config
+    if not cfg.PERF_CONTROLLER_ENABLED:
+        return {"ok": False,
+                "error": "perf controller disabled on this agent (PERF_CONTROLLER_ENABLED)"}
+    unit = cfg.PERF_TARGET_AWAKE if mode == "performance" else cfg.PERF_TARGET_SLEEP
+    ok, rc, err = _perf_run_unit(unit)
+    if not ok:
+        return {"ok": False, "error": err or f"rc={rc}"}
+    return {"ok": True, "mode": mode, "unit": unit}
 
 
 # ── Live benchmark (speed-bench, #879) ────────────────────────────────────
@@ -3489,6 +3494,18 @@ def _perf_mode_state(fresh: bool = False) -> dict:
             "awake": cfg.PERF_TARGET_AWAKE, "sleep": cfg.PERF_TARGET_SLEEP}
 
 
+def _perf_run_unit(unit: str) -> "tuple[bool, Optional[int], str]":
+    """sudo systemctl reload-or-restart <unit>; (ok, rc, error)."""
+    try:
+        r = subprocess.run(
+            ["sudo", "-n", "systemctl", "reload-or-restart", unit],
+            capture_output=True, text=True, timeout=30,
+        )
+        return r.returncode == 0, r.returncode, (r.stderr or r.stdout or "").strip()[:240]
+    except Exception as e:
+        return False, None, str(e)[:240]
+
+
 def _perf_mode_set(phase: str, put) -> None:
     """Switch the host to the configured awake/sleep perf unit; emits a perf_mode event."""
     cfg = _require_ctx().config
@@ -3501,17 +3518,7 @@ def _perf_mode_set(phase: str, put) -> None:
                    "governor": _perf_mode_state()["governor"]})
         put(ev)
         return
-    rc, err, ok = None, "", False
-    try:
-        r = subprocess.run(
-            ["sudo", "-n", "systemctl", "reload-or-restart", unit],
-            capture_output=True, text=True, timeout=30,
-        )
-        rc = r.returncode
-        err = (r.stderr or r.stdout or "").strip()[:240]
-        ok = (rc == 0)
-    except Exception as e:
-        err = str(e)[:240]
+    ok, rc, err = _perf_run_unit(unit)
     ev.update({"ok": ok, "rc": rc, "skipped": False,
                "error": (None if ok else (err or "unknown")),
                "governor": _perf_mode_state(fresh=True)["governor"]})
@@ -3519,7 +3526,7 @@ def _perf_mode_set(phase: str, put) -> None:
 
 
 def _autotune_run_all(req: dict) -> None:
-    global _autotune_active, _autotune_proc
+    global _autotune_active, _autotune_proc, _autotune_quality
     _autotune_cancel_event.clear()
     run_id = _autotune_run_id
     try:
@@ -3582,6 +3589,7 @@ def _autotune_run_all(req: dict) -> None:
         _autotune_untrack_aux()
         with _autotune_lock:
             _autotune_active = False
+            _autotune_quality = False
 
 
 def llama_autotune_preflight(authorization: Optional[str] = Header(default=None)) -> dict[str, Any]:
@@ -3613,7 +3621,7 @@ def llama_autotune_preflight(authorization: Optional[str] = Header(default=None)
 
 def llama_autotune_run(body: dict, authorization: Optional[str] = Header(default=None)) -> dict[str, Any]:
     _require_ctx().check_bearer(authorization); _llama_check_enabled()
-    global _autotune_active, _autotune_run_id
+    global _autotune_active, _autotune_run_id, _autotune_quality
     cache_root = _hf_cache_root()
     try:
         req = _at.validate_request(body or {}, cache_root=cache_root, v1_args=_autotune_build_optional_args)
@@ -3630,6 +3638,7 @@ def llama_autotune_run(body: dict, authorization: Optional[str] = Header(default
         if _autotune_active or _bench_active:
             return {"ok": False, "error": "Another benchmark or auto-tune is in progress"}
         _autotune_active = True
+        _autotune_quality = req.get("mode") == "quality"
         _autotune_run_id = uuid.uuid4().hex[:12]
         # Reset the buffer before the lock drops: a stream landing between
         # active=True and start_run would replay the prior run's stale done.
@@ -3706,7 +3715,8 @@ def llama_tools_state(authorization: Optional[str] = Header(default=None)) -> di
     """Whether a bench/autotune job is running, for the manager Tools view."""
     _require_ctx().check_bearer(authorization)
     return {"ok": True, "bench_active": bool(_bench_active),
-            "autotune_active": bool(_autotune_active)}
+            "autotune_active": bool(_autotune_active),
+            "quality_active": bool(_autotune_active and _autotune_quality)}
 
 
 _ROUTES: tuple = (

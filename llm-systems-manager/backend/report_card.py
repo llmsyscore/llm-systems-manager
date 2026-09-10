@@ -857,6 +857,8 @@ def attach_live(conn, meta: dict, doc: dict, price_kwh: float, snapshot: dict) -
 # Auth is the manager's global before_request gate; no per-route decorator.
 
 MODES = ("standard", "custom")
+# Matches the client's gate-refusal test, so a refused run queues (#887).
+_BUSY_ERROR = "A report card is already in progress on this host."
 _JOBS: "dict[str, dict]" = {}
 _JOBS_LOCK = _threading.Lock()
 _JOB_RETENTION = 32
@@ -887,16 +889,27 @@ def _public_card(card: dict) -> dict:
     return {k: card[k] for k in _PUBLIC_CARD_FIELDS if k in card}
 
 
-def _new_job(req: "dict | None" = None) -> str:
+def _new_job(req: "dict | None" = None, exclusive: bool = False) -> "str | None":
+    """New job id; None when exclusive and that agent already has one running."""
     job_id = _uuid.uuid4().hex
+    agent_id = (req or {}).get("agent") or ""
     with _JOBS_LOCK:
+        if exclusive and agent_id and any(
+                j.get("agent") == agent_id and not j.get("done")
+                for j in _JOBS.values()):
+            return None
         _JOBS[job_id] = {"queue": _queue.Queue(), "done": False,
                          "cancel": _threading.Event(),
-                         "agent": (req or {}).get("agent") or ""}
+                         "agent": agent_id}
         if len(_JOBS) > _JOB_RETENTION:
             for stale in [k for k, v in list(_JOBS.items()) if v["done"]][:-8]:
                 _JOBS.pop(stale, None)
     return job_id
+
+
+def agent_busy(agent_id: str) -> bool:
+    """True when a report-card job is already running on that agent."""
+    return bool(agent_id) and agent_id in active_agents()
 
 
 def active_agents() -> "list[str]":
@@ -920,8 +933,10 @@ def _run_job(job_id: str, req: dict) -> None:
                **ev})
 
     def finish(ev):
-        # Records the terminal event on the job for re-emit to reconnects (#778).
+        # Records the terminal event on the job for re-emit to reconnects (#778),
+        # and releases the agent's run slot before the event reaches the stream.
         job["terminal"] = ev
+        job["done"] = True
         q.put(ev)
 
     def check():
@@ -1089,6 +1104,8 @@ def register_routes(app, ctx=None, db_path: "str | None" = None) -> None:
         if mode == "custom" and not model:
             return jsonify({"ok": False,
                             "error": "model required in custom mode"}), 400
+        if agent_busy(agent_id):
+            return jsonify({"ok": False, "error": _BUSY_ERROR}), 409
         model_key = (body.get("model_key") or "small").strip()
         if mode == "standard" and not preset_source(model_key, provider):
             return jsonify({"ok": False,
@@ -1129,7 +1146,9 @@ def register_routes(app, ctx=None, db_path: "str | None" = None) -> None:
                "model": model, "model_key": model_key, "price_kwh": price,
                "confirm_vllm": bool(body.get("confirm_vllm")),
                "confirm_download": bool(body.get("confirm_download"))}
-        job_id = _new_job(req)
+        job_id = _new_job(req, exclusive=True)
+        if job_id is None:
+            return jsonify({"ok": False, "error": _BUSY_ERROR}), 409
         _threading.Thread(target=_run_job, args=(job_id, req),
                           name=f"reportcard-{job_id[:8]}", daemon=True).start()
         return jsonify({"ok": True, "job_id": job_id})

@@ -176,3 +176,119 @@ describe('toolsGateRefusal (#888)', () => {
     expect(win.toolsGateRefusal(null)).toBe(false);
   });
 });
+
+
+// #887: a queued run keeps the host it was queued against, whatever the
+// picker says later — the payload the pending POST carries is frozen too.
+describe('a pending run keeps its own target (#887)', () => {
+  const PICKER_BODY = BODY + '<select id="tAgent"><option value="a1">gpu-01</option>'
+    + '<option value="a2">gpu-02</option></select>';
+
+  // A slot whose provider/agent read live DOM values, exactly as Report Card's do.
+  function pickerBoot(activity) {
+    const win = runHarness({
+      sources: [STUBS, srcFile('js/lib/modelcards.js'),
+                srcFile('js/lib/toolcards.js'), srcFile('js/tools.js')],
+      bodyHtml: PICKER_BODY,
+      bootstrap: `
+        window.__activity = ${JSON.stringify(activity)};
+        window._fetchT = (url) => Promise.resolve({
+          ok: true, json: () => Promise.resolve(
+            url.indexOf('/api/tools/activity') === 0 ? window.__activity
+            : url.indexOf('/api/agents/list-by-provider') === 0 ? ${JSON.stringify(AGENTS)}
+            : {}),
+        });
+        initToolsTab();
+        window.__started = [];
+        window.__done = toolsPollActivity().then(() => {
+          window.__slot = toolsQueueSlot('reportcard', {
+            provider: () => 'llama',
+            agent: () => document.getElementById('tAgent').value,
+            start: (p) => window.__started.push(p),
+          });
+        });
+      `,
+    });
+    return win.__done.then(() => flush()).then(() => flush()).then(() => win);
+  }
+
+  it('does not start when the picker moves to an idle host', async () => {
+    const win = await pickerBoot(BENCH_ON_A1);
+    win.__slot.queue({ agent: 'a1' });
+    expect(win.__slot.waitFor()).toBe('Benchmark on gpu-01');
+    // The operator repoints the picker at the idle host; the queued POST still
+    // names a1, so the gate must keep watching a1.
+    win.document.getElementById('tAgent').value = 'a2';
+    win.__activity = { reportcard: false, benchmark: true, autotune: false,
+                       agents: { a1: ['benchmark'] } };
+    await win.toolsPollActivity();
+    await flush();
+    expect(win.__started).toEqual([]);
+    expect(win.__slot.busy().agent_id).toBe('a1');
+  });
+
+  it('starts when the host it was queued against goes idle', async () => {
+    const win = await pickerBoot(BENCH_ON_A1);
+    win.__slot.queue({ agent: 'a1' });
+    win.document.getElementById('tAgent').value = 'a2';
+    win.__activity = IDLE;
+    await win.toolsPollActivity();
+    await flush();
+    expect(win.__started).toEqual([{ agent: 'a1' }]);
+  });
+
+  it('reads the picker again for the next run once nothing is pending', async () => {
+    const win = await pickerBoot({ reportcard: false, benchmark: true, autotune: false,
+                                   agents: { a2: ['benchmark'] } });
+    expect(win.__slot.busy()).toBe(null);        // picker is on the idle a1
+    win.document.getElementById('tAgent').value = 'a2';
+    expect(win.__slot.busy().host).toBe('gpu-02');
+  });
+});
+
+// #887: an unresolved agent is not an idle agent.
+describe('the gate before the agent list resolves (#887)', () => {
+  function unresolvedBoot() {
+    const win = runHarness({
+      sources: [STUBS, srcFile('js/lib/modelcards.js'),
+                srcFile('js/lib/toolcards.js'), srcFile('js/tools.js')],
+      bodyHtml: BODY,
+      bootstrap: `
+        window.__resolve = null;
+        window._fetchT = (url) => (url.indexOf('/api/agents/list-by-provider') === 0
+          ? new Promise((r) => { window.__resolve = () => r({
+              ok: true, json: () => Promise.resolve(${JSON.stringify(AGENTS)}) }); })
+          : Promise.resolve({ ok: true, json: () => Promise.resolve({}) }));
+        window.__started = [];
+        window.__slot = toolsQueueSlot('autotune', {
+          provider: () => 'llama', start: (p) => window.__started.push(p) });
+      `,
+    });
+    return win;
+  }
+
+  it('is busy, not free, while the primary agent is unknown', () => {
+    const win = unresolvedBoot();
+    const b = win.toolsGateBusy('llama');
+    expect(b).toBeTruthy();
+    expect(b.unresolved).toBe(true);
+  });
+
+  it('starts the held run as soon as the list arrives idle', async () => {
+    const win = unresolvedBoot();
+    win.__slot.queue({ m: 1 });
+    expect(win.__started).toEqual([]);
+    win.__resolve();
+    await flush(); await flush(); await flush();
+    expect(win.__started).toEqual([{ m: 1 }]);
+  });
+});
+
+// #887: the quality guard has its own name in another dashboard's wait text.
+describe('remote quality runs are named (#887)', () => {
+  it('names the Quality guard rather than Autotune', async () => {
+    const win = await boot({ reportcard: false, benchmark: false, autotune: false,
+                             quality: true, agents: { a1: ['quality'] } });
+    expect(win.toolsGateBusy('llama', 'a1').label).toBe('Quality guard');
+  });
+});

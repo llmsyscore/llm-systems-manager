@@ -291,7 +291,7 @@ describe('Quality guard module (#888)', () => {
     let win = await opened('org/m:Q4', { overrides: { 'ubatch-size': '512' } });
     await finished(win, { kl: 0.0054, kl_max: 0.02, pass: true, error: null, stats: STATS });
     const comfortable = verdictText(win);
-    expect(comfortable).toBe('Quality is safe: the measured 0.0054 is 3.7× below the 0.02 limit, and it picks the same most-likely next token as the f16 reference 98.1% of the time. Differences at this level are not visible in normal use.');
+    expect(comfortable).toBe('Quality is safe: the measured 0.0054 is 3.7× smaller than the 0.02 limit, and it picks the same most-likely next token as the f16 reference 98.1% of the time. Differences at this level are not visible in normal use.');
 
     win = await opened('org/m:Q4', { overrides: { 'ubatch-size': '512' } });
     await finished(win, { kl: 0.019, kl_max: 0.02, pass: true, error: null, stats: { ...STATS, same_top_p: 91.02 } });
@@ -301,10 +301,33 @@ describe('Quality guard module (#888)', () => {
     win = await opened('org/m:Q4', { overrides: { 'ubatch-size': '512' } });
     await finished(win, { kl: 0.031, kl_max: 0.02, pass: false, error: null, stats: { ...STATS, same_top_p: 88.0 } });
     const fail = verdictText(win);
-    expect(fail).toBe('Quality is not safe: the measured 0.0310 is 1.6× over the 0.02 limit, and it picks a different most-likely next token from the f16 reference on 12.0% of tokens. Applying this would cost measurable output quality — keep the current setting, or test a milder value.');
+    expect(fail).toBe('Quality is not safe: the measured 0.0310 is 1.6× the 0.02 limit (55% over), and it picks a different most-likely next token from the f16 reference on 12.0% of tokens. Applying this would cost measurable output quality — keep the current setting, or test a milder value.');
     expect(new Set([comfortable, marginal, fail]).size).toBe(3);
     expect(win.document.querySelector('#qgResult .qg-verdict').classList.contains('bad')).toBe(true);
     expect(win.document.getElementById('qgApplyBtn').style.display).toBe('none');
+  });
+
+  // #887: a ratio is not a percentage over, and a rounded zero is not a proven zero.
+  it('states the over-limit multiple and the percentage over separately', async () => {
+    const win = await opened('org/m:Q4', { overrides: { 'ubatch-size': '512' } });
+    await finished(win, { kl: 0.03, kl_max: 0.02, pass: false, error: null, stats: null });
+    const say = verdictText(win);
+    expect(say).toContain('is 1.5× the 0.02 limit (50% over)');
+    expect(say).not.toContain('1.5× over');
+  });
+
+  it('hedges a divergence that only rounded to zero', async () => {
+    let win = await opened('org/m:Q4', { overrides: { 'ubatch-size': '512' } });
+    await finished(win, { kl: 0, kl_max: 0.02, pass: true, error: null, stats: null });
+    const zero = verdictText(win);
+    expect(zero).toContain('rounds to 0.0000');
+    expect(zero).not.toContain('at all');
+
+    win = await opened('org/m:Q4', { overrides: { 'ubatch-size': '512' } });
+    await finished(win, { kl: 0.00002, kl_max: 0.02, pass: true, error: null, stats: null });
+    // Below the limit reads as a size comparison, never as "× below".
+    expect(verdictText(win)).toContain('smaller than the 0.02 limit');
+    expect(verdictText(win)).not.toContain('× below');
   });
 
   it('renders the stat strip the payload carries and drops the fields it does not', async () => {
@@ -319,7 +342,7 @@ describe('Quality guard module (#888)', () => {
     cells = [...win.document.querySelectorAll('#qgResult .qg-stat')];
     expect(cells.map(c => c.querySelector('.k').textContent)).toEqual(['Typical Δ probability']);
     // No Same-top-p means the verdict drops that clause but still reads the KL number.
-    expect(verdictText(win)).toBe('Quality is safe: the measured 0.0054 is 3.7× below the 0.02 limit. Differences at this level are not visible in normal use.');
+    expect(verdictText(win)).toBe('Quality is safe: the measured 0.0054 is 3.7× smaller than the 0.02 limit. Differences at this level are not visible in normal use.');
 
     win = await opened('org/m:Q4', { overrides: { 'ubatch-size': '512' } });
     await finished(win, { kl: 0.0054, kl_max: 0.02, pass: true, error: null, stats: null });

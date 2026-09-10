@@ -314,18 +314,18 @@
     const x = n => (n >= 10 ? String(Math.round(n)) : String(Math.round(n * 10) / 10));
     let head, tail;
     if (ratio > 1) {
-      head = `Quality is not safe: the measured ${num} is ${x(ratio)}× over the ${lim} limit`;
+      head = `Quality is not safe: the measured ${num} is ${x(ratio)}× the ${lim} limit (${x((ratio - 1) * 100)}% over)`;
       tail = 'Applying this would cost measurable output quality — keep the current setting, or test a milder value.';
     } else if (ratio > 0.5) {
       head = `Quality is inside the limit, but only just: the measured ${num} is ${Math.round(ratio * 100)}% of the ${lim} line`;
       tail = 'Occasional wording differences are likely. Tighten the limit or test a milder value if this model does exact-format work.';
     } else if (ratio > 0.1) {
-      head = `Quality is safe: the measured ${num} is ${x(1 / ratio)}× below the ${lim} limit`;
+      head = `Quality is safe: the measured ${num} is ${x(1 / ratio)}× smaller than the ${lim} limit`;
       tail = 'Differences at this level are not visible in normal use.';
     } else {
       head = ratio > 0
-        ? `Quality is effectively unchanged: the measured ${num} is ${x(1 / ratio)}× below the ${lim} limit`
-        : `Quality is unchanged: no divergence from the f16 reference was measured at all`;
+        ? `Quality is effectively unchanged: the measured ${num} is ${x(1 / ratio)}× smaller than the ${lim} limit`
+        : `Quality is effectively unchanged: divergence from the f16 reference rounds to ${num}, far under the ${lim} limit`;
       tail = 'The changed config behaves like the f16 reference.';
     }
     const same = Number((g.stats || {}).same_top_p);

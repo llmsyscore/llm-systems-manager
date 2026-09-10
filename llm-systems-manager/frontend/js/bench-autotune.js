@@ -847,7 +847,7 @@ function _benchQueue() {
   if (!_benchSlot && typeof toolsQueueSlot === 'function') {
     _benchSlot = toolsQueueSlot('benchmark:offline', {
       provider: () => 'llama',
-      start: (sel) => _benchRunNow(sel),
+      start: (sel) => _benchRunNow(sel, true),
       render: (st) => _benchSyncQueue(st),
     });
   }
@@ -883,7 +883,7 @@ async function runBenchmark() {
   return _benchRunNow({ modelIds, tool, switches });
 }
 
-async function _benchRunNow(sel) {
+async function _benchRunNow(sel, fromQueue) {
   const { modelIds, tool, switches } = sel;
   const slot = _benchQueue();
 
@@ -921,7 +921,19 @@ async function _benchRunNow(sel) {
         confirmLabel: 'Continue',
         cancelLabel:  'Cancel',
       });
-      if (!ok) { _benchRunEnable(); return; }
+      if (!ok) {
+        _benchRunEnable();
+        const st = document.getElementById('benchStatus');
+        if (st) st.textContent = fromQueue ? 'queued run dropped' : 'idle';
+        return;
+      }
+      // The dialog can sit for minutes; another tool may hold the host by now,
+      // and what follows stops llama-server underneath it.
+      if (slot && slot.busy()) {
+        _benchRunEnable();
+        slot.queue(sel);
+        return;
+      }
       if (loadedModel) {
         document.getElementById('benchStatus').textContent = 'unloading model…';
         _benchSetState('running');

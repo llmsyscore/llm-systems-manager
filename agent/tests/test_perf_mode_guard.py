@@ -123,3 +123,60 @@ def test_quality_guard_sets_and_resets(llama, monkeypatch, tmp_path):
     assert [r[-1] for r in runs] == ["turbo", "eco"]
     assert [e["phase"] for e in events if e["type"] == "perf_mode"] == ["awake", "sleep"]
     assert any(e["type"] == "done" and e["ok"] for e in events)
+
+
+# ── the manual Performance/Powersave button (#887) ───────────────────
+
+def test_manual_switch_uses_the_configured_units(llama, monkeypatch):
+    runs = []
+    _wire(llama, monkeypatch, _Ctx(awake="turbo", sleep="eco"), runs)
+    assert llama.llama_bench_perf_mode({"mode": "performance"})["unit"] == "turbo"
+    assert llama.llama_bench_perf_mode({"mode": "powersave"})["unit"] == "eco"
+    assert runs == [["sudo", "-n", "systemctl", "reload-or-restart", "turbo"],
+                    ["sudo", "-n", "systemctl", "reload-or-restart", "eco"]]
+
+
+def test_manual_switch_is_refused_when_the_controller_is_off(llama, monkeypatch):
+    runs = []
+    _wire(llama, monkeypatch, _Ctx(enabled=False), runs)
+    out = llama.llama_bench_perf_mode({"mode": "performance"})
+    assert out["ok"] is False and "PERF_CONTROLLER_ENABLED" in out["error"]
+    assert runs == []
+
+
+def test_manual_switch_still_validates_the_mode(llama, monkeypatch):
+    runs = []
+    _wire(llama, monkeypatch, _Ctx(), runs)
+    assert llama.llama_bench_perf_mode({"mode": "turbo"})["ok"] is False
+    assert runs == []
+
+
+# ── startup reset after a killed run (#887) ──────────────────────────
+
+def _controller_start(llama, monkeypatch, ctx, unit_active, switched):
+    """Runs the controller with restart_pending set, so it exits after startup."""
+    import asyncio
+    ctx.state["restart_pending"] = True
+    ctx.config.AGENT_OS = "linux"
+    ctx.config.LLAMA_LOG_FILE = "/nonexistent/llama.log"
+    ctx.config.LLAMA_STATE_FILE = "/nonexistent/llama.state"
+    monkeypatch.setattr(llama, "_require_ctx", lambda: ctx)
+    monkeypatch.setattr(llama, "_llama_unit_active", lambda: unit_active)
+    monkeypatch.setattr(llama, "llama_write_state_file", lambda state: None)
+
+    async def _switch(unit):
+        switched.append(unit)
+    monkeypatch.setattr(llama, "_perf_switch", _switch)
+    asyncio.run(llama.perf_controller_loop())
+
+
+def test_startup_resets_to_the_sleep_unit_when_llama_server_is_down(llama, monkeypatch):
+    switched = []
+    _controller_start(llama, monkeypatch, _Ctx(), False, switched)
+    assert switched == ["eco"]
+
+
+def test_startup_leaves_a_running_server_in_its_current_mode(llama, monkeypatch):
+    switched = []
+    _controller_start(llama, monkeypatch, _Ctx(), True, switched)
+    assert switched == []
