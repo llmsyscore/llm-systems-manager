@@ -5543,12 +5543,15 @@ def _batch_stream_on_agent(agent_id: str):
     token = agent.get("token") or ""
     for base in agent_registry.agent_callback_urls(agent):
         url = f"{base}/llama/autotune/stream"
+        r = None
         try:
             r = requests.get(url, stream=True, timeout=(5, 120),
                              headers={"Authorization": f"Bearer {token}"},
                              **agent_registry.agent_tls_kwargs(url))
             r.raise_for_status()
         except requests.exceptions.RequestException:
+            if r is not None:
+                r.close()
             continue
         try:
             for raw in r.iter_lines(decode_unicode=True):
