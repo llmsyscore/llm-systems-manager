@@ -189,7 +189,9 @@ _AT_MEM_RE = re.compile(
 )
 _AT_GPU_HINT_RE = re.compile(r"(?i)vulkan|rocm|cuda|hip|metal")
 _AT_MODEL_LOADED_RE = re.compile(r"(?:^|\s)(?:\w+\s*:\s*)?model loaded\b", re.IGNORECASE)
-_AT_BUILD_RE = re.compile(r"\bbuild:\s*(\d+)\s*\(([0-9a-fA-F]{6,})\)")
+_AT_BUILD_RE = re.compile(r"\bbuild:?\s*(\d+)\s*\(([0-9a-fA-F]{6,})\)")
+# Model facts come from print_info lines plus the loader's NextN key-value line.
+_AT_FACT_LINE = ("print_info:", "nextn_predict_layers")
 # The alloc alternative allows only a size/unit run between "alloc…" and "failed".
 _AT_OOM_RE = re.compile(
     r"out of memory|failed to allocate|cudaMalloc failed|OutOfDeviceMemory|not enough (?:memory|space)"
@@ -2886,7 +2888,7 @@ def _autotune_run_iter(model_id: str, fitt_mb: "Optional[int]", extra_args: list
                         fit_applied = False
                     elif "context size reduced from" in line:
                         fit_applied = True
-                if "print_info:" in line:
+                if any(tag in line for tag in _AT_FACT_LINE):
                     facts_lines.append(line)
                 bm = _AT_BUILD_RE.search(line) if not build else None
                 if bm:

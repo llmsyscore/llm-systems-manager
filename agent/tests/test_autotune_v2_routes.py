@@ -105,6 +105,8 @@ def _write_fake_ppl(path: Path, rc: int = 0, crash: bool = False) -> None:
 def test_build_line_regex_and_note(llama):
     m = llama._AT_BUILD_RE.search("build: 6300 (434ddbb) with cc (Ubuntu 13.3.0) for x86_64")
     assert m and f"b{m.group(1)}-{m.group(2)}" == "b6300-434ddbb"
+    m = llama._AT_BUILD_RE.search("common_params_print_info: build 1 (434ddbb) with GNU 14.2.0 for Linux x86_64")
+    assert m and f"b{m.group(1)}-{m.group(2)}" == "b1-434ddbb"
     assert llama._AT_BUILD_RE.search("print_info: build = 3") is None
     llama._autotune_note_build("b1-abcdef0")
     assert llama._llama_build_last == "b1-abcdef0"
@@ -389,6 +391,9 @@ _FAKE_SERVER = """#!/usr/bin/env python3
 import signal, sys, time
 _stop = []
 signal.signal(signal.SIGTERM, lambda *a: _stop.append(1))
+print("0.01.004.218 I cmn  common_param: common_params_print_info: build 1 (434ddbb) with GNU 14.2.0 for Linux x86_64", flush=True)
+print("0.01.174.215 I llama_model_loader: - kv  28:                qwen35.nextn_predict_layers u32              = 1", flush=True)
+print("print_info: n_layer = 48", flush=True)
 print("llama_context: n_ctx_seq (4096)", flush=True)
 print("main: model loaded", flush=True)
 pad = "y" * 900
@@ -436,6 +441,9 @@ def test_run_iter_drains_stdout_while_hold_runs(llama, tmp_path, monkeypatch):
     assert res["model_loaded"] is True and res["hold"] == {"ok": True, "decode_tps": 1.0}
     assert res["actual_free_mb"] == 1024 and res["total_vram_mb"] == 32768
     assert res["ok"] is True and res["ctx_seq"] == 4096
+    # The build and the NextN head are read from the lines this llama.cpp actually prints.
+    assert res["build"] == "b1-434ddbb"
+    assert llama._at.parse_facts(res["facts_lines"])["mtp_layers"] == 1
 
 
 def test_run_iter_without_hold_still_drains(llama, tmp_path, monkeypatch):
