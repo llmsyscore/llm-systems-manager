@@ -942,6 +942,17 @@ describe('Quiet objective (#890)', () => {
 });
 
 describe('draft discovery (#889)', () => {
+  it('drops the run-first advice once a tune has recorded that there is no head', async () => {
+    const win = boot();
+    const realFetch = win.fetch;
+    win.fetch = (u, o) => (String(u).startsWith('/api/tools/runs')
+      ? Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({ runs: [{ tool: 'autotune', model_id: 'org/m:Q4', ok: true, ts: '2026-09-10T10:00:00Z', summary: { objective: 'fit', n_expert: 0, mtp_layers: 0 } }], latest: {} }) })
+      : realFetch(u, o));
+    win.AT.onOpen('org/m:Q4'); for (let i = 0; i < 6; i++) await flush();
+    const note = win.document.getElementById('atDraftNote').textContent;
+    expect(note).toMatch(/no draft on disk/);
+    expect(note).not.toMatch(/Run Autotune once first/);
+  });
   it('needs no draft for a model whose last tune recorded a NextN head', async () => {
     const win = boot();
     const realFetch = win.fetch;
@@ -973,6 +984,8 @@ describe('draft discovery (#889)', () => {
     const row = win.document.getElementById('atDraftRow');
     expect(row.style.display).not.toBe('none');
     expect(win.document.getElementById('atDraftNote').textContent).toMatch(/no draft on disk.*Qwen3-0\.6B-Q4_K_M\.gguf.*0\.4 GB/);
+    // The fixture's ledger row never recorded a head, so the offer carries the run-first advice.
+    expect(win.document.getElementById('atDraftNote').textContent).toMatch(/Run Autotune once first/);
     expect(win.document.getElementById('atDraftDlBtn').style.display).not.toBe('none');
     const spec = [...win.document.querySelectorAll('#atPlanRows .at-plan-r')].find(r => r.textContent.includes('Speculative'));
     expect(spec.textContent).toMatch(/no draft yet/);

@@ -202,6 +202,8 @@
   function gb(n) { return `${(Number(n || 0) / 1e9).toFixed(1)} GB`; }
   // A NextN / MTP head is a built-in draft, known from live facts or the last tune's ledger row.
   function hasMtp(mid) { return Number(factsFor(mid).mtp_layers) > 0; }
+  function mtpKnown(mid) { return factsFor(mid).mtp_layers != null; }
+  const MTP_UNKNOWN = 'Not sure whether this model has a NextN / MTP head? Run Autotune once first: the head is read from the GGUF on load, and a model that has one needs no draft. Download only if that run reports none.';
   function hasDraft(mid) {
     if (hasMtp(mid)) return true;
     const map = (_pre && _pre.drafts_for) || {};
@@ -230,7 +232,10 @@
     } else if (_draftBusy) return;
     row.style.display = '';
     const c = _draft && _draft.ok ? _draft.candidate : null;
-    if (c) { note.textContent = `no draft on disk · ${c.repo} · ${c.file} · ${gb(c.size_bytes)}`; btn.style.display = ''; btn.disabled = false; }
+    if (c) {
+      note.textContent = `no draft on disk · ${c.repo} · ${c.file} · ${gb(c.size_bytes)}` + (mtpKnown(mid) ? '' : ` · ${MTP_UNKNOWN}`);
+      btn.style.display = ''; btn.disabled = false;
+    }
     else { note.textContent = `no draft on disk · ${(_draft && (_draft.reason || _draft.error)) || 'lookup failed'}`; btn.style.display = 'none'; }
     refreshPlan();
   }
