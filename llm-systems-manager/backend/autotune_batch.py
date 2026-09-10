@@ -28,10 +28,6 @@ BATCH_RETENTION = 50
 DIMS_MAX_BYTES = 8192
 CANCELLED = "cancelled"
 
-_ITEM_KEYS = ("agent_id", "hostname", "model_id", "status", "run_id", "run_ts", "started", "finished",
-              "gain_pct", "ctx", "wh_per_ktok", "verify_ok", "applied", "note")
-
-
 # ── validation ──
 
 def validate_body(body: dict, host_ids: set, now: float) -> dict:
@@ -576,3 +572,109 @@ class Runner:
                 b["restarted"].append(names.get(aid) or aid[:8])
             else:
                 b["restart_errors"][names.get(aid) or aid[:8]] = str(err or "unknown error")[:200]
+
+
+# ── routes ──
+
+HOSTS_TIMEOUT_S = 8.0
+LIST_DEFAULT, LIST_MAX = 10, 50
+
+
+def _hosts_with_models(hosts: list, busy: set, models_for: Callable[[str], Optional[list]]) -> list:
+    """Per host: online/busy flags and its configured model ids (parallel, bounded)."""
+    out = [{"agent_id": h["agent_id"], "hostname": h.get("hostname") or h["agent_id"][:8],
+            "online": bool(h.get("online")), "busy": h["agent_id"] in busy, "models": []} for h in hosts]
+    threads = []
+
+    def fill(row):
+        try:
+            row["models"] = sorted(m for m in (models_for(row["agent_id"]) or []) if m != "__DEFAULTS__")
+        except Exception as e:  # noqa: BLE001
+            log.warning("autotune batch: model list for %s failed: %s", row["agent_id"][:8], e)
+    for row in out:
+        if row["online"]:
+            t = threading.Thread(target=fill, args=(row,), daemon=True)
+            t.start()
+            threads.append(t)
+    deadline = time.monotonic() + HOSTS_TIMEOUT_S
+    for t in threads:
+        t.join(max(0.0, deadline - time.monotonic()))
+    out.sort(key=lambda r: (not r["online"], r["hostname"].lower()))
+    return out
+
+
+def register_routes(app, ctx, *, db_path: str, deps: Deps, models_for: Callable[[str], Optional[list]],
+                    now: Callable[[], float] = time.time) -> Runner:
+    from flask import jsonify, request as flask_request
+
+    tls = threading.local()
+
+    def conn_factory():
+        conn = getattr(tls, "conn", None)
+        if conn is None:
+            conn = sqlite3.connect(db_path, timeout=30.0)
+            conn.execute("PRAGMA busy_timeout=5000")
+            tls.conn = conn
+        return conn
+
+    init_table(conn_factory())
+    store = Store(conn_factory)
+    runner = Runner(store, deps)
+    start_lock = threading.Lock()
+    # Task 1 fix round: Runner.recover fails interrupted rows, restarts the hosts
+    # they had stopped, and returns the queued rows to re-arm.
+    for b in runner.recover(now()):
+        runner.start(b)
+
+    @app.route("/api/llm/autotune/batch-hosts")
+    def llm_autotune_batch_hosts():
+        try:
+            hosts = deps.hosts()
+            busy = set(deps.busy_agents() or ())
+        except Exception as e:  # noqa: BLE001
+            return jsonify({"ok": False, "error": f"host list failed: {str(e)[:120]}"}), 502
+        return jsonify({"ok": True, "hosts": _hosts_with_models(hosts, busy, models_for)})
+
+    @app.route("/api/llm/autotune/batch", methods=["POST"])
+    def llm_autotune_batch_start():
+        body = flask_request.get_json(silent=True) or {}
+        hosts = deps.hosts()
+        try:
+            req = validate_body(body, {h["agent_id"] for h in hosts}, now())
+        except ValueError as e:
+            return jsonify({"ok": False, "error": str(e)}), 400
+        with start_lock:
+            cur = store.active()
+            if cur:
+                return jsonify({"ok": False, "error": "a batch is already queued or running", "batch_id": cur["id"]}), 409
+            b = new_batch(req, {h["agent_id"]: h.get("hostname") for h in hosts}, now())
+            store.save(b)
+        runner.start(b)
+        return jsonify({"ok": True, "batch": b})
+
+    @app.route("/api/llm/autotune/batch/<batch_id>")
+    def llm_autotune_batch_get(batch_id):
+        b = store.get(batch_id[:32])
+        if not b:
+            return jsonify({"ok": False, "error": "not found"}), 404
+        return jsonify({"ok": True, "batch": b})
+
+    @app.route("/api/llm/autotune/batches")
+    def llm_autotune_batches():
+        try:
+            limit = int(flask_request.args.get("limit") or LIST_DEFAULT)
+        except ValueError:
+            limit = LIST_DEFAULT
+        return jsonify({"ok": True, "batches": store.recent(max(1, min(LIST_MAX, limit)))})
+
+    @app.route("/api/llm/autotune/batch/<batch_id>/cancel", methods=["POST"])
+    def llm_autotune_batch_cancel(batch_id):
+        b = store.get(batch_id[:32])
+        if not b:
+            return jsonify({"ok": False, "error": "not found"}), 404
+        status = runner.cancel(b["id"])
+        if status is None:
+            return jsonify({"ok": False, "error": f"batch is {b['status']}"}), 409
+        return jsonify({"ok": True, "status": status})
+
+    return runner
