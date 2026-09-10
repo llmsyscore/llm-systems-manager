@@ -108,11 +108,16 @@
     if (!quiet || !inp) return;
     const L = typeof layout !== 'undefined' ? layout : null;
     const saved = L && Number.isFinite(L.atPowerCap) ? L.atPowerCap : null;
+    // Seeded from the busiest hour's draw under load; the hourly mean only stands in when no load was ever metered.
+    const load = _peak && Number.isFinite(_peak.peak_active_w) ? _peak.peak_active_w : null;
     const peak = _peak && Number.isFinite(_peak.peak_w) ? _peak.peak_w : null;
-    if (!inp.value) inp.value = saved != null ? saved : (peak != null ? Math.round(0.8 * peak) : '');
-    if (hint) hint.textContent = peak != null
-      ? `peak ${Math.round(peak)} W over ${_peak.hours} h of history · 80 % is ${Math.round(0.8 * peak)} W`
-      : 'no power history on this host yet — enter the cap by hand';
+    const seed = load != null ? Math.round(0.9 * load) : (peak != null ? Math.round(peak) : null);
+    if (!inp.value) inp.value = saved != null ? saved : (seed != null ? seed : '');
+    if (hint) hint.textContent = load != null
+      ? `busiest hour drew ${Math.round(load)} W under load (${_peak.active_hours} h metered) · 90 % is ${seed} W`
+      : peak != null
+        ? `no load-draw history yet · hourly peak ${Math.round(peak)} W — set the cap below what the bench draws`
+        : 'no power history on this host yet — enter the cap by hand';
   }
   async function loadPeak() {
     try { _peak = await fetch('/api/energy/host-peak').then(r => r.json()); } catch (_) { _peak = null; }
@@ -165,6 +170,7 @@
       } else prev.style.display = 'none';
     }
     syncVerify();
+    if (_pre) seedDrafts(_pre.drafts, primaryModel());
     refreshPlan();
     syncDraft();
   }
@@ -176,13 +182,23 @@
     host.innerHTML = all.map(n => `<span class="bl-chip${on.includes(n) ? ' on' : ''}" data-v="${n}">${n}</span>`).join('');
     const hint = $('atThreadHint'); if (hint) hint.textContent = `Physical cores on this host: ${p} (${l} logical). Batch threads are set separately when MoE offload is on.`;
   }
-  function seedDrafts(drafts) {
+  function familyPrefix(name) { const b = String(name || '').split('/').pop(); const m = b.match(/[-_](\d+(?:\.\d+)?)[bB](?=[-_.]|$)/); return (m ? b.slice(0, m.index) : b).toLowerCase(); }
+  // Only same-family files small enough for auto-detect are offered; the rest can never be a draft for this model.
+  function draftsFor(drafts, mid) {
+    if (!mid) return drafts || [];
+    const fam = familyPrefix(mid.split(':')[0]);
+    const size = _pre && _pre.sizes ? Number(_pre.sizes[mid]) : NaN;
+    return (drafts || []).filter(d => familyPrefix(d.repo) === fam && !/dflash/i.test(d.file || '')
+      && (!(size > 0) || Number(d.size || 0) <= size / 8));
+  }
+  function seedDrafts(drafts, mid) {
     const sel = $('atDraftSel'); if (!sel) return;
     const cur = sel.value;
     sel.innerHTML = '<option value="auto">auto</option><option value="none">none</option>' +
-      (drafts || []).map(d => `<option value="${esc(d.path)}">${esc(d.file)} · ${esc(d.repo)}</option>`).join('');
+      draftsFor(drafts, mid).map(d => `<option value="${esc(d.path)}">${esc(d.file)} · ${esc(d.repo)}</option>`).join('');
     sel.value = [...sel.options].some(o => o.value === cur) ? cur : 'auto';
   }
+  function manualDraft() { const v = ($('atDraftSel') || {}).value; return !!v && v !== 'auto' && v !== 'none'; }
   function gb(n) { return `${(Number(n || 0) / 1e9).toFixed(1)} GB`; }
   function hasDraft(mid) {
     const f = _facts[mid];
@@ -195,7 +211,7 @@
     const row = $('atDraftRow'), note = $('atDraftNote'), btn = $('atDraftDlBtn');
     if (!row) return;
     const mid = primaryModel();
-    if (!mid || hasDraft(mid) !== false || _dl) { if (!_dl) row.style.display = 'none'; return; }
+    if (!mid || hasDraft(mid) !== false || manualDraft() || _dl) { if (!_dl) row.style.display = 'none'; return; }
     if (_draftFor !== mid) {
       const gen = ++_draftGen;
       _draftFor = mid; _draft = null; _draftBusy = true;
@@ -237,7 +253,7 @@
         _dl = null; _draftFor = '';
         if (!msg.ok) { note.textContent = `download failed (exit ${msg.rc ?? msg.error ?? '?'})`; btn.disabled = false; return; }
         const pre = await fetch('/api/llm/autotune/preflight').then(x => x.json()).catch(() => null);
-        if (pre && pre.ok) { _pre = pre; seedDrafts(pre.drafts); }
+        if (pre && pre.ok) { _pre = pre; seedDrafts(pre.drafts, primaryModel()); }
         syncDraft();
       }
     };
@@ -384,7 +400,7 @@
       if (ev.target.id === 'atPowerCap') { const L = typeof layout !== 'undefined' ? layout : null; if (L) { L.atPowerCap = capValue(); try { saveLayout(); } catch (_) {} } return; }
       if (ev.target.closest('.at-dim-b, .at-grp-b')) refreshPlan();
     });
-    mod.addEventListener('change', ev => { if (ev.target.closest('.at-dim-b, .at-grp-b')) refreshPlan(); });
+    mod.addEventListener('change', ev => { if (ev.target.id === 'atDraftSel') syncDraft(); if (ev.target.closest('.at-dim-b, .at-grp-b')) refreshPlan(); });
   }
   async function onOpen(preselect, opts) {
     wire();
@@ -401,7 +417,7 @@
     _models = (models && models.models) || [];
     _pre = pre && pre.ok ? pre : _pre;
     _runs = (runs && runs.runs) || [];
-    if (_pre) { seedThreads(_pre.cores); seedDrafts(_pre.drafts); }
+    if (_pre) seedThreads(_pre.cores);
     renderModels(preselect);
     syncDraft();
     syncCap();
