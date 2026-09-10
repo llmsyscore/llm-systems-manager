@@ -481,7 +481,8 @@ def test_ledger_summary(at):
     assert s == {"objective": "balanced", "mode": "tune", "llama_build": None, "ctx_size": 65536, "free_mb": 1012,
                  "decode_tps": 142.6, "prefill_tps": 900.0, "agg_tps": 150.0,
                  "gain_pct": pytest.approx(41.2, abs=0.1), "stages_done": 1, "verify_ok": True,
-                 "wh_per_ktok": 0.24, "n_expert": 128, "kl": None, "kl_pass": None, "regressed": None}
+                 "wh_per_ktok": 0.24, "n_expert": 128, "kl": None, "kl_pass": None, "regressed": None,
+                 "avg_w": None, "power_cap_w": None}
 
 
 def test_kl_args_keeps_only_perplexity_safe_flags(at):
@@ -606,3 +607,59 @@ def test_ledger_summary_carries_mode_build_and_kl(at):
     s = at.ledger_summary(done)
     assert s["mode"] == "quality" and s["llama_build"] == "b10809-5266f24"
     assert s["kl"] == 0.011 and s["kl_pass"] is True
+
+
+def test_quiet_objective_needs_a_cap_and_applies_its_defaults(at):
+    req = at.validate_request({"model_ids": ["m"], "objective": "quiet", "power_cap_w": 250})
+    assert req["power_cap_w"] == 250.0
+    assert req["dims"]["kv"]["on"] is False and req["dims"]["spec"]["on"] is False and req["dims"]["sampling"]["on"] is False
+    assert req["dims"]["threads"]["on"] is True and req["dims"]["moe"]["on"] is True
+    assert req["dims"]["slots"] == {"on": True, "candidates": [1, 2, 4], "min_ctx_per_slot": 32768}
+    with pytest.raises(ValueError):
+        at.validate_request({"model_ids": ["m"], "objective": "quiet"})
+    with pytest.raises(ValueError):
+        at.validate_request({"model_ids": ["m"], "objective": "quiet", "power_cap_w": 5001})
+    with pytest.raises(ValueError):
+        at.validate_request({"model_ids": ["m"], "objective": "quiet", "power_cap_w": 19})
+
+
+def test_quiet_defaults_yield_to_an_explicit_dim(at):
+    req = at.validate_request({"model_ids": ["m"], "objective": "quiet", "power_cap_w": 250,
+                               "dims": {"kv": {"on": True}, "slots": {"candidates": [1, 8]}}})
+    assert req["dims"]["kv"]["on"] is True
+    assert req["dims"]["slots"]["candidates"] == [1, 8]
+    assert req["dims"]["spec"]["on"] is False
+
+
+def test_other_objectives_carry_no_cap(at):
+    req = at.validate_request({"model_ids": ["m"], "objective": "speed", "power_cap_w": 250})
+    assert req["power_cap_w"] is None
+
+
+QUIET = [
+    {"value": 8, "ok": True, "decode_tps": 90.0, "avg_w": 180.0},
+    {"value": 16, "ok": True, "decode_tps": 101.0, "avg_w": 240.0},
+    {"value": 32, "ok": True, "decode_tps": 104.0, "avg_w": 310.0},
+    {"value": 48, "ok": False, "decode_tps": None, "avg_w": None},
+]
+
+
+def test_choose_quiet_prefers_the_fastest_candidate_under_the_cap(at):
+    assert at.choose_quiet(QUIET, 250.0) == (16, "101.0 t/s · 240 W under the 250 W cap", False)
+
+
+def test_choose_quiet_falls_back_to_the_lowest_draw_and_flags_it(at):
+    assert at.choose_quiet(QUIET, 150.0) == (8, "no candidate under the 150 W cap · lowest draw 180 W", True)
+
+
+def test_choose_quiet_without_power_readings_ranks_by_speed(at):
+    rows = [dict(r, avg_w=None) for r in QUIET]
+    assert at.choose_quiet(rows, 250.0) == (32, "104.0 t/s · no power reading on this host", False)
+    assert at.choose_quiet([dict(QUIET[3])], 250.0) == (None, "no candidate loaded", False)
+
+
+def test_ledger_summary_carries_the_quiet_fields(at):
+    done = {"objective": "quiet", "power_cap_w": 250.0, "after": {"decode_tps": 90.0, "avg_w": 212.5}, "stages": []}
+    s = at.ledger_summary(done)
+    assert s["avg_w"] == 212.5 and s["power_cap_w"] == 250.0
+    assert at.ledger_summary({"objective": "fit", "stages": []})["avg_w"] is None

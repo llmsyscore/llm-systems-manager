@@ -749,7 +749,8 @@ def test_quality_mode_dispatches_run_quality_and_posts_quality_ledger(llama, tmp
     assert posted == [("quality", {"objective": None, "mode": "quality", "llama_build": "b10850-abc",
                                    "ctx_size": None, "free_mb": None, "decode_tps": None, "prefill_tps": None, "agg_tps": None, "gain_pct": None,
                                    "stages_done": 0, "verify_ok": None, "wh_per_ktok": None, "n_expert": None,
-                                   "kl": 0.01, "kl_pass": True, "regressed": None})]
+                                   "kl": 0.01, "kl_pass": True, "regressed": None,
+                                   "avg_w": None, "power_cap_w": None})]
 
 
 def test_preflight_reports_llama_build(llama, tmp_path, monkeypatch):

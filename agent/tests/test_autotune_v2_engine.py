@@ -581,3 +581,67 @@ def test_quality_run_honours_cancel(at):
                                "overrides": {"threads": "8"}})
     doc = at.run_quality("org/m:Q4", {}, req, KLFake(), lambda m: None, lambda: True, {"run_id": "q4"})
     assert doc["ok"] is False and doc["cancelled"] is True and doc["stop_reason"] == "cancelled"
+
+
+class QuietFake(Fake):
+    """Draw scales with threads: 8 → 180 W, 16 → 240 W, 32 → 310 W over a 20 s stick."""
+    W = {"8": 180.0, "16": 240.0, "32": 310.0}
+
+    def load(self, args, ctx, measure):
+        self._last_threads = _val(args, "--threads", "16")
+        return super().load(args, ctx, measure)
+
+    def energy_stop(self):
+        self.energy.append("stop")
+        return self.W.get(self._last_threads, 240.0) * 20.0 / 3600.0, "psu"
+
+
+def _quiet_body(cap, **extra):
+    body = {"model_ids": ["org/m:Q4"], "objective": "quiet", "power_cap_w": cap,
+            "dims": {"threads": {"candidates": [8, 16, 32]}, "slots": {"candidates": [1]}, "moe": {"on": False}}}
+    body.update(extra)
+    return body
+
+
+def test_quiet_run_meters_every_measured_candidate(at):
+    fake = QuietFake()
+    doc, events = _run(at, fake, _quiet_body(250), section={"threads": "32"})
+    threads = [e for e in events if e["type"] == "candidate_result" and e["stage"] == "threads"]
+    assert [round(e["avg_w"]) for e in threads] == [180, 240, 310]
+    assert all(e["w_source"] == "psu" for e in threads)
+    assert fake.energy.count("start") == 1 + len(threads) + 1 + 1     # context baseline + threads + slots(1) + verify
+
+
+def test_quiet_run_picks_the_fastest_under_the_cap_and_reports_draw(at):
+    doc, _ = _run(at, QuietFake(), _quiet_body(250), section={"threads": "32"})
+    assert doc["ok"] is True and doc["power_cap_w"] == 250.0
+    th = next(c for c in doc["changes"] if c["key"] == "threads")
+    assert th["recommended"] == "16"
+    assert "under the 250 W cap" in th["evidence"]
+    assert doc["after"]["avg_w"] == pytest.approx(240.0) and doc["over_cap"] is False
+
+
+def test_quiet_run_over_cap_keeps_the_lowest_draw_and_flags_it(at):
+    doc, _ = _run(at, QuietFake(), _quiet_body(150), section={"threads": "32"})
+    th = next(c for c in doc["changes"] if c["key"] == "threads")
+    assert th["recommended"] == "8"
+    assert "no candidate under the 150 W cap" in th["evidence"]
+    assert doc["over_cap"] is True
+
+
+def test_quiet_run_measures_moe_offload_even_when_the_model_fits(at):
+    fake = QuietFake(facts={"n_expert": 128, "n_layer": 48, "mtp_layers": 0})
+    body = _quiet_body(250, dims={"threads": {"candidates": [16]}, "slots": {"candidates": [1]},
+                                  "moe": {"on": True, "min": 0, "max": 16}})
+    doc, events = _run(at, fake, body)
+    moe = [e for e in events if e["type"] == "candidate_result" and e["stage"] == "moe"]
+    assert [e["value"] for e in moe] == [0, 4, 8, 16]
+    assert all(e["avg_w"] is not None for e in moe)
+    assert next(e for e in events if e["type"] == "stage_done" and e["stage"] == "moe")["choice"] is not None
+
+
+def test_non_quiet_runs_meter_only_the_verify_stage(at):
+    fake = Fake()
+    _run(at, fake, {"model_ids": ["org/m:Q4"], "objective": "speed",
+                    "dims": {"threads": {"candidates": [8, 16]}, "slots": {"on": False}, "spec": {"on": False}, "kv": {"on": False}}})
+    assert fake.energy == ["start", "stop"]

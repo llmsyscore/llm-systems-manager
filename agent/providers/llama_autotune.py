@@ -8,7 +8,11 @@ import time
 from pathlib import Path
 from typing import Any, Callable, Iterable, Optional
 
-OBJECTIVES = ("fit", "speed", "balanced", "serve")
+OBJECTIVES = ("fit", "speed", "balanced", "serve", "quiet")
+POWER_CAP_RANGE = (20.0, 5000.0)
+# Dims a quiet run switches off unless the request names them.
+QUIET_OFF_DIMS = ("kv", "spec", "sampling")
+QUIET_SLOTS = [1, 2, 4]
 MODES = ("tune", "verify", "quality")
 BASELINE_KEYS = ("decode_tps", "prefill_tps", "agg_tps", "ctx", "free_mb")
 # config.ini keys the quality guard may override (what llama-perplexity accepts).
@@ -215,6 +219,16 @@ def validate_request(body: dict, *, cache_root: Optional[Path] = None, v1_args=N
         elif name == "sampling":
             d["overwrite"] = bool(g.get("overwrite", False))
     out = {"model_ids": ids, "objective": objective, "budget_min": budget, "dims": dims}
+    out["power_cap_w"] = None
+    if objective == "quiet":
+        if body.get("power_cap_w") is None:
+            raise ValueError("power_cap_w required for the quiet objective")
+        out["power_cap_w"] = _float(body["power_cap_w"], "power_cap_w", *POWER_CAP_RANGE)
+        for name in QUIET_OFF_DIMS:
+            if "on" not in (given.get(name) or {}):
+                dims[name]["on"] = False
+        if "candidates" not in (given.get("slots") or {}):
+            dims["slots"]["candidates"] = list(QUIET_SLOTS)
     mode = str(body.get("mode") or "tune")
     if mode not in MODES:
         raise ValueError("mode must be one of " + ", ".join(MODES))
@@ -526,6 +540,23 @@ def choose_slots(objective: str, results: list) -> tuple[Optional[int], str]:
     return int(best["value"]), f"max aggregate {best.get('agg_tps') or 0:.0f} t/s"
 
 
+def choose_quiet(results: list, cap: float) -> tuple[Optional[Any], str, bool]:
+    """Fastest candidate whose average draw is under the cap; else the lowest draw, flagged over_cap."""
+    ok = _ok(results)
+    if not ok:
+        return None, "no candidate loaded", False
+    read = [r for r in ok if isinstance(r.get("avg_w"), (int, float))]
+    if not read:
+        best = max(ok, key=lambda r: r.get("decode_tps") or 0)
+        return best["value"], f"{best['decode_tps']:.1f} t/s · no power reading on this host", False
+    under = [r for r in read if r["avg_w"] <= cap]
+    if under:
+        best = max(under, key=lambda r: r.get("decode_tps") or 0)
+        return best["value"], f"{best['decode_tps']:.1f} t/s · {best['avg_w']:.0f} W under the {cap:.0f} W cap", False
+    low = min(read, key=lambda r: r["avg_w"])
+    return low["value"], f"no candidate under the {cap:.0f} W cap · lowest draw {low['avg_w']:.0f} W", True
+
+
 def bisect_smallest(lo: int, hi: int, fits: Callable[[int], bool]) -> tuple[Optional[int], list]:
     """Smallest n in [lo, hi] with fits(n) true, assuming fits is monotonic."""
     tried: list = []
@@ -608,7 +639,8 @@ def ledger_summary(done: dict) -> dict:
             "stages_done": sum(1 for s in stages if s.get("status") == "done"),
             "verify_ok": (done.get("verify") or {}).get("ok"), "wh_per_ktok": after.get("wh_per_ktok"),
             "n_expert": (done.get("facts") or {}).get("n_expert"),
-            "kl": guard.get("kl"), "kl_pass": guard.get("pass"), "regressed": done.get("regressed")}
+            "kl": guard.get("kl"), "kl_pass": guard.get("pass"), "regressed": done.get("regressed"),
+            "avg_w": after.get("avg_w"), "power_cap_w": done.get("power_cap_w")}
 
 
 _KL_SAFE_VALUE = {"--cache-type-k", "--cache-type-v", "-ctk", "-ctv", "--threads", "-t", "--threads-batch", "-tb",
@@ -696,6 +728,8 @@ class _Run:
         self.backend, self.put, self.cancelled, self.env, self.clock = backend, put, cancelled, env, clock
         self.dims, self.objective = req["dims"], req["objective"]
         self.mode = req.get("mode") or "tune"
+        self.power_cap_w: Optional[float] = req.get("power_cap_w")
+        self.over_cap: Optional[bool] = None
         self.regressed: Optional[bool] = None
         self.budget_s = int(req["budget_min"]) * 60
         self.runtime, self.perplexity = bool(env.get("runtime")), bool(env.get("perplexity"))
@@ -790,16 +824,28 @@ class _Run:
         self.note_facts(res.get("facts"))
         return res
 
-    def measure(self, extra: dict, ctx: Optional[int], concurrency: int = 1, limit: int = STICK_LIMIT) -> tuple[dict, dict]:
+    def measure(self, extra: dict, ctx: Optional[int], concurrency: int = 1, limit: int = STICK_LIMIT,
+                energy: bool = False) -> tuple[dict, dict]:
         m = {"concurrency": int(concurrency), "limit": int(limit)} if self.runtime else None
+        meter = self.runtime and (energy or self.objective == "quiet")
+        if meter:
+            self.backend.energy_start()
         res = self.load(extra, ctx, m)
-        return res, (res.get("stick") or {})
+        st = res.get("stick") or {}
+        if meter:
+            wh, src = self.backend.energy_stop()
+            secs = st.get("seconds") or 0
+            st["energy_wh"], st["energy_source"] = wh, src
+            st["avg_w"] = (wh / (secs / 3600.0)) if wh is not None and secs > 0 else None
+            st["w_source"] = src if st["avg_w"] is not None else None
+        return res, st
 
     def result(self, stage: str, value: Any, res: dict, **extra) -> None:
         st = res.get("stick") or {}
         self.emit("candidate_result", stage=stage, value=value, ok=bool(res.get("ok")) and (not st or bool(st.get("ok"))),
                   ctx=res.get("ctx"), free_mb=res.get("free_mb"), decode_tps=st.get("decode_tps"),
                   agg_tps=st.get("agg_tps"), accept=st.get("accept"), kl=extra.get("kl"),
+                  avg_w=st.get("avg_w"), w_source=st.get("w_source"),
                   guard_pass=extra.get("guard_pass"), error=res.get("error") or st.get("error"))
 
     def current_window(self) -> Optional[tuple]:
@@ -949,6 +995,9 @@ class _Run:
         if int(self.facts.get("n_expert") or 0) <= 1:
             self.skip("moe", "not_moe")
             return
+        if self.objective == "quiet":
+            self.stage_moe_quiet()
+            return
         floor = self.floor_target()
         if self.ctx_total and self.ctx_total >= floor:
             self.skip("moe", "fits")
@@ -988,12 +1037,45 @@ class _Run:
         self.ev("ctx-size", f"{floor} ctx reached with {n} expert layers on CPU")
         self.end("moe", mark, n, "smallest offload that fits")
 
+    def stage_moe_quiet(self) -> None:
+        """Measures a few expert-offload counts for draw; the fastest under the cap wins."""
+        if not self.need_runtime("moe"):
+            return
+        d = self.dims["moe"]
+        lo, hi = max(0, int(d["min"])), int(d["max"])
+        cands = sorted({lo, lo + (hi - lo) // 4, lo + (hi - lo) // 2, hi})
+        est = estimate("moe", len(cands), self.load_s, self.stick_s)
+        if not self.within_budget("moe", est):
+            return
+        mark = self.begin("moe", cands, est)
+        results = []
+        for n in cands:
+            self.check_cancel()
+            self.emit("candidate_start", stage="moe", value=n)
+            res, st = self.measure({"n-cpu-moe": str(n)}, self.ctx_total)
+            results.append({"value": n, "ok": bool(res.get("ok")) and bool(st.get("ok")),
+                            "decode_tps": st.get("decode_tps"), "avg_w": st.get("avg_w")})
+            self.result("moe", n, res)
+        choice, reason, _ = choose_quiet(results, float(self.power_cap_w))
+        if choice is None:
+            self.end("moe", mark, None, reason)
+            return
+        best = next(r for r in results if r["value"] == choice)
+        if str(choice) != self.cur("n-cpu-moe", "0"):
+            self.rec["n-cpu-moe"] = str(choice)
+            self.ev("n-cpu-moe", reason, gain_pct(best["decode_tps"], self.decode_now))
+        self.decode_now = best["decode_tps"] or self.decode_now
+        self.end("moe", mark, choice, reason)
+
     def stage_threads(self) -> None:
         if not self.on("threads") or not self.need_runtime("threads"):
             return
         d = self.dims["threads"]
         phys = int((self.env.get("cores") or {}).get("physical") or 0)
-        cands = list(d["candidates"]) or sorted({max(1, phys // 2), max(1, phys * 3 // 4), max(1, phys)})
+        if self.objective == "quiet":
+            cands = list(d["candidates"]) or sorted({max(1, phys // 2), max(1, phys), max(1, phys + 2)})
+        else:
+            cands = list(d["candidates"]) or sorted({max(1, phys // 2), max(1, phys * 3 // 4), max(1, phys)})
         est = estimate("threads", len(cands), self.load_s, self.stick_s)
         if not self.within_budget("threads", est):
             return
@@ -1004,9 +1086,13 @@ class _Run:
             self.emit("candidate_start", stage="threads", value=t)
             res, st = self.measure({"threads": str(t)}, self.ctx_total)
             results.append({"value": t, "ok": bool(res.get("ok")) and bool(st.get("ok")),
-                            "decode_tps": st.get("decode_tps"), "prefill_tps": st.get("prefill_tps")})
+                            "decode_tps": st.get("decode_tps"), "prefill_tps": st.get("prefill_tps"),
+                            "avg_w": st.get("avg_w")})
             self.result("threads", t, res)
-        choice, reason = choose_threads(results)
+        if self.objective == "quiet":
+            choice, reason, _ = choose_quiet(results, float(self.power_cap_w))
+        else:
+            choice, reason = choose_threads(results)
         if choice is None:
             self.end("threads", mark, None, reason)
             return
@@ -1162,9 +1248,13 @@ class _Run:
             self.emit("candidate_start", stage="slots", value=c)
             res, st = self.measure({"parallel": str(c)}, self.ctx_total, concurrency=int(c), limit=max(STICK_LIMIT, 2 * int(c)))
             results.append({"value": c, "ok": bool(res.get("ok")) and bool(st.get("ok")),
-                            "decode_tps": st.get("decode_tps"), "agg_tps": st.get("agg_tps")})
+                            "decode_tps": st.get("decode_tps"), "agg_tps": st.get("agg_tps"),
+                            "avg_w": st.get("avg_w")})
             self.result("slots", c, res)
-        choice, reason = choose_slots(self.objective, results)
+        if self.objective == "quiet":
+            choice, reason, _ = choose_quiet(results, float(self.power_cap_w))
+        else:
+            choice, reason = choose_slots(self.objective, results)
         if choice is None:
             self.end("slots", mark, None, reason)
             return
@@ -1203,10 +1293,8 @@ class _Run:
             conc = self.concurrency
             limit = verify_limit(self.decode_now, self.prefill_now, conc)
             self.emit("candidate_start", stage="verify", value=attempt)
-            if self.runtime:
-                self.backend.energy_start()
-            res, st = self.measure({}, self.ctx_total, concurrency=conc, limit=limit)
-            wh, src = self.backend.energy_stop() if self.runtime else (None, None)
+            res, st = self.measure({}, self.ctx_total, concurrency=conc, limit=limit, energy=True)
+            wh, src = st.get("energy_wh"), st.get("energy_source")
             self.result("verify", attempt, res)
             free = res.get("free_mb")
             free_ok = free is None or int(free) >= target - tol
@@ -1223,7 +1311,10 @@ class _Run:
                               "ctx": self.ctx_total, "agg_tps": st.get("agg_tps"), "free_mb": free,
                               "concurrency": conc, "accept": st.get("accept"),
                               "wh_per_ktok": (wh / (tokens / 1000.0)) if wh is not None and tokens > 0 else None,
-                              "energy_wh": wh, "energy_source": src}
+                              "energy_wh": wh, "energy_source": src,
+                              "avg_w": st.get("avg_w"), "w_source": st.get("w_source")}
+                if self.power_cap_w is not None and st.get("avg_w") is not None:
+                    self.over_cap = float(st["avg_w"]) > float(self.power_cap_w)
                 self.verify = {"ok": True, "seconds": st.get("seconds") or 0, "free_mb": free, "dropped": dropped,
                                "reason": None, "warning": warning}
                 self.end("verify", mark, "pass", f"{conc} slot(s) · {limit} requests" if self.runtime else "load only")
@@ -1305,6 +1396,7 @@ class _Run:
                "mode": self.mode, "llama_build": self.env.get("llama_build") or None, "regressed": self.regressed,
                "facts": self.facts, "changes": changes, "before": self.before, "after": self.after,
                "guard": self.guard, "verify": self.verify, "stages": self.stages,
+               "power_cap_w": self.power_cap_w, "over_cap": self.over_cap,
                "stop_reason": self.stop_reason, "elapsed_s": int(self.elapsed()), "loads": self.loads}
         self.put(doc)
         return doc
