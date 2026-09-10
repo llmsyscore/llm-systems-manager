@@ -959,6 +959,29 @@ describe('draft discovery (#889)', () => {
     expect(win.document.getElementById('atDraftNote').textContent).toMatch(/Qwen3-0\.6B-Q4_K_M\.gguf/);
     expect(win.document.getElementById('atDraftDlBtn').style.display).not.toBe('none');
   });
+  it('never renders or downloads one model\'s candidate under another', async () => {
+    const win = boot(); const real = win.fetch; const pending = {};
+    win.__pre = { ...PRE, drafts_for: { 'org/m:Q4': null, 'org/big:Q4': null } };
+    win.fetch = (u, o) => {
+      const s = String(u);
+      if (!s.startsWith('/api/llm/draft-candidates')) return real(u, o);
+      const mid = decodeURIComponent(s.split('model_id=')[1]);
+      return new Promise(r => { pending[mid] = () => r({ ok: true, json: () => Promise.resolve({ ok: true, candidate: { repo: `repo-for-${mid}`, file: `${mid}.gguf`, size_bytes: 1e9 } }) }); });
+    };
+    win.AT.onOpen('org/m:Q4'); for (let i = 0; i < 6; i++) await flush();
+    win.document.querySelector('#atModelList .mc-toggle[data-model="org/big:Q4"]').click();
+    win.document.querySelector('#atModelList .mc-toggle[data-model="org/m:Q4"]').click();
+    await flush();
+    pending['org/m:Q4'](); for (let i = 0; i < 4; i++) await flush();
+    win.AT.onEvent({ type: 'facts', model_id: 'org/other', n_expert: 0 }); await flush();
+    const note = win.document.getElementById('atDraftNote');
+    expect(note.textContent).not.toContain('org/m:Q4.gguf');
+    expect(note.textContent).toMatch(/looking for one on Hugging Face/);
+    await win.AT.downloadDraft(); await flush();
+    expect(win.__fetches.find(([u]) => u === '/api/llm/download')).toBeUndefined();
+    pending['org/big:Q4'](); for (let i = 0; i < 4; i++) await flush();
+    expect(note.textContent).toContain('org/big:Q4.gguf');
+  });
   it('downloads with one click, streams progress into the row, and refreshes the draft list on completion', async () => {
     const win = await opened();
     await win.AT.downloadDraft(); await flush();

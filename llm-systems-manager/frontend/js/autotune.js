@@ -25,7 +25,7 @@
   let _status = {};        // model_id → /api/llm/autotune/status item
   let _peak = null;        // /api/energy/host-peak payload, or null
   let _slot = null, _busyOn = false, _statusErr = false;
-  let _draft = null, _draftFor = '', _draftBusy = false, _dl = null;
+  let _draft = null, _draftFor = '', _draftGen = 0, _draftBusy = false, _dl = null;
   // Newest row per model wins; the route returns one row per (agent, model).
   async function loadStatus() {
     _status = {}; _statusErr = false;
@@ -197,11 +197,16 @@
     const mid = primaryModel();
     if (!mid || hasDraft(mid) !== false || _dl) { if (!_dl) row.style.display = 'none'; return; }
     if (_draftFor !== mid) {
+      const gen = ++_draftGen;
       _draftFor = mid; _draft = null; _draftBusy = true;
       row.style.display = ''; note.textContent = 'no draft on disk · looking for one on Hugging Face …'; btn.style.display = 'none';
-      try { _draft = await fetch('/api/llm/draft-candidates?model_id=' + encodeURIComponent(mid)).then(r => r.json()); } catch (_) { _draft = null; }
+      let d = null;
+      try { d = await fetch('/api/llm/draft-candidates?model_id=' + encodeURIComponent(mid)).then(r => r.json()); } catch (_) { d = null; }
+      if (gen !== _draftGen) return;                                       // a newer lookup owns the shared state
       _draftBusy = false;
-      if (primaryModel() !== mid || _dl) return;
+      if (primaryModel() !== mid) { _draftFor = ''; return; }
+      _draft = d;
+      if (_dl) return;
       if (hasDraft(mid) !== false) { row.style.display = 'none'; return; }
     } else if (_draftBusy) return;
     row.style.display = '';
@@ -212,7 +217,7 @@
   }
   async function downloadDraft() {
     const c = _draft && _draft.candidate, note = $('atDraftNote'), btn = $('atDraftDlBtn');
-    if (!c || _dl || typeof openAgentSse !== 'function') return;
+    if (!c || _dl || _draftFor !== primaryModel() || typeof openAgentSse !== 'function') return;
     btn.disabled = true;
     let r;
     try { r = await fetch('/api/llm/download', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ repo: c.repo, patterns: [c.file] }) }).then(x => x.json()); }
