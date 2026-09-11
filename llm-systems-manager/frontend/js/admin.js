@@ -282,7 +282,7 @@ function adminSelectProvider(name) {
   adminRenderRoutingSummary();
 }
 
-// Routing header summary: gateway/autopilot state plus pool, pin and proposal counts.
+// Routing header summary: gateway/autopilot state plus pool, pin and plan counts.
 function adminRenderRoutingSummary() {
   const el = document.getElementById('rtSummary');
   if (!el) return;
@@ -296,7 +296,7 @@ function adminRenderRoutingSummary() {
   const parts = [];
   if (gw) parts.push(`<span>gateway ${onOff(gw.enabled)}</span>`);
   parts.push(`<span>autopilot ${onOff(ap && ap.enabled)}</span>`);
-  parts.push(`<span><b>${props}</b> proposal${props === 1 ? '' : 's'}</span>`);
+  parts.push(`<span><b>${props}</b> planned</span>`);
   parts.push(`<span><b>${pool}</b> in pool</span>`);
   parts.push(`<span><b>${pins}</b> pin${pins === 1 ? '' : 's'}</span>`);
   el.innerHTML = parts.join('');

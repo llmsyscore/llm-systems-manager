@@ -203,6 +203,12 @@
 #admin-routing .tbl.ap .unit { font-family: var(--font-mono); color: var(--fg-faint); }
 
 #admin-routing .rt-prop { display: flex; flex-direction: column; }
+/* provider segment sits on its own strip above Pool order (#909) */
+#admin-routing .rt-provbar { display: flex; align-items: center; gap: 10px; margin: 16px 0 8px; }
+#admin-routing .rt-provbar .meta { font-family: var(--font-mono); font-size: 11px; color: var(--fg-dim); }
+/* card-header toggle tips anchor to the toggle and open upward (#909) */
+#admin-routing .card-h .mc-toggle[data-tip] { position: relative; }
+#admin-routing .card-h .mc-toggle[data-tip]::after { top: auto; bottom: calc(100% + 6px); right: auto; left: 0; white-space: normal; width: max-content; max-width: 440px; }
 #admin-routing .rt-pp { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 6px 18px; padding: 12px 16px; border-bottom: 1px solid var(--border-soft); align-items: center; }
 #admin-routing .rt-pp:last-child { border-bottom: 0; }
 #admin-routing .rt-pp .why { grid-column: 1; grid-row: 1; font-size: 12.5px; color: var(--fg); line-height: 1.45; }

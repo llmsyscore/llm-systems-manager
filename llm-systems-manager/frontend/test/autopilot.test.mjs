@@ -181,7 +181,36 @@ describe("plan now surfaces the tick result (#472)", () => {
     }));
     await AP.planNow();
     expect(document.getElementById("apSaveStatus").textContent)
-      .toBe("plan: 2 action(s), 1 proposal(s) pending");
+      .toBe("plan: 2 action(s), 1 waiting for approval");
+  });
+  it("failover dropdown labels semi as plan, not propose (#909)", () => {
+    const row = AP.entryRow(E);
+    const labels = [...row.querySelector('select[data-field="failover"]').options].map(o => o.text);
+    expect(labels).toEqual(["semi (plan)", "auto (execute)"]);
+  });
+});
+
+describe("plan card visibility (#909)", () => {
+  const st = (fo) => ({enabled: false, hosts: {}, entries: fo ? [{...E, failover: fo}] : []});
+  it("is relevant only with a waiting proposal or a semi entry", () => {
+    expect(AP.planCardRelevant(st(null), [])).toBe(false);
+    expect(AP.planCardRelevant(st("auto"), [])).toBe(false);
+    expect(AP.planCardRelevant(st("semi"), [])).toBe(true);
+    expect(AP.planCardRelevant(st("auto"), [{id: "p1"}])).toBe(true);
+    expect(AP.planCardRelevant(null, [])).toBe(false);
+  });
+  it("fetchState hides the card when nothing is planned and shows it when a proposal waits", async () => {
+    document.body.innerHTML = `<div id="apProposalsCard" hidden><div id="apProposalsBody"></div></div>
+      <span id="apProposalsPill"></span><tbody id="apEntriesBody"></tbody><span id="apSaveStatus"></span>`;
+    let payload = {state: st("auto"), proposals: [], last_plan_ts: null};
+    vi.stubGlobal("fetch", vi.fn(() =>
+      Promise.resolve({ok: true, json: () => Promise.resolve(payload)})));
+    await AP.fetchState();
+    expect(document.getElementById("apProposalsCard").hidden).toBe(true);
+    payload = {state: st("auto"), proposals: [{id: "p1", entry_key: "m1/llama", reason: "x"}], last_plan_ts: null};
+    await AP.fetchState();
+    expect(document.getElementById("apProposalsCard").hidden).toBe(false);
+    expect(document.getElementById("apProposalsPill").textContent).toBe("1 waiting");
   });
 
   it("surfaces a tick HTTP error instead of staying silent", async () => {
