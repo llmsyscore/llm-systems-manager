@@ -399,35 +399,36 @@
     .btn { border: none; border-radius: 5px; cursor: pointer; font-size: 0.8em; padding: 6px 14px; transition: opacity 0.2s; }
     .btn:not(:disabled):hover { opacity: 0.8; }
     .btn:disabled { cursor: not-allowed; opacity: 0.3; }
-    .btn-green  { background: #1a3a1a; color: var(--accent-2); }
-    .btn-red    { background: #3a1a1a; color: var(--crit); }
-    .btn-blue   { background: #1a1a3a; color: var(--accent); }
-    .btn-amber  { background: #2a2a1a; color: var(--warn); }
-    .btn-gray   { background: var(--border); color: var(--fg-muted); }
-    .btn-green-muted { background: #1a3a1a; color: #5a9; }
-    .btn-green-gradient { background: linear-gradient(135deg, #1a3a1a, #2a5a2a); color: var(--accent-2); }
-    .btn-green-muted-gradient { background: linear-gradient(135deg, #1a3a1a, #2a5a2a); color: #5a9; }
-    .btn-blue-muted { background: #1a1a3a; color: #5a9f; }
-    .btn-blue-gradient { background: linear-gradient(135deg, #1a1a3a, #2a2a5a); color: var(--accent); }
-    .btn-blue-muted-gradient { background: linear-gradient(135deg, #1a1a3a, #2a2a5a); color: #5a9f; }
-    .btn-red-muted { background: #3a1a1a; color: #c77; }
-    .btn-red-gradient { background: linear-gradient(135deg, #3a1a1a, #5a2a2a); color: var(--crit); }
-    .btn-red-muted-gradient { background: linear-gradient(135deg, #3a1a1a, #5a2a2a); color: #c77; }
-    .btn-amber-muted { background: #2a2a1a; color: #d98; }
-    .btn-amber-gradient { background: linear-gradient(135deg, #2a2a1a, #3a3a2a); color: var(--warn); }
-    .btn-amber-muted-gradient { background: linear-gradient(135deg, #2a2a1a, #3a3a2a); color: #d98; }
+    /* Button tints derive every stop and text colour from theme tokens (#931). */
+    .btn-green { background: color-mix(in srgb, var(--accent-2) 18%, var(--bg-card)); color: color-mix(in srgb, var(--accent-2) 70%, var(--fg)); }
+    .btn-green-muted { background: color-mix(in srgb, var(--accent-2) 14%, var(--bg-card)); color: color-mix(in srgb, var(--accent-2) 65%, var(--fg)); }
+    .btn-green-gradient { background: linear-gradient(135deg, color-mix(in srgb, var(--accent-2) 14%, var(--bg-card)), color-mix(in srgb, var(--accent-2) 24%, var(--bg-card))); color: color-mix(in srgb, var(--accent-2) 70%, var(--fg)); }
+    .btn-green-muted-gradient { background: linear-gradient(135deg, color-mix(in srgb, var(--accent-2) 10%, var(--bg-card)), color-mix(in srgb, var(--accent-2) 22%, var(--bg-card))); color: color-mix(in srgb, var(--accent-2) 65%, var(--fg)); }
+    .btn-red { background: color-mix(in srgb, var(--crit) 18%, var(--bg-card)); color: color-mix(in srgb, var(--crit) 70%, var(--fg)); }
+    .btn-red-muted { background: color-mix(in srgb, var(--crit) 14%, var(--bg-card)); color: color-mix(in srgb, var(--crit) 65%, var(--fg)); }
+    .btn-red-gradient { background: linear-gradient(135deg, color-mix(in srgb, var(--crit) 14%, var(--bg-card)), color-mix(in srgb, var(--crit) 24%, var(--bg-card))); color: color-mix(in srgb, var(--crit) 70%, var(--fg)); }
+    .btn-red-muted-gradient { background: linear-gradient(135deg, color-mix(in srgb, var(--crit) 10%, var(--bg-card)), color-mix(in srgb, var(--crit) 22%, var(--bg-card))); color: color-mix(in srgb, var(--crit) 65%, var(--fg)); }
+    .btn-blue { background: color-mix(in srgb, var(--accent) 18%, var(--bg-card)); color: color-mix(in srgb, var(--accent) 70%, var(--fg)); }
+    .btn-blue-muted { background: color-mix(in srgb, var(--accent) 14%, var(--bg-card)); color: color-mix(in srgb, var(--accent) 65%, var(--fg)); }
+    .btn-blue-gradient { background: linear-gradient(135deg, color-mix(in srgb, var(--accent) 14%, var(--bg-card)), color-mix(in srgb, var(--accent) 24%, var(--bg-card))); color: color-mix(in srgb, var(--accent) 70%, var(--fg)); }
+    .btn-blue-muted-gradient { background: linear-gradient(135deg, color-mix(in srgb, var(--accent) 10%, var(--bg-card)), color-mix(in srgb, var(--accent) 22%, var(--bg-card))); color: color-mix(in srgb, var(--accent) 65%, var(--fg)); }
+    .btn-amber { background: color-mix(in srgb, var(--warn) 18%, var(--bg-card)); color: color-mix(in srgb, var(--warn) 70%, var(--fg)); }
+    .btn-amber-muted { background: color-mix(in srgb, var(--warn) 14%, var(--bg-card)); color: color-mix(in srgb, var(--warn) 65%, var(--fg)); }
+    .btn-amber-gradient { background: linear-gradient(135deg, color-mix(in srgb, var(--warn) 14%, var(--bg-card)), color-mix(in srgb, var(--warn) 24%, var(--bg-card))); color: color-mix(in srgb, var(--warn) 70%, var(--fg)); }
+    .btn-amber-muted-gradient { background: linear-gradient(135deg, color-mix(in srgb, var(--warn) 10%, var(--bg-card)), color-mix(in srgb, var(--warn) 22%, var(--bg-card))); color: color-mix(in srgb, var(--warn) 65%, var(--fg)); }
+    .btn-gray { background: var(--border); color: var(--fg); }
     .btn-gray-muted { background: var(--border); color: var(--fg); }
-    .btn-gray-gradient { background: linear-gradient(135deg, var(--border), #3a3a3a); color: var(--fg-muted); }
-    .btn-gray-muted-gradient { background: linear-gradient(135deg, var(--border), #3a3a3a); color: var(--fg); }
-    .btn-slate-muted { background: var(--bg-card); color: #8b95a5; }
-    .btn-slate-gradient { background: linear-gradient(135deg, var(--bg-card), #2a2a3a); color: #64748b; }
-    .btn-slate-muted-gradient { background: linear-gradient(135deg, var(--bg-card), #2a2a3a); color: #8b95a5; }
-    .btn-zinc-muted { background: var(--bg-card); color: #8a8a94; }
-    .btn-zinc-gradient { background: linear-gradient(135deg, var(--bg-card), var(--border)); color: #71717a; }
-    .btn-zinc-muted-gradient { background: linear-gradient(135deg, var(--bg-card), var(--border)); color: #8a8a94; }
-    .btn-stone-muted { background: var(--bg-card); color: #9a9289; }
-    .btn-stone-gradient { background: linear-gradient(135deg, var(--bg-card), #2a2a1a); color: #78716c; }
-    .btn-stone-muted-gradient { background: linear-gradient(135deg, var(--bg-card), #2a2a1a); color: #9a9289; }
+    .btn-gray-gradient { background: linear-gradient(135deg, var(--border), var(--border-strong)); color: var(--fg); }
+    .btn-gray-muted-gradient { background: linear-gradient(135deg, var(--border), var(--border-strong)); color: var(--fg); }
+    .btn-slate-muted { background: var(--bg-card); color: var(--fg-muted); }
+    .btn-slate-gradient { background: linear-gradient(135deg, var(--bg-card), color-mix(in srgb, var(--accent) 8%, var(--bg-card))); color: var(--fg-muted); }
+    .btn-slate-muted-gradient { background: linear-gradient(135deg, var(--bg-card), color-mix(in srgb, var(--accent) 8%, var(--bg-card))); color: var(--fg-muted); }
+    .btn-zinc-muted { background: var(--bg-card); color: var(--fg-muted); }
+    .btn-zinc-gradient { background: linear-gradient(135deg, var(--bg-card), color-mix(in srgb, var(--border) 35%, var(--bg-card))); color: var(--fg-muted); }
+    .btn-zinc-muted-gradient { background: linear-gradient(135deg, var(--bg-card), color-mix(in srgb, var(--border) 35%, var(--bg-card))); color: var(--fg-muted); }
+    .btn-stone-muted { background: var(--bg-card); color: var(--fg-muted); }
+    .btn-stone-gradient { background: linear-gradient(135deg, var(--bg-card), color-mix(in srgb, var(--warn) 8%, var(--bg-card))); color: var(--fg-muted); }
+    .btn-stone-muted-gradient { background: linear-gradient(135deg, var(--bg-card), color-mix(in srgb, var(--warn) 8%, var(--bg-card))); color: var(--fg-muted); }
     .btn-saved { background: var(--accent-2, #1a8a4e) !important; color: #fff !important; border-color: var(--accent-2, #1a8a4e) !important; }
     .llm-editor { background: var(--bg-card); border: 1px solid var(--border); border-radius: 8px; margin-top: 16px; overflow: hidden; }
     .llm-editor-header { background: var(--bg-card); display: flex; justify-content: space-between; align-items: center; padding: 12px 16px; }
