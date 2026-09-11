@@ -49,6 +49,10 @@ describe('routing sub-tab consolidation (#476)', () => {
 
   it('one provider mc-seg drives both pool and pins; the old chip rows are gone', () => {
     expect(document.querySelectorAll('#admin-routing .mc-seg#rtProviderSeg')).toHaveLength(1);
+    // #909: the segment lives on its own strip directly above Pool order, not in the header.
+    const seg = document.getElementById('rtProviderSeg');
+    expect(seg.closest('.hdr')).toBeNull();
+    expect(seg.closest('.rt-provbar').nextElementSibling.id).toBe('adminPoolCard');
     expect(document.getElementById('adminPoolProviderChips')).toBeNull();
     expect(document.getElementById('adminPinsProviderChips')).toBeNull();
   });

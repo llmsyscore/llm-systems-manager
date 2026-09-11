@@ -1,4 +1,4 @@
-// Model Autopilot admin panel (#472) — entry editor, proposals queue, wiring.
+// Model Autopilot admin panel (#472) — entry editor, plan queue, wiring.
 // IIFE-scoped; exposes window.AP only. Pure testables + thin DOM glue.
 (function (root) {
 
@@ -8,7 +8,7 @@ const PROVIDERS = [
   { v: 'lms', label: 'LM Studio' },
 ];
 const FAILOVER = [
-  { v: 'semi', label: 'semi (propose)' },
+  { v: 'semi', label: 'semi (plan)' },
   { v: 'auto', label: 'auto (execute)' },
 ];
 const NUMERIC_FIELDS = ['priority', 'min_replicas', 'max_replicas', 'size_mb'];
@@ -385,7 +385,15 @@ function _renderDirtyNote() {
   if (n) n.textContent = _dirty ? 'unsaved changes' : '';
 }
 
+// The plan card shows only while a proposal waits or an entry is on semi (#909).
+function _planCardRelevant(state, proposals) {
+  if (proposals && proposals.length) return true;
+  return ((state && state.entries) || []).some(e => (e.failover || 'semi') === 'semi');
+}
+
 function _renderProposals() {
+  const card = document.getElementById('apProposalsCard');
+  if (card) card.hidden = !_planCardRelevant(_lastState, _lastProposals);
   const body = document.getElementById('apProposalsBody');
   if (!body) return;
   body.replaceChildren();
@@ -395,7 +403,7 @@ function _renderProposals() {
     pill.textContent = `${_lastProposals.length} waiting`;
   }
   if (!_lastProposals.length) {
-    body.appendChild(el('div', 'rt-pp empty', 'No proposals waiting.'));
+    body.appendChild(el('div', 'rt-pp empty', 'No plan waiting.'));
     return;
   }
   _lastProposals.forEach(p => {
@@ -549,7 +557,7 @@ async function planNow() {
       const actions = d.actions || [];
       const proposals = d.proposals || [];
       if (actions.length) {
-        _setStatus(`plan: ${actions.length} action(s), ${proposals.length} proposal(s) pending`);
+        _setStatus(`plan: ${actions.length} action(s), ${proposals.length} waiting for approval`);
       } else {
         const blocked = Object.values(d.entry_status || {}).filter(s => s && s.blocked).length;
         _setStatus(blocked
@@ -621,7 +629,7 @@ function poll() {
   fetchState();
 }
 
-const AP = { entryRow, readEntries, proposalRow, statusChip, setCatalog, init, poll, save,
+const AP = { entryRow, readEntries, proposalRow, statusChip, setCatalog, init, poll, save, planCardRelevant: _planCardRelevant,
              addEntry, applyProposal, dismissProposal, planNow, fetchState,
              state: () => _lastState, proposals: () => _lastProposals };
 
