@@ -60,6 +60,30 @@ def test_start_get_list_and_409_while_active(env):
     assert r2.status_code == 409 and "already" in r2.get_json()["error"]
 
 
+def test_host_list_failure_does_not_leak_the_exception(tmp_path):
+    from flask import Flask
+    app = Flask(__name__)
+
+    def boom():
+        raise RuntimeError("secret path /opt/whatever exploded")
+    deps = ab.Deps(hosts=boom, busy_agents=set, preflight=lambda a: None, run_on_agent=lambda a, b: (False, "x"),
+                   stream_on_agent=lambda a, last=None: iter(()), cancel_on_agent=lambda a: True,
+                   stop_server=lambda a: (True, None), restart_server=lambda a: (True, None),
+                   read_config=lambda a: {}, write_config=lambda a, c: (True, None),
+                   active_profile=lambda a, m: None, save_profile=lambda *a: None, alert=lambda p: True,
+                   now=lambda: NOW)
+    ab.register_routes(app, None, db_path=str(tmp_path / "t.db"), deps=deps, models_for=lambda a: [], now=lambda: NOW)
+    r = app.test_client().get("/api/llm/autotune/batch-hosts")
+    assert r.status_code == 502 and r.get_json()["error"] == "host list unavailable"
+    assert "secret" not in r.get_data(as_text=True)
+
+
+def test_validation_errors_are_fixed_strings(env):
+    r = env.post("/api/llm/autotune/batch", json=_body(budget_min=4))
+    assert r.status_code == 400
+    assert r.get_json()["error"] == f"budget_min must be {ab.BUDGET_RANGE[0]}\u2013{ab.BUDGET_RANGE[1]}"
+
+
 def test_start_rejects_bad_bodies(env):
     r = env.post("/api/llm/autotune/batch", json=_body(items=[{"agent_id": "zz", "model_id": "m"}]))
     assert r.status_code == 400 and "approved llama host" in r.get_json()["error"]

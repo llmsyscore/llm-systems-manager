@@ -37,40 +37,48 @@ CANCELLED = "cancelled"
 
 # ── validation ──
 
+class BatchRequestError(ValueError):
+    """Rejected batch request; `message` is a fixed string safe to return."""
+
+    def __init__(self, message: str):
+        super().__init__(message)
+        self.message = message
+
+
 def validate_body(body: dict, host_ids: set, now: float) -> dict:
     if not isinstance(body, dict):
-        raise ValueError("body must be an object")
+        raise BatchRequestError("body must be an object")
     items = body.get("items")
     if not isinstance(items, list) or not items:
-        raise ValueError("items must be a non-empty list")
+        raise BatchRequestError("items must be a non-empty list")
     if len(items) > MAX_ITEMS:
-        raise ValueError(f"items: at most {MAX_ITEMS}")
+        raise BatchRequestError(f"items: at most {MAX_ITEMS}")
     out_items, seen = [], set()
     for it in items:
         if not isinstance(it, dict):
-            raise ValueError("items: each entry must be an object")
+            raise BatchRequestError("items: each entry must be an object")
         aid = str(it.get("agent_id") or "")
         mid = str(it.get("model_id") or "").strip()
         if aid not in host_ids:
-            raise ValueError("items: agent_id must be an approved llama host")
+            raise BatchRequestError("items: agent_id must be an approved llama host")
         if not mid or len(mid) > 200:
-            raise ValueError("items: model_id required (1–200 chars)")
+            raise BatchRequestError("items: model_id required (1–200 chars)")
         if (aid, mid) in seen:
-            raise ValueError("items: duplicate host · model")
+            raise BatchRequestError("items: duplicate host · model")
         seen.add((aid, mid))
         out_items.append({"agent_id": aid, "model_id": mid})
     objective = str(body.get("objective") or "balanced")
     if objective not in OBJECTIVES:
-        raise ValueError("objective must be one of " + ", ".join(OBJECTIVES))
+        raise BatchRequestError("objective must be one of " + ", ".join(OBJECTIVES))
     dims = body.get("dims")
     if not isinstance(dims, dict) or len(json.dumps(dims)) > DIMS_MAX_BYTES:
-        raise ValueError("dims must be an object")
+        raise BatchRequestError("dims must be an object")
     try:
         budget = int(body.get("budget_min"))
     except (TypeError, ValueError):
-        raise ValueError("budget_min must be an integer")
+        raise BatchRequestError("budget_min must be an integer")
     if not BUDGET_RANGE[0] <= budget <= BUDGET_RANGE[1]:
-        raise ValueError(f"budget_min must be {BUDGET_RANGE[0]}–{BUDGET_RANGE[1]}")
+        raise BatchRequestError(f"budget_min must be {BUDGET_RANGE[0]}–{BUDGET_RANGE[1]}")
     raw_start = body.get("start_at")
     if raw_start in (None, 0, ""):
         start_at = float(now)
@@ -78,18 +86,18 @@ def validate_body(body: dict, host_ids: set, now: float) -> dict:
         try:
             start_at = float(raw_start)
         except (TypeError, ValueError):
-            raise ValueError("start_at must be a unix timestamp")
+            raise BatchRequestError("start_at must be a unix timestamp")
         if not math.isfinite(start_at) or start_at < now - START_BEHIND_MAX_S or start_at > now + START_AHEAD_MAX_S:
-            raise ValueError("start_at must be within the next 24 h")
+            raise BatchRequestError("start_at must be within the next 24 h")
         start_at = max(start_at, float(now))
     cap = None
     if objective == "quiet":
         try:
             cap = float(body.get("power_cap_w"))
         except (TypeError, ValueError):
-            raise ValueError("power_cap_w is required for quiet")
+            raise BatchRequestError("power_cap_w is required for quiet")
         if not math.isfinite(cap) or not POWER_CAP_RANGE[0] <= cap <= POWER_CAP_RANGE[1]:
-            raise ValueError(f"power_cap_w must be {POWER_CAP_RANGE[0]:.0f}–{POWER_CAP_RANGE[1]:.0f}")
+            raise BatchRequestError(f"power_cap_w must be {POWER_CAP_RANGE[0]:.0f}–{POWER_CAP_RANGE[1]:.0f}")
     return {"items": out_items, "objective": objective, "dims": dims, "budget_min": budget,
             "start_at": start_at, "restart": bool(body.get("restart", True)), "power_cap_w": cap}
 
@@ -691,8 +699,9 @@ def register_routes(app, ctx, *, db_path: str, deps: Deps, models_for: Callable[
         try:
             hosts = deps.hosts()
             busy = set(deps.busy_agents() or ())
-        except Exception as e:  # noqa: BLE001
-            return jsonify({"ok": False, "error": f"host list failed: {str(e)[:120]}"}), 502
+        except Exception:  # noqa: BLE001
+            log.exception("autotune batch: host list failed")
+            return jsonify({"ok": False, "error": "host list unavailable"}), 502
         return jsonify({"ok": True, "hosts": _hosts_with_models(hosts, busy, models_for)})
 
     @app.route("/api/llm/autotune/batch", methods=["POST"])
@@ -701,8 +710,8 @@ def register_routes(app, ctx, *, db_path: str, deps: Deps, models_for: Callable[
         hosts = deps.hosts()
         try:
             req = validate_body(body, {h["agent_id"] for h in hosts}, now())
-        except ValueError as e:
-            return jsonify({"ok": False, "error": str(e)}), 400
+        except BatchRequestError as e:
+            return jsonify({"ok": False, "error": e.message}), 400
         with start_lock:
             if runner.recovering():
                 return jsonify({"ok": False, "error": "batch recovery from the last restart is still running"}), 409

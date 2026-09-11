@@ -54,7 +54,7 @@ function boot(bootstrap = '') {
 }
 async function opened(pre = '') {
   const w = boot(pre + ' window.AT.onOpen();');
-  await flush(w); await flush(w); await flush(w);
+  await flush(); await flush(); await flush();
   return w;
 }
 const posts = w => w.__fetches.filter(([u, o]) => u === '/api/llm/autotune/batch' && o && o.method === 'POST');
@@ -85,7 +85,7 @@ describe('Batch group', () => {
 
   it('refuses to start with nothing queued', async () => {
     const w = await opened();
-    await w.AT.startBatch(); await flush(w);
+    await w.AT.startBatch(); await flush();
     expect(posts(w).length).toBe(0);
     expect(w.__alerts[0]).toMatch(/queue at least one/i);
   });
@@ -94,7 +94,7 @@ describe('Batch group', () => {
     const w = await opened('window.__batch = ' + JSON.stringify(batchDoc('queued')) + ';');
     w.document.querySelectorAll(`[data-batch-agent="${A1}"]`).forEach(b => b.classList.add('on'));
     w.document.getElementById('atBatchBudget').value = '300';
-    await w.AT.startBatch(); await flush(w); await flush(w);
+    await w.AT.startBatch(); await flush(); await flush();
     const [, opts] = posts(w)[0];
     const body = JSON.parse(opts.body);
     expect(body.items).toEqual([{ agent_id: A1, model_id: 'org/m:Q4' }, { agent_id: A1, model_id: 'org/n:Q8' }]);
@@ -115,7 +115,7 @@ describe('Batch group', () => {
   it('surfaces a refused start', async () => {
     const w = await opened('window.__startReply = { ok: false, error: "a batch is already queued or running" };');
     w.document.querySelector(`[data-batch-agent="${A1}"]`).classList.add('on');
-    await w.AT.startBatch(); await flush(w);
+    await w.AT.startBatch(); await flush();
     expect(w.__alerts.pop()).toMatch(/already queued/);
     expect(w.AT.batchActive()).toBe(false);
   });
@@ -157,10 +157,10 @@ describe('Batch pane', () => {
 
   it('watching opens the current item agent stream', async () => {
     const w = await opened('window.sessionStorage.setItem("at.batch", "b1"); window.__batch = ' + JSON.stringify(batchDoc('running')) + ';');
-    w.AT.batchWatch(); await flush(w);
+    w.AT.batchWatch(); await flush();
     expect(w.__sse.url).toBe('/api/llm/autotune/stream?agent=' + A1);
     expect(w.document.getElementById('atPaneRun').style.display).toBe('');
-    w.__sse.onEvent({ type: 'done', ok: true }); await flush(w);
+    w.__sse.onEvent({ type: 'done', ok: true }); await flush();
     // Back to the Batch pane, still locked, because the batch itself is not done.
     expect(w.document.getElementById('atPaneBatch').style.display).toBe('');
     expect(w.document.querySelector('#toolsModAt .at-rail').classList.contains('locked')).toBe(true);
@@ -196,9 +196,9 @@ describe('Batch pane', () => {
     const w = await opened('window.sessionStorage.setItem("at.batch", "b1"); window.__batch = ' + JSON.stringify(done) + ';');
     expect(w.AT.batchActive()).toBe(false);
     w.document.querySelector('#atModelList .mc-toggle').classList.add('on');
-    await w.AT.run(); await flush(w);
+    await w.AT.run(); await flush();
     w.__sse.onEvent({ type: 'model_done', model_id: 'org/m:Q4', ok: true, changes: [], verify: { ok: true }, after: {}, before: {} });
-    w.__sse.onEvent({ type: 'done', ok: true }); await flush(w);
+    w.__sse.onEvent({ type: 'done', ok: true }); await flush();
     expect(w.document.getElementById('atPaneDone').style.display).toBe('');
     expect(w.document.getElementById('atPaneBatch').style.display).toBe('none');
   });
@@ -221,7 +221,7 @@ describe('Batch pane', () => {
 
   it('cancel posts to the batch cancel route', async () => {
     const w = await opened('window.sessionStorage.setItem("at.batch", "b1"); window.__batch = ' + JSON.stringify(batchDoc('running')) + ';');
-    await w.AT.cancelBatch(); await flush(w);
+    await w.AT.cancelBatch(); await flush();
     expect(w.__fetches.some(([u, o]) => u === '/api/llm/autotune/batch/b1/cancel' && o && o.method === 'POST')).toBe(true);
   });
 });

@@ -176,7 +176,7 @@ def _local_hostname() -> str:
 # banner reads it. Bump suffix (-1, -2, …) for same-day iterations; roll
 # the date for a new day's first change.
 # ---------------------------------------------------------------------------
-__version__ = "v2026.09.10-8"
+__version__ = "v2026.09.10-9"
 
 # Wall-clock at first import (Cheroot main process); the shutdown banner
 # reads it for the uptime line.
@@ -5616,7 +5616,7 @@ def _batch_save_profile(agent_id: str, model_id: str, name: str, values: dict, m
 
 import autotune_batch  # type: ignore[import-not-found]  # sibling; #891
 
-_autotune_batch_runner = autotune_batch.register_routes(
+autotune_batch.register_routes(
     app, ctx, db_path=str(DB_PATH), models_for=_batch_models_for,
     deps=autotune_batch.Deps(
         hosts=_fleet_hosts, busy_agents=_batch_busy_agents, preflight=_batch_preflight,
