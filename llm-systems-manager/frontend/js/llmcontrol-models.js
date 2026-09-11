@@ -1524,14 +1524,57 @@ function resetLLMControlPanels() {
   _set('lmsDlLog', 'textContent', 'Download status will appear here...');
 }
 
-async function startLlamaBuild() {
+// #929: end-of-run banner — what the update actually did, away from the log.
+function _buildBannerRows(rep) {
+  const r = rep || {};
+  const rows = [];
+  const add = (k, v) => { if (v !== '' && v !== null && typeof v !== 'undefined') rows.push([k, v]); };
+  add('Method', r.method);
+  add('Binary', r.binary);
+  const build = [r.version, r.commit].filter(Boolean).join(' ');
+  add('Build', build ? (r.ref ? `${build} (${r.ref})` : build) : '');
+  if (Array.isArray(r.swapped) && r.swapped.length) add('Files swapped', String(r.swapped.length));
+  if (Array.isArray(r.removed) && r.removed.length) add('Tools removed', r.removed.join(', '));
+  add('Backup', r.backup);
+  add('Restart needed', r.restart);
+  add('Error', r.error);
+  if (Array.isArray(r.warnings) && r.warnings.length) add('Warnings', r.warnings.join(' · '));
+  if (typeof r.elapsed_s === 'number') add('Took', `${r.elapsed_s}s`);
+  return rows;
+}
+
+function _renderBuildBanner(msg, ok, rc) {
+  const box = document.getElementById('llamaBuildBanner');
+  if (!box) return;
+  const rep = msg.report;
+  if (!rep) { box.style.display = 'none'; return; }   // agent too old to report
+  const action = rep.action || (ok ? 'built' : 'failed');
+  const cls = !ok ? 'err' : (action === 'up to date' ? 'info' : 'ok');
+  const ico = !ok ? '✗' : (action === 'up to date' ? '=' : '✓');
+  const head = !ok ? `Update failed (exit ${rc})`
+    : action === 'up to date' ? 'Already up to date — nothing built'
+    : action === 'upgraded' ? 'Update complete — new build installed'
+    : 'Update complete';
+  const rows = _buildBannerRows(rep).map(([k, v]) =>
+    `<div class="bld-row"><span class="bld-k">${_esc(k)}</span><span class="bld-v">${_esc(String(v))}</span></div>`).join('');
+  const again = rep.skipped_build
+    ? '<div class="bld-act"><button type="button" class="btn btn-sm" '
+      + 'onclick="startLlamaBuild(true)">Rebuild anyway</button></div>' : '';
+  box.className = 'bld-banner ' + cls;
+  box.innerHTML = `<div class="bld-head"><span class="bld-ico">${ico}</span>${_esc(head)}</div>${rows}${again}`;
+  box.style.display = '';
+}
+
+async function startLlamaBuild(force) {
   {
     const _method = (typeof _llamaBuildMethod !== 'undefined' && _llamaBuildMethod) ? _llamaBuildMethod : '';
     const _label = _method ? ` via ${_method}` : '';
     const ok = await _themedConfirm({
-      title:        `Update llama.cpp${_label}?`,
-      bodyHtml:     `This installs/upgrades llama.cpp${_label} on the llama agent host. It can take several minutes.`,
-      confirmLabel: 'Update',
+      title:        force ? `Rebuild llama.cpp${_label}?` : `Update llama.cpp${_label}?`,
+      bodyHtml:     force
+        ? `This rebuilds llama.cpp${_label} from scratch even though the installed build is current. It can take several minutes.`
+        : `This installs/upgrades llama.cpp${_label} on the llama agent host. It can take several minutes.`,
+      confirmLabel: force ? 'Rebuild' : 'Update',
       cancelLabel:  'Cancel',
     });
     if (!ok) return;
@@ -1541,14 +1584,20 @@ async function startLlamaBuild() {
   const log   = document.getElementById('llamaBuildLog');
   const stat  = document.getElementById('llamaBuildStatus');
   const btn   = document.getElementById('llamaBtnBuild');
+  const banner = document.getElementById('llamaBuildBanner');
   if (panel) panel.style.display = '';
   if (log)   log.textContent = '';
+  if (banner) { banner.style.display = 'none'; banner.innerHTML = ''; }
   if (stat)  { stat.textContent = 'starting…'; stat.style.color = 'var(--fg-dim)'; }
   if (btn)   btn.disabled = true;
 
   let r;
   try {
-    r = await fetch('/api/llm/build', { method: 'POST' }).then(r => r.json().then(j => ({ status: r.status, body: j })));
+    r = await fetch('/api/llm/build', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ force: !!force }),
+    }).then(r => r.json().then(j => ({ status: r.status, body: j })));
   } catch (e) {
     if (log) log.textContent = 'Error: ' + e + '\n';
     if (stat) { stat.textContent = 'failed'; stat.style.color = 'var(--crit)'; }
@@ -1574,8 +1623,11 @@ async function startLlamaBuild() {
     try { msg = JSON.parse(e.data); } catch (_) { return; }
     if (msg.type === 'keepalive') return;
     if (msg.type === 'start') {
-      const _m = msg.method ? `[method: ${msg.method}]\n` : '';
-      if (log) log.textContent = _m + '$ ' + (msg.cmd || 'build') + '\n\n';
+      // #929: a short what-is-running summary, not the whole command line.
+      const rows = Array.isArray(msg.summary) && msg.summary.length
+        ? msg.summary.join('\n')
+        : `method: ${msg.method || 'build'}`;
+      if (log) log.textContent = rows + '\n\n';
     } else if (msg.type === 'line') {
       if (log) {
         log.textContent += (msg.data || msg.text || '') + '\n';
@@ -1585,6 +1637,7 @@ async function startLlamaBuild() {
       const rc = (typeof msg.rc !== 'undefined') ? msg.rc : (msg.ok ? 0 : 1);
       const ok = msg.ok === true || rc === 0;
       if (log) log.textContent += ok ? `\n✓ Build complete (exit ${rc}).\n` : `\n✗ Build failed (exit ${rc}).\n`;
+      _renderBuildBanner(msg, ok, rc);
       if (stat) {
         stat.textContent = ok ? `done (exit ${rc})` : `failed (exit ${rc})`;
         stat.style.color = ok ? 'var(--ok)' : 'var(--crit)';

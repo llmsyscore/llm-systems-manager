@@ -48,7 +48,8 @@ def test_source_clone_when_absent(tmp_path, monkeypatch):
     build = str(tmp_path / "src" / "build")
     assert plan.method == "source"
     assert plan.steps[0] == ["git", "clone", "--depth", "1", "--branch", "b1234", "--", li.REPO_URL, src]
-    assert ["cmake", "-S", src, "-B", build, "-DCMAKE_BUILD_TYPE=Release", "-DGGML_VULKAN=ON"] in plan.steps
+    assert ["cmake", "-S", src, "-B", build, "-DCMAKE_BUILD_TYPE=Release",
+            *li._TOOLSET_CMAKE, "-DGGML_VULKAN=ON"] in plan.steps
     assert ["cmake", "--build", build, "--target", "llama-server", "-j", "6"] in plan.steps
     assert plan.resolve_binary() == str(tmp_path / "src" / "build" / "bin" / "llama-server")
     assert all(s[0] != "sudo" for s in plan.steps)
@@ -100,35 +101,38 @@ def test_source_rejects_invalid_jobs(tmp_path):
             li.plan("source", {"jobs": bad}, cfg)
 
 
-def test_source_builds_existing_tool_targets(tmp_path, monkeypatch):
+def test_source_builds_whole_toolset_after_the_server(tmp_path, monkeypatch):
+    """#928: the server is a hard-fail step, then the full tool set is tolerated."""
     monkeypatch.setattr(li.os, "cpu_count", lambda: 4)
-    install = tmp_path / "install"
-    install.mkdir()
-    for name in ("llama-server", "llama-bench", "llama-cli"):
-        f = install / name
-        f.write_text("#!/bin/sh\n")
-        f.chmod(0o755)
-    (install / "llama-server.log").write_text("log")   # dot => not a target
-    (install / "libllama.so").write_text("lib")        # not a llama-* tool
-    cfg = _cfg(LLAMA_BUILD_DIR=str(tmp_path / "bld"), LLAMA_BIN=str(install / "llama-server"))
+    cfg = _cfg(LLAMA_BUILD_DIR=str(tmp_path / "bld"), LLAMA_BIN="")
     plan = li.plan("source", {}, cfg)
     build = str(tmp_path / "bld" / "src" / "build")
     assert ["cmake", "--build", build, "--target", "llama-server", "-j", "4"] in plan.steps
     sh_steps = [s for s in plan.steps if s[0] == "sh"]
     assert len(sh_steps) == 1
     cmd = sh_steps[0][2]
-    assert "llama-bench" in cmd and "llama-cli" in cmd
-    assert "llama-server.log" not in cmd and "libllama.so" not in cmd
-    assert "|| echo" in cmd
+    assert f"cmake --build {build} -j 4" in cmd          # default target = every tool
+    assert "--target" not in cmd
+    assert "|| echo" in cmd and "some llama.cpp tools failed to build" in cmd
+    assert plan.steps[-1] == sh_steps[0]                  # runs after the server step
 
 
-def test_source_no_extra_step_when_only_server(tmp_path):
+def test_source_toolset_excludes_tests_and_examples(tmp_path):
+    """#928: upstream's tool set, without the test binaries or the examples."""
+    cfg = _cfg(LLAMA_BUILD_DIR=str(tmp_path))
+    step = _configure_step(li.plan("source", {}, cfg))
+    assert "-DLLAMA_BUILD_TOOLS=ON" in step and "-DLLAMA_BUILD_SERVER=ON" in step
+    assert "-DLLAMA_BUILD_TESTS=OFF" in step and "-DLLAMA_BUILD_EXAMPLES=OFF" in step
+
+
+def test_source_toolset_does_not_depend_on_what_is_installed(tmp_path):
+    """#928: a host with only llama-server still builds the whole tool set."""
     install = tmp_path / "install"
     install.mkdir()
     (install / "llama-server").write_text("x")
     cfg = _cfg(LLAMA_BUILD_DIR=str(tmp_path / "bld"), LLAMA_BIN=str(install / "llama-server"))
-    plan = li.plan("source", {}, cfg)
-    assert all(s[0] != "sh" for s in plan.steps)
+    bare = _cfg(LLAMA_BUILD_DIR=str(tmp_path / "bld"), LLAMA_BIN="")
+    assert li.plan("source", {}, cfg).steps == li.plan("source", {}, bare).steps
 
 
 def _configure_step(plan):
@@ -693,3 +697,136 @@ def test_release_binary_label_names_the_resolved_build(tmp_path, monkeypatch):
                         lambda version, backend="cpu": ("https://x/llama-b7-bin-ubuntu-x64.tar.gz", "b7"))
     plan = li.plan("release_binary", {"version": "latest"}, _cfg(LLAMA_BUILD_DIR=str(tmp_path)))
     assert plan.label == "release binary (b7)"
+
+
+# ---- #928/#930: build identity + up-to-date detection ----
+
+class _Run:
+    def __init__(self, rc=0, out="", err=""):
+        self.returncode, self.stdout, self.stderr = rc, out, err
+
+
+def test_installed_build_id_parses_version_line(tmp_path, monkeypatch):
+    binp = tmp_path / "llama-server"
+    binp.write_text("x")
+    monkeypatch.setattr(li.subprocess, "run",
+                        lambda *a, **k: _Run(0, "version: 6150 (a0f7016d)\nbuilt with cc\n"))
+    assert li.installed_build_id(str(binp))["commit"] == "a0f7016d"
+    monkeypatch.setattr(li.subprocess, "run", lambda *a, **k: _Run(0, "", "build: 3265 (abc1234)"))
+    got = li.installed_build_id(str(binp))
+    assert (got["build"], got["commit"]) == ("3265", "abc1234")
+    monkeypatch.setattr(li.subprocess, "run", lambda *a, **k: _Run(0, "version: b6150 (a0f7016d)"))
+    assert li.installed_build_id(str(binp))["commit"] == "a0f7016d"   # b-prefixed build number
+
+
+def test_installed_build_id_parses_current_upstream_format(tmp_path, monkeypatch):
+    """llama.cpp 0.4.0-dev prints a semver plus a separate build and commit."""
+    binp = tmp_path / "llama-server"
+    binp.write_text("x")
+    monkeypatch.setattr(li.subprocess, "run", lambda *a, **k: _Run(
+        0, "version: 0.4.0-dev (build 1, commit df03399)\nbuilt with cc for x86_64-linux-gnu\n"))
+    got = li.installed_build_id(str(binp))
+    assert got["commit"] == "df03399"
+    assert got["build"] == "1"
+    assert got["version"] == "0.4.0-dev"
+    assert got["text"] == ""
+
+
+def test_installed_build_id_keeps_version_empty_for_the_legacy_format(tmp_path, monkeypatch):
+    binp = tmp_path / "llama-server"
+    binp.write_text("x")
+    monkeypatch.setattr(li.subprocess, "run", lambda *a, **k: _Run(0, "version: 6150 (a0f7016d)"))
+    got = li.installed_build_id(str(binp))
+    assert got["commit"] == "a0f7016d" and got["build"] == "6150" and got["version"] is None
+
+
+def test_installed_build_id_reports_why_it_got_nothing(tmp_path, monkeypatch):
+    """The reason reaches the operator instead of a bare 'no usable commit'."""
+    binp = tmp_path / "llama-server"
+    binp.write_text("x")
+    assert li.installed_build_id("")["text"] == "not installed"
+    assert li.installed_build_id("")["version"] is None
+    assert li.installed_build_id(str(tmp_path / "nope"))["text"] == "not installed"
+
+    loader_err = "llama-server: error while loading shared libraries: libggml.so"
+    monkeypatch.setattr(li.subprocess, "run", lambda *a, **k: _Run(127, "", loader_err))
+    got = li.installed_build_id(str(binp))
+    assert got["commit"] is None and got["text"] == loader_err
+
+    monkeypatch.setattr(li.subprocess, "run", lambda *a, **k: _Run(2, "", ""))
+    assert li.installed_build_id(str(binp))["text"] == "no output, exit 2"
+
+    def _boom(*a, **k):
+        raise OSError("exec format error")
+    monkeypatch.setattr(li.subprocess, "run", _boom)
+    assert "exec format error" in li.installed_build_id(str(binp))["text"]
+
+    def _slow(*a, **k):
+        raise li.subprocess.TimeoutExpired("llama-server", 30)
+    monkeypatch.setattr(li.subprocess, "run", _slow)
+    assert li.installed_build_id(str(binp))["text"] == "version check timed out"
+
+
+def test_installed_build_id_puts_the_binary_dir_on_the_loader_path(tmp_path, monkeypatch):
+    """The libs live beside the binary, so a bare exec dies in the loader."""
+    bin_dir = tmp_path / "install"
+    bin_dir.mkdir()
+    binp = bin_dir / "llama-server"
+    binp.write_text("x")
+    seen = {}
+
+    def _capture(argv, **kw):
+        seen.update(kw.get("env") or {})
+        return _Run(0, "version: 1 (abc1234)")
+
+    monkeypatch.setattr(li.subprocess, "run", _capture)
+    monkeypatch.setenv("LD_LIBRARY_PATH", "/pre-existing")
+    li.installed_build_id(str(binp))
+    assert seen["LD_LIBRARY_PATH"].split(os.pathsep)[0] == str(bin_dir)
+    assert "/pre-existing" in seen["LD_LIBRARY_PATH"]
+    assert seen["DYLD_LIBRARY_PATH"].split(os.pathsep)[0] == str(bin_dir)
+
+
+def test_remote_commit_prefers_peeled_tag(monkeypatch):
+    sha_tag, sha_commit = "a" * 40, "b" * 40
+    monkeypatch.setattr(li.subprocess, "run", lambda *a, **k: _Run(
+        0, f"{sha_tag}\trefs/tags/b6150\n{sha_commit}\trefs/tags/b6150^{{}}\n"))
+    assert li.remote_commit("b6150") == sha_commit
+
+
+def test_remote_commit_branch_and_failure_modes(monkeypatch):
+    sha = "c" * 40
+    monkeypatch.setattr(li.subprocess, "run", lambda *a, **k: _Run(0, f"{sha}\trefs/heads/master\n"))
+    assert li.remote_commit("master") == sha
+    monkeypatch.setattr(li.subprocess, "run", lambda *a, **k: _Run(128, "", "fatal"))
+    assert li.remote_commit("master") is None
+    monkeypatch.setattr(li.subprocess, "run", lambda *a, **k: _Run(0, ""))
+    assert li.remote_commit("master") is None
+    assert li.remote_commit("deadbeef") == "deadbeef"      # a ref that is already a commit
+    assert li.remote_commit("../evil") is None             # rejected before it runs
+
+
+def test_source_up_to_date_matches_commit_and_backend(monkeypatch):
+    sha = "d" * 40
+    monkeypatch.setattr(li, "remote_commit", lambda ref, **k: sha)
+    out = li.source_up_to_date({"backend": "cuda"}, sha[:8], "cuda")
+    assert out["up_to_date"] is True and sha[:8] in out["reason"]
+    assert out["remote"] == sha and out["backend"] == "cuda"
+
+
+def test_source_up_to_date_refuses_without_evidence(monkeypatch):
+    sha = "e" * 40
+    monkeypatch.setattr(li, "remote_commit", lambda ref, **k: sha)
+    assert li.source_up_to_date({}, "", "cpu")["up_to_date"] is False          # no build commit
+    no_marker = li.source_up_to_date({}, sha, None)
+    assert no_marker["up_to_date"] is False and "no recorded build backend" in no_marker["reason"]
+    switched = li.source_up_to_date({"backend": "cuda"}, sha, "cpu")
+    assert switched["up_to_date"] is False and "cpu → cuda" in switched["reason"]
+    moved = li.source_up_to_date({}, "f" * 40, "cpu")
+    assert moved["up_to_date"] is False and "moved to" in moved["reason"]
+
+
+def test_source_up_to_date_false_when_upstream_unresolvable(monkeypatch):
+    monkeypatch.setattr(li, "remote_commit", lambda ref, **k: None)
+    out = li.source_up_to_date({"git_ref": "master"}, "a" * 40, "cpu")
+    assert out["up_to_date"] is False and "could not resolve master" in out["reason"]

@@ -1773,23 +1773,92 @@ def _build_put(msg: dict[str, Any]) -> None:
         except _queue_lib.Full: pass
 
 
-def _llama_build_worker() -> None:
+def _build_summary_rows(iplan, method: str, opts: dict, cfg, bin_cfg: str) -> list:
+    """Short what-is-about-to-run lines shown instead of the raw command list."""
+    rows = [f"method: {iplan.label}"]
+    if method == "source":
+        rows.append(f"backend: {(opts.get('backend') or 'cpu').strip().lower()}")
+        rows.append(f"ref: {(opts.get('git_ref') or 'master').strip()}")
+        rows.append(f"jobs: {opts.get('jobs') or (os.cpu_count() or 1)}")
+    try:
+        rows.append(f"build dir: {llama_install._build_root(cfg)}")
+    except Exception:
+        pass  # best-effort: the build-root row is informational
+    if llama_upgrade.should_upgrade_in_place(method, opts) and bin_cfg:
+        rows.append(f"installs to: {os.path.dirname(bin_cfg)} (in place)")
+    elif bin_cfg:
+        rows.append(f"configured binary: {bin_cfg}")
+    rows.append(f"steps: {len(iplan.steps)}")
+    return rows
+
+
+def _llama_build_check_current(cfg, method: str, opts: dict, bin_cfg: str) -> dict:
+    """#930: whether a source build would rebuild the commit already installed.
+    A missing tool the upstream build supplies outvotes a matching commit."""
+    if method != "source" or not bin_cfg:
+        return {"up_to_date": False, "reason": ""}
+    if not llama_upgrade.should_upgrade_in_place(method, opts):
+        return {"up_to_date": False,
+                "reason": "in-place install is off, so the build is staged rather than compared"}
+    dest = os.path.dirname(bin_cfg)
+    missing = [t for t in llama_upgrade.DEPENDENT_TOOLS
+               if not os.path.exists(os.path.join(dest, t))]
+    if missing:
+        return {"up_to_date": False,
+                "reason": f"rebuilding to restore missing tool(s): {', '.join(missing)}"}
+    marker = llama_upgrade.read_build_marker(dest)
+    probe = llama_install.installed_build_id(bin_cfg) or {}
+    commit = probe.get("commit") or marker.get("commit") or ""
+    out = llama_install.source_up_to_date(opts, commit, marker.get("backend"))
+    if not commit and probe.get("text"):
+        out["reason"] = f"{out['reason']} — {probe['text']}"
+    out["version"] = probe.get("version")
+    return out
+
+
+def _llama_build_worker(force: bool = False) -> None:
     global _build_running
     rc = 1
     resolved = None
+    removed_tools: list = []
+    report: dict[str, Any] = {}
+    warnings: list = []
+    started = time.time()
     cfg = _require_ctx().config
     method = (getattr(cfg, "LLAMA_BUILD_METHOD", "") or "custom_script")
     opts = getattr(cfg, "LLAMA_BUILD_OPTS", None) or {}
+    bin_cfg = getattr(cfg, "LLAMA_BIN", "") or ""
+    unit = getattr(cfg, "LLAMA_SYSTEMD_UNIT", "") or "llama_server.service"
     try:
         try:
             iplan = llama_install.plan(method, opts, cfg)
         except llama_install.InstallError as e:
             _build_put({"type": "line", "data": f"[error] {e}", "text": f"[error] {e}"})
             rc = 2
+            report = {"action": "failed", "method": method, "error": str(e)}
             return
+        rows = _build_summary_rows(iplan, method, opts, cfg, bin_cfg)
         joined = " && ".join(" ".join(s) for s in iplan.steps)
-        _build_put({"type": "start", "cmd": joined, "method": iplan.label})
-        emit = lambda line: _build_put({"type": "line", "data": line, "text": line})
+        _build_put({"type": "start", "cmd": joined, "method": iplan.label, "summary": rows})
+
+        def emit(line: str) -> None:
+            if isinstance(line, str) and line.startswith("[warn]") and len(warnings) < 8:
+                warnings.append(line[7:].strip())
+            _build_put({"type": "line", "data": line, "text": line})
+
+        if not force:
+            cur = _llama_build_check_current(cfg, method, opts, bin_cfg)
+            if cur.get("up_to_date"):
+                emit(f"[ok] already up to date — {cur.get('reason')}")
+                emit("nothing to build; use Rebuild anyway to force a full build")
+                rc, resolved = 0, bin_cfg
+                report = {"action": "up to date", "method": iplan.label, "binary": bin_cfg,
+                          "commit": (cur.get("remote") or "")[:8], "ref": cur.get("ref"),
+                          "version": cur.get("version"),
+                          "backend": cur.get("backend"), "skipped_build": True}
+                return
+            elif cur.get("reason"):
+                emit(f"[info] building: {cur['reason']}")
         rc, resolved = llama_install.run_install(iplan, emit=emit)
         if rc == 0:
             bin_cfg = getattr(cfg, "LLAMA_BIN", "") or ""
@@ -1810,8 +1879,22 @@ def _llama_build_worker() -> None:
                     agent_user=getattr(cfg, "AGENT_USER", "") or "",
                     retain=retain, emit=emit,
                 )
+                removed_tools = list(res.removed or [])
                 if res.ok:
                     resolved = res.target or bin_cfg
+                    probe = llama_install.installed_build_id(resolved) or {}
+                    commit = probe.get("commit") or ""
+                    if commit:
+                        llama_upgrade.write_build_marker(
+                            os.path.dirname(bin_cfg), commit=commit,
+                            backend=(opts.get("backend") or "cpu").strip().lower(),
+                            method=method)
+                    report = {"action": "up to date" if res.skipped else "upgraded",
+                              "method": iplan.label, "binary": resolved, "commit": commit[:8],
+                              "version": probe.get("version"),
+                              "swapped": list(res.swapped or []), "removed": removed_tools,
+                              "backup": res.backup_dir,
+                              "restart": f"systemctl restart {unit}" if res.swapped else ""}
                     # Clean build artifacts after a real swap, or after a
                     # release_binary no-op (its re-extracted dir is disposable).
                     if not res.skipped or method == "release_binary":
@@ -1821,6 +1904,7 @@ def _llama_build_worker() -> None:
                             emit(f"[warn] post-upgrade cleanup failed: {e}")
                 else:
                     rc = 3
+                    report = {"action": "failed", "method": iplan.label, "error": res.message}
             elif resolved and bin_cfg and resolved != bin_cfg:
                 warn = (f"[warn] llama-server installed at {resolved}; configured "
                         f"LLAMA_BIN={bin_cfg} — update LLAMA_BIN and restart "
@@ -1834,14 +1918,23 @@ def _llama_build_worker() -> None:
         log.error("_llama_build_worker error: %s", e, exc_info=True)
         _build_put({"type": "line", "data": f"[error] {e}", "text": f"[error] {e}"})
     finally:
-        _build_put({"type": "done", "ok": rc == 0, "rc": rc, "method": method, "path": resolved})
+        if not report:
+            report = {"action": "built" if rc == 0 else "failed",
+                      "method": method, "binary": resolved}
+        report.setdefault("removed", removed_tools)
+        report["warnings"] = warnings
+        report["elapsed_s"] = round(time.time() - started, 1)
+        _build_put({"type": "done", "ok": rc == 0, "rc": rc, "method": method, "path": resolved,
+                    "report": report})
         with _build_lock:
             _build_running = False
 
 
-def llama_build(authorization: Optional[str] = Header(default=None)) -> dict[str, Any]:
+def llama_build(body: Optional[dict] = None,
+                authorization: Optional[str] = Header(default=None)) -> dict[str, Any]:
     global _build_running
     _require_ctx().check_bearer(authorization); _llama_check_enabled()
+    force = bool((body or {}).get("force"))
     with _build_lock:
         if _build_running:
             raise HTTPException(status_code=409, detail="A build is already running")
@@ -1849,8 +1942,8 @@ def llama_build(authorization: Optional[str] = Header(default=None)) -> dict[str
             try: _build_queue.get_nowait()
             except _queue_lib.Empty: break
         _build_running = True
-    threading.Thread(target=_llama_build_worker, daemon=True).start()
-    return {"ok": True}
+    threading.Thread(target=_llama_build_worker, args=(force,), daemon=True).start()
+    return {"ok": True, "force": force}
 
 
 def llama_build_stream(
@@ -2680,6 +2773,12 @@ def _autotune_perplexity_status() -> dict:
     runnable, rc, hint = None, None, None
     if not present:
         hint = "llama-perplexity is not installed beside llama-server."
+        b = _require_ctx().config.LLAMA_BIN
+        why = ((llama_upgrade.read_stale_marker(Path(b).parent).get("removed") or {})
+               .get("llama-perplexity")) if b else None
+        if why:
+            hint = (f"llama-perplexity was removed by the last llama.cpp upgrade ({why}); "
+                    "a source upgrade rebuilds it when its build succeeds.")
     elif not kl_text:
         hint = "the KL reference text is missing from the agent's bench directory."
     else:

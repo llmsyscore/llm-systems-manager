@@ -52,6 +52,15 @@ def _load_llama():
     sys.modules["providers"] = pkg
     for sub in ("llama_install", "llama_sse", "llama_upgrade"):
         sys.modules[f"providers.{sub}"] = types.ModuleType(f"providers.{sub}")
+    _up = sys.modules["providers.llama_upgrade"]
+    _up.read_stale_marker = lambda d: {}
+    _up.read_build_marker = lambda d: {}
+    _up.DEPENDENT_TOOLS = ("llama-perplexity",)
+    _up.should_upgrade_in_place = (lambda method, opts: method in ("source", "release_binary")
+                                   and bool((opts or {}).get("install_in_place", True)))
+    _ins = sys.modules["providers.llama_install"]
+    _ins.installed_build_id = lambda p: {"build": None, "commit": None, "version": None, "text": ""}
+    _ins.source_up_to_date = lambda *a, **k: {"up_to_date": False, "reason": ""}
     spec = importlib.util.spec_from_file_location("providers.llama", _AGENT_ROOT / "providers" / "llama.py")
     mod = importlib.util.module_from_spec(spec)
     sys.modules["providers.llama"] = mod
@@ -308,6 +317,22 @@ def test_status_and_quality_run_refused_when_binary_cannot_be_probed(llama, tmp_
                                     "overrides": {"cache-type-k": "q4_0"}})
     assert out == {"ok": False, "error": expected_hint}
     assert not started
+
+
+def test_perplexity_status_names_the_upgrade_that_removed_it(llama, tmp_path, monkeypatch):
+    """#922: a tool the last swap removed gets a hint naming why, not a bare 'not installed'."""
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    (bin_dir / "llama-server").write_text("")
+    _wire(llama, tmp_path, monkeypatch, llama_bin=str(bin_dir / "llama-server"))
+    monkeypatch.setattr(llama.llama_upgrade, "read_stale_marker",
+                        lambda d: {"ts": "x", "removed": {"llama-perplexity": "not in new build"}}
+                        if Path(d) == bin_dir else {})
+    status = llama._autotune_perplexity_status()
+    assert status["present"] is False and status["ok"] is False
+    assert "removed by the last llama.cpp upgrade (not in new build)" in status["hint"]
+    monkeypatch.setattr(llama.llama_upgrade, "read_stale_marker", lambda d: {})
+    assert llama._autotune_perplexity_status()["hint"] == "llama-perplexity is not installed beside llama-server."
 
 
 class _Proc:
@@ -884,3 +909,44 @@ def test_stick_meters_only_the_bench_subprocess(llama, tmp_path, monkeypatch):
     st = be._stick({"concurrency": 1, "limit": 8, "energy": False})
     assert st["energy_wh"] is None and st["energy_source"] is None
     assert order == ["subprocess", "parse"]
+
+
+def test_build_check_current_rebuilds_for_missing_tools(llama, tmp_path, monkeypatch):
+    """#930: a matching commit must not skip a build that would restore a missing tool."""
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    (bin_dir / "llama-server").write_text("")
+    binp = str(bin_dir / "llama-server")
+    monkeypatch.setattr(llama.llama_upgrade, "read_build_marker", lambda d: {"commit": "abc1234", "backend": "cpu"})
+    monkeypatch.setattr(llama.llama_install, "source_up_to_date",
+                        lambda *a, **k: {"up_to_date": True, "reason": "match"})
+
+    out = llama._llama_build_check_current(None, "source", {}, binp)
+    assert out["up_to_date"] is False and "llama-perplexity" in out["reason"]
+
+    (bin_dir / "llama-perplexity").write_text("")
+    assert llama._llama_build_check_current(None, "source", {}, binp)["up_to_date"] is True
+
+    # A tool the upstream build does not produce must not veto the fast path
+    # forever — no rebuild can restore it, so the marker only feeds hints.
+    monkeypatch.setattr(llama.llama_upgrade, "read_stale_marker",
+                        lambda d: {"removed": {"llama-local-experiment": "could not be executed"}})
+    assert llama._llama_build_check_current(None, "source", {}, binp)["up_to_date"] is True
+
+
+def test_build_check_current_only_applies_to_source(llama, tmp_path, monkeypatch):
+    assert llama._llama_build_check_current(None, "release_binary", {}, "/x/llama-server")["up_to_date"] is False
+    assert llama._llama_build_check_current(None, "source", {}, "")["reason"] == ""
+
+
+def test_build_check_current_skipped_when_in_place_is_off(llama, tmp_path, monkeypatch):
+    """#930: with install_in_place off the build is staged, so the live binary proves nothing."""
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    for n in ("llama-server", "llama-perplexity"):
+        (bin_dir / n).write_text("")
+    monkeypatch.setattr(llama.llama_install, "source_up_to_date",
+                        lambda *a, **k: {"up_to_date": True, "reason": "match"})
+    out = llama._llama_build_check_current(None, "source", {"install_in_place": False},
+                                           str(bin_dir / "llama-server"))
+    assert out["up_to_date"] is False and "in-place install is off" in out["reason"]
