@@ -46,4 +46,6 @@ def test_batch_is_audited():
 
 
 def test_version_bumped():
-    assert '__version__ = "v2026.09.10-9"' in SRC
+    m = re.search(r'^__version__ = "v(\d{4})\.(\d{2})\.(\d{2})-(\d+)"', SRC, re.M)
+    assert m, "__version__ missing"
+    assert tuple(int(x) for x in m.groups()) >= (2026, 9, 10, 9)

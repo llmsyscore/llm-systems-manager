@@ -193,6 +193,7 @@ async function refreshTabIndicators() {
       const d = await r.json();
       if (d.overall === 'warn') { _setTabDot('tabDotAdmin', 'warn'); return; }
       if (d.overall !== 'ok') { _setTabDot('tabDotAdmin', 'alert'); return; }
+      if (d.agent_update && d.agent_update.outdated > 0) { _setTabDot('tabDotAdmin', 'warn'); return; }
       const rel = await _adminFetchRelease();
       _setTabDot('tabDotAdmin', _adminUpdateAvailable(rel) ? 'warn' : 'ok');
     } catch (_) { /* keep prior state */ }
@@ -605,6 +606,18 @@ function _jumpToDashboard(agentId, provider) {
   const sub = (spec && spec.sub_tab) || provider;
   if (typeof switchTab === 'function') switchTab('dashboard');
   if (typeof switchSubTab === 'function') switchSubTab('dashboard', sub);
+}
+
+// Jump to LLM Control with this agent selected for the provider (#903).
+function _jumpToLlmControl(agentId, provider) {
+  const list = (window._agentsByProvider && window._agentsByProvider[provider]) || [];
+  if (list.length > 1 && typeof _selectAgent === 'function') {
+    _selectAgent(provider, agentId);
+  }
+  const spec = _adminProviders.find(p => p.name === provider);
+  const sub = (spec && spec.sub_tab) || provider;
+  if (typeof switchTab === 'function') switchTab('llm');
+  if (typeof switchSubTab === 'function') switchSubTab('llm', sub);
 }
 
 // Phase 4 #4 / #359 — POST /api/agents/<id>/<provider>-pool to add/remove.
@@ -1746,9 +1759,11 @@ async function adminUpdateAll() {
     return;
   }
   const newV = _latestAgentVersion;
-  const todo = (_adminAgentsCache || []).filter(a => a.update_available);
+  const behind = (_adminAgentsCache || []).filter(a => a.update_available);
+  const todo = behind.filter(a => a.status !== 'disabled');
+  const off = behind.filter(a => a.status === 'disabled');
   if (!todo.length || !newV) {
-    _themedToast('All agents are already up to date');
+    _themedToast(off.length ? 'Only disabled agents need an update' : 'All agents are already up to date');
     return;
   }
   const listHtml = todo.map(a =>
@@ -1760,7 +1775,9 @@ async function adminUpdateAll() {
       `<div style="font-family:monospace;background:var(--bg);border:1px solid var(--border);` +
       `border-radius:6px;padding:10px 12px;margin-bottom:12px;max-height:200px;overflow-y:auto;">${listHtml}</div>` +
       `<div>Agents update one at a time; each must come back on the new version ` +
-      `before the next starts. The sequence stops on the first failure.</div>`,
+      `before the next starts. The sequence stops on the first failure.</div>` +
+      (off.length ? `<div style="margin-top:8px;">Skipping ${off.length} disabled agent${off.length > 1 ? 's' : ''}: ` +
+        `${adminEsc(off.map(a => a.hostname || a.agent_id.slice(0, 8)).join(', '))}</div>` : ''),
     confirmLabel: 'Update all',
     cancelLabel: 'Cancel',
   });
@@ -1768,7 +1785,8 @@ async function adminUpdateAll() {
 
   _adminUpdateAllRunning = true;
   _adminUpdateOpen(`all agents (${todo.length})`);
-  const results = [];
+  const results = off.map(a => ({ name: a.hostname || a.agent_id.slice(0, 8), state: 'skipped' }));
+  for (const r of results) _adminUpdateLog(`– ${r.name}: disabled, skipped`);
   try {
     for (let i = 0; i < todo.length; i++) {
       const a = todo[i];
