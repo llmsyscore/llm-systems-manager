@@ -5,9 +5,9 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>LLM Systems — Alarm Engine</title>
     <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🔔</text></svg>">
-    <link rel="stylesheet" href="css/main.css?v=20260903b">
-    <link rel="stylesheet" href="css/dashboard.css?v=20260903b">
-    <link rel="stylesheet" href="css/alerts.css?v=20260903b">
+    <link rel="stylesheet" href="css/main.css?v=20260911g">
+    <link rel="stylesheet" href="css/dashboard.css?v=20260911a">
+    <link rel="stylesheet" href="css/alerts.css?v=20260911g">
     <link rel="stylesheet" href="css/rules.css?v=20260903b">
     <link rel="stylesheet" href="css/notifications.css?v=20260903b">
     <link rel="stylesheet" href="css/history.css?v=20260903b">
@@ -24,8 +24,7 @@
         <button type="button" class="sub-tab-btn active" data-tab="console">Console</button>
         <button type="button" class="sub-tab-btn" data-tab="alerts">Alerts<span class="cnt" id="navAlertCount" hidden>0</span></button>
         <button type="button" class="sub-tab-btn" data-tab="metrics">Metrics</button>
-        <button type="button" class="sub-tab-btn" data-tab="rules">Rules</button>
-        <button type="button" class="sub-tab-btn" data-tab="notifications">Notifications</button>
+        <button type="button" class="sub-tab-btn" data-tab="settings">Settings</button>
     </nav>
 
     <main class="page">
@@ -61,7 +60,7 @@
                 </div>
             </div>
             <div class="card" style="margin-top:16px">
-                <div class="card-h"><h3>Recent alerts</h3><span class="meta">last <b>25</b> of any status</span><div class="side"><button type="button" class="mcbtn mcbtn-ghost mcbtn-sm" data-tab-link="alerts">Open Alerts</button></div></div>
+                <div class="card-h"><h3>Recent alerts</h3><span class="meta">last <select class="sel sel-inline" id="recentLimit" aria-label="How many recent alerts to show"><option value="20">20</option><option value="50">50</option><option value="100">100</option></select> of any status</span><div class="side"><button type="button" class="mcbtn mcbtn-ghost mcbtn-sm" id="recentSeeAll">See all alerts</button></div></div>
                 <div class="card-b flush lwrap" id="recentRows"></div>
             </div>
         </section>
@@ -93,15 +92,14 @@
                 <div class="ledger">
                     <div class="lwrap">
                         <table class="tbl" id="alertsTable">
-                            <colgroup><col class="c-sel"><col class="c-sev"><col class="c-rule"><col class="c-msg"><col class="c-status"><col class="c-fired"><col class="c-last"><col class="c-cnt"><col class="c-act"></colgroup>
+                            <colgroup><col class="c-sel"><col class="c-state"><col class="c-rule"><col class="c-msg"><col class="c-fired"><col class="c-last"><col class="c-cnt"><col class="c-act"></colgroup>
                             <thead><tr>
                                 <th class="c-sel"><span class="cb" id="alertsSelectAll" role="checkbox" aria-label="Select all"></span></th>
-                                <th class="sort" data-sort="severity">Severity</th>
-                                <th class="sort" data-sort="rule">Rule</th>
+                                <th class="c-state sort" data-sort="severity" data-tip="Sort by severity · colour is severity, shape is status: ● active  ◉ acknowledged  ○ closed  ◌ ignored"></th>
+                                <th class="c-rule sort" data-sort="rule">Rule</th>
                                 <th>Message</th>
-                                <th class="sort" data-sort="status">Status</th>
-                                <th class="sort on" data-sort="fired">Triggered</th>
-                                <th class="c-last sort" data-sort="last">Last seen</th>
+                                <th class="c-fired sort on" data-sort="fired">Triggered</th>
+                                <th class="c-last sort" data-sort="last">Duration</th>
                                 <th class="c-cnt r sort" data-sort="count">Count</th>
                                 <th></th>
                             </tr></thead>
@@ -148,7 +146,12 @@
         </section>
 
         <!-- Rules -->
-        <section class="panel" id="panel-rules">
+        <section class="panel" id="panel-settings">
+        <div class="settings-nav" role="tablist" aria-label="Settings sections">
+            <button type="button" class="set-tab active" role="tab" data-tab="rules">Rules</button>
+            <button type="button" class="set-tab" role="tab" data-tab="notifications">Notifications</button>
+        </div>
+        <section class="panel settings-section" id="panel-rules">
             <div class="hdr">
                 <h2>Alarm rules</h2>
                 <div class="sum" id="rulesSum"></div>
@@ -195,7 +198,7 @@
         </section>
 
         <!-- Notifications -->
-        <section class="panel" id="panel-notifications">
+        <section class="panel settings-section" id="panel-notifications">
             <div class="hdr">
                 <h2>Notifications</h2>
                 <div class="sum" id="notifSum"></div>
@@ -242,6 +245,7 @@
                 <div class="pager" id="deliveriesPager"></div>
             </div>
         </section>
+        </section><!-- /panel-settings -->
 
     </main>
 
@@ -256,15 +260,15 @@
 
     <div class="toast-container" id="toastContainer"></div>
 
-    <script src="js/api.js?v=20260903b"></script>
-    <script src="js/websocket.js?v=20260903b"></script>
+    <script src="js/api.js?v=20260911b"></script>
+    <script src="js/websocket.js?v=20260911b"></script>
     <script src="js/thresholds.js?v=20260903b"></script>
-    <script src="js/ui.js?v=20260903b"></script>
-    <script src="js/alerts.js?v=20260903b"></script>
-    <script src="js/console.js?v=20260903b"></script>
+    <script src="js/ui.js?v=20260911f"></script>
+    <script src="js/alerts.js?v=20260911k"></script>
+    <script src="js/console.js?v=20260911g"></script>
     <script src="js/metrics.js?v=20260903b"></script>
-    <script src="js/rules.js?v=20260903b"></script>
-    <script src="js/notifications.js?v=20260903b"></script>
-    <script src="js/main.js?v=20260903b"></script>
+    <script src="js/rules.js?v=20260911a"></script>
+    <script src="js/notifications.js?v=20260911a"></script>
+    <script src="js/main.js?v=20260911b"></script>
 </body>
 </html>

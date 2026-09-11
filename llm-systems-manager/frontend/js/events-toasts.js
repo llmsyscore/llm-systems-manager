@@ -47,10 +47,19 @@
         }
     }
 
-    function inferCategory(title, body, severity) {
-        // 'ack' (blue, no buttons) or 'clear' (green, no buttons) for already-
-        // resolved/acknowledged alerts; otherwise 'alert' (severity colors +
-        // Ack/Close buttons).
+    // 'ack'/'clear' render without Ack/Close controls; 'alert' is actionable.
+    // Prefer the category the engine sent, then the alarm state it carried.
+    function toastCategory(payload) {
+        if (payload.category) return payload.category;
+        const status = String(payload.alert_status || '').toLowerCase();
+        if (status === 'acknowledged' || status === 'ignored') return 'ack';
+        if (status === 'closed' || status === 'exception') return 'clear';
+        if (status) return 'alert';
+        return inferCategory(payload.title, payload.body);
+    }
+
+    // Legacy fallback for an engine too old to send category/alert_status.
+    function inferCategory(title, body) {
         const blob = `${title || ''} ${body || ''}`.toLowerCase();
         if (blob.includes('acknowledg')) return 'ack';
         if (blob.includes('resolv') || blob.includes('clear') || blob.includes('closed')) return 'clear';
@@ -73,7 +82,12 @@
         if (incidentId) {
             const existing = container.querySelector(
                 `.ae-toast[data-incident-id="${CSS.escape(incidentId)}"]`);
-            if (existing) {
+            // A category change rebuilds the toast so its controls match.
+            if (existing && existing.dataset.cat !== cat) {
+                if (existing._dismissTimer) clearTimeout(existing._dismissTimer);
+                delete existing.dataset.incidentId;
+                existing.remove();
+            } else if (existing) {
                 const msgEl = existing.querySelector('.ae-toast-message');
                 if (msgEl) setToastMessage(msgEl, title, body, incidentSize);
                 // Swap severity/category class only; keep show/hide/clickable state classes.
@@ -94,6 +108,7 @@
 
         const el = document.createElement('div');
         el.className = `ae-toast ${sevClass}`;
+        el.dataset.cat = cat;
         if (alertId) el.dataset.alertId = alertId;
         if (incidentId) el.dataset.incidentId = incidentId;
 
@@ -234,8 +249,7 @@
                 const type = msg.event || msg.type;
                 const payload = msg.data ?? msg.payload ?? msg;
                 if (type === 'notification' && payload && payload.action === 'toast') {
-                    const cat = payload.category
-                        || inferCategory(payload.title, payload.body, payload.severity);
+                    const cat = toastCategory(payload);
                     showToast(
                         payload.title || 'Alarm',
                         payload.body || '',

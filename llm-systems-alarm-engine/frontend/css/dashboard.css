@@ -60,3 +60,7 @@
   .arow { grid-template-columns: 18px minmax(0, 1fr) auto; }
   .arow .when, .arow .cnt { display: none; }
 }
+
+/* Recent alerts: name and message both open the alert detail. */
+#recentRows .tbl td.n .nm, #recentRows .tbl td.msg { cursor: pointer; }
+#recentRows .tbl td.n .nm:hover, #recentRows .tbl td.msg:hover { color: var(--accent); }

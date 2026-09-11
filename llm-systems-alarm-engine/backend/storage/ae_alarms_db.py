@@ -27,7 +27,8 @@ logger = logging.getLogger(__name__)
 
 # Status values considered "live" (visible on the dashboard / counted in
 # active stats). Built from the enum so renames stay coherent.
-_LIVE_STATUSES = (AlertStatus.ACTIVE.value, AlertStatus.ACKNOWLEDGED.value)
+_LIVE_STATUSES = (AlertStatus.ACTIVE.value, AlertStatus.ACKNOWLEDGED.value,
+                  AlertStatus.IGNORED.value)
 _LIVE_STATUS_SQL_LIST = "({})".format(
     ", ".join(f"'{s}'" for s in _LIVE_STATUSES)
 )
@@ -87,6 +88,16 @@ CREATE INDEX IF NOT EXISTS alert_history_status_idx ON alert_history(status);
 
 
 _SCHEMA = """
+CREATE TABLE IF NOT EXISTS alert_events (
+  event_id INTEGER PRIMARY KEY AUTOINCREMENT,
+  alert_id TEXT NOT NULL,
+  event TEXT NOT NULL,
+  at TEXT NOT NULL,
+  actor TEXT,
+  detail TEXT
+);
+CREATE INDEX IF NOT EXISTS alert_events_alert_idx ON alert_events(alert_id, event_id);
+
 CREATE TABLE IF NOT EXISTS schema_version (version INTEGER PRIMARY KEY);
 INSERT OR IGNORE INTO schema_version VALUES (1);
 INSERT OR IGNORE INTO schema_version VALUES (2);
@@ -141,6 +152,14 @@ def _migrate(conn: sqlite3.Connection) -> None:
     if "ignored_until" not in hist_cols:
         conn.execute("ALTER TABLE alert_history ADD COLUMN ignored_until TEXT")
     conn.execute("CREATE INDEX IF NOT EXISTS alerts_incident_idx ON alerts(incident_id)")
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS alert_events ("
+        "event_id INTEGER PRIMARY KEY AUTOINCREMENT, alert_id TEXT NOT NULL, "
+        "event TEXT NOT NULL, at TEXT NOT NULL, actor TEXT, detail TEXT)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS alert_events_alert_idx ON alert_events(alert_id, event_id)"
+    )
     conn.execute("INSERT OR IGNORE INTO schema_version VALUES (2)")
 
     # #220: one-time backfill of non-live rows into alert_history (table
@@ -305,7 +324,7 @@ class AeAlarmsDB:
         with self._lock:
             cur = self._conn.execute(
                 "DELETE FROM alert_history "
-                "WHERE COALESCE(closed_at, acknowledged_at, created_at) < ? "
+                "WHERE COALESCE(closed_at, acknowledged_at, ignored_until, created_at) < ? "
                 "AND (ignored_until IS NULL OR ignored_until <= ?)",
                 (cutoff_iso, now_utc().isoformat()),
             )
@@ -348,6 +367,26 @@ class AeAlarmsDB:
                     "SELECT * FROM alert_history WHERE alert_id=?", (str(alert_id),)
                 ).fetchone()
         return self._row_to_alert(row) if row else None
+
+    def write_event(self, alert_id: str, event: str, at: str,
+                    actor: Optional[str] = None, detail: Optional[str] = None) -> None:
+        """Append one lifecycle event for an alert."""
+        with self._lock:
+            self._conn.execute(
+                "INSERT INTO alert_events (alert_id, event, at, actor, detail) "
+                "VALUES (?,?,?,?,?)",
+                (str(alert_id), str(event), str(at), actor, detail),
+            )
+
+    def query_events(self, alert_id: str, limit: int = 200) -> list[dict[str, Any]]:
+        """Lifecycle events for an alert, oldest first."""
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT event, at, actor, detail FROM alert_events "
+                "WHERE alert_id = ? ORDER BY event_id ASC LIMIT ?",
+                (str(alert_id), int(limit)),
+            ).fetchall()
+        return [dict(r) for r in rows]
 
     def query_active(self, limit: int = 1000) -> list[dict[str, Any]]:
         with self._lock:

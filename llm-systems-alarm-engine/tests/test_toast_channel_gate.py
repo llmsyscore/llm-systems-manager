@@ -178,3 +178,64 @@ async def test_delivery_is_recorded_against_the_channel_with_the_alert_id():
     assert row["metadata"] == {"alert_id": str(alert.alert_id)}
     # A successful toast counts as a send: the incident claim is kept.
     assert alert.incident_id in d._incident_dispatched
+
+
+# ── #904: handled alerts stay silent; toasts carry their category ──────────
+# These build a real Alert; a SimpleNamespace status stub cannot catch the bug.
+def _real_alert(status):
+    from backend.models.alert import Alert
+    aid = uuid4()
+    return Alert(
+        alert_id=aid, rule_id=uuid4(), rule_name="GPU hot",
+        metric_source="system", metric_name="gpu_temperature_c",
+        current_value=91.2, threshold_value=85.0, severity="critical",
+        status=status, message="hot", source_host="llama-box",
+        created_at=datetime.now(timezone.utc), incident_id=str(aid),
+    )
+
+
+async def test_acknowledged_alert_is_silent_on_a_continuing_breach():
+    from backend.models.alert import AlertStatus
+    d, sent, _ = _dispatcher([_toast_channel()], [_policy()])
+    await d._send_notifications_async(
+        _real_alert(AlertStatus.ACKNOWLEDGED), event="firing")
+    assert sent == []
+
+
+async def test_ignored_alert_is_silent_on_a_continuing_breach():
+    from backend.models.alert import AlertStatus
+    d, sent, _ = _dispatcher([_toast_channel()], [_policy()])
+    await d._send_notifications_async(
+        _real_alert(AlertStatus.IGNORED), event="firing")
+    assert sent == []
+
+
+async def test_active_alert_still_toasts_with_the_real_model():
+    from backend.models.alert import AlertStatus
+    d, sent, _ = _dispatcher([_toast_channel()], [_policy()])
+    await d._send_notifications_async(
+        _real_alert(AlertStatus.ACTIVE), event="firing")
+    assert len(sent) == 1
+    assert sent[0]["data"]["category"] == "alert"
+    assert sent[0]["data"]["alert_status"] == "active"
+
+
+async def test_ack_does_not_restart_min_alarm_count_from_a_stale_streak():
+    from backend.models.alert import AlertStatus
+    d, sent, _ = _dispatcher([_toast_channel()], [_policy(min_count=2)])
+    alert = _real_alert(AlertStatus.ACTIVE)
+    await d._send_notifications_async(alert, event="firing")
+    alert.status = AlertStatus.ACKNOWLEDGED
+    await d._send_notifications_async(alert, event="firing")
+    alert.status = AlertStatus.ACTIVE
+    await d._send_notifications_async(alert, event="firing")
+    assert sent == []
+
+
+async def test_clear_toast_is_categorised_from_the_event_not_the_text():
+    d, sent, _ = _dispatcher([_toast_channel()], [_policy(notify_on_clear=True)])
+    alert = _alert()
+    await d._send_notifications_async(alert, event="firing")
+    await d._send_notifications_async(alert, event="resolved")
+    assert sent[0]["data"]["category"] == "alert"
+    assert sent[1]["data"]["category"] == "clear"

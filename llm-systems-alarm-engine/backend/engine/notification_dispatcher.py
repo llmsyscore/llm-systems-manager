@@ -39,6 +39,31 @@ def _spawn_dispatch(coro) -> None:
     task.add_done_callback(_dispatch_tasks.discard)
 
 
+# Statuses an operator has already handled — no further firing notifications.
+_HANDLED_STATUSES = frozenset({"acknowledged", "ignored", "closed"})
+
+
+def _alert_status(alert) -> str:
+    """Lowercased status value, read from .value not str(member)."""
+    status = getattr(alert, "status", "") or ""
+    return str(getattr(status, "value", status)).lower()
+
+
+def _toast_category(alert, event: str) -> str:
+    """Toast class: 'ack'/'clear' are informational (no Ack/Close controls),
+    'alert' is actionable. Derived from the event and the alarm state."""
+    if event == "resolved":
+        return "clear"
+    if event == "acknowledged":
+        return "ack"
+    status = _alert_status(alert)
+    if status in ("closed", "exception"):
+        return "clear"
+    if status in ("acknowledged", "ignored"):
+        return "ack"
+    return "alert"
+
+
 def _alert_headline(alert: Alert, event: str) -> "tuple[str, str, str]":
     """(title, body, severity) for one alert event. Shared by the toast and
     web-push channels; resolved/acknowledged events read as info."""
@@ -247,11 +272,11 @@ class NotificationDispatcher:
             self._breach_count.pop(alert_id, None)
             return set()
 
-        # Acknowledged alerts stay silent on every later "firing" cycle.
-        if event == "firing":
-            status = str(getattr(alert, "status", "")).lower()
-            if status == "acknowledged":
-                return set()
+        # Acknowledged/ignored alerts stay silent on every later "firing"
+        # cycle, on every channel, until they clear and re-fire.
+        if event == "firing" and _alert_status(alert) in _HANDLED_STATUSES:
+            self._breach_count.pop(alert_id, None)
+            return set()
 
         # Resolution path: emit per-policy clear notifications only.
         if event == "resolved":
@@ -543,6 +568,8 @@ class NotificationDispatcher:
                 "body": body,
                 "severity": severity,
                 "alert_id": str(alert.alert_id),
+                "alert_status": _alert_status(alert),
+                "category": _toast_category(alert, event),
                 "sticky": bool(sticky),
                 "dismiss_seconds": int(dismiss_seconds or 10),
                 "source_host": host or "",

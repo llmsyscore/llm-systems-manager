@@ -3,17 +3,27 @@
 .split.detail { grid-template-columns: minmax(0, 1fr) 360px; }
 .split.detail table.tbl { min-width: 640px; }
 .split.detail .c-last, .split.detail .c-cnt { display: none; }
-#alertsTable col.c-sev { width: 112px; }
-#alertsTable col.c-rule { width: 250px; }
-#alertsTable col.c-status { width: 118px; }
+#alertsTable col.c-state { width: 36px; }
+#alertsTable col.c-rule { width: 448px; }
 #alertsTable col.c-fired { width: 132px; }
-#alertsTable col.c-last { width: 132px; }
-#alertsTable col.c-cnt { width: 60px; }
-#alertsTable col.c-act { width: 92px; }
-.split.detail #alertsTable col.c-sev { width: 100px; }
-.split.detail #alertsTable col.c-rule { width: 190px; }
-.split.detail #alertsTable col.c-status { width: 108px; }
-.split.detail #alertsTable col.c-fired { width: 118px; }
+#alertsTable col.c-last { width: 84px; }
+#alertsTable col.c-cnt { width: 62px; }
+#alertsTable col.c-act { width: 44px; }
+.split.detail #alertsTable col.c-state { width: 36px; }
+.split.detail #alertsTable col.c-rule { width: 320px; }
+.split.detail #alertsTable col.c-fired { width: 132px; }
+.tbl th.c-fired, .tbl td.c-fired, .tbl th.c-last, .tbl td.c-last,
+.tbl th.c-cnt, .tbl td.c-cnt, .tbl th.c-act, .tbl td.c-act { padding-left: 7px; padding-right: 7px; }
+.tbl th.c-state, .tbl td.c-state { padding-left: 0; padding-right: 0; text-align: center; text-overflow: clip; }
+.tbl th.c-last, .tbl td.c-last { text-align: center; }
+/* Column resize grips on the ledger header. */
+#alertsTable thead th { position: relative; }
+#alertsTable thead th .cgrip { position: absolute; top: 0; right: -4px; width: 9px; height: 100%; cursor: col-resize; z-index: 3; }
+#alertsTable thead th .cgrip::after { content: ""; position: absolute; top: 22%; bottom: 22%; left: 4px; width: 2px; border-radius: 1px; background: transparent; transition: background .12s; }
+#alertsTable thead th .cgrip:hover::after, #alertsTable thead th .cgrip:focus-visible::after { background: var(--accent); }
+#alertsTable thead th .cgrip:focus-visible { outline: none; }
+body.col-resizing { cursor: col-resize; user-select: none; }
+body.col-resizing #alertsTable { user-select: none; }
 #alertsTable td.n .rname { cursor: pointer; }
 .det { display: none; flex-direction: column; border: 1px solid var(--border); border-radius: 10px; background: var(--bg-card); position: sticky; top: 12px; max-height: calc(100vh - 24px); overflow: auto; }
 .split.detail .det { display: flex; }

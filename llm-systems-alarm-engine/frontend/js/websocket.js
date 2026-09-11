@@ -192,6 +192,10 @@ const WebSocketEvents = {
             AlertManager.handleAlertUpdate(payload);
         });
 
+        ws.on('alert_resumed', (payload) => {
+            AlertManager.handleAlertUpdate(payload);
+        });
+
         // Metric events
         ws.on('metric_update', (payload) => {
             MetricsManager.handleMetricUpdate(payload);
@@ -220,6 +224,7 @@ const WebSocketEvents = {
                     sticky: payload.sticky === true,
                     duration: Math.max(1, Number(payload.dismiss_seconds) || 10) * 1000,
                     alertId: payload.alert_id,
+                    category: toastCategory(payload),
                     subtitle: body,
                     incidentId: payload.incident_id,
                     incidentSize: payload.incident_size,

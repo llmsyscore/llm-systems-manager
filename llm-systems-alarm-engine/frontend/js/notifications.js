@@ -135,7 +135,7 @@ const NotificationsManager = {
                 <td><div class="chips">${chips}</div></td>
                 <td class="r"><span class="cnts"><span class="${sent ? '' : 'z'}">${sent}</span> · <span class="${failed ? 'f' : 'z'}">${failed}</span></span></td>
                 <td class="t">${escapeHtml(ch.last_sent_at ? fmtWhen(ch.last_sent_at) : 'never')}</td>
-                <td><div class="act">${ibtn('play', 'Send a test', 'pri', 'data-act="test"')}${ibtn('edit', 'Edit', '', 'data-act="edit"')}${kebabBtn()}${menu}</div></td>
+                <td class="c-act"><div class="act">${ibtn('play', 'Send a test', 'pri', 'data-act="test"')}${ibtn('edit', 'Edit', '', 'data-act="edit"')}${kebabBtn()}${menu}</div></td>
             </tr>`;
         }).join('');
     },
@@ -183,7 +183,7 @@ const NotificationsManager = {
                 <td class="cond">${this._when(p)}</td>
                 <td class="t">${escapeHtml(this._cadence(p))}</td>
                 <td class="t">${escapeHtml(fired)}</td>
-                <td><div class="act">${ibtn('edit', 'Edit', '', 'data-act="edit"')}${ibtn('copy', 'Duplicate', '', 'data-act="copy"')}${kebabBtn()}${menu}</div></td>
+                <td class="c-act"><div class="act">${ibtn('edit', 'Edit', '', 'data-act="edit"')}${ibtn('copy', 'Duplicate', '', 'data-act="copy"')}${kebabBtn()}${menu}</div></td>
             </tr>`;
         }).join('');
     },

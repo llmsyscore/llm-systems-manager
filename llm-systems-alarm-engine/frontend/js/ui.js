@@ -45,6 +45,40 @@ function fmtWhen(ts, seconds = false) {
     return `${_MONTHS[d.getMonth()]} ${d.getDate()}${year} · ${fmtTime(d, seconds)}`;
 }
 
+// Ledger-cell timestamp: clock alone today, date and time adjacent for older
+// rows. Full precision stays on the cell title and in the detail drawer.
+function fmtWhenCell(ts) {
+    const d = parseTs(ts);
+    if (!d) return '—';
+    const n = new Date();
+    if (d.getDate() === n.getDate() && d.getMonth() === n.getMonth()
+        && d.getFullYear() === n.getFullYear()) return fmtTime(d);
+    const date = `${_MONTHS[d.getMonth()]} ${d.getDate()}`;
+    if (d.getFullYear() !== n.getFullYear()) return `${date}, ${d.getFullYear()}`;
+    return `${date} ${fmtTime(d)}`;
+}
+
+// Compact elapsed span: "45s", "15m", "20h 15m", "2d 3h".
+function fmtSpan(seconds) {
+    const s = Math.max(0, Math.round(seconds));
+    if (s < 60) return `${s}s`;
+    const m = Math.floor(s / 60);
+    if (m < 60) return `${m}m`;
+    const h = Math.floor(m / 60), rm = m % 60;
+    if (h < 24) return rm ? `${h}h ${rm}m` : `${h}h`;
+    const dd = Math.floor(h / 24), rh = h % 24;
+    return rh ? `${dd}d ${rh}h` : `${dd}d`;
+}
+
+// Time an alert has been open: trigger until closure, else until now.
+function alertSpan(alert, now = Date.now()) {
+    const start = parseTs(alert.created_at);
+    if (!start) return '—';
+    const endTs = alert.status === 'closed'
+        ? parseTs(alert.closed_at || alert.last_evaluated_at) : null;
+    return fmtSpan(((endTs ? endTs.getTime() : now) - start.getTime()) / 1000);
+}
+
 function fmtAgo(ts, now = Date.now()) {
     const d = parseTs(ts);
     if (!d) return '—';
@@ -157,9 +191,13 @@ function hostHtml(host) {
 }
 
 const _STATUS_PILL = { active: 'crit', acknowledged: 'note', ignored: 'dim', closed: 'ok', exception: 'info' };
-function statusPill(status) {
-    const s = String(status || '').toLowerCase();
-    return `<span class="pill ${_STATUS_PILL[s] || 'dim'}">${escapeHtml(s || '—')}</span>`;
+// One glyph per alert: hue = severity, shape = status. Tip reads "critical · acknowledged".
+function stateGlyph(alert) {
+    const sev = String(alert?.severity || 'info').toLowerCase();
+    const st = String(alert?.status || 'active').toLowerCase();
+    const tip = `${sev} · ${st}`;
+    return `<span class="gd sev-${escapeHtml(sev)} st-${escapeHtml(st)}" data-tip="${escapeHtml(tip)}"`
+        + ` role="img" aria-label="${escapeHtml(tip)}"></span>`;
 }
 
 // items: [{act, label, glyph, danger}] or 'hr'
@@ -322,6 +360,20 @@ try {
     };
 } catch (_) { /* no cross-frame sync on very old browsers */ }
 
+// 'ack'/'clear' toasts are notices; 'alert' carries the Ack/Close controls.
+// Prefer the engine's category, then the alarm state it sent, then the text.
+function toastCategory(payload) {
+    if (payload.category) return payload.category;
+    const status = String(payload.alert_status || '').toLowerCase();
+    if (status === 'acknowledged' || status === 'ignored') return 'ack';
+    if (status === 'closed' || status === 'exception') return 'clear';
+    if (status) return 'alert';
+    const blob = `${payload.title || ''} ${payload.body || ''}`.toLowerCase();
+    if (blob.includes('acknowledg')) return 'ack';
+    if (blob.includes('resolv') || blob.includes('clear') || blob.includes('closed')) return 'clear';
+    return 'alert';
+}
+
 const ToastManager = {
     maxToasts: 5,
 
@@ -333,6 +385,9 @@ const ToastManager = {
         const subtitle = options.subtitle || '';
         const incidentId = options.incidentId || null;
         const incidentSize = options.incidentSize || 0;
+        // Only actionable toasts carry Ack/Close; ack/clear ones are notices.
+        const category = options.category || 'alert';
+        const actionable = alertId && category === 'alert';
         if (alertId && _dismissedAlertIds.has(alertId)) return;
 
         let container = document.getElementById('toastContainer');
@@ -347,7 +402,12 @@ const ToastManager = {
 
         if (incidentId) {
             const existing = container.querySelector(`.toast[data-incident-id="${CSS.escape(incidentId)}"]`);
-            if (existing) {
+            // A category change rebuilds the toast so its controls match.
+            if (existing && existing.dataset.cat !== category) {
+                if (existing._dismissTimer) clearTimeout(existing._dismissTimer);
+                delete existing.dataset.incidentId;
+                existing.remove();
+            } else if (existing) {
                 const msgEl = existing.querySelector('.toast-message');
                 if (msgEl) msgEl.innerHTML = `${safeTitle}${subtitleHtml}`;
                 Array.from(existing.classList).forEach(c => {
@@ -365,9 +425,10 @@ const ToastManager = {
 
         const toast = document.createElement('div');
         toast.className = `toast toast-${type}`;
+        toast.dataset.cat = category;
         if (alertId) toast.dataset.alertId = alertId;
         if (incidentId) toast.dataset.incidentId = incidentId;
-        const actions = alertId
+        const actions = actionable
             ? `<div class="toast-actions"><button class="toast-action toast-ack" type="button" title="Acknowledge alert">Ack</button><button class="toast-action toast-resolve" type="button" title="Close alert">Close</button></div>`
             : '';
         toast.innerHTML = `<span class="toast-message">${safeTitle}${subtitleHtml}</span>${actions}<button class="toast-close" type="button" aria-label="Dismiss">×</button>${sticky ? '<span class="toast-sticky-indicator">Sticky</span>' : ''}`;
@@ -405,8 +466,10 @@ const ToastManager = {
                 else await AlertManager.close(targetId);
                 dismiss(true);
             };
-            toast.querySelector('.toast-ack').addEventListener('click', (e) => { e.stopPropagation(); act('ack'); });
-            toast.querySelector('.toast-resolve').addEventListener('click', (e) => { e.stopPropagation(); act('close'); });
+            if (actionable) {
+                toast.querySelector('.toast-ack').addEventListener('click', (e) => { e.stopPropagation(); act('ack'); });
+                toast.querySelector('.toast-resolve').addEventListener('click', (e) => { e.stopPropagation(); act('close'); });
+            }
         }
 
         container.appendChild(toast);

@@ -94,10 +94,10 @@ def test_v2_migration_moves_non_live_rows_to_history(tmp_path):
     db = AeAlarmsDB.open(p)
     try:
         alert_ids = {r["alert_id"] for r in db._conn.execute("SELECT alert_id FROM alerts")}
-        assert alert_ids == {"active-1"}
+        assert alert_ids == {"active-1", "ignored-1"}, "ignored alerts stay live (#938)"
         assert db.get_alert("active-1") is not None
         assert _history_alert(db, "closed-1") is not None
-        assert _history_alert(db, "ignored-1") is not None
+        assert _history_alert(db, "ignored-1") is None
     finally:
         db.close()
 
@@ -109,9 +109,9 @@ def test_v2_migration_is_idempotent(tmp_path):
     db = AeAlarmsDB.open(p)  # second open must not raise or re-duplicate rows
     try:
         alert_ids = {r["alert_id"] for r in db._conn.execute("SELECT alert_id FROM alerts")}
-        assert alert_ids == {"active-1"}
+        assert alert_ids == {"active-1", "ignored-1"}
         history_ids = {r["alert_id"] for r in db._conn.execute("SELECT alert_id FROM alert_history")}
-        assert history_ids == {"closed-1", "ignored-1"}
+        assert history_ids == {"closed-1"}
     finally:
         db.close()
 
@@ -395,22 +395,24 @@ def test_purge_history_older_than_empty_table_returns_zero(tmp_path):
         db.close()
 
 
-def test_ignoring_old_alert_stamps_acknowledged_at_so_purge_skips_it(tmp_path):
-    """Single-alert ignore must stamp a timestamp, or purge treats it as
-    ancient (falls back to its 100-day-old created_at) and deletes it."""
+def test_ignoring_old_alert_is_retained_and_not_acknowledged(tmp_path):
+    """An ignored alert stays in the live table (#938), so history purge never
+    reaches it — and ignoring never stamps acknowledged_at."""
     db = AeAlarmsDB.open(tmp_path / "fresh.db")
     try:
         alert_id = uuid.uuid4()
         old_created_at = (now_utc() - timedelta(days=100)).isoformat()
         _write(db, str(alert_id), status="active", created_at=old_created_at)
         repo = AlertRepository(alarms_db=db)
-        updated = repo.update(alert_id, AlertUpdate(status=AlertStatus.IGNORED))
+        until = now_utc() + timedelta(hours=24)
+        updated = repo.update(
+            alert_id, AlertUpdate(status=AlertStatus.IGNORED, ignored_until=until)
+        )
         assert updated is not None
-        hist = _history_alert(db, str(alert_id))
-        assert hist is not None
-        assert hist["acknowledged_at"] is not None
+        assert updated.acknowledged_at is None, "ignore must not fake an acknowledgement"
+        assert _history_alert(db, str(alert_id)) is None, "ignored rows stay live"
         cutoff = (now_utc() - timedelta(days=90)).isoformat()
         assert db.purge_history_older_than(cutoff) == 0
-        assert _history_alert(db, str(alert_id)) is not None
+        assert db.get_alert(str(alert_id)) is not None
     finally:
         db.close()

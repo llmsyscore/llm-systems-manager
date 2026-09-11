@@ -118,6 +118,16 @@ const ApiClient = {
                 method: 'POST',
             });
         },
+        async events(alertId) {
+            return ApiClient._request(`/alerts/${alertId}/events`);
+        },
+
+        async resume(alertId) {
+            return ApiClient._request(`/alerts/${alertId}/resume`, {
+                method: 'POST',
+            });
+        },
+
         async ignore(alertId, durationHours) {
             const q = durationHours != null
                 ? `?duration_hours=${encodeURIComponent(durationHours)}` : '';

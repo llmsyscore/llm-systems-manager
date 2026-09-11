@@ -10,7 +10,7 @@ const AppState = {
     lastRefreshOk: true,
     filters: {
         alerts: { severity: 'all', status: 'open', search: '', sort: 'fired', dir: 'desc', page: 1, pageSize: 25 },
-        console: { severity: 'all', sort: 'fired', dir: 'desc' },
+        console: { severity: 'all', sort: 'fired', dir: 'desc', recentLimit: 20 },
         rules: { search: '', type: 'all', state: 'all', host: '', sort: 'name', dir: 'asc', page: 1, pageSize: 25 },
         metrics: { host: '', key: '', minutes: 60, offset: 0, mark: null },
         deliveries: { type: '', result: '', page: 1, pageSize: 20 },
@@ -35,11 +35,16 @@ const DashboardManager = {
     refresh() { TabManager.refreshCurrent(); },
 };
 
+// Rules and Notifications are sections of the Settings tab; they keep their
+// own tab ids so loading, polling and rendering key on them unchanged.
+const SETTINGS_SECTIONS = new Set(['rules', 'notifications']);
+
 const TabManager = {
     _pollTimer: null,
+    _settingsSection: 'rules',
 
     init() {
-        document.querySelectorAll('.sub-tab-btn[data-tab]').forEach(btn => {
+        document.querySelectorAll('.sub-tab-btn[data-tab], .set-tab[data-tab]').forEach(btn => {
             btn.addEventListener('click', () => this.switchTab(btn.dataset.tab));
         });
         document.addEventListener('click', (e) => {
@@ -51,17 +56,25 @@ const TabManager = {
     },
 
     _fromHash() {
-        const m = /^#(console|alerts|metrics|rules|notifications)\b/.exec(location.hash || '');
+        const m = /^#(console|alerts|metrics|settings|rules|notifications)\b/.exec(location.hash || '');
         if (m && m[1] !== AppState.currentTab) this.switchTab(m[1], false);
     },
 
     switchTab(tabName, pushHash = true) {
+        if (tabName === 'settings') tabName = this._settingsSection;
+        const inSettings = SETTINGS_SECTIONS.has(tabName);
+        if (inSettings) this._settingsSection = tabName;
         AppState.currentTab = tabName;
         document.querySelectorAll('.sub-tab-btn[data-tab]').forEach(btn => {
+            const hit = btn.dataset.tab === tabName || (btn.dataset.tab === 'settings' && inSettings);
+            btn.classList.toggle('active', hit);
+        });
+        document.querySelectorAll('.set-tab[data-tab]').forEach(btn => {
             btn.classList.toggle('active', btn.dataset.tab === tabName);
+            btn.setAttribute('aria-selected', btn.dataset.tab === tabName ? 'true' : 'false');
         });
         document.querySelectorAll('.panel').forEach(p => {
-            p.classList.toggle('active', p.id === `panel-${tabName}`);
+            p.classList.toggle('active', p.id === `panel-${tabName}` || (p.id === 'panel-settings' && inSettings));
         });
         const status = document.getElementById('pageStatus');
         const hdr = document.querySelector(`#panel-${tabName} .hdr`);

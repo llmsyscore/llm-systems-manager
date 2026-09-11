@@ -3,6 +3,7 @@
 
 const AlertManager = {
     _inflight: new Set(),
+    _events: new Map(),
     _deliveries: { at: 0, rows: [], promise: null },
 
     get all() { return AppState.alerts; },
@@ -122,6 +123,7 @@ const AlertManager = {
             await fn();
             if (okMsg) ToastManager.show(okMsg, 'success');
             await this._afterChange();
+            await this.refreshEvents(id);
             return true;
         } catch (e) {
             ToastManager.show(`${errMsg}: ${e?.message || 'request failed'}`, 'error');
@@ -129,6 +131,29 @@ const AlertManager = {
         } finally {
             this._inflight.delete(id);
         }
+    },
+
+    // Lifecycle log for the drawer timeline; cached per alert (#939).
+    async loadEvents(id) {
+        const key = String(id);
+        if (this._events.has(key)) return this._events.get(key);
+        this._events.set(key, []);
+        try {
+            const r = await ApiClient.alerts.events(key);
+            this._events.set(key, Array.isArray(r?.events) ? r.events : []);
+        } catch (_) { /* timeline falls back to the derived entries */ }
+        return this._events.get(key);
+    },
+
+    forgetEvents(id) { this._events.delete(String(id)); },
+
+    // Drop the cached log and refetch it for the alert open in the drawer.
+    async refreshEvents(id) {
+        const key = String(id);
+        this.forgetEvents(key);
+        if (typeof AlertsView === 'undefined' || String(AlertsView._sel) !== key) return;
+        await this.loadEvents(key);
+        if (String(AlertsView._sel) === key) AlertsView._renderDetail();
     },
 
     acknowledge(id) {
@@ -145,9 +170,9 @@ const AlertManager = {
         return this._run(id, () => ApiClient.alerts.ignore(id, hours), `Ignored for ${hours} h`, 'Could not ignore');
     },
 
-    // Ends an ignore window by closing the alert; the rule fires again if still over the limit.
+    // Ends an ignore window: the alert returns to active, the rule resumes.
     resume(id) {
-        return this._run(id, () => ApiClient.alerts.close(id), 'Ignore window ended', 'Could not resume');
+        return this._run(id, () => ApiClient.alerts.resume(id), 'Ignore window ended', 'Could not resume');
     },
 
     async closeAll() {
@@ -217,7 +242,7 @@ const AlertManager = {
         if (idx !== -1) AppState.alerts[idx] = { ...AppState.alerts[idx], ...payload };
         UI.setNavCount(this.active().length);
         this._rerender();
-        this._afterChange();
+        this._afterChange().then(() => this.refreshEvents(id));
     },
 
     _rerender() {
@@ -240,6 +265,123 @@ const AlertManager = {
 };
 
 // ── Alerts ledger view ───────────────────────────────────────────────
+
+// Drag-resizable ledger columns, remembered per browser. Widths are written
+// as a stylesheet so the detail-drawer's own column rules still apply.
+const AlertCols = {
+    KEY: 'ae.alerts.colw',
+    MIN: { 'c-rule': 150, 'c-fired': 104, 'c-last': 72, 'c-cnt': 56 },
+    MAX: 640,
+    MSG_MIN: 140,
+    _w: {},
+
+    init() {
+        this._w = this._load();
+        this._apply();
+        this._mount();
+    },
+
+    _load() {
+        try {
+            const raw = JSON.parse(localStorage.getItem(this.KEY) || '{}');
+            const out = {};
+            for (const [k, v] of Object.entries(raw || {})) {
+                if (this.MIN[k] && Number.isFinite(Number(v))) out[k] = this._clamp(k, Number(v));
+            }
+            return out;
+        } catch (_) { return {}; }
+    },
+
+    _save() { try { localStorage.setItem(this.KEY, JSON.stringify(this._w)); } catch (_) {} },
+
+    _clamp(key, w) { return Math.max(this.MIN[key], Math.min(this.MAX, Math.round(w))); },
+
+    // Widest this column may grow before the message column loses its floor.
+    _ceiling(key) {
+        const table = document.getElementById('alertsTable');
+        if (!table) return this.MAX;
+        let others = 0;
+        table.querySelectorAll('colgroup col').forEach(col => {
+            if (col.classList.contains(key) || col.classList.contains('c-msg')) return;
+            others += col.getBoundingClientRect().width;
+        });
+        const room = table.getBoundingClientRect().width - others - this.MSG_MIN;
+        return Math.max(this.MIN[key], Math.min(this.MAX, room));
+    },
+
+    _apply() {
+        let el = document.getElementById('alertsColW');
+        if (!el) { el = document.createElement('style'); el.id = 'alertsColW'; document.head.appendChild(el); }
+        el.textContent = Object.entries(this._w)
+            .map(([k, v]) => `.split:not(.detail) #alertsTable col.${k} { width: ${v}px; }`)
+            .join('\n');
+    },
+
+    _set(key, w, persist) {
+        this._w[key] = Math.min(this._clamp(key, w), this._ceiling(key));
+        this._apply();
+        if (persist) this._save();
+    },
+
+    reset(key) { delete this._w[key]; this._apply(); this._save(); },
+
+    resetAll() { this._w = {}; this._apply(); this._save(); },
+
+    _mount() {
+        document.querySelectorAll('#alertsTable thead th').forEach(th => {
+            const key = Array.from(th.classList).find(c => this.MIN[c]);
+            if (!key || th.querySelector('.cgrip')) return;
+            const grip = document.createElement('span');
+            grip.className = 'cgrip';
+            grip.tabIndex = 0;
+            grip.setAttribute('role', 'separator');
+            grip.setAttribute('aria-orientation', 'vertical');
+            grip.setAttribute('aria-label', `Resize ${th.textContent.trim() || key} column`);
+            grip.title = 'Drag to resize · double-click to reset';
+            th.appendChild(grip);
+            grip.addEventListener('pointerdown', e => this._drag(e, key, th));
+            grip.addEventListener('click', e => e.stopPropagation());
+            grip.addEventListener('dblclick', e => { e.stopPropagation(); this.reset(key); });
+            grip.addEventListener('keydown', e => this._key(e, key, th));
+        });
+    },
+
+    _drag(e, key, th) {
+        if (e.button !== 0) return;
+        e.preventDefault();
+        e.stopPropagation();
+        const startX = e.clientX;
+        const startW = th.getBoundingClientRect().width;
+        const move = ev => this._set(key, startW + ev.clientX - startX, false);
+        const up = () => {
+            window.removeEventListener('pointermove', move);
+            window.removeEventListener('pointerup', up);
+            document.body.classList.remove('col-resizing');
+            this._save();
+        };
+        document.body.classList.add('col-resizing');
+        window.addEventListener('pointermove', move);
+        window.addEventListener('pointerup', up);
+    },
+
+    _key(e, key, th) {
+        if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return;
+        e.preventDefault();
+        e.stopPropagation();
+        const step = e.shiftKey ? 24 : 8;
+        const cur = this._w[key] ?? th.getBoundingClientRect().width;
+        this._set(key, cur + (e.key === 'ArrowRight' ? step : -step), true);
+    },
+};
+
+// Lifecycle event → timeline label (#939).
+const _EVENT_LABEL = {
+    acknowledged:   { label: 'Acknowledged', cls: 'info' },
+    unacknowledged: { label: 'Unacknowledged', cls: '' },
+    ignored:        { label: 'Ignored', cls: '', fmt: e => `until ${fmtWhen(e.detail)}` },
+    ignore_ended:   { label: 'Ignore window ended', cls: '' },
+    closed:         { label: 'Closed', cls: 'ok' },
+};
 
 const AlertsView = {
     _sel: null,
@@ -268,6 +410,7 @@ const AlertsView = {
             if (await AlertManager.bulk(ids, b.dataset.bulk)) this._checked.clear();
             this.render();
         });
+        AlertCols.init();
         document.querySelectorAll('#alertsTable th.sort').forEach(th => th.addEventListener('click', () => {
             const key = th.dataset.sort;
             if (f.sort === key) f.dir = f.dir === 'asc' ? 'desc' : 'asc';
@@ -287,12 +430,15 @@ const AlertsView = {
     },
 
     _onRowClick(e) {
+        // The kebab is owned by the global menu handler, not row selection.
+        if (e.target.closest('[data-menu]')) return;
         const act = e.target.closest('[data-act]');
         const tr = e.target.closest('tr[data-id]');
         if (!tr) return;
         const id = tr.dataset.id;
         if (act) {
             e.stopPropagation();
+            UI.closeMenus();
             this._doAction(act.dataset.act, id);
             return;
         }
@@ -356,7 +502,13 @@ const AlertsView = {
             case 'severity': return SEVERITY_RANK[a.severity] ?? 9;
             case 'rule': return (a.rule_name || '').toLowerCase();
             case 'status': return ['active', 'acknowledged', 'ignored', 'exception', 'closed'].indexOf(a.status);
-            case 'last': return parseTs(a.last_evaluated_at || a.created_at)?.getTime() || 0;
+            case 'last': {
+                const st = parseTs(a.created_at)?.getTime() || 0;
+                const en = a.status === 'closed'
+                    ? (parseTs(a.closed_at || a.last_evaluated_at)?.getTime() || Date.now())
+                    : Date.now();
+                return en - st;
+            }
             case 'count': return Number(a.trigger_count ?? 1);
             default: return parseTs(a.created_at)?.getTime() || 0;
         }
@@ -430,20 +582,35 @@ const AlertsView = {
         const inc = children ? `<button type="button" class="inc" data-inc="${id}">+${children} related</button>` : '';
         const childAttr = child ? ` data-child="${escapeHtml(child)}" hidden` : '';
         const cls = [child ? 'child' : '', this._sel === String(a.alert_id) ? 'sel' : '', (a.status === 'closed' || a.status === 'ignored') ? 'off' : '', 'pick'].filter(Boolean).join(' ');
-        let acts = '';
-        if (a.status === 'active') acts = ibtn('check', 'Acknowledge', 'ok', 'data-act="ack"') + ibtn('snooze', 'Ignore for…', 'warnh', 'data-act="ignore"') + ibtn('x', 'Close', 'crith', 'data-act="close"');
-        else if (a.status === 'acknowledged') acts = ibtn('x', 'Close', 'crith', 'data-act="close"');
-        else if (a.status === 'ignored') acts = ibtn('bell', 'End the ignore window', 'pri', 'data-act="resume"') + ibtn('x', 'Close', 'crith', 'data-act="close"');
+        // One kebab per row; the open actions live inside it.
+        let items = [];
+        if (a.status === 'active') items = [
+            { act: 'ack', glyph: '✓', label: 'Acknowledge' },
+            { act: 'ignore', glyph: '◔', label: 'Ignore for…' },
+            'hr',
+            { act: 'close', glyph: '×', label: 'Close alert', danger: true },
+        ];
+        else if (a.status === 'acknowledged') items = [
+            { act: 'resume', glyph: '◉', label: 'Unacknowledge' },
+            { act: 'ignore', glyph: '◔', label: 'Ignore for…' },
+            'hr',
+            { act: 'close', glyph: '×', label: 'Close alert', danger: true },
+        ];
+        else if (a.status === 'ignored') items = [
+            { act: 'resume', glyph: '◉', label: 'End the ignore window' },
+            'hr',
+            { act: 'close', glyph: '×', label: 'Close alert', danger: true },
+        ];
+        const acts = items.length ? kebabBtn() + menuHtml(items) : '';
         return `<tr class="${cls}" data-id="${id}"${childAttr}>
             <td class="c-sel"><span class="cb${this._checked.has(String(a.alert_id)) ? ' on' : ''}" role="checkbox"></span></td>
-            <td>${sevHtml(a.severity)}</td>
+            <td class="c-state">${stateGlyph(a)}</td>
             <td class="n">${inc}<span class="rname" title="Open the rule">${escapeHtml(a.rule_name || 'Alert')}</span><span class="sub">${sub}</span></td>
             <td class="msg" title="${escapeHtml(AlertManager.cleanMessage(a))}">${d.sentence}</td>
-            <td>${statusPill(a.status)}</td>
-            <td>${escapeHtml(fmtWhen(a.created_at))}</td>
-            <td class="c-last">${escapeHtml(fmtWhen(a.last_evaluated_at || a.created_at))}</td>
+            <td class="c-fired" title="${escapeHtml(fmtWhen(a.created_at, true))}">${escapeHtml(fmtWhenCell(a.created_at))}</td>
+            <td class="c-last" title="Last seen ${escapeHtml(fmtWhen(a.last_evaluated_at || a.created_at, true))}">${escapeHtml(alertSpan(a))}</td>
             <td class="c-cnt r">${escapeHtml(String(a.trigger_count ?? 1))}</td>
-            <td><div class="act">${acts}</div></td>
+            <td class="c-act"><div class="act">${acts}</div></td>
         </tr>`;
     },
 
@@ -458,6 +625,9 @@ const AlertsView = {
 
     // ── selection + drawer ───────────────────────────────────────────
     select(id) {
+        if (id) AlertManager.loadEvents(id).then(() => {
+            if (String(this._sel) === String(id)) this._renderDetail();
+        });
         this._sel = id ? String(id) : null;
         document.querySelectorAll('#alertsBody tr[data-id]').forEach(tr => tr.classList.toggle('sel', tr.dataset.id === this._sel));
         this._renderDetail();
@@ -518,8 +688,11 @@ const AlertsView = {
             ['Metric', `<button class="mlink" ${METRIC_LINK}>${escapeHtml(a.metric_source)}/${escapeHtml(a.metric_name)}</button>`],
             ['Host', escapeHtml(a.source_host || 'any host')],
             ['Triggered', `${escapeHtml(fmtWhen(a.created_at, true))} <span class="t">· ${escapeHtml(firedAgo)}</span>`],
-            ['Last seen', escapeHtml(fmtWhen(a.last_evaluated_at || a.created_at, true))],
+            a.status === 'closed'
+                ? ['Closed', escapeHtml(fmtWhen(a.closed_at || a.last_evaluated_at, true))]
+                : ['Last seen', escapeHtml(fmtWhen(a.last_evaluated_at || a.created_at, true))],
             ['Count', `${escapeHtml(String(a.trigger_count ?? 1))} cycle${(a.trigger_count ?? 1) === 1 ? '' : 's'}`],
+            ['Duration', `${escapeHtml(alertSpan(a))}${stillOn ? ' <span class="t">· still open</span>' : ''}`],
             d.detector ? ['Detector', escapeHtml(d.detector)] : null,
             rule ? ['Auto-resolve', rule.auto_resolve_cycles > 0 ? `after ${rule.auto_resolve_cycles} clean cycle${rule.auto_resolve_cycles === 1 ? '' : 's'}` : 'manual close only'] : null,
             ['Alert id', `${escapeHtml(String(a.alert_id).slice(0, 8))}…`],
@@ -537,9 +710,23 @@ const AlertsView = {
             const before = (parseTs(m.created_at)?.getTime() || 0) < (parseTs(a.created_at)?.getTime() || 0);
             tl.push({ cls: m.severity, html: before ? `Joined <b>${escapeHtml(m.rule_name || 'Alert')}</b>'s incident` : `<b>${escapeHtml(m.rule_name || 'Alert')}</b> joined the incident`, t: fmtWhen(m.created_at, true), ts: parseTs(m.created_at) });
         });
-        if (a.acknowledged_at) tl.push({ cls: 'info', html: `<b>Acknowledged</b>${a.acknowledged_by ? ` by ${escapeHtml(a.acknowledged_by)}` : ''}`, t: fmtWhen(a.acknowledged_at, true), ts: parseTs(a.acknowledged_at) });
-        if (a.status === 'ignored' && a.ignored_until) tl.push({ cls: '', html: `<b>Ignored</b> until ${escapeHtml(fmtWhen(a.ignored_until))}`, t: '', ts: parseTs(a.ignored_until) });
-        if (a.status === 'closed') {
+        // Recorded lifecycle events (#939); each transition keeps its own entry.
+        const log = AlertManager._events.get(String(a.alert_id)) || [];
+        const logged = log.filter(e => e.event !== 'created');
+        logged.forEach(e => {
+            const m = _EVENT_LABEL[e.event];
+            if (!m) return;
+            const who = e.actor ? ` by ${escapeHtml(e.actor)}` : '';
+            const extra = m.fmt ? ` · ${escapeHtml(m.fmt(e))}` : (e.detail ? ` · ${escapeHtml(e.detail)}` : '');
+            tl.push({ cls: m.cls, html: `<b>${m.label}</b>${who}${extra}`,
+                      t: fmtWhen(e.at, true), ts: parseTs(e.at) });
+        });
+        // Older alerts predate the log — fall back to the derived entries.
+        if (!logged.length) {
+            if (a.acknowledged_at) tl.push({ cls: 'info', html: `<b>Acknowledged</b>${a.acknowledged_by ? ` by ${escapeHtml(a.acknowledged_by)}` : ''}`, t: fmtWhen(a.acknowledged_at, true), ts: parseTs(a.acknowledged_at) });
+            if (a.status === 'ignored' && a.ignored_until) tl.push({ cls: '', html: `<b>Ignored</b> until ${escapeHtml(fmtWhen(a.ignored_until))}`, t: '', ts: parseTs(a.ignored_until) });
+        }
+        if (!logged.length && a.status === 'closed') {
             const why = a.resolution_reason === 'auto' ? `auto${a.resolved_value != null ? ` @ ${escapeHtml(fmtVal(a.resolved_value, d.unit))}` : ''}` : a.resolution_reason === 'manual' ? `by ${escapeHtml(a.acknowledged_by || 'operator')}` : 'cleared';
             tl.push({ cls: 'ok', html: `<b>Closed</b> · ${why}`, t: fmtWhen(a.closed_at, true), ts: parseTs(a.closed_at) });
         } else if (stillOn) {
@@ -549,7 +736,7 @@ const AlertsView = {
 
         let foot = '';
         if (a.status === 'active') foot = `<button type="button" class="mcbtn mcbtn-pri mcbtn-sm" data-act="ack">Acknowledge</button><button type="button" class="mcbtn mcbtn-ghost mcbtn-sm" data-act="ignore">Ignore for…</button><button type="button" class="mcbtn mcbtn-ghost mcbtn-sm warn" data-act="close">Close</button>`;
-        else if (a.status === 'acknowledged') foot = `<button type="button" class="mcbtn mcbtn-ghost mcbtn-sm warn" data-act="close">Close</button>`;
+        else if (a.status === 'acknowledged') foot = `<button type="button" class="mcbtn mcbtn-ghost mcbtn-sm" data-act="resume">Unacknowledge</button><button type="button" class="mcbtn mcbtn-ghost mcbtn-sm" data-act="ignore">Ignore for…</button><button type="button" class="mcbtn mcbtn-ghost mcbtn-sm warn" data-act="close">Close</button>`;
         else if (a.status === 'ignored') foot = `<button type="button" class="mcbtn mcbtn-ghost mcbtn-sm" data-act="resume">End ignore window</button><button type="button" class="mcbtn mcbtn-ghost mcbtn-sm warn" data-act="close">Close</button>`;
         else foot = `<span class="none">closed · no actions</span>`;
         if (a.rule_id) foot += `<button type="button" class="lnk" data-act="openrule">Open rule</button>`;

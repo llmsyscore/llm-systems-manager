@@ -14,7 +14,7 @@ from .._time import now_utc
 from typing import Optional
 
 from ..models.alarm_rule import AlarmRule, RuleType
-from ..models.alert import AlertCreate, AlertStatus
+from ..models.alert import ONGOING_STATUSES, AlertCreate, AlertStatus
 from ..models.metrics import MetricPoint
 from ..storage.repositories import RuleRepository, AlertRepository, MetricRepository
 from .alert_manager import AlertManager
@@ -78,6 +78,26 @@ class RuleEngine:
         # a value of 0 disables auto-resolve for that rule.
         self._ok_streak: dict[str, int] = {}
 
+    def _expire_ignore_windows(self, snapshot: list) -> list:
+        """Return elapsed-window alerts to active so they alert again (#938)."""
+        if not snapshot:
+            return snapshot
+        now = now_utc()
+        changed = False
+        for a in list(snapshot):
+            if a.status != AlertStatus.IGNORED or not a.ignored_until:
+                continue
+            if a.ignored_until > now:
+                continue
+            try:
+                if self.alert_manager.resume_alert(str(a.alert_id)) is not None:
+                    changed = True
+                    logger.info("IGNORE WINDOW ELAPSED: alert_id=%s rule=%s",
+                                a.alert_id, a.rule_name or "—")
+            except Exception:
+                logger.exception("Failed to expire ignore window for %s", a.alert_id)
+        return self.alert_repository.get_active() if changed else snapshot
+
     async def evaluate_all(self) -> None:
         """Evaluate all enabled rules against current metrics."""
         cycle_start = time.perf_counter()
@@ -99,6 +119,8 @@ class RuleEngine:
         except Exception:
             logger.exception("Failed to fetch active alerts snapshot")
             active_alerts_snapshot = []
+
+        active_alerts_snapshot = self._expire_ignore_windows(active_alerts_snapshot)
 
         for rule in rules:
             r_start = time.perf_counter()
@@ -237,7 +259,7 @@ class RuleEngine:
                 to_resolve = [
                     a for a in _alerts
                     if str(a.rule_id) == rule_key
-                    and a.status in (AlertStatus.ACTIVE, AlertStatus.ACKNOWLEDGED)
+                    and a.status in ONGOING_STATUSES
                 ]
                 for a in to_resolve:
                     closed = self.alert_manager.close_alert(
@@ -268,7 +290,7 @@ class RuleEngine:
             existing = [
                 a for a in _alerts
                 if str(a.rule_id) == str(rule.rule_id)
-                and a.status in (AlertStatus.ACTIVE, AlertStatus.ACKNOWLEDGED)
+                and a.status in ONGOING_STATUSES
             ]
 
             if not existing:

@@ -354,6 +354,12 @@ class AlertRepository:
             except Exception as e:
                 logger.warning("failed to clear ignore window for %s: %s", rule_id, e)
 
+    def rule_ignored_until(self, rule_id: Optional[str]) -> Optional[datetime]:
+        """Open ignore-window end for a rule, or None when it is not ignored."""
+        if not rule_id or not self.is_rule_ignored(rule_id):
+            return None
+        return self._ignored_until.get(str(rule_id))
+
     def is_rule_ignored(self, rule_id: Optional[str]) -> bool:
         """True while the rule's ignore window is still open; expired windows
         are dropped on read."""
@@ -385,8 +391,31 @@ class AlertRepository:
             logger.warning(f"Failed to deserialize alert {alert_id}: {e}")
             return None
 
+    def record_event(self, alert_id, event: str, actor: Optional[str] = None,
+                     detail: Optional[str] = None) -> None:
+        """Append a lifecycle event. Best-effort: never blocks a transition."""
+        if self.alarms_db is None:
+            return
+        try:
+            self.alarms_db.write_event(
+                str(alert_id), event, now_utc().isoformat(), actor, detail,
+            )
+        except Exception as e:
+            logger.warning("failed to record %s for alert %s: %s", event, alert_id, e)
+
+    def get_events(self, alert_id, limit: int = 200) -> list[dict]:
+        """Lifecycle events for an alert, oldest first."""
+        if self.alarms_db is None:
+            return []
+        try:
+            return self.alarms_db.query_events(str(alert_id), limit=limit)
+        except Exception as e:
+            logger.warning("failed to read events for alert %s: %s", alert_id, e)
+            return []
+
     def get_active(self) -> list[Alert]:
-        """Active + acknowledged alerts. Cached for the rule-eval hot path."""
+        """Ongoing alerts: active, acknowledged and ignored. Ignored ones stay
+        in the set so they keep refreshing and can still auto-close (#938)."""
         if self._active_cache is not None and (time.time() - self._active_cache_ts) < self._active_cache_ttl:
             return self._active_cache
         if self.alarms_db is None:
@@ -487,9 +516,23 @@ class AlertRepository:
             alert_data["acknowledged_at"] = now_utc().isoformat()
         elif update.status == AlertStatus.CLOSED and alert_data.get("closed_at") is None:
             alert_data["closed_at"] = now_utc().isoformat()
-        elif update.status == AlertStatus.IGNORED and alert_data.get("acknowledged_at") is None:
-            alert_data["acknowledged_at"] = now_utc().isoformat()
 
+        alert = self._dict_to_alert(alert_data)
+        self._save_alert(alert)
+        self._invalidate_active_cache()
+        return alert
+
+    def resume(self, alert_id: uuid.UUID) -> Optional[Alert]:
+        """End an ignore window: back to active with ignored_until cleared.
+        update() drops None values, so the deadline is reset here directly."""
+        existing = self.get_by_id(alert_id)
+        if not existing:
+            return None
+        alert_data = existing.to_dict()
+        alert_data["status"] = AlertStatus.ACTIVE.value
+        alert_data["ignored_until"] = None
+        alert_data["acknowledged_at"] = None
+        alert_data["acknowledged_by"] = None
         alert = self._dict_to_alert(alert_data)
         self._save_alert(alert)
         self._invalidate_active_cache()
@@ -565,7 +608,6 @@ class AlertRepository:
         n = self.alarms_db.bulk_update_status(
             from_statuses=(AlertStatus.ACTIVE.value, AlertStatus.ACKNOWLEDGED.value),
             to_status=AlertStatus.IGNORED.value,
-            acknowledged_at=now.isoformat(),
             ignored_until=until.isoformat(),
         )
         for rid in affected:
@@ -927,7 +969,7 @@ class NotificationRepository:
         with years of records."""
         if self.settings_db is None:
             return []
-        ct = str(channel_type) if channel_type else None
+        ct = getattr(channel_type, "value", channel_type) if channel_type else None
         rows = self.settings_db.query_deliveries(
             limit=limit, offset=offset, channel_type=ct,
         )

@@ -162,7 +162,7 @@ async def export_alerts(
             a.metric_source or "", a.metric_name or "",
             a.current_value if a.current_value is not None else "",
             a.threshold_value if a.threshold_value is not None else "",
-            a.severity or "", str(a.status) if a.status is not None else "",
+            a.severity or "", getattr(a.status, "value", a.status) or "",
             a.message or "",
             a.created_at.isoformat() if a.created_at else "",
             a.acknowledged_at.isoformat() if a.acknowledged_at else "",
@@ -185,6 +185,16 @@ async def get_alert(
     if not alert:
         raise HTTPException(status_code=404, detail=f"Alert {alert_id} not found")
     return alert
+
+
+@router.get("/{alert_id}/events")
+async def get_alert_events(
+    alert_id: str,
+    limit: int = Query(200, ge=1, le=1000),
+    alert_repo: AlertRepository = Depends(get_alert_repo),
+) -> dict:
+    """Lifecycle events for one alert, oldest first."""
+    return {"alert_id": alert_id, "events": alert_repo.get_events(alert_id, limit=limit)}
 
 
 @router.post("/{alert_id}/read")
@@ -226,6 +236,19 @@ async def close_alert(
         raise HTTPException(status_code=404, detail=f"Alert {alert_id} not found")
     _try_notify("notify_alert_resolved", result)
     return {"status": "ok", "message": f"Alert {alert_id} closed"}
+
+
+@router.post("/{alert_id}/resume")
+async def resume_alert(
+    alert_id: str,
+    alert_mgr: AlertManager = Depends(get_alert_mgr),
+) -> dict:
+    """End an ignore window early. The alert returns to active and its rule
+    resumes evaluating; this is not a close."""
+    result = alert_mgr.resume_alert(alert_id)
+    if not result:
+        raise HTTPException(status_code=404, detail=f"Alert {alert_id} not found")
+    return {"status": "ok", "message": f"Ignore window ended for alert {alert_id}"}
 
 
 @router.post("/{alert_id}/ignore")

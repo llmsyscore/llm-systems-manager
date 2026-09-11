@@ -474,7 +474,7 @@ class AeSettingsDB:
         args: list = []
         if channel_type:
             sql += " WHERE channel_type = ?"
-            args.append(str(channel_type))
+            args.append(_enum_value(channel_type))
         sql += " ORDER BY delivered_at DESC LIMIT ? OFFSET ?"
         args.extend([int(limit), int(offset)])
         with self._lock:

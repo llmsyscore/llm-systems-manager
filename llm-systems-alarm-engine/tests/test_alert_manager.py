@@ -29,6 +29,7 @@ class FakeAlertRepository:
     """
 
     def __init__(self):
+        self.events = []
         self._alerts: dict[UUID, Alert] = {}
         self.create_calls = 0
         self.refresh_calls = 0
@@ -91,6 +92,15 @@ class FakeAlertRepository:
         self.delete_calls += 1
         return self._alerts.pop(alert_id, None) is not None
 
+
+
+    # Lifecycle event log (#939); recorded alongside every transition.
+    def record_event(self, alert_id, event, actor=None, detail=None):
+        self.events.append({"alert_id": str(alert_id), "event": event,
+                            "actor": actor, "detail": detail})
+
+    def get_events(self, alert_id, limit=200):
+        return [e for e in self.events if e["alert_id"] == str(alert_id)]
 
 class FakeRuleRepository:
     """AlertManager scans this for correlation_group lookups (#215)."""
