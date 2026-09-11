@@ -6,7 +6,6 @@ resuming has to reverse both halves and clear the stored deadline.
 from __future__ import annotations
 
 import uuid
-from datetime import timedelta
 
 import pytest
 

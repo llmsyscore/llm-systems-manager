@@ -5,7 +5,7 @@ import uuid
 
 import pytest
 
-from backend.models.alert import AlertCreate, AlertStatus
+from backend.models.alert import AlertCreate
 from backend.engine.alert_manager import AlertManager
 from backend.storage.ae_alarms_db import AeAlarmsDB
 from backend.storage.cache import MetricCache

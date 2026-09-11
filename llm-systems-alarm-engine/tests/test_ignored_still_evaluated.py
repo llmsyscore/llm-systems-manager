@@ -2,13 +2,11 @@
 from __future__ import annotations
 
 import uuid
-from datetime import timedelta
 
 import pytest
 
-from backend._time import now_utc
 from backend.models.alert import (
-    ONGOING_STATUSES, AlertCreate, AlertStatus, AlertUpdate,
+    ONGOING_STATUSES, AlertCreate, AlertStatus,
 )
 from backend.engine.alert_manager import AlertManager
 from backend.storage.ae_alarms_db import AeAlarmsDB
