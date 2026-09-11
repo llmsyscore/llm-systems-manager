@@ -60,7 +60,7 @@ Backend API endpoints consumed:
   <link rel="stylesheet" href="/static/css/modelcards.css?v=2026.09.09-4">
   <link rel="stylesheet" href="/static/css/reportcard.css?v=2026.09.09-1">
   <link rel="stylesheet" href="/static/css/tools.css?v=2026.09.09-3">
-  <link rel="stylesheet" href="/static/css/autotune.css?v=2026.09.10-2">
+  <link rel="stylesheet" href="/static/css/autotune.css?v=2026.09.10-3">
   <link rel="stylesheet" href="/static/css/energy.css?v=2026.08.19-2">
   <link rel="stylesheet" href="/static/css/overall.css?v=2026.08.30-1">
 </head>
@@ -2449,11 +2449,11 @@ Backend API endpoints consumed:
           </div>
         </div>
         <div class="at-grp" id="atBatchGrp">
-          <div class="at-grp-h">Fleet batch <span class="r" id="atBatchCount">0 queued</span></div>
+          <div class="at-grp-h">Batch <span class="r" id="atBatchCount">0 queued</span></div>
           <div class="at-grp-b">
             <div class="at-hint">Tunes each queued host · model in turn with the objective and dimensions above, applies what verifies, restarts the servers it stopped, and posts one summary through the alarm engine.</div>
             <div class="at-mlist" id="atBatchHosts"></div>
-            <div class="at-frow"><label>Total budget</label><input class="at-in xs" id="atBatchBudget" type="number" min="5" max="1440" value="480"><span class="at-hint">min · split across the queue</span></div>
+            <div class="at-frow"><label>Total time budget</label><input class="at-in xs" id="atBatchBudget" type="number" min="5" max="1440" value="480"><span class="at-hint">min for the whole batch, shared by every item</span></div>
             <div class="at-frow"><label>Start at</label><input class="at-in xs" id="atBatchAt" type="time"><span class="at-hint">blank = now</span></div>
             <div class="at-frow"><button type="button" id="atBatchStartBtn" class="mcbtn mcbtn-pri" onclick="AT.startBatch()">▶ Start batch</button><button type="button" id="atBatchCancelBtn" class="mcbtn mcbtn-ghost warn" onclick="AT.cancelBatch()" style="display:none;">✕ Cancel batch</button></div>
             <div class="at-hint" id="atBatchHint"></div>
@@ -2603,9 +2603,9 @@ Backend API endpoints consumed:
 <script src="/static/js/llmcontrol-models.js?v=2026.09.10-1"></script>
 <script src="/static/js/editor-modern.js?v=2026.09.07-1"></script>
 <script src="/static/js/bench-autotune.js?v=2026.09.10-1"></script>
-<script src="/static/js/bench-live.js?v=2026.09.10-1"></script>
-<script src="/static/js/autotune.js?v=2026.09.10-10"></script>
-<script src="/static/js/quality.js?v=2026.09.10-2"></script>
+<script src="/static/js/bench-live.js?v=2026.09.10-2"></script>
+<script src="/static/js/autotune.js?v=2026.09.10-11"></script>
+<script src="/static/js/quality.js?v=2026.09.10-3"></script>
 <script src="/static/js/lmstudio.js?v=2026.09.04-1"></script>
 <script src="/static/js/vllm.js?v=2026.09.04-1"></script>
 <script src="/static/js/vllm-bench-autotune.js?v=2026.09.02-1"></script>

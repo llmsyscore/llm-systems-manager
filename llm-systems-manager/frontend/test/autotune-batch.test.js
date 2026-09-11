@@ -1,4 +1,4 @@
-// #891: Fleet batch group + Batch pane — host list, start body, resume, poll, lock, cancel.
+// #891: Batch group + Batch pane — host list, start body, resume, poll, lock, cancel.
 import { describe, it, expect, vi } from 'vitest';
 import { srcFile, runHarness, flush } from './helpers/harness.js';
 
@@ -59,7 +59,7 @@ async function opened(pre = '') {
 }
 const posts = w => w.__fetches.filter(([u, o]) => u === '/api/llm/autotune/batch' && o && o.method === 'POST');
 
-describe('Fleet batch group', () => {
+describe('Batch group', () => {
   it('lists each online host with its models as toggles and tags offline hosts', async () => {
     const w = await opened();
     const list = w.document.getElementById('atBatchHosts');
@@ -134,6 +134,21 @@ describe('Batch pane', () => {
     expect(w.AT.batchActive()).toBe(true);
   });
 
+  it('keeps the Watch button after a reload while the host is busy with the batch item', async () => {
+    const w = await opened('window.sessionStorage.setItem("at.batch", "b1"); window.__batch = ' + JSON.stringify(batchDoc('running')) + '; window.__pre = Object.assign({}, window.__pre, { busy: true, autotune_active: true });');
+    expect(w.AT.running()).toBe(false);
+    expect(w.document.getElementById('atBatchWatchBtn').style.display).toBe('');
+    expect(w.document.getElementById('atPaneBatch').style.display).toBe('');
+  });
+
+  it('strip shows elapsed time against the total budget and the estimated end while running', async () => {
+    const now = Math.floor(Date.now() / 1000);
+    const w = await opened('window.sessionStorage.setItem("at.batch", "b1"); window.__batch = ' + JSON.stringify(batchDoc('running', { started: now - 600, budget_min: 480 })) + ';');
+    const t = w.document.getElementById('atBatchStrip').textContent;
+    expect(t).toMatch(/10 min of 480 elapsed/);
+    expect(t).toMatch(/ends by ≈ \d/);
+  });
+
   it('adopts an active batch another browser started', async () => {
     const w = await opened('window.__batch = ' + JSON.stringify(batchDoc('running')) + '; window.__batches = { ok: true, batches: [window.__batch] };');
     expect(w.AT.batchActive()).toBe(true);
@@ -163,7 +178,7 @@ describe('Batch pane', () => {
     expect(w.document.getElementById('atBatchSummary').textContent).toContain('2 tuned, 1 applied');
     const rows = w.document.querySelectorAll('#atBatchRows tr');
     expect(rows[0].textContent).toContain('+12 %');
-    expect(rows[0].textContent).toContain('32k');
+    expect(rows[0].textContent).toContain('32,768');
     expect(rows[0].textContent).toContain('applied');
     expect(rows[1].textContent).toContain('−2 %');
     expect(w.document.getElementById('atBatchPill').textContent).toBe('complete');

@@ -90,8 +90,8 @@ def test_summary_title_and_body_lines():
     s = ab.summary_of(b)
     assert s["title"] == "Overnight autotune: 2 tuned, 1 applied, 1 skipped"
     lines = s["body"].split("\n")
-    assert lines[0] == "alpha · org/m:Q4 · +12 % · ctx 32k · applied"
-    assert lines[1] == "alpha · org/n:Q8 · −2 % · ctx 8k · not applied · slower than the live config"
+    assert lines[0] == "alpha · org/m:Q4 · +12 % · ctx 32,768 · applied"
+    assert lines[1] == "alpha · org/n:Q8 · −2 % · ctx 8,192 · not applied · slower than the live config"
     assert lines[2] == "bravo · org/m:Q4 · skipped · host offline"
     assert lines[3] == "restarted: alpha"
     p = ab.alert_payload(b)

@@ -26,7 +26,7 @@
   let _peak = null;        // /api/energy/host-peak payload, or null
   let _slot = null, _busyOn = false, _statusErr = false;
   let _draft = null, _draftFor = '', _draftGen = 0, _draftBusy = false, _dl = null;
-  let _batch = null, _batchPoll = null, _batchHosts = [];   // fleet batch (#891)
+  let _batch = null, _batchPoll = null, _batchHosts = [];   // batch (#891)
   const BATCH_POLL_MS = 5000;
   // Newest row per model wins; the route returns one row per (agent, model).
   async function loadStatus() {
@@ -433,8 +433,9 @@
     syncCap();
     syncVerify();
     await checkServer(pre && pre.ok ? pre : null);
-    if (_pre && _pre.busy && !running()) attach();
     await resumeBatch();
+    // A batch item on this host is watched from the Batch pane, not auto-attached.
+    if (_pre && _pre.busy && !running() && !batchActive()) attach();
     const s = slot(); if (s) s.sync();
     // A Re-verify deep link runs the check itself when the button is live.
     if (opts && opts.verify && !running()) {
@@ -450,7 +451,7 @@
     ['Plan', 'Run', 'Done', 'Batch'].forEach(p => { const el = $('atPane' + p); if (el) el.style.display = p === name ? '' : 'none'; });
     const note = $('atModeNote');
     if (note) note.textContent = name === 'Plan' ? 'Plan · nothing has run yet' : name === 'Run' ? 'Running'
-      : name === 'Batch' ? (batchActive() ? 'Fleet batch running' : 'Fleet batch complete') : 'Recommendation ready · nothing applied yet';
+      : name === 'Batch' ? (batchActive() ? 'Batch running' : 'Batch complete') : 'Recommendation ready · nothing applied yet';
   }
   function setRailLocked(locked) {
     const rail = document.querySelector('#toolsModAt .at-rail'); if (!rail) return;
@@ -1067,7 +1068,7 @@
     setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 200);
   }
 
-  // ── fleet batch (#891) ──
+  // ── batch (#891) ──
   function batchActive() { return !!(_batch && (_batch.status === 'queued' || _batch.status === 'running')); }
   async function loadBatchHosts() {
     let r = null;
@@ -1129,7 +1130,7 @@
     catch (e) { alert('Batch request failed: ' + (e && e.message ? e.message : e)); return; }
     if (!r || !r.ok || !r.batch) { alert((r && r.error) || 'Failed to start the batch'); return; }
     adoptBatch(r.batch);
-    log(`fleet batch ${r.batch.id} · ${items.length} item${items.length === 1 ? '' : 's'} · ${body.budget_min} min`, 'dim');
+    log(`batch ${r.batch.id} · ${items.length} item${items.length === 1 ? '' : 's'} · ${body.budget_min} min`, 'dim');
   }
   function adoptBatch(b) {
     _batch = b;
@@ -1166,7 +1167,7 @@
     if (!_batch) { stopBatchPoll(); return; }
     let r = null;
     try { r = await fetch('/api/llm/autotune/batch/' + encodeURIComponent(_batch.id)).then(x => x.json()); } catch (_) { return; }
-    if (!r || !r.ok || !r.batch) { stopBatchPoll(); _batch = null; finishBatch(); log('fleet batch lost', 'warn'); setPane('Plan'); return; }
+    if (!r || !r.ok || !r.batch) { stopBatchPoll(); _batch = null; finishBatch(); log('batch lost', 'warn'); setPane('Plan'); return; }
     _batch = r.batch;
     renderBatch();
     if (!batchActive()) finishBatch();
@@ -1178,8 +1179,20 @@
     loadStatus().then(() => syncVerify()); loadBatchHosts();
   }
   function batchGain(g) { if (g == null || !Number.isFinite(Number(g))) return '—'; const r = Math.round(Number(g)); return (r >= 0 ? '+' : '−') + Math.abs(r) + ' %'; }
-  function batchCtx(c) { const n = Number(c); return Number.isFinite(n) && n > 0 ? (n >= 1024 ? Math.round(n / 1024) + 'k' : String(n)) : '—'; }
+  function batchCtx(c) { const n = Number(c); return Number.isFinite(n) && n > 0 ? n.toLocaleString() : '—'; }
   function batchWhen(ts) { return ts ? new Date(ts * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : ''; }
+  // Strip line per batch state: start time while queued, elapsed vs budget while running, time taken when over.
+  function batchStripText(b, finished, nowS) {
+    const items = b.items || [], n = `${finished} / ${items.length} finished · ${b.objective}`;
+    if (b.status === 'queued') return `starts at ${batchWhen(b.start_at)} · ${items.length} item${items.length === 1 ? '' : 's'} · budget ${b.budget_min} min`;
+    const started = Number(b.started) || nowS;
+    if (b.status === 'running') {
+      const el = Math.max(0, Math.round((nowS - started) / 60));
+      return `${n} · ${el} min of ${b.budget_min} elapsed · ends by ≈ ${batchWhen(started + b.budget_min * 60)}`;
+    }
+    const took = Math.max(0, Math.round(((Number(b.finished) || nowS) - started) / 60));
+    return `${n} · took ${took} min of ${b.budget_min}`;
+  }
   function renderBatch() {
     const b = _batch; if (!b) return;
     const pill = $('atBatchPill');
@@ -1189,8 +1202,7 @@
     }
     const items = b.items || [], finished = items.filter(i => ['done', 'skipped', 'failed', 'cancelled'].includes(i.status)).length;
     const strip = $('atBatchStrip');
-    if (strip) strip.textContent = b.status === 'queued' ? `starts at ${batchWhen(b.start_at)} · ${items.length} item${items.length === 1 ? '' : 's'}`
-      : `${finished} / ${items.length} finished · ${b.objective} · ${b.budget_min} min`;
+    if (strip) strip.textContent = batchStripText(b, finished, Date.now() / 1000);
     const meta = $('atBatchMeta'); if (meta) meta.textContent = b.id ? `batch ${b.id}` : '';
     const cur = items.find(i => i.status === 'running');
     const wb = $('atBatchWatchBtn'); if (wb) wb.style.display = cur && !running() ? '' : 'none';
@@ -1223,7 +1235,7 @@
     try {
       const r = await fetch('/api/llm/autotune/batch/' + encodeURIComponent(_batch.id) + '/cancel', { method: 'POST' }).then(x => x.json());
       if (!r || !r.ok) { alert((r && r.error) || 'Cancel failed'); return; }
-      log(r.status === 'cancelled' ? 'fleet batch cancelled' : 'fleet batch stops after the current item', 'warn');
+      log(r.status === 'cancelled' ? 'batch cancelled' : 'batch stops after the current item', 'warn');
       batchTick();
     } catch (e) { alert('Cancel failed: ' + (e && e.message ? e.message : e)); }
   }

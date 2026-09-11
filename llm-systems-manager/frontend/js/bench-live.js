@@ -246,7 +246,10 @@
     document.querySelectorAll('#blFleetTgl .bl-chip').forEach(c => { if (!c._bl) { c._bl = 1; c.addEventListener('click', () => toggleFleet()); } });
     syncSweepUi();
     const rb = $('blRunBtn'); if (rb && rb._blLabel == null) rb._blLabel = rb.textContent;
-    if (_pre && _pre.busy && !running()) attach();
+    // Another tool holding the host (an autotune batch item, say) is gated, not attached to.
+    const holder = typeof toolsGateBusy === 'function' ? toolsGateBusy('llama', null) : null;
+    const foreign = !!(holder && !holder.unresolved && holder.tool && holder.tool !== 'benchmark');
+    if (_pre && _pre.busy && !running() && !foreign) attach();
     const sl = slot(); if (sl) sl.sync();
     const savedJob = sessionStorage.getItem('bl.fleetJob');
     if (savedJob && !running()) { _fleetJob = { job_id: savedJob, hosts: [] }; busy(true); startFleetPoll(); }

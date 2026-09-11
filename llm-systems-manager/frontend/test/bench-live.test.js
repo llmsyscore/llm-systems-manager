@@ -209,6 +209,11 @@ describe('BL presets and mode', () => {
     expect(d.getElementById('blRunBtn').textContent).toBe('Queue run');
     win.BL.cancel();
   });
+  it('does not attach when the tools gate says another tool holds the host', async () => {
+    const win = boot('window.toolsGateBusy = () => ({ tool: "autotune", label: "Autotune", agent_id: "a1", host: "alpha" }); window.__busy = true; BL.onOpen("org/m:Q4");');
+    await flush();
+    expect(win.BL.running()).toBe(false);
+  });
   it('queued run starts after the attached run finishes', async () => {
     const win = boot('window.__busy = true; BL.onOpen("org/m:Q4");');
     await flush();

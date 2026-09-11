@@ -127,7 +127,9 @@
     _done = null; renderResult(null);
     await checkServer(pre && pre.ok ? pre : null);
     // Only an autotune-stream run is worth attaching to; a benchmark holds the host but replays nothing of ours.
-    const held = _pre && (_pre.autotune_active != null ? _pre.autotune_active : _pre.busy);
+    // Newer agents say which run holds the stream; a plain tune is gated by the slot instead.
+    const held = _pre && (_pre.quality_active != null ? _pre.quality_active
+      : _pre.autotune_active != null ? _pre.autotune_active : _pre.busy);
     if (held && !running()) attach(true);
     const s = slot(); if (s) s.sync();
   }

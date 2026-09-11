@@ -257,6 +257,15 @@ describe('Quality guard module (#888)', () => {
     expect(win.document.getElementById('qgRunBtn').disabled).toBe(true);
   });
 
+  it('does not attach to a plain tune when the agent says no quality run holds the stream', async () => {
+    const win = boot();
+    win.__pre = { ok: true, busy: true, autotune_active: true, quality_active: false, perplexity: true, perplexity_detail: { present: true, kl_text: true, runnable: true, rc: 0, hint: null } };
+    await win.QG.onOpen('org/m:Q4'); await flush();
+    expect(win.QG.running()).toBe(false);
+    expect(win.document.getElementById('qgPill').textContent).not.toBe('another tool is running');
+    expect(win.document.getElementById('qgRunBtn').style.display).not.toBe('none');
+  });
+
   it('does not attach while a Benchmark, not an autotune-stream run, holds the host', async () => {
     const win = boot();
     win.__pre = { ok: true, busy: true, autotune_active: false, perplexity: true, perplexity_detail: { present: true, kl_text: true, runnable: true, rc: 0, hint: null } };

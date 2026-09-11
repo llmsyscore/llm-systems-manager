@@ -153,7 +153,7 @@ def _ctx_text(ctx) -> str:
         c = int(ctx)
     except (TypeError, ValueError):
         return "ctx ?"
-    return f"ctx {c // 1024}k" if c >= 1024 else f"ctx {c}"
+    return f"ctx {c:,}"
 
 
 def _note_text(note) -> str:

@@ -186,7 +186,7 @@
   .qg-stat .k { display:block; font-size:11px; color:var(--fg-muted); margin-top:2px; }
   .qg-stat .h { display:block; font-size:10.5px; line-height:1.4; color:var(--fg-dim); margin-top:3px; }
   .qg-speed { color:var(--fg-muted); max-width:56ch; }
-  /* Fleet batch (#891) — host rows in the rail, batch table cells. */
+  /* Batch (#891) — host rows in the rail, batch table cells. */
   .at-bhost { display:flex; align-items:center; gap:8px; padding:4px 0 2px; font-size:12px; color:var(--fg); border-top:1px solid var(--border-soft); }
   .at-bhost:first-child { border-top:0; padding-top:0; }
   .at-bhost b { font-weight:600; }
