@@ -121,7 +121,7 @@
       total: list.length,
       live: list.filter(a => a.status === 'approved' && a.liveness === 'live').length,
       pending: list.filter(a => a.status === 'pending').length,
-      needsUpdate: list.filter(a => a.update_available).length,
+      needsUpdate: list.filter(a => a.update_available && a.status !== 'disabled').length,
     };
   }
   // ↻ colour: green = fresh, amber = last refresh failed or stale, red = unreachable.
@@ -489,7 +489,7 @@
       case 'restart': closeMenus(); call('adminRestart', aid); break;
       case 'ping': closeMenus(); call('adminPing', aid); break;
       case 'log': closeMenus(); call('adminLogs', aid); break;
-      case 'open': closeMenus(); call('_jumpToDashboard', aid, prov); break;
+      case 'open': closeMenus(); call('_jumpToLlmControl', aid, prov); break;
       case 'update': closeMenus(); call('adminUpdate', aid); break;
       case 'config': closeMenus(); call('adminEditConfig', aid); break;
       case 'disable': closeMenus(); call('adminDisable', aid); break;
