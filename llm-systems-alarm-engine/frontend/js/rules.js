@@ -199,7 +199,7 @@ const RuleManager = {
             <td><span class="pill ${pill}">${escapeHtml(r.severity)}</span></td>
             <td>${state}</td>
             <td class="t">${escapeHtml(this.lastFired(r) ? fmtWhen(this.lastFired(r)) : 'never')}</td>
-            <td><div class="act">${ibtn('edit', 'Edit', '', 'data-act="edit"')}${ibtn('copy', 'Duplicate', '', 'data-act="copy"')}${kebabBtn()}${menu}</div></td>
+            <td class="c-act"><div class="act">${ibtn('edit', 'Edit', '', 'data-act="edit"')}${ibtn('copy', 'Duplicate', '', 'data-act="copy"')}${kebabBtn()}${menu}</div></td>
         </tr>`;
     },
 

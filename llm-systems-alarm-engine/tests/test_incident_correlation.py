@@ -10,6 +10,7 @@ from backend.models.alert import AlertCreate, AlertStatus
 
 class FakeAlertRepo:
     def __init__(self, active=None):
+        self.events = []
         self._active = list(active or [])
         self.created = []
 
@@ -33,6 +34,15 @@ class FakeAlertRepo:
     def refresh(self, alert, current_value):
         return alert
 
+
+
+    # Lifecycle event log (#939); recorded alongside every transition.
+    def record_event(self, alert_id, event, actor=None, detail=None):
+        self.events.append({"alert_id": str(alert_id), "event": event,
+                            "actor": actor, "detail": detail})
+
+    def get_events(self, alert_id, limit=200):
+        return [e for e in self.events if e["alert_id"] == str(alert_id)]
 
 class FakeRuleRepo:
     def __init__(self, groups=None):

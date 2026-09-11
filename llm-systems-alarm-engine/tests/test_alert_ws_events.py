@@ -15,6 +15,7 @@ class FakeAlertRepo:
     """Same shape as tests/test_alert_manager.py's fake, minus call counters."""
 
     def __init__(self, active=None):
+        self.events = []
         self._alerts: dict[UUID, Alert] = {}
         for a in (active or []):
             self._alerts[a.alert_id] = a
@@ -65,6 +66,15 @@ class FakeAlertRepo:
         self._alerts[alert.alert_id] = refreshed
         return refreshed
 
+
+
+    # Lifecycle event log (#939); recorded alongside every transition.
+    def record_event(self, alert_id, event, actor=None, detail=None):
+        self.events.append({"alert_id": str(alert_id), "event": event,
+                            "actor": actor, "detail": detail})
+
+    def get_events(self, alert_id, limit=200):
+        return [e for e in self.events if e["alert_id"] == str(alert_id)]
 
 class FakeRuleRepo:
     def get_all(self, enabled_only=True):

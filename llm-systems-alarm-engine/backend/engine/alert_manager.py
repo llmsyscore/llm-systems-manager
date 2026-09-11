@@ -15,6 +15,7 @@ import uuid
 
 from .._time import now_utc
 from ..models.alert import (
+    ONGOING_STATUSES,
     Alert,
     AlertCreate,
     AlertStatus,
@@ -108,19 +109,22 @@ class AlertManager:
 
         Returns the created Alert, or None if deduplicated.
         """
-        # Suppress while the rule sits in an operator ignore window (#247).
+        # Inside an operator ignore window the alert is still recorded, but
+        # born ignored so it stays silent and hidden (#247, #938).
+        born_ignored_until = None
         if alert_create.rule_id and self.alert_repository.is_rule_ignored(
             str(alert_create.rule_id)
         ):
-            logger.debug("Suppressed alert for ignored rule %s", alert_create.rule_id)
-            return None
+            born_ignored_until = self.alert_repository.rule_ignored_until(
+                str(alert_create.rule_id)
+            )
 
         # Check for existing active alert on the same rule
         existing = self.alert_repository.get_active()
         matching = [
             a for a in existing
             if str(a.rule_id) == str(alert_create.rule_id)
-            and a.status in (AlertStatus.ACTIVE, AlertStatus.ACKNOWLEDGED)
+            and a.status in ONGOING_STATUSES
         ]
 
         if matching:
@@ -162,6 +166,16 @@ class AlertManager:
             alert.current_value, alert.threshold_value, alert.severity,
             alert.incident_id,
         )
+        if born_ignored_until is not None:
+            ignored = self.alert_repository.update(alert.alert_id, AlertUpdate(
+                status=AlertStatus.IGNORED, ignored_until=born_ignored_until,
+            ))
+            if ignored is not None:
+                alert = ignored
+            logger.debug("Alert %s born ignored until %s",
+                         alert.alert_id, born_ignored_until.isoformat())
+        self.alert_repository.record_event(alert.alert_id, "created",
+            detail=f"{alert.current_value} vs {alert.threshold_value}")
         self._emit_ws_event("alert_created", alert)
         return alert
 
@@ -185,6 +199,8 @@ class AlertManager:
             self.alert_repository.clear_rule_ignored(
                 str(alert.rule_id) if alert.rule_id else None
             )
+            self.alert_repository.record_event(uid, "acknowledged",
+                                               actor=result.acknowledged_by)
             self._emit_ws_event("alert_acknowledged", result)
         logger.info(
             "ALERT ACKNOWLEDGED: id=%s rule=%s host=%s",
@@ -220,9 +236,15 @@ class AlertManager:
         )
         result = self.alert_repository.update(uid, update)
         if result:
-            self.alert_repository.clear_rule_ignored(
-                str(alert.rule_id) if alert.rule_id else None
-            )
+            # Only an operator action lifts the window; auto-resolve does not.
+            if reason != "auto":
+                self.alert_repository.clear_rule_ignored(
+                    str(alert.rule_id) if alert.rule_id else None
+                )
+            self.alert_repository.record_event(
+                uid, "closed", actor=alert.acknowledged_by,
+                detail=f"{reason or 'manual'}"
+                + (f" @ {resolved_value}" if resolved_value is not None else ""))
             self._emit_ws_event("alert_closed", result)
         logger.info(
             "ALERT CLOSED: id=%s rule=%s host=%s reason=%s value=%s",
@@ -268,8 +290,39 @@ class AlertManager:
             self.alert_repository.set_rule_ignored(
                 str(alert.rule_id) if alert.rule_id else None, until
             )
+            self.alert_repository.record_event(uid, "ignored",
+                                               detail=until.isoformat())
             self._emit_ws_event("alert_ignored", result)
         logger.info("Alert ignored: %s until %s", alert_id, until.isoformat())
+        return result
+
+    def resume_alert(self, alert_id: str) -> Optional[Alert]:
+        """End an ignore window early: the alert returns to active and its
+        rule's suppression window is lifted."""
+        try:
+            uid = uuid.UUID(alert_id)
+        except ValueError:
+            logger.warning(f"Invalid alert ID: {alert_id}")
+            return None
+
+        alert = self.alert_repository.get_by_id(uid)
+        if alert is None:
+            logger.warning(f"Alert not found: {alert_id}")
+            return None
+
+        result = self.alert_repository.resume(uid)
+        if result:
+            self.alert_repository.clear_rule_ignored(
+                str(alert.rule_id) if alert.rule_id else None
+            )
+            was_ignored = alert.status == AlertStatus.IGNORED
+            self.alert_repository.record_event(
+                uid, "ignore_ended" if was_ignored else "unacknowledged")
+            self._emit_ws_event("alert_resumed", result)
+        logger.info(
+            "ALERT RESUMED: id=%s rule=%s host=%s",
+            alert_id, alert.rule_name or "—", alert.source_host or "—",
+        )
         return result
 
     def mark_as_read(self, alert_id: str) -> Optional[Alert]:

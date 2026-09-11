@@ -18,6 +18,11 @@ class AlertStatus(str, Enum):
     EXCEPTION = "exception"
 
 
+# Statuses the rule engine keeps evaluating. Ignored alerts stay in the set:
+# ignoring silences and hides an alert, it does not stop monitoring it (#938).
+ONGOING_STATUSES = (AlertStatus.ACTIVE, AlertStatus.ACKNOWLEDGED, AlertStatus.IGNORED)
+
+
 class AlertCreate(BaseModel):
     """Schema for creating an alert (manually or programmatically)."""
     rule_id: Optional[UUID] = Field(default=None, description="Associated rule ID")

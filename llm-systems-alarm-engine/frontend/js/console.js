@@ -39,9 +39,26 @@ const ConsoleView = {
                 document.querySelectorAll(`#activeRows [data-child="${CSS.escape(inc.dataset.inc)}"]`).forEach(r => { r.hidden = !r.hidden; });
                 return;
             }
-            const nm = e.target.closest('.nm');
+            const nm = e.target.closest('.nm, .msg');
             if (nm && row) AlertsView.openFor(row.dataset.id);
         };
+        const lim = document.getElementById('recentLimit');
+        if (lim) {
+            lim.value = String(AppState.filters.console.recentLimit);
+            lim.addEventListener('change', (e) => {
+                AppState.filters.console.recentLimit = Number(e.target.value) || 20;
+                this.renderRecent();
+            });
+        }
+        document.getElementById('recentSeeAll')?.addEventListener('click', () => {
+            const f = AppState.filters.alerts;
+            f.status = 'all';
+            f.page = 1;
+            f.viaOpen = true;
+            const sel = document.getElementById('alertStatus');
+            if (sel) sel.value = 'all';
+            TabManager.switchTab('alerts');
+        });
         ['activeRows', 'anomalyRows', 'silencedRows', 'recentRows'].forEach(id => document.getElementById(id)?.addEventListener('click', onAct));
         document.getElementById('band')?.addEventListener('click', (e) => {
             const m = e.target.closest('[data-id]');
@@ -240,23 +257,28 @@ const ConsoleView = {
     renderRecent() {
         const el = document.getElementById('recentRows');
         if (!el) return;
-        const list = AppState.alerts.slice(0, 25);
-        if (!list.length) { el.innerHTML = '<div class="empty">No alerts yet. Rules that trigger will show up here.</div>'; return; }
         const f = AppState.filters.console;
+        if (!AppState.alerts.length) { el.innerHTML = '<div class="empty">No alerts yet. Rules that trigger will show up here.</div>'; return; }
         const key = a => f.sort === 'cleared' ? (parseTs(a.status === 'closed' ? (a.closed_at || a.last_evaluated_at) : a.status === 'ignored' ? a.ignored_until : null)?.getTime() || 0) : (parseTs(a.created_at)?.getTime() || 0);
         const sign = f.dir === 'desc' ? -1 : 1;
-        list.sort((x, y) => (key(x) - key(y)) * sign);
+        const list = AppState.alerts.slice()
+            .sort((x, y) => (key(x) - key(y)) * sign)
+            .slice(0, f.recentLimit);
         const rows = list.map(a => {
             const d = AlertManager.describe(a);
-            let cleared = '—';
+            let cleared = '—', clearedText = '';
             if (a.status === 'closed') {
-                const why = a.resolution_reason === 'auto' ? `auto${a.resolved_value != null ? ' @ ' + escapeHtml(fmtVal(a.resolved_value, d.unit)) : ''}` : a.resolution_reason === 'manual' ? `closed by ${escapeHtml(a.acknowledged_by || 'operator')}` : 'cleared';
-                cleared = `${escapeHtml(fmtTime(a.closed_at || a.last_evaluated_at))} · <b>${why}</b>`;
+                const why = a.resolution_reason === 'auto' ? `auto${a.resolved_value != null ? ' @ ' + fmtVal(a.resolved_value, d.unit) : ''}` : a.resolution_reason === 'manual' ? `closed by ${a.acknowledged_by || 'operator'}` : 'cleared';
+                const when = fmtTime(a.closed_at || a.last_evaluated_at);
+                cleared = `${escapeHtml(when)} · <b>${escapeHtml(why)}</b>`;
+                clearedText = `${when} · ${why}`;
             } else if (a.status === 'ignored' && a.ignored_until) {
-                cleared = `until ${escapeHtml(fmtTime(a.ignored_until))}`;
+                const when = fmtTime(a.ignored_until);
+                cleared = `until ${escapeHtml(when)}`;
+                clearedText = `until ${when}`;
             }
-            return `<tr class="pick" data-id="${escapeHtml(String(a.alert_id))}"><td>${sevHtml(a.severity)}</td><td class="n"><span class="nm">${escapeHtml(a.rule_name || 'Alert')}</span><span class="sub">${escapeHtml(a.source_host || 'any host')} · ${escapeHtml(a.metric_source)}/${escapeHtml(a.metric_name)}</span></td><td class="msg">${d.sentence}</td><td>${statusPill(a.status)}</td><td>${escapeHtml(fmtWhen(a.created_at))}</td><td class="t">${cleared}</td></tr>`;
+            return `<tr class="pick" data-id="${escapeHtml(String(a.alert_id))}"><td class="c-state">${stateGlyph(a)}</td><td class="n"><span class="nm">${escapeHtml(a.rule_name || 'Alert')}</span><span class="sub">${escapeHtml(a.source_host || 'any host')} · ${escapeHtml(a.metric_source)}/${escapeHtml(a.metric_name)}</span></td><td class="msg">${d.sentence}</td><td title="${escapeHtml(fmtWhen(a.created_at, true))}">${escapeHtml(fmtWhenCell(a.created_at))}</td><td class="t" title="${escapeHtml(clearedText)}">${cleared}</td></tr>`;
         }).join('');
-        el.innerHTML = `<table class="tbl"><colgroup><col style="width:104px"><col><col><col style="width:150px"><col style="width:132px"><col style="width:200px"></colgroup><thead><tr><th>Severity</th><th>Rule</th><th>Message</th><th>Status</th><th class="sort${f.sort === 'fired' ? ' on' : ''}${f.sort === 'fired' && f.dir === 'asc' ? ' asc' : ''}" data-sort="fired">Triggered</th><th class="sort${f.sort === 'cleared' ? ' on' : ''}${f.sort === 'cleared' && f.dir === 'asc' ? ' asc' : ''}" data-sort="cleared">Cleared</th></tr></thead><tbody>${rows}</tbody></table>`;
+        el.innerHTML = `<table class="tbl"><colgroup><col style="width:36px"><col><col><col style="width:132px"><col style="width:228px"></colgroup><thead><tr><th class="c-state" data-tip="Colour is severity · shape is status: ● active  ◉ acknowledged  ○ closed  ◌ ignored"></th><th>Rule</th><th>Message</th><th class="sort${f.sort === 'fired' ? ' on' : ''}${f.sort === 'fired' && f.dir === 'asc' ? ' asc' : ''}" data-sort="fired">Triggered</th><th class="sort${f.sort === 'cleared' ? ' on' : ''}${f.sort === 'cleared' && f.dir === 'asc' ? ' asc' : ''}" data-sort="cleared">Cleared</th></tr></thead><tbody>${rows}</tbody></table>`;
     },
 };

@@ -11,7 +11,7 @@ from uuid import uuid4
 import pytest
 
 from backend._time import now_utc
-from backend.models.alert import AlertCreate, AlertStatus
+from backend.models.alert import AlertUpdate, AlertCreate, AlertStatus
 from backend.storage.ae_alarms_db import AeAlarmsDB
 from backend.storage.repositories import AlertRepository
 from backend.engine.alert_manager import AlertManager
@@ -52,21 +52,31 @@ def test_ignore_persists_until_and_suppresses_recreate(mgr):
     assert ignored.status == AlertStatus.IGNORED
     assert ignored.ignored_until is not None
     assert ignored.ignored_until > now_utc()
-    # Next eval tick: rule still breaching, no live alert — must NOT re-create.
+    # Next eval tick: rule still breaching — must NOT create a second alert.
     again = mgr.process_alert(_ac(rid, value=97.0))
     assert again is None
-    assert mgr.alert_repository.get_active() == []
+    # The ignored alert stays in the ongoing set so it keeps being evaluated
+    # and can still auto-close (#938); it is silenced and hidden, not dropped.
+    ongoing = mgr.alert_repository.get_active()
+    assert [a.status for a in ongoing] == [AlertStatus.IGNORED]
 
 
-def test_expired_window_allows_recreate(mgr):
+def test_expired_window_returns_the_alert_to_active(mgr):
+    """Once the hours elapse the same alert resumes, rather than a duplicate
+    being created — the ignored alert was never dropped (#938)."""
     rid = uuid4()
     first = mgr.process_alert(_ac(rid))
     mgr.ignore_alert(str(first.alert_id), duration_hours=1)
-    # Force the window into the past, as if the hours had elapsed.
-    mgr.alert_repository.set_rule_ignored(str(rid), now_utc() - timedelta(seconds=1))
-    again = mgr.process_alert(_ac(rid))
-    assert again is not None
-    assert again.status == AlertStatus.ACTIVE
+    past = now_utc() - timedelta(seconds=1)
+    mgr.alert_repository.set_rule_ignored(str(rid), past)
+    mgr.alert_repository.update(first.alert_id, AlertUpdate(ignored_until=past))
+
+    resumed = mgr.resume_alert(str(first.alert_id))
+    assert resumed is not None
+    assert resumed.status == AlertStatus.ACTIVE
+    assert resumed.ignored_until is None
+    assert str(resumed.alert_id) == str(first.alert_id), "same alert, not a duplicate"
+    assert mgr.alert_repository.is_rule_ignored(str(rid)) is False
 
 
 def test_window_survives_repository_restart(db):
