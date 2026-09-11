@@ -1,5 +1,5 @@
 // #891: Batch group + Batch pane — host list, start body, resume, poll, lock, cancel.
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect } from 'vitest';
 import { srcFile, runHarness, flush } from './helpers/harness.js';
 
 const INDEX = srcFile('index.html');
