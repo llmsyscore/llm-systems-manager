@@ -60,7 +60,7 @@ Backend API endpoints consumed:
   <link rel="stylesheet" href="/static/css/modelcards.css?v=2026.09.09-4">
   <link rel="stylesheet" href="/static/css/reportcard.css?v=2026.09.09-1">
   <link rel="stylesheet" href="/static/css/tools.css?v=2026.09.09-3">
-  <link rel="stylesheet" href="/static/css/autotune.css?v=2026.09.09-4">
+  <link rel="stylesheet" href="/static/css/autotune.css?v=2026.09.10-4">
   <link rel="stylesheet" href="/static/css/energy.css?v=2026.08.19-2">
   <link rel="stylesheet" href="/static/css/overall.css?v=2026.08.30-1">
 </head>
@@ -2448,6 +2448,17 @@ Backend API endpoints consumed:
             <div class="at-frow"><label>Restart server after apply</label><button type="button" class="mc-toggle on" id="atRestartAfter"><span class="track"></span></button></div>
           </div>
         </div>
+        <div class="at-grp" id="atBatchGrp">
+          <div class="at-grp-h">Batch <span class="r" id="atBatchCount">0 queued</span></div>
+          <div class="at-grp-b">
+            <div class="at-hint">Tunes each queued host · model in turn with the objective and dimensions above, applies what verifies, restarts the servers it stopped, and posts one summary through the alarm engine.</div>
+            <div class="at-mlist" id="atBatchHosts"></div>
+            <div class="at-frow"><label>Total time budget</label><input class="at-in xs" id="atBatchBudget" type="number" min="5" max="1440" value="480"><span class="at-hint">min for the whole batch, shared by every item</span></div>
+            <div class="at-frow"><label>Start at</label><input class="at-in xs" id="atBatchAt" type="time"><span class="at-hint">blank = now</span></div>
+            <div class="at-frow"><button type="button" id="atBatchStartBtn" class="mcbtn mcbtn-pri" onclick="AT.startBatch()">▶ Start batch</button><button type="button" id="atBatchCancelBtn" class="mcbtn mcbtn-ghost warn" onclick="AT.cancelBatch()" style="display:none;">✕ Cancel batch</button></div>
+            <div class="at-hint" id="atBatchHint"></div>
+          </div>
+        </div>
         <div class="at-runbar">
           <button id="atRunBtn" class="mcbtn mcbtn-pri" onclick="AT.run()">▶ Run autotune</button>
           <button id="atVerifyBtn" class="mcbtn mcbtn-ghost" onclick="AT.verify()" style="display:none;" title="Re-run only the Verify stage against the current config">✓ Re-verify</button>
@@ -2493,6 +2504,15 @@ Backend API endpoints consumed:
           <div class="at-guard" id="atGuard"></div>
           <div class="at-card"><div class="at-card-h"><h3>Before / after</h3><span class="meta">verify stage vs the config that was live</span></div><div class="at-card-b at-cmp" id="atCmp"></div></div>
           <div class="at-card collapsed"><div class="at-card-h tog" onclick="this.parentElement.classList.toggle('collapsed')"><h3>Run log</h3><span class="meta" id="atDoneLogMeta"></span><span class="gap"></span><span class="chev">▾</span></div><div class="at-card-b"><div class="at-log" id="atDoneLog"></div></div></div>
+        </div>
+        <div id="atPaneBatch" class="at-pane" style="display:none;">
+          <div class="bl-strip at-strip"><span class="bench-status-pill running" id="atBatchPill">queued</span><span id="atBatchStrip"></span><span class="gap"></span><button type="button" class="mcbtn mcbtn-ghost mcbtn-sm" id="atBatchWatchBtn" onclick="AT.batchWatch()" style="display:none;">Watch current run</button></div>
+          <div class="at-card">
+            <div class="at-card-h"><h3>Batch</h3><span class="meta" id="atBatchMeta"></span></div>
+            <div class="at-card-b flush" style="overflow-x:auto"><table class="at-rt at-bt"><thead><tr><th>Host</th><th>Model</th><th>Status</th><th>Gain</th><th>Context</th><th>Applied</th><th>Note</th></tr></thead><tbody id="atBatchRows"></tbody></table></div>
+            <div class="at-card-f"><span class="msg">Each item runs the same objective and dimensions. Items are skipped when the host is offline, busy, or does not have the model configured.</span></div>
+          </div>
+          <div class="at-notice" id="atBatchSummary" style="display:none;"></div>
         </div>
       </div>
       </div>
@@ -2583,9 +2603,9 @@ Backend API endpoints consumed:
 <script src="/static/js/llmcontrol-models.js?v=2026.09.10-1"></script>
 <script src="/static/js/editor-modern.js?v=2026.09.07-1"></script>
 <script src="/static/js/bench-autotune.js?v=2026.09.10-1"></script>
-<script src="/static/js/bench-live.js?v=2026.09.10-1"></script>
-<script src="/static/js/autotune.js?v=2026.09.10-8"></script>
-<script src="/static/js/quality.js?v=2026.09.10-2"></script>
+<script src="/static/js/bench-live.js?v=2026.09.10-2"></script>
+<script src="/static/js/autotune.js?v=2026.09.10-11"></script>
+<script src="/static/js/quality.js?v=2026.09.10-3"></script>
 <script src="/static/js/lmstudio.js?v=2026.09.04-1"></script>
 <script src="/static/js/vllm.js?v=2026.09.04-1"></script>
 <script src="/static/js/vllm-bench-autotune.js?v=2026.09.02-1"></script>

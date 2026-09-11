@@ -28,6 +28,7 @@ router = APIRouter(prefix="/api/alarm", tags=["ingest"])
 
 # ── DI wiring ──────────────────────────────────────────────────
 _alert_mgr: Optional[AlertManager] = None
+_notification_dispatcher: Any = None
 
 # Stable namespace so the same logical alert always maps to the same rule_id.
 _NAMESPACE = uuid.UUID("6ba7b810-9dad-11d1-80b4-00c04fd430c8")
@@ -36,6 +37,11 @@ _NAMESPACE = uuid.UUID("6ba7b810-9dad-11d1-80b4-00c04fd430c8")
 def set_alert_manager(alert_mgr: AlertManager) -> None:
     global _alert_mgr
     _alert_mgr = alert_mgr
+
+
+def set_notification_dispatcher(dispatcher: Any) -> None:
+    global _notification_dispatcher
+    _notification_dispatcher = dispatcher
 
 
 def get_alert_mgr() -> AlertManager:
@@ -285,6 +291,12 @@ async def ingest_external_alert(
             deduped += 1
         else:
             created_ids.append(str(alert.alert_id))
+            # Ingested alerts go through the same policies as rule-fired ones.
+            if _notification_dispatcher is not None:
+                try:
+                    _notification_dispatcher.send_notifications(alert)
+                except Exception:
+                    logger.exception("ingest: notification dispatch failed for %s", alert.alert_id)
 
     logger.info(
         "ingest: format=%s created=%d deduped=%d", fmt, len(created_ids), deduped,

@@ -176,7 +176,7 @@ def _local_hostname() -> str:
 # banner reads it. Bump suffix (-1, -2, …) for same-day iterations; roll
 # the date for a new day's first change.
 # ---------------------------------------------------------------------------
-__version__ = "v2026.09.10-4"
+__version__ = "v2026.09.10-9"
 
 # Wall-clock at first import (Cheroot main process); the shutdown banner
 # reads it for the uptime line.
@@ -3409,6 +3409,8 @@ _AUDIT_LABELS: dict[str, str] = {
     "model.build": "Started a llama.cpp build", "model.cache-prune": "Pruned the model cache",
     "model.cache-rm": "Removed a cached model",
     "tools.autotune": "Started an autotune run", "tools.vllm-bench": "Started a vLLM benchmark",
+    "autotune.batch": "Started an overnight autotune batch",
+    "autotune.batch-cancel": "Cancelled an overnight autotune batch",
     "autopilot.toggle": "Turned autopilot on or off",
     "autopilot.proposal-apply": "Applied an autopilot proposal",
     "autopilot.proposal-dismiss": "Dismissed an autopilot proposal",
@@ -3474,6 +3476,8 @@ _AUDIT_ROUTES: list[tuple] = [
     ("POST",   re.compile(r"^/api/llm/(?P<v>download|build)$"),        "model.{v}",          "model.downloads"),
     ("POST",   re.compile(r"^/api/llm/cache/(?P<v>prune|rm)$"),        "model.cache-{v}",    "model.downloads"),
     ("POST",   re.compile(r"^/api/llm/autotune/run$"),                 "tools.autotune",     "tools.run"),
+    ("POST",   re.compile(r"^/api/llm/autotune/batch$"),               "autotune.batch",     "tools.run"),
+    ("POST",   re.compile(r"^/api/llm/autotune/batch/[^/]+/cancel$"),  "autotune.batch-cancel", "tools.run"),
     ("POST",   re.compile(r"^/api/vllm/(?:bench|autotune)/run$"),      "tools.vllm-bench",   "tools.run"),
     ("POST",   re.compile(r"^/api/benchmark/live/baselines/recheck$"), "benchmark.recheck",  "tools.run"),
     ("POST",   re.compile(r"^/api/vllm/server/(?P<v>start|stop|restart)$"), "vllm.server.{v}", "vllm.server"),
@@ -5472,6 +5476,158 @@ bench_live.register_routes(app, ctx, db_path=str(DB_PATH), proxy=proxies.proxy_t
                            agent_by_token=agent_registry.agent_by_token, request_agent=_request_agent,
                            note_tool_start=_note_tool_start, fleet_hosts=_fleet_hosts,
                            run_on_agent=_fleet_run_on_agent, cancel_on_agent=_fleet_cancel_on_agent)
+
+
+# --- Overnight autotune batch (#891): agent callables for autotune_batch.Runner ---
+
+def _batch_agent(agent_id: str) -> "dict | None":
+    spec = providers.get("llama")
+    return agent_registry.resolve_agent_by_id(agent_id, capability=spec.capability_key if spec else "llama")
+
+
+def _batch_json(agent_id: str, method: str, path: str, timeout: float = 15, **kw) -> "tuple[dict | None, str | None]":
+    """One agent call as (json, error); an agent's {"ok": false} is an error too."""
+    agent = _batch_agent(agent_id)
+    if not agent:
+        return None, "unknown agent"
+    resp, _tried, err = agent_registry.agent_request(
+        method, agent, path, headers={"Authorization": f"Bearer {agent.get('token') or ''}"},
+        timeout=timeout, **kw)
+    if resp is None:
+        return None, err or "agent unreachable"
+    try:
+        data = resp.json()
+    except ValueError:
+        data = None
+    if resp.status_code != 200:
+        detail = (data or {}).get("error") or (data or {}).get("detail") if isinstance(data, dict) else None
+        return None, str(detail or f"HTTP {resp.status_code}")[:300]
+    if isinstance(data, dict) and data.get("ok") is False:
+        return None, str(data.get("error") or data.get("detail") or "agent reported failure")[:300]
+    return data if isinstance(data, dict) else {}, None
+
+
+def _batch_busy_agents() -> set:
+    busy = set(tool_activity.busy_agents())
+    with best_effort("batch busy: report card"):
+        busy |= set(report_card.active_agents())
+    return busy
+
+
+def _batch_preflight(agent_id: str) -> "dict | None":
+    data, _err = _batch_json(agent_id, "GET", "/llama/autotune/preflight", timeout=25)
+    return data
+
+
+def _batch_models_for(agent_id: str) -> "list | None":
+    data, _err = _batch_json(agent_id, "GET", "/llama/config", timeout=10)
+    return [k for k in data if k != "__DEFAULTS__"] if isinstance(data, dict) else None
+
+
+def _batch_run_on_agent(agent_id: str, body: dict):
+    data, err = _batch_json(agent_id, "POST", "/llama/autotune/run", timeout=20, json=body)
+    if err:
+        return False, err
+    run_id = (data or {}).get("run_id")
+    if not run_id:
+        return False, "agent returned no run id"
+    tool_activity.note_start(agent_id, "llama", "autotune")
+    return True, str(run_id)
+
+
+def _batch_stream_on_agent(agent_id: str, last_id: "str | None" = None):
+    """Yield decoded autotune SSE events, resuming from last_id and tagging each with its id."""
+    agent = _batch_agent(agent_id)
+    if not agent:
+        raise RuntimeError("unknown agent")
+    headers = {"Authorization": f"Bearer {agent.get('token') or ''}"}
+    if last_id:
+        headers["Last-Event-ID"] = str(last_id)
+    for base in agent_registry.agent_callback_urls(agent):
+        url = f"{base}/llama/autotune/stream"
+        r = None
+        try:
+            r = requests.get(url, stream=True, timeout=(5, 120), headers=headers,
+                             **agent_registry.agent_tls_kwargs(url))
+            r.raise_for_status()
+        except requests.exceptions.RequestException:
+            if r is not None:
+                r.close()
+            continue
+        try:
+            ev_id = None
+            for raw in r.iter_lines(decode_unicode=True):
+                if not raw:
+                    continue
+                if raw.startswith("id: "):
+                    ev_id = raw[4:].strip()
+                elif raw.startswith("data: "):
+                    try:
+                        ev = json.loads(raw[6:])
+                    except ValueError:
+                        continue
+                    if isinstance(ev, dict) and ev_id:
+                        ev["_id"] = ev_id
+                    ev_id = None
+                    yield ev
+        finally:
+            r.close()
+        return
+    raise RuntimeError("no reachable agent stream")
+
+
+def _batch_cancel_on_agent(agent_id: str) -> bool:
+    _data, err = _batch_json(agent_id, "POST", "/llama/autotune/cancel", timeout=10)
+    return err is None
+
+
+def _batch_stop_server(agent_id: str):
+    _data, err = _batch_json(agent_id, "POST", "/llama/server/stop", timeout=60)
+    return err is None, err
+
+
+def _batch_restart_server(agent_id: str):
+    _data, err = _batch_json(agent_id, "POST", "/llama/server/restart", timeout=90)
+    return err is None, err
+
+
+def _batch_read_config(agent_id: str) -> "dict | None":
+    data, _err = _batch_json(agent_id, "GET", "/llama/config", timeout=10)
+    return data
+
+
+def _batch_write_config(agent_id: str, cfg: dict):
+    _data, err = _batch_json(agent_id, "POST", "/llama/config", timeout=15, json=cfg)
+    return err is None, err
+
+
+def _batch_active_profile(agent_id: str, model_id: str) -> "str | None":
+    store = model_profiles.STORE
+    if store is None:
+        return None
+    return ((store.get_agent(agent_id) or {}).get(model_id) or {}).get("active")
+
+
+def _batch_save_profile(agent_id: str, model_id: str, name: str, values: dict, make_active: bool) -> None:
+    store = model_profiles.STORE
+    if store is not None:
+        store.put_profile(agent_id, model_id, name, values, make_active=make_active)
+
+
+import autotune_batch  # type: ignore[import-not-found]  # sibling; #891
+
+autotune_batch.register_routes(
+    app, ctx, db_path=str(DB_PATH), models_for=_batch_models_for,
+    deps=autotune_batch.Deps(
+        hosts=_fleet_hosts, busy_agents=_batch_busy_agents, preflight=_batch_preflight,
+        run_on_agent=_batch_run_on_agent, stream_on_agent=_batch_stream_on_agent,
+        cancel_on_agent=_batch_cancel_on_agent, stop_server=_batch_stop_server,
+        restart_server=_batch_restart_server, read_config=_batch_read_config,
+        write_config=_batch_write_config, active_profile=_batch_active_profile,
+        save_profile=_batch_save_profile, alert=_ae_ingest_alert,
+        run_ended=lambda aid: tool_activity.note_end(aid, "autotune"),
+        shutting_down=lambda: _shutting_down),
+)
 
 
 def _bench_baseline_cfg() -> dict:

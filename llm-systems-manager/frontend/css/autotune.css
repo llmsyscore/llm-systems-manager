@@ -1,6 +1,7 @@
   /* Autotune v2 (#880) — rail, dimension rows, panes. Tokens only. */
   .at-rail { display:flex; flex-direction:column; gap:10px; }
   .at-rail.locked .at-grp, .at-rail.locked .at-dim, .at-rail.locked #atPreflight, .at-rail.locked #qgPreflight { opacity:.55; pointer-events:none; }
+  .at-rail.locked #atBatchGrp { pointer-events:auto; opacity:1; }
   .at-preflight { display:flex; align-items:center; gap:9px; padding:8px 11px; border:1px solid var(--border); border-radius:8px; background:var(--bg-card); font-size:12px; color:var(--fg-muted); }
   .at-preflight .d { flex:1; }
   .at-dot { width:8px; height:8px; border-radius:50%; background:var(--fg-faint); flex-shrink:0; }
@@ -185,3 +186,11 @@
   .qg-stat .k { display:block; font-size:11px; color:var(--fg-muted); margin-top:2px; }
   .qg-stat .h { display:block; font-size:10.5px; line-height:1.4; color:var(--fg-dim); margin-top:3px; }
   .qg-speed { color:var(--fg-muted); max-width:56ch; }
+  /* Batch (#891) — host rows in the rail, batch table cells. */
+  .at-bhost { display:flex; align-items:center; gap:8px; padding:4px 0 2px; font-size:12px; color:var(--fg); border-top:1px solid var(--border-soft); }
+  .at-bhost:first-child { border-top:0; padding-top:0; }
+  .at-bhost b { font-weight:600; }
+  .at-bhost .at-tag { margin-left:auto; }
+  .at-bt td .bench-status-pill { font-size:10.5px; }
+  .at-bt td.num { font-family:var(--font-mono); text-align:right; white-space:nowrap; }
+  .at-bt td.note { color:var(--fg-muted); max-width:260px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
