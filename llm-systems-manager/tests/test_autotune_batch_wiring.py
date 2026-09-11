@@ -20,7 +20,7 @@ def test_batch_routes_are_registered_with_every_dep():
                 "save_profile=_batch_save_profile", "alert=_ae_ingest_alert",
                 'run_ended=lambda aid: tool_activity.note_end(aid, "autotune")',
                 "shutting_down=lambda: _shutting_down", "models_for=_batch_models_for"):
-        assert dep in SRC, f"{dep} not wired"
+        assert dep in call, f"{dep} not wired"
 
 
 def test_batch_stream_follower_parses_data_lines():
