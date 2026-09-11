@@ -11,15 +11,21 @@ from __future__ import annotations
 
 import datetime
 import filecmp
+import json
 import os
 import re
 import shutil
 import subprocess
 import tempfile
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
-# Sibling tools llama.cpp builds next to llama-server; replaced when present.
+# Non-llama-* executables upstream ships beside the tools.
+EXTRA_TOOLS = frozenset({"rpc-server"})
+
+# Tools llama.cpp has shipped beside llama-server. Kept as documentation of the
+# expected set — any upstream llama-* executable is treated as a tool.
 KNOWN_TOOLS = frozenset({
     "llama-server", "llama-cli", "llama-run", "llama-bench", "llama-batched-bench",
     "llama-quantize", "llama-perplexity", "llama-embedding", "llama-tokenize",
@@ -34,9 +40,17 @@ KNOWN_TOOLS = frozenset({
 
 # ggml/llama/mtmd shared objects: lib<name>.(so|dylib) with optional version.
 _LIB_RE = re.compile(r"^lib(ggml|llama|mtmd).*\.(so|dylib)(\.[0-9]+)*$")
+# Any llama-* executable beside the server, known to the allowlist or not.
+_TOOL_RE = re.compile(r"^llama-[a-z0-9]+(?:-[a-z0-9]+)*$")
+# Tools the product depends on; probed for runnability after every swap.
+DEPENDENT_TOOLS = ("llama-perplexity",)
 
 _BACKUP_PREFIX = ".upgrade.bak."
 _STAGE_PREFIX = ".upgrade.stage."
+STALE_MARKER = ".upgrade.stale.json"
+BUILD_MARKER = ".llama-build.json"
+_PROBE_TIMEOUT_S = 10
+_PROBE_BUDGET_S = 60
 
 
 @dataclass
@@ -47,6 +61,7 @@ class UpgradeResult:
     swapped: "list[str]" = field(default_factory=list)
     backup_dir: "str | None" = None
     skipped: bool = False
+    removed: "list[str]" = field(default_factory=list)
 
 
 def should_upgrade_in_place(method: str, opts: "dict | None") -> bool:
@@ -57,8 +72,13 @@ def should_upgrade_in_place(method: str, opts: "dict | None") -> bool:
     return bool((opts or {}).get("install_in_place", True))
 
 
+def is_tool(name: str) -> bool:
+    """Any upstream llama-* tool, named in the allowlist or not, plus rpc-server."""
+    return name in EXTRA_TOOLS or bool(_TOOL_RE.match(name))
+
+
 def is_artifact(name: str, bin_name: str) -> bool:
-    return name == bin_name or name in KNOWN_TOOLS or bool(_LIB_RE.match(name))
+    return name == bin_name or is_tool(name) or bool(_LIB_RE.match(name))
 
 
 def select_artifacts(src_dir: Path, bin_name: str) -> list:
@@ -158,6 +178,156 @@ def _smoke(binp: Path, libdir: Path, timeout: int = 30) -> "tuple[bool, str]":
     return r.returncode == 0, ((r.stdout or "") + (r.stderr or "")).strip()
 
 
+def _probe_rc(binp: Path, libdir: Path, timeout: int = _PROBE_TIMEOUT_S) -> tuple:
+    """(returncode, timed_out) for `binp --version` with libdir on the loader path;
+    returncode is None when the binary could not be executed at all."""
+    env = dict(os.environ)
+    for var in ("LD_LIBRARY_PATH", "DYLD_LIBRARY_PATH"):
+        env[var] = str(libdir) + (os.pathsep + env[var] if env.get(var) else "")
+    try:
+        r = subprocess.run([str(binp), "--version"], capture_output=True, text=True,
+                           timeout=timeout, env=env, stdin=subprocess.DEVNULL)
+    except subprocess.TimeoutExpired:
+        return None, True
+    except (OSError, subprocess.SubprocessError):
+        return None, False
+    return r.returncode, False
+
+
+def tool_broken(rc: "int | None", timed_out: bool) -> "str | None":
+    """Why a tool cannot run, or None when it looks fine. A tool that merely
+    rejects --version is fine; only exec, loader and signal failures count."""
+    if timed_out:
+        return None
+    if rc is None:
+        return "could not be executed"
+    if rc < 0:
+        return f"crashed on startup (signal {-rc})"
+    if rc == 127:
+        return "could not load its shared libraries"
+    return None
+
+
+def sibling_tools(dest: Path, exclude) -> "list[str]":
+    """llama-* executables in dest not listed in exclude."""
+    out = []
+    try:
+        entries = sorted(os.listdir(dest))
+    except OSError:
+        return out
+    for name in entries:
+        if name in exclude or not is_tool(name):
+            continue
+        p = dest / name
+        if (p.is_file() or p.is_symlink()) and os.access(p, os.X_OK):
+            out.append(name)
+    return out
+
+
+def read_build_marker(dest) -> dict:
+    """{"commit", "backend", "method", "ts"} recorded by the last swap, else {}."""
+    try:
+        with open(Path(dest) / BUILD_MARKER, encoding="utf-8") as f:
+            d = json.load(f)
+        return d if isinstance(d, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def write_build_marker(dest, *, commit: str, backend: str, method: str) -> None:
+    """Record what the live install was built from, so a later run can tell
+    whether a rebuild would change anything."""
+    ts = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    mp = Path(dest) / BUILD_MARKER
+    try:
+        tmp = mp.with_name(mp.name + ".tmp")
+        tmp.write_text(json.dumps({"commit": commit, "backend": backend,
+                                   "method": method, "ts": ts}, indent=1), encoding="utf-8")
+        os.replace(tmp, mp)
+    except OSError:
+        pass  # best-effort: a marker write never fails the swap
+
+
+def read_stale_marker(dest) -> dict:
+    """{"ts", "removed": {tool: reason}} recorded by the last swap, else {}."""
+    try:
+        with open(Path(dest) / STALE_MARKER, encoding="utf-8") as f:
+            d = json.load(f)
+        return d if isinstance(d, dict) and isinstance(d.get("removed"), dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def _write_stale_marker(dest: Path, removed: dict, restored) -> None:
+    """Merge newly removed tools into the marker, drop restored ones, delete when empty."""
+    cur = dict(read_stale_marker(dest).get("removed") or {})
+    for name in restored:
+        cur.pop(name, None)
+    cur.update(removed)
+    mp = dest / STALE_MARKER
+    try:
+        if not cur:
+            if mp.exists():
+                mp.unlink()
+            return
+        ts = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        tmp = mp.with_name(mp.name + ".tmp")
+        tmp.write_text(json.dumps({"ts": ts, "removed": cur}, indent=1), encoding="utf-8")
+        os.replace(tmp, mp)
+    except OSError:
+        pass  # best-effort: a marker write never fails the swap
+
+
+def _reconcile_siblings(dest: Path, names, emit, ensure_backup) -> "list[str]":
+    """Remove tools the new build did not provide that no longer run — the ones
+    left behind against replaced shared libraries. A tool that still runs is kept
+    even when this build does not produce it. Each removal is copied into the
+    backup directory first; one that cannot be copied stays in place."""
+    removed = {}
+    budget = time.monotonic() + _PROBE_BUDGET_S
+    for name in sibling_tools(dest, set(names)):
+        if time.monotonic() > budget:
+            emit("[warn] stopped checking leftover tools after "
+                 f"{_PROBE_BUDGET_S}s; the rest were left in place")
+            break
+        why = tool_broken(*_probe_rc(dest / name, dest))
+        if why:
+            removed[name] = why
+    saved_to = None
+    for name, why in list(removed.items()):
+        backup = ensure_backup()
+        if backup is None:
+            emit(f"[warn] {name} {why} but no backup directory could be created; left in place")
+            removed.pop(name)
+            continue
+        try:
+            _copy_one(dest / name, backup / name)
+        except OSError as e:
+            emit(f"[warn] {name} {why} but could not be backed up ({e}); left in place")
+            removed.pop(name)
+            continue
+        try:
+            os.remove(dest / name)
+            saved_to = backup
+        except OSError as e:
+            emit(f"[warn] could not remove stale {name}: {e}")
+            removed.pop(name)
+    if removed:
+        emit(f"[warn] removed {len(removed)} tool(s) that no longer run: "
+             + ", ".join(f"{n} ({w})" for n, w in removed.items()))
+        emit(f"[warn] copies of the removed tool(s) are in {saved_to}")
+        emit("[warn] a source update builds the full upstream tool set; a tool removed here "
+             "is one this build does not produce, and it could not run against the new libraries")
+    _write_stale_marker(dest, removed, names)
+    for name in DEPENDENT_TOOLS:
+        if name in names and (dest / name).exists():
+            why = tool_broken(*_probe_rc(dest / name, dest))
+            if why:
+                emit(f"[warn] {name} {why} after the swap; the new build of this tool "
+                     f"is not runnable here")
+    return sorted(removed)
+
+
 def _prune_backups(dest: Path, retain: int, emit) -> None:
     retain = max(1, int(retain))
     backups = sorted((p for p in dest.iterdir()
@@ -217,6 +387,20 @@ def upgrade_in_place(resolved_bin: str, dest_bin: str, *, build_root=None,
     staging = Path(tempfile.mkdtemp(prefix=_STAGE_PREFIX, dir=str(dest_real)))
     backup = None
     changed = []
+
+    def _ensure_backup():
+        """The run's backup dir, created on demand for a skipped-swap removal."""
+        nonlocal backup
+        if backup is None:
+            ts = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+            b = dest_real / f"{_BACKUP_PREFIX}{ts}"
+            try:
+                b.mkdir(exist_ok=True)
+            except OSError:
+                return None
+            backup = b
+        return backup
+
     try:
         try:
             for name in names:
@@ -284,9 +468,16 @@ def upgrade_in_place(resolved_bin: str, dest_bin: str, *, build_root=None,
             except OSError:
                 pass  # download cleanup is optional; never fail a done swap
 
+    try:
+        removed = _reconcile_siblings(dest_real, names, emit, _ensure_backup)
+    except Exception as e:
+        emit(f"[warn] stale-tool check failed: {e}")
+        removed = []
+
     if not changed:
         emit(f"[ok] already up to date — 0 file(s) changed at {dest_real}")
-        return UpgradeResult(True, "up to date", target=dest_bin, swapped=[], skipped=True)
+        return UpgradeResult(True, "up to date", target=dest_bin, swapped=[], skipped=True,
+                             removed=removed, backup_dir=str(backup) if backup else None)
 
     try:
         _prune_backups(dest_real, retain, emit)
@@ -296,4 +487,5 @@ def upgrade_in_place(resolved_bin: str, dest_bin: str, *, build_root=None,
     emit(f"[ok] upgraded {len(changed)} file(s) at {dest_real}: {', '.join(changed)}")
     emit(f"[ok] previous binaries backed up to {backup}")
     emit(f"restart to run the new build: sudo -n /usr/bin/systemctl restart {unit}")
-    return UpgradeResult(True, "upgraded", target=dest_bin, swapped=changed, backup_dir=str(backup))
+    return UpgradeResult(True, "upgraded", target=dest_bin, swapped=changed, backup_dir=str(backup),
+                         removed=removed)

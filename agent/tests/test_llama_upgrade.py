@@ -320,3 +320,210 @@ def test_upgrade_second_run_same_release_is_noop(tmp_path):
     backups = [p for p in dest.iterdir() if p.name.startswith(".upgrade.bak.")]
     assert len(backups) == 1                                 # run 2 made no new backup
     assert any("up to date" in s for s in seen)
+
+
+# ---- #922: sibling tools the new build did not provide ----
+
+def _crasher(path: Path) -> None:
+    path.write_text("#!/bin/sh\nkill -SEGV $$\n")
+    path.chmod(path.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+
+
+def test_upgrade_removes_siblings_that_no_longer_run(tmp_path):
+    src = _src(tmp_path, marker="new")                     # build provides neither tool
+    dest = _dest(tmp_path)
+    _crasher(dest / "llama-perplexity")
+    _exe(dest / "llama-imatrix", rc=127, marker="old")      # loader failure
+    (dest / "llama-server.log").write_text("log")           # not a tool
+    seen = []
+
+    res = lu.upgrade_in_place(str(src / "llama-server"), str(dest / "llama-server"), emit=seen.append)
+
+    assert res.ok
+    assert res.removed == ["llama-imatrix", "llama-perplexity"]
+    assert not (dest / "llama-perplexity").exists() and not (dest / "llama-imatrix").exists()
+    assert (dest / "llama-server.log").exists() and (dest / "config.ini").exists()
+    assert any("removed 2 tool(s) that no longer run" in s for s in seen)
+    # the removed copies survive in the run's backup dir
+    backups = [p for p in dest.iterdir() if p.name.startswith(".upgrade.bak.")]
+    assert len(backups) == 1
+    assert (backups[0] / "llama-perplexity").exists() and (backups[0] / "llama-imatrix").exists()
+    assert any("copies of the removed tool(s) are in" in s for s in seen)
+    marker = lu.read_stale_marker(dest)
+    assert marker["removed"]["llama-perplexity"] == "crashed on startup (signal 11)"
+    assert marker["removed"]["llama-imatrix"] == "could not load its shared libraries"
+    assert marker["ts"]
+
+
+def test_upgrade_keeps_siblings_the_build_omits_while_they_still_run(tmp_path):
+    """#928 chose to build tools without examples; a working example binary the
+    operator already has must survive that, not be deleted as 'not in new build'."""
+    src = _src(tmp_path, marker="new")
+    dest = _dest(tmp_path)
+    _exe(dest / "llama-simple", marker="old")               # example binary, still runs
+    _exe(dest / "llama-embedding", rc=1, marker="old")      # rejects --version, still fine
+    seen = []
+
+    res = lu.upgrade_in_place(str(src / "llama-server"), str(dest / "llama-server"), emit=seen.append)
+
+    assert res.ok and res.removed == []
+    assert (dest / "llama-simple").exists() and (dest / "llama-embedding").exists()
+    assert not (dest / lu.STALE_MARKER).exists()
+    assert not any("no longer run" in s for s in seen)
+
+
+def test_upgrade_warns_when_a_swapped_dependent_tool_is_broken(tmp_path):
+    src = _src(tmp_path, marker="new")
+    _crasher(src / "llama-perplexity")                      # the NEW build is the broken one
+    dest = _dest(tmp_path)
+    seen = []
+
+    res = lu.upgrade_in_place(str(src / "llama-server"), str(dest / "llama-server"), emit=seen.append)
+
+    assert res.ok and res.removed == []                     # swapped in, not removed
+    assert (dest / "llama-perplexity").exists()
+    assert any("llama-perplexity crashed on startup (signal 11) after the swap" in s for s in seen)
+
+
+def test_upgrade_keeps_a_broken_tool_it_cannot_back_up(tmp_path, monkeypatch):
+    """A tool that cannot be copied aside is left in place rather than lost."""
+    src = _src(tmp_path, marker="new")
+    dest = _dest(tmp_path)
+    _crasher(dest / "llama-perplexity")
+    real_copy = lu._copy_one
+
+    def _fail_on_tool(s, d):
+        if d.name == "llama-perplexity" and ".upgrade.bak." in str(d.parent):
+            raise OSError("no space left on device")
+        return real_copy(s, d)
+
+    monkeypatch.setattr(lu, "_copy_one", _fail_on_tool)
+    seen = []
+
+    res = lu.upgrade_in_place(str(src / "llama-server"), str(dest / "llama-server"), emit=seen.append)
+
+    assert res.ok and res.removed == []
+    assert (dest / "llama-perplexity").exists()
+    assert any("could not be backed up" in s and "left in place" in s for s in seen)
+    assert not (dest / lu.STALE_MARKER).exists()
+
+
+def test_tool_broken_classification():
+    assert lu.tool_broken(0, False) is None
+    assert lu.tool_broken(1, False) is None                 # tool without --version
+    assert lu.tool_broken(None, True) is None               # a hung probe proves nothing
+    assert "signal 11" in lu.tool_broken(-11, False)
+    assert lu.tool_broken(127, False) == "could not load its shared libraries"
+    assert lu.tool_broken(None, False) == "could not be executed"
+
+
+def test_upgrade_probes_siblings_even_when_nothing_changed(tmp_path):
+    src = _src(tmp_path, marker="new")
+    dest = _dest(tmp_path)
+    _exe(dest / "llama-server", marker="new")
+    _exe(dest / "llama-bench", marker="new")
+    (dest / "libggml-base.so").write_text("GGML-new")
+    _crasher(dest / "llama-perplexity")
+
+    res = lu.upgrade_in_place(str(src / "llama-server"), str(dest / "llama-server"))
+
+    assert res.ok and res.skipped and res.removed == ["llama-perplexity"]
+    assert not (dest / "llama-perplexity").exists()
+    # nothing was swapped, so the backup dir exists only to hold the removal
+    assert res.backup_dir and (Path(res.backup_dir) / "llama-perplexity").exists()
+
+
+def test_upgrade_clears_marker_when_tool_is_rebuilt(tmp_path):
+    src = _src(tmp_path, marker="new")
+    _exe(src / "llama-perplexity", marker="new")
+    dest = _dest(tmp_path)
+    (dest / lu.STALE_MARKER).write_text('{"ts": "x", "removed": {"llama-perplexity": "not in new build"}}')
+
+    res = lu.upgrade_in_place(str(src / "llama-server"), str(dest / "llama-server"))
+
+    assert res.ok and "llama-perplexity" in res.swapped and res.removed == []
+    assert not (dest / lu.STALE_MARKER).exists()
+    assert (dest / "llama-perplexity").exists()
+
+
+def test_upgrade_marker_merges_across_runs(tmp_path):
+    src = _src(tmp_path, marker="new")
+    dest = _dest(tmp_path)
+    (dest / lu.STALE_MARKER).write_text('{"ts": "x", "removed": {"llama-imatrix": "not in new build"}}')
+    _crasher(dest / "llama-perplexity")
+
+    res = lu.upgrade_in_place(str(src / "llama-server"), str(dest / "llama-server"))
+
+    assert res.removed == ["llama-perplexity"]
+    assert set(lu.read_stale_marker(dest)["removed"]) == {"llama-imatrix", "llama-perplexity"}
+
+
+def test_upgrade_does_not_remove_siblings_when_swap_aborts(tmp_path):
+    src = _src(tmp_path, rc=1, marker="bad")
+    dest = _dest(tmp_path)
+    _crasher(dest / "llama-perplexity")
+
+    res = lu.upgrade_in_place(str(src / "llama-server"), str(dest / "llama-server"))
+
+    assert not res.ok
+    assert (dest / "llama-perplexity").exists()
+    assert not (dest / lu.STALE_MARKER).exists()
+
+
+def test_read_stale_marker_tolerates_garbage(tmp_path):
+    assert lu.read_stale_marker(tmp_path) == {}
+    (tmp_path / lu.STALE_MARKER).write_text("{not json")
+    assert lu.read_stale_marker(tmp_path) == {}
+    (tmp_path / lu.STALE_MARKER).write_text('{"removed": []}')
+    assert lu.read_stale_marker(tmp_path) == {}
+
+
+def test_sibling_tools_only_llama_executables(tmp_path):
+    _exe(tmp_path / "llama-perplexity")
+    _exe(tmp_path / "llama-server")
+    (tmp_path / "llama-notes.txt").write_text("x")
+    (tmp_path / "llama-quantize").write_text("not executable")
+    (tmp_path / "libllama.so").write_text("lib")
+    assert lu.sibling_tools(tmp_path, {"llama-server"}) == ["llama-perplexity"]
+
+
+# ---- #928: any upstream tool, not just the known list ----
+
+def test_is_artifact_accepts_unknown_upstream_tools():
+    assert lu.is_artifact("llama-brand-new-tool", "llama-server")     # not in KNOWN_TOOLS
+    assert lu.is_artifact("rpc-server", "llama-server")
+    assert lu.is_artifact("libggml-cuda.so", "llama-server")
+    assert not lu.is_artifact("llama-server.log", "llama-server")
+    assert not lu.is_artifact("README.md", "llama-server")
+    assert not lu.is_artifact("test-tokenizer", "llama-server")
+
+
+def test_upgrade_installs_a_tool_the_host_never_had(tmp_path):
+    src = _src(tmp_path, marker="new")
+    _exe(src / "llama-perplexity", marker="new")
+    _exe(src / "llama-brand-new-tool", marker="new")
+    dest = _dest(tmp_path)                                   # has neither tool
+
+    res = lu.upgrade_in_place(str(src / "llama-server"), str(dest / "llama-server"))
+
+    assert res.ok
+    assert "llama-perplexity" in res.swapped and "llama-brand-new-tool" in res.swapped
+    assert (dest / "llama-perplexity").exists() and (dest / "llama-brand-new-tool").exists()
+    assert res.removed == []
+
+
+def test_sibling_tools_covers_rpc_server(tmp_path):
+    _exe(tmp_path / "rpc-server")
+    _exe(tmp_path / "llama-perplexity")
+    assert lu.sibling_tools(tmp_path, set()) == ["llama-perplexity", "rpc-server"]
+
+
+# ---- #930: build marker ----
+
+def test_build_marker_roundtrip_and_garbage(tmp_path):
+    assert lu.read_build_marker(tmp_path) == {}
+    lu.write_build_marker(tmp_path, commit="a0f7016d", backend="cuda", method="source")
+    m = lu.read_build_marker(tmp_path)
+    assert m["commit"] == "a0f7016d" and m["backend"] == "cuda" and m["method"] == "source" and m["ts"]
+    (tmp_path / lu.BUILD_MARKER).write_text("{not json")
+    assert lu.read_build_marker(tmp_path) == {}

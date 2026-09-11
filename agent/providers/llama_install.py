@@ -94,28 +94,111 @@ def _h_custom_script(opts: dict, cfg) -> InstallPlan:
 
 
 _GIT_REF_RE = re.compile(r"[A-Za-z0-9._/][A-Za-z0-9._/-]*\Z")
-_TOOL_RE = re.compile(r"^llama-[a-z0-9]+(?:-[a-z0-9]+)*$")
+# Current form `version: 0.4.0-dev (build 1, commit df03399)`; legacy form
+# `version: 6150 (a0f7016d)`. The commit is the only stable identifier.
+_COMMIT_RE = re.compile(r"\bcommit[\s:]+([0-9a-f]{7,40})\b")
+_BUILD_NO_RE = re.compile(r"\bbuild[\s:]+b?(\d+)\b")
+_VERSION_RE = re.compile(r"\bversion\s*:\s*(\S+)")
+_BUILD_ID_RE = re.compile(r"\b(?:version|build)\s*:\s*b?(\d+)\s*\(([0-9a-f]{7,40})\)")
+# Upstream's tool set, minus tests and examples.
+_TOOLSET_CMAKE = ["-DLLAMA_BUILD_TESTS=OFF", "-DLLAMA_BUILD_EXAMPLES=OFF",
+                  "-DLLAMA_BUILD_TOOLS=ON", "-DLLAMA_BUILD_SERVER=ON"]
 
 
-def _existing_tool_targets(cfg) -> "list[str]":
-    """llama-* tool binaries installed beside LLAMA_BIN, excluding llama-server.
-    Used as extra cmake targets so a source upgrade rebuilds every tool the host
-    already has instead of only the server."""
-    bin_path = (getattr(cfg, "LLAMA_BIN", "") or "").strip()
-    if not bin_path:
-        return []
-    d = Path(bin_path).parent
+def installed_build_id(bin_path, timeout: int = 30) -> dict:
+    """{"build", "commit", "version", "text"} from `<bin> --version`. The binary's
+    own directory goes on the loader path, since its libs live beside it."""
+    out = {"build": None, "commit": None, "version": None, "text": ""}
+    if not bin_path or not os.path.exists(bin_path):
+        out["text"] = "not installed"
+        return out
+    env = dict(os.environ)
+    libdir = os.path.dirname(os.path.abspath(str(bin_path)))
+    for var in ("LD_LIBRARY_PATH", "DYLD_LIBRARY_PATH"):
+        env[var] = libdir + (os.pathsep + env[var] if env.get(var) else "")
     try:
-        entries = os.listdir(d)
-    except OSError:
-        return []
-    out = []
-    for name in sorted(entries):
-        if name == "llama-server" or not _TOOL_RE.match(name):
+        r = subprocess.run([str(bin_path), "--version"], capture_output=True, text=True,
+                           timeout=timeout, stdin=subprocess.DEVNULL, env=env)
+    except subprocess.TimeoutExpired:
+        out["text"] = "version check timed out"
+        return out
+    except (OSError, subprocess.SubprocessError) as e:
+        out["text"] = f"could not run it: {e}"
+        return out
+    text = ((r.stdout or "") + (r.stderr or "")).strip()
+    commit = _COMMIT_RE.search(text)
+    legacy = None if commit else _BUILD_ID_RE.search(text)
+    if commit:
+        out["commit"] = commit.group(1)
+        bn = _BUILD_NO_RE.search(text)
+        out["build"] = bn.group(1) if bn else None
+        ver = _VERSION_RE.search(text)
+        if ver and not ver.group(1).isdigit():
+            out["version"] = ver.group(1)
+    elif legacy:
+        out["build"], out["commit"] = legacy.group(1), legacy.group(2)
+    else:
+        first = next((ln.strip() for ln in text.splitlines() if ln.strip()), "")
+        out["text"] = (first[:100] or f"no output, exit {r.returncode}")
+    return out
+
+
+def remote_commit(ref: str, timeout: int = 30) -> "str | None":
+    """Upstream commit for ref without fetching the tree; None when unresolvable."""
+    ref = (ref or "master").strip()
+    if not _valid_git_ref(ref):
+        return None
+    try:
+        r = subprocess.run(["git", "ls-remote", REPO_URL, ref], capture_output=True, text=True,
+                           timeout=timeout, stdin=subprocess.DEVNULL)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if r.returncode != 0:
+        return None
+    exact, peeled = None, None
+    for line in (r.stdout or "").splitlines():
+        sha, _, name = line.partition("\t")
+        sha, name = sha.strip(), name.strip()
+        if not re.fullmatch(r"[0-9a-f]{40}", sha):
             continue
-        p = d / name
-        if (p.is_file() or p.is_symlink()) and os.access(p, os.X_OK):
-            out.append(name)
+        if name.endswith("^{}"):
+            peeled = sha
+        elif exact is None:
+            exact = sha
+    resolved = peeled or exact
+    if resolved:
+        return resolved
+    # A ref that is already a commit sha resolves to itself.
+    return ref.lower() if re.fullmatch(r"[0-9a-f]{7,40}", ref.lower()) else None
+
+
+def source_up_to_date(opts: dict, installed_commit: "str | None",
+                      recorded_backend: "str | None") -> dict:
+    """Whether a source build would be a no-op: same upstream commit, same backend."""
+    backend = ((opts or {}).get("backend") or "cpu").strip().lower()
+    ref = ((opts or {}).get("git_ref") or "master").strip()
+    out = {"up_to_date": False, "ref": ref, "backend": backend,
+           "installed": installed_commit, "remote": None, "reason": ""}
+    if not installed_commit or len(installed_commit) < 7:
+        out["reason"] = "the installed binary did not report a usable build commit"
+        return out
+    if not recorded_backend:
+        out["reason"] = "this install has no recorded build backend yet"
+        return out
+    if recorded_backend != backend:
+        out["reason"] = f"backend changed ({recorded_backend} → {backend})"
+        return out
+    remote = remote_commit(ref)
+    out["remote"] = remote
+    if not remote:
+        out["reason"] = f"could not resolve {ref} upstream"
+        return out
+    n = min(len(remote), len(installed_commit))
+    if remote[:n] != installed_commit[:n]:
+        out["reason"] = f"upstream {ref} moved to {remote[:8]}"
+        return out
+    out["up_to_date"] = True
+    out["reason"] = f"installed build matches upstream {ref} at {remote[:8]}"
     return out
 
 
@@ -192,7 +275,7 @@ def _h_source(opts: dict, cfg) -> InstallPlan:
     backend = (opts.get("backend") or "cpu").strip().lower()
     if backend not in _BACKEND_CMAKE:
         raise InstallError(f"unknown backend {backend!r}; valid: {', '.join(sorted(_BACKEND_CMAKE))}")
-    flags = ["-DCMAKE_BUILD_TYPE=Release", *_BACKEND_CMAKE[backend]]
+    flags = ["-DCMAKE_BUILD_TYPE=Release", *_TOOLSET_CMAKE, *_BACKEND_CMAKE[backend]]
     env = _hip_build_env() if backend == "rocm" else {}
     if src.exists():
         fetch = [
@@ -212,13 +295,14 @@ def _h_source(opts: dict, cfg) -> InstallPlan:
         if njobs < 1:
             raise InstallError(f"invalid jobs {jobs!r}; must be a positive integer")
     nj = str(njobs)
-    build_steps = [["cmake", "--build", str(build), "--target", "llama-server", "-j", nj]]
-    extras = _existing_tool_targets(cfg)
-    if extras:
-        core = ["cmake", "--build", str(build), "--target", *extras, "-j", nj]
-        warn = "[warn] some existing llama-* tools failed to rebuild; prior copies left in place"
-        joined = " ".join(shlex.quote(a) for a in core)
-        build_steps.append(["sh", "-c", f"{joined} || echo {shlex.quote(warn)}"])
+    # llama-server must build; the rest of the tool set is tolerated so one
+    # broken upstream tool cannot block the update.
+    tools_cmd = " ".join(shlex.quote(a) for a in ["cmake", "--build", str(build), "-j", nj])
+    tools_warn = "[warn] some llama.cpp tools failed to build; only the ones that built are installed"
+    build_steps = [
+        ["cmake", "--build", str(build), "--target", "llama-server", "-j", nj],
+        ["sh", "-c", f"{tools_cmd} || echo {shlex.quote(tools_warn)}"],
+    ]
     steps = [
         *fetch,
         ["cmake", "-S", str(src), "-B", str(build), *flags],

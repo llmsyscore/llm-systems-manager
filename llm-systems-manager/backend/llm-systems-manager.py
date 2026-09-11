@@ -176,7 +176,7 @@ def _local_hostname() -> str:
 # banner reads it. Bump suffix (-1, -2, …) for same-day iterations; roll
 # the date for a new day's first change.
 # ---------------------------------------------------------------------------
-__version__ = "v2026.09.10-10"
+__version__ = "v2026.09.10-11"
 
 # Wall-clock at first import (Cheroot main process); the shutdown banner
 # reads it for the uptime line.
@@ -1973,7 +1973,8 @@ def llm_build_stream_info():
 
 @app.route("/api/llm/build", methods=["POST"])
 def llm_build():
-    return proxies.proxy_to_primary("llama", "POST", "/llama/build")
+    body = flask_request.get_json(silent=True) or {}
+    return proxies.proxy_to_primary("llama", "POST", "/llama/build", json=body)
 
 
 @app.route("/api/llm/build/stream")
