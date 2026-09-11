@@ -46,4 +46,4 @@ def test_batch_is_audited():
 
 
 def test_version_bumped():
-    assert '__version__ = "v2026.09.10-7"' in SRC
+    assert '__version__ = "v2026.09.10-8"' in SRC

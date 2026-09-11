@@ -71,7 +71,7 @@ from .storage.influxdb_client import InfluxDBClient
 # (-1, -2, …) for same-day iterations; roll the date for a new day's first
 # change.
 # ---------------------------------------------------------------------------
-__version__ = "v2026.09.04-1"
+__version__ = "v2026.09.10-1"
 from .storage import influx_monitor as _influx_monitor
 from .models.alarm_rule import (
     AlarmRuleCreate,
@@ -552,6 +552,7 @@ async def _on_startup() -> None:
         notification_dispatcher=notification_dispatcher,
     )
     ingest.set_alert_manager(alert_manager)
+    ingest.set_notification_dispatcher(notification_dispatcher)
     metrics.set_repository(metric_repo)
     notifications.set_repository(notification_repo)
     notifications.set_ws_send(_dispatch_ws_notification)
