@@ -1,6 +1,5 @@
 """#907: placement by the measured speed table (live benchmark rankings)."""
 from __future__ import annotations
-import json
 import sqlite3
 import autopilot as ap
 import autopilot_planner as pl
