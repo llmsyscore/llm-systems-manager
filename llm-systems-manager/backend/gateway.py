@@ -181,22 +181,29 @@ def _forward_json(agent: dict, path: str, body: dict):
     return (r, None) if r is not None else (None, err)
 
 
-def _dial_stream(agent: dict, path: str, body: dict):
+_TIMED_OUT = object()  # _dial_stream result: every URL hit the caller's read timeout
+
+
+def _dial_stream(agent: dict, path: str, body: dict, read_timeout: "float | None" = None):
+    """Opens the upstream stream on the first callback URL that answers; None when none did.
+    With read_timeout set, returns _TIMED_OUT when a read timeout was the only failure."""
     token = agent.get("token") or ""
+    timed_out = False
     for base in agent_registry.agent_callback_urls(agent):
         url = f"{base}{path}"
         try:
             r = requests.post(
                 url, json=body, stream=True,
                 headers={"Authorization": f"Bearer {token}"},
-                timeout=(5, _read_timeout_s()),
+                timeout=(5, read_timeout or _read_timeout_s()),
                 **agent_registry.agent_tls_kwargs(url))
             agent_registry.note_dial_result(agent, base, True)
             return r
         except requests.exceptions.RequestException as e:
+            timed_out |= bool(read_timeout) and isinstance(e, requests.exceptions.ReadTimeout)
             agent_registry.note_dial_error(agent, base, e)
             log.debug("gateway dial %s failed: %s", url, type(e).__name__)
-    return None
+    return _TIMED_OUT if timed_out else None
 
 
 def _with_usage_probe(body: dict) -> "tuple[dict, bool]":
@@ -204,6 +211,145 @@ def _with_usage_probe(body: dict) -> "tuple[dict, bool]":
     if "stream_options" in body:
         return body, False
     return {**body, "stream_options": {"include_usage": True}}, True
+
+
+class GatewayError(RuntimeError):
+    """Completion could not be served; status/err_type mirror _oai_error."""
+    def __init__(self, message: str, status: int = 503, err_type: str = "unavailable"):
+        super().__init__(message)
+        self.status, self.err_type = status, err_type
+
+
+def _resolve(body: dict, provider):
+    if not _gw_enabled():
+        raise GatewayError("gateway disabled", 503, "disabled")
+    model_id = body.get("model") or None
+    return model_id, (provider or _provider_for_model(model_id))
+
+
+def _no_backend(provider: str, errors: list) -> GatewayError:
+    if not errors:
+        return GatewayError(f"no {provider} backend registered", 404, "no_backend")
+    return GatewayError(f"no {provider} backend available", 503)
+
+
+def complete_json(body: dict, *, label: str, provider=None) -> dict:
+    """In-process non-streaming completion with pool failover; usage under `label`."""
+    model_id, provider = _resolve(body, provider)
+    path = _AGENT_PATHS[provider]["chat/completions"]
+    client = gateway_usage.client_begin(label, "", model=model_id)
+    errors: list = []
+    try:
+        for agent in _candidates(model_id, None, provider):
+            aid = agent.get("agent_id")
+            gateway_usage.begin(aid)
+            try:
+                r, err = _forward_json(agent, path, {**body, "stream": False})
+            finally:
+                gateway_usage.end(aid)
+            if r is None:
+                errors.append(f"{_label(agent)}: {err}")
+                continue
+            if r.status_code in _FAILOVER_STATUSES:
+                errors.append(f"{_label(agent)}: {r.status_code}")
+                continue
+            if not (200 <= r.status_code < 300):
+                gateway_usage.record_error()
+                raise GatewayError(f"upstream {r.status_code}", r.status_code, "upstream")
+            u = gateway_usage.completion_usage_from_json_bytes(r.content)
+            if u:
+                gateway_usage.client_record(client, *u)
+                if provider in _USAGE_COUNTED_PROVIDERS:
+                    gateway_usage.record(aid, *u)
+            return r.json()
+        gateway_usage.record_error()
+        raise _no_backend(provider, errors)
+    finally:
+        gateway_usage.client_end(client)
+
+
+def _stream_lines(upstream, waiting_first):
+    """iter_lines with read failures mapped to GatewayError: timeout before the first chunk, dropped after."""
+    try:
+        yield from upstream.iter_lines(decode_unicode=True)
+    except (requests.exceptions.Timeout, requests.exceptions.ConnectionError) as e:
+        if not waiting_first():
+            gateway_usage.record_error()
+        if waiting_first():
+            raise GatewayError("upstream timeout", 504, "timeout") from e
+        raise GatewayError("upstream dropped", 502, "upstream") from e
+
+
+def complete_stream(body: dict, *, label: str, provider=None, read_timeout: "float | None" = None):
+    """In-process streaming completion; yields parsed `data:` chunks until [DONE].
+    read_timeout bounds the wait for each upstream read; a miss raises GatewayError(timeout)."""
+    model_id, provider = _resolve(body, provider)
+    path = _AGENT_PATHS[provider]["chat/completions"]
+    counted = provider in _USAGE_COUNTED_PROVIDERS
+    stream_body = {**body, "stream": True}
+    if counted and bool(getattr(_gw_cfg(), "usage_probe", True)):
+        stream_body, _ = _with_usage_probe(stream_body)
+    client = gateway_usage.client_begin(label, "", model=model_id)
+    t0 = time.perf_counter()
+    errors: list = []
+    timed_out = False
+    try:
+        for agent in _candidates(model_id, None, provider):
+            upstream = _dial_stream(agent, path, stream_body, read_timeout)
+            if upstream is None or upstream is _TIMED_OUT:
+                timed_out |= upstream is _TIMED_OUT
+                errors.append(f"{_label(agent)}: {'timeout' if upstream is _TIMED_OUT else 'unreachable'}")
+                continue
+            if upstream.status_code in _FAILOVER_STATUSES:
+                upstream.close()
+                errors.append(f"{_label(agent)}: {upstream.status_code}")
+                continue
+            ctype = (upstream.headers.get("content-type") or "").lower()
+            if "text/event-stream" not in ctype or upstream.status_code >= 400:
+                status = upstream.status_code
+                upstream.close()
+                gateway_usage.record_error()
+                raise GatewayError(f"upstream {status}", status, "upstream")
+            aid = agent.get("agent_id")
+            gateway_usage.begin(aid)
+            first = True
+            try:
+                for line in _stream_lines(upstream, lambda: first):
+                    if not line or not line.startswith("data: "):
+                        continue
+                    data = line[6:].strip()
+                    if data == "[DONE]":
+                        break
+                    try:
+                        chunk = json.loads(data)
+                    except ValueError:
+                        continue
+                    if first:
+                        first = False
+                        gateway_usage.record_latency((time.perf_counter() - t0) * 1000.0)
+                    u = chunk.get("usage")
+                    if isinstance(u, dict):
+                        p_tok, g_tok = u.get("prompt_tokens") or 0, u.get("completion_tokens") or 0
+                        gateway_usage.client_record(client, p_tok, g_tok)
+                        if counted:
+                            gateway_usage.record(aid, p_tok, g_tok)
+                    yield chunk
+                return
+            except GatewayError as e:
+                # A first-token timeout on this host tries the next one; a drop mid-answer does not.
+                if e.err_type != "timeout" or not first:
+                    raise
+                timed_out = True
+                errors.append(f"{_label(agent)}: timeout")
+            finally:
+                gateway_usage.end(aid)
+                upstream.close()
+        gateway_usage.record_error()
+        if timed_out:
+            raise GatewayError("upstream timeout", 504, "timeout")
+        raise _no_backend(provider, errors)
+    finally:
+        gateway_usage.client_end(client)
 
 
 def _handle_completion(sub: str, provider=None) -> Response:

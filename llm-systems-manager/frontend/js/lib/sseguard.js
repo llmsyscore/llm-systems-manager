@@ -20,8 +20,8 @@
     return BACKOFF_MS[Math.min(Math.max(drop, 1), BACKOFF_MS.length) - 1];
   }
 
-  // opts: url, onEvent(msg, ev), onReconnecting(drop), onRestored(),
-  // onLost(readyState), maxDrops, ES (EventSource constructor override).
+  // opts: url, onEvent(msg, ev), onReconnecting(drop), onRestored(), onLost(readyState),
+  // maxDrops, bypassPause (deliver while LivePause is on), ES (EventSource override).
   function open(opts) {
     const ES = opts.ES || (typeof EventSource !== 'undefined' ? EventSource : null);
     const maxDrops = opts.maxDrops || DEFAULT_MAX_DROPS;
@@ -42,7 +42,7 @@
           if (opts.onRestored) opts.onRestored();
         }
         if (msg && msg.type === 'keepalive') return;
-        if (_SG_API.paused()) return;
+        if (!opts.bypassPause && _SG_API.paused()) return;
         opts.onEvent(msg, ev);
       };
       es.onerror = () => {
@@ -84,7 +84,8 @@
     };
   }
 
-  // Frames are dropped (stream kept open) while the page's LivePause is on.
+  // Frames are dropped (stream kept open) while the page's LivePause is on,
+  // unless the caller opened the stream with bypassPause.
   const paused = () => !!(typeof window !== 'undefined' && window.LivePause && window.LivePause.on);
   const _SG_API = { open, withLastId, backoffMs, timers, paused, BACKOFF_MS, DEFAULT_MAX_DROPS };
   if (typeof window !== 'undefined') window.SG = _SG_API;

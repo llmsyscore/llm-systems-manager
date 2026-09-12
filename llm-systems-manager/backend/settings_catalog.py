@@ -6,6 +6,7 @@ import tomllib
 from typing import Any, Optional
 
 from config.unified_config import Settings, settings
+import tower_tools
 
 _UNSET_SECRETS = {"", "REPLACE_ME"}
 
@@ -20,6 +21,7 @@ GROUPS: list[tuple[str, str]] = [
     ("backup", "Backups"),
     ("audit", "Audit Log"),
     ("discord", "Discord Bot"),
+    ("tower", "Tower assistant"),
     ("companion", "Companion (PWA)"),
     ("gateway", "Inference Gateway"),
     ("proxies", "Proxied UIs"),
@@ -38,7 +40,8 @@ MANAGER, AE, BOTH = "manager", "alarm_engine", "both"
 def _e(path: str, typ: str, label: str, help_: str, group: str, service: str,
        secret: bool = False, choices: Optional[list] = None,
        min: Optional[float] = None, max: Optional[float] = None,
-       nullable: bool = False, hot: bool = False, common: bool = False) -> dict:
+       nullable: bool = False, hot: bool = False, common: bool = False,
+       datalist: Optional[str] = None, exclude: bool = False) -> dict:
     d = {"path": path, "type": typ, "label": label, "help": help_,
          "group": group, "service": service, "secret": secret}
     if choices is not None:
@@ -53,6 +56,10 @@ def _e(path: str, typ: str, label: str, help_: str, group: str, service: str,
         d["hot"] = True  # applied at runtime; never flags a restart
     if common:
         d["common"] = True  # shown in the Admin → Settings "Most used" card
+    if datalist is not None:
+        d["datalist"] = datalist  # id of a <datalist> the frontend renders for this field
+    if exclude:
+        d["exclude"] = True  # chips: the stored list holds the UNselected choices
     return d
 
 
@@ -120,6 +127,22 @@ CATALOG: list[dict] = [
     _e("manager.discord.guild_id", "str", "Guild ID", "Server the bot binds slash-commands to.", "discord", MANAGER),
     _e("manager.discord.allowed_user_ids", "list", "Allowed user IDs", "Empty list = refuse all. One ID per line.", "discord", MANAGER),
     _e("manager.discord.allow_model_control", "bool", "Allow model control", "Enables /load and /unload for allowed users.", "discord", MANAGER),
+    # tower (#924) — hot: the loop reads settings.manager.tower per turn
+    _e("manager.tower.enabled", "bool", "Tower assistant", "Shows the Tower button and answers in the drawer. Off = no routes, no watcher.", "tower", MANAGER, hot=True, common=True),
+    _e("manager.tower.model", "str", "Primary model", "auto = any loaded chat model, or pick a loaded gateway model to pin. Never auto-loads.", "tower", MANAGER, hot=True, common=True, datalist="gateway_models"),
+    _e("manager.tower.request_timeout_s", "int", "Request timeout (s)", "Seconds to wait for the primary model to start answering before the question fails or falls back.", "tower", MANAGER, min=5, max=600, hot=True),
+    _e("manager.tower.fallback", "bool", "Fallback model", "When the primary model misses the request timeout, ask the next loaded chat model (another host first) this one question and say so in the reply. Later questions use the primary model again.", "tower", MANAGER, hot=True),
+    _e("manager.tower.tool_mode", "choice", "Tool calls", "auto = native function calling where the provider supports it, otherwise a JSON block the model writes. llama.cpp needs --jinja for native.", "tower", MANAGER, choices=["auto", "native", "prompt"], hot=True),
+    _e("manager.tower.capabilities", "choice", "What Tower may do", "read = answer only. operate adds load, unload, wake, ack and close. admin adds restarting a provider service. Every action still asks first.", "tower", MANAGER, choices=["read", "operate", "admin"], hot=True, common=True),
+    _e("manager.tower.off_topic", "choice", "Off-topic questions", "refuse = anything outside this manager gets one fixed line and no tool call. allow = it may chat, but gains no tools either way.", "tower", MANAGER, choices=["refuse", "allow"], hot=True),
+    _e("manager.tower.disabled_tools", "chips", "Available tools", "Tools Tower may use. Click a chip to turn it off everywhere; the tier ladder still applies.", "tower", MANAGER, hot=True, choices=list(tower_tools.TOOL_NAMES), exclude=True),
+    _e("manager.tower.diagnose_alarms", "bool", "Diagnose new alarms", "Read-only look at each new alert at or above the lowest severity; the result lands in the drawer as an insight.", "tower", MANAGER, hot=True, common=True),
+    _e("manager.tower.min_severity", "choice", "Lowest severity", "Alerts below this are not diagnosed.", "tower", MANAGER, choices=["info", "warning", "critical"], hot=True),
+    _e("manager.tower.playbooks_auto", "bool", "Apply safe playbooks", "Wake a sleeping server, reload a dropped model, ack a recovered alert without asking. Needs operate. Anything else is always proposed.", "tower", MANAGER, hot=True),
+    _e("manager.tower.max_tool_calls", "int", "Tool calls per question", "Reads Tower may do before it has to answer.", "tower", MANAGER, min=1, max=20, hot=True),
+    _e("manager.tower.max_tokens", "int", "Answer length (tokens)", "Token cap per model call.", "tower", MANAGER, min=128, max=8192, hot=True),
+    _e("manager.tower.temperature", "float", "Temperature", "Sampling temperature for Tower's model calls.", "tower", MANAGER, min=0, max=1, hot=True),
+    _e("manager.tower.history_days", "int", "Keep history (days)", "Threads and insights older than this are deleted daily.", "tower", MANAGER, min=1, max=365, hot=True),
     # companion
     _e("manager.companion.push_contact", "str", "Push contact", "VAPID sub claim the browser push services see (mailto:…).", "companion", MANAGER),
     _e("manager.companion.release_check", "bool", "Release check", "Opt-in GitHub release check (the manager's only outbound github.com call).", "companion", MANAGER, common=True),
@@ -306,10 +329,14 @@ def _coerce(entry: dict, value: Any):
         v = value.strip()
         if typ == "choice" and v not in entry["choices"]:
             raise ValueError(f"must be one of: {', '.join(entry['choices'])}")
-    elif typ == "list":
+    elif typ in ("list", "chips"):
         if not isinstance(value, list) or not all(isinstance(x, str) for x in value):
             raise ValueError("expected a list of strings")
         v = [x.strip() for x in value if x.strip()]
+        if typ == "chips":
+            bad = [x for x in v if x not in entry["choices"]]
+            if bad:
+                raise ValueError(f"unknown: {', '.join(bad)}")
     else:
         raise ValueError(f"unknown type {typ}")
     if entry.get("min") is not None and v < entry["min"]:
@@ -331,7 +358,7 @@ def validate_and_coerce(changes: dict) -> tuple[dict, dict]:
             if value == "" or value == []:
                 continue  # blank secret input = leave unchanged
             if value is None:
-                clean[path] = [] if entry["type"] == "list" else ""
+                clean[path] = [] if entry["type"] in ("list", "chips") else ""
                 continue
         elif value is None:
             # None = remove the key, so the model default applies again.

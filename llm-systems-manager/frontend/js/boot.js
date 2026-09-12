@@ -65,6 +65,7 @@ function switchSubTab(parent, sub) {
   });
 
   _subTabState[parent] = sub;
+  document.dispatchEvent(new CustomEvent('lsm:tab', { detail: { tab: parent, sub } }));
 
   // Stop the llama log SSE/retry + the 5s model-card poll whenever the LLM
   // tab's sub-tab is not llama.cpp — otherwise they keep hitting /llama/log

@@ -5,6 +5,7 @@
 
   let _data = null;
   let _entryByPath = new Map();
+  let _gatewayModels = [];
   const _dirty = new Map();     // path -> raw value to submit (null = clear/default)
   const _invalid = new Map();   // path -> message
   const MOST_USED = '__most_used__';
@@ -31,6 +32,13 @@
       return;
     }
     _entryByPath = new Map(_data.entries.map(e => [e.path, e]));
+    if (_data.entries.some(e => e.datalist === 'gateway_models')) {
+      try {
+        const r = await fetch('/api/gateway/v1/models');
+        const d = r.ok ? await r.json() : {};
+        _gatewayModels = (d.data || []).map(m => m.id).filter(Boolean);
+      } catch (_) { _gatewayModels = []; }
+    }
     const keys = orderedGroups().map(g => g.key);
     if (!keys.includes(_group)) _group = keys[0] || MOST_USED;
     render();
@@ -73,14 +81,16 @@
     if (v !== undefined) return v;
     if (hasDefault(e)) return defaults()[e.path];
     if (e.nullable) return null;
-    return e.type === 'list' ? [] : (e.type === 'bool' ? false : '');
+    return isList(e) ? [] : (e.type === 'bool' ? false : '');
   }
+  function isList(e) { return e.type === 'list' || e.type === 'chips'; }
   function shownValue(e) {
     if (_dirty.has(e.path)) return _dirty.get(e.path);
     return serverValue(e);
   }
-  function fmtVal(v) {
+  function fmtVal(v, e) {
     if (v === null || v === undefined) return 'unset';
+    if (Array.isArray(v) && e && e.exclude) return v.length ? `all but ${v.join(', ')}` : 'all';
     if (Array.isArray(v)) return v.join(', ') || 'empty';
     if (typeof v === 'boolean') return v ? 'on' : 'off';
     return String(v) === '' ? 'blank' : String(v);
@@ -145,9 +155,26 @@
         + '</select></div>' + `<div class="st-sub">${resetHtml(e, opt)}</div>`;
     }
     const fromDom = !!(opt.dirty && opt.dirty.has(e.path));
+    if (e.type === 'chips') {
+      const cur = Array.isArray(v) ? v : [];
+      const chips = (e.choices || []).map(c => {
+        const on = e.exclude ? !cur.includes(c) : cur.includes(c);
+        return `<button type="button" class="st-chip${on ? ' on' : ''}" data-chip="${esc(c)}" aria-pressed="${on}">${esc(c)}</button>`;
+      }).join('');
+      return `<div class="st-chips${dirty}" data-path="${p}" role="group">${chips}</div>`
+        + `<div class="st-sub">${defaultHtml(e, opt)}${resetHtml(e, opt)}</div>`;
+    }
     if (e.type === 'list') {
       return `<textarea class="st-ta st-input${dirty}" data-path="${p}" rows="3" `
         + `placeholder="one per line">${fromDom ? '' : esc((v || []).join('\n'))}</textarea>`;
+    }
+    if (e.datalist === 'gateway_models') {
+      const cur = (v === null || v === undefined || v === '') ? 'auto' : String(v);
+      const opts = ['auto'].concat(_gatewayModels.filter(m => m !== 'auto'));
+      if (!opts.includes(cur)) opts.push(cur);
+      return `<div class="row"><select class="sel st-input${dirty}" data-path="${p}">`
+        + opts.map(c => `<option value="${esc(c)}"${c === cur ? ' selected' : ''}>${esc(c)}</option>`).join('')
+        + '</select></div>' + `<div class="st-sub">${defaultHtml(e, opt)}${resetHtml(e, opt)}</div>`;
     }
     const numeric = e.type === 'int' || e.type === 'float';
     const cls = numeric ? 'st-in' : 'st-in w';
@@ -162,13 +189,13 @@
   // "default 0" / "cleared → default 0" once the field differs from its default.
   function defaultHtml(e, opt) {
     if (e.secret || !hasDefault(e, opt)) return '';
-    const d = defsOf(opt)[e.path];
+    const d = defsOf(opt)[e.path], dv = fmtVal(d, e);
     const v = opt.shown(e);
     if (opt.dirty && opt.dirty.get(e.path) === null) {
-      return `<span class="dflt" data-dflt="${esc(e.path)}" title="default ${esc(fmtVal(d))}">cleared → default <b>${esc(fmtVal(d))}</b></span>`;
+      return `<span class="dflt" data-dflt="${esc(e.path)}" title="default ${esc(dv)}">cleared → default <b>${esc(dv)}</b></span>`;
     }
     if (JSON.stringify(v) === JSON.stringify(d)) return `<span class="dflt" data-dflt="${esc(e.path)}"></span>`;
-    return `<span class="dflt" data-dflt="${esc(e.path)}" title="default ${esc(fmtVal(d))}">default <b>${esc(fmtVal(d))}</b></span>`;
+    return `<span class="dflt" data-dflt="${esc(e.path)}" title="default ${esc(dv)}">default <b>${esc(dv)}</b></span>`;
   }
   function resetHtml(e, opt) {
     if (e.secret || !hasDefault(e, opt)) return '';
@@ -237,7 +264,7 @@
         if (_dirty.has(e.path)) return _dirty.get(e.path);
         if (values && values[e.path] !== undefined) return values[e.path];
         if (defs && Object.prototype.hasOwnProperty.call(defs, e.path)) return defs[e.path];
-        return e.type === 'list' ? [] : (e.type === 'bool' ? false : '');
+        return isList(e) ? [] : (e.type === 'bool' ? false : '');
       },
     }, over || {});
     return `<div class="st-rows">${entries.map(e => fieldHtml(e, opt)).join('')}</div>`;
@@ -535,11 +562,11 @@
       if (dflt && hasDefault(e)) {
         const d = defaults()[e.path];
         const v = shownValue(e);
-        if (_dirty.get(e.path) === null) dflt.innerHTML = `cleared → default <b>${esc(fmtVal(d))}</b>`;
+        if (_dirty.get(e.path) === null) dflt.innerHTML = `cleared → default <b>${esc(fmtVal(d, e))}</b>`;
         else if (JSON.stringify(v) === JSON.stringify(d)) dflt.textContent = '';
-        else dflt.innerHTML = `default <b>${esc(fmtVal(d))}</b>`;
+        else dflt.innerHTML = `default <b>${esc(fmtVal(d, e))}</b>`;
       }
-      row.querySelectorAll('.st-in, .st-ta, .sel').forEach(c => c.classList.toggle('dirty', _dirty.has(e.path)));
+      row.querySelectorAll('.st-in, .st-ta, .sel, .st-chips').forEach(c => c.classList.toggle('dirty', _dirty.has(e.path)));
     });
   }
 
@@ -563,6 +590,19 @@
   }
 
   function onClick(ev) {
+    const chip = ev.target.closest('.st-chips [data-chip]');
+    if (chip) {
+      const box = chip.closest('.st-chips');
+      const entry = _entryByPath.get(box.dataset.path);
+      if (!entry) return;
+      chip.classList.toggle('on');
+      chip.setAttribute('aria-pressed', String(chip.classList.contains('on')));
+      const on = [...box.querySelectorAll('[data-chip]')].filter(c => c.classList.contains('on')).map(c => c.dataset.chip);
+      noteChange(entry, entry.exclude ? (entry.choices || []).filter(c => !on.includes(c)) : on);
+      paintField(entry);
+      updateSaveBar();
+      return;
+    }
     const bool = ev.target.closest('.mc-toggle[data-type="bool"]');
     if (bool) {
       const entry = _entryByPath.get(bool.dataset.path);

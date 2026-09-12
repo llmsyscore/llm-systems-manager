@@ -163,4 +163,18 @@ describe('LivePause gate (#822)', () => {
       SG.paused = orig;
     }
   });
+
+  it('bypassPause keeps delivering frames while paused (#924)', () => {
+    const log = { events: [] };
+    SG.open({ url: '/api/tower/runs/r1/stream', ES: FakeES, bypassPause: true,
+              onEvent: (m) => log.events.push(m) });
+    const orig = SG.paused;
+    SG.paused = () => true;
+    try {
+      msg(last(), { event: 'delta', text: 'hi' }, 'r:1');
+      expect(log.events).toEqual([{ event: 'delta', text: 'hi' }]);
+    } finally {
+      SG.paused = orig;
+    }
+  });
 });

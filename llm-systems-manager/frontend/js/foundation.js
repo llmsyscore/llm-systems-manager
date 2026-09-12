@@ -1608,6 +1608,7 @@ function switchTab(tab) {
     if (typeof stopVllmLogRefresh === 'function') stopVllmLogRefresh();
     if (typeof rcStopStream === 'function') rcStopStream();
   }
+  document.dispatchEvent(new CustomEvent('lsm:tab', { detail: { tab } }));
 }
 
 // ── Role-aware UI (multi-user, #125) ────────────────────────────────────────
@@ -1630,6 +1631,8 @@ function applyRoleGating() {
   // logged-in (non-bypass) session.
   _sdRenderAccount();
   if (!isAdmin && _activeTab === 'admin') switchTab('overall');
+  // Re-reads Tower state so its header button matches the new role (#924).
+  if (typeof towerRefreshState === 'function') towerRefreshState();
 }
 
 async function _accountChangePassword() {

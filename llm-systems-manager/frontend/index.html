@@ -63,6 +63,7 @@ Backend API endpoints consumed:
   <link rel="stylesheet" href="/static/css/autotune.css?v=2026.09.10-4">
   <link rel="stylesheet" href="/static/css/energy.css?v=2026.08.19-2">
   <link rel="stylesheet" href="/static/css/overall.css?v=2026.08.30-1">
+  <link rel="stylesheet" href="/static/css/tower.css?v=2026.09.12-3">
 </head>
 <body>
 
@@ -101,6 +102,7 @@ Backend API endpoints consumed:
     <div class="state-pill"><span id="vllmStateIcon">●</span> <span id="vllmStateText">VLLM · —</span></div>
   </div>
   <div class="header-right">
+    <button type="button" class="hdr-tower" id="towerBtn" onclick="towerToggle()" title="Tower (Alt+T)" aria-haspopup="dialog" hidden><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 21v-9"/><path d="M8.5 12h7l-1.2-4.5h-4.6z"/><path d="M12 7.5V3.5"/><path d="M6.2 10.8A6.4 6.4 0 0 1 8 5.6"/><path d="M17.8 10.8A6.4 6.4 0 0 0 16 5.6"/><path d="M9 21h6"/></svg>Tower<span class="n" id="towerBadge" hidden></span></button>
     <button type="button" class="hdr-badge" id="intervalBadge" onclick="openSettings('refresh')" title="Refresh cadence · open settings"><span class="dot"></span><b>—</b></button>
     <button type="button" class="hdr-cog" id="settingsCog" onclick="openSettings()" title="Settings" aria-label="Settings" aria-haspopup="dialog"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 15.5a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7Z"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3h0a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8v0a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1Z"/></svg></button>
   </div>
@@ -567,7 +569,7 @@ Backend API endpoints consumed:
 <link rel="stylesheet" href="/static/css/admin.css?v=2026.09.02-7">
 <link rel="stylesheet" href="/static/css/audit.css?v=2026.09.02-4">
 <link rel="stylesheet" href="/static/css/agents.css?v=2026.09.04-1">
-<link rel="stylesheet" href="/static/css/admin-tabs.css?v=2026.09.11-6">
+<link rel="stylesheet" href="/static/css/admin-tabs.css?v=2026.09.12-2">
 <link rel="stylesheet" href="/static/css/health.css?v=2026.09.04-1">
 <div id="adminTab" style="display:none;position:fixed;top:88px;left:0;right:0;bottom:0;z-index:10;overflow:auto;background:var(--bg);color:var(--fg);padding:28px 24px;">
   <div class="adm-wrap">
@@ -2586,7 +2588,7 @@ Measurements are the newest Benchmark · Live run per host. A run older than the
 <script src="/static/js/lib/layout.js?v=2026.07.10-1"></script>
 <script src="/static/js/lib/settingsdrawer.js?v=2026.09.04-2"></script>
 <script src="/static/js/lib/modelcards.js?v=2026.09.09-3"></script>
-<script src="/static/js/foundation.js?v=2026.09.04-4"></script>
+<script src="/static/js/foundation.js?v=2026.09.12-3"></script>
 <script src="/static/js/lib/series.js?v=2026.08.04-2"></script>
 <script src="/static/js/lib/peaks.js?v=2026.08.29-2"></script>
 <script src="/static/js/lib/benchaxis.js?v=2026.09.08-1"></script>
@@ -2594,7 +2596,8 @@ Measurements are the newest Benchmark · Live run per host. A run older than the
 <script src="/static/js/lib/thresholds.js?v=2026.08.05-1"></script>
 <script src="/static/js/lib/reportcard.js?v=2026.09.08-2"></script>
 <script src="/static/js/lib/toolcards.js?v=2026.08.31-7"></script>
-<script src="/static/js/lib/sseguard.js?v=2026.09.04-1"></script>
+<script src="/static/js/lib/sseguard.js?v=2026.09.12-1"></script>
+<script src="/static/js/lib/tower-view.js?v=2026.09.12-3"></script>
 <script src="/static/js/lib/energy.js?v=2026.08.26-1"></script>
 <script src="/static/js/lib/overall-view.js?v=2026.09.01-1"></script>
 <script src="/static/js/charts.js?v=2026.09.04-12"></script>
@@ -2607,7 +2610,7 @@ Measurements are the newest Benchmark · Live run per host. A run older than the
 <script src="/static/js/admin-health.js?v=2026.09.04-2"></script>
 <script src="/static/js/admin-gateway.js?v=2026.09.04-2"></script>
 <script src="/static/js/admin-audit.js?v=2026.09.03-8"></script>
-<script src="/static/js/admin-settings.js?v=2026.09.11-6"></script>
+<script src="/static/js/admin-settings.js?v=2026.09.12-3"></script>
 <script src="/static/js/admin-access-settings.js?v=2026.09.11-5"></script>
 <script src="/static/js/autopilot.js?v=2026.09.11-2"></script>
 <script src="/static/js/llmcontrol-models.js?v=2026.09.10-2"></script>
@@ -2624,6 +2627,7 @@ Measurements are the newest Benchmark · Live run per host. A run older than the
 <script src="/static/js/energy.js?v=2026.08.19-1"></script>
 <script src="/static/js/overall.js?v=2026.08.29-2"></script>
 <script src="/static/js/dashboard-manager.js?v=2026.08.17-1"></script>
+<script src="/static/js/tower.js?v=2026.09.12-4"></script>
 
 <!-- Settings drawer — kept at body root so it's never inside a hidden tab container.
      Sections are rendered by foundation.js (renderSettingsPanel). -->
@@ -2644,6 +2648,30 @@ Measurements are the newest Benchmark · Live run per host. A run older than the
     <div class="sd-f"><span>Changes save automatically</span></div>
   </aside>
 </div>
+
+<!-- Tower drawer (#924) — body root, outside every tab container.
+     Body content is rendered by js/tower.js. -->
+<div class="tower-overlay" id="towerOverlay" onclick="if(event.target===this)towerClose()">
+  <aside class="tw" id="towerAside" role="dialog" aria-label="Tower" tabindex="-1">
+    <div class="grip" id="twGrip" title="Drag to resize"></div>
+    <div class="tw-h">
+      <svg class="beacon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 21v-9"/><path d="M8.5 12h7l-1.2-4.5h-4.6z"/><path d="M12 7.5V3.5"/><path d="M6.2 10.8A6.4 6.4 0 0 1 8 5.6"/><path d="M17.8 10.8A6.4 6.4 0 0 0 16 5.6"/><path d="M9 21h6"/></svg>
+      <h2>Tower</h2>
+      <button type="button" class="ib sp" id="twHist" title="History" aria-label="Thread history">↻</button>
+      <button type="button" class="ib" id="twNew" title="New thread" aria-label="New thread">+</button>
+      <button type="button" class="ib" id="twPin" title="Pin: keep open beside the page" aria-label="Pin the drawer beside the page" aria-pressed="false">⊼</button>
+      <button type="button" class="ib" id="twClose" title="Close (Esc)" aria-label="Close Tower" onclick="towerClose()">✕</button>
+    </div>
+    <div class="tw-sub"><span class="chip" id="twModelChip"></span><button type="button" class="chip ctx" id="twCtxChip" aria-pressed="true"></button></div>
+    <div class="tw-b" id="twBody"></div>
+    <div class="tw-c">
+      <div class="sugs" id="twSugs"></div>
+      <div class="box" id="twBox"><textarea rows="1" id="twInput" placeholder="Ask Tower…"></textarea><button type="button" class="send" id="twSend" title="Send (Enter)" aria-label="Send">→</button></div>
+      <div class="hint"><span><b>Enter</b> send</span><span><b>Shift+Enter</b> newline</span><span><b>Alt+T</b> toggle</span><span><b>Esc</b> close</span></div>
+    </div>
+  </aside>
+</div>
+<!-- /tower -->
 
 <!-- Server Config overlay — kept at body root -->
 <!-- Model Autopilot help (#907) -->
@@ -2864,6 +2892,6 @@ Measurements are the newest Benchmark · Live run per host. A run older than the
 <div id="alarmToastContainer"></div>
 
 <script src="/static/js/events-toasts.js?v=2026.09.11-1"></script>
-<script src="/static/js/boot.js?v=2026.09.09-1"></script>
+<script src="/static/js/boot.js?v=2026.09.12-2"></script>
 </body>
 </html>

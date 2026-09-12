@@ -153,6 +153,27 @@ guild_id = ""
 allowed_user_ids = []
 allow_model_control = false
 
+[manager.tower]
+# Tower assistant (#924): answers questions about your hosts, models, alerts
+# and energy using a model served through the gateway. Off by default,
+# read-only (capabilities = "read") and limited to this manager
+# (off_topic = "refuse"). Never loads a model on its own.
+enabled = false
+model = "auto"             # auto = any resident chat model, else a pinned gateway model id
+tool_mode = "auto"         # auto | native | prompt
+capabilities = "read"      # read | operate | admin
+off_topic = "refuse"       # refuse | allow
+disabled_tools = []           # tool names turned off everywhere; Settings shows them as chips
+diagnose_alarms = false
+playbooks_auto = false
+min_severity = "warning"
+max_tool_calls = 8
+max_tokens = 1024
+temperature = 0.2
+request_timeout_s = 45        # seconds to wait for the model to start answering
+fallback = false              # on timeout, ask the next loaded chat model this one question and say so
+history_days = 30
+
 [manager.model_meta]
 # Hugging Face model metadata reader (#878): author-recommended sampling from
 # generation_config.json / model cards. Token only needed for gated repos.
