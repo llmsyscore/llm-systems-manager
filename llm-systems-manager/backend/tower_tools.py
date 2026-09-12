@@ -146,8 +146,8 @@ def summary_line(tool: Tool, args: dict, result: Any, ms: int) -> str:
     if tool.summary:
         try:
             tgt = tool.summary(args, result) or tgt
-        except Exception:
-            pass
+        except Exception:  # noqa: BLE001 — a summary hook never breaks the tick line
+            log.debug("tool summary failed for %s", tool.name, exc_info=True)
     return f"{verb} {label}" + (f" · {tgt}" if tgt else "") + f" · {ms} ms"
 
 
