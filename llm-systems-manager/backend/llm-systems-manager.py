@@ -5746,7 +5746,7 @@ _tower_runs = tower.Runs(_tower_store, registry_factory=lambda: tower_tools.buil
                          cfg=lambda: settings.manager.tower, stream_max_s=_tower_stream_max_s,
                          shutting_down=lambda: _shutting_down)
 tower.register_routes(app, ctx, runs=_tower_runs, gateway_entries=_tower_gateway_entries,
-                      write_setting=lambda path, value: _tower_write_setting(path, value))  # resolved per call
+                      write_setting=_tower_write_setting)
 
 import manager_users  # type: ignore[import-not-found]  # sibling
 manager_users.init(

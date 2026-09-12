@@ -196,7 +196,8 @@ def test_stop_unknown_run_is_404(client):
 
 def test_model_pin_is_admin_only_and_writes_through_settings(client, monkeypatch):
     written = {}
-    monkeypatch.setattr(M, "_tower_write_setting", lambda path, value: written.update({path: value}))
+    monkeypatch.setattr(M.settings_toml_io, "apply_patches", lambda clean: written.update(clean))
+    monkeypatch.setattr(M, "_tower_reload_config", lambda: None)
     assert client.put("/api/tower/model", json={"model": "qwen3-14b"}).status_code == 403
     with client.session_transaction() as s:
         s["role"] = "admin"
@@ -205,9 +206,8 @@ def test_model_pin_is_admin_only_and_writes_through_settings(client, monkeypatch
 
 
 def test_model_pin_rejects_invalid_model_with_400(client, monkeypatch):
-    def _raise(path, value):
-        raise ValueError("not an editable setting")
-    monkeypatch.setattr(M, "_tower_write_setting", _raise)
+    monkeypatch.setattr(M.settings_catalog, "validate_and_coerce", lambda changes: ({}, {p: "not an editable setting" for p in changes}))
+    monkeypatch.setattr(M.settings_toml_io, "apply_patches", lambda clean: pytest.fail("must not write"))
     with client.session_transaction() as s:
         s["role"] = "admin"
     r = client.put("/api/tower/model", json={"model": "qwen3-14b"})

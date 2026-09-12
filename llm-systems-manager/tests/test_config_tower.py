@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import pytest
+import types
 
 import settings_catalog as sc
 from config.unified_config import ManagerConfig, ManagerTower
@@ -43,7 +44,8 @@ def test_hot_reload_copies_file_values(monkeypatch):
     snap = ManagerConfig()
     snap.tower.enabled = True
     snap.tower.model = "qwen3-14b"
-    monkeypatch.setattr(sc, "_snapshot", lambda: type("S", (), {"manager": snap})())
+    fake = types.SimpleNamespace(manager=snap)
+    monkeypatch.setattr(sc, "_snapshot", lambda: fake)
     M._tower_reload_config()
     assert M.settings.manager.tower.enabled is True and M.settings.manager.tower.model == "qwen3-14b"
     M.settings.manager.tower.enabled = False
