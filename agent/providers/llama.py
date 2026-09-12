@@ -2642,7 +2642,7 @@ def _bench_live_run_all(req: dict, server: dict, python: str, script: str) -> No
         doc = {"type": "model_done", "model_id": model_id, "run_id": run_id, "ok": ok and not cancelled,
                "cancelled": cancelled, "bench": req["bench"], "config": req, "levels": levels,
                "energy_wh": wh, "energy_source": src, "wh_per_ktok": wh_per_ktok,
-               "spec": server.get("spec"), "server_url": server.get("url"),
+               "spec": server.get("spec"), "server_url": server.get("url"), "llama_build": _llama_build_last or "",
                "elapsed_s": round(time.time() - started, 1), "baseline_run_id": req.get("baseline_run_id")}
         _bench_put(doc)
         if levels:

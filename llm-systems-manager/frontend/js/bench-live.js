@@ -222,10 +222,12 @@
     if (_runs.length && _runs[0].gen_tps) _lastTps = _runs[0].gen_tps;
     updateEstimate();
   }
-  async function onOpen(modelId) {
+  async function onOpen(modelId, opts) {
     if (modelId && modelId !== _model && !running()) { _fleetJob = null; _fleetSel = null; renderFleet(); syncPinBtn(); }
     if (modelId) _model = modelId;
-    setMode((typeof layout !== 'undefined' && layout && layout.benchMode) || 'live');
+    const wantFleet = !!(opts && opts.fleet);
+    setMode(wantFleet ? 'live' : ((typeof layout !== 'undefined' && layout && layout.benchMode) || 'live'));
+    if (wantFleet && !fleetOn() && !running()) toggleFleet();
     try { _pre = await fetch('/api/benchmark/live/preflight').then(r => r.json()); } catch (_) { _pre = { server: { up: false }, runtime: {} }; }
     renderPreflight();
     await loadRuns();

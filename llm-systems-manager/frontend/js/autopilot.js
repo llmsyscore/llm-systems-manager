@@ -7,10 +7,13 @@ const PROVIDERS = [
   { v: 'vllm', label: 'vLLM' },
   { v: 'lms', label: 'LM Studio' },
 ];
-const FAILOVER = [
-  { v: 'semi', label: 'semi (plan)' },
-  { v: 'auto', label: 'auto (execute)' },
+const RANK_BY = [
+  { v: 'speed', label: 'speed' },
+  { v: 'energy', label: 'energy' },
+  { v: 'capacity', label: 'capacity' },
 ];
+const FAILOVER_TIP = 'On: auto — placements, failovers and scaling execute on their own. Off: semi — the plan waits for your approval.';
+const PLACEMENT_TIP = 'On: the planner picks the host (ranked by the measured speed table, capacity-checked). Off: pin the entry to one host.';
 const NUMERIC_FIELDS = ['priority', 'min_replicas', 'max_replicas', 'size_mb'];
 
 // createElement + textContent only — never innerHTML with server data.
@@ -42,16 +45,62 @@ function _select(field, options, value, className) {
   return s;
 }
 
-function _num(field, value, min, placeholder, width) {
+// Number input with themed ▴▾ steppers (the native spinner is hidden);
+// returns the wrapper, `.input` is the data-field control.
+function _num(field, value, min, placeholder, width, stepAmt) {
   const i = document.createElement('input');
   i.type = 'number';
   i.min = String(min);
   i.className = 'st-in';
-  i.style.width = width || '64px';
   i.dataset.field = field;
   i.value = value == null ? '' : String(value);
   if (placeholder) i.placeholder = placeholder;
-  return i;
+  const wrap = el('span', 'ap-num');
+  wrap.style.width = width || '64px';
+  wrap.appendChild(i);
+  const arrows = el('span', 'arrows');
+  [['up', '▴'], ['down', '▾']].forEach(([dir, glyph]) => {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.tabIndex = -1;
+    b.className = 'ap-step ' + dir;
+    b.textContent = glyph;
+    b.setAttribute('aria-label', (dir === 'up' ? 'Increase ' : 'Decrease ') + field.replace(/_/g, ' '));
+    b.addEventListener('click', () => {
+      const step = stepAmt || 1;
+      const blank = i.value === '';
+      if (blank && dir === 'down') return;
+      const cur = blank ? 0 : (parseInt(i.value, 10) || 0);
+      i.value = String(Math.max(min, dir === 'up' ? cur + step : cur - step));
+      i.dispatchEvent(new Event('input', { bubbles: true }));
+      i.dispatchEvent(new Event('change', { bubbles: true }));
+    });
+    arrows.appendChild(b);
+  });
+  wrap.appendChild(arrows);
+  wrap.input = i;
+  return wrap;
+}
+
+// In-row mc-toggle: state in the class + aria-pressed; `value` holds the
+// field value so _entryFromRow reads it like any input.
+function _toggleBtn(field, on, label, tip, values) {
+  const b = document.createElement('button');
+  b.type = 'button';
+  b.className = 'mc-toggle ap-tgl' + (on ? ' on' : '');
+  b.setAttribute('aria-pressed', String(!!on));
+  if (field) b.dataset.field = field;
+  if (tip) b.setAttribute('data-tip', tip);
+  b.appendChild(el('span', 'track'));
+  b.appendChild(el('span', 'tlbl', label));
+  const sync = () => { b.value = values ? values[_toggleOn(b) ? 1 : 0] : String(_toggleOn(b)); };
+  sync();
+  b.addEventListener('click', () => {
+    _setToggle(b, !_toggleOn(b));
+    sync();
+    b.dispatchEvent(new Event('change', { bubbles: true }));
+  });
+  return b;
 }
 
 // mc-toggle buttons carry state in a class; a legacy checkbox still works.
@@ -120,15 +169,66 @@ function _placementOptions(provider, current) {
   return opts;
 }
 
-function _fillPlacementSelect(sel, provider, current) {
-  sel.replaceChildren();
-  _placementOptions(provider, current).forEach(o => {
-    const opt = document.createElement('option');
-    opt.value = o.v;
-    opt.textContent = o.label;
-    sel.appendChild(opt);
+// Host chips for a pinned placement: one per capable approved agent (plus
+// the current value when it is not among them); clicking one pins the entry.
+function _fillHostChips(box, hidden, provider) {
+  box.replaceChildren();
+  const current = hidden.value !== 'auto' ? hidden.value : '';
+  const opts = _placementOptions(provider, current).slice(1);
+  if (!opts.length) {
+    box.appendChild(el('span', 'ap-hosts-none', `no approved ${provider} host`));
+    return;
+  }
+  opts.forEach(o => {
+    const chip = el('span', 'bl-chip ap-host-chip' + (o.v === hidden.value ? ' on' : ''), o.label);
+    chip.dataset.agent = o.v;
+    chip.addEventListener('click', () => {
+      if (hidden.value === o.v) return;
+      hidden.value = o.v;
+      box.querySelectorAll('.ap-host-chip').forEach(c => c.classList.toggle('on', c.dataset.agent === o.v));
+      hidden.dispatchEvent(new Event('change', { bubbles: true }));
+    });
+    box.appendChild(chip);
   });
-  sel.value = current || 'auto';
+}
+
+// Placement cell: an "auto" toggle over a hidden data-field input; off
+// reveals the host chips and pins to the first capable host when none is set.
+function _placementControl(provider, current) {
+  const wrap = el('div', 'ap-place');
+  const hidden = document.createElement('input');
+  hidden.type = 'hidden';
+  hidden.dataset.field = 'placement';
+  hidden.value = current || 'auto';
+  const auto = hidden.value === 'auto';
+  const tgl = _toggleBtn(null, auto, 'auto', PLACEMENT_TIP);
+  const chips = el('div', 'bl-chips ap-hosts');
+  chips.hidden = auto;
+  const pick = el('span', 'ap-place-pick');   // filled from entry_status by _fillStatusCell
+  pick.hidden = true;
+  wrap.appendChild(tgl);
+  wrap.appendChild(hidden);
+  wrap.appendChild(chips);
+  wrap.appendChild(pick);
+  let prov = provider;
+  const refill = () => _fillHostChips(chips, hidden, prov);
+  refill();
+  tgl.addEventListener('click', () => {
+    const on = _toggleOn(tgl);
+    if (on) {
+      hidden.value = 'auto';
+    } else if (hidden.value === 'auto') {
+      const first = _placementOptions(prov, '').slice(1)[0];
+      if (!first) { _setToggle(tgl, true); return; }   // nothing to pin to
+      hidden.value = first.v;
+    }
+    chips.hidden = _toggleOn(tgl);
+    pick.hidden = !_toggleOn(tgl) || !pick.textContent;
+    refill();
+    hidden.dispatchEvent(new Event('change', { bubbles: true }));
+  });
+  wrap.setProvider = (p) => { prov = p; refill(); };
+  return wrap;
 }
 
 // One entry's table row: every control tagged data-field, plus the status
@@ -152,29 +252,34 @@ function entryRow(entry) {
   const provider = _select('provider', PROVIDERS, prov);
   row.appendChild(_cell(provider));
 
-  const placement = document.createElement('select');
-  placement.className = 'sel ap-placement';
-  placement.dataset.field = 'placement';
-  _fillPlacementSelect(placement, prov, entry.placement || 'auto');
+  const placement = _placementControl(prov, entry.placement || 'auto');
   row.appendChild(_cell(placement));
 
-  row.appendChild(_cell(_select('failover', FAILOVER, entry.failover || 'semi')));
-  row.appendChild(_cell(_num('priority', entry.priority ?? 100, 0)));
+  row.appendChild(_cell(_toggleBtn('failover', (entry.failover || 'semi') === 'auto', 'auto',
+    FAILOVER_TIP, ['semi', 'auto'])));
+  row.appendChild(_cell(_num('priority', entry.priority ?? 100, 0, '', '52px')));
 
-  const rep = document.createElement('td');
-  rep.className = 'rep';
-  rep.appendChild(_num('min_replicas', entry.min_replicas ?? 1, 1, '', '44px'));
+  const rep = el('div', 'rep');
+  rep.appendChild(_num('min_replicas', entry.min_replicas ?? 1, 1, '', '40px'));
   rep.appendChild(el('span', 'unit', '–'));
-  rep.appendChild(_num('max_replicas', entry.max_replicas ?? 1, 1, '', '44px'));
-  row.appendChild(rep);
+  rep.appendChild(_num('max_replicas', entry.max_replicas ?? 1, 1, '', '40px'));
+  row.appendChild(_cell(rep));
 
   // Optional VRAM-fit size override (#474); blank = discovered size.
   // vLLM has no discovery source, so its placeholder says "required".
-  const sizeInput = _num('size_mb', entry.size_mb, 1,
-    (prov === 'vllm') ? 'required' : 'auto', '74px');
+  const sizeNum = _num('size_mb', entry.size_mb, 1,
+    (prov === 'vllm') ? 'required' : 'auto', '66px', 256);
+  const sizeInput = sizeNum.input;
   sizeInput.title = 'Model size in MB for the VRAM/RAM-fit check. Leave blank to use ' +
     'the discovered size; required for vLLM (no discovery source).';
-  row.appendChild(_cell(sizeInput));
+  row.appendChild(_cell(sizeNum));
+
+  // Placement objective (#907); only llama entries have a measured table.
+  const rankSel = _select('rank_by', RANK_BY, entry.rank_by || 'speed');
+  rankSel.title = 'Which host auto placement tries first. speed: fastest measured decode t/s. ' +
+    'energy: lowest measured Wh per 1k tokens. capacity: ignore measurements (registry order). ' +
+    'Memory fit is always checked first.';
+  row.appendChild(_cell(rankSel));
 
   const statusCell = document.createElement('td');
   statusCell.className = 'ap-entry-status';
@@ -183,7 +288,7 @@ function entryRow(entry) {
   provider.addEventListener('change', () => {
     sizeInput.placeholder = (provider.value === 'vllm') ? 'required' : 'auto';
     _fillModelSelect(modelSel, provider.value, modelSel.value);
-    _fillPlacementSelect(placement, provider.value, placement.value);
+    placement.setProvider(provider.value);
   });
 
   const removeBtn = document.createElement('button');
@@ -301,6 +406,61 @@ function statusChip(entry, placements, status) {
   return el('span', 'pill dim ap-entry-chip', 'stable');
 }
 
+// "3m" / "5h" / "12d" for a measurement's age.
+function _ago(s) {
+  if (typeof s !== 'number' || !isFinite(s) || s < 0) return '?';
+  if (s < 3600) return `${Math.max(1, Math.round(s / 60))}m`;
+  if (s < 2 * 86400) return `${Math.round(s / 3600)}h`;
+  return `${Math.round(s / 86400)}d`;
+}
+
+// One tooltip line per measured host: name · t/s · Wh/1k · age [· advisory].
+function _speedLines(rows) {
+  return (rows || []).map(r => {
+    const tps = typeof r.gen_tps === 'number' ? `${r.gen_tps.toFixed(1)} t/s` : '— t/s';
+    const wh = typeof r.wh_per_ktok === 'number' ? ` · ${r.wh_per_ktok.toFixed(2)} Wh/1k` : '';
+    const adv = r.tier === 'advisory' ? ' · advisory' : '';
+    return `${r.hostname || String(r.agent_id || '').slice(0, 8)} · ${tps}${wh} · ${_ago(r.age_s)} ago${adv}`;
+  });
+}
+
+// Placement-basis chip (#907): the pick's tier (measured / advisory /
+// capacity only) with the ranked table in its title; null when there is no pick.
+function basisChip(entry, status) {
+  if (!status || !status.basis) return null;
+  const rows = status.speed || [];
+  const pick = rows.find(r => r.agent_id === status.pick);
+  const host = pick ? pick.hostname : '';
+  let text, cls;
+  if (status.basis === 'measured') { text = `measured · ${host}`; cls = 'pill info'; }
+  else if (status.basis === 'advisory') { text = `advisory · ${host}`; cls = 'pill dim'; }
+  else { text = 'capacity only'; cls = 'pill dim'; }
+  const chip = el('span', cls + ' ap-basis-chip');
+  chip.appendChild(el('span', 't', text));
+  chip.tabIndex = 0;
+  const objective = (RANK_BY.find(o => o.v === (entry.rank_by || 'speed')) || RANK_BY[0]).label;
+  const lines = [`ranked by ${objective === 'capacity' ? 'capacity only' : 'measured ' + objective}`];
+  if (rows.length) lines.push(..._speedLines(rows));
+  else lines.push('no live benchmark run for this model yet');
+  chip.setAttribute('data-tip', lines.join('\n'));
+  return chip;
+}
+
+// "↗" to Benchmark · Live with the autopilot ranking on, to refresh the table.
+function benchLink(entry) {
+  if ((entry.provider || 'llama') !== 'llama' || !entry.model) return null;
+  const b = document.createElement('button');
+  b.type = 'button';
+  b.className = 'ib ap-bench-link';
+  b.textContent = '↗';
+  b.setAttribute('data-tip', 'Refresh the measured table in Benchmark · Live');
+  b.addEventListener('click', (ev) => {
+    ev.preventDefault();
+    if (typeof toolsDeepLink === 'function') toolsDeepLink('benchmark', entry.model, { fleet: true });
+  });
+  return b;
+}
+
 // ── DOM wiring (untested glue) ─────────────────────────────────────────
 
 let _lastState = null;
@@ -367,7 +527,7 @@ function _renderEntries() {
   if (!entries.length) {
     const tr = document.createElement('tr');
     const td = document.createElement('td');
-    td.colSpan = 9;
+    td.colSpan = 10;
     td.appendChild(el('div', 'empty', 'No autopilot entries — add one to declare a desired model placement.'));
     tr.appendChild(td);
     body.appendChild(tr);
@@ -375,9 +535,44 @@ function _renderEntries() {
   entries.forEach(entry => {
     const row = entryRow(entry);
     const cell = row.querySelector('.ap-entry-status');
-    if (cell) cell.appendChild(_chipFor(entry));
+    if (cell) _fillStatusCell(cell, entry);
     body.appendChild(row);
   });
+}
+
+// Hostname for an agent id: catalog first, then the status' speed rows.
+function _hostName(aid, status) {
+  const a = _catalog.agents.find(x => x && x.agent_id === aid);
+  if (a && a.hostname) return a.hostname;
+  const r = ((status && status.speed) || []).find(x => x.agent_id === aid);
+  return (r && r.hostname) || String(aid || '').slice(0, 8);
+}
+
+// Beside an "auto" placement toggle: the host the planner lands on (#907).
+function _fillPlacePick(row, entry, status) {
+  const pick = row && row.querySelector('.ap-place-pick');
+  if (!pick) return;
+  const show = (entry.placement || 'auto') === 'auto' && status && status.pick;
+  pick.textContent = show ? `→ ${_hostName(status.pick, status)}` : '';
+  pick.hidden = !show;
+  if (show) {
+    pick.setAttribute('data-tip', `${_hostName(status.pick, status)} — ` + ((status.placed || 0) > 0
+      ? 'where this entry is placed now (best-ranked copy).'
+      : 'the host the planner would try first.'));
+  }
+}
+
+function _fillStatusCell(cell, entry) {
+  cell.replaceChildren();
+  cell.appendChild(_chipFor(entry));
+  _fillPlacePick(cell.closest('tr'), entry, _lastEntryStatus[_entryKey(entry)]);
+  const basis = basisChip(entry, _lastEntryStatus[_entryKey(entry)]);
+  const link = benchLink(entry);
+  if (!basis && !link) return;
+  const row = el('div', 'ap-basis-row');
+  if (basis) row.appendChild(basis);
+  if (link) row.appendChild(link);
+  cell.appendChild(row);
 }
 
 function _renderDirtyNote() {
@@ -423,7 +618,7 @@ function _refreshStatusChips() {
   body.querySelectorAll('.ap-entry-row').forEach(row => {
     if (row.dataset.edited) return;
     const cell = row.querySelector('.ap-entry-status');
-    if (cell) cell.replaceChildren(_chipFor(_entryFromRow(row)));
+    if (cell) _fillStatusCell(cell, _entryFromRow(row));
   });
 }
 
@@ -513,6 +708,7 @@ async function save() {
     protect_unmanaged: _toggleOn(document.getElementById('apProtectToggle')),
     entries: readEntries(body),
     hosts: (_lastState && _lastState.hosts) || {},
+    speed_max_age_days: (_lastState && _lastState.speed_max_age_days) || undefined,
   };
   _setStatus('saving…');
   try {
@@ -595,6 +791,7 @@ function _wire() {
   if (plan_) plan_.addEventListener('click', planNow);
   const refresh_ = document.getElementById('apProposalsRefreshBtn');
   if (refresh_) refresh_.addEventListener('click', fetchState);
+  _wireHelp();
   // Delegated at document level so it covers rows added after wiring —
   // typing (input) and select/checkbox changes (change) both mark dirty.
   document.addEventListener('input', _onEntryEdit);
@@ -610,6 +807,32 @@ function _wire() {
         _renderDirtyNote();
       });
     }
+  });
+}
+
+// Help dialog (#907): the "How placement works" overlay under the card.
+function openHelp() {
+  const ov = document.getElementById('apHelpOverlay');
+  if (!ov) return;
+  ov.classList.add('open');
+  const x = document.getElementById('apHelpClose');
+  if (x) x.focus();
+}
+function closeHelp() {
+  const ov = document.getElementById('apHelpOverlay');
+  if (ov) ov.classList.remove('open');
+}
+// Delegated at document level so it survives any re-render of the card.
+function _wireHelp() {
+  document.addEventListener('click', (ev) => {
+    const t = ev.target;
+    if (!t || !t.closest) return;
+    if (t.closest('#apHelpBtn')) openHelp();
+    else if (t.closest('#apHelpClose') || t.id === 'apHelpOverlay') closeHelp();
+  });
+  document.addEventListener('keydown', (ev) => {
+    const ov = document.getElementById('apHelpOverlay');
+    if (ev.key === 'Escape' && ov && ov.classList.contains('open')) closeHelp();
   });
 }
 
@@ -629,7 +852,8 @@ function poll() {
   fetchState();
 }
 
-const AP = { entryRow, readEntries, proposalRow, statusChip, setCatalog, init, poll, save, planCardRelevant: _planCardRelevant,
+const AP = { entryRow, readEntries, proposalRow, statusChip, basisChip, benchLink, setCatalog, init, poll, save, planCardRelevant: _planCardRelevant,
+             openHelp, closeHelp,
              addEntry, applyProposal, dismissProposal, planNow, fetchState,
              state: () => _lastState, proposals: () => _lastProposals };
 

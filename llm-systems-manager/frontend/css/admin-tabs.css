@@ -199,7 +199,6 @@
 #admin-routing .tbl.ap td { overflow: visible; padding: 7px 10px; }
 #admin-routing .tbl.ap th { padding-left: 10px; padding-right: 10px; }
 #admin-routing .tbl.ap .sel { width: 100%; font-family: var(--font-mono); color: var(--fg); }
-#admin-routing .tbl.ap .rep { display: flex; align-items: center; gap: 4px; }
 #admin-routing .tbl.ap .unit { font-family: var(--font-mono); color: var(--fg-faint); }
 
 #admin-routing .rt-prop { display: flex; flex-direction: column; }
@@ -265,6 +264,50 @@
 }
 
 #admin-routing .ap-entry-chip { max-width: 100%; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; display: inline-block; vertical-align: middle; cursor: default; }
+#admin-routing .ap-entry-status { white-space: normal; }
+#admin-routing .ap-entry-status .ap-entry-chip { display: block; width: fit-content; max-width: 100%; }
+#admin-routing .ap-basis-row { display: flex; align-items: center; gap: 4px; margin-top: 4px; min-width: 0; }
+#admin-routing .ap-basis-chip { position: relative; display: inline-flex; flex: 0 1 auto; min-width: 0; white-space: nowrap; cursor: default; }
+#admin-routing .ap-basis-chip .t { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#admin-routing .ap-num { position: relative; display: inline-block; vertical-align: middle; }
+#admin-routing .ap-num .st-in { width: 100%; padding-right: 18px; -moz-appearance: textfield; appearance: textfield; }
+#admin-routing .ap-num .st-in::-webkit-inner-spin-button, #admin-routing .ap-num .st-in::-webkit-outer-spin-button { -webkit-appearance: none; margin: 0; }
+#admin-routing .ap-num .arrows { position: absolute; top: 3px; bottom: 3px; right: 3px; width: 14px; display: flex; flex-direction: column; }
+#admin-routing .ap-num .ap-step { flex: 1; padding: 0; border: 0; background: transparent; color: var(--fg-muted); font-size: 10px; line-height: 1; cursor: pointer; border-radius: 3px; }
+#admin-routing .ap-num .ap-step:hover { color: var(--fg); background: var(--bg-card-alt); }
+#admin-routing .ap-basis-chip[data-tip]::after, #admin-routing .ap-th-tip[data-tip]::after { top: auto; bottom: calc(100% + 6px); right: 0; left: auto; white-space: pre-line; text-align: left; width: max-content; max-width: 440px; line-height: 1.45; }
+#admin-routing .ap-th-tip { position: relative; cursor: default; }
+#admin-routing .ap-th-tip[data-tip]::after { top: calc(100% + 4px); bottom: auto; right: auto; left: 0; }
+#admin-routing .tbl.ap .rep { display: flex; align-items: center; gap: 3px; }
+#admin-routing .ap-bench-link { flex-shrink: 0; }
+#admin-routing .tbl.ap button.mc-toggle { background: none; border: 0; padding: 0; color: inherit; font: inherit; height: 26px; position: relative; }
+#admin-routing .tbl.ap .mc-toggle .track { width: 30px; height: 17px; }
+#admin-routing .tbl.ap .mc-toggle .track::after { width: 11px; height: 11px; }
+#admin-routing .tbl.ap .mc-toggle.on .track::after { left: 15px; }
+#admin-routing .tbl.ap .mc-toggle[data-tip]::after { top: auto; bottom: calc(100% + 6px); right: auto; left: 0; white-space: normal; width: max-content; max-width: 360px; }
+#admin-routing .ap-place { display: flex; flex-wrap: wrap; align-items: center; gap: 5px 8px; }
+#admin-routing .ap-place-pick { position: relative; flex: 1 1 40px; min-width: 0; font-family: var(--font-mono); font-size: 11px; color: var(--fg-dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+#admin-routing .ap-place-pick[data-tip]::after { top: auto; bottom: calc(100% + 6px); right: auto; left: 0; white-space: normal; width: max-content; max-width: 320px; }
+#admin-routing .ap-hosts { gap: 4px; }
+#admin-routing .ap-host-chip { font-family: var(--font-mono); font-size: 11px; padding: 1px 8px; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#admin-routing .tbl.ap .st-in { padding: 0 6px; }
+#admin-routing .ap-hosts-none { font-size: 11px; color: var(--fg-faint); }
+#admin-routing .ap-help-link { background: none; border: 0; padding: 0; margin-left: auto; font-family: var(--font-sans); font-size: 12px; color: var(--accent); cursor: pointer; white-space: nowrap; }
+#admin-routing .ap-help-link:hover { text-decoration: underline; }
+#admin-routing .ap-help-link:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 4px; }
+.ap-help { width: 760px; font-family: var(--font-sans); }
+.ap-help .svcconfig-subtitle { font-family: var(--font-sans); font-size: 12px; color: var(--fg-muted); line-height: 1.5; max-width: 540px; word-break: normal; overflow-wrap: normal; }
+.ap-help-body { display: grid; gap: 18px; max-height: 78vh; overflow-y: auto; padding-right: 8px; scrollbar-width: thin; }
+.ap-help-body h3 { font-size: 10px; font-weight: 600; letter-spacing: .12em; text-transform: uppercase; color: var(--fg-dim); margin: 0 0 8px; }
+.ap-help-body p, .ap-help-body dd, .ap-help-body li { font-size: 12.5px; line-height: 1.55; color: var(--fg); margin: 0; }
+.ap-help-body p { margin-bottom: 8px; color: var(--fg-muted); }
+.ap-help-body dl { display: grid; grid-template-columns: max-content 1fr; gap: 6px 16px; margin: 0; align-items: baseline; }
+.ap-help-body dt { font-family: var(--font-mono); font-size: 12px; color: var(--fg-muted); white-space: nowrap; }
+.ap-help-body dt .on, .ap-help-body dt .off { font-size: 10px; font-weight: 600; letter-spacing: .08em; text-transform: uppercase; padding: 1px 6px; border-radius: 999px; margin-left: 4px; }
+.ap-help-body dt .on { color: var(--accent); background: color-mix(in srgb, var(--accent) 14%, transparent); }
+.ap-help-body dt .off { color: var(--fg-dim); background: var(--bg-card-alt); }
+.ap-help-body ul { margin: 0; padding-left: 18px; display: grid; gap: 5px; }
+.ap-help-body b { font-weight: 600; color: var(--fg); }
 #admin-routing .rt-svg .rt-node.dim rect { stroke: var(--border); }
 #admin-routing .rt-svg .rt-node.dim .nm, #admin-routing .rt-svg .rt-node.dim .sb { fill: var(--fg-dim); }
 #admin-routing .rt-svg .rt-node.dim circle { fill: color-mix(in srgb, var(--ok) 45%, var(--fg-faint)); }

@@ -27,6 +27,10 @@ E = {"model": "m1", "provider": "llama", "placement": "auto",
      "failover": "semi", "priority": 100, "min_replicas": 1,
      "max_replicas": 1}
 
+def _core(st):
+    """placed/want/blocked only — drops the #907 basis/pick/speed keys."""
+    return {k: v for k, v in st.items() if k in ("placed", "want", "blocked")}
+
 def _obs(agents, sizes=None, gpu_layers=None):
     return {"agents": agents, "model_sizes_mb": sizes or {"llama:m1": 8000},
             "model_gpu_layers": gpu_layers or {}}
@@ -196,12 +200,12 @@ def test_wake_not_emitted_for_non_llama_entry_on_sleeping_host():
 def test_entry_status_satisfied():
     obs = _obs(_agents(**{A1: {"loaded": {"llama": ["m1"]}}}))
     st = pl.entry_status(_desired([E]), obs)
-    assert st == {"m1/llama": {"placed": 1, "want": 1, "blocked": None}}
+    assert _core(st["m1/llama"]) == {"placed": 1, "want": 1, "blocked": None}
 
 def test_entry_status_no_live_agent():
     obs = _obs(_agents(**{A1: {"live": False}, A2: {"live": False}}))
     st = pl.entry_status(_desired([E]), obs)
-    assert st["m1/llama"] == {"placed": 0, "want": 1,
+    assert _core(st["m1/llama"]) == {"placed": 0, "want": 1,
                               "blocked": "no live agent supports this provider"}
 
 def test_entry_status_pin_lacking_capability():
@@ -209,7 +213,7 @@ def test_entry_status_pin_lacking_capability():
     e = {**E, "placement": A2}
     obs = _obs(_agents(**{A2: {"provider_caps": ["vllm"], "vram_free_mb": 20000}}))
     st = pl.entry_status(_desired([e]), obs)
-    assert st["m1/llama"] == {"placed": 0, "want": 1,
+    assert _core(st["m1/llama"]) == {"placed": 0, "want": 1,
                               "blocked": "no live agent supports this provider"}
 
 def test_entry_status_model_size_unknown():
@@ -217,7 +221,7 @@ def test_entry_status_model_size_unknown():
     # non-empty dict that simply omits this entry's key.
     obs = _obs(_agents(), sizes={"llama:other": 9000})
     st = pl.entry_status(_desired([E]), obs)
-    assert st["m1/llama"] == {"placed": 0, "want": 1,
+    assert _core(st["m1/llama"]) == {"placed": 0, "want": 1,
                               "blocked": "model size unknown (set entry size MB)"}
 
 def test_entry_status_insufficient_vram():
@@ -233,7 +237,7 @@ def test_entry_status_pending_not_blocked():
     # fits somewhere but hasn't been placed yet (e.g. cooldown) -> not "blocked"
     obs = _obs(_agents())
     st = pl.entry_status(_desired([E]), obs)
-    assert st["m1/llama"] == {"placed": 0, "want": 1, "blocked": None}
+    assert _core(st["m1/llama"]) == {"placed": 0, "want": 1, "blocked": None}
 
 def test_entry_status_already_placed_agent_not_its_own_candidate():
     # want=2: A1 already hosts m1 (ample free VRAM there is irrelevant — it
@@ -258,7 +262,7 @@ def test_entry_status_matches_plan_intra_pass_vram_budget():
                 "loaded": {"lms": []}}}
     obs = {"agents": one, "model_sizes_mb": sizes}
     st = pl.entry_status(_desired([lo, hi]), obs)
-    assert st["hi/lms"] == {"placed": 0, "want": 1, "blocked": None}
+    assert _core(st["hi/lms"]) == {"placed": 0, "want": 1, "blocked": None}
     row = st["lo/lms"]
     assert (row["placed"], row["want"]) == (0, 1)
     # Best reflects the intra-pass budget: 9200 - 8000 already committed.
@@ -340,7 +344,7 @@ def test_entry_status_ram_fit_not_blocked():
                           A2: {"vram_free_mb": 0, "ram_free_mb": 0}}),
               gpu_layers={"llama:m1": 0})
     st = pl.entry_status(_desired([E]), obs)
-    assert st["m1/llama"] == {"placed": 0, "want": 1, "blocked": None}
+    assert _core(st["m1/llama"]) == {"placed": 0, "want": 1, "blocked": None}
 
 
 # --- #479 follow-up: per-candidate budget + numeric blocked message ---
@@ -483,7 +487,7 @@ def test_entry_status_counts_in_flight_placements():
     led["placed_at"] = {"m1/llama": {A1: 990.0}}
     obs = _obs(_agents())
     st = pl.entry_status(_desired([E]), obs, led, 1000.0)
-    assert st["m1/llama"] == {"placed": 1, "want": 1, "blocked": None}
+    assert _core(st["m1/llama"]) == {"placed": 1, "want": 1, "blocked": None}
 
 def test_in_flight_placement_reserves_single_resident_host():
     # m2 must not target A1 while m1's load is still in flight there.
@@ -694,7 +698,7 @@ def test_unmanaged_resident_vram_is_credited_for_displacement():
     acts = pl.plan(_desired([E]), obs, _ledger(), now=100000.0)
     assert [(a.kind, a.agent_id) for a in acts] == [("load", A1)]
     assert acts[0].reason.endswith("(displacing other)")
-    assert pl.entry_status(_desired([E]), obs)["m1/llama"] == {
+    assert _core(pl.entry_status(_desired([E]), obs)["m1/llama"]) == {
         "placed": 0, "want": 1, "blocked": None}
 
 def test_unmanaged_resident_of_unknown_size_credits_used_vram():

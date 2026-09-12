@@ -33,6 +33,9 @@ def init_table(conn) -> None:
             result_json   TEXT NOT NULL
         )""")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_bench_live_model ON bench_live_runs(model_id, agent_id, id)")
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(bench_live_runs)").fetchall()}
+    if "llama_build" not in cols:
+        conn.execute("ALTER TABLE bench_live_runs ADD COLUMN llama_build TEXT NOT NULL DEFAULT ''")
     conn.commit()
 
 
@@ -47,10 +50,11 @@ def _row(r) -> dict:
     return {"id": r[0], "run_id": r[1], "model_id": r[2], "agent_id": r[3], "ts": r[4],
             "ok": bool(r[5]), "baseline": bool(r[6]), "gen_tps": r[7], "ppt_tps": r[8],
             "latency_s": r[9], "accept_rate": r[10], "wh_per_ktok": r[11],
-            "config": json.loads(r[12] or "{}")}
+            "config": json.loads(r[12] or "{}"), "llama_build": r[13] or ""}
 
 
-_COLS = "id, run_id, model_id, agent_id, ts, ok, baseline, gen_tps, ppt_tps, latency_s, accept_rate, wh_per_ktok, config_json"
+_COLS = ("id, run_id, model_id, agent_id, ts, ok, baseline, gen_tps, ppt_tps, latency_s, accept_rate, wh_per_ktok, "
+         "config_json, llama_build")
 
 
 def read_run(conn, run_id: str) -> "Optional[tuple[dict, dict]]":
@@ -59,7 +63,7 @@ def read_run(conn, run_id: str) -> "Optional[tuple[dict, dict]]":
     if not r:
         return None
     try:
-        doc = json.loads(r[13])
+        doc = json.loads(r[14])
     except ValueError:
         doc = {}
     return _row(r), doc
@@ -76,6 +80,20 @@ def latest_per_agent(conn, model_id: str) -> list[dict]:
     out = list(seen.values())
     out.sort(key=lambda r: -(r.get("gen_tps") or 0))
     return out
+
+
+def speed_table(db_path: str, model_id: str) -> list[dict]:
+    """latest_per_agent over a short-lived connection; [] when the table is missing."""
+    try:
+        conn = sqlite3.connect(db_path, timeout=5.0)
+    except sqlite3.Error:
+        return []
+    try:
+        return latest_per_agent(conn, model_id)
+    except sqlite3.Error:
+        return []
+    finally:
+        conn.close()
 
 
 def hosts_for(rows: list, model_id: str) -> list[dict]:
@@ -110,7 +128,8 @@ def _fill_from_run(host: dict, meta: dict, doc: dict, job: Optional[dict] = None
 def register_routes(app, ctx, *, db_path: str, proxy: Callable, agent_by_token: Callable,
                     request_agent: Callable, note_tool_start: Callable,
                     fleet_hosts: Optional[Callable] = None, run_on_agent: Optional[Callable] = None,
-                    cancel_on_agent: Optional[Callable] = None) -> None:
+                    cancel_on_agent: Optional[Callable] = None,
+                    llama_build_of: Optional[Callable[[str], str]] = None) -> None:
     from flask import jsonify, request as flask_request
 
     tls = threading.local()
@@ -264,7 +283,8 @@ def register_routes(app, ctx, *, db_path: str, proxy: Callable, agent_by_token: 
         return jsonify({"ok": True, "model_id": model_id, "hosts": [
             {"agent_id": r["agent_id"], "hostname": names.get(r["agent_id"]) or r["agent_id"][:8], "run_id": r["run_id"],
              "ts": r["ts"], "bench": (r.get("config") or {}).get("bench"), "gen_tps": r["gen_tps"], "ppt_tps": r["ppt_tps"],
-             "latency_s": r["latency_s"], "accept_rate": r["accept_rate"], "wh_per_ktok": r["wh_per_ktok"]} for r in rows]})
+             "latency_s": r["latency_s"], "accept_rate": r["accept_rate"], "wh_per_ktok": r["wh_per_ktok"],
+             "llama_build": r.get("llama_build") or ""} for r in rows]})
 
     @app.route("/api/benchmark/live/preflight")
     def bench_live_preflight():
@@ -303,15 +323,23 @@ def register_routes(app, ctx, *, db_path: str, proxy: Callable, agent_by_token: 
         first = (levels[0].get("all") if isinstance(levels[0], dict) else None) or {}
         agent_id = agent.get("agent_id") or ""
         ts = datetime.now(timezone.utc).isoformat()
+        # Old agents omit llama_build; the manager's last llama sample fills it.
+        build = str(doc.get("llama_build") or "").strip()[:64]
+        if not build and llama_build_of:
+            try:
+                build = str(llama_build_of(agent_id) or "")[:64]
+            except Exception:
+                build = ""
         with lock:
             conn = conn_factory()
             cur = conn.execute(
                 "INSERT OR IGNORE INTO bench_live_runs (run_id, model_id, agent_id, ts, ok, baseline, gen_tps, ppt_tps,"
-                " latency_s, accept_rate, wh_per_ktok, config_json, result_json) VALUES (?,?,?,?,?,0,?,?,?,?,?,?,?)",
+                " latency_s, accept_rate, wh_per_ktok, config_json, result_json, llama_build)"
+                " VALUES (?,?,?,?,?,0,?,?,?,?,?,?,?,?)",
                 (run_id, model_id, agent_id, ts, 1 if doc.get("ok", True) else 0,
                  _finite(first.get("pred_tps")), _finite(first.get("prompt_tps")), _finite(first.get("latency_s")),
                  _finite(first.get("accept_rate")), _finite(doc.get("wh_per_ktok")),
-                 json.dumps(doc.get("config") or {}), json.dumps(doc)))
+                 json.dumps(doc.get("config") or {}), json.dumps(doc), build))
             conn.execute(
                 "DELETE FROM bench_live_runs WHERE model_id = ? AND agent_id = ? AND baseline = 0 AND id NOT IN "
                 "(SELECT id FROM bench_live_runs WHERE model_id = ? AND agent_id = ? ORDER BY id DESC LIMIT ?)",

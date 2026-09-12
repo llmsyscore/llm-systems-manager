@@ -57,5 +57,6 @@ def test_get_reports_entry_status_for_unplaceable_entry(client):
         {"model": "m1", "provider": "llama", "min_replicas": 1}], "hosts": {}})
     assert r.status_code == 200
     j = client.get("/api/autopilot").get_json()
-    assert j["entry_status"] == {"m1/llama": {"placed": 0, "want": 1,
+    core = {k: v for k, v in j["entry_status"]["m1/llama"].items() if k in ("placed", "want", "blocked")}
+    assert {"m1/llama": core} == {"m1/llama": {"placed": 0, "want": 1,
                                               "blocked": "no live agent supports this provider"}}
