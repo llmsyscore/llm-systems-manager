@@ -108,7 +108,7 @@ def _patch_registry(monkeypatch):
 def test_get_state_default_when_no_autopilot_key(monkeypatch):
     _patch_registry(monkeypatch)
     assert ap.get_state() == {"enabled": False, "protect_unmanaged": False,
-                              "entries": [], "hosts": {}}
+                              "entries": [], "hosts": {}, "speed_max_age_days": 30}
 
 
 def test_get_state_default_mutation_does_not_leak(monkeypatch):
@@ -118,7 +118,7 @@ def test_get_state_default_mutation_does_not_leak(monkeypatch):
     first["hosts"]["x"] = {"sleep_after_idle_min": 5}
     second = ap.get_state()
     assert second == {"enabled": False, "protect_unmanaged": False,
-                      "entries": [], "hosts": {}}
+                      "entries": [], "hosts": {}, "speed_max_age_days": 30}
 
 
 def test_set_state_get_state_roundtrip(monkeypatch):

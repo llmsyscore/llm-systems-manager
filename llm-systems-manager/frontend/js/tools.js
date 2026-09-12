@@ -517,7 +517,7 @@
     if (id === 'reportcard') {
       if (!run.rc && typeof initReportCard === 'function') initReportCard(modelId || undefined);
     } else if (id === 'benchmark') {
-      if (window.BL) BL.onOpen(modelId || undefined);
+      if (window.BL) BL.onOpen(modelId || undefined, opts);
       if (!run.bench && typeof openBench === 'function') openBench(modelId || undefined);
       else if (typeof _benchChart !== 'undefined' && _benchChart) {
         try { _benchChart.resize(); } catch (_) {}

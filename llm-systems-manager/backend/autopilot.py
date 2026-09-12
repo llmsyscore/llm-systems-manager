@@ -22,13 +22,14 @@ import providers        # type: ignore[import-not-found]  # sibling
 log = logging.getLogger("llm-systems-manager.autopilot")
 
 _PROVIDERS = ("llama", "vllm", "lms")
+_RANK_BY = ("speed", "energy", "capacity")
 _AUTOSCALE_DEFAULTS = {"target_saturation": 0.75, "up_window_s": 120,
                        "down_window_s": 900}
 
 
 def _default_state() -> dict:
     return {"enabled": False, "protect_unmanaged": False, "entries": [],
-            "hosts": {}}
+            "hosts": {}, "speed_max_age_days": pl.SPEED_MAX_AGE_DAYS}
 
 
 def _coerce_int(val, field: str) -> int:
@@ -51,6 +52,11 @@ def validate_state(raw: dict) -> dict:
     out = {"enabled": bool(raw.get("enabled")),
            "protect_unmanaged": bool(raw.get("protect_unmanaged")),
            "entries": [], "hosts": {}}
+    age = raw.get("speed_max_age_days")
+    age = pl.SPEED_MAX_AGE_DAYS if age in (None, "") else _coerce_int(age, "speed_max_age_days")
+    if age < 1:
+        raise ValueError(f"speed_max_age_days must be >= 1, got {age}")
+    out["speed_max_age_days"] = age
     seen = set()
     entries = raw.get("entries") or []
     if not isinstance(entries, list):
@@ -74,11 +80,14 @@ def validate_state(raw: dict) -> dict:
         mx = _coerce_int(e.get("max_replicas", mn), "max_replicas")
         if mn < 1 or mx < mn:
             raise ValueError(f"bad replica range {mn}..{mx}")
+        rb = e.get("rank_by") or "speed"
+        if rb not in _RANK_BY:
+            raise ValueError(f"bad rank_by {rb!r}")
         ne = {"model": model, "provider": prov,
               "placement": _validate_placement(e.get("placement", "auto")),
               "failover": fo,
               "priority": _coerce_int(e.get("priority", 100), "priority"),
-              "min_replicas": mn, "max_replicas": mx}
+              "min_replicas": mn, "max_replicas": mx, "rank_by": rb}
         sv = e.get("size_mb")
         if sv not in (None, ""):
             mb = _coerce_int(sv, "size_mb")
@@ -209,6 +218,7 @@ def build_observed(deps: dict) -> dict:
         detail: "dict[str, str]" = {}
         saturation: "dict[str, float | None]" = {}
         server_state = None
+        llama_build = ""
         gpu: dict = {}
         ram: dict = {}
         for prov in provider_caps:
@@ -221,6 +231,7 @@ def build_observed(deps: dict) -> dict:
                 st = (sample.get("llama") or {}).get("state")
                 if st in ("awake", "sleeping"):
                     server_state = st
+                llama_build = str((sample.get("llama") or {}).get("build") or "")[:64]
             if not gpu:
                 gpu = _sample_gpu(sample)
             if not ram:
@@ -244,6 +255,7 @@ def build_observed(deps: dict) -> dict:
             "answered": answered,
             "sample_detail": detail,
             "server_state": server_state,
+            "llama_build": llama_build,
             "saturation": saturation,
         }
     # Entry-declared size_mb overrides win over discovered sizes (#474).
@@ -255,7 +267,47 @@ def build_observed(deps: dict) -> dict:
                   for p, sp in providers.PROVIDERS.items() if sp.pin_dict_key}
     return {"agents": out, "model_sizes_mb": sizes,
             "model_gpu_layers": deps["model_gpu_layers"]() or {},
-            "route_pins": route_pins}
+            "route_pins": route_pins,
+            "speed": _speed_tables(deps.get("speed"), glob, agents_map)}
+
+
+def _iso_epoch(ts) -> "float | None":
+    if isinstance(ts, (int, float)):
+        return float(ts)
+    try:
+        return datetime.fromisoformat(str(ts).replace("Z", "+00:00")).timestamp()
+    except (TypeError, ValueError):
+        return None
+
+
+def _speed_tables(speed_dep, glob: dict, agents_map: dict) -> dict:
+    """"llama:<model>" -> per-agent newest live-bench run (#907), for every
+    managed llama entry; rows for agents not in the registry are dropped."""
+    out: "dict[str, dict]" = {}
+    if not speed_dep:
+        return out
+    for e in ((glob.get("autopilot") or {}).get("entries") or []):
+        if e.get("provider") != "llama" or not e.get("model"):
+            continue
+        key = f"llama:{e['model']}"
+        if key in out:
+            continue
+        per: "dict[str, dict]" = {}
+        try:
+            rows = speed_dep(e["model"]) or []
+        except Exception as exc:
+            log.debug("speed table %s: %s", e["model"], exc)
+            rows = []
+        for r in rows:
+            aid = r.get("agent_id")
+            if aid not in agents_map:
+                continue
+            per[aid] = {"gen_tps": r.get("gen_tps"), "latency_s": r.get("latency_s"),
+                        "wh_per_ktok": r.get("wh_per_ktok"), "ts": _iso_epoch(r.get("ts")),
+                        "llama_build": str(r.get("llama_build") or ""), "run_id": r.get("run_id"),
+                        "hostname": agents_map[aid].get("hostname") or str(aid)[:8]}
+        out[key] = per
+    return out
 
 
 _SIZES_CACHE_TTL_S = 600.0
@@ -434,9 +486,14 @@ def _prod_saturation(provider: str, agent_id: str) -> dict:
     return {"value": None}  # lms has no comparable saturation signal today
 
 
+# Manager-installed: model_id -> live-bench rows (bench_live.speed_table).
+speed_source = None
+
+
 def _prod_deps() -> dict:
     import provider_state  # type: ignore[import-not-found]  # sibling
     return {
+        "speed": speed_source,
         "agents": agent_registry.load_agents,
         "liveness": agent_registry.agent_liveness,
         "provider_snapshot": provider_state.STORE.get,

@@ -1,6 +1,8 @@
 """#879: live-bench history store, baselines, prune, proxies, agent-token gate."""
 from __future__ import annotations
 
+import sqlite3
+
 import pytest
 
 import bench_live as bl
@@ -98,3 +100,26 @@ def test_read_run_returns_meta_and_doc(app, tmp_path):
     meta, doc = bl.read_run(conn, "rr1")
     assert meta["run_id"] == "rr1" and meta["agent_id"] == AGENT["agent_id"] and doc["levels"]
     assert bl.read_run(conn, "missing") is None
+
+
+def test_store_records_llama_build_from_doc_or_manager_fallback(tmp_path):
+    """#907: the run's llama.cpp build is stored from the doc, else from the manager's last sample."""
+    from flask import Flask
+    app = Flask(__name__)
+    bl.register_routes(app, None, db_path=str(tmp_path / "b.db"), proxy=lambda *a, **k: {"ok": True},
+                       agent_by_token=lambda t: AGENT if t == "tok" else None,
+                       request_agent=lambda p: AGENT, note_tool_start=lambda p, t: None,
+                       llama_build_of=lambda aid: "b7000-mgr")
+    c = app.test_client()
+    h = {"Authorization": "Bearer tok"}
+    assert c.post("/api/benchmark/live/store", json={**_doc("r1"), "llama_build": "b6990-agent"}, headers=h).status_code == 200
+    assert c.post("/api/benchmark/live/store", json=_doc("r2"), headers=h).status_code == 200
+    rows = bl.speed_table(str(tmp_path / "b.db"), "org/m:Q4")
+    assert rows[0]["llama_build"] == "b7000-mgr"          # newest run (r2) used the fallback
+    runs = {r["run_id"]: r["llama_build"] for r in bl.latest_per_agent(sqlite3.connect(tmp_path / "b.db"), "org/m:Q4")}
+    assert runs == {"r2": "b7000-mgr"}
+    sp = c.get("/api/benchmark/live/speed?model_id=org/m:Q4").get_json()
+    assert sp["hosts"][0]["llama_build"] == "b7000-mgr"
+    stored = sqlite3.connect(tmp_path / "b.db").execute(
+        "SELECT run_id, llama_build FROM bench_live_runs ORDER BY id").fetchall()
+    assert stored == [("r1", "b6990-agent"), ("r2", "b7000-mgr")]

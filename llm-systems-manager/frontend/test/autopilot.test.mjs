@@ -16,12 +16,11 @@ describe("entry editor round-trip", () => {
     expect(out[0].model).toBe("m1");
     expect(out[1].max_replicas).toBe(3);
   });
-  it("the vLLM manual-apply rule is stated in the card footer, not per row", () => {
-    // The per-row badge became the card footer note in the #797 table layout.
+  it("the vLLM manual-apply rule is stated in the help dialog, not per row", () => {
+    // Per-row badge (#472) → card footer note (#797) → help dialog (#907).
     const indexSrc = srcFile("index.html");
-    const card = indexSrc.slice(indexSrc.indexOf('id="apEntriesCard"'),
-                                indexSrc.indexOf('id="apProposalsCard"'));
-    expect(card).toContain("vLLM entries never auto-execute");
+    const help = indexSrc.slice(indexSrc.indexOf('id="apHelpOverlay"'), indexSrc.indexOf('id="svcConfigOverlay"'));
+    expect(help).toContain("never auto-execute");
   });
   it("size_mb round-trips as an int (#474)", () => {
     const box = document.createElement("div");
@@ -92,41 +91,70 @@ describe("model/placement datalists (#472)", () => {
     expect(modelSel.selectedOptions[0].textContent).toContain("not discovered");
   });
 
-  it("placement is a select showing auto + capable agents by hostname", () => {
+  const chipsOf = (row) => [...row.querySelectorAll(".ap-host-chip")].map(c => [c.dataset.agent, c.textContent, c.classList.contains("on")]);
+
+  it("placement is an auto toggle; off reveals capable-host chips by hostname (#907)", () => {
     AP.setCatalog(catalog);
     const row = AP.entryRow({...E, provider: "llama"});
-    const sel = row.querySelector("[data-field=placement]");
-    expect(sel.tagName).toBe("SELECT");
-    const values = [...sel.querySelectorAll("option")].map(o => o.value);
-    expect(values[0]).toBe("auto");
-    expect(values).toContain("agent-llama-aaaaaaaa");
-    // Pending (unapproved) agents are never offered as a placement target.
-    expect(values).not.toContain("agent-pending-aaaaaa");
-    // Options display the hostname, not the raw agent id.
-    const opt = [...sel.querySelectorAll("option")].find(o => o.value === "agent-llama-aaaaaaaa");
-    expect(opt.textContent).toBe("hostA");
-    expect(sel.value).toBe("auto");
+    const hidden = row.querySelector("[data-field=placement]");
+    const tgl = row.querySelector(".ap-place .mc-toggle");
+    const hosts = row.querySelector(".ap-hosts");
+    expect(hidden.value).toBe("auto");
+    expect(tgl.classList.contains("on")).toBe(true);
+    expect(hosts.hidden).toBe(true);
+    tgl.click();
+    expect(hosts.hidden).toBe(false);
+    // Off pins to the first capable host; pending (unapproved) agents are never offered.
+    expect(hidden.value).toBe("agent-llama-aaaaaaaa");
+    expect(chipsOf(row)).toEqual([["agent-llama-aaaaaaaa", "hostA", true]]);
+    tgl.click();
+    expect(hidden.value).toBe("auto");
+    expect(hosts.hidden).toBe(true);
   });
 
-  it("an unknown current placement stays selectable and labeled", () => {
+  it("auto cannot be turned off when the provider has no capable host", () => {
+    AP.setCatalog({models: {}, agents: []});
+    const row = AP.entryRow({...E, provider: "llama"});
+    const tgl = row.querySelector(".ap-place .mc-toggle");
+    tgl.click();
+    expect(tgl.classList.contains("on")).toBe(true);
+    expect(row.querySelector("[data-field=placement]").value).toBe("auto");
+    expect(row.querySelector(".ap-hosts").hidden).toBe(true);
+  });
+
+  it("clicking a host chip pins the entry and round-trips (#907)", () => {
+    AP.setCatalog({...catalog, agents: [...catalog.agents,
+      {agent_id: "agent-llama-bbbbbbbb", hostname: "hostD", status: "approved", capabilities: {llama: true}}]});
+    const box = document.createElement("div");
+    const row = AP.entryRow({...E, placement: "agent-llama-aaaaaaaa"});
+    box.appendChild(row);
+    expect(row.querySelector(".ap-place .mc-toggle").classList.contains("on")).toBe(false);
+    const chip = [...row.querySelectorAll(".ap-host-chip")].find(c => c.dataset.agent === "agent-llama-bbbbbbbb");
+    chip.click();
+    expect(chipsOf(row).filter(c => c[2]).map(c => c[0])).toEqual(["agent-llama-bbbbbbbb"]);
+    expect(AP.readEntries(box)[0].placement).toBe("agent-llama-bbbbbbbb");
+  });
+
+  it("an unknown current placement stays pinned and labeled", () => {
     AP.setCatalog(catalog);
     const row = AP.entryRow({...E, placement: "gone-agent-aaaaaaaaa"});
-    const sel = row.querySelector("[data-field=placement]");
-    expect(sel.value).toBe("gone-agent-aaaaaaaaa");
-    expect(sel.selectedOptions[0].textContent).toContain("unknown agent");
+    expect(row.querySelector("[data-field=placement]").value).toBe("gone-agent-aaaaaaaaa");
+    const on = chipsOf(row).find(c => c[2]);
+    expect(on[0]).toBe("gone-agent-aaaaaaaaa");
+    expect(on[1]).toContain("unknown agent");
   });
 
-  it("changing provider rebuilds the placement select for the new capability", () => {
+  it("changing provider rebuilds the host chips for the new capability", () => {
     AP.setCatalog(catalog);
-    const row = AP.entryRow({...E, provider: "llama"});
+    const row = AP.entryRow({...E, provider: "llama", placement: "agent-llama-aaaaaaaa"});
     const providerSel = row.querySelector("[data-field=provider]");
-    const sel = row.querySelector("[data-field=placement]");
     providerSel.value = "vllm";
     providerSel.dispatchEvent(new Event("change", {bubbles: true}));
-    const values = [...sel.querySelectorAll("option")].map(o => o.value);
-    expect(values).toContain("agent-vllm-aaaaaaaaa");
-    expect(values).not.toContain("agent-llama-aaaaaaaa");
-    expect(sel.value).toBe("auto");
+    const ids = chipsOf(row).map(c => c[0]);
+    expect(ids).toContain("agent-vllm-aaaaaaaaa");
+    // The current pin survives the provider switch, labeled as not capable.
+    expect(chipsOf(row).find(c => c[0] === "agent-llama-aaaaaaaa")[1]).toContain("not vllm-capable");
+    expect(row.querySelector("[data-field=placement]").value).toBe("agent-llama-aaaaaaaa");
   });
 
   it("round-trip is unaffected by the datalist wiring", () => {
@@ -183,10 +211,83 @@ describe("plan now surfaces the tick result (#472)", () => {
     expect(document.getElementById("apSaveStatus").textContent)
       .toBe("plan: 2 action(s), 1 waiting for approval");
   });
-  it("failover dropdown labels semi as plan, not propose (#909)", () => {
+  it("failover is an auto/semi toggle that round-trips (#907)", () => {
+    const box = document.createElement("div");
     const row = AP.entryRow(E);
-    const labels = [...row.querySelector('select[data-field="failover"]').options].map(o => o.text);
-    expect(labels).toEqual(["semi (plan)", "auto (execute)"]);
+    box.appendChild(row);
+    const tgl = row.querySelector('[data-field="failover"]');
+    expect(tgl.tagName).toBe("BUTTON");
+    expect(tgl.classList.contains("on")).toBe(false);
+    expect(AP.readEntries(box)[0].failover).toBe("semi");
+    tgl.click();
+    expect(tgl.getAttribute("aria-pressed")).toBe("true");
+    expect(AP.readEntries(box)[0].failover).toBe("auto");
+    expect(AP.entryRow({...E, failover: "auto"}).querySelector('[data-field="failover"]').classList.contains("on")).toBe(true);
+  });
+});
+
+describe("rank by + placement basis (#907)", () => {
+  it("rank_by defaults to speed and round-trips", () => {
+    const box = document.createElement("div");
+    box.appendChild(AP.entryRow(E));
+    box.appendChild(AP.entryRow({...E, model: "m2", rank_by: "energy"}));
+    const out = AP.readEntries(box);
+    expect(out[0].rank_by).toBe("speed");
+    expect(out[1].rank_by).toBe("energy");
+    const labels = [...box.querySelector('select[data-field="rank_by"]').options].map(o => o.text);
+    expect(labels).toEqual(["speed", "energy", "capacity"]);
+  });
+  const rows = [
+    {agent_id: "b".repeat(32), hostname: "hostB", gen_tps: 65.04, wh_per_ktok: 1.204, age_s: 3 * 86400, tier: "measured"},
+    {agent_id: "a".repeat(32), hostname: "hostA", gen_tps: 40, wh_per_ktok: null, age_s: 40 * 86400, tier: "advisory"},
+  ];
+  it("measured chip names the pick and lists the table in its tooltip", () => {
+    const chip = AP.basisChip(E, {basis: "measured", pick: "b".repeat(32), speed: rows});
+    expect(chip.textContent).toBe("measured · hostB");
+    expect(chip.className).toContain("info");
+    expect(chip.getAttribute("data-tip").split("\n")).toEqual([
+      "ranked by measured speed",
+      "hostB · 65.0 t/s · 1.20 Wh/1k · 3d ago",
+      "hostA · 40.0 t/s · 40d ago · advisory",
+    ]);
+  });
+  it("advisory and capacity-only chips are muted; pinned entries get none", () => {
+    expect(AP.basisChip(E, {basis: "advisory", pick: "a".repeat(32), speed: rows}).textContent).toBe("advisory · hostA");
+    const cap = AP.basisChip({...E, rank_by: "energy"}, {basis: "capacity", pick: "a".repeat(32), speed: []});
+    expect(cap.textContent).toBe("capacity only");
+    expect(cap.className).toContain("dim");
+    expect(cap.getAttribute("data-tip")).toContain("ranked by measured energy");
+    expect(cap.getAttribute("data-tip")).toContain("no live benchmark run");
+    expect(AP.basisChip(E, {basis: null, pick: "a".repeat(32), speed: rows})).toBeNull();
+    expect(AP.basisChip(E, undefined)).toBeNull();
+  });
+  it("the bench link deep-links llama entries to Benchmark · Live with the ranking on", () => {
+    globalThis.toolsDeepLink = vi.fn();
+    const link = AP.benchLink(E);
+    link.click();
+    expect(globalThis.toolsDeepLink).toHaveBeenCalledWith("benchmark", "m1", {fleet: true});
+    expect(AP.benchLink({...E, provider: "vllm"})).toBeNull();
+    delete globalThis.toolsDeepLink;
+  });
+  it("save() carries speed_max_age_days through from the loaded state", async () => {
+    document.body.innerHTML = `
+      <input type="checkbox" id="apEnabledToggle">
+      <div id="apEntriesBody"></div><div id="apProposalsBody"></div><span id="apSaveStatus"></span>`;
+    const puts = [];
+    vi.stubGlobal("fetch", vi.fn((url, opts) => {
+      if (opts && opts.method === "PUT") {
+        puts.push(JSON.parse(opts.body));
+        return Promise.resolve({ok: true, json: () => Promise.resolve({ok: true, state: puts[0]})});
+      }
+      return Promise.resolve({ok: true, json: () => Promise.resolve({
+        state: {enabled: false, entries: [E], hosts: {}, speed_max_age_days: 7},
+        proposals: [], entry_status: {}, last_plan_ts: null})});
+    }));
+    await AP.init();
+    await AP.save();
+    expect(puts).toHaveLength(1);
+    expect(puts[0].speed_max_age_days).toBe(7);
+    expect(puts[0].entries[0]).toMatchObject({model: "m1", placement: "auto", failover: "semi", rank_by: "speed"});
   });
 });
 
@@ -393,7 +494,86 @@ describe("catalog refresh in-flight + 30s cadence guard (#472)", () => {
   });
 });
 
-describe("placement select labels (#479 follow-up)", () => {
+describe("themed number steppers (#907)", () => {
+  it("▴/▾ step priority by 1 (never below min) and size by 256 MB, blank ▾ is a no-op", () => {
+    const box = document.createElement("div");
+    box.appendChild(AP.entryRow({...E, priority: 0}));
+    const row = box.querySelector(".ap-entry-row");
+    const up = (f) => row.querySelector(`.ap-num:has([data-field="${f}"]) .ap-step.up`).click();
+    const down = (f) => row.querySelector(`.ap-num:has([data-field="${f}"]) .ap-step.down`).click();
+    const changes = []; row.addEventListener("change", e => changes.push(e.target.dataset.field));
+    up("priority"); up("priority"); down("priority"); down("priority"); down("priority");
+    expect(AP.readEntries(box)[0].priority).toBe(0);
+    up("priority");
+    expect(AP.readEntries(box)[0].priority).toBe(1);
+    down("size_mb");
+    expect("size_mb" in AP.readEntries(box)[0]).toBe(false);
+    up("size_mb"); up("size_mb");
+    expect(AP.readEntries(box)[0].size_mb).toBe(512);
+    expect(changes.length).toBe(8);
+    // native spinner is replaced, so the arrows must always be in the DOM
+    expect(row.querySelectorAll(".ap-num .ap-step").length).toBe(8);
+  });
+});
+
+describe("placement pick beside the auto toggle (#907)", () => {
+  it("shows the planner's host next to an auto toggle and hides it for a pinned entry", async () => {
+    document.body.innerHTML = `
+      <input type="checkbox" id="apEnabledToggle"><table><tbody id="apEntriesBody"></tbody></table>
+      <div id="apProposalsBody"></div><span id="apSaveStatus"></span>`;
+    AP.setCatalog({models: {}, agents: [
+      {agent_id: "a".repeat(32), hostname: "hostA", status: "approved", capabilities: {llama: true}}]});
+    vi.stubGlobal("fetch", vi.fn(() => Promise.resolve({ok: true, json: () => Promise.resolve({
+      state: {enabled: false, entries: [E, {...E, model: "m2", placement: "a".repeat(32)}], hosts: {}},
+      proposals: [], last_plan_ts: null,
+      entry_status: {"m1/llama": {placed: 1, want: 1, blocked: null, basis: "capacity", pick: "a".repeat(32), speed: []},
+                     "m2/llama": {placed: 0, want: 1, blocked: null, basis: null, pick: "a".repeat(32), speed: []}}})})));
+    await AP.init();
+    const picks = [...document.querySelectorAll(".ap-place-pick")];
+    expect(picks[0].hidden).toBe(false);
+    expect(picks[0].textContent).toBe("→ hostA");
+    expect(picks[1].hidden).toBe(true);
+  });
+});
+
+describe("help dialog (#907)", () => {
+  it("the footer keeps a short note plus a help link; the long text lives in the overlay", () => {
+    const indexSrc = srcFile("index.html");
+    const card = indexSrc.slice(indexSrc.indexOf('id="apEntriesCard"'), indexSrc.indexOf('id="apProposalsCard"'));
+    expect(card).toContain('id="apHelpBtn"');
+    expect(card).toContain("Autopilot help");
+    expect(card).not.toContain("Rank by orders");
+    expect(card).not.toContain("vLLM entries never auto-execute");
+    const help = indexSrc.slice(indexSrc.indexOf('id="apHelpOverlay"'), indexSrc.indexOf('id="svcConfigOverlay"'));
+    expect(help).toContain("Rank by");
+    expect(help).toContain("advisory");
+    expect(help).toContain("never auto-execute");
+    expect(help).toContain("Replicas");
+    expect(help).toContain('role="dialog"');
+  });
+  it("opens on the link, closes on ✕, backdrop click and Escape", async () => {
+    document.body.innerHTML = `
+      <input type="checkbox" id="apEnabledToggle"><div id="apEntriesBody"></div><div id="apProposalsBody"></div>
+      <span id="apSaveStatus"></span><button id="apHelpBtn"></button>
+      <div class="svcconfig-overlay" id="apHelpOverlay"><div class="svcconfig-panel"><button id="apHelpClose"></button></div></div>`;
+    vi.stubGlobal("fetch", vi.fn(() => Promise.resolve({ok: true, json: () => Promise.resolve(
+      {state: {enabled: false, entries: [], hosts: {}}, proposals: [], entry_status: {}, last_plan_ts: null})})));
+    await AP.init();
+    const ov = document.getElementById("apHelpOverlay");
+    document.getElementById("apHelpBtn").click();
+    expect(ov.classList.contains("open")).toBe(true);
+    document.getElementById("apHelpClose").click();
+    expect(ov.classList.contains("open")).toBe(false);
+    AP.openHelp();
+    ov.dispatchEvent(new MouseEvent("click", {bubbles: true}));
+    expect(ov.classList.contains("open")).toBe(false);
+    AP.openHelp();
+    document.dispatchEvent(new KeyboardEvent("keydown", {key: "Escape"}));
+    expect(ov.classList.contains("open")).toBe(false);
+  });
+});
+
+describe("placement chip labels (#479 follow-up)", () => {
   const catalog = {
     models: {},
     agents: [
@@ -406,9 +586,9 @@ describe("placement select labels (#479 follow-up)", () => {
     const row = AP.entryRow({model: "m1", provider: "llama",
       placement: "agent-pending-aaaaaa", failover: "semi", priority: 100,
       min_replicas: 1, max_replicas: 1});
-    const sel = row.querySelector("[data-field=placement]");
-    expect(sel.value).toBe("agent-pending-aaaaaa");
-    expect(sel.selectedOptions[0].textContent).toBe("hostC (not approved)");
+    expect(row.querySelector("[data-field=placement]").value).toBe("agent-pending-aaaaaa");
+    const on = [...row.querySelectorAll(".ap-host-chip")].find(c => c.classList.contains("on"));
+    expect(on.textContent).toBe("hostC (not approved)");
   });
 });
 

@@ -10,6 +10,8 @@ DWELL_S = 600
 # exceed the executor's load timeout (autopilot._LOAD_TIMEOUT_S = 200).
 PLACEMENT_FRESH_S = 240
 VRAM_HEADROOM_MB = 1024
+# Live-bench runs older than this rank as advisory (#907).
+SPEED_MAX_AGE_DAYS = 30
 # Providers whose load displaces the resident model (ProviderSpec.single_resident).
 SINGLE_RESIDENT_PROVIDERS = providers.single_resident_names()
 # Providers with an agent-side unload route (ProviderSpec.unloadable).
@@ -77,6 +79,89 @@ def _residents(desired, observed, ledger, now) -> dict:
             if a is not None and _reporting(a):
                 res.setdefault((e["provider"], aid), e["model"])
     return res
+
+def _speed_rows(e, observed) -> dict:
+    return (observed.get("speed") or {}).get(f"{e['provider']}:{e['model']}") or {}
+
+def _speed_tier(row, agent, max_age_s, now) -> str:
+    """'measured' for a fresh same-build run, 'advisory' when stale or the
+    host's llama.cpp build changed since."""
+    ts = row.get("ts")
+    if now is not None and isinstance(ts, (int, float)) and now - ts > max_age_s:
+        return "advisory"
+    ran, cur = row.get("llama_build") or "", (agent or {}).get("llama_build") or ""
+    if ran and cur and ran != cur:
+        return "advisory"
+    return "measured"
+
+def _speed_key(e, aid, observed, desired, now):
+    """(tier, objective...) sort key; unmeasured hosts share the last tier."""
+    row = _speed_rows(e, observed).get(aid)
+    if not row:
+        return (2, 0.0, 0.0)
+    max_age_s = (desired.get("speed_max_age_days") or SPEED_MAX_AGE_DAYS) * 86400.0
+    tier = 0 if _speed_tier(row, observed["agents"].get(aid), max_age_s, now) == "measured" else 1
+    tps = -(row.get("gen_tps") or 0.0)
+    wh = row.get("wh_per_ktok")
+    wh = float(wh) if isinstance(wh, (int, float)) else float("inf")
+    return (tier, wh, tps) if e.get("rank_by") == "energy" else (tier, tps, wh)
+
+def _ranked_candidates(e, candidates, observed, desired, now) -> "list[str]":
+    """Auto-placement order: fresh measured hosts by objective, then advisory,
+    then unmeasured in the given order. Pins and rank_by=capacity pass through."""
+    if e["placement"] != "auto" or e.get("rank_by", "speed") == "capacity" \
+            or not _speed_rows(e, observed):
+        return list(candidates)
+    return sorted(candidates, key=lambda aid: _speed_key(e, aid, observed, desired, now))
+
+def _candidates(e, observed, desired, now) -> "list[str]":
+    cands = [e["placement"]] if e["placement"] != "auto" else list(observed["agents"].keys())
+    return _ranked_candidates(e, cands, observed, desired, now)
+
+def _max_age_s(desired) -> float:
+    return (desired.get("speed_max_age_days") or SPEED_MAX_AGE_DAYS) * 86400.0
+
+def _speed_note(e, aid, observed, desired, now) -> str:
+    """" · measured 65.0 t/s" / " · advisory 65.0 t/s" for a load reason."""
+    row = _speed_rows(e, observed).get(aid)
+    if not row or not isinstance(row.get("gen_tps"), (int, float)):
+        return ""
+    tier = _speed_tier(row, observed["agents"].get(aid), _max_age_s(desired), now)
+    return f" · {tier} {row['gen_tps']:.1f} t/s"
+
+def _speed_pick(e, placed, candidates, free, free_ram, observed, residents, managed, desired, now):
+    """Host the ranking lands on: the best-ranked placed copy, else the first
+    live capable candidate that fits without committing budget. None if none fits."""
+    if placed:
+        return sorted(placed, key=lambda a: _speed_key(e, a, observed, desired, now))[0]
+    for aid in _live_capable(e, candidates, observed):
+        if _resident_conflict(e, aid, residents, managed):
+            continue
+        if _fit_and_size(e, aid, free, free_ram, observed, residents, managed)[0]:
+            return aid
+    return None
+
+def _speed_status(e, pick, observed, desired, now) -> dict:
+    """{basis, pick, speed} for entry_status: the pick's tier and the ranked table."""
+    rows = _speed_rows(e, observed)
+    max_age_s = _max_age_s(desired)
+    table = []
+    for aid in sorted(rows, key=lambda a: _speed_key(e, a, observed, desired, now)):
+        row = rows[aid]
+        ts = row.get("ts")
+        table.append({"agent_id": aid, "hostname": row.get("hostname") or aid[:8],
+                      "gen_tps": row.get("gen_tps"), "latency_s": row.get("latency_s"),
+                      "wh_per_ktok": row.get("wh_per_ktok"), "run_id": row.get("run_id"),
+                      "llama_build": row.get("llama_build") or "",
+                      "age_s": (now - ts) if (now is not None and isinstance(ts, (int, float))) else None,
+                      "tier": _speed_tier(row, observed["agents"].get(aid), max_age_s, now)})
+    if e["placement"] != "auto" or pick is None:
+        basis = None
+    elif e.get("rank_by", "speed") == "capacity" or pick not in rows:
+        basis = "capacity"
+    else:
+        basis = _speed_tier(rows[pick], observed["agents"].get(pick), max_age_s, now)
+    return {"basis": basis, "pick": pick, "speed": table}
 
 def _model_size_mb(observed, provider, model) -> "int | None":
     return observed.get("model_sizes_mb", {}).get(f"{provider}:{model}")
@@ -236,8 +321,8 @@ def _live_capable(entry, candidates, observed) -> "list[str]":
 def entry_status(desired: dict, observed: dict,
                  ledger: "dict | None" = None,
                  now: "float | None" = None) -> dict:
-    """Per-entry {placed, want, blocked}; shares plan()'s priority order +
-    intra-pass RAM/VRAM budgets (via _fit_and_size) so the two can't disagree."""
+    """Per-entry {placed, want, blocked, basis, pick, speed}; shares plan()'s priority
+    order + intra-pass RAM/VRAM budgets (via _fit_and_size) so the two can't disagree."""
     out: "dict[str, dict]" = {}
     free, free_ram, entries, residents, managed = _init_pass(desired, observed, ledger, now)
     for e in entries:
@@ -246,10 +331,10 @@ def entry_status(desired: dict, observed: dict,
         want = e["min_replicas"]
         need = want - len(placed)
         blocked = None
+        candidates = [aid for aid in _candidates(e, observed, desired, now) if aid not in placed]
+        speed_st = _speed_status(e, _speed_pick(e, placed, candidates, free, free_ram, observed,
+                                                residents, managed, desired, now), observed, desired, now)
         if need > 0:
-            candidates = ([e["placement"]] if e["placement"] != "auto"
-                          else list(observed["agents"].keys()))
-            candidates = [aid for aid in candidates if aid not in placed]
             live_capable = _live_capable(e, candidates, observed)
             if not live_capable:
                 blocked = "no live agent supports this provider"
@@ -292,7 +377,7 @@ def entry_status(desired: dict, observed: dict,
                                 f"{size + VRAM_HEADROOM_MB} MB incl. "
                                 f"{VRAM_HEADROOM_MB} MB headroom; best candidate has "
                                 f"{best} MB free)")
-        out[k] = {"placed": len(placed), "want": want, "blocked": blocked}
+        out[k] = {"placed": len(placed), "want": want, "blocked": blocked, **speed_st}
     return out
 
 def plan(desired: dict, observed: dict, ledger: dict, now: float) -> "list[Action]":
@@ -313,8 +398,7 @@ def plan(desired: dict, observed: dict, ledger: dict, now: float) -> "list[Actio
         want = e["min_replicas"]
         if len(placed) >= want:
             continue
-        candidates = ([e["placement"]] if e["placement"] != "auto"
-                      else list(observed["agents"].keys()))
+        candidates = _candidates(e, observed, desired, now)
         if _dwell_blocks(k, placed_at, observed, now):
             continue
         is_failover = _has_dead_candidate(e, candidates, observed)
@@ -341,6 +425,7 @@ def plan(desired: dict, observed: dict, ledger: dict, now: float) -> "list[Actio
             auto = _may_auto(e, desired, e["provider"])
             reason = (f"failover: {k} recovering onto {aid}" if is_failover
                       else f"{k}: {len(placed)}/{want} replicas placed")
+            reason += _speed_note(e, aid, observed, desired, now)
             if displaced:
                 reason += f" (displacing {displaced})"
             if e["provider"] == "llama" and a["server_state"] == "sleeping":
@@ -378,9 +463,7 @@ def plan(desired: dict, observed: dict, ledger: dict, now: float) -> "list[Actio
             continue
         auto = _may_auto(e, desired, e["provider"])
         if decision == "up":
-            candidates = ([e["placement"]] if e["placement"] != "auto"
-                          else list(observed["agents"].keys()))
-            for aid in candidates:
+            for aid in _candidates(e, observed, desired, now):
                 if aid in placed or aid not in observed["agents"] or aid in touched:
                     continue
                 if now - last_action_ts.get(aid, 0) < COOLDOWN_S:

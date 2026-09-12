@@ -176,7 +176,7 @@ def _local_hostname() -> str:
 # banner reads it. Bump suffix (-1, -2, …) for same-day iterations; roll
 # the date for a new day's first change.
 # ---------------------------------------------------------------------------
-__version__ = "v2026.09.11-3"
+__version__ = "v2026.09.11-4"
 
 # Wall-clock at first import (Cheroot main process); the shutdown banner
 # reads it for the uptime line.
@@ -5473,10 +5473,16 @@ def _fleet_cancel_on_agent(agent_id: str) -> bool:
     return bool(resp is not None and resp.status_code == 200)
 
 
+def _llama_build_of(agent_id: str) -> str:
+    wrap = provider_state.STORE.get("llama", agent_id) or {}
+    return str((((wrap.get("sample") or {}).get("llama") or {}).get("build") or ""))[:64]
+
+
 bench_live.register_routes(app, ctx, db_path=str(DB_PATH), proxy=proxies.proxy_to_primary,
                            agent_by_token=agent_registry.agent_by_token, request_agent=_request_agent,
                            note_tool_start=_note_tool_start, fleet_hosts=_fleet_hosts,
-                           run_on_agent=_fleet_run_on_agent, cancel_on_agent=_fleet_cancel_on_agent)
+                           run_on_agent=_fleet_run_on_agent, cancel_on_agent=_fleet_cancel_on_agent,
+                           llama_build_of=_llama_build_of)
 
 
 # --- Overnight autotune batch (#891): agent callables for autotune_batch.Runner ---
@@ -5639,11 +5645,6 @@ def _bench_baseline_cfg() -> dict:
             "regression_pct": float(getattr(b, "regression_pct", 15.0) or 15.0)}
 
 
-def _llama_build_of(agent_id: str) -> str:
-    wrap = provider_state.STORE.get("llama", agent_id) or {}
-    return str((((wrap.get("sample") or {}).get("llama") or {}).get("build") or ""))[:64]
-
-
 _bench_watcher = bench_baseline.Watcher(
     db_path=str(DB_PATH), cfg=_bench_baseline_cfg, fleet_hosts=_fleet_hosts,
     run_on_agent=_fleet_run_on_agent, llama_build_of=_llama_build_of,
@@ -5679,6 +5680,7 @@ def _admin_route(f):
 
 import autopilot  # type: ignore[import-not-found]  # sibling; #472
 autopilot.audit_enabled = lambda: "autopilot.executor" not in _AUDIT_CFG["disabled"]
+autopilot.speed_source = lambda model_id: bench_live.speed_table(str(DB_PATH), model_id)
 autopilot.register_routes(app, ctx, auth=_admin_route)
 
 

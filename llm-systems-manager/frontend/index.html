@@ -567,7 +567,7 @@ Backend API endpoints consumed:
 <link rel="stylesheet" href="/static/css/admin.css?v=2026.09.02-7">
 <link rel="stylesheet" href="/static/css/audit.css?v=2026.09.02-4">
 <link rel="stylesheet" href="/static/css/agents.css?v=2026.09.04-1">
-<link rel="stylesheet" href="/static/css/admin-tabs.css?v=2026.09.11-1">
+<link rel="stylesheet" href="/static/css/admin-tabs.css?v=2026.09.11-2">
 <link rel="stylesheet" href="/static/css/health.css?v=2026.09.04-1">
 <div id="adminTab" style="display:none;position:fixed;top:88px;left:0;right:0;bottom:0;z-index:10;overflow:auto;background:var(--bg);color:var(--fg);padding:28px 24px;">
   <div class="adm-wrap">
@@ -705,16 +705,20 @@ Backend API endpoints consumed:
           <div class="card-b flush">
             <table class="tbl ap">
               <thead><tr>
-                <th style="width:24%">Model</th><th style="width:10%">Provider</th><th style="width:13%">Placement</th>
-                <th style="width:10%">Failover</th><th style="width:8%">Priority</th><th style="width:11%">Replicas</th>
-                <th style="width:9%">Size</th><th>Status</th><th class="r" style="width:40px"></th>
+                <th style="width:16%">Model</th><th style="width:8%">Provider</th><th style="width:19%">Placement</th>
+                <th style="width:6%">Failover</th><th style="width:5%">Priority</th><th style="width:8%">Replicas</th>
+                <th style="width:6%">Size</th><th style="width:8%" class="ap-th-tip" data-tip="Which host auto placement tries first, when more than one fits.
+speed — fastest measured decode t/s first
+energy — lowest measured Wh per 1k tokens first
+capacity — ignore measurements (registry order)
+Measurements are the newest Benchmark · Live run per host. A run older than the max age (30 days by default) or from a different llama.cpp build than the host runs now is advisory: still used, ranked after fresh runs. Hosts with no run come last. Memory fit is always checked first.">Rank by</th><th>Status</th><th class="r" style="width:40px"></th>
               </tr></thead>
               <tbody id="apEntriesBody"></tbody>
             </table>
             <div class="ledger-f">
               <span class="note dirty" id="apDirtyNote"></span>
               <span class="gap"></span>
-              <span class="note">Models come from the pool's discovered list for the chosen provider. vLLM entries never auto-execute.</span>
+              <button type="button" class="ap-help-link" id="apHelpBtn" aria-haspopup="dialog">? Autopilot help</button>
             </div>
           </div>
         </div>
@@ -2602,18 +2606,18 @@ Backend API endpoints consumed:
 <script src="/static/js/admin-audit.js?v=2026.09.03-8"></script>
 <script src="/static/js/admin-settings.js?v=2026.09.09-2"></script>
 <script src="/static/js/admin-access-settings.js?v=2026.09.04-2"></script>
-<script src="/static/js/autopilot.js?v=2026.09.11-1"></script>
+<script src="/static/js/autopilot.js?v=2026.09.11-2"></script>
 <script src="/static/js/llmcontrol-models.js?v=2026.09.10-2"></script>
 <script src="/static/js/editor-modern.js?v=2026.09.07-1"></script>
 <script src="/static/js/bench-autotune.js?v=2026.09.10-1"></script>
-<script src="/static/js/bench-live.js?v=2026.09.10-2"></script>
+<script src="/static/js/bench-live.js?v=2026.09.11-1"></script>
 <script src="/static/js/autotune.js?v=2026.09.10-11"></script>
 <script src="/static/js/quality.js?v=2026.09.10-3"></script>
 <script src="/static/js/lmstudio.js?v=2026.09.04-1"></script>
 <script src="/static/js/vllm.js?v=2026.09.04-1"></script>
 <script src="/static/js/vllm-bench-autotune.js?v=2026.09.02-1"></script>
 <script src="/static/js/report-card.js?v=2026.09.10-1"></script>
-<script src="/static/js/tools.js?v=2026.09.10-1"></script>
+<script src="/static/js/tools.js?v=2026.09.11-1"></script>
 <script src="/static/js/energy.js?v=2026.08.19-1"></script>
 <script src="/static/js/overall.js?v=2026.08.29-2"></script>
 <script src="/static/js/dashboard-manager.js?v=2026.08.17-1"></script>
@@ -2639,6 +2643,76 @@ Backend API endpoints consumed:
 </div>
 
 <!-- Server Config overlay — kept at body root -->
+<!-- Model Autopilot help (#907) -->
+<div class="svcconfig-overlay ap-help-overlay" id="apHelpOverlay">
+  <div class="svcconfig-panel ap-help" role="dialog" aria-modal="true" aria-labelledby="apHelpTitle">
+    <div class="svcconfig-head">
+      <div>
+        <h2 id="apHelpTitle">Model Autopilot help</h2>
+        <div class="svcconfig-subtitle">Each entry declares a model that must stay available. Every 30 s the planner compares that to what the fleet is serving and places, fails over or scales as needed.</div>
+      </div>
+      <span class="mc-gap"></span>
+      <button type="button" class="mcbtn mcbtn-ghost mcbtn-sm" id="apHelpClose" aria-label="Close">✕</button>
+    </div>
+    <div class="ap-help-body">
+      <section>
+        <h3>Model and provider</h3>
+        <ul>
+          <li>Models come from the pool's discovered list for the chosen provider; a model that is no longer discovered stays selectable, marked <b>not discovered</b>.</li>
+          <li><b>vLLM</b> entries never auto-execute: a vLLM model change rewrites the service and restarts it, so those actions always wait in the plan for approval.</li>
+        </ul>
+      </section>
+      <section>
+        <h3>Placement</h3>
+        <dl>
+          <dt>auto <span class="on">on</span></dt><dd>The planner picks the host, ranked by <b>Rank by</b> and gated by memory fit.</dd>
+          <dt>auto <span class="off">off</span></dt><dd>Pin the entry to one host chosen from the chips. Measurements are ignored.</dd>
+        </dl>
+      </section>
+      <section>
+        <h3>Failover</h3>
+        <dl>
+          <dt>auto <span class="on">on</span></dt><dd>Placements, failovers and scaling execute on their own.</dd>
+          <dt>auto <span class="off">off</span></dt><dd>Semi mode: actions queue in the <b>Autopilot plan</b> card and wait for your approval.</dd>
+        </dl>
+      </section>
+      <section>
+        <h3>Priority, replicas, size</h3>
+        <dl>
+          <dt>Priority</dt><dd>Order entries are planned in when they compete for the same hosts; the lowest number is placed first and takes the memory it needs before the next entry is considered.</dd>
+          <dt>Replicas</dt><dd>Minimum and maximum copies to keep loaded. The planner places up to the minimum; a maximum above it enables autoscaling on saturation, and copies above the maximum are reclaimed.</dd>
+          <dt>Size</dt><dd>Model size in MB for the memory-fit check. Blank uses the discovered size (GGUF file size for llama.cpp, LM Studio's reported size). Required for vLLM, which has no discovery source.</dd>
+        </dl>
+      </section>
+      <section>
+        <h3>Rank by</h3>
+        <p>Which host auto placement tries first when more than one fits. Memory fit (VRAM or RAM plus headroom) is always checked before the ranking.</p>
+        <dl>
+          <dt>speed</dt><dd>Fastest measured decode t/s first; ties go to the lower Wh per 1k tokens.</dd>
+          <dt>energy</dt><dd>Lowest measured Wh per 1k tokens first; ties go to the faster decode.</dd>
+          <dt>capacity</dt><dd>Ignore measurements and use the registry order (the pre-ranking behavior).</dd>
+        </dl>
+      </section>
+      <section>
+        <h3>Measurements</h3>
+        <ul>
+          <li>The newest <b>Benchmark · Live</b> run per host for the entry's model. The ↗ in the Status cell opens it with the Autopilot ranking on, so you can refresh the table across hosts.</li>
+          <li>A run is <b>advisory</b> when it is older than the max age (30 days by default) or the host now runs a different llama.cpp build. Advisory runs still count, ranked after fresh ones.</li>
+          <li>Hosts with no run come last. Only llama.cpp hosts have live benchmark runs.</li>
+        </ul>
+      </section>
+      <section>
+        <h3>Status chip</h3>
+        <dl>
+          <dt><span class="pill info">measured · host</span></dt><dd>The host the planner would try next has a fresh run. Hover for the full ranked table.</dd>
+          <dt><span class="pill dim">advisory · host</span></dt><dd>That host's newest run is old or from another build.</dd>
+          <dt><span class="pill dim">capacity only</span></dt><dd>No usable run for this model; placement is by capacity alone.</dd>
+        </dl>
+      </section>
+    </div>
+  </div>
+</div>
+
 <div class="svcconfig-overlay" id="svcConfigOverlay" onclick="if(event.target===this)closeSvcConfig()">
   <div class="svcconfig-panel">
     <div class="svcconfig-head">
