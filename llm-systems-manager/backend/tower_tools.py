@@ -372,7 +372,7 @@ def build_registry(deps: dict) -> "dict[str, Tool]":
                    "lines": {"type": "integer", "minimum": 5, "maximum": 80, "default": 40}}, ["host"]), "read", "read",
              lambda a: deps["log_tail"](a["host"], a.get("provider", "llama"), a["lines"])),
         Tool("config_get", "A manager setting by dotted path (secrets are masked).",
-             _obj({"path": {"type": "string"}}, ["path"]), "read", "read", config_get),
+             _obj({"path": {"type": "string"}}, ["path"]), "read", "read", config_get, role="admin"),
         Tool("help", "Short explanation of a dashboard concept.", _obj({"topic": {"type": "string"}}, ["topic"]), "read", "read",
              lambda a: deps["help"](a["topic"])),
     ]

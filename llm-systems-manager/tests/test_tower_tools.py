@@ -311,3 +311,11 @@ def test_live_block_covers_system_power_and_provider_runtime():
     assert live["providers"]["lms"] == {"server_on": True, "loaded": [{"model": "gemma", "status": "IDLE"}]}
     assert live["providers"]["vllm"] == {"state": "running", "model": "v", "kv_cache_usage_pct": 3}
     assert tt.live_block({}, {}) == {}
+
+
+def test_config_get_is_admin_only_in_the_catalog():
+    reg = tt.build_registry(_deps())
+    assert reg["config_get"].role == "admin"
+    assert "config_get" not in {t.name for t in tt.catalog(reg, _cfg(), "operator")}
+    assert "config_get" in {t.name for t in tt.catalog(reg, _cfg(), "admin")}
+    assert {t.name for t in tt.catalog(reg, _cfg(), "operator")} == set(tt.TOOL_NAMES) - {"config_get"}
