@@ -6,6 +6,8 @@ import { srcFile, blockSrc, runHarness } from './helpers/harness.js';
 const indexSrc = srcFile('index.html');
 const adminSrc = srcFile('js/admin.js');
 const dashSrc = srcFile('js/dashboard-manager.js');
+const foundationSrc = srcFile('js/foundation.js');
+const settingsSrc = srcFile('js/admin-settings.js');
 
 const backupPanel = blockSrc(indexSrc, '<div id="admin-backup"', '<!-- Access Control sub-tab', { includeEnd: false });
 
@@ -136,5 +138,25 @@ describe('mirror pill per archive (#855)', () => {
       last: { ...FULL.last, mirrored: false } };
     const pill = render(status).querySelector('#adminSchedBackupTbody tr').children[4].textContent.trim();
     expect(pill).toBe('copy failed');
+  });
+});
+
+describe('backup settings card bool toggle (#945 review)', () => {
+  it('flips the mc-toggle .tlbl label between Off and On on click', () => {
+    const win = runHarness({
+      sources: [foundationSrc, settingsSrc, dashSrc, adminSrc],
+      bodyHtml: backupPanel,
+      bootstrap: `
+        _adminBackupCfg = { entries: [{ path: 'manager.backup.enabled', label: 'Scheduled backups',
+          help: 'Export an archive on a schedule.', group: 'backup', service: 'manager', type: 'bool' }],
+          values: { 'manager.backup.enabled': false }, defaults: {}, secrets: {} };
+        adminRenderBackupSettings();
+      `,
+    });
+    const tg = win.document.querySelector(
+      '#adminBackupSettingsBody .mc-toggle[data-path="manager.backup.enabled"]');
+    expect(tg.querySelector('.tlbl').textContent).toBe('Off');
+    tg.dispatchEvent(new win.MouseEvent('click', { bubbles: true }));
+    expect(tg.querySelector('.tlbl').textContent).toBe('On');
   });
 });
