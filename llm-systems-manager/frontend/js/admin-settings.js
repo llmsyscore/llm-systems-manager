@@ -1,5 +1,5 @@
-// Admin → Settings sub-tab (#606, redesigned #797): catalog-driven editor with
-// grouped cards, client-side validation and a sticky save bar.
+// Admin → Settings sub-tab (#606, redesigned #797, rail layout #945): a group
+// rail with a single pane, client-side validation and a sticky save bar.
 (() => {
   'use strict';
 
@@ -7,11 +7,9 @@
   let _entryByPath = new Map();
   const _dirty = new Map();     // path -> raw value to submit (null = clear/default)
   const _invalid = new Map();   // path -> message
-  const _open = new Set();      // expanded group keys
-  let _filter = '';
-  let _booted = false;
-  let _pendingOpenGroup = null;
   const MOST_USED = '__most_used__';
+  let _group = MOST_USED;       // active rail group key
+  let _filter = '';
 
   const esc = s => _esc(String(s ?? ''));
   const $ = id => document.getElementById(id);
@@ -33,31 +31,30 @@
       return;
     }
     _entryByPath = new Map(_data.entries.map(e => [e.path, e]));
-    if (!_booted) {
-      _booted = true;
-      _open.add(MOST_USED); // leading card starts open; group cards start collapsed
-    }
+    const keys = orderedGroups().map(g => g.key);
+    if (!keys.includes(_group)) _group = keys[0] || MOST_USED;
     render();
-    if (_pendingOpenGroup) {
-      scrollGroupIntoView(_pendingOpenGroup);
-      _pendingOpenGroup = null;
-    }
   }
 
-  // Expands a group card by key (e.g. from another module's "Settings" deep link).
-  // Always remembers the key so a concurrent load() (e.g. from switchSubTab) re-scrolls to it too.
+  // Sets the active rail group and clears any active filter, then renders.
+  function selectGroup(key) {
+    _group = key;
+    const f = $('stFilter');
+    if (f && f.value) f.value = '';
+    _filter = '';
+    render();
+  }
+
+  // Deep link from another module's "Settings" link: selects a group and
+  // scrolls the pane into view only if it's currently above the scroller.
   function openGroup(key) {
-    _open.add(key);
-    _pendingOpenGroup = key;
-    if (_data) {
-      render();
-      scrollGroupIntoView(key);
+    selectGroup(key);
+    const pane = $('adminSettingsRoot');
+    if (!pane) return;
+    const scroller = pane.closest('#adminTab') || document.scrollingElement;
+    if (pane.getBoundingClientRect().top < scroller.getBoundingClientRect().top) {
+      pane.scrollIntoView({ block: 'start' });
     }
-  }
-
-  function scrollGroupIntoView(key) {
-    const card = document.querySelector(`[data-group="${key}"]`);
-    if (card && card.scrollIntoView) card.scrollIntoView({ block: 'start' });
   }
 
   // ── topology helpers ──────────────────────────────────────────────
@@ -101,11 +98,6 @@
     const i = t.search(/\.(\s|$)/);
     return i === -1 ? t : t.slice(0, i);
   }
-  function restSentences(s) {
-    const t = String(s || '').trim();
-    const i = t.search(/\.(\s|$)/);
-    return i === -1 ? '' : t.slice(i + 1).trim();
-  }
 
   function tagHtml(e) {
     if (e.service === 'alarm_engine') return ' <span class="tag ae">alarm engine</span>';
@@ -144,13 +136,13 @@
       const on = v === true;
       return `<button type="button" class="mc-toggle st-input${on ? ' on' : ''}" data-path="${p}" `
         + `data-type="bool" aria-pressed="${on}"><span class="track"></span>`
-        + `<span class="tlbl">${esc(firstSentence(e.help) || splitUnit(e).label)}</span></button>`;
+        + `<span class="tlbl">${on ? 'On' : 'Off'}</span></button>`;
     }
     if (e.type === 'choice') {
       return `<div class="row"><select class="sel st-input${dirty}" data-path="${p}">`
         + (e.choices || []).map(c =>
           `<option value="${esc(c)}"${String(c) === String(v) ? ' selected' : ''}>${esc(c)}</option>`).join('')
-        + '</select>' + resetHtml(e, opt) + '</div>';
+        + '</select></div>' + `<div class="st-sub">${resetHtml(e, opt)}</div>`;
     }
     const fromDom = !!(opt.dirty && opt.dirty.has(e.path));
     if (e.type === 'list') {
@@ -163,8 +155,8 @@
     const val = (v === null || v === undefined) ? '' : (Array.isArray(v) ? v.join(', ') : String(v));
     return `<div class="row"><input type="text" class="${cls} st-input${dirty}" data-path="${p}" `
       + `inputmode="${numeric ? 'numeric' : 'text'}" value="${fromDom ? '' : esc(val)}" placeholder="${esc(ph)}">`
-      + (unit ? `<span class="unit">${esc(unit)}</span>` : '')
-      + defaultHtml(e, opt) + resetHtml(e, opt) + '</div>';
+      + (unit ? `<span class="unit">${esc(unit)}</span>` : '') + '</div>'
+      + `<div class="st-sub">${defaultHtml(e, opt)}${resetHtml(e, opt)}</div>`;
   }
 
   // "default 0" / "cleared → default 0" once the field differs from its default.
@@ -173,10 +165,10 @@
     const d = defsOf(opt)[e.path];
     const v = opt.shown(e);
     if (opt.dirty && opt.dirty.get(e.path) === null) {
-      return `<span class="dflt" data-dflt="${esc(e.path)}">cleared → default <b>${esc(fmtVal(d))}</b></span>`;
+      return `<span class="dflt" data-dflt="${esc(e.path)}" title="default ${esc(fmtVal(d))}">cleared → default <b>${esc(fmtVal(d))}</b></span>`;
     }
     if (JSON.stringify(v) === JSON.stringify(d)) return `<span class="dflt" data-dflt="${esc(e.path)}"></span>`;
-    return `<span class="dflt" data-dflt="${esc(e.path)}">default <b>${esc(fmtVal(d))}</b></span>`;
+    return `<span class="dflt" data-dflt="${esc(e.path)}" title="default ${esc(fmtVal(d))}">default <b>${esc(fmtVal(d))}</b></span>`;
   }
   function resetHtml(e, opt) {
     if (e.secret || !hasDefault(e, opt)) return '';
@@ -205,50 +197,33 @@
     const { label } = splitUnit(e);
     const isDirty = !!(opt.dirty && opt.dirty.has(e.path));
     const err = opt.invalid && opt.invalid.get(e.path);
-    const help = e.type === 'bool' ? restSentences(e.help) : e.help;
     let control;
     if (opt.locked && opt.locked(e)) {
       const v = _data.values[e.path];
       const shown = e.secret ? secretChip(e, opt.secrets)
         : esc(v === undefined ? 'unknown' : (Array.isArray(v) ? v.join(', ') : String(v)));
-      control = `<div class="row"><span class="lock">🔒 ${shown}</span>`
-        + '<span class="help">read-only; see the alarm-engine notice above</span></div>';
+      control = `<div class="row"><span class="lock">🔒 ${shown}</span></div>`
+        + '<div class="st-sub help">read-only; see the alarm-engine notice above</div>';
     } else if (e.secret) {
       control = secretControl(e, opt);
     } else {
       control = controlHtml(e, opt);
     }
-    return `<div class="st-field settings-row${isDirty ? ' dirty' : ''}${err ? ' invalid' : ''}" `
+    return `<div class="settings-row st-fld${isDirty ? ' dirty' : ''}${err ? ' invalid' : ''}" `
       + `data-path="${esc(e.path)}" data-label="${esc(e.label)}">`
-      + `<label>${esc(label)}${tagHtml(e)}</label>${control}`
-      + (err ? `<div class="err">${esc(err)}</div>` : '')
-      + (help ? `<div class="help">${esc(help)}</div>` : '')
-      + driftHtml(e) + bothNoteHtml(e) + '</div>';
+      + `<div class="st-lb"><label>${esc(label)}${tagHtml(e)}</label><small class="key">${esc(e.path)}</small>`
+      + driftHtml(e) + bothNoteHtml(e) + '</div>'
+      + `<div class="help">${esc(e.help || '')}</div>`
+      + `<div class="st-ct">${control}${err ? `<div class="err">${esc(err)}</div>` : ''}</div></div>`;
   }
 
-  // Unsaved edits are typed text: set them by property, never via the HTML string.
-  // A setting can render twice (Most used + its group), so every match is set.
+  // Sets typed values by property so a re-render never writes them into HTML strings.
   function applyDirtyValues(root, dirty, byPath) {
     dirty.forEach((val, path) => {
       const e = byPath.get(path);
       if (!e || e.secret || e.type === 'bool' || e.type === 'choice') return;
       const v = (val === null || val === undefined) ? '' : (Array.isArray(val) ? val.join('\n') : String(val));
       root.querySelectorAll(`.st-input[data-path="${CSS.escape(path)}"]`).forEach(el => { el.value = v; });
-    });
-  }
-
-  // Mirrors one control's live value onto its twin (Most used <-> group card),
-  // by property only, never through an HTML string.
-  function syncTwin(e, el) {
-    document.querySelectorAll(`.st-input[data-path="${CSS.escape(e.path)}"]`).forEach(other => {
-      if (other === el) return;
-      if (e.type === 'bool') {
-        const on = el.classList.contains('on');
-        other.classList.toggle('on', on);
-        other.setAttribute('aria-pressed', String(on));
-      } else {
-        other.value = el.value;
-      }
     });
   }
 
@@ -265,7 +240,7 @@
         return e.type === 'list' ? [] : (e.type === 'bool' ? false : '');
       },
     }, over || {});
-    return `<div class="st-grid">${entries.map(e => fieldHtml(e, opt)).join('')}</div>`;
+    return `<div class="st-rows">${entries.map(e => fieldHtml(e, opt)).join('')}</div>`;
   }
 
   // ── validation ────────────────────────────────────────────────────
@@ -310,37 +285,65 @@
       || (e.help || '').toLowerCase().includes(q);
   }
 
+  function orderedGroups() {
+    const common = _data.entries.some(e => e.common);
+    const gs = [..._data.groups].sort((a, b) => a.title.localeCompare(b.title))
+      .filter(g => _data.entries.some(e => e.group === g.key));
+    return common ? [{ key: MOST_USED, title: 'Most used' }, ...gs] : gs;
+  }
+  function entriesOf(key) {
+    return key === MOST_USED ? _data.entries.filter(e => e.common) : _data.entries.filter(e => e.group === key);
+  }
+  function groupFlag(key) {
+    const paths = new Set([...(_data.restart_pending_paths || []), ...Object.keys(_data.drift || {})]);
+    return entriesOf(key).some(e => paths.has(e.path));
+  }
+  function groupDirty(key) {
+    return entriesOf(key).filter(e => _dirty.has(e.path) || _invalid.has(e.path)).length;
+  }
+  function navHtml() {
+    const gs = orderedGroups();
+    const btn = g => {
+      const n = groupDirty(g.key);
+      const dim = _filter && (g.key === MOST_USED || !entriesOf(g.key).some(matchesFilter));
+      return `<button type="button" data-group="${esc(g.key)}" class="${g.key === _group && !_filter ? 'on' : ''}${dim ? ' dim' : ''}">`
+        + `${esc(g.title)}${groupFlag(g.key) ? '<span class="flag" data-tip="Restart pending or drift">!</span>' : ''}`
+        + `${n ? `<span class="cnt">${n}</span>` : ''}</button>`;
+    };
+    const opt = g => `<option value="${esc(g.key)}"${g.key === _group ? ' selected' : ''}>${esc(g.title)}</option>`;
+    return { nav: gs.map(btn).join(''), sel: gs.map(opt).join('') };
+  }
+  function groupCardHtml(g, entries, all) {
+    const hot = all.filter(e => e.hot).length;
+    const restart = all.length - hot;
+    const note = restart ? `<b>${restart}</b> need a restart` : 'all apply without a restart';
+    return `<div class="card" data-group="${esc(g.key)}">`
+      + `<div class="card-h"><h3>${esc(g.title)}</h3><span class="meta">${groupMeta(all)} · ${note}</span><span class="gap"></span></div>`
+      + `<div class="card-b">${renderFields(entries, _data.values, defaults())}</div></div>`;
+  }
+  function paneHtml() {
+    if (_filter) {
+      return orderedGroups().filter(g => g.key !== MOST_USED).map(g => {
+        const all = entriesOf(g.key), entries = all.filter(matchesFilter);
+        return entries.length ? groupCardHtml(g, entries, all) : '';
+      }).join('') || '<div class="card"><div class="card-b help">No setting matches.</div></div>';
+    }
+    const g = orderedGroups().find(x => x.key === _group) || orderedGroups()[0];
+    if (!g) return '';
+    const all = entriesOf(g.key);
+    return groupCardHtml(g, all, all);
+  }
+
   function render() {
     const root = $('adminSettingsRoot');
     if (!root || !_data) return;
-    const byGroup = {};
-    _data.entries.forEach(e => (byGroup[e.group] ||= []).push(e));
-    let html = noticesHtml();
-
-    const common = _data.entries.filter(e => e.common).filter(matchesFilter);
-    if (common.length) {
-      const forced = common.some(e => _dirty.has(e.path) || _invalid.has(e.path)) || !!_filter;
-      const open = forced || _open.has(MOST_USED);
-      html += `<div class="card${open ? '' : ' collapsed'}" data-group="${MOST_USED}">`
-        + `<div class="card-h tog"><span class="chev">▾</span><h3>Most used</h3>`
-        + `<span class="meta"><b>${common.length}</b> settings</span><span class="gap"></span></div>`
-        + `<div class="card-b">${renderFields(common, _data.values, defaults())}</div></div>`;
-    }
-
-    const groups = [..._data.groups].sort((a, b) => a.title.localeCompare(b.title));
-    for (const g of groups) {
-      const all = byGroup[g.key];
-      if (!all) continue;
-      const entries = all.filter(matchesFilter);
-      if (!entries.length) continue;
-      const forced = entries.some(e => _dirty.has(e.path) || _invalid.has(e.path)) || !!_filter;
-      const open = forced || _open.has(g.key);
-      html += `<div class="card${open ? '' : ' collapsed'}" data-group="${esc(g.key)}">`
-        + `<div class="card-h tog"><span class="chev">▾</span><h3>${esc(g.title)}</h3>`
-        + `<span class="meta">${groupMeta(all)}</span><span class="gap"></span></div>`
-        + `<div class="card-b">${renderFields(entries, _data.values, defaults())}</div></div>`;
-    }
-    root.innerHTML = html + saveBarHtml();
+    const { nav, sel } = navHtml();
+    const navEl = $('stNav'), selEl = $('stNavSel');
+    const hadFocus = navEl && navEl.contains(document.activeElement);
+    if (navEl) navEl.innerHTML = nav;
+    if (hadFocus) navEl.querySelector('button.on')?.focus();
+    if (selEl) selEl.innerHTML = sel;
+    root.innerHTML = noticesHtml() + paneHtml() + saveBarHtml();
     applyDirtyValues(root, _dirty, _entryByPath);
     renderSummary();
     bindOnce(root);
@@ -473,6 +476,9 @@
   function updateSaveBar() {
     const root = $('adminSettingsRoot');
     if (!root) return;
+    const { nav } = navHtml();
+    const navEl = $('stNav');
+    if (navEl) navEl.innerHTML = nav;
     const bar = $('adminSettingsSaveBar');
     if (!_dirty.size && !_invalid.size) { if (bar) bar.remove(); renderSummary(); return; }
     if (!bar) { root.insertAdjacentHTML('beforeend', saveBarHtml()); renderSummary(); return; }
@@ -512,18 +518,17 @@
     if (err) _invalid.set(e.path, err); else _invalid.delete(e.path);
   }
 
-  // A setting can render twice (Most used + its group); paint every row.
+  // Reflects dirty/invalid state and the default hint onto a setting's row.
   function paintField(e) {
     document.querySelectorAll(`.settings-row[data-path="${CSS.escape(e.path)}"]`).forEach(row => {
       row.classList.toggle('dirty', _dirty.has(e.path));
       const err = _invalid.get(e.path);
       row.classList.toggle('invalid', !!err);
-      if (_dirty.has(e.path) || err) { const card = row.closest('.card'); if (card) card.classList.remove('collapsed'); }
       let node = row.querySelector('.err');
       if (err && !node) {
         node = document.createElement('div');
         node.className = 'err';
-        row.insertBefore(node, row.querySelector('.help') || null);
+        (row.querySelector('.st-ct') || row).appendChild(node);
       }
       if (node) { if (err) node.textContent = err; else node.remove(); }
       const dflt = row.querySelector('[data-dflt]');
@@ -545,7 +550,6 @@
     if (!entry) return;
     noteChange(entry, entry.secret && entry.type !== 'list' ? el.value : readInput(el, entry));
     if (entry.secret) syncClearButton(entry.path);
-    syncTwin(entry, el);
     paintField(entry);
     updateSaveBar();
   }
@@ -559,22 +563,15 @@
   }
 
   function onClick(ev) {
-    const tog = ev.target.closest('.card-h.tog');
-    if (tog) {
-      const card = tog.closest('.card');
-      const key = card && card.dataset.group;
-      card.classList.toggle('collapsed');
-      if (key) { if (card.classList.contains('collapsed')) _open.delete(key); else _open.add(key); }
-      return;
-    }
     const bool = ev.target.closest('.mc-toggle[data-type="bool"]');
     if (bool) {
       const entry = _entryByPath.get(bool.dataset.path);
       if (!entry) return;
       bool.classList.toggle('on');
       bool.setAttribute('aria-pressed', String(bool.classList.contains('on')));
+      const lbl = bool.querySelector('.tlbl');
+      if (lbl) lbl.textContent = bool.classList.contains('on') ? 'On' : 'Off';
       noteChange(entry, bool.classList.contains('on'));
-      syncTwin(entry, bool);
       paintField(entry);
       updateSaveBar();
       return;
@@ -755,17 +752,19 @@
       f._stBound = true;
       f.addEventListener('input', () => { _filter = f.value.trim(); render(); });
     }
-    const x = $('stExpandAll');
-    if (x && !x._stBound) {
-      x._stBound = true;
-      x.addEventListener('click', () => {
-        const keys = [MOST_USED, ...(_data ? _data.groups : []).map(g => g.key)];
-        const expand = _open.size < keys.length;
-        _open.clear();
-        if (expand) keys.forEach(k => _open.add(k));
-        x.textContent = expand ? 'Collapse all' : 'Expand all';
-        render();
+    const nav = $('stNav');
+    if (nav && !nav._stBound) {
+      nav._stBound = true;
+      nav.addEventListener('click', ev => {
+        const b = ev.target.closest('button[data-group]');
+        if (!b) return;
+        selectGroup(b.dataset.group);
       });
+    }
+    const sel = $('stNavSel');
+    if (sel && !sel._stBound) {
+      sel._stBound = true;
+      sel.addEventListener('change', () => selectGroup(sel.value));
     }
   }
   if (typeof document !== 'undefined') {

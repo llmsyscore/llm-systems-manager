@@ -75,26 +75,72 @@ function type(win, path, value) {
   return el;
 }
 
-describe('group cards', () => {
-  test('Most used leads, open; group cards follow alphabetically, all collapsed', async () => {
+describe('rail + pane (#945)', () => {
+  const navBtns = doc => [...doc.querySelectorAll('#stNav button')];
+  test('rail lists Most used first then groups alphabetically; Most used starts active', async () => {
     const doc = (await boot(payload())).document;
-    const cards = [...doc.querySelectorAll('#adminSettingsRoot .card')];
-    expect(cards).toHaveLength(3);
-    expect(cards[0].querySelector('h3').textContent).toBe('Most used');
-    expect(cards[0].classList.contains('collapsed')).toBe(false);
-    expect(cards[1].querySelector('h3').textContent).toBe('Backups');
-    expect(cards[1].classList.contains('collapsed')).toBe(true);
-    expect(cards[2].querySelector('h3').textContent).toBe('Network & TLS');
-    expect(cards[2].classList.contains('collapsed')).toBe(true);
+    expect(navBtns(doc).map(b => b.dataset.group)).toEqual(['__most_used__', 'backup', 'network']);
+    expect(navBtns(doc)[0].classList.contains('on')).toBe(true);
+    expect([...doc.querySelectorAll('#stNavSel option')].map(o => o.value)).toEqual(['__most_used__', 'backup', 'network']);
   });
 
-  test('group meta counts settings and names the host', async () => {
+  test('only the active group renders as a pane card', async () => {
     const doc = (await boot(payload())).document;
-    const metas = [...doc.querySelectorAll('#adminSettingsRoot .card-h .meta')].map(m => m.textContent);
-    expect(metas[0]).toBe('2 settings');
-    expect(metas[1]).toContain('3 settings');
-    expect(metas[1]).toContain('both hosts');
-    expect(metas[2]).toBe('3 settings · manager');
+    const cards = [...doc.querySelectorAll('#adminSettingsRoot .card')];
+    expect(cards).toHaveLength(1);
+    expect(cards[0].dataset.group).toBe('__most_used__');
+    expect(cards[0].querySelector('h3').textContent).toBe('Most used');
+    expect(doc.querySelectorAll('.settings-row')).toHaveLength(2);
+  });
+
+  test('clicking a rail entry switches the pane and keeps unsaved edits', async () => {
+    const win = await boot(payload());
+    type(win, 'manager.poll_interval', '45');
+    navBtns(win.document)[2].click();
+    const card = win.document.querySelector('#adminSettingsRoot .card');
+    expect(card.dataset.group).toBe('network');
+    expect(card.querySelector('.card-h .meta').textContent).toContain('3 settings');
+    expect(win.document.querySelector('.st-input[data-path="manager.poll_interval"]').value).toBe('45');
+    expect(navBtns(win.document)[2].classList.contains('on')).toBe(true);
+  });
+
+  test('the rail shows a dirty count per group and a flag for restart-pending groups', async () => {
+    const win = await boot(payload({ restart_pending: ['manager'], restart_pending_paths: ['manager.ws_proxy_port'] }));
+    type(win, 'manager.poll_interval', '45');
+    const btns = navBtns(win.document);
+    expect(btns[2].querySelector('.cnt').textContent).toBe('1');
+    expect(btns[0].querySelector('.cnt').textContent).toBe('1');
+    expect(btns[2].querySelector('.flag').textContent).toBe('!');
+    expect(btns[1].querySelector('.flag')).toBeNull();
+  });
+
+  test('adminSettingsOpenGroup(key) selects that group', async () => {
+    const win = await boot(payload());
+    win.adminSettingsOpenGroup('backup');
+    expect(win.document.querySelector('#adminSettingsRoot .card').dataset.group).toBe('backup');
+  });
+
+  test('the filter shows matching rows from every group under group headings and dims empty rail entries', async () => {
+    const win = await boot(payload());
+    const f = win.document.getElementById('stFilter');
+    f.value = 'passphrase';
+    f.dispatchEvent(new win.Event('input', { bubbles: true }));
+    const cards = [...win.document.querySelectorAll('#adminSettingsRoot .card')];
+    expect(cards).toHaveLength(1);
+    expect(cards[0].dataset.group).toBe('backup');
+    expect(win.document.querySelectorAll('.settings-row')).toHaveLength(1);
+    expect(navBtns(win.document)[2].classList.contains('dim')).toBe(true);
+    f.value = '';
+    f.dispatchEvent(new win.Event('input', { bubbles: true }));
+    expect(win.document.querySelector('#adminSettingsRoot .card').dataset.group).toBe('__most_used__');
+  });
+
+  test('the mobile select mirrors the rail and switches the pane', async () => {
+    const win = await boot(payload());
+    const sel = win.document.getElementById('stNavSel');
+    sel.value = 'network';
+    sel.dispatchEvent(new win.Event('change', { bubbles: true }));
+    expect(win.document.querySelector('#adminSettingsRoot .card').dataset.group).toBe('network');
   });
 
   test('the header summary counts settings, groups, unsaved and invalid', async () => {
@@ -102,57 +148,71 @@ describe('group cards', () => {
     expect(win.document.getElementById('stSummary').textContent)
       .toBe('6 settings2 groups0 unsaved0 invalid');
   });
+});
 
-  test('the filter narrows fields and expands the matching cards', async () => {
-    const win = await boot(payload());
-    const f = win.document.getElementById('stFilter');
-    f.value = 'passphrase';
-    f.dispatchEvent(new win.Event('input', { bubbles: true }));
-    const cards = [...win.document.querySelectorAll('#adminSettingsRoot .card')];
-    expect(cards).toHaveLength(1);
-    expect(cards[0].classList.contains('collapsed')).toBe(false);
-    expect(win.document.querySelectorAll('.settings-row')).toHaveLength(1);
+describe('group normalization (#945 fix round 1)', () => {
+  test('with no common entries, the rail and pane agree on the first real group', async () => {
+    const entries = [PORT, URLE, { ...IDLE, common: false }, { ...SCHED, common: false }, LEVEL, SECRET];
+    const win = await boot(payload({ entries }));
+    const card = win.document.querySelector('#adminSettingsRoot .card');
+    expect(card.dataset.group).toBe('backup');
+    const on = [...win.document.querySelectorAll('#stNav button')].find(b => b.classList.contains('on'));
+    expect(on.dataset.group).toBe('backup');
+  });
+
+  test('a synchronous openGroup call while the first load is in flight is not clobbered', async () => {
+    const dom = new JSDOM(
+      `<!doctype html><html><body><div id="adminTab">${PANEL}</div></body></html>`,
+      { runScripts: 'dangerously', url: 'http://localhost/' });
+    dom.window.fetch = () => Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve(payload()) });
+    const inject = (code) => {
+      const s = dom.window.document.createElement('script');
+      s.textContent = code;
+      dom.window.document.body.appendChild(s);
+    };
+    inject(`if (!window.CSS) window.CSS = { escape: s => String(s).replace(/([^a-zA-Z0-9_-])/g, '\\\\$1') };`);
+    inject(foundationSrc);
+    inject(settingsSrc);
+    const loadPromise = dom.window.adminSettingsLoad(); // not awaited: load is still in flight
+    dom.window.adminSettingsOpenGroup('network'); // synchronous deep link, races the fetch
+    await loadPromise;
+    const card = dom.window.document.querySelector('#adminSettingsRoot .card');
+    expect(card.dataset.group).toBe('network');
+    const on = [...dom.window.document.querySelectorAll('#stNav button')].find(b => b.classList.contains('on'));
+    expect(on.dataset.group).toBe('network');
   });
 });
 
 describe('Most used card (#801)', () => {
-  test('a common setting renders twice: once in Most used, once in its group', async () => {
+  test('a common setting renders once, in the Most used pane by default', async () => {
     const doc = (await boot(payload())).document;
-    expect(doc.querySelectorAll('.settings-row[data-path="manager.poll_interval"]')).toHaveLength(2);
-    expect(doc.querySelectorAll('.st-input[data-path="manager.poll_interval"]')).toHaveLength(2);
+    expect(doc.querySelectorAll('.settings-row[data-path="manager.poll_interval"]')).toHaveLength(1);
+    expect(doc.querySelectorAll('.st-input[data-path="manager.poll_interval"]')).toHaveLength(1);
   });
 
-  test('editing the Most used copy marks both rows dirty and syncs the group twin by property', async () => {
+  test('editing a common field in Most used keeps the edit when the pane switches to its own group', async () => {
     const win = await boot(payload());
-    const inputs = win.document.querySelectorAll('.st-input[data-path="manager.poll_interval"]');
-    type(win, 'manager.poll_interval', '45'); // input() grabs the first match: Most used
-    const rows = win.document.querySelectorAll('.settings-row[data-path="manager.poll_interval"]');
-    expect([...rows].every(r => r.classList.contains('dirty'))).toBe(true);
-    expect(inputs[1].value).toBe('45');
-    expect(inputs[1].getAttribute('value')).not.toBe('45'); // set by property, not via HTML string
+    type(win, 'manager.poll_interval', '45');
+    win.adminSettingsOpenGroup('network');
+    const row = field(win.document, 'manager.poll_interval');
+    const el = input(win.document, 'manager.poll_interval');
+    expect(row.classList.contains('dirty')).toBe(true);
+    expect(el.value).toBe('45');
+    expect(el.getAttribute('value')).not.toBe('45'); // set by property, not via HTML string
   });
 
-  test('editing the group copy marks both rows dirty and syncs the Most used twin', async () => {
+  test('toggling a common bool in Most used keeps its state when the pane switches to its own group', async () => {
     const win = await boot(payload());
-    const inputs = win.document.querySelectorAll('.st-input[data-path="manager.poll_interval"]');
-    inputs[1].value = '50';
-    inputs[1].dispatchEvent(new win.Event('input', { bubbles: true }));
-    const rows = win.document.querySelectorAll('.settings-row[data-path="manager.poll_interval"]');
-    expect([...rows].every(r => r.classList.contains('dirty'))).toBe(true);
-    expect(inputs[0].value).toBe('50');
+    const tg = win.document.querySelector('.mc-toggle[data-path="manager.backup.enabled"]');
+    tg.dispatchEvent(new win.MouseEvent('click', { bubbles: true }));
+    expect(tg.classList.contains('on')).toBe(false);
+    win.adminSettingsOpenGroup('backup');
+    const tg2 = win.document.querySelector('.mc-toggle[data-path="manager.backup.enabled"]');
+    expect(tg2.classList.contains('on')).toBe(false);
+    expect(tg2.getAttribute('aria-pressed')).toBe('false');
   });
 
-  test('toggling the Most used copy of a bool flips the group twin too', async () => {
-    const win = await boot(payload());
-    const toggles = win.document.querySelectorAll('.mc-toggle[data-path="manager.backup.enabled"]');
-    expect(toggles).toHaveLength(2);
-    toggles[0].dispatchEvent(new win.MouseEvent('click', { bubbles: true }));
-    expect(toggles[0].classList.contains('on')).toBe(false);
-    expect(toggles[1].classList.contains('on')).toBe(false);
-    expect(toggles[1].getAttribute('aria-pressed')).toBe('false');
-  });
-
-  test('save sends a changed common path once, even though it renders twice', async () => {
+  test('save sends a changed common path once', async () => {
     const win = await boot(payload());
     type(win, 'manager.poll_interval', '45');
     win.document.getElementById('adminSettingsSaveBtn').dispatchEvent(new win.MouseEvent('click', { bubbles: true }));
@@ -168,7 +228,7 @@ describe('controls by type', () => {
     const tg = row.querySelector('.mc-toggle');
     expect(tg).toBeTruthy();
     expect(tg.classList.contains('on')).toBe(true);
-    expect(tg.querySelector('.tlbl').textContent).toBe('Export an archive on a schedule');
+    expect(tg.querySelector('.tlbl').textContent).toBe('On');
     expect(doc.querySelector('#adminSettingsRoot input[type="checkbox"]')).toBeNull();
   });
 
@@ -180,8 +240,9 @@ describe('controls by type', () => {
   });
 
   test('a choice renders a select and a shared key carries the both-hosts tag', async () => {
-    const doc = (await boot(payload())).document;
-    const row = field(doc, 'logging.level');
+    const win = await boot(payload());
+    win.adminSettingsOpenGroup('backup');
+    const row = field(win.document, 'logging.level');
     expect(row.querySelector('select.sel')).toBeTruthy();
     expect(row.querySelector('.tag.both')).toBeTruthy();
   });
@@ -200,21 +261,24 @@ describe('controls by type', () => {
 
 describe('defaults', () => {
   test('a value equal to its default shows no hint and no reset button', async () => {
-    const doc = (await boot(payload())).document;
-    const row = field(doc, 'manager.ws_proxy_port');
+    const win = await boot(payload());
+    win.adminSettingsOpenGroup('network');
+    const row = field(win.document, 'manager.ws_proxy_port');
     expect(row.querySelector('.dflt').textContent).toBe('');
     expect(row.querySelector('[data-reset]')).toBeNull();
   });
 
   test('a value differing from its default shows the hint and the reset button', async () => {
-    const doc = (await boot(payload())).document;
-    const row = field(doc, 'manager.alarm_engine_url');
+    const win = await boot(payload());
+    win.adminSettingsOpenGroup('network');
+    const row = field(win.document, 'manager.alarm_engine_url');
     expect(row.querySelector('.dflt').textContent).toBe('default http://127.0.0.1:8081');
     expect(row.querySelector('[data-reset]')).toBeTruthy();
   });
 
   test('clearing a non-secret input reads "cleared → default" and submits null', async () => {
     const win = await boot(payload());
+    win.adminSettingsOpenGroup('network');
     type(win, 'manager.alarm_engine_url', '');
     const row = field(win.document, 'manager.alarm_engine_url');
     expect(row.querySelector('.dflt').textContent).toBe('cleared → default http://127.0.0.1:8081');
@@ -226,6 +290,7 @@ describe('defaults', () => {
 
   test('the reset button queues the same null clear', async () => {
     const win = await boot(payload());
+    win.adminSettingsOpenGroup('network');
     win.document.querySelector('[data-reset="manager.alarm_engine_url"]')
       .dispatchEvent(new win.MouseEvent('click', { bubbles: true }));
     win.document.getElementById('adminSettingsSaveBtn').dispatchEvent(new win.MouseEvent('click', { bubbles: true }));
@@ -237,6 +302,7 @@ describe('defaults', () => {
 describe('client-side validation', () => {
   test('an out-of-range int marks the field invalid and disables Save', async () => {
     const win = await boot(payload());
+    win.adminSettingsOpenGroup('network');
     type(win, 'manager.ws_proxy_port', '70000');
     const row = field(win.document, 'manager.ws_proxy_port');
     expect(row.classList.contains('invalid')).toBe(true);
@@ -247,6 +313,7 @@ describe('client-side validation', () => {
 
   test('a non-numeric int is rejected too, and fixing it re-enables Save', async () => {
     const win = await boot(payload());
+    win.adminSettingsOpenGroup('network');
     type(win, 'manager.ws_proxy_port', 'abc');
     expect(win.document.getElementById('adminSettingsSaveBtn').disabled).toBe(true);
     type(win, 'manager.ws_proxy_port', '5002');
@@ -256,6 +323,7 @@ describe('client-side validation', () => {
 
   test('Save is a no-op while any field is invalid', async () => {
     const win = await boot(payload());
+    win.adminSettingsOpenGroup('network');
     type(win, 'manager.ws_proxy_port', '70000');
     win.document.getElementById('adminSettingsSaveBtn').dispatchEvent(new win.MouseEvent('click', { bubbles: true }));
     await new Promise(r => setTimeout(r, 0));
@@ -265,6 +333,7 @@ describe('client-side validation', () => {
   test('the save bar names which keys need a restart and which apply live', async () => {
     const win = await boot(payload());
     type(win, 'manager.poll_interval', '45');
+    win.adminSettingsOpenGroup('network');
     type(win, 'manager.alarm_engine_url', 'http://ae:8081');
     const note = win.document.querySelector('#adminSettingsSaveBar .note').textContent;
     expect(note).toContain('Idle poll interval (s) applies without restart');
@@ -284,12 +353,12 @@ describe('client-side validation', () => {
 });
 
 describe('SettingsFields export', () => {
-  test('renders a standalone st-grid from caller-supplied entries and defaults', async () => {
+  test('renders a standalone st-rows from caller-supplied entries and defaults', async () => {
     const win = await boot(payload());
     const html = win.SettingsFields.render([SCHED, PORT],
       { 'manager.backup.enabled': true, 'manager.ws_proxy_port': 9999 },
       { 'manager.backup.enabled': false, 'manager.ws_proxy_port': 5001 });
-    expect(html).toContain('st-grid');
+    expect(html).toContain('st-rows');
     expect(html).toContain('mc-toggle');
     expect(html).toContain('default <b>5001</b>');
   });
@@ -298,17 +367,89 @@ describe('SettingsFields export', () => {
 describe('review fixes (#797)', () => {
   test('clearing a field that already sits at its default is not a change', async () => {
     const win = await boot(payload());
+    win.adminSettingsOpenGroup('network');
     type(win, 'manager.ws_proxy_port', '');
     expect(win.document.getElementById('adminSettingsSaveBar')).toBeNull();
     expect(field(win.document, 'manager.ws_proxy_port').classList.contains('dirty')).toBe(false);
   });
+});
 
-  test('typed text survives a full re-render without entering the HTML string', async () => {
+describe('rail layout (#945)', () => {
+  test('the panel has a nav rail, a mobile select and no Expand all button', () => {
+    expect(PANEL).toContain('id="stNav"');
+    expect(PANEL).toContain('id="stNavSel"');
+    expect(PANEL).not.toContain('id="stExpandAll"');
+  });
+
+  test('a row is name | help | control with the dotted key under the name', async () => {
     const win = await boot(payload());
-    type(win, 'manager.alarm_engine_url', 'https://x/<b>"');
-    win.document.getElementById('stExpandAll').click();
-    const again = input(win.document, 'manager.alarm_engine_url');
-    expect(again.value).toBe('https://x/<b>"');
-    expect(again.getAttribute('value')).toBe('');
+    win.adminSettingsOpenGroup('network');
+    const row = field(win.document, 'manager.ws_proxy_port');
+    expect(row.classList.contains('st-fld')).toBe(true);
+    expect(row.children[0].className).toBe('st-lb');
+    expect(row.children[0].querySelector('.key').textContent).toBe('manager.ws_proxy_port');
+    expect(row.children[1].className).toBe('help');
+    expect(row.children[2].className).toBe('st-ct');
+    expect(row.querySelector('.st-ct .st-input')).not.toBeNull();
+  });
+
+  test('a bool row shows the full help in the help column and On/Off on the toggle', async () => {
+    const doc = (await boot(payload())).document;
+    const row = field(doc, 'manager.backup.enabled');
+    expect(row.querySelector('.help').textContent).toBe(SCHED.help);
+    expect(row.querySelector('.mc-toggle .tlbl').textContent).toBe('On');
+  });
+
+  test('a validation error renders inside the control column', async () => {
+    const win = await boot(payload());
+    win.adminSettingsOpenGroup('network');
+    type(win, 'manager.ws_proxy_port', '99999');
+    const row = field(win.document, 'manager.ws_proxy_port');
+    expect(row.querySelector('.st-ct .err').textContent).toMatch(/0 to 65535/);
+  });
+});
+
+describe('rail selection review fixes (#945)', () => {
+  const navBtns = doc => [...doc.querySelectorAll('#stNav button')];
+
+  test('a drift entry (not just restart-pending) also sets the rail flag', async () => {
+    const win = await boot(payload({
+      drift: { 'manager.backup.passphrase': { local: 'a', ae: 'b', secret: true } },
+    }));
+    const backup = navBtns(win.document).find(b => b.dataset.group === 'backup');
+    expect(backup.querySelector('.flag')).toBeTruthy();
+  });
+
+  test('clicking a rail entry clears an active filter', async () => {
+    const win = await boot(payload());
+    const f = win.document.getElementById('stFilter');
+    f.value = 'passphrase';
+    f.dispatchEvent(new win.Event('input', { bubbles: true }));
+    navBtns(win.document).find(b => b.dataset.group === 'network').click();
+    expect(f.value).toBe('');
+    expect(win.document.querySelector('#adminSettingsRoot .card').dataset.group).toBe('network');
+  });
+
+  test('a deep link wins over an active filter', async () => {
+    const win = await boot(payload());
+    const f = win.document.getElementById('stFilter');
+    f.value = 'passphrase';
+    f.dispatchEvent(new win.Event('input', { bubbles: true }));
+    win.adminSettingsOpenGroup('network');
+    const cards = [...win.document.querySelectorAll('#adminSettingsRoot .card')];
+    expect(cards).toHaveLength(1);
+    expect(cards[0].dataset.group).toBe('network');
+    expect(f.value).toBe('');
+    const on = navBtns(win.document).find(b => b.classList.contains('on'));
+    expect(on.dataset.group).toBe('network');
+  });
+
+  test('Most used is dimmed while a filter is active', async () => {
+    const win = await boot(payload());
+    const f = win.document.getElementById('stFilter');
+    f.value = 'passphrase';
+    f.dispatchEvent(new win.Event('input', { bubbles: true }));
+    const mostUsed = navBtns(win.document).find(b => b.dataset.group === '__most_used__');
+    expect(mostUsed.classList.contains('dim')).toBe(true);
   });
 });

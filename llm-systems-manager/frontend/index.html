@@ -567,7 +567,7 @@ Backend API endpoints consumed:
 <link rel="stylesheet" href="/static/css/admin.css?v=2026.09.02-7">
 <link rel="stylesheet" href="/static/css/audit.css?v=2026.09.02-4">
 <link rel="stylesheet" href="/static/css/agents.css?v=2026.09.04-1">
-<link rel="stylesheet" href="/static/css/admin-tabs.css?v=2026.09.11-2">
+<link rel="stylesheet" href="/static/css/admin-tabs.css?v=2026.09.11-6">
 <link rel="stylesheet" href="/static/css/health.css?v=2026.09.04-1">
 <div id="adminTab" style="display:none;position:fixed;top:88px;left:0;right:0;bottom:0;z-index:10;overflow:auto;background:var(--bg);color:var(--fg);padding:28px 24px;">
   <div class="adm-wrap">
@@ -954,17 +954,20 @@ Measurements are the newest Benchmark · Live run per host. A run older than the
         </div>
       </div>
 
-      <!-- Settings sub-tab (catalog editor, #606/#797) -->
+      <!-- Settings sub-tab (catalog editor, #606/#797; rail layout #945) -->
       <div id="admin-settings" class="sub-tab-panel">
         <div class="hdr">
           <h2>Settings</h2>
           <div class="sum" id="stSummary"></div>
           <span class="gap"></span>
           <label class="mc-filter"><span class="mc-filter-ico">⌕</span><input id="stFilter" type="search" placeholder="Find a setting…" autocomplete="off"><kbd>/</kbd></label>
-          <button type="button" class="mcbtn mcbtn-ghost mcbtn-sm" id="stExpandAll">Expand all</button>
         </div>
         <div class="st-note">Clear a field to go back to its default.</div>
-        <div id="adminSettingsRoot"></div>
+        <div class="st-layout">
+          <select id="stNavSel" class="sel" aria-label="Settings group"></select>
+          <nav id="stNav" class="st-nav" aria-label="Settings groups"></nav>
+          <div id="adminSettingsRoot" class="st-pane"></div>
+        </div>
       </div>
 
     </div>
@@ -2599,13 +2602,13 @@ Measurements are the newest Benchmark · Live run per host. A run older than the
 <script src="/static/js/llmcontrol.js?v=2026.09.04-1"></script>
 <script src="/static/js/sections.js?v=2026.08.30-3"></script>
 <script src="/static/js/openclaw.js?v=2026.08.03-1"></script>
-<script src="/static/js/admin.js?v=2026.09.11-1"></script>
+<script src="/static/js/admin.js?v=2026.09.11-5"></script>
 <script src="/static/js/admin-agents.js?v=2026.09.10-1"></script>
 <script src="/static/js/admin-health.js?v=2026.09.04-2"></script>
 <script src="/static/js/admin-gateway.js?v=2026.09.04-2"></script>
 <script src="/static/js/admin-audit.js?v=2026.09.03-8"></script>
-<script src="/static/js/admin-settings.js?v=2026.09.09-2"></script>
-<script src="/static/js/admin-access-settings.js?v=2026.09.04-2"></script>
+<script src="/static/js/admin-settings.js?v=2026.09.11-6"></script>
+<script src="/static/js/admin-access-settings.js?v=2026.09.11-5"></script>
 <script src="/static/js/autopilot.js?v=2026.09.11-2"></script>
 <script src="/static/js/llmcontrol-models.js?v=2026.09.10-2"></script>
 <script src="/static/js/editor-modern.js?v=2026.09.07-1"></script>

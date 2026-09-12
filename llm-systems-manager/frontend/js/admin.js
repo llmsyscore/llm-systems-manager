@@ -2534,6 +2534,8 @@ function adminRenderBackupSettings() {
     if (tg) {
       tg.classList.toggle('on');
       tg.setAttribute('aria-pressed', String(tg.classList.contains('on')));
+      const lbl = tg.querySelector('.tlbl');
+      if (lbl) lbl.textContent = tg.classList.contains('on') ? 'On' : 'Off';
       note(tg);
       return;
     }

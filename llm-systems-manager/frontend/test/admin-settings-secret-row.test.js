@@ -58,6 +58,7 @@ async function boot(data) {
 describe('secret row layout (#760, restyled #797)', () => {
   test('the multi-line secret keeps its chip and Clear on one control row', async () => {
     const doc = await boot(payload());
+    doc.defaultView.adminSettingsOpenGroup('gateway');
     const row = doc.querySelector('.settings-row[data-path="manager.gateway.api_keys"]');
     const head = row.querySelector('.st-secret-head');
     expect(head).toBeTruthy();
@@ -70,6 +71,7 @@ describe('secret row layout (#760, restyled #797)', () => {
 
   test('Clear uses the compact ghost button variant', async () => {
     const doc = await boot(payload());
+    doc.defaultView.adminSettingsOpenGroup('gateway');
     const btn = doc.querySelector('[data-clear="manager.gateway.api_keys"]');
     expect(btn.className.split(/\s+/)).toContain('mcbtn-sm');
     expect(btn.className.split(/\s+/)).toContain('mcbtn-ghost');
@@ -79,6 +81,7 @@ describe('secret row layout (#760, restyled #797)', () => {
 
   test('a single-line secret keeps chip, input and Clear in one inline row', async () => {
     const doc = await boot(payload());
+    doc.defaultView.adminSettingsOpenGroup('gateway');
     const row = doc.querySelector('.settings-row[data-path="notifications.smtp.password"]');
     const inline = row.querySelector('.st-secret--inline');
     expect(inline).toBeTruthy();
@@ -94,6 +97,7 @@ describe('secret row layout (#760, restyled #797)', () => {
   test('clicking Clear queues it and typing a new value un-queues it', async () => {
     const doc = await boot(payload());
     const win = doc.defaultView;
+    win.adminSettingsOpenGroup('gateway');
     const btn = doc.querySelector('[data-clear="manager.gateway.api_keys"]');
     btn.click();
     expect(btn.textContent).toBe('Clear queued');
@@ -108,6 +112,7 @@ describe('secret row layout (#760, restyled #797)', () => {
 
   test('an unset secret renders no Clear button', async () => {
     const doc = await boot(payload({ secrets: {} }));
+    doc.defaultView.adminSettingsOpenGroup('gateway');
     expect(doc.querySelector('[data-clear]')).toBeNull();
     expect(doc.querySelector('.st-secret-head .pill')).toBeTruthy();
   });

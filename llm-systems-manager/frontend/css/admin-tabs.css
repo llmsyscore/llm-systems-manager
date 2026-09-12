@@ -114,23 +114,31 @@
 #adminTab .st-ta { background: var(--bg); border: 1px solid var(--border-strong); border-radius: 7px; color: var(--fg); font-family: var(--font-mono); font-size: 12px; padding: 7px 9px; width: 100%; resize: vertical; min-height: 56px; line-height: 1.45; }
 #adminTab .st-in.dirty, #adminTab .st-ta.dirty, #adminTab .sel.dirty { border-color: color-mix(in srgb, var(--note) 60%, transparent); box-shadow: inset 3px 0 0 var(--note); }
 
-/* settings fields (shared by Settings and Backup settings) */
-#adminTab .st-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 4px 34px; }
-#adminTab .st-field { display: flex; flex-direction: column; gap: 6px; margin-bottom: 16px; min-width: 0; }
-#adminTab .st-field label { font-size: 12.5px; font-weight: 500; color: var(--fg); display: flex; align-items: center; gap: 8px; }
-#adminTab .st-field .help { font-size: 11.5px; color: var(--fg-dim); line-height: 1.45; max-width: 62ch; }
-#adminTab .st-field .help code { font-family: var(--font-mono); color: var(--accent); }
-#adminTab .st-field .row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
-#adminTab .st-field .unit { font-family: var(--font-mono); font-size: 11.5px; color: var(--fg-dim); }
-#adminTab .st-field .drift { font-size: 11.5px; color: var(--warn); }
-#adminTab .st-field .drift b { font-family: var(--font-mono); font-weight: 500; }
-#adminTab .st-field.dirty label::after { content: "edited"; font-family: var(--font-mono); font-size: 9.5px; font-weight: 500; color: var(--note); letter-spacing: .04em; }
-#adminTab .st-field .lock { color: var(--fg-dim); font-size: 12px; font-family: var(--font-mono); }
-#adminTab .st-field .dflt { font-family: var(--font-mono); font-size: 10.5px; color: var(--fg-faint); white-space: nowrap; }
-#adminTab .st-field .dflt b { color: var(--fg-dim); font-weight: 500; }
-#adminTab .st-field .row .ib { width: 24px; height: 24px; font-size: 13px; }
-#adminTab .st-field.invalid .st-in, #adminTab .st-field.invalid .st-ta { border-color: var(--crit); box-shadow: inset 3px 0 0 var(--crit); }
-#adminTab .st-field .err { font-size: 11.5px; color: var(--crit); }
+/* #945 rail layout: rows are name | help | control */
+#adminTab .st-rows { display: grid; gap: 0; }
+#adminTab .st-fld { display: grid; grid-template-columns: 220px minmax(0, 1fr) 260px; gap: 14px; align-items: start; padding: 10px 0; border-bottom: 1px solid var(--border-soft); min-width: 0; }
+#adminTab .st-fld:last-child { border-bottom: 0; }
+#adminTab .st-lb { display: grid; gap: 3px; min-width: 0; }
+#adminTab .st-lb label { font-size: 12.5px; font-weight: 500; color: var(--fg); display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+#adminTab .st-lb .key { font-family: var(--font-mono); font-size: 10.5px; color: var(--fg-dim); overflow-wrap: anywhere; }
+#adminTab .st-fld .help { font-size: 12px; color: var(--fg-muted); line-height: 1.45; padding-top: 2px; }
+#adminTab .st-ct { display: grid; gap: 5px; min-width: 0; }
+#adminTab .st-ct > *, #adminTab .st-ct .row > .st-in, #adminTab .st-ct .row > .sel { min-width: 0; }
+#adminTab .st-ct .row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+#adminTab .st-ct .st-in.w, #adminTab .st-ct .st-ta, #adminTab .st-ct .sel { width: 100%; }
+#adminTab .st-ct .st-in:not(.w) { width: 120px; }
+#adminTab .st-sub { display: flex; align-items: center; gap: 8px; min-height: 18px; min-width: 0; }
+#adminTab .st-sub .ib { flex-shrink: 0; }
+#adminTab .st-fld.dirty .st-lb label::after { content: "edited"; font-family: var(--font-mono); font-size: 9.5px; font-weight: 500; color: var(--note); letter-spacing: .04em; }
+#adminTab .st-fld.invalid .st-in, #adminTab .st-fld.invalid .st-ta { border-color: var(--crit); box-shadow: inset 3px 0 0 var(--crit); }
+#adminTab .st-fld .unit { font-family: var(--font-mono); font-size: 11.5px; color: var(--fg-dim); }
+#adminTab .st-fld .drift { font-size: 11.5px; color: var(--warn); }
+#adminTab .st-fld .drift b { font-family: var(--font-mono); font-weight: 500; }
+#adminTab .st-fld .lock { color: var(--fg-dim); font-size: 12px; font-family: var(--font-mono); }
+#adminTab .st-fld .dflt { font-family: var(--font-mono); font-size: 10.5px; color: var(--fg-faint); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+#adminTab .st-fld .dflt b { color: var(--fg-dim); font-weight: 500; }
+#adminTab .st-fld .st-sub .ib { width: 24px; height: 24px; font-size: 13px; }
+#adminTab .st-fld .err { font-size: 11.5px; color: var(--crit); }
 #adminTab .st-secret { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 #adminTab .st-secret.st-secret--list { flex-direction: column; align-items: stretch; }
 #adminTab .st-secret-head { display: flex; align-items: center; gap: 8px; }
@@ -224,6 +232,27 @@
 #admin-settings .card[data-group="__most_used__"] > .card-h { background: color-mix(in srgb, var(--accent) 6%, transparent); }
 #admin-settings .card[data-group="__most_used__"] > .card-h h3 { color: var(--accent); }
 
+#admin-settings .st-layout { display: grid; grid-template-columns: 200px minmax(0, 1fr); gap: 14px; align-items: start; }
+#admin-settings #stNavSel { display: none; }
+#admin-settings .st-nav { display: grid; gap: 2px; position: sticky; top: 8px; }
+#admin-settings .st-nav button { position: relative; display: flex; align-items: center; gap: 8px; width: 100%; text-align: left; border: 0; background: transparent; color: var(--fg-muted); font: 500 12.5px var(--font-sans); padding: 6px 10px; border-radius: 6px; cursor: pointer; }
+#admin-settings .st-nav button:hover { color: var(--fg); background: var(--bg-card-alt); }
+#admin-settings .st-nav button.on { background: color-mix(in srgb, var(--accent) 14%, transparent); color: var(--accent); font-weight: 600; }
+#admin-settings .st-nav button.dim { opacity: .4; }
+#admin-settings .st-nav button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+#admin-settings .st-nav .cnt { margin-left: auto; font: 500 10.5px var(--font-mono); color: var(--note); }
+#admin-settings .st-nav .flag { font: 600 10.5px var(--font-mono); color: var(--warn); }
+#admin-settings .st-pane > .card { margin-top: 0; }
+#admin-settings .st-pane .card-h .meta b { color: var(--fg-muted); }
+#admin-settings .st-pane .savebar { position: sticky; bottom: 0; z-index: 2; }
+#admin-settings .st-pane .card + .card { margin-top: 16px; }
+@media (max-width: 900px) {
+  #admin-settings .st-layout { grid-template-columns: 1fr; }
+  #admin-settings .st-nav { display: none; }
+  #admin-settings #stNavSel { display: block; width: 100%; }
+  #adminTab .st-fld { grid-template-columns: 1fr; gap: 6px; }
+}
+
 /* ── Access control (ac-) ──────────────────────────────────────────── */
 #admin-access .ac-login { display: flex; flex-direction: column; gap: 14px; }
 #admin-access .ac-login .mc-seg { align-self: flex-start; }
@@ -258,7 +287,6 @@
   #admin-routing .rt-gw { grid-template-columns: 1fr; }
   #admin-routing .rt-gwm { grid-template-columns: repeat(4, 1fr); }
 }
-@media (max-width: 720px) { #adminTab .st-grid { grid-template-columns: 1fr; } }
 @media (prefers-reduced-motion: reduce) {
   #admin-routing .rt-svg .rt-e, #adminTab .chev { animation: none; transition: none; }
 }

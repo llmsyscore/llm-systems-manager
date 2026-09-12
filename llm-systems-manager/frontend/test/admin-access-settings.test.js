@@ -26,7 +26,7 @@ const CATALOG = {
   secrets: {}, groups: [{ key: 'auth', title: 'Auth & Security' }], restart_pending: [],
 };
 
-function harness(putResponder) {
+function harness(putResponder, catalog = CATALOG) {
   const dom = new JSDOM(`<!doctype html><html><head></head><body><div id="adminTab">${CARD}</div></body></html>`,
     { runScripts: 'dangerously', url: 'http://localhost/' });
   const w = dom.window;
@@ -37,7 +37,7 @@ function harness(putResponder) {
     const method = opts.method || 'GET';
     w.calls.push({ url, method, body: opts.body ? JSON.parse(opts.body) : null });
     if (method === 'PUT') { const [status, body] = await putResponder(w.calls); return { ok: status < 300, status, json: async () => body }; }
-    return { ok: true, status: 200, json: async () => JSON.parse(JSON.stringify(CATALOG)) };
+    return { ok: true, status: 200, json: async () => JSON.parse(JSON.stringify(catalog)) };
   };
   const inject = (code) => { const s = w.document.createElement('script'); s.textContent = code; w.document.head.appendChild(s); };
   inject(src('foundation.js'));
@@ -140,5 +140,17 @@ describe('Access settings card', () => {
     w.AccessSettings.invalidate();
     await tick();
     expect(w.calls.length).toBe(2);
+  });
+
+  test('clicking a bool toggle flips its .tlbl label between Off and On (#945 review)', async () => {
+    const cat = JSON.parse(JSON.stringify(CATALOG));
+    cat.entries.push({ path: 'manager.auth.require_mfa', type: 'bool', label: 'Require MFA',
+      help: 'Require a second factor at login.', group: 'auth', service: 'manager' });
+    const w = harness(async () => [200, { ok: true }], cat);
+    await expand(w);
+    const tg = q(w, '.mc-toggle[data-path="manager.auth.require_mfa"]');
+    expect(tg.querySelector('.tlbl').textContent).toBe('Off');
+    tg.dispatchEvent(new w.MouseEvent('click', { bubbles: true }));
+    expect(tg.querySelector('.tlbl').textContent).toBe('On');
   });
 });

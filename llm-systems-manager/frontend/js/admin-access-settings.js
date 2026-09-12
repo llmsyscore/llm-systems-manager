@@ -90,7 +90,7 @@
     if (err && !node) {
       node = document.createElement('div');
       node.className = 'err';
-      row.insertBefore(node, row.querySelector('.help') || null);
+      (row.querySelector('.st-ct') || row).appendChild(node);
     }
     if (node) { if (err) node.textContent = err; else node.remove(); }
     const defs = _data.defaults || {};
@@ -128,6 +128,8 @@
       if (!e) return;
       bool.classList.toggle('on');
       bool.setAttribute('aria-pressed', String(bool.classList.contains('on')));
+      const lbl = bool.querySelector('.tlbl');
+      if (lbl) lbl.textContent = bool.classList.contains('on') ? 'On' : 'Off';
       noteChange(e, bool.classList.contains('on'));
       paintField(e); refreshFoot();
       return;
