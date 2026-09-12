@@ -241,7 +241,6 @@ def test_tower_write_setting_splits_removals_and_runs_the_matching_hot_reloader(
 
 
 def test_bypass_identity_is_a_permanent_session(client):
-    from flask import session as fs
     with client.session_transaction() as s:
         s.pop("user", None); s["auth_ok"] = True; s["role"] = "operator"
     r = client.post("/api/tower/threads", json={"page": {}})
