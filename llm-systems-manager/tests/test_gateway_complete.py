@@ -154,16 +154,42 @@ def test_complete_stream_maps_a_read_failure_mid_stream_to_upstream_dropped(monk
     assert ei.value.err_type == "upstream" and ei.value.status == 502
 
 
-def test_dial_stream_read_timeout_raises_only_when_a_read_timeout_is_requested(monkeypatch):
+def test_dial_stream_read_timeout_tries_every_url_and_reports_the_timeout(monkeypatch):
     import requests
     import agent_registry
-    monkeypatch.setattr(agent_registry, "agent_callback_urls", lambda agent: ["https://box:8443"])
+    noted = []
+    monkeypatch.setattr(agent_registry, "agent_callback_urls", lambda agent: ["https://box:8443", "https://box.local:8443"])
     monkeypatch.setattr(agent_registry, "agent_tls_kwargs", lambda url: {})
-    monkeypatch.setattr(agent_registry, "note_dial_error", lambda *a: None)
+    monkeypatch.setattr(agent_registry, "note_dial_error", lambda agent, base, e: noted.append(base))
     def post(*a, **kw):
         raise requests.exceptions.ReadTimeout("slow")
     monkeypatch.setattr(gateway.requests, "post", post)
     assert gateway._dial_stream({"token": "t"}, "/p", {}) is None
+    assert gateway._dial_stream({"token": "t"}, "/p", {}, read_timeout=5) is gateway._TIMED_OUT
+    assert noted == ["https://box:8443", "https://box.local:8443"] * 2
+
+
+def test_complete_stream_fails_over_to_the_next_host_on_a_first_token_timeout(monkeypatch):
+    import requests
+
+    class _Slow(_Resp):
+        def iter_lines(self, decode_unicode=True):
+            raise requests.exceptions.ConnectionError("read timed out")
+            yield  # pragma: no cover
+
+    seen = []
+    def dial(agent, path, body, read_timeout=None):
+        seen.append(agent["agent_id"])
+        if agent["agent_id"] == "a1":
+            return gateway._TIMED_OUT
+        if agent["agent_id"] == "a2":
+            return _Slow(200, lines=[], ctype="text/event-stream")
+        return _Resp(200, lines=['data: {"choices":[{"delta":{"content":"ok"}}]}', "data: [DONE]"], ctype="text/event-stream")
+    monkeypatch.setattr(gateway, "_dial_stream", dial)
+    monkeypatch.setattr(gateway, "_candidates", lambda m, a, p: [{"agent_id": "a1", "hostname": "h1"}, {"agent_id": "a2", "hostname": "h2"}, {"agent_id": "a3", "hostname": "h3"}])
+    chunks = list(gateway.complete_stream({"model": "m", "messages": []}, label="tower", read_timeout=5))
+    assert seen == ["a1", "a2", "a3"] and chunks[0]["choices"][0]["delta"]["content"] == "ok"
+    monkeypatch.setattr(gateway, "_candidates", lambda m, a, p: [{"agent_id": "a1", "hostname": "h1"}, {"agent_id": "a2", "hostname": "h2"}])
     with pytest.raises(gateway.GatewayError) as ei:
-        gateway._dial_stream({"token": "t"}, "/p", {}, read_timeout=5)
-    assert ei.value.err_type == "timeout"
+        list(gateway.complete_stream({"model": "m", "messages": []}, label="tower", read_timeout=5))
+    assert ei.value.err_type == "timeout" and ei.value.status == 504

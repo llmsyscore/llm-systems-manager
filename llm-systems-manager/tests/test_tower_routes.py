@@ -196,7 +196,7 @@ def test_stop_unknown_run_is_404(client):
 
 def test_model_pin_is_admin_only_and_writes_through_settings(client, monkeypatch):
     written = {}
-    monkeypatch.setattr(M.settings_toml_io, "apply_patches", lambda clean: written.update(clean))
+    monkeypatch.setattr(M.settings_toml_io, "apply_patches", lambda sets, removals=(): written.update(sets))
     monkeypatch.setattr(M, "_tower_reload_config", lambda: None)
     assert client.put("/api/tower/model", json={"model": "qwen3-14b"}).status_code == 403
     with client.session_transaction() as s:
@@ -207,7 +207,7 @@ def test_model_pin_is_admin_only_and_writes_through_settings(client, monkeypatch
 
 def test_model_pin_rejects_invalid_model_with_400(client, monkeypatch):
     monkeypatch.setattr(M.settings_catalog, "validate_and_coerce", lambda changes: ({}, {p: "not an editable setting" for p in changes}))
-    monkeypatch.setattr(M.settings_toml_io, "apply_patches", lambda clean: pytest.fail("must not write"))
+    monkeypatch.setattr(M.settings_toml_io, "apply_patches", lambda sets, removals=(): pytest.fail("must not write"))
     with client.session_transaction() as s:
         s["role"] = "admin"
     r = client.put("/api/tower/model", json={"model": "qwen3-14b"})
@@ -227,3 +227,24 @@ def test_service_health_uses_agent_liveness_not_a_missing_last_seen(monkeypatch)
     assert h["agents"]["online"] == ["box"]
     assert h["agents"]["offline"] == [{"host": "mac", "liveness": "down"}]
     assert h["alarm_engine"] == {"ok": True}
+
+
+def test_tower_write_setting_splits_removals_and_runs_the_matching_hot_reloader(monkeypatch):
+    calls = {}
+    monkeypatch.setattr(M.settings_toml_io, "apply_patches", lambda sets, removals=(): calls.update({"sets": sets, "removals": list(removals)}))
+    monkeypatch.setitem(M._HOT_RELOADERS, "manager.tower.", lambda: calls.setdefault("reloaded", []).append("tower"))
+    M._tower_write_setting("manager.tower.max_tokens", 512)
+    assert calls == {"sets": {"manager.tower.max_tokens": 512}, "removals": [], "reloaded": ["tower"]}
+    calls.clear()
+    M._tower_write_setting("manager.tower.max_tokens", None)
+    assert calls["sets"] == {} and calls["removals"] == ["manager.tower.max_tokens"] and calls["reloaded"] == ["tower"]
+
+
+def test_bypass_identity_is_a_permanent_session(client):
+    from flask import session as fs
+    with client.session_transaction() as s:
+        s.pop("user", None); s["auth_ok"] = True; s["role"] = "operator"
+    r = client.post("/api/tower/threads", json={"page": {}})
+    assert r.status_code == 200
+    with client.session_transaction() as s:
+        assert s.get("tower_uid") and s.permanent is True

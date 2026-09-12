@@ -181,9 +181,14 @@ def _forward_json(agent: dict, path: str, body: dict):
     return (r, None) if r is not None else (None, err)
 
 
+_TIMED_OUT = object()  # _dial_stream result: every URL hit the caller's read timeout
+
+
 def _dial_stream(agent: dict, path: str, body: dict, read_timeout: "float | None" = None):
-    """Opens the upstream stream. With read_timeout set, a read timeout raises GatewayError(timeout)."""
+    """Opens the upstream stream on the first callback URL that answers; None when none did.
+    With read_timeout set, returns _TIMED_OUT when a read timeout was the only failure."""
     token = agent.get("token") or ""
+    timed_out = False
     for base in agent_registry.agent_callback_urls(agent):
         url = f"{base}{path}"
         try:
@@ -195,11 +200,10 @@ def _dial_stream(agent: dict, path: str, body: dict, read_timeout: "float | None
             agent_registry.note_dial_result(agent, base, True)
             return r
         except requests.exceptions.RequestException as e:
-            if read_timeout and isinstance(e, requests.exceptions.ReadTimeout):
-                raise GatewayError("upstream timeout", 504, "timeout")
+            timed_out |= bool(read_timeout) and isinstance(e, requests.exceptions.ReadTimeout)
             agent_registry.note_dial_error(agent, base, e)
             log.debug("gateway dial %s failed: %s", url, type(e).__name__)
-    return None
+    return _TIMED_OUT if timed_out else None
 
 
 def _with_usage_probe(body: dict) -> "tuple[dict, bool]":
@@ -269,7 +273,8 @@ def _stream_lines(upstream, waiting_first):
     try:
         yield from upstream.iter_lines(decode_unicode=True)
     except (requests.exceptions.Timeout, requests.exceptions.ConnectionError) as e:
-        gateway_usage.record_error()
+        if not waiting_first():
+            gateway_usage.record_error()
         if waiting_first():
             raise GatewayError("upstream timeout", 504, "timeout") from e
         raise GatewayError("upstream dropped", 502, "upstream") from e
@@ -287,11 +292,13 @@ def complete_stream(body: dict, *, label: str, provider=None, read_timeout: "flo
     client = gateway_usage.client_begin(label, "", model=model_id)
     t0 = time.perf_counter()
     errors: list = []
+    timed_out = False
     try:
         for agent in _candidates(model_id, None, provider):
             upstream = _dial_stream(agent, path, stream_body, read_timeout)
-            if upstream is None:
-                errors.append(f"{_label(agent)}: unreachable")
+            if upstream is None or upstream is _TIMED_OUT:
+                timed_out |= upstream is _TIMED_OUT
+                errors.append(f"{_label(agent)}: {'timeout' if upstream is _TIMED_OUT else 'unreachable'}")
                 continue
             if upstream.status_code in _FAILOVER_STATUSES:
                 upstream.close()
@@ -328,10 +335,18 @@ def complete_stream(body: dict, *, label: str, provider=None, read_timeout: "flo
                             gateway_usage.record(aid, p_tok, g_tok)
                     yield chunk
                 return
+            except GatewayError as e:
+                # A first-token timeout on this host tries the next one; a drop mid-answer does not.
+                if e.err_type != "timeout" or not first:
+                    raise
+                timed_out = True
+                errors.append(f"{_label(agent)}: timeout")
             finally:
                 gateway_usage.end(aid)
                 upstream.close()
         gateway_usage.record_error()
+        if timed_out:
+            raise GatewayError("upstream timeout", 504, "timeout")
         raise _no_backend(provider, errors)
     finally:
         gateway_usage.client_end(client)

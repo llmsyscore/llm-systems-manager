@@ -64,8 +64,6 @@ def _run(script, cfg=None, user_text="why is box red?", store=None, cancelled=No
     delta chunk per native reply (one fragment per entry, each keeping its own index)."""
     calls = iter(script)
     seen = {"payloads": []}
-    def complete_json(body, *, label):
-        raise AssertionError("run_turn must stream")
     def complete_stream(body, *, label, **kw):
         seen["payloads"].append(body)
         seen.setdefault("timeouts", []).append(kw.get("read_timeout"))
@@ -89,7 +87,7 @@ def _run(script, cfg=None, user_text="why is box red?", store=None, cancelled=No
     st = store or tower.Store(":memory:")
     tid = st.create_thread("adriel", "t", {})
     out = tower.run_turn(thread_id=tid, user_text=user_text, page={"tab": "overall"}, cfg=cfg or _cfg(), role="operator",
-                         registry=_registry(), complete_json=complete_json, complete_stream=complete_stream,
+                         registry=_registry(), complete_stream=complete_stream,
                          store=st, emit=events.append, model={"model": "qwen3-14b", "provider": "llama", "hosts": ["box"]},
                          cancelled=cancelled or (lambda: False), alternates=alternates)
     return out, events, seen, st, tid
@@ -306,7 +304,7 @@ def test_multiple_native_tool_calls_only_first_is_kept_in_the_assistant_message(
     second_payload = seen["payloads"][1]["messages"]
     assistant_msg = next(m for m in second_payload if m.get("role") == "assistant")
     assert len(assistant_msg.get("tool_calls") or []) == 1
-    assert assistant_msg["tool_calls"][0]["id"] == "call_0"
+    assert assistant_msg["tool_calls"][0]["id"] == "call_0" and assistant_msg["tool_calls"][0]["type"] == "function"
 
 
 def test_turn_stops_at_max_tool_calls():
@@ -354,7 +352,7 @@ def test_model_error_emits_error_event():
     tid = st.create_thread("u", "t", {})
     events = []
     out = tower.run_turn(thread_id=tid, user_text="x", page={}, cfg=_cfg(), role="operator", registry=_registry(),
-                         complete_json=boom, complete_stream=boom, store=st, emit=events.append,
+                         complete_stream=boom, store=st, emit=events.append,
                          model={"model": "m", "provider": "llama", "hosts": ["box"]}, cancelled=lambda: False)
     assert events[-1]["event"] == "error" and out["ok"] is False
     assert "upstream" not in events[-1]["message"] and "502" not in events[-1]["message"]
@@ -465,6 +463,9 @@ def test_parse_tool_call_accepts_model_native_tag_forms():
     llama = {"content": '<function=host_detail>{"host": "box"}</function>'}
     assert tower.parse_tool_call(llama) == ("host_detail", {"host": "box"})
     assert tower.parse_tool_call({"content": "<tool_call> not json </tool_call>"}) is None
+    # Fence bodies stay strict JSON; only tag bodies tolerate a stray word.
+    assert tower.parse_tool_call({"content": '```tool\n```\n  {"name": "alarms", "args": {}}\n```tool\n'}) is None
+    assert tower.parse_tool_call({"content": '```tool\ntool {"name": "alarms", "args": {}}\n```'}) is None
     assert tower.parse_tool_call({"content": "<b>bold</b> answer"}) is None
 
 
@@ -572,3 +573,55 @@ def test_history_drops_earlier_refusals_once_off_topic_is_allowed():
     _, _, seen, *_ = _run([{"content": "Paris."}], cfg=_cfg(off_topic="allow"), store=st, user_text="capital of France?")
     sent = [m["content"] for m in seen["payloads"][0]["messages"][1:]]
     assert tower.REFUSAL not in sent and sent[-1] == "capital of France?"
+
+
+def test_pick_keeps_agent_ids_for_server_args_lookup():
+    e = {"id": "qwen3-14b", "provider": "llama", "status": {"value": "loaded"}, "hosts": ["box"], "agent_ids": ["a1"]}
+    assert tower.resolve_model(_cfg(), [e])["agent_ids"] == ["a1"]
+    assert tower.alternate_model({"model": "x"}, [e])["agent_ids"] == ["a1"]
+    seen = {}
+    _run([{"content": "hi"}], cfg=_cfg(tool_mode="auto"))
+    out, events, seen, *_ = _run([{"content": "hi"}], cfg=_cfg(tool_mode="auto"))
+    assert "tools" not in seen["payloads"][0]
+
+
+def test_server_args_of_receives_the_model_and_enables_native_mode():
+    calls = []
+    def cs(body, *, label, **kw):
+        calls.append(body)
+        yield {"choices": [{"delta": {"content": "hi"}}]}
+    st = tower.Store(":memory:")
+    tid = st.create_thread("adriel", "t", {})
+    seen_models = []
+    def server_args_of(m):
+        seen_models.append(m)
+        return "llama-server --jinja -m x.gguf"
+    tower.run_turn(thread_id=tid, user_text="q", page={}, cfg=_cfg(tool_mode="auto"), role="operator", registry=_registry(),
+                   complete_stream=cs, store=st, emit=lambda e: None,
+                   model={"model": "qwen3-14b", "provider": "llama", "hosts": ["box"], "agent_ids": ["a1"]},
+                   cancelled=lambda: False, server_args_of=server_args_of)
+    assert seen_models[0]["agent_ids"] == ["a1"] and "tools" in calls[0]
+
+
+def test_mid_line_native_tag_streams_the_prose_and_runs_the_tool():
+    out, events, *_ = _run([
+        {"chunks": ["Let me ch", "eck. <tool_c", 'all> {"name": "alarms", "args": {}} </tool_call>\n']},
+        {"content": "One alert."},
+    ])
+    assert out["calls"] == 1
+    deltas = "".join(e["text"] for e in events if e["event"] == "delta")
+    assert deltas == "Let me check. One alert."
+    assert not any("<tool" in e["text"] for e in events if e["event"] == "delta")
+
+
+def test_mid_line_angle_brackets_that_are_not_tags_stream_untouched():
+    out, events, *_ = _run([{"chunks": ["Use <b>bo", "ld</b> and a < b\n", "then <to", "ol> tag\n"]}])
+    assert out["calls"] == 0
+    assert "".join(e["text"] for e in events if e["event"] == "delta") == "Use <b>bold</b> and a < b\nthen <tool> tag\n"
+
+
+def test_safe_len_holds_only_a_partial_call_tag():
+    assert tower._safe_len("Let me check. <tool_c") == 14
+    assert tower._safe_len("plain text <b>") == 14
+    assert tower._safe_len("<function=") == 0
+    assert tower._safe_len("") == 0

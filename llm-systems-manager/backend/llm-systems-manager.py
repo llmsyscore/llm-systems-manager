@@ -176,7 +176,7 @@ def _local_hostname() -> str:
 # banner reads it. Bump suffix (-1, -2, …) for same-day iterations; roll
 # the date for a new day's first change.
 # ---------------------------------------------------------------------------
-__version__ = "v2026.09.12-3"
+__version__ = "v2026.09.12-4"
 
 # Wall-clock at first import (Cheroot main process); the shutdown banner
 # reads it for the uptime line.
@@ -5673,10 +5673,9 @@ def _tower_tools_runs(tool, count):
 def _tower_service_health() -> dict:
     agents = agent_registry.load_agents().get("agents") or {}
     now = time.time()
-    approved = [a for a in agents.values() if a.get("status") == "approved"]
-    online = [a.get("hostname") for a in approved if agent_registry.agent_liveness(a) == "live"]
-    offline = [{"host": a.get("hostname"), "liveness": agent_registry.agent_liveness(a)}
-               for a in approved if agent_registry.agent_liveness(a) != "live"]
+    approved = [(a, agent_registry.agent_liveness(a)) for a in agents.values() if a.get("status") == "approved"]
+    online = [a.get("hostname") for a, lv in approved if lv == "live"]
+    offline = [{"host": a.get("hostname"), "liveness": lv} for a, lv in approved if lv != "live"]
     try:
         ae_ok = _ae_session.get(f"{_alarm_engine_url}/health", timeout=3).ok
     except Exception:
@@ -5699,11 +5698,16 @@ def _tower_server_args(model: dict) -> "str | None":
 
 
 def _tower_write_setting(path: str, value) -> None:
+    """One validated settings write with the same removal split and hot reload as the admin route."""
     clean, errors = settings_catalog.validate_and_coerce({path: value})
     if errors:
         raise ValueError(errors[path])
-    settings_toml_io.apply_patches(clean)
-    _tower_reload_config()
+    sets = {k: v for k, v in clean.items() if v is not None}
+    dels = [k for k, v in clean.items() if v is None]
+    settings_toml_io.apply_patches(sets, removals=dels)
+    for prefix, reload in _HOT_RELOADERS.items():
+        if any(k.startswith(prefix) for k in clean):
+            reload()
 
 
 _TOWER_INDEX_WAIT_S = 2.0
@@ -5717,10 +5721,11 @@ def _tower_gateway_entries() -> list:
         gateway._await_model_index(_TOWER_INDEX_WAIT_S)
         entries = gateway._cached_model_entries() or []
     out = []
+    agents = agent_registry.load_agents().get("agents") or {}
     for e in entries:
         prov = e.get("provider") or "llama"
         agent_ids = sorted(gateway._serving_agent_ids(prov, e.get("id")))
-        hosts = [(agent_registry.resolve_agent_by_id(aid) or {}).get("hostname") for aid in agent_ids]
+        hosts = [(agents.get(aid) or {}).get("hostname") for aid in agent_ids if (agents.get(aid) or {}).get("status") == "approved"]
         row = {**e, "hosts": [h for h in hosts if h], "agent_ids": agent_ids}
         # LM Studio's /v1/models carries no load state; the polled `ps` rows do.
         if prov == "lms" and not isinstance(e.get("status"), dict):
@@ -5741,7 +5746,7 @@ _tower_deps = tower_tools.prod_deps(ctx, db_path=str(DB_PATH), tools_runs=_tower
                                     speed_table=lambda m: bench_live.speed_table(str(DB_PATH), m),
                                     service_health=_tower_service_health, gateway_entries=_tower_gateway_entries)
 _tower_runs = tower.Runs(_tower_store, registry_factory=lambda: tower_tools.build_registry(_tower_deps),
-                         complete_json=gateway.complete_json, complete_stream=gateway.complete_stream,
+                         complete_stream=gateway.complete_stream,
                          entries=_tower_gateway_entries, server_args_of=_tower_server_args,
                          cfg=lambda: settings.manager.tower, stream_max_s=_tower_stream_max_s,
                          shutting_down=lambda: _shutting_down)

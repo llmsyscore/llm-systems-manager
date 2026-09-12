@@ -38,7 +38,8 @@ def _resident(entry: dict) -> bool:
 
 
 def _pick(e: dict) -> dict:
-    return {"model": e["id"], "provider": e.get("provider") or "llama", "hosts": list(e.get("hosts") or [])}
+    return {"model": e["id"], "provider": e.get("provider") or "llama", "hosts": list(e.get("hosts") or []),
+            "agent_ids": list(e.get("agent_ids") or [])}
 
 
 def _chat_candidates(entries: "list[dict]") -> "list[dict]":
@@ -130,16 +131,16 @@ def parse_tool_call(message: dict) -> "Optional[tuple[str, dict]]":
         w = _TAG_WRAP.match(raw or "")
         if w:
             wrap_name, raw = w.group(1), w.group(2)
-        call = _call_from_json(raw, wrap_name if wrap_name not in ("tool", "function") else "")
+        call = _call_from_json(raw, wrap_name if wrap_name not in ("tool", "function") else "", lenient=True)
         if call:
             return call
     return None
 
 
-def _call_from_json(raw: str, default_name: str = "") -> "Optional[tuple[str, dict]]":
+def _call_from_json(raw: str, default_name: str = "", lenient: bool = False) -> "Optional[tuple[str, dict]]":
     raw = (raw or "").strip()
-    if not raw.startswith("{"):
-        # Tolerates a stray word or label before the object, e.g. "<tool_call> tool {…}".
+    if lenient and not raw.startswith("{"):
+        # Tag bodies may carry a stray word before the object, e.g. "<tool_call> tool {…}".
         a, b = raw.find("{"), raw.rfind("}")
         if a == -1 or b < a:
             return None
@@ -222,8 +223,10 @@ def _fence(line: str) -> "tuple[bool, bool]":
     return True, s.startswith(_TOOL_OPEN) and not s[len(_TOOL_OPEN):].strip()
 
 
-def _opens_tag(line: str) -> bool:
-    return line.lstrip().startswith(_TAG_OPENS)
+def _tag_offset(line: str) -> Optional[int]:
+    """Index of the first call tag opener anywhere in the line, else None."""
+    hits = [line.find(o) for o in _TAG_OPENS if o in line]
+    return min(hits) if hits else None
 
 
 def _may_open_tool(tail: str) -> bool:
@@ -232,6 +235,19 @@ def _may_open_tool(tail: str) -> bool:
     if _TOOL_OPEN.startswith(t) or (t.startswith(_TOOL_OPEN) and not t[len(_TOOL_OPEN):].strip()):
         return True
     return any(o.startswith(t) or t.startswith(o) for o in _TAG_OPENS)
+
+
+def _safe_len(tail: str) -> int:
+    """How much of an unfinished line can be shown now: stops before any partial call tag."""
+    if _may_open_tool(tail):
+        return 0
+    i = tail.find("<")
+    while i != -1:
+        rest = tail[i:]
+        if any(o.startswith(rest) or rest.startswith(o) for o in _TAG_OPENS):
+            return i
+        i = tail.find("<", i + 1)
+    return len(tail)
 
 
 def _stream_reply(complete_stream: Callable, body: dict, emit: Callable[[dict], None],
@@ -252,7 +268,7 @@ def _stream_reply(complete_stream: Callable, body: dict, emit: Callable[[dict], 
         emitted = upto
 
     gen = complete_stream(body, label="tower")
-    # Close the generator explicitly so the gateway finally block runs on an early exit.
+    # Closes the generator on every exit path.
     with contextlib.closing(gen):
         for chunk in gen:
             if cancelled():
@@ -289,8 +305,9 @@ def _stream_reply(complete_stream: Callable, body: dict, emit: Callable[[dict], 
                         mode = "live"
                 elif opens_tool:
                     mode, hold = "tool", pos
-                elif _opens_tag(text[pos:end]):
-                    mode, hold = "tag", pos
+                elif (off := _tag_offset(text[pos:end])) is not None:
+                    show(pos + off)
+                    mode, hold = "tag", pos + off
                 else:
                     show(end)
                     if fence:
@@ -298,15 +315,22 @@ def _stream_reply(complete_stream: Callable, body: dict, emit: Callable[[dict], 
                 pos = end
             if found:
                 break
-            if mode == "code" or (mode == "live" and not _may_open_tool(text[pos:])):
+            if mode == "code":
                 show(len(text))
-    if mode == "live" and _may_open_tool(text[pos:]):
-        mode, hold = "tag", pos
+            elif mode == "live":
+                show(pos + _safe_len(text[pos:]))
+    if mode == "live":
+        off = _tag_offset(text[pos:])
+        if off is not None or _may_open_tool(text[pos:]):
+            off = off or 0
+            show(pos + off)
+            mode, hold = "tag", pos + off
     if not found and (mode not in ("tool", "tag") or parse_tool_call({"content": text[hold:]}) is None):
         show(len(text))
     msg = {"content": text}
     if frags:
-        msg["tool_calls"] = [{"id": f["id"] or f"call_{i}", "function": f["function"]} for i, f in sorted(frags.items())]
+        msg["tool_calls"] = [{"id": f["id"] or f"call_{i}", "type": "function", "function": f["function"]}
+                             for i, f in sorted(frags.items())]
     return msg, text[:emitted]
 
 
@@ -335,8 +359,7 @@ def _is_timeout(e: BaseException) -> bool:
 
 def run_turn(*, thread_id: str, user_text: str, page: Optional[dict], cfg, role: str, registry: dict,
              complete_stream: Callable, store, emit: Callable[[dict], None],
-             model: dict, cancelled: Callable[[], bool], server_args: Optional[str] = None,
-             complete_json: Optional[Callable] = None, alternates: Optional[Callable[[dict], Optional[dict]]] = None,
+             model: dict, cancelled: Callable[[], bool], alternates: Optional[Callable[[dict], Optional[dict]]] = None,
              server_args_of: Optional[Callable[[dict], Optional[str]]] = None) -> dict:
     """One user turn: every model call streams; tool reads loop until a plain-text answer.
     A first-token timeout may hand this one question to `alternates(model)` when cfg.fallback is on."""
@@ -351,7 +374,7 @@ def run_turn(*, thread_id: str, user_text: str, page: Optional[dict], cfg, role:
         return complete_stream(body, label=label, read_timeout=timeout) if timeout else complete_stream(body, label=label)
 
     def prepare(m: dict, fallback_from: Optional[str] = None) -> "tuple[list, dict]":
-        args = server_args_of(m) if server_args_of else server_args
+        args = server_args_of(m) if server_args_of else None
         native = native_supported(cfg, m["provider"], args)
         emit({"event": "model", "model": m["model"], "provider": m["provider"], "hosts": m.get("hosts") or [],
               **({"fallback": True, "from": fallback_from} if fallback_from else {})})
@@ -526,7 +549,10 @@ class Store:
             now = time.time()
             c.execute("INSERT INTO tower_messages (thread_id, role, content, tool_name, tool_args, tool_ok, tool_ms, ts, tokens) VALUES (?,?,?,?,?,?,?,?,?)",
                       (tid, role, content, tool_name, tool_args, None if tool_ok is None else int(bool(tool_ok)), tool_ms, now, tokens))
-            c.execute("UPDATE tower_threads SET updated=?, title=CASE WHEN title='New thread' AND ?='user' THEN substr(?,1,60) ELSE title END WHERE id=?", (now, role, content, tid))
+            if role == "user":
+                c.execute("UPDATE tower_threads SET updated=?, title=CASE WHEN title='New thread' THEN substr(?,1,60) ELSE title END WHERE id=?", (now, content, tid))
+            else:
+                c.execute("UPDATE tower_threads SET updated=? WHERE id=?", (now, tid))
             c.commit()
 
     def messages(self, tid: str, limit: int = 200) -> "list[dict]":
@@ -555,11 +581,9 @@ _RATE_PER_MIN = 10
 _RATE_WINDOW_S = 60.0
 _SWEEP_EVERY_S = 86400.0
 
-# Module-global set by register_routes(); Runs.start and tower_state read
-# it directly, so a reassignment here (e.g. by a test) is picked up live.
+# Module-global set by register_routes(); read at call time.
 _gateway_entries: "Optional[Callable[[], list]]" = None
 
-# Indirection so a test can fake the clock (patches _now, not time.time).
 _now: "Callable[[], float]" = time.time
 
 _PAGE_STR_KEYS = ("tab", "sub", "host", "alert_id")
@@ -587,26 +611,27 @@ def _drop_oldest_put(run: dict, item: dict) -> None:
         return
     except queue.Full:
         pass
+    _replace_oldest(q, item)
+    if run.get("truncated"):
+        return
+    run["truncated"] = True
+    _replace_oldest(q, {"event": "truncated"})
+
+
+def _replace_oldest(q: "queue.Queue", item: dict) -> None:
     with contextlib.suppress(queue.Empty):
         q.get_nowait()
     with contextlib.suppress(queue.Full):
         q.put_nowait(item)
-    if run.get("truncated"):
-        return
-    run["truncated"] = True
-    with contextlib.suppress(queue.Empty):
-        q.get_nowait()
-    with contextlib.suppress(queue.Full):
-        q.put_nowait({"event": "truncated"})
 
 
 class Runs:
     """One worker thread per turn; events buffered in a queue the SSE route drains."""
-    def __init__(self, store, *, registry_factory, complete_json, complete_stream, entries, server_args_of, cfg,
+    def __init__(self, store, *, registry_factory, complete_stream, entries, server_args_of, cfg,
                  stream_max_s: "Optional[Callable[[], float]]" = None,
                  shutting_down: "Optional[Callable[[], bool]]" = None):
         self._store = store
-        self._registry_factory, self._cj, self._cs = registry_factory, complete_json, complete_stream
+        self._registry_factory, self._cs = registry_factory, complete_stream
         self._entries, self._server_args_of, self._cfg = entries, server_args_of, cfg
         self._stream_max_s = stream_max_s or (lambda: _STREAM_MAX_S)
         self._shutting_down = shutting_down or (lambda: False)
@@ -654,7 +679,7 @@ class Runs:
                 return None, (429, "rate_limited")
             if self._active_run(user):
                 return None, (409, "run_active")
-        # Model resolution may fan out to the gateway index — never under the lock.
+        # Resolved outside the lock.
         model = resolve_model(self._cfg(), (_gateway_entries or self._entries)())
         if model is None:
             return None, (503, "no_model")
@@ -676,8 +701,7 @@ class Runs:
                 run_turn(thread_id=thread_id, user_text=text, page=page, cfg=self._cfg(), role=role,
                          registry=self._registry_factory(), complete_stream=self._cs,
                          store=self._store, emit=lambda ev: _drop_oldest_put(run, ev), model=model,
-                         cancelled=run["cancel"].is_set, complete_json=self._cj,
-                         server_args=self._server_args_of(model), server_args_of=self._server_args_of,
+                         cancelled=run["cancel"].is_set, server_args_of=self._server_args_of,
                          alternates=lambda cur: alternate_model(cur, (_gateway_entries or self._entries)()))
             except Exception as e:
                 log.warning("tower worker failed: %s: %s", type(e).__name__, e)
@@ -747,6 +771,7 @@ def register_routes(app, ctx, *, runs: Runs, gateway_entries, write_setting) -> 
         if not uid:
             uid = uuid.uuid4().hex
             session["tower_uid"] = uid
+            session.permanent = True
         return f"bypass:{uid}"
 
     def _gate():

@@ -319,3 +319,10 @@ def test_config_get_is_admin_only_in_the_catalog():
     assert "config_get" not in {t.name for t in tt.catalog(reg, _cfg(), "operator")}
     assert "config_get" in {t.name for t in tt.catalog(reg, _cfg(), "admin")}
     assert {t.name for t in tt.catalog(reg, _cfg(), "operator")} == set(tt.TOOL_NAMES) - {"config_get"}
+
+
+def test_models_rows_with_a_host_filter_ignores_models_loaded_elsewhere():
+    loaded = {("llama", "qwen"): ["other-box"]}
+    entries = [{"id": "qwen", "provider": "llama", "hosts": ["other-box"]}, {"id": "gemma", "provider": "lms", "hosts": ["mac"]}]
+    assert [r["model"] for r in tt.models_rows(entries, loaded, host="mac")] == ["gemma"]
+    assert tt.models_rows(entries, loaded, host="nowhere") == []

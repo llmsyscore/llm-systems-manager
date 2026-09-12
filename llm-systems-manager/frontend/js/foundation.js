@@ -1547,7 +1547,6 @@ function switchTab(tab) {
   if (_activeTab === 'overall' && tab !== 'overall'
       && typeof returnPinnedCards === 'function') returnPinnedCards();
   _activeTab = tab;
-  document.dispatchEvent(new CustomEvent('lsm:tab', { detail: { tab } }));
   document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
   document.querySelector(`.tab-btn[onclick="switchTab('${tab}')"]`)?.classList.add('active');
 
@@ -1609,6 +1608,7 @@ function switchTab(tab) {
     if (typeof stopVllmLogRefresh === 'function') stopVllmLogRefresh();
     if (typeof rcStopStream === 'function') rcStopStream();
   }
+  document.dispatchEvent(new CustomEvent('lsm:tab', { detail: { tab } }));
 }
 
 // ── Role-aware UI (multi-user, #125) ────────────────────────────────────────

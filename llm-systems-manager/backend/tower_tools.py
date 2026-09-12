@@ -56,8 +56,7 @@ def cap_result(obj: Any, limit: int = RESULT_CAP) -> Any:
         result = None
     if result is not None and len(json.dumps(result, default=str)) <= limit + 64:
         return result
-    # Text fallback re-encodes obj as JSON first, so quote/backslash-dense
-    # content can double-escape; shrink the slice until it actually fits.
+    # Shrinks the JSON slice until the wrapper fits.
     s = json.dumps(obj, default=str)
     n = max(0, limit - 32)
     while True:
@@ -230,7 +229,7 @@ def alarm_stats(rows: list, group_by: str = "rule", top: int = 10, label: str = 
         if group_by == "day":
             ts = parse_ts(r.get("triggered_at"))
             return time.strftime("%Y-%m-%d", time.gmtime(ts)) if ts else "unknown"
-        return str(r.get(group_by if group_by != "rule" else "rule") or "unknown")
+        return str(r.get(group_by) or "unknown")
     groups: "dict[str, dict]" = {}
     for r in rows:
         g = groups.setdefault(key(r), {"key": None, "count": 0, "critical": 0, "warning": 0, "info": 0})
@@ -409,16 +408,18 @@ def models_rows(entries: list, loaded: "dict[tuple, list]", host: Optional[str] 
                 provider: Optional[str] = None) -> list:
     """Merges the gateway catalogue with the resident set; loaded rows first."""
     rows: dict = {}
+    here = lambda hs: [h for h in hs if not host or str(h).lower() == str(host).lower()]  # noqa: E731
+    loaded_here = {k for k, hs in loaded.items() if here(hs)}
     for e in entries:
         prov, mid = e.get("provider") or "llama", e.get("id")
         if not mid or (provider and prov != provider):
             continue
-        hosts = [h for h in (e.get("hosts") or []) if not host or str(h).lower() == str(host).lower()]
-        if host and not hosts and (prov, mid) not in loaded:
+        hosts = here(e.get("hosts") or [])
+        if host and not hosts and (prov, mid) not in loaded_here:
             continue
         rows[(prov, mid)] = {"model": mid, "provider": prov, "loaded": False, "loaded_on": [], "available_on": hosts}
     for (prov, mid), hs in loaded.items():
-        hs = [h for h in hs if not host or str(h).lower() == str(host).lower()]
+        hs = here(hs)
         if not hs or (provider and prov != provider):
             continue
         r = rows.setdefault((prov, mid), {"model": mid, "provider": prov, "loaded": False, "loaded_on": [], "available_on": []})

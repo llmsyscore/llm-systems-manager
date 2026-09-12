@@ -129,7 +129,7 @@
     return _thread;
   }
 
-  function paintHeader() {
+  function paintHeader(page) {
     const chip = $('twModelChip'), ctx = $('twCtxChip');
     if (chip) {
       const c = _view && _view.chip;
@@ -144,7 +144,7 @@
       }
     }
     if (ctx) {
-      const p = pageContext();
+      const p = page || pageContext();
       const label = [p.tab, p.sub].filter(Boolean).join(' · ') || 'no page context';
       ctx.innerHTML = `${TW.esc(label)}<span class="x">✕</span>`;
       ctx.title = _prefs.noCtx ? 'Page context is excluded · click to send it' : 'Page context sent with each question · click to exclude';
@@ -196,7 +196,8 @@
     const prevTop = body.scrollTop;
     const atBottom = (opts && opts.toBottom) || body.scrollHeight - prevTop - body.clientHeight < 24;
     body.onclick = null;
-    paintHeader();
+    const page = pageContext();
+    paintHeader(page);
     if (_view.off) {
       body.innerHTML = `<div class="on-card"><h3>Turn on Tower</h3><p>Answers questions about your hosts, models, alerts and energy using a model you already run behind the gateway. Nothing leaves the lab. It starts <b>read-only</b> and declines anything outside this manager; actions and alarm diagnosis are separate switches in Settings.</p>`
           + `<div class="foot"><button type="button" class="mcbtn mcbtn-pri mcbtn-sm" id="twEnable">Turn on</button><a href="#" id="twSettingsLink">All settings →</a></div></div>`;
@@ -212,14 +213,14 @@
     box?.classList.remove('dis'); if (input) input.disabled = false;
     const turns = (_state && _state.turns) || [];
     if (!turns.length) {
-      const p = pageContext();
+      const p = page;
       body.innerHTML = `<div class="empty"><h3>Ask about your hosts</h3><p>Tower reads live telemetry, alerts, models, energy and recent runs through the gateway.${p.tab ? ` It knows you are on <b>${TW.esc(p.tab)}</b>.` : ''}</p>`
         + `<div class="fu">${TW.suggestions(p).map(s => `<button type="button" class="sug" data-sug="${TW.esc(s)}">${TW.esc(s)}</button>`).join('')}</div></div>` + noticeHtml();
     } else {
       body.innerHTML = turns.map(turnHtml).join('') + pendingHtml() + noticeHtml();
     }
     body.scrollTop = atBottom ? body.scrollHeight : prevTop;
-    if (sugs) sugs.innerHTML = turns.length ? TW.suggestions(pageContext()).map(s => `<button type="button" class="sug" data-sug="${TW.esc(s)}">${TW.esc(s)}</button>`).join('') : '';
+    if (sugs) sugs.innerHTML = turns.length ? TW.suggestions(page).map(s => `<button type="button" class="sug" data-sug="${TW.esc(s)}">${TW.esc(s)}</button>`).join('') : '';
     const busy = !!(_state && _state.status !== 'idle');
     if (input) input.placeholder = busy ? 'Ask another — it goes next' : 'Ask Tower…';
     const sendBtn = $('twSend');
@@ -244,20 +245,25 @@
     if (rid) { try { await fetch(`/api/tower/runs/${encodeURIComponent(rid)}/stop`, { method: 'POST' }); } catch (_) { /* already gone */ } }
   }
 
-  async function send(text, fromInput) {
+  // Sends the composer text; the composer is cleared as soon as the text is taken.
+  function sendFromInput() {
     const input = $('twInput');
-    const t = String((fromInput ? (input && input.value) : text) || '').trim();
+    const t = input ? input.value : '';
+    if (input) { input.value = ''; input.style.height = 'auto'; }
+    send(t);
+  }
+
+  async function send(text) {
+    const t = String(text || '').trim();
     if (!t) return;
     if (_state && _state.status !== 'idle') {
       if (_pending.length >= 5) { _notice = 'Five questions are already waiting.'; paintBody(); return; }
       _pending.push(t);
-      if (fromInput && input) { input.value = ''; input.style.height = 'auto'; }
       paintBody({ toBottom: true });
       return;
     }
     if (!_thread) await ensureThread();
-    if (!_thread) { _notice = 'Tower could not start a thread; try again.'; paintBody(); return; }
-    if (fromInput && input) { input.value = ''; input.style.height = 'auto'; }
+    if (!_thread) { _notice = 'Tower could not start a thread; try again.'; if ($('twInput')) $('twInput').value = t; paintBody(); return; }
     _notice = null;
     _state = TW.reduce(_state || TW.initial(), { event: 'user', text: t });
     paintBody({ toBottom: true });
@@ -305,10 +311,10 @@
     if (!input || input._twBound) return;
     input._twBound = true;
     input.addEventListener('keydown', ev => {
-      if (ev.key === 'Enter' && !ev.shiftKey) { ev.preventDefault(); send(null, true); }
+      if (ev.key === 'Enter' && !ev.shiftKey) { ev.preventDefault(); sendFromInput(); }
     });
     input.addEventListener('input', () => { input.style.height = 'auto'; input.style.height = Math.min(120, input.scrollHeight) + 'px'; });
-    sendBtn?.addEventListener('click', () => { if (sendBtn.classList.contains('stop')) stop(); else send(null, true); });
+    sendBtn?.addEventListener('click', () => { if (sendBtn.classList.contains('stop')) stop(); else sendFromInput(); });
     const onSug = ev => { const b = ev.target.closest('[data-sug]'); if (b) send(b.dataset.sug); };
     body?.addEventListener('click', ev => {
       onSug(ev);
