@@ -52,6 +52,8 @@ The Manager is the central hub of the system. It serves the web dashboard that o
 | companion | PWA phone companion: serves the app shell/manifest/service worker, manages web-push subscriptions and VAPID keys, fans alarm alerts out to devices, and runs the opt-in release check |
 | sse_daemon | Standalone aiohttp daemon that serves the `/api/llama-state/stream` SSE endpoint off its own event loop instead of pinning a web server worker thread per held stream |
 | stream_health | Aggregates the manager's stream pool, worker-thread/queue backlog, and each agent's stream state into one snapshot for the Manager sub-tab's health card |
+| tower.py | Tower assistant: model resolution, streamed reasoning loop over the gateway, thread store, run registry, routes |
+| tower_tools.py | Static read-only tool registry + production readers; no shell/file/HTTP tool |
 | `app_context.py` | Shared context dataclass that wires all modules together — carries references to the agent registry, alarm engine session, and other cross-module dependencies |
 | `providers/` | Multi-agent provider registry — defines which agent types (llama.cpp, LM Studio, vLLM) are supported, how their metrics are aggregated across multiple agents, and how agents are routed |
 
@@ -212,6 +214,8 @@ The JavaScript is split into two tiers that share the same `js/` directory but b
 | Admin | Split into sub-tabs: Access Control, Agents, Audit Log, Backups, Gateway (pools, pins, and Model Autopilot management), and Settings, with a System Health card above the strip. Settings shows a category rail on the left and one group at a time as name / description / control rows, with a filter across every group. |
 
 The Dashboards → Energy sub-tab (`js/energy.js`, `js/lib/energy.js`) shows measured $/Mtok and cloud-savings figures. The LLM Control → Tools sub-tab (`js/tools.js`, `js/report-card.js`, `js/lib/reportcard.js`, `js/bench-autotune.js`) is an app-style launcher hosting Report Card, Benchmark, and Autotune as in-tab modules. Both Dashboards and LLM Control gained a vLLM sub-tab (`js/vllm.js`, `js/vllm-bench-autotune.js`). Model Autopilot has no dedicated top-level tab — it is a card inside Admin → Gateway (`js/autopilot.js`). The rest of the Admin refactor lives in `js/admin-agents.js`, `js/admin-audit.js`, `js/admin-health.js`, `js/admin-settings.js`, and `js/admin-access-settings.js`, with shared helpers in `js/lib/modelcards.js`, `js/editor-modern.js`, and `js/lib/sseguard.js`.
+
+The Tower drawer (header button, Alt+T) answers questions about hosts, models, alerts and energy through the gateway; it ships off and read-only.
 
 ### Phone Companion (PWA)
 

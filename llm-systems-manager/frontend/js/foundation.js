@@ -1547,6 +1547,7 @@ function switchTab(tab) {
   if (_activeTab === 'overall' && tab !== 'overall'
       && typeof returnPinnedCards === 'function') returnPinnedCards();
   _activeTab = tab;
+  document.dispatchEvent(new CustomEvent('lsm:tab', { detail: { tab } }));
   document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
   document.querySelector(`.tab-btn[onclick="switchTab('${tab}')"]`)?.classList.add('active');
 
@@ -1630,6 +1631,8 @@ function applyRoleGating() {
   // logged-in (non-bypass) session.
   _sdRenderAccount();
   if (!isAdmin && _activeTab === 'admin') switchTab('overall');
+  // Re-reads Tower state so its header button matches the new role (#924).
+  if (typeof towerRefreshState === 'function') towerRefreshState();
 }
 
 async function _accountChangePassword() {

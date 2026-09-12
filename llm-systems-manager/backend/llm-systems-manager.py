@@ -176,7 +176,7 @@ def _local_hostname() -> str:
 # banner reads it. Bump suffix (-1, -2, …) for same-day iterations; roll
 # the date for a new day's first change.
 # ---------------------------------------------------------------------------
-__version__ = "v2026.09.11-6"
+__version__ = "v2026.09.12-3"
 
 # Wall-clock at first import (Cheroot main process); the shutdown banner
 # reads it for the uptime line.
@@ -207,6 +207,8 @@ import bench_baseline  # type: ignore[import-not-found]  # noqa: E402  # leaf, n
 import tool_activity  # type: ignore[import-not-found]  # noqa: E402  # leaf, no cycle; #775
 import gateway_usage  # type: ignore[import-not-found]  # noqa: E402  # leaf, no cycle; #502
 import discord_bot  # type: ignore[import-not-found]  # noqa: E402  # leaf, no cycle; #471
+import tower        # type: ignore[import-not-found]  # noqa: E402  # leaf, no cycle; #924
+import tower_tools  # type: ignore[import-not-found]  # noqa: E402  # leaf, no cycle; #924
 import companion  # type: ignore[import-not-found]  # noqa: E402  # leaf, no cycle; #522
 import export_log  # type: ignore[import-not-found]  # noqa: E402  # leaf, no cycle; #797
 import settings_catalog  # type: ignore[import-not-found]  # noqa: E402  # leaf, no cycle; #606
@@ -3372,6 +3374,8 @@ AUDIT_EVENT_GROUPS: list[dict] = [
         {"key": "terminal.open", "label": "Terminal session opened", "default_on": True},
         {"key": "reportcard", "label": "Report card run / delete", "default_on": True},
         {"key": "tools.run", "label": "Benchmark / autotune run", "default_on": False}]},
+    {"key": "tower", "title": "Tower", "events": [
+        {"key": "tower.config", "label": "Model pin / thread delete", "default_on": True}]},
 ]
 _AUDIT_EVENT_GROUP = {ev["key"]: g["key"] for g in AUDIT_EVENT_GROUPS for ev in g["events"]}
 
@@ -3428,6 +3432,7 @@ _AUDIT_LABELS: dict[str, str] = {
     "alarm.acknowledge": "Acknowledged an alert", "alarm.close-all": "Closed all alerts",
     "alarm.ignore-all": "Ignored all alerts", "alarm.bulk": "Bulk alert action",
     "alarm.delete": "Deleted an alert", "alarm.rule": "Changed an alarm rule",
+    "tower.model": "Pinned the Tower model", "tower.thread.delete": "Deleted a Tower thread",
 }
 
 # (method-or-None, path regex, action, event). Groups: t = target, v = verb
@@ -3494,6 +3499,8 @@ _AUDIT_ROUTES: list[tuple] = [
     ("POST",   re.compile(r"^/api/alarm/alerts/(?P<v>close-all|ignore-all|bulk)$"), "alarm.{v}", "alarm.actions"),
     ("DELETE", re.compile(r"^/api/alarm/alerts/(?P<t>[^/]+)$"),        "alarm.delete",       "alarm.actions"),
     (None,     re.compile(r"^/api/alarm/(?:admin/)?rules(?:/(?P<t>[^/]+))?$"), "alarm.rule",  "alarm.actions"),
+    ("PUT",    re.compile(r"^/api/tower/model$"),                      "tower.model",        "tower.config"),
+    ("DELETE", re.compile(r"^/api/tower/threads/(?P<t>[^/]+)$"),       "tower.thread.delete", "tower.config"),
 ]
 
 # Actions whose target is the model id in the JSON body, not in the path.
@@ -3522,7 +3529,7 @@ _AUDIT_PATH_PREFIXES = ("/api/admin/", "/api/agents/", "/api/llm/", "/api/lmstud
                         "/api/config/", "/api/vllm/", "/api/autopilot", "/api/terminal/",
                         "/api/lms/terminal/", "/api/reportcard/", "/api/alarm/",
                         "/api/account/", "/api/layout", "/login", "/logout",
-                        "/api/benchmark/live/baselines")
+                        "/api/benchmark/live/baselines", "/api/tower/")
 
 _AUDIT_DETAIL_BODY_KEYS = ("model", "model_id", "agent", "agent_id", "kind", "set", "enabled",
                            "context_length", "n_gpu_layers", "role", "mode", "provider",
@@ -3821,7 +3828,7 @@ _AUDIT_GROUP_PREFIXES = {
     "agent": ("agent.",), "user": ("user.", "auth.", "account."),
     "config": ("config.", "backup.", "admin."), "model": ("llama.", "lms.", "vllm.", "model."),
     "service": ("service.", "alarm."), "auto": ("autopilot",),
-    "tool": ("terminal.", "reportcard.", "tools."),
+    "tool": ("terminal.", "reportcard.", "tools."), "tower": ("tower.",),
 }
 def _csv_safe(v):
     """Neutralise spreadsheet formula triggers in a CSV cell."""
@@ -5651,6 +5658,96 @@ _bench_watcher = bench_baseline.Watcher(
     alert=_ae_ingest_alert, push_metrics=_push_bench_metrics, log=log)
 bench_baseline.register_routes(app, _bench_watcher, primary_agent=_request_agent)
 companion.register_routes(app, ctx, static_dir=STATIC_DIR)
+
+
+def _tower_tools_runs(tool, count):
+    conn = get_db()
+    q = "SELECT tool, model_id, agent_id, provider, ok, summary, ts, run_id FROM tool_runs"
+    args: tuple = ()
+    if tool:
+        q += " WHERE tool=?"; args = (tool,)
+    rows = conn.execute(q + " ORDER BY id DESC LIMIT ?", args + (int(count),)).fetchall()
+    return [_tool_run_row(r) for r in rows]
+
+
+def _tower_service_health() -> dict:
+    agents = agent_registry.load_agents().get("agents") or {}
+    now = time.time()
+    approved = [a for a in agents.values() if a.get("status") == "approved"]
+    online = [a.get("hostname") for a in approved if agent_registry.agent_liveness(a) == "live"]
+    offline = [{"host": a.get("hostname"), "liveness": agent_registry.agent_liveness(a)}
+               for a in approved if agent_registry.agent_liveness(a) != "live"]
+    try:
+        ae_ok = _ae_session.get(f"{_alarm_engine_url}/health", timeout=3).ok
+    except Exception:
+        ae_ok = False
+    return {"manager": {"version": __version__, "uptime_s": round(now - _manager_startup_ts), "streams": stream_pool.POOL.stats()},
+            "alarm_engine": {"ok": ae_ok}, "agents": {"online": online, "offline": offline}}
+
+
+def _tower_server_args(model: dict) -> "str | None":
+    """Space-joined llama-server args of the model's first host, for --jinja detection."""
+    try:
+        aid = (model.get("agent_ids") or [None])[0]
+        if not aid:
+            return None
+        sample = (provider_state.STORE.get("llama", aid) or {}).get("sample") or {}
+        args = (sample.get("llama") or {}).get("server_args") or (sample.get("llama") or {}).get("cmdline")
+        return " ".join(args) if isinstance(args, list) else (str(args) if args else None)
+    except Exception:
+        return None
+
+
+def _tower_write_setting(path: str, value) -> None:
+    clean, errors = settings_catalog.validate_and_coerce({path: value})
+    if errors:
+        raise ValueError(errors[path])
+    settings_toml_io.apply_patches(clean)
+    _tower_reload_config()
+
+
+_TOWER_INDEX_WAIT_S = 2.0
+
+
+def _tower_gateway_entries() -> list:
+    """Cached model index, or a bounded async refresh — never the blocking fan-out."""
+    entries = gateway._cached_model_entries()
+    if entries is None:
+        gateway._refresh_model_index_async()
+        gateway._await_model_index(_TOWER_INDEX_WAIT_S)
+        entries = gateway._cached_model_entries() or []
+    out = []
+    for e in entries:
+        prov = e.get("provider") or "llama"
+        agent_ids = sorted(gateway._serving_agent_ids(prov, e.get("id")))
+        hosts = [(agent_registry.resolve_agent_by_id(aid) or {}).get("hostname") for aid in agent_ids]
+        row = {**e, "hosts": [h for h in hosts if h], "agent_ids": agent_ids}
+        # LM Studio's /v1/models carries no load state; the polled `ps` rows do.
+        if prov == "lms" and not isinstance(e.get("status"), dict):
+            loaded = any(e.get("id") in autopilot._lms_loaded((provider_state.STORE.get("lms", aid) or {}).get("sample") or {})
+                         for aid in agent_ids)
+            row["status"] = {"value": "loaded" if loaded else "unloaded"}
+        out.append(row)
+    return out
+
+
+def _tower_stream_max_s() -> float:
+    base = float(getattr(settings.manager, "stream_max_lifetime_s", 120.0) or 120.0)
+    return max(base, 3.0 * float(getattr(settings.manager.tower, "request_timeout_s", 45) or 45))
+
+
+_tower_store = tower.Store(str(DB_PATH))
+_tower_deps = tower_tools.prod_deps(ctx, db_path=str(DB_PATH), tools_runs=_tower_tools_runs,
+                                    speed_table=lambda m: bench_live.speed_table(str(DB_PATH), m),
+                                    service_health=_tower_service_health, gateway_entries=_tower_gateway_entries)
+_tower_runs = tower.Runs(_tower_store, registry_factory=lambda: tower_tools.build_registry(_tower_deps),
+                         complete_json=gateway.complete_json, complete_stream=gateway.complete_stream,
+                         entries=_tower_gateway_entries, server_args_of=_tower_server_args,
+                         cfg=lambda: settings.manager.tower, stream_max_s=_tower_stream_max_s,
+                         shutting_down=lambda: _shutting_down)
+tower.register_routes(app, ctx, runs=_tower_runs, gateway_entries=_tower_gateway_entries,
+                      write_setting=lambda path, value: _tower_write_setting(path, value))
+
 import manager_users  # type: ignore[import-not-found]  # sibling
 manager_users.init(
     DATA_DIR / "manager_users.json",
@@ -6200,6 +6297,27 @@ def _bench_baseline_reload_config() -> None:
 
 
 _HOT_RELOADERS["manager.bench_baselines."] = _bench_baseline_reload_config
+
+
+_TOWER_KEYS = ("enabled", "model", "tool_mode", "capabilities", "off_topic", "disabled_tools",
+               "diagnose_alarms", "playbooks_auto", "min_severity", "max_tool_calls",
+               "max_tokens", "temperature", "request_timeout_s", "fallback", "history_days")
+
+
+def _tower_reload_config() -> None:
+    """Re-apply [manager.tower] from the on-disk config onto the live settings (hot)."""
+    try:
+        snap = settings_catalog._snapshot().manager.tower
+        live = getattr(settings.manager, "tower", None)
+        if live is None:
+            return
+        for k in _TOWER_KEYS:
+            setattr(live, k, getattr(snap, k))
+    except Exception as e:
+        log.warning("tower config reload failed (runtime keeps previous values): %s", e)
+
+
+_HOT_RELOADERS["manager.tower."] = _tower_reload_config
 
 
 def _validate_nightly_at(value: str) -> "str | None":

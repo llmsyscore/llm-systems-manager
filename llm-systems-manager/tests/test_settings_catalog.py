@@ -202,3 +202,14 @@ def test_pending_restart_paths_skips_hot(monkeypatch):
            "manager.history.window_minutes": 60}
     assert sc.pending_restart_paths(now) == ["manager.port"]
     assert sc.pending_restart_services(now) == {"manager"}
+
+
+def test_chips_entry_lists_every_tower_tool_and_rejects_unknown_names():
+    import tower_tools
+    e = sc._BY_PATH["manager.tower.disabled_tools"]
+    assert e["type"] == "chips" and e["exclude"] is True and e["label"] == "Available tools"
+    assert e["choices"] == list(tower_tools.TOOL_NAMES)
+    clean, errors = sc.validate_and_coerce({"manager.tower.disabled_tools": ["log_tail", " help "]})
+    assert errors == {} and clean["manager.tower.disabled_tools"] == ["log_tail", "help"]
+    _, errors = sc.validate_and_coerce({"manager.tower.disabled_tools": ["rm_rf"]})
+    assert "rm_rf" in errors["manager.tower.disabled_tools"]

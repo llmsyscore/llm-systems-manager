@@ -1039,6 +1039,55 @@ Sends a test notification via web push (VAPID). **Body (optional):** `{"endpoint
 
 ---
 
+## Tower assistant
+
+Opt-in assistant over the inference gateway (#924). Every route needs a dashboard session and, except `state`, answers 404 while `manager.tower.enabled` is false.
+
+### `GET /api/tower/state`
+Returns `{enabled, admin, model, provider, hosts, capabilities, off_topic, diagnose_alarms, insights_new}`; responds 200 with `enabled: false` (no other fields) while Tower is off.
+
+---
+
+### `GET /api/tower/threads`
+Lists the caller's Tower threads.
+
+---
+
+### `POST /api/tower/threads`
+Creates a thread. **Body:** `{"page": "..."}`.
+
+---
+
+### `GET /api/tower/threads/<id>`
+Returns the thread and its messages.
+
+---
+
+### `DELETE /api/tower/threads/<id>`
+Deletes the thread; audited as `tower.thread.delete`.
+
+---
+
+### `POST /api/tower/threads/<id>/messages`
+Sends a message and starts a run. **Body:** `{"text": "...", "page": "..."}` → `{"run_id": "..."}`. Returns 400 for empty text, 409 `run_active` if the thread already has a run in flight, and 503 `no_model` when no model resolves; also 429 `rate_limited`.
+
+---
+
+### `GET /api/tower/runs/<id>/stream`
+SSE stream of the run's reasoning loop. Events: `model`, `status`, `tool`, `delta`, `truncated`, `done`, `error`. A second `model` event with `fallback: true` and `from` means the question was handed to another loaded model after the request timeout (`manager.tower.fallback`); the answer text opens with the same disclosure. Holds one stream-pool slot for the life of the connection.
+
+---
+
+### `POST /api/tower/runs/<id>/stop`
+Stops an in-progress run; 404 for an unknown run.
+
+---
+
+### `PUT /api/tower/model`
+**Access:** [Admin]. Pins the model Tower uses. **Body:** `{"model": "..."}`; writes `manager.tower.model` and is audited as `tower.model`.
+
+---
+
 ## Admin
 
 These endpoints require an admin-role session.

@@ -414,6 +414,16 @@ Three things to get right:
 
 Restart the manager after editing this section — the bot reads its allowlist at startup.
 
+### Tower assistant
+
+An in-dashboard drawer that answers questions about hosts, models, alerts, and energy over the inference gateway. Enable it in Admin › Settings › Tower assistant: turn Enabled on and, optionally, pick a Primary model from the loaded ones — the default `auto` lets Tower use any loaded chat model, since Tower never loads one itself.
+
+It starts scoped down: "What Tower may do" defaults to read (answer only), and off-topic questions are refused. Both can be relaxed later in the same settings group, as can the tool list (Available tools).
+
+Request timeout (s) bounds how long Tower waits for the model to start answering. With Fallback model on, a question that misses it is asked of the next loaded chat model instead (another host first), and the reply says so; the next question goes back to the primary model.
+
+llama.cpp serves native tool calls only when its server args include `--jinja`; otherwise Tower falls back to a fenced JSON tool format automatically. Nothing Tower reads or does leaves the lab.
+
 ### Backups
 
 **Admin → Backups.** A scheduled run writes an encrypted manager archive (config, agent registry, CA, users, model profiles, benchmarks) and, when `[alarm_engine].management_token` is set, the alarm engine's own export in the same run — without a management token the run is recorded as `manager only`. Retention counts **runs**, not archives, so `keep_last = 7` can retain up to 14 files.

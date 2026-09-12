@@ -40,15 +40,18 @@ function payload(over = {}) {
   };
 }
 
-async function boot(data) {
+async function boot(data, opts) {
   const dom = new JSDOM(
     `<!doctype html><html><body><div id="adminTab">${PANEL}</div></body></html>`,
     { runScripts: 'dangerously', url: 'http://localhost/' });
   dom.window.__puts = [];
-  dom.window.fetch = (url, opts) => {
-    if (opts && opts.method === 'PUT') {
-      dom.window.__puts.push(JSON.parse(opts.body));
+  dom.window.fetch = (url, fetchOpts) => {
+    if (fetchOpts && fetchOpts.method === 'PUT') {
+      dom.window.__puts.push(JSON.parse(fetchOpts.body));
       return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({ ok: true, applied: [] }) });
+    }
+    if (url === '/api/gateway/v1/models') {
+      return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({ data: (opts && opts.gatewayModels) || [] }) });
     }
     return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve(data) });
   };
@@ -451,5 +454,62 @@ describe('rail selection review fixes (#945)', () => {
     f.dispatchEvent(new win.Event('input', { bubbles: true }));
     const mostUsed = navBtns(win.document).find(b => b.dataset.group === '__most_used__');
     expect(mostUsed.classList.contains('dim')).toBe(true);
+  });
+});
+
+describe('gateway model picker (#924)', () => {
+  const MODEL = { path: 'manager.tower.model', label: 'Primary model', help: 'Pinned model.', group: 'network', service: 'manager', type: 'str', hot: true, datalist: 'gateway_models' };
+  test('renders a select of auto plus the gateway models, current value selected', async () => {
+    const win = await boot(payload({ entries: [PORT, MODEL], values: { 'manager.ws_proxy_port': 5001, 'manager.tower.model': 'qwen3-14b' } }),
+      { gatewayModels: [{ id: 'qwen3-14b', provider: 'llama' }, { id: 'gemma-4', provider: 'lms' }] });
+    const sel = input(win.document, 'manager.tower.model');
+    expect(sel.tagName).toBe('SELECT');
+    expect([...sel.options].map(o => o.value)).toEqual(['auto', 'qwen3-14b', 'gemma-4']);
+    expect(sel.value).toBe('qwen3-14b');
+    expect(win.document.querySelector('#stGatewayModels')).toBeNull();
+  });
+  test('a blank or unknown stored value still shows: blank as auto, unknown appended', async () => {
+    let win = await boot(payload({ entries: [PORT, MODEL], values: { 'manager.ws_proxy_port': 5001, 'manager.tower.model': '' } }), { gatewayModels: [{ id: 'qwen3-14b' }] });
+    expect(input(win.document, 'manager.tower.model').value).toBe('auto');
+    win = await boot(payload({ entries: [PORT, MODEL], values: { 'manager.ws_proxy_port': 5001, 'manager.tower.model': 'gone-model' } }), { gatewayModels: [{ id: 'qwen3-14b' }] });
+    const sel = input(win.document, 'manager.tower.model');
+    expect([...sel.options].map(o => o.value)).toEqual(['auto', 'qwen3-14b', 'gone-model']);
+    expect(sel.value).toBe('gone-model');
+  });
+  test('picking a model queues it for Save', async () => {
+    const win = await boot(payload({ entries: [PORT, MODEL], values: { 'manager.ws_proxy_port': 5001, 'manager.tower.model': 'auto' } }), { gatewayModels: [{ id: 'qwen3-14b' }] });
+    const sel = input(win.document, 'manager.tower.model');
+    sel.value = 'qwen3-14b'; sel.dispatchEvent(new win.Event('change', { bubbles: true }));
+    win.document.getElementById('adminSettingsSaveBtn').click();
+    await new Promise(r => setTimeout(r, 0));
+    expect(win.__puts[0].changes['manager.tower.model']).toBe('qwen3-14b');
+  });
+});
+
+describe('chips setting (#924)', () => {
+  const TOOLS = { path: 'manager.tower.disabled_tools', label: 'Available tools', help: 'Tools Tower may use.', group: 'network',
+                  service: 'manager', type: 'chips', hot: true, choices: ['alarms', 'help', 'log_tail'], exclude: true };
+  const data = () => payload({ entries: [PORT, TOOLS],
+    values: { 'manager.ws_proxy_port': 5001, 'manager.tower.disabled_tools': ['log_tail'] },
+    defaults: { 'manager.ws_proxy_port': 5001, 'manager.tower.disabled_tools': [] } });
+
+  test('renders one chip per choice, on unless the stored list excludes it, with an "all" default hint', async () => {
+    const win = await boot(data());
+    const chips = [...win.document.querySelectorAll('.st-chips[data-path="manager.tower.disabled_tools"] .st-chip')];
+    expect(chips.map(c => c.dataset.chip)).toEqual(['alarms', 'help', 'log_tail']);
+    expect(chips.map(c => c.classList.contains('on'))).toEqual([true, true, false]);
+    expect(field(win.document, 'manager.tower.disabled_tools').querySelector('[data-dflt]').textContent).toBe('default all');
+  });
+
+  test('clicking chips writes the excluded list and Save sends it', async () => {
+    const win = await boot(data());
+    const box = win.document.querySelector('.st-chips[data-path="manager.tower.disabled_tools"]');
+    box.querySelector('[data-chip="log_tail"]').click();
+    box.querySelector('[data-chip="help"]').click();
+    expect(box.classList.contains('dirty')).toBe(true);
+    expect(field(win.document, 'manager.tower.disabled_tools').querySelector('[data-dflt]').textContent).toBe('default all');
+    win.document.getElementById('adminSettingsSaveBtn').click();
+    await new Promise(r => setTimeout(r, 0));
+    expect(win.__puts[0].changes['manager.tower.disabled_tools']).toEqual(['help']);
   });
 });

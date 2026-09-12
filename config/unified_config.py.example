@@ -129,6 +129,26 @@ class ManagerDiscord(BaseModel):
     allow_model_control: bool = False
 
 
+class ManagerTower(BaseModel):
+    """Tower assistant (#924). Off by default; read-only and in-scope until relaxed."""
+    model_config = _MODEL_CFG
+    enabled: bool = False
+    model: str = "auto"                # auto = any resident chat model, else a pinned gateway model id
+    tool_mode: str = "auto"            # auto | native | prompt
+    capabilities: str = "read"         # read | operate | admin
+    off_topic: str = "refuse"          # refuse | allow
+    disabled_tools: list[str] = Field(default_factory=list)
+    diagnose_alarms: bool = False
+    playbooks_auto: bool = False
+    min_severity: str = "warning"      # info | warning | critical
+    max_tool_calls: int = 8
+    max_tokens: int = 1024
+    temperature: float = 0.2
+    request_timeout_s: int = 45       # seconds to wait for the model to start answering
+    fallback: bool = False             # on timeout, ask the next loaded chat model this one question
+    history_days: int = 30
+
+
 class ManagerModelMeta(BaseModel):
     """Hugging Face model metadata reader (#878): sampling suggestions from
     generation_config.json / model cards, cached ttl_days."""
@@ -334,6 +354,7 @@ class ManagerConfig(BaseModel):
     reportcard: ManagerReportcard = Field(default_factory=ManagerReportcard)
     energy: ManagerEnergy = Field(default_factory=ManagerEnergy)
     discord: ManagerDiscord = Field(default_factory=ManagerDiscord)
+    tower: ManagerTower = Field(default_factory=ManagerTower)
     model_meta: ManagerModelMeta = Field(default_factory=ManagerModelMeta)
     companion: ManagerCompanion = Field(default_factory=ManagerCompanion)
     history: ManagerHistory = Field(default_factory=ManagerHistory)
