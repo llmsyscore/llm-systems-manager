@@ -416,11 +416,17 @@ Restart the manager after editing this section — the bot reads its allowlist a
 
 ### Tower assistant
 
-An in-dashboard drawer that answers questions about hosts, models, alerts, and energy over the inference gateway. Enable it in Admin › Settings › Tower assistant: turn Enabled on and, optionally, pick a Primary model from the loaded ones — the default `auto` lets Tower use any loaded chat model, since Tower never loads one itself.
+An in-dashboard drawer that answers questions about hosts, models, alerts, energy, and saved model profiles over the inference gateway. Enable it in Admin › Settings › Tower assistant: turn Enabled on and, optionally, pick a Primary model from the loaded ones — the default `auto` lets Tower use any loaded chat model, since Tower never loads one itself.
 
 It starts scoped down: "What Tower may do" defaults to read (answer only), and off-topic questions are refused. Both can be relaxed later in the same settings group, as can the tool list (Available tools).
 
+Set "What Tower may do" to *Answer and act* to let it load or unload a model, wake llama-server, or acknowledge / close an alert; *incl. admin actions* adds restarting a provider server (admins only). Every action pauses on a card in the drawer — what it will do, where, what it will not do, and who may approve — and runs only after Approve. Approvals expire after 10 minutes, the caller's role and the tier are re-checked at that moment, and each decision lands in Admin › Audit as `tower via <user>`. Any single tool can still be switched off under Available tools.
+
+Tower never produces code: a language-tagged code fence in a reply is withheld and replaced with a single "Code withheld" line, though configuration Tower reads for diagnosis — TOML, JSON, YAML, plain text and the like — still shows. "Report rule-bypass attempts" (Settings › Tower assistant, on by default) covers messages that try to make Tower ignore its rules, reveal its instructions, skip approvals or take on another persona: these are refused outright, and with reporting on the refusal is logged to Admin › Audit as a critical `tower.violation` and raises a critical alert; with reporting off, Tower still refuses but nothing is logged or alerted.
+
 Request timeout (s) bounds how long Tower waits for the model to start answering. With Fallback model on, a question that misses it is asked of the next loaded chat model instead (another host first), and the reply says so; the next question goes back to the primary model.
+
+Debug logging (Settings › Tower assistant, and the same switch under Inference Gateway) writes a per-step trace to the manager log with names, sizes and timings only.
 
 llama.cpp serves native tool calls only when its server args include `--jinja`; otherwise Tower falls back to a fenced JSON tool format automatically. Nothing Tower reads or does leaves the lab.
 

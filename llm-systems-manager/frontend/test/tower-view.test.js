@@ -24,6 +24,15 @@ describe('reduce', () => {
     expect(s.turns[1].error).toMatch(/Gateway card/);
     expect(s.status).toBe('idle');
   });
+  test('a second done event does not append an empty turn', () => {
+    let s = TW.reduce(TW.initial(), { event: 'user', text: 'x' });
+    s = TW.reduce(s, { event: 'delta', text: 'answer' });
+    s = TW.reduce(s, { event: 'done', ok: true });
+    expect(s.turns).toHaveLength(2);
+    s = TW.reduce(s, { event: 'done', ok: true });
+    expect(s.turns).toHaveLength(2);
+    expect(s.status).toBe('idle');
+  });
   test('truncated marks the current tower turn as having dropped output', () => {
     let s = TW.reduce(TW.initial(), { event: 'user', text: 'x' });
     s = TW.reduce(s, { event: 'delta', text: 'part' });
@@ -103,5 +112,59 @@ describe('md never hangs on partial input', () => {
     expect(TW.md('Here:\n| host | watts |')).toBe('<p>Here:</p><p>| host | watts |</p>');
     expect(TW.md('| a |\n| b |')).toBe('<p>| a |</p><p>| b |</p>');
     expect(TW.md('| h |\n|---|\n| 1 |')).toContain('<table>');
+  });
+});
+
+describe('actions', () => {
+  const CARD = { title: 'Wake llama-server', target: 'box · llama.cpp', does: 'Sends a one-token completion.', not: 'No model is loaded or unloaded.' };
+  test('confirm parks the turn on a pending card and action resolves it', () => {
+    let s = TW.reduce(TW.initial(), { event: 'user', text: 'wake box' });
+    s = TW.reduce(s, { event: 'confirm', action_id: 'a1', tool: 'wake_server', args: { host: 'box' }, card: CARD, tier: 'operate', role: 'operator', actor: 'tower via adriel', expires_s: 600 });
+    expect(s.status).toBe('awaiting');
+    expect(s.turns[1].actions).toEqual([{ id: 'a1', tool: 'wake_server', args: { host: 'box' }, card: CARD, status: 'pending', tier: 'operate', role: 'operator', actor: 'tower via adriel', message: null, ms: null, expires: expect.any(Number) }]);
+    const now = Math.floor(Date.now() / 1000);
+    expect(s.turns[1].actions[0].expires).toBeGreaterThanOrEqual(now + 599);
+    expect(s.turns[1].actions[0].expires).toBeLessThanOrEqual(now + 601);
+    s = TW.reduce(s, { event: 'action', action_id: 'a1', tool: 'wake_server', status: 'done', message: 'done', ms: 1200, actor: 'adriel' });
+    expect(s.status).toBe('thinking');
+    expect(s.turns[1].actions[0]).toMatchObject({ status: 'done', ms: 1200, message: 'done' });
+    s = TW.reduce(s, { event: 'delta', text: 'awake' });
+    s = TW.reduce(s, { event: 'done', ok: true });
+    expect(s.turns[1].text).toBe('awake');
+  });
+  test('an action resolves the card in whichever turn holds it, appending nothing', () => {
+    let s = { ...TW.initial(), turns: TW.threadView([
+      { role: 'action', content: JSON.stringify({ action_id: 'a1', tool: 'wake_server', card: CARD, status: 'pending' }), tool_name: 'wake_server' },
+      { role: 'user', content: 'and then?' },
+    ]) };
+    expect(s.turns).toHaveLength(2);
+    expect(s.turns[0].done).toBe(true);
+    s = TW.reduce(s, { event: 'action', action_id: 'a1', status: 'done', message: 'done', ms: 900, actor: 'adriel' });
+    expect(s.turns).toHaveLength(2);
+    expect(s.turns[0].actions[0]).toMatchObject({ status: 'done', ms: 900, message: 'done' });
+    expect(s.status).toBe('thinking');
+  });
+  test('an action for an unknown id is ignored', () => {
+    let s = TW.reduce(TW.initial(), { event: 'user', text: 'x' });
+    s = TW.reduce(s, { event: 'action', action_id: 'zz', status: 'denied' });
+    expect(s.turns[1].actions).toEqual([]);
+  });
+  test('threadView folds stored action rows into the turn', () => {
+    const rows = [
+      { role: 'user', content: 'wake box' },
+      { role: 'assistant', content: 'I will wake it.' },
+      { role: 'action', content: JSON.stringify({ action_id: 'a1', tool: 'wake_server', args: { host: 'box' }, card: CARD, status: 'pending', actor: null, expires: 1900000000, message: null }), tool_name: 'wake_server', tool_ok: null, tool_ms: null },
+      { role: 'assistant', content: 'done' },
+    ];
+    const t = TW.threadView(rows);
+    expect(t).toHaveLength(2);
+    expect(t[1].actions[0]).toMatchObject({ id: 'a1', tool: 'wake_server', status: 'pending', expires: 1900000000, card: CARD });
+    expect(t[1].text).toBe('I will wake it.\ndone');
+  });
+  test('suggestions add one act chip above read tier', () => {
+    expect(TW.suggestions({ tab: 'llm' }, 'read')).not.toContain('Wake llama-server');
+    expect(TW.suggestions({ tab: 'llm' }, 'operate').at(-1)).toBe('Wake llama-server');
+    expect(TW.suggestions({ tab: 'events' }, 'admin').at(-1)).toBe('Acknowledge the oldest active alert');
+    expect(TW.suggestions({ tab: 'overall' }, 'operate').at(-1)).toBe('Unload a model nobody is using');
   });
 });

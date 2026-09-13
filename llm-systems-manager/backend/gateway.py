@@ -233,14 +233,28 @@ def _no_backend(provider: str, errors: list) -> GatewayError:
     return GatewayError(f"no {provider} backend available", 503)
 
 
+def _finish_of(obj) -> str:
+    """finish_reason of the first choice, or "-"."""
+    try:
+        return str((obj.get("choices") or [{}])[0].get("finish_reason") or "-")
+    except Exception:
+        return "-"
+
+
 def complete_json(body: dict, *, label: str, provider=None) -> dict:
     """In-process non-streaming completion with pool failover; usage under `label`."""
     model_id, provider = _resolve(body, provider)
     path = _AGENT_PATHS[provider]["chat/completions"]
     client = gateway_usage.client_begin(label, "", model=model_id)
     errors: list = []
+    t0 = time.perf_counter()
+    _dbg = log.isEnabledFor(logging.DEBUG)
     try:
-        for agent in _candidates(model_id, None, provider):
+        cands = _candidates(model_id, None, provider)
+        if _dbg:
+            log.debug("gateway completion label=%s model=%s provider=%s stream=%s candidates=%d",
+                      label, model_id or "-", provider, False, len(cands))
+        for agent in cands:
             aid = agent.get("agent_id")
             gateway_usage.begin(aid)
             try:
@@ -249,20 +263,36 @@ def complete_json(body: dict, *, label: str, provider=None) -> dict:
                 gateway_usage.end(aid)
             if r is None:
                 errors.append(f"{_label(agent)}: {err}")
+                if _dbg:
+                    log.debug("gateway candidate skipped host=%s reason=unreachable", _label(agent))
                 continue
             if r.status_code in _FAILOVER_STATUSES:
                 errors.append(f"{_label(agent)}: {r.status_code}")
+                if _dbg:
+                    log.debug("gateway candidate skipped host=%s reason=status %d", _label(agent), r.status_code)
                 continue
             if not (200 <= r.status_code < 300):
                 gateway_usage.record_error()
+                if _dbg:
+                    log.debug("gateway completion failed label=%s reason=upstream %d errors=%s",
+                              label, r.status_code, "; ".join(errors) or "-")
                 raise GatewayError(f"upstream {r.status_code}", r.status_code, "upstream")
+            if _dbg:
+                log.debug("gateway serving host=%s status=%d", _label(agent), r.status_code)
             u = gateway_usage.completion_usage_from_json_bytes(r.content)
             if u:
                 gateway_usage.client_record(client, *u)
                 if provider in _USAGE_COUNTED_PROVIDERS:
                     gateway_usage.record(aid, *u)
-            return r.json()
+            out = r.json()
+            if _dbg:
+                log.debug("gateway completion end label=%s host=%s total_ms=%d prompt_tokens=%s completion_tokens=%s "
+                          "finish=%s", label, _label(agent), int((time.perf_counter() - t0) * 1000),
+                          (u or ("-", "-"))[0], (u or ("-", "-"))[1], _finish_of(out))
+            return out
         gateway_usage.record_error()
+        if _dbg:
+            log.debug("gateway completion failed label=%s reason=no_backend errors=%s", label, "; ".join(errors) or "-")
         raise _no_backend(provider, errors)
     finally:
         gateway_usage.client_end(client)
@@ -293,25 +323,49 @@ def complete_stream(body: dict, *, label: str, provider=None, read_timeout: "flo
     t0 = time.perf_counter()
     errors: list = []
     timed_out = False
+    p_tok = g_tok = "-"
+    finish = "-"
+    _dbg = log.isEnabledFor(logging.DEBUG)
     try:
-        for agent in _candidates(model_id, None, provider):
+        cands = _candidates(model_id, None, provider)
+        if _dbg:
+            log.debug("gateway completion label=%s model=%s provider=%s stream=%s candidates=%d",
+                      label, model_id or "-", provider, True, len(cands))
+        for agent in cands:
             upstream = _dial_stream(agent, path, stream_body, read_timeout)
             if upstream is None or upstream is _TIMED_OUT:
                 timed_out |= upstream is _TIMED_OUT
-                errors.append(f"{_label(agent)}: {'timeout' if upstream is _TIMED_OUT else 'unreachable'}")
+                reason = "timeout" if upstream is _TIMED_OUT else "unreachable"
+                errors.append(f"{_label(agent)}: {reason}")
+                if _dbg:
+                    log.debug("gateway candidate skipped host=%s reason=%s", _label(agent), reason)
                 continue
             if upstream.status_code in _FAILOVER_STATUSES:
                 upstream.close()
                 errors.append(f"{_label(agent)}: {upstream.status_code}")
+                if _dbg:
+                    log.debug("gateway candidate skipped host=%s reason=status %d",
+                              _label(agent), upstream.status_code)
                 continue
             ctype = (upstream.headers.get("content-type") or "").lower()
             if "text/event-stream" not in ctype or upstream.status_code >= 400:
                 status = upstream.status_code
                 upstream.close()
+                if timed_out:
+                    # An earlier timeout keeps failover alive past a sibling's 4xx.
+                    errors.append(f"{_label(agent)}: {status}")
+                    if _dbg:
+                        log.debug("gateway candidate skipped host=%s reason=status %d", _label(agent), status)
+                    continue
                 gateway_usage.record_error()
+                if _dbg:
+                    log.debug("gateway completion failed label=%s reason=upstream %d errors=%s",
+                              label, status, "; ".join(errors) or "-")
                 raise GatewayError(f"upstream {status}", status, "upstream")
             aid = agent.get("agent_id")
             gateway_usage.begin(aid)
+            if _dbg:
+                log.debug("gateway serving host=%s status=%d", _label(agent), upstream.status_code)
             first = True
             try:
                 for line in _stream_lines(upstream, lambda: first):
@@ -326,14 +380,23 @@ def complete_stream(body: dict, *, label: str, provider=None, read_timeout: "flo
                         continue
                     if first:
                         first = False
-                        gateway_usage.record_latency((time.perf_counter() - t0) * 1000.0)
+                        ms = (time.perf_counter() - t0) * 1000.0
+                        gateway_usage.record_latency(ms)
+                        if _dbg:
+                            log.debug("gateway first_token_ms=%d host=%s", int(ms), _label(agent))
                     u = chunk.get("usage")
                     if isinstance(u, dict):
                         p_tok, g_tok = u.get("prompt_tokens") or 0, u.get("completion_tokens") or 0
                         gateway_usage.client_record(client, p_tok, g_tok)
                         if counted:
                             gateway_usage.record(aid, p_tok, g_tok)
+                    if _dbg and (f := _finish_of(chunk)) != "-":
+                        finish = f
                     yield chunk
+                if _dbg:
+                    log.debug("gateway completion end label=%s host=%s total_ms=%d prompt_tokens=%s "
+                              "completion_tokens=%s finish=%s", label, _label(agent),
+                              int((time.perf_counter() - t0) * 1000), p_tok, g_tok, finish)
                 return
             except GatewayError as e:
                 # A first-token timeout on this host tries the next one; a drop mid-answer does not.
@@ -341,10 +404,15 @@ def complete_stream(body: dict, *, label: str, provider=None, read_timeout: "flo
                     raise
                 timed_out = True
                 errors.append(f"{_label(agent)}: timeout")
+                if _dbg:
+                    log.debug("gateway candidate skipped host=%s reason=timeout", _label(agent))
             finally:
                 gateway_usage.end(aid)
                 upstream.close()
         gateway_usage.record_error()
+        if _dbg:
+            log.debug("gateway completion failed label=%s reason=%s errors=%s",
+                      label, "timeout" if timed_out else "no_backend", "; ".join(errors) or "-")
         if timed_out:
             raise GatewayError("upstream timeout", 504, "timeout")
         raise _no_backend(provider, errors)
@@ -369,14 +437,22 @@ def _handle_completion(sub: str, provider=None) -> Response:
     if (wants_stream and provider in _USAGE_COUNTED_PROVIDERS
             and bool(getattr(_gw_cfg(), "usage_probe", True))):
         stream_body, injected = _with_usage_probe(body)
+    label = _client_identity()[0]
+    # key labels are logged as a kind only
+    caller = "session" if label == GATEWAY_SESSION_LABEL else "api-key"
     client = gateway_usage.client_begin(*_client_identity(), model=model_id)
     t0 = time.perf_counter()
     stream_owns_client = False
+    _dbg = log.isEnabledFor(logging.DEBUG)
     try:
-        for agent in _candidates(model_id, agent_id, provider):
+        cands = _candidates(model_id, agent_id, provider)
+        if _dbg:
+            log.debug("gateway completion caller=%s model=%s provider=%s stream=%s candidates=%d",
+                      caller, model_id or "-", provider, wants_stream, len(cands))
+        for agent in cands:
             if wants_stream:
                 resp = _stream_from(agent, path, stream_body, errors, provider,
-                                    strip_usage=injected, client=client, t0=t0)
+                                    strip_usage=injected, client=client, t0=t0, label=caller)
                 if resp is not None:
                     stream_owns_client = getattr(resp, "gw_client_owned", False)
                     return resp
@@ -389,11 +465,18 @@ def _handle_completion(sub: str, provider=None) -> Response:
                 gateway_usage.end(aid)
             if r is None:
                 errors.append(f"{_label(agent)}: {err}")
+                if _dbg:
+                    log.debug("gateway candidate skipped host=%s reason=unreachable", _label(agent))
                 continue
             if r.status_code in _FAILOVER_STATUSES:
                 errors.append(f"{_label(agent)}: {r.status_code}")
+                if _dbg:
+                    log.debug("gateway candidate skipped host=%s reason=status %d", _label(agent), r.status_code)
                 continue
             gateway_usage.record_latency((time.perf_counter() - t0) * 1000.0)
+            if _dbg:
+                log.debug("gateway serving host=%s status=%d", _label(agent), r.status_code)
+            u = None
             if 200 <= r.status_code < 300:
                 u = gateway_usage.completion_usage_from_json_bytes(r.content)
                 if u:
@@ -402,11 +485,19 @@ def _handle_completion(sub: str, provider=None) -> Response:
                         gateway_usage.record(aid, *u)
             else:
                 gateway_usage.record_error()
+            if _dbg:
+                log.debug("gateway completion end caller=%s host=%s total_ms=%d prompt_tokens=%s "
+                          "completion_tokens=%s finish=%s", caller, _label(agent),
+                          int((time.perf_counter() - t0) * 1000),
+                          (u or ("-", "-"))[0], (u or ("-", "-"))[1], "-")
             return Response(r.content, status=r.status_code,
                             mimetype=r.headers.get("content-type") or "application/json",
                             headers=_proxied_to_header(agent))
         log.warning("gateway %s: no usable %s agent (%s)",
                     sub, provider, "; ".join(errors) or "no candidates")
+        if _dbg:
+            log.debug("gateway completion failed caller=%s reason=no_backend errors=%s",
+                      caller, "; ".join(errors) or "-")
         gateway_usage.record_error()
         if not errors:
             # Zero candidates = nothing registered/configured for the provider —
@@ -422,19 +513,26 @@ def _handle_completion(sub: str, provider=None) -> Response:
 
 def _stream_from(agent: dict, path: str, body: dict, errors: list,
                  provider: str = "llama", strip_usage: bool = False,
-                 client=None, t0=None):
+                 client=None, t0=None, label: str = "-"):
     """One streaming attempt; None means try the next candidate."""
+    _dbg = log.isEnabledFor(logging.DEBUG)
     upstream = _dial_stream(agent, path, body)
     if upstream is None:
         errors.append(f"{_label(agent)}: unreachable")
+        if _dbg:
+            log.debug("gateway candidate skipped host=%s reason=unreachable", _label(agent))
         return None
     if upstream.status_code in _FAILOVER_STATUSES:
         upstream.close()
         errors.append(f"{_label(agent)}: {upstream.status_code}")
+        if _dbg:
+            log.debug("gateway candidate skipped host=%s reason=status %d", _label(agent), upstream.status_code)
         return None
     # Headers are in hand: this is the client's first byte.
     if t0 is not None:
         gateway_usage.record_latency((time.perf_counter() - t0) * 1000.0)
+        if _dbg:
+            log.debug("gateway first_token_ms=%d host=%s", int((time.perf_counter() - t0) * 1000), _label(agent))
     ctype = (upstream.headers.get("content-type") or "").lower()
     if "text/event-stream" not in ctype:
         # Upstream answered non-stream (e.g. 400 validation error): relay as-is.
@@ -457,7 +555,10 @@ def _stream_from(agent: dict, path: str, body: dict, errors: list,
         resp = _oai_error("manager at stream capacity; retry shortly", 503)
         resp.headers["Retry-After"] = str(_POOL_RETRY_AFTER_S)
         return resp
+    if _dbg:
+        log.debug("gateway serving host=%s status=%d", _label(agent), upstream.status_code)
     handed_off = False
+    tally = {"p": "-", "g": "-"}
     try:
         pumped = proxies.thread_pumped(
             upstream, path, max_lifetime_s=proxies._STREAM_OP_MAX_LIFETIME_S)
@@ -465,6 +566,7 @@ def _stream_from(agent: dict, path: str, body: dict, errors: list,
             aid = agent.get("agent_id")
 
             def _on_usage(p, g, a=aid, k=client):
+                tally["p"], tally["g"] = p, g
                 gateway_usage.record(a, p, g)
                 gateway_usage.client_record(k, p, g)
 
@@ -484,6 +586,11 @@ def _stream_from(agent: dict, path: str, body: dict, errors: list,
         # The client slot follows the same lifecycle; the caller stops
         # closing it once gw_client_owned is set.
         resp.call_on_close(lambda k=client: gateway_usage.client_end(k))
+        if _dbg:
+            resp.call_on_close(lambda: log.debug(
+                "gateway completion end label=%s host=%s total_ms=%d prompt_tokens=%s completion_tokens=%s "
+                "finish=%s", label, _label(agent),
+                int((time.perf_counter() - (t0 or time.perf_counter())) * 1000), tally["p"], tally["g"], "-"))
         resp.gw_client_owned = True
         # Increment last: nothing below can raise, so the pair can't leak if
         # the response ends up discarded instead of returned.

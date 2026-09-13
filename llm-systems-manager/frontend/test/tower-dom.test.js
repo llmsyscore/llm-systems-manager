@@ -29,6 +29,15 @@ function boot(state, opts = {}) {
   w.__calls = [];
   w.fetch = (url, o) => {
     w.__calls.push((o && o.method ? o.method + ' ' : 'GET ') + url);
+    const act = url.match(/^\/api\/tower\/actions\/([^/]+)\/(approve|deny)$/);
+    if (act) {
+      if (w.__actNetFail) return Promise.reject(new Error('offline'));
+      if (w.__actFail) {
+        const err = { 403: 'not allowed', 409: 'not pending', 410: 'expired' }[w.__actFail] || 'failed';
+        return Promise.resolve({ ok: false, status: w.__actFail, json: () => Promise.resolve({ ok: false, error: err }) });
+      }
+      return Promise.resolve({ ok: true, json: () => Promise.resolve({ ok: true, run_id: 'r1', status: act[2] === 'approve' ? 'approved' : 'denied', tool: 'wake_server' }) });
+    }
     if (url === '/api/tower/state') {
       if (w.__stateFail) return Promise.resolve({ ok: false, status: 503, json: () => Promise.resolve({}) });
       return Promise.resolve({ ok: true, json: () => Promise.resolve(w.__state) });
@@ -38,14 +47,18 @@ function boot(state, opts = {}) {
       return Promise.resolve({ ok: true, json: () => Promise.resolve({ ok: true, thread: { id: 't1', title: 'New thread' } }) });
     }
     if (url === '/api/tower/threads') return Promise.resolve({ ok: true, json: () => Promise.resolve({ ok: true, threads: w.__threads }) });
-    if (/^\/api\/tower\/threads\/[^/]+$/.test(url)) return Promise.resolve({ ok: true, json: () => Promise.resolve({ ok: true, thread: { id: 't9', title: 'Older' }, messages: [] }) });
+    if (/^\/api\/tower\/threads\/[^/]+$/.test(url)) return Promise.resolve({ ok: true, json: () => Promise.resolve({ ok: true, thread: { id: 't9', title: 'Older' }, messages: w.__rows || [] }) });
     if (/\/messages$/.test(url)) {
       w.__posted = JSON.parse(o.body);
       if (w.__postError) { const e = w.__postError; return Promise.resolve({ ok: false, status: e[1], json: () => Promise.resolve({ ok: false, error: e[0] }) }); }
       return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({ ok: true, run_id: 'r1' }) });
     }
     // The manager answers 404, not {ok:false}, for a run it no longer knows.
-    if (/\/stop$/.test(url)) { w.__stopped = url; return Promise.resolve({ ok: false, status: 404, json: () => Promise.resolve({ ok: false, error: 'unknown run' }) }); }
+    if (/\/stop$/.test(url)) {
+      w.__stopped = url;
+      if (w.__stopOk) return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({ ok: true }) });
+      return Promise.resolve({ ok: false, status: 404, json: () => Promise.resolve({ ok: false, error: 'unknown run' }) });
+    }
     return Promise.resolve({ ok: true, json: () => Promise.resolve({ ok: true }) });
   };
   w._activeTab = 'overall'; w._getDashSubTab = () => 'llama'; w._me = { admin_access: !!state.admin };
@@ -68,6 +81,18 @@ async function ask(w, text) {
   input.value = text;
   input.dispatchEvent(new w.KeyboardEvent('keydown', { key: 'Enter' }));
   await flush(); await flush();
+}
+async function bootAndAsk(state, text) {
+  const w = await ready(state);
+  await ask(w, text);
+  return w;
+}
+async function bootWithThread(state, rows) {
+  const w = boot(state, { stored: { thread: 't1' } });
+  w.__rows = rows;
+  await w.towerRefreshState(); await flush();
+  w.towerOpen(); await flush(); await flush();
+  return w;
 }
 
 describe('Tower drawer', () => {
@@ -363,5 +388,167 @@ describe('Tower drawer', () => {
     const w = await ready({ ok: true, enabled: true, model: null });
     expect(w.document.getElementById('twInput').disabled).toBe(true);
     expect(w.document.querySelector('#twBody .empty h3').textContent).toBe('Nothing to think with');
+  });
+});
+
+const CARD = { title: 'Wake llama-server', target: 'box · llama.cpp', does: 'Sends a one-token completion so the server leaves idle sleep.', not: 'No model is loaded or unloaded.' };
+const CONFIRM = { event: 'confirm', action_id: 'a1', tool: 'wake_server', args: { host: 'box' }, card: CARD, tier: 'operate', role: 'operator', actor: 'tower via adriel', expires_s: 600 };
+
+describe('action cards', () => {
+  test('confirm renders a card with the copy and closes the stream without stopping the run', async () => {
+    const w = await bootAndAsk({ ...ENABLED, capabilities: 'operate' }, 'wake box');
+    w.__sse.onEvent(CONFIRM);
+    const card = w.document.querySelector('#twBody .act[data-act="a1"]');
+    expect(card).not.toBeNull();
+    expect(card.querySelector('h4').textContent).toBe('Wake llama-server');
+    expect(card.querySelector('.tgt').textContent).toBe('box · llama.cpp');
+    expect(card.querySelector('p').textContent).toContain('leaves idle sleep');
+    expect(card.querySelector('.role').textContent).toContain('answer and act · allowed for operators · audit: tower via adriel');
+    expect(card.querySelector('[data-approve]')).not.toBeNull();
+    expect(w.__sseClosed).toBe(true);
+    expect(w.__calls.some(c => c.startsWith('POST /api/tower/runs/r1/stop'))).toBe(false);
+    expect(w.document.getElementById('twSend').classList.contains('stop')).toBe(true);
+  });
+
+  test('approve posts the decision and re-attaches to the run; the card collapses to a tick', async () => {
+    const w = await bootAndAsk({ ...ENABLED, capabilities: 'operate' }, 'wake box');
+    w.__sse.onEvent(CONFIRM);
+    w.document.querySelector('#twBody [data-approve]').click();
+    await flush();
+    expect(w.__calls).toContain('POST /api/tower/actions/a1/approve');
+    expect(w.__sse.url).toBe('/api/tower/runs/r1/stream');
+    expect(w.__sseClosed).toBe(false);
+    w.__sse.onEvent({ event: 'action', action_id: 'a1', tool: 'wake_server', status: 'done', message: 'done', ms: 1200, actor: 'adriel' });
+    expect(w.document.querySelector('#twBody .act[data-act]')).toBeNull();
+    const tick = w.document.querySelector('#twBody .tick.act');
+    expect(tick.textContent).toContain('Wake llama-server');
+    expect(tick.textContent).toContain('1200 ms');
+    w.__sse.onEvent({ event: 'delta', text: 'awake' }); w.__sse.onEvent({ event: 'done', ok: true });
+    expect(w.document.querySelector('#twBody .ans').textContent).toContain('awake');
+  });
+
+  test('deny posts deny and a denied action shows as a crossed tick', async () => {
+    const w = await bootAndAsk({ ...ENABLED, capabilities: 'operate' }, 'wake box');
+    w.__sse.onEvent(CONFIRM);
+    w.document.querySelector('#twBody [data-deny]').click();
+    await flush();
+    expect(w.__calls).toContain('POST /api/tower/actions/a1/deny');
+    w.__sse.onEvent({ event: 'action', action_id: 'a1', tool: 'wake_server', status: 'denied', message: 'denied by the operator', ms: 0, actor: 'adriel' });
+    expect(w.document.querySelector('#twBody .tick.act.bad').textContent).toContain('denied');
+  });
+
+  test('a running action shows the card without buttons', async () => {
+    const w = await bootAndAsk({ ...ENABLED, capabilities: 'operate' }, 'wake box');
+    w.__sse.onEvent(CONFIRM);
+    w.document.querySelector('#twBody [data-approve]').click();
+    await flush();
+    w.__sse.onEvent({ event: 'action', action_id: 'a1', tool: 'wake_server', status: 'running', message: null, ms: null });
+    const card = w.document.querySelector('#twBody .act[data-act="a1"]');
+    expect(card).not.toBeNull();
+    expect(card.querySelector('.eyebrow').textContent).toBe('Running…');
+    expect(card.querySelector('[data-approve]')).toBeNull();
+    expect(card.querySelector('[data-deny]')).toBeNull();
+  });
+
+  test('an expired approval shows a notice instead of re-attaching', async () => {
+    const w = await bootAndAsk({ ...ENABLED, capabilities: 'operate' }, 'wake box');
+    w.__sse.onEvent(CONFIRM);
+    w.__actFail = 410;
+    w.document.querySelector('#twBody [data-approve]').click();
+    await flush();
+    expect(w.document.querySelector('#twBody .notice').textContent).toContain('That approval expired');
+    expect(w.document.querySelector('#twBody .act[data-act]')).toBeNull();
+  });
+
+  test('an expired approval closes out the turn: no caret, one clean "approval expired" tick', async () => {
+    const w = await bootAndAsk({ ...ENABLED, capabilities: 'operate' }, 'wake box');
+    w.__sse.onEvent(CONFIRM);
+    w.__actFail = 410;
+    w.document.querySelector('#twBody [data-approve]').click();
+    await flush();
+    expect(w.document.querySelector('#twBody .caret')).toBeNull();
+    const tick = w.document.querySelector('#twBody .tick.act');
+    expect(tick.textContent).toContain('approval expired');
+    expect(tick.textContent).not.toContain('expired expired');
+  });
+
+  test('Stop while awaiting posts stop for the parked run and listens again for the denial', async () => {
+    const w = await bootAndAsk({ ...ENABLED, capabilities: 'operate' }, 'wake box');
+    w.__sse.onEvent(CONFIRM);
+    w.__stopOk = true;
+    w.document.getElementById('twSend').click();
+    await flush();
+    expect(w.__calls).toContain('POST /api/tower/runs/r1/stop');
+    expect(w.__sse.url).toBe('/api/tower/runs/r1/stream');
+    expect(w.__sseClosed).toBe(false);
+    w.__sse.onEvent({ event: 'action', action_id: 'a1', tool: 'wake_server', status: 'denied', message: 'Stopped.', ms: 0 });
+    w.__sse.onEvent({ event: 'error', message: 'Stopped.' });
+    expect(w.document.querySelector('#twBody .tick.act.bad').textContent).toContain('Stopped.');
+    expect(w.document.getElementById('twSend').classList.contains('stop')).toBe(false);
+  });
+
+  test('a refused approval (403) explains and leaves the card and the run alone', async () => {
+    const w = await bootAndAsk({ ...ENABLED, capabilities: 'operate' }, 'wake box');
+    w.__sse.onEvent(CONFIRM);
+    w.__actFail = 403;
+    w.document.querySelector('#twBody [data-approve]').click();
+    await flush();
+    expect(w.document.querySelector('#twBody .notice').textContent).toContain('does not allow this action');
+    expect(w.document.querySelector('#twBody .act[data-act="a1"] [data-approve]')).not.toBeNull();
+    expect(w.__sseClosed).toBe(true);
+    expect(w.document.getElementById('twSend').classList.contains('stop')).toBe(true);
+    w.document.getElementById('twSend').click();
+    await flush();
+    expect(w.__calls).toContain('POST /api/tower/runs/r1/stop');
+  });
+
+  test('an already-decided action (409) explains and listens again for the real outcome', async () => {
+    const w = await bootAndAsk({ ...ENABLED, capabilities: 'operate' }, 'wake box');
+    w.__sse.onEvent(CONFIRM);
+    w.__actFail = 409;
+    w.document.querySelector('#twBody [data-approve]').click();
+    await flush();
+    expect(w.document.querySelector('#twBody .notice').textContent).toContain('already decided');
+    expect(w.__sse.url).toBe('/api/tower/runs/r1/stream');
+    expect(w.__sseClosed).toBe(false);
+    w.__sse.onEvent({ event: 'action', action_id: 'a1', tool: 'wake_server', status: 'done', message: 'done', ms: 30 });
+    expect(w.document.querySelector('#twBody .act[data-act]')).toBeNull();
+  });
+
+  test('a network failure leaves the decision retryable', async () => {
+    const w = await bootAndAsk({ ...ENABLED, capabilities: 'operate' }, 'wake box');
+    w.__sse.onEvent(CONFIRM);
+    w.__actNetFail = true;
+    w.document.querySelector('#twBody [data-approve]').click();
+    await flush();
+    expect(w.document.querySelector('#twBody .notice').textContent).toContain('could not record the decision');
+    expect(w.document.querySelector('#twBody .act[data-act="a1"] [data-approve]')).not.toBeNull();
+    expect(w.__sseClosed).toBe(true);
+  });
+
+  test('an admin-only action is read-only for an operator and decidable for an admin', async () => {
+    const ADMIN_CONFIRM = { ...CONFIRM, tier: 'admin', role: 'admin' };
+    let w = await bootAndAsk({ ...ENABLED, capabilities: 'operate' }, 'wake box');
+    w.__sse.onEvent(ADMIN_CONFIRM);
+    let card = w.document.querySelector('#twBody .act[data-act="a1"]');
+    expect(card.querySelector('[data-approve]')).toBeNull();
+    expect(card.querySelector('[data-deny]')).toBeNull();
+    expect(card.querySelector('.eyebrow').textContent).toBe("Needs an admin's approval");
+    expect(card.querySelector('.role').textContent).toContain('admins only');
+    w = await bootAndAsk({ ...ENABLED, admin: true, capabilities: 'admin' }, 'wake box');
+    w.__sse.onEvent(ADMIN_CONFIRM);
+    card = w.document.querySelector('#twBody .act[data-act="a1"]');
+    expect(card.querySelector('[data-approve]')).not.toBeNull();
+    expect(card.querySelector('.eyebrow').textContent).toBe('Needs your approval');
+  });
+
+  test('a stored pending card past its expiry renders without buttons', async () => {
+    const rows = [{ role: 'user', content: 'wake box' },
+                  { role: 'action', content: JSON.stringify({ action_id: 'a9', tool: 'wake_server', args: { host: 'box' }, card: CARD, status: 'pending', expires: 1, message: null }), tool_name: 'wake_server' }];
+    const w = await bootWithThread({ ...ENABLED, capabilities: 'operate' }, rows);
+    const card = w.document.querySelector('#twBody .act[data-act="a9"]');
+    expect(card).not.toBeNull();
+    expect(card.querySelector('[data-approve]')).toBeNull();
+    expect(card.querySelector('.eyebrow').textContent).toBe('Approval expired');
   });
 });

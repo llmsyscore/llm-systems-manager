@@ -127,6 +127,8 @@ expose_proxied_to = true
 # counters). Set false if a backend rejects unknown stream_options fields.
 usage_probe = true
 
+debug = false               # per-module DEBUG trace in the manager log; payload text is never logged
+
 [manager.reportcard]
 # Electricity price used for the GPU report card's $/Mtok estimate
 # (#468). Overridable per-run from the Report Card sub-tab.
@@ -163,6 +165,7 @@ model = "auto"             # auto = any resident chat model, else a pinned gatew
 tool_mode = "auto"         # auto | native | prompt
 capabilities = "read"      # read | operate | admin
 off_topic = "refuse"       # refuse | allow
+report_violations = true   # audit + critical alert when a message tries to bypass Tower's rules
 disabled_tools = []           # tool names turned off everywhere; Settings shows them as chips
 diagnose_alarms = false
 playbooks_auto = false
@@ -173,6 +176,7 @@ temperature = 0.2
 request_timeout_s = 45        # seconds to wait for the model to start answering
 fallback = false              # on timeout, ask the next loaded chat model this one question and say so
 history_days = 30
+debug = false                 # per-module DEBUG trace in the manager log; payload text is never logged
 
 [manager.model_meta]
 # Hugging Face model metadata reader (#878): author-recommended sampling from

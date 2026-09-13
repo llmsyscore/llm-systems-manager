@@ -213,3 +213,31 @@ def test_chips_entry_lists_every_tower_tool_and_rejects_unknown_names():
     assert errors == {} and clean["manager.tower.disabled_tools"] == ["log_tail", "help"]
     _, errors = sc.validate_and_coerce({"manager.tower.disabled_tools": ["rm_rf"]})
     assert "rm_rf" in errors["manager.tower.disabled_tools"]
+
+
+# --- choice labels + tool groups (round 2, #924) ---
+
+
+def test_capabilities_entry_has_display_labels():
+    e = sc._BY_PATH["manager.tower.capabilities"]
+    assert e["labels"] == {"read": "Answer only", "operate": "Answer and act",
+                            "admin": "Answer and act, incl. admin actions"}
+
+
+def test_disabled_tools_entry_groups_cover_every_tool():
+    import tower_tools
+    e = sc._BY_PATH["manager.tower.disabled_tools"]
+    assert set(e["groups"]) == {"Read tools", "Actions"}
+    concatenated = [n for names in e["groups"].values() for n in names]
+    assert concatenated == list(tower_tools.TOOL_NAMES)
+
+
+def test_describe_entries_carry_labels_and_groups_through_unchanged():
+    entries = {e["path"]: e for e in sc.describe()["entries"]}
+    assert entries["manager.tower.capabilities"]["labels"] == sc._BY_PATH["manager.tower.capabilities"]["labels"]
+    assert entries["manager.tower.disabled_tools"]["groups"] == sc._BY_PATH["manager.tower.disabled_tools"]["groups"]
+
+
+def test_capabilities_still_validates_the_raw_choice_value():
+    clean, errors = sc.validate_and_coerce({"manager.tower.capabilities": "operate"})
+    assert errors == {} and clean["manager.tower.capabilities"] == "operate"

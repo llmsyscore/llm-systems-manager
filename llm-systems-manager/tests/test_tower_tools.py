@@ -23,8 +23,19 @@ def _deps():
         "speed": lambda model: [{"hostname": "box", "gen_tps": 38.2}],
         "health": lambda: {"manager": {"ok": True}, "alarm_engine": {"ok": True}},
         "log_tail": lambda host, provider="llama", lines=40: [("line %d " % i) * 12 for i in range(lines)],
+        "profiles": lambda host=None, model=None, profile=None: {"hosts": [{"host": host or "box", "models": [
+            {"model": "qwen3", "active": "default", "profiles": ["default", "long-ctx"]}]}]},
         "config_get": lambda path: {"path": path, "value": "***" if path.endswith("token") else 30},
         "help": lambda topic: "Slot pressure means every llama-server slot is busy.",
+        "audit": lambda window="24h", actor=None, action=None, count=20: [
+            {"ts": "2026-09-12T00:00:00+00:00", "actor": actor or "alice", "action": action or "tower.action.approve",
+             "label": "Approved a Tower action", "target": "a1", "outcome": "ok", "detail": {"tool": "wake_server"}}][:count],
+        "load": lambda provider, host, model: (host == "box", None if host == "box" else "unknown host"),
+        "unload": lambda provider, host, model: (True, None),
+        "wake": lambda host: (True, None),
+        "restart": lambda provider, host: (True, None),
+        "ack": lambda aid: (aid == "a1", None if aid == "a1" else "alert not found"),
+        "close": lambda aid: (True, None),
     }
 
 
@@ -34,12 +45,75 @@ def _cfg(**over):
     return types.SimpleNamespace(**base)
 
 
-def test_registry_has_only_read_tools_in_p1():
+READ = {"hosts_overview", "host_detail", "models", "model_profiles", "alarms", "alarm_history", "alert_detail",
+        "energy_summary", "gateway_flow", "recent_runs", "bench_speed", "service_health", "log_tail", "config_get",
+        "help", "audit_log"}
+ACT = {"load_model", "unload_model", "wake_server", "restart_provider", "ack_alert", "close_alert"}
+
+
+def test_registry_has_read_and_act_tools():
     reg = tt.build_registry(_deps())
-    assert set(reg) == {"hosts_overview", "host_detail", "models", "alarms", "alarm_history", "alert_detail", "energy_summary",
-                        "gateway_flow", "recent_runs", "bench_speed", "service_health", "log_tail", "config_get", "help"}
-    assert all(t.kind == "read" and t.tier == "read" for t in reg.values())
-    assert not any(w in n for n in reg for w in ("shell", "exec", "terminal", "file", "http", "config_set"))
+    assert set(reg) == READ | ACT
+    assert {t.name for t in reg.values() if t.kind == "act"} == ACT
+    assert all(reg[n].tier == "operate" for n in ACT - {"restart_provider"})
+    assert reg["restart_provider"].tier == "admin" and reg["restart_provider"].role == "admin"
+    assert tt.ACT_TOOL_NAMES == tuple(n for n in tt.TOOL_NAMES if n in ACT)
+
+
+def test_catalog_ladder_hides_act_tools_until_operate():
+    reg = tt.build_registry(_deps())
+    assert {t.name for t in tt.catalog(reg, _cfg(capabilities="read"), "admin")} & ACT == set()
+    op = {t.name for t in tt.catalog(reg, _cfg(capabilities="operate"), "operator")}
+    assert op & ACT == ACT - {"restart_provider"}
+    assert "restart_provider" not in {t.name for t in tt.catalog(reg, _cfg(capabilities="admin"), "operator")}
+    assert "restart_provider" in {t.name for t in tt.catalog(reg, _cfg(capabilities="admin"), "admin")}
+    assert "wake_server" not in {t.name for t in tt.catalog(reg, _cfg(capabilities="admin", disabled_tools=["wake_server"]), "admin")}
+
+
+def test_act_tools_return_ok_message_and_validate_targets():
+    reg = tt.build_registry(_deps())
+    res, ok = tt.run_tool(reg["load_model"], {"provider": "llama", "host": "box", "model": "qwen3"})
+    assert ok and res == {"ok": True, "message": "done"}
+    res, ok = tt.run_tool(reg["load_model"], {"provider": "llama", "host": "ghost", "model": "qwen3"})
+    assert ok and res == {"ok": False, "message": "unknown host"}
+    res, _ = tt.run_tool(reg["ack_alert"], {"alert_id": "zz"})
+    assert res == {"ok": False, "message": "alert not found"}
+    args, err = tt.validate_args(reg["restart_provider"], {"provider": "docker", "host": "box"})
+    assert err == "provider must be one of llama, lms, vllm"
+    args, err = tt.validate_args(reg["wake_server"], {})
+    assert err == "host is required"
+
+
+def test_act_tool_wraps_a_raising_dep_and_a_falsy_no_message_dep():
+    deps = _deps()
+    deps["wake"] = lambda host: (_ for _ in ()).throw(RuntimeError("boom"))
+    deps["restart"] = lambda provider, host: (False, None)
+    reg = tt.build_registry(deps)
+    res, ok = tt.run_tool(reg["wake_server"], {"host": "box"})
+    assert ok is True and res["ok"] is False and "message" in res
+    res, ok = tt.run_tool(reg["restart_provider"], {"provider": "llama", "host": "box"})
+    assert ok is True and res == {"ok": False, "message": "failed"}
+
+
+def test_action_cards_say_what_where_and_what_not():
+    reg = tt.build_registry(_deps())
+    c = tt.action_card(reg["wake_server"], {"host": "box"})
+    assert c["title"] == "Wake llama-server" and c["target"] == "box · llama.cpp"
+    assert "leaves idle sleep" in c["does"] and c["not"].startswith("No model is loaded or unloaded")
+    c = tt.action_card(reg["unload_model"], {"provider": "lms", "host": "mac", "model": "gemma-3-12b"})
+    assert c["title"] == "Unload gemma-3-12b" and c["target"] == "mac · LM Studio"
+    c = tt.action_card(reg["restart_provider"], {"provider": "vllm", "host": "box"})
+    assert c["title"] == "Restart vLLM" and "in flight fail" in c["does"]
+    c = tt.action_card(reg["close_alert"], {"alert_id": "a1"})
+    assert c["title"] == "Close alert a1" and c["target"] == "alert a1"
+    assert tt.action_card(reg["host_detail"], {"host": "box"}) == {}
+
+
+def test_prompt_catalog_marks_act_tools():
+    reg = tt.build_registry(_deps())
+    text = tt.prompt_catalog(tt.catalog(reg, _cfg(capabilities="operate"), "operator"))
+    assert "- wake_server (action, needs approval):" in text
+    assert "- host_detail:" in text
 
 
 def test_catalog_honours_disabled_tools_and_tier():
@@ -125,6 +199,7 @@ def test_prod_deps_wires_hosts_alarms_alert_and_config(monkeypatch):
         "fleet": lambda: [{"hostname": "box"}],
         "host": lambda name: {"hostname": name},
         "models": lambda host=None: [{"model": "qwen3", "provider": "llama"}],
+        "ack": lambda aid: (True, None), "close": lambda aid: (True, None),
     })
 
     alert_row = {"alert_id": "a1", "rule_name": "GPU temp high", "severity": "critical",
@@ -148,7 +223,7 @@ def test_prod_deps_wires_hosts_alarms_alert_and_config(monkeypatch):
 
     ctx = types.SimpleNamespace(alarm_engine_url=lambda: "http://ae.local", ae_session=_Session())
     deps = tt.prod_deps(ctx, db_path="unused", tools_runs=lambda *a, **k: [],
-                        speed_table=lambda *a: [], service_health=lambda: {}, gateway_entries=lambda: [])
+                        speed_table=lambda *a: [], service_health=lambda: {}, gateway_entries=lambda: [], audit_rows=lambda *a, **k: [])
 
     assert deps["hosts"]() == [{"hostname": "box"}]
 
@@ -248,7 +323,8 @@ def test_window_underfilled_when_the_oldest_row_is_inside_the_window():
 
 def test_alarm_history_falls_back_to_the_csv_export_when_1000_rows_do_not_cover_the_window(monkeypatch):
     import discord_bot
-    monkeypatch.setattr(discord_bot, "prod_deps", lambda ctx: {"fleet": lambda: [], "host": lambda n: None})
+    monkeypatch.setattr(discord_bot, "prod_deps", lambda ctx: {"fleet": lambda: [], "host": lambda n: None,
+                                                                "ack": lambda aid: (True, None), "close": lambda aid: (True, None)})
     import datetime as dt
     now = dt.datetime.now(dt.timezone.utc)
     fresh = [{"alert_id": f"a{i}", "rule_name": "Slow writes", "severity": "info", "status": "closed", "source_host": "box",
@@ -270,7 +346,7 @@ def test_alarm_history_falls_back_to_the_csv_export_when_1000_rows_do_not_cover_
 
     ctx = types.SimpleNamespace(alarm_engine_url=lambda: "http://ae.local", ae_session=_Session())
     deps = tt.prod_deps(ctx, db_path="unused", tools_runs=lambda *a, **k: [], speed_table=lambda *a: [],
-                        service_health=lambda: {}, gateway_entries=lambda: [])
+                        service_health=lambda: {}, gateway_entries=lambda: [], audit_rows=lambda *a, **k: [])
     out = deps["alarm_history"]("30d", "rule", 10)
     assert any("export" in u for u in calls)
     assert out["total"] == 1005 and [g["key"] for g in out["by"]] == ["Slow writes", "Old rule"]
@@ -318,7 +394,27 @@ def test_config_get_is_admin_only_in_the_catalog():
     assert reg["config_get"].role == "admin"
     assert "config_get" not in {t.name for t in tt.catalog(reg, _cfg(), "operator")}
     assert "config_get" in {t.name for t in tt.catalog(reg, _cfg(), "admin")}
-    assert {t.name for t in tt.catalog(reg, _cfg(), "operator")} == set(tt.TOOL_NAMES) - {"config_get"}
+    assert {t.name for t in tt.catalog(reg, _cfg(), "operator")} == set(tt.TOOL_NAMES) - {"config_get", "audit_log"} - ACT
+
+
+def test_audit_log_is_admin_only_and_filters():
+    reg = tt.build_registry(_deps())
+    assert "audit_log" not in {t.name for t in tt.catalog(reg, _cfg(), "operator")}
+    assert "audit_log" in {t.name for t in tt.catalog(reg, _cfg(), "admin")}
+    res, ok = tt.run_tool(reg["audit_log"], {"actor": "bob", "count": 1})
+    assert ok and len(res) == 1 and res[0]["actor"] == "bob"
+    _, err = tt.validate_args(reg["audit_log"], {"count": 500})
+    assert err is not None and "count" in err
+
+
+def test_load_and_unload_reject_vllm_but_restart_still_allows_it():
+    reg = tt.build_registry(_deps())
+    _, err = tt.validate_args(reg["load_model"], {"provider": "vllm", "host": "box", "model": "m"})
+    assert err == "provider must be one of llama, lms"
+    _, err = tt.validate_args(reg["unload_model"], {"provider": "vllm", "host": "box", "model": "m"})
+    assert err == "provider must be one of llama, lms"
+    _, err = tt.validate_args(reg["restart_provider"], {"provider": "vllm", "host": "box"})
+    assert err is None
 
 
 def test_models_rows_with_a_host_filter_ignores_models_loaded_elsewhere():
@@ -326,3 +422,83 @@ def test_models_rows_with_a_host_filter_ignores_models_loaded_elsewhere():
     entries = [{"id": "qwen", "provider": "llama", "hosts": ["other-box"]}, {"id": "gemma", "provider": "lms", "hosts": ["mac"]}]
     assert [r["model"] for r in tt.models_rows(entries, loaded, host="mac")] == ["gemma"]
     assert tt.models_rows(entries, loaded, host="nowhere") == []
+
+
+def test_model_profiles_tool_is_a_plain_read_tool():
+    reg = tt.build_registry(_deps())
+    t = reg["model_profiles"]
+    assert (t.kind, t.tier, t.role) == ("read", "read", "operator")
+    assert set(t.params["properties"]) == {"host", "model", "profile"} and t.params["required"] == []
+    assert "model_profiles" in {x.name for x in tt.catalog(reg, _cfg(), "operator")}
+    assert "use model_profiles" in reg["config_get"].description
+    res, ok = tt.run_tool(t, {"host": "box"})
+    assert ok and res["hosts"][0]["models"][0]["profiles"] == ["default", "long-ctx"]
+
+
+def test_profiles_help_topic_names_the_llm_control_tab():
+    assert tt.default_help("profiles").startswith("Model profiles are saved llama-server flag sets")
+    assert "LLM Control tab" in tt.default_help("model profiles")
+    assert "Admin" not in tt.default_help("profiles")
+
+
+def _profile_deps(monkeypatch, tmp_path, agents=None):
+    """prod_deps wired to a real ProfileStore in tmp_path and a fake agent registry."""
+    import agent_registry
+    import discord_bot
+    import model_profiles
+
+    monkeypatch.setattr(discord_bot, "prod_deps", lambda ctx: {
+        "fleet": lambda: [], "host": lambda n: None,
+        "ack": lambda aid: (True, None), "close": lambda aid: (True, None)})
+    store = model_profiles.ProfileStore(tmp_path / "p.json")
+    store.put_profile("a1", "Qwen3-14B", "default", {"ctx": 4096}, make_active=True)
+    store.put_profile("a1", "Qwen3-14B", "long-ctx", {"ctx": 32768})
+    store.put_profile("a2", "gemma-3-12b", "default", {"ctx": 8192}, make_active=True)
+    store.put_profile("a2", "Qwen3-14B", "mac", {"ctx": 2048}, make_active=True)
+    monkeypatch.setattr(model_profiles, "STORE", store)
+    monkeypatch.setattr(agent_registry, "load_agents", lambda: {"agents": agents if agents is not None else {
+        "a1": {"status": "approved", "hostname": "Box"},
+        "a2": {"status": "approved", "hostname": "mac"},
+        "a3": {"status": "pending", "hostname": "ghost"}}})
+    ctx = types.SimpleNamespace(alarm_engine_url=lambda: "http://ae.local", ae_session=None)
+    return tt.prod_deps(ctx, db_path="unused", tools_runs=lambda *a, **k: [], speed_table=lambda *a: [],
+                        service_health=lambda: {}, gateway_entries=lambda: [], audit_rows=lambda *a, **k: [])["profiles"]
+
+
+def test_prod_deps_profiles_summarises_every_host_and_filters_by_host(monkeypatch, tmp_path):
+    profiles = _profile_deps(monkeypatch, tmp_path)
+    out = profiles()
+    assert [h["host"] for h in out["hosts"]] == ["Box", "mac"]
+    box = out["hosts"][0]["models"][0]
+    assert box == {"model": "Qwen3-14B", "active": "default", "profiles": ["default", "long-ctx"]}
+    only = profiles("box")
+    assert [h["host"] for h in only["hosts"]] == ["Box"]
+    assert profiles("nope") == {"error": "unknown host"}
+
+
+def test_prod_deps_profiles_returns_the_active_or_named_values(monkeypatch, tmp_path):
+    profiles = _profile_deps(monkeypatch, tmp_path)
+    row = profiles("box", "Qwen3-14B")
+    assert row == {"host": "Box", "model": "Qwen3-14B", "active": "default",
+                   "profiles": ["default", "long-ctx"], "values": {"ctx": 4096}}
+    assert profiles("box", "qwen3-14b")["values"] == {"ctx": 4096}
+    assert profiles("box", "qwen3")["model"] == "Qwen3-14B"
+    assert profiles("box", "Qwen3-14B", "long-ctx")["values"] == {"ctx": 32768}
+    assert profiles("box", "Qwen3-14B", "nope") == {"error": "unknown profile"}
+    assert profiles("box", "nothing-like-this") == {"error": "unknown model"}
+
+
+def test_prod_deps_profiles_without_a_host_lists_one_row_per_host(monkeypatch, tmp_path):
+    profiles = _profile_deps(monkeypatch, tmp_path)
+    rows = profiles(None, "Qwen3-14B")["rows"]
+    assert [(r["host"], r["active"], r["values"]) for r in rows] == [
+        ("Box", "default", {"ctx": 4096}), ("mac", "mac", {"ctx": 2048})]
+    assert profiles(None, "no-such-model") == {"rows": []}
+
+
+def test_prod_deps_profiles_skips_unapproved_agents_and_a_missing_store(monkeypatch, tmp_path):
+    import model_profiles
+    profiles = _profile_deps(monkeypatch, tmp_path)
+    assert "ghost" not in {h["host"] for h in profiles()["hosts"]}
+    monkeypatch.setattr(model_profiles, "STORE", None)
+    assert profiles() == {"error": "profile store not available"}

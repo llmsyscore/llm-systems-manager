@@ -97,6 +97,7 @@ class ManagerGateway(BaseModel):
     read_timeout_s: float = 600.0
     expose_proxied_to: bool = True
     usage_probe: bool = True
+    debug: bool = False
 
 
 class ManagerReportcard(BaseModel):
@@ -137,6 +138,7 @@ class ManagerTower(BaseModel):
     tool_mode: str = "auto"            # auto | native | prompt
     capabilities: str = "read"         # read | operate | admin
     off_topic: str = "refuse"          # refuse | allow
+    report_violations: bool = True     # audit + critical alert when a message tries to bypass Tower's rules
     disabled_tools: list[str] = Field(default_factory=list)
     diagnose_alarms: bool = False
     playbooks_auto: bool = False
@@ -147,6 +149,7 @@ class ManagerTower(BaseModel):
     request_timeout_s: int = 45       # seconds to wait for the model to start answering
     fallback: bool = False             # on timeout, ask the next loaded chat model this one question
     history_days: int = 30
+    debug: bool = False        # per-module DEBUG trace in the manager log
 
 
 class ManagerModelMeta(BaseModel):

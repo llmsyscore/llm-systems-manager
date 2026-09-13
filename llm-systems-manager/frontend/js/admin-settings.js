@@ -8,6 +8,7 @@
   let _gatewayModels = [];
   const _dirty = new Map();     // path -> raw value to submit (null = clear/default)
   const _invalid = new Map();   // path -> message
+  const _toolsOpen = new Set();  // chips paths whose editor is expanded
   const MOST_USED = '__most_used__';
   let _group = MOST_USED;       // active rail group key
   let _filter = '';
@@ -88,8 +89,10 @@
     if (_dirty.has(e.path)) return _dirty.get(e.path);
     return serverValue(e);
   }
+  function choiceLabel(e, c) { return (e && e.labels && e.labels[c]) || c; }
   function fmtVal(v, e) {
     if (v === null || v === undefined) return 'unset';
+    if (e && e.type === 'choice' && e.labels && e.labels[v] !== undefined) return String(e.labels[v]);
     if (Array.isArray(v) && e && e.exclude) return v.length ? `all but ${v.join(', ')}` : 'all';
     if (Array.isArray(v)) return v.join(', ') || 'empty';
     if (typeof v === 'boolean') return v ? 'on' : 'off';
@@ -137,6 +140,81 @@
       + `placeholder="${isSet ? 'enter a new value to replace' : 'enter value'}">${clear}</div>`;
   }
 
+  // ── chips ("Available tools") control ─────────────────────────────
+  // `exclude` entries store the off-list, so on = not listed.
+  function toolOn(e, cur, c) { return e.exclude ? !cur.includes(c) : cur.includes(c); }
+  function toolList(e) {
+    const v = shownValue(e);
+    return Array.isArray(v) ? v : [];
+  }
+
+  // [title, choices] pairs from e.groups; ungrouped choices fall under "Other".
+  function toolGroups(e) {
+    const all = e.choices || [];
+    if (!e.groups) return [['Tools', all]];
+    const seen = new Set();
+    const out = [];
+    Object.keys(e.groups).forEach(title => {
+      const list = (e.groups[title] || []).filter(c => all.includes(c));
+      list.forEach(c => seen.add(c));
+      if (list.length) out.push([title, list]);
+    });
+    const rest = all.filter(c => !seen.has(c));
+    if (rest.length) out.push(['Other', rest]);
+    return out;
+  }
+
+  function toolsSummary(e, cur) {
+    const all = e.choices || [];
+    const off = all.filter(c => !toolOn(e, cur, c));
+    const head = esc(`${all.length - off.length} of ${all.length} tools on`);
+    return off.length ? `${head} · off: <span class="nm">${esc(off.join(', '))}</span>` : head;
+  }
+
+  function toolsGroupsHtml(e, cur) {
+    return toolGroups(e).map(([title, list]) => {
+      const on = list.filter(c => toolOn(e, cur, c)).length;
+      const boxes = list.map(c => {
+        const chipOn = toolOn(e, cur, c);
+        return `<button type="button" class="st-tool-chip${chipOn ? ' on' : ''}" data-tool="${esc(c)}" `
+          + `aria-pressed="${chipOn}">${esc(c)}</button>`;
+      }).join('');
+      return `<section class="st-tools-grp"><h5>${esc(title)}<span class="cnt">${on}/${list.length}</span>`
+        + '<button type="button" class="lnk" data-tools-all="on">All on</button>'
+        + '<button type="button" class="lnk" data-tools-all="off">All off</button></h5>'
+        + `<div class="st-tools-grid">${boxes}</div></section>`;
+    }).join('');
+  }
+
+  // Refreshes the summary, group counts and chips from the current value.
+  function paintTools(e) {
+    const cur = toolList(e);
+    document.querySelectorAll(`.st-tools[data-path="${CSS.escape(e.path)}"]`).forEach(box => {
+      const sum = box.querySelector('.st-tools-sum');
+      if (sum) sum.innerHTML = toolsSummary(e, cur);
+      box.querySelectorAll('.st-tools-grp').forEach(grp => {
+        const chips = [...grp.querySelectorAll('[data-tool]')];
+        chips.forEach(chip => {
+          const on = toolOn(e, cur, chip.dataset.tool);
+          chip.classList.toggle('on', on);
+          chip.setAttribute('aria-pressed', String(on));
+        });
+        const cnt = grp.querySelector('.cnt');
+        if (cnt) cnt.textContent = `${chips.filter(c => c.classList.contains('on')).length}/${chips.length}`;
+      });
+    });
+  }
+
+  // Recomputes the stored list from the editor's toggle chips.
+  function writeTools(box) {
+    const entry = box && _entryByPath.get(box.dataset.path);
+    if (!entry) return;
+    const on = [...box.querySelectorAll('[data-tool]')].filter(chip => chip.classList.contains('on')).map(chip => chip.dataset.tool);
+    noteChange(entry, entry.exclude ? (entry.choices || []).filter(c => !on.includes(c)) : on);
+    paintField(entry);
+    updateSaveBar();
+  }
+
   function controlHtml(e, opt) {
     const p = esc(e.path);
     const v = opt.shown(e);
@@ -151,17 +229,17 @@
     if (e.type === 'choice') {
       return `<div class="row"><select class="sel st-input${dirty}" data-path="${p}">`
         + (e.choices || []).map(c =>
-          `<option value="${esc(c)}"${String(c) === String(v) ? ' selected' : ''}>${esc(c)}</option>`).join('')
-        + '</select></div>' + `<div class="st-sub">${resetHtml(e, opt)}</div>`;
+          `<option value="${esc(c)}"${String(c) === String(v) ? ' selected' : ''}>${esc(choiceLabel(e, c))}</option>`).join('')
+        + '</select></div>' + `<div class="st-sub">${defaultHtml(e, opt)}${resetHtml(e, opt)}</div>`;
     }
     const fromDom = !!(opt.dirty && opt.dirty.has(e.path));
     if (e.type === 'chips') {
       const cur = Array.isArray(v) ? v : [];
-      const chips = (e.choices || []).map(c => {
-        const on = e.exclude ? !cur.includes(c) : cur.includes(c);
-        return `<button type="button" class="st-chip${on ? ' on' : ''}" data-chip="${esc(c)}" aria-pressed="${on}">${esc(c)}</button>`;
-      }).join('');
-      return `<div class="st-chips${dirty}" data-path="${p}" role="group">${chips}</div>`
+      const open = _toolsOpen.has(e.path);
+      return `<div class="st-tools${dirty}${open ? ' open' : ''}" data-path="${p}" role="group">`
+        + `<button type="button" class="mcbtn mcbtn-ghost mcbtn-sm" data-tools-edit>${open ? 'Done' : 'Edit'}</button>`
+        + `<span class="st-tools-sum">${toolsSummary(e, cur)}</span>`
+        + (open ? toolsGroupsHtml(e, cur) : '') + '</div>'
         + `<div class="st-sub">${defaultHtml(e, opt)}${resetHtml(e, opt)}</div>`;
     }
     if (e.type === 'list') {
@@ -566,8 +644,9 @@
         else if (JSON.stringify(v) === JSON.stringify(d)) dflt.textContent = '';
         else dflt.innerHTML = `default <b>${esc(fmtVal(d, e))}</b>`;
       }
-      row.querySelectorAll('.st-in, .st-ta, .sel, .st-chips').forEach(c => c.classList.toggle('dirty', _dirty.has(e.path)));
+      row.querySelectorAll('.st-in, .st-ta, .sel, .st-tools').forEach(c => c.classList.toggle('dirty', _dirty.has(e.path)));
     });
+    if (e.type === 'chips') paintTools(e);
   }
 
   function onInput(ev) {
@@ -590,17 +669,36 @@
   }
 
   function onClick(ev) {
-    const chip = ev.target.closest('.st-chips [data-chip]');
-    if (chip) {
-      const box = chip.closest('.st-chips');
+    const tedit = ev.target.closest('.st-tools [data-tools-edit]');
+    if (tedit) {
+      ev.preventDefault();
+      const box = tedit.closest('.st-tools');
       const entry = _entryByPath.get(box.dataset.path);
       if (!entry) return;
-      chip.classList.toggle('on');
-      chip.setAttribute('aria-pressed', String(chip.classList.contains('on')));
-      const on = [...box.querySelectorAll('[data-chip]')].filter(c => c.classList.contains('on')).map(c => c.dataset.chip);
-      noteChange(entry, entry.exclude ? (entry.choices || []).filter(c => !on.includes(c)) : on);
-      paintField(entry);
-      updateSaveBar();
+      const open = !_toolsOpen.has(entry.path);
+      if (open) _toolsOpen.add(entry.path); else _toolsOpen.delete(entry.path);
+      box.classList.toggle('open', open);
+      tedit.textContent = open ? 'Done' : 'Edit';
+      box.querySelectorAll('.st-tools-grp').forEach(n => n.remove());
+      if (open) box.insertAdjacentHTML('beforeend', toolsGroupsHtml(entry, toolList(entry)));
+      return;
+    }
+    const tall = ev.target.closest('.st-tools [data-tools-all]');
+    if (tall) {
+      ev.preventDefault();
+      const on = tall.dataset.toolsAll === 'on';
+      const grp = tall.closest('.st-tools-grp');
+      grp.querySelectorAll('[data-tool]').forEach(chip => { chip.classList.toggle('on', on); chip.setAttribute('aria-pressed', String(on)); });
+      writeTools(tall.closest('.st-tools'));
+      return;
+    }
+    const tchip = ev.target.closest('.st-tools-grid [data-tool]');
+    if (tchip) {
+      ev.preventDefault();
+      const on = !tchip.classList.contains('on');
+      tchip.classList.toggle('on', on);
+      tchip.setAttribute('aria-pressed', String(on));
+      writeTools(tchip.closest('.st-tools'));
       return;
     }
     const bool = ev.target.closest('.mc-toggle[data-type="bool"]');

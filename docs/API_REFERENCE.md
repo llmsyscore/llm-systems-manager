@@ -1069,17 +1069,23 @@ Deletes the thread; audited as `tower.thread.delete`.
 ---
 
 ### `POST /api/tower/threads/<id>/messages`
-Sends a message and starts a run. **Body:** `{"text": "...", "page": "..."}` → `{"run_id": "..."}`. Returns 400 for empty text, 409 `run_active` if the thread already has a run in flight, and 503 `no_model` when no model resolves; also 429 `rate_limited`.
+Sends a message and starts a run. **Body:** `{"text": "...", "page": "..."}` → `{"run_id": "..."}`. Returns 400 for empty text, 409 `run_active` if the thread already has a run in flight, and 503 `no_model` when no model resolves; also 429 `rate_limited`. A message that tries to make Tower ignore its rules, reveal its instructions, skip approvals or take another persona is refused with a fixed line and never reaches the model; when `manager.tower.report_violations` is on the refusal ends with "It has been reported.", an audit row `tower.violation` is written with result `critical` and detail `{severity, source, tool, run_id, excerpt}`, and a critical "Tower rule-bypass attempt" alert is raised in the alarm engine.
 
 ---
 
 ### `GET /api/tower/runs/<id>/stream`
-SSE stream of the run's reasoning loop. Events: `model`, `status`, `tool`, `delta`, `truncated`, `done`, `error`. A second `model` event with `fallback: true` and `from` means the question was handed to another loaded model after the request timeout (`manager.tower.fallback`); the answer text opens with the same disclosure. Holds one stream-pool slot for the life of the connection.
+SSE stream of the run's reasoning loop. Events: `model`, `status`, `tool`, `delta`, `truncated`, `confirm`, `action`, `done`, `error`. A second `model` event with `fallback: true` and `from` means the question was handed to another loaded model after the request timeout (`manager.tower.fallback`); the answer text opens with the same disclosure. Holds one stream-pool slot for the life of the connection. `confirm` carries `{action_id, tool, args, card{title,target,does,not}, tier, role, actor, expires_s}` (`expires_s` is 600) — the stream ends right after this event, since the run is now parked on approval. Re-attaching with `GET` on a run that already finished and drained returns a single `{"event": "done", "ok": true, "drained": true}` frame. `action` carries `{action_id, tool, status: done|failed|denied|expired, message, ms, actor}` once a pending action resolves. `GET /api/tower/threads/<id>` messages now include `role: "action"` rows whose `content` is that same card JSON. A rule-bypass attempt in the user's own message ends the run before any model call, with `done{calls: 0, note: "rule-bypass attempt"}`; the same refusal, audit row and alert fire when the model produces the bypass reply on its own. Any language-tagged code fence in the model's reply is withheld from the `delta` stream and from the stored message, replaced by the single line "Code withheld: Tower does not produce code." — bare fences and configuration or text fences (`toml`, `ini`, `json`, `yaml`, `diff`, `csv`, `md`, …) still stream normally.
 
 ---
 
 ### `POST /api/tower/runs/<id>/stop`
-Stops an in-progress run; 404 for an unknown run.
+Stops an in-progress run; 404 for an unknown run. Stopping a run parked on an approval denies the action (actor `stopped`) and ends the turn with "Stopped.".
+
+---
+
+### `POST /api/tower/actions/<id>/approve` · `POST /api/tower/actions/<id>/deny`
+
+Resolve an action card Tower raised in this user's thread. The server re-checks that the tool is still allowed for the caller's role under the current `capabilities` and `disabled_tools` (403 `not allowed`) — deny skips this recheck and is always allowed — that the action is still pending (409 `not pending` if already decided), and that the run is still alive (410 `expired` if no worker knows the action any more, e.g. after a manager restart; the row is marked expired). Returns `{ok, run_id, status, tool, thread_id}`; re-open `GET /api/tower/runs/<run_id>/stream` to keep receiving the turn — a `running` status means the tool is now executing. Restarting a provider is admin-tier, so a non-admin's approve on a `restart_provider` card is refused by the role recheck (the drawer already hides the buttons for other viewers). `load_model` / `unload_model` accept providers `llama` and `lms`; `restart_provider` also `vllm`. Audited as `tower.action.approve|deny` with actor `tower via <user>` and detail `{tool, args, thread_id}`.
 
 ---
 

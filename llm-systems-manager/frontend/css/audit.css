@@ -65,6 +65,7 @@
 #admin-audit .au-pill.ok { color: var(--ok); background: color-mix(in srgb, var(--ok) 11%, transparent); border: 1px solid color-mix(in srgb, var(--ok) 26%, transparent); }
 #admin-audit .au-pill.denied, #admin-audit .au-pill.fail { color: var(--warn); background: color-mix(in srgb, var(--warn) 12%, transparent); border: 1px solid color-mix(in srgb, var(--warn) 28%, transparent); }
 #admin-audit .au-pill.error { color: var(--crit); background: color-mix(in srgb, var(--crit) 12%, transparent); border: 1px solid color-mix(in srgb, var(--crit) 28%, transparent); }
+#admin-audit .au-pill.critical { color: var(--crit); background: color-mix(in srgb, var(--crit) 12%, transparent); border: 1px solid color-mix(in srgb, var(--crit) 28%, transparent); font-weight: 700; }
 #admin-audit .au-pill.refused, #admin-audit .au-pill.unsupported { color: var(--fg-muted); background: color-mix(in srgb, var(--fg-dim) 12%, transparent); border: 1px solid color-mix(in srgb, var(--fg-dim) 28%, transparent); }
 #admin-audit .au-empty { padding: 28px 16px; text-align: center; color: var(--fg-dim); font-size: 12.5px; font-family: var(--font-sans); white-space: normal; }
 #admin-audit .au-empty b { color: var(--fg-muted); font-weight: 500; }

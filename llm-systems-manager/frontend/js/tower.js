@@ -171,14 +171,36 @@
     if (t.done) return html;
     return html.endsWith('</p>') ? `${html.slice(0, -4)}<span class="caret"></span></p>` : `${html}<span class="caret"></span>`;
   }
+  const TIER_LABEL = { read: 'answer only', operate: 'answer and act', admin: 'answer and act, incl. admin actions' };
+  // Pending and running actions render as a card; every other status is one tick.
+  function actionHtml(a) {
+    const running = a.status === 'running';
+    const stale = a.status === 'pending' && a.expires != null && a.expires * 1000 < Date.now();
+    if (a.status === 'pending' || running) {
+      const who = a.role === 'admin' ? 'admins only' : 'allowed for operators';
+      const mine = a.role !== 'admin' || !!(_view && _view.admin);
+      const eyebrow = running ? 'Running…' : stale ? 'Approval expired' : mine ? 'Needs your approval' : "Needs an admin's approval";
+      const btns = (stale || running || !mine) ? '' : `<div class="btns"><button type="button" class="mcbtn mcbtn-pri mcbtn-sm" data-approve="${TW.esc(a.id)}">Approve</button>`
+        + `<button type="button" class="mcbtn mcbtn-ghost mcbtn-sm" data-deny="${TW.esc(a.id)}">Deny</button></div>`;
+      return `<div class="act" data-act="${TW.esc(a.id)}"><div class="eyebrow">${TW.esc(eyebrow)}</div>`
+        + `<h4>${TW.esc(a.card.title || a.tool)}</h4><div class="tgt">${TW.esc(a.card.target || '')}</div>`
+        + `<p>${TW.esc(a.card.does || '')}${a.card.not ? ' ' + TW.esc(a.card.not) : ''}</p>`
+        + `<div class="role">${TW.esc(TIER_LABEL[a.tier] || a.tier)} · ${who} · audit: <span class="mono">${TW.esc(a.actor)}</span></div>${btns}</div>`;
+    }
+    const ok = a.status === 'done';
+    const tail = ok ? (a.ms != null ? `${a.ms} ms` : '') : a.status;
+    const msg = a.message && a.status !== 'done' && a.message !== a.status ? ` · ${TW.esc(a.message)}` : '';
+    return `<div class="tick act${ok ? ' ok' : ' bad'}"><span class="k">${ok ? '✓' : '✕'}</span>${TW.esc(a.card.title || a.tool)}${msg}<span class="ms">${TW.esc(tail)}</span></div>`;
+  }
   function turnHtml(t, i) {
     if (t.role === 'user') return `<div class="u">${TW.esc(t.text)}</div>`;
     const log = t.ticks.length ? `<div class="log">${t.ticks.map((k, j) => tickHtml(k, `${i}:${j}`)).join('')}</div>` : '';
+    const acts = (t.actions || []).map(actionHtml).join('');
     const body = t.text ? `<div class="ans">${answerHtml(t)}</div>` : (t.done ? '' : '<div class="ans"><span class="caret"></span></div>');
     const drop = t.truncated ? '<div class="drop">some output was dropped</div>' : '';
     const err = t.error ? `<div class="notice"><h4><i></i>${TW.esc(t.error)}</h4></div>` : '';
     const note = t.note ? `<div class="tick"><span class="k">·</span>${TW.esc(t.note)}</div>` : '';
-    return `<div class="t">${log}${body}${drop}${note}${err}</div>`;
+    return `<div class="t">${log}${acts}${body}${drop}${note}${err}</div>`;
   }
   function noticeHtml() {
     return _notice ? `<div class="notice"><h4><i></i>${TW.esc(_notice)}</h4></div>` : '';
@@ -215,12 +237,12 @@
     if (!turns.length) {
       const p = page;
       body.innerHTML = `<div class="empty"><h3>Ask about your hosts</h3><p>Tower reads live telemetry, alerts, models, energy and recent runs through the gateway.${p.tab ? ` It knows you are on <b>${TW.esc(p.tab)}</b>.` : ''}</p>`
-        + `<div class="fu">${TW.suggestions(p).map(s => `<button type="button" class="sug" data-sug="${TW.esc(s)}">${TW.esc(s)}</button>`).join('')}</div></div>` + noticeHtml();
+        + `<div class="fu">${TW.suggestions(p, _view && _view.capabilities).map(s => `<button type="button" class="sug" data-sug="${TW.esc(s)}">${TW.esc(s)}</button>`).join('')}</div></div>` + noticeHtml();
     } else {
       body.innerHTML = turns.map(turnHtml).join('') + pendingHtml() + noticeHtml();
     }
     body.scrollTop = atBottom ? body.scrollHeight : prevTop;
-    if (sugs) sugs.innerHTML = turns.length ? TW.suggestions(page).map(s => `<button type="button" class="sug" data-sug="${TW.esc(s)}">${TW.esc(s)}</button>`).join('') : '';
+    if (sugs) sugs.innerHTML = turns.length ? TW.suggestions(page, _view && _view.capabilities).map(s => `<button type="button" class="sug" data-sug="${TW.esc(s)}">${TW.esc(s)}</button>`).join('') : '';
     const busy = !!(_state && _state.status !== 'idle');
     if (input) input.placeholder = busy ? 'Ask another — it goes next' : 'Ask Tower…';
     const sendBtn = $('twSend');
@@ -236,12 +258,51 @@
 
   function closeStream() {
     if (_sse) { _sse.close(); _sse = null; }
-    _runId = null;
+  }
+  function endRun() { closeStream(); _runId = null; }
+  // Opens (or re-opens) the event stream of a run; the server ends it at confirm/done/error.
+  function attach(runId) {
+    _runId = runId;
+    _sse = SG.open({ url: `/api/tower/runs/${encodeURIComponent(runId)}/stream`, bypassPause: true,
+                     onEvent: ev => {
+                       _state = TW.reduce(_state, ev); paintBody();
+                       if (ev.event === 'confirm') { closeStream(); if (!isOpen()) markUnread(); return; }
+                       if (ev.event === 'done' || ev.event === 'error') { endRun(); if (!isOpen()) markUnread(); drainPending(); }
+                     },
+                     onLost: () => {
+                       if (_state && _state.status === 'awaiting') { closeStream(); return; }
+                       _state = TW.reduce(_state, { event: 'error', message: 'Lost the connection to Tower.' }); paintBody(); endRun();
+                     } });
+  }
+  // Records an approve/deny decision, then re-attaches to the run it releases.
+  async function decide(aid, verb) {
+    _notice = null;
+    let res = null;
+    try { res = await fetch(`/api/tower/actions/${encodeURIComponent(aid)}/${verb}`, { method: 'POST' }); } catch (_) { /* offline */ }
+    const d = res ? await res.json().catch(() => ({})) : {};
+    if (!res || !res.ok || !d.ok) {
+      if (d.error === 'expired') {
+        _notice = 'That approval expired; ask again.';
+        _state = TW.reduce(_state, { event: 'action', action_id: aid, tool: null, status: 'expired', message: 'approval expired', ms: 0 });
+        _state = TW.reduce(_state, { event: 'done', ok: false });
+        endRun(); paintBody(); drainPending(); return;
+      }
+      _notice = d.error === 'not allowed' ? 'Your role or the current tier does not allow this action.'
+        : d.error === 'not pending' ? 'That action was already decided.'
+        : 'Tower could not record the decision; try again.';
+      paintBody();
+      // Decided elsewhere: the run still owns the outcome, so listen for it.
+      if (d.error === 'not pending' && _runId) { closeStream(); attach(_runId); }
+      return;
+    }
+    closeStream();
+    _state = TW.reduce(_state, { event: 'status', state: 'thinking' }); paintBody();
+    attach(d.run_id);
   }
   // Drops the client stream and asks the manager to cancel any active run.
   async function abortRun() {
     const rid = _runId;
-    closeStream();
+    endRun();
     if (rid) { try { await fetch(`/api/tower/runs/${encodeURIComponent(rid)}/stop`, { method: 'POST' }); } catch (_) { /* already gone */ } }
   }
 
@@ -278,13 +339,7 @@
         : 'Tower could not start; try again.';
       _state = TW.reduce(_state, { event: 'error', message: msg }); paintBody(); return;
     }
-    _runId = d.run_id;
-    _sse = SG.open({ url: `/api/tower/runs/${encodeURIComponent(_runId)}/stream`, bypassPause: true,
-                     onEvent: ev => {
-                       _state = TW.reduce(_state, ev); paintBody();
-                       if (ev.event === 'done' || ev.event === 'error') { closeStream(); if (!isOpen()) markUnread(); drainPending(); }
-                     },
-                     onLost: () => { _state = TW.reduce(_state, { event: 'error', message: 'Lost the connection to Tower.' }); paintBody(); closeStream(); } });
+    attach(d.run_id);
   }
 
   function drainPending() {
@@ -298,11 +353,13 @@
     let res = null;
     try { res = await fetch(`/api/tower/runs/${encodeURIComponent(_runId)}/stop`, { method: 'POST' }); } catch (_) { /* offline */ }
     if (res && res.status === 404) {
-      closeStream();
+      endRun();
       _state = TW.reduce(_state, { event: 'error', message: 'Tower stopped.' });
       paintBody();
       return;
     }
+    // A parked run only reports the denial on its stream, so listen again.
+    if (res && res.ok && _state && _state.status === 'awaiting') { closeStream(); attach(_runId); return; }
     if (!res || !res.ok) { _notice = 'Could not stop; the answer will finish on its own.'; paintBody(); }
   }
 
@@ -320,6 +377,8 @@
       onSug(ev);
       if (ev.target.closest('#twEnable')) { ev.preventDefault(); enable(); }
       if (ev.target.closest('#twSettingsLink')) { ev.preventDefault(); towerClose({ returnFocus: false }); switchTab('admin'); switchSubTab('admin', 'settings'); if (typeof adminSettingsOpenGroup === 'function') adminSettingsOpenGroup('tower'); }
+      const ap = ev.target.closest('[data-approve]'); if (ap) { decide(ap.dataset.approve, 'approve'); return; }
+      const dn = ev.target.closest('[data-deny]'); if (dn) { decide(dn.dataset.deny, 'deny'); return; }
       const qx = ev.target.closest('[data-qx]');
       if (qx) { _pending.splice(Number(qx.dataset.qx), 1); paintBody(); return; }
       const tick = ev.target.closest('.tick[data-tk]');
