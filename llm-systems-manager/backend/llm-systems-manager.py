@@ -176,7 +176,7 @@ def _local_hostname() -> str:
 # banner reads it. Bump suffix (-1, -2, …) for same-day iterations; roll
 # the date for a new day's first change.
 # ---------------------------------------------------------------------------
-__version__ = "v2026.09.12-4"
+__version__ = "v2026.09.13-3"
 
 # Wall-clock at first import (Cheroot main process); the shutdown banner
 # reads it for the uptime line.
@@ -3375,7 +3375,9 @@ AUDIT_EVENT_GROUPS: list[dict] = [
         {"key": "reportcard", "label": "Report card run / delete", "default_on": True},
         {"key": "tools.run", "label": "Benchmark / autotune run", "default_on": False}]},
     {"key": "tower", "title": "Tower", "events": [
-        {"key": "tower.config", "label": "Model pin / thread delete", "default_on": True}]},
+        {"key": "tower.config", "label": "Model pin / thread delete", "default_on": True},
+        {"key": "tower.action", "label": "Action approved / denied", "default_on": True},
+        {"key": "tower.violation", "label": "Rule-bypass attempt", "default_on": True}]},
 ]
 _AUDIT_EVENT_GROUP = {ev["key"]: g["key"] for g in AUDIT_EVENT_GROUPS for ev in g["events"]}
 
@@ -3433,6 +3435,8 @@ _AUDIT_LABELS: dict[str, str] = {
     "alarm.ignore-all": "Ignored all alerts", "alarm.bulk": "Bulk alert action",
     "alarm.delete": "Deleted an alert", "alarm.rule": "Changed an alarm rule",
     "tower.model": "Pinned the Tower model", "tower.thread.delete": "Deleted a Tower thread",
+    "tower.action.approve": "Approved a Tower action", "tower.action.deny": "Denied a Tower action",
+    "tower.violation": "Tower rule-bypass attempt",
 }
 
 # (method-or-None, path regex, action, event). Groups: t = target, v = verb
@@ -3501,6 +3505,7 @@ _AUDIT_ROUTES: list[tuple] = [
     (None,     re.compile(r"^/api/alarm/(?:admin/)?rules(?:/(?P<t>[^/]+))?$"), "alarm.rule",  "alarm.actions"),
     ("PUT",    re.compile(r"^/api/tower/model$"),                      "tower.model",        "tower.config"),
     ("DELETE", re.compile(r"^/api/tower/threads/(?P<t>[^/]+)$"),       "tower.thread.delete", "tower.config"),
+    ("POST",   re.compile(r"^/api/tower/actions/(?P<t>[^/]+)/(?P<d>approve|deny)$"), "tower.action.{d}", "tower.action"),
 ]
 
 # Actions whose target is the model id in the JSON body, not in the path.
@@ -3560,7 +3565,7 @@ def _audit_reload_config() -> None:
         log.warning("audit config reload failed (runtime keeps previous values): %s", e)
 
 
-_AUDIT_EVENT_BY_ACTION: dict[str, str] = {}
+_AUDIT_EVENT_BY_ACTION: dict[str, str] = {"tower.violation": "tower.violation"}
 
 
 def _audit_event_for(action: str) -> str:
@@ -3704,6 +3709,9 @@ def _audit_detail(action: str, target, resp) -> "dict | None":
             for k in ("restart_required", "applied", "version"):
                 if k in j:
                     d[k] = j[k]
+    extra = getattr(_flask_g, "_audit_extra", None)
+    if isinstance(extra, dict):
+        d.update(extra)
     if not d:
         return None
     if len(json.dumps(d, default=str)) > _AUDIT_DETAIL_MAX:
@@ -3802,7 +3810,7 @@ def _audit_after_request(resp):
                      else (flask_request.form.get("username") or "")[:64]) or ""
             target = target or actor or None
             role = _flask_session.get("role") or "" if status < 400 else ""
-        elif action == "auth.logout":
+        if action != "auth.login":
             actor = getattr(_flask_g, "_audit_actor", None) or actor
         # Authenticated automated users (smoke test etc.) follow the "Unit tests" gate; failed logins stay.
         if (auth_kind in ("session", "token") and actor in _AUDIT_CFG["automated_actors"]
@@ -4496,15 +4504,26 @@ def _settings_drift(ae_flat: dict, file_vals: "dict | None",
 
 
 # Hot settings (catalog hot=True): prefix → runtime reloader run after a save.
+def _apply_debug_loggers() -> None:
+    """Sets the tower and gateway loggers to DEBUG while their debug flags are on.
+    Off = the manager's own level but never below INFO, so a global DEBUG leaks no trace."""
+    off = max(logging.getLogger("llm-systems-manager").getEffectiveLevel(), logging.INFO)
+    for name, on in (("llm-systems-manager.tower", bool(getattr(getattr(settings.manager, "tower", None), "debug", False))),
+                     ("llm-systems-manager.gateway", bool(getattr(getattr(settings.manager, "gateway", None), "debug", False)))):
+        logging.getLogger(name).setLevel(logging.DEBUG if on else off)
+
+
 def _gateway_reload_config() -> None:
-    """Re-apply [manager.gateway].enabled onto the live settings (hot)."""
+    """Re-apply [manager.gateway].enabled + debug onto the live settings (hot)."""
     try:
         gw = settings_catalog._snapshot().manager.gateway
         live = getattr(settings.manager, "gateway", None)
         if live is not None:
             live.enabled = bool(gw.enabled)
+            live.debug = bool(getattr(gw, "debug", False))
     except Exception as e:
         log.warning("gateway config reload failed (runtime keeps previous value): %s", e)
+    _apply_debug_loggers()
 
 
 # Sections whose live values re-read the file after a save (backup registers below).
@@ -5670,6 +5689,28 @@ def _tower_tools_runs(tool, count):
     return [_tool_run_row(r) for r in rows]
 
 
+def _tower_audit_rows(window, actor, action, count):
+    """Newest audit rows in a window, optionally filtered by actor (exact) and action prefix; detail already masked."""
+    since = (datetime.now(timezone.utc) - timedelta(seconds=tower_tools.WINDOWS.get(window, 86400))).isoformat(timespec="seconds")
+    where, params = ["ts >= ?"], [since]
+    if actor:
+        where.append("actor = ?"); params.append(str(actor)[:64])
+    if action:
+        where.append("action LIKE ?"); params.append(str(action)[:64].replace("%", "") + "%")
+    rows = get_db().execute("SELECT ts, actor, role, action, target, outcome, detail FROM audit_log WHERE " + " AND ".join(where)
+                            + " ORDER BY id DESC LIMIT ?", params + [int(count)]).fetchall()
+    out = []
+    for r in rows:
+        d = dict(r)
+        d["label"] = _audit_label(d.get("action") or "")
+        try:
+            d["detail"] = json.loads(d["detail"]) if d.get("detail") else None
+        except (TypeError, ValueError):
+            d["detail"] = None
+        out.append(d)
+    return out
+
+
 def _tower_service_health() -> dict:
     agents = agent_registry.load_agents().get("agents") or {}
     now = time.time()
@@ -5736,6 +5777,26 @@ def _tower_gateway_entries() -> list:
     return out
 
 
+def _tower_report_violation(info: dict) -> None:
+    """Audit row + critical alert for a message that tried to bypass Tower's rules."""
+    actor = str(info.get("actor") or "")
+    source = str(info.get("source") or "")
+    excerpt = str(info.get("excerpt") or "")
+    detail = json.dumps({"severity": "critical", "source": source, "tool": info.get("tool"),
+                         "run_id": info.get("run_id"), "excerpt": excerpt})
+    if "tower.violation" not in _AUDIT_CFG["disabled"]:
+        _audit_record((datetime.now(timezone.utc).isoformat(timespec="seconds"), actor, str(info.get("role") or ""),
+                       "", "session", "POST", "tower", "tower.violation", str(info.get("thread_id") or ""),
+                       403, "critical", detail, "tower.violation"))
+    try:
+        _ae_ingest_alert({"name": "Tower rule-bypass attempt", "source": "tower",
+                          "metric": f"tower/violation/{actor}", "severity": "critical", "value": 1, "threshold": 0,
+                          "message": f"{actor} sent Tower a message that tries to bypass its rules ({source}). "
+                                     f"Excerpt: {excerpt[:120]!r}"})
+    except Exception as e:  # noqa: BLE001 — the audit row stands even when the alarm engine is down
+        log.warning("tower violation alert failed: %s: %s", type(e).__name__, e)
+
+
 def _tower_stream_max_s() -> float:
     base = float(getattr(settings.manager, "stream_max_lifetime_s", 120.0) or 120.0)
     return max(base, 3.0 * float(getattr(settings.manager.tower, "request_timeout_s", 45) or 45))
@@ -5744,12 +5805,15 @@ def _tower_stream_max_s() -> float:
 _tower_store = tower.Store(str(DB_PATH))
 _tower_deps = tower_tools.prod_deps(ctx, db_path=str(DB_PATH), tools_runs=_tower_tools_runs,
                                     speed_table=lambda m: bench_live.speed_table(str(DB_PATH), m),
-                                    service_health=_tower_service_health, gateway_entries=_tower_gateway_entries)
+                                    service_health=_tower_service_health, gateway_entries=_tower_gateway_entries,
+                                    audit_rows=_tower_audit_rows)
+_tower_approvals = tower.Approvals()
 _tower_runs = tower.Runs(_tower_store, registry_factory=lambda: tower_tools.build_registry(_tower_deps),
                          complete_stream=gateway.complete_stream,
                          entries=_tower_gateway_entries, server_args_of=_tower_server_args,
                          cfg=lambda: settings.manager.tower, stream_max_s=_tower_stream_max_s,
-                         shutting_down=lambda: _shutting_down)
+                         shutting_down=lambda: _shutting_down, approvals=_tower_approvals,
+                         report_violation=_tower_report_violation)
 tower.register_routes(app, ctx, runs=_tower_runs, gateway_entries=_tower_gateway_entries,
                       write_setting=_tower_write_setting)
 
@@ -6304,9 +6368,9 @@ def _bench_baseline_reload_config() -> None:
 _HOT_RELOADERS["manager.bench_baselines."] = _bench_baseline_reload_config
 
 
-_TOWER_KEYS = ("enabled", "model", "tool_mode", "capabilities", "off_topic", "disabled_tools",
-               "diagnose_alarms", "playbooks_auto", "min_severity", "max_tool_calls",
-               "max_tokens", "temperature", "request_timeout_s", "fallback", "history_days")
+_TOWER_KEYS = ("enabled", "model", "tool_mode", "capabilities", "off_topic", "report_violations",
+               "disabled_tools", "diagnose_alarms", "playbooks_auto", "min_severity", "max_tool_calls",
+               "max_tokens", "temperature", "request_timeout_s", "fallback", "history_days", "debug")
 
 
 def _tower_reload_config() -> None:
@@ -6320,9 +6384,11 @@ def _tower_reload_config() -> None:
             setattr(live, k, getattr(snap, k))
     except Exception as e:
         log.warning("tower config reload failed (runtime keeps previous values): %s", e)
+    _apply_debug_loggers()
 
 
 _HOT_RELOADERS["manager.tower."] = _tower_reload_config
+_apply_debug_loggers()
 
 
 def _validate_nightly_at(value: str) -> "str | None":

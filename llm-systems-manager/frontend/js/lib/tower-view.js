@@ -14,7 +14,13 @@
   function ensureTower(turns) {
     const t = last(turns);
     if (t && t.role === 'tower' && !t.done) return turns;
-    return turns.concat([{ role: 'tower', ticks: [], text: '', done: false, error: null }]);
+    return turns.concat([{ role: 'tower', ticks: [], text: '', done: false, error: null, actions: [] }]);
+  }
+
+  // Index of the turn whose actions hold this id, newest first; -1 when none does.
+  function findAction(turns, id) {
+    for (let i = turns.length - 1; i >= 0; i--) if ((turns[i].actions || []).some(a => a.id === id)) return i;
+    return -1;
   }
 
   function reduce(state, ev) {
@@ -38,14 +44,35 @@
         s.turns[s.turns.length - 1] = { ...last(s.turns), truncated: true }; return s;
       }
       case 'done': {
-        s.turns = ensureTower(s.turns);
-        s.turns[s.turns.length - 1] = { ...last(s.turns), done: true, note: ev.note || null, elapsed_ms: ev.elapsed_ms };
+        const l = last(s.turns);
+        // A second done (e.g. after an expired-approval close-out) must not append an empty turn.
+        if (l && l.role === 'tower' && !l.done) {
+          s.turns[s.turns.length - 1] = { ...l, done: true, note: ev.note || null, elapsed_ms: ev.elapsed_ms };
+        }
         s.status = 'idle'; return s;
       }
       case 'error': {
         s.turns = ensureTower(s.turns);
         s.turns[s.turns.length - 1] = { ...last(s.turns), done: true, error: ev.message || 'Tower hit an error.' };
         s.status = 'idle'; s.error = ev.message || null; return s;
+      }
+      case 'confirm': {
+        s.turns = ensureTower(s.turns);
+        const a = { id: ev.action_id, tool: ev.tool, args: ev.args || {}, card: ev.card || {}, status: 'pending', tier: ev.tier || 'operate',
+                    role: ev.role || 'operator', actor: ev.actor || '', message: null, ms: null,
+                    expires: ev.expires_s != null ? Math.floor(Date.now() / 1000) + Number(ev.expires_s) : null };
+        s.turns[s.turns.length - 1] = { ...last(s.turns), actions: (last(s.turns).actions || []).concat([a]) };
+        s.status = 'awaiting'; return s;
+      }
+      case 'action': {
+        const i = findAction(s.turns, ev.action_id);
+        if (i < 0) { s.turns = ensureTower(s.turns); s.status = 'thinking'; return s; }
+        const t = s.turns[i];
+        const actions = t.actions.map(a => a.id === ev.action_id
+          ? { ...a, status: ev.status || a.status, message: ev.message == null ? a.message : ev.message, ms: ev.ms == null ? a.ms : ev.ms, actor: ev.actor || a.actor }
+          : a);
+        s.turns[i] = { ...t, actions };
+        s.status = 'thinking'; return s;
       }
       default: return s;
     }
@@ -107,11 +134,17 @@
     (rows || []).forEach(r => {
       if (r.role === 'user') { flush(); turns.push({ role: 'user', text: r.content || '' }); }
       else if (r.role === 'tool') {
-        if (!cur) cur = { role: 'tower', ticks: [], text: '', done: true, error: null };
+        if (!cur) cur = { role: 'tower', ticks: [], text: '', done: true, error: null, actions: [] };
         cur.ticks.push({ name: r.tool_name, ok: !!r.tool_ok, ms: r.tool_ms, summary: tickSummary(r), result: safeJson(r.content) });
       } else if (r.role === 'assistant') {
-        if (!cur) cur = { role: 'tower', ticks: [], text: '', done: true, error: null };
+        if (!cur) cur = { role: 'tower', ticks: [], text: '', done: true, error: null, actions: [] };
         cur.text = [cur.text, r.content || ''].filter(Boolean).join('\n');
+      } else if (r.role === 'action') {
+        if (!cur) cur = { role: 'tower', ticks: [], text: '', done: true, error: null, actions: [] };
+        const b = safeJson(r.content) || {};
+        cur.actions.push({ id: b.action_id, tool: b.tool || r.tool_name, args: b.args || {}, card: b.card || {}, status: b.status || 'pending',
+                           tier: b.tier || 'operate', role: b.role || 'operator', actor: b.actor || '', message: b.message == null ? null : b.message,
+                           ms: r.tool_ms == null ? null : r.tool_ms, expires: b.expires == null ? null : b.expires });
       }
     });
     flush();
@@ -129,17 +162,23 @@
     admin: ['Is the alarm engine healthy?', 'What version is each agent on?', 'Are any hosts offline?', 'Summarise active alarms'],
     tools: ['What was the last benchmark run?', 'Which host is fastest for a 27B model?', 'Any autotune runs this week?'],
   };
-  function suggestions(page) {
+  const ACT_SUGS = { llm: 'Wake llama-server', events: 'Acknowledge the oldest active alert' };
+  function suggestions(page, caps) {
     const p = page || {};
-    if (p.tab === 'events') return SUGS.events;
-    if (p.tab === 'dashboard' && p.sub === 'energy') return SUGS.energy;
-    if (p.tab === 'llm') return SUGS.llm;
-    if (p.tab === 'admin') return SUGS.admin;
-    if (p.tab === 'tools') return SUGS.tools;
-    const host = p.host ? `Why is ${p.host} red?` : 'Why is a host red?';
-    const hw = p.host ? `What hardware does ${p.host} have?` : 'What hardware does each host have?';
-    return [host, 'Summarise active alarms', 'What used the most power today?', 'What models are loaded everywhere?',
-            'Top alarm offenders this month', hw];
+    let list;
+    if (p.tab === 'events') list = SUGS.events;
+    else if (p.tab === 'dashboard' && p.sub === 'energy') list = SUGS.energy;
+    else if (p.tab === 'llm') list = SUGS.llm;
+    else if (p.tab === 'admin') list = SUGS.admin;
+    else if (p.tab === 'tools') list = SUGS.tools;
+    else {
+      const host = p.host ? `Why is ${p.host} red?` : 'Why is a host red?';
+      const hw = p.host ? `What hardware does ${p.host} have?` : 'What hardware does each host have?';
+      list = [host, 'Summarise active alarms', 'What used the most power today?', 'What models are loaded everywhere?',
+              'Top alarm offenders this month', hw];
+    }
+    if (caps === 'operate' || caps === 'admin') list = list.concat([ACT_SUGS[p.tab] || 'Unload a model nobody is using']);
+    return list;
   }
 
   function pageContext(o) {

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import types
 
 import pytest
@@ -193,3 +194,80 @@ def test_complete_stream_fails_over_to_the_next_host_on_a_first_token_timeout(mo
     with pytest.raises(gateway.GatewayError) as ei:
         list(gateway.complete_stream({"model": "m", "messages": []}, label="tower", read_timeout=5))
     assert ei.value.err_type == "timeout" and ei.value.status == 504
+
+
+# --- debug trace (round 2d, #924) ---
+
+def test_complete_stream_treats_a_400_after_an_earlier_timeout_as_failover(monkeypatch):
+    closed = []
+    class _Closeable(_Resp):
+        def close(self):
+            closed.append(True)
+    def dial(agent, path, body, read_timeout=None):
+        if agent["agent_id"] == "a1":
+            return gateway._TIMED_OUT
+        return _Closeable(400, {"error": {"message": "bad"}})
+    monkeypatch.setattr(gateway, "_dial_stream", dial)
+    monkeypatch.setattr(gateway, "_candidates", lambda m, a, p: [{"agent_id": "a1", "hostname": "h1"}, {"agent_id": "a2", "hostname": "h2"}])
+    with pytest.raises(gateway.GatewayError) as ei:
+        list(gateway.complete_stream({"model": "m", "messages": []}, label="tower", read_timeout=5))
+    assert ei.value.err_type == "timeout" and ei.value.status == 504
+    assert closed == [True]
+
+
+def test_complete_stream_raises_immediately_on_400_with_no_prior_timeout(monkeypatch):
+    seen = []
+    def dial(agent, path, body, read_timeout=None):
+        seen.append(agent["agent_id"])
+        return _Resp(400, {"error": {"message": "bad"}})
+    monkeypatch.setattr(gateway, "_dial_stream", dial)
+    monkeypatch.setattr(gateway, "_candidates", lambda m, a, p: [{"agent_id": "a1", "hostname": "h1"}, {"agent_id": "a2", "hostname": "h2"}])
+    with pytest.raises(gateway.GatewayError) as ei:
+        list(gateway.complete_stream({"model": "m", "messages": []}, label="tower"))
+    assert ei.value.status == 400 and seen == ["a1"]
+
+
+def test_debug_trace_logs_the_completion_start_and_end(monkeypatch, caplog):
+    caplog.set_level(logging.DEBUG, logger="llm-systems-manager.gateway")
+    monkeypatch.setattr(gateway, "_dial_stream",
+                        lambda agent, path, body, read_timeout=None: _Resp(200, lines=_sse_lines(), ctype="text/event-stream"))
+    list(gateway.complete_stream({"model": "m", "messages": []}, label="tower"))
+    blob = "\n".join(r.getMessage() for r in caplog.records if r.name == "llm-systems-manager.gateway")
+    assert "gateway completion label=tower" in blob
+    assert "gateway serving host=" in blob
+    assert "gateway first_token_ms=" in blob
+    assert "gateway completion end label=tower" in blob
+
+
+def test_debug_trace_logs_a_skipped_candidate_on_failover(monkeypatch, caplog):
+    caplog.set_level(logging.DEBUG, logger="llm-systems-manager.gateway")
+    def dial(agent, path, body, read_timeout=None):
+        if agent["agent_id"] == "a1":
+            return None
+        return _Resp(200, lines=_sse_lines(), ctype="text/event-stream")
+    monkeypatch.setattr(gateway, "_dial_stream", dial)
+    monkeypatch.setattr(gateway, "_candidates", lambda m, a, p: [{"agent_id": "a1", "hostname": "h1"},
+                                                                 {"agent_id": "a2", "hostname": "h2"}])
+    list(gateway.complete_stream({"model": "m", "messages": []}, label="tower"))
+    blob = "\n".join(r.getMessage() for r in caplog.records if r.name == "llm-systems-manager.gateway")
+    assert "gateway candidate skipped" in blob and "reason=unreachable" in blob
+
+
+def test_debug_trace_logs_a_failed_completion(monkeypatch, caplog):
+    caplog.set_level(logging.DEBUG, logger="llm-systems-manager.gateway")
+    monkeypatch.setattr(gateway, "_candidates", lambda *a, **k: [])
+    with pytest.raises(gateway.GatewayError):
+        list(gateway.complete_stream({"model": "m", "messages": []}, label="tower"))
+    blob = "\n".join(r.getMessage() for r in caplog.records if r.name == "llm-systems-manager.gateway")
+    assert "gateway completion failed label=tower" in blob
+
+
+def test_debug_trace_covers_the_json_path(monkeypatch, caplog):
+    caplog.set_level(logging.DEBUG, logger="llm-systems-manager.gateway")
+    payload = {"choices": [{"message": {"content": "hi"}, "finish_reason": "stop"}],
+               "usage": {"prompt_tokens": 3, "completion_tokens": 2}}
+    monkeypatch.setattr(gateway, "_forward_json", lambda agent, path, body: (_Resp(200, payload), None))
+    gateway.complete_json({"model": "m", "messages": []}, label="tower")
+    blob = "\n".join(r.getMessage() for r in caplog.records if r.name == "llm-systems-manager.gateway")
+    assert "gateway completion label=tower" in blob and "stream=False" in blob
+    assert "gateway completion end label=tower" in blob

@@ -27,3 +27,14 @@ def test_hot_paths_never_flag_a_restart(monkeypatch):
     now = dict(boot)
     now["manager.audit.retention_days"] = 60
     assert sc.pending_restart_services(now) == set()
+
+
+def test_tower_violation_is_a_catalogued_event_on_by_default():
+    import manager_mod as M
+    tower_group = next(g for g in M.AUDIT_EVENT_GROUPS if g["key"] == "tower")
+    ev = next(e for e in tower_group["events"] if e["key"] == "tower.violation")
+    assert ev["label"] == "Rule-bypass attempt" and ev["default_on"] is True
+    assert M._AUDIT_EVENT_GROUP["tower.violation"] == "tower"
+    assert M._audit_event_for("tower.violation") == "tower.violation"
+    assert M._audit_group_for("tower.violation") == "tower"
+    assert M._audit_label("tower.violation") == "Tower rule-bypass attempt"

@@ -52,8 +52,8 @@ The Manager is the central hub of the system. It serves the web dashboard that o
 | companion | PWA phone companion: serves the app shell/manifest/service worker, manages web-push subscriptions and VAPID keys, fans alarm alerts out to devices, and runs the opt-in release check |
 | sse_daemon | Standalone aiohttp daemon that serves the `/api/llama-state/stream` SSE endpoint off its own event loop instead of pinning a web server worker thread per held stream |
 | stream_health | Aggregates the manager's stream pool, worker-thread/queue backlog, and each agent's stream state into one snapshot for the Manager sub-tab's health card |
-| tower.py | Tower assistant: model resolution, streamed reasoning loop over the gateway, thread store, run registry, routes |
-| tower_tools.py | Static read-only tool registry + production readers; no shell/file/HTTP tool |
+| tower.py | Tower assistant: model resolution, streamed reasoning loop over the gateway, approval-gated act tools, code-fence withholding, rule-bypass refusal + reporting, thread + action store, run registry, routes |
+| tower_tools.py | Static tool registry (sixteen read tools incl. model profiles and the audit log + six approval-gated act tools) and production deps; no shell/file/HTTP tool |
 | `app_context.py` | Shared context dataclass that wires all modules together — carries references to the agent registry, alarm engine session, and other cross-module dependencies |
 | `providers/` | Multi-agent provider registry — defines which agent types (llama.cpp, LM Studio, vLLM) are supported, how their metrics are aggregated across multiple agents, and how agents are routed |
 

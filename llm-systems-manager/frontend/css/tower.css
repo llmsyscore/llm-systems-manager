@@ -132,6 +132,17 @@ body.tw-docked #eventsTab, body.tw-docked #toolsTab, body.tw-docked #adminTab { 
 #towerAside .tw-c .hint { font: 10.5px var(--font-mono); color: var(--fg-faint); display: flex; flex-wrap: wrap; gap: 10px; }
 #towerAside .tw-c .hint b { color: var(--fg-dim); font-weight: 500; }
 
+/* ---------- action cards ---------- */
+#towerAside .act:not(.tick) { border: 1px solid color-mix(in srgb, var(--accent) 45%, var(--border-strong)); border-radius: 9px; padding: 10px 12px; display: grid; gap: 6px; background: color-mix(in srgb, var(--accent) 6%, var(--bg-card)); margin: 6px 0; }
+#towerAside .act .eyebrow { font: 500 10.5px var(--font-mono); letter-spacing: .06em; text-transform: uppercase; color: var(--accent); }
+#towerAside .act h4 { margin: 0; font-size: 13.5px; font-weight: 600; color: var(--fg); }
+#towerAside .act .tgt { font: 11.5px var(--font-mono); color: var(--fg-muted); }
+#towerAside .act p { margin: 0; font-size: 12.5px; color: var(--fg-muted); line-height: 1.45; }
+#towerAside .act .role { font: 11px var(--font-mono); color: var(--fg-dim); }
+#towerAside .act .role .mono { font-family: var(--font-mono); color: var(--fg-muted); }
+#towerAside .act .btns { display: flex; gap: 8px; margin-top: 4px; }
+#towerAside .tick.act.ok .k { color: var(--ok); }
+
 @media (prefers-reduced-motion: no-preference) {
   .hdr-tower.streaming svg, #towerAside.streaming .tw-h .beacon { animation: tw-pulse 1.6s ease-in-out infinite; }
   .hdr-tower.unread { animation: tw-glow 2.4s ease-in-out infinite; }

@@ -14,6 +14,7 @@ def test_defaults_are_off_read_only_in_scope():
     assert t.disabled_tools == [] and t.max_tool_calls == 8 and t.max_tokens == 1024
     assert t.history_days == 30 and t.min_severity == "warning"
     assert t.request_timeout_s == 45 and t.fallback is False
+    assert t.report_violations is True
     assert ManagerConfig().tower.enabled is False
 
 
@@ -30,9 +31,9 @@ def test_catalog_rejects_out_of_range(path, value):
 def test_catalog_group_and_hot_flags():
     keys = {e["path"] for e in sc.CATALOG if e["group"] == "tower"}
     assert keys == {f"manager.tower.{k}" for k in (
-        "enabled", "model", "tool_mode", "capabilities", "off_topic", "disabled_tools",
+        "enabled", "model", "tool_mode", "capabilities", "off_topic", "report_violations", "disabled_tools",
         "diagnose_alarms", "playbooks_auto", "min_severity", "max_tool_calls", "max_tokens", "temperature",
-        "request_timeout_s", "fallback", "history_days")}
+        "request_timeout_s", "fallback", "history_days", "debug")}
     assert all(e["hot"] for e in sc.CATALOG if e["group"] == "tower")
     assert dict(sc.GROUPS)["tower"] == "Tower assistant"
     common = {e["path"] for e in sc.CATALOG if e["group"] == "tower" and e.get("common")}
@@ -50,3 +51,44 @@ def test_hot_reload_copies_file_values(monkeypatch):
     assert M.settings.manager.tower.enabled is True and M.settings.manager.tower.model == "qwen3-14b"
     M.settings.manager.tower.enabled = False
     M.settings.manager.tower.model = ""
+
+
+def test_debug_switch_defaults_off_and_is_hot_in_both_groups():
+    assert ManagerTower().debug is False
+    tower_paths = [e["path"] for e in sc.CATALOG if e["group"] == "tower"]
+    assert tower_paths[-1] == "manager.tower.debug"
+    t = sc._BY_PATH["manager.tower.debug"]
+    assert t["type"] == "bool" and t["hot"] is True
+    g = sc._BY_PATH["manager.gateway.debug"]
+    assert g["type"] == "bool" and g["hot"] is True and g["group"] == "gateway"
+    gateway_paths = [e["path"] for e in sc.CATALOG if e["group"] == "gateway"]
+    assert gateway_paths[-1] == "manager.gateway.debug"
+
+
+def test_tower_keys_cover_every_tower_field():
+    import manager_mod as M
+    assert "debug" in M._TOWER_KEYS and "report_violations" in M._TOWER_KEYS
+    assert set(M._TOWER_KEYS) == set(ManagerTower.model_fields)
+
+
+def test_report_violations_entry_is_hot_manager_owned_and_follows_off_topic():
+    e = sc._BY_PATH["manager.tower.report_violations"]
+    assert e["type"] == "bool" and e["hot"] is True and e["service"] == "manager" and e["group"] == "tower"
+    paths = [x["path"] for x in sc.CATALOG if x["group"] == "tower"]
+    assert paths[paths.index("manager.tower.off_topic") + 1] == "manager.tower.report_violations"
+
+
+def test_gateway_hot_reload_copies_debug(monkeypatch):
+    import manager_mod as M
+    snap = ManagerConfig()
+    snap.gateway.debug = True
+    snap.gateway.enabled = True
+    monkeypatch.setattr(sc, "_snapshot", lambda: types.SimpleNamespace(manager=snap))
+    before = (M.settings.manager.gateway.enabled, M.settings.manager.gateway.debug)
+    try:
+        M._gateway_reload_config()
+        assert M.settings.manager.gateway.debug is True
+        assert M.settings.manager.gateway.enabled is True
+    finally:
+        M.settings.manager.gateway.enabled, M.settings.manager.gateway.debug = before
+        M._apply_debug_loggers()

@@ -134,7 +134,8 @@ def prompt_catalog(tools: "list[Tool]") -> str:
     lines = ["You can call these tools. To call one, reply with ONLY this fenced block, never <tool_call> or other tags:",
              "```tool", '{"name": "<tool>", "args": {…}}', "```", "Tools:"]
     for t in tools:
-        lines.append(f"- {t.name}: {t.description} args={json.dumps(t.params.get('properties') or {}, separators=(',', ':'))}")
+        tag = " (action, needs approval)" if t.kind == "act" else ""
+        lines.append(f"- {t.name}{tag}: {t.description} args={json.dumps(t.params.get('properties') or {}, separators=(',', ':'))}")
     return "\n".join(lines)
 
 
@@ -157,6 +158,8 @@ _HELP = {
     "gateway": "The inference gateway is one OpenAI-compatible URL that routes each model to the host serving it.",
     "energy": "Energy accounting attributes measured watts and token counters to hourly rows per host.",
     "report card": "Report Card is a standardized bench producing TTFT, tok/s, VRAM, watts and $/Mtok.",
+    "profiles": "Model profiles are saved llama-server flag sets per host and model (LLM Control tab); "
+                "the active one is applied when the model loads.",
 }
 
 
@@ -317,12 +320,32 @@ def hardware_block(sample: dict, agent: dict) -> dict:
 
 
 # Every tool name build_registry can return, for the settings chip list.
-TOOL_NAMES = ("hosts_overview", "host_detail", "models", "alarms", "alarm_history", "alert_detail", "energy_summary",
-              "gateway_flow", "recent_runs", "bench_speed", "service_health", "log_tail", "config_get", "help")
+READ_TOOL_NAMES = ("hosts_overview", "host_detail", "models", "model_profiles", "alarms", "alarm_history",
+                   "alert_detail", "energy_summary", "gateway_flow", "recent_runs", "bench_speed", "service_health",
+                   "log_tail", "config_get", "help", "audit_log")
+ACT_TOOL_NAMES = ("load_model", "unload_model", "wake_server", "restart_provider", "ack_alert", "close_alert")
+TOOL_NAMES = READ_TOOL_NAMES + ACT_TOOL_NAMES
+PROVIDER_LABEL = {"llama": "llama.cpp", "lms": "LM Studio", "vllm": "vLLM"}
+_PROVIDER_ENUM = {"type": "string", "enum": ["llama", "lms", "vllm"]}
+# vLLM has no load/unload endpoint, so those two tools drop it from their enum.
+_LOAD_PROVIDER_ENUM = {"type": "string", "enum": ["llama", "lms"]}
+
+
+def _act(deps: dict, name: str, key: str, *args) -> dict:
+    """Runs one act dep `(…) -> (ok, err)`, always returning the `{ok, message}` shape act tools promise."""
+    fn = deps.get(key)
+    if fn is None:
+        return {"ok": False, "message": "action not wired"}
+    try:
+        ok, err = fn(*args)
+    except Exception as e:  # noqa: BLE001 — never lets a raw exception (host/token text) reach the model
+        log.warning("tower act %s failed: %s: %s", name, type(e).__name__, e)
+        return {"ok": False, "message": f"{name} failed: {type(e).__name__}"}
+    return {"ok": bool(ok), "message": (err or "failed") if not ok else "done"}
 
 
 def build_registry(deps: dict) -> "dict[str, Tool]":
-    """P1: read tools only. Every callable comes from `deps` (injected)."""
+    """Read tools plus the six act tools; every callable comes from `deps` (injected)."""
     def config_get(a):
         path = a["path"]
         if not path.startswith(("manager.", "alarm_engine.", "openclaw.", "influxdb.", "notifications.", "logging.")):
@@ -339,6 +362,10 @@ def build_registry(deps: dict) -> "dict[str, Tool]":
         Tool("models", "Models on every host: loaded now (loaded_on) and available to load (available_on), per provider.",
              _obj({"host": {"type": "string"}, "provider": {"type": "string", "enum": ["llama", "lms", "vllm"]}}), "read", "read",
              lambda a: deps["models"](a.get("host"), a.get("provider"))),
+        Tool("model_profiles", "Saved llama-server config profiles per host and model: the active profile, the other "
+             "profile names, and (when a model is given) the active or named profile's values.",
+             _obj({"host": {"type": "string"}, "model": {"type": "string"}, "profile": {"type": "string"}}),
+             "read", "read", lambda a: deps["profiles"](a.get("host"), a.get("model"), a.get("profile"))),
         Tool("alarms", "Alerts from the alarm engine, newest first; filter by status, time window, host or rule.",
              _obj({"status": {"type": "string", "enum": ["active", "all", "closed"], "default": "active"},
                    "window": {"type": "string", "enum": list(WINDOWS)},
@@ -370,12 +397,59 @@ def build_registry(deps: dict) -> "dict[str, Tool]":
              _obj({"host": {"type": "string"}, "provider": {"type": "string", "enum": ["llama", "lms", "vllm"], "default": "llama"},
                    "lines": {"type": "integer", "minimum": 5, "maximum": 80, "default": 40}}, ["host"]), "read", "read",
              lambda a: deps["log_tail"](a["host"], a.get("provider", "llama"), a["lines"])),
-        Tool("config_get", "A manager setting by dotted path (secrets are masked).",
+        Tool("config_get", "A manager or alarm-engine setting by dotted path (secrets are masked); "
+             "not model configs — use model_profiles.",
              _obj({"path": {"type": "string"}}, ["path"]), "read", "read", config_get, role="admin"),
         Tool("help", "Short explanation of a dashboard concept.", _obj({"topic": {"type": "string"}}, ["topic"]), "read", "read",
              lambda a: deps["help"](a["topic"])),
+        Tool("audit_log", "Recent audit-log entries: who did what and when; filter by actor, action prefix and time window.",
+             _obj({"window": {"type": "string", "enum": ["1h", "24h", "7d", "30d"], "default": "24h"},
+                   "actor": {"type": "string"}, "action": {"type": "string"},
+                   "count": {"type": "integer", "minimum": 1, "maximum": 50, "default": 20}}), "read", "read",
+             lambda a: deps["audit"](a.get("window", "24h"), a.get("actor"), a.get("action"), a.get("count", 20)), role="admin"),
+    ]
+    tools += [
+        Tool("load_model", "Load a model on a host's provider server (asks the operator first).",
+             _obj({"provider": _LOAD_PROVIDER_ENUM, "host": {"type": "string"}, "model": {"type": "string"}}, ["provider", "host", "model"]),
+             "act", "operate", lambda a: _act(deps, "load_model", "load", a["provider"], a["host"], a["model"])),
+        Tool("unload_model", "Unload a model from a host's provider server (asks the operator first).",
+             _obj({"provider": _LOAD_PROVIDER_ENUM, "host": {"type": "string"}, "model": {"type": "string"}}, ["provider", "host", "model"]),
+             "act", "operate", lambda a: _act(deps, "unload_model", "unload", a["provider"], a["host"], a["model"])),
+        Tool("wake_server", "Wake a sleeping llama-server on a host (asks the operator first).",
+             _obj({"host": {"type": "string"}}, ["host"]), "act", "operate", lambda a: _act(deps, "wake_server", "wake", a["host"])),
+        Tool("restart_provider", "Restart a provider server on a host; in-flight requests fail (admin, asks first).",
+             _obj({"provider": _PROVIDER_ENUM, "host": {"type": "string"}}, ["provider", "host"]),
+             "act", "admin", lambda a: _act(deps, "restart_provider", "restart", a["provider"], a["host"]), role="admin"),
+        Tool("ack_alert", "Acknowledge an alert in the alarm engine (asks the operator first).",
+             _obj({"alert_id": {"type": "string"}}, ["alert_id"]), "act", "operate", lambda a: _act(deps, "ack_alert", "ack", a["alert_id"])),
+        Tool("close_alert", "Close an alert in the alarm engine (asks the operator first).",
+             _obj({"alert_id": {"type": "string"}}, ["alert_id"]), "act", "operate", lambda a: _act(deps, "close_alert", "close", a["alert_id"])),
     ]
     return {t.name: t for t in tools}
+
+
+def action_card(tool: Tool, args: dict) -> dict:
+    """What an act tool will do, where, and what it will not do — the approval card's copy."""
+    if tool.kind != "act":
+        return {}
+    prov = PROVIDER_LABEL.get(str(args.get("provider") or ""), args.get("provider") or "")
+    host, model, aid = args.get("host") or "", args.get("model") or "", args.get("alert_id") or ""
+    cards = {
+        "load_model": (f"Load {model}", f"{host} · {prov}", "Asks the host's agent to load the model into its server.",
+                       "Nothing is unloaded; other hosts are untouched."),
+        "unload_model": (f"Unload {model}", f"{host} · {prov}", "Frees the model's memory on that host.",
+                         "No other model or host changes."),
+        "wake_server": ("Wake llama-server", f"{host} · llama.cpp", "Sends a one-token completion so the server leaves idle sleep.",
+                        "No model is loaded or unloaded."),
+        "restart_provider": (f"Restart {prov}", f"{host} · {prov}", "Restarts the provider server on that host; requests in flight fail.",
+                             "The resident model reloads on start; no other host changes."),
+        "ack_alert": (f"Acknowledge alert {aid}", f"alert {aid}", "Marks the alert acknowledged in the alarm engine.",
+                      "The rule keeps evaluating; nothing on a host changes."),
+        "close_alert": (f"Close alert {aid}", f"alert {aid}", "Closes the alert in the alarm engine.",
+                        "It reopens if the rule fires again."),
+    }
+    title, target, does, not_ = cards.get(tool.name, (tool.name.replace("_", " "), host or aid, tool.description, ""))
+    return {"title": title, "target": target, "does": does, "not": not_}
 
 
 def default_help(topic: str) -> str:
@@ -429,13 +503,15 @@ def models_rows(entries: list, loaded: "dict[tuple, list]", host: Optional[str] 
 
 def prod_deps(ctx, *, db_path: str, tools_runs: Callable[[Optional[str], int], list],
               speed_table: Callable[[str], list], service_health: Callable[[], dict],
-              gateway_entries: Callable[[], list]) -> dict:
+              gateway_entries: Callable[[], list],
+              audit_rows: Callable[[str, Optional[str], Optional[str], int], list]) -> dict:
     """Production readers: Discord bot deps for hosts/host/alarms, plus models from the
     gateway index + polled provider state, energy, flow, runs, speed, health, log tail, masked config."""
     import urllib.parse
     import discord_bot
     import energy
     import gateway
+    import providers as providers_mod
     import settings_catalog
     base = discord_bot.prod_deps(ctx)
 
@@ -545,6 +621,49 @@ def prod_deps(ctx, *, db_path: str, tools_runs: Callable[[Optional[str], int], l
                                autopilot._LOADED_BY_PROVIDER, host, provider)
         return models_rows(gateway_entries(), loaded, host, provider)
 
+    def _match_model(models: dict, want: str):
+        """Exact model id, else case-insensitive, else the first substring hit."""
+        if want in models:
+            return want
+        low = want.lower()
+        return next((k for k in models if k.lower() == low),
+                    next((k for k in models if low in k.lower()), None))
+
+    def _profile_row(hostname, entry, model_id, profile):
+        names = list((entry.get("profiles") or {}).keys())
+        pick = profile or entry.get("active")
+        if pick not in names:
+            return {"error": "unknown profile"}
+        return {"host": hostname, "model": model_id, "active": entry.get("active"), "profiles": names,
+                "values": entry["profiles"][pick]}
+
+    def profiles(host=None, model=None, profile=None):
+        import agent_registry
+        import model_profiles
+        store = model_profiles.STORE
+        if store is None:
+            return {"error": "profile store not available"}
+        agents = agent_registry.load_agents().get("agents") or {}
+        named = [(aid, str(a.get("hostname") or "")) for aid, a in agents.items() if a.get("status") == "approved"]
+        want = str(host).strip().lower() if host else None
+        if want and want not in {h.lower() for _aid, h in named}:
+            return {"error": "unknown host"}
+        picked = [(aid, hn) for aid, hn in named if not want or hn.lower() == want]
+        if not model:
+            return {"hosts": [{"host": hn, "models": [
+                {"model": mid, "active": e.get("active"), "profiles": list((e.get("profiles") or {}).keys())}
+                for mid, e in (store.get_agent(aid) or {}).items()]}
+                for aid, hn in picked if store.get_agent(aid)]}
+        rows = []
+        for aid, hn in picked:
+            models_ = store.get_agent(aid) or {}
+            mid = _match_model(models_, str(model))
+            if mid is not None:
+                rows.append(_profile_row(hn, models_[mid], mid, profile))
+        if want:
+            return rows[0] if rows else {"error": "unknown model"}
+        return {"rows": rows}
+
     def config_get(path):
         entry = next((e for e in settings_catalog.CATALOG if e["path"] == path), None)
         if entry is None:
@@ -554,10 +673,35 @@ def prod_deps(ctx, *, db_path: str, tools_runs: Callable[[Optional[str], int], l
         d = settings_catalog.describe()
         return {"path": path, "value": d["values"].get(path, d.get("defaults", {}).get(path)), "help": entry["help"]}
 
+    def _cap_key(provider):
+        spec = providers_mod.get(provider)
+        return spec.capability_key if spec else provider
+
+    def _agent_post(host, provider, path, **kw):
+        agent = _agent_by_hostname(host)
+        if not agent:
+            return False, "unknown host"
+        if provider and not (agent.get("capabilities") or {}).get(_cap_key(provider)):
+            return False, f"{host} does not serve {PROVIDER_LABEL.get(provider, provider)}"
+        return discord_bot._agent_call(agent, "POST", path, **kw)
+
+    def load(provider, host, model):
+        return _agent_post(host, provider, f"/{provider}/load", json={"model": model}, timeout=120)
+
+    def unload(provider, host, model):
+        return _agent_post(host, provider, f"/{provider}/unload", json={"model": model}, timeout=60)
+
+    def wake(host):
+        return _agent_post(host, "llama", "/llama/server/wake", timeout=75)
+
+    def restart(provider, host):
+        return _agent_post(host, provider, f"/{provider}/server/restart", timeout=60)
+
     return {
         "hosts": hosts_overview, "host": host_detail,
-        "models": models,
+        "models": models, "profiles": profiles,
         "alarms": alarms, "alarm_history": alarm_history, "alert": alert, "energy": energy_summary, "flow": gateway.flow_payload,
         "runs": tools_runs, "speed": speed_table, "health": service_health,
-        "log_tail": log_tail, "config_get": config_get, "help": default_help,
+        "log_tail": log_tail, "config_get": config_get, "help": default_help, "audit": audit_rows,
+        "load": load, "unload": unload, "wake": wake, "restart": restart, "ack": base["ack"], "close": base["close"],
     }

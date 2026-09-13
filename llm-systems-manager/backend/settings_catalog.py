@@ -41,7 +41,8 @@ def _e(path: str, typ: str, label: str, help_: str, group: str, service: str,
        secret: bool = False, choices: Optional[list] = None,
        min: Optional[float] = None, max: Optional[float] = None,
        nullable: bool = False, hot: bool = False, common: bool = False,
-       datalist: Optional[str] = None, exclude: bool = False) -> dict:
+       datalist: Optional[str] = None, exclude: bool = False,
+       labels: Optional[dict] = None, groups: Optional[dict] = None) -> dict:
     d = {"path": path, "type": typ, "label": label, "help": help_,
          "group": group, "service": service, "secret": secret}
     if choices is not None:
@@ -60,6 +61,10 @@ def _e(path: str, typ: str, label: str, help_: str, group: str, service: str,
         d["datalist"] = datalist  # id of a <datalist> the frontend renders for this field
     if exclude:
         d["exclude"] = True  # chips: the stored list holds the UNselected choices
+    if labels is not None:
+        d["labels"] = labels  # choice value -> display label
+    if groups is not None:
+        d["groups"] = groups  # group title -> list of choice values, for chips
     return d
 
 
@@ -133,16 +138,28 @@ CATALOG: list[dict] = [
     _e("manager.tower.request_timeout_s", "int", "Request timeout (s)", "Seconds to wait for the primary model to start answering before the question fails or falls back.", "tower", MANAGER, min=5, max=600, hot=True),
     _e("manager.tower.fallback", "bool", "Fallback model", "When the primary model misses the request timeout, ask the next loaded chat model (another host first) this one question and say so in the reply. Later questions use the primary model again.", "tower", MANAGER, hot=True),
     _e("manager.tower.tool_mode", "choice", "Tool calls", "auto = native function calling where the provider supports it, otherwise a JSON block the model writes. llama.cpp needs --jinja for native.", "tower", MANAGER, choices=["auto", "native", "prompt"], hot=True),
-    _e("manager.tower.capabilities", "choice", "What Tower may do", "read = answer only. operate adds load, unload, wake, ack and close. admin adds restarting a provider service. Every action still asks first.", "tower", MANAGER, choices=["read", "operate", "admin"], hot=True, common=True),
+    _e("manager.tower.capabilities", "choice", "What Tower may do",
+       "Answer only = read tools. Answer and act adds load, unload, wake, ack and close behind an approval card. "
+       "Incl. admin actions adds restarting a provider server (admins approve). Every action still asks first.",
+       "tower", MANAGER, choices=["read", "operate", "admin"], hot=True, common=True,
+       labels={"read": "Answer only", "operate": "Answer and act", "admin": "Answer and act, incl. admin actions"}),
     _e("manager.tower.off_topic", "choice", "Off-topic questions", "refuse = anything outside this manager gets one fixed line and no tool call. allow = it may chat, but gains no tools either way.", "tower", MANAGER, choices=["refuse", "allow"], hot=True),
-    _e("manager.tower.disabled_tools", "chips", "Available tools", "Tools Tower may use. Click a chip to turn it off everywhere; the tier ladder still applies.", "tower", MANAGER, hot=True, choices=list(tower_tools.TOOL_NAMES), exclude=True),
+    _e("manager.tower.report_violations", "bool", "Report rule-bypass attempts",
+       "Messages that try to make Tower ignore its rules, reveal its instructions or skip approvals are refused, "
+       "written to the audit log as critical and raised as a critical alert. Off = refused only.",
+       "tower", MANAGER, hot=True),
+    _e("manager.tower.disabled_tools", "chips", "Available tools",
+       "Tools Tower may use. Turn one off here and it is gone everywhere; the capability tier still applies to actions.",
+       "tower", MANAGER, hot=True, choices=list(tower_tools.TOOL_NAMES), exclude=True,
+       groups={"Read tools": list(tower_tools.READ_TOOL_NAMES), "Actions": list(tower_tools.ACT_TOOL_NAMES)}),
     _e("manager.tower.diagnose_alarms", "bool", "Diagnose new alarms", "Read-only look at each new alert at or above the lowest severity; the result lands in the drawer as an insight.", "tower", MANAGER, hot=True, common=True),
     _e("manager.tower.min_severity", "choice", "Lowest severity", "Alerts below this are not diagnosed.", "tower", MANAGER, choices=["info", "warning", "critical"], hot=True),
     _e("manager.tower.playbooks_auto", "bool", "Apply safe playbooks", "Wake a sleeping server, reload a dropped model, ack a recovered alert without asking. Needs operate. Anything else is always proposed.", "tower", MANAGER, hot=True),
     _e("manager.tower.max_tool_calls", "int", "Tool calls per question", "Reads Tower may do before it has to answer.", "tower", MANAGER, min=1, max=20, hot=True),
-    _e("manager.tower.max_tokens", "int", "Answer length (tokens)", "Token cap per model call.", "tower", MANAGER, min=128, max=8192, hot=True),
+    _e("manager.tower.max_tokens", "int", "Answer length (tokens)", "Token cap per model call. Thinking models spend part of this on reasoning first; give them 2048 or more.", "tower", MANAGER, min=128, max=8192, hot=True),
     _e("manager.tower.temperature", "float", "Temperature", "Sampling temperature for Tower's model calls.", "tower", MANAGER, min=0, max=1, hot=True),
     _e("manager.tower.history_days", "int", "Keep history (days)", "Threads and insights older than this are deleted daily.", "tower", MANAGER, min=1, max=365, hot=True),
+    _e("manager.tower.debug", "bool", "Debug logging", "Log every model call, tool call and approval step for Tower at DEBUG (names, sizes and timings, never text). Hot.", "tower", MANAGER, hot=True),
     # companion
     _e("manager.companion.push_contact", "str", "Push contact", "VAPID sub claim the browser push services see (mailto:…).", "companion", MANAGER),
     _e("manager.companion.release_check", "bool", "Release check", "Opt-in GitHub release check (the manager's only outbound github.com call).", "companion", MANAGER, common=True),
@@ -154,6 +171,7 @@ CATALOG: list[dict] = [
     _e("manager.gateway.read_timeout_s", "float", "Read timeout (s)", "Upstream cap per completion request.", "gateway", MANAGER, min=10, max=7200),
     _e("manager.gateway.expose_proxied_to", "bool", "Expose X-Proxied-To", "Response header naming the serving agent; off hides backend hostnames.", "gateway", MANAGER),
     _e("manager.gateway.usage_probe", "bool", "Usage probe on streams", "Inject stream_options.include_usage on usage-counted streams; off if a backend rejects stream_options.", "gateway", MANAGER),
+    _e("manager.gateway.debug", "bool", "Debug logging", "Log every completion the gateway serves at DEBUG: client, model, host tried and chosen, status, latency, usage. Hot.", "gateway", MANAGER, hot=True),
     # proxies
     _e("manager.proxies.llm_chat", "str", "Llama Chat UI", "auto | false | explicit http URL.", "proxies", MANAGER),
     _e("manager.proxies.openclaw", "str", "OpenClaw UI", "auto | false | explicit http URL.", "proxies", MANAGER),

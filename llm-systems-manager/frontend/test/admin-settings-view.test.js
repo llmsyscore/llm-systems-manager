@@ -486,30 +486,130 @@ describe('gateway model picker (#924)', () => {
   });
 });
 
-describe('chips setting (#924)', () => {
+
+describe('choice labels (#924)', () => {
+  const MODE = { path: 'manager.tower.mode', label: 'Answer mode', help: 'How Tower answers.', group: 'network',
+                 service: 'manager', type: 'choice', choices: ['balanced', 'fast'],
+                 labels: { balanced: 'Balanced — quality first', fast: 'Fast — short answers' } };
+  const data = () => payload({ entries: [PORT, MODE],
+    values: { 'manager.ws_proxy_port': 5001, 'manager.tower.mode': 'fast' },
+    defaults: { 'manager.ws_proxy_port': 5001, 'manager.tower.mode': 'balanced' } });
+
+  test('options show labels with raw values and the default hint shows the label', async () => {
+    const win = await boot(data());
+    const sel = input(win.document, 'manager.tower.mode');
+    expect([...sel.options].map(o => o.value)).toEqual(['balanced', 'fast']);
+    expect([...sel.options].map(o => o.textContent)).toEqual(['Balanced — quality first', 'Fast — short answers']);
+    expect(sel.value).toBe('fast');
+    expect(field(win.document, 'manager.tower.mode').querySelector('[data-dflt]').textContent)
+      .toBe('default Balanced — quality first');
+  });
+
+  test('an entry without labels still renders raw choice text', async () => {
+    const bare = Object.assign({}, MODE, { labels: undefined });
+    const win = await boot(payload({ entries: [PORT, bare], values: { 'manager.tower.mode': 'fast' } }));
+    const sel = input(win.document, 'manager.tower.mode');
+    expect([...sel.options].map(o => o.textContent)).toEqual(['balanced', 'fast']);
+  });
+});
+
+describe('tools setting (#924)', () => {
   const TOOLS = { path: 'manager.tower.disabled_tools', label: 'Available tools', help: 'Tools Tower may use.', group: 'network',
-                  service: 'manager', type: 'chips', hot: true, choices: ['alarms', 'help', 'log_tail'], exclude: true };
-  const data = () => payload({ entries: [PORT, TOOLS],
+                  service: 'manager', type: 'chips', hot: true, choices: ['alarms', 'help', 'log_tail'], exclude: true,
+                  groups: { 'Read tools': ['alarms', 'help'], Actions: ['log_tail'] } };
+  const data = (over = {}) => payload({ entries: [PORT, Object.assign({}, TOOLS, over)],
     values: { 'manager.ws_proxy_port': 5001, 'manager.tower.disabled_tools': ['log_tail'] },
     defaults: { 'manager.ws_proxy_port': 5001, 'manager.tower.disabled_tools': [] } });
 
-  test('renders one chip per choice, on unless the stored list excludes it, with an "all" default hint', async () => {
+  const box = doc => doc.querySelector('.st-tools[data-path="manager.tower.disabled_tools"]');
+  const sum = doc => box(doc).querySelector('.st-tools-sum').textContent;
+  const grps = doc => [...box(doc).querySelectorAll('.st-tools-grp')];
+  const edit = doc => box(doc).querySelector('[data-tools-edit]');
+  const chip = (doc, name) => box(doc).querySelector(`.st-tool-chip[data-tool="${name}"]`);
+
+  test('collapses to Edit then a one-line summary, with no chips', async () => {
     const win = await boot(data());
-    const chips = [...win.document.querySelectorAll('.st-chips[data-path="manager.tower.disabled_tools"] .st-chip')];
-    expect(chips.map(c => c.dataset.chip)).toEqual(['alarms', 'help', 'log_tail']);
-    expect(chips.map(c => c.classList.contains('on'))).toEqual([true, true, false]);
+    expect(box(win.document).children[0]).toBe(edit(win.document));
+    expect(box(win.document).children[1].className).toContain('st-tools-sum');
+    expect(sum(win.document)).toBe('2 of 3 tools on · off: log_tail');
+    expect(box(win.document).querySelectorAll('.st-tool-chip')).toHaveLength(0);
+    expect(edit(win.document).textContent).toBe('Edit');
     expect(field(win.document, 'manager.tower.disabled_tools').querySelector('[data-dflt]').textContent).toBe('default all');
   });
 
-  test('clicking chips writes the excluded list and Save sends it', async () => {
+  test('Edit expands grouped chips with per-group counts, Done collapses again', async () => {
     const win = await boot(data());
-    const box = win.document.querySelector('.st-chips[data-path="manager.tower.disabled_tools"]');
-    box.querySelector('[data-chip="log_tail"]').click();
-    box.querySelector('[data-chip="help"]').click();
-    expect(box.classList.contains('dirty')).toBe(true);
-    expect(field(win.document, 'manager.tower.disabled_tools').querySelector('[data-dflt]').textContent).toBe('default all');
+    edit(win.document).click();
+    expect(box(win.document).classList.contains('open')).toBe(true);
+    expect(edit(win.document).textContent).toBe('Done');
+    const g = grps(win.document);
+    expect(g).toHaveLength(2);
+    expect(g.map(s => s.querySelector('h5').firstChild.textContent)).toEqual(['Read tools', 'Actions']);
+    expect(g.map(s => s.querySelector('.cnt').textContent)).toEqual(['2/2', '0/1']);
+    expect(g.map(s => [...s.querySelectorAll('.st-tool-chip')].map(c => c.dataset.tool)))
+      .toEqual([['alarms', 'help'], ['log_tail']]);
+    expect(g[0].querySelectorAll('.st-tool-chip')[1].classList.contains('on')).toBe(true);
+    expect(g[0].querySelectorAll('.st-tool-chip')[1].getAttribute('aria-pressed')).toBe('true');
+    expect(g[1].querySelectorAll('.st-tool-chip')[0].classList.contains('on')).toBe(false);
+    expect(g[1].querySelectorAll('.st-tool-chip')[0].getAttribute('aria-pressed')).toBe('false');
+    expect(box(win.document).querySelectorAll('input[type="checkbox"]')).toHaveLength(0);
+    edit(win.document).click();
+    expect(box(win.document).classList.contains('open')).toBe(false);
+    expect(box(win.document).querySelectorAll('.st-tools-grp')).toHaveLength(0);
+    expect(edit(win.document).textContent).toBe('Edit');
+  });
+
+  test('clicking a chip toggles it, updates the summary, and Save sends the excluded list', async () => {
+    const win = await boot(data());
+    edit(win.document).click();
+    chip(win.document, 'help').click();
+    expect(chip(win.document, 'help').classList.contains('on')).toBe(false);
+    expect(chip(win.document, 'help').getAttribute('aria-pressed')).toBe('false');
+    expect(sum(win.document)).toBe('1 of 3 tools on · off: help, log_tail');
+    expect(box(win.document).classList.contains('dirty')).toBe(true);
+    expect(grps(win.document)[0].querySelector('.cnt').textContent).toBe('1/2');
     win.document.getElementById('adminSettingsSaveBtn').click();
     await new Promise(r => setTimeout(r, 0));
-    expect(win.__puts[0].changes['manager.tower.disabled_tools']).toEqual(['help']);
+    expect(win.__puts[0].changes['manager.tower.disabled_tools']).toEqual(['help', 'log_tail']);
+  });
+
+  test('All on / All off apply only to their own group', async () => {
+    const win = await boot(data());
+    edit(win.document).click();
+    chip(win.document, 'help').click();
+    grps(win.document)[1].querySelector('[data-tools-all="on"]').click();
+    expect(sum(win.document)).toBe('2 of 3 tools on · off: help');
+    expect(grps(win.document).map(s => s.querySelector('.cnt').textContent)).toEqual(['1/2', '1/1']);
+    grps(win.document)[0].querySelector('[data-tools-all="off"]').click();
+    expect(sum(win.document)).toBe('1 of 3 tools on · off: alarms, help');
+    expect(grps(win.document).map(s => s.querySelector('.cnt').textContent)).toEqual(['0/2', '1/1']);
+    win.document.getElementById('adminSettingsSaveBtn').click();
+    await new Promise(r => setTimeout(r, 0));
+    expect(win.__puts[0].changes['manager.tower.disabled_tools']).toEqual(['alarms', 'help']);
+  });
+
+  test('without groups every choice lands in a single "Tools" group', async () => {
+    const win = await boot(data({ groups: undefined }));
+    edit(win.document).click();
+    const g = grps(win.document);
+    expect(g).toHaveLength(1);
+    expect(g[0].querySelector('h5').firstChild.textContent).toBe('Tools');
+    expect([...g[0].querySelectorAll('.st-tool-chip')].map(c => c.dataset.tool)).toEqual(['alarms', 'help', 'log_tail']);
+  });
+
+  test('a choice missing from every group still renders, under "Other"', async () => {
+    const win = await boot(data({ groups: { 'Read tools': ['alarms', 'help'] } }));
+    edit(win.document).click();
+    const g = grps(win.document);
+    expect(g.map(s => s.querySelector('h5').firstChild.textContent)).toEqual(['Read tools', 'Other']);
+    expect([...g[1].querySelectorAll('.st-tool-chip')].map(c => c.dataset.tool)).toEqual(['log_tail']);
+  });
+
+  test('the expanded state survives a re-render', async () => {
+    const win = await boot(data());
+    edit(win.document).click();
+    win.adminSettingsOpenGroup('network');
+    expect(box(win.document).classList.contains('open')).toBe(true);
+    expect(box(win.document).querySelectorAll('.st-tool-chip')).toHaveLength(3);
   });
 });
