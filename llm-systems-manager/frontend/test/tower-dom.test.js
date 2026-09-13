@@ -414,7 +414,7 @@ describe('action cards', () => {
     const w = await bootAndAsk({ ...ENABLED, capabilities: 'operate' }, 'wake box');
     w.__sse.onEvent(CONFIRM);
     w.document.querySelector('#twBody [data-approve]').click();
-    await flush(w);
+    await flush();
     expect(w.__calls).toContain('POST /api/tower/actions/a1/approve');
     expect(w.__sse.url).toBe('/api/tower/runs/r1/stream');
     expect(w.__sseClosed).toBe(false);
@@ -431,7 +431,7 @@ describe('action cards', () => {
     const w = await bootAndAsk({ ...ENABLED, capabilities: 'operate' }, 'wake box');
     w.__sse.onEvent(CONFIRM);
     w.document.querySelector('#twBody [data-deny]').click();
-    await flush(w);
+    await flush();
     expect(w.__calls).toContain('POST /api/tower/actions/a1/deny');
     w.__sse.onEvent({ event: 'action', action_id: 'a1', tool: 'wake_server', status: 'denied', message: 'denied by the operator', ms: 0, actor: 'adriel' });
     expect(w.document.querySelector('#twBody .tick.act.bad').textContent).toContain('denied');
@@ -441,7 +441,7 @@ describe('action cards', () => {
     const w = await bootAndAsk({ ...ENABLED, capabilities: 'operate' }, 'wake box');
     w.__sse.onEvent(CONFIRM);
     w.document.querySelector('#twBody [data-approve]').click();
-    await flush(w);
+    await flush();
     w.__sse.onEvent({ event: 'action', action_id: 'a1', tool: 'wake_server', status: 'running', message: null, ms: null });
     const card = w.document.querySelector('#twBody .act[data-act="a1"]');
     expect(card).not.toBeNull();
@@ -455,7 +455,7 @@ describe('action cards', () => {
     w.__sse.onEvent(CONFIRM);
     w.__actFail = 410;
     w.document.querySelector('#twBody [data-approve]').click();
-    await flush(w);
+    await flush();
     expect(w.document.querySelector('#twBody .notice').textContent).toContain('That approval expired');
     expect(w.document.querySelector('#twBody .act[data-act]')).toBeNull();
   });
@@ -465,7 +465,7 @@ describe('action cards', () => {
     w.__sse.onEvent(CONFIRM);
     w.__actFail = 410;
     w.document.querySelector('#twBody [data-approve]').click();
-    await flush(w);
+    await flush();
     expect(w.document.querySelector('#twBody .caret')).toBeNull();
     const tick = w.document.querySelector('#twBody .tick.act');
     expect(tick.textContent).toContain('approval expired');
@@ -477,7 +477,7 @@ describe('action cards', () => {
     w.__sse.onEvent(CONFIRM);
     w.__stopOk = true;
     w.document.getElementById('twSend').click();
-    await flush(w);
+    await flush();
     expect(w.__calls).toContain('POST /api/tower/runs/r1/stop');
     expect(w.__sse.url).toBe('/api/tower/runs/r1/stream');
     expect(w.__sseClosed).toBe(false);
@@ -492,13 +492,13 @@ describe('action cards', () => {
     w.__sse.onEvent(CONFIRM);
     w.__actFail = 403;
     w.document.querySelector('#twBody [data-approve]').click();
-    await flush(w);
+    await flush();
     expect(w.document.querySelector('#twBody .notice').textContent).toContain('does not allow this action');
     expect(w.document.querySelector('#twBody .act[data-act="a1"] [data-approve]')).not.toBeNull();
     expect(w.__sseClosed).toBe(true);
     expect(w.document.getElementById('twSend').classList.contains('stop')).toBe(true);
     w.document.getElementById('twSend').click();
-    await flush(w);
+    await flush();
     expect(w.__calls).toContain('POST /api/tower/runs/r1/stop');
   });
 
@@ -507,7 +507,7 @@ describe('action cards', () => {
     w.__sse.onEvent(CONFIRM);
     w.__actFail = 409;
     w.document.querySelector('#twBody [data-approve]').click();
-    await flush(w);
+    await flush();
     expect(w.document.querySelector('#twBody .notice').textContent).toContain('already decided');
     expect(w.__sse.url).toBe('/api/tower/runs/r1/stream');
     expect(w.__sseClosed).toBe(false);
@@ -520,7 +520,7 @@ describe('action cards', () => {
     w.__sse.onEvent(CONFIRM);
     w.__actNetFail = true;
     w.document.querySelector('#twBody [data-approve]').click();
-    await flush(w);
+    await flush();
     expect(w.document.querySelector('#twBody .notice').textContent).toContain('could not record the decision');
     expect(w.document.querySelector('#twBody .act[data-act="a1"] [data-approve]')).not.toBeNull();
     expect(w.__sseClosed).toBe(true);

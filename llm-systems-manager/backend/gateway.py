@@ -438,6 +438,8 @@ def _handle_completion(sub: str, provider=None) -> Response:
             and bool(getattr(_gw_cfg(), "usage_probe", True))):
         stream_body, injected = _with_usage_probe(body)
     label = _client_identity()[0]
+    # key labels are logged as a kind only
+    caller = "session" if label == GATEWAY_SESSION_LABEL else "api-key"
     client = gateway_usage.client_begin(*_client_identity(), model=model_id)
     t0 = time.perf_counter()
     stream_owns_client = False
@@ -445,12 +447,12 @@ def _handle_completion(sub: str, provider=None) -> Response:
     try:
         cands = _candidates(model_id, agent_id, provider)
         if _dbg:
-            log.debug("gateway completion label=%s model=%s provider=%s stream=%s candidates=%d",
-                      label, model_id or "-", provider, wants_stream, len(cands))
+            log.debug("gateway completion caller=%s model=%s provider=%s stream=%s candidates=%d",
+                      caller, model_id or "-", provider, wants_stream, len(cands))
         for agent in cands:
             if wants_stream:
                 resp = _stream_from(agent, path, stream_body, errors, provider,
-                                    strip_usage=injected, client=client, t0=t0, label=label)
+                                    strip_usage=injected, client=client, t0=t0, label=caller)
                 if resp is not None:
                     stream_owns_client = getattr(resp, "gw_client_owned", False)
                     return resp
@@ -484,8 +486,8 @@ def _handle_completion(sub: str, provider=None) -> Response:
             else:
                 gateway_usage.record_error()
             if _dbg:
-                log.debug("gateway completion end label=%s host=%s total_ms=%d prompt_tokens=%s "
-                          "completion_tokens=%s finish=%s", label, _label(agent),
+                log.debug("gateway completion end caller=%s host=%s total_ms=%d prompt_tokens=%s "
+                          "completion_tokens=%s finish=%s", caller, _label(agent),
                           int((time.perf_counter() - t0) * 1000),
                           (u or ("-", "-"))[0], (u or ("-", "-"))[1], "-")
             return Response(r.content, status=r.status_code,
@@ -494,8 +496,8 @@ def _handle_completion(sub: str, provider=None) -> Response:
         log.warning("gateway %s: no usable %s agent (%s)",
                     sub, provider, "; ".join(errors) or "no candidates")
         if _dbg:
-            log.debug("gateway completion failed label=%s reason=no_backend errors=%s",
-                      label, "; ".join(errors) or "-")
+            log.debug("gateway completion failed caller=%s reason=no_backend errors=%s",
+                      caller, "; ".join(errors) or "-")
         gateway_usage.record_error()
         if not errors:
             # Zero candidates = nothing registered/configured for the provider —
