@@ -168,3 +168,35 @@ describe('actions', () => {
     expect(TW.suggestions({ tab: 'overall' }, 'operate').at(-1)).toBe('Unload a model nobody is using');
   });
 });
+
+describe('insights', () => {
+  const base = { id: 'i1', alert_id: 'a1', rule: 'llama-server asleep', host: 'box', severity: 'warning', summary: 'asleep', detail: 'd',
+                 suggested_action: 'Wake it', status: 'new', playbook_id: 'wake_llama', playbook_title: 'Wake llama-server', playbook_safe: true,
+                 created: 1000, checks: [{ name: 'host_detail', summary: 'read host detail · box · 8 ms', ok: true }] };
+  test('apply needs the tier: safe at operate, unsafe only for admins at admin', () => {
+    expect(TW.insightView(base, { capabilities: 'read' }, 1600).applyLabel).toBeNull();
+    const v = TW.insightView(base, { capabilities: 'operate' }, 1600);
+    expect(v.applyLabel).toBe('Wake llama-server'); expect(v.title).toBe('Wake llama-server'); expect(v.age).toBe('10 min'); expect(v.cls).toBe(''); expect(v.open).toBe(true);
+    expect(v.checks).toHaveLength(1); expect(v.action).toBe('Wake it'); expect(v.alertId).toBe('a1'); expect(v.running).toBe(false);
+    const unsafe = { ...base, playbook_safe: false, playbook_id: 'restart_llama', playbook_title: 'Restart llama-server', severity: 'critical' };
+    expect(TW.insightView(unsafe, { capabilities: 'operate', admin: true }, 1600).applyLabel).toBeNull();
+    expect(TW.insightView(unsafe, { capabilities: 'admin', admin: false }, 1600).adminOnly).toBe(true);
+    expect(TW.insightView(unsafe, { capabilities: 'admin', admin: true }, 1600).applyLabel).toBe('Restart llama-server');
+    expect(TW.insightView(unsafe, {}, 1600).cls).toBe('crit');
+    expect(TW.insightView({ ...base, playbook_id: null }, { capabilities: 'admin', admin: true }, 1600).applyLabel).toBeNull();
+    const busy = TW.insightView({ ...base, status: 'applying' }, { capabilities: 'operate' }, 1600);
+    expect(busy.running).toBe(true); expect(busy.open).toBe(false); expect(busy.applyLabel).toBeNull(); expect(busy.adminOnly).toBe(false);
+  });
+  test('applied cards say what ran and when; failed applies surface the message; header counts', () => {
+    const done = TW.insightView({ ...base, status: 'applied', applied_by: 'tower via alarm a1', resolved: 1590 }, { capabilities: 'operate' }, 1600);
+    expect(done.cls).toBe('done'); expect(done.applied).toBe(true); expect(done.open).toBe(false); expect(done.age).toBe('now');
+    expect(done.appliedLine).toBe('✓ Wake llama-server'); expect(done.appliedBy).toBe('auto'); expect(done.auditActor).toBe('tower via alarm a1'); expect(done.applyLabel).toBeNull();
+    expect(TW.insightView({ ...base, status: 'applied', applied_by: 'tower via alice' }, {}, 1600).appliedBy).toBe('alice');
+    expect(TW.insightView({ ...base, result: { ok: false, message: 'unknown host' } }, {}, 1600).failed).toBe('unknown host');
+    expect(TW.insightView({ ...base, status: 'applied', result: { ok: true } }, {}, 1600).failed).toBeNull();
+    expect(TW.insightsHeader([base, { ...base, status: 'applied' }, { ...base, status: 'dismissed' }])).toBe('1 new · 1 applied');
+    expect(TW.insightsHeader([{ ...base, status: 'seen' }])).toBe('1');
+    expect(TW.visibleInsights([base, { ...base, status: 'dismissed' }])).toHaveLength(1);
+    expect(TW.ageText(30)).toBe('now'); expect(TW.ageText(7200)).toBe('2 h'); expect(TW.ageText(200000)).toBe('2 d');
+  });
+});

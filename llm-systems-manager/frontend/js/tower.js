@@ -7,6 +7,8 @@
   let _api = null, _view = null, _state = null, _thread = null, _sse = null, _runId = null, _notice = null;
   let _openTicks = new Set(), _lastKey = '', _unread = 0, _pending = [];
   let _prefs = { open: false, pinned: false, width: 400, thread: null, noCtx: false };
+  let _insights = [], _insightsNew = 0, _insightsRev = null, _openIns = new Set(), _toasted = null, _insNotice = null, _tab = 'conv', _flash = null, _flashT = null;
+  const _bootS = Date.now() / 1000;
 
   function loadPrefs() { try { _prefs = { ..._prefs, ...(JSON.parse(localStorage.getItem(KEY) || '{}')) }; } catch (_) { /* fresh */ } }
   function savePrefs() { try { localStorage.setItem(KEY, JSON.stringify(_prefs)); } catch (_) { /* private mode */ } }
@@ -25,6 +27,9 @@
     try { const r = await fetch('/api/tower/state'); if (r.ok) next = await r.json(); } catch (_) { /* offline */ }
     if (!next) return;
     _api = next;
+    const prevRev = _insightsRev;
+    _insightsNew = Number(_api.insights_new || 0);
+    _insightsRev = _api.insights_rev ?? null;
     _view = TW.stateView(_api);
     const btn = $('towerBtn');
     if (!btn) return;
@@ -32,7 +37,30 @@
     btn.classList.toggle('off', _view.off);
     if (_view.off && !_view.admin && isOpen()) towerClose();
     paintHeader();
+    paintBadge();
+    maybeToast();
+    if (isOpen() && !_view.off && _insightsRev !== prevRev) {
+      loadInsights().then(() => { paintInsights(); markInsightsSeen(); });
+    } else if (isOpen()) paintInsights();
     if (isOpen() && bodyKey(_view) !== _lastKey) refreshBody();
+  }
+
+  // One toast per fresh insight while the drawer is closed; nothing older than this page load.
+  function maybeToast() {
+    const li = _api && _api.latest_insight;
+    if (!li || isOpen() || !_insightsNew || _toasted === li.id || Number(li.created || 0) < _bootS) return;
+    if (typeof _activeTab !== 'undefined' && _activeTab === 'events') return;
+    _toasted = li.id;
+    if (typeof showToast === 'function') showToast(`Tower · ${li.rule || 'Alert'}`, li.summary || '', li.severity || 'warning', false, '', 'alert', '', null, 9000);
+  }
+  async function loadInsights() {
+    try { const r = await fetch('/api/tower/insights'); if (r.ok) { const d = await r.json(); if (d.ok) _insights = TW.visibleInsights(d.insights); } } catch (_) { /* keep the last list */ }
+  }
+  // Marks new insights seen once the Insights tab is on screen in an open drawer.
+  function markInsightsSeen() {
+    if (!_insightsNew || !isOpen() || _tab !== 'ins') return;
+    _insightsNew = 0; paintBadge(); paintInsights();
+    fetch('/api/tower/insights/seen', { method: 'POST' }).catch(() => { /* next poll retries */ });
   }
 
   function isOpen() { return !!($('towerOverlay') && $('towerOverlay').classList.contains('open')); }
@@ -40,27 +68,26 @@
 
   // Repaints the body; the off and no-model states create no thread.
   function refreshBody() {
-    if (!_view || _view.off || _view.noModel) { paintBody(); return; }
-    ensureThread().then(paintBody);
+    if (!_view || _view.off) { paintBody(); paintInsights(); return; }
+    const loads = _view.noModel ? [loadInsights()] : [ensureThread(), loadInsights()];
+    Promise.all(loads).then(() => { paintBody(); paintInsights(); markInsightsSeen(); });
   }
 
-  // A reply that lands while the drawer is closed pulses the header button until it is opened.
-  function markUnread() {
-    _unread += 1;
+  // Badge = replies that landed while closed + new insights while closed; the glow follows replies only.
+  function paintBadge() {
     const btn = $('towerBtn'), badge = $('towerBadge');
-    btn?.classList.add('unread');
-    if (badge) { badge.textContent = String(_unread); badge.hidden = false; }
+    const n = _unread + (isOpen() ? 0 : _insightsNew);
+    btn?.classList.toggle('unread', _unread > 0);
+    if (badge) { badge.textContent = n ? String(n) : ''; badge.hidden = !n; }
   }
-  function clearUnread() {
-    _unread = 0;
-    $('towerBtn')?.classList.remove('unread');
-    const badge = $('towerBadge'); if (badge) { badge.textContent = ''; badge.hidden = true; }
-  }
+  function markUnread() { _unread += 1; paintBadge(); }
+  function clearUnread() { _unread = 0; paintBadge(); }
 
   function towerOpen() {
     const ov = $('towerOverlay'); if (!ov) return;
     ov.classList.add('open');
     $('towerBtn')?.classList.add('open');
+    if (_insightsNew) _tab = 'ins';
     clearUnread();
     document.addEventListener('keydown', onKey);
     _prefs.open = true; savePrefs();
@@ -210,6 +237,71 @@
     return _pending.map((t, i) => `<div class="u queued"><span class="ql">queued</span>${TW.esc(t)}`
       + `<button type="button" class="qx" data-qx="${i}" title="Remove from queue" aria-label="Remove queued question">✕</button></div>`).join('');
   }
+  function insightHtml(r) {
+    const v = TW.insightView(r, _view, Date.now() / 1000);
+    const open = _openIns.has(v.id), id = TW.esc(v.id);
+    const cls = `ins${v.cls ? ' ' + v.cls : ''}${v.id === _flash ? ' flash' : ''}`;
+    const top = `<div class="top"><span class="rule">${TW.esc(v.rule)}</span>${v.host ? `<span class="host">${TW.esc(v.host)}</span>` : ''}<span class="age">${TW.esc(v.age)}</span></div>`;
+    const checks = v.checks.map(c => `<div class="tick${c.ok ? '' : ' bad'}"><span class="k">${c.ok ? '▸' : '✕'}</span>${TW.esc(c.summary || c.name || '')}</div>`).join('');
+    const hasDet = !!(v.detail || v.action || v.checks.length || v.auditActor || (v.applied && v.summary));
+    const det = hasDet ? `<button type="button" class="lnk" data-ins-det="${id}" aria-expanded="${open}">Details ${open ? '▾' : '▸'}</button>` : '';
+    const detb = open ? `<div class="detb">${v.applied && v.summary ? `<p>${TW.esc(v.summary)}</p>` : ''}${v.detail ? `<p>${TW.esc(v.detail)}</p>` : ''}`
+      + `${v.action ? `<p><b>Suggested:</b> ${TW.esc(v.action)}</p>` : ''}${checks}${v.auditActor ? `<p class="aud">Audit: ${TW.esc(v.auditActor)}</p>` : ''}</div>` : '';
+    const dismiss = `<button type="button" class="lnk" data-ins-dismiss="${id}">Dismiss</button>`;
+    const alertLink = v.alertId ? `<button type="button" class="lnk" data-ins-open="${TW.esc(v.alertId)}">Alert</button>` : '';
+    if (v.applied) {
+      return `<div class="${cls}" data-ins="${id}">${top}<div class="acts"><span class="ok">✓ ${TW.esc(v.title)}${v.appliedBy ? ` · ${TW.esc(v.appliedBy)}` : ''}</span>${det}${dismiss}</div>${detb}</div>`;
+    }
+    if (v.running) {
+      return `<div class="${cls}" data-ins="${id}">${top}<p class="sum">${TW.esc(v.summary)}</p><div class="acts"><span class="run">Running ${TW.esc(v.title)}…</span></div></div>`;
+    }
+    const apply = v.applyLabel ? `<button type="button" class="mcbtn mcbtn-pri mcbtn-sm" data-ins-apply="${id}">${TW.esc(v.applyLabel)}</button>` : '';
+    const notes = (v.failed ? `<div class="fail">Failed: ${TW.esc(v.failed)}</div>` : '') + (v.adminOnly ? '<div class="fail">Admin only</div>' : '');
+    return `<div class="${cls}" data-ins="${id}">${top}<p class="sum">${TW.esc(v.summary)}</p>${notes}<div class="acts">${apply}${dismiss}${alertLink}${det}</div>${detb}</div>`;
+  }
+  // Tab row, the one-line notice in the conversation, and the Insights view; off hides all three.
+  function paintInsights() {
+    const tabs = $('twTabs'), view = $('twInsView'), note = $('twInsNote'), body = $('twBody');
+    if (!tabs || !view || !note || !body) return;
+    const on = !!(_view && !_view.off);
+    if (!on) _tab = 'conv';
+    const ins = on && _tab === 'ins';
+    tabs.hidden = !on;
+    view.hidden = !ins;
+    body.hidden = ins;
+    for (const [elId, sel] of [['twTabConv', !ins], ['twTabIns', ins]]) {
+      const b = $(elId); if (b) { b.classList.toggle('on', sel); b.setAttribute('aria-selected', String(sel)); }
+    }
+    const cnt = $('twInsCount');
+    if (cnt) { cnt.textContent = _insightsNew ? String(_insightsNew) : ''; cnt.hidden = !_insightsNew; }
+    const li = _api && _api.latest_insight;
+    const showNote = !!(on && !ins && _insightsNew && li);
+    note.hidden = !showNote;
+    note.innerHTML = showNote ? `<span class="dot"></span><span class="txt">${_insightsNew > 1 ? `${_insightsNew} new insights · latest: ` : 'New insight: '}${TW.esc(li.rule || 'Alert')}</span>`
+      + `<button type="button" class="lnk" data-ins-view="${TW.esc(li.id)}">View</button>` : '';
+    if (!ins) return;
+    const prevTop = view.scrollTop;
+    const msg = _insNotice ? `<div class="notice"><h4><i></i>${TW.esc(_insNotice)}</h4></div>` : '';
+    view.innerHTML = _insights.length
+      ? `<div class="ins-h"><h3>Insights</h3><span class="cnt">${TW.esc(TW.insightsHeader(_insights))}</span><button type="button" class="lnk" id="twInsDismissAll">Dismiss all</button></div>`
+        + msg + _insights.map(insightHtml).join('')
+      : `<div class="empty"><h3>No insights</h3><p>${_api && _api.diagnose_alarms ? 'Each new alert gets a read-only look here as it opens.' : 'Turn on Diagnose new alarms in Settings to get a read-only look at each new alert.'}</p></div>` + msg;
+    view.scrollTop = prevTop;
+    const hit = _flash && [...view.querySelectorAll('[data-ins]')].find(e => e.dataset.ins === _flash);
+    if (hit && typeof hit.scrollIntoView === 'function') hit.scrollIntoView({ block: 'nearest' });
+  }
+  function setTab(t) {
+    if (_tab === t) return;
+    _tab = t;
+    paintInsights();
+    markInsightsSeen();
+  }
+  // Highlights one card on the Insights tab for a moment.
+  function flashInsight(id) {
+    _flash = id;
+    clearTimeout(_flashT);
+    _flashT = setTimeout(() => { _flash = null; $('twInsView')?.querySelector('.ins.flash')?.classList.remove('flash'); }, 2500);
+  }
 
   function paintBody(opts) {
     const body = $('twBody'), box = $('twBox'), input = $('twInput'), sugs = $('twSugs');
@@ -228,7 +320,7 @@
     }
     if (_view.noModel) {
       body.innerHTML = `<div class="empty"><h3>Nothing to think with</h3><p>No chat model is loaded on any host, and Tower never loads one on its own. Load a model in <b>LLM Control</b> and this drawer wakes up.</p>`
-        + `<div class="fu"><button type="button" class="mcbtn mcbtn-ghost mcbtn-sm" onclick="switchTab('llm')">Open LLM Control</button></div></div>`;
+        + `<div class="fu"><button type="button" class="mcbtn mcbtn-ghost mcbtn-sm" onclick="switchTab('llm')">Open LLM Control</button></div></div>` + noticeHtml();
       box?.classList.add('dis'); if (input) input.disabled = true; if (sugs) sugs.innerHTML = '';
       return;
     }
@@ -299,6 +391,31 @@
     _state = TW.reduce(_state, { event: 'status', state: 'thinking' }); paintBody();
     attach(d.run_id);
   }
+  // The Apply click is the approval: the server re-checks role, tier and the alert, runs the steps, audits.
+  async function applyInsight(id) {
+    _insNotice = null;
+    _insights = _insights.map(r => r.id === id ? { ...r, status: 'applying' } : r); paintInsights();
+    let res = null;
+    try { res = await fetch(`/api/tower/insights/${encodeURIComponent(id)}/apply`, { method: 'POST' }); } catch (_) { /* offline */ }
+    const d = res ? await res.json().catch(() => ({})) : {};
+    if (!res || !res.ok || !d.ok) {
+      _insNotice = d.error === 'not allowed' ? 'Your role or the current tier does not allow this playbook.'
+        : d.error === 'stale' ? 'The alert changed or closed; that playbook no longer fits.'
+        : d.error === 'not open' ? 'That insight is already being handled.'
+        : (d.result && d.result.message) ? `Playbook failed: ${d.result.message}`
+        : 'Tower could not apply the playbook; try again.';
+    }
+    await loadInsights(); paintInsights();
+  }
+  async function dismissInsight(id) {
+    try { await fetch(`/api/tower/insights/${encodeURIComponent(id)}/dismiss`, { method: 'POST' }); } catch (_) { /* offline */ }
+    _insights = _insights.filter(r => r.id !== id); paintInsights();
+  }
+  async function dismissAllInsights() {
+    try { await fetch('/api/tower/insights/dismiss_all', { method: 'POST' }); } catch (_) { /* offline */ }
+    _insNotice = null;
+    _insights = _insights.filter(r => r.status === 'applying'); paintInsights();
+  }
   // Drops the client stream and asks the manager to cancel any active run.
   async function abortRun() {
     const rid = _runId;
@@ -317,6 +434,7 @@
   async function send(text) {
     const t = String(text || '').trim();
     if (!t) return;
+    setTab('conv');
     if (_state && _state.status !== 'idle') {
       if (_pending.length >= 5) { _notice = 'Five questions are already waiting.'; paintBody(); return; }
       _pending.push(t);
@@ -390,10 +508,27 @@
       }
     });
     sugs?.addEventListener('click', onSug);
-    $('twNew')?.addEventListener('click', () => newThread().then(paintBody));
+    $('twTabs')?.addEventListener('click', ev => {
+      if (ev.target.closest('#twTabConv')) setTab('conv');
+      else if (ev.target.closest('#twTabIns')) setTab('ins');
+    });
+    $('twInsNote')?.addEventListener('click', ev => {
+      const b = ev.target.closest('[data-ins-view]');
+      if (b) { flashInsight(b.dataset.insView); setTab('ins'); }
+    });
+    $('twInsView')?.addEventListener('click', ev => {
+      const ia = ev.target.closest('[data-ins-apply]'); if (ia) { applyInsight(ia.dataset.insApply); return; }
+      const idm = ev.target.closest('[data-ins-dismiss]'); if (idm) { dismissInsight(idm.dataset.insDismiss); return; }
+      const io = ev.target.closest('[data-ins-open]');
+      if (io) { if (!_prefs.pinned) towerClose({ returnFocus: false }); if (typeof switchTab === 'function') switchTab('events'); return; }
+      const idt = ev.target.closest('[data-ins-det]');
+      if (idt) { const id = idt.dataset.insDet; if (_openIns.has(id)) _openIns.delete(id); else _openIns.add(id); paintInsights(); return; }
+      if (ev.target.closest('#twInsDismissAll')) { dismissAllInsights(); return; }
+    });
+    $('twNew')?.addEventListener('click', () => { setTab('conv'); newThread().then(paintBody); });
     $('twPin')?.addEventListener('click', () => { _prefs.pinned = !_prefs.pinned; savePrefs(); applyDock(); });
     $('twCtxChip')?.addEventListener('click', () => { _prefs.noCtx = !_prefs.noCtx; savePrefs(); paintHeader(); });
-    $('twHist')?.addEventListener('click', showHistory);
+    $('twHist')?.addEventListener('click', () => { setTab('conv'); showHistory(); });
     bindGrip($('twGrip'));
   }
 

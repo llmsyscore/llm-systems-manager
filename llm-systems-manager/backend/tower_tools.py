@@ -521,8 +521,10 @@ def prod_deps(ctx, *, db_path: str, tools_runs: Callable[[Optional[str], int], l
         return ctx.ae_session.get(f"{root}{path}", timeout=10)
 
     def _alert_row(a: dict) -> dict:
+        metric = "/".join(str(a.get(k) or "") for k in ("metric_source", "metric_name")).strip("/")
         return {"id": a.get("alert_id"), "rule": a.get("rule_name"), "severity": a.get("severity"),
                 "status": a.get("status"), "host": a.get("source_host"), "message": a.get("message"),
+                "metric": metric or None, "value": a.get("current_value"), "threshold": a.get("threshold_value"),
                 "triggered_at": a.get("created_at"), "last_seen": a.get("last_evaluated_at")}
 
     def _alerts(include_closed: bool, limit: int) -> list:
@@ -697,6 +699,14 @@ def prod_deps(ctx, *, db_path: str, tools_runs: Callable[[Optional[str], int], l
     def restart(provider, host):
         return _agent_post(host, provider, f"/{provider}/server/restart", timeout=60)
 
+    def pinned(provider, host, model):
+        import agent_registry
+        try:
+            agent = agent_registry.pinned_agent(provider, model)
+        except Exception:  # noqa: BLE001 — an unreadable registry never confirms a pin
+            return False
+        return bool(agent) and str(agent.get("hostname") or "").lower() == str(host or "").lower()
+
     return {
         "hosts": hosts_overview, "host": host_detail,
         "models": models, "profiles": profiles,
@@ -704,4 +714,5 @@ def prod_deps(ctx, *, db_path: str, tools_runs: Callable[[Optional[str], int], l
         "runs": tools_runs, "speed": speed_table, "health": service_health,
         "log_tail": log_tail, "config_get": config_get, "help": default_help, "audit": audit_rows,
         "load": load, "unload": unload, "wake": wake, "restart": restart, "ack": base["ack"], "close": base["close"],
+        "pinned": pinned,
     }

@@ -38,3 +38,13 @@ def test_tower_violation_is_a_catalogued_event_on_by_default():
     assert M._audit_event_for("tower.violation") == "tower.violation"
     assert M._audit_group_for("tower.violation") == "tower"
     assert M._audit_label("tower.violation") == "Tower rule-bypass attempt"
+
+
+def test_tower_playbook_actions_belong_to_the_tower_action_event():
+    import manager_mod as M
+    assert M._audit_event_for("tower.playbook.apply") == "tower.action"
+    assert M._audit_event_for("tower.playbook.auto") == "tower.action"
+    assert M._audit_label("tower.playbook.apply") == "Applied a Tower playbook"
+    assert M._audit_label("tower.playbook.auto") == "Tower applied a safe playbook"
+    tower_group = next(g for g in M.AUDIT_EVENT_GROUPS if g["key"] == "tower")
+    assert next(e for e in tower_group["events"] if e["key"] == "tower.action")["label"] == "Action approved / denied / playbook applied"

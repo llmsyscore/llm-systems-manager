@@ -204,6 +204,7 @@ def test_prod_deps_wires_hosts_alarms_alert_and_config(monkeypatch):
 
     alert_row = {"alert_id": "a1", "rule_name": "GPU temp high", "severity": "critical",
                  "status": "active", "source_host": "box", "message": "hot",
+                 "metric_source": "system", "metric_name": "gpu_temperature_c", "current_value": 91.0, "threshold_value": 85.0,
                  "created_at": "t1", "last_evaluated_at": "t2"}
 
     class _Resp:
@@ -229,7 +230,8 @@ def test_prod_deps_wires_hosts_alarms_alert_and_config(monkeypatch):
 
     rows = deps["alarms"]()
     assert rows[0] == {"id": "a1", "rule": "GPU temp high", "severity": "critical", "status": "active",
-                       "host": "box", "message": "hot", "triggered_at": "t1", "last_seen": "t2"}
+                       "host": "box", "message": "hot", "metric": "system/gpu_temperature_c", "value": 91.0, "threshold": 85.0,
+                       "triggered_at": "t1", "last_seen": "t2"}
 
     row = deps["alert"]("a1")
     assert row["id"] == "a1" and row["host"] == "box"
@@ -242,6 +244,14 @@ def test_prod_deps_wires_hosts_alarms_alert_and_config(monkeypatch):
 
     with pytest.raises(ValueError):
         deps["config_get"]("/etc/passwd")
+
+    import agent_registry
+    monkeypatch.setattr(agent_registry, "pinned_agent",
+                        lambda prov, model: {"hostname": "Mac"} if (prov, model) == ("lms", "gemma-3-12b-it") else None)
+    assert deps["pinned"]("lms", "mac", "gemma-3-12b-it") is True
+    assert deps["pinned"]("lms", "box", "gemma-3-12b-it") is False and deps["pinned"]("lms", "mac", "other") is False
+    monkeypatch.setattr(agent_registry, "pinned_agent", lambda *a: (_ for _ in ()).throw(OSError("registry")))
+    assert deps["pinned"]("lms", "mac", "gemma-3-12b-it") is False
 
 
 def test_tool_names_constant_matches_the_registry():

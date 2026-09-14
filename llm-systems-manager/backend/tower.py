@@ -823,6 +823,44 @@ def run_turn(*, thread_id: str, user_text: str, page: Optional[dict], cfg, role:
 
 # ── store ───────────────────────────────────────────────────────────
 
+_INSIGHT_COLS = ("id", "alert_id", "rule", "host", "severity", "summary", "detail", "suggested_action",
+                 "playbook_id", "playbook_title", "playbook_safe", "steps", "checks", "thread_id", "status",
+                 "created", "resolved", "applied_by", "result", "seen_at")
+_INSIGHT_SELECT = "SELECT " + ", ".join(_INSIGHT_COLS) + " FROM tower_insights"
+_UNSEEN = "seen_at IS NULL AND status IN ('new','applied')"
+
+
+def _insight_row(r) -> dict:
+    d = {k: r[k] for k in _INSIGHT_COLS}
+    d["playbook_safe"] = None if d["playbook_safe"] is None else bool(d["playbook_safe"])
+    for k, empty in (("steps", []), ("checks", []), ("result", None)):
+        try:
+            d[k] = json.loads(d[k]) if d[k] else empty
+        except (TypeError, ValueError):
+            d[k] = empty
+    return d
+
+
+def insight_brief(i: Optional[dict]) -> Optional[dict]:
+    """The header/toast view of an insight: id, rule, host, severity, summary, created."""
+    if not i:
+        return None
+    return {k: i.get(k) for k in ("id", "rule", "host", "severity", "summary", "created")}
+
+
+def session_user(session) -> str:
+    """The session's user, else a stable per-session `bypass:<uid>` (created on first use)."""
+    u = session.get("user")
+    if u:
+        return str(u)
+    uid = session.get("tower_uid")
+    if not uid:
+        uid = uuid.uuid4().hex
+        session["tower_uid"] = uid
+        session.permanent = True
+    return f"bypass:{uid}"
+
+
 class Store:
     """tower_threads + tower_messages + tower_actions in the manager SQLite (per-thread conn)."""
     def __init__(self, db_path: str):
@@ -860,10 +898,19 @@ class Store:
             id TEXT PRIMARY KEY, thread_id TEXT NOT NULL, run_id TEXT, tool TEXT NOT NULL, args TEXT, card TEXT,
             status TEXT NOT NULL, actor TEXT, requested REAL, expires REAL, resolved REAL, result TEXT, ms INTEGER);
         CREATE INDEX IF NOT EXISTS idx_tower_actions_thread ON tower_actions(thread_id, requested);
+        CREATE TABLE IF NOT EXISTS tower_insights (
+            id TEXT PRIMARY KEY, alert_id TEXT NOT NULL UNIQUE, rule TEXT, host TEXT, severity TEXT,
+            summary TEXT, detail TEXT, suggested_action TEXT, playbook_id TEXT, playbook_title TEXT,
+            playbook_safe INTEGER, steps TEXT, checks TEXT, thread_id TEXT, status TEXT NOT NULL,
+            created REAL, resolved REAL, applied_by TEXT, result TEXT, seen_at REAL);
+        CREATE INDEX IF NOT EXISTS idx_tower_insights_status ON tower_insights(status, created);
         """)
+        if "seen_at" not in {r[1] for r in c.execute("PRAGMA table_info(tower_insights)").fetchall()}:
+            c.execute("ALTER TABLE tower_insights ADD COLUMN seen_at REAL")
         # No worker survives a restart, so any row it left mid-flight is unresolvable.
         c.execute("UPDATE tower_actions SET status='expired', resolved=?, result=? WHERE status IN ('pending','running')",
                   (time.time(), json.dumps({"ok": False, "message": "manager restarted"})))
+        c.execute("UPDATE tower_insights SET status='new' WHERE status='applying'")
         c.commit()
 
     def create_thread(self, user: str, title: str, page: Optional[dict]) -> str:
@@ -977,13 +1024,98 @@ class Store:
         return sorted(out + acts, key=lambda r: (r["ts"] or 0.0))
 
     def sweep(self, days: int) -> int:
-        """Deletes threads idle past `days`, then their now-orphaned messages; live threads keep all rows."""
+        """Deletes threads idle past `days` (with their messages and actions) and insights older than `days`."""
         cutoff = time.time() - max(1, int(days)) * 86400
         with self._lock:
             c = self._conn()
             n = c.execute("DELETE FROM tower_threads WHERE updated < ?", (cutoff,)).rowcount
             c.execute("DELETE FROM tower_messages WHERE thread_id NOT IN (SELECT id FROM tower_threads)")
             c.execute("DELETE FROM tower_actions WHERE thread_id NOT IN (SELECT id FROM tower_threads)")
+            c.execute("DELETE FROM tower_insights WHERE created < ?", (cutoff,))
+            c.commit()
+        return n
+
+    def create_insight(self, row: dict) -> Optional[str]:
+        """Inserts one insight per alert; None when that alert already has one."""
+        iid = uuid.uuid4().hex[:16]
+        safe = row.get("playbook_safe")
+        with self._lock:
+            c = self._conn()
+            cur = c.execute(
+                "INSERT OR IGNORE INTO tower_insights (id, alert_id, rule, host, severity, summary, detail, suggested_action,"
+                " playbook_id, playbook_title, playbook_safe, steps, checks, thread_id, status, created)"
+                " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (iid, str(row["alert_id"]), row.get("rule"), row.get("host"), row.get("severity"),
+                 str(row.get("summary") or "")[:160], row.get("detail"), row.get("suggested_action"),
+                 row.get("playbook_id"), row.get("playbook_title"), None if safe is None else int(bool(safe)),
+                 json.dumps(row.get("steps") or [], default=str), json.dumps(row.get("checks") or [], default=str),
+                 row.get("thread_id"), row.get("status") or "new", float(row.get("created") or time.time())))
+            c.commit()
+        return iid if cur.rowcount else None
+
+    def get_insight(self, iid: str) -> Optional[dict]:
+        r = self._conn().execute(_INSIGHT_SELECT + " WHERE id=?", (iid,)).fetchone()
+        return _insight_row(r) if r else None
+
+    def list_insights(self, limit: int = 50) -> "list[dict]":
+        rows = self._conn().execute(_INSIGHT_SELECT + " WHERE status != 'dismissed' ORDER BY created DESC LIMIT ?",
+                                    (max(1, min(int(limit), 200)),)).fetchall()
+        return [_insight_row(r) for r in rows]
+
+    def count_insights(self, status: str = "new") -> int:
+        return int(self._conn().execute("SELECT COUNT(*) FROM tower_insights WHERE status=?", (status,)).fetchone()[0])
+
+    def latest_insight(self, status: str = "new") -> Optional[dict]:
+        r = self._conn().execute(_INSIGHT_SELECT + " WHERE status=? ORDER BY created DESC LIMIT 1", (status,)).fetchone()
+        return _insight_row(r) if r else None
+
+    def count_unseen(self) -> int:
+        return int(self._conn().execute("SELECT COUNT(*) FROM tower_insights WHERE " + _UNSEEN).fetchone()[0])
+
+    def latest_unseen(self) -> Optional[dict]:
+        r = self._conn().execute(_INSIGHT_SELECT + " WHERE " + _UNSEEN + " ORDER BY created DESC LIMIT 1").fetchone()
+        return _insight_row(r) if r else None
+
+    def insights_rev(self) -> float:
+        """Newest create or resolve time across insights; changes whenever the list does."""
+        return float(self._conn().execute(
+            "SELECT COALESCE(MAX(COALESCE(resolved, created)), 0) FROM tower_insights").fetchone()[0] or 0)
+
+    def mark_insights_seen(self) -> int:
+        """Stamps seen_at on unseen new/applied insights; new ones become seen, applied ones stay applied."""
+        with self._lock:
+            c = self._conn()
+            n = c.execute("UPDATE tower_insights SET seen_at=?, status=CASE WHEN status='new' THEN 'seen' ELSE status END"
+                          " WHERE " + _UNSEEN, (time.time(),)).rowcount
+            c.commit()
+        return n
+
+    def claim_insight(self, iid: str) -> bool:
+        """Atomically marks an open insight as applying; False when another run holds it or it is closed."""
+        with self._lock:
+            c = self._conn()
+            n = c.execute("UPDATE tower_insights SET status='applying' WHERE id=? AND status IN ('new','seen')", (iid,)).rowcount
+            c.commit()
+        return bool(n)
+
+    def set_insight_status(self, iid: str, status: str, *, applied_by=None, result=None,
+                           allow: "tuple[str, ...]" = ("new", "seen")) -> bool:
+        """Moves one insight from a status in `allow` to `status`; False when it is not in one of them."""
+        marks = ",".join("?" * len(allow))
+        with self._lock:
+            c = self._conn()
+            n = c.execute(f"UPDATE tower_insights SET status=?, resolved=?, applied_by=COALESCE(?, applied_by),"
+                          f" result=COALESCE(?, result) WHERE id=? AND status IN ({marks})",
+                          (status, time.time(), applied_by,
+                           json.dumps(result, default=str) if result is not None else None, iid, *allow)).rowcount
+            c.commit()
+        return bool(n)
+
+    def dismiss_insights(self) -> int:
+        with self._lock:
+            c = self._conn()
+            n = c.execute("UPDATE tower_insights SET status='dismissed', resolved=? WHERE status IN ('new','seen','applied')",
+                          (time.time(),)).rowcount
             c.commit()
         return n
 
@@ -1231,15 +1363,7 @@ def register_routes(app, ctx, *, runs: Runs, gateway_entries, write_setting) -> 
         return bool(getattr(_cfg(), "enabled", False))
 
     def _user() -> str:
-        u = session.get("user")
-        if u:
-            return str(u)
-        uid = session.get("tower_uid")
-        if not uid:
-            uid = uuid.uuid4().hex
-            session["tower_uid"] = uid
-            session.permanent = True
-        return f"bypass:{uid}"
+        return session_user(session)
 
     def _gate():
         if not _enabled():
@@ -1260,7 +1384,10 @@ def register_routes(app, ctx, *, runs: Runs, gateway_entries, write_setting) -> 
         return jsonify({"ok": True, "enabled": True, "admin": role == "admin", "model": m.get("model"),
                         "provider": m.get("provider"), "hosts": m.get("hosts") or [],
                         "capabilities": cfg.capabilities, "off_topic": cfg.off_topic,
-                        "diagnose_alarms": bool(cfg.diagnose_alarms), "insights_new": 0})
+                        "diagnose_alarms": bool(cfg.diagnose_alarms),
+                        "insights_new": runs.store.count_unseen(),
+                        "latest_insight": insight_brief(runs.store.latest_unseen()),
+                        "insights_rev": runs.store.insights_rev()})
 
     @app.route("/api/tower/threads", methods=["GET"])
     def tower_threads():
