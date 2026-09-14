@@ -176,7 +176,7 @@ def _local_hostname() -> str:
 # banner reads it. Bump suffix (-1, -2, …) for same-day iterations; roll
 # the date for a new day's first change.
 # ---------------------------------------------------------------------------
-__version__ = "v2026.09.14-1"
+__version__ = "v2026.09.14-5"
 
 # Wall-clock at first import (Cheroot main process); the shutdown banner
 # reads it for the uptime line.
@@ -1356,6 +1356,75 @@ def _rate_window_for(provider: str, hosts) -> "dict | None":
 _OFFLINE_SWEEP_INTERVAL_S = 5.0
 
 
+_PULL_MIN_INTERVAL_S = 30.0
+_PULLS_PER_SWEEP = 2
+_pull_last: dict[str, float] = {}
+
+
+def _pull_llama_state_if_stale(agent_id: str) -> None:
+    """Refresh a stale sample from GET /llama/state when the agent is still reachable."""
+    now = time.monotonic()
+    if now - _pull_last.get(agent_id, 0.0) < _PULL_MIN_INTERVAL_S:
+        return
+    _pull_last[agent_id] = now
+    agent = agent_registry.resolve_agent_by_id(agent_id)
+    if not agent:
+        return
+    for url in agent_registry.agent_callback_urls(agent):
+        try:
+            r = requests.get(f"{url.rstrip('/')}/llama/state", timeout=4,
+                             headers={"Authorization": f"Bearer {agent.get('token', '')}"},
+                             **agent_registry.agent_tls_kwargs(url))
+            if not r.ok:
+                continue
+            body = r.json() or {}
+            wrap = provider_state.STORE.get("llama", agent_id) or {}
+            sample = dict(wrap.get("sample") or {})
+            llama = dict(sample.get("llama") or {})
+            llama.update({"state": body.get("state") or llama.get("state"),
+                          "residency": body.get("residency") or llama.get("residency"),
+                          "power": body.get("power") or llama.get("power"), "pulled_at": time.time()})
+            sample["llama"] = llama
+            provider_state.STORE.put("llama", agent_id, sample, touch=False)
+            _broadcast_llama_state_if_changed(agent_id)
+            log.info("llama-state pulled from stale agent %s (aggregate=%s)", agent_id[:8],
+                     (body.get("residency") or {}).get("aggregate"))
+            return
+        except Exception as e:
+            log.debug("llama-state pull %s failed: %s", url, e)
+
+
+def _offline_sweep_once(now: float) -> None:
+    """One sweep pass: fires the True→False latch transition for any agent
+    whose last_seen exceeds the provider's online_threshold_s, and — for
+    llama — broadcasts + pulls a fresh sample once a sample goes stale, up to
+    _PULLS_PER_SWEEP pulls per pass so a flood of stale agents can't stack up
+    blocking HTTP calls on the sweep thread."""
+    pulls_this_sweep = 0
+    for prov in providers.names():
+        spec = providers.get(prov)
+        threshold = spec.online_threshold_s if spec else 30.0
+        for aid, wrap in provider_state.STORE.all_for(prov).items():
+            last_seen = float(wrap.get("last_seen") or 0)
+            if not last_seen:
+                continue
+            age = now - last_seen
+            if prov == "llama" and age > provider_state.STALE_AFTER_S:
+                _broadcast_llama_state_if_changed(aid)
+                if pulls_this_sweep < _PULLS_PER_SWEEP:
+                    pulls_this_sweep += 1
+                    _pull_llama_state_if_stale(aid)
+            if age <= threshold:
+                continue
+            if provider_state.STORE.mark_offline(prov, aid):
+                log.warning("%s agent offline — last seen %.0fs ago [agent %s]",
+                            prov, age, aid[:8])
+    # Fleet-aware lms_active demotion: if no LMS agent is fresh+busy,
+    # flip the dynamic poll interval back to slow.
+    if not _any_lms_busy():
+        set_lms_active(False)
+
+
 def _offline_sweep_loop():
     """Background sweep that fires the True→False latch transition for any
     agent whose last_seen exceeds the provider's online_threshold_s. Closes
@@ -1363,24 +1432,7 @@ def _offline_sweep_loop():
     was polled. Also de-activates set_lms_active when the fleet goes idle."""
     while not _shutting_down:
         try:
-            now = time.time()
-            for prov in providers.names():
-                spec = providers.get(prov)
-                threshold = spec.online_threshold_s if spec else 30.0
-                for aid, wrap in provider_state.STORE.all_for(prov).items():
-                    last_seen = float(wrap.get("last_seen") or 0)
-                    if not last_seen:
-                        continue
-                    age = now - last_seen
-                    if age <= threshold:
-                        continue
-                    if provider_state.STORE.mark_offline(prov, aid):
-                        log.warning("%s agent offline — last seen %.0fs ago [agent %s]",
-                                    prov, age, aid[:8])
-            # Fleet-aware lms_active demotion: if no LMS agent is fresh+busy,
-            # flip the dynamic poll interval back to slow.
-            if not _any_lms_busy():
-                set_lms_active(False)
+            _offline_sweep_once(time.time())
         except Exception as e:
             log.warning("offline sweep iteration failed: %s", e)
         # Sleep in short slices so shutdown wakes within ~0.5s.
@@ -2280,11 +2332,15 @@ def benchmark_models():
 
 @app.route("/api/benchmark/perf-mode", methods=["POST"])
 def benchmark_perf_mode():
-    """Switch system perf mode (performance / powersave) for benchmarking.
-    Calls 'sudo systemctl restart {service}' on the primary llama agent;
-    those systemd targets live with the perf controller, not on the manager."""
+    """Switch host perf mode: performance | powersave | auto (release the hold).
+    Targets ?agent= or the default llama agent — never llama pool round-robin."""
     body = flask_request.get_json(force=True) or {}
-    return proxies.proxy_to_primary("llama", "POST", "/llama/bench/perf-mode", json=body, timeout=35)
+    aid = flask_request.args.get("agent") or agent_registry.default_agent_id_for("llama")
+    if not aid:
+        return jsonify({"ok": False,
+                        "error": "no llama agent selected and no default llama agent configured"}), 404
+    return proxies.proxy_to_primary("llama", "POST", "/llama/bench/perf-mode",
+                                    json=body, timeout=35, agent_id=aid)
 
 
 @app.route("/api/benchmark/cancel", methods=["POST"])
@@ -2493,27 +2549,61 @@ def _any_lms_busy() -> bool:
 _shutting_down: bool = False
 
 
+def _legacy_residency(llama: dict) -> dict:
+    """Project an old agent's binary state onto the residency shape."""
+    state = llama.get("state") or "unknown"
+    raw = llama.get("model")
+    has_model = isinstance(raw, str) and bool(raw) and not raw.endswith(" (unloaded)")
+    if state == "awake":
+        agg = "active" if has_model else "idle"
+    elif state == "sleeping":
+        agg = "sleeping"
+    else:
+        agg = "off"
+    return {"aggregate": agg, "models": [], "servers": {"llama": "down" if agg == "off" else "up"},
+            "ts": None, "source": "legacy"}
+
+
+def _as_float(v: "object", default: float = 0.0) -> float:
+    """Coerce a wire value to float; default on anything unparseable or non-finite."""
+    try:
+        f = float(v)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return default
+    return f if math.isfinite(f) else default
+
+
 def _build_llama_state_payload(agent_id: "str | None" = None) -> dict:
-    """Snapshot the same shape /api/llama-state returns. When agent_id is
-    None falls back to the primary llama agent — preserves today's
-    behavior for any caller that pre-dates the picker."""
+    """Snapshot the same shape /api/llama-state returns, plus residency + freshness (#966)."""
     if agent_id is None:
         agent_id = _primary_llama_agent_id()
     wrapper = provider_state.STORE.get("llama", agent_id) if agent_id else None
     sample = (wrapper or {}).get("sample") or {}
-    last_seen = float((wrapper or {}).get("last_seen") or 0.0)
     llama = sample.get("llama") or {}
     m = providers.llama.clean_display_model(llama.get("model"))
-    agent_age = (time.time() - last_seen) if last_seen else None
-    agent_online = agent_age is not None and agent_age < 30.0
+    now = time.time()
+    push_age = provider_state.age_of(wrapper, now)
+    agent_online = push_age is not None and push_age < 30.0
+    fresh_ts = max(float((wrapper or {}).get("last_seen") or 0.0), _as_float(llama.get("pulled_at")))
+    stale = fresh_ts == 0 or (now - fresh_ts) > provider_state.STALE_AFTER_S
+    res = llama.get("residency") if isinstance(llama.get("residency"), dict) else _legacy_residency(llama)
     return {
         "state": llama.get("state") or "unknown",
         "model": m,
         "port":  provider_state.llama_port_for(agent_id),
         "agent_online": agent_online,
-        "agent_age_s": round(agent_age, 1) if agent_age is not None else None,
+        "agent_age_s": round(push_age, 1) if push_age is not None else None,
+        "age_s": round(max(0.0, now - fresh_ts), 1) if fresh_ts else None,
+        "stale": stale,
+        "aggregate": res.get("aggregate") or "unknown",
+        "residency": res,
+        "power": llama.get("power") if isinstance(llama.get("power"), dict) else None,
+        "pulled": bool(llama.get("pulled_at")),
         "build_method": llama.get("build_method"),
     }
+
+
+_LLAMA_STATE_FP_KEYS = ("state", "aggregate", "model", "agent_online", "stale", "port", "power")
 
 
 def _broadcast_llama_state_if_changed(agent_id: "str | None" = None) -> None:
@@ -2526,8 +2616,18 @@ def _broadcast_llama_state_if_changed(agent_id: "str | None" = None) -> None:
     payload = _build_llama_state_payload(agent_id)
     provider_state.STORE.broadcast_if_changed(
         "llama", agent_id, payload,
-        fingerprint_keys=("state", "model", "agent_online", "port"),
+        fingerprint_keys=_LLAMA_STATE_FP_KEYS,
     )
+
+
+def _set_llama_awake_from_sample(sample: dict) -> None:
+    """Derive the global llama-awake flag from a residency-aware or legacy sample."""
+    llama = (sample or {}).get("llama") or {}
+    res = llama.get("residency")
+    if isinstance(res, dict) and res.get("aggregate"):
+        set_llama_awake(res["aggregate"] in ("active", "loading"))
+    elif llama.get("state") in ("awake", "sleeping"):
+        set_llama_awake(llama["state"] == "awake")
 
 
 def _request_json_object() -> "dict | None":
@@ -2568,6 +2668,8 @@ def receive_remote_host_metrics():
     provider_state.STORE.put("llama", aid, data)
     if provider_state.STORE.mark_online("llama", aid):
         log.info(f"llama agent online [agent {aid[:8]}@{agent.get('hostname','?')}]")
+    if aid == _primary_llama_agent_id():
+        _set_llama_awake_from_sample(data)
     # Broadcast outside the lock — STORE.broadcast_if_changed handles its
     # own locking and drops it before fanning out to queues.
     _broadcast_llama_state_if_changed(aid)
@@ -2603,6 +2705,8 @@ def receive_provider_state():
         log.info(f"{provider} agent online "
                  f"[agent {aid[:8]}@{agent.get('hostname','?')}]")
     if provider == "llama":
+        if aid == _primary_llama_agent_id():
+            _set_llama_awake_from_sample(sample)
         _broadcast_llama_state_if_changed(aid)
     elif provider == "lms":
         set_lms_active(_any_lms_busy())
@@ -2757,13 +2861,13 @@ def stream_llama_state():
     import queue as _queue
 
     aid = flask_request.args.get("agent") or _primary_llama_agent_id()
-    initial = _build_llama_state_payload(aid)
 
     # No resolvable agent — emit the initial 'unknown' snapshot and close.
     # The browser EventSource will auto-retry (~3s) and re-resolve the
     # primary on each reconnect, matching pre-PR1 "global subscribers"
     # liveness without leaking an unregistered queue.
     if not aid:
+        initial = _build_llama_state_payload(aid)
         def generate_oneshot():
             yield f"data: {json.dumps(initial)}\n\n"
         return app.response_class(
@@ -2776,6 +2880,7 @@ def stream_llama_state():
     # whole life. Over the stream cap, emit a one-shot snapshot and close so
     # the pill still shows current state (EventSource reconnects); no slot held.
     if not stream_pool.POOL.try_acquire():
+        initial = _build_llama_state_payload(aid)
         def generate_capped():
             yield f"data: {json.dumps(initial)}\n\n"
         return app.response_class(
@@ -2784,19 +2889,29 @@ def stream_llama_state():
             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
         )
 
+    # Subscribe before snapshotting so no update lands in the gap between
+    # reading the initial state and registering the queue.
     q: _queue.Queue = _queue.Queue(maxsize=32)
     provider_state.STORE.subscribe("llama", aid, q)
-    lifetime = float(getattr(settings.manager, "stream_max_lifetime_s", 120.0) or 120.0)
-    resp = app.response_class(
-        stream_with_context(_llama_state_sse(
-            f"data: {json.dumps(initial)}\n\n", q,
-            max_lifetime_s=lifetime,
-            is_shutting_down=lambda: _shutting_down,
-            on_finish=lambda: provider_state.STORE.unsubscribe("llama", aid, q),
-        )),
-        mimetype="text/event-stream",
-        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
-    )
+    try:
+        initial = _build_llama_state_payload(aid)
+        lifetime = float(getattr(settings.manager, "stream_max_lifetime_s", 120.0) or 120.0)
+        resp = app.response_class(
+            stream_with_context(_llama_state_sse(
+                f"data: {json.dumps(initial)}\n\n", q,
+                max_lifetime_s=lifetime,
+                is_shutting_down=lambda: _shutting_down,
+                on_finish=lambda: provider_state.STORE.unsubscribe("llama", aid, q),
+            )),
+            mimetype="text/event-stream",
+            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        )
+    except Exception:
+        # Give back the subscribe + pool slot so a build/construction error
+        # doesn't leak either one.
+        provider_state.STORE.unsubscribe("llama", aid, q)
+        stream_pool.POOL.release()
+        raise
     resp.call_on_close(stream_pool.POOL.release)
     return resp
 

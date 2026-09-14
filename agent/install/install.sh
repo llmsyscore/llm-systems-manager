@@ -196,8 +196,9 @@ INSTALL — agent identity
 INSTALL — provider toggles (default OFF for all)
   --enable-perf  /  --no-perf
       Set PERF_CONTROLLER_ENABLED in agent_config.yaml. When true, the
-      agent tails the llama-server log and triggers 'performance' /
-      'powersave' systemd units on sleep / wake transitions. Linux only.
+      agent's power arbiter switches the 'performance' / 'powersave' systemd
+      units from the reconciled model residency (any model loading/loaded ->
+      performance). Linux only.
       Implies --install-perf-units (drops the example units so the controller
       has targets; existing tuned units are never overwritten).
       When this is set (or --install-perf-units is set), the installer
@@ -206,8 +207,8 @@ INSTALL — provider toggles (default OFF for all)
       requires interactive consent; never auto-installs.
 
   --enable-llama /  --no-llama
-      Set LLAMA_ENABLED. The agent reads /tmp/llama-server-last-state and
-      (Phase 2) will proxy llama.cpp lifecycle endpoints.
+      Set LLAMA_ENABLED. The agent proxies llama.cpp lifecycle endpoints and
+      reconciles model state from the server API.
 
   --install-llama[=METHOD]   (--llama-backend BACKEND)
       With --role auto (the default), install llama.cpp during setup when none
@@ -792,6 +793,24 @@ _apply_sudoers_and_wrapper() {
   fi
 }
 
+# _ensure_agent_state_dir
+#   Create/own/tighten $INSTALL_DIR/state and offer to remove the legacy
+#   /tmp state file. Linux only; called from both --update and fresh install.
+_ensure_agent_state_dir() {
+  [[ "$AGENT_OS" == "linux" ]] || return 0
+  $SUDO mkdir -p "$INSTALL_DIR/state"
+  $SUDO chown "$USER_ARG:$USER_GROUP" "$INSTALL_DIR/state"
+  $SUDO chmod 0750 "$INSTALL_DIR/state"
+  local legacy_state="/tmp/llama-server-last-state" _ans
+  if [[ -f "$legacy_state" && ! -L "$legacy_state" && -t 0 ]]; then
+    read -rp "  Remove legacy state file $legacy_state (no longer used)? [y/N] " _ans
+    case "$(printf '%s' "$_ans" | tr '[:upper:]' '[:lower:]')" in
+      y|yes) $SUDO rm -f "$legacy_state"; echo "  ✓ removed" ;;
+      *)     echo "  ✗ left in place" ;;
+    esac
+  fi
+}
+
 # _ensure_hf_cli USER HOME
 #   Install the HuggingFace 'hf' CLI into the agent venv and symlink it to
 #   ~/.local/bin/hf — the path the agent resolves for llama model downloads.
@@ -1167,6 +1186,7 @@ if $DO_UPDATE; then
     echo "ERROR: could not resolve primary group for user '$USER_ARG'" >&2
     exit 1
   fi
+  _ensure_agent_state_dir
   # Same home-dir resolution as the install path (needed for the
   # plist refresh on macOS).
   USER_HOME="$(eval echo "~$USER_ARG" 2>/dev/null || true)"
@@ -3783,7 +3803,7 @@ if [[ -z "$USER_HOME" ]]; then
 fi
 
 # 1. Create install dir
-$SUDO mkdir -p "$INSTALL_DIR/data" "$INSTALL_DIR/logs"
+$SUDO mkdir -p "$INSTALL_DIR/data" "$INSTALL_DIR/logs" "$INSTALL_DIR/state"
 $SUDO chown -R "$USER_ARG:$USER_GROUP" "$INSTALL_DIR"
 
 if [[ "$AGENT_OS" == "linux" ]]; then
@@ -4255,29 +4275,8 @@ EOF
   fi
 fi
 
-# 6b. Migrate /tmp/llama-server-last-state ownership.
-# The legacy bash perf-controller daemon ran as root and created this
-# file owned by root. The agent (running as a regular user) can't
-# os.replace() over a root-owned file under /tmp because of the
-# sticky bit, so every transition would fail with EPERM. One-time
-# fixup: chown to the agent user so the agent can write atomically.
-if [[ "$AGENT_OS" == "linux" && "$ENABLE_PERF" == "true" ]]; then
-  STATE_FILE="/tmp/llama-server-last-state"
-  # Only a real regular file (never a symlink) in world-writable /tmp — a
-  # planted symlink would otherwise redirect the chown to an arbitrary target.
-  if [[ -f "$STATE_FILE" && ! -L "$STATE_FILE" ]]; then
-    CURRENT_OWNER="$(stat -c %U "$STATE_FILE" 2>/dev/null || echo unknown)"
-    if [[ "$CURRENT_OWNER" != "$USER_ARG" ]]; then
-      echo
-      echo "── Migrating $STATE_FILE ownership ────────────────────────────────────"
-      echo "  current owner: $CURRENT_OWNER → target: $USER_ARG"
-      $SUDO chown -h "$USER_ARG:$USER_GROUP" "$STATE_FILE"
-      echo "  ✓ chowned to $USER_ARG:$USER_GROUP"
-      echo "  (legacy artifact from the bash perf-controller daemon — agent"
-      echo "   needs to own it to do atomic rename writes under /tmp)"
-    fi
-  fi
-fi
+# 6b. Agent state dir (power arbiter durable record).
+_ensure_agent_state_dir
 
 # 7. Example perf-controller systemd units (opt-in via --install-perf-units)
 if $INSTALL_PERF_UNITS; then

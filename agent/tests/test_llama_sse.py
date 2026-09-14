@@ -572,3 +572,23 @@ def test_requests_sse_lines_passes_stream_and_timeout():
     list(llama_sse.requests_sse_lines("http://x/models/sse", session=sess))
     assert sess.get_kwargs["stream"] is True
     assert sess.get_kwargs["timeout"] == (5.0, 300.0)
+
+
+# ── router detection from /v1/models (#966) ─────────────────────────
+
+def test_router_mode_from_models_needs_a_status_object():
+    assert llama_sse.router_mode_from_models([{"id": "a", "status": {"value": "loaded"}}]) is True
+    assert llama_sse.router_mode_from_models([{"id": "a"}]) is False
+    assert llama_sse.router_mode_from_models([]) is False
+
+
+def test_listener_calls_on_connect_once_per_connection():
+    seen = []
+    frames = iter([["data: {\"type\":\"model_status\",\"model\":\"a\",\"status\":\"loaded\"}"], []])
+    stops = iter([False, False, False, True])  # 2 stop checks per loop pass
+    lis = llama_sse.LlamaSseListener(
+        connect=lambda: next(frames), on_event=lambda e, d: None,
+        should_stop=lambda: next(stops), sleep=lambda s: None,
+        on_connect=lambda: seen.append("c"))
+    lis.run()
+    assert seen == ["c", "c"]

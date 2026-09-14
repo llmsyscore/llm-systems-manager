@@ -51,6 +51,11 @@ def router_mode_from_flags(flags: Iterable[str]) -> bool:
     return bool(flag_set & _ROUTER_FLAGS)
 
 
+def router_mode_from_models(data: Iterable[Any]) -> bool:
+    """True when any /v1/models entry carries a router `status` object."""
+    return any(isinstance(m, dict) and isinstance(m.get("status"), dict) for m in (data or []))
+
+
 def sse_status_to_state(status: Optional[str]) -> Optional[str]:
     """Map a model_status value to 'awake'/'sleeping', else None."""
     return _SSE_STATUS_TO_STATE.get((status or "").lower())
@@ -169,7 +174,7 @@ def requests_sse_lines(
 class LlamaSseListener:
     """Reconnecting consumer of llama.cpp /models/sse with backoff.
 
-    Callbacks (connect/on_event/should_stop/sleep/on_disconnect) are injected.
+    Callbacks (connect/on_event/should_stop/sleep/on_connect/on_disconnect) are injected.
     """
 
     def __init__(
@@ -179,6 +184,7 @@ class LlamaSseListener:
         on_event: Callable[[str, dict[str, Any]], None],
         should_stop: Callable[[], bool],
         sleep: Callable[[float], None] = time.sleep,
+        on_connect: Optional[Callable[[], None]] = None,
         on_disconnect: Optional[Callable[[], None]] = None,
         logger: Optional[logging.Logger] = None,
         initial_backoff: float = 1.0,
@@ -189,6 +195,7 @@ class LlamaSseListener:
         self._on_event = on_event
         self._should_stop = should_stop
         self._sleep = sleep
+        self._on_connect = on_connect
         self._on_disconnect = on_disconnect
         self._log = logger or _DEFAULT_LOGGER
         self._initial_backoff = initial_backoff
@@ -208,6 +215,11 @@ class LlamaSseListener:
                 lines = self._connect()
                 opened = True
                 self.connected = True
+                if self._on_connect is not None:
+                    try:
+                        self._on_connect()
+                    except Exception as e:
+                        self._log.debug("llama /models/sse on_connect error: %s", e)
                 if not healthy:
                     healthy = True
                     self._log.info("llama /models/sse connected")

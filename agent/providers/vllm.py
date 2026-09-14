@@ -24,6 +24,7 @@ from fastapi.responses import StreamingResponse
 from _bench_replay import BenchReplayBuffer  # type: ignore[import-not-found]  # sibling at agent root
 
 from . import _shared
+from . import residency
 
 # Minimal spec the agent's heartbeat body emits — see providers/llama.py.
 PROVIDER_SPEC = {
@@ -35,6 +36,8 @@ PROVIDER_SPEC = {
 log = logging.getLogger("llm-systems-agent.providers.vllm")
 
 _ctx = None
+
+_residency_inputs: dict = {"models": [], "server": "unknown"}
 
 _vllm_session: Optional[requests.Session] = None
 _vllm_session_lock = threading.Lock()
@@ -166,7 +169,15 @@ def collect_vllm_for_metrics() -> dict[str, Any]:
             log.debug("vllm /metrics scrape failed: %s", e)
     else:
         _vllm_rate_state.clear()
+    models_list, server = residency.vllm_models_from_api(
+        out["models"] if out["state"] == "running" else None, time.time())
+    _residency_inputs.update({"models": models_list, "server": server})
     return out
+
+
+def residency_inputs() -> "tuple[list[dict], str]":
+    """(model entries, server state) from the last /v1/models probe."""
+    return list(_residency_inputs["models"]), str(_residency_inputs["server"])
 
 
 # ── systemd lifecycle ──────────────────────────────────────────────────
@@ -198,19 +209,31 @@ def vllm_server_status_endpoint(
         raise HTTPException(status_code=500, detail=str(e))
 
 
+def reconcile_now() -> None:
+    """Ask the collector for an early residency tick; lazy import keeps the provider cycle out."""
+    from . import llama as _llama
+    _llama.reconcile_now()
+
+
 def vllm_server_start_endpoint(authorization: Optional[str] = Header(default=None)) -> dict[str, Any]:
     _require_ctx().check_bearer(authorization); _vllm_check_enabled()
-    return _vllm_systemctl("start")
+    out = _vllm_systemctl("start")
+    reconcile_now()
+    return out
 
 
 def vllm_server_stop_endpoint(authorization: Optional[str] = Header(default=None)) -> dict[str, Any]:
     _require_ctx().check_bearer(authorization); _vllm_check_enabled()
-    return _vllm_systemctl("stop")
+    out = _vllm_systemctl("stop")
+    reconcile_now()
+    return out
 
 
 def vllm_server_restart_endpoint(authorization: Optional[str] = Header(default=None)) -> dict[str, Any]:
     _require_ctx().check_bearer(authorization); _vllm_check_enabled()
-    return _vllm_systemctl("restart", timeout=60)
+    out = _vllm_systemctl("restart", timeout=60)
+    reconcile_now()
+    return out
 
 
 # ── Journal log tail + SSE stream ──────────────────────────────────────
@@ -377,8 +400,10 @@ def vllm_lora_load(body: dict, authorization: Optional[str] = Header(default=Non
     try:
         r = _get_session().post(f"{ctx.config.VLLM_API_URL.rstrip('/')}/v1/load_lora_adapter",
                                 json={"lora_name": name, "lora_path": path}, timeout=60)
+        reconcile_now()
         return {"ok": r.ok, "status": r.status_code, "output": r.text[:500]}
     except Exception as e:
+        reconcile_now()
         return {"ok": False, "error": str(e)}
 
 
@@ -391,8 +416,10 @@ def vllm_lora_unload(body: dict, authorization: Optional[str] = Header(default=N
     try:
         r = _get_session().post(f"{ctx.config.VLLM_API_URL.rstrip('/')}/v1/unload_lora_adapter",
                                 json={"lora_name": name}, timeout=60)
+        reconcile_now()
         return {"ok": r.ok, "status": r.status_code, "output": r.text[:500]}
     except Exception as e:
+        reconcile_now()
         return {"ok": False, "error": str(e)}
 
 

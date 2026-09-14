@@ -249,13 +249,21 @@ def test_reload_reapplies_tls_verify_and_ae_url(tmp_path):
     ca = tmp_path / "ca.pem"
     ca.write_text("x")
     cfg = SimpleNamespace(MANAGER_URL="https://mgr:5000", ALARM_ENGINE_URL="http://new-ae:8081",
-                          TLS_CA_FILE=str(ca), AGENT_INSTALL_DIR=str(tmp_path), _loaded_from=None)
+                          TLS_CA_FILE=str(ca), AGENT_INSTALL_DIR=str(tmp_path), _loaded_from=None,
+                          AGENT_OS="linux", PERF_CONTROLLER_ENABLED=False,
+                          PERF_TARGET_AWAKE="performance", PERF_TARGET_SLEEP="powersave",
+                          POWER_DWELL_TICKS=2)
     client = _FakeMetricClient()
     session = SimpleNamespace(verify=True)
     ns = {"CONFIG": SimpleNamespace(MANAGER_URL="http://mgr:5000", ALARM_ENGINE_URL="http://old-ae:8081"),
           "AgentConfig": SimpleNamespace(load=lambda: cfg),
           "collectors": SimpleNamespace(configure_all=lambda c: None),
-          "providers": SimpleNamespace(configure_all=lambda ctx: None),
+          "providers": SimpleNamespace(configure_all=lambda ctx: None,
+                                       llama=SimpleNamespace(set_reconcile_hook=lambda fn: None)),
+          "power_arbiter": SimpleNamespace(configure=lambda **kw: None, read_sudo_list=None,
+                                           unit_file_exists=None),
+          "_collector_wake": SimpleNamespace(set=lambda: None),
+          "_read_cpu_governor_safe": None, "_power_readback_factory": None, "os": os,
           "AgentContext": lambda **kw: kw,
           "_check_bearer": lambda a: None, "_check_stream_auth": None, "_probe_http": None,
           "_post_session": session, "_runtime_lock": threading.Lock(), "_reload_lock": threading.Lock(),

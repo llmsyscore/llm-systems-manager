@@ -1396,9 +1396,8 @@ def _agents_heartbeat():
                 save_agents(data)
                 _hb_last_flush_at = now_mono
         auth_disabled = bool(data.get("global", {}).get("auth_disabled", False))
-        primary_llama_id = (data.get("global") or {}).get("primary_llama_id")
         llama_state = body.get("llama_state")
-        if agent["agent_id"] == primary_llama_id and llama_state in ("awake", "sleeping"):
+        if agent["agent_id"] == default_agent_id_for("llama") and llama_state in ("awake", "sleeping"):
             _deps.set_llama_awake(llama_state == "awake")
 
     desc = agent.get("description") or ""
@@ -1519,6 +1518,10 @@ def _agents_list():
         a["update_available"] = agent_update_available(a.get("version"), latest)
         a["is_host_agent"] = bool(a.get("agent_id") and a.get("agent_id") == hid)
         a["colocated_infra"] = colocated_infra(agent, hid)
+        # Power-arbiter snapshot from this agent's latest llama sample (#966).
+        _llama = (((provider_state.STORE.get("llama", a.get("agent_id")) or {})
+                   .get("sample") or {}).get("llama") or {})
+        a["power"] = _llama.get("power") if isinstance(_llama.get("power"), dict) else None
         safe.append(a)
     return jsonify({
         "agents": safe,
@@ -1700,8 +1703,7 @@ def _agents_push_llama_state(agent_id: str):
     if state not in ("awake", "sleeping"):
         return jsonify({"ok": False, "error": "state must be 'awake' or 'sleeping'"}), 400
 
-    data = load_agents()
-    if (data.get("global") or {}).get("primary_llama_id") != agent_id:
+    if default_agent_id_for("llama") != agent_id:
         # Not the primary — return 200 so the agent doesn't retry, but
         # don't touch the interval. Pool-driven multi-host support
         # could lift this restriction later.

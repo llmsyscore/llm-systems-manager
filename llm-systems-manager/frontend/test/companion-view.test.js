@@ -859,3 +859,13 @@ describe('CView.powerCoverage', () => {
     expect(g.power[1].sub).toBe('9.2 kWh · $0.2/kWh');
   });
 });
+
+describe('CView.glance llama aggregate (#966)', () => {
+  it('uses aggregate words when present', () => {
+    const row = (ls) => CView.glance({ metrics: {}, llama: ls, lms: {}, vllm: {} }).providers[0];
+    expect(row({ aggregate: 'loading', model: 'm', state: 'awake' }).detail).toContain('loading');
+    expect(row({ aggregate: 'idle', state: 'awake' }).detail).toBe('no model');
+    expect(row({ aggregate: 'off', state: 'unknown' }).detail).toBe('server off');
+    expect(row({ aggregate: 'active', model: 'm', state: 'awake', stale: true }).detail).toContain('stale');
+  });
+});

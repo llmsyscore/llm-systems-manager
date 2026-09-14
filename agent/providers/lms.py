@@ -18,6 +18,7 @@ import requests
 from fastapi import Header, HTTPException, Request
 
 from . import _shared
+from . import residency
 
 # PR2: minimal spec the agent's heartbeat body emits — see providers/llama.py.
 PROVIDER_SPEC = {
@@ -27,6 +28,8 @@ PROVIDER_SPEC = {
 }
 
 log = logging.getLogger("llm-systems-agent.providers.lms")
+
+_residency_inputs: dict = {"models": [], "server": "unknown"}
 
 _ctx = None
 
@@ -196,8 +199,15 @@ def lms_sample_block() -> dict[str, Any]:
     server = lms_get_status()
     models = lms_get_models()
     ps, err = _lms_read_ps()
+    models_list, srv = residency.lms_models_from_ps(ps, server.get("on"), time.time())
+    _residency_inputs.update({"models": models_list, "server": srv})
     return {"server": server, "models": models, "ps": ps or [],
             "ps_ok": ps is not None, "ps_error": err}
+
+
+def residency_inputs() -> "tuple[list[dict], str]":
+    """(model entries, server state) from the last `lms ps` read."""
+    return list(_residency_inputs["models"]), str(_residency_inputs["server"])
 
 
 # ── Private helpers ────────────────────────────────────────────────────
@@ -335,10 +345,17 @@ async def lms_openai_completions(request: Request,
     return await _lms_openai_forward("completions", request, authorization)
 
 
+def reconcile_now() -> None:
+    """Ask the collector for an early residency tick; lazy import keeps the provider cycle out."""
+    from . import llama as _llama
+    _llama.reconcile_now()
+
+
 def lms_server_start_endpoint(authorization: Optional[str] = Header(default=None)) -> dict[str, Any]:
     _require_ctx().check_bearer(authorization); _lms_check_enabled()
     rc, out = _lms_run_cli(["server", "start"], timeout=20)
     log.info("lms server start: rc=%s %s", rc, out[:200])
+    reconcile_now()
     return {"ok": rc == 0, "output": out}
 
 
@@ -346,6 +363,7 @@ def lms_server_stop_endpoint(authorization: Optional[str] = Header(default=None)
     _require_ctx().check_bearer(authorization); _lms_check_enabled()
     rc, out = _lms_run_cli(["server", "stop"], timeout=20)
     log.info("lms server stop: rc=%s %s", rc, out[:200])
+    reconcile_now()
     return {"ok": rc == 0, "output": out}
 
 
@@ -356,6 +374,7 @@ def lms_server_restart_endpoint(authorization: Optional[str] = Header(default=No
     rc2, out2 = _lms_run_cli(["server", "start"], timeout=20)
     combined = (out1 + "\n" + out2).strip()
     log.info("lms server restart: stop rc=%s start rc=%s", rc1, rc2)
+    reconcile_now()
     return {"ok": (rc2 == 0), "output": combined}
 
 
@@ -417,11 +436,14 @@ def lms_load_endpoint(body: dict, authorization: Optional[str] = Header(default=
         )
     except requests.exceptions.Timeout:
         log.warning("lms load %s: timed out after %ss", model_id, timeout)
+        reconcile_now()
         return {"ok": False, "timeout": True,
                 "error": f"lms load timed out after {timeout}s"}
     except Exception as e:
+        reconcile_now()
         return {"ok": False, "error": str(e)}
     log.info("lms load %s: %s", model_id, resp.status_code)
+    reconcile_now()
     try:
         body_resp = resp.json()
     except Exception:
@@ -574,6 +596,7 @@ def lms_unload_endpoint(body: dict, authorization: Optional[str] = Header(defaul
             timeout=_cfg_timeout("LMS_UNLOAD_TIMEOUT_S", _LMS_UNLOAD_TIMEOUT_DEFAULT_S),
         )
         log.info("lms unload %s: %s", model_id, resp.status_code)
+        reconcile_now()
         if resp.ok:
             try:
                 return {"ok": True, "response": resp.json()}
@@ -582,8 +605,10 @@ def lms_unload_endpoint(body: dict, authorization: Optional[str] = Header(defaul
         # CLI fallback — sometimes succeeds when HTTP doesn't (lock-file issues).
         log.warning("lms HTTP unload failed (%s), trying CLI", resp.status_code)
         rc, out = _lms_run_cli(["unload", model_id], timeout=30)
+        reconcile_now()
         return {"ok": rc == 0, "output": out, "http_status": resp.status_code}
     except Exception as e:
+        reconcile_now()
         return {"ok": False, "error": str(e)}
 
 

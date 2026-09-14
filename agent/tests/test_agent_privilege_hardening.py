@@ -1,6 +1,6 @@
 # agent/tests/test_agent_privilege_hardening.py
 """Static + behavioral guards for the agent privilege-hardening changes:
-#287 (sudoers), #289 (/tmp chown symlink), #292 (tarball fetch)."""
+#287 (sudoers), #289 (/tmp legacy-state removal symlink guard), #292 (tarball fetch)."""
 from __future__ import annotations
 
 import re
@@ -79,11 +79,24 @@ def test_resolver_accepts_valid_unit_name():
     assert _resolve_unit("my-llama.service") == "my-llama.service"
 
 
-# ── #289 /tmp state-file chown ────────────────────────────────────────────
+# ── #289 /tmp legacy state-file removal ───────────────────────────────────
+def _ensure_agent_state_dir_block() -> list[str]:
+    lines = INSTALL_SH.read_text().splitlines()
+    s = next(i for i, l in enumerate(lines) if l.startswith("_ensure_agent_state_dir()"))
+    e = next(i for i in range(s + 1, len(lines)) if lines[i] == "}")
+    return lines[s:e + 1]
+
+
 def test_state_file_chown_rejects_symlink():
-    text = INSTALL_SH.read_text()
-    assert '[[ -f "$STATE_FILE" && ! -L "$STATE_FILE" ]]' in text
-    assert '$SUDO chown -h "$USER_ARG:$USER_GROUP" "$STATE_FILE"' in text
+    """Legacy /tmp/llama-server-last-state removal (inside _ensure_agent_state_dir)
+    only offers to act on a real regular file — a symlink is left untouched."""
+    block = _ensure_agent_state_dir_block()
+    guard = '  if [[ -f "$legacy_state" && ! -L "$legacy_state" && -t 0 ]]; then'
+    assert guard in block
+    rm_lines = [l for l in block if 'rm -f "$legacy_state"' in l]
+    assert len(rm_lines) == 1, "rm -f \"$legacy_state\" must appear exactly once"
+    assert rm_lines[0].strip().startswith("y|yes)"), "rm must live inside the y|yes case arm"
+    assert block.index(guard) < block.index(rm_lines[0]), "guard must precede the rm"
 
 
 # ── #292 tarball fetch ────────────────────────────────────────────────────

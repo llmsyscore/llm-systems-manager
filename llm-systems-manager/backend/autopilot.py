@@ -126,9 +126,19 @@ def _clean_llama_model(raw) -> "str | None":
     return raw.replace(" (sleeping)", "").strip() or None
 
 
+def _llama_residency(sample: dict) -> "dict | None":
+    res = (sample.get("llama") or {}).get("residency")
+    return res if isinstance(res, dict) and res.get("aggregate") else None
+
+
 def _llama_loaded(sample: dict) -> "list[str]":
-    """A sleeping model is still resident (counts as placed); '(unloaded)'
-    or unknown state means nothing is really loaded."""
+    """Resident llama models; residency wins over the legacy state+model pair."""
+    res = _llama_residency(sample)
+    if res is not None:
+        return [m["model_id"] for m in res.get("models") or []
+                if m.get("provider") == "llama" and m.get("status") in ("loaded", "sleeping", "loading")]
+    # legacy branch: a sleeping model is still resident (counts as placed);
+    # '(unloaded)' or unknown state means nothing is really loaded.
     llama = sample.get("llama") or {}
     if llama.get("state") not in ("awake", "sleeping"):
         return []
@@ -156,7 +166,24 @@ _LOADED_BY_PROVIDER = {"llama": _llama_loaded, "vllm": _vllm_loaded, "lms": _lms
 
 
 def _llama_answered(sample: dict) -> bool:
+    res = _llama_residency(sample)
+    if res is not None:
+        return res["aggregate"] != "unknown"
     return (sample.get("llama") or {}).get("state") in ("awake", "sleeping")
+
+
+def _llama_server_state(sample: dict) -> "str | None":
+    """awake/sleeping/None derived from residency when present, else legacy state."""
+    res = _llama_residency(sample)
+    if res is not None:
+        agg = res["aggregate"]
+        if agg == "sleeping":
+            return "sleeping"
+        if agg in ("active", "loading", "idle"):
+            return "awake"
+        return None
+    st = (sample.get("llama") or {}).get("state")
+    return st if st in ("awake", "sleeping") else None
 
 
 def _vllm_answered(sample: dict) -> bool:
@@ -207,6 +234,7 @@ def _sample_ram(sample: dict) -> dict:
 def build_observed(deps: dict) -> dict:
     """Snapshot agents.json + per-provider STORE samples into the agent
     dict shape autopilot_planner.plan() consumes."""
+    import provider_state  # type: ignore[import-not-found]  # sibling
     data = deps["agents"]() or {}
     agents_map = data.get("agents") or {}
     out: "dict[str, dict]" = {}
@@ -221,23 +249,30 @@ def build_observed(deps: dict) -> dict:
         llama_build = ""
         gpu: dict = {}
         ram: dict = {}
+        any_stale = False
+        llama_stale = False
         for prov in provider_caps:
             snap = deps["provider_snapshot"](prov, aid) or {}
             sample = snap.get("sample") or {}
             loaded[prov] = _LOADED_BY_PROVIDER[prov](sample)
             answered[prov] = _ANSWERED_BY_PROVIDER[prov](sample)
             detail[prov] = _SAMPLE_DETAIL_BY_PROVIDER[prov](sample)
-            if prov == "llama":
-                st = (sample.get("llama") or {}).get("state")
-                if st in ("awake", "sleeping"):
-                    server_state = st
-                llama_build = str((sample.get("llama") or {}).get("build") or "")[:64]
             if not gpu:
                 gpu = _sample_gpu(sample)
             if not ram:
                 ram = _sample_ram(sample)
             sat = deps["saturation"](prov, aid) or {}
             saturation[prov] = sat.get("value")
+            last_seen = snap.get("last_seen")
+            age = time.time() - float(last_seen) if last_seen else None
+            stale = age is None or age > provider_state.STALE_AFTER_S
+            any_stale = any_stale or stale
+            if prov == "llama":
+                server_state = _llama_server_state(sample)
+                llama_build = str((sample.get("llama") or {}).get("build") or "")[:64]
+                llama_stale = stale
+        if llama_stale and "llama" in answered:
+            answered["llama"] = False
         total_mb = round((gpu.get("vram_total_bytes") or 0) / 1_048_576)
         used_mb = gpu.get("vram_used_mb") or 0
         # available_bytes (not total-used) already excludes reclaimable
@@ -257,6 +292,7 @@ def build_observed(deps: dict) -> dict:
             "server_state": server_state,
             "llama_build": llama_build,
             "saturation": saturation,
+            "stale": any_stale,
         }
     # Entry-declared size_mb overrides win over discovered sizes (#474).
     sizes = dict(deps["model_sizes"]() or {})

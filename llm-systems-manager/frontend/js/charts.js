@@ -915,6 +915,57 @@ function _cleanLlamaModelName(raw) {
   return (!clean || clean.toLowerCase() === 'sleeping') ? '' : clean;
 }
 
+// Aggregate from the payload, else projected from the legacy binary state + model.
+function _llamaAggregateOf(data) {
+  const agg = data && data.aggregate;
+  if (agg) return agg;
+  const st = (data && data.state) || 'unknown';
+  const hasModel = !!_cleanLlamaModelName(data && data.model);
+  if (st === 'awake') return hasModel ? 'active' : 'idle';
+  if (st === 'sleeping') return 'sleeping';
+  return 'off';
+}
+
+// Power pill + ⋯ menu check from the agent's arbiter snapshot (null on old agents).
+function _renderLlamaPowerPill(p, stale) {
+  const pill = document.getElementById('llamaPowerPill');
+  const btns = { performance: document.getElementById('llamaBtnPerfPerformance'),
+                 powersave: document.getElementById('llamaBtnPerfPowersave'),
+                 auto: document.getElementById('llamaBtnPerfAuto') };
+  const current = (p && p.enabled !== false)
+    ? ((p.owner === 'manual' && (p.desired || p.applied)) ? (p.desired || p.applied) : 'auto') : null;
+  Object.keys(btns).forEach((k) => { if (btns[k]) btns[k].classList.toggle('is-current', k === current); });
+  if (!pill) return;
+  if (!p || typeof p !== 'object') { pill.hidden = true; return; }
+  pill.hidden = false;
+  const cap = (s) => s ? s.charAt(0).toUpperCase() + s.slice(1) : '—';
+  let cls = 'p-unloaded', text, title = '';
+  if (p.enabled === false) {
+    text = 'Power · off';
+    title = 'perf controller disabled on this agent (PERF_CONTROLLER_ENABLED)';
+  } else {
+    const applied = p.applied || null;
+    const icon = applied === 'performance' ? '⌁ ' : (applied === 'powersave' ? '☾ ' : '');
+    const owner = p.owner === 'policy' ? 'auto' : (p.owner || 'auto');
+    const words = { verified: 'verified', applied_unverifiable: 'unverifiable', failed: 'failed', deferred: 'deferred' };
+    const parts = [icon + cap(applied), owner];
+    if (p.outcome && words[p.outcome]) parts.push(words[p.outcome]);
+    if (p.desired && p.desired !== applied) parts.push('→ ' + p.desired + '…');
+    text = parts.join(' · ');
+    cls = p.outcome === 'failed' ? 'p-failed'
+      : (applied === 'performance' ? 'p-active' : (applied === 'powersave' ? 'p-sleeping' : 'p-unloaded'));
+    const checks = Array.isArray(p.readback) ? p.readback.filter((c) => c && c.actual != null) : [];
+    title = checks.length
+      ? checks.map((c) => `${c.label}: ${c.actual}${c.ok ? ' ✓' : ' ✗ (want ' + c.expected + ')'}`).join('\n')
+      : (p.governor ? `cpu governor: ${p.governor}` : 'nothing to read back on this host');
+    if (p.error) title += (title ? '\n' : '') + p.error;
+    if (p.mode === 'observe') { title += (title ? '\n' : '') + 'observe mode: reported, never switched'; }
+  }
+  pill.className = `mc-pill ${cls} llm-sec-pill` + (stale ? ' is-stale' : '');
+  pill.textContent = text;
+  pill.title = title;
+}
+
 function _applyLlamaStatePayload(data) {
   if (!data || typeof data !== 'object') return;
   const state = data.state || 'unknown';
@@ -927,9 +978,13 @@ function _applyLlamaStatePayload(data) {
   const text   = document.getElementById('serverStateText');
   if (!banner || !icon || !text) return;
 
-    banner.className = `state-banner state-${state}`;
+    const agg = _llamaAggregateOf(data);
+    banner.className = `state-banner state-${agg}` + (data.stale ? ' is-stale' : '');
+    banner.title = data.stale
+      ? `stale · ${data.age_s != null ? Math.round(data.age_s) + 's' : 'no recent sample'}`
+      : '';
 
-    const isLlamaUp = (state === 'awake' || state === 'sleeping');
+    const isLlamaUp = (agg !== 'off' && agg !== 'unknown');
     // The LLM Control badge says "Agent" — it must reflect whether the
     // llm-systems-agent process is reporting, not whether llama-server
     // is up. Conflating them showed "Agent offline" whenever
@@ -958,35 +1013,24 @@ function _applyLlamaStatePayload(data) {
       }
     }
 
-    if (state === 'awake') {
+    _renderLlamaPowerPill(data.power, !!data.stale);
+
+    // Five-state pill: active/loading/sleeping carry the model name, idle and
+    // off do not.
+    const _aggLabels = { active: 'Active', loading: 'Loading', sleeping: 'Sleeping' };
+    if (_aggLabels[agg]) {
+      icon.textContent = agg === 'active' ? '●' : '◌';
+      text.textContent = 'LLCPP · ' + _aggLabels[agg] + (_pillModelName ? ' · ' + _pillModelName : '');
+    } else if (agg === 'idle') {
       icon.textContent = '●';
-      if (_pillModelName) {
-        text.textContent = 'LLCPP · Active · ' + _pillModelName;
-      } else {
-        // Server up, no model loaded — muted tone, same as the LMS/vLLM pills
-        banner.className = 'state-banner state-sleeping';
-        text.textContent = 'LLCPP · no model loaded';
-      }
-    } else if (state === 'sleeping') {
-      if (_pillModelName) {
-        // Model was loaded when server entered idle/sleep
-        banner.className = 'state-banner state-sleeping';
-        icon.textContent = '◌';
-        text.textContent = 'LLCPP · Sleeping · ' + _pillModelName;
-      } else {
-        // Server up, no model loaded — muted tone, same as the LMS/vLLM pills
-        banner.className = 'state-banner state-sleeping';
-        icon.textContent = '●';
-        text.textContent = 'LLCPP · no model loaded';
-      }
+      text.textContent = 'LLCPP · Idle';
     } else {
       icon.textContent = '○';
       text.textContent = 'LLCPP · Off';
     }
 
     // Enable/disable llama.cpp server control buttons based on state
-    const llamaUp = (state === 'awake' || state === 'sleeping');
-    _setLlamaBtns(llamaUp);
+    _setLlamaBtns(isLlamaUp);
 
     // On wake transition — refresh metrics and LLM tab model cards
     if (_lastKnownState === 'sleeping' && state === 'awake') {

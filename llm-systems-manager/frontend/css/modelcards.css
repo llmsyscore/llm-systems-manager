@@ -49,8 +49,13 @@
 .mc-menu button { display: flex; width: 100%; align-items: center; gap: 8px; white-space: nowrap; background: none; border: 0; color: var(--fg-muted); font-family: var(--font-sans); font-size: 12.5px; font-weight: 500; padding: 7px 10px; border-radius: 5px; cursor: pointer; text-align: left; }
 .mc-menu button:hover { background: var(--bg-card-alt); color: var(--fg); }
 .mc-menu button.danger { color: var(--crit); }
+.mc-menu button.is-current { color: var(--fg); }
+.mc-menu button.is-current::after { content: "✓"; margin-left: auto; padding-left: 10px; color: var(--ok); }
+.mc-pill.p-failed { color: var(--crit); background: color-mix(in srgb, var(--crit) 12%, transparent); border: 1px solid color-mix(in srgb, var(--crit) 28%, transparent); }
+.mc-pill.is-stale { opacity: 0.55; filter: saturate(0.6); }
 .mc-menu button.danger:hover { background: color-mix(in srgb, var(--crit) 12%, transparent); }
 .mc-menu hr { border: 0; border-top: 1px solid var(--border-soft); margin: 4px 2px; }
+.mc-menu .mc-menu-sec { font-size: 10px; font-weight: 600; letter-spacing: .08em; text-transform: uppercase; color: var(--fg-dim); padding: 6px 10px 2px; }
 
 /* ---------- card view ---------- */
 .mc-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(340px, 1fr)); gap: 14px; }
@@ -258,6 +263,7 @@
 .llm-section.mc-sec-ghost { opacity: .4; }
 .llm-sec-pill { margin-left: auto; text-transform: none; letter-spacing: .02em; cursor: default; }
 .llm-sec-pill + .llm-collapse-icon { margin-left: 10px; }
+.llm-sec-pill + .llm-sec-pill { margin-left: 8px; }
 .llm-sec-hint { margin-left: auto; color: var(--fg-faint); font-weight: 400; text-transform: none; letter-spacing: 0; font-size: 0.95em; cursor: default; }
 .llm-sec-hint:not(:empty) + .llm-collapse-icon { margin-left: 10px; }
 .llm-sec-hint:empty { display: none; }

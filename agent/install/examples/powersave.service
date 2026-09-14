@@ -1,14 +1,16 @@
 # =============================================================================
 # powersave.service — LLM Systems "idle" profile
 # =============================================================================
-# Activated by the agent's perf controller when llama-server enters its
-# sleeping state:
+# Activated by the agent's power arbiter when no model on this host is loading or loaded-awake:
 #     sudo systemctl reload-or-restart powersave
 #
 # This is a STARTING POINT. Tune it for your hardware:
 #   • CPU governor                  — already set below (default: powersave)
 #   • GPU power limit               — uncomment + tune for AMD/NVIDIA
 #   • Cooling                       — uncomment to spin fans down
+#
+# After each switch the agent reads back every `echo VALUE > sysfs-path` and
+# `nvidia-smi -pl/-pm` line below to grade the switch verified / failed.
 #
 # Two ways to extend without editing this file:
 #   1. Drop a snippet at /etc/systemd/system/powersave.service.d/override.conf
@@ -22,7 +24,6 @@ Description=LLM Systems powersave profile (CPU governor + accelerators)
 Documentation=https://github.com/llmsyscore/llm-systems-manager
 DefaultDependencies=no
 After=multi-user.target
-ConditionPathExists=/sys/devices/system/cpu/cpu0/cpufreq/scaling_governor
 
 [Service]
 Type=oneshot

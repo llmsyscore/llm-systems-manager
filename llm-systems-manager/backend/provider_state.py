@@ -69,12 +69,17 @@ class _ProviderSampleStore:
         self._async_subscribers: dict[str, dict[str, list[tuple]]] = {}
 
     # ── sample I/O ──────────────────────────────────────────────────
-    def put(self, provider: str, agent_id: str, sample: dict) -> None:
+    def put(self, provider: str, agent_id: str, sample: dict,
+            touch: bool = True) -> None:
+        """touch=False keeps the previous last_seen (0.0 when never pushed), so a
+        manager-side pull refreshes the sample without faking agent liveness."""
         with self._lock:
-            self._samples.setdefault(provider, {})[agent_id] = {
-                "sample": sample,
-                "last_seen": time.time(),
-            }
+            bucket = self._samples.setdefault(provider, {})
+            if touch:
+                last_seen = time.time()
+            else:
+                last_seen = float((bucket.get(agent_id) or {}).get("last_seen") or 0.0)
+            bucket[agent_id] = {"sample": sample, "last_seen": last_seen}
 
     def get(self, provider: str, agent_id: str) -> dict | None:
         with self._lock:
@@ -218,6 +223,16 @@ class _ProviderSampleStore:
 
 
 STORE = _ProviderSampleStore()
+
+STALE_AFTER_S = 15.0
+
+
+def age_of(wrap: "dict | None", now: "float | None" = None) -> "float | None":
+    """Seconds since the wrapper's last_seen; None when never seen."""
+    last = float((wrap or {}).get("last_seen") or 0.0)
+    if not last:
+        return None
+    return max(0.0, (now if now is not None else time.time()) - last)
 
 
 def llama_port_for(agent_id: "str | None", default: int = 8080) -> int:

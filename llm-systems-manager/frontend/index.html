@@ -55,9 +55,9 @@ Backend API endpoints consumed:
   <script src="/static/vendor/xterm.min.js?v=5.3.0"></script>
   <script src="/static/vendor/xterm-addon-fit.min.js?v=0.8.0"></script>
   <link rel="stylesheet" href="/static/css/fonts.css?v=2026.08.30-1">
-  <link rel="stylesheet" href="/static/css/base.css?v=2026.09.11-2">
+  <link rel="stylesheet" href="/static/css/base.css?v=2026.09.14-1">
   <link rel="stylesheet" href="/static/css/settings.css?v=2026.09.04-2">
-  <link rel="stylesheet" href="/static/css/modelcards.css?v=2026.09.09-4">
+  <link rel="stylesheet" href="/static/css/modelcards.css?v=2026.09.14-5">
   <link rel="stylesheet" href="/static/css/reportcard.css?v=2026.09.09-1">
   <link rel="stylesheet" href="/static/css/tools.css?v=2026.09.09-3">
   <link rel="stylesheet" href="/static/css/autotune.css?v=2026.09.10-4">
@@ -405,6 +405,7 @@ Backend API endpoints consumed:
   <div class="llm-section collapsed" id="secLlamaCtrl">
     <div class="llm-section-title" onclick="toggleSection('secLlamaCtrl')">Llama Server Control
       <span class="mc-pill p-unloaded llm-sec-pill" id="llamaServerStatus" onclick="event.stopPropagation();">—</span>
+      <span class="mc-pill p-unloaded llm-sec-pill" id="llamaPowerPill" onclick="event.stopPropagation();" hidden>—</span>
       <span class="llm-collapse-icon">▾</span>
       <span class="llm-drag" title="Drag to reorder" onclick="event.stopPropagation();">⠿</span>
     </div>
@@ -422,9 +423,12 @@ Backend API endpoints consumed:
       <div class="mc-menuwrap">
         <button class="mcbtn mcbtn-ghost mcbtn-sm mc-menubtn" aria-label="More actions">⋯</button>
         <div class="mc-menu">
-          <button id="llamaBtnPerfPerformance" onclick="serverPerfMode('performance')" title="Force the llama agent host's CPU governor / fan profile to PERFORMANCE (sudo systemctl restart performance)"><span class="mi">⌁</span>Performance mode</button>
-          <button id="llamaBtnPerfPowersave" onclick="serverPerfMode('powersave')" title="Force the llama agent host's CPU governor / fan profile to POWERSAVE (sudo systemctl restart powersave)"><span class="mi">☾</span>Powersave mode</button>
+          <div class="mc-menu-sec">Power</div>
+          <button id="llamaBtnPerfAuto" onclick="serverPerfMode('auto')" title="Release the manual hold; the host follows the residency policy"><span class="mi">⟳</span>Auto (policy)</button>
+          <button id="llamaBtnPerfPerformance" onclick="serverPerfMode('performance')" title="Hold the agent host in the PERFORMANCE profile until the next model load/unload/sleep/wake (or Auto)"><span class="mi">⌁</span>Performance mode</button>
+          <button id="llamaBtnPerfPowersave" onclick="serverPerfMode('powersave')" title="Hold the agent host in the POWERSAVE profile until the next model load/unload/sleep/wake (or Auto)"><span class="mi">☾</span>Powersave mode</button>
           <hr>
+          <div class="mc-menu-sec">Llama server</div>
           <button onclick="openServerConfig()"><span class="mi">⚙</span>Server config</button>
           <button id="llamaBtnBuild" onclick="startLlamaBuild()" title="Rebuild llama.cpp from source"><span class="mi">↑</span>Update llama.cpp</button>
         </div>
@@ -2600,13 +2604,13 @@ Measurements are the newest Benchmark · Live run per host. A run older than the
 <script src="/static/js/lib/tower-view.js?v=2026.09.14-1"></script>
 <script src="/static/js/lib/energy.js?v=2026.08.26-1"></script>
 <script src="/static/js/lib/overall-view.js?v=2026.09.01-1"></script>
-<script src="/static/js/charts.js?v=2026.09.04-12"></script>
+<script src="/static/js/charts.js?v=2026.09.14-4"></script>
 <script src="/static/js/terminal.js?v=2026.09.04-1"></script>
-<script src="/static/js/llmcontrol.js?v=2026.09.04-1"></script>
+<script src="/static/js/llmcontrol.js?v=2026.09.14-5"></script>
 <script src="/static/js/sections.js?v=2026.08.30-3"></script>
 <script src="/static/js/openclaw.js?v=2026.08.03-1"></script>
 <script src="/static/js/admin.js?v=2026.09.11-5"></script>
-<script src="/static/js/admin-agents.js?v=2026.09.10-1"></script>
+<script src="/static/js/admin-agents.js?v=2026.09.14-1"></script>
 <script src="/static/js/admin-health.js?v=2026.09.04-2"></script>
 <script src="/static/js/admin-gateway.js?v=2026.09.04-2"></script>
 <script src="/static/js/admin-audit.js?v=2026.09.03-8"></script>
