@@ -402,7 +402,6 @@ def register_routes(app, ctx, *, runs, registry_factory: Callable[[], dict], dep
         if not runs.store.claim_insight(iid):
             return jsonify({"ok": False, "error": "not open"}), 409
         res = {"ok": False, "message": "failed", "steps": []}
-        status = row["status"]
         try:
             res = run_steps(row["steps"], safe=pb.safe, registry=registry, cfg=cfg, role=role)
         finally:
