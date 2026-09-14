@@ -8,8 +8,6 @@ import time
 import types
 from pathlib import Path
 
-import pytest
-
 _AGENT_ROOT = Path(__file__).resolve().parent.parent
 _PY = _AGENT_ROOT / "providers" / "power_arbiter.py"
 

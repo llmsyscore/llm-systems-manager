@@ -40,7 +40,7 @@ def _fresh_collector(llama, monkeypatch):
     for name, val in (("_llama_info_cache", {}), ("_llama_info_last_poll", 0.0),
                       ("_llama_info_last_active_ts", 0.0), ("_llama_info_last_tokens_total", None),
                       ("_llama_info_last_loaded_model", None), ("_llama_info_idle_logged", False),
-                      ("_llama_build_last", ""), ("_llama_main_pid_last", None),
+                      ("_llama_build_last", ""), ("_llama_main_pid", {"last": None}),
                       ("_residency_inputs", {"models": [], "server": "unknown", "ts": 0.0})):
         monkeypatch.setattr(llama, name, val)
     _PID["pid"] = 1

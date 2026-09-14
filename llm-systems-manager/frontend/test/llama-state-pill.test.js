@@ -95,10 +95,12 @@ function bootPerf(selected, reply) {
   const body = reply || { ok: true, outcome: 'verified', owner: 'manual', applied: 'performance' };
   const stubs = `
     window.__urls = [];
-    window._selectedAgent = ${selected === undefined ? 'undefined' : `() => ${JSON.stringify(selected)}`};
     window.fetch = (u) => { window.__urls.push(String(u));
-      return Promise.resolve({ json: () => Promise.resolve(${JSON.stringify(body)}) }); };`;
-  return runHarness({ sources: [stubs, src, 'window.serverPerfMode = serverPerfMode;'], bodyHtml: PERF_BODY });
+      return Promise.resolve({ json: () => Promise.resolve(window.__reply) }); };`;
+  const w = runHarness({ sources: [stubs, src, 'window.serverPerfMode = serverPerfMode;'], bodyHtml: PERF_BODY });
+  w.__reply = JSON.parse(JSON.stringify(body));
+  if (selected !== undefined) w._selectedAgent = () => selected;
+  return w;
 }
 
 describe('serverPerfMode toasts (#966)', () => {

@@ -174,7 +174,7 @@ def test_reconcile_now_is_coalesced_and_invalidates_the_probe_cache(llama, monke
     hits = []
     llama.set_reconcile_hook(lambda: hits.append(1))
     llama._llama_info_last_poll = 12345.0
-    llama._reconcile_last = 0.0
+    llama._reconcile_mark["last"] = 0.0
     llama.reconcile_now()
     llama.reconcile_now()
     assert hits == [1] and llama._llama_info_last_poll == 0.0
@@ -240,9 +240,9 @@ def test_failed_props_skips_metrics_and_slots(llama, monkeypatch):
 def test_props_bind_to_the_reported_model_not_the_first_probed(llama, monkeypatch):
     body = {"data": [{"id": "a", "status": {"value": "loaded"}},
                      {"id": "b", "status": {"value": "loaded"}}]}
-    ctx, calls = _wire(llama, monkeypatch, body,
-                       {"a": {"is_sleeping": True, "total_slots": 1},
-                        "b": {"is_sleeping": False, "total_slots": 8}})
+    _ctx, calls = _wire(llama, monkeypatch, body,
+                        {"a": {"is_sleeping": True, "total_slots": 1},
+                         "b": {"is_sleeping": False, "total_slots": 8}})
     sample = llama.collect_llama_for_metrics()
     assert sample["model"] == "b"
     assert sample["is_sleeping"] is False and sample["sleeping"] is False
@@ -337,7 +337,7 @@ def test_sse_status_applies_delta_and_triggers_reconcile(llama, monkeypatch):
     monkeypatch.setattr(llama, "_require_ctx", lambda: ctx)
     hits = []
     llama.set_reconcile_hook(lambda: hits.append(1))
-    llama._reconcile_last = 0.0
+    llama._reconcile_mark["last"] = 0.0
     llama._llama_sse_apply_status({"model": "a", "status": "sleeping"})
     assert ctx.state["residency"]["aggregate"] == "sleeping"
     assert ctx.state["residency"]["source"] == "sse" and hits == [1]
@@ -349,7 +349,7 @@ def test_sse_reload_events_force_rebootstrap(llama, monkeypatch):
     monkeypatch.setattr(llama, "_require_ctx", lambda: ctx)
     hits = []
     llama.set_reconcile_hook(lambda: hits.append(1))
-    llama._reconcile_last = 0.0
+    llama._reconcile_mark["last"] = 0.0
     llama._llama_sse_on_event("models_reload", {"model": "*"})
     assert hits == [1]
 

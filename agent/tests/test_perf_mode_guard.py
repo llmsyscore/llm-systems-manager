@@ -55,7 +55,7 @@ def _wire(llama, monkeypatch, arb):
     monkeypatch.setattr(llama.power_arbiter, "get", lambda: arb)
     hits = []
     llama.set_reconcile_hook(lambda: hits.append(1))
-    llama._reconcile_last = 0.0
+    llama._reconcile_mark["last"] = 0.0
     return ctx, hits
 
 

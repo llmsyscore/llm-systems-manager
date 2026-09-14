@@ -82,8 +82,8 @@ _llama_build_last: str = ""
 # Last llama /v1/models probe, folded into HostResidency by the collector tick.
 _residency_inputs: dict[str, Any] = {"models": [], "server": "unknown", "ts": 0.0}
 _reconcile_hook: "Optional[Callable[[], None]]" = None
-_reconcile_last: float = 0.0
-_llama_main_pid_last: "Optional[int]" = None
+_reconcile_mark = {"last": 0.0}
+_llama_main_pid = {"last": None}
 
 # /models/sse listener (router mode); feeds the llama_sse snapshot.
 _llama_sse_listener: "Optional[llama_sse.LlamaSseListener]" = None
@@ -241,11 +241,11 @@ def set_reconcile_hook(fn: "Optional[Callable[[], None]]") -> None:
 
 def reconcile_now() -> None:
     """Ask the collector for an early tick (coalesced to once per second)."""
-    global _reconcile_last, _llama_info_last_poll
+    global _llama_info_last_poll
     now = time.monotonic()
-    if now - _reconcile_last < 1.0:
+    if now - _reconcile_mark["last"] < 1.0:
         return
-    _reconcile_last = now
+    _reconcile_mark["last"] = now
     _llama_info_last_poll = 0.0
     if _reconcile_hook is not None:
         with best_effort("reconcile_now hook", log=log):
@@ -307,7 +307,7 @@ def collect_llama_for_metrics() -> dict[str, Any]:
 
     global _llama_info_cache, _llama_info_last_poll
     global _llama_info_last_active_ts, _llama_info_last_tokens_total
-    global _llama_info_last_loaded_model, _llama_main_pid_last
+    global _llama_info_last_loaded_model
     global _llama_info_idle_logged, _llama_build_last
 
     now = time.time()
@@ -318,11 +318,11 @@ def collect_llama_for_metrics() -> dict[str, Any]:
     _llama_info_last_poll = now
 
     pid = _llama_unit_main_pid()
-    if pid != _llama_main_pid_last:
-        if _llama_main_pid_last is not None:
-            log.info("llama unit MainPID %s -> %s; re-probing", _llama_main_pid_last, pid)
+    if pid != _llama_main_pid["last"]:
+        if _llama_main_pid["last"] is not None:
+            log.info("llama unit MainPID %s -> %s; re-probing", _llama_main_pid["last"], pid)
             _llama_info_last_loaded_model = None
-        _llama_main_pid_last = pid
+        _llama_main_pid["last"] = pid
 
     api_base = _require_ctx().config.LLAMA_API_URL.rstrip("/")
 

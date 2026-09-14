@@ -19,7 +19,6 @@ OUTCOME_DEFERRED = "deferred"
 PROFILES = ("performance", "powersave")
 OWNERS = ("job", "manual", "policy")
 HOLD = "hold"
-_RANK = {"job": 0, "manual": 1, "policy": 2}
 _RETRY_S = (5.0, 15.0, 60.0)
 _SIM_STEP = 0.2
 _SIM_REAL_WAIT = 0.05
@@ -391,7 +390,7 @@ class PowerArbiter:
             try:
                 os.unlink(tmp)
             except OSError:
-                pass
+                self._log.debug("power: temp record %s already gone", tmp)
 
 
 # ── module singleton ─────────────────────────────────────────────────

@@ -74,7 +74,7 @@ except ImportError:
                 fh.write(content)
         tmp.replace(p)
 
-VERSION = "v2026.09.14-4"
+VERSION = "v2026.09.14-5"
 
 # LMS ps busy-status substrings, mirroring manager energy.LMS_BUSY_MARKERS;
 # transitional states (LOADING/UNLOADING/DOWNLOADING) are not busy (#619).
@@ -2543,12 +2543,12 @@ def log_watch_loop() -> None:
 
 
 _collector_wake = threading.Event()
-_residency_prev: Optional[dict] = None
+_residency_prev: dict[str, Optional[dict]] = {"res": None}
 
 
 def _reconcile_residency(sample: dict[str, Any]) -> dict[str, Any]:
     """Fold every provider's inputs into one HostResidency; drive the arbiter."""
-    global _residency_prev
+    prev = _residency_prev["res"]
     models: list[dict] = []
     servers: dict[str, str] = {}
     if CONFIG.LLAMA_ENABLED:
@@ -2557,14 +2557,14 @@ def _reconcile_residency(sample: dict[str, Any]) -> dict[str, Any]:
         m, s = providers.vllm.residency_inputs(); models += m; servers["vllm"] = s
     if CONFIG.LMS_ENABLED:
         m, s = providers.lms.residency_inputs(); models += m; servers["lms"] = s
-    res = residency.reconcile(_residency_prev, models=models, servers=servers, ts=time.time(),
+    res = residency.reconcile(prev, models=models, servers=servers, ts=time.time(),
                               unknown_ticks_max=int(CONFIG.POWER_UNKNOWN_TICKS))
-    for key in residency.changed_models(_residency_prev, res):
+    for key in residency.changed_models(prev, res):
         logger.info("residency: %s -> %s", key,
                     next((m["status"] for m in res["models"] if f"{m['provider']}:{m['model_id']}" == key), "gone"))
-    if _residency_prev and _residency_prev.get("aggregate") != res["aggregate"]:
-        logger.info("residency: host %s -> %s", _residency_prev.get("aggregate"), res["aggregate"])
-    _residency_prev = res
+    if prev and prev.get("aggregate") != res["aggregate"]:
+        logger.info("residency: host %s -> %s", prev.get("aggregate"), res["aggregate"])
+    _residency_prev["res"] = res
     with _runtime_lock:
         _state["residency"] = res
     arb = power_arbiter.get()

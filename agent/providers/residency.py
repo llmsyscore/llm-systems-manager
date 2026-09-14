@@ -12,8 +12,6 @@ PROFILE_PERFORMANCE = "performance"
 PROFILE_POWERSAVE = "powersave"
 HOLD = "hold"
 
-_RESIDENT = ("loading", "loaded", "sleeping")
-
 
 def model_entry(provider: str, model_id: str, status: str, ts: float) -> dict[str, Any]:
     st = status if status in STATUSES else "unknown"

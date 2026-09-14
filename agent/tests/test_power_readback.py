@@ -84,7 +84,6 @@ def _rb(host, units=None):
 
 
 def _amd(level, profile_idx):
-    star = {"2": "*", "5": ""}
     return {
         "/sys/class/drm/card1/device/power_dpm_force_performance_level": level + "\n",
         "/sys/class/drm/card1/device/pp_power_profile_mode": PROFILE_TABLE.format(
