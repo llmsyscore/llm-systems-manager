@@ -81,8 +81,21 @@ def test_disabled_routes_404(client):
 
 def test_state_reports_model_and_tiers(client):
     d = client.get("/api/tower/state").get_json()
-    assert d["ok"] and d["enabled"] and d["model"] == "qwen3-14b" and d["provider"] == "llama"
-    assert d["capabilities"] == "read" and d["off_topic"] == "refuse" and d["insights_new"] == 0
+    assert d["enabled"] is True and d["model"] == "qwen3-14b" and d["provider"] == "llama"
+    assert d["capabilities"] == "read" and d["off_topic"] == "refuse" and d["insights_new"] == 0 and d["latest_insight"] is None
+    iid = M._tower_runs.store.create_insight({"alert_id": "a1", "rule": "GPU hot", "host": "box", "severity": "critical", "summary": "hot"})
+    d = client.get("/api/tower/state").get_json()
+    assert d["insights_new"] == 1 and d["latest_insight"] == {"id": iid, "rule": "GPU hot", "host": "box", "severity": "critical",
+                                                              "summary": "hot", "created": d["latest_insight"]["created"]}
+    assert d["insights_rev"] == d["latest_insight"]["created"]
+    assert M._tower_runs.store.claim_insight(iid)
+    assert M._tower_runs.store.set_insight_status(iid, "applied", applied_by="tower via alarm a1", allow=("applying",))
+    d2 = client.get("/api/tower/state").get_json()
+    assert d2["insights_new"] == 1 and d2["latest_insight"]["id"] == iid and d2["insights_rev"] > d["insights_rev"]
+    assert client.get("/api/tower/insights").get_json()["new"] == 1                      # applied but not yet seen
+    client.post("/api/tower/insights/seen")
+    d3 = client.get("/api/tower/state").get_json()
+    assert d3["insights_new"] == 0 and d3["latest_insight"] is None and M._tower_runs.store.get_insight(iid)["status"] == "applied"
 
 
 def test_threads_are_scoped_to_the_session_user(client):
@@ -518,3 +531,131 @@ def test_tower_report_violation_survives_a_dead_alarm_engine(monkeypatch):
     M._tower_report_violation({"actor": "alice", "role": "admin", "thread_id": "t1", "run_id": "r1",
                                "source": "model", "tool": "alarms", "excerpt": "x"})
     assert len(rows) == 1
+
+
+_LIVE = {"a1": {"id": "a1", "rule": "llama-server asleep", "message": "idle", "host": "box", "status": "active"},
+         "a3": {"id": "a3", "rule": "llama-server unhealthy", "message": "not responding", "host": "box", "status": "active"},
+         "a3b": {"id": "a3b", "rule": "llama-server unhealthy", "message": "not responding", "host": "box", "status": "active"}}
+
+
+def _insight(**over):
+    row = {"alert_id": "a1", "rule": "llama-server asleep", "host": "box", "severity": "warning", "summary": "asleep",
+           "playbook_id": "wake_llama", "playbook_title": "Wake llama-server", "playbook_safe": True,
+           "steps": [["wake_server", {"host": "box"}]]}
+    row.update(over)
+    return M._tower_runs.store.create_insight(row)
+
+
+def test_insight_routes_list_seen_dismiss(client):
+    iid = _insight()
+    d = client.get("/api/tower/insights").get_json()
+    assert d["ok"] and d["new"] == 1 and d["insights"][0]["id"] == iid and d["insights"][0]["steps"] == [["wake_server", {"host": "box"}]]
+    assert client.post("/api/tower/insights/seen").get_json() == {"ok": True, "seen": 1}
+    assert client.get("/api/tower/state").get_json()["insights_new"] == 0
+    assert client.post("/api/tower/insights/nope/dismiss").status_code == 404
+    assert client.post(f"/api/tower/insights/{iid}/dismiss").get_json() == {"ok": True}
+    assert client.post(f"/api/tower/insights/{iid}/dismiss").status_code == 409
+    applied = _insight(alert_id="a3", status="applied")
+    assert client.post(f"/api/tower/insights/{applied}/dismiss").get_json() == {"ok": True}      # applied cards can go
+    running = _insight(alert_id="a4")
+    assert M._tower_runs.store.claim_insight(running)
+    assert client.post(f"/api/tower/insights/{running}/dismiss").status_code == 409             # not while applying
+    _insight(alert_id="a2"); _insight(alert_id="a5", status="applied")
+    assert client.post("/api/tower/insights/dismiss_all").get_json() == {"ok": True, "dismissed": 2}
+    settings.manager.tower.enabled = False
+    assert client.get("/api/tower/insights").status_code == 404
+
+
+def test_insight_apply_rechecks_tier_role_and_alert_runs_once_and_audits(client, monkeypatch):
+    calls = []
+    monkeypatch.setitem(M._tower_deps, "wake", lambda h: (calls.append(h), (True, None))[1])
+    monkeypatch.setitem(M._tower_deps, "restart", lambda p, h: (True, None))
+    monkeypatch.setitem(M._tower_deps, "alert", lambda aid: _LIVE.get(aid))
+    iid = _insight()
+    assert client.post(f"/api/tower/insights/{iid}/apply").status_code == 403           # read tier
+    settings.manager.tower.capabilities = "operate"
+    assert M._tower_runs.store.claim_insight(iid)                                        # another click holds it
+    assert client.post(f"/api/tower/insights/{iid}/apply").status_code == 409 and calls == []
+    assert M._tower_runs.store.set_insight_status(iid, "new", allow=("applying",))
+    d = client.post(f"/api/tower/insights/{iid}/apply").get_json()
+    assert d["ok"] and d["status"] == "applied" and d["result"]["steps"] == [{"tool": "wake_server", "ok": True, "message": "done"}]
+    assert calls == ["box"]
+    row = M._tower_runs.store.get_insight(iid)
+    assert row["status"] == "applied" and row["applied_by"] == "tower via alice"
+    audit = M.get_db().execute("SELECT actor, action, event, target, detail FROM audit_log WHERE action='tower.playbook.apply' ORDER BY id DESC LIMIT 1").fetchone()
+    assert audit and audit[0] == "tower via alice" and audit[2] == "tower.action" and audit[3] == iid
+    assert json.loads(audit[4])["playbook"] == "wake_llama" and json.loads(audit[4])["alert_id"] == "a1"
+    r = client.post(f"/api/tower/insights/{iid}/apply")                                  # already applied
+    assert r.status_code == 409
+    audit = M.get_db().execute("SELECT actor FROM audit_log WHERE action='tower.playbook.apply' ORDER BY id DESC LIMIT 1").fetchone()
+    assert audit[0] == "tower via alice"                                                  # refusals carry the Tower actor too
+    gone = _insight(alert_id="a9")                                                        # alert closed or unknown
+    assert client.post(f"/api/tower/insights/{gone}/apply").get_json()["error"] == "stale" and calls == ["box"]
+    drift = _insight(alert_id="a1x", steps=[["restart_provider", {"provider": "llama", "host": "box"}]])
+    assert client.post(f"/api/tower/insights/{drift}/apply").status_code == 400
+    bare = _insight(alert_id="a2", playbook_id=None, playbook_title=None, playbook_safe=None, steps=[])
+    assert client.post(f"/api/tower/insights/{bare}/apply").status_code == 400
+    unsafe = _insight(alert_id="a3", playbook_id="restart_llama", playbook_title="Restart llama-server", playbook_safe=False,
+                      steps=[["restart_provider", {"provider": "llama", "host": "box"}]])
+    lying = _insight(alert_id="a3b", playbook_id="restart_llama", playbook_title="Restart llama-server", playbook_safe=True,
+                     steps=[["restart_provider", {"provider": "llama", "host": "box"}]])
+    assert client.post(f"/api/tower/insights/{unsafe}/apply").status_code == 403         # operate tier
+    settings.manager.tower.capabilities = "admin"
+    assert client.post(f"/api/tower/insights/{unsafe}/apply").status_code == 403         # operator session
+    assert client.post(f"/api/tower/insights/{lying}/apply").status_code == 403          # stored safe flag is ignored
+    with client.session_transaction() as s:
+        s["role"] = "admin"
+    assert client.post(f"/api/tower/insights/{unsafe}/apply").get_json()["status"] == "applied"
+    assert client.post("/api/tower/insights/nope/apply").status_code == 404
+
+
+def test_insight_apply_bypass_actor_matches_the_thread_routes(client, monkeypatch):
+    monkeypatch.setitem(M._tower_deps, "wake", lambda h: (True, None))
+    monkeypatch.setitem(M._tower_deps, "alert", lambda aid: _LIVE.get(aid))
+    settings.manager.tower.capabilities = "operate"
+    with client.session_transaction() as s:
+        s.pop("user", None); s["auth_ok"] = True; s["role"] = "operator"
+    iid = _insight()
+    assert client.post(f"/api/tower/insights/{iid}/apply").get_json()["status"] == "applied"
+    with client.session_transaction() as s:
+        uid = s.get("tower_uid")
+        assert uid and s.permanent is True
+    assert M._tower_runs.store.get_insight(iid)["applied_by"] == f"tower via bypass:{uid}"
+    client.post("/api/tower/threads", json={"page": {}})
+    with client.session_transaction() as s:
+        assert s.get("tower_uid") == uid                                                   # one identity for both routes
+
+
+def test_insight_apply_failure_keeps_the_insight_open_with_the_message(client, monkeypatch):
+    monkeypatch.setitem(M._tower_deps, "wake", lambda h: (False, "unknown host"))
+    monkeypatch.setitem(M._tower_deps, "alert", lambda aid: _LIVE.get(aid))
+    settings.manager.tower.capabilities = "operate"
+    iid = _insight()
+    assert client.post("/api/tower/insights/seen").status_code == 200
+    r = client.post(f"/api/tower/insights/{iid}/apply")
+    assert r.status_code == 502 and r.get_json()["result"]["message"] == "unknown host" and r.get_json()["status"] == "seen"
+    row = M._tower_runs.store.get_insight(iid)
+    assert row["status"] == "seen" and row["result"]["ok"] is False and row["applied_by"] is None
+
+
+def test_tower_audit_auto_writes_an_ok_row_and_honours_the_disabled_event(monkeypatch):
+    info = {"actor": "tower via alarm a1", "action": "tower.playbook.auto", "target": "a1", "ok": True,
+            "detail": {"playbook": "wake_llama", "alert_id": "a1", "insight_id": "i1", "steps": []}}
+    M._tower_audit_auto(info)
+    row = M.get_db().execute("SELECT actor, role, action, event, target, status, outcome, detail FROM audit_log WHERE action='tower.playbook.auto' ORDER BY id DESC LIMIT 1").fetchone()
+    assert tuple(row[:7]) == ("tower via alarm a1", "operator", "tower.playbook.auto", "tower.action", "a1", 200, "ok")
+    assert json.loads(row[7])["playbook"] == "wake_llama"
+    M._tower_audit_auto({**info, "ok": False, "target": "a2"})
+    row = M.get_db().execute("SELECT status, outcome FROM audit_log WHERE action='tower.playbook.auto' AND target='a2' ORDER BY id DESC LIMIT 1").fetchone()
+    assert tuple(row) == (502, "error")
+    before = M.get_db().execute("SELECT COUNT(*) FROM audit_log WHERE action='tower.playbook.auto'").fetchone()[0]
+    monkeypatch.setitem(M._AUDIT_CFG, "disabled", set(M._AUDIT_CFG["disabled"]) | {"tower.action"})
+    M._tower_audit_auto({**info, "target": "a3"})
+    assert M.get_db().execute("SELECT COUNT(*) FROM audit_log WHERE action='tower.playbook.auto'").fetchone()[0] == before
+
+
+def test_watcher_is_wired_to_the_manager():
+    import tower_watch
+    assert isinstance(M._tower_watcher, tower_watch.Watcher)
+    assert M._tower_watcher._audit is M._tower_audit_auto and M._tower_watcher._report_violation is M._tower_report_violation
+    assert M._tower_watcher._store is M._tower_store and M._tower_watcher._deps is M._tower_deps

@@ -191,6 +191,46 @@
     return p;
   }
 
+  function ageText(sec) {
+    const s = Math.max(0, Math.floor(Number(sec) || 0));
+    if (s < 60) return 'now';
+    if (s < 3600) return Math.floor(s / 60) + ' min';
+    if (s < 86400) return Math.floor(s / 3600) + ' h';
+    return Math.floor(s / 86400) + ' d';
+  }
+  function visibleInsights(rows) { return (rows || []).filter(r => r && r.status !== 'dismissed'); }
+  function insightsHeader(rows) {
+    const n = (rows || []).filter(r => r.status === 'new').length, a = (rows || []).filter(r => r.status === 'applied').length;
+    const parts = [];
+    if (n) parts.push(n + ' new');
+    if (a) parts.push(a + ' applied');
+    return parts.join(' · ') || String((rows || []).length);
+  }
+  // One insight card's render model; `view` is stateView() (tier + admin flag).
+  function insightView(row, view, nowS) {
+    const r = row || {}, v = view || {};
+    const applied = r.status === 'applied', running = r.status === 'applying', open = r.status === 'new' || r.status === 'seen';
+    const safe = !!r.playbook_safe, caps = v.capabilities || 'read';
+    const tierOk = safe ? (caps === 'operate' || caps === 'admin') : (caps === 'admin' && !!v.admin);
+    const title = r.playbook_title || r.playbook_id || '';
+    const res = r.result || null;
+    const at = Number((applied && r.resolved) || r.created || 0);
+    return {
+      id: r.id, alertId: r.alert_id || '', status: r.status, open, applied, running,
+      cls: applied ? 'done' : (String(r.severity || '').toLowerCase() === 'critical' ? 'crit' : ''),
+      rule: r.rule || 'Alert', host: r.host || '',
+      age: at ? ageText((nowS != null ? nowS : Date.now() / 1000) - at) : '',
+      summary: r.summary || '', detail: r.detail || '', action: r.suggested_action || '',
+      checks: Array.isArray(r.checks) ? r.checks : [],
+      title, applyLabel: open && !!r.playbook_id && tierOk ? title : null,
+      adminOnly: open && !!r.playbook_id && !safe && !tierOk,
+      appliedLine: applied ? '✓ ' + title : null,
+      appliedBy: applied ? (/^tower via alarm /.test(r.applied_by || '') ? 'auto' : String(r.applied_by || '').replace(/^tower via /, '')) : '',
+      auditActor: r.applied_by || '',
+      failed: !applied && res && res.ok === false ? String(res.message || 'failed') : null,
+    };
+  }
+
   function stateView(api) {
     const a = api || {};
     const off = !a.enabled;
@@ -200,5 +240,6 @@
              chip: a.model ? { model: a.model, provider: PROVIDER[a.provider] || a.provider || '', host: (a.hosts || [])[0] || '' } : null };
   }
 
-  return { initial, reduce, md, threadView, suggestions, pageContext, stateView, esc, PROVIDER };
+  return { initial, reduce, md, threadView, suggestions, pageContext, stateView, esc, PROVIDER,
+           ageText, insightView, insightsHeader, visibleInsights };
 });

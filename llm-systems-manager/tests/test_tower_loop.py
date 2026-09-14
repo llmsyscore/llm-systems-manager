@@ -1329,3 +1329,84 @@ def test_the_model_violation_note_joins_an_existing_note():
         {"content": tower._VIOLATION_LINE_QUIET},
     ], user_text="what is on box?")
     assert out["note"] == "retried after a length stop; rule-bypass attempt"
+
+
+def test_store_insights_one_per_alert_claims_status_moves_and_sweep():
+    st = tower.Store(":memory:")
+    iid = st.create_insight({"alert_id": "a1", "rule": "GPU hot", "host": "box", "severity": "warning",
+                             "summary": "x" * 200, "detail": "d", "playbook_id": "wake_llama", "playbook_title": "Wake llama-server",
+                             "playbook_safe": True, "steps": [["wake_server", {"host": "box"}]],
+                             "checks": [{"name": "host_detail", "summary": "read host detail · box · 8 ms", "ok": True}], "thread_id": "t1"})
+    assert iid and st.create_insight({"alert_id": "a1", "summary": "dup"}) is None
+    row = st.get_insight(iid)
+    created = row["created"]
+    assert row["status"] == "new" and len(row["summary"]) == 160 and row["playbook_safe"] is True
+    assert row["steps"] == [["wake_server", {"host": "box"}]] and row["checks"][0]["name"] == "host_detail"
+    assert st.count_insights("new") == 1 and st.latest_insight()["id"] == iid
+    assert st.list_insights()[0]["id"] == iid
+    assert st.mark_insights_seen() == 1 and st.count_insights("new") == 0 and st.latest_insight() is None
+    assert st.claim_insight(iid) is True and st.claim_insight(iid) is False       # one runner at a time
+    assert st.get_insight(iid)["status"] == "applying"
+    assert st.set_insight_status(iid, "dismissed", allow=("new", "seen", "applied")) is False   # a running apply stays
+    assert st.set_insight_status(iid, "applied", applied_by="tower via alarm a1", result={"ok": True}, allow=("applying",)) is True
+    row = st.get_insight(iid)
+    assert row["result"] == {"ok": True} and row["applied_by"] == "tower via alarm a1" and row["resolved"]
+    assert st.set_insight_status(iid, "seen") is False                              # applied never reopens
+    other = st.create_insight({"alert_id": "a5", "summary": "s"})
+    assert st.claim_insight(other)
+    st.init_tables()                                                                # a restart releases the claim
+    assert st.get_insight(other)["status"] == "new"
+    old = st.create_insight({"alert_id": "a0", "summary": "old", "created": time.time() - 40 * 86400})
+    st.sweep(30)
+    assert st.get_insight(old) is None and st.get_insight(iid) is not None
+    assert tower.insight_brief(st.get_insight(iid)) == {"id": iid, "rule": "GPU hot", "host": "box", "severity": "warning",
+                                                        "summary": "x" * 160, "created": created}
+    assert tower.insight_brief(None) is None
+    assert st.dismiss_insights() == 2                                               # the applied one and the new one
+    assert st.get_insight(iid)["status"] == "dismissed" and st.get_insight(other)["status"] == "dismissed"
+
+
+def test_store_unseen_counts_applied_insights_until_seen_and_rev_tracks_changes():
+    st = tower.Store(":memory:")
+    assert st.count_unseen() == 0 and st.latest_unseen() is None and st.insights_rev() == 0
+    iid = st.create_insight({"alert_id": "a1", "summary": "s", "created": time.time() - 5})
+    rev0 = st.insights_rev()
+    assert rev0 > 0 and st.count_unseen() == 1
+    assert st.claim_insight(iid) and st.set_insight_status(iid, "applied", applied_by="tower via alarm a1", allow=("applying",))
+    assert st.count_unseen() == 1 and st.latest_unseen()["id"] == iid and st.count_insights("new") == 0
+    assert st.insights_rev() > rev0
+    assert st.mark_insights_seen() == 1
+    row = st.get_insight(iid)
+    assert row["status"] == "applied" and row["seen_at"] and st.count_unseen() == 0 and st.latest_unseen() is None
+    assert st.mark_insights_seen() == 0
+    other = st.create_insight({"alert_id": "a2", "summary": "s2", "created": time.time() - 5})
+    rev1 = st.insights_rev()
+    assert st.mark_insights_seen() == 1 and st.get_insight(other)["status"] == "seen" and st.insights_rev() == rev1
+    time.sleep(0.01)
+    assert st.set_insight_status(other, "dismissed", allow=("seen",))
+    assert st.insights_rev() > rev1
+    assert [r["id"] for r in st.list_insights()] == [iid]                        # dismissed rows are not listed
+
+
+def test_store_list_limit_skips_dismissed_rows():
+    st = tower.Store(":memory:")
+    now = time.time()
+    keep = st.create_insight({"alert_id": "old", "summary": "s", "created": now - 100})
+    for i in range(3):
+        st.set_insight_status(st.create_insight({"alert_id": f"d{i}", "summary": "s", "created": now - i}), "dismissed")
+    assert [r["id"] for r in st.list_insights(1)] == [keep]
+
+
+def test_store_adds_seen_at_to_an_existing_insights_table(tmp_path):
+    import sqlite3
+    db = str(tmp_path / "t.db")
+    c = sqlite3.connect(db)
+    c.execute("CREATE TABLE tower_insights (id TEXT PRIMARY KEY, alert_id TEXT NOT NULL UNIQUE, rule TEXT, host TEXT, severity TEXT,"
+              " summary TEXT, detail TEXT, suggested_action TEXT, playbook_id TEXT, playbook_title TEXT, playbook_safe INTEGER,"
+              " steps TEXT, checks TEXT, thread_id TEXT, status TEXT NOT NULL, created REAL, resolved REAL, applied_by TEXT, result TEXT)")
+    c.execute("INSERT INTO tower_insights (id, alert_id, summary, status, created) VALUES ('x', 'a1', 's', 'new', 1.0)")
+    c.commit(); c.close()
+    st = tower.Store(db)
+    assert st.get_insight("x")["seen_at"] is None and st.count_unseen() == 1
+    tower.Store(db)                                                             # a second init leaves the column alone
+    assert st.mark_insights_seen() == 1 and st.get_insight("x")["seen_at"]

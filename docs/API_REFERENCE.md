@@ -1044,7 +1044,7 @@ Sends a test notification via web push (VAPID). **Body (optional):** `{"endpoint
 Opt-in assistant over the inference gateway (#924). Every route needs a dashboard session and, except `state`, answers 404 while `manager.tower.enabled` is false.
 
 ### `GET /api/tower/state`
-Returns `{enabled, admin, model, provider, hosts, capabilities, off_topic, diagnose_alarms, insights_new}`; responds 200 with `enabled: false` (no other fields) while Tower is off.
+Returns `{enabled, admin, model, provider, hosts, capabilities, off_topic, diagnose_alarms, insights_new, latest_insight, insights_rev}`; responds 200 with `enabled: false` (no other fields) while Tower is off. `insights_new` counts new or applied insights not yet seen; `latest_insight` is `{id, rule, host, severity, summary, created}` for the newest of them, or `null`; `insights_rev` is the newest insight create or resolve time, and changes whenever the list does.
 
 ---
 
@@ -1091,6 +1091,21 @@ Resolve an action card Tower raised in this user's thread. The server re-checks 
 
 ### `PUT /api/tower/model`
 **Access:** [Admin]. Pins the model Tower uses. **Body:** `{"model": "..."}`; writes `manager.tower.model` and is audited as `tower.model`.
+
+---
+
+### `GET /api/tower/insights`
+Lists Tower's insights that are not dismissed, newest first (`?limit=`, default 50, max 200) → `{insights: [{id, alert_id, rule, host, severity, summary, detail, suggested_action, playbook_id, playbook_title, playbook_safe, steps, checks, thread_id, status: new|seen|applying|applied, created, resolved, applied_by, result, seen_at}], new}`; `new` counts new or applied insights not yet seen. Insights are written by the alert watcher (`manager.tower.diagnose_alarms`): every new active alert at or above `manager.tower.min_severity` gets one read-only diagnosis (at most five reads, stopped after about a minute), and `checks` lists what it read. Insights are shared by every session.
+
+---
+
+### `POST /api/tower/insights/seen` · `POST /api/tower/insights/dismiss_all`
+`seen` marks every unseen new or applied insight seen (new ones become `seen`, applied ones stay `applied`) (the drawer calls it once the list is on screen) → `{seen}`; `dismiss_all` dismisses every new, seen or applied insight → `{dismissed}`.
+
+---
+
+### `POST /api/tower/insights/<id>/dismiss` · `POST /api/tower/insights/<id>/apply`
+`dismiss` closes one new, seen or applied insight (404 unknown, 409 `not open` while it is applying or already dismissed). `apply` runs the insight's playbook — the declarative fix the watcher matched: `wake_llama`, `reload_lms_model` (only for a model pinned to that host) and `ack_after_recovery` (only for a threshold alert whose value is back past its threshold, or a non-engine alert that reports recovery) are safe; `restart_llama` is not — through the same act tools the drawer's action cards use. The click is the approval. The server checks, in order: the playbook still exists with the same steps (400 `no playbook`); the insight is open (409 `not open`); the caller's live role and the current `capabilities` allow every step — safe playbooks need *Answer and act*, a non-safe one needs *incl. admin actions* and an admin session (403 `not allowed`); the alert is still open and still matches, re-read from the alarm engine (409 `stale`); and nothing else is applying it (409 `not open`). It then answers `{ok, status, result: {ok, message, steps: [{tool, ok, message}]}}` (502 with the same body when a step fails; the insight stays open with the failure). Audited as `tower.playbook.apply` with actor `tower via <user>` and detail `{playbook, alert_id, insight_id, steps}`. With `manager.tower.playbooks_auto` on and `capabilities` at least *Answer and act*, safe playbooks run right after the diagnosis instead, with the same alert re-check, audited as `tower.playbook.auto` with actor `tower via alarm <alert_id>`.
 
 ---
 

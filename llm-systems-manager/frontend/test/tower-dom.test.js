@@ -38,6 +38,16 @@ function boot(state, opts = {}) {
       }
       return Promise.resolve({ ok: true, json: () => Promise.resolve({ ok: true, run_id: 'r1', status: act[2] === 'approve' ? 'approved' : 'denied', tool: 'wake_server' }) });
     }
+    if (url === '/api/tower/insights') return Promise.resolve({ ok: true, json: () => Promise.resolve({ ok: true, insights: w.__insights || [], new: (w.__insights || []).filter(r => !r.seen_at && (r.status === 'new' || r.status === 'applied')).length }) });
+    if (url === '/api/tower/insights/seen') { w.__seen = (w.__seen || 0) + 1; return Promise.resolve({ ok: true, json: () => Promise.resolve({ ok: true, seen: 1 }) }); }
+    if (url === '/api/tower/insights/dismiss_all') { w.__dismissedAll = true; return Promise.resolve({ ok: true, json: () => Promise.resolve({ ok: true, dismissed: 1 }) }); }
+    const ins = url.match(/^\/api\/tower\/insights\/([^/]+)\/(apply|dismiss)$/);
+    if (ins) {
+      w.__insCalls = (w.__insCalls || []).concat([ins[2] + ' ' + ins[1]]);
+      if (ins[2] === 'apply' && w.__applyFail) return Promise.resolve({ ok: false, status: w.__applyFail, json: () => Promise.resolve({ ok: false, error: { 403: 'not allowed', 409: 'stale' }[w.__applyFail] || 'failed' }) });
+      if (ins[2] === 'apply') { w.__insights = (w.__insights || []).map(r => r.id === ins[1] ? { ...r, status: 'applied', applied_by: 'tower via alice', resolved: Date.now() / 1000 } : r); }
+      return Promise.resolve({ ok: true, json: () => Promise.resolve({ ok: true, status: 'applied', result: { ok: true, message: 'done', steps: [] } }) });
+    }
     if (url === '/api/tower/state') {
       if (w.__stateFail) return Promise.resolve({ ok: false, status: 503, json: () => Promise.resolve({}) });
       return Promise.resolve({ ok: true, json: () => Promise.resolve(w.__state) });
@@ -62,6 +72,8 @@ function boot(state, opts = {}) {
     return Promise.resolve({ ok: true, json: () => Promise.resolve({ ok: true }) });
   };
   w._activeTab = 'overall'; w._getDashSubTab = () => 'llama'; w._me = { admin_access: !!state.admin };
+  w.__toasts = []; w.showToast = (...a) => w.__toasts.push(a);
+  w.switchTab = t => { w.__tab = t; };
   w.SG = { open: (o) => { w.__sse = o; w.__sseClosed = false; return { close() { w.__sseClosed = true; } }; } };
   const inject = code => { const s = w.document.createElement('script'); s.textContent = code; w.document.body.appendChild(s); };
   inject(srcFile('js/lib/tower-view.js'));
@@ -550,5 +562,220 @@ describe('action cards', () => {
     expect(card).not.toBeNull();
     expect(card.querySelector('[data-approve]')).toBeNull();
     expect(card.querySelector('.eyebrow').textContent).toBe('Approval expired');
+  });
+});
+
+describe('insights', () => {
+  // Timestamps are taken per test: vitest loads the file long before a late test runs.
+  const nowS = () => Date.now() / 1000;
+  const mkIns = (over = {}) => ({ id: 'i1', alert_id: 'a1', rule: 'llama-server asleep', host: 'box', severity: 'warning', summary: 'asleep since 21:25',
+                                  detail: 'Idle sleep.', suggested_action: 'Wake it', status: 'new', playbook_id: 'wake_llama', playbook_title: 'Wake llama-server',
+                                  playbook_safe: true, created: nowS() - 600, checks: [{ name: 'host_detail', summary: 'read host detail · box · 8 ms', ok: true }], ...over });
+  const mkState = (created, over = {}) => ({ ...ENABLED, capabilities: 'operate', insights_new: 1, insights_rev: created,
+                                             latest_insight: { id: 'i1', rule: 'llama-server asleep', host: 'box', severity: 'warning', summary: 'asleep since 21:25', created }, ...over });
+  const QUIET = { ...ENABLED, capabilities: 'operate', insights_new: 0, insights_rev: 1 };
+  async function openWith(state, insights, opts) {
+    const w = boot(state, opts); w.__insights = insights;
+    await w.towerRefreshState(); await flush(); w.towerOpen(); await flush(); await flush(); await flush();
+    return w;
+  }
+  const $ = (w, id) => w.document.getElementById(id);
+  const onIns = w => !$(w, 'twInsView').hidden && $(w, 'twBody').hidden;
+
+  test('opening with unseen insights lands on the Insights tab: compact cards with Details, Apply and the applied line', async () => {
+    const INS = mkIns();
+    const w = await openWith(mkState(INS.created), [INS]);
+    const view = $(w, 'twInsView');
+    expect($(w, 'twTabs').hidden).toBe(false);
+    expect(onIns(w)).toBe(true);
+    expect($(w, 'twTabIns').getAttribute('aria-selected')).toBe('true');
+    expect(w.__seen).toBe(1);
+    expect($(w, 'twInsCount').hidden).toBe(true);                                        // seen once on screen
+    expect(view.querySelector('.ins-h .cnt').textContent).toBe('1 new');
+    expect(view.querySelector('.ins .rule').textContent).toBe('llama-server asleep');
+    expect(view.querySelector('.ins .age').textContent).toBe('10 min');
+    expect(view.querySelector('.ins .sum').textContent).toBe('asleep since 21:25');
+    expect(view.querySelector('[data-ins-apply]').textContent).toBe('Wake llama-server');
+    expect(view.querySelector('[data-ins-open]').textContent).toBe('Alert');
+    expect(view.querySelector('.detb')).toBeNull();
+    view.querySelector('[data-ins-det]').click(); await flush();
+    expect(view.querySelector('.detb').textContent).toContain('read host detail · box');
+    expect(view.querySelector('.detb').textContent).toContain('Wake it');
+    view.querySelector('[data-ins-apply]').click();
+    expect(view.querySelector('[data-ins="i1"] .run').textContent).toBe('Running Wake llama-server…');   // before the apply answers
+    await flush(); await flush(); await flush();
+    expect(w.__insCalls).toEqual(['apply i1']);
+    expect(view.querySelector('.ins.done .ok').textContent).toBe('✓ Wake llama-server · alice');
+    expect(view.querySelector('.ins.done .detb').textContent).toContain('Audit: tower via alice');
+    expect(view.querySelector('.ins.done [data-ins-dismiss]')).not.toBeNull();
+  });
+
+  test('opening with nothing unseen stays on the conversation; the tabs switch views', async () => {
+    const w = await openWith(QUIET, [mkIns({ status: 'seen' })]);
+    expect(onIns(w)).toBe(false);
+    expect($(w, 'twTabConv').classList.contains('on')).toBe(true);
+    expect($(w, 'twInsNote').hidden).toBe(true);
+    $(w, 'twTabIns').click(); await flush();
+    expect(onIns(w)).toBe(true);
+    expect($(w, 'twInsView').querySelectorAll('.ins')).toHaveLength(1);
+    $(w, 'twTabConv').click(); await flush();
+    expect(onIns(w)).toBe(false);
+  });
+
+  test('a new insight during a conversation shows a one-line notice; View opens the tab and highlights the card', async () => {
+    const w = await openWith(QUIET, []);
+    await ask(w, 'why is box red?');
+    w.__sse.onEvent({ event: 'delta', text: 'box is hot' });
+    w.__sse.onEvent({ event: 'done', ok: true, calls: 0 });
+    w.__insights = [mkIns()];
+    w.__state = mkState(nowS(), { insights_rev: 2 });
+    await w.towerRefreshState(); await flush(); await flush();
+    const note = $(w, 'twInsNote');
+    expect(onIns(w)).toBe(false);
+    expect(note.hidden).toBe(false);
+    expect(note.querySelector('.txt').textContent).toBe('New insight: llama-server asleep');
+    expect($(w, 'twInsCount').textContent).toBe('1');
+    expect(w.__seen || 0).toBe(0);                                                      // not seen while the conversation is on screen
+    note.querySelector('[data-ins-view]').click(); await flush();
+    expect(onIns(w)).toBe(true);
+    expect($(w, 'twInsView').querySelector('[data-ins="i1"]').classList.contains('flash')).toBe(true);
+    expect(w.__seen).toBe(1);
+    expect(note.hidden).toBe(true);
+    expect($(w, 'twInsCount').hidden).toBe(true);
+    $(w, 'twTabConv').click(); await flush();
+    expect($(w, 'twBody').querySelector('.ans').textContent).toBe('box is hot');
+    w.__state = mkState(nowS(), { insights_new: 2, insights_rev: 3 });
+    await w.towerRefreshState(); await flush(); await flush();
+    expect(note.querySelector('.txt').textContent).toBe('2 new insights · latest: llama-server asleep');
+  });
+
+  test('asking a question from the Insights tab switches back to the conversation', async () => {
+    const w = await openWith(mkState(nowS() - 600), [mkIns()]);
+    expect(onIns(w)).toBe(true);
+    await ask(w, 'why is box red?');
+    expect(onIns(w)).toBe(false);
+    expect(w.__posted.text).toBe('why is box red?');
+  });
+
+  test('read tier hides Apply; dismiss removes a card; Alert switches to Events; Dismiss all leaves the empty state', async () => {
+    const INS = mkIns();
+    const w = await openWith({ ...mkState(INS.created), capabilities: 'read' },
+                             [INS, mkIns({ id: 'i2', alert_id: 'a2' }), mkIns({ id: 'i3', alert_id: 'a3', status: 'applied', applied_by: 'tower via alarm a3' })]);
+    const view = $(w, 'twInsView');
+    expect(view.querySelector('[data-ins-apply]')).toBeNull();
+    expect(view.querySelectorAll('.ins')).toHaveLength(3);
+    expect(view.querySelector('[data-ins="i3"] .ok').textContent).toBe('✓ Wake llama-server · auto');
+    view.querySelector('[data-ins-dismiss="i1"]').click(); await flush(); await flush();
+    expect(w.__insCalls).toEqual(['dismiss i1']);
+    expect(view.querySelectorAll('.ins')).toHaveLength(2);
+    view.querySelector('[data-ins-open]').click(); await flush();
+    expect(w.__tab).toBe('events');
+    expect($(w, 'towerOverlay').classList.contains('open')).toBe(false);
+    w.towerOpen(); await flush(); await flush(); await flush();
+    $(w, 'twTabIns').click(); await flush();
+    $(w, 'twInsDismissAll').click(); await flush(); await flush();
+    expect(w.__dismissedAll).toBe(true);
+    expect(view.querySelector('.ins')).toBeNull();
+    expect(view.querySelector('.empty h3').textContent).toBe('No insights');
+  });
+
+  test('a refused apply explains on the tab and leaves the card; an applying card shows Running with no actions', async () => {
+    const INS = mkIns();
+    const w = await openWith(mkState(INS.created), [INS, mkIns({ id: 'i2', alert_id: 'a2', status: 'applying' })]);
+    w.__applyFail = 403;
+    const view = $(w, 'twInsView');
+    expect(view.querySelector('[data-ins="i2"] .run').textContent).toBe('Running Wake llama-server…');
+    expect(view.querySelector('[data-ins="i2"] [data-ins-dismiss]')).toBeNull();
+    view.querySelector('[data-ins-apply]').click(); await flush(); await flush(); await flush();
+    expect(view.querySelector('.notice').textContent).toContain('does not allow this playbook');
+    expect(view.querySelector('[data-ins-apply]')).not.toBeNull();
+    w.__applyFail = 409;
+    view.querySelector('[data-ins-apply]').click(); await flush(); await flush(); await flush();
+    expect(view.querySelector('.notice').textContent).toContain('alert changed');
+  });
+
+  test('with no chat model loaded the Insights tab still works; Tower off hides the tabs', async () => {
+    const w = await openWith({ ...mkState(nowS() - 600), model: null }, [mkIns()]);
+    expect(onIns(w)).toBe(true);
+    expect($(w, 'twInsView').querySelector('[data-ins-apply]')).not.toBeNull();
+    expect(w.__seen).toBe(1);
+    $(w, 'twTabConv').click(); await flush();
+    expect($(w, 'twBody').querySelector('.empty h3').textContent).toBe('Nothing to think with');
+    const off = await openWith({ ok: true, enabled: false, admin: true }, [mkIns()]);
+    expect($(off, 'twTabs').hidden).toBe(true);
+    expect($(off, 'twInsView').hidden).toBe(true);
+    expect($(off, 'twBody').querySelector('.on-card h3').textContent).toBe('Turn on Tower');
+  });
+
+  test('new insights count on the badge while closed; opening marks them seen; each fresh insight toasts once', async () => {
+    const w = boot(ENABLED);
+    await w.towerRefreshState(); await flush();
+    expect($(w, 'towerBadge').hidden).toBe(true);
+    w.__state = mkState(nowS() + 60);
+    await w.towerRefreshState(); await flush();
+    const badge = $(w, 'towerBadge');
+    expect(badge.hidden).toBe(false); expect(badge.textContent).toBe('1');
+    expect(w.__toasts).toHaveLength(1);
+    expect(w.__toasts[0][0]).toBe('Tower · llama-server asleep'); expect(w.__toasts[0][1]).toBe('asleep since 21:25'); expect(w.__toasts[0][2]).toBe('warning');
+    await w.towerRefreshState(); await flush();
+    expect(w.__toasts).toHaveLength(1);                    // same insight, no second toast
+    w.__state = mkState(nowS() + 60, { latest_insight: { id: 'i2', rule: 'GPU hot', host: 'box', severity: 'critical', summary: 'hot', created: nowS() + 60 } });
+    await w.towerRefreshState(); await flush();
+    expect(w.__toasts).toHaveLength(2);                    // count unchanged, but a different newest insight
+    w.__insights = [mkIns()];
+    w.towerOpen(); await flush(); await flush(); await flush();
+    expect(w.__seen).toBe(1);
+    expect(badge.hidden).toBe(true);
+  });
+
+  test('an insight that predates the page load does not toast; a reply badge and insight badge add up', async () => {
+    const w = boot(ENABLED);
+    await w.towerRefreshState(); await flush();
+    w.__state = mkState(nowS() - 600);                     // older than this page load
+    await w.towerRefreshState(); await flush();
+    expect(w.__toasts).toHaveLength(0);
+    expect($(w, 'towerBadge').textContent).toBe('1');
+    await ask(w, 'why?');                                  // sending works with the drawer closed
+    w.__sse.onEvent({ event: 'done', ok: true, calls: 0 });
+    expect($(w, 'towerBadge').textContent).toBe('2');
+  });
+
+  test('History returns to the conversation tab; a poll with a new insight shows the notice and leaves History alone', async () => {
+    const w = await openWith(mkState(nowS() - 600, { insights_new: 0, insights_rev: 1 }), [mkIns({ status: 'seen' })]);
+    $(w, 'twTabIns').click(); await flush();
+    $(w, 'twHist').click(); await flush(); await flush();
+    expect(onIns(w)).toBe(false);
+    const body = $(w, 'twBody');
+    expect(body.querySelector('.ins-h h3').textContent).toBe('History');
+    w.__insights = [mkIns({ id: 'i2', alert_id: 'a2' })]; w.__state = mkState(nowS() - 600, { insights_rev: 5 });
+    await w.towerRefreshState(); await flush(); await flush();
+    expect(body.querySelector('.ins-h h3').textContent).toBe('History');
+    expect($(w, 'twInsNote').hidden).toBe(false);
+  });
+
+  test('the Insights tab reloads when insights_rev moves even with nothing unseen (auto-applied)', async () => {
+    const w = await openWith({ ...QUIET, insights_rev: 100 }, []);
+    $(w, 'twTabIns').click(); await flush();
+    expect($(w, 'twInsView').querySelector('.empty h3').textContent).toBe('No insights');
+    w.__insights = [mkIns({ status: 'applied', applied_by: 'tower via alarm a1', resolved: nowS() })];
+    w.__state = { ...QUIET, insights_rev: 200 };
+    await w.towerRefreshState(); await flush(); await flush();
+    expect($(w, 'twInsView').querySelector('.ins.done .ok').textContent).toBe('✓ Wake llama-server · auto');
+    const loads = w.__calls.filter(c => c === 'GET /api/tower/insights').length;
+    await w.towerRefreshState(); await flush(); await flush();
+    expect(w.__calls.filter(c => c === 'GET /api/tower/insights').length).toBe(loads);   // same rev, no reload
+  });
+
+  test('no toast while on the Events tab; it shows on the next poll after leaving', async () => {
+    const w = boot(ENABLED);
+    await w.towerRefreshState(); await flush();
+    w._activeTab = 'events';
+    w.__state = mkState(nowS() + 60);
+    await w.towerRefreshState(); await flush();
+    expect(w.__toasts).toHaveLength(0);
+    w._activeTab = 'overall';
+    await w.towerRefreshState(); await flush();
+    expect(w.__toasts).toHaveLength(1);
+    expect(w.__toasts[0][0]).toBe('Tower · llama-server asleep');
   });
 });

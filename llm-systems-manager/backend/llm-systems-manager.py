@@ -176,7 +176,7 @@ def _local_hostname() -> str:
 # banner reads it. Bump suffix (-1, -2, …) for same-day iterations; roll
 # the date for a new day's first change.
 # ---------------------------------------------------------------------------
-__version__ = "v2026.09.13-4"
+__version__ = "v2026.09.14-1"
 
 # Wall-clock at first import (Cheroot main process); the shutdown banner
 # reads it for the uptime line.
@@ -209,6 +209,7 @@ import gateway_usage  # type: ignore[import-not-found]  # noqa: E402  # leaf, no
 import discord_bot  # type: ignore[import-not-found]  # noqa: E402  # leaf, no cycle; #471
 import tower        # type: ignore[import-not-found]  # noqa: E402  # leaf, no cycle; #924
 import tower_tools  # type: ignore[import-not-found]  # noqa: E402  # leaf, no cycle; #924
+import tower_watch  # type: ignore[import-not-found]  # noqa: E402  # leaf, no cycle; #924
 import companion  # type: ignore[import-not-found]  # noqa: E402  # leaf, no cycle; #522
 import export_log  # type: ignore[import-not-found]  # noqa: E402  # leaf, no cycle; #797
 import settings_catalog  # type: ignore[import-not-found]  # noqa: E402  # leaf, no cycle; #606
@@ -3376,7 +3377,7 @@ AUDIT_EVENT_GROUPS: list[dict] = [
         {"key": "tools.run", "label": "Benchmark / autotune run", "default_on": False}]},
     {"key": "tower", "title": "Tower", "events": [
         {"key": "tower.config", "label": "Model pin / thread delete", "default_on": True},
-        {"key": "tower.action", "label": "Action approved / denied", "default_on": True},
+        {"key": "tower.action", "label": "Action approved / denied / playbook applied", "default_on": True},
         {"key": "tower.violation", "label": "Rule-bypass attempt", "default_on": True}]},
 ]
 _AUDIT_EVENT_GROUP = {ev["key"]: g["key"] for g in AUDIT_EVENT_GROUPS for ev in g["events"]}
@@ -3436,6 +3437,7 @@ _AUDIT_LABELS: dict[str, str] = {
     "alarm.delete": "Deleted an alert", "alarm.rule": "Changed an alarm rule",
     "tower.model": "Pinned the Tower model", "tower.thread.delete": "Deleted a Tower thread",
     "tower.action.approve": "Approved a Tower action", "tower.action.deny": "Denied a Tower action",
+    "tower.playbook.apply": "Applied a Tower playbook", "tower.playbook.auto": "Tower applied a safe playbook",
     "tower.violation": "Tower rule-bypass attempt",
 }
 
@@ -3506,6 +3508,7 @@ _AUDIT_ROUTES: list[tuple] = [
     ("PUT",    re.compile(r"^/api/tower/model$"),                      "tower.model",        "tower.config"),
     ("DELETE", re.compile(r"^/api/tower/threads/(?P<t>[^/]+)$"),       "tower.thread.delete", "tower.config"),
     ("POST",   re.compile(r"^/api/tower/actions/(?P<t>[^/]+)/(?P<d>approve|deny)$"), "tower.action.{d}", "tower.action"),
+    ("POST",   re.compile(r"^/api/tower/insights/(?P<t>[^/]+)/apply$"), "tower.playbook.apply", "tower.action"),
 ]
 
 # Actions whose target is the model id in the JSON body, not in the path.
@@ -3565,7 +3568,7 @@ def _audit_reload_config() -> None:
         log.warning("audit config reload failed (runtime keeps previous values): %s", e)
 
 
-_AUDIT_EVENT_BY_ACTION: dict[str, str] = {"tower.violation": "tower.violation"}
+_AUDIT_EVENT_BY_ACTION: dict[str, str] = {"tower.violation": "tower.violation", "tower.playbook.auto": "tower.action"}
 
 
 def _audit_event_for(action: str) -> str:
@@ -5797,6 +5800,17 @@ def _tower_report_violation(info: dict) -> None:
         log.warning("tower violation alert failed: %s: %s", type(e).__name__, e)
 
 
+def _tower_audit_auto(info: dict) -> None:
+    """Audit row for a playbook the watcher applied on its own (no request context)."""
+    if "tower.action" in _AUDIT_CFG["disabled"]:
+        return
+    ok = bool(info.get("ok"))
+    _audit_record((datetime.now(timezone.utc).isoformat(timespec="seconds"), str(info.get("actor") or "tower"), "operator",
+                   "", "session", "POST", "tower", str(info.get("action") or "tower.playbook.auto"),
+                   str(info.get("target") or ""), 200 if ok else 502, "ok" if ok else "error",
+                   json.dumps(info.get("detail") or {}, default=str), "tower.action"))
+
+
 def _tower_stream_max_s() -> float:
     base = float(getattr(settings.manager, "stream_max_lifetime_s", 120.0) or 120.0)
     return max(base, 3.0 * float(getattr(settings.manager.tower, "request_timeout_s", 45) or 45))
@@ -5816,6 +5830,12 @@ _tower_runs = tower.Runs(_tower_store, registry_factory=lambda: tower_tools.buil
                          report_violation=_tower_report_violation)
 tower.register_routes(app, ctx, runs=_tower_runs, gateway_entries=_tower_gateway_entries,
                       write_setting=_tower_write_setting)
+_tower_registry = lambda: tower_tools.build_registry(_tower_deps)  # noqa: E731
+_tower_watcher = tower_watch.Watcher(_tower_store, deps=_tower_deps, registry_factory=_tower_registry,
+                                     complete_stream=gateway.complete_stream, entries=_tower_gateway_entries,
+                                     server_args_of=_tower_server_args, cfg=lambda: settings.manager.tower,
+                                     report_violation=_tower_report_violation, audit=_tower_audit_auto)
+tower_watch.register_routes(app, ctx, runs=_tower_runs, registry_factory=_tower_registry, deps=_tower_deps)
 
 import manager_users  # type: ignore[import-not-found]  # sibling
 manager_users.init(
@@ -8336,6 +8356,12 @@ if __name__ == "__main__":
         bench_baseline.start_thread(_bench_watcher, lambda: _shutting_down)
     except Exception as _e:
         log.warning("bench baseline watcher startup failed: %s", _e)
+
+    # Tower alert watcher (#924); idle until manager.tower.enabled and diagnose_alarms are on.
+    try:
+        tower_watch.start_thread(_tower_watcher, lambda: _shutting_down)
+    except Exception as _e:
+        log.warning("tower watcher startup failed: %s", _e)
 
     # Audit log retention purge (#794): at start, then every 24 h.
     _start_audit_purge_thread()

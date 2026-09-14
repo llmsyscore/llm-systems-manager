@@ -101,6 +101,41 @@ body.tw-docked #eventsTab, body.tw-docked #toolsTab, body.tw-docked #adminTab { 
 #towerAside .hist-empty { margin: 0; font-size: 12.5px; color: var(--fg-dim); }
 #towerAside .ins-h .lnk { margin-left: auto; background: none; border: 0; padding: 0; color: var(--accent); font: 500 11.5px var(--font-sans); cursor: pointer; }
 
+/* ---------- conversation / insights tabs ---------- */
+#towerAside .tw-tabs { display: flex; gap: 2px; padding: 2px 12px 0; border-bottom: 1px solid var(--border); flex-shrink: 0; }
+#towerAside .tw-tabs .tab { display: inline-flex; align-items: center; gap: 6px; border: 0; border-bottom: 2px solid transparent; margin-bottom: -1px; background: none; padding: 7px 8px 7px; font: 500 12.5px var(--font-sans); color: var(--fg-muted); cursor: pointer; }
+#towerAside .tw-tabs .tab:hover { color: var(--fg); }
+#towerAside .tw-tabs .tab.on { color: var(--fg); border-bottom-color: var(--accent); }
+#towerAside .tw-tabs .tab:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+#towerAside .tw-tabs .n { min-width: 16px; height: 16px; padding: 0 5px; border-radius: 8px; background: var(--warn); color: var(--bg); font: 600 10px var(--font-mono); display: inline-flex; align-items: center; justify-content: center; }
+#towerAside .tw-note { display: flex; align-items: center; gap: 8px; padding: 6px 16px; border-bottom: 1px solid var(--border-soft); background: color-mix(in srgb, var(--warn) 7%, var(--bg-card)); font-size: 12px; color: var(--fg-muted); flex-shrink: 0; }
+#towerAside .tw-note .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--warn); flex-shrink: 0; }
+#towerAside .tw-note .txt { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#towerAside .tw-note .lnk { background: none; border: 0; padding: 0; color: var(--accent); font: 500 12px var(--font-sans); cursor: pointer; flex-shrink: 0; }
+#towerAside .tw-iv { flex: 1; overflow-y: auto; padding: 12px 16px 10px; display: flex; flex-direction: column; gap: 8px; }
+
+/* ---------- insight cards ---------- */
+#towerAside .ins { border: 1px solid var(--border-strong); border-radius: 8px; padding: 8px 10px 8px 12px; display: grid; gap: 4px; position: relative; transition: border-color .3s; }
+#towerAside .ins::before { content: ""; position: absolute; left: 0; top: 8px; bottom: 8px; width: 3px; border-radius: 0 2px 2px 0; background: var(--warn); }
+#towerAside .ins.crit::before { background: var(--crit); }
+#towerAside .ins.done::before { background: var(--ok); }
+#towerAside .ins.flash { border-color: var(--accent); }
+#towerAside .ins .top { display: flex; align-items: baseline; gap: 6px; min-width: 0; }
+#towerAside .ins .rule { font-weight: 600; font-size: 12.5px; color: var(--fg); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+#towerAside .ins .host { font: 10.5px var(--font-mono); color: var(--fg-dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+#towerAside .ins .age { margin-left: auto; font: 10.5px var(--font-mono); color: var(--fg-dim); flex-shrink: 0; }
+#towerAside .ins .sum { margin: 0; font-size: 12px; line-height: 1.4; color: var(--fg-muted); display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+#towerAside .ins .acts { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-top: 2px; }
+#towerAside .ins .acts .lnk { background: none; border: 0; padding: 0; font: 500 11.5px var(--font-sans); color: var(--fg-dim); cursor: pointer; }
+#towerAside .ins .acts .lnk:hover { color: var(--fg); }
+#towerAside .ins .acts .lnk:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+#towerAside .ins .acts .ok { font: 500 11.5px var(--font-sans); color: var(--ok); margin-right: auto; }
+#towerAside .ins .acts .run { font: 500 11.5px var(--font-sans); color: var(--accent); }
+#towerAside .ins .fail { font: 11px var(--font-mono); color: var(--crit); }
+#towerAside .ins .detb { display: grid; gap: 4px; padding-left: 10px; border-left: 1px solid var(--border); margin-top: 2px; }
+#towerAside .ins .detb p { margin: 0; font-size: 12px; line-height: 1.45; color: var(--fg-muted); }
+#towerAside .ins .detb .aud { font: 10.5px var(--font-mono); color: var(--fg-dim); }
+
 /* ---------- empty / notice / enable ---------- */
 #towerAside .empty { display: grid; gap: 10px; padding: 26px 6px 10px; text-align: center; }
 #towerAside .empty h3 { margin: 0; padding: 0; border: 0; font-size: 14.5px; font-weight: 600; color: var(--fg); }
