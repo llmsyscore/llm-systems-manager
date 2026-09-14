@@ -900,7 +900,7 @@ def _maybe_sync_ae_url(ack: dict) -> None:
         logger.info("AE URL synced from manager: %s -> %s", old_ae or "(unset)", new_ae)
 
 
-_log_hb_last = 0.0
+_log_hb = {"last": 0.0}
 _register_403_last = 0.0
 _status_poll_warn_last = 0.0
 
@@ -2617,10 +2617,9 @@ def _collector_tick() -> None:
     _push_host_payload(sample)
     _push_vllm_payload(sample)
 
-    global _log_hb_last
     now = time.time()
-    if now - _log_hb_last >= 60:
-        _log_hb_last = now
+    if now - _log_hb["last"] >= 60:
+        _log_hb["last"] = now
         bm = _state.get("last_metric_sample") or {}
         sysm = bm.get("system") or {}
         tail = []

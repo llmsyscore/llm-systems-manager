@@ -107,7 +107,7 @@ def ctx(tmp_path, monkeypatch):
     llama.set_context(context)
     monkeypatch.setattr(llama, "_llama_info_last_poll", 0.0)
     monkeypatch.setattr(llama, "_llama_info_cache", {})
-    monkeypatch.setattr(llama, "_llama_info_last_loaded_model", None)
+    monkeypatch.setattr(llama, "_llama_loaded", {"last": None})
     monkeypatch.setattr(llama, "collect_gpu", lambda: {}, raising=False)
     return context
 

@@ -240,9 +240,9 @@ def test_failed_props_skips_metrics_and_slots(llama, monkeypatch):
 def test_props_bind_to_the_reported_model_not_the_first_probed(llama, monkeypatch):
     body = {"data": [{"id": "a", "status": {"value": "loaded"}},
                      {"id": "b", "status": {"value": "loaded"}}]}
-    _ctx, calls = _wire(llama, monkeypatch, body,
-                        {"a": {"is_sleeping": True, "total_slots": 1},
-                         "b": {"is_sleeping": False, "total_slots": 8}})
+    _wire(llama, monkeypatch, body,
+          {"a": {"is_sleeping": True, "total_slots": 1},
+           "b": {"is_sleeping": False, "total_slots": 8}})
     sample = llama.collect_llama_for_metrics()
     assert sample["model"] == "b"
     assert sample["is_sleeping"] is False and sample["sleeping"] is False
@@ -253,7 +253,7 @@ def test_props_bind_to_the_reported_model_not_the_first_probed(llama, monkeypatc
 
 def test_collector_returns_a_copy_so_the_cache_stays_clean(llama, monkeypatch):
     body = {"data": [{"id": "a", "status": {"value": "loaded"}}]}
-    ctx, calls = _wire(llama, monkeypatch, body, {"a": {"is_sleeping": False}})
+    _wire(llama, monkeypatch, body, {"a": {"is_sleeping": False}})
     sample = llama.collect_llama_for_metrics()
     sample["residency"] = {"injected": True}
     assert "residency" not in llama._llama_info_cache
@@ -273,7 +273,7 @@ def _tick_ns(collection_enabled, approved, state=None):
         "_runtime_lock": threading.RLock(),
         "_state": state if state is not None else {},
         "_metric_client": None,
-        "_log_hb_last": 0.0,
+        "_log_hb": {"last": 0.0},
         "logger": __import__("logging").getLogger("test"),
         "time": __import__("time"),
         "types": types,

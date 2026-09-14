@@ -75,7 +75,7 @@ _llama_info_cache: dict[str, Any] = {}
 _llama_info_last_poll: float = 0.0
 _llama_info_last_active_ts: float = 0.0
 _llama_info_last_tokens_total: "int | None" = None
-_llama_info_last_loaded_model: "str | None" = None
+_llama_loaded = {"last": None}
 _llama_info_idle_logged: bool = False
 _llama_build_last: str = ""
 
@@ -307,7 +307,6 @@ def collect_llama_for_metrics() -> dict[str, Any]:
 
     global _llama_info_cache, _llama_info_last_poll
     global _llama_info_last_active_ts, _llama_info_last_tokens_total
-    global _llama_info_last_loaded_model
     global _llama_info_idle_logged, _llama_build_last
 
     now = time.time()
@@ -321,7 +320,7 @@ def collect_llama_for_metrics() -> dict[str, Any]:
     if pid != _llama_main_pid["last"]:
         if _llama_main_pid["last"] is not None:
             log.info("llama unit MainPID %s -> %s; re-probing", _llama_main_pid["last"], pid)
-            _llama_info_last_loaded_model = None
+            _llama_loaded["last"] = None
         _llama_main_pid["last"] = pid
 
     api_base = _require_ctx().config.LLAMA_API_URL.rstrip("/")
@@ -395,18 +394,18 @@ def collect_llama_for_metrics() -> dict[str, Any]:
             model_api_sleeping = bool(first and first["status"] == "sleeping")
             if loaded_id:
                 llama["model"] = loaded_id
-                if _llama_info_last_loaded_model != loaded_id:
+                if _llama_loaded["last"] != loaded_id:
                     log.info("llama model: %s → %s%s",
-                             _llama_info_last_loaded_model or "(none)",
+                             _llama_loaded["last"] or "(none)",
                              loaded_id,
                              " (sleeping)" if model_api_sleeping else "")
-                _llama_info_last_loaded_model = loaded_id
+                _llama_loaded["last"] = loaded_id
             else:
-                if _llama_info_last_loaded_model is not None:
-                    log.info("llama model unloaded: %s", _llama_info_last_loaded_model)
+                if _llama_loaded["last"] is not None:
+                    log.info("llama model unloaded: %s", _llama_loaded["last"])
                     _llama_info_last_tokens_total = None
                     _llama_info_last_active_ts = now
-                _llama_info_last_loaded_model = None
+                _llama_loaded["last"] = None
                 if models:
                     llama["model"] = (models[0].get("id") or "") + " (unloaded)"
         else:
@@ -415,7 +414,7 @@ def collect_llama_for_metrics() -> dict[str, Any]:
         if _residency_inputs.get("server") != "down":
             log.warning("llama /v1/models unreachable: %s", e)
         _residency_inputs.update({"models": [], "server": "down", "ts": now})
-        _llama_info_last_loaded_model = None
+        _llama_loaded["last"] = None
         llama["state"] = "unknown"
         _llama_info_cache = llama
         return dict(llama)
@@ -451,8 +450,8 @@ def collect_llama_for_metrics() -> dict[str, Any]:
     # /metrics + /slots reset llama-server's sleep timer; skip while sleeping.
     if model_api_sleeping or llama.get("is_sleeping") is True:
         llama["sleeping"] = True
-        if llama["model"] is None and _llama_info_last_loaded_model:
-            llama["model"] = f"{_llama_info_last_loaded_model} (sleeping)"
+        if llama["model"] is None and _llama_loaded["last"]:
+            llama["model"] = f"{_llama_loaded["last"]} (sleeping)"
         # Emit 0 for rates so charts stay continuous; leave cumulative counters None.
         for k in (
             "tokens_per_second", "prompt_tokens_per_second",

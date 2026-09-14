@@ -47,17 +47,22 @@ class FakeLlama:
                         if fake.router:
                             e["status"] = {"value": st}
                         data.append(e)
-                    return self._json(200, {"object": "list", "data": data})
+                    self._json(200, {"object": "list", "data": data})
+                    return
                 if u.path == "/props":
                     mid = q.get("model")
                     if fake.router and not mid:
-                        return self._json(200, {"build_info": "b1"})
-                    return self._json(200, {"build_info": "b1", "total_slots": 1,
-                                            "is_sleeping": (mid or next(iter(models), "")) in asleep})
+                        self._json(200, {"build_info": "b1"})
+                        return
+                    self._json(200, {"build_info": "b1", "total_slots": 1,
+                                     "is_sleeping": (mid or next(iter(models), "")) in asleep})
+                    return
                 if u.path == "/health":
-                    return self._json(200, {"status": "ok"})
+                    self._json(200, {"status": "ok"})
+                    return
                 if u.path in ("/metrics", "/slots"):
-                    return self._json(200, [] if u.path == "/slots" else {})
+                    self._json(200, [] if u.path == "/slots" else {})
+                    return
                 if u.path == "/models/sse":
                     qq: queue.Queue = queue.Queue()
                     with fake._lock:
@@ -74,10 +79,10 @@ class FakeLlama:
                             self.wfile.flush()
                     except (BrokenPipeError, ConnectionResetError):
                         return
-                return self._json(404, {"error": "nope"})
+                self._json(404, {"error": "nope"})
 
             def do_POST(self):
-                return self._json(200, {"ok": True})
+                self._json(200, {"ok": True})
 
         self._srv = ThreadingHTTPServer(("127.0.0.1", 0), H)
         self._thread = threading.Thread(target=self._srv.serve_forever, daemon=True)
