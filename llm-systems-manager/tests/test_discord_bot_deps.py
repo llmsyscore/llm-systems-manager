@@ -188,3 +188,18 @@ def test_full_pipeline_route_then_run(deps):
     out = db.run_job(decision["job"], deps)
     desc = out["embeds"][0]["description"]
     assert "box" in desc and "mac" in desc
+
+
+def test_tower_dep_uses_the_manager_hook(monkeypatch):
+    deps = db.prod_deps(_ctx())
+    monkeypatch.setitem(db.HOOKS, "tower_ask", None)
+    assert deps["tower"]("q", "1")["error"] == "Tower is not available."
+    monkeypatch.setitem(db.HOOKS, "tower_ask", lambda q, u: {"ok": True, "text": q + u, "error": None})
+    assert deps["tower"]("q", "1")["text"] == "q1"
+
+
+def test_resume_alert_action_posts_to_the_ae(deps):
+    ok, err = deps["resume"]("a1")
+    assert ok is True and err is None
+    ok, err = deps["resume"]("missing")
+    assert ok is False and err == "alert not found"

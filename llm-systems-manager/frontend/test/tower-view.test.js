@@ -80,13 +80,15 @@ describe('threadView + suggestions + pageContext + stateView', () => {
     expect(v[1].ticks[0].summary).toBe('read host detail · box · 84 ms');
   });
   test('suggestions depend on the page', () => {
-    expect(TW.suggestions({ tab: 'overall', host: 'box' })[0]).toBe('Why is box red?');
+    expect(TW.suggestions({ tab: 'overall', host: 'box' }).slice(0, 3)).toEqual(['Activity summary for today', 'Alarm summary for today', 'Why is box red?']);
+    expect(TW.suggestions({ tab: 'events' }).slice(0, 2)).toEqual(['Alarm summary for today', 'Activity summary for today']);
+    for (const p of [{ tab: 'llm' }, { tab: 'admin' }, { tab: 'tools' }, { tab: 'dashboard', sub: 'energy' }]) expect(TW.suggestions(p)[0]).toBe('Activity summary for today');
     expect(TW.suggestions({ tab: 'overall', host: 'box' })).toContain('What hardware does box have?');
     expect(TW.suggestions({ tab: 'events' })).toContain('Summarise active alarms');
     expect(TW.suggestions({ tab: 'events' }).length).toBeGreaterThanOrEqual(5);
-    expect(TW.suggestions({ tab: 'admin' })[0]).toMatch(/alarm engine/i);
-    expect(TW.suggestions({ tab: 'tools' })[0]).toMatch(/benchmark/i);
-    expect(TW.suggestions({ tab: 'dashboard', sub: 'energy' })[0]).toMatch(/power/i);
+    expect(TW.suggestions({ tab: 'admin' })[1]).toMatch(/alarm engine/i);
+    expect(TW.suggestions({ tab: 'tools' })[1]).toMatch(/benchmark/i);
+    expect(TW.suggestions({ tab: 'dashboard', sub: 'energy' })[1]).toMatch(/power/i);
   });
   test('pageContext drops empties and caps cards', () => {
     const p = TW.pageContext({ tab: 'overall', sub: '', host: null, cards: Array.from({ length: 40 }, (_, i) => 'c' + i), alertId: 'a1' });
@@ -236,5 +238,101 @@ describe('historyGroups (#987)', () => {
     expect(g[0].rows[0].time).toBe(new Date(2026, 8, 14, 21, 41).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' }));
     expect(g[4].rows[0]).toMatchObject({ id: 'f', title: 'undated', time: '' });
     expect(TW.historyGroups([], now)).toEqual([]);
+  });
+});
+
+describe('insight snapshot + troubleshoot (#980)', () => {
+  test('sparkline maps points into the box, draws the threshold and captions the range', () => {
+    const snap = { metric: 'system/cpu_total', unit: '%', minutes: 60, points: [[0, 10], [30, 50], [60, 90]], threshold: 80 };
+    const sp = TW.sparkline(snap, 240, 36);
+    expect(sp.d).toBe('M2.0 34.0 L120.0 18.0 L238.0 2.0');
+    expect(sp.thrY).toBe(6);
+    expect(sp.caption).toBe('system/cpu_total · last 60 min · 10%–90% · threshold 80%');
+    expect(TW.sparkline({ points: [[0, 1]] })).toBeNull();
+    expect(TW.sparkline(null)).toBeNull();
+    expect(TW.sparkline({ points: [[0, 'x'], [1, null], [2, 3]] })).toBeNull();
+    const flat = TW.sparkline({ points: [[0, 5], [10, 5]], unit: 'C', minutes: 30 });
+    expect(flat.thrY).toBeNull(); expect(flat.caption).toBe('metric · last 30 min · 5 C–5 C');
+    expect(TW.sparkline({ points: [[0, 120.4], [1, 130.6]], unit: 'W' }).caption).toContain('120 W–131 W');
+    expect(TW.insightView({ id: 'i', snapshot: snap }, {}, 1).snapshot).toBe(snap);
+    expect(TW.insightView({ id: 'i', snapshot: { points: 'x' } }, {}, 1).snapshot).toBeNull();
+  });
+  test('troubleshoot title and prompt name the alert and carry the earlier read', () => {
+    const r = { rule: 'GPU hot', host: 'box', alert_id: 'a1', summary: 'GPU at 91 C' };
+    expect(TW.troubleshootTitle(r)).toBe('Troubleshoot: GPU hot · box');
+    expect(TW.troubleshootTitle({})).toBe('Troubleshoot: Alert');
+    const p = TW.troubleshootPrompt(r);
+    expect(p).toMatch(/^Troubleshoot the alert "GPU hot" on box \(alert id a1\)\. Read the alert/);
+    expect(p).toContain("Tower's earlier read: GPU at 91 C");
+    expect(TW.troubleshootPrompt({ ...r, summary: 'Not diagnosed: asleep' })).not.toContain('earlier read');
+    expect(TW.troubleshootPrompt({ rule: 'X' })).toContain('"X" (alert id ?)');
+  });
+});
+
+describe('md ordered lists (#995)', () => {
+  test('numbered lines become an ordered list, inline enumerations split one step per item', () => {
+    expect(TW.md('Steps:\n1. Check RAM\n2. Restart it\n3) Done')).toBe('<p>Steps:</p><ol><li>Check RAM</li><li>Restart it</li><li>Done</li></ol>');
+    expect(TW.md('3. third\n4. fourth')).toBe('<ol start="3"><li>third</li><li>fourth</li></ol>');
+    const inline = TW.md('**Step-by-step fix:** 1. **Verify** the spike at 98.7% today. 2. Check for loads (use `models`). 3. Restart at 10:48.');
+    expect(inline).toBe('<p><b>Step-by-step fix:</b></p><ol><li><b>Verify</b> the spike at 98.7% today.</li><li>Check for loads (use <code>models</code>).</li><li>Restart at 10:48.</li></ol>');
+    expect(TW.md('1. only one')).toBe('<ol><li>only one</li></ol>');
+    expect(TW.md('Value 98.7 exceeds 95.0 at step 2. Nothing else.')).toBe('<p>Value 98.7 exceeds 95.0 at step 2. Nothing else.</p>');
+    expect(TW.md('Version 2. then 1. one 2. two')).toBe('<p>Version 2. then</p><ol><li>one</li><li>two</li></ol>');
+  });
+});
+
+describe('history groups with Discord threads (#996)', () => {
+  test('discord conversations follow the dated groups, one group per Discord user, newest first', () => {
+    const now = Date.UTC(2026, 8, 15, 12, 0, 0);
+    const groups = TW.historyGroups([{ id: 't1', title: 'Mine', updated: now / 1000 }], now,
+      [{ id: 'd1', user: 'discord:111', title: 'why is box red?', updated: now / 1000 - 100 },
+       { id: 'd2', user: 'discord:111', title: 'and now?', updated: now / 1000 - 10 },
+       { id: 'd3', user: 'discord:222', title: 'models?', updated: now / 1000 - 5000 }]);
+    expect(groups.map(g => g.label)).toEqual(['Today', 'Discord · 111', 'Discord · 222']);
+    expect(groups[1].rows.map(r => r.id)).toEqual(['d2', 'd1']);
+    expect(groups[1].rows[0].time).toMatch(/\d/);
+    expect(TW.historyGroups([], now).length).toBe(0);
+  });
+});
+
+describe('waiting status (#1016)', () => {
+  test('a waiting status records the wait and any other event clears it', () => {
+    let s = TW.initial();
+    expect(s.wait).toBeNull();
+    s = TW.reduce(s, { event: 'user', text: 'wake box' });
+    s = TW.reduce(s, { event: 'status', state: 'waiting', name: 'host awake · box', elapsed_s: 10, timeout_s: 300 });
+    expect(s.status).toBe('waiting');
+    expect(s.wait).toEqual({ name: 'host awake · box', elapsed_s: 10, timeout_s: 300 });
+    expect(TW.waitText(s.wait)).toBe('waiting for host awake · box · 10 s of 300');
+    s = TW.reduce(s, { event: 'status', state: 'waiting', name: 'host awake · box', elapsed_s: 15, timeout_s: 300 });
+    expect(s.wait.elapsed_s).toBe(15);
+    s = TW.reduce(s, { event: 'status', state: 'tool', name: 'wait_until' });
+    expect(s.wait).toBeNull();
+    expect(TW.waitText(null)).toBe('');
+    expect(TW.waitText({ name: '', elapsed_s: 3, timeout_s: 0 })).toBe('waiting for the result · 3 s');
+  });
+});
+
+describe('help suggestions (#1018)', () => {
+  test('the Overall list ends with the developer and help prompts', () => {
+    const l = TW.suggestions({ tab: 'overall' });
+    expect(l.slice(-2)).toEqual(['Who develops LLM Systems Manager?', 'How do I get help?']);
+    expect(TW.HELP_SUGS).toEqual(['Who develops LLM Systems Manager?', 'How do I get help?']);
+    expect(TW.suggestions({ tab: 'events' })).not.toContain('How do I get help?');
+  });
+});
+
+describe('links in answers (#1024)', () => {
+  test('plain URLs and e-mail addresses become links; code spans and bold are untouched', () => {
+    const html = TW.md('Site https://www.llmsyscore.com, mail support@llmsyscore.com. Not `https://x.example/in-code` and **bold**.');
+    expect(html).toContain('<a href="https://www.llmsyscore.com" target="_blank" rel="noopener">https://www.llmsyscore.com</a>,');
+    expect(html).toContain('<a href="mailto:support@llmsyscore.com">support@llmsyscore.com</a>.');
+    expect(html).toContain('<code>https://x.example/in-code</code>');
+    expect(html).toContain('<b>bold</b>');
+    expect(TW.md('- repo https://github.com/llmsyscore/llm-systems-manager/issues)')).toContain('href="https://github.com/llmsyscore/llm-systems-manager/issues"');
+    expect(TW.md('<script>https://evil.example/x</script>')).not.toContain('<script>');
+    const mixed = TW.md('See https://mail.example.com/reset?user=foo@bar.com&token=1 now');
+    expect(mixed).toContain('<a href="https://mail.example.com/reset?user=foo@bar.com&amp;token=1" target="_blank" rel="noopener">');
+    expect(mixed).not.toContain('mailto:');
   });
 });

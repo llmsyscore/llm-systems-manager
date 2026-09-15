@@ -6,8 +6,10 @@ import json
 import logging
 import math
 import re
+import threading
 import time
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Callable, Optional
 
 log = logging.getLogger("llm-systems-manager.tower")
@@ -28,6 +30,8 @@ class Tool:
     run: Callable[[dict], Any]
     role: str = "operator"
     summary: Optional[Callable[[dict, Any], str]] = None
+    options: Optional[Callable[[dict], list]] = None    # act tools: option chips the approval card offers
+    precheck: Optional[Callable[[dict], Optional[str]]] = None    # act tools: a reason to skip the action, else None
 
 
 def _obj(props: dict, required: "list[str]" = ()) -> dict:
@@ -109,6 +113,63 @@ def validate_args(tool: Tool, args: Any) -> "tuple[dict, Optional[str]]":
         return {}, "invalid arguments"
 
 
+WAIT_EVERY_S = 5.0
+HEARTBEAT_EVERY_S = 60.0
+WAIT_MAX_S = 600
+MONITOR_LIVE_S = 900
+MONITOR_CARD_S = 1800
+_TURN = threading.local()
+
+
+def turn_begin(emit: Callable[[dict], None], cancelled: Callable[[], bool], heartbeat: Optional[Callable[[], None]] = None) -> None:
+    """Binds this thread's turn so waiting tools can report progress, stop on cancel and keep the model awake."""
+    _TURN.emit, _TURN.cancelled, _TURN.heartbeat = emit, cancelled, heartbeat
+
+
+def turn_end() -> None:
+    _TURN.emit = _TURN.cancelled = _TURN.heartbeat = None
+
+
+def wait_for(check: Callable[[], Any], *, timeout_s: float, label: str, every_s: Optional[float] = None) -> "tuple[Any, int, str]":
+    """Polls check() until it returns a truthy value: (value, waited_s, ok|timeout|cancelled). Emits a waiting status
+    each round and a model heartbeat every HEARTBEAT_EVERY_S."""
+    emit = getattr(_TURN, "emit", None) or (lambda ev: None)
+    cancelled = getattr(_TURN, "cancelled", None) or (lambda: False)
+    heartbeat = getattr(_TURN, "heartbeat", None)
+    every_s = WAIT_EVERY_S if every_s is None else every_s
+    t0 = time.monotonic()
+    last_beat = t0
+    while True:
+        waited = int(time.monotonic() - t0)
+        if cancelled():
+            return None, waited, "cancelled"
+        try:
+            val = check()
+        except Exception as e:  # noqa: BLE001 — a failed poll is a miss, not the end of the wait
+            log.debug("tower wait poll failed (%s): %s", label, type(e).__name__)
+            val = None
+        if val:
+            return val, waited, "ok"
+        if waited >= timeout_s:
+            return None, waited, "timeout"
+        emit({"event": "status", "state": "waiting", "name": label, "elapsed_s": waited, "timeout_s": int(timeout_s)})
+        if heartbeat is not None and time.monotonic() - last_beat >= HEARTBEAT_EVERY_S:
+            last_beat = time.monotonic()
+            try:
+                heartbeat()
+            except Exception as e:  # noqa: BLE001 — a missed heartbeat never ends the wait
+                log.debug("tower heartbeat failed: %s", type(e).__name__)
+        time.sleep(max(0.0, min(every_s, timeout_s - (time.monotonic() - t0))))
+
+
+def wait_result(what: str, target: str, val: Any, waited: int, how: str) -> dict:
+    """The wait_until tool's result: the data when the condition held, else a plain reason."""
+    if how == "ok":
+        return {"ok": True, "waited_s": waited, "what": what, "target": target, "result": val}
+    reason = "the wait was stopped" if how == "cancelled" else f"still not there after {waited} s; check again later"
+    return {"ok": False, "waited_s": waited, "what": what, "target": target, "message": reason}
+
+
 def run_tool(tool: Tool, args: dict) -> "tuple[Any, bool]":
     try:
         return cap_result(tool.run(args)), True
@@ -140,6 +201,22 @@ def prompt_catalog(tools: "list[Tool]") -> str:
     return "\n".join(lines)
 
 
+def apply_options(card: dict, chosen) -> "tuple[dict, Optional[str]]":
+    """The operator's picks for a card's option chips, each checked against the offered choices; (values, error)."""
+    offered = {str(o.get("name")): o for o in ((card or {}).get("options") or []) if isinstance(o, dict) and o.get("name")}
+    out: dict = {}
+    for name, o in offered.items():
+        raw = (chosen or {}).get(name, o.get("value")) if isinstance(chosen, dict) else o.get("value")
+        val = str(raw) if raw is not None else ""
+        allowed = [str(c.get("value") if isinstance(c, dict) else c) for c in (o.get("choices") or [])]
+        if not allowed:
+            continue
+        if val not in allowed:
+            return {}, f"{o.get('label') or name}: {val!r} is not one of the offered choices"
+        out[name] = val
+    return out, None
+
+
 def summary_line(tool: Tool, args: dict, result: Any, ms: int) -> str:
     verb = "read" if tool.kind == "read" else "ran"
     label = tool.name.replace("_", " ")
@@ -161,6 +238,14 @@ _HELP = {
     "report card": "Report Card is a standardized bench producing TTFT, tok/s, VRAM, watts and $/Mtok.",
     "profiles": "Model profiles are saved llama-server flag sets per host and model (LLM Control tab); "
                 "the active one is applied when the model loads.",
+    "notification": "Alert notifications are configured in the Events tab › Settings › Notifications (the alarm console's "
+                    "own settings page): the Channels section holds email, webhook, Discord, SMS and toast; the Policies "
+                    "section decides which alerts go to which channel, with dwell and cooldown. Nothing about notifications "
+                    "lives under Admin.",
+    "channel": "Notification channels (email, webhook, Discord, SMS, toast) are managed in the Events tab › Settings › "
+               "Notifications, Channels section; each channel is enabled separately and must be routed by a policy to send anything.",
+    "policy": "Notification policies live in the Events tab › Settings › Notifications, Policies section: which rules or "
+              "severities route to which channels, dwell time before the first message and cooldown between repeats.",
 }
 
 
@@ -473,15 +558,124 @@ HISTORY_METRICS = {
 }
 HISTORY_WINDOWS = {"1h": 60, "6h": 360, "24h": 1440, "7d": 10080, "30d": 43200}
 HISTORY_POINTS = 24
+HISTORY_POINTS_MAX = 120
+HISTORY_GROUP_POINTS = 720
+HISTORY_SINCE_MAX_MIN = 43200
+HISTORY_AE_POINTS_MAX = 1500
+_METRIC_HELP = "metric must be one of " + ", ".join(HISTORY_METRICS) + " or an alarm-engine source/name like system/cpu_total"
+
+
+def history_metric(metric) -> "tuple[str, str, str, Optional[str]]":
+    """(source, name, unit, error) for a named metric or an alarm-engine source/name pair (#992)."""
+    m = str(metric or "").strip()
+    if m in HISTORY_METRICS:
+        source, name, unit = HISTORY_METRICS[m]
+        return source, name, unit, None
+    source, _, name = m.partition("/")
+    if source and name:
+        return source, name, metric_unit(source, name), None
+    return "", "", "", _METRIC_HELP
+
+
+def history_range(window, since=None, until=None, now: Optional[float] = None) -> "tuple[float, float, str, Optional[str]]":
+    """(start, end, label, error): since/until win, then a named window, then a span like 4h (#992)."""
+    now = time.time() if now is None else now
+    if since or until:
+        start, end, label, err = time_range(None, since, until, now)
+        if err:
+            return 0.0, 0.0, "", err
+        start = now - 86400 if start is None else start
+        end = now if end is None else end
+        return (0.0, 0.0, "", "until must be after since") if end <= start else (start, end, label, None)
+    w = str(window or "24h")
+    if w in HISTORY_WINDOWS:
+        return now - HISTORY_WINDOWS[w] * 60, now, w, None
+    t = parse_when(w, now) if _RELATIVE.match(w) else None
+    if t is None or t >= now:
+        return 0.0, 0.0, "", "window must be one of " + ", ".join(HISTORY_WINDOWS) + ", a span like 4h, or use since/until"
+    return t, now, f"last {w}", None
+
+
+def history_buckets(vals: list, group_by: str) -> list:
+    """(epoch, value) pairs grouped by local day or hour: min/avg/max and the sample count per bucket."""
+    fmt = "%Y-%m-%d" if group_by == "day" else "%Y-%m-%d %H:00"
+    groups: dict = {}
+    for ts, v in vals:
+        groups.setdefault(time.strftime(fmt, time.localtime(ts)), []).append(v)
+    return [{"period": k, "min": round(min(g), 2), "avg": round(sum(g) / len(g), 2), "max": round(max(g), 2), "samples": len(g)}
+            for k, g in sorted(groups.items())]
 _SPARK = "▁▂▃▄▅▆▇█"
 
 
-def history_summary(points: list, metric: str, window: str, host: str, unit: str = "") -> dict:
-    """min/avg/max, latest, trend, a sparkline and the bucketed series for one metric's history points."""
+SNAPSHOT_MINUTES = 60
+SNAPSHOT_POINTS = 40
+ENERGY_SPANS = {"today": "today", "24h": 86400, "7d": 7 * 86400, "month": 30 * 86400}
+ENERGY_BUCKET_CAP = {"day": 62, "hour": 72}
+_ENERGY_KEYS = ("kwh", "cost_usd", "avg_watts", "tokens_gen", "tokens_prompt", "active_pct")
+
+
+def energy_range(window: Optional[str], since=None, until=None, now: Optional[float] = None) -> "tuple[float, float, str, Optional[str]]":
+    """(start, end, label, error) for the energy tool: since/until win; a window is today, 24h, 7d or month (30 days)."""
+    now = time.time() if now is None else now
+    if since or until:
+        start, end, label, err = time_range(None, since, until, now)
+        if err:
+            return 0.0, 0.0, "", err
+        start = now - 86400 if start is None else start
+        end = now if end is None else end
+        if end <= start:
+            return 0.0, 0.0, "", "until must be after since"
+        return start, end, label, None
+    span = ENERGY_SPANS.get(window or "today", "today")
+    if span == "today":
+        lt = time.localtime(now)
+        start = time.mktime((lt.tm_year, lt.tm_mon, lt.tm_mday, 0, 0, 0, 0, 0, -1))
+        return start, now, "today", None
+    return now - span, now, ("last 30 days" if window == "month" else f"last {window}"), None
+
+
+def energy_buckets(rows: list, group_by: str) -> "list[tuple[str, list, float]]":
+    """Hourly ledger rows grouped by local day or hour: [(label, rows, bucket_seconds)] in time order."""
+    fmt, span = ("%Y-%m-%d", 86400.0) if group_by == "day" else ("%Y-%m-%d %H:00", 3600.0)
+    groups: dict = {}
+    for r in rows:
+        key = time.strftime(fmt, time.localtime(float(r.get("hour_ts") or 0)))
+        groups.setdefault(key, []).append(r)
+    return [(k, groups[k], span) for k in sorted(groups)]
+
+
+def metric_unit(source: str, name: str) -> str:
+    return next((u for s, n, u in HISTORY_METRICS.values() if s == source and n == name), "")
+
+
+def snapshot_from_points(points: list, alert: dict, minutes: int = SNAPSHOT_MINUTES) -> Optional[dict]:
+    """The metric series behind an alert as [[epoch, value], …] with its unit, threshold and value (#980)."""
+    metric = str((alert or {}).get("metric") or "")
+    source, _, name = metric.partition("/")
     vals = []
     for p in points or []:
         ts, v = parse_ts((p or {}).get("timestamp")), (p or {}).get("value")
         if ts is not None and isinstance(v, (int, float)) and math.isfinite(v):
+            vals.append([int(ts), round(float(v), 3)])
+    if not vals:
+        return None
+    vals.sort()
+    thr, cur = alert.get("threshold"), alert.get("value")
+    return {"metric": metric, "unit": metric_unit(source, name), "minutes": int(minutes), "points": vals,
+            "threshold": float(thr) if isinstance(thr, (int, float)) else None,
+            "value": float(cur) if isinstance(cur, (int, float)) else None}
+
+
+def history_summary(points: list, metric: str, window: str, host: str, unit: str = "", *, max_points: int = HISTORY_POINTS,
+                    group_by: Optional[str] = None, start: Optional[float] = None, end: Optional[float] = None) -> dict:
+    """min/avg/max, latest, trend, a sparkline and the bucketed series for one metric's history points;
+    start/end narrow the points, group_by day|hour adds per-bucket stats."""
+    vals = []
+    for p in points or []:
+        ts, v = parse_ts((p or {}).get("timestamp")), (p or {}).get("value")
+        if ts is not None and isinstance(v, (int, float)) and math.isfinite(v):
+            if (start is not None and ts < start) or (end is not None and ts > end):
+                continue
             vals.append((ts, float(v)))
     vals.sort()
     base = {"host": host, "metric": metric, "unit": unit, "window": window, "points": len(vals)}
@@ -496,7 +690,8 @@ def history_summary(points: list, metric: str, window: str, host: str, unit: str
     return {**base, "first": local_ts(vals[0][0]), "last": local_ts(vals[-1][0]),
             "min": round(lo, 2), "avg": round(sum(v) / len(v), 2), "max": round(hi, 2), "latest": round(v[-1], 2),
             "trend": trend, "sparkline": spark,
-            "series": [{"t": local_ts(ts), "v": round(x, 2)} for ts, x in vals[-HISTORY_POINTS:]]}
+            "series": [{"t": local_ts(ts), "v": round(x, 2)} for ts, x in vals[-max(1, int(max_points)):]],
+            **({"groups": history_buckets(vals, group_by)} if group_by in ("day", "hour") else {})}
 
 
 _OVERVIEW_SORTS = ("hostname", "watts", "cpu_pct", "ram_pct", "gpu_pct", "gpu_temp_c", "age_s")
@@ -520,6 +715,32 @@ def overview_rows(rows: list, *, provider: Optional[str] = None, online: Optiona
             return (missing, (v if asc else -v) if not missing else 0, str(r.get("hostname") or "").lower())
         out.sort(key=key)
     return out
+
+
+AUDIT_COUNT_MAX = 200
+_SECRET_KEY_RE = re.compile(r"(token|password|passwd|secret|api_key|apikey|private_key|credential)", re.I)
+_CHANNEL_SECRET_RE = re.compile(r"(token|password|passwd|secret|api_key|apikey|private_key|credential|url|headers|authorization|auth_)", re.I)
+
+
+def mask_secrets(obj, key_re=None):
+    """A copy of a config mapping with every secret-looking key's value masked, at any depth; key_re widens the match."""
+    key_re = key_re or _SECRET_KEY_RE
+    if isinstance(obj, dict):
+        return {k: (_SECRET_MASK if key_re.search(str(k)) and v not in (None, "", [], {}) else mask_secrets(v, key_re)) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [mask_secrets(v, key_re) for v in obj]
+    return obj
+
+
+def audit_status_clause(status) -> "tuple[Optional[str], list]":
+    """(sql, params) for an audit status filter: an exact code like 403 or a class like 4xx; (None, []) when blank or bad."""
+    s = str(status or "").strip().lower()
+    if re.fullmatch(r"[1-5]xx", s):
+        lo = int(s[0]) * 100
+        return "status >= ? AND status < ?", [lo, lo + 100]
+    if re.fullmatch(r"\d{3}", s):
+        return "status = ?", [int(s)]
+    return None, []
 
 
 LOG_SOURCES = ("llama", "lms", "vllm", "agent", "manager", "alarm_engine")
@@ -570,8 +791,11 @@ def filter_log_lines(lines: list, *, search: Optional[str] = None, level: Option
 # Every tool name build_registry can return, for the settings chip list.
 READ_TOOL_NAMES = ("hosts_overview", "host_detail", "host_history", "models", "model_profiles", "alarms", "alarm_history",
                    "alert_detail", "energy_summary", "gateway_flow", "recent_runs", "bench_speed", "service_health",
-                   "log_tail", "config_get", "help", "audit_log")
-ACT_TOOL_NAMES = ("load_model", "unload_model", "wake_server", "restart_provider", "ack_alert", "close_alert")
+                   "log_tail", "config_get", "help", "support", "wait_until", "audit_log")
+ACT_TOOL_NAMES = ("load_model", "unload_model", "wake_server", "restart_provider", "start_benchmark", "ack_alert", "close_alert",
+                  "resume_alert")
+WAIT_KINDS = ("host_awake", "model_loaded", "model_ready", "run_done", "reportcard_done")
+BENCH_KINDS = ("live", "reportcard")
 TOOL_NAMES = READ_TOOL_NAMES + ACT_TOOL_NAMES
 PROVIDER_LABEL = {"llama": "llama.cpp", "lms": "LM Studio", "vllm": "vLLM"}
 _PROVIDER_ENUM = {"type": "string", "enum": ["llama", "lms", "vllm"]}
@@ -605,12 +829,91 @@ def _act(deps: dict, name: str, key: str, *args) -> dict:
     return {"ok": bool(ok), "message": (err or "failed") if not ok else "done"}
 
 
+WAKE_TIMEOUT_S = 320    # longer than the agent's 300 s warm-up read timeout
+
+
+def _no_bench(a: dict) -> dict:
+    return {"ok": False, "message": "benchmarks are not wired"}
+
+
+def alert_precheck(deps: dict, verb: str, alert_id: str) -> Optional[str]:
+    """Reason an ack/close should not run, from the alert's current status; None when it may proceed."""
+    fn = deps.get("alert")
+    if fn is None:
+        return None
+    try:
+        row = fn(alert_id)
+    except Exception as e:  # noqa: BLE001 — an unreadable alarm engine still lets the action try
+        log.warning("tower alert precheck failed: %s", type(e).__name__)
+        return None
+    if not row:
+        return f"alert {alert_id} was not found"
+    status = str(row.get("status") or "")
+    if verb == "resume":
+        return None if status == "ignored" else f"alert {alert_id} is {status or 'not ignored'}; there is no ignore window to end"
+    if status == "closed":
+        return f"alert {alert_id} is already closed; nothing to {verb}"
+    if verb == "acknowledge" and status == "acknowledged":
+        return f"alert {alert_id} is already acknowledged"
+    if verb == "acknowledge" and status == "ignored":
+        until = row.get("ignored_until") or "later"
+        return f"alert {alert_id} is ignored until {until}; end the ignore window first (resume_alert) or close it"
+    return None
+
+
+def wait_check(deps: dict, what: str, a: dict) -> "tuple[Callable[[], Any], str]":
+    """(check, target) for a wait_until kind; check returns the data once the condition holds."""
+    host, model = str(a.get("host") or ""), str(a.get("model") or "")
+    if what == "host_awake":
+        def check():
+            row = deps["host"](host, "all") or {}
+            states = row.get("provider_states") or {}
+            return row if str(states.get("llama.cpp") or states.get("llama") or "").lower() == "awake" else None
+        return check, host
+    if what == "model_loaded":
+        def check():
+            row = deps["host"](host, "all") or {}
+            states = row.get("provider_states") or {}
+            if str(states.get("llama.cpp") or states.get("llama") or "").lower() != "awake":
+                return None
+            rows = deps["models"](host, None)
+            rows = rows.get("models") if isinstance(rows, dict) else rows
+            hit = [r for r in rows or [] if r.get("loaded") and model.lower() in str(r.get("model") or "").lower()]
+            return hit[0] if hit else None
+        return check, f"{model} on {host}"
+    if what == "model_ready":
+        return (lambda: (deps.get("probe") or (lambda _h, _m: None))(host, model)), f"{model} on {host}"
+    if what == "run_done":
+        rid = str(a.get("run_id") or "")
+        return (lambda: (deps.get("run_result") or (lambda _r: None))(rid)), rid
+    jid = str(a.get("job_id") or "")
+    return (lambda: (deps.get("card_result") or (lambda _j: None))(jid)), jid
+
+
+def wait_until(deps: dict, a: dict) -> dict:
+    what = str(a.get("what") or "")
+    need = {"host_awake": ("host",), "model_loaded": ("host", "model"), "model_ready": ("host", "model"), "run_done": ("run_id",),
+            "reportcard_done": ("job_id",)}
+    missing = [k for k in need.get(what, ()) if not a.get(k)]
+    if missing:
+        return {"ok": False, "message": f"{', '.join(missing)} required for {what}"}
+    check, target = wait_check(deps, what, a)
+    timeout = max(1, min(int(a.get("timeout_s") or 300), WAIT_MAX_S))
+    val, waited, how = wait_for(check, timeout_s=timeout, label=f"{what.replace('_', ' ')} · {target}")
+    return wait_result(what, target, val, waited, how)
+
+
 def build_registry(deps: dict) -> "dict[str, Tool]":
     """Read tools plus the six act tools; every callable comes from `deps` (injected)."""
     def config_get(a):
-        path = a["path"]
+        path = str(a.get("path") or "")
+        if a.get("host"):
+            return deps["agent_config"](a["host"], path or None)
+        if path.startswith("alarm."):
+            return (deps.get("alarm_config") or (lambda _p: {"error": "alarm engine reads are not wired"}))(path)
         if not path.startswith(("manager.", "alarm_engine.", "openclaw.", "influxdb.", "notifications.", "logging.")):
-            raise ValueError("not a setting")
+            raise ValueError("not a setting (give a dotted manager/alarm-engine path, alarm.rules / alarm.channels / "
+                             "alarm.policies / alarm.settings, or host for an agent's configuration)")
         return deps["config_get"](path)
 
     tools = [
@@ -627,16 +930,24 @@ def build_registry(deps: dict) -> "dict[str, Tool]":
              "totals are energy_summary; benchmark results are recent_runs and bench_speed.",
              _obj({"host": {"type": "string"}, "section": {"type": "string", "enum": list(_SECTIONS), "default": "all"}}, ["host"]),
              "read", "read", lambda a: deps["host"](a["host"], a.get("section", "all")) or {"error": "unknown host"}),
-        Tool("host_history", "One metric's history over a window: min/avg/max, latest, trend and a sparkline; one host also "
-             "returns up to 24 bucketed points, several hosts (comma-separated) or all return one summary per host.",
-             _obj({"host": {"type": "string"}, "metric": {"type": "string", "enum": list(HISTORY_METRICS)},
-                   "window": {"type": "string", "enum": list(HISTORY_WINDOWS), "default": "24h"}}, ["host", "metric"]),
-             "read", "read", lambda a: deps["host_history"](a["host"], a["metric"], a.get("window", "24h"))),
+        Tool("host_history", "One metric's history: min/avg/max, latest, trend, a sparkline and up to `points` bucketed points "
+             "(default 24). Several hosts (comma-separated) or all return one summary per host, plus each series when "
+             "series is true. since/until or a span like 4h replace the window; group_by adds per-day or per-hour stats.",
+             _obj({"host": {"type": "string"},
+                   "metric": {"type": "string", "description": "One of " + ", ".join(HISTORY_METRICS) + ", or an alarm-engine source/name such as system/cpu_total"},
+                   "window": {"type": "string", "default": "24h", "description": "1h, 6h, 24h, 7d, 30d or a span like 4h"},
+                   "since": {"type": "string", "description": "Range start: 4h, 3d, a date or ISO-8601 (overrides window)"},
+                   "until": {"type": "string", "description": "Range end, same forms as since (default now)"},
+                   "points": {"type": "integer", "minimum": 1, "maximum": HISTORY_POINTS_MAX, "default": HISTORY_POINTS},
+                   "series": {"type": "boolean", "default": False},
+                   "group_by": {"type": "string", "enum": ["day", "hour"]}}, ["host", "metric"]),
+             "read", "read", lambda a: deps["host_history"](a["host"], a["metric"], a.get("window", "24h"), a)),
         Tool("models", "Models on every host: loaded now (loaded_on) and available to load (available_on), per provider.",
              _obj({"host": {"type": "string"}, "provider": {"type": "string", "enum": ["llama", "lms", "vllm"]}}), "read", "read",
              lambda a: deps["models"](a.get("host"), a.get("provider"))),
-        Tool("model_profiles", "Saved llama-server config profiles per host and model: the active profile, the other "
-             "profile names, and (when a model is given) the active or named profile's values.",
+        Tool("model_profiles", "Saved llama-server config profiles per host and model (host=name, a comma-separated "
+             "list, or all): the active profile, the other profile names, and (when a model is given) the active or "
+             "named profile's values.",
              _obj({"host": {"type": "string"}, "model": {"type": "string"}, "profile": {"type": "string"}}),
              "read", "read", lambda a: deps["profiles"](a.get("host"), a.get("model"), a.get("profile"))),
         Tool("alarms", "Alerts from the alarm engine, newest first, with total and next_offset for paging. Filter by status, "
@@ -665,15 +976,25 @@ def build_registry(deps: dict) -> "dict[str, Tool]":
              lambda a: deps["alarm_history"](a["window"], a["group_by"], a["top"], a.get("host"), a.get("rule"), a)),
         Tool("alert_detail", "One alert by id.", _obj({"alert_id": {"type": "string"}}, ["alert_id"]), "read", "read",
              lambda a: deps["alert"](a["alert_id"]) or {"error": "alert not found"}),
-        Tool("energy_summary", "Energy and cost totals for a window.",
-             _obj({"window": {"type": "string", "enum": ["today", "24h", "7d", "month"], "default": "today"}}), "read", "read",
-             lambda a: deps["energy"](a["window"])),
+        Tool("energy_summary", "Energy and cost for a window or a since/until range: fleet totals plus one row per host "
+             "(kWh, cost, average watts, tokens). group_by adds a per-day or per-hour breakdown; host narrows to one host.",
+             _obj({"window": {"type": "string", "enum": ["today", "24h", "7d", "month"], "default": "today"},
+                   "since": {"type": "string", "description": "Range start: 3d, 2h, a date or ISO-8601 (overrides window)"},
+                   "until": {"type": "string", "description": "Range end, same forms as since (default now)"},
+                   "group_by": {"type": "string", "enum": ["day", "hour"]},
+                   "host": {"type": "string"}}), "read", "read",
+             lambda a: deps["energy"](a.get("window") or "today", a),
+             summary=lambda a, r: " · ".join(x for x in ((r.get("window") if isinstance(r, dict) else None) or a.get("window") or "today",
+                                                      f"by {a['group_by']}" if a.get("group_by") else "", a.get("host") or "") if x)),
         Tool("gateway_flow", "Gateway clients, hosts, throughput and in-flight requests right now.", _obj({}), "read", "read",
              lambda a: deps["flow"]()),
-        Tool("recent_runs", "Recent Report Card / benchmark / autotune runs.",
+        Tool("recent_runs", "Recent Report Card / benchmark / autotune / quality runs, newest first, each with its host, "
+             "configuration (bench set, output length, samples, concurrency; objective and mode; provider and preset) and "
+             "results. run_id returns that one run in full; host filters by host.",
              _obj({"tool": {"type": "string", "enum": ["reportcard", "benchmark", "autotune", "quality"]},
-                   "count": {"type": "integer", "minimum": 1, "maximum": 10, "default": 5}}), "read", "read",
-             lambda a: deps["runs"](a.get("tool"), a["count"])),
+                   "count": {"type": "integer", "minimum": 1, "maximum": 20, "default": 5},
+                   "run_id": {"type": "string"}, "host": {"type": "string"}}), "read", "read",
+             lambda a: deps["runs"](a.get("tool"), a["count"], a)),
         Tool("bench_speed", "Measured decode speed per host for a model.", _obj({"model": {"type": "string"}}, ["model"]),
              "read", "read", lambda a: deps["speed"](a["model"])),
         Tool("service_health", "Manager, alarm engine and agent health.", _obj({}), "read", "read", lambda a: deps["health"]()),
@@ -688,15 +1009,42 @@ def build_registry(deps: dict) -> "dict[str, Tool]":
                    "since": {"type": "string"}, "before": {"type": "integer", "minimum": 0, "default": 0}}),
              "read", "read", lambda a: deps["log_tail"](a.get("host"), a.get("provider", "llama"), a["lines"], a)),
         Tool("config_get", "A manager or alarm-engine setting by dotted path (secrets are masked); "
-             "not model configs — use model_profiles.",
-             _obj({"path": {"type": "string"}}, ["path"]), "read", "read", config_get, role="admin"),
-        Tool("help", "Short explanation of a dashboard concept.", _obj({"topic": {"type": "string"}}, ["topic"]), "read", "read",
-             lambda a: deps["help"](a["topic"])),
-        Tool("audit_log", "Recent audit-log entries: who did what and when; filter by actor, action prefix and time window.",
-             _obj({"window": {"type": "string", "enum": ["1h", "24h", "7d", "30d"], "default": "24h"},
+             "alarm.rules, alarm.channels, alarm.policies and alarm.settings list the alarm engine's rules, notification "
+             "channels, notification policies and settings (add .<name or id> for one). Not model configs — use model_profiles.",
+             _obj({"path": {"type": "string"}, "host": {"type": "string", "description": "An agent hostname: returns that agent's configuration (secrets masked); path then narrows to one dotted key"}}),
+             "read", "read", config_get, role="admin"),
+        Tool("help", "Explains a dashboard concept or feature: a short note when one exists, plus the best-matching "
+             "sections of the product docs (README, API reference, architecture, components, deployment). doc narrows "
+             "the search to one document.",
+             _obj({"topic": {"type": "string"}, "doc": {"type": "string", "enum": list(DOCS)}}, ["topic"]), "read", "read",
+             lambda a: help_answer(a["topic"], deps, a.get("doc"))),
+        Tool("support", "Where to get help with LLM Systems Manager: the developer (llmsyscore), website, repository, "
+             "issue tracker, docs, and what to include in a help request. Use it when the operator asks for help or "
+             "support, or when you cannot fully answer a question.", _obj({}), "read", "read",
+             lambda a: support_info()),
+        Tool("wait_until", "Waits for a slow operation to finish, polling every few seconds up to timeout_s (default 300, "
+             "max 600), then returns the current data: host_awake (host), model_loaded (host, model: awake with the model "
+             "resident), model_ready (host, model: the model answered a one-token prompt on that host), run_done (run_id of "
+             "a live bench), reportcard_done (job_id). Use it after waking or loading a model or starting a benchmark when "
+             "the operator wants the outcome, not just the start.",
+             _obj({"what": {"type": "string", "enum": list(WAIT_KINDS)}, "host": {"type": "string"}, "model": {"type": "string"},
+                   "run_id": {"type": "string"}, "job_id": {"type": "string"},
+                   "timeout_s": {"type": "integer", "minimum": 1, "maximum": WAIT_MAX_S, "default": 300}}, ["what"]),
+             "read", "read", lambda a: wait_until(deps, a),
+             summary=lambda a, r: f"{str(a.get('what') or '').replace('_', ' ')} · {(r or {}).get('target') or '-'} · "
+                                  f"{'ready' if (r or {}).get('ok') else 'not yet'} after {(r or {}).get('waited_s', 0)} s"),
+        Tool("audit_log", "Audit-log entries, newest first, with total and next_offset for paging: who did what and when. "
+             "Filter by actor, action prefix, a window or since/until, free-text search, outcome and HTTP status.",
+             _obj({"window": {"type": "string", "enum": ["1h", "24h", "7d", "30d", "90d"], "default": "24h"},
+                   "since": {"type": "string", "description": "Range start: 2h, 3d, a date or ISO-8601 (overrides window)"},
+                   "until": {"type": "string", "description": "Range end, same forms as since"},
                    "actor": {"type": "string"}, "action": {"type": "string"},
-                   "count": {"type": "integer", "minimum": 1, "maximum": 50, "default": 20}}), "read", "read",
-             lambda a: deps["audit"](a.get("window", "24h"), a.get("actor"), a.get("action"), a.get("count", 20)), role="admin"),
+                   "search": {"type": "string", "description": "Case-insensitive text over actor, action, target and detail"},
+                   "outcome": {"type": "string", "enum": ["ok", "denied", "error"]},
+                   "status": {"type": "string", "description": "An HTTP status such as 403, or a class such as 4xx"},
+                   "count": {"type": "integer", "minimum": 1, "maximum": AUDIT_COUNT_MAX, "default": 20},
+                   "offset": {"type": "integer", "minimum": 0, "default": 0}}), "read", "read",
+             lambda a: deps["audit"](a.get("window", "24h"), a.get("actor"), a.get("action"), a.get("count", 20), a), role="admin"),
     ]
     tools += [
         Tool("load_model", "Load a model on a host's provider server (asks the operator first).",
@@ -710,10 +1058,24 @@ def build_registry(deps: dict) -> "dict[str, Tool]":
         Tool("restart_provider", "Restart a provider server on a host; in-flight requests fail (admin, asks first).",
              _obj({"provider": _PROVIDER_ENUM, "host": {"type": "string"}}, ["provider", "host"]),
              "act", "admin", lambda a: _act(deps, "restart_provider", "restart", a["provider"], a["host"]), role="admin"),
-        Tool("ack_alert", "Acknowledge an alert in the alarm engine (asks the operator first).",
-             _obj({"alert_id": {"type": "string"}}, ["alert_id"]), "act", "operate", lambda a: _act(deps, "ack_alert", "ack", a["alert_id"])),
-        Tool("close_alert", "Close an alert in the alarm engine (asks the operator first).",
-             _obj({"alert_id": {"type": "string"}}, ["alert_id"]), "act", "operate", lambda a: _act(deps, "close_alert", "close", a["alert_id"])),
+        Tool("start_benchmark", "Start a live benchmark or a report card on a host with a model it has loaded (asks the operator "
+             "first; the approval card offers the bench set, output length and samples, or the provider).",
+             _obj({"kind": {"type": "string", "enum": list(BENCH_KINDS)}, "host": {"type": "string"}, "model": {"type": "string"},
+                   "provider": _PROVIDER_ENUM}, ["kind", "host", "model"]),
+             "act", "operate", lambda a: (deps.get("bench_start") or _no_bench)(a),
+             options=lambda a: (deps.get("bench_options") or (lambda _a: []))(a)),
+        Tool("ack_alert", "Acknowledge an alert in the alarm engine (asks the operator first). Checks the alert's "
+             "current status first: an already acknowledged or closed alert is reported, not re-actioned.",
+             _obj({"alert_id": {"type": "string"}}, ["alert_id"]), "act", "operate", lambda a: _act(deps, "ack_alert", "ack", a["alert_id"]),
+             precheck=lambda a: alert_precheck(deps, "acknowledge", a["alert_id"])),
+        Tool("close_alert", "Close an alert in the alarm engine (asks the operator first). Checks the alert's current "
+             "status first: an already closed alert is reported, not re-actioned.",
+             _obj({"alert_id": {"type": "string"}}, ["alert_id"]), "act", "operate", lambda a: _act(deps, "close_alert", "close", a["alert_id"]),
+             precheck=lambda a: alert_precheck(deps, "close", a["alert_id"])),
+        Tool("resume_alert", "End an ignored alert's ignore window early (asks the operator first): the alert returns to "
+             "active and its rule resumes; this is not a close.",
+             _obj({"alert_id": {"type": "string"}}, ["alert_id"]), "act", "operate", lambda a: _act(deps, "resume_alert", "resume", a["alert_id"]),
+             precheck=lambda a: alert_precheck(deps, "resume", a["alert_id"])),
     ]
     return {t.name: t for t in tools}
 
@@ -733,8 +1095,13 @@ def action_card(tool: Tool, args: dict) -> dict:
                         "No model is loaded or unloaded."),
         "restart_provider": (f"Restart {prov}", f"{host} · {prov}", "Restarts the provider server on that host; requests in flight fail.",
                              "The resident model reloads on start; no other host changes."),
+        "start_benchmark": ("Start a live bench" if args.get("kind") == "live" else "Start a report card", f"{host} · {model}",
+                            "Runs the benchmark on that host against the model it has loaded; results land in the Benchmark tab and recent_runs.",
+                            "Nothing is loaded or unloaded; the host answers more slowly while it runs."),
         "ack_alert": (f"Acknowledge alert {aid}", f"alert {aid}", "Marks the alert acknowledged in the alarm engine.",
                       "The rule keeps evaluating; nothing on a host changes."),
+        "resume_alert": (f"End the ignore window of alert {aid}", f"alert {aid}", "The alert returns to active and its rule resumes evaluating.",
+                         "Does not close the alert."),
         "close_alert": (f"Close alert {aid}", f"alert {aid}", "Closes the alert in the alarm engine.",
                         "It reopens if the rule fires again."),
     }
@@ -748,6 +1115,101 @@ def default_help(topic: str) -> str:
         if k in key or key in k:
             return v
     return "No note for that topic; the docs at /docs cover the dashboard tabs."
+
+
+DOCS = {"readme": "README.md", "api": "docs/API_REFERENCE.md", "architecture": "docs/ARCHITECTURE.md",
+        "components": "docs/COMPONENTS.md", "deployment": "docs/DEPLOYMENT.md"}
+DOCS_ROOT = Path(__file__).resolve().parents[2]
+DOC_HITS = 3
+DOC_SNIPPET = 700
+_DOC_CACHE: "dict[str, tuple[float, list]]" = {}
+_WORD_RE = re.compile(r"[a-z0-9][a-z0-9_.+/-]{1,}")
+_STOP = {"the", "and", "for", "with", "how", "what", "does", "this", "that", "are", "you", "can", "use", "from", "into", "when"}
+
+SUPPORT = {"developer": "llmsyscore", "website": "https://www.llmsyscore.com", "email": "support@llmsyscore.com",
+           "repository": "https://github.com/llmsyscore/llm-systems-manager",
+           "issues": "https://github.com/llmsyscore/llm-systems-manager/issues",
+           "docs": "https://github.com/llmsyscore/llm-systems-manager/tree/main/docs"}
+
+
+def support_info() -> dict:
+    return {**SUPPORT, "how": "Email support, open an issue on the repository for bugs and questions, or use the website's contact page.",
+            "include": ["what you tried and what happened", "manager, alarm engine and agent versions (service_health)",
+                        "host OS and provider (llama.cpp, LM Studio, vLLM)", "the relevant log lines (log_tail)"]}
+
+
+def doc_sections(text: str) -> list:
+    """[(heading path, body)] from Markdown: every heading opens a section; the path keeps the parent headings."""
+    out, stack, body = [], [], []
+    head = ""
+    for line in text.splitlines():
+        m = re.match(r"^(#{1,6})\s+(.*?)\s*#*\s*$", line)
+        if m:
+            if head or body:
+                out.append((head, "\n".join(body).strip()))
+            level, title = len(m.group(1)), m.group(2).strip()
+            stack = stack[: level - 1] + [title]
+            head, body = " › ".join(s for s in stack if s), []
+        else:
+            body.append(line)
+    if head or body:
+        out.append((head, "\n".join(body).strip()))
+    return [(h, b) for h, b in out if b]
+
+
+def _doc_load(name: str, root: Path) -> list:
+    path = root / DOCS[name]
+    try:
+        mtime = path.stat().st_mtime
+    except OSError:
+        return []
+    hit = _DOC_CACHE.get(str(path))
+    if hit and hit[0] == mtime:
+        return hit[1]
+    try:
+        secs = doc_sections(path.read_text(encoding="utf-8", errors="replace"))
+    except OSError:
+        return []
+    _DOC_CACHE[str(path)] = (mtime, secs)
+    return secs
+
+
+def docs_search(query: str, doc: Optional[str] = None, limit: int = DOC_HITS, root: Optional[Path] = None) -> dict:
+    """Best-matching doc sections for the query terms: {hits: [{doc, section, text}], searched: [...]}."""
+    root = root or DOCS_ROOT
+    terms = [t for t in _WORD_RE.findall(str(query or "").lower()) if t not in _STOP]
+    names = [doc] if doc in DOCS else list(DOCS)
+    if not terms:
+        return {"hits": [], "searched": [DOCS[n] for n in names], "note": "no search terms"}
+    scored = []
+    for name in names:
+        for head, body in _doc_load(name, root):
+            low, hl = body.lower(), head.lower()
+            score = sum((3 if t in hl else 0) + min(low.count(t), 5) for t in terms)
+            if score:
+                scored.append((score, name, head, body))
+    scored.sort(key=lambda s: -s[0])
+    hits = [{"doc": DOCS[n], "section": h, "text": b[:DOC_SNIPPET] + ("…" if len(b) > DOC_SNIPPET else "")}
+            for _s, n, h, b in scored[: max(1, min(int(limit or DOC_HITS), 5))]]
+    return {"hits": hits, "searched": [DOCS[n] for n in names]}
+
+
+def help_answer(topic: str, deps: dict, doc: Optional[str] = None) -> dict:
+    """The help tool's result: the built-in note (when one matches) plus matching doc sections."""
+    note = (deps.get("help") or default_help)(topic)
+    out: dict = {"topic": topic}
+    if not note.startswith("No note for"):
+        out["note"] = note
+    fn = deps.get("docs")
+    if fn is not None:
+        try:
+            out.update(fn(topic, doc))
+        except Exception as e:  # noqa: BLE001 — the note still answers when the docs cannot be read
+            log.warning("tower docs search failed: %s", type(e).__name__)
+            out["note_docs"] = "the product docs could not be searched"
+    if "note" not in out and not out.get("hits"):
+        out["note"] = note
+    return out
 
 
 def loaded_models(agents: dict, sample_of: Callable[[str, str], dict], loaded_by_provider: dict,
@@ -778,7 +1240,7 @@ def models_rows(entries: list, loaded: "dict[tuple, list]", host: Optional[str] 
         prov, mid = e.get("provider") or "llama", e.get("id")
         if not mid or (provider and prov != provider):
             continue
-        hosts = here(e.get("hosts") or [])
+        hosts = here(e.get("catalog_hosts") or e.get("hosts") or [])
         if host and not hosts and (prov, mid) not in loaded_here:
             continue
         rows[(prov, mid)] = {"model": mid, "provider": prov, "loaded": False, "loaded_on": [], "available_on": hosts}
@@ -794,7 +1256,10 @@ def models_rows(entries: list, loaded: "dict[tuple, list]", host: Optional[str] 
 def prod_deps(ctx, *, db_path: str, tools_runs: Callable[[Optional[str], int], list],
               speed_table: Callable[[str], list], service_health: Callable[[], dict],
               gateway_entries: Callable[[], list],
-              audit_rows: Callable[[str, Optional[str], Optional[str], int], list]) -> dict:
+              audit_rows: Callable[[str, Optional[str], Optional[str], int], list],
+              bench_start: Optional[Callable[[dict], dict]] = None,
+              bench_options: Optional[Callable[[dict], list]] = None,
+              card_result: Optional[Callable[[str], Optional[dict]]] = None) -> dict:
     """Production readers: Discord bot deps for hosts/host/alarms, plus models from the
     gateway index + polled provider state, energy, flow, runs, speed, health, log tail, masked config."""
     import urllib.parse
@@ -817,7 +1282,7 @@ def prod_deps(ctx, *, db_path: str, tools_runs: Callable[[Optional[str], int], l
                 "metric": metric or None, "value": a.get("current_value"), "threshold": a.get("threshold_value"),
                 "triggered_at": local_ts(a.get("created_at")), "last_seen": local_ts(a.get("last_evaluated_at")),
                 "acknowledged_at": local_ts(a.get("acknowledged_at") or None), "closed_at": local_ts(a.get("closed_at") or None),
-                "incident": a.get("incident_id") or None}
+                "ignored_until": local_ts(a.get("ignored_until") or None), "incident": a.get("incident_id") or None}
 
     def _alerts(include_closed: bool, limit: int) -> list:
         q = "&include_closed=true" if include_closed else ""
@@ -946,48 +1411,135 @@ def prod_deps(ctx, *, db_path: str, tools_runs: Callable[[Optional[str], int], l
             rows.append(host_section(d, "summary" if section in ("all", "", None) else section) if d else {"hostname": n, "error": "unknown host"})
         return {"hosts": rows}
 
-    def _history_one(host, metric, window):
+    def _history_one(host, metric, window, a):
         agent = _agent_by_hostname(host)
         if not agent:
             return {"host": host, "error": "unknown host"}
-        source, name, unit = HISTORY_METRICS[metric]
-        q = urllib.parse.urlencode({"since_minutes": HISTORY_WINDOWS.get(window, 1440), "hostname": agent.get("hostname") or host,
-                                    "max_points": HISTORY_POINTS, "agg": "mean"})
+        hostname = agent.get("hostname") or host
+        source, name, unit, err = history_metric(metric)
+        if err:
+            return {"host": hostname, "error": err}
+        now = time.time()
+        start, end, label, err = history_range(window, a.get("since"), a.get("until"), now)
+        if err:
+            return {"host": hostname, "error": err}
+        note = None
+        since_min = int(math.ceil(round((now - start) / 60, 3)))
+        if since_min > HISTORY_SINCE_MAX_MIN:
+            since_min, start = HISTORY_SINCE_MAX_MIN, now - HISTORY_SINCE_MAX_MIN * 60
+            if end <= start:
+                return {"host": hostname, "error": "the alarm engine keeps 30 days of history; that range is older than that"}
+            note = "the alarm engine keeps 30 days of history; the range was clipped"
+        group_by = a.get("group_by") if a.get("group_by") in ("day", "hour") else None
+        points = max(1, min(int(a.get("points") or HISTORY_POINTS), HISTORY_POINTS_MAX))
+        want = HISTORY_GROUP_POINTS if group_by else points
+        frac = max(0.05, (end - start) / max(1.0, now - start))
+        q = urllib.parse.urlencode({"since_minutes": max(1, since_min), "hostname": hostname,
+                                    "max_points": min(HISTORY_AE_POINTS_MAX, int(math.ceil(want / frac))), "agg": "mean"})
         r = _ae(f"/api/alarm/metrics/{urllib.parse.quote(source, safe='')}/{urllib.parse.quote(name, safe='')}?{q}")
         if not r.ok:
-            return {"host": agent.get("hostname") or host, "error": "history unavailable from the alarm engine"}
+            return {"host": hostname, "error": "history unavailable from the alarm engine"}
         body = r.json()
-        return history_summary(body if isinstance(body, list) else [], metric, window, agent.get("hostname") or host, unit)
+        out = history_summary(body if isinstance(body, list) else [], str(metric), label, hostname, unit,
+                              max_points=points, group_by=group_by, start=start, end=end)
+        if note:
+            out["note"] = note
+        return out
 
-    def host_history(host, metric, window="24h"):
+    def host_history(host, metric, window="24h", a=None):
+        a = a or {}
         names = host_names(host, _known_hosts())
         if not names:
             return {"error": "unknown host"}
         if len(names) == 1:
-            return _history_one(names[0], metric, window)
-        per = []
+            return _history_one(names[0], metric, window, a)
+        per, label = [], str(window or "24h")
         for n in names:
-            one = _history_one(n, metric, window)
-            one.pop("series", None)
-            per.append({k: v for k, v in one.items() if k not in ("metric", "window")})
-        return {"metric": metric, "window": window, "unit": HISTORY_METRICS[metric][2], "hosts": per}
+            one = _history_one(n, metric, window, a)
+            if not a.get("series"):
+                one.pop("series", None)
+            label = one.pop("window", label)
+            per.append({k: v for k, v in one.items() if k != "metric"})
+        return {"metric": str(metric), "window": label, "unit": history_metric(metric)[2], "hosts": per}
 
     def alert(aid):
         r = _ae(f"/api/alarm/alerts/{urllib.parse.quote(str(aid), safe='')}")
         return _alert_row(r.json()) if r.ok else None
 
-    def energy_summary(window="today"):
+    _ALARM_PATHS = {"rules": "/api/alarm/rules", "channels": "/api/alarm/notifications/channels",
+                    "policies": "/api/alarm/notifications/configs", "settings": "/api/alarm/admin/config"}
+
+    def alarm_config(path):
+        """alarm.<rules|channels|policies|settings>[.<name or id>] read from the alarm engine, secrets masked (#1021)."""
+        parts = str(path or "").split(".", 2)
+        kind = parts[1].strip().lower() if len(parts) > 1 else ""
+        want = parts[2].strip().lower() if len(parts) > 2 else ""
+        if kind not in _ALARM_PATHS:
+            return {"error": "alarm paths are alarm.rules, alarm.channels, alarm.policies or alarm.settings"}
+        r = _ae(_ALARM_PATHS[kind])
+        if not r.ok:
+            return {"kind": kind, "error": f"alarm engine returned HTTP {r.status_code}"}
+        body = r.json()
+        if kind == "settings":
+            sections = body.get("sections") if isinstance(body, dict) else None
+            data = sections if isinstance(sections, dict) else body
+            if want:
+                data = {k: v for k, v in (data or {}).items() if k.lower() == want or k.lower().startswith(want)}
+            return {"kind": kind, "settings": mask_secrets(data)}
+        rows = body if isinstance(body, list) else (body.get("items") or body.get("rules") or []) if isinstance(body, dict) else []
+        if want:
+            rows = [x for x in rows if want in {str(x.get(k) or "").lower() for k in ("id", "name", "rule_id", "channel_id", "config_id")}
+                    or want in str(x.get("name") or "").lower()]
+        rows = rows[:100]
+        return {"kind": kind, "count": len(rows), kind: mask_secrets(rows, _CHANNEL_SECRET_RE if kind == "channels" else None)}
+
+    def metric_snapshot(alert_row, minutes=SNAPSHOT_MINUTES):
+        source, _, name = str((alert_row or {}).get("metric") or "").partition("/")
+        if not source or not name:
+            return None
+        q = {"since_minutes": int(minutes), "max_points": SNAPSHOT_POINTS, "agg": "mean"}
+        if alert_row.get("host"):
+            q["hostname"] = str(alert_row["host"])
+        r = _ae(f"/api/alarm/metrics/{urllib.parse.quote(source, safe='')}/{urllib.parse.quote(name, safe='')}?{urllib.parse.urlencode(q)}")
+        if not r.ok:
+            return None
+        body = r.json()
+        return snapshot_from_points(body if isinstance(body, list) else [], alert_row, minutes)
+
+    def energy_summary(window="today", a=None):
+        a = a or {}
         now = time.time()
-        spans = {"today": now - (now % 86400), "24h": now - 86400, "7d": now - 7 * 86400, "month": now - 30 * 86400}
-        start = int(spans[window] // 3600) * 3600
-        end = int(now // 3600 + 1) * 3600
+        start, end, label, err = energy_range(window, a.get("since"), a.get("until"), now)
+        if err:
+            return {"error": err}
         cfg = energy._cfg_energy(ctx)
         factory = energy._conn_factory
         if factory is None:
-            return {"window": window, "error": "energy accounting not started"}
-        rows = energy.query_rows(factory(), start, end)
-        s = energy.summarize(rows, max(0.0, now - start), cfg["price_kwh"], cfg["cloud_price_in_per_mtok"], cfg["cloud_price_out_per_mtok"])
-        return {"window": window, "totals": s.get("totals"), "hosts": s.get("hosts")}
+            return {"window": label, "error": "energy accounting not started"}
+        qs, qe = int(start // 3600) * 3600, int(math.ceil(end / 3600)) * 3600
+        rows = energy.query_rows(factory(), qs, qe)
+        host = str(a.get("host") or "").strip()
+        if host:
+            rows = [r for r in rows if str(r.get("hostname") or "").lower() == host.lower()]
+        prices = (cfg["price_kwh"], cfg["cloud_price_in_per_mtok"], cfg["cloud_price_out_per_mtok"])
+        s = energy.summarize(rows, max(0.0, min(qe, now) - qs), *prices)
+        out = {"window": label, "start": local_ts(qs), "end": local_ts(min(qe, now)), "totals": s.get("totals"), "hosts": s.get("hosts")}
+        if qs != start or qe != end:
+            out["note"] = "the ledger is hourly, so the range was widened to whole hours"
+        if host:
+            out["host"] = host
+            if not rows:
+                out["note"] = f"no energy rows for {host} in this range"
+        gb = a.get("group_by")
+        if gb in ENERGY_BUCKET_CAP:
+            buckets = energy_buckets(rows, gb)
+            cap = ENERGY_BUCKET_CAP[gb]
+            if len(buckets) > cap:
+                out["note"] = f"{len(buckets)} {gb}s in range; showing the last {cap}"
+                buckets = buckets[-cap:]
+            out["breakdown"] = [{"period": k, **{key: energy.summarize(rs, span, *prices)["totals"].get(key) for key in _ENERGY_KEYS}}
+                                for k, rs, span in buckets]
+        return out
 
     def _manager_log_lines():
         import os
@@ -1105,24 +1657,95 @@ def prod_deps(ctx, *, db_path: str, tools_runs: Callable[[Optional[str], int], l
             return {"error": "profile store not available"}
         agents = agent_registry.load_agents().get("agents") or {}
         named = [(aid, str(a.get("hostname") or "")) for aid, a in agents.items() if a.get("status") == "approved"]
-        want = str(host).strip().lower() if host else None
-        if want and want not in {h.lower() for _aid, h in named}:
-            return {"error": "unknown host"}
-        picked = [(aid, hn) for aid, hn in named if not want or hn.lower() == want]
+        wanted = [h.lower() for h in host_names(host, [hn for _aid, hn in named])]
+        bad = [h for h in wanted if h not in {hn.lower() for _aid, hn in named}]
+        if bad:
+            return {"error": "unknown host: " + ", ".join(bad)}
+        want = wanted[0] if len(wanted) == 1 else None
+        picked = [(aid, hn) for aid, hn in named if not wanted or hn.lower() in wanted]
+
+        def _known(hn):
+            """Model ids the host has now (loaded or available), by the models reader; None when it cannot say."""
+            try:
+                rows_ = deps_out["models"](hn)
+            except Exception:  # noqa: BLE001 — an unreadable host keeps the saved entries
+                return None
+            rows_ = rows_.get("models") if isinstance(rows_, dict) else rows_
+            ids = set()
+            for r in rows_ or []:
+                if hn.lower() in [str(h).lower() for h in (r.get("loaded_on") or []) + (r.get("available_on") or [])]:
+                    ids.add(str(r.get("model")))
+            return ids or None
+
+        def _entries(aid, hn):
+            """(present, stale, verified) profile entries for a host: smoke-test artefacts dropped, absent models flagged;
+            verified is False when the host reported no models, so nothing could be checked (#1001)."""
+            saved = {m: e for m, e in (store.get_agent(aid) or {}).items() if not str(m).startswith("smoke-test")}
+            known = _known(hn)
+            if known is None:
+                return saved, {}, False
+            return {m: e for m, e in saved.items() if m in known}, {m: e for m, e in saved.items() if m not in known}, True
+
+        _UNVERIFIED = "the host reported no models, so these saved entries could not be checked against what it has"
+
         if not model:
-            return {"hosts": [{"host": hn, "models": [
-                {"model": mid, "active": e.get("active"), "profiles": list((e.get("profiles") or {}).keys())}
-                for mid, e in (store.get_agent(aid) or {}).items()]}
-                for aid, hn in picked if store.get_agent(aid)]}
+            hosts_out = []
+            for aid, hn in picked:
+                present, stale, verified = _entries(aid, hn)
+                if not present and not stale:
+                    continue
+                row = {"host": hn, "models": [{"model": mid, "active": e.get("active"), "profiles": list((e.get("profiles") or {}).keys())}
+                                              for mid, e in present.items()]}
+                if not verified:
+                    row["verified"] = False
+                    row["note"] = _UNVERIFIED
+                if stale:
+                    row["stale"] = sorted(stale)
+                    row["note"] = "stale entries are saved profiles for models the host no longer has"
+                hosts_out.append(row)
+            return {"hosts": hosts_out}
         rows = []
         for aid, hn in picked:
-            models_ = store.get_agent(aid) or {}
-            mid = _match_model(models_, str(model))
+            present, stale, verified = _entries(aid, hn)
+            mid = _match_model(present, str(model))
             if mid is not None:
-                rows.append(_profile_row(hn, models_[mid], mid, profile))
+                row = _profile_row(hn, present[mid], mid, profile)
+                rows.append(row if verified or "error" in row else {**row, "verified": False, "note": _UNVERIFIED})
+                continue
+            mid = _match_model(stale, str(model))
+            if mid is not None:
+                rows.append({**_profile_row(hn, stale[mid], mid, profile), "present": False,
+                             "note": "the host no longer has this model; the profile is a leftover"})
         if want:
             return rows[0] if rows else {"error": "unknown model"}
         return {"rows": rows}
+
+    def agent_config(host, path=None):
+        import agent_registry
+        agent = _agent_by_hostname(host)
+        if not agent:
+            return {"host": host, "error": "unknown host"}
+        hostname = agent.get("hostname") or host
+        r, _tried, err = agent_registry.agent_request("GET", agent, "/config", timeout=10,
+                                                      headers={"Authorization": f"Bearer {agent.get('token') or ''}"})
+        if r is None or not r.ok:
+            return {"host": hostname, "error": f"could not reach the agent on {hostname}"}
+        try:
+            cfg = r.json()
+        except ValueError:
+            return {"host": hostname, "error": "the agent returned no configuration"}
+        cfg = mask_secrets(cfg if isinstance(cfg, dict) else {})
+        if not path:
+            return {"host": hostname, "config": cfg}
+        node = cfg
+        for part in str(path).split("."):
+            if not isinstance(node, dict) or part not in node:
+                lower = {str(k).lower(): k for k in node} if isinstance(node, dict) else {}
+                if part.lower() not in lower:
+                    return {"host": hostname, "path": path, "error": "no such key", "keys": sorted(cfg)[:60]}
+                part = lower[part.lower()]
+            node = node[part]
+        return {"host": hostname, "path": path, "value": node}
 
     def config_get(path):
         entry = next((e for e in settings_catalog.CATALOG if e["path"] == path), None)
@@ -1171,10 +1794,30 @@ def prod_deps(ctx, *, db_path: str, tools_runs: Callable[[Optional[str], int], l
         return _agent_post(host, provider, f"/{provider}/unload", json={"model": model}, timeout=60)
 
     def wake(host):
-        return _agent_post(host, "llama", "/llama/server/wake", timeout=75, need_fresh=True)
+        return _agent_post(host, "llama", "/llama/server/wake", timeout=WAKE_TIMEOUT_S, need_fresh=True)
 
     def restart(provider, host):
         return _agent_post(host, provider, f"/{provider}/server/restart", timeout=60)
+
+    def probe(host, model):
+        """One-token completion to a llama model on one host; {ok, latency_ms, model} when it answered, else None (#1025)."""
+        import agent_registry
+        agent = _agent_by_hostname(host)
+        if not agent:
+            return None
+        body = {"model": model, "messages": [{"role": "user", "content": "."}], "max_tokens": 1, "temperature": 0}
+        t0 = time.monotonic()
+        r, _tried, _err = agent_registry.agent_request("POST", agent, gateway._AGENT_PATHS["llama"]["chat/completions"], json=body,
+                                                       headers={"Authorization": f"Bearer {agent.get('token') or ''}"}, timeout=(5, 90))
+        if r is None or r.status_code != 200:
+            return None
+        try:
+            data = r.json() or {}
+        except ValueError:
+            return None
+        if not data.get("choices"):
+            return None
+        return {"ok": True, "latency_ms": int((time.monotonic() - t0) * 1000), "model": data.get("model") or model}
 
     def pinned(provider, host, model):
         import agent_registry
@@ -1184,13 +1827,20 @@ def prod_deps(ctx, *, db_path: str, tools_runs: Callable[[Optional[str], int], l
             return False
         return bool(agent) and str(agent.get("hostname") or "").lower() == str(host or "").lower()
 
-    return {
+    deps_out = {
         "hosts": hosts_overview, "host": host_detail, "host_history": host_history,
         "models": models, "profiles": profiles,
         "alarms": alarms, "alarm_search": alarm_search, "alarm_history": alarm_history, "alert": alert,
+        "metric_snapshot": metric_snapshot,
         "energy": energy_summary, "flow": gateway.flow_payload,
         "runs": tools_runs, "speed": speed_table, "health": service_health,
-        "log_tail": log_tail, "config_get": config_get, "help": default_help, "audit": audit_rows,
+        "log_tail": log_tail, "config_get": config_get, "agent_config": agent_config, "help": default_help, "audit": audit_rows,
         "load": load, "unload": unload, "wake": wake, "restart": restart, "ack": base["ack"], "close": base["close"],
-        "pinned": pinned,
+        "resume": base.get("resume") or (lambda aid: (False, "resume is not wired")), "alarm_config": alarm_config, "probe": probe,
+        "pinned": pinned, "docs": docs_search,
+        "run_result": lambda rid: next(iter(tools_runs(None, 1, {"run_id": rid}) or []), None) if rid else None,
+        "card_result": card_result or (lambda jid: None),
+        "bench_start": bench_start or (lambda a: {"ok": False, "message": "benchmarks are not wired"}),
+        "bench_options": bench_options or (lambda a: []),
     }
+    return deps_out

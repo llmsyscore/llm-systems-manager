@@ -140,3 +140,43 @@ def test_age_formatting():
     assert db._fmt_age(45) == "45s"
     assert db._fmt_age(720) == "12m"
     assert db._fmt_age(7200) == "2.0h"
+
+
+def test_tower_job_returns_the_answer_and_splits_long_ones():
+    seen = []
+    deps = _deps(tower=lambda q, u: seen.append((q, u)) or {"ok": True, "text": "box is hot", "error": None})
+    out = db.run_job({"kind": "tower", "question": "why?", "user": "111"}, deps)
+    assert out == {"content": "box is hot", "extra": []} and seen == [("why?", "111")]
+    para = ("line " * 300).strip()
+    text = "\n\n".join([para] * 5)
+    out = db.run_job({"kind": "tower", "question": "q", "user": "1"},
+                     _deps(tower=lambda q, u: {"ok": True, "text": text}))
+    chunks = [out["content"]] + out["extra"]
+    assert len(chunks) == db.TOWER_CHUNKS and all(len(c) <= db.TOWER_CHUNK for c in chunks)
+    assert chunks[-1].endswith("… (answer truncated)") and chunks[0].startswith("line line")
+    assert db.run_job({"kind": "tower", "question": "q", "user": "1"},
+                      _deps(tower=lambda q, u: {"ok": True, "text": ""}))["content"] == "Tower had nothing to say."
+
+
+def test_tower_job_explains_failures_in_plain_words():
+    for err, words in (("no_model", "No chat model"), ("run_active", "still answering"),
+                       ("rate_limited", "Too many"), ("Tower is off.", "Tower is off.")):
+        out = db.run_job({"kind": "tower", "question": "q", "user": "1"},
+                         _deps(tower=lambda q, u, e=err: {"ok": False, "text": "", "error": e}))
+        assert words in out["content"] and out["extra"] == []
+    out = db.run_job({"kind": "tower", "question": "q", "user": "1"},
+                     _deps(tower=lambda q, u: {"ok": False, "text": "partial", "error": "Tower took too long to answer."}))
+    assert out["content"].startswith("partial") and "took too long" in out["content"]
+
+    def boom(q, u):
+        raise RuntimeError("x")
+    assert "Failed" in db.run_job({"kind": "tower", "question": "q", "user": "1"}, _deps(tower=boom))["content"]
+
+
+def test_tower_chunks_split_at_breaks_and_keep_short_text_whole():
+    assert db.tower_chunks("short") == ["short"]
+    assert db.tower_chunks("") == []
+    assert db.tower_chunks("a" * 1000 + "\n" + "b" * 1000) == ["a" * 1000, "b" * 1000]
+    solid = "z" * 4000
+    out = db.tower_chunks(solid, size=100, limit=2)
+    assert len(out) == 2 and len(out[0]) == 100 and out[1].endswith("… (answer truncated)") and len(out[1]) <= 100

@@ -11,7 +11,7 @@ import sqlite3
 import threading
 import time
 import uuid
-from typing import Callable, Optional
+from typing import Any, Callable, Optional
 
 import tower_tools
 
@@ -120,7 +120,13 @@ def alternate_model(current: dict, entries: "list[dict]") -> Optional[dict]:
     return _pick(others[0]) if others else None
 
 
-def native_supported(cfg, provider: str, server_args: Optional[str]) -> bool:
+def _args_native(server_args: Optional[str]) -> bool:
+    return bool(server_args and ("--jinja" in server_args or "--tools" in server_args))
+
+
+def native_supported(cfg, provider: str, server_args) -> bool:
+    """Whether every host serving the model takes native tool calls; `server_args` is one host's
+    llama-server args or a list of them, one per serving host (#952)."""
     mode = str(getattr(cfg, "tool_mode", "auto") or "auto")
     if mode == "native":
         return True
@@ -128,7 +134,9 @@ def native_supported(cfg, provider: str, server_args: Optional[str]) -> bool:
         return False
     if provider in ("vllm", "lms"):
         return True
-    return bool(server_args and ("--jinja" in server_args or "--tools" in server_args))
+    if isinstance(server_args, (list, tuple)):
+        return bool(server_args) and all(_args_native(a) for a in server_args)
+    return _args_native(server_args)
 
 
 # ── prompt + parsing ────────────────────────────────────────────────
@@ -180,6 +188,21 @@ def system_prompt(cfg, tools: "list[tower_tools.Tool]", page: Optional[dict], na
         parts.append("Prefer native function calls when you can; the fenced form works too.")
     parts.append("When you have what you need, answer in plain text without a tool block.")
     parts.append(f"Current local time: {local_now()}. Every timestamp a tool returns is in this local time zone.")
+    parts.append("LLM Systems Manager is developed by llmsyscore. When the operator asks who develops or made the product, or "
+                 "asks for help or support, or you cannot fully answer, call support and answer as a bulleted list, one item "
+                 "per line: developer, website, support email, repository, issues, docs, then what to include in a help "
+                 "request. Write URLs and the email address in full. For product features, setup or the API, call help: it "
+                 "searches the shipped docs. When an action needs time before its result exists (waking or loading a model, "
+                 "a benchmark), call wait_until to wait for it and then report the outcome. After waking or loading a model, "
+                 "never say it is loaded, reachable or available until wait_until model_ready (host, model) returned ok; "
+                 "report that probe's latency.")
+    parts.append("For an activity summary of a day: read alarms (status all, since that day, count 50), audit_log (since that "
+                 "day, count 100; read the next page with offset while next_offset is set), recent_runs (count 20), "
+                 "energy_summary (since that day; it already has per-host cost) and service_health (its backups section), then report by "
+                 "area: alerts, changes and actions, backups, tool runs and results, energy; the backups area is bullets (schedule, "
+                 "last run per component with its outcome, next due). An alarm summary covers alarms only. "
+                 "Report benchmark, report card and wait results as a list, one metric per line with its unit; accept rate "
+                 "and utilisation as percentages.")
     return "\n\n".join(parts)
 
 
@@ -347,12 +370,12 @@ class Approvals:
             p = self._pending.get(action_id)
             return bool(p and p["decision"] is None)
 
-    def resolve(self, action_id: str, decision: str, actor: str) -> bool:
+    def resolve(self, action_id: str, decision: str, actor: str, options: Optional[dict] = None) -> bool:
         with self._lock:
             p = self._pending.get(action_id)
             if not p or p["decision"] is not None:
                 return False
-            p["decision"] = {"status": decision, "actor": actor}
+            p["decision"] = {"status": decision, "actor": actor, "options": dict(options) if isinstance(options, dict) else {}}
             p["event"].set()
             return True
 
@@ -581,10 +604,27 @@ def _is_timeout(e: BaseException) -> bool:
     return getattr(e, "err_type", None) == "timeout"
 
 
+def _precheck(tool, args: dict) -> Optional[str]:
+    """The tool's precheck reason (skip the approval card), or None; a raising precheck lets the action ask."""
+    if tool.precheck is None:
+        return None
+    try:
+        return tool.precheck(args) or None
+    except Exception as e:  # noqa: BLE001 — the approval card still decides
+        log.warning("tower precheck failed for %s: %s", tool.name, type(e).__name__)
+        return None
+
+
 def _run_action(store, approvals: "Approvals", thread_id: str, run_id: str, actor: str, tool, args: dict,
                 emit: Callable[[dict], None], cancelled: Callable[[], bool]) -> "tuple[dict, bool]":
     """Parks the turn on an approval card; runs the act tool only on approval. Returns (result, ok)."""
     card = tower_tools.action_card(tool, args)
+    if tool.options is not None:
+        try:
+            card["options"] = list(tool.options(args) or [])
+        except Exception as e:  # noqa: BLE001 — a card without chips still asks
+            log.warning("tower action options failed for %s: %s", tool.name, type(e).__name__)
+            card["options"] = []
     aid = store.create_action(thread_id, run_id, tool.name, args, card, _APPROVAL_TTL_S)
     approvals.register(aid)
     target = str(args.get("host") or args.get("model") or args.get("alert") or "-")
@@ -621,6 +661,13 @@ def _run_action(store, approvals: "Approvals", thread_id: str, run_id: str, acto
             _trace(status, row.get("actor"), 0)
             return {"ok": False, "message": f"already {status}"}, False
         _trace("approved", decision["actor"])
+        picks, bad = tower_tools.apply_options(card, decision.get("options"))
+        if bad:
+            store.resolve_action(aid, "failed", actor=decision["actor"], result={"ok": False, "message": bad}, ms=0)
+            emit({**ev, "status": "failed", "message": bad, "ms": 0, "actor": decision["actor"]})
+            _trace("failed", decision["actor"], 0)
+            return {"ok": False, "message": bad}, False
+        args = {**args, **picks}
         _trace("running", decision["actor"])
         t0 = time.monotonic()
         result, ran = tower_tools.run_tool(tool, args)
@@ -635,13 +682,31 @@ def _run_action(store, approvals: "Approvals", thread_id: str, run_id: str, acto
         approvals.forget(aid)
 
 
-def run_turn(*, thread_id: str, user_text: str, page: Optional[dict], cfg, role: str, registry: dict,
-             complete_stream: Callable, store, emit: Callable[[dict], None],
-             model: dict, cancelled: Callable[[], bool], alternates: Optional[Callable[[dict], Optional[dict]]] = None,
-             server_args_of: Optional[Callable[[dict], Optional[str]]] = None,
-             approvals: Optional["Approvals"] = None, run_id: str = "", actor: str = "",
-             report_violation: Optional[Callable[[dict], None]] = None,
-             stop_recorded: Optional[Callable[[], bool]] = None) -> dict:
+def heartbeat_fn(complete_stream: Callable, model: dict) -> Callable[[], None]:
+    """A one-token completion that keeps an idle-sleeping Tower model awake during a long wait."""
+    def beat() -> None:
+        body = {"model": model["model"], "messages": [{"role": "user", "content": "."}], "max_tokens": 1, "temperature": 0}
+        for _chunk in complete_stream(body, label="tower-heartbeat"):
+            pass
+    return beat
+
+
+def run_turn(*, complete_stream: Callable, emit: Callable[[dict], None], model: dict, cancelled: Callable[[], bool], **kw) -> dict:
+    """One user turn with the waiting-tool context bound for its thread; see _run_turn."""
+    tower_tools.turn_begin(emit, cancelled, heartbeat_fn(complete_stream, model))
+    try:
+        return _run_turn(complete_stream=complete_stream, emit=emit, model=model, cancelled=cancelled, **kw)
+    finally:
+        tower_tools.turn_end()
+
+
+def _run_turn(*, thread_id: str, user_text: str, page: Optional[dict], cfg, role: str, registry: dict,
+              complete_stream: Callable, store, emit: Callable[[dict], None],
+              model: dict, cancelled: Callable[[], bool], alternates: Optional[Callable[[dict], Optional[dict]]] = None,
+              server_args_of: Optional[Callable[[dict], Any]] = None,
+              approvals: Optional["Approvals"] = None, run_id: str = "", actor: str = "",
+              report_violation: Optional[Callable[[dict], None]] = None,
+              stop_recorded: Optional[Callable[[], bool]] = None) -> dict:
     """One user turn: every model call streams; tool reads loop until a plain-text answer.
     A first-token timeout may hand this one question to `alternates(model)` when cfg.fallback is on.
     `stop_recorded` is True when Stop already stored the turn's stop line (#961)."""
@@ -675,7 +740,7 @@ def run_turn(*, thread_id: str, user_text: str, page: Optional[dict], cfg, role:
     retried_length = False
     model_calls = 0
     last_tool: Optional[str] = None
-    cap = int(getattr(cfg, "max_tool_calls", 8))
+    cap = int(getattr(cfg, "max_tool_calls", 16))
 
     def _end(ok: bool, note_txt: str = "", exc: str = "") -> None:
         """One turn-end DEBUG line; exc names the exception class on the error paths."""
@@ -765,7 +830,7 @@ def run_turn(*, thread_id: str, user_text: str, page: Optional[dict], cfg, role:
                 if length_stop and not retried_length:
                     # thinking ate the token cap: one wider retry that asks for the answer
                     retried_length = True
-                    base["max_tokens"] = min(8192, 2 * int(base["max_tokens"]))
+                    base["max_tokens"] = min(MAX_TOKENS_CAP, 2 * int(base["max_tokens"]))
                     note = "; ".join(x for x in (note, "retried after a length stop") if x)
                     messages.append({"role": "assistant", "content": msg.get("content") or ""})
                     messages.append({"role": "user", "content": "You ran out of room while thinking. "
@@ -814,6 +879,8 @@ def run_turn(*, thread_id: str, user_text: str, page: Optional[dict], cfg, role:
                     result, ok, summary = {"error": err}, False, f"{name} · {err}"
                 elif tool.kind == "act" and approvals is None:
                     result, ok, summary = {"error": f"{name} needs an approval channel"}, False, f"{name} · no approval channel"
+                elif tool.kind == "act" and (skip := _precheck(tool, args)):
+                    result, ok, summary = {"ok": False, "message": skip}, False, f"{name} · {skip}"
                 elif tool.kind == "act":
                     result, ok = _run_action(store, approvals, thread_id, run_id, actor, tool, args, emit, cancelled)
                     summary, acted = "", True
@@ -859,7 +926,7 @@ def run_turn(*, thread_id: str, user_text: str, page: Optional[dict], cfg, role:
 
 _INSIGHT_COLS = ("id", "alert_id", "rule", "host", "severity", "summary", "detail", "suggested_action",
                  "playbook_id", "playbook_title", "playbook_safe", "steps", "checks", "thread_id", "status",
-                 "created", "resolved", "applied_by", "result", "seen_at")
+                 "created", "resolved", "applied_by", "result", "seen_at", "snapshot")
 _INSIGHT_SELECT = "SELECT " + ", ".join(_INSIGHT_COLS) + " FROM tower_insights"
 _UNSEEN = "seen_at IS NULL AND status IN ('new','applied')"
 
@@ -867,7 +934,7 @@ _UNSEEN = "seen_at IS NULL AND status IN ('new','applied')"
 def _insight_row(r) -> dict:
     d = {k: r[k] for k in _INSIGHT_COLS}
     d["playbook_safe"] = None if d["playbook_safe"] is None else bool(d["playbook_safe"])
-    for k, empty in (("steps", []), ("checks", []), ("result", None)):
+    for k, empty in (("steps", []), ("checks", []), ("result", None), ("snapshot", None)):
         try:
             d[k] = json.loads(d[k]) if d[k] else empty
         except (TypeError, ValueError):
@@ -936,11 +1003,13 @@ class Store:
             id TEXT PRIMARY KEY, alert_id TEXT NOT NULL UNIQUE, rule TEXT, host TEXT, severity TEXT,
             summary TEXT, detail TEXT, suggested_action TEXT, playbook_id TEXT, playbook_title TEXT,
             playbook_safe INTEGER, steps TEXT, checks TEXT, thread_id TEXT, status TEXT NOT NULL,
-            created REAL, resolved REAL, applied_by TEXT, result TEXT, seen_at REAL);
+            created REAL, resolved REAL, applied_by TEXT, result TEXT, seen_at REAL, snapshot TEXT);
         CREATE INDEX IF NOT EXISTS idx_tower_insights_status ON tower_insights(status, created);
         """)
-        if "seen_at" not in {r[1] for r in c.execute("PRAGMA table_info(tower_insights)").fetchall()}:
-            c.execute("ALTER TABLE tower_insights ADD COLUMN seen_at REAL")
+        have = {r[1] for r in c.execute("PRAGMA table_info(tower_insights)").fetchall()}
+        for col, typ in (("seen_at", "REAL"), ("snapshot", "TEXT")):
+            if col not in have:
+                c.execute(f"ALTER TABLE tower_insights ADD COLUMN {col} {typ}")
         # No worker survives a restart, so any row it left mid-flight is unresolvable.
         c.execute("UPDATE tower_actions SET status='expired', resolved=?, result=? WHERE status IN ('pending','running')",
                   (time.time(), json.dumps({"ok": False, "message": "manager restarted"})))
@@ -960,6 +1029,16 @@ class Store:
     def list_threads(self, user: str) -> "list[dict]":
         rows = self._conn().execute("SELECT id, title, created, updated FROM tower_threads WHERE user=? ORDER BY updated DESC LIMIT 100", (user,)).fetchall()
         return [{"id": r[0], "title": r[1], "created": r[2], "updated": r[3]} for r in rows]
+
+    def list_discord_threads(self) -> "list[dict]":
+        """Threads the Discord /tower command created, newest first, each with its discord:<id> user (#996)."""
+        rows = self._conn().execute("SELECT id, user, title, created, updated FROM tower_threads WHERE user LIKE 'discord:%'"
+                                    " ORDER BY updated DESC LIMIT 100").fetchall()
+        return [{"id": r[0], "user": r[1], "title": r[2], "created": r[3], "updated": r[4]} for r in rows]
+
+    def thread_user(self, tid: str) -> Optional[str]:
+        r = self._conn().execute("SELECT user FROM tower_threads WHERE id=?", (tid,)).fetchone()
+        return str(r[0]) if r else None
 
     def get_thread(self, user: str, tid: str) -> Optional[dict]:
         r = self._conn().execute("SELECT id, title, created, updated, page_ctx FROM tower_threads WHERE user=? AND id=?", (user, tid)).fetchone()
@@ -1088,13 +1167,14 @@ class Store:
             c = self._conn()
             cur = c.execute(
                 "INSERT OR IGNORE INTO tower_insights (id, alert_id, rule, host, severity, summary, detail, suggested_action,"
-                " playbook_id, playbook_title, playbook_safe, steps, checks, thread_id, status, created)"
-                " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                " playbook_id, playbook_title, playbook_safe, steps, checks, thread_id, status, created, snapshot)"
+                " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (iid, str(row["alert_id"]), row.get("rule"), row.get("host"), row.get("severity"),
                  str(row.get("summary") or "")[:160], row.get("detail"), row.get("suggested_action"),
                  row.get("playbook_id"), row.get("playbook_title"), None if safe is None else int(bool(safe)),
                  json.dumps(row.get("steps") or [], default=str), json.dumps(row.get("checks") or [], default=str),
-                 row.get("thread_id"), row.get("status") or "new", float(row.get("created") or time.time())))
+                 row.get("thread_id"), row.get("status") or "new", float(row.get("created") or time.time()),
+                 json.dumps(row["snapshot"], default=str) if row.get("snapshot") else None))
             c.commit()
         return iid if cur.rowcount else None
 
@@ -1171,6 +1251,8 @@ _STREAM_TICK_S = 1.0
 _STREAM_MAX_S = 180.0
 _DETACH_GRACE_S = 30.0
 _RUN_TTL_S = 600.0
+_QUEUE_MAX = 4096
+MAX_TOKENS_CAP = 32768
 _RATE_PER_MIN = 10
 _RATE_WINDOW_S = 60.0
 _SWEEP_EVERY_S = 86400.0
@@ -1267,7 +1349,9 @@ class Runs:
         run = self._runs.get(active) if active else None
         return run if run and not run["done"] else None
 
-    def start(self, *, user: str, role: str, thread_id: str, text: str, page: dict) -> "tuple[Optional[str], Optional[tuple[int, str]]]":
+    def start(self, *, user: str, role: str, thread_id: str, text: str, page: dict,
+              cfg=None, actor: Optional[str] = None) -> "tuple[Optional[str], Optional[tuple[int, str]]]":
+        """`cfg` overrides the live settings view for this turn (Discord asks run read-only); `actor` the audit name."""
         now = _now()
         with self._lock:
             self._gc(now)
@@ -1295,7 +1379,7 @@ class Runs:
             if self._active_run(user):
                 return None, (409, "run_active")
             rid = uuid.uuid4().hex[:16]
-            run = {"id": rid, "user": user, "thread_id": thread_id, "queue": queue.Queue(maxsize=512),
+            run = {"id": rid, "user": user, "thread_id": thread_id, "queue": queue.Queue(maxsize=_QUEUE_MAX),
                    "done": False, "truncated": False, "cancel": threading.Event(),
                    "started": _now(), "model": model, "awaiting": None, "finished": None, "stopped": False}
             self._runs[rid] = run
@@ -1304,12 +1388,12 @@ class Runs:
 
         def _work():
             try:
-                run_turn(thread_id=thread_id, user_text=text, page=page, cfg=self._cfg(), role=role,
+                run_turn(thread_id=thread_id, user_text=text, page=page, cfg=cfg or self._cfg(), role=role,
                          registry=self._registry_factory(), complete_stream=self._cs,
                          store=self._store, emit=lambda ev: self._emit(run, ev), model=model,
                          cancelled=run["cancel"].is_set, server_args_of=self._server_args_of,
                          alternates=lambda cur: alternate_model(cur, (_gateway_entries or self._entries)()),
-                         approvals=self._approvals, run_id=rid, actor=user,
+                         approvals=self._approvals, run_id=rid, actor=actor or user,
                          report_violation=self._report_violation,
                          stop_recorded=lambda: bool(run.get("stopped")))
             except Exception as e:
@@ -1339,13 +1423,23 @@ class Runs:
         r = self._active_run(user)
         return r["id"] if r and r["thread_id"] == thread_id else None
 
+    def park(self, rid: str, user: str) -> bool:
+        """Keeps a run alive with no listener: the client moved to another conversation and will re-attach later (#994)."""
+        r = self.get(rid, user)
+        if not r:
+            return False
+        r["parked"] = True
+        log.debug("tower run %s parked", rid)
+        return True
+
     def _detach(self, run: dict) -> None:
-        """A client that leaves mid-run gets _DETACH_GRACE_S to come back (a page reload) before the run is cancelled."""
+        """A client that leaves mid-run gets _DETACH_GRACE_S to come back (a page reload) before the run is cancelled;
+        a parked run is never cancelled this way."""
         token = object()
         run["detached"] = token
 
         def later():
-            if run.get("detached") is token and not run["done"]:
+            if run.get("detached") is token and not run["done"] and not run.get("parked"):
                 run["cancel"].set()
                 log.debug("tower run %s cancelled: client gone for %.0fs", run["id"], _DETACH_GRACE_S)
         t = threading.Timer(_DETACH_GRACE_S, later)
@@ -1374,9 +1468,10 @@ class Runs:
             log.debug("tower stop run=%s released=True", rid)
         return True
 
-    def approve(self, aid: str, *, user: str, role: str, decision: str) -> "tuple[Optional[dict], Optional[tuple[int, str]]]":
+    def approve(self, aid: str, *, user: str, role: str, decision: str,
+                options: Optional[dict] = None) -> "tuple[Optional[dict], Optional[tuple[int, str]]]":
         """Resolves one pending action for its owner; an approval also re-checks the tool
-        against the live tier and role (a denial is always allowed)."""
+        against the live tier and role (a denial is always allowed). `options` are the card's chip picks."""
         a = self._store.get_action(aid)
         if not a or not self._store.get_thread(user, a["thread_id"]):
             return None, (404, "unknown action")
@@ -1386,7 +1481,7 @@ class Runs:
             allowed = {t.name for t in tower_tools.catalog(self._registry_factory(), self._cfg(), role)}
             if a["tool"] not in allowed:
                 return None, (403, "not allowed")
-        if not self._approvals.resolve(aid, decision, user):
+        if not self._approvals.resolve(aid, decision, user, options):
             if self._approvals.known(aid):
                 return None, (409, "not pending")
             self._store.resolve_action(aid, "expired", result={"ok": False, "message": "approval expired"})
@@ -1397,6 +1492,7 @@ class Runs:
         started = time.monotonic()
         reason = "client_gone"
         run["detached"] = None
+        run["parked"] = False
         log.debug("tower stream attach run=%s", run["id"])
         try:
             while True:
@@ -1405,6 +1501,10 @@ class Runs:
                     reason = "error"
                     return
                 if time.monotonic() - started > self._stream_max_s():
+                    if not run["done"]:
+                        yield "data: " + json.dumps({"event": "reattach"}) + "\n\n"
+                        reason = "reattach"
+                        return
                     yield "data: " + json.dumps({"event": "error", "message": "Stream timed out."}) + "\n\n"
                     reason = "timeout"
                     return
@@ -1428,6 +1528,77 @@ class Runs:
                 self._detach(run)
 
 
+# ── blocking ask (Discord /tower, #963) ─────────────────────────────
+
+_ASK_WAIT_S = 180.0
+_ASK_THREAD_REUSE_S = 3600.0
+_ASK_NEEDS_APPROVAL = "That needs an approval in the dashboard; nothing was changed."
+_ASK_TOO_LONG = "Tower took too long to answer."
+
+
+class ReadOnlyView:
+    """A settings view pinned to the read tier; every other field reads through to the live config."""
+    capabilities = "read"
+
+    def __init__(self, cfg):
+        self._cfg = cfg
+
+    def __getattr__(self, name):
+        return getattr(self._cfg, name)
+
+
+def recent_thread(store: Store, user: str, now: float, within_s: float = _ASK_THREAD_REUSE_S) -> Optional[str]:
+    """The user's newest thread when it was touched within `within_s`, else None."""
+    rows = store.list_threads(user)
+    if rows and now - float(rows[0].get("updated") or 0) <= within_s:
+        return str(rows[0]["id"])
+    return None
+
+
+def ask_blocking(runs: Runs, *, user: str, role: str, text: str, page: Optional[dict] = None, cfg=None,
+                 actor: Optional[str] = None, wait_s: float = _ASK_WAIT_S, thread_id: Optional[str] = None) -> dict:
+    """Runs one turn and waits for the answer text; a recent thread of the user's is continued.
+    Returns {ok, text, error, thread_id}; an action card is declined (no approval UI here), the wait limit stops the run."""
+    text = " ".join(str(text or "").split())[:4000]
+    if not text:
+        return {"ok": False, "text": "", "error": "text required", "thread_id": None}
+    tid = thread_id or recent_thread(runs.store, user, time.time()) or runs.store.create_thread(user, text[:60], page)
+    rid, err = runs.start(user=user, role=role, thread_id=tid, text=text, page=page or {}, cfg=cfg, actor=actor)
+    if err:
+        return {"ok": False, "text": "", "error": err[1], "thread_id": tid}
+    run = runs.get(rid, user)
+    parts: list = []
+    error: Optional[str] = None
+    declined = False
+    deadline = time.monotonic() + wait_s
+    while True:
+        if time.monotonic() > deadline:
+            runs.stop(rid, user)
+            error = _ASK_TOO_LONG
+            break
+        try:
+            ev = run["queue"].get(timeout=1.0)
+        except queue.Empty:
+            if run["done"] and run["queue"].empty():
+                break
+            continue
+        kind = ev.get("event")
+        if kind == "delta":
+            parts.append(str(ev.get("text") or ""))
+        elif kind == "error":
+            error = str(ev.get("message") or "Tower failed.")
+            break
+        elif kind == "confirm":
+            declined = True
+            runs.approve(str(ev.get("action_id") or ""), user=user, role=role, decision="denied")
+        elif kind == "done":
+            break
+    answer = "".join(parts).strip()
+    if declined and error is None:
+        error = _ASK_NEEDS_APPROVAL
+    return {"ok": error is None, "text": answer, "error": error, "thread_id": tid}
+
+
 # ── routes ──────────────────────────────────────────────────────────
 
 def register_routes(app, ctx, *, runs: Runs, gateway_entries, write_setting) -> Runs:
@@ -1445,6 +1616,14 @@ def register_routes(app, ctx, *, runs: Runs, gateway_entries, write_setting) -> 
 
     def _user() -> str:
         return session_user(session)
+
+    def _owner(tid: str) -> str:
+        """The user a thread route acts as: the session user, or the Discord user for an admin opening a Discord thread (#996)."""
+        u = _user()
+        owner = runs.store.thread_user(tid)
+        if owner and owner != u and owner.startswith("discord:") and auth.effective_role() == "admin":
+            return owner
+        return u
 
     def _gate():
         if not _enabled():
@@ -1474,21 +1653,25 @@ def register_routes(app, ctx, *, runs: Runs, gateway_entries, write_setting) -> 
     def tower_threads():
         deny = _gate()
         if deny: return deny
-        return jsonify({"ok": True, "threads": runs.store.list_threads(_user())})
+        out = {"ok": True, "threads": runs.store.list_threads(_user())}
+        if auth.effective_role() == "admin":
+            out["discord"] = runs.store.list_discord_threads()
+        return jsonify(out)
 
     @app.route("/api/tower/threads", methods=["POST"])
     def tower_thread_create():
         deny = _gate()
         if deny: return deny
         body = flask_request.get_json(silent=True) or {}
-        tid = runs.store.create_thread(_user(), "New thread", _clean_page(body.get("page")))
+        title = " ".join(str(body.get("title") or "").split())[:60] or "New thread"
+        tid = runs.store.create_thread(_user(), title, _clean_page(body.get("page")))
         return jsonify({"ok": True, "thread": runs.store.get_thread(_user(), tid)})
 
     @app.route("/api/tower/threads/<tid>", methods=["GET"])
     def tower_thread_get(tid):
         deny = _gate()
         if deny: return deny
-        t = runs.store.get_thread(_user(), tid)
+        t = runs.store.get_thread(_owner(tid), tid)
         if not t:
             return jsonify({"ok": False, "error": "unknown thread"}), 404
         return jsonify({"ok": True, "thread": t, "messages": runs.store.messages(tid),
@@ -1502,15 +1685,16 @@ def register_routes(app, ctx, *, runs: Runs, gateway_entries, write_setting) -> 
         title = " ".join(str(body.get("title") or "").split())[:60]
         if not title:
             return jsonify({"ok": False, "error": "title required"}), 400
-        if not runs.store.rename_thread(_user(), tid, title):
+        owner = _owner(tid)
+        if not runs.store.rename_thread(owner, tid, title):
             return jsonify({"ok": False, "error": "unknown thread"}), 404
-        return jsonify({"ok": True, "thread": runs.store.get_thread(_user(), tid)})
+        return jsonify({"ok": True, "thread": runs.store.get_thread(owner, tid)})
 
     @app.route("/api/tower/threads/<tid>", methods=["DELETE"])
     def tower_thread_delete(tid):
         deny = _gate()
         if deny: return deny
-        if not runs.store.delete_thread(_user(), tid):
+        if not runs.store.delete_thread(_owner(tid), tid):
             return jsonify({"ok": False, "error": "unknown thread"}), 404
         return jsonify({"ok": True})
 
@@ -1518,7 +1702,7 @@ def register_routes(app, ctx, *, runs: Runs, gateway_entries, write_setting) -> 
     def tower_message(tid):
         deny = _gate()
         if deny: return deny
-        if not runs.store.get_thread(_user(), tid):
+        if not runs.store.get_thread(_owner(tid), tid):
             return jsonify({"ok": False, "error": "unknown thread"}), 404
         body = flask_request.get_json(silent=True) or {}
         text = str(body.get("text") or "").strip()[:4000]
@@ -1554,11 +1738,21 @@ def register_routes(app, ctx, *, runs: Runs, gateway_entries, write_setting) -> 
             return jsonify({"ok": False, "error": "unknown run"}), 404
         return jsonify({"ok": True})
 
+    @app.route("/api/tower/runs/<rid>/park", methods=["POST"])
+    def tower_run_park(rid):
+        deny = _gate()
+        if deny: return deny
+        if not runs.park(rid, _user()):
+            return jsonify({"ok": False, "error": "unknown run"}), 404
+        return jsonify({"ok": True})
+
     def _decide(aid: str, decision: str):
         deny = _gate()
         if deny: return deny
         user = _user()
-        out, err = runs.approve(aid, user=user, role=auth.effective_role() or "operator", decision=decision)
+        body = flask_request.get_json(silent=True) or {}
+        opts = body.get("options") if isinstance(body.get("options"), dict) else None
+        out, err = runs.approve(aid, user=user, role=auth.effective_role() or "operator", decision=decision, options=opts)
         g._audit_actor = f"tower via {user}"
         if err:
             return jsonify({"ok": False, "error": err[1]}), err[0]

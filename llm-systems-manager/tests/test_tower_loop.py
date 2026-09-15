@@ -58,14 +58,15 @@ def test_parse_ignores_a_tool_fence_nested_in_another_code_block():
 
 
 def _deps():
-    return {"host": lambda n, section="all": {"hostname": n, "gpu_temp_c": 91}, "host_history": lambda h, m, w="24h": {"points": 0},
+    return {"host": lambda n, section="all": {"hostname": n, "gpu_temp_c": 91}, "host_history": lambda h, m, w="24h", a=None: {"points": 0},
             "hosts": lambda *a, **k: [], "models": lambda h=None, p=None: [],
-            "alarms": lambda s="active", c=10, w=None, h=None, r=None: [{"id": "a1"}], "alert": lambda a: None,
+            "alarms": lambda s="active", c=10, w=None, h=None, r=None: [{"id": "a1"}],
+            "alert": lambda a: {"id": a, "status": "active"} if a == "a1" else None,
             "alarm_search": lambda a: {"alerts": [{"id": "a1"}], "total": 1, "offset": 0, "next_offset": None},
-            "alarm_history": lambda w="30d", g="rule", t=10, h=None, r=None, a=None: {"total": 1}, "energy": lambda w="today": {},
-            "flow": lambda: {}, "runs": lambda t=None, c=5: [], "speed": lambda m: [], "health": lambda: {},
+            "alarm_history": lambda w="30d", g="rule", t=10, h=None, r=None, a=None: {"total": 1}, "energy": lambda w="today", a=None: {},
+            "flow": lambda: {}, "runs": lambda t=None, c=5, a=None: [], "speed": lambda m: [], "health": lambda: {},
             "log_tail": lambda h, p="llama", n=40, a=None: [], "config_get": lambda p: {}, "help": lambda t: "",
-            "audit": lambda w="24h", a=None, ac=None, c=20: [],
+            "audit": lambda w="24h", a=None, ac=None, c=20, x=None: [],
             "wake": lambda h: (h == "box", None if h == "box" else "unknown host"), "ack": lambda a: (True, None),
             "load": lambda p, h, m: (True, None), "unload": lambda p, h, m: (True, None),
             "restart": lambda p, h: (True, None), "close": lambda a: (True, None),
@@ -82,7 +83,7 @@ class _TimeoutError(RuntimeError):
 
 
 def _run(script, cfg=None, user_text="why is box red?", store=None, cancelled=None, alternates=None,
-         approvals=None, role="operator", report_violation=None):
+         approvals=None, role="operator", report_violation=None, registry=None):
     """script: list of assistant messages the fake model returns, in order, delivered as
     stream deltas — "content" char by char, "chunks" verbatim as given, or one tool_calls
     delta chunk per native reply (one fragment per entry, each keeping its own index)."""
@@ -115,7 +116,7 @@ def _run(script, cfg=None, user_text="why is box red?", store=None, cancelled=No
     st = store or tower.Store(":memory:")
     tid = st.create_thread("adriel", "t", {})
     out = tower.run_turn(thread_id=tid, user_text=user_text, page={"tab": "overall"}, cfg=cfg or _cfg(), role=role,
-                         registry=_registry(), complete_stream=complete_stream,
+                         registry=registry or _registry(), complete_stream=complete_stream,
                          store=st, emit=events.append, model={"model": "qwen3-14b", "provider": "llama", "hosts": ["box"]},
                          cancelled=cancelled or (lambda: False), alternates=alternates,
                          approvals=approvals, run_id="r1", actor="adriel", report_violation=report_violation)
@@ -741,6 +742,35 @@ def test_stop_while_awaiting_denies_the_action():
     assert st.get_action(aid)["status"] == "denied" and st.get_action(aid)["actor"] == "stopped"
 
 
+def test_ack_on_an_already_handled_alert_skips_the_approval_card(monkeypatch):
+    ap = tower.Approvals()
+    deps = {**_deps(), "alert": lambda a: {"id": a, "status": "acknowledged"}}
+    out, events, seen, st, tid = _run([
+        {"content": '```tool\n{"name":"ack_alert","args":{"alert_id":"a1"}}\n```'},
+        {"content": "It was already acknowledged."},
+    ], cfg=_cfg(capabilities="operate"), approvals=ap, registry=tt.build_registry(deps))
+    kinds = [e["event"] for e in events]
+    assert "confirm" not in kinds and "action" not in kinds
+    tool_ev = next(e for e in events if e["event"] == "tool")
+    assert tool_ev["ok"] is False and tool_ev["result"] == {"ok": False, "message": "alert a1 is already acknowledged"}
+    assert tool_ev["summary"] == "ack_alert · alert a1 is already acknowledged"
+    fed = next(m for m in seen["payloads"][1]["messages"] if "Result of ack_alert" in (m.get("content") or ""))
+    assert "already acknowledged" in fed["content"]
+
+
+def test_a_raising_precheck_still_asks_for_approval(monkeypatch):
+    monkeypatch.setattr(tower, "_APPROVAL_TTL_S", 2.0)
+    ap = tower.Approvals()
+    _approve_later(ap, "approved")
+    deps = {**_deps(), "alert": lambda a: (_ for _ in ()).throw(RuntimeError("ae down"))}
+    out, events, *_ = _run([
+        {"content": '```tool\n{"name":"close_alert","args":{"alert_id":"a1"}}\n```'},
+        {"content": "Closed."},
+    ], cfg=_cfg(capabilities="operate"), approvals=ap, registry=tt.build_registry(deps))
+    kinds = [e["event"] for e in events]
+    assert "confirm" in kinds and next(e for e in events if e["event"] == "action")["status"] == "done"
+
+
 def test_act_tool_without_approvals_is_refused_as_data():
     out, events, seen, st, tid = _run([
         {"content": '```tool\n{"name":"wake_server","args":{"host":"box"}}\n```'},
@@ -883,7 +913,12 @@ def test_length_retry_respects_the_max_tokens_ceiling():
         {"content": "", "finish": "length"},
         {"content": "ok."},
     ], cfg=_cfg(max_tokens=8192))
-    assert seen["payloads"][1]["max_tokens"] == 8192
+    assert seen["payloads"][1]["max_tokens"] == 16384
+    out, events, seen, st, tid = _run([
+        {"content": "", "finish": "length"},
+        {"content": "ok."},
+    ], cfg=_cfg(max_tokens=tower.MAX_TOKENS_CAP))
+    assert seen["payloads"][1]["max_tokens"] == tower.MAX_TOKENS_CAP == 32768
 
 
 def test_reasoning_only_reply_gives_a_specific_hint():
@@ -1502,3 +1537,208 @@ def test_resolve_model_prefers_an_awake_model_over_a_sleeping_pin():
     assert tower.resolve_model(_cfg(model="qwen3-14b"), entries)["model"] == "qwen3-14b"
     assert tower.resolve_model(_cfg(model="gemma-4"), entries)["model"] == "qwen3-14b"     # awake non-pin beats the sleeping pin
     assert tower.resolve_model(_cfg(), [{"id": "x", "provider": "lms", "status": {"value": "unloaded"}}]) is None
+
+
+# ── #952 native capability follows every serving host; #963 blocking ask ──
+
+def test_native_supported_follows_every_serving_host():
+    cfg = _cfg(tool_mode="auto")
+    assert tower.native_supported(cfg, "llama", ["--jinja", "--host x --jinja"]) is True
+    assert tower.native_supported(cfg, "llama", ["--jinja", "--host x"]) is False
+    assert tower.native_supported(cfg, "llama", ["--jinja", None]) is False
+    assert tower.native_supported(cfg, "llama", []) is False
+    assert tower.native_supported(cfg, "llama", "--tools all") is True
+    assert tower.native_supported(cfg, "lms", []) is True
+    assert tower.native_supported(_cfg(tool_mode="native"), "llama", [None]) is True
+    assert tower.native_supported(_cfg(tool_mode="prompt"), "llama", ["--jinja"]) is False
+
+
+def test_mixed_hosts_send_the_prompt_form_not_native_tools():
+    calls = []
+    def cs(body, *, label, **kw):
+        calls.append(body)
+        yield {"choices": [{"delta": {"content": "hi"}}]}
+    st = tower.Store(":memory:")
+    tid = st.create_thread("adriel", "t", {})
+    model = {"model": "qwen3-14b", "provider": "llama", "hosts": ["box", "mac"], "agent_ids": ["a1", "a2"]}
+    tower.run_turn(thread_id=tid, user_text="q", page={}, cfg=_cfg(tool_mode="auto"), role="operator", registry=_registry(),
+                   complete_stream=cs, store=st, emit=lambda e: None, model=model, cancelled=lambda: False,
+                   server_args_of=lambda m: ["llama-server --jinja", "llama-server -m x.gguf"])
+    assert "tools" not in calls[0]
+
+
+def _runs(script, cfg=None, entries=None):
+    st = tower.Store(":memory:")
+    calls = iter(script)
+    def cs(body, *, label, **kw):
+        msg = next(calls)
+        for ch in msg.get("content") or "":
+            yield {"choices": [{"delta": {"content": ch}}]}
+    c = cfg or _cfg()
+    ent = [{"id": "qwen3-14b", "provider": "llama", "status": {"value": "loaded"}, "hosts": ["box"]}] if entries is None else entries
+    runs = tower.Runs(st, registry_factory=_registry, complete_stream=cs, entries=lambda: ent,
+                      server_args_of=lambda m: None, cfg=lambda: c)
+    return runs, st
+
+
+def test_ask_blocking_answers_and_continues_the_recent_thread(monkeypatch):
+    monkeypatch.setattr(tower, "_gateway_entries", None)
+    runs, st = _runs([{"content": "box is hot"}, {"content": "still hot"}])
+    out = tower.ask_blocking(runs, user="discord:1", role="operator", text="why  is box red?",
+                             cfg=tower.ReadOnlyView(_cfg(capabilities="admin")), actor="tower via discord:1")
+    assert out["ok"] is True and out["text"] == "box is hot" and out["error"] is None
+    again = tower.ask_blocking(runs, user="discord:1", role="operator", text="and now?")
+    assert again["thread_id"] == out["thread_id"] and again["text"] == "still hot"
+    assert [m["role"] for m in st.messages(out["thread_id"])] == ["user", "assistant", "user", "assistant"]
+    assert st.list_threads("discord:1")[0]["title"] == "why is box red?"
+    assert tower.recent_thread(st, "discord:1", time.time() + 7200) is None
+
+
+def test_ask_blocking_reports_no_model_and_a_blank_question(monkeypatch):
+    monkeypatch.setattr(tower, "_gateway_entries", None)
+    runs, _ = _runs([], entries=[])
+    assert tower.ask_blocking(runs, user="d", role="operator", text="hi")["error"] == "no_model"
+    assert tower.ask_blocking(runs, user="d", role="operator", text="  ")["error"] == "text required"
+
+
+def test_ask_blocking_stops_a_turn_that_parks_on_an_approval(monkeypatch):
+    monkeypatch.setattr(tower, "_gateway_entries", None)
+    script = [{"content": '```tool\n{"name": "wake_server", "args": {"host": "box"}}\n```'}, {"content": "Declined, so nothing changed."}]
+    runs, st = _runs(script, cfg=_cfg(capabilities="operate"))
+    out = tower.ask_blocking(runs, user="d", role="operator", text="wake box")
+    assert out["ok"] is False and out["error"] == tower._ASK_NEEDS_APPROVAL and out["text"] == "Declined, so nothing changed."
+    acts = st._conn().execute("SELECT status, actor FROM tower_actions WHERE thread_id=?", (out["thread_id"],)).fetchall()
+    assert [tuple(a) for a in acts] == [("denied", "d")]
+    run = next(iter(runs._runs.values()))
+    deadline = time.time() + 2
+    while not run["done"] and time.time() < deadline:
+        time.sleep(0.02)
+    assert run["done"] and runs._active_run("d") is None
+
+
+def test_ask_blocking_gives_up_after_the_wait_limit(monkeypatch):
+    monkeypatch.setattr(tower, "_gateway_entries", None)
+    def slow(body, *, label, **kw):
+        time.sleep(0.6)
+        yield {"choices": [{"delta": {"content": "late"}}]}
+    st = tower.Store(":memory:")
+    ent = [{"id": "qwen3-14b", "provider": "llama", "status": {"value": "loaded"}, "hosts": ["box"]}]
+    runs = tower.Runs(st, registry_factory=_registry, complete_stream=slow, entries=lambda: ent,
+                      server_args_of=lambda m: None, cfg=_cfg)
+    out = tower.ask_blocking(runs, user="d", role="operator", text="hi", wait_s=0.2)
+    assert out["ok"] is False and out["error"] == tower._ASK_TOO_LONG
+
+
+def test_read_only_view_pins_the_read_tier():
+    v = tower.ReadOnlyView(_cfg(capabilities="admin", max_tokens=99))
+    assert v.capabilities == "read" and v.max_tokens == 99
+
+
+# ── #1002 approval with option picks ──
+
+def _approve_with(approvals, options, delay=0.05, actor="adriel"):
+    def go():
+        deadline = time.time() + 2
+        while time.time() < deadline:
+            ids = list(approvals._pending)
+            if ids:
+                approvals.resolve(ids[0], "approved", actor, options); return
+            time.sleep(0.01)
+    threading.Thread(target=go, daemon=True).start()
+
+
+def _bench_deps(seen):
+    return {**_deps(), "bench_start": lambda a: seen.append(dict(a)) or {"ok": True, "message": "started"},
+            "bench_options": lambda a: [{"name": "bench", "label": "Bench set", "choices": [{"value": "qualitative"}, {"value": "throughput_1k"}], "value": "qualitative"},
+                                        {"name": "osl", "label": "Output length", "choices": ["256", "1024"], "value": "1024"}]}
+
+
+def test_approval_option_picks_reach_the_tool_after_validation(monkeypatch):
+    monkeypatch.setattr(tower, "_APPROVAL_TTL_S", 2.0)
+    ap = tower.Approvals()
+    seen = []
+    _approve_with(ap, {"bench": "throughput_1k", "extra": "ignored"})
+    script = [{"content": '```tool\n{"name":"start_benchmark","args":{"kind":"live","host":"box","model":"qwen3"}}\n```'}, {"content": "Started."}]
+    st = tower.Store(":memory:")
+    tid = st.create_thread("adriel", "t", {})
+    events = []
+    tower.run_turn(thread_id=tid, user_text="bench it", page={}, cfg=_cfg(capabilities="operate"), role="operator",
+                   registry=tt.build_registry(_bench_deps(seen)), complete_stream=_stream_of(script), store=st,
+                   emit=events.append, model={"model": "qwen3", "provider": "llama", "hosts": ["box"]}, cancelled=lambda: False,
+                   approvals=ap, run_id="r1", actor="adriel")
+    confirm = next(e for e in events if e["event"] == "confirm")
+    assert [o["name"] for o in confirm["card"]["options"]] == ["bench", "osl"]
+    assert st.get_action(confirm["action_id"])["card"]["options"][0]["value"] == "qualitative"
+    assert seen == [{"kind": "live", "host": "box", "model": "qwen3", "bench": "throughput_1k", "osl": "1024"}]
+    assert next(e for e in events if e["event"] == "action")["status"] == "done"
+
+
+def test_approval_with_a_pick_outside_the_choices_fails_the_action(monkeypatch):
+    monkeypatch.setattr(tower, "_APPROVAL_TTL_S", 2.0)
+    ap = tower.Approvals()
+    seen = []
+    _approve_with(ap, {"osl": "99999"})
+    script = [{"content": '```tool\n{"name":"start_benchmark","args":{"kind":"live","host":"box","model":"qwen3"}}\n```'}, {"content": "Not started."}]
+    st = tower.Store(":memory:")
+    tid = st.create_thread("adriel", "t", {})
+    events = []
+    tower.run_turn(thread_id=tid, user_text="bench it", page={}, cfg=_cfg(capabilities="operate"), role="operator",
+                   registry=tt.build_registry(_bench_deps(seen)), complete_stream=_stream_of(script), store=st,
+                   emit=events.append, model={"model": "qwen3", "provider": "llama", "hosts": ["box"]}, cancelled=lambda: False,
+                   approvals=ap, run_id="r1", actor="adriel")
+    action = next(e for e in events if e["event"] == "action")
+    assert action["status"] == "failed" and "not one of the offered choices" in action["message"] and seen == []
+    assert st.get_action(action["action_id"])["status"] == "failed"
+
+
+def _stream_of(script):
+    it = iter(script)
+    def cs(body, *, label, **kw):
+        msg = next(it)
+        for ch in msg.get("content") or "":
+            yield {"choices": [{"delta": {"content": ch}}]}
+    return cs
+
+
+def test_system_prompt_carries_the_activity_summary_hint():
+    txt = tower.system_prompt(_cfg(), [], None, False)
+    assert "For an activity summary of a day" in txt and "An alarm summary covers alarms only." in txt
+
+
+def test_run_turn_binds_the_waiting_context_so_a_tool_can_wait(monkeypatch):
+    monkeypatch.setattr(tt, "WAIT_EVERY_S", 0.01)
+    monkeypatch.setattr(tt, "HEARTBEAT_EVERY_S", 999.0)
+    seen_beats = []
+    monkeypatch.setattr(tower, "heartbeat_fn", lambda cs, model: lambda: seen_beats.append(model["model"]))
+    state = {"llama": "sleeping"}
+    deps = {**_deps(), "host": lambda n, section="all": {"hostname": n, "provider_states": {"llama.cpp": state["llama"]}}}
+
+    def flip():
+        state["llama"] = "awake"
+    threading.Timer(0.05, flip).start()
+    out, events, seen, st, tid = _run([
+        {"content": '```tool\n{"name":"wait_until","args":{"what":"host_awake","host":"box","timeout_s":5}}\n```'},
+        {"content": "box is awake now."},
+    ], registry=tt.build_registry(deps))
+    waits = [e for e in events if e["event"] == "status" and e["state"] == "waiting"]
+    assert waits and waits[0]["name"] == "host awake · box" and waits[0]["timeout_s"] == 5
+    tool_ev = next(e for e in events if e["event"] == "tool")
+    assert tool_ev["ok"] and tool_ev["result"]["ok"] is True and tool_ev["summary"].startswith("read wait until · host awake · box · ready")
+    assert getattr(tt._TURN, "emit", None) is None and out["ok"]
+
+
+def test_heartbeat_fn_sends_a_one_token_completion_to_the_turn_model():
+    bodies = []
+
+    def cs(body, *, label, **kw):
+        bodies.append((label, body))
+        yield {"choices": [{"delta": {"content": "."}}]}
+    tower.heartbeat_fn(cs, {"model": "qwen3-14b", "provider": "llama"})()
+    assert bodies == [("tower-heartbeat", {"model": "qwen3-14b", "messages": [{"role": "user", "content": "."}], "max_tokens": 1, "temperature": 0})]
+
+
+def test_system_prompt_names_support_help_and_waiting():
+    p = tower.system_prompt(_cfg(), [], {"tab": "events"}, native=False)
+    assert "developed by llmsyscore" in p and "call support" in p and "wait_until" in p and "searches the shipped docs" in p
+    assert "backups section" in p and "one metric per line" in p and "count 100" in p
+    assert "support email" in p and "wait_until model_ready" in p and "backups area is bullets" in p

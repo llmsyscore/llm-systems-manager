@@ -36,6 +36,7 @@ function boot(state, opts = {}) {
         const err = { 403: 'not allowed', 409: 'not pending', 410: 'expired' }[w.__actFail] || 'failed';
         return Promise.resolve({ ok: false, status: w.__actFail, json: () => Promise.resolve({ ok: false, error: err }) });
       }
+      w.__decideBody = o && o.body ? JSON.parse(o.body) : null;
       return Promise.resolve({ ok: true, json: () => Promise.resolve({ ok: true, run_id: 'r1', status: act[2] === 'approve' ? 'approved' : 'denied', tool: 'wake_server' }) });
     }
     if (url === '/api/tower/insights') return Promise.resolve({ ok: true, json: () => Promise.resolve({ ok: true, insights: w.__insights || [], new: (w.__insights || []).filter(r => !r.seen_at && (r.status === 'new' || r.status === 'applied')).length }) });
@@ -53,10 +54,11 @@ function boot(state, opts = {}) {
       return Promise.resolve({ ok: true, json: () => Promise.resolve(w.__state) });
     }
     if (url === '/api/tower/threads' && o && o.method === 'POST') {
+      w.__threadBody = o.body ? JSON.parse(o.body) : null;
       if (w.__noThread) return Promise.resolve({ ok: false, status: 503, json: () => Promise.resolve({ ok: false }) });
-      return Promise.resolve({ ok: true, json: () => Promise.resolve({ ok: true, thread: { id: 't1', title: 'New thread' } }) });
+      return Promise.resolve({ ok: true, json: () => Promise.resolve({ ok: true, thread: { id: 't1', title: (w.__threadBody && w.__threadBody.title) || 'New thread' } }) });
     }
-    if (url === '/api/tower/threads') return Promise.resolve({ ok: true, json: () => Promise.resolve({ ok: true, threads: w.__threads }) });
+    if (url === '/api/tower/threads') return Promise.resolve({ ok: true, json: () => Promise.resolve({ ok: true, threads: w.__threads, discord: w.__discord || [] }) });
     if (/^\/api\/tower\/threads\/[^/]+$/.test(url) && o && o.method === 'PATCH') {
       w.__renamed = JSON.parse(o.body).title;
       if (w.__renameFail) return Promise.resolve({ ok: false, status: 404, json: () => Promise.resolve({ ok: false, error: 'unknown thread' }) });
@@ -69,6 +71,7 @@ function boot(state, opts = {}) {
       return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({ ok: true, run_id: 'r1' }) });
     }
     // The manager answers 404, not {ok:false}, for a run it no longer knows.
+    if (/\/park$/.test(url)) { w.__parked = url; return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({ ok: true }) }); }
     if (/\/stop$/.test(url)) {
       w.__stopped = url;
       if (w.__stopOk) return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({ ok: true }) });
@@ -76,7 +79,7 @@ function boot(state, opts = {}) {
     }
     return Promise.resolve({ ok: true, json: () => Promise.resolve({ ok: true }) });
   };
-  w._activeTab = 'overall'; w._getDashSubTab = () => 'llama'; w._me = { admin_access: !!state.admin };
+  w._activeTab = 'overall'; w._subTabState = { dashboard: 'energy', llm: 'llama' }; w._me = { admin_access: !!state.admin };
   w.__toasts = []; w.showToast = (...a) => w.__toasts.push(a);
   w.switchTab = t => { w.__tab = t; };
   w.SG = { open: (o) => { w.__sse = o; w.__sseClosed = false; return { close() { w.__sseClosed = true; } }; } };
@@ -168,7 +171,8 @@ describe('Tower drawer', () => {
   test('sending posts text + page context, then renders SSE events into the transcript', async () => {
     const w = await ready(ENABLED);
     await ask(w, 'why is box red?');
-    expect(w.__posted).toMatchObject({ text: 'why is box red?', page: { tab: 'overall', sub: 'llama' } });
+    expect(w.__posted).toMatchObject({ text: 'why is box red?', page: { tab: 'overall' } });
+    expect(w.__posted.page.sub).toBeUndefined();
     expect(w.__sse.url).toBe('/api/tower/runs/r1/stream');
     // LivePause must not swallow a Tower run's frames.
     expect(w.__sse.bypassPause).toBe(true);
@@ -198,7 +202,8 @@ describe('Tower drawer', () => {
     const w = await ready(ENABLED);
     const ctx = w.document.getElementById('twCtxChip');
     expect(ctx.querySelector('.x').textContent).toBe('✕');
-    expect(ctx.textContent).toContain('overall · llama');
+    expect(ctx.textContent).toContain('overall');
+    expect(ctx.textContent).not.toContain('llama');
     ctx.click();
     expect(ctx.classList.contains('off')).toBe(true);
     expect(ctx.getAttribute('aria-pressed')).toBe('false');
@@ -304,26 +309,40 @@ describe('Tower drawer', () => {
     expect(w.document.querySelector('#twBody .on-card')).toBeNull();
   });
 
-  test('starting a new thread stops the live run and clears the transcript', async () => {
+  test('starting a new thread parks the live run (it keeps answering) and clears the transcript (#994)', async () => {
     const w = await ready(ENABLED);
     await ask(w, 'why is box red?');
     w.__sse.onEvent({ event: 'delta', text: 'box is' });
     w.document.getElementById('twNew').click(); await flush(); await flush();
-    expect(w.__stopped).toBe('/api/tower/runs/r1/stop');
+    expect(w.__parked).toBe('/api/tower/runs/r1/park');
+    expect(w.__stopped).toBeUndefined();
     expect(w.__sseClosed).toBe(true);
     expect(w.document.querySelector('#twBody .ans')).toBeNull();
     expect(w.document.querySelector('#twBody .empty h3').textContent).toBe('Ask about your hosts');
   });
 
-  test('picking an older thread from history stops the live run first', async () => {
+  test('picking an older thread from history parks the live run instead of stopping it (#994)', async () => {
     const w = await ready(ENABLED, { threads: [{ id: 't9', title: 'Older' }] });
     await ask(w, 'why is box red?');
     w.__sse.onEvent({ event: 'delta', text: 'box is' });
     w.document.getElementById('twHist').click(); await flush(); await flush();
     w.document.querySelector('#twBody [data-thread="t9"]').click(); await flush(); await flush();
-    expect(w.__stopped).toBe('/api/tower/runs/r1/stop');
+    expect(w.__parked).toBe('/api/tower/runs/r1/park');
+    expect(w.__stopped).toBeUndefined();
     expect(w.__sseClosed).toBe(true);
     expect(w.document.querySelector('#twBody .ans')).toBeNull();
+  });
+
+  test('a stream that dropped events re-reads the thread from the store once the run is done (#994)', async () => {
+    const w = await ready(ENABLED);
+    await ask(w, 'why is box red?');
+    w.__rows = [{ role: 'user', content: 'why is box red?' }, { role: 'assistant', content: 'the full stored answer' }];
+    w.__sse.onEvent({ event: 'truncated' });
+    w.__sse.onEvent({ event: 'delta', text: 'tail only' });
+    w.__sse.onEvent({ event: 'done', ok: true, calls: 0 });
+    await flush(); await flush(); await flush();
+    expect(w.__calls).toContain('GET /api/tower/threads/t1');
+    expect(w.document.querySelector('#twBody .ans').textContent).toContain('the full stored answer');
   });
 
   test('a reply that lands while the drawer is closed pulses the button until it is opened', async () => {
@@ -503,6 +522,23 @@ describe('action cards', () => {
     expect(w.__sseClosed).toBe(true);
     expect(w.__calls.some(c => c.startsWith('POST /api/tower/runs/r1/stop'))).toBe(false);
     expect(w.document.getElementById('twSend').classList.contains('stop')).toBe(true);
+  });
+
+  test('a card with option chips sends the picks with the approval (#1002)', async () => {
+    const w = await bootAndAsk({ ...ENABLED, capabilities: 'operate' }, 'bench box');
+    const card = { title: 'Start a live bench', target: 'box · qwen3', does: 'Runs the benchmark.', not: 'Nothing is loaded.',
+                   options: [{ name: 'bench', label: 'Bench set', choices: [{ value: 'qualitative', label: 'qualitative' }, { value: 'throughput_1k', label: 'throughput_1k' }], value: 'qualitative' },
+                             { name: 'osl', label: 'Output length', choices: ['256', '1024'], value: '1024' }] };
+    w.__sse.onEvent({ ...CONFIRM, action_id: 'b1', tool: 'start_benchmark', args: { kind: 'live', host: 'box', model: 'qwen3' }, card });
+    const el = w.document.querySelector('#twBody .act[data-act="b1"]');
+    expect([...el.querySelectorAll('.opt .ol')].map(e => e.textContent)).toEqual(['Bench set', 'Output length']);
+    expect([...el.querySelectorAll('.chip.on')].map(e => e.dataset.val)).toEqual(['qualitative', '1024']);
+    el.querySelector('.chip[data-name="bench"][data-val="throughput_1k"]').click(); await flush();
+    const el2 = w.document.querySelector('#twBody .act[data-act="b1"]');
+    expect([...el2.querySelectorAll('.chip.on')].map(e => e.dataset.val)).toEqual(['throughput_1k', '1024']);
+    el2.querySelector('[data-approve]').click(); await flush();
+    expect(w.__calls).toContain('POST /api/tower/actions/b1/approve');
+    expect(w.__decideBody).toEqual({ options: { bench: 'throughput_1k', osl: '1024' } });
   });
 
   test('approve posts the decision and re-attaches to the run; the card collapses to a tick', async () => {
@@ -735,6 +771,26 @@ describe('insights', () => {
     expect(view.querySelector('.ins.done [data-ins-dismiss]')).not.toBeNull();
   });
 
+  test('a card shows its metric snapshot; Troubleshoot opens a titled thread and asks about the alert (#980)', async () => {
+    const INS = mkIns({ snapshot: { metric: 'system/cpu_total', unit: '%', minutes: 60, points: [[0, 10], [60, 90]], threshold: 80 } });
+    const w = await openWith(mkState(INS.created), [INS]);
+    const view = $(w, 'twInsView');
+    expect(view.querySelector('.ins .snap svg path').getAttribute('d')).toMatch(/^M2\.0 34\.0 L238\.0 2\.0$/);
+    expect(view.querySelector('.ins .snap .thr')).not.toBeNull();
+    expect(view.querySelector('.ins .snapc').textContent).toBe('system/cpu_total · last 60 min · 10%–90% · threshold 80%');
+    expect(view.querySelector('[data-ins-chat]').textContent).toBe('Troubleshoot');
+    view.querySelector('[data-ins-chat]').click();
+    await flush(); await flush(); await flush(); await flush(); await flush();
+    expect(onIns(w)).toBe(false);
+    expect(w.__threadBody.title).toBe('Troubleshoot: llama-server asleep · box');
+    expect(w.__posted.text).toMatch(/^Troubleshoot the alert "llama-server asleep" on box \(alert id a1\)\. /);
+    expect(w.__posted.text).toContain("Tower's earlier read: asleep since 21:25");
+    expect(w.__posted.page.alert_id).toBe('a1'); expect(w.__posted.page.tab).toBe('events');
+    expect($(w, 'twTitle').textContent).toContain('Troubleshoot: llama-server asleep');
+    const plain = await openWith(mkState(INS.created), [mkIns()]);
+    expect($(plain, 'twInsView').querySelector('.snap')).toBeNull();
+  });
+
   test('opening with nothing unseen stays on the conversation; the tabs switch views', async () => {
     const w = await openWith(QUIET, [mkIns({ status: 'seen' })]);
     expect(onIns(w)).toBe(false);
@@ -873,6 +929,17 @@ describe('insights', () => {
     expect($(w, 'towerBadge').textContent).toBe('2');
   });
 
+  test('History shows Discord conversations for admins under their own group and opens them (#996)', async () => {
+    const w = await ready({ ...ENABLED, admin: true }, { threads: [{ id: 't9', title: 'Older', updated: Date.now() / 1000 }] });
+    w.__discord = [{ id: 'd1', user: 'discord:111', title: 'why is box red?', updated: Date.now() / 1000 }];
+    w.document.getElementById('twHist').click(); await flush(); await flush();
+    const body = w.document.getElementById('twBody');
+    expect([...body.querySelectorAll('.hday')].map(e => e.textContent)).toEqual(['Today', 'Discord · 111']);
+    expect(body.querySelector('.cnt').textContent).toBe('2');
+    body.querySelector('[data-thread="d1"]').click(); await flush(); await flush();
+    expect(w.__calls).toContain('GET /api/tower/threads/d1');
+  });
+
   test('History returns to the conversation tab; a poll with a new insight shows the notice and leaves History alone', async () => {
     const w = await openWith(mkState(nowS() - 600, { insights_new: 0, insights_rev: 1 }), [mkIns({ status: 'seen' })]);
     $(w, 'twTabIns').click(); await flush();
@@ -910,5 +977,64 @@ describe('insights', () => {
     await w.towerRefreshState(); await flush();
     expect(w.__toasts).toHaveLength(1);
     expect(w.__toasts[0][0]).toBe('Tower · llama-server asleep');
+  });
+});
+
+describe('Tower drawer: sub-views, waiting and re-attach (#1014, #1016)', () => {
+  test('the page context carries the active tab\'s own sub-view, none for tabs without one', async () => {
+    const w = await ready(ENABLED);
+    w._activeTab = 'llm';
+    await ask(w, 'what is loaded?');
+    expect(w.__posted.page).toMatchObject({ tab: 'llm', sub: 'llama' });
+    w.__sse.onEvent({ event: 'done', ok: true });
+    w._activeTab = 'events';
+    await ask(w, 'alarms?');
+    expect(w.__posted.page.tab).toBe('events');
+    expect(w.__posted.page.sub).toBeUndefined();
+  });
+
+  test('a waiting status shows one wait line until the next event, and reattach reopens the stream', async () => {
+    const w = await ready(ENABLED);
+    await ask(w, 'wake box and tell me when it is up');
+    const first = w.__sse;
+    w.__sse.onEvent({ event: 'status', state: 'waiting', name: 'host awake · box', elapsed_s: 45, timeout_s: 300 });
+    const body = w.document.getElementById('twBody');
+    expect(body.querySelector('.wait').textContent).toBe('waiting for host awake · box · 45 s of 300');
+    expect(body.querySelectorAll('.wait').length).toBe(1);
+    w.__sse.onEvent({ event: 'reattach' });
+    expect(w.__sseClosed).toBe(false);
+    expect(w.__sse).not.toBe(first);
+    expect(w.__sse.url).toBe('/api/tower/runs/r1/stream');
+    expect(body.querySelector('.wait')).not.toBeNull();
+    w.__sse.onEvent({ event: 'tool', name: 'wait_until', ok: true, ms: 45000, summary: 'read wait until · host awake · box · ready after 45 s · 45000 ms', result: { ok: true } });
+    expect(body.querySelector('.wait')).toBeNull();
+    w.__sse.onEvent({ event: 'delta', text: 'box is awake.' });
+    w.__sse.onEvent({ event: 'done', ok: true });
+    expect(body.textContent).toContain('box is awake.');
+  });
+});
+
+describe('Tower drawer: running cards and help suggestions (#1017, #1018)', () => {
+  test('approve tints the card and drops its buttons before the action result arrives', async () => {
+    const w = await bootAndAsk({ ...ENABLED, capabilities: 'operate' }, 'wake box');
+    w.__sse.onEvent(CONFIRM);
+    const before = w.document.querySelector('#twBody .act');
+    expect(before.classList.contains('running')).toBe(false);
+    w.document.querySelector('#twBody [data-approve]').click();
+    await flush();
+    const card = w.document.querySelector('#twBody .act');
+    expect(card.classList.contains('running')).toBe(true);
+    expect(card.querySelector('[data-approve]')).toBeNull();
+    expect(card.querySelector('.eyebrow').textContent).toBe('Running…');
+    w.__sse.onEvent({ event: 'action', action_id: 'a1', tool: 'wake_server', status: 'done', message: 'done', ms: 1200, actor: 'adriel' });
+    expect(w.document.querySelector('#twBody .act.running')).toBeNull();
+    expect(w.document.querySelector('#twBody .tick.act.ok')).not.toBeNull();
+  });
+
+  test('the developer and help suggestions render highlighted on the Overall tab', async () => {
+    const w = await ready(ENABLED);
+    const hi = [...w.document.querySelectorAll('#twBody .sug.hi')].map(b => b.textContent);
+    expect(hi).toEqual(['Who develops LLM Systems Manager?', 'How do I get help?']);
+    expect(w.document.querySelector('#twBody .sug:not(.hi)')).not.toBeNull();
   });
 });

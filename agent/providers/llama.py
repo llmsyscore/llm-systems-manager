@@ -1221,6 +1221,10 @@ def llama_server_restart_endpoint(authorization: Optional[str] = Header(default=
     return _llama_systemctl("restart", timeout=60)
 
 
+# Warm-up completion read timeout: a sleeping model reloads its weights first.
+_LLAMA_WAKE_TIMEOUT_S = 300
+
+
 def llama_server_wake_endpoint(body: Optional[dict] = None,
                                authorization: Optional[str] = Header(default=None)) -> dict[str, Any]:
     # GET /v1/models, target the requested model else the sleeping/loaded one, then warm it.
@@ -1248,12 +1252,16 @@ def llama_server_wake_endpoint(body: Optional[dict] = None,
     }
     try:
         r = _require_ctx().post_session.post(f"{base}/v1/chat/completions",
-                               json=payload, timeout=60)
+                               json=payload, timeout=_LLAMA_WAKE_TIMEOUT_S)
         reconcile_now()
         if not r.ok:
             return {"ok": False, "status": r.status_code,
                     "model": model_id, "error": r.text[:300]}
         return {"ok": True, "status": r.status_code, "model": model_id}
+    except requests.exceptions.Timeout:
+        reconcile_now()
+        return {"ok": False, "model": model_id,
+                "error": f"llama-server did not answer the warm-up request within {_LLAMA_WAKE_TIMEOUT_S} s"}
     except Exception as e:
         reconcile_now()
         return {"ok": False, "model": model_id, "error": str(e)}
@@ -2533,7 +2541,9 @@ def _bench_live_run_all(req: dict, server: dict, python: str, script: str) -> No
                                   {"bench_tool": "speed-bench", "gen_tps": first.get("pred_tps"),
                                    "ppt_tps": first.get("prompt_tps"), "latency_s": first.get("latency_s"),
                                    "accept_rate": first.get("accept_rate"), "levels": len(levels),
-                                   "wh_per_ktok": wh_per_ktok, "bench": req["bench"]})
+                                   "wh_per_ktok": wh_per_ktok, "bench": req["bench"], "osl": req.get("osl"),
+                                   "limit": req.get("limit"),
+                                   "concurrency": ",".join(str(r.get("concurrency")) for r in levels)})
         _bench_put({"type": "done", "ok": ok and not cancelled, "cancelled": cancelled, "count": 1})
         _bench_proc = None
         _bench_pgid = None

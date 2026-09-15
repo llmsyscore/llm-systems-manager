@@ -613,9 +613,10 @@ def _entry_resident(m) -> bool:
     return True
 
 
-def _fetch_provider_models(provider: str, serving: "dict | None" = None) -> list:
+def _fetch_provider_models(provider: str, serving: "dict | None" = None,
+                           catalog: "dict | None" = None) -> list:
     """Provider-tagged model entries merged from every candidate agent.
-    When given, serving accumulates model_id -> [agent_ids] as it goes."""
+    serving accumulates model_id -> [agent_ids] of resident entries; catalog every listed entry."""
     merged, seen = [], set()
     for agent in _candidates(None, None, provider, advance_rr=False):
         r, _tried, _err = agent_registry.agent_request(
@@ -632,6 +633,8 @@ def _fetch_provider_models(provider: str, serving: "dict | None" = None) -> list
             mid = (m or {}).get("id")
             if not mid:
                 continue
+            if catalog is not None:
+                catalog.setdefault(f"{provider}:{mid}", []).append(agent.get("agent_id"))
             if serving is not None and _entry_resident(m):
                 serving.setdefault(f"{provider}:{mid}", []).append(
                     agent.get("agent_id"))
@@ -649,18 +652,20 @@ _MODEL_INDEX_TTL_S = 30.0
 _MODEL_INDEX_WAIT_S = 5.0
 _model_index_lock = threading.Lock()
 _model_index_cond = threading.Condition(_model_index_lock)
-_model_index: dict = {"ts": 0.0, "map": {}, "serving": {}, "entries": None,
+_model_index: dict = {"ts": 0.0, "map": {}, "serving": {}, "catalog": {}, "entries": None,
                       "refreshing": False}
 _refresh_lock = threading.Lock()
 
 
 def _store_model_index(mapping: dict, serving: "dict | None" = None,
-                       entries: "list | None" = None) -> None:
+                       entries: "list | None" = None, catalog: "dict | None" = None) -> None:
     with _model_index_lock:
         _model_index["ts"] = time.time()
         _model_index["map"] = mapping
         if serving is not None:
             _model_index["serving"] = serving
+        if catalog is not None:
+            _model_index["catalog"] = catalog
         if entries is not None:
             _model_index["entries"] = entries
 
@@ -679,6 +684,13 @@ def _serving_agent_ids(provider, model_id) -> set:
                    .get(f"{provider}:{model_id}") or ())
 
 
+def _catalog_agent_ids(provider, model_id) -> set:
+    """Agents whose /models listing carries the model, resident or not."""
+    with _model_index_lock:
+        return set((_model_index.get("catalog") or {})
+                   .get(f"{provider}:{model_id}") or ())
+
+
 def _refresh_model_index() -> dict:
     """Single-flight full fan-out; concurrent callers reuse the winner's map."""
     with _refresh_lock:
@@ -687,16 +699,17 @@ def _refresh_model_index() -> dict:
                 return dict(_model_index["map"])
         mapping: dict = {}
         serving: dict = {}
+        catalog: dict = {}
         entries: list = []
         for p in _GATEWAY_PROVIDERS:
-            for m in _fetch_provider_models(p, serving=serving):
+            for m in _fetch_provider_models(p, serving=serving, catalog=catalog):
                 owner = mapping.setdefault(m["id"], p)
                 if owner != p:
                     log.debug("gateway: model id %s on %s shadowed by %s",
                               m["id"], p, owner)
                 else:
                     entries.append(m)
-        _store_model_index(mapping, serving, entries)
+        _store_model_index(mapping, serving, entries, catalog)
         return mapping
 
 

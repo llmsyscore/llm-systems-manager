@@ -16,16 +16,16 @@ def _deps():
         "hosts": lambda provider=None, online=None, busy=None, sort_by=None: [
             {"hostname": "box", "providers": ["llama"], "online": True, "model": "qwen3", "watts": 211.0, "busy": True, "age_s": 3}],
         "host": lambda name, section="all": {"hostname": name, "online": True, "gpu_temp_c": 91.0, "provider_states": {"llama.cpp": "awake"}} if name == "box" else None,
-        "host_history": lambda host, metric, window="24h": {"host": host, "metric": metric, "window": window, "points": 0},
+        "host_history": lambda host, metric, window="24h", a=None: {"host": host, "metric": metric, "window": window, "points": 0},
         "models": lambda host=None, provider=None: [{"model": "qwen3", "provider": "llama", "hostname": "box", "loaded": True}],
         "alarms": lambda status="active", count=5, window=None, host=None, rule=None: [{"id": "a1", "rule": "GPU temp high", "severity": "critical", "host": "box"}][:count],
         "alarm_search": lambda a: {"alerts": [{"id": "a1", "rule": "GPU temp high", "severity": "critical", "host": "box"}][:a.get("count", 5)],
                                    "total": 1, "offset": 0, "next_offset": None},
         "alarm_history": lambda window="30d", group_by="rule", top=10, host=None, rule=None, a=None: {"window": window, "total": 1},
         "alert": lambda aid: {"id": aid, "rule": "GPU temp high"} if aid == "a1" else None,
-        "energy": lambda window="today": {"window": window, "kwh": 1.84, "cost_usd": 0.28},
+        "energy": lambda window="today", a=None: {"window": window, "kwh": 1.84, "cost_usd": 0.28},
         "flow": lambda: {"hosts": [], "totals": {"gen_tps": 38.2}},
-        "runs": lambda tool=None, count=10: [{"tool": "benchmark", "model_id": "qwen3", "ok": True}],
+        "runs": lambda tool=None, count=10, a=None: [{"tool": "benchmark", "model_id": "qwen3", "ok": True}],
         "speed": lambda model: [{"hostname": "box", "gen_tps": 38.2}],
         "health": lambda: {"manager": {"ok": True}, "alarm_engine": {"ok": True}},
         "log_tail": lambda host, provider="llama", lines=40, a=None: [("line %d " % i) * 12 for i in range(lines)],
@@ -33,7 +33,7 @@ def _deps():
             {"model": "qwen3", "active": "default", "profiles": ["default", "long-ctx"]}]}]},
         "config_get": lambda path: {"path": path, "value": "***" if path.endswith("token") else 30},
         "help": lambda topic: "Slot pressure means every llama-server slot is busy.",
-        "audit": lambda window="24h", actor=None, action=None, count=20: [
+        "audit": lambda window="24h", actor=None, action=None, count=20, a=None: [
             {"ts": "2026-09-12T00:00:00+00:00", "actor": actor or "alice", "action": action or "tower.action.approve",
              "label": "Approved a Tower action", "target": "a1", "outcome": "ok", "detail": {"tool": "wake_server"}}][:count],
         "load": lambda provider, host, model: (host == "box", None if host == "box" else "unknown host"),
@@ -53,8 +53,9 @@ def _cfg(**over):
 
 READ = {"hosts_overview", "host_detail", "host_history", "models", "model_profiles", "alarms", "alarm_history", "alert_detail",
         "energy_summary", "gateway_flow", "recent_runs", "bench_speed", "service_health", "log_tail", "config_get",
-        "help", "audit_log"}
-ACT = {"load_model", "unload_model", "wake_server", "restart_provider", "ack_alert", "close_alert"}
+        "help", "support", "audit_log", "wait_until"}
+ACT = {"load_model", "unload_model", "wake_server", "restart_provider", "ack_alert", "close_alert", "start_benchmark",
+       "resume_alert"}
 
 
 def test_registry_has_read_and_act_tools():
@@ -238,7 +239,7 @@ def test_prod_deps_wires_hosts_alarms_alert_and_config(monkeypatch):
     rows = deps["alarms"]()
     assert rows[0] == {"id": "a1", "rule": "GPU temp high", "severity": "critical", "status": "active",
                        "host": "box", "message": "hot", "metric": "system/gpu_temperature_c", "value": 91.0, "threshold": 85.0,
-                       "triggered_at": "t1", "last_seen": "t2", "acknowledged_at": None, "closed_at": None, "incident": None}
+                       "triggered_at": "t1", "last_seen": "t2", "acknowledged_at": None, "closed_at": None, "ignored_until": None, "incident": None}
 
     row = deps["alert"]("a1")
     assert row["id"] == "a1" and row["host"] == "box"
@@ -490,14 +491,15 @@ def test_prod_deps_profiles_summarises_every_host_and_filters_by_host(monkeypatc
     assert box == {"model": "Qwen3-14B", "active": "default", "profiles": ["default", "long-ctx"]}
     only = profiles("box")
     assert [h["host"] for h in only["hosts"]] == ["Box"]
-    assert profiles("nope") == {"error": "unknown host"}
+    assert profiles("nope") == {"error": "unknown host: nope"}
 
 
 def test_prod_deps_profiles_returns_the_active_or_named_values(monkeypatch, tmp_path):
     profiles = _profile_deps(monkeypatch, tmp_path)
     row = profiles("box", "Qwen3-14B")
-    assert row == {"host": "Box", "model": "Qwen3-14B", "active": "default",
-                   "profiles": ["default", "long-ctx"], "values": {"ctx": 4096}}
+    assert row["verified"] is False                             # no models reader data in this fixture
+    assert {k: v for k, v in row.items() if k not in ("verified", "note")} == {
+        "host": "Box", "model": "Qwen3-14B", "active": "default", "profiles": ["default", "long-ctx"], "values": {"ctx": 4096}}
     assert profiles("box", "qwen3-14b")["values"] == {"ctx": 4096}
     assert profiles("box", "qwen3")["model"] == "Qwen3-14B"
     assert profiles("box", "Qwen3-14B", "long-ctx")["values"] == {"ctx": 32768}
@@ -819,10 +821,12 @@ def test_prod_host_history_reads_the_alarm_engine_series(monkeypatch):
                                                               "ack": lambda a: (True, None), "close": lambda a: (True, None)})
     urls = []
 
+    now = time.time()
+
     class _Resp:
         ok = True
         def json(self):
-            return [{"timestamp": "2026-09-14T00:00:00Z", "value": 40.0, "hostname": "box"}, {"timestamp": "2026-09-14T01:00:00Z", "value": 60.0, "hostname": "box"}]
+            return [{"timestamp": now - 7200, "value": 40.0, "hostname": "box"}, {"timestamp": now - 3600, "value": 60.0, "hostname": "box"}]
 
     class _Session:
         def get(self, url, timeout=10):
@@ -837,8 +841,8 @@ def test_prod_host_history_reads_the_alarm_engine_series(monkeypatch):
     assert deps["host_history"]("nope", "cpu_pct") == {"host": "nope", "error": "unknown host"}
     reg = tt.build_registry(deps)
     args, err = tt.validate_args(reg["host_history"], {"host": "box", "metric": "cpu_pct"})
-    assert err is None and args == {"host": "box", "metric": "cpu_pct", "window": "24h"}
-    assert tt.validate_args(reg["host_history"], {"host": "box", "metric": "load_avg"})[1] == "metric must be one of " + ", ".join(tt.HISTORY_METRICS)
+    assert err is None and args == {"host": "box", "metric": "cpu_pct", "window": "24h", "points": 24, "series": False}
+    assert tt.validate_args(reg["host_history"], {"host": "box", "metric": "load_avg"})[1] is None
 
 
 def test_alarm_search_escalates_to_the_csv_only_for_a_deep_range_or_page(monkeypatch):
@@ -907,11 +911,13 @@ def test_prod_host_history_summarises_several_hosts(monkeypatch):
     monkeypatch.setattr(discord_bot, "prod_deps", lambda ctx: {"fleet": lambda: [], "host": lambda n: None,
                                                               "ack": lambda a: (True, None), "close": lambda a: (True, None)})
 
+    now = time.time()
+
     class _Resp:
         def __init__(self, host): self.ok, self._h = True, host
         def json(self):
             base = 40.0 if self._h == "box" else 70.0
-            return [{"timestamp": "2026-09-14T00:00:00Z", "value": base, "hostname": self._h}, {"timestamp": "2026-09-14T01:00:00Z", "value": base + 10, "hostname": self._h}]
+            return [{"timestamp": now - 7200, "value": base, "hostname": self._h}, {"timestamp": now - 3600, "value": base + 10, "hostname": self._h}]
 
     class _Session:
         def get(self, url, timeout=10):
@@ -1017,3 +1023,571 @@ def test_prod_log_tail_routes_every_source(monkeypatch, tmp_path):
     args, err = tt.validate_args(reg["log_tail"], {"provider": "manager", "lines": 200, "level": "error", "before": 3})
     assert err is None and args == {"provider": "manager", "lines": 200, "level": "error", "before": 3}
     assert tt.validate_args(reg["log_tail"], {"host": "box", "lines": 500})[1] == "lines must be at most 200"
+
+
+# ── #980 snapshot helper, #990 energy ranges and breakdowns ──
+
+def test_snapshot_from_points_keeps_finite_points_in_order_with_unit_threshold_and_value():
+    alert = {"metric": "system/cpu_total", "host": "box", "threshold": 90, "value": 95.5}
+    pts = [{"timestamp": "2026-09-15T05:01:00Z", "value": 50.0}, {"timestamp": "2026-09-15T05:00:00Z", "value": 40.25},
+           {"timestamp": "bad", "value": 1}, {"timestamp": "2026-09-15T05:02:00Z", "value": None}, None]
+    s = tt.snapshot_from_points(pts, alert)
+    assert s["metric"] == "system/cpu_total" and s["unit"] == "%" and s["minutes"] == 60
+    assert [p[1] for p in s["points"]] == [40.25, 50.0] and s["points"][0][0] < s["points"][1][0]
+    assert s["threshold"] == 90.0 and s["value"] == 95.5
+    assert tt.snapshot_from_points([], alert) is None
+    assert tt.snapshot_from_points(pts, {"metric": "llama/state", "threshold": "n/a"})["unit"] == ""
+    assert tt.snapshot_from_points(pts, {"metric": "llama/state", "threshold": "n/a"})["threshold"] is None
+
+
+def test_energy_range_windows_and_bounds():
+    now = time.mktime((2026, 9, 15, 10, 30, 0, 0, 0, -1))
+    start, end, label, err = tt.energy_range("today", now=now)
+    assert err is None and label == "today" and end == now and time.localtime(start)[:6] == (2026, 9, 15, 0, 0, 0)
+    assert tt.energy_range("month", now=now)[2] == "last 30 days" and tt.energy_range("7d", now=now)[0] == now - 7 * 86400
+    assert tt.energy_range("24h", now=now)[2] == "last 24h"
+    start, end, label, err = tt.energy_range("today", since="3d", until="1d", now=now)
+    assert err is None and (start, end) == (now - 3 * 86400, now - 86400) and label == "since 3d until 1d"
+    assert tt.energy_range(None, since="1d", until="2d", now=now)[3] == "until must be after since"
+    assert "since is not a time" in tt.energy_range(None, since="soonish", now=now)[3]
+    assert tt.energy_range(None, since="2026-09-14", now=now)[1] == now
+    assert tt.energy_range(None, until="1h", now=now)[0] == now - 86400
+
+
+def test_energy_buckets_group_hourly_rows_by_local_day_or_hour():
+    h0 = time.mktime((2026, 9, 14, 23, 0, 0, 0, 0, -1))
+    rows = [{"hour_ts": h0 + 3600, "kwh": 2}, {"hour_ts": h0, "kwh": 1}, {"hour_ts": h0 + 7200, "kwh": 3}]
+    days = tt.energy_buckets(rows, "day")
+    assert [(k, len(rs), span) for k, rs, span in days] == [("2026-09-14", 1, 86400.0), ("2026-09-15", 2, 86400.0)]
+    hours = tt.energy_buckets(rows, "hour")
+    assert [k for k, _, _ in hours] == ["2026-09-14 23:00", "2026-09-15 00:00", "2026-09-15 01:00"] and hours[0][2] == 3600.0
+    assert tt.energy_buckets([], "day") == []
+
+
+def test_energy_tool_schema_takes_ranges_breakdown_and_host():
+    seen = []
+    reg = tt.build_registry({**_deps(), "energy": lambda w, a=None: seen.append((w, a)) or {"window": w}})
+    t = reg["energy_summary"]
+    assert set(t.params["properties"]) >= {"window", "since", "until", "group_by", "host"}
+    assert t.params["properties"]["group_by"]["enum"] == ["day", "hour"]
+    clean, err = tt.validate_args(t, {"since": "3d", "group_by": "day", "host": "box"})
+    assert err is None
+    tt.run_tool(t, clean)
+    assert seen[-1][0] == "today" and seen[-1][1]["since"] == "3d" and seen[-1][1]["group_by"] == "day" and seen[-1][1]["host"] == "box"
+    assert tt.summary_line(t, clean, {"window": "since 3d"}, 4) == "read energy summary · since 3d · by day · box · 4 ms"
+    assert tt.summary_line(t, {"window": "7d"}, {"window": "last 7d"}, 4) == "read energy summary · last 7d · 4 ms"
+
+
+# ── #992 host_history: arbitrary metrics, ranges, points, series, grouping ──
+
+def test_history_metric_names_and_source_pairs():
+    assert tt.history_metric("cpu_pct") == ("system", "cpu_total", "%", None)
+    assert tt.history_metric("system/cpu_total") == ("system", "cpu_total", "%", None)
+    assert tt.history_metric("gateway/req_per_min") == ("gateway", "req_per_min", "", None)
+    assert tt.history_metric("load_avg")[3].startswith("metric must be one of cpu_pct")
+    assert tt.history_metric("")[3] and tt.history_metric("system/")[3]
+
+
+def test_history_range_windows_spans_and_bounds():
+    now = 1_800_000_000.0
+    assert tt.history_range("6h", now=now) == (now - 6 * 3600, now, "6h", None)
+    assert tt.history_range(None, now=now)[2] == "24h"
+    assert tt.history_range("4h", now=now) == (now - 4 * 3600, now, "last 4h", None)
+    assert "window must be one of" in tt.history_range("soon", now=now)[3]
+    s, e, label, err = tt.history_range("24h", since="3d", until="1d", now=now)
+    assert err is None and (s, e, label) == (now - 3 * 86400, now - 86400, "since 3d until 1d")
+    assert tt.history_range("24h", since="1d", until="2d", now=now)[3] == "until must be after since"
+    assert tt.history_range("24h", until="2h", now=now)[0] == now - 86400
+
+
+def test_history_summary_narrows_by_range_caps_points_and_groups():
+    base = time.mktime((2026, 9, 14, 22, 0, 0, 0, 0, -1))
+    pts = [{"timestamp": base + i * 3600, "value": float(i)} for i in range(6)]      # 22:00 .. 03:00 local
+    out = tt.history_summary(pts, "cpu_pct", "6h", "box", "%", max_points=2)
+    assert out["points"] == 6 and [p["v"] for p in out["series"]] == [4.0, 5.0]
+    cut = tt.history_summary(pts, "cpu_pct", "6h", "box", "%", start=base + 3600, end=base + 3 * 3600)
+    assert cut["points"] == 3 and cut["min"] == 1.0 and cut["max"] == 3.0
+    grouped = tt.history_summary(pts, "cpu_pct", "6h", "box", "%", group_by="day")
+    assert [(g["period"], g["samples"], g["avg"]) for g in grouped["groups"]] == [("2026-09-14", 2, 0.5), ("2026-09-15", 4, 3.5)]
+    hourly = tt.history_summary(pts, "cpu_pct", "6h", "box", "%", group_by="hour")
+    assert len(hourly["groups"]) == 6 and hourly["groups"][0]["period"] == "2026-09-14 22:00"
+    assert "groups" not in tt.history_summary(pts, "cpu_pct", "6h", "box", "%")
+
+
+def _history_deps(monkeypatch, urls, hosts=("box",)):
+    import agent_registry
+    import discord_bot
+    agents = {f"A{i}": {"hostname": h, "status": "approved"} for i, h in enumerate(hosts)}
+    monkeypatch.setattr(agent_registry, "load_agents", lambda: {"agents": agents})
+    monkeypatch.setattr(discord_bot, "prod_deps", lambda ctx: {"fleet": lambda: [], "host": lambda n: None,
+                                                              "ack": lambda a: (True, None), "close": lambda a: (True, None)})
+    now = time.time()
+
+    class _Resp:
+        ok = True
+        def json(self):
+            return [{"timestamp": now - 7200 + i * 600, "value": 10.0 * i} for i in range(12)]
+
+    class _Session:
+        def get(self, url, timeout=10):
+            urls.append(url)
+            return _Resp()
+    ctx = types.SimpleNamespace(alarm_engine_url=lambda: "http://ae.local", ae_session=_Session())
+    return tt.prod_deps(ctx, db_path="unused", tools_runs=lambda *a, **k: [], speed_table=lambda *a: [],
+                        service_health=lambda: {}, gateway_entries=lambda: [], audit_rows=lambda *a, **k: [])
+
+
+def test_prod_host_history_takes_ranges_points_series_and_grouping(monkeypatch):
+    urls = []
+    deps = _history_deps(monkeypatch, urls, hosts=("box", "mac"))
+    out = deps["host_history"]("box", "system/cpu_total", "24h", {"since": "95m", "points": 5})
+    assert urls[-1] == "http://ae.local/api/alarm/metrics/system/cpu_total?since_minutes=95&hostname=box&max_points=5&agg=mean"
+    assert out["window"] == "since 95m" and out["metric"] == "system/cpu_total" and out["unit"] == "%"
+    assert out["points"] == 9 and len(out["series"]) == 5 and out["min"] == 30.0
+    out = deps["host_history"]("box", "cpu_pct", "4h")
+    assert "since_minutes=240" in urls[-1] and out["window"] == "last 4h"
+    out = deps["host_history"]("box", "cpu_pct", "24h", {"since": "125m", "until": "55m", "points": 10})
+    assert "since_minutes=125&hostname=box&max_points=18" in urls[-1] and out["points"] == 7 and out["max"] == 60.0
+    out = deps["host_history"]("box", "cpu_pct", "24h", {"group_by": "hour"})
+    assert "max_points=720" in urls[-1] and out["groups"] and sum(g["samples"] for g in out["groups"]) == 12
+    out = deps["host_history"]("box", "cpu_pct", "24h", {"since": "60d"})
+    assert "since_minutes=43200" in urls[-1] and out["note"].startswith("the alarm engine keeps 30 days")
+    assert deps["host_history"]("box", "cpu_pct", "24h", {"since": "45d", "until": "44d"})["error"].endswith("older than that")
+    assert deps["host_history"]("box", "load_avg")["error"].startswith("metric must be one of")
+    assert "window must be" in deps["host_history"]("box", "cpu_pct", "soon")["error"]
+    multi = deps["host_history"]("all", "cpu_pct", "6h", {"series": True, "points": 3})
+    assert multi["window"] == "6h" and [h["host"] for h in multi["hosts"]] == ["box", "mac"] and len(multi["hosts"][1]["series"]) == 3
+    assert "series" not in deps["host_history"]("all", "cpu_pct", "6h")["hosts"][0]
+    reg = tt.build_registry(deps)
+    clean, err = tt.validate_args(reg["host_history"], {"host": "box", "metric": "gateway/req_per_min", "since": "4h", "points": 50, "group_by": "day"})
+    assert err is None and clean["points"] == 50 and clean["window"] == "24h"
+    assert tt.validate_args(reg["host_history"], {"host": "box", "metric": "cpu_pct", "points": 500})[1]
+
+
+# ── #999 agent configuration, #1000 audit helpers, #1001 profile presence ──
+
+def test_mask_secrets_and_audit_status_clause():
+    cfg = {"MANAGER_URL": "https://m", "AGENT_TOKEN": "abc", "nested": {"api_key": "k", "port": 8000, "empty_token": ""}, "list": [{"password": "p"}]}
+    out = tt.mask_secrets(cfg)
+    assert out["MANAGER_URL"] == "https://m" and out["AGENT_TOKEN"] == tt._SECRET_MASK
+    assert out["nested"] == {"api_key": tt._SECRET_MASK, "port": 8000, "empty_token": ""} and out["list"] == [{"password": tt._SECRET_MASK}]
+    assert cfg["AGENT_TOKEN"] == "abc"
+    assert tt.audit_status_clause("4xx") == ("status >= ? AND status < ?", [400, 500])
+    assert tt.audit_status_clause("403") == ("status = ?", [403])
+    assert tt.audit_status_clause("") == (None, []) and tt.audit_status_clause("lots") == (None, [])
+
+
+def test_config_get_reads_an_agent_configuration_masked(monkeypatch):
+    import agent_registry
+    import discord_bot
+    monkeypatch.setattr(agent_registry, "load_agents", lambda: {"agents": {"A1": {"hostname": "box", "status": "approved", "token": "t"}}})
+    monkeypatch.setattr(discord_bot, "prod_deps", lambda ctx: {"fleet": lambda: [], "host": lambda n: None,
+                                                              "ack": lambda a: (True, None), "close": lambda a: (True, None)})
+    calls = []
+
+    class _R:
+        ok = True
+        def json(self):
+            return {"MANAGER_URL": "https://m", "AGENT_TOKEN": "s3cret", "llama": {"port": 8080, "api_key": "k"}}
+    monkeypatch.setattr(agent_registry, "agent_request", lambda m, a, p, **kw: (calls.append((m, p, kw.get("headers"))) or (_R(), [], None)))
+    ctx = types.SimpleNamespace(alarm_engine_url=lambda: "http://ae.local", ae_session=None)
+    deps = tt.prod_deps(ctx, db_path="unused", tools_runs=lambda *a, **k: [], speed_table=lambda *a: [],
+                        service_health=lambda: {}, gateway_entries=lambda: [], audit_rows=lambda *a, **k: [])
+    reg = tt.build_registry(deps)
+    t = reg["config_get"]
+    clean, err = tt.validate_args(t, {"host": "BOX"})
+    assert err is None
+    out = tt.run_tool(t, clean)[0]
+    assert out["host"] == "box" and out["config"]["AGENT_TOKEN"] == tt._SECRET_MASK and out["config"]["llama"] == {"port": 8080, "api_key": tt._SECRET_MASK}
+    assert calls[-1][0] == "GET" and calls[-1][1] == "/config" and calls[-1][2]["Authorization"] == "Bearer t"
+    assert tt.run_tool(t, {"host": "box", "path": "llama.port"})[0] == {"host": "box", "path": "llama.port", "value": 8080}
+    assert tt.run_tool(t, {"host": "box", "path": "llama.nope"})[0]["error"] == "no such key"
+    assert tt.run_tool(t, {"host": "nope"})[0] == {"host": "nope", "error": "unknown host"}
+    res, ran = tt.run_tool(t, {"path": "nope.thing"})
+    assert ran is False and "could not be read" in res["error"]
+
+
+def test_profiles_flag_models_the_host_no_longer_has(monkeypatch, tmp_path):
+    _profile_deps(monkeypatch, tmp_path)                       # store + agents are patched by the fixture
+    ctx = types.SimpleNamespace(alarm_engine_url=lambda: "http://ae.local", ae_session=None)
+    deps = tt.prod_deps(ctx, db_path="unused", tools_runs=lambda *a, **k: [], speed_table=lambda *a: [],
+                        service_health=lambda: {}, gateway_entries=lambda: [], audit_rows=lambda *a, **k: [])
+    reader = {"rows": [{"model": "Qwen3-14B", "provider": "llama", "loaded_on": ["Box"], "available_on": []}]}
+    deps["models"] = lambda host=None, provider=None: reader["rows"]
+    profiles = deps["profiles"]
+    out = profiles("Box")
+    assert [m["model"] for m in out["hosts"][0]["models"]] == ["Qwen3-14B"] and "stale" not in out["hosts"][0]
+    reader["rows"] = [{"model": "other", "provider": "llama", "loaded_on": ["Box"], "available_on": []}]
+    out = profiles("Box")
+    assert out["hosts"][0]["models"] == [] and out["hosts"][0]["stale"] == ["Qwen3-14B"]
+    row = profiles("Box", "qwen3")
+    assert row["present"] is False and row["model"] == "Qwen3-14B" and row["values"] == {"ctx": 4096}
+    reader["rows"] = []                                        # the host cannot say: entries stand but are marked unverified
+    unv = profiles("Box")["hosts"][0]
+    assert [m["model"] for m in unv["models"]] == ["Qwen3-14B"] and unv["verified"] is False and "could not be checked" in unv["note"]
+    assert profiles("Box", "qwen3")["verified"] is False
+    reader["rows"] = [{"model": "Qwen3-14B", "provider": "llama", "loaded_on": ["Box"], "available_on": []}]
+    assert "verified" not in profiles("Box")["hosts"][0] and "verified" not in profiles("Box", "qwen3")
+    import model_profiles
+    model_profiles.STORE.put_profile("a1", "smoke-test-model", "default", {"ctx": 1}, make_active=True)
+    assert [m["model"] for m in profiles("Box")["hosts"][0]["models"]] == ["Qwen3-14B"]
+
+
+# ── #1002 start_benchmark: option chips on the approval card ──
+
+def test_apply_options_validates_picks_against_the_offered_choices():
+    card = {"options": [{"name": "bench", "label": "Bench set", "choices": [{"value": "qualitative"}, {"value": "throughput_1k"}], "value": "qualitative"},
+                        {"name": "osl", "label": "Output length", "choices": ["256", "1024"], "value": "1024"}]}
+    assert tt.apply_options(card, {"bench": "throughput_1k"}) == ({"bench": "throughput_1k", "osl": "1024"}, None)
+    assert tt.apply_options(card, None) == ({"bench": "qualitative", "osl": "1024"}, None)
+    assert tt.apply_options(card, {"osl": 256, "extra": "x"}) == ({"bench": "qualitative", "osl": "256"}, None)
+    picks, err = tt.apply_options(card, {"bench": "rm -rf"})
+    assert picks == {} and err == "Bench set: 'rm -rf' is not one of the offered choices"
+    assert tt.apply_options({}, {"bench": "x"}) == ({}, None)
+    free = {"options": [{"name": "note", "label": "Note", "choices": [], "value": "x"}, {"name": "osl", "choices": ["256"], "value": "256"}]}
+    assert tt.apply_options(free, {"note": "rm -rf /", "osl": "256"}) == ({"osl": "256"}, None)
+
+
+def test_start_benchmark_tool_card_and_options_come_from_deps():
+    seen = []
+    deps = {**_deps(), "bench_start": lambda a: seen.append(a) or {"ok": True, "message": "started", "run_id": "r1"},
+            "bench_options": lambda a: [{"name": "bench", "label": "Bench set", "choices": [{"value": "qualitative", "label": "qualitative"}], "value": "qualitative"}]}
+    reg = tt.build_registry(deps)
+    t = reg["start_benchmark"]
+    assert t.kind == "act" and t.tier == "operate" and t.options is not None
+    args, err = tt.validate_args(t, {"kind": "live", "host": "box", "model": "qwen3"})
+    assert err is None and tt.validate_args(t, {"kind": "nope", "host": "box", "model": "m"})[1]
+    card = tt.action_card(t, args)
+    assert card["title"] == "Start a live bench" and card["target"] == "box · qwen3" and "recent_runs" in card["does"]
+    assert tt.action_card(t, {**args, "kind": "reportcard"})["title"] == "Start a report card"
+    assert t.options(args)[0]["name"] == "bench"
+    assert tt.run_tool(t, {**args, "bench": "qualitative"})[0]["run_id"] == "r1" and seen[-1]["bench"] == "qualitative"
+    bare = tt.build_registry(_deps())["start_benchmark"]
+    assert tt.run_tool(bare, args)[0] == {"ok": False, "message": "benchmarks are not wired"} and bare.options(args) == []
+
+
+# ── ack/close status precheck, profiles host lists, catalog hosts, wake timeout ──
+
+def test_alert_precheck_reports_handled_or_missing_alerts_and_lets_the_rest_proceed():
+    rows = {"a1": {"id": "a1", "status": "active"}, "a2": {"id": "a2", "status": "acknowledged"},
+            "a3": {"id": "a3", "status": "closed"}, "a4": {"id": "a4", "status": "ignored"}}
+    deps = {"alert": lambda aid: rows.get(aid)}
+    assert tt.alert_precheck(deps, "acknowledge", "a1") is None
+    assert tt.alert_precheck(deps, "acknowledge", "a2") == "alert a2 is already acknowledged"
+    assert tt.alert_precheck(deps, "close", "a2") is None
+    assert tt.alert_precheck(deps, "close", "a3") == "alert a3 is already closed; nothing to close"
+    assert tt.alert_precheck(deps, "acknowledge", "a4") == "alert a4 is ignored until later; end the ignore window first (resume_alert) or close it"
+    assert tt.alert_precheck(deps, "close", "a4") is None
+    assert tt.alert_precheck(deps, "resume", "a4") is None
+    assert tt.alert_precheck(deps, "resume", "a1") == "alert a1 is active; there is no ignore window to end"
+    assert tt.alert_precheck(deps, "resume", "zz") == "alert zz was not found"
+    assert tt.alert_precheck(deps, "close", "zz") == "alert zz was not found"
+    assert tt.alert_precheck({}, "close", "a3") is None
+    assert tt.alert_precheck({"alert": lambda aid: (_ for _ in ()).throw(RuntimeError("down"))}, "close", "a3") is None
+    reg = tt.build_registry({**_deps(), "alert": lambda aid: rows.get(aid)})
+    assert reg["ack_alert"].precheck({"alert_id": "a2"}) == "alert a2 is already acknowledged"
+    assert reg["close_alert"].precheck({"alert_id": "a1"}) is None
+    assert "current status first" in reg["ack_alert"].description and "current status first" in reg["close_alert"].description
+    assert reg["load_model"].precheck is None
+
+
+def test_prod_deps_profiles_accept_a_host_list_and_all(monkeypatch, tmp_path):
+    profiles = _profile_deps(monkeypatch, tmp_path)
+    assert [h["host"] for h in profiles("Box, MAC")["hosts"]] == ["Box", "mac"]
+    assert [h["host"] for h in profiles("all")["hosts"]] == ["Box", "mac"]
+    assert profiles("box,ghost,nope") == {"error": "unknown host: ghost, nope"}
+    rows = profiles("box,mac", "qwen3")["rows"]
+    assert [(r["host"], r["values"]) for r in rows] == [("Box", {"ctx": 4096}), ("mac", {"ctx": 2048})]
+    assert profiles("box", "qwen3")["values"] == {"ctx": 4096}
+    assert "comma-separated" in tt.build_registry(_deps())["model_profiles"].description
+
+
+def test_models_rows_take_availability_from_the_catalog_hosts_not_the_serving_ones():
+    entries = [{"id": "big", "provider": "llama", "hosts": [], "catalog_hosts": ["box"]},
+               {"id": "small", "provider": "llama", "hosts": ["box"], "catalog_hosts": ["box", "mac"]},
+               {"id": "old", "provider": "llama", "hosts": ["mac"]}]
+    rows = {r["model"]: r for r in tt.models_rows(entries, {("llama", "small"): ["box"]})}
+    assert rows["big"]["available_on"] == ["box"] and rows["big"]["loaded"] is False
+    assert rows["small"]["available_on"] == ["box", "mac"] and rows["small"]["loaded_on"] == ["box"]
+    assert rows["old"]["available_on"] == ["mac"]
+    assert [r["model"] for r in tt.models_rows(entries, {}, host="mac")] == ["old", "small"]
+
+
+def test_wake_uses_a_timeout_longer_than_the_agent_warm_up(monkeypatch):
+    import discord_bot
+    import provider_state
+    agents = {"A1": {"hostname": "box", "status": "approved", "capabilities": {"llama": True}}}
+    deps = _agent_deps(monkeypatch, agents, [])
+    timeouts = []
+    monkeypatch.setattr(discord_bot, "_agent_call", lambda agent, method, path, **kw: (timeouts.append((path, kw.get("timeout"))), (True, None))[1])
+    monkeypatch.setattr(provider_state, "STORE", provider_state._ProviderSampleStore())
+    provider_state.STORE.put("llama", "A1", {"llama": {"state": "sleeping", "model": "qwen3"}})
+    assert deps["wake"]("box") == (True, None)
+    assert timeouts == [("/llama/server/wake", tt.WAKE_TIMEOUT_S)] and tt.WAKE_TIMEOUT_S > 300
+
+
+# ── #1016 waiting tools, #1012 docs search, #1013 support, #1015 resume_alert, #1011 recent_runs ──
+
+def test_wait_for_polls_until_true_emitting_waiting_status_and_heartbeats(monkeypatch):
+    events, beats = [], []
+    monkeypatch.setattr(tt, "HEARTBEAT_EVERY_S", 0.0)
+    tt.turn_begin(events.append, lambda: False, lambda: beats.append(1))
+    try:
+        seen = {"n": 0}
+
+        def check():
+            seen["n"] += 1
+            return {"state": "awake"} if seen["n"] >= 3 else None
+        val, waited, how = tt.wait_for(check, timeout_s=5, label="host awake · box", every_s=0.01)
+        assert (val, how) == ({"state": "awake"}, "ok") and waited == 0 and seen["n"] == 3
+        assert [e["state"] for e in events] == ["waiting", "waiting"] and events[0]["name"] == "host awake · box"
+        assert events[0]["timeout_s"] == 5 and beats == [1, 1]
+        val, waited, how = tt.wait_for(lambda: None, timeout_s=0, label="x", every_s=0.01)
+        assert (val, how) == (None, "timeout")
+        val, _w, how = tt.wait_for(lambda: (_ for _ in ()).throw(RuntimeError("poll")), timeout_s=0, label="x", every_s=0.01)
+        assert how == "timeout"
+    finally:
+        tt.turn_end()
+    tt.turn_begin(events.append, lambda: True, None)
+    try:
+        assert tt.wait_for(lambda: 1, timeout_s=5, label="x") == (None, 0, "cancelled")
+    finally:
+        tt.turn_end()
+    assert tt.wait_for(lambda: "ready", timeout_s=1, label="no turn bound") == ("ready", 0, "ok")
+
+
+def test_wait_until_tool_checks_each_kind_and_reports_plainly(monkeypatch):
+    monkeypatch.setattr(tt, "WAIT_EVERY_S", 0.01)
+    state = {"llama": "sleeping", "loaded": False, "run": None, "card": None}
+    deps = {**_deps(),
+            "host": lambda name, section="all": {"hostname": name, "provider_states": {"llama.cpp": state["llama"]}},
+            "models": lambda host=None, provider=None: [{"model": "Qwen3-14B", "loaded": state["loaded"], "loaded_on": [host]}],
+            "run_result": lambda rid: state["run"], "card_result": lambda jid: state["card"]}
+    reg = tt.build_registry(deps)
+    t = reg["wait_until"]
+    assert (t.kind, t.tier) == ("read", "read") and t.params["required"] == ["what"]
+    assert tt.validate_args(t, {"what": "host_awake", "host": "box", "timeout_s": 9999})[1] is not None
+    res, ok = tt.run_tool(t, {"what": "host_awake", "host": "box", "timeout_s": 1})
+    assert ok and res["ok"] is False and "still not there after" in res["message"] and res["target"] == "box"
+    state["llama"] = "awake"
+    res, _ = tt.run_tool(t, {"what": "host_awake", "host": "box", "timeout_s": 5})
+    assert res["ok"] and res["result"]["provider_states"]["llama.cpp"] == "awake"
+    assert tt.summary_line(t, {"what": "host_awake"}, res, 12) == "read wait until · host awake · box · ready after 0 s · 12 ms"
+    state["loaded"] = True
+    res, _ = tt.run_tool(t, {"what": "model_loaded", "host": "box", "model": "qwen3", "timeout_s": 5})
+    assert res["ok"] and res["result"]["model"] == "Qwen3-14B" and res["target"] == "qwen3 on box"
+    state["run"] = {"tool": "benchmark", "results": {"gen_tps": 40.0}}
+    assert tt.run_tool(t, {"what": "run_done", "run_id": "r1", "timeout_s": 5})[0]["result"]["results"] == {"gen_tps": 40.0}
+    state["card"] = {"ok": True, "results": {"gen_tps": 41.0}}
+    assert tt.run_tool(t, {"what": "reportcard_done", "job_id": "j1", "timeout_s": 5})[0]["result"]["ok"] is True
+    assert tt.run_tool(t, {"what": "model_loaded", "host": "box", "timeout_s": 5})[0] == {"ok": False, "message": "model required for model_loaded"}
+    assert tt.wait_result("run_done", "r1", None, 7, "cancelled") == {"ok": False, "waited_s": 7, "what": "run_done", "target": "r1",
+                                                                       "message": "the wait was stopped"}
+
+
+def test_doc_sections_and_docs_search_rank_heading_and_body_hits(tmp_path):
+    (tmp_path / "docs").mkdir()
+    (tmp_path / "README.md").write_text("# LLM Systems Manager\n\nIntro text.\n\n## Tower assistant\n\nTower answers questions about hosts.\n"
+                                        "It can wake a model.\n\n### Settings\n\nTower settings live in Admin.\n", encoding="utf-8")
+    (tmp_path / "docs" / "DEPLOYMENT.md").write_text("# Deployment\n\n## Installing the agent\n\nRun the installer on each host.\n", encoding="utf-8")
+    secs = tt.doc_sections((tmp_path / "README.md").read_text())
+    assert [h for h, _b in secs] == ["LLM Systems Manager", "LLM Systems Manager › Tower assistant", "LLM Systems Manager › Tower assistant › Settings"]
+    out = tt.docs_search("tower settings", root=tmp_path)
+    assert out["hits"][0]["section"].endswith("Tower assistant › Settings") and out["hits"][0]["doc"] == "README.md"
+    assert "Tower settings live in Admin." in out["hits"][0]["text"]
+    assert sorted(out["searched"]) == sorted(tt.DOCS.values())
+    out = tt.docs_search("installer", doc="deployment", root=tmp_path)
+    assert [h["doc"] for h in out["hits"]] == ["docs/DEPLOYMENT.md"] and out["searched"] == ["docs/DEPLOYMENT.md"]
+    assert tt.docs_search("the and", root=tmp_path) == {"hits": [], "searched": list(tt.DOCS.values()), "note": "no search terms"}
+    assert tt.docs_search("nothing-here-zzz", root=tmp_path)["hits"] == []
+    long = "# T\n\n## Long\n\n" + ("word " * 400)
+    (tmp_path / "docs" / "ARCHITECTURE.md").write_text(long, encoding="utf-8")
+    hit = tt.docs_search("word", doc="architecture", root=tmp_path)["hits"][0]
+    assert hit["text"].endswith("…") and len(hit["text"]) == tt.DOC_SNIPPET + 1
+
+
+def test_help_tool_returns_the_note_and_doc_hits(tmp_path):
+    (tmp_path / "docs").mkdir()
+    (tmp_path / "README.md").write_text("# M\n\n## Slot pressure\n\nSlots queue requests.\n", encoding="utf-8")
+    deps = {**_deps(), "docs": lambda q, doc=None: tt.docs_search(q, doc, root=tmp_path)}
+    deps.pop("help")
+    reg = tt.build_registry(deps)
+    t = reg["help"]
+    assert set(t.params["properties"]) == {"topic", "doc"} and t.params["properties"]["doc"]["enum"] == list(tt.DOCS)
+    res, ok = tt.run_tool(t, {"topic": "slot pressure"})
+    assert ok and res["note"].startswith("Slot pressure means") and res["hits"][0]["section"] == "M › Slot pressure"
+    res, _ = tt.run_tool(t, {"topic": "zzz nothing"})
+    assert res["hits"] == [] and res["note"].startswith("No note for")
+    broken = tt.build_registry({**_deps(), "help": tt.default_help, "docs": lambda q, doc=None: (_ for _ in ()).throw(OSError("gone"))})
+    res, _ = tt.run_tool(broken["help"], {"topic": "slot pressure"})
+    assert res["note"].startswith("Slot pressure") and res["note_docs"] == "the product docs could not be searched"
+    assert "docs" in tt.prod_deps(types.SimpleNamespace(alarm_engine_url=lambda: "", ae_session=None), db_path="unused",
+                                  tools_runs=lambda *a, **k: [], speed_table=lambda *a: [], service_health=lambda: {},
+                                  gateway_entries=lambda: [], audit_rows=lambda *a, **k: [])
+    assert (tt.DOCS_ROOT / "README.md").is_file() and all((tt.DOCS_ROOT / p).is_file() for p in tt.DOCS.values())
+
+
+def test_support_tool_names_the_developer_and_where_to_ask():
+    reg = tt.build_registry(_deps())
+    t = reg["support"]
+    assert (t.kind, t.tier, t.role) == ("read", "read", "operator") and t.params["required"] == []
+    res, ok = tt.run_tool(t, {})
+    assert ok and res["developer"] == "llmsyscore" and res["website"] == "https://www.llmsyscore.com"
+    assert res["issues"].startswith(res["repository"]) and len(res["include"]) == 4
+    assert "support" in {x.name for x in tt.catalog(reg, _cfg(), "operator")}
+
+
+def test_resume_alert_is_an_act_tool_with_its_own_card_and_precheck():
+    rows = {"a1": {"id": "a1", "status": "ignored", "ignored_until": "2026-09-16 09:00"}, "a2": {"id": "a2", "status": "active"}}
+    calls = []
+    reg = tt.build_registry({**_deps(), "alert": lambda aid: rows.get(aid), "resume": lambda aid: (calls.append(aid), (True, None))[1]})
+    t = reg["resume_alert"]
+    assert (t.kind, t.tier) == ("act", "operate") and "resume_alert" in tt.ACT_TOOL_NAMES
+    card = tt.action_card(t, {"alert_id": "a1"})
+    assert card["title"] == "End the ignore window of alert a1" and card["not"] == "Does not close the alert."
+    assert t.precheck({"alert_id": "a1"}) is None and t.precheck({"alert_id": "a2"}) == "alert a2 is active; there is no ignore window to end"
+    assert tt.run_tool(t, {"alert_id": "a1"})[0] == {"ok": True, "message": "done"} and calls == ["a1"]
+    assert tt.run_tool(tt.build_registry(_deps())["resume_alert"], {"alert_id": "a1"})[0] == {"ok": False, "message": "action not wired"}
+    assert reg["ack_alert"].precheck({"alert_id": "a1"}) == "alert a1 is ignored until 2026-09-16 09:00; end the ignore window first (resume_alert) or close it"
+    assert reg["close_alert"].precheck({"alert_id": "a1"}) is None
+
+
+def test_recent_runs_passes_run_id_and_host_through():
+    seen = []
+    reg = tt.build_registry({**_deps(), "runs": lambda tool, count, a: (seen.append((tool, count, dict(a))), [{"tool": tool}])[1]})
+    t = reg["recent_runs"]
+    assert set(t.params["properties"]) == {"tool", "count", "run_id", "host"} and t.params["properties"]["count"]["maximum"] == 20
+    assert tt.run_tool(t, {"tool": "benchmark", "count": 3, "run_id": "r1", "host": "box"})[0] == [{"tool": "benchmark"}]
+    assert seen[0][0:2] == ("benchmark", 3) and seen[0][2]["run_id"] == "r1" and seen[0][2]["host"] == "box"
+    assert "configuration" in t.description and "run_id" in t.description
+
+
+# ── #1020 help notes name the Events tab, #1021 alarm paths in config_get ──
+
+def test_help_notes_point_notification_setup_at_the_events_tab():
+    for topic in ("email notification setting", "channel", "policy"):
+        note = tt.default_help(topic)
+        assert "Events tab › Settings › Notifications" in note
+        assert "Admin" not in note.replace("lives under Admin", "")
+    assert "Channels section" in tt.default_help("channel") and "Policies section" in tt.default_help("policy")
+    assert (tt.DOCS_ROOT / "docs" / "COMPONENTS.md").read_text().count("**Settings › Notifications**") == 1
+
+
+def test_config_get_reads_alarm_rules_channels_policies_and_settings_masked():
+    class _Resp:
+        def __init__(self, body, ok=True, status=200):
+            self.ok, self.status_code, self._body = ok, status, body
+
+        def json(self):
+            return self._body
+
+    class _Session:
+        def get(self, url, timeout=10):
+            if url.endswith("/api/alarm/rules"):
+                return _Resp([{"rule_id": "R1", "name": "GPU hot", "severity": "critical"}, {"rule_id": "R2", "name": "Disk full"}])
+            if url.endswith("/notifications/channels"):
+                return _Resp([{"channel_id": "C1", "name": "Email ops", "type": "email", "config": {"smtp_password": "s3cret", "to_email": "ops@example.com"}},
+                              {"channel_id": "C2", "name": "Ops discord", "type": "discord",
+                               "config": {"discord": {"webhook_url": "https://discord.example/api/webhooks/1/abc"},
+                                          "webhook": {"url": "https://hooks.example/x?key=k", "headers": {"Authorization": "Bearer t"}}, "timeout_s": 5}}])
+            if url.endswith("/notifications/configs"):
+                return _Resp([{"config_id": "P1", "name": "Critical to email", "channels": ["C1"]}])
+            if url.endswith("/admin/config"):
+                return _Resp({"sections": {"notifications": {"smtp": {"password": "pw", "server": "smtp.example.com"}}, "history": {"retention_days": 30}}})
+            return _Resp({}, ok=False, status=404)
+
+    ctx = types.SimpleNamespace(alarm_engine_url=lambda: "http://ae.local", ae_session=_Session())
+    deps = tt.prod_deps(ctx, db_path="unused", tools_runs=lambda *a, **k: [], speed_table=lambda *a: [],
+                        service_health=lambda: {}, gateway_entries=lambda: [], audit_rows=lambda *a, **k: [])
+    reg = tt.build_registry(deps)
+    t = reg["config_get"]
+    assert "alarm.rules" in t.description and "alarm.channels" in t.description
+    res, ok = tt.run_tool(t, {"path": "alarm.rules"})
+    assert ok and res["kind"] == "rules" and res["count"] == 2 and res["rules"][1]["name"] == "Disk full"
+    res, _ = tt.run_tool(t, {"path": "alarm.rules.r2"})
+    assert res["count"] == 1 and res["rules"][0]["rule_id"] == "R2"
+    res, _ = tt.run_tool(t, {"path": "alarm.channels"})
+    assert res["channels"][0]["config"]["smtp_password"] == "***" and res["channels"][0]["config"]["to_email"] == "ops@example.com"
+    c2 = res["channels"][1]["config"]
+    assert c2["discord"] == {"webhook_url": "***"} and c2["webhook"] == {"url": "***", "headers": "***"} and c2["timeout_s"] == 5
+    assert tt.run_tool(t, {"path": "alarm.Channels"})[0]["count"] == 2
+    res, _ = tt.run_tool(t, {"path": "alarm.policies.critical"})
+    assert res["count"] == 1 and res["policies"][0]["config_id"] == "P1"
+    res, _ = tt.run_tool(t, {"path": "alarm.settings"})
+    assert res["settings"]["notifications"]["smtp"] == {"password": "***", "server": "smtp.example.com"} and "history" in res["settings"]
+    res, _ = tt.run_tool(t, {"path": "alarm.settings.hist"})
+    assert list(res["settings"]) == ["history"]
+    res, _ = tt.run_tool(t, {"path": "alarm.nope"})
+    assert res["error"].startswith("alarm paths are")
+    _args, err = tt.validate_args(t, {"path": "bogus.thing"})
+    assert err is None
+    res, ok = tt.run_tool(t, {"path": "bogus.thing"})
+    assert ok is False
+    bare = tt.build_registry(_deps())
+    assert tt.run_tool(bare["config_get"], {"path": "alarm.rules"})[0] == {"error": "alarm engine reads are not wired"}
+
+
+# ── #1024 support contact, #1025 readiness probe ──
+
+def test_support_info_carries_the_email_and_the_ways_to_ask():
+    info = tt.support_info()
+    assert info["email"] == "support@llmsyscore.com" and info["how"].startswith("Email support")
+    assert tt.run_tool(tt.build_registry(_deps())["support"], {})[0]["email"] == "support@llmsyscore.com"
+
+
+def test_wait_until_model_loaded_needs_an_awake_server_and_model_ready_probes_it(monkeypatch):
+    monkeypatch.setattr(tt, "WAIT_EVERY_S", 0.01)
+    state = {"llama": "sleeping", "probe": None}
+    deps = {**_deps(),
+            "host": lambda name, section="all": {"hostname": name, "provider_states": {"llama.cpp": state["llama"]}},
+            "models": lambda host=None, provider=None: [{"model": "Qwen3-14B", "loaded": True, "loaded_on": [host]}],
+            "probe": lambda host, model: state["probe"]}
+    t = tt.build_registry(deps)["wait_until"]
+    assert "model_ready" in t.params["properties"]["what"]["enum"]
+    res, _ = tt.run_tool(t, {"what": "model_loaded", "host": "box", "model": "qwen3", "timeout_s": 1})
+    assert res["ok"] is False and "still not there" in res["message"]
+    state["llama"] = None                                     # no reported llama state: not awake either
+    assert tt.run_tool(t, {"what": "model_loaded", "host": "box", "model": "qwen3", "timeout_s": 1})[0]["ok"] is False
+    state["llama"] = "awake"
+    assert tt.run_tool(t, {"what": "model_loaded", "host": "box", "model": "qwen3", "timeout_s": 1})[0]["ok"] is True
+    res, _ = tt.run_tool(t, {"what": "model_ready", "host": "box", "model": "Qwen3-14B", "timeout_s": 1})
+    assert res["ok"] is False and res["target"] == "Qwen3-14B on box"
+    state["probe"] = {"ok": True, "latency_ms": 840, "model": "Qwen3-14B"}
+    res, _ = tt.run_tool(t, {"what": "model_ready", "host": "box", "model": "Qwen3-14B", "timeout_s": 1})
+    assert res["ok"] is True and res["result"]["latency_ms"] == 840
+    assert tt.run_tool(t, {"what": "model_ready", "host": "box", "timeout_s": 1})[0] == {"ok": False, "message": "model required for model_ready"}
+    bare = tt.build_registry(_deps())["wait_until"]
+    assert tt.run_tool(bare, {"what": "model_ready", "host": "box", "model": "m", "timeout_s": 1})[0]["ok"] is False
+
+
+def test_probe_dep_sends_a_one_token_completion_to_the_host(monkeypatch):
+    import agent_registry
+    calls = []
+
+    class _R:
+        def __init__(self, status, body):
+            self.status_code, self._body = status, body
+
+        def json(self):
+            if isinstance(self._body, Exception):
+                raise self._body
+            return self._body
+
+    answers = {"status": 200, "body": {"model": "Qwen3-14B", "choices": [{"message": {"content": "."}}]}}
+
+    def fake_request(method, agent, path, **kw):
+        calls.append((method, agent["hostname"], path, kw.get("json"), kw.get("timeout")))
+        return _R(answers["status"], answers["body"]), [], None
+    monkeypatch.setattr(agent_registry, "agent_request", fake_request)
+    deps = _agent_deps(monkeypatch, {"A1": {"hostname": "box", "status": "approved", "capabilities": {"llama": True}}}, [])
+    out = deps["probe"]("box", "Qwen3-14B")
+    assert out["ok"] is True and out["model"] == "Qwen3-14B" and out["latency_ms"] >= 0
+    assert calls[0][:3] == ("POST", "box", "/llama/openai/chat/completions") and calls[0][4] == (5, 90)
+    assert calls[0][3] == {"model": "Qwen3-14B", "messages": [{"role": "user", "content": "."}], "max_tokens": 1, "temperature": 0}
+    answers["status"] = 503
+    assert deps["probe"]("box", "Qwen3-14B") is None
+    answers["status"], answers["body"] = 200, {"choices": []}
+    assert deps["probe"]("box", "Qwen3-14B") is None
+    answers["body"] = ValueError("not json")
+    assert deps["probe"]("box", "Qwen3-14B") is None
+    assert deps["probe"]("ghost", "Qwen3-14B") is None

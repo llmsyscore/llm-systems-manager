@@ -188,6 +188,8 @@ The Alarm Engine can send alert notifications through five channels, each config
 
 Each channel can be enabled or disabled independently, and each alarm rule can specify which channels to use. The engine records every delivery attempt — including failures — so operators can confirm notifications were sent.
 
+Channels and policies are configured in the dashboard's **Events** tab under **Settings › Notifications** (the alarm console's own settings page): its **Channels** section holds the email, webhook, Discord, SMS and toast definitions, and its **Policies** section decides which alerts route to which channels, with dwell and cooldown. Nothing about notifications is configured under the Admin tab; the installer only pre-fills the SMTP account.
+
 ### Dependencies
 
 The Alarm Engine receives data from agents (direct metric push) and from the Manager (metric forwarding for the manager's own host). It reads and writes InfluxDB for time-series data. It provides chart history and alert data to the Manager, which proxies those to the browser. It sends notifications outbound to its configured channels (email, webhook, Discord, and SMS providers).

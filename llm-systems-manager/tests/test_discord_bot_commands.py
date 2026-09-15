@@ -143,3 +143,34 @@ def test_other_users_click_is_refused_and_action_survives():
 def test_unknown_command_refused():
     r = db.route(_ix("nope"), CFG, db.PendingActions())
     assert "Unknown command" in r["payload"]["data"]["content"]
+
+
+def test_tower_routes_to_a_deferred_job_with_the_cleaned_question():
+    r = db.route(_ix("tower", opts={"question": "  why is   box red? "}), CFG, db.PendingActions())
+    assert r == {"kind": "defer", "flags": db.EPHEMERAL, "update": False,
+                 "job": {"kind": "tower", "question": "why is box red?", "user": "111"}}
+    assert db.route(_ix("tower", opts={"question": "q", "public": True}), CFG, db.PendingActions())["flags"] == 0
+    r = db.route(_ix("tower", opts={"question": "   "}), CFG, db.PendingActions())
+    assert r["kind"] == "respond" and "Ask Tower" in r["payload"]["data"]["content"]
+    long_q = "x" * 2000
+    assert len(db.route(_ix("tower", opts={"question": long_q}), CFG, db.PendingActions())["job"]["question"]) == db.TOWER_QUESTION_MAX
+    assert "allowlist" in db.route(_ix("tower", uid="999", opts={"question": "q"}), CFG, db.PendingActions())["payload"]["data"]["content"]
+
+
+def test_long_tower_answers_post_follow_up_messages():
+    import asyncio
+    text = "\n\n".join(["p" * 1500] * 3)
+    bot = db.GatewayBot(CFG, {"tower": lambda q, u: {"ok": True, "text": text, "error": None}})
+    bot.app_id = "app"
+    calls = []
+
+    async def rest(method, path, json_body=None):
+        calls.append((method, path, json_body))
+        return 200, {}
+    bot._rest = rest
+    asyncio.run(bot._handle_interaction(_ix("tower", opts={"question": "q"})))
+    assert [(m, p.split("/")[1]) for m, p, _ in calls] == [("POST", "interactions"), ("PATCH", "webhooks"),
+                                                            ("POST", "webhooks"), ("POST", "webhooks")]
+    assert "extra" not in calls[1][2] and calls[1][2]["content"] == "p" * 1500
+    assert calls[2][2] == {"content": "p" * 1500, "flags": db.EPHEMERAL}
+    assert calls[3][1] == "/webhooks/app/ixtok"

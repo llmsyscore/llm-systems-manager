@@ -349,6 +349,9 @@ def test_models_merge_populates_serving_index(monkeypatch):
     assert gateway._model_index["serving"] == {
         "llama:m1": [a1["agent_id"]],
         "llama:m2": [a1["agent_id"], a2["agent_id"]]}
+    assert gateway._model_index["catalog"]["llama:m3"] == [a2["agent_id"]]
+    assert gateway._catalog_agent_ids("llama", "m3") == {a2["agent_id"]}
+    assert gateway._serving_agent_ids("llama", "m3") == set()
 
 
 # ── #628/#630/#631/#632: gateway hardening ───────────────────────────

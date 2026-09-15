@@ -473,11 +473,22 @@ def test_tower_audit_rows_filters_by_window_and_action_prefix():
     M._audit_record((now, "carol", "admin", "127.0.0.1", "session", "POST",
                      "/api/tower/actions/z9/approve", "tower.action.approve", "z9",
                      200, "ok", json.dumps({"tool": "wake_server"}), "tower.action.approve"))
-    rows = M._tower_audit_rows("24h", None, "tower.", 5)
-    assert isinstance(rows, list)
+    out = M._tower_audit_rows("24h", None, "tower.", 5)
+    rows = out["entries"]
+    assert isinstance(rows, list) and out["total"] >= 1 and out["offset"] == 0
     row = next(r for r in rows if r["target"] == "z9")
-    assert row["label"] == "Approved a Tower action"
+    assert row["label"] == "Approved a Tower action" and row["status"] == 200 and row["outcome"] == "ok"
     assert isinstance(row["detail"], dict) and row["detail"]["tool"] == "wake_server"
+    assert row["ts"].endswith(("-04:00", "-05:00", "+00:00")) or "T" in row["ts"]
+    # #1000: search, outcome, status class, paging and a since range
+    assert any(r["target"] == "z9" for r in M._tower_audit_rows("24h", None, None, 50, {"search": "wake_server"})["entries"])
+    assert all(r["outcome"] == "ok" for r in M._tower_audit_rows("24h", None, None, 50, {"outcome": "ok"})["entries"])
+    assert M._tower_audit_rows("24h", None, "tower.", 50, {"status": "5xx"})["entries"] == []
+    page = M._tower_audit_rows("24h", None, None, 1, {"offset": 0})
+    assert len(page["entries"]) == 1 and (page["next_offset"] == 1 if page["total"] > 1 else page["next_offset"] is None)
+    assert M._tower_audit_rows("24h", None, None, 5, {"since": "nope"}) == {"error": "since is not a time (use 2h, 3d, 1w, a date or ISO-8601)"}
+    assert M._tower_audit_rows("24h", None, "tower.", 5, {"since": "1h", "until": "30m"})["total"] == 0
+    assert M._tower_audit_rows("24h", None, "tower.", 5, {"since": "1h"})["total"] >= 1
 
 
 # --- debug logger levels (round 2d, #924) ---
@@ -731,3 +742,288 @@ def test_thread_rename_is_scoped_trimmed_and_capped(client):
     M._tower_store.add_message(tid, "user", "why is box red?")
     assert client.get(f"/api/tower/threads/{tid}").get_json()["thread"]["title"].startswith("GPU heat ")
     assert ("PATCH", "tower.thread.rename") in [(m, a) for m, _re, a, _g in M._AUDIT_ROUTES if a == "tower.thread.rename"]
+
+
+def test_thread_create_accepts_a_title(client):
+    d = client.post("/api/tower/threads", json={"title": "  Troubleshoot:   GPU hot · box  ", "page": {}}).get_json()
+    assert d["thread"]["title"] == "Troubleshoot: GPU hot · box"
+    d = client.post("/api/tower/threads", json={"title": "x" * 80}).get_json()
+    assert len(d["thread"]["title"]) == 60
+    d = client.post("/api/tower/threads", json={}).get_json()
+    assert d["thread"]["title"] == "New thread"
+
+
+def test_insight_rows_carry_the_metric_snapshot(client):
+    snap = {"metric": "system/cpu_total", "unit": "%", "minutes": 60, "points": [[1, 2.0], [61, 3.5]], "threshold": 90.0, "value": 95.0}
+    iid = M._tower_runs.store.create_insight({"alert_id": "a9", "rule": "CPU", "host": "box", "severity": "warning", "summary": "s", "snapshot": snap})
+    rows = client.get("/api/tower/insights").get_json()["insights"]
+    assert rows[0]["id"] == iid and rows[0]["snapshot"] == snap
+    iid2 = M._tower_runs.store.create_insight({"alert_id": "a10", "rule": "CPU", "summary": "s"})
+    assert M._tower_runs.store.get_insight(iid2)["snapshot"] is None
+
+
+# ── #993 Discord gate, #994 parked runs ──
+
+def test_discord_ask_is_gated_by_the_tower_settings(client, monkeypatch):
+    settings.manager.tower.discord = False
+    out = M._tower_discord_ask("why?", "111")
+    assert out["ok"] is False and "Answer in Discord" in out["error"]
+    settings.manager.tower.discord = True
+    seen = {}
+    def fake_ask(runs, **kw):
+        seen.update(kw); return {"ok": True, "text": "hot", "error": None, "thread_id": "t"}
+    monkeypatch.setattr(tower, "ask_blocking", fake_ask)
+    assert M._tower_discord_ask("why?", "111")["text"] == "hot"
+    assert seen["user"] == "discord:111" and seen["actor"] == "tower via discord:111" and seen["cfg"].capabilities == "read"
+    settings.manager.tower.enabled = False
+    assert M._tower_discord_ask("why?", "111")["error"] == "Tower is off."
+
+
+def test_parked_run_survives_the_detach_grace_and_reattaches(client, monkeypatch):
+    monkeypatch.setattr(tower, "_DETACH_GRACE_S", 0.05)
+    gate = threading.Event()
+    def slow_turn(**kw):
+        kw["emit"]({"event": "delta", "text": "first"})
+        gate.wait(5)
+        kw["emit"]({"event": "delta", "text": " last"})
+        kw["emit"]({"event": "done", "ok": True, "calls": 0, "elapsed_ms": 1}); return {"ok": True}
+    monkeypatch.setattr(tower, "run_turn", slow_turn)
+    tid = client.post("/api/tower/threads", json={}).get_json()["thread"]["id"]
+    rid = client.post(f"/api/tower/threads/{tid}/messages", json={"text": "hi"}).get_json()["run_id"]
+    run = M._tower_runs._runs[rid]
+    gen = M._tower_runs.stream(run)
+    assert "first" in next(gen)
+    assert client.post(f"/api/tower/runs/{rid}/park").get_json() == {"ok": True}
+    assert client.post("/api/tower/runs/nope/park").status_code == 404
+    gen.close()
+    time.sleep(0.2)
+    assert not run["cancel"].is_set() and run.get("parked") is True
+    assert client.get(f"/api/tower/threads/{tid}").get_json()["active_run"] == rid
+    gen2 = M._tower_runs.stream(run)
+    next(gen2)
+    assert run.get("parked") is False
+    gen2.close()
+    assert run["cancel"].wait(1.0)
+    gate.set()
+    assert _wait_done(rid) is not None
+
+
+# ── #996 Discord threads in History, #999 agent config ──
+
+def test_admins_see_and_open_discord_threads(client):
+    st = M._tower_runs.store
+    d1 = st.create_thread("discord:111", "why is box red?", {})
+    st.add_message(d1, "user", "why is box red?"); st.add_message(d1, "assistant", "hot")
+    mine = client.post("/api/tower/threads", json={}).get_json()["thread"]["id"]
+    d = client.get("/api/tower/threads").get_json()
+    assert [t["id"] for t in d["threads"]] == [mine] and "discord" not in d          # operator session
+    assert client.get(f"/api/tower/threads/{d1}").status_code == 404
+    with client.session_transaction() as s:
+        s["role"] = "admin"
+    d = client.get("/api/tower/threads").get_json()
+    assert [t["id"] for t in d["threads"]] == [mine]
+    assert [(t["id"], t["user"], t["title"]) for t in d["discord"]] == [(d1, "discord:111", "why is box red?")]
+    got = client.get(f"/api/tower/threads/{d1}").get_json()
+    assert got["ok"] and [m["role"] for m in got["messages"]] == ["user", "assistant"]
+    assert client.patch(f"/api/tower/threads/{d1}", json={"title": "Box heat"}).get_json()["thread"]["title"] == "Box heat"
+    assert st.thread_user(d1) == "discord:111"
+    deleted = client.delete(f"/api/tower/threads/{d1}").get_json()
+    assert deleted == {"ok": True}
+    assert client.get("/api/tower/threads").get_json()["discord"] == []
+    assert st.thread_user("nope") is None
+
+
+# ── #1002 approve carries option picks; manager bench deps ──
+
+def test_approve_route_passes_option_picks_to_the_pending_action(act_client):
+    c = act_client
+    tid = c.post("/api/tower/threads", json={}).get_json()["thread"]["id"]
+    rid = c.post(f"/api/tower/threads/{tid}/messages", json={"text": "wake box"}).get_json()["run_id"]
+    confirm, _evs = _first_event(c, rid, "confirm")
+    aid = confirm["action_id"]
+    seen = {}
+    orig = M._tower_approvals.resolve
+    def spy(a, decision, actor, options=None):
+        seen.update({"aid": a, "decision": decision, "options": options}); return orig(a, decision, actor, options)
+    M._tower_approvals.resolve = spy
+    try:
+        r = c.post(f"/api/tower/actions/{aid}/approve", json={"options": {"bench": "throughput_1k"}, "junk": 1})
+    finally:
+        M._tower_approvals.resolve = orig
+    assert r.status_code == 200 and seen == {"aid": aid, "decision": "approved", "options": {"bench": "throughput_1k"}}
+    assert _wait_done(rid) is not None
+
+
+def test_bench_options_and_start_for_live_and_report_card(monkeypatch):
+    import agent_registry
+    import report_card
+    monkeypatch.setattr(agent_registry, "load_agents", lambda: {"agents": {"A1": {"hostname": "box", "status": "approved"}}})
+    monkeypatch.setattr(M, "_fleet_hosts", lambda: [{"agent_id": "A1", "hostname": "box", "online": True, "model": "Qwen3-14B", "state": "loaded"}])
+    started = []
+    monkeypatch.setattr(M, "_fleet_run_on_agent", lambda aid, body: started.append((aid, body)) or (True, "run77"))
+    monkeypatch.setitem(M._tower_deps, "models", lambda host=None, provider=None: [
+        {"model": "Qwen3-14B", "provider": "llama", "loaded_on": ["box"], "available_on": []},
+        {"model": "Qwen3-14B", "provider": "lms", "loaded_on": ["box"], "available_on": []}])
+    live = M._tower_bench_options({"kind": "live", "host": "box", "model": "Qwen3-14B"})
+    assert [o["name"] for o in live] == ["bench", "osl", "limit", "monitor"] and live[0]["value"] == "qualitative"
+    assert live[3]["value"] == "yes" and [c["value"] for c in live[3]["choices"]] == ["yes", "no"]
+    rc = M._tower_bench_options({"kind": "reportcard", "host": "box", "model": "qwen3-14b", "provider": "lms"})
+    assert [c["value"] for c in rc[0]["choices"]] == ["llama", "lms"] and rc[0]["value"] == "lms"
+    out = M._tower_bench_start({"kind": "live", "host": "BOX", "model": "qwen3-14b", "bench": "throughput_1k", "osl": "256", "limit": "4"})
+    assert out["ok"] and out["run_id"] == "run77" and "throughput_1k" in out["message"]
+    assert started == [("A1", {"model_id": "Qwen3-14B", "bench": "throughput_1k", "osl": 256, "limit": 4, "concurrency": [1]})]
+    assert M._tower_bench_start({"kind": "live", "host": "box", "model": "other"})["ok"] is False
+    assert M._tower_bench_start({"kind": "live", "host": "nope", "model": "x"})["message"] == "unknown host nope"
+    jobs = []
+    monkeypatch.setattr(report_card, "agent_busy", lambda aid: False)
+    monkeypatch.setattr(report_card, "_new_job", lambda req, exclusive=False: jobs.append(req) or "job9")
+    monkeypatch.setattr(report_card, "_run_job", lambda job_id, req: None)
+    out = M._tower_bench_start({"kind": "reportcard", "host": "box", "model": "Qwen3-14B", "provider": "lms"})
+    assert out["ok"] and out["job_id"] == "job9" and jobs[0]["mode"] == "custom" and jobs[0]["provider"] == "lms" and jobs[0]["agent"] == "A1"
+    assert M._tower_bench_start({"kind": "reportcard", "host": "box", "model": "Qwen3-14B", "provider": "vllm"})["ok"] is False
+    monkeypatch.setattr(report_card, "agent_busy", lambda aid: True)
+    assert "already running" in M._tower_bench_start({"kind": "reportcard", "host": "box", "model": "Qwen3-14B", "provider": "llama"})["message"]
+
+
+def test_tower_gateway_entries_carry_catalog_hosts_beside_the_serving_ones(monkeypatch):
+    import agent_registry
+    import gateway
+    agents = {"A1": {"hostname": "box", "status": "approved"}, "A2": {"hostname": "mac", "status": "approved"},
+              "A3": {"hostname": "old", "status": "revoked"}}
+    monkeypatch.setattr(agent_registry, "load_agents", lambda: {"agents": agents})
+    monkeypatch.setattr(gateway, "_cached_model_entries", lambda: [{"id": "big", "provider": "llama"}, {"id": "small", "provider": "llama"}])
+    monkeypatch.setattr(gateway, "_serving_agent_ids", lambda p, m: {"A1"} if m == "small" else set())
+    monkeypatch.setattr(gateway, "_catalog_agent_ids", lambda p, m: {"A1", "A3"} if m == "big" else {"A1", "A2"})
+    rows = {r["id"]: r for r in M._tower_gateway_entries()}
+    assert rows["big"]["hosts"] == [] and rows["big"]["agent_ids"] == [] and rows["big"]["catalog_hosts"] == ["box"]
+    assert rows["small"]["hosts"] == ["box"] and rows["small"]["catalog_hosts"] == ["box", "mac"]
+
+
+# ── #1011 recent_runs rows, #1016 monitoring + stream re-attach ──
+
+def _runs_db(monkeypatch):
+    import sqlite3
+    import agent_registry
+    import report_card
+    conn = sqlite3.connect(":memory:", check_same_thread=False)
+    monkeypatch.setattr(M, "get_db", lambda: conn)
+    M.init_db()
+    monkeypatch.setattr(agent_registry, "load_agents", lambda: {"agents": {"A1": {"hostname": "box", "status": "approved"},
+                                                                          "A2": {"hostname": "mac", "status": "approved"}}})
+    ts = datetime.now(timezone.utc).isoformat()
+    conn.execute("INSERT INTO tool_runs (tool, model_id, agent_id, provider, ok, summary, ts, run_id) VALUES (?,?,?,?,?,?,?,?)",
+                 ("benchmark", "Qwen3-14B", "A1", "llama", 1, json.dumps({"bench": "qualitative", "osl": 1024, "limit": 8, "concurrency": "1",
+                                                                          "gen_tps": 40.5, "wh_per_ktok": 1.2, "accept_rate": 0.56}), ts, "run-1"))
+    conn.execute("INSERT INTO tool_runs (tool, model_id, agent_id, provider, ok, summary, ts, run_id) VALUES (?,?,?,?,?,?,?,?)",
+                 ("autotune", "gemma", "A2", "llama", 0, json.dumps({"objective": "speed", "mode": "tune", "ctx_size": 8192, "decode_tps": 30.0}), ts, "run-2"))
+    report_card.init_table(conn)
+    report_card.insert_card(conn, {"ts": int(time.time()) + 5, "agent_id": "A1", "provider": "llama", "mode": "custom", "preset_version": "v3",
+                                   "eligible": False, "result": {"model": "Qwen3-14B", "gen_tps": 39.0, "ttft_s": 0.4, "usd_per_mtok": 0.02,
+                                                                 "gpu_config": "1x RTX", "live": {"x": 1}}})
+    return conn
+
+
+def test_tower_tools_runs_carry_host_config_results_and_report_cards(monkeypatch):
+    _runs_db(monkeypatch)
+    rows = M._tower_tools_runs(None, 5)
+    assert [r["tool"] for r in rows] == ["reportcard", "benchmark", "autotune"] or [r["tool"] for r in rows] == ["reportcard", "autotune", "benchmark"]
+    bench = next(r for r in rows if r["tool"] == "benchmark")
+    assert bench["host"] == "box" and bench["model"] == "Qwen3-14B" and bench["run_id"] == "run-1"
+    assert bench["config"] == {"bench": "qualitative", "osl": 1024, "limit": 8, "concurrency": "1"}
+    assert bench["results"] == {"gen_tps": 40.5, "wh_per_ktok": 1.2, "accept_rate_pct": 56.0}
+    card = rows[0]
+    assert card["host"] == "box" and card["config"] == {"mode": "custom", "preset_version": "v3", "eligible": False, "gpu_config": "1x RTX"}
+    assert card["results"] == {"gen_tps": 39.0, "ttft_s": 0.4, "usd_per_mtok": 0.02} and card["run_id"].startswith("card-")
+    assert [r["tool"] for r in M._tower_tools_runs("reportcard", 5)] == ["reportcard"]
+    assert [r["host"] for r in M._tower_tools_runs(None, 5, {"host": "MAC"})] == ["mac"]
+    assert M._tower_tools_runs(None, 5, {"host": "ghost"}) == {"error": "unknown host"}
+    one = M._tower_tools_runs(None, 5, {"run_id": "run-2"})
+    assert len(one) == 1 and one[0]["config"] == {"objective": "speed", "mode": "tune", "ctx_size": 8192} and one[0]["ok"] is False
+    assert M._tower_tools_runs(None, 5, {"run_id": "nope"}) == []
+    assert len(M._tower_tools_runs(None, 1)) == 1
+
+
+def test_tower_card_result_waits_for_the_job_then_reads_the_card(monkeypatch):
+    import report_card
+    conn = _runs_db(monkeypatch)
+    monkeypatch.setattr(report_card, "_JOBS", {"j1": {"done": False, "agent": "A1"}})
+    M._tower_card_reqs["j1"] = {"agent": "A1", "provider": "llama", "model": "Qwen3-14B"}
+    assert M._tower_card_result("j1") is None
+    report_card._JOBS["j1"]["done"] = True
+    res = M._tower_card_result("j1")
+    assert res["ok"] and res["mode"] == "custom" and res["results"]["gen_tps"] == 39.0 and "j1" not in M._tower_card_reqs
+    M._tower_card_reqs["j2"] = {"agent": "A1", "provider": "llama", "model": "other"}
+    report_card._JOBS["j2"] = {"done": True, "agent": "A1"}
+    assert M._tower_card_result("j2")["ok"] is False
+    M._tower_card_reqs["gone"] = {"agent": "A1"}
+    assert M._tower_card_result("gone") is None and "gone" not in M._tower_card_reqs
+    assert M._tower_card_result("unknown") is None
+    conn.close()
+
+
+def test_tower_monitor_folds_the_result_or_says_it_is_still_running(monkeypatch):
+    monkeypatch.setattr(tower_tools, "WAIT_EVERY_S", 0.01)
+    start = {"ok": True, "message": "Started.", "run_id": "r1"}
+    out = M._tower_monitor(start, lambda: {"results": {"gen_tps": 1.0}}, 5, "live bench · box")
+    assert out["result"] == {"results": {"gen_tps": 1.0}} and out["message"].startswith("Started. Finished after 0 s")
+    out = M._tower_monitor(start, lambda: None, 0, "live bench · box")
+    assert "result" not in out and "still running after 0 s" in out["message"] and out["monitored_s"] == 0
+
+
+def test_bench_start_monitors_when_the_chip_says_yes(monkeypatch):
+    import agent_registry
+    monkeypatch.setattr(agent_registry, "load_agents", lambda: {"agents": {"A1": {"hostname": "box", "status": "approved"}}})
+    monkeypatch.setattr(M, "_fleet_hosts", lambda: [{"agent_id": "A1", "online": True, "state": "awake", "model": "Qwen3-14B"}])
+    monkeypatch.setattr(M, "_fleet_run_on_agent", lambda aid, body: (True, "run-9"))
+    monkeypatch.setattr(tower_tools, "WAIT_EVERY_S", 0.01)
+    monkeypatch.setattr(tower_tools, "MONITOR_LIVE_S", 1)
+    monkeypatch.setattr(M, "_tower_tools_runs", lambda tool, count, a=None: [{"tool": "benchmark", "run_id": "run-9", "results": {"gen_tps": 42.0}}] if a and a.get("run_id") == "run-9" else [])
+    out = M._tower_bench_start({"kind": "live", "host": "box", "model": "Qwen3-14B", "monitor": "yes"})
+    assert out["ok"] and out["run_id"] == "run-9" and out["result"]["results"] == {"gen_tps": 42.0} and "Finished after" in out["message"]
+    out = M._tower_bench_start({"kind": "live", "host": "box", "model": "Qwen3-14B", "monitor": "no"})
+    assert out["ok"] and "result" not in out and "monitored_s" not in out
+
+
+def test_stream_asks_the_client_to_reattach_instead_of_timing_out(client, monkeypatch):
+    gate = threading.Event()
+
+    def slow_turn(**kw):
+        gate.wait(2.0)
+        kw["emit"]({"event": "done", "ok": True, "calls": 0, "elapsed_ms": 1}); return {"ok": True, "calls": 0}
+    monkeypatch.setattr(tower, "run_turn", slow_turn)
+    M._tower_runs._stream_max_s = lambda: 0.0
+    tid = client.post("/api/tower/threads", json={}).get_json()["thread"]["id"]
+    rid = client.post(f"/api/tower/threads/{tid}/messages", json={"text": "hi"}).get_json()["run_id"]
+    r = client.get(f"/api/tower/runs/{rid}/stream")
+    evs = [json.loads(l[6:]) for l in r.get_data(as_text=True).splitlines() if l.startswith("data: ")]
+    r.close()
+    assert evs == [{"event": "reattach"}]
+    gate.set()
+    assert _wait_done(rid)["done"]
+    M._tower_runs._stream_max_s = lambda: 0.0
+    r = client.get(f"/api/tower/runs/{rid}/stream")
+    evs = [json.loads(l[6:]) for l in r.get_data(as_text=True).splitlines() if l.startswith("data: ")]
+    r.close()
+    assert evs and evs[-1]["event"] in ("done", "error")
+
+
+def test_tower_backups_section_summarises_the_scheduler_state(monkeypatch):
+    monkeypatch.setattr(M, "_backup_cfg", lambda: (True, 6, 5, "/mnt/mirror"))
+    monkeypatch.setattr(M, "_get_backup_status", lambda: {"ok": True, "ts": 1_800_000_000, "duration_s": 3.2, "pruned": 1,
+                                                          "components": {"manager": {"ok": True, "file": "a.lsmenc"}, "alarm_engine": {"ok": False, "error": "no token"}}})
+    monkeypatch.setattr(M, "_backup_sched_state", {"running": True, "next_attempt": 1_800_021_600})
+    b = M._tower_backups()
+    assert b["enabled"] is True and b["interval_hours"] == 6 and b["keep_last"] == 5 and b["mirrored"] is True and b["scheduler_running"] is True
+    assert b["last"]["ok"] is True and b["last"]["duration_s"] == 3.2 and b["last"]["ts"].startswith("20") and "T" in b["last"]["ts"]
+    assert b["last"]["components"] == {"manager": {"ok": True, "error": None}, "alarm_engine": {"ok": False, "error": "no token"}}
+    assert b["next_due"].startswith("20")
+    assert "backups" in M._tower_service_health()
+    monkeypatch.setattr(M, "_backup_cfg", lambda: (_ for _ in ()).throw(RuntimeError("cfg")))
+    assert M._tower_backups() == {"error": "backup state unavailable"}
+
+
+def test_tower_run_rows_report_accept_rate_as_a_percentage():
+    row = M._tower_run_row({"tool": "benchmark", "model_id": "m", "agent_id": "A1", "provider": "llama", "ok": True, "ts": None,
+                            "summary": {"bench": "qualitative", "accept_rate": 0.5496, "gen_tps": 68.4}}, {"A1": "box"})
+    assert row["results"] == {"accept_rate_pct": 55.0, "gen_tps": 68.4} and row["config"] == {"bench": "qualitative"}
+    assert M._tower_run_row({"tool": "benchmark", "summary": {"accept_rate": 61.2}}, {})["results"] == {"accept_rate_pct": 61.2}

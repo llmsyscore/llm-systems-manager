@@ -26,6 +26,14 @@ FATAL_CLOSE_CODES = {4004, 4013, 4014}
 SEVERITY_COLOR = {"critical": 0xFF0000, "warning": 0xFFF200, "info": 0x007400}
 EMBED_COLOR = 0x5E6AD2
 
+# Discord caps one message at 2000 characters; a /tower answer spans at most TOWER_CHUNKS messages.
+TOWER_CHUNK = 1900
+TOWER_CHUNKS = 3
+TOWER_QUESTION_MAX = 1000
+
+# Set by the manager once Tower is wired: HOOKS["tower_ask"](question, user_id) -> {ok, text, error} (#963).
+HOOKS: dict = {"tower_ask": None}
+
 
 # ── Command schemas ──────────────────────────────────────────────────
 # Option types: 3=string, 4=integer, 5=boolean.
@@ -74,6 +82,11 @@ def command_schemas() -> "list[dict]":
          "description": "Close an alert; the rule re-fires on a new breach",
          "options": [{"type": 3, "name": "alert_id", "required": True,
                       "description": "Alert id from /alarms"}]},
+        {"name": "tower", "type": 1,
+         "description": "Ask Tower, the manager's assistant, a question",
+         "options": [{"type": 3, "name": "question", "required": True,
+                      "description": "What to ask (hosts, models, alarms, energy, runs)"},
+                     public_opt]},
     ]
 
 
@@ -192,6 +205,13 @@ def route(ix: dict, cfg: dict, pending: PendingActions,
         return {"kind": "defer", "flags": EPHEMERAL, "update": False,
                 "job": {"kind": name,
                         "alert_id": str(opts.get("alert_id") or "")}}
+    if name == "tower":
+        question = " ".join(str(opts.get("question") or "").split())
+        if not question:
+            return _refuse("Ask Tower something, e.g. /tower question: why is box red?")
+        return {"kind": "defer", "flags": public_flags, "update": False,
+                "job": {"kind": "tower", "question": question[:TOWER_QUESTION_MAX],
+                        "user": uid}}
     if name in ("load", "unload"):
         if not cfg.get("allow_model_control"):
             return _refuse("Model control is disabled — set "
@@ -240,6 +260,38 @@ def _cap(lines: "list[str]") -> "list[str]":
     if len(lines) > LIST_CAP:
         return lines[:LIST_CAP] + [f"… +{len(lines) - LIST_CAP} more"]
     return lines
+
+
+def tower_chunks(text: str, size: int = TOWER_CHUNK, limit: int = TOWER_CHUNKS) -> "list[str]":
+    """Splits an answer into Discord-sized messages at paragraph, line or space breaks; the last one notes a cut."""
+    text = str(text or "").strip()
+    out: list = []
+    while text and len(out) < limit:
+        if len(text) <= size:
+            out.append(text)
+            text = ""
+            break
+        cut = max(text.rfind("\n\n", 0, size), text.rfind("\n", 0, size), text.rfind(" ", 0, size))
+        if cut < size // 2:
+            cut = size
+        out.append(text[:cut].rstrip())
+        text = text[cut:].lstrip()
+    if text:
+        out[-1] = out[-1][:size - 24].rstrip() + "\n… (answer truncated)"
+    return out
+
+
+def _tower_message(res: dict) -> dict:
+    if not isinstance(res, dict) or not res.get("ok"):
+        err = (res or {}).get("error") if isinstance(res, dict) else None
+        text = str((res or {}).get("text") or "") if isinstance(res, dict) else ""
+        note = {"no_model": "No chat model is loaded right now.",
+                "run_active": "Tower is still answering your last question.",
+                "rate_limited": "Too many questions in a minute; try again shortly."}.get(str(err or ""), str(err or "Tower failed."))
+        chunks = tower_chunks((text + "\n\n" if text else "") + f"Tower: {note}")
+    else:
+        chunks = tower_chunks(str(res.get("text") or "") or "Tower had nothing to say.")
+    return {"content": chunks[0], "extra": chunks[1:]}
 
 
 def _fmt_age(age_s) -> str:
@@ -353,6 +405,9 @@ def _run_job(job: dict, deps: dict) -> dict:
         return {"content": (f"Closed `{job.get('alert_id')}` — the rule "
                             "re-fires on a new breach.") if ok
                 else f"Close failed: {err}"}
+    if kind == "tower":
+        return _tower_message(deps["tower"](str(job.get("question") or ""),
+                                            str(job.get("user") or "")))
     if kind in ("load", "unload"):
         ok, err = deps[kind](job.get("provider"), job.get("host"),
                              job.get("model"))
@@ -593,10 +648,16 @@ def prod_deps(ctx) -> dict:
             return False, f"HTTP {r.status_code}"
         return call
 
+    def tower_ask(question: str, user_id: str) -> dict:
+        fn = HOOKS.get("tower_ask")
+        if fn is None:
+            return {"ok": False, "text": "", "error": "Tower is not available."}
+        return fn(question, user_id)
+
     return {"fleet": fleet, "host": host, "models": models,
             "load": _control("load"), "unload": _control("unload"),
             "alarms": alarms, "ack": _alert_action("acknowledge"),
-            "close": _alert_action("close")}
+            "close": _alert_action("close"), "resume": _alert_action("resume"), "tower": tower_ask}
 
 
 # ── Gateway client ───────────────────────────────────────────────────
@@ -668,6 +729,13 @@ class GatewayBot:
             log.warning("discord: followup edit %s: %s", status,
                         str(body)[:150])
 
+    async def _followup_post(self, ix: dict, data: dict) -> None:
+        status, body = await self._rest(
+            "POST", f"/webhooks/{self.app_id}/{ix['token']}", data)
+        if status not in (200, 204):
+            log.warning("discord: followup post %s: %s", status,
+                        str(body)[:150])
+
     async def _handle_interaction(self, ix: dict) -> None:
         try:
             decision = route(ix, self.cfg, self.pending)
@@ -680,9 +748,13 @@ class GatewayBot:
             loop = asyncio.get_running_loop()
             data = await loop.run_in_executor(
                 None, run_job, decision["job"], self.deps)
+            extra = data.pop("extra", None) or []
             if decision.get("update"):
                 data = dict(data, components=[])
             await self._followup_edit(ix, data)
+            for chunk in extra:
+                await self._followup_post(
+                    ix, {"content": chunk, "flags": decision["flags"]})
         except Exception as e:
             log.warning("discord: interaction handling failed: %s",
                         str(e)[:150])

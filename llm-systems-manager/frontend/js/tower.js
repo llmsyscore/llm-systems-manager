@@ -146,9 +146,9 @@
     const cards = [...document.querySelectorAll('.tab-panel.active [data-card], .sub-tab-panel.active [data-card]')]
       .filter(el => el.offsetParent !== null).map(el => el.dataset.card);
     const alert = (window._activeAlerts || [])[0];
-    return TW.pageContext({ tab: typeof _activeTab !== 'undefined' ? _activeTab : '',
-                            sub: typeof _getDashSubTab === 'function' ? _getDashSubTab() : '',
-                            cards, alertId: alert && alert.id });
+    const tab = typeof _activeTab !== 'undefined' ? _activeTab : '';
+    const subs = typeof _subTabState !== 'undefined' ? _subTabState : {};
+    return TW.pageContext({ tab, sub: (subs && subs[tab]) || '', cards, alertId: alert && alert.id });
   }
 
   async function ensureThread() {
@@ -172,10 +172,12 @@
     }
     if (activeRun) { _state = TW.reduce(_state, { event: 'status', state: 'thinking' }); attach(activeRun); }
   }
-  async function newThread() {
-    await abortRun();
+  async function newThread(opts) {
+    await parkRun();
     _notice = null; _openTicks = new Set(); _pending = [];
-    const r = await fetch('/api/tower/threads', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ page: pageContext() }) });
+    const body = { page: pageContext() };
+    if (opts && opts.title) body.title = String(opts.title).slice(0, 60);
+    const r = await fetch('/api/tower/threads', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
     const d = r.ok ? await r.json() : { ok: false };
     _thread = d.ok ? d.thread : null;
     _state = TW.initial();
@@ -236,9 +238,10 @@
       const eyebrow = running ? 'Running…' : stale ? 'Approval expired' : mine ? 'Needs your approval' : "Needs an admin's approval";
       const btns = (stale || running || !mine) ? '' : `<div class="btns"><button type="button" class="mcbtn mcbtn-pri mcbtn-sm" data-approve="${TW.esc(a.id)}">Approve</button>`
         + `<button type="button" class="mcbtn mcbtn-ghost mcbtn-sm" data-deny="${TW.esc(a.id)}">Deny</button></div>`;
-      return `<div class="act" data-act="${TW.esc(a.id)}"><div class="eyebrow">${TW.esc(eyebrow)}</div>`
+      const opts = (!stale && !running && mine) ? optionsHtml(a) : '';
+      return `<div class="act${running ? ' running' : ''}" data-act="${TW.esc(a.id)}"><div class="eyebrow">${TW.esc(eyebrow)}</div>`
         + `<h4>${TW.esc(a.card.title || a.tool)}</h4><div class="tgt">${TW.esc(a.card.target || '')}</div>`
-        + `<p>${TW.esc(a.card.does || '')}${a.card.not ? ' ' + TW.esc(a.card.not) : ''}</p>`
+        + `<p>${TW.esc(a.card.does || '')}${a.card.not ? ' ' + TW.esc(a.card.not) : ''}</p>${opts}`
         + `<div class="role">${TW.esc(TIER_LABEL[a.tier] || a.tier)} · ${who} · audit: <span class="mono">${TW.esc(a.actor)}</span></div>${btns}</div>`;
     }
     const ok = a.status === 'done';
@@ -246,15 +249,40 @@
     const msg = a.message && a.status !== 'done' && a.message !== a.status ? ` · ${TW.esc(a.message)}` : '';
     return `<div class="tick act${ok ? ' ok' : ' bad'}"><span class="k">${ok ? '✓' : '✕'}</span>${TW.esc(a.card.title || a.tool)}${msg}<span class="ms">${TW.esc(tail)}</span></div>`;
   }
+  // Option chips on an approval card; the picks ride along with the approve request (#1002).
+  const _optSel = {};
+  function optionPicks(a) {
+    const sel = _optSel[a.id] || {}, out = {};
+    for (const o of (a.card && a.card.options) || []) { if (o && o.name) out[o.name] = sel[o.name] != null ? sel[o.name] : String(o.value == null ? '' : o.value); }
+    return out;
+  }
+  function optionsHtml(a) {
+    const list = (a.card && a.card.options) || [];
+    if (!list.length) return '';
+    const picks = optionPicks(a);
+    return '<div class="opts">' + list.map(o => `<div class="opt"><span class="ol">${TW.esc(o.label || o.name)}</span><div class="chips">`
+      + (o.choices || []).map(c => { const v = String(c && c.value != null ? c.value : c), l = c && c.label != null ? c.label : v;
+        return `<button type="button" class="chip${picks[o.name] === v ? ' on' : ''}" data-opt="${TW.esc(a.id)}" data-name="${TW.esc(o.name)}" data-val="${TW.esc(v)}" aria-pressed="${picks[o.name] === v}">${TW.esc(l)}</button>`; }).join('')
+      + '</div></div>').join('') + '</div>';
+  }
+  function actionById(aid) {
+    for (const t of (_state && _state.turns) || []) for (const a of t.actions || []) if (a.id === aid) return a;
+    return null;
+  }
   function turnHtml(t, i) {
     if (t.role === 'user') return `<div class="u">${TW.esc(t.text)}</div>`;
     const log = t.ticks.length ? `<div class="log">${t.ticks.map((k, j) => tickHtml(k, `${i}:${j}`)).join('')}</div>` : '';
     const acts = (t.actions || []).map(actionHtml).join('');
     const body = t.text ? `<div class="ans">${answerHtml(t)}</div>` : (t.done ? '' : '<div class="ans"><span class="caret"></span></div>');
+    const wait = !t.done && _state && _state.wait && i === _state.turns.length - 1 ? `<div class="wait">${TW.esc(TW.waitText(_state.wait))}</div>` : '';
     const drop = t.truncated ? '<div class="drop">some output was dropped</div>' : '';
     const err = t.error ? `<div class="notice"><h4><i></i>${TW.esc(t.error)}</h4></div>` : '';
     const note = t.note ? `<div class="tick"><span class="k">·</span>${TW.esc(t.note)}</div>` : '';
-    return `<div class="t">${log}${acts}${body}${drop}${note}${err}</div>`;
+    return `<div class="t">${log}${acts}${wait}${body}${drop}${note}${err}</div>`;
+  }
+  function sugHtml(s) {
+    const hi = TW.HELP_SUGS.includes(s) ? ' hi' : '';
+    return `<button type="button" class="sug${hi}" data-sug="${TW.esc(s)}">${TW.esc(s)}</button>`;
   }
   function noticeHtml() {
     return _notice ? `<div class="notice"><h4><i></i>${TW.esc(_notice)}</h4></div>` : '';
@@ -276,15 +304,34 @@
       + `${v.action ? `<p><b>Suggested:</b> ${TW.esc(v.action)}</p>` : ''}${checks}${v.auditActor ? `<p class="aud">Audit: ${TW.esc(v.auditActor)}</p>` : ''}</div>` : '';
     const dismiss = `<button type="button" class="lnk" data-ins-dismiss="${id}">Dismiss</button>`;
     const alertLink = v.alertId ? `<button type="button" class="lnk" data-ins-open="${TW.esc(v.alertId)}">Alert</button>` : '';
+    const chat = v.alertId && !_view.noModel ? `<button type="button" class="lnk" data-ins-chat="${id}" title="Start a conversation about this alert">Troubleshoot</button>` : '';
+    const snap = snapshotHtml(v.snapshot);
     if (v.applied) {
-      return `<div class="${cls}" data-ins="${id}">${top}<div class="acts"><span class="ok">✓ ${TW.esc(v.title)}${v.appliedBy ? ` · ${TW.esc(v.appliedBy)}` : ''}</span>${det}${dismiss}</div>${detb}</div>`;
+      return `<div class="${cls}" data-ins="${id}">${top}<div class="acts"><span class="ok">✓ ${TW.esc(v.title)}${v.appliedBy ? ` · ${TW.esc(v.appliedBy)}` : ''}</span>${chat}${det}${dismiss}</div>${open ? snap : ''}${detb}</div>`;
     }
     if (v.running) {
       return `<div class="${cls}" data-ins="${id}">${top}<p class="sum">${TW.esc(v.summary)}</p><div class="acts"><span class="run">Running ${TW.esc(v.title)}…</span></div></div>`;
     }
     const apply = v.applyLabel ? `<button type="button" class="mcbtn mcbtn-pri mcbtn-sm" data-ins-apply="${id}">${TW.esc(v.applyLabel)}</button>` : '';
     const notes = (v.failed ? `<div class="fail">Failed: ${TW.esc(v.failed)}</div>` : '') + (v.adminOnly ? '<div class="fail">Admin only</div>' : '');
-    return `<div class="${cls}" data-ins="${id}">${top}<p class="sum">${TW.esc(v.summary)}</p>${notes}<div class="acts">${apply}${dismiss}${alertLink}${det}</div>${detb}</div>`;
+    return `<div class="${cls}" data-ins="${id}">${top}<p class="sum">${TW.esc(v.summary)}</p>${snap}${notes}<div class="acts">${apply}${dismiss}${alertLink}${chat}${det}</div>${detb}</div>`;
+  }
+  // The metric graph captured when the insight was made: series path plus a dashed threshold line (#980).
+  function snapshotHtml(snapshot) {
+    const sp = snapshot ? TW.sparkline(snapshot, 240, 36) : null;
+    if (!sp) return '';
+    const thr = sp.thrY !== null ? `<line class="thr" x1="0" x2="${sp.w}" y1="${sp.thrY}" y2="${sp.thrY}"/>` : '';
+    return `<div class="snap"><svg viewBox="0 0 ${sp.w} ${sp.h}" preserveAspectRatio="none" aria-hidden="true">${thr}<path d="${sp.d}"/></svg><span class="snapc">${TW.esc(sp.caption)}</span></div>`;
+  }
+  // Opens a fresh thread about the insight's alert and asks the troubleshooting question first (#980).
+  async function troubleshootInsight(id) {
+    const r = _insights.find(x => x.id === id);
+    if (!r) return;
+    setTab('conv');
+    await newThread({ title: TW.troubleshootTitle(r) });
+    if (!_thread) { _notice = 'Tower could not start a thread; try again.'; paintBody(); return; }
+    paintBody();
+    send(TW.troubleshootPrompt(r), { tab: 'events', alertId: r.alert_id });
   }
   // Tab row, the one-line notice in the conversation, and the Insights view; off hides all three.
   function paintInsights() {
@@ -360,12 +407,12 @@
     if (!turns.length) {
       const p = page;
       body.innerHTML = `<div class="empty"><h3>Ask about your hosts</h3><p>Tower reads live telemetry, alerts, models, energy and recent runs through the gateway.${p.tab ? ` It knows you are on <b>${TW.esc(p.tab)}</b>.` : ''}</p>`
-        + `<div class="fu">${TW.suggestions(p, _view && _view.capabilities).map(s => `<button type="button" class="sug" data-sug="${TW.esc(s)}">${TW.esc(s)}</button>`).join('')}</div></div>` + noticeHtml();
+        + `<div class="fu">${TW.suggestions(p, _view && _view.capabilities).map(sugHtml).join('')}</div></div>` + noticeHtml();
     } else {
       body.innerHTML = turns.map(turnHtml).join('') + pendingHtml() + noticeHtml();
     }
     body.scrollTop = atBottom ? body.scrollHeight : prevTop;
-    if (sugs) sugs.innerHTML = turns.length ? TW.suggestions(page, _view && _view.capabilities).map(s => `<button type="button" class="sug" data-sug="${TW.esc(s)}">${TW.esc(s)}</button>`).join('') : '';
+    if (sugs) sugs.innerHTML = turns.length ? TW.suggestions(page, _view && _view.capabilities).map(sugHtml).join('') : '';
     const busy = !!(_state && _state.status !== 'idle');
     if (input) input.placeholder = busy ? 'Ask another — it goes next' : 'Ask Tower…';
     const sendBtn = $('twSend');
@@ -387,11 +434,15 @@
   // Opens (or re-opens) the event stream of a run; the server ends it at confirm/done/error.
   function attach(runId) {
     _runId = runId;
+    let dropped = false;
     _sse = SG.open({ url: `/api/tower/runs/${encodeURIComponent(runId)}/stream`, bypassPause: true,
                      onEvent: ev => {
+                       if (ev.event === 'reattach') { closeStream(); attach(runId); return; }
                        _state = TW.reduce(_state, ev); paintBody();
+                       if (ev.event === 'truncated') dropped = true;
+                       if (ev.event === 'action' && ev.action_id) delete _optSel[ev.action_id];
                        if (ev.event === 'confirm') { closeStream(); if (!isOpen()) markUnread(); return; }
-                       if (ev.event === 'done' || ev.event === 'error') { endRun(); if (!isOpen()) markUnread(); drainPending(); }
+                       if (ev.event === 'done' || ev.event === 'error') { endRun(); if (!isOpen()) markUnread(); if (dropped) reloadThread(); drainPending(); }
                      },
                      onLost: () => {
                        if (_state && _state.status === 'awaiting') { closeStream(); return; }
@@ -402,7 +453,10 @@
   async function decide(aid, verb) {
     _notice = null;
     let res = null;
-    try { res = await fetch(`/api/tower/actions/${encodeURIComponent(aid)}/${verb}`, { method: 'POST' }); } catch (_) { /* offline */ }
+    const a = actionById(aid);
+    const init = { method: 'POST' };
+    if (verb === 'approve' && a && a.card && (a.card.options || []).length) { init.headers = { 'Content-Type': 'application/json' }; init.body = JSON.stringify({ options: optionPicks(a) }); }
+    try { res = await fetch(`/api/tower/actions/${encodeURIComponent(aid)}/${verb}`, init); } catch (_) { /* offline */ }
     const d = res ? await res.json().catch(() => ({})) : {};
     if (!res || !res.ok || !d.ok) {
       if (d.error === 'expired') {
@@ -420,6 +474,7 @@
       return;
     }
     closeStream();
+    if (verb === 'approve') _state = TW.reduce(_state, { event: 'action', action_id: aid, status: 'running' });
     _state = TW.reduce(_state, { event: 'status', state: 'thinking' }); paintBody();
     attach(d.run_id);
   }
@@ -448,6 +503,20 @@
     _insNotice = null;
     _insights = _insights.filter(r => r.status === 'applying'); paintInsights();
   }
+  // Re-reads the open thread from the store after a stream that dropped events (a run that ran on while parked).
+  async function reloadThread() {
+    if (!_thread) return;
+    const id = _thread.id;
+    const r = await fetch(`/api/tower/threads/${encodeURIComponent(id)}`).catch(() => null);
+    const d = r && r.ok ? await r.json().catch(() => null) : null;
+    if (d && d.ok && _thread && _thread.id === id) { _state = { ...TW.initial(), turns: TW.threadView(d.messages) }; paintBody({ toBottom: true }); }
+  }
+  // Leaves a run to finish on its own: the client stream closes, the manager keeps the run for a later re-attach (#994).
+  async function parkRun() {
+    const rid = _runId, awaiting = !!(_state && _state.status === 'awaiting');
+    endRun();
+    if (rid && !awaiting) { try { await fetch(`/api/tower/runs/${encodeURIComponent(rid)}/park`, { method: 'POST' }); } catch (_) { /* the grace cancel applies */ } }
+  }
   // Drops the client stream and asks the manager to cancel any active run.
   async function abortRun() {
     const rid = _runId;
@@ -463,7 +532,7 @@
     send(t);
   }
 
-  async function send(text) {
+  async function send(text, ctx) {
     const t = String(text || '').trim();
     if (!t) return;
     setTab('conv');
@@ -479,7 +548,7 @@
     if ((_thread.title || 'New thread') === 'New thread' && !((_state && _state.turns) || []).length) _thread.title = t.slice(0, 60);
     _state = TW.reduce(_state || TW.initial(), { event: 'user', text: t });
     paintBody({ toBottom: true });
-    const page = _prefs.noCtx ? {} : pageContext();
+    const page = { ...(_prefs.noCtx ? {} : pageContext()), ...(ctx ? TW.pageContext(ctx) : {}) };
     const r = await fetch(`/api/tower/threads/${encodeURIComponent(_thread.id)}/messages`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text: t, page }) });
     const d = await r.json().catch(() => ({}));
     if (!r.ok || !d.ok) {
@@ -528,6 +597,8 @@
       onSug(ev);
       if (ev.target.closest('#twEnable')) { ev.preventDefault(); enable(); }
       if (ev.target.closest('#twSettingsLink')) { ev.preventDefault(); towerClose({ returnFocus: false }); switchTab('admin'); switchSubTab('admin', 'settings'); if (typeof adminSettingsOpenGroup === 'function') adminSettingsOpenGroup('tower'); }
+      const oc = ev.target.closest('[data-opt]');
+      if (oc) { const id = oc.dataset.opt; _optSel[id] = { ...(_optSel[id] || {}), [oc.dataset.name]: oc.dataset.val }; paintBody(); return; }
       const ap = ev.target.closest('[data-approve]'); if (ap) { decide(ap.dataset.approve, 'approve'); return; }
       const dn = ev.target.closest('[data-deny]'); if (dn) { decide(dn.dataset.deny, 'deny'); return; }
       const qx = ev.target.closest('[data-qx]');
@@ -557,6 +628,7 @@
     $('twInsView')?.addEventListener('click', ev => {
       const ia = ev.target.closest('[data-ins-apply]'); if (ia) { applyInsight(ia.dataset.insApply); return; }
       const idm = ev.target.closest('[data-ins-dismiss]'); if (idm) { dismissInsight(idm.dataset.insDismiss); return; }
+      const ic = ev.target.closest('[data-ins-chat]'); if (ic) { troubleshootInsight(ic.dataset.insChat); return; }
       const io = ev.target.closest('[data-ins-open]');
       if (io) {
         if (!_prefs.pinned) towerClose({ returnFocus: false });
@@ -642,8 +714,8 @@
     el.setAttribute('aria-label', `Rename conversation: ${title}`);
   }
   // Day headers (Today, Yesterday, date) over newest-first rows (#987).
-  function historyHtml(threads) {
-    return TW.historyGroups(threads).map(g => `<div class="hgrp"><div class="hday">${TW.esc(g.label)}</div>${g.rows.map(historyRow).join('')}</div>`).join('');
+  function historyHtml(threads, discord) {
+    return TW.historyGroups(threads, undefined, discord).map(g => `<div class="hgrp"><div class="hday">${TW.esc(g.label)}</div>${g.rows.map(historyRow).join('')}</div>`).join('');
   }
   // Deleting the current thread forgets it locally; the next question starts a new one.
   async function deleteThread(id) {
@@ -656,9 +728,9 @@
   async function showHistory() {
     const r = await fetch('/api/tower/threads'); const d = r.ok ? await r.json() : { threads: [] };
     const body = $('twBody'); if (!body) return;
-    const threads = d.threads || [];
-    body.innerHTML = `<div class="ins-h"><h3>History</h3><span class="cnt">${threads.length}</span><button type="button" class="lnk" id="twHistBack">Back</button></div>`
-      + (threads.length ? `<div class="hist">${historyHtml(threads)}</div>` : '<p class="hist-empty">No past conversations.</p>')
+    const threads = d.threads || [], discord = d.discord || [];
+    body.innerHTML = `<div class="ins-h"><h3>History</h3><span class="cnt">${threads.length + discord.length}</span><button type="button" class="lnk" id="twHistBack">Back</button></div>`
+      + (threads.length || discord.length ? `<div class="hist">${historyHtml(threads, discord)}</div>` : '<p class="hist-empty">No past conversations.</p>')
       + noticeHtml();
     _histOpen = true; paintTitle();
     body.onclick = async ev => {
@@ -670,7 +742,7 @@
       }
       const b = ev.target.closest('[data-thread]');
       if (b) {
-        await abortRun();
+        await parkRun();
         _notice = null; _openTicks = new Set(); _pending = [];
         _prefs.thread = b.dataset.thread; _thread = null; savePrefs();
         await ensureThread(); paintBody();
