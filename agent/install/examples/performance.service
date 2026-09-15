@@ -1,7 +1,7 @@
 # =============================================================================
 # performance.service — LLM Systems "high-load" profile
 # =============================================================================
-# Activated by the agent's perf controller when llama-server wakes up:
+# Activated by the agent's power arbiter while any model on this host is loading or loaded-awake:
 #     sudo systemctl reload-or-restart performance
 #
 # This is a STARTING POINT. Tune it for your hardware:
@@ -9,6 +9,9 @@
 #   • GPU power limit               — uncomment + tune for AMD/NVIDIA
 #   • Cooling (fans / pump)         — uncomment + tune for your AIO/case
 #   • PCIe / interrupt affinity     — host-specific
+#
+# After each switch the agent reads back every `echo VALUE > sysfs-path` and
+# `nvidia-smi -pl/-pm` line below to grade the switch verified / failed.
 #
 # Two ways to extend without editing this file:
 #   1. Drop a snippet at /etc/systemd/system/performance.service.d/override.conf
@@ -22,7 +25,6 @@ Description=LLM Systems performance profile (CPU governor + accelerators)
 Documentation=https://github.com/llmsyscore/llm-systems-manager
 DefaultDependencies=no
 After=multi-user.target
-ConditionPathExists=/sys/devices/system/cpu/cpu0/cpufreq/scaling_governor
 
 [Service]
 # Type=oneshot + RemainAfterExit=yes is the canonical pattern for

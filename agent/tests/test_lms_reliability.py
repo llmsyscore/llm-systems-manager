@@ -42,8 +42,9 @@ def _load_lms():
                     HTTPException=_HTTPException,
                     Query=lambda *a, **k: None, Request=object)
     pkg = _stub_if_absent("lms_pkg")
-    pkg.__path__ = []
+    pkg.__path__ = [str(_AGENT_ROOT / "providers")]
     pkg._shared = _stub_if_absent("lms_pkg._shared", openai_forward=None)
+    pkg.llama = _stub_if_absent("lms_pkg.llama", reconcile_now=lambda: None)
     spec = importlib.util.spec_from_file_location(
         "lms_pkg.lms", _AGENT_ROOT / "providers" / "lms.py")
     mod = importlib.util.module_from_spec(spec)

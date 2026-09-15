@@ -20,7 +20,7 @@ import time
 import uuid
 from collections import deque
 from pathlib import Path
-from typing import Any, Iterator, Optional
+from typing import Any, Callable, Iterator, Optional
 from urllib.parse import urlparse
 
 import requests
@@ -35,6 +35,8 @@ from . import _shared
 from . import llama_install
 from . import llama_sse
 from . import llama_upgrade
+from . import power_arbiter
+from . import residency
 from . import llama_bench_live as _bl
 from . import llama_autotune as _at
 
@@ -65,9 +67,7 @@ def _require_ctx():
 
 # ── Module state ───────────────────────────────────────────────────────
 
-_llama_api_probe_cache: dict[str, Any] = {"ts": 0.0, "result": "unknown"}
 _LLAMA_METRICS_IDLE_THRESHOLD_S = 60
-_LLAMA_FAIL_THRESHOLD = 10
 # Cap on the /props chat_template text carried in each heartbeat sample.
 _LLAMA_CHAT_TEMPLATE_MAX_CHARS = 2000
 
@@ -75,12 +75,17 @@ _llama_info_cache: dict[str, Any] = {}
 _llama_info_last_poll: float = 0.0
 _llama_info_last_active_ts: float = 0.0
 _llama_info_last_tokens_total: "int | None" = None
-_llama_info_last_loaded_model: "str | None" = None
-_llama_info_conn_fail_count: int = 0
+_llama_loaded = {"last": None}
 _llama_info_idle_logged: bool = False
 _llama_build_last: str = ""
 
-# /models/sse listener (router mode); authoritative for llama_state when connected.
+# Last llama /v1/models probe, folded into HostResidency by the collector tick.
+_residency_inputs: dict[str, Any] = {"models": [], "server": "unknown", "ts": 0.0}
+_reconcile_hook: "Optional[Callable[[], None]]" = None
+_reconcile_mark = {"last": 0.0}
+_llama_main_pid = {"last": None}
+
+# /models/sse listener (router mode); feeds the llama_sse snapshot.
 _llama_sse_listener: "Optional[llama_sse.LlamaSseListener]" = None
 _llama_sse_thread: "Optional[threading.Thread]" = None
 _llama_sse_session: "Optional[requests.Session]" = None
@@ -201,57 +206,9 @@ _AT_MEM_TOTAL_SANE_MAX = 200_000
 
 # ── Moved helpers + routes (verbatim from llm-systems-agent.py with ctx-routing) ──
 
-def llama_read_state_file() -> str:
-    try:
-        with open(_require_ctx().config.LLAMA_STATE_FILE) as f:
-            v = f.read().strip().lower()
-            return v if v in ("awake", "sleeping") else "unknown"
-    except FileNotFoundError:
-        return "unknown"
-    except Exception as e:
-        log.debug("read llama state file failed: %s", e)
-        return "unknown"
-
-
-def _llama_port_open() -> bool:
-    """Bare TCP connect — invisible to llama-server's sleep idle timer."""
-    try:
-        from urllib.parse import urlparse
-        p = urlparse(_require_ctx().config.LLAMA_API_URL)
-        host = p.hostname or "127.0.0.1"
-        port = p.port or 8080
-        import socket as _s
-        with _s.create_connection((host, port), timeout=1.5):
-            return True
-    except OSError:
-        return False
-
-
 def llama_get_state() -> str:
-    """Best-effort state: SSE (when authoritative), state-file+TCP-probe, then /v1/models, else unknown.
-
-    State file alone lies after `systemctl stop` (perf controller doesn't
-    clear it), so verify with a non-disturbing TCP connect.
-    """
-    if _llama_sse_authoritative():
-        sse_state = _require_ctx().state.get("llama_state")
-        if sse_state in ("awake", "sleeping"):
-            return sse_state
-    file_state = llama_read_state_file()
-    if file_state in ("awake", "sleeping"):
-        if _llama_port_open():
-            return file_state
-        return "unknown"
-
-    now = time.time()
-    if now - _llama_api_probe_cache["ts"] < 5.0:
-        return _llama_api_probe_cache["result"]
-
-    ok, _msg = _require_ctx().probe_http(f"{_require_ctx().config.LLAMA_API_URL.rstrip('/')}/v1/models", timeout=1.5)
-    result = "awake" if ok else "unknown"
-    _llama_api_probe_cache["ts"] = now
-    _llama_api_probe_cache["result"] = result
-    return result
+    """Legacy binary projection of the reconciled llama residency."""
+    return residency.legacy_state(residency.provider_subset(_require_ctx().state.get("residency"), "llama"))
 
 
 def _llama_metric_val(line: str) -> "float | None":
@@ -272,6 +229,77 @@ def llama_api_port(url: "str | None") -> "int | None":
         return None
 
 
+def residency_inputs() -> "tuple[list[dict[str, Any]], str]":
+    """(model entries, server state) from the last /v1/models probe."""
+    return list(_residency_inputs["models"]), str(_residency_inputs["server"])
+
+
+def set_reconcile_hook(fn: "Optional[Callable[[], None]]") -> None:
+    global _reconcile_hook
+    _reconcile_hook = fn
+
+
+def reconcile_now() -> None:
+    """Ask the collector for an early tick (coalesced to once per second)."""
+    global _llama_info_last_poll
+    now = time.monotonic()
+    if now - _reconcile_mark["last"] < 1.0:
+        return
+    _reconcile_mark["last"] = now
+    _llama_info_last_poll = 0.0
+    if _reconcile_hook is not None:
+        with best_effort("reconcile_now hook", log=log):
+            _reconcile_hook()
+
+
+def _llama_unit_main_pid() -> "Optional[int]":
+    """MainPID of the llama unit via systemctl show; None when unknown."""
+    try:
+        r = subprocess.run(["systemctl", "show", _require_ctx().config.LLAMA_SYSTEMD_UNIT, "-p", "MainPID"],
+                           capture_output=True, text=True, timeout=5)
+        val = (r.stdout or "").strip().split("=", 1)[-1]
+        return int(val) if val.isdigit() else None
+    except Exception:
+        return None
+
+
+def power_snapshot(fresh: bool = False) -> dict:
+    """Arbiter snapshot plus the legacy perf keys the tools UI reads."""
+    snap = power_arbiter.get().snapshot()
+    if snap.get("governor") is None:
+        try:
+            from collectors.system import read_cpu_governor  # type: ignore
+            snap["governor"] = read_cpu_governor(fresh=fresh)
+        except Exception as e:
+            log.debug("power: cpu governor unreadable: %s", e)
+    return snap
+
+
+def _perf_job_set(phase: str, put) -> None:
+    """Take (awake) or drop (sleep) the job hold on the power arbiter; emits a perf_mode event."""
+    cfg = _require_ctx().config
+    unit = cfg.PERF_TARGET_AWAKE if phase == "awake" else cfg.PERF_TARGET_SLEEP
+    arb = power_arbiter.get()
+    ev: dict[str, Any] = {"type": "perf_mode", "phase": phase, "mode": unit, "unit": unit,
+                          "enabled": arb.mode != "disabled", "owner": "job"}
+    if arb.mode == "disabled":
+        ev.update({"ok": False, "rc": None, "skipped": True, "outcome": "skipped",
+                   "error": "perf controller disabled on this agent (PERF_CONTROLLER_ENABLED)",
+                   "governor": power_snapshot()["governor"]})
+        put(ev)
+        return
+    if phase == "awake":
+        res = arb.request("performance", "job")
+        ok = res["outcome"] in ("verified", "applied_unverifiable", "deferred")
+        ev.update({"ok": ok, "rc": 0 if ok else 1, "skipped": res["outcome"] == "skipped",
+                   "outcome": res["outcome"], "error": res.get("error"), "governor": res.get("governor")})
+    else:
+        arb.release("job")
+        ev.update({"ok": True, "rc": 0, "skipped": False, "outcome": "released",
+                   "error": None, "governor": power_snapshot(fresh=True)["governor"]})
+    put(ev)
+
+
 def collect_llama_for_metrics() -> dict[str, Any]:
     """Agent-side rich llama snapshot; skips /metrics + /slots when sleeping or token-idle."""
     if not _require_ctx().config.LLAMA_ENABLED:
@@ -279,7 +307,6 @@ def collect_llama_for_metrics() -> dict[str, Any]:
 
     global _llama_info_cache, _llama_info_last_poll
     global _llama_info_last_active_ts, _llama_info_last_tokens_total
-    global _llama_info_last_loaded_model, _llama_info_conn_fail_count
     global _llama_info_idle_logged, _llama_build_last
 
     now = time.time()
@@ -289,11 +316,17 @@ def collect_llama_for_metrics() -> dict[str, Any]:
         return dict(_llama_info_cache) if _llama_info_cache else {}
     _llama_info_last_poll = now
 
-    state = llama_get_state()
+    pid = _llama_unit_main_pid()
+    if pid != _llama_main_pid["last"]:
+        if _llama_main_pid["last"] is not None:
+            log.info("llama unit MainPID %s -> %s; re-probing", _llama_main_pid["last"], pid)
+            _llama_loaded["last"] = None
+        _llama_main_pid["last"] = pid
+
     api_base = _require_ctx().config.LLAMA_API_URL.rstrip("/")
 
     llama: dict[str, Any] = {
-        "state": state,
+        "state": "unknown",
         "port": llama_api_port(api_base),
         "model": None,
         "sleeping": False,
@@ -325,101 +358,100 @@ def collect_llama_for_metrics() -> dict[str, Any]:
     if sse_snap:
         llama["sse_status"] = sse_snap.get("status")
         llama["download_progress"] = sse_snap.get("download_progress")
-    llama["sse_connected"] = _llama_sse_authoritative()
+    llama["sse_connected"] = bool(_llama_sse_listener and _llama_sse_listener.connected)
 
     loaded_id: "str | None" = None
     model_api_sleeping = False
+    props_by_id: dict[str, dict[str, Any]] = {}
+    props_sleeping: dict[str, Optional[bool]] = {}
 
     # /v1/models is safe in all states; doesn't reset llama-server's sleep timer.
     try:
         resp = requests.get(f"{api_base}/v1/models", timeout=2)
         if resp.ok:
-            _llama_info_conn_fail_count = 0
             models = (resp.json() or {}).get("data", []) or []
-            for m in models:
-                st = m.get("status", {})
-                sv = st.get("value") if isinstance(st, dict) else None
-                if sv in ("loaded", "sleeping"):
-                    loaded_id = m.get("id")
-                    model_api_sleeping = (sv == "sleeping")
-                    llama["model"] = loaded_id
-                    if _llama_info_last_loaded_model != loaded_id:
-                        log.info("llama model: %s → %s%s",
-                                    _llama_info_last_loaded_model or "(none)",
-                                    loaded_id,
-                                    " (sleeping)" if model_api_sleeping else "")
-                    _llama_info_last_loaded_model = loaded_id
-                    break
-            if not loaded_id:
-                if _llama_info_last_loaded_model is not None:
-                    log.info("llama model unloaded: %s", _llama_info_last_loaded_model)
+            loaded_ids = [m.get("id") for m in models
+                          if isinstance(m.get("status"), dict) and m["status"].get("value") == "loaded"]
+            if not any(isinstance(m.get("status"), dict) for m in models):
+                loaded_ids = [m.get("id") for m in models if m.get("id")]
+            for mid in loaded_ids:
+                try:
+                    presp = requests.get(f"{api_base}/props", timeout=2,
+                                         headers={"Authorization": "Bearer no-key"},
+                                         params={"model": mid, "autoload": "0"})
+                    if presp.ok:
+                        props = presp.json() or {}
+                        if isinstance(props, dict):
+                            props_by_id[mid] = props
+                            props_sleeping[mid] = props.get("is_sleeping") if isinstance(props.get("is_sleeping"), bool) else None
+                except Exception as e:
+                    log.debug("llama /props(%s): %s", mid, e)
+            entries = residency.llama_models_from_api(models, props_sleeping, now)
+            _residency_inputs.update({"models": entries, "server": "up", "ts": now})
+            resident = [e for e in entries if e["status"] in ("loaded", "sleeping", "loading")]
+            first = next((e for e in entries if e["status"] == "loaded"), None) or (resident[0] if resident else None)
+            loaded_id = first["model_id"] if first else None
+            model_api_sleeping = bool(first and first["status"] == "sleeping")
+            if loaded_id:
+                llama["model"] = loaded_id
+                if _llama_loaded["last"] != loaded_id:
+                    log.info("llama model: %s → %s%s",
+                             _llama_loaded["last"] or "(none)",
+                             loaded_id,
+                             " (sleeping)" if model_api_sleeping else "")
+                _llama_loaded["last"] = loaded_id
+            else:
+                if _llama_loaded["last"] is not None:
+                    log.info("llama model unloaded: %s", _llama_loaded["last"])
                     _llama_info_last_tokens_total = None
                     _llama_info_last_active_ts = now
-                _llama_info_last_loaded_model = None
+                _llama_loaded["last"] = None
                 if models:
                     llama["model"] = (models[0].get("id") or "") + " (unloaded)"
         else:
-            _llama_info_conn_fail_count += 1
+            _residency_inputs.update({"models": [], "server": "unknown", "ts": now})
     except Exception as e:
-        _llama_info_conn_fail_count += 1
-        if _llama_info_conn_fail_count == 1:
+        if _residency_inputs.get("server") != "down":
             log.warning("llama /v1/models unreachable: %s", e)
-        if _llama_info_conn_fail_count >= _LLAMA_FAIL_THRESHOLD:
-            log.warning(
-                "llama /v1/models unreachable for %s cycles — marking server down",
-                _LLAMA_FAIL_THRESHOLD,
-            )
-            _llama_info_last_loaded_model = None
-            _llama_info_conn_fail_count = 0
-            llama["state"] = "unknown"
+        _residency_inputs.update({"models": [], "server": "down", "ts": now})
+        _llama_loaded["last"] = None
+        llama["state"] = "unknown"
         _llama_info_cache = llama
-        return llama
+        return dict(llama)
 
-    # /props is idle-timer-exempt; router mode returns the per-model fields
-    # only with ?model=, so it's skipped entirely when nothing is loaded.
-    if loaded_id:
-        try:
-            presp = requests.get(
-                f"{api_base}/props",
-                timeout=2,
-                headers={"Authorization": "Bearer no-key"},
-                params={"model": loaded_id},
-            )
-            if presp.ok:
-                props = presp.json() or {}
-                tmpl = props.get("chat_template")
-                if isinstance(tmpl, str) and tmpl:
-                    llama["chat_template"] = tmpl[:_LLAMA_CHAT_TEMPLATE_MAX_CHARS]
-                    llama["chat_template_len"] = len(tmpl)
-                mods = props.get("modalities")
-                if isinstance(mods, dict):
-                    llama["modalities"] = {k: bool(v) for k, v in mods.items()}
-                n_slots = props.get("total_slots")
-                if isinstance(n_slots, int):
-                    llama["total_slots"] = n_slots
-                dgs = props.get("default_generation_settings") or {}
-                n_ctx = dgs.get("n_ctx")
-                if isinstance(n_ctx, (int, float)):
-                    llama["n_ctx"] = int(n_ctx)
-                if isinstance(props.get("is_sleeping"), bool):
-                    llama["is_sleeping"] = props["is_sleeping"]
-                    # Direct API sleep signal corroborates the state-file value.
-                    if props["is_sleeping"]:
-                        llama["sleeping"] = True
-                bi = props.get("build_info")
-                if isinstance(bi, str) and bi.strip():
-                    _llama_build_last = bi.strip()[:64]
-        except Exception as e:
-            log.debug("llama /props: %s", e)
+    # Fields from the reported model's own /props, probed above with autoload=0.
+    props_cur = props_by_id.get(loaded_id or "") or {}
+    if props_cur:
+        tmpl = props_cur.get("chat_template")
+        if isinstance(tmpl, str) and tmpl:
+            llama["chat_template"] = tmpl[:_LLAMA_CHAT_TEMPLATE_MAX_CHARS]
+            llama["chat_template_len"] = len(tmpl)
+        mods = props_cur.get("modalities")
+        if isinstance(mods, dict):
+            llama["modalities"] = {k: bool(v) for k, v in mods.items()}
+        n_slots = props_cur.get("total_slots")
+        if isinstance(n_slots, int):
+            llama["total_slots"] = n_slots
+        dgs = props_cur.get("default_generation_settings") or {}
+        n_ctx = dgs.get("n_ctx")
+        if isinstance(n_ctx, (int, float)):
+            llama["n_ctx"] = int(n_ctx)
+        if isinstance(props_cur.get("is_sleeping"), bool):
+            llama["is_sleeping"] = props_cur["is_sleeping"]
+            if props_cur["is_sleeping"]:
+                llama["sleeping"] = True
+        bi = props_cur.get("build_info")
+        if isinstance(bi, str) and bi.strip():
+            _llama_build_last = bi.strip()[:64]
 
     if _llama_build_last:
         llama["build"] = _llama_build_last
 
     # /metrics + /slots reset llama-server's sleep timer; skip while sleeping.
-    if state == "sleeping":
+    if model_api_sleeping or llama.get("is_sleeping") is True:
         llama["sleeping"] = True
-        if llama["model"] is None and _llama_info_last_loaded_model:
-            llama["model"] = f"{_llama_info_last_loaded_model} (sleeping)"
+        if llama["model"] is None and _llama_loaded["last"]:
+            llama["model"] = f"{_llama_loaded["last"]} (sleeping)"
         # Emit 0 for rates so charts stay continuous; leave cumulative counters None.
         for k in (
             "tokens_per_second", "prompt_tokens_per_second",
@@ -430,12 +462,17 @@ def collect_llama_for_metrics() -> dict[str, Any]:
             if llama.get(k) is None:
                 llama[k] = 0
         _llama_info_cache = llama
-        return llama
+        return dict(llama)
 
     if _llama_info_cache.get("sleeping"):
         _llama_info_last_active_ts = now
 
-    if loaded_id and not model_api_sleeping:
+    # Awake when /props says so, or when it answered without the key at all (pre-sleep build).
+    # A failed /props leaves the id out of props_by_id and skips both probes.
+    known_awake = bool(loaded_id) and (
+        props_sleeping.get(loaded_id) is False
+        or (loaded_id in props_by_id and "is_sleeping" not in props_by_id[loaded_id]))
+    if known_awake:
         idle_secs = now - _llama_info_last_active_ts
         if idle_secs < _LLAMA_METRICS_IDLE_THRESHOLD_S:
             try:
@@ -443,7 +480,7 @@ def collect_llama_for_metrics() -> dict[str, Any]:
                     f"{api_base}/metrics",
                     timeout=2,
                     headers={"Authorization": "Bearer no-key"},
-                    params={"model": loaded_id},
+                    params={"model": loaded_id, "autoload": "0"},
                 )
                 if resp.ok:
                     if _llama_info_idle_logged:
@@ -521,14 +558,13 @@ def collect_llama_for_metrics() -> dict[str, Any]:
                 _llama_info_last_active_ts = now
                 _llama_info_idle_logged = False
 
-    if (loaded_id and not model_api_sleeping
-            and (now - _llama_info_last_active_ts) < _LLAMA_METRICS_IDLE_THRESHOLD_S):
+    if known_awake and (now - _llama_info_last_active_ts) < _LLAMA_METRICS_IDLE_THRESHOLD_S:
         try:
             slots_resp = requests.get(
                 f"{api_base}/slots",
                 timeout=2,
                 headers={"Authorization": "Bearer no-key"},
-                params={"model": loaded_id},
+                params={"model": loaded_id, "autoload": "0"},
             )
             if slots_resp.ok:
                 slots_data = slots_resp.json() or []
@@ -556,200 +592,7 @@ def collect_llama_for_metrics() -> dict[str, Any]:
 
     llama["build_method"] = getattr(_require_ctx().config, "LLAMA_BUILD_METHOD", "") or "custom_script"
     _llama_info_cache = llama
-    return llama
-
-
-def llama_write_state_file(state: str) -> None:
-    """Atomic write so concurrent readers never see a partial file."""
-    target = _require_ctx().config.LLAMA_STATE_FILE
-    tmp = f"{target}.tmp.{os.getpid()}"
-    try:
-        with open(tmp, "w") as f:
-            f.write(state + "\n")
-        os.replace(tmp, target)
-    except PermissionError as e:
-        # Likely legacy: root-owned file from the old bash daemon + /tmp sticky bit.
-        try:
-            stat = os.stat(target) if os.path.exists(target) else None
-        except Exception:
-            stat = None
-        owner = ""
-        if stat is not None:
-            try:
-                owner = pwd.getpwuid(stat.st_uid).pw_name
-            except KeyError:
-                owner = f"uid={stat.st_uid}"
-        log.warning(
-            "write llama state file failed: %s (target=%s owner=%s; "
-            "probable bash-daemon legacy file). Recover with: "
-            "sudo chown %s %s",
-            e, target, owner or "<unknown>",
-            _require_ctx().config.AGENT_USER or "<agent_user>", target,
-        )
-        with best_effort("state file: unlink temp", log=log):
-            os.unlink(tmp)
-    except Exception as e:
-        log.warning("write llama state file failed: %s", e, exc_info=True)
-
-
-# ---------------------------------------------------------------------------
-# Performance controller (replaces the bash daemon)
-# ---------------------------------------------------------------------------
-
-async def perf_controller_loop() -> None:
-    """Tail LLAMA_LOG_FILE and switch CPU/fan profiles on sleep/wake markers."""
-    if not _require_ctx().config.PERF_CONTROLLER_ENABLED:
-        log.info("perf controller disabled by config")
-        return
-    if _require_ctx().config.AGENT_OS != "linux":
-        log.warning("perf controller only supported on Linux; ignoring")
-        return
-
-    log_file = _require_ctx().config.LLAMA_LOG_FILE
-    log.info("perf controller starting; tailing %s", log_file)
-
-    # With llama-server down at startup the sleep profile applies; the state
-    # file follows so the next wake marker is not skipped as a no-op.
-    sleep_unit = _require_ctx().config.PERF_TARGET_SLEEP
-    if sleep_unit and not _llama_unit_active():
-        log.info("perf controller: llama-server is down; resetting to %s", sleep_unit)
-        await _perf_switch(sleep_unit)
-        llama_write_state_file("sleeping")
-
-    # Pre-flight: if the state file exists but isn't owned by us, every
-    # subsequent transition will fail with EPERM at os.replace() time
-    # (sticky bit on /tmp blocks renames over a file you don't own).
-    # Detect now and log a single loud actionable line, instead of
-    # silently spamming a warning per transition.
-    sf = _require_ctx().config.LLAMA_STATE_FILE
-    if os.path.exists(sf):
-        try:
-            sf_uid = os.stat(sf).st_uid
-            if sf_uid != os.geteuid():
-                try:
-                    sf_owner = pwd.getpwuid(sf_uid).pw_name
-                except KeyError:
-                    sf_owner = f"uid={sf_uid}"
-                log.error(
-                    "STATE FILE NOT WRITABLE: %s is owned by '%s' but agent runs as "
-                    "'%s'. Transitions will fail until you run: sudo chown %s %s "
-                    "(usually a leftover from the legacy bash perf-controller daemon)",
-                    sf, sf_owner, _require_ctx().config.AGENT_USER or "<agent_user>",
-                    _require_ctx().config.AGENT_USER or "<agent_user>", sf,
-                )
-        except OSError as e:
-            log.warning("could not stat %s: %s", sf, e)
-
-    if not os.path.exists(_require_ctx().config.LLAMA_STATE_FILE):
-        llama_write_state_file("sleeping")
-        log.info("initialized %s = sleeping", _require_ctx().config.LLAMA_STATE_FILE)
-
-    backoff = 1.0
-    while not _require_ctx().state.get("restart_pending"):
-        if not os.path.exists(log_file):
-            log.warning("llama log file not found: %s; retry in %.0fs", log_file, backoff)
-            await asyncio.sleep(backoff)
-            backoff = min(30.0, backoff * 2)
-            continue
-        backoff = 1.0
-        proc = await asyncio.create_subprocess_exec(
-            "tail", "-F", "-n", "0", log_file,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.DEVNULL,
-        )
-        assert proc.stdout is not None
-        try:
-            while not _require_ctx().state.get("restart_pending"):
-                line_bytes = await proc.stdout.readline()
-                if not line_bytes:
-                    break
-                line = line_bytes.decode("utf-8", errors="replace")
-                await _perf_process_line(line)
-        finally:
-            try:
-                proc.terminate()
-                await asyncio.wait_for(proc.wait(), timeout=3)
-            except Exception:
-                with best_effort("perf: kill controller proc", log=log):
-                    proc.kill()
-
-
-async def _perf_process_line(line: str) -> None:
-    cur = llama_read_state_file()
-    matched_sleep = next((m for m in _require_ctx().config.PERF_SLEEP_MARKERS if m in line), None)
-    matched_wake = next((m for m in _require_ctx().config.PERF_WAKE_MARKERS if m in line), None)
-
-    # When True, SSE owns llama_state; skip the state set + manager push below.
-    sse_auth = _llama_sse_authoritative()
-
-    if matched_sleep and cur != "sleeping":
-        log.info("perf transition wake->sleep (matched %r); switching to %s",
-                    matched_sleep, _require_ctx().config.PERF_TARGET_SLEEP)
-        await _perf_switch(_require_ctx().config.PERF_TARGET_SLEEP)
-        llama_write_state_file("sleeping")
-        with _require_ctx().runtime_lock:
-            if not sse_auth:
-                _require_ctx().state["llama_state"] = "sleeping"
-            _require_ctx().state["perf_sleep_count"] += 1
-            _require_ctx().state["perf_last_transition"] = {"to": "sleeping", "ts": _require_ctx().now_iso(), "marker": matched_sleep}
-        if not sse_auth:
-            _push_llama_state_to_manager("sleeping")
-        return
-
-    if matched_wake and cur != "awake":
-        log.info("perf transition sleep->wake (matched %r); switching to %s",
-                    matched_wake, _require_ctx().config.PERF_TARGET_AWAKE)
-        await _perf_switch(_require_ctx().config.PERF_TARGET_AWAKE)
-        llama_write_state_file("awake")
-        with _require_ctx().runtime_lock:
-            if not sse_auth:
-                _require_ctx().state["llama_state"] = "awake"
-            _require_ctx().state["perf_wake_count"] += 1
-            _require_ctx().state["perf_last_transition"] = {"to": "awake", "ts": _require_ctx().now_iso(), "marker": matched_wake}
-        if not sse_auth:
-            _push_llama_state_to_manager("awake")
-
-
-def _push_llama_state_to_manager(state: str) -> None:
-    """Fire-and-forget llama-state push so the dashboard flips before the next heartbeat."""
-    with _require_ctx().runtime_lock:
-        tok = _require_ctx().state.get("token")
-        aid = _require_ctx().state.get("agent_id")
-    if not (tok and aid):
-        return
-    try:
-        url = f"{_require_ctx().config.MANAGER_URL.rstrip('/')}/api/agents/{aid}/llama-state"
-        r = _require_ctx().post_session.post(
-            url,
-            json={"state": state},
-            headers={"Authorization": f"Bearer {tok}"},
-            timeout=5,
-        )
-        if r.ok:
-            log.info("pushed llama-state=%s to manager (applied=%s)",
-                        state, (r.json() or {}).get("applied"))
-        else:
-            log.debug("manager rejected llama-state push: %s %s",
-                         r.status_code, r.text[:160])
-    except Exception as e:
-        log.debug("llama-state push failed (heartbeat will backstop): %s", e)
-
-
-async def _perf_switch(target_unit: str) -> None:
-    cmd = ["sudo", "-n", "/usr/bin/systemctl", "reload-or-restart", target_unit]
-    try:
-        proc = await asyncio.create_subprocess_exec(
-            *cmd,
-            stdout=asyncio.subprocess.DEVNULL,
-            stderr=asyncio.subprocess.PIPE,
-        )
-        _, err = await asyncio.wait_for(proc.communicate(), timeout=10)
-        if proc.returncode != 0:
-            log.warning("perf switch %s failed (rc=%s): %s",
-                           target_unit, proc.returncode,
-                           (err or b"").decode("utf-8", errors="replace").strip())
-    except Exception as e:
-        log.warning("perf switch %s exception: %s", target_unit, e, exc_info=True)
+    return dict(llama)
 
 
 # ---------------------------------------------------------------------------
@@ -757,6 +600,22 @@ async def _perf_switch(target_unit: str) -> None:
 # ---------------------------------------------------------------------------
 
 def _llama_router_mode() -> bool:
+    """Router mode from live /v1/models status objects; unit-file flags as fallback.
+
+    Only a non-empty model list decides; an empty one is not evidence either way.
+    """
+    try:
+        r = requests.get(f"{_require_ctx().config.LLAMA_API_URL.rstrip('/')}/v1/models", timeout=3)
+        models = ((r.json() or {}).get("data") or []) if r.ok else []
+        if models:
+            return llama_sse.router_mode_from_models(models)
+        log.debug("router-mode detect: /v1/models listed nothing; using unit file")
+    except Exception as e:
+        log.debug("router-mode detect: /v1/models unreachable (%s); using unit file", e)
+    return _llama_router_mode_from_unit_file()
+
+
+def _llama_router_mode_from_unit_file() -> bool:
     """True when the llama systemd unit launches in multi-model router mode."""
     try:
         content = Path(_llama_svc_file_path()).read_text()
@@ -774,12 +633,6 @@ def _llama_router_mode() -> bool:
     return False
 
 
-def _llama_sse_authoritative() -> bool:
-    """True when the SSE listener is connected and owns llama_state reporting."""
-    lis = _llama_sse_listener
-    return lis is not None and lis.connected
-
-
 def _llama_sse_update_snapshot(**fields: Any) -> None:
     ctx = _require_ctx()
     with ctx.runtime_lock:
@@ -791,31 +644,28 @@ def _llama_sse_update_snapshot(**fields: Any) -> None:
 
 
 def _llama_sse_apply_status(data: dict[str, Any]) -> None:
+    """Fold one status event into the snapshot and residency, then trigger a reconcile."""
     status = llama_sse.status_value(data)
     model_id = llama_sse.model_id(data)
-    new_state = llama_sse.sse_status_to_state(status)
     ctx = _require_ctx()
-    changed = False
     with ctx.runtime_lock:
         snap = dict(ctx.state.get("llama_sse") or {})
-        snap.update({
-            "status": (status or "").lower() or None,
-            "model": model_id, "connected": True, "ts": ctx.now_iso(),
-        })
+        snap.update({"status": (status or "").lower() or None, "model": model_id,
+                     "connected": True, "ts": ctx.now_iso()})
         ctx.state["llama_sse"] = snap
-        if new_state in ("awake", "sleeping") and ctx.state.get("llama_state") != new_state:
-            ctx.state["llama_state"] = new_state
-            changed = True
-    if changed:
-        log.info("llama /models/sse: status=%s -> llama_state=%s (model=%s)",
-                    status, new_state, model_id)
-        _push_llama_state_to_manager(new_state)
+        if model_id:
+            ctx.state["residency"] = residency.apply_sse_delta(
+                ctx.state.get("residency"), model_id, (status or "").lower(), time.time())
+    log.info("llama /models/sse: %s -> %s", model_id, status)
+    reconcile_now()
 
 
 def _llama_sse_on_event(sse_event: str, data: dict[str, Any]) -> None:
     kind = llama_sse.event_kind(sse_event, data)
     if kind in ("status_change", "model_status"):
         _llama_sse_apply_status(data)
+    elif kind in ("models_reload", "model_remove"):
+        reconcile_now()
     elif kind == "download_progress":
         _llama_sse_update_snapshot(download_progress=llama_sse.progress_value(data))
     elif kind in ("download_finished", "download_failed"):
@@ -823,10 +673,9 @@ def _llama_sse_on_event(sse_event: str, data: dict[str, Any]) -> None:
 
 
 def _llama_sse_on_disconnect() -> None:
-    """Drop SSE-owned llama_state so the heartbeat re-derives via fallback."""
+    """Mark the SSE snapshot disconnected; residency stays collector-owned."""
     ctx = _require_ctx()
     with ctx.runtime_lock:
-        ctx.state["llama_state"] = "unknown"
         snap = dict(ctx.state.get("llama_sse") or {})
         if snap:
             snap["connected"] = False
@@ -853,6 +702,7 @@ def _maybe_start_sse_listener() -> None:
         connect=lambda: llama_sse.requests_sse_lines(url, session=sess),
         on_event=_llama_sse_on_event,
         should_stop=lambda: bool(ctx.state.get("restart_pending")),
+        on_connect=reconcile_now,
         on_disconnect=_llama_sse_on_disconnect,
         logger=log,
     )
@@ -863,17 +713,23 @@ def _maybe_start_sse_listener() -> None:
 
 
 def llama_state_endpoint(authorization: Optional[str] = Header(default=None)) -> dict[str, Any]:
-    _require_ctx().check_bearer(authorization)
-    if not _require_ctx().config.LLAMA_ENABLED:
+    ctx = _require_ctx()
+    ctx.check_bearer(authorization)
+    if not ctx.config.LLAMA_ENABLED:
         raise HTTPException(status_code=503, detail="llama not enabled on this agent")
+    power = power_snapshot()
     return {
         "state": llama_get_state(),
-        "port": llama_api_port(_require_ctx().config.LLAMA_API_URL),
-        "perf_controller_enabled": _require_ctx().config.PERF_CONTROLLER_ENABLED,
-        "perf": _perf_mode_state(),
-        "last_transition": _require_ctx().state.get("perf_last_transition"),
-        "sse_connected": _llama_sse_authoritative(),
-        "sse": _require_ctx().state.get("llama_sse"),
+        "port": llama_api_port(ctx.config.LLAMA_API_URL),
+        "perf_controller_enabled": ctx.config.PERF_CONTROLLER_ENABLED,
+        "perf": power,
+        "power": power,
+        "residency": residency.provider_subset(ctx.state.get("residency"), "llama"),
+        "host_residency": ctx.state.get("residency"),
+        "last_transition": power.get("last_switch"),
+        "perf_last_transition": power.get("last_switch"),
+        "sse_connected": bool(_llama_sse_listener and _llama_sse_listener.connected),
+        "sse": ctx.state.get("llama_sse"),
     }
 
 
@@ -1343,8 +1199,10 @@ def _llama_systemctl(action: str, timeout: int = 30) -> dict[str, Any]:
             capture_output=True, text=True, timeout=timeout,
         )
         log.info("llama-server %s: rc=%s %s", action, r.returncode, r.stderr.strip())
+        reconcile_now()
         return {"ok": r.returncode == 0, "error": r.stderr.strip() or None}
     except Exception as e:
+        reconcile_now()
         return {"ok": False, "error": str(e)}
 
 
@@ -1391,11 +1249,13 @@ def llama_server_wake_endpoint(body: Optional[dict] = None,
     try:
         r = _require_ctx().post_session.post(f"{base}/v1/chat/completions",
                                json=payload, timeout=60)
+        reconcile_now()
         if not r.ok:
             return {"ok": False, "status": r.status_code,
                     "model": model_id, "error": r.text[:300]}
         return {"ok": True, "status": r.status_code, "model": model_id}
     except Exception as e:
+        reconcile_now()
         return {"ok": False, "model": model_id, "error": str(e)}
 
 
@@ -1589,6 +1449,7 @@ def llama_load_endpoint(body: dict, authorization: Optional[str] = Header(defaul
                 log.info("Unload response: %s %s", ur.status_code, ur.text[:200])
 
         if not _llama_wait_unloaded(api):
+            reconcile_now()
             return {"ok": False,
                     "error": "previous model instance did not unload in time"}
         log.info("Loading model: %s", model_id)
@@ -1600,15 +1461,18 @@ def llama_load_endpoint(body: dict, authorization: Optional[str] = Header(defaul
                                 detail=f"Model not found in llama-server (404). "
                                        f"Verify '{model_id}' matches a registered model ID.")
         body_resp = _json_or_raw(lr)
+        reconcile_now()
         if not lr.ok:
             return {"ok": False,
                     "error": f"llama-server returned HTTP {lr.status_code}",
                     "response": body_resp}
         return {"ok": True, "response": body_resp}
     except HTTPException:
+        reconcile_now()
         raise
     except Exception as e:
         log.error("llama_load_endpoint error: %s", e, exc_info=True)
+        reconcile_now()
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -1629,7 +1493,9 @@ def llama_unload_endpoint(body: dict, authorization: Optional[str] = Header(defa
         resp = requests.post(f"{api}/models/unload", json={"model": model_id}, timeout=15)
         body_resp = _json_or_raw(resp)
     except Exception as e:
+        reconcile_now()
         return {"ok": False, "error": str(e)}
+    reconcile_now()
     if not resp.ok:
         if _llama_model_idle(model_id):
             return {"ok": True, "already_unloaded": True, "response": body_resp}
@@ -2256,7 +2122,7 @@ def _bench_run_all(model_ids: list, tool: str, switches: list):
     _bench_cancel_event.clear()
     try:
         # llama-bench owns the GPU for this run; restored in finally.
-        _perf_mode_set("awake", _bench_put)
+        _perf_job_set("awake", _bench_put)
         env = os.environ.copy()
         parent = str(Path(_require_ctx().config.LLAMA_BIN).parent) if _require_ctx().config.LLAMA_BIN else ""
         existing = env.get("LD_LIBRARY_PATH", "")
@@ -2274,7 +2140,7 @@ def _bench_run_all(model_ids: list, tool: str, switches: list):
         _bench_put({"type": "done", "ok": False, "error": str(e)})
     finally:
         with best_effort("bench: restore sleep perf mode", log=log):
-            _perf_mode_set("sleep", _bench_put)
+            _perf_job_set("sleep", _bench_put)
         _bench_proc = None
         with _bench_lock:
             _bench_active = False
@@ -2373,20 +2239,36 @@ def llama_bench_cancel(authorization: Optional[str] = Header(default=None)) -> d
     return {"ok": True}
 
 
+# Kept under the manager's 35s proxy budget for /api/benchmark/perf-mode.
+_MANUAL_SWITCH_TIMEOUT_S = 25.0
+
+
 def llama_bench_perf_mode(body: dict, authorization: Optional[str] = Header(default=None)) -> dict[str, Any]:
+    """Manual Performance / Powersave hold, or 'auto' to hand the host back to the policy."""
     _require_ctx().check_bearer(authorization); _llama_check_enabled()
     mode = (body.get("mode") or "").strip()
-    if mode not in ("performance", "powersave"):
-        return {"ok": False, "error": "mode must be 'performance' or 'powersave'"}
+    if mode not in ("performance", "powersave", "auto"):
+        return {"ok": False, "error": "mode must be 'performance', 'powersave' or 'auto'"}
     cfg = _require_ctx().config
-    if not cfg.PERF_CONTROLLER_ENABLED:
-        return {"ok": False,
+    arb = power_arbiter.get()
+    if arb.mode == "disabled":
+        return {**power_snapshot(), "ok": False, "mode": mode, "unit": None, "outcome": "skipped",
                 "error": "perf controller disabled on this agent (PERF_CONTROLLER_ENABLED)"}
+    if mode == "auto":
+        arb.release("manual")
+        return {**power_snapshot(fresh=True), "ok": True, "mode": "auto", "unit": None,
+                "outcome": "released", "error": None}
     unit = cfg.PERF_TARGET_AWAKE if mode == "performance" else cfg.PERF_TARGET_SLEEP
-    ok, rc, err = _perf_run_unit(unit)
-    if not ok:
-        return {"ok": False, "error": err or f"rc={rc}"}
-    return {"ok": True, "mode": mode, "unit": unit}
+    if arb.mode == "observe":
+        return {**power_snapshot(), "ok": False, "mode": mode, "unit": unit, "outcome": "skipped",
+                "error": "power arbiter is in observe mode (perf units or sudoers missing) "
+                         "— state is reported but never switched"}
+    res = arb.request(mode, "manual", timeout=_MANUAL_SWITCH_TIMEOUT_S)
+    if res["outcome"] == "failed":
+        return {**power_snapshot(), "ok": False, "mode": mode, "unit": unit,
+                "outcome": "failed", "error": res.get("error") or "switch failed"}
+    return {**power_snapshot(), "ok": True, "mode": mode, "unit": unit,
+            "outcome": res["outcome"], "error": res.get("error")}
 
 
 # ── Live benchmark (speed-bench, #879) ────────────────────────────────────
@@ -3589,50 +3471,6 @@ def _llama_help_valued() -> Optional[set]:
     return found
 
 
-def _perf_mode_state(fresh: bool = False) -> dict:
-    """Perf-controller config plus the CPU governor actually in effect on this host."""
-    cfg = _require_ctx().config
-    gov = None
-    try:
-        from collectors.system import read_cpu_governor  # type: ignore
-        gov = read_cpu_governor(fresh=fresh)
-    except Exception as e:
-        log.debug("perf mode: cpu governor unreadable: %s", e)
-    return {"enabled": bool(cfg.PERF_CONTROLLER_ENABLED), "governor": gov,
-            "awake": cfg.PERF_TARGET_AWAKE, "sleep": cfg.PERF_TARGET_SLEEP}
-
-
-def _perf_run_unit(unit: str) -> "tuple[bool, Optional[int], str]":
-    """sudo systemctl reload-or-restart <unit>; (ok, rc, error)."""
-    try:
-        r = subprocess.run(
-            ["sudo", "-n", "systemctl", "reload-or-restart", unit],
-            capture_output=True, text=True, timeout=30,
-        )
-        return r.returncode == 0, r.returncode, (r.stderr or r.stdout or "").strip()[:240]
-    except Exception as e:
-        return False, None, str(e)[:240]
-
-
-def _perf_mode_set(phase: str, put) -> None:
-    """Switch the host to the configured awake/sleep perf unit; emits a perf_mode event."""
-    cfg = _require_ctx().config
-    unit = cfg.PERF_TARGET_AWAKE if phase == "awake" else cfg.PERF_TARGET_SLEEP
-    ev: dict[str, Any] = {"type": "perf_mode", "phase": phase, "mode": unit, "unit": unit,
-                          "enabled": bool(cfg.PERF_CONTROLLER_ENABLED)}
-    if not cfg.PERF_CONTROLLER_ENABLED:
-        ev.update({"ok": False, "rc": None, "skipped": True,
-                   "error": "perf controller disabled on this agent (PERF_CONTROLLER_ENABLED)",
-                   "governor": _perf_mode_state()["governor"]})
-        put(ev)
-        return
-    ok, rc, err = _perf_run_unit(unit)
-    ev.update({"ok": ok, "rc": rc, "skipped": False,
-               "error": (None if ok else (err or "unknown")),
-               "governor": _perf_mode_state(fresh=True)["governor"]})
-    put(ev)
-
-
 def _autotune_run_all(req: dict) -> None:
     global _autotune_active, _autotune_proc, _autotune_quality
     _autotune_cancel_event.clear()
@@ -3646,7 +3484,7 @@ def _autotune_run_all(req: dict) -> None:
         env["FORCE_COLOR"] = "0"
         env["PYTHONUNBUFFERED"] = "1"
         # Flip to performance so load timing isn't skewed; restored in finally.
-        _perf_mode_set("awake", _autotune_put)
+        _perf_job_set("awake", _autotune_put)
         rt = _bench_live_runtime()
         sizes = {}
         with best_effort("autotune: catalog sweep", log=log):
@@ -3688,7 +3526,7 @@ def _autotune_run_all(req: dict) -> None:
         _autotune_put({"type": "done", "ok": False, "error": str(e)})
     finally:
         with best_effort("autotune: restore sleep perf mode", log=log):
-            _perf_mode_set("sleep", _autotune_put)
+            _perf_job_set("sleep", _autotune_put)
         # base.kld and the stick JSONs are scratch; the summaries already went out as events.
         with best_effort("autotune: drop run scratch dir", log=log):
             shutil.rmtree(_bl.bench_dir(_require_ctx().config.AGENT_INSTALL_DIR) / "runs" / f"at-{run_id}",
@@ -3725,7 +3563,7 @@ def llama_autotune_preflight(authorization: Optional[str] = Header(default=None)
             "llama_build": _llama_build_last or "",
             "cores": _at.physical_cores(_read_cpuinfo(), os.cpu_count() or 1),
             "perplexity": pdet["ok"],
-            "perf": _perf_mode_state(fresh=True),
+            "perf": power_snapshot(fresh=True),
             "perplexity_detail": {"present": pdet["present"], "kl_text": pdet["kl_text"],
                                   "runnable": pdet["runnable"], "rc": pdet["rc"], "hint": pdet["hint"]},
             "runtime": {"ok": bool(rt["python"] and rt["script"]), **rt},
@@ -3885,9 +3723,6 @@ def register_routes(app) -> None:
 
 
 def start_background() -> "Optional[asyncio.Task]":
-    """Spawn the /models/sse listener + perf-controller task. Call from FastAPI lifespan."""
-    ctx = _require_ctx()
+    """Start the /models/sse listener; the perf controller is the tick-driven arbiter now."""
     _maybe_start_sse_listener()
-    if not ctx.config.PERF_CONTROLLER_ENABLED:
-        return None
-    return asyncio.create_task(perf_controller_loop())
+    return None

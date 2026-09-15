@@ -190,6 +190,9 @@
     const rest = enabledCaps(a).filter(k => !provKeys.has(k))
       .sort((x, y) => (quiet.indexOf(x) + 1 || 99) - (quiet.indexOf(y) + 1 || 99) || x.localeCompare(y));
     rest.forEach(k => out.push(`<span class="ag-cap q">${esc(k)}</span>`));
+    // #966: power arbiter mode reported by the agent's llama sample.
+    const pw = a.power || {};
+    if (pw.mode) out.push(`<span class="ag-cap q" title="power arbiter ${esc(pw.mode)} · applied ${esc(pw.applied || '—')}">power ${esc(pw.mode)}</span>`);
     const infra = infraList(a);
     if (infra.length) {
       const title = 'Co-located on this host: ' + infra.map(i => i.label + (i.version ? ' ' + i.version : '')).join(' · ');

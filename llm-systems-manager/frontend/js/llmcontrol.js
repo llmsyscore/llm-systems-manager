@@ -267,28 +267,63 @@ async function serverWake() {
   }
 }
 
+// Short "what was read back" phrase for the perf-mode status line.
+function _perfReadbackWords(p) {
+  const checks = Array.isArray(p.readback) ? p.readback.filter((c) => c && c.actual != null) : [];
+  if (checks.length) return checks.map((c) => `${c.label} ${c.actual}`).join(', ');
+  return p.governor ? `governor ${p.governor}` : 'nothing to read back';
+}
+
+// Toast when the toaster is loaded; else the inline status span (test harness / stripped pages).
+function _perfNotify(statusEl, severity, text) {
+  if (typeof window.showToast === 'function') {
+    window.showToast('Power mode', text, severity, false, null, 'alert', null, null, 6000);
+    if (statusEl) statusEl.textContent = '';
+    return;
+  }
+  if (!statusEl) return;
+  statusEl.style.color = severity === 'error' ? 'var(--crit)' : (severity === 'warning' ? 'var(--note)' : 'var(--ok)');
+  statusEl.textContent = text;
+}
+
 async function serverPerfMode(mode) {
   const statusEl = document.getElementById('serverCtrlStatus');
-  const btnIds = {performance:'llamaBtnPerfPerformance', powersave:'llamaBtnPerfPowersave'};
+  const btnIds = {performance:'llamaBtnPerfPerformance', powersave:'llamaBtnPerfPowersave',
+                  auto:'llamaBtnPerfAuto'};
   const btn = document.getElementById(btnIds[mode]);
-  statusEl.style.color = 'var(--fg-muted)';
-  statusEl.textContent = `Switching agent host to ${mode}…`;
+  if (statusEl) {
+    statusEl.style.color = 'var(--fg-muted)';
+    statusEl.textContent = mode === 'auto'
+      ? 'Releasing the manual hold…' : `Switching agent host to ${mode}…`;
+  }
   if (btn) btn.disabled = true;
   try {
-    const r = await fetch('/api/benchmark/perf-mode', {
+    // Pin the picker's llama agent so the pool never round-robins the hold.
+    const sel = (typeof _selectedAgent === 'function') ? _selectedAgent('llama') : null;
+    const url = '/api/benchmark/perf-mode' + (sel ? '?agent=' + encodeURIComponent(sel) : '');
+    const r = await fetch(url, {
       method:'POST', headers:{'Content-Type':'application/json'},
       body: JSON.stringify({mode}),
     }).then(r => r.json());
-    if (r.ok) {
-      statusEl.style.color = 'var(--ok)';
-      statusEl.textContent = `✓ perf mode set to ${mode}`;
+    // Arbiter snapshot keys arrive at the top level on the agent's reply.
+    const p = r.power || r;
+    if (r.ok && p.outcome === 'skipped') {
+      _perfNotify(statusEl, 'warning', `↺ ${mode} outranked by an active hold (${p.owner || 'job'})`);
+    } else if (r.ok && p.outcome === 'deferred') {
+      _perfNotify(statusEl, 'warning', `↺ ${mode} accepted · deferred (rate-capped) · applied ${p.applied || '—'}`);
+    } else if (r.ok) {
+      const verified = p.outcome === 'verified' ? ''
+        : (p.outcome === 'applied_unverifiable'
+            ? ` · unverifiable (${_perfReadbackWords(p)})`
+            : '');
+      _perfNotify(statusEl, 'success', mode === 'auto'
+        ? `✓ policy control restored (applied ${p.applied || '—'})`
+        : `✓ ${mode} held by ${p.owner || 'manual'} · applied ${p.applied || '—'}${verified}`);
     } else {
-      statusEl.style.color = 'var(--crit)';
-      statusEl.textContent = `✗ perf-mode ${mode} failed: ${r.error || 'unknown'}`;
+      _perfNotify(statusEl, 'error', `✗ perf-mode ${mode} failed: ${r.error || 'unknown'}`);
     }
   } catch(e) {
-    statusEl.style.color = 'var(--crit)';
-    statusEl.textContent = `✗ ${e}`;
+    _perfNotify(statusEl, 'error', `✗ ${e}`);
   } finally {
     if (btn) btn.disabled = false;
   }

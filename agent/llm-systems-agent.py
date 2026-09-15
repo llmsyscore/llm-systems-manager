@@ -55,6 +55,7 @@ from collectors._shared import AbsenceLatch, collect_enabled  # type: ignore
 from providers.lms import lms_sample_block  # type: ignore
 from providers.llama import collect_llama_for_metrics, llama_api_port, llama_get_state  # type: ignore
 from providers.vllm import collect_vllm_for_metrics  # type: ignore
+from providers import residency, power_arbiter, power_readback  # type: ignore
 from agent_context import AgentContext  # type: ignore
 try:
     from _utils import atomic_write_text  # type: ignore
@@ -73,7 +74,7 @@ except ImportError:
                 fh.write(content)
         tmp.replace(p)
 
-VERSION = "v2026.09.11-5"
+VERSION = "v2026.09.14-5"
 
 # LMS ps busy-status substrings, mirroring manager energy.LMS_BUSY_MARKERS;
 # transitional states (LOADING/UNLOADING/DOWNLOADING) are not busy (#619).
@@ -359,6 +360,10 @@ def _coerce_tristate(value):
     return v in ("1", "true", "yes", "on")
 
 
+# Retired by #966: accepted in config files, warned about, then ignored.
+_DEPRECATED_CONFIG_KEYS = ("LLAMA_STATE_FILE", "PERF_SLEEP_MARKERS", "PERF_WAKE_MARKERS")
+
+
 class AgentConfig:
     """Effective configuration. Resolution: defaults < YAML < env vars."""
 
@@ -392,7 +397,6 @@ class AgentConfig:
     LLAMA_BIN: str = ""
     LLAMA_CONFIG_INI: str = ""
     LLAMA_LOG_FILE: str = ""
-    LLAMA_STATE_FILE: str = "/tmp/llama-server-last-state"
     LLAMA_SYSTEMD_UNIT: str = "llama_server.service"
     LLAMA_API_URL: str = "http://localhost:8080"
     LLAMA_BUILD_METHOD: str = ""          # custom_script|source|release_binary|conda|homebrew
@@ -410,17 +414,10 @@ class AgentConfig:
     PERF_CONTROLLER_ENABLED: bool = False
     PERF_TARGET_AWAKE: str = "performance"
     PERF_TARGET_SLEEP: str = "powersave"
-    # Substring markers copied verbatim from the bash performance controller.
-    PERF_SLEEP_MARKERS: list[str] = [
-        "server is entering sleeping state",
-        "cmd_child_to_router:sleep",
-    ]
-    PERF_WAKE_MARKERS: list[str] = [
-        "server is exiting sleeping state",
-        "main: loading model",
-        "model loaded",
-        "load_model: loading model",
-    ]
+    # Consecutive unknown residency ticks before powersave; ticks a profile must
+    # hold before the arbiter switches.
+    POWER_UNKNOWN_TICKS: int = 6
+    POWER_DWELL_TICKS: int = 2
 
     # --- OpenClaw ---
     OPENCLAW_ENABLED: bool = False
@@ -556,6 +553,9 @@ class AgentConfig:
                 print(msg, file=sys.stderr)
                 raise SystemExit(2)
             for k, v in data.items():
+                if k in _DEPRECATED_CONFIG_KEYS:
+                    print(f"WARNING: {k} in agent_config.yaml is deprecated and ignored (#966)", file=sys.stderr)
+                    continue
                 if not hasattr(cfg, k):
                     continue
                 # Skip blank strings so YAML doesn't clobber runtime defaults.
@@ -578,6 +578,10 @@ class AgentConfig:
                     setattr(cfg, k, raw)
                 else:
                     setattr(cfg, k, _env_override_value(k, cur, raw, ref=getattr(cls, k)))
+
+        for k in _DEPRECATED_CONFIG_KEYS:
+            if f"LSA_{k}" in os.environ:
+                print(f"WARNING: LSA_{k} is deprecated and ignored (#966)", file=sys.stderr)
 
         if not cfg.PROCESS_WATCHLIST:
             if cfg.AGENT_OS == "macos":
@@ -699,7 +703,7 @@ _state: dict[str, Any] = {
     "auth_disabled_global": False,
     # Applied AE URL (string, not bool) — _maybe_sync_ae_url re-probes on diff.
     "ae_url_applied": "",
-    "llama_state": "unknown",
+    "residency": None,
     "perf_last_transition": None,
     "perf_sleep_count": 0,
     "perf_wake_count": 0,
@@ -896,7 +900,7 @@ def _maybe_sync_ae_url(ack: dict) -> None:
         logger.info("AE URL synced from manager: %s -> %s", old_ae or "(unset)", new_ae)
 
 
-_log_hb_last = 0.0
+_log_hb = {"last": 0.0}
 _register_403_last = 0.0
 _status_poll_warn_last = 0.0
 
@@ -1256,7 +1260,7 @@ def collect_process_watchlist() -> list[dict[str, Any]]:
 
 # LMS helpers (lms_get_models/lms_get_ps/lms_get_status) moved to
 # agent/providers/lms.py (Tier 3 A2); re-exported above.
-# llama helpers (llama_get_state, collect_llama_for_metrics) + perf-controller moved to
+# llama helpers (llama_get_state, collect_llama_for_metrics) moved to
 # agent/providers/llama.py (Tier 3 A3); re-exported above. start_background() called from _lifespan.
 
 
@@ -2060,16 +2064,7 @@ def heartbeat_loop() -> None:
                 "agent_id": aid,
                 "ts": _now_iso(),
                 "collection_enabled": CONFIG.COLLECTION_ENABLED,
-                # Only report llama_state when llama is actually enabled —
-                # otherwise the manager records 'unknown' which looks like
-                # an error rather than 'this agent doesn't track llama'.
-                # When perf controller is running, _state['llama_state'] is the
-                # truth (transition-driven). Otherwise fall back to llama_get_state(),
-                "llama_state": (
-                    _state.get("llama_state")
-                    if (CONFIG.LLAMA_ENABLED and _state.get("llama_state") in ("awake", "sleeping"))
-                    else (llama_get_state() if CONFIG.LLAMA_ENABLED else None)
-                ),
+                "llama_state": (llama_get_state() if CONFIG.LLAMA_ENABLED else None),
                 "samples_posted": _state.get("samples_posted"),
                 "capabilities": _capabilities(),
                 "version": VERSION,
@@ -2205,18 +2200,7 @@ def _build_metric_sample() -> dict[str, Any]:
             sample["mac_power"] = pm
     except Exception as e:
         logger.debug("collect_powermetrics failed: %s", e)
-    if CONFIG.LMS_ENABLED:
-        sample["lms"] = lms_sample_block()
-    if CONFIG.LLAMA_ENABLED:
-        rich = collect_llama_for_metrics()
-        if not rich:
-            rich = {"state": llama_get_state(),
-                    "port": llama_api_port(CONFIG.LLAMA_API_URL)}
-        sample["llama"] = rich
-    if CONFIG.VLLM_ENABLED:
-        v = collect_vllm_for_metrics()
-        if v:
-            sample["vllm"] = v
+    sample.update(_probe_and_reconcile())
     if CONFIG.MONITOR_MANAGER_ENABLED or CONFIG.MONITOR_ALARM_ENGINE_ENABLED:
         mp = _build_meta_perf_block()
         if mp:
@@ -2558,73 +2542,128 @@ def log_watch_loop() -> None:
         time.sleep(max(1, int(CONFIG.LOG_WATCH_INTERVAL_S)))
 
 
+_collector_wake = threading.Event()
+_residency_prev: dict[str, Optional[dict]] = {"res": None}
+
+
+def _reconcile_residency(sample: dict[str, Any]) -> dict[str, Any]:
+    """Fold every provider's inputs into one HostResidency; drive the arbiter."""
+    prev = _residency_prev["res"]
+    models: list[dict] = []
+    servers: dict[str, str] = {}
+    if CONFIG.LLAMA_ENABLED:
+        m, s = providers.llama.residency_inputs(); models += m; servers["llama"] = s
+    if CONFIG.VLLM_ENABLED:
+        m, s = providers.vllm.residency_inputs(); models += m; servers["vllm"] = s
+    if CONFIG.LMS_ENABLED:
+        m, s = providers.lms.residency_inputs(); models += m; servers["lms"] = s
+    res = residency.reconcile(prev, models=models, servers=servers, ts=time.time(),
+                              unknown_ticks_max=int(CONFIG.POWER_UNKNOWN_TICKS))
+    for key in residency.changed_models(prev, res):
+        logger.info("residency: %s -> %s", key,
+                    next((m["status"] for m in res["models"] if f"{m['provider']}:{m['model_id']}" == key), "gone"))
+    if prev and prev.get("aggregate") != res["aggregate"]:
+        logger.info("residency: host %s -> %s", prev.get("aggregate"), res["aggregate"])
+    _residency_prev["res"] = res
+    with _runtime_lock:
+        _state["residency"] = res
+    arb = power_arbiter.get()
+    arb.on_aggregate(res["aggregate"])
+    arb.set_policy(residency.desired_profile(res, int(CONFIG.POWER_UNKNOWN_TICKS)))
+    power = arb.snapshot()
+    for prov in ("llama", "vllm", "lms"):
+        if isinstance(sample.get(prov), dict):
+            sample[prov]["residency"] = residency.provider_subset(res, prov)
+            sample[prov]["power"] = power
+    if isinstance(sample.get("llama"), dict):
+        sample["llama"]["state"] = residency.legacy_state(sample["llama"]["residency"])
+    return sample
+
+
+def _probe_and_reconcile() -> dict[str, Any]:
+    """Probe every enabled provider and fold one residency/power reconcile in. Runs every tick."""
+    sample: dict[str, Any] = {}
+    if CONFIG.LMS_ENABLED:
+        sample["lms"] = lms_sample_block()
+    if CONFIG.LLAMA_ENABLED:
+        rich = collect_llama_for_metrics()
+        if not rich:
+            rich = {"state": llama_get_state(), "port": llama_api_port(CONFIG.LLAMA_API_URL)}
+        sample["llama"] = rich
+    if CONFIG.VLLM_ENABLED:
+        v = collect_vllm_for_metrics()
+        if v:
+            sample["vllm"] = v
+    return _reconcile_residency(sample)
+
+
+def _collector_tick() -> None:
+    """One collector pass. Residency + power reconcile always run; only publishing is gated."""
+    _collector_wake.clear()
+    if not CONFIG.COLLECTION_ENABLED or not _is_approved():
+        _probe_and_reconcile()
+        return
+    sample = _build_metric_sample()
+    with _runtime_lock:
+        _state["last_metric_sample"] = sample
+    if _metric_client is not None:
+        try:
+            _metric_client.enqueue(sample)
+            with _runtime_lock:
+                _state["samples_posted"] += 1
+        except Exception:
+            logger.exception("enqueue to alarm engine failed")
+    _push_dashboard_payload(sample)
+    _push_host_payload(sample)
+    _push_vllm_payload(sample)
+
+    now = time.time()
+    if now - _log_hb["last"] >= 60:
+        _log_hb["last"] = now
+        bm = _state.get("last_metric_sample") or {}
+        sysm = bm.get("system") or {}
+        tail = []
+        if CONFIG.LLAMA_ENABLED:
+            ls = llama_get_state()
+            tail.append(f"llama={ls}")
+        if CONFIG.LMS_ENABLED:
+            lms = (bm.get("lms") or {}).get("server") or {}
+            on = lms.get('on')
+            tail.append(f"lms_server={'unknown' if on is None else ('on' if on else 'off')}")
+        if CONFIG.OPENCLAW_ENABLED:
+            tail.append("openclaw=on")
+        if _metric_client is not None:
+            with best_effort("heartbeat: append buffer breakdown"):
+                mem, disk = _metric_client.buffer_breakdown()
+                if mem or disk:
+                    tail.append(f"buffer=mem:{mem}/disk:{disk}")
+        last_err = _state.get("last_manager_error")
+        if last_err:
+            tail.append(f"manager_err={last_err}")
+        label = CONFIG.AGENT_DESCRIPTION or CONFIG.AGENT_HOSTNAME
+        logger.info(
+            "heartbeat agent[%s]: collection=%s approved=%s cpu=%.1f%% ram=%.1f%%%s",
+            label,
+            CONFIG.COLLECTION_ENABLED,
+            _is_approved(),
+            sysm.get("cpu_total", 0.0),
+            (sysm.get("ram") or {}).get("percent", 0.0),
+            (" " + " ".join(tail)) if tail else "",
+        )
+
+
 def collector_loop() -> None:
     while True:
         try:
-            if not CONFIG.COLLECTION_ENABLED:
-                time.sleep(CONFIG.POLL_INTERVAL_S)
-                continue
-            if not _is_approved():
-                time.sleep(CONFIG.POLL_INTERVAL_S)
-                continue
-            sample = _build_metric_sample()
-            with _runtime_lock:
-                _state["last_metric_sample"] = sample
-            if _metric_client is not None:
-                try:
-                    _metric_client.enqueue(sample)
-                    with _runtime_lock:
-                        _state["samples_posted"] += 1
-                except Exception:
-                    logger.exception("enqueue to alarm engine failed")
-            _push_dashboard_payload(sample)
-            _push_host_payload(sample)
-            _push_vllm_payload(sample)
-
-            global _log_hb_last
-            now = time.time()
-            if now - _log_hb_last >= 60:
-                _log_hb_last = now
-                bm = _state.get("last_metric_sample") or {}
-                sysm = bm.get("system") or {}
-                tail = []
-                if CONFIG.LLAMA_ENABLED:
-                    ls = _state.get("llama_state")
-                    if ls not in ("awake", "sleeping"):
-                        ls = llama_get_state()
-                    tail.append(f"llama={ls}")
-                if CONFIG.LMS_ENABLED:
-                    lms = (bm.get("lms") or {}).get("server") or {}
-                    on = lms.get('on')
-                    tail.append(f"lms_server={'unknown' if on is None else ('on' if on else 'off')}")
-                if CONFIG.OPENCLAW_ENABLED:
-                    tail.append("openclaw=on")
-                if _metric_client is not None:
-                    with best_effort("heartbeat: append buffer breakdown"):
-                        mem, disk = _metric_client.buffer_breakdown()
-                        if mem or disk:
-                            tail.append(f"buffer=mem:{mem}/disk:{disk}")
-                last_err = _state.get("last_manager_error")
-                if last_err:
-                    tail.append(f"manager_err={last_err}")
-                label = CONFIG.AGENT_DESCRIPTION or CONFIG.AGENT_HOSTNAME
-                logger.info(
-                    "heartbeat agent[%s]: collection=%s approved=%s cpu=%.1f%% ram=%.1f%%%s",
-                    label,
-                    CONFIG.COLLECTION_ENABLED,
-                    _is_approved(),
-                    sysm.get("cpu_total", 0.0),
-                    (sysm.get("ram") or {}).get("percent", 0.0),
-                    (" " + " ".join(tail)) if tail else "",
-                )
+            _collector_tick()
         except Exception as e:
             logger.warning("collector_loop tick failed: %s", e, exc_info=True)
-        time.sleep(CONFIG.POLL_INTERVAL_S)
+        _collector_wake.wait(CONFIG.POLL_INTERVAL_S)
 
 
 @asynccontextmanager
 async def _lifespan(_app: "FastAPI") -> AsyncIterator[None]:
-    """Spawns the perf-controller task at startup when enabled (delegated to providers.llama)."""
+    """Starts provider background workers and drains them on shutdown."""
     try:
         import anyio
         anyio.to_thread.current_default_thread_limiter().total_tokens = max(
@@ -2636,16 +2675,14 @@ async def _lifespan(_app: "FastAPI") -> AsyncIterator[None]:
                     stream_pool.POOL.limit())
     except Exception as e:
         logger.warning("worker-pool tuning skipped: %s", e)
-    perf_task: Optional[asyncio.Task] = providers.llama.start_background()
+    providers.llama.start_background()
     try:
         yield
     finally:
-        if perf_task is not None:
-            perf_task.cancel()
-            try:
-                await perf_task
-            except (asyncio.CancelledError, Exception) as e:
-                logger.debug("perf_task shutdown cleanup raised: %r", e)
+        try:
+            await asyncio.to_thread(power_arbiter.get().stop)
+        except (asyncio.CancelledError, Exception) as e:
+            logger.warning("power arbiter stop failed: %r", e)
         # Kill tracked bench/autotune children before draining metrics.
         try:
             await asyncio.to_thread(providers.llama.shutdown_children)
@@ -2839,6 +2876,19 @@ def reload_config(authorization: Optional[str] = Header(default=None)) -> dict[s
         return _reload_config_locked()
 
 
+def _power_readback_factory(units: dict) -> "power_readback.Readback":
+    """Readback graded from the perf units' own sysfs/nvidia-smi lines."""
+    return power_readback.Readback(units, governor_reader=_read_cpu_governor_safe, logger=logger)
+
+
+def _read_cpu_governor_safe(fresh: bool = False) -> Optional[str]:
+    try:
+        from collectors.system import read_cpu_governor  # type: ignore
+        return read_cpu_governor(fresh=fresh)
+    except Exception:
+        return None
+
+
 def _reload_config_locked() -> dict[str, Any]:
     global CONFIG
     CONFIG = AgentConfig.load()
@@ -2854,6 +2904,14 @@ def _reload_config_locked() -> dict[str, Any]:
         now_iso=_now_iso,
         probe_http=_probe_http,
     ))
+    providers.llama.set_reconcile_hook(_collector_wake.set)
+    power_arbiter.configure(
+        enabled=bool(CONFIG.PERF_CONTROLLER_ENABLED), is_linux=(CONFIG.AGENT_OS == "linux"),
+        awake_unit=CONFIG.PERF_TARGET_AWAKE, sleep_unit=CONFIG.PERF_TARGET_SLEEP,
+        record_path=os.path.join(CONFIG.AGENT_INSTALL_DIR, "state", "power.json"),
+        sudo_list_fn=power_arbiter.read_sudo_list, unit_exists_fn=power_arbiter.unit_file_exists,
+        governor_reader=_read_cpu_governor_safe, logger=logger,
+        dwell_ticks=int(CONFIG.POWER_DWELL_TICKS), readback_factory=_power_readback_factory)
     _configure_manager_tls_verify()
     _configure_ae_tls_verify()
     if _metric_client is not None and CONFIG.ALARM_ENGINE_URL:
@@ -3934,6 +3992,18 @@ def main() -> None:
         getattr(CONFIG, "_loaded_from", None),
     )
 
+    try:
+        os.makedirs(os.path.join(CONFIG.AGENT_INSTALL_DIR, "state"), exist_ok=True)
+    except OSError as e:
+        logger.warning("could not create the agent state dir: %s", e)
+    providers.llama.set_reconcile_hook(_collector_wake.set)
+    power_arbiter.configure(
+        enabled=bool(CONFIG.PERF_CONTROLLER_ENABLED), is_linux=(CONFIG.AGENT_OS == "linux"),
+        awake_unit=CONFIG.PERF_TARGET_AWAKE, sleep_unit=CONFIG.PERF_TARGET_SLEEP,
+        record_path=os.path.join(CONFIG.AGENT_INSTALL_DIR, "state", "power.json"),
+        sudo_list_fn=power_arbiter.read_sudo_list, unit_exists_fn=power_arbiter.unit_file_exists,
+        governor_reader=_read_cpu_governor_safe, logger=logger,
+        dwell_ticks=int(CONFIG.POWER_DWELL_TICKS), readback_factory=_power_readback_factory)
     _configure_manager_tls_verify()
     _configure_ae_tls_verify()
 

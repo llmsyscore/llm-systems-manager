@@ -187,11 +187,18 @@
           { k: 'ram', v: pct(load.ram) }],
       };
     };
+    // #966: the agent's residency aggregate when present, else the legacy
+    // binary state projected onto the same five words.
+    const agg = ls.aggregate || (llamaAwake ? (llamaResident ? 'active' : 'idle')
+      : (ls.state === 'sleeping' ? 'sleeping' : 'off'));
+    const aggWord = { active: llamaGen ? 'generating' : 'idle', loading: 'loading',
+      sleeping: 'sleeping', idle: 'no model', off: 'server off',
+      unknown: 'unknown' }[agg] || 'unknown';
+    const aggResident = (agg === 'active' || agg === 'loading' || agg === 'sleeping');
     const providers = [
-      provRow('llama.cpp', llamaAwake && llamaResident,
-        llamaResident ? (llamaGen ? 'generating' : 'idle')
-          : (ls.state === 'sleeping' ? 'sleeping' : 'no model'),
-        llamaResident ? llamaModel : null, llamaGpu, m),
+      provRow('llama.cpp', agg === 'active',
+        aggWord + (ls.stale ? ' · stale' : ''),
+        aggResident ? llamaModel : null, llamaGpu, m),
       provRow('LM Studio', !!lmsModel,
         lmsModel ? (lmsGen ? 'generating' : 'idle') : 'no model',
         lmsModel, lmsGpu, lms),

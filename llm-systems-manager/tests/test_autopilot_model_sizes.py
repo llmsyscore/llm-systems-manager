@@ -2,6 +2,8 @@
 merge, TTL cache, offload-aware observer fields."""
 from __future__ import annotations
 
+import time
+
 import pytest
 
 import agent_registry
@@ -530,7 +532,7 @@ def _deps_for(caps, sample):
     def fake_agents():
         return {"agents": {A1: {"capabilities": caps, "status": "approved"}}}
     return {"agents": fake_agents, "liveness": lambda a: "live",
-            "provider_snapshot": lambda prov, aid: {"sample": sample},
+            "provider_snapshot": lambda prov, aid: {"sample": sample, "last_seen": time.time()},
             "saturation": lambda prov, aid: {"value": None},
             "model_sizes": lambda: {}, "model_gpu_layers": lambda: {}}
 

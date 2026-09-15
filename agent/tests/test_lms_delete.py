@@ -37,7 +37,7 @@ def _load_lms():
     # Registers a synthetic parent package whose `_shared` is a stub module,
     # then loads lms.py as a submodule of it.
     pkg = _stub_if_absent("lms_pkg")
-    pkg.__path__ = []
+    pkg.__path__ = [str(_AGENT_ROOT / "providers")]
     pkg._shared = _stub_if_absent("lms_pkg._shared", openai_forward=None)
     spec = importlib.util.spec_from_file_location(
         "lms_pkg.lms", _AGENT_ROOT / "providers" / "lms.py")

@@ -96,7 +96,6 @@ def ctx(tmp_path, monkeypatch):
         LLAMA_ENABLED=True,
         POLL_INTERVAL_S=2.0,
         LLAMA_API_URL="http://127.0.0.1:9999",
-        LLAMA_STATE_FILE=str(tmp_path / "llama-state"),
         LLAMA_BUILD_METHOD="custom_script",
     )
     context = SimpleNamespace(
@@ -108,8 +107,7 @@ def ctx(tmp_path, monkeypatch):
     llama.set_context(context)
     monkeypatch.setattr(llama, "_llama_info_last_poll", 0.0)
     monkeypatch.setattr(llama, "_llama_info_cache", {})
-    monkeypatch.setattr(llama, "_llama_info_last_loaded_model", None)
-    monkeypatch.setattr(llama, "_llama_api_probe_cache", {"ts": 0, "result": "unknown"})
+    monkeypatch.setattr(llama, "_llama_loaded", {"last": None})
     monkeypatch.setattr(llama, "collect_gpu", lambda: {}, raising=False)
     return context
 
