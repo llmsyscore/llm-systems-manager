@@ -247,6 +247,7 @@ def complete_json(body: dict, *, label: str, provider=None) -> dict:
     path = _AGENT_PATHS[provider]["chat/completions"]
     client = gateway_usage.client_begin(label, "", model=model_id)
     errors: list = []
+    timed_out = False
     t0 = time.perf_counter()
     _dbg = log.isEnabledFor(logging.DEBUG)
     try:
@@ -262,11 +263,15 @@ def complete_json(body: dict, *, label: str, provider=None) -> dict:
             finally:
                 gateway_usage.end(aid)
             if r is None:
-                errors.append(f"{_label(agent)}: {err}")
+                hit_timeout = bool(getattr(err, "timed_out", False))
+                timed_out |= hit_timeout
+                errors.append(f"{_label(agent)}: {'timeout' if hit_timeout else err}")
                 if _dbg:
-                    log.debug("gateway candidate skipped host=%s reason=unreachable", _label(agent))
+                    log.debug("gateway candidate skipped host=%s reason=%s", _label(agent),
+                              "timeout" if hit_timeout else "unreachable")
                 continue
-            if r.status_code in _FAILOVER_STATUSES:
+            if r.status_code in _FAILOVER_STATUSES or (timed_out and r.status_code >= 400):
+                # An earlier timeout keeps failover alive past a sibling's 4xx.
                 errors.append(f"{_label(agent)}: {r.status_code}")
                 if _dbg:
                     log.debug("gateway candidate skipped host=%s reason=status %d", _label(agent), r.status_code)
@@ -292,7 +297,10 @@ def complete_json(body: dict, *, label: str, provider=None) -> dict:
             return out
         gateway_usage.record_error()
         if _dbg:
-            log.debug("gateway completion failed label=%s reason=no_backend errors=%s", label, "; ".join(errors) or "-")
+            log.debug("gateway completion failed label=%s reason=%s errors=%s",
+                      label, "timeout" if timed_out else "no_backend", "; ".join(errors) or "-")
+        if timed_out:
+            raise GatewayError("upstream timeout", 504, "timeout")
         raise _no_backend(provider, errors)
     finally:
         gateway_usage.client_end(client)
@@ -613,11 +621,18 @@ def _entry_resident(m) -> bool:
     return True
 
 
+def lms_load_status(agent_id: str, model_id: str) -> dict:
+    """Load state of one LM Studio catalogue entry, from the host's polled ps rows (#951)."""
+    import autopilot
+    sample = (provider_state.STORE.get("lms", agent_id) or {}).get("sample") or {}
+    return {"value": "loaded" if model_id in autopilot._lms_loaded(sample) else "unloaded"}
+
+
 def _fetch_provider_models(provider: str, serving: "dict | None" = None,
                            catalog: "dict | None" = None) -> list:
     """Provider-tagged model entries merged from every candidate agent.
     serving accumulates model_id -> [agent_ids] of resident entries; catalog every listed entry."""
-    merged, seen = [], set()
+    merged, seen = [], {}
     for agent in _candidates(None, None, provider, advance_rr=False):
         r, _tried, _err = agent_registry.agent_request(
             "GET", agent, _MODELS_PATHS[provider],
@@ -633,14 +648,20 @@ def _fetch_provider_models(provider: str, serving: "dict | None" = None,
             mid = (m or {}).get("id")
             if not mid:
                 continue
+            if provider == "lms" and not isinstance(m.get("status"), dict):
+                m = {**m, "status": lms_load_status(agent.get("agent_id"), mid)}
             if catalog is not None:
                 catalog.setdefault(f"{provider}:{mid}", []).append(agent.get("agent_id"))
-            if serving is not None and _entry_resident(m):
+            resident = _entry_resident(m)
+            if serving is not None and resident:
                 serving.setdefault(f"{provider}:{mid}", []).append(
                     agent.get("agent_id"))
             if mid not in seen:
-                seen.add(mid)
-                merged.append({**m, "provider": provider})
+                seen[mid] = {**m, "provider": provider}
+                merged.append(seen[mid])
+            elif resident and not _entry_resident(seen[mid]):
+                # A later host serving the model outranks the first host's unloaded copy.
+                seen[mid]["status"] = m.get("status")
     return merged
 
 

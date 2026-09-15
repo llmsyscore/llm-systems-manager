@@ -467,6 +467,7 @@ def prod_deps(ctx) -> dict:
     """Live data callables for run_job, bound to STORE/registry/AE."""
     import agent_registry
     import energy
+    import gateway
     import providers as providers_mod
 
     def _agents() -> dict:
@@ -596,6 +597,8 @@ def prod_deps(ctx) -> dict:
                 if not isinstance(m, dict) or not m.get("id"):
                     continue
                 st = m.get("status")
+                if prov == "lms" and not isinstance(st, dict):
+                    st = gateway.lms_load_status(agent.get("agent_id"), str(m["id"]))
                 loaded = (st.get("value") in ("loaded", "sleeping")
                           if isinstance(st, dict) else False)
                 out.append({"model": str(m["id"]), "provider": prov,

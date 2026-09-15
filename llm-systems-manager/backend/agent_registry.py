@@ -517,13 +517,23 @@ def agent_tls_kwargs(url: str) -> dict:
     return {"verify": str(ca_path)} if ca_path.is_file() else {}
 
 
+class RequestError(str):
+    """agent_request failure text; timed_out marks a read timeout on a callback URL."""
+    timed_out = False
+
+    def __new__(cls, text: str, timed_out: bool = False):
+        obj = super().__new__(cls, text)
+        obj.timed_out = timed_out
+        return obj
+
+
 def agent_request(method: str, agent: dict, path: str, **kwargs
-                  ) -> "tuple[requests.Response | None, list, str | None]":
+                  ) -> "tuple[requests.Response | None, list, RequestError | None]":
     if any(seg in (".", "..") or urllib.parse.unquote(seg) in (".", "..") for seg in path.split("/")):
-        return None, [], "refused: dot segment in proxied path"
+        return None, [], RequestError("refused: dot segment in proxied path")
     urls = agent_callback_urls(agent)
     if not urls:
-        return None, [], "no callback URL recorded"
+        return None, [], RequestError("no callback URL recorded")
     # Cap connect time so a dead callback URL fails in seconds, not the full
     # read timeout. A bare scalar timeout becomes (connect, read); an explicit
     # (connect, read) tuple is left as the caller set it. No timeout at all
@@ -534,6 +544,7 @@ def agent_request(method: str, agent: dict, path: str, **kwargs
     else:
         kwargs["timeout"] = raw_to
     last_err = None
+    timed_out = False
     tried = []
     for base in urls:
         full = f"{base}{path}"
@@ -548,9 +559,10 @@ def agent_request(method: str, agent: dict, path: str, **kwargs
         except Exception as e:
             note_dial_error(agent, base, e)
             log.warning("agent_request %s %s failed: %s: %s", method, full, type(e).__name__, e)
+            timed_out |= isinstance(e, requests.exceptions.ReadTimeout)
             last_err = f"{full}: request failed"
             continue
-    return None, tried, last_err
+    return None, tried, RequestError(last_err, timed_out)
 
 
 # ── Public API: liveness + capability rollups ────────────────────────
