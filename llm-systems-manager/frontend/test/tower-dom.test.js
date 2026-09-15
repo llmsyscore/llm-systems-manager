@@ -57,7 +57,12 @@ function boot(state, opts = {}) {
       return Promise.resolve({ ok: true, json: () => Promise.resolve({ ok: true, thread: { id: 't1', title: 'New thread' } }) });
     }
     if (url === '/api/tower/threads') return Promise.resolve({ ok: true, json: () => Promise.resolve({ ok: true, threads: w.__threads }) });
-    if (/^\/api\/tower\/threads\/[^/]+$/.test(url)) return Promise.resolve({ ok: true, json: () => Promise.resolve({ ok: true, thread: { id: 't9', title: 'Older' }, messages: w.__rows || [] }) });
+    if (/^\/api\/tower\/threads\/[^/]+$/.test(url) && o && o.method === 'PATCH') {
+      w.__renamed = JSON.parse(o.body).title;
+      if (w.__renameFail) return Promise.resolve({ ok: false, status: 404, json: () => Promise.resolve({ ok: false, error: 'unknown thread' }) });
+      return Promise.resolve({ ok: true, json: () => Promise.resolve({ ok: true, thread: { id: url.split('/').pop(), title: w.__renamed } }) });
+    }
+    if (/^\/api\/tower\/threads\/[^/]+$/.test(url)) return Promise.resolve({ ok: true, json: () => Promise.resolve({ ok: true, thread: { id: 't9', title: 'Older' }, messages: w.__rows || [], active_run: w.__activeRun || null }) });
     if (/\/messages$/.test(url)) {
       w.__posted = JSON.parse(o.body);
       if (w.__postError) { const e = w.__postError; return Promise.resolve({ ok: false, status: e[1], json: () => Promise.resolve({ ok: false, error: e[0] }) }); }
@@ -136,6 +141,22 @@ describe('Tower drawer', () => {
     w.document.dispatchEvent(new w.KeyboardEvent('keydown', { key: 'Escape' }));
     expect(w.document.getElementById('towerOverlay').classList.contains('open')).toBe(true);
     expect(JSON.parse(w.localStorage.getItem('lsm.tower'))).toMatchObject({ open: true, pinned: true });
+  });
+
+  test('overlay mode locks the page scroll, pinning insets the drawer instead, closing clears both (#988)', async () => {
+    const w = await ready(ENABLED);
+    const body = w.document.body, root = w.document.documentElement;
+    expect(body.classList.contains('tw-lock')).toBe(true);
+    expect(body.classList.contains('tw-docked')).toBe(false);
+    expect(root.style.getPropertyValue('--tw-sbw')).toMatch(/^\d+px$/);
+    w.document.getElementById('twPin').click(); await flush();
+    expect(body.classList.contains('tw-docked')).toBe(true);
+    expect(body.classList.contains('tw-lock')).toBe(false);
+    w.document.getElementById('twPin').click(); await flush();
+    expect(body.classList.contains('tw-lock')).toBe(true);
+    w.towerClose(); await flush();
+    expect(body.classList.contains('tw-lock')).toBe(false);
+    expect(body.classList.contains('tw-docked')).toBe(false);
   });
 
   test('closing hands focus back to the header button', async () => {
@@ -352,6 +373,68 @@ describe('Tower drawer', () => {
     expect(JSON.parse(w.localStorage.getItem('lsm.tower')).thread).toBeNull();
   });
 
+  test('history rows sit under day headers with a time; an emptied day header goes away (#987)', async () => {
+    const nowS = Date.now() / 1000;
+    const w = await ready(ENABLED, { threads: [{ id: 't1', title: 'Just now', updated: nowS - 60 }, { id: 't9', title: 'Older', updated: nowS - 3 * 86400 }] });
+    w.document.getElementById('twHist').click(); await flush(); await flush();
+    const days = [...w.document.querySelectorAll('#twBody .hday')].map(e => e.textContent);
+    expect(days[0]).toBe('Today');
+    expect(days.length).toBe(2);
+    expect(w.document.querySelector('#twBody .hrow .ht').textContent).toMatch(/\d/);
+    const del = w.document.querySelector('#twBody [data-del="t1"]');
+    del.click(); await flush(); del.click(); await flush(); await flush();
+    expect([...w.document.querySelectorAll('#twBody .hday')].map(e => e.textContent)).toEqual([days[1]]);
+  });
+
+  test('a history row renames inline: Enter saves through PATCH, Esc restores (#987)', async () => {
+    const w = await ready(ENABLED, { threads: [{ id: 't9', title: 'Older', updated: Date.now() / 1000 - 60 }] });
+    w.document.getElementById('twHist').click(); await flush(); await flush();
+    w.document.querySelector('#twBody [data-rn="t9"]').click(); await flush();
+    let input = w.document.querySelector('#twBody input.rn-in');
+    expect(input.value).toBe('Older');
+    input.value = 'GPU heat';
+    input.dispatchEvent(new w.KeyboardEvent('keydown', { key: 'Enter' })); await flush(); await flush();
+    expect(w.__calls).toContain('PATCH /api/tower/threads/t9');
+    expect(w.__renamed).toBe('GPU heat');
+    expect(w.document.querySelector('#twBody [data-thread="t9"]').textContent).toBe('GPU heat');
+    w.document.querySelector('#twBody [data-rn="t9"]').click(); await flush();
+    input = w.document.querySelector('#twBody input.rn-in');
+    input.value = 'dropped';
+    input.dispatchEvent(new w.KeyboardEvent('keydown', { key: 'Escape' })); await flush();
+    expect(w.document.querySelector('#twBody [data-thread="t9"]').textContent).toBe('GPU heat');
+    expect(w.__renamed).toBe('GPU heat');
+  });
+
+  test('the active conversation title is a pill in the tab row; clicking it edits, and History hides it (#987)', async () => {
+    const w = await ready(ENABLED, { threads: [{ id: 't9', title: 'Older', updated: Date.now() / 1000 - 60 }] });
+    const tabs = w.document.getElementById('twTabs');
+    expect(w.document.getElementById('twTitle').hidden).toBe(true);
+    await ask(w, 'why is box red?');
+    const pill = tabs.querySelector('#twTitle');
+    expect(pill.hidden).toBe(false);
+    expect(pill.querySelector('.tt').textContent).toBe('why is box red?');
+    expect(pill.querySelector('.pen')).not.toBeNull();
+    pill.click(); await flush();
+    const input = tabs.querySelector('input.rn-in');
+    expect(input.value).toBe('why is box red?');
+    input.value = 'Red box';
+    input.dispatchEvent(new w.KeyboardEvent('keydown', { key: 'Enter' })); await flush(); await flush();
+    expect(w.__calls).toContain('PATCH /api/tower/threads/t1');
+    expect(tabs.querySelector('#twTitle .tt').textContent).toBe('Red box');
+    w.__renameFail = true;
+    tabs.querySelector('#twTitle').click(); await flush();
+    const again = tabs.querySelector('input.rn-in'); again.value = 'nope';
+    again.dispatchEvent(new w.KeyboardEvent('keydown', { key: 'Enter' })); await flush(); await flush();
+    expect(tabs.querySelector('#twTitle .tt').textContent).toBe('Red box');
+    // History hides the pill, a state poll while History is open keeps it hidden, Back brings it back
+    w.document.getElementById('twHist').click(); await flush(); await flush();
+    expect(tabs.querySelector('#twTitle').hidden).toBe(true);
+    await w.towerRefreshState(); await flush();
+    expect(tabs.querySelector('#twTitle').hidden).toBe(true);
+    w.document.getElementById('twHistBack').click(); await flush();
+    expect(tabs.querySelector('#twTitle').hidden).toBe(false);
+  });
+
   test('a question typed while Tower is busy waits in the queue and goes out after done', async () => {
     const w = await ready(ENABLED);
     await ask(w, 'first');
@@ -562,6 +645,48 @@ describe('action cards', () => {
     expect(card).not.toBeNull();
     expect(card.querySelector('[data-approve]')).toBeNull();
     expect(card.querySelector('.eyebrow').textContent).toBe('Approval expired');
+    expect(w.document.getElementById('twSend').classList.contains('stop')).toBe(false);
+  });
+  test('a reloaded thread parked on a pending card takes its run back: Stop posts to it and listens for the denial (#956)', async () => {
+    const rows = [{ role: 'user', content: 'wake box' },
+                  { role: 'action', content: JSON.stringify({ action_id: 'a9', run_id: 'r7', tool: 'wake_server', args: { host: 'box' }, card: CARD, status: 'pending', expires: Math.floor(Date.now() / 1000) + 500, message: null }), tool_name: 'wake_server' }];
+    const w = await bootWithThread({ ...ENABLED, capabilities: 'operate' }, rows);
+    const send = w.document.getElementById('twSend');
+    expect(send.classList.contains('stop')).toBe(true);
+    expect(w.document.querySelector('#twBody .act[data-act="a9"] [data-approve]')).not.toBeNull();
+    w.__stopOk = true;
+    send.click(); await flush();
+    expect(w.__calls).toContain('POST /api/tower/runs/r7/stop');
+    expect(w.__sse.url).toBe('/api/tower/runs/r7/stream');
+    w.__sse.onEvent({ event: 'action', action_id: 'a9', tool: 'wake_server', status: 'denied', message: 'Stopped.', ms: 0 });
+    w.__sse.onEvent({ event: 'error', message: 'Stopped.' });
+    expect(w.document.querySelector('#twBody .tick.act.bad').textContent).toContain('Stopped.');
+    expect(send.classList.contains('stop')).toBe(false);
+  });
+  test('a reloaded thread with a run still answering re-attaches and receives the reply', async () => {
+    const w = boot({ ...ENABLED }, { stored: { thread: 't1' } });
+    w.__rows = [{ role: 'user', content: 'wake the llama model' }];
+    w.__activeRun = 'r5';
+    await w.towerRefreshState(); await flush();
+    w.towerOpen(); await flush(); await flush();
+    expect(w.__sse.url).toBe('/api/tower/runs/r5/stream');
+    expect(w.document.getElementById('twSend').classList.contains('stop')).toBe(true);
+    w.__sse.onEvent({ event: 'delta', text: 'Woke it.' });
+    w.__sse.onEvent({ event: 'done', ok: true });
+    expect(w.document.querySelector('#twBody .ans').textContent).toBe('Woke it.');
+    expect(w.document.getElementById('twSend').classList.contains('stop')).toBe(false);
+  });
+  test('a reloaded thread whose action is running re-attaches to the run stream (#956)', async () => {
+    const rows = [{ role: 'user', content: 'wake box' },
+                  { role: 'action', content: JSON.stringify({ action_id: 'a9', run_id: 'r8', tool: 'wake_server', args: { host: 'box' }, card: CARD, status: 'running', expires: Math.floor(Date.now() / 1000) + 500, message: null }), tool_name: 'wake_server' }];
+    const w = await bootWithThread({ ...ENABLED, capabilities: 'operate' }, rows);
+    expect(w.__sse.url).toBe('/api/tower/runs/r8/stream');
+    expect(w.document.getElementById('twSend').classList.contains('stop')).toBe(true);
+    w.__sse.onEvent({ event: 'action', action_id: 'a9', tool: 'wake_server', status: 'done', ms: 12 });
+    w.__sse.onEvent({ event: 'delta', text: 'Woke box.' });
+    w.__sse.onEvent({ event: 'done', ok: true });
+    expect(w.document.querySelector('#twBody .tick.act.ok')).not.toBeNull();
+    expect(w.document.querySelector('#twBody .ans').textContent).toBe('Woke box.');
   });
 });
 
@@ -677,6 +802,14 @@ describe('insights', () => {
     expect(w.__dismissedAll).toBe(true);
     expect(view.querySelector('.ins')).toBeNull();
     expect(view.querySelector('.empty h3').textContent).toBe('No insights');
+  });
+  test('the Alert link hands the alert id to focusAlarmAlert when the page provides it (#962)', async () => {
+    const INS = mkIns({ alert_id: 'al-42' });
+    const w = await openWith(mkState(INS.created), [INS]);
+    w.focusAlarmAlert = id => { w.__focused = id; };
+    $(w, 'twInsView').querySelector('[data-ins-open]').click(); await flush();
+    expect(w.__focused).toBe('al-42');
+    expect(w.__tab).toBeUndefined();
   });
 
   test('a refused apply explains on the tab and leaves the card; an applying card shows Running with no actions', async () => {

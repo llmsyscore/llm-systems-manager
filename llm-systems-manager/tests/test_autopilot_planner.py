@@ -834,3 +834,19 @@ def test_protect_unmanaged_does_not_touch_the_entry_own_model():
     desired = {**_desired([E]), "protect_unmanaged": True}
     assert pl.plan(desired, obs, _ledger(), now=1000.0) == []
     assert pl.entry_status(desired, obs, _ledger(), now=1000.0)["m1/llama"]["placed"] == 1
+
+
+def test_unanswered_llama_sample_blocks_placement_and_says_why():
+    """#967: a stale/unknown llama sample (answered False) never gets a wake or load; legacy agents pass."""
+    obs = _obs(_agents(**{A1: {"answered": {"llama": False}, "server_state": "sleeping"},
+                          A2: {"answered": {"llama": False}}}))
+    assert pl.plan(_desired([E]), obs, _ledger(), now=1000.0) == []
+    st = pl.entry_status(_desired([E]), obs, _ledger(), now=1000.0)
+    assert _core(st["m1/llama"]) == {"placed": 0, "want": 1,
+                                     "blocked": "waiting for a fresh llama sample from 2 capable host(s)"}
+    obs = _obs(_agents(**{A1: {"answered": {"llama": False}, "server_state": "sleeping"},
+                          A2: {"answered": {"llama": True}}}))
+    acts = pl.plan(_desired([E]), obs, _ledger(), now=1000.0)
+    assert [(a.kind, a.agent_id) for a in acts] == [("load", A2)]
+    legacy = _obs(_agents())          # no `answered` key at all
+    assert [a.kind for a in pl.plan(_desired([E]), legacy, _ledger(), now=1000.0)] == ["load"]

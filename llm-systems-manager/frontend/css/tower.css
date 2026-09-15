@@ -17,6 +17,10 @@
 body.tw-docked .tower-overlay.open { background: transparent; pointer-events: none; }
 body.tw-docked .tower-overlay.open .tw { pointer-events: auto; box-shadow: none; }
 body.tw-docked { padding-right: var(--tw-w, 400px); }
+/* Overlay mode locks the page (padding keeps its width) so only the drawer scrolls (#988). */
+body.tw-lock { overflow: hidden; padding-right: var(--tw-sbw, 0px); }
+/* Docked: the drawer stops short of the page scrollbar so the two bars never overlap (#988). */
+body.tw-docked #towerAside { right: var(--tw-sbw, 0px); }
 /* Insets the fixed full-bleed tab panels while the drawer is docked. */
 body.tw-docked #eventsTab, body.tw-docked #toolsTab, body.tw-docked #adminTab { right: var(--tw-w, 400px) !important; }
 /* Phone width: nothing is inset. */
@@ -25,7 +29,7 @@ body.tw-docked #eventsTab, body.tw-docked #toolsTab, body.tw-docked #adminTab { 
   body.tw-docked #eventsTab, body.tw-docked #toolsTab, body.tw-docked #adminTab { right: 0 !important; }
 }
 
-#towerAside { position: fixed; top: 0; right: 0; bottom: 0; width: var(--tw-w, min(400px, 100%)); max-width: 100%; background: var(--bg-card); border-left: 1px solid var(--border-strong); box-shadow: -18px 0 40px color-mix(in srgb, var(--bg) 70%, transparent); display: flex; flex-direction: column; color: var(--fg); font-family: var(--font-sans); font-size: 13px; outline: none; }
+#towerAside { position: fixed; top: 0; right: 0; bottom: 0; width: var(--tw-w, min(400px, 100%)); max-width: 100%; background: var(--bg-card); border-left: 1px solid var(--border-strong); box-shadow: -18px 0 40px color-mix(in srgb, var(--bg) 70%, transparent); display: flex; flex-direction: column; color: var(--fg); font-family: var(--font-sans); font-size: 13px; outline: none; overscroll-behavior: contain; }
 #towerAside .grip { position: absolute; left: -3px; top: 0; bottom: 0; width: 6px; cursor: col-resize; }
 #towerAside .grip::after { content: ""; position: absolute; left: 2px; top: 50%; width: 2px; height: 36px; margin-top: -18px; border-radius: 2px; background: var(--border-strong); }
 
@@ -55,14 +59,15 @@ body.tw-docked #eventsTab, body.tw-docked #toolsTab, body.tw-docked #adminTab { 
 #towerAside .chip.ctx.off { color: var(--fg-dim); text-decoration: line-through; }
 
 /* ---------- transcript ---------- */
-#towerAside .tw-b { flex: 1; overflow-y: auto; padding: 14px 16px 10px; display: flex; flex-direction: column; gap: 14px; }
-#towerAside .u { align-self: flex-end; max-width: 86%; padding: 7px 11px; border-radius: 10px 10px 3px 10px; background: color-mix(in srgb, var(--accent) 13%, var(--bg-card-alt)); color: var(--fg); font-size: 13px; line-height: 1.45; }
+/* Wide answers (text charts, tables, long tokens) stay inside the drawer: no horizontal page scroll (#979). */
+#towerAside .tw-b { flex: 1; overflow-y: auto; overflow-x: hidden; overscroll-behavior: contain; padding: 14px 16px 10px; display: flex; flex-direction: column; gap: 14px; min-width: 0; }
+#towerAside .u { align-self: flex-end; max-width: 86%; padding: 7px 11px; border-radius: 10px 10px 3px 10px; background: color-mix(in srgb, var(--accent) 13%, var(--bg-card-alt)); color: var(--fg); font-size: 13px; line-height: 1.45; overflow-wrap: anywhere; }
 #towerAside .u.queued { border: 1px dashed color-mix(in srgb, var(--accent) 45%, var(--border-strong)); background: transparent; color: var(--fg-muted); display: inline-flex; align-items: center; gap: 8px; }
 #towerAside .u.queued .ql { font: 500 10px var(--font-mono); letter-spacing: .05em; text-transform: uppercase; color: var(--fg-dim); }
 #towerAside .u.queued .qx { border: 0; background: transparent; color: var(--fg-dim); cursor: pointer; padding: 0; font: 12px var(--font-mono); line-height: 1; }
 #towerAside .u.queued .qx:hover { color: var(--crit); }
-#towerAside .t { display: grid; gap: 6px; }
-#towerAside .log { display: grid; gap: 3px; padding-left: 10px; border-left: 1px solid var(--border); }
+#towerAside .t { display: grid; gap: 6px; min-width: 0; max-width: 100%; }
+#towerAside .log { display: grid; gap: 3px; padding-left: 10px; border-left: 1px solid var(--border); min-width: 0; }
 #towerAside button.tick { width: 100%; padding: 0; border: 0; background: transparent; text-align: left; }
 #towerAside .tick:not([data-tk]) { cursor: default; }
 #towerAside .tick:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
@@ -70,16 +75,16 @@ body.tw-docked #eventsTab, body.tw-docked #toolsTab, body.tw-docked #adminTab { 
 #towerAside .tick .k { color: var(--fg-dim); }
 #towerAside .tick .ms { margin-left: auto; color: var(--fg-dim); }
 #towerAside .tick.bad .k { color: var(--crit); }
-#towerAside .raw { display: none; margin: 2px 0 4px; padding: 6px 8px; border-radius: 6px; background: var(--bg-card-alt); font: 10.5px var(--font-mono); color: var(--fg-muted); white-space: pre-wrap; word-break: break-word; max-height: 220px; overflow: auto; }
+#towerAside .raw { display: none; margin: 2px 0 4px; padding: 6px 8px; border-radius: 6px; background: var(--bg-card-alt); font: 10.5px var(--font-mono); color: var(--fg-muted); white-space: pre-wrap; word-break: break-word; max-height: 220px; overflow: auto; overscroll-behavior: contain; }
 #towerAside .tick.open + .raw { display: block; }
-#towerAside .ans { padding: 2px 0 2px 12px; border-left: 2px solid var(--accent); font-size: 13px; line-height: 1.5; color: var(--fg); }
+#towerAside .ans { padding: 2px 0 2px 12px; border-left: 2px solid var(--accent); font-size: 13px; line-height: 1.5; color: var(--fg); min-width: 0; max-width: 100%; overflow-wrap: anywhere; }
 #towerAside .ans p { margin: 0 0 8px; }
 #towerAside .ans p:last-child { margin-bottom: 0; }
 #towerAside .ans ul { margin: 0 0 8px; padding-left: 16px; }
 #towerAside .ans li { margin: 2px 0; }
 #towerAside .ans code { font: 11.5px var(--font-mono); background: var(--bg-card-alt); padding: 1px 5px; border-radius: 4px; }
-#towerAside .ans pre { margin: 4px 0 8px; padding: 8px 10px; border-radius: 6px; background: var(--bg-card-alt); font: 11px/1.4 var(--font-mono); color: var(--fg); white-space: pre; overflow-x: auto; }
-#towerAside .ans table { border-collapse: collapse; font: 11.5px var(--font-mono); margin: 4px 0 8px; }
+#towerAside .ans pre { margin: 4px 0 8px; padding: 8px 10px; border-radius: 6px; background: var(--bg-card-alt); font: 11px/1.4 var(--font-mono); color: var(--fg); white-space: pre; overflow-x: auto; max-width: 100%; }
+#towerAside .ans table { border-collapse: collapse; font: 11.5px var(--font-mono); margin: 4px 0 8px; display: block; max-width: 100%; overflow-x: auto; }
 #towerAside .ans td, #towerAside .ans th { padding: 3px 10px 3px 0; text-align: left; border-bottom: 1px solid var(--border-soft); font-weight: 400; color: var(--fg-muted); }
 #towerAside .ans td:first-child, #towerAside .ans th:first-child { color: var(--fg); }
 #towerAside .caret { display: inline-block; width: 7px; height: 13px; background: var(--accent); vertical-align: -2px; margin-left: 2px; }
@@ -93,7 +98,10 @@ body.tw-docked #eventsTab, body.tw-docked #toolsTab, body.tw-docked #adminTab { 
 #towerAside .ins-h { display: flex; align-items: baseline; gap: 8px; }
 #towerAside .ins-h h3 { margin: 0; padding: 0; border: 0; font-size: 12px; font-weight: 600; letter-spacing: .05em; text-transform: uppercase; color: var(--fg-muted); }
 #towerAside .ins-h .cnt { font: 11px var(--font-mono); color: var(--fg-dim); }
-#towerAside .hist { display: grid; gap: 6px; }
+#towerAside .hist { display: grid; gap: 10px; }
+#towerAside .hgrp { display: grid; gap: 6px; }
+#towerAside .hday { font: 500 10.5px var(--font-mono); letter-spacing: .06em; text-transform: uppercase; color: var(--fg-dim); padding-top: 2px; }
+#towerAside .hrow .ht { font: 10.5px var(--font-mono); color: var(--fg-dim); white-space: nowrap; flex-shrink: 0; }
 #towerAside .hrow { display: flex; align-items: center; gap: 6px; min-width: 0; }
 #towerAside .hrow .sug { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; text-align: left; }
 #towerAside .hrow .del { font-size: 11px; white-space: nowrap; width: auto; min-width: 26px; padding: 0 6px; }
@@ -112,7 +120,18 @@ body.tw-docked #eventsTab, body.tw-docked #toolsTab, body.tw-docked #adminTab { 
 #towerAside .tw-note .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--warn); flex-shrink: 0; }
 #towerAside .tw-note .txt { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 #towerAside .tw-note .lnk { background: none; border: 0; padding: 0; color: var(--accent); font: 500 12px var(--font-sans); cursor: pointer; flex-shrink: 0; }
-#towerAside .tw-iv { flex: 1; overflow-y: auto; padding: 12px 16px 10px; display: flex; flex-direction: column; gap: 8px; }
+/* Conversation title: a pill at the right of the tab row; the pen shows on hover, any click edits (#987). */
+#towerAside .tw-tabs .ttl { margin-left: auto; align-self: center; max-width: 48%; min-width: 0; display: inline-flex; align-items: center; gap: 6px; height: 22px; padding: 0 9px; border-radius: 11px; border: 1px solid var(--border-strong); background: var(--bg-card-alt); color: var(--fg-muted); font: 500 11px var(--font-mono); cursor: pointer; }
+#towerAside .tw-tabs .ttl .tt { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#towerAside .tw-tabs .ttl .pen { display: none; color: var(--fg-dim); flex-shrink: 0; }
+#towerAside .tw-tabs .ttl:hover, #towerAside .tw-tabs .ttl:focus-visible { color: var(--fg); border-color: var(--fg-dim); }
+#towerAside .tw-tabs .ttl:hover .pen, #towerAside .tw-tabs .ttl:focus-visible .pen { display: inline; }
+#towerAside .tw-tabs .ttl:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+#towerAside .hrow .rn { background: none; border: 0; padding: 0; color: var(--fg-dim); font: 500 11.5px var(--font-sans); cursor: pointer; flex-shrink: 0; }
+#towerAside .hrow .rn:hover { color: var(--fg); }
+#towerAside input.rn-in { flex: 1 1 auto; min-width: 0; border: 1px solid var(--accent); border-radius: 6px; background: var(--bg-card-alt); color: var(--fg); font: 12.5px var(--font-sans); padding: 3px 8px; outline: none; }
+#towerAside .tw-tabs input.rn-in { flex: 0 1 auto; margin-left: auto; align-self: center; max-width: 55%; height: 22px; padding: 0 8px; border-radius: 11px; font: 500 11px var(--font-mono); }
+#towerAside .tw-iv { flex: 1; overflow-y: auto; overflow-x: hidden; overscroll-behavior: contain; padding: 12px 16px 10px; display: flex; flex-direction: column; gap: 8px; min-width: 0; }
 
 /* ---------- insight cards ---------- */
 #towerAside .ins { border: 1px solid var(--border-strong); border-radius: 8px; padding: 8px 10px 8px 12px; display: grid; gap: 4px; position: relative; transition: border-color .3s; }
@@ -133,7 +152,7 @@ body.tw-docked #eventsTab, body.tw-docked #toolsTab, body.tw-docked #adminTab { 
 #towerAside .ins .acts .run { font: 500 11.5px var(--font-sans); color: var(--accent); }
 #towerAside .ins .fail { font: 11px var(--font-mono); color: var(--crit); }
 #towerAside .ins .detb { display: grid; gap: 4px; padding-left: 10px; border-left: 1px solid var(--border); margin-top: 2px; }
-#towerAside .ins .detb p { margin: 0; font-size: 12px; line-height: 1.45; color: var(--fg-muted); }
+#towerAside .ins .detb p { margin: 0; font-size: 12px; line-height: 1.45; color: var(--fg-muted); overflow-wrap: anywhere; }
 #towerAside .ins .detb .aud { font: 10.5px var(--font-mono); color: var(--fg-dim); }
 
 /* ---------- empty / notice / enable ---------- */

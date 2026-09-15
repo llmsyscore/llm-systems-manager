@@ -57,7 +57,7 @@ const ApiClient = {
             if (response.status === 204) return null;
             return response.json();
         } catch (error) {
-            console.error(`API Error (${endpoint}):`, error);
+            console.error('API Error (%s):', endpoint, error);
             throw error;
         }
     },

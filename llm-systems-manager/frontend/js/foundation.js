@@ -583,6 +583,29 @@ function _propagateThemeToAlarmEngine(name) {
   } catch (_) {}
 }
 
+// Opens the Events tab with one alert selected, scrolled into view and expanded (#962).
+// A booted alarm console takes a postMessage; one that has not loaded yet gets ?alert= on its URL.
+function focusAlarmAlert(id) {
+  if (id == null || id === '') return;
+  const iframe = document.getElementById('alarmEngineIframe');
+  const wanted = String(id);
+  const booted = !!(iframe && iframe.getAttribute('src'));
+  if (iframe && !booted) {
+    const theme = (document.documentElement.dataset.theme || '').trim();
+    const q = new URLSearchParams();
+    if (/^[a-z][a-z0-9-]{0,31}$/.test(theme)) q.set('theme', theme);
+    q.set('alert', wanted);
+    iframe.setAttribute('src', '/alarm/?' + q.toString());
+  }
+  if (typeof switchTab === 'function') switchTab('events');
+  if (!iframe || !booted) return;
+  const post = () => { try { iframe.contentWindow?.postMessage({ type: 'open_alert', id: wanted }, window.location.origin); } catch (_) {} };
+  post();
+  // A console still loading gets the message once it is up.
+  iframe.addEventListener('load', post, { once: true });
+  setTimeout(() => iframe.removeEventListener('load', post), 15000);
+}
+
 // Resolve a CSS theme token (e.g. '--accent') to its computed string — for
 // canvas contexts (Chart.js) that can't consume var() directly.
 function cssVar(name, fallback) {

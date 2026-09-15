@@ -71,7 +71,7 @@ from .storage.influxdb_client import InfluxDBClient
 # (-1, -2, …) for same-day iterations; roll the date for a new day's first
 # change.
 # ---------------------------------------------------------------------------
-__version__ = "v2026.09.11-14"
+__version__ = "v2026.09.15-1"
 from .storage import influx_monitor as _influx_monitor
 from .models.alarm_rule import (
     AlarmRuleCreate,
@@ -1279,6 +1279,25 @@ def _schedule_ae_self_restart(delay: float = 0.8) -> None:
         os._exit(1)
 
     _threading.Thread(target=_terminate, daemon=True).start()
+
+
+@app.get("/api/alarm/admin/log/tail")
+async def ae_log_tail(_auth: None = Depends(require_management_token)) -> dict:
+    """Last ~50 KB of the alarm engine log as lines (management-token guarded; Tower's log_tail reads it)."""
+    tail_bytes = 50 * 1024
+    try:
+        size = os.path.getsize(LOG_FILE)
+        offset = max(0, size - tail_bytes)
+        with open(LOG_FILE, "rb") as f:
+            if offset:
+                f.seek(offset)
+                f.readline()
+            data = f.read()
+        return {"ok": True, "lines": [ln.decode("utf-8", errors="replace").rstrip() for ln in data.splitlines()]}
+    except FileNotFoundError:
+        return {"ok": True, "lines": [], "note": "log file does not exist yet"}
+    except OSError as e:
+        raise HTTPException(status_code=500, detail=f"log unreadable: {type(e).__name__}")
 
 
 @app.post("/api/alarm/admin/self-restart")

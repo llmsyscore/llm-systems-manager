@@ -193,7 +193,9 @@
             el.classList.add('ae-toast-clickable');
             el.title = 'Click to open Events';
             el.addEventListener('click', () => {
-                if (typeof switchTab === 'function') switchTab('events');
+                const targetId = el.dataset.alertId || alertId;
+                if (typeof focusAlarmAlert === 'function') focusAlarmAlert(targetId);
+                else if (typeof switchTab === 'function') switchTab('events');
                 dismiss(true);
             });
         }

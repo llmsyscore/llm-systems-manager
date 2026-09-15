@@ -200,3 +200,41 @@ describe('insights', () => {
     expect(TW.ageText(30)).toBe('now'); expect(TW.ageText(7200)).toBe('2 h'); expect(TW.ageText(200000)).toBe('2 d');
   });
 });
+
+describe('liveRun (#956)', () => {
+  const act = (over = {}) => ({ role: 'action', tool_name: 'wake_server',
+    content: JSON.stringify({ action_id: 'a1', run_id: 'r7', tool: 'wake_server', args: { host: 'box' }, card: {}, status: 'pending', expires: 4102444800, message: null, ...over }) });
+  test('threadView carries the run id and liveRun finds a pending card that has not expired', () => {
+    const turns = TW.threadView([{ role: 'user', content: 'wake box' }, act()]);
+    expect(turns[1].actions[0].runId).toBe('r7');
+    expect(TW.liveRun(turns, 1000)).toEqual({ runId: 'r7', status: 'pending' });
+    expect(TW.liveRun(TW.threadView([{ role: 'user', content: 'wake box' }, act({ status: 'running' })]), 1000)).toEqual({ runId: 'r7', status: 'running' });
+  });
+  test('an expired, decided or run-less card gives nothing; only the last turn counts', () => {
+    expect(TW.liveRun(TW.threadView([{ role: 'user', content: 'x' }, act({ expires: 1 })]), 1000)).toBeNull();
+    expect(TW.liveRun(TW.threadView([{ role: 'user', content: 'x' }, act({ status: 'done' })]), 1000)).toBeNull();
+    expect(TW.liveRun(TW.threadView([{ role: 'user', content: 'x' }, act({ run_id: null })]), 1000)).toBeNull();
+    expect(TW.liveRun(TW.threadView([{ role: 'user', content: 'x' }, act(), { role: 'user', content: 'later' }]), 1000)).toBeNull();
+    expect(TW.liveRun([], 1000)).toBeNull();
+  });
+});
+
+describe('historyGroups (#987)', () => {
+  const now = new Date(2026, 8, 14, 22, 30).getTime();                      // local Sep 14 2026 22:30
+  const at = (y, m, d, h, mi) => new Date(y, m - 1, d, h, mi).getTime() / 1000;
+  test('groups newest-first under Today / Yesterday / date headers with a time per row', () => {
+    const threads = [{ id: 'a', title: 'older today', updated: at(2026, 9, 14, 9, 5) },
+                     { id: 'b', title: 'latest', updated: at(2026, 9, 14, 21, 41) },
+                     { id: 'c', title: 'yesterday', updated: at(2026, 9, 13, 8, 0) },
+                     { id: 'd', title: 'last week', updated: at(2026, 9, 7, 12, 0) },
+                     { id: 'e', title: 'last year', created: at(2025, 12, 31, 23, 59) },
+                     { id: 'f', title: 'undated' }];
+    const g = TW.historyGroups(threads, now);
+    expect(g.map(x => x.label)).toEqual(['Today', 'Yesterday', new Date(2026, 8, 7).toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' }),
+                                          new Date(2025, 11, 31).toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric', year: 'numeric' }), 'Undated']);
+    expect(g[0].rows.map(r => r.id)).toEqual(['b', 'a']);
+    expect(g[0].rows[0].time).toBe(new Date(2026, 8, 14, 21, 41).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' }));
+    expect(g[4].rows[0]).toMatchObject({ id: 'f', title: 'undated', time: '' });
+    expect(TW.historyGroups([], now)).toEqual([]);
+  });
+});

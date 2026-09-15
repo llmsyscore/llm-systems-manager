@@ -205,19 +205,78 @@ def test_worker_reaches_done_even_when_the_queue_backs_up(client, monkeypatch):
     assert run is not None and run["done"] is True
 
 
-def test_closing_the_stream_cancels_the_run():
-    """#924 review CRITICAL 2: the SSE generator closing (client gone) cancels an unfinished run."""
+def test_closing_the_stream_cancels_the_run_after_the_detach_grace(monkeypatch):
+    """#924 review CRITICAL 2 + reload re-attach: a client gone mid-run cancels it only once the grace passes."""
+    monkeypatch.setattr(tower, "_DETACH_GRACE_S", 0.05)
     run = {"id": "r1", "user": "alice", "queue": queue.Queue(maxsize=4),
            "done": False, "cancel": threading.Event(), "started": time.time()}
     run["queue"].put({"event": "status", "state": "thinking"})
     gen = M._tower_runs.stream(run)
     next(gen)
     gen.close()
-    assert run["cancel"].is_set()
+    assert not run["cancel"].is_set()
+    assert run["cancel"].wait(1.0)
+
+
+def test_reattaching_within_the_grace_keeps_the_run_alive(monkeypatch):
+    monkeypatch.setattr(tower, "_DETACH_GRACE_S", 0.1)
+    run = {"id": "r1", "user": "alice", "queue": queue.Queue(maxsize=4),
+           "done": False, "cancel": threading.Event(), "started": time.time()}
+    run["queue"].put({"event": "status", "state": "thinking"})
+    gen = M._tower_runs.stream(run)
+    next(gen); gen.close()
+    run["queue"].put({"event": "delta", "text": "hi"})
+    gen2 = M._tower_runs.stream(run)
+    assert "hi" in next(gen2)
+    time.sleep(0.25)
+    assert not run["cancel"].is_set()
+    gen2.close()
+    assert run["cancel"].wait(1.0)
+
+
+def test_thread_get_reports_the_active_run_for_a_reload(client, monkeypatch):
+    gate = threading.Event()
+    def slow_turn(**kw):
+        gate.wait(5); kw["emit"]({"event": "done", "ok": True, "calls": 0, "elapsed_ms": 1}); return {"ok": True}
+    monkeypatch.setattr(tower, "run_turn", slow_turn)
+    tid = client.post("/api/tower/threads", json={}).get_json()["thread"]["id"]
+    other = client.post("/api/tower/threads", json={}).get_json()["thread"]["id"]
+    assert client.get(f"/api/tower/threads/{tid}").get_json()["active_run"] is None
+    rid = client.post(f"/api/tower/threads/{tid}/messages", json={"text": "wake it"}).get_json()["run_id"]
+    assert client.get(f"/api/tower/threads/{tid}").get_json()["active_run"] == rid
+    assert client.get(f"/api/tower/threads/{other}").get_json()["active_run"] is None
+    gate.set()
+    assert _wait_done(rid) is not None
+    assert client.get(f"/api/tower/threads/{tid}").get_json()["active_run"] is None
 
 
 def test_stop_unknown_run_is_404(client):
     assert client.post("/api/tower/runs/doesnotexist/stop").status_code == 404
+
+
+def test_stop_during_the_first_token_wait_frees_the_slot_and_ends_the_stream(client, monkeypatch):
+    """#961: a worker that has not seen its cancel flag yet must not hold the user's run slot after Stop."""
+    gate = threading.Event()
+    def stuck_turn(**kw):
+        gate.wait(5)     # a first-token wait never checks cancelled()
+        kw["emit"]({"event": "error", "message": "Stopped."})
+        return {"ok": False}
+    monkeypatch.setattr(tower, "run_turn", stuck_turn)
+    tid = client.post("/api/tower/threads", json={}).get_json()["thread"]["id"]
+    rid = client.post(f"/api/tower/threads/{tid}/messages", json={"text": "a"}).get_json()["run_id"]
+    assert client.post(f"/api/tower/threads/{tid}/messages", json={"text": "b"}).status_code == 409
+    assert client.post(f"/api/tower/runs/{rid}/stop").get_json() == {"ok": True}
+    r = client.get(f"/api/tower/runs/{rid}/stream")
+    body = r.get_data(as_text=True); r.close()
+    assert [json.loads(l[6:]) for l in body.splitlines() if l.startswith("data: ")] == [{"event": "error", "message": "Stopped."}]
+    r2 = client.post(f"/api/tower/threads/{tid}/messages", json={"text": "b"})
+    assert r2.status_code == 200 and r2.get_json()["run_id"] != rid
+    rows = client.get(f"/api/tower/threads/{tid}").get_json()["messages"]     # the fake turn stores no user row
+    assert [(m["role"], m["content"]) for m in rows] == [("assistant", "Stopped.")]
+    assert client.post(f"/api/tower/runs/{rid}/stop").get_json() == {"ok": True}    # idempotent, no second line
+    assert sum(1 for m in client.get(f"/api/tower/threads/{tid}").get_json()["messages"] if m["content"] == "Stopped.") == 1
+    gate.set()
+    assert _wait_done(rid) is not None
 
 
 def test_model_pin_is_admin_only_and_writes_through_settings(client, monkeypatch):
@@ -659,3 +718,16 @@ def test_watcher_is_wired_to_the_manager():
     assert isinstance(M._tower_watcher, tower_watch.Watcher)
     assert M._tower_watcher._audit is M._tower_audit_auto and M._tower_watcher._report_violation is M._tower_report_violation
     assert M._tower_watcher._store is M._tower_store and M._tower_watcher._deps is M._tower_deps
+
+
+def test_thread_rename_is_scoped_trimmed_and_capped(client):
+    tid = client.post("/api/tower/threads", json={}).get_json()["thread"]["id"]
+    assert client.patch(f"/api/tower/threads/{tid}", json={"title": "   "}).status_code == 400
+    assert client.patch("/api/tower/threads/nope", json={"title": "x"}).status_code == 404
+    r = client.patch(f"/api/tower/threads/{tid}", json={"title": "  GPU   heat   " + "x" * 80})
+    assert r.status_code == 200 and r.get_json()["thread"]["title"] == ("GPU heat " + "x" * 80)[:60]
+    assert client.get(f"/api/tower/threads/{tid}").get_json()["thread"]["title"].startswith("GPU heat ")
+    # a renamed thread keeps its name when the first question lands
+    M._tower_store.add_message(tid, "user", "why is box red?")
+    assert client.get(f"/api/tower/threads/{tid}").get_json()["thread"]["title"].startswith("GPU heat ")
+    assert ("PATCH", "tower.thread.rename") in [(m, a) for m, _re, a, _g in M._AUDIT_ROUTES if a == "tower.thread.rename"]

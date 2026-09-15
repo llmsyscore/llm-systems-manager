@@ -142,7 +142,7 @@
       } else if (r.role === 'action') {
         if (!cur) cur = { role: 'tower', ticks: [], text: '', done: true, error: null, actions: [] };
         const b = safeJson(r.content) || {};
-        cur.actions.push({ id: b.action_id, tool: b.tool || r.tool_name, args: b.args || {}, card: b.card || {}, status: b.status || 'pending',
+        cur.actions.push({ id: b.action_id, runId: b.run_id || null, tool: b.tool || r.tool_name, args: b.args || {}, card: b.card || {}, status: b.status || 'pending',
                            tier: b.tier || 'operate', role: b.role || 'operator', actor: b.actor || '', message: b.message == null ? null : b.message,
                            ms: r.tool_ms == null ? null : r.tool_ms, expires: b.expires == null ? null : b.expires });
       }
@@ -151,6 +151,16 @@
     return turns;
   }
   function safeJson(s) { try { return JSON.parse(s); } catch (_) { return s; } }
+
+  // The run a reloaded thread is still parked on: {runId, status} of the last turn's live
+  // pending/running action (not past its expiry), else null (#956).
+  function liveRun(turns, nowS) {
+    const t = turns[turns.length - 1];
+    if (!t || t.role !== 'tower') return null;
+    const now = nowS != null ? nowS : Date.now() / 1000;
+    const a = (t.actions || []).slice().reverse().find(x => x.runId && (x.status === 'running' || (x.status === 'pending' && (x.expires == null || x.expires > now))));
+    return a ? { runId: a.runId, status: a.status } : null;
+  }
 
   const SUGS = {
     events: ['Summarise active alarms', 'Which alert needs me first?', 'Top 10 alarm rules over 30 days', 'Alarms per day this week as a chart',
@@ -231,6 +241,33 @@
     };
   }
 
+  // History rows grouped by the day of their last message, newest first; rows without a stamp end up under "Undated" (#987).
+  function historyGroups(threads, nowMs) {
+    const now = new Date(nowMs != null ? nowMs : Date.now());
+    const dayKey = d => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+    const today = dayKey(now), yest = dayKey(new Date(now.getTime() - 86400000));
+    const label = d => {
+      const k = dayKey(d);
+      if (k === today) return 'Today';
+      if (k === yest) return 'Yesterday';
+      const opts = { weekday: 'short', month: 'short', day: 'numeric' };
+      if (d.getFullYear() !== now.getFullYear()) opts.year = 'numeric';
+      return d.toLocaleDateString(undefined, opts);
+    };
+    const rows = (threads || []).map(t => {
+      const at = Number(t.updated || t.created || 0) * 1000;
+      const d = at ? new Date(at) : null;
+      return { id: t.id, title: t.title || 'New thread', at, key: d ? dayKey(d) : '', day: d ? label(d) : 'Undated',
+               time: d ? d.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' }) : '' };
+    }).sort((a, b) => b.at - a.at);
+    const groups = [];
+    for (const r of rows) {
+      const g = groups[groups.length - 1];
+      if (g && g.key === r.key) g.rows.push(r); else groups.push({ key: r.key, label: r.day, rows: [r] });
+    }
+    return groups;
+  }
+
   function stateView(api) {
     const a = api || {};
     const off = !a.enabled;
@@ -240,6 +277,6 @@
              chip: a.model ? { model: a.model, provider: PROVIDER[a.provider] || a.provider || '', host: (a.hosts || [])[0] || '' } : null };
   }
 
-  return { initial, reduce, md, threadView, suggestions, pageContext, stateView, esc, PROVIDER,
+  return { initial, reduce, md, threadView, liveRun, historyGroups, suggestions, pageContext, stateView, esc, PROVIDER,
            ageText, insightView, insightsHeader, visibleInsights };
 });
