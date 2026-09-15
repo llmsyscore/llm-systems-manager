@@ -1624,7 +1624,7 @@ def test_ask_blocking_gives_up_after_the_wait_limit(monkeypatch):
     st = tower.Store(":memory:")
     ent = [{"id": "qwen3-14b", "provider": "llama", "status": {"value": "loaded"}, "hosts": ["box"]}]
     runs = tower.Runs(st, registry_factory=_registry, complete_stream=slow, entries=lambda: ent,
-                      server_args_of=lambda m: None, cfg=lambda: _cfg())
+                      server_args_of=lambda m: None, cfg=_cfg)
     out = tower.ask_blocking(runs, user="d", role="operator", text="hi", wait_s=0.2)
     assert out["ok"] is False and out["error"] == tower._ASK_TOO_LONG
 

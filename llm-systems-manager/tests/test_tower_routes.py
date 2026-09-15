@@ -827,7 +827,8 @@ def test_admins_see_and_open_discord_threads(client):
     assert got["ok"] and [m["role"] for m in got["messages"]] == ["user", "assistant"]
     assert client.patch(f"/api/tower/threads/{d1}", json={"title": "Box heat"}).get_json()["thread"]["title"] == "Box heat"
     assert st.thread_user(d1) == "discord:111"
-    assert client.delete(f"/api/tower/threads/{d1}").get_json() == {"ok": True}
+    deleted = client.delete(f"/api/tower/threads/{d1}").get_json()
+    assert deleted == {"ok": True}
     assert client.get("/api/tower/threads").get_json()["discord"] == []
     assert st.thread_user("nope") is None
 
