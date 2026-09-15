@@ -176,7 +176,7 @@ def _local_hostname() -> str:
 # banner reads it. Bump suffix (-1, -2, …) for same-day iterations; roll
 # the date for a new day's first change.
 # ---------------------------------------------------------------------------
-__version__ = "v2026.09.15-9"
+__version__ = "v2026.09.15-10"
 
 # Wall-clock at first import (Cheroot main process); the shutdown banner
 # reads it for the uptime line.
@@ -5820,7 +5820,7 @@ def _tower_run_row(r: dict, hosts: dict) -> dict:
             "config": cfg, "results": summary}
 
 
-def _tower_card_rows(conn, hosts: dict, host: Optional[str], count: int) -> list:
+def _tower_card_rows(conn, hosts: dict, host: "str | None", count: int) -> list:
     """Report card runs as ledger-shaped rows (they live in their own table)."""
     out = []
     try:
