@@ -133,6 +133,23 @@ def test_models_fans_out_via_agent_request(deps, monkeypatch):
     assert all(r["hostname"] == "box" for r in rows)
 
 
+def test_models_lms_rows_take_load_state_from_ps(deps, monkeypatch):
+    """#951: an LM Studio catalogue row without a status is marked from the polled ps rows."""
+    import agent_registry
+    import gateway
+
+    def fake_request(method, agent, path, **kw):
+        if agent.get("hostname") == "mac" and path == "/lms/models":
+            return _Resp(200, {"data": [{"id": "phi4"}, {"id": "gemma"}]}), [], None
+        return None, [], "unreachable"
+
+    monkeypatch.setattr(agent_registry, "agent_request", fake_request)
+    monkeypatch.setattr(gateway, "lms_load_status",
+                        lambda aid, mid: {"value": "loaded" if mid == "phi4" else "unloaded"})
+    rows = deps["models"]("mac")
+    assert {r["model"]: r["loaded"] for r in rows} == {"phi4": True, "gemma": False}
+
+
 def test_load_resolves_agent_and_unwraps_ok_false(deps, monkeypatch):
     import agent_registry
     seen = {}

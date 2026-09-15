@@ -176,7 +176,7 @@ def _local_hostname() -> str:
 # banner reads it. Bump suffix (-1, -2, …) for same-day iterations; roll
 # the date for a new day's first change.
 # ---------------------------------------------------------------------------
-__version__ = "v2026.09.15-10"
+__version__ = "v2026.09.15-11"
 
 # Wall-clock at first import (Cheroot main process); the shutdown banner
 # reads it for the uptime line.
@@ -6036,13 +6036,7 @@ def _tower_gateway_entries() -> list:
         prov = e.get("provider") or "llama"
         agent_ids = sorted(gateway._serving_agent_ids(prov, e.get("id")))
         have = sorted(gateway._catalog_agent_ids(prov, e.get("id")) | set(agent_ids))
-        row = {**e, "hosts": _names(agent_ids), "agent_ids": agent_ids, "catalog_hosts": _names(have)}
-        # LM Studio's /v1/models carries no load state; the polled `ps` rows do.
-        if prov == "lms" and not isinstance(e.get("status"), dict):
-            loaded = any(e.get("id") in autopilot._lms_loaded((provider_state.STORE.get("lms", aid) or {}).get("sample") or {})
-                         for aid in agent_ids)
-            row["status"] = {"value": "loaded" if loaded else "unloaded"}
-        out.append(row)
+        out.append({**e, "hosts": _names(agent_ids), "agent_ids": agent_ids, "catalog_hosts": _names(have)})
     return out
 
 

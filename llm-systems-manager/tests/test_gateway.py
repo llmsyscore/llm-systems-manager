@@ -707,3 +707,25 @@ def test_stream_400_after_injection_logs_hint(monkeypatch, caplog):
                            json={"model": "m", "stream": True})
     assert r.status_code == 400
     assert any("include_usage injection" in m for m in caplog.messages)
+
+
+def test_lms_index_entries_carry_load_state_from_ps(monkeypatch):
+    """#951: LM Studio's catalogue has no status; the polled ps rows supply it."""
+    _reset_model_index()
+    a1 = {"agent_id": "a" * 32, "hostname": "h1", "token": "t"}
+    a2 = {"agent_id": "b" * 32, "hostname": "h2", "token": "t"}
+    monkeypatch.setattr(gateway, "_candidates",
+                        lambda m, a, p="llama", **kw: [a1, a2] if p == "lms" else [])
+    payload = {"data": [{"id": "s1"}, {"id": "s2"}]}
+    monkeypatch.setattr(gateway.agent_registry, "agent_request",
+                        lambda method, agent, path, **kw: (FakeResp(200, payload), [], None))
+    samples = {a1["agent_id"]: {"ps": [{"model": "s2", "status": "STOPPED"}]},
+               a2["agent_id"]: {"ps": [{"model": "s1", "status": "IDLE"}]}}
+    monkeypatch.setattr(gateway.provider_state.STORE, "get",
+                        lambda prov, aid: {"sample": samples[aid]} if prov == "lms" else None)
+    r = _client().get("/api/gateway/v1/models")
+    by = {m["id"]: m for m in r.get_json()["data"]}
+    assert by["s1"]["status"] == {"value": "loaded"} and by["s2"]["status"] == {"value": "unloaded"}
+    assert gateway._serving_agent_ids("lms", "s1") == {a2["agent_id"]}
+    assert gateway._serving_agent_ids("lms", "s2") == set()
+    assert gateway._catalog_agent_ids("lms", "s2") == {a1["agent_id"], a2["agent_id"]}

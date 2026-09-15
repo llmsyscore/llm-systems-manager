@@ -271,3 +271,61 @@ def test_debug_trace_covers_the_json_path(monkeypatch, caplog):
     blob = "\n".join(r.getMessage() for r in caplog.records if r.name == "llm-systems-manager.gateway")
     assert "gateway completion label=tower" in blob and "stream=False" in blob
     assert "gateway completion end label=tower" in blob
+
+
+# ── #958 non-streaming failover after a first-token timeout ──
+
+def _timeout_err():
+    import agent_registry
+    return agent_registry.RequestError("box: timeout", timed_out=True)
+
+
+def test_complete_json_fails_over_past_4xx_after_timeout(monkeypatch):
+    b, c = dict(AGENT, agent_id="b" * 32), dict(AGENT, agent_id="c" * 32)
+    monkeypatch.setattr(gateway, "_candidates", lambda *a, **k: [AGENT, b, c])
+    payload = {"choices": [{"message": {"content": "late"}}]}
+    replies = {"a": (None, _timeout_err()), "b": (_Resp(400), None), "c": (_Resp(200, payload), None)}
+    monkeypatch.setattr(gateway, "_forward_json", lambda agent, path, body: replies[agent["agent_id"][0]])
+    out = gateway.complete_json({"model": "m", "messages": []}, label="tower")
+    assert out["choices"][0]["message"]["content"] == "late"
+
+
+def test_complete_json_timeout_with_no_survivor_is_504(monkeypatch):
+    b = dict(AGENT, agent_id="b" * 32)
+    monkeypatch.setattr(gateway, "_candidates", lambda *a, **k: [AGENT, b])
+    replies = {"a": (None, _timeout_err()), "b": (_Resp(400), None)}
+    monkeypatch.setattr(gateway, "_forward_json", lambda agent, path, body: replies[agent["agent_id"][0]])
+    with pytest.raises(gateway.GatewayError) as ei:
+        gateway.complete_json({"model": "m", "messages": []}, label="tower")
+    assert ei.value.status == 504 and ei.value.err_type == "timeout"
+
+
+def test_complete_json_4xx_without_timeout_still_raises(monkeypatch):
+    import agent_registry
+    b = dict(AGENT, agent_id="b" * 32)
+    monkeypatch.setattr(gateway, "_candidates", lambda *a, **k: [AGENT, b])
+    replies = {"a": (None, agent_registry.RequestError("box: request failed")), "b": (_Resp(400), None)}
+    monkeypatch.setattr(gateway, "_forward_json", lambda agent, path, body: replies[agent["agent_id"][0]])
+    with pytest.raises(gateway.GatewayError) as ei:
+        gateway.complete_json({"model": "m", "messages": []}, label="tower")
+    assert ei.value.status == 400 and ei.value.err_type == "upstream"
+
+
+def test_agent_request_marks_read_timeout(monkeypatch):
+    import agent_registry
+    import requests
+    monkeypatch.setattr(agent_registry, "agent_callback_urls", lambda a: ["http://h1", "http://h2"])
+    monkeypatch.setattr(agent_registry, "note_dial_error", lambda *a: None)
+    errs = {"http://h1/x": requests.exceptions.ConnectionError("refused"),
+            "http://h2/x": requests.exceptions.ReadTimeout("slow")}
+
+    def boom(method, url, **kw):
+        raise errs[url]
+
+    monkeypatch.setattr(agent_registry.requests, "request", boom)
+    r, tried, err = agent_registry.agent_request("POST", AGENT, "/x")
+    assert r is None and tried == ["http://h1/x", "http://h2/x"]
+    assert isinstance(err, str) and err.timed_out is True
+    errs["http://h2/x"] = requests.exceptions.ConnectionError("refused")
+    _r, _t, err = agent_registry.agent_request("POST", AGENT, "/x")
+    assert err.timed_out is False
