@@ -32,14 +32,14 @@ def _deps(calls, alerts=()):
             calls.append((name,) + a)
             return True, None
         return f
-    return {"host": lambda n, section="all": {"hostname": n, "llama": {"state": "sleeping"}}, "host_history": lambda h, m, w="24h": {"points": 0},
+    return {"host": lambda n, section="all": {"hostname": n, "llama": {"state": "sleeping"}}, "host_history": lambda h, m, w="24h", a=None: {"points": 0},
             "hosts": lambda *a, **k: [], "models": lambda h=None, p=None: [],
             "alarms": lambda s="active", c=10, w=None, h=None, r=None: list(alerts),
             "alert": lambda aid: next((dict(a) for a in alerts if a["id"] == aid), None),
-            "alarm_history": lambda w="30d", g="rule", t=10, h=None, r=None: {}, "energy": lambda w="today": {},
+            "alarm_history": lambda w="30d", g="rule", t=10, h=None, r=None: {}, "energy": lambda w="today", a=None: {},
             "flow": lambda: {}, "runs": lambda t=None, c=5: [], "speed": lambda m: [], "health": lambda: {},
             "log_tail": lambda h, p="llama", n=40, a=None: [], "config_get": lambda p: {}, "help": lambda t: "",
-            "audit": lambda w="24h", a=None, ac=None, c=20: [], "pinned": lambda p, h, m: False,
+            "audit": lambda w="24h", a=None, ac=None, c=20, x=None: [], "pinned": lambda p, h, m: False,
             "wake": rec("wake"), "ack": rec("ack"), "load": rec("load"), "unload": rec("unload"), "restart": rec("restart"), "close": rec("close")}
 
 
@@ -410,3 +410,38 @@ def test_a_bypass_worded_alert_with_only_a_sleeping_model_is_reported_without_a_
     quiet = []
     w2, _, _ = _watcher([], [], cfg=_cfg(report_violations=False), entries=asleep, report_violation=quiet.append)
     assert w2.diagnose(bad) and quiet == []
+
+
+# ── #980 metric snapshot stored with the insight ──
+
+def test_diagnosis_stores_the_metric_snapshot_when_the_dep_answers():
+    alerts = [ALERT]
+    w, st, _ = _watcher(alerts, [READ, ANSWER])
+    snap = {"metric": "llama/state", "unit": "", "minutes": 60, "points": [[1, 0.0], [61, 1.0]], "threshold": None, "value": 1.0}
+    seen = []
+    w._deps["metric_snapshot"] = lambda a: seen.append(a["id"]) or snap
+    w.tick(); alerts.append({**ALERT, "id": "a2"}); w.tick()
+    assert st.list_insights()[0]["snapshot"] == snap and seen == ["a2"]
+
+
+def test_snapshot_failures_and_empty_series_leave_the_insight_without_a_graph():
+    alerts = [ALERT]
+    w, st, _ = _watcher(alerts, [READ, ANSWER, READ, ANSWER])
+    def boom(a):
+        raise RuntimeError("ae down")
+    w._deps["metric_snapshot"] = boom
+    w.tick(); alerts.append({**ALERT, "id": "a2"}); w.tick()
+    assert st.list_insights()[0]["snapshot"] is None
+    w._deps["metric_snapshot"] = lambda a: {"points": []}
+    alerts.append({**ALERT, "id": "a3"}); w.tick()
+    assert st.list_insights()[0]["alert_id"] == "a3" and st.list_insights()[0]["snapshot"] is None
+
+
+def test_asleep_insight_still_captures_the_snapshot():
+    alerts = [ALERT]
+    asleep = [{**ENTRIES[0], "status": {"value": "sleeping"}}]
+    w, st, _ = _watcher(alerts, [], entries=asleep)
+    w._deps["metric_snapshot"] = lambda a: {"metric": "x", "points": [[1, 1.0]]}
+    w.tick(); alerts.append({**ALERT, "id": "a2"}); w.tick()
+    row = st.list_insights()[0]
+    assert row["summary"] == tw._ASLEEP and row["snapshot"]["points"] == [[1, 1.0]]

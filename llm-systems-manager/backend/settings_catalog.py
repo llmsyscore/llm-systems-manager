@@ -155,10 +155,11 @@ CATALOG: list[dict] = [
     _e("manager.tower.diagnose_alarms", "bool", "Diagnose new alarms", "Read-only look at each new alert at or above the lowest severity; the result lands in the drawer as an insight.", "tower", MANAGER, hot=True, common=True),
     _e("manager.tower.min_severity", "choice", "Lowest severity", "Alerts below this are not diagnosed.", "tower", MANAGER, choices=["info", "warning", "critical"], hot=True),
     _e("manager.tower.playbooks_auto", "bool", "Apply safe playbooks", "Wake a sleeping server, reload a dropped model, ack a recovered alert without asking. Needs operate. Anything else is always proposed.", "tower", MANAGER, hot=True),
-    _e("manager.tower.max_tool_calls", "int", "Tool calls per question", "Reads Tower may do before it has to answer.", "tower", MANAGER, min=1, max=20, hot=True),
-    _e("manager.tower.max_tokens", "int", "Answer length (tokens)", "Token cap per model call. Thinking models spend part of this on reasoning first; give them 2048 or more.", "tower", MANAGER, min=128, max=8192, hot=True),
+    _e("manager.tower.max_tool_calls", "int", "Tool calls per question", "Reads Tower may do before it has to answer.", "tower", MANAGER, min=1, max=40, hot=True),
+    _e("manager.tower.max_tokens", "int", "Answer length (tokens)", "Token cap per model call. Thinking models spend part of this on reasoning first; give them 2048 or more.", "tower", MANAGER, min=128, max=32768, hot=True),
     _e("manager.tower.temperature", "float", "Temperature", "Sampling temperature for Tower's model calls.", "tower", MANAGER, min=0, max=1, hot=True),
     _e("manager.tower.history_days", "int", "Keep history (days)", "Threads and insights older than this are deleted daily.", "tower", MANAGER, min=1, max=365, hot=True),
+    _e("manager.tower.discord", "bool", "Answer in Discord", "The Discord bot's /tower command asks Tower read-only for allowlisted users. Off = the command replies that it is disabled.", "tower", MANAGER, hot=True),
     _e("manager.tower.debug", "bool", "Debug logging", "Log every model call, tool call and approval step for Tower at DEBUG (names, sizes and timings, never text). Hot.", "tower", MANAGER, hot=True),
     # companion
     _e("manager.companion.push_contact", "str", "Push contact", "VAPID sub claim the browser push services see (mailto:…).", "companion", MANAGER),

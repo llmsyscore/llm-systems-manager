@@ -143,12 +143,13 @@ class ManagerTower(BaseModel):
     diagnose_alarms: bool = False
     playbooks_auto: bool = False
     min_severity: str = "warning"      # info | warning | critical
-    max_tool_calls: int = 8
+    max_tool_calls: int = 16
     max_tokens: int = 1024
     temperature: float = 0.2
     request_timeout_s: int = 45       # seconds to wait for the model to start answering
     fallback: bool = False             # on timeout, ask the next loaded chat model this one question
     history_days: int = 30
+    discord: bool = False       # the Discord bot's /tower command may ask Tower (read-only)
     debug: bool = False        # per-module DEBUG trace in the manager log
 
 

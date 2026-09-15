@@ -7,7 +7,7 @@ import discord_bot as db
 def test_schemas_cover_the_command_surface():
     names = [c["name"] for c in db.command_schemas()]
     assert names == ["fleet", "host", "models", "load", "unload",
-                     "alarms", "ack", "silence"]
+                     "alarms", "ack", "silence", "tower"]
 
 
 def test_schema_required_options():
@@ -19,6 +19,9 @@ def test_schema_required_options():
     assert load_opts["host"]["required"] is False
     choices = [c["value"] for c in load_opts["provider"]["choices"]]
     assert choices == ["llama", "lms"]
+    tower_opts = {o["name"]: o for o in by_name["tower"]["options"]}
+    assert tower_opts["question"]["required"] is True and tower_opts["question"]["type"] == 3
+    assert tower_opts["public"]["required"] is False
 
 
 def test_schemas_are_json_serializable():

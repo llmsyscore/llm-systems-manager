@@ -11,10 +11,10 @@ from config.unified_config import ManagerConfig, ManagerTower
 def test_defaults_are_off_read_only_in_scope():
     t = ManagerTower()
     assert (t.enabled, t.model, t.tool_mode, t.capabilities, t.off_topic) == (False, "auto", "auto", "read", "refuse")
-    assert t.disabled_tools == [] and t.max_tool_calls == 8 and t.max_tokens == 1024
+    assert t.disabled_tools == [] and t.max_tool_calls == 16 and t.max_tokens == 1024
     assert t.history_days == 30 and t.min_severity == "warning"
     assert t.request_timeout_s == 45 and t.fallback is False
-    assert t.report_violations is True
+    assert t.report_violations is True and t.discord is False
     assert ManagerConfig().tower.enabled is False
 
 
@@ -33,7 +33,7 @@ def test_catalog_group_and_hot_flags():
     assert keys == {f"manager.tower.{k}" for k in (
         "enabled", "model", "tool_mode", "capabilities", "off_topic", "report_violations", "disabled_tools",
         "diagnose_alarms", "playbooks_auto", "min_severity", "max_tool_calls", "max_tokens", "temperature",
-        "request_timeout_s", "fallback", "history_days", "debug")}
+        "request_timeout_s", "fallback", "history_days", "discord", "debug")}
     assert all(e["hot"] for e in sc.CATALOG if e["group"] == "tower")
     assert dict(sc.GROUPS)["tower"] == "Tower assistant"
     common = {e["path"] for e in sc.CATALOG if e["group"] == "tower" and e.get("common")}

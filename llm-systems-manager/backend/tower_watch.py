@@ -156,6 +156,18 @@ class Watcher:
         self._last_sweep = 0.0
         self._busy = False
 
+    def _snapshot(self, alert: dict) -> Optional[dict]:
+        """The alert's metric series at diagnosis time; None when the dep is missing or fails (#980)."""
+        fn = self._deps.get("metric_snapshot")
+        if fn is None:
+            return None
+        try:
+            snap = fn(alert)
+        except Exception as e:  # noqa: BLE001 — an insight stands without its graph
+            log.debug("tower watch snapshot failed alert=%s: %s", alert.get("id"), type(e).__name__)
+            return None
+        return snap if isinstance(snap, dict) and snap.get("points") else None
+
     def _active(self) -> "list[dict]":
         rows = self._deps["alarms"]("active", 100)
         return [r for r in rows if isinstance(r, dict) and r.get("id") and not _own_alert(r)]
@@ -250,7 +262,7 @@ class Watcher:
                "summary": ins["summary"], "detail": ins["detail"], "suggested_action": ins["suggested_action"],
                "playbook_id": pb.id if pb else None, "playbook_title": pb.title if pb else None,
                "playbook_safe": pb.safe if pb else None, "steps": [[t, a] for t, a in (steps or [])],
-               "checks": checks, "thread_id": tid, "created": self._now()}
+               "checks": checks, "thread_id": tid, "created": self._now(), "snapshot": self._snapshot(alert)}
         iid = self._store.create_insight(row)
         log.debug("tower watch insight alert=%s id=%s ms=%d calls=%s playbook=%s ok=%s", aid, iid or "-",
                   int((time.monotonic() - t0) * 1000), out.get("calls"), pb.id if pb else "-", out.get("ok"))
@@ -277,7 +289,7 @@ class Watcher:
                "summary": _NOT_DIAGNOSED if bypass else _ASLEEP, "detail": None, "suggested_action": None,
                "playbook_id": pb.id if pb else None, "playbook_title": pb.title if pb else None,
                "playbook_safe": pb.safe if pb else None, "steps": steps,
-               "checks": [], "thread_id": None, "created": self._now()}
+               "checks": [], "thread_id": None, "created": self._now(), "snapshot": self._snapshot(alert)}
         iid = self._store.create_insight(row)
         log.debug("tower watch skip alert=%s reason=asleep id=%s playbook=%s", aid, iid or "-", pb.id if pb else "-")
         self._maybe_auto_apply(iid, pb, row["steps"], aid, cfg)

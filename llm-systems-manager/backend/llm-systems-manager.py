@@ -176,7 +176,7 @@ def _local_hostname() -> str:
 # banner reads it. Bump suffix (-1, -2, …) for same-day iterations; roll
 # the date for a new day's first change.
 # ---------------------------------------------------------------------------
-__version__ = "v2026.09.15-1"
+__version__ = "v2026.09.15-9"
 
 # Wall-clock at first import (Cheroot main process); the shutdown banner
 # reads it for the uptime line.
@@ -1897,6 +1897,10 @@ def llama_server_restart():
     return proxies.proxy_to_primary("llama", "POST", "/llama/server/restart")
 
 
+# Longer than the agent's own 300 s warm-up read timeout.
+WAKE_TIMEOUT_S = 320
+
+
 @app.route("/api/llm/server/wake", methods=["POST"])
 def llama_server_wake():
     # Generous timeout — when --sleep-idle-seconds has unloaded the model,
@@ -1904,7 +1908,7 @@ def llama_server_wake():
     data     = flask_request.get_json(silent=True) or {}
     model_id = data.get("model_id") or data.get("model")
     return proxies.proxy_to_primary("llama", "POST", "/llama/server/wake",
-                                    json=(data or None), timeout=75, model_id=model_id)
+                                    json=(data or None), timeout=WAKE_TIMEOUT_S, model_id=model_id)
 def _read_ini():
     cp = configparser.ConfigParser(default_section="__DEFAULTS__", interpolation=None)
     cp.optionxform = str
@@ -5799,36 +5803,145 @@ bench_baseline.register_routes(app, _bench_watcher, primary_agent=_request_agent
 companion.register_routes(app, ctx, static_dir=STATIC_DIR)
 
 
-def _tower_tools_runs(tool, count):
+_RUN_CONFIG_KEYS = {"benchmark": ("bench", "osl", "limit", "concurrency", "levels", "bench_tool"),
+                    "autotune": ("objective", "mode", "ctx_size", "llama_build"),
+                    "quality": ("mode", "kl_max", "llama_build")}
+
+
+def _tower_run_row(r: dict, hosts: dict) -> dict:
+    """A ledger row for Tower: host name, the run's configuration keys split from its results (#1011)."""
+    summary = dict(r.get("summary") or {})
+    cfg = {k: summary.pop(k) for k in _RUN_CONFIG_KEYS.get(str(r.get("tool")), ()) if k in summary}
+    rate = summary.pop("accept_rate", None)
+    if isinstance(rate, (int, float)):
+        summary["accept_rate_pct"] = round(rate * 100.0, 1) if rate <= 1 else round(rate, 1)
+    return {"tool": r.get("tool"), "model": r.get("model_id"), "host": hosts.get(r.get("agent_id") or "") or None,
+            "provider": r.get("provider"), "ok": r.get("ok"), "ts": tower_tools.local_ts(r.get("ts")), "run_id": r.get("run_id"),
+            "config": cfg, "results": summary}
+
+
+def _tower_card_rows(conn, hosts: dict, host: Optional[str], count: int) -> list:
+    """Report card runs as ledger-shaped rows (they live in their own table)."""
+    out = []
+    try:
+        rows = conn.execute(f"SELECT {report_card._COLS}, id FROM report_cards ORDER BY ts DESC, id DESC LIMIT ?", (count,)).fetchall()
+    except Exception as e:  # noqa: BLE001 — no cards yet is not an error for the ledger
+        log.debug("tower report card rows failed: %s", type(e).__name__)
+        return out
+    for row in rows:
+        card = report_card._row_to_card(row[:-1])
+        res = card.get("result") or {}
+        hn = hosts.get(card.get("agent_id") or "")
+        if host and (hn or "").lower() != host.lower():
+            continue
+        out.append({"tool": "reportcard", "model": res.get("model"), "host": hn or None, "provider": card.get("provider"),
+                    "ok": True, "ts": tower_tools.local_ts(int(card.get("ts") or 0)),
+                    "run_id": f"card-{row[-1]}", "config": {"mode": card.get("mode"), "preset_version": card.get("preset_version"),
+                                                           "eligible": bool(card.get("eligible")), "gpu_config": res.get("gpu_config")},
+                    "results": {k: res.get(k) for k in ("gen_tps", "prefill_tps", "ttft_s", "tokens_per_joule", "usd_per_mtok",
+                                                        "avg_watts", "vram_gb", "power_source") if k in res}})
+    return out
+
+
+def _tower_tools_runs(tool, count, a=None):
+    """Ledger runs for Tower, newest first: host, configuration and results per run; run_id fetches one run (#1011)."""
+    a = a or {}
     conn = get_db()
+    agents = agent_registry.load_agents().get("agents") or {}
+    hosts = {aid: str(ag.get("hostname") or "") for aid, ag in agents.items()}
+    host = str(a.get("host") or "").strip() or None
+    run_id = str(a.get("run_id") or "").strip()
+    count = max(1, min(int(count), 20))
     q = "SELECT tool, model_id, agent_id, provider, ok, summary, ts, run_id FROM tool_runs"
-    args: tuple = ()
-    if tool:
-        q += " WHERE tool=?"; args = (tool,)
-    rows = conn.execute(q + " ORDER BY id DESC LIMIT ?", args + (int(count),)).fetchall()
-    return [_tool_run_row(r) for r in rows]
+    where, args = [], []
+    if tool and tool != "reportcard":
+        where.append("tool=?"); args.append(tool)
+    if run_id:
+        where.append("run_id=?"); args.append(run_id)
+    if host:
+        ids = [aid for aid, hn in hosts.items() if hn.lower() == host.lower()]
+        if not ids:
+            return {"error": "unknown host"}
+        where.append("agent_id IN (%s)" % ",".join("?" * len(ids))); args += ids
+    if where:
+        q += " WHERE " + " AND ".join(where)
+    rows = [] if tool == "reportcard" else [_tower_run_row(_tool_run_row(r), hosts)
+                                            for r in conn.execute(q + " ORDER BY id DESC LIMIT ?", (*args, count)).fetchall()]
+    if run_id:
+        return rows
+    if not tool or tool == "reportcard":
+        rows += _tower_card_rows(conn, hosts, host, count)
+    rows.sort(key=lambda r: str(r.get("ts") or ""), reverse=True)
+    return rows[:count]
 
 
-def _tower_audit_rows(window, actor, action, count):
-    """Newest audit rows in a window, optionally filtered by actor (exact) and action prefix; detail already masked."""
-    since = (datetime.now(timezone.utc) - timedelta(seconds=tower_tools.WINDOWS.get(window, 86400))).isoformat(timespec="seconds")
-    where, params = ["ts >= ?"], [since]
+_tower_card_reqs: "dict[str, dict]" = {}
+
+
+def _tower_card_result(job_id: str):
+    """The finished report card of a Tower-started job, or None while it runs (#1016)."""
+    job = report_card._JOBS.get(job_id)
+    req = _tower_card_reqs.get(job_id)
+    if job is None:
+        _tower_card_reqs.pop(job_id, None)
+    if not job or not job.get("done") or req is None:
+        return None
+    _tower_card_reqs.pop(job_id, None)
+    card = report_card.latest_card_for_model(get_db(), str(req.get("agent") or ""), str(req.get("provider") or "llama"),
+                                             str(req.get("model") or ""))
+    if not card:
+        return {"ok": False, "message": "the report card run ended without a card; check the Report Card tab"}
+    res = card.get("result") or {}
+    return {"ok": True, "card_id": card.get("id"), "mode": card.get("mode"),
+            "results": {k: res.get(k) for k in ("model", "gen_tps", "prefill_tps", "ttft_s", "tokens_per_joule", "usd_per_mtok",
+                                                "avg_watts", "vram_gb", "power_source") if k in res}}
+
+
+def _tower_audit_rows(window, actor, action, count, a=None):
+    """Audit rows newest first with total and next_offset: a window or since/until, actor (exact), action prefix,
+    free-text search, outcome and status filters, offset paging (#1000); detail already masked."""
+    a = a or {}
+    start, end, _label, err = tower_tools.time_range(None, a.get("since"), a.get("until")) if (a.get("since") or a.get("until")) \
+        else (time.time() - tower_tools.WINDOWS.get(window, 86400), None, window, None)
+    if err:
+        return {"error": err}
+    where, params = [], []
+    if start is not None:
+        where.append("ts >= ?"); params.append(datetime.fromtimestamp(start, tz=timezone.utc).isoformat(timespec="seconds"))
+    if end is not None:
+        where.append("ts < ?"); params.append(datetime.fromtimestamp(end, tz=timezone.utc).isoformat(timespec="seconds"))
     if actor:
         where.append("actor = ?"); params.append(str(actor)[:64])
     if action:
         where.append("action LIKE ?"); params.append(str(action)[:64].replace("%", "") + "%")
-    rows = get_db().execute("SELECT ts, actor, role, action, target, outcome, detail FROM audit_log WHERE " + " AND ".join(where)
-                            + " ORDER BY id DESC LIMIT ?", params + [int(count)]).fetchall()
+    needle = str(a.get("search") or "").strip()[:80].replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    if needle:
+        where.append("(actor LIKE ? ESCAPE '\\' OR action LIKE ? ESCAPE '\\' OR target LIKE ? ESCAPE '\\' OR detail LIKE ? ESCAPE '\\')")
+        params += [f"%{needle}%"] * 4
+    if a.get("outcome"):
+        where.append("outcome = ?"); params.append(str(a["outcome"]))
+    clause, extra = tower_tools.audit_status_clause(a.get("status"))
+    if clause:
+        where.append(clause); params += extra
+    sql_where = (" WHERE " + " AND ".join(where)) if where else ""
+    conn = get_db()
+    total = int(conn.execute("SELECT COUNT(*) FROM audit_log" + sql_where, params).fetchone()[0])
+    count = max(1, min(int(count or 20), tower_tools.AUDIT_COUNT_MAX))
+    offset = max(0, int(a.get("offset") or 0))
+    rows = conn.execute("SELECT ts, actor, role, action, target, status, outcome, detail FROM audit_log" + sql_where
+                        + " ORDER BY id DESC LIMIT ? OFFSET ?", params + [count, offset]).fetchall()
     out = []
     for r in rows:
         d = dict(r)
+        d["ts"] = tower_tools.local_ts(d.get("ts"))
         d["label"] = _audit_label(d.get("action") or "")
         try:
             d["detail"] = json.loads(d["detail"]) if d.get("detail") else None
         except (TypeError, ValueError):
             d["detail"] = None
         out.append(d)
-    return out
+    nxt = offset + count if offset + count < total else None
+    return {"entries": out, "total": total, "offset": offset, "next_offset": nxt}
 
 
 def _tower_service_health() -> dict:
@@ -5842,20 +5955,51 @@ def _tower_service_health() -> dict:
     except Exception:
         ae_ok = False
     return {"manager": {"version": __version__, "uptime_s": round(now - _manager_startup_ts), "streams": stream_pool.POOL.stats()},
-            "alarm_engine": {"ok": ae_ok}, "agents": {"online": online, "offline": offline}}
+            "alarm_engine": {"ok": ae_ok}, "agents": {"online": online, "offline": offline}, "backups": _tower_backups()}
 
 
-def _tower_server_args(model: dict) -> "str | None":
-    """Space-joined llama-server args of the model's first host, for --jinja detection."""
+def _tower_backups() -> dict:
+    """Scheduled-backup state for Tower: schedule, the last run's outcome per component, next due (#1019)."""
     try:
-        aid = (model.get("agent_ids") or [None])[0]
-        if not aid:
-            return None
-        sample = (provider_state.STORE.get("llama", aid) or {}).get("sample") or {}
-        args = (sample.get("llama") or {}).get("server_args") or (sample.get("llama") or {}).get("cmdline")
-        return " ".join(args) if isinstance(args, list) else (str(args) if args else None)
-    except Exception:
-        return None
+        enabled, interval_h, keep_last, mirror_dir = _backup_cfg()
+        st = _get_backup_status() or {}
+        last = {k: v for k, v in st.items() if k != "components" and isinstance(v, (str, int, float, bool))}
+        comps = st.get("components") if isinstance(st.get("components"), dict) else {}
+        last["components"] = {n: {"ok": bool((c or {}).get("ok")), "error": (c or {}).get("error")} for n, c in comps.items()}
+        if isinstance(last.get("ts"), (int, float)):
+            last["ts"] = tower_tools.local_ts(last["ts"])
+        nxt = _backup_sched_state.get("next_attempt")
+        return {"enabled": bool(enabled and interval_h > 0), "interval_hours": interval_h, "keep_last": keep_last,
+                "mirrored": bool(mirror_dir), "scheduler_running": bool(_backup_sched_state.get("running")),
+                "last": last, "next_due": tower_tools.local_ts(nxt) if isinstance(nxt, (int, float)) else None}
+    except Exception as e:  # noqa: BLE001 — health never fails because the backup state is unreadable
+        log.debug("tower backups section failed: %s", type(e).__name__)
+        return {"error": "backup state unavailable"}
+
+
+def _tower_server_args(model: dict) -> "list[str | None]":
+    """Space-joined llama-server args of every host serving the model, in agent_ids order (#952)."""
+    out: list = []
+    for aid in model.get("agent_ids") or []:
+        try:
+            sample = (provider_state.STORE.get("llama", aid) or {}).get("sample") or {}
+            args = (sample.get("llama") or {}).get("server_args") or (sample.get("llama") or {}).get("cmdline")
+            out.append(" ".join(args) if isinstance(args, list) else (str(args) if args else None))
+        except Exception:
+            out.append(None)
+    return out
+
+
+def _tower_discord_ask(question: str, uid: str) -> dict:
+    """One read-only Tower turn for a Discord user; the answer text comes back whole (#963)."""
+    cfg = settings.manager.tower
+    if not bool(getattr(cfg, "enabled", False)):
+        return {"ok": False, "text": "", "error": "Tower is off.", "thread_id": None}
+    if not bool(getattr(cfg, "discord", False)):
+        return {"ok": False, "text": "", "error": "The /tower command is off; turn on Answer in Discord in the Tower settings.",
+                "thread_id": None}
+    return tower.ask_blocking(_tower_runs, user=f"discord:{uid}", role="operator", text=question,
+                              page={}, cfg=tower.ReadOnlyView(cfg), actor=f"tower via discord:{uid}")
 
 
 def _tower_write_setting(path: str, value) -> None:
@@ -5883,11 +6027,16 @@ def _tower_gateway_entries() -> list:
         entries = gateway._cached_model_entries() or []
     out = []
     agents = agent_registry.load_agents().get("agents") or {}
+
+    def _names(ids: list) -> list:
+        return [h for h in ((agents.get(a) or {}).get("hostname") for a in ids
+                            if (agents.get(a) or {}).get("status") == "approved") if h]
+
     for e in entries:
         prov = e.get("provider") or "llama"
         agent_ids = sorted(gateway._serving_agent_ids(prov, e.get("id")))
-        hosts = [(agents.get(aid) or {}).get("hostname") for aid in agent_ids if (agents.get(aid) or {}).get("status") == "approved"]
-        row = {**e, "hosts": [h for h in hosts if h], "agent_ids": agent_ids}
+        have = sorted(gateway._catalog_agent_ids(prov, e.get("id")) | set(agent_ids))
+        row = {**e, "hosts": _names(agent_ids), "agent_ids": agent_ids, "catalog_hosts": _names(have)}
         # LM Studio's /v1/models carries no load state; the polled `ps` rows do.
         if prov == "lms" and not isinstance(e.get("status"), dict):
             loaded = any(e.get("id") in autopilot._lms_loaded((provider_state.STORE.get("lms", aid) or {}).get("sample") or {})
@@ -5933,11 +6082,107 @@ def _tower_stream_max_s() -> float:
     return max(base, 3.0 * float(getattr(settings.manager.tower, "request_timeout_s", 45) or 45))
 
 
+_TOWER_BENCH_SETS = ("qualitative", "throughput_1k", "throughput_2k", "throughput_8k", "throughput_16k", "throughput_32k")
+_TOWER_BENCH_OSL = ("256", "1024", "2048")
+_TOWER_BENCH_LIMIT = ("4", "8", "16")
+
+
+def _tower_model_match(have, want) -> bool:
+    a, b = str(have or "").lower(), str(want or "").lower()
+    return bool(a and b) and (a == b or a in b or b in a)
+
+
+def _tower_loaded_providers(host: str, model: str) -> "list[str]":
+    """Providers on `host` that report `model` loaded, by Tower's models reader."""
+    rows = _tower_deps["models"](host)
+    rows = rows.get("models") if isinstance(rows, dict) else rows
+    out = []
+    for r in rows or []:
+        if _tower_model_match(r.get("model"), model) and any(str(h).lower() == host.lower() for h in r.get("loaded_on") or []):
+            out.append(str(r.get("provider")))
+    return sorted(set(out))
+
+
+def _tower_bench_options(a: dict) -> list:
+    """Option chips for the start_benchmark approval card (#1002)."""
+    monitor = {"name": "monitor", "label": "Wait for the result and report", "choices": [{"value": "yes", "label": "yes"}, {"value": "no", "label": "no"}], "value": "yes"}
+    if a.get("kind") == "live":
+        return [{"name": "bench", "label": "Bench set", "choices": [{"value": b, "label": b} for b in _TOWER_BENCH_SETS], "value": "qualitative"},
+                {"name": "osl", "label": "Output length", "choices": [{"value": o, "label": o} for o in _TOWER_BENCH_OSL], "value": "1024"},
+                {"name": "limit", "label": "Samples per category", "choices": [{"value": n, "label": n} for n in _TOWER_BENCH_LIMIT], "value": "8"},
+                monitor]
+    provs = _tower_loaded_providers(str(a.get("host") or ""), str(a.get("model") or "")) or list(report_card.PROVIDERS)
+    want = str(a.get("provider") or "")
+    return [{"name": "provider", "label": "Provider", "choices": [{"value": p, "label": tower_tools.PROVIDER_LABEL.get(p, p)} for p in provs],
+             "value": want if want in provs else provs[0]}, monitor]
+
+
+def _tower_monitor(start: dict, check, timeout_s: int, label: str) -> dict:
+    """Waits for a Tower-started run to finish and folds its results into the start result (#1016)."""
+    val, waited, how = tower_tools.wait_for(check, timeout_s=timeout_s, label=label)
+    if how == "ok":
+        return {**start, "monitored_s": waited, "result": val,
+                "message": start["message"] + f" Finished after {waited} s; the results follow."}
+    note = "the wait was stopped" if how == "cancelled" else f"still running after {waited} s; read recent_runs later"
+    return {**start, "monitored_s": waited, "message": start["message"] + f" Monitoring ended: {note}."}
+
+
+def _tower_bench_start(a: dict) -> dict:
+    """Starts a live bench (fleet run on one agent) or a custom-mode report card for a loaded model (#1002)."""
+    kind, host, model = str(a.get("kind") or ""), str(a.get("host") or ""), str(a.get("model") or "")
+    agents = agent_registry.load_agents().get("agents") or {}
+    aid = next((k for k, v in agents.items() if v.get("status") == "approved" and str(v.get("hostname") or "").lower() == host.lower()), None)
+    if not aid:
+        return {"ok": False, "message": f"unknown host {host}"}
+    if kind == "live":
+        row = next((h for h in _fleet_hosts() if h["agent_id"] == aid), None)
+        if not row or not row.get("online") or row.get("state") == "sleeping" or not _tower_model_match(row.get("model"), model):
+            return {"ok": False, "message": f"{host} does not have {model} loaded and awake on llama.cpp"}
+        bench = str(a.get("bench") or "qualitative")
+        try:
+            osl, limit = int(a.get("osl") or 1024), int(a.get("limit") or 8)
+        except (TypeError, ValueError):
+            return {"ok": False, "message": "bad benchmark options"}
+        ok, val = _fleet_run_on_agent(aid, {"model_id": row.get("model") or model, "bench": bench, "osl": osl, "limit": limit, "concurrency": [1]})
+        if not ok:
+            return {"ok": False, "message": str(val)}
+        out = {"ok": True, "message": f"Started live bench {val} on {host}: {bench} · output length {osl} · {limit} samples per category. "
+                                      "Results land in the Benchmark tab and in recent_runs.", "run_id": val}
+        if str(a.get("monitor") or "no") == "yes":
+            out = _tower_monitor(out, lambda: next(iter(_tower_tools_runs(None, 1, {"run_id": val}) or []), None),
+                                 tower_tools.MONITOR_LIVE_S, f"live bench · {host}")
+        return out
+    if kind != "reportcard":
+        return {"ok": False, "message": "kind must be live or reportcard"}
+    provider = str(a.get("provider") or "llama")
+    if provider not in report_card.PROVIDERS:
+        return {"ok": False, "message": f"unknown provider {provider}"}
+    if provider not in _tower_loaded_providers(host, model):
+        return {"ok": False, "message": f"{host} does not have {model} loaded on {tower_tools.PROVIDER_LABEL.get(provider, provider)}"}
+    if report_card.agent_busy(aid):
+        return {"ok": False, "message": "a report card is already running on that host"}
+    req = {"agent": aid, "provider": provider, "mode": "custom", "model": model, "model_key": "small",
+           "price_kwh": report_card._price_kwh(), "confirm_vllm": False, "confirm_download": False}
+    job_id = report_card._new_job(req, exclusive=True)
+    if job_id is None:
+        return {"ok": False, "message": "a report card is already running on that host"}
+    _tower_card_reqs[job_id] = req
+    for stale in list(_tower_card_reqs)[:-report_card._JOB_RETENTION]:
+        _tower_card_reqs.pop(stale, None)
+    _threading.Thread(target=report_card._run_job, args=(job_id, req), name=f"reportcard-{job_id[:8]}", daemon=True).start()
+    out = {"ok": True, "message": f"Started a report card for {model} on {host} ({tower_tools.PROVIDER_LABEL.get(provider, provider)}); "
+                                  "results land in the Report Card tab and in recent_runs.", "job_id": job_id}
+    if str(a.get("monitor") or "no") == "yes":
+        out = _tower_monitor(out, lambda: _tower_card_result(job_id), tower_tools.MONITOR_CARD_S, f"report card · {host}")
+    return out
+
+
 _tower_store = tower.Store(str(DB_PATH))
 _tower_deps = tower_tools.prod_deps(ctx, db_path=str(DB_PATH), tools_runs=_tower_tools_runs,
                                     speed_table=lambda m: bench_live.speed_table(str(DB_PATH), m),
                                     service_health=_tower_service_health, gateway_entries=_tower_gateway_entries,
-                                    audit_rows=_tower_audit_rows)
+                                    audit_rows=_tower_audit_rows, bench_start=_tower_bench_start, bench_options=_tower_bench_options,
+                                    card_result=_tower_card_result)
 _tower_approvals = tower.Approvals()
 _tower_runs = tower.Runs(_tower_store, registry_factory=lambda: tower_tools.build_registry(_tower_deps),
                          complete_stream=gateway.complete_stream,
@@ -5947,6 +6192,7 @@ _tower_runs = tower.Runs(_tower_store, registry_factory=lambda: tower_tools.buil
                          report_violation=_tower_report_violation)
 tower.register_routes(app, ctx, runs=_tower_runs, gateway_entries=_tower_gateway_entries,
                       write_setting=_tower_write_setting)
+discord_bot.HOOKS["tower_ask"] = _tower_discord_ask
 _tower_registry = lambda: tower_tools.build_registry(_tower_deps)  # noqa: E731
 _tower_watcher = tower_watch.Watcher(_tower_store, deps=_tower_deps, registry_factory=_tower_registry,
                                      complete_stream=gateway.complete_stream, entries=_tower_gateway_entries,
@@ -6507,7 +6753,7 @@ _HOT_RELOADERS["manager.bench_baselines."] = _bench_baseline_reload_config
 
 _TOWER_KEYS = ("enabled", "model", "tool_mode", "capabilities", "off_topic", "report_violations",
                "disabled_tools", "diagnose_alarms", "playbooks_auto", "min_severity", "max_tool_calls",
-               "max_tokens", "temperature", "request_timeout_s", "fallback", "history_days", "debug")
+               "max_tokens", "temperature", "request_timeout_s", "fallback", "history_days", "discord", "debug")
 
 
 def _tower_reload_config() -> None:

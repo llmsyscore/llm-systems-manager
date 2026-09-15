@@ -8,7 +8,7 @@
   const PROVIDER = { llama: 'llama.cpp', lms: 'LM Studio', vllm: 'vLLM' };
   const esc = s => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
-  function initial() { return { model: null, status: 'idle', turns: [], error: null }; }
+  function initial() { return { model: null, status: 'idle', turns: [], error: null, wait: null }; }
 
   function last(turns) { return turns[turns.length - 1]; }
   function ensureTower(turns) {
@@ -25,10 +25,14 @@
 
   function reduce(state, ev) {
     const s = { ...state, turns: state.turns.slice() };
+    if (ev.event !== 'status' || ev.state !== 'waiting') s.wait = null;
     switch (ev.event) {
       case 'user': s.turns.push({ role: 'user', text: ev.text }); s.status = 'thinking'; s.error = null; return s;
       case 'model': s.model = { model: ev.model, provider: ev.provider, hosts: ev.hosts || [] }; return s;
-      case 'status': s.status = ev.state; s.turns = ensureTower(s.turns); return s;
+      case 'status':
+        s.status = ev.state; s.turns = ensureTower(s.turns);
+        if (ev.state === 'waiting') s.wait = { name: String(ev.name || ''), elapsed_s: Number(ev.elapsed_s) || 0, timeout_s: Number(ev.timeout_s) || 0 };
+        return s;
       case 'tool': {
         s.turns = ensureTower(s.turns);
         const t = { ...last(s.turns), ticks: last(s.turns).ticks.concat([{ name: ev.name, ok: !!ev.ok, ms: ev.ms, summary: ev.summary, result: ev.result }]) };
@@ -78,8 +82,15 @@
     }
   }
 
+  const URL_RE = /https?:\/\/[^\s<>"'`)\]]+[^\s<>"'`)\].,;:!?]/g;
+  const MAIL_RE = /\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b/g;
+  const LINK_RE = new RegExp(URL_RE.source + '|' + MAIL_RE.source, 'g');
+  // Escaped text with `code`, **bold** and plain http(s) URLs / e-mail addresses as links (outside code spans).
   function inline(t) {
-    return esc(t).replace(/`([^`]+)`/g, '<code>$1</code>').replace(/\*\*([^*]+)\*\*/g, '<b>$1</b>');
+    return esc(t).split('`').map((seg, i) => i % 2
+      ? `<code>${seg}</code>`
+      : seg.replace(LINK_RE, m => m.startsWith('http') ? `<a href="${m}" target="_blank" rel="noopener">${m}</a>` : `<a href="mailto:${m}">${m}</a>`)
+           .replace(/\*\*([^*]+)\*\*/g, '<b>$1</b>')).join('');
   }
   function md(text) {
     const out = [];
@@ -100,6 +111,12 @@
         while (i < lines.length && /^\s*[-*]\s+/.test(lines[i])) items.push('<li>' + inline(lines[i].replace(/^\s*[-*]\s+/, '')) + '</li>'), i++;
         out.push('<ul>' + items.join('') + '</ul>'); continue;
       }
+      if (OL_LINE.test(l)) {
+        const items = [];
+        const start = Number((l.match(OL_LINE) || [])[1]) || 1;
+        while (i < lines.length && OL_LINE.test(lines[i])) items.push('<li>' + inline(lines[i].replace(OL_LINE, '')) + '</li>'), i++;
+        out.push(`<ol${start > 1 ? ` start="${start}"` : ''}>` + items.join('') + '</ol>'); continue;
+      }
       if (/^\s*\|/.test(l) && i + 1 < lines.length && /^\s*\|?\s*:?-{2,}/.test(lines[i + 1])) {
         const cells = r => r.trim().replace(/^\||\|$/g, '').split('|').map(c => c.trim());
         const head = cells(l); i += 2;
@@ -111,10 +128,24 @@
       }
       const para = [lines[i]];
       i++;
-      while (i < lines.length && lines[i].trim() && !/^\s*[-*]\s+/.test(lines[i]) && !/^\s*\|/.test(lines[i]) && !/^\s*```/.test(lines[i])) para.push(lines[i]), i++;
-      out.push('<p>' + inline(para.join(' ')) + '</p>');
+      while (i < lines.length && lines[i].trim() && !/^\s*[-*]\s+/.test(lines[i]) && !OL_LINE.test(lines[i]) && !/^\s*\|/.test(lines[i]) && !/^\s*```/.test(lines[i])) para.push(lines[i]), i++;
+      out.push(enumHtml(para.join(' ')));
     }
     return out.join('');
+  }
+  const OL_LINE = /^\s*(\d{1,3})[.)]\s+/;
+  // A paragraph that carries an inline "1. … 2. … 3. …" enumeration becomes a lead sentence plus an ordered list (#995).
+  function enumHtml(text) {
+    const re = /(^|\s)(\d{1,2})[.)]\s+(?=\S)/g;
+    const hits = [];
+    let m;
+    while ((m = re.exec(text))) hits.push({ n: Number(m[2]), at: m.index + m[1].length, end: m.index + m[0].length });
+    const seq = [];
+    for (const h of hits) { if (h.n === seq.length + 1) seq.push(h); else if (h.n === 1) seq.splice(0, seq.length, h); }
+    if (seq.length < 2) return '<p>' + inline(text) + '</p>';
+    const lead = text.slice(0, seq[0].at).trim();
+    const items = seq.map((h, k) => text.slice(h.end, k + 1 < seq.length ? seq[k + 1].at : text.length).trim());
+    return (lead ? '<p>' + inline(lead) + '</p>' : '') + '<ol>' + items.map(t => '<li>' + inline(t) + '</li>').join('') + '</ol>';
   }
 
   function tickSummary(r) {
@@ -163,7 +194,7 @@
   }
 
   const SUGS = {
-    events: ['Summarise active alarms', 'Which alert needs me first?', 'Top 10 alarm rules over 30 days', 'Alarms per day this week as a chart',
+    events: ['Alarm summary for today', 'Summarise active alarms', 'Which alert needs me first?', 'Top 10 alarm rules over 30 days', 'Alarms per day this week as a chart',
              'Which host alarms the most?', 'What changed in the last hour?'],
     energy: ['What used the most power today?', 'What is my $/Mtok today?', 'Energy per host this week', 'Idle vs active energy today',
              'Which host is idle the most?'],
@@ -173,6 +204,8 @@
     tools: ['What was the last benchmark run?', 'Which host is fastest for a 27B model?', 'Any autotune runs this week?'],
   };
   const ACT_SUGS = { llm: 'Wake llama-server', events: 'Acknowledge the oldest active alert' };
+  const ACTIVITY_SUG = 'Activity summary for today';
+  const HELP_SUGS = ['Who develops LLM Systems Manager?', 'How do I get help?'];
   function suggestions(page, caps) {
     const p = page || {};
     let list;
@@ -184,11 +217,18 @@
     else {
       const host = p.host ? `Why is ${p.host} red?` : 'Why is a host red?';
       const hw = p.host ? `What hardware does ${p.host} have?` : 'What hardware does each host have?';
-      list = [host, 'Summarise active alarms', 'What used the most power today?', 'What models are loaded everywhere?',
-              'Top alarm offenders this month', hw];
+      list = ['Alarm summary for today', host, 'What used the most power today?',
+              'What models are loaded everywhere?', 'Top alarm offenders this month', hw].concat(HELP_SUGS);
     }
+    list = p.tab === 'events' ? [list[0], ACTIVITY_SUG].concat(list.slice(1)) : [ACTIVITY_SUG].concat(list);
     if (caps === 'operate' || caps === 'admin') list = list.concat([ACT_SUGS[p.tab] || 'Unload a model nobody is using']);
     return list;
+  }
+
+  // One line for the drawer while a tool waits on a slow operation.
+  function waitText(w) {
+    if (!w) return '';
+    return `waiting for ${w.name || 'the result'} · ${w.elapsed_s} s` + (w.timeout_s ? ` of ${w.timeout_s}` : '');
   }
 
   function pageContext(o) {
@@ -238,11 +278,44 @@
       appliedBy: applied ? (/^tower via alarm /.test(r.applied_by || '') ? 'auto' : String(r.applied_by || '').replace(/^tower via /, '')) : '',
       auditActor: r.applied_by || '',
       failed: !applied && res && res.ok === false ? String(res.message || 'failed') : null,
+      snapshot: r.snapshot && Array.isArray(r.snapshot.points) ? r.snapshot : null,
     };
   }
 
+  // SVG geometry for an insight's metric snapshot: the series path, the threshold line and a caption (#980).
+  function sparkline(snap, w, h) {
+    w = w || 240; h = h || 36;
+    const pts = (snap && Array.isArray(snap.points) ? snap.points : []).filter(p => Array.isArray(p) && typeof p[0] === 'number' && typeof p[1] === 'number' && Number.isFinite(p[0]) && Number.isFinite(p[1]));
+    if (pts.length < 2) return null;
+    const xs = pts.map(p => Number(p[0])), ys = pts.map(p => Number(p[1]));
+    const thr = snap.threshold != null && Number.isFinite(Number(snap.threshold)) ? Number(snap.threshold) : null;
+    let lo = Math.min(...ys), hi = Math.max(...ys);
+    if (thr !== null) { lo = Math.min(lo, thr); hi = Math.max(hi, thr); }
+    if (hi === lo) hi = lo + 1;
+    const pad = 2, x0 = Math.min(...xs), span = (Math.max(...xs) - x0) || 1;
+    const X = t => pad + (t - x0) / span * (w - 2 * pad);
+    const Y = v => h - pad - (v - lo) / (hi - lo) * (h - 2 * pad);
+    const d = pts.map((p, i) => (i ? 'L' : 'M') + X(Number(p[0])).toFixed(1) + ' ' + Y(Number(p[1])).toFixed(1)).join(' ');
+    const unit = String(snap.unit || '');
+    const fmt = v => (Math.abs(v) >= 100 ? Math.round(v) : Math.round(v * 10) / 10) + (unit === '%' || !unit ? unit : ' ' + unit);
+    const caption = `${snap.metric || 'metric'} · last ${Number(snap.minutes) || 60} min · ${fmt(Math.min(...ys))}–${fmt(Math.max(...ys))}`
+      + (thr !== null ? ` · threshold ${fmt(thr)}` : '');
+    return { d, w, h, thrY: thr !== null ? Number(Y(thr).toFixed(1)) : null, caption };
+  }
+
+  // The first message and the thread title of a conversation started from an insight (#980).
+  function troubleshootTitle(r) {
+    return `Troubleshoot: ${(r && r.rule) || 'Alert'}${r && r.host ? ' · ' + r.host : ''}`;
+  }
+  function troubleshootPrompt(r) {
+    const x = r || {};
+    const prior = x.summary && !/^Not diagnosed/.test(x.summary) ? ` Tower's earlier read: ${x.summary}` : '';
+    return `Troubleshoot the alert "${x.rule || 'Alert'}"${x.host ? ` on ${x.host}` : ''} (alert id ${x.alert_id || '?'}). `
+      + 'Read the alert and the host\'s current state, explain the likely cause, and walk me through fixing it step by step.' + prior;
+  }
+
   // History rows grouped by the day of their last message, newest first; rows without a stamp end up under "Undated" (#987).
-  function historyGroups(threads, nowMs) {
+  function historyGroups(threads, nowMs, discord) {
     const now = new Date(nowMs != null ? nowMs : Date.now());
     const dayKey = d => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
     const today = dayKey(now), yest = dayKey(new Date(now.getTime() - 86400000));
@@ -265,6 +338,17 @@
       const g = groups[groups.length - 1];
       if (g && g.key === r.key) g.rows.push(r); else groups.push({ key: r.key, label: r.day, rows: [r] });
     }
+    // Discord conversations (admins only) follow the dated groups, one group per Discord user (#996).
+    const byUser = new Map();
+    for (const t of discord || []) {
+      const at = Number(t.updated || t.created || 0) * 1000, d = at ? new Date(at) : null;
+      const uid = String(t.user || '').replace(/^discord:/, '') || '?';
+      const row = { id: t.id, title: t.title || 'New thread', at, key: 'discord:' + uid, day: 'Discord · ' + uid,
+                    time: d ? d.toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }) : '' };
+      if (!byUser.has(uid)) byUser.set(uid, []);
+      byUser.get(uid).push(row);
+    }
+    for (const [uid, list] of byUser) groups.push({ key: 'discord:' + uid, label: 'Discord · ' + uid, rows: list.sort((a, b) => b.at - a.at) });
     return groups;
   }
 
@@ -277,6 +361,6 @@
              chip: a.model ? { model: a.model, provider: PROVIDER[a.provider] || a.provider || '', host: (a.hosts || [])[0] || '' } : null };
   }
 
-  return { initial, reduce, md, threadView, liveRun, historyGroups, suggestions, pageContext, stateView, esc, PROVIDER,
-           ageText, insightView, insightsHeader, visibleInsights };
+  return { initial, reduce, md, threadView, liveRun, historyGroups, suggestions, pageContext, stateView, esc, PROVIDER, waitText, HELP_SUGS,
+           ageText, insightView, insightsHeader, visibleInsights, sparkline, troubleshootTitle, troubleshootPrompt };
 });

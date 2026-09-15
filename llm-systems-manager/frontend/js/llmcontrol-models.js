@@ -531,7 +531,7 @@ async function wakeModel(modelId) {
     const resp = await _fetchT('/api/llm/server/wake', {
       method: 'POST', headers: {'Content-Type':'application/json'},
       body: JSON.stringify({model: modelId})
-    }, 80000);
+    }, 330000);
     if (typeof _notePinOverride === 'function') _notePinOverride(resp, modelId);
     const r = await resp.json();
     if (!r.ok) alert('Wake failed: ' + (r.error || JSON.stringify(r)));

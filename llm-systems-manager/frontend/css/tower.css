@@ -81,14 +81,18 @@ body.tw-docked #eventsTab, body.tw-docked #toolsTab, body.tw-docked #adminTab { 
 #towerAside .ans p { margin: 0 0 8px; }
 #towerAside .ans p:last-child { margin-bottom: 0; }
 #towerAside .ans ul { margin: 0 0 8px; padding-left: 16px; }
+#towerAside .ans ol { margin: 0 0 8px; padding-left: 24px; list-style: decimal outside; }
 #towerAside .ans li { margin: 2px 0; }
 #towerAside .ans code { font: 11.5px var(--font-mono); background: var(--bg-card-alt); padding: 1px 5px; border-radius: 4px; }
+#towerAside .ans a, #towerAside .ans a:visited { color: var(--accent); text-decoration: underline; text-decoration-color: color-mix(in srgb, var(--accent) 45%, transparent); text-underline-offset: 2px; overflow-wrap: anywhere; }
+#towerAside .ans a:hover { text-decoration-color: var(--accent); }
 #towerAside .ans pre { margin: 4px 0 8px; padding: 8px 10px; border-radius: 6px; background: var(--bg-card-alt); font: 11px/1.4 var(--font-mono); color: var(--fg); white-space: pre; overflow-x: auto; max-width: 100%; }
 #towerAside .ans table { border-collapse: collapse; font: 11.5px var(--font-mono); margin: 4px 0 8px; display: block; max-width: 100%; overflow-x: auto; }
 #towerAside .ans td, #towerAside .ans th { padding: 3px 10px 3px 0; text-align: left; border-bottom: 1px solid var(--border-soft); font-weight: 400; color: var(--fg-muted); }
 #towerAside .ans td:first-child, #towerAside .ans th:first-child { color: var(--fg); }
 #towerAside .caret { display: inline-block; width: 7px; height: 13px; background: var(--accent); vertical-align: -2px; margin-left: 2px; }
 #towerAside .drop { font: 10.5px var(--font-mono); color: var(--fg-dim); padding-left: 12px; }
+#towerAside .wait { font: 11px var(--font-mono); color: var(--fg-muted); padding: 2px 0 2px 12px; border-left: 2px solid var(--border); }
 #towerAside .fu { display: flex; flex-wrap: wrap; gap: 6px; padding-left: 12px; }
 #towerAside .sug { border: 1px solid var(--border-strong); background: transparent; color: var(--fg-muted); font: 500 11.5px var(--font-sans); padding: 4px 10px; border-radius: 999px; cursor: pointer; white-space: nowrap; flex: 0 0 auto; }
 #towerAside .sug:hover { color: var(--fg); border-color: var(--fg-dim); }
@@ -151,6 +155,11 @@ body.tw-docked #eventsTab, body.tw-docked #toolsTab, body.tw-docked #adminTab { 
 #towerAside .ins .acts .ok { font: 500 11.5px var(--font-sans); color: var(--ok); margin-right: auto; }
 #towerAside .ins .acts .run { font: 500 11.5px var(--font-sans); color: var(--accent); }
 #towerAside .ins .fail { font: 11px var(--font-mono); color: var(--crit); }
+#towerAside .ins .snap { display: grid; gap: 2px; margin: 2px 0; min-width: 0; }
+#towerAside .ins .snap svg { display: block; width: 100%; height: 36px; overflow: visible; }
+#towerAside .ins .snap path { fill: none; stroke: var(--accent); stroke-width: 1.5; vector-effect: non-scaling-stroke; }
+#towerAside .ins .snap .thr { stroke: var(--crit); stroke-width: 1; stroke-dasharray: 3 3; vector-effect: non-scaling-stroke; }
+#towerAside .ins .snapc { font: 10.5px var(--font-mono); color: var(--fg-dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 #towerAside .ins .detb { display: grid; gap: 4px; padding-left: 10px; border-left: 1px solid var(--border); margin-top: 2px; }
 #towerAside .ins .detb p { margin: 0; font-size: 12px; line-height: 1.45; color: var(--fg-muted); overflow-wrap: anywhere; }
 #towerAside .ins .detb .aud { font: 10.5px var(--font-mono); color: var(--fg-dim); }
@@ -189,12 +198,23 @@ body.tw-docked #eventsTab, body.tw-docked #toolsTab, body.tw-docked #adminTab { 
 /* ---------- action cards ---------- */
 #towerAside .act:not(.tick) { border: 1px solid color-mix(in srgb, var(--accent) 45%, var(--border-strong)); border-radius: 9px; padding: 10px 12px; display: grid; gap: 6px; background: color-mix(in srgb, var(--accent) 6%, var(--bg-card)); margin: 6px 0; }
 #towerAside .act .eyebrow { font: 500 10.5px var(--font-mono); letter-spacing: .06em; text-transform: uppercase; color: var(--accent); }
+#towerAside .act.running { border-color: var(--border); background: var(--bg-card); opacity: .7; }
+#towerAside .act.running .eyebrow { color: var(--fg-muted); }
+#towerAside .sug.hi { border-color: color-mix(in srgb, var(--accent) 55%, var(--border-strong)); color: var(--accent); }
 #towerAside .act h4 { margin: 0; font-size: 13.5px; font-weight: 600; color: var(--fg); }
 #towerAside .act .tgt { font: 11.5px var(--font-mono); color: var(--fg-muted); }
 #towerAside .act p { margin: 0; font-size: 12.5px; color: var(--fg-muted); line-height: 1.45; }
 #towerAside .act .role { font: 11px var(--font-mono); color: var(--fg-dim); }
 #towerAside .act .role .mono { font-family: var(--font-mono); color: var(--fg-muted); }
 #towerAside .act .btns { display: flex; gap: 8px; margin-top: 4px; }
+#towerAside .act .opts { display: grid; gap: 6px; margin: 4px 0 6px; }
+#towerAside .act .opt { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+#towerAside .act .ol { font: 11px var(--font-mono); color: var(--fg-dim); min-width: 96px; }
+#towerAside .act .chips { display: flex; gap: 4px; flex-wrap: wrap; }
+#towerAside .act .chip { border: 1px solid var(--border-strong); border-radius: 999px; padding: 1px 9px; background: none; color: var(--fg-muted); font: 11.5px var(--font-sans); cursor: pointer; }
+#towerAside .act .chip:hover { color: var(--fg); }
+#towerAside .act .chip.on { border-color: var(--accent); color: var(--fg); background: color-mix(in srgb, var(--accent) 16%, transparent); }
+#towerAside .act .chip:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 #towerAside .tick.act.ok .k { color: var(--ok); }
 
 @media (prefers-reduced-motion: no-preference) {

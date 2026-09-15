@@ -170,12 +170,13 @@ disabled_tools = []           # tool names turned off everywhere; Settings shows
 diagnose_alarms = false
 playbooks_auto = false
 min_severity = "warning"
-max_tool_calls = 8
+max_tool_calls = 16
 max_tokens = 1024
 temperature = 0.2
 request_timeout_s = 45        # seconds to wait for the model to start answering
 fallback = false              # on timeout, ask the next loaded chat model this one question and say so
 history_days = 30
+discord = false               # the Discord bot's /tower command may ask Tower (read-only)
 debug = false                 # per-module DEBUG trace in the manager log; payload text is never logged
 
 [manager.model_meta]
