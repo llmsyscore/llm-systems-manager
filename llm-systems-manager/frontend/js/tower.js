@@ -476,7 +476,7 @@
     if (!_thread) await ensureThread();
     if (!_thread) { _notice = 'Tower could not start a thread; try again.'; if ($('twInput')) $('twInput').value = t; paintBody(); return; }
     _notice = null;
-    if (_thread && (_thread.title || 'New thread') === 'New thread' && !((_state && _state.turns) || []).length) _thread.title = t.slice(0, 60);
+    if ((_thread.title || 'New thread') === 'New thread' && !((_state && _state.turns) || []).length) _thread.title = t.slice(0, 60);
     _state = TW.reduce(_state || TW.initial(), { event: 'user', text: t });
     paintBody({ toBottom: true });
     const page = _prefs.noCtx ? {} : pageContext();

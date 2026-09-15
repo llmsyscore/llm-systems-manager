@@ -23,7 +23,11 @@ describe('focusAlarmAlert', () => {
     Object.defineProperty(iframe, 'contentWindow', { value: { postMessage: post }, configurable: true });
     focusAlarmAlert('al-42');
     expect(iframe.getAttribute('src')).toBe('/alarm/?theme=slate&alert=al-42');
-    expect(window.__tabs).toEqual(['events']);
+    iframe.removeAttribute('src');
+    document.documentElement.dataset.theme = '"><script>';
+    focusAlarmAlert('a&b');
+    expect(iframe.getAttribute('src')).toBe('/alarm/?alert=a%26b');
+    expect(window.__tabs).toEqual(['events', 'events']);
     expect(post).not.toHaveBeenCalled();
   });
   test('a booted console gets an open_alert message now and again on its next load', () => {

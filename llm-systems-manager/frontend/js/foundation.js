@@ -591,13 +591,11 @@ function focusAlarmAlert(id) {
   const wanted = String(id);
   const booted = !!(iframe && iframe.getAttribute('src'));
   if (iframe && !booted) {
-    try {
-      const u = new URL(iframe.getAttribute('data-src') || '/alarm/', window.location.origin);
-      const theme = (document.documentElement.dataset.theme || '').trim();
-      if (theme) u.searchParams.set('theme', theme);
-      u.searchParams.set('alert', wanted);
-      iframe.setAttribute('src', u.pathname + u.search);
-    } catch (_) { /* switchTab loads the console; the message below still reaches it */ }
+    const theme = (document.documentElement.dataset.theme || '').trim();
+    const q = new URLSearchParams();
+    if (/^[a-z][a-z0-9-]{0,31}$/.test(theme)) q.set('theme', theme);
+    q.set('alert', wanted);
+    iframe.setAttribute('src', '/alarm/?' + q.toString());
   }
   if (typeof switchTab === 'function') switchTab('events');
   if (!iframe || !booted) return;
